@@ -1,0 +1,308 @@
+/*
+
+ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
+
+Copyright (c) 2023, 2024 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
+https://github.com/EremusOne/ZX-ESPectrum-IDF
+
+Based on ZX-ESPectrum-Wiimote
+Copyright (c) 2020, 2022 David Crespo [dcrespo3d]
+https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote
+
+Based on previous work by Ramón Martinez and Jorge Fuertes
+https://github.com/rampa069/ZX-ESPectrum
+
+Original project by Pete Todd
+https://github.com/retrogubbins/paseVGA
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+To Contact the dev team you can write to zxespectrum@gmail.com or 
+visit https://zxespectrum.speccy.org/contacto
+
+*/
+
+#ifndef FileUtils_h
+#define FileUtils_h
+
+#include <stdio.h>
+#include <inttypes.h>
+#include <string>
+///#include "sdmmc_cmd.h"
+
+using namespace std;
+
+#include "MemESP.h"
+#include "ff.h"
+
+// Defines
+#define ASCII_NL 10
+
+#define DISK_SNAFILE 0
+#define DISK_TAPFILE 1
+#define DISK_DSKFILE 2
+#define DISK_ROMFILE 3
+#define DISK_IMGFILE 4
+#define DISK_ALLFILE 5
+#define DISK_DLSFILE 6   // GM.DLS soundbank picker (on-device .dls -> gm_bank.bin conversion)
+
+struct DISK_FTYPE {
+    string fileExts;
+    int begin_row;
+    int focus;
+    uint8_t fdMode;
+    string fileSearch;
+};
+
+// Disk/image interface family inferred from file extension.
+enum DiskIface {
+    IFACE_NONE = 0,
+    IFACE_BETA = 1,  // TR-DOS: .trd .scl .fdi .udi — Drive A..D
+    IFACE_MB02 = 2,  // MB-02+: .mbd — Drive 1..4
+    IFACE_ESX  = 3,  // esxDOS: .mmc .hdf — hd0..hd1
+};
+
+class FileUtils
+{
+public:
+    static bool fsMount;
+    // No SD card at boot and a USB stick took over as the default FatFs volume
+    // (f_chdrive "USB:") — all unprefixed paths (configs, /tmp, /spec) resolve
+    // on the stick. SD always wins when a card is present.
+    static bool usbRoot;
+
+    static string getLCaseExt(const string& filename);
+
+    // Map a lowercase extension (no leading dot) to its disk-interface family.
+    // Returns IFACE_NONE for tape/snapshot/unknown extensions.
+    static DiskIface ifaceForExt(const string& lcExt);
+
+    static void initFileSystem();
+    static void ensureBootDirs();
+    static bool mountSDCard();
+    // Runtime automount: while the FS is offline (card-less boot, no USB root),
+    // probe for an inserted SD card; on the tick it comes online mount it,
+    // create the dir tree, set fsMount/SDReady and return true. Throttle calls.
+    static bool automountSD();
+    static void unmountSDCard();
+    // Boot-time guard for remembered "USB:/..." paths (disk mounts, tape):
+    // they are reopened before the main loop ever pumps tuh_task, so the stick
+    // has not enumerated yet and the open would fail — and the failed mount
+    // would then be persisted as empty. Waits for the stick when the path
+    // needs it; true = volume is (now) available, false = skip the reopen.
+    static bool waitVolumeReady(const string& path);
+    static bool mkdirParents(const char* path);
+    static bool checkSDCard();
+    static bool remountSD();
+    // static String         getAllFilesFrom(const String path);
+    // static void           listAllFiles();
+    // static void           sanitizeFilename(String filename); // in-place
+    // static File           safeOpenFileRead(String filename);
+    // static string getFileEntriesFromDir(string path);
+    static void DirToFile(const string& Dir, uint8_t ftype /*string fileExts*/);
+    static void Mergefiles(const string& fpath, uint8_t ftype, int chunk_cnt);
+    // static uint16_t       countFileEntriesFromDir(String path);
+    // static string getSortedFileList(string fileDir);
+    static bool hasSNAextension(const string& filename);
+    static bool hasZ80extension(const string& filename);
+    static bool hasPextension(const string& filename);
+    static bool hasTAPextension(const string& filename);
+    static bool hasTZXextension(const string& filename);
+    static bool hasWAVextension(const string& filename);
+    static bool hasPZXextension(const string& filename);
+    static bool hasMP3extension(const string& filename);
+    static bool hasZIPextension(const string& filename);
+
+    static void deleteFilesWithExtension(const char *folder_path, const char *extension);
+    static bool deleteDirRecursive(const char *path);
+
+    // UTF-8 → CP1251 (Cyrillic) for OSD display with the Font6x8Cyr face. ASCII
+    // passes through; Russian letters map to their CP1251 byte; other codepoints
+    // become '?'; invalid sequences pass through unchanged.
+    static string utf8ToCp1251(const string& s);
+
+    static string MountPoint;
+    static bool SDReady;
+
+    static string SNA_Path; // Current SNA path on the SD
+    static string TAP_Path; // Current TAP path on the SD
+    static string DSK_Path; // Current DSK path on the SD
+    static string ROM_Path; // Current DSK path on the SD
+    static string IMG_Path; // Current MMC/HDF image path on the SD
+    static string ALL_Path; // Current path for unified file dialog
+    static string DLS_Path; // Current .dls path (GM.DLS soundbank conversion)
+
+    static DISK_FTYPE fileTypes[7];
+
+private:
+    friend class Config;
+///    static sdmmc_card_t *card;    
+};
+
+// Config files live under /.config/pico-spec/<port-version>/<board-tag>/
+// (per-version + per-board), with palette.nvs and logs shared in CONFIG_DIR.
+#define CONFIG_DIR_ROOT "/.config"
+#define CONFIG_DIR      CONFIG_DIR_ROOT "/pico-spec"
+#define CONFIG_DIR_VER  CONFIG_DIR "/" PORT_VERSION
+#define CONFIG_DIR_BOARD CONFIG_DIR_VER "/" CONFIG_BOARD_TAG
+#define STORAGE_NVS     CONFIG_DIR_BOARD "/storage.nvs"
+// User-saved default config: unversioned but still per-board (deliberately
+// NOT a single cross-board file — a saved default can carry a forced
+// video_driver, or a feature combination that fits this board's RAM/PSRAM
+// budget but not a different board's, so it must never cross board families).
+// Used as the fallback base when no storage.nvs exists yet for the current
+// version on THIS board (fresh firmware, or after "Reset to my Default"). A
+// true factory reset ("Defaults" menu / Hold-R) bypasses this via SKIP_DEFAULT_FLAG.
+#define CONFIG_DIR_BOARD_ANYVER CONFIG_DIR "/" CONFIG_BOARD_TAG
+#define DEFAULT_NVS       CONFIG_DIR_BOARD_ANYVER "/default.nvs"
+#define SKIP_DEFAULT_FLAG CONFIG_DIR "/skip_default.flag"
+#define PALETTE_NVS     CONFIG_DIR "/palette.nvs"
+#define DEBUG_LOG_PATH  CONFIG_DIR "/debug.log"
+#define DUMP_LOG_PATH   CONFIG_DIR "/dump.log"
+
+// CONFIG_DIR (/.config/pico-spec) holds configs + logs (per-version/per-board NVS).
+#define DISK_BOOT_FILENAME CONFIG_DIR "/boot.cfg"
+
+// User data lives in a separate visible root /spec on the SD card.
+#define SPEC_DIR_ROOT "/spec"
+#define DISK_SCR_DIR  SPEC_DIR_ROOT "/screenshots"
+#define DISK_PSNA_DIR SPEC_DIR_ROOT "/snapshots"
+#define DISK_PSNA_FILE "persist"
+
+#define NO_RAM_FILE "none"
+
+#define SNA_48K_SIZE 49179
+#define SNA_128K_SIZE1 131103
+#define SNA_128K_SIZE2 147487
+
+#define MAX_FNAMES_PER_CHUNK 128
+
+// inline utility functions for uniform access to file/memory
+// and making it easy to to implement SNA/Z80 functions
+
+static inline uint8_t readByteFile(FIL* f)
+{
+    uint8_t result;
+    UINT br;
+    if (f_read(f, &result, 1, &br) != FR_OK || br != 1) {
+        return -1;
+    }
+    return result;
+}
+
+static inline uint16_t readWordFileLE(FIL* f)
+{
+    uint8_t lo = readByteFile(f);
+    uint8_t hi = readByteFile(f);
+    return lo | (hi << 8);
+}
+
+static inline uint16_t readWordFileBE(FIL* f)
+{
+    uint8_t hi = readByteFile(f);
+    uint8_t lo = readByteFile(f);
+    return lo | (hi << 8);
+}
+
+static inline size_t readBlockFile(FIL* f, uint8_t* dstBuffer, size_t size)
+{
+    UINT br;
+    f_read(f, dstBuffer, 0x4000, &br);
+    return br;
+}
+
+static inline void writeByteFile(uint8_t value, FIL* f)
+{
+    UINT bw;
+    f_write(f, &value, 1, &bw);
+}
+
+static inline void writeWordFileLE(uint16_t value, FIL* f)
+{
+    UINT bw;
+    uint8_t lo =  value       & 0xFF;
+    uint8_t hi = (value >> 8) & 0xFF;
+    f_write(f, &lo, 1, &bw);
+    f_write(f, &hi, 1, &bw);
+}
+
+// static inline void writeWordFileBE(uint16_t value, File f)
+// {
+//     uint8_t hi = (value >> 8) & 0xFF;
+//     uint8_t lo =  value       & 0xFF;
+//     f.write(hi);
+//     f.write(lo);
+// }
+
+// static inline size_t writeBlockFile(uint8_t* srcBuffer, File f, size_t size)
+// {
+//     return f.write(srcBuffer, size);
+// }
+
+// static inline uint8_t readByteMem(uint8_t*& ptr)
+// {
+//     uint8_t value = *ptr++;
+//     return value;
+// }
+
+// static inline uint16_t readWordMemLE(uint8_t*& ptr)
+// {
+//     uint8_t lo = *ptr++;
+//     uint8_t hi = *ptr++;
+//     return lo | (hi << 8);
+// }
+
+// static inline uint16_t readWordMemBE(uint8_t*& ptr)
+// {
+//     uint8_t hi = *ptr++;
+//     uint8_t lo = *ptr++;
+//     return lo | (hi << 8);
+// }
+
+// static inline size_t readBlockMem(uint8_t*& srcBuffer, uint8_t* dstBuffer, size_t size)
+// {
+//     memcpy(dstBuffer, srcBuffer, size);
+//     srcBuffer += size;
+//     return size;
+// }
+
+// static inline void writeByteMem(uint8_t value, uint8_t*& ptr)
+// {
+//     *ptr++ = value;
+// }
+
+// static inline void writeWordMemLE(uint16_t value, uint8_t*& ptr)
+// {
+//     uint8_t lo =  value       & 0xFF;
+//     uint8_t hi = (value >> 8) & 0xFF;
+//     *ptr++ = lo;
+//     *ptr++ = hi;
+// }
+
+// static inline void writeWordMemBE(uint16_t value, uint8_t*& ptr)
+// {
+//     uint8_t hi = (value >> 8) & 0xFF;
+//     uint8_t lo =  value       & 0xFF;
+//     *ptr++ = hi;
+//     *ptr++ = lo;
+// }
+
+// static inline size_t writeBlockMem(uint8_t* srcBuffer, uint8_t*& dstBuffer, size_t size)
+// {
+//     memcpy(dstBuffer, srcBuffer, size);
+//     dstBuffer += size;
+//     return size;
+// }
+
+#endif // FileUtils_h

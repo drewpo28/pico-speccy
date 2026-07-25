@@ -1,0 +1,690 @@
+/*
+ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
+
+AY SOUND EMULATION, based on libayemu by:
+Sashnov Alexander <sashnov@ngs.ru> and Roman Scherbakov <v_soft@nm.ru> 
+
+Copyright (c) 2023, 2024 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
+https://github.com/EremusOne/ZX-ESPectrum-IDF
+
+Based on ZX-ESPectrum-Wiimote
+Copyright (c) 2020, 2022 David Crespo [dcrespo3d]
+https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote
+
+Based on previous work by Ramón Martinez and Jorge Fuertes
+https://github.com/rampa069/ZX-ESPectrum
+
+Original project by Pete Todd
+https://github.com/retrogubbins/paseVGA
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+To Contact the dev team you can write to zxespectrum@gmail.com or 
+visit https://zxespectrum.speccy.org/contacto
+
+*/
+#include <math.h>
+
+#include "AySound.h"
+#include "ESPectrum.h"
+#include "Config.h"
+#include "PinSerialData_595.h"
+
+#include <pico/platform.h>
+#include "Midi.h"
+#define IRAM_ATTR __not_in_flash("audio")
+
+// #pragma GCC optimize("O3")
+
+#define AYEMU_MAX_AMP 140 // This results in output values between 0-158
+
+#define AYEMU_DEFAULT_CHIP_FREQ 1773400
+
+int AySound::selected_chip = 0;
+
+AySound chip0(0);
+// chip1 lives in heap; managed by TurboSubsys (see Subsystem.cpp).
+AySound* chip1 = nullptr;
+AySound* chips[2] = { &chip0, nullptr };
+
+/* sound chip volume envelops (will calculated by gen_env()) */
+// static int bEnvGenInit = 0;
+
+// static uint8_t Envelope [16][128];
+
+static const uint8_t Envelope [16][128] = {
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0},
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0},
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31},
+{31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0},
+{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0}
+};
+
+/* AY volume table (c) by V_Soft and Lion 17 */
+// static int Lion17_AY_table [16] = {
+//     0, 513, 828, 1239, 1923, 3238, 4926, 9110,
+//     10344, 17876, 24682, 30442, 38844, 47270, 56402, 65535
+// };
+
+// /* AY volume table (C) Rampa 2023 */
+// static int Rampa_AY_table [16] = {
+//     0, 521, 735, 1039, 1467, 2072, 2927, 4135,
+//     5841, 8250, 11654, 16462, 23253, 32845, 46395, 65535
+// };
+
+/* DRAM_ATTR */ static const uint8_t Rampa_AY_table[16] = {0,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31};
+
+// Borrowed from SoftSpectrum48 source code:
+// Values according to: http://forum.tslabs.info/viewtopic.php?f=6&t=539
+// AmplitudeFactors = { 0.0f, 0.01f, 0.014f, 0.021f, 0.031f, 0.046f, 0.064f, 
+// 0.107f, 0.127f, 0.205f, 0.292f, 0.373f, 0.493f, 0.635f, 0.806f, 1.0f }
+// static int SoftSpec48_AY_table [16] = {
+//     0, 655, 917, 1376, 2032, 3015, 4194, 7012,
+//     8323, 13435, 19136, 24445, 32309, 41615, 52821, 65535
+// };
+
+/* make chip hardware envelop tables.
+        Will execute once before first use. */
+// static void gen_env()
+// {
+
+    // int env;
+    // int pos;
+    // int hold;
+    // int dir;
+    // int vol;
+
+    // printf("Gen Env:\n");
+    // for (env = 0; env < 16; env++) {
+    //     hold = 0;
+    //     dir = (env & 4)?    1 : -1;
+    //     vol = (env & 4)? -1 : 32;
+    //     for (pos = 0; pos < 128; pos++) {
+    //         if (!hold) {
+    //             vol += dir;
+    //             if (vol < 0 || vol >= 32) {
+    //                 if ( env & 8 ) {
+    //                     if ( env & 2 ) dir = -dir;
+    //                     vol = (dir > 0 ) ? 0: 31;
+    //                     if ( env & 1 ) {
+    //                         hold = 1;
+    //                         vol = ( dir > 0 ) ? 31 : 0;
+    //                     }
+    //                 } else {
+    //                     vol = 0;
+    //                     hold = 1;
+    //                 }
+    //             }
+    //         }
+    //         Envelope[env][pos] = (uint8_t) vol;
+    //         printf("%d,",vol);
+    //     }
+    //     printf("\n");
+    // }
+
+//     bEnvGenInit = 1;
+
+// }
+
+void AySound::init()
+{
+
+    default_chip_flag = 1;
+    ChipFreq = AYEMU_DEFAULT_CHIP_FREQ;
+    default_stereo_flag = 1;
+    default_sound_format_flag = 1;
+    dirty = 1;
+    
+    cnt_a = cnt_b = cnt_c = cnt_n = cnt_e = 0;
+    bit_a = bit_b = bit_c = bit_n = 0;
+    env_pos = EnvNum = 0;
+    SamplebufAY[0] = SamplebufAY[1] = 0;
+
+#if !PICO_RP2040
+    midi_bitbang_pos = -1;
+    midi_bitbang_byte = 0;
+    midi_bitbang_prev = true;
+#endif
+
+    /* GenNoise (c) Hacker KAY & Sergey Bulba */
+    Cur_Seed = 0xffff;
+
+    // /* GenNoise (c) SoftSpectrum 48 */
+    // Cur_Seed = 0x1ffff;
+
+    // /* GenNoise (c) JSpeccy */
+    // period_n = 1;
+    // Cur_Seed = 1;
+
+    // if (!bEnvGenInit) gen_env();
+
+}
+
+/** Set chip type. */
+int AySound::set_chip_type(ayemu_chip_t type, int *custom_table)
+{
+
+    const float max_volume = float (AYEMU_MAX_AMP / 3.0f);	// As there are three channels.
+    float root_two = 1.414213562373095f;
+    
+    for(int v = 0; v < 32; v++) {
+		table[v] = int(max_volume / powf(root_two, float(v ^ 0x1f) / 3.18f));
+	}
+    // Tie level 0 to silence.
+	for(int v = 31; v >= 0; --v)
+        table[v] -= table[0];
+
+    // for (int n = 0; n < 32; n++)
+    //     // table[n] = Lion17_AY_table[n / 2];
+    //     table[n] = Rampa_AY_table[n / 2];
+    //     // table[n] = SoftSpec48_AY_table[n / 2];
+    
+    type = AYEMU_AY;
+
+    default_chip_flag = 0;
+    dirty = 1;
+    return 1;
+
+}
+
+/** Set chip frequency. */
+void AySound::set_chip_freq(int chipfreq)
+{
+
+    ChipFreq = chipfreq;
+    dirty = 1;
+
+}
+
+/*! Set output sound format
+ * \arg \c ay - pointer to ayemu_t structure
+ * \arg \c freq - sound freq (44100 for example)
+ * \arg \c chans - number of channels (1-mono, 2-stereo)
+ * \arg \c bits - now supported only 16 and 8.
+ * \retval \b 1 on success, \b 0 if error occure
+ */
+int AySound::set_sound_format(int freq, int chans, int bits)
+{
+    sndfmt.freq = freq;
+    sndfmt.channels = chans;
+    sndfmt.bpc = bits;
+
+    default_sound_format_flag = 0;
+    dirty = 1;
+    return 1;
+}
+
+//  Set amplitude factor for each of channels (A,B anc C, tone and noise).
+//  Factor's value must be from (-100) to 100.
+//  \arg ay - pointer to ayemu_t structure
+//  \arg stereo_type - type of stereo
+//  \arg custom_eq - NULL or pointer to custom table of mixer layout.
+//  \retval 1 if OK, 0 if error occures.
+//
+int AySound::set_stereo(ayemu_stereo_t stereo_type, int *custom_eq)
+{
+    // int i;
+    // int chip;
+
+    // for (i = 0 ; i < 6 ; i++) eq[i] = 100;
+
+    default_stereo_flag = 0;
+    dirty = 1;
+    return 1;
+}
+
+void AySound::prepare_generation()
+{
+
+    // int vol;
+
+    if (!dirty) return;
+
+    if (default_chip_flag) set_chip_type(AYEMU_YM /*AYEMU_AY*/, NULL);
+
+    if (default_stereo_flag) set_stereo(AYEMU_ABC, NULL);
+
+    if (default_sound_format_flag) set_sound_format(44100, 2, 16);
+
+    ChipTacts_per_outcount = ChipFreq / sndfmt.freq / 8;
+
+    // for (int n = 0; n < 32; n++) {
+    //     // vol = table[n];
+    //     for (int m=0; m < 6; m++)
+    //         // vols[m][n] = (int) (((double) vol * eq[m]) / 100);
+    //         vols[m][n] = table[n];
+    // }
+
+    // int max_l = vols[0][31] + vols[2][31] + vols[4][31];
+    // int max_r = vols[1][31] + vols[3][31] + vols[5][31];
+
+    // vol = (max_l > max_r) ? max_l : max_r;
+    // Amp_Global = ChipTacts_per_outcount * vol / AYEMU_MAX_AMP;
+
+    Amp_Global = ChipTacts_per_outcount * (table[31] * 3) / AYEMU_MAX_AMP;
+    inv_Amp_Global = Amp_Global > 0 ? ((1 << 16) + Amp_Global - 1) / Amp_Global : 0;
+
+    dirty = 0;
+}
+
+//
+// Generate sound.
+// Fill sound buffer with current register data
+//
+// Common counter/noise/envelope tick macro — shared by all stereo variants.
+// Operates on hoisted local variables to minimize member access in inner loop.
+#define AY_TICK_COUNTERS() \
+    if (++l_cnt_a >= l_tone_a) { l_cnt_a = 0; l_bit_a ^= 1; } \
+    if (++l_cnt_b >= l_tone_b) { l_cnt_b = 0; l_bit_b ^= 1; } \
+    if (++l_cnt_c >= l_tone_c) { l_cnt_c = 0; l_bit_c ^= 1; } \
+    if (++l_cnt_n >= l_noise2) { \
+        l_cnt_n = 0; \
+        l_seed = (l_seed * 2 + 1) ^ (((l_seed >> 16) ^ (l_seed >> 13)) & 1); \
+        l_bit_n = (l_seed >> 16) & 1; \
+    } \
+    if (++l_cnt_e >= l_env_freq) { \
+        l_cnt_e = 0; \
+        if (++l_env_pos > 127) l_env_pos = 64; \
+    }
+
+// Hoist all loop-invariant AY state into local variables
+#define AY_HOIST_LOCALS() \
+    int l_tone_a = ayregs.tone_a, l_tone_b = ayregs.tone_b, l_tone_c = ayregs.tone_c; \
+    int l_noise2 = ayregs.noise * 2; \
+    int l_env_freq = ayregs.env_freq; \
+    const uint8_t *l_env_row = Envelope[ayregs.env_style]; \
+    int l_R7ta = ayregs.R7_tone_a, l_R7tb = ayregs.R7_tone_b, l_R7tc = ayregs.R7_tone_c; \
+    int l_R7na = ayregs.R7_noise_a, l_R7nb = ayregs.R7_noise_b, l_R7nc = ayregs.R7_noise_c; \
+    int l_vol_a = ayregs.vol_a, l_vol_b = ayregs.vol_b, l_vol_c = ayregs.vol_c; \
+    int l_env_a = ayregs.env_a, l_env_b = ayregs.env_b, l_env_c = ayregs.env_c; \
+    int l_cnt_a = cnt_a, l_cnt_b = cnt_b, l_cnt_c = cnt_c, l_cnt_n = cnt_n, l_cnt_e = cnt_e; \
+    int l_bit_a = bit_a, l_bit_b = bit_b, l_bit_c = bit_c, l_bit_n = bit_n; \
+    int l_env_pos = env_pos; \
+    int l_seed = Cur_Seed; \
+    int l_tacts = ChipTacts_per_outcount; \
+    int l_inv_amp = inv_Amp_Global; \
+    const int *l_table = table;
+
+// Write back mutable state to member variables
+#define AY_WRITEBACK() \
+    cnt_a = l_cnt_a; cnt_b = l_cnt_b; cnt_c = l_cnt_c; cnt_n = l_cnt_n; cnt_e = l_cnt_e; \
+    bit_a = l_bit_a; bit_b = l_bit_b; bit_c = l_bit_c; bit_n = l_bit_n; \
+    env_pos = l_env_pos; Cur_Seed = l_seed;
+
+// Channel volume helper
+#define AY_CHVOL(env_flag, vol_reg) \
+    (l_table[(env_flag) ? l_env_row[l_env_pos] : Rampa_AY_table[vol_reg]])
+
+// ABC stereo: A→L, B→L/2+R/2, C→R
+IRAM_ATTR void AySound::gen_sound_ABC(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+    AY_HOIST_LOCALS()
+    while (sound_bufsize-- > 0) {
+        int mix_l = 0, mix_r = 0;
+        for (int m = 0; m < l_tacts; m++) {
+            AY_TICK_COUNTERS()
+            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+                mix_l += AY_CHVOL(l_env_a, l_vol_a);
+            }
+            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+                int v = AY_CHVOL(l_env_b, l_vol_b) >> 1;
+                mix_l += v;
+                mix_r += v;
+            }
+            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+                mix_r += AY_CHVOL(l_env_c, l_vol_c);
+            }
+        }
+        *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
+        *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
+    }
+    AY_WRITEBACK()
+}
+
+// ACB stereo: A→L, B→R, C→L/2+R/2
+IRAM_ATTR void AySound::gen_sound_ACB(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+    AY_HOIST_LOCALS()
+    while (sound_bufsize-- > 0) {
+        int mix_l = 0, mix_r = 0;
+        for (int m = 0; m < l_tacts; m++) {
+            AY_TICK_COUNTERS()
+            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+                mix_l += AY_CHVOL(l_env_a, l_vol_a);
+            }
+            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+                mix_r += AY_CHVOL(l_env_b, l_vol_b);
+            }
+            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+                int v = AY_CHVOL(l_env_c, l_vol_c) >> 1;
+                mix_l += v;
+                mix_r += v;
+            }
+        }
+        *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
+        *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
+    }
+    AY_WRITEBACK()
+}
+
+// Mono: all channels → both L and R equally
+IRAM_ATTR void AySound::gen_sound_MONO(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+    AY_HOIST_LOCALS()
+    while (sound_bufsize-- > 0) {
+        int mix = 0;
+        for (int m = 0; m < l_tacts; m++) {
+            AY_TICK_COUNTERS()
+            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+                mix += AY_CHVOL(l_env_a, l_vol_a);
+            }
+            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+                mix += AY_CHVOL(l_env_b, l_vol_b);
+            }
+            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+                mix += AY_CHVOL(l_env_c, l_vol_c);
+            }
+        }
+        uint8_t out = (mix * l_inv_amp) >> 16;
+        *sound_buf_L++ = out;
+        *sound_buf_R++ = out;
+    }
+    AY_WRITEBACK()
+}
+
+IRAM_ATTR void AySound::gen_sound(int sound_bufsize, int bufpos)
+{
+    uint8_t *sound_buf_L = SamplebufAY_L + bufpos;
+    uint8_t *sound_buf_R = SamplebufAY_R + bufpos;
+    // Silent fast path: with envelope mode off and volume 0 on all three
+    // channels every AY_CHVOL term is table[Rampa_AY_table[0]], and table[]
+    // is normalized to table[0]==0 ("tie level 0 to silence" in
+    // set_chip_type) — the synth loop can only produce zeros.  Skip the
+    // ChipTacts_per_outcount×bufsize inner loop (56×624 ≈ 35k iterations per
+    // frame on Profi): CP/M and other non-AY software never touch the chip
+    // yet paid ~1 ms/frame per chip.  Tone/noise/envelope phases freeze
+    // while silent and resume on the next register write — inaudible, the
+    // output was zero throughout.
+    if (!ayregs.env_a && !ayregs.env_b && !ayregs.env_c &&
+        ayregs.vol_a == 0 && ayregs.vol_b == 0 && ayregs.vol_c == 0) {
+        memset(sound_buf_L, 0, (size_t)sound_bufsize);
+        memset(sound_buf_R, 0, (size_t)sound_bufsize);
+        return;
+    }
+    switch (Config::ayConfig) {
+    case 0:  gen_sound_ABC(sound_bufsize, sound_buf_L, sound_buf_R); break;
+    case 1:  gen_sound_ACB(sound_bufsize, sound_buf_L, sound_buf_R); break;
+    default: gen_sound_MONO(sound_bufsize, sound_buf_L, sound_buf_R); break;
+    }
+}
+
+IRAM_ATTR uint8_t* AySound::gen_sound()
+{
+    // Single-sample variant — delegates to batch with bufsize=1
+    gen_sound(1, 0);
+    SamplebufAY[0] = SamplebufAY_L[0];
+    SamplebufAY[1] = SamplebufAY_R[0];
+    return SamplebufAY;
+}
+
+#undef AY_TICK_COUNTERS
+#undef AY_HOIST_LOCALS
+#undef AY_WRITEBACK
+#undef AY_CHVOL
+#undef ENVVOL
+
+void AySound::updToneA() {
+    ayregs.tone_a = regs[0] + ((regs[1] & 0x0f) << 8);
+}
+
+void AySound::updToneB() {
+    ayregs.tone_b = regs[2] + ((regs[3] & 0x0f) << 8);
+}
+
+void AySound::updToneC() {
+    ayregs.tone_c = regs[4] + ((regs[5] & 0x0f) << 8);
+}
+
+void AySound::updNoisePitch() {
+    ayregs.noise = regs[6] & 0x1f;
+}
+
+void AySound::updMixer() {
+    ayregs.R7_tone_a = !(regs[7] & 0x01);
+    ayregs.R7_tone_b = !(regs[7] & 0x02);
+    ayregs.R7_tone_c = !(regs[7] & 0x04);
+
+    ayregs.R7_noise_a = !(regs[7] & 0x08);
+    ayregs.R7_noise_b = !(regs[7] & 0x10);
+    ayregs.R7_noise_c = !(regs[7] & 0x20);
+}
+
+void AySound::updVolA() {
+    ayregs.vol_a = regs[8] & 0x0f;
+    ayregs.env_a = regs[8] & 0x10;
+}
+
+void AySound::updVolB() {
+    ayregs.vol_b = regs[9] & 0x0f;
+    ayregs.env_b = regs[9] & 0x10;
+}
+
+void AySound::updVolC() {
+    ayregs.vol_c = regs[10] & 0x0f;
+    ayregs.env_c = regs[10] & 0x10;
+}
+
+void AySound::updEnvFreq() {
+    ayregs.env_freq = regs[11] + (regs[12] << 8);
+}
+
+void AySound::updEnvType() {
+    
+    // This shouldn't happen on AY
+    // if (regs[13] == 0xff) { // R13 = 255 means continue current envelop
+    //     // printf("ENV TYPE 0xff!\n");
+    //     return;
+    // }
+
+    ayregs.env_style = regs[13] & 0x0f;
+    env_pos = cnt_e = 0;
+
+}
+
+void AySound::updIOPortA() {
+    ayregs.IOPortA = regs[14] & 0xff;
+
+#if !PICO_RP2040
+    // Bit-bang UART decoder: zx-midiplayer uses reg 14 bit 2 as serial TX line
+    // 0xFE = HIGH (bit2=1), 0xFA = LOW (bit2=0)
+    // Frame: idle(H) → START(L) → D0..D7 (LSB first) → STOP(H)
+    if (Midi::enabled == 1 || Midi::enabled == 3 || Midi::enabled == 4) {
+        bool line = (regs[14] & 0x04) != 0; // bit 2
+
+        if (midi_bitbang_pos == -1) {
+            // Idle: detect START bit (HIGH → LOW)
+            if (midi_bitbang_prev && !line) {
+                midi_bitbang_pos = 0; // START bit received
+                midi_bitbang_byte = 0;
+            }
+        } else if (midi_bitbang_pos >= 0 && midi_bitbang_pos < 8) {
+            // Data bits 0-7 (LSB first)
+            if (line)
+                midi_bitbang_byte |= (1 << midi_bitbang_pos);
+            midi_bitbang_pos++;
+        } else if (midi_bitbang_pos == 8) {
+            // STOP bit — send the byte
+            Midi::send(midi_bitbang_byte);
+            midi_bitbang_pos = -1;
+        }
+
+        midi_bitbang_prev = line;
+    }
+#endif
+}
+
+void AySound::updIOPortB() {
+    ayregs.IOPortB = regs[15] & 0xff;
+}
+
+uint8_t AySound::getRegisterData()
+{
+
+    if ((selectedRegister >= 14) && ((regs[7] >> (selectedRegister - 8)) & 1) == 0) {
+        // printf("getAYRegister %d: %02X\n", selectedRegister, 0xFF);
+        return 0xFF;
+    }
+
+    switch(selectedRegister) {
+      case 0x00: return ayregs.tone_a & 0xff;
+      case 0x01: return (ayregs.tone_a >> 8) & 0x0f;
+      case 0x02: return ayregs.tone_b & 0xff;
+      case 0x03: return (ayregs.tone_b >> 8) & 0x0f;
+      case 0x04: return ayregs.tone_c & 0xff;
+      case 0x05: return (ayregs.tone_c >> 8) & 0x0f;
+      case 0x06: return ayregs.noise & 0x1f;
+      case 0x07: return regs[7];
+      case 0x08: return ayregs.env_a + ayregs.vol_a;
+      case 0x09: return ayregs.env_b + ayregs.vol_b;
+      case 0x0a: return ayregs.env_c + ayregs.vol_c;
+      case 0x0b: return ayregs.env_freq & 0x00ff;
+      case 0x0c: return ayregs.env_freq >> 8;
+      case 0x0d: return ayregs.env_style & 0x0f;
+      case 0x0e: return ayregs.IOPortA;
+      case 0x0f: return ayregs.IOPortB;
+    }
+    
+    return 0;
+
+}
+
+void AySound::selectRegister(uint8_t registerNumber)
+{
+    if (Config::audio_driver == 3) {
+        if (selected_chip == 0) {
+            HIGH(CS_AY0);
+            LOW(CS_AY1);
+        } else {
+            HIGH(CS_AY1);
+            LOW(CS_AY0);
+        }
+        send_to_595(HIGH(BDIR | BC1) | registerNumber);
+        send_to_595(LOW (BDIR | BC1) | registerNumber);
+    }
+    selectedRegister = registerNumber;
+}
+
+void AySound::setRegisterData(uint8_t data)
+{
+    if (Config::audio_driver == 3) {
+        if (selected_chip == 0) {
+            HIGH(CS_AY0);
+            LOW(CS_AY1);
+        } else {
+            HIGH(CS_AY1);
+            LOW(CS_AY0);
+        }
+        send_to_595(LOW (BDIR) | data);
+        send_to_595(HIGH(BDIR) | data);
+        send_to_595(LOW (BDIR) | data);
+    }
+    if (selectedRegister < 16) {
+        regs[selectedRegister] = data;
+        switch (selectedRegister) {
+            case 0: updToneA(); break;
+            case 1: updToneA(); break;
+            case 2: updToneB(); break;
+            case 3: updToneB(); break;
+            case 4: updToneC(); break;
+            case 5: updToneC(); break;
+            case 6: updNoisePitch(); break;
+            case 7: updMixer(); break;
+            case 8: updVolA(); break;
+            case 9: updVolB(); break;
+            case 10: updVolC(); break;
+            case 11: updEnvFreq(); break;
+            case 12: updEnvFreq(); break;
+            case 13: updEnvType(); break;
+            case 14: updIOPortA(); break;
+            case 15: updIOPortB(); break;
+        }
+    }
+
+}
+
+void AySound::reset()
+{
+/*
+    if (Config::audio_driver == 3) {
+        if (this->my_num == 0) {
+		    send_to_595(HIGH(AY_RES)); // reset
+		    send_to_595(HIGH(AY_Z));
+		    send_to_595(LOW(AY_Enable));
+		    send_to_595(HIGH(AY_Enable | CS_SAA1099 | CS_AY0 | Beeper | CS_AY1 | BDIR | BC1 | (SAVE)));
+        }
+    }
+*/
+    cnt_a = cnt_b = cnt_c = cnt_n = cnt_e = 0;
+    bit_a = bit_b = bit_c = bit_n = 0;
+    env_pos = EnvNum = 0;
+
+    /* GenNoise (c) Hacker KAY & Sergey Bulba */
+    Cur_Seed = 0xffff;
+
+    // // /* GenNoise (c) SoftSpectrum 48 */
+    // // Cur_Seed = 0x1ffff;
+
+    // /* GenNoise (c) JSpeccy */
+    // period_n = 1;
+    // Cur_Seed = 1;
+
+    prepare_generation();
+
+    for (int i=0;i<16;i++) regs[i] = 0; // All registers are set to 0
+    
+    regs[7] = 0xff; // Mixer register
+
+    selectedRegister = 0xff;
+
+#if !PICO_RP2040
+    midi_bitbang_pos = -1;
+    midi_bitbang_byte = 0;
+    midi_bitbang_prev = true; // idle = HIGH
+#endif
+
+    updToneA();
+    updToneA();
+    updToneB();
+    updToneB();
+    updToneC();
+    updToneC();
+    updNoisePitch();
+    updMixer();
+    updVolA();
+    updVolB();
+    updVolC();
+    updEnvFreq();
+    updEnvFreq();
+    updEnvType();
+    updIOPortA();
+    updIOPortB();
+}

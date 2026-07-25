@@ -1,0 +1,275 @@
+// USB mass-storage host (flash stick) → FatFs physical drive 1, volume "USB:".
+// See UsbMsc.h for the overview. Compiled out entirely when CFG_TUH_MSC is 0
+// (RP2040 boards).
+
+#include "tusb.h"
+
+#if CFG_TUH_MSC
+
+#include <cstring>
+#include <cstdlib>
+#include "ff.h"
+#include "diskio.h"
+#include "pico/time.h"
+#include "Debug.h"
+#include "FileUtils.h"
+#include "UsbMsc.h"
+
+extern "C" size_t getLargestAllocatable(void);  // defined in OSDMain.cpp
+
+// ── Stick state ──────────────────────────────────────────────────────────────
+// g_daddr = 0 means "no stick". Set/cleared ONLY by the TinyUSB mount/umount
+// callbacks (which run inside tuh_task, i.e. main-loop context — core0).
+static volatile uint8_t g_daddr    = 0;
+static uint8_t          g_lun      = 0;
+static uint32_t         g_blkcnt   = 0;
+static uint32_t         g_blksz    = 0;
+
+// Heap-lazy FatFs volume object + DMA bounce buffer + pump alt-stack —
+// allocated once when the first stick ever mounts, so SRAM-tight boards
+// (m1p2 Profi ~10 KB heap) pay ~5.3 KB only if a stick is actually used.
+// Never freed: umount/replug churn must not fragment the heap.
+//
+// pump_stack: tuh_task() runs on this stack, NOT the caller's (see mscService).
+// hw-traced 2026-07-21: in usbRoot mode every FatFs sector I/O anywhere in the
+// firmware nests the whole TinyUSB host machinery (ioWait → tuh_task → hcd ISR
+// processing → class callbacks, + Debug::log + alarm-IRQ frames — IRQs push on
+// MSP too) on top of the caller. Tape::LoadTape → FatFs → usb_disk_read blew
+// through the 4 KB core0 stack into SCRATCH_X and trashed core1's live stack.
+#define MSC_PUMP_STACK_SIZE 4096
+struct UsbFsMem {
+    FATFS   fs;                                          // volume "USB:"
+    uint8_t bounce[FF_MAX_SS] __attribute__((aligned(4)));
+    uint8_t pump_stack[MSC_PUMP_STACK_SIZE] __attribute__((aligned(8)));
+};
+static UsbFsMem* g_mem = nullptr;
+
+// ── tuh_task pump guard ──────────────────────────────────────────────────────
+// Same hazard as ZiFi's usbService(): tuh_task() must never run re-entrantly
+// (re-entering the host stack from inside a tuh callback corrupts transfer
+// state). Our pump only runs from FatFs disk I/O — which is never called from
+// a tuh callback — but keep the guard anyway so a future mistake degrades to
+// a timeout instead of a "Data Seq Error" panic.
+static volatile bool g_in_tuh = false;
+
+// Call fn(arg) with MSP switched to new_top and MSPLIM guarding new_bottom
+// (this file only builds on RP2350/Cortex-M33, so MSPLIM always exists).
+// MSPLIM must be OFF (0) whenever SP crosses between stacks: the caller may be
+// on another heap alt-stack BELOW this one (e.g. USB write during a ZIP
+// extract on zipCallOnStack's stack), and raising MSPLIM above a live SP means
+// any IRQ in that window pushes its frame below the limit → STKOF hard fault
+// (hw-traced 2026-07-22 in the identical zipCallOnStack; keep both in sync).
+__attribute__((naked, noinline))
+static void mscCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
+    __asm volatile(
+        "mrs  r12, msplim       \n" // r12 = old MSPLIM
+        "push {r4}              \n" // scratch reg (old stack; SP ≥ old MSPLIM here)
+        "movs r4, #0            \n"
+        "msr  msplim, r4        \n" // limit off while SP crosses stacks
+        "mov  r4, sp            \n" // r4 = old SP
+        "mov  sp, r0            \n" // SP = new_top
+        "msr  msplim, r3        \n" // SP is on the alt stack now — arm its guard
+        "push {r2, r4, r12, lr} \n" // 16 bytes → keeps 8-byte alignment
+        "mov  r0, r2            \n" // r0 = arg
+        "blx  r1                \n" // fn(arg)
+        "pop  {r2, r4, r12, lr} \n"
+        "movs r1, #0            \n"
+        "msr  msplim, r1        \n" // limit off for the return crossing
+        "mov  sp, r4            \n" // restore old SP
+        "msr  msplim, r12       \n" // restore old limit (≤ old SP by construction)
+        "pop  {r4}              \n"
+        "bx   lr                \n"
+    );
+}
+
+static void tuhTaskTramp(void*) { tuh_task(); }
+
+static inline void mscService() {
+    if (g_in_tuh) return;
+    g_in_tuh = true;
+    if (g_mem) {
+        // Deep-context pump (FatFs disk I/O can sit near the bottom of the
+        // 4 KB core0 stack): run tuh_task on the dedicated alt-stack so the
+        // host-stack depth never adds to the caller's. IRQs taken during the
+        // pump also push here (they use MSP) — 4 KB covers both.
+        void* top = (void*)(((uintptr_t)g_mem->pump_stack + MSC_PUMP_STACK_SIZE) & ~(uintptr_t)7);
+        mscCallOnStack(top, tuhTaskTramp, nullptr, g_mem->pump_stack);
+    } else {
+        // Pre-mount pumps (waitReady at boot) run from shallow contexts.
+        tuh_task();
+    }
+    g_in_tuh = false;
+}
+
+// ── Synchronous SCSI I/O (pump until the complete callback fires) ───────────
+static volatile bool g_io_done = false;
+static volatile bool g_io_ok   = false;
+
+static bool ioCompleteCb(uint8_t daddr, tuh_msc_complete_data_t const* cb_data) {
+    (void)daddr;
+    g_io_ok   = (cb_data->csw->status == 0);
+    g_io_done = true;
+    return true;
+}
+
+static bool ioWait(uint32_t timeout_ms) {
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    while (!g_io_done) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return false;
+        mscService();
+    }
+    return g_io_ok;
+}
+
+static bool mscRead(uint8_t* buff, uint32_t sector, unsigned count) {
+    g_io_done = false;
+    if (!tuh_msc_read10(g_daddr, g_lun, buff, sector, (uint16_t)count, ioCompleteCb, 0)) {
+        Debug::log("UsbMsc: read10 refused lba=%u n=%u\n", (unsigned)sector, count);
+        return false;
+    }
+    if (!ioWait(3000 + 100 * count)) {
+        Debug::log("UsbMsc: read fail lba=%u n=%u %s\n", (unsigned)sector, count,
+                   g_io_done ? "csw-err" : "timeout");
+        return false;
+    }
+    return true;
+}
+
+static bool mscWrite(const uint8_t* buff, uint32_t sector, unsigned count) {
+    g_io_done = false;
+    if (!tuh_msc_write10(g_daddr, g_lun, buff, sector, (uint16_t)count, ioCompleteCb, 0)) {
+        Debug::log("UsbMsc: write10 refused lba=%u n=%u\n", (unsigned)sector, count);
+        return false;
+    }
+    if (!ioWait(5000 + 250 * count)) {
+        Debug::log("UsbMsc: write fail lba=%u n=%u %s\n", (unsigned)sector, count,
+                   g_io_done ? "csw-err" : "timeout");
+        return false;
+    }
+    return true;
+}
+
+// ── diskio glue (physical drive 1, dispatched from drivers/sdcard/sdcard.c) ──
+extern "C" {
+
+DSTATUS usb_disk_status(void) {
+    return (g_daddr && g_mem && g_blksz == FF_MAX_SS) ? 0 : (STA_NOINIT | STA_NODISK);
+}
+
+DSTATUS usb_disk_initialize(void) {
+    // Capacity was already read by the host stack during enumeration
+    // (READ CAPACITY 10) — nothing touches the bus here, so this is safe to
+    // call from any context, including the deferred f_mount path.
+    return usb_disk_status();
+}
+
+DRESULT usb_disk_read(BYTE* buff, LBA_t sector, UINT count) {
+    if (usb_disk_status()) return RES_NOTRDY;
+    if (!count || sector + count > g_blkcnt) return RES_PARERR;
+    if (((uintptr_t)buff & 3) == 0)
+        return mscRead(buff, (uint32_t)sector, count) ? RES_OK : RES_ERROR;
+    // Odd-aligned caller buffer (FatFs passes large f_read targets straight
+    // through) — TinyUSB wants 4-aligned, so bounce per sector.
+    for (UINT i = 0; i < count; i++) {
+        if (!mscRead(g_mem->bounce, (uint32_t)sector + i, 1)) return RES_ERROR;
+        memcpy(buff + i * FF_MAX_SS, g_mem->bounce, FF_MAX_SS);
+    }
+    return RES_OK;
+}
+
+DRESULT usb_disk_write(const BYTE* buff, LBA_t sector, UINT count) {
+    if (usb_disk_status()) return RES_NOTRDY;
+    if (!count || sector + count > g_blkcnt) return RES_PARERR;
+    if (((uintptr_t)buff & 3) == 0)
+        return mscWrite(buff, (uint32_t)sector, count) ? RES_OK : RES_ERROR;
+    for (UINT i = 0; i < count; i++) {
+        memcpy(g_mem->bounce, buff + i * FF_MAX_SS, FF_MAX_SS);
+        if (!mscWrite(g_mem->bounce, (uint32_t)sector + i, 1)) return RES_ERROR;
+    }
+    return RES_OK;
+}
+
+DRESULT usb_disk_ioctl(BYTE cmd, void* buff) {
+    switch (cmd) {
+    case CTRL_SYNC:
+        return RES_OK;                       // no write cache on our side
+    case GET_SECTOR_COUNT:
+        *(LBA_t*)buff = g_blkcnt;
+        return RES_OK;
+    case GET_BLOCK_SIZE:
+        *(DWORD*)buff = 1;                   // erase block size unknown → 1
+        return RES_OK;
+    }
+    return RES_PARERR;
+}
+
+// ── TinyUSB MSC callbacks (invoked from inside tuh_task) ────────────────────
+// NO bus traffic and NO blocking FatFs calls allowed here — a deferred
+// f_mount (opt=0) is pure bookkeeping; the first real FS access happens later
+// from main-loop context and goes through the pump above.
+void tuh_msc_mount_cb(uint8_t dev_addr) {
+    g_lun    = 0;
+    g_blkcnt = tuh_msc_get_block_count(dev_addr, g_lun);
+    g_blksz  = tuh_msc_get_block_size(dev_addr, g_lun);
+    g_daddr  = dev_addr;
+    Debug::log("UsbMsc: stick mounted addr=%u blocks=%u blksz=%u (%u MB)\n",
+               dev_addr, (unsigned)g_blkcnt, (unsigned)g_blksz,
+               (unsigned)(((uint64_t)g_blkcnt * g_blksz) >> 20));
+    if (g_blksz != FF_MAX_SS) {
+        Debug::log("UsbMsc: unsupported sector size %u (need %u) — ignoring stick\n",
+                   (unsigned)g_blksz, FF_MAX_SS);
+        return;
+    }
+    if (!g_mem) {
+        // pico malloc panics on OOM — gate on headroom (see Buffer::palloc);
+        // keep a few KB spare so we never squeeze a tight Profi heap dry.
+        if (getLargestAllocatable() >= sizeof(UsbFsMem) + 4096)
+            g_mem = (UsbFsMem*)malloc(sizeof(UsbFsMem));
+        if (!g_mem) {
+            Debug::log("UsbMsc: no heap for volume state (%u B) — ignoring stick\n",
+                       (unsigned)sizeof(UsbFsMem));
+            return;
+        }
+    }
+    f_mount(&g_mem->fs, "USB:", 0);          // deferred — registers the volume only
+    // USB-as-root (booted without an SD card): a re-plugged stick brings the
+    // default volume back to life, so re-enable the filesystem flag.
+    if (FileUtils::usbRoot) FileUtils::fsMount = true;
+}
+
+void tuh_msc_umount_cb(uint8_t dev_addr) {
+    if (dev_addr != g_daddr) return;
+    g_daddr = 0;
+    f_unmount("USB:");                       // bookkeeping only, no disk I/O
+    // Don't leave the file manager pointing into the void: next F5 falls back
+    // to the SD root instead of a dead "USB:/..." path.
+    if (FileUtils::ALL_Path.compare(0, 4, "USB:") == 0)
+        FileUtils::ALL_Path = "/";
+    // USB-as-root: the stick WAS the whole filesystem — flag storage as gone
+    // so menus degrade the same way as a missing SD card.
+    if (FileUtils::usbRoot) FileUtils::fsMount = false;
+    Debug::log("UsbMsc: stick removed\n");
+}
+
+} // extern "C"
+
+// ── Public state accessors ───────────────────────────────────────────────────
+bool UsbMsc::ready() {
+    return g_daddr != 0 && g_mem != nullptr && g_blksz == FF_MAX_SS;
+}
+
+bool UsbMsc::waitReady(uint32_t timeout_ms) {
+    if (!tuh_inited()) return false;   // non-KBDUSB build: host stack never started
+    absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
+    while (!ready()) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) < 0) return false;
+        mscService();
+    }
+    return true;
+}
+
+uint64_t UsbMsc::sizeBytes() {
+    return ready() ? (uint64_t)g_blkcnt * g_blksz : 0;
+}
+
+#endif // CFG_TUH_MSC

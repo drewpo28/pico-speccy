@@ -1,0 +1,467 @@
+/*
+
+WD1793 Floppy Disk controller emulation
+
+Copyright ©2017 Juan Carlos González Amestoy
+
+(Adaptation to ESPectrum / Betadisk (C) 2025 Víctor Iborra [Eremus])
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
+*/
+
+#ifndef __rvmWD1793
+#define __rvmWD1793
+
+#include <stdio.h>
+#include <inttypes.h>
+#include <fcntl.h>
+#include <string>
+#include <cstring>
+#include "ff.h"
+
+#define kRVMwdDiskControlRead 0x000
+#define kRVMwdDiskControlSeekUp 0x100
+#define kRVMwdDiskControlSeekDown 0x300
+#define kRVMwdDiskControlWrite 0x400
+
+#define kRVMwdDiskOutStepping 0x40
+#define kRVMwdDiskOutTrack0 0x80
+#define kRVMwdDiskOutIndex 0x20
+
+// Matches LED::DECAY_FRAMES (LEDIndicators.h) so the FDD lamp/glyph/hum decay at
+// the same rate as every other on-screen activity indicator.
+#define FDD_ACTIVE_DECAY_FRAMES 12
+
+#define TRACKHEADER 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,                         \
+                    0xc2, 0xc2, 0xc2, 0xfc,                                                                         \
+                    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                    0x4e, 0x4e
+#define SECTORHEADER_PRE 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa1, 0xa1, 0xa1, 0xfe, 0x00, 0x00
+#define SECTORHEADER_POST 0x01, 0x00, 0x00, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                          0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e
+#define SECTORDATA_PRE 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xa1, 0xa1, 0xa1, 0xfb
+#define SECTORDATA 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
+                   0x00, 0x00 // Sector Data CRC
+#define SECTORDATA_POST 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                        0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                        0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                        0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                        0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e
+
+#define TRACK_POST 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e, \
+                   0x4e, 0x4e, 0x4e, 0x4e, 0x4e, 0x4e
+
+const uint8_t System34_track[] = {
+    // Track 0, Side 0
+    TRACKHEADER,
+    // Sector 1
+    SECTORHEADER_PRE, 0x01, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 2
+    SECTORHEADER_PRE, 0x02, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 3
+    SECTORHEADER_PRE, 0x03, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 4
+    SECTORHEADER_PRE, 0x04, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 5
+    SECTORHEADER_PRE, 0x05, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 6
+    SECTORHEADER_PRE, 0x06, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 7
+    SECTORHEADER_PRE, 0x07, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 8
+    SECTORHEADER_PRE, 0x08, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 9
+    SECTORHEADER_PRE, 0x09, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 10
+    SECTORHEADER_PRE, 0x0a, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 11
+    SECTORHEADER_PRE, 0x0b, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 12
+    SECTORHEADER_PRE, 0x0c, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 13
+    SECTORHEADER_PRE, 0x0d, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 14
+    SECTORHEADER_PRE, 0x0e, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 15
+    SECTORHEADER_PRE, 0x0f, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    // Sector 16
+    SECTORHEADER_PRE, 0x10, SECTORHEADER_POST, SECTORDATA_PRE, SECTORDATA, SECTORDATA_POST,
+    TRACK_POST};
+
+typedef struct
+{
+    uint16_t tracks;
+    uint8_t sides;
+    uint8_t a, s;
+    uint32_t t;            // trackIndex
+    uint32_t indx;         // index
+    uint32_t indexDelay;   // index delay
+    uint32_t writeprotect; // Write Protect
+    uint8_t cursectbuf[0x100];
+    uint16_t cursectbufpos;
+    FIL *Diskfile;
+    BYTE *Filedata;
+    std::string fname;
+    bool IsSCLFile;
+    int sclDataOffset;
+    int t0s1_info;
+#if !PICO_RP2040
+    bool IsUDIFile;
+    uint32_t udiTrackOffsets[168]; // file offsets for each track (max 84 cyl × 2 sides)
+    uint16_t udiTrackLengths[168]; // TLEN for each track
+    bool IsFDIFile;
+    uint32_t fdiTrackHdrOffsets[168]; // file offsets for each track header
+    uint32_t fdiDataOffset;           // file offset of data block
+    bool IsMBDFile;
+    uint8_t mbdSectorsPerTrack;       // sectors per track (typically 11)
+    uint16_t mbdSectorSize;           // bytes per sector (typically 1024)
+    // PRO format flag: Profi CP/M raw disk. Uses MBD-style track builder but
+    // with special sector ID layout — first track (cyl 0 side 0) uses IDs
+    // {1,2,3,4,9} (5th sector has ID=9 for CP/M boot), other tracks {1,2,3,4,5}.
+    bool IsProFile;
+    // TD0 (Teledisk) flag. Streamed track-by-track from SD to avoid holding the
+    // whole (potentially ~1 MB) image in RAM. Packed images (lowercase "td"
+    // magic) are LZH-decompressed once into a temp file on the SD card at insert;
+    // unpacked images ("TD") stream directly from the original file. Per-track
+    // byte offsets within the (decompressed) stream are stored in
+    // fdiTrackHdrOffsets[]; td0Stream is the FIL to seek/read. Read-only. RP2350.
+    bool IsTD0File;
+    // TR-DOS auto-boot: set when an SCL lacks a "boot" file and we synthesised one
+    // into the in-RAM catalog (SCLtoTRD). The boot's single data sector is served
+    // from flash (kTrdosBootSector) for track 0 / sector 9. TRD images get the boot
+    // written directly into the file at insert, so they don't need this flag.
+    bool bootInjected;
+    FIL* td0Stream;          // file to stream track records from (Diskfile or temp)
+    bool td0OwnsStream;      // true if td0Stream is a temp file we must close+unlink
+    std::string td0TempPath; // temp file path to unlink on eject (if owned)
+#endif
+} rvmwdDisk;
+
+#define kRVMWD177XCLK 0x1  // 0- 1 mhz, 1- 2mhz
+#define kRVMWD177XDDEN 0x2 // 0- FM, 1- MFM
+#define kRVMWD177XTest 0x4
+
+#define kRVMWD177XRateSelect kRVMWD177XCLK | kRVMWD177XDDEN | kRVMWD177XTest
+
+#define kRVMWD177XHLD 0x8  // HEAD LOAD -> Signal HLD commands the drive to load the read/write heads
+#define kRVMWD177XHLT 0x10 // HEAD LOAD TIMING -> Signal HLT informs the controller chip that the head has been properly loaded and to commence read or write operations.
+#define kRVMWD177XINTRQ 0x20
+#define kRVMWD177XDire 0x40
+#define kRVMWD177XWriting 0x80
+#define kRVMWD177XDRQ 0x100
+#define kRVMWD177XCommandType 0x200
+#define kRVMWD177XFINTRQ 0x400
+#define kRVMWD177XONE 0x800
+#define kRVMWD177XPower0 0x1000
+#define kRVMWD177XPower1 0x2000
+#define kRVMWD177XPower2 0x4000
+#define kRVMWD177XPower3 0x8000
+#define kRVMWD177XNotToReady 0x10000
+#define kRVMWD177XReadyToNot 0x20000
+#define kRVMWD177XIndexPulse 0x40000
+#define kRVMWD177XInmediate 0x80000
+
+// States (Step)
+#define kRVMWD177XStepIdle 0x0
+#define kRVMWD177XStepWaiting 0x1
+#define kRVMWD177XStepWaitingMark 0x2
+#define kRVMWD177XStepReadByte 0x3
+#define kRVMWD177XStepWriteByte 0x4
+#define kRVMWD177XStepLastWriteByte 0x5
+#define kRVMWD177XStepWaitIndex 0x6
+#define kRVMWD177XStepWriteRaw 0x7
+
+// States
+#define kRVMWD177XNone 0x0
+#define kRVMWD177XSettingHeader 0x1
+#define kRVMWD177XSettingEnd 0x2
+#define kRVMWD177XTypeI0 0x3
+#define kRVMWD177XTypeI1 0x4
+#define kRVMWD177XTypeICheck 0x5
+#define kRVMWD177XTypeIUpdate 0x6
+#define kRVMWD177XTypeISeek 0x7
+#define kRVMWD177XTypeIEnd 0x8
+#define kRVMWD177XReadHeader 0x9
+#define kRVMWD177XTypeIHeaderReaded 0xA
+#define kRVMWD177XReadHeaderBytes 0xB
+#define kRVMWD177XReadCRC 0xC
+#define kRVMWD177XTypeIHeadSet 0xD
+#define kRVMWD177XTypeIISetHead 0xE
+#define kRVMWD177XTypeIICommand 0xF
+#define kRVMWD177XReadDataFlag 0x10
+#define kRVMWD177XReadDataFlag2 0x11
+#define kRVMWD177XReadData 0x12
+#define kRVMWD177XReadSectorHeader 0x13
+#define kRVMWD177XReadAddressWait 0x14
+#define kRVMWD177XReadAddressBytes 0x15
+#define kRVMWD177XWriteDataFlag 0x16
+#define kRVMWD177XWriteData 0x17
+#define kRVMWD177XWriteCRC1 0x18
+#define kRVMWD177XWriteCRC2 0x19
+#define kRVMWD177XWriteEnd 0x1A
+#define kRVMWD177XWriteLast 0x1B
+#define kRVMWD177XReadAddressDataFlag 0x1C
+#define kRVMWD177XWriteTrack 0x1D
+#define kRVMWD177XWriteTrackCRC 0x1E
+#define kRVMWD177XWriteTrackStart 0x1F
+#define kRVMWD177XReadTrackStart 0x20
+#define kRVMWD177XReadTrackData 0x21
+
+#define kRVMWD177XSettingHeaderTime 3750
+
+// Status Codes
+
+#define kRVMWD177XStatusBusy 0x1
+#define kRVMWD177XStatusIndex 0x2
+#define kRVMWD177XStatusTrack0 0x4
+#define kRVMWD177XStatusCRC 0x8
+#define kRVMWD177XStatusSeek 0x10
+#define kRVMWD177XStatusHeadLoaded 0x20
+#define kRVMWD177XStatusProtected 0x40
+#define kRVMWD177XStatusNotReady 0x80
+
+#define kRVMWD177XStatusDataRequest 0x2
+#define kRVMWD177XStatusLostData 0x4
+#define kRVMWD177XStatusRecordNotFound 0x10
+#define kRVMWD177XStatusRecordType 0x20
+#define kRVMWD177XStatusWriteFault 0x20
+
+#define kRVMWD177XStatusSetWP 0x100
+#define kRVMWD177XStatusSetTrack0 0x200
+#define kRVMWD177XStatusSetIndex 0x400
+#define kRVMWD177XStatusSetHead 0x800
+
+// Command bits
+#define kRVMWD177XHeadBit 0x8
+#define kRVMWD177XUpdateBit 0x10
+#define kRVMWD177XVerifyBit 0x4
+#define kRVMWD177XStepInOut 0x40
+#define kRVMWD177XTypeI 0x80
+
+#define WD177XSTEPSTATES 112 // 112 states -> 14 states per bit
+
+// Size of the per-drive MFM track buffer (UDI/FDI/MBD). Formerly an inline
+// array; now heap-allocated (see rvmWD1793AllocTrackBuf) so the second
+// MB-02 drive can release its 12.5 KB when MB-02 is disabled.
+#define DISK_TRACK_BUF_SZ 12800
+
+typedef struct
+{
+    uint32_t state, stepState, next;
+    uint32_t control;
+    uint32_t c;
+
+    uint8_t command;
+    uint8_t track;
+    uint8_t sector;
+    uint8_t data, dsr;
+    uint16_t status;
+
+    uint8_t header[7];
+    uint8_t headerI;
+
+    uint8_t diskS; // Disk selected
+    uint8_t diskP; // Disk previous
+
+    uint8_t retry;
+
+    uint64_t marka;
+    uint8_t a, e, wb;
+
+    uint16_t crc, aa;
+    uint8_t side;
+
+    rvmwdDisk *disk[4];
+
+    bool fastmode;
+    bool wd2797_mode;
+    // Profi CP/M boot polls "wait for BUSY=1" right after each Type I command.
+    // If our state machine completes the Type I instantly (e.g., Seek to the
+    // already-current track), BUSY=0 immediately → BIOS loop hangs forever.
+    // This one-shot flag forces BUSY=1 in the first status read after a Type I
+    // command that completed synchronously, then auto-clears.
+    bool typeI_busy_oneshot;
+    // Profi CP/M WAIT-line simulation: hold BUSY=1 persistently in the STATUS
+    // REGISTER (not just the oneshot) until a status read occurs.  Used for
+    // no-disk commands so the DSKKE9A CALL 0x40EA re-issue loop sees BUSY=1
+    // and re-issues are rejected, preventing infinite recursion + stack growth.
+    // Cleared on the first status register read (port 0x1F reg 0).
+    bool profi_busy_hold;
+
+    bool sclConverted;
+
+    int wtrackmark, wtracksector;
+
+    uint8_t fdd_clicks;  // Pending step clicks count
+    // Frames remaining since the last genuine head-load/header-search/data-transfer
+    // event (real disk-rotation activity — see the state-machine sites in wd1793.cpp
+    // that set it to FDD_ACTIVE_DECAY_FRAMES). Decremented once per frame by
+    // LED::decay() (LEDIndicators.cpp), so it self-clears like the other LED activity
+    // counters. Deliberately NOT set by raw command-register writes (see Ports.cpp'
+    // LED::touchW on reg 0), so bus-probing software that issues WD1793 commands
+    // without ever moving a real byte doesn't keep the motor-hum/lamp alive. Drives
+    // the audio motor-hum, the corner FDD lamp, and the FDD glyph in the LED
+    // indicator strip — all three read this instead of LED::readActive/writeActive.
+    uint8_t fdd_active_decay;
+
+#if !PICO_RP2040
+    uint8_t* diskTrackBuf;        // MFM track buffer (DISK_TRACK_BUF_SZ); heap-allocated
+    uint16_t diskTrackLen;        // length of current track
+    int diskLoadedCyl;            // loaded cylinder (-1 = none)
+    int diskLoadedSide;           // loaded side
+    int diskLoadedUnit;           // drive unit whose track is in diskTrackBuf (-1 = none)
+    bool diskDirty;              // track buffer modified, needs flush to file
+
+    // FDI find_marker support (ZXMAK2-style)
+    uint32_t fdiSectorIdPos[32];   // byte position of 0xFE in diskTrackBuf per sector
+    uint8_t  fdiSectorFlags[32];   // bit0 = data CRC error, bit1 = no data area (flags & 0x40)
+    int      fdiSectorCount;       // sector count on current track
+    uint32_t fdiTstates;           // intra-command byte offset (for find_marker progression)
+    bool     fdiDataCrcError;      // matched sector has CRC error
+
+    // Deferred track load (idle-window SD I/O — see wdIdleIO in wd1793.cpp).
+    // While pending, the MFM buffer still holds the PREVIOUS track: disk
+    // rotation and the whole per-step state machine are frozen (the guest just
+    // sees a longer address-mark search; WD-side timeouts count index pulses,
+    // which are frozen too).  The actual SD read runs in the frame's idle
+    // window (wdIdleIO) or, if idle stays too small, as an in-frame fallback
+    // after WD_DEFER_FALLBACK_US.
+    uint8_t  trackLoadPending;     // 1 = a data-state step needs pendCyl/pendSide
+    uint8_t  pendCyl;
+    uint8_t  pendSide;
+    uint8_t  pendUnit;             // diskS at registration (revalidated at load)
+    uint64_t pendSince;            // wall-clock µs when this target was registered
+#endif
+
+} rvmWD1793;
+
+#if !PICO_RP2040
+// Per-frame enable for deferred track loads (set by ESPectrum::loop: Profi
+// arch and not maxSpeed).  When false, wdTrackReady() loads blocking in-frame
+// exactly as before — TR-DOS/Pentagon and maxSpeed behaviour is unchanged.
+extern bool g_wdDeferLoads;
+// Run pending WD1793 SD I/O (deferred track load / PRO flush + f_sync) inside
+// the frame's idle window.  deadline_us = absolute time_us_64() budget; the
+// call does nothing when the estimated cost does not fit.
+void wdIdleIO(rvmWD1793 *wd, uint64_t deadline_us);
+#endif
+
+void _do(rvmWD1793 *wd);
+void rvmWD1793Write(rvmWD1793 *wd, uint8_t a, uint8_t v);
+uint8_t rvmWD1793Read(rvmWD1793 *wd, uint8_t a);
+void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps);
+void rvmWD1793Reset(rvmWD1793 *wd);
+// Recompute the per-controller fastmode flag from Config::trdosFastMode and the
+// currently selected drive's format. Call after changing the active drive
+// (diskS) or toggling the config so fastmode tracks the active disk only.
+void rvmWD1793UpdateFastmode(rvmWD1793 *wd);
+// Allocate the MFM track buffer (idempotent). Returns false on OOM. RP2350 only.
+bool rvmWD1793AllocTrackBuf(rvmWD1793 *wd);
+// Release the MFM track buffer (safe if already null). RP2350 only.
+void rvmWD1793FreeTrackBuf(rvmWD1793 *wd);
+bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string& Filename);
+uint8_t rvmwdDiskStep(rvmWD1793 *wd, uint32_t control);
+void wdDiskEject(rvmWD1793 *wd, unsigned char UnitNum);
+// Swap the disks of two drive units (Karabas-Pro Menu+Tab); flushes/remaps the
+// unit-keyed track cache and deferred-sync markers, then updates fastmode.
+void rvmWD1793SwapDrives(rvmWD1793 *wd, uint8_t a, uint8_t b);
+void SCLtoTRD(rvmwdDisk *d, unsigned char *track0);
+bool rvmWD1793CreateEmptyTRD(const char *path);
+#if !PICO_RP2040
+void udiLoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side);
+void fdiLoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side);
+void mbdLoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side);
+#endif
+
+BYTE* load_file_into_ram(FIL* fp, UINT* filesize_out);
+
+inline std::string rvmWD1793StepStateName(rvmWD1793 *wd)
+{
+    std::string st;
+    switch(wd->stepState)
+    {
+        case kRVMWD177XStepIdle:
+            st = "IDLE";
+            break;
+        case kRVMWD177XStepWaiting:
+            st = "WAIT";
+            break;
+        case kRVMWD177XStepWaitingMark:
+            st = "MARK";
+            break;
+        case kRVMWD177XStepReadByte:
+            st = "RDBT";
+            break;
+        case kRVMWD177XStepWriteByte:
+            st = "WRBT";
+            break;
+        case kRVMWD177XStepLastWriteByte:
+            st = "WRBT";
+            break;
+        case kRVMWD177XStepWaitIndex:
+            st = "WIND";
+            break;
+        case kRVMWD177XStepWriteRaw:
+            st = "WRAW";
+            break;
+        default:
+            st = "NONE";
+            break;
+    }
+    return st;
+}
+
+#endif

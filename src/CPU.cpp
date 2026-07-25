@@ -1,0 +1,676 @@
+/*
+
+ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
+
+Copyright (c) 2023, 2024 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
+https://github.com/EremusOne/ZX-ESPectrum-IDF
+
+Based on ZX-ESPectrum-Wiimote
+Copyright (c) 2020, 2022 David Crespo [dcrespo3d]
+https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote
+
+Based on previous work by Ramón Martinez and Jorge Fuertes
+https://github.com/rampa069/ZX-ESPectrum
+
+Original project by Pete Todd
+https://github.com/retrogubbins/paseVGA
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+To Contact the dev team you can write to zxespectrum@gmail.com or
+visit https://zxespectrum.speccy.org/contacto
+
+*/
+
+#include "CPU.h"
+#include "ESPectrum.h"
+#include "MemESP.h"
+#include "Ports.h"
+#include "hardconfig.h"
+#include "Config.h"
+#include "Video.h"
+#include "Z80_JLS/z80.h"
+#include "psram_spi.h"
+#include "Debug.h"
+#include "Z80DMA.h"
+#if !PICO_RP2040
+#include "ZiFi.h"
+#endif
+#if !PICO_RP2040
+#include "DivMMC.h"
+#endif
+
+// Place hot CPU functions in SRAM instead of XIP flash
+#undef IRAM_ATTR
+#define IRAM_ATTR __not_in_flash("cpu")
+
+#pragma GCC optimize("O3")
+
+uint32_t CPU::tstates = 0;
+
+int32_t CPU::prev_tstates = 0;
+uint32_t CPU::tstates_diff = 0;
+
+// Frame timing accumulators (µs); read+reset in VIDEO::EndFrame diagnostic.
+volatile uint32_t cpu_frame_us  = 0;  // total CPU::loop() time (incl. FDC)
+volatile uint32_t fdd_step_us   = 0;  // time inside rvmWD1793Step only
+volatile uint32_t endframe_us   = 0;  // last VIDEO::EndFrame() duration (main path)
+
+uint64_t CPU::global_tstates = 0;
+uint32_t CPU::statesInFrame = 0;
+uint32_t CPU::tstates_frame = 0;
+uint32_t CPU::tstates_active = 0;
+uint8_t CPU::latetiming = 0;
+int32_t CPU::IntStart = 0;
+int32_t CPU::IntEnd = 0;
+uint32_t CPU::stFrame = 0;
+bool CPU::portBasedBP = false;
+bool CPU::paused = false;
+
+bool Z80Ops::is48;
+bool Z80Ops::isByte = false;
+bool Z80Ops::isALF = false;
+bool Z80Ops::is128;
+bool Z80Ops::isPentagon;
+bool Z80Ops::is512 = false;
+bool Z80Ops::is1024 = false;
+bool Z80Ops::isProfi = false;
+
+void CPU::updateStatesInFrame() {
+#if !PICO_RP2040
+    Z80Ops::isALF = (Config::arch == "ALF");
+#endif
+    // Early/Late ULA timing: Early=latetiming=0, Late=latetiming=1.
+    // IntEnd += latetiming shifts the INT window 1T later for Late.
+    // isActiveINT adds latetiming to tstates so that Late fires 1T later,
+    // including via end-of-frame straddle (tstates=statesInFrame-1 → tmp=0).
+    if (Config::arch == "48K") {
+        statesInFrame = TSTATES_PER_FRAME_48;
+        IntStart = INT_START48;
+        IntEnd = INT_END48 + CPU::latetiming;
+        if (Config::romSet48 == "48Kby") {
+            statesInFrame = TSTATES_PER_FRAME_BYTE;
+            IntStart = INT_START48;
+            IntEnd = INT_END_BYTE48;
+        }
+    } else if (Config::arch == "128K" || Z80Ops::isALF) {
+        statesInFrame = TSTATES_PER_FRAME_128;
+        IntStart = INT_START128;
+        IntEnd = INT_END128 + CPU::latetiming;
+    } else if (Config::arch == "P512") {
+        statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+        IntStart = INT_START_PENTAGON;
+        IntEnd = INT_END_PENTAGON;
+    } else if (Config::arch == "P1024") {
+        statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+        IntStart = INT_START_PENTAGON;
+        IntEnd = INT_END_PENTAGON;
+    } else if (Config::arch == "Profi") {
+        statesInFrame = TSTATES_PER_FRAME_PROFI;
+        IntStart = INT_START_PROFI;
+        IntEnd = INT_END_PROFI;
+    } else { // if (Config::arch == "Pentagon") - by default
+        statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+        IntStart = INT_START_PENTAGON;
+        IntEnd = INT_END_PENTAGON;
+    }
+    uint8_t m = ESPectrum::multiplicator;
+    if (m) {
+        statesInFrame <<= m;
+        IntStart <<= m;
+        IntEnd <<= m;
+    }
+    stFrame = statesInFrame - IntEnd;
+}
+
+void CPU::reset() {
+
+    Z80::reset();
+
+    CPU::latetiming = Config::AluTiming;
+
+#if !PICO_RP2040
+    Z80Ops::isALF = (Config::arch == "ALF");
+#endif
+    if (Config::arch == "48K") {
+        Z80Ops::isByte = (Config::romSet48 == "48Kby");
+        Ports::getFloatBusData = &Ports::getFloatBusData48;
+        Z80Ops::is48 = true;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        // Set emulation loop sync target
+        ESPectrum::target = !Z80Ops::isByte ? MICROS_PER_FRAME_48 : MICROS_PER_FRAME_BYTE;
+    } else if (Config::arch == "128K" || Z80Ops::isALF) {
+        Z80Ops::isByte = (Config::romSet128 == "128Kby" || Config::romSet128 == "128Kbg");
+        Ports::getFloatBusData = &Ports::getFloatBusData128;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = true;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        // Set emulation loop sync target
+        ESPectrum::target = !Z80Ops::isByte ? MICROS_PER_FRAME_128 : MICROS_PER_FRAME_BYTE;
+    } else if (Config::arch == "P512") {
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = true;
+        Z80Ops::is512 = true;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        // Set emulation loop sync target
+        ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
+    } else if (Config::arch == "P1024") {
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = true;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = true;
+        Z80Ops::isProfi = false;
+        // Set emulation loop sync target
+        ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
+    } else if (Config::arch == "Profi") {
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = true;
+        // Set emulation loop sync target
+        ESPectrum::target = MICROS_PER_FRAME_PROFI;
+    } else { // if (Config::arch == "Pentagon") - by default
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = true;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        // Set emulation loop sync target
+        ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
+    }
+
+#if !PICO_RP2040
+    // 16col is Pentagon-only — auto-disable when switching to non-Pentagon arch.
+    if (!(Z80Ops::isPentagon || Z80Ops::isProfi)) {
+        if (Config::mode16col_onoff) {
+            Config::mode16col_onoff = false;
+            Config::save();
+        }
+        VIDEO::mode16col_enabled = false;
+        VIDEO::free16colLut();   // release the LUT — 16col now off (0 SRAM)
+    }
+#endif
+
+    // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi) && !Config::betadisk) Config::betadisk = true;
+
+    // Timex video is incompatible with Byte ROM sets — auto-disable.
+#if !PICO_RP2040
+    if (Z80Ops::isByte && Config::timex_video) Config::timex_video = false;
+#endif
+
+    updateStatesInFrame();
+
+    tstates = 0;
+    global_tstates = 0;
+
+    prev_tstates = 0;
+    tstates_diff = 0;
+}
+
+IRAM_ATTR void CPU::step() {
+    Z80::execute();
+}
+
+#define BREAKPOINTS if (pbbp || (nbp > 0 && Config::hasBreakPoint(Z80::getRegPC(), Config::BP_PC))) { VIDEO::EndFrame(); return; }
+
+
+IRAM_ATTR void CPU::loop() {
+    uint64_t _loop_t0 = time_us_64();
+    bool pbbp = CPU::portBasedBP;
+    if (paused || pbbp) {
+        VIDEO::EndFrame();
+        cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+        return;
+    }
+    int nbp = Config::numPcBP;
+
+    BREAKPOINTS
+    // Check NMI
+    if (Z80::isNMIDOS()) {
+        Z80::execute();
+        Z80::doNMIDOS();
+    } else if (Z80::isNMI()) {
+        Z80::execute();
+        Z80::doNMI();
+    }
+#if !PICO_RP2040
+    // ZiFi over USB-CDC: service the host stack mid-frame (~1 kHz) even while the
+    // guest isn't touching the ZiFi ports — see ZiFi::cdcPump(). The cadence check
+    // costs one compare per instruction, same class as the dma_mode check below.
+    uint32_t zifi_pump_due = tstates + 3500; // ~1 ms at 3.5 MHz guest clock
+#endif
+    while (tstates < IntEnd) {
+        Z80::execute();
+#if !PICO_RP2040
+        if (Config::dma_mode) Z80DMA::handleDMA();
+        if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
+            zifi_pump_due = tstates + 3500;
+            ZiFi::cdcPump();
+        }
+#endif
+        BREAKPOINTS
+    }
+    BREAKPOINTS
+    bool halted = Z80::isHalted();
+    if (!halted) {
+        stFrame = statesInFrame - IntEnd;
+        Z80::exec_nocheck();
+        if (stFrame == 0) { tstates_active = tstates; FlushOnHalt(); halted = true; }
+    } else {
+        tstates_active = tstates; FlushOnHalt();
+    }
+    BREAKPOINTS
+    while (tstates < statesInFrame) {
+        Z80::execute();
+#if !PICO_RP2040
+        if (Config::dma_mode) Z80DMA::handleDMA();
+        if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
+            zifi_pump_due = tstates + 3500;
+            ZiFi::cdcPump();
+        }
+#endif
+        BREAKPOINTS
+    }
+    {
+        uint64_t _ef_t0 = time_us_64();
+        VIDEO::EndFrame();
+        endframe_us = (uint32_t)(time_us_64() - _ef_t0);
+    }
+
+    CPU::tstates_diff += CPU::tstates - CPU::prev_tstates;
+
+    if ((ESPectrum::fdd.control & (kRVMWD177XHLD | kRVMWD177XHLT)) != 0)
+    {
+        uint64_t _fdd_t0 = time_us_64();
+        rvmWD1793Step(&ESPectrum::fdd, CPU::tstates_diff / WD177XSTEPSTATES); // FDD
+        fdd_step_us += (uint32_t)(time_us_64() - _fdd_t0);
+    }
+    CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
+
+    cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+
+    global_tstates += statesInFrame; // increase global Tstates
+    tstates_frame = tstates;
+    if (!halted) tstates_active = tstates_frame; // no HALT this frame: full load
+    tstates -= statesInFrame;
+
+    CPU::prev_tstates = tstates;
+}
+
+IRAM_ATTR void CPU::FlushOnHalt() {
+
+    uint32_t stEnd = statesInFrame - IntEnd;
+
+    uint8_t page = Z80::getRegPC() >> 14;
+    if (MemESP::ramContended[page]) {
+
+        while (tstates < stEnd ) {
+            VIDEO::Draw_Opcode(true);
+            Z80::incRegR(1);
+        }
+
+    } else {
+
+        if (VIDEO::snow_toggle) {
+
+            // ULA perfect cycle & snow effect use this code
+            while (tstates < stEnd ) {
+                VIDEO::Draw_Opcode(false);
+                Z80::incRegR(1);
+            }
+
+        } else {
+
+            // Flush the rest of frame
+            uint32_t pre_tstates = tstates;
+            while (VIDEO::Draw != &VIDEO::Blank)
+                VIDEO::Draw(VIDEO::tStatesPerLine, false);
+            tstates = pre_tstates;
+
+            uint32_t incr = (stEnd - pre_tstates) >> 2;
+            if (pre_tstates & 0x03) incr++;
+#if !PICO_RP2040
+            if (Z80Ops::isProfi) {
+                // Land the HALT-wake on the absolute 4T frame grid (phase 0)
+                // rather than inheriting pre_tstates' phase. A HALT only idles
+                // waiting for INT, so its exact wake T-state is a modelling
+                // choice, not discarded computation — same incr, hence same
+                // regR. The inherited phase depends on the (non-deterministic)
+                // flashload/CP/M handoff timing, which made INT-synced border
+                // effects (mcprofi2016) jitter 0..3T per launch; a phase-0
+                // landing is launch-independent. Other archs keep the
+                // inherited-phase model their border timings were calibrated
+                // against.
+                tstates = (pre_tstates & ~3u) + (incr << 2);
+            } else
+#endif
+                tstates += (incr << 2);
+            Z80::incRegR(incr & 0x000000FF);
+
+        }
+
+    }
+
+}
+
+// Z80Ops
+
+// Read byte from RAM
+IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
+    VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
+    return MemESP::readbyte(address);
+}
+
+// Fetch opcode from RAM (NON +2A/3 version)
+#if DEBUG
+uint16_t dbg_last_pc = 0;
+#endif
+IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
+    uint16_t pc = Z80::getRegPC();
+#if DEBUG
+    dbg_last_pc = pc;
+#endif
+    uint8_t pg = pc >> 14;
+    VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
+#if !PICO_RP2040
+    if (DivMMC::enabled) {
+        DivMMC::preOpcFetch(pc);
+        pg = pc >> 14; // re-read in case instant map changed it
+        uint8_t opCode;
+        if (pg == 0 && MemESP::divmmc_mapped) {
+            opCode = (pc < 0x2000) ? MemESP::page0_lo[pc] : MemESP::page0_hi[pc & 0x1FFF];
+        } else {
+            opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], pc & 0x3fff);
+        }
+        DivMMC::postOpcFetch();
+        return opCode;
+    }
+    // MB-02+: page0 mapped but DivMMC not active — check divmmc_mapped for fetch
+    if (pg == 0 && MemESP::divmmc_mapped) {
+        return (pc < 0x2000) ? MemESP::page0_lo[pc] : MemESP::page0_hi[pc & 0x1FFF];
+    }
+#endif
+    return MemESP::romPeek(pg, MemESP::ramCurrent[pg], pc & 0x3fff);
+}
+
+// // Write byte to RAM
+// IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
+
+//     uint8_t page = address >> 14;
+
+//     if (page == 0) {
+//         VIDEO::Draw(3, false);
+//         return;
+//     }
+
+//     #ifndef DIRTY_LINES
+
+//     VIDEO::Draw(3, MemESP::ramContended[page]);
+//     MemESP::ramCurrent[page][address & 0x3fff] = value;
+
+//     #else
+
+//     if (page == 2) {
+//         VIDEO::Draw(3, false);
+//         MemESP::ramCurrent[2][address & 0x3fff] = value;
+//         return;
+//     }
+
+//     VIDEO::Draw(3, MemESP::ramContended[page]);
+
+//     if (page == 3) {
+//         if (MemESP::videoLatch) {
+//             if (MemESP::bankLatch != 7) {
+//                 MemESP::ramCurrent[3][address & 0x3fff] = value;
+//                 return;
+//             }
+//         } else if (MemESP::bankLatch != 5) {
+//             MemESP::ramCurrent[3][address & 0x3fff] = value;
+//             return;
+//         }
+//     } else if (MemESP::videoLatch) {
+//         // Page == 1 == videoLatch
+//         MemESP::ramCurrent[1][address & 0x3fff] = value;
+//         return;
+//     }
+
+//     uint16_t vid_line = address & 0x3fff;
+
+//     if (vid_line < 6144) {
+
+//         uint8_t result =  (vid_line >> 5) & 0b11000000;
+//         result |=  (vid_line >> 2) & 0b00111000;
+//         result |=  (vid_line >> 8) & 0b00000111;
+
+//         VIDEO::dirty_lines[result] |= 0x01;
+
+//     } else if (vid_line < 6912) {
+
+//         uint8_t result = ((vid_line - 6144) >> 5) << 3;
+//         // for (int i=result; i < result + 8; i++)
+//         //     VIDEO::dirty_lines[i] = (value & 0x80) | 0x01;
+//         memset((uint8_t *)VIDEO::dirty_lines + result, (value & 0x80) | 0x01, 8);
+
+//     }
+
+//     MemESP::ramCurrent[page][vid_line] = value;
+
+//     #endif
+
+// }
+
+// Write byte to RAM
+IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
+    VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
+    MemESP::writebyte(address, value);
+}
+
+// Read word from RAM
+IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
+
+    uint8_t page = address >> 14;
+
+    if (page == ((address + 1) >> 14)) {    // Check if address is between two different pages
+
+        if (MemESP::ramContended[page]) {
+            VIDEO::Draw(3, true);
+            VIDEO::Draw(3, true);
+        } else
+            VIDEO::Draw(6, false);
+        return ((MemESP::readbyte(address + 1) << 8) | MemESP::readbyte(address));
+
+    } else {
+
+        // Order matters, first read lsb, then read msb, don't "optimize"
+        uint8_t lsb = Z80Ops::peek8(address);
+        uint8_t msb = Z80Ops::peek8(address + 1);
+        return (msb << 8) | lsb;
+
+    }
+
+}
+
+// Write word to RAM
+IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
+    uint8_t page = address >> 14;
+    uint16_t page_addr = address & 0x3fff;
+
+    if (page_addr < 0x3fff) {    // Check if address is between two different pages
+        if (MemESP::ramContended[page]) {
+            VIDEO::Draw(3, true);
+            VIDEO::Draw(3, true);
+        } else
+            VIDEO::Draw(6, false);
+        MemESP::writebyte(address, word.byte8.lo);
+        MemESP::writebyte(address + 1, word.byte8.hi);
+
+    } else {
+        // Order matters, first write lsb, then write msb, don't "optimize"
+        Z80Ops::poke8(address, word.byte8.lo);
+        Z80Ops::poke8(address + 1, word.byte8.hi);
+    }
+}
+
+// // Write word to RAM
+// IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
+
+//     uint8_t page = address >> 14;
+//     uint16_t vid_line = address & 0x3fff;
+
+//     if (vid_line < 0x3fff) {    // Check if address is between two different pages
+
+//         if (page == 0) {
+//             VIDEO::Draw(6, false);
+//             return;
+//         }
+
+//         #ifndef DIRTY_LINES
+
+//         if (MemESP::ramContended[page]) {
+//             VIDEO::Draw(3, true);
+//             VIDEO::Draw(3, true);
+//         } else
+//             VIDEO::Draw(6, false);
+
+//         MemESP::ramCurrent[page][vid_line] = word.byte8.lo;
+//         MemESP::ramCurrent[page][vid_line + 1] = word.byte8.hi;
+
+//         #else
+
+//         if (page == 2) {
+//             VIDEO::Draw(6, false);
+//             MemESP::ramCurrent[2][vid_line] = word.byte8.lo;
+//             MemESP::ramCurrent[2][vid_line + 1] = word.byte8.hi;
+//             return;
+//         }
+
+//         if (MemESP::ramContended[page]) {
+//             VIDEO::Draw(3, true);
+//             VIDEO::Draw(3, true);
+//         } else
+//             VIDEO::Draw(6, false);
+
+//         if (page == 3) {
+//             if (MemESP::videoLatch) {
+//                 if (MemESP::bankLatch != 7) {
+//                     MemESP::ramCurrent[3][vid_line] = word.byte8.lo;
+//                     MemESP::ramCurrent[3][vid_line + 1] = word.byte8.hi;
+//                     return;
+//                 }
+//             } else if (MemESP::bankLatch != 5) {
+//                 MemESP::ramCurrent[3][vid_line] = word.byte8.lo;
+//                 MemESP::ramCurrent[3][vid_line + 1] = word.byte8.hi;
+//                 return;
+//             }
+//         } else if (MemESP::videoLatch) {
+//             // Page == 1 == videoLatch
+//             MemESP::ramCurrent[1][vid_line] = word.byte8.lo;
+//             MemESP::ramCurrent[1][vid_line + 1] = word.byte8.hi;
+//             return;
+//         }
+
+//         MemESP::ramCurrent[page][vid_line] = word.byte8.lo;
+//         MemESP::ramCurrent[page][vid_line + 1] = word.byte8.hi;
+
+//         if (vid_line < 6144) {
+
+//             uint8_t result =  (vid_line >> 5) & 0b11000000;
+//             result |=  (vid_line >> 2) & 0b00111000;
+//             result |=  (vid_line >> 8) & 0b00000111;
+
+//             VIDEO::dirty_lines[result] |= 0x01;
+
+//         } else if (vid_line < 6912) {
+
+//             uint8_t result = ((vid_line - 6144) >> 5) << 3;
+//             // for (int i=result; i < result + 8; i++)
+//             //     VIDEO::dirty_lines[i] = (word.byte8.lo & 0x80) | 0x01;
+//             memset((uint8_t *)VIDEO::dirty_lines + result, (word.byte8.lo & 0x80) | 0x01, 8);
+
+//         } else return;
+
+//         vid_line++;
+
+//         if (vid_line < 6144) {
+
+//             uint8_t result =  (vid_line >> 5) & 0b11000000;
+//             result |=  (vid_line >> 2) & 0b00111000;
+//             result |=  (vid_line >> 8) & 0b00000111;
+
+//             VIDEO::dirty_lines[result] |= 0x01;
+
+//         } else if (vid_line < 6912) {
+
+//             uint8_t result = ((vid_line - 6144) >> 5) << 3;
+//             // for (int i=result; i < result + 8; i++)
+//             //     VIDEO::dirty_lines[i] = (word.byte8.hi & 0x80) | 0x01;
+//             memset((uint8_t *)VIDEO::dirty_lines + result, (word.byte8.hi & 0x80) | 0x01, 8);
+
+//         }
+
+//         #endif
+
+//     } else {
+
+//         // Order matters, first write lsb, then write msb, don't "optimize"
+//         Z80Ops::poke8(address, word.byte8.lo);
+//         Z80Ops::poke8(address + 1, word.byte8.hi);
+
+//     }
+
+// }
+
+
+/* Put an address on bus lasting 'tstates' cycles */
+IRAM_ATTR void Z80Ops::addressOnBus(uint16_t address, int32_t wstates) {
+    if (MemESP::ramContended[address >> 14]) {
+        for (int idx = 0; idx < wstates; idx++)
+            VIDEO::Draw(1, true);
+    } else
+        VIDEO::Draw(wstates, false);
+}
+
+/* Callback to know when the INT signal is active */
+IRAM_ATTR bool Z80Ops::isActiveINT(void) {
+    // Karabas serial-mouse hardware INT (RST20H): level-asserted while an RX
+    // byte waits with INT_EN set in CP/M mode. Sampled only in the checked
+    // execute() loops (like the frame INT), so worst-case latency is one
+    // exec_nocheck stretch — fine for a level line the device keeps high.
+    if (Ports::serialMouseIntAsserted()) return true;
+    // Adding latetiming shifts the check 1T later for Late mode.
+    // At end of frame (tstates=statesInFrame-1), tmp wraps to 0, firing
+    // the Late INT via straddle — this is the correct hardware behaviour.
+    int32_t tmp = (int32_t)CPU::tstates + CPU::latetiming;
+    if (tmp >= (int32_t)CPU::statesInFrame) tmp -= CPU::statesInFrame;
+    return (tmp >= CPU::IntStart) && (tmp < CPU::IntEnd);
+}
+
