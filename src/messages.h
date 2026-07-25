@@ -62,53 +62,29 @@ visit https://zxespectrum.speccy.org/contacto
 #define ERR_DIR_OPEN "Cannot open directory!"
 
 // OSD
-#if !defined(PICO_RP2040)
   #if PORT_VERSION_LEN <= 5
-    #define OSD_TITLE  " ESPectrum v.1.2 (RP2350 port v." PORT_VERSION ")  "
+    #define OSD_TITLE  " pico-speccy v." PORT_VERSION " (ESPectrum 1.2)    "
   #else
-    #define OSD_TITLE  " ESPectrum v.1.2 (RP2350 port v." PORT_VERSION ") "
+    #define OSD_TITLE  " pico-speccy v." PORT_VERSION " (ESPectrum 1.2)   "
   #endif
-#else
-  #if PORT_VERSION_LEN <= 5
-    #define OSD_TITLE  " ESPectrum v.1.2 (RP2040 port v." PORT_VERSION ")  "
-  #else
-    #define OSD_TITLE  " ESPectrum v.1.2 (RP2040 port v." PORT_VERSION ") "
-  #endif
-#endif
 // #define OSD_BOTTOM " SCIENCE LEADS TO PROGRESS              "
 #define OSD_BOTTOM " Murmulator port by MikeV73" EMU_VERSION
 
-#define OSD_PAUSE_EN "--=[ PAUSED ]=--"
-#define OSD_PAUSE_ES "--=[EN PAUSA]=--"
-static const char *OSD_PAUSE[2] = { OSD_PAUSE_EN,OSD_PAUSE_ES };
+#define OSD_PAUSE "--=[ PAUSED ]=--"
 
-#define OSD_MAXSPEED_ON_EN "--=[ MAX SPEED ON ]=--"
-#define OSD_MAXSPEED_ON_ES "--=[VELOCIDAD MÁXIMA ENCENDIDA]=--"
-static const char *OSD_MAXSPEED_ON[2] = { OSD_MAXSPEED_ON_EN,OSD_MAXSPEED_ON_ES };
+#define OSD_MAXSPEED_ON "--=[ MAX SPEED ON ]=--"
 
-#define OSD_MAXSPEED_OFF_EN "--=[ MAX SPEED OFF ]=--"
-#define OSD_MAXSPEED_OFF_ES "--=[VELOCIDAD MÁXIMA APAGADA]=--"
-static const char *OSD_MAXSPEED_OFF[2] = { OSD_MAXSPEED_OFF_EN,OSD_MAXSPEED_OFF_ES };
+#define OSD_MAXSPEED_OFF "--=[ MAX SPEED OFF ]=--"
 
-#define OSD_GIGASCREEN_ON_EN "--=[ GIGASCREEN ON ]=--"
-#define OSD_GIGASCREEN_ON_ES "--=[ GIGASCREEN ENCENDIDA ]=--"
-static const char *OSD_GIGASCREEN_ON[2] = { OSD_GIGASCREEN_ON_EN,OSD_GIGASCREEN_ON_ES };
+#define OSD_GIGASCREEN_ON "--=[ GIGASCREEN ON ]=--"
 
-#define OSD_GIGASCREEN_OFF_EN "--=[ GIGASCREEN OFF ]=--"
-#define OSD_GIGASCREEN_OFF_ES "--=[ GIGASCREEN APAGADA ]=--"
-static const char *OSD_GIGASCREEN_OFF[2] = { OSD_GIGASCREEN_OFF_EN,OSD_GIGASCREEN_OFF_ES };
+#define OSD_GIGASCREEN_OFF "--=[ GIGASCREEN OFF ]=--"
 
-#define OSD_GIGASCREEN_AUTO_EN "--=[ GIGASCREEN AUTO ]=--"
-#define OSD_GIGASCREEN_AUTO_ES "--=[ GIGASCREEN AUTO ]=--"
-static const char *OSD_GIGASCREEN_AUTO[2] = { OSD_GIGASCREEN_AUTO_EN,OSD_GIGASCREEN_AUTO_ES };
+#define OSD_GIGASCREEN_AUTO "--=[ GIGASCREEN AUTO ]=--"
 
-#define OSD_COBMECT_ON_EN  "--=[ COBMECT. MODE ON ]=--"
-#define OSD_COBMECT_ON_ES  "--=[ COBMECT. MODE ON ]=--"
-static const char *OSD_COBMECT_ON[2] = { OSD_COBMECT_ON_EN,OSD_COBMECT_ON_ES };
+#define OSD_COBMECT_ON  "--=[ COBMECT. MODE ON ]=--"
 
-#define OSD_COBMECT_OFF_EN "--=[ COBMECT. MODE OFF ]=--"
-#define OSD_COBMECT_OFF_ES "--=[ COBMECT. MODE OFF ]=--"
-static const char *OSD_COBMECT_OFF[2] = { OSD_COBMECT_OFF_EN,OSD_COBMECT_OFF_ES };
+#define OSD_COBMECT_OFF "--=[ COBMECT. MODE OFF ]=--"
 
 #define OSD_PSNA_NOT_AVAIL "No Persist Snapshot Available"
 #define OSD_PSNA_LOADING "Loading Persist Snapshot"
@@ -123,246 +99,127 @@ static const char *OSD_COBMECT_OFF[2] = { OSD_COBMECT_OFF_EN,OSD_COBMECT_OFF_ES 
 #define OSD_TAPE_SAVE_ERR "ERROR Saving tape file"
 #define OSD_BETADISK_LOAD_ERR "ERROR Loading Disk file"
 
-#define POKE_ERR_ADDR1_EN "Address should be between 0000 and FFFF"
-#define POKE_ERR_ADDR1_ES "Direccion debe estar entre 0000 y FFFF"
-static const char *POKE_ERR_ADDR1[2] = { POKE_ERR_ADDR1_EN, POKE_ERR_ADDR1_ES };
+#define POKE_ERR_ADDR1 "Address should be between 0000 and FFFF"
 
-#define POKE_ERR_ADDR2_EN "Address should be lower than 4000"
-#define POKE_ERR_ADDR2_ES "Direccion debe ser menor que 4000"
-static const char *POKE_ERR_ADDR2[2] = { POKE_ERR_ADDR2_EN, POKE_ERR_ADDR2_ES };
+#define POKE_ERR_ADDR2 "Address should be lower than 4000"
 
-#define POKE_ERR_VALUE_EN "Value should be lower than 256"
-#define POKE_ERR_VALUE_ES "Valor debe ser menor que 256"
-static const char *POKE_ERR_VALUE[2] = { POKE_ERR_VALUE_EN, POKE_ERR_VALUE_ES };
+#define POKE_ERR_VALUE "Value should be lower than 256"
 
-#define OSD_TAPE_SAVE_EN "SAVE command"
-#define OSD_TAPE_SAVE_ES "Comando SAVE"
-static const char *OSD_TAPE_SAVE[2] = { OSD_TAPE_SAVE_EN, OSD_TAPE_SAVE_ES };
+#define OSD_TAPE_SAVE "SAVE command"
 
-#define OSD_TAPE_SAVE_EXIST_EN "File exists. Overwrite?"
-#define OSD_TAPE_SAVE_EXIST_ES "El fichero ya existe " "\xA8" "Sobreescribir?"
-static const char *OSD_TAPE_SAVE_EXIST[2] = { OSD_TAPE_SAVE_EXIST_EN, OSD_TAPE_SAVE_EXIST_ES };
+#define OSD_TAPE_SAVE_EXIST "File exists. Overwrite?"
 
-#define OSD_PSNA_SAVE_EN "Save snapshot"
-#define OSD_PSNA_SAVE_ES "Guardar snapshot"
-static const char *OSD_PSNA_SAVE[2] = { OSD_PSNA_SAVE_EN, OSD_PSNA_SAVE_ES };
+#define OSD_PSNA_SAVE "Save snapshot"
 
-#define OSD_PSNA_EXISTS_EN "Overwrite slot?"
-#define OSD_PSNA_EXISTS_ES "\xA8" "Sobreescribir ranura?"
-static const char *OSD_PSNA_EXISTS[2] = { OSD_PSNA_EXISTS_EN, OSD_PSNA_EXISTS_ES };
+#define OSD_PSNA_EXISTS "Overwrite slot?"
 
-#define OSD_TAPE_SELECT_ERR_EN "No tape file selected"
-#define OSD_TAPE_SELECT_ERR_ES "Fichero de cinta no seleccionado"
-static const char *OSD_TAPE_SELECT_ERR[2] = { OSD_TAPE_SELECT_ERR_EN,OSD_TAPE_SELECT_ERR_ES };
+#define OSD_TAPE_SELECT_ERR "No tape file selected"
 
-#define OSD_FILE_INDEXING_EN "Indexing"
-#define OSD_FILE_INDEXING_ES "Indexando"
-static const char *OSD_FILE_INDEXING[2] = { OSD_FILE_INDEXING_EN, OSD_FILE_INDEXING_ES };
+#define OSD_FILE_INDEXING "Indexing"
 
-#define OSD_FILE_INDEXING_EN_1 " Sorting (F1) "
-#define OSD_FILE_INDEXING_ES_1 " Ordenando (F1) "
-static const char *OSD_FILE_INDEXING_1[2] = { OSD_FILE_INDEXING_EN_1, OSD_FILE_INDEXING_ES_1 };
+#define OSD_FILE_INDEXING_1 " Sorting (F1) "
 
-#define OSD_FILE_INDEXING_EN_2 "Saving index"
-#define OSD_FILE_INDEXING_ES_2 "Grabando indice"
-static const char *OSD_FILE_INDEXING_2[2] = { OSD_FILE_INDEXING_EN_2, OSD_FILE_INDEXING_ES_2 };
+#define OSD_FILE_INDEXING_2 "Saving index"
 
-#define OSD_FILE_INDEXING_EN_3 "  Cleaning  "
-#define OSD_FILE_INDEXING_ES_3 "   Limpiando   "
-static const char *OSD_FILE_INDEXING_3[2] = { OSD_FILE_INDEXING_EN_3, OSD_FILE_INDEXING_ES_3 };
+#define OSD_FILE_INDEXING_3 "  Cleaning  "
 
-#define OSD_FIRMW_UPDATE_EN "Firmware update"
-#define OSD_FIRMW_UPDATE_ES "Actualizar firmware"
-static const char *OSD_FIRMW_UPDATE[2] = { OSD_FIRMW_UPDATE_EN,OSD_FIRMW_UPDATE_ES};
+#define OSD_FIRMW_UPDATE "Firmware update"
 
-#define OSD_DLG_SURE_EN "Are you sure?"
-#define OSD_DLG_SURE_ES "\xA8" "Desea continuar?"
-static const char *OSD_DLG_SURE[2] = { OSD_DLG_SURE_EN, OSD_DLG_SURE_ES};
+#define OSD_DLG_SURE "Are you sure?"
 
-#define OSD_DLG_REBOOT_EN "Reboot the board?"
-#define OSD_DLG_REBOOT_ES "\xA8" "Reiniciar la placa?"
-static const char *OSD_DLG_REBOOT[2] = { OSD_DLG_REBOOT_EN, OSD_DLG_REBOOT_ES};
+#define OSD_DLG_REBOOT "Reboot the board?"
 
-#define OSD_DLG_LOADDEFAULTS_EN "Load defaults and reboot?"
-#define OSD_DLG_LOADDEFAULTS_ES "\xA8" "Cargar defaults y reiniciar?"
-static const char *OSD_DLG_LOADDEFAULTS[2] = { OSD_DLG_LOADDEFAULTS_EN, OSD_DLG_LOADDEFAULTS_ES};
+#define OSD_DLG_LOADDEFAULTS "Load defaults and reboot?"
 
-#define OSD_DLG_SAVEDEFAULT_EN "Save current config as your Default?"
-#define OSD_DLG_SAVEDEFAULT_ES "\xA8" "Guardar config actual como Mis Defaults?"
-static const char *OSD_DLG_SAVEDEFAULT[2] = { OSD_DLG_SAVEDEFAULT_EN, OSD_DLG_SAVEDEFAULT_ES};
+#define OSD_DLG_SAVEDEFAULT "Save current config as your Default?"
 
-#define OSD_DLG_LOADMYDEFAULT_EN "Load your Default and reboot?"
-#define OSD_DLG_LOADMYDEFAULT_ES "\xA8" "Cargar Mis Defaults y reiniciar?"
-static const char *OSD_DLG_LOADMYDEFAULT[2] = { OSD_DLG_LOADMYDEFAULT_EN, OSD_DLG_LOADMYDEFAULT_ES};
+#define OSD_DLG_LOADMYDEFAULT "Load your Default and reboot?"
 
-#define MSG_DEFAULT_SAVED_EN " Default saved "
-#define MSG_DEFAULT_SAVED_ES " Guardado "
-static const char *MSG_DEFAULT_SAVED[2] = { MSG_DEFAULT_SAVED_EN, MSG_DEFAULT_SAVED_ES};
+#define MSG_DEFAULT_SAVED " Default saved "
 
-#define OSD_DLG_USBBOOT_EN "Reboot to USB mode?"
-#define OSD_DLG_USBBOOT_ES "\xA8" "Reiniciar en modo USB?"
-static const char *OSD_DLG_USBBOOT[2] = { OSD_DLG_USBBOOT_EN, OSD_DLG_USBBOOT_ES};
+#define OSD_DLG_USBBOOT "Reboot to USB mode?"
 
-#define OSD_DLG_APPLYREBOOT_EN "Apply and reboot?"
-#define OSD_DLG_APPLYREBOOT_ES "\xA8" "Aplicar y reiniciar?"
-static const char *OSD_DLG_APPLYREBOOT[2] = { OSD_DLG_APPLYREBOOT_EN, OSD_DLG_APPLYREBOOT_ES};
+#define OSD_DLG_APPLYREBOOT "Apply and reboot?"
 
-#define OSD_DLG_JOYSAVE_EN "Save changes?"
-#define OSD_DLG_JOYSAVE_ES "\xA8" "Guardar cambios?"
-static const char *OSD_DLG_JOYSAVE[2] = { OSD_DLG_JOYSAVE_EN, OSD_DLG_JOYSAVE_ES};
+#define OSD_DLG_JOYSAVE "Save changes?"
 
-#define OSD_DLG_JOYDISCARD_EN "Discard changes?"
-#define OSD_DLG_JOYDISCARD_ES "\xA8" "Descartar cambios?"
-static const char *OSD_DLG_JOYDISCARD[2] = { OSD_DLG_JOYDISCARD_EN, OSD_DLG_JOYDISCARD_ES};
+#define OSD_DLG_JOYDISCARD "Discard changes?"
 
-#define OSD_DLG_SETJOYMAPDEFAULTS_EN "Load joy type default map?"
-#define OSD_DLG_SETJOYMAPDEFAULTS_ES "\xA8" "Cargar mapeo por defecto?"
-static const char *OSD_DLG_SETJOYMAPDEFAULTS[2] = { OSD_DLG_SETJOYMAPDEFAULTS_EN, OSD_DLG_SETJOYMAPDEFAULTS_ES};
+#define OSD_DLG_SETJOYMAPDEFAULTS "Load joy type default map?"
 
 // Factory reset: hold R at boot → confirm → wipe storage.nvs → reboot to defaults.
-static const char *MSG_FACTORY_RESET_TITLE[2] = { "Factory reset", "Reset de fabrica" };
-static const char *MSG_FACTORY_RESET_Q[2] = {
-    "Reset all settings to defaults?",
-    "Restablecer todos los ajustes?"
-};
+#define MSG_FACTORY_RESET_TITLE "Factory reset"
+#define MSG_FACTORY_RESET_Q "Reset all settings to defaults?"
 // "My Default" reset: hold M at boot → confirm → wipe storage.nvs (keeps
 // default.nvs) → reboot, which then falls back to the user's saved default.
-static const char *MSG_MYDEFAULT_RESET_TITLE[2] = { "Reset to my Default", "Restaurar Mis Defaults" };
-static const char *MSG_MYDEFAULT_RESET_Q[2] = {
-    "Reset settings to your saved Default?",
-    "Restablecer a Mis Defaults guardados?"
-};
+#define MSG_MYDEFAULT_RESET_TITLE "Reset to my Default"
+#define MSG_MYDEFAULT_RESET_Q "Reset settings to your saved Default?"
 // Guided boot prompt shown while the "hold R / hold M" reset window is open.
-static const char *MSG_FACTORY_RESET_HOLD[2] = {
-    "Hold R: Factory Reset\nHold M: My Default",
-    "Manten R: Reset fabrica\nManten M: Mis Defaults"
-};
+#define MSG_FACTORY_RESET_HOLD "Hold R: Factory Reset\nHold M: My Default"
 
-#define OSD_FIRMW_EN "Updating firmware"
-#define OSD_FIRMW_ES "Actualizando firmware"
-static const char *OSD_FIRMW[2] = { OSD_FIRMW_EN,OSD_FIRMW_ES};
+#define OSD_FIRMW "Updating firmware"
 
-#define OSD_FIRMW_BEGIN_EN "Erasing destination partition."
-#define OSD_FIRMW_BEGIN_ES "Borrando particion de destino."
-static const char *OSD_FIRMW_BEGIN[2] = { OSD_FIRMW_BEGIN_EN,OSD_FIRMW_BEGIN_ES};
+#define OSD_FIRMW_BEGIN "Erasing destination partition."
 
-#define OSD_FIRMW_WRITE_EN "    Flashing new firmware.    "
-#define OSD_FIRMW_WRITE_ES "   Grabando nuevo firmware.   "
-static const char *OSD_FIRMW_WRITE[2] = { OSD_FIRMW_WRITE_EN,OSD_FIRMW_WRITE_ES};
+#define OSD_FIRMW_WRITE "    Flashing new firmware.    "
 
-#define OSD_FIRMW_END_EN "Flashing complete. Rebooting."
-#define OSD_FIRMW_END_ES "  Completado. Reiniciando.   "
-static const char *OSD_FIRMW_END[2] = { OSD_FIRMW_END_EN,OSD_FIRMW_END_ES};
+#define OSD_FIRMW_END "Flashing complete. Rebooting."
 
-#define OSD_NOFIRMW_ERR_EN "No firmware file found."
-#define OSD_NOFIRMW_ERR_ES "Firmware no encontrado."
-static const char *OSD_NOFIRMW_ERR[2] = { OSD_NOFIRMW_ERR_EN,OSD_NOFIRMW_ERR_ES};
+#define OSD_NOFIRMW_ERR "No firmware file found."
 
-#define OSD_FIRMW_ERR_EN "Problem updating firmware."
-#define OSD_FIRMW_ERR_ES "Error actualizando firmware."
-static const char *OSD_FIRMW_ERR[2] = { OSD_FIRMW_ERR_EN,OSD_FIRMW_ERR_ES};
+#define OSD_FIRMW_ERR "Problem updating firmware."
 
-#define OSD_ROM_ERR_EN "Problem flashing ROM."
-#define OSD_ROM_ERR_ES "Error flasheando ROM."
-static const char *OSD_ROM_ERR[2] = { OSD_ROM_ERR_EN,OSD_ROM_ERR_ES};
+#define OSD_ROM_ERR "Problem flashing ROM."
 
-#define OSD_NOROMFILE_ERR_EN "No custom ROM file found."
-#define OSD_NOROMFILE_ERR_ES "Custom ROM no encontrada."
-static const char *OSD_NOROMFILE_ERR[2] = { OSD_NOROMFILE_ERR_EN,OSD_NOROMFILE_ERR_ES};
+#define OSD_NOROMFILE_ERR "No custom ROM file found."
 
-#define OSD_ROM_EN "Flash Custom ROM"
-#define OSD_ROM_ES "Flashear ROM Custom"
-static const char *OSD_ROM[2] = { OSD_ROM_EN,OSD_ROM_ES};
+#define OSD_ROM "Flash Custom ROM"
 
-#define OSD_ROM_BEGIN_EN "   Preparing flash space.   "
-#define OSD_ROM_BEGIN_ES "Preparando espacio en flash."
-static const char *OSD_ROM_BEGIN[2] = { OSD_ROM_BEGIN_EN,OSD_ROM_BEGIN_ES};
+#define OSD_ROM_BEGIN "   Preparing flash space.   "
 
-#define OSD_ROM_WRITE_EN "    Flashing custom ROM.    "
-#define OSD_ROM_WRITE_ES "    Grabando ROM custom.    "
-static const char *OSD_ROM_WRITE[2] = { OSD_ROM_WRITE_EN,OSD_ROM_WRITE_ES};
+#define OSD_ROM_WRITE "    Flashing custom ROM.    "
 
-#define MENU_SNA_TITLE_EN "Select Snapshot"
-#define MENU_SNA_TITLE_ES "Elija snapshot"
-static const char *MENU_SNA_TITLE[2] = { MENU_SNA_TITLE_EN,MENU_SNA_TITLE_ES };
+#define MENU_SNA_TITLE "Select Snapshot"
 
-#define MENU_TAP_TITLE_EN "Select tape file"
-#define MENU_TAP_TITLE_ES "Elija fichero de cinta"
-static const char *MENU_TAP_TITLE[2] = { MENU_TAP_TITLE_EN,MENU_TAP_TITLE_ES };
+#define MENU_TAP_TITLE "Select tape file"
 
-#define MENU_DSK_TITLE_EN "Select disk"
-#define MENU_DSK_TITLE_ES "Elija disco"
-static const char *MENU_DSK_TITLE[2] = { MENU_DSK_TITLE_EN,MENU_DSK_TITLE_ES };
+#define MENU_DSK_TITLE "Select disk"
 
-#define MENU_ROM_TITLE_EN "Select ROM"
-#define MENU_ROM_TITLE_ES "Elija ROM"
-static const char *MENU_ROM_TITLE[2] = { MENU_ROM_TITLE_EN,MENU_ROM_TITLE_ES };
+#define MENU_ROM_TITLE "Select ROM"
 
-#define MENU_ALL_TITLE_EN "Open File"
-#define MENU_ALL_TITLE_ES "Abrir fichero"
-static const char *MENU_ALL_TITLE[2] = { MENU_ALL_TITLE_EN,MENU_ALL_TITLE_ES };
+#define MENU_ALL_TITLE "Open File"
 
-#define OSD_16COL_NEEDS_PENTAGON_EN "  16col is Pentagon only  "
-#define OSD_16COL_NEEDS_PENTAGON_ES "  16col solo en Pentagon  "
-static const char *OSD_16COL_NEEDS_PENTAGON[2] = { OSD_16COL_NEEDS_PENTAGON_EN,OSD_16COL_NEEDS_PENTAGON_ES };
+#define OSD_16COL_NEEDS_PENTAGON "  16col is Pentagon only  "
 
-#define OSD_IMG_NEEDS_ESXDOS_EN "  Enable esxDOS first  "
-#define OSD_IMG_NEEDS_ESXDOS_ES " Active esxDOS primero "
-static const char *OSD_IMG_NEEDS_ESXDOS[2] = { OSD_IMG_NEEDS_ESXDOS_EN,OSD_IMG_NEEDS_ESXDOS_ES };
+#define OSD_IMG_NEEDS_ESXDOS "  Enable esxDOS first  "
 
-#define OSD_DSK_WRITE_PROTECT_EN "  Disk is write protected  "
-#define OSD_DSK_WRITE_PROTECT_ES " Disco protegido contra escritura "
-static const char *OSD_DSK_WRITE_PROTECT[2] = { OSD_DSK_WRITE_PROTECT_EN,OSD_DSK_WRITE_PROTECT_ES };
+#define OSD_DSK_WRITE_PROTECT "  Disk is write protected  "
 
-#define OSD_ZIP_ERR_EN " No supported file in ZIP "
-#define OSD_ZIP_ERR_ES " No hay archivo en ZIP "
-static const char *OSD_ZIP_ERR[2] = { OSD_ZIP_ERR_EN,OSD_ZIP_ERR_ES };
+#define OSD_ZIP_ERR " No supported file in ZIP "
 
-#define OSD_ZIP_EXTRACTING_EN "    Extracting...    "
-#define OSD_ZIP_EXTRACTING_ES "    Extrayendo...    "
-static const char *OSD_ZIP_EXTRACTING[2] = { OSD_ZIP_EXTRACTING_EN,OSD_ZIP_EXTRACTING_ES };
+#define OSD_ZIP_EXTRACTING "    Extracting...    "
 
-#define OSD_ZIP_BADMETHOD_EN " ZIP: unsupported compression "
-#define OSD_ZIP_BADMETHOD_ES " ZIP: compresion no admitida "
-static const char *OSD_ZIP_BADMETHOD[2] = { OSD_ZIP_BADMETHOD_EN,OSD_ZIP_BADMETHOD_ES };
+#define OSD_ZIP_BADMETHOD " ZIP: unsupported compression "
 
-#define OSD_PROFI_LOADING_EN "  Loading Profi system...  \n  Please wait (SPI PSRAM)  "
-#define OSD_PROFI_LOADING_ES "  Cargando sistema Profi...  \n  Espere (SPI PSRAM)  "
-static const char *OSD_PROFI_LOADING[2] = { OSD_PROFI_LOADING_EN,OSD_PROFI_LOADING_ES };
+#define OSD_PROFI_LOADING "  Loading Profi system...  \n  Please wait (SPI PSRAM)  "
 
-#define OSD_FILE_DELETE_TITLE_EN "Delete?"
-#define OSD_FILE_DELETE_TITLE_ES "Borrar?"
-static const char *OSD_FILE_DELETE_TITLE[2] = { OSD_FILE_DELETE_TITLE_EN,OSD_FILE_DELETE_TITLE_ES };
+#define OSD_FILE_DELETE_TITLE "Delete?"
 
-#define OSD_FILE_DELETE_DIR_TITLE_EN "Delete folder?"
-#define OSD_FILE_DELETE_DIR_TITLE_ES "Borrar carpeta?"
-static const char *OSD_FILE_DELETE_DIR_TITLE[2] = { OSD_FILE_DELETE_DIR_TITLE_EN, OSD_FILE_DELETE_DIR_TITLE_ES };
+#define OSD_FILE_DELETE_DIR_TITLE "Delete folder?"
 
-#define OSD_FILE_MKDIR_TITLE_EN "New folder: "
-#define OSD_FILE_MKDIR_TITLE_ES "Nueva carp.: "
-static const char *OSD_FILE_MKDIR_TITLE[2] = { OSD_FILE_MKDIR_TITLE_EN, OSD_FILE_MKDIR_TITLE_ES };
+#define OSD_FILE_MKDIR_TITLE "New folder: "
 
-#define OSD_FILE_CREATING_TRD_EN "Creating TRD"
-#define OSD_FILE_CREATING_TRD_ES "Creando TRD"
-static const char *OSD_FILE_CREATING_TRD[2] = { OSD_FILE_CREATING_TRD_EN, OSD_FILE_CREATING_TRD_ES };
+#define OSD_FILE_CREATING_TRD "Creating TRD"
 
-#define OSD_FILE_DELETING_EN "Deleting..."
-#define OSD_FILE_DELETING_ES "Borrando..."
-static const char *OSD_FILE_DELETING[2] = { OSD_FILE_DELETING_EN, OSD_FILE_DELETING_ES };
+#define OSD_FILE_DELETING "Deleting..."
 
-#define MENU_SNA_EN \
+#define MENU_SNA \
     "Snapshot menu\n"\
     "Load (SNA,Z80,P)\t{HK_LOAD_SNA}>\n"\
     "Load fast-snap\t{HK_PERSIST_LOAD}>\n"\
     "Save fast-snap\t{HK_PERSIST_SAVE}>\n"
-#define MENU_SNA_ES \
-    "Menu snapshots\n"\
-    "Cargar (SNA,Z80,P)\t{HK_LOAD_SNA}>\n"\
-    "Cargar snapshot\t{HK_PERSIST_LOAD}>\n"\
-    "Guardar snapshot\t{HK_PERSIST_SAVE}>\n"
-static const char *MENU_SNA[2] = { MENU_SNA_EN, MENU_SNA_ES };
 
-#define MENU_TAPE_EN \
+#define MENU_TAPE \
     "Tape menu\n"\
     "Select file\t{HK_LOAD_ANY}>\n"\
     "Play/Stop\t{HK_TAPE_PLAY}\n"\
@@ -372,18 +229,7 @@ static const char *MENU_SNA[2] = { MENU_SNA_EN, MENU_SNA_ES };
 	"Fast tape load\t>\n"\
 	"R.G. ROM timings\t>\n"\
 	"Auto-start\t>\n"
-#define MENU_TAPE_ES \
-    "Casete\n"\
-    "Elegir (TAP)\t{HK_LOAD_ANY}>\n"\
-    "Play/Stop\t{HK_TAPE_PLAY}\n"\
-    "Navegador cinta\t{HK_TAPE_BROWSER}\n"\
-	"Modo reproductor\t>\n"\
-	"Modo de sonido real\t>\n"\
-	"Carga rapida cinta\t>\n"\
-	"Timings ROM R.G.\t>\n"\
-	"Auto-inicio\t>\n"
-static const char *MENU_TAPE[2] = { MENU_TAPE_EN, MENU_TAPE_ES };
-#define MENU_TAPE_NO_SD_EN \
+#define MENU_TAPE_NO_SD \
     "Tape menu\n"\
     "Play/Stop\t{HK_TAPE_PLAY}\n"\
     "Tape browser\t{HK_TAPE_BROWSER}\n"\
@@ -392,22 +238,11 @@ static const char *MENU_TAPE[2] = { MENU_TAPE_EN, MENU_TAPE_ES };
 	"Fast tape load\t>\n"\
 	"R.G. ROM timings\t>\n"\
 	"Auto-start\t>\n"
-#define MENU_TAPE_NO_SD_ES \
-    "Casete\n"\
-    "Play/Stop\t{HK_TAPE_PLAY}\n"\
-    "Navegador cinta\t{HK_TAPE_BROWSER}\n"\
-	"Modo reproductor\t>\n"\
-	"Modo de sonido real\t>\n"\
-	"Carga rapida cinta\t>\n"\
-	"Timings ROM R.G.\t>\n"\
-	"Auto-inicio\t>\n"
-static const char *MENU_TAPE_NO_SD[2] = { MENU_TAPE_NO_SD_EN, MENU_TAPE_NO_SD_ES };
 
-static const char *MENU_TAPEPLAYER[2] = { "Player mode\n", "Modo reproductor\n" };
-static const char *MENU_TAPEPLAYER2[2] = { "Input (P" _PIN_XSTR(LOAD_WAV_PIO) ")\n", "Entrada (P" _PIN_XSTR(LOAD_WAV_PIO) ")\n" };
+#define MENU_TAPEPLAYER "Player mode\n"
+#define MENU_TAPEPLAYER2 "Input (P" _PIN_XSTR(LOAD_WAV_PIO) ")\n"
 
-#if !PICO_RP2040
-#define MENU_STORAGE_MAIN_EN \
+#define MENU_STORAGE_MAIN \
     "Storage\n"\
     "Tape\t>\n"\
     "Betadisk\t>\n"\
@@ -416,169 +251,91 @@ static const char *MENU_TAPEPLAYER2[2] = { "Input (P" _PIN_XSTR(LOAD_WAV_PIO) ")
     "Z-Controller\t>\n"\
     "IDE/HDD\t>\n"\
     "Snapshot\t>\n"
-#define MENU_STORAGE_MAIN_ES \
-    "Almacenamiento\n"\
-    "Casete\t>\n"\
-    "Betadisk\t>\n"\
-    "esxDOS\t>\n"\
-    "MB-02+\t>\n"\
-    "Z-Controller\t>\n"\
-    "IDE/HDD\t>\n"\
-    "Snapshots\t>\n"
-static const char *MENU_STORAGE_MAIN[2] = { MENU_STORAGE_MAIN_EN, MENU_STORAGE_MAIN_ES };
-#else
-#define MENU_STORAGE_MAIN_EN \
-    "Storage\n"\
-    "Tape\t>\n"\
-    "Betadisk\t>\n"\
-    "Snapshot\t>\n"
-#define MENU_STORAGE_MAIN_ES \
-    "Almacenamiento\n"\
-    "Casete\t>\n"\
-    "Betadisk\t>\n"\
-    "Snapshots\t>\n"
-static const char *MENU_STORAGE_MAIN[2] = { MENU_STORAGE_MAIN_EN, MENU_STORAGE_MAIN_ES };
-#endif
 
-#define MENU_STORAGE_MAIN_NO_SD_EN \
+#define MENU_STORAGE_MAIN_NO_SD \
     "Storage\n"\
     "Tape\t>\n"
-#define MENU_STORAGE_MAIN_NO_SD_ES \
-    "Almacenamiento\n"\
-    "Casete\t>\n"
-static const char *MENU_STORAGE_MAIN_NO_SD[2] = { MENU_STORAGE_MAIN_NO_SD_EN, MENU_STORAGE_MAIN_NO_SD_ES };
 
 // Betadisk root menu — Drive A..D rows are built dynamically at runtime
 // (inline status shown after the drive label), so only static tail rows live here.
-#define MENU_BETADISK_TITLE_EN "Drives\n"
-#define MENU_BETADISK_TITLE_ES "Unidades\n"
-static const char *MENU_BETADISK_TITLE[2] = { MENU_BETADISK_TITLE_EN, MENU_BETADISK_TITLE_ES };
-static const char *MENU_BETADISK_MODE[2]  = { "Mode", "Modo" };
-static const char *MENU_BETADISK_FASTMODE[2] = { "Fast Mode\t>\n",   "Modo rápido\t>\n" };
-static const char *MENU_BETADISK_SNDLED[2]   = { "Sound & LED\t>\n", "Sonido y LED\t>\n" };
-static const char *MENU_BETADISK_ROM[2]      = { "ROM\t>\n",         "ROM\t>\n" };
-static const char *MENU_BETADISK_AUTOBOOT[2] = { "Auto-boot\t>\n",   "Auto-arranque\t>\n" };
-static const char *MENU_AUTOBOOT[2]          = { "Auto-boot\n",      "Auto-arranque\n" };
+#define MENU_BETADISK_TITLE "Drives\n"
+#define MENU_BETADISK_MODE "Mode"
+#define MENU_BETADISK_FASTMODE "Fast Mode\t>\n"
+#define MENU_BETADISK_SNDLED "Sound & LED\t>\n"
+#define MENU_BETADISK_ROM "ROM\t>\n"
+#define MENU_BETADISK_AUTOBOOT "Auto-boot\t>\n"
+#define MENU_AUTOBOOT "Auto-boot\n"
 
 // Drive labels used by the dynamic menu builder.
 static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
-#if !PICO_RP2040
-static const char *MENU_ESXDOS_TITLE[2] = { "esxDOS\n", "esxDOS\n" };
-static const char *MENU_IMG_TITLE[2] = { "esxDOS Image\n", "Imagen esxDOS\n" };
-static const char *MENU_IDE_TITLE[2] = { "IDE/HDD\n", "IDE/HDD\n" };
-static const char *MENU_IDE_SCHEME[2] = { "Scheme", "Esquema" };
-static const char *MENU_IDE_IMG_TITLE[2] = { "IDE Image", "Imagen IDE" };
-static const char *MENU_IDE_CREATE[2] = { "Create empty image\n", "Crear imagen vacía\n" };
-static const char *MENU_IDE_CREATE_SIZE[2] = { "New HDD size\n", "Tamaño del nuevo HDD\n" };
-static const char *MENU_IDE_CREATE_NAME[2] = { "Image name:\n", "Nombre de imagen:\n" };
-#endif
+#define MENU_ESXDOS_TITLE "esxDOS\n"
+#define MENU_IMG_TITLE "esxDOS Image\n"
+#define MENU_IDE_TITLE "IDE/HDD\n"
+#define MENU_IDE_SCHEME "Scheme"
+#define MENU_IDE_IMG_TITLE "IDE Image"
+#define MENU_IDE_CREATE "Create empty image\n"
+#define MENU_IDE_CREATE_SIZE "New HDD size\n"
+#define MENU_IDE_CREATE_NAME "Image name:\n"
 
-static const char *MENU_FASTMODE[2] = { "Fast Mode\n", "Modo rápido\n" };
-static const char *MENU_SOUNDLED[2] = { "Sound & LED\n", "Sonido y LED\n" };
-#define MENU_SOUNDLED_SEL_EN \
+#define MENU_FASTMODE "Fast Mode\n"
+#define MENU_SOUNDLED "Sound & LED\n"
+#define MENU_SOUNDLED_SEL \
     "Off\t[ ]\n"\
     "LED\t[ ]\n"\
     "Sound\t[ ]\n"\
     "Sound+LED\t[ ]\n"
-#define MENU_SOUNDLED_SEL_ES \
-    "Off\t[ ]\n"\
-    "LED\t[ ]\n"\
-    "Sonido\t[ ]\n"\
-    "Sonido+LED\t[ ]\n"
-static const char *MENU_SOUNDLED_SEL[2] = { MENU_SOUNDLED_SEL_EN, MENU_SOUNDLED_SEL_ES };
-static const char *MENU_NMI_TITLE[2] = { "NMI\n", "NMI\n" };
-#define MENU_NMI_EN "NMI\n" "Magic Button\n"
-#define MENU_NMI_ES "NMI\n" "Magic Button\n"
-static const char *MENU_NMI_SEL[2] = { MENU_NMI_EN, MENU_NMI_ES };
+#define MENU_NMI_TITLE "NMI\n"
+#define MENU_NMI_SEL "NMI\n" "Magic Button\n"
 
-#define MENU_RESETTO_128_EN "Reset to\n" "128K\n" "48K\n"
-#define MENU_RESETTO_128_ES "Resetear a\n" "128K\n" "48K\n"
-static const char *MENU_RESETTO_128[2] = { MENU_RESETTO_128_EN, MENU_RESETTO_128_ES };
+#define MENU_RESETTO_128 "Reset to\n" "128K\n" "48K\n"
 
-#define MENU_RESETTO_DIVMMC_EN "Reset\n" "Soft Reset\n" "Hard Reset\n"
-#define MENU_RESETTO_DIVMMC_ES "Reset\n" "Soft Reset\n" "Hard Reset\n"
-static const char *MENU_RESETTO_DIVMMC[2] = { MENU_RESETTO_DIVMMC_EN, MENU_RESETTO_DIVMMC_ES };
+#define MENU_RESETTO_DIVMMC "Reset\n" "Soft Reset\n" "Hard Reset\n"
 
-#define MENU_RESETTO_PENT_EN "Reset to\n" "TR-DOS\n" "128K\n" "48K\n"
-#define MENU_RESETTO_PENT_ES "Resetear a\n" "TR-DOS\n" "128K\n" "48K\n"
-static const char *MENU_RESETTO_PENT[2] = { MENU_RESETTO_PENT_EN, MENU_RESETTO_PENT_ES };
+#define MENU_RESETTO_PENT "Reset to\n" "TR-DOS\n" "128K\n" "48K\n"
 
-#define MENU_RESETTO_PENTGLUK_EN "Reset to\n" "Mr Gluk Reset Srvs\n" "TR-DOS\n" "128K\n" "48K\n"
-#define MENU_RESETTO_PENTGLUK_ES "Resetear a\n" "Mr Gluk Reset Srvs\n" "TR-DOS\n" "128K\n" "48K\n"
-static const char *MENU_RESETTO_PENTGLUK[2] = { MENU_RESETTO_PENTGLUK_EN, MENU_RESETTO_PENTGLUK_ES };
+#define MENU_RESETTO_PENTGLUK "Reset to\n" "Mr Gluk Reset Srvs\n" "TR-DOS\n" "128K\n" "48K\n"
 
 // Profi reset menu: Service ROM=1, TR-DOS=2, 128K=3, 48K=4
-#define MENU_RESETTO_PROFI_EN "Reset to\n" "Service ROM\n" "TR-DOS\n" "128K\n" "48K\n"
-#define MENU_RESETTO_PROFI_ES "Resetear a\n" "Service ROM\n" "TR-DOS\n" "128K\n" "48K\n"
-static const char *MENU_RESETTO_PROFI[2] = { MENU_RESETTO_PROFI_EN, MENU_RESETTO_PROFI_ES };
+#define MENU_RESETTO_PROFI "Reset to\n" "Service ROM\n" "TR-DOS\n" "128K\n" "48K\n"
 
-static const char *MENU_TRDOS_ROM_TITLE[2] = { "TR-DOS ROM\n", "TR-DOS ROM\n" };
-#define MENU_TRDOS_ROM_SEL_EN \
+#define MENU_TRDOS_ROM_TITLE "TR-DOS ROM\n"
+#define MENU_TRDOS_ROM_SEL \
     "5.03\t[ ]\n"\
     "5.04TM\t[ ]\n"\
     "5.05D\t[ ]\n"\
     "Custom\t[ ]\n"
-#define MENU_TRDOS_ROM_SEL_ES \
-    "5.03\t[ ]\n"\
-    "5.04TM\t[ ]\n"\
-    "5.05D\t[ ]\n"\
-    "Custom\t[ ]\n"
-static const char *MENU_TRDOS_ROM_SEL[2] = { MENU_TRDOS_ROM_SEL_EN, MENU_TRDOS_ROM_SEL_ES };
 
 // Drive submenu — the Write Protect row is filled in (toggle marker) at runtime.
-#define MENU_BETADRIVE_EN \
+#define MENU_BETADRIVE \
     "Drive#\n"\
 	"Insert disk\t>\n"\
     "Eject disk\n"\
     "Write Protect\t[ ]\n"
-#define MENU_BETADRIVE_ES \
-    "Unidad#\n"\
-    "Insertar disco\t>\n"\
-    "Expulsar disco\n"\
-    "Protección contra escritura\t[ ]\n"
-static const char *MENU_BETADRIVE[2] = { MENU_BETADRIVE_EN,MENU_BETADRIVE_ES };
 
 // Shared labels for the dynamic disk menus and F5 slot-picker popup.
-static const char *OSD_DISK_EMPTY[2]   = { "<empty>",   "<vacío>" };
-static const char *OSD_DISK_WP_TAG[2]  = { ", WP",      ", WP" };
-static const char *OSD_LOAD_TO_TITLE[2]= { "Load to\n", "Cargar en\n" };
-static const char *OSD_LOAD_HINT_WP[2] = { "F2 toggle WP  F8 eject",
-                                            "F2 WP  F8 expulsar" };
-static const char *OSD_LOAD_HINT_NOWP[2]={ "F8 eject",
-                                            "F8 expulsar" };
+#define OSD_DISK_EMPTY "<empty>"
+#define OSD_DISK_WP_TAG ", WP"
+#define OSD_LOAD_TO_TITLE "Load to\n"
+#define OSD_LOAD_HINT_WP "F2 toggle WP  F8 eject"
+#define OSD_LOAD_HINT_NOWP "F8 eject"
 
-#if !PICO_RP2040
 // MB-02+ menu title + dynamic rows are built at runtime.
-static const char *MENU_MB02_TITLE[2]  = { "MB-02+\n", "MB-02+\n" };
-static const char *MENU_MB02_MODE[2]   = { "Mode",     "Modo" };
-static const char *MENU_MB02_DRIVE[2]  = { "Drive",    "Unidad" };
-static const char *MENU_MB02_INSERT[2] = { "Insert disk\t>\n",  "Insertar disco\t>\n" };
-static const char *MENU_MB02_EJECT[2]  = { "Eject disk\n",       "Expulsar disco\n" };
-static const char *MENU_MB02_WP[2]     = { "Write Protect",      "Protección contra escritura" };
-static const char *MENU_MB02_SNDLED[2] = { "Sound & LED\t>\n",   "Sonido y LED\t>\n" };
+#define MENU_MB02_TITLE "MB-02+\n"
+#define MENU_MB02_MODE "Mode"
+#define MENU_MB02_DRIVE "Drive"
+#define MENU_MB02_INSERT "Insert disk\t>\n"
+#define MENU_MB02_EJECT "Eject disk\n"
+#define MENU_MB02_WP "Write Protect"
+#define MENU_MB02_SNDLED "Sound & LED\t>\n"
 
 // esxDOS menu labels.
-static const char *MENU_ESX_INTERFACE[2] = { "Interface",  "Interfaz" };
-static const char *MENU_ESX_INSERT[2]    = { "Insert disk\t>\n", "Insertar disco\t>\n" };
-static const char *MENU_ESX_EJECT[2]     = { "Eject disk\n",     "Expulsar disco\n" };
-#endif
+#define MENU_ESX_INTERFACE "Interface"
+#define MENU_ESX_INSERT "Insert disk\t>\n"
+#define MENU_ESX_EJECT "Eject disk\n"
 
-// Network menu item — present on RP2350 only; empty string on RP2040
-#if !PICO_RP2040
 #define MENU_MAIN_NETWORK_ITEM "Network\t>\n"
-#else
-#define MENU_MAIN_NETWORK_ITEM ""
-#endif
 
-// Hardware menu — RP2350 only; removed on SRAM-tight RP2040. Dropping the whole
-// submenu lets --gc-sections reclaim the info screens + the 1.5 KB osd_info_buf
-// AND Speed Test's static FILs (~1.1 KB), which is what lets core1 graphics_init
-// fit its VGA tables on the ext_ram (PSRAM+SD) path. Overclock via config file.
-#if !PICO_RP2040
 #define MENU_MAIN_HARDWARE_ITEM "Hardware\t>\n"
-#else
-#define MENU_MAIN_HARDWARE_ITEM ""
-#endif
 
 #if TFT
 #define MENU_MAIN_EN \
@@ -595,20 +352,6 @@ static const char *MENU_ESX_EJECT[2]     = { "Eject disk\n",     "Expulsar disco
     "Help\n"\
     "About\n"\
 	"TFT\t>\n"
-#define MENU_MAIN_ES \
-    "Volumen\n"\
-    "Almacenamiento\t>\n"\
-    "Audio\t>\n"\
-    "Video\t>\n"\
-    "Modelo\t>\n"\
-    "Resetear\t>\n"\
-    "Opciones\t>\n"\
-	"Depurar\t>\n"\
-    MENU_MAIN_HARDWARE_ITEM \
-    "Teclado ZX\n"\
-    "Ayuda\n"\
-    "Acerca de\n"\
-	"TFT\t>\n"
 #else
 #define MENU_MAIN_EN \
 	"Volume\n"\
@@ -624,24 +367,10 @@ static const char *MENU_ESX_EJECT[2]     = { "Eject disk\n",     "Expulsar disco
     "ZX Keyboard\n"\
     "Help\n"\
     "About\n"
-#define MENU_MAIN_ES \
-    "Volumen\n"\
-    "Almacenamiento\t>\n"\
-    "Audio\t>\n"\
-    "Video\t>\n"\
-    "Modelo\t>\n"\
-    "Resetear\t>\n"\
-    "Opciones\t>\n"\
-	"Depurar\t>\n"\
-    MENU_MAIN_HARDWARE_ITEM \
-    MENU_MAIN_NETWORK_ITEM \
-    "Teclado ZX\n"\
-    "Ayuda\n"\
-    "Acerca de\n"
 #endif
-static const char *MENU_MAIN[2] = { MENU_MAIN_EN, MENU_MAIN_ES };
+#define MENU_MAIN MENU_MAIN_EN
 
-#define MENU_MAIN_NO_SD_EN \
+#define MENU_MAIN_NO_SD \
 	"Volume\n"\
     "Storage\t>\n"\
     "Audio\t>\n"\
@@ -655,43 +384,17 @@ static const char *MENU_MAIN[2] = { MENU_MAIN_EN, MENU_MAIN_ES };
     "ZX Keyboard\n"\
     "Help\n"\
     "About\n"
-#define MENU_MAIN_NO_SD_ES \
-    "Volumen\n"\
-    "Almacenamiento\t>\n"\
-    "Audio\t>\n"\
-    "Video\t>\n"\
-    "Modelo\t>\n"\
-    "Resetear\t>\n"\
-    "Opciones\t>\n"\
-    "Depurar\t>\n"\
-    MENU_MAIN_HARDWARE_ITEM \
-    MENU_MAIN_NETWORK_ITEM \
-    "Teclado ZX\n"\
-    "Ayuda\n"\
-    "Acerca de\n"
-static const char *MENU_MAIN_NO_SD[2] = { MENU_MAIN_NO_SD_EN, MENU_MAIN_NO_SD_ES };
 
-#define MENU_OPTIONS_EN \
+#define MENU_OPTIONS \
     "Options menu\n"\
     "Preferred Machine\t>\n"\
     "Preferred ROM\t>\n"\
     "Joystick\t>\n"\
     "Joystick emulation\t>\n"\
     "Other\t>\n"\
-    "Language\t>\n"\
 	"Update\t>\n"
-#define MENU_OPTIONS_ES \
-    "Menu opciones\n"\
-    "Modelo preferido\t>\n"\
-    "ROM preferida\t>\n"\
-    "Joystick\t>\n"\
-    "Emulaci" "\xA2" "n joystick\t>\n"\
-    "Otros\t>\n"\
-    "Idioma\t>\n"\
-	"Actualizar\t>\n"
-static const char *MENU_OPTIONS[2] = { MENU_OPTIONS_EN,MENU_OPTIONS_ES };
 
-#define MENU_UPDATE_EN \
+#define MENU_UPDATE_FW \
     "Update\n"\
 	"Firmware\t{HK_USB_BOOT}\n"\
 	"Custom ROM 48K\n"\
@@ -702,28 +405,11 @@ static const char *MENU_OPTIONS[2] = { MENU_OPTIONS_EN,MENU_OPTIONS_ES };
 	"TRDOS ROM\n"\
 	"Main ROM Pentagon bank #0\n"\
 	"Main ROM Pentagon bank #1\n"
-#define MENU_UPDATE_ES \
-    "Actualizar\n"\
-	"Firmware\t{HK_USB_BOOT}\n"\
-	"ROM Custom 48K\n"\
-	"ROM Custom 128k\n"\
-	"ROM Custom Pentagon\n"\
-	"ROM Custom ALF\n"\
-	"ROM Cartridge ALF\n"\
-	"TRDOS ROM\n"\
-	"Main ROM Pentagon bank #0\n"\
-	"Main ROM Pentagon bank #1\n"
-static const char *MENU_UPDATE_FW[2] = { MENU_UPDATE_EN, MENU_UPDATE_ES };
 
-#define MENU_UPDATE_NO_SD_EN \
+#define MENU_UPDATE_FW_NO_SD \
     "Update\n"\
 	"Firmware\t{HK_USB_BOOT}\n"
-#define MENU_UPDATE_NO_SD_ES \
-    "Actualizar\n"\
-	"Firmware\t{HK_USB_BOOT}\n"
-static const char *MENU_UPDATE_FW_NO_SD[2] = { MENU_UPDATE_NO_SD_EN, MENU_UPDATE_NO_SD_ES };
 
-#if !PICO_RP2040
 	#define MENU_VIDEO_EN \
 		"Video\n"\
 		"Mode\t>\n"\
@@ -738,121 +424,46 @@ static const char *MENU_UPDATE_FW_NO_SD[2] = { MENU_UPDATE_NO_SD_EN, MENU_UPDATE
 		"DMA\t>\n"\
 		"HDMI Dither (ULA+)\t>\n"\
 		"16col (Pentagon)\t>\n"
-	#define MENU_VIDEO_ES \
-		"Video\n"\
-		"Modo\t>\n"\
-		"Paleta\t>\n"\
-		"Tipo render\t>\n"\
-		"Relaci" "\xA2" "n de aspecto\t>\n"\
-		"Scanlines\t>\n"\
-		"V-Sync\t>\n"\
-		"Gigascreen (No Flick)\t>\n"\
-		"ULA+\t>\n"\
-		"Timex Gfx Mode\t>\n"\
-		"DMA\t>\n"\
-		"Tramado HDMI (ULA+)\t>\n"\
-		"16col (Pentagon)\t>\n"
-#else
-	#define MENU_VIDEO_EN \
-		"Video\n"\
-		"Mode\t>\n"\
-		"Palette\t>\n"\
-		"Render type\t>\n"\
-		"Aspect Ratio\t>\n"\
-		"Scanlines\t>\n"\
-		"V-Sync\t>\n"
-	#define MENU_VIDEO_ES \
-		"Video\n"\
-		"Modo\t>\n"\
-		"Paleta\t>\n"\
-		"Tipo render\t>\n"\
-		"Relaci" "\xA2" "n de aspecto\t>\n"\
-		"Scanlines\t>\n"\
-		"V-Sync\t>\n"
-#endif
-static const char *MENU_VIDEO[2] = { MENU_VIDEO_EN, MENU_VIDEO_ES };
+#define MENU_VIDEO MENU_VIDEO_EN
 
-#if PICO_RP2040
-#define MENU_VIDEO_MODE_EN \
-    "Mode\n"\
-    "640x480@60\t[6]\n"\
-    "640x480@50\t[5]\n"
-
-#define MENU_VIDEO_MODE_ES \
-    "Modo\n"\
-    "640x480@60\t[6]\n"\
-    "640x480@50\t[5]\n"
-#else
-#define MENU_VIDEO_MODE_EN \
+#define MENU_VIDEO_MODE \
     "Mode\n"\
     "640x480@60\t[6]\n"\
     "640x480@50\t[5]\n"\
     "720x480@60\t[H]\n"\
     "720x576@50\t[F]\n"
 
-#define MENU_VIDEO_MODE_ES \
-    "Modo\n"\
-    "640x480@60\t[6]\n"\
-    "640x480@50\t[5]\n"\
-    "720x480@60\t[H]\n"\
-    "720x576@50\t[F]\n"
-#endif
 
-static const char *MENU_VIDEO_MODE[2] = { MENU_VIDEO_MODE_EN, MENU_VIDEO_MODE_ES };
-
-#define MENU_RENDER_EN \
+#define MENU_RENDER \
     "Render type\n"\
     "Standard\t[S]\n"\
     "Snow effect\t[A]\n"
-#define MENU_RENDER_ES \
-    "Tipo render\n"\
-    "Estandar\t[S]\n"\
-    "Efecto nieve\t[A]\n"
-static const char *MENU_RENDER[2] = { MENU_RENDER_EN, MENU_RENDER_ES };
 
-#define MENU_ASPECT_EN \
+#define MENU_ASPECT \
     "Aspect Ratio\n"\
     "4:3\t[4]\n"\
     "16:9\t[1]\n"
-#define MENU_ASPECT_ES \
-    "Rel. aspecto\n"\
-    "4:3\t[4]\n"\
-    "16:9\t[1]\n"
-static const char *MENU_ASPECT[2] = { MENU_ASPECT_EN, MENU_ASPECT_ES };
 
-static const char *MENU_SCANLINES[2] = { "Scanlines\n", "Scanlines\n" };
+#define MENU_SCANLINES "Scanlines\n"
 
 // Scanlines: Off + 4 brightness levels (dark -> light). Level 2 is the default
 // (matches the legacy single-darkness look). Selection marker is [*]/[ ].
-#define MENU_SCANLINES_SEL_EN \
+#define MENU_SCANLINES_SEL \
     "Off\t[0]\n"\
     "1 Darkest\t[1]\n"\
     "2 Dark (default)\t[2]\n"\
     "3 Light\t[3]\n"\
     "4 Lightest\t[4]\n"
-#define MENU_SCANLINES_SEL_ES \
-    "Off\t[0]\n"\
-    "1 Mas oscuro\t[1]\n"\
-    "2 Oscuro (predet.)\t[2]\n"\
-    "3 Claro\t[3]\n"\
-    "4 Mas claro\t[4]\n"
-static const char *MENU_SCANLINES_SEL[2] = { MENU_SCANLINES_SEL_EN, MENU_SCANLINES_SEL_ES };
 
-static const char *MENU_VSYNC[2] = { "V-Sync\n", "V-Sync\n" };
+#define MENU_VSYNC "V-Sync\n"
 
-static const char *MENU_GIGASCREEN[2] = { "Gigascreen\n", "Gigascreen\n" };
-#define MENU_GIGASCREEN_SEL_EN \
+#define MENU_GIGASCREEN "Gigascreen\n"
+#define MENU_GIGASCREEN_SEL \
     "Off\t[ ]\n"\
     "On\t[ ]\n"\
     "Auto\t[ ]\n"
-#define MENU_GIGASCREEN_SEL_ES \
-    "Off\t[ ]\n"\
-    "On\t[ ]\n"\
-    "Auto\t[ ]\n"
-static const char *MENU_GIGASCREEN_SEL[2] = { MENU_GIGASCREEN_SEL_EN, MENU_GIGASCREEN_SEL_ES };
 
-#if !defined(PICO_RP2040)
-#define MENU_RESET_EN \
+#define MENU_RESET \
     "Reset Menu\n"\
     "Soft reset\n"\
     "Hard reset\t{HK_HARD_RESET}\n"\
@@ -860,33 +471,6 @@ static const char *MENU_GIGASCREEN_SEL[2] = { MENU_GIGASCREEN_SEL_EN, MENU_GIGAS
     "Factory Reset\n"\
     "Save Config as Default\n"\
     "Load My Default Config\n"
-#define MENU_RESET_ES \
-    "Resetear\n"\
-    "Reset parcial\n"\
-    "Reset completo\t{HK_HARD_RESET}\n"\
-    "Resetear RP2350\t{HK_REBOOT}\n"\
-	"Reset de fabrica\n"\
-	"Guardar Config. como Mio\n"\
-	"Cargar Mi Config. Default\n"
-#else
-#define MENU_RESET_EN \
-    "Reset Menu\n"\
-    "Soft reset\n"\
-    "Hard reset\t{HK_HARD_RESET}\n"\
-    "RP2040 reset\t{HK_REBOOT}\n"\
-    "Factory Reset\n"\
-    "Save Config as Default\n"\
-    "Load My Default Config\n"
-#define MENU_RESET_ES \
-    "Resetear\n"\
-    "Reset parcial\n"\
-    "Reset completo\t{HK_HARD_RESET}\n"\
-    "Resetear RP2040\t{HK_REBOOT}\n"\
-	"Reset de fabrica\n"\
-	"Guardar Config. como Mio\n"\
-	"Cargar Mi Config. Default\n"
-#endif
-static const char *MENU_RESET[2] = { MENU_RESET_EN, MENU_RESET_ES };
 
 #define MENU_DEBUG_EN \
     "Debug Menu\n"\
@@ -898,10 +482,10 @@ static const char *MENU_RESET[2] = { MENU_RESET_EN, MENU_RESET_ES };
 	"Trigger NMI\t{HK_NMI}\n"\
 	"Debug Log\t>\n"
 
-static const char *MENU_DEBUG_LOG[2] = { "Write debug.log\n", "Escribir debug.log\n" };
+#define MENU_DEBUG_LOG "Write debug.log\n"
 
 #define MOS_FILE "/.firmware"
-#define MENU_RESET_MOS_EN \
+#define MENU_RESET_MOS \
     "Reset Menu\n"\
     "Soft reset\n"\
     "Hard reset\t{HK_HARD_RESET}\n"\
@@ -910,81 +494,42 @@ static const char *MENU_DEBUG_LOG[2] = { "Write debug.log\n", "Escribir debug.lo
     "Factory Reset\n"\
     "Save Config as Default\n"\
     "Load My Default Config\n"
-#define MENU_RESET_MOS_ES \
-    "Resetear\n"\
-    "Reset parcial\n"\
-    "Reset completo\t{HK_HARD_RESET}\n"\
-    "Resetear RP2350\t{HK_REBOOT}\n"\
-    "MurmulatorOS\n"\
-	"Reset de fabrica\n"\
-	"Guardar Config. como Mio\n"\
-	"Cargar Mi Config. Default\n"
-static const char *MENU_RESET_MOS[2] = { MENU_RESET_MOS_EN, MENU_RESET_MOS_ES };
 
-#define MENU_TFT_EN \
+#define MENU_TFT \
     "TFT Menu\n"\
     "INVERSION\n"\
     "FLAGS\t>\n"\
     "Defaults\n"
-static const char *MENU_TFT[2] = { MENU_TFT_EN, MENU_TFT_EN };
 
-#define MENU_TFT2_EN \
+#define MENU_TFT2 \
     "TFT FLAGS\n"\
     "RGB/BGR\n"\
     "Flip X\n"\
     "Flip Y\n"\
     "Flip XY\n"
-static const char *MENU_TFT2[2] = { MENU_TFT2_EN, MENU_TFT2_EN };
 
-#define MENU_PERSIST_SAVE_EN \
+#define MENU_PERSIST_SAVE \
     "Save snapshot\n"
-#define MENU_PERSIST_SAVE_ES \
-    "Guardar snapshot\n"
-static const char *MENU_PERSIST_SAVE[2] = { MENU_PERSIST_SAVE_EN, MENU_PERSIST_SAVE_ES };
 
-#define MENU_PERSIST_LOAD_EN \
+#define MENU_PERSIST_LOAD \
     "Load snapshot\n"
-#define MENU_PERSIST_LOAD_ES \
-    "Cargar snapshot\n"
-static const char *MENU_PERSIST_LOAD[2] = { MENU_PERSIST_LOAD_EN, MENU_PERSIST_LOAD_ES };
 
 
-#define MENU_YESNO_EN "Yes\t[Y]\n"\
+#define MENU_YESNO "Yes\t[Y]\n"\
     "No\t[N]\n"
-#define MENU_YESNO_ES "Si\t[Y]\n"\
-    "No\t[N]\n"
-static const char *MENU_YESNO[2] = { MENU_YESNO_EN, MENU_YESNO_ES};
 
-static const char *MENU_FLASHLOAD[2] = { "Fast load\n" , "Carga rapida\n"};
+#define MENU_FLASHLOAD "Fast load\n"
 
-static const char *MENU_RGTIMINGS[2] = { "R.G. Timings\n" , "Timings R.G.\n"};
+#define MENU_RGTIMINGS "R.G. Timings\n"
 
-static const char *MENU_TAPE_AUTOSTART[2] = { "Auto-start\n" , "Auto-inicio\n"};
+#define MENU_TAPE_AUTOSTART "Auto-start\n"
 
-static const char *MENU_LEDINDICATORS[2] = { "LED indicators\n" , "Indicadores LED\n"};
+#define MENU_LEDINDICATORS "LED indicators\n"
 
-static const char *MENU_SDLEDBLINK[2] = { "SD card LED\n" , "LED tarjeta SD\n"};
+#define MENU_SDLEDBLINK "SD card LED\n"
 
 
-#if PICO_RP2040
-#define MENU_AUDIO_EN "Audio\n"\
-    "AY-3-8912 ON/OFF\t>\n"\
-    "AY-3-8912 Stereo\t>\n"\
-    "TurboSound\t>\n"\
-    "Covox\t>\n"\
-    "SounDrive\t>\n"\
-    "Audio Driver\t>\n"\
-    "Volume Boost\t>\n"
-#define MENU_AUDIO_ES "Audio\n"\
-    "AY-3-8912 ON/OFF\t>\n"\
-    "AY-3-8912 Est" "\x82" "reo\t>\n"\
-    "TurboSound\t>\n"\
-    "Covox\t>\n"\
-    "SounDrive\t>\n"\
-    "Controlador de audio\t>\n"\
-    "Aumento de volumen\t>\n"
-#else
-#define MENU_AUDIO_EN "Audio\n"\
+#define MENU_AUDIO "Audio\n"\
     "AY-3-8912 ON/OFF\t>\n"\
     "AY-3-8912 Stereo\t>\n"\
     "TurboSound\t>\n"\
@@ -994,28 +539,13 @@ static const char *MENU_SDLEDBLINK[2] = { "SD card LED\n" , "LED tarjeta SD\n"};
     "MIDI\t>\n"\
     "Audio Driver\t>\n"\
     "Volume Boost\t>\n"
-#define MENU_AUDIO_ES "Audio\n"\
-    "AY-3-8912 ON/OFF\t>\n"\
-    "AY-3-8912 Est" "\x82" "reo\t>\n"\
-    "TurboSound\t>\n"\
-    "Covox\t>\n"\
-    "SounDrive\t>\n"\
-    "SAA1099 ON/OFF\t>\n"\
-    "MIDI\t>\n"\
-    "Controlador de audio\t>\n"\
-    "Aumento de volumen\t>\n"
-#endif
-static const char *MENU_AUDIO[2] = { MENU_AUDIO_EN, MENU_AUDIO_ES };
-static const char *MENU_AUDIO_GS_ITEM[2] = { "General Sound\t>\n", "General Sound\t>\n" };
-static const char *MENU_GS_TITLE[2]      = { "General Sound\n",   "General Sound\n" };
-static const char *MENU_GS_MODE[2]       = { "Mode",  "Modo" };
-static const char *MENU_GS_CLOCK[2]      = { "Clock\n", "Reloj\n" };
-static const char *MENU_GS_CLOCK_SEL[2]  = {
-    "12 MHz\t[ ]\n" "13 MHz\t[ ]\n" "14 MHz\t[ ]\n" "20 MHz\t[ ]\n" "24 MHz\t[ ]\n",
-    "12 MHz\t[ ]\n" "13 MHz\t[ ]\n" "14 MHz\t[ ]\n" "20 MHz\t[ ]\n" "24 MHz\t[ ]\n"
-};
+#define MENU_AUDIO_GS_ITEM "General Sound\t>\n"
+#define MENU_GS_TITLE "General Sound\n"
+#define MENU_GS_MODE "Mode"
+#define MENU_GS_CLOCK "Clock\n"
+#define MENU_GS_CLOCK_SEL "12 MHz\t[ ]\n" "13 MHz\t[ ]\n" "14 MHz\t[ ]\n" "20 MHz\t[ ]\n" "24 MHz\t[ ]\n"
 
-#define MENU_OTHER_EN "Other\n"\
+#define MENU_OTHER "Other\n"\
     "ALU Timing\t>\n"\
     "48K Issue 2\t>\n"\
     "Map joystick to cursor\t>\n"\
@@ -1025,36 +555,18 @@ static const char *MENU_GS_CLOCK_SEL[2]  = {
     "Hot Keys\t>\n"\
     "LED indicators\t>\n"\
     "SD card LED\t>\n"
-#define MENU_OTHER_ES "Otros\n"\
-    "Temporizaci" "\xA2" "n ULA\t>\n"\
-    "48K Issue 2\t>\n"\
-    "Joystick al cursor\t>\n"\
-    "Segundo joystick\t>\n"\
-    "Puerto Kempston joystick\t>\n"\
-    "Aceleraci" "\xA2" "n\t>\n"\
-    "Teclas rapidas\t>\n"\
-    "Indicadores LED\t>\n"\
-    "LED tarjeta SD\t>\n"
-static const char *MENU_OTHER[2] = { MENU_OTHER_EN, MENU_OTHER_ES };
 // RP2350-only extra row appended to the Other menu at runtime (Pentagon/Profi
 // Mr Gluk MC146818 clock + battery-backed CMOS persisted to SD).
-static const char *MENU_OTHER_RTC[2] = { "RTC + NVRAM\t>\n", "RTC + NVRAM\t>\n" };
-static const char *MENU_RTC[2]       = { "RTC + NVRAM\n",    "RTC + NVRAM\n" };
+#define MENU_OTHER_RTC "RTC + NVRAM\t>\n"
+#define MENU_RTC "RTC + NVRAM\n"
 
-#ifdef PICO_RP2040
-#define MENU_CPU_MHZ \
-    "CPU MHz\n"\
-    "[2] 252 MHz\n"\
-    "[3] 378 MHz\n"
-#else
 #define MENU_CPU_MHZ \
     "CPU MHz\n"\
     "[2] 252 MHz\n"\
     "[3] 378 MHz\n"\
     "[5] 504 MHz\n"
-#endif
 
-#define MENU_HARDWARE_EN \
+#define MENU_HARDWARE \
     "Hardware\n"\
     "Chip Info\n"\
     "Board Info\n"\
@@ -1063,26 +575,14 @@ static const char *MENU_RTC[2]       = { "RTC + NVRAM\n",    "RTC + NVRAM\n" };
     "HID devices\n"\
     "Speed Test\t>\n"\
     "Overclock (!)\t>\n"
-#define MENU_HARDWARE_ES \
-    "Hardware\n"\
-    "Chip Info\n"\
-    "Info placa\n"\
-    "Info memoria\n"\
-    "Info emulador\n"\
-    "Disp. HID\n"\
-    "Test velocidad\t>\n"\
-    "Overclock (!)\t>\n"
-static const char *MENU_HARDWARE[2] = { MENU_HARDWARE_EN, MENU_HARDWARE_ES };
 
 // NET row (HTTPS download benchmark) only exists where the net client is built.
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 #define MENU_SPEEDTEST_NET_EN "Network\n"
-#define MENU_SPEEDTEST_NET_ES "Red\n"
 #else
 #define MENU_SPEEDTEST_NET_EN ""
-#define MENU_SPEEDTEST_NET_ES ""
 #endif
-#define MENU_SPEEDTEST_EN \
+#define MENU_SPEEDTEST \
     "Speed Test\n"\
     "CPU MIPS\n"\
     "SRAM R/W\n"\
@@ -1091,43 +591,18 @@ static const char *MENU_HARDWARE[2] = { MENU_HARDWARE_EN, MENU_HARDWARE_ES };
     "USB Drive\n"\
     MENU_SPEEDTEST_NET_EN \
     "All tests\n"
-#define MENU_SPEEDTEST_ES \
-    "Test velocidad\n"\
-    "CPU MIPS\n"\
-    "SRAM L/E\n"\
-    "PSRAM\n"\
-    "Tarjeta SD\n"\
-    "Unidad USB\n"\
-    MENU_SPEEDTEST_NET_ES \
-    "Todos\n"
-static const char *MENU_SPEEDTEST[2] = { MENU_SPEEDTEST_EN, MENU_SPEEDTEST_ES };
 
-#define MENU_OVERCLOCK_EN \
+#define MENU_OVERCLOCK \
     "Overclock\n"\
     "CPU Freq\t>\n"\
     "Flash Freq\t>\n"\
     "PSRAM Freq\t>\n"
-#define MENU_OVERCLOCK_ES \
-    "Overclock\n"\
-    "CPU Freq\t>\n"\
-    "Flash Freq\t>\n"\
-    "PSRAM Freq\t>\n"
-#if !PICO_RP2040
-#define MENU_OVERCLOCK_VREG_EN \
+#define MENU_OVERCLOCK_VREG \
     "Overclock\n"\
     "CPU Freq\t>\n"\
     "VReg Voltage\t>\n"\
     "Flash Freq\t>\n"\
     "PSRAM Freq\t>\n"
-#define MENU_OVERCLOCK_VREG_ES \
-    "Overclock\n"\
-    "CPU Freq\t>\n"\
-    "VReg Voltage\t>\n"\
-    "Flash Freq\t>\n"\
-    "PSRAM Freq\t>\n"
-static const char *MENU_OVERCLOCK_VREG[2] = { MENU_OVERCLOCK_VREG_EN, MENU_OVERCLOCK_VREG_ES };
-#endif
-static const char *MENU_OVERCLOCK[2] = { MENU_OVERCLOCK_EN, MENU_OVERCLOCK_ES };
 
 #define MENU_FLASH_FREQ \
     "Flash Freq\n"\
@@ -1146,7 +621,6 @@ static const char *MENU_OVERCLOCK[2] = { MENU_OVERCLOCK_EN, MENU_OVERCLOCK_ES };
     "[D] 133 MHz\n"\
     "[E] 166 MHz\n"
 
-#if !PICO_RP2040
 #define MENU_VREG_VOLTAGE \
     "VReg Voltage\n"\
     "[A] 1.15 V\n"\
@@ -1160,36 +634,25 @@ static const char *MENU_OVERCLOCK[2] = { MENU_OVERCLOCK_EN, MENU_OVERCLOCK_ES };
     "[I] 1.65 V\n"\
     "[J] 1.70 V\n"\
     "[K] 1.80 V\n"
-#endif
 
-static const char *MENU_AY48[2] = { "Turned on?\n" , "Turned on?\n"};
+#define MENU_AY48 "Turned on?\n"
 
-#if !PICO_RP2040
-static const char *MENU_SAA1099[2] = { "Turned on?\n" , "Turned on?\n"};
+#define MENU_SAA1099 "Turned on?\n"
 // DLS wavetable (mode 4) needs the top-of-flash bank partition, which ALF
 // builds reclaim for firmware (NO_GM_DLS). Drop the menu row in that case.
 #if NO_GM_DLS
 #define MENU_MIDI_GMDLS_EN ""
-#define MENU_MIDI_GMDLS_ES ""
 #else
 #define MENU_MIDI_GMDLS_EN "DLS Wavetable\t[G]\n"
-#define MENU_MIDI_GMDLS_ES "DLS Wavetable\t[G]\n"
 #endif
-#define MENU_MIDI_EN "MIDI(Ext:P" _PIN_XSTR(MIDI_TX_PIN) ")\n"\
+#define MENU_MIDI "MIDI(Ext:P" _PIN_XSTR(MIDI_TX_PIN) ")\n"\
     "OFF             \t[O]\n"\
     "AY              \t[A]\n"\
     "ShamaZX         \t[S]\n"\
     "Software MIDI   \t[W]\n"\
     MENU_MIDI_GMDLS_EN
-#define MENU_MIDI_ES "MIDI(Ext:P" _PIN_XSTR(MIDI_TX_PIN) ")\n"\
-    "OFF             \t[O]\n"\
-    "AY              \t[A]\n"\
-    "ShamaZX         \t[S]\n"\
-    "Software MIDI   \t[W]\n"\
-    MENU_MIDI_GMDLS_ES
-static const char *MENU_MIDI[2] = { MENU_MIDI_EN, MENU_MIDI_ES };
 // Software MIDI (mode 3) preset selector (procedural synth).
-#define MENU_MIDI_PRESET_EN "Synth Preset\n"\
+#define MENU_MIDI_PRESET "Synth Preset\n"\
     "GM       \t[G]\n"\
     "Piano    \t[P]\n"\
     "Chiptune \t[C]\n"\
@@ -1198,155 +661,86 @@ static const char *MENU_MIDI[2] = { MENU_MIDI_EN, MENU_MIDI_ES };
     "Organ    \t[O]\n"\
     "Music Box\t[M]\n"\
     "Synth    \t[Y]\n"
-#define MENU_MIDI_PRESET_ES MENU_MIDI_PRESET_EN
-static const char *MENU_MIDI_PRESET[2] = { MENU_MIDI_PRESET_EN, MENU_MIDI_PRESET_ES };
 // DLS wavetable mode (4): a user-supplied bank (gm_bank.bin) is provisioned
 // once from SD into a flash partition, then read via XIP (no PSRAM, persistent).
-static const char *MSG_MIDI_BANK_OK[2] = {
-    "DLS wavetable bank loaded.",
-    "Banco wavetable DLS cargado."
-};
+#define MSG_MIDI_BANK_OK "DLS wavetable bank loaded."
 // Title of the "instrument set" (.bin bank) picker, shown when SD holds >1 bank.
-static const char *MENU_MIDI_BANK_TITLE[2] = {
-    "Instrument set\n",
-    "Set de instrumentos\n"
-};
-static const char *MSG_MIDI_BANK_MISSING[2] = {
-    "No DLS bank in flash or on SD.\nConvert a .dls first. MIDI silent.",
-    "Sin banco DLS en flash ni en SD.\nConvierte un .dls. MIDI sin sonido."
-};
+#define MENU_MIDI_BANK_TITLE "Instrument set\n"
+#define MSG_MIDI_BANK_MISSING "No DLS bank in flash or on SD.\nConvert a .dls first. MIDI silent."
 // msgDialog sizes its width to the message length and is single-line only — keep
 // this to ONE short line (a multi-line string makes the box span the whole screen).
-static const char *MSG_MIDI_BANK_REINSTALL_Q[2] = {
-    "Reinstall DLS bank from SD?",
-    "Reinstalar banco DLS de SD?"
-};
+#define MSG_MIDI_BANK_REINSTALL_Q "Reinstall DLS bank from SD?"
 // Shown when a newly picked bank differs from flash: confirm the (reboot-to-)flash
 // so the user can decline and keep the current bank. Single short line.
-static const char *MSG_MIDI_BANK_INSTALL_Q[2] = {
-    "Install this bank? (reboots)",
-    "Instalar este banco? (reinicia)"
-};
-static const char *MSG_MIDI_BANK_FLASHING[2] = {
-    "Restarting to install DLS bank...\nBoot takes ~20-30s (LED blinks). Do\nNOT power off until it comes back.",
-    "Reiniciando para instalar banco DLS...\nArranque ~20-30s (LED parpadea). NO\napague hasta que vuelva."
-};
+#define MSG_MIDI_BANK_INSTALL_Q "Install this bank? (reboots)"
+#define MSG_MIDI_BANK_FLASHING "Restarting to install DLS bank...\nBoot takes ~20-30s (LED blinks). Do\nNOT power off until it comes back."
 // On-device .dls -> gm_bank.bin conversion (RP2350). Title of the .dls file
 // picker, the bank-picker row that opens it, and the convert progress/result.
-static const char *MENU_DLS_TITLE[2] = {
-    "Select .dls soundbank\n",
-    "Elegir banco .dls\n"
-};
-static const char *MENU_MIDI_CONVERT_DLS[2] = {
-    "[+] Convert a .dls...",
-    "[+] Convertir un .dls..."
-};
-static const char *MSG_MIDI_CONVERTING[2] = {
-    "Converting .dls to bank...",
-    "Convirtiendo .dls a banco..."
-};
-static const char *MSG_MIDI_CONVERT_OK[2] = {
-    "Soundbank created.",
-    "Banco creado."
-};
-static const char *MSG_MIDI_CONVERT_FAIL[2] = {
-    "Conversion failed (bad .dls or low\nspace). See debug log.",
-    "Conversion fallida (.dls invalido o\npoco espacio). Ver log."
-};
+#define MENU_DLS_TITLE "Select .dls soundbank\n"
+#define MENU_MIDI_CONVERT_DLS "[+] Convert a .dls..."
+#define MSG_MIDI_CONVERTING "Converting .dls to bank..."
+#define MSG_MIDI_CONVERT_OK "Soundbank created."
+#define MSG_MIDI_CONVERT_FAIL "Conversion failed (bad .dls or low\nspace). See debug log."
 // A converted bank can exceed the fixed flash partition (~1.6 MB) — it is then
 // written to SD but cannot be installed, so the picker hides it. Tell the user
 // (the actual KB sizes are appended at runtime). Single short line for msgDialog.
-static const char *MSG_MIDI_BANK_TOOBIG[2] = {
-    "Bank too big for flash",
-    "Banco muy grande para flash"
-};
+#define MSG_MIDI_BANK_TOOBIG "Bank too big for flash"
 #if defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)
-static const char *MSG_MIDI_PIN_CONFLICT[2] = {
-    "MIDI and Real sound-in share GPIO " _PIN_XSTR(MIDI_TX_PIN) ".\nDisable one of them.",
-    "MIDI y Modo de sonido real comparten GPIO " _PIN_XSTR(MIDI_TX_PIN) ".\nDesactive uno de ellos."
-};
-#endif
+#define MSG_MIDI_PIN_CONFLICT "MIDI and Real sound-in share GPIO " _PIN_XSTR(MIDI_TX_PIN) ".\nDisable one of them."
 #endif
 
-#if !PICO_RP2040
-static const char *MENU_ULAPLUS[2] = { "ULA+\n", "ULA+\n"};
-static const char *MENU_HDMI_DITHER[2] = { "HDMI Dither (ULA+)\n", "Tramado HDMI (ULA+)\n"};
-static const char *MENU_TIMEX[2] = { "Timex Gfx Mode\n", "Timex Gfx Mode\n"};
-static const char *MENU_16COL[2] = { "16col (Pentagon)\n", "16col (Pentagon)\n"};
-#define MENU_DMA_EN "DMA\n"\
+#define MENU_ULAPLUS "ULA+\n"
+#define MENU_HDMI_DITHER "HDMI Dither (ULA+)\n"
+#define MENU_TIMEX "Timex Gfx Mode\n"
+#define MENU_16COL "16col (Pentagon)\n"
+#define MENU_DMA "DMA\n"\
     "OFF            \t[O]\n"\
     "Port #0B (MB02+) \t[B]\n"\
     "Port #6B (DATA-GEAR)\t[X]\n"
-#define MENU_DMA_ES MENU_DMA_EN
-static const char *MENU_DMA[2] = { MENU_DMA_EN, MENU_DMA_ES };
-#endif
 
-#define MENU_PALETTE_EN \
+#define MENU_PALETTE \
     "Palette\n"\
     "Pulsar\t[1]\n"\
     "Alone\t[2]\n"\
     "Grayscale\t[3]\n"\
     "Mars\t[4]\n"\
     "Ocean\t[5]\n"
-#define MENU_PALETTE_ES \
-    "Paleta\n"\
-    "Pulsar\t[1]\n"\
-    "Alone\t[2]\n"\
-    "Grayscale\t[3]\n"\
-    "Mars\t[4]\n"\
-    "Ocean\t[5]\n"
-static const char *MENU_PALETTE[2] = { MENU_PALETTE_EN, MENU_PALETTE_ES };
 
-#define MENU_KBD2NDPS2_EN "Enable\n"\
+#define MENU_KBD2NDPS2 "Enable\n"\
     "No\t[N]\n"\
     "Yes\t[K]\n"
-#define MENU_KBD2NDPS2_ES "Permitir\n"\
-    "No\t[N]\n"\
-    "Si\t[K]\n"
-static const char *MENU_KBD2NDPS2[2] = { MENU_KBD2NDPS2_EN, MENU_KBD2NDPS2_ES };
 
-#define MENU_AY_EN "ABC\n"\
+#define MENU_AY "ABC\n"\
     "ABC\t[B]\n"\
     "ACB\t[C]\n"\
     "Mono\t[M]\n"
-static const char *MENU_AY[2] = { MENU_AY_EN, MENU_AY_EN };
 
-#define MENU_TS_EN "TurboSound\n"\
+#define MENU_TS "TurboSound\n"\
     "OFF   \t[F]\n"\
     "NedoPC\t[N]\n"\
     "old-TC\t[O]\n"\
     "BOTH  \t[B]\n"
-static const char *MENU_TS[2] = { MENU_TS_EN, MENU_TS_EN };
 
-#define MENU_COVOX_EN "Covox PORT\n"\
+#define MENU_COVOX "Covox PORT\n"\
     "NONE   \t[N]\n"\
     "#FB    \t[F]\n"\
     "#DD    \t[D]\n"
-static const char *MENU_COVOX[2] = { MENU_COVOX_EN, MENU_COVOX_EN };
 
 // SounDrive 8-bit DAC at #0F/#1F/#3F (left), #4F/#5F (right), #FB (both).
 // Auto = enabled on Profi only (Profi CP/M games stream PCM there).
-#define MENU_SOUNDRIVE_EN "SounDrive\n"\
+#define MENU_SOUNDRIVE "SounDrive\n"\
     "Auto (Profi only)\t[A]\n"\
     "On               \t[O]\n"\
     "Off              \t[F]\n"
-static const char *MENU_SOUNDRIVE[2] = { MENU_SOUNDRIVE_EN, MENU_SOUNDRIVE_EN };
 
-#define MENU_I2S_EN "Audio Driver\n"\
+#define MENU_I2S "Audio Driver\n"\
     "Auto     \t[A]\n"\
     "PWM      \t[P]\n"\
     "i2s      \t[I]\n"\
     "AY-3-8910\t[Y]\n"\
 	"HDMI     \t[H]\n"
-#define MENU_I2S_ES "Controlador de audio\n"\
-    "Auto     \t[A]\n"\
-    "PWM      \t[P]\n"\
-    "i2s      \t[I]\n"\
-    "AY-3-8910\t[Y]\n"\
-	"HDMI     \t[H]\n"
-static const char *MENU_I2S[2] = { MENU_I2S_EN, MENU_I2S_ES };
 
-#define MENU_AUDIO_BOOST_EN "Volume Boost\n"\
+#define MENU_AUDIO_BOOST "Volume Boost\n"\
     "+0  \t[A]\n"\
     "+4  \t[B]\n"\
     "+8  \t[C]\n"\
@@ -1354,62 +748,33 @@ static const char *MENU_I2S[2] = { MENU_I2S_EN, MENU_I2S_ES };
     "+16 \t[E]\n"\
     "+32 \t[F]\n"\
     "+64 \t[G]\n"
-#define MENU_AUDIO_BOOST_ES "Aumento de volumen\n"\
-    "+0  \t[A]\n"\
-    "+4  \t[B]\n"\
-    "+8  \t[C]\n"\
-    "+12 \t[D]\n"\
-    "+16 \t[E]\n"\
-    "+32 \t[F]\n"\
-    "+64 \t[G]\n"
-static const char *MENU_AUDIO_BOOST[2] = { MENU_AUDIO_BOOST_EN, MENU_AUDIO_BOOST_ES };
 static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
 
-#define MENU_ALF_JOY_EN "Source\n"\
+#define MENU_ALF_JOY "Source\n"\
     "DPAD #1\t[1]\n"\
     "DPAD #2\t[2]\n"\
     "NUMPAD \t[N]\n"
-static const char *MENU_ALF_JOY[2] = { MENU_ALF_JOY_EN, MENU_ALF_JOY_EN };
 
-#define MENU_K_JOY_EN "PORT #\n"\
+#define MENU_K_JOY "PORT #\n"\
     "1Fh (31)\t[1]\n"\
     "37h (55)\t[3]\n"\
     "5Fh (95)\t[9]\n"
-static const char *MENU_K_JOY[2] = { MENU_K_JOY_EN, MENU_K_JOY_EN };
 
-#define MENU_THROTTLING_EN\
+#define MENU_THROTTLING\
  "Microseconds\n"\
     "None\t[N]\n"\
     "1000\t[1]\n"\
     "2000\t[2]\n"\
     "3000\t[3]\n"
-static const char *MENU_THROTTLING[2] = { MENU_THROTTLING_EN, MENU_THROTTLING_EN };
 
-#define MENU_ALUTIMING_EN "ALU Timing\n"\
+#define MENU_ALUTIMING "ALU Timing\n"\
     "Early\t[E]\n"\
     "Late\t[L]\n"
-#define MENU_ALUTIMING_ES "Timing ULA\n"\
-    "Early\t[E]\n"\
-    "Late\t[L]\n"
-static const char *MENU_ALUTIMING[2] = { MENU_ALUTIMING_EN, MENU_ALUTIMING_ES };
 
-static const char *MENU_ISSUE2[2] = { "48K Issue 2\n", "48K Issue 2\n"};
+#define MENU_ISSUE2 "48K Issue 2\n"
 
 #define MENU_ARCH_EN "Select machine\n"
 
-#define MENU_ARCH_ES "Elija modelo\n"
-
-#if PICO_RP2040
-#define MENU_ARCHS \
-    "Spectrum 48K\t>\n"\
-    "Spectrum 128K\t>\n"\
-	"Pentagon 128K\t>\n"\
-	"Pentagon 512K\t>\n"\
-	"Pentagon 1024K\t>\n"\
-	"Byte\t>\n"\
-	"Murmuzavr mode\t>\n"\
-	"Profi\t>\n"
-#else
 #define MENU_ARCHS \
     "Spectrum 48K\t>\n"\
     "Spectrum 128K\t>\n"\
@@ -1420,30 +785,17 @@ static const char *MENU_ISSUE2[2] = { "48K Issue 2\n", "48K Issue 2\n"};
 	"Murmuzavr mode\t>\n"\
 	"Profi\t>\n"\
 	"ALF TV GAME\n"
-#endif
-static const char *MENU_ARCH[2] = { MENU_ARCH_EN MENU_ARCHS, MENU_ARCH_ES MENU_ARCHS };
+#define MENU_ARCH MENU_ARCH_EN MENU_ARCHS
 
-#if PICO_RP2040
-// RP2040 without SD/PSRAM/butter has no backing for ram[0], ram[4], ram[6] —
-// 48K boots by luck (writes to 0xC000-0xFFFF silently drop, reads from bootrom).
-// 128K/Pentagon do real paging → NULL deref → Z80 loops on junk → hang.
-#define MENU_ARCHS_NO_SD \
-    "Spectrum 48K\t>\n"
-#else
 #define MENU_ARCHS_NO_SD \
     "Spectrum 48K\t>\n"\
     "Spectrum 128K\t>\n"\
 	"Pentagon 128K\t>\n"\
 	"ALF TV GAME\n"
-#endif
-static const char *MENU_ARCH_NO_SD[2] = { MENU_ARCH_EN MENU_ARCHS_NO_SD, MENU_ARCH_ES MENU_ARCHS_NO_SD };
+#define MENU_ARCH_NO_SD MENU_ARCH_EN MENU_ARCHS_NO_SD
 
 #if NO_SPAIN_ROM_48k
 #define MENU_ROMS48_EN "Select ROM\n"\
-	"48K\n"\
-	"Byte 48K\n"\
-    "Custom\n"
-#define MENU_ROMS48_ES "Elija ROM\n"\
 	"48K\n"\
 	"Byte 48K\n"\
     "Custom\n"
@@ -1452,17 +804,10 @@ static const char *MENU_ARCH_NO_SD[2] = { MENU_ARCH_EN MENU_ARCHS_NO_SD, MENU_AR
 	"48K\n"\
     "48K Spanish\n"\
     "Custom\n"
-#define MENU_ROMS48_ES "Elija ROM\n"\
-	"48K\n"\
-    "48K Espa" "\xA4" "ol\n"\
-    "Custom\n"
 #endif
 
 #if NO_SPAIN_ROM_128k
 #define MENU_ROMS128_EN "Select ROM\n"\
-	"128K\n"\
-    "Custom\n"
-#define MENU_ROMS128_ES "Elija ROM\n"\
 	"128K\n"\
     "Custom\n"
 #else
@@ -1473,79 +818,43 @@ static const char *MENU_ARCH_NO_SD[2] = { MENU_ARCH_EN MENU_ARCHS_NO_SD, MENU_AR
     "+2 Spanish\n"\
     "ZX81+\n"\
     "Custom\n"
-#define MENU_ROMS128_ES "Elija ROM\n"\
-	"128K\n"\
-    "128K Espa" "\xA4" "ol\n"\
-	"+2\n"\
-    "+2 Espa" "\xA4" "ol\n"\
-    "ZX81+\n"\
-    "Custom\n"
 #endif
 
-static const char *MENU_ROMS48[2] = { MENU_ROMS48_EN, MENU_ROMS48_ES };
-static const char *MENU_ROMS128[2] = { MENU_ROMS128_EN, MENU_ROMS128_ES };
+#define MENU_ROMS48 MENU_ROMS48_EN
+#define MENU_ROMS128 MENU_ROMS128_EN
 
-#define MENU_ROMS_PENT_EN \
+#define MENU_ROMS_PENT \
   "Select ROM\n"\
 	"128Kp\n"\
 	"128Kp + Mr Gluk Reset Srvs\n"\
     "Custom\n"
-#define MENU_ROMS_PENT_ES \
-  "Elija ROM\n"\
-	"128Kp\n"\
-	"128Kp + Mr Gluk Reset Srvs\n"\
-    "Custom\n"
-static const char *MENU_ROMS_PENT[2] = { MENU_ROMS_PENT_EN, MENU_ROMS_PENT_ES };
 
-#define MENU_ROMS_PROFI_EN "Select ROM\n"\
+#define MENU_ROMS_PROFI "Select ROM\n"\
 	"1024K\n"
-#define MENU_ROMS_PROFI_ES "Elija ROM\n"\
-	"1024K\n"
-static const char *MENU_ROMS_PROFI[2] = { MENU_ROMS_PROFI_EN, MENU_ROMS_PROFI_ES };
 
-#if PICO_RP2350
-#define MENU_MURMUZAVR_EN "Murmuzavr mode\n"\
+#define MENU_MURMUZAVR "Murmuzavr mode\n"\
 	"None\t[N]\n"\
 	" 4 MB\t[4]\n"\
 	" 8 MB\t[8]\n"\
 	"16 MB\t[1]\n"\
 	"32 MB\t[3]\n"
-#else
-#define MENU_MURMUZAVR_EN "Murmuzavr mode\n"\
-	"None\t[N]\n"\
-	"4 MB\t[4]\n"\
-	"8 MB\t[8]\n"
-#endif
-static const char *MENU_MURMUZAVR[2] = { MENU_MURMUZAVR_EN, MENU_MURMUZAVR_EN };
 
-#define MENU_MURMUZAVR_NONE_EN "Murmuzavr mode\n"\
+#define MENU_MURMUZAVR_NONE "Murmuzavr mode\n"\
 	"None\t[N]\n"
-static const char *MENU_MURMUZAVR_NONE[2] = { MENU_MURMUZAVR_NONE_EN, MENU_MURMUZAVR_NONE_EN };
 
 
-#define MENU_ROMSBYTE_EN "Select ROM\n"\
+#define MENU_ROMSBYTE "Select ROM\n"\
 	"48K\n"\
 	"128K\n"\
 	"128K + Mr Gluk Reset Srvs\n"\
 	"COBMECT. Mode\n"
-#define MENU_ROMSBYTE_ES "Elija ROM\n"\
-	"48K\n"\
-	"128K\n"\
-	"128K + Mr Gluk Reset Srvs\n"\
-	"COBMECT. Mode\n"
-static const char *MENU_ROMSBYTE[2] = { MENU_ROMSBYTE_EN, MENU_ROMSBYTE_ES };
 
-static const char *MENU_BYTE_COBMECT_MODE[2] = { "COBMECT. Mode\n", "COBMECT. Mode\n" };
+#define MENU_BYTE_COBMECT_MODE "COBMECT. Mode\n"
 
-#define MENU_ROMS_SCORP_EN \
+#define MENU_ROMS_SCORP \
   "Select ROM\n"\
 	"Mix\n"\
     "Custom\n"
-#define MENU_ROMS_SCORP_ES \
-  "Elija ROM\n"\
-	"Mix\n"\
-    "Custom\n"
-static const char *MENU_ROMS_SCORP[2] = { MENU_ROMS_SCORP_EN, MENU_ROMS_SCORP_ES };
 
 #define MENU_ARCHS_PREF \
     "Spectrum 48K\t[4]\n"\
@@ -1553,10 +862,7 @@ static const char *MENU_ROMS_SCORP[2] = { MENU_ROMS_SCORP_EN, MENU_ROMS_SCORP_ES
 	"Pentagon 128K\t[P]\n"\
 	"Pentagon 512K\t[5]\n"\
 	"Pentagon 1024K\t[2]\n"
-static const char *MENU_ARCH_PREF[2] = {
-	"Preferred machine\n" MENU_ARCHS_PREF "Last used\t[L]\n",
-	"Modelo preferido\n" MENU_ARCHS_PREF "Ultimo utilizado\t[L]\n"
-};
+#define MENU_ARCH_PREF "Preferred machine\n" MENU_ARCHS_PREF "Last used\t[L]\n"
 
 #define MENU_ROMS_PREF \
     "Spectrum 48K\t>\n"\
@@ -1564,43 +870,27 @@ static const char *MENU_ARCH_PREF[2] = {
     "Pentagon 128K\t>\n"\
     "Pentagon 512K\t>\n"\
     "Pentagon 1024K\t>\n"
-static const char *MENU_ROM_PREF[2] = {
-  "Preferred ROM\n" MENU_ROMS_PREF,
-  "ROM preferida\n" MENU_ROMS_PREF
-};
+#define MENU_ROM_PREF "Preferred ROM\n" MENU_ROMS_PREF
 
 #if NO_SPAIN_ROM_48k
 #define MENU_ROMS48_PREF_EN "Select ROM\n"\
 	"48K\t[48K  ]\n"\
     "Custom\t[48Kcs]\n"\
 	"Last used\t[Last ]\n"
-#define MENU_ROMS48_PREF_ES "Elija ROM\n"\
-	"48K\t[48K  ]\n"\
-    "Custom\t[48Kcs]\n"\
-	"Ultima usada\t[Last ]\n"
 #else
 #define MENU_ROMS48_PREF_EN "Select ROM\n"\
 	"48K\t[48K  ]\n"\
     "48K Spanish\t[48Kes]\n"\
     "Custom\t[48Kcs]\n"\
 	"Last used\t[Last ]\n"
-#define MENU_ROMS48_PREF_ES "Elija ROM\n"\
-	"48K\t[48K  ]\n"\
-    "48K Espa" "\xA4" "ol\t[48Kes]\n"\
-    "Custom\t[48Kcs]\n"\
-	"Ultima usada\t[Last ]\n"
 #endif
-static const char *MENU_ROM_PREF_48[2] = { MENU_ROMS48_PREF_EN, MENU_ROMS48_PREF_ES };
+#define MENU_ROM_PREF_48 MENU_ROMS48_PREF_EN
 
 #if NO_SPAIN_ROM_128k
 #define MENU_ROMS128_PREF_EN "Select ROM\n"\
 	"128K\t[128K  ]\n"\
     "Custom\t[128Kcs]\n"\
 	"Last used\t[Last  ]\n"
-#define MENU_ROMS128_PREF_ES "Elija ROM\n"\
-	"128K\t[128K  ]\n"\
-    "Custom\t[128Kcs]\n"\
-	"Ultima usada\t[Last  ]\n"
 #else
 #define MENU_ROMS128_PREF_EN "Select ROM\n"\
 	"128K\t[128K  ]\n"\
@@ -1610,52 +900,22 @@ static const char *MENU_ROM_PREF_48[2] = { MENU_ROMS48_PREF_EN, MENU_ROMS48_PREF
     "ZX81+\t[ZX81+ ]\n"\
     "Custom\t[128Kcs]\n"\
 	"Last used\t[Last  ]\n"
-#define MENU_ROMS128_PREF_ES "Elija ROM\n"\
-	"128K\t[128K  ]\n"\
-    "128K Espa" "\xA4" "ol\t[128Kes]\n"\
-	"+2\t[+2    ]\n"\
-    "+2 Espa" "\xA4" "ol\t[+2es  ]\n"\
-    "ZX81+\t[ZX81+ ]\n"\
-    "Custom\t[128Kcs]\n"\
-	"Ultima usada\t[Last  ]\n"
 #endif
-static const char *MENU_ROM_PREF_128[2] = { MENU_ROMS128_PREF_EN, MENU_ROMS128_PREF_ES };
+#define MENU_ROM_PREF_128 MENU_ROMS128_PREF_EN
 
-#define MENU_ROMS_PENT_PREF_EN \
+#define MENU_ROM_PREF_PENT \
   "Select ROM\n"\
 	"Original\t[128Kp ]\n"\
     "Custom\t[128Kcs]\n"\
 	"Last used\t[Last  ]\n"
-#define MENU_ROMS_PENT_PREF_ES \
-  "Elija ROM\n"\
-	"Original\t[128Kp ]\n"\
-    "Custom\t[128Kcs]\n"\
-	"Last used\t[Last  ]\n"
-static const char *MENU_ROM_PREF_PENT[2] = { MENU_ROMS_PENT_PREF_EN, MENU_ROMS_PENT_PREF_ES };
 
-#define MENU_ROMS_SCORP_PREF_EN \
+#define MENU_ROM_PREF_SCORP \
   "Select ROM\n"\
 	"Mix\t[256Ks ]\n"\
     "Custom\t[256Kcs]\n"\
 	"Last used\t[Last  ]\n"
-#define MENU_ROMS_SCORP_PREF_ES \
-  "Elija ROM\n"\
-	"Mix\t[256Ks ]\n"\
-    "Custom\t[256Kcs]\n"\
-	"Last used\t[Last  ]\n"
-static const char *MENU_ROM_PREF_SCORP[2] = { MENU_ROMS_SCORP_PREF_EN, MENU_ROMS_SCORP_PREF_ES };
-
-#define MENU_INTERFACE_LANG_EN "Language\n"\
-    "English\t[ ]\n"\
-    "Spanish\t[ ]\n"
-#define MENU_INTERFACE_LANG_ES "Idioma\n"\
-    "Ingles\t[ ]\n"\
-    "Espanol\t[ ]\n"
-static const char *MENU_INTERFACE_LANG[2] = { MENU_INTERFACE_LANG_EN, MENU_INTERFACE_LANG_ES };
 
 #define MENU_JOY_EN "Joystick menu\n"
-
-#define MENU_JOY_ES "Menu Joystick\n"
 
 #define MENU_DEFJOY_TITLE "Joystick\n"\
 
@@ -1667,32 +927,24 @@ static const char *MENU_INTERFACE_LANG[2] = { MENU_INTERFACE_LANG_EN, MENU_INTER
     "Fuller\t[ ]\n"
 
 #define MENU_DEFJOY_EN "Assign keys\n"
-#define MENU_DEFJOY_ES "Definir\n"
 
-static const char *MENU_DEFJOY[2] = { MENU_DEFJOY_TITLE MENU_DEFJOYS MENU_DEFJOY_EN, MENU_DEFJOY_TITLE MENU_DEFJOYS MENU_DEFJOY_ES };
+#define MENU_DEFJOY MENU_DEFJOY_TITLE MENU_DEFJOYS MENU_DEFJOY_EN
 
-#define MENU_JOYPS2_EN \
+#define MENU_JOYPS2 \
   "Joystick emulation\n"\
 	"Cursor Keys as Joy\t>\n" \
 	"TAB as fire 1\t>\n"\
     "Right Enter\t>\n"\
     "WASD/KL\t>\n"
 
-#define MENU_JOYPS2_ES \
-  "Joystick emulaci" \
-	"Joy en teclas de cursor\t>\n" \
-	"TAB como disparo 1\t>\n" \
-	"Derecho Enter\t>\n"
 
-static const char *MENU_JOYPS2[2] = { MENU_JOYPS2_EN, MENU_JOYPS2_ES };
+#define MENU_CURSORJOY "Cursor as Joy\n"
 
-static const char *MENU_CURSORJOY[2] = { "Cursor as Joy\n" , "Joy en Cursor\n" };
+#define MENU_TABASFIRE "TAB as fire 1\n"
 
-static const char *MENU_TABASFIRE[2] = { "TAB as fire 1\n" , "TAB disparo 1\n" };
+#define MENU_ENTERSPACE "as Space\n"
 
-static const char *MENU_ENTERSPACE[2] = { "as Space\n" , "como Space\n" };
-
-static const char *MENU_WASD[2] = { "WASD/KL\n" , "WASD/KL\n" };
+#define MENU_WASD "WASD/KL\n"
 
 #define DEDICATORIA "\nF1Dedicado especialmente a:\r"\
 	"\nB1      _       _ _\r"\
@@ -1760,8 +1012,7 @@ static const char *MENU_WASD[2] = { "WASD/KL\n" , "WASD/KL\n" };
 	"\r"\
 	"\r"
 
-static const char *AboutMsg[2][9] = {
-	{
+static const char *AboutMsg[9] = {
 	"\nF1(C)2023-24 Victor Iborra \"Eremus\"\r"\
 	"   2023 David Crespo  \"dcrespo3d\"\r"\
 	"\r"\
@@ -1831,78 +1082,6 @@ static const char *AboutMsg[2][9] = {
 	"\nD1Sir Clive Sinclair \nF1& \nA1M\nE1a\nC1t\nD1t\nB1h\nA1e\nE1w \nC1S\nD1m\nB1i\nA1t\nE1h\r"
 	,
 	DEDICATORIA
-	},
-	{
-	"\nF1(C)2023-24 Victor Iborra \"Eremus\"\r"\
-	"   2023 David Crespo  \"dcrespo3d\"\r"\
-	"\r"\
-	"\nA1Basado en ZX-ESPectrum-Wiimote\r"\
-	"(C)2020-2023 David Crespo\r"\
-	"\r"\
-	"\nB1Inspirado en proyectos anteriores\r"\
-	"de Pete Todd y Rampa & Queru\r"\
-	"\r"\
-	"\nC1Emulacion Z80 por JL Sanchez\r"\
-	"\nD1Driver VGA por BitLuni\r"\
-	"\nE1Libreria AY-3-8912 por A. Sashnov\r"\
-	"\nF1Driver PS2 por Fabrizio di Vittorio\r"
-	,
-	"\nF1Colaboradores:\r"\
-	"\r"\
-	"\nA1ackerman        \nF1Codigo e ideas\r"\
-	"\nB1Armand          \nF1Testing y difusion\r"\
-	"\nC1azesmbog        \nF1Testing e ideas\r"\
-	"\nD1David Carrion   \nF1Codigo h/w, teclado ZX\r"\
-	"\nE1Ramon Martinez  \nF1Mejoras emulacion AY\r"\
-	"\nA1Ron             \nF1Testing y difusion\r"\
-	"\nB1J. L. Sanchez   \nF1Mejoras core Z80\r"\
-	"\nC1Antonio Villena \nF1Soporte hardware\r"\
-	"\nD1ZjoyKiLer       \nF1Testing e ideas\r"\
-	"\r"\
-	"\r"
-	,
-	"\nF1Muchas gracias a nuestros Patreons:\r"\
-	PATREONS
-	,
-	"\nF1Muchas gracias a nuestros Patreons:\r"\
-	PATREONS2
-	,
-	"\nF1Muchas gracias a nuestros Patreons:\r"\
-	PATREONS3
-	,
-	"\nF1Muchas gracias a nuestros Patreons:\r"\
-	PATREONS4
-	,
-	"\nF1Gracias por su ayuda y donaciones a:\r"\
-	"\r"\
-	"\nA1Abel Bayon @Baycorps \nF1Amstrad Eterno\r"\
-	"\nB1Pablo Forcen Soler \nF1AUA\r"\
-	"\nC1Jordi Ramos Montes\r"
-	"\nD1Tsvetan Usunov \nF1Olimex Ltd.\r"\
-	"\r"\
-	"\nF1ZX81+ ROM incluida por cortesia de:\r"\
-	"\r"\
-	"\nA1Paul Farrow\r"\
-	"\r"\
-	"\r"\
-	"\r"
-	,
-	"\nF1Gracias tambien a:\r"\
-	"\r"\
-	"\nA1Retrowiki.es \nF1y su magnifica comunidad\r"\
-	"\nB1Ron \nF1por su genial RetroCrypta\r"\
-	"\nC1Viejoven FX\nF1, \nD1J.Ortiz \"El Spectrumero\"\r"
-	"\nE1J.C. Gonzalez Amestoy \nF1por RVM\r"\
-	"\nA1VidaExtraRetro, \nB1Cesar Nicolas-Gonzalez\r"\
-	"\nC1Rodolfo Guerra, \nD1Todos los creadores en\r"\
-	"el servidor ZXSpectrum en Discord\r"\
-	"\r"\
-	"\nF1y, por supuesto, a:\r"\
-	"\r"\
-	"\nD1Sir Clive Sinclair \nF1& \nA1M\nE1a\nC1t\nD1t\nB1h\nA1e\nE1w \nC1S\nD1m\nB1i\nA1t\nE1h\r"
-	,
-	DEDICATORIA
-	}
 };
 
 #define OSD_DBG_HELP_EN \
@@ -1927,19 +1106,7 @@ static const char *AboutMsg[2][9] = {
     " [0]          Default position\n"\
     " + PageUp/Down and cursor keys\n"
 
-static const char *StartMsg[2] = {
-	"\xAD" "Hola! " "\xAD" "Gracias por elegir    ectrum!\n"\
-	"\n"\
-	"   ectrum es software de c" "\xA2" "digo abier-\n"\
-	"to bajo licencia GPL v3, puedes usarlo\n"\
-	"modificarlo y compartirlo gratis.\n"\
-	"\n"\
-	"Si te gusta    ectrum considera hacer-\n"\
-	"te patrocinador. Tu apoyo nos ayuda a\n"\
-	"mantener y mejorar el proyecto para\n"\
-	"todos los usuarios. Puedes hacerlo\n"\
-	"en\n"
-	,
+#define STARTUP_MSG \
 	"Hi! Thanks for choosing    ectrum!\n"\
 	"\n"\
 	"   ectrum is open source sofware\n"\
@@ -1951,7 +1118,6 @@ static const char *StartMsg[2] = {
 	"us to maintain and improve the project\n"\
 	"for all users. You can do it\n"\
 	"at\n"
-};
 
 const uint8_t ESPectrum_logo[] = {
 	0x45, 0x42, 0x46, 0x38, 0xBB, 0x00, 0x1B, 0x00, 0x00, 0x00, 0x00, 0x0F,
@@ -2379,124 +1545,108 @@ const uint8_t ESPectrum_logo[] = {
 };
 
 
-// Runtime SD automount toast — ALL platforms (the probe runs on RP2040 too, so
+// Runtime SD automount toast (the probe runs on every board, so
 // this must live OUTSIDE the RP2350-only network block below).
-static const char *MSG_SD_AUTOMOUNT[2]       = { "SD card mounted",  "Tarjeta SD montada" };
+#define MSG_SD_AUTOMOUNT "SD card mounted"
 
 // ─── ZiFi / Network menu strings ─────────────────────────────────────────────
-#if !PICO_RP2040
 
-#define MENU_NETWORK_EN \
+#define MENU_NETWORK \
     "Network\n"\
     "Status\n"\
     "Sync time (SNTP)\n"\
     "Time zone\t>\n"\
     "ZiFi NIC\t>\n"
-#define MENU_NETWORK_ES \
-    "Red\n"\
-    "Estado\n"\
-    "Sincronizar hora\n"\
-    "Zona horaria\t>\n"\
-    "ZiFi NIC\t>\n"
-static const char *MENU_NETWORK[2] = { MENU_NETWORK_EN, MENU_NETWORK_ES };
 
-#define MENU_ZIFI_NIC_EN "ZiFi NIC\n"\
+#define MENU_ZIFI_NIC "ZiFi NIC\n"\
     "Off\n"\
     "On\n"
-#define MENU_ZIFI_NIC_ES "ZiFi NIC\n"\
-    "Apagado\n"\
-    "Encendido\n"
-static const char *MENU_ZIFI_NIC[2] = { MENU_ZIFI_NIC_EN, MENU_ZIFI_NIC_ES };
 
-static const char *MSG_WIFI_CONNECTING[2]    = { "Connecting...",     "Conectando..."      };
-static const char *MSG_WIFI_CONNECTED[2]     = { "Connected",         "Conectado"          };
-static const char *MSG_WIFI_DISCONNECTED[2]  = { "Disconnected",      "Desconectado"       };
-static const char *MSG_WIFI_CONNECT_ERR[2]   = { "Connect failed",    "Error al conectar"  };
-static const char *MSG_WIFI_NO_CFG[2]        = { "No /wifi.cfg found","Sin /wifi.cfg"      };
-static const char *MSG_WIFI_CFG_RELOADED[2]  = { "wifi.cfg reloaded", "wifi.cfg recargado" };
-static const char *MSG_RTC_SYNCING[2]        = { "Syncing time...",   "Sincronizando..."   };
-static const char *MSG_RTC_SYNCED[2]         = { "Time set:",         "Hora ajustada:"     };
-static const char *MSG_RTC_SYNC_ERR[2]       = { "Time sync failed",  "Error de hora"      };
-static const char *MSG_WIFI_SCANNING[2]      = { "Scanning...",       "Buscando..."        };
-static const char *MSG_WIFI_NO_NETS[2]       = { "No networks found", "Sin redes"          };
-static const char *MSG_WIFI_PASS_LABEL[2]    = { "Pass:",             "Clave:"             };
-static const char *MSG_WIFI_DISCONNECT_Q[2]  = { "Disconnect?",       "\xA8" "Desconectar?" };
-static const char *MENU_WIFI_LIST_TITLE[2]   = { "Wi-Fi networks",    "Redes Wi-Fi"        };
-static const char *MENU_TZ_TITLE[2]          = { "Time zone (UTC)",   "Zona horaria (UTC)" };
-static const char *MENU_ZIFI_GPIO_TITLE[2]   = { "ZiFi UART GPIO",    "ZiFi UART GPIO"     };
-static const char *MENU_ZIFI_TRANSPORT_TITLE[2] = { "ESP-01 transport", "ESP-01 transporte" };
-static const char *MENU_ZIFI_USB_LABEL[2]    = { "USB (CH340)",       "USB (CH340)"        };
-static const char *MENU_ESP01_TITLE[2]       = { "ESP-01(S)",         "ESP-01(S)"          };
-static const char *MENU_BAUD_TITLE[2]        = { "UART baud rate",    "Velocidad UART"     };
+#define MSG_WIFI_CONNECTING "Connecting..."
+#define MSG_WIFI_CONNECTED "Connected"
+#define MSG_WIFI_DISCONNECTED "Disconnected"
+#define MSG_WIFI_CONNECT_ERR "Connect failed"
+#define MSG_WIFI_NO_CFG "No /wifi.cfg found"
+#define MSG_WIFI_CFG_RELOADED "wifi.cfg reloaded"
+#define MSG_RTC_SYNCING "Syncing time..."
+#define MSG_RTC_SYNCED "Time set:"
+#define MSG_RTC_SYNC_ERR "Time sync failed"
+#define MSG_WIFI_SCANNING "Scanning..."
+#define MSG_WIFI_NO_NETS "No networks found"
+#define MSG_WIFI_PASS_LABEL "Pass:"
+#define MSG_WIFI_DISCONNECT_Q "Disconnect?"
+#define MENU_WIFI_LIST_TITLE "Wi-Fi networks"
+#define MENU_TZ_TITLE "Time zone (UTC)"
+#define MENU_ZIFI_GPIO_TITLE "ZiFi UART GPIO"
+#define MENU_ZIFI_TRANSPORT_TITLE "ESP-01 transport"
+#define MENU_ZIFI_USB_LABEL "USB (CH340)"
+#define MENU_ESP01_TITLE "ESP-01(S)"
+#define MENU_BAUD_TITLE "UART baud rate"
 
 // ─── SRAM budget manager strings ────────────────────────────────────────────
 // Heavy features (Gigascreen / General Sound / DivMMC / Profi / ZiFi) don't all
 // fit in SRAM on butter-less boards. When enabling one would overflow, the OSD
 // offers to free room or refuses.
-static const char *MSG_BUDGET_TITLE[2]       = { "Not enough SRAM",   "Falta SRAM"         };
-static const char *MSG_BUDGET_DENY[2]        = { "not enough free SRAM",
-                                                 "falta SRAM libre" };
-static const char *MSG_BUDGET_FREE_HINT[2]   = { "Turn off to free room, then Apply:",
-                                                 "Desactive para liberar, luego Aplicar:" };
-static const char *MSG_BUDGET_APPLY[2]       = { "Apply & reboot",    "Aplicar y reiniciar" };
-static const char *MSG_BUDGET_INSUFFICIENT[2]= { "Not enough freed - pick more",
-                                                 "Insuficiente - elija mas" };
+#define MSG_BUDGET_TITLE "Not enough SRAM"
+#define MSG_BUDGET_DENY "not enough free SRAM"
+#define MSG_BUDGET_FREE_HINT "Turn off to free room, then Apply:"
+#define MSG_BUDGET_APPLY "Apply & reboot"
+#define MSG_BUDGET_INSUFFICIENT "Not enough freed - pick more"
 
 // ─── File transfer (FTP/SFTP) client strings ────────────────────────────────
-static const char *MENU_NET_PROTO[2]         = { "Protocol\nFTP\nSFTP\n", "Protocolo\nFTP\nSFTP\n" };
-static const char *MSG_NET_FT_NOWIFI[2]      = { "Connect Wi-Fi first", "Conecte Wi-Fi primero" };
-static const char *MSG_NET_HOST_LABEL[2]     = { "Host:",   "Host:"     };
-static const char *MSG_NET_USER_LABEL[2]     = { "User:",   "Usuario:"  };
-static const char *MSG_NET_PORT_LABEL[2]     = { "Port:",   "Puerto:"   };
-static const char *MSG_NET_PASS_LABEL[2]     = { "Pass:",   "Clave:"    };
-static const char *MSG_PASS_TAB[2]           = { "TAB:show","TAB:ver"   };
-static const char *MSG_NET_CONNECTING[2]     = { "Connecting...",    "Conectando..."     };
-static const char *MSG_NET_CONN_ERR[2]       = { "Connection failed","Error de conexion" };
-static const char *MSG_NET_TRUST_Q[2]        = { "Trust this host key?", "\xA8" "Confiar en la clave?" };
-static const char *MSG_NET_HOSTKEY_BAD[2]    = { "HOST KEY CHANGED!\nPossible MITM", "\xA8" "CLAVE CAMBIADA!\nPosible MITM" };
-static const char *MSG_NET_DOWNLOADING[2]    = { "Downloading...",   "Descargando..."    };
-static const char *MSG_NET_UPLOADING[2]      = { "Uploading...",     "Subiendo..."       };
-static const char *MSG_NET_XFER_OK[2]        = { "Transfer complete","Transferencia OK"  };
-static const char *MSG_NET_XFER_ERR[2]       = { "Transfer failed",  "Fallo al transferir" };
-static const char *MSG_NET_EMPTY_DIR[2]      = { "(empty)",          "(vacio)"           };
-static const char *MSG_NET_DL_OR_UL[2]       = { "Download\nUpload here\n", "Descargar\nSubir aqui\n" };
-static const char *MENU_NET_BROWSE_TITLE[2]  = { "Remote files",     "Archivos remotos"  };
-static const char *MSG_NET_DELETE_Q[2]       = { "Delete?",          "\xA8" "Borrar?"     };
-static const char *MSG_NET_FOOTER[2]         = { "Ent:run Alt:SD F5cp F8del F2ref","Ent:ej Alt:SD F5cp F8bor F2act" };
-static const char *MSG_NET_FOOTER_RO[2]      = { "Enter:run  Alt+Ent:SD  F2:refresh","Ent:ejec Alt:SD F2:actualizar" };
-static const char *MSG_NET_COPYING[2]        = { "Copying...",       "Copiando..."        };
-static const char *MSG_NET_LAUNCHING[2]      = { "Launching...",     "Iniciando..."       };
-static const char *MSG_NET_UNSUPPORTED[2]    = { "Cannot run this type","No ejecutable"     };
-static const char *MSG_NET_REFRESHING[2]     = { "Refreshing...",    "Actualizando..."    };
+#define MENU_NET_PROTO "Protocol\nFTP\nSFTP\n"
+#define MSG_NET_FT_NOWIFI "Connect Wi-Fi first"
+#define MSG_NET_HOST_LABEL "Host:"
+#define MSG_NET_USER_LABEL "User:"
+#define MSG_NET_PORT_LABEL "Port:"
+#define MSG_NET_PASS_LABEL "Pass:"
+#define MSG_PASS_TAB "TAB:show"
+#define MSG_NET_CONNECTING "Connecting..."
+#define MSG_NET_CONN_ERR "Connection failed"
+#define MSG_NET_TRUST_Q "Trust this host key?"
+#define MSG_NET_HOSTKEY_BAD "HOST KEY CHANGED!\nPossible MITM"
+#define MSG_NET_DOWNLOADING "Downloading..."
+#define MSG_NET_UPLOADING "Uploading..."
+#define MSG_NET_XFER_OK "Transfer complete"
+#define MSG_NET_XFER_ERR "Transfer failed"
+#define MSG_NET_EMPTY_DIR "(empty)"
+#define MSG_NET_DL_OR_UL "Download\nUpload here\n"
+#define MENU_NET_BROWSE_TITLE "Remote files"
+#define MSG_NET_DELETE_Q "Delete?"
+#define MSG_NET_FOOTER "Ent:run Alt:SD F5cp F8del F2ref"
+#define MSG_NET_FOOTER_RO "Enter:run  Alt+Ent:SD  F2:refresh"
+#define MSG_NET_COPYING "Copying..."
+#define MSG_NET_LAUNCHING "Launching..."
+#define MSG_NET_UNSUPPORTED "Cannot run this type"
+#define MSG_NET_REFRESHING "Refreshing..."
 
 // ─── F5 location picker + saved-remotes manager ─────────────────────────────
-static const char *MENU_F5_LOCATION[2]       = { "Open from",        "Abrir desde"        };
-static const char *MSG_F5_LOCAL[2]           = { "Local (SD)",       "Local (SD)"         };
-static const char *MSG_F5_USB[2]             = { "USB Drive",        "Unidad USB"         };
-static const char *MSG_F5_REMOTE[2]          = { "Remote (FTP/SFTP)","Remoto (FTP/SFTP)"  };
-static const char *MSG_F5_WEB[2]             = { "Web Archives",     "Archivos web"       };
-static const char *MSG_F5_ADD_REMOTE[2]      = { "Add Remote",       "Anadir remoto"      };
-static const char *MENU_REMOTE_TITLE[2]      = { "Remote connections","Conexiones remotas" };
-static const char *MSG_REMOTE_ADD_ROW[2]     = { "[Add Remote]",     "[Anadir remoto]"    };
-static const char *MSG_REMOTE_FORGET_Q[2]    = { "Forget connection?","\xA8" "Olvidar conexion?" };
-static const char *MENU_REMOTE_SAVEPASS[2]   = { "Save password?\nNo\nYes\n", "\xA8" "Guardar clave?\nNo\nSi\n" };
-static const char *MSG_REMOTE_ALIAS_LABEL[2] = { "Alias:", "Alias:" };
-static const char *MSG_REMOTE_PATH_LABEL[2]  = { "Path:",  "Ruta:"  };
-static const char *MSG_REMOTE_FULL[2]        = { "Too many remotes", "Demasiados remotos" };
+#define MENU_F5_LOCATION "Open from"
+#define MSG_F5_LOCAL "Local (SD)"
+#define MSG_F5_USB "USB Drive"
+#define MSG_F5_REMOTE "Remote (FTP/SFTP)"
+#define MSG_F5_WEB "Web Archives"
+#define MSG_F5_ADD_REMOTE "Add Remote"
+#define MENU_REMOTE_TITLE "Remote connections"
+#define MSG_REMOTE_ADD_ROW "[Add Remote]"
+#define MSG_REMOTE_FORGET_Q "Forget connection?"
+#define MENU_REMOTE_SAVEPASS "Save password?\nNo\nYes\n"
+#define MSG_REMOTE_ALIAS_LABEL "Alias:"
+#define MSG_REMOTE_PATH_LABEL "Path:"
+#define MSG_REMOTE_FULL "Too many remotes"
 
 // ─── Archive download (catalog server) strings ──────────────────────────────
-static const char *MENU_ARCH_SITE_TITLE[2]   = { "Archive source",   "Fuente de archivo" };
-static const char *MSG_ARCH_SERVER_LABEL[2]  = { "Catalog:",  "Catalogo:" };
-static const char *MSG_ARCH_SITES_ERR[2]     = { "No sources found",  "Sin fuentes"       };
+#define MENU_ARCH_SITE_TITLE "Archive source"
+#define MSG_ARCH_SERVER_LABEL "Catalog:"
+#define MSG_ARCH_SITES_ERR "No sources found"
 
 // ─── HTTP test ("curl") strings ─────────────────────────────────────────────
-static const char *MENU_HTTP_TEST_ITEM[2]    = { "HTTP test (curl)\t>\n", "Prueba HTTP (curl)\t>\n" };
-static const char *MENU_HTTP_SCHEME[2]       = { "Scheme\nhttps\nhttp\n", "Esquema\nhttps\nhttp\n" };
-static const char *MSG_HTTP_HOST_LABEL[2]    = { "Host:", "Host:" };
-static const char *MSG_HTTP_PATH_LABEL[2]    = { "Path:", "Ruta:" };
-static const char *MSG_HTTP_TESTING[2]       = { "Requesting...", "Solicitando..." };
-static const char *MSG_HTTP_TEST_TITLE[2]    = { "HTTP test", "Prueba HTTP" };
+#define MENU_HTTP_TEST_ITEM "HTTP test (curl)\t>\n"
+#define MENU_HTTP_SCHEME "Scheme\nhttps\nhttp\n"
+#define MSG_HTTP_HOST_LABEL "Host:"
+#define MSG_HTTP_PATH_LABEL "Path:"
+#define MSG_HTTP_TESTING "Requesting..."
+#define MSG_HTTP_TEST_TITLE "HTTP test"
 
-#endif // !PICO_RP2040
 
 #endif // ESPECTRUM_MESSAGES_h

@@ -1,6 +1,6 @@
 #include "ZiFiSock.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "ZiFi.h"
 #include "Debug.h"
@@ -630,4 +630,4 @@ void ZiFiSock::end() {
     ZiFi::restoreBaud();              // back to the NIC-safe idle rate
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

@@ -89,14 +89,13 @@ visit https://zxespectrum.speccy.org/contacto
 #endif
 #include "kbd_img.h"
 
-#if !PICO_RP2040
 // GM.DLS on-device .dls -> bank conversion progress: throttle OSD redraws to whole
 // percent steps so the long (~tens of s) encode shows life without flickering.
 static int s_dlsConvLastPct = -1;
 static void osdDlsConvProgress(int pct, void* /*user*/) {
     if (pct == s_dlsConvLastPct) return;
     s_dlsConvLastPct = pct;
-    OSD::osdCenteredMsg(string(MSG_MIDI_CONVERTING[Config::lang]) + " " + std::to_string(pct) + "%",
+    OSD::osdCenteredMsg(string(MSG_MIDI_CONVERTING) + " " + std::to_string(pct) + "%",
                         LEVEL_INFO, 0);
 }
 
@@ -113,9 +112,9 @@ static string osdConvertDlsToBank(const string& dlsPath) {
     string outBin = string(CONFIG_DIR) + "/" + base + ".bin";
 
     s_dlsConvLastPct = -1;
-    OSD::osdCenteredMsg(string(MSG_MIDI_CONVERTING[Config::lang]) + " 0%", LEVEL_INFO, 0);
+    OSD::osdCenteredMsg(string(MSG_MIDI_CONVERTING) + " 0%", LEVEL_INFO, 0);
     if (!DlsConv::convert(dlsPath.c_str(), outBin.c_str(), 31250, osdDlsConvProgress, nullptr)) {
-        OSD::osdCenteredMsg(MSG_MIDI_CONVERT_FAIL[Config::lang], LEVEL_WARN, 3000);
+        OSD::osdCenteredMsg(MSG_MIDI_CONVERT_FAIL, LEVEL_WARN, 3000);
         return "";
     }
     // A bank larger than the flash partition is written to SD but can never be
@@ -126,28 +125,23 @@ static string osdConvertDlsToBank(const string& dlsPath) {
     size_t cap = MidiSynth::flashBankCapacity();
     if (bankSz > cap) {
         f_unlink(outBin.c_str());
-        OSD::osdCenteredMsg(string(MSG_MIDI_BANK_TOOBIG[Config::lang]) + " (" +
+        OSD::osdCenteredMsg(string(MSG_MIDI_BANK_TOOBIG) + " (" +
                             std::to_string(bankSz >> 10) + " > " + std::to_string(cap >> 10) + " KB)",
                             LEVEL_WARN, 4000);
         return "";
     }
-    OSD::osdCenteredMsg(MSG_MIDI_CONVERT_OK[Config::lang], LEVEL_OK, 1500);
+    OSD::osdCenteredMsg(MSG_MIDI_CONVERT_OK, LEVEL_OK, 1500);
     return outBin;
 }
-#endif
 
 extern "C" void graphics_set_scanlines(uint8_t level);
 extern "C" void graphics_set_dither(bool enabled);
-#if !PICO_RP2040
 extern "C" volatile bool profi_ds80_active;
 extern "C" const uint32_t profi_default_palette16[16];
-#endif
-#if !PICO_RP2040
 #include "DivMMC.h"
 #include "IDE.h"
 #include "MB02.h"
 #include "GS/GS.h"
-#endif
 
 #include <malloc.h>
 
@@ -199,14 +193,7 @@ extern bool SELECT_VGA;
 extern int ram_pages, butter_pages, psram_pages, swap_pages;
 
 // Shared buffer for HWInfo/ChipInfo/BoardInfo/EmulatorInfo (never called concurrently).
-// RP2040 keeps only HWInfo (Alt+F1) — the Hardware menu (and its other, larger info
-// screens) is removed there — and HWInfo fills only ~500 B, so a 640 B buffer suffices
-// and saves ~900 B of the tight SRAM. RP2350 keeps 1536 for the bigger screens.
-#if PICO_RP2040
-#define OSD_INFO_BUF_SZ 640
-#else
 #define OSD_INFO_BUF_SZ 1536
-#endif
 static char osd_info_buf[OSD_INFO_BUF_SZ] __attribute__((aligned(4)));
 
 uint8_t OSD::cols;                     // Maximum columns
@@ -366,7 +353,7 @@ IRAM_ATTR void OSD::click() {
     else
         pwm_audio_write((uint8_t*) click128, (uint8_t*) click128, 116, 0, 0);
     pwm_audio_set_volume(ESPectrum::aud_volume);
-    if (CPU::paused) osdCenteredMsg(OSD_PAUSE[Config::lang], LEVEL_INFO, 0);
+    if (CPU::paused) osdCenteredMsg(OSD_PAUSE, LEVEL_INFO, 0);
 }
 void close_all(void);
 void OSD::esp_hard_reset() {
@@ -381,11 +368,10 @@ void OSD::esp_hard_reset() {
     while (true);
 }
 
-static bool confirmReboot(const char* const dlg[2]) {
-    return OSD::msgDialog("", dlg[Config::lang]) == DLG_YES;
+static bool confirmReboot(const char* dlg) {
+    return OSD::msgDialog("", dlg) == DLG_YES;
 }
 
-#if !PICO_RP2040
 // SRAM budget gate. See OSDMain.h. Asks Subsystems::budgetCheck whether `f` fits;
 // if not, either refuses (DENY) or pops up the freeable features so the user can
 // turn some off → Config + reboot. Returns true only when the caller may proceed
@@ -402,7 +388,7 @@ bool OSD::featureBudgetGate(int featureId) {
     if (r == BUDGET_ALLOW) return true;
 
     if (r == BUDGET_DENY || nCand == 0) {
-        osdCenteredMsg((string)featureName(f) + ":\n" + MSG_BUDGET_DENY[Config::lang],
+        osdCenteredMsg((string)featureName(f) + ":\n" + MSG_BUDGET_DENY,
                        LEVEL_WARN, 4000);
         return false;
     }
@@ -424,7 +410,7 @@ bool OSD::featureBudgetGate(int featureId) {
         size_t freed = 0;
         for (int i = 0; i < nCand; i++) if (sel[i]) freed += featureCost(cand[i]);
 
-        string menu = (string)MSG_BUDGET_FREE_HINT[Config::lang] + "\n";
+        string menu = (string)MSG_BUDGET_FREE_HINT + "\n";
         for (int i = 0; i < nCand; i++) {
             char row[48];
             snprintf(row, sizeof(row), "%s (%uK)\t[%c]\n",
@@ -432,7 +418,7 @@ bool OSD::featureBudgetGate(int featureId) {
                      sel[i] ? '*' : ' ');
             menu += row;
         }
-        menu += (string)MSG_BUDGET_APPLY[Config::lang] + "\t\n";
+        menu += (string)MSG_BUDGET_APPLY + "\t\n";
 
         char foot[40];
         snprintf(foot, sizeof(foot), "free %uK / need %uK",
@@ -449,7 +435,7 @@ bool OSD::featureBudgetGate(int featureId) {
         }
         // Apply & reboot row.
         if (freed < deficit) {
-            osdCenteredMsg(MSG_BUDGET_INSUFFICIENT[Config::lang], LEVEL_WARN, 2500);
+            osdCenteredMsg(MSG_BUDGET_INSUFFICIENT, LEVEL_WARN, 2500);
             menu_curopt = opt;
             menu_saverect = false;
             continue;
@@ -468,14 +454,12 @@ bool OSD::featureBudgetGate(int featureId) {
     menu_saverect = false;
     return result;
 }
-#endif
 
-#if !PICO_RP2040
 // Centred dialog to type a WiFi password (title = SSID). Saves/restores its own
 // screen rect. Returns the typed text, or "\x1B" if the user pressed Esc.
 static string wifiAskPassword(const string& ssid) {
     const int field = 32; // visible password length
-    const int label = strlen(MSG_WIFI_PASS_LABEL[Config::lang]);
+    const int label = strlen(MSG_WIFI_PASS_LABEL);
     const unsigned short cols = label + field + 2;
     const unsigned short w = (cols * OSD_FONT_W) + 2;
     const unsigned short h = (OSD_FONT_H * 2) + 3;
@@ -490,12 +474,12 @@ static string wifiAskPassword(const string& ssid) {
     VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
     VIDEO::vga.print(ssid.substr(0, cols - 2).c_str());
     // TAB-reveal hint, right-aligned in the title bar.
-    const char* hint = MSG_PASS_TAB[Config::lang];
+    const char* hint = MSG_PASS_TAB;
     VIDEO::vga.setCursor(x + w - 1 - (int)(strlen(hint) + 1) * OSD_FONT_W, y + 1);
     VIDEO::vga.print(hint);
     VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
     VIDEO::vga.setCursor(x + OSD_FONT_W, y + 1 + OSD_FONT_H + 1);
-    VIDEO::vga.print(MSG_WIFI_PASS_LABEL[Config::lang]);
+    VIDEO::vga.print(MSG_WIFI_PASS_LABEL);
     string pass = OSD::inlineTextEdit(x + OSD_FONT_W * (label + 1), y + 1 + OSD_FONT_H + 1, field, "", true);
     VIDEO::SaveRect.restore_last();
     return pass;
@@ -522,7 +506,7 @@ static string netAskField(const string& label, const string& initial, bool mask 
     VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
     VIDEO::vga.print(label.c_str());
     if (mask) { // TAB-reveal hint, right-aligned in the title bar
-        const char* hint = MSG_PASS_TAB[Config::lang];
+        const char* hint = MSG_PASS_TAB;
         VIDEO::vga.setCursor(x + w - 1 - (int)(strlen(hint) + 1) * OSD_FONT_W, y + 1);
         VIDEO::vga.print(hint);
     }
@@ -569,11 +553,11 @@ static Ssh::TrustResult netHostKeyCb(const char* host, const char* keytype,
     string stored = knownHostsLookup(g_net_host_for_cb);
     if (!stored.empty()) {
         if (stored == fp) return Ssh::TRUST;
-        OSD::msgDialog(MSG_NET_HOSTKEY_BAD[Config::lang], fp); // mismatch → refuse
+        OSD::msgDialog(MSG_NET_HOSTKEY_BAD, fp); // mismatch → refuse
         return Ssh::REJECT;
     }
     // First contact — show fingerprint and ask to trust.
-    string body = string(keytype) + "\nSHA256:" + fp + "\n" + MSG_NET_TRUST_Q[Config::lang];
+    string body = string(keytype) + "\nSHA256:" + fp + "\n" + MSG_NET_TRUST_Q;
     if (OSD::msgDialog(g_net_host_for_cb, body) == DLG_YES) {
         knownHostsSave(g_net_host_for_cb, fp);
         return Ssh::TRUST;
@@ -600,7 +584,7 @@ static void netSessionRun(void* p) {
     // progressDialog saves/restores its background (osdCenteredMsg with 0 does not),
     // so the notice is cleanly removed before the browser menu draws. The host-key
     // trust msgDialog (during SSH connect) saves/restores its own rect over this.
-    OSD::progressDialog(MSG_NET_CONNECTING[Config::lang], c->host, 0, 0);
+    OSD::progressDialog(MSG_NET_CONNECTING, c->host, 0, 0);
     RemoteFs* fs = nullptr;
     if (c->proto == 0) {
         Ftp* ftp = new Ftp();
@@ -614,7 +598,7 @@ static void netSessionRun(void* p) {
         else delete sftp;
     }
     OSD::progressDialog("", "", 0, 2); // close the "Connecting..." notice
-    if (!fs) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR[Config::lang], LEVEL_WARN, 2500); return; }
+    if (!fs) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR, LEVEL_WARN, 2500); return; }
     if (!c->restorePath.empty() && c->restorePath != fs->cwdPath())
         fs->cwd(c->restorePath);               // reopen at the last folder for this remote
     OSD::remoteFileDialog(fs); // SD-indexed browser (bounded RAM); runs on this alt-stack
@@ -679,7 +663,7 @@ static inline uint8_t* netAltStackAlloc(size_t& stksz) {
 static void netConnectRemote(const Config::Remote& r, const string& restorePath = "") {
     string pass = r.pass;
     if (!r.savepass) {
-        pass = netAskField(MSG_NET_PASS_LABEL[Config::lang], "", true); // masked
+        pass = netAskField(MSG_NET_PASS_LABEL, "", true); // masked
         if (pass == "\x1B") return;
     }
     // Remember as the "last used" defaults (prefill the Add-Remote form next time).
@@ -695,7 +679,7 @@ static void netConnectRemote(const Config::Remote& r, const string& restorePath 
     NetArenaLease lease;   // borrow the dormant Gigascreen prevFB if available
     size_t stksz = 12 * 1024;
     uint8_t* stk = netAltStackAlloc(stksz);
-    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR[Config::lang], LEVEL_WARN, 2500); return; }
+    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR, LEVEL_WARN, 2500); return; }
     void* top = (void*)(((uintptr_t)stk + stksz) & ~(uintptr_t)7); // 8-byte aligned top
     net_call_on_stack(top, netSessionRun, &ctx);
     Buffer::pfree(stk);
@@ -718,42 +702,42 @@ static Config::Remote* remotesBuf() {
 // and append the connection to remotes.tsv. Does not connect.
 static void addRemoteForm() {
     string ssid, ip;
-    if (!ZiFiAT::getStatus(ssid, ip)) { OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI[Config::lang], LEVEL_WARN, 2200); return; }
+    if (!ZiFiAT::getStatus(ssid, ip)) { OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI, LEVEL_WARN, 2200); return; }
 
     OSD::menu_level = 2; OSD::menu_saverect = true; OSD::menu_curopt = Config::net_proto + 1;
-    uint8_t proto = OSD::menuRun(MENU_NET_PROTO[Config::lang]); // 1=FTP, 2=SFTP
+    uint8_t proto = OSD::menuRun(MENU_NET_PROTO); // 1=FTP, 2=SFTP
     if (proto == 0) return;
     VIDEO::SaveRect.restore_last();
     uint8_t pr = proto - 1;
 
     // Field order: Host → Port → User → Pass (→ save-password → Alias below).
-    string host = netAskField(MSG_NET_HOST_LABEL[Config::lang], Config::net_host);
+    string host = netAskField(MSG_NET_HOST_LABEL, Config::net_host);
     if (host == "\x1B" || host.empty()) return;
     uint16_t defport = pr ? 22 : 21;
     char pbuf[8]; snprintf(pbuf, sizeof(pbuf), "%u", Config::net_port ? Config::net_port : defport);
-    string ports = netAskField(MSG_NET_PORT_LABEL[Config::lang], pbuf);
+    string ports = netAskField(MSG_NET_PORT_LABEL, pbuf);
     if (ports == "\x1B") return;
     uint16_t port = (uint16_t)atoi(ports.c_str()); if (!port) port = defport;
-    string user = netAskField(MSG_NET_USER_LABEL[Config::lang], Config::net_user);
+    string user = netAskField(MSG_NET_USER_LABEL, Config::net_user);
     if (user == "\x1B") return;
-    string pass = netAskField(MSG_NET_PASS_LABEL[Config::lang], "", true); // masked
+    string pass = netAskField(MSG_NET_PASS_LABEL, "", true); // masked
     if (pass == "\x1B") return;
 
     OSD::menu_level = 2; OSD::menu_saverect = true; OSD::menu_curopt = 1;
-    uint8_t sp = OSD::menuRun(MENU_REMOTE_SAVEPASS[Config::lang]); // 1=No, 2=Yes
+    uint8_t sp = OSD::menuRun(MENU_REMOTE_SAVEPASS); // 1=No, 2=Yes
     if (sp == 0) return;
     VIDEO::SaveRect.restore_last();
     bool savepass = (sp == 2);
 
     // Optional start directory, then display name — Enter to leave empty, Esc cancels.
-    string path = netAskField(MSG_REMOTE_PATH_LABEL[Config::lang], "");
+    string path = netAskField(MSG_REMOTE_PATH_LABEL, "");
     if (path == "\x1B") return;
-    string alias = netAskField(MSG_REMOTE_ALIAS_LABEL[Config::lang], "");
+    string alias = netAskField(MSG_REMOTE_ALIAS_LABEL, "");
     if (alias == "\x1B") return;
 
     if (!g_remotes) return;   // alloc failed (OOM) — bail out of the form
     int n = Config::loadRemotes(g_remotes, Config::MAX_REMOTES);
-    if (n >= Config::MAX_REMOTES) { OSD::osdCenteredMsg(MSG_REMOTE_FULL[Config::lang], LEVEL_WARN, 2000); return; }
+    if (n >= Config::MAX_REMOTES) { OSD::osdCenteredMsg(MSG_REMOTE_FULL, LEVEL_WARN, 2000); return; }
     g_remotes[n].host = host; g_remotes[n].user = user; g_remotes[n].port = port;
     g_remotes[n].proto = pr; g_remotes[n].savepass = savepass;
     g_remotes[n].pass = savepass ? pass : ""; g_remotes[n].alias = alias; g_remotes[n].path = path;
@@ -771,7 +755,7 @@ static void addRemoteForm() {
 // F8 forgets, the trailing [Add Remote] row opens the form.
 static void remoteHostsBrowse() {
     string ssid, ip;
-    if (!ZiFiAT::getStatus(ssid, ip)) { OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI[Config::lang], LEVEL_WARN, 2200); return; }
+    if (!ZiFiAT::getStatus(ssid, ip)) { OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI, LEVEL_WARN, 2200); return; }
     if (!g_remotes) return;   // alloc failed (OOM) — can't list remotes
     int hf = 2, hb = 2;                               // keep the cursor on the chosen host
     while (1) {
@@ -789,10 +773,10 @@ static void remoteHostsBrowse() {
                 rows.push_back(b);                    // rows 1..n: a plain row (no <DIR>)
             }
         }
-        rows.push_back(MSG_REMOTE_ADD_ROW[Config::lang]);   // row n+1
+        rows.push_back(MSG_REMOTE_ADD_ROW);   // row n+1
         int key;
-        int sel = OSD::fdChromeList(rows, MENU_ALL_TITLE[Config::lang],
-                                    MENU_REMOTE_TITLE[Config::lang],
+        int sel = OSD::fdChromeList(rows, MENU_ALL_TITLE,
+                                    MENU_REMOTE_TITLE,
                                     OSD::FD_SIDE_HOSTS, false, &key, &hf, &hb);
         if (sel <= 0) {                               // "..", Backspace, or Esc → leave list
             if (sel < 0 && key == OSD::FDK_ESC) OSD::net_close_all = true; // Esc → close OSD
@@ -802,7 +786,7 @@ static void remoteHostsBrowse() {
         int hi = sel - 1;                             // host index (row 0 is "..")
         if (hi < 0 || hi >= n) continue;
         if (key == OSD::FDK_F8) {                      // F8 → forget this connection
-            if (OSD::msgDialog(g_remotes[hi].host, MSG_REMOTE_FORGET_Q[Config::lang]) == DLG_YES) {
+            if (OSD::msgDialog(g_remotes[hi].host, MSG_REMOTE_FORGET_Q) == DLG_YES) {
                 for (int j = hi; j < n - 1; j++) g_remotes[j] = g_remotes[j + 1];
                 Config::saveRemotes(g_remotes, n - 1);
             }
@@ -897,18 +881,18 @@ static bool f5Locations() {
         const bool usb = UsbMsc::ready() && !FileUtils::usbRoot;
         std::vector<string> rows = {
             // USB-as-root: "Local" is the stick, not the (absent) SD card.
-            string(1, (char)DIR_MARKER) + (FileUtils::usbRoot ? MSG_F5_USB[Config::lang]
-                                                              : MSG_F5_LOCAL[Config::lang]),
-            string(1, (char)DIR_MARKER) + MSG_F5_REMOTE[Config::lang],
-            string(1, (char)DIR_MARKER) + MSG_F5_WEB[Config::lang],
-            MSG_F5_ADD_REMOTE[Config::lang],
+            string(1, (char)DIR_MARKER) + (FileUtils::usbRoot ? MSG_F5_USB
+                                                              : MSG_F5_LOCAL),
+            string(1, (char)DIR_MARKER) + MSG_F5_REMOTE,
+            string(1, (char)DIR_MARKER) + MSG_F5_WEB,
+            MSG_F5_ADD_REMOTE,
         };
         if (usb)
-            rows.insert(rows.begin() + 1, string(1, (char)DIR_MARKER) + MSG_F5_USB[Config::lang]);
+            rows.insert(rows.begin() + 1, string(1, (char)DIR_MARKER) + MSG_F5_USB);
         OSD::menu_level = 0;
         int key;
-        int loc = OSD::fdChromeList(rows, MENU_ALL_TITLE[Config::lang],
-                                    MENU_F5_LOCATION[Config::lang],
+        int loc = OSD::fdChromeList(rows, MENU_ALL_TITLE,
+                                    MENU_F5_LOCATION,
                                     OSD::FD_SIDE_LOCATIONS, false, &key, &lf, &lb);
         if (loc < 0) return false;                    // Esc → close OSD
         if (usb && loc == 1) {                        // USB Drive → browse the stick
@@ -997,7 +981,7 @@ static void wifiLogLine(const char* s) { ftpdLogLine(s); wifiLogDraw(); }
 // presses a key — so a failure stays readable instead of auto-closing.
 static void wifiLogHold(const char* msg) {
     if (msg && msg[0]) ftpdLogLine(msg);
-    ftpdLogLine(Config::lang ? " -- pulsa una tecla --" : " -- press a key --");
+    ftpdLogLine(" -- press a key --");
     wifiLogDraw();
     auto* kb = ESPectrum::PS2Controller.keyboard();
     while (kb->virtualKeyAvailable()) { fabgl::VirtualKeyItem k; kb->getNextVirtualKey(&k); } // drain
@@ -1021,15 +1005,15 @@ static void ftpdSessionRun(void* arg) {
 
     ftpd_log_count = 0; ftpd_log_dirty = true;
     if (!Ftpd::begin(21, ftpdLogLine)) {
-        OSD::osdCenteredMsg(Config::lang ? "Error al iniciar FTP" : "FTP server start failed", LEVEL_WARN, 2500);
+        OSD::osdCenteredMsg("FTP server start failed", LEVEL_WARN, 2500);
         Ftpd::stop();
         return;
     }
-    ftpdLogLine(Config::lang ? "Servidor FTP iniciado" : "FTP server started");
+    ftpdLogLine("FTP server started");
     char det[FTPD_LOG_COLS];
     snprintf(det, sizeof(det), "ftp://%s:21  user: anonymous", ip);
     ftpdLogLine(det);
-    ftpdLogLine(Config::lang ? "Modo ACTIVO. ESC para parar." : "Use ACTIVE mode. ESC to stop.");
+    ftpdLogLine("Use ACTIVE mode. ESC to stop.");
 
     unsigned short sx = OSD::scrAlignCenterX(OSD_W);
     unsigned short sy = OSD::scrAlignCenterY(OSD_H);
@@ -1082,7 +1066,7 @@ static void ftpdSessionRun(void* arg) {
     }
 
     Ftpd::stop();
-    OSD::osdCenteredMsg(Config::lang ? "Servidor FTP detenido" : "FTP server stopped", LEVEL_WARN, 1200);
+    OSD::osdCenteredMsg("FTP server stopped", LEVEL_WARN, 1200);
     VIDEO::SaveRect.restore_last();
 }
 
@@ -1090,21 +1074,21 @@ static void ftpdSessionRun(void* arg) {
 static void ftpServerRun() {
     string ssid, ip;
     if (!ZiFiAT::getStatus(ssid, ip)) {
-        OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI[Config::lang], LEVEL_WARN, 2200);
+        OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI, LEVEL_WARN, 2200);
         return;
     }
     FtpdCtx ctx; ctx.ip = ip.c_str(); // ip outlives the (synchronous) call below
     NetArenaLease lease;   // borrow the dormant Gigascreen prevFB if available
     size_t stksz = 8 * 1024;
     uint8_t* stk = netAltStackAlloc(stksz);
-    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR[Config::lang], LEVEL_WARN, 2500); return; }
+    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR, LEVEL_WARN, 2500); return; }
     void* top = (void*)(((uintptr_t)stk + stksz) & ~(uintptr_t)7); // 8-byte aligned top
     net_call_on_stack(top, ftpdSessionRun, &ctx);
     Buffer::pfree(stk);
 }
 
 // ── Download archive (catalog server over plain HTTP) ───────────────────────
-// Browses the pico-spec catalog server (HttpCatalogFs) with the same generic
+// Browses the pico-speccy catalog server (HttpCatalogFs) with the same generic
 // remoteFileDialog used for FTP/SFTP. Runs on the large heap stack like the
 // FTP/SFTP session — no crypto here, but the SD-indexed browser is the heavy
 // part, so we keep off the 4 KB core stack for safety + consistency.
@@ -1126,12 +1110,12 @@ static void archSessionRun(void* p) {
         archOpenSite(g_web_rsite.c_str(), g_web_rpath);
         if (OSD::net_launch_close || OSD::net_close_all) return; // launched or Esc → unwind
     }
-    OSD::progressDialog(MSG_NET_CONNECTING[Config::lang], "", 0, 0); // no URL (built-in catalog)
+    OSD::progressDialog(MSG_NET_CONNECTING, "", 0, 0); // no URL (built-in catalog)
     static string site_ids[12];
     static string site_names[12];
     int n = HttpCatalogFs::fetchSites(site_ids, site_names, 12);
     OSD::progressDialog("", "", 0, 2);
-    if (n <= 0) { OSD::osdCenteredMsg(MSG_ARCH_SITES_ERR[Config::lang], LEVEL_WARN, 2200); return; }
+    if (n <= 0) { OSD::osdCenteredMsg(MSG_ARCH_SITES_ERR, LEVEL_WARN, 2200); return; }
 
     // Site list rendered IN the browser window (not a popup) — ".." row returns to the
     // locations level; selecting a source opens its catalog in the same chrome.
@@ -1141,8 +1125,8 @@ static void archSessionRun(void* p) {
         rows.push_back(string(2, (char)DIR_MARKER) + "..");                 // → locations
         for (int i = 0; i < n; i++) rows.push_back(string(1, (char)DIR_MARKER) + site_names[i]);
         int key;
-        int sel = OSD::fdChromeList(rows, MENU_ALL_TITLE[Config::lang],
-                                    MENU_ARCH_SITE_TITLE[Config::lang],
+        int sel = OSD::fdChromeList(rows, MENU_ALL_TITLE,
+                                    MENU_ARCH_SITE_TITLE,
                                     OSD::FD_SIDE_LOCATIONS, false, &key, &sf, &sb);
         if (sel <= 0) {                             // "..", Backspace, or Esc → leave list
             if (sel < 0 && key == OSD::FDK_ESC) OSD::net_close_all = true; // Esc → close OSD
@@ -1160,14 +1144,14 @@ static void archSessionRun(void* p) {
 static void netDownloadArchive() {
     string ssid, ip;
     if (!ZiFiAT::getStatus(ssid, ip)) {
-        OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI[Config::lang], LEVEL_WARN, 2200);
+        OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI, LEVEL_WARN, 2200);
         return;
     }
 
     NetArenaLease lease;   // borrow the dormant Gigascreen prevFB if available
     size_t stksz = 12 * 1024;
     uint8_t* stk = netAltStackAlloc(stksz);
-    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR[Config::lang], LEVEL_WARN, 2500); return; }
+    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR, LEVEL_WARN, 2500); return; }
     void* top = (void*)(((uintptr_t)stk + stksz) & ~(uintptr_t)7);
     net_call_on_stack(top, archSessionRun, nullptr);
     Buffer::pfree(stk);
@@ -1204,7 +1188,7 @@ void httpTestRun(void* p) {
     char summary[1024];
     HttpPreview pv = { preview, sizeof(preview), 0 };
 
-    OSD::progressDialog(MSG_HTTP_TESTING[Config::lang], c->url, 0, 0);
+    OSD::progressDialog(MSG_HTTP_TESTING, c->url, 0, 0);
     size_t heap0 = getFreeHeap();
     HttpsGet::Result r = HttpsGet::get(c->url.c_str(), httpTestSink, &pv,
                                        CONFIG_DIR "/cacert.pem");
@@ -1220,7 +1204,7 @@ void httpTestRun(void* p) {
              c->url.c_str(), r.status, (unsigned long)r.length,
              (unsigned long)r.received, r.ok ? "yes" : "no",
              (unsigned)heap0, (unsigned)heap1, preview);
-    OSD::showTextDialog(MSG_HTTP_TEST_TITLE[Config::lang], summary);
+    OSD::showTextDialog(MSG_HTTP_TEST_TITLE, summary);
 }
 } // namespace
 
@@ -1228,12 +1212,12 @@ static void netHttpTest() {
     Buffer::selfTest();   // exercise the tiered allocator (logs to serial) before the GET
     string ssid, ip;
     if (!ZiFiAT::getStatus(ssid, ip)) {
-        OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI[Config::lang], LEVEL_WARN, 2200);
+        OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI, LEVEL_WARN, 2200);
         return;
     }
     // Scheme.
     OSD::menu_level = 2; OSD::menu_saverect = true; OSD::menu_curopt = 1;
-    uint8_t sc = OSD::menuRun(MENU_HTTP_SCHEME[Config::lang]);
+    uint8_t sc = OSD::menuRun(MENU_HTTP_SCHEME);
     if (sc == 0) return;
     VIDEO::SaveRect.restore_last();
     const char* scheme = (sc == 1) ? "https" : "http";
@@ -1244,16 +1228,16 @@ static void netHttpTest() {
     static string lastPath = "/";
 
     // Host[:port] — prefilled with whatever was last typed this session.
-    string host = netAskField(MSG_HTTP_HOST_LABEL[Config::lang], lastHost);
+    string host = netAskField(MSG_HTTP_HOST_LABEL, lastHost);
     if (host == "\x1B" || host.empty()) return;
     lastHost = host;
 
     // Path — visible width clamped to the screen, but the input cap is larger so
     // long paths can be typed (the field scrolls horizontally past the window).
-    int pathField = (int)OSD::osdMaxCols() - (int)strlen(MSG_HTTP_PATH_LABEL[Config::lang]) - 4;
+    int pathField = (int)OSD::osdMaxCols() - (int)strlen(MSG_HTTP_PATH_LABEL) - 4;
     if (pathField < 20) pathField = 20;
     if (pathField > 64) pathField = 64;
-    string path = netAskField(MSG_HTTP_PATH_LABEL[Config::lang], lastPath, false, pathField, 255);
+    string path = netAskField(MSG_HTTP_PATH_LABEL, lastPath, false, pathField, 255);
     if (path == "\x1B") return;
     if (path.empty() || path[0] != '/') path = "/" + path;
     lastPath = path;
@@ -1266,13 +1250,12 @@ static void netHttpTest() {
     NetArenaLease lease;   // borrow the dormant Gigascreen prevFB if available
     size_t stksz = 12 * 1024;
     uint8_t* stk = netAltStackAlloc(stksz);
-    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR[Config::lang], LEVEL_WARN, 2500); return; }
+    if (!stk) { OSD::osdCenteredMsg(MSG_NET_CONN_ERR, LEVEL_WARN, 2500); return; }
     void* top = (void*)(((uintptr_t)stk + stksz) & ~(uintptr_t)7);
     net_call_on_stack(top, httpTestRun, &ctx);
     Buffer::pfree(stk);
 }
 #endif // ZIFI_NET_CLIENT
-#endif
 
 // // Cursor to OSD first row,col
 void OSD::osdHome() { VIDEO::vga.setCursor(osdInsideX(), osdInsideY()); }
@@ -1506,7 +1489,7 @@ static bool persistDeleteConfirm(uint8_t slotnumber) {
     sprintf(buf, "#%02u", slotnumber);
     string displayName = (name == "\x01") ? "[No Name]" : name;
     string msg = string(buf) + " " + displayName + "?";
-    if (OSD::msgDialog(Config::lang ? "Borrar ranura" : "Delete slot", msg) != DLG_YES) return false;
+    if (OSD::msgDialog("Delete slot", msg) != DLG_YES) return false;
     persistDelete(slotnumber);
     return true;
 }
@@ -1575,7 +1558,6 @@ static string slotInlineEdit(uint8_t opt2, const string& current) {
     return OSD::inlineTextEdit(ex, ey, 20, name);
 }
 
-#if !PICO_RP2040
 // Throttled progress overlay for IDE::createImage (zero-fill can take seconds).
 static void ide_create_progress(uint32_t done, uint32_t total) {
     static int lastpct = -1;
@@ -1586,7 +1568,6 @@ static void ide_create_progress(uint32_t done, uint32_t total) {
     snprintf(msg, sizeof(msg), "Creating HDD... %d%%", pct);
     OSD::osdCenteredMsg(msg, LEVEL_INFO, 0);
 }
-#endif
 
 
 static bool persistSave(uint8_t slotnumber, uint8_t opt2, bool quicksave = false)
@@ -1603,8 +1584,8 @@ static bool persistSave(uint8_t slotnumber, uint8_t opt2, bool quicksave = false
     // Slot isn't void
     if (f_stat(finfo.c_str(), &stat_buf) == FR_OK) {
         if (!quicksave) {
-            string title = OSD_PSNA_SAVE[Config::lang];
-            string msg = OSD_PSNA_EXISTS[Config::lang];
+            string title = OSD_PSNA_SAVE;
+            string msg = OSD_PSNA_EXISTS;
             uint8_t res = OSD::msgDialog(title, msg);
             if (res != DLG_YES) return false;
         }
@@ -1721,7 +1702,6 @@ string getMenuPrefix() {
 static string hkBindingText(int idx);
 static string expandHotkeys(const char* menu);
 extern const char* const hkDescEN[];
-extern const char* const hkDescES[];
 
 // Cold-boot into TR-DOS for the current architecture. Mirrors the per-arch
 // "Reset to… → TR-DOS" logic (HK_RESET_TO): Profi boots bank1 + SYSEN-style
@@ -1747,20 +1727,18 @@ void OSD::bootTrdos() {
 
 // OSD Main Loop
 void OSD::nmiAction() {
-#if !PICO_RP2040
     if (DivMMC::enabled) {
         // DivMMC NMI: automap at 0x0066 handled by preOpcFetch/postOpcFetch
         Z80::triggerNMI();
     } else
-#endif
     if (Z80Ops::isByte) {
         // ZX Byte: NMI menu with COBMECT mode toggle
         menu_level = 0;
         menu_curopt = 1;
         menu_saverect = true;
-        string nmi_menu = MENU_NMI_TITLE[Config::lang];
+        string nmi_menu = MENU_NMI_TITLE;
         nmi_menu += "NMI\n";
-        nmi_menu += MENU_BYTE_COBMECT_MODE[Config::lang];
+        nmi_menu += MENU_BYTE_COBMECT_MODE;
         uint8_t nmi_cols = 20;
         uint16_t nmi_w = (nmi_cols * OSD_FONT_W) + 2;
         uint16_t nmi_h = (rowCount(nmi_menu) * OSD_FONT_H) + 2;
@@ -1777,14 +1755,14 @@ void OSD::nmiAction() {
             MemESP::registerOverlay(gb_rom_0_sinclair_48k,
                 Config::byte_cobmect_mode ? gb_overlay_48k_byte_sovmest : gb_overlay_48k_byte);
             MemESP::recoverPage0();
-            osdCenteredMsg(Config::byte_cobmect_mode ? OSD_COBMECT_ON[Config::lang] : OSD_COBMECT_OFF[Config::lang], LEVEL_INFO, 500);
+            osdCenteredMsg(Config::byte_cobmect_mode ? OSD_COBMECT_ON : OSD_COBMECT_OFF, LEVEL_INFO, 500);
         }
     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
         menu_level = 0;
         menu_curopt = 1;
         menu_saverect = true;
-        string nmi_menu = MENU_NMI_TITLE[Config::lang];
-        nmi_menu += MENU_NMI_SEL[Config::lang];
+        string nmi_menu = MENU_NMI_TITLE;
+        nmi_menu += MENU_NMI_SEL;
         uint8_t nmi_cols = 20;
         uint16_t nmi_w = (nmi_cols * OSD_FONT_W) + 2;
         uint16_t nmi_h = (rowCount(nmi_menu) * OSD_FONT_H) + 2;
@@ -1807,7 +1785,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         ~AYGuard() { if (Config::audio_driver == 3) send_to_595(HIGH(AY_Enable)); }
     } ayGuard;
 
-#if !PICO_RP2040
     // DS80 OSD palette guard.
     //
     // While OSD is open, the Z80/main loop is paused (suspended inside do_OSD()),
@@ -1872,7 +1849,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
         }
     } ds80Guard;
-#endif
 
     static uint8_t last_sna_row = 0;
     fabgl::VirtualKeyItem Nextkey;
@@ -1889,7 +1865,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         }
     }
 
-#if !PICO_RP2040
     // Alt+` (grave/tilde) or plain PrtScr (the Karabas-Pro hardware combo) —
     // toggle Profi extended keyboard mode (only in Profi arch)
     if (Config::arch == "Profi" && !CTRL &&
@@ -1900,7 +1875,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         osdCenteredMsg(Config::profi_ext_keys ? " XT keyboard ON  " : " XT keyboard OFF ", LEVEL_INFO, 500);
         return;
     }
-#endif
 
 #ifdef VGA_HDMI
     // Mode switches require a hard reset — heap fragmentation breaks runtime
@@ -1924,9 +1898,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
     } else
 #endif
     if (hkIdx == Config::HK_HW_INFO) { // Show mem info (Alt+F1)
-            // Kept on RP2040 too (useful for debugging the tight heap); uses the
-            // 640 B osd_info_buf there. The rest of the Hardware menu is still
-            // removed on RP2040 — HWInfo is the only remaining osd_info_buf user.
             OSD::HWInfo();
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
         } else
@@ -1954,17 +1925,16 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         }
         else
         if (hkIdx == Config::HK_RESET_TO) { // Reset to...
-#if !PICO_RP2040
             if (DivMMC::enabled) {
                 menu_level = 0;
                 menu_curopt = 1;
                 menu_saverect = true;
                 uint8_t rst_cols = 22;
                 uint16_t rst_w = (rst_cols * OSD_FONT_W) + 2;
-                uint16_t rst_h = (rowCount(MENU_RESETTO_DIVMMC[Config::lang]) * OSD_FONT_H) + 2;
-                uint8_t opt = simpleMenuRun(MENU_RESETTO_DIVMMC[Config::lang],
+                uint16_t rst_h = (rowCount(MENU_RESETTO_DIVMMC) * OSD_FONT_H) + 2;
+                uint8_t opt = simpleMenuRun(MENU_RESETTO_DIVMMC,
                     scrAlignCenterX(rst_w), scrAlignCenterY(rst_h),
-                    rowCount(MENU_RESETTO_DIVMMC[Config::lang]), rst_cols);
+                    rowCount(MENU_RESETTO_DIVMMC), rst_cols);
                 if (opt == 1) {
                     // Soft Reset: keep DivMMC RAM (ESXDOS sees 0xAA flag, goes to file browser)
                     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
@@ -1979,7 +1949,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     ESPectrum::reset();
                 }
             } else
-#endif
             if (Z80Ops::is48) {
                 // 48K - just reset directly
                 if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
@@ -1989,14 +1958,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 // Build machine-dependent menu
                 string reset_menu;
                 if (Config::arch == "Profi") {
-                    reset_menu = MENU_RESETTO_PROFI[Config::lang];
+                    reset_menu = MENU_RESETTO_PROFI;
                 } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
                     if (Config::romSet == "128Kpg")
-                        reset_menu = MENU_RESETTO_PENTGLUK[Config::lang];
+                        reset_menu = MENU_RESETTO_PENTGLUK;
                     else
-                        reset_menu = MENU_RESETTO_PENT[Config::lang];
+                        reset_menu = MENU_RESETTO_PENT;
                 } else {
-                    reset_menu = MENU_RESETTO_128[Config::lang];
+                    reset_menu = MENU_RESETTO_128;
                 }
 
                 menu_level = 0;
@@ -2076,16 +2045,15 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
         }
         else if (FileUtils::fsMount && hkIdx == Config::HK_DISK) {
-#if !PICO_RP2040
             if (DivMMC::enabled) {
                 menu_level = 0;
                 menu_saverect = false;
-                string mFile = fileDialog(FileUtils::IMG_Path, MENU_IMG_TITLE[Config::lang], DISK_IMGFILE, 51, 22);
+                string mFile = fileDialog(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE, 51, 22);
                 if (mFile != "") {
                     string fname = FileUtils::IMG_Path + mFile.substr(1);
                     if (FileUtils::getLCaseExt(fname) == "zip") {
                         string zipFname = ZipExtract::extract(fname, DISK_IMGFILE);
-                        if (zipFname.empty()) OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN);
+                        if (zipFname.empty()) OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN);
                         else if (zipFname != "\x1b") fname = zipFname;
                         else fname.clear();
                     }
@@ -2098,11 +2066,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 }
                 if (VIDEO::OSD) OSD::drawStats();
             } else
-#endif
             while (1) {
                 menu_level = 0;
                 menu_saverect = false;
-                string mFile = fileDialog(FileUtils::DSK_Path, MENU_DSK_TITLE[Config::lang], DISK_DSKFILE, 51, 22);
+                string mFile = fileDialog(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE, 51, 22);
                 if (mFile != "") {
                     string fname = FileUtils::DSK_Path + mFile.substr(1);
                     string fprefix = mFile.substr(0,1);
@@ -2162,7 +2129,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     string ext = FileUtils::getLCaseExt(fname);
                     if (ext == "zip") {
                         string zipFname = ZipExtract::extract(fname, DISK_DSKFILE);
-                        if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); continue; }
+                        if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); continue; }
                         if (zipFname == "\x1b") continue;
                         fname = zipFname;
                         ext = FileUtils::getLCaseExt(fname);
@@ -2171,7 +2138,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         printf("Insert disk %s\n",fname.c_str());
                         rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
                     }
-#if !PICO_RP2040
                     else if (ext == "mbd") {
                         printf("Insert MB-02 disk %s\n",fname.c_str());
                         if (MB02::enabled) {
@@ -2183,7 +2149,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
                         }
                     }
-#endif
                     else
                     {
                         Debug::led_blink();
@@ -2204,7 +2169,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
         }
         else if (hkIdx == Config::HK_GIGASCREEN) {
-#if !PICO_RP2040
             // Profi is incompatible with Gigascreen (renderer geometry never
             // touches the prev-FB coherently) — same guard as the Video menu;
             // without it the Alt+PgUp toggle enabled it mid-Profi and the
@@ -2248,15 +2212,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 VIDEO::gigascreen_auto_countdown = 0;
                 GsSubsys::request(false);
             }
-            std::string menu = Config::gigascreen_onoff == 1 ? OSD_GIGASCREEN_ON[Config::lang]
-                             : Config::gigascreen_onoff == 2 ? OSD_GIGASCREEN_AUTO[Config::lang]
-                             : OSD_GIGASCREEN_OFF[Config::lang];
+            std::string menu = Config::gigascreen_onoff == 1 ? OSD_GIGASCREEN_ON
+                             : Config::gigascreen_onoff == 2 ? OSD_GIGASCREEN_AUTO
+                             : OSD_GIGASCREEN_OFF;
             osdCenteredMsg(menu, LEVEL_INFO, 500);
             Config::save();
-#endif
         } else if (hkIdx == Config::HK_MAX_SPEED || KeytoESP == fabgl::VK_NUMLOCK) {
         ESPectrum::maxSpeed = !ESPectrum::maxSpeed;
-        std::string menu = ESPectrum::maxSpeed ? OSD_MAXSPEED_ON[Config::lang] : OSD_MAXSPEED_OFF[Config::lang];
+        std::string menu = ESPectrum::maxSpeed ? OSD_MAXSPEED_ON : OSD_MAXSPEED_OFF;
         osdCenteredMsg(menu, LEVEL_INFO, 500);
         click();
         } else if (hkIdx == Config::HK_PAUSE) {
@@ -2265,14 +2228,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         } else if (FileUtils::fsMount && hkIdx == Config::HK_LOAD_SNA) {
             menu_level = 0;
             menu_saverect = false;
-            string mFile = fileDialog(FileUtils::SNA_Path, MENU_SNA_TITLE[Config::lang], DISK_SNAFILE, 51, 22);
+            string mFile = fileDialog(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE, 51, 22);
             if (mFile != "") {
                 Config::save();
                 mFile.erase(0, 1);
                 string fname = FileUtils::SNA_Path + mFile;
                 if (FileUtils::getLCaseExt(fname) == "zip") {
                     string zipFname = ZipExtract::extract(fname, DISK_SNAFILE);
-                    if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); }
+                    if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); }
                     else if (zipFname != "\x1b") fname = zipFname;
                     else fname.clear();
                 }
@@ -2290,8 +2253,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             menu_curopt = Config::persist_slot;
             // Persist Load
             while (1) {
-                menu_footer = Config::lang ? "F3:Cargar  F6:Renombrar  F8:Borrar" : "F3:Load  F6:Rename  F8:Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD[Config::lang], 40));
+                menu_footer = "F3:Load  F6:Rename  F8:Remove";
+                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD, 40));
                 if (opt2) {
                     Config::persist_slot = opt2;
                     if (menu_del_pressed) {
@@ -2313,8 +2276,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             menu_level = 0;
             menu_curopt = Config::persist_slot;
             while (1) {
-                menu_footer = Config::lang ? "F4:Guardar  F6:Renombrar  F8:Borrar" : "F4:Save  F6:Rename  F8:Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE[Config::lang], 40));
+                menu_footer = "F4:Save  F6:Rename  F8:Remove";
+                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE, 40));
                 if (opt2) {
                     Config::persist_slot = opt2;
                     if (menu_del_pressed) {
@@ -2346,7 +2309,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // Quick Save — save to current persist slot without dialog (same as F4 + F4)
             persistSave(Config::persist_slot, Config::persist_slot, true);
         } else if (FileUtils::fsMount && hkIdx == Config::HK_LOAD_ANY) {
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
             // When networking is available, F5 first offers a location picker IN the
             // browser window (Local / Remote / Web Archives / Add Remote). The gate is
             // cheap (no blocking ESP round-trip); the network actions check the WiFi link
@@ -2378,12 +2341,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // Loop to allow re-opening fileDialog after ZIP cancel
             bool forcePopup = false;
             f5_retry:
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
             // From locations: show a ".." even at the SD root → returns "" → locations.
             OSD::fd_root_parent = f5HasChooser();
 #endif
-            mFile = fileDialog(FileUtils::ALL_Path, MENU_ALL_TITLE[Config::lang], DISK_ALLFILE, 52, 22);
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+            mFile = fileDialog(FileUtils::ALL_Path, MENU_ALL_TITLE, DISK_ALLFILE, 52, 22);
+#if ZIFI_NET_CLIENT
             OSD::fd_root_parent = false;             // don't leak into other fileDialog uses
             // ".." at the SD root → locations chooser. Esc ("") just closes the browser
             // (as before) — it does NOT climb a level.
@@ -2393,14 +2356,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 // X prefix = extract ZIP to current folder
                 if (mFile[0] == 'X') {
                     fname = FileUtils::ALL_Path + mFile.substr(1);
-                    OSD::osdCenteredMsg(OSD_ZIP_EXTRACTING[Config::lang], LEVEL_INFO, 0);
+                    OSD::osdCenteredMsg(OSD_ZIP_EXTRACTING, LEVEL_INFO, 0);
                     int count = ZipExtract::extractAll(fname, FileUtils::ALL_Path);
                     if (count > 0) {
                         char msg[40];
                         snprintf(msg, sizeof(msg), " Extracted %d file(s) ", count);
                         OSD::osdCenteredMsg(msg, LEVEL_INFO, 1000);
                     } else {
-                        OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN);
+                        OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN);
                     }
                     goto f5_retry;
                 }
@@ -2416,12 +2379,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     // buffers on butter-less boards (no-op on butter — palloc routes
                     // them to XIP PSRAM). Released right after the extract. The lease
                     // helper only exists where Gigascreen + the net arena do (RP2350).
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
                     NetArenaLease zipLease;
 #endif
                     string zipFname = ZipExtract::extract(fname, DISK_ALLFILE);
                     if (zipFname.empty()) {
-                        OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN);
+                        OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN);
                         if (VIDEO::OSD) OSD::drawStats();
                         return;
                     }
@@ -2467,13 +2430,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         // TD0 is read-only (no write-back) → always WP regardless of the slot flag.
                         ESPectrum::fdd.disk[0]->writeprotect =
                             Config::driveWP[0]
-#if !PICO_RP2040
                             || ESPectrum::fdd.disk[0]->IsTD0File
-#endif
                             ;
                     Config::save();
                 }
-#if !PICO_RP2040
                 else if (ext == "mbd") {
                     // MB-02+ disk — Enter mounts into Drive 1, F5 opens the popup.
                     if (MB02::enabled) {
@@ -2495,7 +2455,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
                     }
                 }
-#endif
                 else if (ext == "sna" || ext == "z80" || ext == "p") {
                     // Snapshot
                     if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
@@ -2507,13 +2466,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         Config::last_ram_file = fname;
                     }
                 }
-#if !PICO_RP2040
                 else if (ext == "rom" || ext == "bin") {
                     // ALF cartridge — lazy-mount from SD (no flash) and switch into ALF in place.
                     if (loadAlfCart(fname)) return;   // clean exit into the running machine
                 }
-#endif
-#if !PICO_RP2040
                 else if (ext == "mmc" || ext == "hdf") {
                     // DivMMC/DivIDE image — Enter loads into hd0 (slot 0); F5 opens
                     // the slot popup which mounts in-place and keeps the popup open.
@@ -2532,11 +2488,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         Config::save();
                         ESPectrum::reset();
                     } else {
-                        OSD::osdCenteredMsg(OSD_IMG_NEEDS_ESXDOS[Config::lang], LEVEL_WARN);
+                        OSD::osdCenteredMsg(OSD_IMG_NEEDS_ESXDOS, LEVEL_WARN);
                     }
                 }
-#endif
-#if !PICO_RP2040
                 else if (ext == "dls") {
                     // GM.DLS soundbank — convert to a GMWB bank in CONFIG_DIR and flash
                     // it, the same pipeline as Audio→MIDI→GM.DLS→"Convert a .dls".
@@ -2556,15 +2510,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // applyBankLive() loads THIS freshly-converted bank: live on PSRAM
                             // (no reboot), else false → it must be written to flash at early boot.
                             if (MidiSynth::applyBankLive()) {
-                                osdCenteredMsg(MSG_MIDI_BANK_OK[Config::lang], LEVEL_OK, 2000);
-                            } else if (OSD::msgDialog("DLS Wavetable", MSG_MIDI_BANK_INSTALL_Q[Config::lang]) == DLG_YES) {
-                                osdCenteredMsg(MSG_MIDI_BANK_FLASHING[Config::lang], LEVEL_INFO, 3000);
+                                osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
+                            } else if (OSD::msgDialog("DLS Wavetable", MSG_MIDI_BANK_INSTALL_Q) == DLG_YES) {
+                                osdCenteredMsg(MSG_MIDI_BANK_FLASHING, LEVEL_INFO, 3000);
                                 OSD::esp_hard_reset();   // no PSRAM: provisionAtBoot writes it pre-video
                             }
                         }
                     }
                 }
-#endif
             }
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
         } else if (hkIdx == Config::HK_TAPE_PLAY) {
@@ -2578,7 +2531,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         } else if (hkIdx == Config::HK_TAPE_BROWSER) {
             // Tape Browser
             if (Tape::tapeFileName=="none") {
-                OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR[Config::lang], LEVEL_WARN);
+                OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
             } else {
                 menu_level = 0;
                 menu_curopt = 1;
@@ -2594,14 +2547,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             {
                 uint8_t mode = VIDEO::OSD & 0x03;
                 bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte)
-#if !PICO_RP2040
                                 || ((Z80Ops::is48 || Z80Ops::is128) && MB02::enabled))
                         && Tape::tapeStatus != TAPE_LOADING
                     && !DivMMC::enabled
-#else
-                                )
-                        && Tape::tapeStatus != TAPE_LOADING
-#endif
                     ;
                 uint8_t maxMode = hasFdd ? 3 : 2;
 
@@ -2698,7 +2646,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // whole menu stack down so the freshly loaded program runs immediately.
             if (OSD::net_launch_close) { OSD::net_launch_close = false; if (VIDEO::OSD) OSD::drawStats(); return; }
             uint8_t opt = menuRun(getMenuPrefix() + Config::arch + "\n" +
-                (!FileUtils::fsMount ? MENU_MAIN_NO_SD[Config::lang] : MENU_MAIN[Config::lang])
+                (!FileUtils::fsMount ? MENU_MAIN_NO_SD : MENU_MAIN)
             );
             if (opt == 1) { // Volume
                 if (VIDEO::OSD == 0) {
@@ -2724,25 +2672,25 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 menu_curopt = 1;
                 while(1) {
                     menu_level = 1;
-                    uint8_t stor_num = menuRun(FileUtils::fsMount ? MENU_STORAGE_MAIN[Config::lang] : MENU_STORAGE_MAIN_NO_SD[Config::lang]);
+                    uint8_t stor_num = menuRun(FileUtils::fsMount ? MENU_STORAGE_MAIN : MENU_STORAGE_MAIN_NO_SD);
                     if (stor_num == 1) { // Tape
                         menu_saverect = true;
                         menu_curopt = 1;
                         while(1) {
                             menu_level = 2;
-                            uint8_t tap_num = menuRun(expandHotkeys(FileUtils::fsMount ? MENU_TAPE[Config::lang] : MENU_TAPE_NO_SD[Config::lang]));
+                            uint8_t tap_num = menuRun(expandHotkeys(FileUtils::fsMount ? MENU_TAPE : MENU_TAPE_NO_SD));
                             if (tap_num > 0) {
                                 if (!FileUtils::fsMount) ++tap_num;
                                 menu_level = 3;
                                 menu_saverect = true;
                                 if (tap_num == 1) {
                                     // Select TAP File
-                                    string mFile = fileDialog(FileUtils::TAP_Path, MENU_TAP_TITLE[Config::lang],DISK_TAPFILE,28,16);
+                                    string mFile = fileDialog(FileUtils::TAP_Path, MENU_TAP_TITLE,DISK_TAPFILE,28,16);
                                     if (mFile != "") {
                                         string fname = FileUtils::TAP_Path + mFile.substr(1);
                                         if (FileUtils::getLCaseExt(fname) == "zip") {
                                             string zipFname = ZipExtract::extract(fname, DISK_TAPFILE);
-                                            if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); break; }
+                                            if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
                                             if (zipFname == "\x1b") break;
                                             fname = zipFname;
                                             string zipBase = fname.substr(fname.rfind('/') + 1);
@@ -2779,7 +2727,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 else if (tap_num == 3) {
                                     // Tape Browser
                                     if (Tape::tapeFileName=="none") {
-                                        OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR[Config::lang], LEVEL_WARN);
+                                        OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
                                         menu_curopt = 2;
                                         menu_saverect = false;
                                     } else {
@@ -2799,8 +2747,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string Mnustr = MENU_TAPEPLAYER[Config::lang];
-                                        Mnustr += MENU_YESNO[Config::lang];
+                                        string Mnustr = MENU_TAPEPLAYER;
+                                        Mnustr += MENU_YESNO;
                                         bool prev_opt = Config::tape_player;
                                         if (prev_opt) {
                                             Mnustr.replace(Mnustr.find("[Y",0),2,"[*");
@@ -2837,8 +2785,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string Mnustr = MENU_TAPEPLAYER2[Config::lang];
-                                        Mnustr += MENU_YESNO[Config::lang];
+                                        string Mnustr = MENU_TAPEPLAYER2;
+                                        Mnustr += MENU_YESNO;
                                         bool prev_opt = Config::real_player;
                                         if (prev_opt) {
                                             Mnustr.replace(Mnustr.find("[Y",0),2,"[*");
@@ -2857,9 +2805,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                                 if (Config::real_player) {
                                                     ESPectrum::aud_volume = ESP_VOLUME_MAX;
                                                     pwm_audio_set_volume(ESPectrum::aud_volume);
-#if defined(PICO_RP2350) && defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)
+#if defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)
                                                     if (Config::midi == 1 || Config::midi == 2)
-                                                        osdCenteredMsg(MSG_MIDI_PIN_CONFLICT[Config::lang], LEVEL_WARN, 3000);
+                                                        osdCenteredMsg(MSG_MIDI_PIN_CONFLICT, LEVEL_WARN, 3000);
 #endif
                                                 } else {
 #if LOAD_WAV_PIO
@@ -2883,8 +2831,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string flash_menu = MENU_FLASHLOAD[Config::lang];
-                                        flash_menu += MENU_YESNO[Config::lang];
+                                        string flash_menu = MENU_FLASHLOAD;
+                                        flash_menu += MENU_YESNO;
                                         bool prev_flashload = Config::flashload;
                                         if (prev_flashload) {
                                             flash_menu.replace(flash_menu.find("[Y",0),2,"[*");
@@ -2918,8 +2866,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string mnu_str = MENU_RGTIMINGS[Config::lang];
-                                        mnu_str += MENU_YESNO[Config::lang];
+                                        string mnu_str = MENU_RGTIMINGS;
+                                        mnu_str += MENU_YESNO;
                                         bool prev_opt = Config::tape_timing_rg;
                                         if (prev_opt) {
                                             mnu_str.replace(mnu_str.find("[Y",0),2,"[*");
@@ -2953,8 +2901,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string mnu_str = MENU_TAPE_AUTOSTART[Config::lang];
-                                        mnu_str += MENU_YESNO[Config::lang];
+                                        string mnu_str = MENU_TAPE_AUTOSTART;
+                                        mnu_str += MENU_YESNO;
                                         bool prev_opt = Config::tape_autostart;
                                         if (prev_opt) {
                                             mnu_str.replace(mnu_str.find("[Y",0),2,"[*");
@@ -2992,8 +2940,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         while(1) {
                             menu_level = 2;
                             // Build Betadisk root menu dynamically so drive status refreshes.
-                            string betamenu = MENU_BETADISK_TITLE[Config::lang];
-                            betamenu += string(MENU_BETADISK_MODE[Config::lang]) + "\t"
+                            string betamenu = MENU_BETADISK_TITLE;
+                            betamenu += string(MENU_BETADISK_MODE) + "\t"
                                       + (Config::betadisk ? "On" : "Off") + "\n";
                             for (uint8_t i = 0; i < 4; i++) {
                                 string label = string("Drive ") + MENU_BETA_DRIVE_LETTERS[i];
@@ -3003,10 +2951,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 betamenu += row + "\n";
                             }
                             {
-                                string fm = MENU_BETADISK_FASTMODE[Config::lang];
-                                string sl = MENU_BETADISK_SNDLED[Config::lang];
-                                string rm = MENU_BETADISK_ROM[Config::lang];
-                                string ab = MENU_BETADISK_AUTOBOOT[Config::lang];
+                                string fm = MENU_BETADISK_FASTMODE;
+                                string sl = MENU_BETADISK_SNDLED;
+                                string rm = MENU_BETADISK_ROM;
+                                string ab = MENU_BETADISK_AUTOBOOT;
                                 if (!Config::betadisk) { fm = "\x01" + fm; sl = "\x01" + sl; rm = "\x01" + rm; ab = "\x01" + ab; }
                                 betamenu += fm + sl + rm + ab;
                             }
@@ -3042,7 +2990,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 while (1) {
                                     menu_level = 3;
-                                    string drvmenu = MENU_BETADRIVE[Config::lang];
+                                    string drvmenu = MENU_BETADRIVE;
                                     drvmenu.replace(drvmenu.find("#",0),1,(string)" " + MENU_BETA_DRIVE_LETTERS[slot]);
                                     // Fill WP toggle marker.
                                     size_t wpPos = drvmenu.rfind("[ ]");
@@ -3053,13 +3001,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     if (opt2 == 1) {
                                         // Insert disk — no F5-style slot popup; slot is already chosen.
                                         menu_saverect = true;
-                                        string mFile = fileDialog(FileUtils::DSK_Path, MENU_DSK_TITLE[Config::lang], DISK_DSKFILE, 26, 15);
+                                        string mFile = fileDialog(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE, 26, 15);
                                         if (mFile != "") {
                                             mFile.erase(0, 1);
                                             string fname = FileUtils::DSK_Path + "/" + mFile;
                                             if (FileUtils::getLCaseExt(fname) == "zip") {
                                                 string zipFname = ZipExtract::extract(fname, DISK_DSKFILE);
-                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); break; }
+                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
                                                 if (zipFname == "\x1b") break;
                                                 fname = zipFname;
                                             }
@@ -3068,9 +3016,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                                 // TD0 is read-only (no write-back) → always WP.
                                                 ESPectrum::fdd.disk[slot]->writeprotect =
                                                     Config::driveWP[slot]
-#if !PICO_RP2040
                                                     || ESPectrum::fdd.disk[slot]->IsTD0File
-#endif
                                                     ;
                                             Config::save();
                                         }
@@ -3095,9 +3041,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             // TD0 is read-only (no write-back) → stays WP even if toggled off.
                                             ESPectrum::fdd.disk[slot]->writeprotect =
                                                 Config::driveWP[slot]
-#if !PICO_RP2040
                                                 || ESPectrum::fdd.disk[slot]->IsTD0File
-#endif
                                                 ;
                                         Config::save();
                                         menu_curopt = 3;
@@ -3117,8 +3061,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string menu = MENU_FASTMODE[Config::lang];
-                                    menu += MENU_YESNO[Config::lang];
+                                    string menu = MENU_FASTMODE;
+                                    menu += MENU_YESNO;
                                     uint8_t prev = Config::trdosFastMode;
                                     if (prev) {
                                         menu.replace(menu.find("[Y",0),2,"[*");
@@ -3150,8 +3094,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = Config::trdosSoundLed + 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string menu = MENU_SOUNDLED[Config::lang];
-                                    menu += MENU_SOUNDLED_SEL[Config::lang];
+                                    string menu = MENU_SOUNDLED;
+                                    menu += MENU_SOUNDLED_SEL;
                                     int mpos = -1;
                                     int idx = 0;
                                     while ((mpos = menu.find("[ ]", mpos + 1)) != (int)string::npos) {
@@ -3181,8 +3125,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string menu = MENU_TRDOS_ROM_TITLE[Config::lang];
-                                    menu += MENU_TRDOS_ROM_SEL[Config::lang];
+                                    string menu = MENU_TRDOS_ROM_TITLE;
+                                    menu += MENU_TRDOS_ROM_SEL;
                                     int mpos = -1;
                                     int idx = 0;
                                     while ((mpos = menu.find("[ ]", mpos + 1)) != (int)string::npos) {
@@ -3227,8 +3171,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = Config::trdosAutoBoot ? 1 : 2;
                                 menu_saverect = true;
                                 while (1) {
-                                    string menu = MENU_AUTOBOOT[Config::lang];
-                                    menu += MENU_YESNO[Config::lang];
+                                    string menu = MENU_AUTOBOOT;
+                                    menu += MENU_YESNO;
                                     bool prev = Config::trdosAutoBoot;
                                     if (prev) {
                                         menu.replace(menu.find("[Y",0),2,"[*");
@@ -3261,7 +3205,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             }
                         }
                     }
-#if !PICO_RP2040
                     else if (FileUtils::fsMount && stor_num == 3) { // esxDOS
                         static const char* mode_names[] = { "OFF", "DivMMC", "DivIDE", "DivSD" };
                         menu_saverect = true;
@@ -3269,8 +3212,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         while (1) {
                             menu_level = 2;
                             // Root menu: Interface row + optional hd0/hd1 rows.
-                            string menu = MENU_ESXDOS_TITLE[Config::lang];
-                            menu += string(MENU_ESX_INTERFACE[Config::lang]) + "\t" + mode_names[Config::esxdos] + "\n";
+                            string menu = MENU_ESXDOS_TITLE;
+                            menu += string(MENU_ESX_INTERFACE) + "\t" + mode_names[Config::esxdos] + "\n";
                             bool showHd0 = (Config::esxdos == 1 || Config::esxdos == 2);
                             bool showHd1 = (Config::esxdos == 2);
                             if (showHd0) {
@@ -3288,7 +3231,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = Config::esxdos + 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string smenu = MENU_ESXDOS_TITLE[Config::lang];
+                                    string smenu = MENU_ESXDOS_TITLE;
                                     for (int i = 0; i < 4; i++) {
                                         smenu += (i == Config::esxdos) ? "[*] " : "[ ] ";
                                         smenu += mode_names[i];
@@ -3298,7 +3241,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     if (sub) {
                                         uint8_t newval = sub - 1;
                                         if (newval != Config::esxdos) {
-#if !PICO_RP2040
                                             // Enabling DivMMC/DivIDE/DivSD from Off — check SRAM budget.
                                             // Set esxdos to the chosen variant first so a freeing reboot
                                             // preserves it; restore on ALLOW so the side-effects below run.
@@ -3309,13 +3251,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                                 Config::esxdos = oldEsx;
                                                 if (!ok) { menu_curopt = sub; menu_saverect = false; continue; }
                                             }
-#endif
                                             if (newval && Config::mb02) {
                                                 Config::mb02 = 0;
                                                 MB02::init();
                                                 OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
                                             }
-#if !PICO_RP2040
                                             if (newval && Config::zcontroller) {
                                                 Config::zcontroller = false;
                                                 DivMMC::zc_shutdown();
@@ -3327,7 +3267,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                                 Config::gs_enabled = 0;
                                                 OSD::osdCenteredMsg("General Sound disabled", LEVEL_WARN, 2000);
                                             }
-#endif
 #endif
                                             Config::esxdos = newval;
                                             DivMMC::init();
@@ -3360,17 +3299,17 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_level = 3;
                                     char title[8]; snprintf(title, sizeof(title), "hd%u\n", (unsigned)slot);
                                     string drvmenu = title;
-                                    drvmenu += MENU_ESX_INSERT[Config::lang];
-                                    drvmenu += MENU_ESX_EJECT[Config::lang];
+                                    drvmenu += MENU_ESX_INSERT;
+                                    drvmenu += MENU_ESX_EJECT;
                                     uint8_t opt2 = menuRun(drvmenu);
                                     if (opt2 == 1) {
                                         menu_saverect = true;
-                                        string mFile = fileDialog(FileUtils::IMG_Path, MENU_IMG_TITLE[Config::lang], DISK_IMGFILE, 51, 22);
+                                        string mFile = fileDialog(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE, 51, 22);
                                         if (mFile != "") {
                                             string fname = FileUtils::IMG_Path + mFile.substr(1);
                                             if (FileUtils::getLCaseExt(fname) == "zip") {
                                                 string zipFname = ZipExtract::extract(fname, DISK_IMGFILE);
-                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); break; }
+                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
                                                 if (zipFname == "\x1b") break;
                                                 fname = zipFname;
                                             }
@@ -3408,19 +3347,19 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // so the backing-rect size never changes across Mode
                             // toggles. Drive / Sound & LED rows are dimmed (via \x01
                             // prefix) and non-selectable when Mode=Off.
-                            string mb02menu = MENU_MB02_TITLE[Config::lang];
-                            mb02menu += string(MENU_MB02_MODE[Config::lang]) + "\t"
+                            string mb02menu = MENU_MB02_TITLE;
+                            mb02menu += string(MENU_MB02_MODE) + "\t"
                                       + (Config::mb02 ? "On" : "Off") + "\n";
                             for (int i = 0; i < 4; i++) {
                                 char lab[16]; snprintf(lab, sizeof(lab), "%s %u",
-                                    MENU_MB02_DRIVE[Config::lang], (unsigned)(i + 1));
+                                    MENU_MB02_DRIVE, (unsigned)(i + 1));
                                 string fname = ESPectrum::mb02_fdd.disk[i] ? ESPectrum::mb02_fdd.disk[i]->fname : "";
                                 string row = formatSlotRow(lab, fname, Config::mb02WP[i], true);
                                 if (!Config::mb02) row = "\x01" + row;
                                 mb02menu += row + "\n";
                             }
                             {
-                                string snd = MENU_MB02_SNDLED[Config::lang];
+                                string snd = MENU_MB02_SNDLED;
                                 if (!Config::mb02) snd = "\x01" + snd;
                                 mb02menu += snd;
                             }
@@ -3448,13 +3387,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     DivMMC::init();
                                     OSD::osdCenteredMsg("esxDOS disabled", LEVEL_WARN, 2000);
                                 }
-#if !PICO_RP2040
                                 if (Config::mb02 && Config::zcontroller) {
                                     Config::zcontroller = false;
                                     DivMMC::zc_shutdown();
                                     OSD::osdCenteredMsg("Z-Controller disabled", LEVEL_WARN, 2000);
                                 }
-#endif
                                 MB02::init();
                                 if (Config::mb02 && !MB02::enabled) {
                                     OSD::osdCenteredMsg("MB-02+: not enough memory", LEVEL_ERROR, 2000);
@@ -3486,11 +3423,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_level = 3;
                                     char drvtitle[16];
                                     snprintf(drvtitle, sizeof(drvtitle), "%s %u\n",
-                                        MENU_MB02_DRIVE[Config::lang], (unsigned)(slot + 1));
+                                        MENU_MB02_DRIVE, (unsigned)(slot + 1));
                                     string drvmenu = drvtitle;
-                                    drvmenu += MENU_MB02_INSERT[Config::lang];
-                                    drvmenu += MENU_MB02_EJECT[Config::lang];
-                                    drvmenu += string(MENU_MB02_WP[Config::lang]) + "\t"
+                                    drvmenu += MENU_MB02_INSERT;
+                                    drvmenu += MENU_MB02_EJECT;
+                                    drvmenu += string(MENU_MB02_WP) + "\t"
                                              + (Config::mb02WP[slot] ? "[*]" : "[ ]") + "\n";
                                     uint8_t opt2 = menuRun(drvmenu);
                                     if (opt2 == 1) {
@@ -3501,7 +3438,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             string fname = FileUtils::DSK_Path + "/" + mFile;
                                             if (FileUtils::getLCaseExt(fname) == "zip") {
                                                 string zipFname = ZipExtract::extract(fname, DISK_DSKFILE);
-                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); break; }
+                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
                                                 if (zipFname == "\x1b") break;
                                                 fname = zipFname;
                                             }
@@ -3545,8 +3482,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = Config::mb02SoundLed + 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string menu = MENU_SOUNDLED[Config::lang];
-                                    menu += MENU_SOUNDLED_SEL[Config::lang];
+                                    string menu = MENU_SOUNDLED;
+                                    menu += MENU_SOUNDLED_SEL;
                                     int mpos = -1;
                                     int idx = 0;
                                     while ((mpos = menu.find("[ ]", mpos + 1)) != (int)string::npos) {
@@ -3576,15 +3513,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             }
                         }
                     }
-#endif
-#if !PICO_RP2040
                     else if (FileUtils::fsMount && stor_num == 5) { // Z-Controller
                         menu_saverect = true;
                         menu_curopt = 1;
                         while (1) {
                             menu_level = 2;
                             string zmenu = "Z-Controller\n";
-                            zmenu += string(MENU_YESNO[Config::lang]);
+                            zmenu += string(MENU_YESNO);
                             if (Config::zcontroller) {
                                 zmenu.replace(zmenu.find("[Y",0),2,"[*");
                                 zmenu.replace(zmenu.find("[N",0),2,"[ ");
@@ -3632,26 +3567,23 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         }
                     }
                     else if (FileUtils::fsMount && stor_num == 7) { // Snapshot
-#else
-                    else if (FileUtils::fsMount && stor_num == 3) { // Snapshot
-#endif
                         menu_saverect = true;
                         menu_curopt = 1;
                         while(1) {
                             menu_level = 2;
-                            uint8_t sna_mnu = menuRun(expandHotkeys(MENU_SNA[Config::lang]));
+                            uint8_t sna_mnu = menuRun(expandHotkeys(MENU_SNA));
                             if (sna_mnu > 0) {
                                 menu_level = 3;
                                 menu_saverect = true;
                                 if (sna_mnu == 1) {
-                                    string mFile = fileDialog(FileUtils::SNA_Path, MENU_SNA_TITLE[Config::lang], DISK_SNAFILE, 28, 16);
+                                    string mFile = fileDialog(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE, 28, 16);
                                     if (mFile != "") {
                                         Config::save();
                                         mFile.erase(0, 1);
                                         string fname = FileUtils::SNA_Path + mFile;
                                         if (FileUtils::getLCaseExt(fname) == "zip") {
                                             string zipFname = ZipExtract::extract(fname, DISK_SNAFILE);
-                                            if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); break; }
+                                            if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
                                             if (zipFname == "\x1b") break;
                                             fname = zipFname;
                                         }
@@ -3669,8 +3601,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        menu_footer = Config::lang ? "F3: Cargar  F6: Renombrar  F8: Borrar" : "F3: Load  F6: Rename  F8: Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD[Config::lang], 10));
+                                        menu_footer = "F3: Load  F6: Rename  F8: Remove";
+                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD, 10));
                                         if (opt2) {
                                             if (menu_del_pressed) {
                                                 persistDeleteConfirm(opt2);
@@ -3697,8 +3629,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        menu_footer = Config::lang ? "F6: Renombrar  F8: Borrar" : "F6: Rename  F8: Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE[Config::lang], 10));
+                                        menu_footer = "F6: Rename  F8: Remove";
+                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE, 10));
                                         if (opt2) {
                                             if (menu_del_pressed) {
                                                 persistDeleteConfirm(opt2);
@@ -3722,17 +3654,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 }
                                 menu_curopt = sna_mnu;
                             } else {
-#if !PICO_RP2040
                                 menu_curopt = 7;
-#else
-                                menu_curopt = 3;
-#endif
                                 menu_level = 1;
                                 break;
                             }
                         }
                     }
-#if !PICO_RP2040
                     else if (FileUtils::fsMount && stor_num == 6) { // IDE/HDD
                         static const char* ide_modes[] = { "OFF", "NEMO", "PROFI" };
                         menu_saverect = true;
@@ -3740,15 +3667,15 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         while (1) {
                             menu_level = 2;
                             // Root: Scheme row + hd0/hd1 rows (shown when a scheme is active).
-                            string menu = MENU_IDE_TITLE[Config::lang];
-                            menu += string(MENU_IDE_SCHEME[Config::lang]) + "\t" + ide_modes[Config::ide_scheme <= 2 ? Config::ide_scheme : 0] + "\n";
+                            string menu = MENU_IDE_TITLE;
+                            menu += string(MENU_IDE_SCHEME) + "\t" + ide_modes[Config::ide_scheme <= 2 ? Config::ide_scheme : 0] + "\n";
                             bool showSlots = (Config::ide_scheme != 0);
                             if (showSlots) {
                                 menu += formatSlotRow("hd0", Config::ide_image[0], false, false);
                                 menu += "\n";
                                 menu += formatSlotRow("hd1", Config::ide_image[1], false, false);
                                 menu += "\n";
-                                menu += MENU_IDE_CREATE[Config::lang];
+                                menu += MENU_IDE_CREATE;
                             }
                             uint8_t opt = menuRun(menu);
                             if (opt == 1) {
@@ -3757,7 +3684,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = Config::ide_scheme + 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string smenu = MENU_IDE_TITLE[Config::lang];
+                                    string smenu = MENU_IDE_TITLE;
                                     for (int i = 0; i < 3; i++) {
                                         smenu += (i == Config::ide_scheme) ? "[*] " : "[ ] ";
                                         smenu += ide_modes[i];
@@ -3808,8 +3735,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_level = 3;
                                     char title[8]; snprintf(title, sizeof(title), "hd%u\n", (unsigned)slot);
                                     string drvmenu = title;
-                                    drvmenu += MENU_ESX_INSERT[Config::lang];
-                                    drvmenu += MENU_ESX_EJECT[Config::lang];
+                                    drvmenu += MENU_ESX_INSERT;
+                                    drvmenu += MENU_ESX_EJECT;
                                     // Geometry row: shows effective C/H/S, LBA and size; "auto" when no override.
                                     {
                                         char geo[48];
@@ -3842,12 +3769,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     uint8_t opt2 = menuRun(drvmenu);
                                     if (opt2 == 1) {
                                         menu_saverect = true;
-                                        string mFile = fileDialog(FileUtils::IMG_Path, MENU_IDE_IMG_TITLE[Config::lang], DISK_IMGFILE, 26, 15);
+                                        string mFile = fileDialog(FileUtils::IMG_Path, MENU_IDE_IMG_TITLE, DISK_IMGFILE, 26, 15);
                                         if (mFile != "") {
                                             string fname = FileUtils::IMG_Path + mFile.substr(1);
                                             if (FileUtils::getLCaseExt(fname) == "zip") {
                                                 string zipFname = ZipExtract::extract(fname, DISK_IMGFILE);
-                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); break; }
+                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
                                                 if (zipFname == "\x1b") break;
                                                 fname = zipFname;
                                             }
@@ -3947,7 +3874,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 bool created = false;
                                 while (!created) {
                                     // Level 3 — target slot.
-                                    string slmenu = MENU_IDE_CREATE[Config::lang];
+                                    string slmenu = MENU_IDE_CREATE;
                                     slmenu += "hd0\n";
                                     slmenu += "hd1\n";
                                     uint8_t slsel = menuRun(slmenu);
@@ -3958,7 +3885,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string szmenu = MENU_IDE_CREATE_SIZE[Config::lang];
+                                        string szmenu = MENU_IDE_CREATE_SIZE;
                                         for (auto &p : ide_presets) szmenu += p.label;
                                         uint8_t sz = menuRun(szmenu);
                                         if (sz < 1 || sz > 4) break;   // Esc → back to slot picker
@@ -4007,7 +3934,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             }
                         }
                     }
-#endif
                     else {
                         menu_curopt = 2;
                         break;
@@ -4023,7 +3949,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 while (1) {
                     menu_level = 1;
                     // Audio: insert General Sound item between MIDI and Audio Driver when GS is available
-                    string audio_menu = MENU_AUDIO[Config::lang];
+                    string audio_menu = MENU_AUDIO;
 #ifdef USE_GS
                     // GS works on butter XIP (fast) or, as a fallback, on plain SPI PSRAM
                     // (slow path, ~30× slower — best-effort, may glitch on MOD playback).
@@ -4036,7 +3962,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         if (last_nl != string::npos && last_nl > 0) {
                             size_t insert_pos = audio_menu.rfind('\n', last_nl - 1);
                             if (insert_pos != string::npos) {
-                                audio_menu.insert(insert_pos + 1, MENU_AUDIO_GS_ITEM[Config::lang]);
+                                audio_menu.insert(insert_pos + 1, MENU_AUDIO_GS_ITEM);
                             }
                         }
                     }
@@ -4050,8 +3976,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string ay_menu = MENU_AY48[Config::lang];
-                                ay_menu += MENU_YESNO[Config::lang];
+                                string ay_menu = MENU_AY48;
+                                ay_menu += MENU_YESNO;
                                 bool prev_ay48 = Config::AY48;
                                 if (prev_ay48) {
                                     ay_menu.replace(ay_menu.find("[Y",0),2,"[*");
@@ -4085,7 +4011,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string menu = MENU_AY[Config::lang];
+                                string menu = MENU_AY;
                                 uint8_t prev = Config::ayConfig;
                                 if (prev == 0) {
                                     menu.replace(menu.find("[B",0),2,"[*");
@@ -4120,7 +4046,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string menu = MENU_TS[Config::lang];
+                                string menu = MENU_TS;
                                 uint8_t prev = Config::turbosound;
                                 if (prev == 0) {
                                     menu.replace(menu.find("[F",0),2,"[*");
@@ -4164,7 +4090,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string menu = MENU_COVOX[Config::lang];
+                                string menu = MENU_COVOX;
                                 uint8_t prev = Config::covox;
                                 static const char covox_tags[3] = {'N','F','D'};
                                 for (uint8_t i = 0; i < 3; i++) {
@@ -4177,14 +4103,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     Config::covox = opt2 - 1;
                                     bool nowOn = (Config::covox != 0 || Config::soundriveEnabled());
                                     // Budget-gate when the shared Covox/SounDrive buffer (~2 KB)
-                                    // transitions from not-needed to needed. No budget
-                                    // manager on RP2040 — enable directly.
-#if !PICO_RP2040
+                                    // transitions from not-needed to needed.
                                     if (!wasOn && nowOn &&
                                         !OSD::featureBudgetGate(Subsystems::FEAT_COVOX)) {
                                         Config::covox = prev;   // declined → revert
                                     } else
-#endif
                                     if (Config::covox != prev) {
                                         Config::save();
                                         CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
@@ -4203,7 +4126,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string menu = MENU_SOUNDRIVE[Config::lang];
+                                string menu = MENU_SOUNDRIVE;
                                 uint8_t prev = Config::soundrive;
                                 menu.replace(menu.find("[A",0),2, prev == 2 ? "[*" : "[ ");
                                 menu.replace(menu.find("[O",0),2, prev == 1 ? "[*" : "[ ");
@@ -4215,13 +4138,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     Config::soundrive = (opt2 <= 3) ? sd_map[opt2 - 1] : prev;
                                     bool nowOn = (Config::covox != 0 || Config::soundriveEnabled());
                                     // Shared Covox/SounDrive buffer (~2 KB): gate on off→on.
-                                    // No budget manager on RP2040 — enable directly.
-#if !PICO_RP2040
                                     if (!wasOn && nowOn &&
                                         !OSD::featureBudgetGate(Subsystems::FEAT_COVOX)) {
                                         Config::soundrive = prev;   // declined → revert
                                     } else
-#endif
                                     if (Config::soundrive != prev) {
                                         Config::save();
                                         CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
@@ -4235,14 +4155,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 }
                             }
                         }
-#if !PICO_RP2040
                         else if (options_num == 6) {
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string saa_menu = MENU_SAA1099[Config::lang];
-                                saa_menu += MENU_YESNO[Config::lang];
+                                string saa_menu = MENU_SAA1099;
+                                saa_menu += MENU_YESNO;
                                 bool prev_saa = Config::SAA1099;
                                 if (prev_saa) {
                                     saa_menu.replace(saa_menu.find("[Y",0),2,"[*");
@@ -4288,7 +4207,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             bool midiFirstDraw = true;   // save the rect only on the first draw;
                             while (1) {                  // redraws (after gate/submenu) must NOT re-save → no duplicate menu
                                 menu_level = 2;
-                                string midi_menu = MENU_MIDI[Config::lang];
+                                string midi_menu = MENU_MIDI;
                                 uint8_t prev_midi = Config::midi;
                                 midi_menu.replace(midi_menu.find("[O",0),2, prev_midi == 0 ? "[*" : "[ ");
                                 midi_menu.replace(midi_menu.find("[A",0),2, prev_midi == 1 ? "[*" : "[ ");
@@ -4299,7 +4218,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 uint8_t opt2 = menuRun(midi_menu);
                                 midiFirstDraw = false;
                                 if (opt2 >= 1 && opt2 <= 5) {
-#if !PICO_RP2040
                                     // GM.DLS (mode 4) is the RAM-heavy MIDI engine: gate it through
                                     // the SRAM budget manager so a tight machine (Profi/m1p2) offers
                                     // heavy features to free — including Profi itself (→ Pentagon) —
@@ -4311,7 +4229,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         menu_saverect = false;
                                         continue;   // declined / not enough — leave MIDI unchanged
                                     }
-#endif
                                     Config::midi = opt2 - 1;
                                     if (Config::midi != prev_midi) {
                                         Midi::enabled = prev_midi;
@@ -4323,7 +4240,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         MidiSubsys::request(Config::midi != 0);
 #if defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)
                                         if ((Config::midi == 1 || Config::midi == 2) && Config::real_player)
-                                            osdCenteredMsg(MSG_MIDI_PIN_CONFLICT[Config::lang], LEVEL_WARN, 3000);
+                                            osdCenteredMsg(MSG_MIDI_PIN_CONFLICT, LEVEL_WARN, 3000);
 #endif
                                     }
                                     // Software MIDI selected — open preset submenu
@@ -4331,7 +4248,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         menu_level = 3;
                                         menu_curopt = 1;
                                         menu_saverect = true;
-                                        string preset_menu = MENU_MIDI_PRESET[Config::lang];
+                                        string preset_menu = MENU_MIDI_PRESET;
                                         static const char preset_marks[] = "GPCSROMY";
                                         for (int p = 0; p < 8; p++) {
                                             char mark[3] = { '[', preset_marks[p], '\0' };
@@ -4376,8 +4293,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             menu_level = 3;
                                             menu_curopt = 1;
                                             menu_saverect = true;
-                                            string bankMenu = MENU_MIDI_BANK_TITLE[Config::lang];
-                                            bankMenu += string(MENU_MIDI_CONVERT_DLS[Config::lang]) + "\n";  // row 1
+                                            string bankMenu = MENU_MIDI_BANK_TITLE;
+                                            bankMenu += string(MENU_MIDI_CONVERT_DLS) + "\n";  // row 1
                                             for (size_t b = 0; b < nBanks; b++) {
                                                 bool cur = (Config::midi_bank == bankPaths[b]);
                                                 bankMenu += string(cur ? "[*] " : "[ ] ") + bankNames[b] + "\n";
@@ -4392,7 +4309,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                                 // Streams the .dls from SD (no big RAM buffer); runs on core0
                                                 // at runtime — the actual flash install still happens at the
                                                 // next boot via MidiSynth::provisionAtBoot().
-                                                string mFile = fileDialog(FileUtils::DLS_Path, MENU_DLS_TITLE[Config::lang], DISK_DLSFILE, 51, 22);
+                                                string mFile = fileDialog(FileUtils::DLS_Path, MENU_DLS_TITLE, DISK_DLSFILE, 51, 22);
                                                 if (mFile != "") {
                                                     mFile.erase(0, 1);
                                                     string outBin = osdConvertDlsToBank(FileUtils::DLS_Path + mFile);
@@ -4408,22 +4325,22 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                                 // No SD bank: keep an already-bound (flash) bank, else nothing.
                                                 if (MidiSynth::bankReady()) {
                                                     if (Config::midi_bank != prevBank) Config::save();
-                                                    osdCenteredMsg(MSG_MIDI_BANK_OK[Config::lang], LEVEL_OK, 2000);
+                                                    osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
                                                 } else {
                                                     Config::midi_bank = prevBank;
-                                                    osdCenteredMsg(MSG_MIDI_BANK_MISSING[Config::lang], LEVEL_WARN, 3000);
+                                                    osdCenteredMsg(MSG_MIDI_BANK_MISSING, LEVEL_WARN, 3000);
                                                 }
                                             } else if (MidiSynth::applyBankLive()) {
                                                 // Applied without a reboot: PSRAM boards load the bank live,
                                                 // and a flash bank that is already current just rebinds.
                                                 Config::save();
-                                                osdCenteredMsg(MSG_MIDI_BANK_OK[Config::lang], LEVEL_OK, 2000);
+                                                osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
                                             } else if (OSD::msgDialog("DLS Wavetable",
-                                                                      MSG_MIDI_BANK_INSTALL_Q[Config::lang]) == DLG_YES) {
+                                                                      MSG_MIDI_BANK_INSTALL_Q) == DLG_YES) {
                                                 // No PSRAM and the flash bank differs → it must be written at
                                                 // EARLY BOOT (single core, pre-video). Commit + reboot.
                                                 Config::save();
-                                                osdCenteredMsg(MSG_MIDI_BANK_FLASHING[Config::lang], LEVEL_INFO, 3000);
+                                                osdCenteredMsg(MSG_MIDI_BANK_FLASHING, LEVEL_INFO, 3000);
                                                 OSD::esp_hard_reset();
                                             } else {
                                                 Config::midi_bank = prevBank;   // declined -> revert + restore
@@ -4447,8 +4364,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             bool gsFirstDraw = true;
                             while (1) {
-                                string gsmenu = MENU_GS_TITLE[Config::lang];
-                                gsmenu += string(MENU_GS_MODE[Config::lang]) + "\t"
+                                string gsmenu = MENU_GS_TITLE;
+                                gsmenu += string(MENU_GS_MODE) + "\t"
                                         + (Config::gs_enabled ? "On" : "Off") + "\n";
                                 uint8_t ci = Config::gs_clock < 5 ? Config::gs_clock : 1;
                                 string clockRow = string("Clock") + "\t"
@@ -4489,8 +4406,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = ci + 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string cmenu = MENU_GS_CLOCK[Config::lang];
-                                        cmenu += MENU_GS_CLOCK_SEL[Config::lang];
+                                        string cmenu = MENU_GS_CLOCK;
+                                        cmenu += MENU_GS_CLOCK_SEL;
                                         int mpos = -1; int idx = 0;
                                         while ((mpos = cmenu.find("[ ]", mpos + 1)) != (int)string::npos) {
                                             if (idx == ci) cmenu.replace(mpos, 3, "[*]");
@@ -4530,20 +4447,15 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             }
                         }
 #endif
-#endif
                         else if (options_num ==
-#if !PICO_RP2040
                             (gs_avail ? 9 : 8)
-#else
-                            6
-#endif
                         ) {
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string menu = MENU_I2S[Config::lang];
-#if PICO_RP2040 || !defined(VGA_HDMI)
+                                string menu = MENU_I2S;
+#if !defined(VGA_HDMI)
                                 // HDMI audio needs RP2350 + HDMI video — hide the entry
                                 {
                                     auto pos = menu.find("HDMI");
@@ -4565,10 +4477,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 uint8_t opt2 = menuRun(menu);
                                 if (opt2) {
                                     // Map menu position to driver value
-                                    // (HDMI is hidden on RP2040/non-HDMI builds, so
+                                    // (HDMI is hidden on non-HDMI builds, so
                                     // opt2-1 doesn't always match the driver number)
                                     static const uint8_t driver_map[] = {0, 1, 2, 3,
-#if !PICO_RP2040 && defined(VGA_HDMI)
+#if defined(VGA_HDMI)
                                         4,
 #endif
 #ifdef ZERO2
@@ -4578,7 +4490,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     static const uint8_t driver_map_size = sizeof(driver_map);
                                     Config::audio_driver = (opt2 <= driver_map_size) ? driver_map[opt2 - 1] : prev;
                                     if (Config::audio_driver != prev) {
-#if !PICO_RP2040 && defined(VGA_HDMI)
+#if defined(VGA_HDMI)
                                         // Budget-gate when switching to HDMI audio (~8.5 KB ring/queue).
                                         // The gate reboots itself if the user frees features; otherwise
                                         // fall through to the normal confirm+reboot.
@@ -4598,28 +4510,20 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_saverect = false;
                                 } else {
                                     menu_curopt =
-#if !PICO_RP2040
                                         (gs_avail ? 9 : 8);
-#else
-                                        6;
-#endif
                                     menu_level = 1;
                                     break;
                                 }
                             }
                         }
                         else if (options_num ==
-#if !PICO_RP2040
                             (gs_avail ? 10 : 9)
-#else
-                            7
-#endif
                         ) { // Volume Boost
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string boost_menu = MENU_AUDIO_BOOST[Config::lang];
+                                string boost_menu = MENU_AUDIO_BOOST;
                                 uint8_t cur = Config::audio_boost;
                                 int cur_idx = 0;
                                 for (int i = 0; i < (int)(sizeof(AUDIO_BOOST_VALS)); i++)
@@ -4659,14 +4563,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 while (1) {
                     menu_level = 1;
                     // Video
-                    uint8_t options_num = menuRun(MENU_VIDEO[Config::lang]);
+                    uint8_t options_num = menuRun(MENU_VIDEO);
                     if (options_num > 0) {
                         if (options_num == 1) { // VIDEO MODE
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string opt_menu = MENU_VIDEO_MODE[Config::lang];
+                                string opt_menu = MENU_VIDEO_MODE;
 #ifdef VGA_HDMI
                                 uint8_t &curVideoMode = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
 #else
@@ -4677,10 +4581,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 uint8_t cur_sel = curVideoMode;
                                 opt_menu.replace(opt_menu.find("[6",0),2, cur_sel == 0 ? "[*" : "[ ");
                                 opt_menu.replace(opt_menu.find("[5",0),2, cur_sel == 1 ? "[*" : "[ ");
-                            #if !PICO_RP2040
                                 opt_menu.replace(opt_menu.find("[H",0),2, cur_sel == 2 ? "[*" : "[ ");
                                 opt_menu.replace(opt_menu.find("[F",0),2, cur_sel == 3 ? "[*" : "[ ");
-                            #endif
                                 uint8_t opt2 = menuRun(opt_menu);
                                 if (opt2) {
                                     uint8_t new_vm = opt2 - 1; // opt2 is 1-based, VM_* is 0-based
@@ -4711,7 +4613,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 // Build palette menu dynamically (built-in + custom)
                                 uint8_t pal_count = VIDEO::paletteCount();
                                 uint8_t prev = Config::palette;
-                                string pal_menu = Config::lang ? "Paleta\n" : "Palette\n";
+                                string pal_menu = "Palette\n";
                                 for (uint8_t i = 0; i < pal_count; i++) {
                                     pal_menu += VIDEO::paletteName(i);
                                     pal_menu += "\t";
@@ -4738,7 +4640,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string opt_menu = MENU_RENDER[Config::lang];
+                                string opt_menu = MENU_RENDER;
                                 uint8_t prev_opt = Config::render;
                                 if (prev_opt) {
                                     opt_menu.replace(opt_menu.find("[S",0),2,"[ ");
@@ -4786,7 +4688,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             while (1) {
 
                                 // aspect ratio
-                                string asp_menu = MENU_ASPECT[Config::lang];
+                                string asp_menu = MENU_ASPECT;
                                 bool prev_asp = Config::aspect_16_9;
                                 if (prev_asp) {
                                     asp_menu.replace(asp_menu.find("[4",0),2,"[ ");
@@ -4824,8 +4726,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string opt_menu = MENU_SCANLINES[Config::lang];
-                                opt_menu += MENU_SCANLINES_SEL[Config::lang];
+                                string opt_menu = MENU_SCANLINES;
+                                opt_menu += MENU_SCANLINES_SEL;
                                 uint8_t prev_opt = Config::scanlines; // 0=Off, 1..4=level
                                 // Mark the active level: rows are [0]..[4], matching the value
                                 for (uint8_t lv = 0; lv <= 4; ++lv) {
@@ -4857,8 +4759,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string opt_menu = MENU_VSYNC[Config::lang];
-                                opt_menu += MENU_YESNO[Config::lang];
+                                string opt_menu = MENU_VSYNC;
+                                opt_menu += MENU_YESNO;
                                 bool prev_opt = Config::v_sync_enabled;
                                 if (prev_opt) {
                                     opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
@@ -4886,14 +4788,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 }
                             }
                         }
-                        #if !PICO_RP2040
                         else if (options_num == 7) {
                             menu_level = 2;
                             menu_curopt = Config::gigascreen_onoff + 1;
                             menu_saverect = true;
                             while (1) {
-                                string opt_menu = MENU_GIGASCREEN[Config::lang];
-                                opt_menu += MENU_GIGASCREEN_SEL[Config::lang];
+                                string opt_menu = MENU_GIGASCREEN;
+                                opt_menu += MENU_GIGASCREEN_SEL;
                                 uint8_t prev_onoff = Config::gigascreen_onoff;
                                 int mpos = -1;
                                 int idx = 0;
@@ -4968,8 +4869,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string ula_menu = MENU_ULAPLUS[Config::lang];
-                                ula_menu += MENU_YESNO[Config::lang];
+                                string ula_menu = MENU_ULAPLUS;
+                                ula_menu += MENU_YESNO;
                                 bool prev_ula = Config::ulaplus;
                                 if (prev_ula) {
                                     ula_menu.replace(ula_menu.find("[Y",0),2,"[*");
@@ -5010,8 +4911,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string tmx_menu = MENU_TIMEX[Config::lang];
-                                tmx_menu += MENU_YESNO[Config::lang];
+                                string tmx_menu = MENU_TIMEX;
+                                tmx_menu += MENU_YESNO;
                                 bool prev = Config::timex_video;
                                 if (prev) {
                                     tmx_menu.replace(tmx_menu.find("[Y",0),2,"[*");
@@ -5060,7 +4961,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string dma_menu = MENU_DMA[Config::lang];
+                                string dma_menu = MENU_DMA;
                                 uint8_t prev = Config::dma_mode;
                                 dma_menu.replace(dma_menu.find("[O",0),2, prev == 0 ? "[*" : "[ ");
                                 dma_menu.replace(dma_menu.find("[B",0),2, prev == 1 ? "[*" : "[ ");
@@ -5069,7 +4970,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 if (opt2) {
                                     Config::dma_mode = opt2 - 1;
                                     if (Config::dma_mode != prev) {
-#if !PICO_RP2040
                                         // Budget-gate when turning DMA on from off (~7 KB attr shadow).
                                         if (prev == 0 && Config::dma_mode != 0 &&
                                             !OSD::featureBudgetGate(Subsystems::FEAT_DMA)) {
@@ -5081,9 +4981,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             DmaSubsys::apply();
                                             Config::save();
                                         }
-#else
-                                        Config::save();
-#endif
                                     }
                                     menu_curopt = opt2;
                                     menu_saverect = false;
@@ -5106,8 +5003,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string dith_menu = MENU_HDMI_DITHER[Config::lang];
-                                    dith_menu += MENU_YESNO[Config::lang];
+                                    string dith_menu = MENU_HDMI_DITHER;
+                                    dith_menu += MENU_YESNO;
                                     bool prev = Config::hdmi_dither;
                                     if (prev) {
                                         dith_menu.replace(dith_menu.find("[Y",0),2,"[*");
@@ -5141,8 +5038,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string mc_menu = MENU_16COL[Config::lang];
-                                mc_menu += MENU_YESNO[Config::lang];
+                                string mc_menu = MENU_16COL;
+                                mc_menu += MENU_YESNO;
                                 bool prev = Config::mode16col_onoff;
                                 if (prev) {
                                     mc_menu.replace(mc_menu.find("[Y",0),2,"[*");
@@ -5155,7 +5052,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 if (opt2) {
                                     bool want = (opt2 == 1);
                                     if (want && !(Z80Ops::isPentagon || Z80Ops::isProfi)) {
-                                        OSD::osdCenteredMsg(OSD_16COL_NEEDS_PENTAGON[Config::lang], LEVEL_WARN, 1500);
+                                        OSD::osdCenteredMsg(OSD_16COL_NEEDS_PENTAGON, LEVEL_WARN, 1500);
                                     } else if (want && !prev &&
                                                !OSD::featureBudgetGate(Subsystems::FEAT_16COL)) {
                                         // declined to free → leave 16col off (~0.5 KB LUT)
@@ -5181,7 +5078,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 }
                             }
                         }
-                        #endif
                     } else {
                         menu_curopt = 4;
                         break;
@@ -5198,16 +5094,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 bool ext_ram = has_psram || FileUtils::fsMount;
                 // Profi needs PSRAM (DS80 hires framebuffer in PSRAM); without it
                 // the emulation is pointless, so hide the entry on SD-only boards.
-                // It also needs RP2350 (RP2040 has no DS80 hires support), so it is
-                // hidden on RP2040 regardless of PSRAM.  The DS80 hires mode lives
-                // entirely in the VGA/HDMI drivers, so it is also hidden on non-VGA/HDMI
-                // builds (TFT/SOFTTV/TV).
+                // The DS80 hires mode lives entirely in the VGA/HDMI drivers, so
+                // Profi is also hidden on non-VGA/HDMI builds (TFT/SOFTTV/TV).
                 // Stripping "Profi" keeps indices of the items before it stable;
                 // any trailing item (ALF) shifts up by one and is keyed off the
                 // computed last index below.  show_profi gates both the menu entry
                 // and the arch_num==8 branch so the indices stay consistent.
-#if PICO_RP2040 || !defined(VGA_HDMI)
-                // RP2040 has no DS80 hires support; non-VGA/HDMI builds (TFT/SOFTTV/TV)
+#if !defined(VGA_HDMI)
+                // Non-VGA/HDMI builds (TFT/SOFTTV/TV)
                 // do not link the DS80 packed-pair display mode (the set_profi_ds80_mode
                 // entry points are no-op stubs there — see Video.cpp), so Profi would
                 // run without its defining hires mode. Hide it on those builds.
@@ -5215,7 +5109,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
 #else
                 const bool show_profi = has_psram;
 #endif
-                string arch_menu = ext_ram ? MENU_ARCH[Config::lang] : MENU_ARCH_NO_SD[Config::lang];
+                string arch_menu = ext_ram ? MENU_ARCH : MENU_ARCH_NO_SD;
                 if (ext_ram && !show_profi) {
                     const string profi_line = "Profi\t>\n";
                     size_t p = arch_menu.find(profi_line);
@@ -5232,7 +5126,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS48[Config::lang]);
+                            opt2 = menuRun(MENU_ROMS48);
                             if (opt2) {
                                 arch = "48K";
                                 if (opt2 == 1) {
@@ -5260,7 +5154,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS128[Config::lang]);
+                            opt2 = menuRun(MENU_ROMS128);
                             if (opt2) {
                                 arch = "128K";
                                 if (opt2 == 1) {
@@ -5297,7 +5191,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS_PENT[Config::lang]);
+                            opt2 = menuRun(MENU_ROMS_PENT);
                             if (opt2) {
                                 arch = "Pentagon";
                                 if (opt2 == 1) {
@@ -5319,7 +5213,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS_PENT[Config::lang]);
+                            opt2 = menuRun(MENU_ROMS_PENT);
                             if (opt2) {
                                 arch = "P512";
                                 if (opt2 == 1) {
@@ -5341,7 +5235,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_level = 2;
                             menu_curopt = 1;
                             menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS_PENT[Config::lang]);
+                            opt2 = menuRun(MENU_ROMS_PENT);
                             if (opt2) {
                                 arch = "P1024";
                                 if (opt2 == 1) {
@@ -5364,7 +5258,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                opt2 = menuRun(MENU_ROMSBYTE[Config::lang]);
+                                opt2 = menuRun(MENU_ROMSBYTE);
                                 if (opt2) {
                                     if (opt2 == 1) {
                                         arch = "48K";
@@ -5386,8 +5280,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         menu_curopt = 1;
                                         menu_saverect = true;
                                         while (1) {
-                                            string opt_menu = MENU_BYTE_COBMECT_MODE[Config::lang];
-                                            opt_menu += MENU_YESNO[Config::lang];
+                                            string opt_menu = MENU_BYTE_COBMECT_MODE;
+                                            opt_menu += MENU_YESNO;
                                             bool prev_opt = Config::byte_cobmect_mode;
                                             if (prev_opt) {
                                                 opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
@@ -5431,11 +5325,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_curopt = 1;
                             menu_saverect = true;
                             while (1) {
-                                string opt_menu = (FileUtils::fsMount ? MENU_MURMUZAVR : MENU_MURMUZAVR_NONE)[Config::lang];
+                                string opt_menu = (FileUtils::fsMount ? MENU_MURMUZAVR : MENU_MURMUZAVR_NONE);
                                 uint32_t new_opt = MEM_PG_CNT, prev_opt = MEM_PG_CNT;
                                 if (!FileUtils::fsMount) {
                                     opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-#if PICO_RP2350
                                 } else if (prev_opt <= 64) {
                                     opt_menu.replace(opt_menu.find("[N",0),2,"[*");
                                     opt_menu.replace(opt_menu.find("[4",0),2,"[ ");
@@ -5467,21 +5360,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     opt_menu.replace(opt_menu.find("[1",0),2,"[ ");
                                     opt_menu.replace(opt_menu.find("[3",0),2,"[*");
                                 }
-#else
-                                } else if (prev_opt <= 64) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[ ");
-                                } else if (prev_opt <= 256) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[ ");
-                                } else if (prev_opt <= 512) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[*");
-                                }
-#endif
                                 uint8_t opt2 = menuRun(opt_menu);
                                 if (opt2) {
                                     if (opt2 == 1) new_opt = 64;
@@ -5516,7 +5394,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_level = 2;
                                 // Profi submenu: ROM selection + XT keyboard + OSD palette
                                 string profi_sub =
-                                    string(Config::lang ? "Profi\n" : "Profi\n") +
+                                    string("Profi\n") +
                                     "1024K (Original)\n" +
                                     "1024K (Karabas)\n" +
                                     "1024K (Karabas+PQDOS)\n" +
@@ -5544,15 +5422,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 } else if (opt_p == 6) {
                                     // XT keyboard toggle (Yes/No submenu) — level 3
                                     // Remind the user it can also be toggled live via the hotkey.
-                                    osdCenteredMsg(Config::lang
-                                        ? " Atajo: Alt+~ alterna teclado XT "
-                                        : " Hotkey Alt+~ toggles XT keyboard ", LEVEL_WARN, 3000);
+                                    osdCenteredMsg(" Hotkey Alt+~ toggles XT keyboard ", LEVEL_WARN, 3000);
                                     menu_level = 3;
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string ext_menu = string(Config::lang ? "Teclado XT\n" : "XT keyboard\n");
-                                        ext_menu += MENU_YESNO[Config::lang];
+                                        string ext_menu = string("XT keyboard\n");
+                                        ext_menu += MENU_YESNO;
                                         bool prev_ext = Config::profi_ext_keys;
                                         if (prev_ext) {
                                             ext_menu.replace(ext_menu.find("[Y",0), 2, "[*");
@@ -5581,7 +5457,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     while (1) {
                                         // Two explicit options: STD (standard ZX palette) / DS80
                                         // (live Profi palette).  Active one marked with [*].
-                                        string osd_pal_menu = string(Config::lang ? "Paleta OSD\n" : "OSD palette\n");
+                                        string osd_pal_menu = string("OSD palette\n");
                                         bool prev_pal = Config::profi_ds80_std_palette_osd;
                                         osd_pal_menu += string("STD\t[")  + (prev_pal  ? "*" : " ") + "]\n";
                                         osd_pal_menu += string("DS80\t[") + (!prev_pal ? "*" : " ") + "]\n";
@@ -5594,13 +5470,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                                 // so EndFrame won't fire to do it for us.
                                                 // applyProfiOSDPalette() reads the new flag and
                                                 // picks STD (conv_color swap) or DS80 (Graphics remap).
-#if !PICO_RP2040
                                                 if (profi_ds80_active) {
                                                     VIDEO::restoreProfiLivePalette(); // clean slate
                                                     VIDEO::profi_ds80_osd_active = true;
                                                     VIDEO::applyProfiOSDPalette();
                                                 }
-#endif
                                             }
                                             menu_curopt = opt3;
                                             menu_saverect = false;
@@ -5619,7 +5493,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 }
                             }
                         }
-#if !PICO_RP2040
                         else if (arch_num == 9 || (ext_ram && !show_profi && arch_num == 8) || !ext_ram) { // ALF TV GAME (shifts to 8 when Profi hidden)
                             arch = "ALF";
                             romset = "ALF1";
@@ -5630,7 +5503,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // GM.DLS may stay enabled when entering ALF — no disable needed.)
                             click();
                             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
-#if !PICO_RP2040
                             // Leaving Profi's forced-SRAM layout (no butter PSRAM) MUST reboot:
                             // ESPectrum::reset() does NOT free the ~96 KB Profi pages + DS80
                             // framebuffer (only setup() re-lays out memory), so a soft reset
@@ -5644,16 +5516,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 OSD::esp_hard_reset();   // never returns; setup() re-lays out for ALF
                                 return;
                             }
-#endif
                             Config::save();
                             Config::requestMachine(arch, romset);
                             ESPectrum::reset();
                             return;
                         }
-#endif
 
                         if (opt2) {
-#if !PICO_RP2040
                             // Leaving ALF for another machine. loadAlfCart() pinned
                             // pref_arch="ALF" so the cart machine survives the flash-reboot; that
                             // pin also makes setup() force ALF back at every boot and blocks the
@@ -5665,11 +5534,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // would skip the un-pin + save, leaving pref_arch="ALF" → F12 = ALF.
                             bool leavingAlf = (arch != "ALF" &&
                                 (Config::pref_arch == "ALF" || Config::alfCartBanks > 0));
-#else
-                            bool leavingAlf = false;
-#endif
                             if (arch != Config::arch || romset != Config::romSet || leavingAlf) {
-#if !PICO_RP2040
                                 if (leavingAlf) {
                                     if (Config::pref_arch == "ALF") Config::pref_arch = "Last";
                                     Config::alfCartBanks = 0;   // unmount cart (empty drive)
@@ -5686,7 +5551,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_saverect = false;
                                     continue;
                                 }
-#endif
                                 Config::ram_file = "none";
                                 if (romset != Config::romSet) {
                                     if (arch == "48K") {
@@ -5745,7 +5609,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 else if (Config::arch == "48K" && Config::pref_romSet_48 == "Last") Config::romSet48 = Config::romSet;
                                 else if (Config::arch == "Profi" && Config::pref_romSetProfi == "Last") Config::romSetProfi = Config::romSet;
                                 // Mutual exclusivity
-#if !PICO_RP2040
                                 bool isByte = (romset == "48Kby" || romset == "128Kby");
                                 if (Config::mb02 && (arch == "Pentagon" || arch == "P512" || arch == "P1024" ||
                                     arch == "Profi" || isByte)) {
@@ -5759,7 +5622,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     VIDEO::timex_mode = 0;
                                     OSD::osdCenteredMsg("Timex disabled", LEVEL_WARN, 2000);
                                 }
-#endif
                                 // TR-DOS is mandatory on Pentagon / Profi
                                 if ((arch == "Pentagon" || arch == "P512" || arch == "P1024" || arch == "Profi") && !Config::betadisk) {
                                     Config::betadisk = true;
@@ -5774,7 +5636,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     }
                                     OSD::osdCenteredMsg("Betadisk disabled", LEVEL_WARN, 1500);
                                 }
-#if !PICO_RP2040
                                 // Switching into Profi: Gigascreen is incompatible —
                                 // turn it off and free its 52 KB prev-FB before saving
                                 // so the Off-state persists across reboots. Config::arch
@@ -5817,9 +5678,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     DivMMC::zc_init();
                                     OSD::osdCenteredMsg("Z-Controller enabled", LEVEL_INFO, 1500);
                                 }
-#endif
                                 Config::save();
-#if !PICO_RP2040
                                 // Profi on SPI-PSRAM boards (no butter PSRAM) needs its
                                 // hires colour/working pages 56/58/61/60/40 backed by
                                 // SRAM (see assign_ram()) — ~80 KB total.  That backing
@@ -5843,7 +5702,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     OSD::esp_hard_reset();
                                     return;
                                 }
-#endif
                                 Config::requestMachine(arch, romset);
                             }
 
@@ -5870,7 +5728,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     FILINFO fi;
                     bool mos = f_stat(MOS_FILE, &fi) == FR_OK;
                     // Reset
-                    uint8_t opt2 = menuRun(expandHotkeys(mos ? MENU_RESET_MOS[Config::lang] : MENU_RESET[Config::lang]));
+                    uint8_t opt2 = menuRun(expandHotkeys(mos ? MENU_RESET_MOS : MENU_RESET));
                     if (opt2 == 1) {
                         // Soft
                         if (Config::last_ram_file != NO_RAM_FILE) {
@@ -5928,7 +5786,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         // to a different board (video wiring / RAM budget).
                         if (confirmReboot(OSD_DLG_SAVEDEFAULT)) {
                             Config::save(DEFAULT_NVS);
-                            osdCenteredMsg(MSG_DEFAULT_SAVED[Config::lang], LEVEL_INFO, 500);
+                            osdCenteredMsg(MSG_DEFAULT_SAVED, LEVEL_INFO, 500);
                         }
                         // Redraw same submenu in place either way, same item focused
                         menu_curopt = opt2;
@@ -5957,13 +5815,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 while(1) {
                     menu_level = 1;
                     // Options menu
-                    uint8_t options_num = menuRun(MENU_OPTIONS[Config::lang]);
+                    uint8_t options_num = menuRun(MENU_OPTIONS);
                     if (options_num == 1) {
                         menu_level = 2;
                         menu_curopt = 1;
                         menu_saverect = true;
                         while (1) {
-                            string archprefmenu = MENU_ARCH_PREF[Config::lang];
+                            string archprefmenu = MENU_ARCH_PREF;
                             string prev_archpref = Config::pref_arch;
                             if (Config::pref_arch == "48K") {
                                 archprefmenu.replace(archprefmenu.find("[4",0),2,"[*");
@@ -6049,14 +5907,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // ROM-pref submenus run at level 3 and restore 2 on Esc, but
                             // setting it here keeps the outer level stable across iterations.
                             menu_level = 2;
-                            uint8_t opt2 = menuRun(MENU_ROM_PREF[Config::lang]);
+                            uint8_t opt2 = menuRun(MENU_ROM_PREF);
                             if (opt2) {
                                 if (opt2 == 1) {
                                     menu_level = 3;
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string rpref48_menu = MENU_ROM_PREF_48[Config::lang];
+                                        string rpref48_menu = MENU_ROM_PREF_48;
                                         int mpos = -1;
                                         while(1) {
                                             mpos = rpref48_menu.find("[",mpos + 1);
@@ -6106,7 +5964,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string rpref128_menu = MENU_ROM_PREF_128[Config::lang];
+                                        string rpref128_menu = MENU_ROM_PREF_128;
                                         int mpos = -1;
                                         while(1) {
                                             mpos = rpref128_menu.find("[",mpos + 1);
@@ -6165,7 +6023,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string rprefPent_menu = MENU_ROM_PREF_PENT[Config::lang];
+                                        string rprefPent_menu = MENU_ROM_PREF_PENT;
                                         int mpos = -1;
                                         while(1) {
                                             mpos = rprefPent_menu.find("[",mpos + 1);
@@ -6204,7 +6062,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string rprefP512_menu = MENU_ROM_PREF_PENT[Config::lang];
+                                        string rprefP512_menu = MENU_ROM_PREF_PENT;
                                         int mpos = -1;
                                         while(1) {
                                             mpos = rprefP512_menu.find("[",mpos + 1);
@@ -6243,7 +6101,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string rprefP1M_menu = MENU_ROM_PREF_PENT[Config::lang];
+                                        string rprefP1M_menu = MENU_ROM_PREF_PENT;
                                         int mpos = -1;
                                         while(1) {
                                             mpos = rprefP1M_menu.find("[",mpos + 1);
@@ -6291,7 +6149,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         menu_curopt = 1;
                         menu_saverect = true;
                         while (1) {
-                            string joy_menu = MENU_DEFJOY[Config::lang];
+                            string joy_menu = MENU_DEFJOY;
                             std::size_t pos = joy_menu.find("[",0);
                             int nfind = 0;
                             while (pos != string::npos) {
@@ -6326,7 +6184,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         menu_saverect = true;
                         while (1) {
                             // joystick
-                            string Mnustr = MENU_JOYPS2[Config::lang];
+                            string Mnustr = MENU_JOYPS2;
                             uint8_t opt2 = menuRun(Mnustr);
                             if (opt2 == 1) {
                                 // Menu cursor keys as joy
@@ -6334,8 +6192,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string csasjoy_menu = MENU_CURSORJOY[Config::lang];
-                                    csasjoy_menu += MENU_YESNO[Config::lang];
+                                    string csasjoy_menu = MENU_CURSORJOY;
+                                    csasjoy_menu += MENU_YESNO;
                                     if (Config::CursorAsJoy) {
                                         csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
                                         csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[ ");
@@ -6367,8 +6225,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string csasjoy_menu = MENU_TABASFIRE[Config::lang];
-                                    csasjoy_menu += MENU_YESNO[Config::lang];
+                                    string csasjoy_menu = MENU_TABASFIRE;
+                                    csasjoy_menu += MENU_YESNO;
                                     bool prev_opt = Config::TABasfire1;
                                     if (prev_opt) {
                                         csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
@@ -6415,8 +6273,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string csasjoy_menu = MENU_ENTERSPACE[Config::lang];
-                                    csasjoy_menu += MENU_YESNO[Config::lang];
+                                    string csasjoy_menu = MENU_ENTERSPACE;
+                                    csasjoy_menu += MENU_YESNO;
                                     bool prev_opt = Config::rightSpace;
                                     if (prev_opt) {
                                         csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
@@ -6446,8 +6304,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 menu_curopt = 1;
                                 menu_saverect = true;
                                 while (1) {
-                                    string csasjoy_menu = MENU_WASD[Config::lang];
-                                    csasjoy_menu += MENU_YESNO[Config::lang];
+                                    string csasjoy_menu = MENU_WASD;
+                                    csasjoy_menu += MENU_YESNO;
                                     bool prev_opt = Config::wasd;
                                     if (prev_opt) {
                                         csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
@@ -6477,49 +6335,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             }
                         }
                     }
-                    else if (options_num == 6) {
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            // language
-                            uint8_t opt2;
-                            string Mnustr = MENU_INTERFACE_LANG[Config::lang];
-                            std::size_t pos = Mnustr.find("[",0);
-                            int nfind = 0;
-                            while (pos != string::npos) {
-                                if (nfind == Config::lang) {
-                                    Mnustr.replace(pos,2,"[*");
-                                    break;
-                                }
-                                pos = Mnustr.find("[",pos + 1);
-                                nfind++;
-                            }
-                            opt2 = menuRun(Mnustr);
-                            if (opt2) {
-                                if (Config::lang != (opt2 - 1)) {
-                                    Config::lang = opt2 - 1;
-                                    Config::save();
-                                    return;
-                                }
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 6;
-                                break;
-                            }
-                        }
-                    }
                     else if (options_num == 5) {
                         menu_level = 2;
                         menu_curopt = 1;
                         menu_saverect = true;
                         while (1) {
                             // Other
-                            string other_menu = MENU_OTHER[Config::lang];
-#if !PICO_RP2040
-                            other_menu += MENU_OTHER_RTC[Config::lang]; // RP2350-only RTC toggle
-#endif
+                            string other_menu = MENU_OTHER;
+                            other_menu += MENU_OTHER_RTC; // RP2350-only RTC toggle
                             uint8_t options_num = menuRun(other_menu);
                             if (options_num > 0) {
                                 if (options_num == 1) {
@@ -6527,7 +6350,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string alu_menu = MENU_ALUTIMING[Config::lang];
+                                        string alu_menu = MENU_ALUTIMING;
                                         uint8_t prev_AluTiming = Config::AluTiming;
                                         if (prev_AluTiming == 0) {
                                             alu_menu.replace(alu_menu.find("[E",0),2,"[*");
@@ -6562,8 +6385,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string iss_menu = MENU_ISSUE2[Config::lang];
-                                        iss_menu += MENU_YESNO[Config::lang];
+                                        string iss_menu = MENU_ISSUE2;
+                                        iss_menu += MENU_YESNO;
                                         bool prev_iss = Config::Issue2;
                                         if (prev_iss) {
                                             iss_menu.replace(iss_menu.find("[Y",0),2,"[*");
@@ -6596,7 +6419,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string ps2_menu = MENU_KBD2NDPS2[Config::lang];
+                                        string ps2_menu = MENU_KBD2NDPS2;
                                         uint8_t prev_ps2 = Config::joy2cursor;
                                         if (prev_ps2) {
                                             ps2_menu.replace(ps2_menu.find("[N",0),2,"[ ");
@@ -6626,7 +6449,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string menu = MENU_ALF_JOY[Config::lang];
+                                        string menu = MENU_ALF_JOY;
                                         uint8_t prev = Config::secondJoy;
                                         if (prev == 3) {
                                             menu.replace(menu.find("[1",0),2,"[ ");
@@ -6661,7 +6484,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string menu = MENU_K_JOY[Config::lang];
+                                        string menu = MENU_K_JOY;
                                         uint8_t prev = Config::kempstonPort;
                                         if (prev == 0x37) {
                                             menu.replace(menu.find("[1",0),2,"[ ");
@@ -6702,7 +6525,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string menu = MENU_THROTTLING[Config::lang];
+                                        string menu = MENU_THROTTLING;
                                         uint8_t prev = Config::throtling;
                                         if (prev == 0) {
                                             menu.replace(menu.find("[N",0),2,"[*");
@@ -6753,9 +6576,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string opt_menu = MENU_LEDINDICATORS[Config::lang];
-                                        opt_menu += MENU_YESNO[Config::lang];
-                                        opt_menu += Config::lang ? "Leyenda\t>\n" : "Legend\t>\n";
+                                        string opt_menu = MENU_LEDINDICATORS;
+                                        opt_menu += MENU_YESNO;
+                                        opt_menu += "Legend\t>\n";
                                         bool prev_opt = Config::ledIndicators;
                                         if (prev_opt) {
                                             opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
@@ -6795,8 +6618,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string opt_menu = MENU_SDLEDBLINK[Config::lang];
-                                        opt_menu += MENU_YESNO[Config::lang];
+                                        string opt_menu = MENU_SDLEDBLINK;
+                                        opt_menu += MENU_YESNO;
                                         bool prev_opt = Config::sdLedBlink;
                                         if (prev_opt) {
                                             opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
@@ -6821,15 +6644,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         }
                                     }
                                 }
-#if !PICO_RP2040
                                 else if (options_num == 10) {
                                     // RTC + NVRAM (Pentagon/Profi Mr Gluk MC146818) ON/OFF
                                     menu_level = 3;
                                     menu_curopt = 1;
                                     menu_saverect = true;
                                     while (1) {
-                                        string opt_menu = MENU_RTC[Config::lang];
-                                        opt_menu += MENU_YESNO[Config::lang];
+                                        string opt_menu = MENU_RTC;
+                                        opt_menu += MENU_YESNO;
                                         bool prev_opt = Config::rtc_enabled;
                                         if (prev_opt) {
                                             opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
@@ -6851,19 +6673,18 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         }
                                     }
                                 }
-#endif
                             } else {
                                 menu_curopt = 5;
                                 break;
                             }
                         }
-                    } else if (options_num == 7) {
+                    } else if (options_num == 6) {
                         menu_level = 2;
                         menu_curopt = 1;
                         menu_saverect = true;
                         while (1) {
                             // Update
-                            string Mnustr = expandHotkeys(FileUtils::fsMount ? MENU_UPDATE_FW[Config::lang] : MENU_UPDATE_FW_NO_SD[Config::lang]);
+                            string Mnustr = expandHotkeys(FileUtils::fsMount ? MENU_UPDATE_FW : MENU_UPDATE_FW_NO_SD);
                             uint8_t opt2 = menuRun(Mnustr);
                             if (opt2) {
                                 // Update
@@ -6874,7 +6695,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     while(1);
                                 }
                                 else {
-                                    string mFile = fileDialog(FileUtils::ROM_Path, MENU_ROM_TITLE[Config::lang], DISK_ROMFILE, 26, 15);
+                                    string mFile = fileDialog(FileUtils::ROM_Path, MENU_ROM_TITLE, DISK_ROMFILE, 26, 15);
                                     if (mFile != "") {
                                         mFile.erase(0, 1);
                                         string fname = FileUtils::ROM_Path + mFile;
@@ -6882,7 +6703,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         // the .rom/.bin inside before flashing.
                                         if (FileUtils::getLCaseExt(fname) == "zip") {
                                             string zf = ZipExtract::extract(fname, DISK_ROMFILE);
-                                            if (zf.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN); fname.clear(); }
+                                            if (zf.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); fname.clear(); }
                                             else if (zf != "\x1b") fname = zf;
                                             else fname.clear();
                                         }
@@ -6898,7 +6719,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_saverect = false;
                                 }
                             } else {
-                                menu_curopt = 7;
+                                menu_curopt = 6;
                                 break;
                             }
                         }
@@ -6941,8 +6762,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         menu_curopt = 1;
                         menu_saverect = true;
                         while (1) {
-                            string dl_menu = MENU_DEBUG_LOG[Config::lang];
-                            dl_menu += MENU_YESNO[Config::lang];
+                            string dl_menu = MENU_DEBUG_LOG;
+                            dl_menu += MENU_YESNO;
                             bool prev_dl = Debug::log_enabled;
                             if (prev_dl) {
                                 dl_menu.replace(dl_menu.find("[Y",0),2,"[*");
@@ -6971,7 +6792,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     }
                 }
             }
-#if !PICO_RP2040
             else if (opt == 9) { // Hardware
                 // ***********************************************************************************
                 // HARDWARE MENU
@@ -6980,7 +6800,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 menu_curopt = 1;
                 while (1) {
                     menu_level = 1;
-                    uint8_t hw_opt = menuRun(MENU_HARDWARE[Config::lang]);
+                    uint8_t hw_opt = menuRun(MENU_HARDWARE);
                     if (hw_opt == 1) {
                         // Chip Info
                         OSD::ChipInfo();
@@ -7013,16 +6833,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     }
                     else if (hw_opt == 7) {
                         // Overclock submenu — warn user
-                        osdCenteredMsg(Config::lang ? "Peligroso! Puede no arrancar!" : "Dangerous! Board may not boot!", LEVEL_WARN, 2000);
+                        osdCenteredMsg("Dangerous! Board may not boot!", LEVEL_WARN, 2000);
                         menu_level = 2;
                         menu_curopt = 1;
                         menu_saverect = true;
                         while (1) {
-                        #if !PICO_RP2040
-                            uint8_t oc_opt = menuRun(MENU_OVERCLOCK_VREG[Config::lang]);
-                        #else
-                            uint8_t oc_opt = menuRun(MENU_OVERCLOCK[Config::lang]);
-                        #endif
+                            uint8_t oc_opt = menuRun(MENU_OVERCLOCK_VREG);
                             if (oc_opt == 1) {
                                 // CPU Freq
                                 menu_level = 3;
@@ -7033,17 +6849,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     uint16_t cur = Config::cpu_mhz;
                                     mhz_menu.replace(mhz_menu.find("[2"), 2, cur == 252 ? "[*" : "[ ");
                                     mhz_menu.replace(mhz_menu.find("[3"), 2, cur == 378 ? "[*" : "[ ");
-                                #if !PICO_RP2040
                                     mhz_menu.replace(mhz_menu.find("[5"), 2, cur == 504 ? "[*" : "[ ");
-                                #endif
                                     uint8_t opt2 = menuRun(mhz_menu);
                                     if (opt2) {
                                         uint16_t new_mhz = 0;
                                         if (opt2 == 1) new_mhz = 252;
                                         else if (opt2 == 2) new_mhz = 378;
-                                    #if !PICO_RP2040
                                         else if (opt2 == 3) new_mhz = 504;
-                                    #endif
                                         if (new_mhz && new_mhz != cur) {
                                             Config::cpu_mhz = new_mhz;
                                             if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
@@ -7062,7 +6874,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     }
                                 }
                             }
-                        #if !PICO_RP2040
                             else if (oc_opt == 2) {
                                 // VReg Voltage
                                 menu_level = 3;
@@ -7103,11 +6914,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     }
                                 }
                             }
-                            // Flash Freq (opt 3 on RP2350, opt 2 on RP2040)
+                            // Flash Freq (opt 3)
                             else if (oc_opt == 3) {
-                        #else
-                            else if (oc_opt == 2) {
-                        #endif
                                 // Flash Freq
                                 menu_level = 3;
                                 menu_curopt = 1;
@@ -7136,22 +6944,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         menu_curopt = opt2;
                                         menu_saverect = false;
                                     } else {
-                                    #if !PICO_RP2040
                                         menu_curopt = 3;
-                                    #else
-                                        menu_curopt = 2;
-                                    #endif
                                         menu_level = 2;
                                         break;
                                     }
                                 }
                             }
-                        #if !PICO_RP2040
-                            // PSRAM Freq (opt 4 on RP2350, opt 3 on RP2040)
+                            // PSRAM Freq (opt 4)
                             else if (oc_opt == 4) {
-                        #else
-                            else if (oc_opt == 3) {
-                        #endif
                                 // PSRAM Freq
                                 menu_level = 3;
                                 menu_curopt = 1;
@@ -7180,11 +6980,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         menu_curopt = opt2;
                                         menu_saverect = false;
                                     } else {
-                                    #if !PICO_RP2040
                                         menu_curopt = 4;
-                                    #else
-                                        menu_curopt = 3;
-                                    #endif
                                         menu_level = 2;
                                         break;
                                     }
@@ -7209,8 +7005,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     }
                 }
             }
-#endif
-#if !PICO_RP2040
             else if (opt == 10) { // Network
                 menu_saverect = true;
                 menu_curopt = 1;
@@ -7252,9 +7046,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
 #if defined(KBDUSB)
                     usbRow = 1;
 #endif
-                    string m = string(MENU_ZIFI_TRANSPORT_TITLE[Config::lang]) + "\n";
+                    string m = string(MENU_ZIFI_TRANSPORT_TITLE) + "\n";
                     m += "Off\n";
-                    if (usbRow) m += string(MENU_ZIFI_USB_LABEL[Config::lang]) + "\n";
+                    if (usbRow) m += string(MENU_ZIFI_USB_LABEL) + "\n";
                     int nopt = BoardPins::zifiPairCount();
                     for (int i = 0; i < nopt; i++) {
                         const BoardPins::UartPair* p = BoardPins::zifiPair(i);
@@ -7295,8 +7089,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         // a reboot so displaced peripherals release/grab their pins.
                         bool nowUsb = (Config::zifi_transport == 1);
                         if ((conflict || wasUsb != nowUsb) &&
-                            OSD::msgDialog(MENU_ZIFI_TRANSPORT_TITLE[Config::lang],
-                                           OSD_DLG_APPLYREBOOT[Config::lang]) == DLG_YES)
+                            OSD::msgDialog(MENU_ZIFI_TRANSPORT_TITLE,
+                                           OSD_DLG_APPLYREBOOT) == DLG_YES)
                             OSD::esp_hard_reset();  // never returns
                         // No reboot (or declined) → recover the WiFi link on the new transport.
                         reconnectWifiIfNeeded();
@@ -7306,7 +7100,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     menu_level = 3; menu_saverect = true;
                     static const uint32_t bauds[] = { 115200, 230400, 460800, 921600 };
                     const int NB = 4;
-                    string m = string(MENU_BAUD_TITLE[Config::lang]) + "\n";
+                    string m = string(MENU_BAUD_TITLE) + "\n";
                     for (int i = 0; i < NB; i++) { char b[16]; snprintf(b, sizeof(b), "%u\n", (unsigned)bauds[i]); m += b; }
                     menu_curopt = 1;
                     for (int i = 0; i < NB; i++) if (bauds[i] == Config::zifi_baud) { menu_curopt = i + 1; break; }
@@ -7327,7 +7121,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 };
                 auto pickTz = [&]() {
                     menu_level = 3; menu_saverect = true;
-                    string m = string(MENU_TZ_TITLE[Config::lang]) + "\n";
+                    string m = string(MENU_TZ_TITLE) + "\n";
                     for (int tz = -12; tz <= 14; tz++) { char b[16]; snprintf(b, sizeof(b), "UTC%+d\n", tz); m += b; }
                     menu_curopt = Config::wifi_tz + 13;
                     uint8_t sel = menuRun(m);
@@ -7338,12 +7132,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     }
                 };
                 auto doSync = [&]() {
-                    OSD::osdCenteredMsg(MSG_RTC_SYNCING[Config::lang], LEVEL_INFO, 0);
+                    OSD::osdCenteredMsg(MSG_RTC_SYNCING, LEVEL_INFO, 0);
                     string when;
                     if (ZiFiAT::syncTime(Config::wifi_tz, when) == ZiFiAT::OK)
-                        OSD::osdCenteredMsg(string(MSG_RTC_SYNCED[Config::lang]) + "\n" + when, LEVEL_INFO, 3000);
+                        OSD::osdCenteredMsg(string(MSG_RTC_SYNCED) + "\n" + when, LEVEL_INFO, 3000);
                     else
-                        OSD::osdCenteredMsg(MSG_RTC_SYNC_ERR[Config::lang], LEVEL_WARN, 3000);
+                        OSD::osdCenteredMsg(MSG_RTC_SYNC_ERR, LEVEL_WARN, 3000);
                 };
                 // ── ESP01 submenu (level 2): Transport / Baud / Time zone / Sync time ──
                 auto esp01Menu = [&]() {
@@ -7357,7 +7151,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         usbT = (Config::zifi_transport == 1);
 #endif
                         if (usbT)
-                            snprintf(gpio, sizeof(gpio), "Transport: %s\t>", MENU_ZIFI_USB_LABEL[Config::lang]);
+                            snprintf(gpio, sizeof(gpio), "Transport: %s\t>", MENU_ZIFI_USB_LABEL);
                         else if (Config::zifi_tx_pin == BoardPins::PIN_OFF)
                             snprintf(gpio, sizeof(gpio), "Transport: Off\t>");
                         else {
@@ -7367,10 +7161,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                      Config::zifi_tx_pin == BoardPins::PIN_DEFAULT ? " (def)" : "");
                         }
                         char baud[32]; snprintf(baud, sizeof(baud), "Baud %u\t>", (unsigned)Config::zifi_baud);
-                        string m = string(MENU_ESP01_TITLE[Config::lang]) + "\n"
+                        string m = string(MENU_ESP01_TITLE) + "\n"
                                  + gpio + "\n" + baud + "\n"
-                                 + (Config::lang ? "Zona horaria\t>\n" : "Time zone\t>\n")
-                                 + (Config::lang ? "Sincronizar hora\n" : "Sync time (SNTP)\n");
+                                 + ("Time zone\t>\n")
+                                 + ("Sync time (SNTP)\n");
                         uint8_t e = menuRun(m);
                         if (e == 0) break; // Esc → back to Network (menuRun popped our rect)
                         if      (e == 1) pickTransport();
@@ -7389,7 +7183,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         // offline — e.g. autoconnect hasn't finished / AP out of range).
                         string title = st_conn ? st_ssid : string("WiFi");
                         string msg   = (st_conn ? st_ip + "  " : string())
-                                     + string(MSG_WIFI_DISCONNECT_Q[Config::lang]);
+                                     + string(MSG_WIFI_DISCONNECT_Q);
                         if (OSD::msgDialog(title, msg) == DLG_YES) {
                             ZiFiAT::disconnect();
                             Config::wifi_enabled = false;
@@ -7403,7 +7197,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // Nobody left using the shared UART link → tear it down.
                             if (!ZiFiAT::connected) ZiFi::deinit();
                             Config::saveWifiConfig();
-                            OSD::osdCenteredMsg(MSG_WIFI_DISCONNECTED[Config::lang], LEVEL_INFO, 1500);
+                            OSD::osdCenteredMsg(MSG_WIFI_DISCONNECTED, LEVEL_INFO, 1500);
                         }
                     } else {
                         // ONE live ESP-01 log window for the whole flow: scan → SSID pick
@@ -7415,7 +7209,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         // selection, leaves its own save for us to pop (→ window reappears);
                         // on Esc it restores itself, so we pop only the window.
                         ftpd_log_count = 0;
-                        s_wifilog_sub = MSG_WIFI_SCANNING[Config::lang];
+                        s_wifilog_sub = MSG_WIFI_SCANNING;
                         unsigned short wlx = OSD::scrAlignCenterX(OSD_W);
                         unsigned short wly = OSD::scrAlignCenterY(OSD_H);
                         VIDEO::SaveRect.save(wlx, wly, OSD_W, OSD_H);   // [window]
@@ -7428,11 +7222,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         int n = ZiFiAT::scan(nets, 24);
                         ZiFiAT::log_cb = nullptr;             // no AT traffic during menu/password
                         if (n <= 0) {
-                            wifiLogHold(MSG_WIFI_NO_NETS[Config::lang]); // error → hold open
+                            wifiLogHold(MSG_WIFI_NO_NETS); // error → hold open
                             VIDEO::SaveRect.restore_last();
                             return;
                         }
-                        string m = string(MENU_WIFI_LIST_TITLE[Config::lang]) + "\n";
+                        string m = string(MENU_WIFI_LIST_TITLE) + "\n";
                         for (int i = 0; i < n; i++) m += nets[i] + "\n";
                         menu_level = 2; menu_saverect = true; menu_curopt = 1;
                         uint8_t sel = menuRun(m);            // draws over the window
@@ -7449,7 +7243,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             VIDEO::SaveRect.restore_last();  // pop [window]
                             return;
                         }
-                        s_wifilog_sub = string(MSG_WIFI_CONNECTING[Config::lang]) + " " + chosen;
+                        s_wifilog_sub = string(MSG_WIFI_CONNECTING) + " " + chosen;
                         wifiLogDraw();                       // repaint over the box region
                         ZiFiAT::log_cb = wifiLogLine;
                         ZiFiAT::Status cst = ZiFiAT::connect(chosen, pass);
@@ -7460,14 +7254,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         if (cst == ZiFiAT::OK) {
                             Config::wifi_ssid = chosen; Config::wifi_pass = pass; Config::wifi_enabled = true;
                             Config::saveWifiConfig();
-                            wifiLogLine(MSG_WIFI_CONNECTED[Config::lang]);
+                            wifiLogLine(MSG_WIFI_CONNECTED);
                             sleep_ms(900);                   // brief, then auto-close on success
                             VIDEO::SaveRect.restore_last();  // pop [window]
-                            string msg = string(MSG_WIFI_CONNECTED[Config::lang]) + "\n" + ZiFiAT::current_ip;
+                            string msg = string(MSG_WIFI_CONNECTED) + "\n" + ZiFiAT::current_ip;
                             if (!when.empty()) msg += "\n" + when;
                             OSD::osdCenteredMsg(msg, LEVEL_INFO, 2500);
                         } else {
-                            wifiLogHold(MSG_WIFI_CONNECT_ERR[Config::lang]); // error → hold open
+                            wifiLogHold(MSG_WIFI_CONNECT_ERR); // error → hold open
                             VIDEO::SaveRect.restore_last();  // pop [window]
                         }
                     }
@@ -7478,16 +7272,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     // of WiFi — it can't be enabled while WiFi is off (and WiFi-off already
                     // forces it off), so there's nothing to toggle. Point the user at WiFi.
                     if (!Config::wifi_enabled) {
-                        OSD::osdCenteredMsg(Config::lang ? "Active WiFi primero"
-                                                         : "Enable WiFi first", LEVEL_WARN, 2500);
+                        OSD::osdCenteredMsg("Enable WiFi first", LEVEL_WARN, 2500);
                         return;
                     }
                     menu_level = 2; menu_saverect = true; menu_curopt = Config::zifi_enabled + 1;
-                    uint8_t zn = menuRun(MENU_ZIFI_NIC[Config::lang]);
+                    uint8_t zn = menuRun(MENU_ZIFI_NIC);
                     if (zn > 0) {
                         uint8_t prevZ = Config::zifi_enabled;
                         Config::zifi_enabled = zn - 1;
-#if !PICO_RP2040
                         // Turning the NIC on claims ~12 KB heap rings — check the SRAM budget.
                         // Freeing reboot never returns; denied/cancelled reverts.
                         if (Config::zifi_enabled && !prevZ &&
@@ -7497,7 +7289,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             VIDEO::SaveRect.restore_last();
                             return;
                         }
-#endif
                         ZiFi::enabled = Config::zifi_enabled; // runtime mirror gates tick()+ports
                         // The NIC toggle ONLY gates the 0xEF port emulation — it is
                         // independent of WiFi. Bring the shared UART link up when the NIC
@@ -7509,7 +7300,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         VIDEO::SaveRect.restore_last();
                         refreshNetStatus();
                         if (Config::zifi_enabled && BoardPins::zifiActiveNote()[0] &&
-                            OSD::msgDialog("", OSD_DLG_APPLYREBOOT[Config::lang]) == DLG_YES)
+                            OSD::msgDialog("", OSD_DLG_APPLYREBOOT) == DLG_YES)
                             OSD::esp_hard_reset();
                     }
                 };
@@ -7537,14 +7328,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     } else st = "WiFi Off";
                     if (st.size() < 32) st.append(32 - st.size(), ' '); else st.resize(32);
 
-                    string nm = string(Config::lang ? "Red\n" : "Network\n")
-                              + string(MENU_ESP01_TITLE[Config::lang]) + "\t>\n"  // 1 ESP01
+                    string nm = string("Network\n")
+                              + string(MENU_ESP01_TITLE) + "\t>\n"  // 1 ESP01
                               + st + "\n";                                        // 2 WiFi
                     // File transfer (Remote) and Online archives now live under F5
                     // (location picker) — only the server/diagnostic rows remain here.
 #if ZIFI_NET_CLIENT
-                    nm += (Config::lang ? "Servidor FTP\t>\n" : "FTP Server\t>\n");           // 3
-                    nm += string(MENU_HTTP_TEST_ITEM[Config::lang]);              // 4
+                    nm += ("FTP Server\t>\n");           // 3
+                    nm += string(MENU_HTTP_TEST_ITEM);              // 4
 #endif
                     nm += "ZiFi NIC\t>\n";                                        // 3 or 5
 
@@ -7568,12 +7359,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 }
                 menu_curopt = 10;
             }
-#endif
-#if !PICO_RP2040
             else if (opt == 11) { // ZX Keyboard — bitmap overlay
-#else
-            else if (opt == 9) { // ZX Keyboard (RP2040: Network+Hardware removed)
-#endif
                 // Protect OSD area from Z80 video renderer overwrite
                 bool kbd_osd_enabled = (VIDEO::OSD != 0);
                 if (!kbd_osd_enabled) {
@@ -7593,7 +7379,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 VIDEO::vga.fillRect(kbd_x - 2, kbd_y - 11, kbd_w + 4, 9, zxColor(7, 0));
                 VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 0));
                 VIDEO::vga.setCursor(kbd_x + 4, kbd_y - 10);
-                VIDEO::vga.print(Config::lang ? "Teclado ZX" : "ZX Keyboard");
+                VIDEO::vga.print("ZX Keyboard");
                 // Draw bitmap: packed 4 bits/pixel, palette index 1..7 (0 = skip).
                 // Black (idx 0) and transparent pixels are not drawn — the area is
                 // already filled with paper black above, so the result is identical.
@@ -7628,13 +7414,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 if (VIDEO::OSD) OSD::drawStats();
                 return;
             }
-#if !PICO_RP2040
             else if (opt == 12) { // Help — dynamic from hotkeys
-#else
-            else if (opt == 10) { // Help — dynamic from hotkeys (RP2040 shifted)
-#endif
                 // Build index of visible hotkeys (no large buffer needed)
-                auto descs = Config::lang ? hkDescES : hkDescEN;
+                auto descs = hkDescEN;
                 const int maxCols = osdMaxCols();
                 const int descCol = 16;
                 // Profi/Karabas-Pro "Menu"-key (Win/GUI) combos — not configurable
@@ -7647,10 +7429,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 static const char* const profiDescEN[] = {
                     "ROMSET 0-3 select", "Turbo FDC", "AY stereo mode", "CPU speed",
                     "NMI", "Swap drives A/B", "Joystick type", "Main menu",
-                };
-                static const char* const profiDescES[] = {
-                    "Sel. ROMSET 0-3", "Turbo FDC", "Estereo AY", "Velocidad CPU",
-                    "NMI", "Discos A/B", "Tipo joystick", "Menu principal",
                 };
                 const int profiN = (int)(sizeof(profiKeys) / sizeof(profiKeys[0]));
                 const bool showProfi = Z80Ops::isProfi;
@@ -7680,14 +7458,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         else buf[maxCols] = 0;
                         return;
                     }
-                    if (idx <= -4) { int p = -4 - idx; key = profiKeys[p]; desc = Config::lang ? profiDescES[p] : profiDescEN[p]; }
+                    if (idx <= -4) { int p = -4 - idx; key = profiKeys[p]; desc = profiDescEN[p]; }
                     // On Profi plain PrtScr toggles the XT keyboard; BMP capture
                     // moves to Alt+PrtScr (see ESPectrum::processKeyboard).
                     else if (idx == -2) {
-                        if (showProfi) { key = "PrtScr"; desc = Config::lang ? "Teclado XT" : "XT keyboard"; }
-                        else { key = "PrtScr"; desc = Config::lang ? "Captura BMP" : "BMP capture"; }
+                        if (showProfi) { key = "PrtScr"; desc = "XT keyboard"; }
+                        else { key = "PrtScr"; desc = "BMP capture"; }
                     }
-                    else if (idx == -1) { key = "ScrollLk"; desc = Config::lang ? "Cursor=Joy" : "Cursor=Joy"; }
+                    else if (idx == -1) { key = "ScrollLk"; desc = "Cursor=Joy"; }
                     else {
                         string b = hkBindingText(idx);
                         snprintf(keybuf, sizeof(keybuf), "%s", b.c_str());
@@ -7760,11 +7538,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 if (VIDEO::OSD) OSD::drawStats();
                 return;
             }
-#if !PICO_RP2040
             else if (opt == 13) { // About
-#else
-            else if (opt == 11) { // About (RP2040 shifted)
-#endif
                 // About
                 // Protect OSD area from Z80 video renderer overwrite
                 bool about_osd_enabled = (VIDEO::OSD != 0);
@@ -7801,7 +7575,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 // About Page 1
                 // osdAt(7, 0);
                 VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-                // VIDEO::vga.print(Config::lang ? OSD_ABOUT1_ES : OSD_ABOUT1_EN);
+                // VIDEO::vga.print(OSD_ABOUT1_EN);
 
                 pos_x = Config::aspect_16_9 ? osd_xi + 26 : osd_xi + 6;
                 pos_y = Config::aspect_16_9 ? osd_y0 + 48 : osd_y0 + 68;
@@ -7814,11 +7588,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 while (1) {
 
                     if (msgDelay == 0) {
-                        nextChar = AboutMsg[Config::lang][msgIndex][msgChar];
+                        nextChar = AboutMsg[msgIndex][msgChar];
                         if (nextChar != 13) {
                             if (nextChar == 10) {
-                                char fore = AboutMsg[Config::lang][msgIndex][++msgChar];
-                                char back = AboutMsg[Config::lang][msgIndex][++msgChar];
+                                char fore = AboutMsg[msgIndex][++msgChar];
+                                char back = AboutMsg[msgIndex][++msgChar];
                                 int foreint = (fore >= 'A') ? (fore - 'A' + 10) : (fore - '0');
                                 int backint = (back >= 'A') ? (back - 'A' + 10) : (back - '0');
                                 VIDEO::vga.setTextColor(zxColor(foreint & 0x7, foreint >> 3), zxColor(backint & 0x7, backint >> 3));
@@ -7885,17 +7659,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 return;
             }
 #if TFT
-            // TFT: RP2350 opt 13; RP2040-TFT opt 12 (Hardware removed, no Network row).
-#if PICO_RP2040
-            else if (FileUtils::fsMount && opt == 12) { // TFT
-#else
+            // TFT: opt 13.
             else if (FileUtils::fsMount && opt == 13) { // TFT
-#endif
                 menu_saverect = true;
                 menu_curopt = 1;
                 while(1) {
                     menu_level = 1;
-                    uint8_t opt2 = menuRun(MENU_TFT[Config::lang]);
+                    uint8_t opt2 = menuRun(MENU_TFT);
                     if (opt2 == 1) {
                         // INVERSION
                         uint8_t prev_inv = TFT_INVERSION;
@@ -7912,7 +7682,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         menu_level = 2;
                         menu_saverect = true;
                         while (1) {
-                            uint8_t opt2 = menuRun(MENU_TFT2[Config::lang]);
+                            uint8_t opt2 = menuRun(MENU_TFT2);
                             uint8_t prev_flags = TFT_FLAGS;
                             if (opt2 == 1) {
                                 TFT_FLAGS = (TFT_FLAGS & MADCTL_BGR_PIXEL_ORDER) ? (TFT_FLAGS & ~MADCTL_BGR_PIXEL_ORDER) : (TFT_FLAGS | MADCTL_BGR_PIXEL_ORDER);
@@ -8049,7 +7819,7 @@ void OSD::showLedLegend() {
     VIDEO::vga.setTextColor(title_ink, title_paper);
     VIDEO::vga.setFont(Font6x8);
     VIDEO::vga.setCursor(ox + OSD_FONT_W, oy + 2);
-    VIDEO::vga.print(Config::lang ? "Leyenda" : "LED legend");
+    VIDEO::vga.print("LED legend");
 
     VIDEO::vga.setTextColor(ink, paper);
 
@@ -8938,11 +8708,7 @@ static void saveDumpToFile(uint16_t addr_from, uint16_t addr_to) {
 
     snprintf(line, sizeof(line), "pagingLock: %d  page0ram: %d  newSRAM: %d  divmmc: %d\n",
         MemESP::pagingLock, MemESP::page0ram, MemESP::newSRAM,
-#if !PICO_RP2040
         MemESP::divmmc_mapped
-#else
-        0
-#endif
     );
     f_write(f, line, strlen(line), &bw);
 
@@ -9177,7 +8943,7 @@ c:
                 goto c;
             } else
             if (Nextkey.vk == fabgl::VK_F8) {
-                uint32_t address = addressDialog(dump_pc, Config::lang ? "Saltar a" : "Jump to");
+                uint32_t address = addressDialog(dump_pc, "Jump to");
                 if (address <= 0xFFFF) {
                     dump_pc = address;
                 }
@@ -9798,8 +9564,8 @@ c:
             if (FileUtils::fsMount && Nextkey.vk == fabgl::VK_F11) {
                 // Persist Load
                 while (1) {
-                    menu_footer = Config::lang ? "F3: Cargar  F6: Renombrar  F8: Borrar" : "F3: Load  F6: Rename  F8: Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD[Config::lang], 40));
+                    menu_footer = "F3: Load  F6: Rename  F8: Remove";
+                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD, 40));
                     if (opt2) {
                         if (menu_del_pressed) {
                             persistDeleteConfirm(opt2);
@@ -9815,8 +9581,8 @@ c:
             else if (FileUtils::fsMount && Nextkey.vk == fabgl::VK_F12) {
                 // Persist Save
                 while (1) {
-                    menu_footer = Config::lang ? "F6: Renombrar  F8: Borrar" : "F6: Rename  F8: Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE[Config::lang], 40));
+                    menu_footer = "F6: Rename  F8: Remove";
+                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE, 40));
                     if (opt2) {
                         if (menu_del_pressed) {
                             persistDeleteConfirm(opt2);
@@ -10367,7 +10133,6 @@ static void buildHWInfoText() {
     uint32_t cpu_hz = clock_get_hz(clk_sys) / MHZ;
     uint32_t free_heap = getFreeHeap();
 
-#if PICO_RP2350
     {
         static const uint16_t vreg_mv[] = {
             550, 600, 650, 700, 750, 800, 850, 900, 950, 1000,
@@ -10387,14 +10152,6 @@ static void buildHWInfoText() {
             mv / 1000, (mv % 1000) / 10,
             (int)(free_heap / 1024));
     }
-#else
-    pos += snprintf(hwtext + pos, sizeof(hwtext) - pos,
-        " Chip model     : RP2040 %d MHz\n"
-        " Chip cores     : 2\n"
-        " Chip RAM       : 264 KB\n"
-        " Free RAM       : %d KB\n",
-        (int)cpu_hz, (int)(free_heap / 1024));
-#endif
 
     {
         uint32_t flash_size = (1 << rx[3]);
@@ -10402,7 +10159,6 @@ static void buildHWInfoText() {
             " Flash size     : %d MB\n"
             " Flash JEDEC ID : %02X-%02X-%02X-%02X\n",
             (int)(flash_size >> 20), rx[0], rx[1], rx[2], rx[3]);
-#if !PICO_RP2040
         if (flash_qe) {
             pos += snprintf(hwtext + pos, sizeof(hwtext) - pos,
                 " Flash QE bit   : %s\n", flash_qe_text());
@@ -10412,7 +10168,6 @@ static void buildHWInfoText() {
                     flash_qe_diag[0], flash_qe_diag[1], flash_qe_diag[2],
                     flash_qe_diag[3], flash_qe_diag[4], flash_qe_diag[5]);
         }
-#endif
     }
 
 #ifndef MURM2
@@ -10470,14 +10225,12 @@ static void buildHWInfoText() {
         pos += snprintf(hwtext + pos, sizeof(hwtext) - pos, " 16K RAM pages  : %d[s%d:b%d:p%d:v%d]\n",
             ram_pages + butter_pages + psram_pages + swap_pages, ram_pages, butter_pages, psram_pages, swap_pages);
 
-#if !PICO_RP2040
     if (DivMMC::enabled) {
         const char* mode_names[] = { "OFF", "DivMMC", "DivIDE", "DivSD" };
         const char* mem_type = DivMMC::use_psram ? "PSRAM" : "swap";
         pos += snprintf(hwtext + pos, sizeof(hwtext) - pos, " %-15s: 128K+8K [%s]\n",
             mode_names[Config::esxdos], mem_type);
     }
-#endif
 
     {
         int ln = 0;
@@ -10568,7 +10321,6 @@ void OSD::ChipInfo() {
     uint32_t cpu_hz = clock_get_hz(clk_sys) / MHZ;
     uint32_t free_heap = getFreeHeap();
 
-#if PICO_RP2350
     {
         static const uint16_t vreg_mv[] = {
             550, 600, 650, 700, 750, 800, 850, 900, 950, 1000,
@@ -10590,15 +10342,6 @@ void OSD::ChipInfo() {
             mv / 1000, (mv % 1000) / 10,
             (int)(free_heap / 1024));
     }
-#else
-    pos += snprintf(buf + pos, sizeof(buf) - pos,
-        " Chip model     : RP2040\n"
-        " Chip cores     : 2\n"
-        " CPU frequency  : %d MHz\n"
-        " Chip RAM       : 264 KB\n"
-        " Free RAM       : %d KB\n",
-        (int)cpu_hz, (int)(free_heap / 1024));
-#endif
 
     {
         uint32_t flash_size = (1 << rx[3]);
@@ -10606,7 +10349,6 @@ void OSD::ChipInfo() {
             " Flash size     : %d MB\n"
             " Flash JEDEC ID : %02X-%02X-%02X-%02X\n",
             (int)(flash_size >> 20), rx[0], rx[1], rx[2], rx[3]);
-#if !PICO_RP2040
         if (flash_qe) {
             pos += snprintf(buf + pos, sizeof(buf) - pos,
                 " Flash QE bit   : %s\n", flash_qe_text());
@@ -10616,7 +10358,6 @@ void OSD::ChipInfo() {
                     flash_qe_diag[0], flash_qe_diag[1], flash_qe_diag[2],
                     flash_qe_diag[3], flash_qe_diag[4], flash_qe_diag[5]);
         }
-#endif
     }
 
 #ifndef MURM2
@@ -10653,17 +10394,10 @@ void OSD::ChipInfo() {
     // On-chip temperature sensor via ADC
     {
         // Register bases differ between chips
-    #if PICO_RP2350
         volatile uint32_t *resets     = (volatile uint32_t *)0x40020000;
         volatile uint32_t *adc_cs     = (volatile uint32_t *)0x400a0000;
         volatile uint32_t *adc_result = (volatile uint32_t *)0x400a0004;
         uint32_t ts_ch = chip_is_rp2350a() ? 4 : 8;
-    #else // RP2040
-        volatile uint32_t *resets     = (volatile uint32_t *)0x4000c000;
-        volatile uint32_t *adc_cs     = (volatile uint32_t *)0x4004c000;
-        volatile uint32_t *adc_result = (volatile uint32_t *)0x4004c004;
-        uint32_t ts_ch = 4;
-    #endif
 
         // Unreset ADC block: clear bit 0 in RESETS_RESET, wait bit 0 in RESET_DONE
         resets[0] &= ~1u;                      // RESET: clear ADC bit
@@ -10786,14 +10520,12 @@ void OSD::BoardInfo() {
         pos += snprintf(buf + pos, sizeof(buf) - pos, " 16K RAM pages  : %d[s%d:b%d:p%d:v%d]\n",
             ram_pages + butter_pages + psram_pages + swap_pages, ram_pages, butter_pages, psram_pages, swap_pages);
 
-#if !PICO_RP2040
     if (DivMMC::enabled) {
         const char* mode_names[] = { "OFF", "DivMMC", "DivIDE", "DivSD" };
         const char* mem_type = DivMMC::use_psram ? "PSRAM" : "swap";
         pos += snprintf(buf + pos, sizeof(buf) - pos, " %-15s: 128K+8K [%s]\n",
             mode_names[Config::esxdos], mem_type);
     }
-#endif
 
     // GPIO pins (all labels 16 chars after "  " prefix, colon at col 18)
     pos += snprintf(buf + pos, sizeof(buf) - pos, "\n GPIO pins:\n");
@@ -10925,7 +10657,6 @@ void OSD::MemoryInfo() {
     if (swp.total)
         pos += snprintf(buf + pos, sizeof(buf) - pos, " SD swap pool   : %d/%d KB\n", (int)(swp.used / KB), (int)(swp.total / KB));
 
-#if !PICO_RP2040
     // ── Enabled features (Subsystem SRAM budget) ────────────────────────────────
     using namespace Subsystems;
     pos += snprintf(buf + pos, sizeof(buf) - pos, "\n Enabled features (SRAM):\n");
@@ -10958,7 +10689,6 @@ void OSD::MemoryInfo() {
     }
     if (psram_feat_n)
         pos += snprintf(buf + pos, sizeof(buf) - pos, "  %-14s : %d KB\n", "TOTAL", (int)((psram_feat_total + KB - 1) / KB));
-#endif
 
     showTextDialog("Memory Info", buf);
 }
@@ -11021,7 +10751,6 @@ void OSD::EmulatorInfo() {
                                  Config::scanlines == 3 ? "Lvl 3" : "Lvl 4") : "Off",
             Config::render ? "Snow effect" : "Standard",
             VIDEO::paletteName(Config::palette));
-#if !PICO_RP2040
         {
             const char* gs;
             if (!Config::gigascreen_enabled || Config::gigascreen_onoff == 0) gs = "Off";
@@ -11035,7 +10764,6 @@ void OSD::EmulatorInfo() {
                 Config::ulaplus ? "On" : "Off",
                 Config::timex_video ? "On (#FF)" : "Off");
         }
-#endif
     }
 
     // --- Sound ---
@@ -11076,7 +10804,6 @@ void OSD::EmulatorInfo() {
             Config::soundrive == 2 ? (Config::soundriveEnabled() ? "Auto (On)" : "Auto (Off)")
                                    : (Config::soundrive == 1 ? "On" : "Off"));
 
-#if !PICO_RP2040
         // SAA1099
         pos += snprintf(buf + pos, sizeof(buf) - pos,
             " SAA1099        : %s\n",
@@ -11103,7 +10830,6 @@ void OSD::EmulatorInfo() {
                 " MIDI           : %s\n",
                 Config::midi == 1 ? "AY bitbang" : "ShamaZX");
         }
-#endif
 
         // Audio driver
         if (Config::audio_driver == 4)
@@ -11147,7 +10873,6 @@ void OSD::EmulatorInfo() {
     {
         pos += snprintf(buf + pos, sizeof(buf) - pos, "\n --- Storage ---\n");
 
-#if !PICO_RP2040
         // esxDOS
         {
             static const char* esx[] = { "Off", "DivMMC", "DivIDE", "DivSD" };
@@ -11185,7 +10910,6 @@ void OSD::EmulatorInfo() {
             pos += appendFilename(buf, pos, sizeof(buf), Config::ide_image[1], 19);
             pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
         }
-#endif
 
         // TR-DOS — available for Pentagon or Byte 128K
         {
@@ -11214,7 +10938,6 @@ void OSD::EmulatorInfo() {
             }
         }
 
-#if !PICO_RP2040
         // MB-02+
         if (MB02::enabled) {
             pos += snprintf(buf + pos, sizeof(buf) - pos, " MB-02+         : On\n");
@@ -11231,9 +10954,7 @@ void OSD::EmulatorInfo() {
         } else if (Config::mb02) {
             pos += snprintf(buf + pos, sizeof(buf) - pos, " MB-02+         : No PSRAM\n");
         }
-#endif
 
-#if !PICO_RP2040
         // DMA
         if (Config::dma_mode == 1)
             pos += snprintf(buf + pos, sizeof(buf) - pos, " DMA            : Z80 DMA (#0B)\n");
@@ -11241,7 +10962,6 @@ void OSD::EmulatorInfo() {
             pos += snprintf(buf + pos, sizeof(buf) - pos, " DMA            : zxnDMA (#6B)\n");
         else
             pos += snprintf(buf + pos, sizeof(buf) - pos, " DMA            : Off\n");
-#endif
 
         // Tape
         pos += snprintf(buf + pos, sizeof(buf) - pos, " Tape           : ");
@@ -11253,7 +10973,7 @@ void OSD::EmulatorInfo() {
             Config::flashload ? "On" : "Off");
     }
 
-    showTextDialog(Config::lang ? "Info emulador" : "Emulator Info", buf);
+    showTextDialog("Emulator Info", buf);
 }
 
 extern "C" int hid_app_format_devices_info(char* buf, int bufsz);
@@ -11352,15 +11072,13 @@ void OSD::HIDDevices() {
             (int)gamepad2_bits.start, (int)gamepad2_bits.select
         );
 #endif
-        showTextDialog(Config::lang ? "Disp. HID live" : "HID devices (live)", buf, false, &hid_scroll);
+        showTextDialog("HID devices (live)", buf, false, &hid_scroll);
     }
 
     VIDEO::SaveRect.restore_last();
 }
 
-#if !PICO_RP2040
 extern "C" uint8_t __gm_bank_start[];   // shared flash region (RP2350) — ALF cart load target
-#endif
 
 static void __not_in_flash_func(flash_block)(const uint8_t* buffer, size_t flash_target_offset) {
     // ensure it is required to write block (may be, it is already the same)
@@ -11387,10 +11105,9 @@ flash_it:
     #endif
 }
 
-#if !PICO_RP2040
 bool OSD::loadAlfCart(const string& fname) {
     FIL* f = fopen2(fname.c_str(), FA_READ);
-    if (!f) { OSD::osdCenteredMsg(OSD_NOROMFILE_ERR[Config::lang], LEVEL_WARN, 2000); return false; }
+    if (!f) { OSD::osdCenteredMsg(OSD_NOROMFILE_ERR, LEVEL_WARN, 2000); return false; }
     size_t size = (size_t)f_size(f);
     fclose2(f);
     if (size == 0) {
@@ -11419,7 +11136,6 @@ bool OSD::loadAlfCart(const string& fname) {
         return false;
     }
     Config::alfCartBanks = (uint8_t)AlfCart::bankCount();
-#if !PICO_RP2040
     // ALF uses neither General Sound nor Gigascreen — free their SRAM so the cart +
     // machine have headroom. Gigascreen frees live (prevFB via GsSubsys); General
     // Sound only frees across a reboot (no live deinit), so if it was on we reboot
@@ -11439,26 +11155,24 @@ bool OSD::loadAlfCart(const string& fname) {
         OSD::esp_hard_reset();   // never returns
         return true;
     }
-#endif
     Config::requestMachine("ALF", "ALF1");   // in-place machine switch (no reboot)
     ESPectrum::reset();
     return true;
 }
-#endif
 
 bool OSD::updateROM(const string& fname, uint8_t arch) {
     FIL* f = fopen2(fname.c_str(), FA_READ);
     if (!f) {
-        osdCenteredMsg(OSD_NOROMFILE_ERR[Config::lang], LEVEL_WARN, 2000);
+        osdCenteredMsg(OSD_NOROMFILE_ERR, LEVEL_WARN, 2000);
         return false;
     }
     FSIZE_t bytesfirmware = f_size(f);
     const uint8_t* rom;
     FSIZE_t max_rom_size = 0;
-    string dlgTitle = OSD_ROM[Config::lang];
+    string dlgTitle = OSD_ROM;
     // Flash custom ROM 48K
     if ( arch == 1 ) {
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
         if( bytesfirmware > 0x4000 ) {
             osdCenteredMsg("Too long file", LEVEL_WARN, 2000);
             fclose2(f);
@@ -11488,7 +11202,7 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
     }
     // Flash custom ROM 128K
     else if ( arch == 2 ) {
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
         if( bytesfirmware > 0x8000 ) {
             osdCenteredMsg("Unsupported file (by size)", LEVEL_WARN, 2000);
             fclose2(f);
@@ -11523,7 +11237,7 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         Config::pref_romSet_128 = "128Kcs";
     }
     else if ( arch == 3 ) {
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
         if( bytesfirmware > 0x8000 ) {
             osdCenteredMsg("Unsupported file (by size)", LEVEL_WARN, 2000);
             fclose2(f);
@@ -11557,7 +11271,6 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         Config::pref_arch = "Pentagon";
         Config::pref_romSetPent = "128Kcs";
     }
-#if !PICO_RP2040
     else if ( arch == 4 ) {
         if( bytesfirmware > (256ul << 10) ) {
             osdCenteredMsg("Unsupported file (by size)", LEVEL_WARN, 2000);
@@ -11578,7 +11291,6 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         fclose2(f);
         return loadAlfCart(fname);   // lazy-mount from SD + switch into ALF in place
     }
-#endif
     else if ( arch == 6 ) {
         if( bytesfirmware > (16ul << 10) ) {
             osdCenteredMsg("Unsupported file (by size)", LEVEL_WARN, 2000);
@@ -11607,7 +11319,7 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         // Custom Pentagon ROM: the factory Pentagon is now a 101-byte overlay over the
         // Sinclair 128K base (no 32K blob), so a user ROM flashes into the shared 128K
         // custom slot and the machine switches to the "128Kcs" romset.
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
         rom = gb_rom_0_128k_custom;
 #else
         rom = gb_rom_Alf_cart;
@@ -11626,7 +11338,7 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
             fclose2(f);
             return false;
         }
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
         rom = gb_rom_0_128k_custom;
 #else
         rom = gb_rom_Alf_cart;
@@ -11694,9 +11406,9 @@ if (target == NULL) {
 // printf("Running partition %s type %d subtype %d at offset 0x%x.\n", partition->label, partition->type, partition->subtype, partition->address);
 // printf("Target  partition %s type %d subtype %d at offset 0x%x.\n", target->label, target->type, target->subtype, target->address);
 
-// osdCenteredMsg(OSD_FIRMW_BEGIN[Config::lang], LEVEL_INFO,0);
+// osdCenteredMsg(OSD_FIRMW_BEGIN, LEVEL_INFO,0);
 
-progressDialog(OSD_FIRMW[Config::lang],OSD_FIRMW_BEGIN[Config::lang],0,0);
+progressDialog(OSD_FIRMW,OSD_FIRMW_BEGIN,0,0);
 
 // Fake erase progress bar ;D
 delay(100);
@@ -11715,8 +11427,8 @@ if (result != ESP_OK) {
 size_t bytesread;
 uint32_t byteswritten = 0;
 
-// osdCenteredMsg(OSD_FIRMW_WRITE[Config::lang], LEVEL_INFO,0);
-progressDialog(OSD_FIRMW[Config::lang],OSD_FIRMW_WRITE[Config::lang],0,1);
+// osdCenteredMsg(OSD_FIRMW_WRITE, LEVEL_INFO,0);
+progressDialog(OSD_FIRMW,OSD_FIRMW_WRITE,0,1);
 
 // Get firmware size
 fseek(firmware, 0, SEEK_END);
@@ -11751,8 +11463,8 @@ if (result != ESP_OK) {
     return result;
 }
 
-// osdCenteredMsg(OSD_FIRMW_END[Config::lang], LEVEL_INFO, 0);
-progressDialog(OSD_FIRMW[Config::lang],OSD_FIRMW_END[Config::lang],100,1);
+// osdCenteredMsg(OSD_FIRMW_END, LEVEL_INFO, 0);
+progressDialog(OSD_FIRMW,OSD_FIRMW_END,100,1);
 
 */
     // Enable StartMsg
@@ -11822,7 +11534,7 @@ static bool benchFsSpeed(const char* benchPath, const char* volName,
     return ok;
 }
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 // NET download benchmark — GET the catalog's speedtest blob (512 KB of
 // incompressible bytes published by gen_static.py) and count body bytes.
 // Always the built-in Pages URL: a Config::catalog_host override may point at
@@ -11903,7 +11615,7 @@ static bool benchNetSpeed(NetBenchCtx& ctx, const char* title) {
                (unsigned long)(ctx.bytes ? ctx.t_end - ctx.t_first : 0));
     return true;
 }
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT
 
 void OSD::SpeedTest() {
     menu_level = 2;
@@ -11911,11 +11623,11 @@ void OSD::SpeedTest() {
     menu_saverect = true;
 
     while (1) {
-        uint8_t st_opt = menuRun(MENU_SPEEDTEST[Config::lang]);
+        uint8_t st_opt = menuRun(MENU_SPEEDTEST);
         if (st_opt == 0) break;
 
         // With the net client built in, row 6 is NET and "All tests" shifts to 7.
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
         const uint8_t all_opt = 7;
         const bool do_net   = (st_opt == 6 || st_opt == all_opt);
 #else
@@ -11927,7 +11639,7 @@ void OSD::SpeedTest() {
         const bool do_sd    = (st_opt == 4 || st_opt == all_opt);
         const bool do_usb   = (st_opt == 5 || st_opt == all_opt);
 
-        const char* title = Config::lang ? "Test velocidad" : "Speed Test";
+        const char* title = "Speed Test";
 
         float cpu_mips = 0.0f;
         float sram_rd = 0.0f, sram_wr = 0.0f;
@@ -12081,7 +11793,7 @@ void OSD::SpeedTest() {
             usb_ok = benchFsSpeed("USB:/bench.tmp", "USB", title, usb_rd, usb_wr);
 
         // --- NET (HTTPS download from the catalog Pages) ---
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
         NetBenchCtx net_ctx = {};
         bool net_wifi = false, net_ran = false;
         if (do_net) {
@@ -12155,7 +11867,7 @@ void OSD::SpeedTest() {
                     " USB     : Error\n\n");
             }
         }
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
         if (do_net) {
             // 2xx + bytes counts as success even when r.ok was cleared by the
             // sink's time cap — the sample is what we measure.
@@ -12310,7 +12022,7 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
     // Yes
     VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-    VIDEO::vga.print(Config::lang ? "  Si  " : " Yes  ");
+    VIDEO::vga.print(" Yes  ");
 
     // // Ruler
     // VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
@@ -12344,7 +12056,7 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
                     // Yes
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print(Config::lang ? "  Si  " : " Yes  ");
+                    VIDEO::vga.print(" Yes  ");
                     // No
                     VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
@@ -12355,7 +12067,7 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
                     // Yes
                     VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print(Config::lang ? "  Si  " : " Yes  ");
+                    VIDEO::vga.print(" Yes  ");
                     // No
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
@@ -12385,7 +12097,7 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
 bool OSD::videoModeConfirm(int timeout_sec) {
 
     string title = "Video Mode";
-    string msg = Config::lang ? "Mantener este modo?" : "Keep this video mode?";
+    string msg = "Keep this video mode?";
 
     const unsigned short h = (OSD_FONT_H * 6) + 2;
     const unsigned short y = scrAlignCenterY(h);
@@ -12421,7 +12133,7 @@ bool OSD::videoModeConfirm(int timeout_sec) {
     // Yes button (initially not selected)
     VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-    VIDEO::vga.print(Config::lang ? "  Si  " : " Yes  ");
+    VIDEO::vga.print(" Yes  ");
 
     // No button (initially selected/highlighted)
     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
@@ -12459,7 +12171,7 @@ bool OSD::videoModeConfirm(int timeout_sec) {
                     // Highlight Yes
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print(Config::lang ? "  Si  " : " Yes  ");
+                    VIDEO::vga.print(" Yes  ");
                     // Unhighlight No
                     VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
@@ -12470,7 +12182,7 @@ bool OSD::videoModeConfirm(int timeout_sec) {
                     // Unhighlight Yes
                     VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print(Config::lang ? "  Si  " : " Yes  ");
+                    VIDEO::vga.print(" Yes  ");
                     // Highlight No
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
@@ -12517,13 +12229,7 @@ return text;
     "0-9      \n"\
     "Special  \n"\
     "Joystick \n"
-#define MENU_JOYSELKEY_ES "Tecla    \n"\
-    "None     \n"\
-    "A-Z      \n"\
-    "0-9      \n"\
-    "Especial \n"\
-    "Joystick \n"
-static const char *MENU_JOYSELKEY[2] = { MENU_JOYSELKEY_EN, MENU_JOYSELKEY_ES };
+#define MENU_JOYSELKEY MENU_JOYSELKEY_EN
 
 #define MENU_JOY_AZ "A-Z\n"\
     "A\n"\
@@ -12981,11 +12687,7 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Volume down",          // HK_VOL_DOWN
     "Volume up",            // HK_VOL_UP
     "Hard reset",           // HK_HARD_RESET
-#if PICO_RP2040
-    "Reboot RP2040",        // HK_REBOOT
-#else
     "Reboot RP2350",        // HK_REBOOT
-#endif
     "Max speed toggle",     // HK_MAX_SPEED
     "Pause",                // HK_PAUSE
     "Hardware info",        // HK_HW_INFO
@@ -13003,47 +12705,12 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Quick Load snapshot",  // HK_QUICK_LOAD
     "Quick Save snapshot",  // HK_QUICK_SAVE
 };
-// ES
-const char* const hkDescES[Config::HK_COUNT] = {
-    "Menu principal",        // HK_MAIN_MENU
-    "Cargar (SNA,Z80,P)",    // HK_LOAD_SNA
-    "Cargar snapshot",  // HK_PERSIST_LOAD
-    "Guardar snapshot", // HK_PERSIST_SAVE
-    "Abrir fichero",         // HK_LOAD_ANY
-    "Play/Stop cinta",       // HK_TAPE_PLAY
-    "Explorador cinta",      // HK_TAPE_BROWSER
-    "Status CPU/Carga",      // HK_STATS
-    "Bajar volumen",         // HK_VOL_DOWN
-    "Subir volumen",         // HK_VOL_UP
-    "Reset completo",        // HK_HARD_RESET
-#if PICO_RP2040
-    "Resetear RP2040",       // HK_REBOOT
-#else
-    "Resetear RP2350",       // HK_REBOOT
-#endif
-    "Velocidad maxima",      // HK_MAX_SPEED
-    "Pausa",                 // HK_PAUSE
-    "Info hardware",         // HK_HW_INFO
-    "Modo turbo",            // HK_TURBO
-    "Depurar",               // HK_DEBUG
-    "Insertar disco",        // HK_DISK
-    "NMI",                   // HK_NMI
-    "Resetear a...",         // HK_RESET_TO
-    "Modo USB Boot",         // HK_USB_BOOT
-    "Gigascreen",            // HK_GIGASCREEN
-    "Indicadores LED",       // HK_LED_TOGGLE
-    "Introducir poke",       // HK_POKE
-    "Modo HDMI 60Hz",        // HK_VIDMODE_60
-    "Modo HDMI 50Hz",        // HK_VIDMODE_50
-    "Carga rapida snapshot", // HK_QUICK_LOAD
-    "Guardado rapido snapshot", // HK_QUICK_SAVE
-};
 
 static const int HK_MENU_WIDTH = 32; // usable cols for hotkey menu
 
 static string buildHotkeyMenu() {
-    auto descs = Config::lang ? hkDescES : hkDescEN;
-    string menu = Config::lang ? "Teclas rapidas\n" : "Hot Keys\n";
+    auto descs = hkDescEN;
+    string menu = "Hot Keys\n";
     for (int i = 0; i < Config::HK_COUNT; i++) {
         string left = descs[i];
         string right = hkBindingText(i);
@@ -13071,9 +12738,7 @@ void OSD::hotkeyDialog() {
     menu_saverect = true;
 
     while (1) {
-        menu_footer = Config::lang
-            ? "F6:Defaults F8:Borrar "
-            : "F6:Defaults F8:Clear";
+        menu_footer = "F6:Defaults F8:Clear";
         string hmenu = buildHotkeyMenu();
         uint8_t opt = menuRun(hmenu);
 
@@ -13091,7 +12756,7 @@ void OSD::hotkeyDialog() {
         // Readonly entries: cannot be edited or cleared
         if (Config::hotkeys[idx].readonly && !menu_rename_pressed) {
             osdCenteredMsg(
-                Config::lang ? " Solo lectura " : " Read only ",
+                " Read only ",
                 LEVEL_WARN, 800);
             menu_curopt = opt;
             menu_saverect = false;
@@ -13112,8 +12777,8 @@ void OSD::hotkeyDialog() {
         // F6: reset all to defaults
         if (menu_rename_pressed) {
             uint8_t res = msgDialog(
-                Config::lang ? "Teclas rapidas" : "Hot Keys",
-                Config::lang ? "Restaurar por defecto?" : "Reset to defaults?");
+                "Hot Keys",
+                "Reset to defaults?");
             if (res == DLG_YES) {
                 Config::initHotkeys();
                 Config::save();
@@ -13127,7 +12792,7 @@ void OSD::hotkeyDialog() {
         // Enter pressed: capture new key
         // Save background, show message, restore after capture
         {
-            string msg = Config::lang ? " Pulsa tecla... (Esc=cancelar) " : " Press key... (Esc=cancel) ";
+            string msg = " Press key... (Esc=cancel) ";
             const unsigned short mh = OSD_FONT_H * 3;
             const unsigned short my = scrAlignCenterY(mh);
             const unsigned short mw = (msg.length() + 2) * OSD_FONT_W;
@@ -13186,7 +12851,7 @@ void OSD::hotkeyDialog() {
                       vk == fabgl::VK_VOLUMEMUTE ||
                       vk == fabgl::VK_DELETE || vk == fabgl::VK_BACKSPACE)) {
                     osdCenteredMsg(
-                        Config::lang ? " Tecla no permitida " : " Key not allowed ",
+                        " Key not allowed ",
                         LEVEL_WARN, 800);
                     continue;
                 }
@@ -13204,7 +12869,7 @@ void OSD::hotkeyDialog() {
                 }
                 if (conflict) {
                     osdCenteredMsg(
-                        Config::lang ? " Ya asignado! " : " Already assigned! ",
+                        " Already assigned! ",
                         LEVEL_WARN, 1000);
                     continue;
                 }
@@ -13244,7 +12909,7 @@ void OSD::joyDialog(void) {
         {241,121,14,-1,13,-1, 0}  // 15=Test  (left→Ok, up→R2)
     };
 
-    string keymenu = MENU_JOYSELKEY[Config::lang];
+    string keymenu = MENU_JOYSELKEY;
     int joytype = Config::joystick;
 
     string selkeymenu[5] = {
@@ -13255,7 +12920,7 @@ void OSD::joyDialog(void) {
         "Joystick"
     };
 
-    selkeymenu[3] = (Config::lang ? "Especial\n" : "Special\n");
+    selkeymenu[3] = ("Special\n");
     selkeymenu[3] += MENU_JOY_SPECIAL;
     selkeymenu[4] = MENU_JOY_KEMPSTON;
     int curDropDown = 2;
@@ -13534,7 +13199,7 @@ void OSD::joyDialog(void) {
                         // Ask to save changes
                         if (changed) {
                             string title = "Joystick";
-                            string msg = OSD_DLG_JOYSAVE[Config::lang];
+                            string msg = OSD_DLG_JOYSAVE;
                             uint8_t res = OSD::msgDialog(title,msg);
                             if (res == DLG_YES) {
                                 for (int n = 0; n < 14; ++n) {
@@ -13594,7 +13259,7 @@ void OSD::joyDialog(void) {
                 } else {
                     // Ask to discard changes
                     string title = "Joystick";
-                    string msg = OSD_DLG_JOYDISCARD[Config::lang];
+                    string msg = OSD_DLG_JOYDISCARD;
                     uint8_t res = OSD::msgDialog(title,msg);
                     if (res == DLG_YES) {
                         click();
@@ -13656,21 +13321,21 @@ struct dlgObject {
     int objTop;
     int objDown;
     unsigned char objType;
-    string Label[2];
+    string Label;
 };
 
 const dlgObject dlg_Objects[5] = {
-    {"Bank",70,16,-1,-1, 4, 1, DLG_OBJ_COMBO , {"RAM Bank  ","Banco RAM "}},
-    {"Address",70,32,-1,-1, 0, 2, DLG_OBJ_INPUT , {"Address   ","Direccion "}},
-    {"Value",70,48,-1,-1, 1, 4, DLG_OBJ_INPUT , {"Value     ","Valor     "}},
-    {"Ok",7,65,-1, 4, 2, 0, DLG_OBJ_BUTTON,  {"  Ok  "  ,"  Ok  "  }},
-    {"Cancel",52,65, 3,-1, 2, 0, DLG_OBJ_BUTTON, {"  Cancel  "," Cancelar "}}
+    {"Bank",70,16,-1,-1, 4, 1, DLG_OBJ_COMBO , "RAM Bank  "},
+    {"Address",70,32,-1,-1, 0, 2, DLG_OBJ_INPUT , "Address   "},
+    {"Value",70,48,-1,-1, 1, 4, DLG_OBJ_INPUT , "Value     "},
+    {"Ok",7,65,-1, 4, 2, 0, DLG_OBJ_BUTTON,  "  Ok  "},
+    {"Cancel",52,65, 3,-1, 2, 0, DLG_OBJ_BUTTON, "  Cancel  "}
 };
 
 const string BankCombo[9] = { "   -   ", "   0   ", "   1   ", "   2   ", "   3   ", "   4   ", "   5   ", "   6   ", "   7   " };
 
 void OSD::jumpToDialog() {
-    uint32_t address = addressDialog(Z80::getRegPC(), Config::lang ? "Saltar a" : "Jump to");
+    uint32_t address = addressDialog(Z80::getRegPC(), "Jump to");
     if (Z80::getRegPC() != address && address <= 0xFFFF) {
         Z80::setRegPC(address);
     }
@@ -13692,7 +13357,7 @@ void OSD::pokeDialog() {
         ""
     };
 
-    string Bankmenu = (Config::lang ? " Banco \n" : " Bank  \n");
+    string Bankmenu = (" Bank  \n");
     int i=0;
     for (;i<9;i++) Bankmenu += BankCombo[i] + "\n";
 
@@ -13719,7 +13384,7 @@ void OSD::pokeDialog() {
     // Title
     VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
     VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print(Config::lang ? "A" "\xA4" "adir Poke" : "Input Poke");
+    VIDEO::vga.print("Input Poke");
 
     // Rainbow
     unsigned short rb_y = y + 8;
@@ -13734,10 +13399,10 @@ void OSD::pokeDialog() {
 
     // Draw objects
     for (int n = 0; n < 5; n++) {
-        if (dlg_Objects[n].Label[Config::lang] != "" && dlg_Objects[n].objType != DLG_OBJ_BUTTON) {
+        if (dlg_Objects[n].Label != "" && dlg_Objects[n].objType != DLG_OBJ_BUTTON) {
             VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
             VIDEO::vga.setCursor(x + dlg_Objects[n].posx - 63, y + dlg_Objects[n].posy);
-            VIDEO::vga.print(dlg_Objects[n].Label[Config::lang].c_str());
+            VIDEO::vga.print(dlg_Objects[n].Label.c_str());
             VIDEO::vga.rect(x + dlg_Objects[n].posx - 2, y + dlg_Objects[n].posy - 2, 46, 12, zxColor(0, 0));
         }
         if (n == curObject)
@@ -13746,7 +13411,7 @@ void OSD::pokeDialog() {
             VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
         VIDEO::vga.setCursor(x + dlg_Objects[n].posx, y + dlg_Objects[n].posy);
         if (dlg_Objects[n].objType == DLG_OBJ_BUTTON) {
-            VIDEO::vga.print(dlg_Objects[n].Label[Config::lang].c_str());
+            VIDEO::vga.print(dlg_Objects[n].Label.c_str());
         } else {
             VIDEO::vga.print(dlgValues[n].c_str());
         }
@@ -13779,7 +13444,7 @@ void OSD::pokeDialog() {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                     if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -13787,7 +13452,7 @@ void OSD::pokeDialog() {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                     if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -13799,7 +13464,7 @@ void OSD::pokeDialog() {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                     if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -13807,7 +13472,7 @@ void OSD::pokeDialog() {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                     if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -13819,7 +13484,7 @@ void OSD::pokeDialog() {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                         if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                             if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
@@ -13828,7 +13493,7 @@ void OSD::pokeDialog() {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                         if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                         }
@@ -13840,7 +13505,7 @@ void OSD::pokeDialog() {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                         if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                             if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
@@ -13849,7 +13514,7 @@ void OSD::pokeDialog() {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
                         if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                         }
@@ -13962,9 +13627,9 @@ void flushKbd() {
 }
 
 const dlgObject dlg_Objects2[3] = {
-    {"Address",70,32,-1,-1, 0, 1, DLG_OBJ_INPUT , {"Address   ","Direccion "}},
-    {"Ok",     7, 65, 2, 2, 0, 2, DLG_OBJ_BUTTON, {"  Ok  "  , "  Ok  "  }},
-    {"Cancel", 52,65, 2, 2, 1, 0, DLG_OBJ_BUTTON, {"  Cancel  "," Cancelar "}}
+    {"Address",70,32,-1,-1, 0, 1, DLG_OBJ_INPUT , "Address   "},
+    {"Ok",     7, 65, 2, 2, 0, 2, DLG_OBJ_BUTTON, "  Ok  "},
+    {"Cancel", 52,65, 2, 2, 1, 0, DLG_OBJ_BUTTON, "  Cancel  "}
 };
 
 uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
@@ -14014,10 +13679,10 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
 
     // Draw objects
     for (int n = 0; n < 3; n++) {
-        if (dlg_Objects2[n].Label[Config::lang] != "" && dlg_Objects2[n].objType != DLG_OBJ_BUTTON) {
+        if (dlg_Objects2[n].Label != "" && dlg_Objects2[n].objType != DLG_OBJ_BUTTON) {
             VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
             VIDEO::vga.setCursor(x + dlg_Objects2[n].posx - 63, y + dlg_Objects2[n].posy);
-            VIDEO::vga.print(dlg_Objects2[n].Label[Config::lang].c_str());
+            VIDEO::vga.print(dlg_Objects2[n].Label.c_str());
             VIDEO::vga.rect(x + dlg_Objects2[n].posx - 2, y + dlg_Objects2[n].posy - 2, 46, 12, zxColor(0, 0));
         }
         if (n == curObject)
@@ -14027,7 +13692,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
 
         VIDEO::vga.setCursor(x + dlg_Objects2[n].posx, y + dlg_Objects2[n].posy);
         if (dlg_Objects2[n].objType == DLG_OBJ_BUTTON) {
-            VIDEO::vga.print(dlg_Objects2[n].Label[Config::lang].c_str());
+            VIDEO::vga.print(dlg_Objects2[n].Label.c_str());
         } else {
             VIDEO::vga.print(dlgValues[n].c_str());
         }
@@ -14060,7 +13725,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                     if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -14068,7 +13733,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                     if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -14080,7 +13745,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                     if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -14088,7 +13753,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                     VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                     VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                     if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                     } else {
                         VIDEO::vga.print(dlgValues[curObject].c_str());
                     }
@@ -14101,7 +13766,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                         if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                             if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
@@ -14110,7 +13775,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                         if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                         }
@@ -14122,7 +13787,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                         if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                             if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
@@ -14131,7 +13796,7 @@ uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
                         VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
                         VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
                         if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label[Config::lang].c_str());
+                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
                         } else {
                             VIDEO::vga.print(dlgValues[curObject].c_str());
                         }
@@ -14425,7 +14090,7 @@ bool OSD::dumpRangeDialog(uint16_t &from, uint16_t &to) {
         VIDEO::vga.setCursor(bx_cancel, by);
         VIDEO::vga.setTextColor(curObject == 3 ? zxColor(0, 1) : zxColor(0, 1),
                                 curObject == 3 ? zxColor(5, 1) : zxColor(7, 1));
-        VIDEO::vga.print(Config::lang ? " Cancelar " : "  Cancel  ");
+        VIDEO::vga.print("  Cancel  ");
     };
 
     drawFields();

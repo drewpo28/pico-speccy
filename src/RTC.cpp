@@ -1,6 +1,5 @@
 #include "RTC.h"
 
-#if !PICO_RP2040
 
 #include <pico/time.h>
 #include "FileUtils.h"
@@ -255,4 +254,3 @@ bool RTC::now(int& year, int& month, int& day,
     return true;
 }
 
-#endif // !PICO_RP2040

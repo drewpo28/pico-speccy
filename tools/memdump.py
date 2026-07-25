@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-memdump.py — convert picospec GDB memory dumps to dump.log format.
-Reads /tmp/picospec_mem{0-3}.bin (4×16KB Z80 windows),
-      /tmp/picospec_ram{0-7}.bin (8×16KB physical RAM pages, 128K),
-      /tmp/picospec_regs.txt.
-Writes /tmp/picospec_dump.log in the same format as OSD::saveDumpToFile().
+memdump.py — convert picospeccycy GDB memory dumps to dump.log format.
+Reads /tmp/picospeccycy_mem{0-3}.bin (4×16KB Z80 windows),
+      /tmp/picospeccycy_ram{0-7}.bin (8×16KB physical RAM pages, 128K),
+      /tmp/picospeccycy_regs.txt.
+Writes /tmp/picospeccycy_dump.log in the same format as OSD::saveDumpToFile().
 The 8 physical RAM pages are appended after the logical Z80 dump.
 """
 
 import sys
 import os
 
-MEM_FILES = [f"/tmp/picospec_mem{i}.bin" for i in range(4)]
-RAM_FILES = [f"/tmp/picospec_ram{i}.bin" for i in range(8)]
-REGS_FILE = "/tmp/picospec_regs.txt"
-OUT_FILE  = "/tmp/picospec_dump.log"
+MEM_FILES = [f"/tmp/picospeccycy_mem{i}.bin" for i in range(4)]
+RAM_FILES = [f"/tmp/picospeccycy_ram{i}.bin" for i in range(8)]
+REGS_FILE = "/tmp/picospeccycy_regs.txt"
+OUT_FILE  = "/tmp/picospeccycy_dump.log"
 
 MEM_TYPE_NAME = {0: "SRAM", 1: "PSRAM_SPI", 2: "SWAP"}
 

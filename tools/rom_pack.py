@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# rom_pack.py — pico-spec ROM overlay packer.
+# rom_pack.py — pico-speccy ROM overlay packer.
 #
 # Many ROM variants differ from one "base" ROM by only a few hundred *positionally
 # identical* bytes (e.g. TR-DOS 5.03/5.04TM vs 5.05D). Instead of shipping every

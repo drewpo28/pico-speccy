@@ -23,7 +23,7 @@
 #include "ff.h"			/* Basic definitions and declarations of API */
 #include "diskio.h"		/* Declarations of MAI */
 
-/* Onboard-LED blink hooks (pico-spec). Defined in drivers/sdcard/sdcard.c.
+/* Onboard-LED blink hooks (pico-speccy). Defined in drivers/sdcard/sdcard.c.
  * Forward-declared here to keep ff.c free of extra include paths. Emulator-
  * internal scratch files (under "/tmp/") are tagged at open so their I/O does
  * not blink the SD-activity LED. */

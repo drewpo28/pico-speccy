@@ -1,6 +1,5 @@
 #include "AlfCart.h"
 
-#if !PICO_RP2040
 
 #include "ff.h"        // fopen2/fclose2/FIL/f_read/f_lseek/f_size, UINT, FSIZE_t
 #include "Debug.h"
@@ -61,4 +60,3 @@ uint8_t* AlfCart::residentBank(int bank) {
     return g_alfWindow;
 }
 
-#endif // !PICO_RP2040

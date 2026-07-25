@@ -1,5 +1,5 @@
 /*
- * RomOverlay — on-the-fly ROM patching for pico-spec.
+ * RomOverlay — on-the-fly ROM patching for pico-speccy.
  *
  * A ROM variant that differs from a base ROM by only a few positional byte runs
  * (e.g. TR-DOS 5.03/5.04TM vs 5.05D) is stored as a small read-only OVERLAY blob in

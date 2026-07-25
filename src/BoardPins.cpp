@@ -1,6 +1,5 @@
 #include "BoardPins.h"
 
-#if !PICO_RP2040
 
 #include "Config.h"
 #include "ZiFi.h"          // ZiFi::linkUp() — UART link owns its pins even with the NIC off
@@ -128,4 +127,3 @@ extern "C" int board_zifi_owns_pin(unsigned pin) {
     return BoardPins::zifiOwnsPin((uint8_t)pin) ? 1 : 0;
 }
 
-#endif // !PICO_RP2040

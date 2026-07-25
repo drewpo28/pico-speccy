@@ -9,7 +9,7 @@
 // tools/rom_pack.py family comment), so they stay raw. Sources kept in
 // src/roms/profi/src/bank{0,2,3}_{flashtool,fdimage}.bin.
 // NOTE: Flash Tool programs the SPI-flash via ports #C7/#87/#A7/#E7/#67 —
-// pico-spec deliberately does NOT emulate the flash chip (the ports are
+// pico-speccy deliberately does NOT emulate the flash chip (the ports are
 // no-ops, see Ports.cpp), so the tool boots but sees no flash. FDImage works
 // with the WD1793 floppy + Z-Controller SD.
 #include <hardware/flash.h>

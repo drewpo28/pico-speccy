@@ -211,22 +211,18 @@ public:
 
     static void esp_hard_reset();
 
-#if !PICO_RP2040
     // SRAM budget gate for the 5 heavy features. Call BEFORE the enable path.
     // Returns true → caller may proceed to enable the feature (it fits, or the
     // user freed room — in which case this reboots and never returns). Returns
     // false → caller must NOT enable (denied, or user cancelled the popup).
     static bool featureBudgetGate(int featureId);
-#endif
 
     static bool updateFirmware(FIL *firmware);
     static bool updateROM(const string& file, uint8_t arch);
-#if !PICO_RP2040
     // Defer-flash an ALF cartridge from `fname` into the shared region and reboot
     // into ALF (does NOT return on success). Used by the F5 browser, the Update menu
     // and the Web-Archive download launcher.
     static bool loadAlfCart(const string& fname);
-#endif
 
     static char stats_lin1[25]; // "CPU: 00000 / IDL: 00000 ";
     static char stats_lin2[25]; // "FPS:000.00 / FND:000.00 ";

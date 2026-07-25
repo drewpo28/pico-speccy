@@ -162,11 +162,9 @@ void AySound::init()
     env_pos = EnvNum = 0;
     SamplebufAY[0] = SamplebufAY[1] = 0;
 
-#if !PICO_RP2040
     midi_bitbang_pos = -1;
     midi_bitbang_byte = 0;
     midi_bitbang_prev = true;
-#endif
 
     /* GenNoise (c) Hacker KAY & Sergey Bulba */
     Cur_Seed = 0xffff;
@@ -513,7 +511,6 @@ void AySound::updEnvType() {
 void AySound::updIOPortA() {
     ayregs.IOPortA = regs[14] & 0xff;
 
-#if !PICO_RP2040
     // Bit-bang UART decoder: zx-midiplayer uses reg 14 bit 2 as serial TX line
     // 0xFE = HIGH (bit2=1), 0xFA = LOW (bit2=0)
     // Frame: idle(H) → START(L) → D0..D7 (LSB first) → STOP(H)
@@ -539,7 +536,6 @@ void AySound::updIOPortA() {
 
         midi_bitbang_prev = line;
     }
-#endif
 }
 
 void AySound::updIOPortB() {
@@ -665,11 +661,9 @@ void AySound::reset()
 
     selectedRegister = 0xff;
 
-#if !PICO_RP2040
     midi_bitbang_pos = -1;
     midi_bitbang_byte = 0;
     midi_bitbang_prev = true; // idle = HIGH
-#endif
 
     updToneA();
     updToneA();

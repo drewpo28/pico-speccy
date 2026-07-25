@@ -8,7 +8,7 @@
 // clients must therefore use *active* mode. RP2350 only, behind ZIFI_NET_CLIENT.
 // All calls run from the OSD/main thread while the Z80 is paused — never an IRQ.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include <inttypes.h>
 
@@ -33,4 +33,4 @@ public:
     static void stop();
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

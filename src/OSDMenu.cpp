@@ -51,10 +51,8 @@ using namespace std;
 #include "Z80_JLS/z80.h"
 #include "Tape.h"
 #include "wd1793.h"
-#if !PICO_RP2040
 #include "MB02.h"
 #include "DivMMC.h"
-#endif
 
 #define MENU_MAX_ROWS 17
 
@@ -585,13 +583,13 @@ string OSD::formatSlotRow(const string& label, const string& fname,
     static const size_t BASENAME_MAX = 10;
     string right;
     if (fname.empty()) {
-        right = OSD_DISK_EMPTY[Config::lang];
+        right = OSD_DISK_EMPTY;
     } else {
         size_t slash = fname.find_last_of("/\\");
         string base = (slash == string::npos) ? fname : fname.substr(slash + 1);
         if (base.length() > BASENAME_MAX) base = base.substr(0, BASENAME_MAX);
         right = base;
-        if (showWP && wp) right += OSD_DISK_WP_TAG[Config::lang];
+        if (showWP && wp) right += OSD_DISK_WP_TAG;
     }
     return label + "\t" + right;
 }
@@ -601,21 +599,18 @@ namespace {
     inline uint8_t slotCount(DiskIface iface) {
         switch (iface) {
             case IFACE_BETA: return 4;
-#if !PICO_RP2040
             case IFACE_MB02: return 4;
             case IFACE_ESX:
                 // Slots visible in popup depend on the active esxDOS interface.
                 if (Config::esxdos == 1) return 1; // DivMMC: hd0
                 if (Config::esxdos == 2) return 2; // DivIDE: hd0+hd1
                 return 0;                          // OFF / DivSD: no slots
-#endif
             default: return 0;
         }
     }
     inline bool slotHasWP(DiskIface iface) { return iface != IFACE_ESX; }
     inline string slotLabel(DiskIface iface, uint8_t idx) {
         if (iface == IFACE_BETA) return string("Drive ") + (char)('A' + idx);
-#if !PICO_RP2040
         if (iface == IFACE_MB02) {
             char b[12]; snprintf(b, sizeof(b), "Drive %u", (unsigned)(idx + 1));
             return string(b);
@@ -624,26 +619,21 @@ namespace {
             char b[8]; snprintf(b, sizeof(b), "hd%u", (unsigned)idx);
             return string(b);
         }
-#endif
         return "";
     }
     inline string slotFname(DiskIface iface, uint8_t idx) {
         if (iface == IFACE_BETA) {
             return ESPectrum::fdd.disk[idx] ? ESPectrum::fdd.disk[idx]->fname : "";
         }
-#if !PICO_RP2040
         if (iface == IFACE_MB02) {
             return ESPectrum::mb02_fdd.disk[idx] ? ESPectrum::mb02_fdd.disk[idx]->fname : "";
         }
         if (iface == IFACE_ESX) return Config::esxdos_hdf_image[idx];
-#endif
         return "";
     }
     inline bool slotWP(DiskIface iface, uint8_t idx) {
         if (iface == IFACE_BETA) return Config::driveWP[idx];
-#if !PICO_RP2040
         if (iface == IFACE_MB02) return Config::mb02WP[idx];
-#endif
         return false;
     }
     // Toggle stored WP and mirror to live disk; caller persists via Config::save.
@@ -653,20 +643,17 @@ namespace {
             if (ESPectrum::fdd.disk[idx])
                 ESPectrum::fdd.disk[idx]->writeprotect = Config::driveWP[idx];
         }
-#if !PICO_RP2040
         else if (iface == IFACE_MB02) {
             Config::mb02WP[idx] = !Config::mb02WP[idx];
             if (ESPectrum::mb02_fdd.disk[idx])
                 ESPectrum::mb02_fdd.disk[idx]->writeprotect = Config::mb02WP[idx];
         }
-#endif
     }
     // Eject the disk/image currently mounted in `idx`. No-op for empty slots.
     inline void slotEject(DiskIface iface, uint8_t idx) {
         if (iface == IFACE_BETA) {
             if (ESPectrum::fdd.disk[idx]) wdDiskEject(&ESPectrum::fdd, idx);
         }
-#if !PICO_RP2040
         else if (iface == IFACE_MB02) {
             if (ESPectrum::mb02_fdd.disk[idx]) {
                 wdDiskEject(&ESPectrum::mb02_fdd, idx);
@@ -677,7 +664,6 @@ namespace {
             Config::esxdos_hdf_image[idx].clear();
             DivMMC::init();
         }
-#endif
     }
     // Mount `fname` into `idx`; seed WP from the per-slot Config flag.
     // For esxDOS this triggers DivMMC::init() but not a full emulator reset —
@@ -690,7 +676,6 @@ namespace {
             if (ESPectrum::fdd.disk[idx])
                 ESPectrum::fdd.disk[idx]->writeprotect = Config::driveWP[idx];
         }
-#if !PICO_RP2040
         else if (iface == IFACE_MB02) {
             rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, idx, fname);
             if (ESPectrum::mb02_fdd.disk[idx])
@@ -703,7 +688,6 @@ namespace {
             Config::esxdos_hdf_image[idx] = fname;
             DivMMC::init();
         }
-#endif
     }
 }
 
@@ -716,7 +700,7 @@ int OSD::diskSlotDialog(DiskIface iface, uint8_t initialSlot, const string& fnam
     const bool showWP = slotHasWP(iface);
 
     auto buildMenu = [&]() {
-        string m = OSD_LOAD_TO_TITLE[Config::lang];
+        string m = OSD_LOAD_TO_TITLE;
         for (uint8_t i = 0; i < slots; i++) {
             m += formatSlotRow(slotLabel(iface, i), slotFname(iface, i),
                                slotWP(iface, i), showWP);
@@ -726,8 +710,8 @@ int OSD::diskSlotDialog(DiskIface iface, uint8_t initialSlot, const string& fnam
     };
 
     menu = buildMenu();
-    menu_footer = showWP ? OSD_LOAD_HINT_WP[Config::lang]
-                         : OSD_LOAD_HINT_NOWP[Config::lang];
+    menu_footer = showWP ? OSD_LOAD_HINT_WP
+                         : OSD_LOAD_HINT_NOWP;
 
     real_rows = rowCount(menu);
     virtual_rows = real_rows;

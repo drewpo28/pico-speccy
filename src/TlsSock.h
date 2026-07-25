@@ -12,7 +12,7 @@
 // from the OSD / main thread (the Z80 is paused), never from an IRQ. Blocking
 // with timeouts. RP2350 only, behind ZIFI_NET_CLIENT.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -71,4 +71,4 @@ private:
     mbedtls_x509_crt    cacert;
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

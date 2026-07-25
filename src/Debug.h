@@ -12,7 +12,7 @@ using namespace std;
 
 // Mirror of DEBUG_LOG_PATH from FileUtils.h. Kept as a literal here so Debug.h
 // stays a leaf header (FileUtils.h pulls MemESP.h which depends on Config).
-#define STORAGE_LOG "/.config/pico-spec/debug.log"
+#define STORAGE_LOG "/.config/pico-speccy/debug.log"
 
 class Debug
 {

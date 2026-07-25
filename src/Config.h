@@ -93,9 +93,7 @@ public:
     static bool     ledIndicators;
     static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
     const static bool     aspect_16_9; /// TODO:
-    static uint8_t  lang;
     static bool     AY48;
-#if !PICO_RP2040
     static bool     SAA1099;
     static uint8_t  midi;  // 0=Off, 1=AY bitbang, 2=ShamaZX, 3=Software synth, 4=GM.DLS wavetable
     static uint8_t  midi_synth_preset; // Software synth preset: 0=GM,1=Piano,2=Chiptune,3=Strings,4=Rock,5=Organ,6=MusicBox,7=Synth
@@ -103,14 +101,11 @@ public:
     static bool     timex_video;  // Timex SCLD video modes (port 0xFF)
     static uint8_t  dma_mode;     // 0=Off, 1=Port #0B (Z80 DMA), 2=Port #6B (zxnDMA)
     static bool     mode16col_onoff; // Pentagon 16col video mode (port #EFF7 D0)
-#endif
-    static uint16_t cpu_mhz;   // 252, 378 (RP2040/RP2350), 504 (RP2350 only)
+    static uint16_t cpu_mhz;   // 252, 378, 504
     static uint16_t max_flash_freq; // MHz, default 66
     static uint16_t max_psram_freq; // MHz, default 166
     static uint16_t max_tft_freq;   // MHz, default 126
-#if !PICO_RP2040
     static uint8_t  vreq_voltage;  // vreg_voltage_t enum value, default VREG_VOLTAGE_1_60
-#endif
     static bool     Issue2;
     static bool     rtc_enabled;  // Pentagon/Profi Mr Gluk MC146818 RTC + CMOS NVRAM (RP2350)
     static bool     flashload;
@@ -232,7 +227,6 @@ public:
     // multicore_lockout deadlocks the HDMI ISR (same reason gm_bank is boot-flashed).
     static string alfCartPath;
     static bool driveWP[4];   // TR-DOS per-slot write protect (Drive A..D)
-#if !PICO_RP2040
     static uint8_t esxdos;   // 0=OFF 1=DivMMC 2=DivIDE 3=DivSD
     // Unified hd0/hd1 image slots — [0]=hd0, [1]=hd1.
     // DivMMC uses hd0 only; DivIDE uses both.
@@ -304,7 +298,6 @@ public:
     static int  loadRemotes(Remote* out, int cap);
     // Persist `count` remotes from `list` to remotes.tsv (overwrites).
     static void saveRemotes(const Remote* list, int count);
-#endif
     
     static signed char aud_volume;
     static uint8_t audio_boost;
@@ -323,10 +316,8 @@ public:
     static bool v_sync_enabled;
     static bool gigascreen_enabled;
     static uint8_t gigascreen_onoff; // 0=Off, 1=On, 2=Auto
-#if !PICO_RP2040
     static bool ulaplus;
     static bool hdmi_dither;
-#endif
     // Palette: 0=Default, 1=Grayscale
     static uint8_t palette;
     static uint8_t audio_driver;

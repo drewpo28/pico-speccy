@@ -1,6 +1,6 @@
 #include "Ftp.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "ZiFiSock.h"
 #include "ZiFi.h"
@@ -392,4 +392,4 @@ void Ftp::disconnect() {
     connected = false;
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

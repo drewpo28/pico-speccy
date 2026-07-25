@@ -52,11 +52,9 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Z80_JLS/z80operations.h"
 #include "psram_spi.h"
 #include "Ports.h"
-#if !PICO_RP2040
 #include "Z80DMA.h"
 #include "hardware/xip_cache.h"
 #include "hardware/regs/addressmap.h"
-#endif
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
 extern "C" void vga_set_palette_entry_solid(uint8_t i, uint32_t color888);
 extern "C" void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height);
@@ -64,7 +62,6 @@ extern "C" void graphics_set_scanlines(uint8_t level);
 extern "C" void graphics_set_dither(bool enabled);
 extern "C" void hdmi_reinit(void);
 extern "C" void vga_reinit(void);
-#if !PICO_RP2040
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" void vga_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" volatile bool profi_ds80_active;
@@ -79,7 +76,6 @@ extern "C" volatile uint hdmi_current_line;
 extern "C" volatile bool profi_ds80_active = false;
 extern "C" void hdmi_set_profi_ds80_mode(bool, const uint32_t *, const uint8_t *) {}
 extern "C" void vga_set_profi_ds80_mode(bool, const uint32_t *, const uint8_t *) {}
-#endif
 #endif
 // Place hot video functions in SRAM instead of XIP flash
 #undef IRAM_ATTR
@@ -146,18 +142,14 @@ extern uint8_t* ds80_dbg_grmem;
 extern int      ds80_dbg_wr_cnt;
 #endif
 
-#if !PICO_RP2040
 extern "C" uint8_t  read8psram(uint32_t addr32);
-#endif
 
 // Graphics-layer DS80 colour remap state (see Graphics8BitPalette).  Declared
 // unconditionally in the header and referenced by inline dot()/drawChar()/etc.
 // accessors in every build, so the definitions must exist for all targets — on
-// RP2040 ds80_active stays false (no DS80 hires there) so the lut is never used.
 bool    Graphics8BitPalette::ds80_active = false;
 uint8_t Graphics8BitPalette::ds80_color_lut[17] = {0};
 
-#if !PICO_RP2040
 // Profi DS80 packed-pair framebuffer in butter PSRAM.
 // Layout: PROFI_FB_W bytes/row = 32 black-pad + 256 content + 32 black-pad.
 // 1 byte = pair of 4-bit palette indices via profi_pair_lookup[ink][paper].
@@ -236,17 +228,14 @@ bool VIDEO::profi_ds80_osd_active = false;
 // (ds80_active / ds80_color_lut defined unconditionally above.)
 
 void VIDEO::rebuildDS80ColorLut() {
-#if !PICO_RP2040
     for (int c = 0; c < 16; c++)
         Graphics8BitPalette::ds80_color_lut[c] = profi_pair_lookup[c][c];
     // ORANGE (16): no DS80 palette entry — fall back to BRI_YELLOW (14).
     Graphics8BitPalette::ds80_color_lut[16] = profi_pair_lookup[14][14];
-#endif
 }
 
 // Saved copy of the running app's live Profi palette while the OSD "STD" override is
 // active (so it can be restored verbatim on close).
-#if !PICO_RP2040
 static uint32_t profi_palette_saved[16];
 static bool     profi_palette_saved_valid = false;
 
@@ -265,7 +254,6 @@ static inline void profi_ds80_driver_set(bool active, const uint32_t *palette16,
     (void)active; (void)palette16; (void)pair_lut;
 #endif
 }
-#endif
 
 // OSD palette override for DS80.  The Graphics-layer ZX→DS80 colour remap
 // (Graphics8BitPalette::ds80_active) is already ON for the whole DS80 session — these
@@ -282,7 +270,6 @@ static inline void profi_ds80_driver_set(bool active, const uint32_t *palette16,
 //         (the accepted "OSD in ZX, background sacrificed" tradeoff).  The app palette
 //         is saved here and restored by restoreProfiLivePalette().
 void VIDEO::applyProfiOSDPalette() {
-#if !PICO_RP2040
     if (Config::profi_ds80_std_palette_osd && !profi_palette_saved_valid) {
         // Save the app palette, load standard ZX defaults, refresh the pair slots + lut.
         for (int i = 0; i < 16; i++) profi_palette_saved[i] = profi_palette_live[i];
@@ -291,20 +278,17 @@ void VIDEO::applyProfiOSDPalette() {
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         rebuildDS80ColorLut();
     }
-#endif
 }
 
 // Undo applyProfiOSDPalette()'s STD palette swap (restore the running app's palette).
 // Does NOT touch ds80_active — the remap stays ON while DS80 is active.
 void VIDEO::restoreProfiLivePalette() {
-#if !PICO_RP2040
     if (profi_palette_saved_valid) {
         for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_palette_saved[i];
         profi_palette_saved_valid = false;
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         rebuildDS80ColorLut();
     }
-#endif
 }
 
 // Drop the saved app-palette snapshot WITHOUT touching HDMI or re-enabling DS80.
@@ -312,9 +296,7 @@ void VIDEO::restoreProfiLivePalette() {
 // was active: the saved palette is no longer meaningful and must not trigger a
 // hdmi_set_profi_ds80_mode(true,…) re-activation.
 void VIDEO::discardProfiOSDPaletteSnapshot() {
-#if !PICO_RP2040
     profi_palette_saved_valid = false;
-#endif
 }
 
 // Re-blacken the DS80 side-padding columns (left 0..pad_l-1 and right pad_l+256..xres-1)
@@ -322,7 +304,6 @@ void VIDEO::discardProfiOSDPaletteSnapshot() {
 // bytes per row, so padding that an OSD dialog drew over is otherwise left dirty after
 // the menu closes (visible artefacts in the side border).  Call after OSD close.
 void VIDEO::clearDS80Padding() {
-#if !PICO_RP2040
     if (!vga.frameBuffer) return;
     const int pad_l = ((int)vga.xres - 256) / 2;
     if (pad_l <= 0) return;
@@ -334,7 +315,6 @@ void VIDEO::clearDS80Padding() {
         memset(row, 0, pad_l);
         if (pad_r > 0) memset(row + right_off, 0, pad_r);
     }
-#endif
 }
 
 void VIDEO::profiPaletteReset() {
@@ -343,17 +323,14 @@ void VIDEO::profiPaletteReset() {
 }
 
 void VIDEO::profiPaletteApplyPending() {
-#if !PICO_RP2040
     if (profi_palette_dirty && profi_ds80_active
         && !profi_ds80_activate_pending && !profi_ds80_deactivate_pending) {
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         profi_palette_dirty = false;
     }
-#endif
 }
 
 void VIDEO::profiPaletteWrite(uint8_t index, uint8_t profi_color) {
-#if !PICO_RP2040
     // Only honor palette writes when DS80 mode is active — avoids corrupting
     // defaults from incidental port-0x7E writes during BIOS startup setup.
     if (!profi_ds80_active) return;
@@ -362,7 +339,6 @@ void VIDEO::profiPaletteWrite(uint8_t index, uint8_t profi_color) {
     profi_palette_live[idx] = newRgb;
     // Defer HDMI refresh to HDMI ISR vblank (set dirty flag, applied in EndFrame).
     profi_palette_dirty = true;
-#endif
 }
 
 // Build profi_pair_lookup[ink][paper] → HDMI conv_color slot index.
@@ -427,7 +403,6 @@ static void init_profi_pair_lookup() {
 bool VIDEO::isProfiDS80() {
     return Config::arch == "Profi" && (Ports::portDFFD & 0x80);
 }
-#endif
 uint16_t VIDEO::offBmp[SPEC_H];
 uint16_t VIDEO::offAtt[SPEC_H];
 SaveRectT VIDEO::SaveRect;
@@ -457,7 +432,6 @@ static int brdcol_end1 = 0;        // end of left border / paper skip point (T-s
 static int brdcol_retrace = 0;     // where H-retrace begins (= brdcol_end when no retrace visible)
 static int brdcol_step = 4;        // T-states per column (4 for 48K/128K, 1 for Pentagon)
 static bool brdPairWrite = true;   // true: uint32_t pair writes, false: uint16_t XOR
-#if !PICO_RP2040
 // Profi DS80 border: per-T-state writes into the packed-pair framebuffer
 // (1T = 4px = 1 uint16_t of two pair bytes).  Geometry applied by
 // applyDS80BorderGeometry(); ds80_brd_col_off shifts the 160 visible
@@ -466,19 +440,15 @@ static bool ds80_border_geom = false;
 static int  ds80_brd_col_off = 0;
 static bool ds80_osd_carve = false; // stats overlay visible → carve its rect
 static bool ds80_carve240 = false;  // stats rect coords differ 640×480 vs 720×576
-#endif // !PICO_RP2040
 static void Select_Update_Border(); // forward declaration
 
 // Timex SCLD video modes
-#if !PICO_RP2040
 uint8_t VIDEO::timex_port_ff = 0;
 uint8_t VIDEO::timex_mode = 0;
 uint8_t VIDEO::timex_hires_ink = 0;
 
-#endif
 
 // ULA+
-#if !PICO_RP2040
 bool VIDEO::ulaplus_enabled = false;
 uint8_t VIDEO::ulaplus_reg = 0;
 // Default palette: standard Spectrum colors in G3R3B2 format
@@ -508,7 +478,6 @@ static bool gigascreen_lut_rebuild_deferred = false;
 // 16col mode (Pentagon, Alone Coder)
 bool VIDEO::mode16col_enabled = false;
 const uint8_t* VIDEO::mode16col_planes[4] = { nullptr, nullptr, nullptr, nullptr };
-#endif
 
 #ifdef DIRTY_LINES
 uint8_t VIDEO::dirty_lines[SPEC_H];
@@ -532,7 +501,6 @@ static unsigned int video_rest;
 static unsigned int video_opcode_rest;
 static unsigned int curline;
 
-#if !PICO_RP2040
 // DS80 per-frame display-page latch (UnrealSpeccy rend_profi model).
 // The Kings Valley CP/M game flips videoLatch (0x7FFD bit3) hundreds of times per
 // display frame, so reading the live grmem/profi_clrmem per scanline (ZXMAK2 beam
@@ -550,15 +518,12 @@ static uint8_t* ds80_frame_clrmem = nullptr;
 // pages are force_sram_locked heap SRAM and no snapshot is needed.
 #define DS80_CLR_SRAM_SIZE 16384
 static uint8_t* ds80_clr_sram = nullptr;
-#endif
 
 static unsigned int bmpOffset;  // offset for bitmap in graphic memory
 static unsigned int attOffset;  // offset for attrib in graphic memory
 
-#if !PICO_RP2040
 // Per-scanline DMA attr shadow: non-null when DMA wrote attrs for current scanline
 static const uint8_t* dma_attr_override = nullptr;
-#endif
 
 static const uint8_t wait_st[128] = {
     6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
@@ -625,7 +590,6 @@ void (*VIDEO::DrawBorder)() = &VIDEO::TopBorder_Blank;
 static uint16_t* brdptr16;
 static uint8_t* prevBrdptr8; // 4-bit packed: 1 byte = 2 pixels
 
-#if !PICO_RP2040
 // Apply / restore the Profi DS80 screen+border timing geometry (ZXMAK2
 // ProfiRenderer model: 192 T/line, paper at line 48 tact 24 minus 19T INT
 // offset (see Video.h), 16T side borders, 1T = 4 px = 1 uint16_t of packed pair bytes).
@@ -676,7 +640,6 @@ static void applyDS80BorderGeometry(bool on) {
     }
     Select_Update_Border();
 }
-#endif // !PICO_RP2040
 
 uint32_t VIDEO::lastBrdTstate;
 bool VIDEO::brdChange = false;
@@ -768,7 +731,6 @@ void precalcborder32()
 }
 
 void VIDEO::updateBorderBrd() {
-#if !PICO_RP2040
     if (isProfiDS80()) {
         // DS80 border colour = Palette[(~borderIndex) & 7] (inverse index, per
         // ZXMAK2 ProfiRenderer m_borderColorPaper), mapped to its solid pair slot.
@@ -777,7 +739,6 @@ void VIDEO::updateBorderBrd() {
         brd = (uint32_t)b * 0x01010101u;
         return;
     }
-#endif
     brd = border32[borderColor];
 }
 
@@ -808,11 +769,7 @@ static const char* builtin_palette_names[] = {
 };
 
 // Custom palettes from /palette.nvs
-#if PICO_RP2040
-#define MAX_CUSTOM_PALETTES 4
-#else
 #define MAX_CUSTOM_PALETTES 11
-#endif
 static PaletteDef custom_palette_defs[MAX_CUSTOM_PALETTES];
 static char custom_palette_names[MAX_CUSTOM_PALETTES][13]; // 12 chars + null
 static uint8_t custom_palette_count = 0;
@@ -1013,9 +970,7 @@ static void initDefaultPalette() {
     buildSpectrumRGB(builtin_palette_defs[0], spectrum_rgb888);
 }
 
-#if !PICO_RP2040
 void initGigascreenBlendLUT();
-#endif
 
 // Apply color matrix transform to an RGB888 color
 static inline uint32_t matrixTransform(uint32_t rgb, const uint16_t *m) {
@@ -1061,7 +1016,6 @@ static inline int vga_lo_chan(int c) { return ((c / 21) >> 2) * 85; }
 static inline int vga_hi_chan(int c) { int hi = ((c / 21) >> 2) + 1; return (hi > 3 ? 3 : hi) * 85; }
 static inline int vga_sub_chan(int c) { return (c / 21) & 3; }
 
-#if !PICO_RP2040
 // Apply ULA+ palette entry i (and Bayer-dither neighbour at i|0x40 for HDMI).
 // Mirrors VGA Bayer: only dither when sub > 0 for at least one channel.
 // When sub=0 for all channels the colour lands exactly on the VGA grid → solid,
@@ -1192,7 +1146,6 @@ void VIDEO::mode16colUpdatePlanes() {
     mode16col_planes[2] = baseLow + 0x2000;   // page 4/6, +0x2000  (#E000)
     mode16col_planes[3] = baseHi  + 0x2000;   // page 5/7, +0x2000  (#6000)
 }
-#endif
 
 // Apply palette: rebuild spectrum_rgb888 from current palette's brightness levels,
 // then apply color matrix to all palette entries.
@@ -1220,10 +1173,8 @@ void VIDEO::applyPalette() {
     Debug::log2SD("applyPalette: done, 240+16+1 entries written");
 
     // Re-apply GigaScreen blend palette if active
-#if !PICO_RP2040
     if (Config::gigascreen_enabled)
         initGigascreenBlendLUT();
-#endif
 }
 
 // Fill 256-entry BMP palette (1024 bytes, BGRA format) matching current VGA palette.
@@ -1262,7 +1213,6 @@ void VIDEO::getBmpPalette(uint8_t* out) {
         out[16 * 4 + 2] = (c >> 16) & 0xFF;
         out[16 * 4 + 3] = 0;
     }
-#if !PICO_RP2040
     // ULA+ palette override (indices 0-63)
     if (ulaplus_enabled) {
         for (int i = 0; i < 64; i++) {
@@ -1273,7 +1223,6 @@ void VIDEO::getBmpPalette(uint8_t* out) {
             out[i * 4 + 3] = 0;
         }
     }
-#endif
 }
 
 const int redPins[] = {RED_PINS_6B};
@@ -1299,10 +1248,9 @@ extern size_t getContiguousHeap(void);
 // (FF_MAX_LFN+1)*2 + MAXDIRB(FF_MAX_LFN) ≈ 1-2 KB for LFN/VFAT scratch. SDK
 // malloc panics on OOM (no NULL return), so we must gate this with sbrk
 // headroom (the only allocator-friendly free-memory measure). Needed by
-// SaveRectT below on every platform — keep outside the !PICO_RP2040 block.
+// SaveRectT below.
 #define FF_OPEN_HEAP_FLOOR 4096u
 
-#if !PICO_RP2040
 // Shared framebuffer pointer arrays sized for the build-time maximum line count
 // so they don't need realloc on mode changes. The actual data blocks
 // (sharedFB_main / sharedFB_prev) are sized to fit the current mode — see
@@ -1341,13 +1289,8 @@ static int sharedFB_lines = 0;
 static int sharedFB_stride = 0;
 
 // prevFB DMA scanline window (defined below, butter-PSRAM boards only).
-#if !PICO_RP2040
 static void pwShutdown();
 static void pwDrop();
-#else
-static inline void pwShutdown() {}
-static inline void pwDrop() {}
-#endif
 
 static inline size_t fbMainBytes(int lines, int stride) {
     return (size_t)lines * (size_t)stride;
@@ -1450,7 +1393,6 @@ static void setupSharedFBPointers(Graphics<unsigned char> &vga, int lines, int s
 // up on even offsets (all 4:3 and fullborder modes; 16:9 Pentagon falls back
 // to the direct cached-XIP path). Cache coherence across gate transitions is
 // handled with xip_cache_clean_range / invalidate_range.
-#if !PICO_RP2040
 
 #define PW_ROW_MAX 184  // largest prev row: 360 px / 2 = 180 B, rounded up
 // Cached XIP (0x1x......) → uncached, non-allocating alias (0x1(x+4)......)
@@ -1667,7 +1609,6 @@ static bool pwSelfTest() {
     return true;
 }
 
-#endif // !PICO_RP2040
 
 // GsSubsys storage and apply() — implemented here so it can touch the
 // sharedFB_* internals directly. Declared in Subsystem.h.
@@ -1772,24 +1713,17 @@ void VIDEO::disableGigascreenForProfi() {
     GsSubsys::request(false);
     GsSubsys::apply();
 }
-#else
-void VIDEO::disableGigascreenForProfi() {} // RP2040: Gigascreen never allocated, Profi hidden
-#endif
 
 // Row accessors used by the render hot paths. Window active → SRAM buffer;
 // otherwise the direct prev-FB pointer (heap SRAM, or cached XIP fallback).
 // Callers already guard on vga.prevFrameBuffer != nullptr.
 static inline uint16_t* prevRowContent(int row) {
-#if !PICO_RP2040
     if (pwOn()) return (uint16_t*)pwFetch(pwCont, row);
-#endif
     return (uint16_t*)(VIDEO::vga.prevFrameBuffer[row]);
 }
 
 static inline uint8_t* prevRowBorder(int row) {
-#if !PICO_RP2040
     if (pwOn()) return pwFetch(pwBrd, row);
-#endif
     return (uint8_t*)(VIDEO::vga.prevFrameBuffer[row]);
 }
 
@@ -1809,7 +1743,6 @@ void VIDEO::Init() {
     OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
     vga.useInterrupt_flag = false;
 
-#if !PICO_RP2040
     // Allocate the main framebuffer block sized for the *initial* mode BEFORE
     // vga.init() — while heap is still unfragmented. It can be realloc'd later
     // on changeMode (see ensureMainFB). The prev block (Gigascreen) is allocated
@@ -1837,7 +1770,6 @@ void VIDEO::Init() {
         GsSubsys::request(true);
         GsSubsys::apply();
     }
-#endif
 
     vga.init( Mode, redPins, grePins, bluPins, HSYNC_PIN, VSYNC_PIN);
 
@@ -1846,12 +1778,10 @@ void VIDEO::Init() {
     // Generate AluBytes table with palette indices (no sync bits)
     initAluBytes();
 
-#if !PICO_RP2040
     // 16col byte->2-pixel LUT: build it only when the mode is enabled, release
     // it otherwise so a disabled 16col reserves no SRAM.
     if (Config::mode16col_onoff) VIDEO::ensure16colLut();
     else VIDEO::free16colLut();
-#endif
 
     precalcULASWAP();   // precalculate ULA SWAP values
 
@@ -1860,14 +1790,12 @@ void VIDEO::Init() {
     // Build and apply palette (brightness levels + color matrix)
     applyPalette();
 
-#if !PICO_RP2040
     if (Config::gigascreen_enabled && vga.prevFrameBuffer)
     {
         VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1); // On=enabled, Auto=start disabled
         VIDEO::gigascreen_auto_countdown = 0;
         initGigascreenBlendLUT(); // Pre-compute blend palette entries
     }
-#endif
 }
 
 static void freeFrameBuffer(void **fb) {
@@ -1893,7 +1821,6 @@ void VIDEO::changeMode() {
 
     bool sameDims = (vga.frameBuffer && vga.xres == newW && vga.yres == newH);
 
-#if !PICO_RP2040
     // Shared block path: realloc to fit the new mode (saves SRAM at smaller
     // resolutions; grows on the way up). Pointer arrays rebuilt afterwards.
     if (sharedFB_main) {
@@ -1907,17 +1834,14 @@ void VIDEO::changeMode() {
             return;
         }
     } else
-#endif
     {
-        // Non-shared fallback (RP2040 always; RP2350 only if shared alloc failed).
+        // Non-shared fallback (only if the shared alloc failed).
         // prevFrameBuffer is RP2350-only (Gigascreen) — guard the cleanup.
-#if !PICO_RP2040
         if (vga.prevFrameBuffer) {
             auto oldPrev = vga.prevFrameBuffer;
             vga.prevFrameBuffer = nullptr;
             freeFrameBuffer((void**)oldPrev);
         }
-#endif
         // Only null FB when dims change (alloc step below will rebuild it).
         // If sameDims, keep current FB to avoid driver reading NULL.
         if (!sameDims) {
@@ -1974,9 +1898,7 @@ void VIDEO::changeMode() {
     }
 
     // 4. Allocate framebuffer (non-shared path only)
-#if !PICO_RP2040
     if (!sharedFB_main) {
-#endif
         if (sameDims) {
             // frameBuffer already nulled above for non-shared; won't reach here for shared
         } else {
@@ -1986,9 +1908,7 @@ void VIDEO::changeMode() {
             vga.frameBuffer = vga.allocateFrameBuffer();
             SaveRect.clear();
         }
-#if !PICO_RP2040
     }
-#endif
 
     // 5. Recalculate border timing + precalc tables (preserve border color)
     uint8_t savedBorderColor = borderColor;
@@ -2003,7 +1923,6 @@ void VIDEO::changeMode() {
         memset(vga.frameBuffer[0], zxColor(borderColor, 0), vga.yres * stride);
     }
 
-#if !PICO_RP2040
     // 7. Gigascreen
     if (Config::gigascreen_enabled && vga.prevFrameBuffer) {
         VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1);
@@ -2014,7 +1933,6 @@ void VIDEO::changeMode() {
             VIDEO::gigascreen_enabled = false;
         }
     }
-#endif
 }
 #endif
 
@@ -2023,7 +1941,6 @@ void VIDEO::Reset() {
     borderColor = 7;
     brd = border32[7];
 
-#if !PICO_RP2040
     // Reset Timex SCLD state
     timex_port_ff = 0;
     timex_mode = 0;
@@ -2037,7 +1954,6 @@ void VIDEO::Reset() {
     // Reset 16col state
     mode16col_enabled = false;
     mode16colUpdatePlanes();
-#endif
 
     is169 = Config::aspect_16_9 ? 1 : 0;
 #ifdef VGA_HDMI
@@ -2119,12 +2035,10 @@ void VIDEO::Reset() {
     // brdcol_cnt counts T-states (1T = 2px = 1 uint16_t in framebuffer)
     // 48K/128K: step=4 (8px per column), brdPairWrite=true
     // Pentagon:  step=1 (2px per column), brdPairWrite=false (XOR)
-#if !PICO_RP2040
     // Clear stale DS80 border geometry first (re-applied below if DS80 active) —
     // Select_Update_Border() would otherwise keep the DS80 updater on arch switch.
     ds80_border_geom = false;
     ds80_brd_col_off = 0;
-#endif
     brdcol_end = isFullBorder ? 180 : 160;  // vga.xres / 2 (T-states = half pixel count)
     if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
         brdcol_step = 1;
@@ -2176,19 +2090,16 @@ void VIDEO::Reset() {
         int totPg = ram_pages + butter_pages + psram_pages + swap_pages;
         profi_clrmem = ((int)clrPage < totPg) ? MemESP::ram[clrPage].direct() : nullptr;
         Debug::log("[VID] DS80 Reset: clrPage=%u totPg=%d clrmem=%p grmem=%p", clrPage, totPg, profi_clrmem, grmem);
-#if !PICO_RP2040
         // DS80: 512×240 content + per-T-state side borders, ZXMAK2 timing
         // (192 T/line).  The grmem layout (pixCoff formula) covers all 240
         // lines; lines 192..239 live at offsets 6144..8191 (odd) and
         // 14336..16383 (even) of the 16KB page.
         applyDS80BorderGeometry(true);
-#endif
     } else {
         grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
         profi_clrmem = nullptr;
     }
 
-#if !PICO_RP2040
     if (Config::arch == "Profi") {
         // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
         init_profi_pair_lookup();
@@ -2207,7 +2118,6 @@ void VIDEO::Reset() {
         free(ds80_clr_sram);
         ds80_clr_sram = nullptr;
     }
-#endif
 
     #ifdef DIRTY_LINES
     // for (int i=0; i < SPEC_H; i++) VIDEO::dirty_lines[i] = 0x01;
@@ -2290,7 +2200,6 @@ void VIDEO::Reset() {
             Draw_OSD43 = BottomBorder_OSD;
     }
 
-#if !PICO_RP2040
     // DS80 transition on reset: ensure DS80 state is fully cleaned up whenever
     // we're entering non-DS80 mode (e.g. after F11 reset from service menu).
     //
@@ -2323,13 +2232,11 @@ void VIDEO::Reset() {
             }
         }
     }
-#endif
 }
 
 extern size_t getFreeHeap(void);
 extern size_t getContiguousHeap(void);
 
-#if !PICO_RP2040
 void VIDEO::InitPrevBuffer() {
     if (!vga.prevFrameBuffer) {
         // Use the GsSubsys-managed prev buffer rather than a one-off
@@ -2372,7 +2279,6 @@ void VIDEO::InitPrevBuffer() {
         }
     }
 }
-#endif
 
 //  VIDEO DRAW FUNCTIONS
 IRAM_ATTR void VIDEO::MainScreen_Blank(unsigned int statestoadd, bool contended) {    
@@ -2391,7 +2297,6 @@ IRAM_ATTR void VIDEO::MainScreen_Blank(unsigned int statestoadd, bool contended)
         coldraw_cnt = 0;
 
         curline = linedraw_cnt - lin_end;
-#if !PICO_RP2040
         if (Config::timex_video && VIDEO::timex_mode != 0) {
             switch (VIDEO::timex_mode) {
                 case 1: // Second screen
@@ -2412,7 +2317,6 @@ IRAM_ATTR void VIDEO::MainScreen_Blank(unsigned int statestoadd, bool contended)
                     break;
             }
         } else
-#endif
         {
             bmpOffset = offBmp[curline];
             attOffset = offAtt[curline];
@@ -2423,14 +2327,12 @@ IRAM_ATTR void VIDEO::MainScreen_Blank(unsigned int statestoadd, bool contended)
         // dirty_lines[curline] = 1;
         #endif // DIRTY_LINES
 
-#if !PICO_RP2040
         // DMA per-scanline attr shadow: use snapshot if DMA wrote attrs for this scanline
         // (dma_attr_valid/shadow are null unless the DMA attr buffer is allocated)
         if (Config::dma_mode && Z80DMA::dma_attr_valid && Z80DMA::dma_attr_valid[curline])
             dma_attr_override = &Z80DMA::dma_attr_shadow[curline * 32];
         else
             dma_attr_override = nullptr;
-#endif
 
         Draw = linedraw_cnt >= 176 && linedraw_cnt <= 191 ? Draw_OSD169 : MainScreen;
         Draw_Opcode = MainScreen_Opcode;
@@ -2461,7 +2363,6 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow(unsigned int statestoadd, bool conte
         coldraw_cnt = 0;
 
         curline = linedraw_cnt - lin_end;
-#if !PICO_RP2040
         if (Config::timex_video && VIDEO::timex_mode != 0) {
             switch (VIDEO::timex_mode) {
                 case 1:
@@ -2482,7 +2383,6 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow(unsigned int statestoadd, bool conte
                     break;
             }
         } else
-#endif
         {
             bmpOffset = offBmp[curline];
             attOffset = offAtt[curline];
@@ -2559,7 +2459,6 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow_Opcode(bool contended) {
 
 #ifndef DIRTY_LINES
 
-#if !PICO_RP2040
 // GigaScreen blend LUT: maps (prev_palette_idx, cur_palette_idx) → blended palette_idx
 // Supports standard 16 Spectrum colors (indices 0-15)
 // Blended colors stored in palette slots 17-239
@@ -2640,12 +2539,6 @@ inline uint32_t blendPixels32_packed(uint32_t cur, uint16_t prev16) {
     uint8_t r3 = ((c3 & 0x0F) == p3) ? c3 : gigsBlendLUT[p3 * 16 + (c3 & 0x0F)];
     return r0 | (r1 << 8) | (r2 << 16) | (r3 << 24);
 }
-#else
-// RP2040: gigascreen_enabled is always false, but compiler still needs the symbol
-inline uint32_t blendPixels32(uint32_t cur, uint32_t) { return cur; }
-inline uint16_t packPixels32(uint32_t) { return 0; }
-inline uint32_t blendPixels32_packed(uint32_t cur, uint16_t) { return cur; }
-#endif // !PICO_RP2040
 
 // ----------------------------------------------------------------------------------
 // Fast video emulation with no ULA cycle emulation and no snow effect support
@@ -2672,7 +2565,6 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
         loopCount -= coldraw_cnt - 32;
     }
 
-#if !PICO_RP2040
     if (Config::timex_video && VIDEO::timex_mode == 6) {
         // Hi-res mode 6 (512->256): real SCLD alternates byte-columns from
         // screen0 and screen1 at same address, 64 cols x 8 bits = 512 pixels.
@@ -2708,19 +2600,12 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
             *lineptr32++ = ld | (lc << 16);
         }
     } else
-#endif
     if (VIDEO::gigascreen_enabled
-#if !PICO_RP2040
         && !VIDEO::ulaplus_enabled
-#endif
     ) {
         for (; loopCount--; ) {
-#if !PICO_RP2040
             uint8_t att = dma_attr_override ? dma_attr_override[attOffset & 0x1F] : grmem[attOffset];
             attOffset++;
-#else
-            uint8_t att = grmem[attOffset++];
-#endif
             uint8_t bmp = grmem[bmpOffset++] ^ (-((att & flashing) >> 7));
             uint32_t newPixel1 = AluByte[bmp >> 4][att];
             uint32_t newPixel2 = AluByte[bmp & 0xF][att];
@@ -2733,7 +2618,6 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
             *lineptr32++ = mix1;
             *lineptr32++ = mix2;
         }
-#if !PICO_RP2040
     } else if (Config::arch == "Profi" && (Ports::portDFFD & 0x80)) {
         // Profi DS80 native rendering — writes 256-byte-wide packed pairs directly into
         // vga.frameBuffer (1 byte = pair of 4-bit palette indices: high nibble =
@@ -2825,15 +2709,10 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
             // Advance lineptr32 to keep std fb cursor in sync with standard renderer stride.
             lineptr32 += 2;
         }
-#endif // !PICO_RP2040 (Profi DS80 branch)
     } else {
         for (; loopCount--; ) {
-#if !PICO_RP2040
             uint8_t att = dma_attr_override ? dma_attr_override[attOffset & 0x1F] : grmem[attOffset];
             attOffset++;
-#else
-            uint8_t att = grmem[attOffset++];
-#endif
             uint8_t bmp = grmem[bmpOffset++] ^ (-((att & flashing) >> 7));
             *lineptr32++ = AluByte[bmp >> 4][att];
             *lineptr32++ = AluByte[bmp & 0xF][att];
@@ -3155,7 +3034,6 @@ IRAM_ATTR void VIDEO::EndFrame() {
 
     tstateDraw = tStatesScreen;
 
-#if !PICO_RP2040
     // ----------------------------------------------------------------
     // Profi DS80 deferred HDMI mode switch — applied NOW (vblank context).
     //
@@ -3434,7 +3312,6 @@ IRAM_ATTR void VIDEO::EndFrame() {
             ulaPlusFlushPalette();
         }
     }
-#endif
 
     static uint8_t skipCnt = 0;
     static bool wasMaxSpeed = false;
@@ -3451,9 +3328,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
         Draw = VIDEO::snow_toggle ? &Blank_Snow : &Blank;
         Draw_Opcode = VIDEO::snow_toggle ? &Blank_Snow_Opcode : &Blank_Opcode;
     } else if (VIDEO::snow_toggle
-#if !PICO_RP2040
         && !(Config::timex_video && VIDEO::timex_mode != 0)
-#endif
     ) {
         Draw = &MainScreen_Blank_Snow;
         Draw_Opcode = &MainScreen_Blank_Snow_Opcode;
@@ -3462,14 +3337,12 @@ IRAM_ATTR void VIDEO::EndFrame() {
         Draw_Opcode = &MainScreen_Blank_Opcode;
     }
 
-#if !PICO_RP2040
     // DS80 borders are rendered by the state machine with DS80 geometry
     // (applyDS80BorderGeometry).  TopBorder_Blank handles lin_end==0 and
     // MiddleBorder guards lin_end2==yres, so no Border_Blank override needed.
     // Refresh the per-frame stats carve-out flags for Update_Border_DS80.
     ds80_osd_carve = ds80_border_geom && (VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04);
     ds80_carve240  = (int)vga.yres < 288;
-#endif
 
     if (!skipFrame) {
         if (brdChange || brdGigascreenChange) {
@@ -3494,7 +3367,6 @@ IRAM_ATTR void VIDEO::EndFrame() {
     lastBrdTstate = tStatesBorder;
     brdChange = false;
 
-#if !PICO_RP2040
     if (Config::gigascreen_onoff == 2) { // Auto mode
         if (gigascreen_auto_countdown > 0) {
             gigascreen_auto_countdown--;
@@ -3509,7 +3381,6 @@ IRAM_ATTR void VIDEO::EndFrame() {
             if (gigascreen_enabled) gigascreen_enabled = false;
         }
     }
-#endif
 
     // Decay activity counters every frame regardless of the border-glyph setting —
     // the corner FDD lamp + motor-hum sound (Config::trdosSoundLed) consume them too.
@@ -3521,12 +3392,10 @@ IRAM_ATTR void VIDEO::EndFrame() {
 
     framecnt++;
 
-#if !PICO_RP2040
     // Debug::log("[HB] f=%u pc=0x%04X bc=0x%04X hl=0x%04X iff=%u rom=%u dffd=0x%02X eff7=0x%02X bl=%u vidlatch=%u",
     //     framecnt, Z80::getRegPC(), Z80::getRegBC(), Z80::getRegHL(),
     //     (unsigned)(Z80::isIFF1()?1:0), MemESP::romInUse, Ports::portDFFD, Ports::portEFF7,
     //     MemESP::bankLatch, MemESP::videoLatch);
-#endif
 }
 
 // Repaint one full frame from the frozen machine state. The scanline renderer
@@ -3647,7 +3516,6 @@ IRAM_ATTR static void Update_Border_XOR() {
     brdptr16[brdcol_cnt ^ 1] = VIDEO::brd;
 }
 
-#if !PICO_RP2040
 // Profi DS80: write 1 uint16_t (2 packed pair bytes = 4px) per T-state.
 // The HDMI/VGA ISR reads pair bytes in (x^2) order, so within an aligned
 // uint16 pair display order is swapped — same ^1 trick as Pentagon.
@@ -3679,7 +3547,6 @@ IRAM_ATTR static void Update_Border_DS80() {
         }
     }
 }
-#endif // !PICO_RP2040
 
 IRAM_ATTR static void Update_Border_XOR_Gig() {
     uint32_t newColor = VIDEO::brd; // 0xCCCCCCCC: 4 copies of palette index byte
@@ -3786,24 +3653,20 @@ IRAM_ATTR static void Update_Border_Span_XOR_Gig(int n) {
     }
 }
 
-#if !PICO_RP2040
 // Fallback for shapes without a fast span (DS80): n per-column calls.
 IRAM_ATTR static void Update_Border_Span_Generic(int n) {
     int save = brdcol_cnt;
     for (int k = 0; k < n; k++) { Update_Border(); brdcol_cnt += brdcol_step; }
     brdcol_cnt = save;
 }
-#endif
 
 static void Select_Update_Border() {
-#if !PICO_RP2040
     pwRefreshGate();  // geometry may have changed — re-evaluate the DMA window
     if (ds80_border_geom) {
         Update_Border = &Update_Border_DS80;  // Gigascreen incompatible with Profi
         Update_Border_Span = &Update_Border_Span_Generic;
         return;
     }
-#endif
     if (brdPairWrite) {
         Update_Border = VIDEO::gigascreen_enabled ? &Update_Border_Pair_Gig : &Update_Border_Pair;
         Update_Border_Span = VIDEO::gigascreen_enabled ? &Update_Border_Span_Pair_Gig : &Update_Border_Span_Pair;
@@ -3914,13 +3777,9 @@ IRAM_ATTR void VIDEO::MiddleBorder() {
                 }
                 brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
                 prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
-#if !PICO_RP2040
                 // DS80: BottomBorder_OSD carve coords are for std-fb layouts —
                 // Update_Border_DS80 carves the stats rect itself; use plain bottom.
                 DrawBorder = ds80_border_geom ? &BottomBorder : Draw_OSD43;
-#else
-                DrawBorder = Draw_OSD43;
-#endif
                 DrawBorder();
                 return;
             }

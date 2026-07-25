@@ -8,7 +8,6 @@
 #ifndef Z80DMA_h
 #define Z80DMA_h
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 
@@ -101,5 +100,4 @@ private:
     static uint8_t getStatusByte();
 };
 
-#endif // !PICO_RP2040
 #endif // Z80DMA_h

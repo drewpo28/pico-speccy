@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Create an empty FAT12 floppy image wrapped in FDI format for pico-spec.
+"""Create an empty FAT12 floppy image wrapped in FDI format for pico-speccy.
 
 Default geometry: 720K (80 cylinders x 2 heads x 9 sectors x 512 bytes),
 standard DOS 3.5" DD layout — fits the WD1793 DD data rate and the
-pico-spec FDI reader limits (<=168 tracks, <=32 sectors/track, N<=3).
+pico-speccy FDI reader limits (<=168 tracks, <=32 sectors/track, N<=3).
 
 Usage:
     python3 tools/create_fdi_fat12.py [output.fdi] [--label NAME]
@@ -114,7 +114,7 @@ def main():
             out_path = a
 
     raw = build_fat12_image(label)
-    fdi = wrap_fdi(raw, 'Empty FAT12 720K (pico-spec)')
+    fdi = wrap_fdi(raw, 'Empty FAT12 720K (pico-speccy)')
     with open(out_path, 'wb') as f:
         f.write(fdi)
     print(f"{out_path}: {len(fdi)} bytes "

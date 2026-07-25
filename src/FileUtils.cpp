@@ -53,11 +53,9 @@ visit https://zxespectrum.speccy.org/contacto
 #include "sdcard.h"
 #include "diskio.h"
 #include "Debug.h"
-#include "UsbMsc.h"   // RP2040-safe: header provides inline stubs there
-#if !PICO_RP2040
+#include "UsbMsc.h"
 #include "DivMMC.h"
 #include "IDE.h"
-#endif
 
 extern "C" void mem_swap_reopen(void);
 
@@ -75,15 +73,6 @@ string FileUtils::IMG_Path = "/";
 string FileUtils::ALL_Path = "/";
 string FileUtils::DLS_Path = "/";
 DISK_FTYPE FileUtils::fileTypes[7] = {
-#if PICO_RP2040
-    {".sna,.SNA,.z80,.Z80,.p,.P",2,2,0,""},
-    {".tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3",2,2,0,""},
-    {".trd,.TRD,.scl,.SCL",2,2,0,""},
-    {".rom,.ROM,.bin,.BIN,.zip,.ZIP",2,2,0,""},
-    {".mmc,.MMC,.hdf,.HDF",2,2,0,""},
-    {".sna,.SNA,.z80,.Z80,.p,.P,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL",2,2,0,""},
-    {".dls,.DLS",2,2,0,""}   // DISK_DLSFILE (GM.DLS; RP2040 has no GM.DLS MIDI but keep index parity)
-#else
     {".sna,.SNA,.z80,.Z80,.p,.P,.zip,.ZIP",2,2,0,""},
     {".tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.zip,.ZIP",2,2,0,""},
     {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.zip,.ZIP",2,2,0,""},
@@ -91,7 +80,6 @@ DISK_FTYPE FileUtils::fileTypes[7] = {
     {".mmc,.MMC,.hdf,.HDF,.hdd,.HDD,.vhd,.VHD,.img,.IMG,.iso,.ISO,.zip,.ZIP",2,2,0,""},
     {".sna,.SNA,.z80,.Z80,.p,.P,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.mmc,.MMC,.hdf,.HDF,.rom,.ROM,.bin,.BIN,.dls,.DLS,.zip,.ZIP",2,2,0,""},
     {".dls,.DLS",2,2,0,""}   // DISK_DLSFILE (GM.DLS soundbank conversion)
-#endif
 };
 
 string toLower(const std::string& str) {
@@ -184,7 +172,6 @@ bool FileUtils::mkdirParents(const char* path) {
 
 void FileUtils::initFileSystem() {
     SDReady = mountSDCard();
-#if !PICO_RP2040
     if (!SDReady) {
         // No SD card — fall back to a USB flash stick as the default volume.
         // SD is always the primary storage when a card is present; the stick
@@ -200,13 +187,12 @@ void FileUtils::initFileSystem() {
             Debug::log("FileUtils: no SD card, USB stick is the root volume\n");
         }
     }
-#endif
     if (SDReady) {
         ensureBootDirs();
     }
 }
 
-// Create the directory tree pico-spec expects on the default volume. Split out
+// Create the directory tree pico-speccy expects on the default volume. Split out
 // of initFileSystem so runtime automount (a card inserted after a card-less
 // boot) can bring the same structure online without a reboot.
 void FileUtils::ensureBootDirs() {
@@ -244,25 +230,14 @@ bool FileUtils::mountSDCard() {
     // Probe the physical drive up front so absence of a card is detected here instead of
     // blocking the first FatFS call later (e.g. OSD SaveRect.clear → f_unlink → 500 ms SPI stall per op).
     if (disk_initialize(0) & STA_NOINIT) { fsMount = false; return false; }
-#if PICO_RP2040
-    // RP2040 is single-volume (FF_VOLUMES=1, no USB MSC, no FF_STR_VOLUME_ID) —
-    // mount the default drive with an empty path. "SD:" would not parse without
-    // FF_STR_VOLUME_ID and the mount would fail.
-    fsMount = f_mount(&fs, "", 1) == FR_OK;
-#else
     // "SD:" with the colon — with FF_FS_RPATH a bare "SD" parses as "no volume
     // prefix" and would target the CURRENT volume instead.
     fsMount = f_mount(&fs, "SD:", 1) == FR_OK;
-#endif
     return fsMount;
 }
 
 void FileUtils::unmountSDCard() {
-#if PICO_RP2040
-    f_unmount("");
-#else
     f_unmount(usbRoot ? "USB:" : "SD:");
-#endif
 }
 
 bool FileUtils::waitVolumeReady(const string& path) {
@@ -278,7 +253,6 @@ bool FileUtils::checkSDCard() {
 }
 
 bool FileUtils::remountSD() {
-#if !PICO_RP2040
     if (usbRoot) {
         // USB-as-root: there is no SD card to remount. The volume itself
         // recovers via the re-plug callback (deferred f_mount); just verify
@@ -286,14 +260,9 @@ bool FileUtils::remountSD() {
         if (!UsbMsc::ready()) return false;
         fsMount = true;
     } else
-#endif
     {
         // Unmount FatFS and force full SD card reinit
-#if PICO_RP2040
-        f_mount(NULL, "", 0);   // single-volume: default drive
-#else
         f_mount(NULL, "SD:", 0);
-#endif
         disk_invalidate();
         if (!mountSDCard()) return false;
     }
@@ -335,10 +304,8 @@ bool FileUtils::remountSD() {
     // Reopen MemESP swap file
     mem_swap_reopen();
 
-#if !PICO_RP2040
     DivMMC::reopenFiles();
     if (IDE::scheme != IDE::OFF) IDE::init();  // reopen IDE images after remount
-#endif
 
     return true;
 }
@@ -400,9 +367,6 @@ bool FileUtils::hasMP3extension(const string& filename)
     return false;
 }
 
-#if PICO_RP2040
-bool FileUtils::hasZIPextension(const string&) { return false; }
-#else
 bool FileUtils::hasZIPextension(const string& filename)
 {
     if (filename.size() < 4) return false;
@@ -410,16 +374,8 @@ bool FileUtils::hasZIPextension(const string& filename)
     if (filename.substr(filename.size()-4,4) == ".ZIP") return true;
     return false;
 }
-#endif
 
 void FileUtils::deleteFilesWithExtension(const char *folder_path, const char *extension) {
-#if PICO_RP2040
-    // RP2040: no USB-MSC pump under FatFs (the chain that overflowed) and BSS is
-    // the scarcer resource on ZERO — keep these on the stack as before.
-    DIR dir;
-    FILINFO entry;
-    char file_path[512];
-#else
     // Static FatFs objects + path buffer: DIR + FILINFO(LFN) + 512 B path ≈ 0.8 KB
     // is too fat for the deep call chains this runs in (Tape::LoadTape flashload /
     // TZX cleanup, near the bottom of the 4 KB core0 stack — part of the usbRoot
@@ -427,7 +383,6 @@ void FileUtils::deleteFilesWithExtension(const char *folder_path, const char *ex
     static DIR dir;
     static FILINFO entry;
     static char file_path[512];
-#endif
     if (f_opendir(&dir, folder_path) != FR_OK) {
         // perror("Unable to open directory");
         return;

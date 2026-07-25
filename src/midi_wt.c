@@ -4,7 +4,6 @@
 
 #include "midi_wt.h"
 
-#if !PICO_RP2040
 
 #include <pico.h>          // __not_in_flash_func
 #include <stdlib.h>        // calloc/free (lazy voice array)
@@ -12,7 +11,7 @@
 
 // ── Engine include contract (define before the .inl) ────────────────────────
 #define INLINE           static inline
-#define SOUND_FREQUENCY  31250   // pico-spec audio rate (ESP_AUDIO_FREQ_*); engine never resamples
+#define SOUND_FREQUENCY  31250   // pico-speccy audio rate (ESP_AUDIO_FREQ_*); engine never resamples
 #define WT_MAX_VOICES    32
 #define WT_NO_WAVE_CACHE 1       // bank sits in directly-addressable PSRAM → no malloc cache
 // (WT_RAMFUNC left as identity: the hot midi_sample_stereo is static-inline and
@@ -58,4 +57,3 @@ int midi_wt_active(void) {
     return g_voices ? wt_has_active_voices() : 0;
 }
 
-#endif // !PICO_RP2040

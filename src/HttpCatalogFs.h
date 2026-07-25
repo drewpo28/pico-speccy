@@ -1,6 +1,6 @@
 #pragma once
 
-// Read-only RemoteFs backed by the pico-spec catalog (ZX archives — vtrd.in,
+// Read-only RemoteFs backed by the pico-speccy catalog (ZX archives — vtrd.in,
 // zxart.ee, worldofspectrum.org — exposed as a compact line-oriented listing plus
 // the file bytes). Two interchangeable backends, picked from Config::catalog_host:
 //
@@ -26,7 +26,7 @@
 //
 // RP2350 only, behind ZIFI_NET_CLIENT. All calls from the OSD/main thread.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "RemoteFs.h"
 
@@ -71,4 +71,4 @@ private:
     std::string tsvCachePath() const;
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

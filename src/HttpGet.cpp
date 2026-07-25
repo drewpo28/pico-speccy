@@ -1,6 +1,6 @@
 #include "HttpGet.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "ZiFiSock.h"
 #include "Debug.h"
@@ -36,7 +36,7 @@ int HttpGet::begin(const char* host, uint16_t port, const char* path, uint32_t t
     int n = snprintf(req, sizeof(req),
                      "GET %s HTTP/1.1\r\n"
                      "Host: %s\r\n"
-                     "User-Agent: pico-spec/1.0\r\n"
+                     "User-Agent: pico-speccy/1.0\r\n"
                      "Accept: */*\r\n"
                      "Connection: close\r\n\r\n",
                      path, host);
@@ -81,4 +81,4 @@ void HttpGet::end() {
     ZiFiSock::end();
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

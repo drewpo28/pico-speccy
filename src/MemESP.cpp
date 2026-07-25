@@ -184,7 +184,7 @@ __attribute__((noinline)) void MemESP::checkMemWriteBP(uint16_t addr) {
 }
 
 static FIL f;
-static const char PAGEFILE[] = "/tmp/pico-spec.swap";
+static const char PAGEFILE[] = "/tmp/pico-speccy.swap";
 
 // Called by FileUtils::remountSD() to reopen swap file after SD remount
 extern "C" void mem_swap_reopen(void) {
@@ -214,7 +214,6 @@ void mem_desc_t::reset(void) {
 uint8_t* mem_desc_t::to_vram(void) {
     uint8_t* res = _int->p;
     uint32_t ba = _int->vram_off;
-#if !PICO_RP2040
     if (vram_butter(ba)) {
         // Uncached alias: pure QMI write burst, no XIP cache allocation/eviction
         // (a cached-alias write would read-allocate every line first).
@@ -225,7 +224,6 @@ uint8_t* mem_desc_t::to_vram(void) {
         _int->p = 0;
         return res;
     }
-#endif
     if (psram_size() >= ba + MEM_PG_SZ) {
         psram_write_page(ba, res); // single SPI CS for full 16KB (32-bit PIO, exact x)
         _int->mem_type = PSRAM_SPI;
@@ -261,14 +259,12 @@ void mem_desc_t::from_vram(uint8_t* p) {
         mem_spi_read_skip++;
         return;
     }
-#if !PICO_RP2040
     if (vram_butter(ba)) {
         mem_spi_evict_count++;
         mem_spi_evict_page = ba / MEM_PG_SZ;
         memcpy(p, butter_nc(ba), MEM_PG_SZ);   // uncached: no XIP cache wipe
         return;
     }
-#endif
     if (psram_size() >= ba + MEM_PG_SZ) {
         mem_spi_evict_count++;
         mem_spi_evict_page = ba / MEM_PG_SZ;
@@ -282,11 +278,9 @@ void mem_desc_t::from_vram(uint8_t* p) {
 }
 uint8_t mem_desc_t::_read(uint16_t addr) {
     uint32_t ba = _int->vram_off;
-#if !PICO_RP2040
     if (vram_butter(ba)) {
         return butter_nc(ba)[addr];
     }
-#endif
     if (psram_size() >= ba + MEM_PG_SZ) {
         return read8psram(ba + addr);
     }
@@ -302,12 +296,10 @@ void mem_desc_t::_write(uint16_t addr, uint8_t v) {
     // The byte lands in the backing store — a later from_vram must not skip
     // the load anymore (the rest of the page stays garbage, like real RAM).
     vram_pg_set_valid(ba);
-#if !PICO_RP2040
     if (vram_butter(ba)) {
         butter_nc(ba)[addr] = v;
         return;
     }
-#endif
     if (psram_size() >= ba + MEM_PG_SZ) {
         write8psram(ba + addr, v);
         return;
@@ -404,7 +396,7 @@ void mem_desc_t::_sync(uint8_t bank) {
 // Transient bounce buffer for chunked page<->file transfers (snapshot load/save
 // into evicted pages). malloc'd per call — pico_malloc PANICS on OOM instead of
 // returning NULL, so gate on getLargestAllocatable() (see Buffer::palloc) and
-// fall back to the per-byte path when the heap is too tight (e.g. RP2040 after
+// fall back to the per-byte path when the heap is too tight (e.g. after
 // VIDEO::Init with ~5KB free).
 extern "C" size_t getLargestAllocatable(void);
 static uint8_t* mem_bounce_acquire(size_t* sz) {
@@ -440,11 +432,9 @@ void mem_desc_t::from_file(FIL* f_in, size_t sz) {
             // Bounce + CPU memcpy for butter (no f_read straight into the XIP
             // window: the SD driver may DMA into the destination, and bulk QMI
             // DMA starves the PIO video — see gigascreen_prevfb notes).
-#if !PICO_RP2040
             if (btr) {
                 memcpy(butter_nc(ba + off), buf, n);
             } else
-#endif
             if (spi) {
                 psram_write_range(ba + off, buf, n);
             } else {
@@ -457,10 +447,8 @@ void mem_desc_t::from_file(FIL* f_in, size_t sz) {
         uint8_t v;
         for (size_t addr = 0; addr < sz; ++addr) {
             f_read(f_in, &v, 1, &br);
-#if !PICO_RP2040
             if (btr) butter_nc(ba)[addr] = v;
             else
-#endif
             if (spi) write8psram(ba + addr, v);
             else     f_write(&f, &v, 1, &br);
         }
@@ -493,10 +481,8 @@ void mem_desc_t::to_file(FIL* f_out, size_t sz) {
     if (buf) {
         for (size_t off = 0; off < sz; off += bsz) {
             size_t n = (sz - off > bsz) ? bsz : sz - off;
-#if !PICO_RP2040
             if (btr)      memcpy(buf, butter_nc(ba + off), n);
             else
-#endif
             if (spi) psram_read_range(ba + off, buf, n);
             else     f_read(&f, buf, n, &br);
             f_write(f_out, buf, n, &br);
@@ -505,10 +491,8 @@ void mem_desc_t::to_file(FIL* f_out, size_t sz) {
     } else {
         uint8_t v;
         for (size_t addr = 0; addr < sz; ++addr) {
-#if !PICO_RP2040
             if (btr)      v = butter_nc(ba)[addr];
             else
-#endif
             if (spi) v = read8psram(ba + addr);
             else     f_read(&f, &v, 1, &br);
             f_write(f_out, &v, 1, &br);
@@ -535,19 +519,15 @@ void mem_desc_t::from_mem(mem_desc_t& ram, size_t sz) {
     UINT brw;
     if (dstPtr) {          // vram/swap → SRAM: one block transfer, no bounce
         _int->dirty = true;
-#if !PICO_RP2040
         if (sbtr) memcpy(direct(), butter_nc(sba), sz);
         else
-#endif
         if (sspi) psram_read_range(sba, direct(), sz);
         else { f_lseek(&f, sba); f_read(&f, direct(), sz, &brw); }
         return;
     }
     if (srcPtr) {          // SRAM → vram/swap: one block transfer, no bounce
-#if !PICO_RP2040
         if (dbtr) memcpy(butter_nc(dba), ram.direct(), sz);
         else
-#endif
         if (dspi) psram_write_range(dba, ram.direct(), sz);
         else { f_lseek(&f, dba); f_write(&f, ram.direct(), sz, &brw); }
         vram_pg_set_valid(dba);
@@ -559,16 +539,12 @@ void mem_desc_t::from_mem(mem_desc_t& ram, size_t sz) {
     if (buf) {
         for (size_t off = 0; off < sz; off += bsz) {
             size_t n = (sz - off > bsz) ? bsz : sz - off;
-#if !PICO_RP2040
             if (sbtr) memcpy(buf, butter_nc(sba + off), n);
             else
-#endif
             if (sspi) psram_read_range(sba + off, buf, n);
             else { f_lseek(&f, sba + off); f_read(&f, buf, n, &brw); }
-#if !PICO_RP2040
             if (dbtr) memcpy(butter_nc(dba + off), buf, n);
             else
-#endif
             if (dspi) psram_write_range(dba + off, buf, n);
             else { f_lseek(&f, dba + off); f_write(&f, buf, n, &brw); }
         }
@@ -585,13 +561,11 @@ void mem_desc_t::cleanup() {
         // Zero the vram backing store (same effect as the old per-byte _write
         // loop — 16384 SPI transactions — but chunked).
         uint32_t ba = _int->vram_off;
-#if !PICO_RP2040
         if (vram_butter(ba)) {
             memset(butter_nc(ba), 0, MEM_PG_SZ);
             vram_pg_set_valid(ba);
             return;
         }
-#endif
         bool spi = psram_size() >= ba + MEM_PG_SZ;
         size_t bsz = 0;
         uint8_t* buf = mem_bounce_acquire(&bsz);
@@ -616,28 +590,21 @@ void mem_desc_t::cleanup() {
 }
 
 mem_desc_t MemESP::rom[64];
-// Z80 RAM pages placed in the .ram_128k section, which the RP2350 linker
-// script pins to SRAM banks 0-1 (dedicated 128 KB region). The framebuffer
-// lives in heap (banks 2-7) so HDMI DMA reading the framebuffer travels
-// through different AHB ports than CPU access to Z80 RAM — no bus contention.
+// Z80 RAM pages placed in the .ram_128k section, which the linker script pins
+// to SRAM banks 0-1 (dedicated 128 KB region). The framebuffer lives in heap
+// (banks 2-7) so HDMI DMA reading the framebuffer travels through different
+// AHB ports than CPU access to Z80 RAM — no bus contention.
 // NOLOAD (no init from flash); pages cleared at runtime in MemESP::reset().
 //
-// On RP2350: all 128 KB of Spectrum 128 RAM (pages 0-7) lives here. The
-// 16col rasterizer (gated `#if !PICO_RP2040` in Video.cpp) reads pages 4-7
-// via direct() in the HDMI/VGA ISR and requires guaranteed POINTER backing.
-// On RP2040: only the video pages 5,7 are static (the rasterizer needs them
-// every line). Pages 0/4/6 are conditionally heap-allocated in setup() —
-// 264 KB total SRAM is too tight to spend 96 KB on static Z80 RAM, and
-// 16col mode is disabled, so pages 4/6 don't need predictable backing.
+// All 128 KB of Spectrum 128 RAM (pages 0-7) lives here. The 16col rasterizer
+// in Video.cpp reads pages 4-7 via direct() in the HDMI/VGA ISR and requires
+// guaranteed POINTER backing.
 #define Z80_RAM_PAGE_ATTR __attribute__((section(".ram_128k"), aligned(4)))
 Z80_RAM_PAGE_ATTR static uint8_t pages57[MEM_PG_SZ * 2];
-#if !PICO_RP2040
 Z80_RAM_PAGE_ATTR static uint8_t pages0123[MEM_PG_SZ * 4];
 Z80_RAM_PAGE_ATTR static uint8_t pages46[MEM_PG_SZ * 2];
-#endif
 #undef Z80_RAM_PAGE_ATTR
 static mem_desc_t temp[8] = {
-#if !PICO_RP2040
     { pages0123 + MEM_PG_SZ * 0, 0 },
     { pages0123 + MEM_PG_SZ * 1, 1 },
     { pages0123 + MEM_PG_SZ * 2, 2 },
@@ -646,16 +613,6 @@ static mem_desc_t temp[8] = {
     { pages57   + MEM_PG_SZ * 0, 5 },
     { pages46   + MEM_PG_SZ * 1, 6 },
     { pages57   + MEM_PG_SZ * 1, 7 },
-#else
-    { 0, 0 },
-    { 0, 1 },
-    { 0, 2 },
-    { 0, 3 },
-    { 0, 4 },
-    { pages57 + MEM_PG_SZ * 0, 5 },
-    { 0, 6 },
-    { pages57 + MEM_PG_SZ * 1, 7 },
-#endif
 };
 mem_desc_t* MemESP::ram = temp;
 bool MemESP::newSRAM = false;
@@ -696,7 +653,6 @@ void MemESP::registerOverlay(const uint8_t* base, const uint8_t* ov) {
     }
 }
 
-#if !PICO_RP2040
 uint8_t* MemESP::page0_lo = nullptr;
 uint8_t* MemESP::page0_hi = nullptr;
 bool MemESP::divmmc_mapped = false;
@@ -704,5 +660,4 @@ bool* MemESP::divmmc_hi_dirty = nullptr;
 bool* MemESP::divmmc_lo_dirty = nullptr;
 bool MemESP::mb02_write_gate = true; // default: allow writes (DivMMC needs this)
 bool* MemESP::mb02_page_dirty = nullptr; // set by MB02::applyMapping (SRAM page window)
-#endif
 

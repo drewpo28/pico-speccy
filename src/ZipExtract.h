@@ -8,18 +8,6 @@
 
 using namespace std;
 
-#if PICO_RP2040
-// RP2040: ZIP disabled to save ~2.5 KB SRAM
-class ZipExtract {
-public:
-    static string extract(const string&, uint8_t) { return ""; }
-    static int listFiles(const string&, uint8_t, vector<string>&) { return 0; }
-    static string extractByIndex(const string&, int) { return ""; }
-    static int extractAll(const string&, const string&) { return 0; }
-    static void viewInfo(const string&) {}
-    static void cleanup() {}
-};
-#else
 
 class ZipExtract {
 public:
@@ -74,6 +62,5 @@ private:
     static bool extractStored(FIL* zipFile, uint32_t size, const char* outPath);
     static bool extractDeflate(FIL* zipFile, uint32_t compressedSize, const char* outPath);
 };
-#endif // PICO_RP2040
 
 #endif

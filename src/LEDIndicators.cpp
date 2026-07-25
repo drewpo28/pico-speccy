@@ -5,7 +5,6 @@
 #include "Z80_JLS/z80.h"
 #include "Z80_JLS/z80operations.h"
 
-#if !PICO_RP2040
 #include "DivMMC.h"
 #include "MB02.h"
 #include "Midi.h"
@@ -13,11 +12,8 @@
 #ifdef USE_GS
 #include "GS/GS.h"
 #endif
-#endif
 
-#if !PICO_RP2040
 extern "C" volatile bool profi_ds80_active; // defined in vga.c, set by both HDMI and VGA DS80 paths
-#endif
 
 namespace LED {
 
@@ -211,7 +207,6 @@ static const uint8_t SPRITE[COUNT][8] = {
 
 bool isVisible(Id i) {
     switch (i) {
-#if !PICO_RP2040
         case SD:       return Config::esxdos != 0 || DivMMC::enabled;
         case ZCTRL:    return Config::zcontroller || DivMMC::zc_enabled;
         case IDE:      return ::IDE::present();
@@ -228,12 +223,6 @@ bool isVisible(Id i) {
         case ULAPLUS:    return Config::ulaplus;
         case GIGASCREEN: return Config::gigascreen_enabled;
         case NET:        return Config::wifi_enabled != 0; // networking is WiFi-driven (NIC requires it)
-#else
-        case SD: case ZCTRL: case IDE: case MIDI:
-        case SAA: case TIMEX: case DMA: case GS:
-        case ULAPLUS: case GIGASCREEN: case NET: return false;
-        case FDD:      return Config::betadisk;
-#endif
         case TAPE:     return true;
         case AY:       return Config::AY48 || !Z80Ops::is48;
         case BEEPER:   return true;
@@ -253,15 +242,12 @@ void decay() {
     // FDD lamp/glyph/hum run off rvmWD1793::fdd_active_decay instead of rdec/wdec
     // (see wd1793.h) — decay it here too so it's a single per-frame tick site.
     if (ESPectrum::fdd.fdd_active_decay) ESPectrum::fdd.fdd_active_decay--;
-#if !PICO_RP2040
     if (ESPectrum::mb02_fdd.fdd_active_decay) ESPectrum::mb02_fdd.fdd_active_decay--;
-#endif
 }
 
 // Determine where to draw the strip given current video mode.
 // Returns true if drawing surface is available; fills (base_x, base_y).
 static bool resolveLayout(int& base_x, int& base_y) {
-#if !PICO_RP2040
     if (VIDEO::isFullBorder288()) {
         base_x = 4;
         base_y = 278;
@@ -272,7 +258,6 @@ static bool resolveLayout(int& base_x, int& base_y) {
         base_y = 230;
         return true;
     }
-#endif
     if (Config::aspect_16_9) {
         base_x = 4;
         base_y = 186;
@@ -299,9 +284,7 @@ static inline uint8_t fgColor(Id i) {
     // lamp uses the same signal — see ESPectrum.cpp.
     if (i == FDD) {
         rvmWD1793* f = &ESPectrum::fdd;
-#if !PICO_RP2040
         if (MB02::enabled) f = &ESPectrum::mb02_fdd;
-#endif
         if (f->fdd_active_decay) {
             bool write = ((f->command & 0xE0) == 0xA0) ||   // Write Sector (0xA_/0xB_)
                          ((f->command & 0xF0) == 0xF0);     // Write Track  (0xF_)
@@ -319,13 +302,11 @@ static inline uint8_t fgColor(Id i) {
     // state.) Swap to BLUE on a white border so it always stays visible.
     else             zx = (VIDEO::borderColor == WHITE) ? BLUE : WHITE;
 
-#if !PICO_RP2040
     // DS80 mode: the framebuffer byte indexes the DS80 packed-pair conv_color
     // table, not the standard ZX palette.  Emit a solid-colour pair slot
     // (profi_pair_lookup[zx][zx]) so the LED glyph shows the intended colour.
     if (profi_ds80_active)
         return VIDEO::profi_pair_lookup[zx & 0x0F][zx & 0x0F];
-#endif
     return zx;
 }
 

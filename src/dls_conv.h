@@ -1,4 +1,4 @@
-// On-device GM.DLS -> pico-spec GM wavetable soundbank (gm_bank.bin) converter.
+// On-device GM.DLS -> pico-speccy GM wavetable soundbank (gm_bank.bin) converter.
 //
 // This is a faithful C++ port of tools/dls_pack.py (itself a port of the xrip
 // embeded-midi-synth C tools), adapted for the RP2350 + FatFS so the device can
@@ -15,7 +15,7 @@
 // Byte-for-byte identical to dls_pack.py output for the same .dls + rate, which is
 // the correctness criterion (validate on host before trusting on device).
 //
-// RP2350-only (GM.DLS MIDI is gated #if !PICO_RP2040). Run on core0 at runtime
+// Run on core0 at runtime
 // (NOT the early-boot flash path): it only produces the .bin on SD; the existing
 // MidiSynth::provisionAtBoot() then installs it into flash after a reboot.
 #pragma once
@@ -29,7 +29,7 @@ namespace DlsConv {
 typedef void (*ProgressCb)(int pct, void* user);
 
 // Convert dlsPath -> outBinPath (GMWB v5) at the given output sample rate
-// (pico-spec uses 31250; the engine never resamples, so this MUST match the audio
+// (pico-speccy uses 31250; the engine never resamples, so this MUST match the audio
 // rate). Writes atomically via a "<outBinPath>.tmp" + rename. Returns true on
 // success. On any failure the partial .tmp is removed and false is returned.
 bool convert(const char* dlsPath, const char* outBinPath, int rate,

@@ -3,7 +3,7 @@
 // Protocol-agnostic remote filesystem interface so the OSD browser/transfer code
 // can drive FTP and SFTP through one API. RP2350 only, behind ZIFI_NET_CLIENT.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include <inttypes.h>
 #include <string>
@@ -94,4 +94,4 @@ public:
     virtual void disconnect() = 0;
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

@@ -6,10 +6,6 @@ using namespace std;
 
 #include "FileInfo.h"
 
-#if PICO_RP2040
-// Stub — saves ~2KB RAM (static FIL, lineStarts/lineLens arrays, format tables)
-void FileInfo::viewInfo(const string& path) {}
-#else
 
 #include "FileUtils.h"
 #include "Video.h"
@@ -888,4 +884,3 @@ void FileInfo::viewInfo(const string& path) {
 
     showInfoBox(info, lines);
 }
-#endif // !PICO_RP2040

@@ -1,6 +1,5 @@
 #include "pico.h"
 
-#if !PICO_RP2040
 
 #include <stdio.h>
 #include <string.h>
@@ -78,11 +77,7 @@ struct ZipEntry {
     uint16_t compression;
 };
 
-#if PICO_RP2040
-#define ZIP_MAX_ENTRIES 8
-#else
 #define ZIP_MAX_ENTRIES 16
-#endif
 
 string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     FIL& zipFile = s_zipFile;
@@ -189,7 +184,7 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
         return "";
     }
 
-    OSD::osdCenteredMsg(OSD_ZIP_EXTRACTING[Config::lang], LEVEL_INFO, 0);
+    OSD::osdCenteredMsg(OSD_ZIP_EXTRACTING, LEVEL_INFO, 0);
 
     cleanup();
     bool ok = extractFile(&zipFile, e.compression, e.compressedSize, e.uncompressedSize);
@@ -208,12 +203,10 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     extBuf[elen] = 0;
 
     string finalPath = string(TEMP_FILE) + "." + extBuf;
-#if !PICO_RP2040
     // A lazily-mounted ALF cart may still hold this exact temp path open (we reuse one
     // fixed name). Release it before unlink/rename so its FIL can't dangle onto freed/
     // reused clusters when we overwrite the file. loadAlfCart re-mounts right after.
     if (AlfCart::active() && AlfCart::path() == finalPath) AlfCart::unmount();
-#endif
     f_unlink(finalPath.c_str());
     f_rename(TEMP_FILE, finalPath.c_str());
     return finalPath;
@@ -676,4 +669,3 @@ void ZipExtract::cleanup() {
     }
 }
 
-#endif // !PICO_RP2040

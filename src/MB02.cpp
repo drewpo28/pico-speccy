@@ -1,6 +1,5 @@
 #include "MB02.h"
 
-#if !PICO_RP2040
 
 #include <stdlib.h>
 #include <string.h>
@@ -243,4 +242,3 @@ uint8_t MB02::readPort13() {
     return result;
 }
 
-#endif // !PICO_RP2040

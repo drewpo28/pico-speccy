@@ -32,7 +32,7 @@ if [ -z "$PICO_TOOLCHAIN_PATH" ]; then
     fi
 fi
 
-REPO="drewpo28/pico-spec"
+REPO="drewpo28/pico-speccy"
 SKIP_BUILD=false
 PRERELEASE=false
 NOTES_FILE=""

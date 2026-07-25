@@ -7,7 +7,7 @@ Create a draft GitHub release with auto-generated Change History notes.
 
 Previous release tag: !`git tag --sort=-v:refname | grep '^v' | head -1`
 Current PORT_VERSION: !`grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt`
-Release for this version: !`VER=$(grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt); gh release view "v$VER" -R drewpo28/pico-spec --json name,isDraft,targetCommitish,assets --template '{{.name}} draft={{.isDraft}} target={{.targetCommitish}} assets={{len .assets}}' 2>&1 || true`
+Release for this version: !`VER=$(grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt); gh release view "v$VER" -R drewpo28/pico-speccy --json name,isDraft,targetCommitish,assets --template '{{.name}} draft={{.isDraft}} target={{.targetCommitish}} assets={{len .assets}}' 2>&1 || true`
 Commits since previous tag: !`git log --oneline $(git tag --sort=-v:refname | grep '^v' | head -1)..HEAD`
 
 Steps:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Offline GUS .pat / TiMidity-cfg -> pico-spec GM wavetable soundbank (gm_bank.bin).
+# Offline GUS .pat / TiMidity-cfg -> pico-speccy GM wavetable soundbank (gm_bank.bin).
 #
 #   python3 tools/gus_pack.py <timidity.cfg> <out.bin> [output_rate]
 #
@@ -11,7 +11,7 @@
 # as 8-bit G.711 µ-law at <output_rate>, regions with resolved tuning / loop / GUS
 # envelope. Same output format as dls_pack.py — use whichever bank source you have.
 #
-# Default output_rate is 31250 (pico-spec's audio rate; the engine never resamples).
+# Default output_rate is 31250 (pico-speccy's audio rate; the engine never resamples).
 # Supports the dgguspat-style cfg: `bank N`, `drumset N`, `<prog-or-note> <patch>`.
 # Not a full TiMidity/UltraMID emulator. The resulting gm_bank.bin goes on the SD
 # card (see the wiki "MIDI" page). freepats is freely redistributable; classic

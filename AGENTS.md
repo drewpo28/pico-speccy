@@ -1,6 +1,6 @@
-# pico-spec — AI Agent Context
+# pico-speccy — AI Agent Context
 
-ZX Spectrum emulator for Raspberry Pi Pico (RP2040 / RP2350), ported from [ESPectrum](https://github.com/EremusOne/ESPectrum).
+ZX Spectrum emulator for Raspberry Pi Pico 2 (RP2350 only — RP2040 support was dropped), ported from [ESPectrum](https://github.com/EremusOne/ESPectrum).
 Emulates ZX Spectrum 48K, 128K, Pentagon 128/512/1024K, Byte computer, and ALF TV Game with 100% cycle-accurate Z80 CPU.
 
 ## Language & Build
@@ -15,18 +15,18 @@ Emulates ZX Spectrum 48K, 128K, Pentagon 128/512/1024K, Byte computer, and ALF T
   make -j$(nproc)
   ```
   Output: `bin/Release/*.uf2` — flash via USB mass-storage mode.
-- **Board selection**: set variables in `CMakeLists.txt` (`PICO_PC`, `MURM2`, `ZERO`, `ZERO2`, `PICO_DV`). Default = Murmulator 1.x.
+- **Board selection**: set variables in `CMakeLists.txt` (`MURM`, `MURM2`, `PICO_PC`, `PICO_DV`, `ZERO2`). Default = Murmulator 2.0.
+- **UI language**: English only (the Spanish strings and `Config::lang` were removed).
 
 ## Supported Hardware Boards
 
 | Board              | Define    | PSRAM GPIO | Notes                    |
 |--------------------|-----------|------------|--------------------------|
-| Murmulator 1.x     | (default) | 19         |                          |
-| Murmulator 2.0     | `MURM2`   | 8          |                          |
+| Murmulator 1.x     | `MURM`    | 19         |                          |
+| Murmulator 2.0     | `MURM2`   | 8          | default                  |
 | Olimex PICO-PC     | `PICO_PC` | 8          | PWM audio on GP27/GP28   |
 | Pimoroni Pico DV   | `PICO_DV` | 47         | HDMI via DVI on GP6+     |
-| Waveshare PiZero   | `ZERO`    | —          | RP2040                   |
-| Waveshare PiZero 2 | `ZERO2`   | 47         | RP2350                   |
+| Waveshare PiZero 2 | `ZERO2`   | 47         |                          |
 
 ## Architecture / Key Source Files
 
@@ -89,7 +89,7 @@ Audio is mixed per-frame into `audioBuffer_L[]` / `audioBuffer_R[]`:
 
 - `IRAM_ATTR` / `__not_in_flash_func()` — hot functions placed in RAM for speed
 - Code uses 4-space indentation (some files use 2-space after recent reformatting)
-- Comments mix English, Spanish (original ESPectrum), and Russian (Byte/PIT additions)
+- User-facing strings are English only; some comments are still Spanish (original ESPectrum) or Russian (Byte/PIT additions)
 - `Z80Ops::isByte` — flag for Byte computer mode (enables PIT sound, special contention)
 - `Z80Ops::isALF` — flag for ALF TV Game mode
 - `Z80Ops::isPentagon` — Pentagon timing (no contention)

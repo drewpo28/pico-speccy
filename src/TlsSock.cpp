@@ -1,6 +1,6 @@
 #include "TlsSock.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "ZiFiSock.h"
 #include "Buffer.h"
@@ -155,7 +155,7 @@ bool TlsSock::connect(const char* host, uint16_t port, uint32_t timeout_ms) {
                                         MBEDTLS_SSL_PRESET_DEFAULT);
     if (r != 0) { last_err = r; Debug::log("TlsSock: config_defaults -0x%04x", -r); close(); return false; }
 
-    // TLS 1.2 is the only protocol compiled in (mbedtls_config_picospec.h enables
+    // TLS 1.2 is the only protocol compiled in (mbedtls_config_picospeccy.h enables
     // MBEDTLS_SSL_PROTO_TLS1_2 and not 1.3), so no explicit version pinning is
     // needed — the handshake can only negotiate 1.2.
 
@@ -293,4 +293,4 @@ void TlsSock::close() {
     }
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

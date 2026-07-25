@@ -9,7 +9,7 @@
 //       SHOULD ONLY CONSIST OF PREPROCESSOR DIRECTIVES
 // -----------------------------------------------------
 
-// pico-spec RP2350B (48-GPIO) board profile.
+// pico-speccy RP2350B (48-GPIO) board profile.
 //
 // This is a verbatim copy of the SDK's "pico2" board header with the ONLY
 // change being the RP2350 variant flipped to the B package (PICO_RP2350A 0).
@@ -22,13 +22,13 @@
 // All functional pins on MURM2/PICO_PC/PICO_DV/MURM1_P2 are set explicitly via
 // target_compile_definitions, so the #ifndef-guarded defaults below are inert.
 
-#ifndef _BOARDS_PICOSPEC_RP2350B_H
-#define _BOARDS_PICOSPEC_RP2350B_H
+#ifndef _BOARDS_PICOSPECCY_RP2350B_H
+#define _BOARDS_PICOSPECCY_RP2350B_H
 
 pico_board_cmake_set(PICO_PLATFORM, rp2350)
 
 // For board detection
-#define PICOSPEC_RP2350B
+#define PICOSPECCY_RP2350B
 
 // --- RP2350 VARIANT ---
 #define PICO_RP2350A 0

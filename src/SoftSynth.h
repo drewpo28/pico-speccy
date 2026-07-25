@@ -1,6 +1,5 @@
 #pragma once
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 
@@ -93,4 +92,3 @@ private:
     static PatchParams getPatch(uint8_t ch, uint8_t program);
 };
 
-#endif // !PICO_RP2040

@@ -1,6 +1,5 @@
 #include "ZiFi.h"
 
-#if !PICO_RP2040
 
 #include "Config.h"
 #include "BoardPins.h"
@@ -979,4 +978,3 @@ extern "C" void tuh_cdc_umount_cb(uint8_t idx) { ZiFi::usbCdcUnmount((int)idx); 
 extern "C" void tuh_cdc_rx_cb(uint8_t idx)     { ZiFi::usbCdcRx((int)idx); }
 #endif
 
-#endif // !PICO_RP2040

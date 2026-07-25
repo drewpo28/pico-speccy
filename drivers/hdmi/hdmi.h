@@ -17,7 +17,7 @@ extern "C" {
 #define HDMI_BASE_PIN (6)
 #endif
 
-#if defined(ZERO) || defined(ZERO2)
+#if defined(ZERO2)
 	#define HDMI_PIN_RGB_notBGR (0)
 	#define HDMI_PIN_invert_diffpairs (0)
 	#define beginHDMI_PIN_data (HDMI_BASE_PIN)
@@ -33,7 +33,6 @@ extern "C" {
 #define TEXTMODE_ROWS 30
 
 // HDMI audio support (RP2350 only)
-#if !PICO_RP2040
 // Allocates the packet queue + sample rings (~36.9 KB) on first call and
 // brings the audio hardware tables up. Returns false on OOM or if the video
 // mode can't carry Data Islands. Managed by HdmiAudioSubsys — prefer
@@ -48,7 +47,6 @@ void hdmi_audio_write_sample(int16_t left, int16_t right);
 int hdmi_audio_dbg_stage(void);
 // Producer/consumer counters: packet queue (wr/rd) and sample ring (wr/rd)
 void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, uint32_t *s_cons);
-#endif
 
 // Hot video mode reinit (reuses existing PIO/DMA resources)
 void hdmi_reinit(void);

@@ -1,6 +1,5 @@
 #pragma once
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 
@@ -61,4 +60,3 @@ private:
     static uint32_t liveSecs();   // base_secs + elapsed
 };
 
-#endif // !PICO_RP2040

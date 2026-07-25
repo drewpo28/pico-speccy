@@ -38,31 +38,24 @@ THE SOFTWARE.
 #include "OSDMain.h"
 #include "messages.h"
 #include "Z80_JLS/z80.h"
-#if !PICO_RP2040
 #include "td0.h"
 #include "psram_spi.h"
 #include "trdos_boot.h"
 #include <string.h>
-#endif
 
 static bool sclConvertToTRD(rvmWD1793 *wd);
-#if !PICO_RP2040
 static void mbdFlushTrack(rvmWD1793 *wd); // defined below; also re-declared near its callers
 // Deferred PRO f_sync (see mbdFlushTrack / wdIdleIO): unit whose Diskfile has
 // flushed-but-unsynced sector data, executed in the frame's idle window.
 static rvmWD1793 *g_wdSyncPendingWd = nullptr;
 static int8_t     g_wdSyncPendingUnit = -1;
-#endif
 
 // Shared 8 KB track scratch for raw-format loads: FDI whole-track bulk read and
 // TD0 streaming decode fetch a track in ONE SD multi-block read instead of one
-// SPI transaction per sector (~1.4 ms each on plain SPI cards). RP2350-only —
-// the FDI/TD0 raw paths are all under #if !PICO_RP2040.
-#if !PICO_RP2040
+// SPI transaction per sector (~1.4 ms each on plain SPI cards).
 static uint8_t g_rawTrkDataBuf[8192];
-#endif
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
 // First 8 bytes delivered for the current sector read — see [FDC RD-END] log.
 uint8_t g_rdFirst[8] = {0};
 uint8_t g_rdFirstN = 0;
@@ -83,10 +76,9 @@ uint16_t g_fdcLastPc = 0;
 // use this cache, for the SAME disk — they can only collide ACROSS drives (SCL in
 // one + FDI/TD0 in another). invalidateSclCacheForScratch() handles that: it drops
 // the SCL cache at every g_rawTrkDataBuf (re)fill, so track-0 is reconverted on the
-// next SCL read (a few ms, only in that rare mix). RP2040 has no FDI/TD0 raw path,
+// next SCL read (a few ms, only in that rare mix).
 // so it keeps a dedicated buffer.
 static rvmWD1793 *s_scl_track0_owner = nullptr;
-#if !PICO_RP2040
 static unsigned char* const s_scl_track0 = (unsigned char*)g_rawTrkDataBuf;
 static inline void invalidateSclCacheForScratch() {
     if (s_scl_track0_owner) {
@@ -94,10 +86,6 @@ static inline void invalidateSclCacheForScratch() {
         s_scl_track0_owner = nullptr;
     }
 }
-#else
-static unsigned char s_scl_track0[2304];
-static inline void invalidateSclCacheForScratch() {}
-#endif
 
 static unsigned char* claim_scl_track0(rvmWD1793 *wd) {
     if (s_scl_track0_owner && s_scl_track0_owner != wd) {
@@ -141,10 +129,8 @@ static const uint16_t sectdatapos[16]= { 162,554,946,1338,1730,2122,2514,2906,32
 #define IRAM_ATTR
 #endif
 
-#if !PICO_RP2040
 static uint16_t vgCrc(uint16_t crc, uint8_t byte);
 void td0LoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side);
-#endif
 
 #ifndef ESP_PLATFORM
 #define heap_caps_calloc(n, size, caps) calloc(n, size)
@@ -502,7 +488,6 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
     }
 
     case kRVMWD177XTypeIICommand: {
-#if !PICO_RP2040
       if (wd->disk[wd->diskS] && (wd->disk[wd->diskS]->IsFDIFile || wd->disk[wd->diskS]->IsMBDFile || wd->disk[wd->diskS]->IsTD0File))
           wd->fdiTstates = 0;
 #if FDD_PORT_TRACE
@@ -510,7 +495,6 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
           Debug::log("[TD0 II] cmd=%02X trk=%d sec=%d side=%d secCnt=%d lc=%d ls=%d",
                      wd->command, wd->track, wd->sector, wd->side,
                      wd->fdiSectorCount, wd->diskLoadedCyl, wd->diskLoadedSide);
-#endif
 #endif
 
       if((wd->command & 0xc0)==0x80) { // Read or Write Sector
@@ -521,7 +505,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
             sclConvertToTRD(wd);
           if(wd->disk[wd->diskS]->writeprotect) {
             wd->status|=kRVMWD177XStatusProtected;
-            OSD::osdCenteredMsg(OSD_DSK_WRITE_PROTECT[Config::lang], LEVEL_WARN);
+            OSD::osdCenteredMsg(OSD_DSK_WRITE_PROTECT, LEVEL_WARN);
             _end(wd);
             return;
           }
@@ -554,7 +538,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
           sclConvertToTRD(wd);
         if(wd->disk[wd->diskS]->writeprotect) {
           wd->status|=kRVMWD177XStatusProtected;
-          OSD::osdCenteredMsg(OSD_DSK_WRITE_PROTECT[Config::lang], LEVEL_WARN);
+          OSD::osdCenteredMsg(OSD_DSK_WRITE_PROTECT, LEVEL_WARN);
           _end(wd);
           return;
         }
@@ -593,7 +577,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
       //   }
       //   printf("--------------------\n");
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsTD0File)
           Debug::log("[TD0 hdr] got C=%d H=%d R=%d N=%d  want trk=%d sec=%d cmdSide=%d",
                      wd->header[1], wd->header[2], wd->header[3], wd->header[4],
@@ -616,7 +600,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
 
         // Side compare: reject if header side != command side (WD1793 spec)
         if((wd->command & 0x2) && ((wd->header[2] & 1) != ((wd->command>>3) & 1))) {
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
           if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsTD0File)
               Debug::log("[TD0 hdr] SIDE MISMATCH hdrH=%d cmdSide=%d → reject",
                          wd->header[2] & 1, (wd->command>>3) & 1);
@@ -657,9 +641,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
         // Use real size for UDI/FDI/MBD, hardcode 256 for TRD/SCL (Betadisk standard)
         {
             uint32_t sz = 128 << (wd->header[4] & 0x03);
-#if !PICO_RP2040
             if (!wd->disk[wd->diskS]->IsUDIFile && !wd->disk[wd->diskS]->IsFDIFile && !wd->disk[wd->diskS]->IsMBDFile && !wd->disk[wd->diskS]->IsTD0File)
-#endif
                 sz = 0x100;
             wd->c = sz;
         }
@@ -689,7 +671,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
     }
 
     case kRVMWD177XReadDataFlag: {
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       {
         extern uint8_t g_rdFirstN;
         g_rdFirstN = 0; // new sector — restart first-bytes capture
@@ -764,7 +746,6 @@ case kRVMWD177XWriteData: {
 
       wd->control&=~kRVMWD177XWriting;
 
-#if !PICO_RP2040
       // On real WD1793, writing a sector produces valid CRC. Fix the MFM buffer
       // and cached flags so subsequent reads on this track return correct CRC.
       if (wd->disk[wd->diskS] && (wd->disk[wd->diskS]->IsFDIFile || wd->disk[wd->diskS]->IsMBDFile || wd->disk[wd->diskS]->IsTD0File) && wd->diskDirty) {
@@ -798,7 +779,6 @@ case kRVMWD177XWriteData: {
               }
           }
       }
-#endif
 
       // Write buffer to diskfile
       // int saveptr = ftell(wd->disk[wd->diskS]->Diskfile);
@@ -817,7 +797,6 @@ case kRVMWD177XWriteData: {
       // }
       // printf("==================================\n");
 
-#if !PICO_RP2040
       // MBD (MB-02 BS-DOS): persist the modified track to SD immediately after a
       // Write Sector completes. Without this the dirty track lingers in
       // diskTrackBuf and only reaches SD on the next track switch / eject /
@@ -833,7 +812,6 @@ case kRVMWD177XWriteData: {
       if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsMBDFile
           && !wd->disk[wd->diskS]->IsProFile && wd->diskDirty)
           mbdFlushTrack(wd);
-#endif
 
       if(wd->command & 0x10) { // Write sector: Multiple record flag on
         wd->sector++;
@@ -851,7 +829,6 @@ case kRVMWD177XWriteData: {
       } else if(wd->a==0xfb) {
         wd->status&=~kRVMWD177XStatusRecordType;
       } else {
-#if !PICO_RP2040
 #if FDD_PORT_TRACE
         if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsTD0File)
             Debug::log("[TD0 data] DataFlag2 unexpected byte a=%02X (want F8/FB) → re-search sec=%d",
@@ -867,7 +844,6 @@ case kRVMWD177XWriteData: {
             _do(wd);
             return;
         }
-#endif
         wd->state=kRVMWD177XTypeIICommand;
         _do(wd);
         wd->stepState=kRVMWD177XNone;
@@ -883,7 +859,7 @@ case kRVMWD177XWriteData: {
 
       wd->data = wd->a;
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       // Capture the first 8 bytes actually delivered for this sector so the
       // completion log (in ReadCRC) can show what the CP/M/PQDOS driver really
       // received — decisive for "is the FAT12 directory / QDOS.SYS read
@@ -895,7 +871,7 @@ case kRVMWD177XWriteData: {
       }
 #endif
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsTD0File &&
           (wd->c >= 1023 || (wd->c & 0xFF) == 0 || wd->c <= 3))
           Debug::log("[TD0 data] ReadData a=%02X c=%d DRQwas=%d",
@@ -920,7 +896,6 @@ case kRVMWD177XWriteData: {
       // printf("Read CRC byte: %02x CRC: %04x\n",wd->a,wd->crc);
       if(!--wd->c) { // CRC readed
 
-#if !PICO_RP2040
 #if FDD_PORT_TRACE
         if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsTD0File)
           Debug::log("[TD0 data] sector READ COMPLETE sec=%d cmd=%02X multi=%d → %s",
@@ -931,7 +906,6 @@ case kRVMWD177XWriteData: {
           wd->status |= kRVMWD177XStatusCRC;
           wd->fdiDataCrcError = false;
         } else
-#endif
           wd->status&=~kRVMWD177XStatusCRC;
 
         if(wd->command & 0x10) { // Read sector: Multiple record flag on
@@ -970,7 +944,7 @@ case kRVMWD177XWriteData: {
 
         } else { // Read sector: Multiple record flag off
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
           // Final status of a Read Sector command right before INTRQ — this is
           // what the Z80 driver actually sees when it polls the SYS/status
           // register after the read. If a load silently uses stale data (e.g.
@@ -1070,9 +1044,7 @@ case kRVMWD177XWriteTrack: {
               // wd->wtrackmark=0b1000000000;
               // For raw format disks (UDI/FDI/MBD), indx runs sequentially through the track buffer;
               // sectdatapos repositioning is only valid for TRD's fixed sector layout.
-#if !PICO_RP2040
               if (!wd->disk[wd->diskS]->IsUDIFile && !wd->disk[wd->diskS]->IsFDIFile && !wd->disk[wd->diskS]->IsMBDFile && !wd->disk[wd->diskS]->IsTD0File)
-#endif
               wd->disk[wd->diskS]->indx = sectdatapos[wd->wtracksector - 1] + 41;
             } else if (wd->wtrackmark & 0b100000000) {
               wd->wtrackmark++;
@@ -1148,15 +1120,12 @@ case kRVMWD177XWriteTrack: {
 
 IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
 
-#if !PICO_RP2040
   // Hoisted out of the per-byte loop: arch/CPM-bit/fastmode can't change
   // while the Z80 is suspended inside this call.
   const bool profi_cpm = (Ports::portDFFD & 0x20) && Z80Ops::isProfi;
-#endif
 
   for (;steps > 0; steps--) {
 
-#if !PICO_RP2040
     // Host-paced data transfer (Profi CP/M).  When DRQ is pending the CPU has
     // not yet read/written the data register, so the byte-by-byte transfer must
     // FREEZE — disk rotation and byte production both stop until the host
@@ -1175,7 +1144,6 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
          wd->stepState == kRVMWD177XStepWriteByte)) {
       break;
     }
-#endif
 
     uint8_t d=0x0;
     uint8_t s=0x0;
@@ -1201,7 +1169,6 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
     uint8_t pd = s ^ wd->diskP;
     wd->diskP=s;
 
-#if !PICO_RP2040
     // Deferred track load in progress: diskTrackBuf still holds the PREVIOUS
     // track, so neither the byte stream nor the WaitingMark find_marker
     // fast-path (which scans diskTrackBuf/fdiSectorIdPos directly) may run.
@@ -1213,7 +1180,6 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
       if (wd->stepState >= kRVMWD177XStepWaitingMark) break;
       wd->trackLoadPending = 0;
     }
-#endif
 
     // Force Interrupt condition check: bit 2 = index pulse
     if ((wd->control >> 16) & 0x4) {
@@ -1250,7 +1216,6 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
         // for Read Sector), but Type I Seek step-delay accumulator never fills
         // when CP/M poll loop spins ~30 T-states/iter, blocking Type I forever.
         // Treat Type I steps as fastmode in this case.
-#if !PICO_RP2040
         bool profi_cpm_typeI =
             (profi_cpm
              && wd->disk[wd->diskS]
@@ -1258,9 +1223,6 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
                  || wd->disk[wd->diskS]->IsTD0File)
              && (wd->command & kRVMWD177XTypeI) == 0
              && wd->state == kRVMWD177XTypeICheck);
-#else
-        bool profi_cpm_typeI = false;
-#endif
 
         if (wd->fastmode || profi_cpm_typeI) {
           wd->c = 0;
@@ -1282,19 +1244,16 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
         }
         // end _checkIndex
 
-#if !PICO_RP2040
         // FDI/MBD: empty track (0 sectors) — report Record Not Found immediately
         // instead of spinning for 5 full revolutions (~5 seconds).
         if (wd->disk[wd->diskS] && (wd->disk[wd->diskS]->IsFDIFile || wd->disk[wd->diskS]->IsMBDFile || wd->disk[wd->diskS]->IsTD0File)
             && wd->state == kRVMWD177XReadHeaderBytes
             && wd->fdiSectorCount == 0)
         {
-#if !PICO_RP2040
             if (wd->disk[wd->diskS]->IsProFile)
                 Debug::log("[FDC!] EmptyTrack dt=%d t=%d s=%d side=%d lc=%d ls=%d",
                            (int)wd->disk[wd->diskS]->t, wd->track, wd->sector, wd->side,
                            wd->diskLoadedCyl, wd->diskLoadedSide);
-#endif
             wd->status |= kRVMWD177XStatusSeek; // bit 4 = Record Not Found (Type II)
             _end(wd);
             break;
@@ -1367,7 +1326,6 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
                 break;
             }
         }
-#endif
 
         if((wd->marka & 0xff) == dd) {
           wd->marka >>= 8;
@@ -1519,12 +1477,12 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
 
         wd->command = value;
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
         if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsTD0File)
             Debug::log("[TD0 cmd] OUT cmd=%02X trk=%d sec=%d side=%d pc=%04X",
                        value, wd->track, wd->sector, wd->side, Z80::getRegPC());
 #endif
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
         // FDD command trace — every accepted WD1793 command with key registers.
         // Enable via -DFDD_PORT_TRACE=ON. Originally Profi-only (decodes the
         // (ROM14,CPM) port scheme bug class: watch `side` vs the command side bit
@@ -1669,22 +1627,18 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
           wd->c = 50;
           wd->command = 0x00;
           wd->control |= kRVMWD177XFINTRQ;
-#if !PICO_RP2040
           if (Z80Ops::isProfi)
             Debug::log("[FDC!] CMD=0x%02X NOT_READY: disk=%p power=0x%X diskS=%d",
                        wd->command, wd->disk[wd->diskS],
                        wd->control & 0xf000, wd->diskS);
-#endif
         }
 
       } else {
-#if !PICO_RP2040
         if (Z80Ops::isProfi && wd->disk[wd->diskS] &&
             (wd->disk[wd->diskS]->IsProFile || wd->disk[wd->diskS]->IsTD0File)) {
           Debug::log("[FDCw!] CMD=0x%02X REJECTED (BUSY) t=%d s=%d prev_cmd=0x%02X st=%d ss=%d",
                      value, wd->track, wd->sector, wd->command, wd->state, wd->stepState);
         }
-#endif
       }
 
       break;
@@ -1693,7 +1647,7 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
       //if(!(wd->status & kRVMWD177XStatusBusy)) {
         wd->track=value;
       //}
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       if (Z80Ops::isProfi)
         Debug::log("[FDC TRK] track<-%d pc=%04X", value, Z80::getRegPC());
 #endif
@@ -1760,7 +1714,7 @@ IRAM_ATTR uint8_t rvmWD1793Read(rvmWD1793 *wd,uint8_t a) {
       } else {
         r|=kRVMWD177XStatusNotReady;
       }
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       // Targeted RDSEC/WRSEC completion-status trace: chasing the PQDOS
       // RESTORE<->RDSEC infinite retry (2026-07-09) — decode the actual
       // status bits the guest sees after a Type II command, to see WHY
@@ -1813,10 +1767,8 @@ static void mbdFlushTrack(rvmWD1793 *wd);
 // multi-disk bug: A:=TRD was forced slow whenever B:/C:/D: held a UDI/FDI/etc).
 static bool diskFastCapable(rvmwdDisk *d) {
   if (!d) return true;
-#if !PICO_RP2040
   if (d->IsUDIFile || d->IsFDIFile || d->IsMBDFile || d->IsTD0File || d->IsProFile)
     return false;
-#endif
   return true;
 }
 
@@ -1850,7 +1802,6 @@ void rvmWD1793Reset(rvmWD1793 *wd) {
   // Fastmode follows the active drive only (reset selects drive 0 above).
   rvmWD1793UpdateFastmode(wd);
   wd->sclConverted = false;
-#if !PICO_RP2040
   // Flush modified UDI/FDI track to SD before resetting (avoid data loss)
   if (wd->diskDirty && wd->diskLoadedCyl >= 0) {
     int lu = (wd->diskLoadedUnit >= 0) ? wd->diskLoadedUnit : wd->diskS;
@@ -1879,31 +1830,23 @@ void rvmWD1793Reset(rvmWD1793 *wd) {
   wd->fdiSectorCount = 0;
   wd->fdiDataCrcError = false;
   wd->trackLoadPending = 0;
-#endif
 }
 
 bool rvmWD1793AllocTrackBuf(rvmWD1793 *wd) {
-#if !PICO_RP2040
     if (wd->diskTrackBuf) return true;
     wd->diskTrackBuf = (uint8_t *)malloc(DISK_TRACK_BUF_SZ);
     return wd->diskTrackBuf != nullptr;
-#else
-    return true;
-#endif
 }
 
 void rvmWD1793FreeTrackBuf(rvmWD1793 *wd) {
-#if !PICO_RP2040
     if (wd->diskTrackBuf) { free(wd->diskTrackBuf); wd->diskTrackBuf = nullptr; }
     wd->diskLoadedCyl = -1;
     wd->diskLoadedSide = -1;
     wd->diskLoadedUnit = -1;
     wd->diskTrackLen = 0;
     wd->diskDirty = false;
-#endif
 }
 
-#if !PICO_RP2040
 // TR-DOS autostarts a BASIC file named "boot" on cold start. Many TRD images
 // (especially ones pulled off online archives) ship without one, so they drop to
 // the TR-DOS prompt instead of running. If enabled (Config::trdosAutoBoot), and the
@@ -1996,15 +1939,12 @@ static void trdMaybeInjectBoot(rvmwdDisk *disk) {
     disk->cursectbufpos = 0xff; // scratch reused — invalidate the sector cache
     Debug::log("TRD: injected boot file (had %d files)", (int)fileCount);
 }
-#endif
 
 bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string& Filename) {
 
-#if !PICO_RP2040
     // Ensure the track buffer exists before a disk can be loaded into it.
     // (The MB-02 drive's buffer is released when MB-02 is disabled.)
     if (!rvmWD1793AllocTrackBuf(wd)) { Debug::led_blink(); return false; }
-#endif
 
     // Close any open disk in this unit
     wdDiskEject(wd,UnitNum);
@@ -2031,19 +1971,16 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
         // SCL file
         printf("SCL disk loaded\n");
         wd->disk[UnitNum]->IsSCLFile=true;
-#if !PICO_RP2040
         wd->disk[UnitNum]->IsUDIFile = false;
         wd->disk[UnitNum]->IsFDIFile = false;
         wd->disk[UnitNum]->IsMBDFile = false;
         wd->disk[UnitNum]->IsProFile = false;
-#endif
         wd->disk[UnitNum]->fname = Filename;
         // writeprotect is seeded by the caller from the per-slot Config array.
         wd->disk[UnitNum]->writeprotect = 0;
         rvmWD1793UpdateFastmode(wd);
         diskType = 0x16;
 
-#if !PICO_RP2040
     } else if (std::strncmp(magic,"UDI!",4) == 0) {
         // UDI file
         printf("UDI disk loaded\n");
@@ -2455,16 +2392,13 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
         printf("PRO (Profi CP/M): %d tracks, %d sides, %d sec/trk, %d bytes/sec\n",
                tracks, sides, spt, secSize);
         return true;
-#endif
 
     } else {
         wd->disk[UnitNum]->IsSCLFile = false;
-#if !PICO_RP2040
         wd->disk[UnitNum]->IsUDIFile = false;
         wd->disk[UnitNum]->IsFDIFile = false;
         wd->disk[UnitNum]->IsMBDFile = false;
         wd->disk[UnitNum]->IsProFile = false;
-#endif
         // writeprotect is seeded by the caller from the per-slot Config array.
         wd->disk[UnitNum]->writeprotect = 0;
         wd->disk[UnitNum]->sclDataOffset = 0;
@@ -2530,7 +2464,6 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
     //rewind(wd->disk[UnitNum]->Diskfile);
     f_rewind(wd->disk[UnitNum]->Diskfile);
 
-#if !PICO_RP2040
     // Plain TRD only (SCL/UDI/FDI/MBD/PRO/TD0 return earlier or are handled in RAM):
     // inject a "boot" file if the image lacks one, so TR-DOS autostarts.
     if (!wd->disk[UnitNum]->IsSCLFile && !wd->disk[UnitNum]->IsUDIFile &&
@@ -2538,7 +2471,6 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
         !wd->disk[UnitNum]->IsProFile && !wd->disk[UnitNum]->IsTD0File) {
         trdMaybeInjectBoot(wd->disk[UnitNum]);
     }
-#endif
 
     wd->disk[UnitNum]->t0s1_info = 0;
     wd->disk[UnitNum]->cursectbufpos = 0xff; // 0xffff;
@@ -2554,7 +2486,6 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
 
 }
 
-#if !PICO_RP2040
 // g_rawTrkDataBuf (raw-format track staging) is defined near the top of the file
 // so the SCL track-0 cache can alias it — see s_scl_track0.
 
@@ -3356,7 +3287,7 @@ static uint32_t g_wdQuietFrames = 0;   // consecutive idle-window calls with FDC
 static void wdRunTrackLoader(rvmWD1793 *wd, uint8_t cyl, uint8_t side) {
     rvmwdDisk *disk = wd->disk[wd->diskS];
     uint64_t t0 = time_us_64();
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
     // Trace every real track load: (cyl,side) requested vs what was loaded
     // before + reload count, to expose double-sided track thrashing.
     static uint32_t g_trkLoadCnt = 0;
@@ -3468,7 +3399,6 @@ void wdIdleIO(rvmWD1793 *wd, uint64_t deadline_us) {
     }
 }
 
-#endif
 
 IRAM_ATTR uint8_t rvmwdDiskStep(rvmWD1793 *wd, uint32_t control) {
 
@@ -3506,7 +3436,6 @@ IRAM_ATTR uint8_t rvmwdDiskStep(rvmWD1793 *wd, uint32_t control) {
 
   } else {
 
-#if !PICO_RP2040
     if (disk->IsUDIFile) {
 
       // During seek (Type I), don't load track data — only update disk->t and status.
@@ -3737,7 +3666,6 @@ IRAM_ATTR uint8_t rvmwdDiskStep(rvmWD1793 *wd, uint32_t control) {
 
     }
 
-#endif
 
     if(disk->indx != 0xffffffff && disk->indx >= /*6417*/ 6663) {
       disk->indx = 0xffffffff;
@@ -3772,10 +3700,8 @@ IRAM_ATTR uint8_t rvmwdDiskStep(rvmWD1793 *wd, uint32_t control) {
           // SCL disk -> Read sector to cache from created Track0
           if (cursect < 9)
             memcpy(disk->cursectbuf, t0 + (cursect << 8), 0x100);
-#if !PICO_RP2040
           else if (cursect == 9 && disk->bootInjected)
             memcpy(disk->cursectbuf, kTrdosBootSector, 0x100); // injected boot data
-#endif
           else
             memset(disk->cursectbuf, 0, 0x100);
 
@@ -3825,7 +3751,6 @@ void wdDiskEject(rvmWD1793 *wd, unsigned char UnitNum) {
     printf("Ejecting disk\n");
 
     if (wd->disk[UnitNum]->Diskfile != NULL) {
-#if !PICO_RP2040
         // Flush only if the buffer actually holds this unit's dirty track.
         // (diskLoadedUnit, not diskS — they differ after a drive switch.)
         if (wd->diskDirty && wd->diskLoadedUnit == (int)UnitNum) {
@@ -3841,12 +3766,10 @@ void wdDiskEject(rvmWD1793 *wd, unsigned char UnitNum) {
         }
         if (wd->trackLoadPending && wd->pendUnit == UnitNum)
             wd->trackLoadPending = 0;
-#endif
         fclose2(wd->disk[UnitNum]->Diskfile);
         wd->disk[UnitNum]->Diskfile = NULL;
     }
 
-#if !PICO_RP2040
     // TD0 streaming cleanup: close+unlink the temp file if we own it (packed
     // images), and free the per-track scratch buffer. The unpacked case shares
     // Diskfile, which was already closed above.
@@ -3859,7 +3782,6 @@ void wdDiskEject(rvmWD1793 *wd, unsigned char UnitNum) {
         wd->disk[UnitNum]->td0Stream = NULL;
         wd->disk[UnitNum]->td0OwnsStream = false;
     }
-#endif
 
     free(wd->disk[UnitNum]);
     wd->disk[UnitNum] = NULL;
@@ -3887,7 +3809,6 @@ void wdDiskEject(rvmWD1793 *wd, unsigned char UnitNum) {
 // deferred per-unit markers are keyed by unit number — flush/remap them so
 // write-back can't land on the wrong image after the swap.
 void rvmWD1793SwapDrives(rvmWD1793 *wd, uint8_t a, uint8_t b) {
-#if !PICO_RP2040
     if (wd->diskLoadedUnit == (int)a || wd->diskLoadedUnit == (int)b) {
         rvmwdDisk *ld = wd->disk[wd->diskLoadedUnit];
         if (wd->diskDirty && ld && ld->Diskfile) {
@@ -3907,7 +3828,6 @@ void rvmWD1793SwapDrives(rvmWD1793 *wd, uint8_t a, uint8_t b) {
     }
     if (wd->trackLoadPending && (wd->pendUnit == a || wd->pendUnit == b))
         wd->trackLoadPending = 0;
-#endif
     rvmwdDisk *t = wd->disk[a];
     wd->disk[a] = wd->disk[b];
     wd->disk[b] = t;
@@ -3980,7 +3900,6 @@ void SCLtoTRD(rvmwdDisk *d, unsigned char* track0) {
 
     d->sclDataOffset =  (9 + (numberOfFiles * 14)) - 4096;
 
-#if !PICO_RP2040
     // Auto-boot: if the SCL has no "boot" file, synthesise one into the in-RAM
     // catalog. Its single data sector is served from flash (kTrdosBootSector) for
     // track 0 / sector 9 in the read path — see rvmwdDiskStep. Track 0's tail is
@@ -4007,7 +3926,6 @@ void SCLtoTRD(rvmwdDisk *d, unsigned char* track0) {
             d->bootInjected = true;
         }
     }
-#endif
 }
 
 // Create an empty formatted TRD disk image at the given path.
@@ -4093,11 +4011,9 @@ static bool sclConvertToTRD(rvmWD1793 *wd) {
     // If we injected a boot file, sector 9 holds its data (served from flash before
     // conversion) — write it into the TRD so the catalog entry still resolves.
     for (int s = 9; s < 16; s++) {
-#if !PICO_RP2040
         if (s == 9 && disk->bootInjected)
             f_write(trdFile, kTrdosBootSector, 256, &bw);
         else
-#endif
             f_write(trdFile, zeroBuf, 256, &bw);
     }
 

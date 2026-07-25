@@ -1,6 +1,5 @@
 #pragma once
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 #include <string>
@@ -83,4 +82,3 @@ private:
     static void processMessage(uint8_t status, uint8_t d0, uint8_t d1);
 };
 
-#endif // !PICO_RP2040

@@ -1,6 +1,5 @@
 #include "ZiFiAT.h"
 
-#if !PICO_RP2040
 
 #include "ZiFi.h"
 #include "RTC.h"
@@ -487,4 +486,3 @@ bool ZiFiAT::getStatus(string& ssid_out, string& ip_out) {
     return have_ip;
 }
 
-#endif // !PICO_RP2040

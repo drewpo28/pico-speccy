@@ -66,11 +66,9 @@ visit https://zxespectrum.speccy.org/contacto
 
 #include "PinSerialData_595.h"
 #include "Debug.h"
-#if !PICO_RP2040
 #include "DivMMC.h"
 #include "IDE.h"
 #include "MB02.h"
-#endif
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "SoftSynth.h"
@@ -87,14 +85,12 @@ using namespace std;
 
 extern size_t getFreeHeap(void);
 
-#if !PICO_RP2040
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" volatile bool profi_ds80_active;
-#endif
 #ifdef KBDUSB
 // C-linkage query from hid_app.cpp; declared at file scope because a linkage
 // specification ("C") is not permitted at block scope. ALL platforms — the
-// factory-reset probe uses it on RP2040 (MURM/ZERO) KBDUSB builds too.
+// factory-reset probe uses it on KBDUSB builds too.
 extern "C" bool usb_keyboard_mounted(void);
 extern "C" size_t getLargestAllocatable(void);  // defined in OSDMain.cpp
 #endif
@@ -222,7 +218,6 @@ uint32_t ESPectrum::faudbufcntAY = 0;
 uint32_t ESPectrum::audbufcntCovox = 0;
 uint32_t ESPectrum::faudbufcntCovox = 0;
 
-#if !PICO_RP2040
 uint8_t* ESPectrum::audioBufferPIT = nullptr;
 uint8_t* ESPectrum::audioBufferMIDI_L = nullptr;
 uint8_t* ESPectrum::audioBufferMIDI_R = nullptr;
@@ -231,7 +226,6 @@ uint32_t ESPectrum::faudbufcntPIT = 0;
 uint32_t ESPectrum::audbufcntSAA = 0;
 uint32_t ESPectrum::faudbufcntSAA = 0;
 bool ESPectrum::SAA_emu = false;
-#endif
 
 ESPectrum::FDDSound ESPectrum::fddSound = {{}, 0xACE1, 0, false, 0, 12};
 const uint8_t ESPectrum::fdd_click_decay[12] = {48,36,27,20,15,11,8,6,4,3,2,1};
@@ -262,9 +256,7 @@ int ESPectrum::TapeNameScroller = 0;
 
 bool ESPectrum::trdos = false;
 rvmWD1793 ESPectrum::fdd;
-#if !PICO_RP2040
 rvmWD1793 ESPectrum::mb02_fdd;
-#endif
 
 /// @brief  Mouse support
 int32_t ESPectrum::mouseX = 0;
@@ -384,10 +376,10 @@ void ShowStartMsg() {
 
   OSD::osdAt(7, 1);
   VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(1, 0));
-  VIDEO::vga.print(Config::lang ? StartMsg[0] : StartMsg[1]);
+  VIDEO::vga.print(STARTUP_MSG);
 
   VIDEO::vga.setTextColor(zxColor(16, 0), zxColor(1, 0));
-  OSD::osdAt(7, Config::lang ? 28 : 25);
+  OSD::osdAt(7, 25);
   VIDEO::vga.print("ESP");
   OSD::osdAt(9, 1);
   VIDEO::vga.print("ESP");
@@ -403,10 +395,7 @@ void ShowStartMsg() {
   for (int i = 20; i >= 0; i--) {
     OSD::osdAt(19, 1);
     sprintf(msg,
-            Config::lang ? "Este mensaje se cerrar"
-                           "\xA0"
-                           " en %02d segundos"
-                         : "This message will close in %02d seconds",
+            "This message will close in %02d seconds",
             i);
     VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
     VIDEO::vga.print(msg);
@@ -618,19 +607,11 @@ static void assign_ram(int i) {
   // With locked=true: no pin/unpin/preload needed in the render path → the
   // HDMI/VGA renderer never stalls on SPI DMA → no sync loss.
   //
-  // Profi CP/M pool layout (RP2350, SPI-PSRAM only):
+  // Profi CP/M pool layout (SPI-PSRAM only):
   //   Locked SRAM (never evicted): pages 56, 58 — DS80 colour-attribute data
   //   LRU pool (evictable):        pages 1, 2, 3, 60, 61 — CP/M working set
   //   All other pages:             SPI PSRAM, on demand via accessor window
   //
-  // RP2040 (ZERO/MURM): DS80 not available; heap budget ~181KB with MEM_REMAIN=96KB
-  // reserved for framebuffer. Use 3-page set {56,58,61} on RP2040.
-#if PICO_RP2040
-  bool force_sram_locked = false; // DS80 not available on RP2040
-  bool force_sram = (Config::arch == "Profi")
-                    && (i == 56 || i == 58 || i == 61)
-                    && (butter_psram_size() == 0);
-#else
   // butter/QSPI boards keep the direct-XIP-pointer scheme for ALL Profi pages
   // (56/58 included — the DS80 renderer reads them via the ds80_clr_sram
   // vblank snapshot, see Video.cpp).  An A/B test (2026-07-07, [NEG2] cpu on
@@ -644,7 +625,6 @@ static void assign_ram(int i) {
   bool force_sram = (Config::arch == "Profi")
                     && (i == 61 || i == 60)
                     && (butter_psram_size() == 0);
-#endif
   if (force_sram_locked) {
     MemESP::ram[i].assign_ram(new unsigned char[MEM_PG_SZ], i, true); // LOCKED: permanent SRAM
     ++ram_pages;
@@ -689,7 +669,6 @@ void ESPectrum::setup() {
   Config::initHotkeys(); // fill hotkey defaults even without SD
   if (FileUtils::fsMount)
     Config::load();
-#if !PICO_RP2040
   // Mount the ALF cartridge from SD (served lazily on demand like a wd1793 disk),
   // per Config::alfCartPath. Empty drive if none is set or the SD file is missing —
   // there is no built-in cart. Must run before ALF banking can read it.
@@ -697,7 +676,6 @@ void ESPectrum::setup() {
   // NOTE: the GM.DLS bank (MidiSynth::provisionAtBoot) is set up later — after
   // Buffer::initPools() so the butter PSRAM arena exists — but still before
   // VIDEO::Init() (flash erase must precede the live HDMI DMA over XIP).
-#endif
   sdcard_set_led_blink(Config::sdLedBlink); // onboard LED blink on SD access
   VIDEO::loadCustomPalettes();
   Debug::log("setup: Config loaded");
@@ -724,11 +702,9 @@ void ESPectrum::setup() {
         else
           Config::romSet = Config::romSet48;
       }
-#if !PICO_RP2040
       else if (Config::arch == "ALF") {
         Config::romSet = "ALF";
       }
-#endif
       else if (Config::arch == "128K") {
         if (Config::pref_romSet_128 != "Last")
           Config::romSet = Config::pref_romSet_128;
@@ -796,27 +772,6 @@ void ESPectrum::setup() {
     MemESP::ram = new mem_desc_t[MEM_PG_CNT + 2];
     memcpy(MemESP::ram, temp, sizeof(mem_desc_t) * 8);
     Debug::log("setup: after memcpy: ram5=%p ram7=%p", MemESP::ram[5].direct(), MemESP::ram[7].direct());
-#if PICO_RP2040
-    // RP2040: page 0 goes to external backing to save heap for framebuffer.
-    // Actual data location at access time is chosen by psram_size() check in
-    // mem_desc_t ops, so label the page with its real backing for honest stats.
-    if (psram_size() >= MEM_PG_SZ) {
-        MemESP::ram[0].assign_vram(0, mem_type_t::PSRAM_SPI);
-        ++psram_pages;
-    } else {
-        MemESP::ram[0].assign_vram(0, mem_type_t::SWAP);
-        ++swap_pages;
-    }
-    MemESP::ram[1].assign_ram(new unsigned char[MEM_PG_SZ], 1, false);
-    MemESP::ram[2].assign_ram(new unsigned char[MEM_PG_SZ], 2, false);
-    MemESP::ram[3].assign_ram(new unsigned char[MEM_PG_SZ], 3, false);
-    ram_pages += 3;
-    // pages 4 and 6 — assign_ram falls back to butter/PSRAM/swap when heap
-    // is below MEM_REMAIN (reserved for framebuffer). 5 and 7 are static
-    // SRAM (pages57). On RP2040 the static pages46 buffer doesn't exist.
-    assign_ram(4);
-    assign_ram(6);
-#else
     // RP2350: pages 0-3 pre-bound to static `pages0123`, pages 4,6 to
     // `pages46`, pages 5,7 to `pages57` (MemESP.cpp). Skip assign_ram so we
     // don't overwrite the static buffers. Pages 5,7 historically not
@@ -831,7 +786,6 @@ void ESPectrum::setup() {
     MemESP::ram[1].assign_ram(MemESP::ram[1].direct(), 1, false);
     MemESP::ram[2].assign_ram(MemESP::ram[2].direct(), 2, false);
     MemESP::ram[3].assign_ram(MemESP::ram[3].direct(), 3, false);
-#endif
     Debug::log("setup: ext_ram: pages 0-7 done, freeHeap=%u", getFreeHeap());
     for (size_t i = 8; i < (MEM_PG_CNT + 2); ++i) {
       assign_ram(i);
@@ -841,29 +795,10 @@ void ESPectrum::setup() {
                (int)((uint8_t*)MemESP::ram[7].direct() - (uint8_t*)MemESP::ram[5].direct()));
   } else {
     Debug::log("setup: no ext_ram path, freeHeap=%u", getFreeHeap());
-#if PICO_RP2350
     // RP2350: pages 0-3 pre-bound to static `pages0123`, pages 4,6 to
     // `pages46` (MemESP.cpp). Pages 5,7 historically not counted.
     ram_pages += 4;
     ram_pages += 2;
-#else
-    // RP2040: page 0 not supported without virtual memory; pages 1-3 essential.
-    MemESP::ram[1].assign_ram(new unsigned char[MEM_PG_SZ], 1, false);
-    MemESP::ram[2].assign_ram(new unsigned char[MEM_PG_SZ], 2, false);
-    MemESP::ram[3].assign_ram(new unsigned char[MEM_PG_SZ], 3, false);
-    ram_pages += 3;
-    // Pages 4,6 only if enough heap remains for framebuffer (MEM_REMAIN).
-    // No ext_ram and 16col mode is disabled on RP2040, so if heap is too
-    // tight these pages stay unbacked (machine effectively 48K).
-    if (getFreeHeap() >= MEM_PG_SZ + MEM_REMAIN) {
-        MemESP::ram[4].assign_ram(new unsigned char[MEM_PG_SZ], 4, false);
-        ++ram_pages;
-    }
-    if (getFreeHeap() >= MEM_PG_SZ + MEM_REMAIN) {
-        MemESP::ram[6].assign_ram(new unsigned char[MEM_PG_SZ], 6, false);
-        ++ram_pages;
-    }
-#endif
     Debug::log("setup: no ext_ram: pages done, freeHeap=%u", getFreeHeap());
   }
   // Initialise every SRAM/butter-backed ZX RAM page to a defined state (0).
@@ -950,7 +885,6 @@ void ESPectrum::setup() {
 
   ///    if (Config::slog_on) showMemInfo("RAM Initialized");
 
-#if !PICO_RP2040
   // Always init DivMMC (load ROM) so it's ready if user enables from OSD later
   Debug::log2SD("setup: DivMMC::init begin, freeHeap=%u", (unsigned)getFreeHeap());
   DivMMC::init();
@@ -969,7 +903,6 @@ void ESPectrum::setup() {
     Debug::log2SD("setup: DivMMC::zc_init");
     DivMMC::zc_init();
   }
-#endif
   // Tiered buffer pools: carve PSRAM/SD-swap arenas from whatever the existing
   // consumers above (MemESP/Profi pages, DivMMC) have NOT claimed, reserving GS's
   // sample-RAM region via GS::configuredRamBytes(). Must run after those so the
@@ -989,7 +922,6 @@ void ESPectrum::setup() {
   }
 #endif
 
-#if !PICO_RP2040
   // GM.DLS MIDI bank: load into butter PSRAM (preferred) or provision the flash
   // partition from SD. MUST be here — AFTER initPools() (the PSRAM arena is now
   // final) and BEFORE VIDEO::Init(): a flash erase disables XIP for the whole QMI
@@ -997,7 +929,6 @@ void ESPectrum::setup() {
   // XIP-PSRAM it would stall the bus and hang. Still single core (core1 launches
   // later in main()). No-op unless GM.DLS mode (Config::midi==4) is selected.
   if (FileUtils::fsMount) MidiSynth::provisionAtBoot();
-#endif
 
   //=======================================================================================
   // VIDEO
@@ -1008,7 +939,7 @@ void ESPectrum::setup() {
     extern uint8_t linkVGA01;
     extern uint8_t video_driver;
     if (video_driver == 0) {
-        #if defined(ZERO) || defined(ZERO2) || defined(PICO_DV)
+        #if defined(ZERO2) || defined(PICO_DV)
             SELECT_VGA = linkVGA01 == 0x1F;
         #else
             SELECT_VGA = (linkVGA01 == 0) || (linkVGA01 == 0x1F);
@@ -1036,10 +967,9 @@ void ESPectrum::setup() {
   //=======================================================================================
   // Set samples per frame and AY_emu flag depending on arch
     AY_emu = Config::AY48;
-#if !PICO_RP2040
     SAA_emu = Config::SAA1099;
     Midi::enabled = Config::midi;
-#if !PICO_RP2040 && defined(MIDI_TX_PIN)
+#if defined(MIDI_TX_PIN)
     // Yield the MIDI TX pin to ZiFi when it owns it (boot-time, after Config).
     if (BoardPins::zifiOwnsPin(MIDI_TX_PIN)) Midi::enabled = 0;
 #endif
@@ -1059,7 +989,6 @@ void ESPectrum::setup() {
     ZiFi::enabled = Config::zifi_enabled && Config::wifi_enabled && Config::arch != "Profi";
     if (ZiFi::enabled)
         ZiFi::init();
-#endif
 
   if (Config::arch == "48K" || Config::arch == "Profi") {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
@@ -1096,9 +1025,7 @@ void ESPectrum::setup() {
 
   if (Config::tape_player) {
     AY_emu = false; // Disable AY emulation if tape player mode is set
-#if !PICO_RP2040
     SAA_emu = false;
-#endif
     ESPectrum::aud_volume = ESP_VOLUME_MAX;
   } else
     ESPectrum::aud_volume = Config::aud_volume;
@@ -1122,15 +1049,10 @@ void ESPectrum::setup() {
   // tape_player mode disables AY/SAA emulation regardless of Config (see below).
   Debug::log2SD("setup: Subsystems::request begin tape_player=%d turbo=%d covox=%d SAA=%d midi=%d freeHeap=%u",
                 (int)Config::tape_player, (int)Config::turbosound, (int)Config::covox,
-#if !PICO_RP2040
                 (int)Config::SAA1099, (int)Config::midi,
-#else
-                0, 0,
-#endif
                 (unsigned)getFreeHeap());
   TurboSubsys::request(!Config::tape_player && Config::turbosound != 0);
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
-#if !PICO_RP2040
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   MidiSubsys::request(Config::midi != 0);
@@ -1138,7 +1060,6 @@ void ESPectrum::setup() {
   Mb02Subsys::syncFromState();
   DivMmcSubsys::syncFromState();
   IdeSubsys::syncFromState();   // IDE::init() already ran above
-#endif
   Debug::log2SD("setup: Subsystems::applyPending begin, freeHeap=%u", (unsigned)getFreeHeap());
   Subsystems::applyPending();
   Debug::log2SD("setup: Subsystems::applyPending done, freeHeap=%u", (unsigned)getFreeHeap());
@@ -1170,12 +1091,10 @@ void ESPectrum::setup() {
   // Init disk controller
   Debug::log("setup: WD1793 reset begin");
   Debug::log2SD("setup: WD1793 reset begin");
-#if !PICO_RP2040
   // Primary Betadisk drive always needs its track buffer. The MB-02 drive's
   // buffer is allocated/freed on demand via Mb02Subsys (saves ~12.5 KB SRAM
   // while MB-02 is disabled, which is the default).
   rvmWD1793AllocTrackBuf(&fdd);
-#endif
   rvmWD1793Reset(&fdd);
   Debug::log("setup: WD1793 reset done");
   Debug::log2SD("setup: WD1793 reset done");
@@ -1186,13 +1105,11 @@ void ESPectrum::setup() {
   CPU::reset();
   VIDEO::Reset(); // Re-run after CPU::reset() so Z80Ops flags are correct
 
-#if !PICO_RP2040
   // KR580VI53 (8253 PIT) — reset to silent state
   if (Z80Ops::isByte && audioBufferPIT) {
     memset(audioBufferPIT, 0, ESP_AUDIO_SAMPLES_PENTAGON);
     memset(Ports::pitChannels, 0, sizeof(Ports::pitChannels));
   }
-#endif
 
   Debug::log("setup: CPU reset done");
   Debug::log2SD("setup: CPU reset done");
@@ -1204,14 +1121,12 @@ void ESPectrum::setup() {
   Debug::log("setup: Config::loadDiskMounts done");
   Debug::log2SD("setup: Config::loadDiskMounts done, freeHeap=%u", (unsigned)getFreeHeap());
 
-#if !PICO_RP2040
   // Re-reset MB-02 after disk mounts so boot EPROM starts with disks already inserted
   if (MB02::enabled && mb02_fdd.disk[0]) {
     Debug::log2SD("setup: MB02::reset (post-mount)");
     MB02::reset();
     Z80::reset();
   }
-#endif
 
   // Profi first boot: run the full reset(0) path so the machine starts in the
   // SYS ROM (bank0) Service menu — identical to the F11 hard-reset / Alt-F11
@@ -1271,7 +1186,6 @@ void ESPectrum::reset(uint8_t romInUse) {
   else if (Config::joystick == JOY_FULLER)
     Ports::port[0x7f] = 0xff; // Fuller
   Ports::portAFF7 = 0;
-#if !PICO_RP2040
   // If DS80 packed-pair HDMI mode was active before reset, disable it before
   // clearing DFFD — otherwise HDMI ISR keeps expanding bytes as pairs and the
   // normal-mode framebuffer renders as vertical scanline garbage.
@@ -1290,14 +1204,13 @@ void ESPectrum::reset(uint8_t romInUse) {
     }
     Debug::log("[RESET] DS80 off + FB cleared");
   }
-#endif
   Ports::portDFFD = 0;
   Ports::serialMouseReset();
   // Profi SYSEN: boot into SYS ROM (bank0) with trdos=true to protect page0
   ESPectrum::trdos = (Config::arch == "Profi" && romInUse == 0);
 
   Debug::log("[reset] arch=%s romInUse=%d trdos=%d", Config::arch.c_str(), romInUse, (int)ESPectrum::trdos);
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
   // g_fdcCmdCount gates the [WR→DIR]/[WR→RSTVEC]/[WR→CBIOS] write-count caps
   // in MemESP.h (only trace once real disk activity starts, skipping the
   // SYS-ROM self-test's memtest/buffer-clear noise). It's a plain static, so
@@ -1339,9 +1252,7 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   // Init disk controller
   rvmWD1793Reset(&fdd);
-#if !PICO_RP2040
   if (MB02::enabled) MB02::reset();
-#endif
 #ifdef USE_GS
   // Without this, GS-Z80 keeps running (still streaming previous module's
   // samples from PSRAM) when ZX side reboots — leftover state collides with
@@ -1365,23 +1276,19 @@ void ESPectrum::reset(uint8_t romInUse) {
   if (audioBufferCovoxL) memset(audioBufferCovoxL, 0, 2 * ESP_AUDIO_SAMPLES_PENTAGON); // L+R halves
   memset(chip0.SamplebufAY_L, 0, sizeof(chip0.SamplebufAY_L));
   if (chip1) memset(chip1->SamplebufAY_R, 0, sizeof(chip1->SamplebufAY_R));
-#if !PICO_RP2040
   if (saaChip) {
     memset(saaChip->SamplebufSAA_L, 0, sizeof(saaChip->SamplebufSAA_L));
     memset(saaChip->SamplebufSAA_R, 0, sizeof(saaChip->SamplebufSAA_R));
   }
-#endif
   lastCovoxVal = lastCovoxValR = lastaudioBit = 0;
   memset(Ports::sndriveLatch, 0, sizeof(Ports::sndriveLatch));
   Ports::sndriveUsed = 0;
 
   AY_emu = Config::AY48;
-#if !PICO_RP2040
     SAA_emu = Config::SAA1099;
     Midi::enabled = Config::midi;
     if (Midi::enabled) Midi::init();
     if (Config::dma_mode) Z80DMA::reset();
-#endif
 
   // Set samples per frame and AY_emu flag depending on arch
   // Profi shares the 48K frame timing (69888 T / 624 samples) — it MUST take the
@@ -1415,31 +1322,25 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   init_sound();
   pcm_setup(Audio_freq);
-#if !PICO_RP2040
   // A reset re-runs init_sound()/pcm_setup(), which can re-claim the shared audio
   // output pins (GP26/27 on MURM1_P2). If a live ESP/WiFi link is using them for
   // its UART, re-assert ownership so WiFi survives a machine reset (F11) instead of
   // dying until a full reboot.
   if (ZiFi::linkUp()) ZiFi::reclaimPins();
-#endif
 
   if (Config::tape_player) {
     AY_emu = false; // Disable AY emulation if tape player mode is set
-#if !PICO_RP2040
     SAA_emu = false;
-#endif
   }
 
   // Reconfigure optional subsystems against current Config and apply
   // synchronously here (we're outside the main loop's frame boundary).
   TurboSubsys::request(!Config::tape_player && Config::turbosound != 0);
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
-#if !PICO_RP2040
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   MidiSubsys::request(Config::midi != 0);
   DmaSubsys::request(Config::dma_mode != 0);
-#endif
   Subsystems::applyPending();
 
   // Reset AY emulation
@@ -1454,7 +1355,6 @@ void ESPectrum::reset(uint8_t romInUse) {
     chip1->reset();
   }
 
-#if !PICO_RP2040
   // Reset SAA1099 emulation
   if (saaChip) {
     saaChip->init();
@@ -1466,19 +1366,16 @@ void ESPectrum::reset(uint8_t romInUse) {
   // when F11 is pressed keep ringing. reset() = all-notes-off for the active engine.
   if (Midi::enabled == 3)      SoftSynth::reset();
   else if (Midi::enabled == 4) MidiSynth::reset();
-#endif
 
   CPU::reset();
 
   VIDEO::Reset();
 
-#if !PICO_RP2040
   // KR580VI53 (8253 PIT) — reset to silent state
   if (Z80Ops::isByte && audioBufferPIT) {
     memset(audioBufferPIT, 0, ESP_AUDIO_SAMPLES_PENTAGON);
     memset(Ports::pitChannels, 0, sizeof(Ports::pitChannels));
   }
-#endif
 
   // Re-mount the remembered tape (reset() wiped it above) so a tape survives an
   // F11 reset like a mounted disk does. No-op if no tape is remembered.
@@ -1523,7 +1420,6 @@ fabgl::VirtualKey ESPectrum::VK_ESPECTRUM_FIRE2 = fabgl::VK_NONE;
 fabgl::VirtualKey ESPectrum::VK_ESPECTRUM_TAB = fabgl::VK_TAB;
 fabgl::VirtualKey ESPectrum::VK_ESPECTRUM_GRAVEACCENT = fabgl::VK_GRAVEACCENT;
 
-#if !PICO_RP2040
 // Map a fabgl VirtualKey to a PQ-DOS serial-keyboard scancode. Table verified
 // against the 0.41h1 BIOS translate routine (ROM 0x2363: `LD HL,0x2429` —
 // 0x2429 holds 'B'): base layout is "BHY65TGVNJU74RFCMKI83EDX?LO92WSZ <cr>P01QA?./"
@@ -1579,7 +1475,6 @@ static uint8_t pqdosScancode(fabgl::VirtualKey vk) {
     default: return 0xFF;
   }
 }
-#endif
 
 IRAM_ATTR void ESPectrum::processKeyboard() {
   static uint8_t PS2cols[8] = {0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf};
@@ -1606,7 +1501,6 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
     if (r) {
       KeytoESP = NextKey.vk;
       Kdown = NextKey.down;
-#if !PICO_RP2040
       // PQ-DOS serial keyboard: feed key-downs to the #F3/#D3 queue (Profi only).
       // Harmless on non-PQDOS software — those ports are ignored unless polled.
 #if FDD_PORT_TRACE
@@ -1644,7 +1538,6 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           return;
         }
       }
-#endif
       // The rest of the Karabas-Pro "Menu"-key combos from the user manual.
       // Unlike Menu+F1..F4 they map onto machine-independent emulator settings,
       // so they work on any arch. osdCenteredMsg blocks for the toast duration —
@@ -1748,7 +1641,6 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
         // In Profi extended keyboard mode, F-keys and nav-keys pass to Z80 matrix
         // instead of opening OSD. PAUSE always opens OSD (escape hatch).
         // GRAVEACCENT/TILDE still go to OSD (for Alt+` toggle and max-speed hotkey).
-#if !PICO_RP2040
         bool passToZ80 = Z80Ops::isProfi && Config::profi_ext_keys
             && KeytoESP != fabgl::VK_PAUSE
             && KeytoESP != fabgl::VK_TILDE
@@ -1760,7 +1652,6 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
             && KeytoESP != fabgl::VK_VOLUMEDOWN
             && KeytoESP != fabgl::VK_VOLUMEMUTE;
         if (!passToZ80)
-#endif
         {
           int64_t osd_start = esp_timer_get_time();
           OSD::do_OSD(
@@ -1779,7 +1670,7 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           // Repaint the frozen frame and put the PAUSE box back on top.
           if (CPU::paused) {
             VIDEO::RedrawPausedFrame();
-            OSD::osdCenteredMsg(OSD_PAUSE[Config::lang], LEVEL_INFO, 0);
+            OSD::osdCenteredMsg(OSD_PAUSE, LEVEL_INFO, 0);
           }
           ESPectrum::ts_start += esp_timer_get_time() - osd_start;
           return;
@@ -2029,7 +1920,6 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
       bitWrite(PS2cols[7], 4,
                (!Kbd->isVKDown(fabgl::VK_B)) & (!Kbd->isVKDown(fabgl::VK_b)));
 
-#if !PICO_RP2040
       // ── Profi extended keyboard ─────────────────────────────────────────
       // Active when arch=Profi and extended keyboard mode is on.
       //
@@ -2222,7 +2112,6 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
         // Not in extended mode — release all extended bits
         for (int i = 0; i < 8; i++) Ports::extPort[i] = 0xFF;
       }
-#endif
     }
   }
   if (r) {
@@ -2290,7 +2179,6 @@ __not_in_flash("audio") void ESPectrum::AYGetSample() {
   }
 }
 
-#if !PICO_RP2040
 __not_in_flash("audio") void ESPectrum::SAAGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider; // SAA counter = 8MHz/256 = 31.25kHz, same rate as AY
   if (multiplicator) audbufpos >>= multiplicator;
@@ -2309,15 +2197,12 @@ __not_in_flash("audio") void ESPectrum::PITGetSample() {
     audbufcntPIT = audbufpos;
   }
 }
-#endif
 
 void ESPectrum::FDDGenSound() {
     // MB-02+ and Betadisk are mutually exclusive, so the active controller's
     // click and LED state feeds the shared fddSound generator.
     rvmWD1793 *ctrl = &fdd;
-#if !PICO_RP2040
     if (MB02::enabled) ctrl = &mb02_fdd;
-#endif
     uint8_t clicks = ctrl->fdd_clicks;
     ctrl->fdd_clicks = 0;
     if (clicks > 0) {
@@ -2397,7 +2282,7 @@ bool __not_in_flash_func(ESPectrum::AY_timer_callback)(repeating_timer_t *rt) {
 
 uint8_t debug_number = 0;
 
-#if !PICO_RP2040 && defined(VGA_HDMI)
+#if defined(VGA_HDMI)
 extern "C" int hdmi_audio_dbg_stage(void);
 extern "C" void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, uint32_t *s_cons);
 #endif
@@ -2474,7 +2359,7 @@ void ESPectrum::loop() {
           }
 
           if (!promptShown && el >= FR_PROMPT_DELAY_US) {
-              OSD::osdCenteredMsg(MSG_FACTORY_RESET_HOLD[Config::lang], LEVEL_INFO, 0);
+              OSD::osdCenteredMsg(MSG_FACTORY_RESET_HOLD, LEVEL_INFO, 0);
               promptShown = true;      // persistent draw; emulation repaint erases it
           }
 
@@ -2484,8 +2369,8 @@ void ESPectrum::loop() {
       }
       if (rHeld) {
           Debug::log("factory-reset: R held -> confirm");
-          if (OSD::msgDialog(MSG_FACTORY_RESET_TITLE[Config::lang],
-                             MSG_FACTORY_RESET_Q[Config::lang]) == DLG_YES) {
+          if (OSD::msgDialog(MSG_FACTORY_RESET_TITLE,
+                             MSG_FACTORY_RESET_Q) == DLG_YES) {
               bool ok = false;
               if (FileUtils::fsMount) {
                   FIL* flag = fopen2(SKIP_DEFAULT_FLAG, FA_WRITE | FA_CREATE_ALWAYS);
@@ -2498,8 +2383,8 @@ void ESPectrum::loop() {
           Debug::log("factory-reset: declined");
       } else if (mHeld) {
           Debug::log("my-default-reset: M held -> confirm");
-          if (OSD::msgDialog(MSG_MYDEFAULT_RESET_TITLE[Config::lang],
-                             MSG_MYDEFAULT_RESET_Q[Config::lang]) == DLG_YES) {
+          if (OSD::msgDialog(MSG_MYDEFAULT_RESET_TITLE,
+                             MSG_MYDEFAULT_RESET_Q) == DLG_YES) {
               bool ok = false;
               if (FileUtils::fsMount) ok = (f_unlink(STORAGE_NVS) == FR_OK);
               Debug::log("my-default-reset: unlink %s -> reboot", ok ? "OK" : "FAIL");
@@ -2511,7 +2396,6 @@ void ESPectrum::loop() {
       }
   }
 
-#if !PICO_RP2040
   // Profi DS80 (hires) on SPI-PSRAM-only boards (no fast butter/QSPI-XIP PSRAM)
   // loads slowly through the slow SPI bus.  When DS80 mode turns on we want a
   // "loading" notice over the "PROFI PLUS" startup screen — but it has to wait
@@ -2525,7 +2409,6 @@ void ESPectrum::loop() {
   // Delay from DS80-on to showing the box: long enough for the startup screen to
   // be drawn.  Tunable — raise if the box still lands before the logo appears.
   const uint64_t PROFI_DS80_MSG_DELAY_US = 2500000ull;
-#endif
 
   for (;;) {
     if (debug_number != 0) {
@@ -2550,10 +2433,8 @@ void ESPectrum::loop() {
     audbufcntAY = 0;
     audbufcntCovox = 0;
 
-#if !PICO_RP2040
     audbufcntSAA = 0;
     audbufcntPIT = 0;
-#endif
 
     // Frame boundary: safe to apply pending subsystem (de)allocations.
     // Audio producers and the mixer are quiescent here.
@@ -2566,7 +2447,6 @@ void ESPectrum::loop() {
 
     CPU::loop();
 
-#if !PICO_RP2040
     if (profi_spi_boot) {
       // DS80 turning on (rising edge) schedules the notice; we show it only after
       // PROFI_DS80_MSG_DELAY_US so the startup screen is painted behind it (the box
@@ -2588,7 +2468,7 @@ void ESPectrum::loop() {
           VIDEO::profi_ds80_osd_active = true;
           VIDEO::applyProfiOSDPalette();
         }
-        //OSD::osdCenteredMsg(OSD_PROFI_LOADING[Config::lang], LEVEL_WARN, 2500);
+        //OSD::osdCenteredMsg(OSD_PROFI_LOADING, LEVEL_WARN, 2500);
         if (ds80) {
           VIDEO::profi_ds80_osd_active = false;
           if (profi_ds80_active) {
@@ -2636,7 +2516,6 @@ void ESPectrum::loop() {
             ZiFiAT::autoSyncPoll(); // no-op unless autoSyncBegin actually ran
         }
     }
-#endif
 
     // SD automount: when the machine booted with no card (fsMount==false, and no
     // USB stick took over as root), probe periodically for one being inserted.
@@ -2653,7 +2532,7 @@ void ESPectrum::loop() {
             if (FileUtils::automountSD()) {
                 Config::loadDiskMounts();   // restore remembered disk images
                 Tape::LoadRemembered();     // and the remembered tape
-                OSD::osdCenteredMsg(MSG_SD_AUTOMOUNT[Config::lang], LEVEL_INFO, 1500);
+                OSD::osdCenteredMsg(MSG_SD_AUTOMOUNT, LEVEL_INFO, 1500);
             }
         }
     }
@@ -2671,10 +2550,8 @@ void ESPectrum::loop() {
     faudbufcntAY = audbufcntAY;
     faudbufcntCovox = audbufcntCovox;
 
-#if !PICO_RP2040
     faudbufcntPIT = audbufcntPIT;
     faudbufcntSAA = audbufcntSAA;
-#endif
 
     if (!CPU::paused) {
 #if LOAD_WAV_PIO
@@ -2744,25 +2621,20 @@ void ESPectrum::loop() {
             *sound_buf_r++ = lastCovoxValR;
           }
         }
-#if !PICO_RP2040
         // KR580VI53 (8253 PIT) — complete buffer for remaining frame
         if (PitSubsys::enabled && Z80Ops::isByte && faudbufcntPIT < samplesPerFrame) {
           Ports::pitGenSound(audioBufferPIT + faudbufcntPIT,
                              samplesPerFrame - faudbufcntPIT);
         }
-#endif
         {
             bool fddSndEnabled = (Config::trdosSoundLed & 2) != 0;
-#if !PICO_RP2040
             if (MB02::enabled) fddSndEnabled = (Config::mb02SoundLed & 2) != 0;
-#endif
             if (fddSndEnabled) FDDGenSound();
         }
         if (AY_emu && faudbufcntAY < samplesPerFrame) {
             if(Config::turbosound != 0 || AySound::selected_chip == 0) chip0.gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
             if((Config::turbosound != 0 || AySound::selected_chip == 1) && chip1) chip1->gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
         }
-#if !PICO_RP2040
         if (SaaSubsys::enabled && saaChip && faudbufcntSAA < samplesPerFrame)
         {
           if (Tape::tapeStatus == TAPE_LOADING) {
@@ -2779,27 +2651,20 @@ void ESPectrum::loop() {
           else if (Midi::enabled == 4)
             MidiSynth::gen_sound(audioBufferMIDI_L, audioBufferMIDI_R, samplesPerFrame);
         }
-#endif
         // Hoist frame-invariant source flags outside the mix loop
         bool mix_chip0 = AY_emu && (Config::turbosound != 0 || AySound::selected_chip == 0);
         bool mix_chip1 = AY_emu && (Config::turbosound != 0 || AySound::selected_chip == 1) && TurboSubsys::enabled && chip1;
         bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
-#if !PICO_RP2040
         bool mix_saa = SaaSubsys::enabled && saaChip;
         bool mix_midi = MidiSubsys::enabled && (Midi::enabled == 3 || Midi::enabled == 4) && audioBufferMIDI_L && audioBufferMIDI_R;
         bool mix_pit = PitSubsys::enabled && audioBufferPIT;
-#endif
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
-#if !PICO_RP2040
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;
-#endif
         bool mix_fdd = fddSndEnabledMix && (fddSound.click_count > 0 || fddSound.motor_noise);
         for (int i = 0; i < samplesPerFrame; i++)
         {
           int beeper_L = overSamplebuf[i];
-#if !PICO_RP2040
           if (mix_pit) beeper_L += audioBufferPIT[i];
-#endif
           if (mix_fdd) beeper_L += getFDDSample(i);
           int beeper_R = beeper_L;
           if (mix_covox) {
@@ -2814,7 +2679,6 @@ void ESPectrum::loop() {
             beeper_L += chip1->SamplebufAY_L[i];
             beeper_R += chip1->SamplebufAY_R[i];
           }
-#if !PICO_RP2040
           if (mix_saa) {
             beeper_L += saaChip->SamplebufSAA_L[i];
             beeper_R += saaChip->SamplebufSAA_R[i];
@@ -2825,7 +2689,6 @@ void ESPectrum::loop() {
             beeper_L += audioBufferMIDI_L[i];
             beeper_R += audioBufferMIDI_R[i];
           }
-#endif
           // GS is mixed live in the audio timer IRQ (pcm_call_inner),
           // not here — burst-sampling on core0 would time-compress it.
           audioBuffer_L[i] = beeper_L > 255 ? 255 : (beeper_L < 0 ? 0 : beeper_L);
@@ -2894,7 +2757,6 @@ void ESPectrum::loop() {
                    "TST: %05d / IDL: %05d ", CPU::tstates_active,
                    (int)(ESPectrum::idle));
 
-#if !PICO_RP2040
           if (MB02::enabled) {
             snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2),
                      "MB02 TR:#%02X/SEC:#%02X/S:%d ",
@@ -2902,7 +2764,6 @@ void ESPectrum::loop() {
                      ESPectrum::mb02_fdd.side);
             OSD::drawStats();
           } else
-#endif
           {
             snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2),
                     "ST:%-6sTR:#%02X/SEC:#%02X ",
@@ -2916,7 +2777,6 @@ void ESPectrum::loop() {
         VIDEO::framecnt = 0;
       }
     }
-#if !PICO_RP2040
     // DS80: the stats overlay (F8) is only refreshed every 10 frames above, but the
     // DS80 scan-time renderer + per-frame border fill repaint the whole framebuffer
     // every frame — so the stats text would show for 1 frame then vanish for 9
@@ -2929,20 +2789,13 @@ void ESPectrum::loop() {
     // erases it after a single frame. Keep it pinned while it's showing.
     if (profi_ds80_active && (VIDEO::OSD & 0x04))
       OSD::drawVolumeBox();
-#endif
     // Flashing flag change (disabled when ULA+ palette is active)
-#if !PICO_RP2040
     if (!(VIDEO::flash_ctr++ & 0x0f) && !VIDEO::ulaplus_enabled)
-#else
-    if (!(VIDEO::flash_ctr++ & 0x0f))
-#endif
       VIDEO::flashing ^= 0x80;
 
     // Draw fdd led indicator in top-right corner
     bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
-#if !PICO_RP2040
         && !DivMMC::enabled
-#endif
         ;
     // Indicator sits at x=312 — inside the DS80 right border band.  The "off" state
     // erases it to the surrounding border colour so no square remains.
@@ -2951,9 +2804,7 @@ void ESPectrum::loop() {
     //     per ProfiRenderer).  The Graphics remap maps a ZX index i → Palette[i&0xF],
     //     so pass (~borderColor)&7 to land on the same byte and blend cleanly.
     uint8_t led_off_col = zxColor(VIDEO::borderColor, 0);
-#if !PICO_RP2040
     if (profi_ds80_active) led_off_col = (uint8_t)(~VIDEO::borderColor) & 0x07;
-#endif
     // Corner FDD lamp. ON/OFF follows rvmWD1793::fdd_active_decay — genuine
     // head-load/header-search/data-transfer activity, decremented once per frame by
     // LED::decay() (auto-clears; unlike the old rvmWD1793::led it can't stick on, and
@@ -2961,9 +2812,7 @@ void ESPectrum::loop() {
     // with no real disk access — see wd1793.h). COLOUR by the actual WD1793 command —
     // write-sector/track → red, else (read/seek) → blue.
     rvmWD1793 *fctrl = &fdd;
-#if !PICO_RP2040
     if (MB02::enabled) fctrl = &mb02_fdd;
-#endif
     bool fdd_active = fctrl->fdd_active_decay != 0;
     bool fdd_write  = ((fctrl->command & 0xE0) == 0xA0) ||   // Write Sector (0xA_/0xB_)
                       ((fctrl->command & 0xF0) == 0xF0);     // Write Track  (0xF_)
@@ -2974,11 +2823,9 @@ void ESPectrum::loop() {
     uint8_t fdd_fg = !fdd_active ? led_off_col
                    : fdd_write   ? zxColor(2, 1)             // red  — write
                                  : zxColor(1, 1);            // blue — read / seek
-#if !PICO_RP2040
     if (MB02::enabled && (Config::mb02SoundLed & 1)) {
         LED::drawGlyph(LED::FDD, 311, 2, fdd_fg, led_off_col);
     } else
-#endif
     if (hasFdd && (Config::trdosSoundLed & 1)) {
         LED::drawGlyph(LED::FDD, 311, 2, fdd_fg, led_off_col);
     }
@@ -3008,7 +2855,6 @@ void ESPectrum::loop() {
     }
 #endif
 
-#if !PICO_RP2040
     // Negative-IDL attribution (Profi): track the worst frame of every
     // 60-frame window and, when at least one frame overran the target, log a
     // breakdown of where its time went.  Counter deltas are robust to the
@@ -3110,7 +2956,6 @@ void ESPectrum::loop() {
       int64_t rem = target - (int64_t)(time_us_64() - ts_start);
       idle = rem > 0 ? rem : 0;
     }
-#endif
 
     totalsecondsnodelay += elapsed;
 
@@ -3123,28 +2968,22 @@ void ESPectrum::loop() {
       // the GPIO UART transport.
       if (Config::v_sync_enabled) {
         for (;;) {
-#if !PICO_RP2040
           if (ZiFi::cdcNicActive) ZiFi::cdcPump();
-#endif
           if (v_sync) {
             v_sync = false;
             break;
           }
         }
-#if !PICO_RP2040
         // Blanking just started (v_sync fires at scanout line v_active): apply
         // any pending Profi DS80 palette refresh now, while the scanout DMA is
         // off-screen — tear-free palette animation (see profiPaletteApplyPending).
         VIDEO::profiPaletteApplyPending();
-#endif
       } else {
         if (idle > 0) {
-#if !PICO_RP2040
           if (ZiFi::cdcNicActive) {
             int64_t e = (int64_t)time_us_64() + idle;
             while ((int64_t)time_us_64() < e) ZiFi::cdcPump();
           } else
-#endif
           {
             delayMicroseconds(idle);
           }

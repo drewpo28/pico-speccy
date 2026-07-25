@@ -4,6 +4,10 @@ bin
 build
 build-*
 build_*
+# ...but the multi-target build scripts are part of the project (see README)
+!build_all.sh
+!build_all.bat
+!build_all.ps1
 firmware
 drew.todo
 debug

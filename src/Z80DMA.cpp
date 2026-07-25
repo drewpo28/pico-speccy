@@ -7,7 +7,6 @@
 
 #include "Z80DMA.h"
 
-#if !PICO_RP2040
 
 #include <string.h>
 #include <stdlib.h>
@@ -702,4 +701,3 @@ IRAM_ATTR uint8_t Z80DMA::readPort() {
     return result;
 }
 
-#endif // !PICO_RP2040

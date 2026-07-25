@@ -4,7 +4,6 @@
 #include <string>
 #include <inttypes.h>
 
-#if !PICO_RP2040
 // Lazy ALF cartridge loader: serves a .rom/.bin cart from the SD card on demand,
 // the same way the WD1793 driver serves disk sectors. ALF cart ROM is only ever
 // visible in Z80 page 0 (one 16K window at a time) and is rebound only on a #5F
@@ -33,6 +32,5 @@ namespace AlfCart {
 // writebyte() can drop guest writes to it: ALF page 0 is always ROM, but the window
 // is heap SRAM (> 0x11000000) so the generic ROM-write drop would otherwise miss it.
 extern uint8_t* g_alfWindow;
-#endif
 
 #endif // AlfCart_h

@@ -19,7 +19,6 @@ namespace Subsystems {
     // Also called once during ESPectrum::setup() before the main loop starts.
     void applyPending();
 
-#if !PICO_RP2040
     // ── SRAM budget manager (RP2350) ───────────────────────────────────────────
     // The big optional features can't all fit in SRAM on a butter-less SPI-PSRAM
     // board (m1p2). Before enabling one, the OSD asks budgetCheck(): if it won't
@@ -57,7 +56,6 @@ namespace Subsystems {
     // GIGASCREEN_PREVFB_HEADROOM of total free heap. Called by VIDEO::ensurePrevFB
     // before the Buffer alloc so the memory policy stays here, not in Video.
     bool gigascreenPrevFBAffordable(size_t want);
-#endif
 }
 
 // Helper macro: each subsystem declares the same five static members.
@@ -74,7 +72,6 @@ SUBSYSTEM_DECL(TurboSubsys);   // AY chip1 (second AY for TurboSound)
 SUBSYSTEM_DECL(CovoxSubsys);   // 640 B audioBufferCovoxL
 SUBSYSTEM_DECL(PitSubsys);     // 640 B audioBufferPIT (Pentagon Byte 8253)
 
-#if !PICO_RP2040
 SUBSYSTEM_DECL(SaaSubsys);     // SAASound saaChip + sample buffers
 SUBSYSTEM_DECL(MidiSubsys);    // MIDI synth + 2x640 B L/R buffers
 SUBSYSTEM_DECL(DmaSubsys);     // Z80/zxnDMA per-scanline attr shadow (~7 KB heap)
@@ -124,7 +121,6 @@ struct IdeSubsys {
     static bool apply();
     static void syncFromState();
 };
-#endif
 
 #undef SUBSYSTEM_DECL
 

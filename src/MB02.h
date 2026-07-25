@@ -1,7 +1,6 @@
 #ifndef __MB02_H
 #define __MB02_H
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 #include <string>
@@ -50,5 +49,4 @@ private:
     static uint8_t* getPage(uint8_t page_idx);
 };
 
-#endif // !PICO_RP2040
 #endif // __MB02_H

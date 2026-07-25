@@ -95,9 +95,7 @@ typedef union {
 // drop under load. z80_run ≈ 916 B, z80_int ≈ 40 B — fits trivially in SRAM.
 // Z80_redcode.h checks #ifndef Z80_API, so defining it here takes precedence
 // and applies section(".time_critical.gs_z80") to all API functions.
-#if defined(PICO_RP2350)
 #   define Z80_API __attribute__((noinline, section(".time_critical.gs_z80")))
-#endif
 
 #define Z_MEMBER_OFFSET(type, member) ((zusize)offsetof(type, member))
 

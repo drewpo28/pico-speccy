@@ -1,6 +1,6 @@
 #include "Ftpd.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "ZiFiSock.h"
 #include "ZiFi.h"
@@ -415,7 +415,7 @@ static void handle(char* line) {
     else if (!strcmp(line, "ABOR")) reply(226, "No transfer in progress");
     else if (!strcmp(line, "CLNT")) reply(200, "Noted");
     else if (!strcmp(line, "ALLO")) reply(200, "OK");
-    else if (!strcmp(line, "STAT")) reply(211, "pico-spec FTP, active mode");
+    else if (!strcmp(line, "STAT")) reply(211, "pico-speccy FTP, active mode");
     else if (!strcmp(line, "HELP")) reply(214, "Anonymous FTP server");
     else if (!strcmp(line, "RETR")) doRetr(arg);
     else if (!strcmp(line, "STOR")) doStor(arg, false);
@@ -485,7 +485,7 @@ void Ftpd::poll() {
             // client never sees it and "can't connect". (With ZiFi tracing on, the Debug
             // log flood accidentally provided this delay — hence "works only with logs".)
             sleep_ms(150);
-            reply(220, "pico-spec FTP server ready");
+            reply(220, "pico-speccy FTP server ready");
         }
         return;
     }
@@ -509,4 +509,4 @@ void Ftpd::stop() {
     free(g_b); g_b = nullptr;   // release the ~4 KB scratch — server is fully idle now
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

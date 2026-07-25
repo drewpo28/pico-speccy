@@ -1,6 +1,5 @@
 #include "SoftSynth.h"
 
-#if !PICO_RP2040
 
 #include <string.h>
 #include "pico.h"
@@ -433,4 +432,3 @@ void __not_in_flash("softsynth") SoftSynth::gen_sound(uint8_t *buf_L, uint8_t *b
     }
 }
 
-#endif // !PICO_RP2040

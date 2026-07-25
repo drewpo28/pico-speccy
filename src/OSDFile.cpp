@@ -526,7 +526,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
         // Count dir items and calc hash
         elements = 0;
         ndirs = 0;
-        OSD::progressDialog(OSD_FILE_INDEXING[Config::lang], OSD_FILE_INDEXING_1[Config::lang], 0, 0);
+        OSD::progressDialog(OSD_FILE_INDEXING, OSD_FILE_INDEXING_1, 0, 0);
         res = f_opendir(&f_dir, fdir.c_str()) == FR_OK;
         if (res) {
         
@@ -566,7 +566,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                     filenames.push(string(2, DIR_MARKER) + "..");
                 }
                 if (f_opendir(&f_dir, fdir.c_str()) != FR_OK) break;
-                OSD::progressDialog(OSD_FILE_INDEXING[Config::lang], OSD_FILE_INDEXING_1[Config::lang], 5, 1);
+                OSD::progressDialog(OSD_FILE_INDEXING, OSD_FILE_INDEXING_1, 5, 1);
                 size_t f_idx = 0;
                 while (f_readdir(&f_dir, &fileInfo) == FR_OK && fileInfo.fname[0] != '\0') {
                     if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
@@ -583,8 +583,8 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                             }
                             ++f_idx;
                             OSD::progressDialog(
-                                OSD_FILE_INDEXING[Config::lang],
-                                OSD_FILE_INDEXING_1[Config::lang],
+                                OSD_FILE_INDEXING,
+                                OSD_FILE_INDEXING_1,
                                 f_idx * 95 / (ndirs + elements) + 5,
                                 1
                             );
@@ -594,7 +594,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                 filenames.sort();
             }
         }
-        OSD::progressDialog(OSD_FILE_INDEXING[Config::lang], OSD_FILE_INDEXING_1[Config::lang], 100, 2);
+        OSD::progressDialog(OSD_FILE_INDEXING, OSD_FILE_INDEXING_1, 100, 2);
         real_rows = ndirs + elements + 2; // Add 2 for title and status bar        
         virtual_rows = (real_rows > mf_rows ? mf_rows : real_rows);
         // printf("Real rows: %d; st_size: %d; Virtual rows: %d\n",real_rows,stat_buf.st_size,virtual_rows);
@@ -743,7 +743,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                             if (fname.size() < 4 || fname.substr(fname.size() - 4) != ".trd")
                                 fname += ".trd";
                             string fullpath = fdir + fname;
-                            OSD::progressDialog(OSD_FILE_CREATING_TRD[Config::lang], fname, 0, 0);
+                            OSD::progressDialog(OSD_FILE_CREATING_TRD, fname, 0, 0);
                             rvmWD1793CreateEmptyTRD(fullpath.c_str());
                             OSD::progressDialog("", "", 100, 1);
                             OSD::progressDialog("", "", 0, 2);
@@ -782,11 +782,11 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                         if (!filedir.empty() && !(isDir && filedir == "..")) {
                             string fullpath = fdir + filedir;
                             const char *dlgTitle = isDir
-                                ? OSD_FILE_DELETE_DIR_TITLE[Config::lang]
-                                : OSD_FILE_DELETE_TITLE[Config::lang];
+                                ? OSD_FILE_DELETE_DIR_TITLE
+                                : OSD_FILE_DELETE_TITLE;
                             if (OSD::msgDialog(dlgTitle, filedir) == DLG_YES) {
                                 if (isDir) {
-                                    OSD::progressDialog(OSD_FILE_DELETING[Config::lang], filedir, 0, 0);
+                                    OSD::progressDialog(OSD_FILE_DELETING, filedir, 0, 0);
                                     FileUtils::deleteDirRecursive(fullpath.c_str());
                                     OSD::progressDialog("", "", 100, 1);
                                     OSD::progressDialog("", "", 0, 2);
@@ -1121,7 +1121,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                 }
                 // Blink cursor in search field — redraw every tick, cursor blinks via fdCursorFlash
                 if ((++fdCursorFlash & 0x7) == 0) {
-                    const char *label = Config::lang ? "Busq: " : "Find: ";
+                    const char *label = "Find: ";
                     int labelLen = strlen(label);
                     int footerRow = mfrows + (Config::aspect_16_9 ? 0 : 1);
                     menuAt(footerRow, 1);
@@ -1478,7 +1478,7 @@ int OSD::fdChromeList(const vector<string>& rows, const string& title,
     return sel;
 }
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 // ─── Remote (FTP/SFTP) file browser ─────────────────────────────────────────
 // Bounded RAM for any directory size: each listing is streamed straight into a
 // sorted_files SD index (fixed 256-byte records, on-disk quicksort, dirs first),
@@ -1670,8 +1670,8 @@ static int rfd_scroll(const string& title, sorted_files& idx,
 // Volume helpers for the local pickers. When both the SD card and a USB stick
 // are present the pickers can cross between them ("USB:/..." paths; unprefixed
 // = SD). In usbRoot mode the stick IS the only volume — no switching.
-static const char *MSG_RFD_TO_USB[2] = { "[USB Drive]", "[Unidad USB]" };
-static const char *MSG_RFD_TO_SD[2]  = { "[SD Card]",   "[Tarjeta SD]" };
+#define MSG_RFD_TO_USB "[USB Drive]"
+#define MSG_RFD_TO_SD "[SD Card]"
 static bool rfd_on_usb(const string& p) { return p.compare(0, 4, "USB:") == 0; }
 static bool rfd_can_switch() { return UsbMsc::ready() && !FileUtils::usbRoot; }
 // One level up; stays at the volume root ("/" or "USB:/").
@@ -1708,10 +1708,10 @@ static string rfd_choose_folder(const string& start) {
             f_closedir(&dp);
         }
         idx.sort();
-        const char* synth[3] = { Config::lang ? "[Elegir esta carpeta]" : "[Select this folder]", "..", nullptr };
+        const char* synth[3] = { "[Select this folder]", "..", nullptr };
         int ns = 2;
         if (rfd_can_switch())
-            synth[ns++] = rfd_on_usb(cur) ? MSG_RFD_TO_SD[Config::lang] : MSG_RFD_TO_USB[Config::lang];
+            synth[ns++] = rfd_on_usb(cur) ? MSG_RFD_TO_SD : MSG_RFD_TO_USB;
         int sel = rfd_scroll(cur, idx, synth, ns);
         if (sel < 0)  { idx.unlink(); return ""; }   // cancel
         if (sel == 0) { idx.unlink(); return cur; }  // choose current
@@ -1755,7 +1755,7 @@ static string rfd_choose_file(const string& start) {
         const char* synth[2] = { "..", nullptr };
         int ns = 1;
         if (rfd_can_switch())
-            synth[ns++] = rfd_on_usb(cur) ? MSG_RFD_TO_SD[Config::lang] : MSG_RFD_TO_USB[Config::lang];
+            synth[ns++] = rfd_on_usb(cur) ? MSG_RFD_TO_SD : MSG_RFD_TO_USB;
         int sel = rfd_scroll(cur, idx, synth, ns);
         if (sel < 0)  { idx.unlink(); return ""; }   // cancel
         if (sel == 0) {                              // parent
@@ -1811,7 +1811,7 @@ static bool rfd_copy_tree(RemoteFs* fs, const std::string& destSd, int depth) {
             std::string fbase = fs->downloadBasename(nm);
             if (fbase.empty()) fbase = nm;
             std::string fdst = destSd + "/" + fbase;
-            rfd_xfer_title = MSG_NET_COPYING[Config::lang];
+            rfd_xfer_title = MSG_NET_COPYING;
             OSD::progressDialog(rfd_xfer_title, nm, 0, 0, fs->utf8Names());
             bool got = fs->get(nm, fdst, rfd_progress);
             OSD::progressDialog("", "", 0, 2);
@@ -1833,7 +1833,7 @@ static bool rfd_launch_tmp(string path) {
     if (ext == "zip") {
         string inner = ZipExtract::extract(path, DISK_ALLFILE); // → /tmp/...
         if (inner.empty() || inner == "\x1b") {
-            OSD::osdCenteredMsg(OSD_ZIP_ERR[Config::lang], LEVEL_WARN);
+            OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN);
             return false;
         }
         path = inner;
@@ -1879,12 +1879,10 @@ static bool rfd_launch_tmp(string path) {
         OSD::bootTrdos();              // cold-boot into TR-DOS so the disk auto-runs
         return true;
     }
-#if !PICO_RP2040
     if (ext == "rom" || ext == "bin") {
         return OSD::loadAlfCart(path); // ALF cartridge — lazy-mount from SD + switch into ALF
     }
-#endif
-    OSD::osdCenteredMsg(string(MSG_NET_UNSUPPORTED[Config::lang]) + " (." + ext + ")",
+    OSD::osdCenteredMsg(string(MSG_NET_UNSUPPORTED) + " (." + ext + ")",
                         LEVEL_WARN, 2200);
     return false;
 }
@@ -1901,11 +1899,9 @@ static void rfd_release_tmp(const string& tmpp) {
     if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
         FileUtils::TAP_Path + Tape::tapeFileName == tmpp)
         Tape::Init();   // closes the open tape FIL
-#if !PICO_RP2040
     // An ALF cart mounted lazily from this temp path holds the FIL open; release it
     // so the next quick-start can truncate/rewrite the same /tmp/_run.<ext> file.
     if (AlfCart::active() && AlfCart::path() == tmpp) AlfCart::unmount();
-#endif
 }
 
 // ── Listing-index cache (Remote/Web) ─────────────────────────────────────────
@@ -1959,7 +1955,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
     // Read-only sources (online catalog) hide upload/delete and use the WEB sidebar.
     const bool ro = fs->readOnly();
     const int  side = ro ? FD_SIDE_WEB : FD_SIDE_REMOTE;
-    const string title = MENU_ALL_TITLE[Config::lang];   // same "Open File" window as SD
+    const string title = MENU_ALL_TITLE;   // same "Open File" window as SD
 
     // Cursor memory (like the SD browser): curFocus/curBegin persist across re-lists of
     // the same folder; a small stack saves/restores the position when descending/ascending.
@@ -1993,14 +1989,14 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
             reuse = (fs->revalidate("", stored, fresh) == RemoteFs::CACHE_FRESH);
         }
         if (!reuse) {
-            OSD::progressDialog(MSG_NET_CONNECTING[Config::lang], dispPath, 0, 0, fs->utf8Names());
+            OSD::progressDialog(MSG_NET_CONNECTING, dispPath, 0, 0, fs->utf8Names());
             filenames.unlink();          // truncate to empty (also (re)creates the file)
             // ".." row (double DIR_MARKER → sorts/renders first), like the SD browser:
             // select it to go up a level, and from the top it exits toward the root.
             filenames.push(string(2, (char)DIR_MARKER) + "..");
             bool ok = fs->listStream("", rfd_push, &filenames);
             OSD::progressDialog("", "", 0, 2);
-            if (!ok) { OSD::osdCenteredMsg(MSG_NET_XFER_ERR[Config::lang], LEVEL_WARN, 2000); filenames.close(); return; }
+            if (!ok) { OSD::osdCenteredMsg(MSG_NET_XFER_ERR, LEVEL_WARN, 2000); filenames.close(); return; }
             if (!fs->preSorted()) filenames.sort(); // pre-sorted (static catalog) skips the slow sort
             netValWrite(key, fs->lastValidator()); // persist this fetch's validator (Web; "" else)
         }
@@ -2026,11 +2022,11 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
                     Config::net_ul_dir = rfd_parent(local);   // dirname, volume-aware
                     Config::saveWifiConfig();
                     string base = local.substr(local.find_last_of('/') + 1);
-                    rfd_xfer_title = MSG_NET_UPLOADING[Config::lang];
+                    rfd_xfer_title = MSG_NET_UPLOADING;
                     OSD::progressDialog(rfd_xfer_title, base, 0, 0);
                     bool put_ok = fs->put(local, base, rfd_progress);
                     OSD::progressDialog("", "", 0, 2);
-                    OSD::osdCenteredMsg(put_ok ? MSG_NET_XFER_OK[Config::lang] : MSG_NET_XFER_ERR[Config::lang],
+                    OSD::osdCenteredMsg(put_ok ? MSG_NET_XFER_OK : MSG_NET_XFER_ERR,
                                         put_ok ? LEVEL_INFO : LEVEL_WARN, 1800);
                     if (put_ok) { netSessForget(key); filenames.unlink(); netValWrite(key, ""); }
                 }
@@ -2059,9 +2055,9 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
             continue;                     // ignore F5/F8/Alt on ".."
         }
         if (outKey == FDK_F8) {           // F8/Del → delete a remote entry
-            if (OSD::msgDialog(nm, MSG_NET_DELETE_Q[Config::lang]) == DLG_YES) {
+            if (OSD::msgDialog(nm, MSG_NET_DELETE_Q) == DLG_YES) {
                 bool rok = fs->remove(nm, isDir);
-                OSD::osdCenteredMsg(rok ? MSG_NET_XFER_OK[Config::lang] : MSG_NET_XFER_ERR[Config::lang],
+                OSD::osdCenteredMsg(rok ? MSG_NET_XFER_OK : MSG_NET_XFER_ERR,
                                     rok ? LEVEL_INFO : LEVEL_WARN, 1500);
                 if (rok) { netSessForget(key); filenames.unlink(); netValWrite(key, ""); }
             }
@@ -2081,7 +2077,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
                     fs->cwd("..");
                 } else {                     // single file — use the real filename (catalog
                                              // display names carry no extension)
-                    rfd_xfer_title = MSG_NET_DOWNLOADING[Config::lang];
+                    rfd_xfer_title = MSG_NET_DOWNLOADING;
                     OSD::progressDialog(rfd_xfer_title, nm, 0, 0, fs->utf8Names()); // show first
                     string base = fs->downloadBasename(nm);   // (catalog: HTTP listing read)
                     if (base.empty()) base = nm;
@@ -2089,7 +2085,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
                     ok = fs->get(nm, dst, rfd_progress);
                     OSD::progressDialog("", "", 0, 2);
                 }
-                OSD::osdCenteredMsg(ok ? MSG_NET_XFER_OK[Config::lang] : MSG_NET_XFER_ERR[Config::lang],
+                OSD::osdCenteredMsg(ok ? MSG_NET_XFER_OK : MSG_NET_XFER_ERR,
                                     ok ? LEVEL_INFO : LEVEL_WARN, 1800);
             }
             continue;
@@ -2102,7 +2098,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         // name (per extension) so /tmp isn't filled with one file per launch — it's
         // overwritten each time. The extension is kept (rfd_launch_tmp needs it to tell
         // the file type). For a real filename, use F5 Save instead.
-        rfd_xfer_title = MSG_NET_DOWNLOADING[Config::lang];
+        rfd_xfer_title = MSG_NET_DOWNLOADING;
         OSD::progressDialog(rfd_xfer_title, nm, 0, 0, fs->utf8Names());
         // Extension straight from the display name only when the suffix is a *known*
         // launchable extension — avoids an extra request. Catalog titles routinely
@@ -2131,9 +2127,9 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         bool got = fs->get(nm, tmpp, rfd_progress);
         OSD::progressDialog("", "", 0, 2);
         if (!got) {
-            OSD::osdCenteredMsg(MSG_NET_XFER_ERR[Config::lang], LEVEL_WARN, 2000);
+            OSD::osdCenteredMsg(MSG_NET_XFER_ERR, LEVEL_WARN, 2000);
         } else {
-            OSD::osdCenteredMsg(MSG_NET_LAUNCHING[Config::lang], LEVEL_INFO, 400);
+            OSD::osdCenteredMsg(MSG_NET_LAUNCHING, LEVEL_INFO, 400);
             if (rfd_launch_tmp(tmpp)) {
                 OSD::net_launch_close = true; // signal the menu stack to close
                 filenames.close();
@@ -2142,4 +2138,4 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         }
     }
 }
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

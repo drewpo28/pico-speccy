@@ -10,7 +10,6 @@
 // The output must be byte-for-byte identical to dls_pack.py for the same input.
 #include "dls_conv.h"
 
-#if !PICO_RP2040   // GM.DLS wavetable MIDI is RP2350-only; keep the converter out of RP2040
 
 #include <stdint.h>
 #include <string.h>
@@ -675,4 +674,3 @@ bool convert(const char* dlsPath, const char* outBinPath, int rate,
 
 }  // namespace DlsConv
 
-#endif  // !PICO_RP2040

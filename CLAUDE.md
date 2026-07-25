@@ -1,4 +1,9 @@
-# pico-spec Project Memory
+# pico-speccy Project Memory
+
+**Scope (rebrand, 2026-07-25):** RP2350 only — RP2040 support, the ZERO and
+MURM*_P1 board targets, and the Spanish UI (all `*_ES` strings, `Config::lang`,
+the Language menu) were removed. Firmware names are `<board>-speccy-...`
+(`m1`/`m2`/`PC`/`DV`/`z0`, no chip suffix); config lives in `/.config/pico-speccy`.
 
 ## SAA1099 Emulation Key Findings
 
@@ -114,27 +119,6 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 - On-hardware benchmark: OSD → Memory Info measures SPI PSRAM MB/s via the
   range functions (`OSDMain.cpp`).
 
-## RP2040 Memory Constraints (ZERO target)
-
-### Key facts
-
-- RP2040: 256KB SRAM total, no PSRAM
-- BSS/data ~109KB → free heap ~148KB at boot
-- Framebuffer: 240×320 ≈ 77KB (allocated in VIDEO::Init)
-- After framebuffer: only ~5KB free heap remains
-- `MEM_REMAIN` = 6×16KB = 96KB — reserve for framebuffer
-
-### Rules for RP2040 development
-
-- **ALWAYS test new features on ZERO** — any static array or large struct can break it
-- **No heap-heavy operations after VIDEO::Init** — only ~5KB free
-  - `vector<string>` parsing of storage.nvs caused OOM in `Config::loadDiskMounts()` (fixed: parse line-by-line)
-- **Guard large RAM features with `#if !PICO_RP2040`**:
-  - ULA+ (`AluBytesUlaPlus[16][256]` = 16KB) — disabled for RP2040
-  - Gigascreen — already guarded
-- **New static buffers**: consider `#if !PICO_RP2040` or make conditional
-- **`Config::load()` is safe** (runs at 148KB free), `Config::loadDiskMounts()` runs at ~5KB free
-
 ## GPIO Map (all boards)
 
 ### Classification
@@ -150,7 +134,6 @@ On RP2350, UART TX available via two funcsel:
 - funcsel 11 (`GPIO_FUNC_UART_AUX`): GPIO 2→UART0, 6→UART1, 10→UART0, 14→UART1, 18→UART0, 22→UART1, 26→UART1, 30→UART0
 - Odd GPIO = RX only, cannot be TX
 - Code auto-selects: `(pin/4)%2 → 0=UART0, 1=UART1`, funcsel via `(gpio & 0x2) ? UART_AUX : UART`
-- RP2040: no MIDI support (`PICO_RP2040=1`)
 
 ### MURM2 (RP2350A, GPIO 0-29) — FIXED=15, REASSIGNABLE=9, FREE=5
 
@@ -237,28 +220,6 @@ On RP2350, UART TX available via two funcsel:
 | 29 | CLK_AY_PIN2 | REASSIGN | |
 | 47 | BUTTER_PSRAM | FIXED | RP2350B onboard PSRAM |
 
-### ZERO (RP2040, GPIO 0-28) — FIXED=16, REASSIGNABLE=8, FREE=5
-
-| GPIO | Function | Cat | Notes |
-|------|----------|-----|-------|
-| 0 | KBD_CLOCK | REASSIGN | |
-| 1 | KBD_DATA | REASSIGN | |
-| 2-5 | PSRAM SPI (CS/SCK/MOSI/MISO) | FIXED | Onboard PSRAM |
-| 6 | — | FREE | |
-| 7 | CLK_AY_PIN2 / NES_CLK | REASSIGN | AY + NESPAD share (conflict) |
-| 8 | NES_LAT | REASSIGN | |
-| 9 | NES_DATA (DATA2=9) | REASSIGN | Single joystick |
-| 10 | Audio DATA/PWM0/LATCH_595 | REASSIGN | |
-| 11 | Audio BCK/PWM1/CLK_595 | REASSIGN | |
-| 12 | Audio LCK/BEEPER/DATA_595 | REASSIGN | |
-| 13 | — | FREE | |
-| 14 | — | FREE | |
-| 15 | — | FREE | |
-| 16 | — | FREE | |
-| 17 | LOAD_WAV_PIO | REASSIGN | No MIDI (RP2040) |
-| 18-21 | SD SPI (SCK/MOSI/MISO/CS) | FIXED | SPI0 PCB |
-| 22-28 | VGA/HDMI (8 pins from 22) | FIXED | Includes LED=25, SMPS=23, VBUS=24 |
-
 ### ZERO2 (RP2350B, GPIO 0-47) — FIXED=14, REASSIGNABLE=12, FREE=22
 
 | GPIO | Function | Cat | Notes |
@@ -292,7 +253,7 @@ On RP2350, UART TX available via two funcsel:
 | 44-46 | — | FREE | |
 | 47 | BUTTER_PSRAM | FIXED | RP2350B onboard PSRAM |
 
-### MURM (RP2040, GPIO 0-28) — FIXED=18, REASSIGNABLE=10, FREE=0
+### MURM (Murmulator 1.x + Pi Pico 2 / RP2350, GPIO 0-29) — FIXED=18, REASSIGNABLE=10, FREE=0
 
 | GPIO | Function | Cat | Notes |
 |------|----------|-----|-------|
@@ -305,14 +266,14 @@ On RP2350, UART TX available via two funcsel:
 | 16 | NES_DATA / KBD_CLOCK (DBG_UART=ON) | REASSIGN | when DBG_UART=ON: KBD moves here |
 | 17 | NES_DATA+1 / KBD_DATA (DBG_UART=ON) | REASSIGN | when DBG_UART=ON: KBD moves here |
 | 18-21 | PSRAM SPI (CS/SCK/MOSI/MISO) | FIXED | Onboard PSRAM; BUTTER=19 |
-| 22 | MIDI_TX / LOAD_WAV_PIO | REASSIGN | RP2040: WAV only. RP2350(MURM_P2): UART1 TX works |
-| 23 | — | FIXED(RP2040) | SMPS power on standard Pico |
-| 24 | — | FIXED(RP2040) | VBUS sense on standard Pico |
+| 22 | MIDI_TX / LOAD_WAV_PIO | REASSIGN | Mutually exclusive. UART1 TX funcsel 11 — works |
+| 23 | — | FIXED | SMPS power on standard Pico |
+| 24 | — | FIXED | VBUS sense on standard Pico |
 | 25 | LED | FIXED | |
 | 26 | Audio DATA/PWM0/LATCH_595 | REASSIGN | |
 | 27 | Audio BCK/PWM1/CLK_595 | REASSIGN | |
 | 28 | Audio LCK/BEEPER/DATA_595 | REASSIGN | |
-| 29 | CLK_AY_PIN2 | REASSIGN | RP2040: GPIO29=ADC3/VSYS |
+| 29 | CLK_AY_PIN2 | REASSIGN | also ADC3/VSYS on a standard Pico |
 
 ### Summary
 
@@ -321,9 +282,8 @@ On RP2350, UART TX available via two funcsel:
 | MURM2 | RP2350A | 0-29 | 15 | 9 | 5 | OK (GPIO 22) | **Conflict with PSRAM** (CLK=20, LAT=21) |
 | PICO_PC | RP2350A | 0-29 | 13 | 10 | 6 | OK (GPIO 26) | OK |
 | PICO_DV | RP2350 | 0-29,47 | 14 | 8 | 9 | **BUG** (GPIO 21=RX!) | Conflict with display (8,9) |
-| ZERO | RP2040 | 0-28 | 16 | 8 | 5 | N/A (RP2040) | OK |
 | ZERO2 | RP2350B | 0-47 | 14 | 12 | 22 | OK (GPIO 22) | Disabled |
-| MURM | RP2040 | 0-28 | 18 | 10 | 0 | N/A (RP2040) | OK |
+| MURM | RP2350 | 0-29 | 18 | 10 | 0 | OK (GPIO 22) | OK |
 
 ### Known bugs and conflicts
 
@@ -377,7 +337,7 @@ Gated by `Config::zifi_enabled`. First two: port low byte `0xEF`, high address b
   (2) CPU::loop every ~3500 T-states (`cdcNicActive`) — covers the checked
   while-loops (INT window + frame tail) where exec_nocheck doesn't run;
   (3) ESPectrum::loop frame-pacing waits (v-sync spin / idle delay, up to ~13 ms).
-  No-op on GPIO UART and RP2040.
+  No-op on GPIO UART.
 - **Do NOT raise `CFG_TUH_CDC_RX_EPSIZE` above 64 for serial dongles**
   (hw 2026-07-06): 512 made multi-packet IN transfers chain through the
   double-buffered EPX, but the CH340's constant SHORT packets through the
@@ -391,8 +351,7 @@ Gated by `Config::zifi_enabled`. First two: port low byte `0xEF`, high address b
 
 ## USB flash stick (MSC host → FatFs volume "USB:")
 
-RP2350-only (`CFG_TUH_MSC` gated on `PICO_RP2350` in tusb_config.h; RP2040 keeps
-MSC off + `CFG_TUH_DEVICE_MAX 5`). NOT hw-confirmed yet.
+NOT hw-confirmed yet.
 
 - **FatFs two volumes**: `FF_VOLUMES=2`, `FF_STR_VOLUME_ID=1`, `VolumeStr {"SD","USB"}`
   (ffconf.h). Unprefixed paths → current volume (normally SD) — zero changes for
@@ -486,7 +445,7 @@ MSC off + `CFG_TUH_DEVICE_MAX 5`). NOT hw-confirmed yet.
 
 Goal: browse/download disk & tape images (vtrd.in, then zxart.ee, worldofspectrum)
 over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
-`#if !PICO_RP2040 && ZIFI_NET_CLIENT`. Reuses `RemoteFs` + `OSD::remoteFileDialog`.
+`#if ZIFI_NET_CLIENT`. Reuses `RemoteFs` + `OSD::remoteFileDialog`.
 
 ### Architecture: host-TLS on RP2350 + serverless GitHub Pages catalog
 - **Catalog** built by a **GitHub Action (cron)** → static per-site index files
@@ -511,7 +470,7 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
 - CA verification: `loadCaFile()` parses PEM from `cacert.pem` on SD →
   `VERIFY_REQUIRED`; no CA → `VERIFY_NONE` (bring-up spike only, logs a warning).
   SNI always set via `mbedtls_ssl_set_hostname`.
-- **mbedTLS config** (`src/mbedtls_config_picospec.h`): TLS stack added on top of the
+- **mbedTLS config** (`src/mbedtls_config_picospeccy.h`): TLS stack added on top of the
   SSH crypto primitives — `MBEDTLS_SSL_TLS_C/SSL_CLI_C/SSL_PROTO_TLS1_2/SNI`,
   ECDHE-RSA/ECDSA key exch, `GCM_C`, X.509 (`PK_C/PK_PARSE_C/X509_USE_C/X509_CRT_PARSE_C/PEM_PARSE_C`).
   TLS 1.2 only (no 1.3 → no version pinning needed). Buffers trimmed:
@@ -543,7 +502,7 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
 
 ## RTC / Time (Pentagon Mr Gluk TimeKeeper)
 
-- `src/RTC.*` — MC146818 emulation (RP2350-only). Ports (Pentagon/Profi):
+- `src/RTC.*` — MC146818 emulation. Ports (Pentagon/Profi):
   - `OUT (#DFF7), reg` — latch register index (confirmed via `OUT (C),H` at Gluk ROM 0x11BA)
   - `OUT (#BFF7), data` / `IN A,(#BFF7)` — data register (runtime-unpacked, not in static ROM)
   - Wired in `Ports::input`/`Ports::output`; responds on `isPentagon||isProfi` (NOT gated on EFF7 bit7 CMOS, for robustness — those ports are RTC-specific on these machines)
@@ -551,12 +510,12 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
 - Time source: SNTP via ZiFi ESP — `ZiFiAT::syncTime(tz, out)` sends `AT+CIPSNTPCFG=1,tz,"pool.ntp.org"` then polls `AT+CIPSNTPTIME?` (parses `+CIPSNTPTIME:Www Mmm dd hh:mm:ss yyyy`, accepts year≥2020).
 - Trigger: **manual** — Network menu → "Sync time (SNTP)". Timezone via Network → "Time zone" (UTC−12..+14 list → `Config::wifi_tz`, saved to wifi.cfg key `tz`).
 - **Network menu** (RP2350, built dynamically): row 1 = `WiFi On <ssid> <ip>` / `WiFi Off` (live status, padded to fixed 32 width so geometry stays stable) then `Sync time (SNTP)` / `Time zone >` / `ZiFi NIC >`. Selecting the **WiFi** row is the all-in-one action — connected: SSID+IP + disconnect (msgDialog); not connected: `AT+CWLAP` scan → pick SSID (dynamic menuRun list) → password (`wifiAskPassword` box over `OSD::inlineTextEdit`) → connect → saves SSID/pass to wifi.cfg. Status is cached (`getStatus` is blocking) and refreshed on menu entry + after connect/disconnect/NIC-toggle. Connect/Disconnect/Reload items removed.
-- **wifi.cfg** lives in `CONFIG_DIR` (`/.config/pico-spec/wifi.cfg`); legacy `/wifi.cfg` still read as fallback. `Config::saveWifiConfig()` writes ssid/pass/tz/autoconnect; `ZiFiAT::scan()` parses `+CWLAP`.
+- **wifi.cfg** lives in `CONFIG_DIR` (`/.config/pico-speccy/wifi.cfg`); legacy `/wifi.cfg` still read as fallback. `Config::saveWifiConfig()` writes ssid/pass/tz/autoconnect; `ZiFiAT::scan()` parses `+CWLAP`.
 - **Auto-sync on boot**: when `Config::wifi_enabled && wifi_ssid` set, `ESPectrum::loop` kicks off `ZiFiAT::autoSyncBegin()` ~4 s in, then `autoSyncPoll()` each tick. Non-blocking background state machine (CWMODE→CWJAP→CIPSNTPCFG→poll CIPSNTPTIME?, ~15 retries) — **no OSD, never freezes** audio/video; writes straight into RTC, silent on failure. Manual menu sync still uses the blocking `syncTime()`. On **Profi** gated by a once-only heap check (`getLargestAllocatable() >= 16K` at the 4 s mark) instead of the old blanket `arch != "Profi"` exclusion — that exclusion left the ROMain/PQDOS clock permanently at 00.00.00 (butter-PSRAM Profi has the headroom; tight m1p2 Profi still skips, preserving the OOM fix).
 - **"NO CMOS" fix (hw-confirmed)**: Gluk treats CMOS valid only when NVRAM **reg 0x11 == 0xAA** (unpacked-RAM check at 0x6049 `CP 0xAA / JR NZ`); reg 0x12 == 0x47 (`'G'`) gates loading the 27-byte config (regs 0x13–0x2D → RAM 0x63A1). No checksum. Gluk's auto-path writes a bogus 0x55 and never self-validates (real signature written only on menu-save). `RTC::init()` seeds `regs[0x11] = 0xAA` after `loadNVRAM()` so the clock works out of the box; Gluk then reads time regs 0x00–0x09.
 - NVRAM (0x0E–0xFF + reg B; full 8-bit index — Karabas exposes 240 DS1307 cells, no `&0x3F` mask or high cells would alias onto the time regs) persisted to `CONFIG_DIR/cmos.nvr` (256 bytes; old 64-byte files still load): `loadNVRAM()` at init, dirty-flushed from main loop via `RTC::flushNVRAM()`.
 - `RTC_PORT_TRACE` CMake option (default OFF) logs every `..F7` IN/OUT for debugging.
-- **Toggle**: Options → Other → "RTC + NVRAM" (Yes/No → `Config::rtc_enabled`, default **off** — `Config::rtc_enabled = false`, NVS-persisted). RP2350-only: the menu row is appended at runtime under `#if !PICO_RP2040`; when off, the RTC ports still RESPOND STATICALLY (not bypassed): reads float 0xFF (Gluk shows "NO CMOS"; Karabas clock shows FF), but status regs A/C read UIP/flags clear so the Karabas ROMain boot's MC146818 "wait until UIP clears" loop can't hang (was the "ROMain won't start with RTC off" bug); register-select is still latched, data writes swallowed (`RTC::readDisabled()`, four handlers in Ports.cpp).
+- **Toggle**: Options → Other → "RTC + NVRAM" (Yes/No → `Config::rtc_enabled`, default **off** — `Config::rtc_enabled = false`, NVS-persisted). when off, the RTC ports still RESPOND STATICALLY (not bypassed): reads float 0xFF (Gluk shows "NO CMOS"; Karabas clock shows FF), but status regs A/C read UIP/flags clear so the Karabas ROMain boot's MC146818 "wait until UIP clears" loop can't hang (was the "ROMain won't start with RTC off" bug); register-select is still latched, data writes swallowed (`RTC::readDisabled()`, four handlers in Ports.cpp).
 
 ## Tools
 

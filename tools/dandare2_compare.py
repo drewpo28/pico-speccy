@@ -5,9 +5,9 @@ import struct
 import math
 import sys
 
-TZX_FILE = "/home/drew/github/pico-spec/debug/Dan Dare 2 - Mekon's Revenge.tzx"
-PZX_FILE = "/home/drew/github/pico-spec/debug/Dan Dare 2 - Mekon's Revenge.pzx"
-OUT_FILE = "/home/drew/github/pico-spec/debug/dandare2_structure.txt"
+TZX_FILE = "/home/drew/github/pico-speccy/debug/Dan Dare 2 - Mekon's Revenge.tzx"
+PZX_FILE = "/home/drew/github/pico-speccy/debug/Dan Dare 2 - Mekon's Revenge.pzx"
+OUT_FILE = "/home/drew/github/pico-speccy/debug/dandare2_structure.txt"
 
 def u8(data, off):
     return data[off]

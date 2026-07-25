@@ -1,6 +1,5 @@
 #pragma once
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 
@@ -17,4 +16,3 @@ private:
     static bool hw_initialized;
 };
 
-#endif // !PICO_RP2040

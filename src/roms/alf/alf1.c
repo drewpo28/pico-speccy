@@ -1,6 +1,5 @@
 #include <hardware/flash.h>
 
-#if !PICO_RP2040
 
 // ALF system ROM: 32KB of real BIOS (2 banks of 16K). The #5F bank latch selects
 // system-ROM banks 0..63; banks 2+ are not real ROM and map to the zero page
@@ -2746,4 +2745,3 @@ const unsigned char __in_flash() __aligned(4096) gb_rom_Alf[32 << 10] = {
 // (the bind loops point every non-real system bank, and out-of-range cart banks, here).
 const unsigned char __in_flash() __aligned(4096) gb_rom_Alf_ep[16 << 10] = { 0 };
 
-#endif

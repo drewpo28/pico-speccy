@@ -16,7 +16,6 @@
 extern size_t getFreeHeap(void);
 extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can really satisfy now
 
-#if !PICO_RP2040
 #include "SAASound.h"
 #include "Midi.h"
 #include "MidiSynth.h"
@@ -32,7 +31,6 @@ extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can re
 #include "psram_spi.h" // psram_size()
 #ifdef VGA_HDMI
 #include "hdmi.h"
-#endif
 #endif
 
 #include "Debug.h"
@@ -137,7 +135,6 @@ bool PitSubsys::apply() {
     dirty = false;
     if (wanted == enabled) return true;
 
-#if !PICO_RP2040
     if (wanted) {
         if (!ESPectrum::audioBufferPIT) {
             ESPectrum::audioBufferPIT = (uint8_t*)calloc(ESP_AUDIO_SAMPLES_PENTAGON, 1);
@@ -153,13 +150,9 @@ bool PitSubsys::apply() {
         free(ESPectrum::audioBufferPIT);
         ESPectrum::audioBufferPIT = nullptr;
     }
-#else
-    enabled = false;
-#endif
     return true;
 }
 
-#if !PICO_RP2040
 
 // ----------------------------------------------------------------------------
 // SaaSubsys — SAA1099 chip (regs/state) plus 2x640 B sample buffers.
@@ -784,7 +777,6 @@ BudgetResult budgetCheck(FeatureId enabling, FeatureId* candidates, int* nCand, 
 
 } // namespace Subsystems
 
-#endif // !PICO_RP2040
 
 // ----------------------------------------------------------------------------
 // applyPending — single coordination point. Called from ESPectrum::loop()
@@ -804,7 +796,6 @@ void Subsystems::applyPending() {
         Debug::log2SD("Subsys: Pit wanted=%d freeHeap=%u", (int)PitSubsys::wanted, (unsigned)getFreeHeap());
         PitSubsys::apply();
     }
-#if !PICO_RP2040
     if (SaaSubsys::dirty)   {
         Debug::log2SD("Subsys: Saa wanted=%d freeHeap=%u", (int)SaaSubsys::wanted, (unsigned)getFreeHeap());
         SaaSubsys::apply();
@@ -838,6 +829,5 @@ void Subsystems::applyPending() {
         Debug::log2SD("Subsys: HdmiAudio wanted=%d freeHeap=%u", (int)HdmiAudioSubsys::wanted, (unsigned)getFreeHeap());
         HdmiAudioSubsys::apply();
     }
-#endif
 #endif
 }

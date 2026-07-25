@@ -1,5 +1,5 @@
 /*
-  SAA1099 Sound Chip Emulation for pico-spec ZX Spectrum emulator
+  SAA1099 Sound Chip Emulation for pico-speccy ZX Spectrum emulator
 
   Based on stripwax/SAASound by Dave Hooper — verified against real SAA1099P.
   https://github.com/stripwax/SAASound
@@ -112,9 +112,7 @@ private:
     static const uint16_t pdm_x4[8][16];
 };
 
-#if !PICO_RP2040
 // saaChip is heap-allocated by SaaSubsys when Config::SAA1099 is true; nullptr otherwise.
 extern SAASound* saaChip;
-#endif
 
 #endif // SAASound_h

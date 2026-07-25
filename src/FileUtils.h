@@ -150,10 +150,10 @@ private:
 ///    static sdmmc_card_t *card;    
 };
 
-// Config files live under /.config/pico-spec/<port-version>/<board-tag>/
+// Config files live under /.config/pico-speccy/<port-version>/<board-tag>/
 // (per-version + per-board), with palette.nvs and logs shared in CONFIG_DIR.
 #define CONFIG_DIR_ROOT "/.config"
-#define CONFIG_DIR      CONFIG_DIR_ROOT "/pico-spec"
+#define CONFIG_DIR      CONFIG_DIR_ROOT "/pico-speccy"
 #define CONFIG_DIR_VER  CONFIG_DIR "/" PORT_VERSION
 #define CONFIG_DIR_BOARD CONFIG_DIR_VER "/" CONFIG_BOARD_TAG
 #define STORAGE_NVS     CONFIG_DIR_BOARD "/storage.nvs"
@@ -171,7 +171,7 @@ private:
 #define DEBUG_LOG_PATH  CONFIG_DIR "/debug.log"
 #define DUMP_LOG_PATH   CONFIG_DIR "/dump.log"
 
-// CONFIG_DIR (/.config/pico-spec) holds configs + logs (per-version/per-board NVS).
+// CONFIG_DIR (/.config/pico-speccy) holds configs + logs (per-version/per-board NVS).
 #define DISK_BOOT_FILENAME CONFIG_DIR "/boot.cfg"
 
 // User data lives in a separate visible root /spec on the SD card.

@@ -441,8 +441,8 @@ def simulate_pzx_data(block_data, initial_ear, max_pulses=MAX_PULSES):
 # ============================================================
 
 def main():
-    tzx_path = "/home/drew/github/pico-spec/debug/Dan Dare 2 - Mekon's Revenge.tzx"
-    pzx_path = "/home/drew/github/pico-spec/debug/Dan Dare 2 - Mekon's Revenge.pzx"
+    tzx_path = "/home/drew/github/pico-speccy/debug/Dan Dare 2 - Mekon's Revenge.tzx"
+    pzx_path = "/home/drew/github/pico-speccy/debug/Dan Dare 2 - Mekon's Revenge.pzx"
 
     # --- TZX ---
     print("=" * 80)

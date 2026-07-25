@@ -1,6 +1,5 @@
 #include "IDE.h"
 
-#if !PICO_RP2040
 
 #include <cstdlib>
 #include <cstring>
@@ -1186,4 +1185,3 @@ void IDE::write_data_low(uint8_t lo) {
     write8(0, latch_write);
 }
 
-#endif // !PICO_RP2040

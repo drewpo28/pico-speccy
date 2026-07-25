@@ -3,7 +3,6 @@
 
 #include <inttypes.h>
 
-#if !PICO_RP2040
 
 #include "ff.h"
 
@@ -137,5 +136,4 @@ private:
     static uint8_t sense_ascq;
 };
 
-#endif // !PICO_RP2040
 #endif // __IDE_H

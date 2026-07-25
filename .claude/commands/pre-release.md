@@ -11,7 +11,7 @@ commit) is pushed by the script.
 
 Previous release tag: !`git tag --sort=-v:refname | grep '^v' | head -1`
 Current PORT_VERSION: !`grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt`
-Release for this version: !`VER=$(grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt); gh release view "v$VER" -R drewpo28/pico-spec --json name,isDraft,isPrerelease,targetCommitish,assets --template '{{.name}} draft={{.isDraft}} prerelease={{.isPrerelease}} target={{.targetCommitish}} assets={{len .assets}}' 2>&1 || true`
+Release for this version: !`VER=$(grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt); gh release view "v$VER" -R drewpo28/pico-speccy --json name,isDraft,isPrerelease,targetCommitish,assets --template '{{.name}} draft={{.isDraft}} prerelease={{.isPrerelease}} target={{.targetCommitish}} assets={{len .assets}}' 2>&1 || true`
 HEAD vs origin: !`git fetch origin --quiet; git rev-parse HEAD; git branch --show-current; git merge-base --is-ancestor HEAD origin/$(git branch --show-current) && echo "HEAD is pushed" || echo "HEAD is NOT pushed"`
 Commits since previous tag: !`git log --oneline $(git tag --sort=-v:refname | grep '^v' | head -1)..HEAD`
 

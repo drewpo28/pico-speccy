@@ -1,6 +1,5 @@
 // USB mass-storage host (flash stick) → FatFs physical drive 1, volume "USB:".
 // See UsbMsc.h for the overview. Compiled out entirely when CFG_TUH_MSC is 0
-// (RP2040 boards).
 
 #include "tusb.h"
 

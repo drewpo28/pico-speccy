@@ -267,7 +267,7 @@ __force_inline static void __time_critical_func(pio_spi_write_async)(
  * @param pio The PIO instance to use (PIO0 or PIO1).
  * @param sm The state machine number in the PIO module to use. If -1 is given,
  * will use the first available state machine.
- * @param clkdiv Clock divisor for the state machine. At RP2040 speeds greater
+ * @param clkdiv Clock divisor for the state machine. At speeds greater
  * than 280MHz, a clkdiv >1.0 is needed. For example, at 400MHz, a clkdiv of
  * 1.6 is recommended.
  * @param fudge Whether to insert an extra "fudge factor" of one clock cycle

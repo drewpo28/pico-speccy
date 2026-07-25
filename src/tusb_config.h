@@ -99,17 +99,13 @@
 // attached, freezing the session on every RECOVERABLE assert (e.g. cdc_host's
 // get_itf(TUSB_INDEX_INVALID) while a dongle re-enumerates). Route TinyUSB's
 // breakpoint to a counting no-op instead — g_tusb_assert_count in main.cpp.
-#define CFG_TUSB_DEBUG_BREAKPOINT picospec_tusb_assert_hook
+#define CFG_TUSB_DEBUG_BREAKPOINT picospeccy_tusb_assert_hook
 
 #define CFG_TUH_XINPUT                 1 //
 #define CFG_TUH_HUB                 1 // number of supported hubs
 // CDC host: one serial adapter at a time (the ESP-01 bridge). The vendor serial
 // sub-drivers let a CH340/CP2102/FTDI USB-UART dongle carry the ESP-01 over the USB
-// host port (through the hub, alongside the keyboard) instead of GPIO. RP2350 only —
-// the RP2040 boards (ZERO/MURM) don't run ZiFi and are SRAM-tight, so keep CDC off.
-// IMPORTANT: gate on PICO_RP2350 (an SDK -D on the build), NOT CFG_TUSB_MCU — TinyUSB
-// reports OPT_MCU_RP2040 for BOTH RP2040 and RP2350, so it can't distinguish them.
-#if PICO_RP2350
+// host port (through the hub, alongside the keyboard) instead of GPIO.
 #define CFG_TUH_CDC                 1
 // Non-standard USB-serial chips. CH340C = CH34x (the documented dongle); CP210x/FTDI
 // come free and cover other common adapters. Stock CDC-ACM is always on.
@@ -146,25 +142,13 @@
 // as garbage, rx counters clean). Multi-packet RX is only safe for full-packet
 // sources (MSC); serial dongles must stay single-packet. Burst survival is
 // handled by cdcPump()'s three call sites instead (see ZiFi.cpp).
-#else
-#define CFG_TUH_CDC                 0
-#endif
 #define CFG_TUH_HID                 8 // composite devices (kbd + pad + extra ifs) can need many slots
 // USB mass-storage host (flash sticks in the file manager, FatFs volume "USB:").
-// RP2350 only — same SRAM reasoning as CDC above; RP2040 boards stay MSC-free.
-#if PICO_RP2350
 #define CFG_TUH_MSC                 1
-#else
-#define CFG_TUH_MSC                 0
-#endif
 #define CFG_TUH_VENDOR              0
 
 // max device support (excluding hub device)
-#if PICO_RP2350
 #define CFG_TUH_DEVICE_MAX          6 // hub + keyboard + mouse + 2 gamepads + MSC stick
-#else
-#define CFG_TUH_DEVICE_MAX          5 // hub + keyboard + mouse + 2 gamepads
-#endif
 
 //------------- HID -------------//
 #define CFG_TUH_HID_EPIN_BUFSIZE    64

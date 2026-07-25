@@ -65,20 +65,10 @@ static uint8_t hdmi_scanline_buf[400];
 
 //ДМА палитра для конвертации
 //в хвосте этой памяти выделяется dma_data
-#if PICO_RP2040
-// HDMI-only: on RP2040 the VGA-HDMI build runs only ONE output per boot (VGA or
-// HDMI, picked at runtime). Keeping this 4960 B (+4 KB alignment hole) in .bss
-// costs SRAM on VGA boots — which is where RP2040 is tightest (the framebuffer
-// barely fits). So allocate it lazily, 4 KB-aligned, in graphics_init_hdmi()
-// only when HDMI is the active output; stays NULL on VGA boots. The PIO addr
-// generator needs the 4 KB alignment (its low 12 bits index into the table).
-static uint32_t *conv_color = NULL;
-#else
 static alignas(4096) uint32_t conv_color[1240];
-#endif
 // Snapshot of the standard palette taken at DS80-enable time. Used to restore
 // conv_color back to the doubled-pixel mode when DS80 turns off.
-// pico-spec: lazily heap-allocated (~5 KB) — kept out of .bss while DS80 is off
+// pico-speccy: lazily heap-allocated (~5 KB) — kept out of .bss while DS80 is off
 // (the common case: boot/Service ROM/std screen). Allocated on DS80 enable, freed
 // on DS80 disable. Cold path (DS80 toggle only), no alignment requirement.
 static uint32_t *conv_color_std_snapshot = (uint32_t *) 0;
@@ -117,7 +107,6 @@ static inline uint32_t hdmi_scanline_gray(void) {
     return hdmi_scanline_gray_lut[(hdmi_scanline_level <= 4) ? hdmi_scanline_level : 2];
 }
 
-#if !PICO_RP2040
 // ============================================================
 // HDMI audio state (Data Island injection, RP2350 only)
 //
@@ -241,7 +230,6 @@ static void hdmi_di_load(uint set, uint logical_line);
 #define HDMI_AUDIO_DEBUG_STAGES 0
 #if HDMI_AUDIO_DEBUG_STAGES
 static volatile uint32_t hdmi_dbg_frame_ct = 0;
-#endif
 #endif
 
 //программа конвертации адреса
@@ -434,7 +422,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI() {
     }
     hdmi_current_line = line; // expose to main context for palette refresh sync
 
-#if !PICO_RP2040 && HDMI_AUDIO_DEBUG_STAGES
+#if HDMI_AUDIO_DEBUG_STAGES
     // Stage clock must tick before the per-line early returns below
     if (line == 0) hdmi_dbg_frame_ct++;
 #endif
@@ -471,7 +459,6 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI() {
     const int scr_w = mode.screen_width;
     const int line_sz = mode.line_bytes;
 
-#if !PICO_RP2040
     // HDMI-audio packet loads run BEFORE the render: the set for the next
     // scanline must be written before that line starts, and doing it after
     // the render leaves too little margin when the ISR fires late (SD/USB
@@ -523,7 +510,6 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI() {
         // read at the start of the previous scanline — safe immediately.
         if (au_ok_now) hdmi_di_load(b, line);
     }
-#endif
 
     if (line < mode.v_active ) {
         uint8_t* output_buffer = activ_buf + h_sync + h_bp;
@@ -610,7 +596,6 @@ ex:
         };
     }
 
-#if !PICO_RP2040
     if (hdmi_audio_enabled) {
         // Byte-level decoration (after the sync memsets above). Vsync lines
         // carry VSYNC=0 variants (Null packets), matching the memset branch.
@@ -633,7 +618,6 @@ ex:
             bp_end[-1] = IDX_VIDEO_GUARD;
         }
     }
-#endif
 }
 
 
@@ -832,13 +816,11 @@ static inline bool hdmi_init() {
         nf_memset(hdmi_scanline_buf + hs, BASE_HDMI_CTRL_INX, bp);         // back porch
         nf_memset(hdmi_scanline_buf + hs + bp, IDX_SCANLINE, sw);          // dark gray content
         nf_memset(hdmi_scanline_buf + ls - fp, BASE_HDMI_CTRL_INX, fp);    // front porch
-#if !PICO_RP2040
         if (hdmi_audio_enabled) {
             // HDMI (audio) mode: active lines need video preamble + guard band
             for (int i = 0; i < 4; i++) hdmi_scanline_buf[hs + bp - 5 + i] = IDX_VIDEO_PREAMBLE;
             hdmi_scanline_buf[hs + bp - 1] = IDX_VIDEO_GUARD;
         }
-#endif
     }
 
     dma_channel_configure(
@@ -969,14 +951,12 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
 #endif
 
     if ((i >= BASE_HDMI_CTRL_INX) && (i != 255) && (i != IDX_SCANLINE)) return; //не записываем "служебные" цвета
-#if !PICO_RP2040
     // Protect Data Island / guard-band conv_color entries from palette writes
     if (hdmi_audio_enabled &&
         ((i >= IDX_DI_DATA2_BASE && i < IDX_DI_DATA2_BASE + 16) ||
          (i >= IDX_DI_PREAMBLE_VS && i <= IDX_DI_GUARD_TRAIL_VS))) return;
-#endif
 
-    // On RP2040 conv_color is NULL on VGA boots (allocated only for HDMI, see
+    // conv_color is NULL on VGA boots (allocated only for HDMI, see
     // graphics_init_hdmi) — the parallel vga_set_palette_entry() above already
     // updated the live VGA LUT, so there is nothing more to do here.
     if (!conv_color) return;
@@ -1106,7 +1086,6 @@ void hdmi_set_profi_ds80_mode(bool active,
     } else {
         if (conv_color_std_snapshot_valid && conv_color_std_snapshot) {
             for (int i = 0; i < 1240; i++) {
-#if !PICO_RP2040
                 // With audio live, the core1 ISR owns the DI slots: data sets are
                 // rewritten every line (a stale snapshot word restored mid-scan =
                 // torn packet, bad BCH, sink mute) and the control entries are
@@ -1115,7 +1094,6 @@ void hdmi_set_profi_ds80_mode(bool active,
                 if (hdmi_audio_enabled &&
                     ((slot >= 184 && slot <= 199) || (slot >= 216 && slot <= 239)))
                     continue;
-#endif
                 conv_color[i] = conv_color_std_snapshot[i];
             }
         }
@@ -1128,26 +1106,6 @@ void hdmi_set_profi_ds80_mode(bool active,
 }
 
 void graphics_init_hdmi() {
-#if PICO_RP2040
-    // conv_color is not in .bss on RP2040 (saves ~5 KB on VGA boots). Allocate it
-    // now that HDMI is confirmed to be the active output. The PIO addr generator
-    // reconstructs table addresses from its X register = (base >> 12), so the
-    // table MUST be 4 KB-aligned — over-allocate and round up (never freed; lives
-    // for the whole HDMI session).
-    // pico_malloc PANICs on OOM instead of returning NULL, so pre-check the
-    // largest satisfiable block (same guard as Buffer::palloc) — this runs on
-    // core1 right after setup, when free heap can be only a few KB.
-    if (!conv_color) {
-        extern size_t getLargestAllocatable(void);
-        const size_t need = 1240 * sizeof(uint32_t) + 4096;
-        if (getLargestAllocatable() >= need) {
-            uintptr_t raw = (uintptr_t)malloc(need);
-            conv_color = (uint32_t *)((raw + 4095) & ~(uintptr_t)4095);
-        } else {
-            printf("graphics_init_hdmi: OOM allocating conv_color (%u B needed)\n", (unsigned)need);
-        }
-    }
-#endif
     // PIO и DMA
     SM_video = pio_claim_unused_sm(PIO_VIDEO, true);
     SM_conv = pio_claim_unused_sm(PIO_VIDEO_ADDR, true);
@@ -1159,11 +1117,9 @@ void graphics_init_hdmi() {
     // Palette is initialized centrally by Video.cpp Init()
     hdmi_init();
 
-#if !PICO_RP2040
     if (hdmi_audio_enabled) {
         hdmi_audio_hw_init();
     }
-#endif
 }
 
 void graphics_set_bgcolor_hdmi(uint32_t color888) //определяем зарезервированный цвет в палитре
@@ -1192,7 +1148,6 @@ void hdmi_set_dither(bool enabled) {
 // Reference implementation: PICO-BK drivers/libdvi (ikjordan/DnCraptor
 // PicoDVI audio fork, hw-confirmed working) + HDMI 1.4b spec.
 // ============================================================
-#if !PICO_RP2040
 
 // TERC4 encoding table: 4-bit value → 10-bit codeword (HDMI 1.4b Table 5-4)
 static const uint16_t terc4_table[16] = {
@@ -1783,5 +1738,4 @@ void __not_in_flash_func(hdmi_audio_write_sample)(int16_t left, int16_t right) {
     }
 }
 
-#endif // !PICO_RP2040
 

@@ -1,6 +1,5 @@
 #include "Midi.h"
 
-#if !PICO_RP2040
 
 #include "Config.h"
 #include "MidiSynth.h"   // mode 4: GM.DLS wavetable synth
@@ -69,4 +68,3 @@ bool __not_in_flash("midi") Midi::busy() {
     return !uart_is_writable(MIDI_UART);
 }
 
-#endif // !PICO_RP2040

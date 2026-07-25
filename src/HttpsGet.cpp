@@ -1,6 +1,6 @@
 #include "HttpsGet.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "TlsSock.h"
 #include "ZiFiSock.h"
@@ -383,4 +383,4 @@ bool HttpsGet::selfTest(const char* url, const char* caPath) {
     return r.ok;
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

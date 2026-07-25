@@ -44,12 +44,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "psram_spi.h"
 #include "Debug.h"
 #include "Z80DMA.h"
-#if !PICO_RP2040
 #include "ZiFi.h"
-#endif
-#if !PICO_RP2040
 #include "DivMMC.h"
-#endif
 
 // Place hot CPU functions in SRAM instead of XIP flash
 #undef IRAM_ATTR
@@ -88,9 +84,7 @@ bool Z80Ops::is1024 = false;
 bool Z80Ops::isProfi = false;
 
 void CPU::updateStatesInFrame() {
-#if !PICO_RP2040
     Z80Ops::isALF = (Config::arch == "ALF");
-#endif
     // Early/Late ULA timing: Early=latetiming=0, Late=latetiming=1.
     // IntEnd += latetiming shifts the INT window 1T later for Late.
     // isActiveINT adds latetiming to tstates so that Late fires 1T later,
@@ -140,9 +134,7 @@ void CPU::reset() {
 
     CPU::latetiming = Config::AluTiming;
 
-#if !PICO_RP2040
     Z80Ops::isALF = (Config::arch == "ALF");
-#endif
     if (Config::arch == "48K") {
         Z80Ops::isByte = (Config::romSet48 == "48Kby");
         Ports::getFloatBusData = &Ports::getFloatBusData48;
@@ -207,7 +199,6 @@ void CPU::reset() {
         ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
     }
 
-#if !PICO_RP2040
     // 16col is Pentagon-only — auto-disable when switching to non-Pentagon arch.
     if (!(Z80Ops::isPentagon || Z80Ops::isProfi)) {
         if (Config::mode16col_onoff) {
@@ -217,15 +208,12 @@ void CPU::reset() {
         VIDEO::mode16col_enabled = false;
         VIDEO::free16colLut();   // release the LUT — 16col now off (0 SRAM)
     }
-#endif
 
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
     if ((Z80Ops::isPentagon || Z80Ops::isProfi) && !Config::betadisk) Config::betadisk = true;
 
     // Timex video is incompatible with Byte ROM sets — auto-disable.
-#if !PICO_RP2040
     if (Z80Ops::isByte && Config::timex_video) Config::timex_video = false;
-#endif
 
     updateStatesInFrame();
 
@@ -262,21 +250,17 @@ IRAM_ATTR void CPU::loop() {
         Z80::execute();
         Z80::doNMI();
     }
-#if !PICO_RP2040
     // ZiFi over USB-CDC: service the host stack mid-frame (~1 kHz) even while the
     // guest isn't touching the ZiFi ports — see ZiFi::cdcPump(). The cadence check
     // costs one compare per instruction, same class as the dma_mode check below.
     uint32_t zifi_pump_due = tstates + 3500; // ~1 ms at 3.5 MHz guest clock
-#endif
     while (tstates < IntEnd) {
         Z80::execute();
-#if !PICO_RP2040
         if (Config::dma_mode) Z80DMA::handleDMA();
         if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
             zifi_pump_due = tstates + 3500;
             ZiFi::cdcPump();
         }
-#endif
         BREAKPOINTS
     }
     BREAKPOINTS
@@ -291,13 +275,11 @@ IRAM_ATTR void CPU::loop() {
     BREAKPOINTS
     while (tstates < statesInFrame) {
         Z80::execute();
-#if !PICO_RP2040
         if (Config::dma_mode) Z80DMA::handleDMA();
         if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
             zifi_pump_due = tstates + 3500;
             ZiFi::cdcPump();
         }
-#endif
         BREAKPOINTS
     }
     {
@@ -358,7 +340,6 @@ IRAM_ATTR void CPU::FlushOnHalt() {
 
             uint32_t incr = (stEnd - pre_tstates) >> 2;
             if (pre_tstates & 0x03) incr++;
-#if !PICO_RP2040
             if (Z80Ops::isProfi) {
                 // Land the HALT-wake on the absolute 4T frame grid (phase 0)
                 // rather than inheriting pre_tstates' phase. A HALT only idles
@@ -372,7 +353,6 @@ IRAM_ATTR void CPU::FlushOnHalt() {
                 // against.
                 tstates = (pre_tstates & ~3u) + (incr << 2);
             } else
-#endif
                 tstates += (incr << 2);
             Z80::incRegR(incr & 0x000000FF);
 
@@ -401,7 +381,6 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
 #endif
     uint8_t pg = pc >> 14;
     VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
-#if !PICO_RP2040
     if (DivMMC::enabled) {
         DivMMC::preOpcFetch(pc);
         pg = pc >> 14; // re-read in case instant map changed it
@@ -418,7 +397,6 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     if (pg == 0 && MemESP::divmmc_mapped) {
         return (pc < 0x2000) ? MemESP::page0_lo[pc] : MemESP::page0_hi[pc & 0x1FFF];
     }
-#endif
     return MemESP::romPeek(pg, MemESP::ramCurrent[pg], pc & 0x3fff);
 }
 

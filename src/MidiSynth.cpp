@@ -1,6 +1,5 @@
 #include "MidiSynth.h"
 
-#if !PICO_RP2040
 
 #include <string.h>
 #include <stdint.h>
@@ -379,4 +378,3 @@ void __not_in_flash("midi") MidiSynth::gen_sound(uint8_t *buf_L, uint8_t *buf_R,
     }
 }
 
-#endif // !PICO_RP2040

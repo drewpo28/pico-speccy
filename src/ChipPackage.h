@@ -3,7 +3,7 @@
 //
 // Distinct from the compile-time build macro PICO_RP2350A (set by the board
 // header): that only says which package we *built for* (now 0/B on every
-// pico-spec RP2350 board). The functions here read the real chip at runtime via
+// pico-speccy RP2350 board). The functions here read the real chip at runtime via
 // the SYSINFO PACKAGE_SEL strap, so they're correct even on a B build running on
 // A silicon (or vice-versa).
 //
@@ -14,7 +14,6 @@
 // cached `extern bool rp2350a` global, which is only valid after main() sets it).
 // Usage anywhere the header is included:  if (IS_RP2350B) { ...use GPIO 30..47... }
 
-#if !PICO_RP2040
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -29,9 +28,3 @@ static inline bool chip_is_rp2350b(void) { return !chip_is_rp2350a(); }
 #define IS_RP2350A (chip_is_rp2350a())
 #define IS_RP2350B (chip_is_rp2350b())
 
-#else  // RP2040: neither package exists; keep the macros usable but constant.
-
-#define IS_RP2350A 0
-#define IS_RP2350B 0
-
-#endif

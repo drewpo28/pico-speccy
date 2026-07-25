@@ -35,10 +35,8 @@
 #include "ESPectrum.h"
 #include "wd1793.h"
 
-#if !PICO_RP2040
 #include "DivMMC.h"
 #include "MB02.h"
-#endif
 
 
 // #include "Snapshot.h"
@@ -47,7 +45,6 @@
 
 uint8_t page;
 
-#if !PICO_RP2040
 #define PEEK8(result,address) \
  page = address >> 14; \
  VIDEO::Draw(3,MemESP::ramContended[page]); \
@@ -55,12 +52,6 @@ uint8_t page;
      result = ((address) < 0x2000) ? MemESP::page0_lo[address] : MemESP::page0_hi[(address) & 0x1FFF]; \
  else \
      result = MemESP::romPeek(page, MemESP::ramCurrent[page], (address) & 0x3fff);
-#else
-#define PEEK8(result,address) \
- page = address >> 14; \
- VIDEO::Draw(3,MemESP::ramContended[page]); \
- result = MemESP::romPeek(page, MemESP::ramCurrent[page], (address) & 0x3fff);
-#endif
 
 // miembros estáticos
 
@@ -963,10 +954,8 @@ IRAM_ATTR void Z80::check_trdos() {
         return;
     }
 
-#if !PICO_RP2040
     if (DivMMC::enabled) return; // DivMMC automap handled in fetchOpcode/exec_nocheck
     if (MB02::enabled) return;   // MB-02 uses tape-compatible hooks, not 0x3Dxx trap
-#endif
 
     if (!Config::betadisk) return;
 
@@ -994,7 +983,7 @@ IRAM_ATTR void Z80::check_trdos() {
                     (!Z80Ops::is48 && Config::arch != "Profi" && MemESP::romInUse == 1 && !MemESP::newSRAM)) {
                     // Profi uses its own TR-DOS in ROM bank 1; others use the external TR-DOS ROM (bank 4)
                     uint8_t dosBank = (Config::arch == "Profi") ? 1 : 4;
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
                     // trdos-transition trace (PQDOS RST8 chain: FE00 stub →
                     // CALL 3D38 automap → bank1 → JP 5C92 exit — chasing where
                     // the BIOS-path boot diverges, 2026-07-09).
@@ -1028,7 +1017,7 @@ IRAM_ATTR void Z80::check_trdos() {
 
             if (doExit) {
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
                 // See matching [DOS MAP] trace above.
                 if (Z80Ops::isProfi) {
                     static int dosExitCnt = 0;
@@ -1163,7 +1152,6 @@ void Z80::doNMI(void) {
 
     activeNMI = false;
     lastFlagQ = false;
-#if !PICO_RP2040
     // ZEsarUX approach: reset DivMMC state before NMI so automap trap at 0x0066
     // fires correctly. Without this, if automap is already ON, preOpcFetch
     // won't set trap_after (it checks !automap) and 0x0066 reads C9=RET from
@@ -1177,7 +1165,6 @@ void Z80::doNMI(void) {
     if (MB02::enabled) {
         MB02::writePort17(0x60); // SRAM page 0, write enable
     }
-#endif
     nmi();
 
 }
@@ -1301,7 +1288,6 @@ IRAM_ATTR void Z80::exec_nocheck() {
 
         uint8_t pg = REG_PCh >> 6;
         VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
-#if !PICO_RP2040
         if (DivMMC::enabled) {
             DivMMC::preOpcFetch(REG_PC);
             // Fetch opcode from currently mapped memory
@@ -1315,7 +1301,6 @@ IRAM_ATTR void Z80::exec_nocheck() {
         } else if (pg == 0 && MemESP::divmmc_mapped) {
             opCode = (REG_PC < 0x2000) ? MemESP::page0_lo[REG_PC] : MemESP::page0_hi[REG_PC & 0x1FFF];
         } else
-#endif
         opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC & 0x3fff);
 
         regR++;
@@ -4915,7 +4900,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
                 if (REG_HL == 0x1F80) {
                     SaveFileExists = (Tape::tapeFileType == TAPE_FTYPE_TAP);
                     if (!SaveFileExists)
-                        OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR[Config::lang], LEVEL_WARN);
+                        OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
                 }
 
                 if (SaveFileExists) {
@@ -4949,7 +4934,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
 
                 //     printf("Tapesavename: %s\n",Tape::tapeSaveName.c_str());
                 //     if ( Tape::tapeSaveName == "" || Tape::tapeSaveName == "none" || !FileUtils::hasTAPextension(Tape::tapeSaveName) || stat(Tape::tapeSaveName.c_str(), &stat_buf) ) {
-                //         OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR[Config::lang], LEVEL_WARN);
+                //         OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
                 //         SaveRes = DLG_NO;
                 //     } else {
                 //         REG_DE--;

@@ -4,7 +4,7 @@
 // Passive mode only (the ESP can't accept inbound connections). Binary transfers.
 // RP2350 only, behind ZIFI_NET_CLIENT. All calls from the OSD/main thread.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "RemoteFs.h"
 
@@ -44,4 +44,4 @@ private:
     uint32_t sizeOf(const std::string& remote);
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

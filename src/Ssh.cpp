@@ -1,6 +1,6 @@
 #include "Ssh.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "ZiFiSock.h"
 #include "Debug.h"
@@ -35,7 +35,7 @@ enum {
     MSG_CHANNEL_SUCCESS = 99, MSG_CHANNEL_FAILURE = 100,
 };
 
-static const char* CLIENT_ID = "SSH-2.0-picospec_1.0";
+static const char* CLIENT_ID = "SSH-2.0-picospeccy_1.0";
 static const uint32_t CHAN_WINDOW = 0x100000; // 1 MB advertised window
 // Small max packet keeps each inbound CHANNEL_DATA (and channelRecv's leftover
 // buffer + readPacket's per-packet std::string) bounded — the heap is tight
@@ -662,4 +662,4 @@ void Ssh::disconnect() {
     chan_inbuf.clear();
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

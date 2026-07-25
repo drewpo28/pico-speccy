@@ -1,4 +1,4 @@
-// mbedTLS configuration for pico-spec's ZiFi network client (RP2350 only).
+// mbedTLS configuration for pico-speccy's ZiFi network client (RP2350 only).
 //
 // We use mbedTLS *only* as a crypto primitive library for a hand-written SSHv2
 // client (see Ssh.cpp) — NOT its TLS/X.509/net stack. This trims the build to
@@ -8,8 +8,8 @@
 // Selected via CMake: target_compile_definitions(... MBEDTLS_CONFIG_FILE=...).
 // Only pulled in when ZIFI_NET_CLIENT is enabled on an RP2350 target.
 
-#ifndef MBEDTLS_CONFIG_PICOSPEC_H
-#define MBEDTLS_CONFIG_PICOSPEC_H
+#ifndef MBEDTLS_CONFIG_PICOSPECCY_H
+#define MBEDTLS_CONFIG_PICOSPECCY_H
 
 // ── Platform ──────────────────────────────────────────────────────────────
 // We do NOT pull in mbedTLS entropy/CTR_DRBG: SSH supplies its own f_rng backed
@@ -118,4 +118,4 @@
 // include build_info.h itself. Wired in via the SDK's PICO_MBEDTLS_CONFIG_FILE
 // (see CMakeLists.txt), which sets MBEDTLS_CONFIG_FILE to this file's path.
 
-#endif // MBEDTLS_CONFIG_PICOSPEC_H
+#endif // MBEDTLS_CONFIG_PICOSPECCY_H

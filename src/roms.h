@@ -49,12 +49,10 @@ visit https://zxespectrum.speccy.org/contacto
 #include "romGluk.h"
 #include "roms/romSTS75.h"
 
-#if !PICO_RP2040
 // gb_rom_Alf_cart (built-in "Elf-1") removed — ALF carts are served lazily from SD
 // (see AlfCart). gb_rom_Alf = ALF system ROM; gb_rom_Alf_ep = open-bus filler.
 extern "C" const unsigned char gb_rom_Alf[];
 extern "C" const unsigned char gb_rom_Alf_ep[];
-#endif
 extern "C" unsigned char gb_rom_4_trdos_505d[];
 // gb_rom_4_trdos_503 / _504tm are no longer raw arrays: they are stored as small
 // read-only overlays over 5.05D (src/roms/trdos/, tools/rom_pack.py) and applied on
@@ -66,9 +64,7 @@ extern "C" unsigned char gb_rom_4_trdos_505d[];
 extern "C" const unsigned char gb_rom_4_trdos_custom[];
 // gb_rom_pentagon_128k (32K blob) removed: Pentagon is a 101-byte overlay over the
 // Sinclair 128K base now (roms/pentagon/). Custom Pentagon uses the 128K custom slot.
-#if !PICO_RP2040
 extern "C" unsigned char gb_rom_esxdos[];
 extern "C" unsigned char gb_rom_esxide[];
-#endif
 #include "roms/profi/romProfi.h"
 #endif

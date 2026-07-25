@@ -2,12 +2,12 @@
 
 // Minimal HTTP/1.1 GET client over ZiFiSock (ESP-01S AT firmware). Single,
 // non-mux connection on link 0; streams the response body and never buffers it.
-// Plain TCP only — the pico-spec catalog server is reached over plain HTTP, and
+// Plain TCP only — the pico-speccy catalog server is reached over plain HTTP, and
 // TLS to the upstream archives (vtrd.in/zxart.ee/…) is the server's job, so the
 // ESP never has to do the heavy/unreliable TLS handshake. RP2350 only, behind
 // ZIFI_NET_CLIENT. All calls run from the OSD/main thread (Z80 paused).
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -36,4 +36,4 @@ private:
     bool is_open;
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

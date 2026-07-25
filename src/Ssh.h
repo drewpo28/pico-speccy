@@ -14,7 +14,7 @@
 // SHA-256 fingerprint and consults a known_hosts file on SD (trust-on-first-use,
 // refuse on mismatch).
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -91,4 +91,4 @@ private:
                        const std::string& exchange_hash);
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

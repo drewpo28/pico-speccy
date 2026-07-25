@@ -1,6 +1,5 @@
 #pragma once
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 #include <string>
@@ -59,4 +58,3 @@ private:
     static bool   waitFor(const char* token, char* line_buf, size_t bufsz, uint32_t timeout_ms);
 };
 
-#endif // !PICO_RP2040

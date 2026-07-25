@@ -15,24 +15,18 @@
 #include <hardware/clocks.h>
 #include <hardware/uart.h>
 #include <hardware/watchdog.h>    // watchdog_caused_reboot (boot breadcrumb)
-#if !PICO_RP2040
 #include <hardware/structs/powman.h>  // chip_reset reason decode (boot breadcrumb)
-#endif
 
 #include <hardware/pll.h>
 
-#ifdef PICO_RP2350
 #include <hardware/regs/qmi.h>
 #include <hardware/structs/qmi.h>
 #include <pico/bootrom.h>              // rom_func_lookup_inline (flash QE fix window)
 #include <hardware/regs/pads_qspi.h>   // SD2/SD3 pull-ups (flash QE fix window)
 #include <hardware/structs/pads_qspi.h>
-#endif
 
 #include "ESPectrum.h"
-#if !PICO_RP2040
 #include "MidiSynth.h"
-#endif
 #include "Config.h"
 #include "BoardPins.h"
 #include "FileUtils.h"
@@ -957,7 +951,6 @@ bool toggle_color() {
 #endif
 
 uint8_t psram_pin;
-#if PICO_RP2350
 #include <hardware/exception.h>
 #include <hardware/structs/qmi.h>
 #include <hardware/structs/xip.h>
@@ -1142,10 +1135,6 @@ void __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
 uint8_t* PSRAM_DATA = (uint8_t*)0;
 uint32_t __not_in_flash_func(butter_psram_size)() { return 0; }
 #endif
-#else
-uint8_t* PSRAM_DATA = (uint8_t*)0;
-uint32_t __not_in_flash_func(butter_psram_size)() { return 0; }
-#endif
 
 // Linker-defined per-core stack bounds: core0 = SCRATCH_Y (__Stack*),
 // core1 = SCRATCH_X (__StackOne*). The fault can fire on EITHER core, so pick the
@@ -1170,7 +1159,6 @@ extern "C" void sigbus_handler(uint32_t *frame) {
     uint32_t bot  = core ? (uint32_t)(uintptr_t)&__StackOneBottom : (uint32_t)(uintptr_t)&__StackBottom;
     uint32_t top  = core ? (uint32_t)(uintptr_t)&__StackOneTop    : (uint32_t)(uintptr_t)&__StackTop;
     int ovf = (sp < bot);
-#ifndef PICO_RP2040
     // CFSR/BFAR only exist on Cortex-M3+ (not M0+)
     uint32_t cfsr = *(volatile uint32_t*)0xE000ED28u;
     uint32_t bfar = *(volatile uint32_t*)0xE000ED38u;
@@ -1181,29 +1169,9 @@ extern "C" void sigbus_handler(uint32_t *frame) {
     printf("SIGBUS[%d] core%u: PC=%08x LR=%08x SP=%08x CFSR=%08x BFAR=%08x stackOvf=%d (bot=%08x top=%08x)\n",
            count, (unsigned)core, (unsigned)pc, (unsigned)lr, (unsigned)sp, (unsigned)cfsr, (unsigned)bfar,
            ovf, (unsigned)bot, (unsigned)top);
-#else
-    printf("SIGBUS[%d] core%u: PC=%08x LR=%08x SP=%08x stackOvf=%d\n",
-           count, (unsigned)core, (unsigned)pc, (unsigned)lr, (unsigned)sp, ovf);
-#endif
 }
 // Naked trampoline: pass the stacked exception frame to sigbus_handler.
 // EXC_RETURN bit 2: 0 = MSP, 1 = PSP was active when the fault fired.
-#ifdef PICO_RP2040
-// Cortex-M0+: no IT blocks, TST only register form, high-reg immediates forbidden.
-void __attribute__((naked)) sigbus(void) {
-    __asm volatile (
-        "movs r0, #4\n"
-        "mov  r1, lr\n"
-        "tst  r0, r1\n"       // Z=1 if bit2(LR)=0 → MSP
-        "bne  1f\n"
-        "mrs  r0, msp\n"
-        "b    sigbus_handler\n"
-        "1:\n"
-        "mrs  r0, psp\n"
-        "b    sigbus_handler\n"
-    );
-}
-#else
 void __attribute__((naked)) sigbus(void) {
     __asm volatile (
         "tst    lr, #4\n"
@@ -1213,14 +1181,12 @@ void __attribute__((naked)) sigbus(void) {
         "b      sigbus_handler\n"
     );
 }
-#endif
 void __attribute__((naked, noreturn)) __printflike(1, 0) dummy_panic(__unused const char *fmt, ...) {
     printf("*** PANIC ***\n");
     if (fmt)
         printf(fmt);
 }
 
-#ifndef PICO_RP2040
 void __not_in_flash() flash_timings(int mhz) {
         const int max_flash_freq = Config::max_flash_freq * MHZ;
         const int clock_hz = mhz * MHZ;
@@ -1236,7 +1202,6 @@ void __not_in_flash() flash_timings(int mhz) {
                             rxdelay << QMI_M0_TIMING_RXDELAY_LSB |
                             divisor << QMI_M0_TIMING_CLKDIV_LSB;
 }
-#endif
 
 static void __not_in_flash_func(flash_info)() {
     if (rx[0] == 0) {
@@ -1245,7 +1210,6 @@ static void __not_in_flash_func(flash_info)() {
     }
 }
 
-#if !PICO_RP2040
 // Flash QE bit fix for Puya flash on RP2350 boards (see fhoedemakers/flash_config).
 // Puya ships with SR2.QE=0 and its 01h command writes SR1 only, so boot2's
 // Winbond-style 2-byte 01h status write silently fails — quad XIP keeps sampling
@@ -1412,7 +1376,6 @@ static void __no_inline_not_in_flash_func(flash_qe_fix)() {
         pads_qspi_hw->io[i] = pads_save[i];
     restore_interrupts(ints);
 }
-#endif
 
 // Try to switch sys clock with PLL lock timeout.
 // Returns true if PLL locked and clock switched; false if PLL did not lock
@@ -1461,7 +1424,6 @@ static bool __not_in_flash_func(try_set_sys_clock_khz)(uint32_t freq_khz) {
     return false;
 }
 
-#if !PICO_RP2040
 // Switch clk_sys to `mhz` and re-tune QMI flash (+ PSRAM) timing to match it — IRQs
 // off and entirely from RAM — then drop the XIP cache. After a flash erase/program the
 // bootrom leaves XIP at a conservative DEFAULT timing; reading flash at the overclock
@@ -1479,7 +1441,6 @@ void __not_in_flash_func(board_set_clock_and_timing)(uint32_t mhz) {
     xip_cache_invalidate_all();
     restore_interrupts(ints);
 }
-#endif
 
 #ifdef VGA_HDMI
 extern "C" uint8_t linkVGA01;
@@ -1490,7 +1451,7 @@ extern "C" int testPins(uint32_t pin0, uint32_t pin1);
 // CFG_TUSB_DEBUG_BREAKPOINT in tusb_config.h) — a bkpt freezes every debug
 // session on recoverable asserts (dongle re-enumeration). Count and move on.
 volatile uint32_t g_tusb_assert_count = 0;
-extern "C" void picospec_tusb_assert_hook(void) { g_tusb_assert_count++; }
+extern "C" void picospeccy_tusb_assert_hook(void) { g_tusb_assert_count++; }
 
 int main() {
     uptime_init();   // capture pre-reboot uptime from watchdog scratch (see uptime_seconds)
@@ -1503,7 +1464,6 @@ int main() {
     uart_init(uart_default, 115200);
     gpio_set_function(PICO_DEFAULT_UART_TX_PIN, GPIO_FUNC_UART);
     Debug::log("main: entry, wd_reboot=%d", (int)watchdog_caused_reboot());
-#if !PICO_RP2040
     // Decode WHY the chip reset (hw-traced 2026-07-21: "wd_reboot=0 mid-ZIP-extract"
     // reboots were undiagnosable — POR/BOR here means the supply sagged, RUN means
     // the reset button / debug probe, WDG means our own esp_hard_reset/crash path).
@@ -1518,25 +1478,14 @@ int main() {
                    (cr & POWMAN_CHIP_RESET_HAD_GLITCH_DETECT_BITS)        ? " GLITCH" : "",
                    (cr & POWMAN_CHIP_RESET_HAD_DP_RESET_REQ_BITS)         ? " DBG"    : "");
     }
-#endif
     uart_tx_wait_blocking(uart_default);   // drain before the clock switch garbles it
 #endif
     flash_info();
-#if !PICO_RP2040
     flash_qe_fix();
     if (flash_qe)
         Debug::log("main: flash QE (Puya) %s | jed=%02X sr1=%02X sr2=%02X vol=%02X wel=%02X fin=%02X",
                    flash_qe_text(), flash_qe_diag[0], flash_qe_diag[1], flash_qe_diag[2],
                    flash_qe_diag[3], flash_qe_diag[4], flash_qe_diag[5]);
-#endif
-#ifdef PICO_RP2040
-    vreg_set_voltage(VREG_VOLTAGE_MAX); // 1.30V — max for RP2040
-    sleep_ms(10);
-    if (!set_sys_clock_khz(CPU_MHZ * KHZ, false)) {
-        set_sys_clock_khz(252 * KHZ, true); // fallback to 252MHz
-    }
-
-#else
     #if 0
         vreg_set_voltage(VREG_VOLTAGE_1_10); // Set voltage  //
         delay(100);
@@ -1552,7 +1501,6 @@ int main() {
             set_sys_clock_khz(CPU_MHZ * KHZ, 1); // fallback to failsafe clocks
         }
     #endif
-#endif
 
 #if defined(DBG_UART_ENABLED)
     // Console UART explicitly enabled via <BOARD>_DBG_UART. We deliberately gate on
@@ -1580,7 +1528,6 @@ int main() {
     }
     #endif
 
-#if PICO_RP2350
     #ifdef BUTTER_PSRAM_GPIO
     #if BUTTER_PSRAM_GPIO == 255
         psram_pin = 255;   // PSRAM disabled via CMake kill-switch (set(PSRAM OFF))
@@ -1593,23 +1540,18 @@ int main() {
     #endif
     #endif
     exception_set_exclusive_handler(HARDFAULT_EXCEPTION, sigbus);
-#endif
 
 
 // NESPAD init moved below ESPectrum::setup() so Config (and thus the ZiFi pin
 // selection) is loaded first — see the guarded nespad_begin() after setup().
 
 #if !defined(BUTTER_PSRAM_GPIO) || BUTTER_PSRAM_GPIO != 255   // skip when PSRAM kill-switch on (set(PSRAM OFF))
-#if PICO_RP2350
     if (butter_psram_size() == 0 || psram_pin != PSRAM_PIN_SCK) {
-#endif
     #ifndef MURM2
         Debug::log("main: init_psram begin");
         init_psram();
     #endif
-#if PICO_RP2350
     }
-#endif
 #endif
     Debug::log("main: psram init done");
     // send kbd reset only after initial process passed
@@ -1638,11 +1580,9 @@ int main() {
     // has claimed any of its pins, in which case yield so the UART owns them.
     {
         bool nes_yield = false;
-#if !PICO_RP2040
         nes_yield = BoardPins::zifiOwnsPin(NES_GPIO_CLK) ||
                     BoardPins::zifiOwnsPin(NES_GPIO_DATA) ||
                     BoardPins::zifiOwnsPin(NES_GPIO_LAT);
-#endif
         if (!nes_yield) {
             nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
             nespad_active = true;
@@ -1696,12 +1636,10 @@ int main() {
 
     // Apply saved CPU frequency and flash/PSRAM timing from Config
     {
-#if !PICO_RP2040
         // Apply saved vreg voltage (vreg_disable_voltage_limit already called at boot)
         Debug::log2SD("main: vreg_set_voltage %d", (int)Config::vreq_voltage);
         vreg_set_voltage((enum vreg_voltage)Config::vreq_voltage);
         sleep_ms(10);
-#endif
         uint16_t running_mhz = clock_get_hz(clk_sys) / 1000000;
         Debug::log2SD("main: cpu_mhz cfg=%d running=%d", (int)Config::cpu_mhz, (int)running_mhz);
 
@@ -1732,10 +1670,8 @@ int main() {
             const uint16_t applied_mhz = clk_locked ? Config::cpu_mhz : running_mhz;
             // Re-apply flash/PSRAM timing for the now-active clock BEFORE re-enabling
             // interrupts, so the next flash/PSRAM access (incl. the audio ISR) is safe.
-#ifndef PICO_RP2040
             flash_timings(applied_mhz);
-#endif
-#if PICO_RP2350 && defined(BUTTER_PSRAM_GPIO) && BUTTER_PSRAM_GPIO != 255
+#if defined(BUTTER_PSRAM_GPIO) && BUTTER_PSRAM_GPIO != 255
             psram_retiming();
 #endif
             // Recalculate PIO SPI PSRAM clkdiv for the now-active sys_clk.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inject a file into the FAT12 filesystem inside a pico-spec FDI image.
+"""Inject a file into the FAT12 filesystem inside a pico-speccy FDI image.
 
 Usage:
     python3 tools/fdi_fat12_put.py image.fdi file [DOSNAME.EXT]

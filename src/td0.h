@@ -1,11 +1,11 @@
-// TD0 (Teledisk) disk image decoder for pico-spec
+// TD0 (Teledisk) disk image decoder for pico-speccy
 //
 // Ported from UnrealSpeccy (wldr_td0.cpp, Alone Coder / SMT).
 // Provides whole-file LZH (Huffman+LZSS) decompression and per-sector
 // decoding (raw / 2-byte pattern / RLE). The wd1793 betadisk emulation
 // uses these to build MFM track images on demand.
 //
-// RP2350 only — guarded by PICO_RP2040 at the call sites.
+// RP2350 only.
 
 #ifndef TD0_H
 #define TD0_H

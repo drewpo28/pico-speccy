@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Offline GM.DLS -> pico-spec GM wavetable soundbank packer (gm_bank.bin).
+# Offline GM.DLS -> pico-speccy GM wavetable soundbank packer (gm_bank.bin).
 #
 #   python3 tools/dls_pack.py <gm.dls> <out.bin> [output_rate]
 #
@@ -11,7 +11,7 @@
 # with resolved wsmp tuning / loop / EG1 / EG2 / LFO baked at <output_rate> so the
 # device never does float math.
 #
-# Default output_rate is 31250 (pico-spec's audio rate; the engine never
+# Default output_rate is 31250 (pico-speccy's audio rate; the engine never
 # resamples, so the bank rate MUST match). The resulting gm_bank.bin goes on the
 # SD card. It is NOT redistributable if derived from Microsoft's gm.dls — keep it
 # off public repos / firmware. See external/embeded-midi-synth/NOTICE.

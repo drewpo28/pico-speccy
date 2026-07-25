@@ -3,7 +3,6 @@
 
 #include <inttypes.h>
 
-#if !PICO_RP2040
 
 #include "ff.h"
 
@@ -211,6 +210,5 @@ inline void DivMMC::postOpcFetch() {
     }
 }
 
-#endif // !PICO_RP2040
 
 #endif // __DIVMMC_H

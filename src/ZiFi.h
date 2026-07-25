@@ -1,6 +1,5 @@
 #pragma once
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -164,4 +163,3 @@ private:
     static void uart_rx_irq_handler();
 };
 
-#endif // !PICO_RP2040

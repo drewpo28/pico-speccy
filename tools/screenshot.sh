@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Convert pico-spec framebuffer dump (made by screenshot.gdb or screenshot_profi.gdb) to PNG.
+# Convert pico-speccycy framebuffer dump (made by screenshot.gdb or screenshot_profi.gdb) to PNG.
 #
 # Usage:
 #   screenshot.sh           -- standard ZX framebuffer (uses screenshot.gdb output)
@@ -14,11 +14,11 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if [[ $PROFI -eq 1 ]]; then
-    FB=/tmp/picospec_profi_fb.bin
-    LUT=/tmp/picospec_profi_lut.bin
-    PAL=/tmp/picospec_profi_pal.bin
-    DIM=/tmp/picospec_profi_dim.txt
-    OUT=/tmp/picospec_profi_screen.png
+    FB=/tmp/picospeccycy_profi_fb.bin
+    LUT=/tmp/picospeccycy_profi_lut.bin
+    PAL=/tmp/picospeccycy_profi_pal.bin
+    DIM=/tmp/picospeccycy_profi_dim.txt
+    OUT=/tmp/picospeccycy_profi_screen.png
 
     if [[ ! -f "$FB" || ! -f "$LUT" || ! -f "$PAL" || ! -f "$DIM" ]]; then
         echo "Missing Profi dump files. Run screenshot_profi.gdb in an active GDB session first."
@@ -36,10 +36,10 @@ if [[ $PROFI -eq 1 ]]; then
     python3 "$SCRIPT_DIR/profi2png.py" "$FB" "$LUT" "$PAL" "$W" "$H" "$OUT"
     echo "$OUT"
 else
-    FB=/tmp/picospec_fb.bin
-    PAL=/tmp/picospec_pal.bin
-    DIM=/tmp/picospec_dim.txt
-    OUT=/tmp/picospec_screen.png
+    FB=/tmp/picospeccycy_fb.bin
+    PAL=/tmp/picospeccycy_pal.bin
+    DIM=/tmp/picospeccycy_dim.txt
+    OUT=/tmp/picospeccycy_screen.png
 
     if [[ ! -f "$FB" || ! -f "$PAL" || ! -f "$DIM" ]]; then
         echo "Missing dump files. Run screenshot.gdb in an active GDB session first."

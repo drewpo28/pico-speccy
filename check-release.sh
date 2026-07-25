@@ -17,10 +17,8 @@
 # you've enabled any of those on the target board, subtract their cost
 # manually — see OPTIONAL FEATURE COSTS at the bottom of the output.
 #
-# Cross-checked against the on-hardware figures in CLAUDE.md (ZERO: "~148KB
-# free heap at boot, ~5KB after framebuffer") — this script's model lands in
-# the same ballpark (single-digit-KB on ZERO) but is not exact; treat WARN/FAIL
-# as "go re-verify on real hardware", not as ground truth.
+# The model is an estimate, not a measurement; treat WARN/FAIL as "go re-verify
+# on real hardware", not as ground truth.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,31 +44,22 @@ VER=$(grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt)
 RAM_BASE=536870912  # 0x20000000
 
 # --- Board table: name | elf glob | total SRAM bytes | MCU family ---
-# RP2040 total SRAM: 264KB (270336B). RP2350/RP2350B: 520KB (532480B) — same
-# figure for the A and B package, they differ in GPIO count/pins, not SRAM.
+# RP2350/RP2350B: 520KB (532480B) — same figure for the A and B package, they
+# differ in GPIO count/pins, not SRAM.
 BOARDS=(
-    "ZERO|build-ZERO/bin/MinSizeRel/z0p1-spec-VGA-HDMI-*.elf|270336|RP2040"
-    "MURM_P1|build-MURM_P1/bin/MinSizeRel/m1p1-spec-VGA-HDMI-*.elf|270336|RP2040"
-    "MURM_P2|build-MURM_P2/bin/MinSizeRel/m1p2-spec-VGA-HDMI-*.elf|532480|RP2350"
-    "MURM2_P2|build-MURM2_P2/bin/MinSizeRel/m2p2-spec-VGA-HDMI-*.elf|532480|RP2350"
-    "PICO_PC|build-PICO_PC/bin/MinSizeRel/PCp2-spec-VGA-HDMI-*.elf|532480|RP2350"
-    "PICO_DV|build-PICO_DV/bin/MinSizeRel/DVp2-spec-VGA-HDMI-*.elf|532480|RP2350"
-    "ZERO2|build-ZERO2/bin/MinSizeRel/z0p2-spec-VGA-HDMI-*.elf|532480|RP2350"
+    "MURM|build-MURM/bin/MinSizeRel/m1-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "MURM2|build-MURM2/bin/MinSizeRel/m2-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "PICO_PC|build-PICO_PC/bin/MinSizeRel/PC-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "PICO_DV|build-PICO_DV/bin/MinSizeRel/DV-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "ZERO2|build-ZERO2/bin/MinSizeRel/z0-speccy-VGA-HDMI-*.elf|532480|RP2350"
 )
 
-# --- Fixed boot-time heap mallocs, default config, per MCU family ---
-# RP2040 (ZERO / MURM_P1):
-#   MemESP pages 1,2,3: 3x `new unsigned char[16384]`  (ESPectrum.cpp ~798-841)  = 49152
-#   Framebuffer, default 320x240 landscape (Video.cpp / DMABufferDescriptor.h)  = 78084
-#   render_core (core1, concurrent): vga_alloc_buffers + lines_pattern_data     ~ 8500
-FIXED_BOOT_RP2040=$((49152 + 78084 + 8500))
-
-# RP2350 (all others):
-#   MemESP pages 1,2,3 are static (0 heap) on RP2350, unlike RP2040
+# --- Fixed boot-time heap mallocs, default config ---
+#   MemESP pages 1,2,3 are static (0 heap)
 #   WD1793 track buffer: `malloc(DISK_TRACK_BUF_SZ)`, unconditional            = 12800
 #   Framebuffer, default 320x240 landscape                                    = 78084
-#   TurboSubsys (AY chip1): default ON on RP2350 (turbosound=3)               ~ 1300
-#   render_core (core1, concurrent): RP2350-HDMI path is static/0-heap, but
+#   TurboSubsys (AY chip1): default ON (turbosound=3)                         ~ 1300
+#   render_core (core1, concurrent): the HDMI path is static/0-heap, but
 #   VGA-selected boards still allocate ~8-9KB via vga_alloc_buffers           ~ 8500
 FIXED_BOOT_RP2350=$((12800 + 78084 + 1300 + 8500))
 
@@ -88,7 +77,7 @@ sram_static_bytes() {
     '
 }
 
-printf "pico-spec pre-release memory check — v%s\n\n" "$VER"
+printf "pico-speccy pre-release memory check — v%s\n\n" "$VER"
 printf "%-10s %-8s %10s %10s %10s %10s  %s\n" \
     "BOARD" "MCU" "STATIC" "FREE@STAT" "FIXEDBOOT" "PROJECTED" "STATUS"
 
@@ -108,11 +97,7 @@ for entry in "${BOARDS[@]}"; do
     STATIC=$(sram_static_bytes "$ELF")
     FREE_AT_STATIC=$((TOTAL_SRAM - STATIC))
 
-    if [ "$MCU" = "RP2040" ]; then
-        FIXED_BOOT=$FIXED_BOOT_RP2040
-    else
-        FIXED_BOOT=$FIXED_BOOT_RP2350
-    fi
+    FIXED_BOOT=$FIXED_BOOT_RP2350
 
     PROJECTED=$((FREE_AT_STATIC - FIXED_BOOT))
 

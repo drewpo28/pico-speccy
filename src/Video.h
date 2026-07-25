@@ -46,7 +46,6 @@ visit https://zxespectrum.speccy.org/contacto
 #define SPEC_W 256
 #define SPEC_H 192
 
-#if !PICO_RP2040
 // Free SRAM that must remain after the Gigascreen prev-FB is allocated, so the
 // running system keeps working room. Shared by VIDEO::ensurePrevFB (the live
 // allocation guard) and the SRAM budget gate (Subsystems::featureMargin for
@@ -54,7 +53,6 @@ visit https://zxespectrum.speccy.org/contacto
 // ensurePrevFB silently declines (Gigascreen stays off, no popup). Empirically
 // the system runs fine down to ~20 KB free, so 24 KB leaves a small buffer.
 static constexpr size_t GIGASCREEN_PREVFB_HEADROOM = 24 * 1024;
-#endif
 
 #define TSTATES_PER_LINE 224
 #define TSTATES_PER_LINE_128 228
@@ -147,9 +145,7 @@ public:
   void restore_ram(void* p, size_t sz);
 };
 
-#if !PICO_RP2040
 void initGigascreenBlendLUT();
-#endif
 
 class VIDEO
 {
@@ -188,7 +184,6 @@ public:
   static void MainScreen_Snow_Opcode(bool contended);
   
   // static void DrawBorderFast();
-#if !PICO_RP2040
   static void InitPrevBuffer();
 
   // Lend the (dormant) Gigascreen prev framebuffer as scratch SRAM for the
@@ -202,7 +197,6 @@ public:
   // Byte size the Gigascreen prev-FB needs in the *current* video mode (4-bit
   // packed). Used by the SRAM budget manager to cost the Gigascreen feature.
   static size_t gigascreenPrevFBBytes();
-#endif
 
   static void Border_Blank();
 
@@ -224,9 +218,6 @@ public:
 
   static uint8_t* grmem;
   static uint8_t* profi_clrmem;   // Profi hires color attr page (56 or 58), NULL if in SPI PSRAM
-#if !PICO_RP2040
-#endif
-#if !PICO_RP2040
   // pair_lookup[ink][paper] → safe HDMI palette index (avoids sync range 220-244, border 255).
   // Built by init_profi_pair_lookup() in Reset(). Used by rasterizer and passed to HDMI driver.
   static uint8_t profi_pair_lookup[16][16];
@@ -258,7 +249,6 @@ public:
   // conv_color rewrite races active scanout otherwise — visible as a stable
   // palette tear line during guest palette animation (Karabas-Pro tests).
   static void profiPaletteApplyPending();
-#endif
 
   static bool isProfiDS80();
   static void updateBorderBrd(); // set VIDEO::brd correctly for current mode (DS80 or normal)
@@ -339,14 +329,11 @@ public:
   static void disableGigascreenForProfi();
 
   // Timex SCLD video modes
-#if !PICO_RP2040
   static uint8_t timex_port_ff;   // bits 0-5 of port 0xFF
   static uint8_t timex_mode;      // cached (timex_port_ff & 7)
   static uint8_t timex_hires_ink; // mode 6: ink palette index (0-7)
-#endif
 
   // ULA+
-#if !PICO_RP2040
   static bool ulaplus_enabled;
   static uint8_t ulaplus_reg;
   static uint8_t ulaplus_palette[64];
@@ -366,7 +353,6 @@ public:
   static void mode16colUpdatePlanes();
   static void ensure16colLut();  // alloc+build the 512 B decode LUT (no-op if present)
   static void free16colLut();    // release the decode LUT — 16col costs 0 SRAM when off
-#endif
 
   // Palette transform (Default, Grayscale, etc.)
   static void applyPalette();

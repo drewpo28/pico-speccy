@@ -47,12 +47,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ChipPackage.h"
 
 #define MEM_PG_SZ 0x4000
-#if PICO_RP2350
 // with gigascreen
 #define MEM_REMAIN (14*16*1024)
-#else
-#define MEM_REMAIN (6*16*1024)
-#endif
 
 extern uint32_t MEM_PG_CNT;
 extern uint8_t* PSRAM_DATA;
@@ -74,12 +70,10 @@ extern volatile uint32_t mem_acc_dirty_cnt, mem_acc_dirty_sum;
 #endif
 uint32_t butter_psram_size();
 extern uint8_t rx[4];
-#if !PICO_RP2040
 extern uint8_t flash_qe;       // Puya QE-bit fix status (0=n/a; see flash_qe_text())
 extern uint8_t flash_qe_diag[6];
 const char* flash_qe_text();
 extern uint8_t* g_alfWindow;   // AlfCart's 16K SD-faulted window (nullptr = unmounted)
-#endif
 extern "C" uint32_t psram_size();   // SPI PSRAM size (0 on butter/QSPI boards)
 
 enum mem_type_t {
@@ -97,15 +91,9 @@ enum mem_type_t {
 // priority: the two backends never coexist on real boards, but if both probes
 // report a size the established SPI dispatch stays authoritative.
 static inline bool vram_butter(uint32_t ba) {
-#if PICO_RP2040
-    (void)ba;
-    return false;
-#else
     return psram_size() == 0 && butter_psram_size() >= ba + MEM_PG_SZ;
-#endif
 }
 
-#if !PICO_RP2040
 // Uncached, non-allocating alias (XIP_NOCACHE_NOALLOC window) of a butter
 // backing offset.  ALL vram-backing traffic (page swaps, accessor per-byte
 // access, snapshot load/save) goes through this alias so it never allocates
@@ -116,7 +104,6 @@ static inline bool vram_butter(uint32_t ba) {
 static inline uint8_t* butter_nc(uint32_t ba) {
     return (uint8_t*)((uintptr_t)PSRAM_DATA + 0x04000000u + ba);
 }
-#endif
 
 class mem_desc_t {
     static std::list<mem_desc_t> pages; // a pool of assigned pages
@@ -363,7 +350,6 @@ public:
         if (page < 4 && ramCurrent[page] == nullptr) promoteBank(page);
     }
 
-#if !PICO_RP2040
     static uint8_t* page0_lo;      // 0x0000-0x1FFF when DivMMC/MB02 mapped
     static uint8_t* page0_hi;      // 0x2000-0x3FFF when DivMMC/MB02 mapped
     static bool divmmc_mapped;     // DivMMC/MB02 memory currently visible at page 0
@@ -374,7 +360,6 @@ public:
                                    // page0 (pool frame!) — writes through the
                                    // page0 window must mark it or the eviction
                                    // write-back is skipped (BS-DOS data loss)
-#endif
 
     static uint8_t readbyte(uint16_t addr);
     static uint16_t readword(uint16_t addr);
@@ -416,11 +401,9 @@ inline uint8_t MemESP::readbyte(uint16_t addr) {
     if (__builtin_expect(Config::numMemReadBP != 0, 0))
         checkMemReadBP(addr);
     uint8_t page = addr >> 14;
-#if !PICO_RP2040
     if (page == 0 && divmmc_mapped) {
         return (addr < 0x2000) ? page0_lo[addr] : page0_hi[addr & 0x1FFF];
     }
-#endif
 #if MEM_ACCESS_TRACE
     // Count only RAM accesses (flash ROM at 0x10xxxxxx is plugged via direct()
     // without sync(), so its slot pointer would be stale — the guard filters it).
@@ -438,7 +421,6 @@ inline void MemESP::writebyte(uint16_t addr, uint8_t data)
     if (__builtin_expect(Config::numMemWriteBP != 0, 0))
         checkMemWriteBP(addr);
     uint8_t page = addr >> 14;
-#if !PICO_RP2040
     if (page == 0 && ramCurrent[0] == g_alfWindow) return; // ALF lazy cart: page 0 is ROM
     if (page == 0 && divmmc_mapped) {
         if (addr < 0x2000) {
@@ -462,7 +444,6 @@ inline void MemESP::writebyte(uint16_t addr, uint8_t data)
         }
         return;
     }
-#endif
     uint8_t* p = ramCurrent[page];
     // Accessor-mode bank: write goes straight to the SPI backing store
     // (must be checked before the ROM filter — nullptr < 0x11000000).

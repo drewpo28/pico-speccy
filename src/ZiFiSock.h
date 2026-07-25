@@ -5,7 +5,7 @@
 // The ESP runs stock Espressif AT firmware; this turns AT+CIPSTART/CIPSEND and
 // the unsolicited +IPD stream into a small blocking-with-timeout socket API that
 // FTP and the hand-rolled SSH transport sit on. RP2350 only; gated behind
-// ZIFI_NET_CLIENT so RP2040 builds get zero footprint.
+// ZIFI_NET_CLIENT so ZIFI_NET_CLIENT=OFF builds get zero footprint.
 //
 // Usage model: WiFi is joined first via ZiFiAT::connect(). Then begin(mux) puts
 // the ESP into single- or multi-connection mode and ZiFiSock owns the ESP RX
@@ -13,7 +13,7 @@
 // socket is open (both drain the same ZiFi::recvRaw ring). All calls run from the
 // OSD / main thread (the Z80 is paused), never from an IRQ.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -119,4 +119,4 @@ private:
     static bool atCmd(const char* cmd, const char* expect, uint32_t timeout_ms);
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

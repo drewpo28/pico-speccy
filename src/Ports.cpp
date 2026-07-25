@@ -53,17 +53,14 @@ visit https://zxespectrum.speccy.org/contacto
 
 #include "OSDMain.h"
 
-#if !PICO_RP2040
 #include "../drivers/graphics/graphics.h"
 extern "C" const uint32_t profi_default_palette16[16];
-#endif
 
 #include "Midi.h"
 #include "Z80DMA.h"
 #ifdef USE_GS
 #include "GS/GS.h"
 #endif
-#if !PICO_RP2040
 #include "DivMMC.h"
 #include "IDE.h"
 #include "ZiFi.h"
@@ -71,7 +68,6 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "MB02.h"
 #include "hardware/gpio.h"
 #include "sdcard.h"
-#endif
 
 // Set to 1 to trace every 0x7FFD / 0xDFFD paging-port write (Profi debugging).
 // Off by default — these fire thousands of times during DS80/CP/M init.
@@ -93,7 +89,7 @@ uint8_t* ds80_dbg_grmem  = nullptr;  // display pixel page (4 or 6)
 int      ds80_dbg_wr_cnt = 0;        // reset each frame so we always capture first write
 #endif
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
 // Watchdog for the DS80/CP/M paging hang investigated 2026-07-08/09: DFFD/7FFD
 // writes cycling forever among a small handful of PCs, with no manual dump
 // timing possible (the freeze point isn't predictable enough to catch by hand).
@@ -177,7 +173,6 @@ uint8_t Ports::port028B = 0;
 uint8_t Ports::serialMouseCtl = 0;
 uint8_t Ports::serialMouseIntEn = 0;
 
-#if !PICO_RP2040
 // Serial-mouse packet pipeline (serial_mouse.vhd st_prepare/st_byteN machine,
 // simplified: the 8-tact RxRDY gaps between bytes are dropped — drivers poll
 // the status register or take level INTs, and both re-sample RxRDY anyway).
@@ -208,33 +203,24 @@ static void smTryBuildPacket() {
   sm_pkt_pos = 0;
   sm_rxrdy = true;
 }
-#endif
 
 void Ports::serialMouseTick() {
-#if !PICO_RP2040
   smTryBuildPacket(); // no-op unless RxE armed and deltas/buttons are pending
-#endif
 }
 
 void Ports::serialMouseReset() {
   serialMouseCtl = 0;
   serialMouseIntEn = 0;
-#if !PICO_RP2040
   sm_pkt_pos = 3;
   sm_rxrdy = false;
   sm_last_btns = 0;
   ESPectrum::mouseDX = ESPectrum::mouseDY = 0;
-#endif
 }
 
 bool Ports::serialMouseIntAsserted() {
-#if !PICO_RP2040
   // hw_int.vhd: INT while (RxRDY && RxE) && CPM && INT_EN. sm_rxrdy is only
   // ever set with RxE on, so the RxE term is already folded in.
   return sm_rxrdy && serialMouseIntEn && Z80Ops::isProfi && (portDFFD & 0x20);
-#else
-  return false;
-#endif
 }
 
 // PQ-DOS serial keyboard scancode queue (drained by the #D3 read handler).
@@ -247,9 +233,7 @@ void Ports::pushKey(uint8_t scan) {
   pqkBuf[pqkHead] = scan;
   pqkHead = nh;
 }
-#if !PICO_RP2040
 Ports::PIT8253Channel Ports::pitChannels[3] = {};
-#endif
 
 uint8_t (*Ports::getFloatBusData)() = &Ports::getFloatBusData48;
 
@@ -384,7 +368,6 @@ IRAM_ATTR void Ports::FDDStep(bool force) {
   CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
 }
 
-#if !PICO_RP2040
 IRAM_ATTR static void FDDStep_MB02(bool force) {
   CPU::tstates_diff += p_states - CPU::prev_tstates;
   CPU::prev_tstates = p_states;
@@ -395,11 +378,9 @@ IRAM_ATTR static void FDDStep_MB02(bool force) {
     rvmWD1793Step(&ESPectrum::mb02_fdd, CPU::tstates_diff / WD177XSTEPSTATES);
   CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
 }
-#endif
 
 uint8_t nes_pad2_for_alf(void);
 static uint8_t newAlfBit = 0;
-#if !PICO_RP2040
 // ALF cartridges are served lazily from SD on demand (AlfCart), like a wd1793 disk:
 // no built-in cart, no flash region. There is no default cart — the cart "drive" is
 // empty (open bus) until the user mounts a .rom/.bin from SD, exactly like TR-DOS
@@ -420,7 +401,6 @@ void alfBindCart() {
         AlfCart::unmount();
     }
 }
-#endif
 static uint8_t profi_fdc_busy = 0;
 // Profi CP/M: detect DSKKE9A "CALL 0x40EA → JR 0x40D9" re-issue loop.
 // When drive has no disk, successive OUT(0x1F) commands are issued at CPU
@@ -462,7 +442,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   uint8_t rambank = address >> 14;
   p_states = CPU::tstates;
 
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
   // Unconditional probe: fires for ANY IN on a Profi FDC-relevant low byte,
   // regardless of whether the CPM/ROM14 gates below actually claim it — shows
   // whether the Z80 program even reaches these addresses, and with what
@@ -529,7 +509,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
 
   // SPI-flash port probe (Karabas-Pro dev manual: #C7/#87/#A7/#E7/#67, CS
   // requires ~IORQ=0 & A(7:0)=port & CPM(DFFD.5)=1 & ROM14(7FFD.4)=1 &
-  // DS80(DFFD.7)=1 — pico-spec doesn't decode these at all). PQDOS bank0 ROM
+  // DS80(DFFD.7)=1 — pico-speccy doesn't decode these at all). PQDOS bank0 ROM
   // has real IN/OUT to #C7/#A7/#E7 (~0x2492-0x24DB in profi64k.rom) — unknown
   // yet whether the boot/hang path actually reaches it. Unconditional probe,
   // capped, to settle that on real hardware.
@@ -579,7 +559,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   // every bank-0 access through SD-swap on no-PSRAM boards (FPS halves).
   if ((Z80Ops::is512 || Z80Ops::is1024 || Z80Ops::isProfi)) {
     if (p8 == 0xFB) { // Hidden RAM on
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       // Suspected trigger for the "loaded data landed in the wrong page0 bank"
       // hang: recoverPage0() maps page0 to ram[MEM_PG_CNT+romLatch] once
       // newSRAM is true, which can differ from whatever bank a file-load loop
@@ -592,7 +572,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       return 0xFF;
     }
     if (p8 == 0x7B) { // Hidden RAM off
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
       Debug::log("[HIDDEN-RAM] OFF romLatch=%d pc=%04X", MemESP::romLatch, Z80::getRegPC());
 #endif
       MemESP::newSRAM = false;
@@ -600,7 +580,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       return 0xFF;
     }
   }
-#if !PICO_RP2040
   // IDE/HDD — NEMO scheme. Enabled on ANY machine when the user selects NEMO
   // (the NEMO interface is a bus card, not machine-specific). Decoded BEFORE the
   // ULA even-port branch because NEMO register ports (e.g. 0xC8/0xD0/0xF0) have
@@ -620,7 +599,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     }
     // else: not an IDE sub-address — fall through (don't shadow AY/ULA etc.)
   }
-#endif
   // ULA PORT
   if ((address & 0x0001) == 0) {
     VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
@@ -633,7 +611,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         if ((portHigh & mask) != 0)
           data &= port[row];
       }
-#if !PICO_RP2040
       // Profi extended keyboard: bit 5 of each standard row.
       // portHigh bit i set → row i is selected → AND extPort[i] with bit 5 only.
       // (other bits of extPort are kept 1 so they don't affect bits 0-4 of data)
@@ -652,7 +629,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         else
           data &= ~0x80;
       }
-#endif
     }
     if (Tape::tapeStatus == TAPE_LOADING) LED::touchR(LED::TAPE);
     if (Tape::TapePortRead()) return data;
@@ -676,7 +652,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     }
   } else {
     ioContentionLate(MemESP::ramContended[rambank]);
-#if !PICO_RP2040
     // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
     // 0xEFF7 (hi=0xEF > 0xC7) falls through to Pentagon mode16col handler below
     if (Config::zifi_enabled && p8 == 0xEF) {
@@ -723,8 +698,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
                    address, Z80::getRegPC(), Ports::portEFF7, RTC::dbgSel(), (unsigned)in_n);
     }
 #endif
-#endif
-#if !PICO_RP2040
     if (ia && bitRead(p8, 7) == 0) {
       if (bitRead(p8, 1) == 0) { // 1D
         MemESP::newSRAM = true;
@@ -734,8 +707,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         MemESP::recoverPage0();
       }
     }
-#endif
-#if !PICO_RP2040
     // ULA+ data port read
     if (Config::ulaplus && address == 0xFF3B) {
       LED::touchR(LED::ULAPLUS);
@@ -784,11 +755,9 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       ioContentionLate(MemESP::ramContended[rambank]);
       return Z80DMA::readPort();
     }
-#endif
     // The default port value is 0xFF.
     data = 0xff;
 
-#if !PICO_RP2040
     // MB-02+ ports: FDC (#0F/#2F/#4F/#6F), floppy status (#13)
     if (MB02::enabled) {
       uint8_t lo = address & 0xFF;
@@ -922,7 +891,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // (synthesized from/applied to ESPectrum::multiplicator). The rest are
     // dead signals even in real hardware (rom1..rom5, ram0..ram7 assigned but
     // unused; rom0 only feeds the FPGA config-flash loader path — not
-    // applicable to pico-spec's static ROM-array model). No PQDOS build up to
+    // applicable to pico-speccy's static ROM-array model). No PQDOS build up to
     // BIOS 0.41h1 touches #008B/#018B at all (checked 2026-07-08).
     if (Z80Ops::isProfi) {
       if (address == 0x028B) {
@@ -959,7 +928,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       //           (scancode → E) then #F3 again (modifiers → D), toggling the
       //           border each pass (the "flashing border" = waiting for a key).
       // PQDOS has NO IN A,(#FE) matrix path anywhere, so this is the only way to
-      // feed input.  We drain Ports::pqkBuf (filled from pico-spec's keyboard,
+      // feed input.  We drain Ports::pqkBuf (filled from pico-speccy's keyboard,
       // see ESPectrum::processKeyboard): #F3 reports bit1=1 while a scancode is
       // queued; #D3 returns it and pops the queue; the follow-up #F3 read then
       // reports 0 → modifiers 0.  Scancodes are QDOS key-table indices.
@@ -1029,7 +998,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         return s;
       }
     }
-#endif
 
     // Beta-128 ports: accessible when TR-DOS ROM is paged in,
     // or when a raw-format disk (UDI/FDI/MBD/PRO) is inserted (copy-protected
@@ -1038,7 +1006,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // (no real disk attached) so the BIOS boot menu can proceed. But if ANY
     // disk is mounted (TRD/SCL/FDI/UDI/MBD/Pro), route to real FDC so TR-DOS
     // and CP/M boot disk detection works.
-#if !PICO_RP2040
     bool has_raw_disk = ESPectrum::fdd.disk[ESPectrum::fdd.diskS] &&
         (ESPectrum::fdd.disk[ESPectrum::fdd.diskS]->IsUDIFile ||
          ESPectrum::fdd.disk[ESPectrum::fdd.diskS]->IsFDIFile ||
@@ -1048,10 +1015,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // Any mounted disk — includes TRD/SCL which are not "raw" but still need
     // real FDC routing so Profi SYS ROM disk probe succeeds.
     bool has_any_disk = ESPectrum::fdd.disk[ESPectrum::fdd.diskS] != nullptr;
-#else
-    bool has_raw_disk = false;
-    bool has_any_disk = false;
-#endif
     // skip_real_fdc: bypass real WD1793 during Profi SYS ROM boot ONLY when
     // no disk is mounted at all.  With any disk (TRD/SCL/FDI/...), let the
     // real FDC handle it so the SYS ROM disk probe can succeed.
@@ -1136,12 +1099,10 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // Returning 0x90 (BUSY=0, NOT_READY=1, SEEK_ERROR=1):
     //   • bit 0 = 0  → RRCA carry = 0 → JR C not taken → busy-wait exits normally
     //   • bit 4 = 1  → AND 0x10 ≠ 0  → error path at 0x40BD (SCF/RET carry=1)
-#if !PICO_RP2040
     if (Z80Ops::isProfi && (portDFFD & 0x20) && !has_raw_disk &&
         (address & 0xE3) == 0x03) {
       return kRVMWD177XStatusNotReady | kRVMWD177XStatusSeek;
     }
-#endif
 
     if (!skip_real_fdc && (ESPectrum::trdos || has_raw_disk)) {
 
@@ -1348,7 +1309,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       }
     }
 #endif
-#if !PICO_RP2040 // RTC (and Profi itself) are RP2350-only
     if (Z80Ops::isProfi) {
       bool cpm = (portDFFD & 0x20), rom14 = MemESP::romLatch, dos = ESPectrum::trdos;
       if ((cpm && rom14) || (dos && !rom14)) {
@@ -1365,7 +1325,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // #FF/#BF (AS) is write-only per the manual — no read defined.
       }
     }
-#endif
 
     /// if (ESPectrum::ps2mouse && Config::mouse == 1)
     // Karabas-Pro manual p.25-27: Kempston Mouse gate is "CPM=0" — in CP/M
@@ -1484,9 +1443,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
               if (Z80Ops::isProfi) VIDEO::profi_clrmem = nullptr;
             }
             if (Config::gigascreen_onoff == 2) VIDEO::gigascreen_auto_countdown = 3;
-#if !PICO_RP2040
             if (VIDEO::mode16col_enabled) VIDEO::mode16colUpdatePlanes();
-#endif
           }
           MemESP::romLatch = bitRead(data, 4);
           if (!ESPectrum::trdos) {
@@ -1582,7 +1539,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (Config::numPortWriteBP > 0 && Config::hasBreakPoint(address, Config::BP_PORT_WRITE))
     CPU::portBasedBP = true;
   uint8_t rambank = address >> 14;
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
   // Unconditional probe — see the matching read-side comment in Ports::input.
   if (Z80Ops::isProfi) {
     uint8_t lo8f = address & 0xFF;
@@ -1638,7 +1595,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
   }
 #endif
-#if !PICO_RP2040
   // Profi dynamic palette (#7E): per ZXMAK2 UlaProfi5XX.WritePortFE / hardware
   // docs, any OUT with (address & 0x0081) == 0 (CS: A0=0, A7=0) is a palette
   // write:
@@ -1656,7 +1612,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     if (portDFFD & 0x80)
       VIDEO::profiPaletteWrite(index, color);
   }
-#endif
 
   if (Z80Ops::isByte && address >= 0xC000) {
     // вместо VIDEO::Draw(1, MemESP::ramContended[rambank]);
@@ -1673,7 +1628,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   uint8_t a8 = (address & 0xFF);
   p_states = CPU::tstates;
 
-#if !PICO_RP2040
   // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
   // 0xEFF7 (hi=0xEF > 0xC7) falls through to Pentagon mode16col handler below
   if (Config::zifi_enabled && a8 == 0xEF) {
@@ -1715,7 +1669,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // Karabas-Pro's own native RTC ports (#FF/#BF AS, #DF/#9F DS) are handled
   // LATER in this function, after the Beta-128/FDC write switch — see the
   // read-side comment in Ports::input for why (FDC must get first refusal).
-#endif
 
   if (address == 0xAFF7) {
     LED::touchW(LED::RAM);
@@ -1745,7 +1698,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // bit [7]: hires video mode — screen at RAM page 4/6 instead of 5/7
   if (Z80Ops::isProfi && address == 0xDFFD) {
     ++Ports::portdffd_cnt;
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
     checkPagingStuck(Z80::getRegPC());
 #endif
     LED::touchW(LED::RAM);
@@ -1811,7 +1764,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         uint32_t totPages = ram_pages + butter_pages + psram_pages + swap_pages;
         VIDEO::profi_clrmem = (clrPage < totPages) ? MemESP::ram[clrPage].direct() : nullptr;
         // Debug::log("[DFFD] DS80 on: clrPage=%u tot=%u clrmem=%p grmem=%p", clrPage, totPages, VIDEO::profi_clrmem, VIDEO::grmem);
-#if !PICO_RP2040
         // DEFERRED: hdmi_set_profi_ds80_mode() writes conv_color[] which the HDMI
         // DMA reads in real time.  Calling it here (Z80 loop, core0, active scan)
         // races the DMA on core1 → TMDS corruption → picture disappears.
@@ -1833,11 +1785,9 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
             }
         }
         VIDEO::updateBorderBrd();
-#endif
       } else {
         VIDEO::grmem        = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
         VIDEO::profi_clrmem = nullptr;
-#if !PICO_RP2040
         // DEFERRED: same race condition — defer deactivation to EndFrame vblank.
         extern volatile bool profi_ds80_active;
         bool exiting_ds80 = profi_ds80_active || VIDEO::profi_ds80_activate_pending;
@@ -1866,12 +1816,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
           for (int y = 0; y < (int)VIDEO::vga.yres; y++)
             if (VIDEO::vga.frameBuffer[y]) memset(VIDEO::vga.frameBuffer[y], 0, VIDEO::vga.xres);
         }
-#endif
       }
     }
   }
 
-#if !PICO_RP2040
   // Port #EFF7 — extended-feature register (per UnrealSpeccy emul.h):
   //   D0 (0x01) = EFF7_4BPP      — 4-bit-per-pixel mode
   //   D1 (0x02) = EFF7_512       — 512-pixel hires mode (Profi CP/M)
@@ -1895,10 +1843,8 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       }
     }
   }
-#endif
 
   bool ia = Z80Ops::isALF;
-#if !PICO_RP2040
   if (ia) {
     if (a8 == 0xFE) {
       newAlfBit = (data >> 3) & 1;
@@ -1935,8 +1881,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       return;
     }
   }
-#endif
-#if !PICO_RP2040
   // IDE/HDD — NEMO scheme. Enabled on ANY machine when the user selects NEMO
   // (bus card, not machine-specific). Decoded BEFORE the ULA even-port branch
   // (NEMO register ports have A0=0). 16-bit data via A0 latch. On Profi the
@@ -1955,18 +1899,15 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     // else: not an IDE sub-address — fall through (don't shadow AY/ULA etc.)
   }
-#endif
   // ULA =======================================================================
   if ((address & 0x0001) == 0) {
     port254 = data;
-#if !PICO_RP2040
     // BX0 (blue LSB of the 3:3:3 palette) is port #FE bit7 — latched here for
     // profiPaletteWrite() and for the PAL_DETECT read-back self-test (Ports::input).
     if (Z80Ops::isProfi)
       VIDEO::profi_bx0_latch = (data >> 7) & 1;
-#endif
     // Border color
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
     // Red border (=2) is a classic ZX error indicator. If PQDOS/TRDBOOT sets it
     // from an error handler, this PC pinpoints WHICH error the boot hits. Log
     // every distinct border-colour change on Profi so we see the error signal.
@@ -1985,11 +1926,9 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
       VIDEO::borderColor = data & 0x07;
-#if !PICO_RP2040
       if (VIDEO::ulaplus_enabled)
         VIDEO::ulaPlusUpdateBorder();
       else
-#endif
         VIDEO::updateBorderBrd();
     }
     if (Config::tape_player)
@@ -2016,7 +1955,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
       return;
     }
-#if !PICO_RP2040
     // KR580VI53 (8253 PIT) — Byte computer synthesizer
     // =========================
     if (Z80Ops::isByte && (a8 & 0x9F) == 0x8E) {
@@ -2046,10 +1984,8 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         }
       }
     }
-#endif
     VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
   } else {
-#if !PICO_RP2040
     // ULA+ ports (odd addresses: 0xBF3B register select, 0xFF3B data)
     if (Config::ulaplus) {
       if (address == 0xBF3B) {
@@ -2087,7 +2023,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         return;
       }
     }
-#endif
     // Covox #FB: on real Profi this is an external DAC decoding only A7:0=#FB,
     // NOT gated by CPM — Profi CP/M games (Single Warrior) stream samples to #FB
     // with DFFD bit5 set. (Karabas-Pro gates its internal Covox by DOS=0&CPM=0,
@@ -2148,7 +2083,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         return;
       }
     }
-#if !PICO_RP2040
     // ShamaZX MIDI Interface (SAM2695)
     // 0xA0CF = control port: TX data byte here
     // 0xA1CF = data port: write 0xFF/0x3F for init, read status (bit 6 = receiver full)
@@ -2207,7 +2141,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         return;
       }
     }
-#endif
     // AY
     // ========================================================================
     if ((ESPectrum::AY_emu) &&
@@ -2234,7 +2167,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
     }
-#if !PICO_RP2040
     // MB-02+ ports: FDC (#0F/#2F/#4F/#6F), floppy control (#13), memory paging (#17)
     if (MB02::enabled) {
       uint8_t lo = address & 0xFF;
@@ -2403,7 +2335,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       // PQDOS/RS232 serial ports #F3/#D3 (keyboard) and #B3/#93 (RS232) — the
       // keyboard driver writes command bytes here to init/select the AT/serial
       // keyboard (e.g. 0x40 at bank5 0x5426, and the 0x2780 resident driver).
-      // pico-spec's Beta-128 FDC decode uses (address & 0xe3), and these four
+      // pico-speccy's Beta-128 FDC decode uses (address & 0xe3), and these four
       // ports alias onto real FDC registers (#F3→SYS/DATA, #D3→SECTOR,
       // #B3→#A3, #93→#83), so without an exact-match intercept here the
       // keyboard command bytes leak into the WD1793 (drive-select / soft-reset /
@@ -2435,12 +2367,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         }
       }
     }
-#endif
 
     // Profi FDC stub: command write to WD1793 reg0 → arm the one-shot busy flag.
     // Only active when no disk at all is mounted; if any disk is present (TRD/SCL
     // included), route to the real FDC so the SYS ROM disk probe can succeed.
-#if !PICO_RP2040
     bool out_has_raw_disk = ESPectrum::fdd.disk[ESPectrum::fdd.diskS] &&
         (ESPectrum::fdd.disk[ESPectrum::fdd.diskS]->IsUDIFile ||
          ESPectrum::fdd.disk[ESPectrum::fdd.diskS]->IsFDIFile ||
@@ -2448,10 +2378,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
          ESPectrum::fdd.disk[ESPectrum::fdd.diskS]->IsTD0File ||
          ESPectrum::fdd.disk[ESPectrum::fdd.diskS]->IsProFile);
     bool out_has_any_disk = ESPectrum::fdd.disk[ESPectrum::fdd.diskS] != nullptr;
-#else
-    bool out_has_raw_disk = false;
-    bool out_has_any_disk = false;
-#endif
     if (Z80Ops::isProfi && MemESP::romInUse == 0 && !out_has_any_disk
         && (address & 0xE3) == 0x03) {
       profi_fdc_busy = 1;
@@ -2470,7 +2396,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // Fix: count consecutive no-disk CMD writes here.  After 4 we walk the
     // Z80 stack to find the original non-0x40DE return address, restore SP
     // and redirect PC to 0x40E1 (EI; RET) for a clean error return.
-#if !PICO_RP2040
     if (Z80Ops::isProfi && (portDFFD & 0x20) &&
         !out_has_raw_disk &&
         (address & 0xE3) == 0x03 && ((address >> 5) & 0x3) == 0) {
@@ -2504,7 +2429,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
     }
-#endif
 
     // Check if TRDOS Rom is mapped, or a raw disk is loaded.
     if (ESPectrum::trdos || out_has_raw_disk) {
@@ -2586,7 +2510,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         FDDStep(false);
         // CMD write via normal path → deactivate shifted-scheme status
         if (((address >> 5) & 0x3) == 0) profi_shifted_fdc = false;
-#if !PICO_RP2040
         // Profi CP/M: detect the DSKKE9A re-issue loop (CALL 0x40EA → JR 0x40D9).
         // The DSKKE9A disk driver uses an infinite re-issue loop: after issuing a
         // Seek command it immediately calls CALL 0x40EA which JRs back to re-issue
@@ -2653,7 +2576,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
             }
           }
         }
-#endif
         rvmWD1793Write(&ESPectrum::fdd, ((address >> 5) & 0x3), data);
         break;
       case 0xa3:
@@ -2704,7 +2626,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       }
     }
 #endif
-#if !PICO_RP2040 // RTC (and Profi itself) are RP2350-only
     if (Z80Ops::isProfi) {
       bool cpm = (portDFFD & 0x20), rom14 = MemESP::romLatch, dos = ESPectrum::trdos;
       if ((cpm && rom14) || (dos && !rom14)) {
@@ -2730,7 +2651,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         }
       }
     }
-#endif
     ioContentionLate(MemESP::ramContended[rambank]);
   }
   // Pentagon #EFF7 (page0ram/notMore128). The loose Pentagon decode
@@ -2777,7 +2697,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       (!Z80Ops::isALF || (address & 0x0080))) { // 8002 !-> 7FFD
     ++Ports::port7ffd_cnt;
     LED::touchW(LED::RAM);
-#if !PICO_RP2040 && FDD_PORT_TRACE
+#if FDD_PORT_TRACE
     // Profi-only: normal 128K screen-flip demos legitimately hammer 7FFD from a
     // fixed PC forever, which would false-positive the watchdog on non-Profi.
     if (Z80Ops::isProfi) checkPagingStuck(Z80::getRegPC());
@@ -2905,15 +2825,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
           if (Z80Ops::isProfi) VIDEO::profi_clrmem = nullptr;
         }
         if (Config::gigascreen_onoff == 2) VIDEO::gigascreen_auto_countdown = 3;
-#if !PICO_RP2040
         if (VIDEO::mode16col_enabled) VIDEO::mode16colUpdatePlanes();
-#endif
       }
     }
   }
 }
 
-#if !PICO_RP2040
 // KR580VI53 (8253 PIT) square wave generator
 // PIT clock = CPU clock = 3.5 MHz (verified: divisor 5602 → 624.7 Hz)
 // Mode 3: output toggles every count_value/2 PIT clock ticks
@@ -2957,7 +2874,6 @@ IRAM_ATTR void Ports::pitGenSound(uint8_t *buf, int bufsize) {
     *buf++ = mix;
   }
 }
-#endif
 
 IRAM_ATTR void Ports::ioContentionLate(bool contend) {
   if (contend) {
@@ -2978,11 +2894,9 @@ IRAM_ATTR void Ports::dmaOutput(uint16_t address, uint8_t data) {
             VIDEO::brdChange = true;
             VIDEO::DrawBorder();
             VIDEO::borderColor = data & 0x07;
-#if !PICO_RP2040
             if (VIDEO::ulaplus_enabled)
                 VIDEO::ulaPlusUpdateBorder();
             else
-#endif
                 VIDEO::updateBorderBrd();
         }
         int Audiobit;
@@ -3000,7 +2914,6 @@ IRAM_ATTR void Ports::dmaOutput(uint16_t address, uint8_t data) {
             chips[AySound::selected_chip]->setRegisterData(data);
         }
     }
-#if !PICO_RP2040
     // MB-02+ FDC: DMA writes to WD2797 data port (#6F)
     if (MB02::enabled) {
         uint8_t lo = address & 0xFF;
@@ -3012,7 +2925,6 @@ IRAM_ATTR void Ports::dmaOutput(uint16_t address, uint8_t data) {
             rvmWD1793Write(&ESPectrum::mb02_fdd, (lo >> 5) & 3, data);
         }
     }
-#endif
 }
 
 IRAM_ATTR uint8_t Ports::dmaInput(uint16_t address) {
@@ -3021,7 +2933,6 @@ IRAM_ATTR uint8_t Ports::dmaInput(uint16_t address) {
         // ULA port: keyboard + ear
         return 0xFF; // no keys pressed
     }
-#if !PICO_RP2040
     // MB-02+ FDC: DMA reads from WD2797 data port (#6F)
     if (MB02::enabled) {
         uint8_t lo = address & 0xFF;
@@ -3043,6 +2954,5 @@ IRAM_ATTR uint8_t Ports::dmaInput(uint16_t address) {
             return rvmWD1793Read(&ESPectrum::mb02_fdd, (lo >> 5) & 3);
         }
     }
-#endif
     return 0xFF;
 }

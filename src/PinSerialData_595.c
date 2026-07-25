@@ -7,9 +7,7 @@
 #include <hardware/structs/systick.h>
 #include "PinSerialData_595.h"
 
-#if !PICO_RP2040
 extern int board_zifi_owns_pin(unsigned pin); // BoardPins.cpp — yield AY clk to ZiFi
-#endif
 
 static volatile bool ts_595_enabled = false;
 
@@ -44,9 +42,7 @@ void Init_PWM_175(uint8_t tspin_mode){
 				pwm_set_gpio_level(CLK_AY_PIN1, 2);
 				break;
 			case TSPIN_MODE_GP29:
-#if !PICO_RP2040
 				if (!board_zifi_owns_pin(CLK_AY_PIN2)) // yield AY clock pin to ZiFi
-#endif
 				{
 					PWM_init_pin(CLK_AY_PIN2);
 					pwm_set_gpio_level(CLK_AY_PIN2, 2);
@@ -55,9 +51,7 @@ void Init_PWM_175(uint8_t tspin_mode){
 			case TSPIN_MODE_BOTH:
 				PWM_init_pin(CLK_AY_PIN1);
 				pwm_set_gpio_level(CLK_AY_PIN1, 2);
-#if !PICO_RP2040
 				if (!board_zifi_owns_pin(CLK_AY_PIN2)) // yield AY clock pin to ZiFi
-#endif
 				{
 					PWM_init_pin(CLK_AY_PIN2);
 					pwm_set_gpio_level(CLK_AY_PIN2, 2);

@@ -1,6 +1,6 @@
 #include "HttpCatalogFs.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "HttpGet.h"
 #include "HttpsGet.h"
@@ -464,4 +464,4 @@ void HttpCatalogFs::disconnect() {
     ZiFiSock::end();
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

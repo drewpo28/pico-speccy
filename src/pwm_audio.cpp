@@ -14,7 +14,7 @@
 #endif
 #include "LoadWavStream.h"
 #include "PinSerialData_595.h"
-#if !PICO_RP2040 && defined(VGA_HDMI)
+#if defined(VGA_HDMI)
 #include "hdmi.h"
 #endif
 #ifdef PCM5122_I2S_DATA
@@ -295,17 +295,15 @@ void init_sound() {
     // below returns early, and leaving this at the end meant the input GPIO was
     // never configured in HDMI mode, breaking tape-in.
     //пин ввода звука (не инициализировать если MIDI использует тот же пин)
-#if defined(PICO_RP2350) && defined(MIDI_TX_PIN) && (LOAD_WAV_PIO == MIDI_TX_PIN)
+#if defined(MIDI_TX_PIN) && (LOAD_WAV_PIO == MIDI_TX_PIN)
     if (Config::midi != 1 && Config::midi != 2)
 #endif
     {
-#if !PICO_RP2040
         if (!BoardPins::zifiOwnsPin(LOAD_WAV_PIO)) // yield WAV input pin to ZiFi
-#endif
             inInit(LOAD_WAV_PIO);
     }
 #endif
-#if !PICO_RP2040 && defined(VGA_HDMI)
+#if defined(VGA_HDMI)
     // Buffers (~36.9 KB) are allocated/freed by HdmiAudioSubsys::apply() at
     // the next Subsystems::applyPending() — both init_sound() call sites are
     // followed by one. With the VGA output active, Data Islands can't be
@@ -349,12 +347,8 @@ void init_sound() {
     // put UART1 on GP26/27), yield them: skip I2S/PWM init so the UART owns the
     // pins. Audio output is sacrificed for WiFi — only when the user picked that
     // pair. The GP29 PWM path (audio_driver==3) is unaffected (different pin).
-#if !PICO_RP2040
     bool zifi_owns_audio = BoardPins::zifiOwnsPin(PWM_PIN0) ||
                            BoardPins::zifiOwnsPin(I2S_DATA_PIO);
-#else
-    const bool zifi_owns_audio = false;
-#endif
     if (Config::audio_driver == 3) {
         Init_PWM_175(TSPIN_MODE_GP29);
     } else if (zifi_owns_audio) {
@@ -458,7 +452,7 @@ static void __not_in_flash_func(pcm_call_inner)() {
         gs_offR = ((int32_t)gR - 128) * (int32_t)vol8;
     }
 #endif
-#if !PICO_RP2040  && defined(VGA_HDMI)
+#if defined(VGA_HDMI)
     if (Config::audio_driver == 4) {
         if (m_off < m_size) {
             int32_t sL = (int32_t)buff_L[m_off] + gs_offL;
@@ -531,11 +525,9 @@ void pcm_call() {
 void pcm_cleanup(void) {
     cancel_repeating_timer(&m_timer);
     m_timer.delay_us = 0;
-#if !PICO_RP2040
     if (Config::audio_driver == 4) {
         return;  // HDMI audio — no hardware to clean up
     }
-#endif
     if (Config::audio_driver == 3) {
         // TODO:
     }
@@ -555,14 +547,12 @@ void pcm_setup(int hz) {
     // Flush output buffer so pcm_call() outputs silence until new data arrives
     m_size = 0;
     m_off = 0;
-#if !PICO_RP2040
     if (Config::audio_driver == 4) {
         // HDMI audio — timer only, no I2S/PWM hardware
         if (m_timer.delay_us) cancel_repeating_timer(&m_timer);
         add_repeating_timer_us(-1000000 / hz, timer_callback, NULL, &m_timer);
         return;
     }
-#endif
     if (Config::audio_driver == 3) {
         // TODO:
     }

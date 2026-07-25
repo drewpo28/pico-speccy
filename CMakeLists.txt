@@ -20,13 +20,12 @@ option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
-option(MURM "Murmulator 1.0" OFF)
-option(MURM2 "Murmulator 2.0" OFF)
-option(PICO_PC "RP2040-PICO-PC" OFF)
-option(PICO_DV "RP2350-PICO-DV" OFF)
-option(ZERO "RP2040-PiZero" OFF)
-option(ZERO2 "RP2350-PiZero" OFF)
-option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (RP2350 only, uses mbedTLS)" ON)
+option(MURM "Murmulator 1.x + Pi Pico 2" OFF)
+option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
+option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
+option(PICO_DV "Pimoroni Pico DV Demo Base + Pi Pico 2" OFF)
+option(ZERO2 "Waveshare RP2350-PiZero" OFF)
+option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
@@ -50,11 +49,7 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
 set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
 set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
-set(ZERO_DBG_UART    OFF CACHE BOOL "Enable Debug Probe UART0 on GP16/GP13 (ZERO)")
 set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
-
-#set(FLASH_SIZE_GREEN ON)
-#set(m1p2launcher ON)
 
 # set(TFT ON)
 # set(TFT_INV ON)
@@ -67,18 +62,15 @@ set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO
 if(NOT VGA_HDMI AND NOT SOFTTV AND NOT TFT AND NOT ILI9341 AND NOT TV)
     set(VGA_HDMI ON)
 endif()
-# ALF is always available on RP2350 (4MB) — small 256KB default cart + shared flash
-# region — but excluded on flash-constrained 2MB RP2040 builds via the SDK's
-# PICO_RP2040 macro directly in the source guards (no separate define needed).
+# ALF is always available (4MB flash) — small 256KB default cart + shared flash region.
 
 set(CPU_MHZ 378)
 set (PORT_VERSION "0.0.1")
 string(LENGTH "${PORT_VERSION}" PORT_VERSION_LEN)
 
-# Target board (default: PICO_PC; override with -D flags, e.g. cmake -DMURM2=ON)
-if(NOT MURM AND NOT MURM2 AND NOT PICO_PC AND NOT PICO_DV AND NOT ZERO AND NOT ZERO2)
+# Target board (default: MURM2; override with -D flags, e.g. cmake -DPICO_DV=ON)
+if(NOT MURM AND NOT MURM2 AND NOT PICO_PC AND NOT PICO_DV AND NOT ZERO2)
     set(MURM2 ON)
-    set(MURM2_P2 ON)
 endif()
 
 set(KBDUSB ON)
@@ -87,29 +79,21 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Pull in Raspberry Pi Pico SDK (must be before project)
+# Pull in Raspberry Pi Pico SDK (must be before project).
+# RP2350 only — RP2040 support was dropped, every board below is an RP2350 target.
 IF(ZERO2)
     # For Board RP2350-PiZero
     set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR}/src/boards)
     set(PICO_BOARD waveshare_rp2350_pizero CACHE STRING "Board type" FORCE)
     set(PICO_PLATFORM rp2350-arm-s)
     set(CPU_MHZ 252)
-elseif(ZERO)
-    set(PICO_BOARD pico CACHE STRING "Board type" FORCE)
-    set(CPU_MHZ 252)
-elseif(MURM AND NOT MURM_P2)
-    set(PICO_BOARD pico CACHE STRING "Board type" FORCE)
-    set(PICO_PLATFORM rp2040)
-elseif(MURM2 AND NOT MURM2_P2)
-    set(PICO_BOARD pico CACHE STRING "Board type" FORCE)
-    set(PICO_PLATFORM rp2040)
 else()
-    # All remaining RP2350 boards (MURM2_P2, PICO_PC, PICO_DV, MURM1_P2/default)
-    # build for the RP2350B (48-GPIO) package so GPIO 30..47 are valid for any
-    # peripheral. pico2 forces PICO_RP2350A=1, so we use a local B-variant header
+    # All remaining boards (MURM2, PICO_PC, PICO_DV, MURM1/default) build for the
+    # RP2350B (48-GPIO) package so GPIO 30..47 are valid for any peripheral.
+    # pico2 forces PICO_RP2350A=1, so we use a local B-variant header
     # (a CMake `set(PICO_RP2350A 0)` is ignored by the SDK — it must be the header).
     set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR}/src/boards)
-    set(PICO_BOARD picospec_rp2350b CACHE STRING "Board type" FORCE)
+    set(PICO_BOARD picospeccy_rp2350b CACHE STRING "Board type" FORCE)
     set(PICO_PLATFORM rp2350-arm-s)
 endif()
 
@@ -117,42 +101,29 @@ message(STATUS "PICO_BOARD: ${PICO_BOARD}")
 
 include(pico_sdk_import.cmake)
 
-if (PICO_BOARD STREQUAL "pico")
-    SET(PROJECT_NAME p1-spec)
-    set(BOARD_CHIP_TAG p1)
-    set(FLASH_SIZE 2048)
-    # light .uf2 (reduced number of ROMs)
-    set(FLASH_SIZE_GREEN ON)
-else ()
-    SET(PROJECT_NAME p2-spec)
-    set(BOARD_CHIP_TAG p2)
-    set(FLASH_SIZE 4096)
-endif()
+SET(PROJECT_NAME speccy)
+set(FLASH_SIZE 4096)
 
+# Board tag: prefix of the firmware file name and the per-board NVS config dir.
+# No chip suffix anymore — every target is RP2350.
 IF(MURM2)
-    SET(BUILD_NAME "m2${PROJECT_NAME}")
-    set(CONFIG_BOARD_TAG "m2${BOARD_CHIP_TAG}")
+    set(BOARD_TAG "m2")
     set (BUTTER_PSRAM_GPIO 8)
 ELSEIF(PICO_PC)
-    SET(BUILD_NAME "PC${PROJECT_NAME}")
-    set(CONFIG_BOARD_TAG "PC${BOARD_CHIP_TAG}")
+    set(BOARD_TAG "PC")
     set (BUTTER_PSRAM_GPIO 8)
 ELSEIF(PICO_DV)
-    SET(BUILD_NAME "DV${PROJECT_NAME}")
-    set(CONFIG_BOARD_TAG "DV${BOARD_CHIP_TAG}")
+    set(BOARD_TAG "DV")
     set (BUTTER_PSRAM_GPIO 47)
-ELSEIF(ZERO)
-    SET(BUILD_NAME "z0${PROJECT_NAME}")
-    set(CONFIG_BOARD_TAG "z0${BOARD_CHIP_TAG}")
 ELSEIF(ZERO2)
-    SET(BUILD_NAME "z0${PROJECT_NAME}")
-    set(CONFIG_BOARD_TAG "z0${BOARD_CHIP_TAG}")
+    set(BOARD_TAG "z0")
     set (BUTTER_PSRAM_GPIO 47)
 ELSE()
-    SET(BUILD_NAME "m1${PROJECT_NAME}")
-    set(CONFIG_BOARD_TAG "m1${BOARD_CHIP_TAG}")
+    set(BOARD_TAG "m1")
     set (BUTTER_PSRAM_GPIO 19)
 ENDIF()
+SET(BUILD_NAME "${BOARD_TAG}-${PROJECT_NAME}")
+set(CONFIG_BOARD_TAG "${BOARD_TAG}")
 
 # PSRAM kill-switch: only when set(PSRAM OFF) is explicitly uncommented above
 # (an undefined/unset PSRAM leaves PSRAM enabled). Forces the butter PSRAM CS to
@@ -180,7 +151,7 @@ project(${PROJECT_NAME} C CXX ASM)
 # usbRoot mode (Tape::LoadTape → FatFs → usb_disk_read → tuh_task pump), and the
 # silent descent into SCRATCH_X trashed core1's live IRQ frames: core1 SIGBUS
 # storms with garbage PC (values = core0 locals), then double-fault LOCKUP on
-# both cores. The guard (MSPLIM on RP2350, MPU canary on RP2040, both cores)
+# both cores. The guard (MSPLIM on RP2350, on both cores)
 # turns any future overflow into an immediate fault AT the boundary — the
 # overflowing core traps with stackOvf=1 instead of corrupting its neighbour.
 add_compile_definitions(PICO_STACK_SIZE=0x1000 PICO_CORE1_STACK_SIZE=0x800
@@ -192,9 +163,9 @@ add_compile_definitions(PICO_STACK_SIZE=0x1000 PICO_CORE1_STACK_SIZE=0x800
 # PICO_MBEDTLS_CONFIG_FILE at SDK-init time and propagates it (as
 # MBEDTLS_CONFIG_FILE) to both our TUs and the mbedTLS library's own sources.
 # Absolute path means it resolves regardless of per-target include dirs. Harmless
-# on builds that don't link pico_mbedtls (RP2040 / ZIFI_NET_CLIENT=OFF).
-if (ZIFI_NET_CLIENT AND NOT PICO_PLATFORM STREQUAL "rp2040")
-    set(PICO_MBEDTLS_CONFIG_FILE "${CMAKE_CURRENT_LIST_DIR}/src/mbedtls_config_picospec.h")
+# on builds that don't link pico_mbedtls (ZIFI_NET_CLIENT=OFF).
+if (ZIFI_NET_CLIENT)
+    set(PICO_MBEDTLS_CONFIG_FILE "${CMAKE_CURRENT_LIST_DIR}/src/mbedtls_config_picospeccy.h")
 endif ()
 
 # TinyUSB 0.21.0 vendored at external/tinyusb (subset: LICENSE, src/, hw/bsp/
@@ -271,12 +242,6 @@ set_source_files_properties(src/ESPectrum.cpp PROPERTIES
 set_source_files_properties(src/pwm_audio.cpp PROPERTIES
     COMPILE_FLAGS "-O3")
 
-if (PICO_BOARD STREQUAL "pico")
-    pico_define_boot_stage2(slower_boot2 ${PICO_DEFAULT_BOOT_STAGE2_FILE})
-    target_compile_definitions(slower_boot2 PRIVATE PICO_FLASH_SPI_CLKDIV=4)
-    pico_set_boot_stage2(${PROJECT_NAME} slower_boot2)
-endif()
-
 # pull in common dependencies
 target_link_libraries(${PROJECT_NAME} PRIVATE
     psram
@@ -322,17 +287,13 @@ pico_add_extra_outputs(${PROJECT_NAME})
 
 # add url via pico_set_program_url
 
-if (m1p2launcher)
-    pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/memmap.ld")
-elseif (NOT PICO_PLATFORM STREQUAL "rp2040")
-    # Custom linker script reserves a fixed 128K region (RAM_PAGES01234567) for
-    # the 8 Z80 RAM pages backing pages 0-7 (m16c_pages: pages0123/pages46/57).
-    # All other code/data and the heap (which holds the framebuffer) live in a
-    # separate RAM region. The two regions sit in different SRAM banks with
-    # independent AHB ports — HDMI DMA reading the framebuffer cannot stall
-    # CPU access to Z80 RAM and vice versa.
-    pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/rp2350-memmap.ld")
-endif ()
+# Custom linker script reserves a fixed 128K region (RAM_PAGES01234567) for
+# the 8 Z80 RAM pages backing pages 0-7 (m16c_pages: pages0123/pages46/57).
+# All other code/data and the heap (which holds the framebuffer) live in a
+# separate RAM region. The two regions sit in different SRAM banks with
+# independent AHB ports — HDMI DMA reading the framebuffer cannot stall
+# CPU access to Z80 RAM and vice versa.
+pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/rp2350-memmap.ld")
 
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections)
 target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
@@ -422,20 +383,11 @@ target_compile_options(${PROJECT_NAME} PUBLIC
 )
 endif ()
 
-IF(FLASH_SIZE_GREEN)
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-#        NO_SEPARATE_48K_CUSTOM=1
-#        NO_SPAIN_ROM_48k=1
-#        NO_SPAIN_ROM_128k=1
-)
-ENDIF()
-
 # ALF is now a standard runtime machine (256KB default cart "Elf-1" in flash; bigger
 # cartridges load into the shared flash region from SD/Web). CARTRIDGE_AS_CUSTOM is
-# gone — custom ROMs use their own dedicated slots. ALF is excluded on 2MB RP2040
-# builds via the PICO_RP2040 macro in the source guards.
+# gone — custom ROMs use their own dedicated slots.
 # ALF no longer carries a 1.6MB cartridge in the image, so the GM.DLS gm_bank
-# partition stays available alongside ALF on RP2350 (they share the region at
+# partition stays available alongside ALF (they share the region at
 # runtime — one occupant at a time; see SharedFlash/RomManager).
 
 IF(KBDUSB)
@@ -452,23 +404,22 @@ if (BUTTER_PSRAM_GPIO)
     target_compile_definitions(${PROJECT_NAME} PRIVATE BUTTER_PSRAM_GPIO=${BUTTER_PSRAM_GPIO})
 endif()
 # General Sound — needs butter PSRAM (XIP @ 0x11000000) for 2 MB of GS RAM plus
-# a second Z80 instance. butter PSRAM is RP2350-only; on RP2040 BUTTER_PSRAM_GPIO
-# maps to plain SPI PSRAM which has different semantics. Restrict accordingly.
-if (BUTTER_PSRAM_GPIO AND NOT PICO_PLATFORM STREQUAL "rp2040")
+# a second Z80 instance.
+if (BUTTER_PSRAM_GPIO)
     target_compile_definitions(${PROJECT_NAME} PRIVATE USE_GS=1)
 endif()
 
-# ZiFi (ESP-01S WiFi NIC emulation) — RP2350 only.
+# ZiFi (ESP-01S WiFi NIC emulation).
 # TX/RX pins are chosen at RUNTIME (Network → GPIO picker, stored in NVS) from a
 # per-board candidate list defined in src/BoardPins.cpp. No compile-time pin
 # define is needed anymore; the old -DZIFI_TX_PIN/-DZIFI_RX_PIN are obsolete.
 
-# ZiFi network client (FTP/SFTP/SSH over the ESP-01S TCP sockets). RP2350 only —
+# ZiFi network client (FTP/SFTP/SSH over the ESP-01S TCP sockets).
 # SSH crypto runs on the Pico via mbedTLS primitives (NOT wolfSSH, NOT mbedTLS's
-# TLS stack; see src/mbedtls_config_picospec.h). New sources (ZiFiSock/Ftp/Ssh/
+# TLS stack; see src/mbedtls_config_picospeccy.h). New sources (ZiFiSock/Ftp/Ssh/
 # Sftp.cpp) auto-compile via the GLOB; each file body is wrapped in
-# `#if !PICO_RP2040 && ZIFI_NET_CLIENT` so RP2040 builds get zero footprint.
-if (ZIFI_NET_CLIENT AND NOT PICO_PLATFORM STREQUAL "rp2040")
+# `#if ZIFI_NET_CLIENT` so ZIFI_NET_CLIENT=OFF builds get zero footprint.
+if (ZIFI_NET_CLIENT)
     target_compile_definitions(${PROJECT_NAME} PRIVATE ZIFI_NET_CLIENT=1)
     if (ZIFI_NET_VERBOSE)
         target_compile_definitions(${PROJECT_NAME} PRIVATE ZIFI_NET_VERBOSE=1)
@@ -722,73 +673,6 @@ ELSEIF(PICO_DV)
         DEFAULT_THROTTLING=0
         PICO_DEFAULT_LED_PIN=25
 )
-ELSEIF(ZERO)
-    # Debug-Probe UART toggle ZERO_DBG_UART declared at top. Enables UART0 on GP16(TX)/GP13(RX).
-    # Both pins are FREE on ZERO; UART0 used because UART1 has no free pins on this board.
-    if(ZERO_DBG_UART)
-        pico_enable_stdio_uart(${PROJECT_NAME} 1)
-    endif()
-    target_compile_definitions(${PROJECT_NAME} PRIVATE
-        $<$<BOOL:${ZERO_DBG_UART}>:PICO_DEFAULT_UART=0>
-        $<$<BOOL:${ZERO_DBG_UART}>:PICO_DEFAULT_UART_TX_PIN=16>
-        $<$<BOOL:${ZERO_DBG_UART}>:PICO_DEFAULT_UART_RX_PIN=13>
-        $<$<BOOL:${ZERO_DBG_UART}>:DBG_UART_ENABLED=1>
-
-        PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}
-        CPU_MHZ=${CPU_MHZ}
-        ZERO=1
-
-        KBD_CLOCK_PIN=0
-        KBD_DATA_PIN=1
-
-        LOAD_WAV_PIO=17
-
-        CLK_AY_PIN1=8 # not in use
-        LATCH_595_PIN=10
-        CLK_595_PIN=11
-        DATA_595_PIN=12
-        CLK_AY_PIN2=7
-
-        I2S_DATA_PIO=10 #
-        I2S_BCK_PIO=11 #
-        I2S_LCK_PIO=12
-
-        PWM_PIN0=10
-        PWM_PIN1=11
-        BEEPER_PIN=12
-
-        # SDCARD
-        SDCARD_PIN_SPI0_SCK=18
-        SDCARD_PIN_SPI0_MOSI=19
-        SDCARD_PIN_SPI0_MISO=20
-        SDCARD_PIN_SPI0_CS=21
-
-        #PSRAM             # not implemented
-        PSRAM_SPINLOCK=255 # not implemented
-        PSRAM_ASYNC=255    # not implemented
-
-        PSRAM_PIN_CS=255   # not implemented
-        PSRAM_PIN_SCK=255  # not implemented
-        PSRAM_PIN_MOSI=255 # not implemented
-        PSRAM_PIN_MISO=255 # not implemented
-
-        # NES Gamepad
-        USE_NESPAD
-        NES_GPIO_CLK=7
-        NES_GPIO_LAT=8
-        NES_GPIO_DATA=9
-        NES_GPIO_DATA2=9
-
-        # VGA 8 pins starts from pin:
-        VGA_BASE_PIN=22
-
-        # HDMI 8 pins starts from pin:
-        HDMI_BASE_PIN=22
-
-        DEFAULT_THROTTLING=0
-        PICO_RP2040=1
-        PICO_DEFAULT_LED_PIN=25
-    )
 ELSEIF(ZERO2)
     # Debug-Probe UART toggle ZERO2_DBG_UART declared at top (UART1 on GP20/GP21).
     if(ZERO2_DBG_UART)
@@ -990,25 +874,7 @@ ENDIF()
 
 SET(BUILD_NAME "${BUILD_NAME}-${PORT_VERSION}")
 
-# ALF is now a standard runtime machine on RP2350 (not a separate build), so no
-# "-ALF" suffix. The 2MB RP2040 builds exclude ALF (no room).
-IF (FLASH_SIZE_GREEN)
-    SET(BUILD_NAME "${BUILD_NAME}")
-ENDIF()
-
-IF(m1p2launcher)
-    IF(MURM2)
-        SET(BUILD_NAME "${BUILD_NAME}.m2p2")
-    ELSEIF(PICO_PC)
-        SET(BUILD_NAME "${BUILD_NAME}.PCp2")
-    ELSEIF(PICO_DV)
-        SET(BUILD_NAME "${BUILD_NAME}.DVp2")
-    ELSEIF(ZERO2)
-        SET(BUILD_NAME "${BUILD_NAME}.z0p2")
-    ELSE()
-        SET(BUILD_NAME "${BUILD_NAME}.m1p2")
-    ENDIF()
-ENDIF()
+# ALF is a standard runtime machine (not a separate build), so no "-ALF" suffix.
 
 message(STATUS "BUILD_NAME: ${BUILD_NAME}")
 
@@ -1033,11 +899,3 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     PICO_GIT_BRANCH="${GIT_BRANCH}"
     PICO_GIT_COMMIT="${GIT_COMMIT_HASH}"
 )
-
-if (m1p2launcher)
-    add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E rename
-        "${OUTPUT_DIR}/${BUILD_NAME}.uf2"
-        "${OUTPUT_DIR}/${BUILD_NAME}"
-    )
-endif ()

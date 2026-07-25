@@ -1,6 +1,6 @@
-# pico-spec
+# pico-speccy
 
-ESPectrum (1.2) port for Raspberry RP2040 or RP2350 SoC<br/>
+ESPectrum (1.2) port for Raspberry RP2350 SoC<br/>
 
 In progress...<br/>
 <br/>
@@ -8,14 +8,14 @@ In progress...<br/>
 
 ![ESPectrum](https://zxespectrum.speccy.org/wp-content/uploads/2023/05/ESPectrum-logo-v02-2.png)
 
-This is an emulator of the Sinclair ZX Spectrum compatible computers running on RP2040 or RP2350 SoC powered boards.
+This is an emulator of the Sinclair ZX Spectrum compatible computers running on RP2350 SoC powered boards.
 
 Board supported:
- - "Murmulator 1.x" + Raspberry "Pi Pico" / "Pi Pico 2" or compatible;
- - "Murmulator 2.0" + Raspberry "Pi Pico" / "Pi Pico 2" or compatible;
- - Waveshare "RP2040-PiZero" / "RP2350-PiZero" + use PCM5122 for best sound;
- - Pimoroni "Pico DV Demo Base" + Raspberry "Pi Pico" / "Pi Pico 2" or compatible;
- - Olimex "RP2040-PICO-PC" board + Raspberry "Pi Pico" / "Pi Pico 2" or compatible.
+ - "Murmulator 1.x" + Raspberry "Pi Pico 2" or compatible;
+ - "Murmulator 2.0" + Raspberry "Pi Pico 2" or compatible;
+ - Waveshare "RP2350-PiZero" + use PCM5122 for best sound;
+ - Pimoroni "Pico DV Demo Base" + Raspberry "Pi Pico 2" or compatible;
+ - Olimex "RP2040-PICO-PC" carrier board + Raspberry "Pi Pico 2" or compatible.
 
 Best performance for case Pimoroni "Pico Plus 2" is used.
 
@@ -71,7 +71,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - FDD activity LED indicator and mechanical head click/seek sound emulation (optional, toggled via Betadisk menu).
 - ZiFi WiFi network interface via an ESP-01S module (stock Espressif AT firmware — no reflash): network access for ZX-Spectrum software (e.g. the MRF terminal), plus an MC146818 RTC (Pentagon "Mr Gluk" TimeKeeper) with SNTP time sync over WiFi (RP2350 only).
 - Unified F5 file browser with a location chooser (RP2350, when WiFi is configured): **Local (SD)**, **Remote (FTP/SFTP)**, **Web Archives** and **Add Remote** — all rendered in the same "Open File" window. **Enter** quick-starts a file (downloads to RAM and runs/mounts), **F5** saves it to a chosen SD folder; `..`/Backspace go up a level, Esc closes. Per-source listing cache (with manual F2 refresh) and remembered cursor/last location.
-- Network file transfer (FTP / SFTP / SSH client): saved connections with optional alias and start path (passwords optionally stored, masked entry; TAB reveals); browse / download / upload / copy (recursive) / delete; SSH/SFTP crypto (curve25519, AES-CTR, HMAC-SHA256) runs on the RP2350 via mbedTLS; SFTP host-key trust-on-first-use; selectable ESP-01S UART baud up to 921600 (RP2350 only). See the [Network wiki page](https://github.com/drewpo28/pico-spec/wiki/EN-Network).
+- Network file transfer (FTP / SFTP / SSH client): saved connections with optional alias and start path (passwords optionally stored, masked entry; TAB reveals); browse / download / upload / copy (recursive) / delete; SSH/SFTP crypto (curve25519, AES-CTR, HMAC-SHA256) runs on the RP2350 via mbedTLS; SFTP host-key trust-on-first-use; selectable ESP-01S UART baud up to 921600. See the [Network wiki page](https://github.com/drewpo28/pico-speccy/wiki/EN-Network).
 - Web Archives: browse and download ZX disk/tape images and ALF cartridges from online catalogs (Virtual TR-DOS, Spectrum Computing, ZX-Art, ALF) over HTTPS straight to SD or RAM. Serverless GitHub-Pages catalog, on-device TLS, Cyrillic titles rendered (RP2350 only).
 - FTP server: share the SD card over the LAN (anonymous, active mode) from the Network menu (RP2350 only).
 - Realtime (with OSD) TZX, TAP and PZX file loading.
@@ -86,9 +86,9 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Hardware info menu: Chip Info (model, cores, frequency, VREG voltage), Board Info (flash, PSRAM, SDK version), Memory Info (live SRAM/PSRAM/flash occupancy and Buffer tier pools) and Emulator Info (machine, video, sound, input and storage configuration).
 - Speed Test menu: benchmark CPU MIPS, SRAM read/write, PSRAM, SD card and USB drive throughput (individual or all at once).
 - ZX Keyboard overlay (main menu → ZX Keyboard): full-screen bitmap of the Spectrum keyboard for quick reference. Thanks to @const_bill and @tecnocat.
-- Overclock menu: CPU frequency (RP2350: 252/378/504 MHz; RP2040: 252/378 MHz), Flash frequency (33–166 MHz), PSRAM frequency (66–166 MHz), VReg voltage (RP2350: 1.15–1.80 V).
+- Overclock menu: CPU frequency (252/378/504 MHz), Flash frequency (33–166 MHz), PSRAM frequency (66–166 MHz), VReg voltage (1.15–1.80 V).
 - Complete file navigation system with autoindexing, folder support and search functions.
-- Complete OSD menu in two languages: English & Spanish.
+- Complete OSD menu (English).
 - On-screen LED indicators: real-time overlay showing FDD activity, SD card, IDE/HDD, MIDI TX, tape, network (ZiFi TX/RX), and other port-driven hardware states.
 - Volume boost: configurable audio amplification (0–64) in the Audio menu.
 - Factory reset: hold R at boot to wipe all settings and restore defaults — an on-screen prompt guides the hold window, works with PS/2 and USB keyboards (with confirmation prompt).
@@ -104,7 +104,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 
 ## Installing
 
-You can flash the binaries directly to the board: [Releases](https://github.com/DnCraptor/pico-spec/releases)
+You can flash the binaries directly to the board: [Releases](https://github.com/drewpo28/pico-speccy/releases)
 
 ## Keyboard functions
 
@@ -121,7 +121,7 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - F9 Volume down
 - F10 Volume up
 - F11 Hard reset
-- F12 Reset RP2040/RP2350
+- F12 Reset RP2350
 - ~ (Tilde) Max speed toggle
 - Pause Pause
 - ALT+F1 Hardware info
@@ -184,11 +184,11 @@ The GM.DLS wavetable mode needs a packed `gm_bank.bin` on the SD card — it is 
 - DLS bank (e.g. Microsoft `gm.dls`): `python3 tools/dls_pack.py gm.dls gm_bank.bin 31250`
 - GUS / freepats patch set: `python3 tools/gus_pack.py timidity.cfg gm_bank.bin 31250`
 
-Copy the resulting `gm_bank.bin` (~1.6 MB, 8-bit µ-law) to `/gm_bank.bin` or `/.config/pico-spec/gm_bank.bin` on the SD card, then select **Audio → MIDI → GM.DLS Wavetable**. To update/reinstall, drop a new bank on SD and re-select the mode (confirm the reinstall prompt). When the SD card holds more than one bank, an **Instrument set** picker lets you choose which one to install. Requires an RP2350 board with ≥ 4 MB flash.
+Copy the resulting `gm_bank.bin` (~1.6 MB, 8-bit µ-law) to `/gm_bank.bin` or `/.config/pico-speccy/gm_bank.bin` on the SD card, then select **Audio → MIDI → GM.DLS Wavetable**. To update/reinstall, drop a new bank on SD and re-select the mode (confirm the reinstall prompt). When the SD card holds more than one bank, an **Instrument set** picker lets you choose which one to install. Requires a board with ≥ 4 MB flash.
 
 > Microsoft's `gm.dls` is copyrighted and **not redistributable** — pack your own copy for personal use, or use the freely-licensed [freepats](https://freepats.zenvoid.org/) GUS set.
 
-The GM.DLS wavetable engine and the `dls_pack` / `gus_pack` conversion tools are based on **[xrip/embedded-midi-synth](https://github.com/xrip/embedded-midi-synth)** — thanks to **[@xrip](https://github.com/xrip)**. Full details: the [MIDI wiki page](https://github.com/drewpo28/pico-spec/wiki/EN-MIDI).
+The GM.DLS wavetable engine and the `dls_pack` / `gus_pack` conversion tools are based on **[xrip/embedded-midi-synth](https://github.com/xrip/embedded-midi-synth)** — thanks to **[@xrip](https://github.com/xrip)**. Full details: the [MIDI wiki page](https://github.com/drewpo28/pico-speccy/wiki/EN-MIDI).
 
 ### MIDI TX Pin Configuration
 
@@ -235,7 +235,7 @@ File access (FTP/SFTP and the online archives) lives in the **F5 file browser** 
 
 In any of these, **Enter** quick-starts a file (download to RAM and run/mount) and **F5** saves it to a chosen SD folder; `..`/Backspace go up, Esc closes.
 
-Wiring is just **4 wires** (TX, RX, GND, 3V3 — TX/RX crossover; EN/RST/GPIO0/GPIO2 left unconnected). Alternatively, the ESP-01S can be connected over USB through a **CH340 / CP210x / FTDI USB-serial dongle** instead of the GPIO UART. Per-board default pins and full details: **[Network wiki page](https://github.com/drewpo28/pico-spec/wiki/EN-Network)** ([RU](https://github.com/drewpo28/pico-spec/wiki/Network)).
+Wiring is just **4 wires** (TX, RX, GND, 3V3 — TX/RX crossover; EN/RST/GPIO0/GPIO2 left unconnected). Alternatively, the ESP-01S can be connected over USB through a **CH340 / CP210x / FTDI USB-serial dongle** instead of the GPIO UART. Per-board default pins and full details: **[Network wiki page](https://github.com/drewpo28/pico-speccy/wiki/EN-Network)** ([RU](https://github.com/drewpo28/pico-speccy/wiki/Network)).
 
 ## How to build
 ### Windows 10+
@@ -243,7 +243,7 @@ Wiring is just **4 wires** (TX, RX, GND, 3V3 — TX/RX crossover; EN/RST/GPIO0/G
  - In VSCode install [Raspberry Pi Pico](https://t.me/ZX_MURMULATOR/42804/194110) plugin, to make other SDK versions available and auto-load;
  - Import this project, and agree on all requests from the plugin (it may be required to wait some times on these steps);
  - Tune up build to be [Pico/Release](https://t.me/ZX_MURMULATOR/42804/214274)
- - Set required variables in your local copy of [CMakeLists.txt](https://github.com/DnCraptor/pico-spec/blob/main/CMakeLists.txt)
+ - Set required variables in your local copy of [CMakeLists.txt](https://github.com/drewpo28/pico-speccy/blob/main/CMakeLists.txt)
  - [Clean/Reconfigure](https://t.me/ZX_MURMULATOR/42804/214276)
  - Build.
 ### Linux
@@ -254,12 +254,12 @@ Your filesystem tree must be look like:
 ```
  Base folder
    |-- pico-sdk
-   |-- pico-spec
+   |-- pico-speccy
         |-- build
         |-- drivers
         |-- src
 ```
- - Configure building options in `pico-spec/CMakeLists.txt` - pico board, video&audio output, etc.
+ - Configure building options in `pico-speccy/CMakeLists.txt` - pico board, video&audio output, etc.
 
 #### CMake build options
 
@@ -267,9 +267,8 @@ Your filesystem tree must be look like:
 |--------|-------------|
 | `-DMURM=ON` | Build for Murmulator 1.x |
 | `-DMURM2=ON` | Build for Murmulator 2.0 (default) |
-| `-DPICO_PC=ON` | Build for Olimex RP2040-PICO-PC |
+| `-DPICO_PC=ON` | Build for Olimex RP2040-PICO-PC carrier board |
 | `-DPICO_DV=ON` | Build for Pimoroni Pico DV Demo Base |
-| `-DZERO=ON` | Build for Waveshare RP2040-PiZero |
 | `-DZERO2=ON` | Build for Waveshare RP2350-PiZero |
 | `-DVGA_HDMI=ON` | VGA/HDMI output (default) |
 | `-DSOFTTV=ON` | Software composite TV output |
@@ -281,13 +280,13 @@ Your filesystem tree must be look like:
 
 #### Multi-target build script
 
-To build firmware for all supported boards and display variants at once, use the `build_all.sh` / `build_all.bat` / `build_all.ps1` scripts in the project root. They build each `(target, display)` pair in its own directory (`build-<TARGET>[-<DISPLAY>]/`) and collect `.uf2` artifacts into `pico-spec/firmware/`.
+To build firmware for all supported boards and display variants at once, use the `build_all.sh` / `build_all.bat` / `build_all.ps1` scripts in the project root. They build each `(target, display)` pair in its own directory (`build-<TARGET>[-<DISPLAY>]/`) and collect `.uf2` artifacts into `pico-speccy/firmware/`.
 
 ```
 ./build_all.sh [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 ```
 
-- Targets: `MURM_P1 MURM_P2 MURM2_P1 MURM2_P2 PICO_PC PICO_DV ZERO ZERO2` (default: all)
+- Targets: `MURM MURM2 PICO_PC PICO_DV ZERO2` (default: all)
 - `--clean` — wipe build dirs first (default: incremental rebuild)
 - `-j` — threads per target build (default: `nproc / MAX_PARALLEL`)
 - `-p` — max number of targets built concurrently (default: 3)
@@ -295,7 +294,7 @@ To build firmware for all supported boards and display variants at once, use the
 - Uses `ccache` automatically if installed (`apt install ccache` for ~2-5× faster rebuilds)
 - Per-target logs are written to `build-logs/`
 
-Single-target builds produce artifacts in `pico-spec/bin/`.
+Single-target builds produce artifacts in `pico-speccy/bin/`.
 
 ## Thanks to
 

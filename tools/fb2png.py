@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert pico-spec framebuffer dump to PNG.
+"""Convert pico-speccycy framebuffer dump to PNG.
 
 Usage:
     python3 fb2png.py fb.bin pal.bin WIDTH HEIGHT out.png
@@ -21,7 +21,7 @@ from PIL import Image
 
 
 def check_contiguous(width: int, height: int) -> None:
-    path = '/tmp/picospec_rowptrs.bin'
+    path = '/tmp/picospeccycy_rowptrs.bin'
     if not os.path.exists(path):
         return
     data = open(path, 'rb').read()

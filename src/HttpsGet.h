@@ -12,7 +12,7 @@
 // already be associated (ZiFiAT::connect). RP2350 only, behind ZIFI_NET_CLIENT.
 // All calls from the OSD/main thread; blocking.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include <inttypes.h>
 #include <stddef.h>
@@ -61,4 +61,4 @@ public:
     static bool selfTest(const char* url, const char* caPath = nullptr);
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

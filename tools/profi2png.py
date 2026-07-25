@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Convert pico-spec Profi DS80 framebuffer dump to 640×480 PNG (screen-accurate).
+"""Convert pico-speccy Profi DS80 framebuffer dump to 640×480 PNG (screen-accurate).
 
 Usage:
     python3 profi2png.py fb.bin lut.bin pal.bin WIDTH HEIGHT out.png [--single-height]

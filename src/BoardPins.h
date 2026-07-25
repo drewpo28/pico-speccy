@@ -10,7 +10,6 @@
 // Pin-selection convention shared by callers/Config:
 //   0xFE = "use board default"   0xFF = OFF (no pins)   else = explicit TX pin.
 
-#if !PICO_RP2040
 
 #include <inttypes.h>
 
@@ -50,4 +49,3 @@ const char* zifiActiveNote();
 
 } // namespace BoardPins
 
-#endif // !PICO_RP2040

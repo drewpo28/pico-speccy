@@ -3,9 +3,7 @@
 #include "roms.h"
 #include "FileUtils.h"
 #include "ESPectrum.h"
-#if !PICO_RP2040
 #include "MB02.h"
-#endif
 #include "fabutils.h"
 #include "messages.h"
 #include "OSDMain.h"
@@ -40,21 +38,16 @@ bool     Config::ledIndicators = false;
 bool     Config::sdLedBlink = false;
 const bool     Config::aspect_16_9 = false;
 ///uint8_t  Config::esp32rev = 0;
-uint8_t  Config::lang = 0;
 bool     Config::AY48 = true;
-#if !PICO_RP2040
 bool     Config::SAA1099 = false;
 uint8_t  Config::midi = 0;
 uint8_t  Config::midi_synth_preset = 0;
 string   Config::midi_bank = "";
-#endif
 uint16_t Config::cpu_mhz = CPU_MHZ;
 uint16_t Config::max_flash_freq = 66;
 uint16_t Config::max_psram_freq = 166;
 uint16_t Config::max_tft_freq = 126;
-#if !PICO_RP2040
 uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_60;
-#endif
 bool     Config::Issue2 = true;
 bool     Config::rtc_enabled = false;
 bool     Config::flashload = true;
@@ -94,11 +87,7 @@ uint16_t Config::joydef[14] = {
 
 uint8_t  Config::AluTiming = 0;
 uint8_t  Config::ayConfig = 0;
-#if !defined(PICO_RP2040)
 uint8_t  Config::turbosound = 3; // BOTH
-#else
-uint8_t  Config::turbosound = 0; // OFF
-#endif
 uint8_t  Config::covox = 0; // NONE
 uint8_t  Config::soundrive = 2; // AUTO: on for Profi, off elsewhere
 
@@ -122,7 +111,6 @@ uint8_t  Config::trdosBios = 2; // Default: 5.05D
 uint8_t  Config::alfCartBanks = 0; // 0 = built-in Elf-1; >0 = loaded cart size in 16K banks
 string   Config::alfCartPath = ""; // pending cart to flash into the shared region at boot
 bool     Config::driveWP[4] = { true, true, true, true };
-#if !PICO_RP2040
 uint8_t  Config::esxdos = 0;
 string   Config::esxdos_hdf_image[2] = {"", ""};
 uint8_t  Config::mb02 = 0;
@@ -151,7 +139,6 @@ string   Config::net_ul_dir = "/spec";
 string   Config::catalog_host;
 uint16_t Config::catalog_port = 0;
 string   Config::last_loc;   // last F5 browse location (all sources); see Config.h
-#endif
 
 uint8_t Config::scanlines = 0;
 uint8_t Config::render = 0;
@@ -166,13 +153,11 @@ uint8_t  Config::vga_video_mode = Config::VM_640x480_60;
 bool     Config::v_sync_enabled = false;
 bool     Config::gigascreen_enabled = false;
 uint8_t  Config::gigascreen_onoff = 0;
-#if !PICO_RP2040
 bool     Config::ulaplus = false;
 bool     Config::hdmi_dither = false;
 bool     Config::timex_video = false;
 uint8_t  Config::dma_mode = 0;
 bool     Config::mode16col_onoff = false;
-#endif
 uint8_t  Config::palette = 0;
 uint8_t  Config::audio_driver = 0;
 extern "C" uint8_t  video_driver = 0;
@@ -220,7 +205,6 @@ extern std::string g_snapshot_loading_path;  // Snapshot.cpp — snapshot mid-lo
 
 void Config::requestMachine(const string& newArch, const string& newRomSet)
 {
-#if !PICO_RP2040
     // Profi boundary: setup() lays out the Profi memory once at boot —
     // forced-SRAM pages (DS80 colour 56/58 + CP/M pool 60/61) on ALL RP2350
     // boards, plus the pool/accessor-backed butter vram strip on butter/QSPI
@@ -247,7 +231,6 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
         save();
         OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
     }
-#endif
     arch = newArch;
     // Re-bind ROM overlays from scratch for this machine (RomOverlay.h). Each romset
     // below registers the overlays it needs; clearing first avoids stale entries.
@@ -256,7 +239,7 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
         if (newRomSet=="") romSet = "48K"; else romSet = newRomSet;
         if (newRomSet=="") romSet48 = "48K"; else romSet48 = newRomSet;
         if (romSet48 == "48Kcs") {
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
 #if NO_SEPARATE_48K_CUSTOM
             MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
 #else
@@ -284,7 +267,6 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);
         }
     }
-#if !PICO_RP2040
     else if (arch == "ALF") {
         const uint8_t* base = gb_rom_Alf;
         // gb_rom_Alf is 32KB = 2 real banks; banks 2..63 → gb_rom_Alf_ep (zero page).
@@ -293,12 +275,11 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
         }
         Config::kempstonPort = 0x1F; // TODO: ensure, save?
     }
-#endif
     else if (arch == "128K") {
         if (newRomSet=="") romSet = "128K"; else romSet = newRomSet;
         if (newRomSet=="") romSet128 = "128K"; else romSet128 = newRomSet;
         if (romSet128 == "128Kcs") {
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
             MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
             MemESP::rom[1].assign_rom(gb_rom_0_128k_custom + (16 << 10)); /// 16392;
 #else
@@ -338,7 +319,6 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
         }
-#if !PICO_RP2040
     } else if (arch == "Profi") {
         if (newRomSet=="") romSet = "Profi"; else romSet = newRomSet;
         if (newRomSet=="") romSetProfi = "Profi"; else romSetProfi = newRomSet;
@@ -393,12 +373,11 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3);
         }
-#endif
     } else { // Pentagon by default
         if (newRomSet=="") romSet = "128Kp"; else romSet = newRomSet;
         if (romSetPent=="") romSetPent = "128Kp"; else romSetPent = newRomSet;
         if (romSetPent == "128Kcs") {
-#if !CARTRIDGE_AS_CUSTOM || PICO_RP2040
+#if !CARTRIDGE_AS_CUSTOM
             MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
             MemESP::rom[1].assign_rom(gb_rom_0_128k_custom + (16 << 10)); /// 16392;
 #else
@@ -521,7 +500,6 @@ void Config::loadDiskMounts() {
                             ESPectrum::fdd.disk[i]->writeprotect = driveWP[i];
                     }
                 }
-#if !PICO_RP2040
                 snprintf(prefix, sizeof(prefix), "mb02d%u.file=", (unsigned)i);
                 plen = strlen(prefix);
                 if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
@@ -545,7 +523,6 @@ void Config::loadDiskMounts() {
                             ESPectrum::mb02_fdd.disk[i]->writeprotect = mb02WP[i];
                     }
                 }
-#endif
             }
             s.clear();
         } else {
@@ -555,7 +532,6 @@ void Config::loadDiskMounts() {
     fclose2(handle);
 }
 
-#if !PICO_RP2040
 // (Re)mount the MB-02+ disks remembered in mb02DiskFile[]. loadDiskMounts()
 // skips MB-02 disks while the interface is disabled (to keep the heap free on
 // Profi etc.), so the remembered paths persist but aren't loaded. Call this the
@@ -575,9 +551,7 @@ void Config::loadMb02DiskMounts() {
         }
     }
 }
-#endif
 
-#if !PICO_RP2040
 // Stored in CONFIG_DIR; legacy "/wifi.cfg" at the SD root is still read as a
 // fallback (migration) but new saves go to the config dir.
 #define WIFI_CFG_PATH      CONFIG_DIR "/wifi.cfg"
@@ -698,7 +672,6 @@ void Config::saveRemotes(const Remote* list, int count) {
     }
     fclose2(f);
 }
-#endif
 
 #if TFT
 extern "C" uint8_t TFT_FLAGS;
@@ -778,16 +751,9 @@ void Config::load() {
         nvs_get_str("pref_romSetP512", pref_romSetP512, sts);
         nvs_get_str("pref_romSetP1M", pref_romSetP1M, sts);
         nvs_get_str("pref_romSetProfi", pref_romSetProfi, sts);
-#if PICO_RP2040
-        // Profi (DS80 hires) is RP2350-only; a stale NVS value from another board
-        // or firmware would otherwise boot into an unsupported, broken state.
-        if (arch == "Profi")      { arch = "128K"; romSet = "128K"; }
-        if (pref_arch == "Profi") { pref_arch = "Last"; }
-#endif
         nvs_get_str("ram", ram_file, sts);
         nvs_get_u8("ram_origin", ram_file_origin, sts); // provenance (default LOCAL)
         nvs_get_b("AY48", AY48, sts);
-#if !PICO_RP2040
         nvs_get_b("SAA1099", SAA1099, sts);
         nvs_get_u8("midi", midi, sts);
         nvs_get_u8("midipreset", midi_synth_preset, sts);
@@ -796,7 +762,6 @@ void Config::load() {
         // GM.DLS wavetable (mode 4) is unavailable in ALF builds (no bank
         // partition). Demote a stale NVS value so it never activates.
         if (midi == 4) midi = 0;
-#endif
 #endif
         nvs_get_u16("cpu_mhz", cpu_mhz, sts);
         if (cpu_mhz == 0) cpu_mhz = CPU_MHZ;
@@ -807,7 +772,6 @@ void Config::load() {
         nvs_get_u16("max_tft_freq", max_tft_freq, sts);
         if (max_tft_freq == 0) max_tft_freq = 126;
         graphics_max_tft_freq_mhz = max_tft_freq;
-#if !PICO_RP2040
         {
             std::string vv;
             nvs_get_str("vreq_voltage", vv, sts);
@@ -823,7 +787,6 @@ void Config::load() {
             else if (vv == "1_70") vreq_voltage = VREG_VOLTAGE_1_70;
             else if (vv == "1_80") vreq_voltage = VREG_VOLTAGE_1_80;
         }
-#endif
         nvs_get_b("Issue2", Issue2, sts);
         nvs_get_b("rtc_enabled", rtc_enabled, sts);
         nvs_get_b("debug_log", Debug::log_enabled, sts);
@@ -905,11 +868,7 @@ void Config::load() {
         nvs_get_u8("gs_enabled", Config::gs_enabled, sts);
         nvs_get_u8("gs_ram_size", Config::gs_ram_size, sts);
         nvs_get_u8("gs_clock", Config::gs_clock, sts);
-#if !defined(PICO_RP2040)
         nvs_get_u8("throtling2", Config::throtling, sts);
-#else
-        nvs_get_u8("throtling1", Config::throtling, sts);
-#endif
         nvs_get_b("CursorAsJoy", CursorAsJoy, sts);
         nvs_get_b("betadisk", betadisk, sts);
         nvs_get_b("trdosFastMode", trdosFastMode, sts);
@@ -927,7 +886,6 @@ void Config::load() {
             char k[12]; snprintf(k, sizeof(k), "drive%d.wp", i);
             nvs_get_b(k, driveWP[i], sts);
         }
-#if !PICO_RP2040
         nvs_get_u8("esxdos", esxdos, sts);
         // Migrate old bool key
         { bool old_divmmc = false; nvs_get_b("divmmc", old_divmmc, sts); if (old_divmmc && esxdos == 0) esxdos = 1; }
@@ -964,7 +922,6 @@ void Config::load() {
         nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
         nvs_get_u8("zifi_rx_pin", zifi_rx_pin, sts);
         nvs_get_u8("zifi_transport", zifi_transport, sts);
-#endif
         nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
         nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
         nvs_get_str("DSK_Path", FileUtils::DSK_Path, sts);
@@ -1009,22 +966,13 @@ void Config::load() {
             Config::vga_video_mode = VM_720x576_50;
         }
         nvs_get_b("v_sync_enabled", v_sync_enabled, sts);
-        #if PICO_RP2350
         nvs_get_b("gigascreen_enabled", gigascreen_enabled, sts);
         nvs_get_u8("gigascreen_onoff", gigascreen_onoff, sts);
-        #endif
-        #if PICO_RP2040
-        // RP2040 can't handle 720x modes — not enough RAM for framebuffer
-        if (hdmi_video_mode >= VM_720x480_60) hdmi_video_mode = VM_640x480_60;
-        if (vga_video_mode >= VM_720x480_60) vga_video_mode = VM_640x480_60;
-        #endif
-        #if !PICO_RP2040
         nvs_get_b("ulaplus", ulaplus, sts);
         nvs_get_b("hdmi_dither", hdmi_dither, sts);
         nvs_get_b("timex_video", timex_video, sts);
         nvs_get_u8("dma_mode", dma_mode, sts);
         nvs_get_b("mode16col_onoff", mode16col_onoff, sts);
-        #endif
         nvs_get_u8("palette", palette, sts);
         std::string v;
         nvs_get_str("audio_driver", v, sts);
@@ -1051,22 +999,17 @@ void Config::load() {
         int mem_pg_cnt = 0;
         nvs_get_i("MEM_PG_CNT", mem_pg_cnt, sts);
         if (mem_pg_cnt < 8 || mem_pg_cnt > 2048) MEM_PG_CNT = 64;
-        #if PICO_RP2040
-        else if (mem_pg_cnt > 512) MEM_PG_CNT = 512;
-        #endif
         else MEM_PG_CNT = mem_pg_cnt;
     }
     loaded = true;
-#if !PICO_RP2040
     if (FileUtils::fsMount)
         loadWifiConfig();
-#endif
 }
 
 // Streams key=value lines straight to the SD file when one is open;
 // the whole config (~5KB) must never be built in a heap string — on
-// RP2040 only ~15KB heap is free at save time and the realloc growth
-// of a single big buffer OOMs (see CLAUDE.md RP2040 rules).
+// When only ~15KB heap is free at save time the realloc growth
+// of a single big buffer OOMs.
 struct NvsWriter {
     FIL* f = nullptr;       // file target
     string* ram = nullptr;  // RAM fallback target (no SD)
@@ -1149,7 +1092,6 @@ void Config::save(const char* path) {
     nvs_set_u16(buf,"max_flash_freq", max_flash_freq);
     nvs_set_u16(buf,"max_psram_freq", max_psram_freq);
     nvs_set_u16(buf,"max_tft_freq", max_tft_freq);
-#if !PICO_RP2040
     {
         const char* vv = "1_60";
         switch (vreq_voltage) {
@@ -1167,7 +1109,6 @@ void Config::save(const char* path) {
         }
         nvs_set_str(buf, "vreq_voltage", vv);
     }
-#endif
 
     #if TFT
     nvs_set_u8(buf,"TFT_FLAGS", TFT_FLAGS);
@@ -1197,9 +1138,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"slog",slog_on ? "true" : "false");
 ///        nvs_set_str(buf,"sdstorage", FileUtils::MountPoint);
 ///        nvs_set_str(buf,"asp169",aspect_16_9 ? "true" : "false");
-    nvs_set_u8(buf,"language", Config::lang);
     nvs_set_str(buf,"AY48", AY48 ? "true" : "false");
-#if !PICO_RP2040
     nvs_set_str(buf,"SAA1099", SAA1099 ? "true" : "false");
     nvs_set_u8(buf,"midi", midi);
     nvs_set_u8(buf,"midipreset", midi_synth_preset);
@@ -1208,7 +1147,6 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"zifi_tx_pin", zifi_tx_pin);
     nvs_set_u8(buf,"zifi_rx_pin", zifi_rx_pin);
     nvs_set_u8(buf,"zifi_transport", zifi_transport);
-#endif
     nvs_set_u8(buf,"ayConfig", Config::ayConfig);
     nvs_set_u8(buf,"turbosound", Config::turbosound);
     nvs_set_u8(buf,"covox", Config::covox);
@@ -1256,11 +1194,7 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"joy2cursor",Config::joy2cursor);
     nvs_set_u8(buf,"secondJoy",Config::secondJoy);
     nvs_set_u8(buf,"kempstonPort",Config::kempstonPort);
-#if !defined(PICO_RP2040)
     nvs_set_u8(buf,"throtling2",Config::throtling);
-#else
-    nvs_set_u8(buf,"throtling1",Config::throtling);
-#endif
     nvs_set_str(buf,"CursorAsJoy", CursorAsJoy ? "true" : "false");
     nvs_set_str(buf,"betadisk", betadisk ? "true" : "false");
     nvs_set_str(buf,"trdosFastMode", trdosFastMode ? "true" : "false");
@@ -1273,7 +1207,6 @@ void Config::save(const char* path) {
         char k[12]; snprintf(k, sizeof(k), "drive%d.wp", i);
         nvs_set_str(buf, k, driveWP[i] ? "true" : "false");
     }
-#if !PICO_RP2040
     nvs_set_u8(buf,"esxdos", esxdos);
     nvs_set_str(buf,"esxdos_hdf", esxdos_hdf_image[0].c_str());
     nvs_set_str(buf,"esxdos_hd1", esxdos_hdf_image[1].c_str());
@@ -1292,7 +1225,6 @@ void Config::save(const char* path) {
     }
     nvs_set_u8(buf,"mb02SoundLedMode", mb02SoundLed);
     nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
-#endif
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
     nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());
     nvs_set_str(buf,"DSK_Path",FileUtils::DSK_Path.c_str());
@@ -1316,7 +1248,6 @@ void Config::save(const char* path) {
             };
             s = "drive" + to_string(i);
             persistFile(s + ".file", ESPectrum::fdd.disk[i] ? ESPectrum::fdd.disk[i]->fname : "");
-#if !PICO_RP2040
             s = "mb02d" + to_string(i);
             // MB-02+ disk paths must survive the interface being disabled. Persist
             // the remembered path, NOT the live FDD state: when MB-02+ is off
@@ -1327,7 +1258,6 @@ void Config::save(const char* path) {
             if (Config::mb02)
                 mb02DiskFile[i] = ESPectrum::mb02_fdd.disk[i] ? ESPectrum::mb02_fdd.disk[i]->fname : "";
             persistFile(s + ".file", mb02DiskFile[i]);
-#endif
         }
     }
     nvs_set_u8(buf,"scanlines",Config::scanlines);
@@ -1341,13 +1271,11 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"v_sync_enabled", Config::v_sync_enabled ? "true" : "false");
     nvs_set_str(buf,"gigascreen_enabled", Config::gigascreen_enabled ? "true" : "false");
     nvs_set_u8(buf,"gigascreen_onoff", Config::gigascreen_onoff);
-    #if !PICO_RP2040
     nvs_set_str(buf,"ulaplus", Config::ulaplus ? "true" : "false");
     nvs_set_str(buf,"hdmi_dither", Config::hdmi_dither ? "true" : "false");
     nvs_set_str(buf,"timex_video", Config::timex_video ? "true" : "false");
     nvs_set_u8(buf,"dma_mode",Config::dma_mode);
     nvs_set_str(buf,"mode16col_onoff", Config::mode16col_onoff ? "true" : "false");
-    #endif
     nvs_set_u8(buf,"palette", Config::palette);
     nvs_set_str(buf,"audio_driver", Config::audio_driver == 0 ? "auto" :
         (Config::audio_driver == 1) ? "pwm" : (Config::audio_driver == 2) ? "i2s" :
@@ -1446,7 +1374,7 @@ void Config::setJoyMap(uint8_t joytype) {
     for (int n = 0; n < 14; n++) joydef[n] = fabgl::VK_NONE;
     // Ask to overwrite map with default joytype values
     string title = "Joystick";
-    string msg = OSD_DLG_SETJOYMAPDEFAULTS[Config::lang];
+    string msg = OSD_DLG_SETJOYMAPDEFAULTS;
     uint8_t res = OSD::msgDialog(title, msg);
     if (res == DLG_YES) {
         joydef[0] = fabgl::VK_DPAD_LEFT;

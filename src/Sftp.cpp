@@ -1,6 +1,6 @@
 #include "Sftp.h"
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "Debug.h"
 #include "ff.h"
@@ -315,4 +315,4 @@ void Sftp::disconnect() {
     up = false; chan = -1;
 }
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT

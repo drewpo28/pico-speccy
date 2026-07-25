@@ -4,7 +4,7 @@
 // RP2350 only, behind ZIFI_NET_CLIENT. Drives Ssh's channel I/O; all blocking,
 // called from the OSD/main thread.
 
-#if !PICO_RP2040 && ZIFI_NET_CLIENT
+#if ZIFI_NET_CLIENT
 
 #include "RemoteFs.h"
 #include "Ssh.h"
@@ -49,4 +49,4 @@ private:
     uint32_t statSize(const std::string& path, bool& isDir, bool& ok);
 };
 
-#endif // !PICO_RP2040 && ZIFI_NET_CLIENT
+#endif // ZIFI_NET_CLIENT
