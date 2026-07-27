@@ -307,9 +307,11 @@ void act_ledLegend() {
 
 // ── Joystick / hot keys ────────────────────────────────────────────────────────
 // The pad map is a page of the new UI now (spatial layout + JoyTest preserved);
-// the classic dialog stays as the small-layout fallback.
+// the classic dialog stays as the small-layout fallback. The gate is the page's
+// real requirement — 310 glyph-scaled px of width — which the full-framebuffer
+// DS80 surface (640 logical, scale 2 -> needs 620) satisfies too.
 void act_joyDialog() {
-    if (nm::available() && !Sf.ds80) joyMappingPage();
+    if (nm::available() && Sf.w >= 310 * Sf.glyphScale + 8) joyMappingPage();
     else OSD::joyDialog();
 }
 // ── hot keys as a level ────────────────────────────────────────────────────────

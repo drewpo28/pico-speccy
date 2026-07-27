@@ -106,8 +106,12 @@ void gfxComputeSurface() {
 // The UI palette is (re)installed on every open: VIDEO::applyPalette() (a palette
 // change, a reset) rewrites 224..239 from the G3R3B2 ramp, so there is no stale state
 // to worry about either way.
+// Every DS80 palette touch below checks the LIVE profi_ds80_active, not just the
+// Sf.ds80 snapshot: a machine switch inside the commit can leave DS80 under a menu
+// that opened in it (Profi -> Pentagon). Applying then would re-arm the DS80 driver
+// over a standard framebuffer — garbled screen / "DS80 stuck" (hw 2026-07-27).
 void gfxInstallPalette() {
-    if (Sf.ds80) {
+    if (Sf.ds80 && profi_ds80_active) {
         VIDEO::applyUiDS80Palette(kUiPalette);
     } else {
         for (int i = 0; i < C_COUNT; i++)
@@ -122,11 +126,11 @@ void gfxBegin() {
 
 void gfxSuspendPalette() {
     // Standard mode needs nothing: the dialogs use indices 0..16, we own 224..239.
-    if (Sf.ds80) VIDEO::restoreUiDS80Palette();
+    if (Sf.ds80 && profi_ds80_active) VIDEO::restoreUiDS80Palette();
 }
 
 void gfxResumePalette() {
-    if (Sf.ds80) VIDEO::applyUiDS80Palette(kUiPalette);
+    if (Sf.ds80 && profi_ds80_active) VIDEO::applyUiDS80Palette(kUiPalette);
 }
 
 const uint32_t* uiPalette()     { return kUiPalette; }
@@ -134,7 +138,7 @@ int             uiPaletteBase() { return UI_PAL_BASE; }
 uint8_t         uiPaletteSlot(UiColor c) { return palByte(c); }
 
 void gfxEnd() {
-    if (Sf.ds80) VIDEO::restoreUiDS80Palette();
+    if (Sf.ds80 && profi_ds80_active) VIDEO::restoreUiDS80Palette();
     // Standard mode: nothing to undo. 224..239 belong to the UI; the next
     // VIDEO::applyPalette() (palette change / reset) rewrites them from the G3R3B2
     // ramp, and gfxBegin() re-installs on every open, so there is no stale state.

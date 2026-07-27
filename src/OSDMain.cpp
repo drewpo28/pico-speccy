@@ -423,6 +423,18 @@ void OSD::esp_hard_reset() {
 }
 
 static bool confirmReboot(const char* dlg) {
+#if NEW_UI
+    // New-chrome Yes/No wherever the layout fits (hotkeys arrive with no gfx
+    // session, hence the begin/end pair). The classic-cascade callers deeper in
+    // this file are only reachable when the new UI does NOT fit (available()
+    // false), so they keep msgDialog automatically.
+    if (nm::available()) {
+        nm::gfxBegin();
+        const bool yes = nm::uiConfirm(dlg);
+        nm::gfxEnd();
+        return yes;
+    }
+#endif
     return OSD::msgDialog("", dlg) == DLG_YES;
 }
 
@@ -447,7 +459,58 @@ bool OSD::featureBudgetGate(int featureId) {
         return false;
     }
 
-    // BUDGET_NEEDS_FREE: multi-select popup of the freeable features. Run it as a
+    // BUDGET_NEEDS_FREE: multi-select of the freeable features.
+#if NEW_UI
+    // New chrome: a pick list where Enter toggles a candidate and the last row
+    // applies; the running free/need tally lives in the title. gfxBegin/End pair
+    // makes this safe standalone (hotkey) and nested (menu/commit callers wrap the
+    // gate in their own suspend/resume, which re-installs after us).
+    if (nm::available()) {
+        nm::gfxBegin();
+        bool sel[FEAT_COUNT] = { false };
+        int cur = 0;
+        while (1) {
+            size_t freed = 0;
+            for (int i = 0; i < nCand; i++) if (sel[i]) freed += featureCost(cand[i]);
+            string rows[FEAT_COUNT + 1];
+            const char* items[FEAT_COUNT + 1];
+            char buf[64];
+            for (int i = 0; i < nCand; i++) {
+                snprintf(buf, sizeof(buf), "[%c] %s (%uK)",
+                         sel[i] ? '*' : ' ', featureName(cand[i]),
+                         (unsigned)((featureCost(cand[i]) + 1023) / 1024));
+                rows[i] = buf;
+                items[i] = rows[i].c_str();
+            }
+            rows[nCand]  = MSG_BUDGET_APPLY;
+            items[nCand] = rows[nCand].c_str();
+            char title[72];
+            snprintf(title, sizeof(title), "%s: free %uK / need %uK",
+                     featureName(f), (unsigned)(freed / 1024),
+                     (unsigned)((deficit + 1023) / 1024));
+            const int pick = nm::uiPickList(title, items, nCand + 1, cur);
+            if (pick < 0) break;                        // Esc: not enabled
+            if (pick < nCand) {                         // toggle a candidate
+                sel[pick] = !sel[pick];
+                cur = pick;
+                continue;
+            }
+            if (freed < deficit) {                      // Apply with too little freed
+                flushKbd();
+                nm::uiToast(MSG_BUDGET_INSUFFICIENT, true, 0);
+                cur = pick;
+                continue;
+            }
+            for (int i = 0; i < nCand; i++) if (sel[i]) featureSetEnabled(cand[i], false);
+            featureSetEnabled(f, true);
+            Config::save();
+            esp_hard_reset();                           // never returns
+        }
+        nm::gfxEnd();
+        return false;
+    }
+#endif
+    // Classic popup. Run it as a
     // CHILD dialog (menu_level+1) so it uses its own prev_y slot — at the caller's
     // level its menu_saverect draw would overwrite prev_y[level] with the popup's
     // (lower) Y, and the parent menu's next saverect=false redraw (y=prev_y[level])
@@ -2029,6 +2092,41 @@ void OSD::bootTrdos() {
 }
 
 // OSD Main Loop
+// Chooser for the small hotkey menus (NMI, Reset-to): takes the classic
+// "Title\nRow\nRow\n" menu string and returns the classic 1-based row (0 = Esc),
+// drawn as a new-chrome pick list when the layout fits, else as the classic
+// simpleMenuRun popup. One helper so every variant of these menus ports at once.
+static uint8_t hotkeyChooser(const string& menu, uint8_t cols) {
+#if NEW_UI
+    if (nm::available()) {
+        string  rows[8];
+        const char* items[8];
+        string  title;
+        int n = 0;
+        size_t prev = 0, pos;
+        bool first = true;
+        while ((pos = menu.find('\n', prev)) != string::npos && n < 8) {
+            string line = menu.substr(prev, pos - prev);
+            if (first) { title = line; first = false; }
+            else if (!line.empty()) { rows[n] = line; items[n] = rows[n].c_str(); n++; }
+            prev = pos + 1;
+        }
+        if (!n) return 0;
+        nm::gfxBegin();
+        const int sel = nm::uiPickList(title.c_str(), items, n);
+        nm::gfxEnd();
+        return sel < 0 ? 0 : (uint8_t)(sel + 1);
+    }
+#endif
+    OSD::menu_level = 0;
+    OSD::menu_curopt = 1;
+    OSD::menu_saverect = true;
+    const uint16_t w = (cols * OSD_FONT_W) + 2;
+    const uint16_t h = (OSD::rowCount(menu) * OSD_FONT_H) + 2;
+    return OSD::simpleMenuRun(menu, OSD::scrAlignCenterX(w), OSD::scrAlignCenterY(h),
+                              OSD::rowCount(menu), cols);
+}
+
 void OSD::nmiAction() {
     if (DivMMC::enabled) {
         // DivMMC NMI: automap at 0x0066 handled by preOpcFetch/postOpcFetch
@@ -2036,18 +2134,10 @@ void OSD::nmiAction() {
     } else
     if (Z80Ops::isByte) {
         // ZX Byte: NMI menu with COBMECT mode toggle
-        menu_level = 0;
-        menu_curopt = 1;
-        menu_saverect = true;
         string nmi_menu = MENU_NMI_TITLE;
         nmi_menu += "NMI\n";
         nmi_menu += MENU_BYTE_COBMECT_MODE;
-        uint8_t nmi_cols = 20;
-        uint16_t nmi_w = (nmi_cols * OSD_FONT_W) + 2;
-        uint16_t nmi_h = (rowCount(nmi_menu) * OSD_FONT_H) + 2;
-        uint8_t opt = simpleMenuRun(nmi_menu,
-            scrAlignCenterX(nmi_w), scrAlignCenterY(nmi_h),
-            rowCount(nmi_menu), nmi_cols);
+        uint8_t opt = hotkeyChooser(nmi_menu, 20);
         if (opt == 1) {
             Z80::triggerNMI();
         } else if (opt == 2) {
@@ -2061,17 +2151,7 @@ void OSD::nmiAction() {
             osdCenteredMsg(Config::byte_cobmect_mode ? OSD_COBMECT_ON : OSD_COBMECT_OFF, LEVEL_INFO, 500);
         }
     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
-        menu_level = 0;
-        menu_curopt = 1;
-        menu_saverect = true;
-        string nmi_menu = MENU_NMI_TITLE;
-        nmi_menu += MENU_NMI_SEL;
-        uint8_t nmi_cols = 20;
-        uint16_t nmi_w = (nmi_cols * OSD_FONT_W) + 2;
-        uint16_t nmi_h = (rowCount(nmi_menu) * OSD_FONT_H) + 2;
-        uint8_t opt = simpleMenuRun(nmi_menu,
-            scrAlignCenterX(nmi_w), scrAlignCenterY(nmi_h),
-            rowCount(nmi_menu), nmi_cols);
+        uint8_t opt = hotkeyChooser(string(MENU_NMI_TITLE) + MENU_NMI_SEL, 20);
         if (opt == 1)
             Z80::triggerNMI();
         else if (opt == 2)
@@ -2239,15 +2319,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         else
         if (hkIdx == Config::HK_RESET_TO) { // Reset to...
             if (DivMMC::enabled) {
-                menu_level = 0;
-                menu_curopt = 1;
-                menu_saverect = true;
-                uint8_t rst_cols = 22;
-                uint16_t rst_w = (rst_cols * OSD_FONT_W) + 2;
-                uint16_t rst_h = (rowCount(MENU_RESETTO_DIVMMC) * OSD_FONT_H) + 2;
-                uint8_t opt = simpleMenuRun(MENU_RESETTO_DIVMMC,
-                    scrAlignCenterX(rst_w), scrAlignCenterY(rst_h),
-                    rowCount(MENU_RESETTO_DIVMMC), rst_cols);
+                uint8_t opt = hotkeyChooser(MENU_RESETTO_DIVMMC, 22);
                 if (opt == 1) {
                     // Soft Reset: keep DivMMC RAM (ESXDOS sees 0xAA flag, goes to file browser)
                     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
@@ -2281,15 +2353,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     reset_menu = MENU_RESETTO_128;
                 }
 
-                menu_level = 0;
-                menu_curopt = 1;
-                menu_saverect = true;
-                uint8_t rst_cols = 22;
-                uint16_t rst_w = (rst_cols * OSD_FONT_W) + 2;
-                uint16_t rst_h = (rowCount(reset_menu) * OSD_FONT_H) + 2;
-                uint8_t opt = simpleMenuRun(reset_menu,
-                    scrAlignCenterX(rst_w), scrAlignCenterY(rst_h),
-                    rowCount(reset_menu), rst_cols);
+                uint8_t opt = hotkeyChooser(reset_menu, 22);
 
                 if (opt > 0) {
                     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
@@ -8707,11 +8771,15 @@ static const nm::UiColor kDbgPaperNu[] = {
 };
 #endif
 
-static int dbgPX(int col) {
+// Cell width: the new skin's glyphs scale horizontally in DS80 (glyphScale 2).
+static int dbgCellW() {
 #if NEW_UI
-    if (s_dbg.nu) return s_dbg.cx + col * UI_FONT_W;
+    if (s_dbg.nu) return UI_FONT_W * nm::Sf.glyphScale;
 #endif
-    return s_dbg.cx + col * OSD_FONT_W;
+    return OSD_FONT_W;
+}
+static int dbgPX(int col) {
+    return s_dbg.cx + col * dbgCellW();
 }
 static int dbgPY(int row) {
 #if NEW_UI
@@ -8724,7 +8792,7 @@ static void dbgText(int col, int row, const char* s, DbgInk k) {
     const int x = dbgPX(col), y = dbgPY(row);
 #if NEW_UI
     if (s_dbg.nu) {
-        nm::fill(x, y, (int)strlen(s) * UI_FONT_W, UI_FONT_H, kDbgPaperNu[k]);
+        nm::fill(x, y, (int)strlen(s) * dbgCellW(), UI_FONT_H, kDbgPaperNu[k]);
         nm::text(x, y, s, kDbgInkNu[k]);
         return;
     }
@@ -8739,7 +8807,7 @@ static void dbgText(int col, int row, const char* s, DbgInk k) {
 static void dbgFillRow(int col, int row, int ncols, DbgInk k) {
 #if NEW_UI
     if (s_dbg.nu) {
-        nm::fill(dbgPX(col), dbgPY(row), ncols * UI_FONT_W, UI_FONT_H, kDbgPaperNu[k]);
+        nm::fill(dbgPX(col), dbgPY(row), ncols * dbgCellW(), UI_FONT_H, kDbgPaperNu[k]);
         return;
     }
 #endif
@@ -8751,7 +8819,10 @@ static void dbgFillRow(int col, int row, int ncols, DbgInk k) {
 // Breakpoint dot on a code row.
 static void dbgBpDot(int row) {
 #if NEW_UI
-    if (s_dbg.nu) { nm::fill(dbgPX(0) + 1, dbgPY(row) + 3, 4, 4, nm::C_ICON_R); return; }
+    if (s_dbg.nu) {
+        nm::fill(dbgPX(0) + 1, dbgPY(row) + 3, 4 * nm::Sf.glyphScale, 4, nm::C_ICON_R);
+        return;
+    }
 #endif
     VIDEO::vga.circle(dbgPX(0) + 3, dbgPY(row) + 3, 3, zxColor(2, 0));
 }
@@ -8827,7 +8898,9 @@ static void dbgBegin() {
 #if NEW_UI
     if (nm::available()) {
         nm::gfxComputeSurface();
-        if (!nm::Sf.ds80) s_dbg.nu = true;
+        // The grid needs ~50 columns. DS80 fits too since the surface covers the
+        // whole framebuffer (640 px / 12-px doubled glyphs = 53 columns).
+        if (nm::Sf.w / (UI_FONT_W * nm::Sf.glyphScale) >= 50) s_dbg.nu = true;
     }
 #endif
     if (s_dbg.nu) {
@@ -9456,7 +9529,12 @@ c:
                 else {
                     // Chrome is full-screen: render one guest frame instead. The
                     // paper repaints every frame, the border only on demand — ask
-                    // for it or the chrome stays in the border area.
+                    // for it or the chrome stays in the border area. DS80: hand the
+                    // palette back so the guest frame shows its own colours
+                    // (dbgFrame re-installs on return).
+#if NEW_UI
+                    nm::gfxSuspendPalette();
+#endif
                     VIDEO::brdnextframe = true;
                     CPU::loop();
                 }
@@ -9824,8 +9902,15 @@ c:
     // redraws the menu; a resumed emulation repaints the guest frame every frame).
     // The border is on-demand though: without the flag it keeps the chrome (visible
     // when the debugger was opened by hotkey, with no menu behind to repaint).
+    // DS80 additionally holds our palette in the guest's 16 entries — hand it back
+    // (no-op in standard mode; runModal re-installs it for the menu behind us).
     if (!s_dbg.nu) VIDEO::SaveRect.restore_last();
-    else VIDEO::brdnextframe = true;
+    else {
+#if NEW_UI
+        nm::gfxSuspendPalette();
+#endif
+        VIDEO::brdnextframe = true;
+    }
 
 }
 

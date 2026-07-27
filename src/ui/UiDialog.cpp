@@ -60,9 +60,12 @@ static int maxLineWidth(const char* s) {
 }
 
 // Draw the box chrome and the body text; returns the box so callers can add
-// buttons under the text. `extra_h` reserves room below the text.
+// buttons under the text. `extra_h` reserves room below the text. `shadow` is
+// off for the transient status notices drawn over the LIVE guest screen
+// (uiOsdMsg): a solid offset slab over a running game reads as garbage there,
+// while over the menu chrome it is what separates a modal from the page.
 static Box drawBox(const char* text_body, const char* title, int extra_h, UiColor border,
-                   int min_w = 0) {
+                   int min_w = 0, bool shadow = true) {
     const int pad  = 4 * Sf.glyphScale;
     const int lh   = UI_FONT_H + 2;
     const int tl   = title ? lh + 2 : 0;
@@ -79,8 +82,8 @@ static Box drawBox(const char* text_body, const char* title, int extra_h, UiColo
     b.x = (Sf.w - b.w) / 2;
     b.y = (Sf.h - b.h) / 2;
 
-    // Drop shadow, then the window.
-    fill(b.x + 2 * Sf.glyphScale, b.y + 2, b.w, b.h, C_SHADOW);
+    // Drop shadow (optional), then the window.
+    if (shadow) fill(b.x + 2 * Sf.glyphScale, b.y + 2, b.w, b.h, C_SHADOW);
     roundRect(b.x, b.y, b.w, b.h, 3, border, C_PANEL_ALT);
 
     int y = b.y + pad;
@@ -247,7 +250,7 @@ void uiOsdMsg(const char* msg, uint8_t level, uint16_t ms) {
         case 3:  border = C_ICON_R; break;      // LEVEL_ERROR
         default: border = C_SEP;    break;      // LEVEL_INFO
     }
-    drawBox(msg, nullptr, 0, border);
+    drawBox(msg, nullptr, 0, border, 0, /*shadow=*/false);   // over the live screen
     if (!ms) return;               // persistent notice: caller repaints later
 
     fabgl::VirtualKeyItem k;

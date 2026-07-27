@@ -612,15 +612,20 @@ resume:
     if (doCommit) Stage::commit(rep);
 
     // At most ONE message, and at most ONE question, for the whole session.
-    if (rep.blocked) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Not enough free SRAM for %s",
-                 Subsystems::featureName((Subsystems::FeatureId)rep.blockedFeat));
-        uiToast(msg, true, 2000);
-    } else if (rep.note) {
-        uiToast(rep.note, true, 2000);
-    } else if (rep.failed) {
-        uiToast("Some settings could not be applied", true, 1500);
+    // Not after a machine switch though: the surface computed at open may be gone
+    // (DS80 -> standard), so drawing with it would garble — and the switch spoke
+    // for itself (MachineSwitch shows its own messages).
+    if (!rep.machineSwitched) {
+        if (rep.blocked) {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Not enough free SRAM for %s",
+                     Subsystems::featureName((Subsystems::FeatureId)rep.blockedFeat));
+            uiToast(msg, true, 2000);
+        } else if (rep.note) {
+            uiToast(rep.note, true, 2000);
+        } else if (rep.failed) {
+            uiToast("Some settings could not be applied", true, 1500);
+        }
     }
 
     // A declined machine switch needs no message of ours: featureBudgetGate already
