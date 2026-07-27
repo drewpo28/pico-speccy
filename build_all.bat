@@ -27,10 +27,25 @@ if not defined JOBS_PER_BUILD (
     set /a "JOBS_PER_BUILD=(%NUMBER_OF_PROCESSORS% + %MAX_PARALLEL% - 1) / %MAX_PARALLEL%"
 )
 
-:: Auto-detect Ninja from Pico SDK or system PATH
+:: Pico SDK cmake bootstrap: the VS Code Pico extension puts cmake on PATH only in
+:: its own terminals, so a plain cmd.exe run needs the SDK copy (newest installed).
+where cmake >nul 2>&1
+if !errorlevel! neq 0 (
+    set "PICO_CMAKE_BIN="
+    for /f "delims=" %%D in ('dir /b /ad /on "%USERPROFILE%\.pico-sdk\cmake" 2^>nul') do (
+        if exist "%USERPROFILE%\.pico-sdk\cmake\%%D\bin\cmake.exe" set "PICO_CMAKE_BIN=%USERPROFILE%\.pico-sdk\cmake\%%D\bin"
+    )
+    if defined PICO_CMAKE_BIN set "PATH=!PICO_CMAKE_BIN!;%PATH%"
+)
+
+:: Auto-detect Ninja from Pico SDK (newest installed version — no hardcoded pin) or
+:: system PATH
 if not defined CMAKE_GENERATOR (
-    set "PICO_NINJA=%USERPROFILE%\.pico-sdk\ninja\v1.12.1\ninja.exe"
-    if exist "!PICO_NINJA!" (
+    set "PICO_NINJA="
+    for /f "delims=" %%D in ('dir /b /ad /on "%USERPROFILE%\.pico-sdk\ninja" 2^>nul') do (
+        if exist "%USERPROFILE%\.pico-sdk\ninja\%%D\ninja.exe" set "PICO_NINJA=%USERPROFILE%\.pico-sdk\ninja\%%D\ninja.exe"
+    )
+    if defined PICO_NINJA (
         set "CMAKE_GENERATOR=Ninja"
         set "CMAKE_MAKE_PROGRAM=!PICO_NINJA!"
     ) else (

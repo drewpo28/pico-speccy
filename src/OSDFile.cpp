@@ -55,6 +55,10 @@ using namespace std;
 #include "wd1793.h"
 #include "ZipExtract.h"
 #include "FileInfo.h"
+#include "ui/OSDNewMenu.h"
+#if NEW_UI
+#include "ui/UiBrowser.h"
+#endif
 
 #include "ff.h"
 
@@ -68,203 +72,20 @@ using namespace std;
 extern Font Font6x8;
 extern Font Font6x8Cyr;   // CP1251 Cyrillic face for the online-catalog browser
 
-// Sort version: bump to invalidate cached .idx files when sort order changes
-#define SORT_VERSION 1
+// The index class + SORT_VERSION moved to SortedFiles.h, shared with the new
+// fullscreen browser (src/ui/UiBrowser.cpp) so both use the same /tmp .idx cache.
+#include "SortedFiles.h"
 
-inline static size_t crc(const std::string& s) {
-    size_t res = 0;
-    for (size_t j = 0; j < s.size(); ++j) {
-        res += s[j];
-    }
-    return res;
-}
-
-fabgl::VirtualKey get_last_key_pressed(void);
-
-class sorted_files {
-    static const size_t rec_size = FF_LFN_BUF + 1;
-    std::string folder;
-    std::string idx_file;
-    size_t sz = 0;
-    FIL* storage_file = 0;
-    bool open = false;
-    inline void calc_sz() {
-        sz = 0;
-        storage_file = fopen2(idx_file.c_str(), FA_READ);
-        if (storage_file) {
-            UINT br;
-            char buf[rec_size];
-            while ( f_read(storage_file, buf, rec_size, &br) == FR_OK && br == rec_size ) {
-                ++sz;
-            }
-            fclose2(storage_file);
-        }
-        storage_file = fopen2(idx_file.c_str(), FA_READ | FA_WRITE);
-        if (storage_file) open = true;
-    }
-public:
-    inline sorted_files() { }
-    inline void close(void) { if (open && storage_file) fclose2(storage_file); open = false; }
-    inline ~sorted_files() { close(); }
-    inline size_t size(void) { return sz; }
-    inline void unlink(void) {
-        close();
-        f_unlink(idx_file.c_str());
-        storage_file = fopen2(idx_file.c_str(), FA_READ | FA_WRITE | FA_CREATE_ALWAYS);
-        if (storage_file) open = true;
-        sz = 0;
-    }
-    inline void init(const std::string& folder) {
-        close();
-        this->folder = folder;
-        const char* prefix;
-        std::string s = folder;
-        std::replace( s.begin(), s.end(), '/', '_');
-        std::replace( s.begin(), s.end(), ':', '_');  // "USB:/..." — ':' is invalid in FAT names
-        idx_file = "/tmp/." + s + ".idx";
-        calc_sz();
-    }
-    inline void put(size_t i, const std::string& s) {
-        f_lseek(storage_file, rec_size * i);
-        UINT bw;
-        char buf[rec_size] = { 0 };
-        strncpy(buf, s.c_str(), rec_size - 1);
-        f_write(storage_file, buf, rec_size, &bw);
-    }
-    inline void push(const std::string& s) {
-        put(sz++, s);
-    }
-    inline size_t crc(void) {
-        size_t res = SORT_VERSION;
-        for (size_t i = 0; i < sz; ++i) {
-            res += ::crc(get(i));
-        }
-        return res;
-    }
-    inline std::string get(size_t i) {
-        f_lseek(storage_file, rec_size * i);
-        UINT br;
-        char buf[rec_size];
-        f_read(storage_file, buf, rec_size, &br);
-        return (buf);
-    }
-    inline std::string operator[](size_t i) {
-        return get(i);
-    }
-    inline int cmp(const std::string& s1, const std::string& s2) {
-        // Case-insensitive compare; DIR_MARKER (0x01) stays lowest so dirs sort first
-        size_t len = s1.size() < s2.size() ? s1.size() : s2.size();
-        for (size_t i = 0; i < len; i++) {
-            int c1 = (uint8_t)s1[i] == DIR_MARKER ? s1[i] : toupper((uint8_t)s1[i]);
-            int c2 = (uint8_t)s2[i] == DIR_MARKER ? s2[i] : toupper((uint8_t)s2[i]);
-            if (c1 != c2) return c1 - c2;
-        }
-        return (int)s1.size() - (int)s2.size();
-    }
-    inline int cmp(size_t i1, size_t i2) {
-        return cmp(get(i1), get(i2));
-    }
-    inline void swap(size_t i1, size_t i2) {
-        std::string s1 = get(i1);
-        std::string s2 = get(i2);
-        put(i1, s2);
-        put(i2, s1);
-    }
-    inline void vecswap(size_t i1, size_t i2, size_t num) {
-        for (size_t i = 0; i < num; ++i) {
-            swap(i1 + i, i2 + i);
-        }
-    }
-    inline size_t med3(size_t a, size_t b, size_t c) {
-	    return cmp(a, b) < 0 ? (cmp(b, c) < 0 ? b : (cmp(a, c) < 0 ? c : a )) : (cmp(b, c) > 0 ? b : (cmp(a, c) < 0 ? a : c ));
-    }
-    inline void sort(void) {
-        qsort(0, sz);
-    }
-    void qsort(size_t ai, size_t n) {
-        if (!n) return;
-        size_t pn, pm, pl, d, pa, pb, pc, pd = 0;
-        int r;
-    loop:
-        fabgl::VirtualKey lkp = get_last_key_pressed();
-        if (lkp == fabgl::VirtualKey::VK_F1) return;
-        size_t swap_cnt = 0;
-        if (n < 7) {
-            for (pm = ai + 1; pm < ai + n; ++pm) {
-                for (pl = pm; pl > ai && cmp(pl - 1, pl) > 0; --pl) {
-                    swap(pl, pl - 1);
-                }
-            }
-        }
-        pm = ai + (n / 2);
-	    if (n > 7) {
-		    pl = ai;
-		    pn = ai + (n - 1);
-		    if (n > 40) {
-			    d = (n / 8);
-			    pl = med3(pl, pl + d, pl + 2 * d);
-			    pm = med3(pm - d, pm, pm + d);
-    			pn = med3(pn - 2 * d, pn - d, pn);
-	    	}
-		    pm = med3(pl, pm, pn);
-	    }
-	    swap(ai, pm);
-	    pa = pb = ai + 1;
-        pc = pd = ai + (n - 1);
-	    for (;;) {
-		    while (pb <= pc && (r = cmp(pb, ai)) <= 0) {
-                fabgl::VirtualKey lkp = get_last_key_pressed();
-                if (lkp == fabgl::VirtualKey::VK_F1) return;
-			    if (r == 0) {
-				    swap_cnt = 1;
-				    swap(pa, pb);
-				    ++pa;
-                }
-			    ++pb;
-		    }
-		    while (pb <= pc && (r = cmp(pc, ai)) >= 0) {
-                fabgl::VirtualKey lkp = get_last_key_pressed();
-                if (lkp == fabgl::VirtualKey::VK_F1) return;
-			    if (r == 0) {
-				    swap_cnt = 1;
-				    swap(pc, pd);
-				    --pd;
-			    }
-			    --pc;
-		    }
-		    if (pb > pc)
-			    break;
-		    swap(pb, pc);
-		    swap_cnt = 1;
-		    ++pb;
-		    --pc;
-	    }
-	    if (swap_cnt == 0) {  // Switch to insertion sort
-		    for (pm = ai + 1; pm < ai + n; ++pm)
-			    for (pl = pm; pl > ai && cmp(pl - 1, pl) > 0; --pl) {
-                    fabgl::VirtualKey lkp = get_last_key_pressed();
-                    if (lkp == fabgl::VirtualKey::VK_F1) return;
-				    swap(pl, pl - 1);
-                }
-		    return;
-        }
-	    pn = ai + n;
-	    r = min(pa - ai, pb - pa);
-	    vecswap(ai, pb - r, r);
-	    r = min(pd - pc, pn - pd - 1);
-	    vecswap(pb, pn - r, r);
-	    if ((r = pb - pa) > 1)
-		qsort(ai, r);
-	    if ((r = pd - pc) > 1) { 
-		    // Iterate rather than recurse to save stack space
-		    ai = pn - r;
-		    n = r;
-		    goto loop;
-	    }
-    }
-};
+inline static size_t crc(const std::string& s) { return sf_name_crc(s); }
 
 static sorted_files filenames;
+
+#if NEW_UI
+// Read-only view of the shared index for the new-chrome renderer
+// (nm::browseIndexNav) — it draws the very same rows the classic chrome would.
+size_t fdIndexSize() { return filenames.size(); }
+string fdIndexGet(size_t i) { return filenames.get(i); }
+#endif
 
 // Name to navigate to after directory rescan (e.g. after create/delete)
 static string fd_goto_name;
@@ -455,10 +276,10 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
     fd_goto_name.clear();
     // Position
     if (menu_level == 0) {
-        x = (Config::aspect_16_9 ? 24 : 4);
-        y = (Config::aspect_16_9 ? 4 : 4);
+        x = 4;
+        y = 4;
     } else {
-        x = (Config::aspect_16_9 ? 24 : 8) + (60 * menu_level);
+        x = 8 + (60 * menu_level);
         y = 8 + (16 * menu_level);
     }
 
@@ -466,7 +287,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
     // DISK_ALLFILE uses a sidebar layout: total cols = list + sep + sidebar
     cols = (ftype == DISK_ALLFILE) ? FDLG_TOTAL_COLS : mfcols;
     fd_list_cols = (ftype == DISK_ALLFILE) ? FDLG_LIST_COLS : cols;
-    mf_rows = mfrows + (Config::aspect_16_9 ? 0 : 1);
+    mf_rows = mfrows + 1;
 
     if (FileUtils::fileTypes[ftype].focus > mf_rows - 1) {
         FileUtils::fileTypes[ftype].begin_row += FileUtils::fileTypes[ftype].focus - (mf_rows - 1);
@@ -662,14 +483,14 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                 VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(5, 0));
                 unsigned int elem = FileUtils::fileTypes[ftype].fdMode ? fdSearchElements : elements;
                 if (elem) {
-                    menuAt(mfrows + (Config::aspect_16_9 ? 0 : 1), cols - (real_rows > virtual_rows ? 13 : 12));
+                    menuAt(mfrows + 1, cols - (real_rows > virtual_rows ? 13 : 12));
                     char elements_txt[13];
                     int nitem = (FileUtils::fileTypes[ftype].begin_row + FileUtils::fileTypes[ftype].focus) - 3 - ndirs;
                     snprintf(elements_txt, sizeof(elements_txt), "%d/%d ", nitem > 0 ? nitem : 0 , elem);
                     VIDEO::vga.print(std::string(12 - strlen(elements_txt), ' ').c_str());
                     VIDEO::vga.print(elements_txt);
                 } else {
-                    menuAt(mfrows + (Config::aspect_16_9 ? 0 : 1), cols - 13);
+                    menuAt(mfrows + 1, cols - 13);
                     VIDEO::vga.print("             ");
                 }
                 // Redraw search field when a key is pressed (fdCursorFlash reset separately)
@@ -698,7 +519,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                     // F7 = create new directory
                     if (Menukey.vk == fabgl::VK_F7 && ftype == DISK_ALLFILE) {
                         fd_DrawSidebar(x, y, mf_rows, fabgl::VK_F7);
-                        string newname = fd_FooterTextEdit(x, y, mfrows + (Config::aspect_16_9 ? 0 : 1), cols, "MkDir: ", "");
+                        string newname = fd_FooterTextEdit(x, y, mfrows + 1, cols, "MkDir: ", "");
                         if (newname != "\x1B" && !newname.empty()) {
                             string fullpath = fdir + newname;
                             f_mkdir(fullpath.c_str());
@@ -719,7 +540,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                         if (isDir) filedir = filedir.substr(1);
                         if (!filedir.empty() && !(isDir && filedir == "..")) {
                             fd_DrawSidebar(x, y, mf_rows, fabgl::VK_F6);
-                            string newname = fd_FooterTextEdit(x, y, mfrows + (Config::aspect_16_9 ? 0 : 1), cols, "Rename: ", filedir);
+                            string newname = fd_FooterTextEdit(x, y, mfrows + 1, cols, "Rename: ", filedir);
                             if (newname != "\x1B" && !newname.empty() && newname != filedir) {
                                 string oldpath = fdir + filedir;
                                 string newpath = fdir + newname;
@@ -737,7 +558,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                     // F9 = create new empty TRD disk image
                     if (Menukey.vk == fabgl::VK_F9 && ftype == DISK_ALLFILE) {
                         fd_DrawSidebar(x, y, mf_rows, fabgl::VK_F9);
-                        string newname = fd_FooterTextEdit(x, y, mfrows + (Config::aspect_16_9 ? 0 : 1), cols, "TRD: ", "");
+                        string newname = fd_FooterTextEdit(x, y, mfrows + 1, cols, "TRD: ", "");
                         if (newname != "\x1B" && !newname.empty()) {
                             string fname = newname;
                             if (fname.size() < 4 || fname.substr(fname.size() - 4) != ".trd")
@@ -874,13 +695,13 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                             fdCursorFlash = 7; // next tick (++&0x7==0) draws immediately
                             // Entering search mode — highlight F3 in sidebar, clear footer
                             if (ftype == DISK_ALLFILE) fd_DrawSidebar(x, y, mf_rows, fabgl::VK_F3);
-                            menuAt(mfrows + (Config::aspect_16_9 ? 0 : 1), 1);
+                            menuAt(mfrows + 1, 1);
                             VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(5, 0));
                             VIDEO::vga.print(std::string(cols - 2, ' ').c_str());
                         } else {
                             // Leaving search mode — restore sidebar and full list
                             if (ftype == DISK_ALLFILE) fd_DrawSidebar(x, y, mf_rows);
-                            menuAt(mfrows + (Config::aspect_16_9 ? 0 : 1), 1);
+                            menuAt(mfrows + 1, 1);
                             VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(5, 0));
                             VIDEO::vga.print(std::string(cols - 2, ' ').c_str());
                             if (FileUtils::fileTypes[ftype].fileSearch != "") {
@@ -1123,7 +944,7 @@ string OSD::fileDialog(string &fdir, const string& title, uint8_t ftype, uint8_t
                 if ((++fdCursorFlash & 0x7) == 0) {
                     const char *label = "Find: ";
                     int labelLen = strlen(label);
-                    int footerRow = mfrows + (Config::aspect_16_9 ? 0 : 1);
+                    int footerRow = mfrows + 1;
                     menuAt(footerRow, 1);
                     VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(5, 0));
                     VIDEO::vga.print(label);
@@ -1301,7 +1122,7 @@ void OSD::fd_PrintRow(uint8_t virtual_row_num, uint8_t line_type, const vector<s
             line = line + std::string(lc - margin - line.length(), ' ');
         else
             if (line_type == IS_FOCUSED) {
-                line = line.substr(fdScrollPos);
+                line = line.substr(fdScrollPos > 0 ? fdScrollPos : 0);
                 if (line.length() <= (size_t)(lc - margin - 6)) {
                     fdScrollPos = -1;
                     timeStartScroll = 0;
@@ -1320,7 +1141,7 @@ void OSD::fd_PrintRow(uint8_t virtual_row_num, uint8_t line_type, const vector<s
                 line = ".." + line.substr(line.length() - (lc - margin) + 2);
             } else {
                 if (line_type == IS_FOCUSED) {
-                    line = line.substr(fdScrollPos);
+                    line = line.substr(fdScrollPos > 0 ? fdScrollPos : 0);
                     if (line.length() <= (size_t)(lc - margin)) {
                         fdScrollPos = -1;
                         timeStartScroll = 0;
@@ -1345,6 +1166,13 @@ void OSD::fd_PrintRow(uint8_t virtual_row_num, uint8_t line_type, const vector<s
 // agnostic (pure draw + input) → safe on the core stack AND the net alt-stack.
 int OSD::fdChromeNav(const string& title, const string& subtitle, int side,
                      bool utf8, int* outKey, int* ioFocus, int* ioBegin) {
+#if NEW_UI
+    // One hook converts every classic-chrome list (Remote hosts, FTP/SFTP browse,
+    // Web Archives catalog) to the new fullscreen chrome; the classic renderer
+    // below stays as the small-layout fallback.
+    if (nm::available())
+        return nm::browseIndexNav(title, subtitle, side, utf8, outKey, ioFocus, ioBegin);
+#endif
     const FdSideItem* items; int nitems;
     switch (side) {
         case FD_SIDE_HOSTS:  items = fd_side_hosts;     nitems = 2; break;
@@ -1362,9 +1190,9 @@ int OSD::fdChromeNav(const string& title, const string& subtitle, int side,
     // so the window is indistinguishable from the SD browser. menu_saverect=false so
     // WindowDraw doesn't push an unbalanced backbuffer save (the OSD repaints on close).
     menu_level = 0; menu_saverect = false;
-    x = (Config::aspect_16_9 ? 24 : 4); y = 4;
+    x = 4; y = 4;
     cols = FDLG_TOTAL_COLS; fd_list_cols = FDLG_LIST_COLS;
-    mf_rows = 22 + (Config::aspect_16_9 ? 0 : 1);
+    mf_rows = 22 + 1;
     w = (cols * OSD_FONT_W) + 2;
     h = ((mf_rows + 1) * OSD_FONT_H) + 2;
     if (x + w > scrW) x = scrW - w;

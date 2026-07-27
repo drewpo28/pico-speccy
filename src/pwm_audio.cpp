@@ -9,9 +9,7 @@
 #include "BoardPins.h"
 #include "Debug.h"
 #include "Subsystem.h"
-#ifdef USE_GS
 #include "GS/GS.h"
-#endif
 #include "LoadWavStream.h"
 #include "PinSerialData_595.h"
 #if defined(VGA_HDMI)
@@ -438,7 +436,6 @@ static void __not_in_flash_func(pcm_call_inner)() {
     // Sampled here at the audio output rate (31.25 kHz) so playback tracks
     // the GS-Z80 DAC state in real time, not a pre-rendered frame buffer.
     int32_t gs_offL = 0, gs_offR = 0;
-#ifdef USE_GS
     if (GS::enabled) {
 #ifdef SOFTTV
         // Under SOFTTV, core1 is fully occupied by composite video rendering
@@ -451,7 +448,6 @@ static void __not_in_flash_func(pcm_call_inner)() {
         gs_offL = ((int32_t)gL - 128) * (int32_t)vol8;
         gs_offR = ((int32_t)gR - 128) * (int32_t)vol8;
     }
-#endif
 #if defined(VGA_HDMI)
     if (Config::audio_driver == 4) {
         if (m_off < m_size) {

@@ -19,9 +19,7 @@
 #include "hardware/gpio.h"              // LED liveness blink during flash write
 #include "hardware/regs/addressmap.h"   // XIP_BASE
 #include "pico/stdlib.h"                // set_sys_clock_khz
-#ifdef USE_GS
 #include "GS/GS.h"         // GS::gs_ram_size
-#endif
 
 extern int butter_pages;             // MemESP.cpp — pages placed in butter PSRAM
 extern size_t getFreeHeap(void);     // platform heap probe (see ESPectrum.cpp)
@@ -166,14 +164,12 @@ void Buffer::initPools() {
         size_t bottom = (size_t)butter_pages * MEM_PG_SZ;
         if (DivMMC::use_psram) bottom += (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
         size_t top = bsize;
-#ifdef USE_GS
         // initPools now runs BEFORE GS::init (so GS's work/ring buffers can draw from
         // this arena), hence GS::gs_ram_size isn't set yet — derive the reserved
         // sample-RAM region from Config via the shared helper.
         size_t gs_res = Config::gs_enabled ? GS::configuredRamBytes() : 0;
         if (gs_res)
             top = (gs_res <= bsize) ? (size_t)bsize - gs_res : bottom;
-#endif
         if (top > bottom) {
             g_butter_base = (uint32_t)bottom;
             butter_arena  = top - bottom;
@@ -186,11 +182,9 @@ void Buffer::initPools() {
     if (spi) {
         size_t low  = (size_t)MEM_PG_CNT * MEM_PG_SZ;
         size_t high = spi;
-#if defined(USE_GS)
         size_t gs_res = (Config::gs_enabled && butter_psram_size() == 0) ? GS::configuredRamBytes() : 0;
         if (gs_res)
             high = (gs_res <= spi) ? (size_t)spi - gs_res : low;
-#endif
         if (high > low) {
             g_spi_base = (uint32_t)low;
             spi_arena  = high - low;

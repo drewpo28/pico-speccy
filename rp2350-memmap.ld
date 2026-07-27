@@ -181,7 +181,8 @@ SECTIONS
         end = __end__;
         KEEP(*(.heap*))
     } > RAM
-    __HeapLimit = ORIGIN(RAM) + LENGTH(RAM);
+    /* __HeapLimit is defined below, next to the stack symbols: the core0 stack
+     * now lives at the top of RAM, so the heap ceiling depends on its size. */
 
     .scratch_x : {
         __scratch_x_start__ = .;
@@ -203,10 +204,13 @@ SECTIONS
     {
         *(.stack1*)
     } > SCRATCH_X
+    /* Core0 stack reservation (PICO_STACK_SIZE). Placed in RAM: the real stack is
+     * positioned by the __Stack* symbols below; this section only provides SIZEOF
+     * and keeps the region accounting honest. */
     .stack_dummy (NOLOAD):
     {
         KEEP(*(.stack*))
-    } > SCRATCH_Y
+    } > RAM
 
     .flash_end : {
         KEEP(*(.embedded_end_block*))
@@ -223,17 +227,24 @@ SECTIONS
     /* ALF builds carry an extra ROM and are too large to also reserve the bank.
      * The build passes --defsym=__no_gm_bank=1 to zero the partition so the whole
      * flash is available to the firmware; GM.DLS is disabled in code (NO_GM_DLS). */
-    __gm_bank_size  = DEFINED(__no_gm_bank) ? 0 : 0x280000;   /* 2.5 MB; multiple of 4 KB. Holds larger converted .dls banks (gm.dls ~1.59 MB; bigger sets fit here). Start moves to FLASH_END-2.5MB; ASSERT below guards firmware overflow. */
+    __gm_bank_size  = DEFINED(__no_gm_bank) ? 0 : 0x260000;   /* 2.375 MB; multiple of 4 KB. Holds converted .dls banks (gm.dls ~1.59 MB fits with margin). Was 2.5 MB — 128 KB handed to the firmware partition for the new fullscreen UI (2026-07-26); moving the start is safe: gm_bank_view() fails the header check on stale data and the bank re-provisions from SD. */
     __gm_bank_start = ORIGIN(FLASH) + LENGTH(FLASH) - __gm_bank_size;
     __gm_bank_end   = ORIGIN(FLASH) + LENGTH(FLASH);
     ASSERT(__flash_binary_end <= __gm_bank_start,
         "ERROR: firmware overflowed into the gm_bank flash partition — shrink firmware or enlarge flash")
 
-    __StackLimit = ORIGIN(RAM) + LENGTH(RAM);
     __StackOneTop = ORIGIN(SCRATCH_X) + LENGTH(SCRATCH_X);
-    __StackTop = ORIGIN(SCRATCH_Y) + LENGTH(SCRATCH_Y);
     __StackOneBottom = __StackOneTop - SIZEOF(.stack1_dummy);
+    /* Core0 stack: 8 KB (PICO_STACK_SIZE) at the TOP of main RAM. It was the 4 KB
+     * SCRATCH_Y bank, which the new UI call chains + the ZiFi RX-IRQ spill stage
+     * (~0.7 KB async, any moment WiFi is up) pushed to the guard (hw-caught
+     * 2026-07-26: double fault, MSP at SCRATCH_Y bottom, F5 browser open).
+     * The MSPLIM guard and the sigbus stackOvf report follow these symbols.
+     * Costs 8 KB of heap ceiling; SCRATCH_Y is now free for future hot code. */
+    __StackTop = ORIGIN(RAM) + LENGTH(RAM);
     __StackBottom = __StackTop - SIZEOF(.stack_dummy);
+    __StackLimit = __StackBottom;
+    __HeapLimit = __StackLimit;
     PROVIDE(__stack = __StackTop);
 
     PROVIDE (__heap_start = __end__);

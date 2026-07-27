@@ -83,10 +83,7 @@ bool LoadSnapshot(const string& filename, const string& force_arch, const string
     g_snapshot_loading_path.clear();
     if (res && OSDprev) {
         VIDEO::OSD = OSDprev;
-        if (Config::aspect_16_9)
-            VIDEO::Draw_OSD169 = VIDEO::MainScreen_OSD;
-        else
-            VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
+        VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
         ESPectrum::TapeNameScroller = 0;
     }    
     return res;

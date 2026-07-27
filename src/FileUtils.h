@@ -71,6 +71,10 @@ enum DiskIface {
     IFACE_BETA = 1,  // TR-DOS: .trd .scl .fdi .udi — Drive A..D
     IFACE_MB02 = 2,  // MB-02+: .mbd — Drive 1..4
     IFACE_ESX  = 3,  // esxDOS: .mmc .hdf — hd0..hd1
+    // IDE/HDD (NEMO/PROFI): .hdd .vhd .iso — hd0 (master) / hd1 (slave). Not
+    // produced by ifaceForExt: those extensions are only meaningful inside the
+    // IDE slot rows, so a plain Enter in the browser must not route them here.
+    IFACE_IDE  = 4,
 };
 
 class FileUtils

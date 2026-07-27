@@ -36,7 +36,6 @@ bool     Config::loaded = false;
 bool     Config::slog_on = false;
 bool     Config::ledIndicators = false;
 bool     Config::sdLedBlink = false;
-const bool     Config::aspect_16_9 = false;
 ///uint8_t  Config::esp32rev = 0;
 bool     Config::AY48 = true;
 bool     Config::SAA1099 = false;
@@ -861,6 +860,10 @@ void Config::load() {
         nvs_get_u8("kempstonPort", Config::kempstonPort, sts);
         nvs_get_u8("ayConfig", Config::ayConfig, sts);
         nvs_get_u8("turbosound", Config::turbosound, sts);
+        // Setting is Yes/No now (3 = both chip-select schemes, 0 = off): fold the
+        // old NedoPC-only (1) / old-TS-only (2) values in, or the menu row would
+        // match no option at all.
+        if (Config::turbosound) Config::turbosound = 3;
         nvs_get_u8("covox", Config::covox, sts);
         if (Config::covox > 2) Config::covox = 0; // migrate short-lived covox==3 SounDrive mode
         nvs_get_u8("soundrive", Config::soundrive, sts);
@@ -1137,7 +1140,6 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"ram_origin", ram_file_origin);
     nvs_set_str(buf,"slog",slog_on ? "true" : "false");
 ///        nvs_set_str(buf,"sdstorage", FileUtils::MountPoint);
-///        nvs_set_str(buf,"asp169",aspect_16_9 ? "true" : "false");
     nvs_set_str(buf,"AY48", AY48 ? "true" : "false");
     nvs_set_str(buf,"SAA1099", SAA1099 ? "true" : "false");
     nvs_set_u8(buf,"midi", midi);

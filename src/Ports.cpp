@@ -58,9 +58,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 
 #include "Midi.h"
 #include "Z80DMA.h"
-#ifdef USE_GS
 #include "GS/GS.h"
-#endif
 #include "DivMMC.h"
 #include "IDE.h"
 #include "ZiFi.h"
@@ -80,6 +78,21 @@ extern "C" const uint32_t profi_default_palette16[16];
 // Unconditional (not just under PROFI_PORT_TRACE) — the #0100 write trace
 // below also needs it, independently of the DS80 display-write trace.
 uint16_t _ds80_dbg_get_pc(void) { return Z80::getRegPC(); }
+
+// TurboSound chip decode for an AY port access: the NedoPC latch (writing #FF /
+// #FE to #FFFD) is the ONLY chip select. An earlier build additionally routed any
+// A8=0 access to chip 1 ("old TS" #FEFD/#BEFD address scheme) — that broke real
+// single-AY software, which relies on the Pentagon's partial decode (A15=1, A1=0,
+// A8 is DON'T CARE): players hitting the AY through A8=0 aliases had their
+// select/data stream split across the two chips (per-chip register latches went
+// out of step → silence or garbage). Symptom on hw (2026-07-27): demos on ONE
+// TRD played or stayed mute depending on which port alias their player used.
+// Returns chip0 when the latched chip does not exist (chip1 is heap-allocated by
+// TurboSubsys and may lag a Config change, or have failed on OOM).
+static inline AySound* ayChipFor(uint16_t /*address*/) {
+  AySound* ch = chips[AySound::selected_chip];
+  return ch ? ch : chips[0];
+}
 
 #if PROFI_PORT_TRACE
 // Pointers to the CURRENT display pages (updated whenever profi_clrmem/grmem change).
@@ -417,11 +430,9 @@ static bool profi_shifted_fdc = false;
 
 extern int ram_pages, butter_pages, psram_pages, swap_pages;
 
-#ifdef USE_GS
 // Proxy for GS.cpp — that TU includes Z80_redcode.h which clashes with
 // Z80_JLS/z80.h, so it can't query the host PC directly.
 extern "C" uint16_t gs_host_z80_pc(void) { return Z80::getRegPC(); }
-#endif
 inline static size_t extendedZxRamPages() {
   if (Z80Ops::is1024)
     return 64;
@@ -726,7 +737,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     if (Midi::enabled >= 2 && address == 0xA0CF) {
       return 0x00;
     }
-#ifdef USE_GS
     // General Sound — host-side status/data ports
     // {
     //   uint8_t a8 = address & 0xFF;
@@ -742,7 +752,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         return (a8 == 0xB3) ? GS::hostReadB3() : GS::hostReadBB();
       }
     }
-#endif
     // Timex SCLD port read (port 0x00FF) — skip when TR-DOS is active (port conflict)
     if (Config::timex_video && !ESPectrum::trdos && address == 0x00FF) {
       LED::touchR(LED::TIMEX);
@@ -1395,10 +1404,12 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     if (ESPectrum::AY_emu) {
       if ((address & 0xC002) == 0xC000) {
         LED::touchR(LED::AY);
+        AySound* chip = ayChipFor(address);
+        uint8_t rd = chip ? chip->getRegisterData() : 0xFF;
         if (ia) {
-          return chips[AySound::selected_chip]->getRegisterData() | newAlfBit;
+          return rd | newAlfBit;
         }
-        return chips[AySound::selected_chip]->getRegisterData();
+        return rd;
       }
     }
     if (!(Z80Ops::isPentagon || Z80Ops::isProfi)) {
@@ -1946,11 +1957,14 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // ========================================================================
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
-      if ((address & 0x4000) != 0) {
-        chips[AySound::selected_chip]->selectRegister(data);
-      } else {
-        if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
-        chips[AySound::selected_chip]->setRegisterData(data);
+      AySound* chip = ayChipFor(address);   // A8 decode: old-TS second chip
+      if (chip) {
+        if ((address & 0x4000) != 0) {
+          chip->selectRegister(data);
+        } else {
+          if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
+          chip->setRegisterData(data);
+        }
       }
       VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
       return;
@@ -2090,7 +2104,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       Midi::send(data);
       return;
     }
-#ifdef USE_GS
     // General Sound — host-side data/command ports
     if (GS::enabled && !DivMMC::divide_mode) {
       if (a8 == 0xB3 || a8 == 0xBB) {
@@ -2101,7 +2114,6 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         return;
       }
     }
-#endif
     // Z80 DMA / zxnDMA port write: listen on both 0x0B and 0x6B
     if (Config::dma_mode && (a8 == 0x0B || a8 == 0x6B)) {
       LED::touchW(LED::DMA);
@@ -2143,9 +2155,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     // AY
     // ========================================================================
-    if ((ESPectrum::AY_emu) &&
-        (Config::turbosound == 1 || Config::turbosound == 3) &&
-        address == 0xFFFD) { // NedoPC way
+    if ((ESPectrum::AY_emu) && Config::turbosound && address == 0xFFFD) {
+      // NedoPC way: chip latched by the DATA written to #FFFD. #FF/#FE are not
+      // valid register numbers, so the write below (which still happens, as on
+      // real hardware) just parks the register latch out of range.
       if (data == 0xFF) {
         AySound::selected_chip = 0;
       } else if (data == 0xFE) {
@@ -2154,15 +2167,14 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
-      if (a8 == 0xFF) { // Old TS way
-        AySound::selected_chip = 0;
-      } else if (a8 == 0xFE && Config::turbosound > 1) {
-        AySound::selected_chip = 1;
-      } else if ((address & 0x4000) != 0) {
-        chips[AySound::selected_chip]->selectRegister(data);
-      } else {
-        if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
-        chips[AySound::selected_chip]->setRegisterData(data);
+      AySound* chip = ayChipFor(address);
+      if (chip) {
+        if ((address & 0x4000) != 0) {
+          chip->selectRegister(data);
+        } else {
+          if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
+          chip->setRegisterData(data);
+        }
       }
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
@@ -2907,11 +2919,16 @@ IRAM_ATTR void Ports::dmaOutput(uint16_t address, uint8_t data) {
             ESPectrum::lastaudioBit = Audiobit;
         }
     } else if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
-        // AY
-        if ((address & 0x4000) != 0) {
-            chips[AySound::selected_chip]->selectRegister(data);
-        } else {
-            chips[AySound::selected_chip]->setRegisterData(data);
+        // AY. Same NedoPC-latch / old-TS-address decode as Ports::output, minus
+        // the #FFFD latch write itself (a DMA burst to the register port is a
+        // register stream, not a chip-select sequence).
+        AySound* chip = ayChipFor(address);
+        if (chip) {
+            if ((address & 0x4000) != 0) {
+                chip->selectRegister(data);
+            } else {
+                chip->setRegisterData(data);
+            }
         }
     }
     // MB-02+ FDC: DMA writes to WD2797 data port (#6F)

@@ -92,7 +92,6 @@ public:
     static bool     slog_on;
     static bool     ledIndicators;
     static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
-    const static bool     aspect_16_9; /// TODO:
     static bool     AY48;
     static bool     SAA1099;
     static uint8_t  midi;  // 0=Off, 1=AY bitbang, 2=ShamaZX, 3=Software synth, 4=GM.DLS wavetable

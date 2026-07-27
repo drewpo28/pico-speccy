@@ -19,13 +19,30 @@ if ($JobsPerBuild -le 0) {
     else { $JobsPerBuild = [math]::Ceiling($NProc / $MaxParallel) }
 }
 
-# Auto-detect Ninja from Pico SDK or system PATH
+# Pico SDK cmake bootstrap: the VS Code Pico extension puts cmake on PATH only in
+# its own terminals, so a plain PowerShell run needs the SDK copy.
+if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
+    $CMakeRoot = Join-Path $env:USERPROFILE ".pico-sdk\cmake"
+    if (Test-Path $CMakeRoot) {
+        $CMakeBin = Get-ChildItem $CMakeRoot -Directory | Sort-Object Name |
+                    Select-Object -Last 1 | ForEach-Object { Join-Path $_.FullName "bin" }
+        if ($CMakeBin -and (Test-Path $CMakeBin)) { $env:PATH = "$CMakeBin;$env:PATH" }
+    }
+}
+
+# Auto-detect Ninja from Pico SDK (newest installed version — no hardcoded pin) or
+# system PATH
 $CMakeGenerator = $env:CMAKE_GENERATOR
 $CMakeMakeProgram = $null
 
 if (-not $CMakeGenerator) {
-    $PicoNinja = Join-Path $env:USERPROFILE ".pico-sdk\ninja\v1.12.1\ninja.exe"
-    if (Test-Path $PicoNinja) {
+    $NinjaRoot = Join-Path $env:USERPROFILE ".pico-sdk\ninja"
+    $PicoNinja = $null
+    if (Test-Path $NinjaRoot) {
+        $PicoNinja = Get-ChildItem $NinjaRoot -Directory | Sort-Object Name |
+                     Select-Object -Last 1 | ForEach-Object { Join-Path $_.FullName "ninja.exe" }
+    }
+    if ($PicoNinja -and (Test-Path $PicoNinja)) {
         $CMakeGenerator = "Ninja"
         $CMakeMakeProgram = $PicoNinja
     } elseif (Get-Command ninja -ErrorAction SilentlyContinue) {

@@ -101,6 +101,16 @@ public:
     static void EmulatorInfo();
     static void HIDDevices();
     static void SpeedTest();
+    static void SpeedTestRun(uint8_t st_opt);   // one benchmark row (new-UI submenu)
+    // While the new fullscreen UI is active it points showTextDialog at its own
+    // renderer, so every classic text page (ChipInfo, BoardInfo, ...) shows in the
+    // new style without per-page changes. nullptr = classic rendering.
+    static void (*textPageOverride)(const char* title, const char* text);
+    // Same idea for progressDialog: the F5 session points it at the new browser's
+    // footer loader (nm::uiProgressStatus), so net fetches show in the status line
+    // instead of a classic centered box. nullptr = classic rendering.
+    static void (*progressOverride)(const char* title, const char* msg, int percent,
+                                    int action, bool cyrillic);
     static void showTextDialog(const char* title, const char* text, bool blocking = true, int* scroll_state = nullptr);
 
     // Error
@@ -109,6 +119,7 @@ public:
     static void osdCenteredMsg(const string& msg, uint8_t warn_level);
     static void osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millispause);
     static void showLedLegend();
+    static void zxKeyboardOverlay();    // classic ZX keyboard bitmap (also DS80 fallback)
 
     static void osdDump();
     static void osdDebug(uint16_t gotoAddr = 0xFFFF);
@@ -173,6 +184,7 @@ public:
     static void menuAt(short int row, short int col);
     static void menuScrollBar(unsigned short br);
     static void click();
+    static void clickNoPause();   // click() without the paused-PAUSE-box repaint
     static uint8_t menu_level;
     static bool menu_saverect;    
     static unsigned short menu_curopt;    
@@ -195,9 +207,23 @@ public:
     static void progressDialog(const string& title, const string& msg, int percent, int action, bool cyrillic = false);
     string inputBox(int x, int y, const string& text);
     static void joyDialog(void);
+#if NEW_UI
+    // Shared with the new UI's joystick page: the key picker (classic submenu
+    // tables) and the VK -> label helper.
+    static int joyPickKey(int currentVk);
+    static string vkToText(int key);
+#endif
     static void pokeDialog();
     static void jumpToDialog();
     static void hotkeyDialog();
+    static void midiDialog();       // MIDI mode / preset / GM.DLS bank wizard
+    // Convert a .dls (full SD path) to a <stem>.bin bank in CONFIG_DIR, with on-screen
+    // progress. "" on failure. Shared by midiDialog, the F5 browser and the new menu.
+    static string convertDlsToBank(const string& dlsPath);
+    static void ideDialog();        // IDE scheme / images / create image wizard
+    // Fast-snapshot slot pickers. Return true when the caller must leave do_OSD.
+    static bool persistLoadDialog();
+    static bool persistSaveDialog();
     static void BPDialog();
     static uint16_t BPListDialog();
     static bool dumpRangeDialog(uint16_t &from, uint16_t &to);
@@ -307,5 +333,39 @@ static inline std::string trim_copy(std::string s) {
 #define is_return(vk) (vk == fabgl::VK_MENU_ENTER)
 
 void flushKbd();
+
+#if NEW_UI
+// Persist-slot primitives shared with the new fullscreen UI (src/ui/UiActions.cpp).
+// Defined in OSDMain.cpp next to the classic persist dialogs.
+std::string getSlotName(uint8_t slotnumber);          // "" empty, "\x01" no name
+std::string getDefaultSnapshotName();
+void persistDelete(uint8_t slotnumber);
+void persistSetName(uint8_t slotnumber, const std::string& newName);
+bool persistSaveNamed(uint8_t slotnumber, const std::string& slotName);
+bool persistLoad(uint8_t slotnumber);
+// US-layout shifted form of a symbol/digit ('1'->'!', '-'->'_', ...), shared with
+// the new UI's line editor. map_key() gives only unshifted symbol VKs.
+char shiftSymUS(char c);
+// Read-only view of the classic browsers' shared row index (OSDFile.cpp), for the
+// new-chrome renderer of the remote/web lists.
+size_t fdIndexSize();
+std::string fdIndexGet(size_t i);
+// Hot-key remapping primitives for the new UI's Hot keys level (the capture loop
+// and the row texts). Defined in OSDMain.cpp next to the classic hotkeyDialog.
+bool hotkeyCapture(int idx);
+const char* hotkeyRowDesc(int idx);
+const char* hotkeyRowBinding(int idx);
+bool hotkeyReadonly(int idx);
+// IDE slot editor (insert / eject / CHS) and the create-image wizard, for the new
+// UI's Devices rows. Defined in OSDMain.cpp next to the classic ideDialog.
+void ideSlotEdit(uint8_t slot);
+void ideCreateImage();
+// Rebuilds and returns the live hardware-summary text (Help > System status).
+const char* hwInfoText();
+// Live HID/XInput device list text (Help > HID devices).
+const char* hidInfoText();
+// Hot-key descriptions + current bindings (Help > Hot keys).
+const char* hotkeysText();
+#endif
 
 #endif // ESPECTRUM_OSD_H

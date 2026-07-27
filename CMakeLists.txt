@@ -27,6 +27,11 @@ option(PICO_DV "Pimoroni Pico DV Demo Base + Pi Pico 2" OFF)
 option(ZERO2 "Waveshare RP2350-PiZero" OFF)
 option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 
+# New fullscreen two-pane OSD menu (src/ui/). OFF = the classic cascade menu on F1.
+# While ON both UIs are in the image; only the F1 entry point differs. Everything
+# new lives under src/ui/ so the classic menu can be deleted in one step later.
+option(NEW_UI "Enable the new fullscreen OSD menu UI on F1" ON)
+
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
 # Add new toggles here following the same option(...) + compile-definition pattern.
@@ -48,7 +53,7 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 # Each enables stdio over the board's Debug-Probe header — see the block for pins.
 set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
 set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
-set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
+set(PICO_DV_DBG_UART ON CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
 set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
 
 # set(TFT ON)
@@ -154,7 +159,7 @@ project(${PROJECT_NAME} C CXX ASM)
 # both cores. The guard (MSPLIM on RP2350, on both cores)
 # turns any future overflow into an immediate fault AT the boundary — the
 # overflowing core traps with stackOvf=1 instead of corrupting its neighbour.
-add_compile_definitions(PICO_STACK_SIZE=0x1000 PICO_CORE1_STACK_SIZE=0x800
+add_compile_definitions(PICO_STACK_SIZE=0x2000 PICO_CORE1_STACK_SIZE=0x800
                         PICO_USE_STACK_GUARDS=1)
 
 # ZiFi network client (FTP/SFTP/SSH) uses the SDK-vendored mbedTLS as a crypto
@@ -194,7 +199,10 @@ add_subdirectory(drivers/psram)
 #target_compile_definitions(${PROJECT_NAME} PRIVATE VGA)
 
 # INCLUDE FILES THAT SHOULD BE COMPILED:
-file(GLOB_RECURSE SRC
+# CONFIGURE_DEPENDS: the generator re-runs the glob on every build, so a new file
+# (e.g. under src/ui/) is picked up by a plain `ninja -C build` without a manual
+# re-configure. Costs one directory stat per build — negligible next to the link.
+file(GLOB_RECURSE SRC CONFIGURE_DEPENDS
     "src/*.cpp"
     "src/*.c"
     "fabgl/*.cpp"
@@ -403,12 +411,6 @@ ENDIF()
 if (BUTTER_PSRAM_GPIO)
     target_compile_definitions(${PROJECT_NAME} PRIVATE BUTTER_PSRAM_GPIO=${BUTTER_PSRAM_GPIO})
 endif()
-# General Sound — needs butter PSRAM (XIP @ 0x11000000) for 2 MB of GS RAM plus
-# a second Z80 instance.
-if (BUTTER_PSRAM_GPIO)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE USE_GS=1)
-endif()
-
 # ZiFi (ESP-01S WiFi NIC emulation).
 # TX/RX pins are chosen at RUNTIME (Network → GPIO picker, stored in NVS) from a
 # per-board candidate list defined in src/BoardPins.cpp. No compile-time pin
@@ -433,6 +435,17 @@ if (ZIFI_NET_CLIENT)
     message(STATUS "ZiFi network client (FTP/SFTP/SSH) enabled with mbedTLS crypto")
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE ZIFI_NET_CLIENT=0)
+endif ()
+
+# New fullscreen OSD menu. Sources live in src/ui/ and are picked up by the
+# GLOB_RECURSE above; every file body is wrapped in `#if NEW_UI` so an OFF build
+# has zero footprint. Both polarities are defined so `#if NEW_UI` never sees an
+# undefined identifier.
+if (NEW_UI)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NEW_UI=1)
+    message(STATUS "New fullscreen OSD menu UI enabled (F1)")
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NEW_UI=0)
 endif ()
 
 # redcode/Z80 build configuration for GS (LGPLv3 library vendored in src/GS/)

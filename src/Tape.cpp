@@ -312,10 +312,7 @@ void Tape::LoadTape(const string& mFile_) {
 
                 if (OSDprev) {
                     VIDEO::OSD = OSDprev;
-                    if (Config::aspect_16_9)
-                        VIDEO::Draw_OSD169 = VIDEO::MainScreen_OSD;
-                    else
-                        VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
+                    VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
                     ESPectrum::TapeNameScroller = 0;
                 }    
         }
@@ -347,10 +344,7 @@ void Tape::LoadTape(const string& mFile_) {
 
                 if (OSDprev) {
                     VIDEO::OSD = OSDprev;
-                    if (Config::aspect_16_9)
-                        VIDEO::Draw_OSD169 = VIDEO::MainScreen_OSD;
-                    else
-                        VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
+                    VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
                     ESPectrum::TapeNameScroller = 0;
                 }
         }
@@ -382,10 +376,7 @@ void Tape::LoadTape(const string& mFile_) {
 
                 if (OSDprev) {
                     VIDEO::OSD = OSDprev;
-                    if (Config::aspect_16_9)
-                        VIDEO::Draw_OSD169 = VIDEO::MainScreen_OSD;
-                    else
-                        VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
+                    VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
                     ESPectrum::TapeNameScroller = 0;
                 }
         }

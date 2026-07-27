@@ -21,6 +21,10 @@ struct UartPair { uint8_t tx; uint8_t rx; const char* note; };
 constexpr uint8_t PIN_DEFAULT = 0xFE; // sentinel: use the board default
 constexpr uint8_t PIN_OFF     = 0xFF; // sentinel: disabled / no pins
 
+// Upper bound on zifiPairCount() across all boards — lets callers size static
+// tables (the transport radio's runtime option list).
+constexpr int ZIFI_MAX_PAIRS = 12;
+
 // Authoritative RP2350 pinmux. Returns the UART instance (0 or 1) that the
 // given *even* TX pin belongs to, or -1 if the pin can't be a UART TX.
 int uartInstanceForTx(uint8_t tx);

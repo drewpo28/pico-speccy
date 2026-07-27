@@ -9,9 +9,7 @@
 #include "MB02.h"
 #include "Midi.h"
 #include "IDE.h"
-#ifdef USE_GS
 #include "GS/GS.h"
-#endif
 
 extern "C" volatile bool profi_ds80_active; // defined in vga.c, set by both HDMI and VGA DS80 paths
 
@@ -215,11 +213,7 @@ bool isVisible(Id i) {
         case SAA:      return Config::SAA1099;
         case TIMEX:    return Config::timex_video;
         case DMA:      return Config::dma_mode != 0;
-#ifdef USE_GS
         case GS:       return Config::gs_enabled != 0;
-#else
-        case GS:       return false;
-#endif
         case ULAPLUS:    return Config::ulaplus;
         case GIGASCREEN: return Config::gigascreen_enabled;
         case NET:        return Config::wifi_enabled != 0; // networking is WiFi-driven (NIC requires it)
@@ -256,11 +250,6 @@ static bool resolveLayout(int& base_x, int& base_y) {
     if (VIDEO::isFullBorder240()) {
         base_x = 4;
         base_y = 230;
-        return true;
-    }
-    if (Config::aspect_16_9) {
-        base_x = 4;
-        base_y = 186;
         return true;
     }
     base_x = 4;

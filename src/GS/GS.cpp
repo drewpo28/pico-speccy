@@ -1,4 +1,3 @@
-#ifdef USE_GS
 
 #include "GS.h"
 #include "GS_ROM.h"
@@ -13,6 +12,7 @@ extern "C" {
 #include "pico.h"
 #include "pico/time.h"
 #include "hardware/sync.h"
+#include "hardware/clocks.h"   // clock_get_hz for the PERF line's config self-id
 #include <string.h>
 
 // Atomic byte OR/AND via GCC __atomic builtins — compile to LDREXB/STREXB on
@@ -229,6 +229,9 @@ static volatile uint32_t s_perf_pc_miss = 0;
 // per-frame IDL minimum to spot stalls.
 static volatile uint32_t s_perf_pump_calls = 0;     // total pump() entries
 static volatile uint32_t s_perf_pump_skip  = 0;     // pump() returned early (ring full)
+static volatile uint32_t s_perf_dt_max     = 0;     // longest gap between pump() calls (µs)
+static volatile uint32_t s_perf_dt_clamps  = 0;     // gaps > 1 ms (GS time silently dropped)
+static volatile int32_t  s_perf_credit_max = 0;     // deepest T-state backlog seen
 static volatile uint32_t s_perf_tstates    = 0;     // GS-Z80 T-states executed
 static volatile uint32_t s_perf_p04_total  = 0;     // total IN port 04 reads
 static volatile uint32_t s_perf_p04_spin   = 0;     // IN port 04 reads where PC == prev PC (spinwait)
@@ -1013,11 +1016,17 @@ void GS::pollPerf() {
     uint32_t tst      = s_perf_tstates;
     uint32_t p04t     = s_perf_p04_total;
     uint32_t p04s     = s_perf_p04_spin;
+    uint32_t dtmax    = s_perf_dt_max;
+    uint32_t clamps   = s_perf_dt_clamps;
+    int32_t  credmax  = s_perf_credit_max;
     s_perf_pump_calls = 0;
     s_perf_pump_skip  = 0;
     s_perf_tstates    = 0;
     s_perf_p04_total  = 0;
     s_perf_p04_spin   = 0;
+    s_perf_dt_max     = 0;
+    s_perf_dt_clamps  = 0;
+    s_perf_credit_max = 0;
 
     // Host counters
     uint32_t b3w  = s_perf_h_b3w;
@@ -1055,17 +1064,25 @@ void GS::pollPerf() {
     uint32_t pc_miss_pct = (pc_h + pc_m) ? (pc_m * 100u / (pc_h + pc_m)) : 0;
 
     // Debug::log on core0 over UART is a blocking operation (~1.5-2 ms for
-    // 200+ char line at 115200 baud). When run from pollPerf each second
-    // this self-induces an exactly-once-per-second IDL stall of ~-2000 µs
-    // that masquerades as a real perf problem. Suppress here unless you
-    // really need the trace; flip to 1 when actively diagnosing.
-#if 0
-    uint32_t fifo_used = s_host_fifo_w - s_host_fifo_r;
-    Debug::log("PERF: fr=%u IDL_min=%d neg=%u | GS:%uMhz pump=%u/%u p04=%u(spin=%u) pc_miss=%u/%u(%u%%) fifo=%u | host: B3=%uw/%ur BB=%uw/%ur spin=%uus",
+    // 200+ char line at 115200 baud): it self-induces a once-per-second IDL
+    // stall of ~-2000 µs that shows up in its own numbers. Acceptable — this
+    // whole function only exists in GS_PERF_TRACE=1 diagnostic builds.
+    {
+        uint32_t fifo_used = s_host_fifo_w - s_host_fifo_r;
+        // Config self-id (sys/GS MHz) + pump-jitter triple: dtmax = longest gap
+        // between pump() calls, clamp = gaps >1 ms (that GS time is DROPPED),
+        // cred = deepest T-state backlog. The jitter is the distortion suspect:
+        // average GS MHz can sit on target while the DAC updates arrive in bursts.
+        Debug::log("PERF[%u/%uMHz]: fr=%u IDL_min=%d neg=%u | GS:%u.%uMhz dtmax=%u clamp=%u cred=%d pump=%u/%u p04=%u(spin=%u) pc_miss=%u/%u(%u%%) fifo=%u | host: B3=%uw/%ur BB=%uw/%ur spin=%uus",
+               (unsigned)(clock_get_hz(clk_sys) / 1000000u),
+               (unsigned)(GS_CLOCK_HZ / 1000000u),
                (unsigned)fr,
                (int)idle_min,
                (unsigned)neg,
-               (unsigned)(gs_khz / 1000),
+               (unsigned)(gs_khz / 1000), (unsigned)((gs_khz % 1000) / 100),
+               (unsigned)dtmax,
+               (unsigned)clamps,
+               (int)credmax,
                (unsigned)(pc_calls - pc_skip),
                (unsigned)pc_calls,
                (unsigned)p04t,
@@ -1079,12 +1096,7 @@ void GS::pollPerf() {
                (unsigned)bbw,
                (unsigned)bbr,
                (unsigned)hsw);
-#else
-    (void)fr; (void)idle_min; (void)neg; (void)gs_khz;
-    (void)pc_calls; (void)pc_skip; (void)p04t; (void)p04s;
-    (void)pc_m; (void)pc_h; (void)pc_miss_pct;
-    (void)b3w; (void)b3r; (void)bbw; (void)bbr; (void)hsw;
-#endif
+    }
 #endif  // GS_PERF_TRACE
 }
 
@@ -1110,7 +1122,11 @@ void __not_in_flash_func(GS::pump)() {
         gs_end_pump();
         return;
     }
-    if (dt_us > 1000) dt_us = 1000;          // clamp: max 1 ms per pump
+    GS_PERF(if (dt_us > s_perf_dt_max) s_perf_dt_max = dt_us);
+    if (dt_us > 1000) {                      // clamp: max 1 ms per pump
+        GS_PERF(s_perf_dt_clamps++);
+        dt_us = 1000;
+    }
     // Accumulate fractional T-states and coalesce tiny 1-us calls. At 504 MHz
     // the core1 loop can call pump() so often that running z80_run() in 12-13T
     // slices spends too much time in dispatch overhead; debug/perf tracing hid
@@ -1120,6 +1136,17 @@ void __not_in_flash_func(GS::pump)() {
     s_pump_credit_t += (int32_t)(scaled / 1000000u);
     s_pump_frac_t = (uint32_t)(scaled % 1000000u);
     s_pump_last_us = now;
+    // Bound the backlog. Under a genuine capacity deficit (hw: HDMI-audio ISR
+    // load at 378 MHz leaves ~16.6M T/s of core1 for a 20 MHz GS) the credit
+    // would otherwise grow without limit — observed climbing ~3.3M/s — and any
+    // later quiet moment would "catch up" through seconds of GS time in one
+    // burst. Cap at ~2 ms of GS time: enough to ride normal jitter, small
+    // enough that a capacity-bound GS simply runs slow and sheds the rest.
+    // (Under hw A/B test 2026-07-27: one 504 MHz listen reported it worse,
+    // a retest didn't reproduce — if 504 regresses again, look HERE first.)
+    const int32_t credit_cap = (int32_t)(GS_CLOCK_HZ / 500u);
+    if (s_pump_credit_t > credit_cap) s_pump_credit_t = credit_cap;
+    GS_PERF(if (s_pump_credit_t > s_perf_credit_max) s_perf_credit_max = s_pump_credit_t);
 
     constexpr int GS_PUMP_MIN_TSTATES = 128;
     if (s_pump_credit_t < GS_PUMP_MIN_TSTATES) {
@@ -1139,7 +1166,17 @@ void __not_in_flash_func(GS::pump)() {
         return;
     }
 
-    int ran = step(s_pump_credit_t);
+    // Drain the credit in BOUNDED chunks. Executing the whole backlog in one
+    // step() keeps us inside pump() longer than the 1 ms dt-clamp above, so the
+    // NEXT gap gets clamped and GS time is dropped — which rebuilds the backlog,
+    // and the cycle self-sustains (hw 378 MHz + GS 20 MHz: 120-170 clamps/s,
+    // GS pinned at ~19.5 MHz, audible as distortion; the same rig with no
+    // clamping sustains a clean 20.0). A bounded chunk returns to the core1
+    // loop in ~0.3 ms; the remaining credit drains over the next calls.
+    constexpr int GS_PUMP_MAX_TSTATES = 4000;    // 0.2 ms of GS time @ 20 MHz
+    const int want = s_pump_credit_t > GS_PUMP_MAX_TSTATES ? GS_PUMP_MAX_TSTATES
+                                                           : s_pump_credit_t;
+    int ran = step(want);
     s_pump_credit_t -= ran;
     if (s_pump_credit_t < -(int32_t)GS_INT_PERIOD) {
         s_pump_credit_t = -(int32_t)GS_INT_PERIOD;
@@ -1482,4 +1519,3 @@ void GS::dumpWorkRam(uint16_t start, uint16_t len) {
     Debug::log("GS work_ram dump: end");
 }
 
-#endif // USE_GS

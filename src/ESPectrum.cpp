@@ -47,6 +47,11 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Buffer.h"
 #include "LEDIndicators.h"
 #include "OSDMain.h"
+#include "ui/OSDNewMenu.h"
+#if NEW_UI
+#include "ui/UiDialog.h"
+#include "ui/UiGfx.h"
+#endif
 #include "Ports.h"
 #include "Snapshot.h"
 #include "Tape.h"
@@ -77,9 +82,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "BoardPins.h"
 #include "RTC.h"
 #include "Z80DMA.h"
-#ifdef USE_GS
 #include "GS/GS.h"
-#endif
 
 using namespace std;
 
@@ -357,14 +360,14 @@ void ShowStartMsg() {
 
   OSD::drawOSD(false);
 
-  VIDEO::vga.fillRect(Config::aspect_16_9 ? 60 : 40,
-                      Config::aspect_16_9 ? 12 : 32, 240, 50, zxColor(0, 0));
+  VIDEO::vga.fillRect(40,
+                      32, 240, 50, zxColor(0, 0));
 
   // Decode Logo in EBF8 format
   // Logo pixels are stored as ZX Spectrum palette indices (0-15)
   uint8_t *logo = (uint8_t *)ESPectrum_logo;
-  int pos_x = Config::aspect_16_9 ? 86 : 66;
-  int pos_y = Config::aspect_16_9 ? 23 : 43;
+  int pos_x = 66;
+  int pos_y = 43;
   int logo_w = (logo[5] << 8) + logo[4]; // Get Width
   int logo_h = (logo[7] << 8) + logo[6]; // Get Height
   logo += 8;                             // Skip header
@@ -556,7 +559,6 @@ void ESPectrum::bootKeyboard() {
 
       if (i < 200) {
   ///        Config::videomode = (s[0] == '1') ? 0 : (s[0] == '2') ? 1 : 2;
-  ///        Config::aspect_16_9 = (s[1] == 'Q') ? false : true;
           Config::ram_file="none";
           Config::save();
           // printf("%s\n", s.c_str());
@@ -910,7 +912,6 @@ void ESPectrum::setup() {
   // from the butter arena. See Buffer.cpp.
   Buffer::initPools();
 
-#ifdef USE_GS
   // AFTER initPools: GS::init allocates its work RAM + DAC rings from the butter
   // arena (NEED_POINTER|PREFER_PSRAM), freeing ~32 KB SRAM on PSRAM boards. The
   // sample-RAM region it claims at the PSRAM top was already excluded from the arena.
@@ -920,7 +921,6 @@ void ESPectrum::setup() {
     GS::init(gs_ram);
     Debug::log2SD("setup: GS::init done, freeHeap=%u", (unsigned)getFreeHeap());
   }
-#endif
 
   // GM.DLS MIDI bank: load into butter PSRAM (preferred) or provision the flash
   // partition from SD. MUST be here — AFTER initPools() (the PSRAM arena is now
@@ -1253,12 +1253,10 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Init disk controller
   rvmWD1793Reset(&fdd);
   if (MB02::enabled) MB02::reset();
-#ifdef USE_GS
   // Without this, GS-Z80 keeps running (still streaming previous module's
   // samples from PSRAM) when ZX side reboots — leftover state collides with
   // the new player's load, producing random garbled audio.
   if (GS::enabled) GS::reset();
-#endif
 
   Tape::tapeFileName = "none";
   if (Tape::tape.obj.fs != NULL) {
@@ -1670,6 +1668,10 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           // Repaint the frozen frame and put the PAUSE box back on top.
           if (CPU::paused) {
             VIDEO::RedrawPausedFrame();
+#if NEW_UI
+            if (nm::available() && !profi_ds80_active) nm::uiPausedBadge();
+            else
+#endif
             OSD::osdCenteredMsg(OSD_PAUSE, LEVEL_INFO, 0);
           }
           ESPectrum::ts_start += esp_timer_get_time() - osd_start;
@@ -2702,9 +2704,7 @@ void ESPectrum::loop() {
       processKeyboard();
       g_kbd_us = (uint32_t)(time_us_64() - _kbd_t0);
     }
-#ifdef USE_GS
     GS::pollPerf();
-#endif
     // Update stats every 50 frames
     if (VIDEO::OSD && VIDEO::framecnt >= 10) {
       if (VIDEO::OSD & 0x04) {
@@ -2716,10 +2716,7 @@ void ESPectrum::loop() {
             Config::save();
           }
           if (VIDEO::OSD == 0) {
-            if (Config::aspect_16_9)
-              VIDEO::Draw_OSD169 = VIDEO::MainScreen;
-            else
-              VIDEO::Draw_OSD43 = VIDEO::BottomBorder;
+            VIDEO::Draw_OSD43 = VIDEO::BottomBorder;
             VIDEO::brdnextframe = true;
           }
         }
@@ -2833,7 +2830,7 @@ void ESPectrum::loop() {
     elapsed = time_us_64() - ts_start;
     idle = target - elapsed;
 
-#if defined(USE_GS) && GS_PERF_TRACE
+#if GS_PERF_TRACE
     // Track min per-frame IDL across the current pollPerf interval — lets
     // us correlate worst-case host stalls with concurrent GS-side activity.
     extern volatile int32_t gs_perf_idle_min;

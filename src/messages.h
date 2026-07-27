@@ -415,7 +415,6 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
 		"Mode\t>\n"\
 		"Palette\t>\n"\
 		"Render type\t>\n"\
-		"Aspect Ratio\t>\n"\
 		"Scanlines\t>\n"\
 		"V-Sync\t>\n"\
 		"Gigascreen (No Flick)\t>\n"\
@@ -438,11 +437,6 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
     "Render type\n"\
     "Standard\t[S]\n"\
     "Snow effect\t[A]\n"
-
-#define MENU_ASPECT \
-    "Aspect Ratio\n"\
-    "4:3\t[4]\n"\
-    "16:9\t[1]\n"
 
 #define MENU_SCANLINES "Scanlines\n"
 
@@ -715,11 +709,10 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
     "ACB\t[C]\n"\
     "Mono\t[M]\n"
 
+// Yes = Config::turbosound 3 (both chip-select schemes accepted), No = 0.
 #define MENU_TS "TurboSound\n"\
-    "OFF   \t[F]\n"\
-    "NedoPC\t[N]\n"\
-    "old-TC\t[O]\n"\
-    "BOTH  \t[B]\n"
+    "Yes\t[Y]\n"\
+    "No \t[N]\n"
 
 #define MENU_COVOX "Covox PORT\n"\
     "NONE   \t[N]\n"\
@@ -1100,9 +1093,6 @@ static const char *AboutMsg[9] = {
     " [Tab]        Code/Memory/Regs\n"\
     " [F8]         Set PC to address\n"\
     " [ALT+F9]     Show full screen\n"\
-    " [F11-F12]    Load / Save snapshot\n"\
-    " [+]          Shift up screen\n"\
-    " [-]          Shift down screen\n"\
     " [0]          Default position\n"\
     " + PageUp/Down and cursor keys\n"
 
@@ -1595,6 +1585,7 @@ const uint8_t ESPectrum_logo[] = {
 
 // ─── File transfer (FTP/SFTP) client strings ────────────────────────────────
 #define MENU_NET_PROTO "Protocol\nFTP\nSFTP\n"
+#define MSG_NET_PROTO_TITLE "Protocol"
 #define MSG_NET_FT_NOWIFI "Connect Wi-Fi first"
 #define MSG_NET_HOST_LABEL "Host:"
 #define MSG_NET_USER_LABEL "User:"
@@ -1631,6 +1622,7 @@ const uint8_t ESPectrum_logo[] = {
 #define MSG_REMOTE_ADD_ROW "[Add Remote]"
 #define MSG_REMOTE_FORGET_Q "Forget connection?"
 #define MENU_REMOTE_SAVEPASS "Save password?\nNo\nYes\n"
+#define MSG_REMOTE_SAVEPASS_Q "Save password?"
 #define MSG_REMOTE_ALIAS_LABEL "Alias:"
 #define MSG_REMOTE_PATH_LABEL "Path:"
 #define MSG_REMOTE_FULL "Too many remotes"

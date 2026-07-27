@@ -87,6 +87,17 @@ static void drawContent(const char** lineStarts, int* lineLens, int totalLines,
 
 // Draw info box with scrolling and wait for ESC
 static void showInfoBox(const string& info, int lineCount) {
+#if NEW_UI
+    // While the new UI is on screen its text-page renderer is installed — route
+    // there (first line of `info` is the title, the rest is the body).
+    if (OSD::textPageOverride) {
+        const size_t nl = info.find('\n');
+        const string title = nl == string::npos ? info : info.substr(0, nl);
+        const string body  = nl == string::npos ? string("") : info.substr(nl + 1);
+        OSD::textPageOverride(title.c_str(), body.c_str());
+        return;
+    }
+#endif
     const int MAX_LINES = 128;
     static const char* lineStarts[MAX_LINES];
     static int lineLens[MAX_LINES];
@@ -216,7 +227,9 @@ static void viewTAP(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
             }
             snprintf(line, sizeof(line), "%03d %-9s %-10s%6d", blockNum + 1, typeName, fname, blkLen);
         } else {
-            snprintf(line, sizeof(line), "%03d Data              %10d", blockNum + 1, blkLen);
+            // Same column layout as the header rows above, so the size column
+            // keeps one flush right edge for every block type.
+            snprintf(line, sizeof(line), "%03d %-9s %-10s%6d", blockNum + 1, "Data", "", blkLen);
         }
         info += line;
         info += "\n";

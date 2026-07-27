@@ -3,6 +3,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-MinSizeRel}"
+# New fullscreen OSD menu: OFF builds the classic cascade menu on F1.
+# Run `NEW_UI=ON ./build_all.sh` to build the whole matrix with the new UI.
+NEW_UI="${NEW_UI:-OFF}"
 NPROC="$(nproc)"
 
 # Parallelism: MAX_PARALLEL targets build concurrently, each with JOBS_PER_BUILD threads.
@@ -27,7 +30,7 @@ while [ $# -gt 0 ]; do
             cat <<EOF
 Usage: $0 [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 
-Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR
+Env vars: BUILD_TYPE, NEW_UI (ON/OFF), MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR
 Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 (default: all)
 EOF
             exit 0 ;;
@@ -36,10 +39,28 @@ EOF
 done
 set -- "${POSITIONAL[@]}"
 
-# Auto-detect Ninja from Pico SDK or system PATH
+# --- Pico SDK tools bootstrap (same as draft-release.sh) ---
+# The VS Code Pico extension injects cmake/toolchain into its own terminals only;
+# plain shells (the "Configure and Build -> ALL" shell task, cron, CI) don't have
+# them on PATH and every cmake call below would die with "command not found".
+if ! command -v cmake >/dev/null 2>&1; then
+    CMAKE_BIN=$(ls -d "$HOME/.pico-sdk/cmake"/*/bin 2>/dev/null | sort -V | tail -1)
+    [ -n "$CMAKE_BIN" ] && export PATH="$CMAKE_BIN:$PATH"
+fi
+if [ -z "$PICO_TOOLCHAIN_PATH" ]; then
+    TC_VER=$(grep -oP 'set\(toolchainVersion \K[^)]+' "$SCRIPT_DIR/CMakeLists.txt")
+    TC_DIR="$HOME/.pico-sdk/toolchain/$TC_VER"
+    if [ -d "$TC_DIR" ]; then
+        export PICO_TOOLCHAIN_PATH="$TC_DIR"
+        export PATH="$TC_DIR/bin:$PATH"
+    fi
+fi
+
+# Auto-detect Ninja from Pico SDK (newest installed version — no hardcoded pin, so
+# this can't drift from what .vscode/tasks.json uses) or system PATH
 if [ -z "$CMAKE_GENERATOR" ]; then
-    PICO_NINJA="$HOME/.pico-sdk/ninja/v1.12.1/ninja"
-    if [ -x "$PICO_NINJA" ]; then
+    PICO_NINJA=$(ls -d "$HOME/.pico-sdk/ninja"/*/ninja 2>/dev/null | sort -V | tail -1)
+    if [ -n "$PICO_NINJA" ] && [ -x "$PICO_NINJA" ]; then
         CMAKE_GENERATOR="Ninja"
         CMAKE_MAKE_PROGRAM="$PICO_NINJA"
     elif command -v ninja &>/dev/null; then
@@ -120,6 +141,7 @@ echo "Build type:       $BUILD_TYPE"
 echo "Generator:        $CMAKE_GENERATOR"
 echo "Parallel targets: $MAX_PARALLEL  (jobs per target: $JOBS_PER_BUILD, nproc=$NPROC)"
 echo "ccache:           $( [ $HAVE_CCACHE = 1 ] && echo enabled || echo "not installed (apt install ccache → ~2-5x faster rebuilds)" )"
+echo "New UI:           $NEW_UI"
 echo "Clean first:      $CLEAN"
 echo ""
 
@@ -159,6 +181,14 @@ build_one() {
     build_dir="$(build_dir_for "$target" "$display")"
     label="$target ($display)"
     log="$LOG_DIR/${target}-${display}.log"
+
+    # Serialize against a second build_all (or a VS Code build task) working on the
+    # SAME build dir: two ninjas in one dir clobber each other's objects, and the
+    # `>` on the log below truncates it under the other writer, leaving a
+    # NUL-padded log whose BUILD_NAME line is unreadable (seen 2026-07-25). The
+    # lock covers the log redirect too, so it must wrap the whole block.
+    exec 9>"$build_dir.lock"
+    command -v flock >/dev/null 2>&1 && flock -x 9 || true
 
     {
         echo "========================================"
@@ -204,6 +234,9 @@ build_one() {
             "${target_flags[@]}"
             "${CCACHE_ARGS[@]}"
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+            # Pinned explicitly so the matrix never inherits a stale cache value
+            # from a one-off manual configure in the same build dir.
+            -DNEW_UI="$NEW_UI"
         )
         if [ -n "$CMAKE_MAKE_PROGRAM" ]; then
             cmake_args+=(-DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM")
@@ -217,7 +250,10 @@ build_one() {
 # Run builds with bounded concurrency via xargs -P.
 # xargs spawns one subshell per pair, at most MAX_PARALLEL concurrently.
 export -f build_one build_dir_for
-export SCRIPT_DIR BUILD_TYPE CMAKE_GENERATOR CMAKE_MAKE_PROGRAM LOG_DIR JOBS_PER_BUILD
+# NEW_UI must be exported too: the workers run in `bash -c` subshells, and an
+# unexported value would reach cmake as `-DNEW_UI=` (empty = OFF), silently
+# ignoring `NEW_UI=ON ./build_all.sh`.
+export SCRIPT_DIR BUILD_TYPE NEW_UI CMAKE_GENERATOR CMAKE_MAKE_PROGRAM LOG_DIR JOBS_PER_BUILD
 export CCACHE_ARGS_STR="${CCACHE_ARGS[*]}"
 # Re-export CCACHE_ARGS as a string and reconstruct in subshell (arrays don't export cleanly).
 build_one_wrapper() {
@@ -272,12 +308,22 @@ if [ ${#SUCCEEDED[@]} -gt 0 ]; then
         # Copy only the uf2 from THIS run's CMake config (BUILD_NAME embeds the
         # current PORT_VERSION), not every stale *.uf2 left in the bin dir from
         # earlier builds with different versions/clocks.
-        BUILD_NAME="$(grep -m1 -- '-- BUILD_NAME:' "$LOG" 2>/dev/null | sed 's/.*-- BUILD_NAME: *//')"
-        if [ -z "$BUILD_NAME" ]; then
-            echo "    !! could not determine BUILD_NAME from $LOG — skipping"
+        # grep -a: a log clobbered by a concurrent writer can contain NUL padding,
+        # which makes grep treat it as binary and print nothing.
+        BUILD_NAME="$(grep -a -m1 -- '-- BUILD_NAME:' "$LOG" 2>/dev/null | sed 's/.*-- BUILD_NAME: *//')"
+        if [ -n "$BUILD_NAME" ]; then
+            FW="$BUILD_DIR/bin/$BUILD_TYPE/$BUILD_NAME.uf2"
+        else
+            # No BUILD_NAME line: cmake didn't re-run (fully incremental build), so
+            # the log only has ninja output. The newest uf2 in the build dir is this
+            # config's — an older PORT_VERSION's leftover is necessarily older.
+            FW="$(ls -t "$BUILD_DIR/bin/$BUILD_TYPE"/*.uf2 2>/dev/null | head -1)"
+            [ -n "$FW" ] && echo "    (no BUILD_NAME in log — using newest uf2 in build dir)" || true
+        fi
+        if [ -z "$FW" ]; then
+            echo "    !! no uf2 found in $BUILD_DIR/bin/$BUILD_TYPE — skipping"
             continue
         fi
-        FW="$BUILD_DIR/bin/$BUILD_TYPE/$BUILD_NAME.uf2"
         if [ -f "$FW" ]; then
             cp "$FW" "$OUTPUT_DIR/"
             echo "    -> $(basename "$FW")"

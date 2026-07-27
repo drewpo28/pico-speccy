@@ -4,7 +4,6 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#ifdef USE_GS
 
 class GS {
 public:
@@ -85,6 +84,5 @@ public:
     static uint32_t int_count;
 };
 
-#endif // USE_GS
 
 #endif // GS_H

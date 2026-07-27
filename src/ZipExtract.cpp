@@ -531,6 +531,18 @@ void ZipExtract::viewInfo(const string& zipPath) {
 
     if (fileCount == 0) return;
 
+#if NEW_UI
+    // While the new UI is on screen its text-page renderer is installed — route
+    // there (first line of `info` is the title, the rest is the body).
+    if (OSD::textPageOverride) {
+        const size_t nl = info.find('\n');
+        const string ttl  = nl == string::npos ? info : info.substr(0, nl);
+        const string body = nl == string::npos ? string("") : info.substr(nl + 1);
+        OSD::textPageOverride(ttl.c_str(), body.c_str());
+        return;
+    }
+#endif
+
     // Draw info box manually and wait for any key
     uint8_t rows = fileCount + 1; // +1 for title
     if (rows > 16) rows = 16;

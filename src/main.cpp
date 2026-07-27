@@ -30,9 +30,7 @@
 #include "Config.h"
 #include "BoardPins.h"
 #include "FileUtils.h"
-#ifdef USE_GS
 #include "GS/GS.h"
-#endif
 #include "MemESP.h"
 #include "ChipPackage.h"
 #include "pwm_audio.h"
@@ -913,7 +911,7 @@ void __scratch_x("render") render_core() {
         refresh_lcd();
 #endif
         pcm_call();
-#if defined(USE_GS) && !defined(SOFTTV)
+#ifndef SOFTTV
         // Wall-clock-locked: runs GS-Z80 at exactly 12 MHz off core0.
         // Under SOFTTV, GS::pump() runs in pcm_call_inner (core0) instead,
         // because video_timer_callbackTV at 30 kHz would starve it here.
@@ -1136,8 +1134,8 @@ uint8_t* PSRAM_DATA = (uint8_t*)0;
 uint32_t __not_in_flash_func(butter_psram_size)() { return 0; }
 #endif
 
-// Linker-defined per-core stack bounds: core0 = SCRATCH_Y (__Stack*),
-// core1 = SCRATCH_X (__StackOne*). The fault can fire on EITHER core, so pick the
+// Linker-defined per-core stack bounds: core0 = top of main RAM (__Stack*, 8 KB —
+// moved out of SCRATCH_Y 2026-07-26), core1 = SCRATCH_X (__StackOne*). The fault can fire on EITHER core, so pick the
 // right bounds by the SIO CPUID — otherwise a normal core1 SP looks like a core0
 // "overflow" (it sits in SCRATCH_X, below __StackBottom) and mislabels the fault.
 extern char __StackBottom;

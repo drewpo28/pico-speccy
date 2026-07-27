@@ -34,6 +34,9 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "Video.h"
+#if NEW_UI
+#include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
+#endif
 #include "Debug.h"
 #include "Subsystem.h"
 #include "Buffer.h"
@@ -280,6 +283,34 @@ void VIDEO::applyProfiOSDPalette() {
     }
 }
 
+// Whole-palette override for the new fullscreen menu: it renders natively in DS80 with
+// its own 16 colours (512x240, packed pairs). Uses its own snapshot slot so it nests
+// inside applyProfiOSDPalette()/restoreProfiLivePalette() without fighting their flag.
+static uint32_t profi_palette_ui_saved[16];
+static bool     profi_palette_ui_saved_valid = false;
+
+void VIDEO::applyUiDS80Palette(const uint32_t rgb888[16]) {
+    if (profi_palette_ui_saved_valid) return;      // already installed
+    for (int i = 0; i < 16; i++) profi_palette_ui_saved[i] = profi_palette_live[i];
+    profi_palette_ui_saved_valid = true;
+    for (int i = 0; i < 16; i++) profi_palette_live[i] = rgb888[i] & 0x00FFFFFF;
+    profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+    rebuildDS80ColorLut();                          // keep legacy dotFast users sane
+}
+
+void VIDEO::restoreUiDS80Palette() {
+    if (!profi_palette_ui_saved_valid) return;
+    for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_palette_ui_saved[i];
+    profi_palette_ui_saved_valid = false;
+    // Only touch the driver while DS80 is still armed: a machine switch from inside the
+    // menu may already have left DS80, and re-arming it over a standard framebuffer
+    // gives a shifted/garbled screen (same hazard DS80Guard documents).
+    if (profi_ds80_active) {
+        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        rebuildDS80ColorLut();
+    }
+}
+
 // Undo applyProfiOSDPalette()'s STD palette swap (restore the running app's palette).
 // Does NOT touch ds80_active — the remap stays ON while DS80 is active.
 void VIDEO::restoreProfiLivePalette() {
@@ -483,7 +514,6 @@ const uint8_t* VIDEO::mode16col_planes[4] = { nullptr, nullptr, nullptr, nullptr
 uint8_t VIDEO::dirty_lines[SPEC_H];
 // uint8_t VIDEO::linecalc[SPEC_H];
 #endif //  DIRTY_LINES
-static unsigned int is169;
 static unsigned int isFullBorder;
 static unsigned int lineptr_offset; // uint32_t offset for screen start in line buffer
 
@@ -624,17 +654,15 @@ static void applyDS80BorderGeometry(bool on) {
         VIDEO::tStatesScreen  = TS_SCREEN_PROFI;
         const bool isFB    = VIDEO::isFullBorderMode();
         const bool isFB240 = VIDEO::isFullBorder240();
-        const bool is169   = Config::aspect_16_9 != 0;
         VIDEO::tStatesBorder = isFB ? (isFB240 ? TS_BORDER_360x240_PROFI : TS_BORDER_360x288_PROFI)
-                             : is169 ? TS_BORDER_360x200_PROFI : TS_BORDER_320x240_PROFI;
+                             : TS_BORDER_320x240_PROFI;
         if      (isFB && !isFB240) { lin_end = 48; lin_end2 = 240; }
         else if (isFB)             { lin_end = 24; lin_end2 = 216; }
-        else if (is169)            { lin_end = 4;  lin_end2 = 196; }
         else                       { lin_end = 24; lin_end2 = 216; }
         brdcol_end     = isFB ? 180 : 160;
         brdcol_step    = 1;
         brdPairWrite   = false;
-        brdcol_start   = is169 ? 10 : 0;
+        brdcol_start   = 0;
         brdcol_end1    = isFB ? 26 : brdcol_start + (brdcol_end - brdcol_start - 128) / 2;
         brdcol_retrace = brdcol_end;
     }
@@ -1205,6 +1233,21 @@ void VIDEO::getBmpPalette(uint8_t* out) {
         out[i * 4 + 2] = (c >> 16) & 0xFF;
         out[i * 4 + 3] = 0;
     }
+#if NEW_UI
+    // The new fullscreen UI owns indices 152..167 — reflect its colours so a
+    // PrintScreen capture taken with the menu open comes out true-colour.
+    {
+        const uint32_t* up = nm::uiPalette();
+        const int base = nm::uiPaletteBase();
+        for (int i = 0; i < 16; i++) {
+            const uint32_t c = up[i];
+            out[(base + i) * 4 + 0] = c & 0xFF;
+            out[(base + i) * 4 + 1] = (c >> 8) & 0xFF;
+            out[(base + i) * 4 + 2] = (c >> 16) & 0xFF;
+            out[(base + i) * 4 + 3] = 0;
+        }
+    }
+#endif
     // Orange (index 16)
     {
         uint32_t c = paletteTransform(0xFF7F00);
@@ -1231,7 +1274,7 @@ const int bluPins[] = {BLU_PINS_6B};
 
 void VIDEO::vgataskinit(void *unused) {
     uint8_t Mode;
-    Mode = 16 + ((Config::arch == "48K") ? 0 : (Config::arch == "128K" || Config::arch == "ALF" ? 2 : 4)) + (Config::aspect_16_9 ? 1 : 0);
+    Mode = 16 + ((Config::arch == "48K") ? 0 : (Config::arch == "128K" || Config::arch == "ALF" ? 2 : 4));
     OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
     OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
     vga.useInterrupt_flag = true;
@@ -1737,7 +1780,7 @@ void VIDEO::Init() {
     } else
 #endif
     {
-        Mode = Config::aspect_16_9 ? 2 : 0;
+        Mode = 0;
     }
     OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
     OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
@@ -1813,7 +1856,7 @@ void VIDEO::changeMode() {
     } else if (VIDEO::isFullBorder240()) {
         Mode = 23;
     } else {
-        Mode = Config::aspect_16_9 ? 2 : 0;
+        Mode = 0;
     }
 
     int newW = vidmodes[Mode][vmodeproperties::hRes];
@@ -1955,7 +1998,6 @@ void VIDEO::Reset() {
     mode16col_enabled = false;
     mode16colUpdatePlanes();
 
-    is169 = Config::aspect_16_9 ? 1 : 0;
 #ifdef VGA_HDMI
     isFullBorder = VIDEO::isFullBorderMode() ? 1 : 0;
 #else
@@ -1972,14 +2014,14 @@ void VIDEO::Reset() {
             tStatesPerLine = TSTATES_PER_LINE_BYTE;
             tStatesScreen = TS_SCREEN_BYTE;
             tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_BYTE : TS_BORDER_360x288_BYTE)
-                          : is169 ? TS_BORDER_360x200_BYTE : TS_BORDER_320x240_BYTE;
+                          : TS_BORDER_320x240_BYTE;
         }
         else
         {
             tStatesPerLine = TSTATES_PER_LINE;
             tStatesScreen = TS_SCREEN_48;
             tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
-                          : is169 ? TS_BORDER_360x200 : TS_BORDER_320x240;
+                          : TS_BORDER_320x240;
         }
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
@@ -1992,14 +2034,14 @@ void VIDEO::Reset() {
             tStatesPerLine = TSTATES_PER_LINE_BYTE;
             tStatesScreen = TS_SCREEN_BYTE;
             tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_BYTE : TS_BORDER_360x288_BYTE)
-                          : is169 ? TS_BORDER_360x200_BYTE : TS_BORDER_320x240_BYTE;
+                          : TS_BORDER_320x240_BYTE;
         }
         else
         {
             tStatesPerLine = TSTATES_PER_LINE_128;
             tStatesScreen = TS_SCREEN_128;
             tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_128 : TS_BORDER_360x288_128)
-                          : is169 ? TS_BORDER_360x200_128 : TS_BORDER_320x240_128;
+                          : TS_BORDER_320x240_128;
         }
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
@@ -2011,7 +2053,7 @@ void VIDEO::Reset() {
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
         tStatesScreen = TS_SCREEN_PENTAGON;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
-                      : is169 ? TS_BORDER_360x200_PENTAGON : TS_BORDER_320x240_PENTAGON;
+                      : TS_BORDER_320x240_PENTAGON;
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
 
@@ -2022,7 +2064,7 @@ void VIDEO::Reset() {
         tStatesPerLine = TSTATES_PER_LINE_PROFI;
         tStatesScreen = TS_SCREEN_PROFI;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PROFI : TS_BORDER_360x288_PROFI)
-                      : is169 ? TS_BORDER_360x200_PROFI : TS_BORDER_320x240_PROFI;
+                      : TS_BORDER_320x240_PROFI;
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
 
@@ -2043,7 +2085,7 @@ void VIDEO::Reset() {
     if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
         brdcol_step = 1;
         brdPairWrite = false;
-        brdcol_start = is169 ? 10 : 0;
+        brdcol_start = 0;
         if (isFullBorder) {
             brdcol_end1 = 26;
         } else {
@@ -2070,10 +2112,6 @@ void VIDEO::Reset() {
         lin_end = 24;
         lin_end2 = 216;
         lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi) ? 26 : 24) / 2;
-    } else if (is169) {
-        lin_end = 4;
-        lin_end2 = 196;
-        lineptr_offset = 13;
     } else {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
@@ -2194,10 +2232,7 @@ void VIDEO::Reset() {
     // Restore stats mode that was active before reset
     if (prevOSDstats) {
         OSD = prevOSDstats;
-        if (Config::aspect_16_9)
-            Draw_OSD169 = MainScreen_OSD;
-        else
-            Draw_OSD43 = BottomBorder_OSD;
+        Draw_OSD43 = BottomBorder_OSD;
     }
 
     // DS80 transition on reset: ensure DS80 state is fully cleaned up whenever
@@ -3686,9 +3721,9 @@ IRAM_ATTR void VIDEO::TopBorder_Blank() {
         static bool brd_logged = false;
         if (!brd_logged) {
             brd_logged = true;
-            Debug::log("BRD: yres=%d step=%d end=%d end1=%d ret=%d lin_end=%d/%d start=%d isFB=%d is169=%d tsBrd=%d tsLine=%d fb=%p",
+            Debug::log("BRD: yres=%d step=%d end=%d end1=%d ret=%d lin_end=%d/%d start=%d isFB=%d tsBrd=%d tsLine=%d fb=%p",
                 (int)vga.yres, brdcol_step, brdcol_end, brdcol_end1, brdcol_retrace,
-                lin_end, lin_end2, brdcol_start, isFullBorder, is169,
+                lin_end, lin_end2, brdcol_start, isFullBorder,
                 tStatesBorder, tStatesPerLine, vga.frameBuffer);
         }
         Select_Update_Border();
