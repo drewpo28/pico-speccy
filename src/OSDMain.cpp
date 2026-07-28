@@ -12163,6 +12163,18 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
 
 bool OSD::videoModeConfirm(int timeout_sec) {
 
+#if NEW_UI
+    // New-UI skin for the post-reboot confirm; the classic chrome below stays as
+    // the fallback for modes the fullscreen UI does not fit.
+    if (nm::available()) {
+        bool keep = nm::uiConfirmTimeout("Keep this video mode?", "Video Mode", timeout_sec);
+        // The new chrome never touches SaveRect: the paper repaints every frame,
+        // the border only on demand — ask for it.
+        VIDEO::brdnextframe = true;
+        return keep;
+    }
+#endif
+
     string title = "Video Mode";
     string msg = "Keep this video mode?";
 

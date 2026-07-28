@@ -155,6 +155,53 @@ bool uiConfirm(const char* text_body, const char* title) {
     }
 }
 
+bool uiConfirmTimeout(const char* text_body, const char* title, int timeout_sec) {
+    Debug::log("uiConfirmTimeout: %ds sp=%08x\n", timeout_sec, debug_sp());
+    gfxBegin();                    // standalone-safe: runs at boot, no gfx yet
+    const int lh  = UI_FONT_H + 2;
+    const int pad = 4 * Sf.glyphScale;
+    // Room below the text for the countdown line and the button row.
+    Box b = drawBox(text_body, title, 2 * lh + 10, C_SEP);
+
+    bool yes = false;              // default lands on No: expiry must revert
+    drawButtons(b, yes);
+
+    const int cnty = b.y + b.h - pad - 2 * lh - 4;
+    int remaining = timeout_sec;
+    auto drawCount = [&]() {
+        char cnt[24];
+        snprintf(cnt, sizeof(cnt), "Reverting in %2d s", remaining);
+        fill(b.x + 2, cnty - 1, b.w - 4, lh, C_PANEL_ALT);
+        text(b.x + (b.w - textWidth(cnt)) / 2, cnty, cnt, C_TEXT_DIM);
+    };
+    drawCount();
+
+    fabgl::VirtualKeyItem k;
+    int tick = 0;
+    while (remaining > 0) {
+        if (nextKeyDown(k)) {
+            switch (k.vk) {
+                case fabgl::VK_MENU_LEFT: case fabgl::VK_MENU_RIGHT:
+                case fabgl::VK_MENU_UP:   case fabgl::VK_MENU_DOWN:
+                    yes = !yes; drawButtons(b, yes); OSD::clickNoPause(); break;
+                case fabgl::VK_MENU_ENTER:
+                    OSD::clickNoPause(); gfxEnd(); return yes;
+                case fabgl::VK_ESCAPE:
+                    OSD::clickNoPause(); gfxEnd(); return false;
+                case fabgl::VK_y: case fabgl::VK_Y:
+                    OSD::clickNoPause(); gfxEnd(); return true;
+                case fabgl::VK_n: case fabgl::VK_N:
+                    OSD::clickNoPause(); gfxEnd(); return false;
+                default: break;
+            }
+        }
+        sleep_ms(5);
+        if (++tick >= 200) { tick = 0; remaining--; drawCount(); }
+    }
+    gfxEnd();
+    return yes;
+}
+
 // ── N-button choice ────────────────────────────────────────────────────────────
 
 int uiChoice(const char* text_body, const char* const* btns, int n, int initial,

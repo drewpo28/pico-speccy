@@ -22,6 +22,12 @@ namespace nm {
 // Keys: Left/Right/Up/Down move, Enter accepts, Esc = No, Y/N direct.
 bool uiConfirm(const char* text, const char* title = nullptr);
 
+// uiConfirm with a live countdown line — the post-reboot video-mode confirm.
+// Standalone-safe (gfxBegin/gfxEnd around itself: it runs at boot, before any
+// menu). On expiry returns the current highlight (initially No), matching the
+// classic dialog, so an unattended black screen auto-reverts.
+bool uiConfirmTimeout(const char* text, const char* title, int timeout_sec);
+
 // N horizontal buttons under the text (the commit dialog's Apply/No/Cancel).
 // Returns the chosen index; Esc returns `esc_result`.
 int uiChoice(const char* text, const char* const* btns, int n, int initial = 0,
