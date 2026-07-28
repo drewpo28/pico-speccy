@@ -517,6 +517,72 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
 - `RTC_PORT_TRACE` CMake option (default OFF) logs every `..F7` IN/OUT for debugging.
 - **Toggle**: Options → Other → "RTC + NVRAM" (Yes/No → `Config::rtc_enabled`, default **off** — `Config::rtc_enabled = false`, NVS-persisted). when off, the RTC ports still RESPOND STATICALLY (not bypassed): reads float 0xFF (Gluk shows "NO CMOS"; Karabas clock shows FF), but status regs A/C read UIP/flags clear so the Karabas ROMain boot's MC146818 "wait until UIP clears" loop can't hang (was the "ROMain won't start with RTC off" bug); register-select is still latched, data writes swallowed (`RTC::readDisabled()`, four handlers in Ports.cpp).
 
+## FDI copy protection — physical damage emulation (`src/wd1793.cpp`)
+
+An FDI sector flagged with a **bad data CRC** was unreadable on the source
+floppy: its data field is valid up to the damaged spot and garbage from there to
+the end. Protections (Чёрный Ворон / Black Raven disk 2 = `br2b.fdi`) write a
+pattern over such a sector, read it back and expect the **first mismatch at the
+damage offset** (Black Raven: ±10 in 2-byte compare units = ±20 bytes).
+
+- **Damage never heals.** WriteEnd keeps the bad-CRC flag and re-inverts the
+  stored MFM CRC for sectors in `wd->fdiOrigBadMask` (set per track in
+  `fdiLoadTrack`). Before this, a write "repaired" the sector — the protection
+  saw a healthy disk and looped forever.
+- **The damaged region refuses writes.** `fdiWrGuard`/`fdiWrCount` (armed in
+  `kRVMWD177XWriteDataFlag`, cleared in `_end`) make the buffer store in
+  `rvmwdDiskStep`'s FDI branch drop every byte from the damage offset on, CRC
+  bytes included. Guard = `offset + 1` because the count includes the data mark,
+  so data byte `offset` is the first one suppressed. The sector is identified by
+  its ID field (`fdiSectorFromHeader`), never by the last find_marker hit, so a
+  healthy sector can't inherit a neighbour's damage.
+- **The image is never written back** for damaged sectors (`fdiFlushTrack`
+  skips them) — flushing the mixed prefix+tail would destroy the protection
+  permanently, and the pristine file is what restores the sector on reload. The
+  write therefore lives only while the track is buffered, which is all a
+  protection needs (write + read-back happen without an intervening seek).
+- **Damage offsets are recovered from the image itself** at insert
+  (`fdiScanDamage`, **no metadata file of any kind**). These disks store one stream
+  redundantly across several damaged sectors at different rotational offsets — so
+  their loader can rebuild it from the parts that still read — and that
+  redundancy locates the damage: align a damaged sector against every other copy
+  (shift 0 plus anchor-matched alignments, `DMG_*` tunables) and take the largest
+  agreement, since an overlap can start disagreeing no later than this sector's
+  own damage. Cost is well under a millisecond, once per insert.
+- The insert-time track-header walk was rewritten to slide an 8 KB window over
+  `g_rawTrkDataBuf` (**2 SD reads instead of 166** for an 83-cyl image) and
+  collects the bad-CRC sectors on the way; their data is then staged in the same
+  buffer for the scan. Verified against a plain per-track walk on every local FDI
+  at window sizes 232 B…8 KB (identical `fdiTrackHdrOffsets` + damaged list; the
+  window must hold one track block — `static_assert`).
+- **Damage located → the scratch is emulated** (write prefix only, nothing
+  persisted to the image). **Not located** (`FDI_DMG_UNKNOWN`, e.g. a lone bad
+  sector with no redundant copy — `OpenIt.fdi`, `OpenIT!.fdi`, `ZXF45_O.FDI`
+  each have one) **→ the sector still takes writes in full and they are
+  persisted**, it just never heals. Refusing those writes would only lose data:
+  without the real offset no protection can be satisfied anyway (Black Raven
+  rejects a mismatch below index 12).
+- `tools/fdi_damage.py image.fdi [--ref crack.fdi]` is the host-side twin of the
+  scan — it needs no input from the firmware and feeds it nothing (there is no
+  sidecar / metadata file; an earlier `.dmg` override was dropped as nobody would
+  author one). Run it to validate the derivation on a new protected image:
+  `--ref` diffs against a crack/rip for the exact offsets and reports the worst
+  deviation. It mirrors the firmware exactly — only damaged sectors are compared,
+  since a healthy sector could supply an alignment the firmware never sees.
+- br2b ground truth (diffed against `RAVEN2.FDI`, the cracked rip) vs what the
+  on-device scan derives, all side 1, 512-byte sectors: cyl1 R145 397/397, cyl1
+  R147 413/413, cyl2 R145 356/**352**, cyl2 R147 326/326, cyl3 R145 378/378,
+  cyl3 R147 380/**378** — every sector inside the game's ±20 bytes.
+  **hw-confirmed 2026-07-28**: the game loads with the on-device scan alone (it
+  derives the right-hand column itself — no offsets supplied from outside). It was
+  first confirmed with a hand-made offset list, which the scan then replaced.
+- Black Raven's checker (readable in the *cracked* `RAVEN1.FDI` at load address
+  0xE000, protection routine ~0xE0CB): picks a protected sector from a table,
+  writes a pattern, reads it back to 0xA000, compares every 2nd byte, then
+  `CP 0xFA` / `CP 0x0C` / `SUB C; ADD A,0x0A; CP 0x16` — i.e. the mismatch index
+  must be 12..249 and within ±10 of the table value. The crack NOP'd those three
+  branches.
+
 ## Tools
 
 - `tools/z80disasm.py` — Z80 disassembler (pure Python3, no deps)
