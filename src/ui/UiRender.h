@@ -67,6 +67,17 @@ bool menuMarqueeTick();     // true = the focused row needs a repaint
 void menuMarqueeReset();
 bool menuMarqueeActive();
 
+// Header clock — current RTC time ("HH:MM"), shown centered in the header band
+// of both the menu and the browser. The RTC only holds a valid time after an
+// SNTP sync over WiFi (or the guest setting it), so the clock doubles as a
+// "time is synced" indicator: nothing is drawn while it is unset.
+bool uiClockText(char out[8]);   // false while the RTC is unset
+bool uiClockDirty();             // minute rolled over since the last draw
+// Draw it at text baseline `ty`, centered in [ix, ix+iw); skipped when the
+// center slot would collide with the header's left text (ends at loEnd) or
+// right text (starts at hiBeg).
+void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg);
+
 } // namespace nm
 
 #endif // NEW_UI

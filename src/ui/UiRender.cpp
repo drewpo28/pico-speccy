@@ -30,6 +30,7 @@
 #include "UiStage.h"
 #include "OSDMain.h"
 #include "Config.h"
+#include "RTC.h"
 
 namespace nm {
 
@@ -116,9 +117,12 @@ static void drawHeader() {
     const int y = LY.iy;
     fill(LY.ix, y, LY.iw, LY.hdr_h, C_PANEL);
     rainbow(LY.ix + LY.pad, y + 3);
-    text(LY.ix + LY.pad + rainbowW() + 2 * LY.pad, y + 4, "Pico-Speccy", C_WHITE);
+    int tx = LY.ix + LY.pad + rainbowW() + 2 * LY.pad;
+    tx += text(tx, y + 4, "Pico-Speccy", C_WHITE);
     const char* ver = "v" PORT_VERSION;
-    text(LY.ix + LY.iw - textWidth(ver) - LY.pad, y + 4, ver, C_TEXT_DIM);
+    const int vx = LY.ix + LY.iw - textWidth(ver) - LY.pad;
+    text(vx, y + 4, ver, C_TEXT_DIM);
+    uiHeaderClock(LY.ix, LY.iw, y + 4, tx + 2 * LY.pad, vx - 2 * LY.pad);
     hline(LY.ix, y + LY.hdr_h - 1, LY.iw, C_SEP);
 }
 
@@ -143,6 +147,37 @@ static void drawSubHeader() {
     if (x + mw + 2 * LY.pad < LY.ix + LY.iw)
         text(LY.ix + LY.iw - mw - LY.pad, y + 2, mach, C_TEXT_DIM);
     hline(LY.ix, y + LY.sub_h - 1, LY.iw, C_SEP);
+}
+
+// ── header clock ───────────────────────────────────────────────────────────────
+// Shared with the browser's header. One "last drawn" slot is enough — the menu
+// and the browser never run concurrently.
+
+static char s_clk_drawn[8];
+
+bool uiClockText(char out[8]) {
+    int Y, M, D, h, m, s;
+    if (!RTC::now(Y, M, D, h, m, s)) return false;
+    snprintf(out, 8, "%02d:%02d", h, m);
+    return true;
+}
+
+bool uiClockDirty() {
+    char clk[8];
+    if (!uiClockText(clk)) return false;
+    return strcmp(clk, s_clk_drawn) != 0;
+}
+
+void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg) {
+    char clk[8];
+    if (!uiClockText(clk)) return;
+    // Recorded even when the slot is too crowded to draw, so uiClockDirty()
+    // doesn't ask for a header repaint every idle tick.
+    strcpy(s_clk_drawn, clk);
+    const int cw = textWidth(clk);
+    const int cx = ix + (iw - cw) / 2;
+    if (cx < loEnd || cx + cw > hiBeg) return;
+    text(cx, ty, clk, C_TEXT_DIM);
 }
 
 // ── marquee for over-long focused labels ───────────────────────────────────────

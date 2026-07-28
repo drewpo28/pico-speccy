@@ -576,6 +576,10 @@ resume:
                 markLeftRow(curLevel().sel - curLevel().top);
                 flushDirty();
             }
+            if (uiClockDirty()) {
+                markDirty(D_HEADER);
+                flushDirty();
+            }
         }
     }
 

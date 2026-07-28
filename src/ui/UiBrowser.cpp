@@ -241,13 +241,16 @@ static void drawHeader() {
     const int y = L.iy;
     fill(L.ix, y, L.iw, L.hdr_h, C_PANEL);
     rainbow(L.ix + L.pad, y + 3);
-    text(L.ix + L.pad + rainbowW() + 2 * L.pad, y + 4, s_title.c_str(), C_WHITE);
+    int tx = L.ix + L.pad + rainbowW() + 2 * L.pad;
+    tx += text(tx, y + 4, s_title.c_str(), C_WHITE);
     char cnt[20];
     if (s_visTotal > 0)
         snprintf(cnt, sizeof(cnt), "%d/%d", s_sel + 1, s_visTotal);
     else
         snprintf(cnt, sizeof(cnt), "empty");
-    text(L.ix + L.iw - textWidth(cnt) - L.pad, y + 4, cnt, C_TEXT_DIM);
+    const int cx = L.ix + L.iw - textWidth(cnt) - L.pad;
+    text(cx, y + 4, cnt, C_TEXT_DIM);
+    uiHeaderClock(L.ix, L.iw, y + 4, tx + 2 * L.pad, cx - 2 * L.pad);
     hline(L.ix, y + L.hdr_h - 1, L.iw, C_SEP);
 }
 
@@ -623,6 +626,7 @@ static string runLoop() {
             if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
                 sleep_ms(5);
                 if (mqTick()) drawListRow(s_sel - s_top);
+                if (uiClockDirty()) drawHeader();
                 continue;
             }
             if (!ESPectrum::readKbd(&k) || !k.down) continue;
@@ -934,6 +938,7 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
     while (1) {
         if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
             sleep_ms(5);
+            if (uiClockDirty()) drawHeader();
             continue;
         }
         if (!ESPectrum::readKbd(&k) || !k.down) continue;
@@ -1132,6 +1137,7 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
         if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
             sleep_ms(5);
             if (mqTick()) drawRowN(sel - top);
+            if (uiClockDirty()) drawHeader();
             continue;
         }
         if (!ESPectrum::readKbd(&k) || !k.down) continue;
