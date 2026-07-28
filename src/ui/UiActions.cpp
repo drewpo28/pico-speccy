@@ -779,8 +779,10 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
         default:
             return;             // F3/F4 are persist-level verbs, not ours
         case 0: {
+            // The armed file stays armed for the whole session (cleared by runDiskSlots
+            // on exit), so Enter on another slot mounts the same image there — matching
+            // the classic popup, where every Enter mounts `fname` into the focused slot.
             string fname = s_armedFile;
-            s_armedFile.clear();
             if (fname.empty()) {
                 // Geometry copied from the classic per-drive "Insert" flow, which is what
                 // this replaces: DSK 26x15 (OSDMain.cpp:2975 and :3404), esxDOS images

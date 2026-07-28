@@ -29,6 +29,11 @@ struct Level {
 struct State {
     Level   lv[NM_MAX_DEPTH];
     uint8_t depth;              // 0 = root
+    uint8_t home_depth;         // depth the session opened at (openPath) — backing out
+                                // of it closes the menu, like the root does. 0 normally;
+                                // the slot/persist entry points open a deeper level and
+                                // must return to their caller (F5 browser), not expose
+                                // the parent menu levels.
     uint8_t focus;              // FOCUS_LEFT / FOCUS_RIGHT
     uint8_t rsel, rtop, rcount; // right pane selection / scroll / row count
     bool    quit;

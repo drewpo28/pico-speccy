@@ -282,7 +282,7 @@ static void enterLevel(const Node* n) {
 }
 
 static void leaveLevel() {
-    if (S.depth == 0) { S.quit = true; return; }
+    if (S.depth <= S.home_depth) { S.quit = true; return; }
     S.depth--;
     S.focus = FOCUS_LEFT;
     buildVisible(curLevel());
@@ -545,7 +545,7 @@ static void runInternal(const Node* openAt) {
     buildVisible(L);
     refreshRightPane();
 
-    if (openAt) openPath(openAt);
+    if (openAt) { openPath(openAt); S.home_depth = S.depth; }
 
     drawFrameOnce();
     markDirty(D_ALL);
