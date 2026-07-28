@@ -31,7 +31,7 @@ using std::string;
 namespace MachineSwitch {
 
 void commitAlf() {
-    Config::romSet = "ALF1";
+    Config::romSet = R_ALF1;
     // Leaving Profi's forced-SRAM layout (no butter PSRAM) MUST reboot:
     // ESPectrum::reset() does NOT free the ~96 KB Profi pages + DS80
     // framebuffer (only setup() re-lays out memory), so a soft reset
@@ -39,19 +39,19 @@ void commitAlf() {
     // Persist arch=ALF so the reboot lands on ALF, not the old Profi arch.
     if (butter_psram_size() == 0 &&
         MemESP::ram[56].memType() == mem_type_t::POINTER) {
-        Config::arch = "ALF";
-        if (Config::pref_arch == "Profi") Config::pref_arch = "Last";
+        Config::arch = A_ALF;
+        if (Config::pref_arch == A_PROFI) Config::pref_arch = A_LAST;
         Config::save();
         OSD::esp_hard_reset();   // never returns; setup() re-lays out for ALF
         return;
     }
     Config::save();
-    Config::requestMachine("ALF", "ALF1");
+    Config::requestMachine(A_ALF, R_ALF1);
     ESPectrum::reset();
 }
 
-bool commit(const string& arch, const string& romset) {
-    if (arch == "ALF") { commitAlf(); return true; }
+bool commit(ArchIdx arch, RomsetIdx romset) {
+    if (arch == A_ALF) { commitAlf(); return true; }
 
     // Leaving ALF for another machine. loadAlfCart() pinned
     // pref_arch="ALF" so the cart machine survives the flash-reboot; that
@@ -62,11 +62,11 @@ bool commit(const string& arch, const string& romset) {
     // menu (the early branch) runs requestMachine() without writing
     // Config::arch, so arch==Config::arch can look unchanged and the gate
     // would skip the un-pin + save, leaving pref_arch="ALF" → F12 = ALF.
-    bool leavingAlf = (arch != "ALF" &&
-        (Config::pref_arch == "ALF" || Config::alfCartBanks > 0));
+    bool leavingAlf = (arch != A_ALF &&
+        (Config::pref_arch == A_ALF || Config::alfCartBanks > 0));
     if (arch != Config::arch || romset != Config::romSet || leavingAlf) {
         if (leavingAlf) {
-            if (Config::pref_arch == "ALF") Config::pref_arch = "Last";
+            if (Config::pref_arch == A_ALF) Config::pref_arch = A_LAST;
             Config::alfCartBanks = 0;   // unmount cart (empty drive)
             Config::alfCartPath  = "";
             AlfCart::unmount();         // close the SD cart file
@@ -75,39 +75,39 @@ bool commit(const string& arch, const string& romset) {
         // Gate it: the popup frees room (Gigascreen/ZiFi/DivMMC
         // auto-handled by the code below; offers GS) or refuses. A freeing
         // reboot never returns; denied/cancelled stays on current arch.
-        if (arch == "Profi" && Config::arch != "Profi" &&
+        if (arch == A_PROFI && Config::arch != A_PROFI &&
             !OSD::featureBudgetGate(Subsystems::FEAT_PROFI)) {
             return false;
         }
         Config::ram_file = "none";
         if (romset != Config::romSet) {
-            if (arch == "48K") {
-                if (Config::pref_romSet_48 == "Last") {
+            if (arch == A_48K) {
+                if (Config::pref_romSet_48 == R_LAST) {
                     Config::romSet = romset;
                     Config::romSet48 = romset;
                 }
-            } else if (arch == "128K") {
-                if (Config::pref_romSet_128 == "Last") {
+            } else if (arch == A_128K) {
+                if (Config::pref_romSet_128 == R_LAST) {
                     Config::romSet = romset;
                     Config::romSet128 = romset;
                 }
-            } else if (arch == "Pentagon") {
-                if (Config::pref_romSetPent == "Last") {
+            } else if (arch == A_PENT) {
+                if (Config::pref_romSetPent == R_LAST) {
                     Config::romSet = romset;
                     Config::romSetPent = romset;
                 }
-            } else if (arch == "P512") {
-                if (Config::pref_romSetP512 == "Last") {
+            } else if (arch == A_P512) {
+                if (Config::pref_romSetP512 == R_LAST) {
                     Config::romSet = romset;
                     Config::romSetP512 = romset;
                 }
-            } else if (arch == "P1024") {
-                if (Config::pref_romSetP1M == "Last") {
+            } else if (arch == A_P1024) {
+                if (Config::pref_romSetP1M == R_LAST) {
                     Config::romSet = romset;
                     Config::romSetP1M = romset;
                 }
-            } else if (arch == "Profi") {
-                if (Config::pref_romSetProfi == "Last") {
+            } else if (arch == A_PROFI) {
+                if (Config::pref_romSetProfi == R_LAST) {
                     Config::romSet = romset;
                     Config::romSetProfi = romset;
                 }
@@ -116,7 +116,7 @@ bool commit(const string& arch, const string& romset) {
             }
         }
         if (arch != Config::arch) {
-            if (Config::pref_arch == "Last") {
+            if (Config::pref_arch == A_LAST) {
                 Config::arch = arch;
             }
         }
@@ -130,16 +130,16 @@ bool commit(const string& arch, const string& romset) {
         // arch's slot to the running romSet so it survives reboot
         // (mirrors the pref=="Last" gating of the romset block above;
         // when a pref is pinned, cold boot loads from that pref instead).
-        if (Config::arch == "Pentagon" && Config::pref_romSetPent == "Last") Config::romSetPent = Config::romSet;
-        else if (Config::arch == "P512" && Config::pref_romSetP512 == "Last") Config::romSetP512 = Config::romSet;
-        else if (Config::arch == "P1024" && Config::pref_romSetP1M == "Last") Config::romSetP1M = Config::romSet;
-        else if (Config::arch == "128K" && Config::pref_romSet_128 == "Last") Config::romSet128 = Config::romSet;
-        else if (Config::arch == "48K" && Config::pref_romSet_48 == "Last") Config::romSet48 = Config::romSet;
-        else if (Config::arch == "Profi" && Config::pref_romSetProfi == "Last") Config::romSetProfi = Config::romSet;
+        if (Config::arch == A_PENT && Config::pref_romSetPent == R_LAST) Config::romSetPent = Config::romSet;
+        else if (Config::arch == A_P512 && Config::pref_romSetP512 == R_LAST) Config::romSetP512 = Config::romSet;
+        else if (Config::arch == A_P1024 && Config::pref_romSetP1M == R_LAST) Config::romSetP1M = Config::romSet;
+        else if (Config::arch == A_128K && Config::pref_romSet_128 == R_LAST) Config::romSet128 = Config::romSet;
+        else if (Config::arch == A_48K && Config::pref_romSet_48 == R_LAST) Config::romSet48 = Config::romSet;
+        else if (Config::arch == A_PROFI && Config::pref_romSetProfi == R_LAST) Config::romSetProfi = Config::romSet;
         // Mutual exclusivity
-        bool isByte = (romset == "48Kby" || romset == "128Kby");
-        if (Config::mb02 && (arch == "Pentagon" || arch == "P512" || arch == "P1024" ||
-            arch == "Profi" || isByte)) {
+        bool isByte = (romset == R_48K_BY || romset == R_128K_BY);
+        if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
+            arch == A_PROFI || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
@@ -151,12 +151,12 @@ bool commit(const string& arch, const string& romset) {
             OSD::osdCenteredMsg("Timex disabled", LEVEL_WARN, 2000);
         }
         // TR-DOS is mandatory on Pentagon / Profi
-        if ((arch == "Pentagon" || arch == "P512" || arch == "P1024" || arch == "Profi") && !Config::betadisk) {
+        if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI) && !Config::betadisk) {
             Config::betadisk = true;
             OSD::osdCenteredMsg("Betadisk enabled", LEVEL_WARN, 1500);
         }
         // Byte 48K has no Beta Disk interface — force it off on entry.
-        if (romset == "48Kby" && Config::betadisk) {
+        if (romset == R_48K_BY && Config::betadisk) {
             Config::betadisk = false;
             if (ESPectrum::trdos) {
                 ESPectrum::trdos = false;
@@ -168,7 +168,7 @@ bool commit(const string& arch, const string& romset) {
         // turn it off and free its 52 KB prev-FB before saving
         // so the Off-state persists across reboots. Config::arch
         // is already committed above (pref_arch=="Last" path).
-        if (Config::arch == "Profi" && Config::gigascreen_enabled) {
+        if (Config::arch == A_PROFI && Config::gigascreen_enabled) {
             VIDEO::disableGigascreenForProfi();
             OSD::osdCenteredMsg("Gigascreen disabled", LEVEL_WARN, 1500);
         }
@@ -176,7 +176,7 @@ bool commit(const string& arch, const string& romset) {
         // ~12 KB of heap rings — Profi forces ~80 KB of SRAM pages
         // and OOMs at VIDEO::Init otherwise. Persist Off so the boot
         // into Profi has the room (boot also skips ZiFi on Profi).
-        if (Config::arch == "Profi" && Config::zifi_enabled) {
+        if (Config::arch == A_PROFI && Config::zifi_enabled) {
             Config::zifi_enabled = 0;
             ZiFi::enabled = 0;
             if (!ZiFiAT::connected) { ZiFiSock::end(); ZiFi::deinit(); }
@@ -185,7 +185,7 @@ bool commit(const string& arch, const string& romset) {
         // Switching into Profi: turn DivMMC off and free its
         // sector/IDE buffers — same mutual exclusion as MB-02+
         // (Profi forces ~80 KB of SRAM pages and OOMs otherwise).
-        if (Config::arch == "Profi" && Config::esxdos) {
+        if (Config::arch == A_PROFI && Config::esxdos) {
             Config::esxdos = 0;
             DivMMC::init();   // teardown path frees buffers
             OSD::osdCenteredMsg("DivMMC disabled", LEVEL_WARN, 1500);
@@ -199,7 +199,7 @@ bool commit(const string& arch, const string& romset) {
         // via ZC) — auto-enable it on entry so SD boot works
         // out of the box. esxDOS/MB-02+ are already forced off
         // above; skipped silently if the budget gate declines.
-        if (arch == "Profi" && romset != "Profi" &&
+        if (arch == A_PROFI && romset != R_PROFI &&
             !Config::zcontroller && FileUtils::fsMount &&
             OSD::featureBudgetGate(Subsystems::FEAT_ZCONTROLLER)) {
             Config::zcontroller = true;
@@ -226,7 +226,7 @@ bool commit(const string& arch, const string& romset) {
         bool profiSramLayout =
             (MemESP::ram[56].memType() == mem_type_t::POINTER);
         if (butter_psram_size() == 0
-            && (arch == "Profi") != profiSramLayout) {
+            && (arch == A_PROFI) != profiSramLayout) {
             OSD::esp_hard_reset();
             return true;
         }

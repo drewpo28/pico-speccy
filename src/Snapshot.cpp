@@ -68,7 +68,7 @@ using namespace std;
 // Config::ram_file and resumed by setup() after the reboot.
 std::string g_snapshot_loading_path;
 
-bool LoadSnapshot(const string& filename, const string& force_arch, const string& force_romset) {
+bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_romset) {
     if (!FileUtils::fsMount) return false;
     bool res = false;
     uint8_t OSDprev = VIDEO::OSD;
@@ -89,9 +89,9 @@ bool LoadSnapshot(const string& filename, const string& force_arch, const string
     return res;
 }
 
-bool FileSNA::load(const string& sna_fn, const string& force_arch, const string& force_romset) {
+bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_romset) {
     int sna_size;
-    string snapshotArch;
+    ArchIdx snapshotArch = A_NONE;
     FIL* file = fopen2(sna_fn.c_str(), FA_READ);
     if (!file)
     {
@@ -101,17 +101,17 @@ bool FileSNA::load(const string& sna_fn, const string& force_arch, const string&
     sna_size = f_size(file);
     // Check snapshot arch
     if (sna_size == SNA_48K_SIZE) {
-        snapshotArch = "48K";
+        snapshotArch = A_48K;
     } else if ((sna_size == SNA_128K_SIZE1) || (sna_size == SNA_128K_SIZE2)) {
         // If using some 128K arch it keeps unmodified. If not, we choose Pentagon because is SNA format default
         if (!Z80Ops::is48)
             snapshotArch = Config::arch;
         else    
-            snapshotArch = "Pentagon";
+            snapshotArch = A_PENT;
     } else if ((sna_size == SNA_128K_SIZE1 + ( 8 + 16 ) * MEM_PG_SZ) || (sna_size == SNA_128K_SIZE2 + ( 8 + 16 ) * MEM_PG_SZ)) {
-        snapshotArch = "P512";
+        snapshotArch = A_P512;
     } else if ((sna_size == SNA_128K_SIZE1 + ( 8 + 16 + 32 ) * MEM_PG_SZ) || (sna_size == SNA_128K_SIZE2 + ( 8 + 16 + 32 ) * MEM_PG_SZ)) {
-        snapshotArch = "P1024";
+        snapshotArch = A_P1024;
     } else {
         OSD::osdCenteredMsg("Bad SNA:\n" + sna_fn + "\nsize: " + to_string(sna_size) + "\n", LEVEL_INFO, 5000);
         fclose2(file);
@@ -119,19 +119,19 @@ bool FileSNA::load(const string& sna_fn, const string& force_arch, const string&
     }
 
     // Manage arch change
-    if (Config::arch != "48K") {
-        if (snapshotArch == "48K") {
-                Config::requestMachine("48K", force_romset);
+    if (Config::arch != A_48K) {
+        if (snapshotArch == A_48K) {
+                Config::requestMachine(A_48K, force_romset);
         } else {
-            if ((force_arch != "") && ((Config::arch != force_arch) || (Config::romSet != force_romset))) {
+            if ((force_arch != A_NONE) && ((Config::arch != force_arch) || (Config::romSet != force_romset))) {
                 snapshotArch = force_arch;
                 Config::requestMachine(force_arch, force_romset);
             }
         }
-    } else if (Config::arch == "48K") {
-        if (snapshotArch != "48K") {
-            if (force_arch == "")
-                Config::requestMachine("Pentagon", "");
+    } else if (Config::arch == A_48K) {
+        if (snapshotArch != A_48K) {
+            if (force_arch == A_NONE)
+                Config::requestMachine(A_PENT, R_NONE);
             else {
                 snapshotArch = force_arch;
                 Config::requestMachine(force_arch, force_romset);
@@ -301,7 +301,7 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
 
     uint16_t SP = Z80::getRegSP();
     
-    if (Config::arch == "48K") {
+    if (Config::arch == A_48K) {
         // decrement stack pointer it for pushing PC to stack, only on 48K
         SP -= 2;
         MemESP::writeword(SP, Z80::getRegPC());
@@ -315,7 +315,7 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
 
     // write RAM pages in 48K address space (0x4000 - 0xFFFF)
     uint8_t pages[3] = {5, 2, 0};
-    if (Config::arch != "48K")
+    if (Config::arch != A_48K)
         pages[2] = MemESP::bankLatch;
 
     for (uint8_t ipage = 0; ipage < 3; ipage++) {
@@ -326,7 +326,7 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
         }
     }
 
-    if (Config::arch != "48K") {
+    if (Config::arch != A_48K) {
         // write pc
         writeWordFileLE( Z80::getRegPC(), file);
         // printf("PC: %u\n",(unsigned int)Z80::getRegPC());
@@ -400,7 +400,7 @@ bool FileZ80::load(const string& z80_fn) {
     // Check Z80 version and arch
     uint8_t z80version;
     uint8_t mch;
-    string z80_arch = "";
+    ArchIdx z80_arch = A_NONE;
     uint16_t ahb_len;
 
     fseek(file,6,SEEK_SET);
@@ -409,7 +409,7 @@ bool FileZ80::load(const string& z80_fn) {
 
         z80version = 1;
         mch = 0;
-        z80_arch = "48K";
+        z80_arch = A_48K;
 
     } else { // Version 2 o 3
 
@@ -432,32 +432,32 @@ bool FileZ80::load(const string& z80_fn) {
         mch = readByteFile(file); // Machine
 
         if (z80version == 2) {
-            if (mch == 0) z80_arch = "48K";
-            if (mch == 1) z80_arch = "48K"; // + if1
+            if (mch == 0) z80_arch = A_48K;
+            if (mch == 1) z80_arch = A_48K; // + if1
             // if (mch == 2) z80_arch = "SAMRAM";
-            if (mch == 3) z80_arch = "128K";
-            if (mch == 4) z80_arch = "128K"; // + if1
+            if (mch == 3) z80_arch = A_128K;
+            if (mch == 4) z80_arch = A_128K; // + if1
         }
         else if (z80version == 3) {
-            if (mch == 0) z80_arch = "48K";
-            if (mch == 1) z80_arch = "48K"; // + if1
+            if (mch == 0) z80_arch = A_48K;
+            if (mch == 1) z80_arch = A_48K; // + if1
             // if (mch == 2) z80_arch = "SAMRAM";
-            if (mch == 3) z80_arch = "48K"; // + mgt
-            if (mch == 4) z80_arch = "128K";
-            if (mch == 5) z80_arch = "128K"; // + if1
-            if (mch == 6) z80_arch = "128K"; // + mgt
-            if (mch == 7) z80_arch = "128K"; // Spectrum +3
-            if (mch == 9) z80_arch = "Pentagon";
-            if (mch == 12) z80_arch = "128K"; // Spectrum +2
-            if (mch == 13) z80_arch = "128K"; // Spectrum +2A            
-/// TODO:            if (mch == 15) z80_arch = "P512"; + P1024
+            if (mch == 3) z80_arch = A_48K; // + mgt
+            if (mch == 4) z80_arch = A_128K;
+            if (mch == 5) z80_arch = A_128K; // + if1
+            if (mch == 6) z80_arch = A_128K; // + mgt
+            if (mch == 7) z80_arch = A_128K; // Spectrum +3
+            if (mch == 9) z80_arch = A_PENT;
+            if (mch == 12) z80_arch = A_128K; // Spectrum +2
+            if (mch == 13) z80_arch = A_128K; // Spectrum +2A            
+/// TODO:            if (mch == 15) z80_arch = A_P512; + P1024
         }
 
     }
 
     // printf("Z80 version %u, AHB Len: %u, machine code: %u\n",(unsigned char)z80version,(unsigned int)ahb_len, (unsigned char)mch);
 
-    if (z80_arch == "") {
+    if (z80_arch == A_NONE) {
         OSD::osdCenteredMsg("Z80 load: unknown machine", LEVEL_ERROR);
         ///printf("Z80.load: unknown machine, machine code = %u\n", (unsigned char)mch);
         fclose2(file);
@@ -470,35 +470,35 @@ bool FileZ80::load(const string& z80_fn) {
     // Manage arch change
     if (Config::arch != z80_arch) {
 
-        string z80_romset = "";
+        RomsetIdx z80_romset = R_NONE;
 
         // printf("z80_arch: %s mch: %d pref_romset48: %s pref_romset128: %s z80_romset: %s\n",z80_arch.c_str(),mch,Config::pref_romSet_48.c_str(),Config::pref_romSet_128.c_str(),z80_romset.c_str());
 
-        if (z80_arch == "48K") {
-            if (Config::pref_romSet_48 == "48K" || Config::pref_romSet_48 == "48Kes" || Config::pref_romSet_48 == "48Kby")
+        if (z80_arch == A_48K) {
+            if (Config::pref_romSet_48 == R_48K || Config::pref_romSet_48 == R_48K_ES || Config::pref_romSet_48 == R_48K_BY)
                 z80_romset = Config::pref_romSet_48;
         } else
-        if (z80_arch == "128K") {
+        if (z80_arch == A_128K) {
             if (mch == 12) { // +2
-                if (Config::pref_romSet_128 == "+2" || Config::pref_romSet_128 == "+2es")
+                if (Config::pref_romSet_128 == R_PLUS2 || Config::pref_romSet_128 == R_PLUS2_ES)
                     z80_romset = Config::pref_romSet_128;
                 else
-                    z80_romset = "+2";
+                    z80_romset = R_PLUS2;
             } else {
-                if (Config::pref_romSet_128 == "128K" || Config::pref_romSet_128 == "128Kes")
+                if (Config::pref_romSet_128 == R_128K || Config::pref_romSet_128 == R_128K_ES)
                     z80_romset = Config::pref_romSet_128;
             }
         } else
-        if (z80_arch == "Pentagon") {
-            if (Config::pref_romSetPent == "128Kp" || Config::pref_romSetPent == "128Kcs")
+        if (z80_arch == A_PENT) {
+            if (Config::pref_romSetPent == R_PENT || Config::pref_romSetPent == R_128K_CS)
                 z80_romset = Config::pref_romSetPent;
         } else
-        if (z80_arch == "P512") {
-            if (Config::pref_romSetP512 == "128Kp" || Config::pref_romSetP512 == "128Kcs")
+        if (z80_arch == A_P512) {
+            if (Config::pref_romSetP512 == R_PENT || Config::pref_romSetP512 == R_128K_CS)
                 z80_romset = Config::pref_romSetP512;
         } else
-        if (z80_arch == "P1024") {
-            if (Config::pref_romSetP1M == "128Kp" || Config::pref_romSetP1M == "128Kcs")
+        if (z80_arch == A_P1024) {
+            if (Config::pref_romSetP1M == R_PENT || Config::pref_romSetP1M == R_128K_CS)
                 z80_romset = Config::pref_romSetP1M;
         }
 
@@ -508,20 +508,20 @@ bool FileZ80::load(const string& z80_fn) {
                         
     } else {
 
-        if (z80_arch == "128K") {
+        if (z80_arch == A_128K) {
             
-            string z80_romset = "";
+            RomsetIdx z80_romset = R_NONE;
             
             // printf("z80_arch: %s mch: %d pref_romset48: %s pref_romset128: %s z80_romset: %s\n",z80_arch.c_str(),mch,Config::pref_romSet_48.c_str(),Config::pref_romSet_128.c_str(),z80_romset.c_str());
 
             if (mch == 12) { // +2
 
-                if (Config::romSet != "+2" && Config::romSet != "+2es" && Config::romSet != "128Kcs") {
+                if (Config::romSet != R_PLUS2 && Config::romSet != R_PLUS2_ES && Config::romSet != R_128K_CS) {
 
-                    if (Config::pref_romSet_128 == "+2" || Config::pref_romSet_128 == "+2es")
+                    if (Config::pref_romSet_128 == R_PLUS2 || Config::pref_romSet_128 == R_PLUS2_ES)
                         z80_romset = Config::pref_romSet_128;
                     else
-                        z80_romset = "+2";
+                        z80_romset = R_PLUS2;
 
                     Config::requestMachine(z80_arch, z80_romset);        
 
@@ -529,12 +529,12 @@ bool FileZ80::load(const string& z80_fn) {
 
             } else {
 
-                if (Config::romSet != "128K" && Config::romSet != "128Kes" && Config::romSet != "128Kcs") {
+                if (Config::romSet != R_128K && Config::romSet != R_128K_ES && Config::romSet != R_128K_CS) {
 
-                    if (Config::pref_romSet_128 == "128K" || Config::pref_romSet_128 == "128Kes")
+                    if (Config::pref_romSet_128 == R_128K || Config::pref_romSet_128 == R_128K_ES)
                         z80_romset = Config::pref_romSet_128;
                     else
-                        z80_romset = "128K";
+                        z80_romset = R_128K;
 
                     Config::requestMachine(z80_arch, z80_romset);        
                 }
@@ -682,7 +682,7 @@ bool FileZ80::load(const string& z80_fn) {
         RegPC = mkword(header[32], header[33]);
         Z80::setRegPC(RegPC);
 
-        if (z80_arch == "48K") {
+        if (z80_arch == A_48K) {
 
             MemESP::page0ram = 0;
             MemESP::romLatch = 0;
@@ -716,7 +716,7 @@ bool FileZ80::load(const string& z80_fn) {
                 dataOffset += compDataLen;
             }
 
-        } else if ((z80_arch == "128K") || (z80_arch == "Pentagon") || (z80_arch == "P512")  || (z80_arch == "P1024")) {
+        } else if ((z80_arch == A_128K) || (z80_arch == A_PENT) || (z80_arch == A_P512)  || (z80_arch == A_P1024)) {
             
             // paging register
             uint8_t b35 = header[35];
@@ -971,34 +971,34 @@ void FileZ80::loader128() {
     uint32_t dataLen = 0;
     // When true, ROM page blocks from the snapshot are skipped (ROM pre-loaded by assign_rom).
     bool skip_rom_pages = false;
-    if (Config::arch == "128K") {
+    if (Config::arch == A_128K) {
         z80_array = (unsigned char *) load128;
         dataLen = sizeof(load128);
-        if (Config::romSet == "128K") {
+        if (Config::romSet == R_128K) {
             // printf("128K\n");
             z80_array = (unsigned char *) load128;
             dataLen = sizeof(load128);
-        } else if (Config::romSet == "128Kes") {
+        } else if (Config::romSet == R_128K_ES) {
             // printf("128Kes\n");
             z80_array = (unsigned char *) load128spa;
             dataLen = sizeof(load128spa);
-        } else if (Config::romSet == "+2") {
+        } else if (Config::romSet == R_PLUS2) {
             // printf("+2\n");
             z80_array = (unsigned char *) loadplus2;
             dataLen = sizeof(loadplus2);
-        } else if (Config::romSet == "+2es") {
+        } else if (Config::romSet == R_PLUS2_ES) {
             // printf("+2es\n");
             z80_array = (unsigned char *) loadplus2;
             dataLen = sizeof(loadplus2);
-        } else if (Config::romSet == "ZX81+") {
+        } else if (Config::romSet == R_ZX81P) {
             // printf("ZX81+\n");
             z80_array = (unsigned char *) loadzx81;
             dataLen = sizeof(loadzx81);
         }
-    } else if (Config::arch == "Pentagon" || Config::arch == "P512"  || Config::arch == "P1024") {
+    } else if (Config::arch == A_PENT || Config::arch == A_P512  || Config::arch == A_P1024) {
         z80_array = (unsigned char *) loadpentagon;
         dataLen = sizeof(loadpentagon);
-    } else if (Config::arch == "Profi") {
+    } else if (Config::arch == A_PROFI) {
         // Profi tape loading: boot into SOS ROM (bank 2) and reuse the Pentagon
         // loader Z80 state — both use the identical 128K SOS ROM tape routine.
         // ROM page blocks from loadpentagon must NOT be written into Profi ROM
@@ -1020,7 +1020,7 @@ void FileZ80::loader128() {
     // routine at the standard 128K ROM address is accessible from bank 0.
     // ESPectrum::reset() no-arg always calls reset(0) for Profi → SYS ROM +
     // trdos=true, which is wrong for tape loading.
-    if (Config::arch == "Profi")
+    if (Config::arch == A_PROFI)
         ESPectrum::reset(2);
     else
         ESPectrum::reset();
@@ -1070,7 +1070,7 @@ void FileZ80::loader128() {
     // Profi: the loadpentagon paging byte sets romLatch=0 → romInUse=0 (Pentagon
     // ROM 0).  Override to romInUse=2 (Profi SOS ROM) so tape loading uses the
     // correct ROM after recoverPage0() at the end of this function.
-    if (Config::arch == "Profi") {
+    if (Config::arch == A_PROFI) {
         MemESP::romInUse = 2;
         MemESP::ramCurrent[0] = MemESP::rom[2].direct();
     }
@@ -1149,7 +1149,7 @@ void FileZ80::loader128() {
     // Empty void ram pages
     MemESP::ram[1].cleanup();
     // ZX81+ loader has block 3 void and has info on block5
-    if (Config::romSet128 == "ZX81+")
+    if (Config::romSet128 == R_ZX81P)
         MemESP::ram[0].cleanup();
     else
         MemESP::ram[2].cleanup();
@@ -1185,8 +1185,8 @@ bool FileP::load(const string& p_fn) {
     }
 
     // Manage arch change
-    if (Config::arch != "128K" || Config::romSet != "ZX81+") {
-        Config::requestMachine("128K", "ZX81+");
+    if (Config::arch != A_128K || Config::romSet != R_ZX81P) {
+        Config::requestMachine(A_128K, R_ZX81P);
     }
 
     FileZ80::loader128();

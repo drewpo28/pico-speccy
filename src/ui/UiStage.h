@@ -23,6 +23,7 @@
 
 #include <stdint.h>
 
+#include "ArchRom.h"     // ArchIdx/RomsetIdx + NM_ARCH_TABLE/NM_ROMSET_TABLE
 #include "Subsystem.h"   // Subsystems::FeatureId used in the table below
 using namespace Subsystems;
 
@@ -73,49 +74,13 @@ enum SettingFlags : uint16_t {
 };
 
 // ── the machine as one staged value ────────────────────────────────────────────
-// A machine is an (arch, romset) pair of strings, and the store holds int32_t. Rather
-// than smuggle strings through it, the pair is encoded as (archIdx << 8) | romsetIdx, so
-// SET_MACHINE is an ordinary staged value and gets the 3-way merge and the "A -> B -> A
-// is a no-op" behaviour for free.
+// A machine is an (arch, romset) pair — ArchIdx/RomsetIdx from ArchRom.h — and the
+// store holds int32_t. Rather than smuggle two values through it, the pair is encoded
+// as (archIdx << 8) | romsetIdx, so SET_MACHINE is an ordinary staged value and gets
+// the 3-way merge and the "A -> B -> A is a no-op" behaviour for free.
 //
-// Both index spaces come from an X-macro, so an index can never drift from its string.
 // The option tables in UiTree spell the arch out in every entry via NM_MACH(), which is
 // what keeps a ROM from ending up under the wrong machine.
-#define NM_ARCH_TABLE(X) \
-    X(A_48K,   "48K")    \
-    X(A_128K,  "128K")   \
-    X(A_PENT,  "Pentagon") \
-    X(A_P512,  "P512")   \
-    X(A_P1024, "P1024")  \
-    X(A_PROFI, "Profi")  \
-    X(A_ALF,   "ALF")
-
-#define NM_ROMSET_TABLE(X)         \
-    X(R_48K,        "48K")         \
-    X(R_48K_ES,     "48Kes")       \
-    X(R_48K_CS,     "48Kcs")       \
-    X(R_48K_BY,     "48Kby")       \
-    X(R_128K,       "128K")        \
-    X(R_128K_ES,    "128Kes")      \
-    X(R_PLUS2,      "+2")          \
-    X(R_PLUS2_ES,   "+2es")        \
-    X(R_ZX81P,      "ZX81+")       \
-    X(R_128K_CS,    "128Kcs")      \
-    X(R_128K_BY,    "128Kby")      \
-    X(R_128K_BG,    "128Kbg")      \
-    X(R_PENT,       "128Kp")       \
-    X(R_PENT_GLUK,  "128Kpg")      \
-    X(R_PROFI,      "Profi")       \
-    X(R_PROFI_KAR,  "ProfiKarabas")    \
-    X(R_PROFI_PQ,   "ProfiPQ")         \
-    X(R_PROFI_FT,   "ProfiKarabasFT")  \
-    X(R_PROFI_FDI,  "ProfiKarabasFDI") \
-    X(R_ALF1,       "ALF1")
-
-#define NM_X_IDX(id, str) id,
-enum ArchIdx   : uint8_t { NM_ARCH_TABLE(NM_X_IDX)   ARCH_COUNT };
-enum RomsetIdx : uint8_t { NM_ROMSET_TABLE(NM_X_IDX) ROMSET_COUNT };
-#undef NM_X_IDX
 
 // The composite stored in SET_MACHINE. -1 means "the running pair is not in our tables",
 // which is a legitimate state (a snapshot can request any romset) and simply shows no
@@ -268,7 +233,12 @@ const char* romsetName(int32_t composite);
     /* NIC on/off: instant like the rest of the link settings. Its ~12 KB enable is  */ \
     /* gated INSIDE the hook (classic featureBudgetGate dialog) — a refusal makes    */ \
     /* the hook return false and Stage::set() undoes the edit.                       */ \
-    X(SET_ZIFI_NIC,        AC_LIVE,   F_PREVIEW | F_MODAL,   get_zifiNic,    put_zifiNic,    hook_zifiNic,   FEAT_ZIFI)
+    X(SET_ZIFI_NIC,        AC_LIVE,   F_PREVIEW | F_MODAL,   get_zifiNic,    put_zifiNic,    hook_zifiNic,   FEAT_ZIFI)   \
+    /* PSRAM off = the runtime twin of the CMake set(PSRAM OFF) kill-switch, for testing */ \
+    /* the SRAM-only paths. Strictly boot-class: page placement, the Buffer pools, GS's  */ \
+    /* sample RAM and the Profi layout are all decided in setup() from the PSRAM size,   */ \
+    /* so it can only be honoured from a fresh boot — hence the reboot prompt.           */ \
+    X(SET_PSRAM_ON,        AC_REBOOT, 0,                     get_psramOn,    put_psramOn,    nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

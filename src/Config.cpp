@@ -12,21 +12,21 @@
 #include "graphics.h"
 #include <hardware/vreg.h>
 
-string   Config::arch = "48K";
-string   Config::romSet = "48K";
-string   Config::romSet48 = "48K";
-string   Config::romSet128 = "128K";
-string   Config::romSetPent = "128Kp";
-string   Config::romSetP512 = "128Kp";
-string   Config::romSetP1M = "128Kp";
-string   Config::romSetProfi = "Profi";
-string   Config::pref_arch = "Last";
-string   Config::pref_romSet_48 = "Last";
-string   Config::pref_romSet_128 = "Last";
-string   Config::pref_romSetPent = "Last";
-string   Config::pref_romSetP512 = "Last";
-string   Config::pref_romSetP1M = "Last";
-string   Config::pref_romSetProfi = "Last";
+ArchIdx   Config::arch = A_48K;
+RomsetIdx Config::romSet = R_48K;
+RomsetIdx Config::romSet48 = R_48K;
+RomsetIdx Config::romSet128 = R_128K;
+RomsetIdx Config::romSetPent = R_PENT;
+RomsetIdx Config::romSetP512 = R_PENT;
+RomsetIdx Config::romSetP1M = R_PENT;
+RomsetIdx Config::romSetProfi = R_PROFI;
+ArchIdx   Config::pref_arch = A_LAST;
+RomsetIdx Config::pref_romSet_48 = R_LAST;
+RomsetIdx Config::pref_romSet_128 = R_LAST;
+RomsetIdx Config::pref_romSetPent = R_LAST;
+RomsetIdx Config::pref_romSetP512 = R_LAST;
+RomsetIdx Config::pref_romSetP1M = R_LAST;
+RomsetIdx Config::pref_romSetProfi = R_LAST;
 string   Config::ram_file = NO_RAM_FILE;
 string   Config::last_ram_file = NO_RAM_FILE;
 string   Config::tape_file = "";
@@ -49,6 +49,7 @@ uint16_t Config::max_tft_freq = 126;
 uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_60;
 bool     Config::Issue2 = true;
 bool     Config::rtc_enabled = false;
+bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
 bool     Config::flashload = true;
 bool     Config::tape_player = false; // Tape player mode
 volatile bool Config::real_player = false;
@@ -92,7 +93,7 @@ uint8_t  Config::soundrive = 2; // AUTO: on for Profi, off elsewhere
 
 bool Config::soundriveEnabled() {
     return Config::soundrive == 1 ||
-           (Config::soundrive == 2 && Config::arch == "Profi");
+           (Config::soundrive == 2 && Config::arch == A_PROFI);
 }
 uint8_t  Config::gs_enabled = 0;  // 0=OFF, 1=ON
 uint8_t  Config::gs_ram_size = 2; // 0=512K, 1=1M, 2=2M
@@ -202,7 +203,7 @@ void Config::initHotkeys() {
 
 extern std::string g_snapshot_loading_path;  // Snapshot.cpp — snapshot mid-load
 
-void Config::requestMachine(const string& newArch, const string& newRomSet)
+void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 {
     // Profi boundary: setup() lays out the Profi memory once at boot —
     // forced-SRAM pages (DS80 colour 56/58 + CP/M pool 60/61) on ALL RP2350
@@ -222,9 +223,9 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
     // reboot is needed — and page 56 is a POINTER for every arch there, which
     // would otherwise read as a false "Profi layout" marker.
     bool profiSramLayout = (MemESP::ram[56].memType() == mem_type_t::POINTER);
-    if (butter_psram_size() == 0 && (newArch == "Profi") != profiSramLayout) {
+    if (butter_psram_size() == 0 && (newArch == A_PROFI) != profiSramLayout) {
         arch = newArch;
-        if (!newRomSet.empty()) romSet = newRomSet;
+        if (newRomSet != R_NONE) romSet = newRomSet;
         if (!g_snapshot_loading_path.empty())
             ram_file = g_snapshot_loading_path;
         save();
@@ -234,10 +235,12 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
     // Re-bind ROM overlays from scratch for this machine (RomOverlay.h). Each romset
     // below registers the overlays it needs; clearing first avoids stale entries.
     MemESP::clearOverlays();
-    if (arch == "48K") {
-        if (newRomSet=="") romSet = "48K"; else romSet = newRomSet;
-        if (newRomSet=="") romSet48 = "48K"; else romSet48 = newRomSet;
-        if (romSet48 == "48Kcs") {
+    switch (arch) {
+    case A_48K: {
+        romSet = (newRomSet == R_NONE) ? R_48K : newRomSet;
+        romSet48 = romSet;
+        switch (romSet48) {
+        case R_48K_CS:
 #if !CARTRIDGE_AS_CUSTOM
 #if NO_SEPARATE_48K_CUSTOM
             MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
@@ -248,36 +251,41 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_Alf_cart);
 #endif
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);
-        } else
+            break;
 #if !NO_SPAIN_ROM_48k
-        if (romSet48 == "48Kes") {
+        case R_48K_ES:
             // 48K Spanish: read-only overlay over the Sinclair 48K base (RomOverlay.h)
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_es);
-        } else
+            break;
 #endif
-        if (romSet48 == "48Kby") {
+        case R_48K_BY:
             // Both BYTE and BYTE-compat are overlays over the Sinclair 48K base.
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
             MemESP::registerOverlay(gb_rom_0_sinclair_48k,
                 Config::byte_cobmect_mode ? gb_overlay_48k_byte_sovmest : gb_overlay_48k_byte);
-        } else {
+            break;
+        default:
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);
+            break;
         }
+        break;
     }
-    else if (arch == "ALF") {
+    case A_ALF: {
         const uint8_t* base = gb_rom_Alf;
         // gb_rom_Alf is 32KB = 2 real banks; banks 2..63 → gb_rom_Alf_ep (zero page).
         for (int i = 0; i < 64; ++i) {
             MemESP::rom[i].assign_rom(i >= 2 ? gb_rom_Alf_ep : base + ((16 * i) << 10));
         }
         Config::kempstonPort = 0x1F; // TODO: ensure, save?
+        break;
     }
-    else if (arch == "128K") {
-        if (newRomSet=="") romSet = "128K"; else romSet = newRomSet;
-        if (newRomSet=="") romSet128 = "128K"; else romSet128 = newRomSet;
-        if (romSet128 == "128Kcs") {
+    case A_128K: {
+        romSet = (newRomSet == R_NONE) ? R_128K : newRomSet;
+        romSet128 = romSet;
+        switch (romSet128) {
+        case R_128K_CS:
 #if !CARTRIDGE_AS_CUSTOM
             MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
             MemESP::rom[1].assign_rom(gb_rom_0_128k_custom + (16 << 10)); /// 16392;
@@ -285,48 +293,58 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_Alf_cart);
             MemESP::rom[1].assign_rom(gb_rom_Alf_cart + (16 << 10)); /// 16392;
 #endif
+            break;
 #if !NO_SPAIN_ROM_128k
-        } else if (romSet128 == "128Kes") {
+        case R_128K_ES:
             // rom[0] (128K editor) differs too much positionally -> stays raw.
             // rom[1] (BASIC) is an overlay over the Sinclair 128K second ROM half.
             MemESP::rom[0].assign_rom(gb_rom_0_128k_es);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_128k_es);
-        } else if (romSet128 == "+2es") {
+            break;
+        case R_PLUS2_ES:
             MemESP::rom[0].assign_rom(gb_rom_0_plus2_es);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_128k_plus2es);
-        } else if (romSet128 == "+2") {
+            break;
+        case R_PLUS2:
             MemESP::rom[0].assign_rom(gb_rom_0_plus2);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_128k_plus2);
-        } else if (romSet128 == "ZX81+") {
+            break;
+        case R_ZX81P:
             MemESP::rom[0].assign_rom(gb_rom_0_s128_zx81);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            break;
 #endif
-        } else if (romSet128 == "128Kby" || romSet128 == "128Kbg") {
+        case R_128K_BY:
+        case R_128K_BY_GLUK:
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
             // rom[1] = BYTE 48K, now a read-only overlay over the Sinclair 48K base
             // (applied on the fly by MemESP when this bank is paged to page 0).
             MemESP::rom[1].assign_rom(gb_rom_0_sinclair_48k);
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
-            if (romSet128 == "128Kbg") {
+            if (romSet128 == R_128K_BY_GLUK) {
                 MemESP::rom[3].assign_rom(gb_rom_gluk);
             }
-        }
-        else {
+            break;
+        default:
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            break;
         }
-    } else if (arch == "Profi") {
-        if (newRomSet=="") romSet = "Profi"; else romSet = newRomSet;
-        if (newRomSet=="") romSetProfi = "Profi"; else romSetProfi = newRomSet;
+        break;
+    }
+    case A_PROFI: {
+        romSet = (newRomSet == R_NONE) ? R_PROFI : newRomSet;
+        romSetProfi = romSet;
         // Five romsets mirroring the real Karabas-Pro ROMSET slots. Every branch
         // sets the overlay for EVERY base it assigns — including nullptr for
         // "no overlay" — because registerOverlay() state persists per-base
         // across romset switches (switching PQDOS→Original used to leave the
         // PQ bank1 overlay live on the stock bank1).
-        if (romSetProfi == "ProfiPQ") {
+        switch (romSetProfi) {
+        case R_PROFI_PQ:
             // ROMSET 1: PQDOS BIOS 0.41h1 (bank0 raw, ~94% different from stock);
             // bank1/2/3 overlay over the same bases as stock (tools/rom_pack.py).
             MemESP::rom[0].assign_rom(gb_rom_profi_pq_bank0);
@@ -336,7 +354,8 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_profi_bank2_pq);
             MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3_pq);
-        } else if (romSetProfi == "ProfiKarabas") {
+            break;
+        case R_PROFI_KAR:
             // ROMSET 0 (ROMain_ramdisk_A.rom, byte-faithful): ROMain bank0
             // (graphical boot menu) + bank1 with the ROMain ramdisk-TR-DOS
             // overlay; the image's bank2 == stock Profi bank2, bank3 == plain
@@ -348,20 +367,23 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_profi_bank2);
             MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, nullptr);
-        } else if (romSetProfi == "ProfiKarabasFT") {
+            break;
+        case R_PROFI_FT:
             // ROMSET 2: Flash Tool v2.7 by Doctor Max. bank1 is empty (0xFF) in
             // the real image; bank0/2/3 are unique raw dumps (profi_banks_dmax.c).
             MemESP::rom[0].assign_rom(gb_rom_profi_bank0_flashtool);
             MemESP::rom[1].assign_rom(gb_rom_profi_bank_ff);
             MemESP::rom[2].assign_rom(gb_rom_profi_bank2_flashtool);
             MemESP::rom[3].assign_rom(gb_rom_profi_bank3_flashtool);
-        } else if (romSetProfi == "ProfiKarabasFDI") {
+            break;
+        case R_PROFI_FDI:
             // ROMSET 3: FDImage v0.87 by Doctor Max. Same layout as Flash Tool.
             MemESP::rom[0].assign_rom(gb_rom_profi_bank0_fdimage);
             MemESP::rom[1].assign_rom(gb_rom_profi_bank_ff);
             MemESP::rom[2].assign_rom(gb_rom_profi_bank2_fdimage);
             MemESP::rom[3].assign_rom(gb_rom_profi_bank3_fdimage);
-        } else {
+            break;
+        default:
             // "Original": bank0 (service) + bank1 (Profi TR-DOS) raw; bank2/bank3
             // overlay the Sinclair 128K halves (rom[0]/rom[1]). See RomOverlay.h.
             MemESP::rom[0].assign_rom(gb_rom_profi_bank0);
@@ -371,11 +393,19 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_profi_bank2);
             MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3);
+            break;
         }
-    } else { // Pentagon by default
-        if (newRomSet=="") romSet = "128Kp"; else romSet = newRomSet;
-        if (romSetPent=="") romSetPent = "128Kp"; else romSetPent = newRomSet;
-        if (romSetPent == "128Kcs") {
+        break;
+    }
+    default: { // Pentagon / P512 / P1024
+        romSet = (newRomSet == R_NONE) ? R_PENT : newRomSet;
+        // Keep the slot of the ACTUAL arch (P512/P1024 used to spill into romSetPent,
+        // and an R_NONE request used to blank the slot instead of resetting it).
+        RomsetIdx& slot = (arch == A_P512)  ? romSetP512
+                        : (arch == A_P1024) ? romSetP1M
+                                            : romSetPent;
+        slot = romSet;
+        if (romSet == R_128K_CS) {
 #if !CARTRIDGE_AS_CUSTOM
             MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
             MemESP::rom[1].assign_rom(gb_rom_0_128k_custom + (16 << 10)); /// 16392;
@@ -389,10 +419,12 @@ void Config::requestMachine(const string& newArch, const string& newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
             MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_pentagon_rom0);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
-            if (romSetPent == "128Kpg") {
+            if (romSet == R_PENT_GLUK) {
                 MemESP::rom[3].assign_rom(gb_rom_gluk);
             }
         }
+        break;
+    }
     }
     // 5.03 / 5.04TM are small read-only overlays over the 5.05D base, applied on the
     // fly by MemESP (RomOverlay.h): rom[4] points at the 5.05D base in flash, and the
@@ -426,6 +458,16 @@ static bool nvs_get_str(const char* key, string& v, const vector<string>& sts) {
         }
     }
     return false;
+}
+// Enum twins of nvs_get_str: unknown/garbage on-disk text keeps the current value
+// (the compiled-in default), so Config never holds a non-table index.
+static void nvs_get_arch(const char* key, ArchIdx& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) v = archFromStr(t, v);
+}
+static void nvs_get_romset(const char* key, RomsetIdx& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) v = romsetFromStr(t, v);
 }
 static void nvs_get_b(const char* key, bool& v, const vector<string>& sts) {
     string t;
@@ -735,21 +777,21 @@ void Config::load() {
         nvs_get_u8("TFT_FLAGS", TFT_FLAGS, sts);
         nvs_get_u8("TFT_INVERSION", TFT_INVERSION, sts);
         #endif
-        nvs_get_str("arch", arch, sts);
-        nvs_get_str("romSet", romSet, sts);
-        nvs_get_str("romSet48", romSet48, sts);
-        nvs_get_str("romSet128", romSet128, sts);
-        nvs_get_str("romSetPent", romSetPent, sts);
-        nvs_get_str("romSetP512", romSetP512, sts);
-        nvs_get_str("romSetP1M", romSetP1M, sts);
-        nvs_get_str("romSetProfi", romSetProfi, sts);
-        nvs_get_str("pref_arch", pref_arch, sts);
-        nvs_get_str("pref_romSet_48", pref_romSet_48, sts);
-        nvs_get_str("pref_romSet_128", pref_romSet_128, sts);
-        nvs_get_str("pref_romSetPent", pref_romSetPent, sts);
-        nvs_get_str("pref_romSetP512", pref_romSetP512, sts);
-        nvs_get_str("pref_romSetP1M", pref_romSetP1M, sts);
-        nvs_get_str("pref_romSetProfi", pref_romSetProfi, sts);
+        nvs_get_arch("arch", arch, sts);
+        nvs_get_romset("romSet", romSet, sts);
+        nvs_get_romset("romSet48", romSet48, sts);
+        nvs_get_romset("romSet128", romSet128, sts);
+        nvs_get_romset("romSetPent", romSetPent, sts);
+        nvs_get_romset("romSetP512", romSetP512, sts);
+        nvs_get_romset("romSetP1M", romSetP1M, sts);
+        nvs_get_romset("romSetProfi", romSetProfi, sts);
+        nvs_get_arch("pref_arch", pref_arch, sts);
+        nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
+        nvs_get_romset("pref_romSet_128", pref_romSet_128, sts);
+        nvs_get_romset("pref_romSetPent", pref_romSetPent, sts);
+        nvs_get_romset("pref_romSetP512", pref_romSetP512, sts);
+        nvs_get_romset("pref_romSetP1M", pref_romSetP1M, sts);
+        nvs_get_romset("pref_romSetProfi", pref_romSetProfi, sts);
         nvs_get_str("ram", ram_file, sts);
         nvs_get_u8("ram_origin", ram_file_origin, sts); // provenance (default LOCAL)
         nvs_get_b("AY48", AY48, sts);
@@ -788,6 +830,7 @@ void Config::load() {
         }
         nvs_get_b("Issue2", Issue2, sts);
         nvs_get_b("rtc_enabled", rtc_enabled, sts);
+        nvs_get_b("psram_enabled", psram_enabled, sts);
         nvs_get_b("debug_log", Debug::log_enabled, sts);
         nvs_get_b("flashload", flashload, sts);
         nvs_get_b("rightSpace", rightSpace, sts);
@@ -1117,21 +1160,21 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"TFT_FLAGS", TFT_FLAGS);
     nvs_set_u8(buf,"TFT_INVERSION", TFT_INVERSION);
     #endif
-    nvs_set_str(buf,"arch",arch.c_str());
-    nvs_set_str(buf,"romSet",romSet.c_str());
-    nvs_set_str(buf,"romSet48",romSet48.c_str());
-    nvs_set_str(buf,"romSet128",romSet128.c_str());
-    nvs_set_str(buf,"romSetPent",romSetPent.c_str());
-    nvs_set_str(buf,"romSetP512",romSetP512.c_str());
-    nvs_set_str(buf,"romSetP1M",romSetP1M.c_str());
-    nvs_set_str(buf,"romSetProfi",romSetProfi.c_str());
-    nvs_set_str(buf,"pref_arch",pref_arch.c_str());
-    nvs_set_str(buf,"pref_romSet_48",pref_romSet_48.c_str());
-    nvs_set_str(buf,"pref_romSet_128",pref_romSet_128.c_str());
-    nvs_set_str(buf,"pref_romSetPent",pref_romSetPent.c_str());
-    nvs_set_str(buf,"pref_romSetP512",pref_romSetP512.c_str());
-    nvs_set_str(buf,"pref_romSetP1M",pref_romSetP1M.c_str());
-    nvs_set_str(buf,"pref_romSetProfi",pref_romSetProfi.c_str());
+    nvs_set_str(buf,"arch",archToStr(arch));
+    nvs_set_str(buf,"romSet",romsetToStr(romSet));
+    nvs_set_str(buf,"romSet48",romsetToStr(romSet48));
+    nvs_set_str(buf,"romSet128",romsetToStr(romSet128));
+    nvs_set_str(buf,"romSetPent",romsetToStr(romSetPent));
+    nvs_set_str(buf,"romSetP512",romsetToStr(romSetP512));
+    nvs_set_str(buf,"romSetP1M",romsetToStr(romSetP1M));
+    nvs_set_str(buf,"romSetProfi",romsetToStr(romSetProfi));
+    nvs_set_str(buf,"pref_arch",archToStr(pref_arch));
+    nvs_set_str(buf,"pref_romSet_48",romsetToStr(pref_romSet_48));
+    nvs_set_str(buf,"pref_romSet_128",romsetToStr(pref_romSet_128));
+    nvs_set_str(buf,"pref_romSetPent",romsetToStr(pref_romSetPent));
+    nvs_set_str(buf,"pref_romSetP512",romsetToStr(pref_romSetP512));
+    nvs_set_str(buf,"pref_romSetP1M",romsetToStr(pref_romSetP1M));
+    nvs_set_str(buf,"pref_romSetProfi",romsetToStr(pref_romSetProfi));
     nvs_set_str(buf,"ram",ram_file.c_str());
     // Derive provenance from the file's actual location so the stored tag is never
     // stale: a /tmp path is a transient quick-start download, anything else is a
@@ -1158,6 +1201,7 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"gs_clock", Config::gs_clock);
     nvs_set_str(buf,"Issue2", Issue2 ? "true" : "false");
     nvs_set_str(buf,"rtc_enabled", rtc_enabled ? "true" : "false");
+    nvs_set_str(buf,"psram_enabled", psram_enabled ? "true" : "false");
     nvs_set_str(buf,"debug_log", Debug::log_enabled ? "true" : "false");
     nvs_set_str(buf,"flashload", flashload ? "true" : "false");
     nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");

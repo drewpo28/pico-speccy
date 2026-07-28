@@ -161,6 +161,10 @@ static const Option opt_psram_freq[] = {
 
 static bool p_extRam()    { return butter_psram_size() || psram_size() > 0 || FileUtils::fsMount; }
 static bool p_hasPsram()  { return butter_psram_size() || psram_size() > 0; }
+// The Debug > PSRAM row asks about the CHIP, not the usable size: with the switch off
+// butter_psram_size()/psram_size() report 0 all session, and a p_hasPsram() row would
+// disappear as soon as it was used — with no way back short of a reflash.
+static bool p_psramChip() { return butter_psram_probed() || psram_probed_size() > 0; }
 
 // Profi needs PSRAM for the DS80 hires framebuffer, and DS80 itself only exists in the
 // VGA/HDMI drivers (set_profi_ds80_mode is a stub on TFT/SOFTTV/TV), so on those builds
@@ -177,14 +181,14 @@ static bool p_showProfi() {
 // if the user just chose one, otherwise the live machine.
 static bool p_profiActive() {
     const int32_t m = Stage::get(SET_MACHINE);
-    return m >= 0 ? ((m >> 8) & 0xFF) == A_PROFI : Config::arch == "Profi";
+    return m >= 0 ? ((m >> 8) & 0xFF) == A_PROFI : Config::arch == A_PROFI;
 }
 static bool p_byteActive() {
     const int32_t m = Stage::get(SET_MACHINE);
-    if (m < 0) return Config::romSet == "48Kby" || Config::romSet == "128Kby" ||
-                      Config::romSet == "128Kbg";
+    if (m < 0) return Config::romSet == R_48K_BY || Config::romSet == R_128K_BY ||
+                      Config::romSet == R_128K_BY_GLUK;
     const int r = m & 0xFF;
-    return r == R_48K_BY || r == R_128K_BY || r == R_128K_BG;
+    return r == R_48K_BY || r == R_128K_BY || r == R_128K_BY_GLUK;
 }
 
 static const Option opt_mach_48[] = {
@@ -224,7 +228,7 @@ static const Option opt_mach_p1024[] = {
 static const Option opt_mach_byte[] = {
     { TXT_ROM_BYTE_48,    NM_MACH(A_48K,  R_48K_BY)  },
     { TXT_ROM_BYTE_128,   NM_MACH(A_128K, R_128K_BY) },
-    { TXT_ROM_BYTE_GLUK,  NM_MACH(A_128K, R_128K_BG), TXT_ROM_BYTE_GLUK_S },
+    { TXT_ROM_BYTE_GLUK,  NM_MACH(A_128K, R_128K_BY_GLUK), TXT_ROM_BYTE_GLUK_S },
 };
 // The five real Karabas-Pro ROMSET slots: stock Original, then ROMain / PQDOS BIOS /
 // Flash Tool / FDImage (OSDMain.cpp's profi_romsets[]).
@@ -625,6 +629,8 @@ static const Node kDebug[] = {
     NM_ACTION(TXT_DBG_DIALOG, act_debugDialog, nullptr),
     NM_ACTION(TXT_DBG_POKE,   act_debugPoke,   nullptr),
     NM_BOOL  (TXT_DBG_LOG,    SET_DEBUG_LOG,   nullptr),
+    // Testing aid: run the firmware as if the board had no PSRAM (see SET_PSRAM_ON).
+    NM_BOOL  (TXT_DBG_PSRAM,  SET_PSRAM_ON,    p_psramChip),
 };
 
 // ── Reset ──────────────────────────────────────────────────────────────────────

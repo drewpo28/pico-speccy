@@ -953,7 +953,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // any romset, RxE (ctl bit2) set always selects the mouse — the PQDOS
         // keyboard init never sets RxE (FPGA behaviour: the VV51 RX machine
         // is gated on RxE).
-        if ((serialMouseCtl & 0x04) || Config::romSet != "ProfiPQ") {
+        if ((serialMouseCtl & 0x04) || Config::romSet != R_PROFI_PQ) {
           if (lo8 == 0xF3) {              // VV51 status register
             smTryBuildPacket();
             uint8_t st = (uint8_t)(0x05 | (sm_rxrdy ? 0x02 : 0x00)); // TxRDY+TxE | RxRDY
@@ -1251,7 +1251,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // ROM14=0 & CPM=1 (BOOTFDD). When ROM14=1 the SYS register moves to #3F
         // (MBOOTHDD scheme, handled before this switch) and #BF is reassigned
         // to extended periphery.
-        if (Config::arch != "Profi" || MemESP::romLatch)
+        if (Config::arch != A_PROFI || MemESP::romLatch)
           break;
         goto fdc_sys_status;
       case 0xe3:
@@ -2595,7 +2595,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         // only in ROM14=0 & CPM=1 (the BOOTFDD scheme). When ROM14=1 the address
         // #BF is reassigned to extended periphery, and the SYS register moves to
         // #3F (the ROM14=1 & CPM=1 / MBOOTHDD scheme, handled before this switch).
-        if (Config::arch != "Profi" || MemESP::romLatch)
+        if (Config::arch != A_PROFI || MemESP::romLatch)
           break;
         // SYS register write — housekeeping, not counted as disk access.
         FDDStep(true);

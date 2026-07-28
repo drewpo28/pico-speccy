@@ -978,11 +978,11 @@ IRAM_ATTR void Z80::check_trdos() {
                 // "rom14=1 OR unlock_128" — with the bit set, TR-DOS is also
                 // enterable from the 128K ROM (our bank 2, rom14=0).
                 if ((Z80Ops::is48 && MemESP::romInUse == 0) ||
-                    (Config::arch == "Profi" && MemESP::romInUse == 3 && !MemESP::newSRAM && !MemESP::page0ram) ||
-                    (Config::arch == "Profi" && MemESP::romInUse == 2 && (Ports::port008B & 0x80) && !MemESP::newSRAM && !MemESP::page0ram) ||
-                    (!Z80Ops::is48 && Config::arch != "Profi" && MemESP::romInUse == 1 && !MemESP::newSRAM)) {
+                    (Config::arch == A_PROFI && MemESP::romInUse == 3 && !MemESP::newSRAM && !MemESP::page0ram) ||
+                    (Config::arch == A_PROFI && MemESP::romInUse == 2 && (Ports::port008B & 0x80) && !MemESP::newSRAM && !MemESP::page0ram) ||
+                    (!Z80Ops::is48 && Config::arch != A_PROFI && MemESP::romInUse == 1 && !MemESP::newSRAM)) {
                     // Profi uses its own TR-DOS in ROM bank 1; others use the external TR-DOS ROM (bank 4)
-                    uint8_t dosBank = (Config::arch == "Profi") ? 1 : 4;
+                    uint8_t dosBank = (Config::arch == A_PROFI) ? 1 : 4;
 #if FDD_PORT_TRACE
                     // trdos-transition trace (PQDOS RST8 chain: FE00 stub →
                     // CALL 3D38 automap → bank1 → JP 5C92 exit — chasing where
@@ -999,7 +999,7 @@ IRAM_ATTR void Z80::check_trdos() {
                     MemESP::romInUse = dosBank;
                     MemESP::ramCurrent[0] = MemESP::rom[dosBank].direct();
                     ESPectrum::trdos = true;
-                } else if (Config::arch == "Profi") {
+                } else if (Config::arch == A_PROFI) {
                 }
 
             }
@@ -1010,10 +1010,10 @@ IRAM_ATTR void Z80::check_trdos() {
             // Profi special: only exit when in TR-DOS bank (bank1) or SYS ROM (bank0).
             // SYS ROM (bank0) SYSEN clears when execution reaches RAM — selects 128K/SOS ROM.
             bool doExit = REG_PCh >= 0x40;
-            if (Config::arch == "Profi" && MemESP::romInUse != 1 && MemESP::romInUse != 0) doExit = false;
+            if (Config::arch == A_PROFI && MemESP::romInUse != 1 && MemESP::romInUse != 0) doExit = false;
             // Karabas ONROM (#008B bit6): the FPGA's forced-DOS level outranks
             // the PC>=0x4000 exit — hold trdos until the guest clears the bit.
-            if (Config::arch == "Profi" && (Ports::port008B & 0x40)) doExit = false;
+            if (Config::arch == A_PROFI && (Ports::port008B & 0x40)) doExit = false;
 
             if (doExit) {
 
@@ -1031,7 +1031,7 @@ IRAM_ATTR void Z80::check_trdos() {
 #endif
                 if (Z80Ops::is48)
                     MemESP::romInUse = 0;
-                else if (Config::arch == "Profi")
+                else if (Config::arch == A_PROFI)
                     // trdos=false: bit4=0→bank2(128K), bit4=1→bank3(SOS/48K)
                     MemESP::romInUse = MemESP::romLatch ? 3 : 2;
                 else

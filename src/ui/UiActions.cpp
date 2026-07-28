@@ -835,7 +835,7 @@ bool p_mosPresent() {
 
 void act_resetSoft() {
     if (Config::last_ram_file != NO_RAM_FILE) {
-        if (!LoadSnapshot(Config::last_ram_file, "", ""))
+        if (!LoadSnapshot(Config::last_ram_file, A_NONE, R_NONE))
             uiToast(TXT_MSG_SNAP_ERR, true, 1500);
         else
             Config::ram_file = Config::last_ram_file;

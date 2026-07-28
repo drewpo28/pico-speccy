@@ -39,6 +39,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include <stdio.h>
 #include <inttypes.h>
 #include <string>
+#include "ArchRom.h"
 #include "Debug.h"
 
 using namespace std;
@@ -61,25 +62,29 @@ public:
     static void save(const char* path = nullptr); // nullptr = STORAGE_NVS (normal path)
     static bool loaded;  // true after successful load() from file/RAM
 
-    static void requestMachine(const string& newArch, const string& newRomSet);
+    // newRomSet == R_NONE resets the arch to its default romset (the old "" argument).
+    static void requestMachine(ArchIdx newArch, RomsetIdx newRomSet);
 
     static void setJoyMap(uint8_t joy_type);
 
-    static string   arch;
-    static string   romSet;
-    static string   romSet48;
-    static string   romSet128;
-    static string   romSetPent;
-    static string   romSetP512;
-    static string   romSetP1M;
-    static string   romSetProfi;
-    static string   pref_arch;
-    static string   pref_romSet_48;
-    static string   pref_romSet_128;
-    static string   pref_romSetPent;
-    static string   pref_romSetP512;
-    static string   pref_romSetP1M;
-    static string   pref_romSetProfi;
+    // arch/romSet* always hold a real table index after load(); only the pref_*
+    // members may additionally hold A_LAST/R_LAST ("Last used") — and pref_arch may
+    // hold A_ALF/A_PROFI as a boot pin (ALF cart / Profi reboot continuity).
+    static ArchIdx   arch;
+    static RomsetIdx romSet;
+    static RomsetIdx romSet48;
+    static RomsetIdx romSet128;
+    static RomsetIdx romSetPent;
+    static RomsetIdx romSetP512;
+    static RomsetIdx romSetP1M;
+    static RomsetIdx romSetProfi;
+    static ArchIdx   pref_arch;
+    static RomsetIdx pref_romSet_48;
+    static RomsetIdx pref_romSet_128;
+    static RomsetIdx pref_romSetPent;
+    static RomsetIdx pref_romSetP512;
+    static RomsetIdx pref_romSetP1M;
+    static RomsetIdx pref_romSetProfi;
     static string   ram_file;
     static string   last_ram_file;
     static string   tape_file;       // full path of remembered tape, re-mounted after F11/reboot like a disk
@@ -107,6 +112,10 @@ public:
     static uint8_t  vreq_voltage;  // vreg_voltage_t enum value, default VREG_VOLTAGE_1_60
     static bool     Issue2;
     static bool     rtc_enabled;  // Pentagon/Profi Mr Gluk MC146818 RTC + CMOS NVRAM (RP2350)
+    // Debug > PSRAM. Read once at boot (ESPectrum::setup, right after load()): false
+    // makes the firmware behave as if the board had no PSRAM — the runtime twin of the
+    // CMake set(PSRAM OFF) kill-switch. See board_psram_disable() in main.cpp.
+    static bool     psram_enabled;
     static bool     flashload;
     static bool     tape_player;
     static volatile bool real_player;

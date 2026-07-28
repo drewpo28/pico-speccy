@@ -1,0 +1,102 @@
+// pico-speccy — the machine identity as two enums.
+//
+// Arch and romset used to live in Config as free-form std::strings compared with
+// literals at ~400 sites; the strings survive only at the edges (NVS key=value file,
+// .esp snapshot sidecars, OSD text). Both index spaces come from an X-macro, so an
+// index can never drift from its on-disk spelling.
+//
+// Sentinels:
+//  * A_LAST / R_LAST  — the "Last used" preference. Placed at COUNT so a table whose
+//    final row is "Last used" can be indexed by the enum directly (the new-UI pref
+//    tables and the classic menus both end with that row).
+//  * A_NONE / R_NONE  — "not specified": requestMachine(arch, R_NONE) derives the
+//    arch's default romset (the old empty-string argument), LoadSnapshot(.., A_NONE,
+//    R_NONE) forces nothing. Never persisted.
+
+#pragma once
+
+#include <stdint.h>
+#include <string>
+
+#define NM_ARCH_TABLE(X) \
+    X(A_48K,        "48K")    \
+    X(A_128K,       "128K")   \
+    X(A_PENT,       "Pentagon") \
+    X(A_P512,       "P512")   \
+    X(A_P1024,      "P1024")  \
+    X(A_PROFI,      "Profi")  \
+    X(A_KARABAS,    "Karabas")  \
+    X(A_ALF,        "ALF")
+
+#define NM_ROMSET_TABLE(X)         \
+    X(R_48K,            "48K")         \
+    X(R_48K_ES,         "48Kes")       \
+    X(R_48K_CS,         "48Kcs")       \
+    X(R_48K_BY,         "48Kby")       \
+    X(R_128K,           "128K")        \
+    X(R_128K_ES,        "128Kes")      \
+    X(R_PLUS2,          "+2")          \
+    X(R_PLUS2_ES,       "+2es")        \
+    X(R_ZX81P,          "ZX81+")       \
+    X(R_128K_CS,        "128Kcs")      \
+    X(R_128K_BY,        "128Kby")      \
+    X(R_128K_BY_GLUK,   "128Kbg")      \
+    X(R_PENT,           "128Kp")       \
+    X(R_PENT_GLUK,      "128Kpg")      \
+    X(R_PROFI,          "Profi")       \
+    X(R_PROFI_KAR,      "ProfiKarabas")    \
+    X(R_PROFI_PQ,       "ProfiPQ")         \
+    X(R_PROFI_FT,       "ProfiKarabasFT")  \
+    X(R_PROFI_FDI,      "ProfiKarabasFDI") \
+    X(R_ALF1,           "ALF1")
+
+#define NM_X_IDX(id, str) id,
+enum ArchIdx   : uint8_t { NM_ARCH_TABLE(NM_X_IDX)   ARCH_COUNT,
+                           A_LAST = ARCH_COUNT,
+                           A_NONE = 0xFF };
+enum RomsetIdx : uint8_t { NM_ROMSET_TABLE(NM_X_IDX) ROMSET_COUNT,
+                           R_LAST = ROMSET_COUNT,
+                           R_NONE = 0xFF };
+#undef NM_X_IDX
+
+#define NM_X_STR(id, str) str,
+inline constexpr const char* kArchName  [ARCH_COUNT]   = { NM_ARCH_TABLE(NM_X_STR)   };
+inline constexpr const char* kRomsetName[ROMSET_COUNT] = { NM_ROMSET_TABLE(NM_X_STR) };
+#undef NM_X_STR
+
+// *_LAST serializes as "Last" (the NVS pref value); *_NONE has no spelling — it is an
+// argument sentinel, never persisted.
+inline const char* archToStr(ArchIdx a) {
+    if (a < ARCH_COUNT) return kArchName[a];
+    return a == A_LAST ? "Last" : "";
+}
+inline const char* romsetToStr(RomsetIdx r) {
+    if (r < ROMSET_COUNT) return kRomsetName[r];
+    return r == R_LAST ? "Last" : "";
+}
+
+// Unknown/garbage input returns `def`, so a hand-edited NVS line can never put a
+// non-table value into Config.
+inline ArchIdx archFromStr(const std::string& s, ArchIdx def) {
+    for (int i = 0; i < ARCH_COUNT; i++)
+        if (s == kArchName[i]) return (ArchIdx)i;
+    if (s == "Last") return A_LAST;
+    return def;
+}
+inline RomsetIdx romsetFromStr(const std::string& s, RomsetIdx def) {
+    for (int i = 0; i < ROMSET_COUNT; i++)
+        if (s == kRomsetName[i]) return (RomsetIdx)i;
+    if (s == "Last") return R_LAST;
+    if (s == "ALF")  return R_ALF1;  // legacy spelling written by older firmware
+    return def;
+}
+
+inline RomsetIdx defaultRomsetFor(ArchIdx a) {
+    switch (a) {
+        case A_48K:   return R_48K;
+        case A_128K:  return R_128K;
+        case A_PROFI: return R_PROFI;
+        case A_ALF:   return R_ALF1;
+        default:      return R_PENT;   // Pentagon / P512 / P1024
+    }
+}

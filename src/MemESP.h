@@ -69,12 +69,19 @@ extern volatile uint32_t mem_acc_lo128, mem_acc_lo512;   // clean victims with <
 extern volatile uint32_t mem_acc_dirty_cnt, mem_acc_dirty_sum;
 #endif
 uint32_t butter_psram_size();
+// Chip presence vs. usable size: butter_psram_size()/psram_size() answer 0 while the
+// runtime PSRAM kill-switch is on (Config::psram_enabled = Debug > PSRAM), the *_probed
+// pair always reports what the boot probe found. Only the menu (which has to know a
+// board HAS PSRAM in order to offer turning it back on) wants the latter.
+uint32_t butter_psram_probed();
+void     board_psram_disable();     // apply Config::psram_enabled == false, boot-only
 extern uint8_t rx[4];
 extern uint8_t flash_qe;       // Puya QE-bit fix status (0=n/a; see flash_qe_text())
 extern uint8_t flash_qe_diag[6];
 const char* flash_qe_text();
 extern uint8_t* g_alfWindow;   // AlfCart's 16K SD-faulted window (nullptr = unmounted)
 extern "C" uint32_t psram_size();   // SPI PSRAM size (0 on butter/QSPI boards)
+extern "C" uint32_t psram_probed_size();
 
 enum mem_type_t {
     POINTER = 0,

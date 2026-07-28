@@ -116,6 +116,16 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 - **MemESP snapshot paths** (`from_file/to_file/from_mem/cleanup`) transfer via
   a malloc'd 1KB bounce (gated on `getLargestAllocatable()`, per-byte fallback
   on tight heap — pico malloc panics on OOM).
+- **Runtime kill-switch (new UI → Debug → PSRAM)**: `Config::psram_enabled`
+  (NVS, default on, row shown only when a chip was actually probed) →
+  `board_psram_disable()` in main.cpp, called from `ESPectrum::setup` right
+  after `Config::load()`. Runtime twin of `set(PSRAM OFF)`: both
+  `butter_psram_size()` and `psram_size()` answer 0 for the session, so every
+  consumer takes its no-PSRAM path. The chip IS still probed/initialized at
+  boot — that's what keeps the row offerable and reversible without a reflash;
+  `butter_psram_probed()`/`psram_probed_size()` are the presence queries the
+  menu uses. Reboot-class (AC_REBOOT): page placement, Buffer pools, GS sample
+  RAM and the Profi layout are all decided once in setup().
 - On-hardware benchmark: OSD → Memory Info measures SPI PSRAM MB/s via the
   range functions (`OSDMain.cpp`).
 

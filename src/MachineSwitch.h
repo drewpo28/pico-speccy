@@ -16,7 +16,7 @@
 // it must survive the deletion of the classic menu.
 #pragma once
 
-#include <string>
+#include "ArchRom.h"
 
 namespace MachineSwitch {
 
@@ -27,8 +27,8 @@ namespace MachineSwitch {
 // true, or does not return at all: crossing the Profi memory-layout boundary on a board
 // without butter PSRAM reboots the firmware from inside.
 //
-// arch == "ALF" is routed to commitAlf().
-bool commit(const std::string& arch, const std::string& romset);
+// arch == A_ALF is routed to commitAlf().
+bool commit(ArchIdx arch, RomsetIdx romset);
 
 // ALF TV GAME. Deliberately NOT the cascade above: ALF has no Beta Disk / Timex / MB-02+
 // interaction to resolve, and its carts stream from SD, so nothing has to be freed.

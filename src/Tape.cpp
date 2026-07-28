@@ -291,8 +291,8 @@ void Tape::LoadTape(const string& mFile_) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
         // Flashload .tap if needed
-        if ((keySel == "R") && (Config::flashload) && (Config::arch != "ALF") &&
-             (Config::romSet != "ZX81+") && (Config::romSet != "48Kcs") && (Config::romSet != "128Kcs")
+        if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
+             (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
         ) {
                 OSD::osdCenteredMsg(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 100);
                 uint8_t OSDprev = VIDEO::OSD;
@@ -325,8 +325,8 @@ void Tape::LoadTape(const string& mFile_) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
         // Flashload .tzx if needed
-        if ((keySel == "R") && (Config::flashload) && (Config::arch != "ALF") &&
-             (Config::romSet != "ZX81+") && (Config::romSet != "48Kcs") && (Config::romSet != "128Kcs")
+        if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
+             (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
         ) {
                 OSD::osdCenteredMsg(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 100);
                 uint8_t OSDprev = VIDEO::OSD;
@@ -357,8 +357,8 @@ void Tape::LoadTape(const string& mFile_) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
         // Flashload .pzx if needed
-        if ((keySel == "R") && (Config::flashload) && (Config::arch != "ALF") &&
-             (Config::romSet != "ZX81+") && (Config::romSet != "48Kcs") && (Config::romSet != "128Kcs")
+        if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
+             (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
         ) {
                 OSD::osdCenteredMsg(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 100);
                 uint8_t OSDprev = VIDEO::OSD;

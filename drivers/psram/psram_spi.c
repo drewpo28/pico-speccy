@@ -69,8 +69,22 @@ static uint32_t _psram_size() {
 #endif
 }
 
+// Runtime kill-switch, set once at boot from Config::psram_enabled (Debug > PSRAM).
+// The chip stays initialized; it simply reports absent, so every consumer takes the
+// no-PSRAM path — see board_psram_disable() in main.cpp.
+static bool psram_reported_absent = false;
+
 uint32_t psram_size() {
+    return psram_reported_absent ? 0 : __psram_sz;
+}
+
+// The probe result regardless of the switch: does this board have a chip at all.
+uint32_t psram_probed_size() {
     return __psram_sz;
+}
+
+void psram_set_disabled(bool off) {
+    psram_reported_absent = off;
 }
 
 #ifndef PSRAM_MAX_SCK_MHZ

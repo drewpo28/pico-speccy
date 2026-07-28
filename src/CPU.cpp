@@ -84,37 +84,37 @@ bool Z80Ops::is1024 = false;
 bool Z80Ops::isProfi = false;
 
 void CPU::updateStatesInFrame() {
-    Z80Ops::isALF = (Config::arch == "ALF");
+    Z80Ops::isALF = (Config::arch == A_ALF);
     // Early/Late ULA timing: Early=latetiming=0, Late=latetiming=1.
     // IntEnd += latetiming shifts the INT window 1T later for Late.
     // isActiveINT adds latetiming to tstates so that Late fires 1T later,
     // including via end-of-frame straddle (tstates=statesInFrame-1 → tmp=0).
-    if (Config::arch == "48K") {
+    if (Config::arch == A_48K) {
         statesInFrame = TSTATES_PER_FRAME_48;
         IntStart = INT_START48;
         IntEnd = INT_END48 + CPU::latetiming;
-        if (Config::romSet48 == "48Kby") {
+        if (Config::romSet48 == R_48K_BY) {
             statesInFrame = TSTATES_PER_FRAME_BYTE;
             IntStart = INT_START48;
             IntEnd = INT_END_BYTE48;
         }
-    } else if (Config::arch == "128K" || Z80Ops::isALF) {
+    } else if (Config::arch == A_128K || Z80Ops::isALF) {
         statesInFrame = TSTATES_PER_FRAME_128;
         IntStart = INT_START128;
         IntEnd = INT_END128 + CPU::latetiming;
-    } else if (Config::arch == "P512") {
+    } else if (Config::arch == A_P512) {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
-    } else if (Config::arch == "P1024") {
+    } else if (Config::arch == A_P1024) {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
-    } else if (Config::arch == "Profi") {
+    } else if (Config::arch == A_PROFI) {
         statesInFrame = TSTATES_PER_FRAME_PROFI;
         IntStart = INT_START_PROFI;
         IntEnd = INT_END_PROFI;
-    } else { // if (Config::arch == "Pentagon") - by default
+    } else { // if (Config::arch == A_PENT) - by default
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
@@ -134,9 +134,9 @@ void CPU::reset() {
 
     CPU::latetiming = Config::AluTiming;
 
-    Z80Ops::isALF = (Config::arch == "ALF");
-    if (Config::arch == "48K") {
-        Z80Ops::isByte = (Config::romSet48 == "48Kby");
+    Z80Ops::isALF = (Config::arch == A_ALF);
+    if (Config::arch == A_48K) {
+        Z80Ops::isByte = (Config::romSet48 == R_48K_BY);
         Ports::getFloatBusData = &Ports::getFloatBusData48;
         Z80Ops::is48 = true;
         Z80Ops::is128 = false;
@@ -146,8 +146,8 @@ void CPU::reset() {
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
         ESPectrum::target = !Z80Ops::isByte ? MICROS_PER_FRAME_48 : MICROS_PER_FRAME_BYTE;
-    } else if (Config::arch == "128K" || Z80Ops::isALF) {
-        Z80Ops::isByte = (Config::romSet128 == "128Kby" || Config::romSet128 == "128Kbg");
+    } else if (Config::arch == A_128K || Z80Ops::isALF) {
+        Z80Ops::isByte = (Config::romSet128 == R_128K_BY || Config::romSet128 == R_128K_BY_GLUK);
         Ports::getFloatBusData = &Ports::getFloatBusData128;
         Z80Ops::is48 = false;
         Z80Ops::is128 = true;
@@ -157,7 +157,7 @@ void CPU::reset() {
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
         ESPectrum::target = !Z80Ops::isByte ? MICROS_PER_FRAME_128 : MICROS_PER_FRAME_BYTE;
-    } else if (Config::arch == "P512") {
+    } else if (Config::arch == A_P512) {
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;
@@ -167,7 +167,7 @@ void CPU::reset() {
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
-    } else if (Config::arch == "P1024") {
+    } else if (Config::arch == A_P1024) {
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;
@@ -177,7 +177,7 @@ void CPU::reset() {
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
-    } else if (Config::arch == "Profi") {
+    } else if (Config::arch == A_PROFI) {
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;
@@ -187,7 +187,7 @@ void CPU::reset() {
         Z80Ops::isProfi = true;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PROFI;
-    } else { // if (Config::arch == "Pentagon") - by default
+    } else { // if (Config::arch == A_PENT) - by default
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;

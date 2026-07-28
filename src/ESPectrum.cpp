@@ -621,10 +621,10 @@ static void assign_ram(int i) {
   // gain on butter once the platform-independent costs were fixed (AY/SAA
   // silent paths, WD step path in SRAM, FDDStep fast exit, strcmp removal,
   // idle-window track loads) — the forced-SRAM pages only spent ~64 KB heap.
-  bool force_sram_locked = (Config::arch == "Profi")
+  bool force_sram_locked = (Config::arch == A_PROFI)
                            && (i == 56 || i == 58)
                            && (butter_psram_size() == 0);
-  bool force_sram = (Config::arch == "Profi")
+  bool force_sram = (Config::arch == A_PROFI)
                     && (i == 61 || i == 60)
                     && (butter_psram_size() == 0);
   if (force_sram_locked) {
@@ -671,6 +671,14 @@ void ESPectrum::setup() {
   Config::initHotkeys(); // fill hotkey defaults even without SD
   if (FileUtils::fsMount)
     Config::load();
+  // Runtime PSRAM kill-switch (Debug > PSRAM = Off). Applied HERE, in the window
+  // between load() and the first consumer: the boot probe has run (so the menu knows
+  // the chip is there) and nothing has placed a page or a pool in PSRAM yet — every
+  // one of those decisions is taken below, from butter_psram_size()/psram_size().
+  if (!Config::psram_enabled) {
+    board_psram_disable();
+    Debug::log("setup: PSRAM disabled by config (Debug > PSRAM)");
+  }
   // Mount the ALF cartridge from SD (served lazily on demand like a wd1793 disk),
   // per Config::alfCartPath. Empty drive if none is set or the SD file is missing —
   // there is no built-in cart. Must run before ALF banking can read it.
@@ -681,7 +689,7 @@ void ESPectrum::setup() {
   sdcard_set_led_blink(Config::sdLedBlink); // onboard LED blink on SD access
   VIDEO::loadCustomPalettes();
   Debug::log("setup: Config loaded");
-  Debug::log2SD("setup: Config loaded, arch=%s romSet=%s", Config::arch.c_str(), Config::romSet.c_str());
+  Debug::log2SD("setup: Config loaded, arch=%s romSet=%s", archToStr(Config::arch), romsetToStr(Config::romSet));
   bool ext_ram_exist = butter_psram_size() >= (16 << 10) ||
                        psram_size() >= (16 << 10) || FileUtils::fsMount;
   Debug::log("setup: ext_ram_exist=%d, freeHeap=%u", ext_ram_exist, getFreeHeap());
@@ -691,44 +699,41 @@ void ESPectrum::setup() {
 
   // Set arch if there's no snapshot to load
   if (Config::ram_file == NO_RAM_FILE) {
-    if (Config::pref_arch.substr(Config::pref_arch.length() - 1) == "R") {
-      Config::pref_arch.pop_back();
-      Config::save();
-    } else {
-      if (Config::pref_arch != "Last")
+    {
+      if (Config::pref_arch != A_LAST)
         Config::arch = Config::pref_arch;
 
-      if (Config::arch == "48K") {
-        if (Config::pref_romSet_48 != "Last")
+      if (Config::arch == A_48K) {
+        if (Config::pref_romSet_48 != R_LAST)
           Config::romSet = Config::pref_romSet_48;
         else
           Config::romSet = Config::romSet48;
       }
-      else if (Config::arch == "ALF") {
-        Config::romSet = "ALF";
+      else if (Config::arch == A_ALF) {
+        Config::romSet = R_ALF1;
       }
-      else if (Config::arch == "128K") {
-        if (Config::pref_romSet_128 != "Last")
+      else if (Config::arch == A_128K) {
+        if (Config::pref_romSet_128 != R_LAST)
           Config::romSet = Config::pref_romSet_128;
         else
           Config::romSet = Config::romSet128;
-      } else if (Config::arch == "P512") {
-        if (Config::pref_romSetP512 != "Last")
+      } else if (Config::arch == A_P512) {
+        if (Config::pref_romSetP512 != R_LAST)
           Config::romSet = Config::pref_romSetP512;
         else
           Config::romSet = Config::romSetP512;
-      } else if (Config::arch == "P1024") {
-        if (Config::pref_romSetP1M != "Last")
+      } else if (Config::arch == A_P1024) {
+        if (Config::pref_romSetP1M != R_LAST)
           Config::romSet = Config::pref_romSetP1M;
         else
           Config::romSet = Config::romSetP1M;
-      } else if (Config::arch == "Profi") {
-        if (Config::pref_romSetProfi != "Last")
+      } else if (Config::arch == A_PROFI) {
+        if (Config::pref_romSetProfi != R_LAST)
           Config::romSet = Config::pref_romSetProfi;
         else
           Config::romSet = Config::romSetProfi;
       } else {
-        if (Config::pref_romSetPent != "Last")
+        if (Config::pref_romSetPent != R_LAST)
           Config::romSet = Config::pref_romSetPent;
         else
           Config::romSet = Config::romSetPent;
@@ -825,7 +830,7 @@ void ESPectrum::setup() {
   // Load romset
   Debug::log("setup: requestMachine begin, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: requestMachine begin arch=%s romSet=%s freeHeap=%u",
-                Config::arch.c_str(), Config::romSet.c_str(), (unsigned)getFreeHeap());
+                archToStr(Config::arch), romsetToStr(Config::romSet), (unsigned)getFreeHeap());
   Config::requestMachine(Config::arch, Config::romSet);
   Debug::log("setup: requestMachine done, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: requestMachine done, freeHeap=%u", (unsigned)getFreeHeap());
@@ -834,11 +839,11 @@ void ESPectrum::setup() {
   ESPectrum::trdos = false;
   // Pentagon+Gluk: boot with Gluk ROM to install service monitor at 0xDB00
   // Profi: boot with SYS ROM (bank0), SYSEN=true — per ZXMAK2 BusReset() spec
-  if (Config::romSet == "128Kpg" || Config::romSet == "128Kbg")
+  if (Config::romSet == R_PENT_GLUK || Config::romSet == R_128K_BY_GLUK)
       MemESP::romInUse = 3;
   else
       MemESP::romInUse = 0;
-  if (Config::arch == "Profi") ESPectrum::trdos = true; // SYSEN
+  if (Config::arch == A_PROFI) ESPectrum::trdos = true; // SYSEN
   // Profi CP/M: clear physical page 1 (ram[1]) so BDOS.BIN loading via the INI
   // driver lands in a known-zero state. The BOOTFDD self-install clears ram[5/6/58]
   // but deliberately skips ram[1] (it holds BOOTFDD.COM from TR-DOS). On butter-PSRAM
@@ -846,7 +851,7 @@ void ESPectrum::setup() {
   // page 1 if INTRQ never fires) causes page 1 code to be garbage on the next boot,
   // breaking the BDOS loading. Zeroing on every reset costs ~10ms but guarantees
   // that page 1 starts clean — the BIOS BDOS load then populates it correctly.
-  if (Config::arch == "Profi") {
+  if (Config::arch == A_PROFI) {
     uint8_t *p1 = MemESP::ram[1].direct();
     if (p1 && p1 >= (uint8_t*)0x11000000) {
       memset(p1, 0, 16384);
@@ -857,7 +862,7 @@ void ESPectrum::setup() {
   MemESP::videoLatch = 0;
   MemESP::romLatch = 0;
   MemESP::newSRAM = false;
-  Debug::log("[setup] arch=%s romInUse=%d", Config::arch.c_str(), MemESP::romInUse);
+  Debug::log("[setup] arch=%s romInUse=%d", archToStr(Config::arch), MemESP::romInUse);
 
   MemESP::ramCurrent[0] = MemESP::rom[MemESP::romInUse].direct();
   MemESP::ramCurrent[1] = MemESP::ram[5].direct();
@@ -868,22 +873,22 @@ void ESPectrum::setup() {
   // Gluk ROM writes 0x47 to port 0x7FFD selecting bank 7 for page 3, then
   // installs its service monitor there. We pre-populate it so STS is ready.
   // ALASM (0x8000) is loaded by Gluk after boot — ram[2] must stay clean.
-  if (Config::romSet == "128Kpg" || Config::romSet == "128Kbg") {
+  if (Config::romSet == R_PENT_GLUK || Config::romSet == R_128K_BY_GLUK) {
       uint8_t* page3 = MemESP::ram[7].direct();
       if (page3) memcpy(page3 + 0x1B00, gb_rom_sts75, sizeof(gb_rom_sts75));
   }
 
   MemESP::ramContended[0] = false;
-  MemESP::ramContended[1] = Config::arch == "P1024" || Config::arch == "P512" ||
-                                    Config::arch == "Pentagon" || Config::arch == "Profi"
+  MemESP::ramContended[1] = Config::arch == A_P1024 || Config::arch == A_P512 ||
+                                    Config::arch == A_PENT || Config::arch == A_PROFI
                                 ? false
                                 : true;
   MemESP::ramContended[2] = false;
   MemESP::ramContended[3] = false;
 
-  // if (Config::arch == "48K") MemESP::pagingLock = 1; else MemESP::pagingLock
+  // if (Config::arch == A_48K) MemESP::pagingLock = 1; else MemESP::pagingLock
   // = 0;
-  MemESP::pagingLock = Config::arch == "48K" ? 1 : 0;
+  MemESP::pagingLock = Config::arch == A_48K ? 1 : 0;
 
   ///    if (Config::slog_on) showMemInfo("RAM Initialized");
 
@@ -986,11 +991,11 @@ void ESPectrum::setup() {
     // stale zifi_enabled. (The menu also turns the NIC off when switching to Profi.)
     // The NIC also requires WiFi to be enabled — it is purely the guest-port
     // emulation layer on top of WiFi, never a standalone networking switch.
-    ZiFi::enabled = Config::zifi_enabled && Config::wifi_enabled && Config::arch != "Profi";
+    ZiFi::enabled = Config::zifi_enabled && Config::wifi_enabled && Config::arch != A_PROFI;
     if (ZiFi::enabled)
         ZiFi::init();
 
-  if (Config::arch == "48K" || Config::arch == "Profi") {
+  if (Config::arch == A_48K || Config::arch == A_PROFI) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -998,14 +1003,14 @@ void ESPectrum::setup() {
 
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
-  } else if (Config::arch == "128K" || Config::arch == "ALF") {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_128;
     Audio_freq = ESP_AUDIO_FREQ_128;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_128 << 8) / ESP_AUDIO_SAMPLES_128;
-  } else { /// if (Config::arch == "P512" || Config::arch == "Pentagon") {
+  } else { /// if (Config::arch == A_P512 || Config::arch == A_PENT) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_PENTAGON;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_PENTAGON;
     audioAYDivider = ESP_AUDIO_AY_DIV_PENTAGON;
@@ -1017,7 +1022,7 @@ void ESPectrum::setup() {
   audioCOVOXDivider = audioAYDivider;
 
   Debug::log("setup: init_sound begin");
-  Debug::log2SD("setup: init_sound begin arch=%s freq=%d", Config::arch.c_str(), (int)Audio_freq);
+  Debug::log2SD("setup: init_sound begin arch=%s freq=%d", archToStr(Config::arch), (int)Audio_freq);
   init_sound();
   pcm_setup(Audio_freq);
   Debug::log("setup: audio init done, freeHeap=%u", getFreeHeap());
@@ -1133,7 +1138,7 @@ void ESPectrum::setup() {
   // "Service ROM" behaviour. The inline paging above sets the right banks but
   // not all the per-reset state, which left first boot dropping into 48K.
   // Skip when a snapshot is queued (LoadSnapshot below sets up its own state).
-  if (Config::arch == "Profi" && Config::ram_file == NO_RAM_FILE) {
+  if (Config::arch == A_PROFI && Config::ram_file == NO_RAM_FILE) {
     ESPectrum::reset(0);
   }
 
@@ -1143,7 +1148,7 @@ void ESPectrum::setup() {
   if (Config::ram_file != NO_RAM_FILE) {
     if (FileUtils::fsMount) {
       Debug::log2SD("setup: LoadSnapshot begin");
-      LoadSnapshot(Config::ram_file, "", "");
+      LoadSnapshot(Config::ram_file, A_NONE, R_NONE);
       Debug::log2SD("setup: LoadSnapshot done");
     }
     Config::last_ram_file = Config::ram_file;
@@ -1172,7 +1177,7 @@ void ESPectrum::reset() {
   // Pentagon+Gluk: boot with Gluk ROM so it installs service monitor at 0xDB00
   // This matches real Pentagon hardware where Gluk always boots first
   uint8_t romInUse = 0;
-  if (Config::romSet == "128Kpg" || Config::romSet == "128Kbg")
+  if (Config::romSet == R_PENT_GLUK || Config::romSet == R_128K_BY_GLUK)
       romInUse = 3;
   ESPectrum::reset(romInUse);
 }
@@ -1207,9 +1212,9 @@ void ESPectrum::reset(uint8_t romInUse) {
   Ports::portDFFD = 0;
   Ports::serialMouseReset();
   // Profi SYSEN: boot into SYS ROM (bank0) with trdos=true to protect page0
-  ESPectrum::trdos = (Config::arch == "Profi" && romInUse == 0);
+  ESPectrum::trdos = (Config::arch == A_PROFI && romInUse == 0);
 
-  Debug::log("[reset] arch=%s romInUse=%d trdos=%d", Config::arch.c_str(), romInUse, (int)ESPectrum::trdos);
+  Debug::log("[reset] arch=%s romInUse=%d trdos=%d", archToStr(Config::arch), romInUse, (int)ESPectrum::trdos);
 #if FDD_PORT_TRACE
   // g_fdcCmdCount gates the [WR→DIR]/[WR→RSTVEC]/[WR→CBIOS] write-count caps
   // in MemESP.h (only trace once real disk activity starts, skipping the
@@ -1235,20 +1240,20 @@ void ESPectrum::reset(uint8_t romInUse) {
   MemESP::ramCurrent[3] = MemESP::ram[0].sync(3);
 
   // Re-load STS 7.5 into RAM bank 7 at offset 0x1B00 (= 0xDB00 - 0xC000)
-  if (Config::romSet == "128Kpg" || Config::romSet == "128Kbg") {
+  if (Config::romSet == R_PENT_GLUK || Config::romSet == R_128K_BY_GLUK) {
       uint8_t* page3 = MemESP::ram[7].direct();
       if (page3) memcpy(page3 + 0x1B00, gb_rom_sts75, sizeof(gb_rom_sts75));
   }
 
   MemESP::ramContended[0] = false;
-  MemESP::ramContended[1] = Config::arch == "P1024" || Config::arch == "P512" ||
-                                    Config::arch == "Pentagon" || Config::arch == "Profi"
+  MemESP::ramContended[1] = Config::arch == A_P1024 || Config::arch == A_P512 ||
+                                    Config::arch == A_PENT || Config::arch == A_PROFI
                                 ? false
                                 : true;
   MemESP::ramContended[2] = false;
   MemESP::ramContended[3] = false;
 
-  MemESP::pagingLock = Config::arch == "48K" ? 1 : 0;
+  MemESP::pagingLock = Config::arch == A_48K ? 1 : 0;
 
   // Init disk controller
   rvmWD1793Reset(&fdd);
@@ -1293,21 +1298,21 @@ void ESPectrum::reset(uint8_t romInUse) {
   // 48K branch here, exactly like setup() does. Otherwise it falls through to the
   // Pentagon branch (640 samples/frame) and over-feeds the 31250 Hz DAC by ~2.6%
   // (640*50.08fps = 32051 > 31250), causing ring overrun → periodic clicks/buzz.
-  if (Config::arch == "48K" || Config::arch == "Profi") {
+  if (Config::arch == A_48K || Config::arch == A_PROFI) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_48;
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
-  } else if (Config::arch == "128K" || Config::arch == "ALF") {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_128;
     Audio_freq = ESP_AUDIO_FREQ_128;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_128 << 8) / ESP_AUDIO_SAMPLES_128;
-  } else { /// if (Config::arch == "P512" || Config::arch == "Pentagon") {
+  } else { /// if (Config::arch == A_P512 || Config::arch == A_PENT) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_PENTAGON;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_PENTAGON;
     audioAYDivider = ESP_AUDIO_AY_DIV_PENTAGON;
@@ -1519,18 +1524,18 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
       if (Kdown && Z80Ops::isProfi &&
           KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F4 &&
           (Kbd->isVKDown(fabgl::VK_LGUI) || Kbd->isVKDown(fabgl::VK_RGUI))) {
-        static const char* karabasRomsets[4] = {
-            "ProfiKarabas", "ProfiPQ", "ProfiKarabasFT", "ProfiKarabasFDI" };
+        static const RomsetIdx karabasRomsets[4] = {
+            R_PROFI_KAR, R_PROFI_PQ, R_PROFI_FT, R_PROFI_FDI };
         bool inKarabas = false;
         for (int i = 0; i < 4; i++)
           if (Config::romSet == karabasRomsets[i]) { inKarabas = true; break; }
         if (inKarabas) {
-          const char* target = karabasRomsets[KeytoESP - fabgl::VK_F1];
+          const RomsetIdx target = karabasRomsets[KeytoESP - fabgl::VK_F1];
           if (Config::romSet != target) {
             Config::romSet = target;
-            if (Config::pref_romSetProfi == "Last") Config::romSetProfi = target;
+            if (Config::pref_romSetProfi == R_LAST) Config::romSetProfi = target;
             Config::save();
-            Config::requestMachine("Profi", target);
+            Config::requestMachine(A_PROFI, target);
           }
           ESPectrum::reset(); // hardware combo resets into the ROMSET's bank0
           return;
@@ -1702,7 +1707,7 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           // printf("Alt + backSpace!\n");
           // Soft reset
           if (Config::last_ram_file != NO_RAM_FILE) {
-            LoadSnapshot(Config::last_ram_file, "", "");
+            LoadSnapshot(Config::last_ram_file, A_NONE, R_NONE);
             Config::ram_file = Config::last_ram_file;
           } else
             ESPectrum::reset();
@@ -2403,7 +2408,7 @@ void ESPectrum::loop() {
   // "loading" notice over the "PROFI PLUS" startup screen — but it has to wait
   // until the SYS ROM has actually painted that screen (see the handler after
   // CPU::loop()), otherwise the blocking box freezes a still-black pre-logo frame.
-  const bool profi_spi_boot = (Config::arch == "Profi") &&
+  const bool profi_spi_boot = (Config::arch == A_PROFI) &&
                               (butter_psram_size() == 0) &&
                               (psram_size() >= (16 << 10));
   bool prev_ds80_active = false;
@@ -2511,7 +2516,7 @@ void ESPectrum::loop() {
                 // fine on butter-PSRAM Profi (~68 KB free with CDC up), but the
                 // SPI-PSRAM m1p2 Profi runs with ~10 KB free and OOMs (see
                 // profi_zifi_oom_fix). Skip only when the headroom isn't there.
-                if (Config::arch != "Profi" || getLargestAllocatable() >= 16384)
+                if (Config::arch != A_PROFI || getLargestAllocatable() >= 16384)
                     ZiFiAT::autoSyncBegin(Config::wifi_ssid, Config::wifi_pass, Config::wifi_tz);
             }
         } else {

@@ -133,6 +133,10 @@ set(CONFIG_BOARD_TAG "${BOARD_TAG}")
 # PSRAM kill-switch: only when set(PSRAM OFF) is explicitly uncommented above
 # (an undefined/unset PSRAM leaves PSRAM enabled). Forces the butter PSRAM CS to
 # GPIO 255 (no valid pin) so the driver treats PSRAM as absent on every board.
+# There is a RUNTIME twin of this for testing without a reflash: the new UI's
+# Debug > PSRAM row (Config::psram_enabled -> board_psram_disable(), main.cpp),
+# which reports size 0 to every consumer for the session. Use this one only to
+# build an image that never brings the chip up at all.
 if(PSRAM STREQUAL "OFF")
     set(BUTTER_PSRAM_GPIO 255)
 endif()

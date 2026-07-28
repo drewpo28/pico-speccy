@@ -954,6 +954,19 @@ uint8_t psram_pin;
 #include <hardware/structs/xip.h>
 #include <hardware/regs/sysinfo.h>
 
+// Runtime PSRAM kill-switch — the new UI's Debug > PSRAM row (Config::psram_enabled),
+// applied once from ESPectrum::setup() right after Config::load() via
+// board_psram_disable(). It is the runtime twin of the CMake `set(PSRAM OFF)`
+// kill-switch: butter_psram_size() and psram_size() answer 0 for the whole session, so
+// every consumer (Buffer pools, MemESP page placement, GS, DivMMC, the Profi layout)
+// takes its no-PSRAM path exactly as it would in a PSRAM-less build.
+//
+// The one difference from the CMake switch is deliberate: the chip is still probed and
+// initialized at boot. That is what lets the menu offer the row only on boards that
+// really have PSRAM — and lets it be switched back on without a reflash. Nothing ever
+// touches the chip afterwards, because every size query returns 0.
+static bool psram_disabled_runtime = false;
+
 #ifdef BUTTER_PSRAM_GPIO
 #define MB16 (16ul << 20)
 #define MB8 (8ul << 20)
@@ -979,7 +992,7 @@ static void __not_in_flash_func(psram_retiming)() {
                           rxdelay << QMI_M1_TIMING_RXDELAY_LSB |
                           divisor << QMI_M1_TIMING_CLKDIV_LSB;
 }
-uint32_t __not_in_flash_func(butter_psram_size)() {
+static uint32_t __not_in_flash_func(butter_psram_probe)() {
 #if BUTTER_PSRAM_GPIO == 255
     return 0;   // PSRAM disabled via CMake kill-switch (set(PSRAM OFF))
 #else
@@ -1007,6 +1020,16 @@ uint32_t __not_in_flash_func(butter_psram_size)() {
     return BUTTER_PSRAM_SIZE;
 #endif
 }
+
+// What every consumer asks: usable butter PSRAM. 0 while the runtime kill-switch is on.
+uint32_t __not_in_flash_func(butter_psram_size)() {
+    if (psram_disabled_runtime) return 0;
+    return butter_psram_probe();
+}
+
+// The probe result regardless of the switch — "is there a chip on this board at all",
+// which is what decides whether the Debug > PSRAM row is offered.
+uint32_t __not_in_flash_func(butter_psram_probed)() { return butter_psram_probe(); }
 
 // Probe for a PSRAM chip on XIP CS1 via QMI direct mode: exit QPI (0xF5) in
 // case the chip is still in QPI after a warm reboot, then Read ID (0x9F).
@@ -1131,8 +1154,17 @@ void __no_inline_not_in_flash_func(psram_init)(uint cs_pin) {
 }
 #else
 uint8_t* PSRAM_DATA = (uint8_t*)0;
-uint32_t __not_in_flash_func(butter_psram_size)() { return 0; }
+uint32_t __not_in_flash_func(butter_psram_size)()   { return 0; }
+uint32_t __not_in_flash_func(butter_psram_probed)() { return 0; }
 #endif
+
+// Config::psram_enabled == false: run the rest of the session as if the board had no
+// PSRAM at all (see psram_disabled_runtime). One-way and boot-only — pages are placed
+// during setup(), so re-enabling needs the reboot the menu asks for.
+void board_psram_disable() {
+    psram_disabled_runtime = true;
+    psram_set_disabled(true);   // the SPI/PIO chip (MURM1) reports absent too
+}
 
 // Linker-defined per-core stack bounds: core0 = top of main RAM (__Stack*, 8 KB —
 // moved out of SCRATCH_Y 2026-07-26), core1 = SCRATCH_X (__StackOne*). The fault can fire on EITHER core, so pick the

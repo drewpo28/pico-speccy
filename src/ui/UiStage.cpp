@@ -66,6 +66,7 @@ NM_INT_ACCESS (throtling, throtling)
 NM_BOOL_ACCESS(ledInd,    ledIndicators)
 NM_BOOL_ACCESS(sdLed,     sdLedBlink)
 NM_BOOL_ACCESS(rtc,       rtc_enabled)
+NM_BOOL_ACCESS(psramOn,   psram_enabled)
 NM_INT_ACCESS (palette,   palette)
 NM_INT_ACCESS (scanlines, scanlines)
 NM_BOOL_ACCESS(vsync,     v_sync_enabled)
@@ -120,22 +121,17 @@ NM_BOOL_ACCESS(profiXT,   profi_ext_keys)
 NM_BOOL_ACCESS(profiPal,  profi_ds80_std_palette_osd)
 
 // ── the machine pair ───────────────────────────────────────────────────────────
-
-#define NM_X_STR(id, str) str,
-static const char* const kArchName  [ARCH_COUNT]   = { NM_ARCH_TABLE(NM_X_STR)   };
-static const char* const kRomsetName[ROMSET_COUNT] = { NM_ROMSET_TABLE(NM_X_STR) };
-#undef NM_X_STR
+// kArchName/kRomsetName come from ArchRom.h (via UiStage.h).
 
 // put() records the pick; the switch itself is the last step of the commit, so that a
 // declined budget gate or a reboot cannot leave Config half-written.
 static int32_t s_machinePick = -1;
 
 static int32_t get_machine() {
-    int a = -1, r = -1;
-    for (int i = 0; i < ARCH_COUNT; i++)   if (Config::arch   == kArchName[i])   { a = i; break; }
-    for (int i = 0; i < ROMSET_COUNT; i++) if (Config::romSet == kRomsetName[i]) { r = i; break; }
-    if (a < 0 || r < 0) return -1;              // e.g. a romset a snapshot brought in
-    return NM_MACH(a, r);
+    // arch/romSet always hold real table indices now; guard anyway (A_LAST/R_LAST
+    // style sentinels would otherwise index past the option tables).
+    if (Config::arch >= ARCH_COUNT || Config::romSet >= ROMSET_COUNT) return -1;
+    return NM_MACH(Config::arch, Config::romSet);
 }
 static void put_machine(int32_t v) { s_machinePick = v; }
 
@@ -150,11 +146,11 @@ const char* romsetName(int32_t c) {
     return r < ROMSET_COUNT ? kRomsetName[r] : nullptr;
 }
 
-// ── string-valued settings ─────────────────────────────────────────────────────
-// The preferred machine / preferred ROM are stored as strings. Each gets an index into
-// its own table; an unrecognised stored value reads back as the LAST entry, which is
+// ── preference settings ────────────────────────────────────────────────────────
+// The preferred machine / preferred ROM each get an index into their own table; a
+// stored value that is not in the table reads back as the LAST entry, which is
 // "Last used" in every one of these tables — the same fallback the classic menu's
-// else-branch has.
+// else-branch has (pref_arch may legally hold A_ALF/A_PROFI as a boot pin).
 #define NM_STR_ACCESS(name, field, tab)                                       \
     static int32_t get_##name() {                                             \
         for (int i = 0; i < (int)(sizeof(tab) / sizeof(tab[0])); i++)          \
@@ -166,22 +162,22 @@ const char* romsetName(int32_t c) {
             Config::field = tab[v];                                           \
     }
 
-static const char* const kPrefArch[] = { "48K", "128K", "Pentagon", "P512", "P1024", "Last" };
-static const char* const kPref48[]   = {
-    "48K",
+static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_PENT, A_P512, A_P1024, A_LAST };
+static const RomsetIdx kPref48[]   = {
+    R_48K,
 #if !NO_SPAIN_ROM_48k
-    "48Kes",
+    R_48K_ES,
 #endif
-    "48Kcs", "Last" };
-static const char* const kPref128[]  = {
-    "128K",
+    R_48K_CS, R_LAST };
+static const RomsetIdx kPref128[]  = {
+    R_128K,
 #if !NO_SPAIN_ROM_128k
-    "128Kes", "+2", "+2es", "ZX81+",
+    R_128K_ES, R_PLUS2, R_PLUS2_ES, R_ZX81P,
 #endif
-    "128Kcs", "Last" };
+    R_128K_CS, R_LAST };
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
-static const char* const kPrefPent[] = { "128Kp", "128Kcs", "Last" };
+static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
 NM_STR_ACCESS(pref48,   pref_romSet_48,   kPref48)
@@ -288,8 +284,8 @@ static bool hook_ay48(int32_t nv, int32_t) {
 }
 static bool hook_render(int32_t nv, int32_t) {
     // Snow is meaningless on Pentagon-class machines (no ULA contention model for it).
-    VIDEO::snow_toggle = (Config::arch != "P1024" && Config::arch != "Pentagon" &&
-                          Config::arch != "P512") ? (nv != 0) : false;
+    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_PENT &&
+                          Config::arch != A_P512) ? (nv != 0) : false;
     if (VIDEO::snow_toggle) {
         VIDEO::Draw        = &VIDEO::MainScreen_Blank_Snow;
         VIDEO::Draw_Opcode = &VIDEO::MainScreen_Blank_Snow_Opcode;
@@ -673,7 +669,7 @@ static int32_t staged(uint16_t id) {
 static bool stagedArchIs(ArchIdx a) {
     const int32_t m = staged(SET_MACHINE);
     if (m >= 0) return ((m >> 8) & 0xFF) == (int)a;
-    return Config::arch == kArchName[a];       // pair not in our tables: trust Config
+    return Config::arch == a;                  // pair not in our tables: trust Config
 }
 static bool stagedIsProfi() { return stagedArchIs(A_PROFI); }
 static bool stagedIsPentagon() {
@@ -1048,14 +1044,14 @@ void commit(CommitReport& rep) {
     // Config itself, which is why a machine change costs a second write — that save is
     // load-bearing (it is what makes the Profi-boundary reboot land on the new machine).
     if (bmGet(g_dirty, SET_MACHINE) && s_machinePick >= 0) {
-        const char* a = archName(s_machinePick);
-        const char* r = romsetName(s_machinePick);
-        if (a && r) {
+        const int a = (s_machinePick >> 8) & 0xFF;
+        const int r = s_machinePick & 0xFF;
+        if (a < ARCH_COUNT && r < ROMSET_COUNT) {
             // It warns through osdCenteredMsg and may open the budget-gate dialog. Under
             // DS80 those draw with zxColor() indices that we have replaced with our own
             // 16 colours, so hand the palette back for the duration.
             gfxSuspendPalette();
-            const bool ok = MachineSwitch::commit(a, r);
+            const bool ok = MachineSwitch::commit((ArchIdx)a, (RomsetIdx)r);
             gfxResumePalette();
             if (ok) rep.machineSwitched = true;
             else    rep.machineDeclined = true;

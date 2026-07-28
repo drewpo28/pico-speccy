@@ -40,15 +40,17 @@ visit https://zxespectrum.speccy.org/contacto
 #include <inttypes.h>
 #include <string>
 #include "ff.h"
+#include "ArchRom.h"
 
 using namespace std;
 
-bool LoadSnapshot(const string& filename, const string& force_arch, const string& force_romset);
+// force_arch == A_NONE / force_romset == R_NONE = nothing forced (the old "" args).
+bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_romset);
 
 class FileSNA
 {
 public:
-    static bool load(const string& sna_fn, const string& force_arch, const string& force_romset);
+    static bool load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_romset);
     static bool save(const string& sna_fn);
     static bool save(const string& sna_fn, bool blockMode);
     static bool isPersistAvailable(const string& filename);

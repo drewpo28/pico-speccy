@@ -1873,7 +1873,7 @@ bool persistSaveNamed(uint8_t slotnumber, const string& slotName) {
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
     FIL* f = fopen2(finfo.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
     if (!f) return false;
-    fputs((Config::arch + "\n" + Config::romSet + "\n" + slotName + "\n").c_str(), *f);
+    fputs((string(archToStr(Config::arch)) + "\n" + romsetToStr(Config::romSet) + "\n" + slotName + "\n").c_str(), *f);
     fclose2(f);
     return FileSNA::save(string(DISK_PSNA_DIR) + "/" + persistfname);
 }
@@ -1977,7 +1977,7 @@ static bool persistSave(uint8_t slotnumber, uint8_t opt2, bool quicksave = false
         OSD::osdCenteredMsg(finfo + " - unable to open", LEVEL_ERROR, 5000);
         return false;
     }
-    fputs((Config::arch + "\n" + Config::romSet + "\n" + slotName + "\n").c_str(), *f);
+    fputs((string(archToStr(Config::arch)) + "\n" + romsetToStr(Config::romSet) + "\n" + slotName + "\n").c_str(), *f);
     fclose2(f);
 
     string fsna = string(DISK_PSNA_DIR) + "/" + persistfname;
@@ -2029,10 +2029,15 @@ bool persistLoad(uint8_t slotnumber)
             return false;
         }
         char buf[256];
+        // f_gets keeps the trailing newline — strip it before the table lookup.
+        // Unknown/corrupt text degrades to "nothing forced" (the snapshot's own
+        // arch detection applies).
         f_gets(buf, sizeof(buf), *f);
-        string persist_arch = buf;
+        buf[strcspn(buf, "\r\n")] = 0;
+        ArchIdx persist_arch = archFromStr(buf, A_NONE);
         f_gets(buf, sizeof(buf), *f);
-        string persist_romset = buf;
+        buf[strcspn(buf, "\r\n")] = 0;
+        RomsetIdx persist_romset = romsetFromStr(buf, R_NONE);
         fclose2(f);
 
         if (!LoadSnapshot(string(DISK_PSNA_DIR) + "/" + persistfname, persist_arch, persist_romset)) {
@@ -2078,7 +2083,7 @@ extern const char* const hkDescEN[];
 void OSD::bootTrdos() {
     Config::ram_file = NO_RAM_FILE;
     Config::last_ram_file = NO_RAM_FILE;
-    if (Config::arch == "Profi") {
+    if (Config::arch == A_PROFI) {
         ESPectrum::reset(1);
         MemESP::romLatch = 1;
         ESPectrum::trdos = true;
@@ -2250,7 +2255,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
 
     // Alt+` (grave/tilde) or plain PrtScr (the Karabas-Pro hardware combo) —
     // toggle Profi extended keyboard mode (only in Profi arch)
-    if (Config::arch == "Profi" && !CTRL &&
+    if (Config::arch == A_PROFI && !CTRL &&
         ((ALT && (KeytoESP == fabgl::VK_GRAVEACCENT || KeytoESP == fabgl::VK_TILDE)) ||
          (!ALT && KeytoESP == fabgl::VK_PRINTSCREEN))) {
         Config::profi_ext_keys = !Config::profi_ext_keys;
@@ -2342,10 +2347,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             } else {
                 // Build machine-dependent menu
                 string reset_menu;
-                if (Config::arch == "Profi") {
+                if (Config::arch == A_PROFI) {
                     reset_menu = MENU_RESETTO_PROFI;
                 } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
-                    if (Config::romSet == "128Kpg")
+                    if (Config::romSet == R_PENT_GLUK)
                         reset_menu = MENU_RESETTO_PENTGLUK;
                     else
                         reset_menu = MENU_RESETTO_PENT;
@@ -2359,7 +2364,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
                     Config::last_ram_file = NO_RAM_FILE;
 
-                    if (Config::arch == "Profi") {
+                    if (Config::arch == A_PROFI) {
                         // Service ROM=1, TR-DOS=2, 128K=3, 48K=4
                         if (opt == 1) {
                             // Service ROM: boot SYS ROM (bank0), SYSEN=true (set by reset(0) for Profi).
@@ -2383,7 +2388,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             ESPectrum::reset(3);
                             MemESP::romLatch = 1;
                         }
-                    } else if ((Z80Ops::isPentagon || Z80Ops::isProfi) && Config::romSet == "128Kpg") {
+                    } else if ((Z80Ops::isPentagon || Z80Ops::isProfi) && Config::romSet == R_PENT_GLUK) {
                         // Service (Gluk)=1, TR-DOS=2, 128K=3, 48K=4
                         if (opt == 1) {
                             ESPectrum::reset(3); // Gluk ROM
@@ -2635,7 +2640,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     else fname.clear();
                 }
                 if (!fname.empty()) {
-                    if(!LoadSnapshot(fname, "", "")) {
+                    if(!LoadSnapshot(fname, A_NONE, R_NONE)) {
                         OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
                     }
                     Config::ram_file = fname;
@@ -2827,7 +2832,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     // Snapshot
                     if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
                     Config::save();
-                    if (!LoadSnapshot(fname, "", "")) {
+                    if (!LoadSnapshot(fname, A_NONE, R_NONE)) {
                         OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
                     } else if (!fromZip) {
                         Config::ram_file = fname;
@@ -2995,7 +3000,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 Config::ram_file = NO_RAM_FILE;
             }
             Config::last_ram_file = NO_RAM_FILE;
-            if (Config::arch == "Profi") {
+            if (Config::arch == A_PROFI) {
                 // Profi hard reset = boot Service ROM (bank0, SYSEN), same as
                 // Alt-F11 → "Service ROM". reset(0) sets trdos=true to hold SYSEN.
                 ESPectrum::reset(0);
@@ -3026,7 +3031,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // An online-archive file was downloaded to /tmp and launched: tear the
             // whole menu stack down so the freshly loaded program runs immediately.
             if (OSD::net_launch_close) { OSD::net_launch_close = false; if (VIDEO::OSD) OSD::drawStats(); return; }
-            uint8_t opt = menuRun(getMenuPrefix() + Config::arch + "\n" +
+            uint8_t opt = menuRun(getMenuPrefix() + archToStr(Config::arch) + "\n" +
                 (!FileUtils::fsMount ? MENU_MAIN_NO_SD : MENU_MAIN)
             );
             if (opt == 1) { // Volume
@@ -3752,7 +3757,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 // pages (Profi forces ~96 KB of SRAM pages for its
                                 // 1024K/DS80 working set); enabling MB-02+ on Profi
                                 // corrupts that and the machine fails to boot. Refuse.
-                                if (newval && Config::arch == "Profi") {
+                                if (newval && Config::arch == A_PROFI) {
                                     OSD::osdCenteredMsg("MB-02+ not available on Profi", LEVEL_WARN, 2000);
                                     menu_curopt = 1;
                                     continue;
@@ -3963,7 +3968,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             if (zipFname == "\x1b") break;
                                             fname = zipFname;
                                         }
-                                        if(!LoadSnapshot(fname, "", "")) {
+                                        if(!LoadSnapshot(fname, A_NONE, R_NONE)) {
                                             OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
                                         } else {
                                             Config::ram_file = fname;
@@ -4596,7 +4601,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                         Config::save();
 
                                         VIDEO::snow_toggle =
-                                            Config::arch != "P1024" && Config::arch != "Pentagon" && Config::arch != "P512"
+                                            Config::arch != A_P1024 && Config::arch != A_PENT && Config::arch != A_P512
                                              ? Config::render : false;
 
                                         if (VIDEO::snow_toggle) {
@@ -5015,8 +5020,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     menu_level = 1;
                     uint8_t arch_num = menuRun(arch_menu.c_str());
                     if (arch_num) {
-                        string arch = Config::arch;
-                        string romset = Config::romSet;
+                        ArchIdx arch = Config::arch;
+                        RomsetIdx romset = Config::romSet;
                         uint8_t opt2 = 0;
                         if (arch_num == 1) { // 48K
                             menu_level = 2;
@@ -5024,20 +5029,20 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_saverect = true;
                             opt2 = menuRun(MENU_ROMS48);
                             if (opt2) {
-                                arch = "48K";
+                                arch = A_48K;
                                 if (opt2 == 1) {
-                                    romset = "48K";
+                                    romset = R_48K;
                                 } else
 #if NO_SPAIN_ROM_48k
                                 if (opt2 == 2) {
-                                    romset = "48Kcs";
+                                    romset = R_48K_CS;
                                 }
 #else
                                 if (opt2 == 2) {
-                                    romset = "48Kes";
+                                    romset = R_48K_ES;
                                 } else
                                 if (opt2 == 3) {
-                                    romset = "48Kcs";
+                                    romset = R_48K_CS;
                                 }
 #endif
                                 menu_curopt = opt2;
@@ -5052,29 +5057,29 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_saverect = true;
                             opt2 = menuRun(MENU_ROMS128);
                             if (opt2) {
-                                arch = "128K";
+                                arch = A_128K;
                                 if (opt2 == 1) {
-                                    romset = "128K";
+                                    romset = R_128K;
                                 } else
 #if NO_SPAIN_ROM_128k
                                 if (opt2 == 2) {
-                                    romset = "128Kcs";
+                                    romset = R_128K_CS;
                                 }
 #else
                                 if (opt2 == 2) {
-                                    romset = "128Kes";
+                                    romset = R_128K_ES;
                                 } else
                                 if (opt2 == 3) {
-                                    romset = "+2";
+                                    romset = R_PLUS2;
                                 } else
                                 if (opt2 == 4) {
-                                    romset = "+2es";
+                                    romset = R_PLUS2_ES;
                                 } else
                                 if (opt2 == 5) {
-                                    romset = "ZX81+";
+                                    romset = R_ZX81P;
                                 } else
                                 if (opt2 == 6) {
-                                    romset = "128Kcs";
+                                    romset = R_128K_CS;
                                 }
 #endif
                                 menu_curopt = opt2;
@@ -5089,15 +5094,15 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_saverect = true;
                             opt2 = menuRun(MENU_ROMS_PENT);
                             if (opt2) {
-                                arch = "Pentagon";
+                                arch = A_PENT;
                                 if (opt2 == 1) {
-                                    romset = "128Kp";
+                                    romset = R_PENT;
                                 } else
                                 if (opt2 == 2) {
-                                    romset = "128Kpg";
+                                    romset = R_PENT_GLUK;
                                 } else
                                 if (opt2 == 3) {
-                                    romset = "128Kcs";
+                                    romset = R_128K_CS;
                                 }
                                 menu_curopt = opt2;
                                 menu_saverect = false;
@@ -5111,15 +5116,15 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_saverect = true;
                             opt2 = menuRun(MENU_ROMS_PENT);
                             if (opt2) {
-                                arch = "P512";
+                                arch = A_P512;
                                 if (opt2 == 1) {
-                                    romset = "128Kp";
+                                    romset = R_PENT;
                                 } else
                                 if (opt2 == 2) {
-                                    romset = "128Kpg";
+                                    romset = R_PENT_GLUK;
                                 } else
                                 if (opt2 == 3) {
-                                    romset = "128Kcs";
+                                    romset = R_128K_CS;
                                 }
                                 menu_curopt = opt2;
                                 menu_saverect = false;
@@ -5133,15 +5138,15 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_saverect = true;
                             opt2 = menuRun(MENU_ROMS_PENT);
                             if (opt2) {
-                                arch = "P1024";
+                                arch = A_P1024;
                                 if (opt2 == 1) {
-                                    romset = "128Kp";
+                                    romset = R_PENT;
                                 } else
                                 if (opt2 == 2) {
-                                    romset = "128Kpg";
+                                    romset = R_PENT_GLUK;
                                 } else
                                 if (opt2 == 3) {
-                                    romset = "128Kcs";
+                                    romset = R_128K_CS;
                                 }
                                 menu_curopt = opt2;
                                 menu_saverect = false;
@@ -5157,18 +5162,18 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 opt2 = menuRun(MENU_ROMSBYTE);
                                 if (opt2) {
                                     if (opt2 == 1) {
-                                        arch = "48K";
-                                        romset = "48Kby";
+                                        arch = A_48K;
+                                        romset = R_48K_BY;
                                         break;
                                     } else
                                     if (opt2 == 2) {
-                                        arch = "128K";
-                                        romset = "128Kby";
+                                        arch = A_128K;
+                                        romset = R_128K_BY;
                                         break;
                                     } else
                                     if (opt2 == 3) {
-                                        arch = "128K";
-                                        romset = "128Kbg";
+                                        arch = A_128K;
+                                        romset = R_128K_BY_GLUK;
                                         break;
                                     } else
                                     if (opt2 == 4) {
@@ -5306,10 +5311,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     // slots: 1=stock "Original", 2="Karabas" (ROMain,
                                     // ROMSET 0), 3=PQDOS BIOS (ROMSET 1), 4=Flash Tool
                                     // (ROMSET 2), 5=FDImage (ROMSET 3)
-                                    static const char* profi_romsets[5] = {
-                                        "Profi", "ProfiKarabas", "ProfiPQ",
-                                        "ProfiKarabasFT", "ProfiKarabasFDI" };
-                                    arch = "Profi";
+                                    static const RomsetIdx profi_romsets[5] = {
+                                        R_PROFI, R_PROFI_KAR, R_PROFI_PQ,
+                                        R_PROFI_FT, R_PROFI_FDI };
+                                    arch = A_PROFI;
                                     romset = profi_romsets[opt_p - 1];
                                     opt2 = 1; // signal machine switch
                                     menu_curopt = 1;
@@ -5390,8 +5395,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             }
                         }
                         else if (arch_num == 9 || (ext_ram && !show_profi && arch_num == 8) || !ext_ram) { // ALF TV GAME (shifts to 8 when Profi hidden)
-                            arch = "ALF";
-                            romset = "ALF1";
+                            arch = A_ALF;
+                            romset = R_ALF1;
                             menu_curopt = opt2;
                             menu_saverect = false;
                             // (ALF carts stream from SD now, not the GM.DLS flash region, so
@@ -5439,7 +5444,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (opt2 == 1) {
                         // Soft
                         if (Config::last_ram_file != NO_RAM_FILE) {
-                            if(!LoadSnapshot(Config::last_ram_file, "", "")) {
+                            if(!LoadSnapshot(Config::last_ram_file, A_NONE, R_NONE)) {
                                 OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
                             } else {
                                 Config::ram_file = Config::last_ram_file;
@@ -5529,36 +5534,36 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         menu_saverect = true;
                         while (1) {
                             string archprefmenu = MENU_ARCH_PREF;
-                            string prev_archpref = Config::pref_arch;
-                            if (Config::pref_arch == "48K") {
+                            ArchIdx prev_archpref = Config::pref_arch;
+                            if (Config::pref_arch == A_48K) {
                                 archprefmenu.replace(archprefmenu.find("[4",0),2,"[*");
                                 archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
-                            } else if (Config::pref_arch == "128K") {
+                            } else if (Config::pref_arch == A_128K) {
                                 archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[1",0),2,"[*");
                                 archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                            } else if (Config::pref_arch == "Pentagon") {
+                            } else if (Config::pref_arch == A_PENT) {
                                 archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[P",0),2,"[*");
                                 archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                            } else if (Config::pref_arch == "P512") {
+                            } else if (Config::pref_arch == A_P512) {
                                 archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[5",0),2,"[*");
                                 archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                            } else if (Config::pref_arch == "P1024") {
+                            } else if (Config::pref_arch == A_P1024) {
                                 archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
                                 archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
@@ -5576,22 +5581,22 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             uint8_t opt2 = menuRun(archprefmenu);
                             if (opt2) {
                                 if (opt2 == 1)
-                                    Config::pref_arch = "48K";
+                                    Config::pref_arch = A_48K;
                                 else
                                 if (opt2 == 2)
-                                    Config::pref_arch = "128K";
+                                    Config::pref_arch = A_128K;
                                 else
                                 if (opt2 == 3)
-                                    Config::pref_arch = "Pentagon";
+                                    Config::pref_arch = A_PENT;
                                 else
                                 if (opt2 == 4)
-                                    Config::pref_arch = "P512";
+                                    Config::pref_arch = A_P512;
                                 else
                                 if (opt2 == 5)
-                                    Config::pref_arch = "P1024";
+                                    Config::pref_arch = A_P1024;
                                 else
                                 if (opt2 == 6)
-                                    Config::pref_arch = "Last";
+                                    Config::pref_arch = A_LAST;
 
                                 if (Config::pref_arch != prev_archpref) {
                                     Config::save();
@@ -5628,32 +5633,32 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             if (mpos == string::npos) break;
                                             string rmenu = rpref48_menu.substr(mpos + 1, 5);
                                             trim(rmenu);
-                                            if (rmenu == Config::pref_romSet_48)
+                                            if (rmenu == romsetToStr(Config::pref_romSet_48))
                                                 rpref48_menu.replace(mpos + 1, 5,"*");
                                             else
                                                 rpref48_menu.replace(mpos + 1, 5," ");
                                         }
-                                        string prev_rpref48 = Config::pref_romSet_48;
+                                        RomsetIdx prev_rpref48 = Config::pref_romSet_48;
                                         uint8_t opt2 = menuRun(rpref48_menu);
                                         if (opt2) {
                                             if (opt2 == 1)
-                                                Config::pref_romSet_48 = "48K";
+                                                Config::pref_romSet_48 = R_48K;
                                             else
 #if NO_SPAIN_ROM_48k
                                             if (opt2 == 2)
-                                                Config::pref_romSet_48 = "48Kcs";
+                                                Config::pref_romSet_48 = R_48K_CS;
                                             else
                                             if (opt2 == 3)
-                                                Config::pref_romSet_48 = "Last";
+                                                Config::pref_romSet_48 = R_LAST;
 #else
                                             if (opt2 == 2)
-                                                Config::pref_romSet_48 = "48Kes";
+                                                Config::pref_romSet_48 = R_48K_ES;
                                             else
                                             if (opt2 == 3)
-                                                Config::pref_romSet_48 = "48Kcs";
+                                                Config::pref_romSet_48 = R_48K_CS;
                                             else
                                             if (opt2 == 4)
-                                                Config::pref_romSet_48 = "Last";
+                                                Config::pref_romSet_48 = R_LAST;
 #endif
                                             if (Config::pref_romSet_48 != prev_rpref48) {
                                                 Config::save();
@@ -5678,41 +5683,41 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             if (mpos == string::npos) break;
                                             string rmenu = rpref128_menu.substr(mpos + 1, 6);
                                             trim(rmenu);
-                                            if (rmenu == Config::pref_romSet_128)
+                                            if (rmenu == romsetToStr(Config::pref_romSet_128))
                                                 rpref128_menu.replace(mpos + 1, 6,"*");
                                             else
                                                 rpref128_menu.replace(mpos + 1, 6," ");
                                         }
-                                        string prev_rpref128 = Config::pref_romSet_128;
+                                        RomsetIdx prev_rpref128 = Config::pref_romSet_128;
                                         uint8_t opt2 = menuRun(rpref128_menu);
                                         if (opt2) {
                                             if (opt2 == 1)
-                                                Config::pref_romSet_128 = "128K";
+                                                Config::pref_romSet_128 = R_128K;
                                             else
 #if NO_SPAIN_ROM_128k
                                             if (opt2 == 2)
-                                                Config::pref_romSet_128 = "128Kcs";
+                                                Config::pref_romSet_128 = R_128K_CS;
                                             else
                                             if (opt2 == 3)
-                                                Config::pref_romSet_128 = "Last";
+                                                Config::pref_romSet_128 = R_LAST;
 #else
                                             if (opt2 == 2)
-                                                Config::pref_romSet_128 = "128Kes";
+                                                Config::pref_romSet_128 = R_128K_ES;
                                             else
                                             if (opt2 == 3)
-                                                Config::pref_romSet_128 = "+2";
+                                                Config::pref_romSet_128 = R_PLUS2;
                                             else
                                             if (opt2 == 4)
-                                                Config::pref_romSet_128 = "+2es";
+                                                Config::pref_romSet_128 = R_PLUS2_ES;
                                             else
                                             if (opt2 == 5)
-                                                Config::pref_romSet_128 = "ZX81+";
+                                                Config::pref_romSet_128 = R_ZX81P;
                                             else
                                             if (opt2 == 6)
-                                                Config::pref_romSet_128 = "128Kcs";
+                                                Config::pref_romSet_128 = R_128K_CS;
                                             else
                                             if (opt2 == 7)
-                                                Config::pref_romSet_128 = "Last";
+                                                Config::pref_romSet_128 = R_LAST;
 #endif
                                             if (Config::pref_romSet_128 != prev_rpref128) {
                                                 Config::save();
@@ -5737,22 +5742,22 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             if (mpos == string::npos) break;
                                             string rmenu = rprefPent_menu.substr(mpos + 1, 6);
                                             trim(rmenu);
-                                            if (rmenu == Config::pref_romSetPent)
+                                            if (rmenu == romsetToStr(Config::pref_romSetPent))
                                                 rprefPent_menu.replace(mpos + 1, 6,"*");
                                             else
                                                 rprefPent_menu.replace(mpos + 1, 6," ");
                                         }
-                                        string prev_rprefPent = Config::pref_romSetPent;
+                                        RomsetIdx prev_rprefPent = Config::pref_romSetPent;
                                         uint8_t opt2 = menuRun(rprefPent_menu);
                                         if (opt2) {
                                             if (opt2 == 1)
-                                                Config::pref_romSetPent = "128Kp";
+                                                Config::pref_romSetPent = R_PENT;
                                             else
                                             if (opt2 == 2)
-                                                Config::pref_romSetPent = "128Kcs";
+                                                Config::pref_romSetPent = R_128K_CS;
                                             else
                                             if (opt2 == 3)
-                                                Config::pref_romSetPent = "Last";
+                                                Config::pref_romSetPent = R_LAST;
                                             if (Config::pref_romSetPent != prev_rprefPent) {
                                                 Config::save();
                                             }
@@ -5776,22 +5781,22 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             if (mpos == string::npos) break;
                                             string rmenu = rprefP512_menu.substr(mpos + 1, 6);
                                             trim(rmenu);
-                                            if (rmenu == Config::pref_romSetP512)
+                                            if (rmenu == romsetToStr(Config::pref_romSetP512))
                                                 rprefP512_menu.replace(mpos + 1, 6,"*");
                                             else
                                                 rprefP512_menu.replace(mpos + 1, 6," ");
                                         }
-                                        string prev_rprefP512 = Config::pref_romSetP512;
+                                        RomsetIdx prev_rprefP512 = Config::pref_romSetP512;
                                         uint8_t opt2 = menuRun(rprefP512_menu);
                                         if (opt2) {
                                             if (opt2 == 1)
-                                                Config::pref_romSetP512 = "128Kp";
+                                                Config::pref_romSetP512 = R_PENT;
                                             else
                                             if (opt2 == 2)
-                                                Config::pref_romSetP512 = "128Kcs";
+                                                Config::pref_romSetP512 = R_128K_CS;
                                             else
                                             if (opt2 == 3)
-                                                Config::pref_romSetP512 = "Last";
+                                                Config::pref_romSetP512 = R_LAST;
                                             if (Config::pref_romSetP512 != prev_rprefP512) {
                                                 Config::save();
                                             }
@@ -5815,22 +5820,22 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                             if (mpos == string::npos) break;
                                             string rmenu = rprefP1M_menu.substr(mpos + 1, 6);
                                             trim(rmenu);
-                                            if (rmenu == Config::pref_romSetP1M)
+                                            if (rmenu == romsetToStr(Config::pref_romSetP1M))
                                                 rprefP1M_menu.replace(mpos + 1, 6,"*");
                                             else
                                                 rprefP1M_menu.replace(mpos + 1, 6," ");
                                         }
-                                        string prev_rprefP1M = Config::pref_romSetP1M;
+                                        RomsetIdx prev_rprefP1M = Config::pref_romSetP1M;
                                         uint8_t opt2 = menuRun(rprefP1M_menu);
                                         if (opt2) {
                                             if (opt2 == 1)
-                                                Config::pref_romSetP1M = "128Kp";
+                                                Config::pref_romSetP1M = R_PENT;
                                             else
                                             if (opt2 == 2)
-                                                Config::pref_romSetP1M = "128Kcs";
+                                                Config::pref_romSetP1M = R_128K_CS;
                                             else
                                             if (opt2 == 3)
-                                                Config::pref_romSetP1M = "Last";
+                                                Config::pref_romSetP1M = R_LAST;
                                             if (Config::pref_romSetP1M != prev_rprefP1M) {
                                                 Config::save();
                                             }
@@ -8359,7 +8364,7 @@ static void saveDumpToFile(uint16_t addr_from, uint16_t addr_to) {
     f_write(f, line, strlen(line), &bw);
 
     // Machine info
-    snprintf(line, sizeof(line), "Arch: %s  RomSet: %s\n", Config::arch.c_str(), Config::romSet.c_str());
+    snprintf(line, sizeof(line), "Arch: %s  RomSet: %s\n", archToStr(Config::arch), romsetToStr(Config::romSet));
     f_write(f, line, strlen(line), &bw);
 
     snprintf(line, sizeof(line), "ROM in use: %d  romLatch: %d  bankLatch: %d  videoLatch: %d\n",
@@ -10276,9 +10281,15 @@ void OSD::HWInfo() {
         // the truth (VIDEO::video_mode tracks arch-dependent 50 Hz variants too);
         // output width is screen_width doubled, freq is the nominal 50/60.
         char vmode[24];
+#ifdef VGA_HDMI
         const struct video_mode_t vm = graphics_get_video_mode(VIDEO::video_mode);
         snprintf(vmode, sizeof(vmode), "%dx%d @%dHz",
                  vm.screen_width * 2, vm.v_active, vm.freq);
+#else
+        // TFT/SOFTTV: no scanout-mode table (VIDEO::video_mode exists only on
+        // VGA/HDMI) — show the framebuffer geometry instead.
+        snprintf(vmode, sizeof(vmode), "%dx%d", VIDEO::vga.xres, VIDEO::vga.yres);
+#endif
         nm::gfxBegin();
         nm::uiTextPageLive(TXT_INFO_SYSTEM, hwInfoText, 1000, vmode);
         nm::gfxEnd();
@@ -10667,6 +10678,11 @@ void OSD::MemoryInfo() {
         pos += snprintf(buf + pos, sizeof(buf) - pos, "  Buffer pool    : %d/%d KB\n", (int)(fp.used / KB), (int)(fp.total / KB));
 
     // ── PSRAM ──────────────────────────────────────────────────────────────────
+    // A chip that was found but is switched off (Debug > PSRAM) would otherwise just
+    // be missing from this page, reading as a hardware fault. Say so instead.
+    if (!Config::psram_enabled && (butter_psram_probed() || psram_probed_size()))
+        pos += snprintf(buf + pos, sizeof(buf) - pos,
+                        " PSRAM          : off (Debug menu)\n");
 #ifdef BUTTER_PSRAM_GPIO
     if (butter_psram_size()) {
         uint32_t bsz = butter_psram_size();
@@ -10750,8 +10766,8 @@ void OSD::EmulatorInfo() {
         " ROM set        : %s\n"
         " Issue 2        : %s\n"
         " ALU Timing     : %s\n",
-        Config::arch.c_str(),
-        Config::romSet.c_str(),
+        archToStr(Config::arch),
+        romsetToStr(Config::romSet),
         Config::Issue2 ? "On" : "Off",
         Config::AluTiming == 0 ? "Early" : "Late");
 
@@ -11177,7 +11193,7 @@ bool OSD::loadAlfCart(const string& fname) {
     // does not use the shared flash region), so it is left untouched.
     Config::alfCartBanks = (uint8_t)((size + (16ul << 10) - 1) >> 14);   // ceil to 16K banks
     Config::alfCartPath  = fname;
-    Config::arch = "ALF"; Config::romSet = "ALF1"; Config::pref_arch = "ALF";
+    Config::arch = A_ALF; Config::romSet = R_ALF1; Config::pref_arch = A_ALF;
     Config::save();
     // Mount FRESH every load — open a new FIL on the file as it is NOW. ZIP carts always
     // extract to the same temp path (/tmp/.zip_extract.rom), so reloading would otherwise
@@ -11207,7 +11223,7 @@ bool OSD::loadAlfCart(const string& fname) {
         OSD::esp_hard_reset();   // never returns
         return true;
     }
-    Config::requestMachine("ALF", "ALF1");   // in-place machine switch (no reboot)
+    Config::requestMachine(A_ALF, R_ALF1);   // in-place machine switch (no reboot)
     ESPectrum::reset();
     return true;
 }
@@ -11246,11 +11262,11 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         max_rom_size = 1ul << 20;
 #endif
         dlgTitle += " 48K   ";
-        Config::arch = "48K";
-        Config::romSet = "48Kcs";
-        Config::romSet48 = "48Kcs";
-        Config::pref_arch = "48K";
-        Config::pref_romSet_48 = "48Kcs";
+        Config::arch = A_48K;
+        Config::romSet = R_48K_CS;
+        Config::romSet48 = R_48K_CS;
+        Config::pref_arch = A_48K;
+        Config::pref_romSet_48 = R_48K_CS;
     }
     // Flash custom ROM 128K
     else if ( arch == 2 ) {
@@ -11282,11 +11298,11 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         }
 #endif
         dlgTitle += " 128K  ";
-        Config::arch = "128K";
-        Config::romSet = "128Kcs";
-        Config::romSet128 = "128Kcs";
-        Config::pref_arch = "128K";
-        Config::pref_romSet_128 = "128Kcs";
+        Config::arch = A_128K;
+        Config::romSet = R_128K_CS;
+        Config::romSet128 = R_128K_CS;
+        Config::pref_arch = A_128K;
+        Config::pref_romSet_128 = R_128K_CS;
     }
     else if ( arch == 3 ) {
 #if !CARTRIDGE_AS_CUSTOM
@@ -11317,11 +11333,11 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         }
 #endif
         dlgTitle += " Pentagon ";
-        Config::arch = "Pentagon";
-        Config::romSet = "128Kcs";
-        Config::romSetPent = "128Kcs";
-        Config::pref_arch = "Pentagon";
-        Config::pref_romSetPent = "128Kcs";
+        Config::arch = A_PENT;
+        Config::romSet = R_128K_CS;
+        Config::romSetPent = R_128K_CS;
+        Config::pref_arch = A_PENT;
+        Config::pref_romSetPent = R_128K_CS;
     }
     else if ( arch == 4 ) {
         if( bytesfirmware > (256ul << 10) ) {
@@ -11332,9 +11348,9 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
         rom = gb_rom_Alf;
         max_rom_size = 256ul << 10;
         dlgTitle += " ALF ROM ";
-        Config::arch = "ALF";
-        Config::romSet = "ALF";
-        Config::pref_arch = "ALF";
+        Config::arch = A_ALF;
+        Config::romSet = R_ALF1;
+        Config::pref_arch = A_ALF;
     }
     else if ( arch == 5 ) {
         // Load an ALF cartridge (up to 1MB) served lazily from SD on demand (like a
@@ -11378,11 +11394,11 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
 #endif
         max_rom_size = bytesfirmware > (16ul << 10) ? (32ul << 10) : (16ul << 10);
         dlgTitle += " Pentagon#0 ";
-        Config::arch = "Pentagon";
-        Config::romSet = "128Kcs";
-        Config::romSetPent = "128Kcs";
-        Config::pref_arch = "Pentagon";
-        Config::pref_romSetPent = "128Kcs";
+        Config::arch = A_PENT;
+        Config::romSet = R_128K_CS;
+        Config::romSetPent = R_128K_CS;
+        Config::pref_arch = A_PENT;
+        Config::pref_romSetPent = R_128K_CS;
     }
     else if ( arch == 8 ) {
         if( bytesfirmware > (16 << 10) ) {
@@ -11397,11 +11413,11 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
 #endif
         max_rom_size = 16 << 10;
         dlgTitle += " Pentagon#1 ";
-        Config::arch = "Pentagon";
-        Config::romSet = "128Kcs";
-        Config::romSetPent = "128Kcs";
-        Config::pref_arch = "Pentagon";
-        Config::pref_romSetPent = "128Kcs";
+        Config::arch = A_PENT;
+        Config::romSet = R_128K_CS;
+        Config::romSetPent = R_128K_CS;
+        Config::pref_arch = A_PENT;
+        Config::pref_romSetPent = R_128K_CS;
     }
     else {
         osdCenteredMsg("Unexpected ROM type: " + to_string(arch), LEVEL_WARN, 2000);

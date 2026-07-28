@@ -624,7 +624,9 @@ __force_inline static void psram_write_async_fast(psram_spi_inst_t* spi, uint32_
 };
 
 uint32_t init_psram();
-uint32_t psram_size();
+uint32_t psram_size();       // usable size: 0 while the runtime kill-switch is on
+uint32_t psram_probed_size();// what the boot probe found, switch or not
+void     psram_set_disabled(bool off); // Debug > PSRAM = Off (board_psram_disable())
 void psram_update_clkdiv(); // recalculate PIO clkdiv after sys_clk change
 void psram_cleanup();
 void write8psram(uint32_t addr32, uint8_t v);

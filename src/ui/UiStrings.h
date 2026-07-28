@@ -231,6 +231,9 @@
 #define TXT_DBG_DIALOG      "Debugger"
 #define TXT_DBG_POKE        "Input poke"
 #define TXT_DBG_LOG         "Debug log"
+// Off = pretend the board has no PSRAM (testing the SRAM-only paths). Row shown only
+// where a chip was actually found.
+#define TXT_DBG_PSRAM       "PSRAM"
 
 // ── Hardware info ──────────────────────────────────────────────────────────────
 // Alt+F1 live page (no menu row of its own — hotkey only, Esc closes).

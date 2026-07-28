@@ -432,7 +432,7 @@ static void init_profi_pair_lookup() {
 }
 
 bool VIDEO::isProfiDS80() {
-    return Config::arch == "Profi" && (Ports::portDFFD & 0x80);
+    return Config::arch == A_PROFI && (Ports::portDFFD & 0x80);
 }
 uint16_t VIDEO::offBmp[SPEC_H];
 uint16_t VIDEO::offAtt[SPEC_H];
@@ -1274,7 +1274,7 @@ const int bluPins[] = {BLU_PINS_6B};
 
 void VIDEO::vgataskinit(void *unused) {
     uint8_t Mode;
-    Mode = 16 + ((Config::arch == "48K") ? 0 : (Config::arch == "128K" || Config::arch == "ALF" ? 2 : 4));
+    Mode = 16 + ((Config::arch == A_48K) ? 0 : (Config::arch == A_128K || Config::arch == A_ALF ? 2 : 4));
     OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
     OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
     vga.useInterrupt_flag = true;
@@ -1358,7 +1358,7 @@ static bool ensureMainFB(int lines, int stride) {
 }
 
 static bool ensurePrevFB(int lines, int stride) {
-    if (Config::arch == "Profi") return true; // Gigascreen not available for Profi
+    if (Config::arch == A_PROFI) return true; // Gigascreen not available for Profi
     size_t want = fbPrevBytes(lines, stride);
     if (sharedFB_prev && sharedFB_prev_size == want) return true;
     if (sharedFB_prev) {
@@ -1746,7 +1746,7 @@ size_t VIDEO::gigascreenPrevFBBytes() {
 }
 
 void VIDEO::disableGigascreenForProfi() {
-    if (Config::arch != "Profi") return; // only Profi is incompatible
+    if (Config::arch != A_PROFI) return; // only Profi is incompatible
     // Clear the persisted/live enable flags so nothing re-arms it (Auto mode
     // checks gigascreen_onoff; force it Off too) and free the prev-FB.
     Config::gigascreen_enabled = false;
@@ -1896,14 +1896,14 @@ void VIDEO::changeMode() {
     if (SELECT_VGA) {
         switch (Config::vga_video_mode) {
             case Config::VM_640x480_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 2;
-                else if (Config::arch == "128K" || Config::arch == "ALF") video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 2;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
                 else video_mode = 1;
                 break;
             case Config::VM_720x480_60: video_mode = 7; break;
             case Config::VM_720x576_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 5;
-                else if (Config::arch == "128K" || Config::arch == "ALF") video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4;
                 break;
             default: video_mode = 0; break;
@@ -1912,14 +1912,14 @@ void VIDEO::changeMode() {
         switch (Config::hdmi_video_mode) {
             case Config::VM_640x480_60: video_mode = 0; break;
             case Config::VM_640x480_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 2;
-                else if (Config::arch == "128K") video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 2;
+                else if (Config::arch == A_128K) video_mode = 3;
                 else video_mode = 1;
                 break;
             case Config::VM_720x480_60: video_mode = 7; break;
             case Config::VM_720x576_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 5;
-                else if (Config::arch == "128K" || Config::arch == "ALF") video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4;
                 break;
             default: video_mode = 0; break;
@@ -2009,8 +2009,8 @@ void VIDEO::Reset() {
 
     bool isFullBorder240 = VIDEO::isFullBorder240();
 
-    if (Config::arch == "48K") {
-        if (Config::romSet48 == "48Kby") {
+    if (Config::arch == A_48K) {
+        if (Config::romSet48 == R_48K_BY) {
             tStatesPerLine = TSTATES_PER_LINE_BYTE;
             tStatesScreen = TS_SCREEN_BYTE;
             tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_BYTE : TS_BORDER_360x288_BYTE)
@@ -2029,8 +2029,8 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == "128K" || Config::arch == "ALF") {
-        if (Config::romSet128 == "128Kby" || Config::romSet128 == "128Kbg") {
+    } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+        if (Config::romSet128 == R_128K_BY || Config::romSet128 == R_128K_BY_GLUK) {
             tStatesPerLine = TSTATES_PER_LINE_BYTE;
             tStatesScreen = TS_SCREEN_BYTE;
             tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_BYTE : TS_BORDER_360x288_BYTE)
@@ -2049,7 +2049,7 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == "Pentagon" || Config::arch == "P512" || Config::arch == "P1024") {
+    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024) {
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
         tStatesScreen = TS_SCREEN_PENTAGON;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
@@ -2060,7 +2060,7 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == "Profi") {
+    } else if (Config::arch == A_PROFI) {
         tStatesPerLine = TSTATES_PER_LINE_PROFI;
         tStatesScreen = TS_SCREEN_PROFI;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PROFI : TS_BORDER_360x288_PROFI)
@@ -2121,7 +2121,7 @@ void VIDEO::Reset() {
         lineptr_offset = 8;  // 32 bytes = (320-256)/2 pixels
     }
 
-    if (Config::arch == "Profi" && (Ports::portDFFD & 0x80)) {
+    if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80)) {
         grmem = MemESP::videoLatch ? MemESP::ram[6].direct() : MemESP::ram[4].direct();
         uint32_t clrPage = MemESP::videoLatch ? 58 : 56;
         extern int ram_pages, butter_pages, psram_pages, swap_pages;
@@ -2138,7 +2138,7 @@ void VIDEO::Reset() {
         profi_clrmem = nullptr;
     }
 
-    if (Config::arch == "Profi") {
+    if (Config::arch == A_PROFI) {
         // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
         init_profi_pair_lookup();
         // Reset live palette to defaults on machine reset
@@ -2162,7 +2162,7 @@ void VIDEO::Reset() {
     memset((uint8_t *)VIDEO::dirty_lines,0x01,SPEC_H);
     #endif // DIRTY_LINES
 
-    VIDEO::snow_toggle = (Config::arch != "P1024" && Config::arch != "P512" && Config::arch != "Pentagon" && Config::arch != "Profi") ? Config::render : false;
+    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI) ? Config::render : false;
 
     if (VIDEO::snow_toggle) {
         Draw = &Blank_Snow;
@@ -2185,16 +2185,16 @@ void VIDEO::Reset() {
     {
         switch (Config::vga_video_mode) {
             case Config::VM_640x480_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 2;
-                else if (Config::arch == "128K" || Config::arch == "ALF") video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 2;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 5;
-                else if (Config::arch == "128K" || Config::arch == "ALF") video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default: // VM_640x480_60
@@ -2210,16 +2210,16 @@ void VIDEO::Reset() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 2;
-                else if (Config::arch == "128K") video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 2;
+                else if (Config::arch == A_128K) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == "48K" || Config::arch == "Profi") video_mode = 5;
-                else if (Config::arch == "128K" || Config::arch == "ALF") video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default:
@@ -2247,7 +2247,7 @@ void VIDEO::Reset() {
     //      running standard Profi code → standard palette bytes interpreted as
     //      DS80 packed-pairs → fine vertical colour stripes on every pixel pair.
     {
-        bool ds80_should_be_active = (Config::arch == "Profi") && (Ports::portDFFD & 0x80);
+        bool ds80_should_be_active = (Config::arch == A_PROFI) && (Ports::portDFFD & 0x80);
         Debug::log("[VRESET] portDFFD=0x%02X ds80=%d act=%d deact=%d should=%d",
             (int)Ports::portDFFD, (int)profi_ds80_active,
             (int)profi_ds80_activate_pending, (int)profi_ds80_deactivate_pending,
@@ -2423,7 +2423,7 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow(unsigned int statestoadd, bool conte
             attOffset = offAtt[curline];
         }
 
-        if (Config::arch == "Profi" && (Ports::portDFFD & 0x80))
+        if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80))
             snowpage = MemESP::videoLatch ? 6 : 4;
         else
             snowpage = MemESP::videoLatch ? 7 : 5;
@@ -2653,7 +2653,7 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
             *lineptr32++ = mix1;
             *lineptr32++ = mix2;
         }
-    } else if (Config::arch == "Profi" && (Ports::portDFFD & 0x80)) {
+    } else if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80)) {
         // Profi DS80 native rendering — writes 256-byte-wide packed pairs directly into
         // vga.frameBuffer (1 byte = pair of 4-bit palette indices: high nibble =
         // left source pixel, low nibble = right). HDMI ISR is configured (via
@@ -2919,7 +2919,7 @@ IRAM_ATTR void VIDEO::MainScreen_Snow_Opcode(bool contended) {
     uint8_t page = Z80::getRegI() & 0xc0;
     if (page == 0x40) { // Snow 48K, 128K
         snow_effect = 1;
-        if (Config::arch == "Profi" && (Ports::portDFFD & 0x80))
+        if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80))
             snowpage = MemESP::videoLatch ? 6 : 4;
         else
             snowpage = MemESP::videoLatch ? 7 : 5;
@@ -2927,7 +2927,7 @@ IRAM_ATTR void VIDEO::MainScreen_Snow_Opcode(bool contended) {
         snow_effect = 1;
         if (MemESP::bankLatch == 1 || MemESP::bankLatch == 3)
             snowpage = MemESP::videoLatch ? 3 : 1;
-        else if (Config::arch == "Profi" && (Ports::portDFFD & 0x80))
+        else if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80))
             snowpage = MemESP::videoLatch ? 6 : 4;
         else
             snowpage = MemESP::videoLatch ? 7 : 5;

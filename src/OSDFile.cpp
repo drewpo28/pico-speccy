@@ -1687,7 +1687,7 @@ static bool rfd_launch_tmp(string path) {
     if (ext == "sna" || ext == "z80" || ext == "p") {
         FileUtils::SNA_Path = dir;
         Config::save();
-        if (!LoadSnapshot(path, "", "")) {
+        if (!LoadSnapshot(path, A_NONE, R_NONE)) {
             OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
             return false;
         }

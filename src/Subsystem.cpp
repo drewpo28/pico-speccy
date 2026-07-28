@@ -524,7 +524,7 @@ bool featureEnabled(FeatureId f) {
         case FEAT_GIGASCREEN:    return Config::gigascreen_enabled;
         case FEAT_GENERAL_SOUND: return Config::gs_enabled != 0;
         case FEAT_DIVMMC:        return Config::esxdos != 0;
-        case FEAT_PROFI:         return Config::arch == "Profi";
+        case FEAT_PROFI:         return Config::arch == A_PROFI;
         case FEAT_ZIFI:          return Config::zifi_enabled != 0;
         case FEAT_MIDI:          return Config::midi == 4;   // GM.DLS wavetable (the RAM-heavy mode)
         case FEAT_ZCONTROLLER:   return Config::zcontroller;
@@ -580,14 +580,14 @@ void featureSetEnabled(FeatureId f, bool on) {
             else if (Config::esxdos == 0) Config::esxdos = 1; // default DivMMC
             break;
         case FEAT_PROFI:
-            if (on) Config::requestMachine("Profi", ""); // disable handled by switching arch elsewhere
+            if (on) Config::requestMachine(A_PROFI, R_NONE); // disable handled by switching arch elsewhere
             else {
                 // Budget candidate: free Profi's ~64 KB SRAM by leaving it for Pentagon
                 // (the default machine). Caller saves Config + reboots; setup() then
                 // re-lays out memory without the Profi forced-SRAM pages.
-                Config::arch   = "Pentagon";
-                Config::romSet = !Config::romSetPent.empty() ? Config::romSetPent : "128Kp";
-                if (Config::pref_arch == "Profi") Config::pref_arch = "Last";
+                Config::arch   = A_PENT;
+                Config::romSet = Config::romSetPent;
+                if (Config::pref_arch == A_PROFI) Config::pref_arch = A_LAST;
                 Config::betadisk = true;   // Pentagon mandates TR-DOS
             }
             break;
