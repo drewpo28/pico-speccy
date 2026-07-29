@@ -1113,10 +1113,15 @@ static bool f5Locations() {
 // Readers are gated by `li < ftpd_log_count`, and ftpd_log_count only advances
 // after a successful alloc here, so they never touch a null buffer.
 static char (*ftpd_log)[FTPD_LOG_COLS] = nullptr;
+extern "C" size_t getLargestAllocatable(void);   // defined at the bottom of this file
 static int  ftpd_log_count = 0;  // total lines pushed (monotonic)
 static bool ftpd_log_dirty = true;
 static void ftpdLogLine(const char* s) {
     if (!ftpd_log) {
+        // Gate, don't null-check: pico_malloc wraps calloc too and PANICs on OOM
+        // instead of returning NULL, so "drop the line rather than crash" only
+        // works if we never make an ask that can fail (see Buffer::palloc).
+        if (getLargestAllocatable() < FTPD_LOG_LINES * FTPD_LOG_COLS + 8192) return;
         ftpd_log = (char(*)[FTPD_LOG_COLS])calloc(FTPD_LOG_LINES, FTPD_LOG_COLS);
         if (!ftpd_log) return;   // OOM — drop the line rather than crash
     }
@@ -1230,8 +1235,10 @@ static void ftpdSessionRun(void* arg) {
 #if NEW_UI
     // New chrome on screen: run the session as a live log page (Esc closes → the
     // server stops). Falls through to the classic terminal if the page buffer
-    // can't be had (this calloc, like the ring's, is null-checked, not panicking).
+    // can't be had — the heap gate is what makes that fallback reachable, since
+    // pico_malloc's calloc PANICs on OOM rather than returning NULL.
     if (nm::available() &&
+        getLargestAllocatable() >= FTPD_PAGE_SZ + 8192 &&
         (s_ftpd_page = (char*)calloc(1, FTPD_PAGE_SZ)) != nullptr) {
         char title[64];
         snprintf(title, sizeof(title), "FTP server  ftp://%s:21  anonymous", ip);
