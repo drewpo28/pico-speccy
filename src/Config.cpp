@@ -1113,10 +1113,21 @@ void Config::save(const char* path) {
     if (FileUtils::fsMount) {
         if (!toDefault && !loaded) {
             // Config was never loaded from file — refuse to overwrite
-            // existing storage.nvs with defaults
+            // existing storage.nvs with defaults. The guard is for a file we
+            // could not READ (SD hiccup at boot); a file THIS session created
+            // is ours, which is why the successful write below sets `loaded`.
+            // Without that, only the first save of a session landed: a boot
+            // with no storage.nvs yet (new firmware version = new config dir)
+            // left loaded=false, the first save created the file, and every
+            // later save in the same session was blocked by it — the new
+            // menu's commit persisted the video mode but MachineSwitch's own
+            // save (which carries arch/romSet, and runs second) was refused,
+            // so the machine reverted on the next boot (hw 2026-07-29:
+            // "720x576 + V-Sync applied, Machine stayed 48K").
             FILINFO fi;
             if (f_stat(STORAGE_NVS, &fi) == FR_OK) {
-                Debug::log("Config::save BLOCKED — not loaded, file exists (%u bytes)", fi.fsize);
+                Debug::log("Config::save BLOCKED — not loaded, file exists (%lu bytes)",
+                           (unsigned long)fi.fsize);
                 return;
             }
         }
@@ -1367,6 +1378,10 @@ void Config::save(const char* path) {
                 // File is authoritative — drop any stale RAM copy
                 nvs_ram_buf.clear();
                 nvs_ram_buf.shrink_to_fit();
+                // storage.nvs now holds exactly this state, so a later save in
+                // the same session is no longer "defaults over an unread file"
+                // and must not be blocked by the guard above.
+                loaded = true;
             }
         } else {
             // Write failed — remove incomplete temp, keep original intact
