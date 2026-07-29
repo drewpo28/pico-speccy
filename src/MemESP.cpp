@@ -197,6 +197,36 @@ extern "C" void mem_swap_reopen(void) {
     }
 }
 
+// Page-descriptor pool.  One mem_desc_int_t exists per ZX RAM page and is never
+// destroyed (setup() builds them once, mem_desc_t copies share the pointer), so a
+// bump allocator over 4 KB blocks is the whole lifetime story.  It matters because
+// MEM_PG_CNT reaches 2048 with Murmuzavr 32 MB: 2050 individual mallocs pay a 4-byte
+// chunk header each (8 KB wasted) and leave 2050 tiny entries in the free list for the
+// framebuffer and the WD1793 track buffer to allocate around.
+void* mem_desc_t::mem_desc_int_t::operator new(size_t sz) {
+#if !MEM_ACCESS_TRACE
+    // Locked down on purpose: 4 bytes added here is 8 KB of SRAM at 2050 pages.
+    static_assert(sizeof(mem_desc_int_t) == 12, "page descriptor grew — see MemESP.h");
+#endif
+    static uint8_t* blk  = nullptr;
+    static size_t   left = 0;
+    const size_t need = (sz + 3u) & ~(size_t)3u;
+    if (left < need) {
+        const size_t BLK = 4096;
+        // pico_malloc panics rather than returning NULL, so a short block is not a
+        // case we can hit here; oversized requests (never happens for this struct)
+        // still get their own chunk.
+        size_t take = need > BLK ? need : BLK;
+        blk  = (uint8_t*)malloc(take);
+        left = blk ? take : 0;
+        if (!blk) return malloc(sz);
+    }
+    void* r = blk;
+    blk  += need;
+    left -= need;
+    return r;
+}
+
 void mem_desc_t::reset(void) {
     memset(vram_pg_valid, 0, sizeof(vram_pg_valid));
     for (int i = 0; i < 4; ++i) bank_dirty[i] = &dirty_sink;
@@ -213,7 +243,7 @@ void mem_desc_t::reset(void) {
 
 uint8_t* mem_desc_t::to_vram(void) {
     uint8_t* res = _int->p;
-    uint32_t ba = _int->vram_off;
+    uint32_t ba = _int->vram_off();
     if (vram_butter(ba)) {
         // Uncached alias: pure QMI write burst, no XIP cache allocation/eviction
         // (a cached-alias write would read-allocate every line first).
@@ -246,7 +276,7 @@ uint8_t* mem_desc_t::to_vram(void) {
 }
 void mem_desc_t::from_vram(uint8_t* p) {
     this->_int->p = p;
-    uint32_t ba = _int->vram_off;
+    uint32_t ba = _int->vram_off();
     _int->mem_type = POINTER;
     _int->dirty = false;   // frame == backing store (or both garbage on skip)
     _int->acc_hits = 0;    // page is pool-resident now; accessor counting restarts
@@ -277,7 +307,7 @@ void mem_desc_t::from_vram(uint8_t* p) {
     }
 }
 uint8_t mem_desc_t::_read(uint16_t addr) {
-    uint32_t ba = _int->vram_off;
+    uint32_t ba = _int->vram_off();
     if (vram_butter(ba)) {
         return butter_nc(ba)[addr];
     }
@@ -292,7 +322,7 @@ uint8_t mem_desc_t::_read(uint16_t addr) {
     return r;
 }
 void mem_desc_t::_write(uint16_t addr, uint8_t v) {
-    uint32_t ba = _int->vram_off;
+    uint32_t ba = _int->vram_off();
     // The byte lands in the backing store — a later from_vram must not skip
     // the load anymore (the rest of the page stays garbage, like real RAM).
     vram_pg_set_valid(ba);
@@ -333,7 +363,7 @@ void mem_desc_t::_sync(uint8_t bank) {
                 }
             }
             {
-                uint32_t vba = page._int->vram_off;
+                uint32_t vba = page._int->vram_off();
                 bool vspi = psram_size() >= vba + MEM_PG_SZ;
                 // butter backing counts as external PSRAM for the victim's new
                 // mem_type; the async-spare arm stays SPI-only (g_swap_spare is
@@ -414,7 +444,7 @@ void mem_desc_t::from_file(FIL* f_in, size_t sz) {
         f_read(f_in, direct(), sz, &br);
         return;
     }
-    uint32_t ba = _int->vram_off;
+    uint32_t ba = _int->vram_off();
     bool btr = vram_butter(ba);
     bool spi = !btr && psram_size() >= ba + MEM_PG_SZ;
     if (!spi && !btr) {
@@ -470,7 +500,7 @@ void mem_desc_t::to_file(FIL* f_out, size_t sz) {
         #endif
         return;
     }
-    uint32_t ba = _int->vram_off;
+    uint32_t ba = _int->vram_off();
     // Same page-fits-in-PSRAM test as to_vram/_read/_write — a bare psram_size()
     // check would read a high page (evicted to SD swap) from wrapped PSRAM addresses.
     bool btr = vram_butter(ba);
@@ -510,8 +540,8 @@ void mem_desc_t::from_mem(mem_desc_t& ram, size_t sz) {
         memcpy(direct(), ram.direct(), sz);
         return;
     }
-    uint32_t sba = ram._int->vram_off;
-    uint32_t dba = _int->vram_off;
+    uint32_t sba = ram._int->vram_off();
+    uint32_t dba = _int->vram_off();
     bool sbtr = vram_butter(sba);
     bool dbtr = vram_butter(dba);
     bool sspi = !sbtr && psram_size() >= sba + MEM_PG_SZ;
@@ -560,7 +590,7 @@ void mem_desc_t::cleanup() {
     if (_int->mem_type == POINTER) {
         // Zero the vram backing store (same effect as the old per-byte _write
         // loop — 16384 SPI transactions — but chunked).
-        uint32_t ba = _int->vram_off;
+        uint32_t ba = _int->vram_off();
         if (vram_butter(ba)) {
             memset(butter_nc(ba), 0, MEM_PG_SZ);
             vram_pg_set_valid(ba);

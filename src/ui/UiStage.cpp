@@ -228,8 +228,12 @@ static void put_zifiTransport(int32_t v) {
     Config::zifi_tx_pin = Config::zifi_rx_pin = BoardPins::PIN_OFF;
 }
 
-static int32_t get_memPgCnt()          { return (int32_t)MEM_PG_CNT; }
-static void    put_memPgCnt(int32_t v) { MEM_PG_CNT = (uint32_t)v; }
+// Murmuzavr page count: edits the PERSISTED pick, never the live MEM_PG_CNT the running
+// machine indexes ROM against — so no F_BOOTONLY window is needed, and the pick survives
+// the extra Config::save() that MachineSwitch::commit() does after this commit's own
+// (which is what used to lose it whenever enabling MZ also meant switching to Pentagon).
+static int32_t get_memPgCnt()          { return (int32_t)Config::mem_pg_cnt; }
+static void    put_memPgCnt(int32_t v) { Config::mem_pg_cnt = (uint16_t)v; }
 
 // The video mode lives in one of two fields depending on which output is live;
 // VIDEO::activeVideoMode() already encodes that choice for reads.
@@ -727,6 +731,16 @@ static void resolveConstraints(CommitReport& rep) {
         // 16col is a Pentagon/Profi feature only (OSDMain.cpp:5010).
         if (staged(SET_16COL) && !(stagedIsPentagon() || stagedIsProfi()))
             changed |= force(SET_16COL, 0, rep, "16col needs Pentagon or Profi");
+
+        // Murmuzavr's extended pages hang off the #AFF7 plane latch, which is Pentagon
+        // hardware — and they are far from free: one descriptor per page in SRAM plus
+        // their share of the PSRAM page budget (2048 pages = 32 KB of bookkeeping).
+        // Leaving the count behind after a switch to another machine is pure cost, and on
+        // Profi (which spends another ~80 KB of its own) it OOM-panicked at boot.
+        // ESPectrum::setup clamps the same way, so a config that predates this rule
+        // still boots; this is what makes the menu agree with it.
+        if (staged(SET_MEM_PG_CNT) > 64 && !stagedIsPentagon())
+            changed |= force(SET_MEM_PG_CNT, 64, rep, "Murmuzavr mode off: Pentagon only");
 
         if (!changed) return;
     }

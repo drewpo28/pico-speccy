@@ -160,6 +160,9 @@ extern const Option opt_onoff[2];
 
 // The tree root, defined in UiTree.cpp.
 const Node* rootNodes();
+// "MZ[8MB]" while Murmuzavr mode is picked, nullptr while it is Off — the subheader
+// appends it to the machine name. Defined next to the option table in UiTree.cpp.
+const char* murmuzavrTag();
 const Node* slotNodeFor(int iface);   // DiskIface -> its K_DYNAMIC slot level
 const Node* persistNodeFor(bool save);// the Save/Load-snapshot K_DYNAMIC level
 uint8_t     rootNodeCount();

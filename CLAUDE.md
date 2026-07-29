@@ -129,6 +129,69 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 - On-hardware benchmark: OSD → Memory Info measures SPI PSRAM MB/s via the
   range functions (`OSDMain.cpp`).
 
+## Murmuzavr extended RAM — page budget + descriptor cost
+
+`MEM_PG_CNT` (Machine → Murmuzavr, 64/256/512/1024/2048 pages = Off/4/8/16/32 MB,
+NVS, clamped ≤2048 in `Config::load`) is the one setting that scales the whole
+memory layout, and 32 MB on an 8 MB chip used to OOM-panic in `setup()`
+(hw 2026-07-29). Two independent costs, both now bounded. **All of the below is
+hw-confirmed on PICO_DV, 2026-07-29** — the page budget, the packed/pooled
+descriptors, the Pentagon-only clamp and the `Config::mem_pg_cnt` shadow together;
+none of it should be unpicked without re-testing Pentagon + 32 MB on a boot log.
+
+- **PSRAM page budget** (`Buffer::pageBudgetButter/pageBudgetSpi/spiPageExtent`):
+  `assign_ram` places pages bottom-up and used to take the whole chip → the
+  Buffer arena came out **0 KB**, `GS::init` logged "not enough butter PSRAM",
+  and prevFB / GS work RAM / zip inflate / net rings all fell back to the heap.
+  The budget = chip − (512 KB min arena + DivMMC's 128 KB + GS's
+  `configuredRamBytes()` at the top). Pages past it go to SD swap, which is where
+  pages past the chip already went. `initPools` (SPI `low`), `GS::init`
+  (`memesp_max`) and both GS-availability gates (`Buffer::gsPsramAvailable`, used
+  by the new menu's `p_gsAvail` and OSDMain's `gs_avail`) all read these instead
+  of `MEM_PG_CNT * MEM_PG_SZ` — the old worst-case term made GS unavailable
+  whenever Murmuzavr exceeded the chip.
+- **Descriptor cost**: one `mem_desc_int_t` per page, so 2050 of them at 32 MB.
+  Packed to **exactly 12 bytes** (`static_assert` in MemESP.cpp) — `vram_off` is
+  derived from a `uint16 page_idx`, `mem_type` is a narrow byte — and
+  bump-allocated from 4 KB blocks via a class `operator new` (descriptors are
+  never freed). 2050 × 24 B of individual mallocs (49 KB, plus 2050 free-list
+  entries) became 2050 × 12 B pooled ≈ 29 KB; with the 4 B/page `ram[]` slot the
+  whole layout is ~16 B/page, logged at boot as `setup: pages ram=.. butter=..
+  spi=.. swap=.. (MEM_PG_CNT=.., desc~..KB)`.
+- Addressability, for reference: `#7FFD` bits 0-2 plus the `#AFF7` plane latch
+  select `plane * extendedZxRamPages()` pages, so plain Pentagon 128 reaches
+  64 × 8 = 512 pages (8 MB); 16/32 MB only pay off on Pentagon 512K/1024K
+  (32/64 pages per plane).
+- **The pick lives in `Config::mem_pg_cnt`, the live count in `MEM_PG_CNT`**, and
+  they are deliberately NOT kept in step: MemESP indexes ROM as
+  `ram[MEM_PG_CNT + romLatch]`, so bumping the live count under a running machine
+  walks off the page strip. `Config::save()` serialises the **pick**;
+  `ESPectrum::setup` derives the live count from it once (plus the Pentagon
+  clamp). This replaced the menu's `F_BOOTONLY` window, which was not enough —
+  `MachineSwitch::commit()` runs its own `Config::save()` AFTER the menu commit's,
+  re-writing the restored old live value over the fresh pick, so enabling MZ
+  failed whenever it also meant switching to Pentagon ("не включается с первого
+  раза", hw 2026-07-29). Both menus write the pick (`put_memPgCnt`, and the
+  classic `MENU_MURMUZAVR` handler); the live count is what the title string and
+  Memory Info report.
+- **Pentagon-only, enforced in three places** (hw 2026-07-29: "Profi + MZ 32 MB"
+  panicked in `setup()` — Profi spends ~80 KB of its own, incl. the 16 KB DS80
+  colour SRAM, and the WD1793 track buffer no longer fit — with no way to reach
+  the menu and undo it):
+  1. `ESPectrum::setup` clamps live `MEM_PG_CNT` to 64 unless
+     `arch ∈ {A_PENT, A_P512, A_P1024}`, right after the arch for this boot is
+     final and before any page strip is sized. NVS keeps the user's pick (so
+     switching back to Pentagon doesn't need it re-entered) until the next
+     `Config::save()` serialises the clamped live value.
+  2. `resolveConstraints()` forces `SET_MEM_PG_CNT` to 64 when
+     `!stagedIsPentagon()` — a machine switch inside one menu session turns MZ
+     off with a note + the AC_REBOOT prompt.
+  3. `p_murmAvail` = SD present && Pentagon staged/live, so the row is simply
+     absent elsewhere (no stale count can survive, hence no escape hatch).
+- UI: `Machine → Murmuzavr mode >` is a submenu (`kMurmuzavr`, one `Extra RAM`
+  radio), indented under the three Pentagon rows. The menu subheader appends
+  `+ MZ[8MB]` from `murmuzavrTag()` (staged value — the setting is F_BOOTONLY).
+
 ## GPIO Map (all boards)
 
 ### Classification

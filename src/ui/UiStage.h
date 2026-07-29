@@ -54,10 +54,19 @@ enum SettingFlags : uint16_t {
     F_BOOTONLY = 1u << 4,  // the destination is live state the RUNNING machine depends on,
                            //   so it must not carry the new value before the reboot: the
                            //   commit writes it only for the duration of Config::save()
-                           //   and restores it immediately. MEM_PG_CNT is the case that
-                           //   forced this — MemESP indexes ROM as ram[MEM_PG_CNT +
-                           //   romLatch], so a bumped count sends every ROM read past the
-                           //   end of the page strip if the user declines the reboot.
+                           //   and restores it immediately. Currently UNUSED, and the
+                           //   reason is worth keeping: MEM_PG_CNT was the case that forced
+                           //   the flag (MemESP indexes ROM as ram[MEM_PG_CNT + romLatch],
+                           //   so a bumped live count sends every ROM read past the end of
+                           //   the page strip if the user declines the reboot), and the
+                           //   flag turned out NOT to be enough — MachineSwitch::commit()
+                           //   runs its own Config::save() AFTER this commit's, which
+                           //   re-serialised the restored old value over the fresh pick
+                           //   (hw 2026-07-29: "MZ does not turn on the first time" when
+                           //   enabling it also meant switching to Pentagon). The fix is a
+                           //   persisted shadow field that save() reads instead of the live
+                           //   variable (Config::mem_pg_cnt) — prefer that shape for the
+                           //   next boot-only setting rather than this window.
     F_GATED   = 1u << 5,   // reboot-class, but its boot allocation can still fail: ask
                            //   Subsystems::budgetCheck(feat) before persisting an enable
                            //   and revert if refused. General Sound needs 38 KB of SRAM on
@@ -169,7 +178,7 @@ const char* romsetName(int32_t composite);
     /* same cascade the classic menu runs. Its put() only records the choice; nothing   */ \
     /* reaches Config until that call.                                                  */ \
     X(SET_MACHINE,         AC_MACHINE, 0,                    get_machine,    put_machine,    nullptr,        -1)          \
-    X(SET_MEM_PG_CNT,      AC_REBOOT, F_BOOTONLY,            get_memPgCnt,   put_memPgCnt,   nullptr,        -1)          \
+    X(SET_MEM_PG_CNT,      AC_REBOOT, 0,                     get_memPgCnt,   put_memPgCnt,   nullptr,        -1)          \
     X(SET_BYTE_COBMECT,    AC_LIVE,   0,                     get_cobmect,    put_cobmect,    hook_cobmect,   -1)          \
     /* ── Options > Preferred machine / rom ───────────────────────────────────── */      \
     X(SET_PREF_ARCH,       AC_PURE,   0,                     get_prefArch,   put_prefArch,   nullptr,        -1)          \

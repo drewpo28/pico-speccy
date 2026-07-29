@@ -154,6 +154,54 @@ inline bool inButter(const void* p) {
 
 } // namespace
 
+// ─── PSRAM page budget ─────────────────────────────────────────────────────────
+// Smallest arena Buffer itself must keep on a PSRAM board. It has to cover the
+// buffers whose only other home is the heap: Gigascreen prevFB (~52 KB), GS work RAM
+// + DAC rings (~40 KB), zip inflate state (~44 KB), the net rings and the OSD alt
+// stack. 512 KB fits all of them at once with room to spare. The GM.DLS bank (1.6 MB)
+// is deliberately NOT counted — it asks with ALLOW_FLASH and has the flash partition
+// to fall back on.
+static const size_t PAGE_ARENA_MIN = 512u << 10;
+
+static size_t pageBudget(size_t chip, bool gs_lands_here, bool divmmc_here) {
+    if (!chip) return 0;
+    size_t reserve = PAGE_ARENA_MIN;
+    // GS's sample RAM is carved off the TOP of the chip, so it has to come out of the
+    // page budget or GS::init finds the space already taken.
+    if (gs_lands_here && Config::gs_enabled) reserve += GS::configuredRamBytes();
+    // DivMMC's banks sit directly above the pages (DivMMC.cpp). Reserved
+    // unconditionally: esxDOS can be switched on at runtime, and 128 KB is cheap
+    // next to being pushed onto the swap-file path for the rest of the session.
+    if (divmmc_here) reserve += (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE;
+    return chip > reserve ? chip - reserve : 0;
+}
+
+size_t Buffer::pageBudgetButter() {
+    return pageBudget(butter_psram_size(), /*gs*/ true, /*divmmc*/ true);
+}
+
+size_t Buffer::pageBudgetSpi() {
+    // GS and DivMMC only use SPI PSRAM when there is no butter chip (GS::init /
+    // DivMMC::init both check butter first).
+    const bool spi_is_the_only_chip = (butter_psram_size() == 0);
+    return pageBudget(psram_size(), spi_is_the_only_chip, /*divmmc*/ false);
+}
+
+size_t Buffer::spiPageExtent() {
+    const size_t addressable = ((size_t)MEM_PG_CNT + 2) * MEM_PG_SZ;
+    const size_t budget = pageBudgetSpi();
+    return budget < addressable ? budget : addressable;
+}
+
+bool Buffer::gsPsramAvailable() {
+    if (butter_psram_size()) return true;
+    const size_t spi = psram_size();
+    if (!spi) return false;
+    // GS's region + the minimum arena + the base 64-page swap pool. Murmuzavr's page
+    // count is NOT part of the test: those pages yield to GS via pageBudgetSpi().
+    return spi >= GS::configuredRamBytes() + PAGE_ARENA_MIN + (size_t)64 * MEM_PG_SZ;
+}
+
 // ─── Pool setup ────────────────────────────────────────────────────────────────
 void Buffer::initPools() {
     size_t butter_arena = 0, spi_arena = 0;
@@ -180,7 +228,7 @@ void Buffer::initPools() {
     // SPI PSRAM arena = above MemESP's swap region, below any GS-on-SPI region.
     uint32_t spi = psram_size();
     if (spi) {
-        size_t low  = (size_t)MEM_PG_CNT * MEM_PG_SZ;
+        size_t low  = spiPageExtent();
         size_t high = spi;
         size_t gs_res = (Config::gs_enabled && butter_psram_size() == 0) ? GS::configuredRamBytes() : 0;
         if (gs_res)
@@ -203,6 +251,9 @@ void Buffer::initPools() {
                (unsigned)(butter_arena >> 10), (unsigned)(g_butter_base >> 10),
                (unsigned)(spi_arena >> 10), (unsigned)(g_spi_base >> 10),
                (int)g_swap_ready);
+    Debug::log("Buffer::initPools pageBudget butter=%uKB spi=%uKB (pages=%d)",
+               (unsigned)(pageBudgetButter() >> 10), (unsigned)(pageBudgetSpi() >> 10),
+               butter_pages);
 }
 
 void Buffer::initFlashPool(void* xipBase, size_t size) {

@@ -111,6 +111,16 @@ public:
     static uint16_t max_tft_freq;   // MHz, default 126
     static uint8_t  vreq_voltage;  // vreg_voltage_t enum value, default VREG_VOLTAGE_1_60
     static bool     Issue2;
+    // Murmuzavr extended page count as CHOSEN/PERSISTED (64..2048; 64 = mode off). The
+    // live count the emulator runs on is the global MEM_PG_CNT, read once from this in
+    // ESPectrum::setup() — and deliberately NOT kept in step afterwards: MemESP indexes
+    // ROM as ram[MEM_PG_CNT + romLatch], so bumping the live count while a machine runs
+    // sends every ROM read past the end of the page strip. save() serialises THIS field,
+    // never the live one; that is what makes the pick survive a machine switch, whose
+    // MachineSwitch::commit() runs its own Config::save() after the menu's (hw
+    // 2026-07-29: "MZ does not turn on the first time" — that second save re-wrote the
+    // stale live value over the fresh pick).
+    static uint16_t mem_pg_cnt;
     static bool     rtc_enabled;  // Pentagon/Profi Mr Gluk MC146818 RTC + CMOS NVRAM (RP2350)
     // Debug > PSRAM. Read once at boot (ESPectrum::setup, right after load()): false
     // makes the firmware behave as if the board had no PSRAM — the runtime twin of the

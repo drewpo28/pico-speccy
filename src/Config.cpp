@@ -48,6 +48,7 @@ uint16_t Config::max_psram_freq = 166;
 uint16_t Config::max_tft_freq = 126;
 uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_60;
 bool     Config::Issue2 = true;
+uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
 bool     Config::rtc_enabled = false;
 bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
 bool     Config::flashload = true;
@@ -1044,10 +1045,13 @@ void Config::load() {
             hotkeys[i].alt  = (mod >> 1) & 1;
             hotkeys[i].ctrl = (mod     ) & 1;
         }
-        int mem_pg_cnt = 0;
-        nvs_get_i("MEM_PG_CNT", mem_pg_cnt, sts);
-        if (mem_pg_cnt < 8 || mem_pg_cnt > 2048) MEM_PG_CNT = 64;
-        else MEM_PG_CNT = mem_pg_cnt;
+        // Murmuzavr page count. Lands in Config::mem_pg_cnt (the persisted pick); the
+        // live MEM_PG_CNT is derived from it once in ESPectrum::setup(), which also
+        // applies the Pentagon-only clamp.
+        int pg = 0;
+        nvs_get_i("MEM_PG_CNT", pg, sts);
+        mem_pg_cnt = (pg < 8 || pg > 2048) ? 64 : (uint16_t)pg;
+        MEM_PG_CNT = mem_pg_cnt;
     }
     loaded = true;
     if (FileUtils::fsMount)
@@ -1340,7 +1344,8 @@ void Config::save(const char* path) {
         uint8_t mod = (hotkeys[i].alt ? 2 : 0) | (hotkeys[i].ctrl ? 1 : 0);
         nvs_set_u8(buf, key, mod);
     }
-    nvs_set_i(buf,"MEM_PG_CNT", MEM_PG_CNT);
+    // The PICK, not the live count — see Config::mem_pg_cnt in Config.h.
+    nvs_set_i(buf,"MEM_PG_CNT", mem_pg_cnt);
 
     if (handle) {
         // f_sync flushes FAT before close so we don't commit the

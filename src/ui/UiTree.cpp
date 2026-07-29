@@ -20,8 +20,10 @@
 #include "FileUtils.h"
 #include "MemESP.h"          // butter_psram_size() for the Profi / ext-RAM predicates
 #include "psram_spi.h"       // psram_size()
+#include "Buffer.h"          // Buffer::gsPsramAvailable() for the General Sound gate
 #include "BoardPins.h"       // the ESP-link predicate of the Network rows
 #include <hardware/vreg.h>   // VREG_VOLTAGE_* values used by the option table
+#include <stdio.h>           // snprintf (murmuzavrTag)
 
 namespace nm {
 
@@ -185,6 +187,19 @@ static bool p_profiActive() {
     const int a = (m >> 8) & 0xFF;
     return a == A_PROFI || a == A_KARABAS;       // Karabas = Profi hardware
 }
+// Murmuzavr is a Pentagon extension (the #AFF7 plane latch on top of #7FFD paging), so
+// its submenu is offered for the Pentagon family only — staged pick first, else the live
+// machine, like the other *Active predicates.
+static bool p_pentActive() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    const int a = (m < 0) ? (int)Config::arch : ((m >> 8) & 0xFF);
+    return a == A_PENT || a == A_P512 || a == A_P1024;
+}
+// Strictly Pentagon: a count cannot survive on another machine, so there is nothing to
+// come back and switch off here. ESPectrum::setup clamps it at boot and the commit's
+// resolveConstraints() forces it to Off whenever the staged machine is not Pentagon.
+static bool p_murmAvail() { return FileUtils::fsMount && p_pentActive(); }
+
 static bool p_byteActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::romSet == R_48K_BY || Config::romSet == R_128K_BY ||
@@ -249,8 +264,9 @@ static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
 
-// Murmuzavr mode is the SD-swap page count, not a machine — values are page counts, and
-// MEM_PG_CNT == 64 is the "no swap" state.
+// Murmuzavr mode is the extended page count, not a machine — values are page counts, and
+// MEM_PG_CNT == 64 is the "no extra RAM" state. The pages live in PSRAM as far as the
+// budget reaches (Buffer::pageBudgetButter) and in the SD swap file beyond it.
 static const Option opt_murmuzavr[] = {
     { "Off",   64   },
     { "4 MB",  256  },
@@ -259,23 +275,43 @@ static const Option opt_murmuzavr[] = {
     { "32 MB", 2048 },
 };
 
+const char* murmuzavrTag() {
+    // Only where the mode actually applies: the persisted pick survives a switch to
+    // another machine, but ESPectrum::setup clamps the live count off there, so showing
+    // the tag would advertise RAM the machine does not have.
+    if (!p_pentActive()) return nullptr;
+    // The STAGED count, so the subheader tracks the pick right away (the live MEM_PG_CNT
+    // only follows on the reboot the commit asks for).
+    const int32_t pg = Stage::get(SET_MEM_PG_CNT);
+    if (pg <= 64) return nullptr;
+    static char buf[12];
+    snprintf(buf, sizeof(buf), "MZ[%dMB]", (int)(pg / 64));   // 64 pages of 16 KB = 1 MB
+    return buf;
+}
+
+// Its own level rather than a radio row wedged between the machine rows: the page count
+// is not a machine, and the extra depth is where a Murmuzavr-only option belongs.
+static const Node kMurmuzavr[] = {
+    NM_RADIO(TXT_MACH_MURM_SIZE, SET_MEM_PG_CNT, opt_murmuzavr, nullptr),
+};
+
 static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_48K,   SET_MACHINE, opt_mach_48,    nullptr),
     NM_RADIO(TXT_MACH_128K,  SET_MACHINE, opt_mach_128,   nullptr),
     NM_RADIO(TXT_MACH_PENT,  SET_MACHINE, opt_mach_pent,  nullptr),
     NM_RADIO(TXT_MACH_P512,  SET_MACHINE, opt_mach_p512,  p_extRam),
     NM_RADIO(TXT_MACH_P1024, SET_MACHINE, opt_mach_p1024, p_extRam),
-    NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
     // Machine-dependent options sit right under their machine, indented so the
     // grouping reads at a glance (they also only show while that machine is
-    // running or staged).
+    // running or staged) — Murmuzavr belongs to the three Pentagon rows above it.
+    NM_SUB  (NM_IND TXT_MACH_MURM, kMurmuzavr, p_murmAvail),
+    NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
     // Shared Profi-hardware options — shown while either Profi or Karabas is
     // running or staged.
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
-    NM_RADIO(TXT_MACH_MURM,  SET_MEM_PG_CNT, opt_murmuzavr, p_hasSD),
 };
 
 // ── Speed test ─────────────────────────────────────────────────────────────────
@@ -443,11 +479,8 @@ static const Node kVideo[] = {
 // slider lands.
 // General Sound needs somewhere to put its 2 MB of sample RAM: butter XIP PSRAM (fast) or,
 // as a fallback, plain SPI PSRAM with room left over for the MemESP swap pool (slow path,
-// ~30x, best-effort). Same test as the classic menu's gs_avail.
-static bool p_gsAvail() {
-    return butter_psram_size() > 0 ||
-           psram_size() >= (size_t)MEM_PG_CNT * MEM_PG_SZ + (2u << 20);
-}
+// ~30x, best-effort). One shared test with the classic menu's gs_avail.
+static bool p_gsAvail() { return Buffer::gsPsramAvailable(); }
 // The clock row is meaningless while GS is off, and reads the STAGED mode so it lights up
 // as soon as the mode is switched on (enable gate of the indented row below).
 static bool p_gsOn() { return p_gsAvail() && Stage::get(SET_GS_MODE) != 0; }

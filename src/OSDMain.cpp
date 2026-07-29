@@ -4100,8 +4100,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     // GS works on butter XIP (fast) or, as a fallback, on plain SPI PSRAM
                     // (slow path, ~30× slower — best-effort, may glitch on MOD playback).
                     // For SPI fallback, need room for MemESP swap pool + 2 MB GS RAM.
-                    bool gs_avail = (butter_psram_size() > 0)
-                                    || (psram_size() >= (size_t)MEM_PG_CNT * MEM_PG_SZ + (2u << 20));
+                    bool gs_avail = Buffer::gsPsramAvailable();
                     if (gs_avail) {
                         // Insert GS before "Audio Driver" (second-to-last item, before Volume Boost)
                         size_t last_nl = audio_menu.rfind('\n', audio_menu.size() - 2);
@@ -5264,7 +5263,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             menu_saverect = true;
                             while (1) {
                                 string opt_menu = (FileUtils::fsMount ? MENU_MURMUZAVR : MENU_MURMUZAVR_NONE);
-                                uint32_t new_opt = MEM_PG_CNT, prev_opt = MEM_PG_CNT;
+                                // The persisted pick, not the live count: on a
+                                // non-Pentagon machine setup() clamps MEM_PG_CNT to 64,
+                                // and Config::save() serialises Config::mem_pg_cnt.
+                                uint32_t new_opt = Config::mem_pg_cnt,
+                                         prev_opt = Config::mem_pg_cnt;
                                 if (!FileUtils::fsMount) {
                                     opt_menu.replace(opt_menu.find("[N",0),2,"[*");
                                 } else if (prev_opt <= 64) {
@@ -5307,7 +5310,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     else if (opt2 == 5) new_opt = 2048;
                                     if (prev_opt != new_opt) {
                                         if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                            MEM_PG_CNT = new_opt;
+                                            Config::mem_pg_cnt = (uint16_t)new_opt;
                                             Config::save();
                                             OSD::esp_hard_reset();
                                             return;

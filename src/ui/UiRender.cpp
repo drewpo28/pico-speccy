@@ -141,9 +141,13 @@ static void drawSubHeader() {
         x += text(x, y + 2, p->label, d == S.depth ? C_WHITE : C_TEXT_DIM);
     }
 
-    char mach[40];
-    snprintf(mach, sizeof(mach), "Machine: %s",
-             archToStr(archDisplay(Config::arch, Config::romSet)));
+    // "Machine: Pentagon 128K + MZ[8MB]" — the Murmuzavr tag only appears while the
+    // mode is on, so the common case reads exactly as before.
+    char mach[56];
+    const char* mz = murmuzavrTag();
+    snprintf(mach, sizeof(mach), "Machine: %s%s%s",
+             archToStr(archDisplay(Config::arch, Config::romSet)),
+             mz ? " + " : "", mz ? mz : "");
     const int mw = textWidth(mach);
     if (x + mw + 2 * LY.pad < LY.ix + LY.iw)
         text(LY.ix + LY.iw - mw - LY.pad, y + 2, mach, C_TEXT_DIM);
