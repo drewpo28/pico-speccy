@@ -867,8 +867,25 @@ static void reconcileSubsystems(CommitReport& rep) {
             // middle of our batch. We only want the measurement here.
             Subsystems::FeatureId cand[Subsystems::FEAT_COUNT];
             int nCand = 0; size_t deficit = 0;
-            if (Subsystems::budgetCheck((Subsystems::FeatureId)b.feat,
-                                        cand, &nCand, &deficit) != Subsystems::BUDGET_ALLOW) {
+            const Subsystems::BudgetResult br =
+                Subsystems::budgetCheck((Subsystems::FeatureId)b.feat, cand, &nCand, &deficit);
+            // Fragmented-only shortfall: keep the staged enable (it is already in Config
+            // and about to be persisted) and let the menu's reboot prompt carry it — the
+            // feature comes up during setup() from an unfragmented heap. Bringing it up
+            // live is the only thing we skip.
+            if (br == Subsystems::BUDGET_NEEDS_REBOOT) {
+                // pre(true) WITHOUT request/apply: arm the persisted state, allocate
+                // nothing. Load-bearing for Gigascreen — the staged put only writes
+                // gigascreen_onoff, while the boot pre-allocation (Video.cpp, "BEFORE
+                // the heap fragments") tests Config::gigascreen_enabled, which only
+                // pre_gs sets. Without this the reboot came back with Gigascreen still
+                // off and the same deficit (hw, PICO_DV).
+                if (b.pre) b.pre(true);
+                rep.needsReboot = true;
+                if (!rep.note) rep.note = " Needs a reboot: SRAM is fragmented ";
+                continue;
+            }
+            if (br != Subsystems::BUDGET_ALLOW) {
                 revertFeature(b.feat);
                 rep.blocked++;
                 if (rep.blockedFeat < 0) rep.blockedFeat = b.feat;
@@ -930,8 +947,12 @@ void commit(CommitReport& rep) {
         if (!g_val[id]) continue;                       // turning it off always fits
         Subsystems::FeatureId cand[Subsystems::FEAT_COUNT];
         int nCand = 0; size_t deficit = 0;
-        if (Subsystems::budgetCheck((Subsystems::FeatureId)d.feat,
-                                    cand, &nCand, &deficit) != Subsystems::BUDGET_ALLOW) {
+        const Subsystems::BudgetResult br =
+            Subsystems::budgetCheck((Subsystems::FeatureId)d.feat, cand, &nCand, &deficit);
+        // Reboot-class settings are already going to reboot — a fragmented-only
+        // shortfall is exactly what that reboot cures, so let the value stand.
+        if (br == Subsystems::BUDGET_NEEDS_REBOOT) { rep.needsReboot = true; continue; }
+        if (br != Subsystems::BUDGET_ALLOW) {
             d.put(g_base[id]);
             bmClr(g_dirty, id);
             rep.changed--;
@@ -946,7 +967,11 @@ void commit(CommitReport& rep) {
     if (bmGet(g_dirty, SET_MIDI_MODE) && g_val[SET_MIDI_MODE] == 4) {
         Subsystems::FeatureId cand[Subsystems::FEAT_COUNT];
         int nCand = 0; size_t deficit = 0;
-        if (Subsystems::budgetCheck(FEAT_MIDI, cand, &nCand, &deficit) != Subsystems::BUDGET_ALLOW) {
+        const Subsystems::BudgetResult br =
+            Subsystems::budgetCheck(FEAT_MIDI, cand, &nCand, &deficit);
+        if (br == Subsystems::BUDGET_NEEDS_REBOOT) {
+            rep.needsReboot = true;      // the bank loads at boot anyway
+        } else if (br != Subsystems::BUDGET_ALLOW) {
             kDesc[SET_MIDI_MODE].put(g_base[SET_MIDI_MODE]);
             bmClr(g_dirty, SET_MIDI_MODE);
             rep.changed--;
