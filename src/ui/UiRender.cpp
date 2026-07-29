@@ -142,7 +142,8 @@ static void drawSubHeader() {
     }
 
     char mach[40];
-    snprintf(mach, sizeof(mach), "Machine: %s", archToStr(Config::arch));
+    snprintf(mach, sizeof(mach), "Machine: %s",
+             archToStr(archDisplay(Config::arch, Config::romSet)));
     const int mw = textWidth(mach);
     if (x + mw + 2 * LY.pad < LY.ix + LY.iw)
         text(LY.ix + LY.iw - mw - LY.pad, y + 2, mach, C_TEXT_DIM);

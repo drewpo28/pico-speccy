@@ -171,6 +171,7 @@
 #define TXT_MACH_P1024      "Pentagon 1024K"
 #define TXT_MACH_BYTE       "Byte"
 #define TXT_MACH_PROFI      "Profi"
+#define TXT_MACH_KARABAS    "Karabas"
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
@@ -201,10 +202,11 @@
 #define TXT_ROM_CUSTOM      "Custom"
 #define TXT_ROM_LAST        "Last used"
 #define TXT_ROM_PROFI_ORIG  "Original"
-#define TXT_ROM_PROFI_KAR   "Karabas"
-#define TXT_ROM_PROFI_PQ    "Karabas + PQDOS"
-#define TXT_ROM_PROFI_FT    "Karabas + Flash"
-#define TXT_ROM_PROFI_FDI   "Karabas + FDImage"
+// Karabas machine row — the real board's four ROMSET slots.
+#define TXT_ROM_KAR_MAIN    "ROMain"
+#define TXT_ROM_KAR_PQ      "PQDOS"
+#define TXT_ROM_KAR_FT      "Flash Tool"
+#define TXT_ROM_KAR_FDI     "FDImage"
 #define TXT_ROM_ALF         "ALF cartridge"
 
 // ── Options ────────────────────────────────────────────────────────────────────

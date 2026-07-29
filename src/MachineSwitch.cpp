@@ -51,6 +51,9 @@ void commitAlf() {
 }
 
 bool commit(ArchIdx arch, RomsetIdx romset) {
+    // Karabas is a UI-level alias of Profi (ArchRom.h) — fold it here so every rule
+    // below (budget gate, slot sync, mutual exclusions, reboot boundary) sees Profi.
+    arch = archCanon(arch);
     if (arch == A_ALF) { commitAlf(); return true; }
 
     // Leaving ALF for another machine. loadAlfCart() pinned

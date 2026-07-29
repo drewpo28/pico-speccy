@@ -181,7 +181,9 @@ static bool p_showProfi() {
 // if the user just chose one, otherwise the live machine.
 static bool p_profiActive() {
     const int32_t m = Stage::get(SET_MACHINE);
-    return m >= 0 ? ((m >> 8) & 0xFF) == A_PROFI : Config::arch == A_PROFI;
+    if (m < 0) return Config::arch == A_PROFI;   // Config never holds A_KARABAS
+    const int a = (m >> 8) & 0xFF;
+    return a == A_PROFI || a == A_KARABAS;       // Karabas = Profi hardware
 }
 static bool p_byteActive() {
     const int32_t m = Stage::get(SET_MACHINE);
@@ -230,14 +232,18 @@ static const Option opt_mach_byte[] = {
     { TXT_ROM_BYTE_128,   NM_MACH(A_128K, R_128K_BY) },
     { TXT_ROM_BYTE_GLUK,  NM_MACH(A_128K, R_128K_BY_GLUK), TXT_ROM_BYTE_GLUK_S },
 };
-// The five real Karabas-Pro ROMSET slots: stock Original, then ROMain / PQDOS BIOS /
-// Flash Tool / FDImage (OSDMain.cpp's profi_romsets[]).
+// Profi and Karabas are two Machine rows over the same Profi hardware (like Byte over
+// 48K/128K): Profi = the stock ROM, Karabas = the real board's four ROMSET slots
+// (ROMain / PQDOS BIOS / Flash Tool / FDImage). The Karabas entries spell A_KARABAS so
+// its row shows the mark; MachineSwitch folds it back to A_PROFI on commit (ArchRom.h).
 static const Option opt_mach_profi[] = {
-    { TXT_ROM_PROFI_ORIG, NM_MACH(A_PROFI, R_PROFI)     },
-    { TXT_ROM_PROFI_KAR,  NM_MACH(A_PROFI, R_PROFI_KAR) },
-    { TXT_ROM_PROFI_PQ,   NM_MACH(A_PROFI, R_PROFI_PQ)  },
-    { TXT_ROM_PROFI_FT,   NM_MACH(A_PROFI, R_PROFI_FT)  },
-    { TXT_ROM_PROFI_FDI,  NM_MACH(A_PROFI, R_PROFI_FDI) },
+    { TXT_ROM_PROFI_ORIG, NM_MACH(A_PROFI, R_PROFI)       },
+};
+static const Option opt_mach_karabas[] = {
+    { TXT_ROM_KAR_MAIN,   NM_MACH(A_KARABAS, R_PROFI_KAR) },
+    { TXT_ROM_KAR_PQ,     NM_MACH(A_KARABAS, R_PROFI_PQ)  },
+    { TXT_ROM_KAR_FT,     NM_MACH(A_KARABAS, R_PROFI_FT)  },
+    { TXT_ROM_KAR_FDI,    NM_MACH(A_KARABAS, R_PROFI_FDI) },
 };
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
@@ -268,7 +274,10 @@ static const Node kMachine[] = {
     // grouping reads at a glance (they also only show while that machine is
     // running or staged).
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
-    NM_RADIO(TXT_MACH_PROFI, SET_MACHINE, opt_mach_profi, p_showProfi),
+    NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
+    NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
+    // Shared Profi-hardware options — shown while either Profi or Karabas is
+    // running or staged.
     NM_BOOL (NM_IND TXT_MACH_XTKBD,   SET_PROFI_XT,     p_profiActive),
     NM_RADIO(NM_IND TXT_MACH_OSDPAL,  SET_PROFI_OSDPAL, opt_osd_palette, p_profiActive),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),

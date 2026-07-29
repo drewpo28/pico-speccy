@@ -93,10 +93,26 @@ inline RomsetIdx romsetFromStr(const std::string& s, RomsetIdx def) {
 
 inline RomsetIdx defaultRomsetFor(ArchIdx a) {
     switch (a) {
-        case A_48K:   return R_48K;
-        case A_128K:  return R_128K;
-        case A_PROFI: return R_PROFI;
-        case A_ALF:   return R_ALF1;
-        default:      return R_PENT;   // Pentagon / P512 / P1024
+        case A_48K:     return R_48K;
+        case A_128K:    return R_128K;
+        case A_PROFI:   return R_PROFI;
+        case A_KARABAS: return R_PROFI_KAR;
+        case A_ALF:     return R_ALF1;
+        default:        return R_PENT;   // Pentagon / P512 / P1024
     }
+}
+
+// Karabas is Profi hardware — it exists as a separate arch only so the Machine menu
+// can offer "Profi" (stock ROM) and "Karabas" (the real board's four ROMSET slots) as
+// two rows, the same way Byte is a romset over 48K/128K. The emulator core and Config
+// only ever see A_PROFI: archCanon() folds the alias at every commit boundary, and
+// archDisplay() recovers the UI-facing arch from the running romset.
+inline ArchIdx archCanon(ArchIdx a) {
+    return a == A_KARABAS ? A_PROFI : a;
+}
+inline bool isKarabasRomset(RomsetIdx r) {
+    return r == R_PROFI_KAR || r == R_PROFI_PQ || r == R_PROFI_FT || r == R_PROFI_FDI;
+}
+inline ArchIdx archDisplay(ArchIdx a, RomsetIdx r) {
+    return (a == A_PROFI && isKarabasRomset(r)) ? A_KARABAS : a;
 }

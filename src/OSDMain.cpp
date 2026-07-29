@@ -2034,7 +2034,7 @@ bool persistLoad(uint8_t slotnumber)
         // arch detection applies).
         f_gets(buf, sizeof(buf), *f);
         buf[strcspn(buf, "\r\n")] = 0;
-        ArchIdx persist_arch = archFromStr(buf, A_NONE);
+        ArchIdx persist_arch = archCanon(archFromStr(buf, A_NONE));
         f_gets(buf, sizeof(buf), *f);
         buf[strcspn(buf, "\r\n")] = 0;
         RomsetIdx persist_romset = romsetFromStr(buf, R_NONE);

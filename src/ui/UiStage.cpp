@@ -129,9 +129,11 @@ static int32_t s_machinePick = -1;
 
 static int32_t get_machine() {
     // arch/romSet always hold real table indices now; guard anyway (A_LAST/R_LAST
-    // style sentinels would otherwise index past the option tables).
+    // style sentinels would otherwise index past the option tables). archDisplay
+    // maps a running Profi with a Karabas romset onto the UI's "Karabas" row, whose
+    // option table spells A_KARABAS (Config itself only ever holds A_PROFI).
     if (Config::arch >= ARCH_COUNT || Config::romSet >= ROMSET_COUNT) return -1;
-    return NM_MACH(Config::arch, Config::romSet);
+    return NM_MACH(archDisplay(Config::arch, Config::romSet), Config::romSet);
 }
 static void put_machine(int32_t v) { s_machinePick = v; }
 
@@ -671,7 +673,7 @@ static bool stagedArchIs(ArchIdx a) {
     if (m >= 0) return ((m >> 8) & 0xFF) == (int)a;
     return Config::arch == a;                  // pair not in our tables: trust Config
 }
-static bool stagedIsProfi() { return stagedArchIs(A_PROFI); }
+static bool stagedIsProfi() { return stagedArchIs(A_PROFI) || stagedArchIs(A_KARABAS); }
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }

@@ -205,6 +205,8 @@ extern std::string g_snapshot_loading_path;  // Snapshot.cpp — snapshot mid-lo
 
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 {
+    // Karabas is a UI-level alias of Profi (see ArchRom.h) — the core never sees it.
+    newArch = archCanon(newArch);
     // Profi boundary: setup() lays out the Profi memory once at boot —
     // forced-SRAM pages (DS80 colour 56/58 + CP/M pool 60/61) on ALL RP2350
     // boards, plus the pool/accessor-backed butter vram strip on butter/QSPI
@@ -778,6 +780,7 @@ void Config::load() {
         nvs_get_u8("TFT_INVERSION", TFT_INVERSION, sts);
         #endif
         nvs_get_arch("arch", arch, sts);
+        arch = archCanon(arch);   // "Karabas" in NVS is an alias of Profi
         nvs_get_romset("romSet", romSet, sts);
         nvs_get_romset("romSet48", romSet48, sts);
         nvs_get_romset("romSet128", romSet128, sts);
@@ -786,6 +789,7 @@ void Config::load() {
         nvs_get_romset("romSetP1M", romSetP1M, sts);
         nvs_get_romset("romSetProfi", romSetProfi, sts);
         nvs_get_arch("pref_arch", pref_arch, sts);
+        pref_arch = archCanon(pref_arch);
         nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
         nvs_get_romset("pref_romSet_128", pref_romSet_128, sts);
         nvs_get_romset("pref_romSetPent", pref_romSetPent, sts);
