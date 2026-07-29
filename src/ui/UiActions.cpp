@@ -36,6 +36,11 @@
 #include "LEDIndicators.h"
 #include <pico/bootrom.h>
 
+// DS80 state + the standard Profi/ZX 16-colour palette (Video.cpp / vga.c): the ZX
+// keyboard page swaps to it so the bitmap keeps its own colours.
+extern "C" volatile bool profi_ds80_active;
+extern "C" const uint32_t profi_default_palette16[16];
+
 #if ZIFI_NET_CLIENT
 // Classic self-contained dialogs in OSDMain.cpp (deliberately non-static there).
 void ftpServerRun();
@@ -55,11 +60,30 @@ void act_todo() {
 void act_helpHotkeys()    { uiTextPage(TXT_HELP_KEYS, ::hotkeysText()); }
 // ZX keyboard bitmap in a new-UI page. The image itself keeps its authentic ZX
 // colours: indices 0..15 belong to the guest palette in standard mode, our block
-// lives at 152+ — the two coexist. In DS80 those 16 entries ARE the UI palette
-// while the menu is open, so the classic overlay (drawn with the palette handed
-// back by runModal) serves there instead.
+// lives at 152+ — the two coexist.
+//
+// DS80 has 16 palette entries in total and they ARE the UI palette while the menu is
+// open, so the picture — whose pixel values are ZX colour indices, drawn through
+// zxColor() below — would render in interface greys. This page therefore borrows the
+// STANDARD ZX palette for its lifetime instead: it covers the whole screen, so no
+// guest content pays for the swap, and its chrome is drawn from three of those
+// entries (0 black, 7 grey, 15 white). In DS80 palByte(c) == c, so a cast of a
+// literal IS a palette index; in standard mode the same locals hold the UI roles.
 static void uiZxKeyboardPage() {
-    gfxResumePalette();
+    const bool zxpal = Sf.ds80 && profi_ds80_active;
+    if (zxpal) {
+        gfxSuspendPalette();                                 // hand the UI palette back
+        VIDEO::applyUiDS80Palette(profi_default_palette16);  // ... and take ZX instead
+    } else {
+        gfxResumePalette();
+    }
+    const UiColor k_bg  = zxpal ? (UiColor)0  : C_BG;
+    const UiColor k_pnl = zxpal ? (UiColor)0  : C_PANEL;
+    const UiColor k_sep = zxpal ? (UiColor)7  : C_SEP;
+    const UiColor k_ttl = zxpal ? (UiColor)15 : C_WHITE;
+    const UiColor k_dim = zxpal ? (UiColor)7  : C_TEXT_DIM;
+    const UiColor k_ft  = zxpal ? (UiColor)0  : C_FOOT_BG;
+
     const int sc  = Sf.glyphScale;
     const int margin = 2 * sc;
     const int ix = margin + sc, iy = 3;
@@ -67,29 +91,34 @@ static void uiZxKeyboardPage() {
     const int hdr_h = UI_FONT_H + 6, foot_h = UI_FONT_H + 4;
     const int pad = 2 * sc;      // the shared chrome inset (menu/browser use 2*sc)
 
-    fill(0, 0, Sf.w, Sf.h, C_BG);
-    roundRect(margin, iy - 1, Sf.w - 2 * margin, ih + 2, 4, C_SEP, C_PANEL);
-    fill(ix, iy, iw, hdr_h, C_PANEL);
-    rainbow(ix + pad, iy + 3);
-    text(ix + pad + rainbowW() + 2 * pad, iy + 4, TXT_HELP_ZXKBD, C_WHITE);
-    hline(ix, iy + hdr_h - 1, iw, C_SEP);
+    fill(0, 0, Sf.w, Sf.h, k_bg);
+    roundRect(margin, iy - 1, Sf.w - 2 * margin, ih + 2, 4, k_sep, k_pnl);
+    fill(ix, iy, iw, hdr_h, k_pnl);
+    rainbow(ix + pad, iy + 3);   // its three inks land on ZX brights in DS80 — still a rainbow
+    text(ix + pad + rainbowW() + 2 * pad, iy + 4, TXT_HELP_ZXKBD, k_ttl);
+    hline(ix, iy + hdr_h - 1, iw, k_sep);
     const int fy = iy + ih - foot_h;
-    fill(ix, fy, iw, foot_h, C_FOOT_BG);
-    hline(ix, fy, iw, C_SEP);
-    text(ix + pad, fy + 3, "Esc Close", C_TEXT_DIM);
-    roundRectBorder(margin, iy - 1, Sf.w - 2 * margin, ih + 2, 4, C_SEP, C_BG);
+    fill(ix, fy, iw, foot_h, k_ft);
+    hline(ix, fy, iw, k_sep);
+    text(ix + pad, fy + 3, "Esc Close", k_dim);
+    roundRectBorder(margin, iy - 1, Sf.w - 2 * margin, ih + 2, 4, k_sep, k_bg);
 
     // The bitmap, centred in the body on its own black card (its native paper).
+    // fillRect/dotFast are the legacy API: they address the framebuffer in BYTES,
+    // which in DS80 is half a logical column — so the picture is placed on halved
+    // coordinates and comes out 2 px per pixel, the same 2x the DS80 text uses.
     const int body_y = iy + hdr_h, body_h = fy - body_y;
-    const int bx = (Sf.w - KBD_IMG_W) / 2;
+    const int step = zxpal ? 2 : 1;                       // logical px per image px
+    const int bx = (Sf.w - KBD_IMG_W * step) / 2;         // logical
     const int by = body_y + (body_h - KBD_IMG_H) / 2;
-    VIDEO::vga.fillRect(bx - 2, by - 2, KBD_IMG_W + 4, KBD_IMG_H + 4, zxColor(0, 0));
+    const int fbx = zxpal ? (bx >> 1) : bx;               // byte column
+    VIDEO::vga.fillRect(fbx - 2, by - 2, KBD_IMG_W + 4, KBD_IMG_H + 4, zxColor(0, 0));
     for (int y = 0; y < KBD_IMG_H; y++) {
         for (int x = 0; x < KBD_IMG_W; x++) {
             const int i = x + y * KBD_IMG_W;
             const uint8_t idx = (kbd_img[i >> 1] >> ((i & 1) << 2)) & 0x0F;
             if (!idx) continue;
-            VIDEO::vga.dotFast(bx + x, by + y, zxColor(idx & 7, (idx >> 3) & 1));
+            VIDEO::vga.dotFast(fbx + x, by + y, zxColor(idx & 7, (idx >> 3) & 1));
         }
     }
 
@@ -102,17 +131,20 @@ static void uiZxKeyboardPage() {
             if (k.vk == fabgl::VK_MENU_ENTER || k.vk == fabgl::VK_ESCAPE ||
                 k.vk == fabgl::VK_F1 || k.vk == fabgl::VK_MENU_LEFT) {
                 OSD::clickNoPause();
-                return;
+                break;
             }
         }
         sleep_ms(10);
     }
+    // Give the ZX palette back and re-install the UI's, so the menu we return to is
+    // painted in its own colours again.
+    if (zxpal) {
+        VIDEO::restoreUiDS80Palette();
+        gfxResumePalette();
+    }
 }
 
-void act_helpZxKeyboard() {
-    if (Sf.ds80) { OSD::zxKeyboardOverlay(); return; }   // see uiZxKeyboardPage note
-    uiZxKeyboardPage();
-}
+void act_helpZxKeyboard() { uiZxKeyboardPage(); }
 // About: one scrollable page — the logo card on top, the credits below, both
 // moving together (option A). The logo's 31 colours fill every free palette
 // slot around the UI block for the duration of the page (UiLogo.h). DS80 has no
@@ -228,8 +260,14 @@ void act_helpRemapInfo() {
 // ── Additional hardware ────────────────────────────────────────────────────────
 // LED legend in the new chrome: the sprites are LED::drawGlyph's own 8x8 bitmaps
 // (drawn with palette indices, so ours work), two columns of "glyph + label".
+// Works in DS80 too: the sprites go through LED::drawGlyph → dotFast, which in DS80
+// maps the colour byte via ds80_color_lut = profi_pair_lookup[c][c] — and that LUT is
+// rebuilt by applyUiDS80Palette, so our palette indices resolve to OUR colours. No
+// free pair is needed (the earlier note claiming otherwise was wrong); the only real
+// difference is that dotFast addresses the framebuffer in BYTES, i.e. half a logical
+// DS80 pixel column, so the glyph x is halved below — which also renders it 2 px per
+// pixel, matching the 2x horizontal glyph scale the DS80 text uses.
 void act_ledLegend() {
-    if (Sf.ds80) { OSD::showLedLegend(); return; }   // DS80: no free palette pair
 
     struct Entry { LED::Id id; const char* label; };
     static const Entry entries[] = {
@@ -289,7 +327,7 @@ void act_ledLegend() {
         if (r >= rows) continue;
         const int x = ix + pad + col * colw;
         const int y = body_y + r * lh;
-        LED::drawGlyph(entries[i].id, x, y + 1, fg, bg);
+        LED::drawGlyph(entries[i].id, Sf.ds80 ? (x >> 1) : x, y + 1, fg, bg);
         textClip(x + 10 * sc, y + 1, colw - 12 * sc, entries[i].label, C_TEXT);
     }
 
