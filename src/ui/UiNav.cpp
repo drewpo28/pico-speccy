@@ -43,7 +43,15 @@ void DynRows::add(const char* lbl, const char* val, int32_t t, bool dimmed) {
     snprintf(value[n], NM_DYN_VALUE_LEN, "%s", val ? val : "");
     tag[n] = t;
     dim[n] = dimmed ? 1 : 0;
+    badge[n][0] = '\0';
+    badge_st[n] = 0;
     n++;
+}
+
+void DynRows::badgeLast(const char* txt, bool active) {
+    if (!n || !txt) return;
+    snprintf(badge[n - 1], sizeof(badge[0]), "%s", txt);
+    badge_st[n - 1] = active ? 1 : 2;
 }
 
 void requestClose() { S.quit = true; }

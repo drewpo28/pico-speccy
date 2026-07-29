@@ -59,6 +59,12 @@ struct DynRows {
     char    value[NM_DYN_MAX_ROWS][NM_DYN_VALUE_LEN];
     int32_t tag[NM_DYN_MAX_ROWS];       // passed to the level's action as its argument
     uint8_t dim[NM_DYN_MAX_ROWS];       // 1 = shown greyed out and not selectable
+    // Optional short flag drawn immediately after the label, in its own colour:
+    // state 1 = active (red, "this is on"), 2 = inactive (greyed). Disk slots use it
+    // for write-protect, which as a value-column suffix was invisible the moment the
+    // filename needed truncating — which is most of the time.
+    char    badge[NM_DYN_MAX_ROWS][5];
+    uint8_t badge_st[NM_DYN_MAX_ROWS];  // 0 = no badge
     // A builder may ask the nav to land the cursor on the row with this tag
     // (e.g. the persist picker opens on Config::persist_slot).
     int32_t focus_tag;
@@ -66,6 +72,8 @@ struct DynRows {
 
     void clear() { n = 0; focus_set = false; }
     void add(const char* lbl, const char* val = nullptr, int32_t t = 0, bool dimmed = false);
+    // Flags the row just added (no-op if none was).
+    void badgeLast(const char* txt, bool active);
     void focusTag(int32_t t) { focus_tag = t; focus_set = true; }
 };
 

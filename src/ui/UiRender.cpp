@@ -257,13 +257,25 @@ static void drawLeftRow(int visRow) {
         int rw = (val && *val) ? textWidth(val) : 0;
         const int maxv = (LY.lw - 2 * LY.pad) / 2;
         if (rw > maxv) rw = maxv;
-        const int availw = LY.lw - 2 * LY.pad - rw - (rw ? LY.pad : 0);
+        int availw = LY.lw - 2 * LY.pad - rw - (rw ? LY.pad : 0);
+        // A badge sits between label and value, in the label's colour scheme but with
+        // its own ink, so its state reads at a glance (write-protect: red = on).
+        const char* bdg = S.dyn.badge_st[r] ? S.dyn.badge[r] : nullptr;
+        const int bw = bdg ? textWidth(bdg) + LY.pad : 0;
+        availw -= bw;
+        if (availw < 0) availw = 0;
         if (sel && !dim) {
             snprintf(s_mq_lbl, sizeof(s_mq_lbl), "%s", S.dyn.label[r]);
             s_mq_avail = availw;
             mqLabel(LY.lx + LY.pad, y + 1, availw, S.dyn.label[r], ink);
         } else {
             textClip(LY.lx + LY.pad, y + 1, availw, S.dyn.label[r], ink);
+        }
+        if (bdg) {
+            const int lw = textWidth(S.dyn.label[r]);
+            const int bx = LY.lx + LY.pad + (lw < availw ? lw : availw) + LY.pad;
+            text(bx, y + 1, bdg,
+                 dim ? C_DISABLED : (S.dyn.badge_st[r] == 1 ? C_ICON_R : C_DISABLED));
         }
         if (rw)
             textClip(LY.lx + LY.lw - LY.pad - rw, y + 1, rw, val,

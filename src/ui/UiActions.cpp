@@ -753,11 +753,14 @@ static void buildSlots(DynRows& d, DiskIface iface) {
         if (!fn.empty()) {
             const size_t sl = fn.rfind('/');
             if (sl != string::npos) fn = fn.substr(sl + 1);
-            if (wpCol && DiskSlots::slotWP(iface, i)) fn += " WP";
         } else {
             fn = "<empty>";
         }
         d.add(DiskSlots::slotLabel(iface, i).c_str(), fn.c_str(), i, false);
+        // WP used to be a " WP" suffix on the filename — i.e. the first thing lost when
+        // the name was truncated, which is the normal case. As a badge next to "Drive A"
+        // it is always visible, and F2 now has visible feedback on empty slots too.
+        if (wpCol) d.badgeLast("WP", DiskSlots::slotWP(iface, i));
     }
 }
 
