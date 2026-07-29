@@ -58,6 +58,11 @@ uint8_t RTC::encHour(int h24) {
     int h12 = h24 % 12; if (!h12) h12 = 12;
     return (uint8_t)(encField(h12) | (pm ? 0x80 : 0x00));
 }
+const char* RTC::formatStr() {
+    return regBcd() ? (reg24h() ? "BCD/24h" : "BCD/12h")
+                    : (reg24h() ? "bin/24h" : "bin/12h");
+}
+
 int RTC::decHour(uint8_t v) {
     if (reg24h()) return decField(v);
     bool pm = v & 0x80;

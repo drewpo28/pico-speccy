@@ -172,6 +172,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "MB02.h"
 #include "MachineSwitch.h"
 #include "GS/GS.h"
+#include "RTC.h"
 
 #include <malloc.h>
 
@@ -179,6 +180,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 
 #include <string>
 #include <cstdio>
+#include <cstdarg>   // infoAppend's vsnprintf
 
 #if USE_NESPAD
 #include "nespad.h"
@@ -223,7 +225,10 @@ extern bool SELECT_VGA;
 extern int ram_pages, butter_pages, psram_pages, swap_pages;
 
 // Shared buffer for HWInfo/ChipInfo/BoardInfo/EmulatorInfo (never called concurrently).
-#define OSD_INFO_BUF_SZ 1536
+// Sized for the longest page — Emulator Info, whose worst case (Karabas + every
+// storage interface with 4 mounted images each + network) runs past 60 lines.
+// snprintf truncates silently, so growing a page means checking this first.
+#define OSD_INFO_BUF_SZ 2560
 static char osd_info_buf[OSD_INFO_BUF_SZ] __attribute__((aligned(4)));
 
 uint8_t OSD::cols;                     // Maximum columns
@@ -485,9 +490,13 @@ bool OSD::featureBudgetGate(int featureId) {
             rows[nCand]  = MSG_BUDGET_APPLY;
             items[nCand] = rows[nCand].c_str();
             char title[72];
-            snprintf(title, sizeof(title), "%s: free %uK / need %uK",
-                     featureName(f), (unsigned)(freed / 1024),
-                     (unsigned)((deficit + 1023) / 1024));
+            // "need X, picked Y" — the old "free 0K / need 9K" read as "you have
+            // 0K free", which is not what either number means: `freed` is what the
+            // ticked boxes would reclaim, `deficit` the shortfall against this
+            // feature's biggest single allocation (not against total free heap).
+            snprintf(title, sizeof(title), "%s: need %uK, picked %uK",
+                     featureName(f), (unsigned)((deficit + 1023) / 1024),
+                     (unsigned)(freed / 1024));
             const int pick = nm::uiPickList(title, items, nCand + 1, cur);
             if (pick < 0) break;                        // Esc: not enabled
             if (pick < nCand) {                         // toggle a candidate
@@ -538,8 +547,8 @@ bool OSD::featureBudgetGate(int featureId) {
         menu += (string)MSG_BUDGET_APPLY + "\t\n";
 
         char foot[40];
-        snprintf(foot, sizeof(foot), "free %uK / need %uK",
-                 (unsigned)(freed / 1024), (unsigned)((deficit + 1023) / 1024));
+        snprintf(foot, sizeof(foot), "need %uK, picked %uK",
+                 (unsigned)((deficit + 1023) / 1024), (unsigned)(freed / 1024));
         menu_footer = foot;
 
         uint8_t opt = menuRun(menu);
@@ -3038,7 +3047,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // An online-archive file was downloaded to /tmp and launched: tear the
             // whole menu stack down so the freshly loaded program runs immediately.
             if (OSD::net_launch_close) { OSD::net_launch_close = false; if (VIDEO::OSD) OSD::drawStats(); return; }
-            uint8_t opt = menuRun(getMenuPrefix() + archToStr(Config::arch) + "\n" +
+            uint8_t opt = menuRun(getMenuPrefix() +
+                archToStr(archDisplay(Config::arch, Config::romSet)) + "\n" +
                 (!FileUtils::fsMount ? MENU_MAIN_NO_SD : MENU_MAIN)
             );
             if (opt == 1) { // Volume
@@ -10024,8 +10034,10 @@ void OSD::showTextDialog(const char* title, const char* text, bool blocking, int
         VIDEO::SaveRect.save(sx, sy, OSD_W, OSD_H);
     }
 
-    // Parse text into line pointers (zero-copy: index into original text)
-    const int MAX_DLGLINES = 64;
+    // Parse text into line pointers (zero-copy: index into original text).
+    // Matches the new UI's text page (UiDialog.cpp MAXL) so a page that fits
+    // there is not silently cut short here.
+    const int MAX_DLGLINES = 128;
     const char* lineStart[MAX_DLGLINES];
     uint8_t lineLen[MAX_DLGLINES];
     int nlines = 0;
@@ -10750,33 +10762,82 @@ void OSD::MemoryInfo() {
     showTextDialog("Memory Info", buf);
 }
 
+// snprintf-style append that returns what was ACTUALLY written, never the
+// would-be length. The info builders accumulate `pos += ...` across dozens of
+// calls; with raw snprintf a page that outgrows its buffer pushes `pos` past the
+// end, and the next call then gets an out-of-bounds `buf + pos` together with an
+// underflowed (huge) size_t size — a write past the buffer instead of the
+// intended truncation. Clamping here makes overflow degrade into a cut-off page.
+static int infoAppend(char* buf, int pos, int bufsize, const char* fmt, ...)
+    __attribute__((format(printf, 4, 5)));
+static int infoAppend(char* buf, int pos, int bufsize, const char* fmt, ...) {
+    if (pos < 0 || pos >= bufsize - 1) return 0;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + pos, bufsize - pos, fmt, ap);
+    va_end(ap);
+    if (n < 0) return 0;
+    return (pos + n >= bufsize) ? bufsize - 1 - pos : n;
+}
+
 // Helper: append just the filename part of a path, truncated to maxlen chars
 static int appendFilename(char* buf, int pos, int bufsize, const string& path, int maxlen) {
-    if (path.empty()) return snprintf(buf + pos, bufsize - pos, "(none)");
+    if (path.empty()) return infoAppend(buf, pos, bufsize, "(none)");
     size_t slash = path.find_last_of("/");
     const char* fn = (slash != string::npos) ? path.c_str() + slash + 1 : path.c_str();
     int len = strlen(fn);
     if (len <= maxlen)
-        return snprintf(buf + pos, bufsize - pos, "%s", fn);
+        return infoAppend(buf, pos, bufsize, "%s", fn);
     else
-        return snprintf(buf + pos, bufsize - pos, "..%s", fn + len - (maxlen - 2));
+        return infoAppend(buf, pos, bufsize, "..%s", fn + len - (maxlen - 2));
 }
 
-void OSD::EmulatorInfo() {
+static void buildEmulatorInfoText() {
     char (&buf)[OSD_INFO_BUF_SZ] = osd_info_buf;
     int pos = 0;
 
     // --- Machine ---
-    pos += snprintf(buf + pos, sizeof(buf) - pos,
+    pos += infoAppend(buf, pos, sizeof(buf),
         " --- Machine ---\n"
         " Architecture   : %s\n"
         " ROM set        : %s\n"
         " Issue 2        : %s\n"
         " ALU Timing     : %s\n",
-        archToStr(Config::arch),
-        romsetToStr(Config::romSet),
+        // archDisplay: Config only ever holds A_PROFI, so a Karabas romset would
+        // otherwise report "Profi" here while the Machine menu says "Karabas".
+        archToStr(archDisplay(Config::arch, Config::romSet)),
+        romsetDisplay(Config::romSet),
         Config::Issue2 ? "On" : "Off",
         Config::AluTiming == 0 ? "Early" : "Late");
+
+    // Rows that only exist in some configurations — printed only when they do,
+    // so the common case stays short.
+    if (Config::throtling)
+        pos += infoAppend(buf, pos, sizeof(buf),
+            " Frameskip      : %d us\n", Config::throtling * 1000);
+    if (Z80Ops::isProfi && Config::profi_ext_keys)
+        pos += infoAppend(buf, pos, sizeof(buf), " XT keyboard    : On\n");
+    if (Config::byte_cobmect_mode)
+        pos += infoAppend(buf, pos, sizeof(buf), " COBMECT mode   : On\n");
+    if (MEM_PG_CNT != 64)   // Murmuzavr SD-swap: 64 pages = no swap
+        pos += infoAppend(buf, pos, sizeof(buf),
+            " SD swap        : %u MB\n", (unsigned)(MEM_PG_CNT / 64));
+
+    // RTC: the live reading plus the register format the guest picked. Both are
+    // here because a wrong-looking clock is nearly always one of the two.
+    if (!Config::rtc_enabled) {
+        pos += infoAppend(buf, pos, sizeof(buf), " RTC + NVRAM    : Off\n");
+    } else {
+        int ry, rmo, rd, rh, rmi, rs;
+        if (RTC::now(ry, rmo, rd, rh, rmi, rs))
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " RTC + NVRAM    : On (%s)\n"
+                "  time          : %02d.%02d.%04d %02d:%02d\n",
+                RTC::formatStr(), rd, rmo, ry, rh, rmi);
+        else
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " RTC + NVRAM    : On (not set)\n");
+    }
 
     // --- Video ---
     {
@@ -10789,17 +10850,17 @@ void OSD::EmulatorInfo() {
             case Config::VM_720x576_50: vmname = "720x576@50"; break;
             default:                    vmname = "unknown";    break;
         }
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "\n --- Video ---\n");
+        pos += infoAppend(buf, pos, sizeof(buf), "\n --- Video ---\n");
 #ifdef VGA_HDMI
         extern bool SELECT_VGA;
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += infoAppend(buf, pos, sizeof(buf),
             " Video output   : %s %s\n",
             SELECT_VGA ? "VGA" : "HDMI", vmname);
 #else
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += infoAppend(buf, pos, sizeof(buf),
             " Video mode     : %s\n", vmname);
 #endif
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += infoAppend(buf, pos, sizeof(buf),
             " Scanlines      : %s\n"
             " Render         : %s\n"
             " Palette        : %s\n",
@@ -10813,57 +10874,90 @@ void OSD::EmulatorInfo() {
             if (!Config::gigascreen_enabled || Config::gigascreen_onoff == 0) gs = "Off";
             else if (Config::gigascreen_onoff == 1) gs = "On";
             else gs = "Auto";
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " Gigascreen     : %s\n"
                 " ULA+           : %s\n"
-                " Timex video    : %s\n",
+                " Timex video    : %s\n"
+                " V-Sync         : %s\n",
                 gs,
                 Config::ulaplus ? "On" : "Off",
-                Config::timex_video ? "On (#FF)" : "Off");
+                Config::timex_video ? "On (#FF)" : "Off",
+                Config::v_sync_enabled ? "On" : "Off");
         }
+        // 16col is a Pentagon-only port (#EFF7 D0); dither only exists on HDMI.
+        if (Z80Ops::isPentagon)
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " 16col mode     : %s\n",
+                Config::mode16col_onoff ? "On (#EFF7)" : "Off");
+#ifdef VGA_HDMI
+        {
+            extern bool SELECT_VGA;
+            if (!SELECT_VGA)
+                pos += infoAppend(buf, pos, sizeof(buf),
+                    " HDMI dither    : %s\n", Config::hdmi_dither ? "On" : "Off");
+        }
+#endif
     }
 
     // --- Sound ---
     {
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "\n --- Sound ---\n");
+        pos += infoAppend(buf, pos, sizeof(buf), "\n --- Sound ---\n");
 
         // AY chip
         if (Config::AY48) {
             static const char* stereo[] = { "ABC", "ACB", "Mono" };
             int si = Config::ayConfig;
             if (si > 2) si = 0;
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " AY-3-8912      : On (%s) #FFFD\n", stereo[si]);
         } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " AY-3-8912      : Off\n");
         }
 
         // TurboSound
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += infoAppend(buf, pos, sizeof(buf),
             " TurboSound     : %s\n", Config::turbosound ? "On" : "Off");
 
         // Covox
         if (Config::covox == 1)
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " Covox          : On (#FB)\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " Covox          : On (#FB)\n");
         else if (Config::covox == 2)
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " Covox          : On (#DD)\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " Covox          : On (#DD)\n");
         else
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " Covox          : Off\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " Covox          : Off\n");
 
         // SounDrive
-        pos += snprintf(buf + pos, sizeof(buf) - pos, " SounDrive      : %s\n",
+        pos += infoAppend(buf, pos, sizeof(buf), " SounDrive      : %s\n",
             Config::soundrive == 2 ? (Config::soundriveEnabled() ? "Auto (On)" : "Auto (Off)")
                                    : (Config::soundrive == 1 ? "On" : "Off"));
 
         // SAA1099
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += infoAppend(buf, pos, sizeof(buf),
             " SAA1099        : %s\n",
             Config::SAA1099 ? "On (#FF)" : "Off");
 
+        // General Sound — configured vs actually running: GS::init needs PSRAM
+        // for its sample RAM, so "enabled but not up" is a real state (same
+        // distinction MB-02+ makes below).
+        if (!Config::gs_enabled) {
+            pos += infoAppend(buf, pos, sizeof(buf), " General Sound  : Off\n");
+        } else if (!GS::enabled) {
+            pos += infoAppend(buf, pos, sizeof(buf), " General Sound  : No PSRAM\n");
+        } else {
+            static const char* gsclk[] = { "12", "13", "14", "20", "24" };
+            uint32_t kb = GS::configuredRamBytes() >> 10;
+            char ram[8];
+            if (kb >= 1024) snprintf(ram, sizeof(ram), "%uM", (unsigned)(kb >> 10));
+            else            snprintf(ram, sizeof(ram), "%uK", (unsigned)kb);
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " General Sound  : On %s @%s MHz\n",
+                ram, gsclk[Config::gs_clock < 5 ? Config::gs_clock : 1]);
+        }
+
         // MIDI
         if (Config::midi == 0) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " MIDI           : Off\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " MIDI           : Off\n");
         } else if (Config::midi == 3) {
             static const char* presets[] = {
                 "GM", "Piano", "Chiptune", "Strings",
@@ -10871,27 +10965,31 @@ void OSD::EmulatorInfo() {
             };
             int pi = Config::midi_synth_preset;
             if (pi > 7) pi = 0;
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " MIDI           : Software (%s)\n", presets[pi]);
         } else if (Config::midi == 4) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " MIDI           : DLS (%s)\n",
                 MidiSynth::bankReady() ? "bank OK" : "no bank");
         } else {
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " MIDI           : %s\n",
                 Config::midi == 1 ? "AY bitbang" : "ShamaZX");
         }
 
         // Audio driver
         if (Config::audio_driver == 4)
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " Audio driver   : HDMI\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " Audio driver   : HDMI\n");
         else if (Config::audio_driver == 3)
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " Audio driver   : AY-3-8910\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " Audio driver   : AY-3-8910\n");
         else
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " Audio driver   : %s%s\n",
+            pos += infoAppend(buf, pos, sizeof(buf), " Audio driver   : %s%s\n",
                 (is_i2s_enabled ? "i2s" : "PWM"),
                 (Config::audio_driver == 0 ? " (auto)" : ""));
+
+        if (Config::audio_boost)
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " Volume boost   : +%d\n", Config::audio_boost);
     }
 
     // --- Input ---
@@ -10902,130 +11000,250 @@ void OSD::EmulatorInfo() {
         };
         int ji = Config::joystick;
         if (ji > 6) ji = 6;
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += infoAppend(buf, pos, sizeof(buf),
             "\n --- Input ---\n");
 
         // Joystick with port number
         if (ji == JOY_KEMPSTON)
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " Joystick       : Kempston (#%02X)\n", Config::kempstonPort);
         else if (ji == JOY_FULLER)
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " Joystick       : Fuller (#7F)\n");
         else
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " Joystick       : %s\n", jnames[ji]);
 
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
-            " TAB as fire    : %s\n",
-            Config::TABasfire1 ? "On" : "Off");
+        {
+            static const char* sjnames[] = { "Off", "DPAD #1", "DPAD #2", "NUMPAD" };
+            int sji = Config::secondJoy <= 3 ? Config::secondJoy : 0;
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " Second joystick: %s\n", sjnames[sji]);
+        }
+
+        pos += infoAppend(buf, pos, sizeof(buf),
+            " TAB as fire    : %s\n"
+            " Cursor as joy  : %s\n"
+            " Joy to cursor  : %s\n"
+            " WASD as Kempst.: %s\n"
+            " R.Enter as Spc : %s\n",
+            Config::TABasfire1 ? "On" : "Off",
+            Config::CursorAsJoy ? "On" : "Off",
+            Config::joy2cursor ? "On" : "Off",
+            Config::wasd ? "On" : "Off",
+            Config::rightSpace ? "On" : "Off");
     }
 
     // --- Storage ---
     {
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "\n --- Storage ---\n");
+        pos += infoAppend(buf, pos, sizeof(buf), "\n --- Storage ---\n");
+
+        if (UsbMsc::ready())
+            pos += infoAppend(buf, pos, sizeof(buf), " USB drive      : %s\n",
+                FileUtils::usbRoot ? "Ready (as root)" : "Ready");
 
         // esxDOS
         {
             static const char* esx[] = { "Off", "DivMMC", "DivIDE", "DivSD" };
             int ei = Config::esxdos;
             if (ei > 3) ei = 0;
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
+            pos += infoAppend(buf, pos, sizeof(buf),
                 " esxDOS         : %s\n", esx[ei]);
 
             // Show image names depending on mode (hd0/hd1 are shared slots).
             if (ei == 1) {
                 // DivMMC — shows hd0 only.
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "  hd0           : ");
+                pos += infoAppend(buf, pos, sizeof(buf), "  hd0           : ");
                 pos += appendFilename(buf, pos, sizeof(buf), Config::esxdos_hdf_image[0], 19);
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
+                pos += infoAppend(buf, pos, sizeof(buf), "\n");
             } else if (ei == 2) {
                 // DivIDE — both slots.
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "  hd0           : ");
+                pos += infoAppend(buf, pos, sizeof(buf), "  hd0           : ");
                 pos += appendFilename(buf, pos, sizeof(buf), Config::esxdos_hdf_image[0], 19);
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "  hd1           : ");
+                pos += infoAppend(buf, pos, sizeof(buf), "\n");
+                pos += infoAppend(buf, pos, sizeof(buf), "  hd1           : ");
                 pos += appendFilename(buf, pos, sizeof(buf), Config::esxdos_hdf_image[1], 19);
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
+                pos += infoAppend(buf, pos, sizeof(buf), "\n");
             }
         }
+
+        // Z-Controller (mutually exclusive with esxDOS/MB-02+, hence its own row)
+        if (Config::zcontroller)
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " Z-Controller   : On (#77/#57)\n");
 
         // IDE/HDD (NEMO/PROFI)
         if (Config::ide_scheme != 0) {
             static const char* idesc[] = { "Off", "NEMO", "PROFI" };
             int si = Config::ide_scheme; if (si > 2) si = 0;
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " IDE/HDD        : %s\n", idesc[si]);
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "  hd0           : ");
+            pos += infoAppend(buf, pos, sizeof(buf), " IDE/HDD        : %s\n", idesc[si]);
+            pos += infoAppend(buf, pos, sizeof(buf), "  hd0           : ");
             pos += appendFilename(buf, pos, sizeof(buf), Config::ide_image[0], 19);
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "  hd1           : ");
+            pos += infoAppend(buf, pos, sizeof(buf), "\n");
+            pos += infoAppend(buf, pos, sizeof(buf), "  hd1           : ");
             pos += appendFilename(buf, pos, sizeof(buf), Config::ide_image[1], 19);
-            pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
+            pos += infoAppend(buf, pos, sizeof(buf), "\n");
         }
 
         // TR-DOS — available for Pentagon or Byte 128K
         {
             bool trdos_available = (Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte);
             if (trdos_available) {
-                pos += snprintf(buf + pos, sizeof(buf) - pos, " TR-DOS         : On");
+                pos += infoAppend(buf, pos, sizeof(buf), " TR-DOS         : On");
                 if (Config::trdosFastMode) {
-                    pos += snprintf(buf + pos, sizeof(buf) - pos, " (fast)");
+                    pos += infoAppend(buf, pos, sizeof(buf), " (fast)");
                 }
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
+                pos += infoAppend(buf, pos, sizeof(buf), "\n");
+
+                {
+                    static const char* trbios[] = { "5.03", "5.04TM", "5.05D", "Custom" };
+                    pos += infoAppend(buf, pos, sizeof(buf),
+                        "  ROM / autoboot: %s / %s\n",
+                        trbios[Config::trdosBios < 4 ? Config::trdosBios : 2],
+                        Config::trdosAutoBoot ? "On" : "Off");
+                }
 
                 // Show disk drives A:-D:
                 static const char drive_letter[] = "ABCD";
                 for (int i = 0; i < 4; i++) {
-                    pos += snprintf(buf + pos, sizeof(buf) - pos, "  %c:            : ", drive_letter[i]);
+                    pos += infoAppend(buf, pos, sizeof(buf), "  %c:            : ", drive_letter[i]);
                     if (ESPectrum::fdd.disk[i] && !ESPectrum::fdd.disk[i]->fname.empty()) {
                         pos += appendFilename(buf, pos, sizeof(buf), ESPectrum::fdd.disk[i]->fname, 19);
                         if (Config::driveWP[i])
-                            pos += snprintf(buf + pos, sizeof(buf) - pos, " WP");
+                            pos += infoAppend(buf, pos, sizeof(buf), " WP");
                     } else
-                        pos += snprintf(buf + pos, sizeof(buf) - pos, "(empty)");
-                    pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
+                        pos += infoAppend(buf, pos, sizeof(buf), "(empty)");
+                    pos += infoAppend(buf, pos, sizeof(buf), "\n");
                 }
             } else {
-                pos += snprintf(buf + pos, sizeof(buf) - pos, " TR-DOS         : Off\n");
+                pos += infoAppend(buf, pos, sizeof(buf), " TR-DOS         : Off\n");
             }
         }
 
         // MB-02+
         if (MB02::enabled) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " MB-02+         : On\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " MB-02+         : On\n");
             for (int i = 0; i < 4; i++) {
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "  %02d            : ", i + 1);
+                pos += infoAppend(buf, pos, sizeof(buf), "  %02d            : ", i + 1);
                 if (ESPectrum::mb02_fdd.disk[i] && !ESPectrum::mb02_fdd.disk[i]->fname.empty()) {
                     pos += appendFilename(buf, pos, sizeof(buf), ESPectrum::mb02_fdd.disk[i]->fname, 19);
                     if (Config::mb02WP[i])
-                        pos += snprintf(buf + pos, sizeof(buf) - pos, " WP");
+                        pos += infoAppend(buf, pos, sizeof(buf), " WP");
                 } else
-                    pos += snprintf(buf + pos, sizeof(buf) - pos, "(empty)");
-                pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
+                    pos += infoAppend(buf, pos, sizeof(buf), "(empty)");
+                pos += infoAppend(buf, pos, sizeof(buf), "\n");
             }
         } else if (Config::mb02) {
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " MB-02+         : No PSRAM\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " MB-02+         : No PSRAM\n");
         }
 
         // DMA
         if (Config::dma_mode == 1)
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " DMA            : Z80 DMA (#0B)\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " DMA            : Z80 DMA (#0B)\n");
         else if (Config::dma_mode == 2)
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " DMA            : zxnDMA (#6B)\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " DMA            : zxnDMA (#6B)\n");
         else
-            pos += snprintf(buf + pos, sizeof(buf) - pos, " DMA            : Off\n");
+            pos += infoAppend(buf, pos, sizeof(buf), " DMA            : Off\n");
+
+        // ALF cartridge (ALF TV GAME): built-in Elf-1 unless a cart was flashed.
+        if (Z80Ops::isALF) {
+            pos += infoAppend(buf, pos, sizeof(buf), " ALF cartridge  : ");
+            if (Config::alfCartBanks) {
+                pos += appendFilename(buf, pos, sizeof(buf), Config::alfCartPath, 14);
+                pos += infoAppend(buf, pos, sizeof(buf), " %dx16K\n",
+                    Config::alfCartBanks);
+            } else
+                pos += infoAppend(buf, pos, sizeof(buf), "built-in Elf-1\n");
+        }
+
+        // Loaded snapshot (the .sna/.z80 that Config remembers across reboots)
+        if (Config::ram_file != NO_RAM_FILE) {
+            pos += infoAppend(buf, pos, sizeof(buf), " Snapshot       : ");
+            pos += appendFilename(buf, pos, sizeof(buf), Config::ram_file, 19);
+            pos += infoAppend(buf, pos, sizeof(buf), "\n");
+        }
 
         // Tape
-        pos += snprintf(buf + pos, sizeof(buf) - pos, " Tape           : ");
+        pos += infoAppend(buf, pos, sizeof(buf), " Tape           : ");
         pos += appendFilename(buf, pos, sizeof(buf), Tape::tapeFileName, 19);
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "\n");
+        pos += infoAppend(buf, pos, sizeof(buf), "\n");
 
-        pos += snprintf(buf + pos, sizeof(buf) - pos,
+        pos += infoAppend(buf, pos, sizeof(buf),
             " Flash load     : %s\n",
             Config::flashload ? "On" : "Off");
+
+        // Tape options as one row — four booleans each on their own line would
+        // dominate the section.
+        {
+            char opts[40]; int op = 0;
+            if (Config::tape_player)    op += snprintf(opts + op, sizeof(opts) - op, "Player, ");
+            if (Config::tape_timing_rg) op += snprintf(opts + op, sizeof(opts) - op, "R.G., ");
+            if (Config::tape_autostart) op += snprintf(opts + op, sizeof(opts) - op, "Auto, ");
+            if (op >= 2) opts[op - 2] = '\0';    // drop the trailing ", "
+            else         snprintf(opts, sizeof(opts), "Default");
+            pos += infoAppend(buf, pos, sizeof(buf), " Tape options   : %s\n", opts);
+        }
     }
 
-    showTextDialog("Emulator Info", buf);
+    // --- Network ---
+    {
+        pos += infoAppend(buf, pos, sizeof(buf), "\n --- Network ---\n");
+
+        if (!Config::zifi_enabled) {
+            pos += infoAppend(buf, pos, sizeof(buf), " ZiFi NIC       : Off\n");
+        } else if (Config::zifi_transport == 1) {
+            pos += infoAppend(buf, pos, sizeof(buf), " ZiFi NIC       : On (USB-CDC)\n");
+        } else {
+            // Pins are resolved at runtime from the board's UART pinmux, so show
+            // what the NIC actually claimed rather than the stored sentinel.
+            uint8_t tx = BoardPins::PIN_OFF, rx = BoardPins::PIN_OFF;
+            if (BoardPins::resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx))
+                pos += infoAppend(buf, pos, sizeof(buf),
+                    " ZiFi NIC       : On (UART %d/%d)\n", tx, rx);
+            else
+                pos += infoAppend(buf, pos, sizeof(buf),
+                    " ZiFi NIC       : On (FIFO only)\n");
+        }
+        if (Config::zifi_enabled)
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " Baud           : %u\n", (unsigned)Config::zifi_baud);
+
+        // Cached status only — ZiFiAT::getStatus() blocks on the ESP.
+        if (!Config::wifi_enabled)
+            pos += infoAppend(buf, pos, sizeof(buf), " WiFi           : Off\n");
+        else if (ZiFiAT::connected)
+            // An SSID is not a path — clip it, don't run it through appendFilename
+            // (which would keep only the part after a '/').
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " WiFi           : %.19s\n"
+                "  IP            : %s\n",
+                ZiFiAT::current_ssid.c_str(), ZiFiAT::current_ip.c_str());
+        else
+            pos += infoAppend(buf, pos, sizeof(buf),
+                " WiFi           : On (not connected)\n");
+    }
+
+}
+
+#if NEW_UI
+// Snapshot for the new UI's live page (Help > Emulator info). Live rather than a
+// one-shot snapshot because the page now carries state that moves while it is
+// open — the RTC clock above all: a frozen reading reads as a stopped clock.
+const char* emuInfoText() {
+    buildEmulatorInfoText();
+    return osd_info_buf;
+}
+#endif
+
+void OSD::EmulatorInfo() {
+#if NEW_UI
+    if (nm::available()) {
+        nm::uiTextPageLive(TXT_INFO_EMU, emuInfoText, 1000);
+        return;
+    }
+#endif
+    buildEmulatorInfoText();
+    showTextDialog("Emulator Info", osd_info_buf);
 }
 
 extern "C" int hid_app_format_devices_info(char* buf, int bufsz);

@@ -39,6 +39,12 @@ public:
 
     static uint8_t dbgSel() { return sel; } // currently selected register (tracing)
 
+    // The data format the guest selected in control reg B — i.e. how every clock
+    // read is encoded ("BCD/24h" out of reset). Worth showing in the OSD: the bits
+    // are battery-backed in cmos.nvr, and a guest that flips DM makes a perfectly
+    // correct clock render as nonsense (day 29 as binary 0x29 reads back as 41).
+    static const char* formatStr();
+
     // Persist CMOS NVRAM to SD (acts as the battery). flushNVRAM() is cheap when
     // not dirty — call it from the main loop; it writes at most every ~1.5s.
     static void    flushNVRAM();

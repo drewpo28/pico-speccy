@@ -28,41 +28,52 @@
     X(A_KARABAS,    "Karabas")  \
     X(A_ALF,        "ALF")
 
-#define NM_ROMSET_TABLE(X)         \
-    X(R_48K,            "48K")         \
-    X(R_48K_ES,         "48Kes")       \
-    X(R_48K_CS,         "48Kcs")       \
-    X(R_48K_BY,         "48Kby")       \
-    X(R_128K,           "128K")        \
-    X(R_128K_ES,        "128Kes")      \
-    X(R_PLUS2,          "+2")          \
-    X(R_PLUS2_ES,       "+2es")        \
-    X(R_ZX81P,          "ZX81+")       \
-    X(R_128K_CS,        "128Kcs")      \
-    X(R_128K_BY,        "128Kby")      \
-    X(R_128K_BY_GLUK,   "128Kbg")      \
-    X(R_PENT,           "128Kp")       \
-    X(R_PENT_GLUK,      "128Kpg")      \
-    X(R_PROFI,          "Profi")       \
-    X(R_PROFI_KAR,      "ProfiKarabas")    \
-    X(R_PROFI_PQ,       "ProfiPQ")         \
-    X(R_PROFI_FT,       "ProfiKarabasFT")  \
-    X(R_PROFI_FDI,      "ProfiKarabasFDI") \
-    X(R_ALF1,           "ALF1")
+// Third column = the human label. The second column is an on-disk spelling that
+// must never change (NVS, .esp sidecars); the third is what a user reads, kept
+// here rather than in UiStrings.h so the classic menus and the info pages get it
+// too, and so a new romset cannot be added without one.
+#define NM_ROMSET_TABLE(X)                                        \
+    X(R_48K,            "48K",              "48K")                \
+    X(R_48K_ES,         "48Kes",            "48K Spanish")        \
+    X(R_48K_CS,         "48Kcs",            "Custom 48K")         \
+    X(R_48K_BY,         "48Kby",            "Byte 48K")           \
+    X(R_128K,           "128K",             "128K")               \
+    X(R_128K_ES,        "128Kes",           "128K Spanish")       \
+    X(R_PLUS2,          "+2",               "+2")                 \
+    X(R_PLUS2_ES,       "+2es",             "+2 Spanish")         \
+    X(R_ZX81P,          "ZX81+",            "ZX81+")              \
+    X(R_128K_CS,        "128Kcs",           "Custom 128K")        \
+    X(R_128K_BY,        "128Kby",           "Byte 128K")          \
+    X(R_128K_BY_GLUK,   "128Kbg",           "Byte 128K+Gluk")     \
+    X(R_PENT,           "128Kp",            "128K")               \
+    X(R_PENT_GLUK,      "128Kpg",           "128K + Mr Gluk")     \
+    X(R_PROFI,          "Profi",            "Original")           \
+    X(R_PROFI_KAR,      "ProfiKarabas",     "ROMain")             \
+    X(R_PROFI_PQ,       "ProfiPQ",          "PQDOS")              \
+    X(R_PROFI_FT,       "ProfiKarabasFT",   "Flash Tool")         \
+    X(R_PROFI_FDI,      "ProfiKarabasFDI",  "FDImage")            \
+    X(R_ALF1,           "ALF1",             "ALF cartridge")
 
 #define NM_X_IDX(id, str) id,
-enum ArchIdx   : uint8_t { NM_ARCH_TABLE(NM_X_IDX)   ARCH_COUNT,
+#define NM_XR_IDX(id, str, ui) id,
+enum ArchIdx   : uint8_t { NM_ARCH_TABLE(NM_X_IDX)    ARCH_COUNT,
                            A_LAST = ARCH_COUNT,
                            A_NONE = 0xFF };
-enum RomsetIdx : uint8_t { NM_ROMSET_TABLE(NM_X_IDX) ROMSET_COUNT,
+enum RomsetIdx : uint8_t { NM_ROMSET_TABLE(NM_XR_IDX) ROMSET_COUNT,
                            R_LAST = ROMSET_COUNT,
                            R_NONE = 0xFF };
 #undef NM_X_IDX
+#undef NM_XR_IDX
 
 #define NM_X_STR(id, str) str,
-inline constexpr const char* kArchName  [ARCH_COUNT]   = { NM_ARCH_TABLE(NM_X_STR)   };
-inline constexpr const char* kRomsetName[ROMSET_COUNT] = { NM_ROMSET_TABLE(NM_X_STR) };
+#define NM_XR_STR(id, str, ui) str,
+#define NM_XR_UI(id, str, ui) ui,
+inline constexpr const char* kArchName    [ARCH_COUNT]   = { NM_ARCH_TABLE(NM_X_STR)    };
+inline constexpr const char* kRomsetName  [ROMSET_COUNT] = { NM_ROMSET_TABLE(NM_XR_STR) };
+inline constexpr const char* kRomsetUiName[ROMSET_COUNT] = { NM_ROMSET_TABLE(NM_XR_UI)  };
 #undef NM_X_STR
+#undef NM_XR_STR
+#undef NM_XR_UI
 
 // *_LAST serializes as "Last" (the NVS pref value); *_NONE has no spelling — it is an
 // argument sentinel, never persisted.
@@ -73,6 +84,13 @@ inline const char* archToStr(ArchIdx a) {
 inline const char* romsetToStr(RomsetIdx r) {
     if (r < ROMSET_COUNT) return kRomsetName[r];
     return r == R_LAST ? "Last" : "";
+}
+
+// For anything a user reads. romsetToStr() is the serialization spelling and
+// leaks internals ("ProfiKarabasFDI", "128Kbg") — never show it in the UI.
+inline const char* romsetDisplay(RomsetIdx r) {
+    if (r < ROMSET_COUNT) return kRomsetUiName[r];
+    return r == R_LAST ? "Last used" : "";
 }
 
 // Unknown/garbage input returns `def`, so a hand-edited NVS line can never put a

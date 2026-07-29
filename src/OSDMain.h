@@ -364,6 +364,8 @@ void ideCreateImage();
 const char* hwInfoText();
 // Live HID/XInput device list text (Help > HID devices).
 const char* hidInfoText();
+// Live emulated-machine summary text (Help > Emulator info).
+const char* emuInfoText();
 // Hot-key descriptions + current bindings (Help > Hot keys).
 const char* hotkeysText();
 #endif
