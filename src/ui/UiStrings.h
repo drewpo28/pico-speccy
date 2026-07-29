@@ -175,9 +175,6 @@
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
-#define TXT_MACH_XTKBD      "XT keyboard"
-#define TXT_MACH_OSDPAL     "OSD palette"
-#define TXT_MSG_XTKBD_HINT  " Hotkey Alt+~ toggles XT keyboard "
 
 // ROM set labels, shared by the machine rows and the Preferred rom rows.
 #define TXT_ROM_48K         "48K"

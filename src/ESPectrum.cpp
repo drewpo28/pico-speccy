@@ -2471,17 +2471,11 @@ void ESPectrum::loop() {
         // the DS80 packed-pair framebuffer instead of as striped garbage.  (If the
         // startup screen turns out to be standard mode by now, skip the guard.)
         const bool ds80 = profi_ds80_active;
-        if (ds80) {
-          VIDEO::profi_ds80_osd_active = true;
-          VIDEO::applyProfiOSDPalette();
-        }
+        if (ds80) VIDEO::profi_ds80_osd_active = true;
         //OSD::osdCenteredMsg(OSD_PROFI_LOADING, LEVEL_WARN, 2500);
         if (ds80) {
           VIDEO::profi_ds80_osd_active = false;
-          if (profi_ds80_active) {
-            VIDEO::restoreProfiLivePalette();
-            VIDEO::clearDS80Padding();
-          }
+          if (profi_ds80_active) VIDEO::clearDS80Padding();
         }
         profi_ds80_msg_at = 0; // one-shot per DS80 activation
       }

@@ -2111,6 +2111,19 @@ static string hkBindingText(int idx);
 static string expandHotkeys(const char* menu);
 extern const char* const hkDescEN[];
 
+// Karabas-Pro "Menu"-key (Win/GUI) combos. Hard-wired in ESPectrum::processKeyboard —
+// they are not entries of the remappable hotkey table, so both Help pages (the classic
+// one below and the new UI's hotkeysText) list them from here.
+static const char* const kProfiHkKeys[] = {
+    "Menu+F1-F4", "Menu+F5", "Menu+F7", "Menu+F11",
+    "Menu+F12", "Menu+Tab", "Menu+J", "Menu+Esc",
+};
+static const char* const kProfiHkDescEN[] = {
+    "ROMSET 0-3 select", "Turbo FDC", "AY stereo mode", "CPU speed",
+    "NMI", "Swap drives A/B", "Joystick type", "Main menu",
+};
+static constexpr int kProfiHkCount = (int)(sizeof(kProfiHkKeys) / sizeof(kProfiHkKeys[0]));
+
 // Cold-boot into TR-DOS for the current architecture. Mirrors the per-arch
 // "Reset to… → TR-DOS" logic (HK_RESET_TO): Profi boots bank1 + SYSEN-style
 // TR-DOS, Pentagon/Profi (incl. Gluk 128Kpg) boots the TR-DOS ROM (bank4) with
@@ -2222,14 +2235,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
     // conv_color table, not the standard ZX palette — so OSD bytes render as garbled
     // striped colours (the reported bug).
     //
-    // Fix: applyProfiOSDPalette() makes the OSD render correctly, in one of two modes
-    // chosen by the "OSD palette" menu toggle (applied live, no reboot):
-    //   STD : restore the standard ZX conv_color snapshot → menu in TRUE ZX colours,
-    //         Profi background re-interpreted through std palette (sacrificed).
-    //   DS80: enable the Graphics-layer remap (Graphics8BitPalette::ds80_active +
-    //         ds80_color_lut[]) so each ZX index → profi_pair_lookup[c][c] (solid Profi
-    //         colour) → menu in Profi-palette colours, background fully correct.
-    // Either way HDMI stays in DS80 mode and the change reverts on OSD close.
+    // Fix: the Graphics-layer remap (Graphics8BitPalette::ds80_active + ds80_color_lut,
+    // armed for the whole DS80 session) maps each ZX index to profi_pair_lookup[c][c] —
+    // a solid Profi colour — so the classic OSD draws in the running app's palette and
+    // the background behind it stays fully correct. HDMI never leaves DS80 mode.
     //
     // Edge case: if a machine reset fires during OSD, ESPectrum::reset() clears DS80
     // state directly.  The dtor re-arms activation only if the machine is still DS80.
@@ -2239,29 +2248,19 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // Cancel any pending activation that arrived just before OSD opened
             // (avoids a spurious framebuffer-zeroing + geometry reset under the dialog).
             VIDEO::profi_ds80_activate_pending = false;
-            if (was_active) {
-                VIDEO::profi_ds80_osd_active = true;
-                VIDEO::applyProfiOSDPalette();   // STD swap or DS80 remap (per toggle)
-            }
+            if (was_active) VIDEO::profi_ds80_osd_active = true;
         }
         ~DS80Guard() {
             if (VIDEO::profi_ds80_osd_active) {
                 VIDEO::profi_ds80_osd_active = false;
-                // CRITICAL: only restore the DS80 palette if HDMI is STILL in DS80 mode.
-                // If a machine reset fired during OSD (e.g. switching to 48K/128K from a
-                // menu), ESPectrum::reset() already called hdmi_set_profi_ds80_mode(false).
-                // restoreProfiLivePalette() would call hdmi_set_profi_ds80_mode(true,…),
-                // RE-ENABLING DS80 packed-pair scanout over a non-DS80 framebuffer →
-                // shifted/garbled screen.  Skip it when we've left DS80.
+                // Only touch the DS80 framebuffer if HDMI is STILL in DS80 mode: a machine
+                // reset during OSD (switching to 48K/128K from a menu) already called
+                // hdmi_set_profi_ds80_mode(false), and anything that re-arms DS80 over a
+                // standard framebuffer gives a shifted/garbled screen.
                 if (profi_ds80_active) {
-                    VIDEO::restoreProfiLivePalette(); // back to live DS80 pair palette
                     // DS80 renderer only rewrites the 256 content bytes per row, so any
                     // side-padding the dialog drew over stays dirty — re-blacken it.
                     VIDEO::clearDS80Padding();
-                } else {
-                    // Left DS80 during OSD: drop the saved-palette flag without re-arming
-                    // DS80, so a later DS80 session starts clean.
-                    VIDEO::discardProfiOSDPaletteSnapshot();
                 }
             }
             // Cancel any stray deferred flags from transitions during OSD.
@@ -5331,7 +5330,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                 // outer Profi submenu level stays stable across iterations,
                                 // even after an inner submenu (level 3) returns.
                                 menu_level = 2;
-                                // Profi submenu: ROM selection + XT keyboard + OSD palette
+                                // Profi submenu: ROM selection only (XT keyboard and the
+                                // OSD-palette toggle are gone — see the comments below).
                                 string profi_sub =
                                     string("Profi\n") +
                                     "1024K (Original)\n" +
@@ -5339,10 +5339,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     "1024K (Karabas+PQDOS)\n" +
                                     "1024K (Karabas+FlashTool)\n" +
                                     "1024K (Karabas+FDImage)\n" +
-                                    string("XT keyboard [") +
-                                    (Config::profi_ext_keys ? "ON" : "OFF") + "]\n" +
-                                    string("OSD palette [") +
-                                    (Config::profi_ds80_std_palette_osd ? "STD" : "DS80") + "]\n";
+                                    // XT keyboard is hotkey-only now (Alt+~ / PrtScr, listed in
+                                    // Help > Hot keys) — no menu row for it in either UI.
+                                    "";
                                 uint8_t opt_p = menuRun(profi_sub);
                                 if (opt_p >= 1 && opt_p <= 5) {
                                     // ROM selected — mirrors the real Karabas-Pro ROMSET
@@ -5358,71 +5357,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                     menu_curopt = 1;
                                     menu_saverect = false;
                                     break;
-                                } else if (opt_p == 6) {
-                                    // XT keyboard toggle (Yes/No submenu) — level 3
-                                    // Remind the user it can also be toggled live via the hotkey.
-                                    osdCenteredMsg(" Hotkey Alt+~ toggles XT keyboard ", LEVEL_WARN, 3000);
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string ext_menu = string("XT keyboard\n");
-                                        ext_menu += MENU_YESNO;
-                                        bool prev_ext = Config::profi_ext_keys;
-                                        if (prev_ext) {
-                                            ext_menu.replace(ext_menu.find("[Y",0), 2, "[*");
-                                            ext_menu.replace(ext_menu.find("[N",0), 2, "[ ");
-                                        } else {
-                                            ext_menu.replace(ext_menu.find("[Y",0), 2, "[ ");
-                                            ext_menu.replace(ext_menu.find("[N",0), 2, "[*");
-                                        }
-                                        uint8_t opt3 = menuRun(ext_menu);
-                                        if (opt3) {
-                                            Config::profi_ext_keys = (opt3 == 1);
-                                            if (Config::profi_ext_keys != prev_ext) Config::save();
-                                            menu_curopt = opt3;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 6;
-                                            menu_level = 2;
-                                            break; // back to Profi submenu
-                                        }
-                                    }
-                                } else if (opt_p == 7) {
-                                    // OSD palette toggle (STD / DS80) submenu — level 3
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        // Two explicit options: STD (standard ZX palette) / DS80
-                                        // (live Profi palette).  Active one marked with [*].
-                                        string osd_pal_menu = string("OSD palette\n");
-                                        bool prev_pal = Config::profi_ds80_std_palette_osd;
-                                        osd_pal_menu += string("STD\t[")  + (prev_pal  ? "*" : " ") + "]\n";
-                                        osd_pal_menu += string("DS80\t[") + (!prev_pal ? "*" : " ") + "]\n";
-                                        uint8_t opt3 = menuRun(osd_pal_menu);
-                                        if (opt3) {
-                                            Config::profi_ds80_std_palette_osd = (opt3 == 1); // 1=STD, 2=DS80
-                                            if (Config::profi_ds80_std_palette_osd != prev_pal) {
-                                                Config::save();
-                                                // Re-apply immediately — OSD blocks the main loop
-                                                // so EndFrame won't fire to do it for us.
-                                                // applyProfiOSDPalette() reads the new flag and
-                                                // picks STD (conv_color swap) or DS80 (Graphics remap).
-                                                if (profi_ds80_active) {
-                                                    VIDEO::restoreProfiLivePalette(); // clean slate
-                                                    VIDEO::profi_ds80_osd_active = true;
-                                                    VIDEO::applyProfiOSDPalette();
-                                                }
-                                            }
-                                            menu_curopt = opt3;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 7;
-                                            menu_level = 2;
-                                            break; // back to Profi submenu
-                                        }
-                                    }
                                 } else {
                                     // ESC — exit Profi submenu
                                     opt2 = 0;
@@ -7119,18 +7053,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 auto descs = hkDescEN;
                 const int maxCols = osdMaxCols();
                 const int descCol = 16;
-                // Profi/Karabas-Pro "Menu"-key (Win/GUI) combos — not configurable
-                // hotkeys (handled in ESPectrum::processKeyboard), so they're
-                // listed here as a static section when a Profi machine is active.
-                static const char* const profiKeys[] = {
-                    "Menu+F1-F4", "Menu+F5", "Menu+F7", "Menu+F11",
-                    "Menu+F12", "Menu+Tab", "Menu+J", "Menu+Esc",
-                };
-                static const char* const profiDescEN[] = {
-                    "ROMSET 0-3 select", "Turbo FDC", "AY stereo mode", "CPU speed",
-                    "NMI", "Swap drives A/B", "Joystick type", "Main menu",
-                };
-                const int profiN = (int)(sizeof(profiKeys) / sizeof(profiKeys[0]));
+                // Profi/Karabas-Pro "Menu"-key (Win/GUI) combos — the shared table
+                // (kProfiHkKeys) so this page and the new UI's cannot drift apart.
+                const char* const* profiKeys   = kProfiHkKeys;
+                const char* const* profiDescEN = kProfiHkDescEN;
+                const int profiN = kProfiHkCount;
                 const bool showProfi = Z80Ops::isProfi;
                 // -3 = Profi section header, -(4+p) = Profi line p,
                 // -2 = PrtScr, -1 = ScrollLk, 0..HK_COUNT-1 = hotkey index
@@ -13083,10 +13010,36 @@ const char* hotkeysText() {
     char (&buf)[OSD_INFO_BUF_SZ] = osd_info_buf;
     int pos = 0;
     for (int i = 0; i < Config::HK_COUNT; i++) {
+        if (Config::hotkeys[i].vk == (uint16_t)fabgl::VK_NONE) continue;  // unbound: as the classic page
         const string b = hkBindingText(i);
         pos += snprintf(buf + pos, sizeof(buf) - pos, " %-20s %s\n",
                         hkDescEN[i], b.c_str());
         if (pos >= (int)sizeof(buf) - 1) break;
+    }
+    // Everything below is hard-wired in ESPectrum::processKeyboard — not entries of the
+    // table above, so not remappable and previously listed only on the classic page.
+    const bool profi = Z80Ops::isProfi;
+    if (profi) {
+        // On Profi plain PrtScr is the Karabas XT-keyboard toggle, so BMP capture moves
+        // to Alt+PrtScr. The XT toggle is now the ONLY way to reach that setting — its
+        // Machine-menu row is gone, which makes this line its documentation.
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " %-20s %s\n",
+                        "XT keyboard", "Alt+~ or PrtScr");
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " %-20s %s\n",
+                        "BMP capture", "Alt+PrtScr");
+    } else {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, " %-20s %s\n",
+                        "BMP capture", "PrtScr");
+    }
+    pos += snprintf(buf + pos, sizeof(buf) - pos, " %-20s %s\n",
+                    "Cursor = Joystick", "ScrollLk");
+    if (profi) {
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "\n Karabas (Menu = Win)\n");
+        for (int p = 0; p < kProfiHkCount; p++) {
+            pos += snprintf(buf + pos, sizeof(buf) - pos, " %-20s %s\n",
+                            kProfiHkDescEN[p], kProfiHkKeys[p]);
+            if (pos >= (int)sizeof(buf) - 1) break;
+        }
     }
     return buf;
 }

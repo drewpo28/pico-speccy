@@ -171,11 +171,6 @@ const char* romsetName(int32_t composite);
     X(SET_MACHINE,         AC_MACHINE, 0,                    get_machine,    put_machine,    nullptr,        -1)          \
     X(SET_MEM_PG_CNT,      AC_REBOOT, F_BOOTONLY,            get_memPgCnt,   put_memPgCnt,   nullptr,        -1)          \
     X(SET_BYTE_COBMECT,    AC_LIVE,   0,                     get_cobmect,    put_cobmect,    hook_cobmect,   -1)          \
-    /* XT keyboard is read live by the keyboard layer, and the DS80 OSD palette only by  */ \
-    /* the classic OSD (the new menu installs its own 16 colours), so neither needs a    */ \
-    /* hook: persisting is the whole job.                                                */ \
-    X(SET_PROFI_XT,        AC_PURE,   0,                     get_profiXT,    put_profiXT,    nullptr,        -1)          \
-    X(SET_PROFI_OSDPAL,    AC_PURE,   0,                     get_profiPal,   put_profiPal,   nullptr,        -1)          \
     /* ── Options > Preferred machine / rom ───────────────────────────────────── */      \
     X(SET_PREF_ARCH,       AC_PURE,   0,                     get_prefArch,   put_prefArch,   nullptr,        -1)          \
     X(SET_PREF_ROM_48,     AC_PURE,   0,                     get_pref48,     put_pref48,     nullptr,        -1)          \

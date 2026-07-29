@@ -117,8 +117,6 @@ NM_BOOL_ACCESS(zc,        zcontroller)
 NM_INT_ACCESS (gsMode,    gs_enabled)
 NM_INT_ACCESS (gsClock,   gs_clock)
 NM_BOOL_ACCESS(cobmect,   byte_cobmect_mode)
-NM_BOOL_ACCESS(profiXT,   profi_ext_keys)
-NM_BOOL_ACCESS(profiPal,  profi_ds80_std_palette_osd)
 
 // ── the machine pair ───────────────────────────────────────────────────────────
 // kArchName/kRomsetName come from ArchRom.h (via UiStage.h).

@@ -258,10 +258,6 @@ static const Option opt_murmuzavr[] = {
     { "16 MB", 1024 },
     { "32 MB", 2048 },
 };
-static const Option opt_osd_palette[] = {
-    { "STD",  1 },      // standard ZX palette for the OSD over DS80
-    { "DS80", 0 },      // keep the live Profi palette
-};
 
 static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_48K,   SET_MACHINE, opt_mach_48,    nullptr),
@@ -278,8 +274,6 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
     // Shared Profi-hardware options — shown while either Profi or Karabas is
     // running or staged.
-    NM_BOOL (NM_IND TXT_MACH_XTKBD,   SET_PROFI_XT,     p_profiActive),
-    NM_RADIO(NM_IND TXT_MACH_OSDPAL,  SET_PROFI_OSDPAL, opt_osd_palette, p_profiActive),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     NM_RADIO(TXT_MACH_MURM,  SET_MEM_PG_CNT, opt_murmuzavr, p_hasSD),
 };

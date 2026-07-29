@@ -237,11 +237,6 @@ void VIDEO::rebuildDS80ColorLut() {
     Graphics8BitPalette::ds80_color_lut[16] = profi_pair_lookup[14][14];
 }
 
-// Saved copy of the running app's live Profi palette while the OSD "STD" override is
-// active (so it can be restored verbatim on close).
-static uint32_t profi_palette_saved[16];
-static bool     profi_palette_saved_valid = false;
-
 // Apply/clear the Profi DS80 packed-pair display mode on whichever video driver is
 // compiled in.  DS80 relies on the VGA/HDMI driver's conv_color pair-slot machinery
 // (and SELECT_VGA to pick between the two) — neither exists under SOFTTV/TFT, where
@@ -258,34 +253,18 @@ static inline void profi_ds80_driver_set(bool active, const uint32_t *palette16,
 #endif
 }
 
-// OSD palette override for DS80.  The Graphics-layer ZX→DS80 colour remap
-// (Graphics8BitPalette::ds80_active) is already ON for the whole DS80 session — these
-// functions only choose WHICH palette the solid pair slots resolve to, per the
-// "OSD palette" menu toggle (Config::profi_ds80_std_palette_osd):
+// Whole-palette override for a full-screen OSD over DS80: the new menu renders natively
+// in DS80 with its own 16 colours (512x240, packed pairs), and the ZX-keyboard page
+// borrows the standard ZX 16 the same way. The Graphics-layer ZX→DS80 remap
+// (Graphics8BitPalette::ds80_active + ds80_color_lut) stays on for the whole DS80
+// session and only decides WHICH palette a solid pair slot resolves to; these two
+// swap that palette and put it back.
 //
-//   DS80: keep the running app's live palette unchanged → menu in app colours,
-//         Profi background stays fully correct.  (apply = no-op)
-//
-//   STD : temporarily load the standard ZX palette into profi_palette_live and refresh
-//         the DS80 pair slots (hdmi_set_profi_ds80_mode only rewrites palette slots
-//         0..255 — it never touches the sync/audio/DMA region, so HDMI sync is safe).
-//         → menu in TRUE ZX colours; the Profi background also shifts to ZX colours
-//         (the accepted "OSD in ZX, background sacrificed" tradeoff).  The app palette
-//         is saved here and restored by restoreProfiLivePalette().
-void VIDEO::applyProfiOSDPalette() {
-    if (Config::profi_ds80_std_palette_osd && !profi_palette_saved_valid) {
-        // Save the app palette, load standard ZX defaults, refresh the pair slots + lut.
-        for (int i = 0; i < 16; i++) profi_palette_saved[i] = profi_palette_live[i];
-        profi_palette_saved_valid = true;
-        for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_default_palette16[i];
-        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
-        rebuildDS80ColorLut();
-    }
-}
-
-// Whole-palette override for the new fullscreen menu: it renders natively in DS80 with
-// its own 16 colours (512x240, packed pairs). Uses its own snapshot slot so it nests
-// inside applyProfiOSDPalette()/restoreProfiLivePalette() without fighting their flag.
+// (There used to be a per-OSD "STD vs DS80 palette" toggle here — the classic OSD's
+// answer to drawing standard ZX colour bytes over a DS80 framebuffer. The new UI
+// installs its own palette instead, which makes the choice meaningless, so the option
+// and Config::profi_ds80_std_palette_osd were removed; the classic OSD keeps the
+// running app's palette, which was that toggle's default.)
 static uint32_t profi_palette_ui_saved[16];
 static bool     profi_palette_ui_saved_valid = false;
 
@@ -309,25 +288,6 @@ void VIDEO::restoreUiDS80Palette() {
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         rebuildDS80ColorLut();
     }
-}
-
-// Undo applyProfiOSDPalette()'s STD palette swap (restore the running app's palette).
-// Does NOT touch ds80_active — the remap stays ON while DS80 is active.
-void VIDEO::restoreProfiLivePalette() {
-    if (profi_palette_saved_valid) {
-        for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_palette_saved[i];
-        profi_palette_saved_valid = false;
-        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
-        rebuildDS80ColorLut();
-    }
-}
-
-// Drop the saved app-palette snapshot WITHOUT touching HDMI or re-enabling DS80.
-// Used when DS80 was switched off (machine reset) while the OSD STD-palette override
-// was active: the saved palette is no longer meaningful and must not trigger a
-// hdmi_set_profi_ds80_mode(true,…) re-activation.
-void VIDEO::discardProfiOSDPaletteSnapshot() {
-    profi_palette_saved_valid = false;
 }
 
 // Re-blacken the DS80 side-padding columns (left 0..pad_l-1 and right pad_l+256..xres-1)
