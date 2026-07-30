@@ -99,9 +99,15 @@ public:
     static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
     static bool     AY48;
     static bool     SAA1099;
-    static uint8_t  midi;  // 0=Off, 1=AY bitbang, 2=ShamaZX, 3=Software synth, 4=GM.DLS wavetable
-    static uint8_t  midi_synth_preset; // Software synth preset: 0=GM,1=Piano,2=Chiptune,3=Strings,4=Rock,5=Organ,6=MusicBox,7=Synth
+    // 0=Off, 1=AY bitbang, 2=ShamaZX, 4=GM.DLS wavetable. 3 was "Software MIDI" (the
+    // procedural SoftSynth) — removed; the value is retired and demoted to 0 on load.
+    static uint8_t  midi;
     static string   midi_bank;    // GM.DLS wavetable: chosen bank .bin path on SD ("" = default gm_bank.bin)
+    // Where the GM.DLS bank lives: 0 = PSRAM (default — reloaded from SD each boot, a
+    // bank change applies without a reboot), 1 = the persistent flash partition (written
+    // once at early boot, survives a missing SD card). Only offered on butter-PSRAM
+    // boards; everywhere else flash is the only pointer-addressable home anyway.
+    static uint8_t  midi_storage;
     static bool     timex_video;  // Timex SCLD video modes (port 0xFF)
     static uint8_t  dma_mode;     // 0=Off, 1=Port #0B (Z80 DMA), 2=Port #6B (zxnDMA)
     static bool     mode16col_onoff; // Pentagon 16col video mode (port #EFF7 D0)

@@ -76,7 +76,6 @@ visit https://zxespectrum.speccy.org/contacto
 #include "MB02.h"
 #include "Midi.h"
 #include "MidiSynth.h"
-#include "SoftSynth.h"
 #include "ZiFi.h"
 #include "ZiFiAT.h"
 #include "BoardPins.h"
@@ -1405,8 +1404,7 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   // Silence the MIDI synth on machine reset — otherwise notes that were sounding
   // when F11 is pressed keep ringing. reset() = all-notes-off for the active engine.
-  if (Midi::enabled == 3)      SoftSynth::reset();
-  else if (Midi::enabled == 4) MidiSynth::reset();
+  if (Midi::enabled == 4) MidiSynth::reset();
 
   CPU::reset();
 
@@ -2685,9 +2683,7 @@ void ESPectrum::loop() {
         }
         if (MidiSubsys::enabled && audioBufferMIDI_L && audioBufferMIDI_R)
         {
-          if (Midi::enabled == 3)
-            SoftSynth::gen_sound(audioBufferMIDI_L, audioBufferMIDI_R, samplesPerFrame);
-          else if (Midi::enabled == 4)
+          if (Midi::enabled == 4)
             MidiSynth::gen_sound(audioBufferMIDI_L, audioBufferMIDI_R, samplesPerFrame);
         }
         // Hoist frame-invariant source flags outside the mix loop
@@ -2695,7 +2691,7 @@ void ESPectrum::loop() {
         bool mix_chip1 = AY_emu && (Config::turbosound != 0 || AySound::selected_chip == 1) && TurboSubsys::enabled && chip1;
         bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
         bool mix_saa = SaaSubsys::enabled && saaChip;
-        bool mix_midi = MidiSubsys::enabled && (Midi::enabled == 3 || Midi::enabled == 4) && audioBufferMIDI_L && audioBufferMIDI_R;
+        bool mix_midi = MidiSubsys::enabled && Midi::enabled == 4 && audioBufferMIDI_L && audioBufferMIDI_R;
         bool mix_pit = PitSubsys::enabled && audioBufferPIT;
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;

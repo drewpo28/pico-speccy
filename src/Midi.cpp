@@ -3,7 +3,6 @@
 
 #include "Config.h"
 #include "MidiSynth.h"   // mode 4: GM.DLS wavetable synth
-#include "SoftSynth.h"   // mode 3: software procedural synth
 #include "LEDIndicators.h"
 #include <hardware/uart.h>
 #include <hardware/gpio.h>
@@ -28,8 +27,9 @@
 uint8_t Midi::enabled = 0;
 bool Midi::hw_initialized = false;
 
+// Mode 3 used to be "Software MIDI" (the procedural SoftSynth). It was removed; the
+// value is retired, never reused, and Config::load() demotes a stale 3 to Off.
 void Midi::init() {
-    if (enabled == 3) { SoftSynth::init(); return; }   // software synth — no UART
     if (enabled == 4) { MidiSynth::init(); return; }   // GM.DLS wavetable — no UART
 
     if (hw_initialized) return;
@@ -43,7 +43,6 @@ void Midi::init() {
 }
 
 void Midi::deinit() {
-    if (enabled == 3) { SoftSynth::reset(); return; }
     if (enabled == 4) { MidiSynth::deinit(); return; }   // free the PSRAM bank
 
     if (!hw_initialized) return;
@@ -56,7 +55,6 @@ void Midi::deinit() {
 // The ShamaZX driver polls busy() before calling, so drops shouldn't happen.
 void __not_in_flash("midi") Midi::send(uint8_t b) {
     LED::touchW(LED::MIDI);
-    if (enabled == 3) { SoftSynth::feedByte(b); return; }
     if (enabled == 4) { MidiSynth::feedByte(b); return; }
     if (uart_is_writable(MIDI_UART))
         uart_get_hw(MIDI_UART)->dr = b;
@@ -64,7 +62,7 @@ void __not_in_flash("midi") Midi::send(uint8_t b) {
 
 // Check if UART TX FIFO is full (maps to SAM2695 "receiver full" bit 6)
 bool __not_in_flash("midi") Midi::busy() {
-    if (enabled >= 3) return false; // software/wavetable synth is never busy
+    if (enabled == 4) return false; // the wavetable synth is never busy
     return !uart_is_writable(MIDI_UART);
 }
 

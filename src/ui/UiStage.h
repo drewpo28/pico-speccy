@@ -224,11 +224,10 @@ const char* romsetName(int32_t composite);
     /* a value that only lands on exit would make those actions run on the OLD link.     */ \
     X(SET_WIFI_TZ,         AC_LIVE,   F_PREVIEW,             get_wifiTz,     put_wifiTz,     hook_wifiTz,    -1)          \
     X(SET_ZIFI_BAUD,       AC_LIVE,   F_PREVIEW | F_MODAL,   get_zifiBaud,   put_zifiBaud,   hook_zifiBaud,  -1)          \
-    /* MIDI mode swaps the whole engine (UART bitbang / SoftSynth / GM.DLS wavetable) in  */ \
-    /* the hook. GM.DLS (mode 4) is budget-gated by a special case in commit() — F_GATED  */ \
-    /* would fire on the cheap modes 1-3 too, which the classic dialog never gated.       */ \
+    /* MIDI mode swaps the whole engine (UART bitbang / GM.DLS wavetable) in the hook.    */ \
+    /* GM.DLS (mode 4) is budget-gated by a special case in commit() — F_GATED would fire */ \
+    /* on the cheap modes 1-2 too, which the classic dialog never gated.                  */ \
     X(SET_MIDI_MODE,       AC_LIVE,   0,                     get_midiMode,   put_midiMode,   hook_midiMode,  FEAT_MIDI)   \
-    X(SET_MIDI_PRESET,     AC_LIVE,   0,                     get_midiPreset, put_midiPreset, hook_midiPreset,-1)          \
     /* ESP transport (Off / USB / GPIO pair): value encoding lives with              */ \
     /* zifi_transportOpts (UiActions.cpp). F_PREVIEW like baud/tz (see above).       */ \
     /* Applies live in every direction; only a CONFLICTING pair asks for the reboot  */ \
@@ -242,7 +241,12 @@ const char* romsetName(int32_t composite);
     /* the SRAM-only paths. Strictly boot-class: page placement, the Buffer pools, GS's  */ \
     /* sample RAM and the Profi layout are all decided in setup() from the PSRAM size,   */ \
     /* so it can only be honoured from a fresh boot — hence the reboot prompt.           */ \
-    X(SET_PSRAM_ON,        AC_REBOOT, 0,                     get_psramOn,    put_psramOn,    nullptr,        -1)
+    X(SET_PSRAM_ON,        AC_REBOOT, 0,                     get_psramOn,    put_psramOn,    nullptr,        -1)          \
+    /* Where the GM.DLS bank lives (PSRAM / flash partition). Not AC_REBOOT: switching to */ \
+    /* PSRAM applies live, and only the flash direction needs the early-boot write — the  */ \
+    /* hook runs the same applyBankLive()/confirm-install flow as the bank picker, after  */ \
+    /* the commit's Config::save() has already persisted the pick.                        */ \
+    X(SET_MIDI_STORAGE,    AC_LIVE,   0,                     get_midiStorage, put_midiStorage, hook_midiStorage, -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

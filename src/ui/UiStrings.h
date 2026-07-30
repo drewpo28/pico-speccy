@@ -84,8 +84,8 @@
 #define TXT_VID_16COL       "16col (Pentagon)"
 
 #define TXT_AUD_MIDI        "MIDI"
-#define TXT_MIDI_PRESET     "Synth preset"
-#define TXT_MIDI_BANK       "Instrument set"
+#define TXT_MIDI_BANK       "Bank set"
+#define TXT_MIDI_STORAGE    "Bank storage"
 #define TXT_MIDI_CONVERT    "[+] Convert a .dls..."
 #define TXT_MIDI_DLS_PICK   "Select .dls soundbank"
 #define TXT_AUD_GS          "General Sound"

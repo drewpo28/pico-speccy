@@ -643,20 +643,15 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
     "OFF             \t[O]\n"\
     "AY              \t[A]\n"\
     "ShamaZX         \t[S]\n"\
-    "Software MIDI   \t[W]\n"\
     MENU_MIDI_GMDLS_EN
-// Software MIDI (mode 3) preset selector (procedural synth).
-#define MENU_MIDI_PRESET "Synth Preset\n"\
-    "GM       \t[G]\n"\
-    "Piano    \t[P]\n"\
-    "Chiptune \t[C]\n"\
-    "Strings  \t[S]\n"\
-    "Rock     \t[R]\n"\
-    "Organ    \t[O]\n"\
-    "Music Box\t[M]\n"\
-    "Synth    \t[Y]\n"
-// DLS wavetable mode (4): a user-supplied bank (gm_bank.bin) is provisioned
-// once from SD into a flash partition, then read via XIP (no PSRAM, persistent).
+// Where the DLS bank lives (butter-PSRAM boards only — elsewhere flash is the only
+// pointer-addressable home). See Config::midi_storage.
+#define MENU_MIDI_STORAGE "Instrument storage\n"\
+    "PSRAM \t[P]\n"\
+    "Flash \t[F]\n"
+// DLS wavetable mode (4): a user-supplied bank (gm_bank.bin) lives either in butter
+// PSRAM (reloaded from SD each boot) or, provisioned once from SD, in a flash
+// partition read via XIP (persistent, the only option without QSPI PSRAM).
 #define MSG_MIDI_BANK_OK "DLS wavetable bank loaded."
 // Title of the "instrument set" (.bin bank) picker, shown when SD holds >1 bank.
 #define MENU_MIDI_BANK_TITLE "Instrument set\n"

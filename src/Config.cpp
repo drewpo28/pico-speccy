@@ -40,8 +40,8 @@ bool     Config::sdLedBlink = false;
 bool     Config::AY48 = true;
 bool     Config::SAA1099 = false;
 uint8_t  Config::midi = 0;
-uint8_t  Config::midi_synth_preset = 0;
 string   Config::midi_bank = "";
+uint8_t  Config::midi_storage = 0;   // 0 = PSRAM (default), 1 = flash partition
 uint16_t Config::cpu_mhz = CPU_MHZ;
 uint16_t Config::max_flash_freq = 66;
 uint16_t Config::max_psram_freq = 166;
@@ -801,8 +801,12 @@ void Config::load() {
         nvs_get_b("AY48", AY48, sts);
         nvs_get_b("SAA1099", SAA1099, sts);
         nvs_get_u8("midi", midi, sts);
-        nvs_get_u8("midipreset", midi_synth_preset, sts);
         nvs_get_str("midibank", midi_bank, sts);
+        nvs_get_u8("midistore", midi_storage, sts);
+        if (midi_storage > 1) midi_storage = 0;
+        // Mode 3 was "Software MIDI" (the procedural SoftSynth), removed along with its
+        // preset. A stale NVS value must not select a synth that no longer exists.
+        if (midi == 3) midi = 0;
 #if NO_GM_DLS
         // GM.DLS wavetable (mode 4) is unavailable in ALF builds (no bank
         // partition). Demote a stale NVS value so it never activates.
@@ -1203,8 +1207,8 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"AY48", AY48 ? "true" : "false");
     nvs_set_str(buf,"SAA1099", SAA1099 ? "true" : "false");
     nvs_set_u8(buf,"midi", midi);
-    nvs_set_u8(buf,"midipreset", midi_synth_preset);
     nvs_set_str(buf,"midibank", midi_bank.c_str());
+    nvs_set_u8(buf,"midistore", midi_storage);
     nvs_set_u8(buf,"zifi_enabled", zifi_enabled);
     nvs_set_u8(buf,"zifi_tx_pin", zifi_tx_pin);
     nvs_set_u8(buf,"zifi_rx_pin", zifi_rx_pin);

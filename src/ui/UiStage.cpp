@@ -30,7 +30,7 @@
 #include "ZiFiAT.h"
 #include "BoardPins.h"
 #include "Midi.h"
-#include "SoftSynth.h"
+#include "MidiSynth.h"  // applyBankLive() for the GM.DLS storage hook
 #include "messages.h"   // _PIN_XSTR for the MIDI/WAV shared-pin note
 #include "UiDialog.h"   // the transport hook asks its reboot question itself
 #include "UiStrings.h"
@@ -106,7 +106,7 @@ NM_BOOL_ACCESS(trdosBoot, trdosAutoBoot)
 NM_INT_ACCESS (mb02Led,   mb02SoundLed)
 NM_INT_ACCESS (tapePlayer, tape_player)
 NM_INT_ACCESS (midiMode,  midi)
-NM_INT_ACCESS (midiPreset, midi_synth_preset)
+NM_INT_ACCESS (midiStorage, midi_storage)
 
 NM_INT_ACCESS (joyType,   joystick)
 NM_BOOL_ACCESS(tabFire,   TABasfire1)
@@ -470,7 +470,7 @@ static bool hook_zc(int32_t nv, int32_t) {
     if (nv) DivMMC::zc_init(); else DivMMC::zc_shutdown();
     return true;
 }
-// MIDI mode: tear the old engine down (UART bitbang / SoftSynth / GM.DLS PSRAM bank)
+// MIDI mode: tear the old engine down (UART bitbang / GM.DLS bank)
 // and bring the new one up — the classic midiDialog body (OSDMain.cpp:12805). The
 // 2x640 B L/R sample buffers belong to MidiSubsys; apply() also runs Midi::init() when
 // the buffers first land, so init here only on an engine SWAP while the subsystem
@@ -485,9 +485,30 @@ static bool hook_midiMode(int32_t nv, int32_t ov) {
     if (nv && wasOn) { Midi::enabled = (uint8_t)nv; Midi::init(); }
     return true;
 }
-static bool hook_midiPreset(int32_t nv, int32_t) {
-    SoftSynth::preset = (uint8_t)nv;    // read live by the mode-3 synth (OSDMain.cpp:12834)
-    return true;
+// GM.DLS bank storage (PSRAM <-> flash partition). Same tail as the bank picker
+// (UiActions.cpp midi_keyBanks): re-place the bank where the new setting asks. Moving
+// it INTO PSRAM is a plain SD load and applies at once; moving it into flash needs the
+// early-boot write, so it asks and reboots. This runs in the commit's live-hook pass,
+// after Config::save() — the pick is already persisted, which is exactly what
+// provisionAtBoot() reads on the way back up.
+static bool hook_midiStorage(int32_t, int32_t ov) {
+    if (Config::midi != 4) return true;         // takes effect when DLS is next selected
+    if (MidiSynth::applyBankLive()) {
+        uiToast(MSG_MIDI_BANK_OK, false, 2000);
+        return true;
+    }
+    if (uiConfirm(MSG_MIDI_BANK_INSTALL_Q, "DLS Wavetable")) {
+        uiToast("Installing DLS bank: boot takes ~20-30s, do NOT power off", false, 3000);
+        sleep_ms(2500);                         // let the warning be read; reset kills it
+        OSD::esp_hard_reset();                  // never returns
+    }
+    // Declined. applyBankLive() has already torn the old binding down, and the commit
+    // persisted the new pick before this pass ran — so undo BOTH, otherwise the session
+    // is left silent with a setting the user just refused waiting for the next boot.
+    Config::midi_storage = (uint8_t)ov;
+    Config::save();
+    MidiSynth::init();
+    return false;
 }
 static bool hook_gsClock(int32_t, int32_t) {
     GS::setClock();     // timing constants only, no allocation (OSDMain.cpp:4421)

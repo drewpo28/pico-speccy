@@ -388,14 +388,6 @@ void* Buffer::palloc(size_t bytes, uint32_t flags) {
     if (!bytes) return nullptr;
     bool preferPsram = flags & PREFER_PSRAM;
 
-    // Lent SRAM arena (e.g. the Gigascreen prevFB during a paused network session)
-    // — first choice for opt-in allocations so the TLS/socket working set lands
-    // there instead of the scarce heap on butter-less boards.
-    if ((flags & USE_NET_ARENA) && g_arena_on) {
-        uint32_t off = g_arena.alloc((uint32_t)bytes);
-        if (off != UINT32_MAX) return (void*)(g_arena_base + off);
-    }
-
     auto tryButter = [&]() -> void* {
         if (!g_butter.ready()) return nullptr;
         uint32_t off = g_butter.alloc((uint32_t)bytes);
@@ -405,7 +397,7 @@ void* Buffer::palloc(size_t bytes, uint32_t flags) {
     // Flash partition (read-only pointer). Opt-in via ALLOW_FLASH — the caller must
     // treat it as read-only and write through flashErase/flashProgram.
     auto tryFlash = [&]() -> void* {
-        if (!(flags & ALLOW_FLASH) || !g_flash.ready()) return nullptr;
+        if (!(flags & (ALLOW_FLASH | FORCE_FLASH)) || !g_flash.ready()) return nullptr;
         uint32_t off = g_flash.alloc((uint32_t)bytes);
         if (off == UINT32_MAX) return nullptr;
         return (void*)(g_flash_xip + off);
@@ -420,6 +412,19 @@ void* Buffer::palloc(size_t bytes, uint32_t flags) {
         if (getLargestAllocatable() < bytes + HEAP_SAFETY_MARGIN) return nullptr;
         return malloc(bytes);
     };
+
+    // FORCE_FLASH is exclusive: the caller asked for the persistent partition, so a
+    // fallback into PSRAM/heap would silently hand back something that does NOT persist.
+    // Failing is the honest answer — the caller reports "no room in flash".
+    if (flags & FORCE_FLASH) return tryFlash();
+
+    // Lent SRAM arena (e.g. the Gigascreen prevFB during a paused network session)
+    // — first choice for opt-in allocations so the TLS/socket working set lands
+    // there instead of the scarce heap on butter-less boards.
+    if ((flags & USE_NET_ARENA) && g_arena_on) {
+        uint32_t off = g_arena.alloc((uint32_t)bytes);
+        if (off != UINT32_MAX) return (void*)(g_arena_base + off);
+    }
 
     if (preferPsram) {
         if (void* p = tryButter()) return p;

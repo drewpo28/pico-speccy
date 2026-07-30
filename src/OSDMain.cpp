@@ -70,7 +70,6 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "dls_conv.h"
-#include "SoftSynth.h"
 #include "ZiFi.h"
 #include "ZiFiAT.h"
 #include "UsbMsc.h"
@@ -10919,19 +10918,12 @@ static void buildEmulatorInfoText() {
         // MIDI
         if (Config::midi == 0) {
             pos += infoAppend(buf, pos, bufsz, " MIDI           : Off\n");
-        } else if (Config::midi == 3) {
-            static const char* presets[] = {
-                "GM", "Piano", "Chiptune", "Strings",
-                "Rock", "Organ", "MusicBox", "Synth"
-            };
-            int pi = Config::midi_synth_preset;
-            if (pi > 7) pi = 0;
-            pos += infoAppend(buf, pos, bufsz,
-                " MIDI           : Software (%s)\n", presets[pi]);
         } else if (Config::midi == 4) {
+            // Where the bank actually landed matters (Instrument storage is a request,
+            // not a guarantee: a full PSRAM arena falls back to the flash partition).
             pos += infoAppend(buf, pos, bufsz,
                 " MIDI           : DLS (%s)\n",
-                MidiSynth::bankReady() ? "bank OK" : "no bank");
+                MidiSynth::bankReady() ? MidiSynth::bankLocation() : "no bank");
         } else {
             pos += infoAppend(buf, pos, bufsz,
                 " MIDI           : %s\n",
@@ -13567,9 +13559,21 @@ bool OSD::persistSaveDialog() {
     }
     return false;
 }
+// Menu row -> Config::midi. Not `opt2 - 1` any more: mode 3 ("Software MIDI") was
+// removed and its stored value retired, so DLS keeps 4 while sitting on row 4.
+static const uint8_t kMidiRowMode[] = {
+    0,      // OFF
+    1,      // AY bitbang
+    2,      // ShamaZX
+#if !NO_GM_DLS
+    4,      // DLS Wavetable
+#endif
+};
+
 void OSD::midiDialog() {
     menu_level = 2;
     menu_curopt = 1;
+    const uint8_t nMidiRows = (uint8_t)(sizeof(kMidiRowMode) / sizeof(kMidiRowMode[0]));
     bool midiFirstDraw = true;   // save the rect only on the first draw;
     while (1) {                  // redraws (after gate/submenu) must NOT re-save → no duplicate menu
         menu_level = 2;
@@ -13578,24 +13582,26 @@ void OSD::midiDialog() {
         midi_menu.replace(midi_menu.find("[O",0),2, prev_midi == 0 ? "[*" : "[ ");
         midi_menu.replace(midi_menu.find("[A",0),2, prev_midi == 1 ? "[*" : "[ ");
         midi_menu.replace(midi_menu.find("[S",0),2, prev_midi == 2 ? "[*" : "[ ");
-        midi_menu.replace(midi_menu.find("[W",0),2, prev_midi == 3 ? "[*" : "[ ");
+#if !NO_GM_DLS
         midi_menu.replace(midi_menu.find("[G",0),2, prev_midi == 4 ? "[*" : "[ ");
+#endif
         menu_saverect = midiFirstDraw;
         uint8_t opt2 = menuRun(midi_menu);
         midiFirstDraw = false;
-        if (opt2 >= 1 && opt2 <= 5) {
+        if (opt2 >= 1 && opt2 <= nMidiRows) {
+            const uint8_t pick = kMidiRowMode[opt2 - 1];
             // GM.DLS (mode 4) is the RAM-heavy MIDI engine: gate it through
             // the SRAM budget manager so a tight machine (Profi/m1p2) offers
             // heavy features to free — including Profi itself (→ Pentagon) —
             // instead of OOMing at allocation time. ALLOW → true (fits as-is);
             // user frees + applies → reboots (never returns); decline → false.
-            if ((opt2 - 1) == 4 && Config::midi != 4 &&
+            if (pick == 4 && Config::midi != 4 &&
                 !OSD::featureBudgetGate(Subsystems::FEAT_MIDI)) {
                 menu_curopt = opt2;
                 menu_saverect = false;
                 continue;   // declined / not enough — leave MIDI unchanged
             }
-            Config::midi = opt2 - 1;
+            Config::midi = pick;
             if (Config::midi != prev_midi) {
                 Midi::enabled = prev_midi;
                 Midi::deinit();
@@ -13609,29 +13615,26 @@ void OSD::midiDialog() {
                     osdCenteredMsg(MSG_MIDI_PIN_CONFLICT, LEVEL_WARN, 3000);
 #endif
             }
-            // Software MIDI selected — open preset submenu
-            if (Config::midi == 3) {
+            // Tentative like the bank pick below: reverted together with it if the user
+            // declines the install, so backing out of the wizard changes nothing.
+            const uint8_t prevStorage = Config::midi_storage;
+            // GM.DLS on a butter-PSRAM board: ask WHERE the bank should live before
+            // picking one, since that decides whether the pick applies live (PSRAM) or
+            // has to be written to the partition at the next boot (Flash). Boards
+            // without QSPI PSRAM have no choice to offer — the step is skipped.
+            if (Config::midi == 4 && butter_psram_size() > 0) {
                 menu_level = 3;
-                menu_curopt = 1;
+                menu_curopt = Config::midi_storage + 1;
                 menu_saverect = true;
-                string preset_menu = MENU_MIDI_PRESET;
-                static const char preset_marks[] = "GPCSROMY";
-                for (int p = 0; p < 8; p++) {
-                    char mark[3] = { '[', preset_marks[p], '\0' };
-                    auto pos = preset_menu.find(mark, 0);
-                    if (pos != string::npos)
-                        preset_menu.replace(pos, 2, Config::midi_synth_preset == p ? "[*" : "[ ");
-                }
-                uint8_t opt3 = menuRun(preset_menu);
-                if (opt3) {
-                    Config::midi_synth_preset = opt3 - 1;
-                    SoftSynth::preset = Config::midi_synth_preset;
-                    Config::save();
-                    VIDEO::SaveRect.restore_last();
-                }
+                string stor_menu = MENU_MIDI_STORAGE;
+                stor_menu.replace(stor_menu.find("[P",0),2, Config::midi_storage == 0 ? "[*" : "[ ");
+                stor_menu.replace(stor_menu.find("[F",0),2, Config::midi_storage == 1 ? "[*" : "[ ");
+                uint8_t optS = menuRun(stor_menu);
+                if (optS >= 1 && optS <= 2) Config::midi_storage = optS - 1;
                 menu_level = 2;
                 menu_curopt = opt2;
                 menu_saverect = false;
+                VIDEO::SaveRect.restore_last();
             }
             // GM.DLS wavetable selected. The bank is written to
             // flash at EARLY BOOT (single core, no video) — never
@@ -13690,10 +13693,12 @@ void OSD::midiDialog() {
                     if (!haveSd) {
                         // No SD bank: keep an already-bound (flash) bank, else nothing.
                         if (MidiSynth::bankReady()) {
-                            if (Config::midi_bank != prevBank) Config::save();
+                            if (Config::midi_bank != prevBank ||
+                                Config::midi_storage != prevStorage) Config::save();
                             osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
                         } else {
                             Config::midi_bank = prevBank;
+                            Config::midi_storage = prevStorage;
                             osdCenteredMsg(MSG_MIDI_BANK_MISSING, LEVEL_WARN, 3000);
                         }
                     } else if (MidiSynth::applyBankLive()) {
@@ -13703,13 +13708,15 @@ void OSD::midiDialog() {
                         osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
                     } else if (OSD::msgDialog("DLS Wavetable",
                                               MSG_MIDI_BANK_INSTALL_Q) == DLG_YES) {
-                        // No PSRAM and the flash bank differs → it must be written at
-                        // EARLY BOOT (single core, pre-video). Commit + reboot.
+                        // Flash storage (by choice, or because there is no PSRAM) and the
+                        // partition holds something else → it must be written at EARLY
+                        // BOOT (single core, pre-video). Commit + reboot.
                         Config::save();
                         osdCenteredMsg(MSG_MIDI_BANK_FLASHING, LEVEL_INFO, 3000);
                         OSD::esp_hard_reset();
                     } else {
                         Config::midi_bank = prevBank;   // declined -> revert + restore
+                        Config::midi_storage = prevStorage;
                         MidiSynth::init();
                     }
                 }

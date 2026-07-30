@@ -10,10 +10,15 @@
 // Wraps the xrip embeded-midi-synth fixed-point GM wavetable engine
 // (external/embeded-midi-synth, hosted by src/midi_wt.c). It plays a
 // user-provided General MIDI sound bank ("gm_bank.bin", packed off-device at
-// 31250 Hz from a gm.dls / GUS set). The bank is provisioned once from the SD
-// card into a fixed flash partition (top of flash, see rp2350-memmap.ld) and
-// read directly via XIP — no PSRAM, persists across reboots. No bank ships in
-// the repo/firmware.
+// 31250 Hz from a gm.dls / GUS set). No bank ships in the repo/firmware.
+//
+// The bank needs a directly-addressable home (the engine reads samples through a raw
+// pointer), so there are exactly two: butter QSPI PSRAM — reloaded from SD each boot,
+// a bank change applies live — or a fixed flash partition (top of flash, see
+// rp2350-memmap.ld), provisioned once from SD at early boot and read via XIP, which
+// persists across reboots and needs no card. Config::midi_storage picks between them
+// on a QSPI board; SPI PSRAM is accessor-only, so a board without QSPI always uses
+// flash. Buffer does the placement — MidiSynth never branches on memory type.
 //
 // This keeps the public API the rest of the emulator already calls
 // (Midi.cpp / Subsystem.cpp / ESPectrum.cpp / OSDMain.cpp). The render output is
@@ -47,10 +52,10 @@ public:
     static void requestReflash();
 
     // Try to (re)load + bind the currently-selected bank WITHOUT a reboot. Returns
-    // true if applied live (it fit RAM/PSRAM, or the flash partition already holds it);
+    // true if applied live (it fit PSRAM, or the flash partition already holds it);
     // false only when a flash *write* is required — the caller then reboots so
-    // provisionAtBoot() can write it pre-video. On a PSRAM board this always succeeds,
-    // so changing the bank never reboots. On false the previous bank is left unbound.
+    // provisionAtBoot() can write it pre-video. With PSRAM storage this always
+    // succeeds, so changing the bank never reboots. On false the bank is left unbound.
     static bool applyBankLive();
 
     // Feed one raw MIDI byte (running-status stream from the Z80 ShamaZX port).
@@ -64,6 +69,10 @@ public:
     // GM.DLS bank size if it landed in PSRAM (butter/SPI), else 0 (flash-resident or
     // no bank). For the Memory Info per-feature PSRAM breakdown.
     static size_t bankPsramBytes();
+
+    // Where the bound bank actually lives ("PSRAM" / "flash" / "no bank") — the real
+    // placement, not Config::midi_storage's request. For the Memory Info MIDI line.
+    static const char* bankLocation();
 
 private:
     // MIDI byte-stream parser state (reconstructs full messages, incl. running status)

@@ -47,6 +47,11 @@ public:
         PREFER_PSRAM  = 2,   // try PSRAM before heap (keep heap free)
         USE_NET_ARENA = 4,   // may draw from a temporarily-lent SRAM arena (see lendArena)
         ALLOW_FLASH   = 8,   // NEED_POINTER may fall back to the flash partition (read-only)
+        FORCE_FLASH   = 16,  // NEED_POINTER: the flash partition is the ONLY acceptable
+                             //   tier — no silent PSRAM/heap fallback. Implies ALLOW_FLASH.
+                             //   For a caller that wants persistence rather than speed
+                             //   (GM.DLS "Instrument storage: Flash"), where landing in
+                             //   PSRAM instead would quietly lose the property asked for.
     };
     enum Tier { TIER_NONE = 0, TIER_HEAP, TIER_BUTTER, TIER_SPI, TIER_SWAP, TIER_ARENA, TIER_FLASH };
 

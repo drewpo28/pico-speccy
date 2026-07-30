@@ -234,8 +234,6 @@ set_source_files_properties(src/SAASound.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
 set_source_files_properties(src/MidiSynth.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
-set_source_files_properties(src/SoftSynth.cpp PROPERTIES
-    COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
 # Wavetable MIDI engine wrapper (external/embeded-midi-synth) — hot audio path.
 set_source_files_properties(src/midi_wt.c PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")

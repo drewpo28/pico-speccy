@@ -28,10 +28,11 @@
 #include <string>
 #include <vector>
 
-// The bank lives wherever Buffer places it: QSPI/butter PSRAM when present (loaded
-// from SD each boot), else a fixed flash partition (top of flash, NOLOAD region in
-// rp2350-memmap.ld — not in the UF2; provisioned once from SD, persists across
-// firmware reflashes). Both are XIP-addressable, and the bank format is
+// The bank lives wherever Buffer places it: QSPI/butter PSRAM (loaded from SD each
+// boot) or a fixed flash partition (top of flash, NOLOAD region in rp2350-memmap.ld —
+// not in the UF2; provisioned once from SD, persists across firmware reflashes).
+// Config::midi_storage picks; without QSPI PSRAM only flash is pointer-addressable, so
+// the pick is moot there. Both are XIP-addressable and the bank format is
 // position-independent, so the engine binds the same way to either.
 extern "C" uint8_t __gm_bank_start[];
 extern "C" uint8_t __gm_bank_end[];
@@ -118,6 +119,29 @@ size_t MidiSynth::bankPsramBytes() {
     return (t == Buffer::TIER_BUTTER || t == Buffer::TIER_SPI) ? g_bankBuf.size() : 0;
 }
 
+// Where the bank the engine is bound to actually sits. Not the same thing as
+// Config::midi_storage — that is a request, and a PSRAM request falls back to flash
+// when the arena cannot hold the bank — so the Memory Info screen reports THIS.
+const char* MidiSynth::bankLocation() {
+    if (!bank_ready) return "no bank";
+    if (!g_bankBuf.ok()) return "flash";        // bound straight to the XIP partition
+    switch (g_bankBuf.tier()) {
+        case Buffer::TIER_BUTTER: return "PSRAM";
+        case Buffer::TIER_FLASH:  return "flash";
+        default:                  return g_bankBuf.tierName();
+    }
+}
+
+// The bank's requested home. Config::midi_storage == 1 pins it to the persistent flash
+// partition; 0 (the default) prefers butter PSRAM and falls back to flash. On a board
+// without QSPI PSRAM the two are the same thing, which is why the menu row is hidden
+// there rather than lying about a choice.
+static inline uint32_t bankAllocFlags() {
+    return Buffer::NEED_POINTER |
+           (Config::midi_storage == 1 ? Buffer::FORCE_FLASH
+                                      : (Buffer::PREFER_PSRAM | Buffer::ALLOW_FLASH));
+}
+
 // Defined below; needed by bindFromPsram() above its definition.
 static FIL* openValidSdBank(size_t* outSize, gm_bank_header_t* outHdr);
 
@@ -139,18 +163,20 @@ static bool bankFileReader(void* ctx, void* dst, uint32_t off, uint32_t n) {
     return f_read(f, dst, n, &br) == FR_OK && br == n;
 }
 
-// Load the SD bank via Buffer, which places it in PSRAM (preferred) or the flash
-// partition and writes it accordingly — MidiSynth does not branch on memory type.
-// mayWriteFlash=false forbids a flash erase (post-VIDEO::Init); a PSRAM load is always
-// allowed, so on PSRAM boards this never needs a reboot. Returns true once bound.
+// Load the SD bank via Buffer, which places it where Config::midi_storage asks (PSRAM
+// preferred, or the flash partition) and writes it accordingly — MidiSynth does not
+// branch on memory type. mayWriteFlash=false forbids a flash erase (post-VIDEO::Init);
+// a PSRAM load is always allowed, so PSRAM storage never needs a reboot. Returns true
+// once bound.
 bool MidiSynth::loadBank(bool force, bool mayWriteFlash) {
     size_t size; gm_bank_header_t hdr;
     FIL* f = openValidSdBank(&size, &hdr);
     if (!f) return false;                                  // no usable SD bank
     g_bankBuf.free();
-    if (!g_bankBuf.alloc(size, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM | Buffer::ALLOW_FLASH)) {
+    if (!g_bankBuf.alloc(size, bankAllocFlags())) {
         fclose2(f);
-        Debug::log("MidiSynth: bank alloc failed (%uKB)", (unsigned)(size >> 10));
+        Debug::log("MidiSynth: bank alloc failed (%uKB, storage=%s)",
+                   (unsigned)(size >> 10), Config::midi_storage == 1 ? "flash" : "psram");
         return false;
     }
     bool ok = g_bankBuf.load((uint32_t)size, force, bankFileReader, f, mayWriteFlash);

@@ -494,34 +494,35 @@ static const Option opt_gs_clock[] = {          // values are Config::gs_clock i
 };
 
 // ── MIDI ───────────────────────────────────────────────────────────────────────
-// The classic MIDI wizard (OSD::midiDialog) becomes three flat rows: the mode is a
-// plain staged radio, and its per-mode follow-ups — the mode-3 synth preset and the
-// mode-4 instrument set — are indented rows greyed until the STAGED mode makes them
-// meaningful, the same pattern as Betadisk's children in Hardware.
+// The classic MIDI wizard (OSD::midiDialog) becomes flat rows: the mode is a plain
+// staged radio, and its DLS follow-ups — where the bank lives and which bank it is —
+// are indented rows greyed until the STAGED mode makes them meaningful, the same
+// pattern as Betadisk's children in Hardware.
+//
+// Value 3 is missing on purpose: it was "Software MIDI" (the procedural SoftSynth),
+// removed along with its preset row. The value is retired, never reused.
 static const Option opt_midi_mode[] = {
     { "Off",           0 },
     { "AY",            1 },
     { "ShamaZX",       2 },
-    { "Software MIDI", 3, "Software" },
 #if !NO_GM_DLS
     { "DLS Wavetable", 4 },
 #endif
 };
-static const Option opt_midi_preset[] = {       // values ARE Config::midi_synth_preset
-    { "GM",        0 },
-    { "Piano",     1 },
-    { "Chiptune",  2 },
-    { "Strings",   3 },
-    { "Rock",      4 },
-    { "Organ",     5 },
-    { "Music Box", 6 },
-    { "Synth",     7 },
-};
-static bool p_midiSoft() { return Stage::get(SET_MIDI_MODE) == 3; }
 #if !NO_GM_DLS
 static bool p_midiDls()  { return Stage::get(SET_MIDI_MODE) == 4; }
 static const Option opt_midi_bank_hints[] = {
     { SYM_ENTER " Select / install", 0 },
+};
+// Where the ~1.6 MB bank lives. Only a butter-PSRAM board has a choice: SPI PSRAM is
+// accessor-only and the engine reads samples through a raw pointer, so everywhere else
+// the flash partition is the sole home and the row would be a lie. PSRAM reloads from
+// SD each boot (a bank swap applies live); Flash survives reboots and a missing card
+// but is written only at early boot, so switching to it costs one reboot.
+static bool p_butterPsram() { return butter_psram_size() > 0; }
+static const Option opt_midi_storage[] = {      // values ARE Config::midi_storage
+    { "PSRAM", 0 },
+    { "Flash", 1 },
 };
 #endif
 
@@ -534,8 +535,9 @@ static const Node kAudio[] = {
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
     NM_BOOL (TXT_AUD_SAA,        SET_SAA1099,      nullptr),
     NM_RADIO   (TXT_AUD_MIDI,           SET_MIDI_MODE,   opt_midi_mode,   nullptr),
-    NM_RADIO_EN(NM_IND TXT_MIDI_PRESET, SET_MIDI_PRESET, opt_midi_preset, nullptr, p_midiSoft),
 #if !NO_GM_DLS
+    NM_RADIO_EN(NM_IND TXT_MIDI_STORAGE, SET_MIDI_STORAGE, opt_midi_storage,
+                p_butterPsram, p_midiDls),
     // The bank list + on-device .dls conversion act immediately (like the disk slots):
     // a bank pick can applyBankLive() or defer a flash write to the next boot.
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,

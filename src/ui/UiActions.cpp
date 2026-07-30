@@ -425,12 +425,13 @@ void midi_keyBanks(int32_t tag, uint8_t key) {
             uiToast("No DLS bank in flash or on SD", true, 3000);
         }
     } else if (MidiSynth::applyBankLive()) {
-        // Applied without a reboot: PSRAM boards load the bank live, and a flash bank
+        // Applied without a reboot: PSRAM storage loads the bank live, and a flash bank
         // that is already current just rebinds.
         Config::save();
         uiToast(MSG_MIDI_BANK_OK, false, 2000);
     } else if (uiConfirm(MSG_MIDI_BANK_INSTALL_Q, "DLS Wavetable")) {
-        // No PSRAM and the flash bank differs → it must be written at EARLY BOOT
+        // Flash storage (Config::midi_storage, or no PSRAM to choose from) and the
+        // partition holds a different bank → it must be written at EARLY BOOT
         // (single core, pre-video). Commit + reboot. The mode may still be a staged
         // edit this session — carry it into Config so the reboot comes up in DLS mode
         // instead of silently dropping it.
