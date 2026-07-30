@@ -107,6 +107,11 @@ public:
     // needs it; true = volume is (now) available, false = skip the reopen.
     static bool waitVolumeReady(const string& path);
     static bool mkdirParents(const char* path);
+    // Karabas-Pro: make sure the card root holds karabas_boot.$c (the FATALL
+    // 0.26 file manager ROMain's "Loading boot from SD" runs). Writes the
+    // bundled copy from flash when the file is missing; no-op otherwise.
+    // Returns true when the file is present after the call.
+    static bool ensureKarabasBoot();
     static bool checkSDCard();
     static bool remountSD();
     // static String         getAllFilesFrom(const String path);
@@ -183,6 +188,11 @@ private:
 #define DISK_SCR_DIR  SPEC_DIR_ROOT "/screenshots"
 #define DISK_PSNA_DIR SPEC_DIR_ROOT "/snapshots"
 #define DISK_PSNA_FILE "persist"
+
+// Karabas-Pro ROMain reads the card itself through the Z-Controller and looks
+// for this hobeta file in the volume ROOT — the path is dictated by the guest
+// ROM, it cannot move into CONFIG_DIR.
+#define KARABAS_BOOT_FILE "/karabas_boot.$c"
 
 #define NO_RAM_FILE "none"
 

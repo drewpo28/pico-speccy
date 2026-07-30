@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 // The 64K gb_rom_profi blob is gone. bank0 (service) and bank1 (TR-DOS variant) stay
 // raw; bank2/bank3 are overlays over the Sinclair 128K halves (profi_overlays.h).
 extern "C" const unsigned char gb_rom_profi_bank0[];
@@ -23,5 +24,11 @@ extern "C" const unsigned char gb_rom_profi_bank0_fdimage[];
 extern "C" const unsigned char gb_rom_profi_bank2_fdimage[];
 extern "C" const unsigned char gb_rom_profi_bank3_fdimage[];
 extern "C" const unsigned char gb_rom_profi_bank_ff[];
+// Not a ROM but a Karabas-Pro asset that lives in flash beside them: the
+// karabas_boot.$c hobeta (FATALL 0.26) that ROMain's "Loading boot from SD"
+// runs off the card root — FileUtils::ensureKarabasBoot() writes it to the SD
+// when a Karabas romset boots and the card has no copy (karabas_boot.c).
+extern "C" const unsigned char gb_karabas_boot[];
+extern "C" const uint32_t gb_karabas_boot_len;
 #include "profi_overlays.h"
 // extern "C" const unsigned char gb_rom_profi_608[];

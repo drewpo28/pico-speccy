@@ -246,6 +246,49 @@ bool FileUtils::waitVolumeReady(const string& path) {
     return UsbMsc::waitReady(3000);
 }
 
+// Karabas-Pro ROMain's "Loading boot from SD" does NOT go through our FatFs: it
+// reads the physical card through the Z-Controller, parses the FAT itself and
+// runs `karabas_boot.$c` (the FATALL 0.26 file manager) from the volume ROOT.
+// So the file has to exist as a real file on the card — drop the bundled copy
+// (src/roms/profi/karabas_boot.c, in flash next to the Karabas ROMs) there when
+// it is missing, so a fresh card boots from SD out of the box. An existing file
+// is never touched: the user may have their own/newer FATALL. FatFs matches the
+// name case-insensitively, so a `KARABAS_BOOT.$C` on the card counts as present.
+bool FileUtils::ensureKarabasBoot() {
+    if (!fsMount) return false;
+    FILINFO fno;
+    if (f_stat(KARABAS_BOOT_FILE, &fno) == FR_OK) return true;
+
+    FIL f;
+    if (f_open(&f, KARABAS_BOOT_FILE, FA_WRITE | FA_CREATE_NEW) != FR_OK) {
+        Debug::log("ensureKarabasBoot: cannot create %s", KARABAS_BOOT_FILE);
+        return false;
+    }
+    // Copy through a small stack bounce instead of handing f_write the flash
+    // pointer straight — the SD driver DMAs from the source buffer.
+    uint8_t buf[512];
+    uint32_t done = 0;
+    bool ok = true;
+    while (done < gb_karabas_boot_len) {
+        uint32_t n = gb_karabas_boot_len - done;
+        if (n > sizeof(buf)) n = sizeof(buf);
+        memcpy(buf, gb_karabas_boot + done, n);
+        UINT bw = 0;
+        if (f_write(&f, buf, n, &bw) != FR_OK || bw != n) { ok = false; break; }
+        done += n;
+    }
+    f_close(&f);
+    if (!ok) {
+        f_unlink(KARABAS_BOOT_FILE);   // no half-written file for the guest to run
+        Debug::log("ensureKarabasBoot: write failed at %u/%u",
+                   (unsigned)done, (unsigned)gb_karabas_boot_len);
+        return false;
+    }
+    Debug::log("ensureKarabasBoot: created %s (%u bytes)",
+               KARABAS_BOOT_FILE, (unsigned)gb_karabas_boot_len);
+    return true;
+}
+
 bool FileUtils::checkSDCard() {
     if (!fsMount) return false;
     FILINFO fno;

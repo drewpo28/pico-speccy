@@ -209,6 +209,11 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             DivMMC::zc_init();
             OSD::osdCenteredMsg("Z-Controller enabled", LEVEL_INFO, 1500);
         }
+        // ...and the file that boot needs: FATALL (karabas_boot.$c) in the card
+        // root. Same as at boot (ESPectrum::setup) — a switch into Karabas from
+        // a running machine does not always go through setup() again.
+        if (arch == A_PROFI && romset != R_PROFI)
+            FileUtils::ensureKarabasBoot();
         Config::save();
         // Profi on SPI-PSRAM boards (no butter PSRAM) needs its
         // hires colour/working pages 56/58/61/60/40 backed by

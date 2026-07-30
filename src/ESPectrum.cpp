@@ -942,6 +942,12 @@ void ESPectrum::setup() {
     Debug::log2SD("setup: DivMMC::zc_init");
     DivMMC::zc_init();
   }
+  // Booting a Karabas romset: ROMain's "Loading boot from SD" runs
+  // karabas_boot.$c from the card root (read by the guest through the
+  // Z-Controller, not by us) — put the bundled FATALL 0.26 there if the card
+  // has none, so SD boot works on a fresh card without a manual copy.
+  if (Config::arch == A_PROFI && isKarabasRomset(Config::romSet))
+    FileUtils::ensureKarabasBoot();
   // Tiered buffer pools: carve PSRAM/SD-swap arenas from whatever the existing
   // consumers above (MemESP/Profi pages, DivMMC) have NOT claimed, reserving GS's
   // sample-RAM region via GS::configuredRamBytes(). Must run after those so the
