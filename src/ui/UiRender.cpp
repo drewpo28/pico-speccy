@@ -87,6 +87,7 @@ bool layoutFits() {
 static uint8_t s_dirty;
 static int8_t  s_lrow[2] = { -1, -1 };
 static int8_t  s_rrow[2] = { -1, -1 };
+static bool    s_pend_drawn;            // pending state the bands were last drawn with
 
 void markDirty(uint8_t bits) { s_dirty |= bits; }
 
@@ -115,15 +116,25 @@ void drawFrameOnce() {
 
 static void drawHeader() {
     const int y = LY.iy;
-    fill(LY.ix, y, LY.iw, LY.hdr_h, C_PANEL);
+
+    // Unapplied edits turn the whole title band red — the one band the eye starts on.
+    // The palette is full (16/16), so C_ICON_R is the only red there is: no darker
+    // fill is available, and the secondary inks have to go bright to survive it.
+    const bool pend = Stage::anyDirty();
+    const UiColor bg     = pend ? C_ICON_R : C_PANEL;
+    const UiColor ink_lo = pend ? C_TEXT   : C_TEXT_DIM;    // version, clock
+
+    fill(LY.ix, y, LY.iw, LY.hdr_h, bg);
     rainbow(LY.ix + LY.pad, y + 3);
     int tx = LY.ix + LY.pad + rainbowW() + 2 * LY.pad;
     tx += text(tx, y + 4, "Pico-Speccy", C_WHITE);
     const char* ver = "v" PORT_VERSION;
     const int vx = LY.ix + LY.iw - textWidth(ver) - LY.pad;
-    text(vx, y + 4, ver, C_TEXT_DIM);
-    uiHeaderClock(LY.ix, LY.iw, y + 4, tx + 2 * LY.pad, vx - 2 * LY.pad);
-    hline(LY.ix, y + LY.hdr_h - 1, LY.iw, C_SEP);
+    text(vx, y + 4, ver, ink_lo);
+    uiHeaderClock(LY.ix, LY.iw, y + 4, tx + 2 * LY.pad, vx - 2 * LY.pad, ink_lo);
+    // Red band: the rule too, so it reads as one solid block instead of a stripe
+    // with a dark line under it.
+    hline(LY.ix, y + LY.hdr_h - 1, LY.iw, pend ? C_ICON_R : C_SEP);
 }
 
 static void drawSubHeader() {
@@ -173,7 +184,7 @@ bool uiClockDirty() {
     return strcmp(clk, s_clk_drawn) != 0;
 }
 
-void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg) {
+void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg, UiColor ink) {
     char clk[8];
     if (!uiClockText(clk)) return;
     // Recorded even when the slot is too crowded to draw, so uiClockDirty()
@@ -182,7 +193,7 @@ void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg) {
     const int cw = textWidth(clk);
     const int cx = ix + (iw - cw) / 2;
     if (cx < loEnd || cx + cw > hiBeg) return;
-    text(cx, ty, clk, C_TEXT_DIM);
+    text(cx, ty, clk, ink);
 }
 
 // ── marquee for over-long focused labels ───────────────────────────────────────
@@ -381,7 +392,7 @@ static void drawFooter() {
         ? SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc / " SYM_LEFT SYM_LEFT " Back"
         : intPane
         ? SYM_UP SYM_DOWN " Adjust   " SYM_ENTER " / " SYM_LEFT " Back"
-        : SYM_UP SYM_DOWN " Move   " SYM_ENTER " Apply   " SYM_LEFT " Back";
+        : SYM_UP SYM_DOWN " Move   " SYM_ENTER " Change   " SYM_LEFT " Back";
     text(LY.ix + LY.pad, y + 3, hint, C_TEXT_DIM);
 
     // Pending-changes marker: settings are applied when the menu closes, so the user
@@ -390,13 +401,24 @@ static void drawFooter() {
     if (pending) {
         char buf[24];
         snprintf(buf, sizeof(buf), "%u pending", (unsigned)pending);
-        text(LY.ix + LY.iw - textWidth(buf) - LY.pad, y + 3, buf, C_ACCENT);
+        // Red, like the breadcrumb band above: green read as "all good" here.
+        text(LY.ix + LY.iw - textWidth(buf) - LY.pad, y + 3, buf, C_ICON_R);
     }
 }
 
 // ── flush ──────────────────────────────────────────────────────────────────────
 
 void flushDirty() {
+    // The pending indication lives in the header band as well as the footer counter,
+    // but the edit sites only raise D_FOOT (nothing there marks D_HEADER — it used to
+    // change only on a clock tick). Latch it here so the band can never go stale —
+    // one place instead of a dozen call sites.
+    const bool pend = Stage::anyDirty();
+    if (pend != s_pend_drawn) {
+        s_pend_drawn = pend;
+        s_dirty |= D_HEADER | D_FOOT;
+    }
+
     if (s_dirty & D_HEADER) drawHeader();
     if (s_dirty & D_SUB)    drawSubHeader();
     if (s_dirty & D_PTITLE) drawPaneTitles();

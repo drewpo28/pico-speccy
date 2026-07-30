@@ -75,8 +75,10 @@ bool uiClockText(char out[8]);   // false while the RTC is unset
 bool uiClockDirty();             // minute rolled over since the last draw
 // Draw it at text baseline `ty`, centered in [ix, ix+iw); skipped when the
 // center slot would collide with the header's left text (ends at loEnd) or
-// right text (starts at hiBeg).
-void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg);
+// right text (starts at hiBeg). `ink` follows the band: the menu's header turns
+// red while edits are staged, where C_TEXT_DIM would sink into the fill.
+void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg,
+                   UiColor ink = C_TEXT_DIM);
 
 } // namespace nm
 
