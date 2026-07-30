@@ -58,6 +58,33 @@ void act_todo() {
 // in do_OSD's dispatcher; lifting them into reusable functions happens with the Help
 // branch itself.
 void act_helpHotkeys()    { uiTextPage(TXT_HELP_KEYS, ::hotkeysText()); }
+
+// Wait until the user closes an info page (Enter / Esc / F1 / Left).
+//
+// ONE physical key injects SEVERAL virtual events into the SAME queue: main.cpp's
+// kbdExtraMapping pushes VK_DPAD_LEFT (when CursorAsJoy is on) + VK_MENU_LEFT +
+// VK_LEFT for a single Left press, and the pads do the same. A page that leaves on
+// the FIRST event it sees therefore hands the rest to nm::runInternal's key loop,
+// which acts on the VK_MENU_LEFT still sitting in the queue and leaves the menu
+// level as well ("Left closed the page AND jumped up a level"; Esc/F1 queue one
+// event each, which is why they behaved). So: only the menu-level keys close, and
+// whatever the same press queued behind them is drained before returning.
+static void uiWaitPageClose() {
+    auto kbd = ESPectrum::PS2Controller.keyboard();
+    fabgl::VirtualKeyItem k;
+    while (1) {
+        if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down) {
+            if (k.vk == fabgl::VK_MENU_ENTER || k.vk == fabgl::VK_ESCAPE ||
+                k.vk == fabgl::VK_F1 || k.vk == fabgl::VK_MENU_LEFT) {
+                fabgl::VirtualKeyItem d;
+                while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d);
+                OSD::clickNoPause();
+                return;
+            }
+        }
+        sleep_ms(10);
+    }
+}
 // ZX keyboard bitmap in a new-UI page. The image itself keeps its authentic ZX
 // colours: indices 0..15 belong to the guest palette in standard mode, our block
 // lives at 152+ — the two coexist.
@@ -123,19 +150,12 @@ static void uiZxKeyboardPage() {
     }
 
     // Drain the opening Enter, then any of the closing keys leaves.
-    auto kbd = ESPectrum::PS2Controller.keyboard();
-    { fabgl::VirtualKeyItem d; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d); }
-    fabgl::VirtualKeyItem k;
-    while (1) {
-        if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down) {
-            if (k.vk == fabgl::VK_MENU_ENTER || k.vk == fabgl::VK_ESCAPE ||
-                k.vk == fabgl::VK_F1 || k.vk == fabgl::VK_MENU_LEFT) {
-                OSD::clickNoPause();
-                break;
-            }
-        }
-        sleep_ms(10);
+    {
+        auto kbd = ESPectrum::PS2Controller.keyboard();
+        fabgl::VirtualKeyItem d;
+        while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d);
     }
+    uiWaitPageClose();
     // Give the ZX palette back and re-install the UI's, so the menu we return to is
     // painted in its own colours again.
     if (zxpal) {
@@ -331,16 +351,12 @@ void act_ledLegend() {
         textClip(x + 10 * sc, y + 1, colw - 12 * sc, entries[i].label, C_TEXT);
     }
 
-    auto kbd = ESPectrum::PS2Controller.keyboard();
-    { fabgl::VirtualKeyItem d; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d); }
-    fabgl::VirtualKeyItem k;
-    while (1) {
-        if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down) {
-            OSD::clickNoPause();
-            return;
-        }
-        sleep_ms(10);
+    {
+        auto kbd = ESPectrum::PS2Controller.keyboard();
+        fabgl::VirtualKeyItem d;
+        while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d);
     }
+    uiWaitPageClose();
 }
 
 // ── Joystick / hot keys ────────────────────────────────────────────────────────

@@ -7456,14 +7456,22 @@ void OSD::showLedLegend() {
         VIDEO::vga.print(entries[i].label);
     }
 
-    // Drain any pending keys (e.g. Enter from menu selection), then wait for new keypress
+    // Drain any pending keys (e.g. Enter from menu selection), then wait for a closing
+    // key. Only the menu-level keys close, and the rest of the queue goes with them:
+    // one physical key injects several virtual events (kbdExtraMapping pushes
+    // VK_DPAD_LEFT + VK_MENU_LEFT + VK_LEFT for a Left press), so leaving on the first
+    // of them let the menu we return to act on the VK_MENU_LEFT still queued and drop
+    // a level as well.
     auto Kbd = ESPectrum::PS2Controller.keyboard();
     fabgl::VirtualKeyItem item;
     while (Kbd->virtualKeyAvailable()) Kbd->getNextVirtualKey(&item);
     while (1) {
         if (Kbd->virtualKeyAvailable()) {
             Kbd->getNextVirtualKey(&item);
-            if (item.down) break;
+            if (item.down && (is_enter(item.vk) || is_back(item.vk))) {
+                while (Kbd->virtualKeyAvailable()) Kbd->getNextVirtualKey(&item);
+                break;
+            }
         }
     }
 
