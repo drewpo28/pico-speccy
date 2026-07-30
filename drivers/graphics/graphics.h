@@ -74,6 +74,12 @@ void graphics_set_bgcolor(uint32_t color888);
 void graphics_set_flashmode(bool flash_line, bool flash_frame);
 
 void graphics_set_scanlines(uint8_t level);
+// CRT filter aperture grille: 0=Off, 1..3 = increasingly dark. Dims the SECOND
+// output pixel of every palette index (each index already owns two — HDMI via the
+// conv_color TMDS pair, VGA via the packed uint16 pixel pair), so it costs nothing
+// at scanout. The colour half of the filter (gamma/tint/lift) is applied upstream
+// in VIDEO::applyCrtFilter() and arrives here as ordinary palette values.
+void graphics_set_crt(uint8_t level);
 void graphics_set_dither(bool enabled);
 
 // Profi DS80 "packed nibble" mode — HDMI path.

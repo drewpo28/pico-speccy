@@ -61,6 +61,16 @@ static const Option opt_scanlines[] = {
     { "3 Light",      3 },
     { "4 Lightest",   4 },
 };
+// CRT filter: gamma + phosphor tint + black lift, plus an aperture grille on the
+// odd-x column. Default Off — the 1-pixel grille beats against a TV's non-integer
+// upscaler on HDMI and can moire; it is at its best on a VGA monitor at native
+// 640x480, and with Scanlines on it completes a 2x2 dot mask.
+static const Option opt_crt[] = {
+    { "Off",     0 },
+    { "Soft",    1 },
+    { "Medium",  2 },
+    { "Strong",  3 },
+};
 static const Option opt_secondjoy[] = {          // 1-based in Config, do not shift
     { "DPAD #1", 1 },
     { "DPAD #2", 2 },
@@ -479,6 +489,7 @@ static const Node kVideo[] = {
     NM_RADIO(TXT_VID_PALETTE,    SET_PALETTE,    opt_palette,    nullptr),
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),
+    NM_RADIO(TXT_VID_CRT,        SET_CRT_FILTER, opt_crt,        nullptr),
     NM_BOOL (TXT_VID_VSYNC,      SET_VSYNC,      nullptr),
     NM_RADIO(TXT_VID_GIGASCREEN, SET_GIGASCREEN, opt_gigascreen, nullptr),
     NM_BOOL (TXT_VID_ULAPLUS,    SET_ULAPLUS,    nullptr),

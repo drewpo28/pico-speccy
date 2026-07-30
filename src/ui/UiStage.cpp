@@ -68,6 +68,7 @@ NM_BOOL_ACCESS(rtc,       rtc_enabled)
 NM_BOOL_ACCESS(psramOn,   psram_enabled)
 NM_INT_ACCESS (palette,   palette)
 NM_INT_ACCESS (scanlines, scanlines)
+NM_INT_ACCESS (crtFilter, crt_filter)
 NM_BOOL_ACCESS(vsync,     v_sync_enabled)
 NM_BOOL_ACCESS(dither,    hdmi_dither)
 NM_BOOL_ACCESS(flashload, flashload)
@@ -307,6 +308,11 @@ static bool hook_palette(int32_t, int32_t) {
 }
 static bool hook_scanlines(int32_t nv, int32_t) {
     graphics_set_scanlines((uint8_t)nv);
+    return true;
+}
+static bool hook_crtFilter(int32_t, int32_t) {
+    // Reads Config::crt_filter, which put_crtFilter() has already written.
+    VIDEO::applyCrtFilter();    // rewrites 0..239 — F_PALETTE re-installs ours
     return true;
 }
 static bool hook_dither(int32_t nv, int32_t) {

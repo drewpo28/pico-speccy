@@ -34,6 +34,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "Video.h"
+#include <math.h>       // powf() — CRT filter gamma curve (cold path, init only)
 #include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
 #include "Debug.h"
 #include "Subsystem.h"
@@ -60,6 +61,7 @@ extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
 extern "C" void vga_set_palette_entry_solid(uint8_t i, uint32_t color888);
 extern "C" void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height);
 extern "C" void graphics_set_scanlines(uint8_t level);
+extern "C" void graphics_set_crt(uint8_t level);
 extern "C" void graphics_set_dither(bool enabled);
 extern "C" void hdmi_reinit(void);
 extern "C" void vga_reinit(void);
@@ -239,9 +241,21 @@ void VIDEO::rebuildDS80ColorLut() {
 // compiled in.  DS80 relies on the VGA/HDMI driver's conv_color pair-slot machinery
 // (and SELECT_VGA to pick between the two) — neither exists under SOFTTV/TFT, where
 // there is no DS80 output path, so this is a no-op for those builds.
+static inline uint32_t crtTransform(uint32_t rgb);   // CRT filter colour stage, defined below
+
 static inline void profi_ds80_driver_set(bool active, const uint32_t *palette16, const uint8_t *pair_lut) {
 #ifdef VGA_HDMI
     extern bool SELECT_VGA;
+    // Run the DS80 palette through the CRT colour stage here rather than at the
+    // call sites: profi_palette_live[] is guest-visible state that round-trips
+    // through profi_palette_ui_saved[], so baking a transform into it would
+    // compound on every re-apply. Only crtTransform() — the ZX palette presets
+    // deliberately do not apply to Profi's own 512-colour palette.
+    uint32_t crt16[16];
+    if (active && palette16 && Config::crt_filter) {
+        for (int i = 0; i < 16; i++) crt16[i] = crtTransform(palette16[i]) & 0x00FFFFFF;
+        palette16 = crt16;
+    }
     if (SELECT_VGA)
         vga_set_profi_ds80_mode(active, palette16, pair_lut);
     else
@@ -983,6 +997,63 @@ static inline uint32_t paletteTransform(uint32_t rgb) {
     return matrixTransform(rgb, m);
 }
 
+// ─── CRT filter: gamma + phosphor tint + black lift ───────────────────────────
+// Purely palette-level, applied on top of the palette preset's own matrix. The
+// third component of the filter (the aperture grille) lives in the drivers,
+// because it uses the second output pixel of each palette index — see
+// graphics_set_crt(). Nothing here touches the scanout ISR.
+//
+// Levels: 0=Off 1=Soft 2=Medium 3=Strong.
+//   gamma  — CRT EOTF is nearer 2.4 than sRGB's 2.2, so midtones sit lower.
+//   lift   — phosphor glow floor: a CRT's black is never the panel's black.
+//   matrix — P22-ish primaries: green pulled towards yellow-green, blue towards
+//            cyan, full primaries mildly desaturated. Rows sum to ~1.0 so white
+//            stays white.
+static const float crt_gamma_val[4]  = { 1.00f, 1.15f, 1.30f, 1.45f };
+static const uint8_t crt_black_lift[4] = { 0, 4, 8, 12 };
+static const uint16_t crt_phosphor[4][9] = {
+    { 0x100, 0, 0,  0, 0x100, 0,  0, 0, 0x100 },            // Off: identity
+    {  246,  8, 3,   5,  248, 3,   3, 15, 238 },            // Soft
+    {  238, 15, 3,  10,  241, 5,   5, 26, 225 },            // Medium
+    {  230, 23, 3,  15,  233, 8,   8, 36, 212 },            // Strong
+};
+
+// Per-channel gamma+lift curve for the active level. Rebuilt by crtBuildLut()
+// on a level change only; 256 B, no per-palette-write float maths.
+static uint8_t crt_curve[256];
+static uint8_t crt_curve_level = 0xFF;   // forces a build on first use
+
+static void crtBuildLut(uint8_t level) {
+    if (level > 3) level = 0;
+    if (crt_curve_level == level) return;
+    crt_curve_level = level;
+    const float g = crt_gamma_val[level];
+    const int lift = crt_black_lift[level];
+    for (int i = 0; i < 256; i++) {
+        int v = (level == 0) ? i : (int)(255.0f * powf(i / 255.0f, g) + 0.5f);
+        v += lift;
+        crt_curve[i] = (uint8_t)(v > 255 ? 255 : v);
+    }
+}
+
+// Apply the CRT colour stage to an RGB888 value already carrying the palette
+// preset's transform.
+static inline uint32_t crtTransform(uint32_t rgb) {
+    const uint8_t level = Config::crt_filter <= 3 ? Config::crt_filter : 0;
+    if (level == 0) return rgb;
+    crtBuildLut(level);
+    uint32_t c = matrixTransform(rgb, crt_phosphor[level]);
+    return ((uint32_t)crt_curve[(c >> 16) & 0xFF] << 16)
+         | ((uint32_t)crt_curve[(c >>  8) & 0xFF] <<  8)
+         |  (uint32_t)crt_curve[ c        & 0xFF];
+}
+
+// The single colour entry point for every palette write: palette preset first,
+// CRT filter second. Every former paletteTransform() call site uses this.
+static inline uint32_t paletteFinal(uint32_t rgb) {
+    return crtTransform(paletteTransform(rgb));
+}
+
 // ULA+ G3R3B2 to full RGB888 conversion
 static inline uint32_t grb_to_rgb888(uint8_t grb) {
     // G3R3B2 format: bits 7:5=green, bits 4:2=red, bits 1:0=blue
@@ -1007,7 +1078,7 @@ static inline int vga_sub_chan(int c) { return (c / 21) & 3; }
 // When sub=0 for all channels the colour lands exactly on the VGA grid → solid,
 // no checkerboard (same as vga_rgb888_dither which sets all 4 positions to lo).
 static inline void applyUlaPlusPalette(int i) {
-    uint32_t orig = paletteTransform(grb_to_rgb888(VIDEO::ulaplus_palette[i]));
+    uint32_t orig = paletteFinal(grb_to_rgb888(VIDEO::ulaplus_palette[i]));
     int R = (orig >> 16) & 0xFF, G = (orig >> 8) & 0xFF, B = orig & 0xFF;
     bool needs = vga_sub_chan(R) || vga_sub_chan(G) || vga_sub_chan(B);
     uint32_t neigh = needs
@@ -1069,9 +1140,9 @@ void VIDEO::ulaPlusDisable() {
     // re-emit and race with HDMI DMA reading conv_color from port-write context.
     int g3r3b2_upper = Config::gigascreen_enabled ? 17 : 64;
     for (int i = 0; i < g3r3b2_upper; i++)
-        graphics_set_palette(i, paletteTransform(grb_to_rgb888(i)));
+        graphics_set_palette(i, paletteFinal(grb_to_rgb888(i)));
     for (int i = 0; i < 16; i++) {
-        uint32_t color = paletteTransform(spectrum_rgb888[i]);
+        uint32_t color = paletteFinal(spectrum_rgb888[i]);
         graphics_set_palette(i, color);
         vga_set_palette_entry_solid(i, color);
     }
@@ -1146,15 +1217,15 @@ void VIDEO::applyPalette() {
 
     // G3R3B2 entries (0-239) — apply matrix transform
     for (int i = 0; i < 240; i++)
-        graphics_set_palette(i, paletteTransform(grb_to_rgb888(i)));
+        graphics_set_palette(i, paletteFinal(grb_to_rgb888(i)));
     // Override indices 0-15 with Spectrum colors (already rebuilt with correct brightness)
     for (int i = 0; i < 16; i++) {
-        uint32_t color = paletteTransform(spectrum_rgb888[i]);
+        uint32_t color = paletteFinal(spectrum_rgb888[i]);
         graphics_set_palette(i, color);
         vga_set_palette_entry_solid(i, color);
     }
     // Orange (index 16)
-    graphics_set_palette(16, paletteTransform(0xFF7F00));
+    graphics_set_palette(16, paletteFinal(0xFF7F00));
 
     Debug::log2SD("applyPalette: done, 240+16+1 entries written");
 
@@ -1163,13 +1234,32 @@ void VIDEO::applyPalette() {
         initGigascreenBlendLUT();
 }
 
+// Apply a CRT-filter level change end to end. Colour stage first (it feeds every
+// palette write), then the drivers' aperture grille.
+//
+// The heavy dependents are all handed to their existing deferred paths rather than
+// rebuilt inline: initGigascreenBlendLUT() is one-shot on purpose (re-entering it
+// from a non-blanking context tears conv_color), and the ULA+ CLUT has the same
+// hazard. EndFrame drains both from blanking.
+void VIDEO::applyCrtFilter() {
+    crtBuildLut(Config::crt_filter <= 3 ? Config::crt_filter : 0);
+    applyPalette();                              // 0..239 + the 16 ZX solids
+    if (Config::gigascreen_enabled)
+        gigascreen_lut_rebuild_deferred = true;  // blends 17..136 carry the old curve
+    if (ulaplus_enabled)
+        ulaplus_alubytes_dirty = true;           // CLUT 0..63 (+ dither twins) likewise
+    if (profi_ds80_active)
+        profi_palette_dirty = true;              // DS80 pair table, re-emitted in blanking
+    graphics_set_crt(Config::crt_filter);
+}
+
 // Fill 256-entry BMP palette (1024 bytes, BGRA format) matching current VGA palette.
 // Replicates the same logic as applyPalette() but writes BMP BGRA entries instead
 // of programming the VGA hardware.
 void VIDEO::getBmpPalette(uint8_t* out) {
     // G3R3B2 entries (0-239) with palette transform
     for (int i = 0; i < 240; i++) {
-        uint32_t c = paletteTransform(grb_to_rgb888(i));
+        uint32_t c = paletteFinal(grb_to_rgb888(i));
         out[i * 4 + 0] = c & 0xFF;         // B
         out[i * 4 + 1] = (c >> 8) & 0xFF;  // G
         out[i * 4 + 2] = (c >> 16) & 0xFF; // R
@@ -1177,7 +1267,7 @@ void VIDEO::getBmpPalette(uint8_t* out) {
     }
     // Indices 240-255: same G3R3B2 fallback
     for (int i = 240; i < 256; i++) {
-        uint32_t c = paletteTransform(grb_to_rgb888(i));
+        uint32_t c = paletteFinal(grb_to_rgb888(i));
         out[i * 4 + 0] = c & 0xFF;
         out[i * 4 + 1] = (c >> 8) & 0xFF;
         out[i * 4 + 2] = (c >> 16) & 0xFF;
@@ -1185,7 +1275,7 @@ void VIDEO::getBmpPalette(uint8_t* out) {
     }
     // Override indices 0-15 with Spectrum colors (matching applyPalette)
     for (int i = 0; i < 16; i++) {
-        uint32_t c = paletteTransform(spectrum_rgb888[i]);
+        uint32_t c = paletteFinal(spectrum_rgb888[i]);
         out[i * 4 + 0] = c & 0xFF;
         out[i * 4 + 1] = (c >> 8) & 0xFF;
         out[i * 4 + 2] = (c >> 16) & 0xFF;
@@ -1206,7 +1296,7 @@ void VIDEO::getBmpPalette(uint8_t* out) {
     }
     // Orange (index 16)
     {
-        uint32_t c = paletteTransform(0xFF7F00);
+        uint32_t c = paletteFinal(0xFF7F00);
         out[16 * 4 + 0] = c & 0xFF;
         out[16 * 4 + 1] = (c >> 8) & 0xFF;
         out[16 * 4 + 2] = (c >> 16) & 0xFF;
@@ -1215,7 +1305,7 @@ void VIDEO::getBmpPalette(uint8_t* out) {
     // ULA+ palette override (indices 0-63)
     if (ulaplus_enabled) {
         for (int i = 0; i < 64; i++) {
-            uint32_t c = paletteTransform(grb_to_rgb888(ulaplus_palette[i]));
+            uint32_t c = paletteFinal(grb_to_rgb888(ulaplus_palette[i]));
             out[i * 4 + 0] = c & 0xFF;
             out[i * 4 + 1] = (c >> 8) & 0xFF;
             out[i * 4 + 2] = (c >> 16) & 0xFF;
@@ -1915,6 +2005,10 @@ void VIDEO::Init() {
     vga.init( Mode, redPins, grePins, bluPins, HSYNC_PIN, VSYNC_PIN);
 
     graphics_set_scanlines(Config::scanlines);
+    // Before applyPalette() below: graphics_set_palette() consults the grille
+    // level, so setting it first grilles every entry on the way in instead of
+    // needing a second walk of the whole palette.
+    graphics_set_crt(Config::crt_filter);
 
     // Generate AluBytes table with palette indices (no sync bits)
     initAluBytes();
@@ -2037,6 +2131,7 @@ void VIDEO::changeMode() {
     OSD::scrH = newH;
     graphics_set_buffer(NULL, newW, newH);
     graphics_set_scanlines(Config::scanlines);
+    graphics_set_crt(Config::crt_filter);
     if (SELECT_VGA) {
         vga_reinit();
     } else {
@@ -2635,7 +2730,7 @@ void initGigascreenBlendLUT() {
             // Assign to next available palette slot
             if (nextSlot < 240) {
                 gigsBlendLUT[i * 16 + j] = nextSlot;
-                graphics_set_palette(nextSlot, paletteTransform(blended));
+                graphics_set_palette(nextSlot, paletteFinal(blended));
                 nextSlot++;
             } else {
                 gigsBlendLUT[i * 16 + j] = i; // fallback
@@ -3307,8 +3402,9 @@ IRAM_ATTR void VIDEO::EndFrame() {
         extern volatile uint32_t cpu_frame_us;
         extern volatile uint32_t fdd_step_us;   // time in end-of-frame rvmWD1793Step
         extern volatile uint32_t hdmi_irq_max_gap_us;
+        extern volatile uint32_t hdmi_irq_max_dur_us;   // time SPENT in the line ISR
         static uint32_t port_log_frame = 0;
-        static uint32_t cpu_accum = 0, cpu_max = 0, gap_max = 0;
+        static uint32_t cpu_accum = 0, cpu_max = 0, gap_max = 0, dur_max = 0;
         static uint32_t fdd_step_accum = 0, fdd_step_max = 0;
         static uint32_t fdd_ports_accum = 0, fdd_ports_max = 0;
         static uint64_t wall_t0 = 0;
@@ -3320,6 +3416,8 @@ IRAM_ATTR void VIDEO::EndFrame() {
         if (Ports::fdd_ports_us > fdd_ports_max) fdd_ports_max = Ports::fdd_ports_us;
         if (hdmi_irq_max_gap_us > gap_max) gap_max = hdmi_irq_max_gap_us;
         hdmi_irq_max_gap_us = 0;
+        if (hdmi_irq_max_dur_us > dur_max) dur_max = hdmi_irq_max_dur_us;
+        hdmi_irq_max_dur_us = 0;
         cpu_frame_us = 0;
         fdd_step_us = 0;
         Ports::fdd_ports_us = 0;
@@ -3328,12 +3426,12 @@ IRAM_ATTR void VIDEO::EndFrame() {
             float fps = wall_t0 ? (60.0f * 1000000.0f / (float)(now - wall_t0)) : 0.0f;
             wall_t0 = now;
             port_log_frame = 0;
-            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus realFPS=%.2f",
+            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus realFPS=%.2f",
                 cpu_accum / 60000.0f, cpu_max / 1000.0f,
                 fdd_step_accum / 60000.0f, fdd_step_max / 1000.0f,
                 fdd_ports_accum / 60000.0f, fdd_ports_max / 1000.0f,
-                (unsigned)gap_max, fps);
-            cpu_accum = cpu_max = gap_max = 0;
+                (unsigned)gap_max, (unsigned)dur_max, fps);
+            cpu_accum = cpu_max = gap_max = dur_max = 0;
             fdd_step_accum = fdd_step_max = 0;
             fdd_ports_accum = fdd_ports_max = 0;
         }

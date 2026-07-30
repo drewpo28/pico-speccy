@@ -5429,11 +5429,15 @@ static void buildEmulatorInfoText() {
 #endif
         pos += infoAppend(buf, pos, bufsz,
             " Scanlines      : %s\n"
+            " CRT filter     : %s\n"
             " Render         : %s\n"
             " Palette        : %s\n",
             Config::scanlines ? (Config::scanlines == 1 ? "Lvl 1" :
                                  Config::scanlines == 2 ? "Lvl 2" :
                                  Config::scanlines == 3 ? "Lvl 3" : "Lvl 4") : "Off",
+            Config::crt_filter == 1 ? "Soft" :
+            Config::crt_filter == 2 ? "Medium" :
+            Config::crt_filter == 3 ? "Strong" : "Off",
             Config::render ? "Snow effect" : "Standard",
             VIDEO::paletteName(Config::palette));
         {

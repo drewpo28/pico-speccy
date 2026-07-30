@@ -62,6 +62,7 @@
 // ── Video ──────────────────────────────────────────────────────────────────────
 #define TXT_VID_PALETTE     "Palette"
 #define TXT_VID_SCANLINES   "Scanlines"
+#define TXT_VID_CRT         "CRT filter"
 #define TXT_VID_VSYNC       "V-Sync"
 #define TXT_VID_DITHER      "HDMI dither"
 

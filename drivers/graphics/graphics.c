@@ -256,12 +256,25 @@ void graphics_set_scanlines(uint8_t level) {
     hdmi_set_scanlines(level);
     vga_set_scanlines(level);
 }
+extern void hdmi_set_crt(uint8_t level);
+extern void vga_set_crt(uint8_t level);
+void graphics_set_crt(uint8_t level) {
+    // Each backend rebuilds only its own tables from its own colour cache, so the
+    // order does not matter and neither can clobber the other's state.
+    hdmi_set_crt(level);
+    vga_set_crt(level);
+}
 extern void hdmi_set_dither(bool enabled);
 void graphics_set_dither(bool enabled) {
     hdmi_set_dither(enabled);
 }
 #else
 void graphics_set_scanlines(uint8_t level) {
+    (void)level;
+}
+// TFT/ILI9341, TV and SOFTTV targets do not link vga.c/hdmi.c — the grille has no
+// output pair to use there, so it degrades to the colour half of the filter only.
+void graphics_set_crt(uint8_t level) {
     (void)level;
 }
 #ifdef HDMI

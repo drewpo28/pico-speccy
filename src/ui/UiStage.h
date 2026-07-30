@@ -252,7 +252,13 @@ const char* romsetName(int32_t composite);
     X(SET_TFT_INVERT,      AC_REBOOT, 0,                     get_tftInv,     put_tftInv,     nullptr,        -1)          \
     X(SET_TFT_BGR,         AC_REBOOT, 0,                     get_tftBgr,     put_tftBgr,     nullptr,        -1)          \
     X(SET_TFT_FLIP_X,      AC_REBOOT, 0,                     get_tftFlipX,   put_tftFlipX,   nullptr,        -1)          \
-    X(SET_TFT_FLIP_Y,      AC_REBOOT, 0,                     get_tftFlipY,   put_tftFlipY,   nullptr,        -1)
+    X(SET_TFT_FLIP_Y,      AC_REBOOT, 0,                     get_tftFlipY,   put_tftFlipY,   nullptr,        -1)          \
+    /* ── Video > CRT filter ──────────────────────────────────────────────────── */      \
+    /* Entirely palette-level — gamma + phosphor tint + black lift on the colour side,  */ \
+    /* plus an aperture grille that dims the second output pixel each palette index     */ \
+    /* already owns. Costs zero scanout cycles and zero palette slots, so it is safe to */ \
+    /* preview live. F_PALETTE because the hook rewrites 0..239.                        */ \
+    X(SET_CRT_FILTER,      AC_LIVE,   F_PREVIEW | F_PALETTE, get_crtFilter,  put_crtFilter,  hook_crtFilter, -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

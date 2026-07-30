@@ -376,6 +376,10 @@ public:
   // Palette transform (Default, Grayscale, etc.)
   static void applyPalette();
 
+  // Apply a Config::crt_filter change: colour stage (gamma + phosphor tint +
+  // black lift) via applyPalette(), then the drivers' aperture grille.
+  static void applyCrtFilter();
+
   // Fill 256-entry BMP palette (1024 bytes, BGRA format) matching current VGA palette
   static void getBmpPalette(uint8_t* out);
 

@@ -141,6 +141,7 @@ uint16_t Config::catalog_port = 0;
 string   Config::last_loc;   // last F5 browse location (all sources); see Config.h
 
 uint8_t Config::scanlines = 0;
+uint8_t Config::crt_filter = 0;
 uint8_t Config::render = 0;
 uint8_t Config::persist_slot = 1;
 
@@ -990,6 +991,8 @@ void Config::load() {
             nvs_get_str((s + ".fileSearch").c_str(), ft.fileSearch, sts);
         }
         nvs_get_u8("scanlines", Config::scanlines, sts);
+        nvs_get_u8("crt_filter", Config::crt_filter, sts);
+        if (Config::crt_filter > 3) Config::crt_filter = 0;
         nvs_get_u8("render", Config::render, sts);
         nvs_get_b("TABasfire1", Config::TABasfire1, sts);
         nvs_get_b("StartMsg", Config::StartMsg, sts);
@@ -1327,6 +1330,7 @@ void Config::save(const char* path) {
         }
     }
     nvs_set_u8(buf,"scanlines",Config::scanlines);
+    nvs_set_u8(buf,"crt_filter",Config::crt_filter);
     nvs_set_u8(buf,"render",Config::render);
     nvs_set_str(buf,"TABasfire1", TABasfire1 ? "true" : "false");
     nvs_set_str(buf,"StartMsg", StartMsg ? "true" : "false");

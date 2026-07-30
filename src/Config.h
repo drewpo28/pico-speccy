@@ -229,6 +229,11 @@ public:
     static uint8_t  throtling;
     static bool CursorAsJoy;
     static uint8_t scanlines;
+    // CRT filter: 0=Off 1=Soft 2=Medium 3=Strong. Purely palette-level (gamma +
+    // phosphor tint + black lift + aperture grille on the 2nd pixel of each pair),
+    // so it costs zero scanout cycles. Independent of scanlines, which own the
+    // vertical axis.
+    static uint8_t crt_filter;
     static uint8_t render;
     static uint8_t persist_slot;
 
