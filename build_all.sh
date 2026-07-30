@@ -3,9 +3,10 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-MinSizeRel}"
-# New fullscreen OSD menu: OFF builds the classic cascade menu on F1.
-# Run `NEW_UI=ON ./build_all.sh` to build the whole matrix with the new UI.
-NEW_UI="${NEW_UI:-OFF}"
+# New fullscreen OSD menu on F1 (matches the CMakeLists default). Both UIs are
+# in the image either way; run `NEW_UI=OFF ./build_all.sh` for the classic
+# cascade menu as the F1 entry point.
+NEW_UI="${NEW_UI:-ON}"
 NPROC="$(nproc)"
 
 # Parallelism: MAX_PARALLEL targets build concurrently, each with JOBS_PER_BUILD threads.
