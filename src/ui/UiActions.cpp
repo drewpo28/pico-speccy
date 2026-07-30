@@ -2,7 +2,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include "UiActions.h"
 #include "UiStrings.h"
@@ -360,14 +359,10 @@ void act_ledLegend() {
 }
 
 // ── Joystick / hot keys ────────────────────────────────────────────────────────
-// The pad map is a page of the new UI now (spatial layout + JoyTest preserved);
-// the classic dialog stays as the small-layout fallback. The gate is the page's
-// real requirement — 310 glyph-scaled px of width — which the full-framebuffer
-// DS80 surface (640 logical, scale 2 -> needs 620) satisfies too.
-void act_joyDialog() {
-    if (nm::available() && Sf.w >= 310 * Sf.glyphScale + 8) joyMappingPage();
-    else OSD::joyDialog();
-}
+// The pad map is a page of the new UI (spatial layout + JoyTest preserved). It needs
+// 310 glyph-scaled px of width, which every supported mode has — the full-framebuffer
+// DS80 surface (640 logical, scale 2 -> needs 620) included.
+void act_joyDialog() { joyMappingPage(); }
 // ── hot keys as a level ────────────────────────────────────────────────────────
 // The classic dialog was a menuRun list with the same three verbs; the capture
 // loop itself (allowed keys, modifiers, duplicate check) is shared verbatim via
@@ -417,8 +412,7 @@ void midi_keyBanks(int32_t tag, uint8_t key) {
     if (key != 0) return;
     const string prevBank = Config::midi_bank;
     if (tag == 0) {
-        const string pick = browseFile(FileUtils::DLS_Path, TXT_MIDI_DLS_PICK,
-                                       DISK_DLSFILE, 51, 22);
+        const string pick = browseFile(FileUtils::DLS_Path, TXT_MIDI_DLS_PICK, DISK_DLSFILE);
         if (pick.empty()) return;
         const string outBin =
             OSD::convertDlsToBank(FileUtils::DLS_Path + pick.substr(1));
@@ -554,10 +548,22 @@ void act_updateFirmware() {
     while (1);
 }
 
+#if TFT
+void act_tftDefaults() {
+    // Staged like any edit, so it is undone by Esc and asks for the reboot once, with
+    // the rest of the commit. The landscape bit is re-asserted by every TFT setter.
+    Stage::set(SET_TFT_INVERT, 0);
+    Stage::set(SET_TFT_BGR,    1);
+    Stage::set(SET_TFT_FLIP_X, 0);
+    Stage::set(SET_TFT_FLIP_Y, 0);
+    uiToast(TXT_TFT_DEFAULTS, false, 1200);
+}
+#endif
+
 // `slot` is the arch index OSD::updateROM expects (the classic menu derived it from the
 // row position, opt2 - 1). Body lifted from OSDMain.cpp:5974.
 void act_replaceRom(int32_t slot) {
-    string mFile = nm::browseFile(FileUtils::ROM_Path, TXT_ROM_PICK, DISK_ROMFILE, 26, 15);
+    string mFile = nm::browseFile(FileUtils::ROM_Path, TXT_ROM_PICK, DISK_ROMFILE);
     if (mFile.empty()) return;
     mFile.erase(0, 1);
     string fname = FileUtils::ROM_Path + mFile;
@@ -633,7 +639,7 @@ void act_debugPoke() {
 // settings, so they take effect immediately and are never staged.
 
 void act_tapeSelect() {
-    string mFile = nm::browseFile(FileUtils::TAP_Path, TXT_TAPE_PICK, DISK_TAPFILE, 28, 16);
+    string mFile = nm::browseFile(FileUtils::TAP_Path, TXT_TAPE_PICK, DISK_TAPFILE);
     if (mFile.empty()) return;
 
     string fname = FileUtils::TAP_Path + mFile.substr(1);
@@ -842,16 +848,10 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
             // the classic popup, where every Enter mounts `fname` into the focused slot.
             string fname = s_armedFile;
             if (fname.empty()) {
-                // Geometry copied from the classic per-drive "Insert" flow, which is what
-                // this replaces: DSK 26x15 (OSDMain.cpp:2975 and :3404), esxDOS images
-                // 51x22 (:3276). The browser's marquee/padding maths is written against
-                // those widths — inventing a size is not free.
                 const bool img = (iface == IFACE_ESX || iface == IFACE_IDE);
                 const uint8_t ftype = img ? DISK_IMGFILE : DISK_DSKFILE;
                 string& dir = img ? FileUtils::IMG_Path : FileUtils::DSK_Path;
-                const string pick = img
-                    ? nm::browseFile(dir, TXT_SLOT_PICK, ftype, 51, 22)
-                    : nm::browseFile(dir, TXT_SLOT_PICK, ftype, 26, 15);
+                const string pick = nm::browseFile(dir, TXT_SLOT_PICK, ftype);
                 if (pick.empty()) return;
                 fname = dir + pick.substr(1);
                 if (FileUtils::getLCaseExt(fname) == "zip") {
@@ -1109,4 +1109,3 @@ void act_speedTestOne(int32_t opt) { OSD::SpeedTestRun((uint8_t)opt); }
 
 } // namespace nm
 
-#endif // NEW_UI

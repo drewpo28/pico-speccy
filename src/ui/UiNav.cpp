@@ -10,7 +10,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include <stdio.h>
 #include <string.h>
@@ -299,16 +298,12 @@ static void leaveLevel() {
 }
 
 // A reused modal dialog owns the whole screen while it runs, so the fullscreen has
-// to be repainted afterwards. Two traps:
-//  * fileDialog pops a SaveRect it never pushed (it relies on menuRun having pushed
-//    one), so menu_saverect must be false around it;
-//  * in DS80 our 16 UI colours have REPLACED the 16 Profi palette entries, and those
-//    dialogs draw with zxColor() indices 0..15 — they would come out in our colours.
-//    Hand the palette back for the duration of the dialog and re-install after.
+// to be repainted afterwards. The trap: in DS80 our 16 UI colours have REPLACED the
+// 16 Profi palette entries, and those dialogs draw with zxColor() indices 0..15 —
+// they would come out in our colours. Hand the palette back for the duration of the
+// dialog and re-install after.
 static void runModal(void (*fn)()) {
     if (!fn) return;
-    OSD::menu_level = 0;
-    OSD::menu_saverect = false;
     gfxSuspendPalette();
     fn();
     gfxResumePalette();
@@ -320,8 +315,6 @@ static void runModal(void (*fn)()) {
 
 static void runModalArg(void (*fn)(int32_t), int32_t arg) {
     if (!fn) return;
-    OSD::menu_level = 0;
-    OSD::menu_saverect = false;
     gfxSuspendPalette();
     fn(arg);
     gfxResumePalette();
@@ -340,8 +333,6 @@ static void dynInvoke(uint8_t key) {
     const int32_t tag = S.dyn.tag[r];
     Debug::log("dynInvoke: tag=%ld key=%u sp=%08x\n", (long)tag, (unsigned)key, debug_sp());
 
-    OSD::menu_level = 0;
-    OSD::menu_saverect = false;
     gfxSuspendPalette();
     owner->rowkey(tag, key);
     gfxResumePalette();
@@ -538,8 +529,6 @@ static void runInternal(const Node* openAt) {
     // The fullscreen is never pushed onto the SaveRect stack (320x240 = 77 KB per
     // open). The emulated frame is repainted by ESPectrum::processKeyboard on close.
     VIDEO::SaveRect.clear();
-    OSD::menu_level = 0;
-    OSD::menu_saverect = false;
 
     memset(&S, 0, sizeof(S));
     Stage::begin();
@@ -657,13 +646,6 @@ void run() { runInternal(nullptr); }
 
 void runDiskSlots(int iface, const char* fname) {
     Debug::log("runDiskSlots: iface=%d file='%s' sp=%08x\n", iface, fname ? fname : "", debug_sp());
-    // The fullscreen layout may not fit the live video mode; the call sites in
-    // OSDMain run Config::save()/reset() right after us, so silently mounting
-    // nothing is not an option — fall back to the classic slot popup.
-    if (!available()) {
-        OSD::diskSlotDialog((DiskIface)iface, 0, fname ? fname : "");
-        return;
-    }
     const Node* target = slotNodeFor(iface);
     if (!target) return;
     slotsArmFile(fname ? fname : "");
@@ -679,4 +661,3 @@ void runPersist(bool save) {
 
 } // namespace nm
 
-#endif // NEW_UI

@@ -87,7 +87,6 @@ static void drawContent(const char** lineStarts, int* lineLens, int totalLines,
 
 // Draw info box with scrolling and wait for ESC
 static void showInfoBox(const string& info, int lineCount) {
-#if NEW_UI
     // While the new UI is on screen its text-page renderer is installed — route
     // there (first line of `info` is the title, the rest is the body).
     if (OSD::textPageOverride) {
@@ -97,7 +96,6 @@ static void showInfoBox(const string& info, int lineCount) {
         OSD::textPageOverride(title.c_str(), body.c_str());
         return;
     }
-#endif
     const int MAX_LINES = 128;
     static const char* lineStarts[MAX_LINES];
     static int lineLens[MAX_LINES];
@@ -825,7 +823,7 @@ static void viewVHD(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
 
     // Static: all view* helpers inline into viewInfo, so this 512 B buffer would
     // otherwise dominate viewInfo's stack frame. viewInfo nests under do_OSD(1 KB)
-    // + fileDialog(0.7 KB) on the 4 KB core0 stack — every byte counts. Not reentrant.
+    // + the browser (0.7 KB) on the 4 KB core0 stack — every byte counts. Not reentrant.
     static uint8_t ft[512];
     UINT br;
     f_lseek(f, fileSize - 512);

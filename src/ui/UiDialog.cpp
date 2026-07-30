@@ -2,7 +2,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include <string.h>
 #include <string>
@@ -722,4 +721,3 @@ bool uiPrompt(const char* title, string& io, size_t maxlen, bool mask, bool allo
 
 } // namespace nm
 
-#endif // NEW_UI

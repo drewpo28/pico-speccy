@@ -17,6 +17,8 @@ using namespace std;
 #include "AlfCart.h"
 #include "Video.h"
 #include "OSDMain.h"
+#include "ui/UiDialog.h"
+#include "ui/UiGfx.h"
 #include "Config.h"
 #include "ESPectrum.h"
 #include "messages.h"
@@ -143,26 +145,21 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     }
 
 
-    // Phase 2: select file
+    // Phase 2: select file. Standalone (hot-key) callers have no gfx session of
+    // their own, hence the begin/end pair; nested under the browser/menu it is a
+    // no-op re-install.
     int selected = 0;
     if (entryCount > 1) {
-        string menu = "Select file\n";
-        for (int i = 0; i < entryCount; i++) {
-            menu += entries[i].name;
-            menu += "\n";
-        }
-        uint8_t maxRows = (entryCount < 15) ? entryCount + 1 : 16;
-        uint8_t menuCols = 30;
-        uint16_t w = menuCols * OSD_FONT_W + 2;
-        uint16_t h = maxRows * OSD_FONT_H + 2;
-        uint8_t opt = OSD::simpleMenuRun(menu,
-            OSD::scrAlignCenterX(w), OSD::scrAlignCenterY(h),
-            maxRows, menuCols);
-        if (opt == 0) {
+        const char* items[ZIP_MAX_ENTRIES];
+        for (int i = 0; i < entryCount; i++) items[i] = entries[i].name;
+        nm::gfxBegin();
+        const int sel = nm::uiPickList("Select file", items, entryCount);
+        nm::gfxEnd();
+        if (sel < 0) {
             f_close(&zipFile);
             return "\x1b"; // ESC = cancelled
         }
-        selected = opt - 1;
+        selected = sel;
     }
 
     // Phase 3: extract
@@ -476,7 +473,7 @@ void ZipExtract::viewInfo(const string& zipPath) {
     LocalFileHeader hdr;
     UINT br;
 
-    // Build info string for simpleMenuRun
+    // Build info string for the info box
     // First line = title (archive name + size)
     const char* zipName = getBaseName(zipPath.c_str());
     char sizeBuf[16];
@@ -531,7 +528,6 @@ void ZipExtract::viewInfo(const string& zipPath) {
 
     if (fileCount == 0) return;
 
-#if NEW_UI
     // While the new UI is on screen its text-page renderer is installed — route
     // there (first line of `info` is the title, the rest is the body).
     if (OSD::textPageOverride) {
@@ -541,7 +537,6 @@ void ZipExtract::viewInfo(const string& zipPath) {
         OSD::textPageOverride(ttl.c_str(), body.c_str());
         return;
     }
-#endif
 
     // Draw info box manually and wait for any key
     uint8_t rows = fileCount + 1; // +1 for title

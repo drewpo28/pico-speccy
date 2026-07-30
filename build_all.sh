@@ -3,10 +3,6 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-MinSizeRel}"
-# New fullscreen OSD menu on F1 (matches the CMakeLists default). Both UIs are
-# in the image either way; run `NEW_UI=OFF ./build_all.sh` for the classic
-# cascade menu as the F1 entry point.
-NEW_UI="${NEW_UI:-ON}"
 NPROC="$(nproc)"
 
 # Parallelism: MAX_PARALLEL targets build concurrently, each with JOBS_PER_BUILD threads.
@@ -31,7 +27,7 @@ while [ $# -gt 0 ]; do
             cat <<EOF
 Usage: $0 [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 
-Env vars: BUILD_TYPE, NEW_UI (ON/OFF), MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR
+Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR
 Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 (default: all)
 EOF
             exit 0 ;;
@@ -142,7 +138,6 @@ echo "Build type:       $BUILD_TYPE"
 echo "Generator:        $CMAKE_GENERATOR"
 echo "Parallel targets: $MAX_PARALLEL  (jobs per target: $JOBS_PER_BUILD, nproc=$NPROC)"
 echo "ccache:           $( [ $HAVE_CCACHE = 1 ] && echo enabled || echo "not installed (apt install ccache → ~2-5x faster rebuilds)" )"
-echo "New UI:           $NEW_UI"
 echo "Clean first:      $CLEAN"
 echo ""
 
@@ -235,9 +230,6 @@ build_one() {
             "${target_flags[@]}"
             "${CCACHE_ARGS[@]}"
             -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
-            # Pinned explicitly so the matrix never inherits a stale cache value
-            # from a one-off manual configure in the same build dir.
-            -DNEW_UI="$NEW_UI"
         )
         if [ -n "$CMAKE_MAKE_PROGRAM" ]; then
             cmake_args+=(-DCMAKE_MAKE_PROGRAM="$CMAKE_MAKE_PROGRAM")
@@ -251,10 +243,7 @@ build_one() {
 # Run builds with bounded concurrency via xargs -P.
 # xargs spawns one subshell per pair, at most MAX_PARALLEL concurrently.
 export -f build_one build_dir_for
-# NEW_UI must be exported too: the workers run in `bash -c` subshells, and an
-# unexported value would reach cmake as `-DNEW_UI=` (empty = OFF), silently
-# ignoring `NEW_UI=ON ./build_all.sh`.
-export SCRIPT_DIR BUILD_TYPE NEW_UI CMAKE_GENERATOR CMAKE_MAKE_PROGRAM LOG_DIR JOBS_PER_BUILD
+export SCRIPT_DIR BUILD_TYPE CMAKE_GENERATOR CMAKE_MAKE_PROGRAM LOG_DIR JOBS_PER_BUILD
 export CCACHE_ARGS_STR="${CCACHE_ARGS[*]}"
 # Re-export CCACHE_ARGS as a string and reconstruct in subshell (arrays don't export cleanly).
 build_one_wrapper() {

@@ -6,7 +6,6 @@
 
 #include <stdint.h>
 
-#if NEW_UI
 
 const uint32_t ui_logo_pal[31] = {
     0xE6F3E5u,    0xA8A6BFu,    0x56BFE6u,    0x4E93C7u,
@@ -705,4 +704,3 @@ const uint8_t ui_logo128[16384] = {
     25,25,25,25,25,25,25,25,28,28,25,29,28,28,28,28,
 };
 
-#endif // NEW_UI

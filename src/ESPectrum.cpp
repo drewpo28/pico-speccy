@@ -48,10 +48,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "LEDIndicators.h"
 #include "OSDMain.h"
 #include "ui/OSDNewMenu.h"
-#if NEW_UI
 #include "ui/UiDialog.h"
 #include "ui/UiGfx.h"
-#endif
 #include "Ports.h"
 #include "Snapshot.h"
 #include "Tape.h"
@@ -1709,10 +1707,8 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           // Repaint the frozen frame and put the PAUSE box back on top.
           if (CPU::paused) {
             VIDEO::RedrawPausedFrame();
-#if NEW_UI
             if (nm::available() && !profi_ds80_active) nm::uiPausedBadge();
             else
-#endif
             OSD::osdCenteredMsg(OSD_PAUSE, LEVEL_INFO, 0);
           }
           ESPectrum::ts_start += esp_timer_get_time() - osd_start;

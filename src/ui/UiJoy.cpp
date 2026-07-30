@@ -13,7 +13,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include <string.h>
 #include <stdio.h>
@@ -335,4 +334,3 @@ void joyMappingPage() {
 
 } // namespace nm
 
-#endif // NEW_UI

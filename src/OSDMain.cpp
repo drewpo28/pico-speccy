@@ -76,13 +76,11 @@ visit https://zxespectrum.speccy.org/contacto
 #include "BoardPins.h"
 #include "graphics.h"
 #include "ui/OSDNewMenu.h"
-#if NEW_UI
 #include "ui/UiBrowser.h"
 #include "ui/UiDialog.h"
 #include "ui/UiGfx.h"
 #include "ui/UiStrings.h"
 #include "ui/UiActions.h"   // act_debugPoke — the new Input-poke flow
-#endif
 #if ZIFI_NET_CLIENT
 #include "ZiFiSock.h"
 #include "RemoteFs.h"
@@ -103,14 +101,12 @@ static int s_dlsConvLastPct = -1;
 static void osdDlsConvProgress(int pct, void* /*user*/) {
     if (pct == s_dlsConvLastPct) return;
     s_dlsConvLastPct = pct;
-#if NEW_UI
     // Under the new chrome this lands in the menu/browser footer status line (the
     // progressOverride hook), where every other long operation reports.
     if (OSD::progressOverride) {
         OSD::progressDialog(MSG_MIDI_CONVERTING, "", pct, 1);
         return;
     }
-#endif
     OSD::osdCenteredMsg(string(MSG_MIDI_CONVERTING) + " " + std::to_string(pct) + "%",
                         LEVEL_INFO, 0);
 }
@@ -128,17 +124,13 @@ static string osdConvertDlsToBank(const string& dlsPath) {
     string outBin = string(CONFIG_DIR) + "/" + base + ".bin";
 
     s_dlsConvLastPct = -1;
-#if NEW_UI
     if (OSD::progressOverride)
         OSD::progressDialog(MSG_MIDI_CONVERTING, "", 0, 0);   // footer, not a modal box
     else
-#endif
-    OSD::osdCenteredMsg(string(MSG_MIDI_CONVERTING) + " 0%", LEVEL_INFO, 0);
+        OSD::osdCenteredMsg(string(MSG_MIDI_CONVERTING) + " 0%", LEVEL_INFO, 0);
     const bool convOk = DlsConv::convert(dlsPath.c_str(), outBin.c_str(), 31250,
                                          osdDlsConvProgress, nullptr);
-#if NEW_UI
     if (OSD::progressOverride) OSD::progressDialog(MSG_MIDI_CONVERTING, "", 100, 2); // close
-#endif
     if (!convOk) {
         OSD::osdCenteredMsg(MSG_MIDI_CONVERT_FAIL, LEVEL_WARN, 3000);
         return "";
@@ -181,35 +173,12 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include <cstdio>
 #include <cstdarg>   // infoAppend's vsnprintf
 
-#if USE_NESPAD
-#include "nespad.h"
-#else
-static const uint32_t nespad_state = 0, nespad_state2 = 0;
-#endif
-struct input_bits_t {
-  bool a: true;
-  bool b: true;
-  bool select: true;
-  bool start: true;
-  bool right: true;
-  bool left: true;
-  bool up: true;
-  bool down: true;
-};
-extern input_bits_t gamepad1_bits;
-extern input_bits_t gamepad2_bits;
-
 extern "C" uint8_t TFT_FLAGS;
 extern "C" uint8_t TFT_INVERSION;
 
 void fputs(const char* b, FIL& f);
 
 using namespace std;
-
-#define MENU_REDRAW true
-#define MENU_UPDATE false
-#define OSD_ERROR true
-#define OSD_NORMAL false
 
 #define OSD_W 248
 #define OSD_H 200
@@ -232,33 +201,7 @@ extern int ram_pages, butter_pages, psram_pages, swap_pages;
 #define OSD_INFO_BUF_SZ 1536
 static char osd_info_buf[OSD_INFO_BUF_SZ] __attribute__((aligned(4)));
 
-uint8_t OSD::cols;                     // Maximum columns
-uint8_t OSD::tab_col;                  // Tab stop column
-uint8_t OSD::max_right;                // Longest right part (hotkeys only)
-uint8_t OSD::mf_rows;                  // File menu maximum rows
-unsigned short OSD::real_rows;      // Real row count
-uint8_t OSD::virtual_rows;             // Virtual maximum rows on screen
-uint16_t OSD::w;                        // Width in pixels
-uint16_t OSD::h;                        // Height in pixels
-uint16_t OSD::x;                        // X vertical position
-uint16_t OSD::y;                        // Y horizontal position
-uint16_t OSD::prev_y[5];                // Y prev. position
-unsigned short OSD::menu_prevopt = 1;
-string OSD::menu;                   // Menu string
-unsigned short OSD::begin_row = 1;      // First real displayed row
-uint8_t OSD::focus = 1;                    // Focused virtual row
-uint8_t OSD::last_focus = 0;               // To check for changes
-unsigned short OSD::last_begin_row = 0; // To check for changes
-
-uint8_t OSD::menu_level = 0;
-bool OSD::menu_saverect = false;
-unsigned short OSD::menu_curopt = 1;
 bool OSD::net_launch_close = false;
-bool OSD::menu_del_pressed = false;
-bool OSD::menu_rename_pressed = false;
-bool OSD::menu_quicksave_pressed = false;
-bool OSD::menu_quickload_pressed = false;
-string OSD::menu_footer = "";
 
 unsigned short OSD::scrW = 320;
 unsigned short OSD::scrH = 240;
@@ -391,12 +334,10 @@ IRAM_ATTR void OSD::click() {
         pwm_audio_write((uint8_t*) click128, (uint8_t*) click128, 116, 0, 0);
     pwm_audio_set_volume(ESPectrum::aud_volume);
     if (CPU::paused) {
-#if NEW_UI
         // The new UI has its own badge; the classic centered box buried the very
         // screen it annotates. DS80 keeps the classic one (our palette would
         // recolour the guest's screen).
         if (nm::available() && !profi_ds80_active) { nm::uiPausedBadge(); return; }
-#endif
         osdCenteredMsg(OSD_PAUSE, LEVEL_INFO, 0);
     }
 }
@@ -429,19 +370,12 @@ void OSD::esp_hard_reset() {
 }
 
 static bool confirmReboot(const char* dlg) {
-#if NEW_UI
-    // New-chrome Yes/No wherever the layout fits (hotkeys arrive with no gfx
-    // session, hence the begin/end pair). The classic-cascade callers deeper in
-    // this file are only reachable when the new UI does NOT fit (available()
-    // false), so they keep msgDialog automatically.
-    if (nm::available()) {
-        nm::gfxBegin();
-        const bool yes = nm::uiConfirm(dlg);
-        nm::gfxEnd();
-        return yes;
-    }
-#endif
-    return OSD::msgDialog("", dlg) == DLG_YES;
+    // Hotkeys arrive with no gfx session, hence the begin/end pair (nested callers
+    // wrap us in their own suspend/resume, which re-installs after us).
+    nm::gfxBegin();
+    const bool yes = nm::uiConfirm(dlg);
+    nm::gfxEnd();
+    return yes;
 }
 
 // SRAM budget gate. See OSDMain.h. Asks Subsystems::budgetCheck whether `f` fits;
@@ -476,13 +410,12 @@ bool OSD::featureBudgetGate(int featureId) {
         return false;
     }
 
-    // BUDGET_NEEDS_FREE: multi-select of the freeable features.
-#if NEW_UI
-    // New chrome: a pick list where Enter toggles a candidate and the last row
-    // applies; the running free/need tally lives in the title. gfxBegin/End pair
-    // makes this safe standalone (hotkey) and nested (menu/commit callers wrap the
-    // gate in their own suspend/resume, which re-installs after us).
-    if (nm::available()) {
+    // BUDGET_NEEDS_FREE: multi-select of the freeable features — a pick list where
+    // Enter toggles a candidate and the last row applies; the running free/need tally
+    // lives in the title. The gfxBegin/End pair makes this safe standalone (hotkey)
+    // and nested (menu/commit callers wrap the gate in their own suspend/resume,
+    // which re-installs after us).
+    {
         nm::gfxBegin();
         bool sel[FEAT_COUNT] = { false };
         int cur = 0;
@@ -530,129 +463,11 @@ bool OSD::featureBudgetGate(int featureId) {
         nm::gfxEnd();
         return false;
     }
-#endif
-    // Classic popup. Run it as a
-    // CHILD dialog (menu_level+1) so it uses its own prev_y slot — at the caller's
-    // level its menu_saverect draw would overwrite prev_y[level] with the popup's
-    // (lower) Y, and the parent menu's next saverect=false redraw (y=prev_y[level])
-    // would then draw shifted down, compounding each cycle.
-    int savedMenuLevel = menu_level;
-    if (menu_level < 4) menu_level++;
-    bool sel[FEAT_COUNT] = { false };
-    menu_saverect = true;
-    menu_curopt = 1;   // start focus at row 1 — the caller's menu_curopt (e.g. 5 for
-                       // GM.DLS, the 5th MIDI row) would be out of range for this small
-                       // popup → "Unknown menu row" + corrupted geometry/SaveRect → hang.
-    bool result = false;
-    while (1) {
-        size_t freed = 0;
-        for (int i = 0; i < nCand; i++) if (sel[i]) freed += featureCost(cand[i]);
-
-        string menu = (string)MSG_BUDGET_FREE_HINT + "\n";
-        for (int i = 0; i < nCand; i++) {
-            char row[48];
-            snprintf(row, sizeof(row), "%s (%uK)\t[%c]\n",
-                     featureName(cand[i]), (unsigned)((featureCost(cand[i]) + 1023) / 1024),
-                     sel[i] ? '*' : ' ');
-            menu += row;
-        }
-        menu += (string)MSG_BUDGET_APPLY + "\t\n";
-
-        char foot[40];
-        snprintf(foot, sizeof(foot), "need %uK, picked %uK",
-                 (unsigned)((deficit + 1023) / 1024), (unsigned)(freed / 1024));
-        menu_footer = foot;
-
-        uint8_t opt = menuRun(menu);
-        if (opt == 0) { result = false; break; }            // Esc → not enabled
-        if (opt <= nCand) {                                  // toggle a candidate
-            sel[opt - 1] = !sel[opt - 1];
-            menu_curopt = opt;
-            menu_saverect = false;
-            continue;
-        }
-        // Apply & reboot row.
-        if (freed < deficit) {
-            osdCenteredMsg(MSG_BUDGET_INSUFFICIENT, LEVEL_WARN, 2500);
-            menu_curopt = opt;
-            menu_saverect = false;
-            continue;
-        }
-        for (int i = 0; i < nCand; i++) if (sel[i]) featureSetEnabled(cand[i], false);
-        featureSetEnabled(f, true);
-        Config::save();
-        esp_hard_reset();   // never returns
-        result = true; break;
-    }
-    // NOTE: do NOT restore_last() here — menuRun() already pops the popup's saved rect
-    // on its Esc/back path (OSDMenu.cpp, is_back → SaveRect.restore_last when level!=0).
-    // A manual restore here is a double-pop → SaveRect stack underflow → shifted menus
-    // and eventually a wild-pointer SIGBUS.
-    menu_level = savedMenuLevel;   // restore parent level (popup ran one level deeper)
-    menu_saverect = false;
-    return result;
 }
 
-// Centred dialog to type a WiFi password (title = SSID). Saves/restores its own
-// screen rect. Returns the typed text, or "\x1B" if the user pressed Esc.
-static string wifiAskPassword(const string& ssid) {
-    const int field = 32; // visible password length
-    const int label = strlen(MSG_WIFI_PASS_LABEL);
-    const unsigned short cols = label + field + 2;
-    const unsigned short w = (cols * OSD_FONT_W) + 2;
-    const unsigned short h = (OSD_FONT_H * 2) + 3;
-    const unsigned short x = OSD::scrAlignCenterX(w);
-    const unsigned short y = OSD::scrAlignCenterY(h);
-    VIDEO::SaveRect.save(x, y, w, h);
-    VIDEO::vga.setFont(Font6x8);
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0, 0));                       // title bar
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7, 1));  // body
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print(ssid.substr(0, cols - 2).c_str());
-    // TAB-reveal hint, right-aligned in the title bar.
-    const char* hint = MSG_PASS_TAB;
-    VIDEO::vga.setCursor(x + w - 1 - (int)(strlen(hint) + 1) * OSD_FONT_W, y + 1);
-    VIDEO::vga.print(hint);
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-    VIDEO::vga.setCursor(x + OSD_FONT_W, y + 1 + OSD_FONT_H + 1);
-    VIDEO::vga.print(MSG_WIFI_PASS_LABEL);
-    string pass = OSD::inlineTextEdit(x + OSD_FONT_W * (label + 1), y + 1 + OSD_FONT_H + 1, field, "", true);
-    VIDEO::SaveRect.restore_last();
-    return pass;
-}
 
 #if ZIFI_NET_CLIENT
 // ─── Network file-transfer client (FTP / SFTP) ──────────────────────────────
-// A centred single-line text-entry dialog (host / user / port). Returns the
-// typed text, or "\x1B" if Esc was pressed. Generalises wifiAskPassword().
-static string netAskField(const string& label, const string& initial, bool mask = false, int field = 30, int maxlen = 0) {
-    if (maxlen <= 0 || maxlen < field) maxlen = field; // input cap (>= visible width)
-    const int lbl = (int)label.size();
-    const unsigned short cols = lbl + field + 2;
-    const unsigned short w = (cols * OSD_FONT_W) + 2;
-    const unsigned short h = (OSD_FONT_H * 2) + 3;
-    const unsigned short x = OSD::scrAlignCenterX(w);
-    const unsigned short y = OSD::scrAlignCenterY(h);
-    VIDEO::SaveRect.save(x, y, w, h);
-    VIDEO::vga.setFont(Font6x8);
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7, 1));
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print(label.c_str());
-    if (mask) { // TAB-reveal hint, right-aligned in the title bar
-        const char* hint = MSG_PASS_TAB;
-        VIDEO::vga.setCursor(x + w - 1 - (int)(strlen(hint) + 1) * OSD_FONT_W, y + 1);
-        VIDEO::vga.print(hint);
-    }
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-    string r = OSD::inlineTextEdit(x + OSD_FONT_W, y + 1 + OSD_FONT_H + 1, maxlen, initial, mask, field);
-    VIDEO::SaveRect.restore_last();
-    return r;
-}
 
 #define NET_KNOWN_HOSTS CONFIG_DIR "/known_hosts"
 
@@ -809,8 +624,8 @@ static inline uint8_t* netAltStackAlloc(size_t& stksz) {
 static void netConnectRemote(const Config::Remote& r, const string& restorePath = "") {
     string pass = r.pass;
     if (!r.savepass) {
-        pass = netAskField(MSG_NET_PASS_LABEL, "", true); // masked
-        if (pass == "\x1B") return;
+        pass.clear();
+        if (!nm::uiPrompt(MSG_NET_PASS_LABEL, pass, 64, true)) return;   // masked
     }
     // Remember as the "last used" defaults (prefill the Add-Remote form next time).
     Config::net_host = r.host; Config::net_user = r.user;
@@ -855,10 +670,9 @@ static void addRemoteForm() {
     string host, user, pass, path, alias;
     bool savepass;
 
-#if NEW_UI
-    if (nm::available()) {
-        // New-UI form: proto picker + boxed prompts. Esc anywhere cancels; the
-        // optional fields (user/pass/path/alias) accept an empty Enter.
+    {
+        // Proto picker + boxed prompts. Esc anywhere cancels; the optional fields
+        // (user/pass/path/alias) accept an empty Enter.
         static const char* const protos[] = { "FTP", "SFTP" };
         const int p = nm::uiPickList(MSG_NET_PROTO_TITLE, protos, 2, Config::net_proto);
         if (p < 0) return;
@@ -880,39 +694,6 @@ static void addRemoteForm() {
         if (!nm::uiPrompt(MSG_REMOTE_PATH_LABEL, path, 64, false, true)) return;
         alias.clear();
         if (!nm::uiPrompt(MSG_REMOTE_ALIAS_LABEL, alias, 32, false, true)) return;
-    } else
-#endif
-    {
-    OSD::menu_level = 2; OSD::menu_saverect = true; OSD::menu_curopt = Config::net_proto + 1;
-    uint8_t proto = OSD::menuRun(MENU_NET_PROTO); // 1=FTP, 2=SFTP
-    if (proto == 0) return;
-    VIDEO::SaveRect.restore_last();
-    pr = proto - 1;
-
-    // Field order: Host → Port → User → Pass (→ save-password → Alias below).
-    host = netAskField(MSG_NET_HOST_LABEL, Config::net_host);
-    if (host == "\x1B" || host.empty()) return;
-    uint16_t defport = pr ? 22 : 21;
-    char pbuf[8]; snprintf(pbuf, sizeof(pbuf), "%u", Config::net_port ? Config::net_port : defport);
-    string ports = netAskField(MSG_NET_PORT_LABEL, pbuf);
-    if (ports == "\x1B") return;
-    port = (uint16_t)atoi(ports.c_str()); if (!port) port = defport;
-    user = netAskField(MSG_NET_USER_LABEL, Config::net_user);
-    if (user == "\x1B") return;
-    pass = netAskField(MSG_NET_PASS_LABEL, "", true); // masked
-    if (pass == "\x1B") return;
-
-    OSD::menu_level = 2; OSD::menu_saverect = true; OSD::menu_curopt = 1;
-    uint8_t sp = OSD::menuRun(MENU_REMOTE_SAVEPASS); // 1=No, 2=Yes
-    if (sp == 0) return;
-    VIDEO::SaveRect.restore_last();
-    savepass = (sp == 2);
-
-    // Optional start directory, then display name — Enter to leave empty, Esc cancels.
-    path = netAskField(MSG_REMOTE_PATH_LABEL, "");
-    if (path == "\x1B") return;
-    alias = netAskField(MSG_REMOTE_ALIAS_LABEL, "");
-    if (alias == "\x1B") return;
     }
 
     if (!g_remotes) return;   // alloc failed (OOM) — bail out of the form
@@ -1014,19 +795,17 @@ static inline bool f5HasChooser() {
 
 // Last browse dir per local source, so switching SD⇄USB in the chooser returns to
 // where you were on each side. ALL_Path holds whichever is active (and is the one
-// persisted to NVS; a stale "USB:/..." with no stick self-heals in fileDialog).
+// persisted to NVS; a stale "USB:/..." with no stick self-heals in the browser).
 static string s_f5_sd_dir  = "/";
 static string s_f5_usb_dir = "USB:/";
 
 static bool f5Locations() {
-#if NEW_UI
     // Net fetch progress goes to the new browser's status line for the whole F5
     // session (every return path clears it via the destructor).
     struct ProgScope {
-        ProgScope()  { if (nm::available()) OSD::progressOverride = nm::uiProgressStatus; }
+        ProgScope()  { OSD::progressOverride = nm::uiProgressStatus; }
         ~ProgScope() { OSD::progressOverride = nullptr; }
     } progScope;
-#endif
     // One-time restore of the last browse location (across all sources), so F5 reopens
     // where you left off — Local stays at ALL_Path, Web/Remote reopen their last folder.
     if (g_f5_restore) {
@@ -1062,7 +841,7 @@ static bool f5Locations() {
             return true;   // "L" or empty → Local (SD) at ALL_Path
         }
     }
-    int lf = 2, lb = 2;                               // keep the cursor on the chosen location
+    int lf = 2;                                       // keep the cursor on the chosen location
     while (1) {
         if (OSD::net_launch_close) return false;      // a quick-start launched → close OSD
         // Hide the USB row when the stick is the root volume — "Local" IS the stick.
@@ -1078,15 +857,12 @@ static bool f5Locations() {
         };
         if (usb)
             rows.insert(rows.begin() + 1, string(1, (char)DIR_MARKER) + MSG_F5_USB);
-        OSD::menu_level = 0;
         int key;
         int loc;
-#if NEW_UI
-        if (nm::available()) {
-            // New-style: the chooser is a LEVEL of the fullscreen browser (same
-            // chrome), not a modal. The classic chrome below remains the fallback
-            // for small layouts and still owns the remote/web flows a chosen row
-            // dives into.
+        {
+            // The chooser is a LEVEL of the fullscreen browser (same chrome), not a
+            // modal; the remote/web flows a chosen row dives into own their own
+            // browser chrome (fdChromeNav).
             const char* items[8];
             const char* hints[8];
             int n = 0;
@@ -1104,11 +880,7 @@ static bool f5Locations() {
             loc = nm::browseLocations(items, hints, n, lf - 2);
             lf = loc >= 0 ? loc + 2 : 2;
             key = OSD::FDK_ENTER;
-        } else
-#endif
-        loc = OSD::fdChromeList(rows, MENU_ALL_TITLE,
-                                    MENU_F5_LOCATION,
-                                    OSD::FD_SIDE_LOCATIONS, false, &key, &lf, &lb);
+        }
         if (loc < 0) return false;                    // Esc → close OSD
         if (usb && loc == 1) {                        // USB Drive → browse the stick
             if (FileUtils::ALL_Path.compare(0, 4, "USB:") != 0) {
@@ -1161,61 +933,9 @@ static void ftpdLogLine(const char* s) {
     ftpd_log_dirty = true;
 }
 
-// ── Live ESP-01 AT-log window (shown during a blocking WiFi connect) ──────────
-// ZiFiAT::log_cb → wifiLogLine appends each tx/rx line to the shared ftpd_log ring
-// and redraws the tail immediately, so the ESP-01 exchange scrolls live while
-// connect() blocks. Reuses ftpd_log[] (a generic line ring) — the WiFi connect
-// window and the FTP server are never up at the same time.
-static string s_wifilog_sub;
-static void wifiLogDraw() {
-    OSD::drawOSD(true);
-    int visCols = OSD::osdMaxCols(); if (visCols > 40) visCols = 40;
-    int visRows = OSD::osdMaxRows() - 4;
-    char row[42];
-    OSD::osdAt(1, 0);                                   // subtitle: "Connecting <ssid>"
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(1, 0));
-    snprintf(row, sizeof(row), " %s", s_wifilog_sub.c_str());
-    int hl = strlen(row); while (hl < visCols) row[hl++] = ' '; row[visCols] = '\0';
-    VIDEO::vga.print(row);
-    OSD::osdAt(2, 0);                                   // separator
-    VIDEO::vga.setTextColor(zxColor(5, 0), zxColor(1, 0));
-    memset(row, '-', visCols); row[0] = ' '; row[visCols] = '\0';
-    VIDEO::vga.print(row);
-    int first = ftpd_log_count > visRows ? ftpd_log_count - visRows : 0; // tail
-    VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-    for (int r = 0; r < visRows; r++) {
-        OSD::osdAt(3 + r, 0);
-        int li = first + r;
-        if (li < ftpd_log_count) {
-            const char* s = ftpd_log[li % FTPD_LOG_LINES];
-            int len = strlen(s); if (len > visCols) len = visCols;
-            memcpy(row, s, len); memset(row + len, ' ', visCols - len);
-        } else memset(row, ' ', visCols);
-        row[visCols] = '\0';
-        VIDEO::vga.print(row);
-    }
-}
-static void wifiLogLine(const char* s) { ftpdLogLine(s); wifiLogDraw(); }
-// Append a final line (e.g. an error) and hold the window open until the user
-// presses a key — so a failure stays readable instead of auto-closing.
-static void wifiLogHold(const char* msg) {
-    if (msg && msg[0]) ftpdLogLine(msg);
-    ftpdLogLine(" -- press a key --");
-    wifiLogDraw();
-    auto* kb = ESPectrum::PS2Controller.keyboard();
-    while (kb->virtualKeyAvailable()) { fabgl::VirtualKeyItem k; kb->getNextVirtualKey(&k); } // drain
-    for (;;) {
-        if (kb->virtualKeyAvailable()) {
-            fabgl::VirtualKeyItem k;
-            if (kb->getNextVirtualKey(&k) && k.down) break;
-        }
-        sleep_ms(5);
-    }
-}
 
 struct FtpdCtx { const char* ip; };
 
-#if NEW_UI
 // New-chrome FTP session: the log ring rendered as a live scrollable text page
 // (nm::uiTextPageLive). The page text is rebuilt only when the ring changed —
 // nullptr from the refresh keeps the current page, so idle polling never repaints.
@@ -1240,7 +960,6 @@ static const char* ftpdPageRefresh() {
     *w = '\0';
     return s_ftpd_page;
 }
-#endif
 
 // Run the server session (details panel + live log terminal) in a blocking loop
 // until ESC. The Z80 stays frozen (we never call CPU::loop). Invoked on a heap
@@ -1261,77 +980,21 @@ static void ftpdSessionRun(void* arg) {
     ftpdLogLine(det);
     ftpdLogLine("Use ACTIVE mode. ESC to stop.");
 
-#if NEW_UI
-    // New chrome on screen: run the session as a live log page (Esc closes → the
-    // server stops). Falls through to the classic terminal if the page buffer
-    // can't be had — the heap gate is what makes that fallback reachable, since
-    // pico_malloc's calloc PANICs on OOM rather than returning NULL.
-    if (nm::available() &&
-        getLargestAllocatable() >= FTPD_PAGE_SZ + 8192 &&
-        (s_ftpd_page = (char*)calloc(1, FTPD_PAGE_SZ)) != nullptr) {
-        char title[64];
-        snprintf(title, sizeof(title), "FTP server  ftp://%s:21  anonymous", ip);
-        nm::uiTextPageLive(title, ftpdPageRefresh, 2);
-        free(s_ftpd_page); s_ftpd_page = nullptr;
+    // The session runs as a live log page (Esc closes → the server stops). The heap
+    // gate is there because pico_malloc's calloc PANICs on OOM instead of returning
+    // NULL; too tight to hold the page → no server rather than a panic.
+    if (getLargestAllocatable() < FTPD_PAGE_SZ + 8192 ||
+        (s_ftpd_page = (char*)calloc(1, FTPD_PAGE_SZ)) == nullptr) {
         Ftpd::stop();
-        nm::uiToast("FTP server stopped", false, 1200);
+        nm::uiToast("Not enough memory for the FTP log", true, 2500);
         return;
     }
-#endif
-
-    unsigned short sx = OSD::scrAlignCenterX(OSD_W);
-    unsigned short sy = OSD::scrAlignCenterY(OSD_H);
-    VIDEO::SaveRect.save(sx, sy, OSD_W, OSD_H);
-
-    string sub = string("ftp://") + ip + ":21  anon  ESC:stop";
-
-    auto draw = [&]() {
-        OSD::drawOSD(true);
-        int visCols = OSD::osdMaxCols(); if (visCols > 40) visCols = 40;
-        int visRows = OSD::osdMaxRows() - 4;
-        char row[42];
-        // Subtitle (row 1): connection string + hint.
-        OSD::osdAt(1, 0);
-        VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(1, 0));
-        snprintf(row, sizeof(row), " %s", sub.c_str());
-        int hl = strlen(row); while (hl < visCols) row[hl++] = ' '; row[visCols] = '\0';
-        VIDEO::vga.print(row);
-        // Separator (row 2).
-        OSD::osdAt(2, 0);
-        VIDEO::vga.setTextColor(zxColor(5, 0), zxColor(1, 0));
-        memset(row, '-', visCols); row[0] = ' '; row[visCols] = '\0';
-        VIDEO::vga.print(row);
-        // Log tail (rows 3..): the most recent visRows lines.
-        int first = ftpd_log_count > visRows ? ftpd_log_count - visRows : 0;
-        VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-        for (int r = 0; r < visRows; r++) {
-            OSD::osdAt(3 + r, 0);
-            int li = first + r;
-            if (li < ftpd_log_count) {
-                const char* s = ftpd_log[li % FTPD_LOG_LINES];
-                int len = strlen(s); if (len > visCols) len = visCols;
-                memcpy(row, s, len); memset(row + len, ' ', visCols - len);
-            } else memset(row, ' ', visCols);
-            row[visCols] = '\0';
-            VIDEO::vga.print(row);
-        }
-    };
-    draw();
-
-    for (;;) {
-        Ftpd::poll();
-        if (ftpd_log_dirty) { draw(); ftpd_log_dirty = false; }
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            fabgl::VirtualKeyItem k;
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&k);
-            if (k.down && is_back(k.vk)) break;
-        }
-        sleep_ms(2);
-    }
-
+    char title[64];
+    snprintf(title, sizeof(title), "FTP server  ftp://%s:21  anonymous", ip);
+    nm::uiTextPageLive(title, ftpdPageRefresh, 2);
+    free(s_ftpd_page); s_ftpd_page = nullptr;
     Ftpd::stop();
-    OSD::osdCenteredMsg("FTP server stopped", LEVEL_WARN, 1200);
-    VIDEO::SaveRect.restore_last();
+    nm::uiToast("FTP server stopped", false, 1200);
 }
 
 // Entry: require WiFi, then run the session on a heap alt-stack.
@@ -1496,43 +1159,6 @@ void netHttpTestUrl(const string& url) {
     Buffer::pfree(stk);
 }
 
-// The classic-menu front: scheme + host + path as separate fields (inlineTextEdit
-// caps text at the field width, so a full URL can't fit one classic field).
-void netHttpTest() {
-    string ssid, ip;
-    if (!ZiFiAT::getStatus(ssid, ip)) {
-        OSD::osdCenteredMsg(MSG_NET_FT_NOWIFI, LEVEL_WARN, 2200);
-        return;
-    }
-    // Scheme.
-    OSD::menu_level = 2; OSD::menu_saverect = true; OSD::menu_curopt = 1;
-    uint8_t sc = OSD::menuRun(MENU_HTTP_SCHEME);
-    if (sc == 0) return;
-    VIDEO::SaveRect.restore_last();
-    const char* scheme = (sc == 1) ? "https" : "http";
-
-    // Session-only memory of the last host/path (RAM only — not persisted to NVS).
-    // Survives until the board reboots; no Config default is substituted.
-    static string lastHost;          // empty on first use
-    static string lastPath = "/";
-
-    // Host[:port] — prefilled with whatever was last typed this session.
-    string host = netAskField(MSG_HTTP_HOST_LABEL, lastHost);
-    if (host == "\x1B" || host.empty()) return;
-    lastHost = host;
-
-    // Path — visible width clamped to the screen, but the input cap is larger so
-    // long paths can be typed (the field scrolls horizontally past the window).
-    int pathField = (int)OSD::osdMaxCols() - (int)strlen(MSG_HTTP_PATH_LABEL) - 4;
-    if (pathField < 20) pathField = 20;
-    if (pathField > 64) pathField = 64;
-    string path = netAskField(MSG_HTTP_PATH_LABEL, lastPath, false, pathField, 255);
-    if (path == "\x1B") return;
-    if (path.empty() || path[0] != '/') path = "/" + path;
-    lastPath = path;
-
-    netHttpTestUrl(string(scheme) + "://" + host + path);
-}
 #endif // ZIFI_NET_CLIENT
 
 // // Cursor to OSD first row,col
@@ -1613,7 +1239,6 @@ void OSD::drawStats() {
         y = 220;
     }
 
-#if NEW_UI
     // New-skin stats: same geometry and 6x8 face, the UI palette's colours. The
     // background still encodes the speed state (turbo steps / max speed). DS80
     // keeps the classic colours — the UI block would recolour the guest screen.
@@ -1637,7 +1262,6 @@ void OSD::drawStats() {
         VIDEO::vga.print(stats_lin2);
         return;
     }
-#endif
     VIDEO::vga.setTextColor(zxColor(7, 0), zxColor( ESPectrum::maxSpeed ? 5 : ESPectrum::multiplicator + 1, 0));
     VIDEO::vga.setFont(Font6x8);
     VIDEO::vga.setCursor(x,y);
@@ -1682,55 +1306,6 @@ void OSD::clearStats() {
     }
 }
 
-// ZX keyboard bitmap overlay (classic colours, 254x156, 4bpp packed). Shared by
-// the classic Help menu and the new UI's DS80 fallback (the packed-pair DS80
-// surface renders ZX indices natively, our UI palette does not).
-void OSD::zxKeyboardOverlay() {
-    fabgl::VirtualKeyItem Nextkey;
-    // Protect OSD area from Z80 video renderer overwrite
-    bool kbd_osd_enabled = (VIDEO::OSD != 0);
-    if (!kbd_osd_enabled) {
-        VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
-        VIDEO::OSD = 0x04;
-    }
-    // Wipe the OSD area with ZX paper colour
-    int kbd_w = 254, kbd_h = 156;
-    int kbd_x = (OSD::scrW - kbd_w) / 2;
-    int kbd_y = (OSD::scrH - kbd_h) / 2;
-    VIDEO::vga.fillRect(kbd_x - 3, kbd_y - 12, kbd_w + 6, kbd_h + 16, zxColor(0, 0));
-    VIDEO::vga.rect(kbd_x - 3, kbd_y - 12, kbd_w + 6, kbd_h + 16, zxColor(7, 0));
-    // Header
-    VIDEO::vga.fillRect(kbd_x - 2, kbd_y - 11, kbd_w + 4, 9, zxColor(7, 0));
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 0));
-    VIDEO::vga.setCursor(kbd_x + 4, kbd_y - 10);
-    VIDEO::vga.print("ZX Keyboard");
-    // Draw bitmap: packed 4 bits/pixel, palette index 1..7 (0 = skip).
-    for (int y = 0; y < kbd_h; y++) {
-        for (int x = 0; x < kbd_w; x++) {
-            int i = x + y * kbd_w;
-            uint8_t idx = (kbd_img[i >> 1] >> ((i & 1) << 2)) & 0x0F;
-            if (!idx) continue;
-            VIDEO::vga.dotFast(kbd_x + x, kbd_y + y, zxColor(idx & 7, (idx >> 3) & 1));
-        }
-    }
-    // The Enter used to pick this may still be held — wait for the first key-up
-    // event, then accept ESC or Enter as "close".
-    bool saw_release = false;
-    while (1) {
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            if (ESPectrum::readKbd(&Nextkey)) {
-                if (!Nextkey.down) { saw_release = true; continue; }
-                if (saw_release && (is_enter(Nextkey.vk) || is_back(Nextkey.vk))) break;
-            }
-        }
-        sleep_ms(20);
-    }
-    click();
-    if (!kbd_osd_enabled) {
-        VIDEO::OSD = 0;
-        VIDEO::Draw_OSD43 = VIDEO::BottomBorder;
-    }
-}
 
 void OSD::drawVolumeBox() {
 
@@ -1745,7 +1320,6 @@ void OSD::drawVolumeBox() {
         x = 168;
         y = 224;
     }
-#if NEW_UI
     // New-skin styling of the same border band — the palette trick uiPausedBadge
     // uses: UI colours live at 224..239, so the running game keeps its own 16.
     // DS80 stays classic: installing the UI palette would steal the guest's
@@ -1768,7 +1342,6 @@ void OSD::drawVolumeBox() {
         }
         return;
     }
-#endif
     VIDEO::vga.fillRect(x, y - 4, 24 * 6, 16, zxColor(1, 0));
     VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
     VIDEO::vga.setFont(Font6x8);
@@ -1781,8 +1354,6 @@ void OSD::drawVolumeBox() {
 
 // Forward-declare the local f_gets wrapper (defined further below)
 static void f_gets(char* b, size_t sz, FIL& f);
-// Forward-declare slotInlineEdit (defined further below)
-static string slotInlineEdit(uint8_t opt2, const string& current);
 
 
 // Get the base name (no extension) of the currently loaded tape or disk
@@ -1843,44 +1414,7 @@ void persistDelete(uint8_t slotnumber) {
     f_unlink(finfo.c_str());
 }
 
-// Confirm and delete slot; returns true if deleted
-static bool persistDeleteConfirm(uint8_t slotnumber) {
-    string name = getSlotName(slotnumber);
-    if (name.empty()) return false;  // already empty, nothing to do
-    char buf[8];
-    sprintf(buf, "#%02u", slotnumber);
-    string displayName = (name == "\x01") ? "[No Name]" : name;
-    string msg = string(buf) + " " + displayName + "?";
-    if (OSD::msgDialog("Delete slot", msg) != DLG_YES) return false;
-    persistDelete(slotnumber);
-    return true;
-}
 
-// Rename slot: inline-edit the name in the menu row, rewrite .esp file
-static void persistRename(uint8_t slotnumber, uint8_t opt2) {
-    string name = getSlotName(slotnumber);
-    if (name.empty()) return;  // slot is empty, nothing to rename
-    string newName = slotInlineEdit(opt2, name == "\x01" ? "" : name);
-    if (newName == "\x1B") return;  // Esc = cancel
-
-    char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
-    sprintf(persistfinfo, DISK_PSNA_FILE "%u.esp", slotnumber);
-    string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
-
-    // Read existing arch + romset lines
-    FIL* f = fopen2(finfo.c_str(), FA_READ);
-    if (!f) return;
-    char arch[64], romset[64];
-    f_gets(arch, sizeof(arch), *f);
-    f_gets(romset, sizeof(romset), *f);
-    fclose2(f);
-
-    // Rewrite with new name
-    f = fopen2(finfo.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
-    if (!f) return;
-    fputs((string(arch) + "\n" + string(romset) + "\n" + newName + "\n").c_str(), *f);
-    fclose2(f);
-}
 
 // UI-free rename core (shared with the new UI): rewrite the .esp keeping arch/romset.
 void persistSetName(uint8_t slotnumber, const string& newName) {
@@ -1914,43 +1448,8 @@ bool persistSaveNamed(uint8_t slotnumber, const string& slotName) {
     return FileSNA::save(string(DISK_PSNA_DIR) + "/" + persistfname);
 }
 
-// Build slot menu label: "#NN - Name" or "#NN - [Empty]", padded to fixed width
-static string slotLabel(uint8_t i) {
-    char buf[8];
-    sprintf(buf, "#%02u - ", i);
-    string name = getSlotName(i);
-    if (name.empty()) name = "[Empty]";
-    else if (name == "\x01") name = "[No Name]";
-    if (name.length() > 20) name = name.substr(0, 20);
-    // Pad to fixed 20 chars so menu width never changes between redraws
-    while (name.length() < 20) name += ' ';
-    return string(buf) + name;
-}
 
-// Build a slot menu string for given count of slots (title is first line)
-static string buildSlotMenu(const char* title, uint8_t count) {
-    string menu = title;
-    for (uint8_t i = 1; i <= count; i++) {
-        menu += slotLabel(i) + "\n";
-    }
-    return menu;
-}
 
-// Inline-edit the name for slot opt2 directly inside the already-drawn menu row.
-// "#NN - " is 6 chars; row margin is 1 space on left. Name field = 20 chars.
-// Returns the new name, or "" if cancelled.
-static string slotInlineEdit(uint8_t opt2, const string& current) {
-    // Virtual row = opt2 - begin_row + 1  (begin_row is 1-based real row of first visible line)
-    uint8_t vrow = (uint8_t)(opt2 - OSD::begin_row + 1);
-    // Pixel position of the name field: x + 1 space margin + 6 chars of "#NN - "
-    int ex = OSD::x + (1 + 6) * OSD_FONT_W;
-    int ey = OSD::y + 1 + vrow * OSD_FONT_H;
-    // Strip trailing spaces from current name
-    string name = current;
-    while (!name.empty() && name.back() == ' ') name.pop_back();
-    if (name == "[No Name]" || name == "[Empty]") name = "";
-    return OSD::inlineTextEdit(ex, ey, 20, name);
-}
 
 // Throttled progress overlay for IDE::createImage (zero-fill can take seconds).
 static void ide_create_progress(uint32_t done, uint32_t total) {
@@ -1958,21 +1457,22 @@ static void ide_create_progress(uint32_t done, uint32_t total) {
     int pct = total ? (int)((uint64_t)done * 100 / total) : 100;
     if (pct == lastpct) return;
     lastpct = pct;
-#if NEW_UI
     // In the new UI this lands in the browser/menu footer status line (the
     // progressOverride hook), which is where every other long operation reports.
     if (OSD::progressOverride) {
         OSD::progressDialog("Creating HDD", "", pct, 1);
         return;
     }
-#endif
     char msg[32];
     snprintf(msg, sizeof(msg), "Creating HDD... %d%%", pct);
     OSD::osdCenteredMsg(msg, LEVEL_INFO, 0);
 }
 
 
-static bool persistSave(uint8_t slotnumber, uint8_t opt2, bool quicksave = false)
+// Quick Save (the hot key): save into `slotnumber`, keeping the slot's name when it
+// already holds a snapshot. The named/interactive save is persistSaveNamed, driven by
+// the menu's slot level.
+static bool persistSave(uint8_t slotnumber)
 {
     FILINFO stat_buf;
     char persistfname[sizeof(DISK_PSNA_FILE) + 7];
@@ -1985,24 +1485,10 @@ static bool persistSave(uint8_t slotnumber, uint8_t opt2, bool quicksave = false
 
     // Slot isn't void
     if (f_stat(finfo.c_str(), &stat_buf) == FR_OK) {
-        if (!quicksave) {
-            string title = OSD_PSNA_SAVE;
-            string msg = OSD_PSNA_EXISTS;
-            uint8_t res = OSD::msgDialog(title, msg);
-            if (res != DLG_YES) return false;
-        }
         slotName = getSlotName(slotnumber);
         if (slotName == "\x01") slotName = "";
     } else {
-        if (!quicksave) {
-            // Empty slot: inline-edit name pre-filled with tape/disk name
-            string defaultName = getDefaultSnapshotName();
-            slotName = slotInlineEdit(opt2, defaultName);
-            if (slotName == "\x1B") return false;  // Esc = cancel save
-            if (slotName.empty()) slotName = defaultName;  // Enter on empty = use default
-        } else {
-            slotName = getDefaultSnapshotName();
-        }
+        slotName = getDefaultSnapshotName();
     }
 
     OSD::osdCenteredMsg(OSD_PSNA_SAVING, LEVEL_INFO, 500);
@@ -2107,12 +1593,11 @@ string getMenuPrefix() {
 
 // Forward declarations for hotkey helpers (defined later in file)
 static string hkBindingText(int idx);
-static string expandHotkeys(const char* menu);
 extern const char* const hkDescEN[];
 
 // Karabas-Pro "Menu"-key (Win/GUI) combos. Hard-wired in ESPectrum::processKeyboard —
-// they are not entries of the remappable hotkey table, so both Help pages (the classic
-// one below and the new UI's hotkeysText) list them from here.
+// they are not entries of the remappable hotkey table, so the Help page (hotkeysText)
+// lists them from here.
 static const char* const kProfiHkKeys[] = {
     "Menu+F1-F4", "Menu+F5", "Menu+F7", "Menu+F11",
     "Menu+F12", "Menu+Tab", "Menu+J", "Menu+Esc",
@@ -2146,13 +1631,11 @@ void OSD::bootTrdos() {
 }
 
 // OSD Main Loop
-// Chooser for the small hotkey menus (NMI, Reset-to): takes the classic
-// "Title\nRow\nRow\n" menu string and returns the classic 1-based row (0 = Esc),
-// drawn as a new-chrome pick list when the layout fits, else as the classic
-// simpleMenuRun popup. One helper so every variant of these menus ports at once.
-static uint8_t hotkeyChooser(const string& menu, uint8_t cols) {
-#if NEW_UI
-    if (nm::available()) {
+// Chooser for the small hotkey menus (NMI, Reset-to): takes a "Title\nRow\nRow\n"
+// menu string and returns the 1-based row (0 = Esc), drawn as a pick list. One
+// helper so every variant of these menus ports at once.
+static uint8_t hotkeyChooser(const string& menu) {
+    {
         string  rows[8];
         const char* items[8];
         string  title;
@@ -2171,14 +1654,6 @@ static uint8_t hotkeyChooser(const string& menu, uint8_t cols) {
         nm::gfxEnd();
         return sel < 0 ? 0 : (uint8_t)(sel + 1);
     }
-#endif
-    OSD::menu_level = 0;
-    OSD::menu_curopt = 1;
-    OSD::menu_saverect = true;
-    const uint16_t w = (cols * OSD_FONT_W) + 2;
-    const uint16_t h = (OSD::rowCount(menu) * OSD_FONT_H) + 2;
-    return OSD::simpleMenuRun(menu, OSD::scrAlignCenterX(w), OSD::scrAlignCenterY(h),
-                              OSD::rowCount(menu), cols);
 }
 
 void OSD::nmiAction() {
@@ -2191,7 +1666,7 @@ void OSD::nmiAction() {
         string nmi_menu = MENU_NMI_TITLE;
         nmi_menu += "NMI\n";
         nmi_menu += MENU_BYTE_COBMECT_MODE;
-        uint8_t opt = hotkeyChooser(nmi_menu, 20);
+        uint8_t opt = hotkeyChooser(nmi_menu);
         if (opt == 1) {
             Z80::triggerNMI();
         } else if (opt == 2) {
@@ -2205,7 +1680,7 @@ void OSD::nmiAction() {
             osdCenteredMsg(Config::byte_cobmect_mode ? OSD_COBMECT_ON : OSD_COBMECT_OFF, LEVEL_INFO, 500);
         }
     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
-        uint8_t opt = hotkeyChooser(string(MENU_NMI_TITLE) + MENU_NMI_SEL, 20);
+        uint8_t opt = hotkeyChooser(string(MENU_NMI_TITLE) + MENU_NMI_SEL);
         if (opt == 1)
             Z80::triggerNMI();
         else if (opt == 2)
@@ -2341,17 +1816,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             osdCenteredMsg(Config::ledIndicators ? " LED indicators ON  " : " LED indicators OFF ", LEVEL_INFO, 500);
         } else
         if (hkIdx == Config::HK_POKE) { // Input Poke
-#if NEW_UI
-            // The new-chrome flow when the mode can host it. Standalone hotkey
-            // context: install the UI palette for the duration (DS80 swaps the
-            // guest palette, gfxEnd puts it back; standard mode is additive).
-            if (nm::available()) {
-                nm::gfxBegin();
-                nm::act_debugPoke();
-                nm::gfxEnd();
-            } else
-#endif
-            pokeDialog();
+            // Standalone hotkey context: install the UI palette for the duration
+            // (DS80 swaps the guest palette, gfxEnd puts it back; standard mode is
+            // additive).
+            nm::gfxBegin();
+            nm::act_debugPoke();
+            nm::gfxEnd();
         } else
         if (hkIdx == Config::HK_NMI) { // NMI
             nmiAction();
@@ -2359,7 +1829,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         else
         if (hkIdx == Config::HK_RESET_TO) { // Reset to...
             if (DivMMC::enabled) {
-                uint8_t opt = hotkeyChooser(MENU_RESETTO_DIVMMC, 22);
+                uint8_t opt = hotkeyChooser(MENU_RESETTO_DIVMMC);
                 if (opt == 1) {
                     // Soft Reset: keep DivMMC RAM (ESXDOS sees 0xAA flag, goes to file browser)
                     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
@@ -2393,7 +1863,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     reset_menu = MENU_RESETTO_128;
                 }
 
-                uint8_t opt = hotkeyChooser(reset_menu, 22);
+                uint8_t opt = hotkeyChooser(reset_menu);
 
                 if (opt > 0) {
                     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
@@ -2463,13 +1933,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         }
         else if (FileUtils::fsMount && hkIdx == Config::HK_DISK) {
             if (DivMMC::enabled) {
-                menu_level = 0;
-                menu_saverect = false;
-                #if NEW_UI
-                string mFile = nm::browseFile(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE, 51, 22);
-#else
-                string mFile = fileDialog(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE, 51, 22);
-#endif
+                string mFile = nm::browseFile(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE);
                 if (mFile != "") {
                     string fname = FileUtils::IMG_Path + mFile.substr(1);
                     if (FileUtils::getLCaseExt(fname) == "zip") {
@@ -2479,13 +1943,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         else fname.clear();
                     }
                     if (!fname.empty()) {
-                        #if NEW_UI
-                        // The slot chooser is a level of the new menu (it appeared with none of the
-                        // menu around it as a classic popup).
+                        // The slot chooser is a level of the menu.
                         nm::runDiskSlots(IFACE_ESX, fname.c_str());
-                        #else
-                        diskSlotDialog(IFACE_ESX, 0, fname);
-                        #endif
                         Config::save();
                         ESPectrum::reset();
                         return;
@@ -2494,13 +1953,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 if (VIDEO::OSD) OSD::drawStats();
             } else
             while (1) {
-                menu_level = 0;
-                menu_saverect = false;
-#if NEW_UI
-                string mFile = nm::browseFile(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE, 51, 22);
-#else
-                string mFile = fileDialog(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE, 51, 22);
-#endif
+                string mFile = nm::browseFile(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE);
                 if (mFile != "") {
                     string fname = FileUtils::DSK_Path + mFile.substr(1);
                     string fprefix = mFile.substr(0,1);
@@ -2657,13 +2110,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         CPU::paused = !CPU::paused;
         click();
         } else if (FileUtils::fsMount && hkIdx == Config::HK_LOAD_SNA) {
-            menu_level = 0;
-            menu_saverect = false;
-#if NEW_UI
-            string mFile = nm::browseFile(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE, 51, 22);
-#else
-            string mFile = fileDialog(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE, 51, 22);
-#endif
+            string mFile = nm::browseFile(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE);
             if (mFile != "") {
                 Config::save();
                 mFile.erase(0, 1);
@@ -2684,22 +2131,18 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
         } else if (FileUtils::fsMount && hkIdx == Config::HK_PERSIST_LOAD) {
-#if NEW_UI
             // The menu's native slot level (same rows F1 shows), like runDiskSlots.
-            if (nm::available()) { nm::runPersist(false); return; }
-#endif
-            if (persistLoadDialog()) return;
+            nm::runPersist(false);
+            return;
         } else if (FileUtils::fsMount && hkIdx == Config::HK_PERSIST_SAVE) {
-#if NEW_UI
-            if (nm::available()) { nm::runPersist(true); return; }
-#endif
-            if (persistSaveDialog()) return;
+            nm::runPersist(true);
+            return;
         } else if (FileUtils::fsMount && hkIdx == Config::HK_QUICK_LOAD) {
             // Quick Load — load current persist slot without dialog (same as F3 + Enter)
             persistLoad(Config::persist_slot);
         } else if (FileUtils::fsMount && hkIdx == Config::HK_QUICK_SAVE) {
             // Quick Save — save to current persist slot without dialog (same as F4 + F4)
-            persistSave(Config::persist_slot, Config::persist_slot, true);
+            persistSave(Config::persist_slot);
         } else if (FileUtils::fsMount && hkIdx == Config::HK_LOAD_ANY) {
 #if ZIFI_NET_CLIENT
             // When networking is available, F5 first offers a location picker IN the
@@ -2723,27 +2166,21 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 // fall through to the SD browser below.
             }
 #endif
-            menu_level = 0;
-            menu_saverect = false;
             string mFile;
             string fname;
             string ext;
             bool fromZip = false;
 
-            // Loop to allow re-opening fileDialog after ZIP cancel
+            // Loop to allow re-opening the browser after ZIP cancel
             bool forcePopup = false;
             f5_retry:
 #if ZIFI_NET_CLIENT
             // From locations: show a ".." even at the SD root → returns "" → locations.
             OSD::fd_root_parent = f5HasChooser();
 #endif
-#if NEW_UI
-            mFile = nm::browseFile(FileUtils::ALL_Path, MENU_ALL_TITLE, DISK_ALLFILE, 52, 22);
-#else
-            mFile = fileDialog(FileUtils::ALL_Path, MENU_ALL_TITLE, DISK_ALLFILE, 52, 22);
-#endif
+            mFile = nm::browseFile(FileUtils::ALL_Path, MENU_ALL_TITLE, DISK_ALLFILE);
 #if ZIFI_NET_CLIENT
-            OSD::fd_root_parent = false;             // don't leak into other fileDialog uses
+            OSD::fd_root_parent = false;             // don't leak into other browser uses
             // ".." at the SD root → locations chooser. Esc ("") just closes the browser
             // (as before) — it does NOT climb a level.
             if (mFile == "\x02UP") goto f5_locations;
@@ -2817,13 +2254,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
                     if (forcePopup) {
                         Config::driveWP[0] = true;
-                        #if NEW_UI
-                        // The slot chooser is a level of the new menu (it appeared with none of the
-                        // menu around it as a classic popup).
+                        // The slot chooser is a level of the menu.
                         nm::runDiskSlots(IFACE_BETA, fname.c_str());
-                        #else
-                        diskSlotDialog(IFACE_BETA, 0, fname);
-                        #endif
                         forcePopup = false;
                         goto f5_retry;
                     }
@@ -2842,13 +2274,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
                         if (forcePopup) {
                             Config::mb02WP[0] = true;
-                            #if NEW_UI
-                            // The slot chooser is a level of the new menu (it appeared with none of the
-                            // menu around it as a classic popup).
+                            // The slot chooser is a level of the menu.
                             nm::runDiskSlots(IFACE_MB02, fname.c_str());
-                            #else
-                            diskSlotDialog(IFACE_MB02, 0, fname);
-                            #endif
                             forcePopup = false;
                             goto f5_retry;
                         }
@@ -2885,13 +2312,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (DivMMC::enabled) {
                         FileUtils::IMG_Path = FileUtils::ALL_Path;
                         if (forcePopup) {
-                            #if NEW_UI
-                            // The slot chooser is a level of the new menu (it appeared with none of the
-                            // menu around it as a classic popup).
+                            // The slot chooser is a level of the menu.
                             nm::runDiskSlots(IFACE_ESX, fname.c_str());
-                            #else
-                            diskSlotDialog(IFACE_ESX, 0, fname);
-                            #endif
                             Config::save();
                             ESPectrum::reset();
                             forcePopup = false;
@@ -2943,28 +2365,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
             click();
         } else if (hkIdx == Config::HK_TAPE_BROWSER) {
-            // Tape Browser
-#if NEW_UI
-            // The menu's native block list (it toasts "No tape inserted" itself).
-            // Standalone hotkey context: install the UI palette for the duration.
-            if (nm::available()) {
-                nm::gfxBegin();
-                nm::act_tapeBrowser();
-                nm::gfxEnd();
-            } else
-#endif
-            if (Tape::tapeFileName=="none") {
-                OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
-            } else {
-                menu_level = 0;
-                menu_curopt = 1;
-                // int tBlock = menuTape(Tape::tapeFileName.substr(6,28));
-                int tBlock = menuTape(Tape::tapeFileName.substr(0,22));
-                if (tBlock >= 0) {
-                    Tape::tapeCurBlock = tBlock;
-                    Tape::Stop();
-                }
-            }
+            // Tape Browser — the menu's native block list (it toasts "No tape
+            // inserted" itself). Standalone hotkey context: install the UI palette
+            // for the duration.
+            nm::gfxBegin();
+            nm::act_tapeBrowser();
+            nm::gfxEnd();
         } else if (hkIdx == Config::HK_STATS) {
             // Show / hide OnScreen Stats
             {
@@ -3048,4313 +2454,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 esp_hard_reset();
             }
         } else if (hkIdx == Config::HK_MAIN_MENU) {
-#if NEW_UI
-          // The new fullscreen menu replaces the whole cascade below. AYGuard and
-          // DS80Guard at the top of do_OSD already cover this path, and the frame
-          // repaint on close is done by ESPectrum::processKeyboard as usual.
-          if (nm::available()) {
-              nm::run();
-              if (VIDEO::OSD) OSD::drawStats();
-              return;
-          }
-#endif
-          menu_curopt = 1;
-          while(1) {
-            // Main menu
-            menu_saverect = false;
-            menu_level = 0;
-            // An online-archive file was downloaded to /tmp and launched: tear the
-            // whole menu stack down so the freshly loaded program runs immediately.
-            if (OSD::net_launch_close) { OSD::net_launch_close = false; if (VIDEO::OSD) OSD::drawStats(); return; }
-            uint8_t opt = menuRun(getMenuPrefix() +
-                archToStr(archDisplay(Config::arch, Config::romSet)) + "\n" +
-                (!FileUtils::fsMount ? MENU_MAIN_NO_SD : MENU_MAIN)
-            );
-            if (opt == 1) { // Volume
-                if (VIDEO::OSD == 0) {
-                    VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
-                    VIDEO::OSD = 0x04;
-                } else
-                    VIDEO::OSD |= 0x04;
-                ESPectrum::totalseconds = 0;
-                ESPectrum::totalsecondsnodelay = 0;
-                VIDEO::framecnt = 0;
-                OSD::drawVolumeBox();
-                click();
-                return;
-            }
-            else if (opt == 2) { // Storage
-                // ***********************************************************************************
-                // STORAGE MENU
-                // ***********************************************************************************
-                menu_saverect = true;
-                menu_curopt = 1;
-                while(1) {
-                    menu_level = 1;
-                    uint8_t stor_num = menuRun(FileUtils::fsMount ? MENU_STORAGE_MAIN : MENU_STORAGE_MAIN_NO_SD);
-                    if (stor_num == 1) { // Tape
-                        menu_saverect = true;
-                        menu_curopt = 1;
-                        while(1) {
-                            menu_level = 2;
-                            uint8_t tap_num = menuRun(expandHotkeys(FileUtils::fsMount ? MENU_TAPE : MENU_TAPE_NO_SD));
-                            if (tap_num > 0) {
-                                if (!FileUtils::fsMount) ++tap_num;
-                                menu_level = 3;
-                                menu_saverect = true;
-                                if (tap_num == 1) {
-                                    // Select TAP File
-                                    string mFile = fileDialog(FileUtils::TAP_Path, MENU_TAP_TITLE,DISK_TAPFILE,28,16);
-                                    if (mFile != "") {
-                                        string fname = FileUtils::TAP_Path + mFile.substr(1);
-                                        if (FileUtils::getLCaseExt(fname) == "zip") {
-                                            string zipFname = ZipExtract::extract(fname, DISK_TAPFILE);
-                                            if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
-                                            if (zipFname == "\x1b") break;
-                                            fname = zipFname;
-                                            string zipBase = fname.substr(fname.rfind('/') + 1);
-                                            mFile = mFile.substr(0, 1) + zipBase;
-                                            FileUtils::TAP_Path = "/tmp/";
-                                        }
-                                        Config::save();
-                                        // Auto-start off: force the "L" (load-only) key so
-                                        // flashload never runs the program — land at BASIC,
-                                        // same as the F5 file manager.
-                                        if (!Config::tape_autostart && mFile.size() > 0)
-                                            mFile[0] = 'L';
-                                        Tape::LoadTape(mFile);
-                                        // Auto-start: press Play automatically after a manual
-                                        // mount. Skipped when flashload is on — there the loader
-                                        // has already run the program during LoadTape, and the
-                                        // runtime auto-start heuristic drives real-time loaders.
-                                        if (Config::tape_autostart && !Config::flashload &&
-                                            Tape::tapeStatus == TAPE_STOPPED &&
-                                            Tape::tapeFileName != "none")
-                                            Tape::Play();
-                                        return;
-                                    }
-                                }
-                                else if (tap_num == 2) {
-                                    // Start / Stop .tap reproduction
-                                    if (Tape::tapeStatus == TAPE_STOPPED) {
-                                        Tape::Play();
-                                    } else {
-                                        Tape::Stop();
-                                    }
-                                    return;
-                                }
-                                else if (tap_num == 3) {
-                                    // Tape Browser
-                                    if (Tape::tapeFileName=="none") {
-                                        OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
-                                        menu_curopt = 2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_level = 0;
-                                        menu_saverect = false;
-                                        menu_curopt = 1;
-                                        int tBlock = menuTape(Tape::tapeFileName.substr(0,22));
-                                        if (tBlock >= 0) {
-                                            Tape::tapeCurBlock = tBlock;
-                                            Tape::Stop();
-                                        }
-                                        return;
-                                    }
-                                }
-                                else if (tap_num == 4) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string Mnustr = MENU_TAPEPLAYER;
-                                        Mnustr += MENU_YESNO;
-                                        bool prev_opt = Config::tape_player;
-                                        if (prev_opt) {
-                                            Mnustr.replace(Mnustr.find("[Y",0),2,"[*");
-                                            Mnustr.replace(Mnustr.find("[N",0),2,"[ ");
-                                        } else {
-                                            Mnustr.replace(Mnustr.find("[Y",0),2,"[ ");
-                                            Mnustr.replace(Mnustr.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(Mnustr);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::tape_player = true;
-                                            else
-                                                Config::tape_player = false;
-
-                                            if (Config::tape_player != prev_opt) {
-                                                if (Config::tape_player) {
-                                                    ESPectrum::aud_volume = ESP_VOLUME_MAX;
-                                                    pwm_audio_set_volume(ESPectrum::aud_volume);
-                                                }
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = FileUtils::fsMount ? 4 : 3;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (tap_num == 5) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string Mnustr = MENU_TAPEPLAYER2;
-                                        Mnustr += MENU_YESNO;
-                                        bool prev_opt = Config::real_player;
-                                        if (prev_opt) {
-                                            Mnustr.replace(Mnustr.find("[Y",0),2,"[*");
-                                            Mnustr.replace(Mnustr.find("[N",0),2,"[ ");
-                                        } else {
-                                            Mnustr.replace(Mnustr.find("[Y",0),2,"[ ");
-                                            Mnustr.replace(Mnustr.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(Mnustr);
-                                        if (opt2) {
-                                            Config::real_player = (opt2 == 1);
-                                            if (Config::real_player != prev_opt) {
-                                                if (Tape::tapeStatus == TAPE_LOADING) {  // W/A
-                                                    Tape::Stop();
-                                                }
-                                                if (Config::real_player) {
-                                                    ESPectrum::aud_volume = ESP_VOLUME_MAX;
-                                                    pwm_audio_set_volume(ESPectrum::aud_volume);
-#if defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)
-                                                    if (Config::midi == 1 || Config::midi == 2)
-                                                        osdCenteredMsg(MSG_MIDI_PIN_CONFLICT, LEVEL_WARN, 3000);
-#endif
-                                                } else {
-#if LOAD_WAV_PIO
-                                                    pcm_audio_in_stop();
-#endif
-                                                }
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = FileUtils::fsMount ? 5 : 4;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (tap_num == 6) {
-                                    // Fast tape load
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string flash_menu = MENU_FLASHLOAD;
-                                        flash_menu += MENU_YESNO;
-                                        bool prev_flashload = Config::flashload;
-                                        if (prev_flashload) {
-                                            flash_menu.replace(flash_menu.find("[Y",0),2,"[*");
-                                            flash_menu.replace(flash_menu.find("[N",0),2,"[ ");
-                                        } else {
-                                            flash_menu.replace(flash_menu.find("[Y",0),2,"[ ");
-                                            flash_menu.replace(flash_menu.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(flash_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::flashload = true;
-                                            else
-                                                Config::flashload = false;
-
-                                            if (Config::flashload != prev_flashload) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = FileUtils::fsMount ? 6 : 5;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (tap_num == 7) {
-                                    // R.G. ROM timings
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string mnu_str = MENU_RGTIMINGS;
-                                        mnu_str += MENU_YESNO;
-                                        bool prev_opt = Config::tape_timing_rg;
-                                        if (prev_opt) {
-                                            mnu_str.replace(mnu_str.find("[Y",0),2,"[*");
-                                            mnu_str.replace(mnu_str.find("[N",0),2,"[ ");
-                                        } else {
-                                            mnu_str.replace(mnu_str.find("[Y",0),2,"[ ");
-                                            mnu_str.replace(mnu_str.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(mnu_str);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::tape_timing_rg = true;
-                                            else
-                                                Config::tape_timing_rg = false;
-
-                                            if (Config::tape_timing_rg != prev_opt) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = FileUtils::fsMount ? 7 : 6;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (tap_num == 8) {
-                                    // Auto-start (remember tape + auto-play on load/restore)
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string mnu_str = MENU_TAPE_AUTOSTART;
-                                        mnu_str += MENU_YESNO;
-                                        bool prev_opt = Config::tape_autostart;
-                                        if (prev_opt) {
-                                            mnu_str.replace(mnu_str.find("[Y",0),2,"[*");
-                                            mnu_str.replace(mnu_str.find("[N",0),2,"[ ");
-                                        } else {
-                                            mnu_str.replace(mnu_str.find("[Y",0),2,"[ ");
-                                            mnu_str.replace(mnu_str.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(mnu_str);
-                                        if (opt2) {
-                                            Config::tape_autostart = (opt2 == 1);
-                                            if (Config::tape_autostart != prev_opt) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = FileUtils::fsMount ? 8 : 7;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                            } else {
-                                menu_curopt = 1;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (FileUtils::fsMount && stor_num == 2) { // Betadisk
-                        menu_saverect = true;
-                        menu_curopt = 1;
-                        bool betaFirstDraw = true;
-                        while(1) {
-                            menu_level = 2;
-                            // Build Betadisk root menu dynamically so drive status refreshes.
-                            string betamenu = MENU_BETADISK_TITLE;
-                            betamenu += string(MENU_BETADISK_MODE) + "\t"
-                                      + (Config::betadisk ? "On" : "Off") + "\n";
-                            for (uint8_t i = 0; i < 4; i++) {
-                                string label = string("Drive ") + MENU_BETA_DRIVE_LETTERS[i];
-                                string fname = ESPectrum::fdd.disk[i] ? ESPectrum::fdd.disk[i]->fname : "";
-                                string row = formatSlotRow(label, fname, Config::driveWP[i], true);
-                                if (!Config::betadisk) row = "\x01" + row;
-                                betamenu += row + "\n";
-                            }
-                            {
-                                string fm = MENU_BETADISK_FASTMODE;
-                                string sl = MENU_BETADISK_SNDLED;
-                                string rm = MENU_BETADISK_ROM;
-                                string ab = MENU_BETADISK_AUTOBOOT;
-                                if (!Config::betadisk) { fm = "\x01" + fm; sl = "\x01" + sl; rm = "\x01" + rm; ab = "\x01" + ab; }
-                                betamenu += fm + sl + rm + ab;
-                            }
-
-                            // Save the backing rect only on the very first draw so the
-                            // stack has exactly one entry to pop on Esc (otherwise the
-                            // extra save'd fragment would show through). Repeat draws
-                            // paint over the previous menu — it has fixed height, so
-                            // no stale pixels remain.
-                            menu_saverect = betaFirstDraw;
-                            uint8_t dsk_num = menuRun(betamenu);
-                            betaFirstDraw = false;
-                            if (dsk_num == 1) {
-                                // Mode toggle
-                                Config::betadisk = !Config::betadisk;
-                                if (!Config::betadisk && ESPectrum::trdos) {
-                                    ESPectrum::trdos = false;
-                                    MemESP::recoverPage0();
-                                }
-                                Config::save();
-                                menu_curopt = 1;
-                                continue;
-                            }
-                            else if (!Config::betadisk && dsk_num >= 2 && dsk_num <= 8) {
-                                // Dimmed rows — ignore
-                                menu_curopt = dsk_num;
-                                continue;
-                            }
-                            else if (dsk_num >= 2 && dsk_num <= 5) {
-                                // Per-drive submenu: Insert / Eject / Write Protect.
-                                uint8_t slot = dsk_num - 2;
-                                menu_saverect = true;
-                                menu_curopt = 1;
-                                while (1) {
-                                    menu_level = 3;
-                                    string drvmenu = MENU_BETADRIVE;
-                                    drvmenu.replace(drvmenu.find("#",0),1,(string)" " + MENU_BETA_DRIVE_LETTERS[slot]);
-                                    // Fill WP toggle marker.
-                                    size_t wpPos = drvmenu.rfind("[ ]");
-                                    if (wpPos != string::npos && Config::driveWP[slot]) {
-                                        drvmenu.replace(wpPos, 3, "[*]");
-                                    }
-                                    uint8_t opt2 = menuRun(drvmenu);
-                                    if (opt2 == 1) {
-                                        // Insert disk — no F5-style slot popup; slot is already chosen.
-                                        menu_saverect = true;
-                                        string mFile = fileDialog(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE, 26, 15);
-                                        if (mFile != "") {
-                                            mFile.erase(0, 1);
-                                            string fname = FileUtils::DSK_Path + "/" + mFile;
-                                            if (FileUtils::getLCaseExt(fname) == "zip") {
-                                                string zipFname = ZipExtract::extract(fname, DISK_DSKFILE);
-                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
-                                                if (zipFname == "\x1b") break;
-                                                fname = zipFname;
-                                            }
-                                            rvmWD1793InsertDisk(&ESPectrum::fdd, slot, fname);
-                                            if (ESPectrum::fdd.disk[slot])
-                                                // TD0 is read-only (no write-back) → always WP.
-                                                ESPectrum::fdd.disk[slot]->writeprotect =
-                                                    Config::driveWP[slot]
-                                                    || ESPectrum::fdd.disk[slot]->IsTD0File
-                                                    ;
-                                            Config::save();
-                                        }
-                                        // Mirror menuRun's Esc path so the drive submenu
-                                        // rect is popped here and the next betamenu redraw
-                                        // starts from a clean stack.
-                                        VIDEO::SaveRect.restore_last();
-                                        menu_saverect = false;
-                                        menu_curopt = dsk_num;
-                                        break;
-                                    } else if (opt2 == 2) {
-                                        wdDiskEject(&ESPectrum::fdd, slot);
-                                        Config::save();
-                                        VIDEO::SaveRect.restore_last();
-                                        menu_saverect = false;
-                                        menu_curopt = dsk_num;
-                                        break;
-                                    } else if (opt2 == 3) {
-                                        // Toggle per-slot Write Protect.
-                                        Config::driveWP[slot] = !Config::driveWP[slot];
-                                        if (ESPectrum::fdd.disk[slot])
-                                            // TD0 is read-only (no write-back) → stays WP even if toggled off.
-                                            ESPectrum::fdd.disk[slot]->writeprotect =
-                                                Config::driveWP[slot]
-                                                || ESPectrum::fdd.disk[slot]->IsTD0File
-                                                ;
-                                        Config::save();
-                                        menu_curopt = 3;
-                                        menu_saverect = false;
-                                    } else {
-                                        // Esc from drive submenu — menuRun already restored
-                                        // its backing rect. Reuse prev_y on next betamenu
-                                        // redraw so the menu stays in place.
-                                        menu_curopt = dsk_num;
-                                        menu_saverect = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            else if (dsk_num == 6) {
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string menu = MENU_FASTMODE;
-                                    menu += MENU_YESNO;
-                                    uint8_t prev = Config::trdosFastMode;
-                                    if (prev) {
-                                        menu.replace(menu.find("[Y",0),2,"[*");
-                                        menu.replace(menu.find("[N",0),2,"[ ");
-                                    } else {
-                                        menu.replace(menu.find("[Y",0),2,"[ ");
-                                        menu.replace(menu.find("[N",0),2,"[*");
-                                    }
-                                    uint8_t opt2 = menuRun(menu);
-                                    if (opt2) {
-                                        Config::trdosFastMode = (opt2 == 1);
-                                        if (Config::trdosFastMode != prev) {
-                                            rvmWD1793UpdateFastmode(&ESPectrum::fdd);
-                                            Config::save();
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 6;
-                                        menu_level = 2;
-                                        menu_saverect = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            else if (dsk_num == 7) {
-                                // Disk Sound & LED
-                                menu_level = 3;
-                                menu_curopt = Config::trdosSoundLed + 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string menu = MENU_SOUNDLED;
-                                    menu += MENU_SOUNDLED_SEL;
-                                    int mpos = -1;
-                                    int idx = 0;
-                                    while ((mpos = menu.find("[ ]", mpos + 1)) != (int)string::npos) {
-                                        if (idx == Config::trdosSoundLed)
-                                            menu.replace(mpos, 3, "[*]");
-                                        idx++;
-                                    }
-                                    uint8_t prev = Config::trdosSoundLed;
-                                    uint8_t opt2 = menuRun(menu);
-                                    if (opt2) {
-                                        Config::trdosSoundLed = opt2 - 1;
-                                        if (Config::trdosSoundLed != prev)
-                                            Config::save();
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 7;
-                                        menu_level = 2;
-                                        menu_saverect = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            else if (dsk_num == 8) {
-                                // TR-DOS ROM selector
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string menu = MENU_TRDOS_ROM_TITLE;
-                                    menu += MENU_TRDOS_ROM_SEL;
-                                    int mpos = -1;
-                                    int idx = 0;
-                                    while ((mpos = menu.find("[ ]", mpos + 1)) != (int)string::npos) {
-                                        if (idx == Config::trdosBios)
-                                            menu.replace(mpos, 3, "[*]");
-                                        idx++;
-                                    }
-                                    uint8_t prev = Config::trdosBios;
-                                    uint8_t opt2 = menuRun(menu);
-                                    if (opt2) {
-                                        Config::trdosBios = opt2 - 1;
-                                        if (Config::trdosBios != prev) {
-                                            Config::save();
-                                            // 5.03 / 5.04TM are read-only overlays over 5.05D applied on
-                                            // the fly by MemESP (RomOverlay.h) — bind immediately, no
-                                            // reboot, on every board.
-                                            const uint8_t* base = gb_rom_4_trdos_505d;
-                                            const uint8_t* ov = nullptr;
-                                            switch (Config::trdosBios) {
-                                                case 0: ov = gb_overlay_trdos_503;   break;
-                                                case 1: ov = gb_overlay_trdos_504tm; break;
-                                                case 3: base = gb_rom_4_trdos_custom; break;
-                                                default: break;
-                                            }
-                                            MemESP::rom[4].assign_rom(base);
-                                            MemESP::registerOverlay(gb_rom_4_trdos_505d, ov);
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 8;
-                                        menu_level = 2;
-                                        menu_saverect = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            else if (dsk_num == 9) {
-                                // Auto-boot: inject a "boot" file into TRD/SCL images
-                                // that lack one so TR-DOS autostarts after mounting.
-                                menu_level = 3;
-                                menu_curopt = Config::trdosAutoBoot ? 1 : 2;
-                                menu_saverect = true;
-                                while (1) {
-                                    string menu = MENU_AUTOBOOT;
-                                    menu += MENU_YESNO;
-                                    bool prev = Config::trdosAutoBoot;
-                                    if (prev) {
-                                        menu.replace(menu.find("[Y",0),2,"[*");
-                                        menu.replace(menu.find("[N",0),2,"[ ");
-                                    } else {
-                                        menu.replace(menu.find("[Y",0),2,"[ ");
-                                        menu.replace(menu.find("[N",0),2,"[*");
-                                    }
-                                    uint8_t opt2 = menuRun(menu);
-                                    if (opt2) {
-                                        bool nv = (opt2 == 1);
-                                        if (nv != prev) {
-                                            Config::trdosAutoBoot = nv;
-                                            Config::save();
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 9;
-                                        menu_level = 2;
-                                        menu_saverect = false;
-                                        break;
-                                    }
-                                }
-                            }
-                            else {
-                                menu_curopt = 2;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (FileUtils::fsMount && stor_num == 3) { // esxDOS
-                        static const char* mode_names[] = { "OFF", "DivMMC", "DivIDE", "DivSD" };
-                        menu_saverect = true;
-                        menu_curopt = 1;
-                        while (1) {
-                            menu_level = 2;
-                            // Root menu: Interface row + optional hd0/hd1 rows.
-                            string menu = MENU_ESXDOS_TITLE;
-                            menu += string(MENU_ESX_INTERFACE) + "\t" + mode_names[Config::esxdos] + "\n";
-                            bool showHd0 = (Config::esxdos == 1 || Config::esxdos == 2);
-                            bool showHd1 = (Config::esxdos == 2);
-                            if (showHd0) {
-                                menu += formatSlotRow("hd0", Config::esxdos_hdf_image[0], false, false);
-                                menu += "\n";
-                            }
-                            if (showHd1) {
-                                menu += formatSlotRow("hd1", Config::esxdos_hdf_image[1], false, false);
-                                menu += "\n";
-                            }
-                            uint8_t opt = menuRun(menu);
-                            if (opt == 1) {
-                                // Interface submenu.
-                                menu_level = 3;
-                                menu_curopt = Config::esxdos + 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string smenu = MENU_ESXDOS_TITLE;
-                                    for (int i = 0; i < 4; i++) {
-                                        smenu += (i == Config::esxdos) ? "[*] " : "[ ] ";
-                                        smenu += mode_names[i];
-                                        smenu += "\n";
-                                    }
-                                    uint8_t sub = menuRun(smenu);
-                                    if (sub) {
-                                        uint8_t newval = sub - 1;
-                                        if (newval != Config::esxdos) {
-                                            // Enabling DivMMC/DivIDE/DivSD from Off — check SRAM budget.
-                                            // Set esxdos to the chosen variant first so a freeing reboot
-                                            // preserves it; restore on ALLOW so the side-effects below run.
-                                            if (newval && Config::esxdos == 0) {
-                                                uint8_t oldEsx = Config::esxdos;
-                                                Config::esxdos = newval;
-                                                bool ok = OSD::featureBudgetGate(Subsystems::FEAT_DIVMMC);
-                                                Config::esxdos = oldEsx;
-                                                if (!ok) { menu_curopt = sub; menu_saverect = false; continue; }
-                                            }
-                                            if (newval && Config::mb02) {
-                                                Config::mb02 = 0;
-                                                MB02::init();
-                                                OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
-                                            }
-                                            if (newval && Config::zcontroller) {
-                                                Config::zcontroller = false;
-                                                DivMMC::zc_shutdown();
-                                                OSD::osdCenteredMsg("Z-Controller disabled", LEVEL_WARN, 2000);
-                                            }
-                                            // DivIDE conflicts with General Sound on ports 0xB3/0xBB
-                                            if (newval == 2 && Config::gs_enabled) {
-                                                Config::gs_enabled = 0;
-                                                OSD::osdCenteredMsg("General Sound disabled", LEVEL_WARN, 2000);
-                                            }
-                                            Config::esxdos = newval;
-                                            DivMMC::init();
-                                            if (DivMMC::enabled && !DivMMC::rom_loaded) {
-                                                OSD::osdCenteredMsg("ESXDOS ROM not found", LEVEL_ERROR, 2000);
-                                                Config::esxdos = 0;
-                                                DivMMC::init();
-                                            }
-                                            Config::save();
-                                            ESPectrum::reset();
-                                            return;
-                                        }
-                                        menu_curopt = sub;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 1;
-                                        break;
-                                    }
-                                }
-                            } else if (opt >= 2) {
-                                // hd0 / hd1 submenu (Insert / Eject).
-                                uint8_t slot = (opt == 2) ? 0 : 1;
-                                if (!(slot == 0 && showHd0) && !(slot == 1 && showHd1)) {
-                                    menu_curopt = opt;
-                                    continue;
-                                }
-                                menu_saverect = true;
-                                menu_curopt = 1;
-                                while (1) {
-                                    menu_level = 3;
-                                    char title[8]; snprintf(title, sizeof(title), "hd%u\n", (unsigned)slot);
-                                    string drvmenu = title;
-                                    drvmenu += MENU_ESX_INSERT;
-                                    drvmenu += MENU_ESX_EJECT;
-                                    uint8_t opt2 = menuRun(drvmenu);
-                                    if (opt2 == 1) {
-                                        menu_saverect = true;
-                                        string mFile = fileDialog(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE, 51, 22);
-                                        if (mFile != "") {
-                                            string fname = FileUtils::IMG_Path + mFile.substr(1);
-                                            if (FileUtils::getLCaseExt(fname) == "zip") {
-                                                string zipFname = ZipExtract::extract(fname, DISK_IMGFILE);
-                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
-                                                if (zipFname == "\x1b") break;
-                                                fname = zipFname;
-                                            }
-                                            Config::esxdos_hdf_image[slot] = fname;
-                                            DivMMC::init();
-                                            Config::save();
-                                            ESPectrum::reset();
-                                            return;
-                                        }
-                                    } else if (opt2 == 2) {
-                                        Config::esxdos_hdf_image[slot].clear();
-                                        DivMMC::init();
-                                        Config::save();
-                                        ESPectrum::reset();
-                                        return;
-                                    } else {
-                                        menu_curopt = opt;
-                                        break;
-                                    }
-                                }
-                            } else {
-                                menu_curopt = 3;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (FileUtils::fsMount && stor_num == 4) { // MB-02+
-                        menu_saverect = true;
-                        menu_curopt = 1;
-                        bool mb02FirstDraw = true;
-                        while(1) {
-                            menu_level = 2;
-                            // Menu has a fixed row count (Mode + 4 drives + Sound & LED)
-                            // so the backing-rect size never changes across Mode
-                            // toggles. Drive / Sound & LED rows are dimmed (via \x01
-                            // prefix) and non-selectable when Mode=Off.
-                            string mb02menu = MENU_MB02_TITLE;
-                            mb02menu += string(MENU_MB02_MODE) + "\t"
-                                      + (Config::mb02 ? "On" : "Off") + "\n";
-                            for (int i = 0; i < 4; i++) {
-                                char lab[16]; snprintf(lab, sizeof(lab), "%s %u",
-                                    MENU_MB02_DRIVE, (unsigned)(i + 1));
-                                string fname = ESPectrum::mb02_fdd.disk[i] ? ESPectrum::mb02_fdd.disk[i]->fname : "";
-                                string row = formatSlotRow(lab, fname, Config::mb02WP[i], true);
-                                if (!Config::mb02) row = "\x01" + row;
-                                mb02menu += row + "\n";
-                            }
-                            {
-                                string snd = MENU_MB02_SNDLED;
-                                if (!Config::mb02) snd = "\x01" + snd;
-                                mb02menu += snd;
-                            }
-                            // Save backing rect only on the first draw; repeat draws
-                            // paint over the previous fixed-height menu in place.
-                            menu_saverect = mb02FirstDraw;
-                            uint8_t mb02_num = menuRun(mb02menu);
-                            mb02FirstDraw = false;
-                            if (mb02_num == 1) {
-                                // Mode toggle — stay in the MB-02+ menu so drive rows
-                                // show up / disappear in place when the user flips Mode.
-                                uint8_t newval = Config::mb02 ? 0 : 1;
-                                // MB-02+ and Profi both claim the upper MemESP RAM
-                                // pages (Profi forces ~96 KB of SRAM pages for its
-                                // 1024K/DS80 working set); enabling MB-02+ on Profi
-                                // corrupts that and the machine fails to boot. Refuse.
-                                if (newval && Config::arch == A_PROFI) {
-                                    OSD::osdCenteredMsg("MB-02+ not available on Profi", LEVEL_WARN, 2000);
-                                    menu_curopt = 1;
-                                    continue;
-                                }
-                                Config::mb02 = newval;
-                                if (Config::mb02 && Config::esxdos) {
-                                    Config::esxdos = 0;
-                                    DivMMC::init();
-                                    OSD::osdCenteredMsg("esxDOS disabled", LEVEL_WARN, 2000);
-                                }
-                                if (Config::mb02 && Config::zcontroller) {
-                                    Config::zcontroller = false;
-                                    DivMMC::zc_shutdown();
-                                    OSD::osdCenteredMsg("Z-Controller disabled", LEVEL_WARN, 2000);
-                                }
-                                MB02::init();
-                                if (Config::mb02 && !MB02::enabled) {
-                                    OSD::osdCenteredMsg("MB-02+: not enough memory", LEVEL_ERROR, 2000);
-                                    Config::mb02 = 0;
-                                }
-                                // Restore the last-used disks remembered in the
-                                // mounts file. loadDiskMounts() skips MB-02 disks
-                                // while the interface is off, so after a reboot
-                                // taken with MB-02 disabled (e.g. switched to Profi
-                                // and back) mb02_fdd is empty — re-mount them now.
-                                if (MB02::enabled)
-                                    Config::loadMb02DiskMounts();
-                                Config::save();
-                                ESPectrum::reset();
-                                menu_curopt = 1;
-                                continue;
-                            }
-                            else if (!Config::mb02 && mb02_num >= 2 && mb02_num <= 6) {
-                                // Disabled rows — ignore the press and redraw same menu.
-                                menu_curopt = mb02_num;
-                                continue;
-                            }
-                            else if (Config::mb02 && mb02_num >= 2 && mb02_num <= 5) {
-                                // Per-drive submenu: Insert / Eject / Write Protect.
-                                uint8_t slot = mb02_num - 2;
-                                menu_saverect = true;
-                                menu_curopt = 1;
-                                while (1) {
-                                    menu_level = 3;
-                                    char drvtitle[16];
-                                    snprintf(drvtitle, sizeof(drvtitle), "%s %u\n",
-                                        MENU_MB02_DRIVE, (unsigned)(slot + 1));
-                                    string drvmenu = drvtitle;
-                                    drvmenu += MENU_MB02_INSERT;
-                                    drvmenu += MENU_MB02_EJECT;
-                                    drvmenu += string(MENU_MB02_WP) + "\t"
-                                             + (Config::mb02WP[slot] ? "[*]" : "[ ]") + "\n";
-                                    uint8_t opt2 = menuRun(drvmenu);
-                                    if (opt2 == 1) {
-                                        menu_saverect = true;
-                                        string mFile = fileDialog(FileUtils::DSK_Path, "MB-02+ Disk", DISK_DSKFILE, 26, 15);
-                                        if (mFile != "") {
-                                            mFile.erase(0, 1);
-                                            string fname = FileUtils::DSK_Path + "/" + mFile;
-                                            if (FileUtils::getLCaseExt(fname) == "zip") {
-                                                string zipFname = ZipExtract::extract(fname, DISK_DSKFILE);
-                                                if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
-                                                if (zipFname == "\x1b") break;
-                                                fname = zipFname;
-                                            }
-                                            rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, slot, fname);
-                                            if (ESPectrum::mb02_fdd.disk[slot])
-                                                ESPectrum::mb02_fdd.disk[slot]->writeprotect = Config::mb02WP[slot];
-                                            ESPectrum::mb02_fdd.diskLoadedCyl = -1;
-                                            ESPectrum::mb02_fdd.diskLoadedSide = -1;
-                                            MB02::signalDiskChange();
-                                            Config::save();
-                                        }
-                                        // Pop drive submenu rect here (mirror Esc path).
-                                        VIDEO::SaveRect.restore_last();
-                                        menu_saverect = false;
-                                        menu_curopt = mb02_num;
-                                        break;
-                                    } else if (opt2 == 2) {
-                                        wdDiskEject(&ESPectrum::mb02_fdd, slot);
-                                        MB02::signalDiskChange();
-                                        Config::save();
-                                        VIDEO::SaveRect.restore_last();
-                                        menu_saverect = false;
-                                        menu_curopt = mb02_num;
-                                        break;
-                                    } else if (opt2 == 3) {
-                                        Config::mb02WP[slot] = !Config::mb02WP[slot];
-                                        if (ESPectrum::mb02_fdd.disk[slot])
-                                            ESPectrum::mb02_fdd.disk[slot]->writeprotect = Config::mb02WP[slot];
-                                        Config::save();
-                                        menu_curopt = 3;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = mb02_num;
-                                        break;
-                                    }
-                                }
-                            }
-                            else if (Config::mb02 && mb02_num == 6) {
-                                // Sound & LED selector: Off / LED / Sound / Sound+LED.
-                                menu_level = 3;
-                                menu_curopt = Config::mb02SoundLed + 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string menu = MENU_SOUNDLED;
-                                    menu += MENU_SOUNDLED_SEL;
-                                    int mpos = -1;
-                                    int idx = 0;
-                                    while ((mpos = menu.find("[ ]", mpos + 1)) != (int)string::npos) {
-                                        if (idx == Config::mb02SoundLed)
-                                            menu.replace(mpos, 3, "[*]");
-                                        idx++;
-                                    }
-                                    uint8_t prev = Config::mb02SoundLed;
-                                    uint8_t opt2 = menuRun(menu);
-                                    if (opt2) {
-                                        Config::mb02SoundLed = opt2 - 1;
-                                        if (Config::mb02SoundLed != prev)
-                                            Config::save();
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 6;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            }
-                            else {
-                                menu_curopt = 4;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (FileUtils::fsMount && stor_num == 5) { // Z-Controller
-                        menu_saverect = true;
-                        menu_curopt = 1;
-                        while (1) {
-                            menu_level = 2;
-                            string zmenu = "Z-Controller\n";
-                            zmenu += string(MENU_YESNO);
-                            if (Config::zcontroller) {
-                                zmenu.replace(zmenu.find("[Y",0),2,"[*");
-                                zmenu.replace(zmenu.find("[N",0),2,"[ ");
-                            } else {
-                                zmenu.replace(zmenu.find("[Y",0),2,"[ ");
-                                zmenu.replace(zmenu.find("[N",0),2,"[*");
-                            }
-                            uint8_t opt = menuRun(zmenu);
-                            if (opt == 0) {
-                                menu_curopt = 5;
-                                menu_level = 1;
-                                break;
-                            }
-                            bool newval = (opt == 1);
-                            if (newval == Config::zcontroller) {
-                                menu_curopt = opt;
-                                menu_saverect = false;
-                                continue;
-                            }
-                            // Budget-gate when turning Z-Controller on (~0.5 KB sector buffer).
-                            if (newval && !OSD::featureBudgetGate(Subsystems::FEAT_ZCONTROLLER)) {
-                                menu_curopt = opt;
-                                menu_saverect = false;
-                                continue;   // declined to free → leave off
-                            }
-                            Config::zcontroller = newval;
-                            if (newval) {
-                                if (Config::esxdos) {
-                                    Config::esxdos = 0;
-                                    DivMMC::init();
-                                    OSD::osdCenteredMsg("esxDOS disabled", LEVEL_WARN, 2000);
-                                }
-                                if (Config::mb02) {
-                                    Config::mb02 = 0;
-                                    MB02::init();
-                                    OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
-                                }
-                                DivMMC::zc_init();
-                            } else {
-                                DivMMC::zc_shutdown();
-                            }
-                            Config::save();
-                            ESPectrum::reset();
-                            return;
-                        }
-                    }
-                    else if (FileUtils::fsMount && stor_num == 7) { // Snapshot
-                        menu_saverect = true;
-                        menu_curopt = 1;
-                        while(1) {
-                            menu_level = 2;
-                            uint8_t sna_mnu = menuRun(expandHotkeys(MENU_SNA));
-                            if (sna_mnu > 0) {
-                                menu_level = 3;
-                                menu_saverect = true;
-                                if (sna_mnu == 1) {
-                                    string mFile = fileDialog(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE, 28, 16);
-                                    if (mFile != "") {
-                                        Config::save();
-                                        mFile.erase(0, 1);
-                                        string fname = FileUtils::SNA_Path + mFile;
-                                        if (FileUtils::getLCaseExt(fname) == "zip") {
-                                            string zipFname = ZipExtract::extract(fname, DISK_SNAFILE);
-                                            if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
-                                            if (zipFname == "\x1b") break;
-                                            fname = zipFname;
-                                        }
-                                        if(!LoadSnapshot(fname, A_NONE, R_NONE)) {
-                                            OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
-                                        } else {
-                                            Config::ram_file = fname;
-                                            Config::last_ram_file = fname;
-                                        }
-                                        return;
-                                    }
-                                }
-                                else if (sna_mnu == 2) {
-                                    // Persist Load
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        menu_footer = "F3: Load  F6: Rename  F8: Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD, 10));
-                                        if (opt2) {
-                                            if (menu_del_pressed) {
-                                                persistDeleteConfirm(opt2);
-                                                menu_saverect = false;
-                                                menu_curopt = opt2;
-                                                continue;
-                                            }
-                                            if (menu_rename_pressed) {
-                                                persistRename(opt2, opt2);
-                                                menu_saverect = false;
-                                                menu_curopt = opt2;
-                                                continue;
-                                            }
-                                            if (persistLoad(opt2)) {
-                                                return;
-                                            }
-                                            menu_saverect = false;
-                                            menu_curopt = opt2;
-                                        } else break;
-                                    }
-                                }
-                                else if (sna_mnu == 3) {
-                                    // Persist Save
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        menu_footer = "F6: Rename  F8: Remove";
-                uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE, 10));
-                                        if (opt2) {
-                                            if (menu_del_pressed) {
-                                                persistDeleteConfirm(opt2);
-                                                menu_saverect = false;
-                                                menu_curopt = opt2;
-                                                continue;
-                                            }
-                                            if (menu_rename_pressed) {
-                                                persistRename(opt2, opt2);
-                                                menu_saverect = false;
-                                                menu_curopt = opt2;
-                                                continue;
-                                            }
-                                            if (persistSave(opt2, opt2)) {
-                                                return;
-                                            }
-                                            menu_saverect = false;
-                                            menu_curopt = opt2;
-                                        } else break;
-                                    }
-                                }
-                                menu_curopt = sna_mnu;
-                            } else {
-                                menu_curopt = 7;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (FileUtils::fsMount && stor_num == 6) { // IDE/HDD
-                        ideDialog();
-                    }
-                    else {
-                        menu_curopt = 2;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 3) { // Audio
-                // ***********************************************************************************
-                // AUDIO MENU
-                // ***********************************************************************************
-                menu_saverect = true;
-                menu_curopt = 1;
-                while (1) {
-                    menu_level = 1;
-                    // Audio: insert General Sound item between MIDI and Audio Driver when GS is available
-                    string audio_menu = MENU_AUDIO;
-                    // GS works on butter XIP (fast) or, as a fallback, on plain SPI PSRAM
-                    // (slow path, ~30× slower — best-effort, may glitch on MOD playback).
-                    // For SPI fallback, need room for MemESP swap pool + 2 MB GS RAM.
-                    bool gs_avail = Buffer::gsPsramAvailable();
-                    if (gs_avail) {
-                        // Insert GS before "Audio Driver" (second-to-last item, before Volume Boost)
-                        size_t last_nl = audio_menu.rfind('\n', audio_menu.size() - 2);
-                        if (last_nl != string::npos && last_nl > 0) {
-                            size_t insert_pos = audio_menu.rfind('\n', last_nl - 1);
-                            if (insert_pos != string::npos) {
-                                audio_menu.insert(insert_pos + 1, MENU_AUDIO_GS_ITEM);
-                            }
-                        }
-                    }
-                    uint8_t options_num = menuRun(audio_menu);
-                    if (options_num > 0) {
-                        if (options_num == 1) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string ay_menu = MENU_AY48;
-                                ay_menu += MENU_YESNO;
-                                bool prev_ay48 = Config::AY48;
-                                if (prev_ay48) {
-                                    ay_menu.replace(ay_menu.find("[Y",0),2,"[*");
-                                    ay_menu.replace(ay_menu.find("[N",0),2,"[ ");
-                                } else {
-                                    ay_menu.replace(ay_menu.find("[Y",0),2,"[ ");
-                                    ay_menu.replace(ay_menu.find("[N",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(ay_menu);
-                                if (opt2) {
-                                    if (opt2 == 1)
-                                        Config::AY48 = true;
-                                    else
-                                        Config::AY48 = false;
-
-                                    if (Config::AY48 != prev_ay48) {
-                                        ESPectrum::AY_emu = Config::AY48;
-                                        Config::save();
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 1;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 2) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string menu = MENU_AY;
-                                uint8_t prev = Config::ayConfig;
-                                if (prev == 0) {
-                                    menu.replace(menu.find("[B",0),2,"[*");
-                                    menu.replace(menu.find("[C",0),2,"[ ");
-                                    menu.replace(menu.find("[M",0),2,"[ ");
-                                } else if (prev == 1) {
-                                    menu.replace(menu.find("[B",0),2,"[ ");
-                                    menu.replace(menu.find("[C",0),2,"[*");
-                                    menu.replace(menu.find("[M",0),2,"[ ");
-                                } else {
-                                    menu.replace(menu.find("[B",0),2,"[ ");
-                                    menu.replace(menu.find("[C",0),2,"[ ");
-                                    menu.replace(menu.find("[M",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(menu);
-                                if (opt2) {
-                                    Config::ayConfig = opt2 - 1;
-                                    if (Config::ayConfig != prev) {
-                                        Config::save();
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 2;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 3) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string menu = MENU_TS;
-                                uint8_t prev = Config::turbosound;
-                                if (prev) {
-                                    menu.replace(menu.find("[Y",0),2,"[*");
-                                    menu.replace(menu.find("[N",0),2,"[ ");
-                                } else {
-                                    menu.replace(menu.find("[Y",0),2,"[ ");
-                                    menu.replace(menu.find("[N",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(menu);
-                                if (opt2) {
-                                    Config::turbosound = (opt2 == 1) ? 3 : 0;
-                                    if (Config::turbosound != prev) {
-                                        Config::save();
-                                        TurboSubsys::request(Config::turbosound != 0);
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 3;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 4) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string menu = MENU_COVOX;
-                                uint8_t prev = Config::covox;
-                                static const char covox_tags[3] = {'N','F','D'};
-                                for (uint8_t i = 0; i < 3; i++) {
-                                    const char tag[3] = {'[', covox_tags[i], 0};
-                                    menu.replace(menu.find(tag,0),2, i == prev ? "[*" : "[ ");
-                                }
-                                uint8_t opt2 = menuRun(menu);
-                                if (opt2) {
-                                    bool wasOn = (prev != 0 || Config::soundriveEnabled());
-                                    Config::covox = opt2 - 1;
-                                    bool nowOn = (Config::covox != 0 || Config::soundriveEnabled());
-                                    // Budget-gate when the shared Covox/SounDrive buffer (~2 KB)
-                                    // transitions from not-needed to needed.
-                                    if (!wasOn && nowOn &&
-                                        !OSD::featureBudgetGate(Subsystems::FEAT_COVOX)) {
-                                        Config::covox = prev;   // declined → revert
-                                    } else
-                                    if (Config::covox != prev) {
-                                        Config::save();
-                                        CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 4;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 5) { // SounDrive
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string menu = MENU_SOUNDRIVE;
-                                uint8_t prev = Config::soundrive;
-                                menu.replace(menu.find("[A",0),2, prev == 2 ? "[*" : "[ ");
-                                menu.replace(menu.find("[O",0),2, prev == 1 ? "[*" : "[ ");
-                                menu.replace(menu.find("[F",0),2, prev == 0 ? "[*" : "[ ");
-                                uint8_t opt2 = menuRun(menu);
-                                if (opt2) {
-                                    static const uint8_t sd_map[3] = {2, 1, 0}; // menu row → mode
-                                    bool wasOn = (Config::covox != 0 || Config::soundriveEnabled());
-                                    Config::soundrive = (opt2 <= 3) ? sd_map[opt2 - 1] : prev;
-                                    bool nowOn = (Config::covox != 0 || Config::soundriveEnabled());
-                                    // Shared Covox/SounDrive buffer (~2 KB): gate on off→on.
-                                    if (!wasOn && nowOn &&
-                                        !OSD::featureBudgetGate(Subsystems::FEAT_COVOX)) {
-                                        Config::soundrive = prev;   // declined → revert
-                                    } else
-                                    if (Config::soundrive != prev) {
-                                        Config::save();
-                                        CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 5;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 6) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string saa_menu = MENU_SAA1099;
-                                saa_menu += MENU_YESNO;
-                                bool prev_saa = Config::SAA1099;
-                                if (prev_saa) {
-                                    saa_menu.replace(saa_menu.find("[Y",0),2,"[*");
-                                    saa_menu.replace(saa_menu.find("[N",0),2,"[ ");
-                                } else {
-                                    saa_menu.replace(saa_menu.find("[Y",0),2,"[ ");
-                                    saa_menu.replace(saa_menu.find("[N",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(saa_menu);
-                                if (opt2) {
-                                    bool want_saa = (opt2 == 1);
-                                    // Budget-gate when turning SAA1099 on from off (~2 KB).
-                                    if (want_saa && !prev_saa &&
-                                        !OSD::featureBudgetGate(Subsystems::FEAT_SAA)) {
-                                        // declined to free → leave SAA off
-                                    } else {
-                                        Config::SAA1099 = want_saa;
-                                        if (Config::SAA1099 != prev_saa) {
-                                            ESPectrum::SAA_emu = Config::SAA1099;
-                                            if (Config::SAA1099 && Config::timex_video) {
-                                                Config::timex_video = false;
-                                                VIDEO::timex_port_ff = 0;
-                                                VIDEO::timex_mode = 0;
-                                                VIDEO::timex_hires_ink = 0;
-                                                OSD::osdCenteredMsg("Timex disabled", LEVEL_WARN, 2000);
-                                            }
-                                            Config::save();
-                                            SaaSubsys::request(Config::SAA1099);
-                                        }
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 6;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 7) {
-                            // The MIDI branch is a wizard of its own (SD bank scan, .dls
-                            // conversion, flash-at-next-boot confirm), lifted verbatim into
-                            // OSD::midiDialog() so the new menu opens the same one. It sets
-                            // menu_curopt/menu_level for the caller on the way out.
-                            midiDialog();
-                        }
-                        else if (gs_avail && options_num == 8) { // General Sound
-                            static const char* GS_CLOCK_NAMES[5] = {"12 MHz", "13 MHz", "14 MHz", "20 MHz", "24 MHz"};
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            bool gsFirstDraw = true;
-                            while (1) {
-                                string gsmenu = MENU_GS_TITLE;
-                                gsmenu += string(MENU_GS_MODE) + "\t"
-                                        + (Config::gs_enabled ? "On" : "Off") + "\n";
-                                uint8_t ci = Config::gs_clock < 5 ? Config::gs_clock : 1;
-                                string clockRow = string("Clock") + "\t"
-                                               + GS_CLOCK_NAMES[ci] + " >\n";
-                                if (!Config::gs_enabled) clockRow = "\x01" + clockRow;
-                                gsmenu += clockRow;
-                                menu_saverect = gsFirstDraw;
-                                uint8_t gs_num = menuRun(gsmenu);
-                                gsFirstDraw = false;
-                                if (gs_num == 1) {
-                                    // Mode toggle — requires reboot
-                                    uint8_t prev = Config::gs_enabled;
-                                    Config::gs_enabled = prev ? 0 : 1;
-                                    if (Config::gs_enabled != prev) {
-                                        if (Config::gs_enabled && !OSD::featureBudgetGate(Subsystems::FEAT_GENERAL_SOUND)) {
-                                            // Denied / cancelled (a freeing reboot never returns).
-                                            Config::gs_enabled = prev;
-                                        } else if (Config::gs_enabled && Config::esxdos == 2) {
-                                            if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                                Config::esxdos = 0;
-                                                Config::save();
-                                                esp_hard_reset();
-                                            } else {
-                                                Config::gs_enabled = prev;
-                                            }
-                                        } else if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                            Config::save();
-                                            esp_hard_reset();
-                                        } else {
-                                            Config::gs_enabled = prev;
-                                        }
-                                    }
-                                    menu_curopt = 1;
-                                    continue;
-                                } else if (gs_num == 2 && Config::gs_enabled) {
-                                    // Clock submenu — radio button list
-                                    menu_level = 3;
-                                    menu_curopt = ci + 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string cmenu = MENU_GS_CLOCK;
-                                        cmenu += MENU_GS_CLOCK_SEL;
-                                        int mpos = -1; int idx = 0;
-                                        while ((mpos = cmenu.find("[ ]", mpos + 1)) != (int)string::npos) {
-                                            if (idx == ci) cmenu.replace(mpos, 3, "[*]");
-                                            idx++;
-                                        }
-                                        uint8_t prev_clock = Config::gs_clock;
-                                        uint8_t opt2 = menuRun(cmenu);
-                                        if (opt2) {
-                                            uint8_t newclock = opt2 - 1;
-                                            if (newclock != prev_clock) {
-                                                // Clock only feeds pump()/step() timing constants
-                                                // (no allocation) — apply live, no reboot needed.
-                                                Config::gs_clock = newclock;
-                                                GS::setClock();
-                                                Config::save();
-                                            }
-                                            ci = Config::gs_clock < 5 ? Config::gs_clock : 1;
-                                            menu_curopt = ci + 1;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 2;
-                                            menu_level = 2;
-                                            menu_saverect = false;
-                                            break;
-                                        }
-                                    }
-                                    continue;
-                                } else if (gs_num == 2 && !Config::gs_enabled) {
-                                    // Disabled row — ignore
-                                    menu_curopt = 2;
-                                    continue;
-                                } else {
-                                    menu_curopt = 8;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num ==
-                            (gs_avail ? 9 : 8)
-                        ) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string menu = MENU_I2S;
-#if !defined(VGA_HDMI)
-                                // HDMI audio needs RP2350 + HDMI video — hide the entry
-                                {
-                                    auto pos = menu.find("HDMI");
-                                    if (pos != string::npos) menu.erase(pos, menu.find('\n', pos) - pos + 1);
-                                }
-#endif
-#ifdef ZERO2
-                                menu += "PCM5122  \t[5]\n";
-#endif
-                                uint8_t prev = Config::audio_driver;
-                                menu.replace(menu.find("[A",0),2,prev==0 ? "[*" : "[ ");
-                                menu.replace(menu.find("[P",0),2,prev==1 ? "[*" : "[ ");
-                                menu.replace(menu.find("[I",0),2,prev==2 ? "[*" : "[ ");
-                                menu.replace(menu.find("[Y",0),2,prev==3 ? "[*" : "[ ");
-                                { auto pos = menu.find("[H",0); if (pos != string::npos) menu.replace(pos,2,prev==4 ? "[*" : "[ "); }
-#ifdef ZERO2
-                                { auto pos = menu.find("[5",0); if (pos != string::npos) menu.replace(pos,2,prev==5 ? "[*" : "[ "); }
-#endif
-                                uint8_t opt2 = menuRun(menu);
-                                if (opt2) {
-                                    // Map menu position to driver value
-                                    // (HDMI is hidden on non-HDMI builds, so
-                                    // opt2-1 doesn't always match the driver number)
-                                    static const uint8_t driver_map[] = {0, 1, 2, 3,
-#if defined(VGA_HDMI)
-                                        4,
-#endif
-#ifdef ZERO2
-                                        5
-#endif
-                                    };
-                                    static const uint8_t driver_map_size = sizeof(driver_map);
-                                    Config::audio_driver = (opt2 <= driver_map_size) ? driver_map[opt2 - 1] : prev;
-                                    if (Config::audio_driver != prev) {
-#if defined(VGA_HDMI)
-                                        // Budget-gate when switching to HDMI audio (~8.5 KB ring/queue).
-                                        // The gate reboots itself if the user frees features; otherwise
-                                        // fall through to the normal confirm+reboot.
-                                        if (Config::audio_driver == 4 &&
-                                            !OSD::featureBudgetGate(Subsystems::FEAT_HDMI_AUDIO)) {
-                                            Config::audio_driver = prev;   // declined → keep current driver
-                                        } else
-#endif
-                                        if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                            Config::save();
-                                            esp_hard_reset();
-                                        } else {
-                                            Config::audio_driver = prev;
-                                        }
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt =
-                                        (gs_avail ? 9 : 8);
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num ==
-                            (gs_avail ? 10 : 9)
-                        ) { // Volume Boost
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string boost_menu = MENU_AUDIO_BOOST;
-                                uint8_t cur = Config::audio_boost;
-                                int cur_idx = 0;
-                                for (int i = 0; i < (int)(sizeof(AUDIO_BOOST_VALS)); i++)
-                                    if (AUDIO_BOOST_VALS[i] == cur) { cur_idx = i; break; }
-                                static const char boost_marks[] = "ABCDEFG";
-                                for (int i = 0; i < (int)(sizeof(AUDIO_BOOST_VALS)); i++) {
-                                    char mark[3] = { '[', boost_marks[i], '\0' };
-                                    auto pos = boost_menu.find(mark, 0);
-                                    if (pos != string::npos)
-                                        boost_menu.replace(pos, 2, cur_idx == i ? "[*" : "[ ");
-                                }
-                                uint8_t opt2 = menuRun(boost_menu);
-                                if (opt2 >= 1 && opt2 <= (uint8_t)(sizeof(AUDIO_BOOST_VALS))) {
-                                    Config::audio_boost = AUDIO_BOOST_VALS[opt2 - 1];
-                                    Config::save();
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = options_num;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        menu_curopt = 3;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 4) { // Video
-                // ***********************************************************************************
-                // VIDEO MENU
-                // ***********************************************************************************
-                menu_saverect = true;
-                menu_curopt = 1;
-                while (1) {
-                    menu_level = 1;
-                    // Video
-                    uint8_t options_num = menuRun(MENU_VIDEO);
-                    if (options_num > 0) {
-                        if (options_num == 1) { // VIDEO MODE
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string opt_menu = MENU_VIDEO_MODE;
-#ifdef VGA_HDMI
-                                uint8_t &curVideoMode = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
-#else
-                                uint8_t dummy_vm = 0;
-                                uint8_t &curVideoMode = dummy_vm;
-#endif
-                                // cur_sel maps directly to VM_* enum: 0=640x480@60, 1=640x480@50, 2=720x480@60, 3=720x576@50
-                                uint8_t cur_sel = curVideoMode;
-                                opt_menu.replace(opt_menu.find("[6",0),2, cur_sel == 0 ? "[*" : "[ ");
-                                opt_menu.replace(opt_menu.find("[5",0),2, cur_sel == 1 ? "[*" : "[ ");
-                                opt_menu.replace(opt_menu.find("[H",0),2, cur_sel == 2 ? "[*" : "[ ");
-                                opt_menu.replace(opt_menu.find("[F",0),2, cur_sel == 3 ? "[*" : "[ ");
-                                uint8_t opt2 = menuRun(opt_menu);
-                                if (opt2) {
-                                    uint8_t new_vm = opt2 - 1; // opt2 is 1-based, VM_* is 0-based
-                                    if (new_vm != curVideoMode) {
-                                        // Save old vm as pending for post-reboot rollback confirmation,
-                                        // then commit new vm and hard reset — runtime FB resize is
-                                        // unreliable due to heap fragmentation.
-                                        Config::savePendingVideoMode();
-                                        curVideoMode = new_vm;
-                                        Config::save();
-                                        OSD::esp_hard_reset();
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 1;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        // Palette selection (option 2 on all platforms)
-                        else if (options_num == 2) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                // Build palette menu dynamically (built-in + custom)
-                                uint8_t pal_count = VIDEO::paletteCount();
-                                uint8_t prev = Config::palette;
-                                string pal_menu = "Palette\n";
-                                for (uint8_t i = 0; i < pal_count; i++) {
-                                    pal_menu += VIDEO::paletteName(i);
-                                    pal_menu += "\t";
-                                    pal_menu += (prev == i) ? "[*]\n" : "[ ]\n";
-                                }
-                                uint8_t opt2 = menuRun(pal_menu);
-                                if (opt2) {
-                                    Config::palette = opt2 - 1;
-                                    if (Config::palette != prev) {
-                                        VIDEO::applyPalette();
-                                        Config::save();
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 2;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 3) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string opt_menu = MENU_RENDER;
-                                uint8_t prev_opt = Config::render;
-                                if (prev_opt) {
-                                    opt_menu.replace(opt_menu.find("[S",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[A",0),2,"[*");
-                                } else {
-                                    opt_menu.replace(opt_menu.find("[S",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[A",0),2,"[ ");
-                                }
-                                uint8_t opt2 = menuRun(opt_menu);
-                                if (opt2) {
-                                    if (opt2 == 1)
-                                        Config::render = 0;
-                                    else
-                                        Config::render = 1;
-
-                                    if (Config::render != prev_opt) {
-                                        Config::save();
-
-                                        VIDEO::snow_toggle =
-                                            Config::arch != A_P1024 && Config::arch != A_PENT && Config::arch != A_P512
-                                             ? Config::render : false;
-
-                                        if (VIDEO::snow_toggle) {
-                                            VIDEO::Draw = &VIDEO::MainScreen_Blank_Snow;
-                                            VIDEO::Draw_Opcode = &VIDEO::MainScreen_Blank_Snow_Opcode;
-                                        } else {
-                                            VIDEO::Draw = &VIDEO::MainScreen_Blank;
-                                            VIDEO::Draw_Opcode = &VIDEO::MainScreen_Blank_Opcode;
-                                        }
-
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 3;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 4) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string opt_menu = MENU_SCANLINES;
-                                opt_menu += MENU_SCANLINES_SEL;
-                                uint8_t prev_opt = Config::scanlines; // 0=Off, 1..4=level
-                                // Mark the active level: rows are [0]..[4], matching the value
-                                for (uint8_t lv = 0; lv <= 4; ++lv) {
-                                    char tag[3] = { '[', (char)('0' + lv), 0 };
-                                    size_t at = opt_menu.find(tag, 0);
-                                    if (at != string::npos)
-                                        opt_menu.replace(at, 2, (lv == prev_opt) ? "[*" : "[ ");
-                                }
-                                uint8_t opt2 = menuRun(opt_menu);
-                                if (opt2) {
-                                    // Rows 1..5 map to levels 0..4
-                                    Config::scanlines = opt2 - 1;
-
-                                    if (Config::scanlines != prev_opt) {
-                                        Config::save();
-                                        graphics_set_scanlines(Config::scanlines);
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 4;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 5) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string opt_menu = MENU_VSYNC;
-                                opt_menu += MENU_YESNO;
-                                bool prev_opt = Config::v_sync_enabled;
-                                if (prev_opt) {
-                                    opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                } else {
-                                    opt_menu.replace(opt_menu.find("[Y",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(opt_menu);
-                                if (opt2) {
-                                    if (opt2 == 1)
-                                        Config::v_sync_enabled = true;
-                                    else
-                                        Config::v_sync_enabled = false;
-
-                                    if (Config::v_sync_enabled != prev_opt) {
-                                        Config::save();
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 5;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (options_num == 6) {
-                            menu_level = 2;
-                            menu_curopt = Config::gigascreen_onoff + 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string opt_menu = MENU_GIGASCREEN;
-                                opt_menu += MENU_GIGASCREEN_SEL;
-                                uint8_t prev_onoff = Config::gigascreen_onoff;
-                                int mpos = -1;
-                                int idx = 0;
-                                while ((mpos = opt_menu.find("[ ]", mpos + 1)) != (int)string::npos) {
-                                    if (idx == prev_onoff)
-                                        opt_menu.replace(mpos, 3, "[*]");
-                                    idx++;
-                                }
-                                uint8_t opt2 = menuRun(opt_menu);
-                                if (opt2) {
-                                    Config::gigascreen_onoff = opt2 - 1; // 0=Off, 1=On, 2=Auto
-                                    if (Config::gigascreen_onoff != prev_onoff) {
-                                        bool want_on = (Config::gigascreen_onoff != 0);
-                                        // Profi is incompatible with Gigascreen (its renderer
-                                        // geometry never touches the prev-FB coherently) —
-                                        // arch switches INTO Profi already force it off
-                                        // (disableGigascreenForProfi), but enabling it FROM
-                                        // this menu while Profi is running crashed with a
-                                        // SIGBUS storm in the render path (hw, PICO_DV).
-                                        if (want_on && Z80Ops::isProfi) {
-                                            OSD::osdCenteredMsg("Gigascreen: not available on Profi", LEVEL_WARN, 1500);
-                                            Config::gigascreen_onoff = prev_onoff;
-                                            menu_curopt = prev_onoff + 1;
-                                            menu_saverect = false;
-                                            continue;
-                                        }
-                                        if (want_on && !OSD::featureBudgetGate(Subsystems::FEAT_GIGASCREEN)) {
-                                            // Denied / cancelled (a freeing reboot never returns here).
-                                            Config::gigascreen_onoff = prev_onoff;
-                                            menu_curopt = prev_onoff + 1;
-                                            menu_saverect = false;
-                                            continue;
-                                        }
-                                        if (want_on) {
-                                            initGigascreenBlendLUT();
-                                            Config::gigascreen_enabled = true;
-                                            GsSubsys::request(true);
-                                            // Allocate immediately so InitPrevBuffer can seed it.
-                                            GsSubsys::apply();
-                                            if (!VIDEO::vga.prevFrameBuffer) {
-                                                // OOM — fall back to Off.
-                                                Config::gigascreen_enabled = false;
-                                                Config::gigascreen_onoff = 0;
-                                                VIDEO::gigascreen_enabled = false;
-                                                VIDEO::gigascreen_auto_countdown = 0;
-                                            } else {
-                                                VIDEO::InitPrevBuffer();
-                                                VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1);
-                                                VIDEO::gigascreen_auto_countdown = 0;
-                                            }
-                                        } else {
-                                            // Off — release the 52 KB prev framebuffer.
-                                            Config::gigascreen_enabled = false;
-                                            VIDEO::gigascreen_enabled = false;
-                                            VIDEO::gigascreen_auto_countdown = 0;
-                                            GsSubsys::request(false);
-                                        }
-                                        Config::save();
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 6;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        // ULA+ ON/OFF
-                        else if (options_num == 7) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string ula_menu = MENU_ULAPLUS;
-                                ula_menu += MENU_YESNO;
-                                bool prev_ula = Config::ulaplus;
-                                if (prev_ula) {
-                                    ula_menu.replace(ula_menu.find("[Y",0),2,"[*");
-                                    ula_menu.replace(ula_menu.find("[N",0),2,"[ ");
-                                } else {
-                                    ula_menu.replace(ula_menu.find("[Y",0),2,"[ ");
-                                    ula_menu.replace(ula_menu.find("[N",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(ula_menu);
-                                if (opt2) {
-                                    bool want_ula = (opt2 == 1);
-                                    // Budget-gate for uniformity (ULA+ costs 0 SRAM — table in
-                                    // flash — so this always allows; keeps the toggle shape identical).
-                                    if (want_ula && !prev_ula &&
-                                        !OSD::featureBudgetGate(Subsystems::FEAT_ULAPLUS)) {
-                                        // declined → leave off
-                                    } else {
-                                        Config::ulaplus = want_ula;
-                                        if (Config::ulaplus != prev_ula) {
-                                            if (!Config::ulaplus && VIDEO::ulaplus_enabled) {
-                                                VIDEO::ulaPlusDisable();
-                                            }
-                                            Config::save();
-                                        }
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 7;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        // Timex Video ON/OFF
-                        else if (options_num == 8) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string tmx_menu = MENU_TIMEX;
-                                tmx_menu += MENU_YESNO;
-                                bool prev = Config::timex_video;
-                                if (prev) {
-                                    tmx_menu.replace(tmx_menu.find("[Y",0),2,"[*");
-                                    tmx_menu.replace(tmx_menu.find("[N",0),2,"[ ");
-                                } else {
-                                    tmx_menu.replace(tmx_menu.find("[Y",0),2,"[ ");
-                                    tmx_menu.replace(tmx_menu.find("[N",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(tmx_menu);
-                                if (opt2) {
-                                    bool want_tmx = (opt2 == 1);
-                                    // Budget-gate for uniformity (Timex costs 0 SRAM → always allows).
-                                    if (want_tmx && !prev &&
-                                        !OSD::featureBudgetGate(Subsystems::FEAT_TIMEX)) {
-                                        // declined → leave off
-                                    } else {
-                                        if (want_tmx)
-                                            Config::timex_video = true;
-                                        else {
-                                            Config::timex_video = false;
-                                            VIDEO::timex_port_ff = 0;
-                                            VIDEO::timex_mode = 0;
-                                            VIDEO::timex_hires_ink = 0;
-                                        }
-                                        if (Config::timex_video != prev) {
-                                            if (Config::timex_video && Config::SAA1099) {
-                                                Config::SAA1099 = false;
-                                                ESPectrum::SAA_emu = false;
-                                                OSD::osdCenteredMsg("SAA1099 disabled", LEVEL_WARN, 2000);
-                                            }
-                                            Config::save();
-                                        }
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 8;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        // DMA mode
-                        else if (options_num == 9) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string dma_menu = MENU_DMA;
-                                uint8_t prev = Config::dma_mode;
-                                dma_menu.replace(dma_menu.find("[O",0),2, prev == 0 ? "[*" : "[ ");
-                                dma_menu.replace(dma_menu.find("[B",0),2, prev == 1 ? "[*" : "[ ");
-                                dma_menu.replace(dma_menu.find("[X",0),2, prev == 2 ? "[*" : "[ ");
-                                uint8_t opt2 = menuRun(dma_menu);
-                                if (opt2) {
-                                    Config::dma_mode = opt2 - 1;
-                                    if (Config::dma_mode != prev) {
-                                        // Budget-gate when turning DMA on from off (~7 KB attr shadow).
-                                        if (prev == 0 && Config::dma_mode != 0 &&
-                                            !OSD::featureBudgetGate(Subsystems::FEAT_DMA)) {
-                                            Config::dma_mode = prev;   // declined to free → stay off
-                                        } else {
-                                            // Apply now: emulation is paused in the OSD, so the attr
-                                            // shadow alloc/free is consistent for the renderer.
-                                            DmaSubsys::request(Config::dma_mode != 0);
-                                            DmaSubsys::apply();
-                                            Config::save();
-                                        }
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 9;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                        // HDMI Dither (visible only on HDMI builds — palette has no extra bits on VGA)
-                        else if (options_num == 10) {
-#ifdef VGA_HDMI
-                            if (SELECT_VGA) {
-                                OSD::osdCenteredMsg("HDMI only", LEVEL_WARN, 1500);
-                            } else
-#endif
-                            {
-                                menu_level = 2;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string dith_menu = MENU_HDMI_DITHER;
-                                    dith_menu += MENU_YESNO;
-                                    bool prev = Config::hdmi_dither;
-                                    if (prev) {
-                                        dith_menu.replace(dith_menu.find("[Y",0),2,"[*");
-                                        dith_menu.replace(dith_menu.find("[N",0),2,"[ ");
-                                    } else {
-                                        dith_menu.replace(dith_menu.find("[Y",0),2,"[ ");
-                                        dith_menu.replace(dith_menu.find("[N",0),2,"[*");
-                                    }
-                                    uint8_t opt2 = menuRun(dith_menu);
-                                    if (opt2) {
-                                        Config::hdmi_dither = (opt2 == 1);
-                                        if (Config::hdmi_dither != prev) {
-                                            // Only takes effect when ULA+ is active; the HDMI ISR
-                                            // OR-masks indices 0..63 with 0x40 to sample palette[64..127].
-                                            graphics_set_dither(Config::hdmi_dither && VIDEO::ulaplus_enabled);
-                                            Config::save();
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 10;
-                                        menu_level = 1;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        // 16col (Pentagon)
-                        else if (options_num == 11) {
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string mc_menu = MENU_16COL;
-                                mc_menu += MENU_YESNO;
-                                bool prev = Config::mode16col_onoff;
-                                if (prev) {
-                                    mc_menu.replace(mc_menu.find("[Y",0),2,"[*");
-                                    mc_menu.replace(mc_menu.find("[N",0),2,"[ ");
-                                } else {
-                                    mc_menu.replace(mc_menu.find("[Y",0),2,"[ ");
-                                    mc_menu.replace(mc_menu.find("[N",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(mc_menu);
-                                if (opt2) {
-                                    bool want = (opt2 == 1);
-                                    if (want && !(Z80Ops::isPentagon || Z80Ops::isProfi)) {
-                                        OSD::osdCenteredMsg(OSD_16COL_NEEDS_PENTAGON, LEVEL_WARN, 1500);
-                                    } else if (want && !prev &&
-                                               !OSD::featureBudgetGate(Subsystems::FEAT_16COL)) {
-                                        // declined to free → leave 16col off (~0.5 KB LUT)
-                                    } else {
-                                        Config::mode16col_onoff = want;
-                                        if (Config::mode16col_onoff) {
-                                            // Build the decode LUT now so the rasterizer is ready
-                                            // even before the next machine reset.
-                                            VIDEO::ensure16colLut();
-                                        } else if (VIDEO::mode16col_enabled) {
-                                            // Disabling globally also drops the runtime latch.
-                                            VIDEO::mode16col_enabled = false;
-                                        }
-                                        if (!Config::mode16col_onoff) VIDEO::free16colLut();
-                                        if (Config::mode16col_onoff != prev) Config::save();
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 11;
-                                    menu_level = 1;
-                                    break;
-                                }
-                            }
-                        }
-                    } else {
-                        menu_curopt = 4;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 5) { // Machine
-                // ***********************************************************************************
-                // MACHINE MENU
-                // ***********************************************************************************
-                menu_saverect = true;
-                menu_curopt = 1;
-                bool has_psram = butter_psram_size() || psram_size() > 0;
-                bool ext_ram = has_psram || FileUtils::fsMount;
-                // Profi needs PSRAM (DS80 hires framebuffer in PSRAM); without it
-                // the emulation is pointless, so hide the entry on SD-only boards.
-                // The DS80 hires mode lives entirely in the VGA/HDMI drivers, so
-                // Profi is also hidden on non-VGA/HDMI builds (TFT/SOFTTV/TV).
-                // Stripping "Profi" keeps indices of the items before it stable;
-                // any trailing item (ALF) shifts up by one and is keyed off the
-                // computed last index below.  show_profi gates both the menu entry
-                // and the arch_num==8 branch so the indices stay consistent.
-#if !defined(VGA_HDMI)
-                // Non-VGA/HDMI builds (TFT/SOFTTV/TV)
-                // do not link the DS80 packed-pair display mode (the set_profi_ds80_mode
-                // entry points are no-op stubs there — see Video.cpp), so Profi would
-                // run without its defining hires mode. Hide it on those builds.
-                const bool show_profi = false;
-#else
-                const bool show_profi = has_psram;
-#endif
-                string arch_menu = ext_ram ? MENU_ARCH : MENU_ARCH_NO_SD;
-                if (ext_ram && !show_profi) {
-                    const string profi_line = "Profi\t>\n";
-                    size_t p = arch_menu.find(profi_line);
-                    if (p != string::npos) arch_menu.erase(p, profi_line.size());
-                }
-                while (1) {
-                    menu_level = 1;
-                    uint8_t arch_num = menuRun(arch_menu.c_str());
-                    if (arch_num) {
-                        ArchIdx arch = Config::arch;
-                        RomsetIdx romset = Config::romSet;
-                        uint8_t opt2 = 0;
-                        if (arch_num == 1) { // 48K
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS48);
-                            if (opt2) {
-                                arch = A_48K;
-                                if (opt2 == 1) {
-                                    romset = R_48K;
-                                } else
-#if NO_SPAIN_ROM_48k
-                                if (opt2 == 2) {
-                                    romset = R_48K_CS;
-                                }
-#else
-                                if (opt2 == 2) {
-                                    romset = R_48K_ES;
-                                } else
-                                if (opt2 == 3) {
-                                    romset = R_48K_CS;
-                                }
-#endif
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 1;
-                                menu_level = 2;
-                            }
-                        } else if (arch_num == 2) { // 128K
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS128);
-                            if (opt2) {
-                                arch = A_128K;
-                                if (opt2 == 1) {
-                                    romset = R_128K;
-                                } else
-#if NO_SPAIN_ROM_128k
-                                if (opt2 == 2) {
-                                    romset = R_128K_CS;
-                                }
-#else
-                                if (opt2 == 2) {
-                                    romset = R_128K_ES;
-                                } else
-                                if (opt2 == 3) {
-                                    romset = R_PLUS2;
-                                } else
-                                if (opt2 == 4) {
-                                    romset = R_PLUS2_ES;
-                                } else
-                                if (opt2 == 5) {
-                                    romset = R_ZX81P;
-                                } else
-                                if (opt2 == 6) {
-                                    romset = R_128K_CS;
-                                }
-#endif
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 1;
-                                menu_level = 2;
-                            }
-                        } else if (arch_num == 3) { // Pentagon
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS_PENT);
-                            if (opt2) {
-                                arch = A_PENT;
-                                if (opt2 == 1) {
-                                    romset = R_PENT;
-                                } else
-                                if (opt2 == 2) {
-                                    romset = R_PENT_GLUK;
-                                } else
-                                if (opt2 == 3) {
-                                    romset = R_128K_CS;
-                                }
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 1;
-                                menu_level = 2;
-                            }
-                        } else if (ext_ram && arch_num == 4) { // Pentagon 512K
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS_PENT);
-                            if (opt2) {
-                                arch = A_P512;
-                                if (opt2 == 1) {
-                                    romset = R_PENT;
-                                } else
-                                if (opt2 == 2) {
-                                    romset = R_PENT_GLUK;
-                                } else
-                                if (opt2 == 3) {
-                                    romset = R_128K_CS;
-                                }
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 1;
-                                menu_level = 2;
-                            }
-                        } else if (ext_ram && arch_num == 5) { // Pentagon 1024K
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            opt2 = menuRun(MENU_ROMS_PENT);
-                            if (opt2) {
-                                arch = A_P1024;
-                                if (opt2 == 1) {
-                                    romset = R_PENT;
-                                } else
-                                if (opt2 == 2) {
-                                    romset = R_PENT_GLUK;
-                                } else
-                                if (opt2 == 3) {
-                                    romset = R_128K_CS;
-                                }
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 1;
-                                menu_level = 2;
-                            }
-                        } else if (ext_ram && arch_num == 6) { // BYTE
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                opt2 = menuRun(MENU_ROMSBYTE);
-                                if (opt2) {
-                                    if (opt2 == 1) {
-                                        arch = A_48K;
-                                        romset = R_48K_BY;
-                                        break;
-                                    } else
-                                    if (opt2 == 2) {
-                                        arch = A_128K;
-                                        romset = R_128K_BY;
-                                        break;
-                                    } else
-                                    if (opt2 == 3) {
-                                        arch = A_128K;
-                                        romset = R_128K_BY_GLUK;
-                                        break;
-                                    } else
-                                    if (opt2 == 4) {
-                                        menu_level = 3;
-                                        menu_curopt = 1;
-                                        menu_saverect = true;
-                                        while (1) {
-                                            string opt_menu = MENU_BYTE_COBMECT_MODE;
-                                            opt_menu += MENU_YESNO;
-                                            bool prev_opt = Config::byte_cobmect_mode;
-                                            if (prev_opt) {
-                                                opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
-                                                opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                            } else {
-                                                opt_menu.replace(opt_menu.find("[Y",0),2,"[ ");
-                                                opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                            }
-                                            uint8_t opt2 = menuRun(opt_menu);
-                                            if (opt2) {
-                                                if (opt2 == 1)
-                                                    Config::byte_cobmect_mode = true;
-                                                else
-                                                    Config::byte_cobmect_mode = false;
-
-                                                if (Config::byte_cobmect_mode != prev_opt) {
-                                                    Config::save();
-                                                    // BYTE and BYTE-compat are both overlays over Sinclair 48K.
-                                                    MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
-                                                    MemESP::registerOverlay(gb_rom_0_sinclair_48k,
-                                                        Config::byte_cobmect_mode ? gb_overlay_48k_byte_sovmest : gb_overlay_48k_byte);
-                                                    MemESP::recoverPage0();
-                                                }
-                                                menu_curopt = opt2;
-                                                menu_saverect = false;
-                                            } else {
-                                                menu_curopt = 4;
-                                                menu_level = 2;
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    menu_curopt = 1;
-                                    menu_level = 2;
-                                    break;
-                                }
-                            }
-                        } else if (ext_ram && arch_num == 7) { // Murmuzavr
-                            menu_level = 2;
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            while (1) {
-                                string opt_menu = (FileUtils::fsMount ? MENU_MURMUZAVR : MENU_MURMUZAVR_NONE);
-                                // The persisted pick, not the live count: on a
-                                // non-Pentagon machine setup() clamps MEM_PG_CNT to 64,
-                                // and Config::save() serialises Config::mem_pg_cnt.
-                                uint32_t new_opt = Config::mem_pg_cnt,
-                                         prev_opt = Config::mem_pg_cnt;
-                                if (!FileUtils::fsMount) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                } else if (prev_opt <= 64) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[1",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[3",0),2,"[ ");
-                                } else if (prev_opt <= 256) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[1",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[3",0),2,"[ ");
-                                } else if (prev_opt <= 512) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[1",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[3",0),2,"[ ");
-                                } else if (prev_opt <= 1024) {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[1",0),2,"[*");
-                                    opt_menu.replace(opt_menu.find("[3",0),2,"[ ");
-                                } else {
-                                    opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[4",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[8",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[1",0),2,"[ ");
-                                    opt_menu.replace(opt_menu.find("[3",0),2,"[*");
-                                }
-                                uint8_t opt2 = menuRun(opt_menu);
-                                if (opt2) {
-                                    if (opt2 == 1) new_opt = 64;
-                                    else if (opt2 == 2) new_opt = 256;
-                                    else if (opt2 == 3) new_opt = 512;
-                                    else if (opt2 == 4) new_opt = 1024;
-                                    else if (opt2 == 5) new_opt = 2048;
-                                    if (prev_opt != new_opt) {
-                                        if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                            Config::mem_pg_cnt = (uint16_t)new_opt;
-                                            Config::save();
-                                            OSD::esp_hard_reset();
-                                            return;
-                                        }
-                                    }
-                                    menu_curopt = opt2;
-                                    menu_saverect = false;
-                                } else {
-                                    menu_curopt = 1;
-                                    menu_level = 2;
-                                    break;
-                                }
-                            }
-                        } else if (show_profi && arch_num == 8) { // Profi (needs PSRAM+RP2350 for DS80)
-                            menu_curopt = 1;
-                            menu_saverect = true;
-                            opt2 = 0;
-                            while (1) {
-                                // menu_level set INSIDE the loop (canonical pattern) so the
-                                // outer Profi submenu level stays stable across iterations,
-                                // even after an inner submenu (level 3) returns.
-                                menu_level = 2;
-                                // Profi submenu: ROM selection only (XT keyboard and the
-                                // OSD-palette toggle are gone — see the comments below).
-                                string profi_sub =
-                                    string("Profi\n") +
-                                    "1024K (Original)\n" +
-                                    "1024K (Karabas)\n" +
-                                    "1024K (Karabas+PQDOS)\n" +
-                                    "1024K (Karabas+FlashTool)\n" +
-                                    "1024K (Karabas+FDImage)\n" +
-                                    // XT keyboard is hotkey-only now (Alt+~ / PrtScr, listed in
-                                    // Help > Hot keys) — no menu row for it in either UI.
-                                    "";
-                                uint8_t opt_p = menuRun(profi_sub);
-                                if (opt_p >= 1 && opt_p <= 5) {
-                                    // ROM selected — mirrors the real Karabas-Pro ROMSET
-                                    // slots: 1=stock "Original", 2="Karabas" (ROMain,
-                                    // ROMSET 0), 3=PQDOS BIOS (ROMSET 1), 4=Flash Tool
-                                    // (ROMSET 2), 5=FDImage (ROMSET 3)
-                                    static const RomsetIdx profi_romsets[5] = {
-                                        R_PROFI, R_PROFI_KAR, R_PROFI_PQ,
-                                        R_PROFI_FT, R_PROFI_FDI };
-                                    arch = A_PROFI;
-                                    romset = profi_romsets[opt_p - 1];
-                                    opt2 = 1; // signal machine switch
-                                    menu_curopt = 1;
-                                    menu_saverect = false;
-                                    break;
-                                } else {
-                                    // ESC — exit Profi submenu
-                                    opt2 = 0;
-                                    menu_curopt = 1;
-                                    menu_level = 2;
-                                    break;
-                                }
-                            }
-                        }
-                        else if (arch_num == 9 || (ext_ram && !show_profi && arch_num == 8) || !ext_ram) { // ALF TV GAME (shifts to 8 when Profi hidden)
-                            arch = A_ALF;
-                            romset = R_ALF1;
-                            menu_curopt = opt2;
-                            menu_saverect = false;
-                            // (ALF carts stream from SD now, not the GM.DLS flash region, so
-                            // GM.DLS may stay enabled when entering ALF — no disable needed.)
-                            click();
-                            if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
-                            MachineSwitch::commitAlf();   // may reboot; never comes back then
-                            return;
-                        }
-
-                        if (opt2) {
-                            // The cascade (romset-slot sync, five mutual exclusions, the
-                            // Profi memory-layout reboot rule) lives in MachineSwitch now,
-                            // unchanged, so the new fullscreen menu commits machines through
-                            // exactly the same code.
-                            if (!MachineSwitch::commit(arch, romset)) {
-                                // Entering Profi was declined by the SRAM budget gate: stay
-                                // on this submenu with the same item focused.
-                                menu_curopt = arch_num;
-                                menu_saverect = false;
-                                continue;
-                            }
-                            return;
-                        }
-                        menu_curopt = arch_num;
-                        menu_saverect = false;
-                    } else {
-                        menu_curopt = 5;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 6) { // Reset
-                // ***********************************************************************************
-                // RESET MENU
-                // ***********************************************************************************
-                menu_saverect = true;
-                menu_curopt = 1;
-                while(1) {
-                    menu_level = 1;
-                    FILINFO fi;
-                    bool mos = f_stat(MOS_FILE, &fi) == FR_OK;
-                    // Reset
-                    uint8_t opt2 = menuRun(expandHotkeys(mos ? MENU_RESET_MOS : MENU_RESET));
-                    if (opt2 == 1) {
-                        // Soft
-                        if (Config::last_ram_file != NO_RAM_FILE) {
-                            if(!LoadSnapshot(Config::last_ram_file, A_NONE, R_NONE)) {
-                                OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
-                            } else {
-                                Config::ram_file = Config::last_ram_file;
-                            }
-                        } else ESPectrum::reset();
-                        return;
-                    }
-                    else if (opt2 == 2) {
-                        // Hard
-                        if (Config::ram_file != NO_RAM_FILE) {
-                            Config::ram_file = NO_RAM_FILE;
-                        }
-                        Config::last_ram_file = NO_RAM_FILE;
-                        ESPectrum::reset();
-                        return;
-                    }
-                    else if (opt2 == 3) {
-                        // ESP host reset
-                        if (confirmReboot(OSD_DLG_REBOOT)) {
-                            Config::ram_file = NO_RAM_FILE;
-                            Config::save();
-                            esp_hard_reset();
-                        }
-                        // Declined: redraw same submenu in place, same item focused
-                        menu_curopt = opt2;
-                        menu_saverect = false;
-                    } else if (mos && opt2 == 4) {
-                        if (confirmReboot(OSD_DLG_REBOOT)) {
-                            f_unlink(MOS_FILE);
-                            esp_hard_reset();
-                        }
-                        menu_curopt = opt2;
-                        menu_saverect = false;
-                    } else if ((mos && opt2 == 5) || (!mos && opt2 == 4)) {
-                        // True factory reset: wipe storage.nvs AND skip the
-                        // user's saved default.nvs on the next load() (see
-                        // SKIP_DEFAULT_FLAG in Config::load()).
-                        if (confirmReboot(OSD_DLG_LOADDEFAULTS)) {
-                            FIL* flag = fopen2(SKIP_DEFAULT_FLAG, FA_WRITE | FA_CREATE_ALWAYS);
-                            if (flag) fclose2(flag);
-                            f_unlink(STORAGE_NVS);
-                            esp_hard_reset();
-                        }
-                        menu_curopt = opt2;
-                        menu_saverect = false;
-                    } else if ((mos && opt2 == 6) || (!mos && opt2 == 5)) {
-                        // Save as Default: snapshot current live config as the
-                        // fallback used whenever no storage.nvs exists yet for
-                        // this board (fresh firmware version, or "My Default"
-                        // reset below). Per-board on purpose — never crosses
-                        // to a different board (video wiring / RAM budget).
-                        if (confirmReboot(OSD_DLG_SAVEDEFAULT)) {
-                            Config::save(DEFAULT_NVS);
-                            osdCenteredMsg(MSG_DEFAULT_SAVED, LEVEL_INFO, 500);
-                        }
-                        // Redraw same submenu in place either way, same item focused
-                        menu_curopt = opt2;
-                        menu_saverect = false;
-                    } else if ((mos && opt2 == 7) || (!mos && opt2 == 6)) {
-                        // My Default: wipe storage.nvs only — default.nvs is
-                        // left intact, so the next load() falls back to it.
-                        if (confirmReboot(OSD_DLG_LOADMYDEFAULT)) {
-                            f_unlink(STORAGE_NVS);
-                            esp_hard_reset();
-                        }
-                        menu_curopt = opt2;
-                        menu_saverect = false;
-                    } else {
-                        menu_curopt = 6;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 7) { // Options
-                // ***********************************************************************************
-                // OPTIONS MENU
-                // ***********************************************************************************
-                menu_saverect = true;
-                menu_curopt = 1;
-                while(1) {
-                    menu_level = 1;
-                    // Options menu
-                    uint8_t options_num = menuRun(MENU_OPTIONS);
-                    if (options_num == 1) {
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            string archprefmenu = MENU_ARCH_PREF;
-                            ArchIdx prev_archpref = Config::pref_arch;
-                            if (Config::pref_arch == A_48K) {
-                                archprefmenu.replace(archprefmenu.find("[4",0),2,"[*");
-                                archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
-                            } else if (Config::pref_arch == A_128K) {
-                                archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[1",0),2,"[*");
-                                archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                            } else if (Config::pref_arch == A_PENT) {
-                                archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[P",0),2,"[*");
-                                archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                            } else if (Config::pref_arch == A_P512) {
-                                archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[5",0),2,"[*");
-                                archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                            } else if (Config::pref_arch == A_P1024) {
-                                archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[2",0),2,"[*");
-                                archprefmenu.replace(archprefmenu.find("[L",0),2,"[ ");
-                            } else {
-                                archprefmenu.replace(archprefmenu.find("[4",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[1",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[P",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[5",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[2",0),2,"[ ");
-                                archprefmenu.replace(archprefmenu.find("[L",0),2,"[*");
-                            }
-                            uint8_t opt2 = menuRun(archprefmenu);
-                            if (opt2) {
-                                if (opt2 == 1)
-                                    Config::pref_arch = A_48K;
-                                else
-                                if (opt2 == 2)
-                                    Config::pref_arch = A_128K;
-                                else
-                                if (opt2 == 3)
-                                    Config::pref_arch = A_PENT;
-                                else
-                                if (opt2 == 4)
-                                    Config::pref_arch = A_P512;
-                                else
-                                if (opt2 == 5)
-                                    Config::pref_arch = A_P1024;
-                                else
-                                if (opt2 == 6)
-                                    Config::pref_arch = A_LAST;
-
-                                if (Config::pref_arch != prev_archpref) {
-                                    Config::save();
-                                }
-
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-
-                            } else {
-                                menu_curopt = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (options_num == 2) {
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            // menu_level set INSIDE the loop (canonical pattern): inner
-                            // ROM-pref submenus run at level 3 and restore 2 on Esc, but
-                            // setting it here keeps the outer level stable across iterations.
-                            menu_level = 2;
-                            uint8_t opt2 = menuRun(MENU_ROM_PREF);
-                            if (opt2) {
-                                if (opt2 == 1) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string rpref48_menu = MENU_ROM_PREF_48;
-                                        int mpos = -1;
-                                        while(1) {
-                                            mpos = rpref48_menu.find("[",mpos + 1);
-                                            if (mpos == string::npos) break;
-                                            string rmenu = rpref48_menu.substr(mpos + 1, 5);
-                                            trim(rmenu);
-                                            if (rmenu == romsetToStr(Config::pref_romSet_48))
-                                                rpref48_menu.replace(mpos + 1, 5,"*");
-                                            else
-                                                rpref48_menu.replace(mpos + 1, 5," ");
-                                        }
-                                        RomsetIdx prev_rpref48 = Config::pref_romSet_48;
-                                        uint8_t opt2 = menuRun(rpref48_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::pref_romSet_48 = R_48K;
-                                            else
-#if NO_SPAIN_ROM_48k
-                                            if (opt2 == 2)
-                                                Config::pref_romSet_48 = R_48K_CS;
-                                            else
-                                            if (opt2 == 3)
-                                                Config::pref_romSet_48 = R_LAST;
-#else
-                                            if (opt2 == 2)
-                                                Config::pref_romSet_48 = R_48K_ES;
-                                            else
-                                            if (opt2 == 3)
-                                                Config::pref_romSet_48 = R_48K_CS;
-                                            else
-                                            if (opt2 == 4)
-                                                Config::pref_romSet_48 = R_LAST;
-#endif
-                                            if (Config::pref_romSet_48 != prev_rpref48) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 1;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                } else if (opt2 == 2) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string rpref128_menu = MENU_ROM_PREF_128;
-                                        int mpos = -1;
-                                        while(1) {
-                                            mpos = rpref128_menu.find("[",mpos + 1);
-                                            if (mpos == string::npos) break;
-                                            string rmenu = rpref128_menu.substr(mpos + 1, 6);
-                                            trim(rmenu);
-                                            if (rmenu == romsetToStr(Config::pref_romSet_128))
-                                                rpref128_menu.replace(mpos + 1, 6,"*");
-                                            else
-                                                rpref128_menu.replace(mpos + 1, 6," ");
-                                        }
-                                        RomsetIdx prev_rpref128 = Config::pref_romSet_128;
-                                        uint8_t opt2 = menuRun(rpref128_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::pref_romSet_128 = R_128K;
-                                            else
-#if NO_SPAIN_ROM_128k
-                                            if (opt2 == 2)
-                                                Config::pref_romSet_128 = R_128K_CS;
-                                            else
-                                            if (opt2 == 3)
-                                                Config::pref_romSet_128 = R_LAST;
-#else
-                                            if (opt2 == 2)
-                                                Config::pref_romSet_128 = R_128K_ES;
-                                            else
-                                            if (opt2 == 3)
-                                                Config::pref_romSet_128 = R_PLUS2;
-                                            else
-                                            if (opt2 == 4)
-                                                Config::pref_romSet_128 = R_PLUS2_ES;
-                                            else
-                                            if (opt2 == 5)
-                                                Config::pref_romSet_128 = R_ZX81P;
-                                            else
-                                            if (opt2 == 6)
-                                                Config::pref_romSet_128 = R_128K_CS;
-                                            else
-                                            if (opt2 == 7)
-                                                Config::pref_romSet_128 = R_LAST;
-#endif
-                                            if (Config::pref_romSet_128 != prev_rpref128) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 1;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                } else if (opt2 == 3) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string rprefPent_menu = MENU_ROM_PREF_PENT;
-                                        int mpos = -1;
-                                        while(1) {
-                                            mpos = rprefPent_menu.find("[",mpos + 1);
-                                            if (mpos == string::npos) break;
-                                            string rmenu = rprefPent_menu.substr(mpos + 1, 6);
-                                            trim(rmenu);
-                                            if (rmenu == romsetToStr(Config::pref_romSetPent))
-                                                rprefPent_menu.replace(mpos + 1, 6,"*");
-                                            else
-                                                rprefPent_menu.replace(mpos + 1, 6," ");
-                                        }
-                                        RomsetIdx prev_rprefPent = Config::pref_romSetPent;
-                                        uint8_t opt2 = menuRun(rprefPent_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::pref_romSetPent = R_PENT;
-                                            else
-                                            if (opt2 == 2)
-                                                Config::pref_romSetPent = R_128K_CS;
-                                            else
-                                            if (opt2 == 3)
-                                                Config::pref_romSetPent = R_LAST;
-                                            if (Config::pref_romSetPent != prev_rprefPent) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 1;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                } else if (opt2 == 4) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string rprefP512_menu = MENU_ROM_PREF_PENT;
-                                        int mpos = -1;
-                                        while(1) {
-                                            mpos = rprefP512_menu.find("[",mpos + 1);
-                                            if (mpos == string::npos) break;
-                                            string rmenu = rprefP512_menu.substr(mpos + 1, 6);
-                                            trim(rmenu);
-                                            if (rmenu == romsetToStr(Config::pref_romSetP512))
-                                                rprefP512_menu.replace(mpos + 1, 6,"*");
-                                            else
-                                                rprefP512_menu.replace(mpos + 1, 6," ");
-                                        }
-                                        RomsetIdx prev_rprefP512 = Config::pref_romSetP512;
-                                        uint8_t opt2 = menuRun(rprefP512_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::pref_romSetP512 = R_PENT;
-                                            else
-                                            if (opt2 == 2)
-                                                Config::pref_romSetP512 = R_128K_CS;
-                                            else
-                                            if (opt2 == 3)
-                                                Config::pref_romSetP512 = R_LAST;
-                                            if (Config::pref_romSetP512 != prev_rprefP512) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 1;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                } else if (opt2 == 5) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string rprefP1M_menu = MENU_ROM_PREF_PENT;
-                                        int mpos = -1;
-                                        while(1) {
-                                            mpos = rprefP1M_menu.find("[",mpos + 1);
-                                            if (mpos == string::npos) break;
-                                            string rmenu = rprefP1M_menu.substr(mpos + 1, 6);
-                                            trim(rmenu);
-                                            if (rmenu == romsetToStr(Config::pref_romSetP1M))
-                                                rprefP1M_menu.replace(mpos + 1, 6,"*");
-                                            else
-                                                rprefP1M_menu.replace(mpos + 1, 6," ");
-                                        }
-                                        RomsetIdx prev_rprefP1M = Config::pref_romSetP1M;
-                                        uint8_t opt2 = menuRun(rprefP1M_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::pref_romSetP1M = R_PENT;
-                                            else
-                                            if (opt2 == 2)
-                                                Config::pref_romSetP1M = R_128K_CS;
-                                            else
-                                            if (opt2 == 3)
-                                                Config::pref_romSetP1M = R_LAST;
-                                            if (Config::pref_romSetP1M != prev_rprefP1M) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 1;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                menu_curopt = opt2;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 2;
-                                break;
-                            }
-                        }
-                    }
-                    else if (options_num == 3) {
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            string joy_menu = MENU_DEFJOY;
-                            std::size_t pos = joy_menu.find("[",0);
-                            int nfind = 0;
-                            while (pos != string::npos) {
-                                if (nfind == Config::joystick) {
-                                    joy_menu.replace(pos,2,"[*");
-                                    break;
-                                }
-                                pos = joy_menu.find("[",pos + 1);
-                                nfind++;
-                            }
-                            uint8_t optjoy = menuRun(joy_menu);
-                            if (optjoy > 0 && optjoy < 6) {
-                                Config::joystick = optjoy - 1;
-                                Config::setJoyMap(optjoy - 1);
-                                Config::save();
-                                menu_curopt = optjoy;
-                                menu_saverect = false;
-                            } else if (optjoy == 6) {
-                                joyDialog();
-                                if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
-                                return;
-                            } else {
-                                menu_curopt = 3;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (options_num == 4) {
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            // joystick
-                            string Mnustr = MENU_JOYPS2;
-                            uint8_t opt2 = menuRun(Mnustr);
-                            if (opt2 == 1) {
-                                // Menu cursor keys as joy
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string csasjoy_menu = MENU_CURSORJOY;
-                                    csasjoy_menu += MENU_YESNO;
-                                    if (Config::CursorAsJoy) {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[ ");
-                                    } else {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[ ");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[*");
-                                    }
-                                    uint8_t opt2 = menuRun(csasjoy_menu);
-                                    if (opt2) {
-                                        if (opt2 == 1)
-                                            Config::CursorAsJoy = true;
-                                        else
-                                            Config::CursorAsJoy = false;
-
-                                        ESPectrum::PS2Controller.keyboard()->setLEDs(false, false, Config::CursorAsJoy);
-                                        Config::save();
-
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 1;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            } else if (opt2 == 2) {
-                                // Menu TAB as fire 1
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string csasjoy_menu = MENU_TABASFIRE;
-                                    csasjoy_menu += MENU_YESNO;
-                                    bool prev_opt = Config::TABasfire1;
-                                    if (prev_opt) {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[ ");
-                                    } else {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[ ");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[*");
-                                    }
-                                    uint8_t opt2 = menuRun(csasjoy_menu);
-                                    if (opt2) {
-                                        if (opt2 == 1)
-                                            Config::TABasfire1 = true;
-                                        else
-                                            Config::TABasfire1 = false;
-
-                                        if (Config::TABasfire1 != prev_opt) {
-
-                                            if (Config::TABasfire1) {
-                                                ESPectrum::VK_ESPECTRUM_FIRE1 = fabgl::VK_TAB;
-                                                ESPectrum::VK_ESPECTRUM_FIRE2 = fabgl::VK_GRAVEACCENT;
-                                                ESPectrum::VK_ESPECTRUM_TAB = fabgl::VK_NONE;
-                                                ESPectrum::VK_ESPECTRUM_GRAVEACCENT = fabgl::VK_NONE;
-                                            } else {
-                                                ESPectrum::VK_ESPECTRUM_FIRE1 = fabgl::VK_NONE;
-                                                ESPectrum::VK_ESPECTRUM_FIRE2 = fabgl::VK_NONE;
-                                                ESPectrum::VK_ESPECTRUM_TAB = fabgl::VK_TAB;
-                                                ESPectrum::VK_ESPECTRUM_GRAVEACCENT = fabgl::VK_GRAVEACCENT;
-                                            }
-
-                                            Config::save();
-                                        }
-
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 2;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            } else if (opt2 == 3) {
-                                // Menu Right Enter as Space
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string csasjoy_menu = MENU_ENTERSPACE;
-                                    csasjoy_menu += MENU_YESNO;
-                                    bool prev_opt = Config::rightSpace;
-                                    if (prev_opt) {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[ ");
-                                    } else {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[ ");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[*");
-                                    }
-                                    uint8_t opt2 = menuRun(csasjoy_menu);
-                                    if (opt2) {
-                                        if (opt2 == 1)
-                                            Config::rightSpace = true;
-                                        else
-                                            Config::rightSpace = false;
-                                        Config::save();
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 3;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            } else if (opt2 == 4) {
-                                // WASD
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string csasjoy_menu = MENU_WASD;
-                                    csasjoy_menu += MENU_YESNO;
-                                    bool prev_opt = Config::wasd;
-                                    if (prev_opt) {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[*");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[ ");
-                                    } else {
-                                        csasjoy_menu.replace(csasjoy_menu.find("[Y",0),2,"[ ");
-                                        csasjoy_menu.replace(csasjoy_menu.find("[N",0),2,"[*");
-                                    }
-                                    uint8_t opt2 = menuRun(csasjoy_menu);
-                                    if (opt2) {
-                                        if (opt2 == 1)
-                                            Config::wasd = true;
-                                        else
-                                            Config::wasd = false;
-                                        Config::save();
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 4;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            } else {
-                                menu_curopt = 4;
-                                break;
-                            }
-                        }
-                    }
-                    else if (options_num == 5) {
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            // Other
-                            string other_menu = MENU_OTHER;
-                            other_menu += MENU_OTHER_RTC; // RP2350-only RTC toggle
-                            uint8_t options_num = menuRun(other_menu);
-                            if (options_num > 0) {
-                                if (options_num == 1) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string alu_menu = MENU_ALUTIMING;
-                                        uint8_t prev_AluTiming = Config::AluTiming;
-                                        if (prev_AluTiming == 0) {
-                                            alu_menu.replace(alu_menu.find("[E",0),2,"[*");
-                                            alu_menu.replace(alu_menu.find("[L",0),2,"[ ");
-                                        } else {
-                                            alu_menu.replace(alu_menu.find("[E",0),2,"[ ");
-                                            alu_menu.replace(alu_menu.find("[L",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(alu_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::AluTiming = 0;
-                                            else
-                                                Config::AluTiming = 1;
-
-                                            if (Config::AluTiming != prev_AluTiming) {
-                                                CPU::latetiming = Config::AluTiming;
-                                                CPU::updateStatesInFrame();
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 1;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 2) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string iss_menu = MENU_ISSUE2;
-                                        iss_menu += MENU_YESNO;
-                                        bool prev_iss = Config::Issue2;
-                                        if (prev_iss) {
-                                            iss_menu.replace(iss_menu.find("[Y",0),2,"[*");
-                                            iss_menu.replace(iss_menu.find("[N",0),2,"[ ");
-                                        } else {
-                                            iss_menu.replace(iss_menu.find("[Y",0),2,"[ ");
-                                            iss_menu.replace(iss_menu.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(iss_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::Issue2 = true;
-                                            else
-                                                Config::Issue2 = false;
-
-                                            if (Config::Issue2 != prev_iss) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 2;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 3) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string ps2_menu = MENU_KBD2NDPS2;
-                                        uint8_t prev_ps2 = Config::joy2cursor;
-                                        if (prev_ps2) {
-                                            ps2_menu.replace(ps2_menu.find("[N",0),2,"[ ");
-                                            ps2_menu.replace(ps2_menu.find("[K",0),2,"[*");
-                                        } else {
-                                            ps2_menu.replace(ps2_menu.find("[N",0),2,"[*");
-                                            ps2_menu.replace(ps2_menu.find("[K",0),2,"[ ");
-                                        }
-                                        uint8_t opt2 = menuRun(ps2_menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::joy2cursor = false;
-                                            else
-                                                Config::joy2cursor = true;
-                                            Config::save();
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 3;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 4) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string menu = MENU_ALF_JOY;
-                                        uint8_t prev = Config::secondJoy;
-                                        if (prev == 3) {
-                                            menu.replace(menu.find("[1",0),2,"[ ");
-                                            menu.replace(menu.find("[2",0),2,"[ ");
-                                            menu.replace(menu.find("[N",0),2,"[*");
-                                        } else if (prev == 2) {
-                                            menu.replace(menu.find("[1",0),2,"[ ");
-                                            menu.replace(menu.find("[2",0),2,"[*");
-                                            menu.replace(menu.find("[N",0),2,"[ ");
-                                        } else {
-                                            menu.replace(menu.find("[1",0),2,"[*");
-                                            menu.replace(menu.find("[2",0),2,"[ ");
-                                            menu.replace(menu.find("[N",0),2,"[ ");
-                                        }
-                                        uint8_t opt2 = menuRun(menu);
-                                        if (opt2) {
-                                            Config::secondJoy = opt2;
-                                            if (Config::secondJoy != prev) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 4;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 5) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string menu = MENU_K_JOY;
-                                        uint8_t prev = Config::kempstonPort;
-                                        if (prev == 0x37) {
-                                            menu.replace(menu.find("[1",0),2,"[ ");
-                                            menu.replace(menu.find("[3",0),2,"[*");
-                                            menu.replace(menu.find("[9",0),2,"[ ");
-                                        } else if (prev == 0x5F) {
-                                            menu.replace(menu.find("[1",0),2,"[ ");
-                                            menu.replace(menu.find("[3",0),2,"[ ");
-                                            menu.replace(menu.find("[9",0),2,"[*");
-                                        } else {
-                                            menu.replace(menu.find("[1",0),2,"[*");
-                                            menu.replace(menu.find("[3",0),2,"[ ");
-                                            menu.replace(menu.find("[9",0),2,"[ ");
-                                        }
-                                        uint8_t opt2 = menuRun(menu);
-                                        if (opt2) {
-                                            if (opt2 == 1)
-                                                Config::kempstonPort = 0x1F;
-                                            else if (opt2 == 2)
-                                                Config::kempstonPort = 0x37;
-                                            else
-                                                Config::kempstonPort = 0x5F;
-
-                                            if (Config::kempstonPort != prev) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 5;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 6) {
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string menu = MENU_THROTTLING;
-                                        uint8_t prev = Config::throtling;
-                                        if (prev == 0) {
-                                            menu.replace(menu.find("[N",0),2,"[*");
-                                            menu.replace(menu.find("[1",0),2,"[ ");
-                                            menu.replace(menu.find("[2",0),2,"[ ");
-                                            menu.replace(menu.find("[3",0),2,"[ ");
-                                        } else if (prev == 1) {
-                                            menu.replace(menu.find("[N",0),2,"[ ");
-                                            menu.replace(menu.find("[1",0),2,"[*");
-                                            menu.replace(menu.find("[2",0),2,"[ ");
-                                            menu.replace(menu.find("[3",0),2,"[ ");
-                                        } else if (prev == 2) {
-                                            menu.replace(menu.find("[N",0),2,"[ ");
-                                            menu.replace(menu.find("[1",0),2,"[ ");
-                                            menu.replace(menu.find("[2",0),2,"[*");
-                                            menu.replace(menu.find("[3",0),2,"[ ");
-                                        } else if (prev == 3) {
-                                            menu.replace(menu.find("[N",0),2,"[ ");
-                                            menu.replace(menu.find("[1",0),2,"[ ");
-                                            menu.replace(menu.find("[2",0),2,"[ ");
-                                            menu.replace(menu.find("[3",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(menu);
-                                        if (opt2) {
-                                            Config::throtling = opt2 - 1;
-                                            if (Config::throtling != prev) {
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 6;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 7) {
-                                    // Hot Keys
-                                    OSD::hotkeyDialog();
-                                    menu_curopt = 7;
-                                    menu_level = 2;
-                                    menu_saverect = false;
-                                }
-                                else if (options_num == 8) {
-                                    // LED indicators ON/OFF + Legend
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string opt_menu = MENU_LEDINDICATORS;
-                                        opt_menu += MENU_YESNO;
-                                        opt_menu += "Legend\t>\n";
-                                        bool prev_opt = Config::ledIndicators;
-                                        if (prev_opt) {
-                                            opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
-                                            opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                        } else {
-                                            opt_menu.replace(opt_menu.find("[Y",0),2,"[ ");
-                                            opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(opt_menu);
-                                        if (opt2 == 1 || opt2 == 2) {
-                                            Config::ledIndicators = (opt2 == 1);
-                                            if (Config::ledIndicators != prev_opt) {
-                                                if (!Config::ledIndicators) LED::clear();
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else if (opt2 == 3) {
-                                            // showLedLegend() does its own SaveRect save/restore,
-                                            // so the LED menu background is already intact on return.
-                                            // menu_saverect MUST be false here: a true would re-save
-                                            // and recalculate y (shifts the menu) and imbalance the
-                                            // SaveRect stack → SIGBUS.
-                                            showLedLegend();
-                                            menu_curopt = 3;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 8;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 9) {
-                                    // SD card LED (onboard GPIO 25) ON/OFF
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string opt_menu = MENU_SDLEDBLINK;
-                                        opt_menu += MENU_YESNO;
-                                        bool prev_opt = Config::sdLedBlink;
-                                        if (prev_opt) {
-                                            opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
-                                            opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                        } else {
-                                            opt_menu.replace(opt_menu.find("[Y",0),2,"[ ");
-                                            opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(opt_menu);
-                                        if (opt2 == 1 || opt2 == 2) {
-                                            Config::sdLedBlink = (opt2 == 1);
-                                            if (Config::sdLedBlink != prev_opt) {
-                                                sdcard_set_led_blink(Config::sdLedBlink);
-                                                Config::save();
-                                            }
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 9;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                                else if (options_num == 10) {
-                                    // RTC + NVRAM (Pentagon/Profi Mr Gluk MC146818) ON/OFF
-                                    menu_level = 3;
-                                    menu_curopt = 1;
-                                    menu_saverect = true;
-                                    while (1) {
-                                        string opt_menu = MENU_RTC;
-                                        opt_menu += MENU_YESNO;
-                                        bool prev_opt = Config::rtc_enabled;
-                                        if (prev_opt) {
-                                            opt_menu.replace(opt_menu.find("[Y",0),2,"[*");
-                                            opt_menu.replace(opt_menu.find("[N",0),2,"[ ");
-                                        } else {
-                                            opt_menu.replace(opt_menu.find("[Y",0),2,"[ ");
-                                            opt_menu.replace(opt_menu.find("[N",0),2,"[*");
-                                        }
-                                        uint8_t opt2 = menuRun(opt_menu);
-                                        if (opt2 == 1 || opt2 == 2) {
-                                            Config::rtc_enabled = (opt2 == 1);
-                                            if (Config::rtc_enabled != prev_opt) Config::save();
-                                            menu_curopt = opt2;
-                                            menu_saverect = false;
-                                        } else {
-                                            menu_curopt = 10;
-                                            menu_level = 2;
-                                            break;
-                                        }
-                                    }
-                                }
-                            } else {
-                                menu_curopt = 5;
-                                break;
-                            }
-                        }
-                    } else if (options_num == 6) {
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            // Update
-                            string Mnustr = expandHotkeys(FileUtils::fsMount ? MENU_UPDATE_FW : MENU_UPDATE_FW_NO_SD);
-                            uint8_t opt2 = menuRun(Mnustr);
-                            if (opt2) {
-                                // Update
-                                if (opt2 == 1) {
-                                    /// TODO: close all files
-                                    //close_all()
-                                    reset_usb_boot(0, 0);
-                                    while(1);
-                                }
-                                else {
-                                    string mFile = fileDialog(FileUtils::ROM_Path, MENU_ROM_TITLE, DISK_ROMFILE, 26, 15);
-                                    if (mFile != "") {
-                                        mFile.erase(0, 1);
-                                        string fname = FileUtils::ROM_Path + mFile;
-                                        // ALF cartridges (and ROMs) ship zipped (zxbyte.org) — extract
-                                        // the .rom/.bin inside before flashing.
-                                        if (FileUtils::getLCaseExt(fname) == "zip") {
-                                            string zf = ZipExtract::extract(fname, DISK_ROMFILE);
-                                            if (zf.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); fname.clear(); }
-                                            else if (zf != "\x1b") fname = zf;
-                                            else fname.clear();
-                                        }
-                                        if (!fname.empty()) {
-                                            bool res = updateROM(fname, opt2 - 1);
-                                            if (res) {
-                                                return;
-                                            }
-                                        }
-                                    }
-                                    menu_curopt = 1;
-                                    menu_level = 2;
-                                    menu_saverect = false;
-                                }
-                            } else {
-                                menu_curopt = 6;
-                                break;
-                            }
-                        }
-                    } else {
-                        menu_curopt = 7;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 8) { // Debug
-                // DEBUG MENU
-                menu_saverect = true;
-                menu_curopt = 1;
-                while(1) {
-                    menu_level = 1;
-                    // Debug
-                    uint8_t opt2 = menuRun(expandHotkeys(MENU_DEBUG_EN));
-                    if (opt2 == 1) {
-                        OSD::osdDebug();
-                        return;
-                    } else if (opt2 == 2) {
-                        BPDialog();
-                        return;
-                    } else if (opt2 == 3) {
-                        { uint16_t bpAddr = BPListDialog();
-                        if (bpAddr != 0xFFFF) osdDebug(bpAddr); }
-                        return;
-                    } else if (opt2 == 4) {
-                        jumpToDialog();
-                        return;
-                    } else if (opt2 == 5) {
-                        pokeDialog();
-                        return;
-                    } else if (opt2 == 6) {
-                        Z80::triggerNMI();
-                        return;
-                    } else if (opt2 == 7) {
-                        // Debug Log toggle
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            string dl_menu = MENU_DEBUG_LOG;
-                            dl_menu += MENU_YESNO;
-                            bool prev_dl = Debug::log_enabled;
-                            if (prev_dl) {
-                                dl_menu.replace(dl_menu.find("[Y",0),2,"[*");
-                                dl_menu.replace(dl_menu.find("[N",0),2,"[ ");
-                            } else {
-                                dl_menu.replace(dl_menu.find("[Y",0),2,"[ ");
-                                dl_menu.replace(dl_menu.find("[N",0),2,"[*");
-                            }
-                            uint8_t opt3 = menuRun(dl_menu);
-                            if (opt3) {
-                                Debug::log_enabled = (opt3 == 1);
-                                if (Debug::log_enabled != prev_dl) {
-                                    Config::save();
-                                }
-                                menu_curopt = opt3;
-                                menu_saverect = false;
-                            } else {
-                                menu_curopt = 7;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    } else {
-                        menu_curopt = 8;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 9) { // Hardware
-                // ***********************************************************************************
-                // HARDWARE MENU
-                // ***********************************************************************************
-                menu_saverect = true;
-                menu_curopt = 1;
-                while (1) {
-                    menu_level = 1;
-                    uint8_t hw_opt = menuRun(MENU_HARDWARE);
-                    if (hw_opt == 1) {
-                        // Chip Info
-                        OSD::ChipInfo();
-                        menu_curopt = 1;
-                        menu_saverect = false;
-                    }
-                    else if (hw_opt == 2) {
-                        // Board Info
-                        OSD::BoardInfo();
-                        menu_curopt = 2;
-                        menu_saverect = false;
-                    }
-                    else if (hw_opt == 3) {
-                        // Memory Info
-                        OSD::MemoryInfo();
-                        menu_curopt = 3;
-                        menu_saverect = false;
-                    }
-                    else if (hw_opt == 4) {
-                        // Emulator Info
-                        OSD::EmulatorInfo();
-                        menu_curopt = 4;
-                        menu_saverect = false;
-                    }
-                    else if (hw_opt == 5) {
-                        // HID devices
-                        OSD::HIDDevices();
-                        menu_curopt = 5;
-                        menu_saverect = false;
-                    }
-                    else if (hw_opt == 7) {
-                        // Overclock submenu — warn user
-                        osdCenteredMsg("Dangerous! Board may not boot!", LEVEL_WARN, 2000);
-                        menu_level = 2;
-                        menu_curopt = 1;
-                        menu_saverect = true;
-                        while (1) {
-                            uint8_t oc_opt = menuRun(MENU_OVERCLOCK_VREG);
-                            if (oc_opt == 1) {
-                                // CPU Freq
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string mhz_menu = MENU_CPU_MHZ;
-                                    uint16_t cur = Config::cpu_mhz;
-                                    mhz_menu.replace(mhz_menu.find("[2"), 2, cur == 252 ? "[*" : "[ ");
-                                    mhz_menu.replace(mhz_menu.find("[3"), 2, cur == 378 ? "[*" : "[ ");
-                                    mhz_menu.replace(mhz_menu.find("[5"), 2, cur == 504 ? "[*" : "[ ");
-                                    uint8_t opt2 = menuRun(mhz_menu);
-                                    if (opt2) {
-                                        uint16_t new_mhz = 0;
-                                        if (opt2 == 1) new_mhz = 252;
-                                        else if (opt2 == 2) new_mhz = 378;
-                                        else if (opt2 == 3) new_mhz = 504;
-                                        if (new_mhz && new_mhz != cur) {
-                                            Config::cpu_mhz = new_mhz;
-                                            if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                                Config::save();
-                                                esp_hard_reset();
-                                            } else {
-                                                Config::cpu_mhz = cur;
-                                            }
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 1;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            }
-                            else if (oc_opt == 2) {
-                                // VReg Voltage
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                while (1) {
-                                    string vreg_menu = MENU_VREG_VOLTAGE;
-                                    uint8_t cur = Config::vreq_voltage;
-                                    static const uint8_t vreg_vals[] = {
-                                        VREG_VOLTAGE_1_15, VREG_VOLTAGE_1_20, VREG_VOLTAGE_1_25,
-                                        VREG_VOLTAGE_1_30, VREG_VOLTAGE_1_35, VREG_VOLTAGE_1_40,
-                                        VREG_VOLTAGE_1_50, VREG_VOLTAGE_1_60, VREG_VOLTAGE_1_65,
-                                        VREG_VOLTAGE_1_70, VREG_VOLTAGE_1_80
-                                    };
-                                    const char markers[] = "ABCDEFGHIJK";
-                                    for (int i = 0; i < 11; i++) {
-                                        char mk[3] = { '[', markers[i], '\0' };
-                                        vreg_menu.replace(vreg_menu.find(mk), 2, cur == vreg_vals[i] ? "[*" : "[ ");
-                                    }
-                                    uint8_t opt2 = menuRun(vreg_menu);
-                                    if (opt2 && opt2 <= 11) {
-                                        uint8_t new_v = vreg_vals[opt2 - 1];
-                                        if (new_v != cur) {
-                                            Config::vreq_voltage = new_v;
-                                            if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                                Config::save();
-                                                esp_hard_reset();
-                                            } else {
-                                                Config::vreq_voltage = cur;
-                                            }
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 2;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            }
-                            // Flash Freq (opt 3)
-                            else if (oc_opt == 3) {
-                                // Flash Freq
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                static const uint16_t flash_vals[] = { 33, 66, 84, 100, 133, 166 };
-                                while (1) {
-                                    string ff_menu = MENU_FLASH_FREQ;
-                                    uint16_t cur = Config::max_flash_freq;
-                                    const char markers[] = "ABCDEF";
-                                    for (int i = 0; i < 6; i++) {
-                                        char mk[3] = { '[', markers[i], '\0' };
-                                        ff_menu.replace(ff_menu.find(mk), 2, cur == flash_vals[i] ? "[*" : "[ ");
-                                    }
-                                    uint8_t opt2 = menuRun(ff_menu);
-                                    if (opt2 && opt2 <= 6) {
-                                        uint16_t new_f = flash_vals[opt2 - 1];
-                                        if (new_f != cur) {
-                                            Config::max_flash_freq = new_f;
-                                            if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                                Config::save();
-                                                esp_hard_reset();
-                                            } else {
-                                                Config::max_flash_freq = cur;
-                                            }
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 3;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            }
-                            // PSRAM Freq (opt 4)
-                            else if (oc_opt == 4) {
-                                // PSRAM Freq
-                                menu_level = 3;
-                                menu_curopt = 1;
-                                menu_saverect = true;
-                                static const uint16_t psram_vals[] = { 66, 84, 100, 133, 166 };
-                                while (1) {
-                                    string pf_menu = MENU_PSRAM_FREQ;
-                                    uint16_t cur = Config::max_psram_freq;
-                                    const char markers[] = "ABCDE";
-                                    for (int i = 0; i < 5; i++) {
-                                        char mk[3] = { '[', markers[i], '\0' };
-                                        pf_menu.replace(pf_menu.find(mk), 2, cur == psram_vals[i] ? "[*" : "[ ");
-                                    }
-                                    uint8_t opt2 = menuRun(pf_menu);
-                                    if (opt2 && opt2 <= 5) {
-                                        uint16_t new_p = psram_vals[opt2 - 1];
-                                        if (new_p != cur) {
-                                            Config::max_psram_freq = new_p;
-                                            if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                                                Config::save();
-                                                esp_hard_reset();
-                                            } else {
-                                                Config::max_psram_freq = cur;
-                                            }
-                                        }
-                                        menu_curopt = opt2;
-                                        menu_saverect = false;
-                                    } else {
-                                        menu_curopt = 4;
-                                        menu_level = 2;
-                                        break;
-                                    }
-                                }
-                            }
-                            else {
-                                menu_curopt = 6;
-                                menu_level = 1;
-                                break;
-                            }
-                        }
-                    }
-                    else if (hw_opt == 6) {
-                        // Speed Test
-                        OSD::SpeedTest();
-                        menu_curopt = 6;
-                        menu_saverect = false;
-                    }
-                    else {
-                        menu_curopt = 9;
-                        break;
-                    }
-                }
-            }
-            else if (opt == 10) { // Network
-                menu_saverect = true;
-                menu_curopt = 1;
-                // Live WiFi status (getStatus is a blocking AT round-trip) — cached,
-                // refreshed on entry and after connect/disconnect/NIC toggle.
-                bool   st_conn = false;
-                string st_ssid, st_ip;
-                auto refreshNetStatus = [&]() {
-                    st_ssid.clear(); st_ip.clear();
-                    // Query when WiFi is in use — WiFi enabled, or already connected (e.g.
-                    // the boot SNTP auto-connect still settling). Keyed on WiFi, not the
-                    // NIC: the NIC is a layer on top and never the reason networking is up.
-                    // Avoids powering up the ESP just by opening the menu when WiFi is off.
-                    st_conn = (Config::wifi_enabled || ZiFiAT::connected)
-                              && ZiFiAT::getStatus(st_ssid, st_ip);
-                };
-                // After a transport/baud change re-established the UART link, make sure WiFi
-                // is associated again. Normally the ESP keeps its association across a host
-                // UART reconfigure and getStatus() above confirms it — but if the change
-                // dropped the link, re-associate from the saved credentials. We're in menu
-                // context with the Z80 paused, so a blocking connect is safe.
-                auto reconnectWifiIfNeeded = [&]() {
-                    if (Config::wifi_enabled && !ZiFiAT::connected && !Config::wifi_ssid.empty()) {
-                        ZiFiAT::connect(Config::wifi_ssid, Config::wifi_pass);
-                        refreshNetStatus();
-                    }
-                };
-
-                // ── ESP-01S hardware/config pickers (level 3, under the ESP01 submenu) ──
-                // ESP-01 transport picker: Off / USB (CH340) / per-board GPIO pairs.
-                // Merges the old GPIO picker with the USB-CDC choice. The USB row only
-                // exists in host-stack builds (#ifdef KBDUSB) — without it the host
-                // never enumerates a dongle, so USB transport can't work. usbRow shifts
-                // the dense GPIO-pair indices (zifiPair()/zifiPairCount() are already a
-                // contiguous, package-filtered view) by one when the USB row is present.
-                auto pickTransport = [&]() {
-                    menu_level = 3; menu_saverect = true;
-                    int usbRow = 0;
-#if defined(KBDUSB)
-                    usbRow = 1;
-#endif
-                    string m = string(MENU_ZIFI_TRANSPORT_TITLE) + "\n";
-                    m += "Off\n";
-                    if (usbRow) m += string(MENU_ZIFI_USB_LABEL) + "\n";
-                    int nopt = BoardPins::zifiPairCount();
-                    for (int i = 0; i < nopt; i++) {
-                        const BoardPins::UartPair* p = BoardPins::zifiPair(i);
-                        char b[48];
-                        snprintf(b, sizeof(b), "GPIO %u/%u%s%s\n", p->tx, p->rx, p->note[0] ? "  " : "", p->note);
-                        m += b;
-                    }
-                    bool usbT = usbRow && (Config::zifi_transport == 1);
-                    if (usbT) menu_curopt = 2;
-                    else if (Config::zifi_tx_pin == BoardPins::PIN_OFF) menu_curopt = 1;
-                    else {
-                        uint8_t rtx, rrx;
-                        BoardPins::resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, rtx, rrx);
-                        menu_curopt = 2 + usbRow;
-                        for (int i = 0; i < nopt; i++)
-                            if (BoardPins::zifiPair(i)->tx == rtx) { menu_curopt = i + 2 + usbRow; break; }
-                    }
-                    uint8_t sel = menuRun(m);
-                    if (sel > 0) {
-                        VIDEO::SaveRect.restore_last();
-                        bool conflict = false;
-                        bool wasUsb = (Config::zifi_transport == 1);
-                        if (sel == 1) {                       // Off
-                            Config::zifi_transport = 0;
-                            Config::zifi_tx_pin = Config::zifi_rx_pin = BoardPins::PIN_OFF;
-                        } else if (usbRow && sel == 2) {      // USB (CH340)
-                            Config::zifi_transport = 1;
-                        } else {                              // a GPIO pair
-                            const BoardPins::UartPair* p = BoardPins::zifiPair(sel - 2 - usbRow);
-                            if (p) { Config::zifi_transport = 0; Config::zifi_tx_pin = p->tx; Config::zifi_rx_pin = p->rx; conflict = p->note[0] != 0; }
-                        }
-                        Config::save();
-                        // Re-apply now whenever the link is up — for the NIC *or* WiFi
-                        // (independent users of the shared transport).
-                        if (ZiFi::linkUp()) { ZiFi::deinit(); ZiFi::init(); }
-                        refreshNetStatus();
-                        // A conflicting GPIO pair, or any switch into/out of USB, wants
-                        // a reboot so displaced peripherals release/grab their pins.
-                        bool nowUsb = (Config::zifi_transport == 1);
-                        if ((conflict || wasUsb != nowUsb) &&
-                            OSD::msgDialog(MENU_ZIFI_TRANSPORT_TITLE,
-                                           OSD_DLG_APPLYREBOOT) == DLG_YES)
-                            OSD::esp_hard_reset();  // never returns
-                        // No reboot (or declined) → recover the WiFi link on the new transport.
-                        reconnectWifiIfNeeded();
-                    }
-                };
-                auto pickBaud = [&]() {
-                    menu_level = 3; menu_saverect = true;
-                    static const uint32_t bauds[] = { 115200, 230400, 460800, 921600 };
-                    const int NB = 4;
-                    string m = string(MENU_BAUD_TITLE) + "\n";
-                    for (int i = 0; i < NB; i++) { char b[16]; snprintf(b, sizeof(b), "%u\n", (unsigned)bauds[i]); m += b; }
-                    menu_curopt = 1;
-                    for (int i = 0; i < NB; i++) if (bauds[i] == Config::zifi_baud) { menu_curopt = i + 1; break; }
-                    uint8_t sel = menuRun(m);
-                    if (sel > 0) {
-                        VIDEO::SaveRect.restore_last();
-                        uint32_t nb = bauds[sel - 1];
-                        if (nb != Config::zifi_baud) {
-                            Config::zifi_baud = nb;
-                            Config::saveWifiConfig();
-                            // deinit resets the ESP to 115200, init re-handshakes at the new rate.
-                            // Apply now whenever the link is up (NIC or WiFi), not just for the NIC.
-                            if (ZiFi::linkUp()) { ZiFi::deinit(); ZiFi::init(); }
-                            refreshNetStatus();
-                            reconnectWifiIfNeeded();  // recover the link if the baud switch dropped it
-                        }
-                    }
-                };
-                auto pickTz = [&]() {
-                    menu_level = 3; menu_saverect = true;
-                    string m = string(MENU_TZ_TITLE) + "\n";
-                    for (int tz = -12; tz <= 14; tz++) { char b[16]; snprintf(b, sizeof(b), "UTC%+d\n", tz); m += b; }
-                    menu_curopt = Config::wifi_tz + 13;
-                    uint8_t sel = menuRun(m);
-                    if (sel > 0) {
-                        Config::wifi_tz = (signed char)((int)sel - 13);
-                        Config::saveWifiConfig();
-                        VIDEO::SaveRect.restore_last();
-                    }
-                };
-                auto doSync = [&]() {
-                    OSD::osdCenteredMsg(MSG_RTC_SYNCING, LEVEL_INFO, 0);
-                    string when;
-                    if (ZiFiAT::syncTime(Config::wifi_tz, when) == ZiFiAT::OK)
-                        OSD::osdCenteredMsg(string(MSG_RTC_SYNCED) + "\n" + when, LEVEL_INFO, 3000);
-                    else
-                        OSD::osdCenteredMsg(MSG_RTC_SYNC_ERR, LEVEL_WARN, 3000);
-                };
-                // ── ESP01 submenu (level 2): Transport / Baud / Time zone / Sync time ──
-                auto esp01Menu = [&]() {
-                    menu_saverect = true; menu_curopt = 1;
-                    while (1) {
-                        menu_level = 2;
-                        // First row shows the current transport: USB, Off, or GPIO pins.
-                        char gpio[44];
-                        bool usbT = false;
-#if defined(KBDUSB)
-                        usbT = (Config::zifi_transport == 1);
-#endif
-                        if (usbT)
-                            snprintf(gpio, sizeof(gpio), "Transport: %s\t>", MENU_ZIFI_USB_LABEL);
-                        else if (Config::zifi_tx_pin == BoardPins::PIN_OFF)
-                            snprintf(gpio, sizeof(gpio), "Transport: Off\t>");
-                        else {
-                            uint8_t dtx, drx;
-                            BoardPins::resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, dtx, drx);
-                            snprintf(gpio, sizeof(gpio), "Transport: %u/%u%s\t>", dtx, drx,
-                                     Config::zifi_tx_pin == BoardPins::PIN_DEFAULT ? " (def)" : "");
-                        }
-                        char baud[32]; snprintf(baud, sizeof(baud), "Baud %u\t>", (unsigned)Config::zifi_baud);
-                        string m = string(MENU_ESP01_TITLE) + "\n"
-                                 + gpio + "\n" + baud + "\n"
-                                 + ("Time zone\t>\n")
-                                 + ("Sync time (SNTP)\n");
-                        uint8_t e = menuRun(m);
-                        if (e == 0) break; // Esc → back to Network (menuRun popped our rect)
-                        if      (e == 1) pickTransport();
-                        else if (e == 2) pickBaud();
-                        else if (e == 3) pickTz();
-                        else if (e == 4) doSync();
-                        menu_curopt = e;
-                        menu_saverect = false; // only the first ESP01 menuRun saves/positions
-                    }
-                };
-                // ── WiFi connect/disconnect (level 2 list) ──
-                auto doWifi = [&]() {
-                    if (Config::wifi_enabled) {
-                        // WiFi is on → this row turns it off. Show the live IP when the ESP
-                        // is associated; otherwise just confirm the switch-off (enabled but
-                        // offline — e.g. autoconnect hasn't finished / AP out of range).
-                        string title = st_conn ? st_ssid : string("WiFi");
-                        string msg   = (st_conn ? st_ip + "  " : string())
-                                     + string(MSG_WIFI_DISCONNECT_Q);
-                        if (OSD::msgDialog(title, msg) == DLG_YES) {
-                            ZiFiAT::disconnect();
-                            Config::wifi_enabled = false;
-                            // The NIC is purely a layer on top of WiFi — it cannot stay on
-                            // once WiFi is off. Drop it too (NVS-persisted separately).
-                            if (Config::zifi_enabled) {
-                                Config::zifi_enabled = 0;
-                                ZiFi::enabled = 0;
-                                Config::save();
-                            }
-                            // Nobody left using the shared UART link → tear it down.
-                            if (!ZiFiAT::connected) ZiFi::deinit();
-                            Config::saveWifiConfig();
-                            OSD::osdCenteredMsg(MSG_WIFI_DISCONNECTED, LEVEL_INFO, 1500);
-                        }
-                    } else {
-                        // ONE live ESP-01 log window for the whole flow: scan → SSID pick
-                        // → password → connect → SNTP. It stays up the entire time (the
-                        // SSID menu and password box draw over it and restore their own
-                        // regions). On error it does NOT auto-close — it holds until a
-                        // keypress so the failure stays readable. SaveRect: the window is
-                        // pushed once here and popped on every exit path. menuRun, on a
-                        // selection, leaves its own save for us to pop (→ window reappears);
-                        // on Esc it restores itself, so we pop only the window.
-                        ftpd_log_count = 0;
-                        s_wifilog_sub = MSG_WIFI_SCANNING;
-                        unsigned short wlx = OSD::scrAlignCenterX(OSD_W);
-                        unsigned short wly = OSD::scrAlignCenterY(OSD_H);
-                        VIDEO::SaveRect.save(wlx, wly, OSD_W, OSD_H);   // [window]
-                        wifiLogDraw();
-                        ZiFiAT::log_cb = wifiLogLine;
-                        // static, not on the 4 KB core stack: 24 std::strings (~768 B)
-                        // plus the nested connect+SNTP-sync call chain under do_OSD
-                        // overflowed the stack (SIGBUS/stackOvf). Single-use, non-reentrant.
-                        static string nets[24];
-                        int n = ZiFiAT::scan(nets, 24);
-                        ZiFiAT::log_cb = nullptr;             // no AT traffic during menu/password
-                        if (n <= 0) {
-                            wifiLogHold(MSG_WIFI_NO_NETS); // error → hold open
-                            VIDEO::SaveRect.restore_last();
-                            return;
-                        }
-                        string m = string(MENU_WIFI_LIST_TITLE) + "\n";
-                        for (int i = 0; i < n; i++) m += nets[i] + "\n";
-                        menu_level = 2; menu_saverect = true; menu_curopt = 1;
-                        uint8_t sel = menuRun(m);            // draws over the window
-                        if (sel <= 0) {                      // Esc: menuRun restored its own save
-                            VIDEO::SaveRect.restore_last();  // pop [window]
-                            return;
-                        }
-                        VIDEO::SaveRect.restore_last();      // pop menuRun's save → window reappears
-                        string chosen = nets[sel - 1];
-                        s_wifilog_sub = chosen;
-                        wifiLogDraw();
-                        string pass = wifiAskPassword(chosen); // box draws over the window
-                        if (pass == "\x1B") {                // password cancelled
-                            VIDEO::SaveRect.restore_last();  // pop [window]
-                            return;
-                        }
-                        s_wifilog_sub = string(MSG_WIFI_CONNECTING) + " " + chosen;
-                        wifiLogDraw();                       // repaint over the box region
-                        ZiFiAT::log_cb = wifiLogLine;
-                        ZiFiAT::Status cst = ZiFiAT::connect(chosen, pass);
-                        string when;
-                        if (cst == ZiFiAT::OK && Config::rtc_enabled)
-                            ZiFiAT::syncTime(Config::wifi_tz, when); // streamed too
-                        ZiFiAT::log_cb = nullptr;
-                        if (cst == ZiFiAT::OK) {
-                            Config::wifi_ssid = chosen; Config::wifi_pass = pass; Config::wifi_enabled = true;
-                            Config::saveWifiConfig();
-                            wifiLogLine(MSG_WIFI_CONNECTED);
-                            sleep_ms(900);                   // brief, then auto-close on success
-                            VIDEO::SaveRect.restore_last();  // pop [window]
-                            string msg = string(MSG_WIFI_CONNECTED) + "\n" + ZiFiAT::current_ip;
-                            if (!when.empty()) msg += "\n" + when;
-                            OSD::osdCenteredMsg(msg, LEVEL_INFO, 2500);
-                        } else {
-                            wifiLogHold(MSG_WIFI_CONNECT_ERR); // error → hold open
-                            VIDEO::SaveRect.restore_last();  // pop [window]
-                        }
-                    }
-                };
-                // ── ZiFi NIC on/off (level 2) ──
-                auto doNic = [&]() {
-                    // The NIC is only the guest-port (0xEF/16550) emulation layered on top
-                    // of WiFi — it can't be enabled while WiFi is off (and WiFi-off already
-                    // forces it off), so there's nothing to toggle. Point the user at WiFi.
-                    if (!Config::wifi_enabled) {
-                        OSD::osdCenteredMsg("Enable WiFi first", LEVEL_WARN, 2500);
-                        return;
-                    }
-                    menu_level = 2; menu_saverect = true; menu_curopt = Config::zifi_enabled + 1;
-                    uint8_t zn = menuRun(MENU_ZIFI_NIC);
-                    if (zn > 0) {
-                        uint8_t prevZ = Config::zifi_enabled;
-                        Config::zifi_enabled = zn - 1;
-                        // Turning the NIC on claims ~12 KB heap rings — check the SRAM budget.
-                        // Freeing reboot never returns; denied/cancelled reverts.
-                        if (Config::zifi_enabled && !prevZ &&
-                            !OSD::featureBudgetGate(Subsystems::FEAT_ZIFI)) {
-                            Config::zifi_enabled = prevZ;
-                            ZiFi::enabled = Config::zifi_enabled;
-                            VIDEO::SaveRect.restore_last();
-                            return;
-                        }
-                        ZiFi::enabled = Config::zifi_enabled; // runtime mirror gates tick()+ports
-                        // The NIC toggle ONLY gates the 0xEF port emulation — it is
-                        // independent of WiFi. Bring the shared UART link up when the NIC
-                        // goes on; when it goes off only tear the link down if WiFi isn't
-                        // using it, otherwise we'd disconnect WiFi as a side effect.
-                        if (Config::zifi_enabled) ZiFi::init();
-                        else if (!ZiFiAT::connected) ZiFi::deinit();
-                        Config::save();
-                        VIDEO::SaveRect.restore_last();
-                        refreshNetStatus();
-                        if (Config::zifi_enabled && BoardPins::zifiActiveNote()[0] &&
-                            OSD::msgDialog("", OSD_DLG_APPLYREBOOT) == DLG_YES)
-                            OSD::esp_hard_reset();
-                    }
-                };
-
-                refreshNetStatus();
-                while (1) {
-                    if (OSD::net_launch_close) break;   // remoteFileDialog launched a /tmp download → close OSD
-                    menu_level = 1;
-                    // Row 2: live WiFi status, padded to a fixed width so geometry is stable.
-                    string st;
-                    if (st_conn) {
-                        const char* pre = "WiFi On ";
-                        string ssid = st_ssid, ip = st_ip;
-                        int avail = 32 - (int)strlen(pre) - 1 - (int)ip.size();
-                        if (avail < 0) avail = 0;
-                        if ((int)ssid.size() > avail) ssid.resize(avail);
-                        st = string(pre) + ssid + " " + ip;
-                    } else if (ZiFiAT::autoSyncBusy()) {
-                        // Boot auto-connect (CWJAP→SNTP) still running — don't claim "Off".
-                        st = "WiFi connecting...";
-                    } else if (Config::wifi_enabled) {
-                        // Enabled by the user but not currently associated (out of range /
-                        // autoconnect not run yet). Still "on" — selecting the row turns it off.
-                        st = "WiFi On (offline)";
-                    } else st = "WiFi Off";
-                    if (st.size() < 32) st.append(32 - st.size(), ' '); else st.resize(32);
-
-                    string nm = string("Network\n")
-                              + string(MENU_ESP01_TITLE) + "\t>\n"  // 1 ESP01
-                              + st + "\n";                                        // 2 WiFi
-                    // File transfer (Remote) and Online archives now live under F5
-                    // (location picker) — only the server/diagnostic rows remain here.
-#if ZIFI_NET_CLIENT
-                    nm += ("FTP Server\t>\n");           // 3
-                    nm += string(MENU_HTTP_TEST_ITEM);              // 4
-#endif
-                    nm += "ZiFi NIC\t>\n";                                        // 3 or 5
-
-                    uint8_t net_opt = menuRun(nm);
-                    if (net_opt == 0) break;
-
-                    if      (net_opt == 1) esp01Menu();
-                    else if (net_opt == 2) doWifi();
-#if ZIFI_NET_CLIENT
-                    else if (net_opt == 3) { ftpServerRun(); }
-                    else if (net_opt == 4) { netHttpTest(); }
-                    else if (net_opt == 5) doNic();
-#else
-                    else if (net_opt == 3) doNic();
-#endif
-                    refreshNetStatus();
-                    menu_curopt = net_opt;
-                    // Only the FIRST Network menuRun may save/position (see existing note):
-                    // keep menu_saverect false on re-entry so the window doesn't march down.
-                    menu_saverect = false;
-                }
-                menu_curopt = 10;
-            }
-            else if (opt == 11) { // ZX Keyboard — bitmap overlay
-                zxKeyboardOverlay();
-                if (VIDEO::OSD) OSD::drawStats();
-                return;
-            }
-            else if (opt == 12) { // Help — dynamic from hotkeys
-                // Build index of visible hotkeys (no large buffer needed)
-                auto descs = hkDescEN;
-                const int maxCols = osdMaxCols();
-                const int descCol = 16;
-                // Profi/Karabas-Pro "Menu"-key (Win/GUI) combos — the shared table
-                // (kProfiHkKeys) so this page and the new UI's cannot drift apart.
-                const char* const* profiKeys   = kProfiHkKeys;
-                const char* const* profiDescEN = kProfiHkDescEN;
-                const int profiN = kProfiHkCount;
-                const bool showProfi = Z80Ops::isProfi;
-                // -3 = Profi section header, -(4+p) = Profi line p,
-                // -2 = PrtScr, -1 = ScrollLk, 0..HK_COUNT-1 = hotkey index
-                int8_t hkOrder[Config::HK_COUNT + 2 + 16];
-                int nlines = 0;
-                for (int i = 0; i < Config::HK_COUNT; i++) {
-                    if (Config::hotkeys[i].vk == (uint16_t)fabgl::VK_NONE) continue;
-                    hkOrder[nlines++] = (int8_t)i;
-                }
-                hkOrder[nlines++] = -2; // PrtScr
-                hkOrder[nlines++] = -1; // ScrollLk
-                if (showProfi) {
-                    hkOrder[nlines++] = -3; // section header
-                    for (int p = 0; p < profiN; p++) hkOrder[nlines++] = (int8_t)(-(4 + p));
-                }
-
-                // Format one help line into buf (42 bytes max)
-                auto fmtLine = [&](int idx, char *buf) {
-                    const char *key, *desc;
-                    char keybuf[16];
-                    if (idx == -3) { // Profi/Karabas section header (no key column)
-                        snprintf(buf, 42, " Karabas (Menu=Win):");
-                        int len = strlen(buf);
-                        if (len < maxCols) { memset(buf + len, ' ', maxCols - len); buf[maxCols] = 0; }
-                        else buf[maxCols] = 0;
-                        return;
-                    }
-                    if (idx <= -4) { int p = -4 - idx; key = profiKeys[p]; desc = profiDescEN[p]; }
-                    // On Profi plain PrtScr toggles the XT keyboard; BMP capture
-                    // moves to Alt+PrtScr (see ESPectrum::processKeyboard).
-                    else if (idx == -2) {
-                        if (showProfi) { key = "PrtScr"; desc = "XT keyboard"; }
-                        else { key = "PrtScr"; desc = "BMP capture"; }
-                    }
-                    else if (idx == -1) { key = "ScrollLk"; desc = "Cursor=Joy"; }
-                    else {
-                        string b = hkBindingText(idx);
-                        snprintf(keybuf, sizeof(keybuf), "%s", b.c_str());
-                        key = keybuf;
-                        desc = descs[idx];
-                    }
-                    int pos = snprintf(buf, 42, " [%s]", key);
-                    while (pos < descCol) buf[pos++] = ' ';
-                    snprintf(buf + pos, 42 - pos, "%s", desc);
-                    int len = strlen(buf);
-                    if (len < maxCols) { memset(buf + len, ' ', maxCols - len); buf[maxCols] = 0; }
-                    else buf[maxCols] = 0;
-                };
-
-                // Content area: skip 2 rows top (header), 2 rows bottom (footer)
-                const int topRow = 2;
-                const int maxVisible = osdMaxRows() - 4;
-                int scroll = 0;
-
-                auto drawHelp = [&]() {
-                    drawOSD(true);
-                    // Content
-                    char buf[42];
-                    VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-                    for (int i = 0; i < maxVisible && (scroll + i) < nlines; i++) {
-                        fmtLine(hkOrder[scroll + i], buf);
-                        osdAt(topRow + i, 0);
-                        VIDEO::vga.print(buf);
-                    }
-                    // Scrollbar on the right edge
-                    if (nlines > maxVisible) {
-                        int ox = osdInsideX() + (maxCols - 1) * OSD_FONT_W;
-                        int oy = osdInsideY() + topRow * OSD_FONT_H;
-                        int barH = maxVisible * OSD_FONT_H;
-                        // Track
-                        VIDEO::vga.fillRect(ox, oy, OSD_FONT_W, barH, zxColor(7, 0));
-                        // Thumb
-                        int thumbH = (maxVisible * barH) / nlines;
-                        if (thumbH < 3) thumbH = 3;
-                        int thumbY = (scroll * barH) / nlines;
-                        if (thumbY + thumbH > barH) thumbY = barH - thumbH;
-                        VIDEO::vga.fillRect(ox + 1, oy + thumbY, OSD_FONT_W - 2, thumbH, zxColor(0, 0));
-                        // Arrows
-                        osdAt(topRow - 1, maxCols - 1);
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 0));
-                        VIDEO::vga.print(scroll > 0 ? "+" : "-");
-                        osdAt(topRow + maxVisible, maxCols - 1);
-                        VIDEO::vga.print(scroll + maxVisible < nlines ? "+" : "-");
-                    }
-                };
-                drawHelp();
-                while (1) {
-                    if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-                        if (ESPectrum::readKbd(&Nextkey)) {
-                            if (!Nextkey.down) continue;
-                            if (is_enter(Nextkey.vk) || is_back(Nextkey.vk)) break;
-                            if (is_down(Nextkey.vk) && scroll + maxVisible < nlines) {
-                                scroll++;
-                                drawHelp();
-                            }
-                            if (is_up(Nextkey.vk) && scroll > 0) {
-                                scroll--;
-                                drawHelp();
-                            }
-                        }
-                    }
-                    sleep_ms(5);
-                }
-                click();
-                if (VIDEO::OSD) OSD::drawStats();
-                return;
-            }
-            else if (opt == 13) { // About
-                // About
-                // Protect OSD area from Z80 video renderer overwrite
-                bool about_osd_enabled = (VIDEO::OSD != 0);
-                if (!about_osd_enabled) {
-                    VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
-                    VIDEO::OSD = 0x04;
-                }
-                drawOSD(false);
-
-                int osd_xi = osdInsideX();               // x inside OSD (with margin)
-                int osd_y0 = osdInsideY() - OSD_MARGIN; // = scrAlignCenterY(OSD_H)
-
-                VIDEO::vga.fillRect(osd_xi,
-                                    osd_y0 + 12,
-                                    240, 50, zxColor(0, 0));
-
-                // Decode Logo in EBF8 format
-                // Logo pixels are stored as ZX Spectrum palette indices (0-15)
-                uint8_t *logo = (uint8_t *)ESPectrum_logo;
-                int pos_x = osd_xi + 26;
-                int pos_y = osd_y0 + 23;
-                int logo_w = (logo[5] << 8) + logo[4]; // Get Width
-                int logo_h = (logo[7] << 8) + logo[6]; // Get Height
-                logo+=8; // Skip header
-                for (int i=0; i < logo_h; i++)
-                    for(int n=0; n<logo_w; n++) {
-                        uint8_t zxIdx = logo[n+(i*logo_w)];
-                        VIDEO::vga.dotFast(pos_x + n, pos_y + i, zxColor(zxIdx & 7, zxIdx >> 3));
-                    }
-
-                // About Page 1
-                // osdAt(7, 0);
-                VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-                // VIDEO::vga.print(OSD_ABOUT1_EN);
-
-                pos_x = osd_xi + 6;
-                pos_y = osd_y0 + 68;
-                int osdRow = 0; int osdCol = 0;
-                int msgIndex = 0; int msgChar = 0;
-                int msgDelay = 0; int cursorBlink = 16; int nextChar = 0;
-                uint16_t cursorCol = zxColor(7,1);
-                uint16_t cursorCol2 = zxColor(1,0);
-
-                while (1) {
-
-                    if (msgDelay == 0) {
-                        nextChar = AboutMsg[msgIndex][msgChar];
-                        if (nextChar != 13) {
-                            if (nextChar == 10) {
-                                char fore = AboutMsg[msgIndex][++msgChar];
-                                char back = AboutMsg[msgIndex][++msgChar];
-                                int foreint = (fore >= 'A') ? (fore - 'A' + 10) : (fore - '0');
-                                int backint = (back >= 'A') ? (back - 'A' + 10) : (back - '0');
-                                VIDEO::vga.setTextColor(zxColor(foreint & 0x7, foreint >> 3), zxColor(backint & 0x7, backint >> 3));
-                                msgChar++;
-                                continue;
-                            } else {
-                                VIDEO::vga.drawChar(pos_x + (osdCol * 6), pos_y + (osdRow * 8), nextChar);
-                            }
-                            msgChar++;
-                        } else {
-                            VIDEO::vga.fillRect(pos_x + (osdCol * 6), pos_y + (osdRow * 8), 6,8, zxColor(1, 0) );
-                        }
-                        osdCol++;
-                        if (osdCol == 38) {
-                            if (osdRow == 12) {
-                                osdCol--;
-                                msgDelay = 192;
-                            } else {
-                                VIDEO::vga.fillRect(pos_x + (osdCol * 6), pos_y + (osdRow * 8), 6,8, zxColor(1, 0) );
-                                osdCol = 0;
-                                msgChar++;
-                                osdRow++;
-                            }
-                        }
-                    } else {
-                        msgDelay--;
-                        if (msgDelay==0) {
-                            VIDEO::vga.fillRect(osd_xi, osd_y0+64, 240, 114, zxColor(1, 0));
-                            osdCol = 0;
-                            osdRow  = 0;
-                            msgChar = 0;
-                            msgIndex++;
-                            if (msgIndex==9) msgIndex = 0;
-                        }
-                    }
-
-                    if (--cursorBlink == 0) {
-                        uint16_t cursorSwap = cursorCol;
-                        cursorCol = cursorCol2;
-                        cursorCol2 = cursorSwap;
-                        cursorBlink = 16;
-                    }
-
-                    VIDEO::vga.fillRect(pos_x + ((osdCol + 1) * 6), pos_y + (osdRow * 8), 6,8, cursorCol );
-
-                    if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-                        if (ESPectrum::readKbd(&Nextkey)) {
-                            if (!Nextkey.down) continue;
-                            if (is_enter(Nextkey.vk) || is_back(Nextkey.vk == fabgl::VK_ESCAPE)) break;
-                        }
-                    }
-                    sleep_ms(20);
-                }
-                click();
-                // Restore video renderer if we enabled OSD protection for About
-                if (!about_osd_enabled) {
-                    VIDEO::OSD = 0;
-                    VIDEO::Draw_OSD43 = VIDEO::BottomBorder;
-                }
-                if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
-                return;
-            }
-#if TFT
-            // TFT: opt 13.
-            else if (FileUtils::fsMount && opt == 13) { // TFT
-                menu_saverect = true;
-                menu_curopt = 1;
-                while(1) {
-                    menu_level = 1;
-                    uint8_t opt2 = menuRun(MENU_TFT);
-                    if (opt2 == 1) {
-                        // INVERSION
-                        uint8_t prev_inv = TFT_INVERSION;
-                        TFT_INVERSION = !TFT_INVERSION;
-                        if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                            Config::save();
-                            esp_hard_reset();
-                        } else {
-                            TFT_INVERSION = prev_inv;
-                        }
-                    }
-                    else if (opt2 == 2) {
-                        // FLAGS
-                        menu_level = 2;
-                        menu_saverect = true;
-                        while (1) {
-                            uint8_t opt2 = menuRun(MENU_TFT2);
-                            uint8_t prev_flags = TFT_FLAGS;
-                            if (opt2 == 1) {
-                                TFT_FLAGS = (TFT_FLAGS & MADCTL_BGR_PIXEL_ORDER) ? (TFT_FLAGS & ~MADCTL_BGR_PIXEL_ORDER) : (TFT_FLAGS | MADCTL_BGR_PIXEL_ORDER);
-                                if (confirmReboot(OSD_DLG_APPLYREBOOT)) { Config::save(); esp_hard_reset(); }
-                                else TFT_FLAGS = prev_flags;
-                            }
-                            else if (opt2 == 2) {
-                                TFT_FLAGS = (TFT_FLAGS & MADCTL_MX) ? (TFT_FLAGS & ~MADCTL_MX) : (TFT_FLAGS | MADCTL_MX);
-                                if (confirmReboot(OSD_DLG_APPLYREBOOT)) { Config::save(); esp_hard_reset(); }
-                                else TFT_FLAGS = prev_flags;
-                            }
-                            else if (opt2 == 3) {
-                                TFT_FLAGS = (TFT_FLAGS & MADCTL_MY) ? (TFT_FLAGS & ~MADCTL_MY) : (TFT_FLAGS | MADCTL_MY);
-                                if (confirmReboot(OSD_DLG_APPLYREBOOT)) { Config::save(); esp_hard_reset(); }
-                                else TFT_FLAGS = prev_flags;
-                            }
-                            else if (opt2 == 4) {
-                                TFT_FLAGS = (TFT_FLAGS & MADCTL_MX) ? (TFT_FLAGS & ~MADCTL_MX) : (TFT_FLAGS | MADCTL_MX);
-                                TFT_FLAGS = (TFT_FLAGS & MADCTL_MY) ? (TFT_FLAGS & ~MADCTL_MY) : (TFT_FLAGS | MADCTL_MY);
-                                if (confirmReboot(OSD_DLG_APPLYREBOOT)) { Config::save(); esp_hard_reset(); }
-                                else TFT_FLAGS = prev_flags;
-                            } else {
-                                menu_level = 1;
-                                menu_curopt = 2;
-                                break;
-                            }
-                        }
-                    }
-                    else if (opt2 == 3) {
-                        uint8_t prev_inv = TFT_INVERSION;
-                        uint8_t prev_flags = TFT_FLAGS;
-                        TFT_INVERSION = 0;
-                        TFT_FLAGS = MADCTL_ROW_COLUMN_EXCHANGE | MADCTL_BGR_PIXEL_ORDER;
-                        if (confirmReboot(OSD_DLG_APPLYREBOOT)) {
-                            Config::save();
-                            esp_hard_reset();
-                        } else {
-                            TFT_INVERSION = prev_inv;
-                            TFT_FLAGS = prev_flags;
-                        }
-                    } else {
-                        menu_curopt = 9;
-                        break;
-                    }
-                }
-            }
-#endif
-            else break;
-          }
+            // The new fullscreen menu owns this key. AYGuard and DS80Guard at the top
+            // of do_OSD already cover this path, and the frame repaint on close is done
+            // by ESPectrum::processKeyboard as usual.
+            nm::run();
+            if (VIDEO::OSD) OSD::drawStats();
+            return;
         }
 }
 
@@ -7395,88 +2500,6 @@ extern "C" void osd_printf(const char* msg, ...) {
     OSD::osdCenteredMsg(msg, LEVEL_WARN, 1000);
 }
 
-// LED indicators legend panel: draws all glyphs with labels in a single column
-void OSD::showLedLegend() {
-    struct Entry { LED::Id id; const char* label; };
-    static const Entry entries[] = {
-        { LED::TAPE,      "Tape (EAR)"      },
-        { LED::FDD,       "Floppy/TR-DOS"   },
-        { LED::SD,        "DivMMC/esxDOS"   },
-        { LED::ZCTRL,     "Z-Controller"    },
-        { LED::IDE,       "IDE/HDD"         },
-        { LED::BEEPER,    "Beeper"          },
-        { LED::AY,        "AY-3-8912"       },
-        { LED::COVOX,     "Covox DAC"       },
-        { LED::SAA,       "SAA1099"         },
-        { LED::MIDI,      "MIDI"            },
-        { LED::GS,        "General Sound"   },
-        { LED::ULAPLUS,    "ULA+"            },
-        { LED::TIMEX,      "Timex SCLD"     },
-        { LED::GIGASCREEN, "Gigascreen"     },
-        { LED::RAM,        "RAM paging"     },
-        { LED::DMA,       "Z80 DMA"         },
-        { LED::KEMPJOY,   "Kempston joy"    },
-        { LED::KEMPMOUSE, "Kempston mouse"  },
-        { LED::NET,       "Network (ZiFi)"  },
-    };
-    static constexpr int N = sizeof(entries) / sizeof(entries[0]);
-
-    static constexpr int row_h = 11;  // 8px sprite + 3px gap
-    static constexpr int W = 160;
-    static constexpr int H = 2 + OSD_FONT_H + 4 + N * row_h + 4;  // title + rows + padding
-
-    unsigned short ox = scrAlignCenterX(W);
-    unsigned short oy = scrAlignCenterY(H);
-    uint8_t paper      = zxColor(1, 0);
-    uint8_t ink        = zxColor(7, 1);
-    uint8_t title_paper = zxColor(5, 1);
-    uint8_t title_ink   = zxColor(0, 0);
-
-    VIDEO::SaveRect.save(ox, oy, W, H);
-    VIDEO::vga.fillRect(ox, oy, W, H, paper);
-    VIDEO::vga.rect(ox, oy, W, H, zxColor(0, 0));
-    VIDEO::vga.rect(ox + 1, oy + 1, W - 2, H - 2, zxColor(7, 0));
-
-    // Title bar
-    VIDEO::vga.fillRect(ox + 2, oy + 2, W - 4, OSD_FONT_H, title_paper);
-    VIDEO::vga.setTextColor(title_ink, title_paper);
-    VIDEO::vga.setFont(Font6x8);
-    VIDEO::vga.setCursor(ox + OSD_FONT_W, oy + 2);
-    VIDEO::vga.print("LED legend");
-
-    VIDEO::vga.setTextColor(ink, paper);
-
-    int top_y = oy + 2 + OSD_FONT_H + 4;
-
-    for (int i = 0; i < N; i++) {
-        int gx = ox + 6;
-        int gy = top_y + i * row_h;
-        LED::drawGlyph(entries[i].id, gx, gy + 1, ink - 1, paper);
-        VIDEO::vga.setCursor(gx + 10, gy + 1);
-        VIDEO::vga.print(entries[i].label);
-    }
-
-    // Drain any pending keys (e.g. Enter from menu selection), then wait for a closing
-    // key. Only the menu-level keys close, and the rest of the queue goes with them:
-    // one physical key injects several virtual events (kbdExtraMapping pushes
-    // VK_DPAD_LEFT + VK_MENU_LEFT + VK_LEFT for a Left press), so leaving on the first
-    // of them let the menu we return to act on the VK_MENU_LEFT still queued and drop
-    // a level as well.
-    auto Kbd = ESPectrum::PS2Controller.keyboard();
-    fabgl::VirtualKeyItem item;
-    while (Kbd->virtualKeyAvailable()) Kbd->getNextVirtualKey(&item);
-    while (1) {
-        if (Kbd->virtualKeyAvailable()) {
-            Kbd->getNextVirtualKey(&item);
-            if (item.down && (is_enter(item.vk) || is_back(item.vk))) {
-                while (Kbd->virtualKeyAvailable()) Kbd->getNextVirtualKey(&item);
-                break;
-            }
-        }
-    }
-
-    VIDEO::SaveRect.restore_last();
-}
 
 // Centered message
 void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level) {
@@ -7484,7 +2507,6 @@ void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level) {
 }
 
 void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millispause) {
-#if NEW_UI
     // New-skin toasts. The persistent (millispause == 0) form leaves the UI
     // palette installed, which recolours a DS80 guest screen — keep the classic
     // renderer there; every timed toast is self-contained and safe everywhere.
@@ -7492,7 +2514,6 @@ void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millisp
         nm::uiOsdMsg(msg.c_str(), warn_level, millispause);
         return;
     }
-#endif
 
     // Count lines and find the longest line for proper sizing
     unsigned short nlines = 1;
@@ -8469,139 +3490,6 @@ static void saveDumpToFile(uint16_t addr_from, uint16_t addr_to) {
     fclose2(f);
 }
 
-#if NEW_UI
-// Defined below the debugger-skin facade (it draws with the facade's grid);
-// returns false when the classic box should run instead (skin not active).
-static bool osdDumpNu();
-#endif
-
-void OSD::osdDump() {
-#if NEW_UI
-    if (osdDumpNu()) return;    // new chrome: the full-screen page below the facade
-#endif
-    const unsigned short h = OSD_FONT_H * 22;
-    const unsigned short y = scrAlignCenterY(h);
-    const unsigned short w = OSD_FONT_W * 46;
-    const unsigned short x = scrAlignCenterX(w);
-
-    VIDEO::SaveRect.save(x - 1, y - 1, w + 2, h + 2);
-    char buf[44];
-    // Set font
-    VIDEO::vga.setFont(Font6x8);
-
-    // Boarder
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0,0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7,1));
-
-    // Title
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print("Dump");
-
-    // Rainbow
-    unsigned short rb_y = y + 8;
-    unsigned short rb_paint_x = x + w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++) {
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8, zxColor(rb_colors[c], 1));
-        }
-        rb_paint_x += 5;
-    }
-
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-
-c:
-    int xi = x + 1;
-
-    for (int i = 0; i < 20; ++i) {
-        uint16_t pci = (dump_pc + i * 16) & 0b1111111111110000;
-        int yi = y + (i + 1) * OSD_FONT_H + 2;
-        VIDEO::vga.setCursor(xi, yi);
-        snprintf(
-            buf, 46, "%04X  %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X %02X%02X",
-            pci,
-            MemESP::readbyte(pci),
-            MemESP::readbyte(pci+1),
-            MemESP::readbyte(pci+2),
-            MemESP::readbyte(pci+3),
-
-            MemESP::readbyte(pci+4),
-            MemESP::readbyte(pci+5),
-            MemESP::readbyte(pci+6),
-            MemESP::readbyte(pci+7),
-
-            MemESP::readbyte(pci+8),
-            MemESP::readbyte(pci+9),
-            MemESP::readbyte(pci+10),
-            MemESP::readbyte(pci+11),
-
-            MemESP::readbyte(pci+12),
-            MemESP::readbyte(pci+13),
-            MemESP::readbyte(pci+14),
-            MemESP::readbyte(pci+15)
-        );
-        VIDEO::vga.print(buf);
-    }
-
-    fabgl::VirtualKeyItem Nextkey;
-    auto Kbd = ESPectrum::PS2Controller.keyboard();
-    bool alt = false;
-    while (1) {
-        sleep_ms(5);
-        if (Kbd->virtualKeyAvailable()) {
-            Kbd->getNextVirtualKey(&Nextkey);
-            if (Nextkey.vk == fabgl::VK_LALT || Nextkey.vk == fabgl::VK_RALT) {
-                alt = Nextkey.down;
-            }
-            if (!Nextkey.down) continue;
-            if (Nextkey.vk == fabgl::VK_ESCAPE) {
-                break;
-            }
-            if (alt && Nextkey.vk == fabgl::VK_F2 && FileUtils::fsMount) {
-                // Remount SD if needed (card may have been swapped)
-                if (!FileUtils::checkSDCard()) FileUtils::remountSD();
-                // Save memory dump to file
-                uint32_t addr_from = addressDialog(dump_pc, "Dump from");
-                if (addr_from > 0xFFFF) goto c;
-                uint32_t addr_to = addressDialog((addr_from + 0xFF) & 0xFFFF, "Dump to");
-                if (addr_to > 0xFFFF) goto c;
-                saveDumpToFile((uint16_t)addr_from, (uint16_t)addr_to);
-                goto c;
-            } else
-            if (Nextkey.vk == fabgl::VK_KP_MINUS || Nextkey.vk == fabgl::VK_UP) {
-                dump_pc -= 16;
-                goto c;
-            } else
-            if (Nextkey.vk == fabgl::VK_KP_PLUS || Nextkey.vk == fabgl::VK_DOWN) {
-                dump_pc += 16;
-                goto c;
-            } else
-            if (Nextkey.vk == fabgl::VK_0) {
-                dump_pc = 0;
-                goto c;
-            } else
-            if (Nextkey.vk == fabgl::VK_PAGEUP) {
-                dump_pc -= 20 * 16;
-                goto c;
-            } else
-            if (Nextkey.vk == fabgl::VK_PAGEDOWN) {
-                dump_pc += 20 * 16;
-                goto c;
-            } else
-            if (Nextkey.vk == fabgl::VK_F8) {
-                uint32_t address = addressDialog(dump_pc, "Jump to");
-                if (address <= 0xFFFF) {
-                    dump_pc = address;
-                }
-                goto c;
-            }
-        }
-    }
-    VIDEO::SaveRect.restore_last();
-}
 
 static uint32_t memSearchResultAddr = 0x10000; // >0xFFFF = no result
 static string memSearchHex;
@@ -8694,15 +3582,11 @@ static int instrLen(uint16_t addr) {
     return 1;
 }
 
-// ── Debugger skins ──────────────────────────────────────────────────────────────
-// One copy of the debugger logic (osdDebug below), two skins: the classic 50x26
-// zxColor box, or the new-UI full-screen chrome (6x10 menu font, header + footer
-// bands, menu palette). The logic addresses CHARACTER CELLS of a content grid whose
-// row 0 is the first disassembly line; the facade maps cells to pixels per skin.
-// DS80 keeps the classic box: its doubled glyphs leave only 42 columns and the grid
-// needs 49. In standard mode the UI palette (indices 224..239) coexists with the
-// zxColor range, so the classic sub-dialogs (menuRun persist slots, osdDump…) keep
-// drawing correctly over the new chrome.
+// ── Debugger chrome ─────────────────────────────────────────────────────────────
+// The debugger draws in the UI's full-screen chrome (6x10 menu font, header +
+// footer bands, menu palette). Its logic addresses CHARACTER CELLS of a content
+// grid whose row 0 is the first disassembly line; the facade below maps cells to
+// pixels.
 namespace {
 
 enum DbgInk : uint8_t {
@@ -8714,33 +3598,17 @@ enum DbgInk : uint8_t {
     DBG_SEL_BYTE,   // memory byte under the column cursor
     DBG_EDIT,       // inline hex editor, idle digits
     DBG_EDIT_CUR,   // inline hex editor, current digit
-    DBG_TITLE,      // classic title bar text
+    DBG_TITLE,      // title bar text
 };
 
 struct DbgSkin {
-    bool nu;            // new-UI chrome active this session
-    int  x, y, w, h;    // classic box rect (SaveRect + border)
     int  cx, cy;        // pixel origin of content cell (0,0)
-    int  code_lines;    // disassembly rows: 18 classic, 15 new chrome
+    int  code_lines;    // disassembly rows
     int  mem_hdr_row;   // content row of the "-Memory-" rule (Flags aligns to it)
-    int  regs_hdr_row;  // new chrome: fixed row; classic: centered while drawing
+    int  regs_hdr_row;  // content row of the "-Regs-" rule
 };
 static DbgSkin s_dbg;
 
-// classic zxColor (ink,bright / paper,bright) per DbgInk
-struct DbgZxPair { uint8_t i, ib, p, pb; };
-static const DbgZxPair kDbgZx[] = {
-    {0,0, 7,1},   // NORM      black on white
-    {0,0, 5,0},   // CUR       black on cyan
-    {2,1, 7,1},   // PC        red on white
-    {2,1, 5,0},   // PC_CUR    red on cyan
-    {5,0, 7,1},   // HDR       cyan on white
-    {7,1, 2,0},   // SEL_BYTE  white on red
-    {7,1, 2,0},   // EDIT      white on red
-    {7,1, 1,1},   // EDIT_CUR  white on blue
-    {7,1, 0,0},   // TITLE     white on black
-};
-#if NEW_UI
 static const nm::UiColor kDbgInkNu[] = {
     nm::C_TEXT, nm::C_WHITE, nm::C_ICON_R, nm::C_ICON_R, nm::C_TEXT_DIM,
     nm::C_WHITE, nm::C_WHITE, nm::C_WHITE, nm::C_WHITE,
@@ -8749,65 +3617,28 @@ static const nm::UiColor kDbgPaperNu[] = {
     nm::C_PANEL, nm::C_SEL_BG, nm::C_PANEL, nm::C_SEL_BG, nm::C_PANEL,
     nm::C_ICON_R, nm::C_ICON_R, nm::C_SEL_BG, nm::C_PANEL,
 };
-#endif
 
-// Cell width: the new skin's glyphs scale horizontally in DS80 (glyphScale 2).
-static int dbgCellW() {
-#if NEW_UI
-    if (s_dbg.nu) return UI_FONT_W * nm::Sf.glyphScale;
-#endif
-    return OSD_FONT_W;
-}
-static int dbgPX(int col) {
-    return s_dbg.cx + col * dbgCellW();
-}
-static int dbgPY(int row) {
-#if NEW_UI
-    if (s_dbg.nu) return s_dbg.cy + row * UI_FONT_H;
-#endif
-    return s_dbg.cy + row * OSD_FONT_H;
-}
+// Cell width: the glyphs scale horizontally in DS80 (glyphScale 2).
+static int dbgCellW() { return UI_FONT_W * nm::Sf.glyphScale; }
+static int dbgPX(int col) { return s_dbg.cx + col * dbgCellW(); }
+static int dbgPY(int row) { return s_dbg.cy + row * UI_FONT_H; }
 
 static void dbgText(int col, int row, const char* s, DbgInk k) {
     const int x = dbgPX(col), y = dbgPY(row);
-#if NEW_UI
-    if (s_dbg.nu) {
-        nm::fill(x, y, (int)strlen(s) * dbgCellW(), UI_FONT_H, kDbgPaperNu[k]);
-        nm::text(x, y, s, kDbgInkNu[k]);
-        return;
-    }
-#endif
-    const DbgZxPair& z = kDbgZx[k];
-    VIDEO::vga.setTextColor(zxColor(z.i, z.ib), zxColor(z.p, z.pb));
-    VIDEO::vga.setCursor(x, y);
-    VIDEO::vga.print(s);
+    nm::fill(x, y, (int)strlen(s) * dbgCellW(), UI_FONT_H, kDbgPaperNu[k]);
+    nm::text(x, y, s, kDbgInkNu[k]);
 }
 
 // Row band fill (the code/cursor line background, wider than its text).
 static void dbgFillRow(int col, int row, int ncols, DbgInk k) {
-#if NEW_UI
-    if (s_dbg.nu) {
-        nm::fill(dbgPX(col), dbgPY(row), ncols * dbgCellW(), UI_FONT_H, kDbgPaperNu[k]);
-        return;
-    }
-#endif
-    const DbgZxPair& z = kDbgZx[k];
-    VIDEO::vga.fillRect(dbgPX(col), dbgPY(row), ncols * OSD_FONT_W, OSD_FONT_H,
-                        zxColor(z.p, z.pb));
+    nm::fill(dbgPX(col), dbgPY(row), ncols * dbgCellW(), UI_FONT_H, kDbgPaperNu[k]);
 }
 
 // Breakpoint dot on a code row.
 static void dbgBpDot(int row) {
-#if NEW_UI
-    if (s_dbg.nu) {
-        nm::fill(dbgPX(0) + 1, dbgPY(row) + 3, 4 * nm::Sf.glyphScale, 4, nm::C_ICON_R);
-        return;
-    }
-#endif
-    VIDEO::vga.circle(dbgPX(0) + 3, dbgPY(row) + 3, 3, zxColor(2, 0));
+    nm::fill(dbgPX(0) + 1, dbgPY(row) + 3, 4 * nm::Sf.glyphScale, 4, nm::C_ICON_R);
 }
 
-#if NEW_UI
 // Full-screen chrome with an arbitrary title and footer — the new skin's frame,
 // shared by the debugger itself and its Dump page. Repaints the whole body.
 static void dbgFrameNu(const char* title, const char* footer) {
@@ -8835,76 +3666,30 @@ static void dbgFrameNu(const char* title, const char* footer) {
     s_dbg.cx = ix + 2 * pad;
     s_dbg.cy = iy + hdr_h + 2;
 }
-#endif
 
-// Frame, title bar and (new chrome) footer. Repaints the whole body background,
-// exactly like the classic redrawTitle block did.
+// Frame, title bar and footer. Repaints the whole body background.
 static void dbgFrame(const char* section) {
     char buf[48];
-#if NEW_UI
-    if (s_dbg.nu) {
-        snprintf(buf, sizeof(buf), "Debugger  [%s]", section);
-        dbgFrameNu(buf, "Tab Sect  Spc Step  Ent Edit  F5 BP  F1 Help");
-        return;
-    }
-#endif
-    VIDEO::vga.rect(s_dbg.x, s_dbg.y, s_dbg.w, s_dbg.h, zxColor(0, 0));
-    VIDEO::vga.fillRect(s_dbg.x + 1, s_dbg.y + 1, s_dbg.w - 2, OSD_FONT_H, zxColor(0, 0));
-    VIDEO::vga.fillRect(s_dbg.x + 1, s_dbg.y + 1 + OSD_FONT_H, s_dbg.w - 2,
-                        s_dbg.h - OSD_FONT_H - 2, zxColor(7, 1));
-    snprintf(buf, sizeof(buf), "Debug [%s]", section);
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(s_dbg.x + OSD_FONT_W + 1, s_dbg.y + 1);
-    VIDEO::vga.print(buf);
-    // Rainbow
-    unsigned short rb_y = s_dbg.y + 8;
-    unsigned short rb_paint_x = s_dbg.x + s_dbg.w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++)
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8,
-                            zxColor(rb_colors[c], 1));
-        rb_paint_x += 5;
-    }
+    snprintf(buf, sizeof(buf), "Debugger  [%s]", section);
+    dbgFrameNu(buf, "Tab Sect  Spc Step  Ent Edit  F5 BP  F1 Help");
 }
-
-// Pick the skin and the grid geometry for this session.
+// Grid geometry for this session. The 20-row content grid needs ~50 columns, which
+// every supported mode has — DS80 included, since the surface covers the whole
+// framebuffer (640 px / 12-px doubled glyphs = 53 columns).
 static void dbgBegin() {
-    s_dbg.w = OSD_FONT_W * 50;
-    s_dbg.h = OSD_FONT_H * 26;
-    s_dbg.x = OSD::scrAlignCenterX(s_dbg.w);
-    s_dbg.y = OSD::scrAlignCenterY(s_dbg.h);
-    s_dbg.nu = false;
-#if NEW_UI
-    if (nm::available()) {
-        nm::gfxComputeSurface();
-        // The grid needs ~50 columns. DS80 fits too since the surface covers the
-        // whole framebuffer (640 px / 12-px doubled glyphs = 53 columns).
-        if (nm::Sf.w / (UI_FONT_W * nm::Sf.glyphScale) >= 50) s_dbg.nu = true;
-    }
-#endif
-    if (s_dbg.nu) {
-        // 20 content rows: 15 code + memory rule + 4 dump; the right column packs
-        // Pages / Regs / Flags into the same 20 (T-states and BPs move under Flags).
-        s_dbg.code_lines   = 15;
-        s_dbg.mem_hdr_row  = 15;
-        s_dbg.regs_hdr_row = 5;
-    } else {
-        s_dbg.code_lines   = 18;
-        s_dbg.mem_hdr_row  = 19;      // blank row 18 between code and the rule
-        s_dbg.regs_hdr_row = -1;      // centered while drawing, as always
-        s_dbg.cx = s_dbg.x + 1;
-        s_dbg.cy = s_dbg.y + OSD_FONT_H + 2;
-    }
+    nm::gfxComputeSurface();
+    // 20 content rows: 15 code + memory rule + 4 dump; the right column packs
+    // Pages / Regs / Flags into the same 20 (T-states and BPs move under Flags).
+    s_dbg.code_lines   = 15;
+    s_dbg.mem_hdr_row  = 15;
+    s_dbg.regs_hdr_row = 5;
 }
 
-#if NEW_UI
-// ── Debugger modals, new-chrome versions ───────────────────────────────────────
-// Same semantics as the classic forms (addressDialog / BPDialog / BPListDialog /
-// memSearchDialog / dumpRangeDialog), rebuilt on the uiPrompt/uiPickList
-// primitives. Used only under the new skin; the classic box keeps its forms.
+// ── Debugger modals ────────────────────────────────────────────────────────────
+// The address / breakpoint / memory-search / dump-range forms, built on the
+// uiPrompt/uiPickList primitives.
 
-// One-line hex prompt. Returns 0x10000 on Esc — the addressDialog cancel contract.
+// One-line hex prompt. Returns 0x10000 on Esc (the "cancelled" address).
 static uint32_t dbgHexPromptNu(uint16_t init, const char* title) {
     char b[8];
     snprintf(b, sizeof(b), "%04X", init);
@@ -9031,16 +3816,12 @@ static bool dbgDumpRangeNu(uint16_t& from, uint16_t& to) {
     to   = (uint16_t)t;
     return true;
 }
-#endif // NEW_UI
 
 } // namespace
 
-#if NEW_UI
-// F2 memory dump in the new chrome: the whole facade grid (20 rows x 16 bytes),
-// same keys as the classic box (Up/Down +-16, PgUp/PgDn a page, 0 top, F8 go,
-// Alt+F2 save range, Esc). Returns false when the new skin is not active.
-static bool osdDumpNu() {
-    if (!s_dbg.nu) return false;
+// F2 memory dump: the whole facade grid (20 rows x 16 bytes). Up/Down +-16,
+// PgUp/PgDn a page, 0 top, F8 go, Alt+F2 save range, Esc closes.
+void OSD::osdDump() {
     const int rows = s_dbg.mem_hdr_row + 5;      // full content grid (20 rows)
     char buf[52];
     bool alt = false;
@@ -9067,7 +3848,7 @@ static bool osdDumpNu() {
         if (!k.down) continue;
         switch (k.vk) {
             case fabgl::VK_ESCAPE:
-                return true;
+                return;
             case fabgl::VK_KP_MINUS:
             case fabgl::VK_UP:       dump_pc -= 16;        break;
             case fabgl::VK_KP_PLUS:
@@ -9103,7 +3884,6 @@ static bool osdDumpNu() {
         }
     }
 }
-#endif // NEW_UI
 
 void OSD::osdDebug(uint16_t gotoAddr) {
     dbgBegin();
@@ -9112,8 +3892,6 @@ void OSD::osdDebug(uint16_t gotoAddr) {
     flushKbd();
     const int CODE_LINES = s_dbg.code_lines;
 
-    if (!s_dbg.nu)
-        VIDEO::SaveRect.save(s_dbg.x - 1, s_dbg.y - 1, s_dbg.w + 2, s_dbg.h + 2);
     char buf[40];
     int ii = 3;
     int cursor_row = 3; // cursor starts at PC line
@@ -9138,8 +3916,6 @@ void OSD::osdDebug(uint16_t gotoAddr) {
 
 c:
     sleep_ms(5);
-    // Set font
-    if (!s_dbg.nu) VIDEO::vga.setFont(Font6x8);
 
     if (redrawTitle) {
         // Border + title bar (+ footer on the new chrome); repaints the body bg.
@@ -9317,15 +4093,8 @@ c:
         }
     }
 
-    // --- REGS header --- classic: centered between Pages and Flags; new: fixed row
-    if (s_dbg.nu) {
-        i = s_dbg.regs_hdr_row;
-    } else {
-        int regsNeeded = 12; // 1 header + 4 paired + 4 single + IR + Tstates + BP
-        int available = CODE_LINES - i; // rows from current i to CODE_LINES
-        int pad = (available - regsNeeded) / 2 + 1;
-        if (pad > 0) i += pad;
-    }
+    // --- REGS header --- fixed row
+    i = s_dbg.regs_hdr_row;
     dbgText(XR, i++, "-Regs------------", DBG_HDR);
     regStartRow = i; // first data row index
     {
@@ -9379,19 +4148,6 @@ c:
             i++;
         }
 
-        // T-states and BP count: here in the classic layout; the new chrome moves
-        // them under the Flags block (its grid is 4 rows shorter).
-        if (!s_dbg.nu) {
-            snprintf(buf, 32, "%dT %dus         ", T2 - T1, t2 - t1);
-            buf[17] = 0;
-            dbgText(XR, i++, buf, DBG_NORM);
-            if (Config::numBreakPoints > 0)
-                snprintf(buf, 32, "BP(s):%d          ", Config::numBreakPoints);
-            else
-                snprintf(buf, 32, "                 ");
-            buf[17] = 0;
-            dbgText(XR, i++, buf, DBG_NORM);
-        }
     }
 
     // --- FLAGS block, aligned with the Memory rule ---
@@ -9408,20 +4164,16 @@ c:
     }
     dbgText(XR, i++, "SZ-H-PNC SZ-H-PNC", DBG_NORM);
 
-    if (s_dbg.nu) {
-        snprintf(buf, 32, "%dT %dus         ", T2 - T1, t2 - t1);
-        buf[17] = 0;
-        dbgText(XR, i++, buf, DBG_NORM);
-        if (Config::numBreakPoints > 0)
-            snprintf(buf, 32, "BP(s):%d          ", Config::numBreakPoints);
-        else
-            snprintf(buf, 32, "                 ");
-        buf[17] = 0;
-        dbgText(XR, i++, buf, DBG_NORM);
-    } else {
-        ++i;
-        dbgText(XR, i++, "F1 - Debug help  ", DBG_NORM);
-    }
+    // T-states and BP count sit under the Flags block.
+    snprintf(buf, 32, "%dT %dus         ", T2 - T1, t2 - t1);
+    buf[17] = 0;
+    dbgText(XR, i++, buf, DBG_NORM);
+    if (Config::numBreakPoints > 0)
+        snprintf(buf, 32, "BP(s):%d          ", Config::numBreakPoints);
+    else
+        snprintf(buf, 32, "                 ");
+    buf[17] = 0;
+    dbgText(XR, i++, buf, DBG_NORM);
   } // redrawRight
 
     // Reset redraw flags (default: redraw all on next goto c)
@@ -9462,19 +4214,10 @@ c:
             } else
             if (Nextkey.vk == fabgl::VK_F7) {
                 if (alt) {
-                    uint16_t bpAddr;
-#if NEW_UI
-                    if (s_dbg.nu) bpAddr = dbgBpListNu();
-                    else
-#endif
-                    bpAddr = BPListDialog();
+                    const uint16_t bpAddr = dbgBpListNu();
                     if (bpAddr != 0xFFFF) { gotoAddr = bpAddr; gotoApplied = false; }
                 } else {
-#if NEW_UI
-                    if (s_dbg.nu) dbgBpAddNu();
-                    else
-#endif
-                    BPDialog();
+                    dbgBpAddNu();
                 }
                 // The modal consumed the Alt key-up: without this, the NEXT F-key
                 // would still read as an Alt-chord.
@@ -9483,38 +4226,28 @@ c:
                 goto c;
             } else
             if (Nextkey.vk == fabgl::VK_F8) {
-#if NEW_UI
-                if (s_dbg.nu) {
+                {
                     const uint32_t a = dbgHexPromptNu(Z80::getRegPC(), "Set PC to (hex)");
                     if (a <= 0xFFFF && a != Z80::getRegPC()) Z80::setRegPC((uint16_t)a);
-                } else
-#endif
-                jumpToDialog();
+                }
                 alt = false;
                 redrawTitle = true;
                 goto c;
             } else
             if (Nextkey.vk == fabgl::VK_F9 && !alt) {
-#if NEW_UI
-                if (s_dbg.nu) nm::act_debugPoke();   // palette already installed
-                else
-#endif
-                pokeDialog();
+                nm::act_debugPoke();   // palette already installed
                 redrawTitle = true;
                 goto c;
             } else
             if (Nextkey.vk == fabgl::VK_F9 && alt) {
                 // Fullscreen debug: show Spectrum screen, step with Space/ALT+Space, ESC to return
-                if (!s_dbg.nu) VIDEO::SaveRect.restore_last();
-                else {
+                {
                     // Chrome is full-screen: render one guest frame instead. The
                     // paper repaints every frame, the border only on demand — ask
                     // for it or the chrome stays in the border area. DS80: hand the
                     // palette back so the guest frame shows its own colours
                     // (dbgFrame re-installs on return).
-#if NEW_UI
                     nm::gfxSuspendPalette();
-#endif
                     VIDEO::brdnextframe = true;
                     CPU::loop();
                 }
@@ -9552,8 +4285,6 @@ c:
                     }
                 }
                 alt = false;
-                if (!s_dbg.nu)
-                    VIDEO::SaveRect.save(s_dbg.x - 1, s_dbg.y - 1, s_dbg.w + 2, s_dbg.h + 2);
                 redrawTitle = true;
                 goto c;
             } else
@@ -9685,19 +4416,10 @@ c:
                     if (!FileUtils::checkSDCard()) FileUtils::remountSD();
                     uint16_t from_addr = line_addr[cursor_row];
                     uint16_t to_addr = (from_addr + 0xFF) & 0xFFFF;
-                    bool ok;
-#if NEW_UI
-                    if (s_dbg.nu) ok = dbgDumpRangeNu(from_addr, to_addr);
-                    else
-#endif
-                    ok = dumpRangeDialog(from_addr, to_addr);
-                    if (ok) {
+                    if (dbgDumpRangeNu(from_addr, to_addr)) {
                         saveDumpToFile(from_addr, to_addr);
-#if NEW_UI
-                        if (s_dbg.nu) { flushKbd(); nm::uiToast("Dump saved", false, 1200); }
-                        else
-#endif
-                        osdCenteredMsg("Dump saved", LEVEL_INFO, 1000);
+                        flushKbd();
+                        nm::uiToast("Dump saved", false, 1200);
                     }
                 } else {
                     osdDump();
@@ -9707,11 +4429,7 @@ c:
             } else
             if (Nextkey.vk == fabgl::VK_F1 && alt) {
                 // ALT+F1: Search memory for hex byte sequence
-#if NEW_UI
-                if (s_dbg.nu) dbgMemSearchNu();
-                else
-#endif
-                memSearchDialog();
+                dbgMemSearchNu();
                 if (memSearchResultAddr <= 0xFFFF) {
                     ii = pc - (uint16_t)memSearchResultAddr + cursor_row;
                 }
@@ -9729,26 +4447,7 @@ c:
                 goto c;
             } else
             if (Nextkey.vk == fabgl::VK_F1) {
-#if NEW_UI
-                if (s_dbg.nu) {
-                    nm::uiTextPage("Debugger help", OSD_DBG_HELP_EN);
-                    redrawTitle = true;
-                    goto c;
-                }
-#endif
-                drawOSD(true);
-                osdAt(2, 0);
-                VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-                VIDEO::vga.print(OSD_DBG_HELP_EN);
-                while (1) {
-                    if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-                        if (ESPectrum::readKbd(&Nextkey)) {
-                            if(!Nextkey.down) continue;
-                            if (is_enter(Nextkey.vk) || is_back(Nextkey.vk)) break;
-                        }
-                    }
-                    sleep_ms(5);
-                }
+                nm::uiTextPage("Debugger help", OSD_DBG_HELP_EN);
                 redrawTitle = true;
                 goto c;
             } else
@@ -9878,51 +4577,18 @@ c:
             }
         }
     }
-    // New chrome: nothing to restore — the caller repaints its own screen (runModal
-    // redraws the menu; a resumed emulation repaints the guest frame every frame).
-    // The border is on-demand though: without the flag it keeps the chrome (visible
-    // when the debugger was opened by hotkey, with no menu behind to repaint).
-    // DS80 additionally holds our palette in the guest's 16 entries — hand it back
+    // Nothing to restore — the caller repaints its own screen (runModal redraws the
+    // menu; a resumed emulation repaints the guest frame every frame). The border is
+    // on-demand though: without the flag it keeps the chrome (visible when the
+    // debugger was opened by hotkey, with no menu behind to repaint). DS80
+    // additionally holds our palette in the guest's 16 entries — hand it back
     // (no-op in standard mode; runModal re-installs it for the menu behind us).
-    if (!s_dbg.nu) VIDEO::SaveRect.restore_last();
-    else {
-#if NEW_UI
-        nm::gfxSuspendPalette();
-#endif
-        VIDEO::brdnextframe = true;
-    }
+    nm::gfxSuspendPalette();
+    VIDEO::brdnextframe = true;
 
 }
 
-// // Count NL chars inside a string, useful to count menu rows
-unsigned short OSD::rowCount(const string& menu) {
-    unsigned short count = 0;
-    for (unsigned short i = 0; i < menu.length(); i++) {
-        if (menu.at(i) == ASCII_NL) {
-            count++;
-        }
-    }
-    return count;
-}
 
-// // Get a row text
-string OSD::rowGet(const string& menu, unsigned short row) {
-    unsigned short count = 0;
-    unsigned short last = 0;
-    for (unsigned short i = 0; i < menu.length(); i++) {
-        if (menu.at(i) == ASCII_NL) {
-            if (count == row) {
-                return menu.substr(last,i - last);
-            }
-            count++;
-            last = i + 1;
-        }
-    }
-    if (count == row && last < menu.length()) {
-        return menu.substr(last);
-    }
-    return "<Unknown menu row>";
-}
 // inline static uint32_t get_cpu_flash_size(void) {
 //     uint8_t rx[4] = {0};
 //     get_cpu_flash_jedec_id(rx);
@@ -9979,8 +4645,8 @@ extern "C" size_t getLargestAllocatable(void) {
 void (*OSD::textPageOverride)(const char* title, const char* text) = nullptr;
 
 void OSD::showTextDialog(const char* title, const char* text, bool blocking, int* scroll_state) {
-    // The new fullscreen UI renders text pages itself (only the blocking,
-    // stateless form — a live-updating window keeps the classic path).
+    // The fullscreen UI renders text pages itself (only the blocking, stateless
+    // form — a live-updating window keeps the plain centered box).
     if (textPageOverride && blocking && !scroll_state) {
         textPageOverride(title, text);
         return;
@@ -10242,18 +4908,15 @@ static void buildHWInfoText() {
 
 }
 
-#if NEW_UI
 // Snapshot for the new UI's live page (Help > System status, also Alt+F1).
 const char* hwInfoText() {
     buildHWInfoText();
     return osd_info_buf;
 }
-#endif
 
 void OSD::HWInfo() {
-#if NEW_UI
-    // Alt+F1 renders the same page the Help branch shows: new chrome, 1 Hz ticks.
-    if (nm::available()) {
+    // Alt+F1 renders the same page the Help branch shows: 1 Hz live ticks.
+    {
         // Current scanout mode, right-aligned in the header. The driver table is
         // the truth (VIDEO::video_mode tracks arch-dependent 50 Hz variants too);
         // output width is screen_width doubled, freq is the nominal 50/60.
@@ -10270,71 +4933,7 @@ void OSD::HWInfo() {
         nm::gfxBegin();
         nm::uiTextPageLive(TXT_INFO_SYSTEM, hwInfoText, 1000, vmode);
         nm::gfxEnd();
-        return;
     }
-#endif
-    // Live variant (same pattern as HIDDevices): rebuild text at 1 Hz so
-    // Uptime and Free RAM tick while the dialog is open.
-    unsigned short sx = scrAlignCenterX(OSD_W);
-    unsigned short sy = scrAlignCenterY(OSD_H);
-    VIDEO::SaveRect.save(sx, sy, OSD_W, OSD_H);
-
-    fabgl::VirtualKeyItem Nextkey;
-    uint32_t last_draw = 0;
-    int scroll = 0;
-
-    bool down = false;
-    bool full = true; // full redraw (initial + after scroll keys), else Uptime row only
-    while (true) {
-        // Non-blocking key check
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
-            if (down && !Nextkey.down && (is_enter(Nextkey.vk) || is_back(Nextkey.vk))) {
-                click();
-                break;
-            }
-            if (Nextkey.down) {
-                down = (is_enter(Nextkey.vk) || is_back(Nextkey.vk));
-                if (Nextkey.vk == fabgl::VK_UP || Nextkey.vk == fabgl::VK_DOWN || Nextkey.vk == fabgl::VK_PAGEUP || Nextkey.vk == fabgl::VK_PAGEDOWN) {
-                    // Re-inject for showTextDialog's own scroll handling
-                    ESPectrum::PS2Controller.keyboard()->injectVirtualKey(Nextkey.vk, true);
-                }
-                last_draw = 0; // force redraw
-                full = true;
-            }
-        }
-
-        uint32_t now = to_ms_since_boot(get_absolute_time());
-        if (now - last_draw < 1000) {
-            sleep_ms(5);
-            continue;
-        }
-        last_draw = now;
-
-        if (full) {
-            buildHWInfoText();
-            showTextDialog("Hardware info", osd_info_buf, false, &scroll);
-            full = false;
-        } else if (s_hwinfo_uptime_line >= 0) {
-            // Repaint only the Uptime row in place — no full-dialog redraw
-            int r = s_hwinfo_uptime_line - scroll;
-            const int visRows = osdMaxRows() - 4;
-            if (r >= 0 && r < visRows) {
-                const int visCols = osdMaxCols();
-                char row[42];
-                int len = formatUptimeLine(row, sizeof(row));
-                int w = visCols - 1; // keep last column intact (scrollbar lives there)
-                if (len > w) len = w;
-                memset(row + len, ' ', w - len);
-                row[w] = '\0';
-                osdAt(3 + r, 0);
-                VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-                VIDEO::vga.print(row);
-            }
-        }
-    }
-
-    VIDEO::SaveRect.restore_last();
 }
 
 void OSD::ChipInfo() {
@@ -11186,7 +5785,6 @@ static void buildEmulatorInfoText() {
 
 }
 
-#if NEW_UI
 // Snapshot for the new UI's live page (Help > Emulator info). Live rather than a
 // one-shot snapshot because the page now carries state that moves while it is
 // open — the RTC clock above all: a frozen reading reads as a stopped clock.
@@ -11194,7 +5792,6 @@ const char* emuInfoText() {
     buildEmulatorInfoText();
     return emuBuf();
 }
-#endif
 
 void OSD::EmulatorInfo() {
     // Borrow the roomy buffer for as long as the page is on screen (the live page
@@ -11206,15 +5803,7 @@ void OSD::EmulatorInfo() {
         emu_buf_sz = emu_buf ? EMU_INFO_BUF_SZ : 0;
     }
 
-#if NEW_UI
-    if (nm::available()) {
-        nm::uiTextPageLive(TXT_INFO_EMU, emuInfoText, 1000);
-    } else
-#endif
-    {
-        buildEmulatorInfoText();
-        showTextDialog("Emulator Info", emuBuf());
-    }
+    nm::uiTextPageLive(TXT_INFO_EMU, emuInfoText, 1000);
 
     free(emu_buf);
     emu_buf = nullptr;
@@ -11224,7 +5813,6 @@ void OSD::EmulatorInfo() {
 extern "C" int hid_app_format_devices_info(char* buf, int bufsz);
 extern "C" int xinput_app_format_devices_info(char* buf, int bufsz);
 
-#if NEW_UI
 // Snapshot for the new UI's live page (Help > HID devices).
 const char* hidInfoText() {
     extern int hid_app_format_devices_info(char* buf, int bufsz);
@@ -11239,111 +5827,9 @@ const char* hidInfoText() {
     buf[xpos + hpos] = '\0';
     return buf;
 }
-#endif
 
 void OSD::HIDDevices() {
-#if NEW_UI
-    if (nm::available()) {
-        nm::uiTextPageLive(TXT_INFO_HID, hidInfoText, 1000);
-        return;
-    }
-#endif
-    extern int hid_app_format_devices_info(char* buf, int bufsz);
-    extern int xinput_app_format_devices_info(char* buf, int bufsz);
-
-    char (&buf)[OSD_INFO_BUF_SZ] = osd_info_buf;
-
-    unsigned short sx = scrAlignCenterX(OSD_W);
-    unsigned short sy = scrAlignCenterY(OSD_H);
-    VIDEO::SaveRect.save(sx, sy, OSD_W, OSD_H);
-
-    fabgl::VirtualKeyItem Nextkey;
-    uint32_t last_draw = 0;
-    int hid_scroll = 0;
-
-    bool down = false;
-    while (true) {
-        // Non-blocking key check
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
-            if (down && !Nextkey.down && (is_enter(Nextkey.vk) || is_back(Nextkey.vk))) {
-                click();
-                break;
-            }
-            if (Nextkey.down) {
-                down = (is_enter(Nextkey.vk) || is_back(Nextkey.vk));
-                if (Nextkey.vk == fabgl::VK_UP || Nextkey.vk == fabgl::VK_DOWN || Nextkey.vk == fabgl::VK_PAGEUP || Nextkey.vk == fabgl::VK_PAGEDOWN) {
-                    ESPectrum::PS2Controller.keyboard()->injectVirtualKey(Nextkey.vk, true);
-                }
-                last_draw = 0; // forse redraw
-            }
-        }
-
-        uint32_t now = to_ms_since_boot(get_absolute_time());
-        if (now - last_draw < 1000) {
-            sleep_ms(5);
-            continue;
-        }
-        last_draw = now;
-
-        buf[0] = '\0';
-        int xpos = xinput_app_format_devices_info(buf, sizeof(buf));
-        if (xpos < 0) xpos = 0;
-        buf[xpos] = '\0';
-        int hpos = hid_app_format_devices_info(buf + xpos, sizeof(buf) - xpos);
-        if (hpos < 0) hpos = 0;
-        buf[xpos + hpos] = '\0';
-        if (xpos == 0 && hpos == 0)
-            snprintf(buf, sizeof(buf), "No HID/XInput devices.\n");
-#ifdef USE_NESPAD
-        int used = (xpos + hpos > 0) ? xpos + hpos : (int)strlen(buf);
-        snprintf(buf + used, sizeof(buf) - used,
-            "NES1: %c%c%c%c %c%c%c%c %c%c%c%c\n"
-            "NES2: %c%c%c%c %c%c%c%c %c%c%c%c\n"
-            "joy1: U%d D%d L%d R%d  A%d B%d St%d Se%d\n"
-            "joy2: U%d D%d L%d R%d  A%d B%d St%d Se%d\n",
-            // NES1
-            (nespad_state & DPAD_UP)     ? 'U' : '.',
-            (nespad_state & DPAD_DOWN)   ? 'D' : '.',
-            (nespad_state & DPAD_LEFT)   ? 'L' : '.',
-            (nespad_state & DPAD_RIGHT)  ? 'R' : '.',
-            (nespad_state & DPAD_A)      ? 'A' : '.',
-            (nespad_state & DPAD_B)      ? 'B' : '.',
-            (nespad_state & DPAD_X)      ? 'X' : '.',
-            (nespad_state & DPAD_Y)      ? 'Y' : '.',
-            (nespad_state & DPAD_LT)     ? '<' : '.',
-            (nespad_state & DPAD_RT)     ? '>' : '.',
-            (nespad_state & DPAD_START)  ? 'S' : '.',
-            (nespad_state & DPAD_SELECT) ? 's' : '.',
-            // NES2
-            (nespad_state2 & DPAD_UP)     ? 'U' : '.',
-            (nespad_state2 & DPAD_DOWN)   ? 'D' : '.',
-            (nespad_state2 & DPAD_LEFT)   ? 'L' : '.',
-            (nespad_state2 & DPAD_RIGHT)  ? 'R' : '.',
-            (nespad_state2 & DPAD_A)      ? 'A' : '.',
-            (nespad_state2 & DPAD_B)      ? 'B' : '.',
-            (nespad_state2 & DPAD_X)      ? 'X' : '.',
-            (nespad_state2 & DPAD_Y)      ? 'Y' : '.',
-            (nespad_state2 & DPAD_LT)     ? '<' : '.',
-            (nespad_state2 & DPAD_RT)     ? '>' : '.',
-            (nespad_state2 & DPAD_START)  ? 'S' : '.',
-            (nespad_state2 & DPAD_SELECT) ? 's' : '.',
-            // gamepad1_bits
-            (int)gamepad1_bits.up,    (int)gamepad1_bits.down,
-            (int)gamepad1_bits.left,  (int)gamepad1_bits.right,
-            (int)gamepad1_bits.a,     (int)gamepad1_bits.b,
-            (int)gamepad1_bits.start, (int)gamepad1_bits.select,
-            // gamepad2_bits
-            (int)gamepad2_bits.up,    (int)gamepad2_bits.down,
-            (int)gamepad2_bits.left,  (int)gamepad2_bits.right,
-            (int)gamepad2_bits.a,     (int)gamepad2_bits.b,
-            (int)gamepad2_bits.start, (int)gamepad2_bits.select
-        );
-#endif
-        showTextDialog("HID devices (live)", buf, false, &hid_scroll);
-    }
-
-    VIDEO::SaveRect.restore_last();
+    nm::uiTextPageLive(TXT_INFO_HID, hidInfoText, 1000);
 }
 
 extern "C" uint8_t __gm_bank_start[];   // shared flash region (RP2350) — ALF cart load target
@@ -11653,96 +6139,6 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
     return true;
 }
 
-bool OSD::updateFirmware(FIL* firmware) {
-    /**
-    char ota_write_data[FWBUFFSIZE + 1] = { 0 };
-    // get the currently running partition
-    const esp_partition_t *partition = esp_ota_get_running_partition();
-    if (partition == NULL) {
-        return ESP_ERR_NOT_FOUND;
-    }
-
-// Grab next update target
-// const esp_partition_t *target = esp_ota_get_next_update_partition(NULL);
-string splabel;
-if (strcmp(partition->label,"esp0")==0) splabel = "esp1"; else splabel= "esp0";
-const esp_partition_t *target = esp_partition_find_first(ESP_PARTITION_TYPE_APP,ESP_PARTITION_SUBTYPE_ANY,splabel.c_str());
-if (target == NULL) {
-    return ESP_ERR_NOT_FOUND;
-}
-
-// printf("Running partition %s type %d subtype %d at offset 0x%x.\n", partition->label, partition->type, partition->subtype, partition->address);
-// printf("Target  partition %s type %d subtype %d at offset 0x%x.\n", target->label, target->type, target->subtype, target->address);
-
-// osdCenteredMsg(OSD_FIRMW_BEGIN, LEVEL_INFO,0);
-
-progressDialog(OSD_FIRMW,OSD_FIRMW_BEGIN,0,0);
-
-// Fake erase progress bar ;D
-delay(100);
-for(int n=0; n <= 100; n += 10) {
-    progressDialog("","",n,1);
-    delay(100);
-}
-
-esp_ota_handle_t ota_handle;
-esp_err_t result = esp_ota_begin(target, OTA_SIZE_UNKNOWN, &ota_handle);
-if (result != ESP_OK) {
-    progressDialog("","",0,2);
-    return result;
-}
-
-size_t bytesread;
-uint32_t byteswritten = 0;
-
-// osdCenteredMsg(OSD_FIRMW_WRITE, LEVEL_INFO,0);
-progressDialog(OSD_FIRMW,OSD_FIRMW_WRITE,0,1);
-
-// Get firmware size
-fseek(firmware, 0, SEEK_END);
-long bytesfirmware = ftell(firmware);
-rewind(firmware);
-
-while (1) {
-    bytesread = fread(ota_write_data, 1, 0x1000 , firmware);
-    result = esp_ota_write(ota_handle,(const void *) ota_write_data, bytesread);
-    if (result != ESP_OK) {
-        progressDialog("","",0,2);
-        return result;
-    }
-    byteswritten += bytesread;
-    progressDialog("","",(float) 100 / ((float) bytesfirmware / (float) byteswritten),1);
-    // printf("Bytes written: %d\n",byteswritten);
-    if (feof(firmware)) break;
-}
-
-result = esp_ota_end(ota_handle);
-if (result != ESP_OK)
-{
-    // printf("esp_ota_end failed, err=0x%x.\n", result);
-    progressDialog("","",0,2);
-    return result;
-}
-
-result = esp_ota_set_boot_partition(target);
-if (result != ESP_OK) {
-    // printf("esp_ota_set_boot_partition failed, err=0x%x.\n", result);
-    progressDialog("","",0,2);
-    return result;
-}
-
-// osdCenteredMsg(OSD_FIRMW_END, LEVEL_INFO, 0);
-progressDialog(OSD_FIRMW,OSD_FIRMW_END,100,1);
-
-*/
-    // Enable StartMsg
-    Config::StartMsg = true;
-    Config::save();
-    delay(5000);
-    // Firmware written: reboot
-    OSD::esp_hard_reset();
-    return true;
-}
 
 // ---------------------------------------------------------------------------
 // Speed Test
@@ -11886,8 +6282,7 @@ static bool benchNetSpeed(NetBenchCtx& ctx, const char* title) {
 #endif // ZIFI_NET_CLIENT
 
 // One benchmark run for a picked row (1=CPU 2=SRAM 3=PSRAM 4=SD 5=USB [6=NET]
-// 6/7=All) — shared by the classic picker loop below and the new menu's Speed
-// test submenu, where every test is a row of its own.
+// 6/7=All) — one row of the menu's Speed test submenu.
 void OSD::SpeedTestRun(uint8_t st_opt) {
     {
         // With the net client built in, row 6 is NET and "All tests" shifts to 7.
@@ -12157,19 +6552,6 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
     }
 }
 
-void OSD::SpeedTest() {
-    menu_level = 2;
-    menu_curopt = 1;
-    menu_saverect = true;
-
-    while (1) {
-        uint8_t st_opt = menuRun(MENU_SPEEDTEST);
-        if (st_opt == 0) break;
-        SpeedTestRun(st_opt);
-        menu_curopt = st_opt;
-        menu_saverect = false;
-    }
-}
 
 void (*OSD::progressOverride)(const char* title, const char* msg, int percent,
                               int action, bool cyrillic) = nullptr;
@@ -12378,145 +6760,13 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
 }
 
 bool OSD::videoModeConfirm(int timeout_sec) {
-
-#if NEW_UI
-    // New-UI skin for the post-reboot confirm; the classic chrome below stays as
-    // the fallback for modes the fullscreen UI does not fit.
-    if (nm::available()) {
-        bool keep = nm::uiConfirmTimeout("Keep this video mode?", "Video Mode", timeout_sec);
-        // The new chrome never touches SaveRect: the paper repaints every frame,
-        // the border only on demand — ask for it.
-        VIDEO::brdnextframe = true;
-        return keep;
-    }
-#endif
-
-    string title = "Video Mode";
-    string msg = "Keep this video mode?";
-
-    const unsigned short h = (OSD_FONT_H * 6) + 2;
-    const unsigned short y = scrAlignCenterY(h);
-    bool confirmed = false;
-
-    const unsigned short w = (((msg.length() + 2) * OSD_FONT_W) + 2);
-    const unsigned short x = scrAlignCenterX(w);
-
-    VIDEO::SaveRect.save(x, y, w, h);
-
-    VIDEO::vga.setFont(Font6x8);
-
-    // Border
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-
-    // Title bar
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7, 1));
-
-    // Title
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print(title.c_str());
-
-    // Message
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-    VIDEO::vga.setCursor(scrAlignCenterX(msg.length() * OSD_FONT_W), y + 1 + (OSD_FONT_H * 2));
-    VIDEO::vga.print(msg.c_str());
-
-    // Countdown area (row 3) — will be updated each second
-    unsigned short count_y = y + 1 + (OSD_FONT_H * 3);
-
-    // Yes button (initially not selected)
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-    VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-    VIDEO::vga.print(" Yes  ");
-
-    // No button (initially selected/highlighted)
-    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-    VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
-    VIDEO::vga.print("  No  ");
-
-    // Rainbow decoration
-    unsigned short rb_y = y + 8;
-    unsigned short rb_paint_x = x + w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++) {
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8, zxColor(rb_colors[c], 1));
-        }
-        rb_paint_x += 5;
-    }
-
-    int remaining = timeout_sec;
-    int tick_count = 0;
-
-    // Show initial countdown
-    char countbuf[8];
-    snprintf(countbuf, sizeof(countbuf), " [%2d] ", remaining);
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-    VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W), count_y);
-    VIDEO::vga.print(countbuf);
-
-    // Keyboard loop with countdown
-    fabgl::VirtualKeyItem Menukey;
-    while (remaining > 0) {
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            if (ESPectrum::readKbd(&Menukey)) {
-                if (!Menukey.down) continue;
-                if (is_left(Menukey.vk)) {
-                    // Highlight Yes
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print(" Yes  ");
-                    // Unhighlight No
-                    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-                    VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print("  No  ");
-                    click();
-                    confirmed = true;
-                } else if (is_right(Menukey.vk)) {
-                    // Unhighlight Yes
-                    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-                    VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print(" Yes  ");
-                    // Highlight No
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
-                    VIDEO::vga.print("  No  ");
-                    click();
-                    confirmed = false;
-                } else if (is_enter(Menukey.vk)) {
-                    break;
-                } else if (Menukey.vk == fabgl::VK_ESCAPE) {
-                    confirmed = false;
-                    break;
-                }
-            }
-        }
-
-        sleep_ms(5);
-        tick_count++;
-        if (tick_count >= 200) { // 200 * 5ms = 1 second
-            tick_count = 0;
-            remaining--;
-            snprintf(countbuf, sizeof(countbuf), " [%2d] ", remaining);
-            VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
-            VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W), count_y);
-            VIDEO::vga.print(countbuf);
-        }
-    }
-
-    click();
-
-    VIDEO::SaveRect.restore_last();
-
-    return confirmed;
+    const bool keep = nm::uiConfirmTimeout("Keep this video mode?", "Video Mode", timeout_sec);
+    // The chrome never touches SaveRect: the paper repaints every frame, the border
+    // only on demand — ask for it.
+    VIDEO::brdnextframe = true;
+    return keep;
 }
 
-string OSD::inputBox(int x, int y, const string& text) {
-
-return text;
-
-}
 
 #define MENU_JOYSELKEY_EN "Key      \n"\
     "None     \n"\
@@ -12836,11 +7086,9 @@ unsigned int joyControl[14][3]={
     {222,89,zxColor(0,0)}   // R2
 };
 
-#if NEW_UI
 // Also reachable as OSD::vkToText for the new UI's joystick page (defined after
 // the free function it forwards to).
 string OSD::vkToText(int key) { return ::vkToText(key); }
-#endif
 
 void DrawjoyControls(unsigned short x, unsigned short y) {
 
@@ -12943,37 +7191,7 @@ static string hkBindingText(int idx) {
     return text;
 }
 
-static const char* hkIdNames[Config::HK_COUNT] = {
-    "HK_MAIN_MENU", "HK_LOAD_SNA", "HK_PERSIST_LOAD", "HK_PERSIST_SAVE",
-    "HK_LOAD_ANY", "HK_TAPE_PLAY", "HK_TAPE_BROWSER", "HK_STATS",
-    "HK_VOL_DOWN", "HK_VOL_UP", "HK_HARD_RESET", "HK_REBOOT",
-    "HK_MAX_SPEED", "HK_PAUSE", "HK_HW_INFO", "HK_TURBO",
-    "HK_DEBUG", "HK_DISK", "HK_NMI", "HK_RESET_TO",
-    "HK_USB_BOOT", "HK_GIGASCREEN", "HK_LED_TOGGLE",
-    "HK_POKE", "HK_VIDMODE_60", "HK_VIDMODE_50",
-    "HK_QUICK_LOAD", "HK_QUICK_SAVE"
-};
 
-static string expandHotkeys(const char* menu) {
-    string s(menu);
-    size_t pos = 0;
-    while ((pos = s.find('{', pos)) != string::npos) {
-        size_t end = s.find('}', pos);
-        if (end == string::npos) break;
-        string token = s.substr(pos + 1, end - pos - 1);
-        string replacement;
-        for (int i = 0; i < Config::HK_COUNT; i++) {
-            if (token == hkIdNames[i]) {
-                string b = hkBindingText(i);
-                if (b != "None") replacement = b + " ";
-                break;
-            }
-        }
-        s.replace(pos, end - pos + 1, replacement);
-        pos += replacement.length();
-    }
-    return s;
-}
 
 // EN
 const char* const hkDescEN[Config::HK_COUNT] = {
@@ -13007,7 +7225,6 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Quick Save snapshot",  // HK_QUICK_SAVE
 };
 
-#if NEW_UI
 // The Help > Hot keys page of the new UI: description + current binding.
 const char* hotkeysText() {
     char (&buf)[OSD_INFO_BUF_SZ] = osd_info_buf;
@@ -13046,39 +7263,12 @@ const char* hotkeysText() {
     }
     return buf;
 }
-#endif
 
-static const int HK_MENU_WIDTH = 32; // usable cols for hotkey menu
 
-static string buildHotkeyMenu() {
-    auto descs = hkDescEN;
-    string menu = "Hot Keys\n";
-    for (int i = 0; i < Config::HK_COUNT; i++) {
-        string left = descs[i];
-        string right = hkBindingText(i);
-        // Pad between left and right so right column is flush right
-        int pad = HK_MENU_WIDTH - (int)left.length() - (int)right.length();
-        if (pad < 1) pad = 1;
-        // Prefix readonly entries with \x01 marker for dimmed rendering
-        if (Config::hotkeys[i].readonly) menu += '\x01';
-        menu += left + string(pad, ' ') + right + '\n';
-    }
-    return menu;
-}
-
-// MIDI mode + synth preset + GM.DLS bank picker. Lifted verbatim out of do_OSD's
-// Audio branch: it is not a setting but a wizard (it scans the card for banks, can
-// convert a .dls, and defers the flash write to the next boot), so both menus reach it
-// as one modal call. Leaves menu_curopt/menu_level set for the classic caller.
-// IDE/HDD (NEMO / PROFI): scheme, the two image slots and image creation. Lifted
-// verbatim out of do_OSD's Storage branch — the image-creation flow (size picker,
-// progress, geometry) is a wizard, not a setting, so both menus reach it as one modal
-// call. Leaves menu_curopt/menu_level set for the classic caller.
-
-#if NEW_UI
-// ── IDE slot editor / image creator for the new UI ─────────────────────────────
-// Same effects as the classic ideDialog branches (insert / eject / CHS override /
-// create), with the new UI's own dialogs and no menuRun nesting.
+// ── IDE slot editor / image creator ────────────────────────────────────────────
+// IDE/HDD (NEMO / PROFI): the two image slots and image creation. Insert / eject /
+// CHS override / create — a wizard rather than a setting, so the Devices rows reach
+// it as one modal call.
 void ideSlotEdit(uint8_t slot) {
     while (1) {
         char title[16];
@@ -13123,8 +7313,7 @@ void ideSlotEdit(uint8_t slot) {
         if (sel < 0) return;
 
         if (sel == 0) {                                  // insert / replace
-            string mFile = nm::browseFile(FileUtils::IMG_Path, MENU_IDE_IMG_TITLE,
-                                          DISK_IMGFILE, 26, 15);
+            string mFile = nm::browseFile(FileUtils::IMG_Path, MENU_IDE_IMG_TITLE, DISK_IMGFILE);
             if (mFile.empty()) continue;
             string fname = FileUtils::IMG_Path + mFile.substr(1);
             if (FileUtils::getLCaseExt(fname) == "zip") {
@@ -13225,521 +7414,8 @@ void ideCreateImage() {
     Config::save();
     nm::uiToast("HDD image created", false, 1500);
 }
-#endif  // NEW_UI
 
-void OSD::ideDialog() {
-static const char* ide_modes[] = { "OFF", "NEMO", "PROFI" };
-menu_saverect = true;
-menu_curopt = 1;
-while (1) {
-    menu_level = 2;
-    // Root: Scheme row + hd0/hd1 rows (shown when a scheme is active).
-    string menu = MENU_IDE_TITLE;
-    menu += string(MENU_IDE_SCHEME) + "\t" + ide_modes[Config::ide_scheme <= 2 ? Config::ide_scheme : 0] + "\n";
-    bool showSlots = (Config::ide_scheme != 0);
-    if (showSlots) {
-        menu += formatSlotRow("hd0", Config::ide_image[0], false, false);
-        menu += "\n";
-        menu += formatSlotRow("hd1", Config::ide_image[1], false, false);
-        menu += "\n";
-        menu += MENU_IDE_CREATE;
-    }
-    uint8_t opt = menuRun(menu);
-    if (opt == 1) {
-        // Scheme submenu (OFF / NEMO / PROFI).
-        menu_level = 3;
-        menu_curopt = Config::ide_scheme + 1;
-        menu_saverect = true;
-        while (1) {
-            string smenu = MENU_IDE_TITLE;
-            for (int i = 0; i < 3; i++) {
-                smenu += (i == Config::ide_scheme) ? "[*] " : "[ ] ";
-                smenu += ide_modes[i];
-                smenu += "\n";
-            }
-            uint8_t sub = menuRun(smenu);
-            if (sub) {
-                uint8_t newval = sub - 1;
-                if (newval != Config::ide_scheme) {
-                    uint8_t prevScheme = Config::ide_scheme;
-                    // Mutually exclusive with esxDOS DivMMC/DivIDE
-                    // (shared ports 0xEB/0xE7/0xA3 etc.).
-                    if (newval && Config::esxdos) {
-                        Config::esxdos = 0;
-                        DivMMC::init();
-                        OSD::osdCenteredMsg("esxDOS disabled", LEVEL_WARN, 2000);
-                    }
-                    Config::ide_scheme = newval;
-                    // Budget-gate when turning IDE on from off (~3.4 KB buffers).
-                    // Set scheme first so the user's NEMO/PROFI choice survives
-                    // a free-and-reboot inside the gate.
-                    bool ok = true;
-                    if (prevScheme == 0 && newval != 0)
-                        ok = OSD::featureBudgetGate(Subsystems::FEAT_IDE);
-                    if (!ok) {
-                        Config::ide_scheme = prevScheme;   // declined → stay off
-                    } else {
-                        IDE::init();
-                        IdeSubsys::syncFromState();
-                        Config::save();
-                    }
-                    menu_curopt = sub;
-                    menu_saverect = false;
-                }
-                menu_curopt = sub;
-                menu_saverect = false;
-            } else {
-                menu_curopt = 1;
-                break;
-            }
-        }
-    } else if ((opt == 2 || opt == 3) && showSlots) {
-        // hd0 / hd1 submenu (Insert / Eject).
-        uint8_t slot = (opt == 2) ? 0 : 1;
-        menu_saverect = true;
-        menu_curopt = 1;
-        while (1) {
-            menu_level = 3;
-            char title[8]; snprintf(title, sizeof(title), "hd%u\n", (unsigned)slot);
-            string drvmenu = title;
-            drvmenu += MENU_ESX_INSERT;
-            drvmenu += MENU_ESX_EJECT;
-            // Geometry row: shows effective C/H/S, LBA and size; "auto" when no override.
-            {
-                char geo[48];
-                if (IDE::isCD(slot)) {
-                    // ATAPI CD-ROM: no CHS geometry; show type + size.
-                    uint32_t mb = (uint32_t)(((uint64_t)IDE::sizeBytes(slot)) / (1024*1024));
-                    snprintf(geo, sizeof(geo), "Type\tCD-ROM\n");
-                    drvmenu += geo;
-                    char szr[48];
-                    snprintf(szr, sizeof(szr), "Size\t%u MB (ISO)\n", (unsigned)mb);
-                    drvmenu += szr;
-                } else {
-                uint16_t oc=Config::ide_chs[slot][0], oh=Config::ide_chs[slot][1], os=Config::ide_chs[slot][2];
-                uint16_t C=IDE::geomC(slot), H=IDE::geomH(slot), S=IDE::geomS(slot);
-                bool over = (oc&&oh&&os);
-                bool profi = (IDE::scheme == IDE::PROFI);
-                if (C && H && S)
-                    // Profi locks H=16/S=16 (BIOS CHS addressing); only C is user-editable.
-                    snprintf(geo, sizeof(geo), "CHS\t%u/%u/%u%s\n", C, H, S,
-                             profi ? " (Profi: C only)" : (over?"":" (auto)"));
-                else
-                    snprintf(geo, sizeof(geo), "CHS\t<empty>\n");
-                drvmenu += geo;
-                uint32_t lba = IDE::geomLBA(slot);
-                char lbar[48];
-                snprintf(lbar, sizeof(lbar), "LBA\t%u (%u MB)\n", (unsigned)lba, (unsigned)(((uint64_t)lba*512)/(1024*1024)));
-                drvmenu += lbar;
-                }
-            }
-            uint8_t opt2 = menuRun(drvmenu);
-            if (opt2 == 1) {
-                menu_saverect = true;
-                string mFile = fileDialog(FileUtils::IMG_Path, MENU_IDE_IMG_TITLE, DISK_IMGFILE, 26, 15);
-                if (mFile != "") {
-                    string fname = FileUtils::IMG_Path + mFile.substr(1);
-                    if (FileUtils::getLCaseExt(fname) == "zip") {
-                        string zipFname = ZipExtract::extract(fname, DISK_IMGFILE);
-                        if (zipFname.empty()) { OSD::osdCenteredMsg(OSD_ZIP_ERR, LEVEL_WARN); break; }
-                        if (zipFname == "\x1b") break;
-                        fname = zipFname;
-                    }
-                    Config::ide_image[slot] = fname;
-                    IDE::init();
-                    Config::save();
-                    menu_curopt = opt2;
-                    menu_saverect = false;
-                }
-            } else if (opt2 == 2) {
-                Config::ide_image[slot].clear();
-                IDE::init();
-                Config::save();
-                menu_curopt = opt2;
-                menu_saverect = false;
-            } else if (opt2 == 3 && !IDE::isCD(slot)) {
-                // Edit CHS override. Empty input = auto-detect (0/0/0).
-                // (Skipped for ATAPI CD-ROM — geometry N/A.)
-                // Inline-edit on the CHS row (row index 3 within submenu).
-                int ex = OSD::x + (1 + 4) * OSD_FONT_W;     // after "CHS\t"
-                int ey = OSD::y + 1 + 3 * OSD_FONT_H;
-                if (IDE::scheme == IDE::PROFI) {
-                    // Profi locks H=16/S=16 for BIOS CHS addressing; only the
-                    // cylinder count is meaningful. Edit C alone (empty = auto).
-                    char cur[8];
-                    snprintf(cur, sizeof(cur), "%u", IDE::geomC(slot));
-                    string in = OSD::inlineTextEdit(ex, ey, 6, string(cur));
-                    if (in != "\x1B") {
-                        unsigned c=0;
-                        if (in.empty()) { c=0; }   // auto
-                        if (in.empty() || sscanf(in.c_str(), "%u", &c)==1) {
-                            if (c==0) {            // auto-detect
-                                Config::ide_chs[slot][0]=0;
-                                Config::ide_chs[slot][1]=0;
-                                Config::ide_chs[slot][2]=0;
-                            } else {               // keep H=16 S=16
-                                Config::ide_chs[slot][0]=(uint16_t)c;
-                                Config::ide_chs[slot][1]=16;
-                                Config::ide_chs[slot][2]=16;
-                            }
-                            IDE::init();
-                            Config::save();
-                        } else {
-                            OSD::osdCenteredMsg("Cylinders: number or empty", LEVEL_WARN, 2000);
-                        }
-                    }
-                } else {
-                char cur[20];
-                if (Config::ide_chs[slot][0] && Config::ide_chs[slot][1] && Config::ide_chs[slot][2])
-                    snprintf(cur, sizeof(cur), "%u/%u/%u",
-                             Config::ide_chs[slot][0], Config::ide_chs[slot][1], Config::ide_chs[slot][2]);
-                else
-                    snprintf(cur, sizeof(cur), "%u/%u/%u",
-                             IDE::geomC(slot), IDE::geomH(slot), IDE::geomS(slot));
-                string in = OSD::inlineTextEdit(ex, ey, 14, string(cur));
-                if (in != "\x1B") {
-                    unsigned c=0,h=0,s=0;
-                    if (in.empty()) { c=h=s=0; }   // auto
-                    if (in.empty() || sscanf(in.c_str(), "%u/%u/%u", &c,&h,&s)==3) {
-                        // Sanity: H<=16, S<=63 (ATA); 0/0/0 allowed (=auto)
-                        if ((c==0&&h==0&&s==0) || (h>=1&&h<=16&&s>=1&&s<=63&&c>=1)) {
-                            Config::ide_chs[slot][0]=(uint16_t)c;
-                            Config::ide_chs[slot][1]=(uint16_t)h;
-                            Config::ide_chs[slot][2]=(uint16_t)s;
-                            IDE::init();
-                            Config::save();
-                        } else {
-                            OSD::osdCenteredMsg("Invalid CHS (H<=16 S<=63)", LEVEL_WARN, 2000);
-                        }
-                    } else {
-                        OSD::osdCenteredMsg("Format: C/H/S", LEVEL_WARN, 2000);
-                    }
-                }
-                }
-                menu_saverect = false;
-                menu_curopt = 3;
-            } else if (opt2 == 4) {
-                // LBA row is informational — Enter does nothing,
-                // stay on this hd submenu with the cursor on LBA.
-                menu_saverect = false;
-                menu_curopt = 4;
-            } else {
-                menu_curopt = opt;
-                break;
-            }
-        }
-    } else if (opt == 4 && showSlots) {
-        // "Create empty image": pick slot → size → name, then create+mount.
-        // Nested Esc-driven loops mirror the Scheme submenu so each level
-        // backs out to its parent (slot picker → IDE/HDD root) on Esc.
-        static const struct { const char* label; uint32_t mb; } ide_presets[] = {
-            { "10 MB\n", 10 }, { "32 MB\n", 32 }, { "64 MB\n", 64 }, { "128 MB\n", 128 }
-        };
-        menu_level = 3;
-        menu_curopt = 1;
-        menu_saverect = true;
-        bool created = false;
-        while (!created) {
-            // Level 3 — target slot.
-            string slmenu = MENU_IDE_CREATE;
-            slmenu += "hd0\n";
-            slmenu += "hd1\n";
-            uint8_t slsel = menuRun(slmenu);
-            if (slsel != 1 && slsel != 2) { menu_curopt = 4; break; }  // Esc → IDE/HDD
-            uint8_t slot = slsel - 1;
-            // Level 4 — size preset.
-            menu_level = 4;
-            menu_curopt = 1;
-            menu_saverect = true;
-            while (1) {
-                string szmenu = MENU_IDE_CREATE_SIZE;
-                for (auto &p : ide_presets) szmenu += p.label;
-                uint8_t sz = menuRun(szmenu);
-                if (sz < 1 || sz > 4) break;   // Esc → back to slot picker
-                uint32_t mb = ide_presets[sz - 1].mb;
-                // Name — inline-edit over the selected size row.
-                uint8_t vrow = (uint8_t)(sz - OSD::begin_row + 1);
-                int ex = OSD::x + 1 * OSD_FONT_W;
-                int ey = OSD::y + 1 + vrow * OSD_FONT_H;
-                string name = OSD::inlineTextEdit(ex, ey, 18, "new");
-                menu_saverect = false;
-                menu_curopt = sz;
-                if (name == "\x1B") continue;   // Esc on name → stay in size menu
-                while (!name.empty() && name.back()  == ' ') name.pop_back();
-                while (!name.empty() && name.front() == ' ') name.erase(name.begin());
-                if (name.empty()) continue;
-                if (FileUtils::getLCaseExt(name) != "hdd") name += ".hdd";
-                string path = FileUtils::IMG_Path + name;
-                FILINFO fno;
-                if (f_stat(path.c_str(), &fno) == FR_OK) {
-                    OSD::osdCenteredMsg("File already exists", LEVEL_WARN, 2000);
-                    continue;
-                }
-                OSD::osdCenteredMsg("Creating HDD...", LEVEL_INFO, 0);
-                bool ok = IDE::createImage(path.c_str(), mb, ide_create_progress);
-                if (!ok) { OSD::osdCenteredMsg("Create failed", LEVEL_WARN, 2000); continue; }
-                Config::ide_image[slot] = path;
-                IDE::init();
-                Config::save();
-                OSD::osdCenteredMsg("HDD image created", LEVEL_INFO, 1500);
-                // Success: unwind size + slot menus back to the IDE/HDD root.
-                VIDEO::SaveRect.restore_last();   // pop size-menu rect
-                VIDEO::SaveRect.restore_last();   // pop slot-menu rect
-                created = true;
-                menu_curopt = 4;
-                break;
-            }
-            // Back at the slot-picker level (Esc from size, or after create).
-            menu_level = 3;
-            menu_saverect = false;
-        }
-        menu_saverect = false;
-    } else {
-        menu_curopt = 6;
-        menu_level = 1;
-        break;
-    }
-}
-}
-// Fast-snapshot slot pickers (F3 / F4). Lifted verbatim out of do_OSD's hot-key
-// dispatcher so the new menu opens the same 40-slot list with the same F3/F4 load-save,
-// F6 rename (inline, positioned against the drawn row) and F8 remove. Rebuilding this as
-// a generic dynamic-row level would have duplicated all of that for no visible gain.
-//
-// The return value is what the classic `return;` inside the branch meant: true = the
-// caller should leave do_OSD immediately.
-bool OSD::persistLoadDialog() {
-    menu_level = 0;
-    menu_curopt = Config::persist_slot;
-    // Persist Load
-    while (1) {
-        menu_footer = "F3:Load  F6:Rename  F8:Remove";
-        uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_LOAD, 40));
-        if (opt2) {
-            Config::persist_slot = opt2;
-            if (menu_del_pressed) {
-                persistDeleteConfirm(opt2);
-                menu_curopt = opt2;
-                continue;
-            }
-            if (menu_rename_pressed) {
-                persistRename(opt2, opt2);
-                menu_curopt = opt2;
-                continue;
-            }
-            persistLoad(opt2);
-            break;
-        } else break;
-    }
-    return false;
-}
 
-bool OSD::persistSaveDialog() {
-    // Persist Save
-    menu_level = 0;
-    menu_curopt = Config::persist_slot;
-    while (1) {
-        menu_footer = "F4:Save  F6:Rename  F8:Remove";
-        uint8_t opt2 = menuRun(buildSlotMenu(MENU_PERSIST_SAVE, 40));
-        if (opt2) {
-            Config::persist_slot = opt2;
-            if (menu_del_pressed) {
-                persistDeleteConfirm(opt2);
-                menu_curopt = opt2;
-                continue;
-            }
-            if (menu_rename_pressed) {
-                persistRename(opt2, opt2);
-                menu_curopt = opt2;
-                continue;
-            }
-            if (menu_quicksave_pressed) {
-                persistSave(opt2, opt2, true);
-                return true;
-            }
-            if (persistSave(opt2, opt2)) {
-                return true;
-            }
-            menu_curopt = opt2;
-        } else {
-            break;
-        }
-    }
-    return false;
-}
-// Menu row -> Config::midi. Not `opt2 - 1` any more: mode 3 ("Software MIDI") was
-// removed and its stored value retired, so DLS keeps 4 while sitting on row 4.
-static const uint8_t kMidiRowMode[] = {
-    0,      // OFF
-    1,      // AY bitbang
-    2,      // ShamaZX
-#if !NO_GM_DLS
-    4,      // DLS Wavetable
-#endif
-};
-
-void OSD::midiDialog() {
-    menu_level = 2;
-    menu_curopt = 1;
-    const uint8_t nMidiRows = (uint8_t)(sizeof(kMidiRowMode) / sizeof(kMidiRowMode[0]));
-    bool midiFirstDraw = true;   // save the rect only on the first draw;
-    while (1) {                  // redraws (after gate/submenu) must NOT re-save → no duplicate menu
-        menu_level = 2;
-        string midi_menu = MENU_MIDI;
-        uint8_t prev_midi = Config::midi;
-        midi_menu.replace(midi_menu.find("[O",0),2, prev_midi == 0 ? "[*" : "[ ");
-        midi_menu.replace(midi_menu.find("[A",0),2, prev_midi == 1 ? "[*" : "[ ");
-        midi_menu.replace(midi_menu.find("[S",0),2, prev_midi == 2 ? "[*" : "[ ");
-#if !NO_GM_DLS
-        midi_menu.replace(midi_menu.find("[G",0),2, prev_midi == 4 ? "[*" : "[ ");
-#endif
-        menu_saverect = midiFirstDraw;
-        uint8_t opt2 = menuRun(midi_menu);
-        midiFirstDraw = false;
-        if (opt2 >= 1 && opt2 <= nMidiRows) {
-            const uint8_t pick = kMidiRowMode[opt2 - 1];
-            // GM.DLS (mode 4) is the RAM-heavy MIDI engine: gate it through
-            // the SRAM budget manager so a tight machine (Profi/m1p2) offers
-            // heavy features to free — including Profi itself (→ Pentagon) —
-            // instead of OOMing at allocation time. ALLOW → true (fits as-is);
-            // user frees + applies → reboots (never returns); decline → false.
-            if (pick == 4 && Config::midi != 4 &&
-                !OSD::featureBudgetGate(Subsystems::FEAT_MIDI)) {
-                menu_curopt = opt2;
-                menu_saverect = false;
-                continue;   // declined / not enough — leave MIDI unchanged
-            }
-            Config::midi = pick;
-            if (Config::midi != prev_midi) {
-                Midi::enabled = prev_midi;
-                Midi::deinit();
-                Midi::enabled = Config::midi;
-                if (Midi::enabled)
-                    Midi::init();
-                Config::save();
-                MidiSubsys::request(Config::midi != 0);
-#if defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)
-                if ((Config::midi == 1 || Config::midi == 2) && Config::real_player)
-                    osdCenteredMsg(MSG_MIDI_PIN_CONFLICT, LEVEL_WARN, 3000);
-#endif
-            }
-            // Tentative like the bank pick below: reverted together with it if the user
-            // declines the install, so backing out of the wizard changes nothing.
-            const uint8_t prevStorage = Config::midi_storage;
-            // GM.DLS on a butter-PSRAM board: ask WHERE the bank should live before
-            // picking one, since that decides whether the pick applies live (PSRAM) or
-            // has to be written to the partition at the next boot (Flash). Boards
-            // without QSPI PSRAM have no choice to offer — the step is skipped.
-            if (Config::midi == 4 && butter_psram_size() > 0) {
-                menu_level = 3;
-                menu_curopt = Config::midi_storage + 1;
-                menu_saverect = true;
-                string stor_menu = MENU_MIDI_STORAGE;
-                stor_menu.replace(stor_menu.find("[P",0),2, Config::midi_storage == 0 ? "[*" : "[ ");
-                stor_menu.replace(stor_menu.find("[F",0),2, Config::midi_storage == 1 ? "[*" : "[ ");
-                uint8_t optS = menuRun(stor_menu);
-                if (optS >= 1 && optS <= 2) Config::midi_storage = optS - 1;
-                menu_level = 2;
-                menu_curopt = opt2;
-                menu_saverect = false;
-                VIDEO::SaveRect.restore_last();
-            }
-            // GM.DLS wavetable selected. The bank is written to
-            // flash at EARLY BOOT (single core, no video) — never
-            // here, where core1/HDMI would freeze. So any flash
-            // write is triggered by REBOOT; the boot path does it.
-            if (Config::midi == 4) {
-                // ALF cartridges stream from SD (AlfCart) and no longer occupy
-                // this flash region, so GM.DLS and a loaded cart coexist — no
-                // unload prompt needed.
-                {
-                    // Let the user pick which instrument set (.bin bank) to use
-                    // when SD holds more than one. The choice is applied to
-                    // Config::midi_bank only TENTATIVELY: it is committed (saved)
-                    // only if the user confirms the flash below, and reverted to
-                    // `prevBank` otherwise — so declining never changes the bank
-                    // (and never triggers a flash on the next boot).
-                    std::vector<std::string> bankPaths, bankNames;
-                    size_t nBanks = MidiSynth::scanBanks(bankPaths, bankNames);
-                    string prevBank = Config::midi_bank;
-                    // Always show the picker: row 1 converts any .dls on the card
-                    // into a bank (gm_bank.bin in CONFIG_DIR), the rest are the
-                    // banks already present. The choice is applied to
-                    // Config::midi_bank only TENTATIVELY: committed on flash-confirm
-                    // below, reverted to `prevBank` otherwise.
-                    menu_level = 3;
-                    menu_curopt = 1;
-                    menu_saverect = true;
-                    string bankMenu = MENU_MIDI_BANK_TITLE;
-                    bankMenu += string(MENU_MIDI_CONVERT_DLS) + "\n";  // row 1
-                    for (size_t b = 0; b < nBanks; b++) {
-                        bool cur = (Config::midi_bank == bankPaths[b]);
-                        bankMenu += string(cur ? "[*] " : "[ ] ") + bankNames[b] + "\n";
-                    }
-                    uint8_t optB = menuRun(bankMenu);
-                    menu_level = 2;
-                    menu_curopt = opt2;
-                    menu_saverect = false;
-                    VIDEO::SaveRect.restore_last();
-                    if (optB == 1) {
-                        // Convert a .dls -> <stem>.bin in CONFIG_DIR, then select it.
-                        // Streams the .dls from SD (no big RAM buffer); runs on core0
-                        // at runtime — the actual flash install still happens at the
-                        // next boot via MidiSynth::provisionAtBoot().
-                        string mFile = fileDialog(FileUtils::DLS_Path, MENU_DLS_TITLE, DISK_DLSFILE, 51, 22);
-                        if (mFile != "") {
-                            mFile.erase(0, 1);
-                            string outBin = osdConvertDlsToBank(FileUtils::DLS_Path + mFile);
-                            if (!outBin.empty())
-                                Config::midi_bank = outBin;   // tentative; committed on flash-confirm below
-                        }
-                    } else if (optB >= 2 && (size_t)(optB - 1) <= nBanks) {
-                        Config::midi_bank = bankPaths[optB - 2];   // tentative
-                    }
-
-                    bool haveSd = MidiSynth::sdBankAvailable();
-                    if (!haveSd) {
-                        // No SD bank: keep an already-bound (flash) bank, else nothing.
-                        if (MidiSynth::bankReady()) {
-                            if (Config::midi_bank != prevBank ||
-                                Config::midi_storage != prevStorage) Config::save();
-                            osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
-                        } else {
-                            Config::midi_bank = prevBank;
-                            Config::midi_storage = prevStorage;
-                            osdCenteredMsg(MSG_MIDI_BANK_MISSING, LEVEL_WARN, 3000);
-                        }
-                    } else if (MidiSynth::applyBankLive()) {
-                        // Applied without a reboot: PSRAM boards load the bank live,
-                        // and a flash bank that is already current just rebinds.
-                        Config::save();
-                        osdCenteredMsg(MSG_MIDI_BANK_OK, LEVEL_OK, 2000);
-                    } else if (OSD::msgDialog("DLS Wavetable",
-                                              MSG_MIDI_BANK_INSTALL_Q) == DLG_YES) {
-                        // Flash storage (by choice, or because there is no PSRAM) and the
-                        // partition holds something else → it must be written at EARLY
-                        // BOOT (single core, pre-video). Commit + reboot.
-                        Config::save();
-                        osdCenteredMsg(MSG_MIDI_BANK_FLASHING, LEVEL_INFO, 3000);
-                        OSD::esp_hard_reset();
-                    } else {
-                        Config::midi_bank = prevBank;   // declined -> revert + restore
-                        Config::midi_storage = prevStorage;
-                        MidiSynth::init();
-                    }
-                }
-            }
-            menu_curopt = opt2;
-            menu_saverect = false;
-        } else {
-            menu_curopt = 7;
-            menu_level = 1;
-            break;
-        }
-    }
-}
-
-#if NEW_UI
 // Capture a new binding for hotkey `idx`, exactly as the classic dialog does:
 // modifiers tracked separately, Spectrum keys refused, duplicates refused, Esc
 // cancels. Returns true when the binding changed. The caller owns the prompt on
@@ -13830,173 +7506,8 @@ const char* hotkeyRowBinding(int idx) {
 bool hotkeyReadonly(int idx) {
     return idx >= 0 && idx < Config::HK_COUNT && Config::hotkeys[idx].readonly;
 }
-#endif  // NEW_UI
 
-void OSD::hotkeyDialog() {
-    auto Kbd = ESPectrum::PS2Controller.keyboard();
-    fabgl::VirtualKeyItem Nextkey;
-    bool changed = false;
 
-    // Disable joystick mapping so LALT/cursors aren't remapped to DPAD
-    bool savedCursorAsJoy = Config::CursorAsJoy;
-    Config::CursorAsJoy = false;
-
-    menu_level = 3;
-    menu_curopt = 1;
-    menu_saverect = true;
-
-    while (1) {
-        menu_footer = "F6:Defaults F8:Clear";
-        string hmenu = buildHotkeyMenu();
-        uint8_t opt = menuRun(hmenu);
-
-        if (opt == 0) {
-            // Escape: close dialog, save if changed
-            menu_footer = "";
-            if (changed) Config::save();
-            Config::CursorAsJoy = savedCursorAsJoy;
-            return;
-        }
-
-        int idx = opt - 1; // row 1 = title, so opt=1 → first entry
-        if (idx < 0 || idx >= Config::HK_COUNT) continue;
-
-        // Readonly entries: cannot be edited or cleared
-        if (Config::hotkeys[idx].readonly && !menu_rename_pressed) {
-            osdCenteredMsg(
-                " Read only ",
-                LEVEL_WARN, 800);
-            menu_curopt = opt;
-            menu_saverect = false;
-            continue;
-        }
-
-        // Delete/F8: clear binding for selected entry
-        if (menu_del_pressed) {
-            if (!Config::hotkeys[idx].readonly) {
-                Config::hotkeys[idx] = { (uint16_t)fabgl::VK_NONE, false, false };
-                changed = true;
-            }
-            menu_curopt = opt;
-            menu_saverect = false;
-            continue;
-        }
-
-        // F6: reset all to defaults
-        if (menu_rename_pressed) {
-            uint8_t res = msgDialog(
-                "Hot Keys",
-                "Reset to defaults?");
-            if (res == DLG_YES) {
-                Config::initHotkeys();
-                Config::save();
-                changed = false;
-            }
-            menu_curopt = opt;
-            menu_saverect = false;
-            continue;
-        }
-
-        // Enter pressed: capture new key
-        // Save background, show message, restore after capture
-        {
-            string msg = " Press key... (Esc=cancel) ";
-            const unsigned short mh = OSD_FONT_H * 3;
-            const unsigned short my = scrAlignCenterY(mh);
-            const unsigned short mw = (msg.length() + 2) * OSD_FONT_W;
-            const unsigned short mx = scrAlignCenterX(mw);
-            VIDEO::SaveRect.save(mx, my, mw, mh);
-            VIDEO::vga.fillRect(mx, my, mw, mh, zxColor(1, 0));
-            VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-            VIDEO::vga.setFont(Font6x8);
-            VIDEO::vga.setCursor(mx + OSD_FONT_W, my + OSD_FONT_H);
-            VIDEO::vga.print(msg.c_str());
-        }
-
-        // Drain queue (Enter release etc.)
-        while (Kbd->virtualKeyAvailable())
-            Kbd->getNextVirtualKey(&Nextkey);
-
-        // Wait for a real key-down event
-        bool alt = false, ctrl = false;
-        while (1) {
-            sleep_ms(5);
-            if (Kbd->virtualKeyAvailable()) {
-                Kbd->getNextVirtualKey(&Nextkey);
-                if (Nextkey.vk == fabgl::VK_LALT || Nextkey.vk == fabgl::VK_RALT)
-                    alt = Nextkey.down;
-                if (Nextkey.vk == fabgl::VK_LCTRL || Nextkey.vk == fabgl::VK_RCTRL)
-                    ctrl = Nextkey.down;
-                if (!Nextkey.down) continue;
-                fabgl::VirtualKey vk = Nextkey.vk;
-                // Ignore modifier, joystick and menu-navigation keys
-                if (vk == fabgl::VK_LALT || vk == fabgl::VK_RALT ||
-                    vk == fabgl::VK_LCTRL || vk == fabgl::VK_RCTRL ||
-                    vk == fabgl::VK_LSHIFT || vk == fabgl::VK_RSHIFT ||
-                    vk == fabgl::VK_DPAD_FIRE || vk == fabgl::VK_DPAD_ALTFIRE ||
-                    vk == fabgl::VK_DPAD_LEFT || vk == fabgl::VK_DPAD_RIGHT ||
-                    vk == fabgl::VK_DPAD_UP || vk == fabgl::VK_DPAD_DOWN ||
-                    vk == fabgl::VK_DPAD_SELECT || vk == fabgl::VK_DPAD_START ||
-                    vk == fabgl::VK_MENU_LEFT || vk == fabgl::VK_MENU_RIGHT ||
-                    vk == fabgl::VK_MENU_UP || vk == fabgl::VK_MENU_DOWN ||
-                    vk == fabgl::VK_MENU_ENTER || vk == fabgl::VK_MENU_BS ||
-                    vk == fabgl::VK_MENU_HOME)
-                    continue;
-
-                if (vk == fabgl::VK_ESCAPE) {
-                    break;
-                }
-
-                // Only allow non-Spectrum keys (F-keys, navigation, special)
-                if (!((vk >= fabgl::VK_F1 && vk <= fabgl::VK_F12) ||
-                      vk == fabgl::VK_PAUSE || vk == fabgl::VK_PRINTSCREEN ||
-                      vk == fabgl::VK_SCROLLLOCK || vk == fabgl::VK_NUMLOCK ||
-                      vk == fabgl::VK_INSERT ||
-                      vk == fabgl::VK_HOME || vk == fabgl::VK_END ||
-                      vk == fabgl::VK_PAGEUP || vk == fabgl::VK_PAGEDOWN ||
-                      vk == fabgl::VK_TILDE || vk == fabgl::VK_GRAVEACCENT ||
-                      vk == fabgl::VK_VOLUMEUP || vk == fabgl::VK_VOLUMEDOWN ||
-                      vk == fabgl::VK_VOLUMEMUTE ||
-                      vk == fabgl::VK_DELETE || vk == fabgl::VK_BACKSPACE)) {
-                    osdCenteredMsg(
-                        " Key not allowed ",
-                        LEVEL_WARN, 800);
-                    continue;
-                }
-
-                // Conflict check
-                bool conflict = false;
-                for (int i = 0; i < Config::HK_COUNT; i++) {
-                    if (i == idx) continue;
-                    if (Config::hotkeys[i].vk == (uint16_t)vk &&
-                        Config::hotkeys[i].alt  == alt &&
-                        Config::hotkeys[i].ctrl == ctrl) {
-                        conflict = true;
-                        break;
-                    }
-                }
-                if (conflict) {
-                    osdCenteredMsg(
-                        " Already assigned! ",
-                        LEVEL_WARN, 1000);
-                    continue;
-                }
-
-                Config::hotkeys[idx] = { (uint16_t)vk, alt, ctrl };
-                changed = true;
-                break;
-            }
-        }
-
-        // Restore background behind "Press key..." message
-        VIDEO::SaveRect.restore_last();
-
-        menu_curopt = opt;
-        menu_saverect = false;
-    }
-}
-
-#if NEW_UI
 // Pick a ZX key for a pad control, reusing the classic submenu tables so the
 // option -> VirtualKey mapping lives in one place. Returns the new VK, or -1 when
 // the user backed out. Drawn with the new UI's list picker.
@@ -14073,425 +7584,7 @@ int OSD::joyPickKey(int currentVk) {
     if (Config::joystick == JOY_FULLER && opt2 <= 6) vk += 6;
     return vk;
 }
-#endif  // NEW_UI
 
-void OSD::joyDialog(void) {
-
-    int joyDropdown[16][7]={
-        {7, 65,-1, 1, 2, 3, 0},   // 0=Left   (right→Right, up→Up, down→Down)
-        {67,65, 0, 9, 2, 3, 0},   // 1=Right  (left→Left, right→X, up→Up, down→Down)
-        {37,17,-1, 6,-1, 0, 0},   // 2=Up     (right→A, down→Left)
-        {37,89,-1, 8, 0, 4, 0},   // 3=Down   (right→C, up→Left, down→Start)
-        {37,121,-1, 5, 3,-1, 0},  // 4=Start  (right→Mode, up→Down)
-        {121,121,4,14, 1,-1, 0},  // 5=Mode   (left→Start, right→Ok, up→Right)
-        {157,17, 2, 7,-1, 9, 0},  // 6=A      (left→Up, right→B, down→X)
-        {237,17, 6,-1,-1,10, 0},  // 7=B      (left→A, down→Y)
-        {157,65, 3,11, 9,12, 0},  // 8=C      (left→Down, right→Z, up→X, down→L2)
-        {157,41, 1,10, 6, 8, 0},  // 9=X      (left→Right, right→Y, up→A, down→C)
-        {237,41, 9,-1, 7,11, 0},  // 10=Y     (left→X, up→B, down→Z)
-        {237,65, 8,-1,10,13, 0},  // 11=Z     (left→C, up→Y, down→R2)
-        {157,89, 3,13, 8,14, 0},  // 12=L2    (left→Down, right→R2, up→C, down→Ok)
-        {237,89,12,-1,11,15, 0},  // 13=R2    (left→L2, up→Z, down→Test)
-        {181,121, 5,15,12,-1, 0}, // 14=Ok    (left→Mode, right→Test, up→L2)
-        {241,121,14,-1,13,-1, 0}  // 15=Test  (left→Ok, up→R2)
-    };
-
-    string keymenu = MENU_JOYSELKEY;
-    int joytype = Config::joystick;
-
-    string selkeymenu[5] = {
-        "",             // None (no submenu)
-        MENU_JOY_AZ,
-        MENU_JOY_09,
-        "",
-        "Joystick"
-    };
-
-    selkeymenu[3] = ("Special\n");
-    selkeymenu[3] += MENU_JOY_SPECIAL;
-    selkeymenu[4] = MENU_JOY_KEMPSTON;
-    int curDropDown = 2;
-    uint8_t joyDialogMode = 0; // 0 -> Define, 1 -> Test
-
-    const unsigned short h = (OSD_FONT_H * 17) + 2;
-    const unsigned short y = scrAlignCenterY(h) - 8;
-
-    const unsigned short w = (50 * OSD_FONT_W) + 2;
-    const unsigned short x = scrAlignCenterX(w) - 3;
-
-    // Set font
-    VIDEO::vga.setFont(Font6x8);
-
-    // Menu border
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0,0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7,1));
-
-    // Title
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print("Joystick");
-
-    // Rainbow
-    unsigned short rb_y = y + 8;
-    unsigned short rb_paint_x = x + w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++) {
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8, zxColor(rb_colors[c], 1));
-        }
-        rb_paint_x += 5;
-    }
-
-    // Read joy definition into joyDropdown
-    for (int n = 0; n < 14; ++n)
-        joyDropdown[n][6] = Config::joydef[n];
-
-    // Draw Joy DropDowns
-    for (int n = 0; n < 14; ++n) {
-        VIDEO::vga.rect(x + joyDropdown[n][0] - 2, y + joyDropdown[n][1] - 2, 58, 12, zxColor(0, 0));
-        if (n == curDropDown)
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-        else
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-        VIDEO::vga.setCursor(x + joyDropdown[n][0], y + joyDropdown[n][1]);
-        VIDEO::vga.print(vkToText(joyDropdown[n][6]).c_str());
-    }
-
-    // Draw dialog buttons
-    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-    VIDEO::vga.setCursor(x + joyDropdown[14][0], y + joyDropdown[14][1]);
-    VIDEO::vga.print("   Ok    ");
-    VIDEO::vga.setCursor(x + joyDropdown[15][0], y + joyDropdown[15][1]);
-    VIDEO::vga.print(" JoyTest ");
-    DrawjoyControls(x, y);
-
-    // Wait for key
-    fabgl::VirtualKeyItem Nextkey;
-    int joyTestExitCount = 0;
-    while (1) {
-        if (joyDialogMode) {
-            DrawjoyControls(x,y);
-        }
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
-            if(!Nextkey.down) continue;
-            if (is_left(Nextkey.vk) || Nextkey.vk == fabgl::VK_F9) {
-                if (joyDialogMode == 0 && joyDropdown[curDropDown][2] >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    curDropDown = joyDropdown[curDropDown][2];
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    click();
-                }
-            } else
-            if (is_right(Nextkey.vk) || Nextkey.vk == fabgl::VK_F10) {
-                if (joyDialogMode == 0 && joyDropdown[curDropDown][3] >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    curDropDown = joyDropdown[curDropDown][3];
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    click();
-                }
-            } else
-            if (is_up(Nextkey.vk)) {
-                if (joyDialogMode == 0 && joyDropdown[curDropDown][4] >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    curDropDown = joyDropdown[curDropDown][4];
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    click();
-                }
-            } else
-            if (is_down(Nextkey.vk)) {
-                if (joyDialogMode == 0 && joyDropdown[curDropDown][5] >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    curDropDown = joyDropdown[curDropDown][5];
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    if (curDropDown < 14)
-                        VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                    else
-                        VIDEO::vga.print(curDropDown == 14 ? "   Ok    " : " JoyTest ");
-                    click();
-                }
-            } else
-            if (is_enter(Nextkey.vk)) {
-                if (joyDialogMode == 0) {
-                    if (curDropDown>=0 && curDropDown<14) {
-                        click();
-                        // Launch assign menu
-                        menu_curopt = 1;
-                        while (1) {
-                            menu_level = 0;
-                            menu_saverect = true;
-                            uint8_t opt = simpleMenuRun(keymenu,x + joyDropdown[curDropDown][0],y + joyDropdown[curDropDown][1],6,11);
-                            if(opt!=0) {
-                                if (opt == 1) {// None: assign directly, no submenu
-                                    joyDropdown[curDropDown][6] = fabgl::VK_NONE;
-                                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                                    VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                                    break;
-                                }
-                                // Key select menu
-                                menu_saverect = true;
-                                menu_level = 0;
-                                menu_curopt = 1;
-                                uint8_t opt2 = simpleMenuRun(selkeymenu[opt - 1],x + joyDropdown[curDropDown][0],y + joyDropdown[curDropDown][1],6,11);
-                                if(opt2!=0) {
-                                    if (opt == 2) {// A-Z
-                                        joyDropdown[curDropDown][6] = (fabgl::VirtualKey) 47 + opt2;
-                                    } else
-                                    if (opt == 3) {// 0-9
-                                        joyDropdown[curDropDown][6] = (fabgl::VirtualKey) 1 + opt2;
-                                    } else
-                                    if (opt == 4) {// Special
-                                        if (opt2 < 13) {// F1-F12
-                                            joyDropdown[curDropDown][6] = (fabgl::VirtualKey) 158 + opt2;
-                                        } else
-                                        if (opt2 == 13) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_PAUSE;
-                                        } else
-                                        if (opt2 == 14) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_PRINTSCREEN;
-                                        } else
-                                        if (opt2 == 15) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_LEFT;
-                                        } else
-                                        if (opt2 == 16) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_RIGHT;
-                                        } else
-                                        if (opt2 == 17) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_UP;
-                                        } else
-                                        if (opt2 == 18) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DOWN;
-                                        } else
-                                        if (opt2 == 19) {
-                                            joyDropdown[curDropDown][6] = fabgl::VK_RETURN;
-                                        } else
-                                        if (opt2 == 20) {
-                                            joyDropdown[curDropDown][6] = fabgl::VK_LSHIFT;
-                                        } else
-                                        if (opt2 == 21) {
-                                            joyDropdown[curDropDown][6] = fabgl::VK_LCTRL;
-                                        } else
-                                        if (opt2 == 22) {
-                                            joyDropdown[curDropDown][6] = fabgl::VK_SPACE;
-                                        } else
-                                        if (opt2 == 23) {
-                                            joyDropdown[curDropDown][6] = fabgl::VK_BACKSPACE;
-                                        } else
-                                        if (opt2 == 24) {
-                                            joyDropdown[curDropDown][6] = fabgl::VK_KP_0;
-                                        } else
-                                        if (opt2 == 25) {
-                                            joyDropdown[curDropDown][6] = fabgl::VK_KP_PERIOD;
-                                        }
-                                    } else
-                                    if (opt == 5) {// Kempston / Fuller
-                                        if (opt2 == 1) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_LEFT;
-                                        } else
-                                        if (opt2 == 2) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_RIGHT;
-                                        } else
-                                        if (opt2 == 3) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_UP;
-                                        } else
-                                        if (opt2 == 4) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_DOWN;
-                                        } else
-                                        if (opt2 == 5) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_FIRE;
-                                        } else
-                                        if (opt2 == 6) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_ALTFIRE;
-                                        } else
-                                        if (opt2 == 7) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_JOY_C;
-                                        } else
-                                        if (opt2 == 8) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_JOY_X;
-                                        } else
-                                        if (opt2 == 9) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_JOY_Y;
-                                        } else
-                                        if (opt2 == 10) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_JOY_Z;
-                                        } else
-                                        if (opt2 == 11) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_START;
-                                        } else
-                                        if (opt2 == 12) {
-                                            joyDropdown[curDropDown][6] = fabgl::VirtualKey::VK_DPAD_SELECT;
-                                        }
-                                        if (joytype == JOY_FULLER && opt2 <= 6)
-                                            joyDropdown[curDropDown][6] += 6;
-                                    }
-                                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                                    VIDEO::vga.print(vkToText(joyDropdown[curDropDown][6]).c_str());
-                                    break;
-                                }
-                            } else break;
-                            menu_curopt = opt;
-                        }
-                    } else
-                    if (curDropDown == 14) {
-                        // Ok button
-
-                        // Check if there are changes and ask to save them
-                        bool changed = false;
-                        for (int n = 0; n < 14; ++n) {
-                            if (Config::joydef[n] != joyDropdown[n][6]) {
-                                changed = true;
-                                break;
-                            }
-                        }
-                        // Ask to save changes
-                        if (changed) {
-                            string title = "Joystick";
-                            string msg = OSD_DLG_JOYSAVE;
-                            uint8_t res = OSD::msgDialog(title,msg);
-                            if (res == DLG_YES) {
-                                for (int n = 0; n < 14; ++n) {
-                                    Config::joydef[n] = joyDropdown[n][6];
-                                }
-                                Config::save();
-                                click();
-                                break;
-
-                            } else
-                            if (res == DLG_NO) {
-                                click();
-                                break;
-                            }
-                        } else {
-                            click();
-                            break;
-                        }
-                    } else
-                    if (curDropDown == 15) {
-                        // Enable joyTest
-                        joyDialogMode = 1;
-                        for (int n = 0; n < 14; ++n) {
-                            Config::joydef[n] = joyDropdown[n][6];
-                        }
-                        Config::save(); /// TODO: revert support
-                        joyTestExitCount = 0;
-                        VIDEO::vga.setTextColor(zxColor(4, 1), zxColor(5, 1));
-                        VIDEO::vga.setCursor(x + joyDropdown[15][0], y + joyDropdown[15][1]);
-                        VIDEO::vga.print(" JoyTest ");
-                        click();
-                    }
-                }
-            } else
-            if (Nextkey.vk == fabgl::VK_DELETE) {
-                if (joyDialogMode == 0 && curDropDown < 14) {
-                    click();
-                    joyDropdown[curDropDown][6] = fabgl::VK_NONE;
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + joyDropdown[curDropDown][0], y + joyDropdown[curDropDown][1]);
-                    VIDEO::vga.print(vkToText(fabgl::VK_NONE).c_str());
-                }
-            } else
-            if (Nextkey.vk == fabgl::VK_ESCAPE) {
-                if (joyDialogMode) {
-                    if (Nextkey.vk == fabgl::VK_ESCAPE) {
-                        // Disable joyTest
-                        joyDialogMode = 0;
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                        VIDEO::vga.setCursor(x + joyDropdown[15][0], y + joyDropdown[15][1]);
-                        VIDEO::vga.print(" JoyTest ");
-                        for (int n = 0; n < 14; n++)
-                            joyControl[n][2] = zxColor(0,0);
-                        DrawjoyControls(x,y);
-                        click();
-                    }
-                } else {
-                    // Ask to discard changes
-                    string title = "Joystick";
-                    string msg = OSD_DLG_JOYDISCARD;
-                    uint8_t res = OSD::msgDialog(title,msg);
-                    if (res == DLG_YES) {
-                        click();
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Joy Test Mode: Check joy status and color controls
-        if (joyDialogMode) {
-            for (int n = fabgl::VK_JOY_RIGHT; n <= fabgl::VK_JOY_R2; n++) {
-                int m = 0; // index in joyControl
-                switch (n) {
-                    case fabgl::VK_JOY_RIGHT: m = 1; break;
-                    case fabgl::VK_JOY_LEFT: m = 0; break;
-                    case fabgl::VK_JOY_DOWN: m = 3; break;
-                    case fabgl::VK_JOY_UP: m = 2; break;
-                    case fabgl::VK_JOY_A: m = 6; break;
-                    case fabgl::VK_JOY_B: m = 7; break;
-                    case fabgl::VK_JOY_START: m = 4; break;
-                    case fabgl::VK_JOY_MODE: m = 5; break;
-                    case fabgl::VK_JOY_C: m = 8; break;
-                    case fabgl::VK_JOY_X: m = 9; break;
-                    case fabgl::VK_JOY_Y: m = 10; break;
-                    case fabgl::VK_JOY_Z: m = 11; break;
-                    case fabgl::VK_JOY_L2: m = 12; break;
-                    case fabgl::VK_JOY_R2: m = 13; break;
-                }
-                if (ESPectrum::PS2Controller.keyboard()->isVKDown((fabgl::VirtualKey) n))
-                    joyControl[m][2] = zxColor(4,1);
-                else
-                    joyControl[m][2] = zxColor(0,0);
-            }
-            if (ESPectrum::PS2Controller.keyboard()->isVKDown(fabgl::VK_JOY_B)) {
-                joyTestExitCount++;
-                if (joyTestExitCount == 5)
-                    ESPectrum::PS2Controller.keyboard()->injectVirtualKey(fabgl::VK_ESCAPE, true, false);
-            } else {
-                joyTestExitCount = 0;
-            }
-        }
-        sleep_ms(50);
-    }
-}
 
 // POKE DIALOG
 
@@ -14521,289 +7614,7 @@ const dlgObject dlg_Objects[5] = {
 
 const string BankCombo[9] = { "   -   ", "   0   ", "   1   ", "   2   ", "   3   ", "   4   ", "   5   ", "   6   ", "   7   " };
 
-void OSD::jumpToDialog() {
-    uint32_t address = addressDialog(Z80::getRegPC(), "Jump to");
-    if (Z80::getRegPC() != address && address <= 0xFFFF) {
-        Z80::setRegPC(address);
-    }
-}
 
-void OSD::pokeDialog() {
-    char tmp1[8];
-    uint16_t address = Z80::getRegPC();
-    snprintf(tmp1, 8, "%04X", address);
-    char* tmp2 = tmp1 + 5;
-    uint8_t page = address >> 14;
-    snprintf(tmp2, 8, "%02X", MemESP::romPeek(page, MemESP::ramCurrent[page], address & 0x3fff));
-
-    string dlgValues[5] = {
-        "   -   ", // Bank
-        tmp1, // Address
-        tmp2, // Value
-        "",
-        ""
-    };
-
-    string Bankmenu = (" Bank  \n");
-    int i=0;
-    for (;i<9;i++) Bankmenu += BankCombo[i] + "\n";
-
-    int curObject = 0;
-    uint8_t dlgMode = 0; // 0 -> Move, 1 -> Input
-
-    const unsigned short h = (OSD_FONT_H * 10) + 2;
-    const unsigned short y = scrAlignCenterY(h) - 8;
-
-    const unsigned short w = (OSD_FONT_W * 20) + 2;
-    const unsigned short x = scrAlignCenterX(w) - 3;
-
-    click();
-
-    // Set font
-    VIDEO::vga.setFont(Font6x8);
-
-    // Menu border
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0,0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7,1));
-
-    // Title
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print("Input Poke");
-
-    // Rainbow
-    unsigned short rb_y = y + 8;
-    unsigned short rb_paint_x = x + w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++) {
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8, zxColor(rb_colors[c], 1));
-        }
-        rb_paint_x += 5;
-    }
-
-    // Draw objects
-    for (int n = 0; n < 5; n++) {
-        if (dlg_Objects[n].Label != "" && dlg_Objects[n].objType != DLG_OBJ_BUTTON) {
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-            VIDEO::vga.setCursor(x + dlg_Objects[n].posx - 63, y + dlg_Objects[n].posy);
-            VIDEO::vga.print(dlg_Objects[n].Label.c_str());
-            VIDEO::vga.rect(x + dlg_Objects[n].posx - 2, y + dlg_Objects[n].posy - 2, 46, 12, zxColor(0, 0));
-        }
-        if (n == curObject)
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-        else
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-        VIDEO::vga.setCursor(x + dlg_Objects[n].posx, y + dlg_Objects[n].posy);
-        if (dlg_Objects[n].objType == DLG_OBJ_BUTTON) {
-            VIDEO::vga.print(dlg_Objects[n].Label.c_str());
-        } else {
-            VIDEO::vga.print(dlgValues[n].c_str());
-        }
-    }
-    // Wait for key
-    fabgl::VirtualKeyItem Nextkey;
-    uint8_t CursorFlash = 0;
-    while (1) {
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
-            if(!Nextkey.down) continue;
-            if ((Nextkey.vk >= fabgl::VK_0) && (Nextkey.vk <= fabgl::VK_9)) {
-                if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) {
-                    if (dlgValues[curObject].length() < (curObject == 1 ? 4 : 2)) {
-                        dlgValues[curObject] += char(Nextkey.vk + 46);
-                    }
-                }
-                click();
-            } else
-            if ((Nextkey.vk >= fabgl::VK_A) && (Nextkey.vk <= fabgl::VK_F)) {
-                if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) {
-                    if (dlgValues[curObject].length() < (curObject == 1 ? 4 : 2)) {
-                        dlgValues[curObject] += char(Nextkey.vk - fabgl::VK_A) + 'A';
-                    }
-                }
-                click();
-            } else
-            if (is_left(Nextkey.vk)) {
-                if (dlg_Objects[curObject].objLeft >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                    if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    curObject = dlg_Objects[curObject].objLeft;
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                    if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    click();
-                }
-            } else
-            if (is_right(Nextkey.vk)) {
-                if (dlg_Objects[curObject].objRight >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                    if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    curObject = dlg_Objects[curObject].objRight;
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                    if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    click();
-                }
-            } else
-            if (is_up(Nextkey.vk)) {
-                if (dlg_Objects[curObject].objTop >= 0) {
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                        if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                            if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
-                        }
-                        curObject = dlg_Objects[curObject].objTop;
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                        if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                        }
-                        click();
-                }
-            } else
-            if (is_down(Nextkey.vk)) {
-                if (dlg_Objects[curObject].objDown >= 0) {
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                        if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                            if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
-                        }
-                        curObject = dlg_Objects[curObject].objDown;
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                        if (dlg_Objects[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                        }
-                        click();
-                }
-            } else
-            if (Nextkey.vk == fabgl::VK_BACKSPACE) {
-                if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) {
-                    if (dlgValues[curObject] != "") dlgValues[curObject].pop_back();
-                }
-                click();
-            } else
-            if (is_enter(Nextkey.vk)) {
-                if (dlg_Objects[curObject].Name == "Bank" && !Z80Ops::is48) {
-                    click();
-                    // Launch bank menu
-                    menu_curopt = 1;
-                    while (1) {
-                        menu_level = 0;
-                        menu_saverect = true;
-                        uint8_t opt = simpleMenuRun( Bankmenu, x + dlg_Objects[curObject].posx,y + dlg_Objects[curObject].posy, 10, 9);
-                        if(opt != 0) {
-                            if (BankCombo[opt -1] != dlgValues[curObject]) {
-                                dlgValues[curObject] = BankCombo[opt - 1];
-                                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                                VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                                VIDEO::vga.print(dlgValues[curObject].c_str());
-
-                                if (dlgValues[curObject]==BankCombo[0]) {
-                                    dlgValues[1] = tmp1;
-                                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                                    VIDEO::vga.setCursor(x + dlg_Objects[1].posx, y + dlg_Objects[1].posy);
-                                    VIDEO::vga.print(tmp1);
-                                } else {
-                                    string val = dlgValues[1];
-                                    trim(val);
-                                    if(stoi(val) > 16383) {
-                                        dlgValues[1] = tmp1;
-                                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                                        VIDEO::vga.setCursor(x + dlg_Objects[1].posx, y + dlg_Objects[1].posy);
-                                        VIDEO::vga.print(tmp1);
-                                    }
-                                }
-
-                            }
-                            break;
-                        } else {
-                            break;
-                        }
-                        menu_curopt = opt;
-                    }
-                } else
-                if (dlg_Objects[curObject].Name == "Ok") {
-                    string addr = dlgValues[1];
-                    string val = dlgValues[2];
-                    trim(addr);
-                    trim(val);
-                    address = stoul(addr, nullptr, 16);
-                    uint8_t value = stoul(val, nullptr, 16);
-                    // Apply poke
-                    if (dlgValues[0] == "   -   ") {
-                        // Poke address between 16384 and 65535
-                        uint8_t page = address >> 14;
-                        MemESP::ensureResident(page); // accessor bank → real frame
-                        MemESP::ramCurrent[page][address & 0x3fff] = value;
-                    } else {
-                        // Poke address in bank
-                        string bank = dlgValues[0];
-                        trim(bank);
-                        MemESP::ram[stoi(bank)].write(address, value);
-                    }
-                    click();
-                    break;
-                } else if (dlg_Objects[curObject].Name == "Cancel") {
-                    click();
-                    break;
-                }
-            } else if (is_back(Nextkey.vk)) {
-                click();
-                break;
-            }
-        }
-        if (dlg_Objects[curObject].objType == DLG_OBJ_INPUT) {
-            if ((++CursorFlash & 0xF) == 0) {
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                VIDEO::vga.setCursor(x + dlg_Objects[curObject].posx, y + dlg_Objects[curObject].posy);
-                VIDEO::vga.print(dlgValues[curObject].c_str());
-                if (CursorFlash > 63) {
-                    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 1));
-                    if (CursorFlash == 128) CursorFlash = 0;
-                } else {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                }
-                VIDEO::vga.print("K");
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                VIDEO::vga.print(" ");
-            }
-        }
-        sleep_ms(5);
-    }
-    flushKbd();
-}
 
 void flushKbd() {
     auto kbd = ESPectrum::PS2Controller.keyboard();
@@ -14819,537 +7630,9 @@ const dlgObject dlg_Objects2[3] = {
     {"Cancel", 52,65, 2, 2, 1, 0, DLG_OBJ_BUTTON, "  Cancel  "}
 };
 
-uint32_t OSD::addressDialog(uint16_t addr, const char* title) {
-    char tmp[8];
-    snprintf(tmp, 8, "%04X", addr);
-    string dlgValues[3]={
-        tmp, // Address
-        "",
-        ""
-    };
 
-    int curObject = 0;
-    uint8_t dlgMode = 0; // 0 -> Move, 1 -> Input
 
-    const unsigned short h = (OSD_FONT_H * 10) + 2;
-    const unsigned short y = scrAlignCenterY(h) - 8;
 
-    const unsigned short w = (OSD_FONT_W * 20) + 2;
-    const unsigned short x = scrAlignCenterX(w) - 3;
-
-    click();
-
-    // Set font
-    VIDEO::vga.setFont(Font6x8);
-
-    // Menu border
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0,0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7,1));
-
-    // Title
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print(title);
-
-    // Rainbow
-    unsigned short rb_y = y + 8;
-    unsigned short rb_paint_x = x + w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++) {
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8, zxColor(rb_colors[c], 1));
-        }
-        rb_paint_x += 5;
-    }
-
-    // Draw objects
-    for (int n = 0; n < 3; n++) {
-        if (dlg_Objects2[n].Label != "" && dlg_Objects2[n].objType != DLG_OBJ_BUTTON) {
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-            VIDEO::vga.setCursor(x + dlg_Objects2[n].posx - 63, y + dlg_Objects2[n].posy);
-            VIDEO::vga.print(dlg_Objects2[n].Label.c_str());
-            VIDEO::vga.rect(x + dlg_Objects2[n].posx - 2, y + dlg_Objects2[n].posy - 2, 46, 12, zxColor(0, 0));
-        }
-        if (n == curObject)
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-        else
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-
-        VIDEO::vga.setCursor(x + dlg_Objects2[n].posx, y + dlg_Objects2[n].posy);
-        if (dlg_Objects2[n].objType == DLG_OBJ_BUTTON) {
-            VIDEO::vga.print(dlg_Objects2[n].Label.c_str());
-        } else {
-            VIDEO::vga.print(dlgValues[n].c_str());
-        }
-    }
-    // Wait for key
-    fabgl::VirtualKeyItem Nextkey;
-    uint8_t CursorFlash = 0;
-    while (1) {
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
-            if(!Nextkey.down) continue;
-            if (Nextkey.vk >= fabgl::VK_0 && Nextkey.vk <= fabgl::VK_9) {
-                if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) {
-                    if (dlgValues[curObject].length() < 4) {
-                        dlgValues[curObject] += char(Nextkey.vk + 46);
-                    }
-                }
-                click();
-            } else
-            if (Nextkey.vk >= fabgl::VK_A && Nextkey.vk <= fabgl::VK_F) {
-                if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) {
-                    if (dlgValues[curObject].length() < 4) {
-                        dlgValues[curObject] += char(Nextkey.vk - fabgl::VK_A) + 'A';
-                    }
-                }
-                click();
-            } else
-            if (is_left(Nextkey.vk) || Nextkey.vk == fabgl::VK_TAB) {
-                if (dlg_Objects2[curObject].objLeft >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                    if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    curObject = dlg_Objects2[curObject].objLeft;
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                    if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    click();
-                }
-            } else
-            if (is_right(Nextkey.vk)) {
-                if (dlg_Objects2[curObject].objRight >= 0) {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                    if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    curObject = dlg_Objects2[curObject].objRight;
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                    VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                    if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                        VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                    } else {
-                        VIDEO::vga.print(dlgValues[curObject].c_str());
-                    }
-                    click();
-                }
-            } else
-            if (is_up(Nextkey.vk)) {
-                if (dlg_Objects2[curObject].objTop >= 0) {
-                    // Input values validation
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                        if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                            if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
-                        }
-                        curObject = dlg_Objects2[curObject].objTop;
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                        if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                        }
-                        click();
-                }
-            } else
-            if (is_down(Nextkey.vk)) {
-                if (dlg_Objects2[curObject].objDown >= 0) {
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                        if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                            if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) VIDEO::vga.print(" "); // Clear K cursor
-                        }
-                        curObject = dlg_Objects2[curObject].objDown;
-                        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                        VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                        if (dlg_Objects2[curObject].objType == DLG_OBJ_BUTTON) {
-                            VIDEO::vga.print(dlg_Objects2[curObject].Label.c_str());
-                        } else {
-                            VIDEO::vga.print(dlgValues[curObject].c_str());
-                        }
-                        click();
-                }
-            } else
-            if (Nextkey.vk == fabgl::VK_BACKSPACE) {
-                if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) {
-                    if (dlgValues[curObject] != "") dlgValues[curObject].pop_back();
-                }
-                click();
-            } else
-            if (is_enter(Nextkey.vk) || Nextkey.vk == fabgl::VK_RETURN || Nextkey.vk == fabgl::VK_KP_ENTER) {
-                if (dlg_Objects2[curObject].Name == "Ok" || dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) {
-                    string s = dlgValues[0];
-                    trim(s);
-                    if (s.empty()) {
-                        click();
-                        flushKbd();
-                        return 0x00010001;
-                    }
-                    addr = stoul(s, nullptr, 16);
-                    click();
-                    flushKbd();
-                    return addr;
-                } else if (dlg_Objects2[curObject].Name == "Cancel") {
-                    click();
-                    flushKbd();
-                    return 0x00010001;
-                }
-            } else if (is_back(Nextkey.vk)) {
-                click();
-                flushKbd();
-                return 0x00010000;
-            }
-        }
-
-        if (dlg_Objects2[curObject].objType == DLG_OBJ_INPUT) {
-            if ((++CursorFlash & 0xF) == 0) {
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                VIDEO::vga.setCursor(x + dlg_Objects2[curObject].posx, y + dlg_Objects2[curObject].posy);
-                VIDEO::vga.print(dlgValues[curObject].c_str());
-                if (CursorFlash > 63) {
-                    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 1));
-                    if (CursorFlash == 128) CursorFlash = 0;
-                } else {
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                }
-                VIDEO::vga.print("K");
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                VIDEO::vga.print(" ");
-            }
-        }
-        sleep_ms(5);
-    }
-    return 0x00010000;
-}
-
-uint16_t OSD::BPListDialog() {
-    // Collect active breakpoint indices
-    int bpIdx[Config::MAX_BREAKPOINTS];
-    int count = 0;
-    auto rebuild = [&]() {
-        count = 0;
-        for (int i = 0; i < Config::MAX_BREAKPOINTS; i++)
-            if (Config::breakPoints[i].type != Config::BP_NONE)
-                bpIdx[count++] = i;
-        // Sort by type then address
-        for (int i = 0; i < count - 1; i++)
-            for (int j = i + 1; j < count; j++) {
-                auto &a = Config::breakPoints[bpIdx[i]], &b = Config::breakPoints[bpIdx[j]];
-                if (a.type > b.type || (a.type == b.type && a.addr > b.addr)) {
-                    int t = bpIdx[i]; bpIdx[i] = bpIdx[j]; bpIdx[j] = t;
-                }
-            }
-    };
-    rebuild();
-    if (count == 0) return 0xFFFF;
-
-    int maxVisible = 10;
-    int visible = count < maxVisible ? count : maxVisible;
-    const unsigned short h = (visible + 2) * OSD_FONT_H + 4;
-    const unsigned short w = OSD_FONT_W * 28 + 2;
-    const unsigned short x = scrAlignCenterX(w);
-    const unsigned short y = scrAlignCenterY(h);
-
-    int cursor = 0;
-    int scroll = 0;
-    char buf[34];
-
-    VIDEO::vga.setFont(Font6x8);
-    VIDEO::SaveRect.save(x - 1, y - 1, w + 2, h + 2);
-
-    while (1) {
-        VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-        VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0, 0));
-        VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7, 1));
-
-        VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-        VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-        snprintf(buf, sizeof(buf), "BP(s) [%d/%d] DEL=rm", count, Config::MAX_BREAKPOINTS);
-        VIDEO::vga.print(buf);
-
-        for (int i = 0; i < visible; i++) {
-            int idx = bpIdx[scroll + i];
-            auto &bp = Config::breakPoints[idx];
-            int yi = y + (i + 2) * OSD_FONT_H;
-            if (i == cursor)
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-            else
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-            VIDEO::vga.setCursor(x + OSD_FONT_W, yi);
-            if (bp.type == Config::BP_PC) {
-                char mn[13];
-                disasmAt(bp.addr, mn, 13);
-                snprintf(buf, sizeof(buf), "#%02d %s %04X %-12s", scroll + i + 1, Config::bpTypeName(bp.type), bp.addr, mn);
-            } else {
-                snprintf(buf, sizeof(buf), "#%02d %s %04X             ", scroll + i + 1, Config::bpTypeName(bp.type), bp.addr);
-            }
-            buf[28] = 0;
-            VIDEO::vga.print(buf);
-        }
-
-        auto Kbd = ESPectrum::PS2Controller.keyboard();
-        while (!Kbd->virtualKeyAvailable()) sleep_ms(5);
-        fabgl::VirtualKeyItem key;
-        Kbd->getNextVirtualKey(&key);
-        if (!key.down) continue;
-
-        if (key.vk == fabgl::VK_UP) {
-            if (cursor > 0) cursor--;
-            else if (scroll > 0) scroll--;
-        } else if (key.vk == fabgl::VK_DOWN) {
-            if (cursor < visible - 1 && cursor < count - scroll - 1) cursor++;
-            else if (scroll + visible < count) scroll++;
-        } else if (key.vk == fabgl::VK_DELETE || key.vk == fabgl::VK_BACKSPACE) {
-            Config::removeBreakPointAt(bpIdx[scroll + cursor]);
-            rebuild();
-            if (count == 0) break;
-            visible = count < maxVisible ? count : maxVisible;
-            if (scroll + cursor >= count) {
-                if (cursor > 0) cursor--;
-                else if (scroll > 0) scroll--;
-            }
-        } else if (key.vk == fabgl::VK_RETURN) {
-            auto &bp = Config::breakPoints[bpIdx[scroll + cursor]];
-            if (bp.type == Config::BP_PC) {
-                Config::save();
-                VIDEO::SaveRect.restore_last();
-                return bp.addr;
-            }
-            break;
-        } else if (key.vk == fabgl::VK_ESCAPE) {
-            break;
-        }
-    }
-    Config::save();
-    VIDEO::SaveRect.restore_last();
-    return 0xFFFF;
-}
-
-void OSD::BPDialog() {
-    const char* items[] = { "PC address", "Port read", "Port write", "Mem write", "Mem read" };
-    Config::BPType types[] = { Config::BP_PC, Config::BP_PORT_READ, Config::BP_PORT_WRITE, Config::BP_MEM_WRITE, Config::BP_MEM_READ };
-    const char* titles[] = { "PC breakpoint", "Port read BP", "Port write BP", "Mem write BP", "Mem read BP" };
-    const int nItems = 5;
-    int sel = 0;
-
-    const unsigned short h = (nItems + 2) * OSD_FONT_H + 4;
-    const unsigned short w = OSD_FONT_W * 18 + 2;
-    const unsigned short x = scrAlignCenterX(w);
-    const unsigned short y = scrAlignCenterY(h);
-    char buf[24];
-
-    VIDEO::vga.setFont(Font6x8);
-    VIDEO::SaveRect.save(x - 1, y - 1, w + 2, h + 2);
-
-    while (1) {
-        VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-        VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0, 0));
-        VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7, 1));
-        VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-        VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-        VIDEO::vga.print("Breakpoint type");
-
-        for (int i = 0; i < nItems; i++) {
-            int yi = y + (i + 2) * OSD_FONT_H;
-            if (i == sel)
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-            else
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-            VIDEO::vga.setCursor(x + OSD_FONT_W, yi);
-            snprintf(buf, 24, " %-15s", items[i]);
-            buf[16] = 0;
-            VIDEO::vga.print(buf);
-        }
-
-        auto Kbd = ESPectrum::PS2Controller.keyboard();
-        while (!Kbd->virtualKeyAvailable()) sleep_ms(5);
-        fabgl::VirtualKeyItem key;
-        Kbd->getNextVirtualKey(&key);
-        if (!key.down) continue;
-        if (key.vk == fabgl::VK_UP) { if (sel > 0) sel--; }
-        else if (key.vk == fabgl::VK_DOWN) { if (sel < nItems - 1) sel++; }
-        else if (key.vk == fabgl::VK_RETURN || key.vk == fabgl::VK_KP_ENTER) {
-            VIDEO::SaveRect.restore_last();
-            uint32_t address = addressDialog(Z80::getRegPC(), titles[sel]);
-            if (address == 0x00010000 || address == 0x00010001) return;
-            Config::addBreakPoint(address, types[sel]);
-            Config::save();
-            return;
-        }
-        else if (key.vk == fabgl::VK_ESCAPE) {
-            VIDEO::SaveRect.restore_last();
-            return;
-        }
-    }
-}
-
-bool OSD::dumpRangeDialog(uint16_t &from, uint16_t &to) {
-    char tmp0[8], tmp1[8];
-    snprintf(tmp0, 8, "%04X", from);
-    snprintf(tmp1, 8, "%04X", to);
-    string vals[2] = { tmp0, tmp1 };
-    const char* labels[2] = { "From ", "To   " };
-    int curField = 0;
-    uint8_t dlgMode = 0;
-
-    const unsigned short h = (OSD_FONT_H * 8) + 2;
-    const unsigned short w = (OSD_FONT_W * 20) + 2;
-    const unsigned short x = scrAlignCenterX(w) - 3;
-    const unsigned short y = scrAlignCenterY(h) - 8;
-
-    click();
-    VIDEO::vga.setFont(Font6x8);
-
-    // Border & background
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7, 1));
-
-    // Title
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print("Dump range");
-
-    // Rainbow
-    unsigned short rb_y = y + 8;
-    unsigned short rb_paint_x = x + w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++)
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8, zxColor(rb_colors[c], 1));
-        rb_paint_x += 5;
-    }
-
-    // Field positions
-    int fx = x + 10 * OSD_FONT_W; // input x
-    int fy[2] = { y + 24, y + 36 };
-    // Button positions
-    int by = y + 52;
-    int bx_ok = x + 7, bx_cancel = x + 52;
-
-    // Draw labels
-    for (int f = 0; f < 2; f++) {
-        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-        VIDEO::vga.setCursor(x + OSD_FONT_W, fy[f]);
-        VIDEO::vga.print(labels[f]);
-        VIDEO::vga.rect(fx - 2, fy[f] - 2, 6 * OSD_FONT_W + 4, 12, zxColor(0, 0));
-    }
-
-    int curObject = 0; // 0=from, 1=to, 2=ok, 3=cancel
-    int CursorFlash = 0;
-    fabgl::VirtualKeyItem Nextkey;
-
-    auto drawFields = [&]() {
-        for (int f = 0; f < 2; f++) {
-            if (f == curObject)
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-            else
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-            VIDEO::vga.setCursor(fx, fy[f]);
-            VIDEO::vga.print(vals[f].c_str());
-            VIDEO::vga.print(" ");
-        }
-        // Buttons
-        VIDEO::vga.setCursor(bx_ok, by);
-        VIDEO::vga.setTextColor(curObject == 2 ? zxColor(0, 1) : zxColor(0, 1),
-                                curObject == 2 ? zxColor(5, 1) : zxColor(7, 1));
-        VIDEO::vga.print("  Ok  ");
-        VIDEO::vga.setCursor(bx_cancel, by);
-        VIDEO::vga.setTextColor(curObject == 3 ? zxColor(0, 1) : zxColor(0, 1),
-                                curObject == 3 ? zxColor(5, 1) : zxColor(7, 1));
-        VIDEO::vga.print("  Cancel  ");
-    };
-
-    drawFields();
-
-    while (1) {
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
-            if (!Nextkey.down) continue;
-
-            if (Nextkey.vk >= fabgl::VK_0 && Nextkey.vk <= fabgl::VK_9) {
-                if (curObject < 2 && vals[curObject].length() < 4) {
-                    vals[curObject] += char(Nextkey.vk + 46);
-                    drawFields();
-                }
-            } else if (Nextkey.vk >= fabgl::VK_A && Nextkey.vk <= fabgl::VK_F) {
-                if (curObject < 2 && vals[curObject].length() < 4) {
-                    vals[curObject] += char('A' + (Nextkey.vk - fabgl::VK_A));
-                    drawFields();
-                }
-            } else if (Nextkey.vk == fabgl::VK_BACKSPACE) {
-                if (curObject < 2 && vals[curObject].length() > 0) {
-                    vals[curObject].pop_back();
-                    drawFields();
-                }
-            } else if (Nextkey.vk == fabgl::VK_DOWN || Nextkey.vk == fabgl::VK_TAB) {
-                curObject = (curObject + 1) % 4;
-                CursorFlash = 0;
-                drawFields();
-            } else if (Nextkey.vk == fabgl::VK_UP) {
-                curObject = (curObject + 3) % 4;
-                CursorFlash = 0;
-                drawFields();
-            } else if (Nextkey.vk == fabgl::VK_LEFT) {
-                if (curObject >= 2) { curObject = (curObject == 2) ? 3 : 2; drawFields(); }
-            } else if (Nextkey.vk == fabgl::VK_RIGHT) {
-                if (curObject >= 2) { curObject = (curObject == 2) ? 3 : 2; drawFields(); }
-            } else if (Nextkey.vk == fabgl::VK_RETURN || Nextkey.vk == fabgl::VK_KP_ENTER) {
-                if (curObject == 3) { click(); return false; } // Cancel
-                if (curObject == 2 || curObject < 2) {
-                    // Ok or Enter on field
-                    string s0 = vals[0], s1 = vals[1];
-                    while (s0.length() < 4) s0 = "0" + s0;
-                    while (s1.length() < 4) s1 = "0" + s1;
-                    from = stoul(s0, nullptr, 16);
-                    to = stoul(s1, nullptr, 16);
-                    click();
-                    return true;
-                }
-            } else if (Nextkey.vk == fabgl::VK_ESCAPE) {
-                click();
-                return false;
-            }
-        }
-        // Cursor blink
-        if (curObject < 2) {
-            if ((++CursorFlash & 0xF) == 0) {
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-                VIDEO::vga.setCursor(fx, fy[curObject]);
-                VIDEO::vga.print(vals[curObject].c_str());
-                if (CursorFlash > 63)
-                    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 1));
-                else
-                    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                VIDEO::vga.print("K");
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-                VIDEO::vga.print(" ");
-                if (CursorFlash == 128) CursorFlash = 0;
-            }
-        }
-        sleep_ms(5);
-    }
-}
 
 // Search memory for memSearchHex pattern starting at startAddr, return found address or 0x10000
 static uint32_t memDoSearch(uint16_t startAddr) {
@@ -15383,117 +7666,4 @@ static uint32_t memDoSearch(uint16_t startAddr) {
     return 0x10000;
 }
 
-void OSD::memSearchDialog() {
-
-    const unsigned short h = (OSD_FONT_H * 6) + 2;
-    const unsigned short w = (OSD_FONT_W * 22) + 2;
-    const unsigned short x = scrAlignCenterX(w) - 3;
-    const unsigned short y = scrAlignCenterY(h) - 8;
-
-    click();
-    VIDEO::vga.setFont(Font6x8);
-
-    VIDEO::vga.rect(x, y, w, h, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1, w - 2, OSD_FONT_H, zxColor(0, 0));
-    VIDEO::vga.fillRect(x + 1, y + 1 + OSD_FONT_H, w - 2, h - OSD_FONT_H - 2, zxColor(7, 1));
-
-    VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-    VIDEO::vga.setCursor(x + OSD_FONT_W + 1, y + 1);
-    VIDEO::vga.print("Search memory");
-
-    unsigned short rb_y = y + 8;
-    unsigned short rb_paint_x = x + w - 30;
-    uint8_t rb_colors[] = {2, 6, 4, 5};
-    for (uint8_t c = 0; c < 4; c++) {
-        for (uint8_t i = 0; i < 5; i++)
-            VIDEO::vga.line(rb_paint_x + i, rb_y, rb_paint_x + 8 + i, rb_y - 8, zxColor(rb_colors[c], 1));
-        rb_paint_x += 5;
-    }
-
-    int iy = y + 22;
-    int ry = y + 34;
-    int maxHexChars = 16;
-    char buf[32];
-    int CursorFlash = 0;
-    memSearchResultAddr = 0x10000;
-
-    auto drawInput = [&]() {
-        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-        VIDEO::vga.setCursor(x + OSD_FONT_W, iy);
-        VIDEO::vga.print("Hex:");
-        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-        VIDEO::vga.setCursor(x + 5 * OSD_FONT_W, iy);
-        snprintf(buf, 32, "%-16s", memSearchHex.c_str());
-        buf[16] = 0;
-        VIDEO::vga.print(buf);
-    };
-
-    auto drawResult = [&](const char* msg) {
-        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-        VIDEO::vga.setCursor(x + OSD_FONT_W, ry);
-        snprintf(buf, 32, "%-20s", msg);
-        buf[20] = 0;
-        VIDEO::vga.print(buf);
-    };
-
-    auto doSearch = [&](uint16_t startAddr) {
-        uint32_t result = memDoSearch(startAddr);
-        memSearchResultAddr = result;
-        if (result <= 0xFFFF) {
-            snprintf(buf, 32, "Found at %04X", (uint16_t)result);
-            drawResult(buf);
-        } else {
-            int len = memSearchHex.length();
-            if (len < 2 || (len & 1))
-                drawResult("Need even hex digits");
-            else
-                drawResult("Not found");
-        }
-    };
-
-    drawInput();
-    drawResult("Enter hex, F3=next");
-
-    fabgl::VirtualKeyItem Nextkey;
-    while (1) {
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
-            if (!Nextkey.down) continue;
-
-            if (Nextkey.vk >= fabgl::VK_0 && Nextkey.vk <= fabgl::VK_9) {
-                if ((int)memSearchHex.length() < maxHexChars) {
-                    memSearchHex += char(Nextkey.vk + 46);
-                    drawInput();
-                }
-            } else if (Nextkey.vk >= fabgl::VK_A && Nextkey.vk <= fabgl::VK_F) {
-                if ((int)memSearchHex.length() < maxHexChars) {
-                    memSearchHex += char('A' + (Nextkey.vk - fabgl::VK_A));
-                    drawInput();
-                }
-            } else if (Nextkey.vk == fabgl::VK_BACKSPACE) {
-                if (memSearchHex.length() > 0) {
-                    memSearchHex.pop_back();
-                    drawInput();
-                }
-            } else if (Nextkey.vk == fabgl::VK_RETURN || Nextkey.vk == fabgl::VK_KP_ENTER) {
-                doSearch(0);
-            } else if (Nextkey.vk == fabgl::VK_F3) {
-                doSearch((memSearchLastFound + 1) & 0xFFFF);
-            } else if (Nextkey.vk == fabgl::VK_ESCAPE) {
-                break;
-            }
-        }
-        if ((++CursorFlash & 0xF) == 0) {
-            int cx = x + 5 * OSD_FONT_W + (int)memSearchHex.length() * OSD_FONT_W;
-            if (CursorFlash > 63)
-                VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 1));
-            else
-                VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(7, 1));
-            VIDEO::vga.setCursor(cx, iy);
-            VIDEO::vga.print("K");
-            if (CursorFlash == 128) CursorFlash = 0;
-        }
-        sleep_ms(5);
-    }
-}
 

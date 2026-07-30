@@ -1,7 +1,6 @@
 // pico-speccy — the joystick keyboard-mapping page of the new UI (see UiJoy.cpp).
 #pragma once
 
-#if NEW_UI
 
 namespace nm {
 
@@ -12,4 +11,3 @@ void joyMappingPage();
 
 } // namespace nm
 
-#endif // NEW_UI

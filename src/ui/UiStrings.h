@@ -10,7 +10,6 @@
 
 #pragma once
 
-#if NEW_UI
 
 // ── top level ──────────────────────────────────────────────────────────────────
 #define TXT_HELP            "Help"
@@ -82,6 +81,13 @@
 #define TXT_VID_ULAPLUS     "ULA+"
 #define TXT_VID_TIMEX       "Timex Gfx mode"
 #define TXT_VID_16COL       "16col (Pentagon)"
+// TFT builds only (ST7789 / ILI9341): the panel's MADCTL orientation + inversion.
+#define TXT_VID_TFT         "TFT panel"
+#define TXT_TFT_INVERT      "Inversion"
+#define TXT_TFT_BGR         "RGB / BGR order"
+#define TXT_TFT_FLIPX       "Flip X"
+#define TXT_TFT_FLIPY       "Flip Y"
+#define TXT_TFT_DEFAULTS    "Restore defaults"
 
 #define TXT_AUD_MIDI        "MIDI"
 #define TXT_MIDI_BANK       "Bank set"
@@ -310,6 +316,5 @@
 
 // ── misc ───────────────────────────────────────────────────────────────────────
 #define TXT_TODO_TITLE      "Not implemented yet"
-#define TXT_TODO_BODY       "This branch of the new menu is not\nwired up yet. Build with NEW_UI=OFF\nto use the classic menu."
+#define TXT_TODO_BODY       "This branch of the menu is not\nwired up yet."
 
-#endif // NEW_UI

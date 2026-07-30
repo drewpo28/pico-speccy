@@ -2,7 +2,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include <string.h>
 #include <stdio.h>
@@ -117,6 +116,44 @@ NM_BOOL_ACCESS(zc,        zcontroller)
 NM_INT_ACCESS (gsMode,    gs_enabled)
 NM_INT_ACCESS (gsClock,   gs_clock)
 NM_BOOL_ACCESS(cobmect,   byte_cobmect_mode)
+
+// ── TFT panel (ST7789 / ILI9341 builds) ────────────────────────────────────────
+// Not Config fields: the driver owns TFT_INVERSION and the MADCTL byte TFT_FLAGS, and
+// Config::save()/load() persist them as plain NVS keys. Both are read once, while
+// st7789_init() builds its command list, so every one of these is reboot-class and
+// writing the live variables here is harmless.
+//
+// Only the three bits the classic TFT menu offered are editable. Every put also
+// re-asserts MADCTL_ROW_COLUMN_EXCHANGE (landscape — how these boards wire the panel,
+// and part of the driver's own default), which is what makes "Defaults" restore a
+// usable orientation without exposing a row nobody should turn off.
+#if TFT
+#include "st7789.h"     // TFT_FLAGS / TFT_INVERSION + the MADCTL_* bit names
+
+static inline void tftFlagBit(uint8_t bit, bool on) {
+    TFT_FLAGS = (uint8_t)((on ? (TFT_FLAGS | bit) : (TFT_FLAGS & ~bit))
+                          | MADCTL_ROW_COLUMN_EXCHANGE);
+}
+static int32_t get_tftInv()   { return TFT_INVERSION ? 1 : 0; }
+static void    put_tftInv(int32_t v) { TFT_INVERSION = v ? 1 : 0; }
+static int32_t get_tftBgr()   { return (TFT_FLAGS & MADCTL_BGR_PIXEL_ORDER) ? 1 : 0; }
+static void    put_tftBgr(int32_t v) { tftFlagBit(MADCTL_BGR_PIXEL_ORDER, v != 0); }
+static int32_t get_tftFlipX() { return (TFT_FLAGS & MADCTL_MX) ? 1 : 0; }
+static void    put_tftFlipX(int32_t v) { tftFlagBit(MADCTL_MX, v != 0); }
+static int32_t get_tftFlipY() { return (TFT_FLAGS & MADCTL_MY) ? 1 : 0; }
+static void    put_tftFlipY(int32_t v) { tftFlagBit(MADCTL_MY, v != 0); }
+#else
+// No panel on this build: the ids stay in the table (it is append-only) but no row
+// references them, so these only have to exist.
+static int32_t get_tftInv()   { return 0; }
+static void    put_tftInv(int32_t) {}
+static int32_t get_tftBgr()   { return 0; }
+static void    put_tftBgr(int32_t) {}
+static int32_t get_tftFlipX() { return 0; }
+static void    put_tftFlipX(int32_t) {}
+static int32_t get_tftFlipY() { return 0; }
+static void    put_tftFlipY(int32_t) {}
+#endif
 
 // ── the machine pair ───────────────────────────────────────────────────────────
 // kArchName/kRomsetName come from ArchRom.h (via UiStage.h).
@@ -1166,4 +1203,3 @@ const char* nodeValueLabel(const Node& n) {
 
 } // namespace nm
 
-#endif // NEW_UI

@@ -1,7 +1,6 @@
 // pico-speccy — 6x10 UI font (see tools/mkuifont.py for the glyph art).
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 
@@ -33,4 +32,3 @@ inline const uint8_t* uiGlyph(char ch) {
 
 } // namespace nm
 
-#endif // NEW_UI

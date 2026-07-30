@@ -27,11 +27,6 @@ option(PICO_DV "Pimoroni Pico DV Demo Base + Pi Pico 2" OFF)
 option(ZERO2 "Waveshare RP2350-PiZero" OFF)
 option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 
-# New fullscreen two-pane OSD menu (src/ui/). OFF = the classic cascade menu on F1.
-# While ON both UIs are in the image; only the F1 entry point differs. Everything
-# new lives under src/ui/ so the classic menu can be deleted in one step later.
-option(NEW_UI "Enable the new fullscreen OSD menu UI on F1" ON)
-
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
 # Add new toggles here following the same option(...) + compile-definition pattern.
@@ -446,17 +441,6 @@ if (ZIFI_NET_CLIENT)
     message(STATUS "ZiFi network client (FTP/SFTP/SSH) enabled with mbedTLS crypto")
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE ZIFI_NET_CLIENT=0)
-endif ()
-
-# New fullscreen OSD menu. Sources live in src/ui/ and are picked up by the
-# GLOB_RECURSE above; every file body is wrapped in `#if NEW_UI` so an OFF build
-# has zero footprint. Both polarities are defined so `#if NEW_UI` never sees an
-# undefined identifier.
-if (NEW_UI)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE NEW_UI=1)
-    message(STATUS "New fullscreen OSD menu UI enabled (F1)")
-else ()
-    target_compile_definitions(${PROJECT_NAME} PRIVATE NEW_UI=0)
 endif ()
 
 # redcode/Z80 build configuration for GS (LGPLv3 library vendored in src/GS/)

@@ -18,7 +18,6 @@
 
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 #include <stddef.h>
@@ -187,4 +186,3 @@ const char* nodeValueLabel(const Node& n);   // "" when the node carries no valu
 
 } // namespace nm
 
-#endif // NEW_UI

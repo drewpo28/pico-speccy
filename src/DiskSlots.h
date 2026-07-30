@@ -1,8 +1,7 @@
 // pico-speccy — per-interface disk/image slot primitives.
 //
-// Extracted verbatim from the anonymous namespace in OSDMenu.cpp so BOTH menus can drive
-// the same slots: the classic diskSlotDialog popup and the new fullscreen menu's native
-// slot level. Header-only and inline, exactly as they were.
+// Header-only and inline: the slot rows of the fullscreen menu and the disk hot key
+// drive the same primitives.
 #pragma once
 
 #include <string>

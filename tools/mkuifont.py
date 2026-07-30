@@ -191,10 +191,6 @@ def emit(path):
     out.append("// leftmost pixel. Baseline is row 7; rows 8..9 carry descenders.")
     out.append("// Deliberately not the ZX face: this UI has its own renderer and font.")
     out.append("")
-    out.append('#include "OSDNewMenu.h"')
-    out.append("")
-    out.append("#if NEW_UI")
-    out.append("")
     out.append('#include "UiFont.h"')
     out.append("")
     out.append("namespace nm {")
@@ -214,8 +210,6 @@ def emit(path):
     out.append("};")
     out.append("")
     out.append("} // namespace nm")
-    out.append("")
-    out.append("#endif // NEW_UI")
     with open(path, "w") as f:
         f.write("\n".join(out) + "\n")
     print("wrote %s (%d glyphs, %d bytes of flash)"

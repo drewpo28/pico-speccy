@@ -5,6 +5,30 @@ MURM*_P1 board targets, and the Spanish UI (all `*_ES` strings, `Config::lang`,
 the Language menu) were removed. Firmware names are `<board>-speccy-...`
 (`m1`/`m2`/`PC`/`DV`/`z0`, no chip suffix); config lives in `/.config/pico-speccy`.
 
+**One UI (2026-07-31):** the classic cascade menu is GONE, together with the
+`NEW_UI` CMake option (there is nothing to switch any more). Deleted: `OSDMenu.cpp`
+(menuRun / simpleMenuRun / WindowDraw / menuAt / PrintRow / menuTape /
+diskSlotDialog), the whole F1 cascade inside `do_OSD` (~4300 lines), `OSD::fileDialog`
++ `fd_Redraw`/`fd_PrintRow` and the classic `fdChromeNav` body, the classic
+joy/hotkey/MIDI/IDE/persist/poke/debugger dialogs, the classic debugger skin
+(`s_dbg.nu` and the zxColor tables), and ~215 now-unused `MENU_*`/`MSG_*` strings in
+`messages.h`. The menu geometry state (`OSD::menu_level/menu_saverect/menu_curopt`,
+`cols/x/y/w/h/prev_y`, `focus/begin_row`, ...) went with it. `src/ui/` (nm::) is the
+only UI; the runtime `nm::available()` fallbacks to the classic chrome were removed
+too — every supported video mode satisfies `layoutFits()` (≥40 cols, ≥6 body rows),
+DS80 included. Still shared and NOT part of the old UI: `osdCenteredMsg`,
+`progressDialog`, `showTextDialog` (+ `textPageOverride`), `msgDialog`,
+`inlineTextEdit`, `errorPanel`, `drawOSD`/`osdAt`, `drawStats`, `fdChromeNav`
+(now a one-line delegation to `nm::browseIndexNav`).
+The TFT panel settings the classic `MENU_TFT` owned were re-added as **Video > TFT
+panel** (`kTft` in UiTree.cpp, `#if TFT` only): Inversion / RGB-BGR / Flip X / Flip Y
+as ordinary staged `AC_REBOOT` booleans (`SET_TFT_*`) plus a "Restore defaults" action.
+They write the driver's globals (`TFT_INVERSION`, the MADCTL byte `TFT_FLAGS`), which
+`st7789_init()` reads once while building its command list — hence reboot-class; the
+MADCTL bit names now live in `drivers/st7789/st7789.h` (whose declarations got an
+`extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
+(landscape), so Defaults always lands on a usable orientation.
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation

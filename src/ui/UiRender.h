@@ -12,7 +12,6 @@
 
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 #include "UiModel.h"
@@ -82,4 +81,3 @@ void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg,
 
 } // namespace nm
 
-#endif // NEW_UI

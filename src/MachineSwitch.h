@@ -12,8 +12,7 @@
 //   * ANY switch that crosses the Profi forced-SRAM boundary MUST reboot, because the
 //     page backing is decided once in setup() and ESPectrum::reset() does not redo it.
 //
-// It lives outside src/ui/ on purpose: both the classic menu and the new one call it, and
-// it must survive the deletion of the classic menu.
+// It lives outside src/ui/ on purpose: the hot-key paths in OSDMain.cpp call it too.
 #pragma once
 
 #include "ArchRom.h"

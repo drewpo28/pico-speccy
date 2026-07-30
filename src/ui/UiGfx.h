@@ -24,7 +24,6 @@
 
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 
@@ -125,4 +124,3 @@ int  rainbowW();
 
 } // namespace nm
 
-#endif // NEW_UI

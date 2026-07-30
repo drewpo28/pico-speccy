@@ -2,7 +2,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include <string.h>
 
@@ -361,4 +360,3 @@ void icon1bpp(int x, int y, const uint16_t* rows, int n, int wbits, UiColor c) {
 
 } // namespace nm
 
-#endif // NEW_UI

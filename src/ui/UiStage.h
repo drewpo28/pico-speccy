@@ -19,7 +19,6 @@
 
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 
@@ -246,7 +245,14 @@ const char* romsetName(int32_t composite);
     /* PSRAM applies live, and only the flash direction needs the early-boot write — the  */ \
     /* hook runs the same applyBankLive()/confirm-install flow as the bank picker, after  */ \
     /* the commit's Config::save() has already persisted the pick.                        */ \
-    X(SET_MIDI_STORAGE,    AC_LIVE,   0,                     get_midiStorage, put_midiStorage, hook_midiStorage, -1)
+    X(SET_MIDI_STORAGE,    AC_LIVE,   0,                     get_midiStorage, put_midiStorage, hook_midiStorage, -1) \
+    /* ── Video > TFT panel (rows exist on TFT builds only) ───────────────────── */      \
+    /* TFT_INVERSION / TFT_FLAGS are read once, while st7789_init() builds its command  */ \
+    /* list, so all four are reboot-class; the accessors are no-ops off a TFT build.     */ \
+    X(SET_TFT_INVERT,      AC_REBOOT, 0,                     get_tftInv,     put_tftInv,     nullptr,        -1)          \
+    X(SET_TFT_BGR,         AC_REBOOT, 0,                     get_tftBgr,     put_tftBgr,     nullptr,        -1)          \
+    X(SET_TFT_FLIP_X,      AC_REBOOT, 0,                     get_tftFlipX,   put_tftFlipX,   nullptr,        -1)          \
+    X(SET_TFT_FLIP_Y,      AC_REBOOT, 0,                     get_tftFlipY,   put_tftFlipY,   nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {
@@ -292,4 +298,3 @@ bool editDrawsModal(uint16_t id);
 } // namespace Stage
 } // namespace nm
 
-#endif // NEW_UI

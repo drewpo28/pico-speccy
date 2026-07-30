@@ -22,7 +22,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include <string.h>
 #include <stdio.h>
@@ -1204,11 +1203,7 @@ out:
 
 // ── entry point ────────────────────────────────────────────────────────────────
 
-string browseFile(string& fdir, const string& title, uint8_t ftype,
-                  uint8_t classic_cols, uint8_t classic_rows) {
-    if (!available())
-        return OSD::fileDialog(fdir, title, ftype, classic_cols, classic_rows);
-
+string browseFile(string& fdir, const string& title, uint8_t ftype) {
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
 
     gfxBegin();
@@ -1250,4 +1245,3 @@ string browseFile(string& fdir, const string& title, uint8_t ftype,
 
 } // namespace nm
 
-#endif // NEW_UI

@@ -34,9 +34,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "Video.h"
-#if NEW_UI
 #include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
-#endif
 #include "Debug.h"
 #include "Subsystem.h"
 #include "Buffer.h"
@@ -1193,7 +1191,6 @@ void VIDEO::getBmpPalette(uint8_t* out) {
         out[i * 4 + 2] = (c >> 16) & 0xFF;
         out[i * 4 + 3] = 0;
     }
-#if NEW_UI
     // The new fullscreen UI owns indices 152..167 — reflect its colours so a
     // PrintScreen capture taken with the menu open comes out true-colour.
     {
@@ -1207,7 +1204,6 @@ void VIDEO::getBmpPalette(uint8_t* out) {
             out[(base + i) * 4 + 3] = 0;
         }
     }
-#endif
     // Orange (index 16)
     {
         uint32_t c = paletteTransform(0xFF7F00);
@@ -4056,7 +4052,7 @@ void SaveRectT::save(int16_t x, int16_t y, int16_t w, int16_t h) {
         }
         // sizeof(FIL) ~= 580 B (FF_MAX_SS=512 sector buf). The OSD runs on a tight
         // ~2 KB core stack and SaveRect::save is reached from deep call chains
-        // (e.g. fileDialog -> viewInfo -> showInfoBox -> save) — a FIL on the stack
+        // (e.g. the browser -> viewInfo -> showInfoBox -> save) — a FIL on the stack
         // overflows it and corrupts neighbouring memory (timer callbacks etc),
         // crashing later in alarm_pool_irq_handler. save() is synchronous
         // (open/write/close within one call) so a static FIL is safe even nested.

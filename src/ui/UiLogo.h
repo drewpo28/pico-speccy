@@ -1,7 +1,6 @@
 // pico-speccy — the About logo (see UiLogo.c).
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 
@@ -24,4 +23,3 @@ static inline uint8_t ui_logo_slot(uint8_t idx) {
 }
 #endif
 
-#endif // NEW_UI

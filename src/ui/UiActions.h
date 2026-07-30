@@ -1,13 +1,11 @@
 // pico-speccy — action leaves of the new fullscreen menu.
 //
 // Thin wrappers so UiTree.cpp stays pure data and UiNav.cpp stays pure engine. Each
-// wrapper calls a long-lived OSD:: dialog; the nav loop clears OSD::menu_saverect and
-// repaints the fullscreen around the call (fileDialog in particular pops a SaveRect it
-// never pushed, so an unbalanced stack there shows up as shifted menus later).
+// wrapper calls a long-lived OSD:: dialog; the nav loop repaints the fullscreen
+// around the call.
 
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 #include <string>
@@ -64,6 +62,11 @@ void persist_build(DynRows& d);
 void persist_keySave(int32_t slot, uint8_t key);
 void persist_keyLoad(int32_t slot, uint8_t key);
 void act_updateFirmware();
+#if TFT
+// Video > TFT panel > Restore defaults: stages the driver's own default MADCTL /
+// inversion (landscape, BGR, no flips) — the classic TFT menu's "Defaults" row.
+void act_tftDefaults();
+#endif
 void act_replaceRom(int32_t slot);
 
 // Network
@@ -104,4 +107,3 @@ void act_speedTestOne(int32_t opt);   // rows of the Speed test submenu
 
 } // namespace nm
 
-#endif // NEW_UI

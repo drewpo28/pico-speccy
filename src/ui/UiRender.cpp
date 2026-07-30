@@ -18,7 +18,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include <stdio.h>
 #include <string.h>
@@ -443,4 +442,3 @@ void flushDirty() {
 
 } // namespace nm
 
-#endif // NEW_UI

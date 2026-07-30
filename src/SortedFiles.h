@@ -1,9 +1,8 @@
 // pico-speccy — the on-SD sorted directory index shared by the file browsers.
 //
-// Extracted verbatim from OSDFile.cpp so the classic fileDialog and the new
-// fullscreen browser (src/ui/UiBrowser.cpp) use the SAME .idx files under /tmp:
-// one indexing pass serves both, and the cache invalidation (content CRC +
-// SORT_VERSION) stays in one place.
+// Shared by the fullscreen browser (src/ui/UiBrowser.cpp) and the remote/web
+// browsers in OSDFile.cpp: they use the SAME .idx files under /tmp, and the cache
+// invalidation (content CRC + SORT_VERSION) stays in one place.
 //
 // The index is a flat file of fixed-size records (FF_LFN_BUF+1 bytes, one
 // filename each, DIR_MARKER prefix for directories) living at

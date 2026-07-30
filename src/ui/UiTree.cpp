@@ -9,7 +9,6 @@
 
 #include "OSDNewMenu.h"
 
-#if NEW_UI
 
 #include "UiModel.h"
 #include "UiStage.h"
@@ -459,6 +458,21 @@ static const Node kHardware[] = {
     NM_BOOL  (TXT_HW_RTC,        SET_RTC,     nullptr),
 };
 
+// ── Video > TFT panel ──────────────────────────────────────────────────────────
+// TFT builds only. All four values are read once by the display init, hence the single
+// "Apply and reboot?" the commit asks for them; "Restore defaults" is the driver's own
+// starting point (landscape, BGR, no flips), which is the way back from a panel that
+// came up mirrored or with inverted colours.
+#if TFT
+static const Node kTft[] = {
+    NM_BOOL  (TXT_TFT_INVERT,   SET_TFT_INVERT, nullptr),
+    NM_BOOL  (TXT_TFT_BGR,      SET_TFT_BGR,    nullptr),
+    NM_BOOL  (TXT_TFT_FLIPX,    SET_TFT_FLIP_X, nullptr),
+    NM_BOOL  (TXT_TFT_FLIPY,    SET_TFT_FLIP_Y, nullptr),
+    NM_ACTION(TXT_TFT_DEFAULTS, act_tftDefaults, nullptr),
+};
+#endif
+
 // ── Video ──────────────────────────────────────────────────────────────────────
 static const Node kVideo[] = {
     NM_RADIO(TXT_VID_MODE,       SET_VIDEO_MODE, opt_video_mode, nullptr),
@@ -472,6 +486,9 @@ static const Node kVideo[] = {
     NM_RADIO(TXT_VID_DMA,        SET_DMA,        opt_dma,        nullptr),
     NM_BOOL (TXT_VID_DITHER,     SET_HDMI_DITHER, nullptr),
     NM_BOOL (TXT_VID_16COL,      SET_16COL,      nullptr),
+#if TFT
+    NM_SUB  (TXT_VID_TFT,        kTft,           nullptr),
+#endif
 };
 
 // ── Audio ──────────────────────────────────────────────────────────────────────
@@ -801,4 +818,3 @@ uint8_t     rootNodeCount() { return NM_COUNT(kRoot); }
 
 } // namespace nm
 
-#endif // NEW_UI

@@ -11,7 +11,6 @@
 
 #pragma once
 
-#if NEW_UI
 
 #include <string>
 #include <stdint.h>
@@ -96,4 +95,3 @@ void uiTextPageLive(const char* title, const char* (*refresh)(), int period_ms,
 
 } // namespace nm
 
-#endif // NEW_UI

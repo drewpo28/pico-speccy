@@ -1,7 +1,6 @@
 // pico-speccy — fullscreen menu navigation state (internal to src/ui/).
 #pragma once
 
-#if NEW_UI
 
 #include <stdint.h>
 #include "UiModel.h"
@@ -61,4 +60,3 @@ const char* dynHint(int i);          // right-pane verb list of a dynamic level
 
 } // namespace nm
 
-#endif // NEW_UI

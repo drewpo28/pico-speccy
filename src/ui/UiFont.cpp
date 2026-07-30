@@ -6,10 +6,6 @@
 // leftmost pixel. Baseline is row 7; rows 8..9 carry descenders.
 // Deliberately not the ZX face: this UI has its own renderer and font.
 
-#include "OSDNewMenu.h"
-
-#if NEW_UI
-
 #include "UiFont.h"
 
 namespace nm {
@@ -152,4 +148,3 @@ const uint8_t* uiGlyphExt(uint8_t c) {
 
 } // namespace nm
 
-#endif // NEW_UI

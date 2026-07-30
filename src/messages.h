@@ -41,11 +41,6 @@ visit https://zxespectrum.speccy.org/contacto
 #define _PIN_XSTR(x) _PIN_STR(x)
 
 // General
-#define MSG_LOADING_SNA "Loading SNA file"
-#define MSG_LOADING_Z80 "Loading Z80 file"
-#define MSG_SAVE_CONFIG "Saving config file"
-#define MSG_VGA_INIT "Initializing VGA"
-
 #if PORT_VERSION_LEN <= 5
 #define EMU_VERSION " v1.2/" PORT_VERSION "  "
 #else
@@ -55,12 +50,6 @@ visit https://zxespectrum.speccy.org/contacto
 // Error
 #define ERROR_TITLE "  !!!   ERROR - CLIVE MEDITATION   !!!  "
 #define ERROR_BOTTOM "  Sir Clive is smoking in the Rolls...  "
-#define ERR_READ_FILE "Cannot read file!"
-#define ERR_BANK_FAIL "Failed to allocate RAM bank"
-#define ERR_FS_INT_FAIL "Cannot mount internal storage!"
-#define ERR_FS_EXT_FAIL "Cannot mount external storage!"
-#define ERR_DIR_OPEN "Cannot open directory!"
-
 // OSD
   #if PORT_VERSION_LEN <= 5
     #define OSD_TITLE  " pico-speccy v." PORT_VERSION " (ESPectrum 1.2)    "
@@ -87,63 +76,20 @@ visit https://zxespectrum.speccy.org/contacto
 #define OSD_COBMECT_OFF "--=[ COBMECT. MODE OFF ]=--"
 
 #define OSD_PSNA_NOT_AVAIL "No Persist Snapshot Available"
-#define OSD_PSNA_LOADING "Loading Persist Snapshot"
 #define OSD_PSNA_SAVING  "Saving Persist Snapshot"
 #define OSD_PSNA_SAVE_WARN "Disk error. Trying slow mode, be patient"
 #define OSD_PSNA_SAVE_ERR "ERROR Saving Persist Snapshot"
-#define OSD_PSNA_LOADED  "Persist Snapshot Loaded"
 #define OSD_PSNA_LOAD_ERR "ERROR Loading Persist Snapshot"
-#define OSD_PSNA_SAVED  "Persist Snapshot Saved"
 #define OSD_TAPE_FLASHLOAD "Fast loading tape file"
 #define OSD_TAPE_LOAD_ERR "ERROR Loading tape file"
 #define OSD_TAPE_SAVE_ERR "ERROR Saving tape file"
-#define OSD_BETADISK_LOAD_ERR "ERROR Loading Disk file"
-
-#define POKE_ERR_ADDR1 "Address should be between 0000 and FFFF"
-
-#define POKE_ERR_ADDR2 "Address should be lower than 4000"
-
-#define POKE_ERR_VALUE "Value should be lower than 256"
-
-#define OSD_TAPE_SAVE "SAVE command"
-
-#define OSD_TAPE_SAVE_EXIST "File exists. Overwrite?"
-
-#define OSD_PSNA_SAVE "Save snapshot"
-
-#define OSD_PSNA_EXISTS "Overwrite slot?"
-
 #define OSD_TAPE_SELECT_ERR "No tape file selected"
 
-#define OSD_FILE_INDEXING "Indexing"
-
-#define OSD_FILE_INDEXING_1 " Sorting (F1) "
-
-#define OSD_FILE_INDEXING_2 "Saving index"
-
-#define OSD_FILE_INDEXING_3 "  Cleaning  "
-
-#define OSD_FIRMW_UPDATE "Firmware update"
-
-#define OSD_DLG_SURE "Are you sure?"
-
 #define OSD_DLG_REBOOT "Reboot the board?"
-
-#define OSD_DLG_LOADDEFAULTS "Load defaults and reboot?"
-
-#define OSD_DLG_SAVEDEFAULT "Save current config as your Default?"
-
-#define OSD_DLG_LOADMYDEFAULT "Load your Default and reboot?"
-
-#define MSG_DEFAULT_SAVED " Default saved "
 
 #define OSD_DLG_USBBOOT "Reboot to USB mode?"
 
 #define OSD_DLG_APPLYREBOOT "Apply and reboot?"
-
-#define OSD_DLG_JOYSAVE "Save changes?"
-
-#define OSD_DLG_JOYDISCARD "Discard changes?"
 
 #define OSD_DLG_SETJOYMAPDEFAULTS "Load joy type default map?"
 
@@ -157,39 +103,15 @@ visit https://zxespectrum.speccy.org/contacto
 // Guided boot prompt shown while the "hold R / hold M" reset window is open.
 #define MSG_FACTORY_RESET_HOLD "Hold R: Factory Reset\nHold M: My Default"
 
-#define OSD_FIRMW "Updating firmware"
-
-#define OSD_FIRMW_BEGIN "Erasing destination partition."
-
-#define OSD_FIRMW_WRITE "    Flashing new firmware.    "
-
-#define OSD_FIRMW_END "Flashing complete. Rebooting."
-
-#define OSD_NOFIRMW_ERR "No firmware file found."
-
-#define OSD_FIRMW_ERR "Problem updating firmware."
-
-#define OSD_ROM_ERR "Problem flashing ROM."
-
 #define OSD_NOROMFILE_ERR "No custom ROM file found."
 
 #define OSD_ROM "Flash Custom ROM"
 
-#define OSD_ROM_BEGIN "   Preparing flash space.   "
-
-#define OSD_ROM_WRITE "    Flashing custom ROM.    "
-
 #define MENU_SNA_TITLE "Select Snapshot"
-
-#define MENU_TAP_TITLE "Select tape file"
 
 #define MENU_DSK_TITLE "Select disk"
 
-#define MENU_ROM_TITLE "Select ROM"
-
 #define MENU_ALL_TITLE "Open File"
-
-#define OSD_16COL_NEEDS_PENTAGON "  16col is Pentagon only  "
 
 #define OSD_IMG_NEEDS_ESXDOS "  Enable esxDOS first  "
 
@@ -199,48 +121,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #define OSD_ZIP_EXTRACTING "    Extracting...    "
 
-#define OSD_ZIP_BADMETHOD " ZIP: unsupported compression "
-
 #define OSD_PROFI_LOADING "  Loading Profi system...  \n  Please wait (SPI PSRAM)  "
-
-#define OSD_FILE_DELETE_TITLE "Delete?"
-
-#define OSD_FILE_DELETE_DIR_TITLE "Delete folder?"
-
-#define OSD_FILE_MKDIR_TITLE "New folder: "
-
-#define OSD_FILE_CREATING_TRD "Creating TRD"
-
-#define OSD_FILE_DELETING "Deleting..."
-
-#define MENU_SNA \
-    "Snapshot menu\n"\
-    "Load (SNA,Z80,P)\t{HK_LOAD_SNA}>\n"\
-    "Load fast-snap\t{HK_PERSIST_LOAD}>\n"\
-    "Save fast-snap\t{HK_PERSIST_SAVE}>\n"
-
-#define MENU_TAPE \
-    "Tape menu\n"\
-    "Select file\t{HK_LOAD_ANY}>\n"\
-    "Play/Stop\t{HK_TAPE_PLAY}\n"\
-    "Tape browser\t{HK_TAPE_BROWSER}\n"\
-	"Player mode\t>\n"\
-	"Real sound-in\t>\n"\
-	"Fast tape load\t>\n"\
-	"R.G. ROM timings\t>\n"\
-	"Auto-start\t>\n"
-#define MENU_TAPE_NO_SD \
-    "Tape menu\n"\
-    "Play/Stop\t{HK_TAPE_PLAY}\n"\
-    "Tape browser\t{HK_TAPE_BROWSER}\n"\
-	"Player mode\t>\n"\
-	"Real sound-in\t>\n"\
-	"Fast tape load\t>\n"\
-	"R.G. ROM timings\t>\n"\
-	"Auto-start\t>\n"
-
-#define MENU_TAPEPLAYER "Player mode\n"
-#define MENU_TAPEPLAYER2 "Input (P" _PIN_XSTR(LOAD_WAV_PIO) ")\n"
 
 #define MENU_STORAGE_MAIN \
     "Storage\n"\
@@ -252,38 +133,13 @@ visit https://zxespectrum.speccy.org/contacto
     "IDE/HDD\t>\n"\
     "Snapshot\t>\n"
 
-#define MENU_STORAGE_MAIN_NO_SD \
-    "Storage\n"\
-    "Tape\t>\n"
-
 // Betadisk root menu — Drive A..D rows are built dynamically at runtime
 // (inline status shown after the drive label), so only static tail rows live here.
-#define MENU_BETADISK_TITLE "Drives\n"
-#define MENU_BETADISK_MODE "Mode"
-#define MENU_BETADISK_FASTMODE "Fast Mode\t>\n"
-#define MENU_BETADISK_SNDLED "Sound & LED\t>\n"
-#define MENU_BETADISK_ROM "ROM\t>\n"
-#define MENU_BETADISK_AUTOBOOT "Auto-boot\t>\n"
-#define MENU_AUTOBOOT "Auto-boot\n"
-
 // Drive labels used by the dynamic menu builder.
 static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
-#define MENU_ESXDOS_TITLE "esxDOS\n"
 #define MENU_IMG_TITLE "esxDOS Image\n"
-#define MENU_IDE_TITLE "IDE/HDD\n"
-#define MENU_IDE_SCHEME "Scheme"
 #define MENU_IDE_IMG_TITLE "IDE Image"
-#define MENU_IDE_CREATE "Create empty image\n"
 #define MENU_IDE_CREATE_SIZE "New HDD size\n"
-#define MENU_IDE_CREATE_NAME "Image name:\n"
-
-#define MENU_FASTMODE "Fast Mode\n"
-#define MENU_SOUNDLED "Sound & LED\n"
-#define MENU_SOUNDLED_SEL \
-    "Off\t[ ]\n"\
-    "LED\t[ ]\n"\
-    "Sound\t[ ]\n"\
-    "Sound+LED\t[ ]\n"
 #define MENU_NMI_TITLE "NMI\n"
 #define MENU_NMI_SEL "NMI\n" "Magic Button\n"
 
@@ -298,41 +154,10 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
 // Profi reset menu: Service ROM=1, TR-DOS=2, 128K=3, 48K=4
 #define MENU_RESETTO_PROFI "Reset to\n" "Service ROM\n" "TR-DOS\n" "128K\n" "48K\n"
 
-#define MENU_TRDOS_ROM_TITLE "TR-DOS ROM\n"
-#define MENU_TRDOS_ROM_SEL \
-    "5.03\t[ ]\n"\
-    "5.04TM\t[ ]\n"\
-    "5.05D\t[ ]\n"\
-    "Custom\t[ ]\n"
-
 // Drive submenu — the Write Protect row is filled in (toggle marker) at runtime.
-#define MENU_BETADRIVE \
-    "Drive#\n"\
-	"Insert disk\t>\n"\
-    "Eject disk\n"\
-    "Write Protect\t[ ]\n"
-
 // Shared labels for the dynamic disk menus and F5 slot-picker popup.
-#define OSD_DISK_EMPTY "<empty>"
-#define OSD_DISK_WP_TAG ", WP"
-#define OSD_LOAD_TO_TITLE "Load to\n"
-#define OSD_LOAD_HINT_WP "F2 toggle WP  F8 eject"
-#define OSD_LOAD_HINT_NOWP "F8 eject"
-
 // MB-02+ menu title + dynamic rows are built at runtime.
-#define MENU_MB02_TITLE "MB-02+\n"
-#define MENU_MB02_MODE "Mode"
-#define MENU_MB02_DRIVE "Drive"
-#define MENU_MB02_INSERT "Insert disk\t>\n"
-#define MENU_MB02_EJECT "Eject disk\n"
-#define MENU_MB02_WP "Write Protect"
-#define MENU_MB02_SNDLED "Sound & LED\t>\n"
-
 // esxDOS menu labels.
-#define MENU_ESX_INTERFACE "Interface"
-#define MENU_ESX_INSERT "Insert disk\t>\n"
-#define MENU_ESX_EJECT "Eject disk\n"
-
 #define MENU_MAIN_NETWORK_ITEM "Network\t>\n"
 
 #define MENU_MAIN_HARDWARE_ITEM "Hardware\t>\n"
@@ -368,48 +193,6 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
     "Help\n"\
     "About\n"
 #endif
-#define MENU_MAIN MENU_MAIN_EN
-
-#define MENU_MAIN_NO_SD \
-	"Volume\n"\
-    "Storage\t>\n"\
-    "Audio\t>\n"\
-    "Video\t>\n"\
-	"Machine\t>\n"\
-    "Reset\t>\n"\
-    "Options\t>\n"\
-    "Debug\t>\n"\
-    MENU_MAIN_HARDWARE_ITEM \
-    MENU_MAIN_NETWORK_ITEM \
-    "ZX Keyboard\n"\
-    "Help\n"\
-    "About\n"
-
-#define MENU_OPTIONS \
-    "Options menu\n"\
-    "Preferred Machine\t>\n"\
-    "Preferred ROM\t>\n"\
-    "Joystick\t>\n"\
-    "Joystick emulation\t>\n"\
-    "Other\t>\n"\
-	"Update\t>\n"
-
-#define MENU_UPDATE_FW \
-    "Update\n"\
-	"Firmware\t{HK_USB_BOOT}\n"\
-	"Custom ROM 48K\n"\
-	"Custom ROM 128k\n"\
-	"Custom ROM Pentagon\n"\
-	"Custom ROM ALF\n"\
-	"Cartridge ROM ALF\n"\
-	"TRDOS ROM\n"\
-	"Main ROM Pentagon bank #0\n"\
-	"Main ROM Pentagon bank #1\n"
-
-#define MENU_UPDATE_FW_NO_SD \
-    "Update\n"\
-	"Firmware\t{HK_USB_BOOT}\n"
-
 	#define MENU_VIDEO_EN \
 		"Video\n"\
 		"Mode\t>\n"\
@@ -423,215 +206,20 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
 		"DMA\t>\n"\
 		"HDMI Dither (ULA+)\t>\n"\
 		"16col (Pentagon)\t>\n"
-#define MENU_VIDEO MENU_VIDEO_EN
-
-#define MENU_VIDEO_MODE \
-    "Mode\n"\
-    "640x480@60\t[6]\n"\
-    "640x480@50\t[5]\n"\
-    "720x480@60\t[H]\n"\
-    "720x576@50\t[F]\n"
-
-
-#define MENU_RENDER \
-    "Render type\n"\
-    "Standard\t[S]\n"\
-    "Snow effect\t[A]\n"
-
-#define MENU_SCANLINES "Scanlines\n"
 
 // Scanlines: Off + 4 brightness levels (dark -> light). Level 2 is the default
 // (matches the legacy single-darkness look). Selection marker is [*]/[ ].
-#define MENU_SCANLINES_SEL \
-    "Off\t[0]\n"\
-    "1 Darkest\t[1]\n"\
-    "2 Dark (default)\t[2]\n"\
-    "3 Light\t[3]\n"\
-    "4 Lightest\t[4]\n"
-
-#define MENU_VSYNC "V-Sync\n"
-
-#define MENU_GIGASCREEN "Gigascreen\n"
-#define MENU_GIGASCREEN_SEL \
-    "Off\t[ ]\n"\
-    "On\t[ ]\n"\
-    "Auto\t[ ]\n"
-
-#define MENU_RESET \
-    "Reset Menu\n"\
-    "Soft reset\n"\
-    "Hard reset\t{HK_HARD_RESET}\n"\
-    "RP2350 reset\t{HK_REBOOT}\n"\
-    "Factory Reset\n"\
-    "Save Config as Default\n"\
-    "Load My Default Config\n"
-
-#define MENU_DEBUG_EN \
-    "Debug Menu\n"\
-    "Debug dialog\t{HK_DEBUG}\n"\
-    "BreakPoint\n"\
-    "BP List\n"\
-    "Jump to\n"\
-    "Input Poke\t{HK_POKE}\n"\
-	"Trigger NMI\t{HK_NMI}\n"\
-	"Debug Log\t>\n"
-
-#define MENU_DEBUG_LOG "Write debug.log\n"
-
 #define MOS_FILE "/.firmware"
-#define MENU_RESET_MOS \
-    "Reset Menu\n"\
-    "Soft reset\n"\
-    "Hard reset\t{HK_HARD_RESET}\n"\
-    "RP2350 reset\t{HK_REBOOT}\n"\
-    "MurmulatorOS\n"\
-    "Factory Reset\n"\
-    "Save Config as Default\n"\
-    "Load My Default Config\n"
-
-#define MENU_TFT \
-    "TFT Menu\n"\
-    "INVERSION\n"\
-    "FLAGS\t>\n"\
-    "Defaults\n"
-
-#define MENU_TFT2 \
-    "TFT FLAGS\n"\
-    "RGB/BGR\n"\
-    "Flip X\n"\
-    "Flip Y\n"\
-    "Flip XY\n"
-
-#define MENU_PERSIST_SAVE \
-    "Save snapshot\n"
-
-#define MENU_PERSIST_LOAD \
-    "Load snapshot\n"
 
 
-#define MENU_YESNO "Yes\t[Y]\n"\
-    "No\t[N]\n"
-
-#define MENU_FLASHLOAD "Fast load\n"
-
-#define MENU_RGTIMINGS "R.G. Timings\n"
-
-#define MENU_TAPE_AUTOSTART "Auto-start\n"
-
-#define MENU_LEDINDICATORS "LED indicators\n"
-
-#define MENU_SDLEDBLINK "SD card LED\n"
-
-
-#define MENU_AUDIO "Audio\n"\
-    "AY-3-8912 ON/OFF\t>\n"\
-    "AY-3-8912 Stereo\t>\n"\
-    "TurboSound\t>\n"\
-    "Covox\t>\n"\
-    "SounDrive\t>\n"\
-    "SAA1099 ON/OFF\t>\n"\
-    "MIDI\t>\n"\
-    "Audio Driver\t>\n"\
-    "Volume Boost\t>\n"
-#define MENU_AUDIO_GS_ITEM "General Sound\t>\n"
-#define MENU_GS_TITLE "General Sound\n"
-#define MENU_GS_MODE "Mode"
-#define MENU_GS_CLOCK "Clock\n"
-#define MENU_GS_CLOCK_SEL "12 MHz\t[ ]\n" "13 MHz\t[ ]\n" "14 MHz\t[ ]\n" "20 MHz\t[ ]\n" "24 MHz\t[ ]\n"
-
-#define MENU_OTHER "Other\n"\
-    "ALU Timing\t>\n"\
-    "48K Issue 2\t>\n"\
-    "Map joystick to cursor\t>\n"\
-    "Second joystick\t>\n"\
-    "Kempston joystick port\t>\n"\
-    "Throttling\t>\n"\
-    "Hot Keys\t>\n"\
-    "LED indicators\t>\n"\
-    "SD card LED\t>\n"
 // RP2350-only extra row appended to the Other menu at runtime (Pentagon/Profi
 // Mr Gluk MC146818 clock + battery-backed CMOS persisted to SD).
-#define MENU_OTHER_RTC "RTC + NVRAM\t>\n"
-#define MENU_RTC "RTC + NVRAM\n"
-
-#define MENU_CPU_MHZ \
-    "CPU MHz\n"\
-    "[2] 252 MHz\n"\
-    "[3] 378 MHz\n"\
-    "[5] 504 MHz\n"
-
-#define MENU_HARDWARE \
-    "Hardware\n"\
-    "Chip Info\n"\
-    "Board Info\n"\
-    "Memory Info\n"\
-    "Emulator Info\n"\
-    "HID devices\n"\
-    "Speed Test\t>\n"\
-    "Overclock (!)\t>\n"
-
 // NET row (HTTPS download benchmark) only exists where the net client is built.
 #if ZIFI_NET_CLIENT
 #define MENU_SPEEDTEST_NET_EN "Network\n"
 #else
 #define MENU_SPEEDTEST_NET_EN ""
 #endif
-#define MENU_SPEEDTEST \
-    "Speed Test\n"\
-    "CPU MIPS\n"\
-    "SRAM R/W\n"\
-    "PSRAM\n"\
-    "SD Card\n"\
-    "USB Drive\n"\
-    MENU_SPEEDTEST_NET_EN \
-    "All tests\n"
-
-#define MENU_OVERCLOCK \
-    "Overclock\n"\
-    "CPU Freq\t>\n"\
-    "Flash Freq\t>\n"\
-    "PSRAM Freq\t>\n"
-#define MENU_OVERCLOCK_VREG \
-    "Overclock\n"\
-    "CPU Freq\t>\n"\
-    "VReg Voltage\t>\n"\
-    "Flash Freq\t>\n"\
-    "PSRAM Freq\t>\n"
-
-#define MENU_FLASH_FREQ \
-    "Flash Freq\n"\
-    "[A] 33 MHz\n"\
-    "[B] 66 MHz\n"\
-    "[C] 84 MHz\n"\
-    "[D] 100 MHz\n"\
-    "[E] 133 MHz\n"\
-    "[F] 166 MHz\n"
-
-#define MENU_PSRAM_FREQ \
-    "PSRAM Freq\n"\
-    "[A] 66 MHz\n"\
-    "[B] 84 MHz\n"\
-    "[C] 100 MHz\n"\
-    "[D] 133 MHz\n"\
-    "[E] 166 MHz\n"
-
-#define MENU_VREG_VOLTAGE \
-    "VReg Voltage\n"\
-    "[A] 1.15 V\n"\
-    "[B] 1.20 V\n"\
-    "[C] 1.25 V\n"\
-    "[D] 1.30 V\n"\
-    "[E] 1.35 V\n"\
-    "[F] 1.40 V\n"\
-    "[G] 1.50 V\n"\
-    "[H] 1.60 V\n"\
-    "[I] 1.65 V\n"\
-    "[J] 1.70 V\n"\
-    "[K] 1.80 V\n"
-
-#define MENU_AY48 "Turned on?\n"
-
-#define MENU_SAA1099 "Turned on?\n"
 // DLS wavetable (mode 4) needs the top-of-flash bank partition, which ALF
 // builds reclaim for firmware (NO_GM_DLS). Drop the menu row in that case.
 #if NO_GM_DLS
@@ -639,34 +227,21 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
 #else
 #define MENU_MIDI_GMDLS_EN "DLS Wavetable\t[G]\n"
 #endif
-#define MENU_MIDI "MIDI(Ext:P" _PIN_XSTR(MIDI_TX_PIN) ")\n"\
-    "OFF             \t[O]\n"\
-    "AY              \t[A]\n"\
-    "ShamaZX         \t[S]\n"\
-    MENU_MIDI_GMDLS_EN
 // Where the DLS bank lives (butter-PSRAM boards only — elsewhere flash is the only
 // pointer-addressable home). See Config::midi_storage.
-#define MENU_MIDI_STORAGE "Instrument storage\n"\
-    "PSRAM \t[P]\n"\
-    "Flash \t[F]\n"
 // DLS wavetable mode (4): a user-supplied bank (gm_bank.bin) lives either in butter
 // PSRAM (reloaded from SD each boot) or, provisioned once from SD, in a flash
 // partition read via XIP (persistent, the only option without QSPI PSRAM).
 #define MSG_MIDI_BANK_OK "DLS wavetable bank loaded."
 // Title of the "instrument set" (.bin bank) picker, shown when SD holds >1 bank.
-#define MENU_MIDI_BANK_TITLE "Instrument set\n"
-#define MSG_MIDI_BANK_MISSING "No DLS bank in flash or on SD.\nConvert a .dls first. MIDI silent."
 // msgDialog sizes its width to the message length and is single-line only — keep
 // this to ONE short line (a multi-line string makes the box span the whole screen).
-#define MSG_MIDI_BANK_REINSTALL_Q "Reinstall DLS bank from SD?"
 // Shown when a newly picked bank differs from flash: confirm the (reboot-to-)flash
 // so the user can decline and keep the current bank. Single short line.
 #define MSG_MIDI_BANK_INSTALL_Q "Install this bank? (reboots)"
 #define MSG_MIDI_BANK_FLASHING "Restarting to install DLS bank...\nBoot takes ~20-30s (LED blinks). Do\nNOT power off until it comes back."
 // On-device .dls -> gm_bank.bin conversion (RP2350). Title of the .dls file
 // picker, the bank-picker row that opens it, and the convert progress/result.
-#define MENU_DLS_TITLE "Select .dls soundbank\n"
-#define MENU_MIDI_CONVERT_DLS "[+] Convert a .dls..."
 #define MSG_MIDI_CONVERTING "Converting .dls to bank..."
 #define MSG_MIDI_CONVERT_OK "Soundbank created."
 #define MSG_MIDI_CONVERT_FAIL "Conversion failed (bad .dls or low\nspace). See debug log."
@@ -678,88 +253,10 @@ static const char *MENU_BETA_DRIVE_LETTERS[4] = { "A", "B", "C", "D" };
 #define MSG_MIDI_PIN_CONFLICT "MIDI and Real sound-in share GPIO " _PIN_XSTR(MIDI_TX_PIN) ".\nDisable one of them."
 #endif
 
-#define MENU_ULAPLUS "ULA+\n"
-#define MENU_HDMI_DITHER "HDMI Dither (ULA+)\n"
-#define MENU_TIMEX "Timex Gfx Mode\n"
-#define MENU_16COL "16col (Pentagon)\n"
-#define MENU_DMA "DMA\n"\
-    "OFF            \t[O]\n"\
-    "Port #0B (MB02+) \t[B]\n"\
-    "Port #6B (DATA-GEAR)\t[X]\n"
-
-#define MENU_PALETTE \
-    "Palette\n"\
-    "Pulsar\t[1]\n"\
-    "Alone\t[2]\n"\
-    "Grayscale\t[3]\n"\
-    "Mars\t[4]\n"\
-    "Ocean\t[5]\n"
-
-#define MENU_KBD2NDPS2 "Enable\n"\
-    "No\t[N]\n"\
-    "Yes\t[K]\n"
-
-#define MENU_AY "ABC\n"\
-    "ABC\t[B]\n"\
-    "ACB\t[C]\n"\
-    "Mono\t[M]\n"
-
 // Yes = Config::turbosound 3 (both chip-select schemes accepted), No = 0.
-#define MENU_TS "TurboSound\n"\
-    "Yes\t[Y]\n"\
-    "No \t[N]\n"
-
-#define MENU_COVOX "Covox PORT\n"\
-    "NONE   \t[N]\n"\
-    "#FB    \t[F]\n"\
-    "#DD    \t[D]\n"
-
 // SounDrive 8-bit DAC at #0F/#1F/#3F (left), #4F/#5F (right), #FB (both).
 // Auto = enabled on Profi only (Profi CP/M games stream PCM there).
-#define MENU_SOUNDRIVE "SounDrive\n"\
-    "Auto (Profi only)\t[A]\n"\
-    "On               \t[O]\n"\
-    "Off              \t[F]\n"
-
-#define MENU_I2S "Audio Driver\n"\
-    "Auto     \t[A]\n"\
-    "PWM      \t[P]\n"\
-    "i2s      \t[I]\n"\
-    "AY-3-8910\t[Y]\n"\
-	"HDMI     \t[H]\n"
-
-#define MENU_AUDIO_BOOST "Volume Boost\n"\
-    "+0  \t[A]\n"\
-    "+4  \t[B]\n"\
-    "+8  \t[C]\n"\
-    "+12 \t[D]\n"\
-    "+16 \t[E]\n"\
-    "+32 \t[F]\n"\
-    "+64 \t[G]\n"
 static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
-
-#define MENU_ALF_JOY "Source\n"\
-    "DPAD #1\t[1]\n"\
-    "DPAD #2\t[2]\n"\
-    "NUMPAD \t[N]\n"
-
-#define MENU_K_JOY "PORT #\n"\
-    "1Fh (31)\t[1]\n"\
-    "37h (55)\t[3]\n"\
-    "5Fh (95)\t[9]\n"
-
-#define MENU_THROTTLING\
- "Microseconds\n"\
-    "None\t[N]\n"\
-    "1000\t[1]\n"\
-    "2000\t[2]\n"\
-    "3000\t[3]\n"
-
-#define MENU_ALUTIMING "ALU Timing\n"\
-    "Early\t[E]\n"\
-    "Late\t[L]\n"
-
-#define MENU_ISSUE2 "48K Issue 2\n"
 
 #define MENU_ARCH_EN "Select machine\n"
 
@@ -773,15 +270,11 @@ static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
 	"Murmuzavr mode\t>\n"\
 	"Profi\t>\n"\
 	"ALF TV GAME\n"
-#define MENU_ARCH MENU_ARCH_EN MENU_ARCHS
-
 #define MENU_ARCHS_NO_SD \
     "Spectrum 48K\t>\n"\
     "Spectrum 128K\t>\n"\
 	"Pentagon 128K\t>\n"\
 	"ALF TV GAME\n"
-#define MENU_ARCH_NO_SD MENU_ARCH_EN MENU_ARCHS_NO_SD
-
 #if NO_SPAIN_ROM_48k
 #define MENU_ROMS48_EN "Select ROM\n"\
 	"48K\n"\
@@ -808,41 +301,8 @@ static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
     "Custom\n"
 #endif
 
-#define MENU_ROMS48 MENU_ROMS48_EN
-#define MENU_ROMS128 MENU_ROMS128_EN
-
-#define MENU_ROMS_PENT \
-  "Select ROM\n"\
-	"128Kp\n"\
-	"128Kp + Mr Gluk Reset Srvs\n"\
-    "Custom\n"
-
-#define MENU_ROMS_PROFI "Select ROM\n"\
-	"1024K\n"
-
-#define MENU_MURMUZAVR "Murmuzavr mode\n"\
-	"None\t[N]\n"\
-	" 4 MB\t[4]\n"\
-	" 8 MB\t[8]\n"\
-	"16 MB\t[1]\n"\
-	"32 MB\t[3]\n"
-
-#define MENU_MURMUZAVR_NONE "Murmuzavr mode\n"\
-	"None\t[N]\n"
-
-
-#define MENU_ROMSBYTE "Select ROM\n"\
-	"48K\n"\
-	"128K\n"\
-	"128K + Mr Gluk Reset Srvs\n"\
-	"COBMECT. Mode\n"
 
 #define MENU_BYTE_COBMECT_MODE "COBMECT. Mode\n"
-
-#define MENU_ROMS_SCORP \
-  "Select ROM\n"\
-	"Mix\n"\
-    "Custom\n"
 
 #define MENU_ARCHS_PREF \
     "Spectrum 48K\t[4]\n"\
@@ -850,16 +310,12 @@ static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
 	"Pentagon 128K\t[P]\n"\
 	"Pentagon 512K\t[5]\n"\
 	"Pentagon 1024K\t[2]\n"
-#define MENU_ARCH_PREF "Preferred machine\n" MENU_ARCHS_PREF "Last used\t[L]\n"
-
 #define MENU_ROMS_PREF \
     "Spectrum 48K\t>\n"\
     "Spectrum 128K\t>\n"\
     "Pentagon 128K\t>\n"\
     "Pentagon 512K\t>\n"\
     "Pentagon 1024K\t>\n"
-#define MENU_ROM_PREF "Preferred ROM\n" MENU_ROMS_PREF
-
 #if NO_SPAIN_ROM_48k
 #define MENU_ROMS48_PREF_EN "Select ROM\n"\
 	"48K\t[48K  ]\n"\
@@ -872,8 +328,6 @@ static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
     "Custom\t[48Kcs]\n"\
 	"Last used\t[Last ]\n"
 #endif
-#define MENU_ROM_PREF_48 MENU_ROMS48_PREF_EN
-
 #if NO_SPAIN_ROM_128k
 #define MENU_ROMS128_PREF_EN "Select ROM\n"\
 	"128K\t[128K  ]\n"\
@@ -889,21 +343,11 @@ static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
     "Custom\t[128Kcs]\n"\
 	"Last used\t[Last  ]\n"
 #endif
-#define MENU_ROM_PREF_128 MENU_ROMS128_PREF_EN
-
 #define MENU_ROM_PREF_PENT \
   "Select ROM\n"\
 	"Original\t[128Kp ]\n"\
     "Custom\t[128Kcs]\n"\
 	"Last used\t[Last  ]\n"
-
-#define MENU_ROM_PREF_SCORP \
-  "Select ROM\n"\
-	"Mix\t[256Ks ]\n"\
-    "Custom\t[256Kcs]\n"\
-	"Last used\t[Last  ]\n"
-
-#define MENU_JOY_EN "Joystick menu\n"
 
 #define MENU_DEFJOY_TITLE "Joystick\n"\
 
@@ -916,23 +360,6 @@ static const uint8_t AUDIO_BOOST_VALS[] = { 0, 4, 8, 12, 16, 32, 64 };
 
 #define MENU_DEFJOY_EN "Assign keys\n"
 
-#define MENU_DEFJOY MENU_DEFJOY_TITLE MENU_DEFJOYS MENU_DEFJOY_EN
-
-#define MENU_JOYPS2 \
-  "Joystick emulation\n"\
-	"Cursor Keys as Joy\t>\n" \
-	"TAB as fire 1\t>\n"\
-    "Right Enter\t>\n"\
-    "WASD/KL\t>\n"
-
-
-#define MENU_CURSORJOY "Cursor as Joy\n"
-
-#define MENU_TABASFIRE "TAB as fire 1\n"
-
-#define MENU_ENTERSPACE "as Space\n"
-
-#define MENU_WASD "WASD/KL\n"
 
 #define DEDICATORIA "\nF1Dedicado especialmente a:\r"\
 	"\nB1      _       _ _\r"\
@@ -1536,57 +963,29 @@ const uint8_t ESPectrum_logo[] = {
 
 // ─── ZiFi / Network menu strings ─────────────────────────────────────────────
 
-#define MENU_NETWORK \
-    "Network\n"\
-    "Status\n"\
-    "Sync time (SNTP)\n"\
-    "Time zone\t>\n"\
-    "ZiFi NIC\t>\n"
-
-#define MENU_ZIFI_NIC "ZiFi NIC\n"\
-    "Off\n"\
-    "On\n"
-
 #define MSG_WIFI_CONNECTING "Connecting..."
 #define MSG_WIFI_CONNECTED "Connected"
 #define MSG_WIFI_DISCONNECTED "Disconnected"
 #define MSG_WIFI_CONNECT_ERR "Connect failed"
-#define MSG_WIFI_NO_CFG "No /wifi.cfg found"
-#define MSG_WIFI_CFG_RELOADED "wifi.cfg reloaded"
 #define MSG_RTC_SYNCING "Syncing time..."
 #define MSG_RTC_SYNCED "Time set:"
 #define MSG_RTC_SYNC_ERR "Time sync failed"
-#define MSG_WIFI_SCANNING "Scanning..."
-#define MSG_WIFI_NO_NETS "No networks found"
-#define MSG_WIFI_PASS_LABEL "Pass:"
-#define MSG_WIFI_DISCONNECT_Q "Disconnect?"
-#define MENU_WIFI_LIST_TITLE "Wi-Fi networks"
-#define MENU_TZ_TITLE "Time zone (UTC)"
-#define MENU_ZIFI_GPIO_TITLE "ZiFi UART GPIO"
-#define MENU_ZIFI_TRANSPORT_TITLE "ESP-01 transport"
 #define MENU_ZIFI_USB_LABEL "USB (CH340)"
-#define MENU_ESP01_TITLE "ESP-01(S)"
-#define MENU_BAUD_TITLE "UART baud rate"
-
 // ─── SRAM budget manager strings ────────────────────────────────────────────
 // Heavy features (Gigascreen / General Sound / DivMMC / Profi / ZiFi) don't all
 // fit in SRAM on butter-less boards. When enabling one would overflow, the OSD
 // offers to free room or refuses.
-#define MSG_BUDGET_TITLE "Not enough SRAM"
 #define MSG_BUDGET_DENY "not enough free SRAM"
-#define MSG_BUDGET_FREE_HINT "Turn off to free room, then Apply:"
 #define MSG_BUDGET_APPLY "Apply & reboot"
 #define MSG_BUDGET_INSUFFICIENT "Not enough freed - pick more"
 
 // ─── File transfer (FTP/SFTP) client strings ────────────────────────────────
-#define MENU_NET_PROTO "Protocol\nFTP\nSFTP\n"
 #define MSG_NET_PROTO_TITLE "Protocol"
 #define MSG_NET_FT_NOWIFI "Connect Wi-Fi first"
 #define MSG_NET_HOST_LABEL "Host:"
 #define MSG_NET_USER_LABEL "User:"
 #define MSG_NET_PORT_LABEL "Port:"
 #define MSG_NET_PASS_LABEL "Pass:"
-#define MSG_PASS_TAB "TAB:show"
 #define MSG_NET_CONNECTING "Connecting..."
 #define MSG_NET_CONN_ERR "Connection failed"
 #define MSG_NET_TRUST_Q "Trust this host key?"
@@ -1595,28 +994,18 @@ const uint8_t ESPectrum_logo[] = {
 #define MSG_NET_UPLOADING "Uploading..."
 #define MSG_NET_XFER_OK "Transfer complete"
 #define MSG_NET_XFER_ERR "Transfer failed"
-#define MSG_NET_EMPTY_DIR "(empty)"
-#define MSG_NET_DL_OR_UL "Download\nUpload here\n"
-#define MENU_NET_BROWSE_TITLE "Remote files"
 #define MSG_NET_DELETE_Q "Delete?"
-#define MSG_NET_FOOTER "Ent:run Alt:SD F5cp F8del F2ref"
-#define MSG_NET_FOOTER_RO "Enter:run  Alt+Ent:SD  F2:refresh"
 #define MSG_NET_COPYING "Copying..."
 #define MSG_NET_LAUNCHING "Launching..."
 #define MSG_NET_UNSUPPORTED "Cannot run this type"
-#define MSG_NET_REFRESHING "Refreshing..."
-
 // ─── F5 location picker + saved-remotes manager ─────────────────────────────
-#define MENU_F5_LOCATION "Open from"
 #define MSG_F5_LOCAL "Local (SD)"
 #define MSG_F5_USB "USB Drive"
 #define MSG_F5_REMOTE "Remote (FTP/SFTP)"
 #define MSG_F5_WEB "Web Archives"
-#define MSG_F5_ADD_REMOTE "Add Remote"
 #define MENU_REMOTE_TITLE "Remote connections"
 #define MSG_REMOTE_ADD_ROW "[Add Remote]"
 #define MSG_REMOTE_FORGET_Q "Forget connection?"
-#define MENU_REMOTE_SAVEPASS "Save password?\nNo\nYes\n"
 #define MSG_REMOTE_SAVEPASS_Q "Save password?"
 #define MSG_REMOTE_ALIAS_LABEL "Alias:"
 #define MSG_REMOTE_PATH_LABEL "Path:"
@@ -1624,14 +1013,9 @@ const uint8_t ESPectrum_logo[] = {
 
 // ─── Archive download (catalog server) strings ──────────────────────────────
 #define MENU_ARCH_SITE_TITLE "Archive source"
-#define MSG_ARCH_SERVER_LABEL "Catalog:"
 #define MSG_ARCH_SITES_ERR "No sources found"
 
 // ─── HTTP test ("curl") strings ─────────────────────────────────────────────
-#define MENU_HTTP_TEST_ITEM "HTTP test (curl)\t>\n"
-#define MENU_HTTP_SCHEME "Scheme\nhttps\nhttp\n"
-#define MSG_HTTP_HOST_LABEL "Host:"
-#define MSG_HTTP_PATH_LABEL "Path:"
 #define MSG_HTTP_TESTING "Requesting..."
 #define MSG_HTTP_TEST_TITLE "HTTP test"
 
