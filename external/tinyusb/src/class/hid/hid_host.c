@@ -380,6 +380,15 @@ static bool hidh_set_idle(uint8_t daddr, uint8_t itf_num, uint16_t idle_rate,
 //--------------------------------------------------------------------+
 
 // Check if HID interface is ready to receive report
+// PICO-SPEC PATCH: expose the interrupt IN endpoint address of one HID interface.
+// The firmware needs it to ask the HCD about that exact endpoint (a composite device —
+// e.g. a wireless keyboard/mouse receiver — has several, and guessing "the first
+// interrupt IN of this device" answers for the wrong interface). Returns 0 if unknown.
+uint8_t tuh_hid_ep_in(uint8_t dev_addr, uint8_t idx) {
+  hidh_interface_t* p_hid = get_hid_itf(dev_addr, idx);
+  return p_hid ? p_hid->ep_in : 0;
+}
+
 bool tuh_hid_receive_ready(uint8_t dev_addr, uint8_t idx) {
   hidh_interface_t* p_hid = get_hid_itf(dev_addr, idx);
   TU_VERIFY(p_hid);

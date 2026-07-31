@@ -123,6 +123,10 @@ bool tuh_hid_set_report(uint8_t dev_addr, uint8_t idx, uint8_t report_id, uint8_
 // Check if HID interface is ready to receive report
 bool tuh_hid_receive_ready(uint8_t dev_addr, uint8_t idx);
 
+// PICO-SPEC PATCH: interrupt IN endpoint address of this interface (0 if unknown),
+// so the application can query the HCD about that exact endpoint.
+uint8_t tuh_hid_ep_in(uint8_t dev_addr, uint8_t idx);
+
 // Try to receive next report on Interrupt Endpoint. Immediately return
 // - true If succeeded, tuh_hid_report_received_cb() callback will be invoked when report is available
 // - false if failed to queue the transfer e.g endpoint is busy

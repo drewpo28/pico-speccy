@@ -29,7 +29,14 @@
 
 #include "tusb_option.h"
 
-#if CFG_TUH_ENABLED && (CFG_TUSB_MCU == OPT_MCU_RP2040) && !CFG_TUH_RPI_PIO_USB && !CFG_TUH_MAX3421
+// PICO-SPEC PATCH: with CFG_TUH_RPI_PIO_USB the native driver used to compile away
+// entirely, making the PIO port the ONLY host port. src/usb_hcd_native_wrap.c defines
+// PICOSPEC_HCD_NATIVE_WRAP and #includes this file to build it with hcd_* renamed to
+// hcd_native_*, so both drivers can live in one image behind src/usb_hcd_router.c.
+// The copy compiled by the SDK's tinyusb_host target still sees no wrap macro and
+// still expands to nothing, so there is exactly one definition of each symbol.
+#if CFG_TUH_ENABLED && (CFG_TUSB_MCU == OPT_MCU_RP2040) && !CFG_TUH_MAX3421 && \
+    (!CFG_TUH_RPI_PIO_USB || defined(PICOSPEC_HCD_NATIVE_WRAP))
 
   #include "pico.h"
 

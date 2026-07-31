@@ -1,0 +1,18 @@
+Pico-PIO-USB (sekigon-gonnoc) vendored subset — CMakeLists.txt, LICENSE, README.md, src/.
+Upstream: https://github.com/sekigon-gonnoc/Pico-PIO-USB
+Pinned commit: 5a37a66dc5d3fbe0ef3cdbeda923a757440f984f
+
+Used ONLY by the ZERO2 -DZERO2_PIO_USB=ON build (USB host on the second Type-C
+connector J2, D+=GP28 / D-=GP29, PIO2).
+
+LOCAL PATCH — grep "PICO-SPEC PATCH" in src/pio_usb.c before re-vendoring or
+upgrading: the five TX-side spin loops in pio_usb_bus_usb_transfer()/send_pre()
+waited on the TX state machine's IRQ/PC flags FOREVER. That code runs inside the
+1 ms SOF timer IRQ, so a state machine that never completes froze the whole
+firmware ("works, then hangs at random"). They now bail out after
+PIO_USB_TX_WAIT_US = 500 us (a full-speed 64-byte packet is ~46 us on the wire) and
+count the event in pio_usb_tx_timeouts, which main.cpp logs from its 150 ms tick;
+the transaction then fails its CRC/handshake check and TinyUSB retries it.
+
+The reproducible overlay that generates this state (clone + patch + build, without
+touching the working tree) lives in debug/pico-speccy-zero2-pio-usb/.

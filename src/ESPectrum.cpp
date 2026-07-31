@@ -181,6 +181,13 @@ void kbdPushData(fabgl::VirtualKey virtualKey, bool down) {
 
 void repeat_handler(void) {
   fabgl::VirtualKey v = last_key_pressed;
+  // Never auto-repeat the OSD hotkeys. Auto-repeat is for cursor/character keys; on
+  // F1..F12 it turns ONE lost key-up into an endless re-trigger, because
+  // last_key_pressed is only cleared by a key-up and tickKbdRep is deliberately not
+  // re-armed below — so after the initial 500 ms the key is re-pushed on every 150 ms
+  // tick. A USB keyboard behind a hub that drops its release report made F1 reopen
+  // the menu forever (hw 2026-07-31: one runInternal per tick until reset).
+  if (v >= fabgl::VirtualKey::VK_F1 && v <= fabgl::VirtualKey::VK_F12) return;
   if (v != fabgl::VirtualKey::VK_NONE) {
     if (tickKbdRep == 0) {
       if (v == fabgl::VirtualKey::VK_UP) {

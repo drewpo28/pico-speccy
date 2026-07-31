@@ -29,6 +29,10 @@
 #include "Config.h"
 #include "ESPectrum.h"
 #include "hid_rip.h"
+#include "pico/time.h"
+#if defined(ZERO2_PIO_USB_HOST)
+#include "pio_usb.h"   // pio_usb_host_ep_debug() for the keyboard health line
+#endif   // time_us_32() for the stuck-key resync timer
 
 //--------------------------------------------------------------------+
 // MACRO TYPEDEF CONSTANT ENUM DECLARATION
@@ -103,6 +107,10 @@ struct hid_snap_t {
   bool     decoded_valid;
 };
 static hid_snap_t hid_snap[CFG_TUH_HID];
+
+// PICOSPECCY_ZERO2_PIO_USB_HOST_V1: one-shot latch for the "no report info" diagnostic (see
+// process_generic_report); cleared on mount/unmount so a re-plug logs again.
+static bool no_rpt_info_logged[CFG_TUH_HID];
 
 // Helper for vendor handlers to publish their decoded state to the OSD.
 static inline void hid_snap_set_handler(uint8_t instance, uint8_t h) {
@@ -239,6 +247,18 @@ static void process_gp_0810_0001(uint8_t instance, uint8_t const* report, uint16
 // TinyUSB Callbacks
 //--------------------------------------------------------------------+
 
+static inline uint32_t kbd_now_ms(void) { return time_us_32() / 1000u; }
+// Rate-limited re-arm complaint: a blocking 115200 UART line is ~4 ms, and these sit
+// in the report path, so printing per event starves tuh_task() and drops the very
+// reports it is complaining about. hid_app_rearm_tick() retries anyway.
+static void hid_log_rearm_refused(uint8_t instance) {
+  static uint32_t last_ms = 0;
+  const uint32_t now = kbd_now_ms();
+  if ((uint32_t)(now - last_ms) < 1000) return;
+  last_ms = now;
+  printf("HID instance %u: re-arm refused (watchdog will retry)\r\n", instance);
+}
+
 // Invoked when device with hid interface is mounted
 // Report descriptor is also available for use. tuh_hid_parse_report_descriptor()
 // can be used to parse common/simple enough descriptor.
@@ -270,6 +290,7 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
     s.last_handler = HID_HANDLER_NONE;
     s.decoded = 0;
     s.decoded_valid = false;
+    no_rpt_info_logged[instance] = false;
     if (desc_report && desc_len) {
       uint16_t n = desc_len < HID_SNAP_DESC_BYTES ? desc_len : HID_SNAP_DESC_BYTES;
       memcpy(s.desc, desc_report, n);
@@ -315,7 +336,109 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
   // tuh_hid_report_received_cb() will be invoked when report is available
   if ( !tuh_hid_receive_report(dev_addr, instance) )
   {
-    printf("Error: cannot request to receive report\r\n");
+    hid_log_rearm_refused(instance);
+  }
+}
+
+
+
+// Defined below, next to prev_report (the keyboard state it resyncs).
+static void kbd_resync_tick(void);
+static bool    kbd_resync_off   = false;  // GET_REPORT unusable on this device
+static uint8_t kbd_resync_fails = 0;      // consecutive GET_REPORT failures
+static uint32_t hid_rearm_recoveries = 0;   // recoveries done by hid_app_rearm_tick()
+static uint32_t hid_desync_recoveries = 0;  // wedged endpoints healed (see below)
+static uint32_t hid_last_reports[CFG_TUH_HID] = { 0 };
+static uint32_t hid_stale_since_ms[CFG_TUH_HID] = { 0 };
+
+// Watchdog: re-arm any mounted HID interface whose IN endpoint is idle.
+//
+// The ONLY re-arm points are tuh_hid_mount_cb() and the tail of
+// tuh_hid_report_received_cb(), so one failed tuh_hid_receive_report() leaves the
+// interface permanently unarmed and the device silently dead until it is re-plugged.
+// That call fails whenever the endpoint cannot be claimed or the HCD refuses the
+// transfer — which is exactly what heavy competing traffic provokes: loading a file
+// from a USB stick shares the bus (and, on the ZERO2 PIO-USB port, the same 1 ms SOF
+// budget) with the keyboard's interrupt endpoint (hw 2026-07-31: "after loading from
+// USB flash the keyboard sometimes stops working").
+//
+// tuh_hid_receive_ready() is false while a transfer is pending, so in normal
+// operation this does nothing; it only fires when an interface really lost its arm.
+// Must be called from main-loop context (never from a tuh callback).
+
+extern "C" void hid_app_rearm_tick(void)
+{
+  kbd_resync_tick();
+
+  extern volatile uint32_t g_tusb_assert_count;   // main.cpp: TU_ASSERT counter
+  static uint32_t last_assert_seen = 0;
+  const uint32_t now = kbd_now_ms();
+
+  for (uint8_t i = 0; i < CFG_TUH_HID; i++) {
+    if (!hid_snap[i].mounted) { hid_stale_since_ms[i] = now; continue; }
+    const uint8_t daddr = hid_snap[i].dev_addr;
+
+    // Track how long this interface has produced nothing.
+    if (hid_snap[i].report_total != hid_last_reports[i]) {
+      hid_last_reports[i] = hid_snap[i].report_total;
+      hid_stale_since_ms[i] = now;
+    }
+
+    if (tuh_hid_receive_ready(daddr, i)) {
+      // No transfer pending: the interface really is unarmed (a refused
+      // tuh_hid_receive_report() is otherwise permanent — see the comment above).
+      if (tuh_hid_receive_report(daddr, i)) {
+        hid_rearm_recoveries++;
+        Debug::log("HID instance %u: IN endpoint was unarmed, re-armed (total %u)",
+                   i, (unsigned)hid_rearm_recoveries);
+      }
+      continue;
+    }
+
+    // TinyUSB says a transfer is in flight. That is the NORMAL state — including for
+    // several hundred milliseconds after the HCD finished, because the completion
+    // event waits in the queue until tuh_task() runs and this firmware starves it
+    // (OSD, file loading, SD writes). Aborting here on a hunch destroys a completed
+    // report and wedges the endpoint for real: doing exactly that produced a cascade
+    // of "cannot request to receive report" on hw 2026-07-31.
+    //
+    // The one thing that genuinely wedges an endpoint is a DROPPED event, and events
+    // are only ever dropped by queue_event()'s TU_ASSERT (our TU_ASSERT is a counting
+    // no-op). So require hard evidence: the assert counter must have moved AND the
+    // interface must have been silent for over a second.
+    const uint32_t silent = (uint32_t)(now - hid_stale_since_ms[i]);
+    bool evidence = false;
+
+    if (g_tusb_assert_count != last_assert_seen && silent > 1000) {
+      evidence = true;                      // an event really was dropped
+    }
+#if defined(ZERO2_PIO_USB_HOST)
+    else if (silent > 5000) {
+      // Nothing for 5 s, which is far beyond any queue latency: if the HCD has no
+      // pending transfer for THIS interface's endpoint, the stack and the driver
+      // disagree and only we can break the tie. (has_transfer set = the device is
+      // simply NAKing, i.e. an idle keyboard — leave it alone.)
+      const uint8_t ep_in = tuh_hid_ep_in(daddr, i);
+      const uint32_t epdbg = ep_in ? pio_usb_host_ep_debug(daddr, ep_in) : ~0u;
+      if (epdbg != ~0u && !(epdbg & 1u)) {
+        evidence = true;
+        Debug::log("HID instance %u: armed in stack but idle in HCD for %ums (ep=%02X st=%08X)",
+                   i, (unsigned)silent, ep_in, (unsigned)epdbg);
+      }
+    }
+#endif
+    if (!evidence) continue;
+
+    last_assert_seen = g_tusb_assert_count;
+    tuh_hid_receive_abort(daddr, i);
+    if (tuh_hid_receive_report(daddr, i)) {
+      hid_desync_recoveries++;
+      hid_stale_since_ms[i] = now;
+      Debug::log("HID instance %u: wedged endpoint recovered (asserts=%u), re-armed (total %u)",
+                 i, (unsigned)g_tusb_assert_count, (unsigned)hid_desync_recoveries);
+      kbd_resync_off = false;   // its control transfers may work again now
+      kbd_resync_fails = 0;
+    }
   }
 }
 
@@ -325,10 +448,126 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
   printf("HID device address = %d, instance = %d is unmounted\r\n", dev_addr, instance);
   if (instance < CFG_TUH_HID) {
     hid_snap[instance].mounted = false;
+    no_rpt_info_logged[instance] = false;
   }
 }
 
 static hid_keyboard_report_t prev_report = { 0 , 0 , {0}};
+
+// ── Stuck-key recovery for boot keyboards ───────────────────────────────────
+// A boot keyboard reports STATE, but only when it CHANGES: lose the report that
+// carries a release and the key stays down forever as far as we are concerned. In
+// BASIC that reads as a dead keyboard with one key jammed on; the ZX ROM keeps
+// seeing the matrix bit. Reports do get lost on a flaky bus — a low-speed keyboard
+// behind a hub on the PIO port is the worst case, since every transaction there is
+// prefixed by a PRE token and the bus switches speed mid-transaction.
+//
+// GET_REPORT over the control pipe returns the CURRENT state, so it can resync
+// without ever inventing a release: only keys the device no longer reports are
+// released. Issued only while we believe a key is held and the interrupt endpoint has
+// been silent for a while, so an idle keyboard costs nothing and a genuine long hold
+// (games) is preserved.
+#define KBD_RESYNC_SILENCE_MS 400   // silence with a key held before we ask the device
+static uint8_t  kbd_resync_daddr    = 0;
+static uint8_t  kbd_resync_instance = 0xFF;
+static uint32_t kbd_last_report_ms  = 0;
+static uint8_t  kbd_resync_buf[8];
+static bool     kbd_resync_busy     = false;
+static uint32_t kbd_resync_fixes    = 0;
+
+static bool kbd_state_has_key(void) {
+  if (prev_report.modifier) return true;
+  for (uint8_t kc : prev_report.keycode) if (kc) return true;
+  return false;
+}
+
+// Health line for the keyboard interface: printed at most every 2 s and ONLY while we
+// believe a key is held (i.e. exactly the "keyboard is stuck/hung" situation), so it
+// costs nothing in normal use. Tells the three failure modes apart:
+//   ep=---- (~0)          the PIO layer has no endpoint for it -> arm/enumeration lost
+//   ep flags bit0=1, failed=0, no reports  the device NAKs: our state is stale, the
+//                                          GET_REPORT resync is what must fix it
+//   failed>0 / timeouts rising             bus errors (PRE/LS through the hub)
+static void kbd_health_log(void) {
+#if defined(ZERO2_PIO_USB_HOST)
+  static uint32_t last_ms = 0;
+  const uint32_t now = kbd_now_ms();
+  if (kbd_resync_instance == 0xFF) return;
+
+  // Print while a key is held (the "stuck key" case) and also when the interface has
+  // simply gone quiet for a long time (the "keyboard died and nothing is logged at all"
+  // case — an idle keyboard is legitimately silent, hence the slow 10 s cadence).
+  const bool held  = kbd_state_has_key();
+  const uint32_t silent = now - kbd_last_report_ms;
+  if (!held && silent < 5000) return;
+  if ((uint32_t)(now - last_ms) < (held ? 2000u : 10000u)) return;
+  last_ms = now;
+
+  tuh_bus_info_t bus = { 0 };
+  tuh_bus_info_get(kbd_resync_daddr, &bus);
+  const uint8_t inst = kbd_resync_instance;
+  const uint8_t ep_in = tuh_hid_ep_in(kbd_resync_daddr, inst);
+  const uint32_t epdbg = pio_usb_host_ep_debug(kbd_resync_daddr, ep_in);
+  extern volatile uint32_t g_tusb_assert_count;   // dropped events land here
+  Debug::log("HID kbd: rhport=%u daddr=%u inst=%u ep=%02X held=%u silent=%ums reports=%u "
+             "resync(fix=%u fail=%u off=%u) rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
+             bus.rhport, kbd_resync_daddr, inst, ep_in, (unsigned)held,
+             (unsigned)silent,
+             (unsigned)(inst < CFG_TUH_HID ? hid_snap[inst].report_total : 0),
+             (unsigned)kbd_resync_fixes, (unsigned)kbd_resync_fails,
+             (unsigned)kbd_resync_off, (unsigned)hid_rearm_recoveries,
+             (unsigned)hid_desync_recoveries, (unsigned)g_tusb_assert_count,
+             (unsigned)tuh_hid_receive_ready(kbd_resync_daddr, inst),
+             (unsigned)epdbg);
+#endif
+}
+
+static void kbd_resync_tick(void) {
+  kbd_health_log();
+  if (kbd_resync_off || kbd_resync_busy) return;
+  if (kbd_resync_instance == 0xFF) return;
+  if (!kbd_state_has_key()) return;
+  if ((uint32_t)(kbd_now_ms() - kbd_last_report_ms) < KBD_RESYNC_SILENCE_MS) return;
+
+  memset(kbd_resync_buf, 0, sizeof(kbd_resync_buf));
+  if (tuh_hid_get_report(kbd_resync_daddr, kbd_resync_instance, 0,
+                         HID_REPORT_TYPE_INPUT, kbd_resync_buf,
+                         sizeof(kbd_resync_buf))) {
+    kbd_resync_busy = true;
+  } else if (++kbd_resync_fails >= 5) {
+    // Control pipe unavailable/stalling: fall back to kicking the interrupt endpoint,
+    // which at least revives delivery if the transfer itself got stuck.
+    kbd_resync_off = true;
+    Debug::log("HID kbd: GET_REPORT unavailable, stuck-key resync disabled");
+    tuh_hid_receive_abort(kbd_resync_daddr, kbd_resync_instance);
+    tuh_hid_receive_report(kbd_resync_daddr, kbd_resync_instance);
+  }
+}
+
+void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t report_id,
+                                    uint8_t report_type, uint16_t len)
+{
+  (void) dev_addr; (void) idx; (void) report_id; (void) report_type;
+  kbd_resync_busy = false;
+  if (len < sizeof(hid_keyboard_report_t)) {   // 0 = stalled/failed
+    if (++kbd_resync_fails >= 5) {
+      kbd_resync_off = true;
+      Debug::log("HID kbd: GET_REPORT rejected, stuck-key resync disabled");
+    }
+    return;
+  }
+  kbd_resync_fails = 0;
+  hid_keyboard_report_t const* now = (hid_keyboard_report_t const*) kbd_resync_buf;
+  if (memcmp(now, &prev_report, sizeof(prev_report)) != 0) {
+    kbd_resync_fixes++;
+    Debug::log("HID kbd: state resynced via GET_REPORT (total %u)",
+               (unsigned)kbd_resync_fixes);
+    process_kbd_report(now, &prev_report);
+    prev_report = *now;
+  }
+  kbd_last_report_ms = kbd_now_ms();
+}
+
 
 #include "ff.h"
 
@@ -336,6 +575,20 @@ static hid_keyboard_report_t prev_report = { 0 , 0 , {0}};
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* report, uint16_t len)
 {
   uint8_t const itf_protocol = tuh_hid_interface_protocol(dev_addr, instance);
+
+  // A zero-length interrupt-IN report is legal idle traffic for some devices: a Dell
+  // wireless receiver (413C:301D) sends ZLPs on its third HID interface instead of
+  // NAKing. Every dispatch below indexes report[0] — the boot-keyboard branch casts
+  // the buffer to an 8-byte struct, and process_generic_report() does report++/len--
+  // so len wraps to 0xFFFF — i.e. an out-of-bounds read either way. It also used to
+  // emit one "Couldn't find the report info" printf PER report; at ~4 ms of blocking
+  // UART each that starves tuh_task(), so real keyboard reports get dropped and keys
+  // stick (worst through a hub, where the receiver shares the frame budget).
+  if (report == NULL || len == 0) {
+    if (!tuh_hid_receive_report(dev_addr, instance))
+      hid_log_rearm_refused(instance);
+    return;
+  }
 
   // 0810:0001 registers with boot kbd/mouse protocol but sends joystick
   // reports — intercept before the boot-protocol switch.
@@ -353,7 +606,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
       process_gp_0810_0001(instance, report + 1, len - 1);
     }
     if (!tuh_hid_receive_report(dev_addr, instance))
-      printf("Error: cannot request to receive report\r\n");
+      hid_log_rearm_refused(instance);
     return;
   }
   
@@ -384,6 +637,10 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
     case HID_ITF_PROTOCOL_KEYBOARD:
       TU_LOG2("HID receive boot keyboard report\r\n");
       hid_snap_set_handler(instance, HID_HANDLER_KBD);
+      // Remember who to ask for a state resync, and when we last heard from it.
+      kbd_resync_daddr    = dev_addr;
+      kbd_resync_instance = instance;
+      kbd_last_report_ms  = kbd_now_ms();
       process_kbd_report( (hid_keyboard_report_t const*) report, &prev_report );
       prev_report = *(hid_keyboard_report_t const*)report;
     break;
@@ -403,7 +660,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
   // continue to request to receive report
   if ( !tuh_hid_receive_report(dev_addr, instance) )
   {
-    printf("Error: cannot request to receive report\r\n");
+    hid_log_rearm_refused(instance);
   }
 }
 
@@ -1330,7 +1587,21 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
 
   if (!rpt_info)
   {
-    printf("Couldn't find the report info for this report !\r\n");
+    // ONCE per instance, never per report: this sits in the HID data path, which
+    // some devices drive at up to 1 kHz, and printf goes to a blocking 115200 UART
+    // when <BOARD>_DBG_UART is on (~4 ms per line — enough to stall the whole main
+    // loop and look like a freeze). The OSD's HID diagnostics page already reports
+    // the condition via last_handler, so the line is only a bring-up hint.
+    if (instance < CFG_TUH_HID && !no_rpt_info_logged[instance]) {
+      no_rpt_info_logged[instance] = true;
+      // report was advanced past the id byte in the composite branch above — the
+      // only branch that can leave rpt_info NULL — so report[-1] is that id.
+      printf("HID instance %u %04X:%04X itf_protocol=%u: no report info for id %02X, len=%u "
+             "(%u parsed; further ones silenced)\r\n",
+             instance, hid_info[instance].vid, hid_info[instance].pid,
+             hid_snap[instance].itf_protocol, report[-1], (unsigned)(len + 1),
+             hid_info[instance].report_count);
+    }
     hid_snap_set_handler(instance, HID_HANDLER_NO_RPT_INFO);
     return;
   }
