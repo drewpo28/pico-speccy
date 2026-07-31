@@ -206,11 +206,13 @@ static void refreshRightPane() {
     }
 }
 
-static void moveLeft(int delta) {
+// wrap: single-step moves roll over top<->bottom; paging/Home/End keep clamping.
+static void moveLeft(int delta, bool wrap = false) {
     Level& L = curLevel();
     if (!L.nvis) return;
     int old = L.sel, oldTop = L.top;
     int s = L.sel + delta;
+    if (wrap)      s = (s < 0) ? L.nvis - 1 : (s > L.nvis - 1) ? 0 : s;
     if (s < 0) s = 0;
     if (s > L.nvis - 1) s = L.nvis - 1;
     L.sel = (uint8_t)s;
@@ -224,11 +226,12 @@ static void moveLeft(int delta) {
     markDirty(D_PTITLE | D_RIGHT | D_FOOT);
 }
 
-static void moveRight(int delta) {
+static void moveRight(int delta, bool wrap = false) {
     const Node* n = curNode();
     if (!hasValuePane(n) || !S.rcount) return;
     int old = S.rsel, oldTop = S.rtop;
     int s = S.rsel + delta;
+    if (wrap)      s = (s < 0) ? S.rcount - 1 : (s > S.rcount - 1) ? 0 : s;
     if (s < 0) s = 0;
     if (s > S.rcount - 1) s = S.rcount - 1;
     S.rsel = (uint8_t)s;
@@ -428,8 +431,8 @@ static bool handleKey(NmKey k) {
         }
     }
     switch (k) {
-        case NK_UP:    (S.focus == FOCUS_LEFT) ? moveLeft(-1) : moveRight(-1); break;
-        case NK_DOWN:  (S.focus == FOCUS_LEFT) ? moveLeft(+1) : moveRight(+1); break;
+        case NK_UP:    (S.focus == FOCUS_LEFT) ? moveLeft(-1, true) : moveRight(-1, true); break;
+        case NK_DOWN:  (S.focus == FOCUS_LEFT) ? moveLeft(+1, true) : moveRight(+1, true); break;
         case NK_PGUP:  (S.focus == FOCUS_LEFT) ? moveLeft(-LY.body_rows)
                                                : moveRight(-LY.body_rows); break;
         case NK_PGDN:  (S.focus == FOCUS_LEFT) ? moveLeft(+LY.body_rows)
