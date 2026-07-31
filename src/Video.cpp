@@ -1009,6 +1009,15 @@ static inline uint32_t paletteTransform(uint32_t rgb) {
 //   matrix — P22-ish primaries: green pulled towards yellow-green, blue towards
 //            cyan, full primaries mildly desaturated. Rows sum to ~1.0 so white
 //            stays white.
+// Levels: 0=Off, 1..3 = Soft/Medium/Strong at mask pitch 4, 4..6 = the same three
+// strengths at mask pitch 2 (see hdmi_crt_mask). The pitch only affects the mask,
+// which lives in the drivers; the colour stage below is indexed by STRENGTH, so
+// levels 4..6 share the curve of 1..3.
+#define CRT_LEVELS 7
+static inline uint8_t crtStrength(uint8_t level) {
+    if (level >= CRT_LEVELS) return 0;
+    return level <= 3 ? level : (uint8_t)(level - 3);   // 4..6 = 1..3 at pitch 2
+}
 static const float crt_gamma_val[4]  = { 1.00f, 1.15f, 1.30f, 1.45f };
 static const uint8_t crt_black_lift[4] = { 0, 4, 8, 12 };
 static const uint16_t crt_phosphor[4][9] = {
@@ -1024,13 +1033,13 @@ static uint8_t crt_curve[256];
 static uint8_t crt_curve_level = 0xFF;   // forces a build on first use
 
 static void crtBuildLut(uint8_t level) {
-    if (level > 3) level = 0;
-    if (crt_curve_level == level) return;
-    crt_curve_level = level;
-    const float g = crt_gamma_val[level];
-    const int lift = crt_black_lift[level];
+    const uint8_t st = crtStrength(level);
+    if (crt_curve_level == st) return;
+    crt_curve_level = st;
+    const float g = crt_gamma_val[st];
+    const int lift = crt_black_lift[st];
     for (int i = 0; i < 256; i++) {
-        int v = (level == 0) ? i : (int)(255.0f * powf(i / 255.0f, g) + 0.5f);
+        int v = (st == 0) ? i : (int)(255.0f * powf(i / 255.0f, g) + 0.5f);
         v += lift;
         crt_curve[i] = (uint8_t)(v > 255 ? 255 : v);
     }
@@ -1039,7 +1048,7 @@ static void crtBuildLut(uint8_t level) {
 // Apply the CRT colour stage to an RGB888 value already carrying the palette
 // preset's transform.
 static inline uint32_t crtTransform(uint32_t rgb) {
-    const uint8_t level = Config::crt_filter <= 3 ? Config::crt_filter : 0;
+    const uint8_t level = crtStrength(Config::crt_filter);
     if (level == 0) return rgb;
     crtBuildLut(level);
     uint32_t c = matrixTransform(rgb, crt_phosphor[level]);
@@ -1242,7 +1251,7 @@ void VIDEO::applyPalette() {
 // from a non-blanking context tears conv_color), and the ULA+ CLUT has the same
 // hazard. EndFrame drains both from blanking.
 void VIDEO::applyCrtFilter() {
-    crtBuildLut(Config::crt_filter <= 3 ? Config::crt_filter : 0);
+    crtBuildLut(Config::crt_filter);
     applyPalette();                              // 0..239 + the 16 ZX solids
     if (Config::gigascreen_enabled)
         gigascreen_lut_rebuild_deferred = true;  // blends 17..136 carry the old curve

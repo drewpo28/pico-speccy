@@ -229,10 +229,12 @@ public:
     static uint8_t  throtling;
     static bool CursorAsJoy;
     static uint8_t scanlines;
-    // CRT filter: 0=Off 1=Soft 2=Medium 3=Strong. Purely palette-level (gamma +
-    // phosphor tint + black lift + aperture grille on the 2nd pixel of each pair),
-    // so it costs zero scanout cycles. Independent of scanlines, which own the
-    // vertical axis.
+    // CRT filter. 0=Off; 1..3 = Soft/Medium/Strong with a soft 4-pixel-pitch mask
+    // profile; 4..6 = the same three strengths with a hard 2-pixel-pitch grille.
+    // Purely palette-level (gamma + phosphor tint + black lift, plus a mask built
+    // from the output pixels each palette index already owns), so it costs zero
+    // scanout cycles. Composes with scanlines, which own the vertical axis — the two
+    // together give a full dot mask.
     static uint8_t crt_filter;
     static uint8_t render;
     static uint8_t persist_slot;

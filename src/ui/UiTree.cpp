@@ -61,15 +61,20 @@ static const Option opt_scanlines[] = {
     { "3 Light",      3 },
     { "4 Lightest",   4 },
 };
-// CRT filter: gamma + phosphor tint + black lift, plus an aperture grille on the
-// odd-x column. Default Off — the 1-pixel grille beats against a TV's non-integer
-// upscaler on HDMI and can moire; it is at its best on a VGA monitor at native
-// 640x480, and with Scanlines on it completes a 2x2 dot mask.
+// CRT filter: gamma + phosphor tint + black lift, plus a vertical mask.
+// 1..3 use a soft 4-pixel-pitch profile (smooth phosphor stripes); 4..6 a hard
+// 2-pixel grille, which beats harder against a display's own upscaler — that moire
+// is the slow left-to-right envelope a real tube's phosphor pitch produces, so on a
+// non-integer-scaling monitor it often looks more natural than the softer profile.
+// Default Off. With Scanlines on, either completes a full dot mask.
 static const Option opt_crt[] = {
-    { "Off",     0 },
-    { "Soft",    1 },
-    { "Medium",  2 },
-    { "Strong",  3 },
+    { "Off",          0 },
+    { "Soft",         1 },
+    { "Medium",       2 },
+    { "Strong",       3 },
+    { "Grille soft",  4 },
+    { "Grille med",   5 },
+    { "Grille hard",  6 },
 };
 static const Option opt_secondjoy[] = {          // 1-based in Config, do not shift
     { "DPAD #1", 1 },

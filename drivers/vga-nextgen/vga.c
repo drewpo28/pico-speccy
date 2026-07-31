@@ -86,6 +86,17 @@ static uint16_t palette16_mask = 0;
 // the setters below no-op — so the SRAM isn't reserved. See vga_alloc_buffers().
 static uint16_t (*palette_vga16)[256] = (uint16_t (*)[256]) 0;
 
+// CRT mask phase-B tables: ODD source pixels index these instead, so the mask
+// profile spans 4 output pixels (2 source pixels x 2 doubled pixels) with four
+// independent levels — the same scheme as the HDMI backend's second palette page.
+// Allocated only when the filter is switched on (~2.5 KB); while it is off, and if
+// the allocation fails, these alias the A tables, which degrades to a plain
+// period-2 grille rather than to nothing.
+static uint16_t (*palette_vga16_b)[256] = (uint16_t (*)[256]) 0;
+static uint16_t *palette_vga16_scanline_b = (uint16_t *) 0;
+static uint16_t (*palette_vga_ds80_b)[256] = (uint16_t (*)[256]) 0;
+static bool vga_crt_phaseb = false;    // true once the B tables are real, not aliases
+
 // Scanline dimmed palette: dithered at reduced brightness for scanline effect.
 // Rebuilt from vga_color888[] whenever the scanline level changes.
 static uint16_t *palette_vga16_scanline = (uint16_t *) 0;
@@ -123,6 +134,13 @@ static void vga_alloc_buffers(void) {
     vga_color888           = (uint32_t *)        calloc(256,     sizeof(uint32_t));
     vga_color_solid        = (bool *)            calloc(256,     sizeof(bool));
     palette_vga_ds80       = (uint16_t (*)[256]) calloc(2 * 256, sizeof(uint16_t));
+    // Mask off by default: phase B aliases phase A, so the render loop's second
+    // lookup is identical to the first and the output matches the old single-table
+    // code exactly. vga_set_crt() promotes these to real tables when needed.
+    palette_vga16_b           = palette_vga16;
+    palette_vga16_scanline_b  = palette_vga16_scanline;
+    palette_vga_ds80_b        = palette_vga_ds80;
+    vga_crt_phaseb = false;
 }
 
 // True once the VGA tables exist. On HDMI (SELECT_VGA false) returns false so the
@@ -319,20 +337,29 @@ if (!text_buffer) return;
     uint8_t* output_buffer_8bit;
     switch (graphics_mode) {
         case GRAPHICSMODE_DEFAULT: {
+            // Unrolled by 2 so even/odd source pixels can read different tables
+            // (the CRT mask's phase A / phase B). Instruction count per pixel is
+            // unchanged — it is the same load+lookup+store, just from a second base
+            // register — so this costs nothing when the mask is off (pal_b == pal).
+            // width is 320 or 360, always even; the x^2 swizzle pairs up cleanly
+            // (x=0..7 -> 2,3,0,1,6,7,4,5).
             if (profi_ds80_active) {
-                uint16_t* pal = palette_vga_ds80[screen_line & 1];
-                for (int x = 0; x < width; ++x) {
-                    register uint8_t idx = input_buffer_8bit[x ^ 2];
-                    *output_buffer_16bit++ = pal[idx];
+                uint16_t* pal   = palette_vga_ds80[screen_line & 1];
+                uint16_t* pal_b = palette_vga_ds80_b[screen_line & 1];
+                for (int x = 0; x < width; x += 2) {
+                    *output_buffer_16bit++ = pal  [input_buffer_8bit[ x      ^ 2]];
+                    *output_buffer_16bit++ = pal_b[input_buffer_8bit[(x + 1) ^ 2]];
                 }
             } else
             {
-                uint16_t* pal = (vga_scanlines && (screen_line & 1))
-                    ? palette_vga16_scanline
-                    : palette_vga16[screen_line & 1];
-                for (int x = 0; x < width; ++x) {
-                    register uint8_t idx = input_buffer_8bit[x ^ 2];
-                    *output_buffer_16bit++ = pal[idx];
+                const bool sl = vga_scanlines && (screen_line & 1);
+                uint16_t* pal   = sl ? palette_vga16_scanline
+                                     : palette_vga16[screen_line & 1];
+                uint16_t* pal_b = sl ? palette_vga16_scanline_b
+                                     : palette_vga16_b[screen_line & 1];
+                for (int x = 0; x < width; x += 2) {
+                    *output_buffer_16bit++ = pal  [input_buffer_8bit[ x      ^ 2]];
+                    *output_buffer_16bit++ = pal_b[input_buffer_8bit[(x + 1) ^ 2]];
                 }
             }
             break;
@@ -546,21 +573,45 @@ void graphics_set_flashmode(const bool flash_line, const bool flash_frame) {
     is_flash_line = flash_line;
 }
 
-// CRT aperture grille: attenuation of the odd-x column, as a 0..256 multiplier on
-// each channel's code value. Level 1 is exactly 2/3 — 255→170, which lands on the
-// 4-level VGA DAC grid, so bright primaries keep a solid (undithered) grille
-// column. Levels 2 and 3 do not quantise cleanly and will checkerboard.
+// CRT mask profile over the 4 output pixels of one 2-source-pixel group, as
+// 0..256 multipliers on each channel's code value. Raised cosine centred on tap 0:
+// [1, (1+lo)/2, lo, (1+lo)/2] — vertical phosphor stripes with a soft profile,
+// rather than the hard two-level mesh a period-2 grille produces.
 //
-// Same nominal factors as the HDMI backend, but VGA uses them directly: HDMI has
-// to snap each value to a TMDS-DC-balanced neighbour (hdmi_crt_dim_lut), so the
-// two backends' grille columns differ by a few code units. No TMDS here, and the
-// exact 2/3 of level 1 is what makes 255 land on the DAC grid.
-static const uint16_t vga_crt_grille_num[4] = { 256, 171, 148, 128 };
+//   output x:   0       1       2       3      (repeats)
+//   table:    A.even  A.odd   B.even  B.odd
+//
+// Same numerators as the HDMI backend (hdmi_crt_mask), but used directly: HDMI has
+// to snap each value to a TMDS-DC-balanced neighbour, so its columns differ from
+// these by a few code units. No TMDS here.
+// Levels 4..6: same machinery at PITCH 2 — taps 2/3 repeat 0/1, so phase B comes
+// out identical to phase A (and needs no storage). See the note in hdmi.c on why a
+// pitch-2 pattern is worth keeping alongside the pitch-4 profile.
+#define VGA_CRT_LEVELS 7
+static const uint16_t vga_crt_mask[VGA_CRT_LEVELS][4] = {
+    { 256, 256, 256, 256 },   // 0 Off
+    { 256, 228, 200, 228 },   // 1 Soft    pitch 4, lo = 0.78
+    { 256, 207, 159, 207 },   // 2 Medium  pitch 4, lo = 0.62
+    { 256, 186, 115, 186 },   // 3 Strong  pitch 4, lo = 0.45
+    { 256, 171, 256, 171 },   // 4 Grille soft  pitch 2, exactly 2/3 — the one factor
+                              //   that lands on the 4-level VGA DAC grid
+    { 256, 148, 256, 148 },   // 5 Grille med   pitch 2
+    { 256, 128, 256, 128 },   // 6 Grille hard  pitch 2, 1/2
+};
 static uint8_t vga_crt_level = 0;
 
-static inline uint32_t vga_crt_dim(uint32_t c) {
+// True when the level actually needs distinct phase-B tables (pitch 4). Pitch-2
+// levels leave B aliasing A, so they cost no extra memory at all.
+static inline bool vga_crt_needs_phaseb(uint8_t level) {
+    if (level == 0 || level >= VGA_CRT_LEVELS) return false;
+    return vga_crt_mask[level][2] != 256 || vga_crt_mask[level][3] != vga_crt_mask[level][1];
+}
+
+static inline uint32_t vga_crt_tap(uint32_t c, int tap) {
     if (!vga_crt_level) return c;
-    const uint32_t n = vga_crt_grille_num[vga_crt_level <= 3 ? vga_crt_level : 0];
+    const uint8_t lv = vga_crt_level < VGA_CRT_LEVELS ? vga_crt_level : 0;
+    const uint32_t n = vga_crt_mask[lv][tap];
+    if (n == 256) return c;
     return (((((c >> 16) & 0xff) * n) >> 8) << 16)
          | (((((c >>  8) & 0xff) * n) >> 8) <<  8)
          |   ((( c        & 0xff) * n) >> 8);
@@ -624,67 +675,82 @@ static uint32_t dim_rgb888(uint32_t color888) {
     return (r << 16) | (g << 8) | b;
 }
 
+static inline uint16_t vga_pack_pair(uint8_t lo, uint8_t hi) {
+    return (((uint16_t)hi << 8) | lo) & 0x3f3f | palette16_mask;
+}
+
+static inline uint8_t vga6_of(uint32_t c) {
+    return ((((c >> 16) & 0xff) / 85) << 4) | ((((c >> 8) & 0xff) / 85) << 2) | ((c & 0xff) / 85);
+}
+
+// 6-bit sub-pixel matrix for one colour: sub[tap][bayer position], where the Bayer
+// position is (x & 1) + 2 * (y & 1) — output x 0 and 2 share the even-x thresholds.
+// solid=true pins tap 0 (the unattenuated colour) to the DAC grid with no dither, so
+// the brightest column of the 16 ZX colours never shimmers.
+//
+// With the mask off every tap is the same colour, so all four rows are identical and
+// the packed results below are bit-identical to the original single-colour dither.
+static void vga_crt_subpixels(uint32_t c, bool solid, uint8_t sub[4][4]) {
+    const uint32_t t0 = vga_crt_tap(c, 0);
+    for (int k = 0; k < 4; k++) {
+        const uint32_t tk = vga_crt_tap(c, k);
+        // A solid entry stays solid for every tap that is NOT attenuated. With the
+        // mask off that is all four, so the result is bit-identical to the old
+        // undithered path; with it on, only the unattenuated tap 0 keeps that.
+        if (solid && tk == t0) {
+            const uint8_t v6 = vga6_of(tk);
+            sub[k][0] = sub[k][1] = sub[k][2] = sub[k][3] = v6;
+        } else {
+            vga_bayer4(tk, sub[k]);
+        }
+    }
+}
+
 // Recompute the dimmed scanline pixel for a single index from its cached color.
-// Scanline dim and the CRT grille compose: with both on, VGA gets a full 2×2 dot
-// mask (line parity × column parity) for free.
+// Scanline dim and the CRT mask compose: the mask varies across x, the scanline dim
+// across y, so together they give a full dot mask.
 static void vga_build_scanline_entry(uint8_t i) {
     if (!vga_color888) return;                 // VGA tables not allocated (HDMI active)
-    uint32_t dim = dim_rgb888(vga_color888[i]);
-    uint32_t dim_r = vga_crt_dim(dim);
-    if (vga_color_solid[i]) {
-        // Same rule as vga_set_palette_entry_solid(): the even column of a solid
-        // colour stays solid, only the grille column may dither.
-        uint8_t r2 = ((dim >> 16) & 0xff) / 85;
-        uint8_t g2 = ((dim >> 8) & 0xff) / 85;
-        uint8_t b2 = (dim & 0xff) / 85;
-        uint8_t vga6 = (r2 << 4) | (g2 << 2) | b2;
-        uint8_t right = vga6;
-        if (dim != dim_r) {
-            uint8_t d[4];
-            vga_bayer4(dim_r, d);
-            right = d[3];                          // odd x, odd y — this is the odd-line table
-        }
-        palette_vga16_scanline[i] = (((uint16_t)right << 8) | vga6) & 0x3f3f | palette16_mask;
-    } else {
-        uint16_t dummy;
-        vga_rgb888_pair(dim, dim_r, &dummy, &palette_vga16_scanline[i]);
+    uint8_t sub[4][4];
+    vga_crt_subpixels(dim_rgb888(vga_color888[i]), vga_color_solid[i], sub);
+    // Odd-line table only: Bayer positions 2 (even x) and 3 (odd x).
+    palette_vga16_scanline[i] = vga_pack_pair(sub[0][2], sub[1][3]);
+    if (vga_crt_phaseb)
+        palette_vga16_scanline_b[i] = vga_pack_pair(sub[2][2], sub[3][3]);
+}
+
+// Fill the phase-A (even source pixel, mask taps 0/1) and phase-B (odd source pixel,
+// taps 2/3) pixel pairs for one palette index, for both line parities.
+static void vga_fill_pairs(uint8_t i, uint32_t color888, bool solid) {
+    uint8_t sub[4][4];
+    vga_crt_subpixels(color888, solid, sub);
+    palette_vga16[0][i] = vga_pack_pair(sub[0][0], sub[1][1]);   // even y, taps 0/1
+    palette_vga16[1][i] = vga_pack_pair(sub[0][2], sub[1][3]);   // odd  y
+    if (vga_crt_phaseb) {
+        palette_vga16_b[0][i] = vga_pack_pair(sub[2][0], sub[3][1]);   // taps 2/3
+        palette_vga16_b[1][i] = vga_pack_pair(sub[2][2], sub[3][3]);
     }
 }
 
 // Update a single VGA palette LUT entry with Bayer dithering
 void vga_set_palette_entry(uint8_t i, uint32_t color888) {
     if (!vga_buffers_ready()) return;          // HDMI active → VGA tables unused
-    vga_rgb888_pair(color888, vga_crt_dim(color888),
-                    &palette_vga16[0][i], &palette_vga16[1][i]);
     vga_color888[i] = color888;
     vga_color_solid[i] = false;
+    vga_fill_pairs(i, color888, false);
     // Scanline: dithered at the current brightness level (odd pair for single-line rendering)
     vga_build_scanline_entry(i);
 }
 
 // Update a VGA palette entry WITHOUT dithering (both palettes get identical solid color)
-// Use for the 16 standard Spectrum colors to avoid visible dithering artifacts
+// Use for the 16 standard Spectrum colors to avoid visible dithering artifacts.
+// With the CRT mask on, only the unattenuated tap stays solid — the attenuated
+// columns must dither or the 4-level DAC would quantise the profile away.
 void vga_set_palette_entry_solid(uint8_t i, uint32_t color888) {
     if (!vga_buffers_ready()) return;          // HDMI active → VGA tables unused
-    uint8_t r2 = ((color888 >> 16) & 0xff) / 85;
-    uint8_t g2 = ((color888 >> 8) & 0xff) / 85;
-    uint8_t b2 = (color888 & 0xff) / 85;
-    uint8_t vga6 = (r2 << 4) | (g2 << 2) | b2;
-    uint16_t solid = ((vga6 << 8) | vga6) & 0x3f3f | palette16_mask;
-    palette_vga16[0][i] = solid;
-    palette_vga16[1][i] = solid;
-    if (vga_crt_level) {
-        // Keep the even column solid (that is the whole point of this entry point —
-        // the 16 ZX colours must not shimmer) and dither only the grille column,
-        // so intermediate attenuations survive the 4-level DAC. At grille level 1
-        // (exactly 2/3) a full-scale channel lands on the grid and stays solid too.
-        uint8_t d[4];
-        vga_bayer4(vga_crt_dim(color888), d);
-        palette_vga16[0][i] = (((uint16_t)d[1] << 8) | vga6) & 0x3f3f | palette16_mask;
-        palette_vga16[1][i] = (((uint16_t)d[3] << 8) | vga6) & 0x3f3f | palette16_mask;
-    }
     vga_color888[i] = color888;
     vga_color_solid[i] = true;
+    vga_fill_pairs(i, color888, true);
     // Scanline: dimmed solid at the current brightness level
     vga_build_scanline_entry(i);
 }
@@ -706,23 +772,28 @@ void vga_set_profi_ds80_mode(bool active,
         uint8_t vga_even_right[16];  // even scan-line, right pixel (odd screen x)
         uint8_t vga_odd_left[16];    // odd scan-line,  left  pixel
         uint8_t vga_odd_right[16];   // odd scan-line,  right pixel
+        // Phase A (even source pixel) takes mask taps 0/1, phase B taps 2/3; within
+        // each pair p0 = ink is the left pixel, p1 = paper the right one.
+        // [phase][colour]
+        uint8_t vga_even_left_b[16], vga_even_right_b[16];
+        uint8_t vga_odd_left_b[16],  vga_odd_right_b[16];
         for (int i = 0; i < 16; i++) {
-            uint16_t ep, op;
-            // p0 (left) is the ink pixel, p1 (right) the paper pixel — the CRT
-            // grille attenuates the odd-x column, i.e. the right/paper values.
-            // With the filter off vga_crt_dim() is the identity, so this is
-            // bit-identical to the plain single-colour dither.
-            vga_rgb888_pair(palette16_rgb888[i], vga_crt_dim(palette16_rgb888[i]), &ep, &op);
-            vga_even_left[i]  = ep & 0x3F;
-            vga_even_right[i] = (ep >> 8) & 0x3F;
-            vga_odd_left[i]   = op & 0x3F;
-            vga_odd_right[i]  = (op >> 8) & 0x3F;
+            uint8_t sub[4][4];
+            vga_crt_subpixels(palette16_rgb888[i], false, sub);
+            vga_even_left[i]    = sub[0][0];  vga_even_right[i]    = sub[1][1];
+            vga_odd_left[i]     = sub[0][2];  vga_odd_right[i]     = sub[1][3];
+            vga_even_left_b[i]  = sub[2][0];  vga_even_right_b[i]  = sub[3][1];
+            vga_odd_left_b[i]   = sub[2][2];  vga_odd_right_b[i]   = sub[3][3];
         }
         // Initialise all slots to (black, black) so unused/border slots are safe.
         uint16_t black_pair = palette16_mask;
         for (int s = 0; s < 256; s++) {
             palette_vga_ds80[0][s] = black_pair;
             palette_vga_ds80[1][s] = black_pair;
+            if (vga_crt_phaseb) {
+                palette_vga_ds80_b[0][s] = black_pair;
+                palette_vga_ds80_b[1][s] = black_pair;
+            }
         }
         // Fill every (p0, p1) combination that has a valid slot.
         // written[] guard: for merged slots (paper=8 → paper=0 for ink≤5), the first
@@ -733,8 +804,12 @@ void vga_set_profi_ds80_mode(bool active,
                 uint8_t slot = pair_lut[p0 * 16 + p1];
                 if (written[slot]) continue;
                 written[slot] = true;
-                palette_vga_ds80[0][slot] = (((uint16_t)vga_even_right[p1] << 8) | vga_even_left[p0]) | palette16_mask;
-                palette_vga_ds80[1][slot] = (((uint16_t)vga_odd_right[p1]  << 8) | vga_odd_left[p0])  | palette16_mask;
+                palette_vga_ds80[0][slot] = vga_pack_pair(vga_even_left[p0], vga_even_right[p1]);
+                palette_vga_ds80[1][slot] = vga_pack_pair(vga_odd_left[p0],  vga_odd_right[p1]);
+                if (vga_crt_phaseb) {
+                    palette_vga_ds80_b[0][slot] = vga_pack_pair(vga_even_left_b[p0], vga_even_right_b[p1]);
+                    palette_vga_ds80_b[1][slot] = vga_pack_pair(vga_odd_left_b[p0],  vga_odd_right_b[p1]);
+                }
             }
         }
         profi_ds80_active = true;
@@ -749,11 +824,17 @@ void graphics_set_bgcolor(const uint32_t color888) {
         graphics_set_bgcolor_hdmi(color888);
         return;
     }
-    uint16_t p0, p1;
-    // Border/background is beam-drawn on a real CRT, so it takes the grille too.
-    vga_rgb888_pair(color888, vga_crt_dim(color888), &p0, &p1);
-    bg_color[0] = (p0 << 16) | p0;
-    bg_color[1] = (p1 << 16) | p1;
+    // Border/background is beam-drawn on a real CRT, so it takes the mask too.
+    // bg_color is a 32-bit word = two consecutive pixel PAIRS, i.e. one full
+    // 4-output-pixel mask group: low half = phase A, high half = phase B.
+    uint8_t sub[4][4];
+    vga_crt_subpixels(color888, false, sub);
+    const uint16_t a0 = vga_pack_pair(sub[0][0], sub[1][1]);   // even y, phase A
+    const uint16_t b0 = vga_pack_pair(sub[2][0], sub[3][1]);   // even y, phase B
+    const uint16_t a1 = vga_pack_pair(sub[0][2], sub[1][3]);   // odd  y, phase A
+    const uint16_t b1 = vga_pack_pair(sub[2][2], sub[3][3]);   // odd  y, phase B
+    bg_color[0] = ((uint32_t)b0 << 16) | a0;
+    bg_color[1] = ((uint32_t)b1 << 16) | a1;
 }
 
 #ifndef VGA_HDMI
@@ -782,10 +863,32 @@ void vga_set_scanlines(uint8_t level) {
 // The solid flag has to be honoured explicitly: vga_set_palette_entry() clears it,
 // so a blind re-walk would silently start dithering the 16 ZX colours.
 void vga_set_crt(uint8_t level) {
-    if (level > 3) level = 0;
+    if (level >= VGA_CRT_LEVELS) level = 0;
     if (level == vga_crt_level) return;
     vga_crt_level = level;
     if (!vga_buffers_ready()) return;          // HDMI active → VGA tables unused
+    // Promote the phase-B tables from aliases to real storage the first time the
+    // mask is switched on (~2.5 KB). If that fails the aliases stay, which yields a
+    // plain period-2 grille instead of the 4-tap profile — degraded, not broken.
+    if (vga_crt_needs_phaseb(level) && !vga_crt_phaseb) {
+        extern size_t getLargestAllocatable(void);
+        const size_t need = 2 * 256 * sizeof(uint16_t)   // palette_vga16_b
+                          +     256 * sizeof(uint16_t)   // palette_vga16_scanline_b
+                          + 2 * 256 * sizeof(uint16_t);  // palette_vga_ds80_b
+        if (getLargestAllocatable() >= need) {
+            palette_vga16_b          = (uint16_t (*)[256]) calloc(2 * 256, sizeof(uint16_t));
+            palette_vga16_scanline_b = (uint16_t *)        calloc(    256, sizeof(uint16_t));
+            palette_vga_ds80_b       = (uint16_t (*)[256]) calloc(2 * 256, sizeof(uint16_t));
+            vga_crt_phaseb = palette_vga16_b && palette_vga16_scanline_b && palette_vga_ds80_b;
+        }
+        if (!vga_crt_phaseb) {
+            printf("vga_set_crt: no room for CRT phase-B tables (%u B) — period-2 mask only\n",
+                   (unsigned)need);
+            palette_vga16_b          = palette_vga16;
+            palette_vga16_scanline_b = palette_vga16_scanline;
+            palette_vga_ds80_b       = palette_vga_ds80;
+        }
+    }
     for (int i = 0; i < 256; ++i) {
         if (vga_color_solid[i]) vga_set_palette_entry_solid((uint8_t)i, vga_color888[i]);
         else                    vga_set_palette_entry((uint8_t)i, vga_color888[i]);

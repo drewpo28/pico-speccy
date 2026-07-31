@@ -992,7 +992,7 @@ void Config::load() {
         }
         nvs_get_u8("scanlines", Config::scanlines, sts);
         nvs_get_u8("crt_filter", Config::crt_filter, sts);
-        if (Config::crt_filter > 3) Config::crt_filter = 0;
+        if (Config::crt_filter > 6) Config::crt_filter = 0;
         nvs_get_u8("render", Config::render, sts);
         nvs_get_b("TABasfire1", Config::TABasfire1, sts);
         nvs_get_b("StartMsg", Config::StartMsg, sts);

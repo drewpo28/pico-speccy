@@ -5437,7 +5437,10 @@ static void buildEmulatorInfoText() {
                                  Config::scanlines == 3 ? "Lvl 3" : "Lvl 4") : "Off",
             Config::crt_filter == 1 ? "Soft" :
             Config::crt_filter == 2 ? "Medium" :
-            Config::crt_filter == 3 ? "Strong" : "Off",
+            Config::crt_filter == 3 ? "Strong" :
+            Config::crt_filter == 4 ? "Grille soft" :
+            Config::crt_filter == 5 ? "Grille med" :
+            Config::crt_filter == 6 ? "Grille hard" : "Off",
             Config::render ? "Snow effect" : "Standard",
             VIDEO::paletteName(Config::palette));
         {

@@ -66,6 +66,11 @@ static uint8_t hdmi_scanline_buf[400];
 //ДМА палитра для конвертации
 //в хвосте этой памяти выделяется dma_data
 static alignas(4096) uint32_t conv_color[1240];
+// Palette page B — odd source pixels (see pio_program_instructions_conv_HDMI).
+// Only 1024 words: the two line buffers live in page A's tail, outside the 4 KB
+// window the PIO can address. With the CRT filter off this is an exact copy of
+// page A's palette half, so output is bit-identical to the single-page design.
+static alignas(4096) uint32_t conv_color_b[1024];
 // Snapshot of the standard palette taken at DS80-enable time. Used to restore
 // conv_color back to the doubled-pixel mode when DS80 turns off.
 // pico-speccy: lazily heap-allocated (~5 KB) — kept out of .bss while DS80 is off
@@ -243,19 +248,39 @@ static volatile uint32_t hdmi_dbg_frame_ct = 0;
 
 //программа конвертации адреса
 
+// Address converter: fb byte -> conv_color read address = (reg << 12) | (byte << 4).
+//
+// Two passes per iteration, injecting X on the first fb byte and Y on the second.
+// X and Y hold the >>12 bases of two separate 4 KB-aligned palette pages, so EVEN
+// source pixels resolve through page A and ODD ones through page B. That is what
+// makes the CRT mask period 4 output pixels (2 source pixels x 2 doubled pixels)
+// with four independently settable brightness levels — at zero CPU cost and zero
+// extra palette slots, since each page is a full 256-entry table.
+//
+// Instruction count per fb byte is unchanged (pull/in/in/push), so PIO throughput
+// is identical; only the program is twice as long.
+//
+// Phase determinism: pio_sm_init() sets PC to instruction 0, and every mode's
+// line_bytes is even (400), so the A/B phase is identical on every line and every
+// frame. A dropped byte would flip the phase for the rest of the frame — but that
+// already means a corrupted line.
 uint16_t pio_program_instructions_conv_HDMI[] = {
     //         //     .wrap_target
     0x80a0, //  0: pull   block
     0x40e8, //  1: in     osr, 8
-    0x4034, //  2: in     x, 20
+    0x4034, //  2: in     x, 20        ; even fb byte -> palette page A
     0x8020, //  3: push   block
+    0x80a0, //  4: pull   block
+    0x40e8, //  5: in     osr, 8
+    0x4054, //  6: in     y, 20        ; odd  fb byte -> palette page B
+    0x8020, //  7: push   block
     //     .wrap
 };
 
 
 const struct pio_program pio_program_conv_addr_HDMI = {
     .instructions = pio_program_instructions_conv_HDMI,
-    .length = 4,
+    .length = 8,
     .origin = -1,
 };
 
@@ -341,6 +366,20 @@ static void pio_set_x(PIO pio, const int sm, uint32_t v) {
     for (int i = 0; i < 8; i++) {
         const uint32_t nibble = (v >> (i * 4)) & 0xf;
         pio_sm_exec(pio, sm, pio_encode_set(pio_x, nibble));
+        pio_sm_exec(pio, sm, instr_shift);
+    }
+    pio_sm_exec(pio, sm, instr_mov);
+}
+
+// Same for Y (the odd-pixel palette page base). pio_sm_init() preserves X/Y — it
+// restarts the shift counters and PC, not the scratch registers — so, like
+// pio_set_x, this may be called before init.
+static void pio_set_y(PIO pio, const int sm, uint32_t v) {
+    uint instr_shift = pio_encode_in(pio_y, 4);
+    uint instr_mov = pio_encode_mov(pio_y, pio_isr);
+    for (int i = 0; i < 8; i++) {
+        const uint32_t nibble = (v >> (i * 4)) & 0xf;
+        pio_sm_exec(pio, sm, pio_encode_set(pio_y, nibble));
         pio_sm_exec(pio, sm, instr_shift);
     }
     pio_sm_exec(pio, sm, instr_mov);
@@ -708,6 +747,7 @@ static inline bool hdmi_init() {
     offs_prg1 = pio_add_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI);
     offs_prg0 = pio_add_program(PIO_VIDEO, &program_PIO_HDMI);
     pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color >> 12));
+    pio_set_y(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color_b >> 12));
 
     //заполнение палитры
     for (int ci = 0; ci < 240; ci++) graphics_set_palette(ci, palette[ci]); //
@@ -719,7 +759,11 @@ static inline bool hdmi_init() {
     graphics_set_palette(IDX_SCANLINE, hdmi_scanline_gray());
 
     //240-243 служебные данные(синхра) напрямую вносим в массив -конвертер
-    uint64_t* conv_color64 = (uint64_t *)conv_color;
+    // Written to BOTH palette pages: sync/porch bytes are position-dependent, so
+    // the same index is consumed at even and odd source-pixel offsets and must
+    // decode identically either way. Same rule for every non-colour index.
+    for (int pg = 0; pg < 2; pg++) {
+    uint64_t* conv_color64 = (uint64_t *)(pg ? conv_color_b : conv_color);
     const uint16_t b0 = 0b1101010100;
     const uint16_t b1 = 0b0010101011;
     const uint16_t b2 = 0b0101010100;
@@ -737,6 +781,7 @@ static inline bool hdmi_init() {
 
     conv_color64[2 * (base_inx + 3) + 0] = get_ser_diff_data(b0, b0, b0);
     conv_color64[2 * (base_inx + 3) + 1] = get_ser_diff_data(b0, b0, b0);
+    }
 
     //настройка PIO SM для конвертации
 
@@ -1038,59 +1083,90 @@ static void hdmi_write_pair(uint64_t *cc64, uint8_t slot, uint32_t left888, uint
         B_r ^ ((hdmi_tmds_disp(B_l) * hdmi_tmds_disp(B_r) >= 0) ? 0xFF : 0));
 }
 
-// CRT aperture grille. Each palette index already owns two output pixels; dimming
-// the second one gives a period-2 vertical mask for free — no ISR cycles, no new
-// palette slots. Factors are code-value fractions of 256 (not linear-light).
-static const uint16_t hdmi_crt_grille_num[4] = { 256, 171, 148, 128 };
+// CRT mask. Each palette index owns two output pixels, and the conv PIO resolves
+// even/odd source pixels through two different palette pages — so the mask profile
+// spans FOUR output pixels with four independent levels, at zero scanout cost:
+//
+//   output x:      0        1        2        3        (repeats)
+//   page:        A.left   A.right  B.left   B.right
+//   tap:           0        1        2        3
+//
+// Profile is a raised cosine centred on tap 0: [1, (1+lo)/2, lo, (1+lo)/2]. A hard
+// two-level period-2 grille (what this was first) reads as a wire mesh; a soft
+// four-level profile reads as vertical phosphor stripes, which is what a real tube
+// does and what the eye accepts. Numerators are /256 code-value fractions.
+// Levels 4..6 are the same machinery at PITCH 2: taps 2/3 repeat taps 0/1, so both
+// palette pages come out identical and the profile is a plain two-column grille.
+// Kept as separate levels because a pitch-2 pattern beats much harder against a
+// display's own upscaler — that moire IS the slow left-to-right envelope a real
+// tube's phosphor pitch produces, and on a non-integer-scaling monitor it reads
+// more natural than the mathematically nicer pitch-4 profile.
+#define HDMI_CRT_LEVELS 7
+static const uint16_t hdmi_crt_mask[HDMI_CRT_LEVELS][4] = {
+    { 256, 256, 256, 256 },   // 0 Off
+    { 256, 228, 200, 228 },   // 1 Soft    pitch 4, lo = 0.78
+    { 256, 207, 159, 207 },   // 2 Medium  pitch 4, lo = 0.62
+    { 256, 186, 115, 186 },   // 3 Strong  pitch 4, lo = 0.45
+    { 256, 171, 256, 171 },   // 4 Grille soft  pitch 2, 2/3
+    { 256, 148, 256, 148 },   // 5 Grille med   pitch 2
+    { 256, 128, 256, 128 },   // 6 Grille hard  pitch 2, 1/2
+};
 static uint8_t hdmi_crt_level = 0;
 
-// Per-channel dimmed value, DC-BALANCED BY CONSTRUCTION rather than by luck.
+// Per-channel dimmed values, DC-BALANCED BY CONSTRUCTION rather than by luck.
 //
 // hw 2026-07-31: a plain (v * num) >> 8 multiplier dropped sync on an HDMI monitor
 // (a capture card, being DVI-lenient, showed it fine) because some ideal values —
-// notably 255 at grille levels 1-2 — leave the pair at |residual| 8, which drifts
-// the running disparity 4x faster than anything that already ships. So instead of
-// taking the ideal value, take the nearest value whose pair residual is within ±2,
-// the same bound the identical-colour twin has by construction.
+// notably 255 — leave the pair at |residual| 8, which drifts the running disparity
+// 4x faster than anything that already ships. So each pair's RIGHT value is the
+// nearest one whose residual is within ±2, the bound the identical-colour twin has
+// by construction. Balancing is per PAIR, so tap 1 is balanced against tap 0 (the
+// colour itself) and tap 3 against tap 2 — tap 2, being a pair's left pixel, is its
+// own reference and takes the plain target.
 //
-// Measured: such a value always exists within 12 code units of the ideal (≈4.5%
-// brightness, invisible on a 1-pixel mask column) for every one of the 256 values
-// at every level. 256 B of BSS, rebuilt only on a level change.
-//
-// VGA does not need this and keeps the plain multiplier — there is no TMDS there,
-// and level 1 = exactly 2/3 is what makes 255 land on its 4-level DAC grid. The two
-// backends therefore differ by a few code units on the grille column.
+// Measured: such a value always exists within ~12 code units of the ideal (≈4.5%
+// brightness, invisible on a mask column) for all 256 values at every level.
+// 768 B of BSS, rebuilt only on a level change.
 #define HDMI_CRT_DIM_SEARCH 16
-static uint8_t hdmi_crt_dim_lut[256];
-static uint8_t hdmi_crt_dim_lut_level = 0xFF;
+static uint8_t hdmi_crt_tap1[256];   // page A right — balanced against v
+static uint8_t hdmi_crt_tap2[256];   // page B left  — plain target, own reference
+static uint8_t hdmi_crt_tap3[256];   // page B right — balanced against tap 2
+static uint8_t hdmi_crt_lut_level = 0xFF;
+
+// Nearest value to `target` whose pair residual against `ref` is within ±2.
+static uint8_t hdmi_balanced_near(uint8_t ref, int target) {
+    int r = hdmi_pair_residual(ref, (uint8_t)target);
+    int best_d = target, best_res = r < 0 ? -r : r;
+    for (int rad = 1; rad <= HDMI_CRT_DIM_SEARCH && best_res > 2; rad++) {
+        for (int sg = -1; sg <= 1; sg += 2) {
+            const int d = target + sg * rad;
+            if (d < 0 || d > 255) continue;
+            r = hdmi_pair_residual(ref, (uint8_t)d);
+            if (r < 0) r = -r;
+            if (r < best_res) { best_res = r; best_d = d; }
+            if (best_res <= 2) break;
+        }
+    }
+    return (uint8_t)best_d;
+}
 
 static void hdmi_build_crt_dim_lut(uint8_t level) {
-    if (hdmi_crt_dim_lut_level == level) return;
-    hdmi_crt_dim_lut_level = level;
-    const uint32_t n = hdmi_crt_grille_num[level <= 3 ? level : 0];
+    if (hdmi_crt_lut_level == level) return;
+    hdmi_crt_lut_level = level;
+    const uint16_t *m = hdmi_crt_mask[level < HDMI_CRT_LEVELS ? level : 0];
     for (int v = 0; v < 256; v++) {
-        const int t = (int)(((uint32_t)v * n) >> 8);
-        int r = hdmi_pair_residual((uint8_t)v, (uint8_t)t);
-        int best_d = t, best_res = r < 0 ? -r : r;
-        for (int rad = 1; rad <= HDMI_CRT_DIM_SEARCH && best_res > 2; rad++) {
-            for (int s = -1; s <= 1; s += 2) {
-                const int d = t + s * rad;
-                if (d < 0 || d > 255) continue;
-                r = hdmi_pair_residual((uint8_t)v, (uint8_t)d);
-                if (r < 0) r = -r;
-                if (r < best_res) { best_res = r; best_d = d; }
-                if (best_res <= 2) break;
-            }
-        }
-        hdmi_crt_dim_lut[v] = (uint8_t)best_d;
+        hdmi_crt_tap1[v] = hdmi_balanced_near((uint8_t)v, (int)(((uint32_t)v * m[1]) >> 8));
+        hdmi_crt_tap2[v] = (uint8_t)(((uint32_t)v * m[2]) >> 8);
+        hdmi_crt_tap3[v] = hdmi_balanced_near(hdmi_crt_tap2[v], (int)(((uint32_t)v * m[3]) >> 8));
     }
 }
 
-static inline uint32_t hdmi_crt_dim(uint32_t c) {
+// Apply mask tap 1/2/3 to a whole RGB888 colour. Tap 0 is the colour itself.
+static inline uint32_t hdmi_crt_tap(uint32_t c, const uint8_t *lut) {
     if (!hdmi_crt_level) return c;
-    return ((uint32_t)hdmi_crt_dim_lut[(c >> 16) & 0xff] << 16)
-         | ((uint32_t)hdmi_crt_dim_lut[(c >>  8) & 0xff] <<  8)
-         |  (uint32_t)hdmi_crt_dim_lut[ c        & 0xff];
+    return ((uint32_t)lut[(c >> 16) & 0xff] << 16)
+         | ((uint32_t)lut[(c >>  8) & 0xff] <<  8)
+         |  (uint32_t)lut[ c        & 0xff];
 }
 
 // The grille applies to EVERY colour slot, the OSD's own palette (152..167)
@@ -1112,8 +1188,18 @@ static inline bool hdmi_palette_slot_writable(uint8_t i) {
 }
 
 // Write one palette index's TMDS pair, applying the aperture grille.
+// Re-derive palette page B's colour slots from palette[], leaving page A alone.
+// Used on DS80 exit: page A comes back from conv_color_std_snapshot, and rebuilding
+// page B this way avoids growing that snapshot by another 4 KB — which would make
+// DS80 refuse to start on the ~10 KB-heap m1p2 Profi. Page B's structural slots are
+// never touched by DS80 (pair_lut excludes the sync range).
+static void hdmi_rebuild_page_b(void);
+
 static inline void hdmi_emit_slot(uint8_t i, uint32_t c) {
-    hdmi_write_pair((uint64_t *)conv_color, i, c, hdmi_crt_dim(c));
+    hdmi_write_pair((uint64_t *)conv_color,   i, c,
+                    hdmi_crt_tap(c, hdmi_crt_tap1));
+    hdmi_write_pair((uint64_t *)conv_color_b, i, hdmi_crt_tap(c, hdmi_crt_tap2),
+                    hdmi_crt_tap(c, hdmi_crt_tap3));
 }
 
 void graphics_set_palette(uint8_t i, uint32_t color888) {
@@ -1135,6 +1221,16 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
     // a walk-only design would silently un-grille every entry the guest touches.
     hdmi_emit_slot(i, color888 & 0x00ffffff);
 };
+
+static void hdmi_rebuild_page_b(void) {
+    if (!conv_color) return;
+    uint64_t *ccb = (uint64_t *)conv_color_b;
+    for (int i = 0; i < 256; i++) {
+        if (!hdmi_palette_slot_writable((uint8_t)i)) continue;
+        hdmi_write_pair(ccb, (uint8_t)i, hdmi_crt_tap(palette[i], hdmi_crt_tap2),
+                                         hdmi_crt_tap(palette[i], hdmi_crt_tap3));
+    }
+}
 
 #define RGB888(r, g, b) ((r<<16) | (g << 8 ) | b )
 
@@ -1186,44 +1282,50 @@ void hdmi_set_profi_ds80_mode(bool active,
             conv_color_std_snapshot_valid = true;
         }
 
-        uint64_t tmds16[16];
         // Per-channel TMDS values (10-bit) and per-channel disparity (ones×2 - 10).
         // Separate R/G/B disparity is critical: for colors like bright-red (+8,-8,-8)
         // and bright-green (-8,+8,-8), the combined disparity is same-sign (-8×-8=+64)
         // but individual channels need OPPOSITE complement decisions — using a single
         // combined use_compl would leave R and G at ±16, causing sync loss.
-        uint R_raw[16], G_raw[16], B_raw[16];
-        int disp_R[16], disp_G[16], disp_B[16];
-        // Paper side, separately encoded so the CRT aperture grille can dim it:
-        // in DS80 the pair is (ink, paper) = two different source pixels, and the
-        // grille attenuates the second output pixel, which is paper. With the
-        // filter off hdmi_crt_dim() is the identity and these are bit-identical to
-        // the ink arrays, so there is only one code path.
+        //
+        // Ink and paper are encoded separately per palette PAGE so the CRT mask can
+        // give each of the four output positions its own level. With the filter off
+        // hdmi_crt_tap() is the identity and both pages come out identical, so there
+        // is still only one code path.
         //
         // Deliberately NOT routed through hdmi_write_pair(): that would re-encode
         // both colours for each of ~250 slots instead of 16 once, and this runs on
         // every deferred palette apply (a guest animating the Profi palette hits it
         // per frame).
-        uint R_pap[16], G_pap[16], B_pap[16];
-        int disp_R_p[16], disp_G_p[16], disp_B_p[16];
+        //
+        // [pg][p]: pg 0 = page A (mask taps 0/1), pg 1 = page B (taps 2/3).
+        // ink takes the pair's LEFT tap, paper the RIGHT one.
+        uint R_ink[2][16], G_ink[2][16], B_ink[2][16];
+        int disp_R[2][16], disp_G[2][16], disp_B[2][16];
+        uint R_pap[2][16], G_pap[2][16], B_pap[2][16];
+        int disp_R_p[2][16], disp_G_p[2][16], disp_B_p[2][16];
+        uint64_t tmds16_pg[2][16];
         for (int p = 0; p < 16; p++) {
-            uint32_t c = palette16_rgb888[p] & 0x00ffffff;
-            uint R = tmds_encoder((c >> 16) & 0xff);
-            uint G = tmds_encoder((c >>  8) & 0xff);
-            uint B = tmds_encoder( c        & 0xff);
-            R_raw[p] = R; G_raw[p] = G; B_raw[p] = B;
-            tmds16[p] = get_ser_diff_data(R, G, B);
-            disp_R[p] = (int)__builtin_popcount(R & 0x3FF) * 2 - 10;
-            disp_G[p] = (int)__builtin_popcount(G & 0x3FF) * 2 - 10;
-            disp_B[p] = (int)__builtin_popcount(B & 0x3FF) * 2 - 10;
+            const uint32_t c = palette16_rgb888[p] & 0x00ffffff;
+            const uint32_t ink[2]  = { c, hdmi_crt_tap(c, hdmi_crt_tap2) };
+            const uint32_t pap[2]  = { hdmi_crt_tap(c, hdmi_crt_tap1),
+                                       hdmi_crt_tap(c, hdmi_crt_tap3) };
+            for (int pg = 0; pg < 2; pg++) {
+                R_ink[pg][p] = tmds_encoder((ink[pg] >> 16) & 0xff);
+                G_ink[pg][p] = tmds_encoder((ink[pg] >>  8) & 0xff);
+                B_ink[pg][p] = tmds_encoder( ink[pg]        & 0xff);
+                tmds16_pg[pg][p] = get_ser_diff_data(R_ink[pg][p], G_ink[pg][p], B_ink[pg][p]);
+                disp_R[pg][p] = hdmi_tmds_disp(R_ink[pg][p]);
+                disp_G[pg][p] = hdmi_tmds_disp(G_ink[pg][p]);
+                disp_B[pg][p] = hdmi_tmds_disp(B_ink[pg][p]);
 
-            uint32_t d = hdmi_crt_dim(c);
-            R_pap[p] = tmds_encoder((d >> 16) & 0xff);
-            G_pap[p] = tmds_encoder((d >>  8) & 0xff);
-            B_pap[p] = tmds_encoder( d        & 0xff);
-            disp_R_p[p] = (int)__builtin_popcount(R_pap[p] & 0x3FF) * 2 - 10;
-            disp_G_p[p] = (int)__builtin_popcount(G_pap[p] & 0x3FF) * 2 - 10;
-            disp_B_p[p] = (int)__builtin_popcount(B_pap[p] & 0x3FF) * 2 - 10;
+                R_pap[pg][p] = tmds_encoder((pap[pg] >> 16) & 0xff);
+                G_pap[pg][p] = tmds_encoder((pap[pg] >>  8) & 0xff);
+                B_pap[pg][p] = tmds_encoder( pap[pg]        & 0xff);
+                disp_R_p[pg][p] = hdmi_tmds_disp(R_pap[pg][p]);
+                disp_G_p[pg][p] = hdmi_tmds_disp(G_pap[pg][p]);
+                disp_B_p[pg][p] = hdmi_tmds_disp(B_pap[pg][p]);
+            }
         }
         // Write all unique slots referenced by pair_lut.
         // pixel-0 = ink  (first  HDMI pixel clock of the pair)
@@ -1241,25 +1343,31 @@ void hdmi_set_profi_ds80_mode(bool active,
         // ink=8 has independent slots (different from ink=0) so palette[8] renders
         // independently; changing palette[8] cannot corrupt black-ink pixels.
         bool written[256] = {};
-        for (int ink = 0; ink < 16; ink++) {
-            for (int paper = 0; paper < 16; paper++) {
-                uint8_t slot = pair_lut[ink * 16 + paper];
-                // pair_lut guarantees slot is never in sync/border range
-                if (!written[slot]) {
-                    written[slot] = true;
-                    cc64[slot * 2 + 0] = tmds16[ink];
-                    // Per-channel complement: flip data bits 0-7 when same-sign disparity.
-                    uint R_p = R_pap[paper] ^ ((disp_R[ink] * disp_R_p[paper] >= 0) ? 0xFF : 0);
-                    uint G_p = G_pap[paper] ^ ((disp_G[ink] * disp_G_p[paper] >= 0) ? 0xFF : 0);
-                    uint B_p = B_pap[paper] ^ ((disp_B[ink] * disp_B_p[paper] >= 0) ? 0xFF : 0);
-                    cc64[slot * 2 + 1] = get_ser_diff_data(R_p, G_p, B_p);
+        for (int pg = 0; pg < 2; pg++) {
+            uint64_t *ccp = (uint64_t *)(pg ? conv_color_b : conv_color);
+            for (int i = 0; i < 256; i++) written[i] = false;
+            for (int ink = 0; ink < 16; ink++) {
+                for (int paper = 0; paper < 16; paper++) {
+                    uint8_t slot = pair_lut[ink * 16 + paper];
+                    // pair_lut guarantees slot is never in sync/border range
+                    if (!written[slot]) {
+                        written[slot] = true;
+                        ccp[slot * 2 + 0] = tmds16_pg[pg][ink];
+                        // Per-channel complement: flip data bits 0-7 when same-sign disparity.
+                        uint R_p = R_pap[pg][paper] ^ ((disp_R[pg][ink] * disp_R_p[pg][paper] >= 0) ? 0xFF : 0);
+                        uint G_p = G_pap[pg][paper] ^ ((disp_G[pg][ink] * disp_G_p[pg][paper] >= 0) ? 0xFF : 0);
+                        uint B_p = B_pap[pg][paper] ^ ((disp_B[pg][ink] * disp_B_p[pg][paper] >= 0) ? 0xFF : 0);
+                        ccp[slot * 2 + 1] = get_ser_diff_data(R_p, G_p, B_p);
+                    }
                 }
             }
+            // Slot 255: border fill byte — must be (black, black) in both pages.
+            // Black: all channels disp=-8 (same-sign self) → complement all channels.
+            ccp[255 * 2 + 0] = tmds16_pg[pg][0];
+            ccp[255 * 2 + 1] = get_ser_diff_data(R_ink[pg][0] ^ 0xFF,
+                                                 G_ink[pg][0] ^ 0xFF,
+                                                 B_ink[pg][0] ^ 0xFF);
         }
-        // Slot 255: border fill byte — must be (black, black).
-        // Black: all channels disp=-8 (same-sign self) → complement all channels.
-        cc64[255 * 2 + 0] = tmds16[0];
-        cc64[255 * 2 + 1] = get_ser_diff_data(R_raw[0]^0xFF, G_raw[0]^0xFF, B_raw[0]^0xFF);
 
         __dmb(); // ensure all conv_color writes are visible to core1 before flag is set
         profi_ds80_active = true;
@@ -1277,6 +1385,7 @@ void hdmi_set_profi_ds80_mode(bool active,
                 conv_color[i] = conv_color_std_snapshot[i];
             }
         }
+        hdmi_rebuild_page_b();      // page A restored above; B is re-derived
         profi_ds80_active = false;
         // Release the ~5 KB snapshot while DS80 is off (re-taken on next enable).
         free(conv_color_std_snapshot);
@@ -1330,8 +1439,8 @@ void hdmi_set_scanlines(uint8_t level) {
 // active, and VIDEO::applyCrtFilter() marks profi_palette_dirty so EndFrame
 // re-emits it from blanking, where writing conv_color is safe.
 void hdmi_set_crt(uint8_t level) {
-    if (level > 3) level = 0;
-    hdmi_build_crt_dim_lut(level);      // must precede any hdmi_crt_dim() use
+    if (level >= HDMI_CRT_LEVELS) level = 0;
+    hdmi_build_crt_dim_lut(level);      // must precede any hdmi_crt_tap() use
     hdmi_crt_level = level;
     if (!conv_color || profi_ds80_active) return;
     for (int i = 0; i < 256; i++)
@@ -1651,15 +1760,22 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
     }
     else src = blob_null;
 
-    uint64_t *dst = ((uint64_t *)conv_color) + (set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE) * 2;
+    // Both palette pages: the island sits at line bytes [0..21], so consecutive
+    // island indices land on alternating source-pixel parities and each one must
+    // decode identically through either page. Cost is one extra 32-uint64 store
+    // run (~0.3 µs at 378 MHz against a 63.55 µs budget), and only with audio on.
+    const uint slot = (set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE) * 2;
+    uint64_t *dst  = ((uint64_t *)conv_color)   + slot;
+    uint64_t *dstb = ((uint64_t *)conv_color_b) + slot;
     if (from_q) {
         // Encode the raw audio packet straight into conv_color (replaces the
         // 32-uint64 copy — see hdmi_audio_pkt_t). hdmi_pack_blob writes all 32.
         hdmi_pack_blob(dst, qpkt->hdr, qpkt->sp);
+        for (int i = 0; i < 32; i++) dstb[i] = dst[i];
         __dmb();
         aq_rd = aq_rd + 1;
     } else {
-        for (int i = 0; i < 32; i++) dst[i] = src[i];
+        for (int i = 0; i < 32; i++) { dst[i] = src[i]; dstb[i] = src[i]; }
     }
 }
 
@@ -1719,7 +1835,11 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
 
     // Static conv_color entries. Argument order of get_ser_diff_data is
     // (ch2, ch1, ch0) — ch0 carries syncs.
-    uint64_t *cc = (uint64_t *)conv_color;
+    // Written to BOTH palette pages: island/preamble/guard indices are consumed at
+    // whatever source-pixel parity their byte offset happens to be, so each must
+    // decode identically through page A and page B.
+    for (int pg = 0; pg < 2; pg++) {
+    uint64_t *cc = (uint64_t *)(pg ? conv_color_b : conv_color);
     const uint16_t CTL00 = 0b1101010100;        // CTLx = {0,0}
     const uint16_t CTL01 = 0b0010101011;        // CTLx = {0,1}
     const uint16_t SYNC_H1V1 = 0b1010101011;    // ch0 control: blanking idle
@@ -1753,6 +1873,7 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
     uint64_t vg = get_ser_diff_data(GB_VID, GB_DI, GB_VID);
     cc[IDX_VIDEO_GUARD * 2] = vg;
     cc[IDX_VIDEO_GUARD * 2 + 1] = vg;
+    }
 
     // The static scanline (gray) buffer plays as active video — it needs the
     // video preamble + guard band too (no island: its line head stays control)
@@ -1817,8 +1938,12 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
         // Null-fill only on first init: once the ISR is running it manages both
         // sets itself, and a concurrent memcpy would produce a torn BCH packet
         // that makes the TV mute for ~0.5 s.
-        memcpy(&cc[IDX_DI_DATA_BASE * 2],  blob_null, sizeof(blob_null));
-        memcpy(&cc[IDX_DI_DATA2_BASE * 2], blob_null, sizeof(blob_null));
+        // Both pages, same reason as the preamble/guard entries above.
+        uint64_t *ccp[2] = { (uint64_t *)conv_color, (uint64_t *)conv_color_b };
+        for (int pg = 0; pg < 2; pg++) {
+            memcpy(&ccp[pg][IDX_DI_DATA_BASE * 2],  blob_null, sizeof(blob_null));
+            memcpy(&ccp[pg][IDX_DI_DATA2_BASE * 2], blob_null, sizeof(blob_null));
+        }
         hdmi_au_pos = 0;
         // Pre-fill the latency cushion with silent audio packets (the sample
         // ring is still zeroed — audio isn't enabled yet, so no concurrency):
