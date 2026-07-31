@@ -57,6 +57,7 @@ using namespace std;
 #include "FileInfo.h"
 #include "ui/OSDNewMenu.h"
 #include "ui/UiBrowser.h"
+#include "ui/UiDialog.h"
 
 #include "ff.h"
 
@@ -66,9 +67,6 @@ using namespace std;
 #include "RemoteFs.h"
 #include "Snapshot.h"
 #endif
-
-extern Font Font6x8;
-extern Font Font6x8Cyr;   // CP1251 Cyrillic face for the online-catalog browser
 
 // The index class + SORT_VERSION moved to SortedFiles.h, shared with the new
 // fullscreen browser (src/ui/UiBrowser.cpp) so both use the same /tmp .idx cache.
@@ -184,158 +182,38 @@ static bool rfd_progress(uint32_t done, uint32_t total) {
     return true;
 }
 
-// Shared windowed scroller over an SD index. Rows [0,nsynth) are the synthetic
-// labels in `synth` (e.g. "[Upload]", ".."); rows [nsynth..) are idx entries (a
-// leading DIR_MARKER byte = directory → shown with a "/" suffix). Only the
-// visible window is read from the index per redraw, so RAM stays bounded.
-// Returns the chosen absolute row index, or -1 on Esc. If `footer` is set it is
-// shown as a hotkey hint line at the bottom. If `delPressed`/`copyPressed` are
-// given, F8/Del and F5 return the current index with the respective flag set.
+// Row source for the picker below: uiPickListCb takes a plain callback, so the
+// list it walks lives in these statics for the duration of the call.
+static sorted_files*      s_rfd_idx;
+static const char* const* s_rfd_synth;
+static int                s_rfd_nsynth;
+
+static void rfd_rowCb(int i, char* out, size_t n) {
+    if (i < s_rfd_nsynth) { snprintf(out, n, "%s", s_rfd_synth[i]); return; }
+    const string rec = s_rfd_idx->get(i - s_rfd_nsynth);
+    if (!rec.empty() && (uint8_t)rec[0] == DIR_MARKER) snprintf(out, n, "%s/", rec.c_str() + 1);
+    else                                               snprintf(out, n, "%s", rec.c_str());
+}
+
+// Shared windowed picker over an SD index, in the new UI chrome. Rows
+// [0,nsynth) are the synthetic labels in `synth` (e.g. "[Select this folder]",
+// ".."); rows [nsynth..) are idx entries (a leading DIR_MARKER byte = directory
+// → shown with a "/" suffix). Only the visible window is read from the index
+// per redraw, so RAM stays bounded. Returns the chosen absolute row index, or
+// -1 on Esc.
 static int rfd_scroll(const string& title, sorted_files& idx,
-                      const char* const* synth, int nsynth,
-                      const char* footer = nullptr, bool* delPressed = nullptr,
-                      bool* copyPressed = nullptr, bool utf8 = false,
-                      bool* altPressed = nullptr, bool* refreshPressed = nullptr) {
-    if (delPressed)  *delPressed = false;
-    if (copyPressed) *copyPressed = false;
-    if (altPressed)  *altPressed = false;
-    if (refreshPressed) *refreshPressed = false;
-    const int cols_n = 36, MAXVIS = 16;
-    int total = nsynth + (int)idx.size();
-    int vis   = total < MAXVIS ? total : MAXVIS;
-    if (vis < 1) vis = 1;
-    int foot = footer ? 1 : 0;
-
-    int w = (cols_n + 2) * OSD_FONT_W + 2;
-    int h = (vis + 1 + foot) * OSD_FONT_H + 2;
-    int wx = OSD::scrAlignCenterX(w), wy = OSD::scrAlignCenterY(h);
-    int cursor = 0, top = 0;
-    int hscroll = 0, hdelay = 0, hstep = 0;  // horizontal marquee of the focused over-long row
-    VIDEO::SaveRect.save(wx, wy, w, h);
-
-    // Draw one visible row r (0..vis-1). The focused row, when its text overflows the
-    // window, is shifted left by `hscroll` (the idle-loop marquee advances it).
-    auto drawRow = [&](int r) {
-        int ab = top + r;
-        VIDEO::vga.setFont(utf8 ? Font6x8Cyr : Font6x8);   // marquee calls this outside redraw()
-        VIDEO::vga.setTextColor(zxColor(0, 1), ab == cursor ? zxColor(5, 1) : zxColor(7, 1));
-        VIDEO::vga.setCursor(wx + 1, wy + 1 + OSD_FONT_H + r * OSD_FONT_H);
-        string disp;
-        if (ab < nsynth)        disp = synth[ab];
-        else if (ab < total) {
-            string rec = idx.get(ab - nsynth);
-            if (!rec.empty() && (uint8_t)rec[0] == DIR_MARKER) disp = rec.substr(1) + "/";
-            else disp = rec;
-            if (utf8) disp = FileUtils::utf8ToCp1251(disp);   // Cyrillic names → CP1251 for the font
-        }
-        if (ab == cursor && (int)disp.size() > cols_n && hscroll > 0) {
-            int maxoff = (int)disp.size() - cols_n;
-            disp = disp.substr(hscroll > maxoff ? maxoff : hscroll);
-        }
-        if ((int)disp.size() > cols_n) disp = disp.substr(0, cols_n);
-        VIDEO::vga.print(" ");
-        VIDEO::vga.print(disp.c_str());
-        for (int i = (int)disp.size(); i < cols_n + 1; i++) VIDEO::vga.print(" ");
-    };
-
-    auto redraw = [&]() {
-        VIDEO::vga.setFont(utf8 ? Font6x8Cyr : Font6x8);
-        VIDEO::vga.rect(wx, wy, w, h, zxColor(0, 0));
-        VIDEO::vga.fillRect(wx + 1, wy + 1, w - 2, OSD_FONT_H, zxColor(0, 0));
-        VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(0, 0));
-        VIDEO::vga.setCursor(wx + 1 + OSD_FONT_W, wy + 1);
-        string t = utf8 ? FileUtils::utf8ToCp1251(title) : title;
-        if ((int)t.size() > cols_n) t = "..." + t.substr(t.size() - (cols_n - 3));
-        VIDEO::vga.print(t.c_str());
-        for (int r = 0; r < vis; r++) drawRow(r);
-        // Right-edge scrollbar when the list doesn't fit (track + proportional thumb).
-        if (total > vis) {
-            int sbx = wx + w - OSD_FONT_W - 1;
-            int sby = wy + 1 + OSD_FONT_H;
-            int sbh = OSD_FONT_H * vis;
-            VIDEO::vga.fillRect(sbx, sby, OSD_FONT_W, sbh, zxColor(7, 0));
-            int bar_h = sbh * vis / total; if (bar_h < 3) bar_h = 3;
-            int bar_y = (total > vis) ? (sbh - bar_h) * top / (total - vis) : 0;
-            VIDEO::vga.fillRect(sbx + 1, sby + bar_y, OSD_FONT_W - 2, bar_h, zxColor(0, 0));
-        }
-        // Footer hotkey hint line.
-        if (footer) {
-            int fy = wy + 1 + (vis + 1) * OSD_FONT_H;
-            VIDEO::vga.fillRect(wx + 1, fy, w - 2, OSD_FONT_H, zxColor(5, 1));
-            VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
-            VIDEO::vga.setCursor(wx + 1 + OSD_FONT_W, fy);
-            string fs = footer;
-            if ((int)fs.size() > cols_n) fs = fs.substr(0, cols_n);
-            VIDEO::vga.print(fs.c_str());
-        }
-    };
-
-    // Cached full length of the focused row's text (idx.get is an SD read, so we
-    // compute it only on cursor change — never per idle tick). For a dir entry the
-    // DIR_MARKER byte it carries offsets the "/" we append, so rec.size() == display.
-    auto focusLen = [&]() -> int {
-        if (cursor < nsynth)  return (int)strlen(synth[cursor]);
-        if (cursor >= total)  return 0;
-        string rec = idx.get(cursor - nsynth);
-        return (int)(utf8 ? FileUtils::utf8ToCp1251(rec).size() : rec.size());
-    };
-    int flen = focusLen();
-    redraw();
-
-    while (1) {
-        if (ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            fabgl::VirtualKeyItem k;
-            if (!ESPectrum::readKbd(&k) || !k.down) continue;
-            int oc = cursor;
-            if (is_up(k.vk))            cursor--;
-            else if (is_down(k.vk))     cursor++;
-            else if (k.vk == fabgl::VK_PAGEUP)   cursor -= vis;
-            else if (k.vk == fabgl::VK_PAGEDOWN) cursor += vis;
-            else if (is_home(k.vk))     cursor = 0;
-            else if (k.vk == fabgl::VK_END) cursor = total - 1;
-            else if (is_enter(k.vk))    {
-                // Alt+Enter on a catalog file = download to /tmp and launch (vs. plain
-                // Enter which picks an SD folder and just downloads). Physical Enter is
-                // re-synthesized as VK_MENU_ENTER (main.cpp), which drops the item's
-                // .LALT flag — so query live key state, same as OSD::do_OSD does.
-                auto* kb = ESPectrum::PS2Controller.keyboard();
-                if (altPressed && kb &&
-                    (kb->isVKDown(fabgl::VK_LALT) || kb->isVKDown(fabgl::VK_RALT)))
-                    *altPressed = true;
-                OSD::click(); VIDEO::SaveRect.restore_last(); return cursor;
-            }
-            else if (is_back(k.vk))     { OSD::click(); VIDEO::SaveRect.restore_last(); return -1; }
-            else if (delPressed && (k.vk == fabgl::VK_F8 || k.vk == fabgl::VK_DELETE)) {
-                *delPressed = true; OSD::click(); VIDEO::SaveRect.restore_last(); return cursor;
-            }
-            else if (copyPressed && k.vk == fabgl::VK_F5) {
-                *copyPressed = true; OSD::click(); VIDEO::SaveRect.restore_last(); return cursor;
-            }
-            else if (refreshPressed && k.vk == fabgl::VK_F2) {
-                *refreshPressed = true; OSD::click(); VIDEO::SaveRect.restore_last(); return cursor;
-            }
-            else continue;
-            if (cursor < 0) cursor = 0;
-            if (cursor > total - 1) cursor = total - 1;
-            if (cursor < top) top = cursor;
-            if (cursor >= top + vis) top = cursor - vis + 1;
-            if (top > total - vis) top = total - vis;
-            if (top < 0) top = 0;
-            if (cursor != oc) { hscroll = hdelay = hstep = 0; flen = focusLen(); redraw(); OSD::click(); }
-        } else if (flen > cols_n) {
-            // Idle: marquee-scroll the focused over-long row — ~1 s pause, then shift
-            // one char every ~250 ms, wrapping back to the start (file-browser style).
-            if (hdelay < 200) hdelay++;
-            else if (++hstep >= 50) {
-                hstep = 0;
-                int over = flen - cols_n;
-                hscroll = (hscroll < over) ? hscroll + 1 : 0;
-                if (hscroll == 0) hdelay = 0;   // re-pause when wrapped to the start
-                drawRow(cursor - top);
-            }
-        }
-        sleep_ms(5);
-    }
+                      const char* const* synth, int nsynth, int initial = 0) {
+    const int total = nsynth + (int)idx.size();
+    if (total <= 0) return -1;
+    s_rfd_idx = &idx; s_rfd_synth = synth; s_rfd_nsynth = nsynth;
+    // Fixed geometry: the picker is reopened for every folder we descend into,
+    // and a box sized to the row count would leave the taller previous one
+    // showing around a shorter list (uiPickListCb saves no background). Width is
+    // constant already — the title is clipped to the same WCH the rows use.
+    constexpr int WCH = 36, VIS = 16;
+    string t = title;
+    if ((int)t.size() > WCH) t = "..." + t.substr(t.size() - (WCH - 3));
+    return nm::uiPickListCb(t.c_str(), total, rfd_rowCb, initial, WCH, nullptr, VIS);
 }
 
 // Volume helpers for the local pickers. When both the SD card and a USB stick

@@ -64,9 +64,13 @@ int uiPickList(const char* title, const char* const* items, int n, int initial =
 // formats row `idx` into `out`. `wchars` fixes the list width in characters.
 // `fkey` (optional) enables per-row verbs: F8/Delete return the selected index
 // with *fkey = 8 (the caller acts and may reopen); Enter returns it with 0.
+// `fixedRows` (optional) keeps the box that many rows tall whatever `n` is —
+// for a picker that gets reopened with a different list each time (the download
+// folder chooser), so the box never shrinks and leaves the previous one showing
+// around it. Rows past `n` are drawn empty. Clamped to what the screen fits.
 typedef void (*UiRowCb)(int idx, char* out, size_t outsz);
 int uiPickListCb(const char* title, int n, UiRowCb cb, int initial = 0, int wchars = 36,
-                 uint8_t* fkey = nullptr);
+                 uint8_t* fkey = nullptr, int fixedRows = 0);
 
 // Boxed one-line prompt (title + edit field). Returns true on Enter with
 // non-empty text (`allowEmpty` accepts an empty Enter too — optional form
