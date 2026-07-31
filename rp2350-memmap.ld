@@ -240,8 +240,16 @@ SECTIONS
      * (~0.7 KB async, any moment WiFi is up) pushed to the guard (hw-caught
      * 2026-07-26: double fault, MSP at SCRATCH_Y bottom, F5 browser open).
      * The MSPLIM guard and the sigbus stackOvf report follow these symbols.
-     * Costs 8 KB of heap ceiling; SCRATCH_Y is now free for future hot code. */
-    __StackTop = ORIGIN(RAM) + LENGTH(RAM);
+     * Costs 8 KB of heap ceiling; SCRATCH_Y is now free for future hot code.
+     *
+     * ...minus __mos_mailbox: the Murmulator launcher (murmulator-os2) keeps its boot
+     * handshake in the LAST 8 BYTES of main SRAM — 0x2007FFF8 "enter to target" magic
+     * and 0x2007FFFC "enter to UI" magic, read by its before_main() constructor after
+     * the watchdog reset that hands control to an installed firmware. Its own layout
+     * never touches them (stack in SCRATCH_Y, heap ceiling below), and neither did we
+     * until the stack moved here — our very first push would land on the mailbox. */
+    __mos_mailbox = 32;   /* 8 bytes used, 32 reserved for alignment + headroom */
+    __StackTop = ORIGIN(RAM) + LENGTH(RAM) - __mos_mailbox;
     __StackBottom = __StackTop - SIZEOF(.stack_dummy);
     __StackLimit = __StackBottom;
     __HeapLimit = __StackLimit;
