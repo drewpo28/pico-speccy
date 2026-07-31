@@ -16,7 +16,7 @@
 #define TXT_MACHINE         "Machine"
 #define TXT_SNAP_SAVE       "Save snapshot"
 #define TXT_SNAP_LOAD       "Load snapshot"
-#define TXT_HW              "Additional hardware"
+#define TXT_HW              "Devices"
 #define TXT_VIDEO           "Video"
 #define TXT_AUDIO           "Audio"
 #define TXT_JOYSTICK        "Joystick"
