@@ -88,7 +88,7 @@ uint16_t Config::joydef[14] = {
 uint8_t  Config::AluTiming = 0;
 uint8_t  Config::ayConfig = 0;
 uint8_t  Config::turbosound = 3; // BOTH
-uint8_t  Config::covox = 0; // NONE
+uint8_t  Config::covox = 1; // #FB
 uint8_t  Config::soundrive = 2; // AUTO: on for Profi, off elsewhere
 
 bool Config::soundriveEnabled() {
@@ -104,10 +104,10 @@ uint8_t  Config::kempstonPort = 0x1F;
 uint8_t  Config::throtling = DEFAULT_THROTTLING;
 bool     Config::CursorAsJoy = true;
 bool     Config::betadisk = true;
-bool     Config::trdosFastMode = false;
+bool     Config::trdosFastMode = true;
 bool     Config::trdosAutoBoot = true;
-uint8_t  Config::trdosSoundLed = 0; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
-uint8_t  Config::trdosBios = 2; // Default: 5.05D
+uint8_t  Config::trdosSoundLed = 1; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+uint8_t  Config::trdosBios = 1; // Default: 5.04T
 uint8_t  Config::alfCartBanks = 0; // 0 = built-in Elf-1; >0 = loaded cart size in 16K banks
 string   Config::alfCartPath = ""; // pending cart to flash into the shared region at boot
 bool     Config::driveWP[4] = { true, true, true, true };
@@ -117,7 +117,7 @@ uint8_t  Config::mb02 = 0;
 bool     Config::mb02WP[4] = { true, true, true, true };
 string   Config::mb02DiskFile[4] = { "", "", "", "" };
 uint8_t  Config::mb02SoundLed = 0; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
-bool     Config::zcontroller = false;
+bool     Config::zcontroller = true;
 uint8_t  Config::ide_scheme = 0;
 string   Config::ide_image[2] = {"", ""};
 uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
@@ -151,11 +151,11 @@ uint8_t  Config::audio_boost = 0;
 uint8_t  Config::hdmi_video_mode = Config::VM_640x480_60;
 uint8_t  Config::vga_video_mode = Config::VM_640x480_60;
 bool     Config::v_sync_enabled = false;
-bool     Config::gigascreen_enabled = false;
-uint8_t  Config::gigascreen_onoff = 0;
-bool     Config::ulaplus = false;
+bool     Config::gigascreen_enabled = true;
+uint8_t  Config::gigascreen_onoff = 2;
+bool     Config::ulaplus = true;
 bool     Config::hdmi_dither = false;
-bool     Config::timex_video = false;
+bool     Config::timex_video = true;
 uint8_t  Config::dma_mode = 0;
 bool     Config::mode16col_onoff = false;
 uint8_t  Config::palette = 0;
