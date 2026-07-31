@@ -410,7 +410,7 @@ void uiBusy(const char* msg) {
 // ── modal list picker ──────────────────────────────────────────────────────────
 
 int uiPickListCb(const char* title, int n, UiRowCb cb, int initial, int wchars,
-                 uint8_t* fkey) {
+                 uint8_t* fkey, int fixedRows) {
     if (n <= 0) return -1;
     if (fkey) *fkey = 0;
     gfxResumePalette();
@@ -420,9 +420,10 @@ int uiPickListCb(const char* title, int n, UiRowCb cb, int initial, int wchars,
     int tw = wchars * glyphW();
     { const int t2 = textWidth(title); if (t2 > tw) tw = t2; }
 
-    int rows = n;
+    int rows = fixedRows > 0 ? fixedRows : n;
     const int maxRows = (Sf.h - 6 * lh) / lh;
     if (rows > maxRows) rows = maxRows;
+    if (rows < 1) rows = 1;
 
     Box b;
     b.w = tw + 3 * pad;
