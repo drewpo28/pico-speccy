@@ -549,8 +549,12 @@ void graphics_set_flashmode(const bool flash_line, const bool flash_frame) {
 // CRT aperture grille: attenuation of the odd-x column, as a 0..256 multiplier on
 // each channel's code value. Level 1 is exactly 2/3 — 255→170, which lands on the
 // 4-level VGA DAC grid, so bright primaries keep a solid (undithered) grille
-// column. Levels 2 and 3 do not quantise cleanly and will checkerboard. Shared
-// with the HDMI backend (hdmi_crt_grille_num) so both look the same.
+// column. Levels 2 and 3 do not quantise cleanly and will checkerboard.
+//
+// Same nominal factors as the HDMI backend, but VGA uses them directly: HDMI has
+// to snap each value to a TMDS-DC-balanced neighbour (hdmi_crt_dim_lut), so the
+// two backends' grille columns differ by a few code units. No TMDS here, and the
+// exact 2/3 of level 1 is what makes 255 land on the DAC grid.
 static const uint16_t vga_crt_grille_num[4] = { 256, 171, 148, 128 };
 static uint8_t vga_crt_level = 0;
 
@@ -562,11 +566,8 @@ static inline uint32_t vga_crt_dim(uint32_t c) {
          |   ((( c        & 0xff) * n) >> 8);
 }
 
-// Palette slots that keep both columns identical: the new UI's own 16 colours, so
-// menu text stays crisp instead of striped. Mirrors hdmi_crt_grille_exempt().
-static inline bool vga_crt_grille_exempt(uint8_t i) {
-    return i >= 152 && i < 168;    // UI_PAL_BASE .. +C_COUNT, see src/ui/UiGfx.cpp
-}
+// The grille covers every colour slot, the OSD palette included — see the note in
+// hdmi.c: exempting the OSD meant the fullscreen menu showed no preview at all.
 
 // Bayer 2×2 ordered dithering: /21 → 13 levels/channel → 2197 perceived colors
 // Threshold matrix: [0 2]  Fill order per sub-level: (0,0), (1,1), (0,1), (1,0)
@@ -629,7 +630,7 @@ static uint32_t dim_rgb888(uint32_t color888) {
 static void vga_build_scanline_entry(uint8_t i) {
     if (!vga_color888) return;                 // VGA tables not allocated (HDMI active)
     uint32_t dim = dim_rgb888(vga_color888[i]);
-    uint32_t dim_r = vga_crt_grille_exempt(i) ? dim : vga_crt_dim(dim);
+    uint32_t dim_r = vga_crt_dim(dim);
     if (vga_color_solid[i]) {
         // Same rule as vga_set_palette_entry_solid(): the even column of a solid
         // colour stays solid, only the grille column may dither.
@@ -653,8 +654,7 @@ static void vga_build_scanline_entry(uint8_t i) {
 // Update a single VGA palette LUT entry with Bayer dithering
 void vga_set_palette_entry(uint8_t i, uint32_t color888) {
     if (!vga_buffers_ready()) return;          // HDMI active → VGA tables unused
-    vga_rgb888_pair(color888,
-                    vga_crt_grille_exempt(i) ? color888 : vga_crt_dim(color888),
+    vga_rgb888_pair(color888, vga_crt_dim(color888),
                     &palette_vga16[0][i], &palette_vga16[1][i]);
     vga_color888[i] = color888;
     vga_color_solid[i] = false;
@@ -673,7 +673,7 @@ void vga_set_palette_entry_solid(uint8_t i, uint32_t color888) {
     uint16_t solid = ((vga6 << 8) | vga6) & 0x3f3f | palette16_mask;
     palette_vga16[0][i] = solid;
     palette_vga16[1][i] = solid;
-    if (vga_crt_level && !vga_crt_grille_exempt(i)) {
+    if (vga_crt_level) {
         // Keep the even column solid (that is the whole point of this entry point —
         // the 16 ZX colours must not shimmer) and dither only the grille column,
         // so intermediate attenuations survive the 4-level DAC. At grille level 1
@@ -695,7 +695,7 @@ void vga_set_palette_entry_solid(uint8_t i, uint32_t color888) {
 // high byte = VGA pixel for p1 (right). PIO right-shifts LSB first → correct order.
 // Two tables (even/odd scan lines) implement Bayer 2×2 checkerboard dithering:
 //   p0 is always at even screen x, p1 at odd screen x.
-//   vga_rgb888_dither() gives: even_pair=low(even_x,even_y)/high(odd_x,even_y),
+//   vga_rgb888_pair() gives: even_pair=low(even_x,even_y)/high(odd_x,even_y),
 //                               odd_pair =low(even_x,odd_y) /high(odd_x,odd_y).
 void vga_set_profi_ds80_mode(bool active,
                               const uint32_t *palette16_rgb888,

@@ -1000,14 +1000,24 @@ void hdmi_poll_reinit() {
 //    would leave R and G at ±16 for e.g. bright-red (+8,-8,-8) next to
 //    bright-green (-8,+8,-8), and drops sync.
 //
-// Residual balance of the different-colour case, measured over the encoder above:
-// worst |disp(left) + disp(right')| is 8, and 8 is not a property of the rule —
+// Residual balance of the different-colour case is NOT free: worst
+// |disp(left) + disp(right')| is 8, and 8 is not a property of the rule —
 // minimising over {R, R^0xFF, R^0x2FF, R^0x200} gives the same 8, because when the
 // right character is already DC-balanced no complement can cancel an unbalanced
-// left one. For scale: the shipping DS80 mode hits |8| in 12 of its 64 real
-// palette-pair combinations, whereas the aperture grille hits it in 1-2 of 256
-// channel values (255 at grille levels 1-2). So this stays inside an envelope
-// that is already hw-confirmed, rather than opening a new one.
+// left one. hw 2026-07-31: an aperture grille built on a plain multiplier hit that
+// case at channel value 255 (grille levels 1-2) and DROPPED SYNC on an HDMI
+// monitor while a capture card — DVI-lenient — showed it fine. The caller must
+// therefore choose right888 from values that balance; see hdmi_crt_dim_lut.
+static int hdmi_tmds_disp(uint v) { return (int)__builtin_popcount(v & 0x3FF) * 2 - 10; }
+
+// Residual of the pair (l, r) under the exact complement rule used below. Callers
+// use this to pick a right-hand value that balances instead of hoping one does.
+static int hdmi_pair_residual(uint8_t l, uint8_t r) {
+    const uint L = tmds_encoder(l), R = tmds_encoder(r);
+    const int dL = hdmi_tmds_disp(L);
+    return dL + hdmi_tmds_disp(R ^ ((dL * hdmi_tmds_disp(R) >= 0) ? 0xFF : 0));
+}
+
 static void hdmi_write_pair(uint64_t *cc64, uint8_t slot, uint32_t left888, uint32_t right888) {
     const uint R_l = tmds_encoder((left888 >> 16) & 0xff);
     const uint G_l = tmds_encoder((left888 >>  8) & 0xff);
@@ -1022,36 +1032,74 @@ static void hdmi_write_pair(uint64_t *cc64, uint8_t slot, uint32_t left888, uint
     const uint R_r = tmds_encoder((right888 >> 16) & 0xff);
     const uint G_r = tmds_encoder((right888 >>  8) & 0xff);
     const uint B_r = tmds_encoder( right888        & 0xff);
-    #define HDMI_TMDS_DISP(v) ((int)__builtin_popcount((v) & 0x3FF) * 2 - 10)
     cc64[slot * 2 + 1] = get_ser_diff_data(
-        R_r ^ ((HDMI_TMDS_DISP(R_l) * HDMI_TMDS_DISP(R_r) >= 0) ? 0xFF : 0),
-        G_r ^ ((HDMI_TMDS_DISP(G_l) * HDMI_TMDS_DISP(G_r) >= 0) ? 0xFF : 0),
-        B_r ^ ((HDMI_TMDS_DISP(B_l) * HDMI_TMDS_DISP(B_r) >= 0) ? 0xFF : 0));
-    #undef HDMI_TMDS_DISP
+        R_r ^ ((hdmi_tmds_disp(R_l) * hdmi_tmds_disp(R_r) >= 0) ? 0xFF : 0),
+        G_r ^ ((hdmi_tmds_disp(G_l) * hdmi_tmds_disp(G_r) >= 0) ? 0xFF : 0),
+        B_r ^ ((hdmi_tmds_disp(B_l) * hdmi_tmds_disp(B_r) >= 0) ? 0xFF : 0));
 }
 
 // CRT aperture grille. Each palette index already owns two output pixels; dimming
 // the second one gives a period-2 vertical mask for free — no ISR cycles, no new
-// palette slots, no new memory. Factors are code-value fractions of 256 (not
-// linear-light): level 1 is exactly 2/3, the one value that also lands on VGA's
-// 4-level DAC grid, so both backends can share the constants.
+// palette slots. Factors are code-value fractions of 256 (not linear-light).
 static const uint16_t hdmi_crt_grille_num[4] = { 256, 171, 148, 128 };
 static uint8_t hdmi_crt_level = 0;
 
-static inline uint32_t hdmi_crt_dim(uint32_t c) {
-    if (!hdmi_crt_level) return c;
-    const uint32_t n = hdmi_crt_grille_num[hdmi_crt_level <= 3 ? hdmi_crt_level : 0];
-    return (((((c >> 16) & 0xff) * n) >> 8) << 16)
-         | (((((c >>  8) & 0xff) * n) >> 8) <<  8)
-         |   ((( c        & 0xff) * n) >> 8);
+// Per-channel dimmed value, DC-BALANCED BY CONSTRUCTION rather than by luck.
+//
+// hw 2026-07-31: a plain (v * num) >> 8 multiplier dropped sync on an HDMI monitor
+// (a capture card, being DVI-lenient, showed it fine) because some ideal values —
+// notably 255 at grille levels 1-2 — leave the pair at |residual| 8, which drifts
+// the running disparity 4x faster than anything that already ships. So instead of
+// taking the ideal value, take the nearest value whose pair residual is within ±2,
+// the same bound the identical-colour twin has by construction.
+//
+// Measured: such a value always exists within 12 code units of the ideal (≈4.5%
+// brightness, invisible on a 1-pixel mask column) for every one of the 256 values
+// at every level. 256 B of BSS, rebuilt only on a level change.
+//
+// VGA does not need this and keeps the plain multiplier — there is no TMDS there,
+// and level 1 = exactly 2/3 is what makes 255 land on its 4-level DAC grid. The two
+// backends therefore differ by a few code units on the grille column.
+#define HDMI_CRT_DIM_SEARCH 16
+static uint8_t hdmi_crt_dim_lut[256];
+static uint8_t hdmi_crt_dim_lut_level = 0xFF;
+
+static void hdmi_build_crt_dim_lut(uint8_t level) {
+    if (hdmi_crt_dim_lut_level == level) return;
+    hdmi_crt_dim_lut_level = level;
+    const uint32_t n = hdmi_crt_grille_num[level <= 3 ? level : 0];
+    for (int v = 0; v < 256; v++) {
+        const int t = (int)(((uint32_t)v * n) >> 8);
+        int r = hdmi_pair_residual((uint8_t)v, (uint8_t)t);
+        int best_d = t, best_res = r < 0 ? -r : r;
+        for (int rad = 1; rad <= HDMI_CRT_DIM_SEARCH && best_res > 2; rad++) {
+            for (int s = -1; s <= 1; s += 2) {
+                const int d = t + s * rad;
+                if (d < 0 || d > 255) continue;
+                r = hdmi_pair_residual((uint8_t)v, (uint8_t)d);
+                if (r < 0) r = -r;
+                if (r < best_res) { best_res = r; best_d = d; }
+                if (best_res <= 2) break;
+            }
+        }
+        hdmi_crt_dim_lut[v] = (uint8_t)best_d;
+    }
 }
 
-// Slots that must keep both halves identical: the new UI's own 16 colours, so
-// menu text stays crisp and legible instead of striped. Sync/Data-Island/border
-// slots are already filtered out before this is reached.
-static inline bool hdmi_crt_grille_exempt(uint8_t i) {
-    return i >= 152 && i < 168;    // UI_PAL_BASE .. +C_COUNT, see src/ui/UiGfx.cpp
+static inline uint32_t hdmi_crt_dim(uint32_t c) {
+    if (!hdmi_crt_level) return c;
+    return ((uint32_t)hdmi_crt_dim_lut[(c >> 16) & 0xff] << 16)
+         | ((uint32_t)hdmi_crt_dim_lut[(c >>  8) & 0xff] <<  8)
+         |  (uint32_t)hdmi_crt_dim_lut[ c        & 0xff];
 }
+
+// The grille applies to EVERY colour slot, the OSD's own palette (152..167)
+// included. It was exempted at first so menu text would stay unstriped, but a
+// display-level mask that skips part of the screen is not one: with the OSD
+// exempt, selecting a level in the fullscreen menu showed no change at all until
+// the menu closed, while Scanlines — which dims physical lines — previewed
+// immediately. Same reason a real CRT's mask covers the whole tube.
+// Sync/Data-Island/border slots are structural and are filtered out separately.
 
 // True when index i owns a writable conv_color pair: sync/porch/scanline slots and
 // the Data Island ranges are structural, not colours.
@@ -1065,8 +1113,7 @@ static inline bool hdmi_palette_slot_writable(uint8_t i) {
 
 // Write one palette index's TMDS pair, applying the aperture grille.
 static inline void hdmi_emit_slot(uint8_t i, uint32_t c) {
-    hdmi_write_pair((uint64_t *)conv_color, i, c,
-                    hdmi_crt_grille_exempt(i) ? c : hdmi_crt_dim(c));
+    hdmi_write_pair((uint64_t *)conv_color, i, c, hdmi_crt_dim(c));
 }
 
 void graphics_set_palette(uint8_t i, uint32_t color888) {
@@ -1284,6 +1331,7 @@ void hdmi_set_scanlines(uint8_t level) {
 // re-emits it from blanking, where writing conv_color is safe.
 void hdmi_set_crt(uint8_t level) {
     if (level > 3) level = 0;
+    hdmi_build_crt_dim_lut(level);      // must precede any hdmi_crt_dim() use
     hdmi_crt_level = level;
     if (!conv_color || profi_ds80_active) return;
     for (int i = 0; i < 256; i++)
