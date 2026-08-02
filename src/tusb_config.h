@@ -34,7 +34,17 @@
 // Board Specific Configuration
 //--------------------------------------------------------------------+
 
-#if CFG_TUSB_MCU == OPT_MCU_RP2040
+#if defined(ZERO2_PIO_USB_HOST)
+// PICOSPECCY_ZERO2_PIO_USB_HOST_V1: BOTH Type-C connectors are USB hosts. rhport 0 is
+// the native RP2350 controller (first connector), rhport 1 is Pico-PIO-USB on GP28/GP29
+// via PIO2 (second connector J2 — hcd_pio_usb.c maps root hub N to PIO root N-1, so its
+// port number is fixed at 1). CFG_TUH_RPI_PIO_USB alone would compile the native driver
+// away; src/usb_hcd_router.c plus the two wrapper TUs keep both drivers in the image and
+// dispatch hcd_* by rhport, and usbh.c is patched to keep more than one controller
+// active. BOARD_TUH_RHPORT stays 0 — main.cpp initialises both ports explicitly.
+#define CFG_TUH_RPI_PIO_USB   1
+#define BOARD_TUH_RHPORT      0
+#elif CFG_TUSB_MCU == OPT_MCU_RP2040
 // change to 1 if using pico-pio-usb as host controller for raspberry rp2040
 #define CFG_TUH_RPI_PIO_USB   0
 #define BOARD_TUH_RHPORT      CFG_TUH_RPI_PIO_USB
@@ -69,6 +79,17 @@
 
 // Enable Host stack
 #define CFG_TUH_ENABLED       1
+
+// Host event queue. The default 16 is not enough here: hcd_event_* is called from IRQ
+// context (the native controller's USBCTRL_IRQ and Pico-PIO-USB's 1 ms SOF timer) while
+// tuh_task() only runs from the main loop, which this firmware can starve for many
+// milliseconds (SD/flash writes, a blocking UART printf, the OSD). On overflow
+// queue_event() only does TU_ASSERT — and our TU_ASSERT is a counting no-op
+// (CFG_TUSB_DEBUG_BREAKPOINT below), so the event is DROPPED silently. Losing one
+// xfer-complete event wedges that endpoint forever: TinyUSB keeps it "busy" while the
+// HCD has already finished, so nothing re-arms it (hw 2026-07-31: keyboard behind a hub
+// on the PIO port died with TinyUSB busy + PIO has_transfer=0, failed_count=3).
+#define CFG_TUH_TASK_QUEUE_SZ 64
 
 // Default is max speed that hardware controller could support with on-chip PHY
 #define CFG_TUH_MAX_SPEED     BOARD_TUH_MAX_SPEED
@@ -148,7 +169,13 @@
 #define CFG_TUH_VENDOR              0
 
 // max device support (excluding hub device)
+// Two host buses on ZERO2 (native + PIO), so the budget must cover both at once —
+// e.g. a keyboard behind a hub on one connector and a flash stick on the other.
+#if defined(ZERO2_PIO_USB_HOST)
+#define CFG_TUH_DEVICE_MAX          8 // 2 buses: hubs + keyboard + mouse + pads + MSC
+#else
 #define CFG_TUH_DEVICE_MAX          6 // hub + keyboard + mouse + 2 gamepads + MSC stick
+#endif
 
 //------------- HID -------------//
 #define CFG_TUH_HID_EPIN_BUFSIZE    64

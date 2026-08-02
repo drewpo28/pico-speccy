@@ -25,6 +25,7 @@ option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
 option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
 option(PICO_DV "Pimoroni Pico DV Demo Base + Pi Pico 2" OFF)
 option(ZERO2 "Waveshare RP2350-PiZero" OFF)
+option(ZERO2_PIO_USB "ZERO2: add a USB host on the second Type-C (J2, PIO-USB GP28/GP29)" ON)
 option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
@@ -183,6 +184,17 @@ set(PICO_TINYUSB_PATH ${CMAKE_CURRENT_LIST_DIR}/external/tinyusb)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# PICOSPECCY_ZERO2_PIO_USB_HOST_V1: Pico-PIO-USB (cloned by the overlay's prepare script, pinned commit).
+if(ZERO2 AND ZERO2_PIO_USB)
+    set(PICO_PIO_USB_DIR "${CMAKE_CURRENT_LIST_DIR}/external/Pico-PIO-USB")
+    if(NOT EXISTS "${PICO_PIO_USB_DIR}/CMakeLists.txt")
+        message(FATAL_ERROR
+            "Pico-PIO-USB dependency is missing at ${PICO_PIO_USB_DIR}. "
+            "Run the supplied prepare/build script.")
+    endif()
+    add_subdirectory("${PICO_PIO_USB_DIR}" "${CMAKE_BINARY_DIR}/pico-pio-usb")
+endif()
+
 add_subdirectory(drivers/audio)
 add_subdirectory(drivers/picomp3lib)
 add_subdirectory(drivers/nespad)
@@ -220,6 +232,24 @@ endforeach ()
 message(STATUS "")
 
 add_executable(${PROJECT_NAME} ${SRC})
+
+# PICOSPECCY_ZERO2_PIO_USB_HOST_V1: swap TinyUSB's native RP2 HCD for the PIO one. Root hub 1 == the PIO port
+# (hcd_pio_usb.c maps rhport N -> PIO root N-1); the native controller has no HCD in
+# this build at all. PIO2 is the only free PIO on ZERO2 (pio0 = video, pio1 = PS/2
+# keyboard + I2S/WAV) and Pico-PIO-USB needs a whole one (3 SMs, 32 instructions)
+# plus one DMA channel, which main.cpp picks at runtime.
+if(ZERO2 AND ZERO2_PIO_USB)
+    # Both HCDs live in the image: src/usb_hcd_native_wrap.c and src/usb_hcd_pio_wrap.c
+    # (picked up by the src/*.c glob) compile hcd_rp2040.c / hcd_pio_usb.c with their
+    # hcd_* entry points renamed, and src/usb_hcd_router.c dispatches by rhport. Do NOT
+    # add hcd_pio_usb.c here as well — the wrapper is its only translation unit.
+    target_link_libraries(${PROJECT_NAME} PRIVATE pico_pio_usb)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE
+        ZERO2_PIO_USB_HOST=1
+        ZERO2_PIO_USB_PIO_NUM=2
+        PICO_DEFAULT_PIO_USB_DP_PIN=28   # D- is GP29 (PIO_USB_PINOUT_DPDM)
+    )
+endif()
 
 # КРИТИЧНАЯ ОПТИМИЗАЦИЯ: принудительно -O3 для горячего кода независимо от CMAKE_BUILD_TYPE
 # Это важно для MinSizeRel (где по умолчанию -Os), чтобы не терять FPS

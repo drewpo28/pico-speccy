@@ -234,7 +234,14 @@ typedef struct {
 #endif
 } usbh_data_t;
 
-static uint8_t _usbh_controller_id = TUSB_INDEX_INVALID_8;
+// PICO-SPEC PATCH: upstream tracks a SINGLE active host controller, so calling
+// tuh_init() for a second rhport silently deactivated the first — every
+// tuh_rhport_is_active() check (the bus reset during enumeration, tuh_inited())
+// then failed for it. Everything else in 0.21 is already multi-bus (each device
+// carries bus_info.rhport), so a bitmask of active controllers is all that is needed
+// to run the native RP2350 controller and the PIO-USB one at the same time. See
+// src/usb_hcd_router.c for the hcd_* dispatch that lets both drivers coexist.
+static uint32_t _usbh_active_mask = 0;   // bit N = rhport N initialised
 static usbh_data_t _usbh_data;
 
 typedef struct {
@@ -482,7 +489,7 @@ tusb_speed_t tuh_speed_get(uint8_t daddr) {
 }
 
 bool tuh_rhport_is_active(uint8_t rhport) {
-  return _usbh_controller_id == rhport;
+  return (_usbh_active_mask & (1u << rhport)) != 0;   // PICO-SPEC PATCH
 }
 
 bool tuh_rhport_reset_bus(uint8_t rhport, bool active) {
@@ -509,7 +516,7 @@ static void clear_device(usbh_device_t* dev) {
 }
 
 bool tuh_inited(void) {
-  return _usbh_controller_id != TUSB_INDEX_INVALID_8;
+  return _usbh_active_mask != 0;                      // PICO-SPEC PATCH
 }
 
 bool tuh_rhport_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
@@ -571,7 +578,7 @@ bool tuh_rhport_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
     tu_memclr(_usbh_devices, sizeof(_usbh_devices));
     tu_memclr(&_usbh_data, sizeof(_usbh_data));
 
-    _usbh_controller_id = TUSB_INDEX_INVALID_8;
+    _usbh_active_mask = 0;                            // PICO-SPEC PATCH
     _usbh_data.enumerating_daddr = TUSB_INDEX_INVALID_8;
 
     for (uint8_t i = 0; i < TOTAL_DEVICES; i++) {
@@ -589,7 +596,7 @@ bool tuh_rhport_init(uint8_t rhport, const tusb_rhport_init_t* rh_init) {
   }
 
   // Init host controller
-  _usbh_controller_id = rhport;
+  _usbh_active_mask |= (1u << rhport);                // PICO-SPEC PATCH
   TU_ASSERT(hcd_init(rhport, rh_init));
   hcd_int_enable(rhport);
 
@@ -604,7 +611,7 @@ bool tuh_deinit(uint8_t rhport) {
   // deinit host controller
   hcd_int_disable(rhport);
   TU_ASSERT(hcd_deinit(rhport));
-  _usbh_controller_id = TUSB_INDEX_INVALID_8;
+  _usbh_active_mask &= ~(1u << rhport);               // PICO-SPEC PATCH
 
   // remove all devices on this rhport (hub_addr = 0, hub_port = 0)
   remove_device_tree(rhport, 0, 0);
@@ -1237,11 +1244,16 @@ uint8_t *usbh_get_enum_buf(void) {
 }
 
 void usbh_int_set(bool enabled) {
-  // TODO all host controller if multiple are used since they shared the same event queue
-  if (enabled) {
-    hcd_int_enable(_usbh_controller_id);
-  } else {
-    hcd_int_disable(_usbh_controller_id);
+  // PICO-SPEC PATCH (upstream TODO): every active controller feeds the same event
+  // queue, so masking only one of them would let the other push events while the
+  // stack believes interrupts are off.
+  for (uint8_t rhport = 0; rhport < 32; rhport++) {
+    if (!(_usbh_active_mask & (1u << rhport))) continue;
+    if (enabled) {
+      hcd_int_enable(rhport);
+    } else {
+      hcd_int_disable(rhport);
+    }
   }
 }
 

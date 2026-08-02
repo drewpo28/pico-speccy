@@ -44,6 +44,19 @@
 #include "Debug.h"
 #ifdef KBDUSB
     #include "ps2kbd_mrmltr.h"
+    #if defined(ZERO2_PIO_USB_HOST)
+        // PICOSPECCY_ZERO2_PIO_USB_HOST_V1: host on the second Type-C (J2), D+=GP28 / D-=GP29.
+        #include "hardware/dma.h"
+        #include "pio_usb.h"
+        #include "usb_hcd_router.h"   // rhport constants + the two drivers' entry points
+        // Both PICO-SPEC PATCH additions in external/Pico-PIO-USB (pio_usb_host.c /
+        // pio_usb.c). Declared here rather than via pio_usb_ll.h, which is not C++-clean.
+        extern "C" void pio_usb_host_reclock(void);
+        extern "C" volatile uint32_t pio_usb_tx_timeouts;
+        // PICO-SPEC PATCH counter in external/Pico-PIO-USB/src/pio_usb_host.c: extra
+        // bulk transactions squeezed into the 1 ms frames (the ~64 KB/s lift).
+        extern "C" uint32_t pio_usb_bulk_extra_xacts;
+    #endif
 #else
     #include "ps2.h"
 #endif
@@ -96,6 +109,11 @@ uint8_t nes_pad2_for_alf(void) {
 
 #include "fabutils.h"
 void repeat_handler(void);
+#ifdef KBDUSB
+// hid_app.cpp: re-arms HID IN endpoints that lost their arm (a refused
+// tuh_hid_receive_report() otherwise kills the device until re-plug).
+extern "C" void hid_app_rearm_tick(void);
+#endif
 void back2joy2(fabgl::VirtualKey virtualKey, bool down);
 extern "C" int get_framebuffer_width();
 extern "C" int get_framebuffer_height();
@@ -868,6 +886,38 @@ void repeat_me_for_input() {
         if (tickKbdRep2 - tickKbdRep1 > 150000) { // repeat each 150 ms
             repeat_handler();
             uptime_refresh();
+#ifdef KBDUSB
+            // Recover HID interfaces whose IN endpoint lost its arm (see hid_app.cpp):
+            // without this a single refused tuh_hid_receive_report() kills the keyboard
+            // until re-plug — reproducible by loading a file from a USB stick.
+            hid_app_rearm_tick();
+#endif
+#if defined(KBDUSB) && defined(ZERO2_PIO_USB_HOST)
+            // PICOSPECCY_ZERO2_PIO_USB_HOST_V1: a PIO-USB TX state machine that never completes used to spin
+            // inside the 1 ms SOF IRQ forever (whole-firmware freeze); the patched
+            // library bails out after 500 us and counts it here. Non-zero = the bus
+            // is glitching (bit-rate/jitter, cabling, hub) even though it recovers.
+            {
+                static uint32_t prev_tx_timeouts = 0;
+                const uint32_t now_to = pio_usb_tx_timeouts;
+                if (now_to != prev_tx_timeouts) {
+                    Debug::log("PIO-USB: tx timeouts=%u (+%u)",
+                               (unsigned)now_to, (unsigned)(now_to - prev_tx_timeouts));
+                    prev_tx_timeouts = now_to;
+                }
+                // Bulk rate, at most once a second: packets/s x 64 B ~= the transfer
+                // rate the PIO port is actually achieving.
+                static uint32_t prev_bulk = 0, prev_bulk_us = 0;
+                const uint32_t now_us = time_us_32();
+                if (pio_usb_bulk_extra_xacts != prev_bulk && now_us - prev_bulk_us > 1000000) {
+                    Debug::log("PIO-USB: bulk +%u xacts/s (~%u KB/s)",
+                               (unsigned)(pio_usb_bulk_extra_xacts - prev_bulk),
+                               (unsigned)((pio_usb_bulk_extra_xacts - prev_bulk) * 64u / 1024u));
+                    prev_bulk = pio_usb_bulk_extra_xacts;
+                    prev_bulk_us = now_us;
+                }
+            }
+#endif
             tickKbdRep1 = tickKbdRep2;
         }
 
@@ -1477,6 +1527,44 @@ extern "C" uint8_t linkVGA01;
 #endif
 extern "C" int testPins(uint32_t pin0, uint32_t pin1);
 
+#if defined(KBDUSB) && defined(ZERO2_PIO_USB_HOST)
+// ── USB host on the ZERO2's second Type-C (J2, silkscreen "PIO-USB") ─────────
+// Pico-PIO-USB bit-bangs a full-speed root port on GP28 (D+) / GP29 (D-) using
+// PIO2 (3 SMs + 32 instructions) and one DMA channel; TinyUSB talks to it as root
+// hub 1 (BOARD_TUH_RHPORT). The DMA channel is picked here instead of taken from
+// PIO_USB_DEFAULT_CONFIG (ch 0) because video/audio/PSRAM all grab channels via
+// dma_claim_unused_channel() — pio_usb_bus_init() does a hard dma_claim_mask() and
+// would panic on a collision. Scanning top-down keeps us clear of the low channels
+// the SDK hands out.
+static bool zero2_pio_usb_host_init() {
+    int dma_ch = -1;
+    for (int ch = NUM_DMA_CHANNELS - 1; ch >= 0; --ch) {
+        if (!dma_channel_is_claimed((uint)ch)) { dma_ch = ch; break; }
+    }
+    if (dma_ch < 0) {
+        Debug::log("PIO-USB: no free DMA channel");
+        return false;
+    }
+
+    pio_usb_configuration_t cfg = PIO_USB_DEFAULT_CONFIG;
+    cfg.pin_dp     = PICO_DEFAULT_PIO_USB_DP_PIN;
+    cfg.pinout     = PIO_USB_PINOUT_DPDM;          // D- = D+ + 1 = GP29
+    cfg.pio_tx_num = ZERO2_PIO_USB_PIO_NUM;
+    cfg.pio_rx_num = ZERO2_PIO_USB_PIO_NUM;
+    cfg.tx_ch      = (uint8_t)dma_ch;              // claimed inside pio_usb_bus_init()
+    // SM numbers stay at the library defaults (0/1/2 of PIO2, which nothing else uses).
+
+    tuh_configure(PICOSPEC_RHPORT_PIO, TUH_CFGID_RPI_PIO_USB_CONFIGURATION, &cfg);
+    const bool ok = tuh_init(PICOSPEC_RHPORT_PIO);
+    Debug::log("PIO-USB: rhport=%d pio=%d dp=%d dm=%d dma=%d clk=%u MHz %s",
+               PICOSPEC_RHPORT_PIO, ZERO2_PIO_USB_PIO_NUM,
+               PICO_DEFAULT_PIO_USB_DP_PIN, PICO_DEFAULT_PIO_USB_DP_PIN + 1,
+               dma_ch, (unsigned)(clock_get_hz(clk_sys) / 1000000u),
+               ok ? "OK" : "FAILED");
+    return ok;
+}
+#endif
+
 // TinyUSB routes failed TU_ASSERTs here instead of a bkpt instruction (see
 // CFG_TUSB_DEBUG_BREAKPOINT in tusb_config.h) — a bkpt freezes every debug
 // session on recoverable asserts (dongle re-enumeration). Count and move on.
@@ -1541,7 +1629,19 @@ int main() {
 #endif
 
 #ifdef KBDUSB
+    #if defined(ZERO2_PIO_USB_HOST)
+    // Both ports: the native controller (rhport 0, first Type-C) AND the PIO one
+    // (rhport 1, J2). src/usb_hcd_router.c dispatches hcd_* between the two drivers.
+    tuh_init(PICOSPEC_RHPORT_NATIVE);
+    // PICOSPECCY_ZERO2_PIO_USB_HOST_V1: same point in the boot as the native tuh_init(), deliberately — the
+    // USB-stick-as-root fallback (FileUtils::initFileSystem) and the CDC/ZiFi
+    // bring-up inside ESPectrum::setup() both need the host stack live before
+    // setup() runs. clk_sys is already at CPU_MHZ here; a later Config::cpu_mhz
+    // switch is handled by pio_usb_host_reclock() below.
+    zero2_pio_usb_host_init();
+    #else
     tuh_init(BOARD_TUH_RHPORT);
+    #endif
     ps2kbd.init_gpio();
 #else
     keyboard_init();
@@ -1721,6 +1821,12 @@ int main() {
 #endif
             // Reinit audio: I2S PIO divider was calculated for old sys_clk
             pcm_setup(ESPectrum::Audio_freq);
+#if defined(KBDUSB) && defined(ZERO2_PIO_USB_HOST)
+            // PICOSPECCY_ZERO2_PIO_USB_HOST_V1: same story for the PIO-USB bus dividers — pio_usb_host_init()
+            // derived them from the boot clock at tuh_init() time.
+            pio_usb_host_reclock();
+            Debug::log("PIO-USB: reclocked for %d MHz", (int)Config::cpu_mhz);
+#endif
         } else if (clk_changed) {
             Debug::log2SD("main: PLL lock FAILED at %d MHz, restoring %d",
                           (int)Config::cpu_mhz, (int)running_mhz);
