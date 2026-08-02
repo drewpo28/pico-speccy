@@ -95,7 +95,7 @@ TFT_TARGETS="MURM MURM2"
 # Targets that support TFT+ST7789 display variant
 # (was MURM2_P1 only — that RP2040 target is gone; -DTFT=ON -DST7789=ON still works
 #  manually on MURM2, it is just not part of the default build matrix.)
-TFT_ST_TARGETS=""
+TFT_ST_TARGETS="MURM MURM2"
 
 # Targets that support SOFTTV display variant
 SOFTTV_TARGETS="MURM MURM2"
