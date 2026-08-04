@@ -58,7 +58,6 @@ set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO
 # set(ILI9341 ON)
 # set(ST7789 ON)
 # set(SOFTTV ON)
-# set(PSRAM OFF)  #For Testing Only
 
 # Display output (default: VGA_HDMI; override with -D flags, e.g. cmake -DSOFTTV=ON)
 if(NOT VGA_HDMI AND NOT SOFTTV AND NOT TFT AND NOT ILI9341 AND NOT TV)
@@ -126,17 +125,6 @@ ELSE()
 ENDIF()
 SET(BUILD_NAME "${BOARD_TAG}-${PROJECT_NAME}")
 set(CONFIG_BOARD_TAG "${BOARD_TAG}")
-
-# PSRAM kill-switch: only when set(PSRAM OFF) is explicitly uncommented above
-# (an undefined/unset PSRAM leaves PSRAM enabled). Forces the butter PSRAM CS to
-# GPIO 255 (no valid pin) so the driver treats PSRAM as absent on every board.
-# There is a RUNTIME twin of this for testing without a reflash: the new UI's
-# Debug > PSRAM row (Config::psram_enabled -> board_psram_disable(), main.cpp),
-# which reports size 0 to every consumer for the session. Use this one only to
-# build an image that never brings the chip up at all.
-if(PSRAM STREQUAL "OFF")
-    set(BUTTER_PSRAM_GPIO 255)
-endif()
 
 set(OUTPUT_DIR "${CMAKE_BINARY_DIR}/bin/${CMAKE_BUILD_TYPE}")
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_DIR}")

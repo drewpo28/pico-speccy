@@ -1,14 +1,13 @@
 # pico-speccy
 
-ESPectrum (1.2) port for Raspberry RP2350 SoC<br/>
-
-In progress...<br/>
-<br/>
-[Original repo](https://github.com/EremusOne/ESPectrum)
-
-![ESPectrum](https://zxespectrum.speccy.org/wp-content/uploads/2023/05/ESPectrum-logo-v02-2.png)
+<img src="img/logo.jpg" alt="pico-speccy" width="320"/>
 
 This is an emulator of the Sinclair ZX Spectrum compatible computers running on RP2350 SoC powered boards.
+
+Pico-Speccy is based on:
+ - [ESPectrum](https://github.com/EremusOne/ESPectrum)
+ - [DnCraptor/pico-spec](https://github.com/DnCraptor/pico-spec)
+ - [drewpo28/pico-spec](https://github.com/drewpo28/pico-spec)
 
 Board supported:
  - "Murmulator 1.x" + Raspberry "Pi Pico 2" or compatible;
@@ -34,6 +33,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - VGA/HDMI output with 4 selectable video modes: 640x480@60Hz, 640x480@50Hz, 720x480@60Hz, 720x576@50Hz.
 - Hot video mode switching without reboot (VGA/HDMI).
 - VGA/HDMI scanlines effect with 5 selectable brightness levels (Off, Darkest, Dark, Light, Lightest).
+- VGA/HDMI CRT filter with 7 selectable levels (Off, Soft, Medium, Strong, Grille soft/med/hard): gamma correction, phosphor tint, black lift and a vertical aperture-grille mask.
 - HDMI dither effect for ULA+ (RP2350 only): optional Bayer-look palette dithering applied via ISR.
 - HDMI audio output (RP2350 only).
 - TV-composite video out.
@@ -57,6 +57,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - MIDI support: external UART output (AY bit-bang, ShamaZX), a built-in procedural software synthesizer, and a **GM.DLS wavetable synth** that plays a real General MIDI sound bank loaded from SD (RP2350 only).
 - Beeper & Mic emulation (Cobra’s Arc).
 - Dual keyboard support: you can connect two devices: first using PS/2 protocol and second using USB at the same time.
+- Dual USB host on Waveshare RP2350-PiZero: the second USB Type-C port (J2) works as an extra USB host via PIO-USB, so two USB devices (e.g. keyboard + gamepad) can be connected without a hub.
 - PS/2 Joystick emulation (Cursor, Sinclair, Kempston and Fuller).
 - Two real joysticks support (Up to 8 button joysticks).
 - USB HID gamepad support: XInput (Xbox 360/One), DualShock 4 (PS4), DualSense (PS5), generic HID gamepads with auto-detected report descriptors and analog trigger support.
@@ -270,6 +271,7 @@ Your filesystem tree must be look like:
 | `-DPICO_PC=ON` | Build for Olimex RP2040-PICO-PC carrier board |
 | `-DPICO_DV=ON` | Build for Pimoroni Pico DV Demo Base |
 | `-DZERO2=ON` | Build for Waveshare RP2350-PiZero |
+| `-DZERO2_PIO_USB=ON` | ZERO2: USB host on the second Type-C port (J2, PIO-USB on GP28/GP29). Default ON. |
 | `-DVGA_HDMI=ON` | VGA/HDMI output (default) |
 | `-DSOFTTV=ON` | Software composite TV output |
 | `-DTV=ON` | Hardware composite TV output |
