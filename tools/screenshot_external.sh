@@ -6,8 +6,8 @@
 set -euo pipefail
 
 # Pick the most recent ELF.
-ELF=$(ls -t /home/drew/github/pico-speccycy/build/bin/MinSizeRel/*.elf \
-              /home/drew/github/pico-speccycy/build_picodvi/bin/Release/*.elf 2>/dev/null \
+ELF=$(ls -t /home/drew/github/pico-speccy/build/bin/MinSizeRel/*.elf \
+              /home/drew/github/pico-speccy/build_picodvi/bin/Release/*.elf 2>/dev/null \
       | grep -v "bs2_default" | head -1)
 if [[ -z "${ELF:-}" ]]; then
     echo "No ELF found"
@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 "$OPENOCD" -s "$OPENOCD_SCRIPTS" \
     -f interface/cmsis-dap.cfg -f target/rp2350.cfg \
     -c "adapter speed 5000" \
-    >/tmp/picospeccycy_openocd.log 2>&1 &
+    >/tmp/picospec_openocd.log 2>&1 &
 OPENOCD_PID=$!
 trap 'kill $OPENOCD_PID 2>/dev/null || true' EXIT
 

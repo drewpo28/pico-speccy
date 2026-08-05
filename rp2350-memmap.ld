@@ -25,6 +25,16 @@ SECTIONS
         KEEP (*(.reset))
         *(.init)
         *libgcc.a:cmse_nonsecure_call.o
+        /* The ARM EH unwinder is cold code — it only runs on a C++ throw, and
+         * this firmware never throws (no try/catch/throw anywhere; it is linked
+         * in solely because libstdc++'s __throw_* paths reference it). The
+         * EXCLUDE_FILE below sends ALL of libgcc to the RAM catch-all in .data,
+         * which is right for the hot helpers (_ashldi3, _thumb1_case_*,
+         * dividers) but also drags in ~4 KB of unwinder. Claim these three
+         * objects for FLASH first — first match wins. Measured -3.9 KB of SRAM. */
+        *libgcc.a:unwind-arm.o(.text* .rodata*)
+        *libgcc.a:pr-support.o(.text* .rodata*)
+        *libgcc.a:libunwind.o(.text* .rodata*)
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .text*)
         *(.fini)
         *crtbegin.o(.ctors)

@@ -1,25 +1,40 @@
 #!/usr/bin/env python3
 """
-memdump.py — convert picospeccycy GDB memory dumps to dump.log format.
-Reads /tmp/picospeccycy_mem{0-3}.bin (4×16KB Z80 windows),
-      /tmp/picospeccycy_ram{0-7}.bin (8×16KB physical RAM pages, 128K),
-      /tmp/picospeccycy_regs.txt.
-Writes /tmp/picospeccycy_dump.log in the same format as OSD::saveDumpToFile().
+memdump.py — convert picospec GDB memory dumps to dump.log format.
+Reads /tmp/picospec_mem{0-3}.bin (4×16KB Z80 windows),
+      /tmp/picospec_ram{0-7}.bin (8×16KB physical RAM pages, 128K),
+      /tmp/picospec_regs.txt.
+Writes /tmp/picospec_dump.log in the same format as OSD::saveDumpToFile().
 The 8 physical RAM pages are appended after the logical Z80 dump.
 """
 
 import sys
 import os
 
-MEM_FILES = [f"/tmp/picospeccycy_mem{i}.bin" for i in range(4)]
-RAM_FILES = [f"/tmp/picospeccycy_ram{i}.bin" for i in range(8)]
-REGS_FILE = "/tmp/picospeccycy_regs.txt"
-OUT_FILE  = "/tmp/picospeccycy_dump.log"
+MEM_FILES = [f"/tmp/picospec_mem{i}.bin" for i in range(4)]
+RAM_FILES = [f"/tmp/picospec_ram{i}.bin" for i in range(8)]
+REGS_FILE = "/tmp/picospec_regs.txt"
+OUT_FILE  = "/tmp/picospec_dump.log"
 
 MEM_TYPE_NAME = {0: "SRAM", 1: "PSRAM_SPI", 2: "SWAP"}
 
 
 def load_mem():
+    # pico-speccy (8x8K slots): picospec_s{0-7}.bin; a missing slot file means
+    # an accessor-mode slot (not directly readable) — filled with zeros.
+    slot_files = [f"/tmp/picospec_s{i}.bin" for i in range(8)]
+    if any(os.path.exists(f) for f in slot_files):
+        pages = []
+        for f in slot_files:
+            if os.path.exists(f):
+                with open(f, "rb") as fh:
+                    data = fh.read()
+                if len(data) != 8192:
+                    raise ValueError(f"{f}: expected 8192 bytes, got {len(data)}")
+            else:
+                data = bytes(8192)
+            pages.append(data)
+        return b"".join(pages)
     pages = []
     for f in MEM_FILES:
         with open(f, "rb") as fh:
@@ -87,7 +102,11 @@ def hex_line(addr, mem):
 
 
 def main():
-    for f in MEM_FILES + [REGS_FILE]:
+    # Either the 8x8K slot set (pico-speccy) or the 4x16K legacy set must be
+    # present; load_mem() picks whichever exists.
+    have_slots = any(os.path.exists(f"/tmp/picospec_s{i}.bin") for i in range(8))
+    need = [REGS_FILE] if have_slots else MEM_FILES + [REGS_FILE]
+    for f in need:
         if not os.path.exists(f):
             print(f"Missing: {f}", file=sys.stderr)
             sys.exit(1)
