@@ -954,10 +954,14 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
                 ret = sel;
                 goto out;
             case fabgl::VK_ESCAPE: case fabgl::VK_F1:
-            case fabgl::VK_MENU_LEFT: case fabgl::VK_MENU_BS:
                 OSD::clickNoPause();
                 ret = -1;
                 goto out;
+            case fabgl::VK_MENU_LEFT: case fabgl::VK_MENU_BS:
+                // This is the top level — there is nothing to back out to, and Back
+                // must never close the OSD (Esc/F1 only, as the footer says).
+                OSD::clickNoPause();
+                break;
             default: break;
         }
         if (ns < 0) ns = 0;

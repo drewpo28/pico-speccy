@@ -237,7 +237,9 @@ static inline int rowY(int visRow) { return LY.body_y + LY.row_h * (visRow + 1);
 static void drawPaneTitles() {
     const int y = LY.body_y;
     fill(LY.lx, y, LY.lw, LY.row_h, C_PANEL);
-    if (S.depth)
+    // Only where Left actually has a level to back out to — at the home level it does
+    // nothing (closing is Esc/F1 only), so the hint would be a lie.
+    if (S.depth > S.home_depth)
         text(LY.lx + LY.pad, y + 1, SYM_LEFT SYM_LEFT " Back", C_DISABLED);
 
     fill(LY.rx, y, LY.rw, LY.row_h, C_PANEL);
@@ -387,8 +389,10 @@ static void drawFooter() {
     hline(LY.ix, y, LY.iw, C_SEP);
     const Node* fn_ = curLevel().dyn ? nullptr : curNode();
     const bool intPane = (S.focus == FOCUS_RIGHT) && fn_ && fn_->kind == K_INT;
+    const bool atHome = (S.depth <= S.home_depth);   // no level below: Left is a no-op
     const char* hint = (S.focus == FOCUS_LEFT)
-        ? SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc / " SYM_LEFT SYM_LEFT " Back"
+        ? (atHome ? SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc Close"
+                  : SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc / " SYM_LEFT SYM_LEFT " Back")
         : intPane
         ? SYM_UP SYM_DOWN " Adjust   " SYM_ENTER " / " SYM_LEFT " Back"
         : SYM_UP SYM_DOWN " Move   " SYM_ENTER " Change   " SYM_LEFT " Back";

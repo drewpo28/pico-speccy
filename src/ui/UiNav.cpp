@@ -291,8 +291,11 @@ static void enterLevel(const Node* n) {
     markDirty(D_SUB | D_PTITLE | D_LEFT | D_RIGHT | D_FOOT);
 }
 
-static void leaveLevel() {
-    if (S.depth <= S.home_depth) { S.quit = true; return; }
+// closeAtRoot: what to do when there is no level left to back out of. Esc/F1 close the
+// menu; Left only ever navigates, so it stops dead at the home level — a stray Left on
+// the root list must not throw the user out of the menu.
+static void leaveLevel(bool closeAtRoot) {
+    if (S.depth <= S.home_depth) { if (closeAtRoot) S.quit = true; return; }
     S.depth--;
     S.focus = FOCUS_LEFT;
     buildVisible(curLevel());
@@ -449,7 +452,7 @@ static bool handleKey(NmKey k) {
                 markLeftRow(curLevel().sel - curLevel().top);
                 markDirty(D_RIGHT | D_FOOT);
             } else {
-                leaveLevel();
+                leaveLevel(false);
             }
             break;
         case NK_ESC:
@@ -458,7 +461,7 @@ static bool handleKey(NmKey k) {
                 markLeftRow(curLevel().sel - curLevel().top);
                 markDirty(D_RIGHT | D_FOOT);
             } else {
-                leaveLevel();
+                leaveLevel(true);
             }
             break;
         case NK_F2: if (curLevel().dyn) dynInvoke(2); break;
