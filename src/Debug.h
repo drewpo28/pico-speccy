@@ -12,7 +12,9 @@ using namespace std;
 
 // Mirror of DEBUG_LOG_PATH from FileUtils.h. Kept as a literal here so Debug.h
 // stays a leaf header (FileUtils.h pulls MemESP.h which depends on Config).
-#define STORAGE_LOG "/.config/pico-speccy/debug.log"
+// TEMPORARY (see FileUtils.h config-path experiment): flattened alongside it.
+#define STORAGE_LOG "/config-log.txt"
+// #define STORAGE_LOG "/.config/pico-speccy/debug.log"
 
 // Current stack pointer — for stack-depth watermarks in Debug::log lines.
 static inline uint32_t debug_sp() { uint32_t sp; __asm volatile("mov %0, sp" : "=r"(sp)); return sp; }
@@ -30,6 +32,23 @@ public:
     static void led_off();
 
     static void log(const char* fmt, ...);
+
+#if NEO8_TRAP
+    // Temporary wild-jump hunter (Neo8 SDz crash): call per executed
+    // instruction; logs the recent-PC history + frame/stack snapshot once
+    // when execution enters the screen area while the Pentagon page0-RAM
+    // overlay is active.
+    static void neo8TrapStep(uint16_t pc, uint16_t sp, uint16_t ix, uint16_t iy);
+#endif
+
+    // Exception-safe variant for fault handlers: NO stdio/printf (the stdio
+    // path takes print_mutex and WFEs — blocking in exception context; if the
+    // other core died holding the mutex, the handler freezes the machine, and
+    // a mutex assert inside an already-faulted core escalates to a double
+    // fault → LOCKUP). Formats into a per-core static buffer (not the — maybe
+    // overflowed — fault stack) and emits via the bounded lock-free debug
+    // UART path. No-op when the debug UART is off.
+    static void fault_log(const char* fmt, ...);
 
     // Runtime-gated. The flag check is inlined here so when logging is
     // disabled the call collapses to a single branch on a global bool.

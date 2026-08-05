@@ -8,6 +8,11 @@
 class GS {
 public:
     static bool enabled;
+    // NeoGS mode (Config::gs_enabled == 2). Superset of GS: 512 KB paged ROM,
+    // up to 4 MB RAM (NOROM/MPAG/MPAGEX/EXPAG mapping), 8 sound channels with
+    // panning, guest-switchable clock, timer INT divider, SD-card interface,
+    // host control port #33 (reset/NMI/LED). Set once in init().
+    static bool neogs;
 
     static bool init(uint32_t ram_size_bytes);
     static void deinit();
@@ -49,6 +54,22 @@ public:
     static uint8_t hostReadBB();
     static void    hostWriteB3(uint8_t data);
     static void    hostWriteBB(uint8_t data);
+    // NeoGS-only ZX control port #33 (GSCTR): 0x80 = warm reset, 0x40 = NMI,
+    // 0x20 = LED toggle. Reset/NMI are latched and consumed by the GS-Z80
+    // loop on core1 (never mutate s_cpu from core0 while z80_run is in flight).
+    static void    hostWriteCtrl(uint8_t data);
+    // NeoGS cold-boot release: the GS-Z80 is held parked from init() until
+    // ESPectrum::loop pumps the SD mailbox (the fw boots off the card).
+    // Idempotent, called once per loop iteration from core0.
+    static void    ngsBootRelease();
+    // ZX machine reset with NeoGS: the card itself is untouched (real hw), but
+    // the host-side FIFOs are an emulation artifact standing in for the real
+    // single-byte #B3/#BB latches — leftover bytes from the previous ZX
+    // session would shift every later data exchange by N bytes (hw 2026-08-04:
+    // a detector's unconsumed #B3 writes survived the ZX reset and desynced
+    // NPL's CMD 0x10 — fw took a stale byte as the port number and NPL hung
+    // waiting for its real byte to be consumed). Flush them + status D7/D0.
+    static void    hostIfaceFlush();
 
     // Dump host/guest port-IO trace ring buffer to Debug::log. Triggered
     // automatically on key handshake events; can also be called manually
@@ -78,8 +99,9 @@ public:
     static volatile uint8_t  reg_status;
 
     static uint8_t  reg_page;
-    static uint8_t  reg_vol[4];
-    static uint8_t  reg_ch[4];
+    // 8 entries for NeoGS (VOL1-8 / channels 1-8); classic GS uses [0..3].
+    static uint8_t  reg_vol[8];
+    static uint8_t  reg_ch[8];
 
     static uint32_t int_count;
 };

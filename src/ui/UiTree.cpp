@@ -514,9 +514,24 @@ static const Node kVideo[] = {
 // as a fallback, plain SPI PSRAM with room left over for the MemESP swap pool (slow path,
 // ~30x, best-effort). One shared test with the classic menu's gs_avail.
 static bool p_gsAvail() { return Buffer::gsPsramAvailable(); }
-// The clock row is meaningless while GS is off, and reads the STAGED mode so it lights up
-// as soon as the mode is switched on (enable gate of the indented row below).
-static bool p_gsOn() { return p_gsAvail() && Stage::get(SET_GS_MODE) != 0; }
+// The children read the STAGED mode so they light up as soon as the mode is switched.
+// Clock is classic-GS only (NeoGS firmware picks its own clock via GSCFG0 CKSEL);
+// the RAM pick is NeoGS only (classic GS stays on its 2 MB default).
+static bool p_gsClassic() { return p_gsAvail() && Stage::get(SET_GS_MODE) == 1; }
+static bool p_gsNeo()     { return p_gsAvail() && Stage::get(SET_GS_MODE) == 2; }
+
+static const Option opt_gs_mode[] = {           // values ARE Config::gs_enabled
+    { "Off",           0 },
+    { "General Sound", 1 },
+    { "NeoGS",         2 },
+};
+// NeoGS RAM sizes fw 1.11 auto-detects; values ARE Config::gs_ram_size
+// (1 = 1 MB is a classic-GS-only value, not offered here).
+static const Option opt_gs_ram[] = {
+    { "512 KB", 0 },
+    { "2 MB",   2 },
+    { "4 MB",   3 },
+};
 
 static const Option opt_gs_clock[] = {          // values are Config::gs_clock indices
     { "12 MHz", 0 },
@@ -576,8 +591,9 @@ static const Node kAudio[] = {
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,
                 opt_midi_bank_hints, p_hasSD, p_midiDls),
 #endif
-    NM_BOOL    (TXT_AUD_GS,          SET_GS_MODE,  p_gsAvail),
-    NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK, opt_gs_clock, p_gsAvail, p_gsOn),
+    NM_RADIO   (TXT_AUD_GS,          SET_GS_MODE,  opt_gs_mode,  p_gsAvail),
+    NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK, opt_gs_clock, p_gsAvail, p_gsClassic),
+    NM_RADIO_EN(NM_IND TXT_GS_RAM,   SET_GS_RAM,   opt_gs_ram,   p_gsAvail, p_gsNeo),
     NM_RADIO   (TXT_AUD_BOOST,       SET_AUDIO_BOOST, opt_boost,  nullptr),
 };
 

@@ -161,10 +161,21 @@ private:
 
 // Config files live under /.config/pico-speccy/<port-version>/<board-tag>/
 // (per-version + per-board), with palette.nvs and logs shared in CONFIG_DIR.
-#define CONFIG_DIR_ROOT "/.config"
-#define CONFIG_DIR      CONFIG_DIR_ROOT "/pico-speccy"
-#define CONFIG_DIR_VER  CONFIG_DIR "/" PORT_VERSION
-#define CONFIG_DIR_BOARD CONFIG_DIR_VER "/" CONFIG_BOARD_TAG
+//
+// TEMPORARY EXPERIMENT (NPL directory-depth hypothesis, 2026-08-05): the
+// 4-level config tree is suspected of overflowing NPL's fw-side directory
+// stack during its SD scan (deterministic garbage cluster after walking it —
+// every card the emulator ever booted carries the tree). Flattened to a
+// single /config-<board> level so the deepest path on a fresh card is 2.
+// REVERT to the block below once the experiment concludes.
+#define CONFIG_DIR_ROOT "/config-" CONFIG_BOARD_TAG
+#define CONFIG_DIR      CONFIG_DIR_ROOT
+#define CONFIG_DIR_VER  CONFIG_DIR
+#define CONFIG_DIR_BOARD CONFIG_DIR
+// #define CONFIG_DIR_ROOT "/.config"
+// #define CONFIG_DIR      CONFIG_DIR_ROOT "/pico-speccy"
+// #define CONFIG_DIR_VER  CONFIG_DIR "/" PORT_VERSION
+// #define CONFIG_DIR_BOARD CONFIG_DIR_VER "/" CONFIG_BOARD_TAG
 #define STORAGE_NVS     CONFIG_DIR_BOARD "/storage.nvs"
 // User-saved default config: unversioned but still per-board (deliberately
 // NOT a single cross-board file — a saved default can carry a forced

@@ -97,6 +97,7 @@
 #define TXT_MIDI_DLS_PICK   "Select .dls soundbank"
 #define TXT_AUD_GS          "General Sound"
 #define TXT_GS_CLOCK        "Clock"
+#define TXT_GS_RAM          "RAM"
 
 // ── Overclock ──────────────────────────────────────────────────────────────────
 #define TXT_OC_CPU          "CPU frequency"

@@ -29,6 +29,112 @@ MADCTL bit names now live in `drivers/st7789/st7789.h` (whose declarations got a
 `extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
 (landscape), so Defaults always lands on a usable orientation.
 
+## NeoGS (ported from pico-spec drew-sound-neogs, 2026-08-04)
+
+Ported by 3-way merge (base = pico-spec `36081de`); NOT yet hw-tested here.
+`Config::gs_enabled` is now 0=Off / 1=GS / 2=NeoGS; `gs_ram_size` 3 = 4 MB
+(NeoGS only; fw 1.11 auto-detects exactly 512K/2M/4M). UI: Audio → General
+Sound is a radio (Off/GS/NeoGS) + indented `Clock` (classic GS only — NeoGS
+picks its own via GSCFG0 CKSEL) + `RAM` (NeoGS only, `SET_GS_RAM`, AC_REBOOT).
+The pico-spec classic-menu changes (OSDMain/messages) were NOT ported — nm:: UI
+only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
+
+- **New files**: `src/GS/NGS_ROM.{c,h}` (sparse 512 KB fw 1.11 flash image,
+  regen via `tools/ngs_rom_pack.py full_ngs.rom`), `src/GS/NgsSd.{cpp,h}`
+  (SD ports #11-#14 → host SD via core1→core0 one-slot mailbox; card is
+  always SDHC; core0 pumps `NgsSd::service()` from ESPectrum::loop + frame
+  waits + GS host-port handlers).
+- **Emulation verified against** NedoPC `ports.inc` + `GS_info_v0.4.2.2`
+  (tslabs/neogs mirror; svn.nedopc.com is behind a JS bot-check) + MAME
+  `bus/spectrum/zxbus/neogs.cpp` + fw ROM disasm. Port map, GSCFG0 (NOROM/
+  RAMRO/8CHANS/EXPAG/CKSEL/PAN4CH/INV7B), SETNCLR (INTENA/INTREQ 0x07,
+  SCTRL 0x3F), TIM_FRQ divider {1,2,4,8,16,64,256,1024}, DAC latch at
+  0x6000-0x7FFF read (channel = (addr>>8) & 3/7), mixing L=1,2,5,6 R=3,4,7,8,
+  PAN4CH pairing (chN → VOLn L + VOLn+2 R via slots), fixed 0x4000-0x7FFF =
+  phys 0xC000-0xFFFF (2nd half of big page 1), GSCTR #33 (0x80 reset latched
+  to core1, 0x40 NMI, 0x20 LED **toggle** — MAME writes bit5, ports.inc says
+  toggle; we follow ports.inc), #BB host status reads `status | 0x7E` — all
+  match the docs.
+- **Fixed during the port review**: EXPAG 16K page number is 8-bit —
+  `page = (port<<1) | D7` (GS_info "xxxx xxxa", MAME agrees). The donor code
+  masked `mpag/mpagex & 0x3F` (dropped bit 6 → only 2 MB reachable in EXPAG
+  mode on a 4 MB card); now `& 0x7F` in ngs_rebuild_map.
+- **MP3 really decodes** (2026-08-04, NOT yet hw-tested): `src/GS/NgsMp3.*`
+  + vendored `src/minimp3/minimp3.h` (lieff/minimp3, CC0, `-O3`). MD_SEND
+  (#14, core1) → 8 KB input ring → core0 `NgsMp3::service()` (pumped beside
+  `NgsSd::service()`; ≤1 frame ≈ 2 ms per call) → minimp3 → linear resample
+  to 37500 Hz (SCI_VOL attenuation applied, half scale to keep the int16 sum
+  with the GS DAC from clipping) → 16 KB PCM ring → `mixTick()` adds one
+  stereo pair per DAC tick in `GS::step()`. SSTAT MDDRQ is now real flow
+  control (input-ring headroom ≥1 KB); SCI_DECODE_TIME = decoded seconds;
+  MPXRS / SCI MODE soft-reset restart the decoder (flag consumed on core0).
+  State (~40 KB) comes from the Buffer pool at `GS::init` — alloc failure
+  degrades to the old stub (MDDRQ=1, bytes discarded). NGS_TRACE line gained
+  `MP3 fr/junk/ovr/und/hz`.
+- **core1 deadlock in `GS::step()` — the root cause of "GS not found unless you
+  wait after start", and of ZP4/NPL hanging (hw-fixed 2026-08-05)**. `until_int
+  = GS_INT_PERIOD - s_int_timer_ts` could be **zero**: the INT block runs
+  `z80_run(32)` AFTER the period check, so the timer can land exactly on the
+  period, and NeoGS additionally rewrites `GS_INT_PERIOD` live whenever the
+  firmware changes GSCFG0 CKSEL. `z80_run(0)` returns 0 → `ran` 0 → `remaining`
+  never shrinks → **core1 spins inside step() forever holding the pump lock**:
+  the GS-Z80 freezes mid-instruction (PC pinned, 0.0 MHz, `p04=0`) while the
+  host polls #BB for a command nobody will ever fetch. It only ever recovered
+  because a later `GS::reset()` zeroed `s_int_timer_ts` under the spinning
+  loop — hence "wait a minute / poke the FDD and it starts working". Classic GS
+  hits it far more rarely (fixed clock). Fix: clamp `until_int` without the
+  unsigned underflow and never call `z80_run(0)` (`if (chunk == 0) chunk = 1`).
+  Diagnosis came from three always-on counters now in the NGS_TRACE line:
+  `rs=` (run-state), `pe=`/`px=` (pump entries/early exits) — a frozen `pe`
+  with `rs=1` means exactly this class of bug; keep them.
+- **Boot latency work (same session)**: NgsSd got an 8-sector read-ahead cache
+  (the fw loader was spending 1163 SPI exchanges per sector — half of them
+  waiting for the core0 mailbox) and `GS::pump()` runs the GS-Z80 at 8x wall
+  clock while `!s_gs_main_loop` (turbo-boot; exact pacing returns the moment
+  the fw dispatcher is up, so audio timing stays authentic). NeoGS is also NOT
+  reset by a ZX reset (the real card survives it — an advertised feature); the
+  host FIFOs are flushed instead (`GS::hostIfaceFlush`).
+  **#B3 latch-vs-FIFO (real, independent bug — briefly misdiagnosed as a
+  symptom of the step() deadlock, reverted, then reproduced again and
+  reinstated once the deadlock AND the SD mailbox race were both separately
+  fixed and SD boot verified reading real VBR/FAT content)**: `hostWriteBB`
+  collapses the #B3 backlog to the newest byte on every NeoGS command (F3/F4
+  drop it entirely). Real hardware's #B3 is a single-byte latch; NPL's detect
+  writes a harmless probe byte before ACK-only commands (0xFF, 0x1F) that a
+  real latch just overwrites, but our FIFO queues — so a later, real
+  data-carrying command (0x10) can dequeue that stale orphan first, leaving
+  NPL's actual bytes stuck behind it (spins on #BB forever waiting for D7).
+  Classic GS keeps the deep FIFO (FH1GS-style loaders need the backlog,
+  hw-tested) — this collapse is NeoGS-only.
+- **CMD18 continuation prefetch removed** (`NgsSd.cpp`, 2026-08-05): block-
+  complete used to speculatively `post_read()` sector+1 in case the guest
+  kept streaming. Every real trace ever seen used CMD18 for exactly one
+  block + CMD12, so the feature never once fired for its purpose, but its
+  speculative post repeatedly won the single-slot SD mailbox race against an
+  explicit, still-in-flight CMD17/18 — even after two escalating
+  confirmation-gate attempts, still losing the race at 8x turbo-boot speed.
+  CMD18 now behaves like CMD17 (exactly one block, then idle 0xFF on further
+  polls) — untested for true multi-block streaming, but nothing observed so
+  far needs it, and silent sector substitution was actively hanging the fw's
+  own boot-time VBR read.
+- **Known deliberate deviations**: DMA modules (#1B-#1F) and WIN0-3 (#20-#23)
+  are warn-once stubs; INT is
+  level-until-INTA (real hw: ≤100 T @24 MHz pulse) — same model as classic GS
+  here; on an EXPAG→normal GSCFG0 toggle we remap immediately (real hw keeps
+  the old mapping until the next MPAG write); write-only regs (MPAG/MPAGEX
+  etc.) read back their latches instead of floating.
+- fw 1.11 never reads SSTAT SDDET (checked by ROM scan) — polarity
+  (1 = card present) only matters to apps (NPL etc.).
+- Also merged from the donor branch (they were found via Neo8Tracker debugging,
+  hw-confirmed in pico-spec): Pentagon EAR idles high (bit6=1, ZXEVO-detect
+  fix), #EFF7 requires the full 0xE000-family decode on Pentagon too
+  (Z-Controller #0057 collision), P1024 EFF7 D3 maps the CACHE overlay
+  (`MemESP::newSRAM`) not ram[0], DivMMC CMD25 WRITE_MULTIPLE_BLOCK,
+  `Debug::fault_log` (exception-safe, replaces printf in sigbus/panic),
+  NEO8_TRAP/ZC_PORT_TRACE/NGS_TRACE CMake toggles.
+- Test images: `pico-spec/debug/NeoGS/` (neo8tr.trd, npl.scl, Z-PLAYERv4.1,
+  s3m_*.trd).
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation

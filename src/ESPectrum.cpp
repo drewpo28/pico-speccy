@@ -80,6 +80,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "RTC.h"
 #include "Z80DMA.h"
 #include "GS/GS.h"
+#include "GS/NgsSd.h"
+#include "GS/NgsMp3.h"
 
 using namespace std;
 
@@ -665,6 +667,9 @@ void ESPectrum::setup() {
   //=======================================================================================
   // INIT FILESYSTEM
   //=======================================================================================
+  // Build stamp — distinguishes freshly-flashed images during debug sessions
+  // (the version string alone doesn't change between local rebuilds).
+  Debug::log("build: " __DATE__ " " __TIME__);
   Debug::log("setup: initFileSystem begin");
   FileUtils::initFileSystem();
   Debug::log("setup: initFileSystem done, fsMount=%d", FileUtils::fsMount);
@@ -1303,7 +1308,19 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Without this, GS-Z80 keeps running (still streaming previous module's
   // samples from PSRAM) when ZX side reboots — leftover state collides with
   // the new player's load, producing random garbled audio.
-  if (GS::enabled) GS::reset();
+  //
+  // NeoGS is deliberately NOT reset: on real hardware a Spectrum reset does
+  // not touch the card at all (its autonomous playback survives ZX reboots —
+  // an advertised feature). Rebooting it here also re-runs the fw's SD boot
+  // walk (~2 s emulated), and detection software running right after a ZX
+  // reset hit that window and reported "GS not found" (hw log 2026-08-04).
+  // The card resets only via GSCTR (#33, bit7) or power-cycle, as on hw.
+  // The host FIFOs ARE flushed: they emulate single-byte latches, and bytes
+  // left by the previous ZX session must not desync the next one's protocol.
+  if (GS::enabled) {
+    if (GS::neogs) GS::hostIfaceFlush();
+    else           GS::reset();
+  }
 
   Tape::tapeFileName = "none";
   if (Tape::tape.obj.fs != NULL) {
@@ -2741,6 +2758,12 @@ void ESPectrum::loop() {
       g_kbd_us = (uint32_t)(time_us_64() - _kbd_t0);
     }
     GS::pollPerf();
+    // NeoGS SD + MP3: execute a sector request posted by the GS-Z80 on core1
+    // (FatFs/SD SPI are core0-only) and decode buffered MP3 frames. Cheap
+    // no-ops when idle; also serviced from the frame-pacing waits below.
+    // ngsBootRelease un-parks the GS-Z80 on the first iteration — its SD
+    // boot needs this mailbox pump, which doesn't exist during setup().
+    if (GS::neogs) { GS::ngsBootRelease(); NgsSd::service(); NgsMp3::service(); }
     // Update stats every 50 frames
     if (VIDEO::OSD && VIDEO::framecnt >= 10) {
       if (VIDEO::OSD & 0x04) {
@@ -3002,6 +3025,7 @@ void ESPectrum::loop() {
       if (Config::v_sync_enabled) {
         for (;;) {
           if (ZiFi::cdcNicActive) ZiFi::cdcPump();
+          if (GS::neogs) { NgsSd::service(); NgsMp3::service(); }
           if (v_sync) {
             v_sync = false;
             break;
@@ -3016,6 +3040,10 @@ void ESPectrum::loop() {
           if (ZiFi::cdcNicActive) {
             int64_t e = (int64_t)time_us_64() + idle;
             while ((int64_t)time_us_64() < e) ZiFi::cdcPump();
+          } else
+          if (GS::neogs) {
+            int64_t e = (int64_t)time_us_64() + idle;
+            while ((int64_t)time_us_64() < e) { NgsSd::service(); NgsMp3::service(); }
           } else
           {
             delayMicroseconds(idle);
