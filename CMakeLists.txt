@@ -28,6 +28,14 @@ option(ZERO2 "Waveshare RP2350-PiZero" OFF)
 option(ZERO2_PIO_USB "ZERO2: add a USB host on the second Type-C (J2, PIO-USB GP28/GP29)" ON)
 option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 
+# HDMI signal-integrity knobs (drivers/hdmi/hdmi.c). ON is the intended
+# configuration; they exist so a marginal link can be A/B'd by rebuild instead of
+# by editing the driver. Turning any of them OFF cannot break the stream — see the
+# HDMI_TMDS_LEVEL_SNAP and HDMI_SOFT_CLK comment blocks in hdmi.c.
+option(HDMI_TMDS_LEVEL_SNAP "HDMI: snap channel levels by <=2 codes to the friendliest TMDS pattern" ON)
+option(HDMI_TMDS_LEVEL_CLAMP "HDMI: keep channel levels inside [0x08..0xF6] (costs ~3% black, ~4% white)" ON)
+option(HDMI_SOFT_CLK "HDMI: drive the clock pair at 8 mA + slow slew instead of 12 mA + fast" ON)
+
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
 # Add new toggles here following the same option(...) + compile-definition pattern.
@@ -344,6 +352,16 @@ if (RTC_PORT_TRACE)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE RTC_PORT_TRACE=0)
 endif ()
+
+# HDMI signal-integrity knobs. Always defined (0 or 1) so the driver's own
+# `#ifndef` defaults never silently win over an OFF chosen here.
+foreach (HDMI_SI_OPT HDMI_TMDS_LEVEL_SNAP HDMI_TMDS_LEVEL_CLAMP HDMI_SOFT_CLK)
+    if (${HDMI_SI_OPT})
+        target_compile_definitions(${PROJECT_NAME} PRIVATE ${HDMI_SI_OPT}=1)
+    else ()
+        target_compile_definitions(${PROJECT_NAME} PRIVATE ${HDMI_SI_OPT}=0)
+    endif ()
+endforeach ()
 
 # Per-60-frame CPU/HDMI/FPS performance logging (see Video.cpp `#if PERF_TRACE`).
 if (PERF_TRACE)
