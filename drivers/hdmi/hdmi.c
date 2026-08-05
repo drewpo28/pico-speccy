@@ -817,7 +817,8 @@ static inline bool hdmi_init() {
         // margin to spare on a short cable.
         // Ported from pico-spec 43ea8c8, picked there as the best variant over
         // several resets in an A/B against the 12 mA/fast default (m1p1 + Samsung
-        // S27AG300N). Not hw-confirmed on pico-speccy yet; a rebuild with
+        // S27AG300N), and confirmed good here too (hw 2026-08-06, pico-speccy with
+        // a capture card, together with HDMI_TMDS_LEVEL_CLAMP). A rebuild with
         // `cmake -DHDMI_SOFT_CLK=OFF` restores the harder edge if a board needs it.
         gpio_set_drive_strength(beginHDMI_PIN_clk + i, GPIO_DRIVE_STRENGTH_8MA);
         gpio_set_slew_rate(beginHDMI_PIN_clk + i, GPIO_SLEW_RATE_SLOW);
@@ -1086,7 +1087,7 @@ static int hdmi_pair_residual(uint8_t l, uint8_t r) {
 }
 
 // ============================================================
-// TMDS level conditioning — swing and run
+// TMDS level clamp (HDMI_TMDS_LEVEL_CLAMP)
 //
 // Balance is not the only thing that decides how kind a pixel pair is to a
 // receiver. Two more properties of the emitted 20 bits matter:
@@ -1096,132 +1097,69 @@ static int hdmi_pair_residual(uint8_t l, uint8_t r) {
 //           the pair repeats across a run of same-coloured pixels (the wrap can
 //           be the worst spot) — how long the CDR coasts without an edge
 //
-// Measured over all 256 values of the identical-colour pair THIS driver emits
-// (A = tmds_encoder(v), B = A ^ 0x2FF — see hdmi_level_cost): mean swing 4.33 /
-// worst 9, mean run 5.55 / worst 11. The worst values are 0x01/0xFE (9, 11)
-// followed by 0x00/0xFF (8, 10) — i.e. black and full brightness, which is most
-// of a ZX screen, and the values a uniform fill repeats for a whole line.
+// Measured over all 256 values of the identical-colour pair this driver emits
+// (A = tmds_encoder(v), B = A ^ 0x2FF — the left == right case in
+// hdmi_write_pair): mean swing 4.33 / worst 9, mean run 5.55 / worst 11. The worst
+// values are 0x01/0xFE (9, 11) followed by 0x00/0xFF (8, 10) — i.e. black and full
+// brightness, which is most of a ZX screen, and exactly what a uniform fill
+// repeats for a whole line.
 //
-// SNAP: nudge each channel value by at most ±2 to the neighbour with the lowest
-// (swing, run). Mean swing 4.33 -> 3.44 (worst 9 -> 7), mean run 5.55 -> 4.38
-// (worst 11 -> 8), for a level shift of ≤2 codes (≤0.8%) — invisible.
-// LEVEL_CLAMP: additionally keep values inside [LO..HI], which is what moves the
-// black and white ends off their bad patterns; with SNAP that takes worst swing
-// to 5 and mean to 3.38 / run mean 4.32. Costs ~3% of black level and ~4% of
-// white (0x00 -> 0x08, 0xFF -> 0xF4, shift ≤11 codes) — the price of a stable
-// link on a marginal receiver.
+// CLAMP keeps every channel inside [LO..HI], which moves the black and white ends
+// off those worst patterns: worst swing 9 -> 7, worst run 11 -> 10. Costs ~3% of
+// black level and ~4% of white (0x00 -> 0x08, 0xFF -> 0xF6) — the price of a stable
+// link on a marginal receiver. hw-confirmed 2026-08-06 (pico-speccy + capture card,
+// together with HDMI_SOFT_CLK); ported from pico-spec 43ea8c8, where it is
+// confirmed on m1p1 + Samsung S27AG300N (yellow streaks over a white screen and a
+// coloured left-edge column both gone).
 //
-// Ported from pico-spec 43ea8c8, where SNAP+CLAMP is hw-confirmed (m1p1 +
-// Samsung S27AG300N: yellow streaks over a white screen and a coloured left-edge
-// column both gone). Its pair comes from a balanced-pair search this driver does
-// not have, so ALL the numbers above were re-measured here — do not copy them
-// back, and re-measure if the pair construction ever changes.
-// NOT hw-confirmed on pico-speccy yet. Both are CMake options (CMakeLists.txt),
-// so they A/B by rebuild: `cmake -DHDMI_TMDS_LEVEL_CLAMP=OFF` gets true black
-// back, and adding `-DHDMI_TMDS_LEVEL_SNAP=OFF` drops the nudge too — the two are
-// independent, and SNAP alone already takes mean swing 4.33 -> 3.44 for a shift
-// nobody can see, so try dropping CLAMP first. Turning either off
-// cannot break the stream — the pair construction is untouched, only which value
-// it encodes, so balance is exactly as before either way.
+// WHAT WAS TRIED AND REMOVED — HDMI_TMDS_LEVEL_SNAP (2026-08-06). pico-spec pairs
+// CLAMP with a "snap": nudge each channel by ≤2 codes to the neighbour with the
+// lowest (swing, run). On paper it is the bigger win of the two — measured here,
+// mean swing 4.33 -> 3.44, ZX worst run 10 -> 6, Gigascreen worst swing 7 -> 5 —
+// and the level shift is ≤2 codes, invisible. On hardware it broke the new UI both
+// ways it was built:
+//   * per-channel (pico-spec's form): each channel snaps independently and by a
+//     different amount, so neutral greys pick up a cast (C_BG 0x0F1218 ->
+//     0x101316 is R+1 G+1 B-2). It also quantises hard — 154 of the 255 steps
+//     collapse, 0x1A..0x1E all become 0x1C. src/ui's palette is 16 closely-spaced
+//     neutral greys, the one thing in this firmware that cannot absorb either.
+//   * spread-aware (a shared offset for near-neutral colours, per-channel for
+//     saturated ones): measured hue drift 0 on every near-neutral colour of every
+//     palette this firmware installs, keeping nearly all of the signal win. The UI
+//     was STILL broken on hw — and not as a colour fault: entering the menu left
+//     the guest frame on screen with noise in vertical bands, i.e. the menu never
+//     painted. No mechanism was found by which a legal 8-bit level value per
+//     channel could do that (the pair construction, the palette indices and
+//     palette[]/VGA all stay identical), so the cause is unexplained and was NOT
+//     colour.
+// Removed rather than left switchable: an option that breaks the menu for reasons
+// nobody understands is worse than the signal margin it buys. Reinstate only with
+// that mechanism in hand — the maths is in git history (this file, 2026-08-06), and
+// re-measure it, because those numbers belong to THIS pair construction.
 //
 // Applies to the HDMI TMDS words ONLY: graphics_set_palette stores palette[] and
 // updates the VGA LUT before this runs, so VGA output and the OSD's own colour
-// logic see the exact colour. The CRT grille taps are derived from the snapped
+// logic see the exact colour. The CRT grille taps are derived from the clamped
 // value and keep their own residual balancing (hdmi_crt_tap / hdmi_balanced_near
-// are NOT re-snapped), so the grille loses none of its depth. Sync, porch and
+// are NOT re-clamped), so the grille loses none of its depth. Sync, porch and
 // Data Island slots never come through here — they are written as raw code words.
-#ifndef HDMI_TMDS_LEVEL_SNAP
-#define HDMI_TMDS_LEVEL_SNAP 1
-#endif
 #ifndef HDMI_TMDS_LEVEL_CLAMP
 #define HDMI_TMDS_LEVEL_CLAMP 1
 #endif
 #define HDMI_TMDS_LEVEL_LO      0x08
 #define HDMI_TMDS_LEVEL_HI      0xF6
-#define HDMI_TMDS_LEVEL_RADIUS  2
 
-#if HDMI_TMDS_LEVEL_SNAP || HDMI_TMDS_LEVEL_CLAMP
-// 256-byte lookup built once on first use: the search is ~300 loop iterations per
-// value and ULA+ rewrites palette entries straight from the emulation path (per
-// frame if a guest animates them), so it must not sit in graphics_set_palette.
-static uint8_t hdmi_tmds_lvl[256];
-static bool hdmi_tmds_lvl_ready = false;
-
-#if HDMI_TMDS_LEVEL_SNAP
-// Peak |running disparity| inside the pair, starting from balance.
-static int hdmi_pair_swing(uint a, uint b) {
-    int rd = 0, peak = 0;
-    for (int k = 0; k < 20; k++) {
-        const uint c = (k < 10) ? a : b;
-        rd += ((c >> (k % 10)) & 1) ? 1 : -1;
-        const int m = (rd < 0) ? -rd : rd;
-        if (m > peak) peak = m;
-    }
-    return peak;
-}
-
-// Longest run of identical bits over two periods of the pair.
-static int hdmi_pair_run(uint a, uint b) {
-    int best = 0, run = 0, prev = -1;
-    for (int k = 0; k < 40; k++) {
-        const int i = k % 20;
-        const uint c = (i < 10) ? a : b;
-        const int bit = (c >> (i % 10)) & 1;
-        run = (bit == prev) ? run + 1 : 1;
-        prev = bit;
-        if (run > best) best = run;
-    }
-    return (best > 20) ? 20 : best;
-}
-
-// (swing, run) of the identical-colour pair emitted for channel value v. The
-// second character is hdmi_write_pair's left == right case: the serialized
-// ^0x3F03FFFFFFFFFFFF flips D0-7 and D9, which on the 10-bit character is ^0x2FF.
-static void hdmi_level_cost(uint8_t v, int *swing, int *run) {
-    const uint a = tmds_encoder(v);
-    const uint b = a ^ 0x2FFu;
-    *swing = hdmi_pair_swing(a, b);
-    *run = hdmi_pair_run(a, b);
-}
-#endif   // HDMI_TMDS_LEVEL_SNAP — CLAMP alone needs no cost model
-
-static void hdmi_build_tmds_level_lut(void) {
 #if HDMI_TMDS_LEVEL_CLAMP
-    const int lo = HDMI_TMDS_LEVEL_LO, hi = HDMI_TMDS_LEVEL_HI;
-#else
-    const int lo = 0, hi = 255;
-#endif
-    for (int v = 0; v < 256; v++) {
-        int base = (v < lo) ? lo : ((v > hi) ? hi : v);
-#if HDMI_TMDS_LEVEL_SNAP
-        int from = base - HDMI_TMDS_LEVEL_RADIUS, to = base + HDMI_TMDS_LEVEL_RADIUS;
-        if (from < lo) from = lo;
-        if (to > hi) to = hi;
-        int best_w = base, best_sw = 99, best_rn = 99;
-        for (int w = from; w <= to; w++) {
-            int sw, rn;
-            hdmi_level_cost((uint8_t)w, &sw, &rn);
-            const int dist = (w > base) ? (w - base) : (base - w);
-            const int best_dist = (best_w > base) ? (best_w - base) : (base - best_w);
-            // Lowest swing wins, then lowest run, then the smallest move.
-            if (sw < best_sw || (sw == best_sw && rn < best_rn)
-                || (sw == best_sw && rn == best_rn && dist < best_dist)) {
-                best_sw = sw; best_rn = rn; best_w = w;
-            }
-        }
-        base = best_w;
-#endif
-        hdmi_tmds_lvl[v] = (uint8_t)base;
-    }
-    hdmi_tmds_lvl_ready = true;
+static inline uint8_t hdmi_tmds_level(uint32_t v) {
+    return (v < HDMI_TMDS_LEVEL_LO) ? HDMI_TMDS_LEVEL_LO
+         : ((v > HDMI_TMDS_LEVEL_HI) ? HDMI_TMDS_LEVEL_HI : (uint8_t)v);
 }
 
 // Condition a whole RGB888 colour on its way into the TMDS encoder.
 static inline uint32_t hdmi_tmds_level888(uint32_t c) {
-    if (!hdmi_tmds_lvl_ready) hdmi_build_tmds_level_lut();
-    return ((uint32_t)hdmi_tmds_lvl[(c >> 16) & 0xff] << 16)
-         | ((uint32_t)hdmi_tmds_lvl[(c >>  8) & 0xff] <<  8)
-         |  (uint32_t)hdmi_tmds_lvl[ c        & 0xff];
+    return ((uint32_t)hdmi_tmds_level((c >> 16) & 0xff) << 16)
+         | ((uint32_t)hdmi_tmds_level((c >>  8) & 0xff) <<  8)
+         |  (uint32_t)hdmi_tmds_level( c        & 0xff);
 }
 #else
 static inline uint32_t hdmi_tmds_level888(uint32_t c) { return c; }
