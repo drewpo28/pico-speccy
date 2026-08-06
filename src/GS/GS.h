@@ -64,6 +64,11 @@ public:
     // 0x20 = LED toggle. Reset/NMI are latched and consumed by the GS-Z80
     // loop on core1 (never mutate s_cpu from core0 while z80_run is in flight).
     static void    hostWriteCtrl(uint8_t data);
+    // NeoGS warm reset — exactly what the guest gets by writing GSCTR (#33)
+    // bit 7: registers and the GS-Z80 restart from ROM, sample RAM survives.
+    // Latched for core1 like every other GSCTR request, so it is safe to call
+    // from core0 while the pump is running. No-op unless NeoGS is up.
+    static void    ngsReset();
     // NeoGS cold-boot release: the GS-Z80 is held parked from init() until
     // ESPectrum::loop pumps the SD mailbox (the fw boots off the card).
     // Idempotent, called once per loop iteration from core0.

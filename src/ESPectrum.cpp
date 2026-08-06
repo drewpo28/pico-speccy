@@ -1309,16 +1309,28 @@ void ESPectrum::reset(uint8_t romInUse) {
   // samples from PSRAM) when ZX side reboots — leftover state collides with
   // the new player's load, producing random garbled audio.
   //
-  // NeoGS is deliberately NOT reset: on real hardware a Spectrum reset does
-  // not touch the card at all (its autonomous playback survives ZX reboots —
-  // an advertised feature). Rebooting it here also re-runs the fw's SD boot
-  // walk (~2 s emulated), and detection software running right after a ZX
-  // reset hit that window and reported "GS not found" (hw log 2026-08-04).
-  // The card resets only via GSCTR (#33, bit7) or power-cycle, as on hw.
-  // The host FIFOs ARE flushed: they emulate single-byte latches, and bytes
-  // left by the previous ZX session must not desync the next one's protocol.
+  // NeoGS is reset too, but through the card's own C_GRST path (GSCTR #33
+  // bit7) rather than GS::reset(): registers and the GS-Z80 restart from ROM
+  // while sample RAM survives, and the request is latched for core1 instead of
+  // mutating s_cpu from here.
+  //
+  // This deviates from real hardware on purpose — a Spectrum reset does not
+  // touch a real card, whose autonomous playback surviving a ZX reboot is an
+  // advertised feature. It was also skipped here for a second, practical
+  // reason: rebooting re-ran the fw's SD boot walk, and detection software
+  // starting right after a ZX reset landed inside that window and reported
+  // "GS not found" (hw log 2026-08-04). That window is gone as of 2026-08-06
+  // (turbo-boot in pump(), the NgsSd read-ahead cache and the step() deadlock
+  // fix between them made the boot no longer observable), and having F11 leave
+  // the card running was the more confusing behaviour in practice — so the
+  // authenticity is traded away deliberately. If "GS not found right after
+  // F11" ever comes back, THIS is the first thing to undo.
+  //
+  // The host FIFOs are flushed immediately as well: ngs_warm_reset() clears
+  // them too, but only once core1 picks the request up, and they emulate
+  // single-byte latches whose leftovers must not reach the next ZX session.
   if (GS::enabled) {
-    if (GS::neogs) GS::hostIfaceFlush();
+    if (GS::neogs) { GS::hostIfaceFlush(); GS::ngsReset(); }
     else           GS::reset();
   }
 

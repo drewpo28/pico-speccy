@@ -2330,6 +2330,11 @@ void GS::hostIfaceFlush() {
     gs_status_and(&reg_status, ~0x81u);   // D7 (data pending) + D0 (command)
 }
 
+void GS::ngsReset() {
+    if (!enabled || !neogs) return;
+    s_ngs_grst_pending = true;   // consumed by step() on core1, like C_GRST
+}
+
 void GS::hostWriteCtrl(uint8_t data) {
     if (!enabled || !neogs) return;
     gs_host_sd_service();
