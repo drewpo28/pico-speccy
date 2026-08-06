@@ -2775,6 +2775,9 @@ void ESPectrum::loop() {
     // no-ops when idle; also serviced from the frame-pacing waits below.
     // ngsBootRelease un-parks the GS-Z80 on the first iteration — its SD
     // boot needs this mailbox pump, which doesn't exist during setup().
+    // This is the ONE place MP3 frames are decoded: once per emulated frame,
+    // before the pacing wait below, so the cost lands in the frame budget we
+    // then wait out rather than on top of it.
     if (GS::neogs) { GS::ngsBootRelease(); NgsSd::service(); NgsMp3::service(); }
     // Update stats every 50 frames
     if (VIDEO::OSD && VIDEO::framecnt >= 10) {
@@ -3037,7 +3040,16 @@ void ESPectrum::loop() {
       if (Config::v_sync_enabled) {
         for (;;) {
           if (ZiFi::cdcNicActive) ZiFi::cdcPump();
-          if (GS::neogs) { NgsSd::service(); NgsMp3::service(); }
+          // SD only. An MP3 frame decode is an indivisible multi-millisecond
+          // unit of work, and started here it delays our notice of v_sync by
+          // its whole duration — the frame ends late, which shows up as FPS
+          // slightly under the Pentagon 48.83 and as clicks in the ZX audio
+          // (hw 2026-08-06: ~47.8 fps with MP3 playing). Decoding happens once
+          // per frame further up, BEFORE this wait, where its cost is absorbed
+          // by shortening the idle instead of overrunning the frame — 48.8
+          // opportunities a second against the 38.28 a 44.1 kHz stream needs.
+          // The SD mailbox does have to stay: the GS-Z80 blocks on it.
+          if (GS::neogs) NgsSd::service();
           if (v_sync) {
             v_sync = false;
             break;
@@ -3055,7 +3067,8 @@ void ESPectrum::loop() {
           } else
           if (GS::neogs) {
             int64_t e = (int64_t)time_us_64() + idle;
-            while ((int64_t)time_us_64() < e) { NgsSd::service(); NgsMp3::service(); }
+            // SD only — see the note in the v_sync branch above.
+            while ((int64_t)time_us_64() < e) NgsSd::service();
           } else
           {
             delayMicroseconds(idle);
