@@ -105,10 +105,17 @@ static volatile uint32_t s_cmd_hist_pos = 0;
 // neither containing the garbage bytes NPL choked on). 8 deep, 512 B each —
 // 4 KB, negligible next to the rest of the trace/cache buffers. Ring index 0
 // = most recently served; frozen at the first bad request, read via probe.
+// Gated 2026-08-06: the investigation this served (the 0x52313A80 wild read)
+// is closed — it is NPL's own uninitialised variable, handled and documented —
+// and the cost is not small: 4 KB of RAM plus a 512-byte copy on EVERY sector
+// read, which during MP3 streaming is ~80 copies a second. The cheap counters
+// below stay always-on; only the bulk capture needs a trace build.
+#if NGS_TRACE
 #define SNAP_DEPTH 8
 static volatile uint8_t  s_snap_buf[SNAP_DEPTH][512];
 static volatile uint32_t s_snap_sec[SNAP_DEPTH];
 static volatile uint32_t s_snap_pos = 0;     // next ring slot to write
+#endif
 static volatile uint32_t s_snap_bad_arg = 0; // the offending sector number
 static volatile bool     s_snap_frozen = false;
 
@@ -116,9 +123,11 @@ static volatile bool     s_snap_frozen = false;
 // (0x52 0x31 0x3A) and neither of the two snapshot sectors contains them, so
 // record every served sector whose data holds that triple — that is where the
 // scanner picked the number up. Last 4 hits, cheap (a 512-byte scan per read).
+#if NGS_TRACE
 static volatile uint32_t s_pat_sec[4];
 static volatile uint32_t s_pat_off[4];
 static volatile uint32_t s_pat_cnt = 0;
+#endif
 
 // Error attribution: `err` alone can't tell an out-of-range request (guest
 // asked for a sector past the card) from a genuine disk_read failure, and the
@@ -614,6 +623,7 @@ void NgsSd::service() {
                    s_secbuf[0x1CA], s_secbuf[0x1CB], s_secbuf[0x1CC], s_secbuf[0x1CD],
                    s_secbuf[0x1FE], s_secbuf[0x1FF]);
     }
+#if NGS_TRACE
     if (ok && op == REQ_READ && !s_snap_frozen) {
         for (int i = 0; i < 510; i++) {
             if (s_secbuf[i] == 0x52 && s_secbuf[i+1] == 0x31 && s_secbuf[i+2] == 0x3A) {
@@ -633,6 +643,7 @@ void NgsSd::service() {
         s_snap_sec[p] = sector;
         s_snap_pos++;
     }
+#endif  // NGS_TRACE
 #if NGS_TRACE > 1
     Debug::log("NgsSd: %s sec=%lu ok=%d %02X %02X %02X %02X %02X %02X %02X %02X ... %02X %02X",
                op == REQ_READ ? "rd" : "wr", (unsigned long)sector, (int)ok,

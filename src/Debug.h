@@ -12,9 +12,7 @@ using namespace std;
 
 // Mirror of DEBUG_LOG_PATH from FileUtils.h. Kept as a literal here so Debug.h
 // stays a leaf header (FileUtils.h pulls MemESP.h which depends on Config).
-// TEMPORARY (see FileUtils.h config-path experiment): flattened alongside it.
-#define STORAGE_LOG "/config-log.txt"
-// #define STORAGE_LOG "/.config/pico-speccy/debug.log"
+#define STORAGE_LOG "/.config/pico-speccy/debug.log"
 
 // Current stack pointer — for stack-depth watermarks in Debug::log lines.
 static inline uint32_t debug_sp() { uint32_t sp; __asm volatile("mov %0, sp" : "=r"(sp)); return sp; }
