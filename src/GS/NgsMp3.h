@@ -34,6 +34,11 @@ bool mddrq();                           // SSTAT b0: room for more data
 void sciWrite(uint8_t addr, uint16_t v); // completed SCI register write
 bool active();                          // decoder allocated (not stub)
 uint16_t decodeTimeSec();               // SCI_DECODE_TIME value
+// SCI_HDAT1 / SCI_HDAT0 — the MPEG header of the last decoded frame (bytes 0-1
+// and 2-3). Players read these to show sample rate and bitrate, and take a zero
+// low byte of HDAT1 to mean the decoder is idle.
+uint16_t hdat1();
+uint16_t hdat0();
 
 // Core0: decode pending frames (bounded work per call; cheap no-op when idle).
 void service();

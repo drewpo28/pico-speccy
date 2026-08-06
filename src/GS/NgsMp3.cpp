@@ -81,6 +81,7 @@ static Buffer    s_stateBuf;
 static volatile uint32_t s_in_w = 0, s_in_r = 0;    // producer core1 / consumer core0
 static volatile uint32_t s_out_w = 0, s_out_r = 0;  // producer core0 / consumer core1
 static volatile bool     s_reset_pending = false;
+static bool              s_drq_high = true;   // DREQ state (hysteretic, see mddrq)
 
 static int      s_asm_len = 0;        // valid bytes in asm_buf (core0 only)
 static uint32_t s_src_hz = 44100;     // last decoded frame's rate
@@ -93,6 +94,16 @@ static uint64_t s_decoded_samples = 0;              // per channel, at s_src_hz
 
 static uint32_t s_st_frames = 0, s_st_junk = 0, s_st_over = 0, s_st_under = 0;
 static uint32_t s_st_resets = 0;      // pipeline flushes (MPXRS / SCI soft reset)
+
+// SCI_HDAT1 / SCI_HDAT0 — the VS10xx "what am I decoding" registers, and the
+// only way a player learns the stream's rate and bitrate: NPL reads both and
+// treats a zero LOW byte of HDAT1 as "nothing is playing", which is why its
+// Hz / kbps / Time Play fields all stayed blank while audio was coming out
+// (hw 2026-08-06). The layout is simply the MPEG frame header: HDAT1 = header
+// bytes 0-1 (syncword, ID, layer, protect), HDAT0 = bytes 2-3 (bitrate index,
+// sample rate, padding, mode, emphasis) — so we publish the header of the last
+// frame that actually decoded, and zero both when the pipeline is flushed.
+static volatile uint16_t s_hdat1 = 0, s_hdat0 = 0;
 
 // First bytes of each stream, captured on core1 in mdSend() and printed by the
 // core0 health tick (Debug::log from core1 blocks for milliseconds — never put
@@ -158,6 +169,7 @@ bool NgsMp3::init() {
     s_rs_prev_l = s_rs_prev_r = 0;
     s_gain_l = s_gain_r = 16384;
     s_decoded_samples = 0;
+    s_hdat1 = s_hdat0 = 0;
     s_reset_pending = false;
     Debug::log("NgsMp3: Helix ready (buffers %u B in %s, state %u/%u B in %s)",
                (unsigned)sizeof(Mp3State), s_stateBuf.tierName(),
@@ -255,6 +267,7 @@ static void resample_frame(const short* pcm, int samples, int channels, uint32_t
     }
 }
 
+#if NGS_TRACE
 // 1 Hz decoder health line. Deliberately NOT under NGS_TRACE: that toggle also
 // turns on the GS health line and (at level 2) the SD command flood, and the
 // MP3 path needs watching on its own — "sound keeps cutting out" is a rate
@@ -293,9 +306,20 @@ static void mp3_health_tick() {
     uint32_t df = s_st_frames - s_pf, dj = s_st_junk  - s_pj;
     uint32_t dov = s_st_over  - s_po, du = s_st_under - s_pu;
     uint32_t dr = s_st_resets - s_pr;
+    extern volatile uint16_t gs_dbg_bb_pc;
+    extern volatile uint16_t gs_dbg_bb_ret;
+    extern volatile uint8_t  gs_dbg_bb_st;
+    extern volatile uint32_t gs_dbg_bb_polls;
+    extern uint16_t gs_dbg_gs_pc(void);
+    static uint32_t s_pbb = 0;
+    uint32_t dbb = gs_dbg_bb_polls - s_pbb;
+    s_pbb = gs_dbg_bb_polls;
     uint32_t in_depth  = s_in_w  - s_in_r;
     uint32_t out_depth = s_out_w - s_out_r;
-    bool active = df || dj || dov || du || dr || in_depth || out_depth;
+    // Print while the host is hammering #BB even if every other counter is
+    // zero: a wedged player is all zeroes, and staying quiet there is exactly
+    // how the first hang capture lost its last seconds.
+    bool active = df || dj || dov || du || dr || in_depth || out_depth || dbb > 1000;
     s_last_us = now;
     s_pf = s_st_frames; s_pj = s_st_junk; s_po = s_st_over;
     s_pu = s_st_under;  s_pr = s_st_resets;
@@ -304,18 +328,42 @@ static void mp3_health_tick() {
     // // read together (a stream that is corrupt because the guest fetched the
     // // wrong sectors looks identical, in the MP3 counters alone, to one that was
     // // mangled in transit).
-    // NgsSd::Stats sd;
-    // NgsSd::getStats(sd);
-    // static uint32_t s_p17 = 0, s_pbrk = 0;
-    // uint32_t d17 = sd.reads17 - s_p17, dbrk = sd.seq_break - s_pbrk;
-    // s_p17 = sd.reads17; s_pbrk = sd.seq_break;
-    // Debug::log("MP3: fr=%u junk=%u ovr=%u und=%u rst=%u hz=%u in=%u/%u out=%u/%u | SD rd17=%u brk=%u",
-    //            (unsigned)df, (unsigned)dj, (unsigned)dov, (unsigned)du,
-    //            (unsigned)dr, (unsigned)s_src_hz,
-    //            (unsigned)in_depth,  (unsigned)MP3_IN_SIZE,
-    //            (unsigned)out_depth, (unsigned)MP3_OUT_SIZE,
-    //            (unsigned)d17, (unsigned)dbrk);
+    NgsSd::Stats sd;
+    NgsSd::getStats(sd);
+    static uint32_t s_p17 = 0, s_pbrk = 0;
+    uint32_t d17 = sd.reads17 - s_p17, dbrk = sd.seq_break - s_pbrk;
+    s_p17 = sd.reads17; s_pbrk = sd.seq_break;
+    // Host #BB spin state (GS.cpp): polls/s plus where the host is spinning.
+    // Printed here because a wedged player and a starved decoder look the same
+    // from the outside, and these two lines together tell them apart.
+    Debug::log("MP3: fr=%u junk=%u ovr=%u und=%u rst=%u hz=%u in=%u/%u out=%u/%u | SD rd17=%u brk=%u"
+               " | BB %u/s zxpc=%04X ret=%04X st=%02X gspc=%04X hdat=%04X/%04X",
+               (unsigned)df, (unsigned)dj, (unsigned)dov, (unsigned)du,
+               (unsigned)dr, (unsigned)s_src_hz,
+               (unsigned)in_depth,  (unsigned)MP3_IN_SIZE,
+               (unsigned)out_depth, (unsigned)MP3_OUT_SIZE,
+               (unsigned)d17, (unsigned)dbrk,
+               (unsigned)dbb, (unsigned)gs_dbg_bb_pc, (unsigned)gs_dbg_bb_ret,
+               (unsigned)gs_dbg_bb_st,
+               (unsigned)gs_dbg_gs_pc(),
+               (unsigned)s_hdat1, (unsigned)s_hdat0);
+    // Last 16 handshake steps. P=host wrote #B3, C=host wrote #BB,
+    // D=card took the parameter, K=card cleared the command bit,
+    // W=card wrote an answer byte, R=host took it. Each is byte/status.
+    if (dbb > 1000) {
+        extern void gs_dbg_handshake(char* out, int cap);
+        extern void gs_dbg_npl_vars(char* out, int cap);
+        char buf[500];
+        gs_dbg_npl_vars(buf, sizeof(buf));
+        Debug::log("NPL: %s", buf);
+        gs_dbg_handshake(buf, sizeof(buf));
+        Debug::log("MP3 hs: %s", buf);
+    }
 }
+
+#else
+#define mp3_health_tick() ((void)0)
+#endif  // NGS_TRACE
 
 void NgsMp3::service() {
     if (!s_st) return;
@@ -329,6 +377,7 @@ void NgsMp3::service() {
         s_rs_phase = 0;
         s_rs_prev_l = s_rs_prev_r = 0;
         s_decoded_samples = 0;
+        s_hdat1 = s_hdat0 = 0;              // "nothing playing" until a frame lands
         // Helix has no reset entry point and needs none: flushing our buffers
         // is enough. The next frames come back MAINDATA_UNDERFLOW while its bit
         // reservoir refers to bytes we dropped, then it picks the stream up.
@@ -377,6 +426,8 @@ void NgsMp3::service() {
             s_st_junk += (uint32_t)off;
         }
 
+        const uint8_t  h0 = s_st->asm_buf[0], h1 = s_st->asm_buf[1];
+        const uint8_t  h2 = s_st->asm_buf[2], h3 = s_st->asm_buf[3];
         unsigned char* p    = s_st->asm_buf;
         int            left = s_asm_len;
         int            err  = MP3Decode(s_dec, &p, &left, s_st->frame_pcm, 0);
@@ -414,6 +465,8 @@ void NgsMp3::service() {
         int ch = fi.nChans ? fi.nChans : 2;
         int per_ch = fi.outputSamps / ch;         // Helix reports the total
         if (per_ch > 0) {
+            s_hdat1 = (uint16_t)((h0 << 8) | h1);
+            s_hdat0 = (uint16_t)((h2 << 8) | h3);
             s_st_frames++;
             s_decoded_samples += (uint32_t)per_ch;
             resample_frame(s_st->frame_pcm, per_ch, ch, (uint32_t)fi.samprate);
@@ -429,10 +482,12 @@ void __not_in_flash_func(NgsMp3::mdSend)(uint8_t v) {
     if (!s_st) return;                          // stub mode: discard
     uint32_t w = s_in_w;
     if (w - s_in_r >= MP3_IN_SIZE) { s_st_over++; return; }
+#if NGS_TRACE
     if (s_sniff_len < MP3_SNIFF_LEN) {
         s_sniff[s_sniff_len] = v;
         if (++s_sniff_len == MP3_SNIFF_LEN) { __dmb(); s_sniff_ready = true; }
     }
+#endif
     s_st->in_ring[w & MP3_IN_MASK] = v;
     __dmb();
     s_in_w = w + 1;
@@ -440,9 +495,26 @@ void __not_in_flash_func(NgsMp3::mdSend)(uint8_t v) {
 
 bool __not_in_flash_func(NgsMp3::mddrq)() {
     if (!s_st) return true;                     // stub: infinitely fast bit bucket
-    // DREQ high = the chip can take a burst (real VS1011: ≥32 bytes). Keep a
-    // fat margin so a full burst between polls never overruns.
-    return MP3_IN_SIZE - (s_in_w - s_in_r) >= 1024;
+    // DREQ, WITH HYSTERESIS — and the hysteresis is the whole point.
+    //
+    // A real VS1011 drains its FIFO smoothly at the bitrate, so DREQ flickers
+    // and the feeding loop always makes progress. We drain in ~1 KB lumps once
+    // per decoded frame, and a bare threshold turns that into a pathological
+    // trickle: the decoder frees ~1044 bytes, DREQ opens, the guest pushes its
+    // next 32-byte block, free drops back under the mark and it stalls again.
+    // NPL's RON_MP3 rechecks DREQ every 32 bytes but only returns to its
+    // command poll (OPROS) after a WHOLE 512-byte sector, so one sector took a
+    // dozen-plus frames and the host got serviced barely twice a second — the
+    // player's clock stopped and its keys went dead while audio played on
+    // (hw 2026-08-06, with the input ring pinned at 7170..7199 of 8192).
+    //
+    // So: once high, stay high until the ring is genuinely full; once low, wait
+    // for a real chunk of room before re-arming. The guest then dumps several
+    // sectors in a burst, polling the host between each, and parks cleanly.
+    uint32_t freeb = MP3_IN_SIZE - (s_in_w - s_in_r);
+    if (s_drq_high) { if (freeb < 256)  s_drq_high = false; }
+    else            { if (freeb >= 2048) s_drq_high = true;  }
+    return s_drq_high;
 }
 
 void __not_in_flash_func(NgsMp3::mixTick)(int32_t& l, int32_t& r) {
@@ -466,3 +538,6 @@ void NgsMp3::getStats(Stats& out) {
     out.underruns = s_st_under;
     out.hz        = s_src_hz;
 }
+
+uint16_t NgsMp3::hdat1() { return s_hdat1; }
+uint16_t NgsMp3::hdat0() { return s_hdat0; }

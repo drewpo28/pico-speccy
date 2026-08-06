@@ -29,6 +29,114 @@ static inline void gs_status_and(volatile uint8_t* p, uint8_t mask) {
     __atomic_fetch_and(p, mask, __ATOMIC_SEQ_CST);
 }
 
+// Card->host data mailbox, NeoGS only. {full flag, byte} live in ONE word so
+// the host can claim a byte with a single exchange.
+//
+// The individual status bits were always atomic, but read-then-clear is two
+// operations and the two Z80s run on two cores. GET_RZN sends a 16-bit reply as
+// OUT(03) H / WDN / OUT(03) L, and WDN gives up after only 256 polls (~0.3 ms
+// of GS time). Load core0 enough that the ZX Z80 is late and this happens:
+//   card: OUT(03) H, D7=1
+//   host: reads reg_data_gs -> H          (has not cleared D7 yet)
+//   card: WDN times out, OUT(03) L, D7=1
+//   host: ...now clears D7 — wiping the flag that belonged to L
+// The host then waits in WN for a byte that is already sitting in the latch,
+// forever (hw 2026-08-06: NPL wedged at zxpc=8B85 st=00 on FGETVTS, with the
+// card healthy and looping in its own OPROS). Claiming the byte by exchange
+// closes the window: a byte stored after our exchange keeps its flag, and one
+// stored before it is simply the newer latch value, which is what the hardware
+// would have too.
+// Card->host data path, NeoGS only: a short QUEUE, not the hardware's single
+// latch — on purpose.
+//
+// Real #B3 is one byte and a second write overwrites the first; the firmware
+// avoids that by waiting for the host to read (GET_RZN: OUT(03) H / WDN /
+// OUT(03) L, and OUTDATA likewise for the 6-byte clock). WDN gives up after 256
+// polls, ~0.33 ms of GS time, which on real hardware is an eternity because
+// both CPUs run continuously.
+//
+// Here they do not. The GS-Z80 runs nonstop on core1 while the ZX-Z80 only
+// advances when core0 is executing a frame — during the pacing wait, SD service
+// or an MP3 frame decode it is stopped for MILLISECONDS. So WDN times out, the
+// card writes the low byte over the high one, and the host takes the wrong
+// value and then waits forever for a byte that no longer exists. Captured
+// exactly (hw 2026-08-06): "W20/00 W00/80 R00/80" — both bytes written, one
+// read, the reply half lost, NPL wedged in WN on FGETVTS.
+//
+// Queueing preserves what the firmware meant to send. It is flushed whenever
+// the host starts a new command, so a desync cannot outlive one exchange.
+// 512, not 16. The queue has to hold the largest burst the firmware can emit
+// while the ZX side is not executing, and that is not a 2-byte GET_RZN reply:
+// GET_LNG answers with OUTDATA E=0, i.e. a FULL 256 BYTES (the file name), sent
+// back-to-back because WDN gives up waiting for the host after 256 polls. With
+// a 16-deep ring the host read sixteen bytes and then waited forever for the
+// seventeenth, which we had already dropped — INI_E never returns and the whole
+// UI is dead while the card happily keeps playing (hw 2026-08-06: fr=39, brk=0,
+// flags=01, host parked at ret=8B9D). 512 leaves 2x margin over the worst case.
+#define GS_G2H_SIZE 512
+#define GS_G2H_MASK (GS_G2H_SIZE - 1)
+static volatile uint8_t  s_g2h_buf[GS_G2H_SIZE];
+static volatile uint32_t s_g2h_w = 0, s_g2h_r = 0;
+static inline bool gs_g2h_empty() { return s_g2h_w == s_g2h_r; }
+
+#if NGS_TRACE
+// Handshake recorder. Only the SIX events that make up a command exchange are
+// logged — they happen at command rate, not stream rate, so a 16-deep ring is
+// free. The status polls (#BB / ZXSTAT) are deliberately excluded: they are the
+// 100k/s noise this is meant to see through.
+//   P host wrote #B3 (parameter)      D card read port 2 (took it)
+//   C host wrote #BB (command)        K card cleared the command bit
+//   W card wrote port 3 (answer)      R host read #B3 (took it)
+// Printed by the MP3 health line, so a wedge shows its own last 16 steps.
+// 64 deep, and consecutive repeats of the same (tag,data) collapse into a
+// count. A polling UI otherwise fills the whole window with one W/R pair and
+// buries the command sequence that led there — which is the part worth seeing.
+#define GS_HS_SIZE 64
+#define GS_HS_MASK (GS_HS_SIZE - 1)
+struct GsHsEntry { uint8_t tag, data, st, rep; };
+static volatile GsHsEntry s_hs[GS_HS_SIZE];
+static volatile uint32_t  s_hs_pos = 0;
+// The UI polls constantly, so by the time a wedge is noticed the ring holds
+// only the idle ping-pong. Arm a countdown on a file-switch key (param 1..5
+// ahead of command 0x1F) and freeze shortly after: what stays is the window
+// around the switch, which is the part that matters.
+static volatile uint32_t s_hs_arm = 0;
+static volatile bool     s_hs_frozen = false;
+static volatile uint8_t  s_hs_last_p = 0;
+// Freeze on the WEDGE itself, not on the command that precedes it: the switch
+// window turned out healthy (both reply bytes delivered), so the failure is
+// further along. hostReadBB bumps this on every poll and any handshake event
+// clears it; a long run of pure polling with no exchange is the wedge, and
+// freezing then leaves the last 64 real events sitting in the ring.
+static volatile uint32_t s_hs_quiet = 0;
+#define GS_HS_QUIET_TRIP 300000u          // ≈2.5 s of a 117k/s poll loop
+void gs_dbg_hs_arm(void) { if (!s_hs_frozen && !s_hs_arm) s_hs_arm = 48; }
+static inline void __not_in_flash_func(gs_hs)(uint8_t tag, uint8_t data, uint8_t st) {
+    if (s_hs_frozen) return;
+    s_hs_quiet = 0;
+    if (s_hs_arm && --s_hs_arm == 0) s_hs_frozen = true;
+    uint32_t last = s_hs_pos - 1;
+    if (s_hs_pos) {
+        volatile GsHsEntry& e = s_hs[last & GS_HS_MASK];
+        if (e.tag == tag && e.data == data && e.rep < 250) { e.rep++; return; }
+    }
+    uint32_t i = __atomic_fetch_add(&s_hs_pos, 1, __ATOMIC_RELAXED) & GS_HS_MASK;
+    s_hs[i].tag = tag; s_hs[i].data = data; s_hs[i].st = st; s_hs[i].rep = 0;
+}
+void gs_dbg_handshake(char* out, int cap) {
+    uint32_t end = s_hs_pos;
+    int n = snprintf(out, cap, s_hs_frozen ? "[frozen] " : "");
+    for (uint32_t k = (end >= GS_HS_SIZE ? end - GS_HS_SIZE : 0); k < end && n < cap - 16; k++) {
+        const volatile GsHsEntry& e = s_hs[k & GS_HS_MASK];
+        if (e.rep) n += snprintf(out + n, cap - n, "%c%02X*%u ", e.tag ? e.tag : '?', e.data, e.rep + 1);
+        else       n += snprintf(out + n, cap - n, "%c%02X ",    e.tag ? e.tag : '?', e.data);
+    }
+    out[n > 0 ? n : 0] = 0;
+}
+#else
+#define gs_hs(tag, data, st) ((void)0)
+#endif
+
 extern uint8_t* PSRAM_DATA;
 extern uint32_t butter_psram_size();
 
@@ -39,6 +147,7 @@ extern uint32_t butter_psram_size();
 // Audio quality on this path is best-effort — simple AY/PT3 may work,
 // MOD playback will likely glitch when core0 is busy with PSRAM.
 #include "psram_spi.h"
+#include <stdio.h>
 
 // Backend selection: when true, s_gs_ram_base is an offset into SPI PSRAM
 // (use read*/write*psram); when false, s_gs_ram is a direct pointer
@@ -59,6 +168,7 @@ extern int butter_pages;
 // We can't pull that header in here because Z80_redcode.h already defines
 // a different `struct Z80`, so the two TUs must stay disjoint.
 extern "C" uint16_t gs_host_z80_pc(void);
+extern "C" uint16_t gs_host_z80_ret(void);
 
 // =================================================================
 // GS port-IO trace ring buffer (debug-only)
@@ -676,6 +786,16 @@ static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 
 // IN/OUT 0x05, after the command is processed. ZPlayer polls
 // D0=0 as the signal that the response is ready; clearing D0
 // on read (before processing) breaks GS detection.
+// D7 is one flag shared by both directions, so every place that clears it must
+// agree on when "nothing is pending" is true. Getting this wrong in only one of
+// the three sites is invisible until a command both takes parameters AND
+// returns data — NAMELNG does exactly that (two parameter bytes, then a
+// 256-byte name), and the card reading its parameter would clear the flag that
+// belonged to a queued reply byte, stranding the host in WN.
+static inline bool gs_hs_idle() {
+    return gs_g2h_empty() && (s_host_fifo_w == s_host_fifo_r);
+}
+
 static inline uint8_t __not_in_flash_func(gsio_in_cmd)() {
     uint8_t v;
     uint32_t r = s_cmd_fifo_r;
@@ -715,19 +835,20 @@ static inline uint8_t __not_in_flash_func(gsio_in_data)() {
             v = s_host_fifo[r & GS_HOST_FIFO_MASK];
             s_host_fifo_r = r + 1;
             s_p02_latch = v;
-            if ((r + 1) == w) {
+            if ((r + 1) == w && (!s_ngs || gs_g2h_empty())) {
                 gs_status_and(&GS::reg_status, ~0x80u);
             }
         } else {
             // D7 said data ready but FIFO empty — race; hold latch.
             v = s_p02_latch;
-            gs_status_and(&GS::reg_status, ~0x80u);
+            if (!s_ngs || gs_g2h_empty()) gs_status_and(&GS::reg_status, ~0x80u);
         }
     } else {
         // D7=0: idle drain peek. Return last latched byte without
         // consuming. ROM's 0x02C2 will discard via JP P,0x0295.
         v = s_p02_latch;
     }
+    gs_hs('D', v, GS::reg_status);
     gs_trace_gs(TR_IN02, v, GS::reg_status);
     return v;
 }
@@ -744,17 +865,42 @@ static inline uint8_t __not_in_flash_func(gsio_in_selfdata)() {
 // ZXDATWR: publish a byte for the host and raise D7.
 static inline void __not_in_flash_func(gsio_out_data)(zuint8 value) {
     GS::reg_data_gs = value;
+    if (s_ngs) {
+        uint32_t w = s_g2h_w;
+        // Overflow can only mean the host has stopped reading entirely; dropping
+        // anything desynchronises the transfer either way, so keep the oldest
+        // (the bytes the host is about to ask for) and discard the newest.
+        if (w - s_g2h_r >= GS_G2H_SIZE) { gs_hs('!', value, GS::reg_status); return; }
+        s_g2h_buf[w & GS_G2H_MASK] = value;
+        __dmb();
+        s_g2h_w = w + 1;
+    }
+    gs_hs('W', value, GS::reg_status);
     __dmb();  // data must be visible to core0 before setting D7
     gs_status_or(&GS::reg_status, 0x80u);
 }
 
-// CLRCBIT (IN or OUT 0x05): clear D0 only. D7 is left untouched — it means
-// "GS response ready for host" and must stay set until the host
-// reads B3 (hostReadB3). Clearing D7 here races with ZPlayer's
-// wait-D7 loop: GS sets D7 via OUT(03) then immediately fires
-// OUT(05), clearing D7 before the host enters its wait loop.
-// D7 for data-streaming (FIFO) is handled by IN(02) + FIFO drain.
+#if NGS_TRACE
+// NPL's own state block (play_on_ngs.a80: INIT_VAR 0x4168), which lives in the
+// card's fixed 0x4000-0x7FFF window and is therefore directly readable here.
+// The handshake turned out healthy while the player still did nothing, so what
+// matters now is what the player thinks its state IS: flags (bit B_PLAY_STOP
+// gates PLAYMP3 entirely), status, the file count and the current index.
+void gs_dbg_npl_vars(char* out, int cap) {
+    if (!s_ngs || !s_gs_work_ram) { if (cap) out[0] = 0; return; }
+    const uint8_t* v = s_gs_work_ram + (0x4168 - 0x4000);
+    snprintf(out, cap,
+             "flags=%02X st=%02X vts=%02X%02X cnt=%u num=%u ftype=%02X chip=%02X tmo=%u",
+             v[0x00], v[0x01], v[0x03], v[0x02],
+             (unsigned)(v[0x06] | (v[0x07] << 8)),
+             (unsigned)(v[0x08] | (v[0x09] << 8)),
+             v[0x1D], v[0x1C],
+             (unsigned)(v[0x16] | (v[0x17] << 8)));
+}
+#endif  // NGS_TRACE
+
 static inline void __not_in_flash_func(gsio_clr_cbit)() {
+    gs_hs('K', 0, GS::reg_status);
     gs_status_and(&GS::reg_status, ~0x01u);
     if (s_cmd_fifo_r != s_cmd_fifo_w) {
         gs_status_or(&GS::reg_status, 0x01u);
@@ -763,7 +909,7 @@ static inline void __not_in_flash_func(gsio_clr_cbit)() {
 
 // Data-port ack (OUT 0x02) — only clear D7 if data FIFO empty.
 static inline void __not_in_flash_func(gsio_ack_data)() {
-    if (s_host_fifo_r == s_host_fifo_w) {
+    if (s_host_fifo_r == s_host_fifo_w && (!s_ngs || gs_g2h_empty())) {
         gs_status_and(&GS::reg_status, ~0x80u);
     }
 }
@@ -1057,6 +1203,13 @@ static uint16_t ngs_mp3_read_reg(uint8_t addr) {
         // analog-powerdown bits) would otherwise wipe the version field and
         // resurrect the bug above at run time.
         return (uint16_t)((s_mp3_reg[1] & ~0x00F0u) | NGS_VS_SS_VER);
+    }
+    if (addr == 8 || addr == 9) {
+        // SCI_HDAT0 / SCI_HDAT1: what the decoder is currently playing. Zero
+        // while nothing is being decoded, which is exactly how players tell
+        // "idle" from "playing" (see the note in NgsMp3.cpp).
+        if (!NgsMp3::active()) return 0;
+        return (addr == 9) ? NgsMp3::hdat1() : NgsMp3::hdat0();
     }
     if (addr == 4) {
         // SCI_DECODE_TIME: real seconds from the decoder; stub mode falls
@@ -2188,21 +2341,67 @@ static inline void gs_host_sd_service() {
 uint8_t GS::hostReadB3() {
     GS_PERF(s_perf_h_b3r++);
     gs_host_sd_service();
-    uint8_t v = reg_data_gs;
-    __dmb();  // consume data before clearing the flag
-    uint32_t fifo_used = s_host_fifo_w - s_host_fifo_r;
-    // D7 is multiplexed: "GS→host response ready" (set by firmware OUT 03)
-    // AND "host→GS FIFO non-empty" (set by hostWriteB3). Only clear if the
-    // FIFO is empty — otherwise firmware loses the FIFO indicator and never
-    // drains. Z-Player's tight OUT B3/IN B3 pattern hits this race.
-    if (fifo_used == 0) {
-        gs_status_and(&reg_status, ~0x80u);
+    uint8_t v;
+    if (s_ngs) {
+        // One exchange takes the byte AND its flag (see s_g2h). Empty means the
+        // card has not answered yet: return the latch unchanged, as hardware
+        // would, and leave the flags alone.
+        uint32_t r = s_g2h_r;
+        __dmb();
+        if (r != s_g2h_w) { v = s_g2h_buf[r & GS_G2H_MASK]; s_g2h_r = r + 1; }
+        else              { v = reg_data_gs; }   // nothing pending: hold the latch
+        reg_data_gs = v;
+        // D7 remains the single stored bit the firmware has always seen; it
+        // just has to account for both directions now — a queued reply byte or
+        // an unread host byte keeps it up.
+        if (gs_hs_idle()) gs_status_and(&reg_status, ~0x80u);
+    } else {
+        v = reg_data_gs;
+        __dmb();  // consume data before clearing the flag
+        uint32_t fifo_used = s_host_fifo_w - s_host_fifo_r;
+        // D7 is multiplexed: "GS→host response ready" (set by firmware OUT 03)
+        // AND "host→GS FIFO non-empty" (set by hostWriteB3). Only clear if the
+        // FIFO is empty — otherwise firmware loses the FIFO indicator and never
+        // drains. Z-Player's tight OUT B3/IN B3 pattern hits this race.
+        if (fifo_used == 0) {
+            gs_status_and(&reg_status, ~0x80u);
+        }
     }
+    gs_hs('R', v, reg_status);
     gs_trace_host(TR_B3r, v, reg_status);
     return v;
 }
 
+#if NGS_TRACE
+// Host-side #BB spin sampler. NPL's protocol is three near-identical 3-byte
+// poll loops (WC waits for the command bit to clear, WN for the data bit to
+// set, WD for it to clear — face_play.a80), and when the player wedges, WHICH
+// one it is in decides where to look: WC = the card never took the command,
+// WN = it never answered, WD = it never consumed our byte. The host PC plus the
+// status byte separate them. Sampled once every 4096 polls, so the cost stays
+// invisible on a path that runs >100k/s, and cheap enough to leave always on —
+// this is a hang diagnostic, and hangs do not wait for a debug build.
+volatile uint16_t gs_dbg_bb_pc = 0;
+volatile uint16_t gs_dbg_bb_ret = 0;
+volatile uint8_t  gs_dbg_bb_st = 0;
+volatile uint32_t gs_dbg_bb_polls = 0;
+
+// Where the GS-Z80 itself is parked. The host-side PC says which handshake the
+// ZX is waiting on; this says what the card is doing instead of answering, and
+// the two together are what turn "it hung" into an address to look up.
+uint16_t gs_dbg_gs_pc(void);
+
+#endif  // NGS_TRACE
+
 uint8_t GS::hostReadBB() {
+#if NGS_TRACE
+    if ((++gs_dbg_bb_polls & 0xFFFu) == 0) {
+        gs_dbg_bb_pc = gs_host_z80_pc();
+        gs_dbg_bb_ret = gs_host_z80_ret();
+        gs_dbg_bb_st = reg_status;
+    }
+    if (s_ngs && !s_hs_frozen && ++s_hs_quiet >= GS_HS_QUIET_TRIP) s_hs_frozen = true;
+#endif
     GS_PERF(s_perf_h_bbr++);
     gs_host_sd_service();
     uint8_t v = reg_status | 0x7E;
@@ -2258,11 +2457,30 @@ void GS::hostWriteB3(uint8_t data) {
         }
         w = s_host_fifo_w;
     }
+    if (s_ngs) {
+        // NeoGS: #B3 host->card is a single-byte LATCH on real hardware, not a
+        // queue — a second write simply overwrites the first. Emulating it as a
+        // deep FIFO pins D7, because hostReadB3() below refuses to clear the
+        // flag while anything is still unread, and D7 is SHARED with the
+        // card->host direction. NPL's two-byte replies then break: GET_RZN
+        // sends the high byte, waits in WDN for D7 to clear (bounded, 256
+        // polls), never sees it because our leftover byte holds the flag up,
+        // times out and overwrites its own high byte with the low one. The host
+        // takes the wrong byte, the two sides slip by one, and the next reply
+        // never arrives — the player wedges in WN forever (hw 2026-08-06:
+        // zxpc=8B85 st=00 with the card healthy and looping in OPROS).
+        // Dropping the unread byte here is what the hardware does.
+        s_host_fifo_r = w;
+    }
     s_host_fifo[w & GS_HOST_FIFO_MASK] = data;
     __dmb();
     s_host_fifo_w = w + 1;
     __dmb();
-    gs_status_or(&reg_status, 0x80u);  // D7=1: FIFO non-empty
+    gs_status_or(&reg_status, 0x80u);  // D7=1: data byte pending for the card
+    gs_hs('P', data, reg_status);
+#if NGS_TRACE
+    s_hs_last_p = data;
+#endif
 }
 
 void GS::hostWriteBB(uint8_t data) {
@@ -2330,6 +2548,7 @@ void GS::hostWriteBB(uint8_t data) {
     // keeps the deep FIFO — FH1GS-style loaders outrun the fw's drain with
     // command+data pairs and need the backlog (hw-tested).
     if (s_ngs) {
+        s_g2h_r = s_g2h_w;                 // stale reply bytes cannot span commands
         uint32_t r = s_host_fifo_r, w2 = s_host_fifo_w;
         if (data == 0xF3 || data == 0xF4) {
             if (r != w2) s_host_fifo_r = w2;
@@ -2349,6 +2568,8 @@ void GS::hostWriteBB(uint8_t data) {
     __dmb();
     s_cmd_fifo_w = w + 1;
     reg_command = data;  // mirror to scalar for any direct-readers
+    gs_hs('C', data, reg_status);
+
     __dmb();
     gs_status_or(&reg_status, 0x01u);  // D0=1: command available
 }
@@ -2599,3 +2820,5 @@ void GS::dumpWorkRam(uint16_t start, uint16_t len) {
     Debug::log("GS work_ram dump: end");
 }
 
+
+uint16_t gs_dbg_gs_pc(void) { return (uint16_t)Z80_PC(s_cpu); }

@@ -133,7 +133,115 @@ only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
   `Debug::fault_log` (exception-safe, replaces printf in sigbus/panic),
   NEO8_TRAP/ZC_PORT_TRACE/NGS_TRACE CMake toggles.
 - Test images: `pico-spec/debug/NeoGS/` (neo8tr.trd, npl.scl, Z-PLAYERv4.1,
-  s3m_*.trd).
+  s3m_*.trd). **NPL sources** (invaluable — every finding below came from
+  reading them): `debug/ngs-Neo_Player_Light.r188.tar.gz`, CP866, the useful
+  files are `face_play.a80` (ZX side), `play_on_ngs.a80` + `sd_on_ngs.a80` +
+  `fat_on_ngs.a80` (card side). svn.nedopc.com is behind a JS bot-check, so
+  WebFetch cannot reach the upstream repo — use the tarball.
+
+### NeoGS session 2026-08-06 — everything below is hw-confirmed
+
+**Emulation bugs found (ours):**
+- **SS_VER must be 1, not 2** (`NGS_VS_SS_VER`, GS.cpp). NPL reads SCI_STATUS
+  and uses `(low byte & 0xF0) >> 4` as a direct index into its per-chip table of
+  playable extensions (`RTYPEVS` → `F_EXT`), and the entries for the chips it
+  does not support — 2, 5, 7 — are **NULL POINTERS**. Reporting 2 (VS1002) gave
+  it an empty extension list: the scan walked the whole card correctly and
+  reported "Found files: 0". Read-only: `ngs_mp3_read_reg` forces the field so a
+  guest write to SCI_STATUS cannot erase it.
+- **SCI_HDAT0/HDAT1 were not emulated** and players need them: NPL treats a zero
+  low byte of HDAT1 as "decoder idle" and then leaves Hz / kbps / Time Play
+  blank no matter what is coming out of the speaker. Layout is simply the MPEG
+  frame header — HDAT1 = header bytes 0-1, HDAT0 = bytes 2-3 — so NgsMp3
+  publishes the header of the last frame that actually decoded, zeroed on flush.
+- **MDDRQ needs HYSTERESIS.** A real VS1011 drains its FIFO smoothly at the
+  bitrate; we drain in ~1 KB lumps once per decoded frame, and a bare threshold
+  turned that into a trickle (decoder frees ~1044 B, DREQ opens, guest pushes its
+  32-byte block, DREQ shuts). NPL's `RON_MP3` rechecks DREQ every 32 bytes but
+  only returns to its command poll (`OPROS`) after a WHOLE 512-byte sector, so
+  one sector took a dozen-plus frames and the host was serviced twice a second:
+  the player's clock stopped and its keys went dead while audio played on.
+- **#B3 host→card is a single-byte latch** for NeoGS (a write drops the unread
+  byte). The old deep FIFO pinned D7, which is shared with the card→host
+  direction. Classic GS keeps the FIFO — FH1GS loaders need it, hw-tested.
+- **Card→host needs a 512-byte QUEUE** (`s_g2h`), and the size is load-bearing.
+  The two Z80s are not co-scheduled: the GS-Z80 runs nonstop on core1 while the
+  ZX-Z80 only advances when core0 is executing a frame, so it is stopped for
+  MILLISECONDS during the pacing wait / SD service / MP3 decode. Every card-side
+  wait for the host (`WDN`) gives up after 256 polls (~0.3 ms of GS time) and
+  writes anyway. `GET_RZN` therefore overwrote its own high byte with the low
+  one (2-byte replies half-lost, host stuck in `WN` — captured as
+  `W20/00 W00/80 R00/80`), and `GET_LNG` answers with `OUTDATA E=0` = a **full
+  256 bytes** of file name, requested only when `B_NEW_FILE` is set, i.e. only
+  after a track change. A 16-deep queue let the host read sixteen and then wait
+  forever for the seventeenth — music kept playing, the whole UI was dead. On
+  overflow drop the NEWEST byte, never the oldest.
+- **D7 is one flag shared by both directions**, so all three places that clear it
+  (`hostReadB3`, `gsio_in_data`, `gsio_ack_data`) must agree on "nothing
+  pending" — `gs_hs_idle()`. Getting it right in only one is invisible until a
+  command both takes parameters AND returns data, which `NAMELNG` does.
+- **Banked NeoGS pages are pointer-backed on butter PSRAM** (`ngs_map_half16`).
+  NPL uploads its player into a high page and RUNS it there, so this is the
+  OPCODE FETCH path: 3.36M `gs_pc_read` calls/s at 17.6M T/s, one per 5.2
+  T-states, which no data-read instruction can produce. Pointer-backed it is a
+  single load served by the hardware XIP cache: GS 17.6 → 20.0 MHz (100% of
+  target), private-cache calls → 0, `pump` 4.4k → 1.15M/s. SPI PSRAM (MURM1) has
+  no such window and keeps the software cache.
+- **`pump()` runs 265k-1.1M times/s**, so its arithmetic matters: Q16 fixed point
+  (`s_t_per_us_q16`, `s_credit_cap` precomputed by `setClock`) replaced a 64-bit
+  multiply plus two 64-bit divisions plus a 32-bit divide PER CALL, and the
+  always-on `pe`/`px` counters moved under `NGS_TRACE`.
+- **F11 now resets NeoGS** via `GS::ngsReset()` (the card's own C_GRST, latched
+  for core1). Deliberate deviation: a real card survives a ZX reset. The old
+  reason for skipping it — the fw's SD boot walk making detection fail right
+  after a reset — is gone as of turbo-boot + the NgsSd read-ahead + the step()
+  deadlock fix. If "GS not found right after F11" returns, undo this first.
+- `Config::ngs_clock` (Audio → General Sound → Clock, NeoGS only) forces
+  24/20/12/10 MHz over the firmware's GSCFG0 CKSEL pick. Not a fudge: the DAC
+  tick is a divider of the clock, so pitch and tempo do not move — only the
+  firmware's T-state budget per sample, exactly like a card clocked down.
+
+**MP3 decoding — now Helix, not minimp3:**
+- `drivers/picomp3lib` (Helix, fixed point) was already vendored, built and
+  linked but never called. `NgsMp3.cpp` now uses it: `MP3FindSyncWord` +
+  `MP3Decode` + `MP3GetLastFrameInfo`. Its eight state structures (23.9 KB) come
+  from ONE SRAM arena via `ngs_helix_alloc` — a bump allocator, valid because
+  Helix never frees (buffers.c leaves `MPDEC_FREE` undefined). NOT the project's
+  global `malloc2` (Tape.cpp), which owns a different pool. Firmware shrank 25 KB.
+- Why the switch: minimp3's short-buffer behaviour is a trap. Given a window too
+  small to hold a frame plus the NEXT header it wipes its own decoder state,
+  reports the WHOLE window as consumed and returns zero samples — the next
+  window again starts mid-frame and the stream can NEVER resynchronise (junk
+  exactly equal to the input rate, fr=0, forever). That is why toggling max speed
+  "fixed" playback: it skips the frame-pacing waits that also pump `service()`,
+  so the input ring accumulated and the windows got big enough to sync. Helix
+  answers `ERR_MP3_INDATA_UNDERFLOW` and consumes nothing.
+- minimp3's `mp3dec_scratch_t` is a **~16.8 KB stack local** and core0 has an
+  8 KB stack: the first decoded frame took the firmware down with a UsageFault
+  STKOF. `minimp3.h` keeps a `PICO-SPEC PATCH` (`MINIMP3_EXTERNAL_SCRATCH`) for
+  this; the file stays in the tree unused, so re-check the patch before
+  re-vendoring.
+- **Decode exactly once per frame, from `ESPectrum::loop`, never from the
+  frame-pacing waits.** A frame decode is an indivisible multi-millisecond unit;
+  started inside the v_sync wait it delays our notice of v_sync by its whole
+  duration, which shows up as FPS under the Pentagon 48.83 (~47.8) and as clicks
+  in the ZX audio. 48.8 opportunities/s against the 38.28 a 44.1 kHz stream
+  needs. `NgsSd::service()` DOES have to stay in those waits — the GS-Z80
+  blocks on it.
+
+**Diagnostics (all under `NGS_TRACE`, and they are what finally cracked this —
+reach for them before theorising):** `MP3:` (decoder rates + input/output ring
+depth + SD sequentiality + `#BB` poll rate + host PC/return + GS-Z80 PC),
+`NPL:` (NPL's own state block at card address 0x4168 — flags/status/file
+count/index/type, read straight out of `s_gs_work_ram`), `MP3 hs:` (64-entry
+handshake ring: P=host wrote #B3, C=host wrote #BB, D=card took the parameter,
+K=card cleared the command bit, W=card wrote a reply byte, R=host took it,
+!=reply dropped). The host RETURN address is the single most useful field —
+all three of NPL's waits are three-byte poll loops so the PC alone is useless,
+but the word on top of its stack names the routine (8758 → `FGETVTS`,
+8B9D → `INI_E` inside `NAMELNG`). `NGS_SD_TRACE` (level 2) is a per-SD-command
+flood that changes the timing it is meant to observe — do not use it on a
+timing-dependent bug.
 
 ## SAA1099 Emulation Key Findings
 

@@ -433,6 +433,14 @@ extern int ram_pages, butter_pages, psram_pages, swap_pages;
 // Proxy for GS.cpp — that TU includes Z80_redcode.h which clashes with
 // Z80_JLS/z80.h, so it can't query the host PC directly.
 extern "C" uint16_t gs_host_z80_pc(void) { return Z80::getRegPC(); }
+// Return address of whatever called the #BB poll loop. The PC alone is useless
+// there — all three waits are three-byte loops and the host sits in one of them
+// permanently — but the word on top of its stack names the routine, exactly as
+// the memory dump did when 8758 identified FGETVTS.
+extern "C" uint16_t gs_host_z80_ret(void) {
+    uint16_t sp = Z80::getRegSP();
+    return (uint16_t)(MemESP::readbyte(sp) | (MemESP::readbyte(sp + 1) << 8));
+}
 inline static size_t extendedZxRamPages() {
   if (Z80Ops::is1024)
     return 64;
