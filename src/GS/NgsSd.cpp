@@ -135,6 +135,9 @@ static volatile uint32_t s_dbg_iter_sector[4];
 static volatile uint32_t s_dbg_iter_gen[4];
 static volatile uint32_t s_dbg_iter_n      = 0;
 static volatile uint32_t s_dbg_multi_fail  = 0;
+static volatile uint32_t s_dbg_reads17     = 0;   // CMD17 count
+static volatile uint32_t s_dbg_seq_break   = 0;   // CMD17 sector != previous + 1
+static uint32_t          s_dbg_prev17      = 0xFFFFFFFFu;
 static volatile uint32_t s_dbg_single_fail = 0;
 static volatile uint32_t s_dbg_range_fail  = 0;
 static volatile uint32_t s_dbg_first_bad   = 0xFFFFFFFFu;
@@ -306,6 +309,9 @@ static void __not_in_flash_func(fsm_execute)() {
                 s_rd_multi = (cmd == 0x52);
                 break;
             }
+            s_dbg_reads17++;
+            if (arg != s_dbg_prev17 + 1) s_dbg_seq_break++;
+            s_dbg_prev17 = arg;
             static const uint8_t r[] = {0xFF, 0x00};
             queue_resp(r, sizeof(r));
             s_rd_sector = arg;                    // SDHC: sector address
@@ -650,5 +656,7 @@ void NgsSd::getStats(Stats& out) {
     out.multi_fail  = s_dbg_multi_fail;
     out.single_fail = s_dbg_single_fail;
     out.first_bad   = s_dbg_first_bad;
+    out.reads17     = s_dbg_reads17;
+    out.seq_break   = s_dbg_seq_break;
 }
 

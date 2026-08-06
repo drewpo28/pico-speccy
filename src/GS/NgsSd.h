@@ -49,6 +49,16 @@ struct Stats {
     uint32_t multi_fail;
     uint32_t single_fail;
     uint32_t first_bad;
+    // CMD17 sequentiality. A player streaming a file reads sector N, N+1, N+2...
+    // within each cluster, so seq_break counts how often the guest asked for
+    // something that is NOT the previous sector + 1. Streaming audio that is
+    // arriving corrupt is either the guest fetching the wrong sectors (seq_break
+    // climbing wildly) or the bytes being mangled between the card and the
+    // decoder (reads sequential, audio still broken) — this tells them apart
+    // without the NGS_SD_TRACE flood, which is itself slow enough to change the
+    // timing being investigated.
+    uint32_t reads17;
+    uint32_t seq_break;
 };
 void getStats(Stats& out);
 

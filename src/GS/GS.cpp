@@ -938,10 +938,33 @@ static void __not_in_flash_func(ngs_map_half16)(int slot, uint32_t page, uint32_
                 s_write_page[slot + i] = ro ? nullptr : s_ngs_low_ram + phys;
                 s_bank_woff[slot + i]  = NGS_BANK_NONE;
             } else {
-                s_fetch_page[slot + i] = nullptr;
-                s_write_page[slot + i] = nullptr;
-                s_bank_off[slot + i]   = phys - NGS_LOW_RAM_SIZE;
-                s_bank_woff[slot + i]  = phys - NGS_LOW_RAM_SIZE;
+                uint32_t boff = phys - NGS_LOW_RAM_SIZE;
+                s_bank_off[slot + i]  = boff;
+                s_bank_woff[slot + i] = boff;
+                if (!s_gs_use_spi) {
+                    // Butter PSRAM is memory-mapped (PSRAM_DATA, hardware QMI +
+                    // XIP cache), so a banked page can be pointer-backed just
+                    // like the low SRAM pages instead of going through the
+                    // private 64-byte SRAM cache. That matters far more than it
+                    // looks: NPL uploads its player into a high page and RUNS it
+                    // there, so this is the OPCODE FETCH path, not just data —
+                    // hw 2026-08-06 measured 3.36M gs_pc_read calls/s at 17.6M
+                    // T/s, i.e. one per 5.2 T-states, which no data-read
+                    // instruction can produce. Each one cost two calls plus the
+                    // tag compare; pointer-backed it is a single load that the
+                    // hardware XIP cache serves (the 99.99% hit rate on the
+                    // private cache says the working set is tiny, so it will sit
+                    // in the XIP cache too). The write path already stored
+                    // straight through s_gs_ram[] here, so this only makes reads
+                    // agree with writes — and with no reader left on the private
+                    // cache for these pages, its coherency invalidate is moot.
+                    // SPI PSRAM (MURM1) has no such window and keeps the cache.
+                    s_fetch_page[slot + i] = s_gs_ram + boff;
+                    s_write_page[slot + i] = s_gs_ram + boff;
+                } else {
+                    s_fetch_page[slot + i] = nullptr;
+                    s_write_page[slot + i] = nullptr;
+                }
             }
         }
     }
@@ -1005,17 +1028,36 @@ static int      s_mp3_sci_idx = 0;
 static uint8_t  s_mp3_rx = 0xFF;   // byte "received" during the last MC_SEND
 static uint32_t s_mp3_md_bytes = 0;
 
+// SS_VER, the decoder-version field of SCI_STATUS (reg 1). The encoding is
+// the VS10xx one: 0 = VS1001, 1 = VS1011, 2 = VS1002, 3 = VS1003, 4 = VS1053,
+// 5 = VS1033, 6 = VS1063, 7 = VS1103. We model a VS1011 (the MA8201A module),
+// so 1 — this used to be 2, which is VS1002.
+//
+// It is not a cosmetic field. Neo Player Light indexes its per-chip table of
+// playable extensions with exactly (low byte of SCI_STATUS & 0xF0) >> 4
+// (RTYPEVS in play_on_ngs.a80 → F_EXT in fat_on_ngs.a80), and the entries for
+// the chips it does not support — 2, 5 and 7 — are NULL POINTERS. Reporting 2
+// therefore gave it an empty extension list: its directory scan walked the
+// whole card correctly (5538 sector reads in the hw trace), matched nothing,
+// and reported "Found files: 0" (hw 2026-08-06, r188 sources).
+static constexpr uint16_t NGS_VS_SS_VER = 0x0010;   // SS_VER = 1 → VS1011
+
 static void ngs_mp3_reset() {
     memset(s_mp3_reg, 0, sizeof(s_mp3_reg));
-    // SCI_STATUS (reg 1) bits 7:4 = chip version; players read this to tell
-    // VS1001 from VS1011 (NGS manual §5.3 item 4). 2 = VS1011.
-    s_mp3_reg[1] = 0x20;
+    s_mp3_reg[1] = NGS_VS_SS_VER;
     s_mp3_sci_idx = 0;
     s_mp3_rx = 0xFF;
     s_mp3_md_bytes = 0;
 }
 
 static uint16_t ngs_mp3_read_reg(uint8_t addr) {
+    if (addr == 1) {
+        // SS_VER is read-only on the real chip. We keep the whole 16-bit
+        // register in one slot, so a guest writing SCI_STATUS (SS_AVOL, the
+        // analog-powerdown bits) would otherwise wipe the version field and
+        // resurrect the bug above at run time.
+        return (uint16_t)((s_mp3_reg[1] & ~0x00F0u) | NGS_VS_SS_VER);
+    }
     if (addr == 4) {
         // SCI_DECODE_TIME: real seconds from the decoder; stub mode falls
         // back to the byte-count estimate (bytes * 8 / 128000).

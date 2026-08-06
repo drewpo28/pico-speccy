@@ -51,6 +51,7 @@ option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and evicti
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
 option(GS_DEBUG_TRACE "Enable General Sound port-IO trace ring + auto-dumps (~50 KB SRAM)" OFF)
 option(NGS_TRACE "Enable NeoGS 1 Hz health line (GS-Z80 PC / SD counters; ~2-4 ms UART stall per line)" OFF)
+option(NGS_SD_TRACE "Also log every guest SD command (NGS_TRACE level 2; thousands of lines per directory scan)" OFF)
 option(ZC_PORT_TRACE "Enable Z-Controller/DivSD SPI-SD command tracing (CS edges + command frames)" OFF)
 option(NEO8_TRAP "Wild-jump hunter: log PC history + frame snapshot when execution enters screen memory (per-instruction hook; debug builds only)" OFF)
 option(ZIFI_TRACE "Enable ZiFi (ESP-01S WiFi NIC) port/UART tracing" OFF)
@@ -62,7 +63,7 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 # Each enables stdio over the board's Debug-Probe header — see the block for pins.
 set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
 set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
-set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
+set(PICO_DV_DBG_UART ON CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
 set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
 
 # set(TFT ON)
@@ -409,7 +410,15 @@ endif ()
 # NeoGS 1 Hz health line (GS-Z80 PC / mapping / SD counters — GS.cpp pollPerf).
 # The UART write blocks core0 ~2-4 ms per line = once-per-second stutter, so
 # it's a diagnostic toggle, not a default.
-if (NGS_TRACE)
+# NGS_SD_TRACE raises the level to 2, which additionally logs one line per SD
+# command the guest issues (NgsSd.cpp). That is the tool for "player X doesn't
+# see its files": it shows whether the guest reaches the SD layer at all and
+# which sector its scan dies on. Very heavy — a directory scan issues thousands
+# of commands and each line stalls core1 on the print mutex, so a scan takes
+# minutes. Usually only the first screenful and the last line matter.
+if (NGS_SD_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NGS_TRACE=2)
+elseif (NGS_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE NGS_TRACE=1)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE NGS_TRACE=0)

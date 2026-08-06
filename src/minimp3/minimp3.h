@@ -238,6 +238,13 @@ typedef struct
     uint8_t ist_pos[2][39];
 } mp3dec_scratch_t;
 
+#ifdef MINIMP3_EXTERNAL_SCRATCH
+/* PICO-SPEC PATCH: supplied by the embedder so this ~16.8 KB struct does not
+   land on the stack. Must return the same, permanently-live instance every
+   time and never NULL once decoding starts. See mp3dec_decode_frame below. */
+static mp3dec_scratch_t *mp3dec_external_scratch(void);
+#endif
+
 static void bs_init(bs_t *bs, const uint8_t *data, int bytes)
 {
     bs->buf   = data;
@@ -1715,7 +1722,22 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
     int i = 0, igr, frame_size = 0, success = 1;
     const uint8_t *hdr;
     bs_t bs_frame[1];
+/* PICO-SPEC PATCH: mp3dec_scratch_t is ~16.8 KB (syn[33][64] and grbuf[2][576]
+   floats dominate) and upstream puts it on the stack. Core0 here has an 8 KB
+   stack, so the first decoded frame took the firmware down with a UsageFault
+   STKOF (hw 2026-08-06: SIGBUS core0 CFSR=00100000 stackOvf=1 the moment NPL
+   started playback). With MINIMP3_EXTERNAL_SCRATCH the caller supplies the
+   scratch instead — see NgsMp3.cpp, which carves it out of the same pooled
+   allocation as the rest of the decoder state. Single-instance and NOT
+   reentrant: every mp3dec_decode_frame() call must come from one context
+   (core0 only here). The macro keeps the ~40 `scratch.` uses below unchanged
+   and is undefined again at the end of this function. */
+#ifdef MINIMP3_EXTERNAL_SCRATCH
+    mp3dec_scratch_t * const scratch_p = mp3dec_external_scratch();
+#define scratch (*scratch_p)
+#else
     mp3dec_scratch_t scratch;
+#endif
 
     if (mp3_bytes > 4 && dec->header[0] == 0xff && hdr_compare(dec->header, mp3))
     {
@@ -1804,6 +1826,9 @@ int mp3dec_decode_frame(mp3dec_t *dec, const uint8_t *mp3, int mp3_bytes, mp3d_s
     }
     return success*hdr_frame_samples(dec->header);
 }
+#ifdef MINIMP3_EXTERNAL_SCRATCH
+#undef scratch                        /* PICO-SPEC PATCH (see above) */
+#endif
 
 #ifdef MINIMP3_FLOAT_OUTPUT
 void mp3dec_f32_to_s16(const float *in, int16_t *out, int num_samples)
