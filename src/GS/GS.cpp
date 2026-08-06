@@ -272,12 +272,22 @@ static volatile uint32_t s_perf_h_bbr   = 0;
 static volatile uint32_t s_perf_h_spin_us = 0;     // total spinwait µs/sec in hostWriteB3
 #endif  // GS_PERF_TRACE
 
-// Always-on (not GS_PERF gated): core1 liveness for the "GS-Z80 stopped
-// ticking for 99 s while the host polled #BB" investigation. entries counts
-// EVERY pump() call including the early returns, so entries-vs-pump_calls
-// separates "core1 never got here" from "core1 got here and was refused".
+// Core1 liveness for the "GS-Z80 stopped ticking for 99 s while the host polled
+// #BB" investigation: a frozen `pe` with rs=1 is the signature of the step()
+// spin-with-the-lock-held bug class, so keep these — but only in builds that
+// can show them. They are reported by the NGS_TRACE line and nowhere else, and
+// they are two VOLATILE read-modify-writes on the single hottest path in the
+// emulator: pump() runs up to 1.1M times a second (hw 2026-08-06), so leaving
+// them always-on spent a measurable slice of core1 on counters no release build
+// ever reads. GS_PERF(...) is not the right gate — the whole point is that they
+// survive when the perf counters are off.
+#if NGS_TRACE
+#define GS_DBG_PUMP(stmt) stmt
 volatile uint32_t gs_dbg_pump_entries = 0;
 volatile uint32_t gs_dbg_pump_exits   = 0;
+#else
+#define GS_DBG_PUMP(stmt) ((void)0)
+#endif
 
 static inline bool __not_in_flash_func(gs_try_begin_pump)() {
     uint32_t expected = GS_RUN_IDLE;
@@ -394,6 +404,16 @@ static constexpr uint32_t GS_CLOCK_TABLE[5] = {12000000, 13125000, 14000000, 200
 static constexpr uint32_t GS_INT_HZ         = 37500;
 static uint32_t           GS_CLOCK_HZ       = 13125000;  // set in init() from Config::gs_clock
 static uint32_t           GS_INT_PERIOD     = 350;        // set in init()
+// Derived from GS_CLOCK_HZ, recomputed only when the clock changes. Both exist
+// to keep divisions out of pump(), which runs up to 1.1M times a second:
+//   s_t_per_us_q16 — T-states per microsecond, Q16
+//   s_credit_cap   — backlog ceiling, GS_CLOCK_HZ/500 ≈ 2 ms of GS time
+static uint32_t           s_t_per_us_q16    = (13125000ull << 16) / 1000000u;
+static int32_t            s_credit_cap      = 13125000 / 500;
+static inline void gs_derive_clock_consts() {
+    s_t_per_us_q16 = (uint32_t)(((uint64_t)GS_CLOCK_HZ << 16) / 1000000u);
+    s_credit_cap   = (int32_t)(GS_CLOCK_HZ / 500u);
+}
 
 // Adaptive-drain state (consumer side, see getLiveLR). Target depth is the
 // cushion the controller aims to keep: 128 entries ≈ 3.4 ms of GS time, which
@@ -886,6 +906,7 @@ static void ngs_apply_clock() {
     GS_CLOCK_HZ   = sel ? NGS_CLOCK_FORCED[sel]
                         : NGS_CLOCK_TABLE[(s_ngs_cfg0 >> 4) & 3];
     GS_INT_PERIOD = (GS_CLOCK_HZ + GS_INT_HZ / 2) / GS_INT_HZ;
+    gs_derive_clock_consts();
 }
 
 // Resolve one 8 KB slot of the 512 KB flash ROM; unpopulated chunks read 0xFF.
@@ -1394,6 +1415,7 @@ void GS::setClock() {
     uint8_t ci = Config::gs_clock < 5 ? Config::gs_clock : 1;
     GS_CLOCK_HZ   = GS_CLOCK_TABLE[ci];
     GS_INT_PERIOD = GS_CLOCK_HZ / GS_INT_HZ;
+    gs_derive_clock_consts();
 }
 
 bool GS::init(uint32_t ram_size_bytes) {
@@ -1863,13 +1885,13 @@ void __not_in_flash_func(GS::pump)() {
     // >1.2M SPI exchanges polling busy filler (hw log 2026-08-04) and the
     // whole boot took 3-4 s. Hold the GS-Z80 until the first ESPectrum::loop
     // iteration (ngsBootRelease), when the mailbox is actually serviced.
-    gs_dbg_pump_entries++;
+    GS_DBG_PUMP(gs_dbg_pump_entries++);
     if (s_ngs_boot_hold) {
         s_pump_last_us = time_us_32();       // no giant dt on release
-        gs_dbg_pump_exits++;
+        GS_DBG_PUMP(gs_dbg_pump_exits++);
         return;
     }
-    if (!gs_try_begin_pump()) { gs_dbg_pump_exits++; return; }
+    if (!gs_try_begin_pump()) { GS_DBG_PUMP(gs_dbg_pump_exits++); return; }
     GS_PERF(s_perf_pump_calls++);
     // Wall-clock-locked pacing. Independent of how fast the emulator can
     // crunch instructions — we always advance GS-Z80 time at exactly
@@ -1890,10 +1912,6 @@ void __not_in_flash_func(GS::pump)() {
         return;
     }
     GS_PERF(if (dt_us > s_perf_dt_max) s_perf_dt_max = dt_us);
-    if (dt_us > 1000) {                      // clamp: max 1 ms per pump
-        GS_PERF(s_perf_dt_clamps++);
-        dt_us = 1000;
-    }
     // Accumulate fractional T-states and coalesce tiny 1-us calls. At 504 MHz
     // the core1 loop can call pump() so often that running z80_run() in 12-13T
     // slices spends too much time in dispatch overhead; debug/perf tracing hid
@@ -1910,11 +1928,31 @@ void __not_in_flash_func(GS::pump)() {
     // up we drop back to exact wall-clock pacing (sound timing must stay
     // authentic). Real hardware has no such window — its 24 MHz Z80 and
     // direct SPI finish this before the Spectrum finishes its own reset.
-    uint32_t clk_hz = GS_CLOCK_HZ;
-    if (s_ngs && !s_gs_main_loop) clk_hz *= 8;
-    uint64_t scaled = (uint64_t)dt_us * (uint64_t)clk_hz + s_pump_frac_t;
-    s_pump_credit_t += (int32_t)(scaled / 1000000u);
-    s_pump_frac_t = (uint32_t)(scaled % 1000000u);
+    //
+    // The conversion is Q16 fixed point on purpose. This runs 265k-1.1M times
+    // a second (hw 2026-08-06: 1.11M/s while the fw idles at 20 MHz, 265k/s
+    // under Neo8 at 24 MHz), so what used to be here — a 64-bit multiply plus
+    // TWO 64-bit divisions by 1000000, plus a 32-bit divide for the cap below —
+    // was costing more core1 time than the 1% by which 24 MHz was missing its
+    // target. s_t_per_us_q16 is precomputed by setClock(); the whole update is
+    // now one 32-bit multiply and two shifts.
+    uint32_t q16 = s_t_per_us_q16;
+    int32_t  cap = s_credit_cap;
+    uint32_t dt_cap = 1000;                  // clamp: max 1 ms of GS time per pump
+    if (s_ngs && !s_gs_main_loop) {          // turbo-boot: 8x wall clock
+        q16 <<= 3;
+        cap <<= 3;
+        // 8x the rate needs 8x the headroom before dt_us * q16 overflows 32
+        // bits; 250 µs still buys the boot 2 ms of GS time per call.
+        dt_cap = 250;
+    }
+    if (dt_us > dt_cap) {
+        GS_PERF(s_perf_dt_clamps++);
+        dt_us = dt_cap;
+    }
+    uint32_t scaled = dt_us * q16 + s_pump_frac_t;
+    s_pump_credit_t += (int32_t)(scaled >> 16);
+    s_pump_frac_t = scaled & 0xFFFFu;
     s_pump_last_us = now;
     // Bound the backlog. Under a genuine capacity deficit (hw: HDMI-audio ISR
     // load at 378 MHz leaves ~16.6M T/s of core1 for a 20 MHz GS) the credit
@@ -1924,8 +1962,8 @@ void __not_in_flash_func(GS::pump)() {
     // enough that a capacity-bound GS simply runs slow and sheds the rest.
     // (Under hw A/B test 2026-07-27: one 504 MHz listen reported it worse,
     // a retest didn't reproduce — if 504 regresses again, look HERE first.)
-    const int32_t credit_cap = (int32_t)(clk_hz / 500u);   // scales with turbo-boot
-    if (s_pump_credit_t > credit_cap) s_pump_credit_t = credit_cap;
+    // `cap` was picked above (precomputed by setClock, shifted for turbo-boot).
+    if (s_pump_credit_t > cap) s_pump_credit_t = cap;
     GS_PERF(if (s_pump_credit_t > s_perf_credit_max) s_perf_credit_max = s_pump_credit_t);
 
     constexpr int GS_PUMP_MIN_TSTATES = 128;
