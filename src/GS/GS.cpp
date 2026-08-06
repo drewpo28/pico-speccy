@@ -245,6 +245,20 @@ static volatile uint32_t s_perf_p04_total  = 0;     // total IN port 04 reads
 static volatile uint32_t s_perf_p04_spin   = 0;     // IN port 04 reads where PC == prev PC (spinwait)
 static volatile uint16_t s_perf_p04_pc     = 0;     // last PC of port-04 read (for spinwait detection)
 
+// Audio-path counters. The MHz/credit figures above describe the PRODUCER
+// (GS-Z80 on core1); these describe what actually reaches the DAC, which is
+// where "GS is too slow" becomes audible. One ring entry is produced per GS
+// INT tick (nominal GS_INT_HZ = 37500/s) and consumed by getLiveLR from the
+// core0 audio IRQ at 31250/s with 6:5 fractional decimation, so a healthy
+// second reads int≈37500 with und/part/full all zero.
+static volatile uint32_t s_perf_ints       = 0;     // INT ticks = ring samples produced
+static volatile uint32_t s_perf_ring_full  = 0;     // pump() refused to produce: ring >=7/8
+static volatile uint32_t s_perf_ring_und   = 0;     // getLiveLR: ring empty, last sample held
+static volatile uint32_t s_perf_ring_part  = 0;     // getLiveLR: fewer entries than 1.2 needed
+static volatile uint32_t s_perf_ring_min   = 0xFFFFFFFFu;  // consumer-side depth watermarks
+static volatile uint32_t s_perf_ring_max   = 0;
+static volatile uint32_t s_perf_clip       = 0;     // gs_to_u8 clamped at 0 or 255
+
 // Core0-side counters updated from ESPectrum.cpp main frame loop. extern
 // so the cross-module reference stays simple.
 volatile int32_t  gs_perf_idle_min        = 0x7FFFFFFF;
@@ -380,6 +394,38 @@ static constexpr uint32_t GS_CLOCK_TABLE[5] = {12000000, 13125000, 14000000, 200
 static constexpr uint32_t GS_INT_HZ         = 37500;
 static uint32_t           GS_CLOCK_HZ       = 13125000;  // set in init() from Config::gs_clock
 static uint32_t           GS_INT_PERIOD     = 350;        // set in init()
+
+// Adaptive-drain state (consumer side, see getLiveLR). Target depth is the
+// cushion the controller aims to keep: 128 entries ≈ 3.4 ms of GS time, which
+// covers the observed pump jitter (dtmax ~0.5 ms) with margin while adding
+// only that much latency. Correction is bounded to ±3% of the nominal rate —
+// a tempo offset that small is inaudible, and anything needing more is a
+// genuine capacity problem to solve by lowering the emulated GS clock.
+//
+// These exact constants are a LISTENING result, not a tuning target — hw
+// 2026-08-06, NeoGS @24 MHz on 504 MHz (core1 sustains ~23.7 MHz = a steady
+// ~0.8% sample deficit). This shape scored best by ear (ring 11..144, und=0)
+// even though its `rate` visibly wanders ±1.6%; two attempts to calm that
+// number were BOTH judged worse on hw despite equal-or-better counters, so do
+// not "fix" the wander on the strength of the log alone:
+//   · 16-window IIR on the measurement, gain unchanged — underruns came back
+//     and the ripple grew (ring 1..174). Per-window gain 0.26 against a
+//     16-window lag is well past where the loop stays damped.
+//   · Feed-forward from the produced-sample count (65 ms window) + weak trim,
+//     target raised to 320. Counters were the cleanest of all four variants
+//     (und=0, ring 101..443, rate ±170) and it still sounded worse — the
+//     suspects are the 8.5 ms of added latency and the slower recentring.
+// What the servo demonstrably does is CENTRE the buffer, not suppress ripple:
+// without it the ring sat at 1..78 with its trough on the floor, with it at
+// 11..144 — same ripple, lifted clear.
+static constexpr uint32_t GS_RING_TARGET  = 128;
+static constexpr uint32_t GS_DEPTH_WINDOW = 256;      // calls per update (~8 ms)
+static constexpr int32_t  GS_DRAIN_GAIN   = 16;       // rate units per entry of error
+static constexpr uint32_t GS_DRAIN_MIN    = GS_INT_HZ - GS_INT_HZ * 3 / 100;
+static constexpr uint32_t GS_DRAIN_MAX    = GS_INT_HZ + GS_INT_HZ * 3 / 100;
+static uint32_t s_drain_rate = GS_INT_HZ;
+static uint32_t s_depth_acc  = 0;
+static uint32_t s_depth_cnt  = 0;
 
 static inline uint32_t __not_in_flash_func(gs_map_addr)(uint16_t address) {
     return (uint32_t)(GS::reg_page - 1) * 0x8000u + (address - 0x8000u);
@@ -822,8 +868,23 @@ static void __not_in_flash_func(gs_cb_out)(void* ctx, zuint16 port, zuint8 value
 // {0,0}=24 MHz (ports.inc C_10MHZ..C_24MHZ). Index below = (cfg0>>4)&3.
 static const uint32_t NGS_CLOCK_TABLE[4] = {24000000, 12000000, 20000000, 10000000};
 
+// Config::ngs_clock: 0 = follow the firmware's CKSEL pick, 1..4 = force one of
+// the four rates the hardware offers. Forcing is not a fudge factor — the card
+// really can be clocked down, and the INT divider below keeps the DAC at
+// GS_INT_HZ either way, so only the firmware's T-state budget per sample
+// changes. What it buys us is a target core1 can actually sustain: at ~21
+// RP2350 cycles per emulated T-state, 24 MHz saturates core1 at 504 MHz and is
+// unreachable at 378. The firmware still reads back whatever it wrote to
+// GSCFG0 (port 0x0F is a plain memory cell), so nothing in it observes the
+// override — it simply behaves like a card that is slower than it assumes.
+static const uint32_t NGS_CLOCK_FORCED[5] = {
+    0, 24000000, 20000000, 12000000, 10000000
+};
+
 static void ngs_apply_clock() {
-    GS_CLOCK_HZ   = NGS_CLOCK_TABLE[(s_ngs_cfg0 >> 4) & 3];
+    uint8_t sel = Config::ngs_clock <= 4 ? Config::ngs_clock : 0;
+    GS_CLOCK_HZ   = sel ? NGS_CLOCK_FORCED[sel]
+                        : NGS_CLOCK_TABLE[(s_ngs_cfg0 >> 4) & 3];
     GS_INT_PERIOD = (GS_CLOCK_HZ + GS_INT_HZ / 2) / GS_INT_HZ;
 }
 
@@ -1320,10 +1381,13 @@ uint32_t GS::configuredRamBytes() {
     return rounded;
 }
 
+uint32_t GS::clockHz() { return GS_CLOCK_HZ; }
+
 void GS::setClock() {
     if (neogs) {
-        // NeoGS clock is guest-controlled via GSCFG0 CKSEL; the menu value
-        // is ignored. (Called with the current cfg0 — 10 MHz out of reset.)
+        // NeoGS follows GSCFG0 CKSEL unless Config::ngs_clock forces a rate;
+        // either way ngs_apply_clock() owns the decision. (Called with the
+        // current cfg0 — 10 MHz out of reset.)
         ngs_apply_clock();
         return;
     }
@@ -1522,6 +1586,9 @@ void GS::reset() {
     s_ring_wpos = 0;
     s_ring_rpos = 0;
     s_drain_frac = 0;
+    s_drain_rate = GS_INT_HZ;
+    s_depth_acc  = 0;
+    s_depth_cnt  = 0;
     for (int i = 0; i < GS_RING_SIZE; i++) { s_ring_L[i] = 0; s_ring_R[i] = 0; }
     for (int i = 0; i < GS_PC_SETS; i++) {
         for (int w = 0; w < GS_PC_WAYS; w++) s_pc_tag[i][w] = ~0u;
@@ -1698,8 +1765,27 @@ void GS::pollPerf() {
     s_perf_pc_hit = 0;
     s_perf_pc_miss = 0;
 
+    // Audio path
+    uint32_t ints     = s_perf_ints;
+    uint32_t rfull    = s_perf_ring_full;
+    uint32_t rund     = s_perf_ring_und;
+    uint32_t rpart    = s_perf_ring_part;
+    uint32_t rmin     = s_perf_ring_min;
+    uint32_t rmax     = s_perf_ring_max;
+    uint32_t clip     = s_perf_clip;
+    s_perf_ints      = 0;
+    s_perf_ring_full = 0;
+    s_perf_ring_und  = 0;
+    s_perf_ring_part = 0;
+    s_perf_ring_min  = 0xFFFFFFFFu;
+    s_perf_ring_max  = 0;
+    s_perf_clip      = 0;
+    if (rmin == 0xFFFFFFFFu) rmin = 0;   // consumer never ran this second
+
     // GS-Z80 effective MHz (12 MHz target)
     uint32_t gs_khz = (uint32_t)((uint64_t)tst * 1000u / dt);  // = T-states/ms
+    // DAC sample rate actually produced (nominal GS_INT_HZ = 37500).
+    uint32_t int_hz = (uint32_t)((uint64_t)ints * 1000000u / dt);
 
     // Skip first probe-only burst — only log if there's work or interesting stalls
     if (tst == 0 && b3w == 0 && b3r == 0 && fr == 0) return;
@@ -1741,6 +1827,30 @@ void GS::pollPerf() {
                (unsigned)bbw,
                (unsigned)bbr,
                (unsigned)hsw);
+        // Second line: the audio path proper. Kept separate because the PERF
+        // line above is already ~190 chars and Debug::log truncates at 255.
+        //   int   — DAC samples actually produced (nominal GS_INT_HZ = 37500)
+        //   ring  — consumer-side depth watermarks, of GS_RING_SIZE entries
+        //   und   — ring found empty, previous sample repeated (audible)
+        //   part  — short drain: fewer entries than the 1.2 the 6:5 needs
+        //   full  — producer refused: ring >=7/8, that GS time is shed
+        //   clip  — output clamped at 0/255 in gs_to_u8
+        //   rate  — where the adaptive drain controller settled; it should
+        //           track `int`, and pinning at 36375/38625 means the ±3%
+        //           bound was hit and underruns are no longer being absorbed
+        // Starvation reads as int well below 37500 with und>0; a mix that is
+        // simply too hot reads as clip>0 with int on target — different bug.
+        Debug::log("PERF-A: int=%u/%u ring=%u..%u/%u und=%u part=%u full=%u clip=%u rate=%u",
+                   (unsigned)int_hz,
+                   (unsigned)GS_INT_HZ,
+                   (unsigned)rmin,
+                   (unsigned)rmax,
+                   (unsigned)GS_RING_SIZE,
+                   (unsigned)rund,
+                   (unsigned)rpart,
+                   (unsigned)rfull,
+                   (unsigned)clip,
+                   (unsigned)s_drain_rate);
     }
 #endif  // GS_PERF_TRACE
 }
@@ -1832,6 +1942,7 @@ void __not_in_flash_func(GS::pump)() {
             s_pump_credit_t = (int32_t)GS_INT_PERIOD;
         }
         GS_PERF(s_perf_pump_skip++);
+        GS_PERF(s_perf_ring_full++);
         gs_end_pump();
         return;
     }
@@ -1938,6 +2049,7 @@ int __not_in_flash_func(GS::step)(int tstates) {
             // GS, every s_ngs_int_div ticks on NeoGS (TIM_FRQ) when enabled.
             s_int_timer_ts -= GS_INT_PERIOD;
             int_count++;
+            GS_PERF(s_perf_ints++);
             bool fire_int = true;
             if (s_ngs) {
                 fire_int = false;
@@ -2214,8 +2326,8 @@ int16_t __not_in_flash_func(GS::getSampleRight)() {
 // with silence at 128. >>7 fits ±125 into the byte; +128 biases.
 static inline uint8_t gs_to_u8(int32_t v) {
     int32_t u = 128 + (v >> 7);
-    if (u < 0)   u = 0;
-    if (u > 255) u = 255;
+    if (u < 0)   { GS_PERF(s_perf_clip++); return 0; }
+    if (u > 255) { GS_PERF(s_perf_clip++); return 255; }
     return (uint8_t)u;
 }
 
@@ -2226,9 +2338,9 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
         return;
     }
 
-    // Drain from ring with 6:5 fractional decimation (37500→31250).
-    // Consumer rate: 31250 Hz (audio IRQ). Producer: 37500 Hz avg (INT).
-    // Each call consumes 37500/31250 = 1.2 ring entries on average.
+    // Drain from ring with fractional decimation into the 31250 Hz audio IRQ.
+    // The nominal numerator is the producer's 37500 Hz INT rate (1.2 entries
+    // per call), but it is TRACKED, not fixed — see the controller below.
     uint32_t w = s_ring_wpos;
     // DMB: ensures we see the ring data that was written before wpos was
     // incremented by the producer on core1 (matched by dmb in step()).
@@ -2236,20 +2348,57 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
     uint32_t r = s_ring_rpos;
     uint32_t avail = w - r;
 
+    // Adaptive drain rate. The producer is wall-clock paced but capacity-bound:
+    // when core1 can't sustain the emulated GS clock it delivers slightly fewer
+    // than 37500 samples/s (hw 2026-08-06, NeoGS @24 MHz on 504 MHz: 23.7 MHz
+    // achieved, int=37100/37500). With a fixed 6:5 ratio that 1.3% deficit
+    // drains the ring to empty ~180×/s and every one of those repeats the
+    // previous sample — a continuous crackle. Nudging the numerator toward
+    // whatever the producer actually sustains converts the deficit into an
+    // equally small tempo offset, which is inaudible. Bound at ±3% so a real
+    // failure (producer far behind, e.g. 24 MHz asked of a 378 MHz build)
+    // degrades to plain underruns instead of an audible pitch slide — that
+    // case wants a lower NeoGS clock, not resampling.
+    //
+    // Proportional only: the residual error is what parks the ring just below
+    // the target, which is exactly where we want it. Averaged over a 256-call
+    // (~8 ms) window because avail jitters by ±2 entries call to call.
+    if (w != 0) {
+        s_depth_acc += avail;
+        if (++s_depth_cnt >= GS_DEPTH_WINDOW) {
+            int32_t mean = (int32_t)(s_depth_acc / GS_DEPTH_WINDOW);
+            s_depth_acc = 0;
+            s_depth_cnt = 0;
+            int32_t rate = (int32_t)GS_INT_HZ
+                         + (mean - (int32_t)GS_RING_TARGET) * GS_DRAIN_GAIN;
+            if (rate < (int32_t)GS_DRAIN_MIN) rate = (int32_t)GS_DRAIN_MIN;
+            if (rate > (int32_t)GS_DRAIN_MAX) rate = (int32_t)GS_DRAIN_MAX;
+            s_drain_rate = (uint32_t)rate;
+        }
+    }
+
     if (avail == 0) {
         // Ring empty — hold last value (silence at startup).
         if (w == 0) { L = 128; R = 128; return; }
+        // Producer starvation: the same sample is emitted again. Counted
+        // separately from `part` below because a full repeat is the audible
+        // one (zipper/crackle), while a short drain only shifts the average.
+        GS_PERF(s_perf_ring_und++);
         uint32_t last = (w - 1) & GS_RING_MASK;
         L = gs_to_u8(s_ring_L[last]);
         R = gs_to_u8(s_ring_R[last]);
         return;
     }
+#if GS_PERF_TRACE
+    if (avail < s_perf_ring_min) s_perf_ring_min = avail;
+    if (avail > s_perf_ring_max) s_perf_ring_max = avail;
+#endif
 
-    s_drain_frac += GS_INT_HZ;              // += 37500
+    s_drain_frac += s_drain_rate;           // ≈37500, tracked
     uint32_t n = s_drain_frac / 31250u;
     s_drain_frac %= 31250u;
     if (n == 0) n = 1;
-    if (n > avail) n = avail;
+    if (n > avail) { n = avail; GS_PERF(s_perf_ring_part++); }
 
     int32_t sumL = 0, sumR = 0;
     for (uint32_t i = 0; i < n; i++) {

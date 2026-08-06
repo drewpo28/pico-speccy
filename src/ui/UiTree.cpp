@@ -519,6 +519,12 @@ static bool p_gsAvail() { return Buffer::gsPsramAvailable(); }
 // the RAM pick is NeoGS only (classic GS stays on its 2 MB default).
 static bool p_gsClassic() { return p_gsAvail() && Stage::get(SET_GS_MODE) == 1; }
 static bool p_gsNeo()     { return p_gsAvail() && Stage::get(SET_GS_MODE) == 2; }
+// Clock is two rows sharing one label — the classic table (12..24 MHz) and the
+// NeoGS one (Auto + the four CKSEL rates) have no values in common. They are
+// mutually exclusive by VISIBILITY rather than greyed like their neighbours,
+// because both being visible would put two identical "Clock" lines on screen.
+// Off still shows the classic row greyed, as before.
+static bool p_gsClockCls() { return p_gsAvail() && Stage::get(SET_GS_MODE) != 2; }
 
 static const Option opt_gs_mode[] = {           // values ARE Config::gs_enabled
     { "Off",           0 },
@@ -539,6 +545,20 @@ static const Option opt_gs_clock[] = {          // values are Config::gs_clock i
     { "14 MHz", 2 },
     { "20 MHz", 3 },
     { "24 MHz", 4 },
+};
+
+// NeoGS clock. "Auto" is the real behaviour — the card's firmware picks one of
+// these four through GSCFG0 CKSEL. Forcing a lower one emulates a card clocked
+// down: the 37.5 kHz DAC tick is a divider of the clock, so pitch and tempo do
+// not move, only the firmware's T-state budget per sample. Worth doing because
+// the emulated GS-Z80 needs the whole of core1 to sustain 24 MHz at 504 MHz and
+// cannot reach it at 378 — a starved producer crackles, a slower card does not.
+static const Option opt_ngs_clock[] = {         // values ARE Config::ngs_clock
+    { "Auto (fw)", 0 },
+    { "24 MHz",    1 },
+    { "20 MHz",    2 },
+    { "12 MHz",    3 },
+    { "10 MHz",    4 },
 };
 
 // ── MIDI ───────────────────────────────────────────────────────────────────────
@@ -592,8 +612,9 @@ static const Node kAudio[] = {
                 opt_midi_bank_hints, p_hasSD, p_midiDls),
 #endif
     NM_RADIO   (TXT_AUD_GS,          SET_GS_MODE,  opt_gs_mode,  p_gsAvail),
-    NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK, opt_gs_clock, p_gsAvail, p_gsClassic),
-    NM_RADIO_EN(NM_IND TXT_GS_RAM,   SET_GS_RAM,   opt_gs_ram,   p_gsAvail, p_gsNeo),
+    NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK,  opt_gs_clock,  p_gsClockCls, p_gsClassic),
+    NM_RADIO   (NM_IND TXT_GS_CLOCK, SET_NGS_CLOCK, opt_ngs_clock, p_gsNeo),
+    NM_RADIO_EN(NM_IND TXT_GS_RAM,   SET_GS_RAM,    opt_gs_ram,    p_gsAvail, p_gsNeo),
     NM_RADIO   (TXT_AUD_BOOST,       SET_AUDIO_BOOST, opt_boost,  nullptr),
 };
 

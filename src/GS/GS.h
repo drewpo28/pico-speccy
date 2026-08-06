@@ -18,11 +18,17 @@ public:
     static void deinit();
     static void reset();
 
-    // Re-derive the GS-Z80 clock/IRQ timing from Config::gs_clock at runtime.
-    // The clock feeds only the pump()/step() timing constants (no allocation),
-    // so a clock change applies live without a reboot. Safe to call any time;
-    // init() calls it too.
+    // Re-derive the GS-Z80 clock/IRQ timing at runtime — from Config::gs_clock
+    // for classic GS, from GSCFG0 CKSEL (or Config::ngs_clock, when it forces a
+    // rate) for NeoGS. The clock feeds only the pump()/step() timing constants
+    // (no allocation), so a clock change applies live without a reboot. Safe to
+    // call any time; init() calls it too.
     static void setClock();
+
+    // The clock currently in effect, in Hz. For NeoGS this is the only honest
+    // answer to "what is it running at" — the menu value can be Auto, and the
+    // firmware may re-pick via CKSEL while running.
+    static uint32_t clockHz();
 
     // Sample-RAM size (bytes) GS will reserve at the top of PSRAM, derived purely
     // from Config (no side effects). Single source of truth shared by init() and

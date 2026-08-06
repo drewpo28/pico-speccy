@@ -5519,14 +5519,17 @@ static void buildEmulatorInfoText() {
         } else if (!GS::enabled) {
             pos += infoAppend(buf, pos, bufsz, " General Sound  : No PSRAM\n");
         } else {
-            static const char* gsclk[] = { "12", "13", "14", "20", "24" };
             uint32_t kb = GS::configuredRamBytes() >> 10;
             char ram[8];
             if (kb >= 1024) snprintf(ram, sizeof(ram), "%uM", (unsigned)(kb >> 10));
             else            snprintf(ram, sizeof(ram), "%uK", (unsigned)kb);
+            // Live clock, not the menu pick: NeoGS may be on Auto and the
+            // firmware re-picks via GSCFG0 CKSEL while running.
             pos += infoAppend(buf, pos, bufsz,
-                " General Sound  : On %s @%s MHz\n",
-                ram, gsclk[Config::gs_clock < 5 ? Config::gs_clock : 1]);
+                " %s : On %s @%u MHz%s\n",
+                GS::neogs ? "NeoGS         " : "General Sound ",
+                ram, (unsigned)(GS::clockHz() / 1000000u),
+                (GS::neogs && Config::ngs_clock == 0) ? " (auto)" : "");
         }
 
         // MIDI

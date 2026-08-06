@@ -223,6 +223,14 @@ public:
     static uint8_t  gs_enabled;
     static uint8_t  gs_ram_size;
     static uint8_t  gs_clock;   // 0=12MHz 1=13MHz 2=14MHz 3=20MHz 4=24MHz
+    // NeoGS clock override. The card's own firmware selects one of 24/12/20/10 MHz
+    // through GSCFG0 CKSEL and normally that is what we emulate (0 = Auto). The
+    // emulated GS-Z80 costs ~21 RP2350 cycles per T-state, so 24 MHz needs the
+    // whole of core1 at 504 MHz and is out of reach at 378 — forcing a lower clock
+    // trades the firmware's per-sample T-state budget (exactly what a real card
+    // clocked down has) for an output rate the emulator can actually sustain.
+    // The 37.5 kHz DAC tick is a divider of the clock, so pitch/tempo are unaffected.
+    static uint8_t  ngs_clock;  // 0=Auto(fw) 1=24MHz 2=20MHz 3=12MHz 4=10MHz
     static uint8_t  joy2cursor;
     static uint8_t  secondJoy;
     static uint8_t  kempstonPort;

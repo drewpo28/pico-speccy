@@ -98,6 +98,7 @@ bool Config::soundriveEnabled() {
 uint8_t  Config::gs_enabled = 0;  // 0=OFF, 1=GS, 2=NeoGS
 uint8_t  Config::gs_ram_size = 2; // 0=512K, 1=1M, 2=2M, 3=4M (NeoGS only)
 uint8_t  Config::gs_clock = 1;    // 0=12MHz 1=13MHz 2=14MHz 3=20MHz 4=24MHz
+uint8_t  Config::ngs_clock = 0;   // 0=Auto(fw CKSEL) 1=24MHz 2=20MHz 3=12MHz 4=10MHz
 uint8_t  Config::joy2cursor = false;
 uint8_t  Config::secondJoy = 2; // NPAD#2
 uint8_t  Config::kempstonPort = 0x1F;
@@ -922,6 +923,8 @@ void Config::load() {
         nvs_get_u8("gs_enabled", Config::gs_enabled, sts);
         nvs_get_u8("gs_ram_size", Config::gs_ram_size, sts);
         nvs_get_u8("gs_clock", Config::gs_clock, sts);
+        nvs_get_u8("ngs_clock", Config::ngs_clock, sts);
+        if (Config::ngs_clock > 4) Config::ngs_clock = 0;
         nvs_get_u8("throtling2", Config::throtling, sts);
         nvs_get_b("CursorAsJoy", CursorAsJoy, sts);
         nvs_get_b("betadisk", betadisk, sts);
@@ -1223,6 +1226,7 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"gs_enabled", Config::gs_enabled);
     nvs_set_u8(buf,"gs_ram_size", Config::gs_ram_size);
     nvs_set_u8(buf,"gs_clock", Config::gs_clock);
+    nvs_set_u8(buf,"ngs_clock", Config::ngs_clock);
     nvs_set_str(buf,"Issue2", Issue2 ? "true" : "false");
     nvs_set_str(buf,"rtc_enabled", rtc_enabled ? "true" : "false");
     nvs_set_str(buf,"psram_enabled", psram_enabled ? "true" : "false");

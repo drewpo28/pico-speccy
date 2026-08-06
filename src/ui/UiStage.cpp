@@ -116,6 +116,7 @@ NM_INT_ACCESS (mb02,      mb02)
 NM_BOOL_ACCESS(zc,        zcontroller)
 NM_INT_ACCESS (gsMode,    gs_enabled)
 NM_INT_ACCESS (gsClock,   gs_clock)
+NM_INT_ACCESS (ngsClock,  ngs_clock)
 // NeoGS RAM pick. The radio offers the sizes fw 1.11 auto-detects (512K/2M/4M =
 // config values 0/2/3); a legacy 1 (= classic-GS 1 MB) reads back as the 2 MB row.
 static int32_t get_gsRam()          { return Config::gs_ram_size >= 3 ? 3 : (Config::gs_ram_size == 0 ? 0 : 2); }

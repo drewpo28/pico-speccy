@@ -153,6 +153,9 @@ const char* romsetName(int32_t composite);
     /* only feeds pump()/step() timing constants — no allocation, applies live.          */ \
     X(SET_GS_MODE,         AC_REBOOT, F_GATED,               get_gsMode,     put_gsMode,     nullptr,        FEAT_GENERAL_SOUND) \
     X(SET_GS_CLOCK,        AC_LIVE,   0,                     get_gsClock,    put_gsClock,    hook_gsClock,   -1)          \
+    /* NeoGS clock: normally the firmware's own CKSEL pick (Auto), overridable because  */ \
+    /* 24 MHz costs more core1 than a 378 MHz build has. Same live timing-only path.    */ \
+    X(SET_NGS_CLOCK,       AC_LIVE,   0,                     get_ngsClock,   put_ngsClock,   hook_gsClock,   -1)          \
     /* NeoGS total RAM (512K/2M/4M): sizes the PSRAM reservation at the chip top,      */ \
     /* decided once in setup() — reboot-class like the mode itself.                    */ \
     X(SET_GS_RAM,          AC_REBOOT, 0,                     get_gsRam,      put_gsRam,      nullptr,        -1)          \
