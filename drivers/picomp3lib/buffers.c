@@ -57,8 +57,13 @@
 void osd_printf(const char* msg, ...);
 #define printf(...) osd_printf(__VA_ARGS__)
 
-void* malloc2(size_t sz);
-#define MPDEC_ALLOCATOR(x) malloc2(x)
+/* pico-speccy: the decoder is owned by NgsMp3 (NeoGS VS1011 emulation), which
+   hands it one SRAM arena and carves it up here. Deliberately NOT the project's
+   global malloc2() in Tape.cpp — that is a bump allocator over Tape's own pool.
+   Helix never frees (MPDEC_FREE is left undefined below, so SAFE_FREE only
+   nulls the pointer), which is exactly why an arena works. */
+void* ngs_helix_alloc(size_t sz);
+#define MPDEC_ALLOCATOR(x) ngs_helix_alloc(x)
 
 /**************************************************************************************
  * Function:    ClearBuffer

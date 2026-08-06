@@ -8,14 +8,45 @@
 #include "hardware/sync.h"
 #include <string.h>
 #include <math.h>
+#include <stdarg.h>
+#include <stdio.h>
 
-#define MINIMP3_IMPLEMENTATION
-#define MINIMP3_ONLY_MP3
-// Keep minimp3's ~16.8 KB per-frame scratch off the stack — core0 has 8 KB and
-// the first decoded frame faulted on it (see the patch note in minimp3.h). We
-// supply it via mp3dec_external_scratch() from s_scratchBuf below.
-#define MINIMP3_EXTERNAL_SCRATCH
-#include "../minimp3/minimp3.h"
+// Helix (drivers/picomp3lib), not minimp3. Fixed point, no float and no huge
+// stack frame, and — the reason for the switch — its short-buffer behaviour is
+// benign: it answers ERR_MP3_INDATA_UNDERFLOW and leaves the stream alone,
+// where minimp3 wiped its own state, declared the whole window consumed and
+// could never resynchronise (hw 2026-08-06; that trap is what MP3_DECODE_MIN
+// below existed to dodge). minimp3.h stays in the tree, unused, with its
+// external-scratch patch intact.
+extern "C" {
+#include "mp3dec.h"
+}
+
+// Helix allocates its eight state structures (23.9 KB total) through this hook
+// at MP3InitDecoder() time and NEVER frees them — buffers.c leaves MPDEC_FREE
+// undefined, so its SAFE_FREE only nulls the pointer. That makes a bump
+// allocator over one Buffer exactly right: we pick the tier (SRAM, NOT PSRAM —
+// this is the decoder's hot state and butter PSRAM shares its XIP cache with
+// core1's GS fetches) and we can hand the whole thing back in one call.
+#define HELIX_ARENA_SIZE 24576
+static Buffer   s_helixBuf;
+static uint8_t* s_helix_arena = nullptr;
+static uint32_t s_helix_used  = 0;
+
+extern "C" void* ngs_helix_alloc(size_t sz) {
+    if (!s_helix_arena) return nullptr;
+    uint32_t need = ((uint32_t)sz + 3u) & ~3u;          // keep 4-byte alignment
+    if (s_helix_used + need > HELIX_ARENA_SIZE) return nullptr;
+    void* p = s_helix_arena + s_helix_used;
+    s_helix_used += need;
+    memset(p, 0, need);   // Helix relies on zeroed state on first use
+    return p;
+}
+
+// (buffers.c routes its own diagnostics to the project-wide osd_printf.)
+
+// Largest frame Helix can emit: MAX_NGRAN * MAX_NSAMP * MAX_NCHAN shorts.
+#define MP3_MAX_SAMPLES (2 * 576 * 2)
 
 // ============================================================================
 // Buffers — one pooled allocation, carved into the state struct below.
@@ -23,50 +54,28 @@
 
 #define MP3_IN_SIZE   8192            // MD_SEND byte ring (core1 → core0)
 #define MP3_IN_MASK   (MP3_IN_SIZE - 1)
-#define MP3_ASM_SIZE  4096            // linear frame-assembly window for minimp3
+#define MP3_ASM_SIZE  4096            // linear frame-assembly window for the decoder
                                       // (max MP3 frame 1441 B + sync-hunt slack)
-// Never hand minimp3 a window that cannot hold a worst-case frame plus the
-// header after it. mp3dec_decode_frame() only accepts a frame once it can
-// validate the NEXT header inside the same buffer; when it cannot, it wipes its
-// own state, reports the WHOLE window as consumed and returns zero samples. Our
-// caller then discards those bytes, the next window again starts mid-frame, and
-// the stream can never resynchronise — hw 2026-08-06: junk exactly equal to the
-// input rate with fr=0, indefinitely. The tell was that toggling max speed fixed
-// it: that skips the frame-pacing waits which also pump service(), so the input
-// ring accumulated and the windows got big enough to sync. Worst case is a
-// 1441-byte frame reached at an arbitrary offset, so two frames plus a header.
-#define MP3_DECODE_MIN 3072
+// Helix needs the whole frame present before it can decode it, but says so
+// politely (ERR_MP3_INDATA_UNDERFLOW) and consumes nothing, so this is only an
+// efficiency gate: it stops us re-parsing a header on every service() call
+// while the window fills. It is NOT the trap-avoidance minimp3 required — that
+// decoder wiped its state and swallowed the whole window on a short buffer,
+// which is why this constant used to be 3072 and load-bearing.
+#define MP3_DECODE_MIN 1600
 #define MP3_OUT_SIZE  4096            // stereo pairs @37500 Hz ≈ 109 ms
 #define MP3_OUT_MASK  (MP3_OUT_SIZE - 1)
 
 struct Mp3State {
-    mp3dec_t dec;
-    mp3d_sample_t frame_pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];  // 1152*2 shorts
+    short    frame_pcm[MP3_MAX_SAMPLES];                     // interleaved L,R
     uint8_t  in_ring[MP3_IN_SIZE];
     uint8_t  asm_buf[MP3_ASM_SIZE];
     int16_t  out_ring[MP3_OUT_SIZE * 2];                     // interleaved L,R
 };
+static HMP3Decoder s_dec = nullptr;
 
 static Mp3State* s_st = nullptr;
 static Buffer    s_stateBuf;
-
-// minimp3's per-frame workspace (~16.8 KB) gets its OWN allocation, asked for
-// WITHOUT PREFER_PSRAM so it lands in heap/SRAM. It is by far the hottest thing
-// in the decoder — grbuf[2][576] and syn[33][64] are swept several times per
-// frame — and in butter PSRAM it does not just decode slowly, it thrashes the
-// XIP cache that core1's GS sample reads share. hw 2026-08-06 with the scratch
-// pooled in PSRAM: playback ran at half speed, and the tell was that the OUTPUT
-// side was the limit, not the decoder — out sat in its regulated band (~3055 of
-// 4096) with und=0 while fr held 18/s against the 38.28/s a 44.1 kHz stream
-// needs, i.e. mixTick was only draining ~17.6k of 37500 pairs/s because the
-// GS-Z80 on core1 had itself dropped to half speed.
-static mp3dec_scratch_t* s_scratch = nullptr;
-static Buffer            s_scratchBuf;
-
-// Handed to minimp3 in place of its stack local (MINIMP3_EXTERNAL_SCRATCH).
-// Only ever reached from mp3dec_decode_frame(), which this file calls from
-// service() alone — core0, never nested — so one shared instance is safe.
-static mp3dec_scratch_t *mp3dec_external_scratch(void) { return s_scratch; }
 
 // SPSC ring indices (free-running, power-of-2 masks; ARM word stores atomic).
 static volatile uint32_t s_in_w = 0, s_in_r = 0;    // producer core1 / consumer core0
@@ -117,24 +126,31 @@ bool NgsMp3::init() {
                    (unsigned)sizeof(Mp3State));
         return false;
     }
-    // Heap first (see the note on s_scratch); PSRAM only as a last resort, so a
-    // tight heap degrades to slow playback instead of no MP3 at all.
-    if (!s_scratchBuf.alloc(sizeof(mp3dec_scratch_t), Buffer::NEED_POINTER) ||
-        !s_scratchBuf.data()) {
-        s_scratchBuf.free();
-        if (!s_scratchBuf.alloc(sizeof(mp3dec_scratch_t),
-                                Buffer::NEED_POINTER | Buffer::PREFER_PSRAM) ||
-            !s_scratchBuf.data()) {
-            s_scratchBuf.free();
+    // Helix state: one SRAM arena, carved by malloc2() above. Heap first;
+    // PSRAM only if the heap cannot spare it, so a tight heap degrades to slow
+    // playback rather than to no MP3 at all.
+    if (!s_helixBuf.alloc(HELIX_ARENA_SIZE, Buffer::NEED_POINTER) || !s_helixBuf.data()) {
+        s_helixBuf.free();
+        if (!s_helixBuf.alloc(HELIX_ARENA_SIZE, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM) ||
+            !s_helixBuf.data()) {
+            s_helixBuf.free();
             s_stateBuf.free();
-            Debug::log("NgsMp3: no room for decoder scratch (%u B) — MP3 stubbed",
-                       (unsigned)sizeof(mp3dec_scratch_t));
+            Debug::log("NgsMp3: no room for Helix arena (%u B) — MP3 stubbed",
+                       (unsigned)HELIX_ARENA_SIZE);
             return false;
         }
     }
-    s_scratch = (mp3dec_scratch_t*)s_scratchBuf.data();
+    s_helix_arena = (uint8_t*)s_helixBuf.data();
+    s_helix_used  = 0;
+    s_dec = MP3InitDecoder();
+    if (!s_dec) {
+        s_helixBuf.free(); s_helix_arena = nullptr;
+        s_stateBuf.free();
+        Debug::log("NgsMp3: MP3InitDecoder failed (arena %u B) — MP3 stubbed",
+                   (unsigned)HELIX_ARENA_SIZE);
+        return false;
+    }
     s_st = (Mp3State*)s_stateBuf.data();
-    mp3dec_init(&s_st->dec);
     s_in_w = s_in_r = 0;
     s_out_w = s_out_r = 0;
     s_asm_len = 0;
@@ -143,17 +159,20 @@ bool NgsMp3::init() {
     s_gain_l = s_gain_r = 16384;
     s_decoded_samples = 0;
     s_reset_pending = false;
-    Debug::log("NgsMp3: decoder ready (%u B in %s, scratch %u B in %s)",
+    Debug::log("NgsMp3: Helix ready (buffers %u B in %s, state %u/%u B in %s)",
                (unsigned)sizeof(Mp3State), s_stateBuf.tierName(),
-               (unsigned)sizeof(mp3dec_scratch_t), s_scratchBuf.tierName());
+               (unsigned)s_helix_used, (unsigned)HELIX_ARENA_SIZE,
+               s_helixBuf.tierName());
     return true;
 }
 
 void NgsMp3::deinit() {
     s_st = nullptr;
-    s_scratch = nullptr;
+    s_dec = nullptr;                 // Helix never frees; the arena goes as a whole
+    s_helix_arena = nullptr;
+    s_helix_used = 0;
     s_stateBuf.free();
-    s_scratchBuf.free();
+    s_helixBuf.free();
 }
 
 void NgsMp3::reset() {
@@ -198,7 +217,7 @@ static inline bool out_push(int16_t l, int16_t r) {
 
 // Resample one decoded frame (samples per channel at hz) to 37500 Hz with
 // linear interpolation, carrying phase and the last pair across frames.
-static void resample_frame(const mp3d_sample_t* pcm, int samples, int channels, uint32_t hz) {
+static void resample_frame(const short* pcm, int samples, int channels, uint32_t hz) {
     if (hz != s_src_hz) {                       // rate change: restart cleanly
         s_src_hz = hz;
         s_rs_phase = 0;
@@ -281,21 +300,21 @@ static void mp3_health_tick() {
     s_pf = s_st_frames; s_pj = s_st_junk; s_po = s_st_over;
     s_pu = s_st_under;  s_pr = s_st_resets;
     if (!active) return;
-    // SD sequentiality alongside the decoder numbers: the two only make sense
-    // read together (a stream that is corrupt because the guest fetched the
-    // wrong sectors looks identical, in the MP3 counters alone, to one that was
-    // mangled in transit).
-    NgsSd::Stats sd;
-    NgsSd::getStats(sd);
-    static uint32_t s_p17 = 0, s_pbrk = 0;
-    uint32_t d17 = sd.reads17 - s_p17, dbrk = sd.seq_break - s_pbrk;
-    s_p17 = sd.reads17; s_pbrk = sd.seq_break;
-    Debug::log("MP3: fr=%u junk=%u ovr=%u und=%u rst=%u hz=%u in=%u/%u out=%u/%u | SD rd17=%u brk=%u",
-               (unsigned)df, (unsigned)dj, (unsigned)dov, (unsigned)du,
-               (unsigned)dr, (unsigned)s_src_hz,
-               (unsigned)in_depth,  (unsigned)MP3_IN_SIZE,
-               (unsigned)out_depth, (unsigned)MP3_OUT_SIZE,
-               (unsigned)d17, (unsigned)dbrk);
+    // // SD sequentiality alongside the decoder numbers: the two only make sense
+    // // read together (a stream that is corrupt because the guest fetched the
+    // // wrong sectors looks identical, in the MP3 counters alone, to one that was
+    // // mangled in transit).
+    // NgsSd::Stats sd;
+    // NgsSd::getStats(sd);
+    // static uint32_t s_p17 = 0, s_pbrk = 0;
+    // uint32_t d17 = sd.reads17 - s_p17, dbrk = sd.seq_break - s_pbrk;
+    // s_p17 = sd.reads17; s_pbrk = sd.seq_break;
+    // Debug::log("MP3: fr=%u junk=%u ovr=%u und=%u rst=%u hz=%u in=%u/%u out=%u/%u | SD rd17=%u brk=%u",
+    //            (unsigned)df, (unsigned)dj, (unsigned)dov, (unsigned)du,
+    //            (unsigned)dr, (unsigned)s_src_hz,
+    //            (unsigned)in_depth,  (unsigned)MP3_IN_SIZE,
+    //            (unsigned)out_depth, (unsigned)MP3_OUT_SIZE,
+    //            (unsigned)d17, (unsigned)dbrk);
 }
 
 void NgsMp3::service() {
@@ -310,7 +329,9 @@ void NgsMp3::service() {
         s_rs_phase = 0;
         s_rs_prev_l = s_rs_prev_r = 0;
         s_decoded_samples = 0;
-        mp3dec_init(&s_st->dec);
+        // Helix has no reset entry point and needs none: flushing our buffers
+        // is enough. The next frames come back MAINDATA_UNDERFLOW while its bit
+        // reservoir refers to bytes we dropped, then it picks the stream up.
         s_st_resets++;
         s_sniff_len = 0;                        // re-arm the head snapshot
         s_sniff_ready = false;
@@ -339,70 +360,63 @@ void NgsMp3::service() {
         // The last few KB of a track are dropped rather than decoded from a
         // short window — under 80 ms, and the player flushes us between tracks.
         if (s_asm_len < MP3_DECODE_MIN) return;
-        mp3dec_frame_info_t info;
-        int samples = mp3dec_decode_frame(&s_st->dec, s_st->asm_buf, s_asm_len,
-                                          s_st->frame_pcm, &info);
-        if (info.frame_bytes <= 0) {
-            // No full frame in the window. If it's completely full of junk
-            // that never syncs, drop half to keep the stream moving.
-            if (s_asm_len >= MP3_ASM_SIZE) {
-                // Rate-limited peek at what we are about to throw away. A full
-                // 4 KB window of a 320 kbps stream holds ~4 frames, so failing
-                // to sync in it means the window is not contiguous file data —
-                // this says whether it is filler (0xFF runs from the SD line
-                // going idle mid-transfer), a repeated byte, or genuine audio
-                // that minimp3 is rejecting for some other reason.
-                static uint32_t s_last_dump_us = 0;
-                uint32_t now = time_us_32();
-                if (now - s_last_dump_us >= 1000000u) {
-                    s_last_dump_us = now;
-                    const uint8_t* b = s_st->asm_buf;
-                    // Count 0xFF bytes across the window — one number that
-                    // separates "idle line leaked in" from "real but unsyncable".
-                    int ff = 0;
-                    for (int i = 0; i < MP3_ASM_SIZE; i++) if (b[i] == 0xFF) ff++;
-                    Debug::log("MP3 junk: ff=%d/%d head %02X %02X %02X %02X %02X %02X %02X %02X "
-                               "%02X %02X %02X %02X %02X %02X %02X %02X",
-                               ff, MP3_ASM_SIZE,
-                               b[0], b[1], b[2],  b[3],  b[4],  b[5],  b[6],  b[7],
-                               b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-                }
-                memmove(s_st->asm_buf, s_st->asm_buf + MP3_ASM_SIZE / 2, MP3_ASM_SIZE / 2);
-                s_asm_len = MP3_ASM_SIZE / 2;
-                s_st_junk += MP3_ASM_SIZE / 2;
-            }
+
+        // Helix wants inbuf pointing AT the sync word.
+        int off = MP3FindSyncWord(s_st->asm_buf, s_asm_len);
+        if (off < 0) {
+            // Nothing frame-like in the whole window. Keep the last byte: a
+            // sync word can straddle the boundary.
+            s_st_junk += (uint32_t)(s_asm_len - 1);
+            s_st->asm_buf[0] = s_st->asm_buf[s_asm_len - 1];
+            s_asm_len = 1;
             return;
         }
-        uint8_t fhdr[16];
-        memcpy(fhdr, s_st->asm_buf, 16);        // frame start, before it is consumed
-        memmove(s_st->asm_buf, s_st->asm_buf + info.frame_bytes, s_asm_len - info.frame_bytes);
-        s_asm_len -= info.frame_bytes;
-        if (samples > 0) {
+        if (off > 0) {                       // leading garbage (ID3 tag, padding)
+            memmove(s_st->asm_buf, s_st->asm_buf + off, s_asm_len - off);
+            s_asm_len -= off;
+            s_st_junk += (uint32_t)off;
+        }
+
+        unsigned char* p    = s_st->asm_buf;
+        int            left = s_asm_len;
+        int            err  = MP3Decode(s_dec, &p, &left, s_st->frame_pcm, 0);
+
+        if (err == ERR_MP3_INDATA_UNDERFLOW) {
+            // The frame is real but not fully here yet. Unlike minimp3 this
+            // costs nothing and consumes nothing — just wait for more bytes.
+            // (MP3Decode did advance its local copy of the pointer; ours is
+            // untouched, which is the whole point of passing a copy.)
+            return;
+        }
+        int consumed = s_asm_len - left;
+        if (err && err != ERR_MP3_MAINDATA_UNDERFLOW) {
+            // False sync or a damaged frame: step over one byte and let
+            // MP3FindSyncWord try again from the next position.
+            memmove(s_st->asm_buf, s_st->asm_buf + 1, s_asm_len - 1);
+            s_asm_len -= 1;
+            s_st_junk += 1;
+            return;
+        }
+        if (consumed > 0 && consumed <= s_asm_len) {
+            memmove(s_st->asm_buf, s_st->asm_buf + consumed, s_asm_len - consumed);
+            s_asm_len -= consumed;
+        }
+        if (err == ERR_MP3_MAINDATA_UNDERFLOW) {
+            // Valid frame whose bit reservoir refers to data we flushed (the
+            // first frames after a start or a soft reset). Consume it, emit
+            // nothing, and the stream picks up within a frame or two.
+            s_st_junk += (uint32_t)consumed;
+            return;
+        }
+
+        MP3FrameInfo fi;
+        MP3GetLastFrameInfo(s_dec, &fi);
+        int ch = fi.nChans ? fi.nChans : 2;
+        int per_ch = fi.outputSamps / ch;         // Helix reports the total
+        if (per_ch > 0) {
             s_st_frames++;
-            s_decoded_samples += (uint32_t)samples;
-            resample_frame(s_st->frame_pcm, samples, info.channels, (uint32_t)info.hz);
-        } else {
-            // A frame minimp3 located but decoded to nothing. Everything else
-            // has been ruled out by measurement (sectors sequential, byte count
-            // exact to the sector, stream starts on a valid FF FB header), so
-            // the only thing left is what it actually parsed: dump the header
-            // it accepted plus the fields it derived. layer!=3 or a nonsense
-            // bitrate/rate means it locked onto a false sync; a sane MPEG-1
-            // Layer III header here means the fault is inside the decode.
-            static uint32_t s_last_bad_us = 0;
-            uint32_t now = time_us_32();
-            if (now - s_last_bad_us >= 1000000u) {
-                s_last_bad_us = now;
-                const uint8_t* b = fhdr;
-                Debug::log("MP3 bad: bytes=%d layer=%d hz=%d ch=%d br=%d | "
-                           "%02X %02X %02X %02X %02X %02X %02X %02X "
-                           "%02X %02X %02X %02X %02X %02X %02X %02X",
-                           info.frame_bytes, info.layer, info.hz, info.channels,
-                           info.bitrate_kbps,
-                           b[0], b[1], b[2],  b[3],  b[4],  b[5],  b[6],  b[7],
-                           b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-            }
-            s_st_junk += (uint32_t)info.frame_bytes;
+            s_decoded_samples += (uint32_t)per_ch;
+            resample_frame(s_st->frame_pcm, per_ch, ch, (uint32_t)fi.samprate);
         }
     }
 }
