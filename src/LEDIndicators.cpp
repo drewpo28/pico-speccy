@@ -205,7 +205,14 @@ static const uint8_t SPRITE[COUNT][8] = {
 
 bool isVisible(Id i) {
     switch (i) {
-        case SD:       return Config::esxdos != 0 || DivMMC::enabled;
+        // NeoGS carries its OWN SD interface (NgsSd), so the indicator is
+        // meaningful whenever the card is selected — without this the glyph was
+        // simply absent from the row on a NeoGS-only setup and no amount of
+        // touchR/W could light it (hw 2026-08-07: NPL streaming an MP3 at ~78
+        // sector reads/s, indicator dark, while Neo8Tracker "worked" only
+        // because DivMMC happened to be enabled in that test).
+        case SD:       return Config::esxdos != 0 || DivMMC::enabled
+                           || Config::gs_enabled == 2;   // 2 = NeoGS
         case ZCTRL:    return Config::zcontroller || DivMMC::zc_enabled;
         case IDE:      return ::IDE::present();
         case FDD:      return Config::betadisk || Config::mb02 != 0 || MB02::enabled;

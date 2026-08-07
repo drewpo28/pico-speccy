@@ -3019,7 +3019,16 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
     L = gs_to_u8(sumL / (int32_t)n);
     R = gs_to_u8(sumR / (int32_t)n);
     s_ring_rpos = r + n;
-    if (sumL || sumR) LED::touchR(LED::GS);
+    // Light on CHANGING output, not on a non-zero level. The channel latches
+    // keep whatever the firmware last wrote, so a card sitting idle after (or
+    // before) playback usually holds a non-silent DC value and `sumL || sumR`
+    // stayed true forever — the GS indicator was lit solid while the card was
+    // only scanning its SD card (hw 2026-08-07). A DC offset is not sound.
+    static uint8_t s_led_prevL = 0, s_led_prevR = 0;
+    if (L != s_led_prevL || R != s_led_prevR) {
+        s_led_prevL = L; s_led_prevR = R;
+        LED::touchR(LED::GS);
+    }
 }
 
 // =================================================================

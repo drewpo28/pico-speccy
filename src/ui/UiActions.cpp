@@ -292,7 +292,7 @@ void act_ledLegend() {
     static const Entry entries[] = {
         { LED::TAPE,       "Tape (EAR)"     },
         { LED::FDD,        "Floppy/TR-DOS"  },
-        { LED::SD,         "DivMMC/esxDOS"  },
+        { LED::SD,         "SD (DivMMC/NGS)" },
         { LED::ZCTRL,      "Z-Controller"   },
         { LED::IDE,        "IDE/HDD"        },
         { LED::BEEPER,     "Beeper"         },

@@ -1,5 +1,6 @@
 #include "NgsSd.h"
 #include "Debug.h"
+#include "../LEDIndicators.h"
 
 #include "pico.h"
 #include "hardware/sync.h"
@@ -534,6 +535,14 @@ void NgsSd::csEdge(bool cs_active) {
 uint8_t __not_in_flash_func(NgsSd::xfer)(uint8_t mosi) {
     s_st_xfers++;
     if (!s_cs_active || s_sector_count == 0) { s_rx = 0xFF; return s_rx; }
+    // Indicator lives here, not only at the host-I/O completion in service():
+    // the 8-sector read-ahead means a sequential stream is served almost
+    // entirely from cache, so service() never runs and the LED stayed dark for
+    // NPL playing an MP3 while it blinked fine for Neo8Tracker's scattered
+    // module loads (hw 2026-08-07). The card is doing SPI either way, which is
+    // what a real board's LED would show. One byte store per SPI exchange on
+    // core1; the decay counter is read on core0 and a torn count is invisible.
+    LED::touchR(LED::SD);
     s_rx = fsm_out();
     fsm_in(mosi);
     return s_rx;
@@ -600,7 +609,16 @@ void NgsSd::service() {
         __dmb();
         if (gen != s_req_gen) s_dbg_retries++;
     } while (gen != s_req_gen);   // reposted under us — serve the live request
-    if (ok) { if (op == REQ_READ) s_st_reads++; else s_st_writes++; }
+    if (ok) {
+        // Light the SD indicator. The card's own SD traffic never touches the
+        // DivMMC ports where every other touchR/W(LED::SD) sits, so with NeoGS
+        // playing off its card the indicator stayed dark (hw 2026-08-07, NPL
+        // streaming an MP3). Done here rather than in xfer(): this is once per
+        // sector on core0 — the same core that decays the indicators — instead
+        // of once per SPI byte on core1.
+        if (op == REQ_READ) { s_st_reads++;  LED::touchR(LED::SD); }
+        else                { s_st_writes++; LED::touchW(LED::SD); }
+    }
     else {
         s_st_errors++;
         if (s_dbg_first_bad == 0xFFFFFFFFu) s_dbg_first_bad = sector;
