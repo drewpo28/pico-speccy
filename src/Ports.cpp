@@ -1423,7 +1423,13 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       if ((address & 0xC002) == 0xC000) {
         LED::touchR(LED::AY);
         AySound* chip = ayChipFor(address);
-        uint8_t rd = chip ? chip->getRegisterData() : 0xFF;
+        // TurboSound FM status mode (see the #F8..#FF select in Ports::output):
+        // the YM2203 status byte is bit 7 = BUSY plus the two timer-overflow
+        // flags in bits 1..0. We emulate neither the FM half nor its timers, so
+        // the honest answer is "idle, nothing pending" — and it is also the one
+        // that lets an OPN driver's BUSY poll finish instead of spinning.
+        uint8_t rd = AySound::ts_status_read ? 0x00
+                   : (chip ? chip->getRegisterData() : 0xFF);
         if (ia) {
           return rd | newAlfBit;
         }
@@ -2183,13 +2189,39 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // AY
     // ========================================================================
     if ((ESPectrum::AY_emu) && Config::turbosound && address == 0xFFFD) {
-      // NedoPC way: chip latched by the DATA written to #FFFD. #FF/#FE are not
-      // valid register numbers, so the write below (which still happens, as on
-      // real hardware) just parks the register latch out of range.
-      if (data == 0xFF) {
-        AySound::selected_chip = 0;
-      } else if (data == 0xFE) {
-        AySound::selected_chip = 1;
+      // NedoPC way: chip latched by the DATA written to #FFFD. The full family
+      // is #F8..#FF, not just #FF/#FE — TurboSound FM is 2 × YM2203 (an AY plus
+      // an FM half each), and its manual (nedopc.com/TURBOSOUND/tfm-prg.zip,
+      // §5.1) defines the "pseudo-registers" as %11111frc:
+      //   c = chip number
+      //   r = ready-poll mode, 0 = ON  → IN #FFFD returns the OPN STATUS byte
+      //                                  (bit 7 = BUSY) instead of a register
+      //   f = FM synthesis,   0 = ON
+      // Classic TurboSound only ever writes #FF/#FE, i.e. r=1, which is why
+      // plain-TS software never sees the status register. Xpeccy's
+      // libxpeccy/sound/ayym.c TS_NEDOPC decodes the same `(val & 0xF8)==0xF8`.
+      //
+      // Without the status path a TSFM driver hangs the machine outright: its
+      // register write is "wait for BUSY to clear, write the register number,
+      // wait again, write the data" (manual §5.1), and IN #FFFD with the latch
+      // parked at #F8 returned 0xFF — BUSY forever (hw 2026-08-07, TheLink
+      // stuck at ZX PC C0BC in `IN (C) / JP M` initialising the FM chips).
+      //
+      // "Выбор псевдорегистра обрабатывается ПЛИС, до YM2203 он не доходит -
+      // текущий регистр не меняется": the select is swallowed by the CPLD, so
+      // it must NOT reach selectRegister — hence the early return. (An earlier
+      // build let it through on the guess that hardware parks the latch out of
+      // range; the manual says the previously selected register survives.)
+      //
+      // The chip mapping keeps this project's hw-tested #FF → chip 0 / #FE →
+      // chip 1 convention (Xpeccy maps bit 0 the other way round); FM itself is
+      // not emulated, so #F8/#F9 only have to stay consistent with it.
+      if ((data & 0xF8) == 0xF8) {
+        AySound::selected_chip  = (data & 0x01) ? 0 : 1;
+        AySound::ts_status_read = !(data & 0x02);
+        LED::touchW(LED::AY);
+        ioContentionLate(MemESP::ramContended[rambank]);
+        return;
       }
     }
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {

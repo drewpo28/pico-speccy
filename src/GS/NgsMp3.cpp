@@ -347,17 +347,34 @@ static void mp3_health_tick() {
                (unsigned)gs_dbg_bb_st,
                (unsigned)gs_dbg_gs_pc(),
                (unsigned)s_hdat1, (unsigned)s_hdat0);
-    // Last 16 handshake steps. P=host wrote #B3, C=host wrote #BB,
-    // D=card took the parameter, K=card cleared the command bit,
-    // W=card wrote an answer byte, R=host took it. Each is byte/status.
+    // The host handshake ring. Nothing about it is MP3-specific — it is the
+    // #B3/#BB/#33 exchange, and it is the main tool for ANY NeoGS wedge, so it
+    // is labelled "NGS hs:" (it used to say "MP3 hs:", which sent every reader
+    // looking for a decoder problem in demos that never touch the decoder).
     if (dbb > 1000) {
         extern void gs_dbg_handshake(char* out, int cap);
         extern void gs_dbg_npl_vars(char* out, int cap);
-        char buf[500];
-        gs_dbg_npl_vars(buf, sizeof(buf));
-        Debug::log("NPL: %s", buf);
+        // MUST stay under Debug::log's own 256-byte line buffer, minus the
+        // "NGS hs: " prefix and the log's counter/timestamp header. A bigger
+        // buffer here is worthless: vsnprintf truncates the line afterwards,
+        // and it truncates the TAIL — the newest entries, i.e. the only ones
+        // that name a wedge. That is how the ring kept arriving cut mid-token
+        // ("... N40 W0") even after gs_dbg_handshake was taught to print the
+        // newest entries first (hw 2026-08-07, two captures lost to it).
+        // gs_dbg_handshake budgets backwards from `cap`, so sizing the buffer
+        // to what actually survives is what keeps the tail intact.
+        char buf[200];
+        // NPL's state block only exists when NPL is the thing running. Printed
+        // unconditionally it just decodes whatever bytes happen to live at card
+        // address 0x4168 — in TheLink that came out as "ftype=57 chip=8D
+        // tmo=7975", pure noise that reads like real state. Gate it on the
+        // decoder having actually been fed: no MP3 stream, no NPL.
+        if (s_st_frames || s_st_junk || s_in_w != s_in_r) {
+            gs_dbg_npl_vars(buf, sizeof(buf));
+            Debug::log("NPL: %s", buf);
+        }
         gs_dbg_handshake(buf, sizeof(buf));
-        Debug::log("MP3 hs: %s", buf);
+        Debug::log("NGS hs: %s", buf);
     }
 }
 

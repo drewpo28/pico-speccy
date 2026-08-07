@@ -15,6 +15,10 @@ MEM_FILES = [f"/tmp/picospec_mem{i}.bin" for i in range(4)]
 RAM_FILES = [f"/tmp/picospec_ram{i}.bin" for i in range(8)]
 REGS_FILE = "/tmp/picospec_regs.txt"
 OUT_FILE  = "/tmp/picospec_dump.log"
+# NeoGS card side (written by memdump.gdb only when a card is up)
+NGS_LOW_FILE  = "/tmp/picospec_ngs_low.bin"
+NGS_REGS_FILE = "/tmp/picospec_ngs.txt"
+NGS_BANK_FILES = [f"/tmp/picospec_ngs_b{i}.bin" for i in (4, 5, 6, 7)]
 
 MEM_TYPE_NAME = {0: "SRAM", 1: "PSRAM_SPI", 2: "SWAP"}
 
@@ -60,9 +64,12 @@ def load_ram_pages():
     return out
 
 
-def load_regs():
+def load_kv(path):
+    """Parse a `key=value` log written by GDB `printf`. Returns {} if absent."""
+    if not os.path.exists(path):
+        return {}
     regs = {}
-    with open(REGS_FILE) as fh:
+    with open(path) as fh:
         for line in fh:
             line = line.strip()
             # Strip GDB/MI console-stream wrapping: ~"AF=7E2C\n"
@@ -77,6 +84,10 @@ def load_regs():
                 k, v = line.split("=", 1)
                 regs[k.strip()] = v.strip()
     return regs
+
+
+def load_regs():
+    return load_kv(REGS_FILE)
 
 
 def r16(regs, key):
@@ -94,8 +105,13 @@ def flags_str(af_lo):
             f"P={(af_lo>>2)&1} N={(af_lo>>1)&1} C={af_lo&1}")
 
 
-def hex_line(addr, mem):
-    b = [mem[addr + i] for i in range(16)]
+def hex_line(addr, mem, off=None):
+    """One canonical 16-byte line. `off` is the index into `mem` when it differs
+    from the address being printed (the NeoGS fixed window lives at physical
+    0xC000 but the GS-Z80 sees it at 0x4000)."""
+    if off is None:
+        off = addr
+    b = [mem[off + i] for i in range(16)]
     hex_part = " ".join(f"{x:02X}" for x in b[:8]) + "  " + " ".join(f"{x:02X}" for x in b[8:])
     asc_part = "".join(chr(x) if 0x20 <= x < 0x7F else "." for x in b)
     return f"{addr:04X}: {hex_part}  |{asc_part}|\n"
@@ -168,6 +184,60 @@ def main():
             for a in range(0, 0x4000, 16):
                 out.write(hex_line(a, page))
         out.write("\n")
+
+        # NeoGS card side, when memdump.gdb found a live card. The GS-Z80's
+        # 0x0000-0x3FFF is physical page 0 (with NOROM set, which is how every
+        # loaded firmware runs) and its fixed 0x4000-0x7FFF window is physical
+        # 0xC000-0xFFFF, so the single 64K s_ngs_low_ram dump carries both —
+        # printed here under the CPU addresses the GS-Z80 actually sees, which
+        # is what a disassembly of a stuck PC needs.
+        ngs = load_kv(NGS_REGS_FILE)
+        if ngs:
+            out.write("=" * 40 + "\n")
+            out.write("NeoGS GS-Z80\n")
+            out.write("PC={PC} SP={SP} AF={AF} BC={BC} DE={DE} HL={HL} "
+                      "IX={IX} IY={IY}\n".format(**{k: ngs.get(k, "????")
+                      for k in ("PC","SP","AF","BC","DE","HL","IX","IY")}))
+            out.write("GSCFG0={} MPAG={} MPAGEX={} INTENA={} INTREQ={} "
+                      "status={} command={} ZXDMA={}@{}\n".format(
+                          ngs.get("GSCFG0","??"), ngs.get("MPAG","??"),
+                          ngs.get("MPAGEX","??"), ngs.get("INTENA","??"),
+                          ngs.get("INTREQ","??"), ngs.get("status","??"),
+                          ngs.get("command","??"), ngs.get("zxdma","?"),
+                          ngs.get("dma_addr","??????")))
+            low = None
+            if os.path.exists(NGS_LOW_FILE):
+                with open(NGS_LOW_FILE, "rb") as fh:
+                    low = fh.read()
+            if low and len(low) >= 0x10000:
+                out.write("--- NeoGS 0000-3FFF (phys page 0; ROM window "
+                          "unless NOROM) ---\n")
+                for a in range(0, 0x4000, 16):
+                    out.write(hex_line(a, low))
+                out.write("--- NeoGS 4000-7FFF (fixed window = phys "
+                          "C000-FFFF) ---\n")
+                win = low[0xC000:0x10000]
+                for a in range(0, 0x4000, 16):
+                    out.write(hex_line(0x4000 + a, win, a))
+            else:
+                out.write("--- NeoGS memory [missing] ---\n")
+            # Banked window 8000-FFFF, four 8K slots as currently mapped. This
+            # is where a demo's own card-side handlers usually live, and none of
+            # it is reachable through s_ngs_low_ram.
+            bank = bytearray()
+            for f in NGS_BANK_FILES:
+                if os.path.exists(f):
+                    with open(f, "rb") as fh:
+                        d = fh.read()
+                    bank += d if len(d) == 8192 else bytes(8192)
+                else:
+                    bank += b"\xFF" * 8192
+            if any(b != 0xFF for b in bank):
+                out.write("--- NeoGS 8000-FFFF (banked: MPAG/MPAGEX as mapped) "
+                          "---\n")
+                for a in range(0, 0x8000, 16):
+                    out.write(hex_line(0x8000 + a, bank, a))
+            out.write("\n")
 
     print(f"Dump written to {OUT_FILE}")
 

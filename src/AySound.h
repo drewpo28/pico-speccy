@@ -133,6 +133,11 @@ class AySound
     uint8_t my_num;
 public:
     static int selected_chip;
+    // TurboSound FM read mode, set by the #F8..#FF select written to #FFFD
+    // (bit 1 clear). false = classic TurboSound, IN #FFFD returns the selected
+    // AY register; true = the YM2203/OPN STATUS register, whose bit 7 is BUSY.
+    // Shared by both chips (it is one latch in the TSFM CPLD), reset with them.
+    static bool ts_status_read;
     AySound(uint8_t my_num): my_num(my_num) {}
     void updToneA();
     void updToneB();

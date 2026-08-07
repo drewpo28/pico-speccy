@@ -5,6 +5,19 @@
 #include <stddef.h>
 
 
+// NeoGS ZX-DMA window (defined in GS.cpp): 1 while the card is running DMA
+// module 1, i.e. while every host access to 0x0000-0x3FFF must become one
+// card-RAM access instead. Read by the four Z80Ops memory accessors in CPU.cpp.
+//
+// It is deliberately NOT tested inside MemESP::readbyte/writebyte: those are
+// inlined into ~170 sites, most of them inside the RAM-resident Z80 core, and
+// the test cost 4128 bytes of SRAM there — enough to push the boot-time
+// framebuffer malloc over the top (pico_malloc PANICS on OOM: "Out of memory"
+// right after "VIDEO::Init begin", hw 2026-08-06). Z80Ops::peek8/poke8/peek16/
+// poke16 are single out-of-line IRAM functions and cover every guest data
+// access, so one test each is all this needs.
+extern volatile uint8_t g_ngs_zxdma;
+
 class GS {
 public:
     static bool enabled;
@@ -81,6 +94,35 @@ public:
     // NPL's CMD 0x10 — fw took a stale byte as the port number and NPL hung
     // waiting for its real byte to be consumed). Flush them + status D7/D0.
     static void    hostIfaceFlush();
+
+    // NeoGS ZX-DMA (DMA_MOD 1) — the card programs a linear RAM address and
+    // opens the window (DMA_CST b7), then the ZX streams bytes through its own
+    // 0x0000-0x3FFF area with LDIR/LDDR: every host access there is turned into
+    // one card-RAM access at the DMA address, which post-increments. See
+    // NedoPC docs/dma_zx_doc.txt. Hooked from MemESP::readbyte/writebyte via
+    // g_ngs_zxdma (0 = off, so the hot path costs one predicted-not-taken test).
+    static uint8_t zxDmaRead();
+    static void    zxDmaWrite(uint8_t data);
+
+    // GS-Z80 state for the OSD memory dump. The ZX-side dump alone is half a
+    // picture whenever the two CPUs deadlock — "ZX waits for D7, card waits for
+    // something" needs the card's PC and the code under it to go any further
+    // (hw 2026-08-07: TheLink froze with the ZX in `IN A,(#BB)/RLCA/JR NC` and
+    // the card looping at 0x59C5, which is demo code living in card RAM and
+    // therefore invisible to every tool we had).
+    struct Snapshot {
+        uint16_t pc, sp, af, bc, de, hl, ix, iy;
+        uint8_t  cfg0, mpag, mpagex, status, intena, intreq;
+        uint8_t  zxdma;          // ZX-DMA window open
+        uint32_t dma_addr;       // ...and its current linear card address
+        uint32_t clock_hz;
+    };
+    static bool ngsSnapshot(Snapshot& out);
+    // Read the GS-Z80's address space THROUGH ITS CURRENT MAPPING. Slots that
+    // are not pointer-backed (banked pages on SPI-PSRAM boards only) read 0xFF
+    // rather than going through core1's private cache, which is not safe to
+    // touch from core0. Returns false unless NeoGS is up.
+    static bool ngsCpuPeek(uint16_t addr, uint8_t* dst, uint32_t len);
 
     // Dump host/guest port-IO trace ring buffer to Debug::log. Triggered
     // automatically on key handshake events; can also be called manually

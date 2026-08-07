@@ -117,8 +117,8 @@ only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
   polls) — untested for true multi-block streaming, but nothing observed so
   far needs it, and silent sector substitution was actively hanging the fw's
   own boot-time VBR read.
-- **Known deliberate deviations**: DMA modules (#1B-#1F) and WIN0-3 (#20-#23)
-  are warn-once stubs; INT is
+- **Known deliberate deviations**: DMA modules 2 (SD) / 3 (MP3) and WIN0-3
+  (#20-#23) are warn-once stubs (module 1 is implemented — see ZX-DMA below); INT is
   level-until-INTA (real hw: ≤100 T @24 MHz pulse) — same model as classic GS
   here; on an EXPAG→normal GSCFG0 toggle we remap immediately (real hw keeps
   the old mapping until the next MPAG write); write-only regs (MPAG/MPAGEX
@@ -242,6 +242,317 @@ but the word on top of its stack names the routine (8758 → `FGETVTS`,
 8B9D → `INI_E` inside `NAMELNG`). `NGS_SD_TRACE` (level 2) is a per-SD-command
 flood that changes the timing it is meant to observe — do not use it on a
 timing-dependent bug.
+
+### NeoGS ZX-DMA (DMA module 1) — implemented 2026-08-06, transfer hw-confirmed 2026-08-07
+
+**Status**: both directions hw-confirmed (2026-08-07). The read path carries
+~10 MB per run including `POP`-based bulk reads (SP pointed into the window),
+and TheLink now plays through its effect changes. The write path: TheLink moves
+`wr=327680`
+(2 × 160 KB) and the address lands on `0x0A8000`, i.e. both blocks (0x100000 and
+0x080000) exactly where the card programmed them, and the card then executes the
+uploaded player (pc wanders 0x592C-0x5AA3 with `mpag` changing per channel, which
+is the mixer paging sample pages). The demo still did not run after that, but
+**the next fault was not the DMA and not the GS at all** — it was the missing
+TurboSound FM status register (see below); the card sitting in
+`IN A,(01)/CP E/JR NZ` at 0x59A7 was simply waiting for a host that had wedged.
+`st=01` there is NOT a symptom either: this demo's protocol never issues
+`OUT (05)`, so D0 stays latched by design.
+
+
+Found by the demo **TheLink** (Pentagon 1024 + NeoGS): it hangs after loading.
+The whole chain came out of one `NGS_TRACE` capture — `NGS: DMA module 1 not
+emulated` at `pc=5878`, then the GS-Z80 parked forever at fw `0x006A`
+(`OUT (3),A / IN A,(4) / RLCA / JR C` — the ROM's "send a word to the host" loop,
+reached by a crash, `POP HL` walking the stack) with `st=81`, while the ZX spun
+at `786A` waiting for D7. The demo uploads a ~0x86-byte routine to card RAM
+0x5830 with the ordinary `0x18`/`0x19` (set-address / write-byte) commands, runs
+it, and that routine drives the DMA — so with the DMA stubbed the 320 KB it
+expects at card 0x080000/0x100000 never arrives and `CALL 0xC000` lands in
+garbage. Reference: NedoPC `fpga/current/dma/dma_zx.v` + `docs/dma_zx_doc.txt`
+(both via the **tslabs/neogs** GitHub mirror — nedopc.com is a self-signed-cert
+403 wall for WebFetch, and `gh api repos/tslabs/neogs/contents/...` is the way in;
+`docs/`, `fpga/current/{ports,dma,memmap,zxbus}` are all worth having).
+
+- `DMA_MOD` #1B selects the module: **1 = ZX, 2 = SD, 3 = MP3** (`ports.v`
+  `DMA_MODULE_*`); #1C-#1F are that module's registers. Only 1 exists in the
+  hardware docs' words ("пока существует только модуль с номером 1") and only 1
+  is implemented; 2/3 keep the warn-once stub (their data paths are already
+  emulated byte-at-a-time through the SPI/decoder ports).
+- Address is **22-bit linear card RAM**: #1C = a[21:16] (6 bits), #1D = a[15:8],
+  #1E = a[7:0]. Post-increments on **every** host access, and reads of #1C-#1E
+  return the LIVE value — that is how the card learns how much moved.
+- `DMA_CST` #1F: only b7 (window open), rest undefined. Cleared by warm reset.
+- ZX side: while the window is open, every host access to **0x0000-0x3FFF** is
+  one card-RAM access. Two asymmetries, both from the doc and both implemented:
+  **read** requires ROM actually paged there (the FPGA gates on CSROM — with RAM
+  at page 0 a real card stays silent) and the **first byte read is junk** (it is
+  the FPGA's prefetch latch; the programmed address arrives on the second read,
+  modelled as a one-byte pipeline latch, no address fudging). **Write** needs no
+  priming byte and fires regardless of what is paged there — the byte goes to
+  card RAM *and* to the host's own RAM if that window is RAM, which is what
+  NedoPC's own test program checks itself against.
+- **Byte ORDER inside `peek16`/`poke16` is load-bearing on the DMA path.** Every
+  read advances the card's pointer, so a 16-bit access must touch LSB first,
+  exactly as the cross-page branch's own comment has always said ("Order
+  matters, first read lsb, then read msb, don't optimize"). `peek16`'s same-page
+  fast path did `(read(addr+1) << 8) | read(addr)` — backwards, and in a single
+  expression whose operand evaluation order C++ leaves unspecified. Harmless for
+  real memory, fatal here: hosts pull DMA data with `POP` (point SP into the
+  window and pop), and every popped word came back byte-swapped. TheLink does
+  exactly that at an effect change — `LD SP,HL` into the window then four `POP
+  HL` at 0x792C-0x7939, patching the operands at 794B/7963/7985/799D — so its
+  whole next phase ran on corrupted addresses and the ZX ended up waiting at
+  798B for a byte its own broken script had asked for (hw 2026-08-07).
+- **Hook goes in `Z80Ops::peek8/poke8/peek16/poke16` (CPU.cpp), NEVER in
+  `MemESP::readbyte`/`writebyte`.** `g_ngs_zxdma` (declared in `GS.h`) gates one
+  predicted-not-taken test in each of those four out-of-line IRAM accessors,
+  which is where every guest data access already funnels (`ldi()` → peek8/poke8,
+  so LDIR is covered). Putting the same test inside readbyte/writebyte instead
+  cost **+4128 bytes of SRAM** — they are inlined into ~170 sites, most in the
+  RAM-resident Z80 core — and that was enough to make the boot-time framebuffer
+  `malloc` in `VIDEO::Init` fail; pico_malloc PANICS instead of returning NULL,
+  so the whole firmware died with `*** PANIC *** Out of memory` + SIGBUS right
+  after `setup: VIDEO::Init begin, freeHeap=120056` (hw 2026-08-06). Two
+  lessons worth keeping: **the heap margin at VIDEO::Init is under 4 KB on
+  PICO_DV**, so measure `RAM:` against a stashed baseline before/after any
+  change that touches an inlined hot path (the out-of-line version costs 32 B);
+  and `ensureMainFB`'s `if (!p) return false` is dead code on this SDK.
+  **`fetchOpcode` is deliberately NOT hooked** — the doc's own rule is that
+  interrupts must be off while the window is open (else the ZX RSTs to $38 and
+  executes card data), and no DMA user runs code from the window.
+- `ngs_dma_peek/poke` bypass the private 64-byte SRAM cache (`gs_pc_read`): that
+  cache is core1-only by construction (FIFO eviction + the
+  `s_pc_last_line`/`s_pc_last_buf` memo pair are unsynchronised, so a second
+  producer could hand core1 a tag paired with the wrong buffer). Butter PSRAM is
+  memory-mapped, SPI PSRAM has psram_spi's cross-core lock. The write path does
+  still invalidate on SPI, where core1 reads banked pages through the cache.
+  On MURM1 that means one SPI transaction per DMA byte — correct but slow; a
+  sequential write-combining buffer is the obvious follow-up if it matters.
+- Diagnostics: the `NGS:` trace line gained `ZDMA <on>@<addr> rd=/wr=` — the
+  first question a DMA hang raises is whether the host streamed anything at all
+  and where the address ended up. `zxpc/ret/cmd/b3` moved into the same
+  always-on line for the same reason — the `MP3:` line that used to carry them
+  is gated on #BB traffic, and the hang where the card waits for a command the
+  host never sends has #BB traffic of exactly zero.
+- **The card side is in the memory dump now** (`tools/memdump.gdb` +
+  `tools/memdump.py`, NOT `OSD::saveDumpToFile` — the Ctrl+Alt+D dump is
+  produced over GDB by the VS Code extension, so firmware-side changes to
+  saveDumpToFile never show up there): 64 KB of `s_ngs_low_ram` re-split into
+  the GS-Z80's `0000-3FFF` and its fixed `4000-7FFF` window, plus GS-Z80
+  registers and GSCFG0/MPAG/MPAGEX/INTENA/INTREQ/status/command/ZXDMA. The GDB
+  block sits at the very END of the script so an unresolved symbol cannot lose
+  the main dump. Without it a two-CPU deadlock is unreadable — the ZX half only
+  ever says "waiting on #BB".
+
+### The handshake ring: four separate defects cost more than the bugs did
+
+Every NeoGS hang in the 2026-08-07 session was diagnosed from `NGS hs:`, and
+four times in a row the ring itself was the thing that hid the answer. All four
+are fixed; the pattern is worth remembering before trusting any capture:
+
+1. **Printed oldest-first and truncated at `cap`** — it dropped the NEWEST
+   entries, i.e. the ones at the wedge. Now budgets backwards from the end and
+   prefixes `..` when older entries were dropped.
+2. **`Debug::log` has its own 256-byte line buffer** and truncates the tail
+   again. Growing the ring's buffer to 600 achieved nothing; it has to be sized
+   to what survives the log (200).
+3. **`hostWriteCtrl` (#33) was never recorded.** A protocol can be driven
+   entirely by NMI with the command port barely used — TheLink's effect changes
+   are — so the ring showed half the conversation and several wrong fixes came
+   out of reading it. Tag `N` now covers reset/NMI/LED.
+4. **The quiet-trip froze the ring before its first entry.** The card's own boot
+   (SD walk, 1-2 s) is a long run of pure #BB polling, which is exactly the
+   trip condition; `gs_hs()` then returns immediately forever and the whole
+   session logs `NGS hs: [frozen]` and nothing else. Now requires a full ring
+   first — and note the freeze was never protecting entries from the polling
+   flood in the first place, since status polls are deliberately not recorded.
+
+Also `NPL:` used to print unconditionally, decoding whatever bytes happened to
+live at card address 0x4168 — in a demo that never loads NPL that came out as
+plausible-looking state (`ftype=57 chip=8D tmo=7975`). It is now gated on the
+MP3 decoder having actually been fed. And the ring line is `NGS hs:`, not
+`MP3 hs:` — it is the #B3/#BB/#33 exchange and has nothing to do with MP3.
+
+### D7 clear is check-then-act across two cores — always re-check
+
+`gs_hs_idle()` and the `gs_status_and(~0x80)` that follows it are two operations
+on two cores, and both producers publish their byte BEFORE raising the flag
+(`gsio_out_data`: store, `__dmb`, set; `hostWriteB3` likewise). A byte that
+lands between the idle test and the clear therefore loses its announcement: the
+queue holds it, D7 says nothing is pending, and both sides wait forever.
+`gs_d7_clear_recheck()` clears and then re-tests, restoring the flag if anything
+arrived — safe and idempotent, since the producer sets it too and a byte
+arriving after the re-check keeps its own set.
+
+TheLink, hw 2026-08-07: ring ends `... N40 W0F R0F N40 W90` with `st=01` — the
+host took 0x0F, the card answered the next NMI with 0x90 inside that window, and
+the host's trailing clear wiped 0x90's flag. ZX at 798D waiting for a D7 that
+had been erased, card at 0x59C5 waiting for the command that wait would have
+produced.
+
+**The comment above `gs_status_or` has described this exact shape since the NPL
+`GET_RZN` fix (2026-08-06)** — that one was closed by claiming the byte in a
+single `{flag, byte}` exchange, and the 512-byte queue path that replaced it
+does not do that. Worth re-reading that comment before touching this area: it
+predicted the bug, the code had just drifted away from its fix.
+
+### DAMNPORT1 (#0A) took the wrong MPAG bit and wiped D7
+
+`ports.inc` describes #0A as "data bit := inverse of MPAG bit 0". The RTL says
+something else, and the difference is a rare, delayed hang:
+
+```verilog
+assign port0a_wrrd = (a[5:0]==DAMNPORT1 && (port_wr||port_rd));
+mode_pg2 <= mode_expag ? {din[6:0], din[7]}    // written from port 00 = MPAG
+                       : {din[6:0], 1'b0};
+data_bit_output <= ~mode_pg2[0];
+```
+
+So the bit forced into `data_bit` is **MPAG bit 7**, and only in EXPAG mode — in
+normal paging `mode_pg2[0]` is hardwired 0, i.e. the data bit is always **set**.
+We used MPAG **bit 0**, a completely different bit and one the firmware's mixer
+churns every INT. Every #0A access with an odd MPAG therefore cleared D7 and
+destroyed a card→host byte the host had not collected yet.
+
+TheLink, hw 2026-08-07: ring `... N40 W0F R0F N40 W90` with `st=01` — the second
+NMI answered with 0x90, an unrelated #0A access wiped the flag announcing it,
+and the ZX sat at 798E waiting for a D7 that no longer existed. It depends on
+MPAG's low bit at that instant, which is why it presented as "runs fine for a
+couple of minutes, then hangs at an effect change".
+
+Both #0A and #0B fire on `port_wr || port_rd`, so reads and writes force the
+flags identically (`ngs_damnport1`/`ngs_damnport2` hold the single copy).
+`ports.inc` is a summary, the RTL is the specification — prefer it.
+
+### A host NMI can be silently swallowed by redcode's reject latch
+
+`Z80_redcode.c` models the real "the CPU does not accept a second NMI during the
+NMI response" behaviour like this:
+
+```c
+if (REQUEST & Z80_REQUEST_REJECT_NMI) REQUEST = 0;          /* <-- */
+else if (REQUEST & Z80_REQUEST_NMI)   { take it; REQUEST = Z80_REQUEST_REJECT_NMI; }
+```
+
+The latch is consumed on the core's next request evaluation — but `REQUEST = 0`
+wipes the **whole** word, so an NMI raised in between is destroyed rather than
+deferred. `GS::step()` calls `z80_nmi()` exactly at a `z80_run` chunk boundary,
+and a chunk ends every INT period (~533 T-states at 20 MHz), so a chunk that
+ends right after an NMI response leaves the latch standing for the next
+`step()` to walk into. Fixed by deferring: raise the NMI only when
+`!(s_cpu.request & Z80_REQUEST_REJECT_NMI)`, keeping `s_ngs_nmi_pending` set
+otherwise. Costs at most one extra `step()` — the latch cannot survive a single
+instruction.
+
+Found in TheLink at an effect change (hw 2026-08-07). Its per-effect exchange is
+NMI-driven, so **one lost NMI is a permanent deadlock**: ring ends
+`... C01 W80 R80 N40 W0F R0F N40` — the first NMI answers with 0x0F, the second
+produces nothing, the card sits in its own poll loop at 0x59C5 and the ZX waits
+at 798B for the byte the swallowed handler never wrote.
+
+**This was invisible until `hostWriteCtrl` started feeding the handshake ring**
+(tag `N`). The protocol barely uses the command port at effect transitions, so a
+ring without #33 showed half the conversation and every reading of it was
+guesswork — several wrong fixes came out of that. Same lesson as the ring's
+print order: **the diagnostic being incomplete cost more than the bug**.
+
+Noted but NOT fixed (inside the vendored core): that same `REQUEST = 0` also
+drops a pending `Z80_REQUEST_INT`, so an NMI response can eat one timer
+interrupt. Our INT is level-triggered and re-asserted, so it should self-heal.
+
+### The #B3/#BB host interface — read the RTL, it settles everything
+
+I burned three hardware round-trips guessing at this model before reading
+NedoPC's own Verilog (`fpga/current/zxbus/zxbus.v` + `ports/ports.v`, via the
+tslabs/neogs mirror). **Do that first.** The actual design:
+
+- **TWO data registers, not one latch.** `data_reg_out` is written by the ZX
+  (`OUT #B3`) and read by the card (`IN 02`); `data_reg_in` is written by the
+  card (`OUT 03`) and read by the ZX (`IN #B3`). They never alias.
+- **ONE `data_bit` flip-flop** (the D7 both sides see), with exactly four rules:
+  ZX writes #B3 → set; ZX reads #B3 → clear; card writes #03 → set;
+  **card reads #02 → clear**. Collisions resolve set-wins-on-write,
+  clear-wins-on-read (zxbus.v ~line 332).
+- So **the card reading a parameter clears the flag even when the flag was
+  raised by the card's own unread reply.** Hardware cannot keep that
+  announcement alive; real firmware therefore never writes an answer and then
+  goes back to reading parameters without the host taking it first.
+
+`ngs_data_bit_clear()` implements that rule: on `IN (02)` clear D7 **and** drop
+the card→host queue, because those bytes are exactly what the hardware has just
+declared unreachable. The 512-byte queue itself stays a deliberate deviation
+(the two CPUs are not co-scheduled, and NPL's 256-byte `GET_LNG` needs it).
+
+This replaced an unconditional `s_g2h_r = s_g2h_w` in `hostWriteBB`, which was
+standing in for the missing rule and was **both too broad and too narrow**:
+
+- too narrow — with D7 held up by a reply to a command the host had abandoned,
+  a command that DOES carry parameters got a phantom byte: ring
+  `P92 K00 W00 W3E C18 D92*2 K00 D92 P40` (order is trustworthy, `gs_hs` indexes
+  with an atomic fetch_add). The firmware answered abandoned command 0x00 with
+  00/3E *after* the host had put 0x92 up, so command 0x18's second parameter
+  read — that second `D92` — took the stale latch instead of waiting, its
+  handler finished early, and the host's real 0x40 was never read (`b3=1 st=80`,
+  ZX spinning at 786A, card idle at fw 0x0270).
+- too broad — it killed answers the host was about to collect, leaving
+  TheLink's ping-pong one step out of phase: card parked in
+  `IN A,(01)/OR A/JR NZ` at 0x59C6 waiting for command 0, i.e. having already
+  answered command 1, while the ZX spun at 798B waiting for that answer
+  (`reg_command=01`, D7=0, queue empty).
+
+Commands that carry no parameters never reach `IN (02)`, which is why the new
+rule fixes the second case instead of trading one hang for the other.
+
+Also: `ngs_warm_reset()` clears the queue (it zeroes `reg_status`, and a
+surviving queue would disagree with the cleared D7); `hostWriteB3` drops it too
+(that IS what the single `data_reg_out` register does); F3/F4 still flush
+everything in `hostWriteBB` (the firmware reboots). The host→card `#B3`
+collapse-to-newest is unrelated and stays. **Unverified against the RTL and
+worth a look next time this area moves:** ports.v lists only `port02_rd`,
+`port03_wr` and `port0a_wrrd` as data-bit events — `OUT (02)` is NOT one of
+them, yet `gsio_ack_data()` clears the flag on it.
+
+## TurboSound FM (#FFFD select #F8..#FF) — status register stub, 2026-08-07
+
+`Config::turbosound` used to decode only `#FF`/`#FE` written to `#FFFD`. The real
+NedoPC family is **`(value & 0xF8) == 0xF8`** — the manual calls these
+"pseudo-registers" **`%11111frc`**: `c` = chip, **`r` = ready-poll mode, 0 = ON →
+`IN #FFFD` returns the YM2203/OPN STATUS byte (bit 7 = BUSY) instead of a
+register**, `f` = FM synthesis, 0 = ON. Classic TurboSound only ever writes
+`#FF`/`#FE` (r=1), which is why plain-TS software never touches the status path.
+TSFM is 2 × YM2203 and a YM2203 is an AY plus an FM half, so one chip answers
+both. Source: the official programming manual, `tfm-prg.zip` §5.1 from
+<http://nedopc.com/TURBOSOUND/ts-fm.php> (the site is a self-signed-cert 403 wall
+for WebFetch — `curl -sk` gets it; the page also links the schematic, the CPLD
+firmware+source and TFM Music Maker). Xpeccy `libxpeccy/sound/ayym.c`
+`TS_NEDOPC` decodes identically.
+
+**The select is swallowed by the CPLD — it must NOT reach the register latch**
+("до YM2203 он не доходит - текущий регистр не меняется"), so the handler
+returns instead of falling through to `selectRegister`.
+
+**This hangs the machine outright when missing**, which is how it was found (hw
+2026-08-07, TheLink after the ZX-DMA work): an OPN register write is "poll STATUS
+until bit 7 (BUSY) clears, write the address, poll again, write the data", and
+with the register latch parked at `#F8` `getRegisterData()` returned 0xFF — BUSY
+forever. The ZX sat at PC `C0BC` (`IN (C) / JP M`, BC=`#FFFD`) inside the demo's
+`CALL 0xC000` init with IFF1=0, so the screen never came up and the NeoGS card
+looked stuck when it was only waiting for a dead host. Recognising `#F8..#FF`
+as a select **and** answering the status read with 0x00 (no BUSY, no timer
+flags — we emulate neither the FM half nor its timers) is the whole fix.
+
+- Chip mapping keeps this project's hw-tested `#FF` → chip 0 / `#FE` → chip 1
+  (Xpeccy maps bit 0 the other way). FM is not emulated, so `#F8`/`#F9` only
+  have to stay consistent with that.
+- FM register writes (0x30-0xB6) are harmlessly dropped: `setRegisterData` is
+  already `if (selectedRegister < 16)`. Registers 0-13 written while an FM chip
+  is selected DO reach the AY — correct, that is the YM2203's own SSG half.
+- `getRegisterData()` gained an explicit `>= 16 → 0xFF`: the old
+  `regs[7] >> (selectedRegister - 8)` was undefined once the latch went past 39,
+  which is exactly what a TSFM select does.
+- The whole thing is gated on `Config::turbosound` (Audio → TurboSound). With it
+  off, a TSFM demo still hangs — same as real hardware without the card.
 
 ## SAA1099 Emulation Key Findings
 

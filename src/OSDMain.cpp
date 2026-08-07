@@ -3486,6 +3486,45 @@ static void saveDumpToFile(uint16_t addr_from, uint16_t addr_to) {
         f_write(f, line, n, &bw);
     }
 
+    // NeoGS side. Without it a two-CPU deadlock is undebuggable: the ZX half
+    // only ever shows "waiting on #BB", and the code the card is stuck in lives
+    // in card RAM, which nothing else can read (hw 2026-08-07, TheLink).
+    {
+        GS::Snapshot gs;
+        if (GS::ngsSnapshot(gs)) {
+            f_write(f, "\n--- NeoGS GS-Z80 ---\n", 22, &bw);
+            snprintf(line, sizeof(line),
+                "PC=%04X SP=%04X AF=%04X BC=%04X DE=%04X HL=%04X IX=%04X IY=%04X\n",
+                gs.pc, gs.sp, gs.af, gs.bc, gs.de, gs.hl, gs.ix, gs.iy);
+            f_write(f, line, strlen(line), &bw);
+            snprintf(line, sizeof(line),
+                "GSCFG0=%02X MPAG=%02X MPAGEX=%02X status=%02X INTENA=%02X INTREQ=%02X "
+                "clk=%luHz  ZXDMA=%u@%06lX\n",
+                gs.cfg0, gs.mpag, gs.mpagex, gs.status, gs.intena, gs.intreq,
+                (unsigned long)gs.clock_hz, (unsigned)gs.zxdma,
+                (unsigned long)gs.dma_addr);
+            f_write(f, line, strlen(line), &bw);
+            // Whole GS-Z80 address space as it is mapped right now. Banked
+            // slots read 0xFF on SPI-PSRAM boards (see ngsCpuPeek).
+            f_write(f, "--- NeoGS memory (GS-Z80 view) ---\n", 35, &bw);
+            for (uint32_t a = 0; a < 0x10000; a += 16) {
+                uint8_t b[16];
+                GS::ngsCpuPeek((uint16_t)a, b, 16);
+                int n = snprintf(line, sizeof(line),
+                    "%04X: %02X %02X %02X %02X %02X %02X %02X %02X  "
+                    "%02X %02X %02X %02X %02X %02X %02X %02X  |",
+                    (unsigned)a, b[0], b[1], b[2],  b[3],  b[4],  b[5],  b[6],  b[7],
+                    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+                for (int j = 0; j < 16; j++)
+                    line[n++] = (b[j] >= 0x20 && b[j] < 0x7F) ? b[j] : '.';
+                line[n++] = '|';
+                line[n++] = '\n';
+                line[n] = 0;
+                f_write(f, line, n, &bw);
+            }
+        }
+    }
+
     f_write(f, "\n", 1, &bw);
     fclose2(f);
 }

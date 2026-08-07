@@ -87,6 +87,18 @@ static inline bool gs_g2h_empty() { return s_g2h_w == s_g2h_r; }
 //   P host wrote #B3 (parameter)      D card read port 2 (took it)
 //   C host wrote #BB (command)        K card cleared the command bit
 //   W card wrote port 3 (answer)      R host read #B3 (took it)
+//   N host wrote #33 (GSCTR: reset/NMI/LED) — data is the byte written
+// Two more tags existed briefly while hunting a wedge and were removed once it
+// was found: `X<site>` on every D7 clear and `Q<cmd>@<pc>` on every command
+// pop. Both are cheap to reinstate (see git history) and both settled real
+// questions — X proved the clears were legitimate, Q proved the command FIFO
+// hands each command to the right waiter — so reach for them again rather
+// than reasoning about those two mechanisms from the outside.
+// N matters more than it looks: a protocol can be driven entirely by NMI with
+// the command port barely used, and then a ring without it shows half the
+// conversation and every read of it is guesswork (hw 2026-08-07, TheLink: its
+// per-frame exchange is OUT (#33),#40 → card's NMI handler answers → host reads,
+// and none of the NMIs were in the ring).
 // Printed by the MP3 health line, so a wedge shows its own last 16 steps.
 // 64 deep, and consecutive repeats of the same (tag,data) collapse into a
 // count. A polling UI otherwise fills the whole window with one W/R pair and
@@ -96,25 +108,21 @@ static inline bool gs_g2h_empty() { return s_g2h_w == s_g2h_r; }
 struct GsHsEntry { uint8_t tag, data, st, rep; };
 static volatile GsHsEntry s_hs[GS_HS_SIZE];
 static volatile uint32_t  s_hs_pos = 0;
-// The UI polls constantly, so by the time a wedge is noticed the ring holds
-// only the idle ping-pong. Arm a countdown on a file-switch key (param 1..5
-// ahead of command 0x1F) and freeze shortly after: what stays is the window
-// around the switch, which is the part that matters.
-static volatile uint32_t s_hs_arm = 0;
-static volatile bool     s_hs_frozen = false;
+// The ring does NOT freeze any more, and must not be taught to again.
+//
+// Freezing was there on the theory that constant polling would bury the wedge
+// under idle traffic — but status polls are deliberately never recorded, so a
+// wedged machine emits no events at all and the ring already retains its last
+// entries indefinitely. The freeze protected nothing and destroyed evidence
+// twice in one session: once tripping during the card's 1-2 s SD boot (a long
+// quiet stretch by definition) so a whole capture came back as
+// "NGS hs: [frozen]" with zero entries, and once landing BETWEEN the two gs_hs
+// calls inside a single hostReadB3 — the ring ended `... W90 X01` with the `R`
+// that belonged to it dropped, which reads as "the host never took the byte"
+// and is the opposite of what happened.
 static volatile uint8_t  s_hs_last_p = 0;
-// Freeze on the WEDGE itself, not on the command that precedes it: the switch
-// window turned out healthy (both reply bytes delivered), so the failure is
-// further along. hostReadBB bumps this on every poll and any handshake event
-// clears it; a long run of pure polling with no exchange is the wedge, and
-// freezing then leaves the last 64 real events sitting in the ring.
-static volatile uint32_t s_hs_quiet = 0;
-#define GS_HS_QUIET_TRIP 300000u          // ≈2.5 s of a 117k/s poll loop
-void gs_dbg_hs_arm(void) { if (!s_hs_frozen && !s_hs_arm) s_hs_arm = 48; }
+void gs_dbg_hs_arm(void) { }
 static inline void __not_in_flash_func(gs_hs)(uint8_t tag, uint8_t data, uint8_t st) {
-    if (s_hs_frozen) return;
-    s_hs_quiet = 0;
-    if (s_hs_arm && --s_hs_arm == 0) s_hs_frozen = true;
     uint32_t last = s_hs_pos - 1;
     if (s_hs_pos) {
         volatile GsHsEntry& e = s_hs[last & GS_HS_MASK];
@@ -125,8 +133,40 @@ static inline void __not_in_flash_func(gs_hs)(uint8_t tag, uint8_t data, uint8_t
 }
 void gs_dbg_handshake(char* out, int cap) {
     uint32_t end = s_hs_pos;
-    int n = snprintf(out, cap, s_hs_frozen ? "[frozen] " : "");
-    for (uint32_t k = (end >= GS_HS_SIZE ? end - GS_HS_SIZE : 0); k < end && n < cap - 16; k++) {
+    int n = 0;
+    out[0] = 0;
+    // Print the NEWEST entries that fit, not the oldest. Filling forward and
+    // stopping at `cap` drops the tail — which is the only part that matters,
+    // since the last few exchanges before a wedge are what name it (hw
+    // 2026-08-07: the line ended mid-token at "... C01 W80 R8", so the events
+    // at the actual failure were the ones thrown away). Walk back from the end
+    // budgeting worst-case width, then print forward from there.
+    uint32_t oldest = (end >= GS_HS_SIZE ? end - GS_HS_SIZE : 0);
+    uint32_t first = oldest;
+    //
+    // The budget below is the ONLY limit — the print loop must not carry a
+    // second, different one. It used to stop at `n < cap - 8` while the budget
+    // filled to `cap - 4`, so the last entries were selected and then silently
+    // dropped again: the ring came back ending `... W90 X01` with the `R90`
+    // that immediately follows it in hostReadB3 missing, which reads as "the
+    // host never took the byte" — the exact opposite of what happened, and two
+    // rounds of chasing a nonexistent lost flag (hw 2026-08-07).
+    {
+        int budget = cap - n - 4;   // ".. " marker + NUL
+        uint32_t k = end;
+        while (k > first) {
+            const volatile GsHsEntry& e = s_hs[(k - 1) & GS_HS_MASK];
+            int w = e.rep ? 9 : 4;          // "Xnn*rrr " / "Xnn "
+            if (budget < w) break;
+            budget -= w;
+            k--;
+        }
+        first = k;
+    }
+    // Say so when the window dropped older entries, so a partial ring is never
+    // mistaken for the whole conversation.
+    if (first != oldest) n += snprintf(out + n, cap - n, ".. ");
+    for (uint32_t k = first; k < end; k++) {
         const volatile GsHsEntry& e = s_hs[k & GS_HS_MASK];
         if (e.rep) n += snprintf(out + n, cap - n, "%c%02X*%u ", e.tag ? e.tag : '?', e.data, e.rep + 1);
         else       n += snprintf(out + n, cap - n, "%c%02X ",    e.tag ? e.tag : '?', e.data);
@@ -579,9 +619,21 @@ static uint8_t  s_ngs_tim_frq = 0;    // TIM_FRQ #0E
 static uint8_t  s_ngs_sctrl  = 0x03;  // SCTRL #11 (SDNCS=1, MCNCS=1 — both inactive)
 static uint8_t  s_ngs_led    = 0;     // LEDCTR #01 (b0: 0 = LED on)
 static uint8_t  s_ngs_win[4] = {0,0,0,0};  // WIN0-3 #20-#23 — latched, not implemented
-static uint8_t  s_ngs_dma_mod = 0;    // DMA_MOD #1B
-static uint8_t  s_ngs_dma_addr[3] = {0,0,0};  // DMA_HAD/MAD/LAD #1C-#1E
-static uint8_t  s_ngs_dma_cst = 0;    // DMA_CST #1F (b7 = run) — stub
+static uint8_t  s_ngs_dma_mod = 0;    // DMA_MOD #1B (0 = none, 1 = ZX, 2 = SD, 3 = MP3)
+static uint8_t  s_ngs_dma_cst = 0;    // DMA_CST #1F (b7 = run)
+// ZX-DMA (module 1) state. dma_addr is a 22-bit LINEAR card-RAM address
+// (dma_zx.v: HAD = a[21:16], MAD = a[15:8], LAD = a[7:0]) that post-increments
+// on every host access through the window. s_ngs_dma_pre is the FPGA's read
+// pipeline latch, which is why the first byte the host reads is garbage and the
+// byte at the programmed address only arrives on the SECOND read
+// (docs/dma_zx_doc.txt: "первый прочитанный байт - неверен").
+static volatile uint32_t s_ngs_dma_pos = 0;
+static volatile uint8_t  s_ngs_dma_pre = 0xFF;
+// Byte counters — the whole point of the window is bulk transfer, so "did the
+// host actually stream anything, and where did the address end up" is the first
+// question a DMA-related hang raises. Always counted (two increments on a path
+// the guest already pays a memory access for), reported under NGS_TRACE.
+static volatile uint32_t s_ngs_dma_rd = 0, s_ngs_dma_wr = 0;
 // Timer INT divider: TIM_FRQ selects 37500 Hz / {1,2,4,8,16,64,256,1024}.
 // The DAC keeps sampling at 37500 Hz regardless — only the CPU INT divides.
 static uint32_t s_ngs_int_div = 1;
@@ -775,6 +827,74 @@ static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 
 }
 
 // =================================================================
+// NeoGS ZX-DMA — DMA module 1 (fpga/current/dma/dma_zx.v, docs/dma_zx_doc.txt)
+//
+// The card writes DMA_MOD=1, a 22-bit linear RAM address into DMA_HAD/MAD/LAD
+// (#1C/#1D/#1E) and DMA_CST b7=1 (#1F); from then on every ZX access to the
+// host's own 0x0000-0x3FFF area is turned by the FPGA into one card-RAM access
+// at that address, post-incrementing it. That is how demos blast hundreds of KB
+// into the card at LDIR speed instead of one byte per #B3/#BB handshake.
+//
+// Two documented asymmetries, both load-bearing:
+//   * READ needs ROM actually paged at 0x0000-0x3FFF on the host (the FPGA
+//     gates the DMA cycle on CSROM) and the FIRST byte read is garbage — it is
+//     the pipeline latch, the byte at the programmed address arrives second.
+//   * WRITE needs no priming byte and happens regardless of what the host has
+//     paged there: the byte lands in card RAM *and* in the host's own RAM if
+//     that window is RAM ("это стоит иметь в виду эмуляторщикам" — the NedoPC
+//     test program relies on exactly that to verify itself).
+//
+// Called from MemESP::readbyte/writebyte on core0 while the GS-Z80 runs on
+// core1, i.e. the same unsynchronised-but-byte-atomic sharing the rest of the
+// card RAM already has (real hardware arbitrates with waits instead).
+// g_ngs_zxdma is the hot-path gate: 0 whenever the window is closed.
+volatile uint8_t g_ngs_zxdma = 0;
+
+static inline void ngs_zxdma_gate() {
+    g_ngs_zxdma = (s_ngs && GS::enabled && s_ngs_dma_mod == 1 && (s_ngs_dma_cst & 0x80)) ? 1 : 0;
+}
+
+// Both of these run on core0. They deliberately BYPASS the private 64-byte
+// SRAM cache (gs_pc_read), which is core1-only by construction: its FIFO
+// eviction and the (s_pc_last_line, s_pc_last_buf) memo pair are unsynchronised,
+// so a second producer could hand core1 a line tag paired with another line's
+// buffer. Butter PSRAM is memory-mapped anyway; SPI PSRAM has its own cross-core
+// spinlock in psram_spi. The write path still has to invalidate on SPI, because
+// there core1 DOES read banked pages through that cache.
+static uint8_t __not_in_flash_func(ngs_dma_peek)(uint32_t phys) {
+    phys &= s_ngs_ram_total - 1;
+    if (phys < NGS_LOW_RAM_SIZE) return s_ngs_low_ram[phys];
+    uint32_t off = phys - NGS_LOW_RAM_SIZE;
+    return s_gs_use_spi ? read8psram(s_gs_ram_base + off) : s_gs_ram[off];
+}
+
+static void __not_in_flash_func(ngs_dma_poke)(uint32_t phys, uint8_t v) {
+    phys &= s_ngs_ram_total - 1;
+    if (phys < NGS_LOW_RAM_SIZE) { s_ngs_low_ram[phys] = v; return; }
+    uint32_t off = phys - NGS_LOW_RAM_SIZE;
+    if (s_gs_use_spi) {
+        write8psram(s_gs_ram_base + off, v);
+        gs_pc_invalidate_line(off);
+    } else {
+        s_gs_ram[off] = v;   // pointer-backed for core1 too — no cache to sync
+    }
+}
+
+uint8_t __not_in_flash_func(GS::zxDmaRead)() {
+    uint8_t v = s_ngs_dma_pre;                    // pipeline latch (first read = junk)
+    s_ngs_dma_pre = ngs_dma_peek(s_ngs_dma_pos);
+    s_ngs_dma_pos = (s_ngs_dma_pos + 1) & 0x3FFFFFu;
+    s_ngs_dma_rd++;
+    return v;
+}
+
+void __not_in_flash_func(GS::zxDmaWrite)(uint8_t data) {
+    ngs_dma_poke(s_ngs_dma_pos, data);
+    s_ngs_dma_pos = (s_ngs_dma_pos + 1) & 0x3FFFFFu;
+    s_ngs_dma_wr++;
+}
+
+// =================================================================
 // Shared ZX-interface port bodies. GS and NeoGS have identical
 // ZXCMD/ZXDATRD/ZXDATWR/CLRCBIT semantics (ports 0x01r/0x02r/0x03w/0x05);
 // the helpers hold the single copy so the subtle FIFO/latch fixes below
@@ -794,6 +914,28 @@ static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 
 // belonged to a queued reply byte, stranding the host in WN.
 static inline bool gs_hs_idle() {
     return gs_g2h_empty() && (s_host_fifo_w == s_host_fifo_r);
+}
+
+// Clear D7, then re-check. "Is anything pending?" and "clear the flag" are two
+// operations on two cores, and the producers publish their byte BEFORE raising
+// the flag (gsio_out_data: store, __dmb, set; hostWriteB3 likewise). So a byte
+// that lands between the idle test and the clear loses its announcement and is
+// never collected — the queue holds it, D7 says nothing is there, and both
+// sides wait. Restoring the flag is safe and idempotent: the producer sets it
+// too, and a byte that arrives after the re-check keeps its own set.
+//
+// hw 2026-08-07, TheLink: ring ends `... N40 W0F R0F N40 W90` with st=01 — the
+// host took 0x0F, the card answered the next NMI with 0x90 inside that window,
+// and the host's trailing clear wiped 0x90's flag. The ZX then sat at 798D
+// waiting for a D7 that had been erased, the card at 0x59C5 waiting for the
+// command that wait would have produced. The comment above gs_status_or has
+// described this exact shape since the NPL GET_RZN fix — that one was closed by
+// claiming the byte in a single {flag,byte} exchange, which the 512-byte queue
+// path does not do.
+static void gs_d7_clear_recheck() {
+    gs_status_and(&GS::reg_status, ~0x80u);
+    __dmb();
+    if (!gs_hs_idle()) gs_status_or(&GS::reg_status, 0x80u);
 }
 
 static inline uint8_t __not_in_flash_func(gsio_in_cmd)() {
@@ -835,13 +977,29 @@ static inline uint8_t __not_in_flash_func(gsio_in_data)() {
             v = s_host_fifo[r & GS_HOST_FIFO_MASK];
             s_host_fifo_r = r + 1;
             s_p02_latch = v;
+            // NOTE: the RTL says a card read of #02 clears data_bit
+            // unconditionally, and an earlier version of this enforced that
+            // (plus dropping the card->host queue with it). That rule and our
+            // 512-byte queue are INCOMPATIBLE — the queue exists precisely
+            // because the two CPUs are not co-scheduled, and hardware has no
+            // queue to invalidate. Enforcing it broke ZP4's module load
+            // (hw 2026-08-07: detect fine, mods never arrive). The queue wins;
+            // NPL needs it. Keep the flag tied to "anything still pending".
             if ((r + 1) == w && (!s_ngs || gs_g2h_empty())) {
-                gs_status_and(&GS::reg_status, ~0x80u);
+                gs_d7_clear_recheck();
             }
         } else {
-            // D7 said data ready but FIFO empty — race; hold latch.
+            // D7 said data ready but the host FIFO is empty: this is the
+            // firmware's unconditional idle drain (GS ROM 0x02C2 reads port 2
+            // every pass), and D7 is up because the CARD has an answer waiting,
+            // not because the host wrote anything. Consume nothing and leave
+            // both the flag and the queue alone — clearing here would throw
+            // away a live reply before the host, which only runs while core0 is
+            // executing a frame, ever gets to read it (hw 2026-08-07: doing
+            // that took the demo back to a black screen at startup).
             v = s_p02_latch;
-            if (!s_ngs || gs_g2h_empty()) gs_status_and(&GS::reg_status, ~0x80u);
+            if (s_ngs) { if (gs_g2h_empty()) gs_d7_clear_recheck(); }
+            else       gs_status_and(&GS::reg_status, ~0x80u);
         }
     } else {
         // D7=0: idle drain peek. Return last latched byte without
@@ -912,6 +1070,55 @@ static inline void __not_in_flash_func(gsio_ack_data)() {
     if (s_host_fifo_r == s_host_fifo_w && (!s_ngs || gs_g2h_empty())) {
         gs_status_and(&GS::reg_status, ~0x80u);
     }
+}
+
+// DAMNPORT1/2 (#0A/#0B) — the two ports whose only job is to force a value into
+// the shared handshake flags. Straight from the RTL (ports.v), because the doc
+// wording ("data bit := inverse of MPAG bit 0") does not survive contact with it:
+//
+//   assign port0a_wrrd = (a==DAMNPORT1 && (port_wr||port_rd));   // BOTH ways
+//   mode_pg2 <= mode_expag ? {din[6:0], din[7]}    // written from port 00 (MPAG)
+//                          : {din[6:0], 1'b0};
+//   data_bit_output <= ~mode_pg2[0];
+//
+// so the bit that lands in data_bit is MPAG bit **7**, and only in EXPAG mode —
+// in normal paging mode_pg2[0] is hardwired 0, i.e. the data bit is always SET.
+// We were using MPAG bit 0, which is a completely different bit and one the
+// firmware's mixer churns constantly: every #0A access with an odd MPAG cleared
+// D7 and threw away a card->host byte the host had not collected yet. That is
+// the "hangs after a couple of minutes, at an effect change" failure — ring
+// `... N40 W0F R0F N40 W90` with st=01: the second NMI answered with 0x90, the
+// flag announcing it was wiped by an unrelated #0A access, and the ZX sat at
+// 798E waiting for a D7 that no longer existed (hw 2026-08-07).
+//
+// #0B is the same shape for the command bit, sourced from bit 5 of the last
+// write to port #09 (VOL4) — `port09_bit5` in the RTL.
+static inline void __not_in_flash_func(ngs_damnport1)() {
+    // ports.inc: "data bit := INVERSE of MPAG bit 0". UNVERIFIED — no workload
+    // here is known to exercise #0A, so this is the documentation's word and
+    // nothing more.
+    //
+    // The mirrored RTL disagrees:
+    //     if (!mode_expag) mode_pg2 <= {din[6:0], 1'b0};   // bit 0 tied to 0
+    //     data_bit_output <= ~mode_pg2[0];                 // => always SET
+    // i.e. MPAG bit *7*, and in normal paging always set. That reading is
+    // plausible — the mirrored FPGA is a later revision whose mode_pg2 belongs
+    // to the newer pg0-pg3 scheme, where MPAG is shifted left into two 16K
+    // halves — but it is equally unverified, and swapping to it changes a flag
+    // the firmware's mixer touches constantly. Left on the doc's version
+    // because that is what shipped and what the GS 1.04-lineage firmware was
+    // written against. Decide it with a test, not by re-reading either source.
+    //
+    // (I briefly blamed ZP4's broken module load on this and "reverted to be
+    // safe". That was wrong: ZP4 fails identically on a pristine HEAD build,
+    // so #0A was never implicated either way.)
+    if (!(s_ngs_mpag & 0x01)) gs_status_or(&GS::reg_status, 0x80u);
+    else                      gs_status_and(&GS::reg_status, ~0x80u);
+}
+
+static inline void __not_in_flash_func(ngs_damnport2)() {
+    if ((GS::reg_vol[3] >> 5) & 0x01) gs_status_or(&GS::reg_status, 0x01u);
+    else                              gs_status_and(&GS::reg_status, 0xFEu);
 }
 
 static zuint8 ngs_cb_in(void* ctx, zuint16 port);
@@ -1281,6 +1488,7 @@ static void ngs_reset_regs() {
     s_ngs_sctrl   = 0x03;   // SDNCS=1, MCNCS=1
     s_ngs_dma_mod = 0;
     s_ngs_dma_cst = 0;
+    ngs_zxdma_gate();       // window must not survive a warm reset (dma_zx.v rst_n)
     s_dac_mask    = 3;
     ngs_mp3_reset();
     NgsMp3::reset();
@@ -1297,9 +1505,19 @@ static void __not_in_flash_func(ngs_warm_reset)() {
     // itself via OUT(03), so pending FIFOs/status are stale.
     s_cmd_fifo_r  = s_cmd_fifo_w;
     s_host_fifo_r = s_host_fifo_w;
+    gs_status_and(&GS::reg_status, ~0x80u);
+    s_g2h_r       = s_g2h_w;   // must go with reg_status=0: a surviving reply
+                               // queue would disagree with the cleared D7 and
+                               // block every later attempt to clear it
     GS::reg_status = 0;
     s_gs_booted    = false;
     s_gs_main_loop = false;
+    // A reset cancels a pending NMI. This could not matter while z80_nmi() was
+    // called the moment the request arrived; now that step() may DEFER it (the
+    // core's reject latch would otherwise swallow it — see the NMI note there),
+    // a request can outlive the reset and fire into the freshly restarted
+    // loader, whose 0x0066 is blank flash (0xFF = RST 38).
+    s_ngs_nmi_pending = false;
     NgsSd::warmReset();
     z80_instant_reset(&s_cpu);
 }
@@ -1310,10 +1528,22 @@ static zuint8 __not_in_flash_func(ngs_cb_in)(void* ctx, zuint16 port) {
     switch (port & 0xFF) {
         case 0x01:  // ZXCMD
             v = gsio_in_cmd();
-            // Boot gate: the firmware reading its command port means the
-            // dispatcher is up (NGS fw PCs differ from the GS-ROM heuristic
-            // used in the GS path) — release hostWriteBB's wait.
-            if (!s_gs_main_loop) s_gs_main_loop = true;
+            // NO boot gate here. Reading ZXCMD used to be taken as "the
+            // dispatcher is up" and released hostWriteBB's wait — but the very
+            // first thing the flash LOADER does is read this port, twice, for
+            // its 0x55/0xAA magic handshake (fw ROM 0x0021 and 0x003B), long
+            // before it has walked the SD card, fallen back to the flash GS
+            // image and started that image's dispatcher. So the gate opened
+            // microseconds into a warm reset and every command the guest sent
+            // during the ~1-2 s boot was delivered into a half-initialised
+            // firmware. That is exactly the failure this gate exists to
+            // prevent, and it is what it looks like when it happens: the
+            // GS-Z80 running a NOP sled (hw 2026-08-07, TheLink after its
+            // OUT (#33),#80 warm reset — card at 0x41F9 in zeroed memory with
+            // command 0x18 still unacknowledged, ZX spinning at 7864).
+            // The honest signal is the SECOND OUT (03) ("fw dispatcher ready"),
+            // handled in ngs_cb_out; a firmware that never gets there still
+            // falls through hostWriteBB's 5 s cap.
             break;
         case 0x02:  // ZXDATRD
             v = gsio_in_data();
@@ -1337,16 +1567,8 @@ static zuint8 __not_in_flash_func(ngs_cb_in)(void* ctx, zuint16 port) {
             v = 0xFF;
             gs_trace_gs(TR_IN05, 0, GS::reg_status);
             break;
-        case 0x0A:  // DAMNPORT1: data bit := INVERSE of MPAG bit 0 (ports.inc)
-            v = GS::reg_status;
-            gs_status_and(&GS::reg_status, 0x7Fu);
-            if (!(s_ngs_mpag & 0x01)) gs_status_or(&GS::reg_status, 0x80u);
-            break;
-        case 0x0B:  // DAMNPORT2: command bit := bit 5 of VOL4
-            v = GS::reg_status;
-            gs_status_and(&GS::reg_status, 0xFEu);
-            if ((GS::reg_vol[3] >> 5) & 0x01) gs_status_or(&GS::reg_status, 0x01u);
-            break;
+        case 0x0A: v = GS::reg_status; ngs_damnport1(); break;
+        case 0x0B: v = GS::reg_status; ngs_damnport2(); break;
         case 0x0C: v = s_ngs_intena;  break;
         case 0x0D: v = s_ngs_intreq;  break;
         case 0x0E: v = s_ngs_tim_frq; break;
@@ -1363,10 +1585,15 @@ static zuint8 __not_in_flash_func(ngs_cb_in)(void* ctx, zuint16 port) {
         case 0x14: v = NgsSd::rstr();   break;  // SD_RSTR
         case 0x15: v = s_mp3_rx; break;         // MC_READ — VS1011 SCI model
         case 0x1B: v = s_ngs_dma_mod; break;
-        case 0x1C: case 0x1D: case 0x1E:
-            v = s_ngs_dma_addr[(port & 0xFF) - 0x1C];
-            break;
-        case 0x1F: v = s_ngs_dma_cst; break;
+        // #1C-#1F belong to whichever module DMA_MOD selected; only module 1
+        // (ZX) exists here. dma_zx.v reads back the LIVE address, which the
+        // host's accesses have already incremented — the doc calls this out
+        // ("адреса например инкрементируются иногда"), and it is how the card
+        // learns how much the host actually transferred.
+        case 0x1C: v = (s_ngs_dma_mod == 1) ? (uint8_t)((s_ngs_dma_pos >> 16) & 0x3F) : 0xFF; break;
+        case 0x1D: v = (s_ngs_dma_mod == 1) ? (uint8_t)((s_ngs_dma_pos >> 8) & 0xFF)  : 0xFF; break;
+        case 0x1E: v = (s_ngs_dma_mod == 1) ? (uint8_t)(s_ngs_dma_pos & 0xFF)         : 0xFF; break;
+        case 0x1F: v = (s_ngs_dma_mod == 1) ? (uint8_t)(s_ngs_dma_cst | 0x7F)         : 0xFF; break;
         case 0x20: case 0x21: case 0x22: case 0x23:
             v = s_ngs_win[(port & 0xFF) - 0x20];
             break;
@@ -1421,14 +1648,8 @@ static void __not_in_flash_func(ngs_cb_out)(void* ctx, zuint16 port, zuint8 valu
         case 0x16: case 0x17: case 0x18: case 0x19:  // VOL5-8
             GS::reg_vol[4 + ((port & 0xFF) - 0x16)] = value & 0x3F;
             return;
-        case 0x0A:  // DAMNPORT1 — write has the same effect as read
-            gs_status_and(&GS::reg_status, 0x7Fu);
-            if (!(s_ngs_mpag & 0x01)) gs_status_or(&GS::reg_status, 0x80u);
-            return;
-        case 0x0B:
-            gs_status_and(&GS::reg_status, 0xFEu);
-            if ((GS::reg_vol[3] >> 5) & 0x01) gs_status_or(&GS::reg_status, 0x01u);
-            return;
+        case 0x0A: ngs_damnport1(); return;  // write has the same effect as read
+        case 0x0B: ngs_damnport2(); return;
         case 0x0C:  // INTENA (SETNCLR, bits 0-2)
             s_ngs_intena = ngs_setnclr(s_ngs_intena, value, 0x07);
             return;
@@ -1479,23 +1700,37 @@ static void __not_in_flash_func(ngs_cb_out)(void* ctx, zuint16 port, zuint8 valu
         case 0x15:  // MC_SEND — MP3 control (VS1011 SCI model)
             if (!(s_ngs_sctrl & 0x02)) ngs_mp3_mc_send(value);  // MCNCS active-low
             return;
-        case 0x1B:  // DMA_MOD
-            s_ngs_dma_mod = value & 0x03;
+        case 0x1B:  // DMA_MOD — ports.v: 3 bits, 0 = none, 1 = ZX, 2 = SD, 3 = MP3
+            s_ngs_dma_mod = value & 0x07;
+            ngs_zxdma_gate();
             return;
-        case 0x1C: case 0x1D: case 0x1E:  // DMA_HAD/MAD/LAD
-            s_ngs_dma_addr[(port & 0xFF) - 0x1C] = value;
+        case 0x1C: case 0x1D: case 0x1E:  // DMA_HAD/MAD/LAD of the selected module
+            if (s_ngs_dma_mod == 1) {
+                uint32_t p = s_ngs_dma_pos;
+                switch (port & 0xFF) {
+                    case 0x1C: p = (p & 0x00FFFFu) | ((uint32_t)(value & 0x3F) << 16); break;
+                    case 0x1D: p = (p & 0x3F00FFu) | ((uint32_t)value << 8);           break;
+                    default:   p = (p & 0x3FFF00u) | value;                            break;
+                }
+                s_ngs_dma_pos = p;
+            }
             return;
-        case 0x1F: {  // DMA_CST — stub: latch b7, warn once per module
-            s_ngs_dma_cst = value & 0x80;
-            if (value & 0x80) {
+        case 0x1F:   // DMA_CST — b7 = window open, the rest undefined
+            if (s_ngs_dma_mod == 1) {
+                s_ngs_dma_cst = value & 0x80;
+                ngs_zxdma_gate();
+            } else if (value & 0x80) {
+                // SD (2) and MP3 (3) DMA move data between card RAM and the
+                // SPI/decoder blocks, which we already emulate byte-at-a-time
+                // through their own ports — the fw only uses these on paths that
+                // work without them, so keep the warn-once stub.
                 static uint8_t warned = 0;
-                if (!(warned & (1u << s_ngs_dma_mod))) {
-                    warned |= (uint8_t)(1u << s_ngs_dma_mod);
+                if (!(warned & (1u << (s_ngs_dma_mod & 7)))) {
+                    warned |= (uint8_t)(1u << (s_ngs_dma_mod & 7));
                     Debug::log("NGS: DMA module %u not emulated", (unsigned)s_ngs_dma_mod);
                 }
             }
             return;
-        }
         case 0x20: case 0x21: case 0x22: case 0x23: {  // WIN0-3 — stub latches
             s_ngs_win[(port & 0xFF) - 0x20] = value;
             static bool win_warned = false;
@@ -1754,6 +1989,7 @@ bool GS::init(uint32_t ram_size_bytes) {
 void GS::deinit() {
     gs_begin_reset();
     enabled = false;
+    g_ngs_zxdma = 0;    // never leave the host memory hook pointing at freed RAM
     s_gs_ram = nullptr;
     s_gs_ram_base = 0;
     s_gs_use_spi = false;
@@ -1784,6 +2020,7 @@ void GS::reset() {
     }
 #endif
     gs_begin_reset();
+    g_ngs_zxdma = 0;    // close the host memory window before anything else moves
     reg_command = 0;
     reg_data_zx = 0;
     reg_data_gs = 0;
@@ -1854,12 +2091,26 @@ void GS::pollPerf() {
             NgsSd::getStats(st);
             NgsMp3::Stats mp;
             NgsMp3::getStats(mp);
-            Debug::log("NGS: pc=%04X cfg0=%02X mpag=%02X st=%02X rs=%u pe=%lu px=%lu | SD x=%lu rd=%lu wr=%lu err=%lu(r%lu/m%lu/s%lu bad=%08lX) sec=%lu cs=%d | MP3 fr=%lu junk=%lu ovr=%lu und=%lu hz=%lu",
+            // zxpc/ret + the pending command are here, not only in the `MP3:`
+            // line, because that line is gated on #BB traffic — and the hang
+            // this exists for is the one where the card waits for a command the
+            // host never sends, so #BB traffic is exactly ZERO and the gated
+            // sampler stays silent (hw 2026-08-07, TheLink: card parked in
+            // `IN A,(01)/CP E/JR NZ` at 59A7 with st=01 and nothing at all
+            // known about the ZX). cmd = last byte the host wrote to #BB and
+            // how many are still queued; b3 = unread host→card data bytes.
+            Debug::log("NGS: pc=%04X cfg0=%02X mpag=%02X st=%02X rs=%u pe=%lu px=%lu | zxpc=%04X ret=%04X cmd=%02X/%u b3=%u | ZDMA %u@%06lX rd=%lu wr=%lu | SD x=%lu rd=%lu wr=%lu err=%lu(r%lu/m%lu/s%lu bad=%08lX) sec=%lu cs=%d | MP3 fr=%lu junk=%lu ovr=%lu und=%lu hz=%lu",
                        (unsigned)Z80_PC(s_cpu), (unsigned)s_ngs_cfg0,
                        (unsigned)s_ngs_mpag, (unsigned)reg_status,
                        (unsigned)s_run_state,
                        (unsigned long)gs_dbg_pump_entries,
                        (unsigned long)gs_dbg_pump_exits,
+                       (unsigned)gs_host_z80_pc(), (unsigned)gs_host_z80_ret(),
+                       (unsigned)reg_command,
+                       (unsigned)(s_cmd_fifo_w - s_cmd_fifo_r),
+                       (unsigned)(s_host_fifo_w - s_host_fifo_r),
+                       (unsigned)g_ngs_zxdma, (unsigned long)s_ngs_dma_pos,
+                       (unsigned long)s_ngs_dma_rd, (unsigned long)s_ngs_dma_wr,
                        (unsigned long)st.xfers, (unsigned long)st.reads,
                        (unsigned long)st.writes, (unsigned long)st.errors,
                        (unsigned long)st.range_fail, (unsigned long)st.multi_fail,
@@ -2248,7 +2499,29 @@ int __not_in_flash_func(GS::step)(int tstates) {
             s_ngs_grst_pending = false;
             ngs_warm_reset();
         }
-        if (s_ngs_nmi_pending) {
+        // Raise the NMI only when the core is not still holding the
+        // reject-latch from the PREVIOUS one, or it is silently swallowed:
+        //
+        //     if (REQUEST & Z80_REQUEST_REJECT_NMI) REQUEST = 0;        <-- !
+        //     else if (REQUEST & Z80_REQUEST_NMI)   { take it; REQUEST = REJECT; }
+        //
+        // (Z80_redcode.c, modelling "the CPU does not accept a second NMI during
+        // the NMI response".) The latch is consumed on the core's next request
+        // evaluation — but `REQUEST = 0` wipes the whole word, so an NMI raised
+        // in between is destroyed rather than deferred. We call z80_nmi() from
+        // here, i.e. exactly at a z80_run chunk boundary, and a chunk ends
+        // every INT period (~533 T-states), so a chunk that ends right after an
+        // NMI response leaves the latch standing for the next step() to walk
+        // into. Deferring costs at most one more step() — the latch cannot
+        // survive a single instruction — and the host's request is never lost.
+        //
+        // hw 2026-08-07, TheLink at an effect change: ring ends
+        // `... C01 W80 R80 N40 W0F R0F N40` — the first NMI answers (W0F), the
+        // second produces nothing at all and the card stays in its own poll
+        // loop at 0x59C5 while the ZX waits at 798B for a byte that the
+        // swallowed NMI handler never wrote. That protocol is NMI-driven, so
+        // one lost NMI is a permanent deadlock.
+        if (s_ngs_nmi_pending && !(s_cpu.request & Z80_REQUEST_REJECT_NMI)) {
             s_ngs_nmi_pending = false;
             z80_nmi(&s_cpu);
         }
@@ -2354,7 +2627,7 @@ uint8_t GS::hostReadB3() {
         // D7 remains the single stored bit the firmware has always seen; it
         // just has to account for both directions now — a queued reply byte or
         // an unread host byte keeps it up.
-        if (gs_hs_idle()) gs_status_and(&reg_status, ~0x80u);
+        if (gs_hs_idle()) gs_d7_clear_recheck();
     } else {
         v = reg_data_gs;
         __dmb();  // consume data before clearing the flag
@@ -2400,7 +2673,6 @@ uint8_t GS::hostReadBB() {
         gs_dbg_bb_ret = gs_host_z80_ret();
         gs_dbg_bb_st = reg_status;
     }
-    if (s_ngs && !s_hs_frozen && ++s_hs_quiet >= GS_HS_QUIET_TRIP) s_hs_frozen = true;
 #endif
     GS_PERF(s_perf_h_bbr++);
     gs_host_sd_service();
@@ -2528,7 +2800,7 @@ void GS::hostWriteBB(uint8_t data) {
         uint32_t fifo_used = s_host_fifo_w - s_host_fifo_r;
         if (fifo_used > 16) {
             s_host_fifo_r = s_host_fifo_w;
-            gs_status_and(&reg_status, ~0x80u);  // D7=0: FIFO now empty
+            gs_status_and(&GS::reg_status, ~0x80u);  // D7=0: FIFO now empty
         }
     }
     // NeoGS: #B3 is a single-byte LATCH on real hardware — at a command
@@ -2552,7 +2824,7 @@ void GS::hostWriteBB(uint8_t data) {
         uint32_t r = s_host_fifo_r, w2 = s_host_fifo_w;
         if (data == 0xF3 || data == 0xF4) {
             if (r != w2) s_host_fifo_r = w2;
-            gs_status_and(&reg_status, ~0x80u);
+            gs_status_and(&GS::reg_status, ~0x80u);
         } else if (w2 - r > 1) {
             s_host_fifo_r = w2 - 1;
         }
@@ -2581,6 +2853,29 @@ void GS::ngsBootRelease() {
     if (s_ngs_boot_hold) s_ngs_boot_hold = false;
 }
 
+bool GS::ngsSnapshot(Snapshot& out) {
+    if (!enabled || !s_ngs) return false;
+    out.pc  = Z80_PC(s_cpu);  out.sp = Z80_SP(s_cpu);
+    out.af  = Z80_AF(s_cpu);  out.bc = Z80_BC(s_cpu);
+    out.de  = Z80_DE(s_cpu);  out.hl = Z80_HL(s_cpu);
+    out.ix  = Z80_IX(s_cpu);  out.iy = Z80_IY(s_cpu);
+    out.cfg0 = s_ngs_cfg0;  out.mpag = s_ngs_mpag;  out.mpagex = s_ngs_mpagex;
+    out.status = reg_status; out.intena = s_ngs_intena; out.intreq = s_ngs_intreq;
+    out.zxdma = g_ngs_zxdma; out.dma_addr = s_ngs_dma_pos;
+    out.clock_hz = clockHz();
+    return true;
+}
+
+bool GS::ngsCpuPeek(uint16_t addr, uint8_t* dst, uint32_t len) {
+    if (!enabled || !s_ngs) return false;
+    for (uint32_t i = 0; i < len; i++) {
+        uint16_t a = (uint16_t)(addr + i);
+        const uint8_t* base = s_fetch_page[a >> 13];
+        dst[i] = base ? base[a & 0x1FFF] : 0xFF;
+    }
+    return true;
+}
+
 void GS::hostIfaceFlush() {
     if (!enabled) return;
     // Same producer-side flush pattern as hostWriteBB's >16-backlog drain
@@ -2590,6 +2885,7 @@ void GS::hostIfaceFlush() {
     // (status & 0x81) abort path returns it to the dispatcher.
     s_host_fifo_r = s_host_fifo_w;
     s_cmd_fifo_r  = s_cmd_fifo_w;
+    gs_status_and(&GS::reg_status, ~0x80u);
     gs_status_and(&reg_status, ~0x81u);   // D7 (data pending) + D0 (command)
 }
 
@@ -2600,6 +2896,7 @@ void GS::ngsReset() {
 
 void GS::hostWriteCtrl(uint8_t data) {
     if (!enabled || !neogs) return;
+    gs_hs('N', data, reg_status);
     gs_host_sd_service();
     if (data & 0x80) s_ngs_grst_pending = true;   // C_GRST — warm reset
     if (data & 0x40) s_ngs_nmi_pending  = true;   // C_GNMI

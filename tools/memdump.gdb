@@ -137,4 +137,60 @@ printf "ram7_type=%d\n",  (int)MemESP::ram[7]._int->mem_type
 set logging enabled off
 set logging redirect off
 
+# NeoGS card side. A two-CPU deadlock is undebuggable from the ZX half alone:
+# it only ever shows "waiting on #BB", while the code the card is stuck in lives
+# in card RAM (hw 2026-08-07, TheLink froze with the ZX in `IN A,(#BB)/RLCA/JR NC`
+# and the card looping at 0x59C5, which is demo code uploaded into the card).
+# s_ngs_low_ram is physical RAM pages 0+1 = the GS-Z80's 0x0000-0x3FFF (when
+# NOROM is set) plus the fixed 0x4000-0x7FFF window at phys 0xC000-0xFFFF, and
+# it is always pointer-backed, so a plain dump is exact. memdump.py re-splits it
+# into the two CPU-address windows.
+shell rm -f /tmp/picospec_ngs_low.bin /tmp/picospec_ngs.txt /tmp/picospec_ngs_b4.bin /tmp/picospec_ngs_b5.bin /tmp/picospec_ngs_b6.bin /tmp/picospec_ngs_b7.bin
+if GS::neogs && GS::enabled
+  if s_ngs_low_ram != 0
+    dump binary memory /tmp/picospec_ngs_low.bin s_ngs_low_ram (s_ngs_low_ram + 65536)
+  end
+  set logging file /tmp/picospec_ngs.txt
+  set logging overwrite on
+  set logging redirect on
+  set logging enabled on
+  printf "PC=%04X\n", (unsigned short)s_cpu.pc.uint16_value
+  printf "SP=%04X\n", (unsigned short)s_cpu.sp.uint16_value
+  printf "AF=%04X\n", (unsigned short)s_cpu.af.uint16_value
+  printf "BC=%04X\n", (unsigned short)s_cpu.bc.uint16_value
+  printf "DE=%04X\n", (unsigned short)s_cpu.de.uint16_value
+  printf "HL=%04X\n", (unsigned short)s_cpu.hl.uint16_value
+  printf "IX=%04X\n", (unsigned short)s_cpu.ix_iy[0].uint16_value
+  printf "IY=%04X\n", (unsigned short)s_cpu.ix_iy[1].uint16_value
+  printf "GSCFG0=%02X\n", (unsigned char)s_ngs_cfg0
+  printf "MPAG=%02X\n",   (unsigned char)s_ngs_mpag
+  printf "MPAGEX=%02X\n", (unsigned char)s_ngs_mpagex
+  printf "INTENA=%02X\n", (unsigned char)s_ngs_intena
+  printf "INTREQ=%02X\n", (unsigned char)s_ngs_intreq
+  printf "status=%02X\n", (unsigned char)GS::reg_status
+  printf "command=%02X\n",(unsigned char)GS::reg_command
+  printf "zxdma=%d\n",    (int)g_ngs_zxdma
+  printf "dma_addr=%06X\n", (unsigned int)s_ngs_dma_pos
+  printf "mpag_slots=%08X %08X %08X %08X\n", (unsigned)s_fetch_page[4], (unsigned)s_fetch_page[5], (unsigned)s_fetch_page[6], (unsigned)s_fetch_page[7]
+  set logging enabled off
+  set logging redirect off
+  # Banked window 8000-FFFF as currently mapped. The demo's own command
+  # handlers live here (the Q tags caught them popping commands at PCs that
+  # exist nowhere in the 0000-7FFF dump), so without it half the card's code
+  # is invisible. Pointer-backed on butter PSRAM; a null slot (SPI-PSRAM
+  # boards) is simply skipped and memdump.py fills 0xFF.
+  if s_fetch_page[4] != 0
+    dump binary memory /tmp/picospec_ngs_b4.bin s_fetch_page[4] (s_fetch_page[4] + 8192)
+  end
+  if s_fetch_page[5] != 0
+    dump binary memory /tmp/picospec_ngs_b5.bin s_fetch_page[5] (s_fetch_page[5] + 8192)
+  end
+  if s_fetch_page[6] != 0
+    dump binary memory /tmp/picospec_ngs_b6.bin s_fetch_page[6] (s_fetch_page[6] + 8192)
+  end
+  if s_fetch_page[7] != 0
+    dump binary memory /tmp/picospec_ngs_b7.bin s_fetch_page[7] (s_fetch_page[7] + 8192)
+  end
+end
+
 echo \nMemory dump files written to /tmp/picospec_mem{0-3}.bin, /tmp/picospec_ram{0-7}.bin and /tmp/picospec_regs.txt\n

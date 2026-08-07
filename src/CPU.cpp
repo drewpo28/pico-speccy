@@ -46,6 +46,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Z80DMA.h"
 #include "ZiFi.h"
 #include "DivMMC.h"
+#include "GS/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
 
 // Place hot CPU functions in SRAM instead of XIP flash
 #undef IRAM_ATTR
@@ -364,10 +365,36 @@ IRAM_ATTR void CPU::FlushOnHalt() {
 
 // Z80Ops
 
+// Guest data access with the NeoGS ZX-DMA window folded in (GS.h g_ngs_zxdma).
+// While the card runs DMA module 1, every host access to 0x0000-0x3FFF is one
+// card-RAM access at the card's DMA address instead (docs/dma_zx_doc.txt).
+//   read  — only when ROM is really paged there: the FPGA gates the DMA cycle on
+//           CSROM, so with RAM at page 0 a real card stays silent and the host
+//           reads its own RAM.
+//   write — regardless of what is paged there, and it does NOT replace the
+//           normal store: the byte goes to card RAM *and* to the host's RAM if
+//           that window is RAM (NedoPC's own test program verifies itself that
+//           way). ROM there simply swallows the second store as usual.
+// Opcode fetch is deliberately not hooked — the doc's own rule is that
+// interrupts must be off while the window is open (or the ZX RSTs to $38 and
+// executes card data), so nothing legitimately runs code from the window.
+static inline uint8_t gsDmaPeek8(uint16_t address) {
+    if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000
+        && !MemESP::page0ram && !MemESP::newSRAM && !MemESP::divmmc_mapped)
+        return GS::zxDmaRead();
+    return MemESP::readbyte(address);
+}
+
+static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
+    if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000)
+        GS::zxDmaWrite(value);
+    MemESP::writebyte(address, value);
+}
+
 // Read byte from RAM
 IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
-    return MemESP::readbyte(address);
+    return gsDmaPeek8(address);
 }
 
 // Fetch opcode from RAM (NON +2A/3 version)
@@ -469,7 +496,7 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
 // Write byte to RAM
 IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
-    MemESP::writebyte(address, value);
+    gsDmaPoke8(address, value);
 }
 
 // Read word from RAM
@@ -484,7 +511,22 @@ IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
             VIDEO::Draw(3, true);
         } else
             VIDEO::Draw(6, false);
-        return ((MemESP::readbyte(address + 1) << 8) | MemESP::readbyte(address));
+        // Order matters here for the same reason it does in the cross-page
+        // branch below, and the old one-expression form got it backwards AND
+        // left it to the compiler (the evaluation order of `|`'s operands is
+        // unspecified). Harmless for real memory; fatal through the NeoGS
+        // ZX-DMA window, where every read advances the card's pointer, so the
+        // two halves of a POP come back swapped.
+        //
+        // hw 2026-08-07, TheLink: at an effect change the host points SP into
+        // the DMA window and pulls its next phase's parameters with four POPs
+        // (0x792C-0x7939, patching the operands at 794B/7963/7985/799D). With
+        // the halves swapped every one of those addresses is wrong, the NMI
+        // phase runs on garbage, and the ZX ends up waiting at 798B for a byte
+        // its corrupted script asks for and the card is never told to send.
+        uint8_t lsb = gsDmaPeek8(address);
+        uint8_t msb = gsDmaPeek8(address + 1);
+        return (uint16_t)((msb << 8) | lsb);
 
     } else {
 
@@ -508,8 +550,8 @@ IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
             VIDEO::Draw(3, true);
         } else
             VIDEO::Draw(6, false);
-        MemESP::writebyte(address, word.byte8.lo);
-        MemESP::writebyte(address + 1, word.byte8.hi);
+        gsDmaPoke8(address, word.byte8.lo);
+        gsDmaPoke8(address + 1, word.byte8.hi);
 
     } else {
         // Order matters, first write lsb, then write msb, don't "optimize"

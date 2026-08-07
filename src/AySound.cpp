@@ -52,6 +52,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define AYEMU_DEFAULT_CHIP_FREQ 1773400
 
 int AySound::selected_chip = 0;
+bool AySound::ts_status_read = false;
 
 AySound chip0(0);
 // chip1 lives in heap; managed by TurboSubsys (see Subsystem.cpp).
@@ -545,6 +546,10 @@ void AySound::updIOPortB() {
 uint8_t AySound::getRegisterData()
 {
 
+    // Registers past 15 don't exist: the TSFM select codes (#F8..#FF) and any
+    // YM2203 FM register number park the latch out of range, and the shift
+    // below is undefined once (selectedRegister - 8) reaches 32.
+    if (selectedRegister >= 16) return 0xFF;
     if ((selectedRegister >= 14) && ((regs[7] >> (selectedRegister - 8)) & 1) == 0) {
         // printf("getAYRegister %d: %02X\n", selectedRegister, 0xFF);
         return 0xFF;
@@ -639,6 +644,7 @@ void AySound::reset()
         }
     }
 */
+    ts_status_read = false;   // TSFM select latch powers up in classic-TS mode
     cnt_a = cnt_b = cnt_c = cnt_n = cnt_e = 0;
     bit_a = bit_b = bit_c = bit_n = 0;
     env_pos = EnvNum = 0;
