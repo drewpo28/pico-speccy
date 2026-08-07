@@ -2730,19 +2730,27 @@ void GS::hostWriteB3(uint8_t data) {
         w = s_host_fifo_w;
     }
     if (s_ngs) {
-        // NeoGS: #B3 host->card is a single-byte LATCH on real hardware, not a
-        // queue — a second write simply overwrites the first. Emulating it as a
-        // deep FIFO pins D7, because hostReadB3() below refuses to clear the
-        // flag while anything is still unread, and D7 is SHARED with the
-        // card->host direction. NPL's two-byte replies then break: GET_RZN
-        // sends the high byte, waits in WDN for D7 to clear (bounded, 256
-        // polls), never sees it because our leftover byte holds the flag up,
-        // times out and overwrites its own high byte with the low one. The host
-        // takes the wrong byte, the two sides slip by one, and the next reply
-        // never arrives — the player wedges in WN forever (hw 2026-08-06:
-        // zxpc=8B85 st=00 with the card healthy and looping in OPROS).
-        // Dropping the unread byte here is what the hardware does.
-        s_host_fifo_r = w;
+        // NOT a latch here, deliberately — do not reinstate the collapse.
+        //
+        // Real hardware's #B3 host->card side IS a single-byte register: a
+        // second write overwrites the first. Emulating that literally (dropping
+        // the unread byte on every write) is wrong for us, because it copies
+        // the register without copying the TIMING that makes it safe. On the
+        // card the firmware reads the byte within microseconds, so the host
+        // never actually overwrites an unread one; here the GS-Z80 runs on
+        // core1 while the ZX only advances while core0 executes a frame, so a
+        // host that writes two bytes in a row (a command's two parameters, say)
+        // routinely gets the first one thrown away.
+        //
+        // It was added 2026-08-06 to stop NPL's GET_RZN wedging on a pinned D7,
+        // and it did — but it was treating the symptom: the flag was pinned for
+        // other reasons, all since fixed. hw 2026-08-07: with the collapse gone
+        // BOTH Z-Player 4 (module load, which it had broken outright — the
+        // regression bisected to exactly this hunk in 9de338e) and NPL work.
+        //
+        // Classic GS never had it, which is why "works on GS, hangs on NeoGS"
+        // was the tell: the deep FIFO is what FH1GS-style loaders need, and ZP4
+        // is one of them.
     }
     s_host_fifo[w & GS_HOST_FIFO_MASK] = data;
     __dmb();

@@ -94,18 +94,13 @@ only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
   the fw dispatcher is up, so audio timing stays authentic). NeoGS is also NOT
   reset by a ZX reset (the real card survives it — an advertised feature); the
   host FIFOs are flushed instead (`GS::hostIfaceFlush`).
-  **#B3 latch-vs-FIFO (real, independent bug — briefly misdiagnosed as a
-  symptom of the step() deadlock, reverted, then reproduced again and
-  reinstated once the deadlock AND the SD mailbox race were both separately
-  fixed and SD boot verified reading real VBR/FAT content)**: `hostWriteBB`
-  collapses the #B3 backlog to the newest byte on every NeoGS command (F3/F4
-  drop it entirely). Real hardware's #B3 is a single-byte latch; NPL's detect
-  writes a harmless probe byte before ACK-only commands (0xFF, 0x1F) that a
-  real latch just overwrites, but our FIFO queues — so a later, real
-  data-carrying command (0x10) can dequeue that stale orphan first, leaving
-  NPL's actual bytes stuck behind it (spins on #BB forever waiting for D7).
-  Classic GS keeps the deep FIFO (FH1GS-style loaders need the backlog,
-  hw-tested) — this collapse is NeoGS-only.
+  **#B3 collapse-to-newest in `hostWriteBB`** (NeoGS only): NPL's detect writes
+  a harmless probe byte before ACK-only commands (0xFF, 0x1F) that a real latch
+  would overwrite; our FIFO queues it, so a later data-carrying command (0x10)
+  can dequeue that orphan first. Collapsing the backlog at a command boundary
+  is still in. NOTE the separate, stronger `hostWriteB3` version of this — drop
+  the unread byte on EVERY write — was removed 2026-08-07 after it turned out
+  to break ZP4; see the entry below.
 - **CMD18 continuation prefetch removed** (`NgsSd.cpp`, 2026-08-05): block-
   complete used to speculatively `post_read()` sector+1 in case the guest
   kept streaming. Every real trace ever seen used CMD18 for exactly one
@@ -161,9 +156,18 @@ only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
   only returns to its command poll (`OPROS`) after a WHOLE 512-byte sector, so
   one sector took a dozen-plus frames and the host was serviced twice a second:
   the player's clock stopped and its keys went dead while audio played on.
-- **#B3 host→card is a single-byte latch** for NeoGS (a write drops the unread
-  byte). The old deep FIFO pinned D7, which is shared with the card→host
-  direction. Classic GS keeps the FIFO — FH1GS loaders need it, hw-tested.
+- ~~**#B3 host→card is a single-byte latch** for NeoGS (a write drops the unread
+  byte)~~ — **REMOVED 2026-08-07, do not reinstate.** Real hardware's register
+  does overwrite, but copying that without copying its TIMING is wrong here: on
+  the card the firmware reads within microseconds so the host never overwrites
+  an unread byte, whereas our GS-Z80 runs on core1 while the ZX only advances
+  while core0 executes a frame — so a host writing two bytes in a row (a
+  command's two parameters) routinely lost the first. It broke Z-Player 4's
+  module load outright (bisected to exactly this hunk in `9de338e`), and it was
+  only ever treating a symptom: with it gone BOTH ZP4 and NPL work, because the
+  pinned D7 it was compensating for has since been fixed properly. "Works on
+  classic GS, hangs on NeoGS" was the tell — the deep FIFO is what FH1GS-style
+  loaders need, and ZP4 is one of them.
 - **Card→host needs a 512-byte QUEUE** (`s_g2h`), and the size is load-bearing.
   The two Z80s are not co-scheduled: the GS-Z80 runs nonstop on core1 while the
   ZX-Z80 only advances when core0 is executing a frame, so it is stopped for
@@ -508,7 +512,8 @@ Also: `ngs_warm_reset()` clears the queue (it zeroes `reg_status`, and a
 surviving queue would disagree with the cleared D7); `hostWriteB3` drops it too
 (that IS what the single `data_reg_out` register does); F3/F4 still flush
 everything in `hostWriteBB` (the firmware reboots). The host→card `#B3`
-collapse-to-newest is unrelated and stays. **Unverified against the RTL and
+collapse-to-newest at a command boundary is unrelated and stays — but the
+per-write drop that used to sit in `hostWriteB3` is gone (see above). **Unverified against the RTL and
 worth a look next time this area moves:** ports.v lists only `port02_rd`,
 `port03_wr` and `port0a_wrrd` as data-bit events — `OUT (02)` is NOT one of
 them, yet `gsio_ack_data()` clears the flag on it.
