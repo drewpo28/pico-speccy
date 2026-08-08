@@ -5528,9 +5528,13 @@ static void buildEmulatorInfoText() {
                 " AY-3-8912      : Off\n");
         }
 
-        // TurboSound
+        // TurboSound (a TSFM board carries the second PSG too — twoAyChips())
         pos += infoAppend(buf, pos, bufsz,
-            " TurboSound     : %s\n", Config::turbosound ? "On" : "Off");
+            " TurboSound     : %s\n", Config::twoAyChips() ? "On" : "Off");
+
+        // TurboSound FM (2 x YM2203: 6 PSG + 6 FM channels)
+        pos += infoAppend(buf, pos, bufsz,
+            " TurboSound FM  : %s\n", Config::tsfm ? "On (#F8-#FF)" : "Off");
 
         // Covox
         if (Config::covox == 1)

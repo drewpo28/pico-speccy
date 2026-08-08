@@ -53,6 +53,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 int AySound::selected_chip = 0;
 bool AySound::ts_status_read = false;
+bool AySound::ts_fm_enabled = false;
 
 AySound chip0(0);
 // chip1 lives in heap; managed by TurboSubsys (see Subsystem.cpp).
@@ -645,6 +646,7 @@ void AySound::reset()
     }
 */
     ts_status_read = false;   // TSFM select latch powers up in classic-TS mode
+    ts_fm_enabled  = false;   // ...and with the FM DAC gated off (FM_DIS preset)
     cnt_a = cnt_b = cnt_c = cnt_n = cnt_e = 0;
     bit_a = bit_b = bit_c = bit_n = 0;
     env_pos = EnvNum = 0;

@@ -105,6 +105,7 @@ public:
     static void BeeperGetSample();
     static void CovoxGetSample();
     static void AYGetSample();
+    static void FMGenSound(int count, int bufpos);
     static void SAAGetSample();
     static void PITGetSample();
     static void FDDGenSound();
@@ -174,6 +175,10 @@ public:
     // Dynamically allocated by MidiSubsys when Config::midi != 0.
     static uint8_t* audioBufferMIDI_L;
     static uint8_t* audioBufferMIDI_R;
+    // TurboSound FM: both YM2203 FM halves sum into this one signed buffer
+    // (allocated by TsfmSubsys when Config::tsfm is on). Signed because FM is
+    // bipolar; the mixer re-centres it on 128.
+    static int16_t* audioBufferFM;
     static uint32_t audbufcntPIT;
     static uint32_t faudbufcntPIT;
     static bool SAA_emu;

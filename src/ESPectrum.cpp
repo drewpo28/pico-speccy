@@ -37,6 +37,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #include "AySound.h"
 #include "SAASound.h"
+#include "OpnFm.h"
 #include "Subsystem.h"
 #include "CPU.h"
 #include "Config.h"
@@ -230,6 +231,7 @@ uint32_t ESPectrum::faudbufcntCovox = 0;
 uint8_t* ESPectrum::audioBufferPIT = nullptr;
 uint8_t* ESPectrum::audioBufferMIDI_L = nullptr;
 uint8_t* ESPectrum::audioBufferMIDI_R = nullptr;
+int16_t* ESPectrum::audioBufferFM = nullptr;
 uint32_t ESPectrum::audbufcntPIT = 0;
 uint32_t ESPectrum::faudbufcntPIT = 0;
 uint32_t ESPectrum::audbufcntSAA = 0;
@@ -1103,10 +1105,11 @@ void ESPectrum::setup() {
                 (int)Config::tape_player, (int)Config::turbosound, (int)Config::covox,
                 (int)Config::SAA1099, (int)Config::midi,
                 (unsigned)getFreeHeap());
-  TurboSubsys::request(!Config::tape_player && Config::turbosound != 0);
+  TurboSubsys::request(!Config::tape_player && Config::twoAyChips());
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
+  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   MidiSubsys::request(Config::midi != 0);
   DmaSubsys::request(Config::dma_mode != 0);
   Mb02Subsys::syncFromState();
@@ -1409,10 +1412,11 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   // Reconfigure optional subsystems against current Config and apply
   // synchronously here (we're outside the main loop's frame boundary).
-  TurboSubsys::request(!Config::tape_player && Config::turbosound != 0);
+  TurboSubsys::request(!Config::tape_player && Config::twoAyChips());
   CovoxSubsys::request(Config::covox != 0 || Config::soundriveEnabled());
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
+  TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   MidiSubsys::request(Config::midi != 0);
   DmaSubsys::request(Config::dma_mode != 0);
   Subsystems::applyPending();
@@ -1428,6 +1432,14 @@ void ESPectrum::reset(uint8_t romInUse) {
     chip1->set_stereo(AYEMU_MONO, NULL);
     chip1->reset();
   }
+
+  // Reset the TurboSound FM halves. The sample rate can have changed with the
+  // arch (48K/Profi run at 30469 Hz, Pentagon at 31250), and every phase and
+  // envelope constant in an OPN core is derived from it.
+  for (int i = 0; i < 2; i++) {
+    if (opnfm[i]) { opnfm[i]->setRates(TSFM_YM2203_CLOCK, Audio_freq); opnfm[i]->reset(); }
+  }
+  AySound::ts_fm_enabled = false;
 
   // Reset SAA1099 emulation
   if (saaChip) {
@@ -2242,14 +2254,28 @@ __not_in_flash("audio") void ESPectrum::CovoxGetSample() {
   }
 }
 
+// Both YM2203 FM halves into audioBufferFM[bufpos .. bufpos+count-1]. The range
+// is cleared first because gen() accumulates: on a TFM board the two chips' FM
+// outputs are summed on the way to the DAC, exactly like this.
+__not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
+  if (!TsfmSubsys::enabled || !audioBufferFM) return;
+  memset(audioBufferFM + bufpos, 0, count * sizeof(int16_t));
+  if (opnfm[0]) opnfm[0]->gen(audioBufferFM, count, bufpos);
+  if (opnfm[1]) opnfm[1]->gen(audioBufferFM, count, bufpos);
+}
+
 __not_in_flash("audio") void ESPectrum::AYGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
     if (multiplicator) audbufpos >>= multiplicator;
     if (audbufpos > audbufcntAY) {
         chip0.gen_sound(audbufpos - audbufcntAY, audbufcntAY);
         // chip1 only present when TurboSubsys::enabled
-    if (Config::turbosound && chip1)
+    if (Config::twoAyChips() && chip1)
             chip1->gen_sound(audbufpos - audbufcntAY, audbufcntAY);
+    // FM shares the AY counter deliberately: both are caught up by the same
+    // register-write hook, so one position keeps the two halves of a YM2203 in
+    // step with no second counter to get out of sync.
+    FMGenSound(audbufpos - audbufcntAY, audbufcntAY);
     audbufcntAY = audbufpos;
   }
 }
@@ -2701,8 +2727,9 @@ void ESPectrum::loop() {
             if (fddSndEnabled) FDDGenSound();
         }
         if (AY_emu && faudbufcntAY < samplesPerFrame) {
-            if(Config::turbosound != 0 || AySound::selected_chip == 0) chip0.gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
-            if((Config::turbosound != 0 || AySound::selected_chip == 1) && chip1) chip1->gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
+            if(Config::twoAyChips() || AySound::selected_chip == 0) chip0.gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
+            if((Config::twoAyChips() || AySound::selected_chip == 1) && chip1) chip1->gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
+            FMGenSound(samplesPerFrame - faudbufcntAY, faudbufcntAY);
         }
         if (SaaSubsys::enabled && saaChip && faudbufcntSAA < samplesPerFrame)
         {
@@ -2719,8 +2746,12 @@ void ESPectrum::loop() {
             MidiSynth::gen_sound(audioBufferMIDI_L, audioBufferMIDI_R, samplesPerFrame);
         }
         // Hoist frame-invariant source flags outside the mix loop
-        bool mix_chip0 = AY_emu && (Config::turbosound != 0 || AySound::selected_chip == 0);
-        bool mix_chip1 = AY_emu && (Config::turbosound != 0 || AySound::selected_chip == 1) && TurboSubsys::enabled && chip1;
+        bool mix_chip0 = AY_emu && (Config::twoAyChips() || AySound::selected_chip == 0);
+        bool mix_chip1 = AY_emu && (Config::twoAyChips() || AySound::selected_chip == 1) && TurboSubsys::enabled && chip1;
+        // FM is audible only while the CPLD's FM_DIS flip-flop is clear, i.e. after
+        // a %11111 0 r c select. Generation still runs (timers and envelopes keep
+        // going on a real card too) — only the DAC path is gated, as in the CPLD.
+        bool mix_fm = TsfmSubsys::enabled && audioBufferFM && AySound::ts_fm_enabled;
         bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
         bool mix_saa = SaaSubsys::enabled && saaChip;
         bool mix_midi = MidiSubsys::enabled && Midi::enabled == 4 && audioBufferMIDI_L && audioBufferMIDI_R;
@@ -2749,6 +2780,15 @@ void ESPectrum::loop() {
           if (mix_saa) {
             beeper_L += saaChip->SamplebufSAA_L[i];
             beeper_R += saaChip->SamplebufSAA_R[i];
+          }
+          if (mix_fm) {
+            // Bipolar (+/-127 per chip, two chips), so it needs a mid-scale
+            // offset the way MidiSynth's already-centred output has one, or the
+            // whole negative half would clip against 0 when FM plays alone. The
+            // DC lands on the constant 128 and pwm_audio removes it downstream.
+            int fm = audioBufferFM[i] >> 1;
+            beeper_L += 128 + fm;
+            beeper_R += 128 + fm;
           }
           if (mix_midi) {
             // Wavetable synth output is unipolar, centered at 128 (see MidiSynth::gen_sound);

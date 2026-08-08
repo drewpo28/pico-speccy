@@ -138,6 +138,15 @@ public:
     // AY register; true = the YM2203/OPN STATUS register, whose bit 7 is BUSY.
     // Shared by both chips (it is one latch in the TSFM CPLD), reset with them.
     static bool ts_status_read;
+    // TurboSound FM synthesis enable, the `f` bit of the same %11111frc select
+    // (0 = FM ON). It is the CPLD's FM_DIS flip-flop, which gates the serial data
+    // line from both YM2203s to the FM DAC (turbofm.tdf: `FM1_OUT = FM1_IN and
+    // not(FM_DIS.q)`) — so it is ONE flag for the board, not one per chip, and it
+    // powers up DISABLED (`DEFAULTS FM_DIS = 1`). Classic TurboSound only ever
+    // writes #FF/#FE, which keeps it disabled; that is why plain-TS software can
+    // never make FM noise, and why "select %11111111 when the music ends" (the
+    // manual's §5.1 advice) mutes the FM half.
+    static bool ts_fm_enabled;
     AySound(uint8_t my_num): my_num(my_num) {}
     void updToneA();
     void updToneB();

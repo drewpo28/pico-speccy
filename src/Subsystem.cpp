@@ -17,6 +17,7 @@ extern size_t getFreeHeap(void);
 extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can really satisfy now
 
 #include "SAASound.h"
+#include "OpnFm.h"
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "MB02.h"
@@ -191,6 +192,57 @@ bool SaaSubsys::apply() {
             delete saaChip;
             saaChip = nullptr;
         }
+    }
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// TsfmSubsys — TurboSound FM: the FM halves of the two YM2203s (~2 KB each, plus
+// the ~2.5 KB sine/attenuation tables the first one builds) and the int16 buffer
+// they sum into. The SSG halves are AySound chip0/chip1 and are NOT ours.
+//
+// The buffer is int16 and signed because FM is a bipolar signal and both chips
+// mix into one: at the +/-127 per chip the core emits, a sum needs 9 bits. The
+// mixer re-centres it on 128 the way MidiSynth's output already is.
+// ----------------------------------------------------------------------------
+volatile bool TsfmSubsys::enabled = false;
+bool TsfmSubsys::wanted = false;
+bool TsfmSubsys::dirty = false;
+
+void TsfmSubsys::request(bool on) {
+    wanted = on;
+    if (wanted != enabled) dirty = true;
+}
+
+bool TsfmSubsys::apply() {
+    dirty = false;
+    if (wanted == enabled) return true;
+
+    if (wanted) {
+        if (!ESPectrum::audioBufferFM)
+            ESPectrum::audioBufferFM = (int16_t*)calloc(ESP_AUDIO_SAMPLES_PENTAGON, sizeof(int16_t));
+        if (!opnfm[0]) opnfm[0] = new (std::nothrow) OpnFm();
+        if (!opnfm[1]) opnfm[1] = new (std::nothrow) OpnFm();
+        if (!ESPectrum::audioBufferFM || !opnfm[0] || !opnfm[1] || !OpnFm::tablesReady()) {
+            Debug::log("TsfmSubsys: OOM, free=%u", (unsigned)getFreeHeap());
+            delete opnfm[0]; opnfm[0] = nullptr;
+            delete opnfm[1]; opnfm[1] = nullptr;
+            free(ESPectrum::audioBufferFM); ESPectrum::audioBufferFM = nullptr;
+            wanted = false;
+            Config::tsfm = 0;
+            return false;
+        }
+        for (int i = 0; i < 2; i++) {
+            opnfm[i]->setRates(TSFM_YM2203_CLOCK, ESPectrum::Audio_freq);
+            opnfm[i]->reset();
+        }
+        enabled = true;
+    } else {
+        enabled = false;
+        AySound::ts_fm_enabled = false;
+        delete opnfm[0]; opnfm[0] = nullptr;
+        delete opnfm[1]; opnfm[1] = nullptr;
+        free(ESPectrum::audioBufferFM); ESPectrum::audioBufferFM = nullptr;
     }
     return true;
 }
@@ -813,6 +865,10 @@ void Subsystems::applyPending() {
     if (SaaSubsys::dirty)   {
         Debug::log2SD("Subsys: Saa wanted=%d freeHeap=%u", (int)SaaSubsys::wanted, (unsigned)getFreeHeap());
         SaaSubsys::apply();
+    }
+    if (TsfmSubsys::dirty)  {
+        Debug::log2SD("Subsys: Tsfm wanted=%d freeHeap=%u", (int)TsfmSubsys::wanted, (unsigned)getFreeHeap());
+        TsfmSubsys::apply();
     }
     if (MidiSubsys::dirty)  {
         Debug::log2SD("Subsys: Midi wanted=%d freeHeap=%u", (int)MidiSubsys::wanted, (unsigned)getFreeHeap());

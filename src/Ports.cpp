@@ -36,6 +36,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #include "Ports.h"
 #include "AySound.h"
+#include "OpnFm.h"
 #include "SAASound.h"
 #include "CPU.h"
 #include "Config.h"
@@ -92,6 +93,25 @@ uint16_t _ds80_dbg_get_pc(void) { return Z80::getRegPC(); }
 static inline AySound* ayChipFor(uint16_t /*address*/) {
   AySound* ch = chips[AySound::selected_chip];
   return ch ? ch : chips[0];
+}
+
+// One #FFFD/#BFFD access, both halves of the latched YM2203. The FM half keeps
+// its own register-number latch (OpnFm::writeAddr) instead of reading AySound's:
+// ayChipFor() falls back to chip0 when chip1 does not exist, which is right for
+// the AY side but would put every chip-1 FM write on chip 0. opnfm[] is null
+// unless TsfmSubsys is up, so this costs one null test while TSFM is off.
+// `genSample` is false only on the DMA path, which has never caught the mixer up.
+static inline void ayPortWrite(uint16_t address, uint8_t data, bool genSample) {
+  AySound* chip = ayChipFor(address);
+  OpnFm*   fm   = opnfm[AySound::selected_chip];
+  if ((address & 0x4000) != 0) {
+    if (chip) chip->selectRegister(data);
+    if (fm)   fm->writeAddr(data);
+  } else {
+    if (genSample && Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
+    if (chip) chip->setRegisterData(data);
+    if (fm)   fm->writeData(data);
+  }
 }
 
 #if PROFI_PORT_TRACE
@@ -1425,11 +1445,18 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         AySound* chip = ayChipFor(address);
         // TurboSound FM status mode (see the #F8..#FF select in Ports::output):
         // the YM2203 status byte is bit 7 = BUSY plus the two timer-overflow
-        // flags in bits 1..0. We emulate neither the FM half nor its timers, so
-        // the honest answer is "idle, nothing pending" — and it is also the one
-        // that lets an OPN driver's BUSY poll finish instead of spinning.
-        uint8_t rd = AySound::ts_status_read ? 0x00
-                   : (chip ? chip->getRegisterData() : 0xFF);
+        // flags in bits 1..0. BUSY is always clear — every register write here
+        // completes inside the OUT, so there is nothing to wait for, and a driver
+        // polling BUSY has to see it go away or it spins forever (hw 2026-08-07).
+        // The timer flags are real (OpnFm runs both timers); with no FM half
+        // allocated they read 0, which is the same "idle" answer as before.
+        uint8_t rd;
+        if (AySound::ts_status_read) {
+          OpnFm* fm = opnfm[AySound::selected_chip];
+          rd = fm ? fm->status() : 0x00;
+        } else {
+          rd = chip ? chip->getRegisterData() : 0xFF;
+        }
         if (ia) {
           return rd | newAlfBit;
         }
@@ -1983,15 +2010,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // ========================================================================
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
-      AySound* chip = ayChipFor(address);   // A8 decode: old-TS second chip
-      if (chip) {
-        if ((address & 0x4000) != 0) {
-          chip->selectRegister(data);
-        } else {
-          if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
-          chip->setRegisterData(data);
-        }
-      }
+      ayPortWrite(address, data, true);     // A8 decode: old-TS second chip
       VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
       return;
     }
@@ -2188,7 +2207,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     // AY
     // ========================================================================
-    if ((ESPectrum::AY_emu) && Config::turbosound && address == 0xFFFD) {
+    if ((ESPectrum::AY_emu) && (Config::turbosound || Config::tsfm) && address == 0xFFFD) {
       // NedoPC way: chip latched by the DATA written to #FFFD. The full family
       // is #F8..#FF, not just #FF/#FE — TurboSound FM is 2 × YM2203 (an AY plus
       // an FM half each), and its manual (nedopc.com/TURBOSOUND/tfm-prg.zip,
@@ -2214,11 +2233,26 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       // range; the manual says the previously selected register survives.)
       //
       // The chip mapping keeps this project's hw-tested #FF → chip 0 / #FE →
-      // chip 1 convention (Xpeccy maps bit 0 the other way round); FM itself is
-      // not emulated, so #F8/#F9 only have to stay consistent with it.
-      if ((data & 0xF8) == 0xF8) {
+      // chip 1 convention (Xpeccy maps bit 0 the other way round); #F8/#F9 only
+      // have to stay consistent with it.
+      // #FF/#FE are classic TurboSound and stay under Config::turbosound;
+      // the rest of the family (#F8..#FD, i.e. FM enable / ready-poll mode)
+      // only exists on a TSFM board, so it needs Config::tsfm.
+      if ((data & 0xF8) == 0xF8 && (data >= 0xFE || Config::tsfm)) {
         AySound::selected_chip  = (data & 0x01) ? 0 : 1;
         AySound::ts_status_read = !(data & 0x02);
+        // The `f` bit is the CPLD's FM_DIS latch, one for the whole board. It
+        // gates the FM DAC only — the FM registers stay writable either way.
+        // The mute itself is applied per frame in the mixer, so catch the FM
+        // buffer up first: the samples already generated under the old state
+        // then belong to the frame they were produced in.
+        if (Config::tsfm) {
+          const bool fm_on = !(data & 0x04);
+          if (fm_on != AySound::ts_fm_enabled) {
+            if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
+            AySound::ts_fm_enabled = fm_on;
+          }
+        }
         LED::touchW(LED::AY);
         ioContentionLate(MemESP::ramContended[rambank]);
         return;
@@ -2226,15 +2260,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
-      AySound* chip = ayChipFor(address);
-      if (chip) {
-        if ((address & 0x4000) != 0) {
-          chip->selectRegister(data);
-        } else {
-          if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
-          chip->setRegisterData(data);
-        }
-      }
+      ayPortWrite(address, data, true);
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
     }
@@ -3000,14 +3026,7 @@ IRAM_ATTR void Ports::dmaOutput(uint16_t address, uint8_t data) {
         // AY. Same NedoPC-latch / old-TS-address decode as Ports::output, minus
         // the #FFFD latch write itself (a DMA burst to the register port is a
         // register stream, not a chip-select sequence).
-        AySound* chip = ayChipFor(address);
-        if (chip) {
-            if ((address & 0x4000) != 0) {
-                chip->selectRegister(data);
-            } else {
-                chip->setRegisterData(data);
-            }
-        }
+        ayPortWrite(address, data, false);
     }
     // MB-02+ FDC: DMA writes to WD2797 data port (#6F)
     if (MB02::enabled) {

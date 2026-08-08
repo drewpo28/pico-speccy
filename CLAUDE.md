@@ -401,6 +401,95 @@ single `{flag, byte}` exchange, and the 512-byte queue path that replaced it
 does not do that. Worth re-reading that comment before touching this area: it
 predicted the bug, the code had just drifted away from its fix.
 
+### TurboSound FM — the OPN core, 2026-08-07 (NOT hw-tested)
+
+`src/OpnFm.{h,cpp}` is the FM half of a YM2203: 3 channels x 4 operators, 8
+algorithms, feedback, detune/multiple, the full 4-stage EG with KSR, SSG-EG,
+channel 3's per-operator ("3-slot") mode, both timers and the prescaler. Two
+instances (`opnfm[0..1]`, `TsfmSubsys`) make the board's 6 FM channels. The SSG
+halves are still AySound chip0/chip1 — a YM2203 is an AY plus an FM half, and
+there is exactly one AY object per chip.
+
+**It is a reduced re-derivation of MAME `fm.cpp`** (Jarek Burczynski / Tatsuyuki
+Satoh, GPL-2.0+; fetched from `mamedev/mame` tag `mame0220` — modern MAME dropped
+fm.cpp for ymfm). Register semantics, the EG rate/select/shift tables, the detune
+table and the sine/attenuation math are all fm.cpp's; the file header lists every
+deliberate difference. The two that matter for RAM: fm.cpp's `fn_table` (16 KB)
+is arithmetic here, and its `tl_tab` (26 KB) is stored as the 256-entry base row
+it is built from, with the shift and sign that fm.cpp bakes into the flat table
+re-applied at the fetch. Only ~2.5 KB of shared tables remain, on the heap.
+
+Validated on the host, not on hardware, by `tools/opnfm_test.cpp` (OpnFm.cpp's
+only project dependency is `Debug::log`, which the harness stubs, so it builds
+with `g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/OpnFm.cpp`):
+440.0 Hz demanded / 440.1 Hz measured (algorithm 7 and via autocorrelation on a
+real 4-op patch), key-off decays to exact silence, channel 3 3-slot mode plays,
+SSG-EG cycles and stays bounded, timer A 48 overflows/s against 48.1 wanted,
+timer B 12 against 12.0. **Re-run it after ANY change here** — an FM core fails
+quietly and by degrees.
+
+- **The YM2203 clock is 2 x the AY clock**, i.e. 3.5469 MHz (`TSFM_YM2203_CLOCK`).
+  This is NOT a guess and NOT the 4 MHz the manual's timer formulas assume: the
+  CPLD source (`tfm_plm_src.zip` → `turbofm.tdf`) contains a delay-line frequency
+  doubler, `CLK2OUT = INTDELAY_OUT xor CLK1` with CLK1 = "AY clk generator". It
+  has to be 2x, because a YM2203 divides its master clock by 2 for the SSG at the
+  reset prescaler — that is what puts the PSG channels back on the ZX's own
+  1.75 MHz and makes the board a drop-in AY replacement. FM runs at clock/72
+  (12 operator slots x 6), 49.3 kHz, resampled to our 31250 by fm.cpp's freqbase.
+- **A TFM board IS a TurboSound board** — `Config::twoAyChips()` (Config.h) is
+  `turbosound || tsfm`, and every place that used to test `Config::turbosound`
+  for "is there a second PSG" now calls it. Without that, `ayChipFor()`'s
+  "chip1 missing -> use chip0" fallback lands every chip-1 PSG write of a TFM
+  tune on chip 0.
+- **The `f` bit of the `%11111frc` select is real and load-bearing**
+  (`AySound::ts_fm_enabled`). It is the CPLD's `FM_DIS` flip-flop, which gates the
+  serial data line from both YM2203s to the FM DAC (`FM1_OUT = FM1_IN and
+  not(FM_DIS.q)`), so it is ONE flag for the board and it powers up DISABLED
+  (`DEFAULTS FM_DIS = 1`). Classic TurboSound only ever writes `#FF`/`#FE`, which
+  keeps it disabled — that is why plain-TS software can never make FM noise, and
+  why the manual's "select `%11111111` when the music ends" mutes FM.
+- **The FM half keeps its OWN register-number latch** (`OpnFm::writeAddr`) rather
+  than reading AySound's. On the real chip there is one latch per YM2203 shared
+  by both halves, but our chip1 only exists while TurboSound is on and
+  `ayChipFor()` falls back to chip0 when it is not — which is right for the AY
+  side and would put every chip-1 FM write on chip 0.
+- **Output**: `+/-127` per chip (fm.cpp's own 8-bit path), both chips summed into
+  one signed `ESPectrum::audioBufferFM`, mixed as `128 + (sum >> 1)`. The
+  mid-scale offset is not cosmetic — FM is bipolar and this mixer is unsigned
+  0..255, so without it the whole negative half clips against 0 whenever FM plays
+  alone. MidiSynth's output is centred the same way and pwm_audio removes the DC.
+- **Cost**: ~0.2 us per output sample for both chips fully keyed on a desktop,
+  which is the worst case (every operator loud, so fm.cpp's `ENV_QUIET` early-out
+  never fires). Extrapolating to the M33 that is order 20% of core0 at 31250 Hz —
+  measure it on hardware. A silent chip (every operator in `EG_OFF`, which is
+  where both sit whenever TSFM is enabled in Config but the software is an
+  ordinary AY title) costs a 12-byte scan per call and nothing else; the fast
+  path is safe only because an envelope can leave `EG_OFF` only on a key-on, i.e.
+  a register write, i.e. between `gen()` calls — CSM is excluded from it for
+  exactly that reason, since a timer A overflow keys channel 3 from inside.
+- **Everything is in FLASH**, deliberately, unlike `AySound::gen_sound` /
+  `SAASound::gen_sound`. Total new SRAM is ~130 B (19 B of BSS, an 84 B
+  `FMGenSound`, three veneers) against the ~4 KB heap headroom at `VIDEO::Init`
+  that a previous session's extra SRAM turned into a boot panic. If FM costs
+  frames on hardware, `__not_in_flash("audio")` on `gen`/`chanCalc`/`advanceEg`
+  is the whole change.
+- **BUSY is always clear.** Every register write completes inside the OUT, so
+  there is nothing to wait for, and a driver polling BUSY has to see it go away
+  (that was the 2026-08-07 hang). The timer flags in bits 1..0 are now real.
+- **Prescaler**: implemented for the FM side and the timers, NOT for the SSG
+  divider. The only sequence real TFM software uses is the manual's §5.3 "write
+  `#2F`, then `#2D`", which starts and ends at /6; following it through the
+  intermediate state would just detune the PSG for one write.
+- **Not implemented, on purpose**: LFO (a YM2203 has none — fm.cpp pins LFO_AM /
+  LFO_PM at 0 for its YM2203 update loop, and registers `#B4+` are YM2612), and
+  FM state in snapshots.
+- **Sources**, all behind nedopc.com's self-signed-cert 403 wall — `curl -sk`,
+  WebFetch cannot: `tfm-prg.zip` (programming manual: §4.4/4.5 registers, §5.1 the
+  write protocol, §5.2 "parameter changes other than TL/MUL/Detune take effect
+  only at the next key-on", §5.3 the prescaler), `tfm_plm_src.zip` (the CPLD
+  source — the authority on the clock, the select decode and FM_DIS),
+  `tfm_sch_c.png`, `ym2203.pdf`, and TFM Music Maker.
+
 ### DAMNPORT1 (#0A) took the wrong MPAG bit and wiped D7
 
 `ports.inc` describes #0A as "data bit := inverse of MPAG bit 0". The RTL says
@@ -518,7 +607,10 @@ worth a look next time this area moves:** ports.v lists only `port02_rd`,
 `port03_wr` and `port0a_wrrd` as data-bit events — `OUT (02)` is NOT one of
 them, yet `gsio_ack_data()` clears the flag on it.
 
-## TurboSound FM (#FFFD select #F8..#FF) — status register stub, 2026-08-07
+## TurboSound FM (#FFFD select #F8..#FF) — the port layer, 2026-08-07
+
+(The FM synthesis that sits behind it is a separate section: "TurboSound FM —
+the OPN core". This one is only about the `#FFFD` decode and why it was found.)
 
 `Config::turbosound` used to decode only `#FF`/`#FE` written to `#FFFD`. The real
 NedoPC family is **`(value & 0xF8) == 0xF8`** — the manual calls these
@@ -544,20 +636,47 @@ with the register latch parked at `#F8` `getRegisterData()` returned 0xFF — BU
 forever. The ZX sat at PC `C0BC` (`IN (C) / JP M`, BC=`#FFFD`) inside the demo's
 `CALL 0xC000` init with IFF1=0, so the screen never came up and the NeoGS card
 looked stuck when it was only waiting for a dead host. Recognising `#F8..#FF`
-as a select **and** answering the status read with 0x00 (no BUSY, no timer
-flags — we emulate neither the FM half nor its timers) is the whole fix.
+as a select **and** answering the status read with BUSY clear is the whole fix.
+(It first answered a flat 0x00 with nothing behind it; the status read now comes
+from `OpnFm::status()`, so the timer flags in bits 1..0 are real. BUSY is still
+always clear, and has to be — see the OPN core section.)
 
 - Chip mapping keeps this project's hw-tested `#FF` → chip 0 / `#FE` → chip 1
-  (Xpeccy maps bit 0 the other way). FM is not emulated, so `#F8`/`#F9` only
-  have to stay consistent with that.
-- FM register writes (0x30-0xB6) are harmlessly dropped: `setRegisterData` is
-  already `if (selectedRegister < 16)`. Registers 0-13 written while an FM chip
-  is selected DO reach the AY — correct, that is the YM2203's own SSG half.
+  (Xpeccy maps bit 0 the other way); `#F8`/`#F9` stay consistent with that.
+- FM register writes (0x30-0xB6) never reach `AySound::setRegisterData`, which is
+  still `if (selectedRegister < 16)` — `Ports::ayPortWrite` hands every #FFFD /
+  #BFFD access to BOTH halves of the latched chip and the FM half ignores
+  anything below 0x20. Registers 0-13 written while an FM chip is selected DO
+  reach the AY — correct, that is the YM2203's own SSG half.
 - `getRegisterData()` gained an explicit `>= 16 → 0xFF`: the old
   `regs[7] >> (selectedRegister - 8)` was undefined once the latch went past 39,
   which is exactly what a TSFM select does.
 - The whole thing is gated on `Config::turbosound` (Audio → TurboSound). With it
   off, a TSFM demo still hangs — same as real hardware without the card.
+
+## LED indicators — touching one does nothing unless it is VISIBLE
+
+`LED::touchR/touchW` only set a decay counter; whether the glyph exists in the
+row at all is decided separately by `isVisible()` in `LEDIndicators.cpp`. So a
+device can be hammering away with the indicator dark and nothing wrong with the
+touch. `case SD` gated on `Config::esxdos || DivMMC::enabled` and knew nothing
+about NeoGS, which carries its own SD interface — NPL streamed an MP3 at ~78
+sector reads/s with the row showing no SD at all (hw 2026-08-07). Now also true
+for `Config::gs_enabled == 2`.
+
+Two more things learned there:
+
+- **Light NeoGS SD from `NgsSd::xfer()`, not only from `service()`.** The
+  8-sector read-ahead means a sequential stream is served almost entirely from
+  cache, so `service()` never runs — the indicator blinked for Neo8Tracker's
+  scattered module loads and stayed dark for continuous playback. The card is
+  doing SPI either way, which is what a real board's LED shows. `service()`
+  keeps a touch too, since only it can tell a write from a read.
+- **`LED::GS` must trigger on CHANGE, not on a non-zero level.** The channel
+  latches hold whatever the firmware last wrote, so an idle card usually sits at
+  a non-silent DC value and `if (sumL || sumR)` stayed true forever — the GS
+  indicator was lit solid while the card was merely scanning its SD. A DC offset
+  is not sound.
 
 ## SAA1099 Emulation Key Findings
 

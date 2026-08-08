@@ -79,6 +79,7 @@ SUBSYSTEM_DECL(CovoxSubsys);   // 640 B audioBufferCovoxL
 SUBSYSTEM_DECL(PitSubsys);     // 640 B audioBufferPIT (Pentagon Byte 8253)
 
 SUBSYSTEM_DECL(SaaSubsys);     // SAASound saaChip + sample buffers
+SUBSYSTEM_DECL(TsfmSubsys);    // TurboSound FM: 2x OpnFm + 1280 B mix buffer
 SUBSYSTEM_DECL(MidiSubsys);    // MIDI synth + 2x640 B L/R buffers
 SUBSYSTEM_DECL(DmaSubsys);     // Z80/zxnDMA per-scanline attr shadow (~7 KB heap)
 #ifdef VGA_HDMI

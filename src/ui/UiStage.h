@@ -144,6 +144,7 @@ const char* romsetName(int32_t composite);
     X(SET_AY48,            AC_LIVE,   0,                     get_ay48,       put_ay48,       hook_ay48,      -1)          \
     X(SET_AY_STEREO,       AC_PURE,   0,                     get_ayCfg,      put_ayCfg,      nullptr,        -1)          \
     X(SET_TURBOSOUND,      AC_SUBSYS, F_SUBSYS,              get_turbo,      put_turbo,      nullptr,        -1)          \
+    X(SET_TSFM,            AC_SUBSYS, F_SUBSYS,              get_tsfm,       put_tsfm,       nullptr,        -1)          \
     X(SET_COVOX,           AC_SUBSYS, F_SUBSYS,              get_covox,      put_covox,      nullptr,        FEAT_COVOX)  \
     X(SET_SOUNDRIVE,       AC_SUBSYS, F_SUBSYS,              get_soundrive,  put_soundrive,  nullptr,        FEAT_COVOX)  \
     X(SET_SAA1099,         AC_SUBSYS, F_SUBSYS,              get_saa,        put_saa,        nullptr,        FEAT_SAA)    \

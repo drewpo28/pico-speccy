@@ -88,6 +88,7 @@ uint16_t Config::joydef[14] = {
 uint8_t  Config::AluTiming = 0;
 uint8_t  Config::ayConfig = 0;
 uint8_t  Config::turbosound = 3; // BOTH
+uint8_t  Config::tsfm = 0;       // TurboSound FM off by default
 uint8_t  Config::covox = 1; // #FB
 uint8_t  Config::soundrive = 2; // AUTO: on for Profi, off elsewhere
 
@@ -912,6 +913,7 @@ void Config::load() {
         nvs_get_u8("kempstonPort", Config::kempstonPort, sts);
         nvs_get_u8("ayConfig", Config::ayConfig, sts);
         nvs_get_u8("turbosound", Config::turbosound, sts);
+        nvs_get_u8("tsfm", Config::tsfm, sts);
         // Setting is Yes/No now (3 = both chip-select schemes, 0 = off): fold the
         // old NedoPC-only (1) / old-TS-only (2) values in, or the menu row would
         // match no option at all.
@@ -1221,6 +1223,7 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"zifi_transport", zifi_transport);
     nvs_set_u8(buf,"ayConfig", Config::ayConfig);
     nvs_set_u8(buf,"turbosound", Config::turbosound);
+    nvs_set_u8(buf,"tsfm", Config::tsfm);
     nvs_set_u8(buf,"covox", Config::covox);
     nvs_set_u8(buf,"soundrive", Config::soundrive);
     nvs_set_u8(buf,"gs_enabled", Config::gs_enabled);

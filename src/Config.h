@@ -217,6 +217,14 @@ public:
     static uint8_t  AluTiming;
     static uint8_t  ayConfig;
     static uint8_t  turbosound;
+    // TurboSound FM (2 x YM2203). Gates the #F8..#FF pseudo-register family on
+    // #FFFD, the OPN status read and the FM synthesis (OpnFm / TsfmSubsys).
+    static uint8_t  tsfm;
+    // Is there a SECOND PSG? A TurboSound FM board is a TurboSound board — it is
+    // literally two YM2203s, each an AY plus an FM half — so enabling TSFM has to
+    // bring AySound chip1 up too. Without this, ayChipFor()'s "chip1 missing ->
+    // use chip0" fallback lands every chip-1 PSG write of a TFM tune on chip 0.
+    static bool twoAyChips() { return turbosound != 0 || tsfm != 0; }
     static uint8_t  covox;
     static uint8_t  soundrive;          // 0=Off, 1=On, 2=Auto (Profi only)
     static bool soundriveEnabled();     // resolves Auto against current arch

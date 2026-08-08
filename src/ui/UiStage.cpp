@@ -83,6 +83,7 @@ NM_INT_ACCESS (kempPort,  kempstonPort)
 NM_BOOL_ACCESS(ay48,      AY48)
 NM_INT_ACCESS (ayCfg,     ayConfig)
 NM_INT_ACCESS (turbo,     turbosound)
+NM_INT_ACCESS (tsfm,      tsfm)
 NM_INT_ACCESS (covox,     covox)
 NM_INT_ACCESS (soundrive, soundrive)
 NM_BOOL_ACCESS(saa,       SAA1099)
@@ -830,9 +831,10 @@ struct SubsysBinding {
     bool  (*post)(bool on);             // after apply; false = the allocation failed
 };
 
-static bool want_turbo() { return Config::turbosound != 0; }
+static bool want_turbo() { return Config::twoAyChips(); }
 static bool want_covox() { return Config::covox != 0 || Config::soundriveEnabled(); }
 static bool want_saa()   { return Config::SAA1099; }
+static bool want_tsfm()  { return Config::tsfm != 0; }
 static bool want_dma()   { return Config::dma_mode != 0; }
 static bool want_gs()    { return Config::gigascreen_onoff != 0; }
 static bool want_divmmc(){ return Config::esxdos != 0; }
@@ -846,6 +848,7 @@ static bool want_mb02()  { return Config::mb02 != 0; }
 NM_SUBSYS_THUNKS(turbo, TurboSubsys)
 NM_SUBSYS_THUNKS(covox, CovoxSubsys)
 NM_SUBSYS_THUNKS(saa,   SaaSubsys)
+NM_SUBSYS_THUNKS(tsfm,  TsfmSubsys)
 NM_SUBSYS_THUNKS(dma,   DmaSubsys)
 NM_SUBSYS_THUNKS(gs,    GsSubsys)
 NM_SUBSYS_THUNKS(divmmc, DivMmcSubsys)
@@ -910,6 +913,7 @@ static const SubsysBinding kSubsys[] = {
     { -1,              want_turbo, on_turbo, req_turbo, app_turbo, nullptr, nullptr },
     { FEAT_COVOX,      want_covox, on_covox, req_covox, app_covox, nullptr, nullptr },
     { FEAT_SAA,        want_saa,   on_saa,   req_saa,   app_saa,   nullptr, nullptr },
+    { -1,              want_tsfm,  on_tsfm,  req_tsfm,  app_tsfm,  nullptr, nullptr },
     { FEAT_DMA,        want_dma,   on_dma,   req_dma,   app_dma,   nullptr, nullptr },
     { FEAT_GIGASCREEN, want_gs,    on_gs,    req_gs,    app_gs,    pre_gs,  post_gs },
     // DivMMC is deliberately ABSENT here: esxDOS is reboot-class (see the settings
