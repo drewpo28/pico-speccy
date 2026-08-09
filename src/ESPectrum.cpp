@@ -2386,6 +2386,7 @@ uint8_t debug_number = 0;
 #if defined(VGA_HDMI)
 extern "C" int hdmi_audio_dbg_stage(void);
 extern "C" void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, uint32_t *s_cons);
+extern "C" void hdmi_audio_health_dump(void);
 #endif
 //=======================================================================================
 // MAIN LOOP
@@ -2631,6 +2632,20 @@ void ESPectrum::loop() {
             }
         }
     }
+
+#if defined(VGA_HDMI)
+    // HDMI-audio health heartbeat (1 Hz, no-op unless the driver is live).
+    // Same rationale as the NGS_TRACE counters: dropouts in this pipeline
+    // (duplicate packets on late ISRs, queue underruns) leave no other trace.
+    {
+        static uint64_t hdmiau_at = 0;
+        uint64_t now_au = time_us_64();
+        if (now_au >= hdmiau_at) {
+            hdmiau_at = now_au + 1000000ull;
+            hdmi_audio_health_dump();
+        }
+    }
+#endif
 
     // GS-Z80 runs on core1 alongside pcm_call(); core0 only reads the ring.
 

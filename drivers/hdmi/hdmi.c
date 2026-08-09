@@ -219,6 +219,22 @@ static volatile uint32_t aq_wr = 0, aq_rd = 0;
 #define HDMI_AU_TARGET 64
 static uint32_t hdmi_au_spl24_hi = 0, hdmi_au_spl24_lo = 0;
 static uint32_t hdmi_au_pos = 0;       // consumer-only (core1)
+
+// Health counters for the 1 Hz "HDMIAU:" line (hdmi_audio_health_dump). All
+// written on core1 (ISR/di_load) except the dump's read-and-reset on core0 —
+// lossy resets are fine for a diagnostic. This exists because every failure
+// mode of this pipeline ("sound cuts out", "picture drops") is invisible
+// without counters: skips transmit DUPLICATE packets (sink FIFO overflow →
+// ~0.5 s mute), underruns transmit Nulls (audible hole), and neither leaves
+// any other trace.
+static volatile uint32_t hdmi_au_skip_ct = 0;  // di_load(b^1) skipped: ISR later than the 45 µs guard
+static volatile uint32_t hdmi_au_dup_ct  = 0;  // ...and the stale set held an AUDIO packet (sink hears it twice)
+static volatile uint32_t hdmi_au_und_ct  = 0;  // pop credit available but packet queue empty (producer starved)
+static volatile uint32_t hdmi_au_qmin = 0xFFFFFFFFu, hdmi_au_qmax = 0; // queue depth watermarks
+// Whether DI set N currently holds an audio-sample packet (vs Null/ACR/IF).
+// core1-only; used to tell a harmless skip (stale Null repeats — sink ignores
+// duplicates of those) from a duplicate audio packet that must be compensated.
+static bool aq_set_audio[2] = { false, false };
 // Credit ceiling. Must survive the longest run of consecutive lines that emit
 // NO audio packet (InfoFrame burst + vsync), or banked credit is clamped away
 // and the consumer systematically under-delivers -> sink mutes permanently.
@@ -432,6 +448,26 @@ static inline void* __not_in_flash_func(nf_memset)(void* ptr, int value, size_t 
     return ptr;
 }
 
+// Mode snapshot for the line ISR. graphics_get_video_mode() returns the 88-byte
+// struct BY VALUE through flash-resident memcpy — at 31.5k IRQs/s, and with the
+// GS-Z80 saturating the shared XIP path (GS backend=XIP on butter PSRAM) every
+// one of those flash fetches misses the shared XIP cache and queues behind the
+// PSRAM stream: worst-case ISR time went 33 → 54 µs with GS enabled (hw
+// 2026-08-09, HDMIAU dur), past the 45 µs Data-Island guard and closing on the
+// 63.5 µs two-line render budget — "sound or picture drops when GS is on".
+// Snapshotted in hdmi_init() (ISR not yet running / DMA stopped on reinit);
+// the ISR reads it through a pointer and never touches flash at all.
+static struct video_mode_t hdmi_isr_mode;
+
+// RAM-resident 64-bit copy for the ISR path. A plain assignment loop here is
+// converted by GCC's loop-distribute-patterns into a call to libc memcpy —
+// which lives in FLASH (see hdmi_isr_mode above for why that is poison on this
+// path). The volatile destination blocks the libcall transform.
+static inline void __not_in_flash_func(nf_copy64)(uint64_t *dst, const uint64_t *src, int n) {
+    volatile uint64_t *d = dst;
+    for (int i = 0; i < n; i++) d[i] = src[i];
+}
+
 // Current HDMI scanline counter (exposed for Profi palette refresh sync).
 volatile uint hdmi_current_line = 0;
 
@@ -458,7 +494,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         last_irq_us = isr_t0;
         if (isr_gap > hdmi_irq_max_gap_us) hdmi_irq_max_gap_us = isr_gap;
     }
-    struct video_mode_t mode = graphics_get_video_mode(get_video_mode());
+    const struct video_mode_t * const modep = &hdmi_isr_mode;  // no flash memcpy — see hdmi_isr_mode
     irq_inx++;
 
     dma_hw->ints0 = 1u << dma_chan_ctrl;
@@ -466,9 +502,9 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     // Решаем источник для следующей строки (line+1) до её начала, чтобы
     // ctrl-канал был перезаряжен ровно один раз. Подмена адреса задним
     // числом, как в v1.2.13, давала срыв синхры на чувствительных приёмниках.
-    uint next_line = (line >= mode.v_total) ? 1 : (line + 1);
+    uint next_line = (line >= modep->v_total) ? 1 : (line + 1);
     bool next_is_scanline = hdmi_scanlines
-                         && (next_line <= mode.v_active)
+                         && (next_line <= modep->v_active)
                          && !(next_line & 1);
     if (next_is_scanline) {
         // scanline-строка играет из статичного буфера, ping-pong не трогаем
@@ -477,7 +513,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         dma_channel_set_read_addr(dma_chan_ctrl, &DMA_BUF_ADDR[inx_buf_dma & 1], false);
     }
 
-    if (line >= mode.v_total ) {
+    if (line >= modep->v_total ) {
         line = 0;
     } else {
         ++line;
@@ -492,7 +528,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     // Сигнализируем vsync в начале blanking-периода (после последней видимой строки),
     // чтобы эмулятор рендерил следующий кадр во время blanking,
     // пока HDMI не читает frameBuffer — предотвращает тиринг в верхней части экрана
-    if (line == mode.v_active) {
+    if (line == modep->v_active) {
         ESPectrum_vsync();
     }
 
@@ -502,7 +538,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     // буфер (адрес уже перезаряжен на прошлом IRQ), чётная — рендерится из FB.
     // Граничная line == v_active (чётная) — это первая строка blanking;
     // её надо пропустить, иначе получаем лишнюю активную строку (482).
-    if (line < mode.v_active) {
+    if (line < modep->v_active) {
         if (hdmi_scanlines) {
             if (line & 1) return;            // нечётные = серая, ничего не пишем
         } else {
@@ -515,11 +551,11 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
 
     uint8_t* activ_buf = (uint8_t *)dma_lines[inx_buf_dma & 1];
 
-    const int h_sync = mode.h_sync_bytes;
-    const int h_bp = mode.h_bp_bytes;
-    const int h_fp = mode.h_fp_bytes;
-    const int scr_w = mode.screen_width;
-    const int line_sz = mode.line_bytes;
+    const int h_sync = modep->h_sync_bytes;
+    const int h_bp = modep->h_bp_bytes;
+    const int h_fp = modep->h_fp_bytes;
+    const int scr_w = modep->screen_width;
+    const int line_sz = modep->line_bytes;
 
     // HDMI-audio packet loads run BEFORE the render: the set for the next
     // scanline must be written before that line starts, and doing it after
@@ -530,7 +566,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     // (Video.cpp) keeps the DI palette indices (184..199, 216..239) out of pair_lut.
     if (hdmi_audio_enabled) {
         const uint b = inx_buf_dma & 1;
-        au_pair_vs = (line >= mode.vsync_start) && (line < mode.vsync_end);
+        au_pair_vs = (line >= modep->vsync_start) && (line < modep->vsync_end);
         au_ok_now = true; au_ok_prev = true; au_video_guards = true;
         // Line-clock credit, bang-bang by queue depth vs target (see the
         // hdmi_au_spl24_hi declaration). This ISR covers exactly 2
@@ -548,8 +584,8 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
             const uint stage = (hdmi_dbg_frame_ct >> 10) & 3;
             if (stage == 0) { au_ok_now = false; au_ok_prev = false; au_video_guards = false; }
             else if (stage <= 2) {
-                au_ok_now  = (line >= (uint)mode.v_active);
-                au_ok_prev = ((line - 2) >= (uint)mode.v_active);
+                au_ok_now  = (line >= (uint)modep->v_active);
+                au_ok_prev = ((line - 2) >= (uint)modep->v_active);
                 au_video_guards = (stage == 2);
             }
         }
@@ -563,19 +599,33 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         // finish this write before the next line starts reading the set — a
         // torn packet has bad BCH and the sink mutes. Skip instead: the
         // previous packet repeats (valid, minor artifact, no mute).
-        if (au_ok_prev && isr_gap < 45 &&
-            !(hdmi_scanlines && (line + 1) <= mode.v_active)) {
-            while (time_us_32() - isr_t0 < 5) tight_loop_contents();
-            hdmi_di_load(b ^ 1, line - 1);
+        if (au_ok_prev && !(hdmi_scanlines && (line + 1) <= modep->v_active)) {
+            if (isr_gap < 45) {
+                while (time_us_32() - isr_t0 < 5) tight_loop_contents();
+                hdmi_di_load(b ^ 1, line - 1);
+            } else {
+                // The stale set transmits again. A repeated Null/ACR is free;
+                // a repeated AUDIO packet delivers 4 extra samples the pacing
+                // never accounted for — a burst of late ISRs (flash op freezing
+                // core1, IRQ storm) floods the sink's FIFO that way and it
+                // mutes for ~0.5 s. Compensate: burn one packet of pop credit
+                // so a future pop is deferred and long-run delivery stays at
+                // the credit rate exactly.
+                hdmi_au_skip_ct++;
+                if (aq_set_audio[b ^ 1]) {
+                    hdmi_au_dup_ct++;
+                    hdmi_au_pos = (hdmi_au_pos >= (4u << 24)) ? hdmi_au_pos - (4u << 24) : 0;
+                }
+            }
         }
         // Packet for the just-rendered buffer's 1st play; its set was last
         // read at the start of the previous scanline — safe immediately.
         if (au_ok_now) hdmi_di_load(b, line);
     }
 
-    if (line < mode.v_active ) {
+    if (line < modep->v_active ) {
         uint8_t* output_buffer = activ_buf + h_sync + h_bp;
-        int y = (line >> 1) + mode.v_offset;
+        int y = (line >> 1) + modep->v_offset;
         //область изображения
         uint8_t* input_buffer = getLineBuffer(y);
         if (!input_buffer) return;
@@ -657,7 +707,7 @@ ex:
     }
     else {
         int blanking_rest = line_sz - h_sync;
-        if ((line >= mode.vsync_start) && (line < mode.vsync_end)) {
+        if ((line >= modep->vsync_start) && (line < modep->vsync_end)) {
             //кадровый синхроимпульс
             nf_memset(activ_buf + h_sync, BASE_HDMI_CTRL_INX + 2, blanking_rest);
             nf_memset(activ_buf, BASE_HDMI_CTRL_INX + 3, h_sync);
@@ -683,7 +733,7 @@ ex:
             for (int i = 0; i < 16; i++) p[5 + i] = dbase + i;
             p[21] = au_pair_vs ? IDX_DI_GUARD_TRAIL_VS : IDX_DI_GUARD_TRAIL;
         }
-        if (au_video_guards && line < mode.v_active) {
+        if (au_video_guards && line < modep->v_active) {
             // HDMI mode requires a video preamble + guard band before active video
             uint8_t *bp_end = activ_buf + h_sync + h_bp;
             bp_end[-5] = IDX_VIDEO_PREAMBLE; bp_end[-4] = IDX_VIDEO_PREAMBLE;
@@ -859,6 +909,10 @@ static inline bool hdmi_init() {
     sm_config_set_fifo_join(&c_c, PIO_FIFO_JOIN_TX);
 
     struct video_mode_t hdmi_mode = graphics_get_video_mode(get_video_mode());
+    // ISR mode snapshot (see hdmi_isr_mode): filled here because the line ISR is
+    // guaranteed not to be running yet — first init installs it below, reinit
+    // (hdmi_poll_reinit) has all DMA channels aborted before calling us.
+    hdmi_isr_mode = hdmi_mode;
     // Use pre-computed clean divider (integer or half-integer) to avoid PIO clock jitter
     sm_config_set_clkdiv(&c_c, hdmi_mode.pio_clk_div);
     pio_sm_init(PIO_VIDEO, SM_video, offs_prg0, &c_c);
@@ -1860,14 +1914,17 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
         // the credit (capped by the ISR), so emission resumes the moment the
         // producer catches up.
         const uint32_t qd = aq_wr - aq_rd;
+        if (qd < hdmi_au_qmin) hdmi_au_qmin = qd;
+        if (qd > hdmi_au_qmax) hdmi_au_qmax = qd;
         if (qd != 0 && qd <= HDMI_AQ_LEN) {
             hdmi_au_pos -= (4u << 24);
             qpkt = &aq_blob[aq_rd & (HDMI_AQ_LEN - 1)];
             from_q = true;
         }
-        else src = blob_null;
+        else { src = blob_null; hdmi_au_und_ct++; }
     }
     else src = blob_null;
+    aq_set_audio[set] = from_q;
 
     // Both palette pages: the island sits at line bytes [0..21], so consecutive
     // island indices land on alternating source-pixel parities and each one must
@@ -1876,26 +1933,36 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
     const uint slot = (set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE) * 2;
     uint64_t *dst  = ((uint64_t *)conv_color)   + slot;
     uint64_t *dstb = ((uint64_t *)conv_color_b) + slot;
+    // nf_copy64, not plain loops: GCC turns these into flash-resident memcpy
+    // calls, which stall behind GS/Gigascreen XIP traffic (see hdmi_isr_mode).
     if (from_q) {
         // Encode the raw audio packet straight into conv_color (replaces the
         // 32-uint64 copy — see hdmi_audio_pkt_t). hdmi_pack_blob writes all 32.
         hdmi_pack_blob(dst, qpkt->hdr, qpkt->sp);
-        for (int i = 0; i < 32; i++) dstb[i] = dst[i];
+        nf_copy64(dstb, dst, 32);
         __dmb();
         aq_rd = aq_rd + 1;
     } else {
-        for (int i = 0; i < 32; i++) { dst[i] = src[i]; dstb[i] = src[i]; }
+        nf_copy64(dst, src, 32);
+        nf_copy64(dstb, src, 32);
     }
 }
 
 // ---------- init ----------
 
 // Pick ACR N/CTS for the real TMDS pixel clock (clk_sys / (pio_div * 10)).
-// CEA-861-F Table 7-1 recommended N for 48 kHz is 6144; at 25.2 MHz it gives
-// CTS=25200. Fall back to other N if the clock doesn't divide cleanly.
+// The CEA-861/HDMI recommended N for the configured Fs goes FIRST: strict sinks
+// size their audio clock-regeneration PLL for it. The list used to start with a
+// flat 4096 — the recommended N for the OLD 32 kHz rate — which at 48 kHz sits
+// at the very bottom of the spec's allowed window (128*Fs/1500 = 4096) and both
+// divide 25.2 MHz cleanly, so the scan always picked the marginal one
+// (N=4096/CTS=16800 instead of 6144/25200, seen in every boot log).
+// Fall back to other N if the clock doesn't divide cleanly.
 static void hdmi_pick_acr(uint32_t pix_hz, uint32_t *n_out, uint32_t *cts_out) {
-    const uint64_t denom = 128ull * HDMI_AUDIO_FS;  // 4,096,000
-    static const uint16_t n_cand[] = { 4096, 6144, 6000, 6720, 5120, 12288 };
+    const uint64_t denom = 128ull * HDMI_AUDIO_FS;  // 6,144,000 @48k
+    static const uint16_t n_cand[] = {
+        (HDMI_AUDIO_FS == 32000) ? 4096 : (HDMI_AUDIO_FS == 44100) ? 6272 : 6144,
+        4096, 6144, 6272, 6000, 6720, 5120, 12288 };
     for (unsigned i = 0; i < sizeof(n_cand) / sizeof(n_cand[0]); i++) {
         uint64_t num = (uint64_t)pix_hz * n_cand[i];
         if (num % denom == 0) {
@@ -2053,6 +2120,7 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
             memcpy(&ccp[pg][IDX_DI_DATA_BASE * 2],  blob_null, sizeof(blob_null));
             memcpy(&ccp[pg][IDX_DI_DATA2_BASE * 2], blob_null, sizeof(blob_null));
         }
+        aq_set_audio[0] = aq_set_audio[1] = false;
         hdmi_au_pos = 0;
         // Pre-fill the latency cushion with silent audio packets (the sample
         // ring is still zeroed — audio isn't enabled yet, so no concurrency):
@@ -2081,6 +2149,35 @@ void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, 
     *q_cons = aq_rd;
     *s_prod = hdmi_audio_wr;
     *s_cons = hdmi_audio_rd;
+}
+
+// 1 Hz health line, called from ESPectrum::loop (core0). Read-and-reset is
+// lossy against the core1 writers — fine for a diagnostic. q= packet-queue
+// watermarks (target 64/128; min pinned at 0 = producer starved, max pinned at
+// 128 = consumer starved), skip/dup = late-ISR set-rewrite skips (dup = the
+// repeat carried an audio packet — each is 4 extra samples at the sink),
+// und = pops that found the queue empty (each is a 4-sample hole), gap/dur =
+// worst inter-ISR gap / time inside the ISR since the last line (µs; the
+// isr_gap<45 guard and the ~32 µs line period are the scales to read them
+// against). NB: Video.cpp's PERF_TRACE block read-and-resets gap/dur too — with
+// both enabled each line sees only its share.
+void hdmi_audio_health_dump(void) {
+    if (!hdmi_audio_enabled) return;
+    const uint32_t qmin = hdmi_au_qmin, qmax = hdmi_au_qmax;
+    const uint32_t skip = hdmi_au_skip_ct, dup = hdmi_au_dup_ct, und = hdmi_au_und_ct;
+    const uint32_t gap = hdmi_irq_max_gap_us, dur = hdmi_irq_max_dur_us;
+    // rd before wr: the core0 timer IRQ advances both between our two loads —
+    // this order can only overestimate depth, never underflow to ~4e9.
+    const uint32_t ring_rd = hdmi_audio_rd, ring_wr = hdmi_audio_wr;
+    hdmi_au_qmin = 0xFFFFFFFFu; hdmi_au_qmax = 0;
+    hdmi_au_skip_ct = 0; hdmi_au_dup_ct = 0; hdmi_au_und_ct = 0;
+    hdmi_irq_max_gap_us = 0; hdmi_irq_max_dur_us = 0;
+    printf("HDMIAU: q=%lu..%lu/%u ring=%lu skip=%lu dup=%lu und=%lu gap=%luus dur=%luus\n",
+           (unsigned long)(qmin == 0xFFFFFFFFu ? 0 : qmin), (unsigned long)qmax,
+           (unsigned)HDMI_AQ_LEN,
+           (unsigned long)(ring_wr - ring_rd),
+           (unsigned long)skip, (unsigned long)dup, (unsigned long)und,
+           (unsigned long)gap, (unsigned long)dur);
 }
 
 bool hdmi_audio_init(void) {

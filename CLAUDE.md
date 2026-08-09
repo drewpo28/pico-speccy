@@ -654,6 +654,66 @@ always clear, and has to be — see the OPN core section.)
 - The whole thing is gated on `Config::turbosound` (Audio → TurboSound). With it
   off, a TSFM demo still hangs — same as real hardware without the card.
 
+## HDMI audio instability ("звук или картинка срывается") — session 2026-08-09
+
+**ROOT CAUSE + FIX both hw-confirmed 2026-08-09: the line ISR had
+flash-resident code on its hot path, and GS/Gigascreen saturate the shared XIP
+port.** After the fix, with NeoGS running: worst `dur` over a whole session =
+**19 µs** (was 41–54 µs; even GS-off used to be 31–36 µs — the per-IRQ flash
+memcpy was costing double-digit µs on every configuration), worst `gap` 34 µs,
+skip/dup/und all zero, queue pinned at 64..66. `graphics_get_video_mode()` returns its 88-byte struct BY
+VALUE → GCC emits a call to libc `memcpy` (FLASH, 0x1009xxxx) on every one of
+the 31.5k line IRQs/s, and the copy loops in `hdmi_di_load` were converted to
+flash memcpy calls too (GCC loop-distribute-patterns). RP2350 flash and butter
+PSRAM share ONE XIP path and cache: with the GS-Z80 running on core1
+(backend=XIP, 3.36M PSRAM fetches/s) or Gigascreen reading its prev-frame from
+butter PSRAM, every ISR flash fetch misses the thrashed cache and queues behind
+the PSRAM stream. Measured (HDMIAU line, Pentagon idle at 504 MHz): worst-case
+ISR duration 33 µs with GS off → **41–54 µs with GS on**, against a 31.75 µs
+line period, a 45 µs Data-Island rewrite guard and the 63.5 µs two-line render
+budget — hence "sound or picture drops when GS/NeoGS or Gigascreen is enabled".
+Note how it hid: the lateness lands on the cheap EVEN-line ISRs (the render ISR
+that follows enters nearly on time), so skip/dup stayed 0 while the margin was
+gone. Fix: `hdmi_isr_mode` static snapshot (filled in `hdmi_init`, ISR reads a
+pointer — the per-IRQ struct copy is gone entirely) + `nf_copy64` (volatile
+dest blocks the memcpy libcall) in `hdmi_di_load`. Verified by disasm: every
+`bl` in `dma_handler_HDMI` and `hdmi_di_load` now targets 0x2xxxxxxx. **Rule:
+anything the HDMI line ISR calls must be RAM-resident — check the disasm, not
+the source; GCC inserts flash memcpy into innocent-looking struct returns and
+copy loops. `hdmi_irq_max_dur_us` (HDMIAU `dur`) is the regression detector.**
+
+Three changes from the same session, before the root cause was found:
+
+- **ACR N was 4096, now 6144 (48 kHz)**: `hdmi_pick_acr`'s candidate list began
+  with a flat 4096 — the recommended N for the OLD 32 kHz rate — and both 4096
+  and 6144 divide 25.2 MHz exactly, so the scan always returned the marginal
+  one (N=4096/CTS=16800 in every boot log). 4096 at 48 kHz is the exact bottom
+  of the HDMI-allowed window (128*Fs/1500); strict sinks size their
+  clock-regeneration PLL for the recommended value. Candidate list now puts the
+  CEA-recommended N for the configured Fs first (32k→4096, 44.1k→6272,
+  48k→6144). Boot log should now read N=6144 CTS=25200.
+- **Late-ISR skips now compensate duplicates**: when `isr_gap >= 45` skips the
+  `hdmi_di_load(b^1)` set rewrite, the stale set transmits AGAIN. A repeated
+  Null/ACR is free, but a repeated AUDIO packet is 4 extra samples the pacing
+  never accounted for — a burst of late ISRs (flash_safe_execute freezing
+  core1, IRQ storm) floods the sink's FIFO exactly into the known "~0.5 s
+  mute". `aq_set_audio[2]` tracks what each set holds; a skipped audio set
+  burns one packet of pop credit so long-run delivery stays rate-exact.
+- **`HDMIAU:` 1 Hz health line** (ESPectrum::loop → `hdmi_audio_health_dump`,
+  no-op unless HDMI audio live): packet-queue watermarks `q=min..max/128`
+  (min pinned 0 = producer starved → underrun holes; max pinned 128 = consumer
+  starved), `skip/dup` (late-ISR skips / audio duplicates), `und` (pops that
+  found the queue empty), `gap/dur` (worst inter-ISR gap and time inside the
+  ISR, µs — read against the 45 µs guard and the ~32 µs line period). Same
+  lesson as NGS_TRACE: these failures leave no other trace. NB Video.cpp's
+  PERF_TRACE block read-and-resets gap/dur too — with both on, each line only
+  sees its share.
+
+Diagnosis guide for the next hw session: sound cut + `dup>0` bursts = ISR
+lateness (find what blocks core1/IRQs); sound cut + `und>0`/qmin=0 = core0
+producer starvation (flash ops, IRQ-off regions); picture drop with clean
+counters = link/TMDS-level issue (SOFT_CLK/CLAMP territory), not timing.
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the

@@ -47,6 +47,10 @@ void hdmi_audio_write_sample(int16_t left, int16_t right);
 int hdmi_audio_dbg_stage(void);
 // Producer/consumer counters: packet queue (wr/rd) and sample ring (wr/rd)
 void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, uint32_t *s_cons);
+// 1 Hz "HDMIAU:" health line (queue watermarks, skips/duplicates/underruns,
+// worst ISR gap+duration). No-op unless HDMI audio is live. Call from the
+// core0 main loop about once a second.
+void hdmi_audio_health_dump(void);
 
 // Hot video mode reinit (reuses existing PIO/DMA resources)
 void hdmi_reinit(void);
