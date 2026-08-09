@@ -612,6 +612,7 @@ static inline uint32_t __not_in_flash_func(gs_map_addr)(uint16_t address) {
 static bool     s_ngs = false;        // mirror of GS::neogs for hot paths
 static uint8_t  s_ngs_cfg0   = NGS_CFG0_RESET;
 static uint8_t  s_ngs_mpag   = 0;     // MPAG   #00
+static uint8_t  s_ngs_pg2_b0 = 0;     // RTL mode_pg2[0] latch — only #0A reads it (ngs_damnport1)
 static uint8_t  s_ngs_mpagex = 0;     // MPAGEX #10
 static uint8_t  s_ngs_intena = 0x01;  // INTENA #0C (b0 timer, b1 SD-DMA, b2 MP3-DMA)
 static uint8_t  s_ngs_intreq = 0;     // INTREQ #0D
@@ -1073,47 +1074,39 @@ static inline void __not_in_flash_func(gsio_ack_data)() {
 }
 
 // DAMNPORT1/2 (#0A/#0B) — the two ports whose only job is to force a value into
-// the shared handshake flags. Straight from the RTL (ports.v), because the doc
-// wording ("data bit := inverse of MPAG bit 0") does not survive contact with it:
+// the shared handshake flags. ports.inc says "sets data bit to the inverse of
+// bit 0 into MPAG port"; the RTL says something else, and the question was
+// settled (2026-08-09) by checking EVERY bitstream in the tslabs/neogs mirror:
+// fpgaC_release (2007, the first release), D, E, F and current all compute the
+// bit from the internal 16K page register for 0x8000+, which every revision
+// builds from MPAG pre-shifted LEFT one bit:
 //
 //   assign port0a_wrrd = (a==DAMNPORT1 && (port_wr||port_rd));   // BOTH ways
-//   mode_pg2 <= mode_expag ? {din[6:0], din[7]}    // written from port 00 (MPAG)
+//   mode_pg2 <= mode_expag ? {din[6:0], din[7]}   // MPAG (#00) write
 //                          : {din[6:0], 1'b0};
-//   data_bit_output <= ~mode_pg2[0];
+//   mode_pg2 <= din;                              // PG2 (#22) write, current rev only
+//   data_bit_output <= ~mode_pg2[0];              // #0A read or write
 //
-// so the bit that lands in data_bit is MPAG bit **7**, and only in EXPAG mode —
-// in normal paging mode_pg2[0] is hardwired 0, i.e. the data bit is always SET.
-// We were using MPAG bit 0, which is a completely different bit and one the
-// firmware's mixer churns constantly: every #0A access with an odd MPAG cleared
-// D7 and threw away a card->host byte the host had not collected yet. That is
-// the "hangs after a couple of minutes, at an effect change" failure — ring
-// `... N40 W0F R0F N40 W90` with st=01: the second NMI answered with 0x90, the
-// flag announcing it was wiped by an unrelated #0A access, and the ZX sat at
-// 798E waiting for a D7 that no longer existed (hw 2026-08-07).
+// (revisions C-F name the register mode_pg0 and make it 7 bits — same shift,
+// same bit 0). So the value forced into data_bit is: always SET in normal
+// paging (bit 0 of the shifted register is tied to 0); ~MPAG bit 7 in EXPAG
+// (the LSB of the 8-bit extended page number); ~PG2 bit 0 after a #22 write.
+// No NeoGS bitstream ever implemented ports.inc's wording — that sentence
+// describes the original 1994 GS these ports were cloned from ("made just
+// because they were on the original GS"), not the FPGA. Nor was any firmware
+// "written against" the doc: fw source (tslabs/neogs z80/main_rom) defines
+// DPORT1/2 and never references them, and NPL's card side never touches them
+// either — the only path that reaches #0A at all is fw command 0x10 ("OUT to
+// any port") driven by a ZX program. Hence RTL semantics below, tracked by the
+// s_ngs_pg2_b0 latch, updated exactly where the RTL rewrites mode_pg2 (MPAG
+// and PG2 writes — an EXPAG toggle alone does NOT retroactively move it).
 //
-// #0B is the same shape for the command bit, sourced from bit 5 of the last
-// write to port #09 (VOL4) — `port09_bit5` in the RTL.
+// #0B is the same shape for the command bit, sourced NON-inverted from bit 5
+// of the last write to port #09 (VOL4) — `port09_bit5` in the RTL; on this
+// one ports.inc agrees.
 static inline void __not_in_flash_func(ngs_damnport1)() {
-    // ports.inc: "data bit := INVERSE of MPAG bit 0". UNVERIFIED — no workload
-    // here is known to exercise #0A, so this is the documentation's word and
-    // nothing more.
-    //
-    // The mirrored RTL disagrees:
-    //     if (!mode_expag) mode_pg2 <= {din[6:0], 1'b0};   // bit 0 tied to 0
-    //     data_bit_output <= ~mode_pg2[0];                 // => always SET
-    // i.e. MPAG bit *7*, and in normal paging always set. That reading is
-    // plausible — the mirrored FPGA is a later revision whose mode_pg2 belongs
-    // to the newer pg0-pg3 scheme, where MPAG is shifted left into two 16K
-    // halves — but it is equally unverified, and swapping to it changes a flag
-    // the firmware's mixer touches constantly. Left on the doc's version
-    // because that is what shipped and what the GS 1.04-lineage firmware was
-    // written against. Decide it with a test, not by re-reading either source.
-    //
-    // (I briefly blamed ZP4's broken module load on this and "reverted to be
-    // safe". That was wrong: ZP4 fails identically on a pristine HEAD build,
-    // so #0A was never implicated either way.)
-    if (!(s_ngs_mpag & 0x01)) gs_status_or(&GS::reg_status, 0x80u);
-    else                      gs_status_and(&GS::reg_status, ~0x80u);
+    if (!s_ngs_pg2_b0) gs_status_or(&GS::reg_status, 0x80u);
+    else               gs_status_and(&GS::reg_status, ~0x80u);
 }
 
 static inline void __not_in_flash_func(ngs_damnport2)() {
@@ -1479,6 +1472,8 @@ static inline uint8_t ngs_setnclr(uint8_t reg, uint8_t value, uint8_t mask) {
 static void ngs_reset_regs() {
     s_ngs_cfg0    = NGS_CFG0_RESET;
     s_ngs_mpag    = 0;
+    s_ngs_pg2_b0  = 0;      // RTL leaves mode_pg2 unreset (X until the first
+                            // MPAG write); 0 keeps it consistent with mpag=0
     s_ngs_mpagex  = 0;
     s_ngs_intena  = 0x01;   // GS-compatible: timer INT running out of reset
     s_ngs_intreq  = 0;
@@ -1609,6 +1604,9 @@ static void __not_in_flash_func(ngs_cb_out)(void* ctx, zuint16 port, zuint8 valu
     switch (port & 0xFF) {
         case 0x00:  // MPAG
             s_ngs_mpag = value;
+            // RTL: an MPAG write rebuilds mode_pg2 = {din[6:0], expag?din[7]:0};
+            // its bit 0 is what #0A forces into the data bit (ngs_damnport1).
+            s_ngs_pg2_b0 = (s_ngs_cfg0 & 0x08) ? (uint8_t)((value >> 7) & 1) : 0;
             GS::reg_page = value;  // keep pollPerf diagnostics meaningful
             ngs_rebuild_map();
             return;
@@ -1616,7 +1614,14 @@ static void __not_in_flash_func(ngs_cb_out)(void* ctx, zuint16 port, zuint8 valu
             s_ngs_led = value & 1;
             return;
         case 0x02:
-            gsio_ack_data();
+            // NOT a data-bit event. Settled against the RTL (2026-08-09): every
+            // ports.v revision (C..current) lists exactly three data-bit events
+            // — port02_rd, port03_wr, port0a_wrrd — and port02_rd is
+            // `a==ZXDATRD && port_rd`, reads only. A card-side WRITE to #02
+            // does nothing on the hardware. The gsio_ack_data() that used to
+            // sit here was classic-GS heritage (that path keeps it); fw 1.11
+            // and NPL never execute OUT (02), so dropping it is also
+            // behavior-neutral for known software.
             gs_trace_gs(TR_OUT02, value, GS::reg_status);
             return;
         case 0x03:  // ZXDATWR
@@ -1733,6 +1738,9 @@ static void __not_in_flash_func(ngs_cb_out)(void* ctx, zuint16 port, zuint8 valu
             return;
         case 0x20: case 0x21: case 0x22: case 0x23: {  // WIN0-3 — stub latches
             s_ngs_win[(port & 0xFF) - 0x20] = value;
+            // Current-rev RTL: pg2_wr loads mode_pg2 unshifted, so a PG2 write
+            // retargets the #0A data bit even with the paging itself stubbed.
+            if ((port & 0xFF) == 0x22) s_ngs_pg2_b0 = value & 1;
             static bool win_warned = false;
             if (!win_warned) {
                 win_warned = true;
@@ -2521,6 +2529,20 @@ int __not_in_flash_func(GS::step)(int tstates) {
         // loop at 0x59C5 while the ZX waits at 798B for a byte that the
         // swallowed NMI handler never wrote. That protocol is NMI-driven, so
         // one lost NMI is a permanent deadlock.
+        //
+        // The same `REQUEST = 0` can NOT lose our timer INT — settled by
+        // reading the core, no test needed (2026-08-09; upstream redcode/Z80
+        // HEAD still has the identical statement). While the reject latch
+        // stands, IFF1 is 0: the NMI response sets both together and the latch
+        // is consumed before the next instruction can execute, and z80_int()
+        // only sets Z80_REQUEST_INT when IFF1=1 — so there is never an INT bit
+        // under that wipe. The NMI response itself (`REQUEST = REJECT`) does
+        // overwrite an already-pending INT bit, but INT_LINE stays asserted
+        // until gs_cb_inta deasserts it at INTA, and RETN/EI re-derive the bit
+        // from the line (`if ((IFF1 = IFF2) && INT_LINE) REQUEST |= INT`) —
+        // which is also just the real chip: IFF1=0 blocks INT for the whole
+        // NMI handler anyway. Only a handler exiting with plain RET (IFF1
+        // stuck 0) would strand it, and that strands real hardware equally.
         if (s_ngs_nmi_pending && !(s_cpu.request & Z80_REQUEST_REJECT_NMI)) {
             s_ngs_nmi_pending = false;
             z80_nmi(&s_cpu);

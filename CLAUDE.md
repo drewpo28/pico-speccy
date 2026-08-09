@@ -490,33 +490,47 @@ quietly and by degrees.
   source — the authority on the clock, the select decode and FM_DIS),
   `tfm_sch_c.png`, `ym2203.pdf`, and TFM Music Maker.
 
-### DAMNPORT1 (#0A) took the wrong MPAG bit and wiped D7
+### DAMNPORT1 (#0A) — SETTLED 2026-08-09: RTL unanimous, ports.inc wrong
 
-`ports.inc` describes #0A as "data bit := inverse of MPAG bit 0". The RTL says
-something else, and the difference is a rare, delayed hang:
+Hw regression-run 2026-08-09 (this change + the OUT(02) ack removal): NEO8 /
+NPL / ZP4 / TheLink all play, no visible difference — exactly as predicted,
+since none of them exercises either path.
+
+`ports.inc` describes #0A as "data bit := inverse of bit 0 into MPAG port". The
+RTL says something else, and checking EVERY bitstream in the tslabs/neogs mirror
+(fpgaC_release 2007 — the first release — D, E, F, current) settled it: all of
+them compute the bit from the internal page register built from MPAG
+pre-shifted LEFT one bit (current names it `mode_pg2`, C-F `mode_pg0` — same
+shift, same bit 0):
 
 ```verilog
 assign port0a_wrrd = (a[5:0]==DAMNPORT1 && (port_wr||port_rd));
-mode_pg2 <= mode_expag ? {din[6:0], din[7]}    // written from port 00 = MPAG
+mode_pg2 <= mode_expag ? {din[6:0], din[7]}    // MPAG (#00) write
                        : {din[6:0], 1'b0};
+mode_pg2 <= din;                               // PG2 (#22) write, current rev only
 data_bit_output <= ~mode_pg2[0];
 ```
 
-So the bit forced into `data_bit` is **MPAG bit 7**, and only in EXPAG mode — in
-normal paging `mode_pg2[0]` is hardwired 0, i.e. the data bit is always **set**.
-We used MPAG **bit 0**, a completely different bit and one the firmware's mixer
-churns every INT. Every #0A access with an odd MPAG therefore cleared D7 and
-destroyed a card→host byte the host had not collected yet.
-
-TheLink, hw 2026-08-07: ring `... N40 W0F R0F N40 W90` with `st=01` — the second
-NMI answered with 0x90, an unrelated #0A access wiped the flag announcing it,
-and the ZX sat at 798E waiting for a D7 that no longer existed. It depends on
-MPAG's low bit at that instant, which is why it presented as "runs fine for a
-couple of minutes, then hangs at an effect change".
+So on #0A the data bit is **always SET in normal paging** (register bit 0 tied
+to 0), **~MPAG bit 7 in EXPAG** (LSB of the 8-bit extended page number), and
+~PG2 bit 0 after a #22 write. No NeoGS bitstream ever implemented ports.inc's
+wording — that sentence describes the original 1994 GS the ports were cloned
+from. Nor does any known software care: fw source (`z80/main_rom`) defines
+DPORT1/2 and never references them, NPL's card side never touches them; the
+only path to #0A is fw command 0x10 ("OUT to any port") from a ZX program.
+`ngs_damnport1` now implements the RTL via the `s_ngs_pg2_b0` latch, updated
+exactly where the RTL rewrites the register (MPAG and PG2 writes — an EXPAG
+toggle alone does not retroactively move it; warm reset zeroes it alongside
+mpag, where real hw leaves it X). An earlier session blamed a TheLink hang on
+the doc version's D7 clears (ring `... N40 W0F R0F N40 W90`, st=01) — that
+signature was later re-attributed to the D7 check-then-act race and the
+swallowed NMI (sections below), consistent with nothing actually exercising #0A.
 
 Both #0A and #0B fire on `port_wr || port_rd`, so reads and writes force the
-flags identically (`ngs_damnport1`/`ngs_damnport2` hold the single copy).
-`ports.inc` is a summary, the RTL is the specification — prefer it.
+flags identically (`ngs_damnport1`/`ngs_damnport2` hold the single copy). #0B
+(command bit := VOL4 bit 5, non-inverted, `port09_bit5`) matches ports.inc and
+needed no change. `ports.inc` is a summary, the RTL is the specification —
+prefer it.
 
 ### A host NMI can be silently swallowed by redcode's reject latch
 
@@ -550,9 +564,16 @@ ring without #33 showed half the conversation and every reading of it was
 guesswork — several wrong fixes came out of that. Same lesson as the ring's
 print order: **the diagnostic being incomplete cost more than the bug**.
 
-Noted but NOT fixed (inside the vendored core): that same `REQUEST = 0` also
-drops a pending `Z80_REQUEST_INT`, so an NMI response can eat one timer
-interrupt. Our INT is level-triggered and re-asserted, so it should self-heal.
+The INT half of the same `REQUEST = 0` is SETTLED (2026-08-09, by reading the
+core — no test needed; upstream redcode/Z80 HEAD has the identical statement):
+it cannot lose our timer INT. While the reject latch stands, IFF1 is 0 (the NMI
+response sets both together, the latch dies before the next instruction), and
+`z80_int()` only sets `Z80_REQUEST_INT` when IFF1=1 — so there is never an INT
+bit under the wipe. The NMI response itself (`REQUEST = REJECT`) does overwrite
+an already-pending INT bit, but INT_LINE stays asserted until `gs_cb_inta`
+deasserts it at INTA, and RETN/EI re-derive the bit from the line — the same
+delay a real chip's IFF1=0 imposes for the whole NMI handler. Only a handler
+exiting with plain RET would strand it, and that strands real hardware equally.
 
 ### The #B3/#BB host interface — read the RTL, it settles everything
 
@@ -602,10 +623,15 @@ surviving queue would disagree with the cleared D7); `hostWriteB3` drops it too
 (that IS what the single `data_reg_out` register does); F3/F4 still flush
 everything in `hostWriteBB` (the firmware reboots). The host→card `#B3`
 collapse-to-newest at a command boundary is unrelated and stays — but the
-per-write drop that used to sit in `hostWriteB3` is gone (see above). **Unverified against the RTL and
-worth a look next time this area moves:** ports.v lists only `port02_rd`,
-`port03_wr` and `port0a_wrrd` as data-bit events — `OUT (02)` is NOT one of
-them, yet `gsio_ack_data()` clears the flag on it.
+per-write drop that used to sit in `hostWriteB3` is gone (see above). The
+`OUT (02)` question is SETTLED (2026-08-09): every ports.v revision in the
+mirror (fpgaC_release 2007 → current) lists exactly three data-bit events —
+`port02_rd`, `port03_wr`, `port0a_wrrd` — and `port02_rd` fires on reads only,
+so a card-side WRITE to #02 does nothing on the hardware. The NeoGS `OUT (02)`
+handler no longer calls `gsio_ack_data()` (classic GS keeps its
+UnrealSpeccy-heritage ack); behavior-neutral for known software — fw 1.11's
+source and NPL's card side never execute `OUT (02)` (only fw command 0x10
+"OUT to any port" could reach it).
 
 ## TurboSound FM (#FFFD select #F8..#FF) — the port layer, 2026-08-07
 
