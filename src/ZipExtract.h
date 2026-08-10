@@ -30,6 +30,13 @@ public:
 
     static void cleanup();
 
+    // Why the last extract()/extractAll() failed, ready for osdCenteredMsg: the
+    // specific reason when we know it (unsupported compression method, out of
+    // memory), else the generic "no supported file in ZIP". Both failures used to
+    // surface as that generic message, which sent people looking for a bad archive
+    // when the real problem was a tight heap. Valid until the next call.
+    static const char* errMsg();
+
     // Real extraction body — extractFile() runs it on a heap alt-stack (the
     // caller chain is OSD-deep and the 4 KB core0 stack is not enough on top).
     // Public only so the file-static alt-stack trampoline can call it.

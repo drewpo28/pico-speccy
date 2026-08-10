@@ -13,6 +13,7 @@ using namespace std;
 #include "ZipExtract.h"
 #include "FileUtils.h"
 #include "Buffer.h"
+#include "NetArena.h"
 #include "MemESP.h"
 #include "AlfCart.h"
 #include "Video.h"
@@ -28,15 +29,24 @@ extern Font Font6x8;
 
 #define ZIP_BUF_SIZE 512
 
+extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp — malloc panics on OOM
+
+
 // Shared filename scratch buffer — extract/extractAll/viewInfo each used a
 // 252-byte static; only one zip operation runs at a time.
 static char s_zip_fnBuf[252];
 
 const char* ZipExtract::TEMP_FILE = "/tmp/.zip_extract";
 
-// Static FIL to avoid ~560 bytes on stack (FIL contains 512-byte sector buffer)
-static FIL s_zipFile;
-static FIL s_outFile;
+// Failure reason of the last extract()/extractAll(): nullptr → the generic
+// "no supported file in ZIP". Set for the cases the caller cannot tell apart on
+// its own (both return "" / 0), so a tight heap doesn't masquerade as a bad
+// archive.
+static const char* s_zip_err = nullptr;
+
+const char* ZipExtract::errMsg() {
+    return s_zip_err ? s_zip_err : OSD_ZIP_ERR;
+}
 
 static bool hasMatchingExt(const char* filename, uint8_t fileType) {
     const char* dot = strrchr(filename, '.');
@@ -81,15 +91,69 @@ struct ZipEntry {
 
 #define ZIP_MAX_ENTRIES 16
 
+// ── Per-operation working set ────────────────────────────────────────────────
+// The two FILs (a FIL carries a 512-byte sector buffer, ~600 B each — far too
+// big for the 4 KB core0 stack, which is why they were static) and the scan
+// table used to be permanent .bss: 2368 bytes resident for the whole session to
+// serve an operation that lasts a second or two. On a tight build (576p +
+// Gigascreen + no PSRAM leaves ~6 KB free) that is a third of the free heap.
+// Now allocated per operation through the Buffer pool, so the Gigascreen lease
+// taken below can back it as well.
+//
+// NOT PREFER_PSRAM: a FIL's sector buffer is a DMA target for the SD driver, and
+// bulk-DMAing over the QMI bus while PIO video streams from it is the one thing
+// XIP PSRAM must never be used for.
+struct ZipWork {
+    FIL      zip;
+    FIL      out;
+    ZipEntry entries[ZIP_MAX_ENTRIES];
+};
+static ZipWork* s_work = nullptr;
+
+// RAII. Nesting is a no-op (the outer scope owns the block) — extract() can be
+// reached from a download session that is itself inside one.
+struct ZipWorkGuard {
+    bool owner;
+    ZipWorkGuard() : owner(false) {
+        if (s_work) return;
+        s_work = (ZipWork*)Buffer::palloc(sizeof(ZipWork),
+                                          Buffer::NEED_POINTER | Buffer::USE_NET_ARENA);
+        owner = (s_work != nullptr);
+        if (!owner) {
+            Debug::log("ZIP: work block (%u B) alloc failed, largest=%u",
+                       (unsigned)sizeof(ZipWork), (unsigned)getLargestAllocatable());
+            s_zip_err = OSD_ZIP_NOMEM;
+        }
+    }
+    ~ZipWorkGuard() { if (owner) { Buffer::pfree(s_work); s_work = nullptr; } }
+    bool ok() const { return s_work != nullptr; }
+};
+
 string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
-    FIL& zipFile = s_zipFile;
+    s_zip_err = nullptr;
+
+    // The emulator is paused behind the OSD for the whole extract, so the dormant
+    // Gigascreen prev-FB can back the inflate state (~8 KB), the 32 KB LZ dict and
+    // the alt-stack instead of the tight heap. Taken here rather than at the call
+    // sites: there are a dozen of them (F5, Tape, Disk, IMG, SNA, ROM, OSDFile)
+    // and only the F5 one used to hold a lease, so every other route into a ZIP
+    // was inflating straight out of the heap. No-op on butter boards (palloc goes
+    // to XIP PSRAM) and when Gigascreen is off (there is no prev-FB to lend).
+    NetArenaLease arena;
+    Debug::log("ZIP: extract '%s' arena=%d largest=%u", zipPath.c_str(),
+               (int)Buffer::arenaActive(), (unsigned)getLargestAllocatable());
+
+    ZipWorkGuard work;                  // FILs + scan table, freed on every exit
+    if (!work.ok()) return "";
+
+    FIL& zipFile = s_work->zip;
     if (f_open(&zipFile, zipPath.c_str(), FA_READ) != FR_OK)
         return "";
 
     FSIZE_t zipSize = f_size(&zipFile);
 
     // Phase 1: single-pass scan, collect matching entries
-    static ZipEntry entries[ZIP_MAX_ENTRIES];
+    ZipEntry* entries = s_work->entries;
     int entryCount = 0;
 
     LocalFileHeader hdr;
@@ -175,9 +239,9 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     // one rather than the generic "no supported file" message.
     if (e.compression != 0 && e.compression != 8) {
         f_close(&zipFile);
-        char m[40];
+        static char m[40];   // outlives the call — errMsg() hands it to the caller
         snprintf(m, sizeof(m), " ZIP: unsupported method %u ", e.compression);
-        OSD::osdCenteredMsg(m, LEVEL_WARN, 3000);
+        s_zip_err = m;
         return "";
     }
 
@@ -232,8 +296,6 @@ string ZipExtract::extractByIndex(const string& zipPath, int fileIndex) {
 // net_call_on_stack (OSDMain.cpp); this file is RP2350-only (Cortex-M33).
 #define ZIP_DEEP_STACK_SIZE 8192
 
-extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp — malloc panics on OOM
-
 // MSPLIM must be OFF (0) whenever SP crosses between stacks: the caller may
 // itself be on a heap alt-stack BELOW this one (archive download → extract runs
 // on net_call_on_stack's stack), and raising MSPLIM above a live SP means any
@@ -282,13 +344,22 @@ static void extractFileTramp(void* p) {
 bool ZipExtract::extractFile(FIL* zipFile, uint16_t compression, uint32_t compressedSize, uint32_t uncompressedSize, const char* outPath) {
     if (!outPath) outPath = TEMP_FILE;
     ZipDeepArgs a = { zipFile, compression, compressedSize, uncompressedSize, outPath, false };
+    // Take the alt-stack from the lent Gigascreen prev-FB when one is active: this
+    // was a bare malloc, so the lease could not help here at all and 12 KB of
+    // contiguous heap was demanded even with ~52 KB of arena sitting idle.
+    // Arena-or-heap only — deliberately NOT plain palloc(), whose heap→butter
+    // fallback could put the stack in XIP PSRAM, where every push/pop (IRQ frames
+    // included) would cross the QMI bus the video DMA is already streaming through.
     uint8_t* stk = nullptr;
-    if (getLargestAllocatable() >= ZIP_DEEP_STACK_SIZE + 4096)
+    if (Buffer::arenaActive())
+        stk = (uint8_t*)Buffer::palloc(ZIP_DEEP_STACK_SIZE,
+                                       Buffer::NEED_POINTER | Buffer::USE_NET_ARENA);
+    if (!stk && getLargestAllocatable() >= ZIP_DEEP_STACK_SIZE + 4096)
         stk = (uint8_t*)malloc(ZIP_DEEP_STACK_SIZE);
     if (stk) {
         void* top = (void*)(((uintptr_t)stk + ZIP_DEEP_STACK_SIZE) & ~(uintptr_t)7);
         zipCallOnStack(top, extractFileTramp, &a, stk);
-        free(stk);
+        Buffer::pfree(stk);
     } else {
         // Heap too tight for the alt-stack — run in place (pre-guard behavior;
         // the stack guard turns a repeat overflow into a clean fault, not
@@ -308,7 +379,7 @@ bool ZipExtract::extractFileInner(FIL* zipFile, uint16_t compression, uint32_t c
 }
 
 bool ZipExtract::extractStored(FIL* zipFile, uint32_t size, const char* outPath) {
-    FIL& outFile = s_outFile;
+    FIL& outFile = s_work->out;
     if (f_open(&outFile, outPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
         return false;
 
@@ -348,7 +419,7 @@ static void* zip_zalloc(void* /*opaque*/, size_t items, size_t size) {
 static void zip_zfree(void* /*opaque*/, void* p) { Buffer::pfree(p); }
 
 bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const char* outPath) {
-    FIL& outFile = s_outFile;
+    FIL& outFile = s_work->out;
     if (f_open(&outFile, outPath, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK)
         return false;
 
@@ -391,7 +462,14 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
     }
     memset(dict, 0, TINFL_LZ_DICT_SIZE);
 
+    // The only way inflateInit2 fails here is MZ_MEM_ERROR from zip_zalloc — the
+    // ~8.2 KB inflate_state, the one allocation in this path with no fallback (the
+    // dict has the page-5/7 borrow above). Say so instead of letting the caller
+    // report "no supported file in ZIP" for what is plain OOM.
     if (inflateInit2(&stream, -MZ_DEFAULT_WINDOW_BITS, dict)) {
+        Debug::log("ZIP: inflateInit2 failed (state alloc), largest=%u",
+                   (unsigned)getLargestAllocatable());
+        s_zip_err = OSD_ZIP_NOMEM;
         if (dictBorrowedRam) VIDEO::SaveRect.restore_ram(dict, TINFL_LZ_DICT_SIZE);
         else                 Buffer::pfree(dict);
         f_close(&outFile);
@@ -465,7 +543,10 @@ bool ZipExtract::extractDeflate(FIL* zipFile, uint32_t compressedSize, const cha
 }
 
 void ZipExtract::viewInfo(const string& zipPath) {
-    FIL& zipFile = s_zipFile;
+    ZipWorkGuard work;   // only the zip FIL is used here, but it is the same block
+    if (!work.ok()) return;
+
+    FIL& zipFile = s_work->zip;
     if (f_open(&zipFile, zipPath.c_str(), FA_READ) != FR_OK)
         return;
 
@@ -596,7 +677,13 @@ void ZipExtract::viewInfo(const string& zipPath) {
 }
 
 int ZipExtract::extractAll(const string& zipPath, const string& destDir) {
-    FIL& zipFile = s_zipFile;
+    s_zip_err = nullptr;
+    NetArenaLease arena;   // same paused-emulator lease as extract() — see there
+
+    ZipWorkGuard work;
+    if (!work.ok()) return 0;
+
+    FIL& zipFile = s_work->zip;
     if (f_open(&zipFile, zipPath.c_str(), FA_READ) != FR_OK)
         return 0;
 

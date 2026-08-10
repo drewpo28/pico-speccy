@@ -121,6 +121,8 @@ visit https://zxespectrum.speccy.org/contacto
 
 #define OSD_ZIP_EXTRACTING "    Extracting...    "
 
+#define OSD_ZIP_NOMEM " ZIP: not enough memory "
+
 #define OSD_PROFI_LOADING "  Loading Profi system...  \n  Please wait (SPI PSRAM)  "
 
 #define MENU_STORAGE_MAIN \
