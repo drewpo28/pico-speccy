@@ -519,6 +519,13 @@ static Buffer s_workRamBuf, s_ringLBuf, s_ringRBuf;
 static uint8_t s_host_fifo[GS_HOST_FIFO_SIZE];
 static volatile uint32_t s_host_fifo_w = 0;
 static volatile uint32_t s_host_fifo_r = 0;
+// REAL consumption counter (core1 pops only). The pacing/rot logic below must
+// gauge consumer liveness by this, NOT by s_host_fifo_r: hostWriteB3's
+// overflow drop-oldest also advances r from core0, and during a dead blast
+// (ZP4 streaming into a card that is not receiving) those drops faked a live
+// consumer — every blast byte then paid the full 15 ms pacing timeout and the
+// rot-flush timer never expired (hw 2026-08-10, "ZP4 все еще тормозит").
+static volatile uint32_t s_h2c_pops = 0;
 
 // Same FIFO for command port BB. FH1_GS_TZ.scl streams interleaved
 // CMD/DATA pairs (OUT BB,A; OUT B3,A; ...) at thousands per second; the
@@ -939,6 +946,30 @@ static void gs_d7_clear_recheck() {
     if (!gs_hs_idle()) gs_status_or(&GS::reg_status, 0x80u);
 }
 
+// The card's own data_bit for the reply direction, with the RTL clearing
+// rule: set by the card's OUT(03), cleared by ANY card read of port 02 and
+// tracking undelivered replies as the host drains them. fw 1.11 RELIES on
+// that rule to self-clean: COM38_/COM3E answer the host and then immediately
+// execute a dummy `IN A,(ZXDATRD)` purely to drop their own data_bit
+// (main_ngs.asm), so the unread reply cannot poison LOAD's D7-checked stream
+// receiver. Our shared-flag model kept D7 up through the g2h queue instead
+// (FH1 never reads replies), the self-clean was defeated, and LOAD ingested
+// s_p02_latch peeks as REAL stream bytes at full card speed whenever the
+// FIFO ran empty mid-stream — CURADR raced to ~10 MB (dump 2026-08-10:
+// 0x9FC080), LOAD's unguarded RAMPG[E] page-table walk read fill bytes as
+// page numbers (CPAGE fixpoint, mpag=7F) and the stream flooded the fw's
+// own work RAM. The FH1/COMTR4GS killer; this bit is the hw-confirmed cure
+// (both play with it, 2026-08-10). Card-visible D7 = "host bytes queued" OR
+// this bit; D0 and every pop path stay RAW — gating them broke ZP4/NPL/NEO8.
+static volatile uint8_t s_card_reply_bit = 0;
+
+static inline uint8_t __not_in_flash_func(ngs_card_status)() {
+    uint8_t st = GS::reg_status;
+    if ((st & 0x80) && s_host_fifo_r == s_host_fifo_w && !s_card_reply_bit)
+        st &= ~0x80u;
+    return st;
+}
+
 static inline uint8_t __not_in_flash_func(gsio_in_cmd)() {
     uint8_t v;
     uint32_t r = s_cmd_fifo_r;
@@ -970,6 +1001,9 @@ static inline uint8_t __not_in_flash_func(gsio_in_cmd)() {
 static uint8_t s_p02_latch = 0xFF;
 static inline uint8_t __not_in_flash_func(gsio_in_data)() {
     uint8_t v;
+    // Any card read of port 02 clears the reply data_bit (RTL rule) — this
+    // is the fw's own self-clean after answering, see s_card_reply_bit.
+    if (s_ngs) s_card_reply_bit = 0;
     if (GS::reg_status & 0x80u) {
         uint32_t r = s_host_fifo_r;
         uint32_t w = s_host_fifo_w;
@@ -977,6 +1011,7 @@ static inline uint8_t __not_in_flash_func(gsio_in_data)() {
         if (r != w) {
             v = s_host_fifo[r & GS_HOST_FIFO_MASK];
             s_host_fifo_r = r + 1;
+            s_h2c_pops++;
             s_p02_latch = v;
             // NOTE: the RTL says a card read of #02 clears data_bit
             // unconditionally, and an earlier version of this enforced that
@@ -1025,6 +1060,7 @@ static inline uint8_t __not_in_flash_func(gsio_in_selfdata)() {
 static inline void __not_in_flash_func(gsio_out_data)(zuint8 value) {
     GS::reg_data_gs = value;
     if (s_ngs) {
+        s_card_reply_bit = 1;   // card-side data_bit: reply outstanding
         uint32_t w = s_g2h_w;
         // Overflow can only mean the host has stopped reading entirely; dropping
         // anything desynchronises the transfer either way, so keep the oldest
@@ -1501,6 +1537,7 @@ static void __not_in_flash_func(ngs_warm_reset)() {
     s_cmd_fifo_r  = s_cmd_fifo_w;
     s_host_fifo_r = s_host_fifo_w;
     gs_status_and(&GS::reg_status, ~0x80u);
+    s_card_reply_bit = 0;
     s_g2h_r       = s_g2h_w;   // must go with reg_status=0: a surviving reply
                                // queue would disagree with the cleared D7 and
                                // block every later attempt to clear it
@@ -1546,8 +1583,8 @@ static zuint8 __not_in_flash_func(ngs_cb_in)(void* ctx, zuint16 port) {
         case 0x03:
             v = gsio_in_selfdata();
             break;
-        case 0x04:  // ZXSTAT
-            v = GS::reg_status;
+        case 0x04:  // ZXSTAT — card view: reply-bit RTL rule, see above
+            v = ngs_card_status();
 #if GS_PERF_TRACE
             {
                 uint16_t pc = Z80_PC(s_cpu);
@@ -1562,8 +1599,8 @@ static zuint8 __not_in_flash_func(ngs_cb_in)(void* ctx, zuint16 port) {
             v = 0xFF;
             gs_trace_gs(TR_IN05, 0, GS::reg_status);
             break;
-        case 0x0A: v = GS::reg_status; ngs_damnport1(); break;
-        case 0x0B: v = GS::reg_status; ngs_damnport2(); break;
+        case 0x0A: v = ngs_card_status(); ngs_damnport1(); break;
+        case 0x0B: v = ngs_card_status(); ngs_damnport2(); break;
         case 0x0C: v = s_ngs_intena;  break;
         case 0x0D: v = s_ngs_intreq;  break;
         case 0x0E: v = s_ngs_tim_frq; break;
@@ -2643,8 +2680,13 @@ uint8_t GS::hostReadB3() {
         // would, and leave the flags alone.
         uint32_t r = s_g2h_r;
         __dmb();
-        if (r != s_g2h_w) { v = s_g2h_buf[r & GS_G2H_MASK]; s_g2h_r = r + 1; }
-        else              { v = reg_data_gs; }   // nothing pending: hold the latch
+        if (r != s_g2h_w) {
+            v = s_g2h_buf[r & GS_G2H_MASK];
+            s_g2h_r = r + 1;
+            s_card_reply_bit = !gs_g2h_empty();   // delivered: bit follows queue
+        } else {
+            v = reg_data_gs;   // nothing pending: hold the latch
+        }
         reg_data_gs = v;
         // D7 remains the single stored bit the firmware has always seen; it
         // just has to account for both directions now — a queued reply byte or
@@ -2688,6 +2730,10 @@ uint16_t gs_dbg_gs_pc(void);
 
 #endif  // NGS_TRACE
 
+// Rot-flush state for hostReadBB (core0-only).
+static uint32_t s_bb_rot_r  = 0;
+static uint32_t s_bb_rot_us = 0;
+
 uint8_t GS::hostReadBB() {
 #if NGS_TRACE
     if ((++gs_dbg_bb_polls & 0xFFFu) == 0) {
@@ -2698,6 +2744,33 @@ uint8_t GS::hostReadBB() {
 #endif
     GS_PERF(s_perf_h_bbr++);
     gs_host_sd_service();
+    // NeoGS stale-blast rot flush. ZP4 blasts a block into #B3 with NO
+    // command and then polls #BB until D7 clears ("card consumed my data").
+    // On real hardware a single card read of port 02 drops data_bit and the
+    // host proceeds; here a QUEUE holds D7 up until the backlog is consumed,
+    // and an idle fw dispatcher never reads the data port — the host used to
+    // be unstuck only by an accidental drain through the shared-D7 phantom
+    // path, which the reply-bit fix correctly closed (hw 2026-08-10: ZP4
+    // stalled for minutes at start, then recovered via its own timeout + the
+    // pre-command >16 flush). If the backlog has not moved for >250 ms while
+    // the host is polling status, it is rotting garbage by definition — a
+    // live FH1-style stream is consumed continuously and never trips this.
+    if (s_ngs) {
+        uint32_t pp = s_h2c_pops;
+        if (s_host_fifo_r == s_host_fifo_w) {
+            s_bb_rot_us = 0;
+        } else {
+            uint32_t now = time_us_32();
+            if (pp != s_bb_rot_r || s_bb_rot_us == 0) {
+                s_bb_rot_r = pp;
+                s_bb_rot_us = now ? now : 1;
+            } else if (now - s_bb_rot_us > 250000) {
+                s_host_fifo_r = s_host_fifo_w;
+                if (gs_hs_idle()) gs_d7_clear_recheck();
+                s_bb_rot_us = 0;
+            }
+        }
+    }
     uint8_t v = reg_status | 0x7E;
     gs_trace_host(TR_BBr, v, reg_status);
 #ifdef GS_DEBUG_TRACE
@@ -2733,9 +2806,51 @@ uint8_t GS::hostReadBB() {
 //
 // FIFO size is 512 bytes; at 37500 bytes/sec drain rate that's ~14 ms
 // buffer — enough to absorb a full SCL sector (256 B) plus a margin.
+// Pacing state for the NeoGS co-scheduling below (core0-only).
+static uint32_t s_b3_seen_r   = 0;
+static uint32_t s_b3_drain_us = 0;
+
 void GS::hostWriteB3(uint8_t data) {
     GS_PERF(s_perf_h_b3w++);
     gs_trace_host(TR_B3w, data, reg_status);
+    // NeoGS co-scheduling: while the card is ACTIVELY draining, wait for the
+    // FIFO to empty before pushing the next byte — the interface behaves like
+    // the real one-byte latch with flow control instead of byte loss, so fw
+    // 1.11's unconditional-read-then-maybe-discard receiver (main_ngs.asm
+    // LOADEFWT) and its blind latch peeks meet an EMPTY latch exactly as on
+    // hardware, and the pre-command flush/collapse below never see a live
+    // stream to destroy (FH1 blasts 14-32 KB blocks with no handshake — the
+    // per-byte "wait" on its ZX side is a screen-attribute progress bar).
+    // ADAPTIVE: if the consumer has not drained for >15 ms (longer than the
+    // fw's longest legitimate mid-stream pause, the ~5-10 ms INT sample
+    // refill), push immediately — ZP4's detect pre-fills 200+ bytes nobody
+    // reads and pays this wait at most once. Handshaked flows (NPL etc.)
+    // find the FIFO empty and never wait at all.
+    // Threshold: byte-by-byte protocols (ZP4's module upload writes one #B3
+    // byte per command round-trip) keep the backlog at 1-2 and must NEVER
+    // wait — with music playing the card pops a byte in ~ms, and waiting for
+    // it inside every OUT stalled core0 hard enough to slow the whole
+    // emulated ZX ("ZP4 тормозит", hw 2026-08-10). Only a writer running
+    // AHEAD of the card (a blast) accumulates 4+, and only blasts need the
+    // latch-like pacing.
+    if (s_ngs && s_host_fifo_w - s_host_fifo_r >= 4) {
+        uint32_t now = time_us_32();
+        uint32_t p0 = s_h2c_pops;
+        if (p0 != s_b3_seen_r) { s_b3_seen_r = p0; s_b3_drain_us = now; }
+        if (now - s_b3_drain_us <= 15000) {
+            uint32_t t0 = now;
+            while (s_host_fifo_w != s_host_fifo_r) {
+                gs_host_sd_service();   // card may be blocked on the SD mailbox
+                __dmb();
+                now = time_us_32();
+                uint32_t p = s_h2c_pops;
+                if (p != s_b3_seen_r) { s_b3_seen_r = p; s_b3_drain_us = now; }
+                else if (now - s_b3_drain_us > 15000) break;  // consumer died mid-wait
+                if (now - t0 > 30000) break;                  // hard cap, never wedge core0
+            }
+            GS_PERF(s_perf_h_spin_us += time_us_32() - t0);
+        }
+    }
     uint32_t w = s_host_fifo_w;
     uint32_t used = w - s_host_fifo_r;
     if (used >= GS_HOST_FIFO_SIZE) {
@@ -2851,6 +2966,7 @@ void GS::hostWriteBB(uint8_t data) {
     // command+data pairs and need the backlog (hw-tested).
     if (s_ngs) {
         s_g2h_r = s_g2h_w;                 // stale reply bytes cannot span commands
+        s_card_reply_bit = 0;
         uint32_t r = s_host_fifo_r, w2 = s_host_fifo_w;
         if (data == 0xF3 || data == 0xF4) {
             if (r != w2) s_host_fifo_r = w2;

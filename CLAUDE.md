@@ -575,6 +575,95 @@ deasserts it at INTA, and RETN/EI re-derive the bit from the line — the same
 delay a real chip's IFF1=0 imposes for the whole NMI handler. Only a handler
 exiting with plain RET would strand it, and that strands real hardware equally.
 
+### FH1/COMTR4GS on NeoGS (2026-08-10) — the reply-bit + write pacing; 6 failed attempts first
+
+FH1 (`FH1_GS_TZ.scl`) and COMTR4GS hung/were silent on NeoGS while fine on
+classic GS. Final fix = **HEAD + two surgical changes in GS.cpp** (everything
+else from an 8-round session was REVERTED; ZP4/NPL/NEO8 hw-regressed against
+the intermediate builds and recovered only on plain-HEAD semantics):
+
+- **`s_card_reply_bit` — the actual cure (hw-confirmed: FH1 + COMTR4GS play).**
+  fw 1.11 self-cleans after answering a command: COM38_/COM3E write the reply
+  and immediately execute a dummy `IN A,(ZXDATRD)` purely to drop their own
+  data_bit (RTL rule: any card read of port 02 clears it), so the unread
+  reply cannot poison LOAD's D7-checked stream receiver. Our shared-D7-via-
+  g2h-queue model defeated that self-clean (FH1 never reads replies), and
+  whenever the FIFO ran empty mid-stream LOAD saw D7 up, read the port, got
+  the s_p02_latch peek and STORED it as stream data at full card speed —
+  CURADR raced to ~10 MB (dump: 0x9FC080 vs ~230 KB actually sent), and
+  LOAD's UNGUARDED RAMPG[E] page-table walk (no bounds check past the
+  0-terminator, main_ngs.asm) read fw variables as page numbers — CPAGE is a
+  stable fixpoint (observed as mpag=81, then 7F) — flooding the fw's own
+  work RAM via banked page 1. The bit: set on card OUT(03), cleared by ANY
+  card IN(02) and tracked as the host drains g2h; card-visible D7
+  (`ngs_card_status`, used by ZXSTAT/#0A/#0B reads) = "host bytes queued" OR
+  this bit. The HOST keeps the raw register.
+- **Adaptive write pacing in `hostWriteB3`**: while the card is actively
+  draining (r advanced within 15 ms — longer than the fw's ~5-10 ms INT
+  sample-refill pauses), the host waits for the FIFO to EMPTY before pushing
+  the next byte. FH1 blasts 14-32 KB blocks with NO handshake (its per-byte
+  "wait" is four screen-attribute writes — a progress bar), and pacing keeps
+  the HEAD-era pre-command flush (>16) and NeoGS collapse-to-newest — which
+  ZP4/NPL depend on and which STAY — from ever seeing a live stream to
+  destroy. Consumer idle >15 ms (ZP4's detect pre-fill that nobody reads) →
+  push immediately, one ≤15 ms wait total. THRESHOLD (hw 2026-08-10): pacing
+  engages only at a backlog of ≥4 bytes — byte-by-byte protocols (ZP4's
+  upload writes one #B3 byte per command round-trip) keep the backlog at 1-2
+  and must never wait; with music playing the card pops a byte in ~ms, and
+  waiting inside every OUT stalled core0 hard enough to slow the whole
+  emulated ZX ("ZP4 тормозит"). `gs_host_sd_service()` is pumped inside the
+  wait (card may block on SD). LIVENESS = `s_h2c_pops` (a core1-side counter
+  incremented per real gsio_in_data pop), NEVER s_host_fifo_r: the overflow
+  drop-oldest also advances r from core0, and during a dead blast those
+  drops faked a live consumer — every blast byte then paid the full 15 ms
+  timeout and the rot-flush timer never expired (the second "ZP4 тормозит",
+  hw 2026-08-10).
+- **hw-refuted approaches — do NOT reinstate** (each broke ZP4 "GS not
+  found" / NPL file-scan hang / NEO8 SD errors, all recovered on HEAD):
+  removing the >16 flush and/or the collapse for NeoGS; a 64 KB h2c ring
+  (masked the real bug); an "epoch rule" dropping bytes across two command
+  boundaries (shredded FH1's cmd-6B playback stream); a card-side D0 gate on
+  per-command data marks; a full present/future model. Also: an SRAM mirror
+  of card phys 0x0000-0x3FFF allocated at GS::init FRAGMENTED the heap →
+  VIDEO::Init OOM-panic; if the perf idea returns, allocate AFTER
+  VIDEO::Init (a late-alloc hook worked) — but note the perf theory alone
+  was WRONG for this bug (12 MHz forced clock changed nothing; the GS-Z80
+  does sustain only ~15 of 20 MHz on mixer-heavy loads at sys=504, ~97% of
+  wall in the refill, which is a real but separate issue).
+- **Facts worth keeping**: fw 1.11's RAM detect writes 0xAA@page 0x7F /
+  0x55@page 0x3F and reads back (NUMPG=0x3E on 2 MB — our 1984K+64K masks
+  correctly); RAMPG = [2..0x3F, 1, 0] with the last entry = HALF page 1
+  (lower 16K only, guarded by `CP E` with NUMPG — page 1's upper half IS the
+  fw work RAM, aliased at phys 0xC000+). The D700/D800 "user vector" table
+  is the fw's OWN command set (COM20-COM6B in banked page-0 code at
+  0xC2xx-0xC9xx) — NOT user-installed (an earlier note said otherwise after
+  reading the table through the wrong MPAG page). The card stack lives at
+  CARD 0x43F8-0x4400 = PHYS 0xC3F8+ in the low-RAM dump — phys 0x43F8
+  decodes as plausible-looking garbage and cost a full analysis round.
+  fw source: `gh api repos/tslabs/neogs/contents/z80/main_rom/{main_ngs,
+  high_ngs,equ_ngs,comtab}.asm`. Diagnostics that cracked it: OpenOCD telnet
+  :50002 `mdb/mdw/mdh/mwb` live (fifo indices, reg_status, hs ring, GS-Z80
+  PC at s_cpu+0x58, PLL); `int_count` rate = effective GS clock; nm
+  addresses move EVERY rebuild; multi-variable telnet sampling is not atomic
+  (two "impossible" states were read skew); the `build:` stamp lives in
+  ESPectrum.cpp and ccache keeps it stale unless that TU rebuilds — touch it
+  before shipping a test build.
+- **Rot-flush in `hostReadBB`** (third and last piece): ZP4 blasts a block
+  into #B3 with NO command and polls #BB until D7 clears — on real hardware
+  one card read of port 02 drops data_bit; our queue held D7 up until the
+  backlog drained, and an idle fw dispatcher never reads the data port. HEAD
+  used to unstick it via the accidental shared-D7 phantom drain that the
+  reply-bit correctly closed, so ZP4 stalled minutes at start (hw: it DID
+  recover by its own timeout + the pre-command >16 flush — the live hs ring
+  showed a healthy 18/19/1B upload by the time the counters were read). Fix:
+  a backlog that has not moved for >250 ms while the host polls status is
+  rotting garbage — flush it and clear D7 via the idle-recheck. A live
+  FH1-style stream is consumed continuously and never trips this.
+- **Regression set, hw 2026-08-10, FINAL build (reply-bit + pacing ≥4 with
+  pops-liveness + rot-flush on top of HEAD): FH1 ✓ COMTR4GS ✓ NPL ✓ ZP4 ✓
+  (starts fast).** NEO8's "SD error" was never a firmware bug — it requires
+  the Pentagon 1024K machine config. Long-run speed soak still pending.
+
 ### The #B3/#BB host interface — read the RTL, it settles everything
 
 I burned three hardware round-trips guessing at this model before reading
