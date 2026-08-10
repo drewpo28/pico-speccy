@@ -1,10 +1,13 @@
 // pico-speccy — every user-visible string of the new fullscreen menu.
 //
-// Deliberately NOT in messages.h. Those macros are pre-rendered *rows* carrying
+// Deliberately NOT in messages.h. Its macros were pre-rendered *rows* carrying
 // layout markup (\t, trailing ">", "[X]" markers, {HK_*} tokens expanded by
-// expandHotkeys, \x01 dim prefixes) and several are concatenated across #if variants,
-// so they cannot be reused as bare labels — and keeping them apart means the classic
-// menu and its texts can be deleted in one step.
+// expandHotkeys, \x01 dim prefixes) and several were concatenated across #if
+// variants, so they could not be reused as bare labels — keeping them apart is
+// what let the classic menu's texts be deleted in one step once the cascade went.
+// What is left of messages.h is dialog/error/status text (osdCenteredMsg,
+// msgDialog, showTextDialog) plus the titles the file browsers take as arguments;
+// bare menu labels belong here.
 //
 // English only (the Spanish strings and Config::lang are gone).
 

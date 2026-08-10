@@ -148,7 +148,6 @@ uint8_t Config::render = 0;
 uint8_t Config::persist_slot = 1;
 
 bool     Config::TABasfire1 = false;
-bool     Config::StartMsg = true;
 signed char Config::aud_volume = 0;
 uint8_t  Config::audio_boost = 0;
 uint8_t  Config::hdmi_video_mode = Config::VM_640x480_60;
@@ -1000,7 +999,6 @@ void Config::load() {
         if (Config::crt_filter > 6) Config::crt_filter = 0;
         nvs_get_u8("render", Config::render, sts);
         nvs_get_b("TABasfire1", Config::TABasfire1, sts);
-        nvs_get_b("StartMsg", Config::StartMsg, sts);
         nvs_get_sc("AudVolume", Config::aud_volume, sts);
         nvs_get_u8("AudBoost", Config::audio_boost, sts);
         // Try new format first, fallback to old bool-based format for migration
@@ -1340,7 +1338,6 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"crt_filter",Config::crt_filter);
     nvs_set_u8(buf,"render",Config::render);
     nvs_set_str(buf,"TABasfire1", TABasfire1 ? "true" : "false");
-    nvs_set_str(buf,"StartMsg", StartMsg ? "true" : "false");
     nvs_set_sc(buf,"AudVolume", ESPectrum::aud_volume);
     nvs_set_u8(buf,"AudBoost", Config::audio_boost);
     nvs_set_u8(buf,"hdmi_vmode",Config::hdmi_video_mode);

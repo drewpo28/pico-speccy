@@ -257,8 +257,6 @@ public:
 
     static bool TABasfire1; 
 
-    static bool StartMsg;    
-
     static bool betadisk;       // TR-DOS interface enabled
     static bool trdosFastMode;
     static bool trdosAutoBoot;  // inject a "boot" file into TRD/SCL images that lack one

@@ -360,66 +360,6 @@ int ESPectrum::ESPtestvar = 0;
 int ESPectrum::ESPtestvar1 = 0;
 int ESPectrum::ESPtestvar2 = 0;
 
-void ShowStartMsg() {
-
-  fabgl::VirtualKeyItem Nextkey;
-
-  VIDEO::vga.clear(zxColor(7, 0));
-
-  OSD::drawOSD(false);
-
-  VIDEO::vga.fillRect(40,
-                      32, 240, 50, zxColor(0, 0));
-
-  // Decode Logo in EBF8 format
-  // Logo pixels are stored as ZX Spectrum palette indices (0-15)
-  uint8_t *logo = (uint8_t *)ESPectrum_logo;
-  int pos_x = 66;
-  int pos_y = 43;
-  int logo_w = (logo[5] << 8) + logo[4]; // Get Width
-  int logo_h = (logo[7] << 8) + logo[6]; // Get Height
-  logo += 8;                             // Skip header
-  for (int i = 0; i < logo_h; i++)
-    for (int n = 0; n < logo_w; n++) {
-      uint8_t zxIdx = logo[n + (i * logo_w)];
-      VIDEO::vga.dotFast(pos_x + n, pos_y + i, zxColor(zxIdx & 7, zxIdx >> 3));
-    }
-
-  OSD::osdAt(7, 1);
-  VIDEO::vga.setTextColor(zxColor(7, 1), zxColor(1, 0));
-  VIDEO::vga.print(STARTUP_MSG);
-
-  VIDEO::vga.setTextColor(zxColor(16, 0), zxColor(1, 0));
-  OSD::osdAt(7, 25);
-  VIDEO::vga.print("ESP");
-  OSD::osdAt(9, 1);
-  VIDEO::vga.print("ESP");
-  OSD::osdAt(13, 13);
-  VIDEO::vga.print("ESP");
-
-  OSD::osdAt(17, 4);
-  VIDEO::vga.setTextColor(zxColor(3, 1), zxColor(1, 0));
-  VIDEO::vga.print("https://patreon.com/ESPectrum");
-
-  char msg[38];
-
-  for (int i = 20; i >= 0; i--) {
-    OSD::osdAt(19, 1);
-    sprintf(msg,
-            "This message will close in %02d seconds",
-            i);
-    VIDEO::vga.setTextColor(zxColor(7, 0), zxColor(1, 0));
-    VIDEO::vga.print(msg);
-    sleep_ms(1);
-  }
-
-  VIDEO::vga.clear(zxColor(7, 0));
-
-  // Disable StartMsg
-  Config::StartMsg = false;
-  Config::save();
-}
-
 /**
 void showMemInfo(const char* caption = "ZX-ESPectrum-IDF") {
 
@@ -1011,8 +951,6 @@ void ESPectrum::setup() {
   VIDEO::Reset();
   Debug::log("setup: VIDEO::Reset done");
   Debug::log2SD("setup: VIDEO::Reset done");
-
-  // if (Config::StartMsg) ShowStartMsg(); // Show welcome message
 
   Debug::log("setup: AUDIO section begin, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: AUDIO section begin, freeHeap=%u", (unsigned)getFreeHeap());
@@ -2567,7 +2505,6 @@ void ESPectrum::loop() {
         // startup screen turns out to be standard mode by now, skip the guard.)
         const bool ds80 = profi_ds80_active;
         if (ds80) VIDEO::profi_ds80_osd_active = true;
-        //OSD::osdCenteredMsg(OSD_PROFI_LOADING, LEVEL_WARN, 2500);
         if (ds80) {
           VIDEO::profi_ds80_osd_active = false;
           if (profi_ds80_active) VIDEO::clearDS80Padding();
