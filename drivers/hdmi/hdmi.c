@@ -70,7 +70,18 @@ static alignas(4096) uint32_t conv_color[1240];
 // Only 1024 words: the two line buffers live in page A's tail, outside the 4 KB
 // window the PIO can address. With the CRT filter off this is an exact copy of
 // page A's palette half, so output is bit-identical to the single-page design.
-static alignas(4096) uint32_t conv_color_b[1024];
+//
+// Lives in SCRATCH_Y, and that is worth 7328 bytes of main RAM, not 4096: the
+// PIO address converter reconstructs the read address as (reg << 12) | offset
+// (see the comment at pio_set_y below), so the table MUST start on a 4 KB
+// boundary — in .bss that alignment cost a *fill* of 0xca0 on top of the array
+// itself. SCRATCH_Y's ORIGIN (0x20081000) satisfies it for free, the 4 KB bank
+// is an exact fit, and it has been dead space since the core0 stack moved to
+// the top of main RAM (rp2350-memmap.ld). Bonus: the DMA palette fetches now
+// come out of a non-striped bank, off the SRAM0-7 stripe both cores hammer.
+// The alignas stays as a tripwire — if this ever moves back to a general
+// region, the linker still has to honour the PIO's requirement.
+static alignas(4096) __scratch_y("hdmi_palette_b") uint32_t conv_color_b[1024];
 // Snapshot of the standard palette taken at DS80-enable time. Used to restore
 // conv_color back to the doubled-pixel mode when DS80 turns off.
 // pico-speccy: lazily heap-allocated (~5 KB) — kept out of .bss while DS80 is off

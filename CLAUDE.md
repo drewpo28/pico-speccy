@@ -740,6 +740,46 @@ lateness (find what blocks core1/IRQs); sound cut + `und>0`/qmin=0 = core0
 producer starvation (flash ops, IRQ-off regions); picture drop with clean
 counters = link/TMDS-level issue (SOFT_CLK/CLAMP territory), not timing.
 
+## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
+
+Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):
+`.bss` 89068 → 106808, `.data` (mostly `.time_critical` RAM-resident code)
+103080 → 112152, plus 8224 off the heap ceiling because the core0 stack moved.
+The ledger, for when the next feature has to justify its bytes:
+
+- **the core0 stack is the single biggest line and it is deliberate** —
+  `PICO_STACK_SIZE=0x2000` (CMakeLists.txt) and `.stack_dummy … > RAM` with
+  `__HeapLimit = __StackBottom` (rp2350-memmap.ld). pico-spec keeps a 4 KB stack
+  in SCRATCH_Y, costing the heap nothing. Ours is 8 KB at the top of main RAM
+  because the new UI call chains + the ZiFi RX-IRQ spill overflowed the 4 KB bank
+  (hw-caught 2026-07-26, double fault with the F5 browser open). Do not undo this
+  without re-testing that path.
+- the `nm::` UI is ~6.8 KB of `.bss` that the classic cascade never had
+  (UiNav 3580 = `nm::S`, UiActions 1401, UiStage 748, UiBrowser 438, …); the old
+  menu handed back ~1.6 KB.
+- NeoGS is ~8.7 KB, almost all RAM-resident code: GS.cpp `.time_critical`
+  3597 → 9327 (`ngs_cb_out`, `gs_cb_in`, `ngs_map_half16`, `ngs_rebuild_map`,
+  `zxDma*`), NgsSd.cpp 0 → 2932, NgsMp3 395. **Helix itself costs zero static
+  RAM** — every picomp3lib object has `.bss`/`.data` of 0, and all ~56.5 KB of
+  decoder state (33280 B `Mp3State`, PSRAM-first; 24576 B Helix arena,
+  heap-first) is allocated in `NgsMp3::init()`, called from `GS::init` only
+  under `if (s_ngs)`. Off/classic GS pays nothing but NgsMp3.cpp's own 395 B.
+- TinyUSB 0.21 costs +2.4 KB over 0.18 (`_usbh_epbuf`, `_hidh_epbuf`, `hid_snap`).
+- Video.cpp `.time_critical.video` 16568 → 18896.
+
+**`alignas(N)` in `.bss` costs the fill as well as the object.** `conv_color_b`
+(4 KB, must be 4 KB-aligned because the PIO address converter rebuilds the read
+address as `(reg << 12) | offset`) was dragging a `*fill*` of 0xca0 behind it —
+7328 bytes for a 4096-byte table. It now lives in **SCRATCH_Y**
+(`__scratch_y("hdmi_palette_b")`, hdmi.c): ORIGIN 0x20081000 satisfies the
+alignment for free, the bank is an exact fit, and it had been dead space since
+the stack moved out of it. Main RAM 213184 → 205856 (−7328) on every HDMI build,
++4096 of flash (`.scratch_y` is `AT > FLASH`, so it is copied by crt0 and stays
+zero-initialised); SOFTTV/TFT builds do not compile hdmi.c and are unchanged.
+After this there are 162 bytes of alignment fill left in `.bss`+`.data` combined
+— nothing more to reclaim there. SCRATCH_Y is now full; SCRATCH_X has ~760 B.
+NOT hw-tested.
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the
