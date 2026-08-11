@@ -2809,6 +2809,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // 128K RAM"). The cart ROM in page0 is preserved: romInUse is gated by !ia below,
   // so recoverPage0() keeps it. Require A7=1 for ALF so the loose #7FFD decode
   // (which ignores A7) can't catch the A7=0 port region used by ALF peripherals.
+  // The decode is deliberately the loose 128K/Pentagon one (A15=0 & A1=0),
+  // i.e. exactly what the paging latch's clock gate does on those machines.
+  // It means `OUT (n),A` with a small A pages the machine — ExTracker 3.07's
+  // device probe at 0x6FAA/0x6FDE (`LD A,B / OUT (0x88),A`) drives #0188 and
+  // does just that. That is honest Pentagon behaviour, not a bug here; see
+  // the extracker-7ffd-loose-decode note before "fixing" it with A14.
   if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
       (!Z80Ops::isALF || (address & 0x0080))) { // 8002 !-> 7FFD
     ++Ports::port7ffd_cnt;
@@ -2944,6 +2950,22 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         if (VIDEO::mode16col_enabled) VIDEO::mode16colUpdatePlanes();
       }
     }
+#if PAGE_TRACE
+    // Every 7FFD write with the state it LANDS IN. D4 (ROM select) is the one
+    // that matters here: TR-DOS software that EI/HALTs needs ROM 1's
+    // self-contained 0x0038 handler, and a write that fails to make romU
+    // follow rom14 hands it the 128K ROM instead — whose handler trampolines
+    // through a RAM stub at 0x5B00 the guest is entitled to have overwritten.
+    // "BLOCKED" means pagingLock swallowed the write whole. Bounded so a
+    // screen-flip demo hammering 7FFD cannot flood the UART.
+    { static uint16_t pgw = 0;
+      if (pgw < 300) { pgw++;
+        Debug::log("[7FFD] w=%02X %s bank=%u rom14=%u romU=%u lock=%u dos=%u pc=%04X",
+                   data, blocked ? "BLOCKED" : "ok", (unsigned)MemESP::bankLatch,
+                   (unsigned)MemESP::romLatch, (unsigned)MemESP::romInUse,
+                   (unsigned)MemESP::pagingLock, (unsigned)ESPectrum::trdos,
+                   Z80::getRegPC()); } }
+#endif
   }
 }
 

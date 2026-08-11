@@ -44,6 +44,7 @@ option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" OFF)
 option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
+option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
 option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" OFF)
 option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
@@ -351,6 +352,17 @@ if (FDD_PORT_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE FDD_PORT_TRACE=1)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE FDD_PORT_TRACE=0)
+endif ()
+
+# ROM-selection tracing (Ports.cpp `#if PAGE_TRACE`, Z80_JLS.cpp check_trdos +
+# interrupt). Answers "which ROM was mapped when the guest took its interrupt"
+# — see the ExTracker 3.07 crash: the tracker EI/HALTs during its GS detect and
+# needs ROM 1 (48 BASIC) at 0x0038, because it has already overwritten the 128K
+# ROM's own 0x5B00 trampoline.
+if (PAGE_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PAGE_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PAGE_TRACE=0)
 endif ()
 
 # RTC (MC146818 Mr Gluk TimeKeeper) port tracing — logs every IN/OUT with low

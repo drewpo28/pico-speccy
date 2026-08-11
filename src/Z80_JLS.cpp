@@ -996,6 +996,13 @@ IRAM_ATTR void Z80::check_trdos() {
                                        ++dosMapCnt);
                     }
 #endif
+#if PAGE_TRACE
+                    { static uint16_t n = 0;
+                      if (n < 200) { n++;
+                        Debug::log("[DOS IN ] pc=%04X romU->%u rom14=%u bank=%u",
+                                   REG_PC, (unsigned)dosBank, (unsigned)MemESP::romLatch,
+                                   (unsigned)MemESP::bankLatch); } }
+#endif
                     MemESP::romInUse = dosBank;
                     MemESP::ramCurrent[0] = MemESP::rom[dosBank].direct();
                     ESPectrum::trdos = true;
@@ -1036,6 +1043,18 @@ IRAM_ATTR void Z80::check_trdos() {
                     MemESP::romInUse = MemESP::romLatch ? 3 : 2;
                 else
                     MemESP::romInUse = MemESP::romLatch;
+#if PAGE_TRACE
+                // The exit re-derives the ROM from the LATCH, so whatever the
+                // TR-DOS ROM last wrote to 7FFD decides what the guest gets
+                // back. Its own 128K helpers write 0xC6/0xC7 (bit4 = 0) and are
+                // supposed to restore 0x10 — if one of them doesn't, the guest
+                // resumes on the 128K ROM instead of 48 BASIC.
+                { static uint16_t n = 0;
+                  if (n < 200) { n++;
+                    Debug::log("[DOS OUT] pc=%04X romU->%u rom14=%u bank=%u",
+                               REG_PC, (unsigned)MemESP::romInUse,
+                               (unsigned)MemESP::romLatch, (unsigned)MemESP::bankLatch); } }
+#endif
 
                 MemESP::recoverPage0();
                 ESPectrum::trdos = false;
@@ -1104,6 +1123,9 @@ void Z80::interrupt(void) {
     regR++;
 
     ffIFF1 = ffIFF2 = false;
+#if PAGE_TRACE
+    const uint16_t pgIntPC = REG_PC;   // interrupted address, for the alarm below
+#endif
     push(REG_PC); // el push añadirá 6 t-estados (+contended si toca)
     if (modeINT == IntMode::IM2) {
 
@@ -1119,6 +1141,32 @@ void Z80::interrupt(void) {
         // IM0 executes the bus byte: RST20H → 0x0020 for the serial mouse.
         REG_PC = (modeINT == IntMode::IM0 && Ports::serialMouseIntAsserted())
                      ? 0x0020 : 0x0038;
+#if PAGE_TRACE
+        // Alarm: an IM1 interrupt entering the 128K BASIC ROM at 0x0038. That
+        // handler is NOT self-contained — it pushes 0x0048/0x5B00/0x0038 and
+        // jumps to a stub the ROM copies into RAM at 0x5B00 during its own
+        // boot. TR-DOS software runs with ROM 1 (48 BASIC, self-contained
+        // handler) and is entitled to use 0x5B00 as ordinary memory, so if we
+        // hand it ROM 0 here the guest dies: NOP sled through 0x5B00 → RST 38
+        // off the 0xFF at 0x5C00 → the stack marches down until something wild
+        // happens. Exactly the ExTracker 3.07 hang (it EI/HALTs while waiting
+        // for the General Sound to answer its detect command 0x23).
+        if (REG_PC == 0x0038 && !Z80Ops::is48 && MemESP::romInUse == 0 &&
+            !MemESP::page0ram && !MemESP::newSRAM) {
+            const uint8_t* p5 = MemESP::ramCurrent[1];
+            if (p5 && p5[0x1B00] == 0x00) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    Debug::log("[PAGE] IM1 -> ROM0 with DEAD 5B00 stub: intPC=%04X "
+                               "rom14=%u lock=%u dos=%u bank=%u",
+                               (unsigned)pgIntPC, (unsigned)MemESP::romLatch,
+                               (unsigned)MemESP::pagingLock, (unsigned)ESPectrum::trdos,
+                               (unsigned)MemESP::bankLatch);
+                }
+            }
+        }
+#endif
     }
     REG_WZ = REG_PC;
 
