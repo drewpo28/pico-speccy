@@ -120,6 +120,9 @@ static const Option opt_audio_driver[] = {
 #if defined(VGA_HDMI)
     { "HDMI",     4 },
 #endif
+#ifdef PCM5122_I2S_DATA
+    { "PCM5122",  5 },              // ZERO2's I2S DAC board (I2C-configured)
+#endif
 };
 static const Option opt_video_mode[] = {      // values are the VM_* enum
     { "640x480 @60", 0 },
