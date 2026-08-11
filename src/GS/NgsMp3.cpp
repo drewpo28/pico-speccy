@@ -116,6 +116,123 @@ static uint8_t  s_sniff[MP3_SNIFF_LEN];
 static volatile uint32_t s_sniff_len = 0;
 static volatile bool     s_sniff_ready = false;
 
+// ============================================================================
+// SCI_BASS and SM_DIFF — the VS1011's post-decoder tone stage
+//
+// Neither has anything to do with MP3 decoding: on the real card the decoder
+// feeds a small DSP block on its way to the DAC, and Helix stops at the PCM —
+// so these have to be ours. NPL drives both (key 9 "Treble/Bass" writes
+// SCI_BASS, key 8 "Surround" toggles SM_DIFF) and reads SCI_BASS back for its
+// display, so the registers themselves always worked; they just did nothing to
+// the audio.
+//
+// SCI_BASS layout (VS1011e):
+//   15:12  ST_AMPLITUDE  treble, signed -8..+7, 1.5 dB per step (0 = off)
+//   11:8   ST_FREQLIMIT  treble corner, 1 kHz per step (1..15)
+//    7:4   SB_AMPLITUDE  bass boost, 0..15 dB (0 = off)
+//    3:0   SB_FREQLIMIT  bass corner, 10 Hz per step (2..15)
+//
+// One first-order shelf per band per channel (Zolzer's direct forms), designed
+// once per register write at the fixed 37500 Hz output rate. VLSI's own bass
+// enhancer is a dynamic psychoacoustic thing rather than a static shelf, so
+// this matches it in character and direction, not sample for sample. Signal
+// order follows the chip: decoder -> tone -> SCI_VOL -> DAC.
+// ============================================================================
+#define TONE_Q 24            // coefficient fraction bits
+#define TONE_S 8             // extra fraction bits carried in the filter state
+
+struct Shelf {
+    int32_t b0, b1, a1;      // Q24 coefficients
+    int32_t x1, y1;          // history, samples in Q8 (headroom for +15 dB)
+};
+static Shelf s_sh_bass[2], s_sh_treb[2];       // [0] = left, [1] = right
+static bool  s_bass_on = false, s_treb_on = false;      // core0
+// Written by core1 in the port handler, applied by core0 in service(): the
+// coefficient set is six words and must not be recomputed under the reader.
+static volatile uint16_t s_bass_reg   = 0;
+static volatile bool     s_tone_dirty = false;
+static volatile bool     s_sm_diff    = false;  // SCI_MODE b0: left inverted
+
+static inline int32_t sat16(int32_t v) {
+    return v > 32767 ? 32767 : (v < -32768 ? -32768 : v);
+}
+
+// y[n] = b0*x[n] + b1*x[n-1] - a1*y[n-1], everything Q8 in and out. int64 is
+// not a luxury here: a +15 dB shelf sits on a pole at ~0.99, so both the
+// coefficient precision and the state precision are what keep its DC gain
+// where it was designed.
+static inline int32_t shelf_run(Shelf& f, int32_t x) {
+    int64_t acc = (int64_t)f.b0 * x + (int64_t)f.b1 * f.x1 - (int64_t)f.a1 * f.y1;
+    int32_t y = (int32_t)((acc + (1 << (TONE_Q - 1))) >> TONE_Q);
+    f.x1 = x;
+    f.y1 = y;
+    return y;
+}
+
+static inline int32_t tone_q24(float v) {
+    return (int32_t)(v * 16777216.0f + (v >= 0.0f ? 0.5f : -0.5f));
+}
+
+// First-order shelving filter, low (high=false) or high (high=true). Cut is
+// the reciprocal of boost, hence the two branches.
+static void shelf_design(Shelf& f, float fc, float gain_db, bool high) {
+    const float K  = tanf(3.14159265f * fc / 37500.0f);
+    const float V0 = powf(10.0f, fabsf(gain_db) / 20.0f);
+    float b0, b1, a1;
+    if (gain_db >= 0.0f) {
+        const float d = 1.0f + K;
+        b0 = (high ? (V0 + K)        : (1.0f + V0 * K)) / d;
+        b1 = (high ? (K - V0)        : (V0 * K - 1.0f)) / d;
+        a1 = (K - 1.0f) / d;
+    } else {
+        const float d = high ? (V0 + K) : (1.0f + V0 * K);
+        b0 = (1.0f + K) / d;
+        b1 = (K - 1.0f) / d;
+        a1 = (high ? (K - V0) : (V0 * K - 1.0f)) / d;
+    }
+    f.b0 = tone_q24(b0);
+    f.b1 = tone_q24(b1);
+    f.a1 = tone_q24(a1);
+}
+
+static void tone_reset() {
+    for (int c = 0; c < 2; c++) {
+        s_sh_bass[c].x1 = s_sh_bass[c].y1 = 0;
+        s_sh_treb[c].x1 = s_sh_treb[c].y1 = 0;
+    }
+}
+
+// core0: turn the latest SCI_BASS write into coefficients. A band that was
+// already running keeps its state (a shelf is stable across a coefficient
+// nudge, and NPL sends one per key repeat); a band coming back from bypass
+// starts clean, since its history is whatever the stream looked like when it
+// was last switched off.
+static void tone_update(uint16_t reg) {
+    int st_amp = (reg >> 12) & 0x0F;
+    if (st_amp > 7) st_amp -= 16;                       // signed 4-bit
+    const int  st_freq = (reg >> 8) & 0x0F;
+    const int  sb_amp  = (reg >> 4) & 0x0F;
+    const int  sb_freq = reg & 0x0F;
+    const bool bass_on = sb_amp != 0;
+    const bool treb_on = st_amp != 0;
+    if (bass_on) {
+        const float fc = (sb_freq < 2 ? 2 : sb_freq) * 10.0f;
+        for (int c = 0; c < 2; c++) {
+            if (!s_bass_on) s_sh_bass[c].x1 = s_sh_bass[c].y1 = 0;
+            shelf_design(s_sh_bass[c], fc, (float)sb_amp, false);
+        }
+    }
+    if (treb_on) {
+        const float fc = (st_freq < 1 ? 1 : st_freq) * 1000.0f;
+        for (int c = 0; c < 2; c++) {
+            if (!s_treb_on) s_sh_treb[c].x1 = s_sh_treb[c].y1 = 0;
+            shelf_design(s_sh_treb[c], fc, st_amp * 1.5f, true);
+        }
+    }
+    s_bass_on = bass_on;
+    s_treb_on = treb_on;
+}
+
 static uint16_t vol_gain_q15(uint8_t att) {
     if (att >= 0xFE) return 0;                      // analog powerdown / mute
     // 10^(-att*0.5/20), then halved: the card sums DAC+MP3 into one output
@@ -168,6 +285,11 @@ bool NgsMp3::init() {
     s_rs_phase = 0;
     s_rs_prev_l = s_rs_prev_r = 0;
     s_gain_l = s_gain_r = 16384;
+    s_bass_on = s_treb_on = false;      // SCI_BASS powers up at 0 (both bypassed)
+    s_bass_reg = 0;
+    s_tone_dirty = false;
+    s_sm_diff = false;
+    tone_reset();
     s_decoded_samples = 0;
     s_hdat1 = s_hdat0 = 0;
     s_reset_pending = false;
@@ -188,6 +310,11 @@ void NgsMp3::deinit() {
 }
 
 void NgsMp3::reset() {
+    // A chip reset zeroes the SCI file (GS.cpp's ngs_mp3_reset does that for the
+    // register images), so the tone stage and SM_DIFF go with it.
+    s_bass_reg      = 0;
+    s_tone_dirty    = true;
+    s_sm_diff       = false;
     s_reset_pending = true;
 }
 
@@ -202,6 +329,11 @@ void NgsMp3::sciWrite(uint8_t addr, uint16_t v) {
     switch (addr) {
         case 0x00:                                   // SCI_MODE: b2 = soft reset
             if (v & 0x0004) s_reset_pending = true;
+            s_sm_diff = (v & 0x0001) != 0;           // SM_DIFF — NPL's "Surround"
+            break;
+        case 0x02:                                   // SCI_BASS: bass/treble stage
+            s_bass_reg   = v;
+            s_tone_dirty = true;                     // core0 designs the filters
             break;
         case 0x04:                                   // SCI_DECODE_TIME write resets it
             s_decoded_samples = 0;
@@ -235,6 +367,10 @@ static void resample_frame(const short* pcm, int samples, int channels, uint32_t
         s_rs_phase = 0;
     }
     const uint32_t step = (uint32_t)(((uint64_t)hz << 16) / 37500u);
+    // Snapshot the tone stage once per frame: core1 can flip these mid-frame,
+    // and a band appearing between two samples would run on stale history.
+    const bool bass = s_bass_on, treb = s_treb_on, tone = bass || treb;
+    const bool diff = s_sm_diff;
     // Source stream = prev pair (index -1 in Q16 phase space) + this frame.
     while (true) {
         uint32_t idx = s_rs_phase >> 16;
@@ -260,8 +396,24 @@ static void resample_frame(const short* pcm, int samples, int channels, uint32_t
         uint32_t frac = s_rs_phase & 0xFFFF;
         int32_t l = a_l + (((int32_t)(b_l - a_l) * (int32_t)frac) >> 16);
         int32_t r = a_r + (((int32_t)(b_r - a_r) * (int32_t)frac) >> 16);
+        if (tone) {
+            int32_t ql = l << TONE_S, qr = r << TONE_S;
+            if (bass) {
+                ql = shelf_run(s_sh_bass[0], ql);
+                qr = shelf_run(s_sh_bass[1], qr);
+            }
+            if (treb) {
+                ql = shelf_run(s_sh_treb[0], ql);
+                qr = shelf_run(s_sh_treb[1], qr);
+            }
+            // The tone stage clips at full scale, as it does on the chip — and
+            // it has to happen before the gain multiply, which assumes int16.
+            l = sat16((ql + (1 << (TONE_S - 1))) >> TONE_S);
+            r = sat16((qr + (1 << (TONE_S - 1))) >> TONE_S);
+        }
         l = ((int32_t)l * s_gain_l) >> 15;
         r = ((int32_t)r * s_gain_r) >> 15;
+        if (diff) l = -l;                   // SM_DIFF: left channel inverted
         if (!out_push((int16_t)l, (int16_t)r)) break;   // ring full — drop rest
         s_rs_phase += step;
     }
@@ -385,6 +537,11 @@ static void mp3_health_tick() {
 void NgsMp3::service() {
     if (!s_st) return;
     mp3_health_tick();
+    if (s_tone_dirty) {                     // SCI_BASS changed (core1)
+        s_tone_dirty = false;
+        __dmb();
+        tone_update(s_bass_reg);
+    }
     if (s_reset_pending) {
         // Flush the pipeline: consumer-side drains for both rings (in-ring we
         // consume, out-ring the mixer skips while the flag is up), then restart.
@@ -394,6 +551,7 @@ void NgsMp3::service() {
         s_rs_phase = 0;
         s_rs_prev_l = s_rs_prev_r = 0;
         s_decoded_samples = 0;
+        tone_reset();                       // stale shelf history is a thump
         s_hdat1 = s_hdat0 = 0;              // "nothing playing" until a frame lands
         // Helix has no reset entry point and needs none: flushing our buffers
         // is enough. The next frames come back MAINDATA_UNDERFLOW while its bit

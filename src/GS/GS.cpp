@@ -1486,8 +1486,8 @@ static void __not_in_flash_func(ngs_mp3_mc_send)(uint8_t v) {
             } else {
                 s_mp3_reg[s_mp3_sci[1]] = (uint16_t)((s_mp3_reg[s_mp3_sci[1]] & 0xFF00) | v);
                 if (s_mp3_sci[1] == 4) s_mp3_md_bytes = 0;  // DECODE_TIME write resets it
-                // Completed register write → the decoder (MODE soft reset,
-                // DECODE_TIME clear, VOL attenuation).
+                // Completed register write → the decoder (MODE soft reset and
+                // SM_DIFF, BASS tone stage, DECODE_TIME clear, VOL attenuation).
                 NgsMp3::sciWrite(s_mp3_sci[1], s_mp3_reg[s_mp3_sci[1]]);
                 s_mp3_rx = 0xFF;
             }
