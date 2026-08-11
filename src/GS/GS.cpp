@@ -537,6 +537,10 @@ static volatile uint32_t s_h2c_pops = 0;
 static uint8_t s_cmd_fifo[GS_CMD_FIFO_SIZE];
 static volatile uint32_t s_cmd_fifo_w = 0;
 static volatile uint32_t s_cmd_fifo_r = 0;
+// Card-side activity counters for the stale-command flush in hostReadBB: reads
+// of the command port (IN 01) and acknowledges (port 05, read or write).
+static volatile uint32_t s_cmd_reads = 0;
+static volatile uint32_t s_cmd_acks  = 0;
 
 // DAC snapshot ring buffer. Producer: step() pushes at each INT (37500 Hz
 // avg, jittery during core1 stalls). Consumer: pcm_call_inner timer IRQ at
@@ -982,6 +986,7 @@ static inline uint8_t __not_in_flash_func(ngs_card_status)() {
 
 static inline uint8_t __not_in_flash_func(gsio_in_cmd)() {
     uint8_t v;
+    s_cmd_reads++;
     uint32_t r = s_cmd_fifo_r;
     uint32_t w = s_cmd_fifo_w;
     __dmb();
@@ -1106,7 +1111,16 @@ void gs_dbg_npl_vars(char* out, int cap) {
 
 static inline void __not_in_flash_func(gsio_clr_cbit)() {
     gs_hs('K', 0, GS::reg_status);
+    s_cmd_acks++;
     gs_status_and(&GS::reg_status, ~0x01u);
+    // Re-raising D0 for a command still sitting unread in the FIFO is an
+    // emulator crutch, not hardware — see the stale-command flush in
+    // hostReadBB, which is what bounds it. It is load-bearing: our card drains
+    // a burst far more slowly than a real 20 MHz one, so commands hardware
+    // would have collapsed into its single latch pile up here (FH1's cmd/data
+    // pairs, hw-tested). Nothing here may become conditional on how the card
+    // acknowledged: an ack with nothing read is perfectly legal and both
+    // FH1 and NEO8 do it (hw 2026-08-11, twice).
     if (s_cmd_fifo_r != s_cmd_fifo_w) {
         gs_status_or(&GS::reg_status, 0x01u);
     }
@@ -1180,6 +1194,8 @@ static zuint8 __not_in_flash_func(gs_cb_in)(void* ctx, zuint16 port) {
             break;
         case 0x04: {
             v = GS::reg_status;
+            s_zxstat_polls++;   // liveness for the stale-command flush; the
+                                // NeoGS twin of this counts in ngs_card_status
             uint16_t pc = Z80_PC(s_cpu);
             GS_PERF(s_perf_p04_total++);
             GS_PERF(if (pc == s_perf_p04_pc) s_perf_p04_spin++);
@@ -2751,6 +2767,12 @@ static uint32_t s_bb_rot_us    = 0;
 // a card inside COM_FAT/LDMOD polls zero times no matter how long it takes.
 #define GS_ROT_MIN_POLLS 20000u
 
+// Baselines captured at each host command write, for the stale-command flush
+// below. Written on core0, read on core0; the counters they sample are core1's.
+static uint32_t s_cmd_w_reads = 0;
+static uint32_t s_cmd_w_acks  = 0;
+static uint32_t s_cmd_w_polls = 0;
+
 uint8_t GS::hostReadBB() {
 #if NGS_TRACE
     if ((++gs_dbg_bb_polls & 0xFFFu) == 0) {
@@ -2761,6 +2783,50 @@ uint8_t GS::hostReadBB() {
 #endif
     GS_PERF(s_perf_h_bbr++);
     gs_host_sd_service();
+    // Stale-COMMAND flush — the twin of the rot flush below, on the D0 side,
+    // and gated on the same card-side liveness signal for the same reason.
+    //
+    // D0 is a plain flip-flop in the RTL: set by the host's OUT #BB, cleared by
+    // ANY card access to port 05 (zxbus.v ~356 command_bit, ports.v
+    // port05_wrrd), and `IN (01)` touches neither — a card may acknowledge a
+    // command it never read, and a spare "clear whatever is there" OUT (05) is
+    // legal and harmless. gsio_clr_cbit re-raises D0 while the FIFO still holds
+    // an unread command, which is an emulator crutch for our slow card; for a
+    // card that never reads commands it makes the byte immortal and D0 can
+    // never fall. Z-Player 5's card-side clock measurer is exactly that card:
+    // its uploaded routine at 5B00 waits for D0 on the STATUS port (`IN A,(04)
+    // / RRCA / JR NC`), runs an IM2 interrupt-counting loop (its `CLK: MHz`
+    // readout), answers with OUT (03) and clears the bit with OUT (05) — it
+    // never touches port 01, having no use for the command byte, only for the
+    // fact that one arrived. The ZX then spun in its own `IN A,(#BB) / RRCA /
+    // JR C` wait at 84F1 (the author's WCC) while the card sat in its
+    // reply-send wait at 5B59: status=81, command=FC, both CPUs stuck (hw
+    // 2026-08-11 — "jumping to the RET at #84F6 makes it start" skips WCC).
+    //
+    // Conditions, all three load-bearing: the card ACKNOWLEDGED since this
+    // command was written (so hardware's flip-flop is down and only the crutch
+    // is holding ours up — without this we would clear a bit a real card keeps
+    // set, and every host that reads D0 as "command accepted" would run ahead);
+    // it has NOT read the command port since (it is not dispatching this one);
+    // and it has spun through GS_ROT_MIN_POLLS status polls meanwhile, which is
+    // what separates "not going to read it" from "busy" — a dispatcher takes a
+    // command within a handful of polls, a card inside SD/FAT work polls zero
+    // times however long it takes. Nothing is destroyed: dropping the unread
+    // FIFO entries just falls back to reg_command, which IS the hardware latch,
+    // so a card that does read port 01 afterwards still gets the newest byte.
+    //
+    // Do NOT move this into gsio_clr_cbit as a test on how the card acked:
+    // unpaired acknowledges are legal and occur in normal FH1/NEO8 operation,
+    // and making the ack path conditional on them broke both, twice (hw
+    // 2026-08-11: eating one queued command per unpaired ack; then suppressing
+    // the re-raise and collapsing the queue on one).
+    if ((reg_status & 0x01u) && s_cmd_fifo_r != s_cmd_fifo_w &&
+        s_cmd_acks != s_cmd_w_acks && s_cmd_reads == s_cmd_w_reads &&
+        (uint32_t)(s_zxstat_polls - s_cmd_w_polls) >= GS_ROT_MIN_POLLS) {
+        s_cmd_fifo_r = s_cmd_fifo_w;
+        gs_status_and(&reg_status, ~0x01u);
+        gs_hs('S', reg_command, reg_status);
+    }
     // NeoGS stale-blast rot flush. ZP4 blasts a block into #B3 with NO
     // command and then polls #BB until D7 clears ("card consumed my data").
     // On real hardware a single card read of port 02 drops data_bit and the
@@ -3029,6 +3095,13 @@ void GS::hostWriteBB(uint8_t data) {
     __dmb();
     s_cmd_fifo_w = w + 1;
     reg_command = data;  // mirror to scalar for any direct-readers
+                         // (this scalar is the hardware's command LATCH: what
+                         // gsio_in_cmd falls back to once the FIFO is drained)
+    // Baseline for the stale-command flush in hostReadBB — the window it
+    // measures starts at the command it is judging, not at some earlier one.
+    s_cmd_w_reads = s_cmd_reads;
+    s_cmd_w_acks  = s_cmd_acks;
+    s_cmd_w_polls = s_zxstat_polls;
     gs_hs('C', data, reg_status);
 
     __dmb();

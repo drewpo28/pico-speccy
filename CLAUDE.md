@@ -707,6 +707,67 @@ General lesson for this interface: **the two CPUs are not co-scheduled, so no
 wall-clock timeout can classify a pending byte.** Only what the card is doing
 can. Reach for a card-side liveness signal before a timer.
 
+### The D0 re-raise crutch needs a stale-command flush, NOT a smarter ack (ZP5, 2026-08-11)
+
+Z-Player 5 on NeoGS hung right at start; jumping to the `RET` at ZX `#84F6`
+(skipping the D0 wait) let it run. **hw-confirmed 2026-08-11** — and **two fixes
+in the acknowledge path were hw-refuted first** (each fixed ZP5 and broke FH1 +
+NEO8): read the dead ends below before touching `gsio_clr_cbit`, which came out
+of this byte-for-byte what it always was.
+
+The dump reads the hang out end to end. ZX at `PC=84F1`:
+`OUT (#BB),A / IN A,(#BB) / RRCA / JR C,-5 / RET` — send command, wait for the
+command bit to fall (the author calls it `WCC`). Card at `PC=5B59`, inside a
+routine ZP5 uploaded and started (`PUT_RES`): entry `5B00` is
+`IN A,(04) / RRCA / JR NC` — it waits for **D0 on the STATUS port**, runs an IM2
+interrupt-counting loop (ZP5 measuring the card clock for its `CLK: MHz`
+readout), then `OUT (03)` the low byte, `OUT (05)` to clear the command bit, and
+waits at `5B59` for the host to take it. **It never executes `IN A,(01)`** — it
+has no use for the command byte, only for the fact that one arrived. Dump:
+`status=81 command=FC`, D0 still set with the card long past its `OUT (05)`.
+
+The RTL settles the semantics (`zxbus.v` ~356, `ports.v` `port05_wrrd`, via the
+tslabs/neogs mirror): `command_bit` is a plain flip-flop — **set** by the ZX
+write to #BB, **cleared** by any card access to port 05 (read OR write) — and
+`IN (01)` touches neither. So a card may acknowledge a command it never read,
+and a spare "clear whatever is there" `OUT (05)` is legal and harmless.
+
+Our command FIFO re-raises D0 whenever it still holds an unread command. That is
+an **emulator crutch**, not hardware: our card drains a burst far more slowly
+than a real 20 MHz one, so commands hardware would have collapsed into its single
+latch pile up here, and FH1's cmd/data pairs need them delivered. For a card that
+never reads commands the crutch makes the byte immortal.
+
+Fix: leave the crutch alone and **bound** it with a stale-command flush in
+`hostReadBB`, the exact twin of the rot flush beside it. It fires only when all
+three hold: the card has **acknowledged** since this command was written (so
+hardware's flip-flop is down and only the crutch holds ours up — without this we
+would clear a bit a real card keeps set, and any host reading D0 as "command
+accepted" runs ahead); it has **not read** the command port since; and it has
+spun through `GS_ROT_MIN_POLLS` status polls meanwhile. That last one is what
+separates "not going to read it" from "busy": a dispatcher takes a command within
+a handful of polls, a card inside SD/FAT work polls zero times however long it
+takes. Nothing is destroyed — dropping the unread FIFO entries falls back to
+`reg_command`, which IS the hardware latch, so a card that reads port 01
+afterwards still gets the newest byte. Classic GS's `IN (04)` now counts polls
+too (the NeoGS twin counts in `ngs_card_status`), so the flush covers both.
+
+**Both dead ends made the ACK path conditional, and both broke FH1 (no sound) and
+NEO8 (would not start) while fixing ZP5:**
+
+1. A separate ACK pointer with D0 = `a != w`: one `OUT (05)` consumes one queued
+   command and discards it if still unread. Each unpaired acknowledge EATS a
+   queued command.
+2. A "did the card read port 01 since its last ack" flag: paired → old
+   behaviour, unpaired → clear D0 and collapse the queue to its newest byte.
+   Still destructive, and it stalls dispatch of a legitimately queued command.
+
+The lesson: **unpaired acknowledges are normal traffic here**, not a signature of
+anything, and at the moment of the ack the two cases are indistinguishable — one
+unread command queued, the card just acked. Only what the card does NEXT tells
+them apart, which is why the decision belongs in the host's poll loop with a
+liveness gate, and why a deviation may be suppressed but never made destructive.
+
 ### The #B3/#BB host interface — read the RTL, it settles everything
 
 I burned three hardware round-trips guessing at this model before reading
