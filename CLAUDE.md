@@ -659,10 +659,53 @@ the intermediate builds and recovered only on plain-HEAD semantics):
   a backlog that has not moved for >250 ms while the host polls status is
   rotting garbage — flush it and clear D7 via the idle-recheck. A live
   FH1-style stream is consumed continuously and never trips this.
+  **"Rotting by definition" was wrong, and time alone can NEVER establish it
+  (NPL regression, 2026-08-11 — see the section below).**
 - **Regression set, hw 2026-08-10, FINAL build (reply-bit + pacing ≥4 with
   pops-liveness + rot-flush on top of HEAD): FH1 ✓ COMTR4GS ✓ NPL ✓ ZP4 ✓
   (starts fast).** NEO8's "SD error" was never a firmware bug — it requires
   the Pentagon 1024K machine config. Long-run speed soak still pending.
+
+### The rot-flush needs a BUSY test, not a timer (NPL track switch, 2026-08-11)
+
+Symptom: NPL hangs while switching tracks — **the music keeps playing and the
+keyboard is dead**, which is the signature of the ZX half deadlocked in a
+handshake wait while the card's INT-driven mixer carries on. Bisected by the
+user to `9f40cdd` (the FH1/COMTR4GS commit); `36f3ce0` is clean. **The fix
+below is hw-confirmed (NPL track switching works, 2026-08-11)**; FH1 /
+COMTR4GS / ZP4 not re-run against it yet.
+
+The cause is the rot-flush's premise, not its mechanics. **The card is
+routinely busy for far longer than 250 ms with a perfectly live host byte
+queued**, so "the backlog has not moved for 250 ms while the host polls" does
+not mean garbage:
+
+- `play_on_ngs.a80` `OPROS` falls through to `CONROM` → `CALL Z,LD_MOD`
+  between commands, and `LD_MOD` loads a whole module off SD via
+  `COM_FAT`/`LDMOD` — hundreds of ms, often seconds. **It polls ZXSTAT exactly
+  zero times while doing it** (the only ZXSTAT sites on the card side are
+  `WDN`/`WDY`/`OPROS` and `DAT2MP3`).
+- Meanwhile `NAMELNG` (`face_play.a80`, issued on `B_NEW_FILE`, i.e. precisely
+  at a track change) has already written its function byte with
+  `OUT_GSDAT 0x11` **BEFORE** `OUT_GSCOM 0x1F` and is spinning in `WC` on #BB
+  for the whole load.
+- The flush destroyed that parameter. The card returned, took the command and
+  executed `OPROS.L3`'s **unconditional** `IN A,(ZXDATRD)` — no `WDY`, because
+  the byte is supposed to be sitting in the latch — got a stale `s_p02_latch`
+  peek, and dispatched a wrong function or none (`JR NC,OPROS`). The 256 name
+  bytes were never sent and the host waited in `INI_E`'s `WN` forever.
+
+Fix: the flush now also requires the card to be **idle-spinning** rather than
+merely slow — `s_zxstat_polls` (bumped in `ngs_card_status`, i.e. on every card
+read of #04/#0A/#0B) must have advanced by `GS_ROT_MIN_POLLS` (20000 ≈ 27 ms of
+tight polling at 20 MHz, against zero during SD/FAT work) since the backlog
+last moved — plus no command pending (D0 clear: a pending command means the
+card still owes a dispatch and the backlog is its parameters) and no reply
+mid-flight (`gs_g2h_empty()`). ZP4's idle-dispatcher blast still trips it.
+
+General lesson for this interface: **the two CPUs are not co-scheduled, so no
+wall-clock timeout can classify a pending byte.** Only what the card is doing
+can. Reach for a card-side liveness signal before a timer.
 
 ### The #B3/#BB host interface — read the RTL, it settles everything
 

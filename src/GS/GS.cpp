@@ -963,7 +963,17 @@ static void gs_d7_clear_recheck() {
 // this bit; D0 and every pop path stay RAW — gating them broke ZP4/NPL/NEO8.
 static volatile uint8_t s_card_reply_bit = 0;
 
+// Card-side status polls (ZXSTAT / #0A / #0B). The ONLY honest way to tell a
+// ROTTING host byte from one the card will legitimately come back for is
+// whether the card is sitting in a poll loop or off doing real work: a card
+// spinning on ZXSTAT is answering nothing and will never drain the byte, while
+// a card inside a multi-hundred-millisecond SD/FAT operation polls exactly
+// zero times and WILL read the byte the moment it returns. See the rot-flush
+// in hostReadBB, which is gated on this (NPL track-switch regression).
+static volatile uint32_t s_zxstat_polls = 0;
+
 static inline uint8_t __not_in_flash_func(ngs_card_status)() {
+    s_zxstat_polls++;
     uint8_t st = GS::reg_status;
     if ((st & 0x80) && s_host_fifo_r == s_host_fifo_w && !s_card_reply_bit)
         st &= ~0x80u;
@@ -2731,8 +2741,15 @@ uint16_t gs_dbg_gs_pc(void);
 #endif  // NGS_TRACE
 
 // Rot-flush state for hostReadBB (core0-only).
-static uint32_t s_bb_rot_r  = 0;
-static uint32_t s_bb_rot_us = 0;
+static uint32_t s_bb_rot_r     = 0;
+static uint32_t s_bb_rot_polls = 0;
+static uint32_t s_bb_rot_us    = 0;
+
+// How many card-side status polls prove "the card is idle-spinning, not busy".
+// A GS-Z80 at 20 MHz runs NPL's `IN A,(ZXSTAT)/RLA/JR C` (~27 T) about 740k
+// times a second, so this is ~27 ms of pure polling inside a >=250 ms window;
+// a card inside COM_FAT/LDMOD polls zero times no matter how long it takes.
+#define GS_ROT_MIN_POLLS 20000u
 
 uint8_t GS::hostReadBB() {
 #if NGS_TRACE
@@ -2755,6 +2772,28 @@ uint8_t GS::hostReadBB() {
     // pre-command >16 flush). If the backlog has not moved for >250 ms while
     // the host is polling status, it is rotting garbage by definition — a
     // live FH1-style stream is consumed continuously and never trips this.
+    //
+    // "By definition" was WRONG, and time alone can never establish it: the
+    // card is regularly busy for far longer than 250 ms with a perfectly live
+    // host byte queued (NPL regression, 2026-08-11 — hangs on a track switch,
+    // music playing, keyboard dead). NPL's dispatcher (play_on_ngs.a80 OPROS)
+    // reaches `CALL Z,LD_MOD` between commands, and LD_MOD loads a whole
+    // module off SD through COM_FAT/LDMOD — hundreds of milliseconds, often
+    // seconds. Meanwhile the ZX side of NAMELNG has already written its
+    // function byte (`OUT_GSDAT 0x11`) BEFORE the command (`OUT_GSCOM 0x1F`)
+    // and is spinning in WC on #BB for the whole load. The flush destroyed
+    // that parameter; the card came back, took the command and executed the
+    // unconditional `IN A,(ZXDATRD)` at OPROS.L3 (no WDY — the byte is meant
+    // to be sitting in the latch), read a stale s_p02_latch peek instead and
+    // dispatched a wrong function or none at all, so the 256 name bytes were
+    // never sent and the host waited in INI_E's WN forever. The card's own
+    // INT-driven mixer keeps the music playing throughout, which is exactly
+    // what the bug looks like from the outside.
+    //
+    // So the flush additionally requires the CARD to be idle-spinning on
+    // status (GS_ROT_MIN_POLLS) rather than merely slow, no command pending
+    // (a pending command means the card still owes us a dispatch and the
+    // backlog is its parameters), and no reply mid-flight.
     if (s_ngs) {
         uint32_t pp = s_h2c_pops;
         if (s_host_fifo_r == s_host_fifo_w) {
@@ -2762,9 +2801,13 @@ uint8_t GS::hostReadBB() {
         } else {
             uint32_t now = time_us_32();
             if (pp != s_bb_rot_r || s_bb_rot_us == 0) {
-                s_bb_rot_r = pp;
-                s_bb_rot_us = now ? now : 1;
-            } else if (now - s_bb_rot_us > 250000) {
+                s_bb_rot_r     = pp;
+                s_bb_rot_polls = s_zxstat_polls;
+                s_bb_rot_us    = now ? now : 1;
+            } else if (now - s_bb_rot_us > 250000 &&
+                       !(reg_status & 0x01u) &&
+                       gs_g2h_empty() &&
+                       (uint32_t)(s_zxstat_polls - s_bb_rot_polls) >= GS_ROT_MIN_POLLS) {
                 s_host_fifo_r = s_host_fifo_w;
                 if (gs_hs_idle()) gs_d7_clear_recheck();
                 s_bb_rot_us = 0;
