@@ -13,6 +13,7 @@
 //PIO параметры
 static uint offs_prg0 = 0;
 static uint offs_prg1 = 0;
+static bool hdmi_progs_loaded = false;   // offs_prg0/1 are meaningful only then
 
 //SM
 static int SM_video = -1;
@@ -808,12 +809,30 @@ static inline bool hdmi_init() {
 
 
     //удаление программ из соответствующих PIO
-    pio_remove_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI, offs_prg1);
-    pio_remove_program(PIO_VIDEO, &program_PIO_HDMI, offs_prg0);
+    // Only if we ever loaded them: offs_prg0/1 start at 0, so on the FIRST call
+    // this used to free instruction slots 0..9 and 0..7 of a PIO we do not own
+    // yet — silently, since pio_remove_program only asserts in debug builds.
+    if (hdmi_progs_loaded) {
+        pio_remove_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI, offs_prg1);
+        pio_remove_program(PIO_VIDEO, &program_PIO_HDMI, offs_prg0);
+        hdmi_progs_loaded = false;
+    }
 
-
+    // Both programs must fit, or pio_add_program() hard_asserts on core1 and the
+    // firmware comes up with no video and no message (that was the m1 "нет видео"
+    // bug — see PIO_VIDEO in hdmi.h). Say so first; the panic is still the right
+    // outcome, there is nothing to fall back to.
+    if (!pio_can_add_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI)) {
+        printf("hdmi_init: PIO%d has no room for the %d-instruction address converter\n",
+               (int)PIO_NUM(PIO_VIDEO_ADDR), (int)pio_program_conv_addr_HDMI.length);
+    }
     offs_prg1 = pio_add_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI);
+    if (!pio_can_add_program(PIO_VIDEO, &program_PIO_HDMI)) {
+        printf("hdmi_init: PIO%d has no room for the %d-instruction TMDS program\n",
+               (int)PIO_NUM(PIO_VIDEO), (int)program_PIO_HDMI.length);
+    }
     offs_prg0 = pio_add_program(PIO_VIDEO, &program_PIO_HDMI);
+    hdmi_progs_loaded = true;
     pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color >> 12));
     pio_set_y(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color_b >> 12));
 
@@ -946,8 +965,10 @@ static inline bool hdmi_init() {
     channel_config_set_write_increment(&cfg_dma, false);
 
 
-    uint dreq = DREQ_PIO1_TX0 + SM_conv;
-    if (PIO_VIDEO_ADDR == pio0) dreq = DREQ_PIO0_TX0 + SM_conv;
+    // pio_get_dreq() instead of a hand-rolled pio0/pio1 pick: PIO_VIDEO* is pio2
+    // now (see hdmi.h) and the old two-way test would have silently produced a
+    // pio1 DREQ for it.
+    uint dreq = pio_get_dreq(PIO_VIDEO_ADDR, SM_conv, true);
 
     channel_config_set_dreq(&cfg_dma, dreq);
 
@@ -1011,8 +1032,7 @@ static inline bool hdmi_init() {
     channel_config_set_read_increment(&cfg_dma, true);
     channel_config_set_write_increment(&cfg_dma, false);
 
-    dreq = DREQ_PIO1_TX0 + SM_video;
-    if (PIO_VIDEO == pio0) dreq = DREQ_PIO0_TX0 + SM_video;
+    dreq = pio_get_dreq(PIO_VIDEO, SM_video, true);
 
     channel_config_set_dreq(&cfg_dma, dreq);
 
@@ -1035,8 +1055,7 @@ static inline bool hdmi_init() {
     channel_config_set_read_increment(&cfg_dma, false);
     channel_config_set_write_increment(&cfg_dma, false);
 
-    dreq = DREQ_PIO1_RX0 + SM_conv;
-    if (PIO_VIDEO_ADDR == pio0) dreq = DREQ_PIO0_RX0 + SM_conv;
+    dreq = pio_get_dreq(PIO_VIDEO_ADDR, SM_conv, false);   // RX: converter -> DMA
 
     channel_config_set_dreq(&cfg_dma, dreq);
 
@@ -1117,9 +1136,14 @@ void hdmi_poll_reinit() {
 //
 // DC balance is the load-bearing part, and the two cases are NOT interchangeable:
 //
-//  * left == right — the second character is the opposite-disparity variant of the
-//    first: flip TMDS data bits D0-7 AND the inversion flag D9 (keep D8). The old
-//    mask (0x0003ffffffffffff) flipped only D0-7, producing characters outside the
+//  * left == right — both characters come from tmds_balanced_pair(), which picks
+//    legal TMDS words whose one-counts sum to 10, so the pair leaves NO running
+//    disparity behind. See HDMI_TMDS_BALANCED_PAIR below for why that matters and
+//    what it replaced.
+//    The pairing it replaced, kept under -DHDMI_TMDS_BALANCED_PAIR=0: the second
+//    character is the opposite-disparity variant of the first — flip TMDS data
+//    bits D0-7 AND the inversion flag D9 (keep D8). An even older mask
+//    (0x0003ffffffffffff) flipped only D0-7, producing characters outside the
 //    legal TMDS code set: DVI sinks decode them anyway (±1 LSB colour error), but
 //    strict HDMI-mode receivers classify every character and reject the video
 //    period — black screen with working Data Island audio. Serialized layout:
@@ -1162,9 +1186,11 @@ static int hdmi_pair_residual(uint8_t l, uint8_t r) {
 //           the pair repeats across a run of same-coloured pixels (the wrap can
 //           be the worst spot) — how long the CDR coasts without an edge
 //
-// Measured over all 256 values of the identical-colour pair this driver emits
-// (A = tmds_encoder(v), B = A ^ 0x2FF — the left == right case in
-// hdmi_write_pair): mean swing 4.33 / worst 9, mean run 5.55 / worst 11. The worst
+// Measured over all 256 values of the identical-colour pair this driver USED to
+// emit (A = tmds_encoder(v), B = A ^ 0x2FF — the left == right case in
+// hdmi_write_pair, now HDMI_TMDS_BALANCED_PAIR's #else branch; the numbers below
+// belong to THAT pair construction, and the grille's left != right path still
+// uses it): mean swing 4.33 / worst 9, mean run 5.55 / worst 11. The worst
 // values are 0x01/0xFE (9, 11) followed by 0x00/0xFF (8, 10) — i.e. black and full
 // brightness, which is most of a ZX screen, and exactly what a uniform fill
 // repeats for a whole line.
@@ -1230,16 +1256,80 @@ static inline uint32_t hdmi_tmds_level888(uint32_t c) {
 static inline uint32_t hdmi_tmds_level888(uint32_t c) { return c; }
 #endif
 
+// ============================================================
+// DC-balanced pair for the identical-colour case (HDMI_TMDS_BALANCED_PAIR)
+//
+// Ported from pico-spec 1.2.30, where it is hw-confirmed on m1p1 + Samsung
+// S27AG300N (it is the fix for yellow horizontal streaks over a white screen and
+// a coloured column at the left edge; a more tolerant NEC panel never showed
+// either). It replaces the "second character = first with D0-7 and D9 flipped"
+// pairing below, which is NEVER DC balanced: those two characters' one-counts add
+// up to 9 or 11, never 10, so every doubled pixel leaves ±2 of running disparity
+// behind — +2 for the 128 byte values the encoder XOR-codes, -2 for the 128 it
+// XNOR-codes. Uniform content drifts by ±640 per 320-byte line, and because the
+// drift is content-dependent it steps from line to line; a receiver with a slow
+// DC-restore loop walks its slicing threshold off and the channel with the least
+// margin starts making bit errors.
+//
+// Fix: pick the two characters as legal TMDS words whose one-counts add up to
+// exactly 10. A single byte value cannot always do that (its two legal
+// characters add up to 9 or 11), so the SECOND character may carry v±1 —
+// verified over all 256 values that ±1 always suffices, and one LSB on every
+// other pixel of a doubled pair is invisible. The first character always carries
+// v exactly.
+//
+// Second benefit, specific to this encoder: tmds_encoder() emits {D9=1, D8=0,
+// q_m} for the 128 XNOR-coded (bright) values. That IS a legal code word — but
+// it is the legal word for the neighbouring level: a receiver inverts the data
+// bits because D9 is set, and the XNOR chain then reproduces v with bit 0
+// flipped. So the old FIRST character carries a systematic 1-LSB error on half
+// the palette (measured, 128/256 values). tmds_qm/tmds_rep below build the
+// characters from the value itself, and the first one always decodes to exactly
+// v.
+//
+// Scope: the IDENTICAL-colour case only, which is every palette slot whenever
+// the CRT aperture grille is off (the default). With the grille on, left != right
+// and the pair falls through to the per-channel complement rule below, which has
+// its own balancing story (hdmi_balanced_near / hdmi_crt_dim_lut) — pico-spec has
+// no grille and therefore no such path.
+//
+// NOT ported with it: pico-spec's HDMI_TMDS_LEVEL_SNAP. That one was tried here
+// and removed for breaking the nm:: UI on hardware — see the LEVEL_CLAMP comment
+// above. This is a different mechanism (it never moves the FIRST character's
+// value, and the second moves by at most one code), and CLAMP still runs upstream
+// in hdmi_emit_slot, so the value arriving here is already conditioned.
+//
+// Build with -DHDMI_TMDS_BALANCED_PAIR=0 to A/B against the old pairing.
+#ifndef HDMI_TMDS_BALANCED_PAIR
+#define HDMI_TMDS_BALANCED_PAIR 1
+#endif
+
+#if HDMI_TMDS_BALANCED_PAIR
+#include "tmds_pair.h"
+#endif // HDMI_TMDS_BALANCED_PAIR
+
 static void hdmi_write_pair(uint64_t *cc64, uint8_t slot, uint32_t left888, uint32_t right888) {
+    if (((left888 ^ right888) & 0x00ffffff) == 0) {
+#if HDMI_TMDS_BALANCED_PAIR
+        uint16_t rA, rB, gA, gB, bA, bB;
+        tmds_balanced_pair((left888 >> 16) & 0xff, &rA, &rB);
+        tmds_balanced_pair((left888 >>  8) & 0xff, &gA, &gB);
+        tmds_balanced_pair( left888        & 0xff, &bA, &bB);
+        cc64[slot * 2 + 0] = get_ser_diff_data(rA, gA, bA);
+        cc64[slot * 2 + 1] = get_ser_diff_data(rB, gB, bB);
+#else
+        cc64[slot * 2 + 0] = get_ser_diff_data(tmds_encoder((left888 >> 16) & 0xff),
+                                               tmds_encoder((left888 >>  8) & 0xff),
+                                               tmds_encoder( left888        & 0xff));
+        cc64[slot * 2 + 1] = cc64[slot * 2 + 0] ^ 0x3F03FFFFFFFFFFFFull;
+#endif
+        return;
+    }
+
     const uint R_l = tmds_encoder((left888 >> 16) & 0xff);
     const uint G_l = tmds_encoder((left888 >>  8) & 0xff);
     const uint B_l = tmds_encoder( left888        & 0xff);
     cc64[slot * 2 + 0] = get_ser_diff_data(R_l, G_l, B_l);
-
-    if (((left888 ^ right888) & 0x00ffffff) == 0) {
-        cc64[slot * 2 + 1] = cc64[slot * 2 + 0] ^ 0x3F03FFFFFFFFFFFFull;
-        return;
-    }
 
     const uint R_r = tmds_encoder((right888 >> 16) & 0xff);
     const uint G_r = tmds_encoder((right888 >>  8) & 0xff);

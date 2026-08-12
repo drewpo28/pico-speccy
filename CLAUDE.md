@@ -873,6 +873,76 @@ always clear, and has to be — see the OPN core section.)
 - The whole thing is gated on `Config::turbosound` (Audio → TurboSound). With it
   off, a TSFM demo still hangs — same as real hardware without the card.
 
+## HDMI on MURM1: "no video at all" — PIO0 instruction memory (2026-08-12)
+
+**hw-confirmed 2026-08-12 on BOTH boards: m1p2 (the broken one) now has a picture,
+PICO_DV (the regression check — it moved to pio2 as well) still works.** m1
+(Murmulator 1 + Pico 2) showed no HDMI picture from v1.0.1 on while the firmware
+itself ran fine; pico-spec 1.2.30 on the same board works. Cause was found by
+counting PIO instructions, without hardware:
+
+- MURM1 is the ONLY board whose SPI PSRAM runs through PIO, and it sits on
+  **pio0** (`psram_spi.c`; pio1 only under SOFTTV): `spi_psram` 9 + `spi_psram_32`
+  9, or 10 + 10 when the >83 MHz "fudge" variants are picked. `init_psram()` runs
+  long before video.
+- HDMI was on pio0 too and needs 18 (address converter 8 + TMDS out 10). pico-spec
+  fits at exactly **32/32** because its converter is 4 instructions; pico-speccy's
+  is 8 since the two-page CRT palette (`8d43092`, hence "broken since v1.0.1"),
+  so **36 > 32** and `pio_add_program` hard_asserts.
+- Why it looks like a working firmware with a dead screen: `graphics_init()` runs
+  on **core1**, and core0 waits for it only in SOFTTV builds. core1 dies, core0
+  keeps emulating.
+- Fix: HDMI moved to **pio2** (`PIO_VIDEO`/`PIO_VIDEO_ADDR` in hdmi.h). pio2 is
+  free on every board here — pio0 = PSRAM/VGA/SOFTTV/ST7789, pio1 = PS/2 keyboard,
+  NESPAD, I2S audio, PICO_DV's SD — and always exists (RP2350-only firmware).
+  Budget after the move: 14 free on pio0, 14 on pio2.
+- Two latent bugs fixed with it: the three DMA DREQs were hand-picked with
+  `if (PIO_VIDEO == pio0) ... else DREQ_PIO1_*`, which silently yields a **pio1**
+  DREQ for anything else — now `pio_get_dreq()`; and the FIRST `hdmi_init()` call
+  ran `pio_remove_program(..., offs=0)` with `offs_prg0/1` still 0, freeing
+  instruction slots it never owned (release builds do not assert) — now gated on
+  `hdmi_progs_loaded`. A `pio_can_add_program()` check + `printf` now names the
+  overflow instead of dying silently on core1.
+- **Rule: pico-spec's HDMI lives at 32/32 with no headroom.** Any instruction
+  added to the converter or the TMDS program breaks m1 there, and would have
+  broken it here too before the move.
+
+## TMDS pair: the identical-colour pair was never DC balanced (2026-08-12)
+
+**hw-confirmed 2026-08-12 on PICO_DV and m1p2** (picture clean on both, no visible
+colour shift from the second character's ±1 LSB). Ported from pico-spec 1.2.30 (`HDMI_TMDS_BALANCED_PAIR`,
+hw-confirmed there on m1p1 + Samsung S27AG300N — it is the fix for yellow
+horizontal streaks over a white screen and a coloured left-edge column; a
+tolerant NEC panel never showed either).
+
+Every framebuffer byte is sent as TWO TMDS characters (hardware pixel doubling).
+The pair used to be "character, character with D0-7 and D9 flipped", whose
+one-counts add up to 9 or 11 — **never 10** — so every doubled pixel left ±2 of
+running disparity behind, ±640 per 320-byte line, content-dependent and therefore
+stepping from line to line. Now both characters are legal words whose one-counts
+sum to exactly 10; the second may carry v±1 (verified: ±1 always suffices, and one
+LSB on every other pixel of a doubled pair is invisible).
+
+- Second, unrelated win: the old FIRST character decoded to v with bit 0 flipped
+  for the 128 XNOR-coded values — `tmds_encoder()` emits `{D9=1, D8=0, q_m}`,
+  which is legal but is the legal word for the neighbouring level. The new first
+  character always decodes to exactly v.
+- **Scope is the identical-colour case only** — i.e. every palette slot while the
+  CRT aperture grille is off (the default). With the grille on, left != right and
+  the pair still uses the per-channel complement rule and its own balancing
+  (`hdmi_balanced_near`/`hdmi_crt_dim_lut`); pico-spec has no grille and no such
+  path.
+- `HDMI_TMDS_LEVEL_SNAP` is still NOT ported — it broke the nm:: UI on hardware
+  (see the LEVEL_CLAMP comment in hdmi.c). This is a different mechanism and CLAMP
+  still runs upstream in `hdmi_emit_slot`.
+- The construction lives in **`drivers/hdmi/tmds_pair.h`** so the host validator
+  builds against the shipped code, not a copy:
+  `gcc -O2 -Wall -Idrivers/hdmi -o /tmp/t tools/hdmi_tmds_pair_test.c && /tmp/t`.
+  **Re-run it after any change there** — these properties are invisible in a
+  picture until a marginal receiver breaks on them. Measured over all 256 values:
+  old pair 256/256 unbalanced, mean run 5.55 / worst 11; new pair all balanced,
+  mean run 4.64 / worst 9 (clamped 0x08..0xF6: worst swing 7, worst run 8).
+
 ## HDMI audio instability ("звук или картинка срывается") — session 2026-08-09
 
 **ROOT CAUSE + FIX both hw-confirmed 2026-08-09: the line ISR had

@@ -9,8 +9,24 @@ extern "C" {
 
 #include "hardware/pio.h"
 
-#define PIO_VIDEO pio0
-#define PIO_VIDEO_ADDR pio0
+// HDMI lives on pio2 — deliberately, and it must not move back to pio0.
+//
+// A PIO holds 32 instructions. HDMI needs 18 of them (address converter 8 +
+// TMDS output 10), and on MURM1 pio0 is already half full when video comes up:
+// it is the only board whose SPI PSRAM runs through PIO (init_psram(), called
+// well before graphics_init()), and that costs 18-20 instructions (spi_psram 9
+// or its fudge variant 10, plus spi_psram_32 9/10). 18 + 18 > 32, so
+// pio_add_program() hard_asserts — on core1, inside graphics_init(), which core0
+// does not wait for outside SOFTTV builds. The firmware then runs perfectly with
+// no video at all, which is exactly what m1 showed from v1.0.1 on (the converter
+// grew 4 -> 8 instructions with the two-page CRT palette).
+//
+// pio2 exists on every RP2350 (this firmware is RP2350-only) and is unused by
+// everything else here: pio0 = PSRAM / VGA / SOFTTV / ST7789, pio1 = PS/2
+// keyboard, NESPAD, I2S audio, PICO_DV's SD. That leaves 14 free instructions on
+// both pio0 and pio2 instead of a -4 overflow.
+#define PIO_VIDEO pio2
+#define PIO_VIDEO_ADDR pio2
 #define VIDEO_DMA_IRQ (DMA_IRQ_0)
 
 #ifndef HDMI_BASE_PIN
