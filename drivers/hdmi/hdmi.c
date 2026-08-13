@@ -1660,8 +1660,20 @@ void hdmi_set_profi_ds80_mode(bool active,
 
 void graphics_init_hdmi() {
     // PIO и DMA
-    SM_video = pio_claim_unused_sm(PIO_VIDEO, true);
-    SM_conv = pio_claim_unused_sm(PIO_VIDEO_ADDR, true);
+    // Name the PIO before dying: this runs on core1, which core0 does not wait
+    // for outside SOFTTV builds, so an exhausted PIO shows up only as a reboot
+    // loop ending in the SDK's bare "No PIO state machines are available"
+    // (z0p2 2026-08-13, when PIO-USB and HDMI both wanted pio2 — see PIO_VIDEO
+    // in hdmi.h). Claim non-fatally first, report, then let the fatal claim run:
+    // there is nothing to fall back to, but at least the message says which PIO.
+    int sm = pio_claim_unused_sm(PIO_VIDEO, false);
+    if (sm < 0)
+        printf("graphics_init_hdmi: PIO%d has no free state machine\n", (int)PIO_NUM(PIO_VIDEO));
+    SM_video = sm >= 0 ? sm : pio_claim_unused_sm(PIO_VIDEO, true);
+    sm = pio_claim_unused_sm(PIO_VIDEO_ADDR, false);
+    if (sm < 0)
+        printf("graphics_init_hdmi: PIO%d has no free state machine\n", (int)PIO_NUM(PIO_VIDEO_ADDR));
+    SM_conv = sm >= 0 ? sm : pio_claim_unused_sm(PIO_VIDEO_ADDR, true);
     dma_chan_ctrl = dma_claim_unused_channel(true);
     dma_chan = dma_claim_unused_channel(true);
     dma_chan_pal_conv_ctrl = dma_claim_unused_channel(true);
