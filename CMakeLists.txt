@@ -25,7 +25,13 @@ option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
 option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
 option(PICO_DV "Pimoroni Pico DV Demo Base + Pi Pico 2" OFF)
 option(ZERO2 "Waveshare RP2350-PiZero" OFF)
-option(ZERO2_PIO_USB "ZERO2: add a USB host on the second Type-C (J2, PIO-USB GP28/GP29)" ON)
+# OFF by default and shipped as a SEPARATE z0p2 firmware ("-PIOUSB" in the file name):
+# Pico-PIO-USB costs 17.7 KB of SRAM that cannot be reclaimed at runtime — 11.0 KB of
+# .time_critical code (the bit-banged host has to run from RAM) plus 6.7 KB of .bss,
+# mostly its 32-entry endpoint pool — which is nearly the whole 20 KB by which z0p2's
+# free heap trailed DVp2's (measured from the map files, 2026-08-13). Boards that do
+# not use the second Type-C as a host should not pay it, so the default build does not.
+option(ZERO2_PIO_USB "ZERO2: add a USB host on the second Type-C (J2, PIO-USB GP28/GP29) — costs ~18 KB SRAM" OFF)
 option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 
 # HDMI signal-integrity knobs (drivers/hdmi/hdmi.c). Both ON is the combination
@@ -237,9 +243,11 @@ add_executable(${PROJECT_NAME} ${SRC})
 
 # PICOSPECCY_ZERO2_PIO_USB_HOST_V1: swap TinyUSB's native RP2 HCD for the PIO one. Root hub 1 == the PIO port
 # (hcd_pio_usb.c maps rhport N -> PIO root N-1); the native controller has no HCD in
-# this build at all. PIO2 is the only free PIO on ZERO2 (pio0 = video, pio1 = PS/2
-# keyboard + I2S/WAV) and Pico-PIO-USB needs a whole one (3 SMs, 32 instructions)
-# plus one DMA channel, which main.cpp picks at runtime.
+# this build at all. Pico-PIO-USB needs a WHOLE PIO (3 SMs, 32 instructions) plus one
+# DMA channel, which main.cpp picks at runtime; it takes pio2, and ZERO2_PIO_USB_HOST
+# is therefore also what pushes HDMI back to pio0 (see PIO_VIDEO in drivers/hdmi/hdmi.h
+# — with both on pio2 the firmware rebooted forever on a core1 PIO panic). pio1 is the
+# PS/2 keyboard + I2S/WAV either way.
 if(ZERO2 AND ZERO2_PIO_USB)
     # Both HCDs live in the image: src/usb_hcd_native_wrap.c and src/usb_hcd_pio_wrap.c
     # (picked up by the src/*.c glob) compile hcd_rp2040.c / hcd_pio_usb.c with their
@@ -943,35 +951,61 @@ ELSE()
     )
 ENDIF()
 
+# DISPLAY_TAG is the same choice in one word, for the compact name below.
 IF(TFT)
     target_link_libraries(${PROJECT_NAME} PRIVATE st7789)
     target_compile_definitions(${PROJECT_NAME} PRIVATE TFT)
     IF(ILI9341)
         SET(BUILD_NAME "${BUILD_NAME}-ILI9341")
+        SET(DISPLAY_TAG "ILI9341")
         target_compile_definitions(${PROJECT_NAME} PRIVATE ILI9341)
     ELSE()
         IF(TFT_INV)
             SET(BUILD_NAME "${BUILD_NAME}-ST7789V")
+            SET(DISPLAY_TAG "ST7789V")
         ELSE()
             SET(BUILD_NAME "${BUILD_NAME}-ST7789")
+            SET(DISPLAY_TAG "ST7789")
         ENDIF()
     ENDIF()
 ELSEIF(TV)
     target_compile_definitions(${PROJECT_NAME} PRIVATE TV)
     target_link_libraries(${PROJECT_NAME} PRIVATE tv)
     SET(BUILD_NAME "${BUILD_NAME}-TV")
+    SET(DISPLAY_TAG "TV")
 ELSEIF(SOFTTV)
 	target_compile_definitions(${PROJECT_NAME} PRIVATE SOFTTV)
 	target_link_libraries(${PROJECT_NAME} PRIVATE tv-software)
 	SET(BUILD_NAME "${BUILD_NAME}-TV-SOFT")
+	SET(DISPLAY_TAG "TVSOFT")
 ELSE()
     target_link_libraries(${PROJECT_NAME} PRIVATE hdmi)
     target_link_libraries(${PROJECT_NAME} PRIVATE vga-nextgen)
     target_compile_definitions(${PROJECT_NAME} PRIVATE VGA_HDMI)
     SET(BUILD_NAME "${BUILD_NAME}-VGA-HDMI")
+    # ONE image drives both outputs and the pick is made at boot (SELECT_VGA, from
+    # linkVGA01 or Config::video_driver), so this tag is only the fallback: the OSD
+    # substitutes the output that actually came up. Every other DISPLAY_TAG above is
+    # a real build-time choice and needs no such treatment.
+    SET(DISPLAY_TAG "VGAHDMI")
+ENDIF()
+
+# The PIO-USB host is a build-time variant of the same board, not a display mode, so
+# it tags the name after the display part: z0p2-speccy-VGA-HDMI-PIOUSB-<version>.
+SET(VARIANT_TAG "")
+IF(ZERO2 AND ZERO2_PIO_USB)
+    SET(BUILD_NAME "${BUILD_NAME}-PIOUSB")
+    SET(VARIANT_TAG "+PIOUSB")
+    SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
 ENDIF()
 
 SET(BUILD_NAME "${BUILD_NAME}-${PORT_VERSION}")
+
+# Compact form for the OSD's Hardware Info row — z0p2+HDMI+1.0.2 — where the full
+# file name beside an aligned label overruns the narrowest page nm:: supports (40
+# cols). Built from the same pieces rather than parsed back out of BUILD_NAME, so the
+# two cannot drift apart. The file name itself is unchanged — release assets use it.
+SET(BUILD_NAME_SHORT "${BOARD_TAG}+${DISPLAY_TAG}+${PORT_VERSION}")
 
 # ALF is a standard runtime machine (not a separate build), so no "-ALF" suffix.
 
@@ -995,6 +1029,8 @@ execute_process(
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     PICO_BUILD_NAME="${BUILD_NAME}"
+    PICO_BUILD_NAME_SHORT="${BUILD_NAME_SHORT}"
+    PICO_BUILD_VARIANT_TAG="${VARIANT_TAG}"
     PICO_GIT_BRANCH="${GIT_BRANCH}"
     PICO_GIT_COMMIT="${GIT_COMMIT_HASH}"
 )

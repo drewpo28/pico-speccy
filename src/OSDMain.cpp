@@ -4803,6 +4803,28 @@ static void buildHWInfoText() {
     uint32_t cpu_hz = clock_get_hz(clk_sys) / MHZ;
     uint32_t free_heap = getFreeHeap();
 
+    // First line. PICO_BUILD_NAME_SHORT, not PICO_BUILD_NAME: with the label in the
+    // same column as every row below, the file name (26 chars) makes a 44-char line —
+    // fine in this 53-column page, but past the narrowest layout nm:: supports (40
+    // cols), and textPageRun clips rather than wraps. z0p2+HDMI+1.0.2 carries the same
+    // three facts in 15. This used to be the LAST line, which is why it fell off the
+    // bottom of the first page (the screenshot that prompted the move read "1-16/17").
+    // On a VGA_HDMI build the display half of the tag is decided at BOOT, not by the
+    // build: one image drives both outputs and vga.c's graphics_init() picks between
+    // them from linkVGA01 / Config::video_driver. Reporting the build's own "VGAHDMI"
+    // would say nothing about which one is on the cable, so name the live output.
+#ifdef VGA_HDMI
+    {
+        extern bool SELECT_VGA;   // vga.c
+        pos += snprintf(hwtext + pos, sizeof(hwtext) - pos,
+            " Firmware       : %s / %s%s [v%s]\n", CONFIG_BOARD_TAG,
+            SELECT_VGA ? "VGA" : "HDMI", PICO_BUILD_VARIANT_TAG, PORT_VERSION);
+    }
+#else
+    pos += snprintf(hwtext + pos, sizeof(hwtext) - pos,
+        " Firmware       : %s\n", PICO_BUILD_NAME_SHORT);
+#endif
+
     {
         static const uint16_t vreg_mv[] = {
             550, 600, 650, 700, 750, 800, 850, 900, 950, 1000,

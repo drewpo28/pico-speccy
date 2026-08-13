@@ -80,6 +80,9 @@ set "ALL_TARGETS=MURM MURM2 PICO_PC PICO_DV ZERO2"
 set "TFT_TARGETS=MURM MURM2"
 set "TFT_ST_TARGETS="
 set "SOFTTV_TARGETS=MURM MURM2"
+:: Second image of the same board with -DZERO2_PIO_USB=ON (USB host on the second
+:: Type-C). Not a display mode; it costs ~18 KB of SRAM, hence a separate firmware.
+set "PIOUSB_TARGETS=ZERO2"
 
 if "%POSARGS%"=="" (
     set "TARGETS=%ALL_TARGETS%"
@@ -94,6 +97,7 @@ for %%T in (%TARGETS%) do (
     for %%M in (%TFT_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:TFT_ILI9341" )
     for %%M in (%TFT_ST_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:TFT_ST7789" )
     for %%M in (%SOFTTV_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:SOFTTV" )
+    for %%M in (%PIOUSB_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:PIOUSB" )
 )
 
 :: Count pairs
@@ -303,6 +307,15 @@ set "W_FLAGS=-D%W_TARGET%=ON"
 if "%W_DISPLAY%"=="TFT_ILI9341" set "W_FLAGS=!W_FLAGS! -DTFT=ON -DILI9341=ON -DVGA_HDMI=OFF"
 if "%W_DISPLAY%"=="TFT_ST7789"  set "W_FLAGS=!W_FLAGS! -DTFT=ON -DST7789=ON -DVGA_HDMI=OFF"
 if "%W_DISPLAY%"=="SOFTTV"      set "W_FLAGS=!W_FLAGS! -DSOFTTV=ON -DVGA_HDMI=OFF"
+
+:: Always explicit: the option default only applies to a fresh cache, so a build dir
+:: configured while ZERO2_PIO_USB was still ON would keep emitting the PIOUSB image
+:: under the plain name.
+if "%W_DISPLAY%"=="PIOUSB" (
+    set "W_FLAGS=!W_FLAGS! -DZERO2_PIO_USB=ON"
+) else (
+    set "W_FLAGS=!W_FLAGS! -DZERO2_PIO_USB=OFF"
+)
 
 set "W_ARGS=-B "%W_BUILD_DIR%" -S "%SCRIPT_DIR%" -G "%CMAKE_GENERATOR%" !W_FLAGS! %CCACHE_ARGS% -DCMAKE_BUILD_TYPE=%BUILD_TYPE%"
 if defined CMAKE_MAKE_PROGRAM set "W_ARGS=!W_ARGS! -DCMAKE_MAKE_PROGRAM=!CMAKE_MAKE_PROGRAM!"

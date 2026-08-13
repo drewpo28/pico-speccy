@@ -271,7 +271,7 @@ Your filesystem tree must be look like:
 | `-DPICO_PC=ON` | Build for Olimex RP2040-PICO-PC carrier board |
 | `-DPICO_DV=ON` | Build for Pimoroni Pico DV Demo Base |
 | `-DZERO2=ON` | Build for Waveshare RP2350-PiZero |
-| `-DZERO2_PIO_USB=ON` | ZERO2: USB host on the second Type-C port (J2, PIO-USB on GP28/GP29). Default ON. |
+| `-DZERO2_PIO_USB=ON` | ZERO2: USB host on the second Type-C port (J2, PIO-USB on GP28/GP29). **Default OFF** — the bit-banged host costs ~18 KB of SRAM (RAM-resident code + endpoint pool), so it ships as a separate `z0p2-speccy-VGA-HDMI-PIOUSB-*.uf2` image instead. |
 | `-DVGA_HDMI=ON` | VGA/HDMI output (default) |
 | `-DSOFTTV=ON` | Software composite TV output |
 | `-DTV=ON` | Hardware composite TV output |
@@ -289,6 +289,7 @@ To build firmware for all supported boards and display variants at once, use the
 ```
 
 - Targets: `MURM MURM2 PICO_PC PICO_DV ZERO2` (default: all)
+- ZERO2 builds twice: the plain image and a `PIOUSB` one (`-DZERO2_PIO_USB=ON`, USB host on the second Type-C)
 - `--clean` — wipe build dirs first (default: incremental rebuild)
 - `-j` — threads per target build (default: `nproc / MAX_PARALLEL`)
 - `-p` — max number of targets built concurrently (default: 3)

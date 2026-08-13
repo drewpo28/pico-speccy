@@ -26,16 +26,21 @@ extern "C" {
 // keyboard, NESPAD, I2S audio, PICO_DV's SD. That leaves 14 free instructions on
 // both pio0 and pio2 instead of a -4 overflow.
 //
-// ONE exception: the ZERO2's PIO-USB host (second Type-C, GP28/GP29) needs a
-// WHOLE PIO — 3 SMs and all 32 instructions — and it took pio2 back when video
-// still lived on pio0 (see zero2_pio_usb_host_init() in main.cpp, which runs
-// long before graphics_init()). Two SMs were left, HDMI wants two plus the
-// converter's, so pio_claim_unused_sm() panicked on core1 with "No PIO state
-// machines are available" and the board rebooted forever (z0p2, hw 2026-08-13).
+// ONE exception, and it is the WHOLE BOARD, not just the build that needs it:
+// the ZERO2's PIO-USB host (second Type-C, GP28/GP29, the -PIOUSB firmware) needs
+// a WHOLE PIO — 3 SMs and all 32 instructions — and it took pio2 back when video
+// still lived on pio0 (see zero2_pio_usb_host_init() in main.cpp, which runs long
+// before graphics_init()). Two SMs were left, HDMI wants two plus the converter's,
+// so pio_claim_unused_sm() panicked on core1 with "No PIO state machines are
+// available" and the board rebooted forever (z0p2, hw 2026-08-13).
+//
 // ZERO2 has no PIO PSRAM — its 8 MB is butter QSPI through the QMI, and
 // init_psram() is compiled out (`#ifdef PSRAM`) — so pio0 is free there and the
-// pio0-vs-PSRAM collision that forced this move on MURM1 cannot happen.
-#if defined(ZERO2_PIO_USB_HOST)
+// pio0-vs-PSRAM collision that forced this move on MURM1 cannot happen. Keying on
+// the BOARD rather than on ZERO2_PIO_USB_HOST keeps both z0p2 images on the same,
+// hw-tested video path: pio0 is where ZERO2's HDMI ran before the MURM1 move, and
+// z0p2-on-pio2 has never been on hardware at all.
+#if defined(ZERO2)
 #define PIO_VIDEO pio0
 #define PIO_VIDEO_ADDR pio0
 #else

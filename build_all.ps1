@@ -74,6 +74,9 @@ $AllTargets    = @("MURM", "MURM2", "PICO_PC", "PICO_DV", "ZERO2")
 $TftTargets    = @("MURM", "MURM2")
 $TftStTargets  = @()
 $SofttvTargets = @("MURM", "MURM2")
+# Second image of the same board with -DZERO2_PIO_USB=ON (USB host on the second
+# Type-C). Not a display mode; it costs ~18 KB of SRAM, hence a separate firmware.
+$PiousbTargets = @("ZERO2")
 
 if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 
@@ -89,6 +92,9 @@ foreach ($Target in $Targets) {
     }
     if ($SofttvTargets -contains $Target) {
         $BuildPairs += ,@{ Target = $Target; Display = "SOFTTV" }
+    }
+    if ($PiousbTargets -contains $Target) {
+        $BuildPairs += ,@{ Target = $Target; Display = "PIOUSB" }
     }
 }
 
@@ -182,6 +188,14 @@ $Worker = {
             $TargetFlags += @("-DTFT=ON", "-DST7789=ON", "-DVGA_HDMI=OFF")
         } elseif ($Display -eq "SOFTTV") {
             $TargetFlags += @("-DSOFTTV=ON", "-DVGA_HDMI=OFF")
+        }
+        # Always explicit: the option default only applies to a fresh cache, so a build
+        # dir configured while ZERO2_PIO_USB was still ON would otherwise keep emitting
+        # the PIOUSB image under the plain name.
+        if ($Display -eq "PIOUSB") {
+            $TargetFlags += @("-DZERO2_PIO_USB=ON")
+        } else {
+            $TargetFlags += @("-DZERO2_PIO_USB=OFF")
         }
 
         $CMakeArgs = @(

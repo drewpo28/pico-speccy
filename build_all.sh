@@ -100,6 +100,11 @@ TFT_ST_TARGETS="MURM MURM2"
 # Targets that support SOFTTV display variant
 SOFTTV_TARGETS="MURM MURM2"
 
+# Targets that also ship a PIO-USB variant (second Type-C as a USB host). Not a
+# display mode — the same VGA_HDMI firmware with -DZERO2_PIO_USB=ON, which costs
+# ~18 KB of SRAM, hence two separate images instead of a runtime toggle.
+PIOUSB_TARGETS="ZERO2"
+
 # Parse arguments: pass target names to build specific ones, or nothing for all
 if [ $# -gt 0 ]; then
     TARGETS="$*"
@@ -126,6 +131,12 @@ for TARGET in $TARGETS; do
     for STV_T in $SOFTTV_TARGETS; do
         if [ "$TARGET" = "$STV_T" ]; then
             BUILD_PAIRS+=("${TARGET}:SOFTTV")
+            break
+        fi
+    done
+    for PU_T in $PIOUSB_TARGETS; do
+        if [ "$TARGET" = "$PU_T" ]; then
+            BUILD_PAIRS+=("${TARGET}:PIOUSB")
             break
         fi
     done
@@ -222,6 +233,14 @@ build_one() {
             target_flags+=(-DTFT=ON -DST7789=ON -DVGA_HDMI=OFF)
         elif [ "$display" = "SOFTTV" ]; then
             target_flags+=(-DSOFTTV=ON -DVGA_HDMI=OFF)
+        fi
+        # Always pass ZERO2_PIO_USB explicitly: the option's default only applies to a
+        # FRESH cache, so a build dir configured while it was still ON would otherwise
+        # keep producing the PIOUSB image under the plain name.
+        if [ "$display" = "PIOUSB" ]; then
+            target_flags+=(-DZERO2_PIO_USB=ON)
+        else
+            target_flags+=(-DZERO2_PIO_USB=OFF)
         fi
 
         local cmake_args=(
