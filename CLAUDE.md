@@ -1177,6 +1177,21 @@ reduction left, and costs speed), `IMDCTInfo` ~6944, `HuffmanInfo` 4624. minimp3
 is bigger and traps (see the NeoGS session notes), libmad is bigger and slower —
 there is no better driver to switch to, only lazier allocation.
 
+## The corner FDD lamp must not self-erase by colour-matching (hw-confirmed 2026-08-13)
+
+The lamp used to paint its 8x8 cell EVERY frame with a computed "border colour"
+byte (fg=bg=`led_off_col`) so it would blend away when idle. That byte has to
+stay identical to what the border machine wrote at the last `brdChange` — but
+in DS80 the cell bytes are `profi_pair_lookup` slots and the table is REBUILT
+on every guest palette write (Karabas ROMain's menu does a palette fade), so
+the idle lamp started writing post-rebuild slots against a band frozen with
+pre-rebuild bytes: a permanent grey square in the black DS80 right border.
+Now: draw only when `fdd_active`, foreground pixels only (`LED::drawSpriteFg`,
+dotFast maps the ZX index per mode), and on the active→idle edge set
+`VIDEO::brdChange = true` so the border renderer does the erase authoritatively.
+Idle leaves zero footprint. `LED::drawGlyph` (full fg/bg cell) is still used by
+the menu's LED legend — don't remove it.
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the

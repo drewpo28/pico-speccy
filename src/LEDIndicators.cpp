@@ -320,6 +320,16 @@ static void drawSprite(Id i, int xpix, int ypix, uint8_t fg) {
     }
 }
 
+void drawSpriteFg(Id i, int xpix, int ypix, uint8_t fg) {
+    const uint8_t* glyph = SPRITE[i];
+    for (int row = 0; row < 8; row++) {
+        uint8_t bits = glyph[row];
+        if (!bits) continue;
+        for (int c = 0; c < 8; c++)
+            if (bits & (0x80 >> c)) VIDEO::vga.dotFast(xpix + c, ypix + row, fg);
+    }
+}
+
 void drawGlyph(Id i, int xpix, int ypix, uint8_t fg, uint8_t bg) {
     const uint8_t* glyph = SPRITE[i];
     for (int row = 0; row < 8; row++) {

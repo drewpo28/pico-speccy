@@ -2892,14 +2892,7 @@ void ESPectrum::loop() {
     bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
         && !DivMMC::enabled
         ;
-    // Indicator sits at x=312 — inside the DS80 right border band.  The "off" state
-    // erases it to the surrounding border colour so no square remains.
-    //   Normal mode: border byte = zxColor(borderColor, 0).
-    //   DS80 mode:   the band is filled with Palette[(~borderColor)&7] (inverse index,
-    //     per ProfiRenderer).  The Graphics remap maps a ZX index i → Palette[i&0xF],
-    //     so pass (~borderColor)&7 to land on the same byte and blend cleanly.
-    uint8_t led_off_col = zxColor(VIDEO::borderColor, 0);
-    if (profi_ds80_active) led_off_col = (uint8_t)(~VIDEO::borderColor) & 0x07;
+    // Indicator sits at x=311 — inside the DS80 right border band / normal top border.
     // Corner FDD lamp. ON/OFF follows rvmWD1793::fdd_active_decay — genuine
     // head-load/header-search/data-transfer activity, decremented once per frame by
     // LED::decay() (auto-clears; unlike the old rvmWD1793::led it can't stick on, and
@@ -2911,19 +2904,27 @@ void ESPectrum::loop() {
     bool fdd_active = fctrl->fdd_active_decay != 0;
     bool fdd_write  = ((fctrl->command & 0xE0) == 0xA0) ||   // Write Sector (0xA_/0xB_)
                       ((fctrl->command & 0xF0) == 0xF0);     // Write Track  (0xF_)
-    // Foreground = lamp colour when active, else the border colour so the diskette
-    // glyph vanishes into the border when idle. Reuse LEDIndicators' 8x8 diskette
-    // sprite (instead of a plain square) so the corner lamp matches the border row.
-    // drawGlyph paints the full 8x8 each frame (fg/bg), so it self-erases.
-    uint8_t fdd_fg = !fdd_active ? led_off_col
-                   : fdd_write   ? zxColor(2, 1)             // red  — write
-                                 : zxColor(1, 1);            // blue — read / seek
-    if (MB02::enabled && (Config::mb02SoundLed & 1)) {
-        LED::drawGlyph(LED::FDD, 311, 2, fdd_fg, led_off_col);
-    } else
-    if (hasFdd && (Config::trdosSoundLed & 1)) {
-        LED::drawGlyph(LED::FDD, 311, 2, fdd_fg, led_off_col);
+    // While active: draw ONLY the sprite's foreground pixels (border shows through);
+    // dotFast maps the ZX index for the current mode (DS80 → solid pair slot).
+    // On the active→idle edge: erase by scheduling a full border repaint instead of
+    // painting the cell with a computed "border colour" byte. The old self-erase
+    // (drawGlyph fg=bg=led_off_col every frame) had to stay byte-identical with the
+    // band the border machine painted at the last brdChange — any mode/palette
+    // history divergence left a permanent square in the band (hw 2026-08-13:
+    // Karabas ROMain menu, stale 8x8 pair-slot block at 311,2 rendering grey in
+    // the black DS80 right border).
+    bool lamp_on = fdd_active &&
+                   ((MB02::enabled && (Config::mb02SoundLed & 1)) ||
+                    (hasFdd && (Config::trdosSoundLed & 1)));
+    static bool lamp_was_on = false;
+    if (lamp_on) {
+        LED::drawSpriteFg(LED::FDD, 311, 2,
+                          fdd_write ? zxColor(2, 1)      // red  — write
+                                    : zxColor(1, 1));    // blue — read / seek
+    } else if (lamp_was_on) {
+        VIDEO::brdChange = true;   // border repaint next frame erases the glyph
     }
+    lamp_was_on = lamp_on;
 
     elapsed = time_us_64() - ts_start;
     idle = target - elapsed;

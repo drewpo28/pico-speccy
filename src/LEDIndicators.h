@@ -63,6 +63,11 @@ namespace LED {
     void draw();
     void clear();
     void drawGlyph(Id i, int xpix, int ypix, uint8_t fg, uint8_t bg);
+    // Foreground pixels only, via dotFast (so DS80 index→pair mapping applies);
+    // background shows through. Erase is the caller's problem — the corner FDD
+    // lamp repaints the border (VIDEO::brdChange) on its active→idle edge
+    // instead of trying to self-erase by matching the border colour byte.
+    void drawSpriteFg(Id i, int xpix, int ypix, uint8_t fg);
 }
 
 #endif
