@@ -30,10 +30,15 @@ extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp; C linkage so hdm
 static const size_t HEAP_SAFETY_MARGIN = 32 * 1024;
 // HOT_SRAM's reduced rule. The generic margin above is sized for the BOOT path
 // (the framebuffer is still to come); a buffer allocated on first use at runtime
-// competes with a heap that is already at its steady level (~59 KB free on
-// PICO_DV with NeoGS), where 32 KB spare plus the request itself is unreachable
-// and the caller would silently always land in PSRAM.
-static const size_t HEAP_HOT_MARGIN = 12 * 1024;
+// competes with a heap that is already at its steady level, and 32 KB spare plus
+// the request itself is unreachable there — the caller would silently always land
+// in PSRAM. 8 KB, not 12: at 720x576 the runtime heap is ~43 KB with a few KB of
+// fragmentation, and 12 sent the NeoGS MP3 arena to butter, which is exactly the
+// slow path it asked to avoid (hw 2026-08-13: NPL laggy, FPS down, log said
+// "state 23820/24576 B in butter"). A caller using this flag is expected to hand
+// the block BACK when it stops needing it (NgsMp3 releases on idle) — without
+// that, 8 KB of spare heap is too little to leave standing for a whole session.
+static const size_t HEAP_HOT_MARGIN = 8 * 1024;
 
 // SD swap arena: own file, separate from MemESP (/tmp/pico-speccy.swap) and ZiFi
 // (/tmp/zifi-rx.swap). Bookkeeping cap (the file itself grows lazily on write).

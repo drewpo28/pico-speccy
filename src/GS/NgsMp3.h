@@ -30,8 +30,16 @@ bool init();
 void deinit();
 
 // Hardware reset (SCTRL MPXRS low) or VS1011 MODE soft reset. Callable from
-// core1: latches a flag; core0's service() performs the actual restart.
+// core1: latches a flag; core0's service() performs the actual restart. This is
+// the CHIP reset and must NOT free anything — NPL soft-resets the decoder between
+// tracks, mid-session.
 void reset();
+
+// MACHINE reset (F11): the ZX session that was streaming is gone, so give the
+// decoder's memory back at once instead of waiting out the idle timer. Latches a
+// request; core0's service() performs the same two-phase free the idle path uses.
+// Also re-arms one allocation attempt if a previous one had found no room.
+void releaseNow();
 
 // Guest side (core1, GS-Z80 port handlers):
 void mdSend(uint8_t v);                 // MD_SEND data byte

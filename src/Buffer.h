@@ -60,6 +60,10 @@ public:
                              //   the heap sits at its runtime level and the generic margin
                              //   would send every such buffer to PSRAM. No effect when
                              //   PREFER_PSRAM is set (that caller wants PSRAM first).
+                             //   The margin is small enough that a caller MUST free the
+                             //   block when it stops needing it, rather than holding it
+                             //   for the session — otherwise the heap is left too thin
+                             //   for the OSD/browser/ZIP paths.
     };
     enum Tier { TIER_NONE = 0, TIER_HEAP, TIER_BUTTER, TIER_SPI, TIER_SWAP, TIER_ARENA, TIER_FLASH };
 

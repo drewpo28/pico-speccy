@@ -22,18 +22,42 @@ extern "C" {
 #include "mp3dec.h"
 }
 
-extern size_t getFreeHeap(void);   // OSDMain.cpp — reported when the decoder lands
+extern size_t getFreeHeap(void);                // OSDMain.cpp — reported at alloc time
+extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp — decides the arena's tier
 
 // Helix allocates its eight state structures (23.9 KB total) through this hook
 // at MP3InitDecoder() time and NEVER frees them — buffers.c leaves MPDEC_FREE
 // undefined, so its SAFE_FREE only nulls the pointer. That makes a bump
-// allocator over one Buffer exactly right: we pick the tier (SRAM, NOT PSRAM —
-// this is the decoder's hot state and butter PSRAM shares its XIP cache with
-// core1's GS fetches) and we can hand the whole thing back in one call.
+// allocator over a Buffer exactly right: we pick the tier and can hand the whole
+// thing back in one call.
+//
+// TWO arenas, and the split is the point. SRAM is where this state belongs — it is
+// the decoder's hot working set, and in butter PSRAM it shares the XIP cache with
+// core1's GS opcode fetches, which cost NPL its smooth playback and the emulator
+// its FPS (hw 2026-08-13). But at 720x576 the framebuffer takes 104 KB and the
+// runtime heap is ~43 KB with a few KB of fragmentation, so ONE 24 KB SRAM block
+// is often unreachable while 12-20 KB is there for the taking. So: fill an SRAM
+// arena as large as the heap will give (largest first, stepping down), and send
+// the overflow to butter.
+//
+// The order Helix asks in decides who wins, and it is already the right order —
+// buffers.c requests MP3DecInfo, then HuffmanInfo (4624), SubbandInfo (8712),
+// IMDCTInfo (6944), and only then the four small ones (DequantInfo, SideInfo,
+// ScaleFactorInfo, FrameHeader, ~3.3 KB together). Greedy "SRAM until full" thus
+// keeps the per-sample polyphase/IMDCT/Huffman buffers in SRAM and pushes the
+// cold per-frame headers out, with no per-structure knowledge here.
 #define HELIX_ARENA_SIZE 24576
-static Buffer   s_helixBuf;
-static uint8_t* s_helix_arena = nullptr;
-static uint32_t s_helix_used  = 0;
+// SRAM sizes to try, largest first. 12 KB is the floor worth having: below that the
+// three hot structures cannot fit anyway and the whole arena may as well be butter.
+static const uint32_t kHelixSramTry[] = { 24576, 20480, 16384, 12288 };
+static Buffer   s_helixBuf;       // SRAM (heap) part — may be empty
+static Buffer   s_helixPsBuf;     // butter part — holds whatever did not fit
+static uint8_t* s_helix_arena = nullptr;   // SRAM base (also the "carving" marker)
+static uint32_t s_helix_cap   = 0;         // SRAM capacity
+static uint32_t s_helix_used  = 0;         // SRAM bytes handed out
+static uint8_t* s_helix_ps    = nullptr;   // butter base
+static uint32_t s_helix_ps_cap  = 0;
+static uint32_t s_helix_ps_used = 0;
 
 // ── Lazy allocation ──────────────────────────────────────────────────────────
 // init() used to run from GS::init for every NeoGS boot, so ~24 KB of SRAM heap
@@ -51,15 +75,35 @@ static uint32_t s_helix_used  = 0;
 // answering 1: that is the established stub contract (a 0 wedges NPL's init poll,
 // see GS.cpp SSTAT), and the cost is under a frame of stream head, which Helix
 // resynchronises past on the next sync word.
+// The arena is given BACK when the stream stops, and that is not a nicety: it is
+// what lets the SRAM attempt run with Buffer's small HOT_SRAM margin. Holding 24 KB
+// of a ~43 KB runtime heap (720x576 + NeoGS + MIDI) for a whole session would leave
+// the OSD/browser/ZIP paths too thin; holding it only while a player is actually
+// streaming costs them nothing, because those paths are not in use then. Freeing
+// crosses cores, so it is two-phase: core0 drops `s_st` (every core1 entry point
+// tests it first), then waits GRACE frames before releasing the memory, by which
+// time a core1 call that had already loaded the old pointer is long finished.
+#define MP3_IDLE_RELEASE_FRAMES 1500   // ~30 s at 50 Hz — long enough that NPL's
+                                       // multi-second between-track SD loads, and a
+                                       // paused track, never churn the allocation
+#define MP3_FREE_GRACE_FRAMES   2
 static volatile bool s_want_init   = false;  // core1 → core0: MP3 data is flowing
 static volatile bool s_init_failed = false;  // core0 → core1: tried once, no room
+static volatile bool s_release_req = false;  // machine reset → core0: free it now
+static uint32_t      s_idle_frames = 0;      // core0: service() calls with nothing to do
+static uint8_t       s_free_pending = 0;     // core0: frames left before the buffers go
 
 extern "C" void* ngs_helix_alloc(size_t sz) {
-    if (!s_helix_arena) return nullptr;
     uint32_t need = ((uint32_t)sz + 3u) & ~3u;          // keep 4-byte alignment
-    if (s_helix_used + need > HELIX_ARENA_SIZE) return nullptr;
-    void* p = s_helix_arena + s_helix_used;
-    s_helix_used += need;
+    uint8_t* p = nullptr;
+    if (s_helix_arena && s_helix_used + need <= s_helix_cap) {
+        p = s_helix_arena + s_helix_used;               // SRAM while it lasts
+        s_helix_used += need;
+    } else if (s_helix_ps && s_helix_ps_used + need <= s_helix_ps_cap) {
+        p = s_helix_ps + s_helix_ps_used;               // then butter
+        s_helix_ps_used += need;
+    }
+    if (!p) return nullptr;
     memset(p, 0, need);   // Helix relies on zeroed state on first use
     return p;
 }
@@ -268,6 +312,7 @@ static uint16_t vol_gain_q15(uint8_t att) {
 
 bool NgsMp3::init() {
     if (s_st) return true;
+    const size_t largest_before = getLargestAllocatable();   // logged: it decides the tier
     if (!s_stateBuf.alloc(sizeof(Mp3State), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM) ||
         !s_stateBuf.data()) {
         s_stateBuf.free();
@@ -275,28 +320,44 @@ bool NgsMp3::init() {
                    (unsigned)sizeof(Mp3State));
         return false;
     }
-    // Helix state: one SRAM arena, carved by ngs_helix_alloc() above. Heap first;
-    // PSRAM only if the heap cannot spare it, so a tight heap degrades to slow
-    // playback rather than to no MP3 at all. HOT_SRAM because this now runs at
-    // runtime, on a heap already at its steady level — Buffer's generic 32 KB
-    // margin would put every arena in PSRAM (see Buffer.h).
-    if (!s_helixBuf.alloc(HELIX_ARENA_SIZE, Buffer::NEED_POINTER | Buffer::HOT_SRAM) ||
-        !s_helixBuf.data()) {
+    // Helix state: as much SRAM as the heap will give (largest step first, HOT_SRAM
+    // margin), remainder in butter. See the two-arena note at the top — the split
+    // exists because 576p leaves ~43 KB of heap where one 24 KB block usually is not
+    // available but 12-20 KB is, and the hot structures are the ones Helix asks for
+    // first, so greedy carving puts exactly them in SRAM.
+    for (uint32_t want : kHelixSramTry) {
+        if (s_helixBuf.alloc(want, Buffer::NEED_POINTER | Buffer::HOT_SRAM) &&
+            s_helixBuf.data() && s_helixBuf.tier() == Buffer::TIER_HEAP) {
+            s_helix_arena = (uint8_t*)s_helixBuf.data();
+            s_helix_cap   = want;
+            break;
+        }
+        // HOT_SRAM is a preference, not a promise: Buffer falls through to butter on
+        // its own. A non-heap tier here is not the split we are building, so drop it
+        // and try a smaller SRAM step; the remainder allocation below covers butter.
         s_helixBuf.free();
-        if (!s_helixBuf.alloc(HELIX_ARENA_SIZE, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM) ||
-            !s_helixBuf.data()) {
-            s_helixBuf.free();
+    }
+    s_helix_used = 0;
+    // Whatever SRAM did not cover, plus slack for the per-structure 4-byte rounding.
+    if (s_helix_cap < HELIX_ARENA_SIZE) {
+        const uint32_t rest = HELIX_ARENA_SIZE - s_helix_cap + 64;
+        if (!s_helixPsBuf.alloc(rest, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM) ||
+            !s_helixPsBuf.data()) {
+            s_helixPsBuf.free();
+            s_helixBuf.free(); s_helix_arena = nullptr; s_helix_cap = 0;
             s_stateBuf.free();
             Debug::log("NgsMp3: no room for Helix arena (%u B) — MP3 stubbed",
                        (unsigned)HELIX_ARENA_SIZE);
             return false;
         }
+        s_helix_ps      = (uint8_t*)s_helixPsBuf.data();
+        s_helix_ps_cap  = rest;
+        s_helix_ps_used = 0;
     }
-    s_helix_arena = (uint8_t*)s_helixBuf.data();
-    s_helix_used  = 0;
     s_dec = MP3InitDecoder();
     if (!s_dec) {
-        s_helixBuf.free(); s_helix_arena = nullptr;
+        s_helixBuf.free();   s_helix_arena = nullptr; s_helix_cap = 0;
+        s_helixPsBuf.free(); s_helix_ps    = nullptr; s_helix_ps_cap = 0;
         s_stateBuf.free();
         Debug::log("NgsMp3: MP3InitDecoder failed (arena %u B) — MP3 stubbed",
                    (unsigned)HELIX_ARENA_SIZE);
@@ -321,31 +382,71 @@ bool NgsMp3::init() {
     s_bass_on = s_treb_on = false;
     tone_reset();
     s_tone_dirty = true;                // core0 designs the filters on the next call
-    Debug::log("NgsMp3: Helix ready (buffers %u B in %s, state %u/%u B in %s, freeHeap=%u)",
+    s_idle_frames = 0;
+    s_free_pending = 0;
+    // How the arena actually split, and the number that decided it. `sram` under
+    // ~20 KB means the hot structures started spilling into butter, which is a
+    // PERFORMANCE problem (hw 2026-08-13: NPL stuttered and the emulator lost FPS
+    // with the whole arena there) — so the log has to say how close the heap came,
+    // not just where things ended up.
+    Debug::log("NgsMp3: Helix ready (buffers %u B in %s, state sram=%u/%u butter=%u, "
+               "freeHeap=%u largest_before=%u)",
                (unsigned)sizeof(Mp3State), s_stateBuf.tierName(),
-               (unsigned)s_helix_used, (unsigned)HELIX_ARENA_SIZE,
-               s_helixBuf.tierName(), (unsigned)getFreeHeap());
+               (unsigned)s_helix_used, (unsigned)s_helix_cap,
+               (unsigned)s_helix_ps_used,
+               (unsigned)getFreeHeap(), (unsigned)largest_before);
     return true;
+}
+
+// Hand the memory back (core0). Callers must already have dropped `s_st` and let
+// MP3_FREE_GRACE_FRAMES pass, or a core1 mixTick/mdSend holding the old pointer
+// would touch freed memory.
+static void mp3_release_buffers() {
+    s_dec = nullptr;                 // Helix never frees; the arenas go as a whole
+    s_helix_arena = nullptr;
+    s_helix_used = s_helix_cap = 0;
+    s_helix_ps = nullptr;
+    s_helix_ps_used = s_helix_ps_cap = 0;
+    s_stateBuf.free();
+    s_helixBuf.free();
+    s_helixPsBuf.free();
+    s_free_pending = 0;
+    s_idle_frames  = 0;
+    // Re-arm the lazy path: the next MD_SEND byte allocates again. NOT s_init_failed
+    // — that latch means "there was no room", and it stays for the session.
+    s_want_init = false;
 }
 
 void NgsMp3::deinit() {
     s_st = nullptr;
-    s_dec = nullptr;                 // Helix never frees; the arena goes as a whole
-    s_helix_arena = nullptr;
-    s_helix_used = 0;
-    s_stateBuf.free();
-    s_helixBuf.free();
-    s_want_init   = false;           // a fresh GS::init may defer again
-    s_init_failed = false;
+    mp3_release_buffers();
+    s_init_failed = false;           // a fresh GS::init may try again
+    s_release_req = false;
 }
 
 void NgsMp3::reset() {
     // A chip reset zeroes the SCI file (GS.cpp's ngs_mp3_reset does that for the
-    // register images), so the tone stage and SM_DIFF go with it.
+    // register images), so the tone stage and SM_DIFF go with it. NOTE this is the
+    // CHIP reset and deliberately frees NOTHING: NPL soft-resets the decoder at every
+    // track change, and dropping ~24 KB of SRAM + 33 KB of butter there would churn
+    // the allocation mid-session (and could come back in a worse tier). Only a
+    // MACHINE reset releases — see releaseNow().
     s_bass_reg      = 0;
     s_tone_dirty    = true;
     s_sm_diff       = false;
     s_reset_pending = true;
+}
+
+void NgsMp3::releaseNow() {
+    // The ZX session that was streaming has been rebooted, so nothing is going to
+    // read the pipeline again: hand the memory back without waiting out the ~30 s
+    // idle timer. Only a request — service() runs the two-phase free on core0,
+    // because core1 may be inside mixTick/mdSend with the old pointer right now.
+    s_release_req = true;
+    // One fresh allocation attempt for the next session: the latch means "there was
+    // no room", and after a reset the heap is a different shape (this also re-opens
+    // the SRAM tier for a decoder that had been forced into butter).
+    s_init_failed = false;
 }
 
 bool NgsMp3::active() { return s_st != nullptr; }
@@ -566,6 +667,22 @@ static void mp3_health_tick() {
 
 void NgsMp3::service() {
     if (!s_st) {
+        // Second phase of the idle release: core1 dropped out of the picture when
+        // s_st went null, so after the grace frames the memory can go. This runs
+        // BEFORE the re-init check so a stream arriving inside the grace window
+        // cannot allocate on top of buffers that are still being retired.
+        if (s_free_pending) {
+            if (--s_free_pending == 0) {
+                const unsigned sram = s_helix_cap;
+                const bool     rst  = s_release_req;
+                s_release_req = false;
+                mp3_release_buffers();
+                Debug::log("NgsMp3: %s — decoder released (%u B SRAM back, freeHeap=%u)",
+                           rst ? "reset" : "idle", sram, (unsigned)getFreeHeap());
+            }
+            return;
+        }
+        s_release_req = false;        // nothing allocated: the request is already met
         // Lazy allocation (see the note at s_want_init). One attempt per session:
         // if there is no room now there will not be room a millisecond later, and
         // retrying on every MD_SEND byte would probe the heap thousands of times
@@ -576,6 +693,28 @@ void NgsMp3::service() {
             if (!init()) s_init_failed = true;
         }
         return;
+    }
+    // A machine reset (F11) frees immediately, whatever is still in the rings — the
+    // guest that queued those bytes no longer exists. Same two-phase handoff as the
+    // idle path: drop the pointer here, release in the branch above.
+    if (s_release_req) {
+        s_st = nullptr;
+        __dmb();                                // core1 sees the null before the free
+        s_free_pending = MP3_FREE_GRACE_FRAMES;  // s_release_req is consumed there
+        return;
+    }
+    // Nothing queued and nothing left to play: after MP3_IDLE_RELEASE_FRAMES give
+    // the buffers back (first phase — drop the pointer core1 tests, then let the
+    // grace frames run in the branch above). Any traffic at all rearms the count.
+    if (s_in_w == s_in_r && s_out_w == s_out_r) {
+        if (++s_idle_frames >= MP3_IDLE_RELEASE_FRAMES) {
+            s_st = nullptr;
+            __dmb();                            // core1 sees the null before the free
+            s_free_pending = MP3_FREE_GRACE_FRAMES;
+            return;
+        }
+    } else {
+        s_idle_frames = 0;
     }
     mp3_health_tick();
     if (s_tone_dirty) {                     // SCI_BASS changed (core1)

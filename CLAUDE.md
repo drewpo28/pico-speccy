@@ -1047,7 +1047,15 @@ NOT hw-tested.
 
 ## The framebuffer is claimed FIRST, and the MP3 decoder is lazy (2026-08-13)
 
-**NOT hw-tested.** Symptom: 720x576 + NeoGS + MIDI GM.DLS died in `setup()` with
+**hw-confirmed 2026-08-13 on z0p2** (ZERO2 + Pico 2, butter 8 MB): 720x576 + NeoGS +
+MIDI GM.DLS boots (`VIDEO: FB reserved 360x289 (104040 B), freeHeap=80616
+largest=64244`), NPL plays smoothly once the Helix arena stopped landing whole in
+butter, and F11 hands the decoder's memory back. **NOT re-run against this build:**
+the rest of the NeoGS regression set (FH1, COMTR4GS, ZP5, TheLink, NEO8) and any
+butter-less board — where the FB-first reorder deliberately leaves `GS::init` less
+heap than before.
+
+Symptom: 720x576 + NeoGS + MIDI GM.DLS died in `setup()` with
 `setup: VIDEO::Init begin, freeHeap=149152` followed by `*** PANIC *** Out of
 memory`. The main framebuffer at 576p is `fbCalcLines(288) * 360` = **104 040
 contiguous bytes** (640x480 is 241*320 = 77 120), and by `VIDEO::Init` the heap
@@ -1086,12 +1094,50 @@ Two changes, both about ORDER and both worth keeping straight:
   the wrong level. `Subsystems::featureCost(FEAT_GENERAL_SOUND)` dropped its
   NeoGS-only +24 KB for the same reason.
 - **`Buffer::HOT_SRAM`** (new flag) is what keeps the Helix arena in SRAM despite
-  running late: heap-first with a 12 KB margin instead of the generic 32 KB
+  running late: heap-first with a reduced margin instead of the generic 32 KB
   `HEAP_SAFETY_MARGIN`, which is sized for the BOOT path and would send every
-  lazily-allocated buffer to PSRAM (runtime heap is ~59 KB with NeoGS). The
-  butter fallback is still there, and butter is measurably slower for this —
-  the arena is the decoder's hot state and shares the XIP cache with core1's
-  GS fetches.
+  lazily-allocated buffer to PSRAM (runtime heap is ~43 KB at 576p + NeoGS + MIDI).
+- **The butter fallback for the Helix arena is a PERFORMANCE BUG, not a
+  degradation** (hw 2026-08-13): with `state 23820/24576 B in butter` NPL
+  stuttered during playback and the emulator lost FPS — the arena is the
+  decoder's hot state, it shares the XIP cache with core1's GS fetches (3.36M
+  PSRAM opcode fetches/s), and the whole frame decode sits in `ESPectrum::loop`
+  once per emulated frame, so slowing it down spends the frame budget directly.
+  **This is the mechanism behind "MP3 only stutters at 720x576"**: resolution →
+  framebuffer size → free heap → arena tier. Nothing about the mode touches the
+  decoder otherwise.
+- **The arena is SPLIT across two tiers** (`kHelixSramTry`, `ngs_helix_alloc`):
+  take as much SRAM as the heap will give — 24576, else 20480/16384/12288 — and
+  put the overflow in butter. One 24 KB block is often unreachable in a 43 KB
+  fragmented heap while 12-20 KB is there, and a lowered margin cannot fix that
+  (12 KB was tried first, then 8; the block simply is not there). **The order
+  Helix asks in is what makes greedy carving correct**: buffers.c requests
+  MP3DecInfo, `HuffmanInfo` (4624), `SubbandInfo` (8712), `IMDCTInfo` (6944) and
+  only then the four small cold ones (~3.3 KB total), so filling SRAM first keeps
+  the per-sample polyphase/IMDCT/Huffman buffers there with no per-structure
+  knowledge in our hook. The log prints `sram=used/cap butter=used` plus
+  `largest_before=`.
+- Still-open candidate if that is not enough: `Mp3State` (33 KB — in_ring,
+  asm_buf, out_ring, frame_pcm) is PREFER_PSRAM, i.e. always butter, and
+  `out_ring` is read by core1 at 37 500/s. Moving in_ring + asm_buf (12 KB) to
+  SRAM is the next lever; it is resolution-independent, so it is NOT the cause of
+  the 576p-only symptom.
+- **A MACHINE reset (F11) releases it at once** — `NgsMp3::releaseNow()`, called from
+  `ESPectrum::reset` beside `GS::hostIfaceFlush`/`GS::ngsReset`, plus one re-armed
+  allocation attempt (`s_init_failed` cleared, so a decoder that had been forced into
+  butter can land in SRAM next session). **`NgsMp3::reset()` — the CHIP reset — must
+  keep freeing nothing**: NPL soft-resets the decoder at every track change, and a
+  free there would churn the allocation mid-session and could come back in a worse
+  tier. Two different resets, two different policies.
+- **The arena is RELEASED after ~30 s of no MP3 traffic** (`MP3_IDLE_RELEASE_FRAMES`),
+  which is what makes an 8 KB margin defensible: the heap is thin only while a
+  player is actually streaming, not for the whole session. The free crosses cores,
+  so it is two-phase — core0 nulls `s_st` (every core1 entry point tests it first),
+  then waits `MP3_FREE_GRACE_FRAMES` before releasing, by which time a core1 call
+  that had already loaded the pointer is long finished. 30 s, not 5: NPL's
+  between-track SD loads take seconds and a paused track must not churn the
+  allocation. `s_init_failed` is NOT cleared by the release — "there was no room"
+  stays latched for the session; only `GS::deinit` re-arms it.
 
 Helix itself is at the floor for stereo MP3 (~23.9 KB): `SubbandInfo::vbuf` 8712 B
 (deliberately double-sized to skip modulo indexing — halving it is the only real
@@ -1516,6 +1562,29 @@ pair whenever the DAC is **present or selected** — `board_kbd_set_alt_pins()`
 HWInfo's `Kbd CLK/DATA` prints the live pair (`board_kbd_clock_pin()`), not the
 macros. A re-init also pushes an emptied HID report downstream, or a key held at
 the moment of the move stays pressed for the emulated machine forever.
+
+### PS/2 SM attach mid-frame = PERMANENT desync (z0p2 "F12/boot sometimes dead", 2026-08-13)
+
+NOT hw-tested yet. The PIO program treats the first clock edge it sees as a
+start bit and then counts 11 clocks per frame — exactly one real PS/2 frame —
+so an SM enabled mid-transmission keeps a phase offset that NEVER rotates away,
+and `tick()` used to accept the garbage unchecked (no stop/parity test). The
+keyboard is then dead until a reboot that happens to start on a quiet line —
+which is why the physical reset button "fixed" it: the F12-release scancode
+(watchdog reboot) and the BAT 0xAA (power-on) race the boot, a RUN reset with
+hands off the keyboard does not. Three fixes in `drivers/ps2kbd/` +
+`drivers/audio/pcm5122_init.c`:
+
+- `init_gpio` waits for 150 µs of continuous clock-high (15 ms bound) before
+  enabling the SM — it can only ever attach between frames.
+- `tick()` validates stop + odd parity per frame; a bad frame bumps
+  `bad_frames()` and runs `resyncSm()` (SM restart at a real start bit + the
+  emptied-report push, so no stuck keys). main.cpp logs
+  `PS/2: bad frames=N (+d), SM resynced` from the 150 ms input tick.
+- `pcm5122_detect` (ZERO2, shares GP2/3 with the PS/2 port) waits for quiet
+  lines before driving I2C into whatever is there, and requires TWO clean ACKs
+  — keyboard noise faking one ACK would move the keyboard to GP14/15 for the
+  whole session. Boot log now prints `main: pcm5122 present/absent, kbd CLK=GPn`.
 
 ## ZiFi NIC — three host interfaces (all bridge to one ESP UART)
 

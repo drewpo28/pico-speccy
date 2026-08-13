@@ -1292,8 +1292,15 @@ void ESPectrum::reset(uint8_t romInUse) {
   // The host FIFOs are flushed immediately as well: ngs_warm_reset() clears
   // them too, but only once core1 picks the request up, and they emulate
   // single-byte latches whose leftovers must not reach the next ZX session.
+  //
+  // The MP3 decoder's memory goes back here too (~24 KB of SRAM + 33 KB of butter,
+  // allocated on the first MD_SEND byte). Only NPL and the Z-Players ever stream
+  // MP3, and whatever was streaming is exactly what this reset just killed — so
+  // there is nothing left to hold it for, and the next session gets a fresh (and
+  // possibly better-placed) allocation when it asks. The idle timer would get there
+  // in ~30 s anyway; this makes it immediate.
   if (GS::enabled) {
-    if (GS::neogs) { GS::hostIfaceFlush(); GS::ngsReset(); }
+    if (GS::neogs) { GS::hostIfaceFlush(); GS::ngsReset(); NgsMp3::releaseNow(); }
     else           GS::reset();
   }
 
