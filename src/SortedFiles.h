@@ -95,10 +95,17 @@ public:
     }
     inline std::string get(size_t i) {
         if (!open || !storage_file) return std::string();
-        f_lseek(storage_file, rec_size * i);
-        UINT br;
-        char buf[rec_size];
-        f_read(storage_file, buf, rec_size, &br);
+        // buf MUST be zeroed and the read length MUST be checked: a short read (the
+        // record is missing because a put() write failed, or the index file was
+        // truncated/cross-linked under us) used to return the raw stack frame, so the
+        // browser drew binary junk — residue of whatever strings that stack last held
+        // — instead of an empty row, hiding the real failure. hw 2026-08-13.
+        UINT br = 0;
+        char buf[rec_size] = { 0 };
+        if (f_lseek(storage_file, rec_size * i) != FR_OK) return std::string();
+        if (f_read(storage_file, buf, rec_size, &br) != FR_OK || br < rec_size)
+            return std::string();
+        buf[rec_size - 1] = '\0';
         return (buf);
     }
     inline std::string operator[](size_t i) {

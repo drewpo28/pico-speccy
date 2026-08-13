@@ -1194,6 +1194,71 @@ reduction left, and costs speed), `IMDCTInfo` ~6944, `HuffmanInfo` 4624. minimp3
 is bigger and traps (see the NeoGS session notes), libmad is bigger and slower —
 there is no better driver to switch to, only lazier allocation.
 
+## Launching from the Web catalog: never unlink a temp file that is still open (2026-08-13)
+
+**hw-confirmed 2026-08-13 on z0p2**: two demos launched in a row from Web Archives
+each start the right one, and the catalog listing is clean. Symptoms were "the second
+demo starts the FIRST one" plus a Web-catalog listing drawn as binary garbage — ONE
+root cause, and both halves are worth remembering because neither points at the other.
+
+Quick-start extracts to a FIXED path per extension (`/tmp/.zip_extract.<ext>`), so the
+file a previous launch still holds open is the file the next launch unlinks. `FF_FS_LOCK`
+is **0**, so `f_unlink` succeeds on an open file — and the dangling FIL is not inert:
+
+- `f_close` → `f_sync` rewrites the directory entry through the CACHED `fp->dir_ptr`
+  whenever the FIL is `FA_MODIFIED` (ff.c, non-exFAT branch), and `dir_alloc` has
+  meanwhile handed that deleted slot to the freshly extracted file (it scans for `DDEM`
+  from the top). The new entry inherits the OLD start cluster and size → the next mount
+  reads the PREVIOUS image, whose data is still intact on the card.
+- The old chain is free in the FAT, so later allocations get it — the catalog's own
+  `/tmp/.net_*.idx` / `.catv_*.tsv` — and those files come back cross-linked, i.e. as
+  binary junk. That is the garbage listing; nothing was wrong with the catalog code.
+- **What makes a mounted image `FA_MODIFIED` in the first place is READING it.** FatFs
+  `f_lseek` stretches a `FA_WRITE` file when it seeks past EOF, and every image shorter
+  than the geometry it emulates is read past its end routinely (an SCL is tens of KB
+  standing in for 640 KB).
+
+Fix (`ZipExtract.cpp`): `cleanup()` **leaves a path that is still open alone**
+(`tempPathBusy` — both `fdd` and `mb02_fdd`, tape, ALF cart; deleting a mounted image
+under the running machine was never right either), and `releaseTempOwners` runs beside
+the finalPath `f_unlink`/`f_rename`, i.e. AFTER `extractFile`.
+
+**The TIMING of that release is load-bearing, not just its presence.** An earlier
+version released inside `cleanup()`, before `extractFile` — correct on paper, and it
+reordered every heap free in this path relative to `extractFile`'s 8 KB alt-stack and
+inflate buffers. Two hw runs then died with a wild PC (`SIGBUS`, INVSTATE/UNDEFINSTR)
+out of `rvmWD1793Step`'s own frame where five launches on the old ordering had been
+clean. Keep the release at the last possible moment.
+
+Also from this session:
+
+- **`sorted_files::get()` returned an uninitialized 253-byte STACK buffer** on a short
+  read (SortedFiles.h) — that is what turned a broken `.idx` into plausible-looking
+  garbage names (residue of earlier strings) instead of empty rows, and it hid the real
+  failure. Zeroed + length-checked now.
+- **`SCLtoTRD` never bounded the SCL file count**: the header byte allows 255, TR-DOS
+  holds 128, and the loop writes `track0[(i << 4) + 15]` — up to 4080 bytes into a
+  2304-byte track 0 (inside the 8 KB `g_rawTrkDataBuf`, so it corrupts the staging area
+  and `sclDataOffset`, not the heap). Clamped to 128.
+- **OPEN: reading past EOF still grows images on the card**, filling them with whatever
+  the freed clusters held. The obvious clamp (past EOF → blank sector) was tried and
+  **BACKED OUT** — it changes what the guest sees for empty sectors, which moved the FDC
+  onto a different path, and the wild-PC crash above followed it. Reverting it made the
+  crash go away. Whether it created that fault or merely exposed a latent one in the FDC
+  is unresolved; the comment sits at the old call site in `wd1793.cpp`.
+- **The fault handler now prints two more lines** (`main.cpp` `sigbus_handler`): r0-r3/
+  r12/xPSR/EXC_RETURN plus eight words of the faulting function's frame — and it takes
+  EXC_RETURN from the naked trampoline because bit 4 says whether the frame is 8 or **26**
+  words. `rvmWD1793Step` opens with `vpush {d8}`, so this path really does use the
+  extended FP frame, and reading the caller's frame at the basic-frame offset would just
+  print FP registers dressed up as return addresses. Without these lines the crash was
+  unreadable (PC in `.bss`, LR valid, and NO indirect branch anywhere on the path — the
+  answer only came from the frame: word 3 = `Ports::FDDStep`, so the chain above was
+  intact and only `rvmWD1793Step`'s own frame was gone).
+- Bisect trick that settled the attribution: **the ZipExtract change is a no-op on the
+  FIRST launch of a session** (nothing is mounted, so nothing is released). A crash on
+  launch #1 therefore cannot come from it.
+
 ## The corner FDD lamp must not self-erase by colour-matching (hw-confirmed 2026-08-13)
 
 The lamp used to paint its 8x8 cell EVERY frame with a computed "border colour"

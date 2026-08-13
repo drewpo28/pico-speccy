@@ -1270,7 +1270,7 @@ extern char __StackOneBottom;
 extern char __StackOneTop;
 
 // C linkage so the naked-asm `b sigbus_handler` resolves without mangling.
-extern "C" void sigbus_handler(uint32_t *frame) {
+extern "C" void sigbus_handler(uint32_t *frame, uint32_t exc_return) {
     static int count = 0;
     if (++count > 3) return;
     // Exception frame: [0]=r0 [1]=r1 [2]=r2 [3]=r3 [4]=r12 [5]=LR [6]=PC [7]=xPSR.
@@ -1298,6 +1298,32 @@ extern "C" void sigbus_handler(uint32_t *frame) {
     Debug::fault_log("SIGBUS[%d] core%u: PC=%08x LR=%08x SP=%08x CFSR=%08x BFAR=%08x stackOvf=%d (bot=%08x top=%08x)",
            count, (unsigned)core, (unsigned)pc, (unsigned)lr, (unsigned)sp, (unsigned)cfsr, (unsigned)bfar,
            ovf, (unsigned)bot, (unsigned)top);
+    // Second line, only on the first fault: the registers plus the words just above
+    // the exception frame — i.e. the top of the faulting function's own frame. PC and
+    // LR alone cannot tell a wild indirect branch from an overwritten return address
+    // (hw 2026-08-13: PC in .bss with LR still valid, and neither function on the
+    // path has an indirect branch — the answer has to come out of the frame). Bounded
+    // to what fault_log's 192-byte line holds, and only while SP is sane.
+    if (count == 1) {
+        // EXC_RETURN bit 4 clear = extended (FP) frame: 26 words, not 8. Whether the
+        // faulting chain used the FPU is not a detail here — rvmWD1793Step opens with
+        // `vpush {d8}` — and reading the caller's frame at the wrong offset would just
+        // print FP registers dressed up as return addresses.
+        const unsigned fwords = (exc_return & 0x10u) ? 8u : 26u;
+        if (sp >= bot && sp + (fwords + 8) * sizeof(uint32_t) <= top) {
+            Debug::fault_log("SIGBUS regs: r0=%08x r1=%08x r2=%08x r3=%08x r12=%08x xpsr=%08x exc=%08x",
+                   (unsigned)frame[0], (unsigned)frame[1], (unsigned)frame[2],
+                   (unsigned)frame[3], (unsigned)frame[4], (unsigned)frame[7],
+                   (unsigned)exc_return);
+            const uint32_t* c = frame + fwords;   // top of the faulting function's frame
+            Debug::fault_log("SIGBUS stk(%u): %08x %08x %08x %08x %08x %08x %08x %08x",
+                   fwords, (unsigned)c[0], (unsigned)c[1], (unsigned)c[2], (unsigned)c[3],
+                   (unsigned)c[4], (unsigned)c[5], (unsigned)c[6], (unsigned)c[7]);
+        } else {
+            Debug::fault_log("SIGBUS regs: SP out of range, frame not dumped (exc=%08x)",
+                   (unsigned)exc_return);
+        }
+    }
 }
 // Naked trampoline: pass the stacked exception frame to sigbus_handler.
 // EXC_RETURN bit 2: 0 = MSP, 1 = PSP was active when the fault fired.
@@ -1307,6 +1333,7 @@ void __attribute__((naked)) sigbus(void) {
         "ite    eq\n"
         "mrseq  r0, msp\n"
         "mrsne  r0, psp\n"
+        "mov    r1, lr\n"       // EXC_RETURN: bit 2 = MSP/PSP, bit 4 = basic/FP frame
         "b      sigbus_handler\n"
     );
 }

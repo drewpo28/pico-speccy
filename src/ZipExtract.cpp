@@ -22,6 +22,7 @@ using namespace std;
 #include "ui/UiGfx.h"
 #include "Config.h"
 #include "ESPectrum.h"
+#include "Tape.h"
 #include "messages.h"
 #include "Debug.h"
 
@@ -46,6 +47,57 @@ static const char* s_zip_err = nullptr;
 
 const char* ZipExtract::errMsg() {
     return s_zip_err ? s_zip_err : OSD_ZIP_ERR;
+}
+
+// Every extraction reuses ONE fixed temp path per extension
+// (/tmp/.zip_extract.<ext>), so the file a previous launch is still holding open
+// is the same file the next launch unlinks and rewrites. With FF_FS_LOCK == 0
+// f_unlink succeeds on an open file, and the dangling FIL is not harmless: its
+// f_close still rewrites the directory entry through the cached fp->dir_ptr
+// (ff.c f_sync) whenever the FIL is FA_MODIFIED, while dir_alloc has meanwhile
+// handed that deleted slot to the freshly extracted file. The new file then
+// inherits the OLD start cluster and size — so launching a second image mounts
+// the FIRST one again — and the old chain, already free in the FAT, is handed out
+// to later allocations, cross-linking whatever /tmp file gets it next (the Web
+// catalog's .idx / .catv, which then render as binary garbage). hw 2026-08-13.
+//
+// So release the owner before the unlink — and, just as important, do it at the LAST
+// possible moment. An earlier attempt released inside cleanup(), i.e. before
+// extractFile ran, and that reordered every heap free in this path relative to
+// extractFile's 8 KB alt-stack and inflate buffers; two hardware runs then died with
+// a wild PC in the FDC (LR pinned at rvmWD1793Step's call to rvmwdDiskStep) where
+// five launches on the old ordering had been clean. So cleanup() now LEAVES a path
+// that is still open alone — deleting a mounted image from under the running machine
+// was never right either — and the release happens where it is actually needed:
+// beside the finalPath unlink/rename, which is where the old ordering already sat.
+//
+// DivMMC / IDE images (.mmc/.hdf/.hdd/.vhd/.iso in cleanup()'s list) are NOT covered:
+// they are mounted through Config and reopened at boot, so nothing holds a zip temp
+// path open for them.
+static bool tempPathBusy(const char* path) {
+    const string p(path);
+    for (int u = 0; u < 4; u++) {
+        if (ESPectrum::fdd.disk[u] && ESPectrum::fdd.disk[u]->fname == p) return true;
+        if (ESPectrum::mb02_fdd.disk[u] && ESPectrum::mb02_fdd.disk[u]->fname == p) return true;
+    }
+    if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
+        FileUtils::TAP_Path + Tape::tapeFileName == p) return true;
+    if (AlfCart::active() && AlfCart::path() == p) return true;
+    return false;
+}
+
+static void releaseTempOwners(const char* path) {
+    const string p(path);
+    for (int u = 0; u < 4; u++) {
+        if (ESPectrum::fdd.disk[u] && ESPectrum::fdd.disk[u]->fname == p)
+            wdDiskEject(&ESPectrum::fdd, u);
+        if (ESPectrum::mb02_fdd.disk[u] && ESPectrum::mb02_fdd.disk[u]->fname == p)
+            wdDiskEject(&ESPectrum::mb02_fdd, u);
+    }
+    if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
+        FileUtils::TAP_Path + Tape::tapeFileName == p)
+        Tape::Init();   // closes the open tape FIL
+    if (AlfCart::active() && AlfCart::path() == p) AlfCart::unmount();
 }
 
 static bool hasMatchingExt(const char* filename, uint8_t fileType) {
@@ -264,10 +316,11 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     extBuf[elen] = 0;
 
     string finalPath = string(TEMP_FILE) + "." + extBuf;
-    // A lazily-mounted ALF cart may still hold this exact temp path open (we reuse one
-    // fixed name). Release it before unlink/rename so its FIL can't dangle onto freed/
-    // reused clusters when we overwrite the file. loadAlfCart re-mounts right after.
-    if (AlfCart::active() && AlfCart::path() == finalPath) AlfCart::unmount();
+    // A previous launch may still hold this exact temp path open (we reuse one fixed
+    // name per extension) — a mounted disk, tape or ALF cart. Release it before the
+    // unlink/rename so its FIL can't dangle onto freed/reused clusters, or rewrite the
+    // recycled directory entry from f_close. The caller re-mounts right after.
+    releaseTempOwners(finalPath.c_str());
     f_unlink(finalPath.c_str());
     f_rename(TEMP_FILE, finalPath.c_str());
     return finalPath;
@@ -750,7 +803,7 @@ int ZipExtract::extractAll(const string& zipPath, const string& destDir) {
 }
 
 void ZipExtract::cleanup() {
-    f_unlink(TEMP_FILE);
+    f_unlink(TEMP_FILE);   // extension-less staging name; never mounted
     const char* exts[] = {
         ".sna", ".z80", ".p", ".tap", ".tzx", ".pzx", ".wav", ".mp3",
         ".trd", ".scl", ".udi", ".fdi", ".td0", ".mbd", ".pro",
@@ -759,7 +812,9 @@ void ZipExtract::cleanup() {
     for (int i = 0; exts[i]; i++) {
         char path[32];
         snprintf(path, sizeof(path), "%s%s", TEMP_FILE, exts[i]);
-        f_unlink(path);
+        // Still mounted/loaded? Leave it — extract()'s finalPath step releases and
+        // replaces the one path it actually needs, and no other path is in the way.
+        if (!tempPathBusy(path)) f_unlink(path);
     }
 }
 

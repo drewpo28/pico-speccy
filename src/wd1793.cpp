@@ -95,6 +95,23 @@ static unsigned char* claim_scl_track0(rvmWD1793 *wd) {
     return s_scl_track0;
 }
 
+// KNOWN, currently UNFIXED: reading an image past its end GROWS the file.
+//
+// Images are opened FA_READ | FA_WRITE so the guest can write to them, and FatFs
+// f_lseek extends a writable file when it seeks past EOF — create_chain with forced
+// stretch, objsize = fptr, FA_MODIFIED (ff.c f_lseek). Every image shorter than the
+// geometry it emulates gets read past its end as a matter of course (an SCL is tens
+// of KB standing in for a 640 KB disk), so empty sectors allocate clusters, grow the
+// file on the card and read back whatever those clusters last held.
+//
+// A clamp (read past EOF → blank sector, never seek past it) was tried on 2026-08-13
+// and BACKED OUT: it changes what the guest sees for empty sectors (zeros instead of
+// that junk), which moved the FDC onto a different path, and two hardware runs then
+// died with a wild PC out of rvmWD1793Step's own frame (LR pinned at its call to
+// rvmwdDiskStep, caller chain above it intact). Whether the clamp created that or
+// merely exposed it is unresolved — do not re-add it until that crash is understood,
+// or the same intermittent fault comes back with it.
+
 // #pragma GCC optimize("O3")
 
 //Step rates
@@ -4100,6 +4117,16 @@ void SCLtoTRD(rvmwdDisk *d, unsigned char* track0) {
     UINT br;
     f_lseek(d->Diskfile,8);
     f_read(d->Diskfile, &numberOfFiles,1,&br);
+
+    // TR-DOS holds at most 128 catalog entries (8 sectors x 16). The header byte
+    // allows 255, and the loop below writes track0[(i << 4) + 15] — i.e. up to 4080
+    // bytes into a 2304-byte track 0 — so a corrupt or hostile SCL scribbles over
+    // the rest of the staging buffer and lands a garbage sclDataOffset, after which
+    // the FDC streams from wild file offsets. Clamp; a real SCL never exceeds this.
+    if (numberOfFiles > 128) {
+        Debug::log("SCL: file count %u > 128 — clamped (corrupt image?)", (unsigned)numberOfFiles);
+        numberOfFiles = 128;
+    }
 
     // printf("Number of files: %d\n",(int)numberOfFiles);
 
