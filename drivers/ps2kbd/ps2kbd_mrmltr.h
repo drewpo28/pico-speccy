@@ -26,7 +26,9 @@ class Ps2Kbd_Mrmltr {
 private:
   PIO _pio;                        // pio0 or pio1
   uint _sm;                        // pio state machine index
-  uint _base_gpio;                 // data signal gpio
+  uint _base_gpio;                 // CLOCK gpio (DATA is _base_gpio + 1)
+  uint _offset = 0;                // where the patched program sits in PIO memory
+  bool _started = false;           // init_gpio() has run at least once
   hid_keyboard_report_t _report;   // HID report structure
   Ps2KbdAction_ _actions[2];
   uint _action;
@@ -60,8 +62,15 @@ public:
     uint base_gpio,
     std::function<void(hid_keyboard_report_t *curr, hid_keyboard_report_t *prev)> keyHandler);
   
-  void init_gpio();
-  
+  void init_gpio();                 // on the pair given to the constructor
+  // Bring the keyboard up on `base_gpio` (CLOCK; DATA = base_gpio + 1). Safe to
+  // call again while running: the SM is stopped, the program reloaded for the new
+  // pin and the old pins released. Used to move off GP2/3 when a board wants them
+  // for something else (ZERO2's PCM5122 control I2C).
+  void init_gpio(uint base_gpio);
+  uint clock_gpio() const { return _base_gpio; }
+  uint data_gpio()  const { return _base_gpio + 1; }
+
   void __not_in_flash_func(tick)();
 };
 

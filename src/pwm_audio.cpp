@@ -314,24 +314,32 @@ void init_sound() {
     }
 #endif
 #ifdef PCM5122_I2S_DATA
-    // Yield I2S DATA pin to ZiFi if it owns it (skip PCM5122 → standard audio).
-    if (Config::audio_driver == 5 && !BoardPins::zifiOwnsPin(PCM5122_I2S_DATA)) {
-        Debug::log("init_sound: PCM5122 mode (explicit)");
-        pcm5122_detected = pcm5122_init(PCM5122_I2C_SDA, PCM5122_I2C_SCL);
-        Debug::log("init_sound: PCM5122 detected=%d", (int)pcm5122_detected);
-        i2s_config.data_pin = PCM5122_I2S_DATA;
-        i2s_config.bck_pin = PCM5122_I2S_BCK;
-        i2s_config.lck_pin = PCM5122_I2S_LCK;
-        is_i2s_enabled = true;
-        i2s_volume(&i2s_config, 0);
-        return;
-    }
-    if (Config::audio_driver == 0 && !BoardPins::zifiOwnsPin(PCM5122_I2S_DATA)) {
-        // Auto mode: probe PCM5122 via I2C before standard testPins
-        if (pcm5122_detect(PCM5122_I2C_SDA, PCM5122_I2C_SCL)) {
-            Debug::log("init_sound: PCM5122 detected in auto mode");
-            pcm5122_detected = true;
-            pcm5122_init(PCM5122_I2C_SDA, PCM5122_I2C_SCL);
+    {
+        // Yield I2S DATA pin to ZiFi if it owns it (skip PCM5122 → standard audio).
+        const bool pcm_pins_free = !BoardPins::zifiOwnsPin(PCM5122_I2S_DATA);
+        // Explicit pick always wins; Auto uses the boot-time probe (cached — it
+        // must not run again now that the keyboard may be sitting on those pins).
+        const bool use_pcm = pcm_pins_free &&
+            (Config::audio_driver == 5 ||
+             (Config::audio_driver == 0 &&
+              pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL)));
+    #if defined(KBD_ALT_CLOCK_PIN)
+        // The control I2C shares its pins with the PS/2 port. The keyboard moves
+        // off them whenever the DAC board is THERE (probed at boot) or has been
+        // picked in Audio > Driver — a board plugged into GP2/3 is wired for the
+        // alternate PS/2 pair either way, whatever the audio path ends up being.
+        // Release the bus BEFORE the keyboard reclaims the pins (the teardown
+        // deinits them, pull-ups included; no-op if the bus was never brought up).
+        const bool kbd_alt = pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL) ||
+                             Config::audio_driver == 5;
+        if (!use_pcm) pcm5122_release(PCM5122_I2C_SDA, PCM5122_I2C_SCL);
+        board_kbd_set_alt_pins(kbd_alt);
+    #endif
+        if (use_pcm) {
+            Debug::log("init_sound: PCM5122 mode (%s)",
+                       Config::audio_driver == 5 ? "explicit" : "auto");
+            pcm5122_detected = pcm5122_init(PCM5122_I2C_SDA, PCM5122_I2C_SCL);
+            Debug::log("init_sound: PCM5122 detected=%d", (int)pcm5122_detected);
             i2s_config.data_pin = PCM5122_I2S_DATA;
             i2s_config.bck_pin = PCM5122_I2S_BCK;
             i2s_config.lck_pin = PCM5122_I2S_LCK;

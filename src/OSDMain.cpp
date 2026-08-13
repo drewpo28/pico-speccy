@@ -5184,7 +5184,9 @@ void OSD::BoardInfo() {
     // GPIO pins (all labels 16 chars after "  " prefix, colon at col 18)
     pos += snprintf(buf + pos, sizeof(buf) - pos, "\n GPIO pins:\n");
     pos += snprintf(buf + pos, sizeof(buf) - pos,
-        "  Kbd CLK/DATA  : %d/%d\n", KBD_CLOCK_PIN, KBD_DATA_PIN);
+        // live pair — on ZERO2 it moves to KBD_ALT_* when the PCM5122 takes GP2/3
+        "  Kbd CLK/DATA  : %d/%d\n", (int)board_kbd_clock_pin(),
+        (int)board_kbd_clock_pin() + 1);
 #ifdef VGA_BASE_PIN
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "  VGA base      : %d\n", VGA_BASE_PIN);

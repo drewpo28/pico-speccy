@@ -11,18 +11,11 @@
 #include "ps2kbd_mrmltr.h"
 // printf came transitively from TinyUSB <=0.18 headers; 0.21 cleaned its includes up
 #include <cstdio>
-#if KBD_CLOCK_PIN == 2
-#include "ps2kbd_mrmltr2.pio.h"
-#elif KBD_CLOCK_PIN == 10
-#include "ps2kbd_mrmltr10.pio.h"
-#elif KBD_CLOCK_PIN == 14
-#include "ps2kbd_mrmltr14.pio.h"
-#elif KBD_CLOCK_PIN == 16
-#include "ps2kbd_mrmltr16.pio.h"
-#else
+// One program for every pin — the CLOCK pin is patched into it at load time
+// (ps2kbd_program_for below), so there is no per-board .pio copy any more.
 #include "ps2kbd_mrmltr.pio.h"
-#endif
 #include "hardware/clocks.h"
+#include <cassert>
 
 #ifdef DEBUG_PS2
 #define DBG_PRINTF(...) printf(__VA_ARGS__)
@@ -400,42 +393,75 @@ void Ps2Kbd_Mrmltr::tick() {
   }
 }
 
+// The PIO program watches the CLOCK line with an *absolute* `wait N gpio <pin>`,
+// so the pin number is baked into three instructions. That used to be solved by
+// keeping one .pio per board pin — four byte-identical copies differing only in
+// that field — and picking one with `#if KBD_CLOCK_PIN == ...`. Patch the index
+// field at load time instead: it works for any pin, and it is what lets the
+// keyboard MOVE while running (ZERO2 shares GP2/3 between the PS/2 port and the
+// PCM5122 DAC's control I2C, so the pair is only settled once the audio driver
+// is known — see board_kbd_set_alt_pins() in main.cpp).
+static uint16_t      s_kbd_instr[8];
+static pio_program_t s_kbd_prog;
+
+static const pio_program_t* ps2kbd_program_for(uint clk_gpio) {
+    static_assert(ps2kbd_program.length <= count_of(s_kbd_instr),
+                  "grow s_kbd_instr to hold the whole program");
+    s_kbd_prog = ps2kbd_program;
+    for (uint i = 0; i < ps2kbd_program.length; ++i) {
+        uint16_t in = ps2kbd_program.instructions[i];
+        // WAIT is 001|Delay/SS(5)|Pol(1)|Source(2)|Index(5); Source 00 = GPIO
+        if ((in & 0xE000) == 0x2000 && ((in >> 5) & 3) == 0)
+            in = (uint16_t)((in & ~0x1Fu) | (clk_gpio & 0x1Fu));
+        s_kbd_instr[i] = in;
+    }
+    s_kbd_prog.instructions = s_kbd_instr;
+#if PICO_PIO_VERSION > 0
+    // Metadata from the .pio describes the *original* pin; recompute it for the
+    // patched one (CLK) plus the sampled DATA pin (CLK+1), or pio_add_program()
+    // would check the program against the wrong 16-pin GPIO range.
+    s_kbd_prog.used_gpio_ranges = (uint8_t)((1u << (clk_gpio >> 4)) |
+                                            (1u << ((clk_gpio + 1) >> 4)));
+#endif
+    return &s_kbd_prog;
+}
+
 // TODO Error checking and reporting
 void Ps2Kbd_Mrmltr::init_gpio() {
+    init_gpio(_base_gpio);
+}
+
+void Ps2Kbd_Mrmltr::init_gpio(uint base_gpio) {
+    const bool reinit = _started;
+    if (_started) {
+        // Re-init on another pair: stop the SM, hand back the program space and
+        // release the old pins (their pull-ups included — GP2/3 go on to carry
+        // the PCM5122 I2C, which brings its own).
+        pio_sm_set_enabled(_pio, _sm, false);
+        pio_sm_clear_fifos(_pio, _sm);
+        // Only .length matters to the removal, and patching never changes it
+        pio_remove_program(_pio, &ps2kbd_program, _offset);
+        if (base_gpio != _base_gpio) {
+            gpio_deinit(_base_gpio);
+            gpio_deinit(_base_gpio + 1);
+        }
+    }
+    _base_gpio = base_gpio;
     // init KBD pins to input
-    gpio_init(_base_gpio);     // Data
-    gpio_init(_base_gpio + 1); // Clock
+    gpio_init(_base_gpio);     // Clock
+    gpio_init(_base_gpio + 1); // Data
     // with pull up
     gpio_pull_up(_base_gpio);
     gpio_pull_up(_base_gpio + 1);
-    // get a state machine
-    _sm = pio_claim_unused_sm(_pio, true);
+    // get a state machine (kept across a re-init)
+    if (!_started) _sm = pio_claim_unused_sm(_pio, true);
     // reserve program space in SM memory
-#if KBD_CLOCK_PIN == 2
-    uint offset = pio_add_program(_pio, &m2ps2kbd_program);
-#elif KBD_CLOCK_PIN == 10
-    uint offset = pio_add_program(_pio, &m10ps2kbd_program);
-#elif KBD_CLOCK_PIN == 14
-    uint offset = pio_add_program(_pio, &m14ps2kbd_program);
-#elif KBD_CLOCK_PIN == 16
-    uint offset = pio_add_program(_pio, &m16ps2kbd_program);
-#else
-    uint offset = pio_add_program(_pio, &ps2kbd_program);
-#endif
+    _offset = pio_add_program(_pio, ps2kbd_program_for(_base_gpio));
+    uint offset = _offset;
     // Set pin directions base
     pio_sm_set_consecutive_pindirs(_pio, _sm, _base_gpio, 2, false);
     // program the start and wrap SM registers
-#if KBD_CLOCK_PIN == 2
-    pio_sm_config c = m2ps2kbd_program_get_default_config(offset);
-#elif KBD_CLOCK_PIN == 10
-    pio_sm_config c = m10ps2kbd_program_get_default_config(offset);
-#elif KBD_CLOCK_PIN == 14
-    pio_sm_config c = m14ps2kbd_program_get_default_config(offset);
-#elif KBD_CLOCK_PIN == 16
-    pio_sm_config c = m16ps2kbd_program_get_default_config(offset);
-#else
     pio_sm_config c = ps2kbd_program_get_default_config(offset);
-#endif
     // Set the base input pin. pin index 0 is DAT, index 1 is CLK  // Murmulator: 0->CLK 1->DAT ( _base_gpio + 1)
     //  sm_config_set_in_pins(&c, _base_gpio);
     sm_config_set_in_pins(&c, _base_gpio + 1);
@@ -450,4 +476,14 @@ void Ps2Kbd_Mrmltr::init_gpio() {
     // Ready to go
     pio_sm_init(_pio, _sm, offset, &c);
     pio_sm_set_enabled(_pio, _sm, true);
+    // A move mid-frame can strand half a scan code / a held key on the old pins.
+    // On a re-init push the emptied report downstream too, or whatever was held
+    // at that moment stays pressed for the emulated machine forever.
+    hid_keyboard_report_t prev = _report;
+    clearHidKeys();
+    clearActions();
+    _double = false;
+    _overflow = false;
+    if (reinit) _keyHandler(&_report, &prev);
+    _started = true;
 }

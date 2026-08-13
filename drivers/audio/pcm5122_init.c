@@ -64,6 +64,18 @@ bool pcm5122_detect(uint sda_pin, uint scl_pin) {
     return true;
 }
 
+bool pcm5122_present(uint sda_pin, uint scl_pin) {
+    static int cached = -1;             // -1 = not probed yet
+    if (cached < 0) cached = pcm5122_detect(sda_pin, scl_pin) ? 1 : 0;
+    return cached != 0;
+}
+
+void pcm5122_release(uint sda_pin, uint scl_pin) {
+    // Only when the bus was actually brought up: the teardown deinits the pins,
+    // and on ZERO2 they belong to the PS/2 keyboard whenever the DAC is unused.
+    if (pcm5122_i2c) pcm5122_i2c_teardown(sda_pin, scl_pin);
+}
+
 bool pcm5122_init(uint sda_pin, uint scl_pin) {
     // If detect() wasn't called first, set up I2C
     if (!pcm5122_i2c) {

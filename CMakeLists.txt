@@ -795,11 +795,14 @@ ELSEIF(ZERO2)
         CPU_MHZ=${CPU_MHZ}
         ZERO2=1
 
-        # PS2 keyboard (moved from GPIO 2/3 for PCM5122 I2C)
-        KBD_CLOCK_PIN=14
-        KBD_DATA_PIN=15
-        # KBD_CLOCK_PIN=2
-        # KBD_DATA_PIN=3
+        # PS/2 keyboard. GP2/3 is the default pair and is shared with the PCM5122
+        # DAC board's control I2C — when that board is detected at boot (or picked
+        # in Audio > Driver) the keyboard is moved to the ALT pair at runtime; see
+        # board_kbd_set_alt_pins() in main.cpp.
+        KBD_CLOCK_PIN=2
+        KBD_DATA_PIN=3
+        KBD_ALT_CLOCK_PIN=14
+        KBD_ALT_DATA_PIN=15
 
         LOAD_WAV_PIO=17
 

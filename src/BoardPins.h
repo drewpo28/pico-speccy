@@ -53,3 +53,10 @@ const char* zifiActiveNote();
 
 } // namespace BoardPins
 
+// PS/2 keyboard pin pair, implemented in main.cpp next to the driver instance.
+// Boards that share the default pair with another peripheral define
+// KBD_ALT_CLOCK_PIN/KBD_ALT_DATA_PIN (ZERO2: GP2/3 doubles as the PCM5122 DAC's
+// control I2C, alt pair GP14/15). Everywhere else the setter is a no-op.
+extern "C" void     board_kbd_set_alt_pins(bool alt);
+extern "C" unsigned board_kbd_clock_pin(void);   // live CLOCK pin (DATA = +1)
+

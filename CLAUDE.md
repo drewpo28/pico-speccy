@@ -1360,8 +1360,8 @@ On RP2350, UART TX available via two funcsel:
 | GPIO | Function | Cat | Notes |
 |------|----------|-----|-------|
 | 0-1 | — | FREE | PSRAM disabled |
-| 2 | PCM5122_I2C_SDA | REASSIGN | DAC control (if attached) |
-| 3 | PCM5122_I2C_SCL | REASSIGN | |
+| 2 | KBD_CLOCK / PCM5122_I2C_SDA | REASSIGN | KBD default; DAC control when the board is there |
+| 3 | KBD_DATA / PCM5122_I2C_SCL | REASSIGN | |
 | 4-6 | — | FREE | NESPAD disabled |
 | 7 | CLK_AY_PIN2 | REASSIGN | AY clock out |
 | 8-9 | — | FREE | |
@@ -1369,8 +1369,8 @@ On RP2350, UART TX available via two funcsel:
 | 11 | Audio BCK/PWM1/CLK_595 | REASSIGN | |
 | 12 | Audio LCK/BEEPER/DATA_595 | REASSIGN | |
 | 13 | — | FREE | |
-| 14 | KBD_CLOCK | REASSIGN | Moved from 2/3 for PCM5122 I2C |
-| 15 | KBD_DATA | REASSIGN | |
+| 14 | KBD_ALT_CLOCK | REASSIGN | KBD moves here when PCM5122 is detected/selected |
+| 15 | KBD_ALT_DATA | REASSIGN | |
 | 16 | — | FREE | |
 | 17 | LOAD_WAV_PIO | REASSIGN | WAV loader |
 | 18 | PCM5122_I2S_BCK | REASSIGN | DAC bit clock |
@@ -1426,6 +1426,40 @@ On RP2350, UART TX available via two funcsel:
 2. **MURM2 NESPAD vs PSRAM** — NES_CLK=20, NES_LAT=21 overlap PSRAM_MOSI=20, PSRAM_MISO=21. Cannot coexist
 3. **PICO_DV NESPAD vs Display** — NES_CLK=8, NES_LAT=9 inside display range (6-13). USE_NESPAD correctly not set
 4. **MURM2/MURM MIDI_TX=LOAD_WAV_PIO=22** — mutually exclusive features on same pin. Handled in code (warning in messages.h)
+
+### PS/2 keyboard pins are RUNTIME, not compile-time (2026-08-13, NOT hw-tested)
+
+`Ps2Kbd_Mrmltr::init_gpio(base_gpio)` can be called again while running: it stops
+the SM, reloads the program and releases the old pins. The PIO program watches
+CLOCK with an **absolute `wait N gpio <pin>`**, so the pin is baked into three
+instructions — that used to mean one .pio per board pin (`ps2kbd_mrmltr{2,10,14,
+16}.pio`, byte-identical copies picked by `#if KBD_CLOCK_PIN == ...`). All four
+are **deleted**; `ps2kbd_program_for()` patches the 5-bit index field (WAIT is
+`001|delay(5)|pol(1)|src(2)|index(5)`, src 00 = GPIO) into a static copy and
+recomputes `used_gpio_ranges` for CLK and CLK+1, or `pio_add_program` checks the
+program against the wrong 16-pin range. `drivers/ps2/ps2.c` (the non-KBDUSB
+bit-bang path) still uses the macros — KBDUSB is ON for every board.
+
+Why: **ZERO2 shares GP2/3 between the PS/2 port and the PCM5122 DAC's control
+I2C.** GP2/3 is the default again (`KBD_CLOCK_PIN`), GP14/15 is the alternate
+(`KBD_ALT_CLOCK_PIN`, ZERO2-only define), and the keyboard moves to the alternate
+pair whenever the DAC is **present or selected** — `board_kbd_set_alt_pins()`
+(main.cpp, next to the driver instance) called from `init_sound()` once
+`Config::audio_driver` is known. Two ordering rules, both load-bearing:
+
+- **The I2C probe runs in `main()` BEFORE `ps2kbd.init_gpio()`**, and its answer
+  is cached (`pcm5122_present()`). An I2C transfer on a live keyboard's clock/data
+  lines reads as host-to-device signalling and would strand it mid-command, so it
+  must never happen with the SM listening — which is also why the Auto branch of
+  `init_sound()` calls the cached probe instead of `pcm5122_detect()`.
+- **`pcm5122_release()` before the keyboard reclaims the pins** — the teardown
+  `gpio_deinit`s them, pull-ups included, so releasing after the remap would leave
+  the PS/2 lines floating. It is a no-op when the bus was never brought up (that
+  guard is what keeps a DAC-less board from losing its keyboard pull-ups).
+
+HWInfo's `Kbd CLK/DATA` prints the live pair (`board_kbd_clock_pin()`), not the
+macros. A re-init also pushes an emptied HID report downstream, or a key held at
+the moment of the move stays pressed for the emulated machine forever.
 
 ## ZiFi NIC — three host interfaces (all bridge to one ESP UART)
 

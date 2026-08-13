@@ -43,6 +43,9 @@
 #include "psram_spi.h"
 #include "Debug.h"
 #include "Buffer.h"
+#if defined(KBD_ALT_CLOCK_PIN) && defined(PCM5122_I2C_SDA)
+    #include "pcm5122_init.h"
+#endif
 #ifdef KBDUSB
     #include "ps2kbd_mrmltr.h"
     #if defined(ZERO2_PIO_USB_HOST)
@@ -832,6 +835,32 @@ Ps2Kbd_Mrmltr ps2kbd(
         process_kbd_report
 );
 #endif
+
+// ── PS/2 keyboard pins shared with another peripheral ────────────────────────
+// ZERO2 wires the PS/2 port to GP2/3, which is also the PCM5122 DAC board's
+// control I2C. Whoever is actually there decides: no DAC (or an audio driver
+// that isn't the DAC) → keyboard on GP2/3; DAC detected at boot or picked in
+// Audio > Driver → keyboard moves to GP14/15 and the I2C takes GP2/3.
+// Called from init_sound() (pwm_audio.cpp) once Config::audio_driver is known;
+// the boot-time choice is made in main() below, before the PIO SM starts.
+extern "C" void board_kbd_set_alt_pins(bool alt) {
+#if defined(KBDUSB) && defined(KBD_ALT_CLOCK_PIN)
+    const uint want = alt ? KBD_ALT_CLOCK_PIN : KBD_CLOCK_PIN;
+    if (ps2kbd.clock_gpio() == want) return;
+    Debug::log("kbd: moving PS/2 to GP%u/%u", want, want + 1);
+    ps2kbd.init_gpio(want);
+#else
+    (void)alt;
+#endif
+}
+
+extern "C" unsigned board_kbd_clock_pin(void) {
+#ifdef KBDUSB
+    return ps2kbd.clock_gpio();
+#else
+    return KBD_CLOCK_PIN;
+#endif
+}
 
 // ── Uptime across soft reboots ───────────────────────────────────────────────
 // HWInfo's Uptime used raw time_us_64() (µs since the last chip reset), so an
@@ -1667,7 +1696,21 @@ int main() {
     #else
     tuh_init(BOARD_TUH_RHPORT);
     #endif
-    ps2kbd.init_gpio();
+    {
+        uint kbd_clk = KBD_CLOCK_PIN;
+    #if defined(KBD_ALT_CLOCK_PIN) && defined(PCM5122_I2C_SDA)
+        // GP2/3 is either the PS/2 port or the PCM5122's control I2C. Probe the
+        // DAC *before* the PS/2 SM starts listening: an I2C transfer on a live
+        // keyboard's clock/data lines looks like host-to-device signalling and
+        // would strand it mid-command (and hand us a bogus scan code). The result
+        // is cached, so init_sound()'s Auto branch never re-probes on these pins.
+        // Config isn't loaded yet — an explicit Audio > Driver = PCM5122 is
+        // honoured later by board_kbd_set_alt_pins() from init_sound().
+        if (pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL))
+            kbd_clk = KBD_ALT_CLOCK_PIN;
+    #endif
+        ps2kbd.init_gpio(kbd_clk);
+    }
 #else
     keyboard_init();
 #endif

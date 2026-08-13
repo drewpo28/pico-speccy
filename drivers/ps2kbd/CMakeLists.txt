@@ -12,22 +12,8 @@ target_include_directories(ps2kbd INTERFACE
 )
 
 
-pico_generate_pio_header(ps2kbd 
+# One program for every board pin: the driver patches the `wait gpio` index at
+# load time (see ps2kbd_program_for), so no per-pin .pio copies are needed.
+pico_generate_pio_header(ps2kbd
 ${CMAKE_CURRENT_LIST_DIR}/ps2kbd_mrmltr.pio
-)
-
-pico_generate_pio_header(ps2kbd
-${CMAKE_CURRENT_LIST_DIR}/ps2kbd_mrmltr2.pio
-)
-
-pico_generate_pio_header(ps2kbd
-${CMAKE_CURRENT_LIST_DIR}/ps2kbd_mrmltr14.pio
-)
-
-pico_generate_pio_header(ps2kbd
-${CMAKE_CURRENT_LIST_DIR}/ps2kbd_mrmltr10.pio
-)
-
-pico_generate_pio_header(ps2kbd
-${CMAKE_CURRENT_LIST_DIR}/ps2kbd_mrmltr16.pio
 )
