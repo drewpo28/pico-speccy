@@ -44,6 +44,7 @@
 // VIDEO::activeVideoMode(); re-stated here at FILE scope because inside namespace nm it
 // would resolve to nm::SELECT_VGA and fail to link.
 extern bool SELECT_VGA;
+extern size_t getFreeHeap(void);   // OSDMain.cpp — same file-scope reasoning
 
 namespace nm {
 
@@ -958,6 +959,20 @@ static void revertFeature(int8_t feat) {
 // session") frees ~nothing: the re-check refuses again and the caller reverts the
 // enable as before — the Off left behind only writes down what was already true.
 static char s_yieldNote[56];
+static char s_vmodeNote[40];
+static void yieldGigascreen(const char* beneficiary, CommitReport& rep) {
+    kDesc[SET_GIGASCREEN].put(0);       // Config::gigascreen_onoff = 0, persisted by
+                                        // the commit's single Config::save()
+    bmClr(g_dirty, SET_GIGASCREEN);     // a staged Gigascreen edit is superseded
+    pre_gs(false);                      // gigascreen_enabled + the VIDEO mirrors
+    GsSubsys::request(false);
+    GsSubsys::apply();                  // synchronous: the re-check must see the heap
+    snprintf(s_yieldNote, sizeof(s_yieldNote), " Gigascreen off: RAM freed for %s ",
+             beneficiary);
+    rep.note = s_yieldNote;             // overrides lesser notes: this one explains
+    rep.constrained++;
+}
+
 static Subsystems::BudgetResult gatedBudgetCheck(int feat, CommitReport& rep) {
     using namespace Subsystems;
     FeatureId cand[FEAT_COUNT];
@@ -966,16 +981,7 @@ static Subsystems::BudgetResult gatedBudgetCheck(int feat, CommitReport& rep) {
     if (br != BUDGET_NEEDS_FREE) return br;
     if (feat == FEAT_GIGASCREEN || !featureEnabled(FEAT_GIGASCREEN)) return br;
     if (featureCost(FEAT_GIGASCREEN) < deficit) return br;
-    kDesc[SET_GIGASCREEN].put(0);       // Config::gigascreen_onoff = 0, persisted by
-                                        // the commit's single Config::save()
-    bmClr(g_dirty, SET_GIGASCREEN);     // a staged Gigascreen edit is superseded
-    pre_gs(false);                      // gigascreen_enabled + the VIDEO mirrors
-    GsSubsys::request(false);
-    GsSubsys::apply();                  // synchronous: the re-check must see the heap
-    snprintf(s_yieldNote, sizeof(s_yieldNote), " Gigascreen off: RAM freed for %s ",
-             featureName((FeatureId)feat));
-    rep.note = s_yieldNote;             // overrides lesser notes: this one explains
-    rep.constrained++;
+    yieldGigascreen(featureName((FeatureId)feat), rep);
     return budgetCheck((FeatureId)feat, cand, &nCand, &deficit);
 }
 
@@ -1100,6 +1106,46 @@ void commit(CommitReport& rep) {
             rep.changed--;
             rep.blocked++;
             if (rep.blockedFeat < 0) rep.blockedFeat = FEAT_MIDI;
+        }
+    }
+
+    // 720x480/576 need a bigger main framebuffer — one CONTIGUOUS block, claimed at
+    // boot (VIDEO::reserveFrameBuffer) — and, with Gigascreen on a butter-less board,
+    // a bigger prev-FB on top. A video mode has no budgetCheck FeatureId, so it is
+    // gated here: without this the "Apply & reboot" came back to a board that could
+    // not place the FB and OOM-hung in vga.init()'s legacy allocator (m1p2,
+    // hw 2026-08-13). The reboot defragments (setup() claims the FB first), so total
+    // free heap is the right measure — same reasoning as budgetCheck's totalDef.
+    if (bmGet(g_dirty, SET_VIDEO_MODE)) {
+        size_t curPrev = 0, newPrev = 0;
+        const size_t curMain = VIDEO::fbBytesForVM((uint8_t)g_base[SET_VIDEO_MODE], &curPrev);
+        const size_t newMain = VIDEO::fbBytesForVM((uint8_t)g_val[SET_VIDEO_MODE], &newPrev);
+        // want_gs() is the post-commit intent — a staged Gigascreen edit is already
+        // written live by this point. Off → both prev terms drop out (the current
+        // prev-FB being freed later only adds uncounted headroom).
+        if (!want_gs()) curPrev = newPrev = 0;
+        const size_t curBytes = curMain + curPrev, newBytes = newMain + newPrev;
+        const size_t grow     = newBytes > curBytes ? newBytes - curBytes : 0;
+        const size_t mainGrow = newMain  > curMain  ? newMain  - curMain  : 0;
+        const char*  label    = (g_val[SET_VIDEO_MODE] == Config::VM_720x480_60)
+                              ? "720x480" : "720x576";
+        bool fits = (grow == 0) || getFreeHeap() >= grow + Subsystems::SRAM_MARGIN;
+        if (!fits && want_gs() &&
+            getFreeHeap() + curPrev >= mainGrow + Subsystems::SRAM_MARGIN) {
+            // Sacrificing Gigascreen both frees the current prev-FB and takes the
+            // bigger one off the bill — same policy as gatedBudgetCheck. The re-check
+            // uses the real heap, so a prev-FB that was never actually allocated
+            // ("off this session") cannot fake the credit.
+            yieldGigascreen(label, rep);
+            fits = getFreeHeap() >= mainGrow + Subsystems::SRAM_MARGIN;
+        }
+        if (!fits) {
+            kDesc[SET_VIDEO_MODE].put(g_base[SET_VIDEO_MODE]);
+            bmClr(g_dirty, SET_VIDEO_MODE);
+            rep.changed--;
+            rep.constrained++;
+            snprintf(s_vmodeNote, sizeof(s_vmodeNote), " Not enough RAM for %s ", label);
+            rep.note = s_vmodeNote;
         }
     }
 

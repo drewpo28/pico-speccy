@@ -1998,6 +1998,22 @@ static inline int fbModeStride(int Mode) {
     return (vidmodes[Mode][vmodeproperties::hRes] + 3) & ~3;
 }
 
+// See Video.h. The vm → vidmodes[] mapping mirrors fbModeIndex() exactly, just for
+// an arbitrary mode instead of the active one.
+size_t VIDEO::fbBytesForVM(uint8_t vm, size_t* prevBytes) {
+    int Mode = 0;
+#ifdef VGA_HDMI
+    if (vm >= Config::VM_720x576_50)      Mode = 22;  // 360x288 full border
+    else if (vm == Config::VM_720x480_60) Mode = 23;  // 360x240 half border
+#else
+    (void)vm;
+#endif
+    const int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
+    if (prevBytes)
+        *prevBytes = butter_psram_size() ? 0 : fbPrevBytes(lines, stride);
+    return fbMainBytes(lines, stride);
+}
+
 // Claim the main framebuffer as early as setup() can — ideally straight after
 // Config::load(), where ~185 KB of heap is untouched. Its size depends on nothing
 // but the configured video mode, while everything that runs between there and
@@ -2007,8 +2023,8 @@ static inline int fbModeStride(int Mode) {
 // 576p + NeoGS + MIDI. Idempotent, and safe to skip — Init() allocates exactly the
 // same way if this was never called, or if it failed.
 void VIDEO::reserveFrameBuffer() {
-    const int Mode = fbModeIndex();
-    const int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
+    int Mode = fbModeIndex();
+    int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
     if (!sharedFB_arr1) sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
     if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
         Debug::log("VIDEO: FB reserved %ux%u (%u B), freeHeap=%u largest=%u",
@@ -2022,6 +2038,37 @@ void VIDEO::reserveFrameBuffer() {
     Debug::log("VIDEO: FB reserve FAILED %ux%u (%u B), freeHeap=%u largest=%u",
                (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
                (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+#ifdef VGA_HDMI
+    // Self-heal instead of hanging. Downstream there is no recovery: Init()'s
+    // legacy-allocator fallback goes through pico_malloc, which PANICS on OOM —
+    // the board wedges on every boot with no menu to undo the mode (the menu gate
+    // in UiStage normally refuses such a switch, but a config carried from another
+    // board, or features enabled after the mode was picked, land here). Downgrade
+    // to the 640x480 sibling (same refresh), persist it — otherwise every boot
+    // repeats this — and drop any pending-mode record so videoModeConfirm doesn't
+    // ask to keep a mode that never ran. The bootNotice explains the change once
+    // video is up.
+    if (isFullBorderMode()) {
+        char note[64];
+        snprintf(note, sizeof(note), "%s: not enough RAM - using 640x480",
+                 isFullBorder240() ? "720x480" : "720x576");
+        OSD::bootNotice(note);
+        const uint8_t fallback = isFullBorder240() ? Config::VM_640x480_60
+                                                   : Config::VM_640x480_50;
+        if (SELECT_VGA) Config::vga_video_mode  = fallback;
+        else            Config::hdmi_video_mode = fallback;
+        Config::save();
+        Config::clearPendingVideoMode();
+        Mode = fbModeIndex();
+        lines = fbModeLines(Mode); stride = fbModeStride(Mode);
+        if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
+            Debug::log("VIDEO: FB reserved %ux%u (%u B) after mode fallback, freeHeap=%u",
+                       (unsigned)stride, (unsigned)lines,
+                       (unsigned)fbMainBytes(lines, stride), (unsigned)getFreeHeap());
+            return;
+        }
+    }
+#endif
     free(sharedFB_arr1); sharedFB_arr1 = nullptr;
 }
 

@@ -164,6 +164,13 @@ public:
   // Optional and idempotent: Init() does the same allocation if this never ran.
   static void reserveFrameBuffer();
 
+  // Heap bytes a VM_* video mode costs: return value = main FB (one contiguous
+  // block), *prevBytes = the Gigascreen prev-FB that goes with it (0 on butter
+  // boards, where the prev-FB lives in PSRAM). Pure arithmetic over vidmodes[] —
+  // used by the menu's video-mode budget gate to refuse 720x480/576 on a board
+  // that cannot fit them (the boot would OOM-hang otherwise).
+  static size_t fbBytesForVM(uint8_t vm, size_t* prevBytes);
+
 
   // Reset video
   static void Reset();

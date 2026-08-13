@@ -1028,6 +1028,23 @@ Two mechanisms fix the two halves:
   distinguished. Edge: Gigascreen enabled in Config but prev-FB never landed
   ("off this session") frees ~nothing → the re-check refuses again, the enable
   reverts as before, and the Off left behind matches what was already true.
+- **Video-mode budget gate (UiStage.cpp commit) + boot self-heal (Video.cpp)**:
+  switching to 720x480/576 on a board that cannot place the bigger main FB used to
+  HANG on the next boot — `VIDEO::reserveFrameBuffer` fails, `Init()` falls back to
+  the legacy allocator path and pico_malloc PANICS, every boot, with no menu to
+  undo the mode. Two layers: (a) the commit gates `SET_VIDEO_MODE` — grow =
+  Δ(main FB) + Δ(Gigascreen prev-FB, butter-less + want_gs() only), measured by the
+  new `VIDEO::fbBytesForVM(vm, &prev)` (pure arithmetic mirroring `fbModeIndex`:
+  640x480→77 120, 720x480→86 760, 720x576→104 040; prev 38 560/43 380/52 020);
+  needs `getFreeHeap() >= grow + SRAM_MARGIN` (total free is right — the reboot
+  defragments, FB is claimed first). Short → Gigascreen yields (same policy/helper
+  `yieldGigascreen` as the feature gate) → still short → mode reverts with note
+  " Not enough RAM for 720x576 ". (b) `reserveFrameBuffer`'s failure branch: if the
+  active mode is full-border, downgrade to the 640x480 sibling (same refresh),
+  `Config::save()` (else every boot repeats it), `clearPendingVideoMode()` (no
+  "keep this mode?" dialog for a mode that never ran), retry, bootNotice
+  "720x576: not enough RAM - using 640x480". The hotkey mode switches (HK_VIDMODE_*)
+  only go TO 640x480, so the menu is the only path that needs the gate.
 - **`OSD::bootNotice`/`flushBootNotices` (OSDMain.cpp)**: setup()-time failures
   queue one line each (192 B buffer, keeps the EARLIEST on overflow — the first
   failure is the cause); the first `ESPectrum::loop` frame shows them in one
