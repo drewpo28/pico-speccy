@@ -51,15 +51,45 @@ static void pcm5122_i2c_teardown(uint sda_pin, uint scl_pin) {
     gpio_deinit(scl_pin);
 }
 
+// On ZERO2 these pins double as the PS/2 port, so what is actually on them may
+// be a KEYBOARD, and at probe time it may be mid-scancode (the hotkey release
+// that follows a watchdog reboot, or the BAT 0xAA after power-on). Wait for the
+// lines to go quiet before driving I2C into it: probing over live keyboard
+// traffic both strands the keyboard mid-command and lets its clocking be
+// misread as bus activity. Bounded — a stuck-low line just falls through to
+// the (failing) probe.
+static void pcm5122_wait_quiet(uint sda_pin, uint scl_pin) {
+    gpio_init(sda_pin);
+    gpio_init(scl_pin);
+    gpio_pull_up(sda_pin);
+    gpio_pull_up(scl_pin);
+    busy_wait_us(10);   // pull-up settle before the first sample
+    absolute_time_t deadline = make_timeout_time_us(20000);
+    absolute_time_t quiet    = make_timeout_time_us(200);
+    while (!time_reached(quiet)) {
+        if (!gpio_get(sda_pin) || !gpio_get(scl_pin))
+            quiet = make_timeout_time_us(200);
+        if (time_reached(deadline))
+            break;
+        tight_loop_contents();
+    }
+}
+
 bool pcm5122_detect(uint sda_pin, uint scl_pin) {
+    pcm5122_wait_quiet(sda_pin, scl_pin);
     pcm5122_i2c_setup(sda_pin, scl_pin);
 
+    // Two clean ACKs, not one: a false positive here moves the PS/2 keyboard to
+    // the alternate pins for the whole session (dead keyboard on a DAC-less
+    // board), and residual keyboard clocking could fake a single ACK. A real
+    // DAC acknowledges its address deterministically.
     uint8_t rxdata;
-    int ret = i2c_read_timeout_us(pcm5122_i2c, PCM5122_ADDR, &rxdata, 1, false, 5000);
-
-    if (ret < 0) {
-        pcm5122_i2c_teardown(sda_pin, scl_pin);
-        return false;
+    for (int i = 0; i < 2; ++i) {
+        int ret = i2c_read_timeout_us(pcm5122_i2c, PCM5122_ADDR, &rxdata, 1, false, 5000);
+        if (ret < 0) {
+            pcm5122_i2c_teardown(sda_pin, scl_pin);
+            return false;
+        }
     }
     return true;
 }

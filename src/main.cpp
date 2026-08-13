@@ -917,6 +917,20 @@ void repeat_me_for_input() {
             repeat_handler();
             uptime_refresh();
 #ifdef KBDUSB
+            // PS/2 frames rejected by the driver's stop/parity check (each one
+            // also resynced the SM). A burst right after boot = the keyboard's
+            // own traffic raced the SM start; steady growth = a noisy line.
+            {
+                static uint32_t prev_bad_frames = 0;
+                const uint32_t now_bad = ps2kbd.bad_frames();
+                if (now_bad != prev_bad_frames) {
+                    Debug::log("PS/2: bad frames=%u (+%u), SM resynced",
+                               (unsigned)now_bad, (unsigned)(now_bad - prev_bad_frames));
+                    prev_bad_frames = now_bad;
+                }
+            }
+#endif
+#ifdef KBDUSB
             // Recover HID interfaces whose IN endpoint lost its arm (see hid_app.cpp):
             // without this a single refused tuh_hid_receive_report() kills the keyboard
             // until re-plug — reproducible by loading a file from a USB stick.
@@ -1708,6 +1722,9 @@ int main() {
         // honoured later by board_kbd_set_alt_pins() from init_sound().
         if (pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL))
             kbd_clk = KBD_ALT_CLOCK_PIN;
+        Debug::log("main: pcm5122 %s, kbd CLK=GP%u",
+                   pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL) ? "present" : "absent",
+                   kbd_clk);
     #endif
         ps2kbd.init_gpio(kbd_clk);
     }

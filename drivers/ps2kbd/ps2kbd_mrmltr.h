@@ -34,6 +34,11 @@ private:
   uint _action;
   bool _double;
   bool _overflow;
+  uint32_t _bad_frames = 0;        // frames rejected by the stop/parity check
+
+  // Recover from a framing error: restart the SM on a real start bit and
+  // release whatever keys the garbled stretch may have left stuck.
+  void __not_in_flash_func(resyncSm)();
   
   std::function<void(hid_keyboard_report_t *curr, hid_keyboard_report_t *prev)> _keyHandler;
 
@@ -70,6 +75,9 @@ public:
   void init_gpio(uint base_gpio);
   uint clock_gpio() const { return _base_gpio; }
   uint data_gpio()  const { return _base_gpio + 1; }
+  // Total frames rejected by the stop/parity check (each one also resynced the
+  // SM). Non-zero = the keyboard raced the SM start or the line is noisy.
+  uint32_t bad_frames() const { return _bad_frames; }
 
   void __not_in_flash_func(tick)();
 };

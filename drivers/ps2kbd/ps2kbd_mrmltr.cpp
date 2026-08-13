@@ -15,7 +15,28 @@
 // (ps2kbd_program_for below), so there is no per-board .pio copy any more.
 #include "ps2kbd_mrmltr.pio.h"
 #include "hardware/clocks.h"
+#include "pico/time.h"
 #include <cassert>
+
+// Wait until CLOCK has been continuously high for `quiet_us` (i.e. the keyboard
+// is between frames — a transmitting device toggles the clock every ~40-50 us),
+// bounded by `timeout_us` in case the line is stuck low (dead/absent keyboard).
+// The SM's frame is 11 clocks, exactly one real PS/2 frame, so attaching it
+// mid-frame is a PERMANENT desync (the phase offset never rotates away) — this
+// is what made the keyboard come up dead when its own traffic raced the boot:
+// the F12 release right after a watchdog reboot, or the BAT 0xAA at power-on.
+static void ps2_wait_line_idle(uint clk_gpio, uint32_t quiet_us, uint32_t timeout_us) {
+    busy_wait_us(10);   // let a freshly-enabled pull-up settle before sampling
+    absolute_time_t deadline = make_timeout_time_us(timeout_us);
+    absolute_time_t quiet    = make_timeout_time_us(quiet_us);
+    while (!time_reached(quiet)) {
+        if (!gpio_get(clk_gpio))
+            quiet = make_timeout_time_us(quiet_us);
+        if (time_reached(deadline))
+            break;
+        tight_loop_contents();
+    }
+}
 
 #ifdef DEBUG_PS2
 #define DBG_PRINTF(...) printf(__VA_ARGS__)
@@ -353,10 +374,21 @@ void Ps2Kbd_Mrmltr::tick() {
   
   while (!pio_sm_is_rx_fifo_empty(_pio, _sm)) {
     // pull a scan code from the PIO SM fifo
-    uint32_t rc = _pio->rxf[_sm];    
+    uint32_t rc = _pio->rxf[_sm];
     DBG_PRINTF("PS/2 rc %4.4lX (%ld)\n", rc, rc);
-    
-    uint32_t code = (rc << 2) >> 24;
+
+    // The 10 sampled bits sit in the ISR top (shift-right, autopush at 10):
+    // b22..b29 = data LSB..MSB, b30 = odd parity, b31 = stop (must be 1).
+    // A failure means the SM is sampling mid-frame — and since its frame is
+    // exactly one keyboard frame long, the desync never heals on its own:
+    // resync or the keyboard stays garbled forever.
+    uint32_t frame = rc >> 22;
+    if ((frame & 0x200) == 0 || (__builtin_popcount(frame & 0x1FF) & 1) == 0) {
+      ++_bad_frames;
+      resyncSm();
+      return;   // resync cleared the FIFO; anything pending was suspect too
+    }
+    uint32_t code = frame & 0xFF;
     DBG_PRINTF("PS/2 keycode %2.2lX (%ld)\n", code, code);
 
     // TODO Handle PS/2 overflow/error messages
@@ -391,6 +423,25 @@ void Ps2Kbd_Mrmltr::tick() {
       }
     }
   }
+}
+
+// Framing error recovery: stop the SM, restart it at the top of the program
+// (clears the ISR/shift counter), wait for an inter-frame gap so it re-attaches
+// on a real start bit, and drop whatever the report held — a release lost to
+// the garbled stretch would otherwise stay pressed for the emulated machine
+// forever.
+void Ps2Kbd_Mrmltr::resyncSm() {
+    pio_sm_set_enabled(_pio, _sm, false);
+    pio_sm_clear_fifos(_pio, _sm);
+    pio_sm_restart(_pio, _sm);
+    pio_sm_exec(_pio, _sm, pio_encode_jmp(_offset));
+    ps2_wait_line_idle(_base_gpio, 150, 2000);
+    pio_sm_set_enabled(_pio, _sm, true);
+    hid_keyboard_report_t prev = _report;
+    clearHidKeys();
+    clearActions();
+    _double = false;
+    _keyHandler(&_report, &prev);
 }
 
 // The PIO program watches the CLOCK line with an *absolute* `wait N gpio <pin>`,
@@ -473,6 +524,13 @@ void Ps2Kbd_Mrmltr::init_gpio(uint base_gpio) {
     // than 8 SM cycles per keyboard clock.
     float div = (float)clock_get_hz(clk_sys) / (8 * 16700);
     sm_config_set_clkdiv(&c, div);
+    // Never enable the SM mid-frame: at boot the keyboard is often transmitting
+    // right now (the hotkey release that triggered a watchdog reboot, the BAT
+    // 0xAA after power-on, or its reaction to the PCM5122 I2C probe that just
+    // ran on these very pins), and an SM attached mid-frame stays desynced
+    // permanently. 150 us of continuous clock-high = between frames; the 15 ms
+    // bound covers a stuck-low line (no keyboard).
+    ps2_wait_line_idle(_base_gpio, 150, 15000);
     // Ready to go
     pio_sm_init(_pio, _sm, offset, &c);
     pio_sm_set_enabled(_pio, _sm, true);
