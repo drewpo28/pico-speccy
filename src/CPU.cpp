@@ -214,7 +214,13 @@ void CPU::reset() {
     if ((Z80Ops::isPentagon || Z80Ops::isProfi) && !Config::betadisk) Config::betadisk = true;
 
     // Timex video is incompatible with Byte ROM sets — auto-disable.
-    if (Z80Ops::isByte && Config::timex_video) Config::timex_video = false;
+    // Also with Profi/Karabas: port #FF there is the Beta-128 FDC SYS register,
+    // the Karabas-Pro native RTC AS latch (#FF/#BF, CPM=1&ROM14=1) and the SAA
+    // select — the Timex handler fires whenever trdos=0, which is ROMain's
+    // normal running state (CP/M code in RAM), so it steals the RTC register
+    // select and ROMain's boot hangs in its MC146818 "wait while UIP=1" spin
+    // (RTC::readDisabled answers UIP-clear only for the LATCHED status regs).
+    if ((Z80Ops::isByte || Z80Ops::isProfi) && Config::timex_video) Config::timex_video = false;
 
     updateStatesInFrame();
 

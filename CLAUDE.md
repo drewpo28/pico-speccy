@@ -1837,6 +1837,28 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
   heap) is too tight — if so, route mbedTLS allocs to PSRAM (`PSRAM_DATA`) later.
   SD-swap is NOT usable for TLS buffers (no MMU/demand-paging on RP2350).
 
+## Timex SCLD is excluded on Profi/Karabas — port #FF collision (hw-confirmed 2026-08-13)
+
+Karabas ROMain hung at boot whenever Timex Video Mode was on. On Profi/Karabas
+port #FF is never an SCLD register: it is the Beta-128 FDC SYS register
+(trdos=1), the **Karabas-Pro native RTC AS latch** (#FF/#BF, CPM=1&ROM14=1) and
+the SAA1099 select. The Timex OUT handler (Ports.cpp, `a8==0xFF && !(address &
+0x0100)`) fires whenever `trdos=0` — which is ROMain's NORMAL running state
+(CP/M code executing from RAM, PC≥0x4000 drops trdos) — so `OUT (#FF),0x0A`
+(select MC146818 reg A before the datasheet "wait while UIP=1" spin) was
+stolen: the RTC select never latched, `RTC::readDisabled()` (RTC off is the
+default) answered the STALE register with 0xFF → UIP looked stuck → the exact
+"ROMain won't start with RTC off" hang came back. Note A8 of `OUT (#FF),A` is
+bit 0 of A, so only EVEN register selects were stolen — and each one also
+flipped `timex_mode = reg&7` (garbage screen even when boot survived). With
+RTC ON the boot may survive by luck (stale sel 0 = seconds, bit7=0) but the
+clock and screen still corrupt. Fix follows the Gigascreen-on-Profi pattern,
+three layers: `CPU::reset` backstop (`isByte || isProfi` auto-off, silent),
+`MachineSwitch` (toast + reg clear on switch into Profi), and
+`resolveConstraints` in UiStage ("Timex is not available on Profi" note when
+staged with a Profi arch). The port handlers themselves are unchanged — the
+config can no longer be true while Profi runs.
+
 ## RTC / Time (Pentagon Mr Gluk TimeKeeper)
 
 - `src/RTC.*` — MC146818 emulation. Ports (Pentagon/Profi):

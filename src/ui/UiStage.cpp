@@ -770,6 +770,15 @@ static void resolveConstraints(CommitReport& rep) {
         if (staged(SET_GIGASCREEN) != 0 && stagedIsProfi())
             changed |= force(SET_GIGASCREEN, 0, rep, "Gigascreen is not available on Profi");
 
+        // Port #FF on Profi/Karabas is the FDC SYS register (Beta scheme), the
+        // native RTC AS latch (CPM=1&ROM14=1) and the SAA select. The Timex SCLD
+        // handler claims it whenever trdos=0 — ROMain's normal running state —
+        // stealing the RTC register select, so ROMain's boot hung in its
+        // MC146818 "wait while UIP=1" spin (and every stolen OUT flipped the
+        // screen into a Timex mode). Same rule as Gigascreen above.
+        if (staged(SET_TIMEX) != 0 && stagedIsProfi())
+            changed |= force(SET_TIMEX, 0, rep, "Timex is not available on Profi");
+
         // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so
         // at most one may be on (OSDMain.cpp:3251, :3380, :3545). The classic menu enforces
         // this inside each handler, which means the rule only ever fires in the direction

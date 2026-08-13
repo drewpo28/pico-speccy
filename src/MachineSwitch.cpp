@@ -147,7 +147,9 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             MB02::init();
             OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
         }
-        if (Config::timex_video && isByte) {
+        // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
+        // register / native RTC AS latch / SAA select (see CPU::reset backstop).
+        if (Config::timex_video && (isByte || arch == A_PROFI)) {
             Config::timex_video = false;
             VIDEO::timex_port_ff = 0;
             VIDEO::timex_mode = 0;
