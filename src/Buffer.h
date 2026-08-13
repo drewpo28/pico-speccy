@@ -52,6 +52,14 @@ public:
                              //   For a caller that wants persistence rather than speed
                              //   (GM.DLS "Instrument storage: Flash"), where landing in
                              //   PSRAM instead would quietly lose the property asked for.
+        HOT_SRAM      = 32,  // heap-first with a REDUCED headroom rule: take SRAM as long
+                             //   as HEAP_HOT_MARGIN stays spare, instead of the generic
+                             //   32 KB HEAP_SAFETY_MARGIN. For hot working state that a
+                             //   PSRAM placement makes measurably slower (the NeoGS MP3
+                             //   decoder's Helix arena), allocated AFTER boot — by then
+                             //   the heap sits at its runtime level and the generic margin
+                             //   would send every such buffer to PSRAM. No effect when
+                             //   PREFER_PSRAM is set (that caller wants PSRAM first).
     };
     enum Tier { TIER_NONE = 0, TIER_HEAP, TIER_BUTTER, TIER_SPI, TIER_SWAP, TIER_ARENA, TIER_FLASH };
 

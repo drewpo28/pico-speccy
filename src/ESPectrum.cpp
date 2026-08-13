@@ -87,6 +87,7 @@ visit https://zxespectrum.speccy.org/contacto
 using namespace std;
 
 extern size_t getFreeHeap(void);
+extern "C" size_t getLargestAllocatable(void);  // defined in OSDMain.cpp
 
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" volatile bool profi_ds80_active;
@@ -95,7 +96,6 @@ extern "C" volatile bool profi_ds80_active;
 // specification ("C") is not permitted at block scope. ALL platforms — the
 // factory-reset probe uses it on KBDUSB builds too.
 extern "C" bool usb_keyboard_mounted(void);
-extern "C" size_t getLargestAllocatable(void);  // defined in OSDMain.cpp
 #endif
 
 //=======================================================================================
@@ -605,6 +605,29 @@ static void assign_ram(int i) {
   }
 }
 
+// Which output the board drives this boot: the config override (video_driver) or,
+// on "auto", the board's link pins sampled in main(). Both are final the moment
+// Config::load() returns, which is why this can — and must — run there: the video
+// MODE hangs off it (VIDEO::activeVideoMode picks vga_ or hdmi_video_mode), and
+// the framebuffer is claimed from that mode before anything else touches the heap.
+// graphics_init() re-derives the same thing on core1 from the same two inputs.
+static void resolveVideoOutput() {
+#ifdef VGA_HDMI
+  extern bool SELECT_VGA;
+  extern uint8_t linkVGA01;
+  extern uint8_t video_driver;
+  if (video_driver == 0) {
+      #if defined(ZERO2) || defined(PICO_DV)
+          SELECT_VGA = linkVGA01 == 0x1F;
+      #else
+          SELECT_VGA = (linkVGA01 == 0) || (linkVGA01 == 0x1F);
+      #endif
+  } else {
+      SELECT_VGA = video_driver == 1;
+  }
+#endif
+}
+
 void ESPectrum::setup() {
   //=======================================================================================
   // INIT FILESYSTEM
@@ -635,6 +658,17 @@ void ESPectrum::setup() {
     board_psram_disable();
     Debug::log("setup: PSRAM disabled by config (Debug > PSRAM)");
   }
+  // Output + framebuffer FIRST — before even the file-touching calls below, so the
+  // block lands in a heap nothing has cut into yet. Everything further down (ZX RAM
+  // pages, Buffer::initPools, GS/NeoGS, the GM.DLS bank) draws on this same heap,
+  // and the FB is the one block that is both large and un-negotiable: at 720x576 it
+  // is 104 040 CONTIGUOUS bytes, and by VIDEO::Init time the heap no longer holds a
+  // hole that big (hw 2026-08-13, 576p + NeoGS + MIDI: "*** PANIC *** Out of
+  // memory" with 149 KB free). Claiming it here costs the later consumers nothing
+  // they were entitled to — each of them has a PSRAM/SD-swap tier to fall back on,
+  // the framebuffer does not.
+  resolveVideoOutput();
+  VIDEO::reserveFrameBuffer();
   // Mount the ALF cartridge from SD (served lazily on demand like a wd1793 disk),
   // per Config::alfCartPath. Empty drive if none is set or the SD file is missing —
   // there is no built-in cart. Must run before ALF banking can read it.
@@ -927,24 +961,12 @@ void ESPectrum::setup() {
   //=======================================================================================
   // VIDEO
   //=======================================================================================
-#ifdef VGA_HDMI
-  {
-    extern bool SELECT_VGA;
-    extern uint8_t linkVGA01;
-    extern uint8_t video_driver;
-    if (video_driver == 0) {
-        #if defined(ZERO2) || defined(PICO_DV)
-            SELECT_VGA = linkVGA01 == 0x1F;
-        #else
-            SELECT_VGA = (linkVGA01 == 0) || (linkVGA01 == 0x1F);
-        #endif
-    } else {
-        SELECT_VGA = video_driver == 1;
-    }
-  }
-#endif
-  Debug::log("setup: VIDEO::Init begin, freeHeap=%u", getFreeHeap());
-  Debug::log2SD("setup: VIDEO::Init begin, freeHeap=%u", getFreeHeap());
+  // SELECT_VGA is already resolved (resolveVideoOutput(), right after Config::load)
+  // and the framebuffer is normally already claimed — see VIDEO::reserveFrameBuffer.
+  Debug::log("setup: VIDEO::Init begin, freeHeap=%u largest=%u",
+             (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+  Debug::log2SD("setup: VIDEO::Init begin, freeHeap=%u largest=%u",
+                (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
   VIDEO::Init();
   Debug::log("setup: VIDEO::Init done, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: VIDEO::Init done, freeHeap=%u", getFreeHeap());

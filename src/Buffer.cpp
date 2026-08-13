@@ -28,6 +28,12 @@ extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp; C linkage so hdm
 // Keep enough headroom that routing a buffer to the heap never starves the boot
 // allocations / framebuffer. Below this, large buffers prefer PSRAM instead.
 static const size_t HEAP_SAFETY_MARGIN = 32 * 1024;
+// HOT_SRAM's reduced rule. The generic margin above is sized for the BOOT path
+// (the framebuffer is still to come); a buffer allocated on first use at runtime
+// competes with a heap that is already at its steady level (~59 KB free on
+// PICO_DV with NeoGS), where 32 KB spare plus the request itself is unreachable
+// and the caller would silently always land in PSRAM.
+static const size_t HEAP_HOT_MARGIN = 12 * 1024;
 
 // SD swap arena: own file, separate from MemESP (/tmp/pico-speccy.swap) and ZiFi
 // (/tmp/zifi-rx.swap). Bookkeeping cap (the file itself grows lazily on write).
@@ -409,7 +415,8 @@ void* Buffer::palloc(size_t bytes, uint32_t flags) {
         // margin while no single block of `bytes` exists, and malloc() then hits
         // the SDK's un-catchable OOM panic instead of returning nullptr. Probe the
         // real allocator, same as the last-resort check below.
-        if (getLargestAllocatable() < bytes + HEAP_SAFETY_MARGIN) return nullptr;
+        const size_t margin = (flags & HOT_SRAM) ? HEAP_HOT_MARGIN : HEAP_SAFETY_MARGIN;
+        if (getLargestAllocatable() < bytes + margin) return nullptr;
         return malloc(bytes);
     };
 

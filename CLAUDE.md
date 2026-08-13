@@ -321,7 +321,9 @@ garbage. Reference: NedoPC `fpga/current/dma/dma_zx.v` + `docs/dma_zx_doc.txt`
   lessons worth keeping: **the heap margin at VIDEO::Init is under 4 KB on
   PICO_DV**, so measure `RAM:` against a stashed baseline before/after any
   change that touches an inlined hot path (the out-of-line version costs 32 B);
-  and `ensureMainFB`'s `if (!p) return false` is dead code on this SDK.
+  and `ensureMainFB`'s `if (!p) return false` was dead code on this SDK (it is
+  reachable as of 2026-08-13 — a `getLargestAllocatable()` probe now precedes the
+  malloc; see the framebuffer-first section).
   **`fetchOpcode` is deliberately NOT hooked** — the doc's own rule is that
   interrupts must be off while the window is open (else the ZX RSTs to $38 and
   executes card data), and no DMA user runs code from the window.
@@ -1043,6 +1045,60 @@ After this there are 162 bytes of alignment fill left in `.bss`+`.data` combined
 — nothing more to reclaim there. SCRATCH_Y is now full; SCRATCH_X has ~760 B.
 NOT hw-tested.
 
+## The framebuffer is claimed FIRST, and the MP3 decoder is lazy (2026-08-13)
+
+**NOT hw-tested.** Symptom: 720x576 + NeoGS + MIDI GM.DLS died in `setup()` with
+`setup: VIDEO::Init begin, freeHeap=149152` followed by `*** PANIC *** Out of
+memory`. The main framebuffer at 576p is `fbCalcLines(288) * 360` = **104 040
+contiguous bytes** (640x480 is 241*320 = 77 120), and by `VIDEO::Init` the heap
+had 149 KB free but no hole that big. The same shape killed a butter-less board
+even at 640x480: with `butter=0` NeoGS puts everything on the heap and Init began
+with 31 912 free (logs 2026-08-13 11:58 / 12:07).
+
+Two changes, both about ORDER and both worth keeping straight:
+
+- **`VIDEO::reserveFrameBuffer()` runs right after `Config::load()`** (ESPectrum.cpp),
+  where ~185 KB is untouched. FB size depends on nothing but the video mode, so
+  the only prerequisite is `SELECT_VGA` — hence `resolveVideoOutput()`, the block
+  that used to sit just above `VIDEO::Init` (`video_driver`, else the board's
+  `linkVGA01` link pins; `graphics_init` re-derives the same thing on core1).
+  `Init()` then adopts the block and allocates nothing; both share `fbModeIndex()`
+  so they can never disagree — a disagreement would make `ensureMainFB` free and
+  re-allocate, i.e. undo the reservation. **Everything below that point has a
+  PSRAM/SD-swap tier to fall back on; the FB does not** — so the reorder converts
+  "firmware panics" into "GS/prevFB degrades", which is the correct trade, but it
+  DOES mean a butter-less board can now find less heap at `GS::init`.
+- **`ensureMainFB` pre-checks `getLargestAllocatable()`.** Its `if (!p) return
+  false` was dead code (pico_malloc panics, it never returns NULL) — the note in
+  the ZX-DMA section saying so is now out of date. Both boot log lines print
+  `largest=` beside `freeHeap=`; without it a log cannot tell "not enough heap"
+  from "no contiguous block", which is exactly the question this failure asks.
+- **`NgsMp3::init()` is no longer called from `GS::init`.** It allocates on the
+  first MD_SEND byte instead: core1's `mdSend` raises `s_want_init` and drops the
+  byte, core0's `service()` does the one allocation attempt (a failure latches
+  `s_init_failed` — stub mode for the session, as before). Nearly nothing on a
+  NeoGS card plays MP3, so a normal session keeps ~24 KB of SRAM (Helix arena)
+  and ~33 KB of butter. `mddrq()` still answers 1 while stubbed — a 0 wedges NPL's
+  init poll (GS.cpp SSTAT) — so the cost is under a frame of stream head, which
+  Helix resynchronises past. **`init()` must NOT reset the guest-written mirrors**
+  (`s_gain_l/r` SCI_VOL, `s_bass_reg` SCI_BASS, `s_sm_diff`): running late, it now
+  happens AFTER a player has set them, and clearing them plays the first track at
+  the wrong level. `Subsystems::featureCost(FEAT_GENERAL_SOUND)` dropped its
+  NeoGS-only +24 KB for the same reason.
+- **`Buffer::HOT_SRAM`** (new flag) is what keeps the Helix arena in SRAM despite
+  running late: heap-first with a 12 KB margin instead of the generic 32 KB
+  `HEAP_SAFETY_MARGIN`, which is sized for the BOOT path and would send every
+  lazily-allocated buffer to PSRAM (runtime heap is ~59 KB with NeoGS). The
+  butter fallback is still there, and butter is measurably slower for this —
+  the arena is the decoder's hot state and shares the XIP cache with core1's
+  GS fetches.
+
+Helix itself is at the floor for stereo MP3 (~23.9 KB): `SubbandInfo::vbuf` 8712 B
+(deliberately double-sized to skip modulo indexing — halving it is the only real
+reduction left, and costs speed), `IMDCTInfo` ~6944, `HuffmanInfo` 4624. minimp3
+is bigger and traps (see the NeoGS session notes), libmad is bigger and slower —
+there is no better driver to switch to, only lazier allocation.
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the
@@ -1427,7 +1483,7 @@ On RP2350, UART TX available via two funcsel:
 3. **PICO_DV NESPAD vs Display** — NES_CLK=8, NES_LAT=9 inside display range (6-13). USE_NESPAD correctly not set
 4. **MURM2/MURM MIDI_TX=LOAD_WAV_PIO=22** — mutually exclusive features on same pin. Handled in code (warning in messages.h)
 
-### PS/2 keyboard pins are RUNTIME, not compile-time (2026-08-13, NOT hw-tested)
+### PS/2 keyboard pins are RUNTIME, not compile-time (hw-confirmed z0p2, 2026-08-13)
 
 `Ps2Kbd_Mrmltr::init_gpio(base_gpio)` can be called again while running: it stops
 the SM, reloads the program and releases the old pins. The PIO program watches

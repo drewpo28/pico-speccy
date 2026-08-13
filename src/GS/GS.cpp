@@ -2061,7 +2061,11 @@ bool GS::init(uint32_t ram_size_bytes) {
         memset(s_ngs_low_ram, 0, NGS_LOW_RAM_SIZE);
         memset(s_ngs_low_ram + NGS_LOW_RAM_SIZE, 0xFF, 0x2000);  // blank ROM page
         // Fetch/write tables are built by ngs_reset_regs() from reset() below.
-        NgsMp3::init();   // failure just leaves the MP3 path in stub mode
+        // The MP3 decoder is NOT allocated here: NgsMp3 claims its ~24 KB of SRAM
+        // and ~33 KB of PSRAM on the first MD_SEND byte instead, so a session that
+        // never plays MP3 (which is nearly all of them) leaves that memory to the
+        // framebuffer. See the lazy-allocation note in NgsMp3.cpp — a failure there
+        // still just leaves the MP3 path in stub mode.
         s_ngs_boot_hold = true;   // parked until ngsBootRelease() (see pump)
     } else {
         memset(s_gs_work_ram, 0, GS_WORK_RAM_SIZE);

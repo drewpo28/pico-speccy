@@ -1418,10 +1418,19 @@ static inline size_t fbPrevBytes(int lines, int stride) {
 // FB allocation happens once at boot via these. Mode-change runtime resize
 // was removed because heap fragmentation made grow impossible — switching
 // video modes now triggers a hard reset (see Config::pending_vga/hdmi mode).
+extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp — malloc panics on OOM
+extern size_t getFreeHeap(void);                // OSDMain.cpp (also declared below)
+
 static bool ensureMainFB(int lines, int stride) {
     size_t want = fbMainBytes(lines, stride);
     if (sharedFB_main && sharedFB_main_size == want) return true;
     if (sharedFB_main) { free(sharedFB_main); sharedFB_main = nullptr; sharedFB_main_size = 0; }
+    // Probe before asking: pico_malloc PANICS on OOM instead of returning NULL, so
+    // the `!p` branch below never fires on this SDK and a too-small heap took the
+    // whole firmware down with "*** PANIC *** Out of memory" (hw 2026-08-13: 720x576
+    // + NeoGS + MIDI, 149 KB free but no contiguous 104 040 B block). With the probe
+    // the caller gets false and can fall back / report.
+    if (getLargestAllocatable() < want) return false;
     uint8_t *p = (uint8_t*)malloc(want);
     if (!p) return false;
     memset(p, 0, want);
@@ -1429,9 +1438,6 @@ static bool ensureMainFB(int lines, int stride) {
     sharedFB_main_size = want;
     return true;
 }
-
-extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp — malloc panics on OOM
-extern size_t getFreeHeap(void);                // OSDMain.cpp (also declared below)
 
 // Row `row` of the prev-FB, whichever way it is backed. The ONLY way the render
 // path reaches prev-FB rows is the pointer array these fill, so chunking is
@@ -1967,29 +1973,66 @@ static inline uint8_t* prevRowBorder(int row) {
     return (uint8_t*)(VIDEO::vga.prevFrameBuffer[row]);
 }
 
-void VIDEO::Init() {
-    int Mode;
+// The vidmodes[] index the configured video mode asks for. Shared by Init() and
+// reserveFrameBuffer() so the block claimed early is the one Init() then adopts —
+// a disagreement would make ensureMainFB free and re-allocate, i.e. undo the whole
+// point of reserving early.
+static int fbModeIndex() {
 #ifdef VGA_HDMI
-    if (VIDEO::isFullBorder288()) {
-        Mode = 22; // VgaMode_360x288 — full border 360x288
-    } else if (VIDEO::isFullBorder240()) {
-        Mode = 23; // VgaMode_360x240 — half border 360x240
-    } else
+    if (VIDEO::isFullBorder288()) return 22; // VgaMode_360x288 — full border 360x288
+    if (VIDEO::isFullBorder240()) return 23; // VgaMode_360x240 — half border 360x240
 #endif
-    {
-        Mode = 0;
+    return 0;
+}
+
+static inline int fbModeLines(int Mode) {
+    return fbCalcLines(vidmodes[Mode][vmodeproperties::vRes] /
+                       vidmodes[Mode][vmodeproperties::vDiv]);
+}
+static inline int fbModeStride(int Mode) {
+    return (vidmodes[Mode][vmodeproperties::hRes] + 3) & ~3;
+}
+
+// Claim the main framebuffer as early as setup() can — ideally straight after
+// Config::load(), where ~185 KB of heap is untouched. Its size depends on nothing
+// but the configured video mode, while everything that runs between there and
+// VIDEO::Init() (Buffer::initPools, GS/NeoGS, the GM.DLS bank) goes through the
+// heap first. 720x576 needs one contiguous 104 040 B block (289 rows x 360) and
+// hw 2026-08-13 OOM-panicked in Init with 149 KB free but no hole that big:
+// 576p + NeoGS + MIDI. Idempotent, and safe to skip — Init() allocates exactly the
+// same way if this was never called, or if it failed.
+void VIDEO::reserveFrameBuffer() {
+    const int Mode = fbModeIndex();
+    const int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
+    if (!sharedFB_arr1) sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
+    if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
+        Debug::log("VIDEO: FB reserved %ux%u (%u B), freeHeap=%u largest=%u",
+                   (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
+                   (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+        return;
     }
+    // Nothing else has claimed the heap yet, so this means the mode simply does not
+    // fit this board. Say so here rather than letting Init() report it later, when
+    // the pools and the GS have muddied the numbers.
+    Debug::log("VIDEO: FB reserve FAILED %ux%u (%u B), freeHeap=%u largest=%u",
+               (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
+               (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+    free(sharedFB_arr1); sharedFB_arr1 = nullptr;
+}
+
+void VIDEO::Init() {
+    int Mode = fbModeIndex();
     OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
     OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
     vga.useInterrupt_flag = false;
 
-    // Allocate the main framebuffer block sized for the *initial* mode BEFORE
-    // vga.init() — while heap is still unfragmented. It can be realloc'd later
-    // on changeMode (see ensureMainFB). The prev block (Gigascreen) is allocated
-    // on demand by GsSubsys, also sized for the current mode.
-    int initLines = fbCalcLines(
-        vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv]);
-    int initStride = (vidmodes[Mode][vmodeproperties::hRes] + 3) & ~3;
+    // Adopt the main framebuffer block sized for the *initial* mode BEFORE
+    // vga.init(). Normally reserveFrameBuffer() already claimed it back in setup()
+    // and both calls below are no-ops; this path still allocates when it did not
+    // (or could not). The prev block (Gigascreen) is allocated on demand by
+    // GsSubsys, also sized for the current mode.
+    int initLines = fbModeLines(Mode);
+    int initStride = fbModeStride(Mode);
     if (!sharedFB_arr1) {
         sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
     }

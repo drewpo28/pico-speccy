@@ -8,9 +8,12 @@
    ring; core1's step() mixes one stereo pair per tick into the GS DAC ring
    (at half scale, like the card's output-amp summing).
 
-   Buffers (~40 KB) come from the Buffer pool (butter PSRAM preferred, heap
-   fallback) only when NeoGS mode is active. If the allocation fails the
-   module degrades to the old stub: MDDRQ always 1, bytes discarded. */
+   Buffers (~57 KB: ~33 KB of rings/state plus the 24 KB Helix arena) come from
+   the Buffer pool (PSRAM preferred for the rings, SRAM-first for the arena) on
+   the FIRST MD_SEND BYTE, not at GS::init — a NeoGS session that never plays MP3
+   pays nothing, which is what leaves the heap room for a 720x576 framebuffer. If
+   the allocation fails the module degrades to the old stub: MDDRQ always 1, bytes
+   discarded. */
 
 #ifndef NGS_MP3_H
 #define NGS_MP3_H
@@ -19,8 +22,10 @@
 
 namespace NgsMp3 {
 
-// Core0 (GS::init / GS::deinit). init() is idempotent; returns false when
-// buffers are unavailable (stub mode — everything else stays callable).
+// Core0. init() is idempotent and is normally called BY service() when the guest
+// starts streaming — GS::init deliberately does not; returns false when buffers
+// are unavailable (stub mode — everything else stays callable). deinit() is
+// GS::deinit's, and re-arms the lazy path.
 bool init();
 void deinit();
 

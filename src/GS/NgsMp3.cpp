@@ -22,6 +22,8 @@ extern "C" {
 #include "mp3dec.h"
 }
 
+extern size_t getFreeHeap(void);   // OSDMain.cpp — reported when the decoder lands
+
 // Helix allocates its eight state structures (23.9 KB total) through this hook
 // at MP3InitDecoder() time and NEVER frees them — buffers.c leaves MPDEC_FREE
 // undefined, so its SAFE_FREE only nulls the pointer. That makes a bump
@@ -32,6 +34,25 @@ extern "C" {
 static Buffer   s_helixBuf;
 static uint8_t* s_helix_arena = nullptr;
 static uint32_t s_helix_used  = 0;
+
+// ── Lazy allocation ──────────────────────────────────────────────────────────
+// init() used to run from GS::init for every NeoGS boot, so ~24 KB of SRAM heap
+// (this arena) and ~33 KB of butter went to the decoder on every session — while
+// almost nothing on a NeoGS card plays MP3 (NPL and the Z-Players do; demos,
+// trackers and every FH1-style loader never touch MD_SEND). At 720x576 that SRAM
+// is the difference between booting and not: the main framebuffer needs one
+// contiguous 104 040 B block and setup() OOM-panicked in VIDEO::Init with 149 KB
+// free (hw 2026-08-13, 576p + NeoGS + MIDI). So the decoder is now allocated on
+// the first MD_SEND byte instead.
+//
+// core1 (mdSend) only raises a flag; core0's service() does the allocation, one
+// attempt — a failure means stub mode for the rest of the session, exactly as
+// before. Bytes that arrive before core0 gets there are DROPPED and mddrq() keeps
+// answering 1: that is the established stub contract (a 0 wedges NPL's init poll,
+// see GS.cpp SSTAT), and the cost is under a frame of stream head, which Helix
+// resynchronises past on the next sync word.
+static volatile bool s_want_init   = false;  // core1 → core0: MP3 data is flowing
+static volatile bool s_init_failed = false;  // core0 → core1: tried once, no room
 
 extern "C" void* ngs_helix_alloc(size_t sz) {
     if (!s_helix_arena) return nullptr;
@@ -254,10 +275,13 @@ bool NgsMp3::init() {
                    (unsigned)sizeof(Mp3State));
         return false;
     }
-    // Helix state: one SRAM arena, carved by malloc2() above. Heap first;
+    // Helix state: one SRAM arena, carved by ngs_helix_alloc() above. Heap first;
     // PSRAM only if the heap cannot spare it, so a tight heap degrades to slow
-    // playback rather than to no MP3 at all.
-    if (!s_helixBuf.alloc(HELIX_ARENA_SIZE, Buffer::NEED_POINTER) || !s_helixBuf.data()) {
+    // playback rather than to no MP3 at all. HOT_SRAM because this now runs at
+    // runtime, on a heap already at its steady level — Buffer's generic 32 KB
+    // margin would put every arena in PSRAM (see Buffer.h).
+    if (!s_helixBuf.alloc(HELIX_ARENA_SIZE, Buffer::NEED_POINTER | Buffer::HOT_SRAM) ||
+        !s_helixBuf.data()) {
         s_helixBuf.free();
         if (!s_helixBuf.alloc(HELIX_ARENA_SIZE, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM) ||
             !s_helixBuf.data()) {
@@ -284,19 +308,23 @@ bool NgsMp3::init() {
     s_asm_len = 0;
     s_rs_phase = 0;
     s_rs_prev_l = s_rs_prev_r = 0;
-    s_gain_l = s_gain_r = 16384;
-    s_bass_on = s_treb_on = false;      // SCI_BASS powers up at 0 (both bypassed)
-    s_bass_reg = 0;
-    s_tone_dirty = false;
-    s_sm_diff = false;
-    tone_reset();
     s_decoded_samples = 0;
     s_hdat1 = s_hdat0 = 0;
     s_reset_pending = false;
-    Debug::log("NgsMp3: Helix ready (buffers %u B in %s, state %u/%u B in %s)",
+    // NOT reset here: s_gain_l/r (SCI_VOL), s_bass_reg (SCI_BASS) and s_sm_diff
+    // (SCI_MODE SM_DIFF) mirror registers the GUEST writes, and since this runs on
+    // the first MD_SEND byte rather than at GS::init, a player that set its volume
+    // or tone before streaming has already written them — clearing them here would
+    // play the first track at the wrong level. Their power-on values live in the
+    // definitions above, and a chip reset goes through NgsMp3::reset(). The filter
+    // state IS ours, so re-derive it from whatever s_bass_reg currently holds.
+    s_bass_on = s_treb_on = false;
+    tone_reset();
+    s_tone_dirty = true;                // core0 designs the filters on the next call
+    Debug::log("NgsMp3: Helix ready (buffers %u B in %s, state %u/%u B in %s, freeHeap=%u)",
                (unsigned)sizeof(Mp3State), s_stateBuf.tierName(),
                (unsigned)s_helix_used, (unsigned)HELIX_ARENA_SIZE,
-               s_helixBuf.tierName());
+               s_helixBuf.tierName(), (unsigned)getFreeHeap());
     return true;
 }
 
@@ -307,6 +335,8 @@ void NgsMp3::deinit() {
     s_helix_used = 0;
     s_stateBuf.free();
     s_helixBuf.free();
+    s_want_init   = false;           // a fresh GS::init may defer again
+    s_init_failed = false;
 }
 
 void NgsMp3::reset() {
@@ -535,7 +565,18 @@ static void mp3_health_tick() {
 #endif  // NGS_TRACE
 
 void NgsMp3::service() {
-    if (!s_st) return;
+    if (!s_st) {
+        // Lazy allocation (see the note at s_want_init). One attempt per session:
+        // if there is no room now there will not be room a millisecond later, and
+        // retrying on every MD_SEND byte would probe the heap thousands of times
+        // a second. Decoding starts on the next call, with the ring empty — the
+        // bytes the guest sent while we were stubbed are gone by design.
+        if (s_want_init && !s_init_failed) {
+            s_want_init = false;
+            if (!init()) s_init_failed = true;
+        }
+        return;
+    }
     mp3_health_tick();
     if (s_tone_dirty) {                     // SCI_BASS changed (core1)
         s_tone_dirty = false;
@@ -654,7 +695,13 @@ void NgsMp3::service() {
 // ============================================================================
 
 void __not_in_flash_func(NgsMp3::mdSend)(uint8_t v) {
-    if (!s_st) return;                          // stub mode: discard
+    if (!s_st) {
+        // Not allocated yet — ask core0 for the decoder and drop this byte. One
+        // store, no barrier needed: core0 polls the flag every service() call and
+        // a byte lost to the race just arrives on the next MD_SEND.
+        if (!s_init_failed) s_want_init = true;
+        return;                                 // stub mode: discard
+    }
     uint32_t w = s_in_w;
     if (w - s_in_r >= MP3_IN_SIZE) { s_st_over++; return; }
 #if NGS_TRACE

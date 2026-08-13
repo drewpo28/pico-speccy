@@ -523,16 +523,17 @@ size_t featureCost(FeatureId f) {
         // Butter boards: work RAM (16K) + DAC rings (16K) move to butter PSRAM
         // (Buffer NEED_POINTER|PREFER_PSRAM); only the PC prefetch cache (~4.3K) stays
         // in SRAM. Butter-less: NEED_POINTER falls back to heap → full 38K.
-        // NeoGS is a different card and a different bill: its MP3 decoder keeps the
-        // Helix arena (24K) on the heap even where butter exists (NgsMp3::init asks
-        // heap-first), and the card's 64 KB of pointer-backed low RAM makes the
-        // butter-less variant impossible rather than merely expensive — GS::init
-        // refuses it there, so the SPI column below is what CLASSIC GS costs.
+        // NeoGS used to be charged 24 KB more than classic GS for its MP3 decoder's
+        // Helix arena; that arena is now allocated on the first MD_SEND byte (see
+        // NgsMp3.cpp), so a card that is merely PRESENT costs the same as classic GS
+        // and only actual MP3 playback claims the SRAM — out of the runtime heap,
+        // where this budget no longer applies. NeoGS's 64 KB of pointer-backed low
+        // RAM makes the butter-less variant impossible rather than merely expensive
+        // — GS::init refuses it there, so the SPI column below is CLASSIC GS's bill.
         // The SPI figure is 8 KB lower than it used to be because a butter-less board
         // halves the DAC rings (2×4 KB instead of 2×8 KB — see GS_RING_SIZE_MAX in
         // GS.cpp), which is what lets it sit beside Gigascreen at all.
-        case FEAT_GENERAL_SOUND: return spi ? 30 * 1024
-                                            : (Config::gs_enabled == 2 ? 29 * 1024 : 5 * 1024);
+        case FEAT_GENERAL_SOUND: return spi ? 30 * 1024 : 5 * 1024;
         case FEAT_DIVMMC:        return spi ? 33 * 1024 : 9 * 1024; // SPI: 3x8K cache+8K ROM+misc
         // Profi's *marginal* SRAM cost relative to a non-Profi baseline, NOT the
         // absolute forced-page reservation (~80-96 KB). Switching arch re-lays out

@@ -159,7 +159,12 @@ public:
 
   // Initialize video
   static void Init();
-    
+
+  // Claim the main framebuffer early in setup() — see the note at the definition.
+  // Optional and idempotent: Init() does the same allocation if this never ran.
+  static void reserveFrameBuffer();
+
+
   // Reset video
   static void Reset();
 
