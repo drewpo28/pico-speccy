@@ -523,7 +523,16 @@ size_t featureCost(FeatureId f) {
         // Butter boards: work RAM (16K) + DAC rings (16K) move to butter PSRAM
         // (Buffer NEED_POINTER|PREFER_PSRAM); only the PC prefetch cache (~4.3K) stays
         // in SRAM. Butter-less: NEED_POINTER falls back to heap → full 38K.
-        case FEAT_GENERAL_SOUND: return spi ? 38 * 1024 : 5 * 1024;
+        // NeoGS is a different card and a different bill: its MP3 decoder keeps the
+        // Helix arena (24K) on the heap even where butter exists (NgsMp3::init asks
+        // heap-first), and the card's 64 KB of pointer-backed low RAM makes the
+        // butter-less variant impossible rather than merely expensive — GS::init
+        // refuses it there, so the SPI column below is what CLASSIC GS costs.
+        // The SPI figure is 8 KB lower than it used to be because a butter-less board
+        // halves the DAC rings (2×4 KB instead of 2×8 KB — see GS_RING_SIZE_MAX in
+        // GS.cpp), which is what lets it sit beside Gigascreen at all.
+        case FEAT_GENERAL_SOUND: return spi ? 30 * 1024
+                                            : (Config::gs_enabled == 2 ? 29 * 1024 : 5 * 1024);
         case FEAT_DIVMMC:        return spi ? 33 * 1024 : 9 * 1024; // SPI: 3x8K cache+8K ROM+misc
         // Profi's *marginal* SRAM cost relative to a non-Profi baseline, NOT the
         // absolute forced-page reservation (~80-96 KB). Switching arch re-lays out
@@ -803,8 +812,18 @@ BudgetResult budgetCheck(FeatureId enabling, FeatureId* candidates, int* nCand, 
     // when no single hole fits (VIDEO::ensurePrevFB), so its block requirement is one
     // chunk — using the full cost here demanded a 37.7 KB hole and sent a perfectly
     // affordable mid-session enable down the reboot path (hw, PICO_DV without PSRAM).
+    // General Sound is the same shape of mistake: its `cost` is a SUM of separate
+    // allocations — 16 KB work RAM + 2×8 KB DAC rings + the ~4.3 KB PC cache (butter
+    // boards keep only the last two of those in the heap, and NeoGS additionally the
+    // 24 KB Helix arena). Demanding all 38.9 KB in one hole denied a live enable on a
+    // heap whose largest block was 22 KB but which had room for every individual piece
+    // (m1p2, hw 2026-08-13). The biggest single block is what the allocator must find.
+    const size_t gsBlock = (butter_psram_size() == 0) ? 16 * 1024               // work RAM
+                         : (Config::gs_enabled == 2)  ? 24 * 1024               // Helix arena
+                                                      : 8 * 1024;               // one DAC ring
     const size_t blockNeed = (enabling == FEAT_PROFI)     ? (size_t)MEM_PG_SZ
                            : (enabling == FEAT_GIGASCREEN) ? VIDEO::gigascreenPrevFBBlockBytes()
+                           : (enabling == FEAT_GENERAL_SOUND) ? gsBlock
                                                            : cost;
     const size_t blockDef = (blockFree < blockNeed)     ? (blockNeed - blockFree)     : 0;
     const size_t totalDef = (totalFree < cost + margin) ? (cost + margin - totalFree) : 0;

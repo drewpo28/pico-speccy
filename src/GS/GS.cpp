@@ -548,8 +548,19 @@ static volatile uint32_t s_cmd_acks  = 0;
 // GS-time — absorbs typical 10-25 ms core1 slowdowns (heavy core0 PSRAM use,
 // sustained OSD activity) without draining. Single-writer (core1 main) /
 // single-reader (core1 IRQ preempts main) — volatile wpos/rpos atomic on ARM.
-#define GS_RING_SIZE 4096
-#define GS_RING_MASK (GS_RING_SIZE - 1)
+// Depth is per-board and therefore RUNTIME (power of two either way, so the mask
+// stays a mask). Butter-PSRAM boards keep 4096 entries ≈ 109 ms — they cost no SRAM
+// there, the rings live in XIP. A butter-less board pays both rings out of the heap
+// (NEED_POINTER cannot be served from SPI PSRAM), and 2×8 KB is the difference
+// between General Sound fitting beside Gigascreen and not: 38.9 KB wanted against
+// 42.5 KB free left a 6.6 KB deficit under the 10 KB safety margin (m1p2, hw
+// 2026-08-13). 2048 entries ≈ 55 ms is still 2.7 frames of slack against the
+// 10-25 ms core1 stalls this ring exists to absorb.
+#define GS_RING_SIZE_MAX 4096
+static uint32_t s_ring_size = GS_RING_SIZE_MAX;
+static uint32_t s_ring_mask = GS_RING_SIZE_MAX - 1;
+#define GS_RING_SIZE (s_ring_size)
+#define GS_RING_MASK (s_ring_mask)
 static int16_t* s_ring_L = nullptr;
 static int16_t* s_ring_R = nullptr;
 static volatile uint32_t s_ring_wpos = 0;
@@ -1919,9 +1930,36 @@ void GS::setClock() {
     gs_derive_clock_consts();
 }
 
+// Every failure exit of init() goes through this. `neogs` is set at the top (setClock
+// and the allocation sizes below both branch on it), and leaving it set after a failed
+// init made ESPectrum::loop pump NgsSd/NgsMp3 every frame and turned the frame-pacing
+// waits into spin loops on a card that does not exist.
+static bool gs_init_failed() {
+    GS::neogs = s_ngs = false;
+    return false;
+}
+
 bool GS::init(uint32_t ram_size_bytes) {
     if (enabled) return true;
     neogs = s_ngs = (Config::gs_enabled == 2);
+
+    // NeoGS needs butter PSRAM, and the check has to be here rather than only in the
+    // menu: a config carried over from another board (or written before this rule)
+    // would otherwise take the whole heap and panic the NEXT allocator call.
+    // Everything NeoGS holds is NEED_POINTER — 64 KB of physical pages 0+1 (the card
+    // firmware executes from there under NOROM) + an 8 KB blank ROM page + 16 KB of
+    // DAC rings + ~58 KB of MP3 decoder state — and SPI PSRAM cannot serve a pointer,
+    // so on a butter-less board all ~149 KB come out of a 185 KB heap. VIDEO::Init
+    // then asks for its ~77 KB framebuffer and pico_malloc PANICS rather than
+    // returning NULL: the board reboot-loops on "Out of memory" with no way back to
+    // the menu (m1p2, hw 2026-08-13). Fall back to Off, not to classic GS — silently
+    // swapping in a different sound card would be worse than reporting none.
+    if (s_ngs && butter_psram_size() == 0) {
+        Debug::log("GS::init: NeoGS needs butter PSRAM (72 KB of card RAM must be "
+                   "pointer-backed; SPI PSRAM cannot) — General Sound off");
+        Config::gs_enabled = 0;
+        return gs_init_failed();
+    }
     setClock();
 
     if (!s_ngs) {
@@ -1944,7 +1982,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         if ((size_t)psram < reserved_below + ram_size_bytes) {
             Debug::log("GS::init: not enough butter PSRAM (need %u, have %u free)",
                        (unsigned)ram_size_bytes, (unsigned)(psram - reserved_below));
-            return false;
+            return gs_init_failed();
         }
 
         s_gs_use_spi  = false;
@@ -1959,7 +1997,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         uint32_t spi = psram_size();
         if (spi == 0) {
             Debug::log("GS::init: no PSRAM (butter or SPI)");
-            return false;
+            return gs_init_failed();
         }
         // Make sure the MemESP swap pool fits below GS RAM. Its top is the page
         // budget, not MEM_PG_CNT: a Murmuzavr page count larger than the chip is
@@ -1968,7 +2006,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         if ((size_t)spi < memesp_max + ram_size_bytes) {
             Debug::log("GS::init: SPI PSRAM too small (%u, need %u + %u memesp)",
                        (unsigned)spi, (unsigned)ram_size_bytes, (unsigned)memesp_max);
-            return false;
+            return gs_init_failed();
         }
         s_gs_use_spi  = true;
         s_gs_ram      = nullptr;
@@ -1987,7 +2025,7 @@ bool GS::init(uint32_t ram_size_bytes) {
     // serves unpopulated ROM chunks.
     if (!s_gs_work_ram) {
         size_t wsz = s_ngs ? (NGS_LOW_RAM_SIZE + 0x2000) : GS_WORK_RAM_SIZE;
-        if (!s_workRamBuf.alloc(wsz, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) return false;
+        if (!s_workRamBuf.alloc(wsz, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) return gs_init_failed();
         if (s_ngs) {
             s_ngs_low_ram = s_workRamBuf.data();
             s_ngs_blank   = s_ngs_low_ram + NGS_LOW_RAM_SIZE;
@@ -1996,12 +2034,20 @@ bool GS::init(uint32_t ram_size_bytes) {
             s_gs_work_ram = s_workRamBuf.data();
         }
     }
+    // Ring depth: full on butter (the rings sit in XIP and cost no SRAM), half on a
+    // butter-less board where both come out of the heap — see GS_RING_SIZE_MAX. Fixed
+    // before the first alloc and never changed while the rings exist: the mask is read
+    // by the consumer IRQ.
+    if (!s_ring_L && !s_ring_R) {
+        s_ring_size = butter_psram_size() ? GS_RING_SIZE_MAX : (GS_RING_SIZE_MAX / 2);
+        s_ring_mask = s_ring_size - 1;
+    }
     if (!s_ring_L) {
-        if (!s_ringLBuf.alloc(GS_RING_SIZE * sizeof(int16_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) return false;
+        if (!s_ringLBuf.alloc(GS_RING_SIZE * sizeof(int16_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) return gs_init_failed();
         s_ring_L = (int16_t*)s_ringLBuf.data();
     }
     if (!s_ring_R) {
-        if (!s_ringRBuf.alloc(GS_RING_SIZE * sizeof(int16_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) return false;
+        if (!s_ringRBuf.alloc(GS_RING_SIZE * sizeof(int16_t), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) return gs_init_failed();
         s_ring_R = (int16_t*)s_ringRBuf.data();
     }
     Debug::log("GS::init: work/rings on %s/%s/%s",
@@ -2114,7 +2160,7 @@ void GS::reset() {
     s_drain_rate = GS_INT_HZ;
     s_depth_acc  = 0;
     s_depth_cnt  = 0;
-    for (int i = 0; i < GS_RING_SIZE; i++) { s_ring_L[i] = 0; s_ring_R[i] = 0; }
+    for (uint32_t i = 0; i < GS_RING_SIZE; i++) { s_ring_L[i] = 0; s_ring_R[i] = 0; }
     for (int i = 0; i < GS_PC_SETS; i++) {
         for (int w = 0; w < GS_PC_WAYS; w++) s_pc_tag[i][w] = ~0u;
         s_pc_next[i] = 0;

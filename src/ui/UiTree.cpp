@@ -529,11 +529,25 @@ static bool p_gsNeo()     { return p_gsAvail() && Stage::get(SET_GS_MODE) == 2; 
 // Off still shows the classic row greyed, as before.
 static bool p_gsClockCls() { return p_gsAvail() && Stage::get(SET_GS_MODE) != 2; }
 
-static const Option opt_gs_mode[] = {           // values ARE Config::gs_enabled
-    { "Off",           0 },
-    { "General Sound", 1 },
-    { "NeoGS",         2 },
-};
+// values ARE Config::gs_enabled. Built at runtime (NM_RADIO_D) because NeoGS is
+// offered only where it can actually run: its 64 KB of physical pages 0+1 (the card
+// firmware EXECUTES from there under NOROM) plus the 8 KB blank ROM page must be
+// pointer-backed, and SPI PSRAM hands out no pointers — on a butter-less board those
+// 72 KB, the DAC rings and the MP3 decoder all land on the heap, ~149 KB of it, and
+// the framebuffer that VIDEO::Init allocates NEXT then fails. pico_malloc panics
+// instead of returning NULL, so the board came up in an "Out of memory" reboot loop
+// (m1p2, hw 2026-08-13). Classic GS costs 36 KB and stays offered everywhere.
+static const Option* gs_modeOpts(uint8_t& cnt) {
+    static Option opts[3];
+    static uint8_t n = 0;
+    if (!n) {
+        opts[n++] = { "Off",           0, nullptr };
+        opts[n++] = { "General Sound", 1, nullptr };
+        if (butter_psram_size()) opts[n++] = { "NeoGS", 2, nullptr };
+    }
+    cnt = n;
+    return opts;
+}
 // NeoGS RAM sizes fw 1.11 auto-detects; values ARE Config::gs_ram_size
 // (1 = 1 MB is a classic-GS-only value, not offered here).
 static const Option opt_gs_ram[] = {
@@ -615,7 +629,7 @@ static const Node kAudio[] = {
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,
                 opt_midi_bank_hints, p_hasSD, p_midiDls),
 #endif
-    NM_RADIO   (TXT_AUD_GS,          SET_GS_MODE,  opt_gs_mode,  p_gsAvail),
+    NM_RADIO_D (TXT_AUD_GS,          SET_GS_MODE,  gs_modeOpts,  p_gsAvail),
     NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK,  opt_gs_clock,  p_gsClockCls, p_gsClassic),
     NM_RADIO   (NM_IND TXT_GS_CLOCK, SET_NGS_CLOCK, opt_ngs_clock, p_gsNeo),
     NM_RADIO_EN(NM_IND TXT_GS_RAM,   SET_GS_RAM,    opt_gs_ram,    p_gsAvail, p_gsNeo),
