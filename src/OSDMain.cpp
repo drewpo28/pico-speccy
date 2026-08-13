@@ -2472,6 +2472,37 @@ extern "C" void osd_printf(const char* msg, ...) {
     OSD::osdCenteredMsg(msg, LEVEL_WARN, 1000);
 }
 
+// ── Boot notices ─────────────────────────────────────────────────────────────
+// See OSDMain.h. Silent boot-time self-disables are what made "Apply & reboot →
+// nothing happens": GS::init and the Gigascreen prev-FB used to report only to
+// Debug::log (m1p2 + MIDI + Gigascreen, 2026-08-13). On overflow the buffer keeps
+// the EARLIEST notices — the first failure is the cause, later ones are usually
+// its fallout.
+static char s_bootNotices[192];
+static bool s_bootNoticesShown = false;
+
+void OSD::bootNotice(const char* msg) {
+    if (s_bootNoticesShown || !msg || !msg[0]) return;
+    const size_t used = strlen(s_bootNotices);
+    const size_t sep  = used ? 1 : 0;
+    if (used + sep + strlen(msg) + 1 > sizeof(s_bootNotices)) return;
+    if (sep) s_bootNotices[used] = '\n';
+    strcpy(s_bootNotices + used + sep, msg);
+    Debug::log("bootNotice: %s", msg);
+}
+
+void OSD::flushBootNotices() {
+    if (s_bootNoticesShown) return;
+    s_bootNoticesShown = true;
+    if (!s_bootNotices[0]) return;
+    osdCenteredMsg(s_bootNotices, LEVEL_WARN, 4000);
+}
+
+// C-linkage forward for modules that do not include OSDMain.h (GS.cpp).
+extern "C" void osd_boot_notice(const char* msg) {
+    OSD::bootNotice(msg);
+}
+
 
 // Centered message
 void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level) {

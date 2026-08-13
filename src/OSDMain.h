@@ -112,6 +112,15 @@ public:
     static void osdCenteredMsg(const string& msg, uint8_t warn_level);
     static void osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millispause);
 
+    // Boot notices: setup() runs long before video is up, so a feature that gives up
+    // there (GS::init short on heap, Gigascreen's prev-FB decline) can only queue a
+    // line here; the first loop() frame shows them all in one centered box. One-shot:
+    // after that flush new calls are dropped — mid-session failures already report
+    // through the menu/budget-gate toasts. GS.cpp reaches bootNotice through the
+    // C-linkage forward osd_boot_notice() (it does not include this header).
+    static void bootNotice(const char* msg);
+    static void flushBootNotices();
+
     static void osdDump();
     static void osdDebug(uint16_t gotoAddr = 0xFFFF);
 

@@ -1826,6 +1826,10 @@ bool GsSubsys::apply() {
             wanted = false;
             Config::gigascreen_enabled = false;
             VIDEO::gigascreen_enabled = false;
+            // Only reaches the screen when this is the boot pre-allocation (VIDEO::Init):
+            // bootNotice is a no-op after the first frame, and the mid-session callers
+            // (menu commit, hotkey) report the failure themselves.
+            OSD::bootNotice("Gigascreen off: not enough memory");
             return false;
         }
         if (!sharedFB_arr2) {
@@ -1835,6 +1839,7 @@ bool GsSubsys::apply() {
                 wanted = false;
                 Config::gigascreen_enabled = false;
                 VIDEO::gigascreen_enabled = false;
+                OSD::bootNotice("Gigascreen off: not enough memory");
                 return false;
             }
         }

@@ -933,6 +933,43 @@ static void revertFeature(int8_t feat) {
     }
 }
 
+// budgetCheck plus the ONE remedy the commit path may take on its own: sacrifice
+// Gigascreen. The commit deliberately never shows featureBudgetGate's free-list
+// (it reboots mid-batch), so a refused enable used to end in a 2-second toast and
+// nothing else — "Apply & reboot and nothing happens" (m1p2 + MIDI + Gigascreen,
+// hw 2026-08-13). Gigascreen is uniquely fit to yield automatically: purely
+// cosmetic, its prev-FB frees LIVE (no reboot), and it costs one hotkey to bring
+// back — where featureBudgetGate then offers the interactive free-list. Every
+// other feature stays a user decision: silently disabling DivMMC/MIDI/ZiFi would
+// destroy function, not looks.
+// Fires only when turning Gigascreen off covers the WHOLE deficit; total free then
+// suffices by construction, so the re-check answers ALLOW or (if the freed chunks
+// don't coalesce into the needed block) NEEDS_REBOOT — both proceed. The edge case
+// where Gigascreen is enabled in Config but its prev-FB never landed ("off this
+// session") frees ~nothing: the re-check refuses again and the caller reverts the
+// enable as before — the Off left behind only writes down what was already true.
+static char s_yieldNote[56];
+static Subsystems::BudgetResult gatedBudgetCheck(int feat, CommitReport& rep) {
+    using namespace Subsystems;
+    FeatureId cand[FEAT_COUNT];
+    int nCand = 0; size_t deficit = 0;
+    BudgetResult br = budgetCheck((FeatureId)feat, cand, &nCand, &deficit);
+    if (br != BUDGET_NEEDS_FREE) return br;
+    if (feat == FEAT_GIGASCREEN || !featureEnabled(FEAT_GIGASCREEN)) return br;
+    if (featureCost(FEAT_GIGASCREEN) < deficit) return br;
+    kDesc[SET_GIGASCREEN].put(0);       // Config::gigascreen_onoff = 0, persisted by
+                                        // the commit's single Config::save()
+    bmClr(g_dirty, SET_GIGASCREEN);     // a staged Gigascreen edit is superseded
+    pre_gs(false);                      // gigascreen_enabled + the VIDEO mirrors
+    GsSubsys::request(false);
+    GsSubsys::apply();                  // synchronous: the re-check must see the heap
+    snprintf(s_yieldNote, sizeof(s_yieldNote), " Gigascreen off: RAM freed for %s ",
+             featureName((FeatureId)feat));
+    rep.note = s_yieldNote;             // overrides lesser notes: this one explains
+    rep.constrained++;
+    return budgetCheck((FeatureId)feat, cand, &nCand, &deficit);
+}
+
 // Disables first, then enables one at a time: the heap has to grow before it shrinks,
 // and the budget gate measures live free memory, so it only composes if each allocation
 // has actually landed before the next question is asked.
@@ -949,11 +986,9 @@ static void reconcileSubsystems(CommitReport& rep) {
         if (b.feat >= 0) {
             // NOT OSD::featureBudgetGate(): that one has its own "Apply & reboot" popup
             // and ends in Config::save() + esp_hard_reset(), which would reboot in the
-            // middle of our batch. We only want the measurement here.
-            Subsystems::FeatureId cand[Subsystems::FEAT_COUNT];
-            int nCand = 0; size_t deficit = 0;
-            const Subsystems::BudgetResult br =
-                Subsystems::budgetCheck((Subsystems::FeatureId)b.feat, cand, &nCand, &deficit);
+            // middle of our batch. We only want the measurement (plus the automatic
+            // Gigascreen yield — see gatedBudgetCheck).
+            const Subsystems::BudgetResult br = gatedBudgetCheck(b.feat, rep);
             // Fragmented-only shortfall: keep the staged enable (it is already in Config
             // and about to be persisted) and let the menu's reboot prompt carry it — the
             // feature comes up during setup() from an unfragmented heap. Bringing it up
@@ -1030,10 +1065,7 @@ void commit(CommitReport& rep) {
         const SettingDesc& d = kDesc[id];
         if (!bmGet(g_dirty, id) || !(d.flags & F_GATED) || d.feat < 0) continue;
         if (!g_val[id]) continue;                       // turning it off always fits
-        Subsystems::FeatureId cand[Subsystems::FEAT_COUNT];
-        int nCand = 0; size_t deficit = 0;
-        const Subsystems::BudgetResult br =
-            Subsystems::budgetCheck((Subsystems::FeatureId)d.feat, cand, &nCand, &deficit);
+        const Subsystems::BudgetResult br = gatedBudgetCheck(d.feat, rep);
         // Reboot-class settings are already going to reboot — a fragmented-only
         // shortfall is exactly what that reboot cures, so let the value stand.
         if (br == Subsystems::BUDGET_NEEDS_REBOOT) { rep.needsReboot = true; continue; }
@@ -1050,10 +1082,7 @@ void commit(CommitReport& rep) {
     // (featureBudgetGate(FEAT_MIDI), OSDMain.cpp:12799). Not expressible as F_GATED —
     // that fires on ANY nonzero staged value and would wrongly gate the cheap modes 1-3.
     if (bmGet(g_dirty, SET_MIDI_MODE) && g_val[SET_MIDI_MODE] == 4) {
-        Subsystems::FeatureId cand[Subsystems::FEAT_COUNT];
-        int nCand = 0; size_t deficit = 0;
-        const Subsystems::BudgetResult br =
-            Subsystems::budgetCheck(FEAT_MIDI, cand, &nCand, &deficit);
+        const Subsystems::BudgetResult br = gatedBudgetCheck(FEAT_MIDI, rep);
         if (br == Subsystems::BUDGET_NEEDS_REBOOT) {
             rep.needsReboot = true;      // the bank loads at boot anyway
         } else if (br != Subsystems::BUDGET_ALLOW) {

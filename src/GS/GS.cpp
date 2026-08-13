@@ -1934,8 +1934,16 @@ void GS::setClock() {
 // and the allocation sizes below both branch on it), and leaving it set after a failed
 // init made ESPectrum::loop pump NgsSd/NgsMp3 every frame and turned the frame-pacing
 // waits into spin loops on a card that does not exist.
-static bool gs_init_failed() {
+// Boot notice (OSDMain.cpp) — GS::init runs from setup(), long before video is up,
+// so a Debug::log alone leaves the user with GS=On in the menu and no sound and no
+// explanation ("Apply & reboot → nothing happens", m1p2 2026-08-13).
+extern "C" void osd_boot_notice(const char* msg);
+
+static bool gs_init_failed(const char* why = "not enough memory") {
     GS::neogs = s_ngs = false;
+    char msg[64];
+    snprintf(msg, sizeof(msg), "General Sound off: %s", why);
+    osd_boot_notice(msg);
     return false;
 }
 
@@ -1958,7 +1966,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         Debug::log("GS::init: NeoGS needs butter PSRAM (72 KB of card RAM must be "
                    "pointer-backed; SPI PSRAM cannot) — General Sound off");
         Config::gs_enabled = 0;
-        return gs_init_failed();
+        return gs_init_failed("NeoGS needs internal PSRAM");
     }
     setClock();
 
@@ -1982,7 +1990,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         if ((size_t)psram < reserved_below + ram_size_bytes) {
             Debug::log("GS::init: not enough butter PSRAM (need %u, have %u free)",
                        (unsigned)ram_size_bytes, (unsigned)(psram - reserved_below));
-            return gs_init_failed();
+            return gs_init_failed("not enough PSRAM for sample RAM");
         }
 
         s_gs_use_spi  = false;
@@ -1997,7 +2005,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         uint32_t spi = psram_size();
         if (spi == 0) {
             Debug::log("GS::init: no PSRAM (butter or SPI)");
-            return gs_init_failed();
+            return gs_init_failed("no PSRAM for sample RAM");
         }
         // Make sure the MemESP swap pool fits below GS RAM. Its top is the page
         // budget, not MEM_PG_CNT: a Murmuzavr page count larger than the chip is
@@ -2006,7 +2014,7 @@ bool GS::init(uint32_t ram_size_bytes) {
         if ((size_t)spi < memesp_max + ram_size_bytes) {
             Debug::log("GS::init: SPI PSRAM too small (%u, need %u + %u memesp)",
                        (unsigned)spi, (unsigned)ram_size_bytes, (unsigned)memesp_max);
-            return gs_init_failed();
+            return gs_init_failed("PSRAM too small for sample RAM");
         }
         s_gs_use_spi  = true;
         s_gs_ram      = nullptr;

@@ -1005,6 +1005,38 @@ lateness (find what blocks core1/IRQs); sound cut + `und>0`/qmin=0 = core0
 producer starvation (flash ops, IRQ-off regions); picture drop with clean
 counters = link/TMDS-level issue (SOFT_CLK/CLAMP territory), not timing.
 
+## Gigascreen auto-yield + boot notices (2026-08-13, NOT hw-tested)
+
+The menu commit path never shows `featureBudgetGate`'s free-list (it reboots
+mid-batch), and boot-time self-disables only went to `Debug::log` — so on
+m1p2 + MIDI + Gigascreen, enabling GS ended in "Apply & reboot and nothing
+happens" (either the enable was silently reverted with a 2 s toast, or the
+reboot came back with `GS::init` refusing and Config still claiming GS=On).
+Two mechanisms fix the two halves:
+
+- **`gatedBudgetCheck` (UiStage.cpp)** wraps all three commit-path `budgetCheck`
+  sites (reconcileSubsystems, F_GATED loop, GM.DLS special case). On
+  `BUDGET_NEEDS_FREE`, if Gigascreen is enabled and its cost covers the WHOLE
+  deficit, it is sacrificed automatically: `put(SET_GIGASCREEN, 0)` (persisted by
+  the commit's single save), `pre_gs(false)`, live `GsSubsys` disable (prev-FB
+  frees without reboot), `rep.note = " Gigascreen off: RAM freed for <feature> "`,
+  then re-check (can only be ALLOW or NEEDS_REBOOT — total free suffices by
+  construction, contiguity may not). ONLY Gigascreen gets this: purely cosmetic,
+  frees live, one hotkey to bring back (Alt+PgUp — where featureBudgetGate still
+  offers the interactive free-list). Auto-disabling DivMMC/MIDI/ZiFi would
+  destroy function; they stay a user decision. On vs Auto is deliberately not
+  distinguished. Edge: Gigascreen enabled in Config but prev-FB never landed
+  ("off this session") frees ~nothing → the re-check refuses again, the enable
+  reverts as before, and the Off left behind matches what was already true.
+- **`OSD::bootNotice`/`flushBootNotices` (OSDMain.cpp)**: setup()-time failures
+  queue one line each (192 B buffer, keeps the EARLIEST on overflow — the first
+  failure is the cause); the first `ESPectrum::loop` frame shows them in one
+  centered 4 s box, then the mechanism goes dead for the session (mid-session
+  failures already report via menu/gate toasts). Wired into `gs_init_failed()`
+  (now takes a `why`; GS.cpp reaches it via the C-linkage `osd_boot_notice`
+  forward — it does not include OSDMain.h) and both failure branches of
+  `GsSubsys::apply` ("Gigascreen off: not enough memory"). Cost: ~250 B .bss.
+
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 
 Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):

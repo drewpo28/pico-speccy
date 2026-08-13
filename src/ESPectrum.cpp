@@ -2486,6 +2486,9 @@ void ESPectrum::loop() {
       OSD::osdCenteredMsg(msg, LEVEL_WARN, 5000);
       debug_number = 0;
     }
+    // Anything that self-disabled during setup() (no video yet) queued a message —
+    // show it once, now that the OSD can draw. No-op from the second frame on.
+    OSD::flushBootNotices();
     ts_start = time_us_64();
 
     if (!CPU::paused) {
