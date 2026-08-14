@@ -97,6 +97,11 @@ public:
     static bool     slog_on;
     static bool     ledIndicators;
     static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
+    // Chip temperature calibration, whole °C added to the ADC sensor reading.
+    // The RP2350 sensor is uncalibrated and per-chip offsets are real: one z0p2
+    // unit reads ~55-60 C low (Vbe 0.78 V vs the typical 0.706 @27 C) with a
+    // verified-good 3.28 V ADC_AVDD, while other RP2350B units read fine.
+    static int8_t   temp_offset;
     static bool     AY48;
     static bool     SAA1099;
     // 0=Off, 1=AY bitbang, 2=ShamaZX, 4=GM.DLS wavetable. 3 was "Software MIDI" (the

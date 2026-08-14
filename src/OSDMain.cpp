@@ -4847,12 +4847,36 @@ int chipTempX10() {
         busy_wait_us(500);                  // first-time bias settle
         adc_up = true;
     }
+#ifdef ZERO2
+    // The PiZero routes HDMI DDC/CEC (external 2.2K pull-ups to 3V3) onto
+    // ADC-capable GPIO44-46, and a high level on those PINS leaks into the
+    // ADC's internal temp-sensor node: +120..160 mV on the diode, i.e. the
+    // reading comes out ~60-90 C LOW, and it is a per-boot lottery because the
+    // MONITOR decides where the DDC/CEC lines idle after each reset. hw-proven
+    // via OpenOCD (2026-08-14): pins high -> 971..1011 counts (-17..-31 C),
+    // pins driven low -> 809 = the true 56 C; reconfiguring the PADS (ISO/IE/
+    // pulls) changes nothing — only the pin LEVEL matters, so ground them for
+    // the ~30 us the burst takes. Safe: this firmware never speaks DDC/CEC,
+    // grounding SDA+SCL then releasing is an aborted I2C start/stop to the
+    // monitor, and CEC ignores sub-100 us glitches (its bit time is 2.4 ms).
+    for (uint8_t p = 44; p <= 46; p++) {
+        gpio_init(p);                       // SIO func, output latch 0
+        gpio_set_dir(p, GPIO_OUT);          // drive low
+    }
+    busy_wait_us(15);                       // let the sensor node recover
+#endif
     adc_select_input(chip_is_rp2350a() ? 4 : 8);
     (void)adc_read();                       // discard the first conversion
     int raw = 0;
     for (int i = 0; i < 4; i++) raw += adc_read();
+#ifdef ZERO2
+    for (uint8_t p = 44; p <= 46; p++)
+        gpio_deinit(p);                     // release to the external pull-ups
+#endif
     int uv10 = (raw / 4) * 33000 / 4096;    // volts * 10000
-    return 270 - (uv10 - 7060) * 1000 / 1721;
+    // temp_offset: per-chip calibration (Debug > Temp offset) — the sensor is
+    // uncalibrated silicon and offsets of a few degrees exist between chips.
+    return 270 - (uv10 - 7060) * 1000 / 1721 + Config::temp_offset * 10;
 }
 
 static void buildHWInfoText() {

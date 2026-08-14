@@ -265,7 +265,11 @@ const char* romsetName(int32_t composite);
     /* plus an aperture grille that dims the second output pixel each palette index     */ \
     /* already owns. Costs zero scanout cycles and zero palette slots, so it is safe to */ \
     /* preview live. F_PALETTE because the hook rewrites 0..239.                        */ \
-    X(SET_CRT_FILTER,      AC_LIVE,   F_PREVIEW | F_PALETTE, get_crtFilter,  put_crtFilter,  hook_crtFilter, -1)
+    X(SET_CRT_FILTER,      AC_LIVE,   F_PREVIEW | F_PALETTE, get_crtFilter,  put_crtFilter,  hook_crtFilter, -1)          \
+    /* Per-chip calibration for the RP2350 temp sensor (uncalibrated silicon; one     */ \
+    /* z0p2 unit reads ~55 C low with a verified-good reference). Pure config: the    */ \
+    /* readout paths add it at display time.                                          */ \
+    X(SET_TEMP_OFFSET,     AC_PURE,   0,                     get_tempOffset, put_tempOffset, nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

@@ -751,12 +751,27 @@ static const Node kOptions[] = {
 // Breakpoints, jump-to and NMI are NOT menu rows: they live inside the Debugger
 // (F7/F8/Alt+F9 there), where they act on a visible code cursor instead of a blind
 // address prompt.
+// Per-chip calibration for the RP2350 temperature sensor: uncalibrated silicon,
+// and per-chip offsets are real (one z0p2 unit reads ~55-60 C low with a
+// verified-good 3.28 V reference — see chipTempX10 in OSDMain.cpp). The stored
+// value IS the offset in whole °C, added to the reading at display time.
+static const Option opt_tempOffset[] = {
+    { "-60 C", -60 }, { "-55 C", -55 }, { "-50 C", -50 }, { "-45 C", -45 },
+    { "-40 C", -40 }, { "-35 C", -35 }, { "-30 C", -30 }, { "-25 C", -25 },
+    { "-20 C", -20 }, { "-15 C", -15 }, { "-10 C", -10 }, { "-5 C",   -5 },
+    { "0 C",     0 }, { "+5 C",    5 }, { "+10 C",  10 }, { "+15 C",  15 },
+    { "+20 C",  20 }, { "+25 C",  25 }, { "+30 C",  30 }, { "+35 C",  35 },
+    { "+40 C",  40 }, { "+45 C",  45 }, { "+50 C",  50 }, { "+55 C",  55 },
+    { "+60 C",  60 }, { "+65 C",  65 }, { "+70 C",  70 }, { "+75 C",  75 },
+};
+
 static const Node kDebug[] = {
     NM_ACTION(TXT_DBG_DIALOG, act_debugDialog, nullptr),
     NM_ACTION(TXT_DBG_POKE,   act_debugPoke,   nullptr),
     NM_BOOL  (TXT_DBG_LOG,    SET_DEBUG_LOG,   nullptr),
     // Testing aid: run the firmware as if the board had no PSRAM (see SET_PSRAM_ON).
     NM_BOOL  (TXT_DBG_PSRAM,  SET_PSRAM_ON,    p_psramChip),
+    NM_RADIO (TXT_DBG_TEMPOFF, SET_TEMP_OFFSET, opt_tempOffset, nullptr),
 };
 
 // ── Reset ──────────────────────────────────────────────────────────────────────

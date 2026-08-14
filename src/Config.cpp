@@ -36,6 +36,7 @@ bool     Config::loaded = false;
 bool     Config::slog_on = false;
 bool     Config::ledIndicators = false;
 bool     Config::sdLedBlink = false;
+int8_t   Config::temp_offset = 0;
 ///uint8_t  Config::esp32rev = 0;
 bool     Config::AY48 = true;
 bool     Config::SAA1099 = false;
@@ -848,6 +849,7 @@ void Config::load() {
         nvs_get_b("wasd", wasd, sts);
         nvs_get_b("ledIndicators", ledIndicators, sts);
         nvs_get_b("sdLedBlink", sdLedBlink, sts);
+        nvs_get_i8("temp_offset", temp_offset, sts);
         // Load typed breakpoints array
         for (int i = 0; i < MAX_BREAKPOINTS; i++) {
             breakPoints[i] = {0xFFFF, BP_NONE};
@@ -1239,6 +1241,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"flashload", flashload ? "true" : "false");
     nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");
     nvs_set_str(buf,"sdLedBlink", sdLedBlink ? "true" : "false");
+    nvs_set_i8(buf,"temp_offset", temp_offset);
     nvs_set_str(buf,"tape_player", tape_player ? "true" : "false");
     nvs_set_str(buf,"profi_ext_keys", profi_ext_keys ? "true" : "false");
     nvs_set_str(buf,"real_player", real_player ? "true" : "false");

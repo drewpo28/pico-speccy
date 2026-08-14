@@ -246,6 +246,7 @@
 // Off = pretend the board has no PSRAM (testing the SRAM-only paths). Row shown only
 // where a chip was actually found.
 #define TXT_DBG_PSRAM       "PSRAM"
+#define TXT_DBG_TEMPOFF     "Temp offset"
 
 // ── Hardware info ──────────────────────────────────────────────────────────────
 // Alt+F1 live page (no menu row of its own — hotkey only, Esc closes).

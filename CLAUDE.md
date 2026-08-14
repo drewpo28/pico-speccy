@@ -1116,6 +1116,36 @@ Two mechanisms fix the two halves:
   forward — it does not include OSDMain.h) and both failure branches of
   `GsSubsys::apply` ("Gigascreen off: not enough memory"). Cost: ~250 B .bss.
 
+## RP2350 chip temperature (chipTempX10) + the ZERO2 ADC-leak (hw-proven 2026-08-14)
+
+`chipTempX10()` (OSDMain.cpp, non-static) is the ONE reader: SDK `hardware_adc`,
+runtime channel pick (`chip_is_rp2350a() ? 4 : 8` — the SDK's
+ADC_TEMPERATURE_CHANNEL_NUM is compile-time and wrong for a mixed fleet), datasheet
+formula T = 27 − (V−0.706)/0.001721 in Q(0.1 °C) integer math. The pico-spec donor
+block had the conversion off by 10× (`*100/1721`, pinned every reading at ~27 °C) —
+fixed here, don't re-port it. ADC + TS bias stay enabled between calls; nothing else
+in the firmware owns the ADC. Shown in Hardware Info (`Chip VREG/TEMP`, 1 Hz live)
+and Chip Info. `Config::temp_offset` (int8 °C, NVS, Debug > Temp offset radio,
+AC_PURE) is per-chip calibration — the sensor is uncalibrated silicon.
+
+**ZERO2 read ~60-90 °C LOW, randomly per boot** (−16.8 on screen at a real ~56 °C).
+Diagnosed end-to-end over OpenOCD (:50002 `mww/mdw` on the live ADC): registers
+correct (TS_EN=1, AINSEL=8, no ERR), mux map verified pin-by-pin against the board's
+real signals, reference verified (ADC_AVDD = 3V3 net per the PiZero schematic,
+3.28 V by meter). The cause: the PiZero routes HDMI DDC/CEC (external 2.2K pull-ups)
+onto ADC-capable GPIO44-46, and a HIGH level on those pins leaks into the internal
+temp-sensor node (+120..160 mV on the diode). Pin level is all that matters —
+reconfiguring pads (ISO/IE/pulls) changes nothing (pins high → 971..1011 counts,
+driven low → 809 = truth), and the per-boot lottery is the MONITOR deciding where
+DDC/CEC idle after each reset. GPIO40/43/47 sit equally high and do NOT leak
+(E9-class per-pad variability). Fix in chipTempX10 (`#ifdef ZERO2`): ground
+GPIO44-46 for the ~30 µs of the conversion burst, then `gpio_deinit` back — an
+aborted I2C start/stop to the monitor, and far below CEC's 2.4 ms bit time. DVp2
+(Pico Plus 2) never leaks — those pins are unconnected there, resting low on the
+internal pull-downs. Debugging trap that cost a round: while Hardware Info is OPEN,
+the firmware rewrites AINSEL every second — OpenOCD channel scans race it (verify
+with CS readback beside every RESULT).
+
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 
 Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):
