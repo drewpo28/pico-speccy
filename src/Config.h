@@ -226,6 +226,9 @@ public:
     // use chip0" fallback lands every chip-1 PSG write of a TFM tune on chip 0.
     static bool twoAyChips() { return turbosound != 0 || tsfm != 0; }
     static uint8_t  covox;
+    // CPU turbo picked by the user (0..3 = 3.5/7/14/28 MHz), NVS-persisted.
+    // Feeds ESPectrum::multUser at setup; the live speed may differ (EFF7 D4).
+    static uint8_t  turbo;
     static uint8_t  soundrive;          // 0=Off, 1=On, 2=Auto (Profi only)
     static bool soundriveEnabled();     // resolves Auto against current arch
     static uint8_t  gs_enabled;

@@ -1778,11 +1778,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
         } else
         if (hkIdx == Config::HK_TURBO) { // Turbo mode
-            ESPectrum::multiplicator += 1;
-            if (ESPectrum::multiplicator > 3) {
-                ESPectrum::multiplicator = 0;
+            ESPectrum::multUser += 1;
+            if (ESPectrum::multUser > 3) {
+                ESPectrum::multUser = 0;
             }
+            ESPectrum::multiplicator = ESPectrum::multUser;
             CPU::updateStatesInFrame();
+            Config::turbo = ESPectrum::multUser;
+            Config::save();
         } else
         if (hkIdx == Config::HK_DEBUG) {
             osdDebug();
@@ -4835,7 +4838,8 @@ static int formatUptimeLine(char* out, int outsz) {
 // runtime. Datasheet 12.4.6: T = 27 - (V - 0.706) / 0.001721, V = raw*3.3/4096.
 // The ADC and the sensor bias stay enabled between calls (nothing else in the
 // firmware owns the ADC; re-arming would need a settle wait on every 1 Hz tick).
-static int chipTempX10() {
+// Non-static: the LED indicator strip (LEDIndicators.cpp) reads it too.
+int chipTempX10() {
     static bool adc_up = false;
     if (!adc_up) {
         adc_init();                         // reset block + EN, waits READY

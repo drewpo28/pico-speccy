@@ -2754,8 +2754,22 @@ static inline void gs_host_sd_service() {
     if (GS::neogs) NgsSd::service();
 }
 
+// Unproductive-poll pacing state (see the comment in hostReadBB). Reset by any
+// host write and by every visible status change.
+static uint8_t  s_bb_pace_last    = 0xFF;
+static uint32_t s_bb_pace_streak  = 0;
+static uint32_t s_bb_pace_t0_us   = 0;   // wall time at episode start
+static uint32_t s_bb_pace_goal_us = 0;   // guest time elapsed in the episode, µs
+static uint32_t s_bb_pace_prev_ts = 0;   // CPU::tstates at the previous poll
+// The ZX-side guest clock, for converting the poll's T-states to real µs —
+// same C-linkage pattern as gs_host_z80_pc (implemented in Ports.cpp; not an
+// ESPectrum.h include, which would drag half the emulator's headers in here).
+extern "C" void gs_host_clock(uint32_t* tstates, uint32_t* states_in_frame,
+                              uint8_t* mult, uint8_t* max_speed);
+
 uint8_t GS::hostReadB3() {
     GS_PERF(s_perf_h_b3r++);
+    s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_host_sd_service();
     uint8_t v;
     if (s_ngs) {
@@ -2939,6 +2953,63 @@ uint8_t GS::hostReadBB() {
         }
     }
     uint8_t v = reg_status | 0x7E;
+    // Real-time pacing for an UNPRODUCTIVE status poll (TheLink tunnel, hw
+    // 2026-08-14). core0 emulates a frame in a wall-clock BURST, so a tight
+    // `IN A,(#BB) / RLCA / JR NC` wait burns its guest T-state budget in a
+    // fraction of the wall time the same loop spends on real hardware — the
+    // card gets a far SHORTER wall deadline than a real 20-24 MHz card enjoys.
+    // Measured: the tunnel leaves ~5.2k T for the frame handshake; at burst
+    // pace that is ~0.1 ms of wall for the card to finish rendering, against
+    // ~1.5 ms on a real Pentagon — so a card running at ~21 of 24 MHz missed
+    // the INT on ~14% of frames (42 fps, and the music, called once per
+    // effect frame, dragged tempo with it — the whole "тормозит TSFM" report;
+    // the TSFM probe cleared the player itself: ~19 port accesses/frame,
+    // lastT 66.4k, zero frames past 68k).
+    //
+    // Pacing the poll changes NOTHING the guest can observe — each iteration
+    // still costs the same T-states — it only stops wall time from
+    // outrunning guest time while the guest is provably doing nothing else.
+    // Engages after 48 reads that returned the SAME visible status (a real
+    // exchange flips D7/D0 and resets the streak, as does any host write).
+    //
+    // The pace target is EXACTLY real time: guest T-states elapsed inside the
+    // episode, divided by the actual guest clock (3.5 MHz << multiplicator).
+    // Not a fixed delay per read — the first cut used 30 µs/read (~3.5x slower
+    // than a real 3.5 MHz poll, ~7x slower at 7 MHz) and it regressed
+    // TheLink's 16col dragon effect to 40 fps (hw 2026-08-14): that effect's
+    // #BB poll waits for a GUEST-side event, so running the guest slower than
+    // real wall time stretched its frames to the episode cap. Real-time pacing
+    // is the fixed point both callers agree on: a poll that ends on a card
+    // event costs exactly the card's true lateness, a poll that ends on a
+    // guest event costs exactly what real hardware pays.
+    // The 8 ms goal cap bounds a genuinely idle dispatcher poll (NPL's OPROS
+    // spins on #BB for seconds) — past it the episode free-runs as before.
+    // SD stays pumped inside the wait — the card may block on our mailbox.
+    if (v == s_bb_pace_last) {
+        ++s_bb_pace_streak;
+        uint32_t tsn, sif; uint8_t mult, maxsp;
+        gs_host_clock(&tsn, &sif, &mult, &maxsp);
+        if (s_bb_pace_streak == 48) {              // episode start
+            s_bb_pace_t0_us   = time_us_32();
+            s_bb_pace_goal_us = 0;
+        } else if (s_bb_pace_streak > 48 && !maxsp) {
+            uint32_t dt = (tsn >= s_bb_pace_prev_ts)
+                            ? tsn - s_bb_pace_prev_ts
+                            : tsn + (sif - s_bb_pace_prev_ts);
+            if (dt > 2000) dt = 2000;              // not a tight poll — don't credit it
+            // µs = T / (3.5 MHz << mult) = T * 2 / (7 << mult)
+            s_bb_pace_goal_us += (dt * 2u) / (7u << mult);
+            if (s_bb_pace_goal_us > 8000) s_bb_pace_goal_us = 8000;
+            while ((uint32_t)(time_us_32() - s_bb_pace_t0_us) < s_bb_pace_goal_us) {
+                gs_host_sd_service();
+                busy_wait_us_32(10);
+            }
+        }
+        s_bb_pace_prev_ts = tsn;
+    } else {
+        s_bb_pace_last = v;
+        s_bb_pace_streak = 0;
+    }
     gs_trace_host(TR_BBr, v, reg_status);
 #ifdef GS_DEBUG_TRACE
     // Auto-dump on the NPL hang signature: the host polls #BB for ages while
@@ -2979,6 +3050,7 @@ static uint32_t s_b3_drain_us = 0;
 
 void GS::hostWriteB3(uint8_t data) {
     GS_PERF(s_perf_h_b3w++);
+    s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_trace_host(TR_B3w, data, reg_status);
     // NeoGS co-scheduling: while the card is ACTIVELY draining, wait for the
     // FIFO to empty before pushing the next byte — the interface behaves like
@@ -3069,6 +3141,7 @@ void GS::hostWriteB3(uint8_t data) {
 
 void GS::hostWriteBB(uint8_t data) {
     GS_PERF(s_perf_h_bbw++);
+    s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_trace_host(TR_BBw, data, reg_status);
 #ifdef GS_DEBUG_TRACE
     // Auto-dump trigger: ZP4 GS-detection sequence starts with CMD 0xD2 →

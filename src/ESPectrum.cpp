@@ -326,6 +326,7 @@ int64_t ESPectrum::ts_start;
 int64_t ESPectrum::elapsed;
 int64_t ESPectrum::idle;
 uint8_t ESPectrum::multiplicator = 0;
+uint8_t ESPectrum::multUser = 0;
 uint32_t ESPectrum::lastBeeperTstates = 0;
 uint32_t ESPectrum::accumulatorFP = 0;
 uint32_t ESPectrum::tstatesPerSampleFP = 0;
@@ -680,6 +681,10 @@ void ESPectrum::setup() {
   VIDEO::loadCustomPalettes();
   Debug::log("setup: Config loaded");
   Debug::log2SD("setup: Config loaded, arch=%s romSet=%s", archToStr(Config::arch), romsetToStr(Config::romSet));
+  // Restore the user's CPU turbo pick (NVS "turbo"). The live multiplicator is
+  // derived from it; CPU::reset()/updateStatesInFrame below pick it up.
+  ESPectrum::multUser = Config::turbo;
+  ESPectrum::multiplicator = ESPectrum::multUser;
   bool ext_ram_exist = butter_psram_size() >= (16 << 10) ||
                        psram_size() >= (16 << 10) || FileUtils::fsMount;
   Debug::log("setup: ext_ram_exist=%d, freeHeap=%u", ext_ram_exist, getFreeHeap());
@@ -1243,6 +1248,12 @@ void ESPectrum::reset(uint8_t romInUse) {
   MemESP::videoLatch = 0;
   MemESP::romLatch = 0;
   MemESP::newSRAM = false;
+  // Reset clears #EFF7, so a guest-held CPU-speed override (EFF7 D4 on
+  // Pentagon-1024SL, #028B on Profi) dies with it — back to the user's pick.
+  if (ESPectrum::multiplicator != ESPectrum::multUser) {
+    ESPectrum::multiplicator = ESPectrum::multUser;
+    CPU::updateStatesInFrame();
+  }
 
   MemESP::ramCurrent[0] = MemESP::rom[romInUse].direct();
   MemESP::ramCurrent[1] = MemESP::ram[5].direct();
@@ -1625,9 +1636,12 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           // (the configurable Turbo hotkey also offers 28 MHz as a 4th state)
           static const char* const mhz[3] =
               { " CPU: 3.5 MHz " , " CPU: 7 MHz   ", " CPU: 14 MHz  " };
-          ESPectrum::multiplicator = (ESPectrum::multiplicator + 1) % 3;
+          ESPectrum::multUser = (ESPectrum::multUser + 1) % 3;
+          ESPectrum::multiplicator = ESPectrum::multUser;
           CPU::updateStatesInFrame();
-          menuToast(mhz[ESPectrum::multiplicator]);
+          Config::turbo = ESPectrum::multUser;
+          Config::save();
+          menuToast(mhz[ESPectrum::multUser]);
           return;
         }
         if (KeytoESP == fabgl::VK_F12) { // NMI — route through do_OSD with the

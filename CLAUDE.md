@@ -828,6 +828,68 @@ UnrealSpeccy-heritage ack); behavior-neutral for known software — fw 1.11's
 source and NPL's card side never execute `OUT (02)` (only fw command 0x10
 "OUT to any port" could reach it).
 
+## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
+
+TheLink (pouet 53778, Pentagon 1024SL + NeoGS + TSFM, REQUIRES 7 MHz turbo)
+exposed two unrelated defects; both fixes hw-confirmed same day. Analysis
+artifacts: `TUNNELZX` disassembled from the TRD (runtime = file − 0x4810),
+`MC7FFD_TRACE` / `TSFM_TRACE` CMake probes in Ports.cpp (default OFF).
+
+- **#EFF7 D4 = turbo OFF on Pentagon-1024SL** (1 = 3.5 MHz, 0 = the machine's
+  turbo clock). Unreal's emul.h calls the bit EFF7_GIGASCREEN — misleading
+  historical name; pentevo io.cpp is authoritative
+  (`turbo((pEFF7 & EFF7_GIGASCREEN) ? 1 : 2)`), speccy.info "Порт EFF7"
+  confirms ("запрещает турбо-режим"; the wiki is behind Cloudflare JS — fetch
+  via web.archive.org). TheLink's beam-locked attr multicolors (TUNNELZX,
+  MULBARZX — the only effects writing 0x10) drop THEMSELVES to 3.5 and restore
+  7 on exit; ignoring D4 ran them at 7 MHz where the doubled INT window
+  (IntEnd 36→72, correct model of the fixed-wall-time ULA pulse) let the EI,RET
+  handler take a SECOND interrupt (+33 T) — measured with MC7FFD_TRACE: the
+  tunnel's screen-5 flip is instruction-exact on the 17920+1792·i line grid
+  (each writer iteration is EXACTLY 1792 T — our ZX core's timing is т-в-т),
+  and +69 T of shift put it 6 T past the renderer's col-0 sample at
+  TS_SCREEN_PENTAGON 17983 → 1-scanline stripes in column 0. D4 is honored in
+  the #EFF7 paging handler, is1024-only, ONLY while the user has turbo on
+  (`ESPectrum::multUser > 0`): Gluk RTC rewrites EFF7 (D7 CMOS) with D4=0
+  constantly and must not turbo a 3.5 session. Applied immediately mid-frame
+  (Profi #028B precedent). Machine reset restores the user's pick (RES clears
+  EFF7).
+- **`ESPectrum::multUser` vs `multiplicator`**: multUser = the user's turbo
+  pick (both hotkeys write it, NVS-persisted as `Config::turbo`, restored in
+  setup); multiplicator = the LIVE speed, which guest hardware may pull down
+  (EFF7 D4) or override (Profi #028B).
+- **EFF7 bit audit** (vs speccy.info): D0 16col — now honored unconditionally
+  on is1024 (lazy 512 B LUT; the menu "16 colours" toggle still gates the
+  other Pentagons); D1 512x192 NOT implemented (only real gap; the DS80
+  512-wide HDMI path is the donor if ever needed); D2 notMore128 ✓; D3 cache
+  overlay ✓ (keep Unreal semantics over the wiki's loose wording — hw-proven
+  via Neo8Tracker); D4 ✓; D5 hw-multicolor / D6 384x304 — officially dead
+  ("все программы работоспособны без них"), deliberately skipped; D7 Gluk
+  CMOS — RTC deliberately not gated on it.
+- **Unproductive GS status-poll pacing (GS.cpp hostReadBB, `s_bb_pace_*`)** —
+  the tunnel stuttered at 42 fps (music tempo dragging with it: the TSFM
+  player is called once per effect frame — TSFM_TRACE cleared the player
+  itself: ~19 port accesses/frame, last access at T 66.4k/71680, zero frames
+  late). Root deviation: core0 emulates the frame in a wall BURST, so the
+  ~5.2k T the tunnel leaves for its #BB frame handshake span ~0.1 ms of wall
+  against ~1.5 ms on real hardware — our card (GS-Z80 sustains ~20-21 of the
+  24 MHz CKSEL asks) got a 15× shorter wall deadline than a real card. Fix:
+  after 48 consecutive #BB reads returning the same visible status, pace each
+  further read so wall time equals the poll's ELAPSED GUEST TIME
+  (T-states / (3.5 MHz << multiplicator), via the `gs_host_clock()` C-shim in
+  Ports.cpp; wrap-aware; skipped under maxSpeed; SD mailbox pumped inside the
+  wait; 8 ms episode goal cap for NPL-style idle spinning; any host write or
+  status change resets). **The exact-real-time target is load-bearing**: the
+  first cut used a fixed 30 µs/read (3.5-7× slower than real) — it fixed the
+  tunnel but regressed TheLink's 16col dragon effect to 40 fps, because that
+  effect's poll ends on a GUEST-side event and running the guest slower than
+  real wall stretched every frame to the episode cap. Real time is the fixed
+  point both classes of poller agree on: a poll ending on a card event costs
+  the card's true lateness, one ending on a guest event costs what real
+  hardware pays. Guest-visible T flow is UNCHANGED either way.
+- Still open (separate lever, only if some title still drops frames): the
+  GS-Z80's genuine ~10-15% deficit vs a 24 MHz card on render-heavy loads.
+
 ## TurboSound FM (#FFFD select #F8..#FF) — the port layer, 2026-08-07
 
 (The FM synthesis that sits behind it is a separate section: "TurboSound FM —

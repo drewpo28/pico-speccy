@@ -50,6 +50,8 @@ option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" OFF)
 option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
+option(MC7FFD_TRACE "One-shot capture of #7FFD write tstates when a frame carries >=90 of them (beam-raced multicolor phase diagnosis)" OFF)
+option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
 option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" OFF)
@@ -316,6 +318,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     hardware_flash
     hardware_xip_cache
     hardware_exception
+    hardware_adc
     stdc++
 
     tinyusb_host tinyusb_board
@@ -467,6 +470,20 @@ if (PROFI_PORT_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE PROFI_PORT_TRACE=1)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PROFI_PORT_TRACE=0)
+endif ()
+
+# One-shot #7FFD multicolor phase capture (see Ports.cpp `#if MC7FFD_TRACE`).
+if (MC7FFD_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MC7FFD_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MC7FFD_TRACE=0)
+endif ()
+
+# TSFM guest-T budget probe (see Ports.cpp `#if TSFM_TRACE`).
+if (TSFM_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TSFM_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TSFM_TRACE=0)
 endif ()
 
 # ZiFi port/UART tracing (see ZiFi.cpp / ZiFiAT.cpp `#if ZIFI_TRACE`).

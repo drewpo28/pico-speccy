@@ -90,6 +90,7 @@ uint8_t  Config::ayConfig = 0;
 uint8_t  Config::turbosound = 3; // BOTH
 uint8_t  Config::tsfm = 0;       // TurboSound FM off by default
 uint8_t  Config::covox = 1; // #FB
+uint8_t  Config::turbo = 0; // 3.5 MHz
 uint8_t  Config::soundrive = 2; // AUTO: on for Profi, off elsewhere
 
 bool Config::soundriveEnabled() {
@@ -917,6 +918,8 @@ void Config::load() {
         // old NedoPC-only (1) / old-TS-only (2) values in, or the menu row would
         // match no option at all.
         if (Config::turbosound) Config::turbosound = 3;
+        nvs_get_u8("turbo", Config::turbo, sts);
+        if (Config::turbo > 3) Config::turbo = 0;
         nvs_get_u8("covox", Config::covox, sts);
         if (Config::covox > 2) Config::covox = 0; // migrate short-lived covox==3 SounDrive mode
         nvs_get_u8("soundrive", Config::soundrive, sts);
@@ -1222,6 +1225,7 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"ayConfig", Config::ayConfig);
     nvs_set_u8(buf,"turbosound", Config::turbosound);
     nvs_set_u8(buf,"tsfm", Config::tsfm);
+    nvs_set_u8(buf,"turbo", Config::turbo);
     nvs_set_u8(buf,"covox", Config::covox);
     nvs_set_u8(buf,"soundrive", Config::soundrive);
     nvs_set_u8(buf,"gs_enabled", Config::gs_enabled);

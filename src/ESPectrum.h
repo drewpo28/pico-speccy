@@ -191,6 +191,11 @@ public:
     static int Audio_freq;
 
     static uint8_t multiplicator;
+    // The turbo speed the USER selected (hotkeys write this). `multiplicator`
+    // is the LIVE value: guest hardware may pull it below multUser — Pentagon
+    // 1024SL software drops itself to 3.5 MHz via #EFF7 D4 (TheLink's
+    // beam-locked multicolor effects), Profi ROMain forces 7 MHz via #028B.
+    static uint8_t multUser;
     static uint32_t lastBeeperTstates;
     static uint32_t accumulatorFP;
     static uint32_t tstatesPerSampleFP;

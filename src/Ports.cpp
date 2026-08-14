@@ -74,6 +74,117 @@ extern "C" const uint32_t profi_default_palette16[16];
 #define PROFI_PORT_TRACE 0
 #endif
 
+#ifndef MC7FFD_TRACE
+#define MC7FFD_TRACE 0
+#endif
+#ifndef TSFM_TRACE
+#define TSFM_TRACE 0
+#endif
+#if TSFM_TRACE
+// TSFM budget probe (TheLink tunnel stutter, 2026-08-14). At 3.5 MHz the
+// tunnel frame leaves ~11.4k T after delay+copy, all of it for the music
+// call — and the log showed ~25% of INTs landing while the ZX still waits in
+// the post-music handshake. This measures WHERE the music's guest-T goes:
+//   stRd      — YM2203 status reads (IN #FFFD in ready-poll mode) per window
+//   wr        — #FFFD/#BFFD writes per window
+//   lastT     — latest FM-port access tstate seen in any frame of the window
+//               (how deep into the frame the player runs; frame = 71680 at 3.5)
+//   late      — frames whose last FM access came past tstates 68000
+//   maxStRd/fr— longest status-poll burst in one frame (timer-flag spinning?)
+// Frames are detected by tstates wrap between FM accesses, so only frames
+// with FM traffic are counted — rates are per counted frame.
+static uint32_t tsfm_st_rd = 0, tsfm_wr = 0;
+static uint16_t tsfm_frames = 0, tsfm_late = 0;
+static uint32_t tsfm_max_t = 0, tsfm_frame_last = 0, tsfm_prev_ts = 0;
+static uint16_t tsfm_frame_strd = 0, tsfm_max_strd = 0;
+static void tsfmProbe(bool status_read) {
+  uint32_t ts = CPU::tstates;
+  if (ts < tsfm_prev_ts) {   // frame boundary passed since the last FM access
+    tsfm_frames++;
+    if (tsfm_frame_last > 68000) tsfm_late++;
+    if (tsfm_frame_strd > tsfm_max_strd) tsfm_max_strd = tsfm_frame_strd;
+    if (tsfm_frame_last > tsfm_max_t) tsfm_max_t = tsfm_frame_last;
+    tsfm_frame_strd = 0; tsfm_frame_last = 0;
+    if (tsfm_frames >= 100) {
+      Debug::log("TSFM: fr=%u stRd=%lu wr=%lu lastT=%lu late(>68k)=%u maxStRd/fr=%u",
+                 tsfm_frames, (unsigned long)tsfm_st_rd, (unsigned long)tsfm_wr,
+                 (unsigned long)tsfm_max_t, tsfm_late, tsfm_max_strd);
+      tsfm_frames = 0; tsfm_late = 0; tsfm_st_rd = 0; tsfm_wr = 0;
+      tsfm_max_t = 0; tsfm_max_strd = 0;
+    }
+  }
+  tsfm_prev_ts = ts;
+  if (status_read) { tsfm_st_rd++; tsfm_frame_strd++; } else tsfm_wr++;
+  tsfm_frame_last = ts;
+}
+#endif
+#if MC7FFD_TRACE
+// One-shot capture of #7FFD write times, for beam-raced multicolor diagnosis
+// (TheLink tunnel, 2026-08-14: 1-scanline attr stripes in column 0 of rows
+// 19-23). The tunnel's ZX side is phase-locked to the beam: HALT on INT, a
+// 17,285 T delay loop, then 24 iterations of exactly 1792 T (one attr row of
+// beam time), each flipping the displayed screen 4x via OUT (C),A to #7FFD
+// with every flip designed to land in a horizontal border — the second flip
+// of each iteration falls on the 17920 + 1792*i grid exactly (= start of
+// machine line 80+8i on the Pentagon it was tuned for). This trace measures
+// where OUR core puts those flips: the offset of flip #2 from the 17920 grid
+// is the phase error vs TS_SCREEN_PENTAGON, and the spacing between flips is
+// the actual per-block cost in this core (design: 437/429/452/452+22).
+//
+// Arms itself on the multicolor signature — >= 90 paging writes in one frame
+// (the tunnel does 96: 4 per attr row) — then records the next ~200 writes
+// with their frame-relative tstate and dumps once per boot. A frame boundary
+// shows up in the dump as tstates decreasing.
+static uint32_t mc_tr_t[200];
+static uint8_t  mc_tr_d[200];
+static uint16_t mc_tr_n = 0;
+static uint16_t mc_frame_writes = 0;
+static uint32_t mc_prev_ts = 0;
+static uint8_t  mc_state = 0;      // 0=watching 1=recording 2=cooldown
+static uint16_t mc_cool = 0;       // frames left in cooldown
+static uint16_t mc_dump_no = 0;
+static void mc7ffdTrace(uint8_t data) {
+  uint32_t ts = CPU::tstates;
+  bool new_frame = ts < mc_prev_ts;
+  mc_prev_ts = ts;
+  if (mc_state == 2) {             // cooldown between captures (~5 s), then re-arm
+    if (new_frame && --mc_cool == 0) { mc_state = 0; mc_frame_writes = 0; }
+    return;
+  }
+  if (mc_state == 0) {
+    if (new_frame) {
+      if (mc_frame_writes >= 90) {
+        mc_state = 1;
+        mc_tr_n = 0;
+        Debug::log("MC7FFD: armed #%u (%u writes/frame)", mc_dump_no, mc_frame_writes);
+      }
+      mc_frame_writes = 0;
+    }
+    mc_frame_writes++;
+    if (mc_state == 0) return;
+  }
+  mc_tr_t[mc_tr_n] = ts;
+  mc_tr_d[mc_tr_n] = data;
+  if (++mc_tr_n < 200) return;
+  mc_state = 2;
+  mc_cool = 250;
+  Debug::log("MC7FFD: dump #%u tsScreen=%d tsLine=%d frame=%u IntEnd=%ld",
+             mc_dump_no++, VIDEO::tStatesScreen, (int)VIDEO::tStatesPerLine,
+             (unsigned)CPU::statesInFrame, (long)CPU::IntEnd);
+  for (int i = 0; i < 200; i += 8) {
+    Debug::log("MC7FFD: %lu/%02X %lu/%02X %lu/%02X %lu/%02X %lu/%02X %lu/%02X %lu/%02X %lu/%02X",
+               (unsigned long)mc_tr_t[i],   mc_tr_d[i],
+               (unsigned long)mc_tr_t[i+1], mc_tr_d[i+1],
+               (unsigned long)mc_tr_t[i+2], mc_tr_d[i+2],
+               (unsigned long)mc_tr_t[i+3], mc_tr_d[i+3],
+               (unsigned long)mc_tr_t[i+4], mc_tr_d[i+4],
+               (unsigned long)mc_tr_t[i+5], mc_tr_d[i+5],
+               (unsigned long)mc_tr_t[i+6], mc_tr_d[i+6],
+               (unsigned long)mc_tr_t[i+7], mc_tr_d[i+7]);
+  }
+}
+#endif
+
 // Helper so MemESP.h writebyte() can read the Z80 PC without pulling
 // in Z80_JLS/z80.h (which would create circular include chains via MemESP.h).
 // Unconditional (not just under PROFI_PORT_TRACE) — the #0100 write trace
@@ -102,6 +213,9 @@ static inline AySound* ayChipFor(uint16_t /*address*/) {
 // unless TsfmSubsys is up, so this costs one null test while TSFM is off.
 // `genSample` is false only on the DMA path, which has never caught the mixer up.
 static inline void ayPortWrite(uint16_t address, uint8_t data, bool genSample) {
+#if TSFM_TRACE
+  tsfmProbe(false);
+#endif
   AySound* chip = ayChipFor(address);
   OpnFm*   fm   = opnfm[AySound::selected_chip];
   if ((address & 0x4000) != 0) {
@@ -453,6 +567,14 @@ extern int ram_pages, butter_pages, psram_pages, swap_pages;
 // Proxy for GS.cpp — that TU includes Z80_redcode.h which clashes with
 // Z80_JLS/z80.h, so it can't query the host PC directly.
 extern "C" uint16_t gs_host_z80_pc(void) { return Z80::getRegPC(); }
+// Guest clock snapshot for the GS host-poll pacing (GS.cpp hostReadBB).
+extern "C" void gs_host_clock(uint32_t* tstates, uint32_t* states_in_frame,
+                              uint8_t* mult, uint8_t* max_speed) {
+  *tstates = CPU::tstates;
+  *states_in_frame = CPU::statesInFrame;
+  *mult = ESPectrum::multiplicator;
+  *max_speed = ESPectrum::maxSpeed ? 1 : 0;
+}
 // Return address of whatever called the #BB poll loop. The PC alone is useless
 // there — all three waits are three-byte loops and the host sits in one of them
 // permanently — but the word on top of its stack names the routine, exactly as
@@ -1452,6 +1574,9 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // allocated they read 0, which is the same "idle" answer as before.
         uint8_t rd;
         if (AySound::ts_status_read) {
+#if TSFM_TRACE
+          tsfmProbe(true);
+#endif
           OpnFm* fm = opnfm[AySound::selected_chip];
           rd = fm ? fm->status() : 0x00;
         } else {
@@ -1887,7 +2012,9 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   //   D1 (0x02) = EFF7_512       — 512-pixel hires mode (Profi CP/M)
   //   D2 (0x04) = EFF7_LOCKMEM
   //   D3 (0x08) = EFF7_ROCACHE
-  //   D4 (0x10) = EFF7_GIGASCREEN
+  //   D4 (0x10) = EFF7_GIGASCREEN — MISNAMED in emul.h: on Pentagon-1024SL it
+  //               is TURBO OFF (pentevo io.cpp: turbo(pEFF7&0x10 ? 1 : 2));
+  //               handled in the dedicated #EFF7 paging handler further down
   //   D5 (0x20) = EFF7_HWMC      — hardware multicolor
   //   D6 (0x40) = EFF7_384       — 384-line video
   //   D7 (0x80) = EFF7_CMOS      — CMOS RTC enable
@@ -1898,12 +2025,20 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     portEFF7 = data;
     // (page0ram/notMore128 from bits 2-3 are handled by the dedicated #EFF7
     // paging handler further down — single owner, don't duplicate here.)
-    // Pentagon 16col — keep existing bit 0 behaviour (legacy mode_16col_onoff)
-    if (Config::mode16col_onoff) {
+    // Pentagon 16col (EFF7 D0, speccy.info "Порт EFF7"). On Pentagon-1024SL
+    // the bit is real hardware, so it is honored there unconditionally — the
+    // menu's "16 colours" toggle only matters for the other Pentagons (where
+    // it deliberately lets a user grant the mode to software written for an
+    // SL). The 512 B decode LUT is allocated lazily on first guest enable;
+    // Video Reset / a machine switch away from Pentagon frees it as before.
+    if (Config::mode16col_onoff || Z80Ops::is1024) {
       bool want = (data & 0x01) != 0;
       if (want != VIDEO::mode16col_enabled) {
+        if (want) {
+          VIDEO::ensure16colLut();
+          VIDEO::mode16colUpdatePlanes();
+        }
         VIDEO::mode16col_enabled = want;
-        if (want) VIDEO::mode16colUpdatePlanes();
       }
     }
   }
@@ -2792,6 +2927,26 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         if (MemESP::page0ram != prevPage0)
           MemESP::recoverPage0();
       }
+      // Pentagon-1024SL v2.x: EFF7 D4 = turbo OFF (1 = 3.5 MHz, 0 = the
+      // machine's turbo clock). Unreal's emul.h calls the bit EFF7_GIGASCREEN
+      // (historical name) but pentevo io.cpp implements it as
+      // `turbo((pEFF7 & EFF7_GIGASCREEN) ? 1 : 2)` — it is the CPU speed
+      // switch. TheLink's beam-locked multicolor effects (TUNNEL, MULBAR)
+      // write 0x10 at entry / 0x00 at exit: the demo runs at 7 MHz but those
+      // effects need cycle-exact 3.5 MHz raster timing (each writer iteration
+      // is exactly 1792 T = 8 scanlines, and the doubled turbo INT window even
+      // adds a second EI,RET interrupt = +33 T — hw-measured with MC7FFD_TRACE
+      // 2026-08-14: 1-cell attr stripes at column 0). Honored only while the
+      // USER has turbo on: D4=0 must not turbo a 3.5 MHz session — the Gluk
+      // RTC clock loop rewrites EFF7 (D7 CMOS) with D4=0 all the time.
+      // Immediate apply mid-frame follows the Profi #028B precedent above.
+      if (Z80Ops::is1024 && ESPectrum::multUser) {
+        uint8_t want = bitRead(data, 4) ? 0 : ESPectrum::multUser;
+        if (want != ESPectrum::multiplicator) {
+          ESPectrum::multiplicator = want;
+          CPU::updateStatesInFrame();
+        }
+      }
       // Only flash the RAM paging LED on an actual paging change. #EFF7 is
       // shared with the CMOS-enable bit (D7): Gluk's RTC clock loop toggles D7
       // every update, which would otherwise blink the RAM LED with no real
@@ -2818,6 +2973,9 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
       (!Z80Ops::isALF || (address & 0x0080))) { // 8002 !-> 7FFD
     ++Ports::port7ffd_cnt;
+#if MC7FFD_TRACE
+    mc7ffdTrace(data);
+#endif
     LED::touchW(LED::RAM);
 #if FDD_PORT_TRACE
     // Profi-only: normal 128K screen-flip demos legitimately hammer 7FFD from a
