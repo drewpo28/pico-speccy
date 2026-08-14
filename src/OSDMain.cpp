@@ -37,6 +37,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include <hardware/clocks.h>
 #include <hardware/flash.h>
 #include <hardware/vreg.h>
+#include <hardware/adc.h>
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
 
@@ -4827,6 +4828,29 @@ static int formatUptimeLine(char* out, int outsz) {
         (int)(up_s / 60 % 60), (int)(up_s % 60));
 }
 
+// On-chip temperature in 0.1 C units, via the SDK hardware_adc driver.
+// The temp sensor's channel depends on the PACKAGE (RP2350A = ch4, RP2350B =
+// ch8) and one image can run on either, so the SDK's compile-time
+// ADC_TEMPERATURE_CHANNEL_NUM (NUM_ADC_CHANNELS - 1) cannot be used — pick at
+// runtime. Datasheet 12.4.6: T = 27 - (V - 0.706) / 0.001721, V = raw*3.3/4096.
+// The ADC and the sensor bias stay enabled between calls (nothing else in the
+// firmware owns the ADC; re-arming would need a settle wait on every 1 Hz tick).
+static int chipTempX10() {
+    static bool adc_up = false;
+    if (!adc_up) {
+        adc_init();                         // reset block + EN, waits READY
+        adc_set_temp_sensor_enabled(true);
+        busy_wait_us(500);                  // first-time bias settle
+        adc_up = true;
+    }
+    adc_select_input(chip_is_rp2350a() ? 4 : 8);
+    (void)adc_read();                       // discard the first conversion
+    int raw = 0;
+    for (int i = 0; i < 4; i++) raw += adc_read();
+    int uv10 = (raw / 4) * 33000 / 4096;    // volts * 10000
+    return 270 - (uv10 - 7060) * 1000 / 1721;
+}
+
 static void buildHWInfoText() {
     char (&hwtext)[OSD_INFO_BUF_SZ] = osd_info_buf;
     int pos = 0;
@@ -4865,14 +4889,16 @@ static void buildHWInfoText() {
         };
         int vi = vreg_get_voltage();
         int mv = (vi >= 0 && vi < 32) ? vreg_mv[vi] : 0;
+        int t_x10 = chipTempX10();
         pos += snprintf(hwtext + pos, sizeof(hwtext) - pos,
             " Chip model     : RP2350%s %d MHz\n"
             " Chip cores     : 2\n"
-            " Chip VREG      : %d.%02d V\n"
+            " Chip VREG/TEMP : %d.%02d V / %d.%d C\n"
             " Chip RAM       : 520 KB\n"
             " Free RAM       : %d KB\n",
             chip_is_rp2350a() ? "A" : "B", (int)cpu_hz,
             mv / 1000, (mv % 1000) / 10,
+            t_x10 / 10, (t_x10 < 0 ? -t_x10 : t_x10) % 10,
             (int)(free_heap / 1024));
     }
 
@@ -5076,35 +5102,14 @@ void OSD::ChipInfo() {
     }
 #endif
 
-    // On-chip temperature sensor via ADC
+    // On-chip temperature sensor via ADC (the old raw-register version of this
+    // block, inherited from pico-spec, had the conversion off by 10x — it read
+    // ~27-29 C no matter the real die temperature)
     {
-        // Register bases differ between chips
-        volatile uint32_t *resets     = (volatile uint32_t *)0x40020000;
-        volatile uint32_t *adc_cs     = (volatile uint32_t *)0x400a0000;
-        volatile uint32_t *adc_result = (volatile uint32_t *)0x400a0004;
-        uint32_t ts_ch = chip_is_rp2350a() ? 4 : 8;
-
-        // Unreset ADC block: clear bit 0 in RESETS_RESET, wait bit 0 in RESET_DONE
-        resets[0] &= ~1u;                      // RESET: clear ADC bit
-        while (!(resets[2] & 1u)) {}            // RESET_DONE: wait ADC ready
-
-        *adc_cs = 1; // EN=1
-        while (!(*adc_cs & (1 << 8))) {} // wait READY
-        *adc_cs = (ts_ch << 12) | (1 << 1) | 1; // AINSEL=ch, TS_EN=1, EN=1
-        sleep_ms(1); // let temp sensor stabilize
-        *adc_cs = (ts_ch << 12) | (1 << 2) | (1 << 1) | 1; // + START_ONCE
-        while (!(*adc_cs & (1 << 8))) {} // wait READY
-        uint16_t raw = *adc_result & 0xFFF;
-        *adc_cs = 0; // disable ADC
-
-        // T = 27 - (V - 0.706) / 0.001721, V = raw * 3.3 / 4096
-        // Integer: T*10 = 270 - (raw*33000/4096 - 7060) * 100 / 1721
-        int uv10 = (int)raw * 33000 / 4096; // voltage * 10000 (0..33000)
-        int temp_x10 = 270 - (uv10 - 7060) * 100 / 1721;
-        int t_int = temp_x10 / 10;
-        int t_frac = (temp_x10 < 0 ? -temp_x10 : temp_x10) % 10;
+        int temp_x10 = chipTempX10();
         pos += snprintf(buf + pos, sizeof(buf) - pos,
-            " Temperature    : %d.%d C\n", t_int, t_frac);
+            " Temperature    : %d.%d C\n",
+            temp_x10 / 10, (temp_x10 < 0 ? -temp_x10 : temp_x10) % 10);
     }
 
     showTextDialog("Chip Info", buf);
