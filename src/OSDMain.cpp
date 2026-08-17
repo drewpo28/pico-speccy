@@ -2052,6 +2052,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     reset_menu = MENU_RESETTO_PROFI;
                 } else if (Config::arch == A_SCORP) {
                     reset_menu = MENU_RESETTO_SCORP;
+                } else if (Z80Ops::isP3) {
+                    reset_menu = MENU_RESETTO_P3;
                 } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
                     if (Config::romSet == R_PENT_GLUK)
                         reset_menu = MENU_RESETTO_PENTGLUK;
@@ -2130,6 +2132,20 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             ESPectrum::reset(0); // 128K
                         } else if (opt == 4) {
                             ESPectrum::reset(1); // 48K BASIC ROM
+                            MemESP::pagingLock = 1;
+                        }
+                    } else if (Z80Ops::isP3) {
+                        // +3=1, 48 BASIC=2. ESPectrum::reset() clears #1FFD, so the
+                        // ROM-3 case has to re-state the high ROM-select bit (D2) and
+                        // re-run the remap — exactly what the machine's own "48 BASIC"
+                        // menu entry does before locking paging.
+                        if (opt == 1) {
+                            ESPectrum::reset(0);
+                        } else if (opt == 2) {
+                            ESPectrum::reset(3);
+                            MemESP::romLatch  = 1;
+                            Ports::port1FFD   = 0x04;
+                            MemESP::plus3Remap(Ports::port1FFD);
                             MemESP::pagingLock = 1;
                         }
                     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {

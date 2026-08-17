@@ -248,6 +248,11 @@ static const Option opt_mach_128[] = {
 #endif
     { TXT_ROM_CUSTOM,     NM_MACH(A_128K, R_128K_CS)  },
 };
+// +3: one ROM set so far (the English v4.0 four-bank image). The row still needs an
+// option table — SET_MACHINE radios read their arch/romset pair from it.
+static const Option opt_mach_p3[] = {
+    { TXT_ROM_P3,         NM_MACH(A_P3, R_P3)         },
+};
 static const Option opt_mach_pent[] = {
     { TXT_ROM_PENT,       NM_MACH(A_PENT, R_PENT)      },
     { TXT_ROM_PENT_GLUK,  NM_MACH(A_PENT, R_PENT_GLUK), TXT_ROM_PENT_GLUK_S },
@@ -333,6 +338,7 @@ static const Node kMurmuzavr[] = {
 static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_48K,   SET_MACHINE, opt_mach_48,    nullptr),
     NM_RADIO(TXT_MACH_128K,  SET_MACHINE, opt_mach_128,   nullptr),
+    NM_RADIO(TXT_MACH_P3,    SET_MACHINE, opt_mach_p3,    nullptr),
     NM_RADIO(TXT_MACH_PENT,  SET_MACHINE, opt_mach_pent,  nullptr),
     NM_RADIO(TXT_MACH_P512,  SET_MACHINE, opt_mach_p512,  p_extRam),
     NM_RADIO(TXT_MACH_P1024, SET_MACHINE, opt_mach_p1024, p_extRam),
@@ -705,14 +711,16 @@ static const Node kJoystick[] = {
 // ── Options ────────────────────────────────────────────────────────────────────
 // Preferred machine / ROM: what a cold boot loads. "Last used" defers to whatever was
 // running, which is also the fallback for any value not in these tables.
+// Index-aligned with kPrefArch[] in UiStage.cpp — keep the two in step.
 static const Option opt_pref_arch[] = {
     { TXT_MACH_48K,   0 },
     { TXT_MACH_128K,  1 },
-    { TXT_MACH_PENT,  2 },
-    { TXT_MACH_P512,  3 },
-    { TXT_MACH_P1024, 4 },
-    { TXT_MACH_SCORP, 5 },
-    { TXT_ROM_LAST,   6 },
+    { TXT_MACH_P3,    2 },
+    { TXT_MACH_PENT,  3 },
+    { TXT_MACH_P512,  4 },
+    { TXT_MACH_P1024, 5 },
+    { TXT_MACH_SCORP, 6 },
+    { TXT_ROM_LAST,   7 },
 };
 static const Option opt_pref48[] = {
     { TXT_ROM_48K,     0 },

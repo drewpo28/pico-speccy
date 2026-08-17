@@ -27,7 +27,8 @@
     X(A_PROFI,      "Profi")  \
     X(A_KARABAS,    "Karabas")  \
     X(A_SCORP,      "Scorpion") \
-    X(A_ALF,        "ALF")
+    X(A_ALF,        "ALF")      \
+    X(A_P3,         "P3")
 
 // Third column = the human label. The second column is an on-disk spelling that
 // must never change (NVS, .esp sidecars); the third is what a user reads, kept
@@ -58,7 +59,8 @@
     X(R_SCORP_GMX,      "ScorpGMX",         "ZS-256 Turbo+ & GMX")        \
     X(R_SCORP_1024,     "Scorp1024",        "ZS-1024 Turbo+")             \
     X(R_SCORP_PROF,     "ScorpProf",        "ZS-1024 + ProfROM")          \
-    X(R_ALF1,           "ALF1",             "ALF cartridge")
+    X(R_ALF1,           "ALF1",             "ALF cartridge")        \
+    X(R_P3,             "P3",               "+3 v4.0")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -123,6 +125,7 @@ inline RomsetIdx defaultRomsetFor(ArchIdx a) {
         case A_KARABAS: return R_PROFI_KAR;
         case A_SCORP:   return R_SCORP;
         case A_ALF:     return R_ALF1;
+        case A_P3:      return R_P3;
         default:        return R_PENT;   // Pentagon / P512 / P1024
     }
 }

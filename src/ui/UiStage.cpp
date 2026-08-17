@@ -229,7 +229,8 @@ const char* romsetName(int32_t c) {
             Config::field = tab[v];                                           \
     }
 
-static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_PENT, A_P512, A_P1024, A_SCORP, A_LAST };
+// Index-aligned with opt_pref_arch[] in UiTree.cpp — keep the two in step.
+static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_P3, A_PENT, A_P512, A_P1024, A_SCORP, A_LAST };
 static const RomsetIdx kPref48[]   = {
     R_48K,
 #if !NO_SPAIN_ROM_48k
@@ -799,6 +800,7 @@ static bool stagedArchIs(ArchIdx a) {
     return Config::arch == a;                  // pair not in our tables: trust Config
 }
 static bool stagedIsProfi() { return stagedArchIs(A_PROFI) || stagedArchIs(A_KARABAS); }
+static bool stagedIsPlus3() { return stagedArchIs(A_P3); }
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }
@@ -831,6 +833,24 @@ static void resolveConstraints(CommitReport& rep) {
         // screen into a Timex mode). Same rule as Gigascreen above.
         if (staged(SET_TIMEX) != 0 && stagedIsProfi())
             changed |= force(SET_TIMEX, 0, rep, "Timex is not available on Profi");
+
+        // The +3 has no Beta Disk (its FDC is the uPD765 on #2FFD/#3FFD) and no SCLD;
+        // both claim ports the +3 uses, and Beta's 0x3D00 trap would fire inside the
+        // +3's own four ROMs. MachineSwitch and CPU::reset enforce the same rule — this
+        // is what makes the menu agree with them instead of silently reverting.
+        if (stagedIsPlus3()) {
+            if (staged(SET_BETADISK))
+                changed |= force(SET_BETADISK, 0, rep, "Betadisk is not available on the +3");
+            if (staged(SET_TIMEX) != 0)
+                changed |= force(SET_TIMEX, 0, rep, "Timex is not available on the +3");
+            if (staged(SET_MB02))
+                changed |= force(SET_MB02, 0, rep, "MB-02+ is not available on the +3");
+            // DivMMC / Z-Controller automap on addresses inside the +3's own ROMs.
+            if (staged(SET_ESXDOS))
+                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on the +3");
+            if (staged(SET_ZCONTROLLER))
+                changed |= force(SET_ZCONTROLLER, 0, rep, "Z-Controller is not available on the +3");
+        }
 
         // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so
         // at most one may be on (OSDMain.cpp:3251, :3380, :3545). The classic menu enforces

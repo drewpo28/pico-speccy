@@ -90,6 +90,7 @@ bool g_scorp_prof = false;
 bool g_scorp_banked = false;
 bool g_scorp_1024 = false;
 bool g_gmx_tap = false;
+bool Z80Ops::isP3 = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -106,7 +107,9 @@ void CPU::updateStatesInFrame() {
             IntStart = INT_START48;
             IntEnd = INT_END_BYTE48;
         }
-    } else if (Config::arch == A_128K || Z80Ops::isALF) {
+    } else if (Config::arch == A_128K || Z80Ops::isALF || Config::arch == A_P3) {
+        // The +2A/+3 keeps the 128K frame (70908 T, 228 T/line, screen at 14361) and
+        // differs only in the contention PATTERN and which pages are contended.
         statesInFrame = TSTATES_PER_FRAME_128;
         IntStart = INT_START128;
         IntEnd = INT_END128 + CPU::latetiming;
@@ -165,7 +168,20 @@ void CPU::reset() {
     g_scorp_1024 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_1024 ||
                                           Config::romSetScorp == R_SCORP_PROF);
     g_gmx_tap = false;   // re-armed by Ports::scorpionRomUpdate once paging settles
-    if (Config::arch == A_48K) {
+    Z80Ops::isP3 = (Config::arch == A_P3);
+    if (Config::arch == A_P3) {
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;      // the +3 is NOT 128K here: it has its own paging,
+        Z80Ops::isPentagon = false; // its own contention and no floating bus
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        // Unattached ports read 0xFF on a +2A/+3 — there is no floating bus
+        // (Fuse: machine->unattached_port = spectrum_unattached_port_none).
+        Ports::getFloatBusData = &Ports::getFloatBusDataNone;
+        ESPectrum::target = MICROS_PER_FRAME_128;
+    } else if (Config::arch == A_48K) {
         Z80Ops::isByte = (Config::romSet48 == R_48K_BY);
         Ports::getFloatBusData = &Ports::getFloatBusData48;
         Z80Ops::is48 = true;
@@ -257,6 +273,16 @@ void CPU::reset() {
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
     // Scorpion too: its Beta-128 is on board (TR-DOS in the machine's own rom[3]).
     if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) && !Config::betadisk) Config::betadisk = true;
+
+    // ...and impossible on the +3, which has the uPD765 on #2FFD/#3FFD instead. Beta's
+    // #1F/#FF decode and its 0x3D00 ROM trap would both fire inside the +3's own ROMs.
+    // Backstop for the paths that reach a machine without going through MachineSwitch
+    // (boot with a stale config, snapshot-forced arch).
+    if (Z80Ops::isP3) {
+        if (Config::betadisk) Config::betadisk = false;
+        if (Config::mb02) Config::mb02 = false;
+        if (Config::timex_video) Config::timex_video = false;
+    }
 
     // Timex video is incompatible with Byte ROM sets — auto-disable.
     // Also with Profi/Karabas: port #FF there is the Beta-128 FDC SYS register,
