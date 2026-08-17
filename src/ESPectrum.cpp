@@ -707,6 +707,11 @@ void ESPectrum::setup() {
       else if (Config::arch == A_ALF) {
         Config::romSet = R_ALF1;
       }
+      else if (Config::arch == A_P3) {
+        // One romset so far, so no per-arch "last used" slot: an explicit arm is still
+        // required or the Pentagon fallback below would hand a +3 boot R_PENT.
+        Config::romSet = R_P3;
+      }
       else if (Config::arch == A_128K) {
         if (Config::pref_romSet_128 != R_LAST)
           Config::romSet = Config::pref_romSet_128;
@@ -733,6 +738,24 @@ void ESPectrum::setup() {
         else
           Config::romSet = Config::romSetPent;
       }
+    }
+  }
+
+  // The +3 has no room for the other storage interfaces: Beta and MB-02+ collide on the
+  // port map, and DivMMC / Z-Controller automap on ROM addresses (0x0000/0x0008/0x0038/
+  // 0x0066) that on a +3 belong to its own four ROMs — the trap would page their RAM
+  // over the +3 ROM and the machine would never boot. MachineSwitch shows a toast and
+  // does the teardown when the user switches live; this is the boot-time twin, and it
+  // has to run BEFORE DivMMC::init() below reads the flags. Not persisted: coming back
+  // to another machine restores the user's pick.
+  if (Config::arch == A_P3) {
+    Config::betadisk = false;
+    Config::mb02 = false;
+    Config::timex_video = false;
+    if (Config::esxdos || Config::zcontroller) {
+      Debug::log("setup: +3 — DivMMC/Z-Controller off (they automap over the +3 ROMs)");
+      Config::esxdos = 0;
+      Config::zcontroller = false;
     }
   }
 
@@ -858,6 +881,8 @@ void ESPectrum::setup() {
   Debug::log2SD("setup: requestMachine done, freeHeap=%u", (unsigned)getFreeHeap());
 
   MemESP::page0ram = 0;
+  MemESP::p3special = 0;
+  Ports::port1FFD = 0;          // +3: normal paging, ROM 0, motors off
   ESPectrum::trdos = false;
   // Pentagon+Gluk: boot with Gluk ROM to install service monitor at 0xDB00
   // Profi: boot with SYS ROM (bank0), SYSEN=true — per ZXMAK2 BusReset() spec
@@ -1017,7 +1042,7 @@ void ESPectrum::setup() {
 
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -1243,6 +1268,8 @@ void ESPectrum::reset(uint8_t romInUse) {
 #endif
   // Memory
   MemESP::page0ram = 0;
+  MemESP::p3special = 0;
+  Ports::port1FFD = 0;          // +3: normal paging, ROM 0, motors off
   MemESP::romInUse = romInUse;
   MemESP::bankLatch = 0;
   MemESP::videoLatch = 0;
@@ -1357,7 +1384,7 @@ void ESPectrum::reset(uint8_t romInUse) {
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_48;
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;

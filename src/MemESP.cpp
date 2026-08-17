@@ -34,6 +34,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "MemESP.h"
+#include "Plus3Paging.h"
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -669,6 +670,36 @@ uint8_t MemESP::videoLatch = 0;
 uint8_t MemESP::romLatch = 0;
 uint8_t MemESP::pagingLock = 0;
 uint8_t MemESP::romInUse = 0;
+uint8_t MemESP::p3special = 0;
+
+// ZX Spectrum +2A/+3 memory map. Normal mode is the 128K one (ROM / 5 / 2 / bank) with
+// a FOUR-way ROM select; #1FFD D0 swaps it for one of four all-RAM configurations.
+// Table and semantics from Fuse (machines/specplus3.c special_memory_map /
+// select_special_map). Contended pages on a +2A/+3 are 4,5,6,7 — not the odd ones.
+void MemESP::plus3Remap(uint8_t p1ffd) {
+    if (plus3IsSpecial(p1ffd)) {
+        const uint8_t* m = plus3SpecialPages(p1ffd);
+        p3special = 1;
+        page0ram  = 1;          // for outside observers (debugger, snapshots)
+        for (uint8_t i = 0; i < 4; i++) {
+            ramCurrent[i]   = ram[m[i]].sync(i);
+            ramContended[i] = plus3PageContended(m[i]);
+        }
+    } else {
+        const uint8_t bank = bankLatch & 0x07;
+        p3special = 0;
+        page0ram  = 0;
+        romInUse        = plus3RomIndex(p1ffd, romLatch);
+        ramCurrent[0]   = rom[romInUse].direct();
+        ramContended[0] = false;
+        ramCurrent[1]   = ram[5].sync(1);
+        ramContended[1] = plus3PageContended(5);
+        ramCurrent[2]   = ram[2].sync(2);
+        ramContended[2] = plus3PageContended(2);
+        ramCurrent[3]   = ram[bank].sync(3);
+        ramContended[3] = plus3PageContended(bank);
+    }
+}
 
 const uint8_t* MemESP::overlayBase[8] = {0};
 const uint8_t* MemESP::overlayPtr[8]  = {0};

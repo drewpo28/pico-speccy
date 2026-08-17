@@ -132,6 +132,9 @@ visit https://zxespectrum.speccy.org/contacto
 #define MENU_BYTE_COBMECT_MODE "COBMECT. Mode\n"
 
 #define MENU_RESETTO_128 "Reset to\n" "128K\n" "48K\n"
+// +3: ROM 0 is the editor/menu the machine boots into, ROM 3 is 48 BASIC (what the
+// machine's own menu reaches by locking paging with ROM 3 selected).
+#define MENU_RESETTO_P3 "Reset to\n" "+3\n" "48 BASIC\n"
 
 #define MENU_RESETTO_DIVMMC "Reset\n" "Soft Reset\n" "Hard Reset\n"
 

@@ -313,6 +313,7 @@ uint8_t Ports::sndriveLatch[6] = {0, 0, 0, 0, 0, 0};
 uint8_t Ports::sndriveUsed = 0;
 uint8_t Ports::portAFF7 = 0;
 uint8_t Ports::portDFFD = 0;
+uint8_t Ports::port1FFD = 0;
 uint8_t Ports::portEFF7 = 0;
 uint8_t Ports::port008B = 0;
 uint8_t Ports::port018B = 0;
@@ -448,6 +449,8 @@ IRAM_ATTR uint8_t Ports::getFloatBusData48() {
 #endif
   return fbdata;
 }
+
+IRAM_ATTR uint8_t Ports::getFloatBusDataNone() { return 0xFF; }
 
 IRAM_ATTR uint8_t Ports::getFloatBusData128() {
 
@@ -588,8 +591,8 @@ inline static size_t extendedZxRamPages() {
     return 64;
   if (Z80Ops::is512)
     return 32;
-  if (Z80Ops::is128 || (Z80Ops::isPentagon || Z80Ops::isProfi))
-    return 8;
+  if (Z80Ops::is128 || Z80Ops::isP3 || (Z80Ops::isPentagon || Z80Ops::isProfi))
+    return 8;   // the +3 has the same eight 16K banks as a 128K
   return 4;
 }
 
@@ -1594,7 +1597,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         Debug::log("[FLOAT-IN] addr=%04X ts=%u ia=%d", address, CPU::tstates, (int)ia);
 #endif
       data = getFloatBusData();
-      if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
+      if ((!Z80Ops::is48) && (!Z80Ops::isP3) && ((address & 0x8002) == 0) &&
           (!Z80Ops::isALF || (address & 0x0080))) { // ALF: #7FFD reflect, A7=1 only
         LED::touchR(LED::RAM);
         // //  Solo en el modelo 128K, pero no en los +2/+2A/+3, si se lee el
@@ -2954,6 +2957,39 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       if (MemESP::page0ram != prevPage0 || MemESP::newSRAM != prevSRAM ||
           MemESP::notMore128 != prevNotMore)
         LED::touchW(LED::RAM);
+    }
+  }
+  // ZX Spectrum +3
+  // ==================================================================
+  // Both paging latches live here and RETURN, because the loose 128K decode below
+  // (A15=0 & A1=0) would also swallow #1FFD. The +2A/+3 decodes are tight — from
+  // Fuse's own port table, machines/machines_periph.c plus3_memory_ports:
+  //   #7FFD  (address & 0xC002) == 0x4000      #1FFD  (address & 0xF002) == 0x1000
+  // The paging lock (#7FFD D5) gates BOTH ports, and a locked write is dropped whole
+  // (spec128_memoryport_write / specplus3_memoryport2_write).
+  if (Z80Ops::isP3) {
+    if ((address & 0xC002) == 0x4000) {
+      ++Ports::port7ffd_cnt;
+      LED::touchW(LED::RAM);
+      if (MemESP::pagingLock) return;
+      MemESP::pagingLock = bitRead(data, 5);
+      MemESP::bankLatch  = data & 0x07;
+      MemESP::romLatch   = bitRead(data, 4);
+      if (MemESP::videoLatch != bitRead(data, 3)) {
+        MemESP::videoLatch = bitRead(data, 3);
+        VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
+        if (Config::gigascreen_onoff == 2) VIDEO::gigascreen_auto_countdown = 3;
+      }
+      MemESP::plus3Remap(Ports::port1FFD);
+      return;
+    }
+    if ((address & 0xF002) == 0x1000) {
+      if (MemESP::pagingLock) return;
+      Ports::port1FFD = data;
+      MemESP::plus3Remap(data);
+      // D3 drives BOTH drive motors, D4 is the printer strobe. The uPD765 is wired
+      // to the motor bit where the controller lands (Plus3Fdc::writeAux).
+      return;
     }
   }
   // 128K, Pentagon

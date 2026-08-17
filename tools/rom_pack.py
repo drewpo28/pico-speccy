@@ -176,6 +176,21 @@ FAMILIES = {
             {'key': 'rom0', 'name': 'Pentagon', 'sym': 'gb_rom_0_pentagon_128k'},
         ],
     },
+    # +3 v4.0 (4 banks). ROM 0 (editor/menu), 1 (syntax checker) and 2 (+3DOS) are
+    # Amstrad rewrites that share almost nothing positionally with anything already in
+    # the tree (best candidate base still leaves a ~17 KB overlay, i.e. bigger than the
+    # 16 KB raw array), so they stay raw in romPlus3.c. ROM 3 is 48 BASIC and overlays
+    # the Sinclair 128K second half at ~1.2 KB — that base must be a RAW array, because
+    # MemESP's overlay registry is keyed by base pointer and does not chain (the +2's
+    # own 48-BASIC is itself an overlay, so it cannot be the base even though it is a
+    # few dozen bytes closer).
+    'plus3': {
+        'id': 'plus3',
+        'base': {'name': 'sinclair_128k_1', 'sym': 'gb_rom_1_sinclair_128k'},
+        'variants': [
+            {'key': 'rom3', 'name': '+3 48 BASIC', 'sym': 'gb_rom_3_plus3'},
+        ],
+    },
     # Profi 64K (4 banks). bank0 (service) is unique and bank1 (TR-DOS variant) shares
     # the trdos_505d base with rom[4] -> both stay raw. bank2 maps to Sinclair 128K
     # rom[0], bank3 to Sinclair 128K rom[1] -> overlays.

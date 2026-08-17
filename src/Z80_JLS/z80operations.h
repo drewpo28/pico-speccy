@@ -44,6 +44,7 @@ public:
     static bool is512;
     static bool is1024;
     static bool isProfi;
+    static bool isP3;       // ZX Spectrum +3 (+2A memory map, uPD765, no floating bus)
 };
 
 #endif // Z80OPERATIONS_H

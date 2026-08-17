@@ -328,6 +328,16 @@ public:
 
     static uint8_t romInUse;
 
+    // +2A/+3 secondary paging (#1FFD). plus3Remap() is the ONE place that turns
+    // (port1FFD, bankLatch, romLatch) into ramCurrent[]/ramContended[]/romInUse; it is
+    // out-of-line and cold (it runs on a paging write, never per instruction), and it
+    // takes the latch as an argument so MemESP does not have to include Ports.h.
+    // p3special mirrors "an all-RAM configuration is active": recoverPage0() must not
+    // touch page 0 then, because in configurations 1-3 it holds RAM page 4, which the
+    // generic page0ram path (which always maps ram[0]) would get wrong.
+    static uint8_t p3special;
+    static void plus3Remap(uint8_t p1ffd);
+
     // ROM overlay registry (RomOverlay.h). A base+patch ROM variant (e.g. TR-DOS
     // 5.03/5.04TM, 48K Spanish) leaves rom[bank] pointing at its base ROM and
     // registers a flash overlay keyed by the base pointer. On a page-0 ROM read,
@@ -402,6 +412,7 @@ public:
     static int getByteContention(uint16_t addr);
 
     inline static void recoverPage0() {
+        if (__builtin_expect(p3special != 0, 0)) return;   // +3 all-RAM: plus3Remap owns page 0
         MemESP::ramCurrent[0] = MemESP::newSRAM ? MemESP::ram[MEM_PG_CNT + MemESP::romLatch].sync(0) :
                                (MemESP::page0ram ? MemESP::ram[0].sync(0) : MemESP::rom[MemESP::romInUse].direct());
     }

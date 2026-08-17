@@ -341,6 +341,21 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         }
         break;
     }
+    case A_P3: {
+        // +2A/+3: FOUR ROMs, selected by (1FFD.D2 << 1) | 7FFD.D4 —
+        //   0 editor/menu   1 syntax checker   2 +3DOS   3 48 BASIC
+        // ROM 3 is the only one close enough to anything already in flash to overlay
+        // (~1.2 KB over the Sinclair 128K second half); 0/1/2 are Amstrad rewrites and
+        // stay raw.  rom[4] (TR-DOS) is still bound below but is unreachable: Beta disk
+        // is forced off for this arch (MachineSwitch / CPU::reset).
+        romSet = R_P3;
+        MemESP::rom[0].assign_rom(gb_rom_0_plus3);
+        MemESP::rom[1].assign_rom(gb_rom_1_plus3);
+        MemESP::rom[2].assign_rom(gb_rom_2_plus3);
+        MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
+        MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_plus3_rom3);
+        break;
+    }
     case A_PROFI: {
         romSet = (newRomSet == R_NONE) ? R_PROFI : newRomSet;
         romSetProfi = romSet;

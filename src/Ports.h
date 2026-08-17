@@ -54,6 +54,9 @@ public:
     static uint8_t (*getFloatBusData)();
     static uint8_t getFloatBusData48();
     static uint8_t getFloatBusData128();
+    // +2A/+3: the ULA does not put the screen byte on an unattached port — reads
+    // return idle bus. Fuse models this as spectrum_unattached_port_none.
+    static uint8_t getFloatBusDataNone();
 
     static void FDDStep(bool force);
     static void dmaOutput(uint16_t address, uint8_t data);
@@ -72,6 +75,10 @@ public:
     static uint8_t portAFF7;
     static uint8_t portDFFD;
     static uint8_t portEFF7; // Extended feature register (Profi CP/M uses bit 1=EFF7_512)
+    // +2A/+3 secondary paging latch #1FFD:
+    //   D0 special (all-RAM) paging enable, D1-2 which configuration when D0=1,
+    //   D2 ROM select high bit when D0=0, D3 disk motor (both drives), D4 printer strobe.
+    static uint8_t port1FFD;
 
     // PQ-DOS serial keyboard emulation (ports #F3 status / #D3 data). PQDOS uses
     // ONLY this controller for input (no IN A,(#FE) matrix reads anywhere in the
