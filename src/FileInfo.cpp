@@ -622,6 +622,42 @@ static void viewZ80(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     info += line; info += "\n"; lines++;
 }
 
+// ---- DSK (CPCEMU / Extended, the +3's format) ----
+// Deliberately parses the header here rather than going through DskImage: this runs on
+// a file the user has merely highlighted in the browser, so it must never allocate a
+// sector window or leave a FIL open.
+static void viewDSK(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
+    if (fileSize < 0x100) return;
+    uint8_t hdr[0x100];
+    UINT br;
+    f_lseek(f, 0);
+    if (f_read(f, hdr, sizeof(hdr), &br) != FR_OK || br != sizeof(hdr)) return;
+    // Both signatures put "Disk-Info\r\n" at 0x17; the leading word picks the flavour.
+    if (memcmp(hdr + 0x17, "Disk-Info\r\n", 11) != 0) return;
+    const bool extended = (memcmp(hdr, "EXTENDED", 8) == 0);
+    const uint8_t cyls = hdr[0x30], sides = hdr[0x31];
+
+    char line[48];
+    snprintf(line, sizeof(line), "%s DSK", extended ? "Extended" : "Standard");
+    info += line; info += "\n"; lines++;
+    snprintf(line, sizeof(line), "Cyls: %u  Sides: %u", cyls, sides);
+    info += line; info += "\n"; lines++;
+
+    // The first track tells the reader the geometry that matters — a standard +3 disk
+    // is 9 x 512 with IDs 0xC1..0xC9, and anything else is worth seeing at a glance.
+    // 0x100 is the first track PRESENT in the file for both flavours: an unformatted
+    // extended track occupies no space, so leading ones need no skipping.
+    const uint32_t t0 = 0x100;
+    uint8_t tib[0x18];
+    if (t0 + sizeof(tib) <= fileSize && f_lseek(f, t0) == FR_OK &&
+        f_read(f, tib, sizeof(tib), &br) == FR_OK && br == sizeof(tib) &&
+        memcmp(tib, "Track-Info\r\n", 12) == 0) {
+        snprintf(line, sizeof(line), "Track 0: %u sectors, %u bytes",
+                 tib[0x15], (unsigned)(128u << (tib[0x14] > 8 ? 8 : tib[0x14])));
+        info += line; info += "\n"; lines++;
+    }
+}
+
 // ---- FDI ----
 static void viewFDI(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     if (fileSize < 14) return;
@@ -880,6 +916,7 @@ void FileInfo::viewInfo(const string& path) {
     else if (ext == "sna") viewSNA(&f, fileSize, info, lines);
     else if (ext == "z80") viewZ80(&f, fileSize, info, lines);
     else if (ext == "fdi") viewFDI(&f, fileSize, info, lines);
+    else if (ext == "dsk") viewDSK(&f, fileSize, info, lines);
     else if (ext == "udi") viewUDI(&f, fileSize, info, lines);
     else if (ext == "hdf") viewHDF(&f, fileSize, info, lines);
     else if (ext == "pro") viewPRO(&f, fileSize, info, lines);

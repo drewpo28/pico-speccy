@@ -2681,6 +2681,27 @@ __not_in_flash("audio") void ESPectrum::PITGetSample() {
 }
 
 void ESPectrum::FDDGenSound() {
+    // The +3's uPD765 is a third controller in the same position: it keeps the same two
+    // signals (head steps to click on, activity to hum on) under its own names, so it
+    // feeds the shared generator through the same two locals.
+    if (Z80Ops::isP3) {
+        uint8_t clicks = Plus3Fdc::fdc.clicks;
+        Plus3Fdc::fdc.clicks = 0;
+        if (clicks > 8) clicks = 8;
+        if (clicks > 0) {
+            fddSound.click_count = clicks;
+            fddSound.motor_noise = false;
+            const int spacing = samplesPerFrame / (clicks + 1);
+            for (int c = 0; c < clicks; c++) fddSound.click_pos[c] = spacing * (c + 1);
+        } else {
+            fddSound.click_count = 0;
+            // The +3 ROM turns the motor off between accesses, so the motor bit alone
+            // is the honest "the drive is spinning" signal here — no need for the
+            // activity heuristic the WD1793 path has to use.
+            fddSound.motor_noise = Plus3Fdc::fdc.motor;
+        }
+        return;
+    }
     // MB-02+ and Betadisk are mutually exclusive, so the active controller's
     // click and LED state feeds the shared fddSound generator.
     rvmWD1793 *ctrl = &fdd;
@@ -3454,9 +3475,10 @@ void ESPectrum::loop() {
       VIDEO::flashing ^= 0x80;
 
     // Draw fdd led indicator in top-right corner. Scorpion carries the Beta
-    // interface on board (betadisk forced on), so it counts like Pentagon here.
+    // interface on board (betadisk forced on), so it counts like Pentagon here;
+    // the +3 has its own uPD765.
     bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ||
-                   (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
+                   (Z80Ops::is128 && Z80Ops::isByte) || Z80Ops::isP3) && Tape::tapeStatus != TAPE_LOADING
         && !DivMMC::enabled
         ;
     // Indicator sits at x=311 — inside the DS80 right border band / normal top border.
@@ -3471,6 +3493,10 @@ void ESPectrum::loop() {
     bool fdd_active = fctrl->fdd_active_decay != 0;
     bool fdd_write  = ((fctrl->command & 0xE0) == 0xA0) ||   // Write Sector (0xA_/0xB_)
                       ((fctrl->command & 0xF0) == 0xF0);     // Write Track  (0xF_)
+    if (Z80Ops::isP3) {                       // the +3's own controller, same signals
+        fdd_active = Plus3Fdc::fdc.activity != 0;
+        fdd_write  = Plus3Fdc::fdc.wroteRecently;
+    }
     // While active: draw ONLY the sprite's foreground pixels (border shows through);
     // dotFast maps the ZX index for the current mode (DS80 → solid pair slot).
     // On the active→idle edge: erase by scheduling a full border repaint instead of
@@ -3482,6 +3508,7 @@ void ESPectrum::loop() {
     // the black DS80 right border).
     bool lamp_on = fdd_active &&
                    ((MB02::enabled && (Config::mb02SoundLed & 1)) ||
+                    (Z80Ops::isP3 && (Config::trdosSoundLed & 1)) ||
                     (hasFdd && (Config::trdosSoundLed & 1)));
     static bool lamp_was_on = false;
     if (lamp_on) {

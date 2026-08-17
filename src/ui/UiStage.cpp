@@ -23,6 +23,7 @@
 #include "MachineSwitch.h"
 #include "DivMMC.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "IDE.h"
 #include "Debug.h"
 #include "GS/GS.h"
@@ -67,6 +68,8 @@ NM_INT_ACCESS (throtling, throtling)
 NM_BOOL_ACCESS(ledInd,    ledIndicators)
 NM_BOOL_ACCESS(sdLed,     sdLedBlink)
 NM_BOOL_ACCESS(rtc,       rtc_enabled)
+NM_BOOL_ACCESS(p3Fast,    p3_fastdisk)
+NM_BOOL_ACCESS(p3Slock,   p3_speedlock)
 NM_BOOL_ACCESS(psramOn,   psram_enabled)
 NM_INT_ACCESS (palette,   palette)
 NM_INT_ACCESS (scanlines, scanlines)
@@ -419,6 +422,16 @@ static bool hook_betadisk(int32_t nv, int32_t) {
 }
 static bool hook_trdosFast(int32_t, int32_t) {
     rvmWD1793UpdateFastmode(&ESPectrum::fdd);
+    return true;
+}
+// Both +3 disk toggles are plain fields of the live controller, so they take effect on
+// the next command without touching the mounted images.
+static bool hook_p3Fast(int32_t nv, int32_t) {
+    Plus3Fdc::fdc.fastMode = (nv != 0);
+    return true;
+}
+static bool hook_p3Slock(int32_t nv, int32_t) {
+    Plus3Fdc::fdc.speedlock = nv ? 0 : -1;
     return true;
 }
 static bool hook_trdosRom(int32_t nv, int32_t) {

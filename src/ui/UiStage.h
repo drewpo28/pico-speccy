@@ -178,6 +178,9 @@ const char* romsetName(int32_t composite);
     X(SET_TRDOS_ROM,       AC_LIVE,   0,                     get_trdosRom,   put_trdosRom,   hook_trdosRom,  -1)          \
     X(SET_TRDOS_AUTOBOOT,  AC_PURE,   0,                     get_trdosBoot,  put_trdosBoot,  nullptr,        -1)          \
     X(SET_MB02_LED,        AC_PURE,   0,                     get_mb02Led,    put_mb02Led,    nullptr,        -1)          \
+    /* ── Storage > +3 disk ───────────────────────────────────────────────────── */      \
+    X(SET_P3_FASTDISK,     AC_LIVE,   0,                     get_p3Fast,     put_p3Fast,     hook_p3Fast,    -1)          \
+    X(SET_P3_SPEEDLOCK,    AC_LIVE,   0,                     get_p3Slock,    put_p3Slock,    hook_p3Slock,   -1)          \
     /* ── Joystick > Additional preferences ───────────────────────────────────── */      \
     X(SET_CURSOR_JOY,      AC_LIVE,   0,                     get_cursorJoy,  put_cursorJoy,  hook_cursorJoy, -1)          \
     X(SET_JOY2CURSOR,      AC_PURE,   0,                     get_joy2cursor, put_joy2cursor, nullptr,        -1)          \

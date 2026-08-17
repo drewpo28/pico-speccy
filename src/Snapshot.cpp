@@ -452,11 +452,13 @@ bool FileZ80::load(const string& z80_fn) {
             if (mch == 4) z80_arch = A_128K;
             if (mch == 5) z80_arch = A_128K; // + if1
             if (mch == 6) z80_arch = A_128K; // + mgt
-            if (mch == 7) z80_arch = A_128K; // Spectrum +3
+            if (mch == 7) z80_arch = A_P3;   // Spectrum +3
             if (mch == 9) z80_arch = A_PENT;
             if (mch == 10) z80_arch = A_SCORP; // Scorpion ZS-256
             if (mch == 12) z80_arch = A_128K; // Spectrum +2
-            if (mch == 13) z80_arch = A_128K; // Spectrum +2A
+            // A +2A is a +3 without the disk drive, so it runs on the same machine
+            // here; the snapshot carries no disk state either way.
+            if (mch == 13) z80_arch = A_P3;  // Spectrum +2A
 /// TODO:            if (mch == 15) z80_arch = A_P512; + P1024
         }
 
@@ -729,7 +731,8 @@ bool FileZ80::load(const string& z80_fn) {
                 dataOffset += compDataLen;
             }
 
-        } else if ((z80_arch == A_128K) || (z80_arch == A_PENT) || (z80_arch == A_P512)  || (z80_arch == A_P1024) || (z80_arch == A_SCORP)) {
+        } else if ((z80_arch == A_128K) || (z80_arch == A_PENT) || (z80_arch == A_P512)
+                   || (z80_arch == A_P1024) || (z80_arch == A_SCORP) || (z80_arch == A_P3)) {
 
             // paging register
             uint8_t b35 = header[35];
@@ -739,6 +742,13 @@ bool FileZ80::load(const string& z80_fn) {
             MemESP::pagingLock = bitRead(b35, 5);
             MemESP::bankLatch = b35 & 0x07;
             MemESP::romInUse = MemESP::romLatch;
+            // Header byte 86 is port #1FFD, and it is the whole of the +3's extra
+            // state: the ROM select's high bit and which all-RAM configuration (if
+            // any) is mapped. Without it a snapshot taken in special paging restores
+            // with ROM at 0x0000 and dies on its first instruction.
+            // It exists ONLY in the 55-byte version-3 header — the 54-byte variant
+            // stops at byte 85, so reading it there would be uninitialised stack.
+            if (z80_arch == A_P3) Ports::port1FFD = (ahblen >= 55) ? header[86] : 0;
 
             if (z80_arch == A_SCORP) {
                 // v3 55-byte header: byte 86 = "last OUT to 0x1FFD" (the +3 field,
@@ -792,9 +802,14 @@ bool FileZ80::load(const string& z80_fn) {
                 dataOffset += compDataLen;
             }
 
-            MemESP::recoverPage0();
-            MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);
-            MemESP::ramContended[3] = (Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ? false : (MemESP::bankLatch & 0x01 ? true: false);
+            if (z80_arch == A_P3) {
+                // plus3Remap owns all four slots and both contention rules on a +3.
+                MemESP::plus3Remap(Ports::port1FFD);
+            } else {
+                MemESP::recoverPage0();
+                MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);
+                MemESP::ramContended[3] = (Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ? false : (MemESP::bankLatch & 0x01 ? true: false);
+            }
 
             VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
         }

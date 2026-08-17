@@ -283,6 +283,7 @@ bool hotkeyReadonly(int idx);
 // Devices rows. Defined in OSDMain.cpp.
 void ideSlotEdit(uint8_t slot);
 void ideCreateImage();
+void plus3CreateImage();
 // Rebuilds and returns the live hardware-summary text (Help > System status).
 const char* hwInfoText();
 // Live HID/XInput device list text (Help > HID devices).
