@@ -287,6 +287,17 @@ public:
     static bool mb02WP[4];   // MB-02+ per-slot write protect
     static string mb02DiskFile[4]; // remembered MB-02+ disk paths; survive the interface being disabled
     static uint8_t mb02SoundLed;// MB-02+ disk sound & LED: 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+    // ZX Spectrum +3 disk interface (uPD765 + .dsk). Drive A: and B: only — the +3
+    // decodes US0 alone, so there is no third unit to remember.
+    static bool p3WP[2];         // per-drive write protect
+    static string p3DiskFile[2]; // remembered paths; survive the machine being switched away
+    // Speedlock's protection reads one sector twice and expects the reads to differ;
+    // the dumps carry a single copy, so the difference is manufactured. On by default,
+    // matching Fuse, and self-suppressing on a dump that records the variation for real.
+    static bool p3_speedlock;
+    // Transfers normally take the real 32 us per byte, which is what lights the drive
+    // lamp and keeps timed loaders honest. This collapses that for the impatient.
+    static bool p3_fastdisk;
     static bool zcontroller; // Z-Controller SD on ports 0x77/0x57 (mutually exclusive with esxDOS/MB-02+)
     static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
     static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)

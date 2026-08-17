@@ -65,6 +65,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "ZiFi.h"
 #include "RTC.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "hardware/gpio.h"
 #include "sdcard.h"
 
@@ -1169,6 +1170,15 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
 #endif
         return s;
       }
+    }
+
+    // ZX Spectrum +3 uPD765. Ahead of the Beta-128 block below because Beta is forced
+    // off on this machine anyway, and these decodes must not fall through to it.
+    //   #2FFD  main status register (read only)      #3FFD  data register
+    // (Fuse machines/machines_periph.c upd765_ports; both are mask 0xF002.)
+    if (Z80Ops::isP3) {
+      if ((address & 0xF002) == 0x2000) return Plus3Fdc::readStatus();
+      if ((address & 0xF002) == 0x3000) return Plus3Fdc::readData();
     }
 
     // Beta-128 ports: accessible when TR-DOS ROM is paged in,
@@ -2984,13 +2994,17 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       return;
     }
     if ((address & 0xF002) == 0x1000) {
+      // D3 (both drive motors) and D4 (printer strobe) are NOT gated by the paging
+      // lock — only the memory bits are — so the motor is driven before the lock test.
+      Plus3Fdc::writeAux(data);
       if (MemESP::pagingLock) return;
       Ports::port1FFD = data;
       MemESP::plus3Remap(data);
-      // D3 drives BOTH drive motors, D4 is the printer strobe. The uPD765 is wired
-      // to the motor bit where the controller lands (Plus3Fdc::writeAux).
       return;
     }
+    // The FDC data register. #2FFD is read-only, so a write there is swallowed.
+    if ((address & 0xF002) == 0x3000) { Plus3Fdc::writeData(data); return; }
+    if ((address & 0xF002) == 0x2000) return;
   }
   // 128K, Pentagon
   // ==================================================================
