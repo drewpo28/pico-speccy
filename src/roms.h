@@ -72,4 +72,5 @@ extern "C" unsigned char gb_rom_esxdos[];
 extern "C" unsigned char gb_rom_esxide[];
 #include "roms/profi/romProfi.h"
 #include "roms/scorpion/romScorpion.h"
+#include "roms/tsconf/romTsBios.h"
 #endif

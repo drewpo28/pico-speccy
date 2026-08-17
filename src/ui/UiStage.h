@@ -306,7 +306,8 @@ const char* romsetName(int32_t composite);
     X(SET_HDMI_CLKDRV,     AC_LIVE,   F_PREVIEW,             get_hdmiClkDrv, put_hdmiClkDrv, hook_hdmiClkDrv,-1)         \
     /* Debug > UART console (Config::dbg_uart). Reboot-class: the peripherals the   */ \
     /* console displaces (KBD pair, NESPAD, WAV input) yield at boot only.          */ \
-    X(SET_DBG_UART,        AC_REBOOT, 0,                     get_dbgUart,    put_dbgUart,    nullptr,        -1)
+    X(SET_DBG_UART,        AC_REBOOT, 0,                     get_dbgUart,    put_dbgUart,    nullptr,        -1)         \
+    X(SET_TSCONF_RAM,      AC_REBOOT, 0,                     get_tsconfRam,  put_tsconfRam,  nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

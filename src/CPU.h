@@ -133,6 +133,7 @@ public:
 
     // Flush screen
     static void FlushOnHalt();
+    static void FlushOnHaltTo(uint32_t stEnd); // explicit target (TS-Conf sliced loop)
 
     // CPU Tstates elapsed in current frame
     static uint32_t tstates;

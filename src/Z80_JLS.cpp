@@ -37,6 +37,7 @@
 
 #include "DivMMC.h"
 #include "MB02.h"
+#include "TsConf.h"
 
 
 // #include "Snapshot.h"
@@ -941,6 +942,13 @@ void Z80::bitTest(uint8_t mask, uint8_t reg) {
 
 IRAM_ATTR void Z80::check_trdos() {
 
+    // TS-Conf owns its window-0 mapping (Page0/MemConfig) — the generic code
+    // below writes ramCurrent[0]/romInUse directly and calls recoverPage0(),
+    // both of which would walk over the TS-Conf banking. Its own trap keeps
+    // the DOS-signal semantics (enter at #3Dxx with ROM128+ROM, leave on
+    // executing RAM) and remaps through TsConf::setBanks().
+    if (Z80Ops::isTsconf) { TsConf::trdosTrap(REG_PCh); return; }
+
     // Detect NMI-DOS handler return: exact PC and SP match after planted RET at 0x5C00
     if (nmiDosInProgress && REG_PC == nmiDos_savedPC && REG_SP == nmiDos_savedSP) {
         nmiDosInProgress = false;
@@ -1164,7 +1172,10 @@ void Z80::interrupt(void) {
 
         // INT-ack bus byte: the Karabas serial-mouse hw_int drives 0xE7
         // (RST20H) while its request is asserted; the ULA default is 0xFF.
-        uint8_t busByte = Ports::serialMouseIntAsserted() ? 0xE7 : 0xFF;
+        // TS-Conf drives a per-source vector (#FF FRAME / #FD LINE / #FB DMA;
+        // only FRAME is wired in this phase).
+        uint8_t busByte = Z80Ops::isTsconf ? TsConf::im2Vector()
+                        : (Ports::serialMouseIntAsserted() ? 0xE7 : 0xFF);
         REG_PC = Z80Ops::peek16((regI << 8) | busByte); // +6 t-estados
 
         check_trdos();
