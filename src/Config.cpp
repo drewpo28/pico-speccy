@@ -2,6 +2,7 @@
 #include "MemESP.h"
 #include "RTC.h"
 #include "Nvram24.h"
+#include "TsConf.h"
 #include "roms.h"
 #include "FileUtils.h"
 #include "ESPectrum.h"
@@ -27,6 +28,7 @@ RomsetIdx Config::romSetP512 = R_PENT;
 RomsetIdx Config::romSetP1M = R_PENT;
 RomsetIdx Config::romSetProfi = R_PROFI;
 RomsetIdx Config::romSetScorp = R_SCORP;
+RomsetIdx Config::romSetTsconf = R_TSCONF;
 ArchIdx   Config::pref_arch = A_LAST;
 RomsetIdx Config::pref_romSet_48 = R_LAST;
 RomsetIdx Config::pref_romSet_128 = R_LAST;
@@ -35,6 +37,7 @@ RomsetIdx Config::pref_romSetP512 = R_LAST;
 RomsetIdx Config::pref_romSetP1M = R_LAST;
 RomsetIdx Config::pref_romSetProfi = R_LAST;
 RomsetIdx Config::pref_romSetScorp = R_LAST;
+RomsetIdx Config::pref_romSetTsconf = R_LAST;
 string   Config::ram_file = NO_RAM_FILE;
 string   Config::last_ram_file = NO_RAM_FILE;
 string   Config::tape_file = "";
@@ -65,6 +68,8 @@ uint16_t Config::max_tft_freq = 126;
 uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_50;
 bool     Config::Issue2 = true;
 uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
+uint16_t Config::tsconf_ram = 256;     // TS-Conf 4 MB default (64/128/256 pages)
+uint8_t  Config::tsconf_clk_cap = 2;   // ZCLK cap: 14 MHz allowed
 bool     Config::rtc_enabled = false;
 bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
 bool     Config::flashload = true;
@@ -297,7 +302,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // the Profi layout — is sized once in setup() and never grows at runtime.
     // Entering GMX on a 64-page session must reboot so setup() re-lays it out
     // (setup raises MEM_PG_CNT to 128 for a persisted GMX pick). Leaving GMX
-    // needs nothing: the extra pages just sit unused until the next boot.
+    // needs nothing by itself (the extra pages just sit unused), but the
+    // generic wantedPages() boundary below reboots on any strip change.
     // (butter-less modules skip the reboot: the GMX pick falls back to Yellow
     // PCB below anyway, so a power cycle would be wasted.)
     if (newArch == A_SCORP && newRomSet == R_SCORP_GMX && MEM_PG_CNT < 128 &&
@@ -305,6 +311,19 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         arch = newArch;
         romSet = newRomSet;
         romSetScorp = newRomSet;
+        if (!g_snapshot_loading_path.empty())
+            ram_file = g_snapshot_loading_path;
+        save();
+        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+    }
+    // TS-Conf boundary, same shape: the page-strip length itself changes
+    // (256 pages vs 64, or a Murmuzavr pick), MemESP indexes ROM as
+    // ram[MEM_PG_CNT + romLatch], and the strip is sized once in setup() —
+    // any change of wantedPages() must reboot. Unlike the Profi guard this
+    // is NOT butter-exempt.
+    if (wantedPages(newArch, newRomSet) != MEM_PG_CNT) {
+        arch = newArch;
+        if (newRomSet != R_NONE) romSet = newRomSet;
         if (!g_snapshot_loading_path.empty())
             ram_file = g_snapshot_loading_path;
         save();
@@ -575,6 +594,16 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::rom[2].assign_rom(gb_rom_scorpion_bank2);
             MemESP::rom[3].assign_rom(gb_rom_scorpion_bank3);
         }
+        break;
+    }
+    case A_TSCONF: {
+        romSet = (newRomSet == R_NONE) ? R_TSCONF : newRomSet;
+        romSetTsconf = romSet;
+        // TS-Conf window 0 reads flash through TsConf::romPtr(), not
+        // MemESP::rom[] — nothing to bind here. rom[4] (TR-DOS) is still
+        // bound by the tail below for the Beta-128 path; TS-BIOS carries its
+        // own TR-DOS in ROM page 1 and never uses rom[4].
+        TsConf::bindRoms();
         break;
     }
     default: { // Pentagon / P512 / P1024
@@ -994,6 +1023,7 @@ void Config::load() {
         nvs_get_romset("romSetP1M", romSetP1M, sts);
         nvs_get_romset("romSetProfi", romSetProfi, sts);
         nvs_get_romset("romSetScorp", romSetScorp, sts);
+        nvs_get_romset("romSetTsconf", romSetTsconf, sts);
         nvs_get_arch("pref_arch", pref_arch, sts);
         pref_arch = archCanon(pref_arch);
         nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
@@ -1003,6 +1033,7 @@ void Config::load() {
         nvs_get_romset("pref_romSetP1M", pref_romSetP1M, sts);
         nvs_get_romset("pref_romSetProfi", pref_romSetProfi, sts);
         nvs_get_romset("pref_romSetScorp", pref_romSetScorp, sts);
+        nvs_get_romset("pref_romSetTsconf", pref_romSetTsconf, sts);
         nvs_get_str("ram", ram_file, sts);
         nvs_get_u8("ram_origin", ram_file_origin, sts); // provenance (default LOCAL)
         nvs_get_b("AY48", AY48, sts);
@@ -1290,6 +1321,13 @@ void Config::load() {
         nvs_get_i("MEM_PG_CNT", pg, sts);
         mem_pg_cnt = (pg < 8 || pg > 2048) ? 64 : (uint16_t)pg;
         MEM_PG_CNT = mem_pg_cnt;
+        // TS-Conf RAM pick: only the three real configurations are valid.
+        int tsr = 0;
+        nvs_get_i("tsconf_ram", tsr, sts);
+        tsconf_ram = (tsr == 64 || tsr == 128 || tsr == 256) ? (uint16_t)tsr : 256;
+        int tsc = -1;
+        nvs_get_i("tsconf_clk_cap", tsc, sts);
+        tsconf_clk_cap = (tsc >= 0 && tsc <= 2) ? (uint8_t)tsc : 2;
     }
     loaded = true;
     if (FileUtils::fsMount)
@@ -1424,6 +1462,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"romSetP1M",romsetToStr(romSetP1M));
     nvs_set_str(buf,"romSetProfi",romsetToStr(romSetProfi));
     nvs_set_str(buf,"romSetScorp",romsetToStr(romSetScorp));
+    nvs_set_str(buf,"romSetTsconf",romsetToStr(romSetTsconf));
     nvs_set_str(buf,"pref_arch",archToStr(pref_arch));
     nvs_set_str(buf,"pref_romSet_48",romsetToStr(pref_romSet_48));
     nvs_set_str(buf,"pref_romSet_128",romsetToStr(pref_romSet_128));
@@ -1432,6 +1471,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"pref_romSetP1M",romsetToStr(pref_romSetP1M));
     nvs_set_str(buf,"pref_romSetProfi",romsetToStr(pref_romSetProfi));
     nvs_set_str(buf,"pref_romSetScorp",romsetToStr(pref_romSetScorp));
+    nvs_set_str(buf,"pref_romSetTsconf",romsetToStr(pref_romSetTsconf));
     nvs_set_str(buf,"ram",ram_file.c_str());
     // Derive provenance from the file's actual location so the stored tag is never
     // stale: a /tmp path is a transient quick-start download, anything else is a
@@ -1631,6 +1671,8 @@ void Config::save(const char* path) {
     }
     // The PICK, not the live count — see Config::mem_pg_cnt in Config.h.
     nvs_set_i(buf,"MEM_PG_CNT", mem_pg_cnt);
+    nvs_set_i(buf,"tsconf_ram", tsconf_ram);
+    nvs_set_i(buf,"tsconf_clk_cap", tsconf_clk_cap);
 
     if (handle) {
         // f_sync flushes FAT before close so we don't commit the

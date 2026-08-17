@@ -376,9 +376,9 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
 # MODULE, not of the carrier board (a Murmulator 1 takes a module with PSRAM on
 # XIP CS1 = GPIO19 just fine), so the gate is the RUNTIME butter probe: without
 # a chip the GMX pick falls back to Yellow PCB (Config::requestMachine +
-# resolveConstraints). The linker shrinks the GM.DLS partition to 1.6875 MB
+# resolveConstraints). The linker shrinks the GM.DLS partition to 1.625 MB
 # (rp2350-memmap.ld, __gmx_rom_in_flash) so firmware + ROM fit below it — the
-# stock converted gm.dls bank (~1.59 MB) still fits with ~100 KB margin; a
+# stock converted gm.dls bank (1668026 B) still fits with ~35 KB margin; a
 # previously provisioned bank at the old address fails the header check and
 # re-provisions from SD. GMX_IN_FLASH=0 remains an escape hatch (drops the ROM,
 # the menu rows and the partition shrink together).

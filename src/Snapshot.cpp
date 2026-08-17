@@ -70,6 +70,12 @@ std::string g_snapshot_loading_path;
 
 bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_romset) {
     if (!FileUtils::fsMount) return false;
+    // No snapshot format expresses TS-Conf state (its register file, CRAM and
+    // 4 MB paging are outside SNA/Z80) — a TS-Conf force can only come from a
+    // hand-edited .esp sidecar. Drop it; the SNA's own size-detected arch
+    // applies, and loading it while TS-Conf runs goes through requestMachine's
+    // page-strip reboot boundary like any other cross-layout load.
+    if (archCanon(force_arch) == A_TSCONF) { force_arch = A_NONE; force_romset = R_NONE; }
     bool res = false;
     uint8_t OSDprev = VIDEO::OSD;
     g_snapshot_loading_path = filename;

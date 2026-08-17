@@ -63,6 +63,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "Midi.h"
 #include "Z80DMA.h"
 #include "GS/GS.h"
+#include "TsConf.h"
 #include "DivMMC.h"
 #include "IDE.h"
 #include "Plus3eIde.h"
@@ -891,7 +892,13 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     VIDEO::Draw(1, MemESP::ramContended[rambank]); // I/O Contention (Early)
   }
 
-  if (MEM_PG_CNT > 64 && address == 0xAFF7) {
+  // TS-Conf register file: any port #nnAF, register = high address byte.
+  // Full low-byte decode; the only known collision is DivIDE's #AF (ATA
+  // sector-number register), and esxDOS is forced off on TS-Conf.
+  if (Z80Ops::isTsconf && (address & 0xFF) == 0xAF)
+    return TsConf::portRead((uint8_t)(address >> 8));
+
+  if (MEM_PG_CNT > 64 && !Z80Ops::isTsconf && address == 0xAFF7) {
     LED::touchR(LED::RAM);
     return portAFF7;
   }
@@ -1005,7 +1012,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   }
   // ULA PORT
   if ((address & 0x0001) == 0) {
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf)); // I/O Contention (Late)
     if (ia && p8 == 0xFE) {
       data = nes_pad2_for_alf(); // default port value is 0xFF.
     } else {
@@ -1047,7 +1054,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
           (Config::Issue2)) { // Issue 2 behaviour only on Spectrum 48K
         if (port254 & 0x18)
           data |= 0x40;
-      } else if (Z80Ops::isPentagon) {
+      } else if (Z80Ops::isPentagon || Z80Ops::isTsconf) {
         // Pentagon: the EAR input comes from the tape amplifier and idles
         // HIGH with nothing connected — real hardware reads bit 6 = 1 (no
         // port-254 feedback path on Pentagon). Software probes rely on it:
@@ -1093,7 +1100,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // MC146818 RTC data read (#BFF7) — Pentagon/Profi "Mr Gluk" TimeKeeper.
     // Register index was latched via OUT (#DFF7). Port is RTC-specific on these
     // machines, so no extra gating needed.
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi) && address == 0xBFF7) {
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) && address == 0xBFF7) {
       // RTC off → static response (see RTC::readDisabled) instead of leaving the
       // port unclaimed; keeps the boot clock's UIP-wait from hanging.
       uint8_t rv = Config::rtc_enabled ? RTC::readData() : RTC::readDisabled();
@@ -1115,7 +1122,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // comment there for why (it must run only once FDC has declined the address).
 #if RTC_PORT_TRACE
     // Catch-all: any other IN with low byte 0xF7 (reveals a non-#BFF7 data port).
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi) && (address & 0xFF) == 0xF7) {
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) && (address & 0xFF) == 0xF7) {
       static uint32_t in_n = 0;
       if (++in_n <= 150 || (in_n & 0xFF) == 0)
         Debug::log("[RTC IN?] %04X pc=%04X eff7=%02X sel=%02X n=%u",
@@ -1865,7 +1872,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // here. Pentagon/Profi keep 0xFF (no float bus). The 128K "IN #7FFD rewrites
     // the latch" quirk below is a 128K-ULA artifact and must stay OFF for
     // Scorpion (it has its own paging; a stray float-bus read would corrupt it).
-    if (!(Z80Ops::isPentagon || Z80Ops::isProfi)) {
+    if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf)) {
 #if HALT2INT_TRACE
       if (address == 0xFFFF)
         Debug::log("[FLOAT-IN] addr=%04X ts=%u ia=%d", address, CPU::tstates, (int)ia);
@@ -2713,6 +2720,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     IDE::write8(r, data);
     return;
   }
+  // TS-Conf register file (see the matching read hook in Ports::input).
+  if (Z80Ops::isTsconf && a8 == 0xAF) {
+    TsConf::portWrite((uint8_t)(address >> 8), data);
+    return;
+  }
+
   // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
   // 0xEFF7 (hi=0xEF > 0xC7) falls through to Pentagon mode16col handler below
   if (Config::zifi_enabled && a8 == 0xEF) {
@@ -2743,7 +2756,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
-  if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
+  if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf)) {
 #if RTC_PORT_TRACE
     if (a8 == 0xF7) {
       static uint32_t out_n = 0;
@@ -2762,7 +2775,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // LATER in this function, after the Beta-128/FDC write switch — see the
   // read-side comment in Ports::input for why (FDC must get first refusal).
 
-  if (address == 0xAFF7) {
+  if (!Z80Ops::isTsconf && address == 0xAFF7) {
     LED::touchW(LED::RAM);
     uint8_t prev = portAFF7;
     uint8_t d6 = data & 0b00111111; // limit it for 64 planes
@@ -3099,6 +3112,9 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       }
     }
 #endif
+    // TS-Conf: OUT (#FE) mirrors the low 3 bits into the Border register's
+    // ZX bank — reference io.cpp:628 `ts.border = (val & 7) | 0xF0`.
+    if (Z80Ops::isTsconf) TsConf::r.border = (data & 0x07) | 0xF0;
     // Compare the 3-bit colour only: borderColor stores data & 0x07, so an
     // unmasked compare fires on every beeper/MIC bit change (bits 3-4) and on
     // OTIR/OTDR garbage bytes — each false hit runs a full DrawBorder catch-up
@@ -3106,7 +3122,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // Found via FPGA48_2026.tap: its OTDR section writes arbitrary bytes to #FE.
     if (VIDEO::borderColor != (data & 0x07)) {
       VIDEO::brdChange = true;
-      if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion))
+      if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
@@ -3132,10 +3148,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
       ayPortWrite(address, data, true);     // A8 decode: old-TS second chip
-      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
+      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf)); // I/O Contention (Late)
       return;
     }
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf)); // I/O Contention (Late)
   } else {
     // ULA+ ports (odd addresses: 0xBF3B register select, 0xFF3B data)
     if (Config::ulaplus) {
@@ -4048,6 +4064,16 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // device probe at 0x6FAA/0x6FDE (`LD A,B / OUT (0x88),A`) drives #0188 and
   // does just that. That is honest Pentagon behaviour, not a bug here; see
   // the extracker-7ffd-loose-decode note before "fixing" it with A14.
+  // TS-Conf #7FFD: LCK128-dependent paging into Page3, SCR into VPage —
+  // its own handler; the generic bankLatch/videoLatch machinery below must
+  // not run (TS-Conf banks are Page0..3, not the 128K latches).
+  if (Z80Ops::isTsconf && ((address & 0x8002) == 0)) {
+    ++Ports::port7ffd_cnt;
+    LED::touchW(LED::RAM);
+    TsConf::write7ffd(data);
+    return;
+  }
+
   if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
       (!Z80Ops::isScorpion || (address & 0x4000)) && // Scorpion: A14=1 → 7FFD, A14=0 is the 1FFD family (handled above)
       (!Z80Ops::isALF || (address & 0x0080))) { // 8002 !-> 7FFD

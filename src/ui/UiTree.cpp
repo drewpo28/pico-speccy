@@ -232,6 +232,22 @@ static bool p_pentActive() {
 // resolveConstraints() forces it to Off whenever the staged machine is not Pentagon.
 static bool p_murmAvail() { return FileUtils::fsMount && p_pentActive(); }
 
+// TS-Conf needs every RAM page pointer-backed for the render/DMA phases —
+// butter/QSPI PSRAM only (MURM1's PIO-SPI PSRAM is accessor-only and cannot
+// serve a page the renderer reads every frame), and VGA/HDMI for the video.
+static bool p_showTsconf() {
+#if !defined(VGA_HDMI)
+    return false;
+#else
+    return butter_psram_size() >= (1u << 20);
+#endif
+}
+static bool p_tsconfActive() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m < 0) return Config::arch == A_TSCONF;
+    return ((m >> 8) & 0xFF) == A_TSCONF;
+}
+
 static bool p_byteActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::romSet == R_48K_BY || Config::romSet == R_128K_BY ||
@@ -313,6 +329,15 @@ static const Option opt_mach_scorp[] = {
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
+static const Option opt_mach_tsconf[] = {
+    { TXT_ROM_TSBIOS,     NM_MACH(A_TSCONF, R_TSCONF) },
+};
+// TS-Conf RAM size: values are page counts (the real configurations are 1/2/4 MB).
+static const Option opt_tsconf_ram[] = {
+    { "1 MB", 64  },
+    { "2 MB", 128 },
+    { "4 MB", 256 },
+};
 
 // Murmuzavr mode is the extended page count, not a machine — values are page counts, and
 // MEM_PG_CNT == 64 is the "no extra RAM" state. The pages live in PSRAM as far as the
@@ -345,6 +370,18 @@ static const Node kMurmuzavr[] = {
     NM_RADIO(TXT_MACH_MURM_SIZE, SET_MEM_PG_CNT, opt_murmuzavr, nullptr),
 };
 
+const char* tsconfTag() {
+    if (!p_tsconfActive()) return nullptr;
+    const int32_t pg = Stage::get(SET_TSCONF_RAM);
+    static char buf[12];
+    snprintf(buf, sizeof(buf), "TS[%dMB]", (int)(pg > 0 ? pg / 64 : 4));
+    return buf;
+}
+
+static const Node kTsconf[] = {
+    NM_RADIO(TXT_MACH_TSCONF_RAM, SET_TSCONF_RAM, opt_tsconf_ram, nullptr),
+};
+
 static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_48K,   SET_MACHINE, opt_mach_48,    nullptr),
     NM_RADIO(TXT_MACH_128K,  SET_MACHINE, opt_mach_128,   nullptr),
@@ -362,6 +399,8 @@ static const Node kMachine[] = {
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
+    NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
+    NM_SUB  (NM_IND TXT_MACH_TSCONF_OPTS, kTsconf, p_tsconfActive),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by

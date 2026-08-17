@@ -37,6 +37,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include <math.h>       // powf() — CRT filter gamma curve (cold path, init only)
 #include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
 #include "Debug.h"
+#include "TsConf.h"
 #include "Subsystem.h"
 #include "Buffer.h"
 #include "Tape.h"
@@ -1309,6 +1310,48 @@ void VIDEO::applyPalette() {
         initGigascreenBlendLUT();
 }
 
+// ── TS-Conf CRAM → hardware palette ────────────────────────────────────────────
+// ZX mode uses CRAM cells gpal<<4 .. +15 (reset: #F0-#FF). Those 16 cells land
+// on hardware slots 0..15 — always writable (HDMI's reserved indices start at
+// 184) — so the renderer keeps writing raw 0..15 and AluByte is reused
+// unmodified. Deferred to EndFrame like the ULA+ flush (16 entries ≈ 65 µs).
+bool VIDEO::tsCramDirty = false;
+static bool s_ts_pal_active = false;
+
+void VIDEO::tsPaletteFlush() {
+    // The reference's real-PWM gamma (tsconf.cpp pwm[], base colours
+    // #00-#5D-#A2-#FF measured by DDp) — 5-bit channel → 8-bit.
+    static const uint8_t ts_pwm[32] = {
+          0,  36,  50,  60,  68,  75,  82,  88,  93, 105, 115, 124, 133, 141, 148, 155,
+        162, 177, 190, 203, 215, 226, 236, 246, 255, 255, 255, 255, 255, 255, 255, 255,
+    };
+    tsCramDirty = false;
+    s_ts_pal_active = true;
+    uint8_t gpal = (TsConf::r.palsel & 0x0F) << 4;
+    for (int i = 0; i < 16; i++) {
+        uint16_t t = TsConf::cram[gpal | i];
+        uint32_t rgb = ((uint32_t)ts_pwm[(t >> 10) & 0x1F] << 16) |
+                       ((uint32_t)ts_pwm[(t >> 5) & 0x1F] << 8) |
+                       ts_pwm[t & 0x1F];
+        uint32_t c = paletteFinal(rgb);
+        graphics_set_palette(i, c);
+        vga_set_palette_entry_solid(i, c);
+    }
+}
+
+// Leaving TS-Conf: hand slots 0..15 back to the standard Spectrum colours
+// (the ulaPlusDisable pattern). Called from Reset() on any other machine.
+void VIDEO::tsPaletteRestore() {
+    if (!s_ts_pal_active) return;
+    s_ts_pal_active = false;
+    tsCramDirty = false;
+    for (int i = 0; i < 16; i++) {
+        uint32_t color = paletteFinal(spectrum_rgb888[i]);
+        graphics_set_palette(i, color);
+        vga_set_palette_entry_solid(i, color);
+    }
+}
+
 // Apply a CRT-filter level change end to end. Colour stage first (it feeds every
 // palette write), then the drivers' aperture grille.
 //
@@ -2400,6 +2443,9 @@ void VIDEO::Reset() {
 
     // Reset ULA+ state
     if (ulaplus_enabled) ulaPlusDisable();
+
+    // Leaving TS-Conf → give the ZX slots their standard colours back.
+    if (Config::arch != A_TSCONF) tsPaletteRestore();
     ulaplus_reg = 0;
     memcpy(ulaplus_palette, ulaplus_default_palette, 64);
 
@@ -2489,6 +2535,13 @@ void VIDEO::Reset() {
         tStatesScreen = TS_SCREEN_48;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
                       : TS_BORDER_320x240;
+    } else if (Config::arch == A_TSCONF) {
+        // TS-Conf raster is identical to Pentagon (320 lines x 448 px-periods
+        // = 224 T/line, 71680 T/frame) — every constant is reused verbatim.
+        tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
+        tStatesScreen = TS_SCREEN_PENTAGON;
+        tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
+                      : TS_BORDER_320x240_PENTAGON;
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
 
@@ -2506,7 +2559,7 @@ void VIDEO::Reset() {
     ds80_border_geom = false;
     ds80_brd_col_off = 0;
     brdcol_end = isFullBorder ? 180 : 160;  // vga.xres / 2 (T-states = half pixel count)
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf)) {
         brdcol_step = 1;
         brdPairWrite = false;
         brdcol_start = 0;
@@ -2528,14 +2581,14 @@ void VIDEO::Reset() {
     if (isFullBorder && !isFullBorder240) {
         lin_end = 48;
         lin_end2 = 240;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
     } else if (isFullBorder && isFullBorder240) {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
         // the stats overlay (y=220) fell inside the paper area → flicker.
         lin_end = 24;
         lin_end2 = 216;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
     } else {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
@@ -2545,7 +2598,13 @@ void VIDEO::Reset() {
         lineptr_offset = 8;  // 32 bytes = (320-256)/2 pixels
     }
 
-    if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80)) {
+    if (Config::arch == A_TSCONF) {
+        // ZX mode renders from VPage. CPU::reset (→ TsConf::reset → setBanks →
+        // refreshGrmem) runs before this in every reset path, but re-derive
+        // here anyway so a bare VIDEO::Reset can never leave grmem on ram[5].
+        TsConf::refreshGrmem();
+        profi_clrmem = nullptr;
+    } else if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80)) {
         grmem = MemESP::videoLatch ? MemESP::ram[6].direct() : MemESP::ram[4].direct();
         uint32_t clrPage = MemESP::videoLatch ? 58 : 56;
         extern int ram_pages, butter_pages, psram_pages, swap_pages;
@@ -2605,7 +2664,7 @@ void VIDEO::Reset() {
 
     // The +2A/+3 ULA has no snow bug either (its RAM is not shared with the CPU the
     // way the 48K/128K ULA's is), so it joins the machines that never render snow.
-    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && !Config::isPlus3()) ? Config::render : false;
+    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_TSCONF && !Config::isPlus3()) ? Config::render : false;
 
     // +2A/+3 contention pattern (see wait_st_tab). Selected here, after the per-arch
     // timing block above, so every machine reset re-picks it.
@@ -4039,6 +4098,10 @@ IRAM_ATTR void VIDEO::EndFrame() {
             ulaPlusFlushPalette();
         }
     }
+
+    // TS-Conf CRAM → the 16 ZX palette slots, same deferred-to-blanking rule
+    // as the ULA+ flush above (16 entries ≈ 65 µs).
+    if (Z80Ops::isTsconf && tsCramDirty) tsPaletteFlush();
 
     static uint8_t skipCnt = 0;
     static bool wasMaxSpeed = false;

@@ -1512,6 +1512,83 @@ and SK) are now covered, and one mutation that looked uncaught turned out to nee
 1100-byte sector to expose. A suite that cannot fail is worth nothing here: an FDC
 misbehaves by degrees, as one game in twenty that will not load.
 
+## TS-Conf (ZX-Evo) — Phase 1: the machine core (2026-08-17, NOT hw-tested)
+
+`A_TSCONF` / `R_TSCONF` ("TSconf"/"TSbios" on disk). Reference: tslabs/zx-evo —
+`pentevo/unreal/Unreal/{tsconf.*,io.cpp,memory.cpp,z80_main.inl}` (the ported
+semantics), `pentevo/fpga/current` (the authority where they disagree),
+`pentevo/docs/TSconf/tsconf_en.md`. Test material: `pentevo/test/MEM.TRD`,
+`pentevo/demos/examples/*`, `pentevo/sdk/evosdkts`. Full multi-phase plan (video
+modes 16c/256c/text, TSU tiles/sprites, DMA, VDOS) lived in the 2026-08-17 plan
+file; Phase 1 = TS-BIOS boots, 4 MB paging, #nnAF registers, FRAME INT,
+ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
+
+- **Core**: `src/TsConf.{h,cpp}` owns the register file (`TsConf::r`, with the
+  hardware's `*_d` line-delay shadows stored for phase 3), CRAM/SFILE, paging
+  (`setBanks()` — sole writer of `ramCurrent[0..3]` while TS runs), `write7ffd`
+  (LCK128 modes; **Auto=10 treated as 512K** — needs opcode knowledge Ports
+  doesn't have), `trdosTrap` (DOS enter at #3Dxx w/ ROM128+ROM; exit on
+  executing RAM — `check_trdos()` short-circuits to it), the FRAME INT
+  (programmable HSINT/VSINT → `CPU::IntStart/IntEnd`; window straddling frame
+  end truncated), `applyZclk` (ZCLK 3.5/7/14 → multiplicator; **user turbo is a
+  floor, never a cap** — both turbo hotkeys re-apply it; `tsconf_clk_cap` NVS
+  escape hatch). Reset = `tsinit()` values; **`MemConfig` reset is 0 (mapped
+  mode)** — the datasheet's `!W0_MAP=1` table row is wrong, Unreal's code is
+  right. Boot in RM_SYS: `ESPectrum::trdos = true` at reset → Service ROM.
+  ROM: `src/roms/tsconf/romTsBios.c` (64 KB, byte-identical to zxevo.rom's
+  first 64 KB; pages Service/TR-DOS/128/48), read via `TsConf::romPtr()` —
+  **no `MemESP::rom[]` slots consumed**; pages 4-31 = `gb_rom_Alf_ep` zeros.
+- **CPU::loop has a third shape for TS-Conf**: unchecked to IntStart, checked
+  across the INT window, unchecked to frame end (`FlushOnHaltTo(target)` is the
+  parameterized FlushOnHalt; a HALT before the window wakes at IntStart). The
+  frame tail is a faithful copy — kept duplicated so other machines' hot path
+  stays textually untouched. `isActiveINT` gates on `intmask` bit 0.
+- **FMAddr window is live in Phase 1** (TS-BIOS programs CRAM through it — the
+  plan's phase-2 deferral was self-contradictory): `g_tsconf_fm` gate tested in
+  `gsDmaPoke8` (the `g_ngs_zxdma` pattern — NEVER in `MemESP::writebyte`), the
+  write does NOT consume (hardware stores to RAM and the FPGA array in
+  parallel), even byte latched / odd commits the word (TSF_REGS/CRAM/SFILE).
+- **Memory**: `Config::tsconf_ram` (64/128/256 pages, NVS, menu Machine →
+  TS-Conf options → RAM, AC_REBOOT) — TS-Conf's own pick, `Config::mem_pg_cnt`
+  (Murmuzavr) deliberately untouched. **`Config::wantedPages(arch)` is the one
+  derivation** used by setup()'s MEM_PG_CNT, requestMachine's and
+  MachineSwitch's reboot boundaries — they must never disagree. Boot residency
+  self-heal: any non-POINTER page → halve tsconf_ram, bootNotice, save, reboot
+  (floor 64). Machine only offered on butter-PSRAM ≥1 MB + VGA_HDMI
+  (`p_showTsconf`) — TSU/DMA phases read arbitrary pages via
+  `TsConf::pagePtr()` (POINTER-backed or nullptr, cached XIP alias).
+- **Ports**: `#nnAF` hooks in input/output (`a8 == 0xAF`; DivIDE's #AF is the
+  one collision → esxDOS forced off). `#7FFD` early-delegates to
+  `write7ffd`. `#AFF7` read/write and the float-bus reflect are guarded off.
+  Audit results: TS-Conf joined the Pentagon/Profi gates for uncontended I/O,
+  EAR-idles-high (bit6=1 — Neo8Tracker's TS detect relies on it), Gluk RTC
+  (#DFF7/#BFF7 — "Gluclock ports supported" per datasheet), border-change
+  contention skip, FDD lamp; it did NOT join #EFF7, #FB/#7B hidden RAM, or
+  Murmuzavr. `OUT (#FE)` mirrors border into `r.border = (v&7)|0xF0`.
+- **Video (phase 1 = ZX mode only)**: Pentagon timing constants verbatim;
+  `VIDEO::grmem = TsConf::pagePtr(vpage)` (`refreshGrmem`, re-derived in
+  VIDEO::Reset). **CRAM cells `gpal<<4..+15` → hardware slots 0..15**
+  (`VIDEO::tsPaletteFlush`, EndFrame-deferred like the ULA+ flush; restore via
+  `tsPaletteRestore` on leaving, the ulaPlusDisable pattern) — slots 0-15 are
+  always writable so no remap table is needed until phase 3's 256c. RGB555
+  via the reference's real-PWM gamma. Border: 3-bit approximation through the
+  existing machine — exact for cells #F0-#F7 (where OUT #FE puts it), a
+  TSW_BORDER outside the ZX bank approximates to its low 3 bits.
+- **Stored-only in Phase 1** (registers readable back where hw allows, engines
+  inert): DMA (#1A-#1F/#26-#28, DMACTR warns once, DMASTATUS never busy), LINE
+  and DMA INT sources (intmask bits stored), VConf/TSConf/PalSel-as-video,
+  scroll registers, TMPage/T*GPage/SGPage, FDDVirt (VDOS), CacheConfig (the
+  512-byte cache is timing-only — pico-speccy models no DRAM wait states, so
+  the "invalidate after DMA" rule is trivially satisfied), W0_WE (ROM is
+  naturally read-only via the flash-pointer write filter; RAM-with-WE=0 not
+  enforced yet).
+- **Known Phase-1 deviations**: LCK128 Auto=512K; INT window truncated at frame
+  end; 14 MHz overruns the ~20 ms frame budget and simply runs slow ([NEG2]);
+  turbo does not rescale the raster constants (pre-existing — same for Profi
+  #028B and P1024 D4); bright/far-CRAM border cells approximate. Open hw
+  question: does TS-BIOS Setup (SS+F12) need the ZX-Evo AVR (`slavespi`)
+  keyboard path? Plain #FE should cover boot + TR-DOS.
+
 ## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
 
 TheLink (pouet 53778, Pentagon 1024SL + NeoGS + TSFM, REQUIRES 7 MHz turbo)
@@ -2040,7 +2117,10 @@ warm reboot" is exactly the expected shape.
 ## Flash ceiling: the firmware must stay below the GM.DLS partition (2026-09-06, build boots + IDEDOS hw-confirmed on DVp2)
 
 `rp2350-memmap.ld` ASSERTs `__flash_binary_end <= __gm_bank_start` — on GMX builds
-(every board) that is **2424832 B** (4 MB − 1.6875 MB). The failure looks like
+(every board) that is **2490368 B** (4 MB − 1.625 MB; it was 2424832 B = 4 MB − 1.6875 MB
+until 2026-09-06, when the embedded 64 KB TS-Conf TS-BIOS ROM took another 64 KB from
+the partition — the stock converted gm.dls is 1668026 B, so 35 KB of margin remain
+there and NO further shrink is possible without a smaller bank). The failure looks like
 "ld returned 1" after a healthy-looking memory table; the actual message is
 `ERROR: firmware overflowed into the gm_bank flash partition`, one line above it.
 Merging the +3/+3e ROMs (~86 KB) overflowed it by 23 KB. Fixed by dropping ~89 KB
@@ -2961,7 +3041,7 @@ gate exists).
   unconditional rom[4] TR-DOS tail in requestMachine is skipped on GMX — it was
   clobbering plane 1 bank 0 (romInUse 4) and would fight the GMX 505d overlay.
   To make room, **GMX builds shrink the GM.DLS flash partition 2.375 MB →
-  1.6875 MB** (`rp2350-memmap.ld`, `--defsym=__gmx_rom_in_flash=1` from
+  1.625 MB** (1.6875 MB until the TS-BIOS ROM landed 2026-09-06; `rp2350-memmap.ld`, `--defsym=__gmx_rom_in_flash=1` from
   CMakeLists): the stock converted gm.dls bank (~1.59 MB) still fits with
   ~100 KB margin, MidiSynth reads the bounds from the linker symbols so nothing
   else changes, and a bank provisioned at the OLD address fails the header

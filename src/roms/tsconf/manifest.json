@@ -1,0 +1,13 @@
+{
+  "id": "tsconf",
+  "source": "tslabs/zx-evo pentevo/rom/bin/ts-bios.rom",
+  "sym": "gb_rom_tsbios",
+  "len": 65536,
+  "md5": "9a0a7f6c10ffa0a556748c4b40088554",
+  "pages": [
+    "Service",
+    "TR-DOS",
+    "128 BASIC",
+    "48 BASIC"
+  ]
+}

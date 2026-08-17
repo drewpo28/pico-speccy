@@ -87,6 +87,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Nvram24.h"
 #include "Z80DMA.h"
 #include "GS/GS.h"
+#include "TsConf.h"
 #include "GS/NgsSd.h"
 #include "GS/NgsMp3.h"
 
@@ -800,6 +801,11 @@ void ESPectrum::setup() {
           Config::romSet = Config::pref_romSetScorp;
         else
           Config::romSet = Config::romSetScorp;
+      } else if (Config::arch == A_TSCONF) {
+        if (Config::pref_romSetTsconf != R_LAST)
+          Config::romSet = Config::pref_romSetTsconf;
+        else
+          Config::romSet = Config::romSetTsconf;
       } else {
         if (Config::pref_romSetPent != R_LAST)
           Config::romSet = Config::pref_romSetPent;
@@ -853,14 +859,17 @@ void ESPectrum::setup() {
   // keeps the pick, so coming back to Pentagon does not need it re-entered; the menu's
   // resolveConstraints() clears it for real — with a note and the reboot prompt — at the
   // first commit made on another machine.
-  MEM_PG_CNT = Config::mem_pg_cnt;
-  if (MEM_PG_CNT > 64 && !(Config::arch == A_PENT || Config::arch == A_P512 ||
-                           Config::arch == A_P1024)) {
+  // TS-Conf sizes its RAM through its own persisted pick (1/2/4 MB), NOT the
+  // Murmuzavr field — so a user's Murmuzavr setting survives a trip through
+  // TS-Conf. Config::wantedPages() is the single source of this decision;
+  // the requestMachine/MachineSwitch reboot boundary compares against it.
+  MEM_PG_CNT = Config::wantedPages(Config::arch);
+  if (Config::arch != A_TSCONF && Config::mem_pg_cnt > 64 && MEM_PG_CNT == 64 &&
+      Config::mem_pg_cnt != MEM_PG_CNT) {
     Debug::log("setup: Murmuzavr %u pages dropped — %s is not Pentagon",
-               (unsigned)MEM_PG_CNT, archToStr(Config::arch));
+               (unsigned)Config::mem_pg_cnt, archToStr(Config::arch));
     Debug::log2SD("setup: MEM_PG_CNT %u -> 64 (arch=%s, Murmuzavr is Pentagon-only)",
-                  (unsigned)MEM_PG_CNT, archToStr(Config::arch));
-    MEM_PG_CNT = 64;
+                  (unsigned)Config::mem_pg_cnt, archToStr(Config::arch));
   }
 #if GMX_IN_FLASH
   // Scorpion GMX is a 2 MB machine (7-bit page: DFFD<<4 | 1FFD.D4<<3 | 7FFD 0-2)
@@ -939,6 +948,24 @@ void ESPectrum::setup() {
                   (unsigned)(((MEM_PG_CNT + 2) * 16u) >> 10));
     Debug::log("setup: ram5=%p ram7=%p diff=%d", MemESP::ram[5].direct(), MemESP::ram[7].direct(),
                (int)((uint8_t*)MemESP::ram[7].direct() - (uint8_t*)MemESP::ram[5].direct()));
+    // TS-Conf boot self-heal (the framebuffer-first pattern): every page must
+    // be POINTER-backed — the later render/DMA phases read arbitrary pages via
+    // TsConf::pagePtr(), and an accessor/SD-swap page there is a null pointer.
+    // Not enough butter for the pick → halve it, persist, reboot (floor 64,
+    // which always fits: pages 8+ land heap-first before butter).
+    if (Config::arch == A_TSCONF && (psram_pages || swap_pages)) {
+      uint16_t next = (Config::tsconf_ram > 64) ? (uint16_t)(Config::tsconf_ram / 2) : 64;
+      Debug::log2SD("setup: TS-Conf %u pages not pointer-backed (spi=%d swap=%d) -> %u pages, reboot",
+                    (unsigned)Config::tsconf_ram, psram_pages, swap_pages, (unsigned)next);
+      if (Config::tsconf_ram > 64) {
+        Config::tsconf_ram = next;
+        OSD::bootNotice("TS-Conf: not enough PSRAM - RAM reduced");
+        Config::save();
+        OSD::esp_hard_reset();
+      }
+      // 64 pages and still short: run degraded (pagePtr answers nullptr for
+      // the non-resident tail; ZX video falls back to page 5).
+    }
   } else {
     Debug::log("setup: no ext_ram path, freeHeap=%u", getFreeHeap());
     // RP2350: pages 0-3 pre-bound to static `pages0123`, pages 4,6 to
@@ -1468,7 +1495,10 @@ void ESPectrum::reset(uint8_t romInUse) {
   }
   Ports::serialMouseReset();
   // Profi SYSEN: boot into SYS ROM (bank0) with trdos=true to protect page0
-  ESPectrum::trdos = (Config::arch == A_PROFI && romInUse == 0);
+  // TS-Conf boots in RM_SYS: DOS signal set + ROM128=0 selects the Service
+  // ROM (TS-BIOS) in the mapped window 0 — reference memory.cpp:512.
+  ESPectrum::trdos = (Config::arch == A_PROFI && romInUse == 0) ||
+                     (Config::arch == A_TSCONF);
 
   Debug::log("[reset] arch=%s romInUse=%d trdos=%d", archToStr(Config::arch), romInUse, (int)ESPectrum::trdos);
 #if FDD_PORT_TRACE
@@ -1928,6 +1958,8 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           ESPectrum::multUser = (ESPectrum::multUser + 1) % 3;
           ESPectrum::multiplicator = ESPectrum::multUser;
           CPU::updateStatesInFrame();
+          // TS-Conf: the guest's SysConfig ZCLK stays a floor (see applyZclk).
+          if (Z80Ops::isTsconf) TsConf::applyZclk();
           Config::turbo = ESPectrum::multUser;
           Config::save();
           menuToast(mhz[ESPectrum::multUser]);
@@ -3584,7 +3616,7 @@ void ESPectrum::loop() {
     // Draw fdd led indicator in top-right corner. Scorpion carries the Beta
     // interface on board (betadisk forced on), so it counts like Pentagon here;
     // the +3 has its own uPD765.
-    bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ||
+    bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf) ||
                    (Z80Ops::is128 && Z80Ops::isByte) || Z80Ops::isP3) && Tape::tapeStatus != TAPE_LOADING
         && !DivMMC::enabled
         ;

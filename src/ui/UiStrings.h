@@ -200,6 +200,10 @@
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
+#define TXT_MACH_TSCONF      "TS-Conf (ZX-Evo)"
+#define TXT_MACH_TSCONF_OPTS "TS-Conf options"
+#define TXT_MACH_TSCONF_RAM  "RAM"
+#define TXT_ROM_TSBIOS       "TS-BIOS"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
 
 // ROM set labels, shared by the machine rows and the Preferred rom rows.
