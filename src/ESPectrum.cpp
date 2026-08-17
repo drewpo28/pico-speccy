@@ -77,6 +77,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "DivMMC.h"
 #include "IDE.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "ZiFi.h"
@@ -1209,6 +1210,9 @@ void ESPectrum::setup() {
   // while MB-02 is disabled, which is the default).
   rvmWD1793AllocTrackBuf(&fdd);
   rvmWD1793Reset(&fdd);
+  // The +3's uPD765. Allocates nothing until a .dsk is mounted, so a session on any
+  // other machine pays only the controller struct.
+  Plus3Fdc::init();
   Debug::log("setup: WD1793 reset done");
   Debug::log2SD("setup: WD1793 reset done");
 
@@ -1436,6 +1440,9 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Init disk controller
   rvmWD1793Reset(&fdd);
   if (MB02::enabled) MB02::reset();
+  // A machine reset resets the controller but not the drives — the disks stay in,
+  // exactly as they do when the reset button on a real +3 is pressed.
+  Plus3Fdc::reset();
   // Without this, GS-Z80 keeps running (still streaming previous module's
   // samples from PSRAM) when ZX side reboots — leftover state collides with
   // the new player's load, producing random garbled audio.
@@ -3594,6 +3601,9 @@ void ESPectrum::loop() {
     // including maxSpeed ones — a stale 'true' with no idle runner would leave
     // every track load waiting for wdTrackReady's in-frame fallback.
     g_wdDeferLoads = !maxSpeed && Z80Ops::isProfi;
+    // The +3 FDC is otherwise only pumped from its own port handlers, so a guest
+    // sitting in HALT would never see a seek complete.
+    Plus3Fdc::frameTick();
     // Deferred pool promotions (butter accessor banks): allow 1 inline
     // promotion per frame; the rest queue for the idle window below.  On
     // maxSpeed there is no idle window — run everything inline as before.

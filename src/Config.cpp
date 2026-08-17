@@ -139,6 +139,12 @@ uint8_t  Config::mb02 = 0;
 bool     Config::mb02WP[4] = { true, true, true, true };
 string   Config::mb02DiskFile[4] = { "", "", "", "" };
 uint8_t  Config::mb02SoundLed = 0; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+// +3 drives default to write-protected, like every other floppy slot here: a mounted
+// image is not written to until the user says so.
+bool     Config::p3WP[2] = { true, true };
+string   Config::p3DiskFile[2] = { "", "" };
+bool     Config::p3_speedlock = true;
+bool     Config::p3_fastdisk = false;
 bool     Config::zcontroller = true;
 uint8_t  Config::ide_scheme = 0;
 string   Config::ide_image[2] = {"", ""};
@@ -1157,6 +1163,14 @@ void Config::load() {
             nvs_get_b("mb02SoundLed", old, sts);
             mb02SoundLed = old ? 3 : 0;
         }
+        for (int i = 0; i < 2; i++) {
+            char k[16]; snprintf(k, sizeof(k), "p3d%d.wp", i);
+            nvs_get_b(k, p3WP[i], sts);
+            snprintf(k, sizeof(k), "p3d%d.file", i);
+            nvs_get_str(k, p3DiskFile[i], sts);
+        }
+        nvs_get_b("p3_speedlock", p3_speedlock, sts);
+        nvs_get_b("p3_fastdisk", p3_fastdisk, sts);
         nvs_get_b("zcontroller", zcontroller, sts);
         nvs_get_u8("zifi_enabled", zifi_enabled, sts);
         nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
@@ -1500,6 +1514,12 @@ void Config::save(const char* path) {
         nvs_set_str(buf, k, mb02WP[i] ? "true" : "false");
     }
     nvs_set_u8(buf,"mb02SoundLedMode", mb02SoundLed);
+    for (int i = 0; i < 2; i++) {
+        char k[12]; snprintf(k, sizeof(k), "p3d%d.wp", i);
+        nvs_set_str(buf, k, p3WP[i] ? "true" : "false");
+    }
+    nvs_set_str(buf,"p3_speedlock", p3_speedlock ? "true" : "false");
+    nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
     nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
     nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());
