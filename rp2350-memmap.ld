@@ -237,7 +237,7 @@ SECTIONS
     /* ALF builds carry an extra ROM and are too large to also reserve the bank.
      * The build passes --defsym=__no_gm_bank=1 to zero the partition so the whole
      * flash is available to the firmware; GM.DLS is disabled in code (NO_GM_DLS). */
-    __gm_bank_size  = DEFINED(__no_gm_bank) ? 0 : 0x260000;   /* 2.375 MB; multiple of 4 KB. Holds converted .dls banks (gm.dls ~1.59 MB fits with margin). Was 2.5 MB — 128 KB handed to the firmware partition for the new fullscreen UI (2026-07-26); moving the start is safe: gm_bank_view() fails the header check on stale data and the bank re-provisions from SD. */
+    __gm_bank_size  = DEFINED(__no_gm_bank) ? 0 : 0x250000;   /* 2.3125 MB; multiple of 4 KB. Holds converted .dls banks (gm.dls ~1.59 MB fits with margin). Was 2.5 MB — 128 KB handed to the firmware partition for the new fullscreen UI (2026-07-26), 64 KB more for the embedded TS-Conf TS-BIOS ROM (2026-08-17); moving the start is safe: gm_bank_view() fails the header check on stale data and the bank re-provisions from SD. */
     __gm_bank_start = ORIGIN(FLASH) + LENGTH(FLASH) - __gm_bank_size;
     __gm_bank_end   = ORIGIN(FLASH) + LENGTH(FLASH);
     ASSERT(__flash_binary_end <= __gm_bank_start,

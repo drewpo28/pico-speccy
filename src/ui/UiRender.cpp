@@ -155,6 +155,7 @@ static void drawSubHeader() {
     // mode is on, so the common case reads exactly as before.
     char mach[56];
     const char* mz = murmuzavrTag();
+    if (!mz) mz = tsconfTag();   // TS[4MB] — same slot, the two never coexist
     snprintf(mach, sizeof(mach), "Machine: %s%s%s",
              archToStr(archDisplay(Config::arch, Config::romSet)),
              mz ? " + " : "", mz ? mz : "");

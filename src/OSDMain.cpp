@@ -165,6 +165,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "MB02.h"
 #include "MachineSwitch.h"
 #include "GS/GS.h"
+#include "TsConf.h"
 #include "RTC.h"
 
 #include <malloc.h>
@@ -1784,6 +1785,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
             ESPectrum::multiplicator = ESPectrum::multUser;
             CPU::updateStatesInFrame();
+            // TS-Conf: the guest's SysConfig ZCLK is a floor under the user
+            // pick — re-apply it so cycling turbo down cannot underclock a
+            // guest that asked for 7/14 MHz.
+            if (Z80Ops::isTsconf) TsConf::applyZclk();
             Config::turbo = ESPectrum::multUser;
             Config::save();
         } else

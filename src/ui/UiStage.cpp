@@ -281,6 +281,8 @@ static void put_zifiTransport(int32_t v) {
 // (which is what used to lose it whenever enabling MZ also meant switching to Pentagon).
 static int32_t get_memPgCnt()          { return (int32_t)Config::mem_pg_cnt; }
 static void    put_memPgCnt(int32_t v) { Config::mem_pg_cnt = (uint16_t)v; }
+static int32_t get_tsconfRam()          { return (int32_t)Config::tsconf_ram; }
+static void    put_tsconfRam(int32_t v) { Config::tsconf_ram = (uint16_t)v; }
 
 // The video mode lives in one of two fields depending on which output is live;
 // VIDEO::activeVideoMode() already encodes that choice for reads.
@@ -749,6 +751,7 @@ static bool stagedArchIs(ArchIdx a) {
     return Config::arch == a;                  // pair not in our tables: trust Config
 }
 static bool stagedIsProfi() { return stagedArchIs(A_PROFI) || stagedArchIs(A_KARABAS); }
+static bool stagedIsTsconf() { return stagedArchIs(A_TSCONF); }
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }
@@ -772,6 +775,27 @@ static void resolveConstraints(CommitReport& rep) {
         // Profi runs was a SIGBUS storm in the render path (OSDMain.cpp:4773, hw PICO_DV).
         if (staged(SET_GIGASCREEN) != 0 && stagedIsProfi())
             changed |= force(SET_GIGASCREEN, 0, rep, "Gigascreen is not available on Profi");
+
+        // TS-Conf owns the whole video path (CRAM palette, VPage) — the same
+        // set of exclusions as Profi, plus its own: Timex (#FF is the Beta
+        // SYS register here too), MB-02/esxDOS (page-0 rewiring; DivIDE also
+        // decodes port #AF, the TS register file's low byte), 16col (TS-Conf
+        // has its own 16c mode, not the #EFF7 one), Murmuzavr (TS-Conf sizes
+        // RAM through SET_TSCONF_RAM).
+        if (stagedIsTsconf()) {
+            if (staged(SET_GIGASCREEN) != 0)
+                changed |= force(SET_GIGASCREEN, 0, rep, "Gigascreen is not available on TS-Conf");
+            if (staged(SET_TIMEX) != 0)
+                changed |= force(SET_TIMEX, 0, rep, "Timex is not available on TS-Conf");
+            if (staged(SET_MB02))
+                changed |= force(SET_MB02, 0, rep, "MB-02+ is not available on TS-Conf");
+            if (staged(SET_ESXDOS))
+                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on TS-Conf");
+            if (staged(SET_16COL))
+                changed |= force(SET_16COL, 0, rep, "16col needs Pentagon or Profi");
+            if (staged(SET_MEM_PG_CNT) > 64)
+                changed |= force(SET_MEM_PG_CNT, 64, rep, "Murmuzavr mode off: Pentagon only");
+        }
 
         // Port #FF on Profi/Karabas is the FDC SYS register (Beta scheme), the
         // native RTC AS latch (CPM=1&ROM14=1) and the SAA select. The Timex SCLD

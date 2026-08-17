@@ -269,7 +269,8 @@ const char* romsetName(int32_t composite);
     /* Per-chip calibration for the RP2350 temp sensor (uncalibrated silicon; one     */ \
     /* z0p2 unit reads ~55 C low with a verified-good reference). Pure config: the    */ \
     /* readout paths add it at display time.                                          */ \
-    X(SET_TEMP_OFFSET,     AC_PURE,   0,                     get_tempOffset, put_tempOffset, nullptr,        -1)
+    X(SET_TEMP_OFFSET,     AC_PURE,   0,                     get_tempOffset, put_tempOffset, nullptr,        -1)          \
+    X(SET_TSCONF_RAM,      AC_REBOOT, 0,                     get_tsconfRam,  put_tsconfRam,  nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

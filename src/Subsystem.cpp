@@ -560,6 +560,7 @@ size_t featureCost(FeatureId f) {
         case FEAT_TIMEX:         return 0;           // ~3B static state, no heap
         case FEAT_DMA:           return 8 * 1024;    // DmaAttrBuf (6K shadow + valid/charrow/prev_attrs)
         case FEAT_16COL:         return 512;         // decode LUT (256 x uint16_t)
+        case FEAT_TSCONF:        return 2 * 1024;    // CRAM + SFILE + register file
         default:                 return 0;
     }
 }
@@ -603,6 +604,7 @@ bool featureEnabled(FeatureId f) {
         case FEAT_TIMEX:         return Config::timex_video;
         case FEAT_DMA:           return Config::dma_mode != 0;
         case FEAT_16COL:         return Config::mode16col_onoff;
+        case FEAT_TSCONF:        return Config::arch == A_TSCONF;
         default:                 return false;
     }
 }
@@ -627,6 +629,7 @@ const char* featureName(FeatureId f) {
         case FEAT_TIMEX:         return "Timex Gfx";
         case FEAT_DMA:           return "DMA";
         case FEAT_16COL:         return "16 colours";
+        case FEAT_TSCONF:        return "TS-Conf";
         default:                 return "?";
     }
 }
@@ -705,6 +708,17 @@ void featureSetEnabled(FeatureId f, bool on) {
             break;
         case FEAT_16COL:
             Config::mode16col_onoff = on;
+            break;
+        case FEAT_TSCONF:
+            if (on) Config::requestMachine(A_TSCONF, R_NONE);
+            else {
+                // Budget candidate: leave TS-Conf for Pentagon (frees the
+                // register state and, after the reboot, the 256-page strip).
+                Config::arch   = A_PENT;
+                Config::romSet = Config::romSetPent;
+                if (Config::pref_arch == A_TSCONF) Config::pref_arch = A_LAST;
+                Config::betadisk = true;   // Pentagon mandates TR-DOS
+            }
             break;
         default: break;
     }

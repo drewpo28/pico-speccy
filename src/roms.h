@@ -67,4 +67,5 @@ extern "C" const unsigned char gb_rom_4_trdos_custom[];
 extern "C" unsigned char gb_rom_esxdos[];
 extern "C" unsigned char gb_rom_esxide[];
 #include "roms/profi/romProfi.h"
+#include "roms/tsconf/romTsBios.h"
 #endif

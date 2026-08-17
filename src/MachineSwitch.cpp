@@ -22,6 +22,7 @@
 #include "AlfCart.h"
 #include "DivMMC.h"
 #include "MB02.h"
+#include "Buffer.h"
 #include "ZiFi.h"
 #include "ZiFiAT.h"
 #include "ZiFiSock.h"
@@ -82,6 +83,16 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             !OSD::featureBudgetGate(Subsystems::FEAT_PROFI)) {
             return false;
         }
+        // Entering TS-Conf: ~2 KB of SRAM state (gated) plus tsconf_ram of
+        // butter PSRAM for the page strip. The PSRAM side is only warned
+        // about here — if it really doesn't fit, the boot residency
+        // self-heal (ESPectrum::setup) halves the RAM pick and reboots.
+        if (arch == A_TSCONF && Config::arch != A_TSCONF) {
+            if (!OSD::featureBudgetGate(Subsystems::FEAT_TSCONF))
+                return false;
+            if (Buffer::pageBudgetButter() < (size_t)Config::tsconf_ram * MEM_PG_SZ)
+                OSD::osdCenteredMsg("TS-Conf: PSRAM short - RAM may be reduced", LEVEL_WARN, 2000);
+        }
         Config::ram_file = "none";
         if (romset != Config::romSet) {
             if (arch == A_48K) {
@@ -114,6 +125,11 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                     Config::romSet = romset;
                     Config::romSetProfi = romset;
                 }
+            } else if (arch == A_TSCONF) {
+                if (Config::pref_romSetTsconf == R_LAST) {
+                    Config::romSet = romset;
+                    Config::romSetTsconf = romset;
+                }
             } else {
                 Config::romSet = romset;
             }
@@ -139,24 +155,25 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         else if (Config::arch == A_128K && Config::pref_romSet_128 == R_LAST) Config::romSet128 = Config::romSet;
         else if (Config::arch == A_48K && Config::pref_romSet_48 == R_LAST) Config::romSet48 = Config::romSet;
         else if (Config::arch == A_PROFI && Config::pref_romSetProfi == R_LAST) Config::romSetProfi = Config::romSet;
+        else if (Config::arch == A_TSCONF && Config::pref_romSetTsconf == R_LAST) Config::romSetTsconf = Config::romSet;
         // Mutual exclusivity
         bool isByte = (romset == R_48K_BY || romset == R_128K_BY);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || isByte)) {
+            arch == A_PROFI || arch == A_TSCONF || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
         }
         // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
         // register / native RTC AS latch / SAA select (see CPU::reset backstop).
-        if (Config::timex_video && (isByte || arch == A_PROFI)) {
+        if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_TSCONF)) {
             Config::timex_video = false;
             VIDEO::timex_port_ff = 0;
             VIDEO::timex_mode = 0;
             OSD::osdCenteredMsg("Timex disabled", LEVEL_WARN, 2000);
         }
         // TR-DOS is mandatory on Pentagon / Profi
-        if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI) && !Config::betadisk) {
+        if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_TSCONF) && !Config::betadisk) {
             Config::betadisk = true;
             OSD::osdCenteredMsg("Betadisk enabled", LEVEL_WARN, 1500);
         }
@@ -173,7 +190,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // turn it off and free its 52 KB prev-FB before saving
         // so the Off-state persists across reboots. Config::arch
         // is already committed above (pref_arch=="Last" path).
-        if (Config::arch == A_PROFI && Config::gigascreen_enabled) {
+        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF) && Config::gigascreen_enabled) {
             VIDEO::disableGigascreenForProfi();
             OSD::osdCenteredMsg("Gigascreen disabled", LEVEL_WARN, 1500);
         }
@@ -190,7 +207,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // Switching into Profi: turn DivMMC off and free its
         // sector/IDE buffers — same mutual exclusion as MB-02+
         // (Profi forces ~80 KB of SRAM pages and OOMs otherwise).
-        if (Config::arch == A_PROFI && Config::esxdos) {
+        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF) && Config::esxdos) {
             Config::esxdos = 0;
             DivMMC::init();   // teardown path frees buffers
             OSD::osdCenteredMsg("DivMMC disabled", LEVEL_WARN, 1500);
@@ -204,7 +221,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // via ZC) — auto-enable it on entry so SD boot works
         // out of the box. esxDOS/MB-02+ are already forced off
         // above; skipped silently if the budget gate declines.
-        if (arch == A_PROFI && romset != R_PROFI &&
+        if (((arch == A_PROFI && romset != R_PROFI) || arch == A_TSCONF) &&
             !Config::zcontroller && FileUtils::fsMount &&
             OSD::featureBudgetGate(Subsystems::FEAT_ZCONTROLLER)) {
             Config::zcontroller = true;
@@ -237,6 +254,13 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             (MemESP::ram[56].memType() == mem_type_t::POINTER);
         if (butter_psram_size() == 0
             && (arch == A_PROFI) != profiSramLayout) {
+            OSD::esp_hard_reset();
+            return true;
+        }
+        // TS-Conf boundary: the page-strip length itself changes (Config
+        // saved above, setup() re-derives MEM_PG_CNT via wantedPages —
+        // keep this comparison identical to the requestMachine guard).
+        if (Config::wantedPages(arch) != MEM_PG_CNT) {
             OSD::esp_hard_reset();
             return true;
         }

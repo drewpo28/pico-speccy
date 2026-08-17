@@ -47,6 +47,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ZiFi.h"
 #include "DivMMC.h"
 #include "GS/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
+#include "TsConf.h"     // g_tsconf_fm + TsConf::fmWrite (FMAddr window)
 
 // Place hot CPU functions in SRAM instead of XIP flash
 #undef IRAM_ATTR
@@ -83,6 +84,7 @@ bool Z80Ops::isPentagon;
 bool Z80Ops::is512 = false;
 bool Z80Ops::is1024 = false;
 bool Z80Ops::isProfi = false;
+bool Z80Ops::isTsconf = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -127,6 +129,9 @@ void CPU::updateStatesInFrame() {
         IntEnd <<= m;
     }
     stFrame = statesInFrame - IntEnd;
+    // TS-Conf: the FRAME INT window is programmable (HSINT/VSINT) — override
+    // the Pentagon IntStart/IntEnd just set above with the guest's position.
+    if (Z80Ops::isTsconf) TsConf::frameIntRecalc();
 }
 
 void CPU::reset() {
@@ -136,6 +141,7 @@ void CPU::reset() {
     CPU::latetiming = Config::AluTiming;
 
     Z80Ops::isALF = (Config::arch == A_ALF);
+    Z80Ops::isTsconf = (Config::arch == A_TSCONF);
     if (Config::arch == A_48K) {
         Z80Ops::isByte = (Config::romSet48 == R_48K_BY);
         Ports::getFloatBusData = &Ports::getFloatBusData48;
@@ -188,6 +194,17 @@ void CPU::reset() {
         Z80Ops::isProfi = true;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PROFI;
+    } else if (Config::arch == A_TSCONF) {
+        // TS-Conf: Pentagon raster (224 T/line, 71680 T/frame), uncontended.
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        // Set emulation loop sync target
+        ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
     } else { // if (Config::arch == A_PENT) - by default
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
@@ -211,7 +228,7 @@ void CPU::reset() {
     }
 
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi) && !Config::betadisk) Config::betadisk = true;
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) && !Config::betadisk) Config::betadisk = true;
 
     // Timex video is incompatible with Byte ROM sets — auto-disable.
     // Also with Profi/Karabas: port #FF there is the Beta-128 FDC SYS register,
@@ -220,9 +237,16 @@ void CPU::reset() {
     // normal running state (CP/M code in RAM), so it steals the RTC register
     // select and ROMain's boot hangs in its MC146818 "wait while UIP=1" spin
     // (RTC::readDisabled answers UIP-clear only for the LATCHED status regs).
-    if ((Z80Ops::isByte || Z80Ops::isProfi) && Config::timex_video) Config::timex_video = false;
+    if ((Z80Ops::isByte || Z80Ops::isProfi || Z80Ops::isTsconf) && Config::timex_video) Config::timex_video = false;
 
     updateStatesInFrame();
+
+    // TS-Conf register file reset (tsinit values). Runs after
+    // updateStatesInFrame so applyZclk/frameIntRecalc see the final frame
+    // geometry, and after ESPectrum::reset's standard ramCurrent assignment,
+    // which its setBanks() overrides with the TS-Conf window mapping.
+    // Warm reset: pwr_up and CRAM survive (only a STATUS read clears pwr_up).
+    if (Z80Ops::isTsconf) TsConf::reset(false);
 
     tstates = 0;
     global_tstates = 0;
@@ -261,6 +285,73 @@ IRAM_ATTR void CPU::loop() {
     // guest isn't touching the ZiFi ports — see ZiFi::cdcPump(). The cadence check
     // costs one compare per instruction, same class as the dma_mode check below.
     uint32_t zifi_pump_due = tstates + 3500; // ~1 ms at 3.5 MHz guest clock
+
+    // TS-Conf: the FRAME INT window is programmable and can sit anywhere in
+    // the frame (every other machine has IntStart = 0). Same three-stage
+    // shape as below with one extra unchecked slice up to IntStart. A window
+    // straddling the frame end is truncated at statesInFrame by
+    // frameIntRecalc, so no wrap handling is needed here.
+    if (Z80Ops::isTsconf) {
+        // Stage A: [now, IntStart) unchecked.
+        if (tstates < IntStart) {
+            if (Z80::isHalted()) {
+                tstates_active = tstates;
+                FlushOnHaltTo(IntStart);
+            } else {
+                stFrame = IntStart;
+                Z80::exec_nocheck();
+                if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(IntStart); }
+            }
+            BREAKPOINTS
+        }
+        // Stage B: the INT window, checked — Z80::execute() samples
+        // isActiveINT and takes the interrupt here.
+        while (tstates < IntEnd) {
+            Z80::execute();
+            if (Config::dma_mode) Z80DMA::handleDMA();
+            if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
+                zifi_pump_due = tstates + 3500;
+                ZiFi::cdcPump();
+            }
+            BREAKPOINTS
+        }
+        // Stage C: [IntEnd, statesInFrame) unchecked — no frame-end INT
+        // straddle is possible (frameIntRecalc truncates the window).
+        bool ts_halted = Z80::isHalted();
+        if (!ts_halted) {
+            stFrame = statesInFrame;
+            Z80::exec_nocheck();
+            if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(statesInFrame); ts_halted = true; }
+        } else {
+            tstates_active = tstates;
+            FlushOnHaltTo(statesInFrame);
+        }
+        BREAKPOINTS
+        // Frame tail — a faithful copy of the shared tail below (kept
+        // duplicated so the hot path of every other machine stays textually
+        // untouched).
+        {
+            uint64_t _ef_t0 = time_us_64();
+            VIDEO::EndFrame();
+            endframe_us = (uint32_t)(time_us_64() - _ef_t0);
+        }
+        CPU::tstates_diff += CPU::tstates - CPU::prev_tstates;
+        if ((ESPectrum::fdd.control & (kRVMWD177XHLD | kRVMWD177XHLT)) != 0)
+        {
+            uint64_t _fdd_t0 = time_us_64();
+            rvmWD1793Step(&ESPectrum::fdd, CPU::tstates_diff / WD177XSTEPSTATES); // FDD
+            fdd_step_us += (uint32_t)(time_us_64() - _fdd_t0);
+        }
+        CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
+        cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+        global_tstates += statesInFrame;
+        tstates_frame = tstates;
+        if (!ts_halted) tstates_active = tstates_frame;
+        tstates -= statesInFrame;
+        CPU::prev_tstates = tstates;
+        return;
+    }
+
     while (tstates < IntEnd) {
         Z80::execute();
         if (Config::dma_mode) Z80DMA::handleDMA();
@@ -316,8 +407,14 @@ IRAM_ATTR void CPU::loop() {
 }
 
 IRAM_ATTR void CPU::FlushOnHalt() {
+    FlushOnHaltTo(statesInFrame - IntEnd);
+}
 
-    uint32_t stEnd = statesInFrame - IntEnd;
+// Fast-forward a halted CPU (burning NOPs and raster) to an explicit target.
+// The classic frame loop always targets statesInFrame - IntEnd; TS-Conf's
+// sliced loop targets IntStart (a HALT before the programmable INT window
+// wakes at the window) or statesInFrame.
+IRAM_ATTR void CPU::FlushOnHaltTo(uint32_t stEnd) {
 
     uint8_t page = Z80::getRegPC() >> 14;
     if (MemESP::ramContended[page]) {
@@ -394,6 +491,11 @@ static inline uint8_t gsDmaPeek8(uint16_t address) {
 static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000)
         GS::zxDmaWrite(value);
+    // TS-Conf FMAddr window (CRAM/SFILE/register file). Like the NeoGS DMA
+    // write, it does NOT replace the normal store — the hardware writes RAM
+    // and the FPGA array in parallel (reference z80_main.inl:108).
+    if (__builtin_expect(g_tsconf_fm != 0, 0))
+        TsConf::fmWrite(address, value);
     MemESP::writebyte(address, value);
 }
 
@@ -692,6 +794,9 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // execute() loops (like the frame INT), so worst-case latency is one
     // exec_nocheck stretch — fine for a level line the device keeps high.
     if (Ports::serialMouseIntAsserted()) return true;
+    // TS-Conf: INTMask bit 0 gates the FRAME source (the only one wired in
+    // this phase); LINE/DMA arrive with their sources later.
+    if (Z80Ops::isTsconf && !TsConf::frameIntEnabled()) return false;
     // Adding latetiming shifts the check 1T later for Late mode.
     // At end of frame (tstates=statesInFrame-1), tmp wraps to 0, firing
     // the Late INT via straddle — this is the correct hardware behaviour.

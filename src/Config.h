@@ -78,6 +78,7 @@ public:
     static RomsetIdx romSetP512;
     static RomsetIdx romSetP1M;
     static RomsetIdx romSetProfi;
+    static RomsetIdx romSetTsconf;
     static ArchIdx   pref_arch;
     static RomsetIdx pref_romSet_48;
     static RomsetIdx pref_romSet_128;
@@ -85,6 +86,7 @@ public:
     static RomsetIdx pref_romSetP512;
     static RomsetIdx pref_romSetP1M;
     static RomsetIdx pref_romSetProfi;
+    static RomsetIdx pref_romSetTsconf;
     static string   ram_file;
     static string   last_ram_file;
     static string   tape_file;       // full path of remembered tape, re-mounted after F11/reboot like a disk
@@ -132,6 +134,23 @@ public:
     // 2026-07-29: "MZ does not turn on the first time" — that second save re-wrote the
     // stale live value over the fresh pick).
     static uint16_t mem_pg_cnt;
+    // TS-Conf RAM size in 16 KB pages (64/128/256 = 1/2/4 MB) — TS-Conf's own
+    // persisted pick, deliberately separate from mem_pg_cnt (same live-vs-pick
+    // rules as above). tsconf_clk_cap bounds the guest's SysConfig ZCLK
+    // (0/1/2 = 3.5/7/14 MHz) for boards that cannot keep up with 14 MHz.
+    static uint16_t tsconf_ram;
+    static uint8_t  tsconf_clk_cap;
+    // The page-strip length the NEXT boot of `a` needs. The single source for
+    // the live MEM_PG_CNT (ESPectrum::setup) and for the boot-layout reboot
+    // boundary in requestMachine()/MachineSwitch::commit() — the two must
+    // never disagree, or a snapshot load across the boundary walks off the
+    // page strip.
+    static uint32_t wantedPages(ArchIdx a) {
+        if (a == A_TSCONF) return tsconf_ram;
+        uint32_t n = mem_pg_cnt;
+        if (n > 64 && !(a == A_PENT || a == A_P512 || a == A_P1024)) n = 64;
+        return n;
+    }
     static bool     rtc_enabled;  // Pentagon/Profi Mr Gluk MC146818 RTC + CMOS NVRAM (RP2350)
     // Debug > PSRAM. Read once at boot (ESPectrum::setup, right after load()): false
     // makes the firmware behave as if the board had no PSRAM — the runtime twin of the

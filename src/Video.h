@@ -374,6 +374,10 @@ public:
   static void regenerateUlaPlusAluBytes();
   static void ulaPlusUpdatePaletteEntry(uint8_t entry);
   static void ulaPlusFlushPalette();   // apply pending palette to hardware
+  // TS-Conf: CRAM (gpal bank) → hardware slots 0..15, deferred to EndFrame.
+  static bool tsCramDirty;
+  static void tsPaletteFlush();
+  static void tsPaletteRestore();
   static void ulaPlusUpdateBorder();
   static void ulaPlusDisable();
 

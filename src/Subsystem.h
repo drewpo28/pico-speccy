@@ -33,6 +33,10 @@ namespace Subsystems {
         // a free-candidate (see budgetCheck).
         FEAT_ZCONTROLLER, FEAT_IDE, FEAT_SAA, FEAT_COVOX, FEAT_HDMI_AUDIO,
         FEAT_ULAPLUS, FEAT_TIMEX, FEAT_DMA, FEAT_16COL,
+        // TS-Conf machine state: CRAM 512 + SFILE 512 + registers (~1.2 KB
+        // rounded up); the 4 MB page strip is PSRAM, checked separately in
+        // MachineSwitch + the boot residency self-heal.
+        FEAT_TSCONF,
         FEAT_COUNT
     };
 

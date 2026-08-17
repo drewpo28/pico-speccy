@@ -26,7 +26,8 @@
     X(A_P1024,      "P1024")  \
     X(A_PROFI,      "Profi")  \
     X(A_KARABAS,    "Karabas")  \
-    X(A_ALF,        "ALF")
+    X(A_ALF,        "ALF")      \
+    X(A_TSCONF,     "TSconf")
 
 // Third column = the human label. The second column is an on-disk spelling that
 // must never change (NVS, .esp sidecars); the third is what a user reads, kept
@@ -52,7 +53,8 @@
     X(R_PROFI_PQ,       "ProfiPQ",          "PQDOS")              \
     X(R_PROFI_FT,       "ProfiKarabasFT",   "Flash Tool")         \
     X(R_PROFI_FDI,      "ProfiKarabasFDI",  "FDImage")            \
-    X(R_ALF1,           "ALF1",             "ALF cartridge")
+    X(R_ALF1,           "ALF1",             "ALF cartridge")      \
+    X(R_TSCONF,         "TSbios",           "TS-BIOS")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -116,6 +118,7 @@ inline RomsetIdx defaultRomsetFor(ArchIdx a) {
         case A_PROFI:   return R_PROFI;
         case A_KARABAS: return R_PROFI_KAR;
         case A_ALF:     return R_ALF1;
+        case A_TSCONF:  return R_TSCONF;
         default:        return R_PENT;   // Pentagon / P512 / P1024
     }
 }
