@@ -75,6 +75,10 @@ enum DiskIface {
     // produced by ifaceForExt: those extensions are only meaningful inside the
     // IDE slot rows, so a plain Enter in the browser must not route them here.
     IFACE_IDE  = 4,
+    // ZX Spectrum +3 (uPD765 + .dsk) — Drive A:/B:. Note the name collision with the
+    // long-standing DISK_DSKFILE / DSK_Path constants, which are the GENERIC disk
+    // dialog and have nothing to do with the CPC .dsk container.
+    IFACE_PLUS3 = 5,
 };
 
 class FileUtils

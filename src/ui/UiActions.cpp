@@ -461,6 +461,7 @@ void midi_keyBanks(int32_t tag, uint8_t key) {
 // slots are a dynamic level like esxDOS's (same DiskSlots primitives, same verbs).
 // Only the create-image wizard stays modal.
 void act_ideCreate() { ::ideCreateImage(); }
+void act_p3Create()  { ::plus3CreateImage(); }
 
 // ── fast snapshots ─────────────────────────────────────────────────────────────
 // The 40 slots as dynamic levels (they were classic 40-row menuRun pickers).
@@ -871,10 +872,12 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
 
 void slots_buildBeta(DynRows& d) { buildSlots(d, IFACE_BETA); }
 void slots_buildMb02(DynRows& d) { buildSlots(d, IFACE_MB02); }
+void slots_buildP3  (DynRows& d) { buildSlots(d, IFACE_PLUS3); }
 void slots_buildEsx (DynRows& d) { buildSlots(d, IFACE_ESX);  }
 void slots_buildIde (DynRows& d) { buildSlots(d, IFACE_IDE);  }
 void slots_keyBeta(int32_t s, uint8_t k) { keySlots(IFACE_BETA, s, k); }
 void slots_keyMb02(int32_t s, uint8_t k) { keySlots(IFACE_MB02, s, k); }
+void slots_keyP3  (int32_t s, uint8_t k) { keySlots(IFACE_PLUS3, s, k); }
 void slots_keyEsx (int32_t s, uint8_t k) { keySlots(IFACE_ESX,  s, k); }
 void slots_keyIde (int32_t s, uint8_t k) { keySlots(IFACE_IDE,  s, k); }
 

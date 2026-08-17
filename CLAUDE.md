@@ -828,6 +828,122 @@ UnrealSpeccy-heritage ack); behavior-neutral for known software — fw 1.11's
 source and NPL's card side never execute `OUT (02)` (only fw command 0x10
 "OUT to any port" could reach it).
 
+## ZX Spectrum +3: the machine, uPD765 and .dsk (2026-08-17, NOT hw-tested)
+
+New arch `A_P3` + romset `R_P3`, a sector-level uPD765A and CPCEMU/Extended `.dsk`
+images in drives A:/B: with read, write and format. **Nothing here has run on hardware**
+— the container had no Pico SDK — but every piece that could be tested on a host is,
+and each suite was mutation-checked (see the bottom of this section).
+
+**Reference is Fuse**, not documentation: `machines/specplus3.c`,
+`machines/machines_periph.c`, `peripherals/disk/upd_fdc.c`, `peripherals/disk/disk.c`,
+`spectrum.c`. worldofspectrum.org and spectrum3.es are both behind this session's egress
+policy (403 on CONNECT), as are the WoS mirrors and rk.nvg.ntnu.no — GitHub is reachable,
+so raw.githubusercontent.com is the way to any of this.
+
+- **Port decodes are TIGHT and come from Fuse's own port table** (`plus3_memory_ports` /
+  `upd765_ports`): `#7FFD` = `(addr & 0xC002) == 0x4000`, `#1FFD` = `0xF002/0x1000`,
+  `#2FFD` = `0xF002/0x2000` (status, read only), `#3FFD` = `0xF002/0x3000`. The +3 block
+  in `Ports::input`/`output` RETURNS, because the loose 128K decode below it
+  (`0x8002/0x0000`) would otherwise swallow `#1FFD`. Like every other early-returning
+  handler in that file it skips `ioContentionLate` — so does the 128K `#7FFD` path.
+- **`MemESP::plus3Remap()` is the one place** that turns `(port1FFD, bankLatch,
+  romLatch)` into `ramCurrent[]`/`ramContended[]`/`romInUse`. ROM index is
+  `(1FFD.D2 << 1) | 7FFD.D4`; `1FFD.D0` swaps the normal map for one of four all-RAM
+  configurations `{0,1,2,3} {4,5,6,7} {4,5,6,3} {4,7,6,3}`. **`recoverPage0()` bows out
+  while one is mapped** (`MemESP::p3special`): its generic `page0ram` path always maps
+  `ram[0]`, which is wrong for configurations 1-3 — they hold page 4 there.
+  The arithmetic lives in `src/Plus3Paging.h` so `tools/plus3_paging_test.cpp` builds
+  against the shipped table rather than a copy.
+- **Contended pages are 4,5,6,7, not the odd ones**, and the delay pattern differs. In
+  this repo's phase (index 0 = `TS_SCREEN_128` = 14361) the +3 sequence is
+  `1,0,7,6,5,4,3,2` against the 128K's `6,5,4,3,2,1,0,0` — `wait_st` is now a table pair
+  picked in `VIDEO::Reset()`. **Known simplification:** the +3 contention window also
+  opens 3 T-states earlier (Fuse's offset 4 vs 1), which is not modelled.
+  Frame timing is the 128K's exactly; there is no floating bus (unattached ports read
+  0xFF) and no ULA snow.
+- **Beta, MB-02+, Timex, DivMMC and the Z-Controller are forced OFF on a +3** — the first
+  three collide on the port map, the last two automap on addresses inside the +3's own
+  four ROMs. Enforced in three places, the same shape Profi uses: the menu's
+  `resolveConstraints` (note), `MachineSwitch` (toast), and `ESPectrum::setup` /
+  `CPU::reset` as the backstop for boots that never pass through the menu.
+- **ROMs**: the standard v4.0 English set. Banks 0-2 are raw (`src/roms/plus3/`); bank 3
+  is 48 BASIC and overlays `gb_rom_1_sinclair_128k` in **1266 bytes**. The base has to be
+  a RAW array — MemESP's overlay registry is keyed by base pointer and does NOT chain, so
+  the +2's own (overlaid) 48 BASIC cannot be the base even though it is ~80 bytes closer.
+  Regenerate with `python3 tools/rom_pack.py plus3`. ~50 KB of flash all told.
+
+### The three uPD765 behaviours that are hangs, not wrong bytes
+
+Each has a named assertion in `tools/upd765_test.cpp`; if one regresses the machine
+stops rather than misbehaves, so check these first when a +3 will not boot:
+
+1. **SENSE INTERRUPT with nothing pending must rewrite itself to INVALID and return
+   exactly ONE byte, 0x80.** +3DOS polls it after every seek and never leaves the loop
+   otherwise.
+2. **`ST0=0x40` with `ST1=0x80` (end of cylinder) is the SUCCESS report** for a
+   multi-sector read that ran to EOT — the +3 never issues a terminal count, so that is
+   how transfers normally finish. `ST0=0x00` there looks like a lost last sector.
+3. **The rotational position is per drive and PERSISTS ACROSS COMMANDS.** Without it a
+   track carrying two sectors with the same ID can only ever return the first, and
+   Alkatraz / Speedlock-3 protections never pass.
+
+### Deliberate deviations from Fuse
+
+- **SK stays where the datasheet puts it** (command bit 5). Fuse re-reads it from bit 5
+  of the HD/US byte, which the datasheet defines as zero — so SK never engages there.
+- **0xFF during SCAN is the don't-care byte**, which Fuse omits entirely.
+- **Multi-track switches head**, where Fuse increments the cylinder.
+- **Weak sectors rotate through the recorded copies** (`actualLen / (128<<N)`) instead of
+  Fuse's randomised differing-bit bitmap: deterministic and replays what the dumper
+  captured. A surplus that is NOT a whole number of copies is "data in the gap" and stays
+  one copy — 1100 bytes of a 512-byte sector is ONE copy, not two.
+- **`READ DIAGNOSTIC` returns sector payloads only**, no gap or CRC bytes. +3DOS never
+  needs the difference; a few hardcore protections will fail on it. This is the one real
+  cost of the sector-level model.
+
+### DskImage, and why FORMAT dictates how blank images are made
+
+- A mount costs **one** read however big the image is — the track directory is pure
+  arithmetic over the 256-byte disk information block. A track costs one more when first
+  selected. Payload comes through a **caller-owned sliding window** (8 KB from the Buffer
+  pool, `HOT_SRAM`, halving to 1 KB rather than failing, freed by the last eject), so the
+  size is a pure performance knob: `tools/dsk_test.cpp` reruns the whole suite at 256
+  bytes to force a refill inside every sector read.
+- **`Disk-Info\r\n` sits at offset 0x17, not 0x22.** Both signatures are 34 bytes and
+  their vendor halves are the same length; keying on the marker rather than the vendor
+  string is what makes third-party writers' images load.
+- **Writes never move a byte outside the sector** — a size mismatch is refused before
+  anything is written — and a write repairs the sector's error flags, because a real one
+  does. FORMAT rewrites a track only when the new layout fits the space the file already
+  allots it; growing a track means shifting every later one and rewriting the size table,
+  which is refused with `ST1 NW`.
+- **That is why blank images are STANDARD, fully pre-formatted DSK** (40x1x9x512, IDs
+  0xC1..0xC9, filler 0xE5, ~190 KB): every track already has the +3's own geometry, so
+  `FORMAT "a:"` from +3 BASIC always hits the in-place path.
+
+### Testing
+
+`Upd765` and `DskImage` depend on nothing from the firmware — the backing store is a
+struct of function pointers and the clock is an argument — which is the only reason any
+of this could be tested without hardware. Reference images in the tests are built byte by
+byte, never through DskImage's own writer, so a parser bug cannot hide behind a matching
+writer bug.
+
+```
+g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/dsk_test \
+    tools/dsk_test.cpp src/DskImage.cpp && /tmp/dsk_test
+g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/upd765_test \
+    tools/upd765_test.cpp src/Upd765.cpp src/DskImage.cpp && /tmp/upd765_test
+g++ -O2 -Wall -Wextra -Isrc -o /tmp/p3 tools/plus3_paging_test.cpp && /tmp/p3
+```
+
+Run all three after any change to these files. Every assertion in them was checked to
+FAIL under a hand-applied mutation of the code it covers — two gaps found that way (DTL
+and SK) are now covered, and one mutation that looked uncaught turned out to need a
+1100-byte sector to expose. A suite that cannot fail is worth nothing here: an FDC
+misbehaves by degrees, as one game in twenty that will not load.
+
 ## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
 
 TheLink (pouet 53778, Pentagon 1024SL + NeoGS + TSFM, REQUIRES 7 MHz turbo)

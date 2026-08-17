@@ -4,6 +4,7 @@
 #include "FileUtils.h"
 #include "ESPectrum.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "fabutils.h"
 #include "messages.h"
 #include "OSDMain.h"
@@ -590,6 +591,21 @@ void Config::loadDiskMounts() {
                         if (ESPectrum::mb02_fdd.disk[i])
                             ESPectrum::mb02_fdd.disk[i]->writeprotect = mb02WP[i];
                     }
+                }
+            }
+            // +3 disks: two drives, and only re-inserted when a +3 is the running
+            // machine. Same reasoning as the MB-02 guard above — mounting opens a FIL
+            // and claims the sector window at the tight-heap point, which is pure waste
+            // on a machine that has no uPD765. The path stays remembered either way.
+            for (size_t i = 0; i < 2; ++i) {
+                char prefix[16];
+                snprintf(prefix, sizeof(prefix), "p3d%u.file=", (unsigned)i);
+                const size_t plen = strlen(prefix);
+                if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
+                    std::string fn = s.substr(plen);
+                    p3DiskFile[i] = fn;
+                    if (!fn.empty() && Config::arch == A_P3 && FileUtils::waitVolumeReady(fn))
+                        Plus3Fdc::mount(i, fn);
                 }
             }
             s.clear();
@@ -1374,6 +1390,14 @@ void Config::save(const char* path) {
             if (Config::mb02)
                 mb02DiskFile[i] = ESPectrum::mb02_fdd.disk[i] ? ESPectrum::mb02_fdd.disk[i]->fname : "";
             persistFile(s + ".file", mb02DiskFile[i]);
+            // +3 disks, same rule as MB-02+: the remembered path is authoritative, and
+            // is only refreshed from the live mount while a +3 is the running machine —
+            // otherwise nothing is mounted and writing the live "" would erase it.
+            if (i < 2) {
+                if (Config::arch == A_P3)
+                    p3DiskFile[i] = Plus3Fdc::fname(i);
+                persistFile("p3d" + to_string(i) + ".file", p3DiskFile[i]);
+            }
         }
     }
     nvs_set_u8(buf,"scanlines",Config::scanlines);

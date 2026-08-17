@@ -16,6 +16,7 @@ using namespace std;
 #include "NetArena.h"
 #include "MemESP.h"
 #include "AlfCart.h"
+#include "Plus3Fdc.h"
 #include "Video.h"
 #include "OSDMain.h"
 #include "ui/UiDialog.h"
@@ -80,6 +81,8 @@ static bool tempPathBusy(const char* path) {
         if (ESPectrum::fdd.disk[u] && ESPectrum::fdd.disk[u]->fname == p) return true;
         if (ESPectrum::mb02_fdd.disk[u] && ESPectrum::mb02_fdd.disk[u]->fname == p) return true;
     }
+    for (int u = 0; u < 2; u++)
+        if (Plus3Fdc::mounted(u) && Plus3Fdc::fname(u) == p) return true;
     if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
         FileUtils::TAP_Path + Tape::tapeFileName == p) return true;
     if (AlfCart::active() && AlfCart::path() == p) return true;
@@ -94,6 +97,8 @@ static void releaseTempOwners(const char* path) {
         if (ESPectrum::mb02_fdd.disk[u] && ESPectrum::mb02_fdd.disk[u]->fname == p)
             wdDiskEject(&ESPectrum::mb02_fdd, u);
     }
+    for (int u = 0; u < 2; u++)
+        if (Plus3Fdc::mounted(u) && Plus3Fdc::fname(u) == p) Plus3Fdc::eject(u);
     if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
         FileUtils::TAP_Path + Tape::tapeFileName == p)
         Tape::Init();   // closes the open tape FIL
@@ -806,7 +811,7 @@ void ZipExtract::cleanup() {
     f_unlink(TEMP_FILE);   // extension-less staging name; never mounted
     const char* exts[] = {
         ".sna", ".z80", ".p", ".tap", ".tzx", ".pzx", ".wav", ".mp3",
-        ".trd", ".scl", ".udi", ".fdi", ".td0", ".mbd", ".pro",
+        ".trd", ".scl", ".udi", ".fdi", ".td0", ".mbd", ".pro", ".dsk",
         ".mmc", ".hdf", ".hdd", ".vhd", ".iso", ".rom", ".bin", NULL
     };
     for (int i = 0; exts[i]; i++) {

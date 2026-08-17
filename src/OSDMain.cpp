@@ -163,6 +163,8 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "DivMMC.h"
 #include "IDE.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
+#include "DiskSlots.h"
 #include "MachineSwitch.h"
 #include "GS/GS.h"
 #include "RTC.h"
@@ -1401,13 +1403,21 @@ void persistSetName(uint8_t slotnumber, const string& newName) {
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
     FIL* f = fopen2(finfo.c_str(), FA_READ);
     if (!f) return;
-    char arch[64], romset[64];
+    char arch[64], romset[64], oldname[64], extra[64];
+    arch[0] = romset[0] = oldname[0] = extra[0] = 0;
     f_gets(arch, sizeof(arch), *f);
     f_gets(romset, sizeof(romset), *f);
+    f_gets(oldname, sizeof(oldname), *f);
+    // Line 4 is the +3's #1FFD. Renaming a slot must not drop it — the snapshot would
+    // come back with ROM at 0x0000 and die on its first instruction.
+    f_gets(extra, sizeof(extra), *f);
+    extra[strcspn(extra, "\r\n")] = 0;
     fclose2(f);
     f = fopen2(finfo.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
     if (!f) return;
-    fputs((string(arch) + "\n" + string(romset) + "\n" + newName + "\n").c_str(), *f);
+    string out = string(arch) + "\n" + string(romset) + "\n" + newName + "\n";
+    if (extra[0]) out += string(extra) + "\n";
+    fputs(out.c_str(), *f);
     fclose2(f);
 }
 
@@ -1421,7 +1431,16 @@ bool persistSaveNamed(uint8_t slotnumber, const string& slotName) {
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
     FIL* f = fopen2(finfo.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
     if (!f) return false;
-    fputs((string(archToStr(Config::arch)) + "\n" + romsetToStr(Config::romSet) + "\n" + slotName + "\n").c_str(), *f);
+    string info = string(archToStr(Config::arch)) + "\n" + romsetToStr(Config::romSet) +
+                  "\n" + slotName + "\n";
+    // A 128K .sna has nowhere to put the +3's #1FFD, and it dumps all eight banks
+    // anyway, so the latch is the ONLY thing missing — a fourth sidecar line carries
+    // it. Older sidecars simply lack the line, and the reader treats that as zero.
+    if (Config::arch == A_P3) {
+        char x[16]; snprintf(x, sizeof(x), "1FFD=%02X\n", Ports::port1FFD);
+        info += x;
+    }
+    fputs(info.c_str(), *f);
     fclose2(f);
     return FileSNA::save(string(DISK_PSNA_DIR) + "/" + persistfname);
 }
@@ -1538,11 +1557,25 @@ bool persistLoad(uint8_t slotnumber)
         f_gets(buf, sizeof(buf), *f);
         buf[strcspn(buf, "\r\n")] = 0;
         RomsetIdx persist_romset = romsetFromStr(buf, R_NONE);
+        // Line 3 is the slot name; line 4, when present, is the +3's #1FFD. A sidecar
+        // written before this existed simply ends after line 3, and the wrapper leaves
+        // an empty string there, so the sscanf fails and the value stays "absent".
+        int persist_1ffd = -1;
+        buf[0] = 0; f_gets(buf, sizeof(buf), *f);       // slot name, not needed here
+        buf[0] = 0; f_gets(buf, sizeof(buf), *f);
+        { unsigned v = 0;
+          if (sscanf(buf, "1FFD=%x", &v) == 1) persist_1ffd = (int)(v & 0xFF); }
         fclose2(f);
 
         if (!LoadSnapshot(string(DISK_PSNA_DIR) + "/" + persistfname, persist_arch, persist_romset)) {
             OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
             return false;
+        }
+        // Apply the +3 paging latch AFTER the snapshot, which restores #7FFD itself:
+        // plus3Remap needs both to place the four banks and the ROM.
+        if (persist_1ffd >= 0 && Config::arch == A_P3) {
+            Ports::port1FFD = (uint8_t)persist_1ffd;
+            MemESP::plus3Remap(Ports::port1FFD);
         }
         else
         {
@@ -2019,6 +2052,16 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         printf("Insert disk %s\n",fname.c_str());
                         rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
                     }
+                    else if (ext == "dsk") {
+                        // A +3 disk. This branch predates ifaceForExt and still tests
+                        // the extension directly, so the new one has to be added here
+                        // as well as in the browser above.
+                        if (Config::arch == A_P3) {
+                            DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
+                        } else {
+                            OSD::osdCenteredMsg("Switch to the +3 first", LEVEL_WARN);
+                        }
+                    }
                     else if (ext == "mbd") {
                         printf("Insert MB-02 disk %s\n",fname.c_str());
                         if (MB02::enabled) {
@@ -2259,6 +2302,27 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             || ESPectrum::fdd.disk[0]->IsTD0File
                             ;
                     Config::save();
+                }
+                else if (FileUtils::ifaceForExt(ext) == IFACE_PLUS3) {
+                    // A +3 disk. The image is only meaningful on a +3, so mounting one
+                    // from another machine switches to the +3 and resets into it — the
+                    // analogue of what the TR-DOS path does with betadisk + bootTrdos.
+                    if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+                    if (forcePopup) {
+                        nm::runDiskSlots(IFACE_PLUS3, fname.c_str());
+                        forcePopup = false;
+                        goto f5_retry;
+                    }
+                    const bool needSwitch = (Config::arch != A_P3);
+                    DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
+                    Config::save();
+                    if (needSwitch) {
+                        // commit() reboots on some boards and never returns; the mount
+                        // above is already persisted, so Config::loadDiskMounts puts the
+                        // disk back either way.
+                        MachineSwitch::commit(A_P3, R_P3);
+                        return;
+                    }
                 }
                 else if (ext == "mbd") {
                     // MB-02+ disk — Enter mounts into Drive 1, F5 opens the popup.
@@ -5774,6 +5838,22 @@ static void buildEmulatorInfoText() {
             pos += infoAppend(buf, pos, bufsz, "\n");
         }
 
+        // +3 disk — the interface is part of the machine, so there is no "on" to show
+        if (Z80Ops::isP3) {
+            pos += infoAppend(buf, pos, bufsz, " +3 disk (765)  : uPD765A");
+            if (Config::p3_fastdisk) pos += infoAppend(buf, pos, bufsz, " (fast)");
+            pos += infoAppend(buf, pos, bufsz, "\n");
+            for (int i = 0; i < 2; i++) {
+                pos += infoAppend(buf, pos, bufsz, "  %c:            : ", 'A' + i);
+                if (Plus3Fdc::mounted(i)) {
+                    pos += appendFilename(buf, pos, bufsz, Plus3Fdc::fname(i), 19);
+                    if (Config::p3WP[i]) pos += infoAppend(buf, pos, bufsz, " WP");
+                } else
+                    pos += infoAppend(buf, pos, bufsz, "(empty)");
+                pos += infoAppend(buf, pos, bufsz, "\n");
+            }
+        }
+
         // TR-DOS — available for Pentagon or Byte 128K
         {
             bool trdos_available = (Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte);
@@ -7506,6 +7586,35 @@ void ideSlotEdit(uint8_t slot) {
         }
         // The size/LBA row is informational.
     }
+}
+
+// Write a blank, formatted +3 disk into the disk-dialog directory and offer to put it
+// straight into a drive — the +3 analogue of the browser's "New TRD" (F9).
+void plus3CreateImage() {
+    static const char* const kinds[] = { "180K single-sided", "360K double-sided" };
+    const int kind = nm::uiPickList("Create +3 disk", kinds, 2, 0);
+    if (kind < 0) return;
+
+    string name = "new";
+    if (!nm::uiPrompt("Disk name", name, 18)) return;
+    while (!name.empty() && name.back()  == ' ') name.pop_back();
+    while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+    if (name.empty()) return;
+    if (FileUtils::getLCaseExt(name) != "dsk") name += ".dsk";
+
+    const string path = FileUtils::DSK_Path + name;
+    FILINFO fno;
+    if (f_stat(path.c_str(), &fno) == FR_OK) { nm::uiToast("File already exists", true, 2000); return; }
+
+    if (!Plus3Fdc::createBlank(path, kind == 1)) { nm::uiToast("Create failed", true, 2000); return; }
+
+    static const char* const where[] = { "Drive A:", "Drive B:", "Leave it on the card" };
+    const int slot = nm::uiPickList("Insert it into", where, 3, 0);
+    if (slot == 0 || slot == 1) {
+        DiskSlots::slotMount(IFACE_PLUS3, (uint8_t)slot, path);
+        Config::save();
+    }
+    nm::uiToast("Disk created", false, 1500);
 }
 
 void ideCreateImage() {

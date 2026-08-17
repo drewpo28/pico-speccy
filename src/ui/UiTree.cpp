@@ -432,6 +432,13 @@ static bool p_esxImages() {
     return v == 1 || v == 2;
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
+// The +3 disk rows follow the machine, not a toggle: the interface is part of the
+// machine and cannot be turned off, so they appear whenever a +3 is staged or running.
+static bool p_plus3On() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m >= 0) return ((m >> 8) & 0xFF) == (int)A_P3;
+    return Config::arch == A_P3;
+}
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
 
 // IDE/HDD scheme: the value IS Config::ide_scheme.
@@ -474,6 +481,10 @@ static const Node kHardware[] = {
     NM_BOOL    (TXT_MB02,          SET_MB02,  nullptr),
     NM_DYN_EN  (NM_IND TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
     NM_RADIO_EN(NM_IND TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
+    NM_DYN_EN  (TXT_P3_DRIVES,     slots_buildP3, slots_keyP3, p_hasSD, p_plus3On),
+    NM_ACTION_EN(NM_IND TXT_P3_CREATE,    act_p3Create,  p_hasSD, p_plus3On),
+    NM_BOOL_EN (NM_IND TXT_P3_FASTDISK,   SET_P3_FASTDISK,  nullptr, p_plus3On),
+    NM_BOOL_EN (NM_IND TXT_P3_SPEEDLOCK,  SET_P3_SPEEDLOCK, nullptr, p_plus3On),
     NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_hasSD),
     NM_RADIO   (TXT_HW_IDE,        SET_IDE_SCHEME, opt_ide_scheme, p_hasSD),
     NM_DYNH_EN (NM_IND TXT_IDE_IMAGES,   slots_buildIde, slots_keyIde,
@@ -894,6 +905,7 @@ const Node* slotNodeFor(int iface) {
         case IFACE_BETA: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildBeta);
         case IFACE_MB02: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildMb02);
         case IFACE_ESX:  return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEsx);
+        case IFACE_PLUS3: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildP3);
         default:         return nullptr;
     }
 }
