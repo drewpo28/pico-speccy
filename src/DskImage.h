@@ -4,7 +4,8 @@
 // lives in Upd765.{h,cpp}. It deliberately does NOT synthesise an MFM track the way
 // wd1793.cpp does for TR-DOS images: the 765 is a command/result-phase device that never
 // exposes rotation to the guest beyond sector ordering, so a sector index over the file
-// is both smaller and faster. What that costs is documented at dskReadDiagBytes().
+// is both smaller and faster. The one thing that costs is READ DIAGNOSTIC, which can
+// only return sector payloads here — see the C_READ_DIAG case in Upd765.cpp.
 //
 // DEPENDENCIES: none. Not FatFs, not Buffer, not Debug — the backing store arrives as a
 // DskIo struct of function pointers and the sliding window as a caller-owned buffer.

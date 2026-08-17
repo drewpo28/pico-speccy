@@ -176,7 +176,7 @@ bool mount(uint8_t unit, const std::string& path) {
     fdc.drive[unit].rot = 0;
     Debug::log("+3 FDC: drive %c = %s (%s, %u cyl, %u side%s)%s",
                (char)('A' + unit), path.c_str(), s.img.extended ? "extended" : "standard",
-               s.img.cyls, s.img.sides, s.img.sides == 1 ? "" : "s",
+               (unsigned)s.img.cyls, (unsigned)s.img.sides, s.img.sides == 1 ? "" : "s",
                s.img.wrprot ? ", write protected" : "");
     return true;
 }

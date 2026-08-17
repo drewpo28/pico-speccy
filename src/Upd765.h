@@ -7,7 +7,8 @@
 //
 // Sector level, not bit level: commands are served out of DskImage's sector index rather
 // than by scanning a synthesised MFM track. What that costs is confined to READ
-// DIAGNOSTIC (see updReadDiagNote in the .cpp) — every other command is exact, including
+// DIAGNOSTIC, which can only return sector payloads and not the gap and CRC bytes a
+// real one interleaves — every other command is exact here, including
 // the ones protections rely on.
 //
 // DEPENDENCIES: DskImage only. No FatFs, no Ports, no Config, no Debug — the clock
