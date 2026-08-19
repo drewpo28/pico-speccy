@@ -44,9 +44,11 @@ visit https://zxespectrum.speccy.org/contacto
 #define TSTATES_PER_FRAME_PENTAGON 71680
 #define TSTATES_PER_FRAME_PROFI 69888
 #define TSTATES_PER_FRAME_BYTE  69888
-// Scorpion ZS-256: 224 T/line x 312 lines (libspectrum/MAME agree), same frame
-// as the 48K but uncontended and with the paper starting 14336 T after INT.
+// Scorpion ZS-256: 224 T/line, uncontended, paper starting 14336 T after INT.
+// Two PCB revisions differ ONLY in total frame length (ZXMAK2 UlaScorpion*/MAME):
+// Yellow = 312 lines (the 48K frame), Green = 316 lines (MAME scorpiontb's +4).
 #define TSTATES_PER_FRAME_SCORPION 69888
+#define TSTATES_PER_FRAME_SCORPION_GR 70784
 
 #define MICROS_PER_FRAME_48 19968
 #define MICROS_PER_FRAME_128 19992
@@ -54,6 +56,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define MICROS_PER_FRAME_PROFI 19968
 #define MICROS_PER_FRAME_BYTE  19968
 #define MICROS_PER_FRAME_SCORPION 19968
+#define MICROS_PER_FRAME_SCORPION_GR 20224   // 70784 T / 3.5 MHz
 
 #define INT_START48 0
 #define INT_END48 32

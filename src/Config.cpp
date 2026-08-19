@@ -411,6 +411,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         // (the on-board TR-DOS 5.03 variant) are raw. TR-DOS runs from rom[3] — the
         // machine's own bank, like Profi's rom[1] — so the shared rom[4] (bound in
         // the unconditional tail below) is unused on Scorpion.
+        // R_SCORP (Yellow PCB) and R_SCORP_GR (Green PCB) share this binding — the
+        // romsets differ only in frame timing (CPU::updateStatesInFrame + audio).
         romSet = (newRomSet == R_NONE) ? R_SCORP : newRomSet;
         romSetScorp = romSet;
         MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);

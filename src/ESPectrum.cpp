@@ -1016,9 +1016,11 @@ void ESPectrum::setup() {
     if (ZiFi::enabled)
         ZiFi::init();
 
-  // Scorpion: 69888 T/frame — numerically the 48K frame, so the 48K audio branch
-  // is exact (the Pentagon branch would over-feed the DAC, see the reset() twin).
-  if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) {
+  // Scorpion Yellow: 69888 T/frame — numerically the 48K frame, so the 48K audio
+  // branch is exact (the Pentagon branch would over-feed the DAC, see the reset()
+  // twin). Scorpion Green (316-line frame) gets its own exact set below.
+  if (Config::arch == A_48K || Config::arch == A_PROFI ||
+      (Config::arch == A_SCORP && Config::romSetScorp != R_SCORP_GR)) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1026,6 +1028,15 @@ void ESPectrum::setup() {
 
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
+  } else if (Config::arch == A_SCORP) {
+    // Green PCB: 70784 T / 632 samples = exactly 31250 Hz at 49.4462 fps.
+    samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
+    audioAYDivider = ESP_AUDIO_AY_DIV_SCORP_GR;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_SCORP_GR;
+
+    Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
   } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
@@ -1361,14 +1372,23 @@ void ESPectrum::reset(uint8_t romInUse) {
   // 48K branch here, exactly like setup() does. Otherwise it falls through to the
   // Pentagon branch (640 samples/frame) and over-feeds the 31250 Hz DAC by ~2.6%
   // (640*50.08fps = 32051 > 31250), causing ring overrun → periodic clicks/buzz.
-  // Scorpion is the same 69888 T frame — same rule.
-  if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) {
+  // Scorpion Yellow is the same 69888 T frame — same rule; Green (70784 T) gets
+  // its own exact 632-sample set below.
+  if (Config::arch == A_48K || Config::arch == A_PROFI ||
+      (Config::arch == A_SCORP && Config::romSetScorp != R_SCORP_GR)) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_48;
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
+  } else if (Config::arch == A_SCORP) {
+    samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
+    audioAYDivider = ESP_AUDIO_AY_DIV_SCORP_GR;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_SCORP_GR;
+    Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
   } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;

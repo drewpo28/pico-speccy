@@ -223,7 +223,7 @@ static const RomsetIdx kPref128[]  = {
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
-static const RomsetIdx kPrefScorp[] = { R_SCORP, R_LAST };
+static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_LAST };
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
 NM_STR_ACCESS(pref48,   pref_romSet_48,   kPref48)
