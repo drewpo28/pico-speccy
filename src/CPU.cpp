@@ -117,7 +117,10 @@ void CPU::updateStatesInFrame() {
         IntStart = INT_START_PROFI;
         IntEnd = INT_END_PROFI;
     } else if (Config::arch == A_SCORP) {
-        statesInFrame = TSTATES_PER_FRAME_SCORPION;
+        // Green PCB revision = 316 lines/frame; Yellow = 312 (see CPU.h).
+        statesInFrame = (Config::romSetScorp == R_SCORP_GR)
+                            ? TSTATES_PER_FRAME_SCORPION_GR
+                            : TSTATES_PER_FRAME_SCORPION;
         IntStart = INT_START_SCORPION;
         IntEnd = INT_END_SCORPION;
     } else { // if (Config::arch == A_PENT) - by default
@@ -198,7 +201,8 @@ void CPU::reset() {
         ESPectrum::target = MICROS_PER_FRAME_PROFI;
     } else if (Config::arch == A_SCORP) {
         // Scorpion ZS-256: no float bus (getFloatBusData stays unset — never called,
-        // same as Pentagon), no contention, 48K-length frame.
+        // same as Pentagon), no contention. Yellow PCB = 48K-length frame, Green
+        // PCB = 316 lines (70784 T).
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;
@@ -207,7 +211,9 @@ void CPU::reset() {
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
-        ESPectrum::target = MICROS_PER_FRAME_SCORPION;
+        ESPectrum::target = (Config::romSetScorp == R_SCORP_GR)
+                                ? MICROS_PER_FRAME_SCORPION_GR
+                                : MICROS_PER_FRAME_SCORPION;
     } else { // if (Config::arch == A_PENT) - by default
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;

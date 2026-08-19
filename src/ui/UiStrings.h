@@ -220,7 +220,10 @@
 #define TXT_ROM_KAR_PQ      "PQDOS"
 #define TXT_ROM_KAR_FT      "Flash Tool"
 #define TXT_ROM_KAR_FDI     "FDImage"
-#define TXT_ROM_SCORP       "v2.94"
+// Scorpion PCB revisions (ZXMAK2's Yellow/Green): same v2.94 ROM, different
+// frame timing (312 vs 316 lines).
+#define TXT_ROM_SCORP       "Yellow PCB"
+#define TXT_ROM_SCORP_GR    "Green PCB"
 #define TXT_ROM_ALF         "ALF cartridge"
 
 // ── Options ────────────────────────────────────────────────────────────────────

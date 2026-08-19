@@ -509,7 +509,7 @@ bool FileZ80::load(const string& z80_fn) {
                 z80_romset = Config::pref_romSetP1M;
         } else
         if (z80_arch == A_SCORP) {
-            if (Config::pref_romSetScorp == R_SCORP)
+            if (Config::pref_romSetScorp == R_SCORP || Config::pref_romSetScorp == R_SCORP_GR)
                 z80_romset = Config::pref_romSetScorp;
         }
 

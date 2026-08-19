@@ -1937,6 +1937,16 @@ scorpion`); bank2/3 raw in `src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT
 overlay: rom[4] already overlays the `trdos_505d` base pointer and
 `MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
 
+- **Two PCB revisions as two romsets over the SAME ROM** (2026-08-19, the ZXMAK2
+  `UlaScorpionYellow`/`UlaScorpionGreen` split; the Byte-over-48K pattern —
+  `Config::romSetScorp` drives the timing branch): `R_SCORP` "Scorp" = **Yellow
+  PCB**, 312 lines = 69888 T (default), `R_SCORP_GR` "ScorpGr" = **Green PCB**,
+  **316 lines = 70784 T** (= MAME scorpiontb's +4 lines) with its own exact audio
+  set (`ESP_AUDIO_*_SCORP_GR`: 632 samples = 70784/112, 31250 Hz at 49.4462 fps).
+  Paper line 64 / geometry / ports identical, so Video.cpp needs NO green branch —
+  only `statesInFrame`, `ESPectrum::target` (20224 µs) and the audio cascades
+  differ. ZXMAK2's other yellow-only quirk — even-M1 alignment on RAM fetches —
+  is still deliberately NOT implemented (see below).
 - **Timing = the 48K numbers, uncontended**: 224 T/line × 312 = 69888 T/frame, paper
   14336 T after INT (`TS_SCREEN_48` reused in the Video Reset branch), INT_END 36.
   Takes the **48K audio branch** (624 samples — same rule as Profi), the 48K-family
