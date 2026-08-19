@@ -1514,6 +1514,58 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 - On-hardware benchmark: OSD → Memory Info measures SPI PSRAM MB/s via the
   range functions (`OSDMain.cpp`).
 
+## Scorpion ZS-256 (A_SCORP, 2026-08-19) — NOT yet hw-tested
+
+New machine, modelled from MAME `sinclair/scorpion.cpp` + libspectrum `timings.c` +
+Fuse `machines/scorpion.c` (the speccy4ever docs the user linked are egress-blocked
+from the cloud env; all three sources agree). ROM = the user-supplied **v2.94**
+`scorp294.rom` (CRC32 99f57ce1, = MAME's; pages 0-1 byte-identical to v2.92):
+0=BASIC-128, 1=BASIC-48, 2=service monitor, 3=TR-DOS 5.03 variant. bank0/1 are
+overlays over the Sinclair 128K halves (290/115 diff bytes, `tools/rom_pack.py
+scorpion`); bank2/3 raw in `src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT be an
+overlay: rom[4] already overlays the `trdos_505d` base pointer and
+`MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
+
+- **Timing = the 48K numbers, uncontended**: 224 T/line × 312 = 69888 T/frame, paper
+  14336 T after INT (`TS_SCREEN_48` reused in the Video Reset branch), INT_END 36.
+  Takes the **48K audio branch** (624 samples — same rule as Profi), the 48K-family
+  border geometry (step=4 pair-write), the 48K/Profi 50 Hz video-mode planes. No
+  contention anywhere (`ramContended` false, all `Draw(3, …)` I/O-contention sites
+  and the border-change `Draw(0,true)` exclude it), no float bus (input twin
+  excluded; unmapped IN = 0xFF), no snow.
+- **#1FFD** (write-only, own handler BEFORE the loose #7FFD block in Ports::output,
+  decode `(addr & 0xC002)==0 && (addr & 0x20)` per MAME's PAL; NEVER gated by
+  pagingLock): D0 = RAM0 at 0x0000 (drives the existing `page0ram`), D1 = service
+  ROM override, D4 = +8 on the 0xC000 page (`page = ((1FFD&0x10)>>1)|(7FFD&7)`,
+  also composed inside the #7FFD handler). The #7FFD gate got
+  `(!isScorpion || (addr & 0x4000))` — A14 routes the two families.
+- **ROM select is ONE function**, `Ports::scorpionRomUpdate()`:
+  `romInUse = 1FFD.D1 ? 2 : ((trdos<<1) | romLatch)` — MAME's hardware quirk
+  included (DOS with 128 ROM selected shows the SERVICE page, not TR-DOS).
+  Callers: #1FFD handler, #7FFD rom-select arm, .z80 loader; check_trdos
+  entry/exit and doNMIDOS use their own dosBank=3 / D1-aware restores.
+- **TR-DOS = the machine's own bank 3** (like Profi's bank 1): check_trdos entry
+  `romInUse==1 && !newSRAM && !page0ram` (RAM0 makes 0x3Dxx ordinary RAM — no
+  trap), dosBank 3; exit at PC≥0x4000 → `D1 ? 2 : romLatch`. rom[4] + the TR-DOS
+  bios overlays are unused on Scorpion. betadisk forced on (CPU::reset backstop +
+  MachineSwitch), MB-02 mutually excluded.
+- **Snapshots**: .z80 v3 `mch==10` → A_SCORP; 1FFD restored from header[86] (the +3
+  field, ahb_len==55 only); block ids 3..18 → RAM 0..15. SNA: 128K-size files keep
+  a running Scorpion arch; tr_dos flag maps bank 3; **save clamps to the
+  7FFD-visible bank** (`curBank = bankLatch & 7`) — SNA has no 1FFD field, and the
+  raw bankLatch 8-15 corrupted the port byte (bit3=videoLatch) and derailed the
+  page-skip loop into a malformed size. Tape loader128 reuses `loadpentagon` with
+  `skip_rom_pages` (Profi pattern).
+- **UI**: Machine → "Scorpion 256K" (gated `p_extRam` like P512 — pages 8-15 need
+  backing), pref-arch/pref-rom rows (`SET_PREF_ROM_SCORP` appended LAST in the
+  UiStage X-macro per its APPEND ONLY rule), `MENU_RESETTO_SCORP` = Service
+  monitor (reset(2) + `port1FFD=0x02` AFTER reset — reset clears the latch, and
+  without the override the next 7FFD write pages the monitor out) / TR-DOS / 128K
+  / 48K (romLatch=1 + pagingLock). NVS keys `romSetScorp`/`pref_romSetScorp`,
+  on-disk arch spelling "Scorpion", romset "Scorp".
+- Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle, GMX,
+  even-M1 alignment, a Magic/NMI hotkey into the service monitor, SMUC.
+
 ## Murmuzavr extended RAM — page budget + descriptor cost
 
 `MEM_PG_CNT` (Machine → Murmuzavr, 64/256/512/1024/2048 pages = Off/4/8/16/32 MB,

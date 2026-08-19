@@ -277,6 +277,9 @@ static const Option opt_mach_karabas[] = {
     { TXT_ROM_KAR_FT,     NM_MACH(A_KARABAS, R_PROFI_FT)  },
     { TXT_ROM_KAR_FDI,    NM_MACH(A_KARABAS, R_PROFI_FDI) },
 };
+static const Option opt_mach_scorp[] = {
+    { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP) },
+};
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
@@ -328,6 +331,8 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
     // Shared Profi-hardware options — shown while either Profi or Karabas is
     // running or staged.
+    // Scorpion's pages 8-15 need extended-RAM backing, same gate as P512.
+    NM_RADIO(TXT_MACH_SCORP, SET_MACHINE, opt_mach_scorp, p_extRam),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
 };
 
@@ -670,7 +675,8 @@ static const Option opt_pref_arch[] = {
     { TXT_MACH_PENT,  2 },
     { TXT_MACH_P512,  3 },
     { TXT_MACH_P1024, 4 },
-    { TXT_ROM_LAST,   5 },
+    { TXT_MACH_SCORP, 5 },
+    { TXT_ROM_LAST,   6 },
 };
 static const Option opt_pref48[] = {
     { TXT_ROM_48K,     0 },
@@ -702,6 +708,10 @@ static const Option opt_pref_pent[] = {
     { TXT_ROM_CUSTOM,    1 },
     { TXT_ROM_LAST,      2 },
 };
+static const Option opt_pref_scorp[] = {
+    { TXT_ROM_SCORP, 0 },
+    { TXT_ROM_LAST,  1 },
+};
 
 static const Node kPrefRom[] = {
     NM_RADIO(TXT_MACH_48K,   SET_PREF_ROM_48,    opt_pref48,    nullptr),
@@ -709,6 +719,7 @@ static const Node kPrefRom[] = {
     NM_RADIO(TXT_MACH_PENT,  SET_PREF_ROM_PENT,  opt_pref_pent, nullptr),
     NM_RADIO(TXT_MACH_P512,  SET_PREF_ROM_P512,  opt_pref_pent, nullptr),
     NM_RADIO(TXT_MACH_P1024, SET_PREF_ROM_P1024, opt_pref_pent, nullptr),
+    NM_RADIO(TXT_MACH_SCORP, SET_PREF_ROM_SCORP, opt_pref_scorp, nullptr),
 };
 
 // "Other" is gone: it held four unrelated rows behind one more keypress, so they sit at

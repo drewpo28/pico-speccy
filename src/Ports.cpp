@@ -314,6 +314,7 @@ uint8_t Ports::sndriveUsed = 0;
 uint8_t Ports::portAFF7 = 0;
 uint8_t Ports::portDFFD = 0;
 uint8_t Ports::portEFF7 = 0;
+uint8_t Ports::port1FFD = 0;
 uint8_t Ports::port008B = 0;
 uint8_t Ports::port018B = 0;
 uint8_t Ports::port028B = 0;
@@ -588,6 +589,8 @@ inline static size_t extendedZxRamPages() {
     return 64;
   if (Z80Ops::is512)
     return 32;
+  if (Z80Ops::isScorpion)
+    return 16;
   if (Z80Ops::is128 || (Z80Ops::isPentagon || Z80Ops::isProfi))
     return 8;
   return 4;
@@ -762,7 +765,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   }
   // ULA PORT
   if ((address & 0x0001) == 0) {
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
     if (ia && p8 == 0xFE) {
       data = nes_pad2_for_alf(); // default port value is 0xFF.
     } else {
@@ -1588,7 +1591,10 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         return rd;
       }
     }
-    if (!(Z80Ops::isPentagon || Z80Ops::isProfi)) {
+    // Scorpion has no float bus either (Fuse: unattached_port_none) — unmapped
+    // reads answer 0xFF and the 128K "IN #7FFD rewrites the latch" quirk (a
+    // 128K-ULA artifact) never happens there.
+    if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)) {
 #if HALT2INT_TRACE
       if (address == 0xFFFF)
         Debug::log("[FLOAT-IN] addr=%04X ts=%u ia=%d", address, CPU::tstates, (int)ia);
@@ -1715,6 +1721,21 @@ static inline void profiFdcSysWrite(uint8_t data) {
     ESPectrum::fdd.control &= ~kRVMWD177XDDEN;
   else
     ESPectrum::fdd.control |= kRVMWD177XDDEN;
+}
+
+// Scorpion ROM select — MAME's hardware-derived function (sinclair/scorpion.cpp):
+//   rom = 1FFD D1 ? 2 : ((dos << 1) | 7FFD D4)
+// bank0/1 = BASIC-128/BASIC-48, bank2 = service monitor, bank3 = TR-DOS. Note the
+// quirk that IS the hardware: in DOS with the 128 ROM selected (D4=0) the SERVICE
+// page appears, not TR-DOS — normal TR-DOS software always runs with D4=1.
+// The ONLY place Scorpion's rom bank is derived — callers: the #1FFD handler, the
+// Scorpion arm of the #7FFD rom-select, check_trdos entry/exit, the .z80 loader.
+// recoverPage0() already orders newSRAM > page0ram > rom[romInUse], which matches
+// the hardware (RAM0 wins over the service override).
+void Ports::scorpionRomUpdate() {
+  MemESP::romInUse = (port1FFD & 0x02) ? 2
+                   : ((((uint8_t)ESPectrum::trdos) << 1) | MemESP::romLatch);
+  MemESP::recoverPage0();
 }
 
 IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
@@ -2120,7 +2141,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
 #endif
     if (VIDEO::borderColor != data) {
       VIDEO::brdChange = true;
-      if (!(Z80Ops::isPentagon || Z80Ops::isProfi))
+      if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
@@ -2146,7 +2167,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
       ayPortWrite(address, data, true);     // A8 decode: old-TS second chip
-      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
+      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
       return;
     }
     // KR580VI53 (8253 PIT) — Byte computer synthesizer
@@ -2178,7 +2199,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         }
       }
     }
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
   } else {
     // ULA+ ports (odd addresses: 0xBF3B register select, 0xFF3B data)
     if (Config::ulaplus) {
@@ -2956,6 +2977,29 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         LED::touchW(LED::RAM);
     }
   }
+  // Scorpion #1FFD (write-only): D0=1 → RAM page 0 at 0x0000 (r/w), D1=1 → service
+  // monitor ROM (bank2) override, D4 → +8 on the 0xC000 RAM page (256K = 16 pages);
+  // D3 (RS-232) and D5 (Centronics strobe) are ignored. Decode per MAME's PAL mask
+  // (1FFD = 00xxxxxxxx1xxx01): A15=A14=0, A1=0, plus A5=1 so small-port OUT (n),A
+  // probes with n<0x20 can't land here; the #7FFD side below stays as loose as the
+  // rest of the codebase (A14=1 separates them — see the extracker note there).
+  // NEVER gated by pagingLock: the 7FFD D5 lock freezes only the 7FFD latch on
+  // real hardware, #1FFD stays live until reset.
+  if (Z80Ops::isScorpion && ((address & 0xC002) == 0) && (address & 0x0020)) {
+    LED::touchW(LED::RAM);
+    port1FFD = data;
+    uint32_t page = (MemESP::bankLatch & 0x07) | ((data & 0x10) >> 1);
+    uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
+    if (page >= pages) page &= 0x07; // W/A like the Profi combine: never walk off the strip
+    if (page != MemESP::bankLatch) {
+      MemESP::bankLatch = page;
+      MemESP::ramContended[3] = false;
+      MemESP::ramCurrent[3] = MemESP::ram[page].sync(3);
+    }
+    MemESP::page0ram = data & 0x01;
+    scorpionRomUpdate();   // D1 service override / TR-DOS / romLatch + recoverPage0
+    return;
+  }
   // 128K, Pentagon
   // ==================================================================
   // ALF shares the 128K codepath but uses port #5F (A7=0, A0=1) for its ROM-bank
@@ -2971,6 +3015,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // does just that. That is honest Pentagon behaviour, not a bug here; see
   // the extracker-7ffd-loose-decode note before "fixing" it with A14.
   if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
+      (!Z80Ops::isScorpion || (address & 0x4000)) && // Scorpion: A14=1 → 7FFD, A14=0 is the 1FFD family (handled above)
       (!Z80Ops::isALF || (address & 0x0080))) { // 8002 !-> 7FFD
     ++Ports::port7ffd_cnt;
 #if MC7FFD_TRACE
@@ -3013,6 +3058,13 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         MemESP::pagingLock = D5;
       }
       uint32_t page = (data & 0x7);
+      // Scorpion: page = ((1FFD D4) >> 1) | (7FFD bits 0-2) — the extended-RAM
+      // bit lives in the OTHER port's latch, combined on every write of either.
+      if (Z80Ops::isScorpion) {
+        page |= (port1FFD & 0x10) >> 1;
+        uint32_t tp = ram_pages + butter_pages + psram_pages + swap_pages;
+        if (page >= tp) page = (data & 0x7); // W/A like the Profi combine below
+      }
       if ((Z80Ops::is512 || Z80Ops::is1024) && !MemESP::notMore128 &&
           !MemESP::pagingLock) {
         uint8_t D6 = bitRead(data, 6);
@@ -3041,7 +3093,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       if (MemESP::bankLatch != page) {
         MemESP::bankLatch = page;
         MemESP::ramContended[3] =
-            (Z80Ops::isPentagon || Z80Ops::isProfi) ? false : (page & 0x01 ? true : false);
+            (Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ? false : (page & 0x01 ? true : false);
       }
       // Profi SCO (DFFD bit3): bank1=ramPage (full 0..63), bank3=page7; else bank3=ramPage
       if (Z80Ops::isProfi && (portDFFD & 0x08)) {
@@ -3081,6 +3133,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
           MemESP::romInUse = ESPectrum::trdos ? (MemESP::romLatch ? 1 : 0)
                                               : (MemESP::romLatch ? 3 : 2);
           MemESP::recoverPage0();
+        } else if (Z80Ops::isScorpion) {
+          // Live recompute like Profi's: the 1FFD D1 service override outranks
+          // D4, and TR-DOS stays mapped while trdos is true.
+          scorpionRomUpdate();
         } else if (!ia && !ESPectrum::trdos) {
           MemESP::romInUse = MemESP::romLatch;
         }

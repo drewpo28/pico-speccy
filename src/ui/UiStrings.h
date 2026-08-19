@@ -184,6 +184,7 @@
 #define TXT_MACH_BYTE       "Byte"
 #define TXT_MACH_PROFI      "Profi"
 #define TXT_MACH_KARABAS    "Karabas"
+#define TXT_MACH_SCORP      "Scorpion 256K"
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
@@ -217,6 +218,7 @@
 #define TXT_ROM_KAR_PQ      "PQDOS"
 #define TXT_ROM_KAR_FT      "Flash Tool"
 #define TXT_ROM_KAR_FDI     "FDImage"
+#define TXT_ROM_SCORP       "v2.94"
 #define TXT_ROM_ALF         "ALF cartridge"
 
 // ── Options ────────────────────────────────────────────────────────────────────

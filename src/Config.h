@@ -78,6 +78,7 @@ public:
     static RomsetIdx romSetP512;
     static RomsetIdx romSetP1M;
     static RomsetIdx romSetProfi;
+    static RomsetIdx romSetScorp;
     static ArchIdx   pref_arch;
     static RomsetIdx pref_romSet_48;
     static RomsetIdx pref_romSet_128;
@@ -85,6 +86,7 @@ public:
     static RomsetIdx pref_romSetP512;
     static RomsetIdx pref_romSetP1M;
     static RomsetIdx pref_romSetProfi;
+    static RomsetIdx pref_romSetScorp;
     static string   ram_file;
     static string   last_ram_file;
     static string   tape_file;       // full path of remembered tape, re-mounted after F11/reboot like a disk

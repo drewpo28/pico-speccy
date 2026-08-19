@@ -83,6 +83,7 @@ bool Z80Ops::isPentagon;
 bool Z80Ops::is512 = false;
 bool Z80Ops::is1024 = false;
 bool Z80Ops::isProfi = false;
+bool Z80Ops::isScorpion = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -115,6 +116,10 @@ void CPU::updateStatesInFrame() {
         statesInFrame = TSTATES_PER_FRAME_PROFI;
         IntStart = INT_START_PROFI;
         IntEnd = INT_END_PROFI;
+    } else if (Config::arch == A_SCORP) {
+        statesInFrame = TSTATES_PER_FRAME_SCORPION;
+        IntStart = INT_START_SCORPION;
+        IntEnd = INT_END_SCORPION;
     } else { // if (Config::arch == A_PENT) - by default
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
@@ -136,6 +141,9 @@ void CPU::reset() {
     CPU::latetiming = Config::AluTiming;
 
     Z80Ops::isALF = (Config::arch == A_ALF);
+    // Derived once here (like isALF) instead of per-branch below — a branch that
+    // forgets to clear it would leak Scorpion's #1FFD decode into another machine.
+    Z80Ops::isScorpion = (Config::arch == A_SCORP);
     if (Config::arch == A_48K) {
         Z80Ops::isByte = (Config::romSet48 == R_48K_BY);
         Ports::getFloatBusData = &Ports::getFloatBusData48;
@@ -188,6 +196,18 @@ void CPU::reset() {
         Z80Ops::isProfi = true;
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PROFI;
+    } else if (Config::arch == A_SCORP) {
+        // Scorpion ZS-256: no float bus (getFloatBusData stays unset — never called,
+        // same as Pentagon), no contention, 48K-length frame.
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        // Set emulation loop sync target
+        ESPectrum::target = MICROS_PER_FRAME_SCORPION;
     } else { // if (Config::arch == A_PENT) - by default
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
@@ -211,7 +231,8 @@ void CPU::reset() {
     }
 
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi) && !Config::betadisk) Config::betadisk = true;
+    // Scorpion too: its Beta-128 is on board (TR-DOS in the machine's own rom[3]).
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) && !Config::betadisk) Config::betadisk = true;
 
     // Timex video is incompatible with Byte ROM sets — auto-disable.
     // Also with Profi/Karabas: port #FF there is the Beta-128 FDC SYS register,

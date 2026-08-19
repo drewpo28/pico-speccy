@@ -216,8 +216,9 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         MemESP::bankLatch = tmp_latch;
         
         if (tr_dos) {
-            MemESP::romInUse = 4;
-            ESPectrum::trdos = true;            
+            // Scorpion's TR-DOS is its own bank 3, not the shared external rom[4]
+            MemESP::romInUse = Z80Ops::isScorpion ? 3 : 4;
+            ESPectrum::trdos = true;
         } else {
             MemESP::romInUse = MemESP::romLatch;
             ESPectrum::trdos = false;
@@ -225,7 +226,7 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
 
         MemESP::recoverPage0();
         MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);
-        MemESP::ramContended[3] = (Z80Ops::isPentagon || Z80Ops::isProfi) ? false : (MemESP::bankLatch & 0x01 ? true: false);
+        MemESP::ramContended[3] = (Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ? false : (MemESP::bankLatch & 0x01 ? true: false);
 
         VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
 
@@ -314,9 +315,14 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
     writeByteFile(bordercol, file);
 
     // write RAM pages in 48K address space (0x4000 - 0xFFFF)
+    // Scorpion: SNA has no #1FFD field, so only the 128K-visible state is saved.
+    // With an extended page (8-15) mapped at 0xC000 the raw bankLatch would
+    // corrupt the port byte (bit3 = videoLatch) and derail the page-skip loop
+    // below into a malformed size — clamp to the 7FFD-visible bank throughout.
+    uint32_t curBank = Z80Ops::isScorpion ? (MemESP::bankLatch & 0x07) : MemESP::bankLatch;
     uint8_t pages[3] = {5, 2, 0};
     if (Config::arch != A_48K)
-        pages[2] = MemESP::bankLatch;
+        pages[2] = curBank;
 
     for (uint8_t ipage = 0; ipage < 3; ipage++) {
         uint8_t page = pages[ipage];
@@ -332,7 +338,7 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
         // printf("PC: %u\n",(unsigned int)Z80::getRegPC());
 
         // write memESP bank control port
-        uint8_t tmp_port = MemESP::bankLatch;
+        uint8_t tmp_port = curBank;
         bitWrite(tmp_port, 3, MemESP::videoLatch);
         bitWrite(tmp_port, 4, MemESP::romLatch);
         bitWrite(tmp_port, 5, MemESP::pagingLock);
@@ -350,7 +356,7 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
         if (Z80Ops::is1024) pages = 64;
         // TODO: Murmozavr
         for (int page = 0; page < pages; ++page) {
-            if (page != MemESP::bankLatch && page != 2 && page != 5) {
+            if (page != (int)curBank && page != 2 && page != 5) {
                 if (!writeMemPage(page, file, blockMode)) {
                     fclose2(file);
                     return false;
@@ -448,8 +454,9 @@ bool FileZ80::load(const string& z80_fn) {
             if (mch == 6) z80_arch = A_128K; // + mgt
             if (mch == 7) z80_arch = A_128K; // Spectrum +3
             if (mch == 9) z80_arch = A_PENT;
+            if (mch == 10) z80_arch = A_SCORP; // Scorpion ZS-256
             if (mch == 12) z80_arch = A_128K; // Spectrum +2
-            if (mch == 13) z80_arch = A_128K; // Spectrum +2A            
+            if (mch == 13) z80_arch = A_128K; // Spectrum +2A
 /// TODO:            if (mch == 15) z80_arch = A_P512; + P1024
         }
 
@@ -500,6 +507,10 @@ bool FileZ80::load(const string& z80_fn) {
         if (z80_arch == A_P1024) {
             if (Config::pref_romSetP1M == R_PENT || Config::pref_romSetP1M == R_128K_CS)
                 z80_romset = Config::pref_romSetP1M;
+        } else
+        if (z80_arch == A_SCORP) {
+            if (Config::pref_romSetScorp == R_SCORP)
+                z80_romset = Config::pref_romSetScorp;
         }
 
         // printf("z80_arch: %s mch: %d pref_romset48: %s pref_romset128: %s z80_romset: %s\n",z80_arch.c_str(),mch,Config::pref_romSet_48.c_str(),Config::pref_romSet_128.c_str(),z80_romset.c_str());
@@ -716,8 +727,8 @@ bool FileZ80::load(const string& z80_fn) {
                 dataOffset += compDataLen;
             }
 
-        } else if ((z80_arch == A_128K) || (z80_arch == A_PENT) || (z80_arch == A_P512)  || (z80_arch == A_P1024)) {
-            
+        } else if ((z80_arch == A_128K) || (z80_arch == A_PENT) || (z80_arch == A_P512)  || (z80_arch == A_P1024) || (z80_arch == A_SCORP)) {
+
             // paging register
             uint8_t b35 = header[35];
             // printf("Paging register: %u\n",b35);
@@ -726,6 +737,15 @@ bool FileZ80::load(const string& z80_fn) {
             MemESP::pagingLock = bitRead(b35, 5);
             MemESP::bankLatch = b35 & 0x07;
             MemESP::romInUse = MemESP::romLatch;
+
+            if (z80_arch == A_SCORP) {
+                // v3 55-byte header: byte 86 = "last OUT to 0x1FFD" (the +3 field,
+                // reused by Scorpion-aware emulators). Best-effort — default 0.
+                Ports::port1FFD = (z80version == 3 && ahb_len == 55) ? header[86] : 0;
+                MemESP::page0ram = Ports::port1FFD & 0x01;
+                MemESP::bankLatch = (b35 & 0x07) | ((Ports::port1FFD & 0x10) >> 1);
+                Ports::scorpionRomUpdate();   // 1FFD D1 > trdos(false after reset) > romLatch
+            }
 
             mem_desc_t* pages[12] = {
                 &MemESP::rom[0], &MemESP::rom[2], &MemESP::rom[1],
@@ -743,20 +763,28 @@ bool FileZ80::load(const string& z80_fn) {
                 uint8_t hdr1 = readByteFile(file); dataOffset ++;
                 uint8_t hdr2 = readByteFile(file); dataOffset ++;
                 uint16_t compDataLen = mkword(hdr0, hdr1);
-                if (compDataLen == 0xffff) { 
+                // Scorpion 256K: .z80 block ids 3..18 map to RAM pages 0..15 (the
+                // 128K 3..10 = RAM0..7 rule extended); ROM blocks 0..2 stay skipped
+                // (our ROMs are const flash).
+                bool isRamBlk = (z80_arch == A_SCORP) ? (hdr2 >= 3 && hdr2 <= 18)
+                                                      : (hdr2 > 2 && hdr2 < 11);
+                mem_desc_t* blkPage = !isRamBlk ? nullptr
+                                    : (z80_arch == A_SCORP) ? &MemESP::ram[hdr2 - 3]
+                                                            : pages[hdr2];
+                if (compDataLen == 0xffff) {
                     // load uncompressed data into memory
                     // printf("Loading uncompressed data\n");
                     compDataLen = MEM_PG_SZ;
-                    if ((hdr2 > 2) && (hdr2 < 11)) {
-                        uint8_t* sp = pages[hdr2]->sync(4);
+                    if (blkPage) {
+                        uint8_t* sp = blkPage->sync(4);
                         for (int i = 0; i < compDataLen; i++) {
                             sp[i] = readByteFile(file);
                         }
                     }
                 } else {
                     // Block is compressed
-                    if ((hdr2 > 2) && (hdr2 < 11)) {
-                        loadCompressedMemPage(file, compDataLen, pages[hdr2]->sync(4), MEM_PG_SZ);
+                    if (blkPage) {
+                        loadCompressedMemPage(file, compDataLen, blkPage->sync(4), MEM_PG_SZ);
                     }
                 }
                 dataOffset += compDataLen;
@@ -764,7 +792,7 @@ bool FileZ80::load(const string& z80_fn) {
 
             MemESP::recoverPage0();
             MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);
-            MemESP::ramContended[3] = (Z80Ops::isPentagon || Z80Ops::isProfi) ? false : (MemESP::bankLatch & 0x01 ? true: false);
+            MemESP::ramContended[3] = (Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ? false : (MemESP::bankLatch & 0x01 ? true: false);
 
             VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
         }
@@ -1003,6 +1031,13 @@ void FileZ80::loader128() {
         // loader Z80 state — both use the identical 128K SOS ROM tape routine.
         // ROM page blocks from loadpentagon must NOT be written into Profi ROM
         // slots (rom[0]=SYS ROM would be corrupted; rom[1]=TR-DOS likewise).
+        z80_array = (unsigned char *) loadpentagon;
+        dataLen = sizeof(loadpentagon);
+        skip_rom_pages = true;
+    } else if (Config::arch == A_SCORP) {
+        // Scorpion tape loading: reuse the Pentagon loader Z80 state — its BASIC-128
+        // (Sinclair + 290-byte overlay) shares the same tape routine. ROMs are
+        // pre-assigned flash (bank2=service, bank3=TR-DOS), skip the ROM blocks.
         z80_array = (unsigned char *) loadpentagon;
         dataLen = sizeof(loadpentagon);
         skip_rom_pages = true;

@@ -114,6 +114,11 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                     Config::romSet = romset;
                     Config::romSetProfi = romset;
                 }
+            } else if (arch == A_SCORP) {
+                if (Config::pref_romSetScorp == R_LAST) {
+                    Config::romSet = romset;
+                    Config::romSetScorp = romset;
+                }
             } else {
                 Config::romSet = romset;
             }
@@ -139,10 +144,11 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         else if (Config::arch == A_128K && Config::pref_romSet_128 == R_LAST) Config::romSet128 = Config::romSet;
         else if (Config::arch == A_48K && Config::pref_romSet_48 == R_LAST) Config::romSet48 = Config::romSet;
         else if (Config::arch == A_PROFI && Config::pref_romSetProfi == R_LAST) Config::romSetProfi = Config::romSet;
+        else if (Config::arch == A_SCORP && Config::pref_romSetScorp == R_LAST) Config::romSetScorp = Config::romSet;
         // Mutual exclusivity
         bool isByte = (romset == R_48K_BY || romset == R_128K_BY);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || isByte)) {
+            arch == A_PROFI || arch == A_SCORP || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
@@ -155,8 +161,8 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             VIDEO::timex_mode = 0;
             OSD::osdCenteredMsg("Timex disabled", LEVEL_WARN, 2000);
         }
-        // TR-DOS is mandatory on Pentagon / Profi
-        if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI) && !Config::betadisk) {
+        // TR-DOS is mandatory on Pentagon / Profi / Scorpion (Beta-128 on board)
+        if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_SCORP) && !Config::betadisk) {
             Config::betadisk = true;
             OSD::osdCenteredMsg("Betadisk enabled", LEVEL_WARN, 1500);
         }
