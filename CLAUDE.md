@@ -1945,8 +1945,13 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
   set (`ESP_AUDIO_*_SCORP_GR`: 632 samples = 70784/112, 31250 Hz at 49.4462 fps).
   Paper line 64 / geometry / ports identical, so Video.cpp needs NO green branch —
   only `statesInFrame`, `ESPectrum::target` (20224 µs) and the audio cascades
-  differ. ZXMAK2's other yellow-only quirk — even-M1 alignment on RAM fetches —
-  is still deliberately NOT implemented (see below).
+  differ. **Even-M1 is implemented for Yellow only** (`g_scorp_even_m1`, set in
+  CPU::reset, one predicted-not-taken test in `Z80Ops::fetchOpcode`): an M1 cycle
+  fetching from 0x4000+ that would start on an odd T-state gets one wait T
+  (`VIDEO::Draw(1,false)` so the renderer accounts it). ZXMAK2 busRDM1 / Unreal
+  `evenM1_C0=0xC0` agree on the 0x4000+ gate (MAME aligns ROM fetches too — the
+  minority reading, not followed); MAME's scorpiontb drops even-M1 entirely,
+  which is why Green has none.
 - **Timing = the 48K numbers, uncontended**: 224 T/line × 312 = 69888 T/frame, paper
   14336 T after INT (`TS_SCREEN_48` reused in the Video Reset branch), INT_END 36.
   Takes the **48K audio branch** (624 samples — same rule as Profi), the 48K-family
@@ -1985,7 +1990,7 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
   / 48K (romLatch=1 + pagingLock). NVS keys `romSetScorp`/`pref_romSetScorp`,
   on-disk arch spelling "Scorpion", romset "Scorp".
 - Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle, GMX,
-  even-M1 alignment, a Magic/NMI hotkey into the service monitor, SMUC.
+  a Magic/NMI hotkey into the service monitor, SMUC.
 
 ## Murmuzavr extended RAM — page budget + descriptor cost
 

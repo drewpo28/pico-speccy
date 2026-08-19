@@ -84,6 +84,7 @@ bool Z80Ops::is512 = false;
 bool Z80Ops::is1024 = false;
 bool Z80Ops::isProfi = false;
 bool Z80Ops::isScorpion = false;
+bool g_scorp_even_m1 = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -147,6 +148,8 @@ void CPU::reset() {
     // Derived once here (like isALF) instead of per-branch below — a branch that
     // forgets to clear it would leak Scorpion's #1FFD decode into another machine.
     Z80Ops::isScorpion = (Config::arch == A_SCORP);
+    // Even-M1 is a Yellow-PCB-only trait (see CPU.h); Green boards dropped it.
+    g_scorp_even_m1 = Z80Ops::isScorpion && (Config::romSetScorp != R_SCORP_GR);
     if (Config::arch == A_48K) {
         Z80Ops::isByte = (Config::romSet48 == R_48K_BY);
         Ports::getFloatBusData = &Ports::getFloatBusData48;
@@ -445,6 +448,11 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     dbg_last_pc = pc;
 #endif
     uint8_t pg = pc >> 14;
+    // Scorpion Yellow-PCB even-M1 (see the g_scorp_even_m1 note in CPU.h): an M1
+    // cycle fetching from 0x4000+ that would start on an odd T-state gets one
+    // wait T first. Draw(1) so the renderer accounts the extra tact too.
+    if (g_scorp_even_m1 && (pc & 0xC000) && (CPU::tstates & 1))
+        VIDEO::Draw(1, false);
     VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
     if (DivMMC::enabled) {
         DivMMC::preOpcFetch(pc);

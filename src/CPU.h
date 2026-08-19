@@ -75,6 +75,13 @@ visit https://zxespectrum.speccy.org/contacto
 /// TODO:
 #define IRAM_ATTR
 
+// Scorpion Yellow-PCB even-M1: the board holds /WAIT so every M1 cycle fetching
+// from 0x4000+ starts on an even T-state (ZXMAK2 UlaScorpionYellow busRDM1,
+// Unreal evenM1_C0=0xC0, MAME is_m1_even — the Green/Turbo+ boards dropped it).
+// A plain global tested once per opcode fetch (the g_ngs_zxdma pattern) — set in
+// CPU::reset only, so it can never be stale mid-frame.
+extern bool g_scorp_even_m1;
+
 class CPU
 {
 public:
