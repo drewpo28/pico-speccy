@@ -1738,6 +1738,10 @@ void OSD::bootTrdos() {
         ESPectrum::reset(1);
         MemESP::romLatch = 1;
         ESPectrum::trdos = true;
+    } else if (Config::arch == A_SCORP) {
+        ESPectrum::reset(3); // Scorpion's own TR-DOS bank
+        MemESP::romLatch = 1;
+        ESPectrum::trdos = true;
     } else if (Z80Ops::isPentagon || Z80Ops::isProfi) {
         ESPectrum::reset(4); // TR-DOS ROM
         MemESP::romLatch = 1;
@@ -1979,6 +1983,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 string reset_menu;
                 if (Config::arch == A_PROFI) {
                     reset_menu = MENU_RESETTO_PROFI;
+                } else if (Config::arch == A_SCORP) {
+                    reset_menu = MENU_RESETTO_SCORP;
                 } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
                     if (Config::romSet == R_PENT_GLUK)
                         reset_menu = MENU_RESETTO_PENTGLUK;
@@ -2017,6 +2023,30 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // 48K/SOS ROM: trdos=false, romLatch=1 → bank3
                             ESPectrum::reset(3);
                             MemESP::romLatch = 1;
+                        }
+                    } else if (Config::arch == A_SCORP) {
+                        // Service monitor=1, TR-DOS=2, 128K=3, 48K=4
+                        if (opt == 1) {
+                            // Service monitor: boot bank2 and hold the 1FFD D1
+                            // override (like OUT #1FFD,2), or the next 7FFD write's
+                            // scorpionRomUpdate() would page the monitor out.
+                            // Set AFTER reset() — reset clears port1FFD.
+                            ESPectrum::reset(2);
+                            Ports::port1FFD = 0x02;
+                        } else if (opt == 2) {
+                            // TR-DOS: boot the machine's own bank3 with trdos +
+                            // romLatch=1 asserted (same pattern as Profi's bank1).
+                            ESPectrum::reset(3);
+                            MemESP::romLatch = 1;
+                            ESPectrum::trdos = true;
+                        } else if (opt == 3) {
+                            ESPectrum::reset(0); // 128K menu (bank0)
+                        } else if (opt == 4) {
+                            // 48 BASIC locked, like the 128 menu's own "48K" pick
+                            // (OUT #7FFD,0x30): bank1 + D4 latched + D5 lock.
+                            ESPectrum::reset(1);
+                            MemESP::romLatch = 1;
+                            MemESP::pagingLock = 1;
                         }
                     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi) && Config::romSet == R_PENT_GLUK) {
                         // Service (Gluk)=1, TR-DOS=2, 128K=3, 48K=4

@@ -72,6 +72,11 @@ public:
     static uint8_t portAFF7;
     static uint8_t portDFFD;
     static uint8_t portEFF7; // Extended feature register (Profi CP/M uses bit 1=EFF7_512)
+    // Scorpion #1FFD latch (write-only on real hardware — no read-back handler):
+    // D0=RAM0 at 0x0000, D1=service-monitor ROM override, D4=+8 on the 0xC000 page.
+    static uint8_t port1FFD;
+    // Recompute Scorpion's rom bank from (port1FFD D1, trdos, romLatch) + recoverPage0.
+    static void scorpionRomUpdate();
 
     // PQ-DOS serial keyboard emulation (ports #F3 status / #D3 data). PQDOS uses
     // ONLY this controller for input (no IN A,(#FE) matrix reads anywhere in the

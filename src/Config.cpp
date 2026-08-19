@@ -20,6 +20,7 @@ RomsetIdx Config::romSetPent = R_PENT;
 RomsetIdx Config::romSetP512 = R_PENT;
 RomsetIdx Config::romSetP1M = R_PENT;
 RomsetIdx Config::romSetProfi = R_PROFI;
+RomsetIdx Config::romSetScorp = R_SCORP;
 ArchIdx   Config::pref_arch = A_LAST;
 RomsetIdx Config::pref_romSet_48 = R_LAST;
 RomsetIdx Config::pref_romSet_128 = R_LAST;
@@ -27,6 +28,7 @@ RomsetIdx Config::pref_romSetPent = R_LAST;
 RomsetIdx Config::pref_romSetP512 = R_LAST;
 RomsetIdx Config::pref_romSetP1M = R_LAST;
 RomsetIdx Config::pref_romSetProfi = R_LAST;
+RomsetIdx Config::pref_romSetScorp = R_LAST;
 string   Config::ram_file = NO_RAM_FILE;
 string   Config::last_ram_file = NO_RAM_FILE;
 string   Config::tape_file = "";
@@ -412,6 +414,22 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3);
             break;
         }
+        break;
+    }
+    case A_SCORP: {
+        // Scorpion ZS-256 v2.94: bank0 (BASIC-128) and bank1 (BASIC-48) are tiny
+        // overlays over the Sinclair 128K halves; bank2 (service monitor) and bank3
+        // (the on-board TR-DOS 5.03 variant) are raw. TR-DOS runs from rom[3] — the
+        // machine's own bank, like Profi's rom[1] — so the shared rom[4] (bound in
+        // the unconditional tail below) is unused on Scorpion.
+        romSet = (newRomSet == R_NONE) ? R_SCORP : newRomSet;
+        romSetScorp = romSet;
+        MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
+        MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_scorpion_bank0);
+        MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+        MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_scorpion_bank1);
+        MemESP::rom[2].assign_rom(gb_rom_scorpion_bank2);
+        MemESP::rom[3].assign_rom(gb_rom_scorpion_bank3);
         break;
     }
     default: { // Pentagon / P512 / P1024
@@ -803,6 +821,7 @@ void Config::load() {
         nvs_get_romset("romSetP512", romSetP512, sts);
         nvs_get_romset("romSetP1M", romSetP1M, sts);
         nvs_get_romset("romSetProfi", romSetProfi, sts);
+        nvs_get_romset("romSetScorp", romSetScorp, sts);
         nvs_get_arch("pref_arch", pref_arch, sts);
         pref_arch = archCanon(pref_arch);
         nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
@@ -811,6 +830,7 @@ void Config::load() {
         nvs_get_romset("pref_romSetP512", pref_romSetP512, sts);
         nvs_get_romset("pref_romSetP1M", pref_romSetP1M, sts);
         nvs_get_romset("pref_romSetProfi", pref_romSetProfi, sts);
+        nvs_get_romset("pref_romSetScorp", pref_romSetScorp, sts);
         nvs_get_str("ram", ram_file, sts);
         nvs_get_u8("ram_origin", ram_file_origin, sts); // provenance (default LOCAL)
         nvs_get_b("AY48", AY48, sts);
@@ -1222,6 +1242,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"romSetP512",romsetToStr(romSetP512));
     nvs_set_str(buf,"romSetP1M",romsetToStr(romSetP1M));
     nvs_set_str(buf,"romSetProfi",romsetToStr(romSetProfi));
+    nvs_set_str(buf,"romSetScorp",romsetToStr(romSetScorp));
     nvs_set_str(buf,"pref_arch",archToStr(pref_arch));
     nvs_set_str(buf,"pref_romSet_48",romsetToStr(pref_romSet_48));
     nvs_set_str(buf,"pref_romSet_128",romsetToStr(pref_romSet_128));
@@ -1229,6 +1250,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"pref_romSetP512",romsetToStr(pref_romSetP512));
     nvs_set_str(buf,"pref_romSetP1M",romsetToStr(pref_romSetP1M));
     nvs_set_str(buf,"pref_romSetProfi",romsetToStr(pref_romSetProfi));
+    nvs_set_str(buf,"pref_romSetScorp",romsetToStr(pref_romSetScorp));
     nvs_set_str(buf,"ram",ram_file.c_str());
     // Derive provenance from the file's actual location so the stored tag is never
     // stale: a /tmp path is a transient quick-start download, anything else is a

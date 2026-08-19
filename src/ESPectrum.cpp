@@ -646,6 +646,7 @@ void ESPectrum::setup() {
   mem_desc_t::reset();
   Ports::portAFF7 = 0;
   Ports::portDFFD = 0;
+  Ports::port1FFD = 0;
   Ports::serialMouseReset();
   //=======================================================================================
   // LOAD CONFIG
@@ -729,6 +730,11 @@ void ESPectrum::setup() {
           Config::romSet = Config::pref_romSetProfi;
         else
           Config::romSet = Config::romSetProfi;
+      } else if (Config::arch == A_SCORP) {
+        if (Config::pref_romSetScorp != R_LAST)
+          Config::romSet = Config::pref_romSetScorp;
+        else
+          Config::romSet = Config::romSetScorp;
       } else {
         if (Config::pref_romSetPent != R_LAST)
           Config::romSet = Config::pref_romSetPent;
@@ -904,7 +910,8 @@ void ESPectrum::setup() {
 
   MemESP::ramContended[0] = false;
   MemESP::ramContended[1] = Config::arch == A_P1024 || Config::arch == A_P512 ||
-                                    Config::arch == A_PENT || Config::arch == A_PROFI
+                                    Config::arch == A_PENT || Config::arch == A_PROFI ||
+                                    Config::arch == A_SCORP
                                 ? false
                                 : true;
   MemESP::ramContended[2] = false;
@@ -1011,7 +1018,9 @@ void ESPectrum::setup() {
     if (ZiFi::enabled)
         ZiFi::init();
 
-  if (Config::arch == A_48K || Config::arch == A_PROFI) {
+  // Scorpion: 69888 T/frame — numerically the 48K frame, so the 48K audio branch
+  // is exact (the Pentagon branch would over-feed the DAC, see the reset() twin).
+  if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1235,6 +1244,7 @@ void ESPectrum::reset(uint8_t romInUse) {
     Debug::log("[RESET] DS80 off + FB cleared");
   }
   Ports::portDFFD = 0;
+  Ports::port1FFD = 0;   // Scorpion: reset clears the 1FFD latch (RAM0/service off)
   Ports::serialMouseReset();
   // Profi SYSEN: boot into SYS ROM (bank0) with trdos=true to protect page0
   ESPectrum::trdos = (Config::arch == A_PROFI && romInUse == 0);
@@ -1278,7 +1288,8 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   MemESP::ramContended[0] = false;
   MemESP::ramContended[1] = Config::arch == A_P1024 || Config::arch == A_P512 ||
-                                    Config::arch == A_PENT || Config::arch == A_PROFI
+                                    Config::arch == A_PENT || Config::arch == A_PROFI ||
+                                    Config::arch == A_SCORP
                                 ? false
                                 : true;
   MemESP::ramContended[2] = false;
@@ -1360,7 +1371,8 @@ void ESPectrum::reset(uint8_t romInUse) {
   // 48K branch here, exactly like setup() does. Otherwise it falls through to the
   // Pentagon branch (640 samples/frame) and over-feeds the 31250 Hz DAC by ~2.6%
   // (640*50.08fps = 32051 > 31250), causing ring overrun → periodic clicks/buzz.
-  if (Config::arch == A_48K || Config::arch == A_PROFI) {
+  // Scorpion is the same 69888 T frame — same rule.
+  if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;

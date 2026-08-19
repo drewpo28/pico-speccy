@@ -211,7 +211,7 @@ const char* romsetName(int32_t c) {
             Config::field = tab[v];                                           \
     }
 
-static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_PENT, A_P512, A_P1024, A_LAST };
+static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_PENT, A_P512, A_P1024, A_SCORP, A_LAST };
 static const RomsetIdx kPref48[]   = {
     R_48K,
 #if !NO_SPAIN_ROM_48k
@@ -227,6 +227,7 @@ static const RomsetIdx kPref128[]  = {
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
+static const RomsetIdx kPrefScorp[] = { R_SCORP, R_LAST };
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
 NM_STR_ACCESS(pref48,   pref_romSet_48,   kPref48)
@@ -234,6 +235,7 @@ NM_STR_ACCESS(pref128,  pref_romSet_128,  kPref128)
 NM_STR_ACCESS(prefPent, pref_romSetPent,  kPrefPent)
 NM_STR_ACCESS(prefP512, pref_romSetP512,  kPrefPent)
 NM_STR_ACCESS(prefP1M,  pref_romSetP1M,   kPrefPent)
+NM_STR_ACCESS(prefScorp, pref_romSetScorp, kPrefScorp)
 
 // MEM_PG_CNT is not in Config, but Config::save() persists it (Config.cpp:1294) and
 // load() clamps it to 8..2048.

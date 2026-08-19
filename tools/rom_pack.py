@@ -227,6 +227,22 @@ FAMILIES = {
              'base': {'name': 'bank1', 'sym': 'gb_rom_profi_bank1'}},
         ],
     },
+    # Scorpion ZS-256 64K ROM v2.94 (MAME scorp294.rom, CRC32 99f57ce1; page order
+    # 0=BASIC-128, 1=BASIC-48, 2=service monitor, 3=TR-DOS 5.03 variant; pages 0-1 are
+    # byte-identical to the v2.92 set). bank0 is Sinclair 128K rom[0] + 290 diff bytes
+    # and bank1 is Sinclair 128K rom[1] + 115 diff bytes -> overlays. bank2 (service
+    # monitor) is unique code and bank3 diffs 30% from trdos_505d — and rom[4] already
+    # carries overlays on that base pointer, MemESP::registerOverlay is keyed by base —
+    # so both stay raw arrays in scorpion_banks.c.
+    'scorpion': {
+        'id': 'scorpion',
+        'base': {'name': 'sinclair_128k_0', 'sym': 'gb_rom_0_sinclair_128k'},
+        'variants': [
+            {'key': 'bank0', 'name': 'Scorpion bank0', 'sym': 'gb_rom_scorpion_bank0'},
+            {'key': 'bank1', 'name': 'Scorpion bank1', 'sym': 'gb_rom_scorpion_bank1',
+             'base': {'name': 'sinclair_128k_1', 'sym': 'gb_rom_1_sinclair_128k'}},
+        ],
+    },
 }
 
 def main():
