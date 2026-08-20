@@ -39,6 +39,43 @@ static const uint32_t kUiPalette[C_COUNT] = {
     0x5A6478,   // C_DISABLED
 };
 
+// VGA twin of kUiPalette: every channel sits on the 2-bit DAC grid {00,55,AA,FF}.
+// An on-grid RGB888 makes vga_bayer4() come out with sub=0 for all channels, so the
+// ordinary dithered path renders it SOLID — the menu loses the Bayer checkerboard on
+// VGA without touching the driver. (The CRT grille / scanline taps attenuate colours
+// off the grid and re-dither them, same as they do to the 16 solid ZX colours.)
+// Hand-picked, not nearest-rounded: 4 levels per channel cannot keep the slate
+// theme's subtle darks apart, so the dark ladder is re-spread over black → navy →
+// blue while text, selection and icon hues stay nearest-grid.
+static const uint32_t kUiPaletteVga[C_COUNT] = {
+    0x000000,   // C_BG
+    0x000055,   // C_PANEL
+    0x0000AA,   // C_PANEL_ALT
+    0x555555,   // C_SEP
+    0xFFFFFF,   // C_TEXT      (merges with C_WHITE — they were 25 units apart anyway)
+    0xAAAAAA,   // C_TEXT_DIM
+    0xFFFFFF,   // C_WHITE
+    0x5555FF,   // C_SEL_BG
+    0x0000AA,   // C_SEL_BAND  (shares C_PANEL_ALT's slot value; the roles never abut)
+    0x55FFAA,   // C_ACCENT
+    0x000000,   // C_FOOT_BG   (darker than the panel, same as the original relation)
+    0x000000,   // C_SHADOW
+    0xFF5555,   // C_ICON_R
+    0xFFAA55,   // C_ICON_Y
+    0x55AAFF,   // C_ICON_C
+    0x555555,   // C_DISABLED
+};
+
+// The palette the active output actually shows. VGA gets the on-grid twin so menu
+// fills stay solid; HDMI (and the non-VGA builds) keep the full-depth scheme.
+static const uint32_t* uiPaletteActive() {
+#if defined(VGA_HDMI)
+    extern bool SELECT_VGA;   // vga.c
+    if (SELECT_VGA) return kUiPaletteVga;
+#endif
+    return kUiPalette;
+}
+
 // Standard-mode palette block.
 //
 // Every claimant of the 8-bit palette, and why 152 is the only kind of place this can
@@ -110,11 +147,12 @@ void gfxComputeSurface() {
 // that opened in it (Profi -> Pentagon). Applying then would re-arm the DS80 driver
 // over a standard framebuffer — garbled screen / "DS80 stuck" (hw 2026-07-27).
 void gfxInstallPalette() {
+    const uint32_t* pal = uiPaletteActive();
     if (Sf.ds80 && profi_ds80_active) {
-        VIDEO::applyUiDS80Palette(kUiPalette);
+        VIDEO::applyUiDS80Palette(pal);
     } else {
         for (int i = 0; i < C_COUNT; i++)
-            graphics_set_palette((uint8_t)(UI_PAL_BASE + i), kUiPalette[i]);
+            graphics_set_palette((uint8_t)(UI_PAL_BASE + i), pal[i]);
     }
 }
 
@@ -129,10 +167,12 @@ void gfxSuspendPalette() {
 }
 
 void gfxResumePalette() {
-    if (Sf.ds80 && profi_ds80_active) VIDEO::applyUiDS80Palette(kUiPalette);
+    if (Sf.ds80 && profi_ds80_active) VIDEO::applyUiDS80Palette(uiPaletteActive());
 }
 
-const uint32_t* uiPalette()     { return kUiPalette; }
+// Active-output palette, so a BMP capture of the open menu shows what the screen
+// showed (Video.cpp saveBitmap reads this for indices 152..167).
+const uint32_t* uiPalette()     { return uiPaletteActive(); }
 int             uiPaletteBase() { return UI_PAL_BASE; }
 uint8_t         uiPaletteSlot(UiColor c) { return palByte(c); }
 

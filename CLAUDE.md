@@ -1390,6 +1390,22 @@ Two more things learned there:
   indicator was lit solid while the card was merely scanning its SD. A DC offset
   is not sound.
 
+## The menu palette has a VGA twin — solid colours, no Bayer texture (2026-08-20, NOT hw-tested)
+
+`kUiPaletteVga` (UiGfx.cpp) mirrors `kUiPalette` with every channel on the VGA
+DAC grid {00,55,AA,FF}: an on-grid RGB888 makes `vga_bayer4()` come out with
+sub=0, so the ordinary dithered path renders it SOLID — no driver change, no
+solid-entry calls. `uiPaletteActive()` picks it when `SELECT_VGA` (VGA_HDMI
+builds only); HDMI/SOFTTV/TFT keep the full-depth scheme. Wired into
+`gfxInstallPalette` (both branches — the DS80 pair build also degenerates to
+solid on grid colours), `gfxResumePalette`, and the public `uiPalette()` so BMP
+captures match the screen. Hand-picked, NOT nearest-rounded: 4 levels/channel
+cannot keep the slate theme's dark shades apart, so the dark ladder is re-spread
+(BG/FOOT/SHADOW → black, PANEL → 0x000055, PANEL_ALT = SEL_BAND → 0x0000AA)
+while text/selection/icon hues are nearest-grid. CRT grille and scanline taps
+attenuate off the grid and re-dither — inherent to those effects, same as the
+16 solid ZX colours.
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation
