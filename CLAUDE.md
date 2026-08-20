@@ -1406,6 +1406,18 @@ while text/selection/icon hues are nearest-grid. CRT grille and scanline taps
 attenuate off the grid and re-dither — inherent to those effects, same as the
 16 solid ZX colours.
 
+Both looks are user-switchable (2026-08-20, NOT hw-tested): **Options → VGA menu
+colors** (`Config::ui_vga_solid`, default Solid; row visible only while
+`SELECT_VGA`) picks the on-grid twin vs the dithered full-depth scheme, and
+**Options → Menu corners** (`Config::ui_rounded`, default Rounded) switches
+rounded vs square — enforced centrally in `roundRect`/`roundRectBorder`
+(UiGfx.cpp), which every window/dialog corner goes through. Both are
+`AC_LIVE + F_PREVIEW`: the palette one carries `F_PALETTE` (the re-install IS the
+apply), the corner one `F_MODAL` (the nav's chrome restore redraws the window
+with the new corners; `drawFrameOnce()` clears to C_BG first, so Square→Rounded
+leaves no stale corner pixels). Trivial shared hook `hook_uiLook` — the drawing
+code reads Config directly.
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation

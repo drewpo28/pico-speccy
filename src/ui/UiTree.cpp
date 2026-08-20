@@ -24,6 +24,12 @@
 #include <hardware/vreg.h>   // VREG_VOLTAGE_* values used by the option table
 #include <stdio.h>           // snprintf (murmuzavrTag)
 
+#if defined(VGA_HDMI)
+// Defined in drivers/vga-nextgen/vga.c; file scope, or inside namespace nm it would
+// resolve to nm::SELECT_VGA and fail to link (same note as UiStage.cpp).
+extern bool SELECT_VGA;
+#endif
+
 namespace nm {
 
 // Two-space label indent for rows that belong to the row above (a machine's own
@@ -727,6 +733,24 @@ static const Node kReplaceRom[] = {
     NM_ACTION_ARG(TXT_ROM_SLOT_PENT1,   act_replaceRom, 8, nullptr),
 };
 
+// The VGA menu-palette row only means something while the VGA output is live —
+// on HDMI (and the non-VGA builds) the menu always shows the full-depth palette.
+static bool p_vgaOut() {
+#if defined(VGA_HDMI)
+    return SELECT_VGA;
+#else
+    return false;
+#endif
+}
+static const Option opt_ui_vga_pal[] = {
+    { "Solid 2:2:2", 1 },     // on-grid twin: solid fills, coarser colours
+    { "Dithered",    0 },     // full-depth scheme through the Bayer dither
+};
+static const Option opt_ui_corners[] = {
+    { "Rounded", 1 },
+    { "Square",  0 },
+};
+
 static const Node kOptions[] = {
     NM_SUB   (TXT_HW_OVERCLOCK,     kOverclock,     nullptr),
     NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
@@ -735,6 +759,10 @@ static const Node kOptions[] = {
     NM_BOOL  (TXT_OTHER_ISSUE2,     SET_ISSUE2,     nullptr),
     NM_RADIO (TXT_OTHER_FRAMESKIP,  SET_FRAMESKIP,  opt_frameskip, nullptr),
     NM_DYNH  (TXT_OTHER_HOTKEYS,    hotkeys_build, hotkeys_key, opt_hotkey_hints, nullptr),
+    // Menu look: both apply live (the corner switch redraws the chrome on the spot,
+    // the palette switch re-installs the UI palette block).
+    NM_RADIO (TXT_OPT_VGA_MENU_PAL, SET_UI_VGA_PAL, opt_ui_vga_pal,  p_vgaOut),
+    NM_RADIO (TXT_OPT_UI_CORNERS,   SET_UI_CORNERS, opt_ui_corners,  nullptr),
     // LED indication is one group: the master toggle, its legend (a reference for
     // the indicators, so greyed while they are off) and the board's own SD LED,
     // which came over from Devices — it is indication, not an interface.

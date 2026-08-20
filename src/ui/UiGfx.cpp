@@ -9,6 +9,7 @@
 #include "UiFont.h"
 #include "OSDMain.h"
 #include "Video.h"
+#include "Config.h"     // ui_vga_solid / ui_rounded — the menu-look preferences
 
 extern "C" volatile bool profi_ds80_active;
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
@@ -67,11 +68,12 @@ static const uint32_t kUiPaletteVga[C_COUNT] = {
 };
 
 // The palette the active output actually shows. VGA gets the on-grid twin so menu
-// fills stay solid; HDMI (and the non-VGA builds) keep the full-depth scheme.
+// fills stay solid — unless the user prefers the full-depth scheme through the
+// dither (Options > VGA menu colors); HDMI and the non-VGA builds always keep it.
 static const uint32_t* uiPaletteActive() {
 #if defined(VGA_HDMI)
     extern bool SELECT_VGA;   // vga.c
-    if (SELECT_VGA) return kUiPaletteVga;
+    if (SELECT_VGA && Config::ui_vga_solid) return kUiPaletteVga;
 #endif
     return kUiPalette;
 }
@@ -334,6 +336,7 @@ static inline int cornerCut(int i, int h, int r) {
 
 void roundRect(int x, int y, int w, int h, int r, UiColor border, UiColor fill_c) {
     if (w <= 0 || h <= 0) return;
+    if (!Config::ui_rounded) r = 0;    // Options > Menu corners: Square
     if (r > 4) r = 4;
     const int sc = Sf.glyphScale;           // corners stay square on screen in DS80
     for (int i = 0; i < h; i++) {
@@ -357,6 +360,7 @@ void roundRect(int x, int y, int w, int h, int r, UiColor border, UiColor fill_c
 
 void roundRectBorder(int x, int y, int w, int h, int r, UiColor border, UiColor outside) {
     if (w <= 0 || h <= 0) return;
+    if (!Config::ui_rounded) r = 0;    // Options > Menu corners: Square
     if (r > 4) r = 4;
     const int sc = Sf.glyphScale;
     for (int i = 0; i < h; i++) {
