@@ -375,6 +375,13 @@ public:
     static uint8_t audio_driver;
     static bool byte_cobmect_mode;
 
+    // «Байт» доп. ПЗУ (DD71) flip-flop: any access to the Kempston-decoded port
+    // (#1F/#9F) toggles the DD66 substitution map between native and test state
+    // (2 blocks at #3A00-#3AFF). Used by the built-in ROM memory test's switch
+    // stub at #387A (IN A,(#9F); RET). Reset returns the machine to native.
+    static void byteTestRomToggle();
+    static void byteTestRomReset();
+
     static void savePendingVideoMode();
     static bool loadPendingVideoMode(uint8_t &hdmi_vm, uint8_t &vga_vm);
     static void clearPendingVideoMode();

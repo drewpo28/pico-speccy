@@ -714,6 +714,15 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   }
   bool ia = Z80Ops::isALF;
   uint8_t p8 = address & 0xFF;
+
+  // «Байт»: any access to the Kempston-decoded port (#1F/#9F) toggles the
+  // DD71 доп. ПЗУ overlay — the built-in test's switch stub at #387A is
+  // IN A,(#9F); RET. Side effect only: the read still falls through to
+  // whatever answers below (Kempston joystick / bus float). In TR-DOS #1F
+  // belongs to the FDC.
+  if (Z80Ops::isByte && !ESPectrum::trdos && (p8 & 0x7F) == 0x1F)
+    Config::byteTestRomToggle();
+
   // Hidden RAM — Pentagon 512/1024 (and Profi) only. Plain Pentagon 128 must NOT
   // react: stock software probes #xxFB (printer port) — e.g. BALLQ's loader does
   // IN A,(#FB) at init — and remapping bank 0 to ram[MEM_PG_CNT+romLatch] sends
@@ -1815,6 +1824,13 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   uint8_t a8 = (address & 0xFF);
   p_states = CPU::tstates;
 
+  // «Байт»: any access to the Kempston-decoded port (#1F/#9F) toggles the
+  // DD71 доп. ПЗУ overlay (the built-in test's switch stub at #387A is
+  // IN A,(#9F); RET). In TR-DOS #1F belongs to the FDC. Side effect only —
+  // the write itself has no other target here.
+  if (Z80Ops::isByte && !ESPectrum::trdos && (a8 & 0x7F) == 0x1F)
+    Config::byteTestRomToggle();
+
   // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
   // 0xEFF7 (hi=0xEF > 0xC7) falls through to Pentagon mode16col handler below
   if (Config::zifi_enabled && a8 == 0xEF) {
@@ -2108,6 +2124,16 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // would flicker red/white with beeper clicks on top of the melody.
     if (Z80Ops::isByte && (a8 & 0x9F) == 0x8E) {
       pitWrite(a8, data);
+      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
+      return;
+    }
+    // The Byte fully decodes its output ports: only #FE reaches the
+    // border/beeper latch (that full decode is a documented Byte trait). The
+    // built-in test relies on it — its OUT (0),A phase markers and the RAM-
+    // error loop's OUT (C),A to #0F must not repaint the border: the page
+    // documents the border staying yellow through the RAM test after a
+    // successful ROM checksum.
+    if (Z80Ops::isByte && a8 != 0xFE) {
       VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
       return;
     }

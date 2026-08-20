@@ -222,6 +222,11 @@ void CPU::reset() {
     // (RTC::readDisabled answers UIP-clear only for the LATCHED status regs).
     if ((Z80Ops::isByte || Z80Ops::isProfi) && Config::timex_video) Config::timex_video = false;
 
+    // «Байт»: RESET returns the DD66 map to native state — the built-in test's
+    // dispatch (#39F9) must land on DD73's own base test at #3A00, not on the
+    // DD71 blocks a previous test run left switched in.
+    if (Z80Ops::isByte) Config::byteTestRomReset();
+
     updateStatesInFrame();
 
     tstates = 0;

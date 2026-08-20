@@ -1477,3 +1477,33 @@ void Config::setJoyMap(uint8_t joytype) {
         Config::save();
     }
 }
+
+// ============================================================================
+// «Байт» доп. ПЗУ (DD71) switch — the built-in ROM memory test.
+//
+// The real machine substitutes 128-byte ROM blocks from DD71 per the DD66 map
+// PROM, which has two software-visible states (besides COBMECT): native, and a
+// "test" state where blocks #74/#75 (#3A00-#3AFF) come from DD71 blocks 14/15.
+// Native #3A00 holds the base test (border cycle, ROM checksum, RAM test, LDIR
+// of the ROM to #6000); the substituted blocks hold its continuation (keyboard
+// grid, the DD68 timer melody, and the 128-square ROM compare, which expects
+// EXACTLY the 2 swapped blocks to differ from the #6000 copy). The switch stub
+// at #387A is IN A,(#9F); RET — any access to the Kempston-decoded port flips
+// the flip-flop. Toggling is harmless to running software: neither state's
+// #3A00-#3AFF is executed outside the test, so a game polling the Kempston
+// joystick only flips unused ROM bytes. COBMECT mode (sovmest overlay) is left
+// untouched, matching the test's requirement that the button be released.
+// ============================================================================
+
+void Config::byteTestRomToggle() {
+    const uint8_t* cur = MemESP::overlayFor(gb_rom_0_sinclair_48k);
+    if (cur == gb_overlay_48k_byte)
+        MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte_test);
+    else if (cur == gb_overlay_48k_byte_test)
+        MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
+}
+
+void Config::byteTestRomReset() {
+    if (MemESP::overlayFor(gb_rom_0_sinclair_48k) == gb_overlay_48k_byte_test)
+        MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
+}

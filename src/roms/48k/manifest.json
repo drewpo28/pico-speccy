@@ -16,6 +16,14 @@
       "name": "BYTE",
       "sym": "gb_rom_0_byte_48k",
       "overlay_sym": "gb_overlay_48k_byte",
+      "len": 2114,
+      "runs": 58,
+      "diff_bytes": 1754
+    },
+    {
+      "name": "BYTE test",
+      "sym": "gb_rom_0_byte_test_48k",
+      "overlay_sym": "gb_overlay_48k_byte_test",
       "len": 2092,
       "runs": 56,
       "diff_bytes": 1744
@@ -24,9 +32,9 @@
       "name": "BYTE compat",
       "sym": "gb_rom_0_byte_sovmest_48k",
       "overlay_sym": "gb_overlay_48k_byte_sovmest",
-      "len": 175,
-      "runs": 12,
-      "diff_bytes": 91
+      "len": 167,
+      "runs": 11,
+      "diff_bytes": 89
     }
   ]
 }

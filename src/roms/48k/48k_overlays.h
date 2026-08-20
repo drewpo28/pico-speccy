@@ -3,5 +3,6 @@
 extern "C" {
 extern const unsigned char gb_overlay_48k_es[];
 extern const unsigned char gb_overlay_48k_byte[];
+extern const unsigned char gb_overlay_48k_byte_test[];
 extern const unsigned char gb_overlay_48k_byte_sovmest[];
 }
