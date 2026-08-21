@@ -2140,6 +2140,32 @@ damage offset** (Black Raven: ±10 in 2-byte compare units = ±20 bytes).
   - Supports all Z80 prefixes: CB, DD, FD, ED, DD CB, FD CB (including undocumented)
 - [profi2png VGA detection fix](memory/profi2png_vga_detection.md) — max_byte>15 heuristic always fires for VGA std-mode (0xC0+ sync bits); fix: also require min_byte<0xC0.
 
+## FPGA48_2026.tap border test — 48K ONLY, verified by host simulation (2026-08-21)
+
+The test hides rainbow OUT-stripes BEHIND the paper area and in h-blank with only
+8-12 T-states of margin; the visible border must stay black with a few green
+marks. It HALT-syncs every frame and its per-line timing (224T, incl. exotic
+opcodes: EX (SP),HL, RLD/RRD, DD CB SLL, OTIR/OTDR, PUSH/POP runs) is budgeted
+around EXACT 48K contention (paper @14335, pattern 6,5,4,3,2,1,0,0, ULA-port
+IO contention N:1 C:3). Any timing error ≥8T leaks the hidden rainbows into the
+visible border ("бордюр расползается").
+
+`scratchpad` host simulation (full instruction-stream interpreter + two timing
+engines: fuse-reference vs a faithful copy of our Draw/wait_st/Ports/border
+machine) proved our **48K path is T-state-exact vs fuse** on this test — every
+instruction matched, images differ only by 1-2 quantization columns at mark
+edges (step=4). **On Pentagon/P512/P1024 (no contention — our default arch) and
+on 128K (228T/line) the test MUST smear, exactly as on real hardware.** So
+"расползается" on this test = the machine is not 48K (or turbo != 3.5 MHz,
+which scales statesInFrame/IntEnd but not the video constants).
+
+Fixed while investigating: `Ports::output` ULA branch compared the FULL data
+byte against the 3-bit `borderColor`, so every beeper-bit change and every
+OTIR/OTDR garbage byte ran a spurious DrawBorder catch-up + whole-border
+repaint (timing-neutral — the extra `Draw(0,true)` alignment was idempotent
+with the following `Draw(3,true)` — but wasted core0 cycles on every beeper
+OUT). Now masks `data & 0x07`.
+
 ## Test Files
 
 - `FPGA48all.tap` — **ULA test program for ZX Spectrum 48K** (NOT SAA1099 — port
