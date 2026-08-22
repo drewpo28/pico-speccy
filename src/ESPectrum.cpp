@@ -103,6 +103,8 @@ extern "C" bool usb_keyboard_mounted(void);
 //=======================================================================================
 fabgl::PS2Controller ESPectrum::PS2Controller;
 
+bool g_ui_text_entry = false;   // see ESPectrum.h
+
 void joyPushData(fabgl::VirtualKey virtualKey, bool down) {
   fabgl::Keyboard *kbd = ESPectrum::PS2Controller.keyboard();
   if (kbd) {

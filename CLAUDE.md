@@ -1366,6 +1366,29 @@ dotFast maps the ZX index per mode), and on the active→idle edge set
 Idle leaves zero footprint. `LED::drawGlyph` (full fg/bg cell) is still used by
 the menu's LED legend — don't remove it.
 
+## WASD MENU twins vs the nm:: UI — "typing 'ma' comes out as 'am'" (2026-08-22, NOT hw-tested)
+
+User report (z0p2, WiFi password + debugger address field): the letter 'a'
+swaps places with its neighbour; pico-spec is fine with the same keyboard. Not
+a USB/HID or transport bug — the reports and the VK queue are strictly FIFO on
+every path. Cause: `Config::wasd` defaults to **true**, and kbdExtraMapping's
+WASD cases pushed `VK_MENU_LEFT/RIGHT/UP/DOWN` twins alongside `VK_DPAD_*`.
+The MENU twin is queued BEFORE the raw letter, and `nm::uiEditLine` — unlike
+the classic `inlineTextEdit`, which SKIPPED all `VK_MENU_*` (that is the whole
+pico-spec difference) — uses `VK_MENU_LEFT` as cursor-left. So 'a' first moved
+the cursor left, then inserted: "ma" → "am". W/S/D map to MENU moves that are
+no-ops at the end of a line, which is why ONLY 'a' looked broken; in the
+browser the same `VK_MENU_LEFT` is "go to parent dir", so 'a' in type-to-search
+also left the directory. Fix: WASD ("WASD as Kempston") emits only the
+`VK_DPAD_*` joystick twins — every letter is a letter in the nm:: UI (text
+fields, search, first-letter jump), so letter→MENU nav is inherently in
+conflict there; arrows/gamepad still navigate. Same family, fixed with it:
+`VK_SPACE` also pushes a `VK_MENU_ENTER` twin, which uiEditLine takes as
+"confirm the field" — a password/filename with a space was accepted half-typed.
+`g_ui_text_entry` (ESPectrum.h, RAII-set inside uiEditLine only) suppresses
+just that twin, so Space types a space while Enter/gamepad still confirm.
+Space-as-Enter in the browser list/search is deliberate picker behavior, kept.
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the
