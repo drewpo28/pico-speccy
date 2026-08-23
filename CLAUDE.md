@@ -1388,6 +1388,29 @@ conflict there; arrows/gamepad still navigate. Same family, fixed with it:
 `g_ui_text_entry` (ESPectrum.h, RAII-set inside uiEditLine only) suppresses
 just that twin, so Space types a space while Enter/gamepad still confirm.
 Space-as-Enter in the browser list/search is deliberate picker behavior, kept.
+Hw-confirmed 2026-08-23: with WASD off the swap is gone (user report).
+
+## GET_REPORT stuck-key resync must EARN trust — "holding any key repeats '7'" (2026-08-23, NOT hw-tested)
+
+Same z0p2 user, Rapoo keyboard: hold any key and the guest's typematic types
+'7' forever; another USB keyboard is fine, and the Rapoo is fine on pico-spec.
+pico-spec has no resync machinery — the culprit is ours (hid_app.cpp): a plain
+long hold IS "400 ms of interrupt silence with a key held", so
+`kbd_resync_tick` fires GET_REPORT on EVERY auto-repeat. A keyboard whose
+GET_REPORT answer is not a boot report (report-ID-prefixed, NKRO bitmap, some
+other report) feeds constant bytes into `process_kbd_report` as keycodes: a
+fixed 0x24 in the reply presses HID '7', the silent interrupt pipe never
+contradicts it, so the ZX ROM repeats '7' while the really-held key "releases"
+(absent from the junk). Fix: the device must pass a one-time trust probe —
+GET_REPORT issued while we believe NO key is held must answer the all-idle
+boot report (modifier 0, six zero keycodes; the reserved byte is OEM-defined,
+ignored). Junk → resync disabled for the session (`kbd_resync_off`, logged
+with the reply bytes); stall → the existing 5-strikes path; a key arriving
+mid-probe → inconclusive, retried. Trust resets when daddr/instance changes
+(re-plug, other keyboard). Health line gained `ver=`; an applied resync now
+logs its reply bytes too. The lesson: a recovery path that runs on the happy
+path (a long hold is NORMAL) must validate the device speaks the protocol
+before rewriting state from its answers.
 
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
