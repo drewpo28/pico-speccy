@@ -200,6 +200,10 @@ public:
   static void MainScreen_Blank_Snow_Opcode(bool contended);
   static void MainScreen_Snow(unsigned int statestoadd, bool contended);
   static void MainScreen_Snow_Opcode(bool contended);
+  // Debug "Paper off": MainScreen's timing skeleton (contention, T-state flow,
+  // line advance) with every pixel write removed — the border state machine owns
+  // the paper columns instead (MiddleBorder paints straight through them).
+  static void MainScreen_NoPaper(unsigned int statestoadd, bool contended);
   
   // static void DrawBorderFast();
   static void InitPrevBuffer();
@@ -297,6 +301,10 @@ public:
   static bool brdChange;
   static bool brdnextframe;
   static bool brdGigascreenChange;
+  // Live mirror of !Config::render_paper (Debug > Paper). True = paper hidden:
+  // MainScreen_Blank* select MainScreen_NoPaper and MiddleBorder does not skip
+  // the paper columns. Synced in Reset(); the menu hook flips it live.
+  static bool paper_off;
   static uint32_t lastBrdTstate;
 
   static uint8_t tStatesPerLine;

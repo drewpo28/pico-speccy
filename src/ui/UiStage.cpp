@@ -124,6 +124,7 @@ NM_INT_ACCESS (ngsClock,  ngs_clock)
 static int32_t get_gsRam()          { return Config::gs_ram_size >= 3 ? 3 : (Config::gs_ram_size == 0 ? 0 : 2); }
 static void    put_gsRam(int32_t v) { Config::gs_ram_size = (uint8_t)v; }
 NM_BOOL_ACCESS(cobmect,   byte_cobmect_mode)
+NM_BOOL_ACCESS(paper,     render_paper)
 
 // ── TFT panel (ST7789 / ILI9341 builds) ────────────────────────────────────────
 // Not Config fields: the driver owns TFT_INVERSION and the MADCTL byte TFT_FLAGS, and
@@ -349,6 +350,15 @@ static bool hook_render(int32_t nv, int32_t) {
         VIDEO::Draw        = &VIDEO::MainScreen_Blank;
         VIDEO::Draw_Opcode = &VIDEO::MainScreen_Blank_Opcode;
     }
+    return true;
+}
+static bool hook_paper(int32_t nv, int32_t) {
+    // Live flag + a full border repaint next frame: turning paper off leaves the
+    // stale content on screen until the border machine paints over it, turning it
+    // back on leaves border colour where MainScreen redraws next frame anyway.
+    VIDEO::paper_off = (nv == 0);
+    VIDEO::brdChange = true;
+    VIDEO::brdnextframe = true;
     return true;
 }
 static bool hook_ulaplus(int32_t nv, int32_t) {

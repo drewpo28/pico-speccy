@@ -147,6 +147,7 @@ string   Config::last_loc;   // last F5 browse location (all sources); see Confi
 uint8_t Config::scanlines = 0;
 uint8_t Config::crt_filter = 0;
 uint8_t Config::render = 0;
+bool Config::render_paper = true;
 uint8_t Config::persist_slot = 1;
 
 bool     Config::TABasfire1 = false;
@@ -1003,6 +1004,7 @@ void Config::load() {
         nvs_get_u8("crt_filter", Config::crt_filter, sts);
         if (Config::crt_filter > 6) Config::crt_filter = 0;
         nvs_get_u8("render", Config::render, sts);
+        nvs_get_b("render_paper", Config::render_paper, sts);
         nvs_get_b("TABasfire1", Config::TABasfire1, sts);
         nvs_get_sc("AudVolume", Config::aud_volume, sts);
         nvs_get_u8("AudBoost", Config::audio_boost, sts);
@@ -1344,6 +1346,7 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"scanlines",Config::scanlines);
     nvs_set_u8(buf,"crt_filter",Config::crt_filter);
     nvs_set_u8(buf,"render",Config::render);
+    nvs_set_str(buf,"render_paper", Config::render_paper ? "true" : "false");
     nvs_set_str(buf,"TABasfire1", TABasfire1 ? "true" : "false");
     nvs_set_sc(buf,"AudVolume", ESPectrum::aud_volume);
     nvs_set_u8(buf,"AudBoost", Config::audio_boost);

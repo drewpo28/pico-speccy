@@ -246,6 +246,9 @@
 // Off = pretend the board has no PSRAM (testing the SRAM-only paths). Row shown only
 // where a chip was actually found.
 #define TXT_DBG_PSRAM       "PSRAM"
+// No = hide the paper area and render the border colour through it instead
+// (per-T-state, like top/bottom border) — shows border effects "under" the paper.
+#define TXT_DBG_PAPER       "Paper"
 #define TXT_DBG_TEMPOFF     "Temp offset"
 
 // ── Hardware info ──────────────────────────────────────────────────────────────
