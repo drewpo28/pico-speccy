@@ -920,11 +920,6 @@ void Config::load() {
         // Mode 3 was "Software MIDI" (the procedural SoftSynth), removed along with its
         // preset. A stale NVS value must not select a synth that no longer exists.
         if (midi == 3) midi = 0;
-#if NO_GM_DLS
-        // GM.DLS wavetable (mode 4) is unavailable in ALF builds (no bank
-        // partition). Demote a stale NVS value so it never activates.
-        if (midi == 4) midi = 0;
-#endif
         nvs_get_u16("cpu_mhz", cpu_mhz, sts);
         if (cpu_mhz == 0) cpu_mhz = CPU_MHZ;
         nvs_get_u16("max_flash_freq", max_flash_freq, sts);

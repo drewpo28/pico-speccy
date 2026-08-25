@@ -610,11 +610,8 @@ static const Option opt_midi_mode[] = {
     { "Off",           0 },
     { "AY",            1 },
     { "ShamaZX",       2 },
-#if !NO_GM_DLS
     { "DLS Wavetable", 4 },
-#endif
 };
-#if !NO_GM_DLS
 static bool p_midiDls()  { return Stage::get(SET_MIDI_MODE) == 4; }
 static const Option opt_midi_bank_hints[] = {
     { SYM_ENTER " Select / install", 0 },
@@ -629,7 +626,6 @@ static const Option opt_midi_storage[] = {      // values ARE Config::midi_stora
     { "PSRAM", 0 },
     { "Flash", 1 },
 };
-#endif
 
 static const Node kAudio[] = {
     NM_RADIO(TXT_AUD_DRIVER,     SET_AUDIO_DRIVER, opt_audio_driver, nullptr),
@@ -641,14 +637,12 @@ static const Node kAudio[] = {
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
     NM_BOOL (TXT_AUD_SAA,        SET_SAA1099,      nullptr),
     NM_RADIO   (TXT_AUD_MIDI,           SET_MIDI_MODE,   opt_midi_mode,   nullptr),
-#if !NO_GM_DLS
     NM_RADIO_EN(NM_IND TXT_MIDI_STORAGE, SET_MIDI_STORAGE, opt_midi_storage,
                 p_butterPsram, p_midiDls),
     // The bank list + on-device .dls conversion act immediately (like the disk slots):
     // a bank pick can applyBankLive() or defer a flash write to the next boot.
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,
                 opt_midi_bank_hints, p_hasSD, p_midiDls),
-#endif
     NM_RADIO_D (TXT_AUD_GS,          SET_GS_MODE,  gs_modeOpts,  p_gsAvail),
     NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK,  opt_gs_clock,  p_gsClockCls, p_gsClassic),
     NM_RADIO   (NM_IND TXT_GS_CLOCK, SET_NGS_CLOCK, opt_ngs_clock, p_gsNeo),

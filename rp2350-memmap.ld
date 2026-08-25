@@ -234,18 +234,14 @@ SECTIONS
      * reflashes. NOLOAD: nothing is emitted here at link time, so it is NOT in
      * the UF2 (keeps the firmware UF2 small). The device writes it at runtime via
      * flash_range_program (MidiSynth::provision) and reads it via XIP. */
-    /* ALF builds carry an extra ROM and are too large to also reserve the bank.
-     * The build passes --defsym=__no_gm_bank=1 to zero the partition so the whole
-     * flash is available to the firmware; GM.DLS is disabled in code (NO_GM_DLS). */
-    /* GMX builds (__gmx_rom_in_flash — every board; QSPI PSRAM is a property of
-     * the plugged-in Pico module, so the ROM ships everywhere and GMX gates at
-     * runtime) embed the Scorpion GMX boot ROM (~345 KB after dedup/overlays)
-     * in the firmware — the partition shrinks to 1.6875 MB so firmware + ROM
-     * fit below it. The stock converted gm.dls (~1.59 MB) still fits with
-     * ~100 KB margin; larger custom banks that used the old 2.375 MB ceiling
-     * no longer install on GMX builds. */
-    __gm_bank_size  = DEFINED(__no_gm_bank) ? 0 :
-                      (DEFINED(__gmx_rom_in_flash) ? 0x1B0000 : 0x260000);   /* 1.6875 / 2.375 MB; multiple of 4 KB. Holds converted .dls banks (gm.dls ~1.59 MB fits with margin). Was 2.5 MB — 128 KB handed to the firmware partition for the new fullscreen UI (2026-07-26); moving the start is safe: gm_bank_view() fails the header check on stale data and the bank re-provisions from SD. */
+    /* __gmx_rom_in_flash (every board; QSPI PSRAM is a property of the plugged-in
+     * Pico module, so the Scorpion GMX boot ROM — ~345 KB after dedup/overlays —
+     * ships everywhere and GMX gates at runtime): the partition is 1.6875 MB so
+     * firmware + ROM fit below it. The stock converted gm.dls (~1.59 MB) still
+     * fits with ~100 KB margin; larger custom banks that used the old 2.375 MB
+     * ceiling no longer install. The 0x260000 branch survives only for the
+     * GMX_IN_FLASH=0 escape hatch (CMakeLists). */
+    __gm_bank_size  = DEFINED(__gmx_rom_in_flash) ? 0x1B0000 : 0x260000;   /* 1.6875 / 2.375 MB; multiple of 4 KB. Holds converted .dls banks (gm.dls ~1.59 MB fits with margin). Was 2.5 MB — 128 KB handed to the firmware partition for the new fullscreen UI (2026-07-26); moving the start is safe: gm_bank_view() fails the header check on stale data and the bank re-provisions from SD. */
     __gm_bank_start = ORIGIN(FLASH) + LENGTH(FLASH) - __gm_bank_size;
     __gm_bank_end   = ORIGIN(FLASH) + LENGTH(FLASH);
     ASSERT(__flash_binary_end <= __gm_bank_start,
