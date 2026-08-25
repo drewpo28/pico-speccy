@@ -222,6 +222,22 @@ void Config::initHotkeys() {
 
 extern std::string g_snapshot_loading_path;  // Snapshot.cpp — snapshot mid-load
 
+#if GMX_IN_FLASH
+// Register the overlay of the GMX bank now live at 0x0000. Called from
+// gmxTapUpdate (Ports.cpp) on every romInUse change while GMX is active —
+// several GMX banks patch the SAME base pointer, so a one-time registration at
+// bind time cannot express the table (MemESP keys ONE overlay per base). Lives
+// HERE and not in Ports.cpp because the Sinclair 128K bases are header-defined
+// internal-linkage arrays: a second TU taking their address embeds a private
+// 16 KB copy each — 32 KB wasted, and worse, gmxTapUpdate would then register
+// addresses that never match the ones rom[] was bound to in this TU, so the
+// overlays would silently never apply.
+void gmxRegisterLiveOverlay(uint8_t bank) {
+    const scorpion_gmx_bank_t& bk = gb_rom_scorpion_gmx_banks[bank & 31];
+    MemESP::registerOverlay(bk.data, bk.overlay);
+}
+#endif
+
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 {
     // Karabas is a UI-level alias of Profi (see ArchRom.h) — the core never sees it.
@@ -464,8 +480,15 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         romSetScorp = romSet;
 #if GMX_IN_FLASH
         if (romSet == R_SCORP_GMX) {
+            // Deduplicated bank table (rom_pack.py pack_gmx): .data is either a raw
+            // GMX bank or a base ROM already in flash; a non-NULL .overlay supplies
+            // the differing bytes on the fly (RomOverlay.h). NOT registered here:
+            // several banks patch the SAME base pointer, so gmxTapUpdate (Ports.cpp)
+            // re-registers the live bank's overlay on every romInUse change. The
+            // post-bind reset lands on plane 0 bank 0 (raw), so nothing is missed
+            // before the first page switch.
             for (int i = 0; i < 32; ++i)
-                MemESP::rom[i].assign_rom(gb_rom_scorpion_gmx + ((16 * i) << 10));
+                MemESP::rom[i].assign_rom(gb_rom_scorpion_gmx_banks[i].data);
         } else
 #endif
         {
@@ -510,7 +533,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // 5.03 / 5.04TM are small read-only overlays over the 5.05D base, applied on the
     // fly by MemESP (RomOverlay.h): rom[4] points at the 5.05D base in flash, and the
     // active overlay supplies the differing bytes. No slot, no flash write, no reboot.
-    {
+    // NOT on Scorpion GMX: there rom[4] IS a GMX bank (plane 1 slot 0 — romInUse is
+    // (plane<<2)|slot), so this binding would clobber it, and its registerOverlay on
+    // the 5.05D base would evict the GMX plane-1 TR-DOS overlay keyed to the same
+    // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
+    // own bank 3).
+    if (!(arch == A_SCORP && romSetScorp == R_SCORP_GMX)) {
         const uint8_t* base = gb_rom_4_trdos_505d;
         const uint8_t* ov = nullptr;
         switch (Config::trdosBios) {

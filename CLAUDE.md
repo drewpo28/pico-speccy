@@ -2000,22 +2000,45 @@ build carries neither the ROM nor the GMX menu rows (`GMX_IN_FLASH=0`), and on
 GMX-capable builds a disabled/absent butter chip falls the pick back to Yellow
 with a bootNotice (requestMachine).
 
-- **ROM is EMBEDDED in flash** (`scorpion_gmx_rom.c`, `#if GMX_IN_FLASH` — CMake
-  sets it 1 for every board but MURM1): the 512 KB GMX boot ROM (regenerated from
-  `src/gmx13500.bin` = MAME gmx13500.rom, CRC 47c9df88), rom[0..31] point straight
-  into it — 8 ProfROM planes × 4 banks, `romInUse = (plane << 2) | bank`. To make
-  room, **GMX builds shrink the GM.DLS flash partition 2.375 MB → 1.6875 MB**
-  (`rp2350-memmap.ld`, `--defsym=__gmx_rom_in_flash=1` from CMakeLists): the stock
-  converted gm.dls bank (~1.59 MB) still fits with ~100 KB margin, MidiSynth reads
-  the bounds from the linker symbols so nothing else changes, and a bank
-  provisioned at the OLD address fails the header check and re-provisions from SD.
-  Firmware headroom on GMX builds ≈ 230 KB (limit 2.3125 MB, firmware ~2.19 MB) —
-  the next big feature may have to shave the partition again or trim the ROM
-  (planes 2/3 of gmx13500 look byte-identical; dedup was not needed yet). An
-  earlier SD-loaded-into-butter version of this ROM was replaced by this commit —
-  it worked but cost a boot-ordering dance (requestMachine runs before
-  Buffer::initPools). `Buffer::butterPoolReady()` (kept) is the arena-readiness
-  query from that round.
+- **ROM is EMBEDDED in flash, deduplicated + overlaid** (`#if GMX_IN_FLASH` —
+  CMake sets it 1 for every board but MURM1): the 512 KB GMX boot ROM
+  (`src/gmx13500.bin` = MAME gmx13500.rom, CRC 47c9df88) costs **~345 KB of
+  flash, not 512** — `tools/rom_pack.py gmx` (`pack_gmx`) splits it into 32
+  16K banks, folds the 6 exact duplicates (planes 2/3, the flashtool planes,
+  are near-mirrors), and stores 5 banks as RomOverlay patches over ROMs already
+  in flash: p1b0 ≡ Pentagon ROM0 exactly (reuses `gb_overlay_pentagon_rom0`
+  verbatim), p1b1/p4b1 over `sinclair_128k_1` (19/182 B), p4b0 over
+  `sinclair_128k_0` (443 B), p1b2(≡p1b3) over `trdos_505d` (817 B); p4b3 stays
+  raw (3856 diff bytes > the 1 KB threshold — not worth a wide run list on the
+  TR-DOS fetch path). The packer reconstructs all 512 KB and compares at pack
+  time. Emits `scorpion_gmx_rom.c` (raw banks + new overlays, plain C) and
+  `scorpion_gmx_banks.h` (the `gb_rom_scorpion_gmx_banks[32]` {data, overlay}
+  table — a C++ header because the Sinclair bases are header-defined
+  internal-linkage arrays a .c cannot reference). Binding: requestMachine
+  assigns rom[0..31] = .data, `romInUse = (plane << 2) | bank`. **Overlay
+  registration is DYNAMIC** — several banks patch the SAME base pointer, so a
+  static registerOverlay cannot express the table: `gmxTapUpdate` (Ports.cpp)
+  calls `gmxRegisterLiveOverlay(romInUse)` on every ROM bank change (all sites
+  already funnel through it / gmxTapRecheck; the two NMI-DOS romInUse writes in
+  Z80_JLS.cpp gained rechecks). Only the live page-0 pointer is ever consulted,
+  so stale entries for unpaged bases are harmless. **`gmxRegisterLiveOverlay`
+  lives in Config.cpp, and ONLY Config.cpp may reference the bank table**: the
+  Sinclair halves are internal-linkage, so a second referencing TU embeds 32 KB
+  of private copies whose ADDRESSES the pointer-keyed registry never matches —
+  Ports.cpp touching the table directly both cost 32 KB and silently disabled
+  the overlays (caught by nm before it shipped). Also fixed here: the
+  unconditional rom[4] TR-DOS tail in requestMachine is skipped on GMX — it was
+  clobbering plane 1 bank 0 (romInUse 4) and would fight the GMX 505d overlay.
+  To make room, **GMX builds shrink the GM.DLS flash partition 2.375 MB →
+  1.6875 MB** (`rp2350-memmap.ld`, `--defsym=__gmx_rom_in_flash=1` from
+  CMakeLists): the stock converted gm.dls bank (~1.59 MB) still fits with
+  ~100 KB margin, MidiSynth reads the bounds from the linker symbols so nothing
+  else changes, and a bank provisioned at the OLD address fails the header
+  check and re-provisions from SD. Firmware headroom on GMX builds ≈ 413 KB
+  (limit 2.3125 MB, firmware ~1.91 MB). An earlier SD-loaded-into-butter
+  version of this ROM was replaced — it worked but cost a boot-ordering dance
+  (requestMachine runs before Buffer::initPools). `Buffer::butterPoolReady()`
+  (kept) is the arena-readiness query from that round.
 - **2 MB RAM**: page = `(DFFDgmx&7)<<4 | (1FFD.D4)>>1 | (7FFD&7)` (`scorpionC000Page`,
   one helper for all three writer ports) + #78FD pages CPU bank 2 (0x8000!) as
   `value ^ 2`. Needs MEM_PG_CNT=128 — raised in setup for a persisted GMX pick and

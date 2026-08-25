@@ -952,6 +952,7 @@ IRAM_ATTR void Z80::check_trdos() {
         } else {
             MemESP::recoverPage0();
         }
+        if (g_scorp_gmx) Ports::gmxTapRecheck(); // re-arm tap + re-register the bank overlay
         return;
     }
 
@@ -1260,6 +1261,7 @@ void Z80::doNMIDOS(void) {
     MemESP::romInUse = nmiDosBank;
     MemESP::ramCurrent[0] = MemESP::rom[nmiDosBank].direct();
     ESPectrum::trdos = true; // Protect ROM from 7FFD changes
+    if (g_scorp_gmx) Ports::gmxTapRecheck(); // re-arm tap + re-register the bank overlay
 
     // Mark NMI-DOS in progress
     nmiDosInProgress = true;

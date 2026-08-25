@@ -1752,6 +1752,18 @@ static inline void profiFdcSysWrite(uint8_t data) {
 // almost-always-false global load.
 static inline void gmxTapUpdate() {
   g_gmx_tap = g_scorp_gmx && ((MemESP::romInUse & 3) == 2) && !MemESP::page0ram;
+#if GMX_IN_FLASH
+  // GMX banks are stored deduplicated + as overlays over ROMs already in flash
+  // (scorpion_gmx_banks.h). MemESP's overlay registry keys ONE overlay per base
+  // pointer, and several GMX banks derive from the SAME base (plane 1 and plane 4
+  // both patch the Sinclair 128K halves) — so the registration is DYNAMIC: every
+  // romInUse change lands here (scorpionRomUpdate / gmxTapRecheck) and re-registers
+  // the overlay of the bank now live at 0x0000. Only the live bank's pointer is
+  // ever consulted, so a stale entry for a base that is not paged in is harmless.
+  // For a raw bank this registers nullptr — a no-op. The table itself must be
+  // touched only from Config.cpp (see gmxRegisterLiveOverlay's comment).
+  if (g_scorp_gmx) gmxRegisterLiveOverlay(MemESP::romInUse);
+#endif
 }
 
 // The 0xC000 RAM page from all three latches: 7FFD bits 0-2 (low3), 1FFD D4 (+8),
