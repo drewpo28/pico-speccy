@@ -286,7 +286,9 @@ static const Option opt_mach_karabas[] = {
 static const Option opt_mach_scorp[] = {
     { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP)     },
     { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR)  },
+#if GMX_IN_FLASH   // MURM1 carries no GMX ROM (CMakeLists) — hide the row there
     { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX) },
+#endif
 };
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
@@ -723,8 +725,12 @@ static const Option opt_pref_pent[] = {
 static const Option opt_pref_scorp[] = {
     { TXT_ROM_SCORP,     0 },
     { TXT_ROM_SCORP_GR,  1 },
+#if GMX_IN_FLASH
     { TXT_ROM_SCORP_GMX, 2 },
     { TXT_ROM_LAST,      3 },
+#else
+    { TXT_ROM_LAST,      2 },
+#endif
 };
 
 static const Node kPrefRom[] = {

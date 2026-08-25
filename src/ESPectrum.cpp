@@ -771,14 +771,16 @@ void ESPectrum::setup() {
                   (unsigned)MEM_PG_CNT, archToStr(Config::arch));
     MEM_PG_CNT = 64;
   }
+#if GMX_IN_FLASH
   // Scorpion GMX is a 2 MB machine (7-bit page: DFFD<<4 | 1FFD.D4<<3 | 7FFD 0-2)
   // AND its 640x200 mode reads attributes from bitmap-page+64 (pages 121/123) —
-  // both need the full 128-page strip regardless of the Murmuzavr pick. GMX is
-  // butter-PSRAM boards only (the ROM load refuses elsewhere and the pick falls
-  // back to Yellow), so don't grow the strip on butter-less boards.
+  // both need the full 128-page strip regardless of the Murmuzavr pick. GMX
+  // requires live QSPI (butter) PSRAM (requestMachine falls the pick back to
+  // Yellow otherwise), so don't grow the strip without it.
   if (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP_GMX && MEM_PG_CNT < 128 &&
       butter_psram_size() > 0)
     MEM_PG_CNT = 128;
+#endif
 
   //=======================================================================================
   // INIT PS/2 KEYBOARD
@@ -969,10 +971,6 @@ void ESPectrum::setup() {
   // boundaries are final, and BEFORE GS::init so GS's work/ring buffers can draw
   // from the butter arena. See Buffer.cpp.
   Buffer::initPools();
-
-  // Scorpion GMX: finish the boot-deferred SD→butter ROM load now that the
-  // arena exists (no-op unless requestMachine deferred it above).
-  Config::gmxLateRomLoad();
 
   // AFTER initPools: GS::init allocates its work RAM + DAC rings from the butter
   // arena (NEED_POINTER|PREFER_PSRAM), freeing ~32 KB SRAM on PSRAM boards. The

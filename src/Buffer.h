@@ -130,9 +130,7 @@ public:
     static void* palloc(size_t bytes, uint32_t flags = ALLOC_AUTO);
     static void  pfree(void* p);
     // True once initPools() has carved the butter arena — before that a
-    // PSRAM-tier palloc can only land on the heap (or fail). Lets boot-time
-    // callers (Config's GMX ROM load) defer PSRAM allocations to after setup's
-    // initPools() call instead of silently burning heap.
+    // PSRAM-tier palloc can only land on the heap (or fail).
     static bool  butterPoolReady();
 
     // ── Tier-agnostic block load ───────────────────────────────────────────────

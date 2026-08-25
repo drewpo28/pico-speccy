@@ -222,76 +222,6 @@ void Config::initHotkeys() {
 
 extern std::string g_snapshot_loading_path;  // Snapshot.cpp — snapshot mid-load
 
-// Scorpion GMX 512 KB boot ROM — SD-loaded into butter PSRAM once per session
-// (never freed: leaving GMX crosses the reboot boundary anyway). Flash cannot
-// hold it: the GM.DLS partition leaves ~1.6 MB for firmware and the ROM alone
-// would consume the entire remaining headroom. XIP-mapped butter reads exactly
-// like a flash rom pointer, and GMX's 640x200 mode needs butter regardless.
-static const uint8_t* s_gmx_rom = nullptr;
-static bool s_gmx_late_pending = false;   // boot-time load deferred past initPools
-static const char* const kGmxRomPaths[] = { "/gmx.rom", "/roms/gmx.rom" };
-
-static bool loadGmxRom() {
-    if (s_gmx_rom) return true;
-    if (butter_psram_size() == 0) {
-        OSD::bootNotice("GMX needs butter PSRAM - using Yellow PCB");
-        return false;
-    }
-    FIL* f = nullptr;
-    for (auto p : kGmxRomPaths) { f = fopen2(p, FA_READ); if (f) break; }
-    if (!f) {
-        OSD::bootNotice("GMX: no /gmx.rom on SD - using Yellow PCB");
-        Debug::log("[GMX] gmx.rom not found (tried /gmx.rom, /roms/gmx.rom)");
-        return false;
-    }
-    if (f_size(f) != 0x80000) {
-        fclose2(f);
-        OSD::bootNotice("GMX: gmx.rom must be 512 KB - using Yellow PCB");
-        return false;
-    }
-    uint8_t* dst = (uint8_t*)Buffer::palloc(0x80000, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
-    if (!dst || (uintptr_t)dst < 0x11000000u) {   // butter only — never 512 KB of heap
-        if (dst) Buffer::pfree(dst);
-        fclose2(f);
-        OSD::bootNotice("GMX: no PSRAM for gmx.rom - using Yellow PCB");
-        return false;
-    }
-    UINT total = 0;
-    while (total < 0x80000) {
-        UINT rd = 0;
-        if (f_read(f, dst + total, 0x8000, &rd) != FR_OK || rd == 0) break;
-        total += rd;
-    }
-    fclose2(f);
-    if (total != 0x80000) {
-        Buffer::pfree(dst);
-        OSD::bootNotice("GMX: gmx.rom read error - using Yellow PCB");
-        return false;
-    }
-    s_gmx_rom = dst;
-    Debug::log("[GMX] boot ROM loaded to butter PSRAM @%p", dst);
-    return true;
-}
-
-// Finish a boot-deferred GMX ROM load (see the R_SCORP_GMX arm in requestMachine).
-// Called from ESPectrum::setup right after Buffer::initPools() — before the CPU
-// executes a single frame, so the temporary Yellow ROM binding is never fetched.
-void Config::gmxLateRomLoad() {
-    if (!s_gmx_late_pending) return;
-    s_gmx_late_pending = false;
-    if (loadGmxRom()) {
-        for (int i = 0; i < 32; ++i)
-            MemESP::rom[i].assign_rom(s_gmx_rom + ((16 * i) << 10));
-        MemESP::recoverPage0();   // page 0 currently points at the Yellow stand-in
-        Debug::log("[GMX] late ROM bind done (romInUse=%u)", (unsigned)MemESP::romInUse);
-    } else {
-        // Notices already queued by loadGmxRom; the Yellow stand-ins ARE the
-        // fallback ROMs — just make the romset match what is actually running.
-        romSet = R_SCORP;
-        romSetScorp = R_SCORP;
-    }
-}
-
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 {
     // Karabas is a UI-level alias of Profi (see ArchRom.h) — the core never sees it.
@@ -513,27 +443,32 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         // the unconditional tail below) is unused on Scorpion.
         // R_SCORP (Yellow PCB) and R_SCORP_GR (Green PCB) share this binding — the
         // romsets differ only in frame timing (CPU::updateStatesInFrame + audio).
-        // R_SCORP_GMX instead maps the 512 KB GMX boot ROM: 8 ProfROM planes x 4
-        // banks into rom[0..31], romInUse = (plane << 2) | slot (Ports::gmx*).
-        // The GMX ROM is SD-loaded into butter PSRAM (see loadGmxRom) — a load
-        // failure falls back to the Yellow PCB romset so the machine still boots.
+        // R_SCORP_GMX instead maps the flash-embedded 512 KB GMX boot ROM:
+        // 8 ProfROM planes x 4 banks into rom[0..31], romInUse = (plane << 2) |
+        // slot (Ports::gmx*). The ROM is embedded only on GMX_IN_FLASH builds
+        // (all boards but MURM1 — CMakeLists); GMX also needs QSPI (butter)
+        // PSRAM live for the 2 MB page strip and the 640x200 attr pages, so a
+        // disabled/absent chip falls the pick back to Yellow.
         romSet = (newRomSet == R_NONE) ? R_SCORP : newRomSet;
-        if (romSet == R_SCORP_GMX && !s_gmx_rom) {
-            if (butter_psram_size() > 0 && !Buffer::butterPoolReady()) {
-                // Boot path: setup() calls requestMachine BEFORE Buffer::initPools
-                // carves the butter arena — defer the SD load. The Yellow ROMs
-                // below stand in until gmxLateRomLoad() rebinds (called from
-                // setup right after initPools, before the CPU runs a frame).
-                s_gmx_late_pending = true;
-            } else if (!loadGmxRom()) {
-                romSet = R_SCORP;
-            }
+#if GMX_IN_FLASH
+        if (romSet == R_SCORP_GMX && butter_psram_size() == 0) {
+            OSD::bootNotice("GMX needs QSPI PSRAM - using Yellow PCB");
+            Debug::log("[GMX] butter PSRAM off/absent - falling back to Yellow");
+            romSet = R_SCORP;
         }
+#else
+        // This build carries no GMX ROM (e.g. an NVS card written by another
+        // board's firmware picked it) — quiet fallback.
+        if (romSet == R_SCORP_GMX) romSet = R_SCORP;
+#endif
         romSetScorp = romSet;
-        if (romSet == R_SCORP_GMX && s_gmx_rom) {
+#if GMX_IN_FLASH
+        if (romSet == R_SCORP_GMX) {
             for (int i = 0; i < 32; ++i)
-                MemESP::rom[i].assign_rom(s_gmx_rom + ((16 * i) << 10));
-        } else {
+                MemESP::rom[i].assign_rom(gb_rom_scorpion_gmx + ((16 * i) << 10));
+        } else
+#endif
+        {
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
             MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_scorpion_bank0);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);

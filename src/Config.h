@@ -64,9 +64,6 @@ public:
 
     // newRomSet == R_NONE resets the arch to its default romset (the old "" argument).
     static void requestMachine(ArchIdx newArch, RomsetIdx newRomSet);
-    // Scorpion GMX: finish the boot-deferred SD→butter ROM load (no-op otherwise).
-    // Must run after Buffer::initPools() and before the first emulated frame.
-    static void gmxLateRomLoad();
 
     static void setJoyMap(uint8_t joy_type);
 

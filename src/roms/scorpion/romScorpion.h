@@ -7,10 +7,12 @@
 // (MemESP::registerOverlay is keyed by base) — both stay raw (scorpion_banks.c).
 extern "C" const unsigned char gb_rom_scorpion_bank2[];
 extern "C" const unsigned char gb_rom_scorpion_bank3[];
-// The Scorpion GMX 512 KB boot ROM (8 ProfROM planes x 4 x 16K banks) is NOT
-// embedded: the GM.DLS flash partition leaves ~1.6 MB for firmware and the ROM
-// alone would eat all remaining headroom. It is loaded from SD (/gmx.rom or
-// /roms/gmx.rom, e.g. MAME's gmx13500.rom) into butter PSRAM once per session —
-// Config::requestMachine, R_SCORP_GMX case. rom[] pages read it via XIP
-// pointers exactly like flash. GMX is butter-PSRAM boards only.
+// Scorpion GMX 512 KB boot ROM (8 ProfROM planes x 4 x 16K banks), embedded in
+// flash on GMX-capable builds only — GMX_IN_FLASH is set by CMake for every
+// board but MURM1 (whose SPI PSRAM cannot back the GMX page strip / 640x200
+// pages), and the linker shrinks the GM.DLS partition on those builds to make
+// room (rp2350-memmap.ld __gmx_rom_in_flash). scorpion_gmx_rom.c.
+#if GMX_IN_FLASH
+extern "C" const unsigned char gb_rom_scorpion_gmx[];
+#endif
 #include "scorpion_overlays.h"
