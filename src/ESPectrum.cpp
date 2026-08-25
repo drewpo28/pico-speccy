@@ -647,6 +647,14 @@ void ESPectrum::setup() {
   Ports::portAFF7 = 0;
   Ports::portDFFD = 0;
   Ports::port1FFD = 0;
+  Ports::gmxPort00 = 0;
+  Ports::gmxPort78FD = 0;
+  Ports::gmxPort7EFD = 0;
+  Ports::gmxScrollLo = 0;
+  Ports::gmxScrollHi = 0;
+  Ports::gmxPlane = 0;
+  Ports::gmxMagicShift = 0;
+  Ports::portDFFDgmx = 0;
   Ports::serialMouseReset();
   //=======================================================================================
   // LOAD CONFIG
@@ -763,6 +771,14 @@ void ESPectrum::setup() {
                   (unsigned)MEM_PG_CNT, archToStr(Config::arch));
     MEM_PG_CNT = 64;
   }
+  // Scorpion GMX is a 2 MB machine (7-bit page: DFFD<<4 | 1FFD.D4<<3 | 7FFD 0-2)
+  // AND its 640x200 mode reads attributes from bitmap-page+64 (pages 121/123) —
+  // both need the full 128-page strip regardless of the Murmuzavr pick. GMX is
+  // butter-PSRAM boards only (the ROM load refuses elsewhere and the pick falls
+  // back to Yellow), so don't grow the strip on butter-less boards.
+  if (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP_GMX && MEM_PG_CNT < 128 &&
+      butter_psram_size() > 0)
+    MEM_PG_CNT = 128;
 
   //=======================================================================================
   // INIT PS/2 KEYBOARD
@@ -954,6 +970,10 @@ void ESPectrum::setup() {
   // from the butter arena. See Buffer.cpp.
   Buffer::initPools();
 
+  // Scorpion GMX: finish the boot-deferred SD→butter ROM load now that the
+  // arena exists (no-op unless requestMachine deferred it above).
+  Config::gmxLateRomLoad();
+
   // AFTER initPools: GS::init allocates its work RAM + DAC rings from the butter
   // arena (NEED_POINTER|PREFER_PSRAM), freeing ~32 KB SRAM on PSRAM boards. The
   // sample-RAM region it claims at the PSRAM top was already excluded from the arena.
@@ -1022,7 +1042,7 @@ void ESPectrum::setup() {
   // branch is exact (the Pentagon branch would over-feed the DAC, see the reset()
   // twin). Scorpion Green (316-line frame) gets its own exact set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
-      (Config::arch == A_SCORP && Config::romSetScorp != R_SCORP_GR)) {
+      (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP)) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1254,8 +1274,22 @@ void ESPectrum::reset(uint8_t romInUse) {
     }
     Debug::log("[RESET] DS80 off + FB cleared");
   }
+  // GMX 640x200: same rule — tear down BEFORE the latches are cleared, or the
+  // deferred EndFrame path never sees the off edge (see VIDEO::gmxForceOff).
+  VIDEO::gmxForceOff();
   Ports::portDFFD = 0;
   Ports::port1FFD = 0;   // Scorpion: reset clears the 1FFD latch (RAM0/service off)
+  // GMX: warm reset clears the whole register file (MAME machine_reset), the
+  // ProfROM plane included; the 640x200 mode is torn down below with DS80's.
+  Ports::gmxPort00 = 0;
+  Ports::gmxPort78FD = 0;
+  Ports::gmxPort7EFD = 0;
+  Ports::gmxScrollLo = 0;
+  Ports::gmxScrollHi = 0;
+  Ports::gmxPlane = 0;
+  Ports::gmxMagicShift = 0;
+  Ports::portDFFDgmx = 0;
+  g_gmx_tap = false;
   Ports::serialMouseReset();
   // Profi SYSEN: boot into SYS ROM (bank0) with trdos=true to protect page0
   ESPectrum::trdos = (Config::arch == A_PROFI && romInUse == 0);
@@ -1385,7 +1419,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Scorpion Yellow is the same 69888 T frame — same rule; Green (70784 T) gets
   // its own exact 632-sample set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
-      (Config::arch == A_SCORP && Config::romSetScorp != R_SCORP_GR)) {
+      (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP)) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;

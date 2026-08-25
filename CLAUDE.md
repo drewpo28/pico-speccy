@@ -1989,8 +1989,64 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
   without the override the next 7FFD write pages the monitor out) / TR-DOS / 128K
   / 48K (romLatch=1 + pagingLock). NVS keys `romSetScorp`/`pref_romSetScorp`,
   on-disk arch spelling "Scorpion", romset "Scorp".
-- Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle, GMX,
+- Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle,
   a Magic/NMI hotkey into the service monitor, SMUC.
+
+### Scorpion GMX (R_SCORP_GMX, 2026-08-25) — NOT yet hw-tested
+
+Third Scorpion romset ("ScorpGMX", UI "GMX"), modelled from MAME scorpiongmx_state.
+Green timing (70784 T), NO even-M1. **Butter-PSRAM boards only** — enforced softly:
+the ROM load refuses elsewhere and the pick falls back to Yellow with a bootNotice.
+
+- **ROM is NOT embedded**: the 512 KB GMX boot ROM (`/gmx.rom` or `/roms/gmx.rom`
+  on SD; MAME gmx13500.rom CRC 47c9df88 verified) would eat the ENTIRE firmware
+  flash headroom (GM.DLS partition leaves ~1.6 MB; firmware is ~1.65 MB). It is
+  SD-loaded into butter PSRAM once per session (`loadGmxRom`, Config.cpp) and
+  rom[0..31] point into it via XIP — 8 ProfROM planes × 4 banks,
+  `romInUse = (plane << 2) | bank`. **Boot ordering trap**: setup() calls
+  requestMachine BEFORE Buffer::initPools carves the arena, so the boot load is
+  DEFERRED (`s_gmx_late_pending` → `Config::gmxLateRomLoad()` right after
+  initPools; Yellow ROMs stand in meanwhile, never fetched — the CPU hasn't run).
+  `Buffer::butterPoolReady()` is the new readiness query.
+- **2 MB RAM**: page = `(DFFDgmx&7)<<4 | (1FFD.D4)>>1 | (7FFD&7)` (`scorpionC000Page`,
+  one helper for all three writer ports) + #78FD pages CPU bank 2 (0x8000!) as
+  `value ^ 2`. Needs MEM_PG_CNT=128 — raised in setup for a persisted GMX pick and
+  guarded by a Profi-style reboot boundary in requestMachine (entering GMX on a
+  64-page session reboots; leaving needs nothing).
+- **Ports** (cold flash dispatch `Ports::gmxPortWrite/gmxPortRead` — Ports::output/
+  input are RAM code, the register file is not hot): #00 mirror ff00 (D5 BLKEXT
+  register-file off, D4 fixrom, D3 arms magic_shift 0x88|(D0-2) + CPU-only
+  Z80::reset when !fixrom), #7AFD/#7CFD scroll, #7EFD (D7 turbo — EFF7-D4 policy,
+  only while multUser>0; D4-6 plane; D3 gfx_ext; rest ignored), #DFFD (own latch
+  `portDFFDgmx`, NOT Profi's portDFFD). Read-backs mix BRD bits from port254.
+  1FFD D2 = hard-wired DOS page + Beta on (scorpionRomUpdate short-circuit +
+  check_trdos exit hold, the Karabas-ONROM shape).
+- **ProfROM plane switch**: #7EFD D4-6 (full 0-7), plus the legacy 0x0100-0x010F
+  read tap (`g_gmx_tap` — armed only while (romInUse&3)==2 && !page0ram, recomputed
+  in scorpionRomUpdate/`gmxTapRecheck`; one almost-always-false global test in
+  peek8 AND fetchOpcode — ZXMAK2 subscribes both) → `kProfPlaneMap`, clamps to
+  planes 0-3 (MAME/ZXMAK2 agree).
+- **640x200x16 (gfx_ext)** reuses the WHOLE DS80 pair-slot machinery — same
+  `profi_pair_lookup`, same `profi_ds80_driver_set` driver tables, same
+  `Graphics8BitPalette::ds80_active` OSD remap; the modes can never coexist
+  (different machines). 640 px = 320 fb bytes = the full 640x480 row (pad 20+20
+  in 360-wide modes); 200 lines centred via lin_end 20/44 (offBmp/offAtt grown to
+  [240] — MainScreen_Blank indexes offBmp[curline] unconditionally and GMX curline
+  reaches 199). Rendered **whole-line on the first Draw call of each line**
+  (nothing GMX races the beam; avoids the 80-bytes/32-columns mismatch and the
+  `coldraw_cnt>=32`/`MiddleBorder +128` literals). Bitmap page 57/59 (7FFD D3),
+  attrs byte-per-8px at same offset in page+64 (121/123 — hence 128 pages);
+  fg=((a>>3)&8)|(a&7), bg=(a>>3)&0xF; per-frame latched pages + scroll rows
+  ((hi<<8|lo)/80 % 200). Mode switch is vblank-deferred (`gmxExtRequest` →
+  EndFrame `gmxApplyPending`, DS80 rule); border machine parked (`Border_Blank`),
+  top/bottom bands frame-granular (`gmxBorderFrame`), side pads per line;
+  `VIDEO::gmxForceOff()` in ESPectrum::reset (before latches clear); VIDEO::Reset
+  re-arms a live mode via pending-on (video-mode switch rebuilds driver tables).
+  Cold halves deliberately NOT IRAM — RAM cost of the whole GMX feature is ~224 B.
+  Timex forced off on GMX (CPU::reset backstop). Stats-overlay carve-outs and
+  screenshots in GMX mode: not handled (same gap as DS80 screenshots).
+- Known deliberate gaps: magic-lock register snapshots (no NMI button), Vpp/EWR
+  28F400 flash writes ignored, GMX state not in snapshots.
 
 ## Murmuzavr extended RAM — page budget + descriptor cost
 

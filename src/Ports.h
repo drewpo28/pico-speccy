@@ -74,9 +74,31 @@ public:
     static uint8_t portEFF7; // Extended feature register (Profi CP/M uses bit 1=EFF7_512)
     // Scorpion #1FFD latch (write-only on real hardware — no read-back handler):
     // D0=RAM0 at 0x0000, D1=service-monitor ROM override, D4=+8 on the 0xC000 page.
+    // GMX adds D2 = hard-wire the DOS page at 0x0000 + Beta on (MAME scorpiongmx).
     static uint8_t port1FFD;
-    // Recompute Scorpion's rom bank from (port1FFD D1, trdos, romLatch) + recoverPage0.
+    // Recompute Scorpion's rom bank from (port1FFD D1/D2, trdos, romLatch) — and on
+    // GMX the ProfROM plane — then recoverPage0.
     static void scorpionRomUpdate();
+
+    // ── Scorpion GMX latches (R_SCORP_GMX only; reset clears all) ──────────────
+    // port #00 global config: D5=BLKEXT (GMX ports off), D4=fixrom (block plane
+    // writes via #7EFD), D3+D0-2 arm the magic_shift readout + reset.
+    static uint8_t gmxPort00;
+    static uint8_t gmxPort78FD;   // RAM page at 0x8000: page = value ^ 2
+    static uint8_t gmxPort7EFD;   // D7 turbo, D4-6 ProfROM plane, D3 gfx_ext 640x200, D2 magic off
+    static uint8_t gmxScrollLo;   // #7AFD write, high nibble kept
+    static uint8_t gmxScrollHi;   // #7CFD write, 6 bits
+    static uint8_t gmxPlane;      // live ProfROM plane 0-7 (from #7EFD or the 0x0100 tap)
+    static uint8_t gmxMagicShift; // port #00 D3 arms 0x88|(D0-2); #78FD reads shift it out
+    static uint8_t portDFFDgmx;   // GMX #DFFD: 3 extra RAM-page bits (<<4)
+    // ProfROM legacy plane switch (reads of 0x0100-0x010F inside the service bank).
+    static void gmxProfRomTap(uint16_t address);
+    // Recompute g_gmx_tap after a direct romInUse write (check_trdos entry/exit).
+    static void gmxTapRecheck();
+    // Cold GMX port dispatch (flash-resident on purpose — Ports::input/output are
+    // RAM code and the GMX register file is not hot). Return true when handled.
+    static bool gmxPortWrite(uint16_t address, uint8_t data);
+    static bool gmxPortRead(uint16_t address, uint8_t* out);
 
     // PQ-DOS serial keyboard emulation (ports #F3 status / #D3 data). PQDOS uses
     // ONLY this controller for input (no IN A,(#FE) matrix reads anywhere in the

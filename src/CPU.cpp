@@ -85,6 +85,8 @@ bool Z80Ops::is1024 = false;
 bool Z80Ops::isProfi = false;
 bool Z80Ops::isScorpion = false;
 bool g_scorp_even_m1 = false;
+bool g_scorp_gmx = false;
+bool g_gmx_tap = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -118,8 +120,9 @@ void CPU::updateStatesInFrame() {
         IntStart = INT_START_PROFI;
         IntEnd = INT_END_PROFI;
     } else if (Config::arch == A_SCORP) {
-        // Green PCB revision = 316 lines/frame; Yellow = 312 (see CPU.h).
-        statesInFrame = (Config::romSetScorp == R_SCORP_GR)
+        // Green PCB / GMX = 316 lines/frame; Yellow = 312 (see CPU.h; MAME's
+        // scorpiongmx builds on the Turbo+/Green machine config).
+        statesInFrame = (Config::romSetScorp != R_SCORP)
                             ? TSTATES_PER_FRAME_SCORPION_GR
                             : TSTATES_PER_FRAME_SCORPION;
         IntStart = INT_START_SCORPION;
@@ -148,8 +151,10 @@ void CPU::reset() {
     // Derived once here (like isALF) instead of per-branch below — a branch that
     // forgets to clear it would leak Scorpion's #1FFD decode into another machine.
     Z80Ops::isScorpion = (Config::arch == A_SCORP);
-    // Even-M1 is a Yellow-PCB-only trait (see CPU.h); Green boards dropped it.
-    g_scorp_even_m1 = Z80Ops::isScorpion && (Config::romSetScorp != R_SCORP_GR);
+    // Even-M1 is a Yellow-PCB-only trait (see CPU.h); Green and GMX dropped it.
+    g_scorp_even_m1 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP);
+    g_scorp_gmx = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_GMX);
+    g_gmx_tap = false;   // re-armed by Ports::scorpionRomUpdate once paging settles
     if (Config::arch == A_48K) {
         Z80Ops::isByte = (Config::romSet48 == R_48K_BY);
         Ports::getFloatBusData = &Ports::getFloatBusData48;
@@ -213,8 +218,8 @@ void CPU::reset() {
         Z80Ops::is512 = false;
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
-        // Set emulation loop sync target
-        ESPectrum::target = (Config::romSetScorp == R_SCORP_GR)
+        // Set emulation loop sync target (Green/GMX share the 316-line frame)
+        ESPectrum::target = (Config::romSetScorp != R_SCORP)
                                 ? MICROS_PER_FRAME_SCORPION_GR
                                 : MICROS_PER_FRAME_SCORPION;
     } else { // if (Config::arch == A_PENT) - by default
@@ -250,7 +255,9 @@ void CPU::reset() {
     // normal running state (CP/M code in RAM), so it steals the RTC register
     // select and ROMain's boot hangs in its MC146818 "wait while UIP=1" spin
     // (RTC::readDisabled answers UIP-clear only for the LATCHED status regs).
-    if ((Z80Ops::isByte || Z80Ops::isProfi) && Config::timex_video) Config::timex_video = false;
+    // ...and on Scorpion GMX: the Timex MainScreen branch would render over the
+    // GMX 640x200 pair-slot framebuffer.
+    if ((Z80Ops::isByte || Z80Ops::isProfi || g_scorp_gmx) && Config::timex_video) Config::timex_video = false;
 
     // «Байт»: RESET returns the DD66 map to native state — the built-in test's
     // dispatch (#39F9) must land on DD73's own base test at #3A00, not on the
@@ -435,6 +442,11 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
 // Read byte from RAM
 IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
+    // GMX ProfROM legacy plane switch: any read of 0x0100-0x010F while the
+    // service bank is at 0x0000 (g_gmx_tap, ZXMAK2 SubscribeRdMem window).
+    // One almost-always-false global test — the g_ngs_zxdma pattern.
+    if (g_gmx_tap && (address & 0xFFF0) == 0x0100)
+        Ports::gmxProfRomTap(address);
     return gsDmaPeek8(address);
 }
 
@@ -453,6 +465,10 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     // wait T first. Draw(1) so the renderer accounts the extra tact too.
     if (g_scorp_even_m1 && (pc & 0xC000) && (CPU::tstates & 1))
         VIDEO::Draw(1, false);
+    // GMX ProfROM plane switch fires on M1 fetches of 0x0100-0x010F too
+    // (ZXMAK2 SubscribeRdMemM1 + SubscribeRdMem).
+    if (g_gmx_tap && (pc & 0xFFF0) == 0x0100)
+        Ports::gmxProfRomTap(pc);
     VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
     if (DivMMC::enabled) {
         DivMMC::preOpcFetch(pc);

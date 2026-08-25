@@ -406,8 +406,50 @@ static void init_profi_pair_lookup() {
 bool VIDEO::isProfiDS80() {
     return Config::arch == A_PROFI && (Ports::portDFFD & 0x80);
 }
-uint16_t VIDEO::offBmp[SPEC_H];
-uint16_t VIDEO::offAtt[SPEC_H];
+
+volatile bool VIDEO::gmx_ext_pending_on = false;
+volatile bool VIDEO::gmx_ext_pending_off = false;
+bool VIDEO::gmx_ext_live = false;
+uint8_t* VIDEO::gmx_frame_bmp = nullptr;
+uint8_t* VIDEO::gmx_frame_att = nullptr;
+uint32_t VIDEO::gmx_frame_srow = 0;
+bool VIDEO::gmx_border_dirty = false;
+uint8_t VIDEO::gmx_border_col = 0xFF;
+
+// Immediate 640x200 teardown for ESPectrum::reset — the port latches are about
+// to be cleared, so the deferred path would never see the "off" edge. Mirrors
+// the DS80 reset teardown right above it in ESPectrum.cpp: driver back to
+// standard tables, framebuffer cleared (pair-slot bytes are garbage under the
+// standard palette), geometry restored by the VIDEO::Reset that follows.
+void VIDEO::gmxForceOff() {
+    gmx_ext_pending_on = gmx_ext_pending_off = false;
+    if (!gmx_ext_live) return;
+    gmx_ext_live = false;
+    profi_ds80_driver_set(false, nullptr, nullptr);
+    Graphics8BitPalette::ds80_active = false;
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++)
+            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+    }
+    Debug::log("[RESET] GMX 640x200 off + FB cleared");
+}
+
+// #7EFD D3 request — deferred to EndFrame like the DS80 DFFD.7 switch (driver
+// pair tables must never be rewritten mid-scanout). An on/off pair inside one
+// frame cancels out, same as the DS80 handler.
+void VIDEO::gmxExtRequest(bool on) {
+    if (on) {
+        if (gmx_ext_live) { gmx_ext_pending_off = false; return; }
+        gmx_ext_pending_on = true;
+        gmx_ext_pending_off = false;
+    } else {
+        if (!gmx_ext_live) { gmx_ext_pending_on = false; return; }
+        gmx_ext_pending_off = true;
+        gmx_ext_pending_on = false;
+    }
+}
+uint16_t VIDEO::offBmp[240];   // see Video.h — GMX curline reaches 199
+uint16_t VIDEO::offAtt[240];
 SaveRectT VIDEO::SaveRect;
 int VIDEO::VsyncFinetune[2];
 uint32_t VIDEO::framecnt = 0;
@@ -2462,8 +2504,23 @@ void VIDEO::Reset() {
         profi_clrmem = nullptr;
     }
 
-    if (Config::arch == A_PROFI) {
+    // GMX video-mode-switch / reset recovery: the standard driver tables were just
+    // rebuilt, so a live 640x200 session must redo its full activation in the next
+    // vblank; on any other machine kill stale requests outright.
+    if (g_scorp_gmx) {
+        if (gmx_ext_live) {
+            gmx_ext_live = false;
+            gmx_ext_pending_on = true;
+        }
+    } else {
+        gmx_ext_live = false;
+        gmx_ext_pending_on = gmx_ext_pending_off = false;
+    }
+
+    if (Config::arch == A_PROFI || g_scorp_gmx) {
         // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
+        // GMX shares it: its 640x200 mode uses the same 16-colour pair-slot scheme
+        // (fixed ZX palette — profiPaletteReset defaults, no palette port on GMX).
         init_profi_pair_lookup();
         // Reset live palette to defaults on machine reset
         profiPaletteReset();
@@ -2474,7 +2531,9 @@ void VIDEO::Reset() {
         // snapshot converts that into one sequential burst per frame.
         // On SPI-PSRAM/SWAP boards pages 56/58 are force_sram_locked heap SRAM,
         // so ds80_frame_clrmem is already a plain SRAM pointer — no snapshot.
-        if (!ds80_clr_sram && butter_psram_size() > 0)
+        // GMX reads its bitmap/attr pages straight from butter XIP (sequential
+        // 80-byte rows are cache-friendly) — no snapshot buffer needed there.
+        if (Config::arch == A_PROFI && !ds80_clr_sram && butter_psram_size() > 0)
             ds80_clr_sram = (uint8_t*)malloc(DS80_CLR_SRAM_SIZE);
     } else if (ds80_clr_sram) {
         free(ds80_clr_sram);
@@ -2989,6 +3048,72 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
             // pixels 4..7 = L(c), R(c), L(d), R(d) — same swap
             *lineptr32++ = ld | (lc << 16);
         }
+    } else if (gmx_ext_live) {
+        // Scorpion GMX 640x200x16 — same packed-pair framebuffer as DS80 (1 fb
+        // byte = 2 output pixels via the driver pair tables), rendered a WHOLE
+        // LINE at a time on the first Draw call of each line: nothing in the GMX
+        // world races the beam (it is the boot ROM's GUI mode), and whole-line
+        // rendering avoids the 80-bytes-per-line / 32-columns mismatch (2.5
+        // bytes per 4T column does not divide).
+        // Layout (MAME scorpiongmx spectrum_update_screen): bitmap = 80 bytes/
+        // line linear in page 57/59 (7FFD D3), attrs byte-per-8px at the same
+        // offset in page+64 (121/123); fg = ((attr>>3)&8)|(attr&7), bg =
+        // (attr>>3)&0xF; vertical scroll offsets the source row.
+        // Placed BEFORE the gigascreen branch: the pair-slot framebuffer is
+        // structurally incompatible with gigascreen blending.
+        unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
+        unsigned int start_col = end_col - loopCount;
+        uint32_t line = curline;   // 0..199
+        if (start_col == 0) {
+            if (line == 0 || gmx_frame_bmp == nullptr) {
+                // Per-frame latch (rend_profi model): pages + scroll captured at
+                // line 0 so mid-frame flips don't tear.
+                uint32_t bmpPg = MemESP::videoLatch ? 0x3Bu : 0x39u;
+                gmx_frame_bmp = (bmpPg < MEM_PG_CNT) ? MemESP::ram[bmpPg].direct() : nullptr;
+                gmx_frame_att = (bmpPg + 64 < MEM_PG_CNT) ? MemESP::ram[bmpPg + 64].direct() : nullptr;
+                gmx_frame_srow = ((((uint32_t)Ports::gmxScrollHi << 8) | Ports::gmxScrollLo) / 80u) % 200u;
+            }
+            const uint32_t frow = (uint32_t)linedraw_cnt;   // content rows lin_end..lin_end2-1
+            uint8_t* fb_row = (vga.frameBuffer && frow < (uint32_t)vga.yres)
+                              ? (uint8_t*)vga.frameBuffer[frow] : nullptr;
+            if (fb_row && line < 200) {
+                const int pad_l = ((int)vga.xres - 320) / 2;   // 0 (320) or 20 (360)
+                // Side border pads, per line (frame-granular top/bottom bands are
+                // painted in EndFrame).
+                if (pad_l > 0) {
+                    uint8_t brdSlot = profi_pair_lookup[borderColor & 7][borderColor & 7];
+                    memset(fb_row, brdSlot, pad_l);
+                    memset(fb_row + pad_l + 320, brdSlot, (size_t)vga.xres - pad_l - 320);
+                }
+                uint32_t srow = line + gmx_frame_srow;
+                if (srow >= 200) srow -= 200;
+                uint32_t off = srow * 80;
+                const uint8_t* bmp = gmx_frame_bmp;
+                const uint8_t* att = gmx_frame_att;
+                if (bmp) {
+                    for (int j = 0; j < 80; j++) {
+                        uint8_t b = bmp[off + j];
+                        uint8_t a = att ? att[off + j] : 0x07;
+                        uint8_t fg = (uint8_t)(((a >> 3) & 0x08) | (a & 0x07));
+                        uint8_t bg = (uint8_t)((a >> 3) & 0x0F);
+                        // 8 source pixels → 4 pair bytes, (k^2) pre-swizzled for the
+                        // ISR's x^2 read pattern (same trick as the DS80 branch), one
+                        // aligned uint32_t store per source byte.
+                        uint8_t p0 = profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg]; // k=2 → +0
+                        uint8_t p1 = profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]; // k=3 → +1
+                        uint8_t p2 = profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg]; // k=0 → +2
+                        uint8_t p3 = profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg]; // k=1 → +3
+                        *(uint32_t*)(fb_row + pad_l + j * 4) =
+                            (uint32_t)p0 | ((uint32_t)p1 << 8) | ((uint32_t)p2 << 16) | ((uint32_t)p3 << 24);
+                    }
+                } else {
+                    // Attr/bitmap page not backed (butter-less board) — black line.
+                    memset(fb_row + pad_l, profi_pair_lookup[0][0], 320);
+                }
+            }
+        }
+        // Keep the shared fb cursor in sync with the standard renderer stride.
+        lineptr32 += loopCount * 2;
     } else
     if (VIDEO::gigascreen_enabled
         && !VIDEO::ulaplus_enabled
@@ -3444,6 +3569,73 @@ IRAM_ATTR void VIDEO::Blank_Opcode(bool contended) { CPU::tstates += 4; }
 IRAM_ATTR void VIDEO::Blank_Snow(unsigned int statestoadd, bool contended) { CPU::tstates += statestoadd; }
 IRAM_ATTR void VIDEO::Blank_Snow_Opcode(bool contended) { CPU::tstates += 4; }
 
+// Cold half of EndFrame's GMX mode switch (flash on purpose — EndFrame is RAM
+// code and this runs once per switch). Vblank-only: the driver pair tables are
+// read by the scanout DMA in real time (DS80 rule).
+void VIDEO::gmxApplyPending() {
+    if (gmx_ext_pending_on) {
+        gmx_ext_pending_on = false;
+        // Same driver path as DS80: pair tables from profi_pair_lookup with
+        // the (default ZX) 16-colour palette; ISR expands 1 fb byte → 2 px.
+        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        rebuildDS80ColorLut();
+        Graphics8BitPalette::ds80_active = true;
+        gmx_ext_live = true;
+        gmx_frame_bmp = nullptr;
+        gmx_frame_att = nullptr;
+        // 200 content lines centred vertically: 20+20 border rows at yres=240,
+        // 44+44 at yres=288. Content is rendered whole-line in MainScreen.
+        lin_end  = ((int)vga.yres >= 288) ? 44 : 20;
+        lin_end2 = lin_end + 200;
+        tstateDraw   = tStatesScreen;
+        linedraw_cnt = lin_end;
+        DrawBorder = &Border_Blank;   // bands are painted frame-granular instead
+        gmx_border_dirty = true;
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        Debug::log("[GMX] 640x200 on: lin_end=%d bmpPg=%u", lin_end,
+                   (unsigned)(MemESP::videoLatch ? 0x3B : 0x39));
+    } else if (gmx_ext_pending_off) {
+        gmx_ext_pending_off = false;
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+        gmx_ext_live = false;
+        // Pair-slot bytes are garbage under the standard tables — clear.
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        // Restore the standard Scorpion line window (mirror of Reset's generic
+        // block; Scorpion always takes the 24/216 arm unless full-border 288).
+        if (isFullBorder && !isFullBorder240()) { lin_end = 48; lin_end2 = 240; }
+        else                                    { lin_end = 24; lin_end2 = 216; }
+        tstateDraw   = tStatesScreen;
+        linedraw_cnt = lin_end;
+        DrawBorder = &Border_Blank; // mid-frame border state is stale — skip this frame
+        brdChange = true;
+        Debug::log("[GMX] 640x200 off");
+    }
+}
+
+// Frame-granular top/bottom border bands for the GMX mode — repainted only when
+// the border colour (or the mode itself) changed; side pads are per content line.
+void VIDEO::gmxBorderFrame(bool skipFrame) {
+    if (skipFrame) return;
+    if (!(brdChange || gmx_border_dirty || gmx_border_col != (borderColor & 7))) return;
+    gmx_border_dirty = false;
+    gmx_border_col = borderColor & 7;
+    uint8_t slot = profi_pair_lookup[gmx_border_col][gmx_border_col];
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++) {
+            if (_y >= lin_end && _y < lin_end2) continue;
+            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], slot, vga.xres);
+        }
+    }
+}
+
+
 IRAM_ATTR void VIDEO::EndFrame() {
 
     linedraw_cnt = lin_end;
@@ -3536,6 +3728,10 @@ IRAM_ATTR void VIDEO::EndFrame() {
             DrawBorder = &Border_Blank; // mid-frame machine state is stale — skip this frame's flush
             brdChange = true;           // schedule full border repaint next frame
         }
+
+        // ── Scorpion GMX 640x200 deferred mode switch — same vblank-only rule ──
+        // (cold flash body; the checks stay cheap in this RAM function)
+        if (gmx_ext_pending_on || gmx_ext_pending_off) gmxApplyPending();
     }
 
     // Profi palette refresh. EndFrame is NOT in the display blanking window:
@@ -3763,6 +3959,16 @@ IRAM_ATTR void VIDEO::EndFrame() {
     ds80_osd_carve = ds80_border_geom && (VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04);
     ds80_carve240  = (int)vga.yres < 288;
 
+    if (gmx_ext_live) {
+        // GMX 640x200: the per-T-state border machine stays parked (its writers
+        // would put raw ZX indices into a pair-slot framebuffer) — cold flash
+        // body in gmxBorderFrame, cheap check here.
+        gmxBorderFrame(skipFrame);
+        brdGigascreenChange = false;
+        DrawBorder = &Border_Blank;
+        lastBrdTstate = tStatesBorder;
+        brdChange = false;
+    } else {
     if (!skipFrame) {
         if (brdChange || brdGigascreenChange) {
             DrawBorder();
@@ -3785,6 +3991,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
         DrawBorder = &TopBorder_Blank;
     lastBrdTstate = tStatesBorder;
     brdChange = false;
+    }
 
     if (Config::gigascreen_onoff == 2) { // Auto mode
         if (gigascreen_auto_countdown > 0) {

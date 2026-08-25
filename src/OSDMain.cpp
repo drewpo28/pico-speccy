@@ -2033,6 +2033,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // Set AFTER reset() — reset clears port1FFD.
                             ESPectrum::reset(2);
                             Ports::port1FFD = 0x02;
+                            Ports::scorpionRomUpdate(); // re-derive (arms the GMX ProfROM tap)
                         } else if (opt == 2) {
                             // TR-DOS: boot the machine's own bank3 with trdos +
                             // romLatch=1 asserted (same pattern as Profi's bank1).

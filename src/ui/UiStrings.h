@@ -224,6 +224,7 @@
 // frame timing (312 vs 316 lines).
 #define TXT_ROM_SCORP       "Yellow PCB"
 #define TXT_ROM_SCORP_GR    "Green PCB"
+#define TXT_ROM_SCORP_GMX   "GMX"
 #define TXT_ROM_ALF         "ALF cartridge"
 
 // ── Options ────────────────────────────────────────────────────────────────────

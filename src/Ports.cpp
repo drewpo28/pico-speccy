@@ -315,6 +315,14 @@ uint8_t Ports::portAFF7 = 0;
 uint8_t Ports::portDFFD = 0;
 uint8_t Ports::portEFF7 = 0;
 uint8_t Ports::port1FFD = 0;
+uint8_t Ports::gmxPort00 = 0;
+uint8_t Ports::gmxPort78FD = 0;
+uint8_t Ports::gmxPort7EFD = 0;
+uint8_t Ports::gmxScrollLo = 0;
+uint8_t Ports::gmxScrollHi = 0;
+uint8_t Ports::gmxPlane = 0;
+uint8_t Ports::gmxMagicShift = 0;
+uint8_t Ports::portDFFDgmx = 0;
 uint8_t Ports::port008B = 0;
 uint8_t Ports::port018B = 0;
 uint8_t Ports::port028B = 0;
@@ -771,6 +779,11 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       return (reg == 0) ? IDE::read_data_low() : IDE::read8(reg);
     }
     // else: not an IDE sub-address — fall through (don't shadow AY/ULA etc.)
+  }
+  // Scorpion GMX register read-backs — cold flash dispatch, see gmxPortRead.
+  if (g_scorp_gmx) {
+    uint8_t gmxData;
+    if (gmxPortRead(address, &gmxData)) return gmxData;
   }
   // ULA PORT
   if ((address & 0x0001) == 0) {
@@ -1732,19 +1745,179 @@ static inline void profiFdcSysWrite(uint8_t data) {
     ESPectrum::fdd.control |= kRVMWD177XDDEN;
 }
 
+// GMX ProfROM 0x0100-0x010F read tap: armed only while the SERVICE bank sits at
+// 0x0000 with ROM actually mapped (ZXMAK2 MemoryScorpionProfRom256 gates on SYSEN;
+// MAME taps 0x0100-0x010C when (bank & 3) == SYS && !romram). Recomputed on every
+// romInUse change for Scorpion, so the hot-path test in peek8/fetchOpcode is one
+// almost-always-false global load.
+static inline void gmxTapUpdate() {
+  g_gmx_tap = g_scorp_gmx && ((MemESP::romInUse & 3) == 2) && !MemESP::page0ram;
+}
+
+// The 0xC000 RAM page from all three latches: 7FFD bits 0-2 (low3), 1FFD D4 (+8),
+// and on GMX the #DFFD 3 extra bits (<<4) — 128 pages = 2 MB (MAME scorpiongmx).
+// Bounds W/A like the Profi combine: never walk off the page strip.
+static inline uint32_t scorpionC000Page(uint32_t low3) {
+  uint32_t page = low3 | ((Ports::port1FFD & 0x10) >> 1);
+  if (g_scorp_gmx) page |= (uint32_t)(Ports::portDFFDgmx & 0x07) << 4;
+  uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
+  if (page >= pages) page = low3;
+  return page;
+}
+
 // Scorpion ROM select — MAME's hardware-derived function (sinclair/scorpion.cpp):
 //   rom = 1FFD D1 ? 2 : ((dos << 1) | 7FFD D4)
 // bank0/1 = BASIC-128/BASIC-48, bank2 = service monitor, bank3 = TR-DOS. Note the
 // quirk that IS the hardware: in DOS with the 128 ROM selected (D4=0) the SERVICE
 // page appears, not TR-DOS — normal TR-DOS software always runs with D4=1.
+// GMX: the bank lands inside the live ProfROM plane (romInUse = plane*4 + bank),
+// and 1FFD D2 hard-wires the DOS page at 0x0000 (overriding even RAM0) with the
+// Beta interface forced on — MAME scorpiongmx scorpion_update_memory.
 // The ONLY place Scorpion's rom bank is derived — callers: the #1FFD handler, the
 // Scorpion arm of the #7FFD rom-select, check_trdos entry/exit, the .z80 loader.
 // recoverPage0() already orders newSRAM > page0ram > rom[romInUse], which matches
 // the hardware (RAM0 wins over the service override).
 void Ports::scorpionRomUpdate() {
-  MemESP::romInUse = (port1FFD & 0x02) ? 2
-                   : ((((uint8_t)ESPectrum::trdos) << 1) | MemESP::romLatch);
+  if (g_scorp_gmx && (port1FFD & 0x04)) {
+    MemESP::romInUse = (gmxPlane << 2) | 3;
+    ESPectrum::trdos = true;   // Beta on; check_trdos holds DOS while D2 is set
+    MemESP::ramCurrent[0] = MemESP::rom[MemESP::romInUse].direct();
+    gmxTapUpdate();
+    return;
+  }
+  uint8_t bank = (port1FFD & 0x02) ? 2
+               : ((((uint8_t)ESPectrum::trdos) << 1) | MemESP::romLatch);
+  MemESP::romInUse = (g_scorp_gmx ? (gmxPlane << 2) : 0) | bank;
   MemESP::recoverPage0();
+  gmxTapUpdate();
+}
+
+// MAME scorpiontb prof_plane_map — the legacy ProfROM plane-switch table driven
+// by reads of 0x0100/4/8/C from inside the service bank; clamps to planes 0-3
+// even on GMX (the full 0-7 range is reachable only via #7EFD D4-6).
+static const uint8_t kProfPlaneMap[16] = {
+    0, 1, 2, 3,
+    3, 3, 3, 2,
+    2, 2, 0, 1,
+    1, 0, 1, 0,
+};
+
+// Called from Z80Ops::peek8/fetchOpcode when g_gmx_tap is armed and the address
+// is 0x0100-0x010F (ZXMAK2 subscribes the whole 16-byte window; the plane slot
+// is addr bits 2-3). Out of line — the armed case is rare.
+void Ports::gmxProfRomTap(uint16_t address) {
+  uint8_t plane = kProfPlaneMap[(address & 0x0C) | (gmxPlane & 0x03)];
+  if (plane != gmxPlane) {
+    gmxPlane = plane;
+    scorpionRomUpdate();
+  }
+}
+
+void Ports::gmxTapRecheck() { gmxTapUpdate(); }
+
+// ── Scorpion GMX port family (MAME sinclair/scorpion.cpp scorpiongmx) ────────
+// Deliberately NOT IRAM: called from the RAM-resident Ports::output/input only
+// while g_scorp_gmx, and the register file is not on any hot path — keeping the
+// bodies in flash saves ~1 KB of the RAM code budget.
+bool Ports::gmxPortWrite(uint16_t address, uint8_t data) {
+  if ((address & 0x00FF) == 0) {
+    // Port #00 global config: D5=BLKEXT (GMX register file off), D4=fixrom
+    // (freeze the ProfROM plane), D3 arms the magic shift-register readout
+    // 0x88|(D0-2) and, with fixrom off, pulses CPU reset — the GMX "magic
+    // jump" into the boot ROM (MAME global_cfg_w).
+    gmxPort00 = data;
+    if (data & 0x08) {
+      gmxMagicShift = 0x88 | (data & 0x07);
+      if (!(data & 0x10)) Z80::reset();   // CPU only — RAM/paging stay
+    }
+    return true;
+  }
+  if (gmxPort00 & 0x20) return false;     // BLKEXT → register file off
+  switch (address) {                      // full 16-bit decode (MAME mirror 0)
+    case 0x78FD: {
+      // RAM page at 0x8000 (CPU bank 2): page = value ^ 2, so 0 = the
+      // default page 2. Full 7-bit page number (2 MB).
+      gmxPort78FD = data & 0x7F;
+      uint32_t pg = gmxPort78FD ^ 2;
+      uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
+      if (pg >= pages) pg = 2;
+      MemESP::ramCurrent[2] = MemESP::ram[pg].sync(2);
+      MemESP::ramContended[2] = false;
+      LED::touchW(LED::RAM);
+      return true;
+    }
+    case 0x7AFD: gmxScrollLo = data & 0xF0; return true;  // 640x200 v-scroll
+    case 0x7CFD: gmxScrollHi = data & 0x3F; return true;
+    case 0x7EFD: {
+      gmxPort7EFD = data;
+      // D7 turbo (7 MHz) — honored only while the USER has turbo on, same
+      // policy as Pentagon-1024SL #EFF7 D4 (the GMX boot ROM flips it at
+      // will and must not turbo a 3.5 MHz session).
+      if (ESPectrum::multUser) {
+        uint8_t want = (data & 0x80) ? ESPectrum::multUser : 0;
+        if (want != ESPectrum::multiplicator) {
+          ESPectrum::multiplicator = want;
+          CPU::updateStatesInFrame();
+        }
+      }
+      // D4-6 = ProfROM plane (28F400 A16-18), frozen by fixrom (port #00 D4)
+      if (!(gmxPort00 & 0x10)) {
+        uint8_t plane = (data >> 4) & 0x07;
+        if (plane != gmxPlane) {
+          gmxPlane = plane;
+          scorpionRomUpdate();
+        }
+      }
+      // D3 = gfx_ext 640x200x16 — applied in vblank (EndFrame), the driver
+      // palette tables must never be rewritten mid-scanout (DS80 precedent)
+      VIDEO::gmxExtRequest((data & 0x08) != 0);
+      // D2 = magic_disabled, D1 = Vpp, D0 = EWR (28F400 flash write) — ignored
+      return true;
+    }
+    case 0xDFFD:
+      // 3 extra RAM-page bits for the 0xC000 window ((dffd&7)<<4 → 2 MB)
+      portDFFDgmx = data & 0x07;
+      MemESP::bankLatch = scorpionC000Page(MemESP::bankLatch & 0x07);
+      MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);
+      MemESP::ramContended[3] = false;
+      LED::touchW(LED::RAM);
+      return true;
+    default: return false;
+  }
+}
+
+// GMX register read-backs (live state; the MAME magic-lock snapshots are not
+// modelled — no GMX Magic/NMI button in this port).
+bool Ports::gmxPortRead(uint16_t address, uint8_t* out) {
+  if (gmxPort00 & 0x20) return false;     // BLKEXT → register file off
+  if (address == 0x78FD) {
+    // BRD1 (last #FE bit1) | RAM-at-0x8000 page | magic shift-register bit 0
+    *out = (uint8_t)((port254 & 0x02) << 6) | (gmxPort78FD & 0x7F) | (gmxMagicShift & 0x01);
+    gmxMagicShift >>= 1;
+    return true;
+  }
+  if (address == 0x7AFD) {
+    // BRD0 | the composed 0xC000 paging state: DFFD<<4 | 1FFD.D4<<3 | 7FFD 0-2
+    *out = (uint8_t)((port254 & 0x01) << 7)
+         | (uint8_t)((portDFFDgmx & 0x07) << 4)
+         | (uint8_t)((port1FFD & 0x10) >> 1)
+         | (uint8_t)(MemESP::bankLatch & 0x07);
+    return true;
+  }
+  if (address == 0x7EFD) {
+    // BRD2 | 1FFD.D0(RAM0)<<6 | BLKEXT<<5 | port00.D7<<4 | gfx<<3 | turbo<<2
+    //      | videoLatch<<1 | pagingLock
+    *out = (uint8_t)((port254 & 0x04) << 5)
+         | (uint8_t)((port1FFD & 0x01) << 6)
+         | (uint8_t)(gmxPort00 & 0x20)
+         | (uint8_t)((gmxPort00 & 0x80) >> 3)
+         | (uint8_t)(gmxPort7EFD & 0x08)
+         | (uint8_t)((gmxPort7EFD & 0x80) >> 5)
+         | (uint8_t)((MemESP::videoLatch & 1) << 1)
+         | (uint8_t)(MemESP::pagingLock & 1);
+    return true;
+  }
+  return false;
 }
 
 IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
@@ -1872,6 +2045,13 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     ZiFi::unoUartWrite(address & 0x0100, data);
     return;
   }
+  // Scorpion GMX port family — cold flash-resident dispatch, see gmxPortWrite.
+  // Placed BEFORE the ULA and #7FFD blocks on purpose: port #00 is even (the
+  // ULA branch would repaint the border with config bytes — the Scorpion PAL
+  // decodes ULA as A5=1&A1=1&A0=0, so #00 never reaches it on hardware), and
+  // #78FD/#7AFD/#7CFD/#7EFD have A15=0/A1=0 (the loose 7FFD gate would eat
+  // them as paging writes).
+  if (g_scorp_gmx && gmxPortWrite(address, data)) return;
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
@@ -3001,16 +3181,14 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (Z80Ops::isScorpion && ((address & 0xC002) == 0) && (address & 0x0020)) {
     LED::touchW(LED::RAM);
     port1FFD = data;
-    uint32_t page = (MemESP::bankLatch & 0x07) | ((data & 0x10) >> 1);
-    uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
-    if (page >= pages) page &= 0x07; // W/A like the Profi combine: never walk off the strip
+    uint32_t page = scorpionC000Page(MemESP::bankLatch & 0x07);
     if (page != MemESP::bankLatch) {
       MemESP::bankLatch = page;
       MemESP::ramContended[3] = false;
       MemESP::ramCurrent[3] = MemESP::ram[page].sync(3);
     }
     MemESP::page0ram = data & 0x01;
-    scorpionRomUpdate();   // D1 service override / TR-DOS / romLatch + recoverPage0
+    scorpionRomUpdate();   // D1 service / GMX D2 DOS / TR-DOS / romLatch + recoverPage0
     return;
   }
   // 128K, Pentagon
@@ -3071,12 +3249,11 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         MemESP::pagingLock = D5;
       }
       uint32_t page = (data & 0x7);
-      // Scorpion: page = ((1FFD D4) >> 1) | (7FFD bits 0-2) — the extended-RAM
-      // bit lives in the OTHER port's latch, combined on every write of either.
+      // Scorpion: page = (GMX #DFFD bits << 4) | ((1FFD D4) >> 1) | (7FFD bits
+      // 0-2) — the extended-RAM bits live in the OTHER ports' latches,
+      // recombined on every write of any of them.
       if (Z80Ops::isScorpion) {
-        page |= (port1FFD & 0x10) >> 1;
-        uint32_t tp = ram_pages + butter_pages + psram_pages + swap_pages;
-        if (page >= tp) page = (data & 0x7); // W/A like the Profi combine below
+        page = scorpionC000Page(data & 0x07);
       }
       if ((Z80Ops::is512 || Z80Ops::is1024) && !MemESP::notMore128 &&
           !MemESP::pagingLock) {

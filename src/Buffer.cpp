@@ -395,6 +395,8 @@ bool Buffer::load(uint32_t size, bool force, LoadReader reader, void* ctx, bool 
 }
 
 // ─── Pointer alloc / free (heap or butter) ──────────────────────────────────────
+bool Buffer::butterPoolReady() { return g_butter.ready(); }
+
 void* Buffer::palloc(size_t bytes, uint32_t flags) {
     if (!bytes) return nullptr;
     bool preferPsram = flags & PREFER_PSRAM;
