@@ -1995,13 +1995,18 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
 ### Scorpion GMX (R_SCORP_GMX, 2026-08-25) — NOT yet hw-tested
 
 Third Scorpion romset ("ScorpGMX", UI "GMX"), modelled from MAME scorpiongmx_state.
-Green timing (70784 T), NO even-M1. **QSPI(butter)-PSRAM boards only**: MURM1's
-build carries neither the ROM nor the GMX menu rows (`GMX_IN_FLASH=0`), and on
-GMX-capable builds a disabled/absent butter chip falls the pick back to Yellow
-with a bootNotice (requestMachine).
+Green timing (70784 T), NO even-M1. **Needs QSPI(butter) PSRAM, gated at RUNTIME,
+not per board**: QSPI PSRAM is a property of the plugged-in Pico 2 module, not of
+the carrier (a Murmulator 1 takes a CS1-PSRAM module fine — its butter probe is
+GPIO19), so `GMX_IN_FLASH=1` on EVERY board (=0 stays an escape hatch that drops
+the ROM, the menu rows and the GM.DLS partition shrink together). A
+disabled/absent butter chip: the menu retargets a staged GMX pick to Yellow in
+`resolveConstraints` ("GMX needs QSPI PSRAM"); a persisted pick falls back in
+requestMachine with a bootNotice (visible at boot only — that is why the menu
+gate exists).
 
-- **ROM is EMBEDDED in flash, deduplicated + overlaid** (`#if GMX_IN_FLASH` —
-  CMake sets it 1 for every board but MURM1): the 512 KB GMX boot ROM
+- **ROM is EMBEDDED in flash, deduplicated + overlaid** (`#if GMX_IN_FLASH`,
+  all boards): the 512 KB GMX boot ROM
   (`src/gmx13500.bin` = MAME gmx13500.rom, CRC 47c9df88) costs **~345 KB of
   flash, not 512** — `tools/rom_pack.py gmx` (`pack_gmx`) splits it into 32
   16K banks, folds the 6 exact duplicates (planes 2/3, the flashtool planes,

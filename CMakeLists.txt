@@ -350,20 +350,19 @@ pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/rp2350-memmap.ld")
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections)
 target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
 
-# Scorpion GMX: the 512 KB boot ROM is embedded in flash on QSPI(butter)-PSRAM
-# boards only. MURM1's SPI PSRAM cannot back the GMX 128-page strip / 640x200
-# pages anyway, so its build carries neither the ROM nor the GMX menu rows and
-# keeps the full 2.375 MB GM.DLS partition. On GMX builds the linker shrinks
-# the GM.DLS partition to 1.6875 MB (rp2350-memmap.ld, __gmx_rom_in_flash) so
-# firmware + ROM fit below it — the stock converted gm.dls bank (~1.59 MB)
-# still fits with ~100 KB margin; a previously provisioned bank at the old
-# address fails the header check and re-provisions from SD.
-if (NOT MURM)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_IN_FLASH=1)
-    target_link_options(${PROJECT_NAME} PRIVATE -Wl,--defsym=__gmx_rom_in_flash=1)
-else ()
-    target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_IN_FLASH=0)
-endif ()
+# Scorpion GMX: the boot ROM (~345 KB after dedup/overlays) is embedded in flash
+# on EVERY board — QSPI(butter) PSRAM is a property of the plugged-in Pico 2
+# MODULE, not of the carrier board (a Murmulator 1 takes a module with PSRAM on
+# XIP CS1 = GPIO19 just fine), so the gate is the RUNTIME butter probe: without
+# a chip the GMX pick falls back to Yellow PCB (Config::requestMachine +
+# resolveConstraints). The linker shrinks the GM.DLS partition to 1.6875 MB
+# (rp2350-memmap.ld, __gmx_rom_in_flash) so firmware + ROM fit below it — the
+# stock converted gm.dls bank (~1.59 MB) still fits with ~100 KB margin; a
+# previously provisioned bank at the old address fails the header check and
+# re-provisions from SD. GMX_IN_FLASH=0 remains an escape hatch (drops the ROM,
+# the menu rows and the partition shrink together).
+target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_IN_FLASH=1)
+target_link_options(${PROJECT_NAME} PRIVATE -Wl,--defsym=__gmx_rom_in_flash=1)
 target_compile_definitions(${PROJECT_NAME} PRIVATE CONFIG_BOARD_TAG="${CONFIG_BOARD_TAG}")
 
 # IDE/HDD port tracing toggle (see Ports.cpp / IDE.cpp `#if IDE_PORT_TRACE`).

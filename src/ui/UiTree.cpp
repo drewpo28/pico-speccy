@@ -286,7 +286,8 @@ static const Option opt_mach_karabas[] = {
 static const Option opt_mach_scorp[] = {
     { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP)     },
     { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR)  },
-#if GMX_IN_FLASH   // MURM1 carries no GMX ROM (CMakeLists) — hide the row there
+#if GMX_IN_FLASH   // escape-hatch builds carry no GMX ROM (CMakeLists); with the ROM
+                   // in, a butter-less module reverts the pick in resolveConstraints
     { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX) },
 #endif
 };

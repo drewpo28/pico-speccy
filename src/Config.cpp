@@ -273,8 +273,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // Entering GMX on a 64-page session must reboot so setup() re-lays it out
     // (setup raises MEM_PG_CNT to 128 for a persisted GMX pick). Leaving GMX
     // needs nothing: the extra pages just sit unused until the next boot.
-    // (butter-less boards skip the reboot: loadGmxRom refuses there anyway and
-    // the pick falls back to Yellow PCB without a wasted power cycle.)
+    // (butter-less modules skip the reboot: the GMX pick falls back to Yellow
+    // PCB below anyway, so a power cycle would be wasted.)
     if (newArch == A_SCORP && newRomSet == R_SCORP_GMX && MEM_PG_CNT < 128 &&
         butter_psram_size() > 0) {
         arch = newArch;
@@ -459,12 +459,16 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         // the unconditional tail below) is unused on Scorpion.
         // R_SCORP (Yellow PCB) and R_SCORP_GR (Green PCB) share this binding — the
         // romsets differ only in frame timing (CPU::updateStatesInFrame + audio).
-        // R_SCORP_GMX instead maps the flash-embedded 512 KB GMX boot ROM:
-        // 8 ProfROM planes x 4 banks into rom[0..31], romInUse = (plane << 2) |
-        // slot (Ports::gmx*). The ROM is embedded only on GMX_IN_FLASH builds
-        // (all boards but MURM1 — CMakeLists); GMX also needs QSPI (butter)
-        // PSRAM live for the 2 MB page strip and the 640x200 attr pages, so a
-        // disabled/absent chip falls the pick back to Yellow.
+        // R_SCORP_GMX instead maps the flash-embedded GMX boot ROM (stored
+        // deduplicated + overlaid, scorpion_gmx_banks.h): 8 ProfROM planes x 4
+        // banks into rom[0..31], romInUse = (plane << 2) | slot (Ports::gmx*).
+        // The ROM is in flash on EVERY board (GMX_IN_FLASH — the escape hatch
+        // is off by default); what gates GMX is the RUNTIME butter probe: QSPI
+        // PSRAM is a property of the plugged-in Pico module (a Murmulator 1
+        // takes a CS1-PSRAM module fine), and the 2 MB page strip + the
+        // 640x200 attr pages need it live — a disabled/absent chip falls the
+        // pick back to Yellow (mid-session the menu retargets it earlier, in
+        // resolveConstraints, where the note is actually visible).
         romSet = (newRomSet == R_NONE) ? R_SCORP : newRomSet;
 #if GMX_IN_FLASH
         if (romSet == R_SCORP_GMX && butter_psram_size() == 0) {

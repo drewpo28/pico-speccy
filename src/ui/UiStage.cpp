@@ -848,6 +848,16 @@ static void resolveConstraints(CommitReport& rep) {
         if (staged(SET_MEM_PG_CNT) > 64 && !stagedIsPentagon())
             changed |= force(SET_MEM_PG_CNT, 64, rep, "Murmuzavr mode off: Pentagon only");
 
+        // Scorpion GMX pages its 2 MB strip and the 640x200 attribute pages out of
+        // butter (QSPI) PSRAM — a property of the plugged-in Pico module, so only
+        // the runtime probe can tell (the ROM is in flash on every board). Without
+        // a chip, requestMachine would silently fall the pick back to Yellow (its
+        // bootNotice only shows at boot, not mid-session); retarget the staged pick
+        // here so the menu reports what will actually happen.
+        if (staged(SET_MACHINE) == NM_MACH(A_SCORP, R_SCORP_GMX) && butter_psram_size() == 0)
+            changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP),
+                             rep, "GMX needs QSPI PSRAM - using Yellow PCB");
+
         if (!changed) return;
     }
 }
