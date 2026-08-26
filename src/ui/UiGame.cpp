@@ -209,21 +209,25 @@ void act_gameSkvosh() {
         old_bx = bx >> 8; old_by = by >> 8;
     };
 
-    // Centered one-liner in the court; erased by rect.
+    // Centered one-liner in the court, on its own small panel (same chrome as
+    // the game-over box) so the pong centre line never shows through the text.
+    const int box_y = msg_y - 4, box_h = UI_FONT_H + 8;
     auto centerMsg = [&](const char* msg, UiColor ink) {
+        const int w = textWidth(msg) + 8 * sc;
+        roundRect((Sf.w - w) / 2, box_y, w, box_h, 2, C_SEP, C_PANEL);
         text((Sf.w - textWidth(msg)) / 2, msg_y, msg, ink);
     };
     auto eraseCenterMsg = [&]() {
-        fill(ox0, msg_y, ox1 - ox0 + 1, UI_FONT_H, C_BG);
+        fill(ox0, box_y, ox1 - ox0 + 1, box_h, C_BG);
         // The band spans the whole court width — repaint whatever it ate.
-        if (old_bx >= 0 && old_by + bh > msg_y && old_by < msg_y + UI_FONT_H)
+        if (old_bx >= 0 && old_by + bh > box_y && old_by < box_y + box_h)
             fill(old_bx, old_by, bw, bh, C_WHITE);
-        if (old_py >= 0 && old_py + ph > msg_y && old_py < msg_y + UI_FONT_H)
+        if (old_py >= 0 && old_py + ph > box_y && old_py < box_y + box_h)
             fill(paddle_x, old_py, pw, ph, C_ACCENT);
         if (mode == MODE_PONG && old_cy >= 0 &&
-            old_cy + ph > msg_y && old_cy < msg_y + UI_FONT_H)
+            old_cy + ph > box_y && old_cy < box_y + box_h)
             fill(cpu_x, old_cy, pw, ph, C_ACCENT);
-        repaintCenterLine(ox0, msg_y, ox1 - ox0 + 1, UI_FONT_H);
+        repaintCenterLine(ox0, box_y, ox1 - ox0 + 1, box_h);
     };
 
     auto gameOverBox = [&]() {
