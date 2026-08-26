@@ -629,6 +629,31 @@ static void resolveVideoOutput() {
 #endif
 }
 
+// Fill one 16 KB ZX RAM page with the power-on state of real DRAM.
+// A cold КР565РУ5/4164 array does not wake up zeroed: cells come up in a
+// topology-dependent stripe pattern — bytes alternate 0xFF/0x00 every 8 bytes,
+// with the phase inverting every 64 bytes. In the attribute file (32 bytes per
+// row) that reads as the classic checkerboard of 8x2-character black and
+// flashing-bright-white squares (attr 0x00 / 0xFF), visible until the ROM's
+// RAM test/CLS overwrites it; the bitmap area carries the same 0x00/0xFF
+// pattern, invisible under ink==paper attributes. A small fraction of cells
+// wakes in the opposite state — those are the lone coloured squares and pixel
+// specks a real screen shows. The deviations come from a fixed-seed xorshift
+// (seeded per page), so the whole power-on state is bit-identical on every
+// boot and every build — the property the memset(0) this replaces existed for
+// (halt2int's floating-bus verdict must not flip from build to build).
+static void powerOnDramFill(uint8_t *p, uint32_t page) {
+  uint32_t rnd = 0x9E3779B9u * (page + 1); // fixed per-page seed, deliberately no RNG
+  for (uint32_t a = 0; a < MEM_PG_SZ; ++a) {
+    uint8_t v = (((a >> 3) ^ (a >> 6)) & 1) ? 0x00 : 0xFF;
+    rnd ^= rnd << 13; rnd ^= rnd >> 17; rnd ^= rnd << 5;
+    // ~1/32 bytes carry defective cells; ANDing two draws keeps the flips
+    // sparse (mostly 1-3 bits per affected byte), like the real thing.
+    if ((rnd & 0x1F) == 0) v ^= (uint8_t)((rnd >> 8) & (rnd >> 16));
+    p[a] = v;
+  }
+}
+
 void ESPectrum::setup() {
   //=======================================================================================
   // INIT FILESYSTEM
@@ -830,25 +855,28 @@ void ESPectrum::setup() {
     ram_pages += 2;
     Debug::log("setup: no ext_ram: pages done, freeHeap=%u", getFreeHeap());
   }
-  // Initialise every SRAM/butter-backed ZX RAM page to a defined state (0).
-  // Without this the emulated RAM starts with build-dependent garbage:
+  // Initialise every SRAM/butter-backed ZX RAM page to a DEFINED power-on
+  // state. Without this the emulated RAM starts with build-dependent garbage:
   //  - RP2350 pages 0-7 live in the .ram_128k linker section, declared (NOLOAD),
   //    so the C runtime never zeroes them.
   //  - heap pages from `new unsigned char[]` are not zero-initialised either.
   // The leftover content is stable across power cycles for a given binary but
   // differs between builds (layout/boot writes change), which made halt2int's
   // floating-bus probe return a flaky Early/Unknown verdict that flipped from
-  // build to build with no source change.  A defined power-on state (matching a
-  // real machine after the ROM clears the screen) makes the result reproducible.
+  // build to build with no source change.  The defined state used to be all
+  // zeros; it is now the DRAM wake-up pattern (powerOnDramFill above) so a cold
+  // boot shows the real machine's checkerboard garbage until the ROM clears the
+  // screen — still fully deterministic, which is all halt2int needs.  A warm
+  // reset (F11 → ESPectrum::reset) keeps RAM contents, matching hardware.
   // PSRAM_SPI/SWAP pages are skipped (extended pages, not used by 48K; butter is
   // already cleared at boot).  Runs once at cold setup, before romset/snapshot load.
   for (size_t i = 0; i < MEM_PG_CNT; ++i) {
     if (MemESP::ram[i].memType() == mem_type_t::POINTER) {
       uint8_t *p = MemESP::ram[i].direct();
-      if (p && p >= (uint8_t *)0x11000000) memset(p, 0, MEM_PG_SZ);
+      if (p && p >= (uint8_t *)0x11000000) powerOnDramFill(p, i);
     }
   }
-  Debug::log("setup: ZX RAM pages zeroed, freeHeap=%u", getFreeHeap());
+  Debug::log("setup: ZX RAM pages set to DRAM power-on pattern, freeHeap=%u", getFreeHeap());
   // Load romset
   Debug::log("setup: requestMachine begin, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: requestMachine begin arch=%s romSet=%s freeHeap=%u",

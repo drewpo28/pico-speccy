@@ -1116,6 +1116,23 @@ Two mechanisms fix the two halves:
   forward — it does not include OSDMain.h) and both failure branches of
   `GsSubsys::apply` ("Gigascreen off: not enough memory"). Cost: ~250 B .bss.
 
+## DRAM power-on garbage at cold boot (2026-08-26, NOT hw-tested)
+
+Cold boot now shows the real machine's power-on screen garbage: the setup()-time
+page init (`powerOnDramFill`, ESPectrum.cpp) fills every POINTER-backed ZX RAM
+page with the КР565РУ5/4164 wake-up pattern — 0xFF/0x00 alternating every
+8 bytes, phase inverted every 64 (= the 8x2-character black/flashing-white
+checkerboard in the attr file) plus ~1/32 bytes with sparse fixed-seed xorshift
+bit flips (the lone coloured squares / pixel specks). This replaced the
+`memset(0)` whose ONLY purpose was determinism for halt2int's floating-bus
+verdict — the pattern is bit-identical every boot and build, so that property
+holds. F11 (`ESPectrum::reset`) deliberately keeps RAM, matching a real reset
+button; only a firmware reboot (= power cycle) regenerates the pattern. The
+Profi ram[1] zero for CP/M BDOS and snapshot loaders' `cleanup()` (zero-fill of
+void pages) are unchanged and run after/independently. Pattern validated on
+host against the user's photo (block geometry exact; render script regenerates
+the fill byte-for-byte).
+
 ## RP2350 chip temperature (chipTempX10) + the ZERO2 ADC-leak (hw-proven 2026-08-14)
 
 `chipTempX10()` (OSDMain.cpp, non-static) is the ONE reader: SDK `hardware_adc`,
