@@ -1390,6 +1390,23 @@ Two more things learned there:
   indicator was lit solid while the card was merely scanning its SD. A DC offset
   is not sound.
 
+## Built-in game: Skvosh (src/ui/UiGame.cpp, NOT hw-tested)
+
+A native squash/pong (tribute to andykarpov's skvosh console) that runs WITHOUT
+the emulated machine: a `K_PAGE` root row ("Skvosh game", before Volume) whose
+`act_gameSkvosh()` owns its key loop like `uiAboutPage`. Drawn with the nm::
+rasteriser only, so it works in standard 8bpp and DS80 alike (horizontal sizes
+×`Sf.glyphScale`). Controls: arrows/Q/A + joystick (the injected `VK_MENU_UP/
+DOWN` cover it for free), Space/Enter/fire = serve, P = pause, Esc/F1 exits.
+Held keys come from `Keyboard::isVKDown` (tracks injected keys too); edge events
+from the drained queue. 60 ticks/s paced by `time_us_64`, positions in 8.8
+fixed point, paddle-plane collision is crossing-tested (no tunnelling at ×2 DS80
+speeds). Sound = square waves synthesized into a stack buffer through
+`pwm_audio_write`, same path as `OSD::clickNoPause` — the staging buffer is 640
+samples and the mixer HOLDS the last sample after draining, so every beep is
+≤640 samples and must END AT 0. Session best score is the only static state
+(2 B); everything else is stack locals, code in flash.
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation

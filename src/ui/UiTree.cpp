@@ -867,6 +867,7 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_NETWORK,   kNetwork,  nullptr),
     NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),
     NM_SUB   (TXT_RESET,     kReset,    nullptr),
+    NM_PAGE  (TXT_GAME,      act_gameSkvosh, nullptr),
     NM_INT   (TXT_VOLUME,    SET_VOLUME, -16, 0, 1, nullptr),
 };
 
