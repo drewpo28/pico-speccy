@@ -1218,10 +1218,7 @@ void ESPectrum::reset(uint8_t romInUse) {
     // VIDEO::Reset() won't clear it (profi_ds80_active is now false), so we
     // must do it here.  Fill with 0 = palette index BLACK in both standard and
     // DS80 modes.
-    if (VIDEO::vga.frameBuffer) {
-      for (int _y = 0; _y < (int)VIDEO::vga.yres; _y++)
-        if (VIDEO::vga.frameBuffer[_y]) memset(VIDEO::vga.frameBuffer[_y], 0, VIDEO::vga.xres);
-    }
+    VIDEO::fbFillAll(0);
     Debug::log("[RESET] DS80 off + FB cleared");
   }
   Ports::portDFFD = 0;

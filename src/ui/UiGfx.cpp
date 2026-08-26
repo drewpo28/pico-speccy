@@ -146,7 +146,9 @@ void gfxEnd() {
 // ── pixels ─────────────────────────────────────────────────────────────────────
 
 static inline uint8_t* fbRow(int y) {
-    return (uint8_t*)VIDEO::vga.frameBuffer[Sf.oy + y];
+    // Materialize virtual (uniform) border rows — the UI owns the whole screen,
+    // border band included. NULL on a starved heap; every caller already guards.
+    return VIDEO::fbWriteRow(Sf.oy + y);
 }
 
 void px(int x, int y, UiColor c) {

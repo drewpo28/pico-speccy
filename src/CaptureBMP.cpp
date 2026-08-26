@@ -42,6 +42,9 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Config.h"
 #include "OSDMain.h"
 #include "ff.h"
+#include <string.h>
+
+extern "C" uint8_t* getLineBuffer(int line);   // Video.cpp — composes virtual rows
 
 size_t fwrite(const void* v, size_t sz1, size_t sz2, FIL* f);
 
@@ -140,7 +143,13 @@ void CaptureToBmp()
 
     // process every scanline in reverse order (BMP is bottom-up)
     for (int y = h - 1; y >= 0; y--) {
-        uint32_t* src = (uint32_t*)VIDEO::vga.frameBuffer[y];
+        // getLineBuffer composes virtual (uniform) border rows into a scratch row
+        uint32_t* src = (uint32_t*)getLineBuffer(y);
+        if (!src) {   // no framebuffer at all — keep the file well-formed
+            memset(linebuf, 0, count * sizeof(uint32_t));
+            fwrite(linebuf, sizeof(uint32_t), count, f);
+            continue;
+        }
         uint32_t* dst = linebuf;
         // process every uint32 in scanline
         for (int i = 0; i < count; i++) {

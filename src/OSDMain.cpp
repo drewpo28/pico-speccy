@@ -1252,10 +1252,13 @@ void OSD::clearStats() {
 
     uint16_t brd16 = (uint16_t)VIDEO::brd;
 
+    // A NULL row is a virtual (uniform) border row — it holds no stats remnants,
+    // nothing to clear (the stats rows sit in the bottom border band).
     if (VIDEO::isFullBorder288()) {
         // full border 360x288: stats at x=188, y=268, 144x16px, uint16_t framebuffer
         for (int line = 268; line < 284; line++) {
             uint16_t *ptr = (uint16_t *)(VIDEO::vga.frameBuffer[line]);
+            if (!ptr) continue;
             for (int col = 188; col < 332; col++)
                 ptr[col ^ 1] = brd16;
         }
@@ -1263,12 +1266,14 @@ void OSD::clearStats() {
         // half border 360x240: stats at x=188, y=220, 144x16px, uint16_t framebuffer
         for (int line = 220; line < 236; line++) {
             uint16_t *ptr = (uint16_t *)(VIDEO::vga.frameBuffer[line]);
+            if (!ptr) continue;
             for (int col = 188; col < 332; col++)
                 ptr[col ^ 1] = brd16;
         }
     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
         for (int line = 220; line < 236; line++) {
             uint16_t *ptr = (uint16_t *)(VIDEO::vga.frameBuffer[line]);
+            if (!ptr) continue;
             for (int col = 84; col < 156; col++)
                 ptr[col ^ 1] = brd16;
         }
@@ -1276,6 +1281,7 @@ void OSD::clearStats() {
         uint32_t brdColor = VIDEO::brd;
         for (int line = 220; line < 236; line++) {
             uint32_t *ptr = (uint32_t *)(VIDEO::vga.frameBuffer[line]);
+            if (!ptr) continue;
             for (int col = 21; col < 39; col++) {
                 ptr[col * 2] = brdColor;
                 ptr[col * 2 + 1] = brdColor;

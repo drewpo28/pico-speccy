@@ -1146,6 +1146,67 @@ internal pull-downs. Debugging trap that cost a round: while Hardware Info is OP
 the firmware rewrites AINSEL every second — OpenOCD channel scans race it (verify
 with CS readback beside every RESULT).
 
+## Virtual framebuffer border rows (2026-08-26, NOT hw-tested)
+
+The main FB block now holds ONLY the standard 192-row content band (rows 48..240
+@360x288, 24..216 @240-line modes); every border-band row is VIRTUAL while it is
+one colour: `vga.frameBuffer[y] == NULL`, colour byte in `s_fbRowColor[y]`
+(Video.cpp top block). Boot-time FB cost: 640x480 77 120 → 61 440, 720x480
+86 760 → 69 120, 720x576 104 040 → **69 120** (−34.9 KB); the change itself costs
++2816 B of .bss (per-core scratch rows, staging row, 3 per-row side arrays) —
+measured DVp2 MinSizeRel 206 432 → 209 248 linker RAM, FB savings land on the
+heap. `fbBytesForVM` and the UiStage video-mode gate follow automatically (576p
+main-FB grow over 640x480 is now just 7 680 B).
+
+- **Reads**: every consumer goes through `getLineBuffer()` (all five drivers —
+  each consumes the row synchronously before the next call, verified); a virtual
+  row is composed into a per-core scratch row with a hand-rolled fill
+  (`fbScratchRow` — NO memset call, it runs inside the HDMI line ISR on core1;
+  the flash-memset XIP-stall lesson applies).
+- **Writes** materialize the row from the heap (`VIDEO::fbWriteRow`, per-row
+  malloc gated on getLargestAllocatable; NULL on a starved heap → the writer
+  skips — degraded pixels in the border band, never a crash). Funnels: `dotFast`
+  & co in Graphics8BitPalette.h (covers all vga.print/drawChar/fillRect users —
+  drawStats, dialogs), UiGfx `fbRow` (the whole nm:: UI — it owns the full
+  screen, border included), LED drawSprite, SaveRect restore. Full-row fills go
+  through `VIDEO::fbFillRow/fbFillAll` (demotes instead of materializing).
+- **Demote**: only the border machine. The walkers paint border-band rows into a
+  360 B staging row (`brdRowBegin` at every old `brdptr16 = frameBuffer[row]`
+  site, seeded from the row's current contents so the stats carve and mid-row
+  catch-up resume keep exact semantics); at the row wrap `brdRowClassify`
+  scans it: uniform → `fbDemote` (colour byte, pixel row kept in `s_fbRowReal`),
+  non-uniform → materialize + copy in. Content rows (MiddleBorder side borders)
+  keep the direct pointer — zero new cost there. Side win: border rows now
+  update atomically per row instead of tearing under async scanout.
+- **Cross-core**: mutation is core0-only; publish = fill→`__dmb`→pointer, demote
+  = colour→`__dmb`→NULL, and demoted rows are freed ≥2 frames later
+  (`fbLazyFree` in EndFrame) because core1 holds a fetched pointer ≤1 scanline.
+  Re-promotion reuses the kept row (raster demos toggle rows every frame with
+  zero malloc churn).
+- **DS80**: its content band (240 rows) is wider than the block band —
+  `applyDS80BorderGeometry(true)` eagerly materializes the extra 48 rows (funded
+  by the border rows the same switch demotes); on failure the renderer's
+  existing `fb_row` null-guard shows a black band. `fbFillRow` deliberately does
+  NOT demote rows inside the CURRENT `[lin_end, lin_end2)` window — the
+  DS80-activation zero-fill would otherwise free the band it just materialized.
+  After DS80 exit the std border repaint demotes them naturally.
+- **Menus over full-border modes** borrow border-band rows from the heap while
+  open (lazily, per row actually drawn) and the border repaint on close
+  (`brdnextframe`) demotes them back. On a heap too starved to materialize, the
+  UI is simply not drawn in the border band (px/hline null-guards).
+- **Steady-state SRAM cost is load-dependent by design**: a plain game = 0 extra
+  rows; stats overlay = 16 rows while enabled; a mid-row multicolour border
+  demo = whatever rows its effect actually makes non-uniform, from the heap.
+- The legacy `allocateFrameBuffer()` fallback path keeps full-size rows and the
+  feature dormant (`s_fbVirtOn` false).
+- Also in this change: `ps2kbd_mrmltr.cpp`'s static_assert now compares
+  `count_of(ps2kbd_program_instructions)` — pioasm's `ps2kbd_program` struct is
+  plain `static const` (not constexpr) on SDK 2.2.0, so `.length` is not a
+  constant expression there.
+- Follow-ups if measurements ask for them: the Gigascreen prev-FB border rows
+  (96×180 = 17.3 KB heap on butter-less boards) could get the same treatment;
+  MemoryInfo/boot log shows the block as `FB reserved WxH of WxLINES`.
+
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 
 Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):

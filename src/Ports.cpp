@@ -1999,10 +1999,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         //   Standard: palette index 0 = BLACK ✓
         // The border scanner fires after EndFrame deactivates DS80 and writes the correct
         // border color (white/default), so the first full standard frame looks correct.
-        if (exiting_ds80 && VIDEO::vga.frameBuffer) {
-          for (int y = 0; y < (int)VIDEO::vga.yres; y++)
-            if (VIDEO::vga.frameBuffer[y]) memset(VIDEO::vga.frameBuffer[y], 0, VIDEO::vga.xres);
-        }
+        if (exiting_ds80) VIDEO::fbFillAll(0);
       }
     }
   }

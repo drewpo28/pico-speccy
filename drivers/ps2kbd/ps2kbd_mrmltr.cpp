@@ -456,7 +456,11 @@ static uint16_t      s_kbd_instr[8];
 static pio_program_t s_kbd_prog;
 
 static const pio_program_t* ps2kbd_program_for(uint clk_gpio) {
-    static_assert(ps2kbd_program.length <= count_of(s_kbd_instr),
+    // Compare via the instruction array itself: pioasm's `ps2kbd_program` is a
+    // plain `static const` struct (not constexpr) on SDK 2.2.0, so its .length
+    // is not a constant expression there; the array's extent always is, and
+    // .length is that extent by construction.
+    static_assert(count_of(ps2kbd_program_instructions) <= count_of(s_kbd_instr),
                   "grow s_kbd_instr to hold the whole program");
     s_kbd_prog = ps2kbd_program;
     for (uint i = 0; i < ps2kbd_program.length; ++i) {

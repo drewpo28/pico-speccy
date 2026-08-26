@@ -15,6 +15,13 @@
 #pragma once
 #include "Graphics.h"
 
+// Virtual (uniform) framebuffer rows — see the block at the top of Video.cpp.
+// A NULL row pointer means "this row is a single colour"; writers must
+// materialize the row first, readers take the colour byte.
+extern "C" unsigned char* video_fb_row_w(int y);
+extern "C" unsigned char  video_fb_row_color(int y);
+extern "C" void           video_fb_fill_row(int y, unsigned char c);
+
 class Graphics8BitPalette: public Graphics<unsigned char>
 {
 	public:
@@ -73,40 +80,51 @@ class Graphics8BitPalette: public Graphics<unsigned char>
 		return ((r >> 6) & 0b11) | ((g >> 4) & 0b1100) | ((b >> 2) & 0b110000) | (a & 0b11000000);
 	}
 
+	// A NULL row is a virtual (uniform) border row — materialize before writing,
+	// drop the pixel when the heap can't give the row (never crash).
+	inline Color* rowW(int y)
+	{
+		Color* row = frameBuffer[y];
+		return row ? row : video_fb_row_w(y);
+	}
+
 	virtual void dotFast(int x, int y, Color color)
 	{
-		frameBuffer[y][x^2] = mapColor(color);
+		Color* row = rowW(y);
+		if (row) row[x^2] = mapColor(color);
 	}
 
 	virtual void dot(int x, int y, Color color)
 	{
 		if ((unsigned int)x < xres && (unsigned int)y < yres)
-			frameBuffer[y][x^2] = mapColor(color);
+			dotFast(x, y, color);
 	}
 
 	virtual void dotAdd(int x, int y, Color color)
 	{
 		if ((unsigned int)x < xres && (unsigned int)y < yres)
-			frameBuffer[y][x^2] = mapColor(color); // simplified — was dead code
+			dotFast(x, y, color); // simplified — was dead code
 	}
 
 	virtual void dotMix(int x, int y, Color color)
 	{
 		if ((unsigned int)x < xres && (unsigned int)y < yres)
-			frameBuffer[y][x^2] = mapColor(color); // simplified — was dead code
+			dotFast(x, y, color); // simplified — was dead code
 	}
 
 	virtual Color get(int x, int y)
 	{
-		if ((unsigned int)x < xres && (unsigned int)y < yres)
-			return frameBuffer[y][x^2];
+		if ((unsigned int)x < xres && (unsigned int)y < yres) {
+			Color* row = frameBuffer[y];
+			return row ? row[x^2] : video_fb_row_color(y);
+		}
 		return 0;
 	}
 
 	virtual void clear(Color color = 0)
 	{
+		// Row-wise: a virtual row just takes the colour byte (no materialization).
 		for (int y = 0; y < this->yres; y++)
-			for (int x = 0; x < this->xres; x++)
-				frameBuffer[y][x^2] = color;
+			video_fb_fill_row(y, color);
 	}
 };

@@ -57,6 +57,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Z80DMA.h"
 #include "hardware/xip_cache.h"
 #include "hardware/regs/addressmap.h"
+#include "hardware/sync.h"   // __dmb() — virtual-row publish ordering
+#include "pico/platform.h"   // get_core_num() — per-core scratch row
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
 extern "C" void vga_set_palette_entry_solid(uint8_t i, uint32_t color888);
 extern "C" void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height);
@@ -88,9 +90,60 @@ extern "C" void vga_set_profi_ds80_mode(bool, const uint32_t *, const uint8_t *)
 
 VGA8Bit VIDEO::vga;
 
+// ── Virtual (uniform) framebuffer rows ────────────────────────────────────────
+// The main FB block stores pixels only for the standard content band (192 rows).
+// Every other row is VIRTUAL while it is a single colour: vga.frameBuffer[y] is
+// NULL and the colour byte lives in s_fbRowColor[y]. That is the whole SRAM win:
+// 96 border rows @360x288 (34.6 KB), 48 @240-line modes (15.4/17.3 KB) exist as
+// one byte each until something actually needs pixels there.
+//   READ  — every consumer goes through getLineBuffer() (all five drivers, and
+//           they all consume the row synchronously before the next call): a
+//           virtual row is composed into a per-core scratch row on demand.
+//   WRITE — writers materialize the row from the heap first (fbWriteRow / the
+//           dotFast guard in Graphics8BitPalette.h); on a starved heap the write
+//           is dropped (existing null-guards), never a crash.
+//   DEMOTE — only the border machine turns pixel rows back into colours: the
+//           walkers paint border-band rows into a staging row and classify it at
+//           the row wrap (see brdRowBegin/brdRowClassify by Update_Border).
+// Cross-core: all mutation happens on core0; core1 (scanout) only ever reads the
+// row pointer via getLineBuffer. Publish order is fill→dmb→pointer; demoted rows
+// are freed lazily ≥2 frames later (fbLazyFree) since core1 may hold the pointer
+// for up to one scanline.
+#define FB_MAX_LINES 289   // calcLines(288), the largest mode (360x288)
+#define FB_MAX_STRIDE 360
+static bool     s_fbVirtOn = false;        // shared-FB path active (never on legacy alloc)
+static int      s_fbBandLo = 0;            // content-band rows [lo, hi) are block-backed
+static int      s_fbBandHi = 0;
+static uint8_t  s_fbRowColor[FB_MAX_LINES];        // colour of a virtual row
+static uint8_t  s_fbRowStamp[FB_MAX_LINES];        // framecnt at demotion (lazy free)
+static uint8_t* s_fbRowReal[FB_MAX_LINES];         // heap row kept through demotion
+static int      s_fbPendingFrees = 0;              // demoted rows not yet freed
+// Per-core compose buffer for reading a virtual row. Consumption is synchronous
+// in every driver (verified: hdmi.c line ISR CPU-copies, vga.c converts in-ISR,
+// tv/tv-software/st7789 convert per line), so one row per core suffices.
+static uint32_t s_fbScratch[2][FB_MAX_STRIDE / 4];
+static int16_t  s_fbScratchColor[2] = { -1, -1 };
+
+// Hand-rolled fill: getLineBuffer runs inside the HDMI line ISR on core1 — a
+// libc memset call would fetch from flash and stall on the thrashed XIP port
+// (the exact failure mode documented in the HDMI-audio notes).
+static uint8_t* __not_in_flash_func(fbScratchRow)(int line) {
+    const uint core = get_core_num();
+    uint32_t* dst = s_fbScratch[core];
+    const int c = s_fbRowColor[line];
+    if (s_fbScratchColor[core] != (int16_t)c) {
+        s_fbScratchColor[core] = (int16_t)c;
+        const uint32_t v = (uint32_t)(uint8_t)c * 0x01010101u;
+        for (int i = 0; i < FB_MAX_STRIDE / 4; i++) dst[i] = v;
+    }
+    return (uint8_t*)dst;
+}
+
 extern "C" uint8_t* __not_in_flash_func(getLineBuffer)(int line) {
     if (!VIDEO::vga.frameBuffer) return 0;
-    return (uint8_t*)VIDEO::vga.frameBuffer[line];
+    uint8_t* p = (uint8_t*)VIDEO::vga.frameBuffer[line];
+    if (p || !s_fbVirtOn || (unsigned)line >= FB_MAX_LINES) return p;
+    return fbScratchRow(line);
 }
 
 extern "C" void __not_in_flash_func(ESPectrum_vsync)() {
@@ -619,6 +672,17 @@ static void applyDS80BorderGeometry(bool on) {
         // 640×480 (320 B/row → 160 cols) → 0; 720×576 (360 B → 180 cols) → 10.
         ds80_brd_col_off = ((int)VIDEO::vga.xres / 2 - 160) / 2;
         ds80_border_geom = true;
+        // The DS80 content band (240 rows) is wider than the block-backed standard
+        // band (192) — materialize the extra rows now. They are funded by the
+        // border rows this very switch demotes, so the heap normally has them; on
+        // failure the renderer's fb_row null-guard skips those rows (black band).
+        if (VIDEO::vga.frameBuffer) {
+            int failed = 0;
+            for (int y = (int)lin_end; y < (int)lin_end2; y++)
+                if (!VIDEO::fbWriteRow(y)) failed++;
+            if (failed)
+                Debug::log("VIDEO: DS80 band: %d rows not materialized (heap)", failed);
+        }
     } else {
         ds80_border_geom = false;
         ds80_brd_col_off = 0;
@@ -1355,7 +1419,7 @@ extern size_t getContiguousHeap(void);
 // ensureMainFB / ensurePrevFB.
 // prevFrameBuffer is 4-bit packed (2 px/byte): Gigascreen blendLUT only uses
 // prev & 0x0F, so the upper nibble is free for the next pixel.
-#define FB_MAX_LINES 289   // calcLines(288), the largest mode (360x288)
+// (FB_MAX_LINES is defined by the virtual-row block at the top of the file.)
 
 static int fbCalcLines(int count) {
     if (count == 288) return 289;
@@ -1367,8 +1431,10 @@ static int fbCalcLines(int count) {
 
 // Two separate blocks: main FB (always present) and prev FB (Gigascreen only).
 // Splitting them lets GsSubsys free up to 52 020 B of SRAM when Gigascreen is off.
-// Each block is sized to fit the current video mode, not the build-time maximum,
-// and grown/shrunk via realloc on mode changes (see ensureMainFB/ensurePrevFB).
+// The main block holds ONLY the standard content band (FB_BAND_ROWS rows); the
+// border-band rows are virtual (see the block at the top of the file) and borrow
+// per-row heap allocations only while they actually hold pixels (menus, stats,
+// multicolour border effects, the DS80 content band).
 static uint8_t *sharedFB_main = nullptr;  // sized for current mode
 static uint8_t *sharedFB_prev = nullptr;  // sized for current mode (Gigascreen only)
 static size_t sharedFB_main_size = 0;     // actual byte capacity of sharedFB_main
@@ -1458,6 +1524,126 @@ static void prevFBFree() {
     sharedFB_prev_size = 0;
 }
 
+// ── Virtual-row materialize / demote (state at the top of the file) ──────────
+// Standard-geometry content band: always 192 rows (SPEC_H); only the top edge
+// differs per mode. 360x288 shows rows 48..240 as content, every 240-line mode
+// 24..216. The DS80 geometry (content rows 24..264 / 0..240) is wider than the
+// block band — its extra rows are materialized on DS80 activation and demoted
+// back on deactivation, funded by the border rows the switch just freed.
+#define FB_BAND_ROWS SPEC_H
+static inline int fbBandLo(int Mode) {
+#ifdef VGA_HDMI
+    if (Mode == 22) return 48;   // 360x288 full border
+#endif
+    (void)Mode;
+    return 24;                   // 320x240 / 360x240
+}
+
+// Keep the heap's last blocks out of reach: pico_malloc PANICS on OOM, so every
+// per-row allocation is pre-checked with this much to spare.
+#define FB_ROW_ALLOC_SLACK 2048
+
+// RAM-resident copy/fill for row-sized transfers on the emulation hot path
+// (GCC turns innocent loops into flash memcpy calls — the HDMI ISR lesson).
+static inline void __not_in_flash_func(fbRowFill32)(uint8_t* dst, uint8_t c, int bytes) {
+    uint32_t v = (uint32_t)c * 0x01010101u;
+    uint32_t* d = (uint32_t*)dst;
+    for (int i = bytes >> 2; i > 0; i--) *d++ = v;
+}
+static inline void __not_in_flash_func(fbRowCopy32)(uint8_t* dst, const uint8_t* src, int bytes) {
+    uint32_t* d = (uint32_t*)dst;
+    const uint32_t* s = (const uint32_t*)src;
+    for (int i = bytes >> 2; i > 0; i--) *d++ = *s++;
+}
+
+// Give virtual row y real pixel storage. Reuses the row kept through a recent
+// demotion when there is one (raster demos re-promote the same rows every frame
+// — zero malloc churn), otherwise takes a fresh row off the heap. seed=false
+// skips the colour pre-fill when the caller overwrites the whole row anyway.
+static uint8_t* fbMaterialize(int y, bool seed = true) {
+    if (!s_fbVirtOn || (unsigned)y >= FB_MAX_LINES) return nullptr;
+    uint8_t* row = s_fbRowReal[y];
+    const int stride = sharedFB_stride;
+    if (row) {
+        if (s_fbPendingFrees) s_fbPendingFrees--;   // was awaiting lazy free
+    } else {
+        if (getLargestAllocatable() < (size_t)stride + FB_ROW_ALLOC_SLACK) return nullptr;
+        row = (uint8_t*)malloc(stride);
+        if (!row) return nullptr;
+        s_fbRowReal[y] = row;
+    }
+    if (seed) fbRowFill32(row, s_fbRowColor[y], stride);
+    __dmb();   // row contents visible before core1 can fetch the pointer
+    VIDEO::vga.frameBuffer[y] = row;
+    return row;
+}
+
+// Turn row y back into a uniform colour. The heap row (if any) is kept in
+// s_fbRowReal and freed by fbLazyFree() ≥2 frames later — core1 may still be
+// scanning out from the pointer it fetched this frame.
+static void __not_in_flash_func(fbDemote)(int y, uint8_t c) {
+    if ((unsigned)y >= FB_MAX_LINES) return;
+    s_fbRowColor[y] = c;
+    uint8_t* row = (uint8_t*)VIDEO::vga.frameBuffer[y];
+    if (!row) return;
+    if (row != s_fbRowReal[y]) return;   // block-backed / legacy row — never demote
+    __dmb();   // colour visible before the pointer goes NULL
+    VIDEO::vga.frameBuffer[y] = nullptr;
+    s_fbRowStamp[y] = (uint8_t)VIDEO::framecnt;
+    s_fbPendingFrees++;
+}
+
+// Free rows that have stayed demoted for ≥2 frames. Called from EndFrame.
+static void fbLazyFree() {
+    if (!s_fbPendingFrees) return;
+    for (int y = 0; y < FB_MAX_LINES; y++) {
+        if (!s_fbRowReal[y] || VIDEO::vga.frameBuffer[y]) continue;
+        if ((uint8_t)((uint8_t)VIDEO::framecnt - s_fbRowStamp[y]) < 2) continue;
+        free(s_fbRowReal[y]);
+        s_fbRowReal[y] = nullptr;
+        if (s_fbPendingFrees) s_fbPendingFrees--;
+    }
+}
+
+uint8_t* VIDEO::fbWriteRow(int y) {
+    if (!vga.frameBuffer || (unsigned)y >= FB_MAX_LINES) return nullptr;
+    uint8_t* row = (uint8_t*)vga.frameBuffer[y];
+    if (row) return row;
+    return fbMaterialize(y);
+}
+
+void VIDEO::fbFillRow(int y, uint8_t c) {
+    if (!vga.frameBuffer || (unsigned)y >= FB_MAX_LINES) return;
+    if (s_fbVirtOn && (y < s_fbBandLo || y >= s_fbBandHi)) {
+        // Outside the block band. Rows inside the CURRENT content window
+        // (lin_end..lin_end2 — wider than the block band under DS80 geometry)
+        // must keep their materialized pixels: the renderer writes them every
+        // frame. Everything else demotes back to a colour byte.
+        uint8_t* row = (uint8_t*)vga.frameBuffer[y];
+        const bool inContent = (y >= (int)lin_end && y < (int)lin_end2);
+        if (!row || !inContent) {
+            fbDemote(y, c);   // also covers already-virtual rows (just sets the colour)
+            return;
+        }
+        fbRowFill32(row, c, sharedFB_stride ? sharedFB_stride : (int)vga.xres);
+        return;
+    }
+    uint8_t* row = (uint8_t*)vga.frameBuffer[y];
+    if (row) fbRowFill32(row, c, sharedFB_stride ? sharedFB_stride : (int)vga.xres);
+}
+
+void VIDEO::fbFillAll(uint8_t c) {
+    if (!vga.frameBuffer) return;
+    for (int y = 0; y < (int)vga.yres; y++) fbFillRow(y, c);
+}
+
+// C hooks for Graphics8BitPalette.h (dotFast & co) — see that header.
+extern "C" unsigned char* video_fb_row_w(int y)     { return VIDEO::fbWriteRow(y); }
+extern "C" unsigned char  video_fb_row_color(int y) {
+    return ((unsigned)y < FB_MAX_LINES) ? s_fbRowColor[y] : 0;
+}
+extern "C" void video_fb_fill_row(int y, unsigned char c) { VIDEO::fbFillRow(y, c); }
+
 // Rows per chunk / largest single allocation at the finest split we will attempt.
 static inline int prevChunkRows(int lines, int n) { return (lines + n - 1) / n; }
 size_t VIDEO::gigascreenPrevFBBlockBytes() {
@@ -1533,12 +1719,22 @@ static bool ensurePrevFB(int lines, int stride) {
     return false;
 }
 
-static void setupSharedFBPointers(Graphics<unsigned char> &vga, int lines, int stride) {
+static void setupSharedFBPointers(Graphics<unsigned char> &vga, int lines, int stride, int bandLo) {
     sharedFB_lines = lines;
     sharedFB_stride = stride;
-    for (int i = 0; i < lines; i++) {
-        sharedFB_arr1[i] = sharedFB_main + i * stride;
+    s_fbBandLo = bandLo;
+    s_fbBandHi = bandLo + FB_BAND_ROWS;
+    // Content band → block rows; every other slot (border band, the spare row,
+    // rows past yres) starts VIRTUAL: NULL pointer + colour byte. Fill the whole
+    // array so no slot is ever left as stale garbage.
+    for (int i = 0; i < FB_MAX_LINES; i++) {
+        if (i >= s_fbBandLo && i < s_fbBandHi)
+            sharedFB_arr1[i] = sharedFB_main + (size_t)(i - s_fbBandLo) * stride;
+        else
+            sharedFB_arr1[i] = nullptr;
+        s_fbRowColor[i] = 0;
     }
+    s_fbVirtOn = true;
     vga.frameBuffer = (unsigned char **)sharedFB_arr1;
     if (sharedFB_prev && sharedFB_arr2) {
         int prev_stride = stride / 2; // 4-bit packed
@@ -2011,7 +2207,9 @@ size_t VIDEO::fbBytesForVM(uint8_t vm, size_t* prevBytes) {
     const int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
     if (prevBytes)
         *prevBytes = butter_psram_size() ? 0 : fbPrevBytes(lines, stride);
-    return fbMainBytes(lines, stride);
+    // Main block = content band only (192 rows); border rows are virtual and
+    // borrow per-row heap allocations transiently — not a boot-time cost.
+    return fbMainBytes(FB_BAND_ROWS, stride);
 }
 
 // Claim the main framebuffer as early as setup() can — ideally straight after
@@ -2026,9 +2224,10 @@ void VIDEO::reserveFrameBuffer() {
     int Mode = fbModeIndex();
     int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
     if (!sharedFB_arr1) sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
-    if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
-        Debug::log("VIDEO: FB reserved %ux%u (%u B), freeHeap=%u largest=%u",
-                   (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
+    if (sharedFB_arr1 && ensureMainFB(FB_BAND_ROWS, stride)) {
+        Debug::log("VIDEO: FB reserved %ux%u of %ux%u (%u B, border rows virtual), freeHeap=%u largest=%u",
+                   (unsigned)stride, (unsigned)FB_BAND_ROWS, (unsigned)stride, (unsigned)lines,
+                   (unsigned)fbMainBytes(FB_BAND_ROWS, stride),
                    (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
         return;
     }
@@ -2036,7 +2235,8 @@ void VIDEO::reserveFrameBuffer() {
     // fit this board. Say so here rather than letting Init() report it later, when
     // the pools and the GS have muddied the numbers.
     Debug::log("VIDEO: FB reserve FAILED %ux%u (%u B), freeHeap=%u largest=%u",
-               (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
+               (unsigned)stride, (unsigned)FB_BAND_ROWS,
+               (unsigned)fbMainBytes(FB_BAND_ROWS, stride),
                (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
 #ifdef VGA_HDMI
     // Self-heal instead of hanging. Downstream there is no recovery: Init()'s
@@ -2061,10 +2261,10 @@ void VIDEO::reserveFrameBuffer() {
         Config::clearPendingVideoMode();
         Mode = fbModeIndex();
         lines = fbModeLines(Mode); stride = fbModeStride(Mode);
-        if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
+        if (sharedFB_arr1 && ensureMainFB(FB_BAND_ROWS, stride)) {
             Debug::log("VIDEO: FB reserved %ux%u (%u B) after mode fallback, freeHeap=%u",
-                       (unsigned)stride, (unsigned)lines,
-                       (unsigned)fbMainBytes(lines, stride), (unsigned)getFreeHeap());
+                       (unsigned)stride, (unsigned)FB_BAND_ROWS,
+                       (unsigned)fbMainBytes(FB_BAND_ROWS, stride), (unsigned)getFreeHeap());
             return;
         }
     }
@@ -2088,8 +2288,8 @@ void VIDEO::Init() {
     if (!sharedFB_arr1) {
         sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
     }
-    if (sharedFB_arr1 && ensureMainFB(initLines, initStride)) {
-        setupSharedFBPointers(vga, initLines, initStride);
+    if (sharedFB_arr1 && ensureMainFB(FB_BAND_ROWS, initStride)) {
+        setupSharedFBPointers(vga, initLines, initStride, fbBandLo(Mode));
         // frameBuffer is set — vga.init()'s allocateFrameBuffers() will skip allocation
     } else {
         // Out of memory for shared FB — fall back to legacy allocator path.
@@ -2262,11 +2462,9 @@ void VIDEO::changeMode() {
     updateBorderBrd();
     precalcborder32();
 
-    // 6. Repaint framebuffer with current border color
-    if (vga.frameBuffer) {
-        int stride = (vga.xres + 3) & ~3;
-        memset(vga.frameBuffer[0], zxColor(borderColor, 0), vga.yres * stride);
-    }
+    // 6. Repaint framebuffer with current border color (row-wise: border rows
+    // are virtual, content rows live in the shared block)
+    fbFillAll(zxColor(borderColor, 0));
 
     // 7. Gigascreen
     if (Config::gigascreen_enabled && vga.prevFrameBuffer) {
@@ -2562,10 +2760,7 @@ void VIDEO::Reset() {
                 // shows clean black for the one frame until EndFrame processes it.
                 // (0xFF = slot 255 = black/black in DS80 mode per hdmi.c line 810-811)
                 profi_ds80_deactivate_pending = true;
-                if (vga.frameBuffer) {
-                    for (int _y = 0; _y < (int)vga.yres; _y++)
-                        if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0xFF, vga.xres);
-                }
+                fbFillAll(0xFF);
             }
         }
     }
@@ -2588,7 +2783,7 @@ void VIDEO::InitPrevBuffer() {
     const int h = VIDEO::vga.yres;
     const int w = VIDEO::vga.xres;
     for (int y = 0; y < h; ++y) {
-        uint8_t *src = VIDEO::vga.frameBuffer[y];
+        uint8_t *src = getLineBuffer(y);   // composes virtual (uniform) border rows
         uint8_t *dst = VIDEO::vga.prevFrameBuffer[y];
         if (!src || !dst) continue;
         // While the DMA window is active the prev-FB must never enter the XIP
@@ -3428,10 +3623,9 @@ IRAM_ATTR void VIDEO::EndFrame() {
             // Zero all vga.frameBuffer rows: scan-time renderer writes only content bytes
             // (pad_l..pad_l+255) into each DS80 row; padding bytes must start at 0 (black
             // pair) and are never overwritten. Rows 240..yres-1 stay black throughout DS80.
-            if (vga.frameBuffer) {
-                for (int _y = 0; _y < (int)vga.yres; _y++)
-                    if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
-            }
+            // (fbFillRow keeps the freshly-materialized DS80 band as pixels and demotes
+            // the border-band rows to a black colour byte.)
+            fbFillAll(0);
             Debug::log("[DS80] activate: tStScreen=%d grmem=%p clrmem=%p (SRAM=%d) videoLatch=%d",
                        tStatesScreen, grmem, profi_clrmem,
                        (profi_clrmem && (uintptr_t)profi_clrmem < 0x11000000u),
@@ -3443,10 +3637,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
             Graphics8BitPalette::ds80_active = false; // leave DS80 → raw ZX indices again
             // Clear framebuffer: DS80 packed-pair slot values look like garbage
             // when re-interpreted through the standard HDMI conv_color table.
-            if (vga.frameBuffer) {
-                for (int _y = 0; _y < (int)vga.yres; _y++)
-                    if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
-            }
+            fbFillAll(0);
             // Restore standard Profi (non-DS80) geometry.
             grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
             profi_clrmem = nullptr;
@@ -3658,9 +3849,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
     bool skipFrame = ESPectrum::maxSpeed && (++skipCnt & 63);
     if (!ESPectrum::maxSpeed && wasMaxSpeed) {
         // Exiting maxSpeed: fill entire framebuffer border with current color
-        uint8_t border = brd & 0xFF;
-        for (int y = 0; y < (int)vga.yres; y++)
-            memset(vga.frameBuffer[y], border, vga.xres);
+        fbFillAll(brd & 0xFF);
     }
     wasMaxSpeed = ESPectrum::maxSpeed;
     if (skipFrame) {
@@ -3731,6 +3920,11 @@ IRAM_ATTR void VIDEO::EndFrame() {
     }
 
     framecnt++;
+
+    // Release border rows the machine demoted back to a colour ≥2 frames ago
+    // (core1 may still scan out from a pointer it fetched this frame — see the
+    // virtual-row block at the top of the file).
+    fbLazyFree();
 
     // Debug::log("[HB] f=%u pc=0x%04X bc=0x%04X hl=0x%04X iff=%u rom=%u dffd=0x%02X eff7=0x%02X bl=%u vidlatch=%u",
     //     framecnt, Z80::getRegPC(), Z80::getRegBC(), Z80::getRegHL(),
@@ -3810,6 +4004,70 @@ void VIDEO::RedrawPausedFrame() {
 
 IRAM_ATTR void VIDEO::Border_Blank() {
 
+}
+
+//----------------------------------------------------------------------------------------------------------------
+// Border-band row staging (virtual rows — see the block at the top of the file).
+// The walkers below paint border-band rows into s_brdStage instead of the FB row;
+// at the row wrap brdRowClassify() decides: uniform → the row demotes back to a
+// single colour byte (fbDemote), non-uniform → the row materializes and takes the
+// staged pixels. Content rows (MiddleBorder's side borders) keep the direct
+// pointer — zero overhead there. The staging row is seeded from the row's current
+// contents so partial paints (the BottomBorder_OSD / Update_Border_DS80 stats
+// carve, a catch-up that resumes mid-row) keep exactly today's semantics. A side
+// win: a border row now updates atomically at the wrap instead of tearing under
+// the asynchronous scanout.
+//----------------------------------------------------------------------------------------------------------------
+
+static uint16_t s_brdStage[FB_MAX_STRIDE / 2] __attribute__((aligned(4)));
+static int s_brdStagedRow = -1;   // row currently accumulating in s_brdStage
+
+IRAM_ATTR static void brdRowClassify() {
+    const int row = s_brdStagedRow;
+    if (row < 0) return;
+    s_brdStagedRow = -1;
+    const uint32_t* s = (const uint32_t*)s_brdStage;
+    const int words = (int)VIDEO::vga.xres >> 2;   // stride == xres (both %4 == 0)
+    const uint32_t v0 = s[0];
+    bool uniform = ((v0 & 0xFF) * 0x01010101u == v0);
+    if (uniform) {
+        for (int i = 1; i < words; i++)
+            if (s[i] != v0) { uniform = false; break; }
+    }
+    if (uniform) {
+        fbDemote(row, (uint8_t)v0);
+        return;
+    }
+    uint8_t* row_p = (uint8_t*)VIDEO::vga.frameBuffer[row];
+    if (!row_p) row_p = fbMaterialize(row, /*seed=*/false);
+    if (!row_p) {   // starved heap: degrade to the row's first colour
+        s_fbRowColor[row] = (uint8_t)v0;
+        return;
+    }
+    fbRowCopy32(row_p, (const uint8_t*)s_brdStage, words << 2);
+}
+
+// Start walking row `row`: classify the previous staged row, then decide where
+// this row's border writes go. Must be called at every point the walkers used to
+// assign brdptr16 = frameBuffer[row].
+IRAM_ATTR static void brdRowBegin(int row) {
+    brdRowClassify();
+    if ((unsigned)row >= (unsigned)VIDEO::vga.yres) { brdptr16 = s_brdStage; return; }
+    uint8_t* real = (uint8_t*)VIDEO::vga.frameBuffer[row];
+    const bool borderBand = (row < (int)lin_end) || (row >= (int)lin_end2);
+    if (s_fbVirtOn && borderBand) {
+        const int bytes = (int)VIDEO::vga.xres;
+        if (real) fbRowCopy32((uint8_t*)s_brdStage, real, bytes);
+        else      fbRowFill32((uint8_t*)s_brdStage, s_fbRowColor[row], bytes);
+        s_brdStagedRow = row;
+        brdptr16 = s_brdStage;
+    } else if (real) {
+        brdptr16 = (uint16_t*)real;
+    } else {
+        // Unmaterialized content row (DS80 band on a starved heap): the renderer
+        // skips it too — give the writes a scribble area and never classify.
+        brdptr16 = s_brdStage;
+    }
 }
 
 //----------------------------------------------------------------------------------------------------------------
@@ -4034,7 +4292,8 @@ IRAM_ATTR void VIDEO::TopBorder_Blank() {
         Select_Update_Border();
         brdcol_cnt = brdcol_start;
         brdlin_cnt = 0;
-        brdptr16 = (uint16_t *)(vga.frameBuffer[0]);
+        s_brdStagedRow = -1;   // a row interrupted at frame end is discarded, not classified
+        brdRowBegin(0);
         prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(0) : (uint8_t *)brdptr16;
         // lin_end==0 (DS80 640×480): no top border rows — straight to side borders.
         // (TopBorder would otherwise paint row 0 full-width over the content.)
@@ -4066,7 +4325,7 @@ IRAM_ATTR void VIDEO::TopBorder() {
 
         if (brdcol_cnt >= brdcol_end) {
             brdlin_cnt++;
-            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            brdRowBegin(brdlin_cnt);
             prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
             brdcol_cnt = brdcol_start;
             lastBrdTstate += tStatesPerLine - brdcol_end;
@@ -4112,10 +4371,11 @@ IRAM_ATTR void VIDEO::MiddleBorder() {
             if (brdlin_cnt == (int)lin_end2) {
                 // DS80 640×480: lin_end2 == yres — no bottom border rows at all.
                 if (brdlin_cnt >= (int)vga.yres) {
+                    brdRowClassify();
                     DrawBorder = &Border_Blank;
                     return;
                 }
-                brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+                brdRowBegin(brdlin_cnt);
                 prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
                 // DS80: BottomBorder_OSD carve coords are for std-fb layouts —
                 // Update_Border_DS80 carves the stats rect itself; use plain bottom.
@@ -4123,7 +4383,7 @@ IRAM_ATTR void VIDEO::MiddleBorder() {
                 DrawBorder();
                 return;
             }
-            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            brdRowBegin(brdlin_cnt);
             prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
         }
     }
@@ -4153,10 +4413,11 @@ IRAM_ATTR void VIDEO::BottomBorder() {
             brdcol_cnt = brdcol_start;
             lastBrdTstate += tStatesPerLine - brdcol_end;
             if (brdlin_cnt == (int)vga.yres) {
+                brdRowClassify();   // the frame's last border row
                 DrawBorder = &Border_Blank;
                 return;
             }
-            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            brdRowBegin(brdlin_cnt);
             prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
         }
     }
@@ -4192,10 +4453,11 @@ IRAM_ATTR void VIDEO::BottomBorder_OSD() {
             brdcol_cnt = brdcol_start;
             lastBrdTstate += tStatesPerLine - brdcol_end;
             if (brdlin_cnt == (int)vga.yres) {
+                brdRowClassify();   // the frame's last border row
                 DrawBorder = &Border_Blank;
                 return;
             }
-            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            brdRowBegin(brdlin_cnt);
             prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
         }
     }
@@ -4237,7 +4499,7 @@ void SaveRectT::save(int16_t x, int16_t y, int16_t w, int16_t h) {
         write16psram(pos, (uint16_t)w); pos += 2;
         write16psram(pos, (uint16_t)h); pos += 2;
         for (size_t line = y; line < (size_t)y + h; ++line) {
-            writepsram(pos, VIDEO::vga.frameBuffer[line] + x, w);
+            writepsram(pos, getLineBuffer(line) + x, w);   // composes virtual rows
             pos += w;
         }
         offsets.push_back(off + need);
@@ -4271,7 +4533,7 @@ void SaveRectT::save(int16_t x, int16_t y, int16_t w, int16_t h) {
         f_write(&f, &h, 2, &bw);
         off += 8;
         for (size_t line = y; line < y + h; ++line) {
-            uint8_t *backbuffer = VIDEO::vga.frameBuffer[line];
+            uint8_t *backbuffer = getLineBuffer(line);   // composes virtual rows
             f_write(&f, backbuffer + x, w, &bw);
             off += w;
         }
@@ -4305,7 +4567,7 @@ void SaveRectT::save(int16_t x, int16_t y, int16_t w, int16_t h) {
         memcpy(p, &w, 2); p += 2;
         memcpy(p, &h, 2); p += 2;
         for (size_t line = y; line < y + h; ++line) {
-            memcpy(p, VIDEO::vga.frameBuffer[line] + x, w);
+            memcpy(p, getLineBuffer(line) + x, w);   // composes virtual rows
             p += w;
         }
         offsets.push_back(new_size);
@@ -4335,7 +4597,8 @@ void SaveRectT::restore_last() {
         size_t line_end_p = (size_t)y + h;
         if (line_end_p > (size_t)VIDEO::vga.yres) line_end_p = VIDEO::vga.yres;
         for (size_t line = y; line < line_end_p; ++line) {
-            readpsram(VIDEO::vga.frameBuffer[line] + x, pos, w);
+            uint8_t *d = VIDEO::fbWriteRow((int)line);   // materialize virtual rows
+            if (d) readpsram(d + x, pos, w);
             pos += w;
         }
         if (offsets.empty()) offsets.push_back(0);
@@ -4369,7 +4632,9 @@ void SaveRectT::restore_last() {
         size_t line_end = (size_t)y + h;
         if (line_end > (size_t)VIDEO::vga.yres) line_end = VIDEO::vga.yres;
         for (size_t line = y; line < line_end; ++line) {
-            f_read(&f, VIDEO::vga.frameBuffer[line] + x, w, &br);
+            uint8_t *d = VIDEO::fbWriteRow((int)line);   // materialize virtual rows
+            if (d) f_read(&f, d + x, w, &br);
+            else   f_lseek(&f, f_tell(&f) + w);          // heap starved: skip the row
         }
         f_close(&f);
     } else if (off < ram_buf.size()) {
@@ -4383,7 +4648,8 @@ void SaveRectT::restore_last() {
         size_t line_end_r = (size_t)y + h;
         if (line_end_r > (size_t)VIDEO::vga.yres) line_end_r = VIDEO::vga.yres;
         for (size_t line = y; line < line_end_r; ++line) {
-            memcpy(VIDEO::vga.frameBuffer[line] + x, p, w);
+            uint8_t *d = VIDEO::fbWriteRow((int)line);   // materialize virtual rows
+            if (d) memcpy(d + x, p, w);
             p += w;
         }
         ram_buf.resize(off); // shrink

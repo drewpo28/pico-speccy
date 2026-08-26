@@ -313,7 +313,10 @@ static void drawSprite(Id i, int xpix, int ypix, uint8_t fg) {
     for (int row = 0; row < 8; row++) {
         uint8_t bits = glyph[row];
         if (!bits) continue;
-        uint8_t* line = (uint8_t*)VIDEO::vga.frameBuffer[ypix + row];
+        // LED rows live in the bottom border band — materialize the virtual row
+        // (heap starved → skip: an unlit LED beats a crash).
+        uint8_t* line = VIDEO::fbWriteRow(ypix + row);
+        if (!line) continue;
         for (int c = 0; c < 8; c++) {
             if (bits & (0x80 >> c)) line[(xpix + c) ^ 2] = fg;
         }

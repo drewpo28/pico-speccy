@@ -171,6 +171,17 @@ public:
   // that cannot fit them (the boot would OOM-hang otherwise).
   static size_t fbBytesForVM(uint8_t vm, size_t* prevBytes);
 
+  // Virtual (uniform) framebuffer rows — see the block at the top of Video.cpp.
+  // Border-band rows hold no pixels while they are a single colour
+  // (vga.frameBuffer[y] == NULL); use these instead of touching rows directly:
+  //   fbWriteRow — materialize row y (heap) and return its pixels; NULL when the
+  //                heap is starved (drop the write — never crash).
+  //   fbFillRow  — fill row y with one colour: demotes an eligible row back to a
+  //                colour byte, memsets a block/content row.
+  //   fbFillAll  — fbFillRow over every visible row.
+  static uint8_t* fbWriteRow(int y);
+  static void fbFillRow(int y, uint8_t c);
+  static void fbFillAll(uint8_t c);
 
   // Reset video
   static void Reset();
