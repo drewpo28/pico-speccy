@@ -39,6 +39,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "SAASound.h"
 #include "OpnFm.h"
 #include "OplFm.h"
+#include "SnSound.h"
 #include "Subsystem.h"
 #include "CPU.h"
 #include "Config.h"
@@ -237,6 +238,11 @@ int16_t* ESPectrum::audioBufferOPL_L = nullptr;
 int16_t* ESPectrum::audioBufferOPL_R = nullptr;
 uint32_t ESPectrum::audbufcntOPL = 0;
 uint32_t ESPectrum::faudbufcntOPL = 0;
+uint8_t* ESPectrum::audioBufferSN = nullptr;
+uint32_t ESPectrum::audbufcntSN = 0;
+uint32_t ESPectrum::faudbufcntSN = 0;
+uint32_t ESPectrum::audbufcntCMS = 0;
+uint32_t ESPectrum::faudbufcntCMS = 0;
 uint32_t ESPectrum::audbufcntPIT = 0;
 uint32_t ESPectrum::faudbufcntPIT = 0;
 uint32_t ESPectrum::audbufcntSAA = 0;
@@ -1081,6 +1087,8 @@ void ESPectrum::setup() {
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
+  CmsSubsys::request(!Config::tape_player && Config::cms != 0);
+  SnSubsys::request(!Config::tape_player && Config::sn76489 != 0);
   MidiSubsys::request(Config::midi != 0);
   DmaSubsys::request(Config::dma_mode != 0);
   Mb02Subsys::syncFromState();
@@ -1402,6 +1410,8 @@ void ESPectrum::reset(uint8_t romInUse) {
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
+  CmsSubsys::request(!Config::tape_player && Config::cms != 0);
+  SnSubsys::request(!Config::tape_player && Config::sn76489 != 0);
   MidiSubsys::request(Config::midi != 0);
   DmaSubsys::request(Config::dma_mode != 0);
   Subsystems::applyPending();
@@ -1429,6 +1439,13 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Reset the OPL3 the same way (the VGM-player card sits on the ZX reset
   // line); rate can have changed with the arch, so re-derive it too.
   if (oplfm) { oplfm->setRates(OPL3_YMF262_CLOCK, Audio_freq); oplfm->reset(); }
+
+  // Same for the card's CMS pair and the SN76489 pair. init() does not touch
+  // the SAA clock scale, so the CMS chips keep their 7.159 MHz.
+  for (int i = 0; i < 2; i++) {
+    if (cmsChip[i]) { cmsChip[i]->init(); cmsChip[i]->set_sound_format(Audio_freq, 1, 8); cmsChip[i]->reset(); }
+  }
+  if (snChip) { snChip->setRates(SN76489_CLOCK, Audio_freq); snChip->reset(); }
 
   // Reset SAA1099 emulation
   if (saaChip) {
@@ -2279,6 +2296,33 @@ __not_in_flash("audio") void ESPectrum::OPLGetSample() {
   }
 }
 
+// Both SN76489s into audioBufferSN[bufpos..]; cleared first, gen accumulates.
+__not_in_flash("audio") void ESPectrum::SNGenSound(int count, int bufpos) {
+  if (!SnSubsys::enabled || !audioBufferSN || !snChip) return;
+  memset(audioBufferSN + bufpos, 0, count);
+  snChip->gen(audioBufferSN, count, bufpos);
+}
+
+__not_in_flash("audio") void ESPectrum::SNGetSample() {
+  uint32_t audbufpos = CPU::tstates / audioAYDivider;
+  if (multiplicator) audbufpos >>= multiplicator;
+  if (audbufpos > audbufcntSN) {
+    SNGenSound(audbufpos - audbufcntSN, audbufcntSN);
+    audbufcntSN = audbufpos;
+  }
+}
+
+// Catch the CMS pair up; each SAASound writes its own member buffers.
+__not_in_flash("audio") void ESPectrum::CMSGetSample() {
+  uint32_t audbufpos = CPU::tstates / audioAYDivider;
+  if (multiplicator) audbufpos >>= multiplicator;
+  if (audbufpos > audbufcntCMS && cmsChip[0] && cmsChip[1]) {
+    cmsChip[0]->gen_sound(audbufpos - audbufcntCMS, audbufcntCMS);
+    cmsChip[1]->gen_sound(audbufpos - audbufcntCMS, audbufcntCMS);
+    audbufcntCMS = audbufpos;
+  }
+}
+
 __not_in_flash("audio") void ESPectrum::AYGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
     if (multiplicator) audbufpos >>= multiplicator;
@@ -2556,6 +2600,8 @@ void ESPectrum::loop() {
     audbufcntSAA = 0;
     audbufcntPIT = 0;
     audbufcntOPL = 0;
+    audbufcntSN = 0;
+    audbufcntCMS = 0;
 
     // Frame boundary: safe to apply pending subsystem (de)allocations.
     // Audio producers and the mixer are quiescent here.
@@ -2681,6 +2727,8 @@ void ESPectrum::loop() {
     faudbufcntPIT = audbufcntPIT;
     faudbufcntSAA = audbufcntSAA;
     faudbufcntOPL = audbufcntOPL;
+    faudbufcntSN = audbufcntSN;
+    faudbufcntCMS = audbufcntCMS;
 
     if (!CPU::paused) {
 #if LOAD_WAV_PIO
@@ -2767,6 +2815,19 @@ void ESPectrum::loop() {
         }
         if (OplSubsys::enabled && audioBufferOPL_L && faudbufcntOPL < samplesPerFrame)
             OPLGenSound(samplesPerFrame - faudbufcntOPL, faudbufcntOPL);
+        if (SnSubsys::enabled && audioBufferSN && faudbufcntSN < samplesPerFrame)
+            SNGenSound(samplesPerFrame - faudbufcntSN, faudbufcntSN);
+        if (CmsSubsys::enabled && cmsChip[0] && cmsChip[1] && faudbufcntCMS < samplesPerFrame) {
+          if (Tape::tapeStatus == TAPE_LOADING) {
+            memset(cmsChip[0]->SamplebufSAA_L, 0, sizeof(cmsChip[0]->SamplebufSAA_L));
+            memset(cmsChip[0]->SamplebufSAA_R, 0, sizeof(cmsChip[0]->SamplebufSAA_R));
+            memset(cmsChip[1]->SamplebufSAA_L, 0, sizeof(cmsChip[1]->SamplebufSAA_L));
+            memset(cmsChip[1]->SamplebufSAA_R, 0, sizeof(cmsChip[1]->SamplebufSAA_R));
+          } else {
+            cmsChip[0]->gen_sound(samplesPerFrame - faudbufcntCMS, faudbufcntCMS);
+            cmsChip[1]->gen_sound(samplesPerFrame - faudbufcntCMS, faudbufcntCMS);
+          }
+        }
         if (SaaSubsys::enabled && saaChip && faudbufcntSAA < samplesPerFrame)
         {
           if (Tape::tapeStatus == TAPE_LOADING) {
@@ -2789,6 +2850,8 @@ void ESPectrum::loop() {
         // going on a real card too) — only the DAC path is gated, as in the CPLD.
         bool mix_fm = TsfmSubsys::enabled && audioBufferFM && AySound::ts_fm_enabled;
         bool mix_opl = OplSubsys::enabled && audioBufferOPL_L;
+        bool mix_sn  = SnSubsys::enabled && audioBufferSN;
+        bool mix_cms = CmsSubsys::enabled && cmsChip[0] && cmsChip[1];
         bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
         bool mix_saa = SaaSubsys::enabled && saaChip;
         bool mix_midi = MidiSubsys::enabled && Midi::enabled == 4 && audioBufferMIDI_L && audioBufferMIDI_R;
@@ -2838,6 +2901,15 @@ void ESPectrum::loop() {
             opl = audioBufferOPL_R[i] >> 7;
             if (opl > 127) opl = 127; else if (opl < -128) opl = -128;
             beeper_R += 128 + opl;
+          }
+          if (mix_sn) {
+            // unipolar like the beeper/AY, no re-centre needed
+            beeper_L += audioBufferSN[i];
+            beeper_R += audioBufferSN[i];
+          }
+          if (mix_cms) {
+            beeper_L += cmsChip[0]->SamplebufSAA_L[i] + cmsChip[1]->SamplebufSAA_L[i];
+            beeper_R += cmsChip[0]->SamplebufSAA_R[i] + cmsChip[1]->SamplebufSAA_R[i];
           }
           if (mix_midi) {
             // Wavetable synth output is unipolar, centered at 128 (see MidiSynth::gen_sound);

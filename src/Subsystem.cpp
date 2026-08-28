@@ -19,6 +19,7 @@ extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can re
 #include "SAASound.h"
 #include "OpnFm.h"
 #include "OplFm.h"
+#include "SnSound.h"
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "MB02.h"
@@ -244,6 +245,91 @@ bool TsfmSubsys::apply() {
         delete opnfm[0]; opnfm[0] = nullptr;
         delete opnfm[1]; opnfm[1] = nullptr;
         free(ESPectrum::audioBufferFM); ESPectrum::audioBufferFM = nullptr;
+    }
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// CmsSubsys — Creative Music System / Game Blaster for the VGM-player card:
+// two more SAA1099 instances (~1.5 KB each, sample buffers included) at the
+// CMS clock of 7.159 MHz, on ports #D4-#D7. Independent of SaaSubsys — the
+// Karabas #FF chip keeps its own instance and 8 MHz clock.
+// ----------------------------------------------------------------------------
+volatile bool CmsSubsys::enabled = false;
+bool CmsSubsys::wanted = false;
+bool CmsSubsys::dirty = false;
+
+void CmsSubsys::request(bool on) {
+    wanted = on;
+    if (wanted != enabled) dirty = true;
+}
+
+bool CmsSubsys::apply() {
+    dirty = false;
+    if (wanted == enabled) return true;
+
+    if (wanted) {
+        for (int i = 0; i < 2; i++)
+            if (!cmsChip[i]) cmsChip[i] = new (std::nothrow) SAASound();
+        if (!cmsChip[0] || !cmsChip[1]) {
+            Debug::log("CmsSubsys: OOM, free=%u", (unsigned)getFreeHeap());
+            delete cmsChip[0]; cmsChip[0] = nullptr;
+            delete cmsChip[1]; cmsChip[1] = nullptr;
+            wanted = false;
+            Config::cms = 0;
+            return false;
+        }
+        for (int i = 0; i < 2; i++) {
+            cmsChip[i]->init();
+            cmsChip[i]->set_clock(CMS_SAA_CLOCK);
+            cmsChip[i]->set_sound_format(ESPectrum::Audio_freq, 1, 8);
+            cmsChip[i]->reset();
+        }
+        enabled = true;
+    } else {
+        enabled = false;
+        delete cmsChip[0]; cmsChip[0] = nullptr;
+        delete cmsChip[1]; cmsChip[1] = nullptr;
+    }
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// SnSubsys — 2x SN76489 for the VGM-player card (ports #CC/#CD): one SnSound
+// (both chips inside, ~100 B) plus the 640 B mono mix buffer.
+// ----------------------------------------------------------------------------
+volatile bool SnSubsys::enabled = false;
+bool SnSubsys::wanted = false;
+bool SnSubsys::dirty = false;
+
+void SnSubsys::request(bool on) {
+    wanted = on;
+    if (wanted != enabled) dirty = true;
+}
+
+bool SnSubsys::apply() {
+    dirty = false;
+    if (wanted == enabled) return true;
+
+    if (wanted) {
+        if (!ESPectrum::audioBufferSN)
+            ESPectrum::audioBufferSN = (uint8_t*)calloc(ESP_AUDIO_SAMPLES_PENTAGON, 1);
+        if (!snChip) snChip = new (std::nothrow) SnSound();
+        if (!ESPectrum::audioBufferSN || !snChip) {
+            Debug::log("SnSubsys: OOM, free=%u", (unsigned)getFreeHeap());
+            delete snChip; snChip = nullptr;
+            free(ESPectrum::audioBufferSN); ESPectrum::audioBufferSN = nullptr;
+            wanted = false;
+            Config::sn76489 = 0;
+            return false;
+        }
+        snChip->setRates(SN76489_CLOCK, ESPectrum::Audio_freq);
+        snChip->reset();
+        enabled = true;
+    } else {
+        enabled = false;
+        delete snChip; snChip = nullptr;
+        free(ESPectrum::audioBufferSN); ESPectrum::audioBufferSN = nullptr;
     }
     return true;
 }
@@ -943,6 +1029,14 @@ void Subsystems::applyPending() {
     if (OplSubsys::dirty)   {
         Debug::log2SD("Subsys: Opl wanted=%d freeHeap=%u", (int)OplSubsys::wanted, (unsigned)getFreeHeap());
         OplSubsys::apply();
+    }
+    if (CmsSubsys::dirty)   {
+        Debug::log2SD("Subsys: Cms wanted=%d freeHeap=%u", (int)CmsSubsys::wanted, (unsigned)getFreeHeap());
+        CmsSubsys::apply();
+    }
+    if (SnSubsys::dirty)    {
+        Debug::log2SD("Subsys: Sn wanted=%d freeHeap=%u", (int)SnSubsys::wanted, (unsigned)getFreeHeap());
+        SnSubsys::apply();
     }
     if (MidiSubsys::dirty)  {
         Debug::log2SD("Subsys: Midi wanted=%d freeHeap=%u", (int)MidiSubsys::wanted, (unsigned)getFreeHeap());

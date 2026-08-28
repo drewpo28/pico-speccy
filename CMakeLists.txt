@@ -275,6 +275,9 @@ set_source_files_properties(src/OpnFm.cpp PROPERTIES
 # YMF262 (OPL3, VGM-player card): 36 operators at the AY sample rate.
 set_source_files_properties(src/OplFm.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -funroll-loops")
+# 2x SN76489 (VGM-player card): ~7 chip ticks per output sample.
+set_source_files_properties(src/SnSound.cpp PROPERTIES
+    COMPILE_FLAGS "-O3 -funroll-loops")
 set_source_files_properties(src/MidiSynth.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
 # Wavetable MIDI engine wrapper (external/embeded-midi-synth) — hot audio path.

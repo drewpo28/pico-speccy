@@ -32,12 +32,19 @@ public:
     void setRegisterData(uint8_t data);
     uint8_t getRegisterData();
     void set_sound_format(int freq, int chans, int bits);
+    // Master clock in Hz. The generator was written for the ZX/SAM convention
+    // of 8 MHz with one tick per 31250 Hz output sample; other clocks (the
+    // Creative Music System runs its two SAA1099s at 7.159090 MHz) scale every
+    // counter increment by clock/8MHz in Q16. Default 8000000 = bit-identical
+    // to the pre-clock-aware code.
+    void set_clock(int hz);
     void gen_sound(int bufsize, int bufpos);
 
     uint8_t SamplebufSAA_L[ESP_AUDIO_SAMPLES_PENTAGON];
     uint8_t SamplebufSAA_R[ESP_AUDIO_SAMPLES_PENTAGON];
 
 private:
+    uint32_t tick_q16 = 1u << 16;   // clock / 8 MHz, Q16 (see set_clock)
     uint8_t regs[32];
     uint8_t selectedRegister;
     bool outputEnabled;
@@ -114,5 +121,10 @@ private:
 
 // saaChip is heap-allocated by SaaSubsys when Config::SAA1099 is true; nullptr otherwise.
 extern SAASound* saaChip;
+
+// The Creative Music System / Game Blaster pair (CmsSubsys, Config::cms):
+// two more SAA1099s at the CMS clock, on Z80 ports #D4-#D7 (see Ports.cpp).
+#define CMS_SAA_CLOCK 7159090
+extern SAASound* cmsChip[2];
 
 #endif // SAASound_h

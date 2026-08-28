@@ -93,6 +93,7 @@ const uint16_t SAASound::pdm_x4[8][16] = {
 
 // saaChip lives in heap; managed by SaaSubsys (see Subsystem.cpp).
 SAASound* saaChip = nullptr;
+SAASound* cmsChip[2] = { nullptr, nullptr };
 
 SAASound::SAASound() {
     init();
@@ -133,6 +134,10 @@ void SAASound::reset() {
 
 void SAASound::set_sound_format(int freq, int chans, int bits) {
     (void)freq; (void)chans; (void)bits;
+}
+
+void SAASound::set_clock(int hz) {
+    tick_q16 = (uint32_t)(((uint64_t)hz << 16) / 8000000u);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -503,9 +508,9 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
                 case 1: period = 2; break;  // 15625 Hz
                 default: period = 4; break; // 7812.5 Hz
                 }
-                noise[ng].counter++;
-                while (noise[ng].counter >= period) {
-                    noise[ng].counter -= period;
+                noise[ng].counter += tick_q16;
+                while (noise[ng].counter >= (period << 16)) {
+                    noise[ng].counter -= (period << 16);
                     // 18-bit Galois LFSR (x^18+x^11+x^1, verified against SAA1099P)
                     if (noise[ng].rand & 1)
                         noise[ng].rand = (noise[ng].rand >> 1) ^ 0x20400;
@@ -523,9 +528,11 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
             int ng = ch / 3;
 
             // --- Tone tick (CSAAFreq::Tick) ---
-            c.counter += (1 << c.octave);
-            while (c.counter >= c.period) {
-                c.counter -= c.period;
+            // Q16: increment scaled by clock/8MHz; period compared in Q16 too,
+            // so at the default clock this is the old integer math times 65536.
+            c.counter += (tick_q16 << c.octave);
+            while (c.counter >= (c.period << 16)) {
+                c.counter -= (c.period << 16);
                 c.level ^= 1;
 
                 // Trigger connected devices (from CSAAFreq constructor wiring):

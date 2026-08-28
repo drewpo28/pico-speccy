@@ -891,6 +891,51 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
 - Not implemented, on purpose: OPL outputs C/D (OPL4-only DO0 pair), IRQ line
   (no card IRQ wiring), FM state in snapshots (same policy as TSFM).
 
+### CMS (2x SAA1099) + 2x SN76489 (2026-08-28, NOT hw-tested, port map is OURS)
+
+Second round of the VGM card: CMS/Game Blaster (VGM cmd 0xBD; a few dozen rips
+on vgmrips) and the Sega-arcade 2x SN76489 pair (cmds 0x50/0x30; a couple
+hundred). **No plugin version drives these chips yet** (0.61 is the newest and
+its dispatcher has no 0xBD/0x50/0x30), so the port map below is OUR proposal,
+documented in README as the spec for AlexZor — if his plugin lands on different
+ports, the two Ports.cpp decode blocks are the only thing to move:
+
+- **CMS = #D4-#D7**, PC 220h-223h layout (+0 chip-1 DATA, +1 chip-1 ADDR,
+  +2 chip-2 DATA, +3 chip-2 ADDR), write-only (no input decode at all — reads
+  fall to the ULA/floatbus like a real partial-decode bus). The base is NOT
+  #C0-#C3 next to OPL3 deliberately: NEMO IDE's decode (`!(address & 6)` +
+  window tests) claims lo&6==0 ports — #C0/#C1/#C3/#C8/#D0 — and a CMS there
+  would fight it for #C1/#C3 writes. #D4-#D7 and #CC/#CD clear every existing
+  decode (NEMO, MB02 #x0F, DivMMC #E3/#E7/#EB/#A3, ZC #57/#77, Covox #FB/#DD,
+  Profi #8B window and the SPI-probe list).
+- **2x SN76489 = #CC (VGM 0x50) / #CD (0x30)**, write-only, one register byte
+  per OUT. Both blocks sit with the OPL3 one BEFORE the ULA even-port branch
+  (#D4/#D6/#CC have A0=0) and RETURN — same shared-bus deviation as OPL3.
+- **`SAASound::set_clock(hz)`** — the CMS runs its SAAs at 7.159090 MHz, not
+  the ZX/SAM 8 MHz the generator bakes in (1 tick per 31250 Hz sample). The
+  tone/noise counters now advance in Q16 scaled by clock/8MHz; at the default
+  the math is the old integers times 65536, bit-identical. Validated by
+  `tools/saa_clock_test.cpp` (builds against COPIES + stub headers — recipe in
+  its header, quoted includes make src/ always win): 8 MHz → 521.9 Hz exact,
+  7.159 → ratio 0.8949 exact. CmsSubsys = two more SAASound instances
+  (~1.5 KB each, buffers included) — saaChip (Karabas #FF, 8 MHz) is untouched
+  and independent; `init()` deliberately does not reset tick_q16, so F11's
+  init+reset keeps the CMS clock.
+- **`src/SnSound.{h,cpp}`** — both SN76489s in one object (~100 B + 640 B mono
+  mix buffer, SnSubsys). Sega/VGM-default noise: 16-bit LFSR reset to 0x8000
+  on every noise-register write, white feedback bit0^bit3, output bit0; tone
+  period 0/1 = constant +1 (the chip's PCM mode). Internal tick clock/16 with
+  a Q16 accumulator, ~7 ticks per output sample box-averaged (PCM and high
+  tones fold down instead of aliasing). Host test `tools/snsound_test.cpp`
+  (g++ -O2 -Isrc ... src/SnSound.cpp): tone 440.4 Hz, PCM DC, white/periodic
+  noise (periodic = 1-in-16 pulse train at clock/(32·N·16)), chip
+  independence. **Re-run after any change.** Volume: sn_vol[0]=48 per channel,
+  mixed unipolar like the beeper (no re-centre) — the knob if hw disagrees.
+- Config::cms / Config::sn76489 (NVS "cms"/"sn76489", default off) → Audio →
+  "CMS (2x SAA1099)" / "2x SN76489", ordinary AC_SUBSYS/F_SUBSYS live toggles.
+  VGM chip clocks in file headers are irrelevant as ever — we fix 7.159090 /
+  3.579545 MHz and the plugin streams raw writes.
+
 ## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
 
 TheLink (pouet 53778, Pentagon 1024SL + NeoGS + TSFM, REQUIRES 7 MHz turbo)

@@ -86,6 +86,8 @@ NM_INT_ACCESS (ayCfg,     ayConfig)
 NM_INT_ACCESS (turbo,     turbosound)
 NM_INT_ACCESS (tsfm,      tsfm)
 NM_INT_ACCESS (opl3,      opl3)
+NM_INT_ACCESS (cms,       cms)
+NM_INT_ACCESS (sn76489,   sn76489)
 NM_INT_ACCESS (covox,     covox)
 NM_INT_ACCESS (soundrive, soundrive)
 NM_BOOL_ACCESS(saa,       SAA1099)
@@ -849,6 +851,8 @@ static bool want_covox() { return Config::covox != 0 || Config::soundriveEnabled
 static bool want_saa()   { return Config::SAA1099; }
 static bool want_tsfm()  { return Config::tsfm != 0; }
 static bool want_opl3()  { return Config::opl3 != 0; }
+static bool want_cms()   { return Config::cms != 0; }
+static bool want_sn()    { return Config::sn76489 != 0; }
 static bool want_dma()   { return Config::dma_mode != 0; }
 static bool want_gs()    { return Config::gigascreen_onoff != 0; }
 static bool want_divmmc(){ return Config::esxdos != 0; }
@@ -864,6 +868,8 @@ NM_SUBSYS_THUNKS(covox, CovoxSubsys)
 NM_SUBSYS_THUNKS(saa,   SaaSubsys)
 NM_SUBSYS_THUNKS(tsfm,  TsfmSubsys)
 NM_SUBSYS_THUNKS(opl3,  OplSubsys)
+NM_SUBSYS_THUNKS(cms,   CmsSubsys)
+NM_SUBSYS_THUNKS(sn,    SnSubsys)
 NM_SUBSYS_THUNKS(dma,   DmaSubsys)
 NM_SUBSYS_THUNKS(gs,    GsSubsys)
 NM_SUBSYS_THUNKS(divmmc, DivMmcSubsys)
@@ -930,6 +936,8 @@ static const SubsysBinding kSubsys[] = {
     { FEAT_SAA,        want_saa,   on_saa,   req_saa,   app_saa,   nullptr, nullptr },
     { -1,              want_tsfm,  on_tsfm,  req_tsfm,  app_tsfm,  nullptr, nullptr },
     { -1,              want_opl3,  on_opl3,  req_opl3,  app_opl3,  nullptr, nullptr },
+    { -1,              want_cms,   on_cms,   req_cms,   app_cms,   nullptr, nullptr },
+    { -1,              want_sn,    on_sn,    req_sn,    app_sn,    nullptr, nullptr },
     { FEAT_DMA,        want_dma,   on_dma,   req_dma,   app_dma,   nullptr, nullptr },
     { FEAT_GIGASCREEN, want_gs,    on_gs,    req_gs,    app_gs,    pre_gs,  post_gs },
     // DivMMC is deliberately ABSENT here: esxDOS is reboot-class (see the settings

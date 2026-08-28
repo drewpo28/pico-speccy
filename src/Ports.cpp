@@ -38,6 +38,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "AySound.h"
 #include "OpnFm.h"
 #include "OplFm.h"
+#include "SnSound.h"
 #include "SAASound.h"
 #include "CPU.h"
 #include "Config.h"
@@ -2131,6 +2132,31 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     if ((address & 1) && Tape::tapeStatus != TAPE_LOADING)
       ESPectrum::OPLGetSample();
     oplfm->write(address & 3, data);
+    ioContentionLate(MemESP::ramContended[rambank]);
+    return;
+  }
+  // CMS / Game Blaster (VGM-player card): two SAA1099s at 7.159 MHz on
+  // #D4-#D7, laid out like the PC original at 220h-223h — +0 chip-1 DATA,
+  // +1 chip-1 ADDR, +2 chip-2 DATA, +3 chip-2 ADDR. Write-only (a real
+  // SAA1099 has no readable registers on this card), so no input decode; the
+  // base avoids the NEMO IDE windows (which claim lo&6==0, i.e. #C0-#C3/#C8/
+  // #D0). Same early-return deviation as OPL3 — #D4/#D6 have A0=0 and would
+  // otherwise write the border.
+  if (cmsChip[0] && (address & 0x00FC) == 0x00D4) {
+    // catch up first — selectRegister can tick the external envelope clock
+    if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::CMSGetSample();
+    SAASound* chip = cmsChip[(address >> 1) & 1];
+    if (address & 1) chip->selectRegister(data);
+    else             chip->setRegisterData(data);
+    ioContentionLate(MemESP::ramContended[rambank]);
+    return;
+  }
+  // 2x SN76489 (VGM-player card): single write-only register byte per chip,
+  // #CC = chip 1 (VGM cmd 0x50), #CD = chip 2 (VGM cmd 0x30). #CC has A0=0 —
+  // same placement rule as above.
+  if (snChip && (address & 0x00FE) == 0x00CC) {
+    if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SNGetSample();
+    snChip->write(address & 1, data);
     ioContentionLate(MemESP::ramContended[rambank]);
     return;
   }
