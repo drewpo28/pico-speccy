@@ -18,6 +18,7 @@ extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can re
 
 #include "SAASound.h"
 #include "OpnFm.h"
+#include "OplFm.h"
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "MB02.h"
@@ -243,6 +244,55 @@ bool TsfmSubsys::apply() {
         delete opnfm[0]; opnfm[0] = nullptr;
         delete opnfm[1]; opnfm[1] = nullptr;
         free(ESPectrum::audioBufferFM); ESPectrum::audioBufferFM = nullptr;
+    }
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// OplSubsys — YMF262/OPL3 for the DivMMC VGM-player card (ports #C4-#C7):
+// one ~9 KB OplFm on the heap plus the stereo int16 mix buffers. The big
+// attenuation/sine tables are const flash (OplTabs.h), so this is the whole
+// RAM cost.
+// ----------------------------------------------------------------------------
+volatile bool OplSubsys::enabled = false;
+bool OplSubsys::wanted = false;
+bool OplSubsys::dirty = false;
+
+void OplSubsys::request(bool on) {
+    wanted = on;
+    if (wanted != enabled) dirty = true;
+}
+
+bool OplSubsys::apply() {
+    dirty = false;
+    if (wanted == enabled) return true;
+
+    if (wanted) {
+        if (!ESPectrum::audioBufferOPL_L) {
+            ESPectrum::audioBufferOPL_L = (int16_t*)calloc(2 * ESP_AUDIO_SAMPLES_PENTAGON, sizeof(int16_t));
+            ESPectrum::audioBufferOPL_R = ESPectrum::audioBufferOPL_L
+                ? ESPectrum::audioBufferOPL_L + ESP_AUDIO_SAMPLES_PENTAGON : nullptr;
+        }
+        if (!oplfm) oplfm = new (std::nothrow) OplFm();
+        if (!ESPectrum::audioBufferOPL_L || !oplfm) {
+            Debug::log("OplSubsys: OOM, free=%u", (unsigned)getFreeHeap());
+            delete oplfm; oplfm = nullptr;
+            free(ESPectrum::audioBufferOPL_L);
+            ESPectrum::audioBufferOPL_L = nullptr;
+            ESPectrum::audioBufferOPL_R = nullptr;
+            wanted = false;
+            Config::opl3 = 0;
+            return false;
+        }
+        oplfm->setRates(OPL3_YMF262_CLOCK, ESPectrum::Audio_freq);
+        oplfm->reset();
+        enabled = true;
+    } else {
+        enabled = false;
+        delete oplfm; oplfm = nullptr;
+        free(ESPectrum::audioBufferOPL_L);
+        ESPectrum::audioBufferOPL_L = nullptr;
+        ESPectrum::audioBufferOPL_R = nullptr;
     }
     return true;
 }
@@ -889,6 +939,10 @@ void Subsystems::applyPending() {
     if (TsfmSubsys::dirty)  {
         Debug::log2SD("Subsys: Tsfm wanted=%d freeHeap=%u", (int)TsfmSubsys::wanted, (unsigned)getFreeHeap());
         TsfmSubsys::apply();
+    }
+    if (OplSubsys::dirty)   {
+        Debug::log2SD("Subsys: Opl wanted=%d freeHeap=%u", (int)OplSubsys::wanted, (unsigned)getFreeHeap());
+        OplSubsys::apply();
     }
     if (MidiSubsys::dirty)  {
         Debug::log2SD("Subsys: Midi wanted=%d freeHeap=%u", (int)MidiSubsys::wanted, (unsigned)getFreeHeap());

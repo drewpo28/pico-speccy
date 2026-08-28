@@ -75,6 +75,7 @@
 #define TXT_AUD_AY_STEREO   "AY stereo mode"
 #define TXT_AUD_TURBOSOUND  "TurboSound"
 #define TXT_AUD_TSFM        "TurboSound FM"
+#define TXT_AUD_OPL3        "OPL3 (YMF262)"
 #define TXT_AUD_COVOX       "Covox port"
 #define TXT_AUD_SOUNDRIVE   "SounDrive"
 #define TXT_AUD_SAA         "SAA1099"

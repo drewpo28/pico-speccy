@@ -50,6 +50,8 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Z80 DMA / zxnDMA emulation: Port #0B (MB02+) and Port #6B (DATA-GEAR) modes (RP2350 only).
 - Contended memory and contended I/O emulation.
 - AY-3-8912 / TurboSound emulation.
+- TurboSound FM (2 x YM2203) emulation: NedoPC #FFFD pseudo-registers, OPN FM synthesis.
+- OPL3 (YMF262) sound-card emulation on ports #C4-#C7 (Audio → "OPL3 (YMF262)") — together with AY and TSFM this covers the [VGM player plugin for the ESXDOS NMI browser](https://github.com/Alex-Zor/VGM-Plugin-for-DivMMC): copy the plugin to `/BIN/BPLUGINS` on the SD card and .vgm files (AY / YM2203 / OPL2 / OPL3) play from the NMI browser.
 - SAA1099 sound chip emulation (https://en.wikipedia.org/wiki/Philips_SAA1099).
 - Covox 8-bit DAC emulation: selectable port (#FB or #DD) from the Audio menu.
 - SounDrive 8-bit stereo DAC emulation: left channel on ports #0F/#1F/#3F, right on #4F/#5F, both on #FB. Own Audio-menu item (Off/On/Auto; Auto enables it on Profi only, where CP/M games stream PCM there).

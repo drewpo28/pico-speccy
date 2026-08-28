@@ -617,6 +617,7 @@ static const Node kAudio[] = {
     NM_RADIO(TXT_AUD_AY_STEREO,  SET_AY_STEREO,    opt_ay_stereo,  nullptr),
     NM_RADIO(TXT_AUD_TURBOSOUND, SET_TURBOSOUND,   opt_turbosound, nullptr),
     NM_BOOL (TXT_AUD_TSFM,       SET_TSFM,         nullptr),
+    NM_BOOL (TXT_AUD_OPL3,       SET_OPL3,         nullptr),
     NM_RADIO(TXT_AUD_COVOX,      SET_COVOX,        opt_covox,      nullptr),
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
     NM_BOOL (TXT_AUD_SAA,        SET_SAA1099,      nullptr),

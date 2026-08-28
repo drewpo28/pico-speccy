@@ -37,6 +37,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Ports.h"
 #include "AySound.h"
 #include "OpnFm.h"
+#include "OplFm.h"
 #include "SAASound.h"
 #include "CPU.h"
 #include "Config.h"
@@ -759,6 +760,22 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       return (reg == 0) ? IDE::read_data_low() : IDE::read8(reg);
     }
     // else: not an IDE sub-address — fall through (don't shadow AY/ULA etc.)
+  }
+  // OPL3 (YMF262) VGM-player card: the status register lives at the address
+  // ports (#C4/#C6); data ports read 0x00, as verified on real YMF262 (MAME).
+  // Bits 2..1 read LOW — that is how software tells an OPL3 from an OPL2 —
+  // and the plugin's detect ("start timer 1, wait ~950 us, expect 0xC0")
+  // needs the timers advanced to NOW, which only gen() does: catch up first.
+  // Decoded BEFORE the ULA even-port branch (like NEMO): #C4/#C6 have A0=0
+  // and would otherwise read back as keyboard rows; also shadows Kempston's
+  // A5=0 partial decode further down. oplfm is non-null only while OplSubsys
+  // is up (Config::opl3), so nothing changes while the card is off.
+  if (oplfm && (address & 0x00FC) == 0x00C4) {
+    if ((address & 3) == 0) {
+      if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::OPLGetSample();
+      return oplfm->status();
+    }
+    return 0x00;
   }
   // ULA PORT
   if ((address & 0x0001) == 0) {
@@ -2098,6 +2115,25 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     // else: not an IDE sub-address — fall through (don't shadow AY/ULA etc.)
   }
+  // OPL3 (YMF262) — the AlexZor DivMMC VGM-player sound card: address/data
+  // register pairs on #C4/#C5 (set #1) and #C6/#C7 (set #2), low-byte decode
+  // (the plugin uses OUT (n),A, so the high address byte is the data byte).
+  // Decoded BEFORE the ULA even-port branch — #C4/#C6 have A0=0 — and it
+  // RETURNS, a deliberate deviation from a shared real bus: on a Pentagon's
+  // partial decodes an OPL access would also hit the ULA (OUT (#C4) = border
+  // write), the AY (OUT (#C5),#A4 = I/O address #A4C5 = AY data write) and
+  // even #7FFD paging (OUT (#C4),#04 = #04C4); emulating that would flash the
+  // border and corrupt paging mid-tune. oplfm is non-null only while
+  // OplSubsys is up (Config::opl3), so nothing changes while the card is off.
+  if (oplfm && (address & 0x00FC) == 0x00C4) {
+    // Catch the mixer up before a DATA write lands (address latches are
+    // free); MAME's UpdateHandler does the same split.
+    if ((address & 1) && Tape::tapeStatus != TAPE_LOADING)
+      ESPectrum::OPLGetSample();
+    oplfm->write(address & 3, data);
+    ioContentionLate(MemESP::ramContended[rambank]);
+    return;
+  }
   // ULA =======================================================================
   if ((address & 0x0001) == 0) {
     port254 = data;
@@ -2387,6 +2423,25 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
             if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
             AySound::ts_fm_enabled = fm_on;
           }
+        }
+        LED::touchW(LED::AY);
+        ioContentionLate(MemESP::ramContended[rambank]);
+        return;
+      }
+      // AlexZor VGM-plugin TSFM select: its YM2203 commands write #F0 (first
+      // chip, VGM cmd 0x55) / #F1 (second chip, cmd 0xA5) to #FFFD before
+      // every register/data pair — a different family from NedoPC's %11111frc
+      // (which starts at #F8 and which the plugin never writes). Verified by
+      // disassembling the plugin binary (0x80C8: LD A,#F1 / LD A,#F0 →
+      // OUT (C),A on #FFFD). Treated like the CPLD select: latch the chip,
+      // un-gate the FM DAC, and swallow the byte (a real AY register #F0
+      // select is meaningless — the latch would just park out of range).
+      if (Config::tsfm && (data & 0xFE) == 0xF0) {
+        AySound::selected_chip  = data & 0x01;
+        AySound::ts_status_read = false;
+        if (!AySound::ts_fm_enabled) {
+          if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
+          AySound::ts_fm_enabled = true;
         }
         LED::touchW(LED::AY);
         ioContentionLate(MemESP::ramContended[rambank]);

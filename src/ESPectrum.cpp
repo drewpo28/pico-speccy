@@ -38,6 +38,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "AySound.h"
 #include "SAASound.h"
 #include "OpnFm.h"
+#include "OplFm.h"
 #include "Subsystem.h"
 #include "CPU.h"
 #include "Config.h"
@@ -232,6 +233,10 @@ uint8_t* ESPectrum::audioBufferPIT = nullptr;
 uint8_t* ESPectrum::audioBufferMIDI_L = nullptr;
 uint8_t* ESPectrum::audioBufferMIDI_R = nullptr;
 int16_t* ESPectrum::audioBufferFM = nullptr;
+int16_t* ESPectrum::audioBufferOPL_L = nullptr;
+int16_t* ESPectrum::audioBufferOPL_R = nullptr;
+uint32_t ESPectrum::audbufcntOPL = 0;
+uint32_t ESPectrum::faudbufcntOPL = 0;
 uint32_t ESPectrum::audbufcntPIT = 0;
 uint32_t ESPectrum::faudbufcntPIT = 0;
 uint32_t ESPectrum::audbufcntSAA = 0;
@@ -1075,6 +1080,7 @@ void ESPectrum::setup() {
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
   MidiSubsys::request(Config::midi != 0);
   DmaSubsys::request(Config::dma_mode != 0);
   Mb02Subsys::syncFromState();
@@ -1395,6 +1401,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
   MidiSubsys::request(Config::midi != 0);
   DmaSubsys::request(Config::dma_mode != 0);
   Subsystems::applyPending();
@@ -1418,6 +1425,10 @@ void ESPectrum::reset(uint8_t romInUse) {
     if (opnfm[i]) { opnfm[i]->setRates(TSFM_YM2203_CLOCK, Audio_freq); opnfm[i]->reset(); }
   }
   AySound::ts_fm_enabled = false;
+
+  // Reset the OPL3 the same way (the VGM-player card sits on the ZX reset
+  // line); rate can have changed with the arch, so re-derive it too.
+  if (oplfm) { oplfm->setRates(OPL3_YMF262_CLOCK, Audio_freq); oplfm->reset(); }
 
   // Reset SAA1099 emulation
   if (saaChip) {
@@ -2245,6 +2256,29 @@ __not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
   if (opnfm[1]) opnfm[1]->gen(audioBufferFM, count, bufpos);
 }
 
+// YMF262 into audioBufferOPL_L/R[bufpos .. bufpos+count-1]; cleared first
+// because OplFm::gen accumulates.
+__not_in_flash("audio") void ESPectrum::OPLGenSound(int count, int bufpos) {
+  if (!OplSubsys::enabled || !audioBufferOPL_L || !oplfm) return;
+  memset(audioBufferOPL_L + bufpos, 0, count * sizeof(int16_t));
+  memset(audioBufferOPL_R + bufpos, 0, count * sizeof(int16_t));
+  oplfm->gen(audioBufferOPL_L, audioBufferOPL_R, count, bufpos);
+}
+
+// Catch the OPL3 stream up to the current T-state. Called from every OPL port
+// access: a data write must land between the samples generated before and
+// after it, and a STATUS READ must see the timers advanced to "now" — the VGM
+// plugin's detect is "start timer 1, busy-wait ~950 us, expect 0xC0", and the
+// timers only move inside gen().
+__not_in_flash("audio") void ESPectrum::OPLGetSample() {
+  uint32_t audbufpos = CPU::tstates / audioAYDivider;
+  if (multiplicator) audbufpos >>= multiplicator;
+  if (audbufpos > audbufcntOPL) {
+    OPLGenSound(audbufpos - audbufcntOPL, audbufcntOPL);
+    audbufcntOPL = audbufpos;
+  }
+}
+
 __not_in_flash("audio") void ESPectrum::AYGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
     if (multiplicator) audbufpos >>= multiplicator;
@@ -2521,6 +2555,7 @@ void ESPectrum::loop() {
 
     audbufcntSAA = 0;
     audbufcntPIT = 0;
+    audbufcntOPL = 0;
 
     // Frame boundary: safe to apply pending subsystem (de)allocations.
     // Audio producers and the mixer are quiescent here.
@@ -2645,6 +2680,7 @@ void ESPectrum::loop() {
 
     faudbufcntPIT = audbufcntPIT;
     faudbufcntSAA = audbufcntSAA;
+    faudbufcntOPL = audbufcntOPL;
 
     if (!CPU::paused) {
 #if LOAD_WAV_PIO
@@ -2729,6 +2765,8 @@ void ESPectrum::loop() {
             if((Config::twoAyChips() || AySound::selected_chip == 1) && chip1) chip1->gen_sound(samplesPerFrame - faudbufcntAY , faudbufcntAY);
             FMGenSound(samplesPerFrame - faudbufcntAY, faudbufcntAY);
         }
+        if (OplSubsys::enabled && audioBufferOPL_L && faudbufcntOPL < samplesPerFrame)
+            OPLGenSound(samplesPerFrame - faudbufcntOPL, faudbufcntOPL);
         if (SaaSubsys::enabled && saaChip && faudbufcntSAA < samplesPerFrame)
         {
           if (Tape::tapeStatus == TAPE_LOADING) {
@@ -2750,6 +2788,7 @@ void ESPectrum::loop() {
         // a %11111 0 r c select. Generation still runs (timers and envelopes keep
         // going on a real card too) — only the DAC path is gated, as in the CPLD.
         bool mix_fm = TsfmSubsys::enabled && audioBufferFM && AySound::ts_fm_enabled;
+        bool mix_opl = OplSubsys::enabled && audioBufferOPL_L;
         bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
         bool mix_saa = SaaSubsys::enabled && saaChip;
         bool mix_midi = MidiSubsys::enabled && Midi::enabled == 4 && audioBufferMIDI_L && audioBufferMIDI_R;
@@ -2787,6 +2826,18 @@ void ESPectrum::loop() {
             int fm = audioBufferFM[i] >> 1;
             beeper_L += 128 + fm;
             beeper_R += 128 + fm;
+          }
+          if (mix_opl) {
+            // Full-resolution chip output (a loud OPL3 tune peaks near +/-16k),
+            // scaled to the +/-127 swing the TSFM path uses and saturated —
+            // bipolar, so it needs the same 128 re-centre. If hardware says
+            // it is too loud/quiet against AY, this shift is the one knob.
+            int opl = audioBufferOPL_L[i] >> 7;
+            if (opl > 127) opl = 127; else if (opl < -128) opl = -128;
+            beeper_L += 128 + opl;
+            opl = audioBufferOPL_R[i] >> 7;
+            if (opl > 127) opl = 127; else if (opl < -128) opl = -128;
+            beeper_R += 128 + opl;
           }
           if (mix_midi) {
             // Wavetable synth output is unipolar, centered at 128 (see MidiSynth::gen_sound);
