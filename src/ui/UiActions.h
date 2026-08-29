@@ -87,6 +87,9 @@ void netStatusInvalidate();
 void act_debugDialog();
 void act_debugPoke();
 
+// Skvosh — the built-in native paddle game (UiGame.cpp)
+void act_gameSkvosh();
+
 // Reset (all immediate by definition; three of them reboot)
 void act_resetSoft();
 void act_resetHard();

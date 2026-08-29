@@ -1533,6 +1533,35 @@ the listing's `IN A,(#1F)` at "#387F" is actually **`IN A,(#9F)` at #387A**.
   indexes romDd11[offset-512] with offset up to 0x3FFF — reads past the
   512-byte array for addr ≥ 0xC400; pre-existing, not touched.
 
+## Built-in game: Skvosh (src/ui/UiGame.cpp, NOT hw-tested)
+
+A native squash/pong (tribute to andykarpov's skvosh console) that runs WITHOUT
+the emulated machine: a `K_PAGE` root row ("Skvosh game", before Volume) whose
+`act_gameSkvosh()` owns its key loop like `uiAboutPage`. Two games behind an
+in-page mode menu: Solo squash (right paddle, three walls, 5 balls, score =
+returns) and Pong vs CPU (left wall replaced by a computer paddle, first to 11,
+rally speed resets each point). CPU difficulty = what the CPU can DO, not the
+ball: `k_cpu[3]` = paddle px/tick {2,3,3} vs the player's 4, per-rally aim
+error ±{12,6,3} px (re-rolled on serve and on every player return), Hard
+additionally predicts the arrival y with wall reflections folded in
+(`predictY`) instead of chasing the live ball; Easy also ignores the ball
+until it is in the left 2/3. Hard stays beatable BY DESIGN: its paddle is
+slower than the max english (±3 px/t) plus the player's own 4. The pong
+centre line is dashes, and every erase that can cross it (ball trail, the
+serve-hint band) goes through `repaintCenterLine`. Drawn with the nm::
+rasteriser only, so it works in standard 8bpp and DS80 alike (horizontal sizes
+×`Sf.glyphScale`). Controls: arrows/Q/A + joystick (the injected `VK_MENU_UP/
+DOWN` cover it for free), Space/Enter/fire = serve/start, P = pause, M = back
+to the mode menu from game over, Esc/F1 = mode menu, from there exits.
+Held keys come from `Keyboard::isVKDown` (tracks injected keys too); edge events
+from the drained queue. 60 ticks/s paced by `time_us_64`, positions in 8.8
+fixed point, paddle-plane collision is crossing-tested (no tunnelling at ×2 DS80
+speeds). Sound = square waves synthesized into a stack buffer through
+`pwm_audio_write`, same path as `OSD::clickNoPause` — the staging buffer is 640
+samples and the mixer HOLDS the last sample after draining, so every beep is
+≤640 samples and must END AT 0. Static state is the solo best score + the last
+mode row (3 B); everything else is stack locals, code in flash.
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation
