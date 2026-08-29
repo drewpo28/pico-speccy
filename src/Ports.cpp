@@ -2118,7 +2118,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       }
     }
 #endif
-    if (VIDEO::borderColor != data) {
+    // Compare the 3-bit colour only: borderColor stores data & 0x07, so an
+    // unmasked compare fires on every beeper/MIC bit change (bits 3-4) and on
+    // OTIR/OTDR garbage bytes — each false hit runs a full DrawBorder catch-up
+    // and re-arms brdChange (whole-border repaint) for no visual change.
+    // Found via FPGA48_2026.tap: its OTDR section writes arbitrary bytes to #FE.
+    if (VIDEO::borderColor != (data & 0x07)) {
       VIDEO::brdChange = true;
       if (!(Z80Ops::isPentagon || Z80Ops::isProfi))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
