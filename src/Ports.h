@@ -124,14 +124,17 @@ public:
 
     // KR580VI53 (Intel 8253 PIT) — Byte computer sound synthesizer
     struct PIT8253Channel {
-        uint16_t count_value;  // Programmed divisor (16-bit)
+        uint16_t count_value;  // Programmed divisor (binary, BCD pre-converted)
         int counter;           // Current counter position
         uint8_t output;        // Current output state (0 or 1)
         uint8_t lsb;           // Latched LSB for 2-byte load
+        uint8_t rw;            // Control word RW mode (1=LSB, 2=MSB, 3=LSB+MSB)
+        bool bcd;              // Control word BCD bit — count is decimal
         bool lsb_loaded;       // Whether LSB is waiting for MSB
         bool active;           // Whether channel has been programmed
     };
     static PIT8253Channel pitChannels[3];
+    static void pitWrite(uint8_t a8, uint8_t data);
     static void pitGenSound(uint8_t* buf, int bufsize);
 
 private :

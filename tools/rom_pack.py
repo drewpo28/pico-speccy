@@ -151,7 +151,16 @@ FAMILIES = {
         'base': {'name': 'sinclair_48k', 'sym': 'gb_rom_0_sinclair_48k'},
         'variants': [
             {'key': 'es',           'name': '48K Spanish', 'sym': 'gb_rom_0_48k_es'},
+            # byte      = genuine DD72+DD73 dump (native state; both 8K halves
+            #             checksum to #FF, the built-in test's own algorithm).
+            # byte_test = native with DD71 (доп. ПЗУ) blocks 14/15 substituted at
+            #             #3A00-#3AFF per the DD66 map's test state — what the
+            #             machine shows after the test ROM's IN A,(#9F) toggle.
+            # byte_sovmest = native with DD71 blocks 0-13 substituted per DD66's
+            #             СОВМЕСТ. state (block 13 = 0xFF, erasing the Cyrillic
+            #             keyboard extensions at #3880-#3CFF like a real Sinclair).
             {'key': 'byte',         'name': 'BYTE',        'sym': 'gb_rom_0_byte_48k'},
+            {'key': 'byte_test',    'name': 'BYTE test',   'sym': 'gb_rom_0_byte_test_48k'},
             {'key': 'byte_sovmest', 'name': 'BYTE compat', 'sym': 'gb_rom_0_byte_sovmest_48k'},
         ],
     },

@@ -1436,6 +1436,58 @@ Two more things learned there:
   indicator was lit solid while the card was merely scanning its SD. A DC offset
   is not sound.
 
+## «Байт» built-in ROM memory test (zxbyte.org/test.htm) — 2026-08-20, NOT hw-tested
+
+Started by holding Ы+В+А (= S+D+F, half-row #FDFE bits 1-3) through RESET with
+COBMECT off. Everything below came from the MAME-style romset (dd72/dd73 +
+dd71_rt7 + dd66_rt5) and the genuine dumps, not the site's source listing —
+the listing's `IN A,(#1F)` at "#387F" is actually **`IN A,(#9F)` at #387A**.
+
+- **ROM layout**: `byte.bin` (src/roms/48k/src/) is now the GENUINE dd72+dd73 —
+  both 8K halves checksum to #FF by the test's own algorithm (ADD (HL)/ADC 0,
+  end-around carry). The previous byte.bin was a hacked merge with DD71's test
+  blocks baked in at #3A00 (which broke the DD73 checksum → the test hung with
+  a magenta border, and destroyed the base test that lives in dd73 at #3A00:
+  border cycle, ROM checksum, RAM test #17/#0F/#F0/#00, LDIR ROM→#6000). That
+  old image is preserved verbatim as `byte_test.bin` → `gb_overlay_48k_byte_test`.
+- **DD66 (512B PROM) is the substitution map**: input = 128-byte block number +
+  2 mode bits, output #FF = main ROM, #E0-#EF = DD71 block (low nibble).
+  State 0 = СОВМЕСТ (DD71 blocks 0-12 over scattered blocks; block 13 = 0xFF
+  erases the Cyrillic keyboard extensions at #3880-#3CFF → matches Sinclair
+  spare); state 2 = TEST (blocks #74/#75 → DD71 blocks 14/15 at #3A00-#3AFF =
+  keyboard grid + DD68 melody + the 128-square ROM compare). byte_sovmest.bin
+  is exactly dd66-state-0 applied to main (the old file was 2 bytes short —
+  the © glyph's last rows read as 0). One unexplained entry: state 1 block
+  #0F → #DF (different select bit); ignored.
+- **The switch**: `Config::byteTestRomToggle()` — any IN/OUT with
+  (a8 & 0x7F) == 0x1F (i.e. #1F/#9F, Kempston decode) while isByte && !trdos
+  swaps the byte↔byte_test overlay via registerOverlay (COBMECT/sovmest overlay
+  untouched). Stateless: reads the current overlay pointer. `byteTestRomReset()`
+  in CPU::reset returns to native — without it a second test run would skip the
+  base test exactly like the old merged ROM did. Kempston-polling games flip
+  the two unused #3A00 blocks harmlessly. The final test phase compares ROM
+  (test state) against the #6000 copy (native) and hangs unless EXACTLY 2
+  blocks differ — that's why the overlay pair must differ only in #74/#75.
+- **KR580VI53 (pitWrite, Ports.cpp)**: the test programs every melody note with
+  control #37/#77/#B7 = mode 3, **BCD** — counts are decimal ("6902" = 6902,
+  not 0x6902); binary counting played the dog waltz ~2 octaves low with wrong
+  intervals for notes with hex digits >9 (#B6/#D8/#F5 — real decade counters
+  count invalid digits through face value, hence the nibble-weighted sum).
+  RW modes honored (1=LSB, 2=MSB, 3=LSB+MSB); counter-latch (RW=00) no longer
+  resets the channel. Host validation: extract pitWrite/pitGenSound verbatim
+  and run the test's exact write sequence (see session — notes must measure
+  507/454/302/603/226 Hz; the mode-5 "lock" words at reset must silence).
+- **Byte fully decodes output ports**: for isByte only #FE reaches the
+  border/beeper latch (Ports::output even branch; PIT ports #8E/#AE/#CE/#EE
+  intercepted before it). The test's OUT (0),A markers and the RAM-error
+  OUT (C),A→#0F must not repaint the border (it stays yellow after a good
+  checksum). Input side deliberately NOT gated (no evidence either way);
+  PIT counter READ-back is not implemented (IN #8E still reads the keyboard).
+- dd10 revB = the period-5 timing PROM already used as `romDd10` (contention);
+  dd10 revA in the romset is a scrambled/bad dump. NB `getByteContention`
+  indexes romDd11[offset-512] with offset up to 0x3FFF — reads past the
+  512-byte array for addr ≥ 0xC400; pre-existing, not touched.
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation
