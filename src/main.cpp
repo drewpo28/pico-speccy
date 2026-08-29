@@ -681,31 +681,37 @@ void kbdExtraMapping(fabgl::VirtualKey virtualKey, bool pressed) {
             joyPushData(fabgl::VirtualKey::VK_MENU_RIGHT, pressed);
             break;
         }
+        // WASD ("WASD as Kempston") emits ONLY the VK_DPAD_* joystick twins, never
+        // the VK_MENU_* menu twins: in the nm:: UI every letter is a letter (text
+        // fields, browser type-to-search/first-letter jump), so a MENU twin rides
+        // along with the character and acts too. 'a' was the visible one — its
+        // VK_MENU_LEFT is queued BEFORE the raw VK_A, so uiEditLine moved the
+        // cursor left and then inserted: "ma" came out as "am" (hw report, z0p2;
+        // W/S/D map to MENU moves that are no-ops at the end of a line, which is
+        // why only 'a' looked broken). In the browser the same MENU_LEFT is "go to
+        // parent dir". The classic UI never saw this only because inlineTextEdit
+        // skipped all VK_MENU_* events.
         case fabgl::VirtualKey::VK_D: {
             if (Config::wasd) {
                 joyPushData(fabgl::VirtualKey::VK_DPAD_RIGHT, pressed);
-                joyPushData(fabgl::VirtualKey::VK_MENU_RIGHT, pressed);
             }
             break;
         }
         case fabgl::VirtualKey::VK_W: {
             if (Config::wasd) {
                 joyPushData(fabgl::VirtualKey::VK_DPAD_UP, pressed);
-                joyPushData(fabgl::VirtualKey::VK_MENU_UP, pressed);
             }
             break;
         }
         case fabgl::VirtualKey::VK_A: {
             if (Config::wasd) {
                 joyPushData(fabgl::VirtualKey::VK_DPAD_LEFT, pressed);
-                joyPushData(fabgl::VirtualKey::VK_MENU_LEFT, pressed);
             }
             break;
         }
         case fabgl::VirtualKey::VK_S: {
             if (Config::wasd) {
                 joyPushData(fabgl::VirtualKey::VK_DPAD_DOWN, pressed);
-                joyPushData(fabgl::VirtualKey::VK_MENU_DOWN, pressed);
             }
             break;
         }
@@ -723,7 +729,10 @@ void kbdExtraMapping(fabgl::VirtualKey virtualKey, bool pressed) {
         }
 
         case fabgl::VirtualKey::VK_BACKSPACE: joyPushData(fabgl::VirtualKey::VK_MENU_BS, pressed); break;
-        case fabgl::VirtualKey::VK_SPACE:     joyPushData(fabgl::VirtualKey::VK_MENU_ENTER, pressed); break;
+        // Space doubles as Enter in menus, but inside a line editor it must stay a
+        // character: uiEditLine confirms on VK_MENU_ENTER, and the twin is queued
+        // BEFORE the raw VK_SPACE, so a password with a space was accepted half-typed.
+        case fabgl::VirtualKey::VK_SPACE:     if (!g_ui_text_entry) joyPushData(fabgl::VirtualKey::VK_MENU_ENTER, pressed); break;
         case fabgl::VirtualKey::VK_TAB:       if (Config::TABasfire1) JPAD(fabgl::VirtualKey::VK_DPAD_FIRE, pressed); break;
         case fabgl::VirtualKey::VK_LALT:
             if (Config::CursorAsJoy) JPAD(fabgl::VirtualKey::VK_DPAD_FIRE, pressed);

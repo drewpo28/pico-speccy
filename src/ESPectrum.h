@@ -251,4 +251,12 @@ inline void delayMicroseconds(int64_t us) {
 void kbdPushData(fabgl::VirtualKey virtualKey, bool down);
 void joyPushData(fabgl::VirtualKey virtualKey, bool down);
 
+// True while a line editor (nm::uiEditLine) owns the keyboard. kbdExtraMapping
+// then keeps Space a character instead of adding its VK_MENU_ENTER menu twin,
+// which uiEditLine would take as "confirm the field" — a WiFi password or file
+// name with a space in it was impossible to type. Set/cleared only inside
+// uiEditLine's blocking loop; all key pushes happen from the pumps that loop
+// itself runs, so the flag is naturally in sync with what the editor will read.
+extern bool g_ui_text_entry;
+
 #endif

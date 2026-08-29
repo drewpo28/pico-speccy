@@ -323,6 +323,14 @@ bool uiEditLine(int x, int y, int wpx, string& io, size_t maxlen, bool mask) {
     // repeat-injected synthetic) so it cannot confirm an untouched field.
     { fabgl::VirtualKeyItem drain; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&drain); }
 
+    // While this editor owns the keyboard, Space must be a character, not a
+    // VK_MENU_ENTER confirm (see g_ui_text_entry in ESPectrum.h). RAII so every
+    // return below restores it.
+    struct TextEntryScope {
+        TextEntryScope()  { g_ui_text_entry = true; }
+        ~TextEntryScope() { g_ui_text_entry = false; }
+    } textEntryScope;
+
     bool reveal = false;                    // masked field: TAB shows the text
 
     size_t cur = io.size();                 // cursor = insertion point

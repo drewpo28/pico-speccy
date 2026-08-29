@@ -467,12 +467,29 @@ static hid_keyboard_report_t prev_report = { 0 , 0 , {0}};
 // released. Issued only while we believe a key is held and the interrupt endpoint has
 // been silent for a while, so an idle keyboard costs nothing and a genuine long hold
 // (games) is preserved.
+//
+// TRUST IS NOT FREE: a plain long hold IS 400 ms of interrupt silence with a key
+// held, so the resync fires on every auto-repeat. A keyboard whose GET_REPORT
+// answer is not a boot report (report-ID-prefixed, an NKRO bitmap, a different
+// report altogether — hw report 2026-08-23, Rapoo on z0p2) feeds constant junk
+// bytes into process_kbd_report as keycodes: a fixed 0x24 in the reply presses
+// HID '7', nothing on the silent interrupt pipe ever contradicts it, and the ZX
+// ROM's own typematic repeats '7' forever while the really-held key "releases"
+// (it is absent from the junk). So the device must EARN the resync first:
+// kbd_resync_tick probes GET_REPORT once while we believe NO key is held — a
+// proper boot keyboard answers all-idle (modifier 0, six zero keycodes; the
+// reserved byte is OEM-defined and ignored). Junk instead disables the resync
+// for this device for the session (the pico-spec behavior, where such keyboards
+// work); a stall goes through the existing 5-strikes path.
 #define KBD_RESYNC_SILENCE_MS 400   // silence with a key held before we ask the device
+#define KBD_PROBE_SILENCE_MS 1000   // idle silence before the one-time trust probe
 static uint8_t  kbd_resync_daddr    = 0;
 static uint8_t  kbd_resync_instance = 0xFF;
 static uint32_t kbd_last_report_ms  = 0;
 static uint8_t  kbd_resync_buf[8];
 static bool     kbd_resync_busy     = false;
+static bool     kbd_resync_probing  = false;  // current GET_REPORT is the trust probe
+static bool     kbd_resync_verified = false;  // idle probe answered a clean boot report
 static uint32_t kbd_resync_fixes    = 0;
 
 static bool kbd_state_has_key(void) {
@@ -510,12 +527,13 @@ static void kbd_health_log(void) {
   const uint32_t epdbg = pio_usb_host_ep_debug(kbd_resync_daddr, ep_in);
   extern volatile uint32_t g_tusb_assert_count;   // dropped events land here
   Debug::log("HID kbd: rhport=%u daddr=%u inst=%u ep=%02X held=%u silent=%ums reports=%u "
-             "resync(fix=%u fail=%u off=%u) rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
+             "resync(fix=%u fail=%u off=%u ver=%u) rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
              bus.rhport, kbd_resync_daddr, inst, ep_in, (unsigned)held,
              (unsigned)silent,
              (unsigned)(inst < CFG_TUH_HID ? hid_snap[inst].report_total : 0),
              (unsigned)kbd_resync_fixes, (unsigned)kbd_resync_fails,
-             (unsigned)kbd_resync_off, (unsigned)hid_rearm_recoveries,
+             (unsigned)kbd_resync_off, (unsigned)kbd_resync_verified,
+             (unsigned)hid_rearm_recoveries,
              (unsigned)hid_desync_recoveries, (unsigned)g_tusb_assert_count,
              (unsigned)tuh_hid_receive_ready(kbd_resync_daddr, inst),
              (unsigned)epdbg);
@@ -526,6 +544,25 @@ static void kbd_resync_tick(void) {
   kbd_health_log();
   if (kbd_resync_off || kbd_resync_busy) return;
   if (kbd_resync_instance == 0xFF) return;
+
+  if (!kbd_resync_verified) {
+    // Trust probe (see the block comment above): only while our state says no key
+    // is held, ~1 s after the keyboard last spoke. Inconclusive runs just retry.
+    if (kbd_state_has_key()) return;
+    if ((uint32_t)(kbd_now_ms() - kbd_last_report_ms) < KBD_PROBE_SILENCE_MS) return;
+    memset(kbd_resync_buf, 0, sizeof(kbd_resync_buf));
+    if (tuh_hid_get_report(kbd_resync_daddr, kbd_resync_instance, 0,
+                           HID_REPORT_TYPE_INPUT, kbd_resync_buf,
+                           sizeof(kbd_resync_buf))) {
+      kbd_resync_busy = true;
+      kbd_resync_probing = true;
+    } else if (++kbd_resync_fails >= 5) {
+      kbd_resync_off = true;
+      Debug::log("HID kbd: GET_REPORT unavailable, stuck-key resync disabled");
+    }
+    return;
+  }
+
   if (!kbd_state_has_key()) return;
   if ((uint32_t)(kbd_now_ms() - kbd_last_report_ms) < KBD_RESYNC_SILENCE_MS) return;
 
@@ -549,6 +586,8 @@ void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t repor
 {
   (void) dev_addr; (void) idx; (void) report_id; (void) report_type;
   kbd_resync_busy = false;
+  const bool probing = kbd_resync_probing;
+  kbd_resync_probing = false;
   if (len < sizeof(hid_keyboard_report_t)) {   // 0 = stalled/failed
     if (++kbd_resync_fails >= 5) {
       kbd_resync_off = true;
@@ -557,11 +596,36 @@ void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t repor
     return;
   }
   kbd_resync_fails = 0;
+  if (probing) {
+    // Trust probe: we believed no key was held when it was issued. If a real key
+    // arrived meanwhile the run is inconclusive — retry later. Otherwise the reply
+    // must be the all-idle boot report; anything else is a device whose GET_REPORT
+    // does not speak boot protocol, and trusting it types phantom keys (the
+    // "holding any key repeats '7'" Rapoo, hw 2026-08-23).
+    if (kbd_state_has_key()) return;
+    hid_keyboard_report_t const* r = (hid_keyboard_report_t const*) kbd_resync_buf;
+    bool idle = (r->modifier == 0);
+    for (uint8_t kc : r->keycode) if (kc) idle = false;
+    if (idle) {
+      kbd_resync_verified = true;
+      Debug::log("HID kbd: GET_REPORT probe clean, stuck-key resync enabled");
+    } else {
+      kbd_resync_off = true;
+      Debug::log("HID kbd: GET_REPORT junk while idle "
+                 "(%02X %02X %02X %02X %02X %02X %02X %02X), stuck-key resync disabled",
+                 kbd_resync_buf[0], kbd_resync_buf[1], kbd_resync_buf[2], kbd_resync_buf[3],
+                 kbd_resync_buf[4], kbd_resync_buf[5], kbd_resync_buf[6], kbd_resync_buf[7]);
+    }
+    return;
+  }
   hid_keyboard_report_t const* now = (hid_keyboard_report_t const*) kbd_resync_buf;
   if (memcmp(now, &prev_report, sizeof(prev_report)) != 0) {
     kbd_resync_fixes++;
-    Debug::log("HID kbd: state resynced via GET_REPORT (total %u)",
-               (unsigned)kbd_resync_fixes);
+    Debug::log("HID kbd: state resynced via GET_REPORT (total %u, "
+               "reply %02X %02X %02X %02X %02X %02X %02X %02X)",
+               (unsigned)kbd_resync_fixes,
+               kbd_resync_buf[0], kbd_resync_buf[1], kbd_resync_buf[2], kbd_resync_buf[3],
+               kbd_resync_buf[4], kbd_resync_buf[5], kbd_resync_buf[6], kbd_resync_buf[7]);
     process_kbd_report(now, &prev_report);
     prev_report = *now;
   }
@@ -638,6 +702,13 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
       TU_LOG2("HID receive boot keyboard report\r\n");
       hid_snap_set_handler(instance, HID_HANDLER_KBD);
       // Remember who to ask for a state resync, and when we last heard from it.
+      // A different device (re-plug, another keyboard) starts untrusted again.
+      if (kbd_resync_daddr != dev_addr || kbd_resync_instance != instance) {
+        kbd_resync_verified = false;
+        kbd_resync_probing  = false;
+        kbd_resync_off      = false;
+        kbd_resync_fails    = 0;
+      }
       kbd_resync_daddr    = dev_addr;
       kbd_resync_instance = instance;
       kbd_last_report_ms  = kbd_now_ms();
