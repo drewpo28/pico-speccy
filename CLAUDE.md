@@ -1351,6 +1351,40 @@ Also from this session:
   FIRST launch of a session** (nothing is mounted, so nothing is released). A crash on
   launch #1 therefore cannot come from it.
 
+## Debug > Paper (toggleable paper rendering, 2026-08-24, NOT hw-tested)
+
+`Config::render_paper` (NVS `render_paper`, default on) → live mirror
+`VIDEO::paper_off`. Off = the paper area is not rendered and the border state
+machine paints straight through it — the middle rows become full-width border,
+per-T-state, so multicolour border effects show what the raster carries "under"
+the paper. A border-timing debugging aid (SET_PAPER, AC_LIVE, hook_paper).
+
+- **The border side is one gate, not new code**: `MiddleBorder`'s paper skip is
+  exactly `brdcol_cnt += 128; lastBrdTstate += 128` (1 col per `brdcol_step` T
+  in every geometry, DS80 included — its 512 px = 128 cols at 4 px/col), so NOT
+  skipping paints the same time span through the same fb columns. Both skip
+  points (the span `stop` and the `== brdcol_end1` jump) are gated on
+  `!paper_off`.
+- **The content side is `MainScreen_NoPaper`**: MainScreen's timing skeleton
+  (contention `wait_st`, `video_rest`, line advance) with every pixel write
+  removed — guest-visible timing is unchanged. All three MainScreen_Blank*
+  variants branch to it right after their `brdChange` catch-up, BEFORE touching
+  `prevRowContent` (keeps the pw content stream out of the row). It parks at
+  plain `&Blank` at lin_end2 — required by `CPU::FlushOnHalt`'s
+  `while (Draw != &Blank)` flush; `RedrawPausedFrame`'s guard accepts both
+  blanks for the snow case.
+- **pw window**: with paper off the border stream owns the WHOLE middle row
+  (`pwSegs`), or gigascreen blending loses prev history in the paper segment;
+  `paper_off` is XORed into `pw_geom_sig` so a toggle drops buffered rows like
+  a geometry change. The DS80 640×480 stats carve in `Update_Border_DS80`
+  widens from col 144 to col 84 (the full stats rect) when the machine also
+  paints the content columns.
+- `hook_paper` only flips the flag + `brdChange`/`brdnextframe` (the border
+  renderer erases/hands back authoritatively — same pattern as the FDD lamp);
+  `VIDEO::Reset()` re-syncs the flag from Config. Known cosmetic gaps: in-paper
+  OSD stats rows (176-191) don't draw while off; an OSD box in the paper area
+  is erased only by the next border repaint.
+
 ## The corner FDD lamp must not self-erase by colour-matching (hw-confirmed 2026-08-13)
 
 The lamp used to paint its 8x8 cell EVERY frame with a computed "border colour"

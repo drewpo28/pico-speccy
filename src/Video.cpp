@@ -643,6 +643,7 @@ static void applyDS80BorderGeometry(bool on) {
 
 uint32_t VIDEO::lastBrdTstate;
 bool VIDEO::brdChange = false;
+bool VIDEO::paper_off = false;
 bool VIDEO::brdnextframe = true;
 bool VIDEO::brdGigascreenChange = true;
 bool VIDEO::gigascreen_enabled = false;
@@ -1617,7 +1618,10 @@ static inline uint8_t* pwUncachedRow(int row) {
 // copy runs words over the aligned interior and halfwords at the ragged edges.
 static int __not_in_flash_func(pwSegs)(bool isBorder, int row, int* off, int* len) {
     if (!isBorder) { off[0] = (int)lineptr_offset * 2; len[0] = 128; return 1; }
-    if (row >= (int)lin_end && row < (int)lin_end2) {
+    // Paper off (debug): the border machine paints middle rows full-width and the
+    // content stream never runs, so the border stream owns the whole row — the
+    // paper segment's prev bytes must round-trip with it or blending loses history.
+    if (row >= (int)lin_end && row < (int)lin_end2 && !VIDEO::paper_off) {
         off[0] = 0;                len[0] = brdcol_end1;
         off[1] = brdcol_end1 + 128; len[1] = brdcol_end - off[1];
         return (len[1] > 0) ? 2 : 1;
@@ -1722,7 +1726,10 @@ static void pwRefreshGate() {
         && brdcol_end == W
         && W > 0 && W <= PW_ROW_MAX && (W & 3) == 0;
     uint32_t sig = (uint32_t)brdcol_end1 | ((uint32_t)brdcol_end << 8)
-                 | ((uint32_t)lin_end << 16) | ((uint32_t)lin_end2 << 24);
+                 | ((uint32_t)lin_end << 16) | ((uint32_t)lin_end2 << 24)
+                 // paper_off changes segment ownership (pwSegs) — treat a toggle
+                 // like a geometry change so stale buffered rows are dropped.
+                 ^ (VIDEO::paper_off ? 0x00000080u : 0u);
     if (want == pw_gate) {
         if (pw_gate && sig != pw_geom_sig) { pwDrop(); pw_geom_sig = sig; }
         return;
@@ -2466,6 +2473,8 @@ void VIDEO::Reset() {
 
     VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI) ? Config::render : false;
 
+    VIDEO::paper_off = !Config::render_paper;
+
     if (VIDEO::snow_toggle) {
         Draw = &Blank_Snow;
         Draw_Opcode = &Blank_Snow_Opcode;
@@ -2626,6 +2635,17 @@ IRAM_ATTR void VIDEO::MainScreen_Blank(unsigned int statestoadd, bool contended)
 
         if (brdChange) DrawBorder(); // Needed to avoid tearing in demos like Gabba (Pentagon)
 
+        if (paper_off) {
+            // Debug "Paper off": keep the exact T-state/contention flow but write
+            // nothing — MiddleBorder paints through the paper columns instead.
+            coldraw_cnt = 0;
+            Draw = &MainScreen_NoPaper;
+            Draw_Opcode = &MainScreen_Opcode;
+            video_rest = CPU::tstates - tstateDraw;
+            Draw(0, false);
+            return;
+        }
+
         lineptr32 = (uint32_t *)(vga.frameBuffer[linedraw_cnt]) + lineptr_offset;
         prevLineptr16 = vga.prevFrameBuffer
                           ? prevRowContent(linedraw_cnt) + lineptr_offset
@@ -2691,6 +2711,15 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow(unsigned int statestoadd, bool conte
     if (CPU::tstates >= tstateDraw) {
 
         if (brdChange) DrawBorder();
+
+        if (paper_off) {
+            coldraw_cnt = 0;
+            Draw = &MainScreen_NoPaper;
+            Draw_Opcode = &MainScreen_Opcode;
+            video_rest = CPU::tstates - tstateDraw;
+            Draw(0, false);
+            return;
+        }
 
         lineptr32 = (uint32_t *)(vga.frameBuffer[linedraw_cnt]) + lineptr_offset;
         prevLineptr16 = vga.prevFrameBuffer
@@ -2758,6 +2787,15 @@ IRAM_ATTR void VIDEO::MainScreen_Blank_Snow_Opcode(bool contended) {
     if (CPU::tstates >= tstateDraw) {
 
         if (brdChange) DrawBorder();
+
+        if (paper_off) {
+            coldraw_cnt = 0;
+            Draw = &MainScreen_NoPaper;
+            Draw_Opcode = &MainScreen_Opcode;
+            video_rest = CPU::tstates - tstateDraw;
+            Draw(0, false);
+            return;
+        }
 
         lineptr32 = (uint32_t *)(vga.frameBuffer[linedraw_cnt]) + lineptr_offset;
         prevLineptr16 = vga.prevFrameBuffer
@@ -3057,7 +3095,33 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
     }
 }
 
-IRAM_ATTR void VIDEO::MainScreen_OSD(unsigned int statestoadd, bool contended) {    
+// Debug "Paper off": MainScreen's timing skeleton with the pixel writes removed.
+// Contention, T-state accounting and the per-line hand-back to MainScreen_Blank
+// are byte-for-byte MainScreen's, so guest-visible timing is unchanged; the
+// framebuffer bytes under the paper are owned by the border state machine
+// (MiddleBorder paints through them when paper_off is set).
+IRAM_ATTR void VIDEO::MainScreen_NoPaper(unsigned int statestoadd, bool contended) {
+
+    if (contended) statestoadd += wait_st[CPU::tstates - tstateDraw];
+
+    CPU::tstates += statestoadd;
+    statestoadd += video_rest;
+    video_rest = statestoadd & 0x03;
+    coldraw_cnt += statestoadd >> 2;
+
+    if (coldraw_cnt >= 32) {
+        tstateDraw += tStatesPerLine;
+        if (++linedraw_cnt == lin_end2) {
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+        } else {
+            Draw = &MainScreen_Blank;
+            Draw_Opcode = &MainScreen_Blank_Opcode;
+        }
+    }
+}
+
+IRAM_ATTR void VIDEO::MainScreen_OSD(unsigned int statestoadd, bool contended) {
 
     if (contended) statestoadd += wait_st[CPU::tstates - tstateDraw];
 
@@ -3767,8 +3831,9 @@ void VIDEO::RedrawPausedFrame() {
 
     // Walk the whole paper area; the chain parks itself at Blank after lin_end2.
     // Guard: ~1 line per call, so a frame is ~lines calls — cap well above that.
+    // (paper_off parks at plain Blank even from the snow chain — accept both.)
     CPU::tstates = 0;
-    for (int guard = 2048; Draw != blank && guard; guard--)
+    for (int guard = 2048; Draw != blank && Draw != &Blank && guard; guard--)
         Draw(tStatesPerLine, false);
 
     // Full border repaint: with tstates at end-of-frame the border state machine
@@ -3866,9 +3931,11 @@ IRAM_ATTR static void Update_Border_DS80() {
     if (ds80_osd_carve) {
         // Stats overlay rectangle is owned by OSD::drawStats — skip it.
         if (ds80_carve240) {
-            // 640×480: rows 220..235, fb bytes 288..311 (right pad part)
+            // 640×480: rows 220..235, fb bytes 288..311 (right pad part).
+            // Paper off: the machine also paints the content columns, so the
+            // carve widens to the whole stats rect (fb bytes 168.., col 84).
             if (brdlin_cnt >= 220 && brdlin_cnt < 236
-                && brdcol_cnt >= 144 && brdcol_cnt < 156) return;
+                && brdcol_cnt >= (VIDEO::paper_off ? 84 : 144) && brdcol_cnt < 156) return;
         } else {
             // 720×576: rows 268..283, fb bytes 188..331 (bottom band)
             int c = brdcol_cnt + ds80_brd_col_off;
@@ -4081,11 +4148,17 @@ IRAM_ATTR void VIDEO::TopBorder() {
 }
 
 IRAM_ATTR void VIDEO::MiddleBorder() {
+    // Debug "Paper off": paint straight through the paper columns — same
+    // per-T-state machine as the side borders, so multicolour border effects
+    // show what the raster would have carried "under" the paper. The paper
+    // skip below advances brdcol_cnt/lastBrdTstate by exactly 128 T (1 col per
+    // brdcol_step T), so walking through paints the same time span instead.
+    const bool skip_paper = !paper_off;
     while (lastBrdTstate <= CPU::tstates) {
         if (brdcol_cnt < brdcol_retrace) {
             // Span must stop exactly at brdcol_end1 — the paper-skip check
             // below fires on equality.
-            int stop = (brdcol_cnt < brdcol_end1) ? brdcol_end1 : brdcol_retrace;
+            int stop = (skip_paper && brdcol_cnt < brdcol_end1) ? brdcol_end1 : brdcol_retrace;
             int lim = (stop - brdcol_cnt) / brdcol_step;
             unsigned int avail = (CPU::tstates - lastBrdTstate) / (unsigned)brdcol_step + 1;
             int n = (avail < (unsigned)lim) ? (int)avail : lim;
@@ -4102,7 +4175,7 @@ IRAM_ATTR void VIDEO::MiddleBorder() {
         lastBrdTstate += brdcol_step;
         brdcol_cnt += brdcol_step;
 
-        if (brdcol_cnt == brdcol_end1) {
+        if (skip_paper && brdcol_cnt == brdcol_end1) {
             lastBrdTstate += 128;
             brdcol_cnt = brdcol_end1 + 128;
         } else if (brdcol_cnt >= brdcol_end) {

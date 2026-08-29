@@ -771,6 +771,10 @@ static const Node kDebug[] = {
     NM_BOOL  (TXT_DBG_LOG,    SET_DEBUG_LOG,   nullptr),
     // Testing aid: run the firmware as if the board had no PSRAM (see SET_PSRAM_ON).
     NM_BOOL  (TXT_DBG_PSRAM,  SET_PSRAM_ON,    p_psramChip),
+    // Border-timing aid: No = the paper area is not rendered; the border state
+    // machine paints through it, showing the border colour "under" the paper as
+    // it would run on the raster (per-T-state — multicolour effects included).
+    NM_BOOL  (TXT_DBG_PAPER,  SET_PAPER,       nullptr),
     NM_RADIO (TXT_DBG_TEMPOFF, SET_TEMP_OFFSET, opt_tempOffset, nullptr),
 };
 

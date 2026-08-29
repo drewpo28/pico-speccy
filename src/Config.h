@@ -261,6 +261,10 @@ public:
     // together give a full dot mask.
     static uint8_t crt_filter;
     static uint8_t render;
+    // Debug > Paper: false = the paper area is not rendered; the border state
+    // machine paints straight through it (per-T-state, like top/bottom border),
+    // showing the border colour "under" the paper — for border-timing debugging.
+    static bool render_paper;
     static uint8_t persist_slot;
 
     static bool TABasfire1; 
