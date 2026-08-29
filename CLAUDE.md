@@ -1436,10 +1436,21 @@ Two more things learned there:
   indicator was lit solid while the card was merely scanning its SD. A DC offset
   is not sound.
 
-## «Байт» built-in ROM memory test (zxbyte.org/test.htm) — 2026-08-20, NOT hw-tested
+## «Байт» built-in ROM memory test (zxbyte.org/test.htm) — hw-confirmed 2026-08-29
 
 Started by holding Ы+В+А (= S+D+F, half-row #FDFE bits 1-3) through RESET with
-COBMECT off. Everything below came from the MAME-style romset (dd72/dd73 +
+COBMECT off. **F11 only** — F12 reboots the RP2350 and USB enumeration delivers
+the first HID report long after the ROM has sampled the half-rows.
+
+- **`ESPectrum::reset()` must NOT wipe keyboard rows 0-7** (hw-confirmed
+  2026-08-29 — this was the last blocker: "тест не срабатывает при SDF+сброс").
+  The matrix is physical on real hardware, so keys held through СБРОС stay
+  pressed; the test dispatch reads #FDFE ~150 T-states after reset. The old
+  full `port[i]=0xBF` wipe was unrecoverable in time: the PS2cols→port copy in
+  processKeyboard is EVENT-gated (`if (r)`), the F11 hotkey path returns (after
+  `emptyVirtualKeyQueue()`) before that copy, and held keys generate no new
+  events — so the ROM saw an empty matrix and went to BASIC. Rows 8+ (Kempston,
+  Fuller) are still wiped; the full wipe remains only in setup(). Everything below came from the MAME-style romset (dd72/dd73 +
 dd71_rt7 + dd66_rt5) and the genuine dumps, not the site's source listing —
 the listing's `IN A,(#1F)` at "#387F" is actually **`IN A,(#9F)` at #387A**.
 

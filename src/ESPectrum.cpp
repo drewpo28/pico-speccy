@@ -1200,8 +1200,16 @@ void ESPectrum::reset() {
 }
 
 void ESPectrum::reset(uint8_t romInUse) {
-  // Ports
-  for (int i = 0; i < 128; i++)
+  // Ports. Keyboard rows 0-7 are deliberately NOT wiped: the matrix is
+  // physical on real hardware, so keys held THROUGH a reset stay pressed —
+  // the Byte's built-in ROM test is entered exactly that way (Ы+В+А = S+D+F
+  // held while resetting; the dispatch reads #FDFE ~150 T-states after
+  // reset). Wiping them here made that impossible: the PS2cols→port copy in
+  // processKeyboard is event-gated, and the hotkey path returns (after
+  // emptying the VK queue) before that copy runs, so held keys only
+  // reappeared on the NEXT key event — long after the ROM had already
+  // sampled the half-rows.
+  for (int i = 8; i < 128; i++)
     Ports::port[i] = 0xBF;
   if (Config::joystick == JOY_KEMPSTON)
     Ports::port[Config::kempstonPort] = 0; // Kempston
