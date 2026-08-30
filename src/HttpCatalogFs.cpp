@@ -145,7 +145,15 @@ static bool httpsReadLines(const std::string& url, void (*fn)(const char*, void*
 // XferProgressCb has no ctx; bridge it to HttpsGet::ProgressCb via a static (one
 // catalog transfer runs at a time, like g_http_buf).
 static XferProgressCb g_xfer_cb = nullptr;
+// Size from the listing's 3rd column, used as `total` when the transport does not
+// know one. archive.org's view_archive.php (the TOSEC mirror) answers HTTP/1.1
+// with Transfer-Encoding: chunked and NO Content-Length, so HttpsGet reports
+// total=0 for every chunk and the caller's bar would sit frozen at 0% for the
+// whole download. The catalog already carries the exact byte count, so hand it
+// over rather than degrading to an indeterminate bar.
+static uint32_t g_xfer_total_hint = 0;
 static bool httpsProgressThunk(void*, uint32_t done, uint32_t total) {
+    if (!total) total = g_xfer_total_hint;
     return g_xfer_cb ? g_xfer_cb(done, total) : true;
 }
 
@@ -373,9 +381,9 @@ bool HttpCatalogFs::cwd(const std::string& path) {
     return true;
 }
 
-// Static: find the F-line whose name matches `want` and capture its 4th column
-// (the download locator). Stops at the first match.
-struct LocateCtx { const char* want; std::string url; bool found; };
+// Static: find the F-line whose name matches `want` and capture its 3rd and 4th
+// columns (the size and the download locator). Stops at the first match.
+struct LocateCtx { const char* want; std::string url; uint32_t size; bool found; };
 static void locate_line(const char* line, void* arg) {
     LocateCtx* lc = (LocateCtx*)arg;
     if (lc->found || line[0] != 'F') return;
@@ -385,6 +393,7 @@ static void locate_line(const char* line, void* arg) {
     const char* t3 = strchr(t2 + 1, '\t');       if (!t3) return; // before locator
     if ((size_t)(t2 - name) != strlen(lc->want) || strncmp(name, lc->want, t2 - name) != 0)
         return;
+    lc->size = (uint32_t)strtoul(t2 + 1, nullptr, 10);  // 3rd column
     lc->url.assign(t3 + 1);                       // 4th column (empty if not mirrored)
     lc->found = true;
 }
@@ -394,7 +403,7 @@ bool HttpCatalogFs::get(const std::string& remote, const std::string& localSdPat
         // Resolve the file's locator from the local .tsv cache (written while browsing)
         // to avoid a slow HTTPS re-fetch; fall back to the network if no cache.
         std::string listUrl = baseUrl() + "/" + site + "/" + slugPath(cur_path) + ".tsv";
-        LocateCtx loc = { remote.c_str(), std::string(), false };
+        LocateCtx loc = { remote.c_str(), std::string(), 0, false };
         if (!readTsvCachedOrHttp(tsvCachePath(), listUrl, locate_line, &loc)) return false;
         if (!loc.found || loc.url.empty()) return false; // unknown or not mirrored
         std::string fileUrl =
@@ -409,9 +418,11 @@ bool HttpCatalogFs::get(const std::string& remote, const std::string& localSdPat
         Debug::log("catalog get: url=%s save=%s", fileUrl.c_str(), localSdPath.c_str());
 #endif
         g_xfer_cb = cb;
+        g_xfer_total_hint = loc.size;   // for chunked sources with no Content-Length
         HttpsGet::Result r = HttpsGet::getToFile(fileUrl.c_str(), localSdPath.c_str(),
                                                  CATALOG_CA_PATH, httpsProgressThunk, nullptr);
         g_xfer_cb = nullptr;
+        g_xfer_total_hint = 0;
         if (!r.ok) { f_unlink(localSdPath.c_str()); return false; }
         return true;
     }
@@ -459,7 +470,7 @@ bool HttpCatalogFs::get(const std::string& remote, const std::string& localSdPat
 std::string HttpCatalogFs::downloadBasename(const std::string& displayName) {
     if (isStaticBase()) {
         std::string listUrl = baseUrl() + "/" + site + "/" + slugPath(cur_path) + ".tsv";
-        LocateCtx loc = { displayName.c_str(), std::string(), false };
+        LocateCtx loc = { displayName.c_str(), std::string(), 0, false };
         if (!readTsvCachedOrHttp(tsvCachePath(), listUrl, locate_line, &loc) || !loc.found || loc.url.empty())
             return displayName;
         std::string fname = loc.url;

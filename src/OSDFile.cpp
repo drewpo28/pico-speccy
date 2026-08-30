@@ -173,7 +173,13 @@ static void rfd_push(void* ctx, const char* name, bool isDir, uint32_t size) {
 // Transfer progress: update the dialog; Esc/F1 aborts.
 static string rfd_xfer_title;
 static bool rfd_progress(uint32_t done, uint32_t total) {
-    int pct = total ? (int)((uint64_t)done * 100 / total) : 0;
+    // total == 0 = the transport never learned a length (a chunked source with no
+    // Content-Length, e.g. archive.org's view_archive.php behind the TOSEC mirror;
+    // HttpCatalogFs::get substitutes the listing's size where it has one). Pulse
+    // the bar by bytes received instead of freezing it at 0% — same "it IS working"
+    // signal rfd_push gives while a listing streams.
+    int pct = total ? (int)((uint64_t)done * 100 / total)
+                    : (int)((done >> 12) % 20) * 5;   // wrap every 4 KB, 0,5,…,95
     if (pct > 100) pct = 100;
     OSD::progressDialog(rfd_xfer_title, "", pct, 1);
     fabgl::VirtualKeyItem k;
