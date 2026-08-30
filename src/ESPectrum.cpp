@@ -2406,6 +2406,8 @@ void ESPectrum::loop() {
   // user's default.nvs this boot) -> reboot to compiled-in defaults.
   // My-Default reset: hold M at boot -> confirm -> wipe storage.nvs only
   // (default.nvs kept) -> reboot, which then falls back to it.
+  // Pico-Scwong: hold S at boot -> the built-in game, straight from the same
+  // window (no SD card needed); boot continues normally when it exits.
   // Pump the keyboard at FULL SPEED here, BEFORE the emulation for(;;)
   // starts: once it runs, a thrashing machine (Profi DS80 on SPI-PSRAM, ~4 FPS)
   // pumps tuh_task too rarely for USB to even enumerate, so a per-frame check inside
@@ -2434,6 +2436,7 @@ void ESPectrum::loop() {
       uint32_t fr_ready_at = 0;        // elapsed us when the keyboard became available
       bool rHeld = false;
       bool mHeld = false;
+      bool sHeld = false;
       bool promptShown = false;
       Debug::log("factory-reset: probing for held R/M (guided window)");
       for (;;) {
@@ -2441,6 +2444,7 @@ void ESPectrum::loop() {
           repeat_me_for_input();       // pump USB (tuh_task) + PS/2 at full speed
           if (Kbd && (Kbd->isVKDown(fabgl::VK_R) || Kbd->isVKDown(fabgl::VK_r))) { rHeld = true; break; }
           if (Kbd && (Kbd->isVKDown(fabgl::VK_M) || Kbd->isVKDown(fabgl::VK_m))) { mHeld = true; break; }
+          if (Kbd && (Kbd->isVKDown(fabgl::VK_S) || Kbd->isVKDown(fabgl::VK_s))) { sHeld = true; break; }
 
           if (!fr_ready_at) {
 #ifdef KBDUSB
@@ -2484,8 +2488,13 @@ void ESPectrum::loop() {
               OSD::esp_hard_reset();   // never returns; Config::load() then falls back to default.nvs
           }
           Debug::log("my-default-reset: declined");
+      } else if (sHeld) {
+          // The built-in game, before the emulation loop ever runs. Blocks
+          // until the player leaves it, then boot continues normally.
+          Debug::log("boot-game: S held -> Pico-Scwong");
+          nm::gameScwongStandalone();
       } else {
-          Debug::log("factory-reset: no R/M (continue)");
+          Debug::log("factory-reset: no R/M/S (continue)");
       }
   }
 

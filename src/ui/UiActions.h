@@ -87,8 +87,10 @@ void netStatusInvalidate();
 void act_debugDialog();
 void act_debugPoke();
 
-// Skvosh — the built-in native paddle game (UiGame.cpp)
-void act_gameSkvosh();
+// Pico-Scwong — the built-in native paddle game (UiGame.cpp).
+// The standalone twin is the boot-time entrance (held S in the R/M probe).
+void act_gameScwong();
+void gameScwongStandalone();
 
 // Reset (all immediate by definition; three of them reboot)
 void act_resetSoft();

@@ -1575,29 +1575,72 @@ the listing's `IN A,(#1F)` at "#387F" is actually **`IN A,(#9F)` at #387A**.
   dd10 revA in the romset is a scrambled/bad dump. NB `getByteContention`
   indexes romDd11[offset-512] with offset up to 0x3FFF — reads past the
   512-byte array for addr ≥ 0xC400; pre-existing, not touched.
-
-## Built-in game: Skvosh (src/ui/UiGame.cpp, NOT hw-tested)
+## Built-in game: Pico-Scwong (src/ui/UiGame.cpp, NOT hw-tested)
 
 A native squash/pong (tribute to andykarpov's skvosh console) that runs WITHOUT
-the emulated machine: a `K_PAGE` root row ("Skvosh game", before Volume) whose
-`act_gameSkvosh()` owns its key loop like `uiAboutPage`. Two games behind an
-in-page mode menu: Solo squash (right paddle, three walls, 5 balls, score =
-returns) and Pong vs CPU (left wall replaced by a computer paddle, first to 11,
-rally speed resets each point). CPU difficulty = what the CPU can DO, not the
-ball: `k_cpu[3]` = paddle px/tick {2,3,3} vs the player's 4, per-rally aim
-error ±{12,6,3} px (re-rolled on serve and on every player return), Hard
-additionally predicts the arrival y with wall reflections folded in
-(`predictY`) instead of chasing the live ball; Easy also ignores the ball
-until it is in the left 2/3. Hard stays beatable BY DESIGN: its paddle is
-slower than the max english (±3 px/t) plus the player's own 4. The pong
-centre line is dashes, and every erase that can cross it (ball trail, the
-serve-hint band) goes through `repaintCenterLine`. Drawn with the nm::
-rasteriser only, so it works in standard 8bpp and DS80 alike (horizontal sizes
-×`Sf.glyphScale`). Controls: arrows/Q/A + joystick (the injected `VK_MENU_UP/
-DOWN` cover it for free), Space/Enter/fire = serve/start, P = pause, M = back
-to the mode menu from game over, Esc/F1 = mode menu, from there exits.
+the emulated machine and WITHOUT an SD card. Two entrances: the last row of
+Machine (`K_PAGE`, `act_gameScwong()` owns its key loop like `uiAboutPage`),
+and **held S in the boot-time R/M factory-reset probe window**
+(`nm::gameScwongStandalone()`, declared in OSDNewMenu.h — it wraps the page in
+its own `gfxBegin/gfxEnd` and sets `VIDEO::brdnextframe` on exit; boot then
+continues normally). Two games behind an in-page mode menu: Solo squash (right
+paddle, three walls, 5 balls, score = returns) and Pong vs CPU (left wall
+replaced by a computer paddle, first to 11, rally speed resets each point).
+Difficulty tunes BOTH the CPU and the ball (`CpuSkill k_cpu[3]`): CPU paddle
+px/tick {2,3,3}, per-rally aim error ±{16,8,3} px (re-rolled on serve and on
+every player return), Hard predicts the arrival y with wall reflections folded
+in (`predictY`), Easy also ignores the ball until it is in the left 2/3 AND
+gets a slower ball — serve/cap/accel {480/900/32, 560/1200/28, 560/1536/24} in
+8.8 px/tick (solo squash keeps `k_solo` = the Hard ball). Hard stays beatable
+BY DESIGN: its paddle is slower than the max english (±3 px/t) plus the
+player's own speed. The Options page (5th mode-menu row) picks field colour,
+paddle colour, paddle width {3,5,7} px, paddle SIZE (length along the wall,
+{16,26,38} px — the only cosmetic-looking row that changes difficulty, and it
+changes it for BOTH sides since the CPU paddle uses the same `ph`), ball colour,
+ball size {4,6,8} px and player paddle speed {3,4,6} px/t, with a live preview
+strip sized for the longest paddle so it does not jump while that row is cycled.
+The page's geometry is derived from its own height and centred between the top
+of the screen and the footer, NOT from fixed `Sf.h/6` offsets — at 240 lines
+seven rows plus that strip do not fit under a hardcoded top margin, and the
+strip, drawn last, is what silently disappeared; adding a row now moves the
+whole block up instead. Values are indices in `Config::gm_*` (seven u8 NVS
+keys, modulo-clamped on use),
+written by ONE `Config::save()` on leaving the page — no SD means they silently stay
+session-only (Config::save's own fallback). The court erase colour is
+`colField` everywhere (the whole screen is filled with it, so the ball flying
+out over the margin erases cleanly). **"Is a ball on screen" is its own
+`ball_on` flag, never `old_bx >= 0`** — the ball keeps being drawn (clipped by
+`hline`) while it leaves the court past the CPU paddle, so a perfectly live
+ball has a NEGATIVE x for its last few frames. Reading the sentinel out of the
+coordinate skipped exactly those erases, in `eraseBall` and in `pongPoint`'s
+final one, and every goal against the CPU glued another staircase of clipped
+slivers (widths bw-1, bw-3, bw-5 …) to the left screen edge. The right side
+never showed it: there the ball exits at large x, which the sentinel reads as
+"drawn". The pong centre line is dashes, and every
+erase that can cross it (ball trail, the serve-hint panel) goes through
+`repaintCenterLine`. `eraseCenterMsg` erases a band spanning the WHOLE court
+width, so it has to hand back everything that band crosses: ball, both paddles,
+the centre line — and in solo squash the LEFT WALL, which is the one that shows
+with the player doing nothing at all (the hint blinks every 32 ticks from the
+moment a game starts, so the wall comes up with a hole in it). Drawn with the nm:: rasteriser only, so it works in
+standard 8bpp and DS80 alike (horizontal sizes ×`Sf.glyphScale`). Controls:
+arrows/Q/A + joystick (the injected `VK_MENU_UP/DOWN` cover it for free),
+Space/Enter/fire = serve/start, Left/Right cycle option values, P = pause,
+M = back to the mode menu from game over, Esc/F1 = one screen back.
 Held keys come from `Keyboard::isVKDown` (tracks injected keys too); edge events
-from the drained queue. 60 ticks/s paced by `time_us_64`, positions in 8.8
+from the drained queue — and every arrow / Enter / Space arrives **TWICE** there
+(the input layer queues a `VK_MENU_*` twin right beside the raw key: main.cpp
+`kbdExtraMapping` for USB, the PS/2 scancode table, and `repeat_handler` for
+auto-repeat), so the loop decodes events to VERBS (`scwongAct`) and collapses a
+repeat of the same verb inside one drain pass. Accepting both cases in one
+switch makes every press act twice: the mode menu steps two rows at a time
+("проскакивает"), picking a mode with Space also serves the ball with the twin,
+and an option value jumps two steps per Left/Right. The collapse is safe
+because the twin is always queued immediately before its raw key, so both land
+in the same 60 Hz tick, and it keeps the no-twin keys working (KP-Enter, Q/A).
+**This was lost once already** — the 2026-08-30 branch rename to Pico-Scwong
+predated the fix and a wholesale file take at merge reverted it. 60 ticks/s
+paced by `time_us_64`, positions in 8.8
 fixed point, paddle-plane collision is crossing-tested (no tunnelling at ×2 DS80
 speeds). Sound = square waves synthesized into a stack buffer through
 `pwm_audio_write`, same path as `OSD::clickNoPause` — the staging buffer is 640
