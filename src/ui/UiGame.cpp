@@ -82,9 +82,28 @@ static const char* const k_cpu_name[3] = { "Easy", "Normal", "Hard" };
 static const CpuSkill k_solo = { 0, 0, false, false, 560, 1536, 24 };
 
 // ── the Options tables (values live in Config::gm_*, persisted as NVS keys) ──
+// The game borrows the menu palette by ROLE, and Options > Theme can invert what a
+// role MEANS. The ZX Spectrum scheme is a LIGHT one: C_WHITE is black ink there,
+// C_PANEL is white paper, C_SEP a black rule. Drawn with the Slate assumptions the
+// whole game came out black — screen C_BG black, title and rows C_WHITE/C_TEXT
+// black, court walls C_TEXT black, the default White ball black — with only the
+// cyan selection bar visible (user capture, 2026-08-30). So no colour here is a
+// bare role: screens go through gmPaper()/gmRule(), the court through gmWall(),
+// and each option list has a per-theme row so its LABELS stay true ("White" must
+// be white in both schemes, and C_WHITE is not).
+static inline bool    gmZx()    { return Config::ui_theme == 1; }
+static inline UiColor gmPaper() { return gmZx() ? C_PANEL     : C_BG;   }  // full-screen backdrop
+static inline UiColor gmRule()  { return gmZx() ? C_PANEL_ALT : C_SEP;  }  // underlines, preview frame
+static inline UiColor gmWall()  { return gmZx() ? C_PANEL     : C_TEXT; }  // court walls
+
 static const UiColor k_fieldCol[]  = { C_BG, C_SHADOW, C_PANEL, C_SEL_BAND, C_FOOT_BG };
+// ZX twin. Every entry must stay DARK (the walls and ball are drawn bright on it);
+// that scheme has only {00,AA,FF} per channel and therefore no dark grey, so
+// "Charcoal" is its normal-white 0xAAAAAA — the closest it can offer.
+static const UiColor k_fieldColZx[]= { C_BG, C_SHADOW, C_TEXT_DIM, C_SEL_BAND, C_PANEL_ALT };
 static const char* const k_fieldName[] = { "Dark", "Black", "Navy", "Steel", "Charcoal" };
 static const UiColor k_padCol[]    = { C_ACCENT, C_WHITE, C_ICON_R, C_ICON_Y, C_ICON_C, C_SEL_BG };
+static const UiColor k_padColZx[]  = { C_ACCENT, C_PANEL, C_ICON_R, C_ICON_Y, C_ICON_C, C_TEXT_DIM };
 static const char* const k_padName[]   = { "Green", "White", "Red", "Yellow", "Cyan", "Blue" };
 static const uint8_t k_padW[3]     = { 3, 5, 7 };
 static const char* const k_padWName[]  = { "Slim", "Medium", "Wide" };
@@ -97,10 +116,19 @@ static const uint8_t k_ballSz[3]   = { 4, 6, 8 };
 static const char* const k_ballName[]  = { "Small", "Medium", "Big" };
 // The ball's own palette — White first, so the default stays the classic look.
 static const UiColor k_ballCol[]   = { C_WHITE, C_ICON_Y, C_ICON_C, C_ICON_R, C_ACCENT, C_SEL_BG };
+static const UiColor k_ballColZx[] = { C_PANEL, C_ICON_Y, C_ICON_C, C_ICON_R, C_ACCENT, C_TEXT_DIM };
 static const char* const k_ballColName[] = { "White", "Yellow", "Cyan", "Red", "Green", "Blue" };
 static const uint8_t k_pSpd[3]     = { 3, 4, 6 };
 static const char* const k_pSpdName[]  = { "Slow", "Normal", "Fast" };
 #define GM_N(a) ((int)(sizeof(a) / sizeof((a)[0])))
+
+// Row selectors — the two rows are the same length by construction.
+static inline UiColor gmFieldCol(int i) { return (gmZx() ? k_fieldColZx : k_fieldCol)[i % GM_N(k_fieldCol)]; }
+static inline UiColor gmPadCol(int i)   { return (gmZx() ? k_padColZx   : k_padCol  )[i % GM_N(k_padCol)];   }
+static inline UiColor gmBallCol(int i)  { return (gmZx() ? k_ballColZx  : k_ballCol )[i % GM_N(k_ballCol)];  }
+static_assert(GM_N(k_fieldCol) == GM_N(k_fieldColZx), "field colour rows must match");
+static_assert(GM_N(k_padCol)   == GM_N(k_padColZx),   "paddle colour rows must match");
+static_assert(GM_N(k_ballCol)  == GM_N(k_ballColZx),  "ball colour rows must match");
 
 static inline bool vkDown(fabgl::VirtualKey vk) {
     return ESPectrum::PS2Controller.keyboard()->isVKDown(vk);
@@ -185,9 +213,9 @@ void act_gameScwong() {
     int paddle_x = 0, plane_p = 0, plane_c = 0;
     UiColor colField = C_BG, colPad = C_ACCENT, colBall = C_WHITE;
     auto applyOpts = [&]() {
-        colField  = k_fieldCol[Config::gm_field % GM_N(k_fieldCol)];
-        colPad    = k_padCol[Config::gm_pad % GM_N(k_padCol)];
-        colBall   = k_ballCol[Config::gm_ballc % GM_N(k_ballCol)];
+        colField  = gmFieldCol(Config::gm_field);
+        colPad    = gmPadCol(Config::gm_pad);
+        colBall   = gmBallCol(Config::gm_ballc);
         pw        = k_padW[Config::gm_padw % 3] * sc;
         ph        = k_padH[Config::gm_padh % 3];
         bw        = k_ballSz[Config::gm_ball % 3] * sc;
@@ -266,10 +294,10 @@ void act_gameScwong() {
     auto drawCourt = [&]() {
         fill(0, 0, Sf.w, Sf.h, colField);
         drawHud();
-        fill(ox0, oy0, ox1 - ox0 + 1, wt, C_TEXT);                    // top wall
-        fill(ox0, oy1 - wt + 1, ox1 - ox0 + 1, wt, C_TEXT);           // bottom wall
+        fill(ox0, oy0, ox1 - ox0 + 1, wt, gmWall());                  // top wall
+        fill(ox0, oy1 - wt + 1, ox1 - ox0 + 1, wt, gmWall());         // bottom wall
         if (mode == MODE_SQUASH) {
-            fill(ox0, oy0, wtx, oy1 - oy0 + 1, C_TEXT);               // left wall
+            fill(ox0, oy0, wtx, oy1 - oy0 + 1, gmWall());             // left wall
         } else {
             centerLineDash(iy0, iy1);                                 // pong centre line
         }
@@ -371,10 +399,10 @@ void act_gameScwong() {
         "Options",
     };
     auto drawModeMenu = [&]() {
-        fill(0, 0, Sf.w, Sf.h, C_BG);
+        fill(0, 0, Sf.w, Sf.h, gmPaper());
         const char* t = "P I C O - S C W O N G";
         text((Sf.w - textWidth(t)) / 2, Sf.h / 6, t, C_WHITE);
-        hline((Sf.w - textWidth(t)) / 2, Sf.h / 6 + UI_FONT_H + 1, textWidth(t), C_SEP);
+        hline((Sf.w - textWidth(t)) / 2, Sf.h / 6 + UI_FONT_H + 1, textWidth(t), gmRule());
         if (s_best) {
             char b[24];
             snprintf(b, sizeof(b), "solo best %d", s_best);
@@ -389,7 +417,7 @@ void act_gameScwong() {
         const int ry = Sf.h / 6 + 3 * UI_FONT_H;
         for (int i = 0; i < 5; i++) {
             const int y = ry + i * lh;
-            fill(rx, y, rw, lh - 2, i == sel ? C_SEL_BG : C_BG);
+            fill(rx, y, rw, lh - 2, i == sel ? C_SEL_BG : gmPaper());
             text(rx + 6 * sc, y + 2, k_rows[i], i == sel ? C_WHITE : C_TEXT);
         }
         text(m, Sf.h - foot_h + 2,
@@ -428,7 +456,7 @@ void act_gameScwong() {
         applyOpts();
     };
     auto drawOptions = [&]() {
-        fill(0, 0, Sf.w, Sf.h, C_BG);
+        fill(0, 0, Sf.w, Sf.h, gmPaper());
         // The page is laid out from its own height and centred between the top
         // of the screen and the footer, NOT from fixed Sf.h/6 offsets: seven
         // rows plus a preview strip tall enough for the longest paddle do not
@@ -443,13 +471,13 @@ void act_gameScwong() {
         if (top < 2) top = 2;
         const char* t = "OPTIONS";
         text((Sf.w - textWidth(t)) / 2, top, t, C_WHITE);
-        hline((Sf.w - textWidth(t)) / 2, top + UI_FONT_H + 1, textWidth(t), C_SEP);
+        hline((Sf.w - textWidth(t)) / 2, top + UI_FONT_H + 1, textWidth(t), gmRule());
         const int rw = 30 * glyphW();               // 30 glyph cells wide
         const int rx = (Sf.w - rw) / 2;
         const int ry = top + UI_FONT_H + 6;
         for (int i = 0; i < opt_n; i++) {
             const int y = ry + i * lh;
-            fill(rx, y, rw, lh - 2, i == osel ? C_SEL_BG : C_BG);
+            fill(rx, y, rw, lh - 2, i == osel ? C_SEL_BG : gmPaper());
             text(rx + 6 * sc, y + 2, k_optRows[i], i == osel ? C_WHITE : C_TEXT);
             const char* v = optValue(i);
             text(rx + rw - textWidth(v) - 6 * sc, y + 2, v,
@@ -463,12 +491,12 @@ void act_gameScwong() {
         const int sy = ry + opt_n * lh + 6;
         const int sw2 = 22 * glyphW(), sx = (Sf.w - sw2) / 2;
         const int pbw = k_ballSz[Config::gm_ball % 3];
-        fill(sx, sy, sw2, sh, k_fieldCol[Config::gm_field % GM_N(k_fieldCol)]);
-        frame(sx - 1, sy - 1, sw2 + 2, sh + 2, C_SEP);
+        fill(sx, sy, sw2, sh, gmFieldCol(Config::gm_field));
+        frame(sx - 1, sy - 1, sw2 + 2, sh + 2, gmRule());
         fill(sx + 4 * sc, sy + (sh - pbh) / 2, k_padW[Config::gm_padw % 3] * sc, pbh,
-             k_padCol[Config::gm_pad % GM_N(k_padCol)]);
+             gmPadCol(Config::gm_pad));
         fill(sx + sw2 / 2 - (pbw * sc) / 2, sy + (sh - pbw) / 2,
-             pbw * sc, pbw, k_ballCol[Config::gm_ballc % GM_N(k_ballCol)]);
+             pbw * sc, pbw, gmBallCol(Config::gm_ballc));
         text(m, Sf.h - foot_h + 2,
              SYM_LEFT SYM_RIGHT " Change  " SYM_UP SYM_DOWN " Select  Esc Back",
              C_TEXT_DIM);
