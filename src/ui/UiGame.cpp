@@ -67,6 +67,35 @@ static inline bool vkDown(fabgl::VirtualKey vk) {
     return ESPectrum::PS2Controller.keyboard()->isVKDown(vk);
 }
 
+// Which menu/game verb a key event carries, or 0 for "not one of ours".
+// Every arrow, Enter and Space arrives TWICE: the input layer queues a
+// VK_MENU_* twin right beside the raw key (main.cpp kbdExtraMapping for USB,
+// the PS/2 scancode table for PS/2, and repeat_handler for auto-repeat), which
+// is what the nm:: menus decode. A switch that accepts BOTH therefore acts
+// twice per press — the mode selection stepped two rows at a time, and picking
+// a mode with Space also served the ball with the twin. Collapsing a repeat of
+// the same verb inside one drain pass is enough (the twin is always queued
+// immediately before its raw key, so both land in the same 60 Hz tick), and it
+// keeps the keys the input layer sends with NO twin working — KP-Enter, and
+// the Q/A letters.
+enum SkvoshAct : uint8_t { SA_NONE, SA_UP, SA_DOWN, SA_FIRE, SA_BACK, SA_PAUSE, SA_MENU };
+
+static SkvoshAct skvoshAct(fabgl::VirtualKey vk) {
+    switch (vk) {
+        case fabgl::VK_UP:   case fabgl::VK_MENU_UP:
+        case fabgl::VK_q:    case fabgl::VK_Q:          return SA_UP;
+        case fabgl::VK_DOWN: case fabgl::VK_MENU_DOWN:
+        case fabgl::VK_a:    case fabgl::VK_A:          return SA_DOWN;
+        case fabgl::VK_SPACE: case fabgl::VK_RETURN:
+        case fabgl::VK_MENU_ENTER:                      return SA_FIRE;
+        case fabgl::VK_ESCAPE: case fabgl::VK_F1:
+        case fabgl::VK_MENU_BS:                         return SA_BACK;
+        case fabgl::VK_p: case fabgl::VK_P:             return SA_PAUSE;
+        case fabgl::VK_m: case fabgl::VK_M:             return SA_MENU;
+        default:                                        return SA_NONE;
+    }
+}
+
 // One square-wave beep. `half` = half-period in samples (freq = 31250 / (2*half)),
 // `len` capped to the 640-sample staging buffer. Fixed loudness like the menu
 // click; silent in tape-player mode for the same reason clickNoPause is.
@@ -220,6 +249,14 @@ void act_gameSkvosh() {
     auto eraseCenterMsg = [&]() {
         fill(ox0, box_y, ox1 - ox0 + 1, box_h, C_BG);
         // The band spans the whole court width — repaint whatever it ate.
+        // The squash left wall is one of them: the serve hint blinks (erase
+        // every 32 ticks) from the moment a solo game starts, so the wall came
+        // up with a hole in it before the player had touched anything.
+        if (mode == MODE_SQUASH) {
+            const int t = box_y > oy0 ? box_y : oy0;
+            const int b = (box_y + box_h < oy1 + 1) ? box_y + box_h : oy1 + 1;
+            if (t < b) fill(ox0, t, wtx, b - t, C_TEXT);
+        }
         if (old_bx >= 0 && old_by + bh > box_y && old_by < box_y + box_h)
             fill(old_bx, old_by, bw, bh, C_WHITE);
         if (old_py >= 0 && old_py + ph > box_y && old_py < box_y + box_h)
@@ -369,30 +406,29 @@ void act_gameSkvosh() {
     // ── main loop: 60 ticks/s ──────────────────────────────────────────────────
     uint64_t next = time_us_64();
     while (true) {
-        // edge events
+        // edge events. Decoded to verbs so a key and its VK_MENU_* twin (both
+        // queued for every arrow / Enter / Space) act once — see skvoshAct().
         fabgl::VirtualKeyItem k;
+        SkvoshAct prev_act = SA_NONE;
         while (kbd->virtualKeyAvailable()) {
             if (!ESPectrum::readKbd(&k) || !k.down) continue;
-            switch (k.vk) {
-                case fabgl::VK_ESCAPE:
-                case fabgl::VK_F1:
-                case fabgl::VK_MENU_BS:
+            const SkvoshAct act = skvoshAct(k.vk);
+            if (act == SA_NONE || act == prev_act) continue;
+            prev_act = act;
+            switch (act) {
+                case SA_BACK:
                     if (st == ST_MENU) return;
                     s_menu_sel = (uint8_t)sel;
                     st = ST_MENU; paused = false;
                     drawModeMenu();
                     break;
-                case fabgl::VK_UP: case fabgl::VK_MENU_UP:
-                case fabgl::VK_q:  case fabgl::VK_Q:
+                case SA_UP:
                     if (st == ST_MENU && sel > 0) { sel--; drawModeMenu(); }
                     break;
-                case fabgl::VK_DOWN: case fabgl::VK_MENU_DOWN:
-                case fabgl::VK_a:    case fabgl::VK_A:
+                case SA_DOWN:
                     if (st == ST_MENU && sel < 3) { sel++; drawModeMenu(); }
                     break;
-                case fabgl::VK_SPACE:
-                case fabgl::VK_RETURN:
-                case fabgl::VK_MENU_ENTER:
+                case SA_FIRE:
                     if (st == ST_MENU) {
                         s_menu_sel = (uint8_t)sel;
                         mode = sel == 0 ? MODE_SQUASH : MODE_PONG;
@@ -403,16 +439,14 @@ void act_gameSkvosh() {
                     else if (st == ST_OVER) newGame();
                     else if (paused) { paused = false; eraseCenterMsg(); }
                     break;
-                case fabgl::VK_p:
-                case fabgl::VK_P:
+                case SA_PAUSE:
                     if (st == ST_PLAY) {
                         paused = !paused;
                         if (paused) centerMsg("PAUSE", C_TEXT_DIM);
                         else eraseCenterMsg();
                     }
                     break;
-                case fabgl::VK_m:
-                case fabgl::VK_M:
+                case SA_MENU:
                     if (st == ST_OVER) {
                         s_menu_sel = (uint8_t)sel;
                         st = ST_MENU;

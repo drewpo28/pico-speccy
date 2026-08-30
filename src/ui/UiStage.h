@@ -273,7 +273,7 @@ const char* romsetName(int32_t composite);
     /* Debug > Paper: No = don't render the paper area; the border state machine    */ \
     /* paints straight through it (per-T-state, like top/bottom border), exposing   */ \
     /* what the border "under" the paper carries — a border-timing debugging aid.   */ \
-    X(SET_PAPER,           AC_LIVE,   0,                     get_paper,      put_paper,      hook_paper,     -1)
+    X(SET_PAPER,           AC_LIVE,   0,                     get_paper,      put_paper,      hook_paper,     -1)          \
     /* ── Options > menu look ─────────────────────────────────────────────────── */      \
     /* VGA menu palette: solid on-grid twin vs the dithered full-depth scheme. The     */ \
     /* drawing code reads the value directly; F_PALETTE re-installs the UI palette     */ \

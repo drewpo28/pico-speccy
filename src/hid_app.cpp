@@ -491,6 +491,9 @@ static bool     kbd_resync_busy     = false;
 static bool     kbd_resync_probing  = false;  // current GET_REPORT is the trust probe
 static bool     kbd_resync_verified = false;  // idle probe answered a clean boot report
 static uint32_t kbd_resync_fixes    = 0;
+static uint32_t kbd_report_seq      = 0;      // interrupt reports processed, ever
+static uint32_t kbd_resync_seq      = 0;      // kbd_report_seq when the GET_REPORT went out
+static uint32_t kbd_resync_stale    = 0;      // replies discarded as overtaken
 
 static bool kbd_state_has_key(void) {
   if (prev_report.modifier) return true;
@@ -527,12 +530,13 @@ static void kbd_health_log(void) {
   const uint32_t epdbg = pio_usb_host_ep_debug(kbd_resync_daddr, ep_in);
   extern volatile uint32_t g_tusb_assert_count;   // dropped events land here
   Debug::log("HID kbd: rhport=%u daddr=%u inst=%u ep=%02X held=%u silent=%ums reports=%u "
-             "resync(fix=%u fail=%u off=%u ver=%u) rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
+             "resync(fix=%u fail=%u off=%u ver=%u stale=%u) rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
              bus.rhport, kbd_resync_daddr, inst, ep_in, (unsigned)held,
              (unsigned)silent,
              (unsigned)(inst < CFG_TUH_HID ? hid_snap[inst].report_total : 0),
              (unsigned)kbd_resync_fixes, (unsigned)kbd_resync_fails,
              (unsigned)kbd_resync_off, (unsigned)kbd_resync_verified,
+             (unsigned)kbd_resync_stale,
              (unsigned)hid_rearm_recoveries,
              (unsigned)hid_desync_recoveries, (unsigned)g_tusb_assert_count,
              (unsigned)tuh_hid_receive_ready(kbd_resync_daddr, inst),
@@ -567,6 +571,7 @@ static void kbd_resync_tick(void) {
   if ((uint32_t)(kbd_now_ms() - kbd_last_report_ms) < KBD_RESYNC_SILENCE_MS) return;
 
   memset(kbd_resync_buf, 0, sizeof(kbd_resync_buf));
+  kbd_resync_seq = kbd_report_seq;      // anything newer than this overtakes the reply
   if (tuh_hid_get_report(kbd_resync_daddr, kbd_resync_instance, 0,
                          HID_REPORT_TYPE_INPUT, kbd_resync_buf,
                          sizeof(kbd_resync_buf))) {
@@ -619,15 +624,45 @@ void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t repor
     return;
   }
   hid_keyboard_report_t const* now = (hid_keyboard_report_t const*) kbd_resync_buf;
-  if (memcmp(now, &prev_report, sizeof(prev_report)) != 0) {
+
+  // A control-pipe answer is a SNAPSHOT, and the interrupt pipe can overtake it:
+  // the user releases the key while the GET_REPORT is in flight, the (empty)
+  // interrupt report is processed first, and the older reply then arrives still
+  // holding the key. Applying it re-PRESSES a key nobody is holding — and since
+  // the device is now idle and silent, nothing on the interrupt pipe ever
+  // contradicts it. That is the "the down arrow sometimes jams" report (hw
+  // 2026-08-29, seen in the Skvosh game, where arrows are held past the 400 ms
+  // resync threshold constantly). Anything that arrived after the request went
+  // out makes the reply worthless.
+  if (kbd_report_seq != kbd_resync_seq) {
+    kbd_resync_stale++;
+    kbd_last_report_ms = kbd_now_ms();
+    return;
+  }
+
+  // A resync may only RELEASE keys the device no longer reports — it must never
+  // press one. The block comment above always claimed this; process_kbd_report()
+  // applies the reply in BOTH directions, so state it as code: act on the
+  // intersection of what we believe is held and what the device says.
+  hid_keyboard_report_t merged;
+  memset(&merged, 0, sizeof(merged));
+  merged.modifier = prev_report.modifier & now->modifier;
+  uint8_t nk = 0;
+  for (uint8_t kc : prev_report.keycode) {
+    if (!kc) continue;
+    for (uint8_t k2 : now->keycode)
+      if (k2 == kc) { merged.keycode[nk++] = kc; break; }
+  }
+
+  if (memcmp(&merged, &prev_report, sizeof(prev_report)) != 0) {
     kbd_resync_fixes++;
-    Debug::log("HID kbd: state resynced via GET_REPORT (total %u, "
+    Debug::log("HID kbd: state resynced via GET_REPORT (total %u, stale %u, "
                "reply %02X %02X %02X %02X %02X %02X %02X %02X)",
-               (unsigned)kbd_resync_fixes,
+               (unsigned)kbd_resync_fixes, (unsigned)kbd_resync_stale,
                kbd_resync_buf[0], kbd_resync_buf[1], kbd_resync_buf[2], kbd_resync_buf[3],
                kbd_resync_buf[4], kbd_resync_buf[5], kbd_resync_buf[6], kbd_resync_buf[7]);
-    process_kbd_report(now, &prev_report);
-    prev_report = *now;
+    process_kbd_report(&merged, &prev_report);
+    prev_report = merged;
   }
   kbd_last_report_ms = kbd_now_ms();
 }
@@ -712,6 +747,7 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
       kbd_resync_daddr    = dev_addr;
       kbd_resync_instance = instance;
       kbd_last_report_ms  = kbd_now_ms();
+      kbd_report_seq++;               // lets a resync reply see it was overtaken
       process_kbd_report( (hid_keyboard_report_t const*) report, &prev_report );
       prev_report = *(hid_keyboard_report_t const*)report;
     break;

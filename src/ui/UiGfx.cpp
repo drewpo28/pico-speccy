@@ -12,6 +12,9 @@
 #include "Config.h"     // ui_vga_solid / ui_rounded — the menu-look preferences
 
 extern "C" volatile bool profi_ds80_active;
+// File scope, OUTSIDE namespace nm: an extern declared inside the namespace
+// would resolve to nm::SELECT_VGA and fail to link (same note as UiStage.cpp).
+extern bool SELECT_VGA;   // vga.c
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
 
 namespace nm {
@@ -102,8 +105,7 @@ static const uint32_t kUiPaletteZx[C_COUNT] = {
 static const uint32_t* uiPaletteActive() {
     if (Config::ui_theme == 1) return kUiPaletteZx;
 #if defined(VGA_HDMI)
-    extern bool SELECT_VGA;   // vga.c
-    if (SELECT_VGA && Config::ui_vga_solid) return kUiPaletteVga;
+    if (::SELECT_VGA && Config::ui_vga_solid) return kUiPaletteVga;
 #endif
     return kUiPalette;
 }
