@@ -1237,6 +1237,18 @@ void Z80::doNMI(void) {
     if (MB02::enabled) {
         MB02::writePort17(0x60); // SRAM page 0, write enable
     }
+    // Scorpion magic button: the hardware asserts 1FFD D1 (service page) with
+    // the NMI pulse, so the 0x0066 handler always executes from the service
+    // monitor (MAME scorpion nmi_check_callback: port_1ffd |= 0x02 + pulse).
+    // A bare NMI landed at 0x0066 of whatever ROM happened to be paged — the
+    // Sinclair banks have no handler there, hence "enters the monitor only
+    // sometimes". Done at the ack point so not a single opcode is fetched from
+    // the swapped page before the NMI vectors; the monitor exits by clearing
+    // D1 itself.
+    if (Z80Ops::isScorpion) {
+        Ports::port1FFD |= 0x02;
+        Ports::scorpionRomUpdate();
+    }
     nmi();
 
 }

@@ -1925,7 +1925,7 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 - On-hardware benchmark: OSD → Memory Info measures SPI PSRAM MB/s via the
   range functions (`OSDMain.cpp`).
 
-## Scorpion ZS-256 (A_SCORP, 2026-08-19) — NOT yet hw-tested
+## Scorpion ZS-256 (A_SCORP, 2026-08-19; hw-debugged 2026-08-30, see the SYSEN/NMI/motor section below)
 
 New machine, modelled from MAME `sinclair/scorpion.cpp` + libspectrum `timings.c` +
 Fuse `machines/scorpion.c` (the speccy4ever docs the user linked are egress-blocked
@@ -1982,15 +1982,56 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
   raw bankLatch 8-15 corrupted the port byte (bit3=videoLatch) and derailed the
   page-skip loop into a malformed size. Tape loader128 reuses `loadpentagon` with
   `skip_rom_pages` (Profi pattern).
-- **UI**: Machine → "Scorpion 256K" (gated `p_extRam` like P512 — pages 8-15 need
-  backing), pref-arch/pref-rom rows (`SET_PREF_ROM_SCORP` appended LAST in the
-  UiStage X-macro per its APPEND ONLY rule), `MENU_RESETTO_SCORP` = Service
-  monitor (reset(2) + `port1FFD=0x02` AFTER reset — reset clears the latch, and
-  without the override the next 7FFD write pages the monitor out) / TR-DOS / 128K
-  / 48K (romLatch=1 + pagingLock). NVS keys `romSetScorp`/`pref_romSetScorp`,
-  on-disk arch spelling "Scorpion", romset "Scorp".
-- Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle,
-  a Magic/NMI hotkey into the service monitor, SMUC.
+- **UI**: Machine → "Scorpion 256K" (between the Pentagons and Byte; gated
+  `p_extRam` like P512 — pages 8-15 need backing), pref-arch/pref-rom rows
+  (`SET_PREF_ROM_SCORP` appended LAST in the UiStage X-macro per its APPEND ONLY
+  rule), `MENU_RESETTO_SCORP` = Service monitor (a bare `Z80::triggerNMI()`, NO
+  reset — see the magic-button section below; the original cold reset(2)+D1 path
+  started the monitor's disk-boot code at PC=0 and hung in the FDC wait) /
+  TR-DOS / 128K / 48K (romLatch=1 + pagingLock). NVS keys
+  `romSetScorp`/`pref_romSetScorp`, on-disk arch spelling "Scorpion", romset
+  "Scorp".
+- Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle, SMUC.
+
+### Scorpion SYSEN ports + magic NMI + WD1793 motor model (hw-confirmed 2026-08-30)
+
+Three fixes from one hw session ("128 TR-DOS hangs", "NMI enters the monitor
+only sometimes"), all confirmed working by the user on hardware. The debugging
+itself ran off `/tmp/picospec_dump.log` (tools/memdump.gdb) + full disassembly
+of the v2.94 ROM pair — worth repeating on any Scorpion hang: the monitor's
+code paths are NOT TR-DOS-like and exercise WD1793 behaviour nothing else does.
+
+- **FDC ports are open under SYSEN (1FFD D1), not only DOSEN** — ZXMAK2
+  FddController: "Ports active when DOSEN=1 or SYSEN=1". `scorp_sysen` joins
+  `ESPectrum::trdos` in the Beta-128 IN gate, the OUT gate, the Kempston-on-#1F
+  exclusion and the #FF SYS-register case (Ports.cpp). Without it the service
+  monitor polled #1F forever: DOSEN drops at PC>=0x4000 while SYSEN stays, the
+  FDC branch declined and Kempston answered 0x00.
+- **The magic button (any NMI on Scorpion) asserts 1FFD D1 at the ACK point**
+  (`Z80::doNMI`, MAME scorpion nmi_check_callback) so 0x0066 always executes
+  from the service monitor — a bare NMI used to land in whatever ROM happened
+  to be paged ("works only sometimes"). Done in doNMI, not the hotkey, so not a
+  single opcode is fetched from the swapped page before the vector. The monitor
+  clears D1 itself on exit. The two NMI-DOS romInUse writes in Z80_JLS.cpp also
+  gained `gmxTapRecheck()` (they bypassed scorpionRomUpdate).
+- **WD1793 motor/READY model** (`motor_frames` in wd1793.h, refreshed to
+  `WD_MOTOR_FRAMES`=150 on every accepted command, per-frame decrement beside
+  `fdd_active_decay` in LEDIndicators.cpp, zeroed by rvmWD1793Reset): an IDLE
+  status read with the motor stopped returns NOT READY even with a disk in.
+  **This is the "128 menu → TR-DOS" deadlock fix**, and the mechanism is worth
+  remembering: the 128-menu TR-DOS row writes #1FFD=0x12 (D1+D4) via a stub at
+  bank0 0x0024, the monitor's cmd09 calls bank3 through the self-modifying RAM
+  thunk at 0xE358 (OUT 7FFD,10 / OUT 1FFD,10 / JP 0x3D30 — bank3 has RET at
+  0x3D30, so the 0x3Dxx automap trap + stacked address = a cross-bank CALL),
+  bank3 does RESTORE + READ ADDRESS (0xC4) and the monitor then parks in
+  `IN A,(#1F); AND #E0; JR Z` (bank2 0x0237) waiting for NOT READY | WP | HLD —
+  bits an idle, mounted, writable disk NEVER shows without motor spin-down.
+  ZXMAK2 carries the identical model with the comment "KLUDGE: motor emulation
+  to fix SCORPION 128 TRDOS dead lock" (Wd1793.cs). Deliberately gated on
+  `Z80Ops::isScorpion` in rvmWD1793Read so the hw-proven Pentagon/Profi status
+  expectations (e.g. Profi's no-disk 0x90 special case) stay byte-identical.
+  Expected UX: entering TR-DOS with a disk mounted pauses up to ~3 s (15 disk
+  revolutions — same on ZXMAK2 and real hardware) while the motor times out.
 
 ### Scorpion GMX (R_SCORP_GMX, 2026-08-25) — NOT yet hw-tested
 

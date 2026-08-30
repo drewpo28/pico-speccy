@@ -244,6 +244,9 @@ void decay() {
     // (see wd1793.h) — decay it here too so it's a single per-frame tick site.
     if (ESPectrum::fdd.fdd_active_decay) ESPectrum::fdd.fdd_active_decay--;
     if (ESPectrum::mb02_fdd.fdd_active_decay) ESPectrum::mb02_fdd.fdd_active_decay--;
+    // WD1793 motor spin-down timers (wd1793.h motor_frames — Scorpion READY model)
+    if (ESPectrum::fdd.motor_frames) ESPectrum::fdd.motor_frames--;
+    if (ESPectrum::mb02_fdd.motor_frames) ESPectrum::mb02_fdd.motor_frames--;
 }
 
 // Determine where to draw the strip given current video mode.

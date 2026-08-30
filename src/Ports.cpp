@@ -1209,6 +1209,15 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // Any mounted disk — includes TRD/SCL which are not "raw" but still need
     // real FDC routing so Profi SYS ROM disk probe succeeds.
     bool has_any_disk = ESPectrum::fdd.disk[ESPectrum::fdd.diskS] != nullptr;
+    // Scorpion SYSEN (1FFD D1): the service monitor drives the WD1793 directly —
+    // ZXMAK2 FddController: "Ports active when DOSEN=1 or SYSEN=1". Without this
+    // the monitor's disk boot (reached from the guest 128 menu's TR-DOS row, the
+    // reset-to-TR-DOS chain and the magic NMI) polls #1F forever: the FDC branch
+    // declines (trdos=false — DOSEN drops at PC>=0x4000 while SYSEN stays), the
+    // Kempston block below answers 0x00, and the monitor's head-load wait
+    // `IN A,(#1F); AND #E0; JR Z` never exits (hw dump 2026-08-30: PC=0237 in
+    // bank2, romInUse=2, romLatch=1).
+    bool scorp_sysen = Z80Ops::isScorpion && (port1FFD & 0x02);
     // skip_real_fdc: bypass real WD1793 during Profi SYS ROM boot ONLY when
     // no disk is mounted at all.  With any disk (TRD/SCL/FDI/...), let the
     // real FDC handle it so the SYS ROM disk probe can succeed.
@@ -1298,7 +1307,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       return kRVMWD177XStatusNotReady | kRVMWD177XStatusSeek;
     }
 
-    if (!skip_real_fdc && (ESPectrum::trdos || has_raw_disk)) {
+    if (!skip_real_fdc && (ESPectrum::trdos || scorp_sysen || has_raw_disk)) {
 
       uint8_t dat;
 
@@ -1421,7 +1430,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // p.24 the FDC owns #1F only when CPM=1 (DOS=0) — i.e. an active loader
         // context: TR-DOS ROM paged in or Profi CP/M mode. Otherwise (a running
         // game polling the joystick) let it fall through to the Kempston block.
-        if (Config::joystick == JOY_KEMPSTON && !ESPectrum::trdos &&
+        if (Config::joystick == JOY_KEMPSTON && !ESPectrum::trdos && !scorp_sysen &&
             !(Z80Ops::isProfi && (portDFFD & 0x20)))
           break;
         // fallthrough — FDC owns #1F in loader/CP-M context
@@ -1447,8 +1456,10 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // float — otherwise IN A,(0xFF) returns FDC status (~0x00) instead of
         // the floating bus, breaking floating-bus reads (games + halt2int's
         // Float test → "Unknown"). On Profi trdos is permanently asserted
-        // (SYSEN), so its SYS-register path is unaffected.
-        if (!ESPectrum::trdos)
+        // (SYSEN), so its SYS-register path is unaffected. Scorpion's SYSEN is
+        // a separate latch (1FFD D1) — the service monitor selects drives via
+        // #FF too, so it counts as "TR-DOS paged" here.
+        if (!ESPectrum::trdos && !scorp_sysen)
           break;
         // Port #FF (and #FF-family) is the SYS register only in the standard
         // scheme (CPM=0). In CP/M the SYS register is at #BF/#3F and the
@@ -2888,8 +2899,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       return;
     }
 
-    // Check if TRDOS Rom is mapped, or a raw disk is loaded.
-    if (ESPectrum::trdos || out_has_raw_disk) {
+    // Check if TRDOS Rom is mapped, or a raw disk is loaded. Scorpion SYSEN
+    // (1FFD D1, the service monitor) opens the FDC ports too — see the
+    // matching read-side comment (ZXMAK2: "Ports active when DOSEN=1 or
+    // SYSEN=1").
+    if (ESPectrum::trdos || out_has_raw_disk ||
+        (Z80Ops::isScorpion && (port1FFD & 0x02))) {
 
       // Profi CP/M mode: FDC data registers shift to 0x83/0xA3/0xC3/0xE3
       // UnrealSpeccy decode: (addr & 0x9F) == 0x83 → reg index = (addr >> 5) & 3

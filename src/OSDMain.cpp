@@ -2027,13 +2027,15 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     } else if (Config::arch == A_SCORP) {
                         // Service monitor=1, TR-DOS=2, 128K=3, 48K=4
                         if (opt == 1) {
-                            // Service monitor: boot bank2 and hold the 1FFD D1
-                            // override (like OUT #1FFD,2), or the next 7FFD write's
-                            // scorpionRomUpdate() would page the monitor out.
-                            // Set AFTER reset() — reset clears port1FFD.
-                            ESPectrum::reset(2);
-                            Ports::port1FFD = 0x02;
-                            Ports::scorpionRomUpdate(); // re-derive (arms the GMX ProfROM tap)
+                            // Service monitor = the magic button: a bare NMI into the
+                            // RUNNING machine, no reset — the monitor inspects the
+                            // interrupted state, and its ack asserts 1FFD D1 so 0x0066
+                            // executes from the monitor (Z80::doNMI, MAME scorpion
+                            // nmi_check_callback). There is no "cold boot into the
+                            // monitor" on real hardware: the old reset(2)+D1 path
+                            // started it at PC=0 — its disk-boot code, which parked in
+                            // the FDC wait and looked hung (hw 2026-08-30).
+                            Z80::triggerNMI();
                         } else if (opt == 2) {
                             // TR-DOS: boot the machine's own bank3 with trdos +
                             // romLatch=1 asserted (same pattern as Profi's bank1).

@@ -336,14 +336,13 @@ static const Node kMachine[] = {
     // grouping reads at a glance (they also only show while that machine is
     // running or staged) — Murmuzavr belongs to the three Pentagon rows above it.
     NM_SUB  (NM_IND TXT_MACH_MURM, kMurmuzavr, p_murmAvail),
+    // Scorpion sits with the Soviet-clone block, right after the Pentagons.
+    // Its pages 8-15 need extended-RAM backing, same gate as P512.
+    NM_RADIO(TXT_MACH_SCORP, SET_MACHINE, opt_mach_scorp, p_extRam),
     NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
-    // Shared Profi-hardware options — shown while either Profi or Karabas is
-    // running or staged.
-    // Scorpion's pages 8-15 need extended-RAM backing, same gate as P512.
-    NM_RADIO(TXT_MACH_SCORP, SET_MACHINE, opt_mach_scorp, p_extRam),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by
