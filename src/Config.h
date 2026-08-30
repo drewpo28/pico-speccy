@@ -102,6 +102,15 @@ public:
     // unit reads ~55-60 C low (Vbe 0.78 V vs the typical 0.706 @27 C) with a
     // verified-good 3.28 V ADC_AVDD, while other RP2350B units read fine.
     static int8_t   temp_offset;
+    // Pico-Scwong (the built-in game, src/ui/UiGame.cpp): indices into its own
+    // option tables — field colour, paddle colour, paddle width (0..2), ball
+    // size (0..2), player paddle speed (0..2). The game clamps by modulo, so a
+    // stale value can never index out of a table.
+    static uint8_t  gm_field;
+    static uint8_t  gm_pad;
+    static uint8_t  gm_padw;
+    static uint8_t  gm_ball;
+    static uint8_t  gm_pspd;
     static bool     AY48;
     static bool     SAA1099;
     // 0=Off, 1=AY bitbang, 2=ShamaZX, 4=GM.DLS wavetable. 3 was "Software MIDI" (the

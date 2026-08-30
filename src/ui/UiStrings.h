@@ -27,7 +27,7 @@
 #define TXT_NETWORK         "Network"
 #define TXT_DEBUG           "Debug"
 #define TXT_RESET           "Reset"
-#define TXT_GAME            "Skvosh game"
+#define TXT_GAME            "Pico-Scwong"
 #define TXT_VOLUME          "Volume"
 
 // ── Help ───────────────────────────────────────────────────────────────────────

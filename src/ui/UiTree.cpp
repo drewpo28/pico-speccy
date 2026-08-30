@@ -329,6 +329,10 @@ static const Node kMachine[] = {
     // Shared Profi-hardware options — shown while either Profi or Karabas is
     // running or staged.
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
+    // Not a machine, but it lives with them by request: the built-in game — the
+    // one "machine" that needs neither ROM nor SD card. Also reachable by
+    // holding S during the boot R/M probe window.
+    NM_PAGE (TXT_GAME,       act_gameScwong, nullptr),
 };
 
 // ── Speed test ─────────────────────────────────────────────────────────────────
@@ -871,7 +875,6 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_NETWORK,   kNetwork,  nullptr),
     NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),
     NM_SUB   (TXT_RESET,     kReset,    nullptr),
-    NM_PAGE  (TXT_GAME,      act_gameSkvosh, nullptr),
     NM_INT   (TXT_VOLUME,    SET_VOLUME, -16, 0, 1, nullptr),
 };
 

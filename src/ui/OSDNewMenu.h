@@ -27,5 +27,9 @@ void runDiskSlots(int iface, const char* fname);
 // Open the menu positioned on the Save/Load-snapshot slot level — the F3/F4 hot keys.
 void runPersist(bool save);
 
+// Pico-Scwong (the built-in game) outside the menu: the boot-time "hold S"
+// entrance in ESPectrum::setup. Owns its own gfx session, needs no SD card.
+void gameScwongStandalone();
+
 } // namespace nm
 

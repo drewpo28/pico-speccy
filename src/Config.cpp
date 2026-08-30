@@ -37,6 +37,11 @@ bool     Config::slog_on = false;
 bool     Config::ledIndicators = false;
 bool     Config::sdLedBlink = false;
 int8_t   Config::temp_offset = 0;
+uint8_t  Config::gm_field = 0;      // Pico-Scwong options (see Config.h)
+uint8_t  Config::gm_pad   = 0;
+uint8_t  Config::gm_padw  = 0;
+uint8_t  Config::gm_ball  = 0;
+uint8_t  Config::gm_pspd  = 1;      // Normal
 ///uint8_t  Config::esp32rev = 0;
 bool     Config::AY48 = true;
 bool     Config::SAA1099 = false;
@@ -851,6 +856,11 @@ void Config::load() {
         nvs_get_b("ledIndicators", ledIndicators, sts);
         nvs_get_b("sdLedBlink", sdLedBlink, sts);
         nvs_get_i8("temp_offset", temp_offset, sts);
+        nvs_get_u8("gm_field", gm_field, sts);
+        nvs_get_u8("gm_pad",   gm_pad,   sts);
+        nvs_get_u8("gm_padw",  gm_padw,  sts);
+        nvs_get_u8("gm_ball",  gm_ball,  sts);
+        nvs_get_u8("gm_pspd",  gm_pspd,  sts);
         // Load typed breakpoints array
         for (int i = 0; i < MAX_BREAKPOINTS; i++) {
             breakPoints[i] = {0xFFFF, BP_NONE};
@@ -1244,6 +1254,11 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");
     nvs_set_str(buf,"sdLedBlink", sdLedBlink ? "true" : "false");
     nvs_set_i8(buf,"temp_offset", temp_offset);
+    nvs_set_u8(buf,"gm_field", gm_field);
+    nvs_set_u8(buf,"gm_pad",   gm_pad);
+    nvs_set_u8(buf,"gm_padw",  gm_padw);
+    nvs_set_u8(buf,"gm_ball",  gm_ball);
+    nvs_set_u8(buf,"gm_pspd",  gm_pspd);
     nvs_set_str(buf,"tape_player", tape_player ? "true" : "false");
     nvs_set_str(buf,"profi_ext_keys", profi_ext_keys ? "true" : "false");
     nvs_set_str(buf,"real_player", real_player ? "true" : "false");

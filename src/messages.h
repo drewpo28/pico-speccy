@@ -101,7 +101,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define MSG_MYDEFAULT_RESET_TITLE "Reset to my Default"
 #define MSG_MYDEFAULT_RESET_Q "Reset settings to your saved Default?"
 // Guided boot prompt shown while the "hold R / hold M" reset window is open.
-#define MSG_FACTORY_RESET_HOLD "Hold R: Factory Reset\nHold M: My Default"
+#define MSG_FACTORY_RESET_HOLD "Hold R: Factory Reset\nHold M: My Default\nHold S: Pico-Scwong"
 
 #define OSD_NOROMFILE_ERR "No custom ROM file found."
 
