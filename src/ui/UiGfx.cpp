@@ -9,6 +9,7 @@
 #include "UiFont.h"
 #include "OSDMain.h"
 #include "Video.h"
+#include "Config.h"     // ui_vga_solid / ui_rounded — the menu-look preferences
 
 extern "C" volatile bool profi_ds80_active;
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
@@ -38,6 +39,74 @@ static const uint32_t kUiPalette[C_COUNT] = {
     0x3BC7E2,   // C_ICON_C
     0x5A6478,   // C_DISABLED
 };
+
+// VGA twin of kUiPalette: every channel sits on the 2-bit DAC grid {00,55,AA,FF}.
+// An on-grid RGB888 makes vga_bayer4() come out with sub=0 for all channels, so the
+// ordinary dithered path renders it SOLID — the menu loses the Bayer checkerboard on
+// VGA without touching the driver. (The CRT grille / scanline taps attenuate colours
+// off the grid and re-dither them, same as they do to the 16 solid ZX colours.)
+// Hand-picked, not nearest-rounded: 4 levels per channel cannot keep the slate
+// theme's subtle darks apart, so the dark ladder is re-spread over black → navy →
+// blue while text, selection and icon hues stay nearest-grid.
+static const uint32_t kUiPaletteVga[C_COUNT] = {
+    0x000000,   // C_BG
+    0x000055,   // C_PANEL
+    0x0000AA,   // C_PANEL_ALT
+    0x555555,   // C_SEP
+    0xFFFFFF,   // C_TEXT      (merges with C_WHITE — they were 25 units apart anyway)
+    0xAAAAAA,   // C_TEXT_DIM
+    0xFFFFFF,   // C_WHITE
+    0x5555FF,   // C_SEL_BG
+    0x0000AA,   // C_SEL_BAND  (shares C_PANEL_ALT's slot value; the roles never abut)
+    0x55FFAA,   // C_ACCENT
+    0x000000,   // C_FOOT_BG   (darker than the panel, same as the original relation)
+    0x000000,   // C_SHADOW
+    0xFF5555,   // C_ICON_R
+    0xFFAA55,   // C_ICON_Y
+    0x55AAFF,   // C_ICON_C
+    0x555555,   // C_DISABLED
+};
+
+// "ZX Spectrum" theme (Options > Theme): the classic pico-spec cascade menu's colours,
+// read off its OSDMenu.cpp — black ink on bright-white paper (zxColor 0,1 / 7,1),
+// bright-cyan selection with black text (0,1 / 5,1), normal cyan for the focused row
+// of the unfocused pane (the classic dimmed selection paper 5,0), blue secondary text,
+// a cyan footer (BASIC edit-line look) and the bright rainbow. The emphasis role
+// C_WHITE becomes black here: in a light theme the ink that reads on the selection
+// bar and the header IS the ink. Every channel sits on {00,AA,FF} — the VGA DAC grid
+// (normal=0xAA, bright=0xFF) — so this theme renders solid on VGA by construction and
+// needs no dithered/solid twin.
+static const uint32_t kUiPaletteZx[C_COUNT] = {
+    0x000000,   // C_BG        black backdrop (the classic border)
+    0xFFFFFF,   // C_PANEL     bright white paper
+    0xAAAAAA,   // C_PANEL_ALT normal white bands
+    0x000000,   // C_SEP       black rules, the classic window border
+    0x000000,   // C_TEXT      black ink
+    0x0000AA,   // C_TEXT_DIM  normal blue secondary text
+    0x000000,   // C_WHITE     emphasis ink (black on cyan/white, as the classic menu)
+    0x00FFFF,   // C_SEL_BG    bright cyan selection bar
+    0x00AAAA,   // C_SEL_BAND  normal cyan — the classic dimmed selection
+    0x00FF00,   // C_ACCENT    bright green (radio, rainbow stripe)
+    0x00AAAA,   // C_FOOT_BG   cyan footer, blue hints on it
+    0x000000,   // C_SHADOW
+    0xFF0000,   // C_ICON_R    bright red
+    0xFFFF00,   // C_ICON_Y    bright yellow
+    0x00FFFF,   // C_ICON_C    bright cyan
+    0xAAAAAA,   // C_DISABLED  normal white — the classic dimmed ink
+};
+
+// The palette the active output actually shows. The ZX theme is one table for every
+// output (its values are on the VGA grid already); the Slate theme keeps the
+// VGA solid/dithered choice — the on-grid twin unless the user prefers the
+// full-depth scheme through the dither (Options > VGA menu colors).
+static const uint32_t* uiPaletteActive() {
+    if (Config::ui_theme == 1) return kUiPaletteZx;
+#if defined(VGA_HDMI)
+    extern bool SELECT_VGA;   // vga.c
+    if (SELECT_VGA && Config::ui_vga_solid) return kUiPaletteVga;
+#endif
+    return kUiPalette;
+}
 
 // Standard-mode palette block.
 //
@@ -110,11 +179,12 @@ void gfxComputeSurface() {
 // that opened in it (Profi -> Pentagon). Applying then would re-arm the DS80 driver
 // over a standard framebuffer — garbled screen / "DS80 stuck" (hw 2026-07-27).
 void gfxInstallPalette() {
+    const uint32_t* pal = uiPaletteActive();
     if (Sf.ds80 && profi_ds80_active) {
-        VIDEO::applyUiDS80Palette(kUiPalette);
+        VIDEO::applyUiDS80Palette(pal);
     } else {
         for (int i = 0; i < C_COUNT; i++)
-            graphics_set_palette((uint8_t)(UI_PAL_BASE + i), kUiPalette[i]);
+            graphics_set_palette((uint8_t)(UI_PAL_BASE + i), pal[i]);
     }
 }
 
@@ -129,10 +199,12 @@ void gfxSuspendPalette() {
 }
 
 void gfxResumePalette() {
-    if (Sf.ds80 && profi_ds80_active) VIDEO::applyUiDS80Palette(kUiPalette);
+    if (Sf.ds80 && profi_ds80_active) VIDEO::applyUiDS80Palette(uiPaletteActive());
 }
 
-const uint32_t* uiPalette()     { return kUiPalette; }
+// Active-output palette, so a BMP capture of the open menu shows what the screen
+// showed (Video.cpp saveBitmap reads this for indices 152..167).
+const uint32_t* uiPalette()     { return uiPaletteActive(); }
 int             uiPaletteBase() { return UI_PAL_BASE; }
 uint8_t         uiPaletteSlot(UiColor c) { return palByte(c); }
 
@@ -294,6 +366,7 @@ static inline int cornerCut(int i, int h, int r) {
 
 void roundRect(int x, int y, int w, int h, int r, UiColor border, UiColor fill_c) {
     if (w <= 0 || h <= 0) return;
+    if (!Config::ui_rounded) r = 0;    // Options > Menu corners: Square
     if (r > 4) r = 4;
     const int sc = Sf.glyphScale;           // corners stay square on screen in DS80
     for (int i = 0; i < h; i++) {
@@ -317,6 +390,7 @@ void roundRect(int x, int y, int w, int h, int r, UiColor border, UiColor fill_c
 
 void roundRectBorder(int x, int y, int w, int h, int r, UiColor border, UiColor outside) {
     if (w <= 0 || h <= 0) return;
+    if (!Config::ui_rounded) r = 0;    // Options > Menu corners: Square
     if (r > 4) r = 4;
     const int sc = Sf.glyphScale;
     for (int i = 0; i < h; i++) {

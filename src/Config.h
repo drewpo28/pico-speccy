@@ -374,6 +374,14 @@ public:
     static uint8_t gigascreen_onoff; // 0=Off, 1=On, 2=Auto
     static bool ulaplus;
     static bool hdmi_dither;
+    // New-menu look preferences. ui_vga_solid: on VGA output the menu uses its on-grid
+    // 2:2:2 palette twin (solid fills, no Bayer texture); off = the full-depth scheme,
+    // dithered. ui_rounded: window/dialog corners rounded vs square.
+    // ui_theme: 0 = Slate (the cool neutral scheme), 1 = ZX Spectrum (the classic
+    // pico-spec menu colours: black ink on bright-white paper, cyan selection).
+    static bool ui_vga_solid;
+    static bool ui_rounded;
+    static uint8_t ui_theme;
     // Palette: 0=Default, 1=Grayscale
     static uint8_t palette;
     static uint8_t audio_driver;

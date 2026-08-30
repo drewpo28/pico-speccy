@@ -110,6 +110,9 @@ NM_INT_ACCESS (tapePlayer, tape_player)
 NM_INT_ACCESS (midiMode,  midi)
 NM_INT_ACCESS (midiStorage, midi_storage)
 
+NM_BOOL_ACCESS(uiVgaPal,  ui_vga_solid)
+NM_BOOL_ACCESS(uiCorners, ui_rounded)
+NM_INT_ACCESS (uiTheme,   ui_theme)
 NM_INT_ACCESS (joyType,   joystick)
 NM_BOOL_ACCESS(tabFire,   TABasfire1)
 NM_INT_ACCESS (esxdos,    esxdos)
@@ -325,6 +328,11 @@ static bool hook_crtFilter(int32_t, int32_t) {
     VIDEO::applyCrtFilter();    // rewrites 0..239 — F_PALETTE re-installs ours
     return true;
 }
+// Both menu-look settings (SET_UI_VGA_PAL, SET_UI_CORNERS): the drawing code reads
+// the Config value directly, so there is nothing to push here — the redraw the flags
+// trigger (F_PALETTE re-install / F_MODAL chrome restore) is the whole apply.
+static bool hook_uiLook(int32_t, int32_t) { return true; }
+
 static bool hook_dither(int32_t nv, int32_t) {
     // Only has an effect while ULA+ is active; the HDMI ISR OR-masks indices 0..63
     // with 0x40 to sample palette[64..127].

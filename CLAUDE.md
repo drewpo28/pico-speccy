@@ -1470,6 +1470,49 @@ Two more things learned there:
   indicator was lit solid while the card was merely scanning its SD. A DC offset
   is not sound.
 
+## The menu palette has a VGA twin — solid colours, no Bayer texture (2026-08-20, NOT hw-tested)
+
+`kUiPaletteVga` (UiGfx.cpp) mirrors `kUiPalette` with every channel on the VGA
+DAC grid {00,55,AA,FF}: an on-grid RGB888 makes `vga_bayer4()` come out with
+sub=0, so the ordinary dithered path renders it SOLID — no driver change, no
+solid-entry calls. `uiPaletteActive()` picks it when `SELECT_VGA` (VGA_HDMI
+builds only); HDMI/SOFTTV/TFT keep the full-depth scheme. Wired into
+`gfxInstallPalette` (both branches — the DS80 pair build also degenerates to
+solid on grid colours), `gfxResumePalette`, and the public `uiPalette()` so BMP
+captures match the screen. Hand-picked, NOT nearest-rounded: 4 levels/channel
+cannot keep the slate theme's dark shades apart, so the dark ladder is re-spread
+(BG/FOOT/SHADOW → black, PANEL → 0x000055, PANEL_ALT = SEL_BAND → 0x0000AA)
+while text/selection/icon hues are nearest-grid. CRT grille and scanline taps
+attenuate off the grid and re-dither — inherent to those effects, same as the
+16 solid ZX colours.
+
+Both looks are user-switchable (2026-08-20, NOT hw-tested): **Options → VGA menu
+colors** (`Config::ui_vga_solid`, default Solid; row visible only while
+`SELECT_VGA`) picks the on-grid twin vs the dithered full-depth scheme, and
+**Options → Menu corners** (`Config::ui_rounded`, default Rounded) switches
+rounded vs square — enforced centrally in `roundRect`/`roundRectBorder`
+(UiGfx.cpp), which every window/dialog corner goes through. Both are
+`AC_LIVE + F_PREVIEW`: the palette one carries `F_PALETTE` (the re-install IS the
+apply), the corner one `F_MODAL` (the nav's chrome restore redraws the window
+with the new corners; `drawFrameOnce()` clears to C_BG first, so Square→Rounded
+leaves no stale corner pixels). Trivial shared hook `hook_uiLook` — the drawing
+code reads Config directly.
+
+**Options → Theme** (2026-08-30, NOT hw-tested): `Config::ui_theme` 0 = Slate,
+1 = **ZX Spectrum** — `kUiPaletteZx` (UiGfx.cpp), the classic pico-spec cascade
+menu's colours read off its OSDMenu.cpp (drewpo28/pico-spec): black ink on
+bright-white paper (0,1/7,1), bright-cyan selection with black text (0,1/5,1),
+normal-cyan SEL_BAND (the classic dimmed-selection paper 5,0), blue secondary
+text, cyan footer, bright rainbow/icons. Role inversion to know about: C_WHITE
+(the "emphasis ink" role) is BLACK in this theme — in a light theme the ink that
+reads on the selection bar and header is the ink; the pending-edits header band
+is then black-on-red (acceptable, checked). Every channel is on {00,AA,FF} =
+the VGA DAC grid (normal=AA, bright=FF), so the ZX theme is solid on VGA by
+construction and ignores `ui_vga_solid` — the "VGA menu colors" row is greyed
+(`p_themeSlate`, staged-first) while it is active. Same `F_PREVIEW + F_PALETTE`
+live-apply as the VGA palette toggle: the re-install recolours the open menu
+instantly since the framebuffer stores palette indices.
+
 ## «Байт» built-in ROM memory test (zxbyte.org/test.htm) — hw-confirmed 2026-08-29
 
 Started by holding Ы+В+А (= S+D+F, half-row #FDFE bits 1-3) through RESET with
