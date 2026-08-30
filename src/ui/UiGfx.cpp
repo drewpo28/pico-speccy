@@ -24,23 +24,42 @@ Surface Sf;
 // ── the UI palette ─────────────────────────────────────────────────────────────
 // A cool neutral scheme: this is the whole point of owning the palette instead of
 // borrowing the 16 ZX colours. Index order matches enum UiColor.
+// Every channel below sits on a level whose HDMI pair is a SINGLE TMDS symbol
+// (2026-08-30). Under HDMI_TMDS_BALANCED_PAIR the two output pixels of a doubled
+// framebuffer pixel normally carry v and v±1, which is invisible on a monitor — but
+// an HDMI capture card here has a pixel-phase-dependent stage that turns any such
+// pair into two WILDLY different colours: C_ACCENT 0x4ADE80 came back as
+// (209,252,255) on even pixels and (0,8,30) on odd ones, measured 1:1 against a
+// framebuffer dump. Colours whose pair is one repeated symbol have no phase for that
+// stage to act on and come through exactly — which is why the ZX Spectrum theme, all
+// of whose values happen to be single-symbol, always rendered correctly on the same
+// card while this table did not.
+//
+// Computed against HDMI_TMDS_LEVEL_HI = 0xF6: the ceiling decides where a channel
+// above it lands, so these two numbers are COUPLED — re-run the snap if it moves.
+// 118 of the 256 levels are single-symbol, so snapping costs almost nothing: the
+// worst channel here moved 4 code units (1.6% of full scale) and most moved 1-2.
+// The old values are in the comments. Re-check with tools/ if a colour is ever
+// retuned — the property is invisible on a monitor and only a capture reveals it.
+// (kUiPaletteVga and kUiPaletteZx need no such treatment: every level on the
+// {00,55,AA,FF} DAC grid is single-symbol already — all 64 grid colours verified.)
 static const uint32_t kUiPalette[C_COUNT] = {
-    0x0F1218,   // C_BG
-    0x1E2431,   // C_PANEL
-    0x262D3C,   // C_PANEL_ALT
-    0x333B4D,   // C_SEP
-    0xE6EBF2,   // C_TEXT
-    0x8B95A7,   // C_TEXT_DIM
-    0xFFFFFF,   // C_WHITE
-    0x3B6EF5,   // C_SEL_BG
-    0x2B3346,   // C_SEL_BAND
-    0x4ADE80,   // C_ACCENT
-    0x191F2A,   // C_FOOT_BG
-    0x0B0E14,   // C_SHADOW
-    0xE23B3B,   // C_ICON_R
-    0xF2C43B,   // C_ICON_Y
-    0x3BC7E2,   // C_ICON_C
-    0x5A6478,   // C_DISABLED
+    0x101116,   // C_BG         was 0x0F1218
+    0x1C232F,   // C_PANEL      was 0x1E2431
+    0x262D3A,   // C_PANEL_ALT  was 0x262D3C
+    0x343A4B,   // C_SEP        was 0x333B4D
+    0xE8EDEF,   // C_TEXT       was 0xE6EBF2
+    0x8B95A7,   // C_TEXT_DIM   already single-symbol
+    0xFFFFFF,   // C_WHITE      already single-symbol
+    0x3A6DF6,   // C_SEL_BG     was 0x3B6EF5
+    0x2A3445,   // C_SEL_BAND   was 0x2B3346
+    0x4ADD84,   // C_ACCENT     was 0x4ADE80
+    0x16212A,   // C_FOOT_BG    was 0x191F2A
+    0x081013,   // C_SHADOW     was 0x0B0E14
+    0xE23A3A,   // C_ICON_R     was 0xE23B3B
+    0xEFC43A,   // C_ICON_Y     was 0xF2C43B
+    0x3AC7E2,   // C_ICON_C     was 0x3BC7E2
+    0x5A6477,   // C_DISABLED   was 0x5A6478
 };
 
 // VGA twin of kUiPalette: every channel sits on the 2-bit DAC grid {00,55,AA,FF}.
