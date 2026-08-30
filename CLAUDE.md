@@ -1007,6 +1007,98 @@ LSB on every other pixel of a doubled pair is invisible).
   old pair 256/256 unbalanced, mean run 5.55 / worst 11; new pair all balanced,
   mean run 4.64 / worst 9 (clamped 0x08..0xF6: worst swing 7, worst run 8).
 
+## An HDMI capture card needs SINGLE-SYMBOL palette entries (hw-confirmed 2026-08-30)
+
+Through a USB3 HDMI grabber every solid colour of the nm:: UI came back as **two
+alternating colours, one per output pixel of the doubled pair**, while a monitor on
+the same output stayed clean. Measured 1:1 against a framebuffer dump:
+`C_ACCENT 0x4ADE80` → `(209,252,255)` on even pixels, `(0,8,30)` on odd;
+`C_SEL_BAND 0x2B3346` → `(39,46,28)` / `(22,28,11)`.
+
+**The rule.** With `HDMI_TMDS_BALANCED_PAIR` the two characters of a doubled pixel
+normally carry v and v±1 (invisible on a monitor). A colour whose pair is ONE
+repeated symbol — `tmds_balanced_pair()` returns `A == B` on **all three** channels —
+gives the card's pixel-phase-dependent stage nothing to act on and comes through
+exactly. **118 of the 256 levels are single-symbol, and all 64 colours on the
+{00,55,AA,FF} DAC grid are** — which is why the ZX Spectrum theme (9/9 single-symbol)
+always rendered correctly on the same card while Slate (14 of 16 entries splitting)
+did not. That contrast is what identified the rule; the user spotted it from two
+screenshots before any of it was derived.
+
+- **The test is per COLOUR, not per channel.** A split in any one channel splits the
+  whole pixel, including channels whose own pair is a single symbol — `C_ACCENT`'s
+  red is `A == B == 0x1C6`, one constant symbol across the whole span, and the card
+  still returned 209 even / 0 odd in RED. Its G and B were the ones that alternated.
+- `kUiPalette` (UiGfx.cpp) is snapped to single-symbol levels: **worst channel moved
+  4 code units (1.6% of full scale)**, most 1-2, old values kept in the comments.
+  `kUiPaletteVga`/`kUiPaletteZx` need nothing — they are on the DAC grid already.
+- Verified single-symbol under **both** `HDMI_TMDS_LEVEL_HI` 0xF6 and 0xEF, so the
+  clamp ceiling and the palette are no longer coupled. That took a re-snap: the
+  ceiling decides where a channel above it lands, and the first pass (computed for
+  0xEF) left `C_TEXT`/`C_SEL_BG`/`C_ICON_Y` splitting at 0xF6.
+- **NOT covered: guest screens.** `spectrum_rgb888` through `paletteFinal` (gamma,
+  CRT filter, ULA+, custom palettes) produces arbitrary values, so games can still
+  split on the card. The same snap would apply to `builtin_palette_defs`.
+- Host-side check: build any small program against `drivers/hdmi/tmds_pair.h` and
+  compare `A == B` per channel after applying the LO/HI clamp. The property is
+  invisible on a monitor — only a capture reveals it — so re-check after retuning
+  any UI colour.
+
+**`HDMI_TMDS_LEVEL_HI` stays 0xF6, and that was measured too.** 0xF6 lands white on
+one of only TEN values in 0x08..0xF6 whose pair has run 10 (9, 17, 33, 65, 126, 129,
+190, 222, 238, 246) — the ceiling was picked for level, not for bit pattern, and its
+own comment's "worst run 11 → 10" was landing ON the worst. 0xEF measures swing 4 /
+run 5 against 5 / 10 and was tried; on hardware it dropped sync occasionally, so
+0xF6 stands. Note 222 is on that list and is the green channel of the old
+`C_ACCENT` — the snap moved it anyway.
+
+**`HDMI_TMDS_BALANCED_PAIR 0` is NOT the escape hatch** (tried, hw 2026-08-30: sync
+dropped at boot and white went yellow — blue is the marginal channel at display base
+6, its pair on GPIO 8/9 sits beside the clock on 6/7). **No value is DC-neutral
+there: 0 of 256.** The two characters are the two legal representations of the same
+q_m, `w` and `w ^ 0x2FF`, and that XOR leaves **D8** — the XOR/XNOR flag, part of the
+value's identity — untouched, so `ones(w) + ones(w') = 9 + 2·D8` and the residual is
++2 for XOR-coded values, −2 for XNOR-coded, always. A uniform bright fill therefore
+drifts ~−1280 per line in all three channels at once, which is why the white-paper ZX
+theme and the white 48K boot screen both killed the link. pico-spec's independently
+confirmed symptom for the same pairing is "yellow streaks over a WHITE screen" — same
+trigger, less of it. **No palette or level choice can fix that**, which is what makes
+the single-symbol snap the only lever, and it only exists with the pair at 1.
+
+**Two dead ends from the same session, do not re-derive:**
+- **AVI InfoFrame quantization range** (declaring Q=2 Full instead of Q=0 Default,
+  hdmi.c `hdmi_build_avi_if_blob`). A no-op here — reverted. The card already carried
+  the levels correctly: background `(15,18,24)` → `(14,18,21)`, text `(230,235,242)` →
+  `(230,235,238)`, in captures taken both before and after. If a limited→full
+  expansion had been happening, 15 would have gone to 0.
+- **"It is MJPEG chroma subsampling + DCT ringing."** Wrong. The alternating columns
+  are the two characters of the doubled pair; a framebuffer dump settles it in one
+  frame, and the dump is the first thing to take — it goes over GDB, not over HDMI,
+  so it separates "the UI never painted" from "the link mangled it".
+
+## Skvosh vs Options > Theme — a role can INVERT (hw-confirmed 2026-08-30)
+
+The ZX Spectrum theme is a LIGHT scheme, so `C_WHITE` is black ink there, `C_PANEL`
+is white paper and `C_SEP` a black rule (this is documented at the theme itself, and
+it is easy to forget). `UiGame.cpp` was written against Slate and used bare roles:
+screens filled `C_BG` with `C_WHITE`/`C_TEXT` ink, court walls `C_TEXT`, default
+"White" ball `C_WHITE` — **all black on black** under ZX. The mode list showed
+nothing but its cyan selection bar, and the court would have been equally empty.
+
+Fix: no colour in the game is a bare role any more. `gmPaper()` / `gmRule()` /
+`gmWall()` resolve the backdrop, the rules and the walls per theme, and each of the
+three colour OPTIONS has a per-theme row so its **label stays true** — "White" must be
+white in both schemes and `C_WHITE` is not, so ZX maps it to `C_PANEL`, and "Blue" to
+`C_TEXT_DIM` (that theme's `C_SEL_BG` is bright cyan). The ZX field row is all-dark
+by requirement, since walls and ball are drawn bright on it; with only {00,AA,FF} per
+channel that scheme has no dark grey, so "Charcoal" there is 0xAAAAAA — the name is a
+stretch and the contrast is the weakest of the five. `static_assert` keeps the row
+lengths equal.
+
+**General rule for anything else that borrows the nm:: palette:** a full-screen
+surface must be a PAPER role (`C_PANEL`), never `C_BG`, or the ink roles invert out
+from under it.
+
 ## HDMI audio instability ("звук или картинка срывается") — session 2026-08-09
 
 **ROOT CAUSE + FIX both hw-confirmed 2026-08-09: the line ISR had

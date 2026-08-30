@@ -25,7 +25,7 @@ Surface Sf;
 // A cool neutral scheme: this is the whole point of owning the palette instead of
 // borrowing the 16 ZX colours. Index order matches enum UiColor.
 // Every channel below sits on a level whose HDMI pair is a SINGLE TMDS symbol
-// (2026-08-30). Under HDMI_TMDS_BALANCED_PAIR the two output pixels of a doubled
+// (2026-08-30, hw-confirmed: colours come through a capture card correctly). Under HDMI_TMDS_BALANCED_PAIR the two output pixels of a doubled
 // framebuffer pixel normally carry v and v±1, which is invisible on a monitor — but
 // an HDMI capture card here has a pixel-phase-dependent stage that turns any such
 // pair into two WILDLY different colours: C_ACCENT 0x4ADE80 came back as

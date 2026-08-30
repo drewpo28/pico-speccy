@@ -90,7 +90,7 @@ static const CpuSkill k_solo = { 0, 0, false, false, 560, 1536, 24 };
 // cyan selection bar visible (user capture, 2026-08-30). So no colour here is a
 // bare role: screens go through gmPaper()/gmRule(), the court through gmWall(),
 // and each option list has a per-theme row so its LABELS stay true ("White" must
-// be white in both schemes, and C_WHITE is not).
+// be white in both schemes, and C_WHITE is not). hw-confirmed 2026-08-30.
 static inline bool    gmZx()    { return Config::ui_theme == 1; }
 static inline UiColor gmPaper() { return gmZx() ? C_PANEL     : C_BG;   }  // full-screen backdrop
 static inline UiColor gmRule()  { return gmZx() ? C_PANEL_ALT : C_SEP;  }  // underlines, preview frame
