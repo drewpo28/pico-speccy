@@ -1418,6 +1418,21 @@ with the new corners; `drawFrameOnce()` clears to C_BG first, so Square→Rounde
 leaves no stale corner pixels). Trivial shared hook `hook_uiLook` — the drawing
 code reads Config directly.
 
+**Options → Theme** (2026-08-30, NOT hw-tested): `Config::ui_theme` 0 = Slate,
+1 = **ZX Spectrum** — `kUiPaletteZx` (UiGfx.cpp), the classic pico-spec cascade
+menu's colours read off its OSDMenu.cpp (drewpo28/pico-spec): black ink on
+bright-white paper (0,1/7,1), bright-cyan selection with black text (0,1/5,1),
+normal-cyan SEL_BAND (the classic dimmed-selection paper 5,0), blue secondary
+text, cyan footer, bright rainbow/icons. Role inversion to know about: C_WHITE
+(the "emphasis ink" role) is BLACK in this theme — in a light theme the ink that
+reads on the selection bar and header is the ink; the pending-edits header band
+is then black-on-red (acceptable, checked). Every channel is on {00,AA,FF} =
+the VGA DAC grid (normal=AA, bright=FF), so the ZX theme is solid on VGA by
+construction and ignores `ui_vga_solid` — the "VGA menu colors" row is greyed
+(`p_themeSlate`, staged-first) while it is active. Same `F_PREVIEW + F_PALETTE`
+live-apply as the VGA palette toggle: the re-install recolours the open menu
+instantly since the framebuffer stores palette indices.
+
 ## SAA1099 Emulation Key Findings
 
 ### Current implementation

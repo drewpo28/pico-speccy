@@ -222,6 +222,7 @@
 // ── Options ────────────────────────────────────────────────────────────────────
 #define TXT_OPT_PREF_MACHINE "Preferred machine"
 #define TXT_OPT_PREF_ROM     "Preferred rom"
+#define TXT_OPT_THEME        "Theme"
 #define TXT_OPT_VGA_MENU_PAL "VGA menu colors"
 #define TXT_OPT_UI_CORNERS   "Menu corners"
 #define TXT_OPT_REPLACE_ROM  "Replace ZX rom"

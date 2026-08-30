@@ -112,6 +112,7 @@ NM_INT_ACCESS (midiStorage, midi_storage)
 
 NM_BOOL_ACCESS(uiVgaPal,  ui_vga_solid)
 NM_BOOL_ACCESS(uiCorners, ui_rounded)
+NM_INT_ACCESS (uiTheme,   ui_theme)
 NM_INT_ACCESS (joyType,   joystick)
 NM_BOOL_ACCESS(tabFire,   TABasfire1)
 NM_INT_ACCESS (esxdos,    esxdos)

@@ -161,6 +161,7 @@ bool     Config::ulaplus = true;
 bool     Config::hdmi_dither = false;
 bool     Config::ui_vga_solid = true;
 bool     Config::ui_rounded = true;
+uint8_t  Config::ui_theme = 0;
 bool     Config::timex_video = true;
 uint8_t  Config::dma_mode = 0;
 bool     Config::mode16col_onoff = false;
@@ -1038,6 +1039,7 @@ void Config::load() {
         nvs_get_b("hdmi_dither", hdmi_dither, sts);
         nvs_get_b("ui_vga_solid", ui_vga_solid, sts);
         nvs_get_b("ui_rounded", ui_rounded, sts);
+        nvs_get_u8("ui_theme", ui_theme, sts);
         nvs_get_b("timex_video", timex_video, sts);
         nvs_get_u8("dma_mode", dma_mode, sts);
         nvs_get_b("mode16col_onoff", mode16col_onoff, sts);
@@ -1360,6 +1362,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"hdmi_dither", Config::hdmi_dither ? "true" : "false");
     nvs_set_str(buf,"ui_vga_solid", Config::ui_vga_solid ? "true" : "false");
     nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
+    nvs_set_u8(buf,"ui_theme", Config::ui_theme);
     nvs_set_str(buf,"timex_video", Config::timex_video ? "true" : "false");
     nvs_set_u8(buf,"dma_mode",Config::dma_mode);
     nvs_set_str(buf,"mode16col_onoff", Config::mode16col_onoff ? "true" : "false");

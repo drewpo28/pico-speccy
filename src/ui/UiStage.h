@@ -278,7 +278,11 @@ const char* romsetName(int32_t composite);
     /* Rounded vs square corners. The value is read by roundRect/roundRectBorder at    */ \
     /* draw time; F_MODAL makes the nav restore the whole chrome, i.e. redraw the      */ \
     /* window with the new corners — that redraw IS the apply.                         */ \
-    X(SET_UI_CORNERS,      AC_LIVE,   F_PREVIEW | F_MODAL,   get_uiCorners,  put_uiCorners,  hook_uiLook,    -1)
+    X(SET_UI_CORNERS,      AC_LIVE,   F_PREVIEW | F_MODAL,   get_uiCorners,  put_uiCorners,  hook_uiLook,    -1)          \
+    /* Theme (0 = Slate, 1 = ZX Spectrum): picks which colour table the UI palette     */ \
+    /* block is filled from. The framebuffer stores palette indices, so the F_PALETTE  */ \
+    /* re-install recolours the whole open menu on the spot — no repaint needed.       */ \
+    X(SET_UI_THEME,        AC_LIVE,   F_PREVIEW | F_PALETTE, get_uiTheme,    put_uiTheme,    hook_uiLook,    -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

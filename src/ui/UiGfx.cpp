@@ -67,10 +67,40 @@ static const uint32_t kUiPaletteVga[C_COUNT] = {
     0x555555,   // C_DISABLED
 };
 
-// The palette the active output actually shows. VGA gets the on-grid twin so menu
-// fills stay solid — unless the user prefers the full-depth scheme through the
-// dither (Options > VGA menu colors); HDMI and the non-VGA builds always keep it.
+// "ZX Spectrum" theme (Options > Theme): the classic pico-spec cascade menu's colours,
+// read off its OSDMenu.cpp — black ink on bright-white paper (zxColor 0,1 / 7,1),
+// bright-cyan selection with black text (0,1 / 5,1), normal cyan for the focused row
+// of the unfocused pane (the classic dimmed selection paper 5,0), blue secondary text,
+// a cyan footer (BASIC edit-line look) and the bright rainbow. The emphasis role
+// C_WHITE becomes black here: in a light theme the ink that reads on the selection
+// bar and the header IS the ink. Every channel sits on {00,AA,FF} — the VGA DAC grid
+// (normal=0xAA, bright=0xFF) — so this theme renders solid on VGA by construction and
+// needs no dithered/solid twin.
+static const uint32_t kUiPaletteZx[C_COUNT] = {
+    0x000000,   // C_BG        black backdrop (the classic border)
+    0xFFFFFF,   // C_PANEL     bright white paper
+    0xAAAAAA,   // C_PANEL_ALT normal white bands
+    0x000000,   // C_SEP       black rules, the classic window border
+    0x000000,   // C_TEXT      black ink
+    0x0000AA,   // C_TEXT_DIM  normal blue secondary text
+    0x000000,   // C_WHITE     emphasis ink (black on cyan/white, as the classic menu)
+    0x00FFFF,   // C_SEL_BG    bright cyan selection bar
+    0x00AAAA,   // C_SEL_BAND  normal cyan — the classic dimmed selection
+    0x00FF00,   // C_ACCENT    bright green (radio, rainbow stripe)
+    0x00AAAA,   // C_FOOT_BG   cyan footer, blue hints on it
+    0x000000,   // C_SHADOW
+    0xFF0000,   // C_ICON_R    bright red
+    0xFFFF00,   // C_ICON_Y    bright yellow
+    0x00FFFF,   // C_ICON_C    bright cyan
+    0xAAAAAA,   // C_DISABLED  normal white — the classic dimmed ink
+};
+
+// The palette the active output actually shows. The ZX theme is one table for every
+// output (its values are on the VGA grid already); the Slate theme keeps the
+// VGA solid/dithered choice — the on-grid twin unless the user prefers the
+// full-depth scheme through the dither (Options > VGA menu colors).
 static const uint32_t* uiPaletteActive() {
+    if (Config::ui_theme == 1) return kUiPaletteZx;
 #if defined(VGA_HDMI)
     extern bool SELECT_VGA;   // vga.c
     if (SELECT_VGA && Config::ui_vga_solid) return kUiPaletteVga;
