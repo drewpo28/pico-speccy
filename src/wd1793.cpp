@@ -539,7 +539,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
             sclConvertToTRD(wd);
           if(wd->disk[wd->diskS]->writeprotect) {
             wd->status|=kRVMWD177XStatusProtected;
-            OSD::osdCenteredMsg(OSD_DSK_WRITE_PROTECT, LEVEL_WARN);
+            OSD::notify(OSD_DSK_WRITE_PROTECT, LEVEL_WARN);
             _end(wd);
             return;
           }
@@ -572,7 +572,7 @@ IRAM_ATTR void _do(rvmWD1793 *wd) {
           sclConvertToTRD(wd);
         if(wd->disk[wd->diskS]->writeprotect) {
           wd->status|=kRVMWD177XStatusProtected;
-          OSD::osdCenteredMsg(OSD_DSK_WRITE_PROTECT, LEVEL_WARN);
+          OSD::notify(OSD_DSK_WRITE_PROTECT, LEVEL_WARN);
           _end(wd);
           return;
         }

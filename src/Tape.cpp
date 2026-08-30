@@ -294,7 +294,7 @@ void Tape::LoadTape(const string& mFile_) {
         if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
              (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
         ) {
-                OSD::osdCenteredMsg(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 100);
+                OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
                 if (Z80Ops::is48)
                     FileZ80::loader48();
@@ -328,7 +328,7 @@ void Tape::LoadTape(const string& mFile_) {
         if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
              (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
         ) {
-                OSD::osdCenteredMsg(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 100);
+                OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
                 if (Z80Ops::is48)
                     FileZ80::loader48();
@@ -360,7 +360,7 @@ void Tape::LoadTape(const string& mFile_) {
         if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
              (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
         ) {
-                OSD::osdCenteredMsg(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 100);
+                OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
                 if (Z80Ops::is48)
                     FileZ80::loader48();
@@ -1131,7 +1131,7 @@ void Tape::Stop() {
     // LoadRemembered) — popping the OSD there put a spurious "Tape loading is
     // stopped" message on screen on every reset.
     if (tapeStatus == TAPE_LOADING)
-        OSD::osdCenteredMsg("Tape loading is stopped", LEVEL_INFO, 100);
+        OSD::notify(" Tape loading is stopped ", LEVEL_INFO, 900);
     tapeEarBit = 0;
     tapeStatus = TAPE_STOPPED;
     tapePhase = TAPE_PHASE_STOPPED;

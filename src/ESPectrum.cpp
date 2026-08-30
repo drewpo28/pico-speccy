@@ -1613,14 +1613,11 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
       }
       // The rest of the Karabas-Pro "Menu"-key combos from the user manual.
       // Unlike Menu+F1..F4 they map onto machine-independent emulator settings,
-      // so they work on any arch. osdCenteredMsg blocks for the toast duration —
-      // compensate ts_start like the do_OSD dispatch below does.
+      // so they work on any arch. OSD::notify puts the confirmation in the top
+      // border and returns at once — no frame-time compensation needed (the old
+      // osdCenteredMsg slept for the toast duration inside the frame).
       if (Kdown && (Kbd->isVKDown(fabgl::VK_LGUI) || Kbd->isVKDown(fabgl::VK_RGUI))) {
-        auto menuToast = [](const char *msg) {
-          int64_t t = esp_timer_get_time();
-          OSD::osdCenteredMsg(msg, LEVEL_INFO, 500);
-          ESPectrum::ts_start += esp_timer_get_time() - t;
-        };
+        auto menuToast = [](const char *msg) { OSD::notify(msg, LEVEL_INFO, 900); };
         if (KeytoESP == fabgl::VK_F5) { // TurboFDC = our TR-DOS fast mode
           Config::trdosFastMode = !Config::trdosFastMode;
           rvmWD1793UpdateFastmode(&ESPectrum::fdd);
@@ -2640,7 +2637,7 @@ void ESPectrum::loop() {
             if (FileUtils::automountSD()) {
                 Config::loadDiskMounts();   // restore remembered disk images
                 Tape::LoadRemembered();     // and the remembered tape
-                OSD::osdCenteredMsg(MSG_SD_AUTOMOUNT, LEVEL_INFO, 1500);
+                OSD::notify(MSG_SD_AUTOMOUNT, LEVEL_INFO, 1500);
             }
         }
     }

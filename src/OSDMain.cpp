@@ -1285,6 +1285,145 @@ void OSD::clearStats() {
 }
 
 
+// ── Top-border notification banner ─────────────────────────────────────────────
+//
+// The transient toasts a hotkey fires (Gigascreen mode, max speed, LED
+// indicators, ...) used to go through osdCenteredMsg, which paints a box over
+// the middle of the guest screen and then sleep_ms()es inside the emulation
+// loop — the machine stops for the whole toast. This is the same information in
+// the place F8 already uses for status: a one-line band in the middle of the
+// TOP border, repainted once per frame from VIDEO::EndFrame(), with the machine
+// running underneath.
+//
+// Erase contract is the corner FDD lamp's (see ESPectrum::loop): never paint the
+// band with a computed "border colour" byte — on expiry set VIDEO::brdChange so
+// the border state machine repaints the band authoritatively. A colour-matched
+// self-erase leaves a permanent block the moment the palette/mode history
+// diverges (hw 2026-08-13, DS80).
+static char     notify_text[49];
+static uint8_t  notify_level = LEVEL_INFO;
+static uint64_t notify_until_us = 0;
+static bool     notify_on = false;
+// nm::available() re-runs the whole menu layout pass, so it is decided once when
+// the banner is raised rather than on every frame of its life.
+static bool     notify_nm = false;
+
+// Top border height in framebuffer rows = the border machine's lin_end:
+// 48 on the 360x288 full-border modes, 24 everywhere else. DS80 is excluded
+// altogether — 640x480 has no top border at all (lin_end == 0), and the packed
+// pair-slot framebuffer is the guest palette's, not ours.
+static constexpr int NOTIFY_BAND_H = OSD_FONT_H + 4;
+
+// Widest banner the mode can take: leaves the corner FDD lamp at x=311 alone and
+// keeps a margin at both ends.
+static int notifyMaxChars() { return ((int)OSD::scrW - 48) / OSD_FONT_W; }
+
+static bool notifyGeom(int textw, int& x, int& y) {
+    if (profi_ds80_active) return false;
+    if (notifyMaxChars() < 8) return false;      // no mode this narrow, but don't index off the row
+    const int top = VIDEO::isFullBorder288() ? 48 : 24;
+    if (top < NOTIFY_BAND_H) return false;
+    y = (top - NOTIFY_BAND_H) / 2;
+    x = ((int)OSD::scrW - textw) / 2;
+    if (x < 4) x = 4;
+    return true;
+}
+
+bool OSD::notifyAvailable() {
+    int x, y;
+    return notifyGeom(0, x, y);
+}
+
+void OSD::notify(const string& msg, uint8_t warn_level, uint16_t millis) {
+    // No top border to put it in (DS80): keep the classic behaviour rather than
+    // dropping the message.
+    if (!notifyAvailable()) { osdCenteredMsg(msg, warn_level, millis ? millis : 1000); return; }
+
+    // One line only, and never wide enough to reach the corner FDD lamp at x=311.
+    size_t n = msg.find('\n');
+    if (n == string::npos) n = msg.length();
+    size_t maxchars = (size_t)notifyMaxChars();
+    if (maxchars > sizeof(notify_text) - 1) maxchars = sizeof(notify_text) - 1;
+    if (n > maxchars) n = maxchars;
+    memcpy(notify_text, msg.c_str(), n);
+    notify_text[n] = 0;
+
+    notify_level    = warn_level;
+    notify_until_us = (uint64_t)esp_timer_get_time() + (uint64_t)millis * 1000ull;
+    notify_nm       = nm::available();
+    notify_on       = true;
+    drawNotify();                 // show it on the frame that asked for it
+}
+
+void OSD::cancelNotify() {
+    if (!notify_on) return;
+    notify_on = false;
+    VIDEO::clearNoticeBand();     // hand the columns back to the border machine
+    // The border repaint is what erases the band — never a colour-matched fill.
+    // Both flags: brdChange is cleared by EndFrame even on a SKIPPED frame (max
+    // speed), so on its own it can be swallowed before any border is painted;
+    // brdnextframe is only cleared by the branch that actually paints.
+    VIDEO::brdChange    = true;
+    VIDEO::brdnextframe = true;
+}
+
+void OSD::drawNotify() {
+    if (!notify_on) return;
+    if ((int64_t)((uint64_t)esp_timer_get_time() - notify_until_us) >= 0) { cancelNotify(); return; }
+
+    const int textw = (int)strlen(notify_text) * OSD_FONT_W;
+    int x, y;
+    if (!notifyGeom(textw, x, y)) { cancelNotify(); return; }   // mode changed under us
+
+    // Reserve the band so the border state machine stops painting it: without
+    // this the banner is erased on every brdChange and only comes back at the
+    // next EndFrame, which reads as flicker on any screen with border effects.
+    // setNoticeBand snaps the span to the machine's column granularity and hands
+    // back what it actually reserved — paint exactly that, or the extra carved
+    // columns keep a stale border colour.
+    int px0 = x - 4, px1 = x + textw + 4;
+    VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
+    if (px1 - px0 < textw) { cancelNotify(); return; }
+    const int bandw = px1 - px0;
+    x = px0 + (bandw - textw) / 2;
+
+    if (notify_nm) {
+        // Same trick as drawStats/uiPausedBadge: the UI colours live in their own
+        // palette block, so the running game keeps all 16 of its own entries.
+        nm::gfxComputeSurface();
+        nm::gfxInstallPalette();      // applyPalette() may have rewritten our block
+        const int base = nm::uiPaletteBase();
+        nm::UiColor ink;
+        switch (notify_level) {
+            case LEVEL_OK:    ink = nm::C_ACCENT; break;
+            case LEVEL_WARN:  ink = nm::C_ICON_Y; break;
+            case LEVEL_ERROR: ink = nm::C_ICON_R; break;
+            default:          ink = nm::C_TEXT;   break;
+        }
+        VIDEO::vga.fillRect(px0, y, bandw, NOTIFY_BAND_H,
+                            nm::uiPaletteSlot(nm::C_PANEL));
+        VIDEO::vga.setTextColor((uint8_t)(base + ink), (uint8_t)(base + nm::C_PANEL));
+        VIDEO::vga.setFont(Font6x8);
+        VIDEO::vga.setCursor(x, y + 2);
+        VIDEO::vga.print(notify_text);
+        return;
+    }
+
+    uint8_t ink, paper = zxColor(1, 0);
+    switch (notify_level) {
+        case LEVEL_OK:    ink = zxColor(4, 1); break;
+        case LEVEL_WARN:  ink = zxColor(6, 1); break;
+        case LEVEL_ERROR: ink = zxColor(2, 1); break;
+        default:          ink = zxColor(7, 1); break;
+    }
+    VIDEO::vga.fillRect(px0, y, bandw, NOTIFY_BAND_H, paper);
+    VIDEO::vga.setTextColor(ink, paper);
+    VIDEO::vga.setFont(Font6x8);
+    VIDEO::vga.setCursor(x, y + 2);
+    VIDEO::vga.print(notify_text);
+}
+
+
 void OSD::drawVolumeBox() {
 
     unsigned short x, y;
@@ -1655,7 +1794,7 @@ void OSD::nmiAction() {
             MemESP::registerOverlay(gb_rom_0_sinclair_48k,
                 Config::byte_cobmect_mode ? gb_overlay_48k_byte_sovmest : gb_overlay_48k_byte);
             MemESP::recoverPage0();
-            osdCenteredMsg(Config::byte_cobmect_mode ? OSD_COBMECT_ON : OSD_COBMECT_OFF, LEVEL_INFO, 500);
+            notify(Config::byte_cobmect_mode ? OSD_COBMECT_ON : OSD_COBMECT_OFF, LEVEL_INFO, 900);
         }
     } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
         uint8_t opt = hotkeyChooser(string(MENU_NMI_TITLE) + MENU_NMI_SEL);
@@ -1669,6 +1808,11 @@ void OSD::nmiAction() {
 }
 
 void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
+
+    // A live top-border banner belongs to the running machine: EndFrame() stops
+    // while the OSD owns the screen, so it could neither age out nor be erased.
+    // Hotkey handlers below raise their own after this.
+    cancelNotify();
 
     struct AYGuard {
         AYGuard()  { if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable)); }
@@ -1748,7 +1892,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
          (!ALT && KeytoESP == fabgl::VK_PRINTSCREEN))) {
         Config::profi_ext_keys = !Config::profi_ext_keys;
         Config::save();
-        osdCenteredMsg(Config::profi_ext_keys ? " XT keyboard ON  " : " XT keyboard OFF ", LEVEL_INFO, 500);
+        notify(Config::profi_ext_keys ? " XT keyboard ON " : " XT keyboard OFF ", LEVEL_INFO, 900);
         return;
     }
 
@@ -1794,7 +1938,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             Config::ledIndicators = !Config::ledIndicators;
             if (!Config::ledIndicators) LED::clear();
             Config::save();
-            osdCenteredMsg(Config::ledIndicators ? " LED indicators ON  " : " LED indicators OFF ", LEVEL_INFO, 500);
+            notify(Config::ledIndicators ? " LED indicators ON " : " LED indicators OFF ", LEVEL_INFO, 900);
         } else
         if (hkIdx == Config::HK_POKE) { // Input Poke
             // Standalone hotkey context: install the UI palette for the duration
@@ -2039,7 +2183,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // without it the Alt+PgUp toggle enabled it mid-Profi and the
             // render path SIGBUS-stormed (hw, PICO_DV).
             if (Z80Ops::isProfi) {
-                osdCenteredMsg("Gigascreen: not available on Profi", LEVEL_WARN, 1500);
+                notify(" Gigascreen: not available on Profi ", LEVEL_WARN, 1800);
                 return;
             }
             Config::gigascreen_onoff = (Config::gigascreen_onoff + 1) % 3; // Off -> On -> Auto -> Off
@@ -2080,12 +2224,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             std::string menu = Config::gigascreen_onoff == 1 ? OSD_GIGASCREEN_ON
                              : Config::gigascreen_onoff == 2 ? OSD_GIGASCREEN_AUTO
                              : OSD_GIGASCREEN_OFF;
-            osdCenteredMsg(menu, LEVEL_INFO, 500);
+            notify(menu, LEVEL_INFO, 900);
             Config::save();
         } else if (hkIdx == Config::HK_MAX_SPEED || KeytoESP == fabgl::VK_NUMLOCK) {
         ESPectrum::maxSpeed = !ESPectrum::maxSpeed;
         std::string menu = ESPectrum::maxSpeed ? OSD_MAXSPEED_ON : OSD_MAXSPEED_OFF;
-        osdCenteredMsg(menu, LEVEL_INFO, 500);
+        notify(menu, LEVEL_INFO, 900);
         click();
         } else if (hkIdx == Config::HK_PAUSE) {
         CPU::paused = !CPU::paused;

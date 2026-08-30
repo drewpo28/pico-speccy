@@ -1443,6 +1443,50 @@ Also from this session:
   FIRST launch of a session** (nothing is mounted, so nothing is released). A crash on
   launch #1 therefore cannot come from it.
 
+## Hotkey toasts live in the TOP border now (`OSD::notify`, 2026-08-30)
+
+`osdCenteredMsg` paints a box over the middle of the guest screen and then
+`sleep_ms()`es inside the emulation loop — the machine STOPS for the whole toast
+(Alt+PgUp Gigascreen, max speed, LED indicators, the Karabas Menu+key combos,
+tape flashload, and the WD1793 write-protect warning, which fired from inside
+`_do()` for a full second per write attempt). `OSD::notify(msg, level, ms)`
+(OSDMain.cpp) is the non-blocking replacement: one line centred in the TOP
+border, 6x8 face on the UI palette like the F8 stats, machine running
+underneath. `osdCenteredMsg` stays for anything the user must acknowledge and
+for anything raised while the MENU owns the screen.
+
+- **Band geometry** = the border machine's own `lin_end`: 48 rows on the 360x288
+  full-border modes, 24 everywhere else; 12-row band centred in it. Width is
+  capped at `(scrW - 48) / 6` chars so it can never reach the corner FDD lamp at
+  x=311, and only the first line of a multi-line message is used.
+- **`profi_ds80_active` is excluded** — 640x480 DS80 has no top border at all
+  (`lin_end == 0`) and its framebuffer bytes are packed pair slots. `notify()`
+  falls back to the old blocking `osdCenteredMsg` there rather than dropping the
+  message.
+- **The band MUST be carved out of the border state machine** (`TopBorder_OSD`,
+  the twin of `BottomBorder_OSD` for the F8 stats rect; reserved through
+  `VIDEO::setNoticeBand`, released by `clearNoticeBand`). Drawing it once per
+  frame from `VIDEO::EndFrame()` is NOT enough: every `brdChange` repaints the
+  top border mid-frame, so on any screen with border effects the banner is erased
+  and only restored at frame end — hw 2026-08-30, "сообщение мерцает если бордюр
+  активно перерисовывается". `setNoticeBand` snaps the span outwards to
+  `brdcol_step` (4 = 8 px on 48K/128K) and hands back what it actually reserved,
+  and `drawNotify` paints exactly that — a carved column nobody paints keeps a
+  stale border colour (the stats rect has that artifact on its left edge).
+- **Erase is the corner FDD lamp's contract**: never colour-match the border,
+  set `brdChange` AND `brdnextframe` on expiry and let the border machine
+  repaint. Both flags, because `EndFrame` clears `brdChange` even on a SKIPPED
+  frame (max speed) — on its own it can be swallowed before anything is painted,
+  while `brdnextframe` is only cleared by the branch that actually paints.
+- `do_OSD` cancels a live banner on entry: `EndFrame()` does not run while the
+  OSD owns the screen, so it could neither age out nor be erased.
+- `nm::available()` re-runs the whole menu layout pass, so it is decided once in
+  `notify()` and cached — not called from the per-frame path. The UI palette IS
+  re-installed every frame (`applyPalette` can rewrite our block), which is 16
+  `hdmi_emit_slot` calls and only for the ~1 s the banner lives.
+- Expiry is wall time (`esp_timer_get_time`), not frames, so max speed does not
+  flash it past.
+
 ## Debug > Paper (toggleable paper rendering, 2026-08-24, NOT hw-tested)
 
 `Config::render_paper` (NVS `render_paper`, default on) → live mirror

@@ -242,6 +242,19 @@ public:
   static void MiddleBorder();
   static void BottomBorder();
   static void BottomBorder_OSD();
+  // TopBorder with the OSD::notify band carved out — the twin of
+  // BottomBorder_OSD, which does the same for the F8 stats rectangle. Without it
+  // the banner is repainted by the border machine on every brdChange and only
+  // restored at EndFrame, i.e. it FLICKERS on any screen with border effects.
+  static void TopBorder_OSD();
+
+  // Reserve/release that band. setNoticeBand takes the wanted pixel span and
+  // snaps it outwards to the border machine's column granularity (brdcol_step is
+  // 4 on 48K/128K = 8 px), writing back the span actually reserved so the caller
+  // paints exactly what the border machine skips — an unpainted carved column
+  // would keep a stale border colour.
+  static void setNoticeBand(int y0, int y1, int& px0, int& px1);
+  static void clearNoticeBand();
   
   static void (*Draw)(unsigned int, bool);
   static void (*Draw_Opcode)(bool);

@@ -3794,6 +3794,11 @@ IRAM_ATTR void VIDEO::EndFrame() {
         LED::draw();
     }
 
+    // Top-border status banner (OSD::notify). Repainted here, after the border
+    // flush above, so a mid-frame border repaint can never leave it half-erased;
+    // it erases itself by asking for one more border repaint when it expires.
+    OSD::drawNotify();
+
     framecnt++;
 
     // Debug::log("[HB] f=%u pc=0x%04X bc=0x%04X hl=0x%04X iff=%u rom=%u dffd=0x%02X eff7=0x%02X bl=%u vidlatch=%u",
@@ -4088,6 +4093,37 @@ static void Select_Update_Border() {
 // Uses brdcol_step/brdcol_end/brdcol_end1/brdcol_start/brdcol_retrace variables
 //----------------------------------------------------------------------------------------------------------------
 
+// ── OSD::notify band in the top border ─────────────────────────────────────────
+// Same contract as the F8 stats rectangle in BottomBorder_OSD: while the band is
+// reserved the border state machine leaves those framebuffer columns alone, so a
+// guest hammering the border colour cannot erase the banner between EndFrame
+// repaints. Columns are brdcol units (1 col = 2 px).
+static bool osd_notice_carve = false;
+static int  osd_notice_y0 = 0, osd_notice_y1 = -1;
+static int  osd_notice_c0 = 0, osd_notice_c1 = 0;
+
+void VIDEO::setNoticeBand(int y0, int y1, int& px0, int& px1) {
+    const int mask = ~(brdcol_step - 1);
+    int c0 = (px0 >> 1) & mask;
+    int c1 = ((px1 + 1) >> 1);
+    c1 = (c1 + brdcol_step - 1) & mask;
+    if (c0 < brdcol_start) c0 = brdcol_start;
+    if (c1 > brdcol_retrace) c1 = brdcol_retrace;
+    if (c1 <= c0) { clearNoticeBand(); px1 = px0; return; }
+    osd_notice_c0 = c0;
+    osd_notice_c1 = c1;
+    osd_notice_y0 = y0;
+    osd_notice_y1 = y1;
+    osd_notice_carve = true;
+    px0 = c0 * 2;
+    px1 = c1 * 2;
+}
+
+void VIDEO::clearNoticeBand() {
+    osd_notice_carve = false;
+    osd_notice_y1    = -1;
+}
+
 IRAM_ATTR void VIDEO::TopBorder_Blank() {
     if (CPU::tstates >= tStatesBorder) {
         static bool brd_logged = false;
@@ -4105,7 +4141,11 @@ IRAM_ATTR void VIDEO::TopBorder_Blank() {
         prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(0) : (uint8_t *)brdptr16;
         // lin_end==0 (DS80 640×480): no top border rows — straight to side borders.
         // (TopBorder would otherwise paint row 0 full-width over the content.)
-        DrawBorder = lin_end ? &TopBorder : &MiddleBorder;
+        // ds80_border_geom is excluded belt-and-braces: OSD::notify never reserves
+        // a band there (the packed-pair framebuffer is the guest palette's).
+        DrawBorder = lin_end ? ((osd_notice_carve && !ds80_border_geom)
+                                    ? &TopBorder_OSD : &TopBorder)
+                             : &MiddleBorder;
         DrawBorder();
     }
 }
@@ -4121,6 +4161,43 @@ IRAM_ATTR void VIDEO::TopBorder() {
             Update_Border_Span(n);
             lastBrdTstate += (n - 1) * brdcol_step;
             brdcol_cnt += (n - 1) * brdcol_step;
+        } else if (brdcol_retrace < brdcol_end) {
+            int lastPair = (brdcol_retrace - 1) & ~1;
+            int curPair = brdcol_cnt & ~1;
+            ((uint32_t *)&brdptr16[curPair])[0] = ((uint32_t *)&brdptr16[lastPair])[0];
+            if (gigascreen_enabled) ((uint16_t *)&prevBrdptr8[curPair])[0] = ((uint16_t *)&prevBrdptr8[lastPair])[0];
+        }
+
+        lastBrdTstate += brdcol_step;
+        brdcol_cnt += brdcol_step;
+
+        if (brdcol_cnt >= brdcol_end) {
+            brdlin_cnt++;
+            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
+            brdcol_cnt = brdcol_start;
+            lastBrdTstate += tStatesPerLine - brdcol_end;
+
+            if (brdlin_cnt >= lin_end) {
+                DrawBorder = &MiddleBorder;
+                MiddleBorder();
+                return;
+            }
+        }
+    }
+}
+
+// TopBorder with the notification band skipped. Per-column Update_Border() rather
+// than the span optimisation, exactly like BottomBorder_OSD — the span would have
+// to be split around the band anyway, and this only runs while a banner is up.
+IRAM_ATTR void VIDEO::TopBorder_OSD() {
+    const int y0 = osd_notice_y0, y1 = osd_notice_y1;
+    const int c0 = osd_notice_c0, c1 = osd_notice_c1;
+    while (lastBrdTstate <= CPU::tstates) {
+        if (brdcol_cnt < brdcol_retrace) {
+            if (brdlin_cnt < y0 || brdlin_cnt > y1 ||
+                brdcol_cnt < c0 || brdcol_cnt >= c1)
+                Update_Border();
         } else if (brdcol_retrace < brdcol_end) {
             int lastPair = (brdcol_retrace - 1) & ~1;
             int curPair = brdcol_cnt & ~1;

@@ -4953,7 +4953,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
                 if (REG_HL == 0x1F80) {
                     SaveFileExists = (Tape::tapeFileType == TAPE_FTYPE_TAP);
                     if (!SaveFileExists)
-                        OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
+                        OSD::notify(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
                 }
 
                 if (SaveFileExists) {

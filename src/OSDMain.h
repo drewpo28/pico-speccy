@@ -112,6 +112,20 @@ public:
     static void osdCenteredMsg(const string& msg, uint8_t warn_level);
     static void osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millispause);
 
+    // Non-blocking status banner, centred in the TOP border with the F8 stats look
+    // (6x8 face, UI palette). Unlike osdCenteredMsg it neither covers the guest
+    // screen nor sleeps: notify() only records the text, drawNotify() repaints it
+    // once per frame from VIDEO::EndFrame() and, when it expires, hands the band
+    // back to the border renderer (same erase contract as the corner FDD lamp).
+    // Use it for the transient toasts a hotkey fires while the machine runs;
+    // anything the user must acknowledge, or anything raised while the menu owns
+    // the screen, still belongs in osdCenteredMsg.
+    static void notify(const string& msg, uint8_t warn_level = LEVEL_INFO,
+                       uint16_t millis = 1200);
+    static void drawNotify();     // per-frame repaint (VIDEO::EndFrame)
+    static void cancelNotify();   // drop it now and schedule the border erase
+    static bool notifyAvailable();// false when the mode has no usable top border
+
     // Boot notices: setup() runs long before video is up, so a feature that gives up
     // there (GS::init short on heap, Gigascreen's prev-FB decline) can only queue a
     // line here; the first loop() frame shows them all in one centered box. One-shot:
