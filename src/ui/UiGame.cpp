@@ -585,12 +585,12 @@ void act_gameScwong() {
                     drawModeMenu();
                     break;
                 case SA_UP:
-                    if (st == ST_MENU && sel > 0) { sel--; drawModeMenu(); }
-                    else if (st == ST_OPTS && osel > 0) { osel--; drawOptions(); }
+                    if (st == ST_MENU) { sel = sel > 0 ? sel - 1 : 4; drawModeMenu(); }
+                    else if (st == ST_OPTS) { osel = osel > 0 ? osel - 1 : opt_n - 1; drawOptions(); }
                     break;
                 case SA_DOWN:
-                    if (st == ST_MENU && sel < 4) { sel++; drawModeMenu(); }
-                    else if (st == ST_OPTS && osel < opt_n - 1) { osel++; drawOptions(); }
+                    if (st == ST_MENU) { sel = sel < 4 ? sel + 1 : 0; drawModeMenu(); }
+                    else if (st == ST_OPTS) { osel = osel < opt_n - 1 ? osel + 1 : 0; drawOptions(); }
                     break;
                 case SA_LEFT:
                     if (st == ST_OPTS) { optCycle(osel, -1); drawOptions(); }

@@ -88,7 +88,7 @@ endif()
 # ALF is always available (4MB flash) — small 256KB default cart + shared flash region.
 
 set(CPU_MHZ 378)
-set (PORT_VERSION "1.0.2")
+set (PORT_VERSION "1.0.3")
 string(LENGTH "${PORT_VERSION}" PORT_VERSION_LEN)
 
 # Target board (default: MURM2; override with -D flags, e.g. cmake -DPICO_DV=ON)

@@ -1486,10 +1486,10 @@ while text/selection/icon hues are nearest-grid. CRT grille and scanline taps
 attenuate off the grid and re-dither — inherent to those effects, same as the
 16 solid ZX colours.
 
-Both looks are user-switchable (2026-08-20, NOT hw-tested): **Options → VGA menu
+Both looks are user-switchable (2026-08-20, NOT hw-tested): **Interface → VGA menu
 colors** (`Config::ui_vga_solid`, default Solid; row visible only while
 `SELECT_VGA`) picks the on-grid twin vs the dithered full-depth scheme, and
-**Options → Menu corners** (`Config::ui_rounded`, default Rounded) switches
+**Interface → Menu corners** (`Config::ui_rounded`, default Rounded) switches
 rounded vs square — enforced centrally in `roundRect`/`roundRectBorder`
 (UiGfx.cpp), which every window/dialog corner goes through. Both are
 `AC_LIVE + F_PREVIEW`: the palette one carries `F_PALETTE` (the re-install IS the
@@ -1498,7 +1498,10 @@ with the new corners; `drawFrameOnce()` clears to C_BG first, so Square→Rounde
 leaves no stale corner pixels). Trivial shared hook `hook_uiLook` — the drawing
 code reads Config directly.
 
-**Options → Theme** (2026-08-30, NOT hw-tested): `Config::ui_theme` 0 = Slate,
+**Interface → Theme** (2026-08-31: the menu-look rows, hot keys and the LED
+group moved from Options into a new top-level **Interface** menu — `kInterface`
+in UiTree.cpp, between Options and Network; Options keeps machine preferences
+only): `Config::ui_theme` 0 = Slate,
 1 = **ZX Spectrum** — `kUiPaletteZx` (UiGfx.cpp), the classic pico-spec cascade
 menu's colours read off its OSDMenu.cpp (drewpo28/pico-spec): black ink on
 bright-white paper (0,1/7,1), bright-cyan selection with black text (0,1/5,1),

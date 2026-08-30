@@ -24,6 +24,7 @@
 #define TXT_AUDIO           "Audio"
 #define TXT_JOYSTICK        "Joystick"
 #define TXT_OPTIONS         "Options"
+#define TXT_INTERFACE       "Interface"
 #define TXT_NETWORK         "Network"
 #define TXT_DEBUG           "Debug"
 #define TXT_RESET           "Reset"
@@ -223,9 +224,12 @@
 // ── Options ────────────────────────────────────────────────────────────────────
 #define TXT_OPT_PREF_MACHINE "Preferred machine"
 #define TXT_OPT_PREF_ROM     "Preferred rom"
+// Inside the Interface menu the "menu" qualifier is redundant: the corners row
+// sits right under Theme and its values (Rounded/Square) say the rest, and the
+// VGA palette row is indented under Theme, which supplies the context.
 #define TXT_OPT_THEME        "Theme"
-#define TXT_OPT_VGA_MENU_PAL "VGA menu colors"
-#define TXT_OPT_UI_CORNERS   "Menu corners"
+#define TXT_OPT_VGA_MENU_PAL "VGA colors"
+#define TXT_OPT_UI_CORNERS   "Corners"
 #define TXT_OPT_REPLACE_ROM  "Replace ZX rom"
 #define TXT_OPT_UPDATE_FW    "Update firmware"
 #define TXT_ROM_PICK         "Select ROM file"

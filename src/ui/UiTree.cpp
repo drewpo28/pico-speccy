@@ -763,6 +763,28 @@ static const Option opt_ui_corners[] = {
     { "Square",  0 },
 };
 
+// ── Interface ──────────────────────────────────────────────────────────────────
+// Everything about the firmware's own UI and indication, split out of Options
+// (which stays machine preferences): menu look, hot keys, LED indication.
+static const Node kInterface[] = {
+    // Menu look: all three apply live (the corner switch redraws the chrome on the
+    // spot, the theme and palette switches re-install the UI palette block, which
+    // recolours the open menu instantly — the framebuffer stores palette indices).
+    NM_RADIO   (TXT_OPT_THEME,        SET_UI_THEME,   opt_ui_theme,    nullptr),
+    NM_RADIO_EN(NM_IND TXT_OPT_VGA_MENU_PAL, SET_UI_VGA_PAL, opt_ui_vga_pal, p_vgaOut, p_themeSlate),
+    NM_RADIO (TXT_OPT_UI_CORNERS,   SET_UI_CORNERS, opt_ui_corners,  nullptr),
+    NM_DYNH  (TXT_OTHER_HOTKEYS,    hotkeys_build, hotkeys_key, opt_hotkey_hints, nullptr),
+    // LED indication is one group: the master toggle, its legend (a reference for
+    // the indicators, so greyed while they are off) and the board's own SD LED,
+    // which came over from Devices — it is indication, not an interface setting
+    // of the machine.
+    NM_BOOL     (TXT_HW_LED,           SET_LED_IND,   nullptr),
+    // Always available: the legend is reference material, useful before you turn
+    // the indicators on (to see what they will mean) as much as after.
+    NM_ACTION   (NM_IND TXT_HW_LEGEND, act_ledLegend, nullptr),
+    NM_BOOL     (NM_IND TXT_HW_SDLED,  SET_SD_LED,    nullptr),
+};
+
 static const Node kOptions[] = {
     NM_SUB   (TXT_HW_OVERCLOCK,     kOverclock,     nullptr),
     NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
@@ -770,21 +792,6 @@ static const Node kOptions[] = {
     NM_RADIO (TXT_OTHER_ALU,        SET_ALU_TIMING, opt_alu,       nullptr),
     NM_BOOL  (TXT_OTHER_ISSUE2,     SET_ISSUE2,     nullptr),
     NM_RADIO (TXT_OTHER_FRAMESKIP,  SET_FRAMESKIP,  opt_frameskip, nullptr),
-    NM_DYNH  (TXT_OTHER_HOTKEYS,    hotkeys_build, hotkeys_key, opt_hotkey_hints, nullptr),
-    // Menu look: all three apply live (the corner switch redraws the chrome on the
-    // spot, the theme and palette switches re-install the UI palette block, which
-    // recolours the open menu instantly — the framebuffer stores palette indices).
-    NM_RADIO   (TXT_OPT_THEME,        SET_UI_THEME,   opt_ui_theme,    nullptr),
-    NM_RADIO_EN(NM_IND TXT_OPT_VGA_MENU_PAL, SET_UI_VGA_PAL, opt_ui_vga_pal, p_vgaOut, p_themeSlate),
-    NM_RADIO (TXT_OPT_UI_CORNERS,   SET_UI_CORNERS, opt_ui_corners,  nullptr),
-    // LED indication is one group: the master toggle, its legend (a reference for
-    // the indicators, so greyed while they are off) and the board's own SD LED,
-    // which came over from Devices — it is indication, not an interface.
-    NM_BOOL     (TXT_HW_LED,           SET_LED_IND,   nullptr),
-    // Always available: the legend is reference material, useful before you turn
-    // the indicators on (to see what they will mean) as much as after.
-    NM_ACTION   (NM_IND TXT_HW_LEGEND, act_ledLegend, nullptr),
-    NM_BOOL     (NM_IND TXT_HW_SDLED,  SET_SD_LED,    nullptr),
     NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),
     NM_ACTION(TXT_OPT_UPDATE_FW,    act_updateFirmware, nullptr),
 };
@@ -910,6 +917,7 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_AUDIO,     kAudio,    nullptr),
     NM_SUB   (TXT_JOYSTICK,  kJoystick, nullptr),
     NM_SUB   (TXT_OPTIONS,   kOptions,  nullptr),
+    NM_SUB   (TXT_INTERFACE, kInterface, nullptr),
     NM_SUB   (TXT_NETWORK,   kNetwork,  nullptr),
     NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),
     NM_SUB   (TXT_RESET,     kReset,    nullptr),
