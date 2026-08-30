@@ -2219,9 +2219,19 @@ __not_in_flash("audio") void ESPectrum::BeeperGetSample() {
     uint32_t overflowTstates = accumulatorFP >> 8;
     uint32_t completedAccum = beeperSampleAccum - lastaudioBit * overflowTstates;
     uint32_t completedTstates = beeperTstatesInSample - overflowTstates;
-    // Write tstate-weighted average directly
-    overSamplebuf[audbufcntover++] = (completedTstates > 0 && completedTstates < 256)
-        ? (uint32_t)(completedAccum * beeper_recip[completedTstates]) >> 16 : 0;
+    // Write tstate-weighted average directly. At 14/28 MHz (multiplicator >= 2)
+    // one output sample spans 448/896 T — past the 256-entry beeper_recip table,
+    // so the guard zeroed EVERY sample (beeper + tape audio silent in turbo).
+    // Scaling both halves of the average down by the multiplicator keeps the
+    // quotient and puts the divisor back in table range; m<=1 (112/224 T) stays
+    // on the exact original path.
+    uint32_t ca = completedAccum, ct = completedTstates;
+    if (multiplicator >= 2) {
+      ca >>= multiplicator;
+      ct >>= multiplicator;
+    }
+    overSamplebuf[audbufcntover++] = (ct > 0 && ct < 256)
+        ? (uint32_t)(ca * beeper_recip[ct]) >> 16 : 0;
     // Carry overflow to next sample
     beeperSampleAccum = lastaudioBit * overflowTstates;
     beeperTstatesInSample = overflowTstates;
