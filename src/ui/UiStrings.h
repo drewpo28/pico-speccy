@@ -187,6 +187,7 @@
 #define TXT_MACH_PROFI      "Profi"
 #define TXT_MACH_KARABAS    "Karabas"
 #define TXT_MACH_SCORP      "Scorpion 256K"
+#define TXT_MACH_GMX        "Scorpion GMX"
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
