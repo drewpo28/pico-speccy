@@ -2033,7 +2033,7 @@ code paths are NOT TR-DOS-like and exercise WD1793 behaviour nothing else does.
   Expected UX: entering TR-DOS with a disk mounted pauses up to ~3 s (15 disk
   revolutions — same on ZXMAK2 and real hardware) while the motor times out.
 
-### Scorpion GMX (R_SCORP_GMX, 2026-08-25) — NOT yet hw-tested
+### Scorpion GMX (R_SCORP_GMX, 2026-08-25; boots on hw since 2026-08-31 — tap/D2 fixes below; games untested)
 
 Third Scorpion romset ("ScorpGMX", UI "GMX"), modelled from MAME scorpiongmx_state.
 Green timing (70784 T), NO even-M1. **Needs QSPI(butter) PSRAM, gated at RUNTIME,
@@ -2098,11 +2098,38 @@ gate exists).
   `portDFFDgmx`, NOT Profi's portDFFD). Read-backs mix BRD bits from port254.
   1FFD D2 = hard-wired DOS page + Beta on (scorpionRomUpdate short-circuit +
   check_trdos exit hold, the Karabas-ONROM shape).
-- **ProfROM plane switch**: #7EFD D4-6 (full 0-7), plus the legacy 0x0100-0x010F
-  read tap (`g_gmx_tap` — armed only while (romInUse&3)==2 && !page0ram, recomputed
-  in scorpionRomUpdate/`gmxTapRecheck`; one almost-always-false global test in
-  peek8 AND fetchOpcode — ZXMAK2 subscribes both) → `kProfPlaneMap`, clamps to
-  planes 0-3 (MAME/ZXMAK2 agree).
+- **ProfROM plane switch = #7EFD D4-6 ONLY; the legacy 0x0100-0x010F read tap
+  is DISABLED on GMX (hw-traced 2026-08-31, this is what made GMX boot)**. The
+  v2.94 service monitor (plane 4 bank 2) checksums its whole 16K with 1FFD D1
+  set — its CPI loop at 0x31B8 reads straight through 0x0100-0x010F, and the
+  tap flipped the plane to 0 mid-execution (GMX_TRACE "[GMX romU] 18->2 ...
+  plane=0 pc=31B9"), landing the CPU in plane 0's DATA bank → the striped
+  9B-pattern crash. The GMX firmware switches planes exclusively via #7EFD
+  (every deliberate change in the trace is a 7EFD write from RAM thunks at
+  E3FD/E429); the tap is a ProfROM-add-on feature (ZXMAK2
+  MemoryScorpionProfRom256 — ZXMAK2 has NO GMX; MAME's scorpiongmx merely
+  inherits it from scorpiontb). `gmxTapUpdate` now pins `g_gmx_tap = false`;
+  `gmxProfRomTap`/`kProfPlaneMap` + the peek8/fetchOpcode hooks are kept for a
+  future Yellow/Green+ProfROM romset — if resurrected, arm on M1 ONLY (the
+  data-read hook is what fired on the checksum).
+- **1FFD D2 FALLING edge clears trdos** (same hw session): on real hardware
+  DOSEN drops on the next >=0x4000 read (MAME beta_disable_r fires on ANY
+  read), while our DOS exit runs only at control-flow opcodes checking the NEW
+  PC — so after the loader's D2 pulse (calling the plane's TR-DOS bank), a jump
+  straight into ROM closed the window with trdos latched and
+  (dos<<1)|rom14 decoded the WRONG bank (trace: "[GMX romU] 3->2 1FFD=00
+  dos=1"). The #1FFD handler clears trdos at the edge when PC>=0x4000 (every
+  D2 writer in the fw runs from RAM).
+- **GMX_TRACE** (CMake, default OFF): capped 600-line trace of port #00
+  (magic/reset), 7EFD (plane), 1FFD writes, every romInUse transition and the
+  0x3Dxx trap entry/exit — this is what cracked both bugs above; reach for it
+  on any GMX misbehavior. Also known from the same reverse-engineering round:
+  the GMX loader ROM (p0b0) is mostly LZ-COMPRESSED (bit-stream unpacker at
+  ROM 0x0178, streams at 0x01E1/0x101F → RAM 0x5C01; a Python reimplementation
+  is trivial — see the 2026-08-31 session), its shadow port copies live at
+  0x9447 (7FFD) / 0x9448 (1FFD) in the 0x8000 window, and the 0x3Dxx DOS trap
+  is a deliberate cross-bank CALL mechanism of this firmware (bank3 keeps RET /
+  thunk code at 0x3D0x-0x3D30), which our PC-based trap models correctly.
 - **640x200x16 (gfx_ext)** reuses the WHOLE DS80 pair-slot machinery — same
   `profi_pair_lookup`, same `profi_ds80_driver_set` driver tables, same
   `Graphics8BitPalette::ds80_active` OSD remap; the modes can never coexist

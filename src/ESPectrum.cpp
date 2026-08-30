@@ -2992,8 +2992,10 @@ void ESPectrum::loop() {
     if (!(VIDEO::flash_ctr++ & 0x0f) && !VIDEO::ulaplus_enabled)
       VIDEO::flashing ^= 0x80;
 
-    // Draw fdd led indicator in top-right corner
-    bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
+    // Draw fdd led indicator in top-right corner. Scorpion carries the Beta
+    // interface on board (betadisk forced on), so it counts like Pentagon here.
+    bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ||
+                   (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
         && !DivMMC::enabled
         ;
     // Indicator sits at x=311 — inside the DS80 right border band / normal top border.

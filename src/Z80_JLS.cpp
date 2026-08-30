@@ -1015,6 +1015,11 @@ IRAM_ATTR void Z80::check_trdos() {
                                    REG_PC, (unsigned)dosBank, (unsigned)MemESP::romLatch,
                                    (unsigned)MemESP::bankLatch); } }
 #endif
+#if GMX_TRACE
+                    if (Config::arch == A_SCORP)
+                        GMXT("[GMX trap+] pc=%04X romU %u->%u", REG_PC,
+                             (unsigned)MemESP::romInUse, (unsigned)dosBank);
+#endif
                     MemESP::romInUse = dosBank;
                     MemESP::ramCurrent[0] = MemESP::rom[dosBank].direct();
                     ESPectrum::trdos = true;
@@ -1082,6 +1087,10 @@ IRAM_ATTR void Z80::check_trdos() {
                 MemESP::recoverPage0();
                 ESPectrum::trdos = false;
                 if (g_scorp_gmx) Ports::gmxTapRecheck();
+#if GMX_TRACE
+                if (Config::arch == A_SCORP)
+                    GMXT("[GMX trap-] pc=%04X romU=%u", REG_PC, (unsigned)MemESP::romInUse);
+#endif
 
             }
 

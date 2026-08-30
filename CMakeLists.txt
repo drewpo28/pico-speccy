@@ -51,6 +51,7 @@ option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
 option(MC7FFD_TRACE "One-shot capture of #7FFD write tstates when a frame carries >=90 of them (beam-raced multicolor phase diagnosis)" OFF)
+option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1FFD writes, romInUse transitions, TR-DOS trap entry/exit (capped)" ON)
 option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
@@ -72,7 +73,7 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 # Each enables stdio over the board's Debug-Probe header — see the block for pins.
 set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
 set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
-set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
+set(PICO_DV_DBG_UART ON CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
 set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
 
 # set(TFT ON)
@@ -486,6 +487,10 @@ else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PROFI_PORT_TRACE=0)
 endif ()
 
+# Scorpion GMX paging trace (see Ports.cpp / Z80_JLS.cpp `#if GMX_TRACE`).
+if (GMX_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_TRACE=1)
+endif ()
 # One-shot #7FFD multicolor phase capture (see Ports.cpp `#if MC7FFD_TRACE`).
 if (MC7FFD_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE MC7FFD_TRACE=1)

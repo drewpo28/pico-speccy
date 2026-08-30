@@ -172,4 +172,13 @@ private :
 
 };
 
+#if GMX_TRACE
+// Scorpion GMX paging trace (-DGMX_TRACE=ON, CMake): capped line budget so the
+// boot sequence fits the UART without stalling emulation. Counter lives in
+// Ports.cpp; used from Ports.cpp and Z80_JLS.cpp.
+#include "Debug.h"
+extern uint32_t g_gmxTraceN;
+#define GMXT(...) do { if (g_gmxTraceN < 600) { g_gmxTraceN++; Debug::log(__VA_ARGS__); } } while (0)
+#endif
+
 #endif // Ports_h

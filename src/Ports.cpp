@@ -1761,8 +1761,30 @@ static inline void profiFdcSysWrite(uint8_t data) {
 // MAME taps 0x0100-0x010C when (bank & 3) == SYS && !romram). Recomputed on every
 // romInUse change for Scorpion, so the hot-path test in peek8/fetchOpcode is one
 // almost-always-false global load.
+#if GMX_TRACE
+// Scorpion GMX paging trace (-DGMX_TRACE=ON): every ROM-bank transition, GMX
+// register write, magic reset and TR-DOS trap event, capped so the boot
+// sequence fits the UART without stalling emulation. Shared with Z80_JLS.cpp.
+uint32_t g_gmxTraceN = 0;
+#endif
+
 static inline void gmxTapUpdate() {
-  g_gmx_tap = g_scorp_gmx && ((MemESP::romInUse & 3) == 2) && !MemESP::page0ram;
+  // The legacy ProfROM 0x0100-0x010F read tap is DISABLED on GMX (hw trace
+  // 2026-08-31): the v2.94 service monitor (plane 4 bank 2) checksums its whole
+  // 16K with 1FFD D1 set — the CPI loop at 0x31B8 reads straight through
+  // 0x0100-0x010F, and the tap flipped the plane to 0 mid-execution
+  // (GMX_TRACE: "[GMX romU] 18->2 ... plane=0 pc=31B9"), landing the CPU in
+  // plane 0's DATA bank — the striped-screen crash. The GMX firmware switches
+  // planes exclusively via #7EFD D4-6 (same trace: every deliberate plane
+  // change is a 7EFD write from the RAM thunks at E3FD/E429); the 0x010x tap
+  // belongs to the ProfROM add-on for the Yellow/Green boards (ZXMAK2
+  // MemoryScorpionProfRom256 — ZXMAK2 has no GMX machine at all, and MAME's
+  // scorpiongmx only inherits the tap from scorpiontb). Keep gmxProfRomTap /
+  // kProfPlaneMap for a future ProfROM romset — the arming condition there
+  // was ((romInUse & 3) == 2) && !page0ram, on M1 ONLY (the data-read hook in
+  // peek8 is what fired on the checksum; ZXMAK2 subscribes both, but ZXMAK2
+  // never ran this firmware).
+  g_gmx_tap = false;
 #if GMX_IN_FLASH
   // GMX banks are stored deduplicated + as overlays over ROMs already in flash
   // (scorpion_gmx_banks.h). MemESP's overlay registry keys ONE overlay per base
@@ -1801,11 +1823,19 @@ static inline uint32_t scorpionC000Page(uint32_t low3) {
 // recoverPage0() already orders newSRAM > page0ram > rom[romInUse], which matches
 // the hardware (RAM0 wins over the service override).
 void Ports::scorpionRomUpdate() {
+#if GMX_TRACE
+  uint8_t gmxt_prev = MemESP::romInUse;
+#endif
   if (g_scorp_gmx && (port1FFD & 0x04)) {
     MemESP::romInUse = (gmxPlane << 2) | 3;
     ESPectrum::trdos = true;   // Beta on; check_trdos holds DOS while D2 is set
     MemESP::ramCurrent[0] = MemESP::rom[MemESP::romInUse].direct();
     gmxTapUpdate();
+#if GMX_TRACE
+    if (MemESP::romInUse != gmxt_prev)
+      GMXT("[GMX romU] %u->%u D2-hold 1FFD=%02X plane=%u pc=%04X",
+           gmxt_prev, (unsigned)MemESP::romInUse, port1FFD, gmxPlane, Z80::getRegPC());
+#endif
     return;
   }
   uint8_t bank = (port1FFD & 0x02) ? 2
@@ -1813,6 +1843,12 @@ void Ports::scorpionRomUpdate() {
   MemESP::romInUse = (g_scorp_gmx ? (gmxPlane << 2) : 0) | bank;
   MemESP::recoverPage0();
   gmxTapUpdate();
+#if GMX_TRACE
+  if (MemESP::romInUse != gmxt_prev)
+    GMXT("[GMX romU] %u->%u 1FFD=%02X dos=%d rom14=%u plane=%u pc=%04X",
+         gmxt_prev, (unsigned)MemESP::romInUse, port1FFD, (int)ESPectrum::trdos,
+         (unsigned)MemESP::romLatch, gmxPlane, Z80::getRegPC());
+#endif
 }
 
 // MAME scorpiontb prof_plane_map — the legacy ProfROM plane-switch table driven
@@ -1849,9 +1885,19 @@ bool Ports::gmxPortWrite(uint16_t address, uint8_t data) {
     // 0x88|(D0-2) and, with fixrom off, pulses CPU reset — the GMX "magic
     // jump" into the boot ROM (MAME global_cfg_w).
     gmxPort00 = data;
+#if GMX_TRACE
+    GMXT("[GMX p00] %02X blkext=%d fixrom=%d magic=%d pc=%04X",
+         data, (int)((data >> 5) & 1), (int)((data >> 4) & 1),
+         (int)((data >> 3) & 1), Z80::getRegPC());
+#endif
     if (data & 0x08) {
       gmxMagicShift = 0x88 | (data & 0x07);
-      if (!(data & 0x10)) Z80::reset();   // CPU only — RAM/paging stay
+      if (!(data & 0x10)) {
+#if GMX_TRACE
+        GMXT("[GMX p00] magic reset shift=%02X (CPU only)", gmxMagicShift);
+#endif
+        Z80::reset();   // CPU only — RAM/paging stay
+      }
     }
     return true;
   }
@@ -1872,6 +1918,12 @@ bool Ports::gmxPortWrite(uint16_t address, uint8_t data) {
     case 0x7AFD: gmxScrollLo = data & 0xF0; return true;  // 640x200 v-scroll
     case 0x7CFD: gmxScrollHi = data & 0x3F; return true;
     case 0x7EFD: {
+#if GMX_TRACE
+      if (data != gmxPort7EFD)
+        GMXT("[GMX 7EFD] %02X plane=%u gfx=%d turbo=%d pc=%04X",
+             data, (unsigned)((data >> 4) & 7), (int)((data >> 3) & 1),
+             (int)((data >> 7) & 1), Z80::getRegPC());
+#endif
       gmxPort7EFD = data;
       // D7 turbo (7 MHz) — honored only while the USER has turbo on, same
       // policy as Pentagon-1024SL #EFF7 D4 (the GMX boot ROM flips it at
@@ -3207,6 +3259,23 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // real hardware, #1FFD stays live until reset.
   if (Z80Ops::isScorpion && ((address & 0xC002) == 0) && (address & 0x0020)) {
     LED::touchW(LED::RAM);
+#if GMX_TRACE
+    if (data != port1FFD)
+      GMXT("[GMX 1FFD] %02X (addr=%04X) pc=%04X", data, address, Z80::getRegPC());
+#endif
+    // GMX 1FFD D2 (hard-wired DOS page) FALLING edge: on real hardware DOSEN
+    // drops on the very next >=0x4000 read — MAME's beta_disable_r fires on ANY
+    // read, so dos survives a D2 clear by at most one instruction when the
+    // writer runs from RAM. Our DOS exit only runs at control-flow opcodes
+    // checking the NEW PC, so a jump straight INTO ROM (<0x4000) closes the
+    // window with trdos still latched — romInUse then decodes as
+    // (dos<<1)|rom14 = the wrong bank (GMX_TRACE 2026-08-31:
+    // "[GMX romU] 3->2 1FFD=00 dos=1" after the loader's D2 pulse at 0x5F4C —
+    // the 9B-pattern striped-screen crash class). Every D2 writer in the GMX
+    // firmware runs from RAM, so clear the latch right at the edge.
+    if (g_scorp_gmx && (port1FFD & 0x04) && !(data & 0x04) &&
+        Z80::getRegPC() >= 0x4000)
+      ESPectrum::trdos = false;
     port1FFD = data;
     uint32_t page = scorpionC000Page(MemESP::bankLatch & 0x07);
     if (page != MemESP::bankLatch) {
