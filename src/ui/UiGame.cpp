@@ -247,6 +247,22 @@ void act_gameScwong() {
     bool paused = false;
     uint32_t tick = 0;
 
+    // ── attract mode ───────────────────────────────────────────────────────────
+    // 10 s without a key in the mode menu starts a CPU-vs-CPU pong exhibition;
+    // any key hands the screen back to the title. `idle` counts menu ticks and
+    // is reset by every key DOWN event, whatever it was — an unrecognised key is
+    // still a sign of life. `demo_hold` counts ticks inside ONE demo state, so
+    // the serve happens by itself and the game-over box dwells before the title
+    // comes back (which re-arms `idle`, i.e. the attract loop alternates the two
+    // the way an arcade cabinet does).
+    bool demo     = false;
+    int  demo_err = 0;              // the right-hand paddle's own aim error
+    int  demo_hold = 0;
+    uint32_t idle = 0;
+    const uint32_t DEMO_IDLE_TICKS  = 10 * 60;   // 10 s at 60 ticks/s
+    const int      DEMO_SERVE_TICKS = 48;        // wait before an auto-serve
+    const int      DEMO_OVER_TICKS  = 180;       // game-over box dwell
+
     int old_bx = -1, old_by = -1, old_py = -1, old_cy = -1;   // last drawn positions
     // "Is there a ball on the screen?" is its OWN flag, never `old_bx >= 0`:
     // the ball is drawn (clipped) while it leaves the court past the CPU, so a
@@ -276,8 +292,9 @@ void act_gameScwong() {
             for (int i = 0; i < 5; i++, x += 6 * sc)
                 fill(x, 4, 4 * sc, 4, i < balls ? colPad : C_PANEL_ALT);
         } else {
-            snprintf(s, sizeof(s), "%s   CPU %02d : %02d YOU",
-                     k_cpu_name[diff], score_c, score_p);
+            snprintf(s, sizeof(s), "%s   CPU %02d : %02d %s",
+                     demo ? "DEMO" : k_cpu_name[diff], score_c, score_p,
+                     demo ? "CPU" : "YOU");
         }
         text(Sf.w - m - textWidth(s) - 2 * sc, 2, s, C_TEXT);
     };
@@ -302,7 +319,8 @@ void act_gameScwong() {
             centerLineDash(iy0, iy1);                                 // pong centre line
         }
         text(m, Sf.h - foot_h + 2,
-             "Q/A " SYM_UP SYM_DOWN " Move  Space Serve  P Pause  Esc Exit",
+             demo ? "DEMO - press any key"
+                  : "Q/A " SYM_UP SYM_DOWN " Move  Space Serve  P Pause  Esc Exit",
              C_TEXT_DIM);
     };
 
@@ -376,12 +394,17 @@ void act_gameScwong() {
         if (mode == MODE_SQUASH) {
             l1 = "GAME OVER";
             snprintf(sl, sizeof(sl), "Score %d   Best %d", score, s_best);
+        } else if (demo) {
+            l1 = "DEMO";
+            snprintf(sl, sizeof(sl), "CPU %d : %d CPU  (%s)",
+                     score_c, score_p, k_cpu_name[diff]);
         } else {
             l1 = score_p > score_c ? "YOU WIN!" : "CPU WINS";
             snprintf(sl, sizeof(sl), "CPU %d : %d YOU  (%s)",
                      score_c, score_p, k_cpu_name[diff]);
         }
-        const char* l3 = "Enter Again  M Menu  Esc Exit";
+        const char* l3 = demo ? "press any key"
+                              : "Enter Again  M Menu  Esc Exit";
         int w = textWidth(l3);
         if (textWidth(sl) > w) w = textWidth(sl);
         w += 8 * sc;
@@ -519,13 +542,15 @@ void act_gameScwong() {
             drawBall();
         }
         st = ST_SERVE;
+        demo_hold = 0;
     };
 
     auto serve = [&]() {
         eraseCenterMsg();
         dx = (mode == MODE_PONG && serve_dx > 0) ? speed : -speed;
         dy = rnd(0, 1) ? rnd(96, 384) : -rnd(96, 384);
-        cpu_err = rnd(-(int)tune().err, (int)tune().err);
+        cpu_err  = rnd(-(int)tune().err, (int)tune().err);
+        demo_err = rnd(-(int)tune().err, (int)tune().err);
         st = ST_PLAY;
     };
 
@@ -541,12 +566,16 @@ void act_gameScwong() {
         placeServe();
     };
 
-    // Where the ball's centre will be when it reaches the CPU plane, with wall
-    // reflections folded in. All 8.8 fixed; used by the Hard CPU only.
-    auto predictY = [&]() -> int {
-        const int span = (bx >> 8) - plane_c;             // logical px to travel
-        if (span <= 0 || dx >= 0) return (by >> 8) + bh / 2;
-        const int ticks = (span << 8) / ((-dx) * sc);     // whole ticks to arrival
+    // Where the ball's centre will be when it reaches `plane`, with wall
+    // reflections folded in. All 8.8 fixed; used by the predicting skills. Takes
+    // the plane rather than assuming the CPU's, because in the demo the RIGHT
+    // paddle runs the same AI mirrored.
+    auto predictYAt = [&](int plane) -> int {
+        const int span = plane - (bx >> 8);               // signed logical px to travel
+        const int vx   = dx * sc;                         // 8.8 px/tick, signed
+        if (vx == 0 || (span < 0) != (vx < 0))            // going the other way
+            return (by >> 8) + bh / 2;
+        const int ticks = ((span < 0 ? -span : span) << 8) / (vx < 0 ? -vx : vx);
         int y = by + dy * ticks;
         const int lo = iy0 << 8, hi = (iy1 - bh + 1) << 8, range = hi - lo;
         y -= lo;
@@ -555,28 +584,38 @@ void act_gameScwong() {
         return ((y + lo) >> 8) + bh / 2;
     };
 
-    // One CPU step: pick a target, move at most `pv` toward it.
-    auto cpuStep = [&]() {
-        const CpuSkill& sk = k_cpu[diff];
+    // One AI step for a paddle whose top is `y`: pick a target, move at most
+    // `pv` toward it. `plane` is the ball x at which this paddle meets it and
+    // `sign` says which dx approaches (+1 = the right-hand paddle, -1 = left),
+    // so the same body drives the pong CPU and both demo players. Returns the
+    // new top; the caller owns the redraw (the two paddles draw differently).
+    auto aiStep = [&](int y, int plane, int sign, const CpuSkill& sk, int err) -> int {
+        const bool incoming = sign > 0 ? dx > 0 : dx < 0;
         int target;                                        // desired ball-centre y
-        if (st != ST_PLAY || dx > 0) {
+        if (st != ST_PLAY || !incoming) {
             target = (iy0 + iy1) / 2;                      // ball going away — recentre
-        } else if (sk.lazy && (bx >> 8) > ox0 + ((ox1 - ox0) * 2) / 3) {
-            return;                                        // Easy: hasn't noticed yet
+        } else if (sk.lazy && (sign > 0 ? (bx >> 8) < ox0 + (ox1 - ox0) / 3
+                                        : (bx >> 8) > ox0 + ((ox1 - ox0) * 2) / 3)) {
+            return y;                                      // Easy: hasn't noticed yet
         } else {
-            target = sk.predict ? predictY() : (by >> 8) + bh / 2;
-            target += cpu_err;
+            target = (sk.predict ? predictYAt(plane) : (by >> 8) + bh / 2) + err;
         }
         int want = target - ph / 2;
         if (want < iy0) want = iy0;
         if (want > iy1 - ph + 1) want = iy1 - ph + 1;
-        if      (cy < want) { cy += sk.pv; if (cy > want) cy = want; }
-        else if (cy > want) { cy -= sk.pv; if (cy < want) cy = want; }
+        if      (y < want) { y += sk.pv; if (y > want) y = want; }
+        else if (y > want) { y -= sk.pv; if (y < want) y = want; }
+        return y;
+    };
+
+    auto cpuStep = [&]() {
+        cy = aiStep(cy, plane_c, -1, k_cpu[diff], cpu_err);
         if (cy != old_cy) drawCpuPaddle();
     };
 
     // A pong point was decided. `player_scored` names the winner of the rally.
     auto pongPoint = [&](bool player_scored) {
+        demo_hold = 0;              // covers the ST_OVER exit too (placeServe re-zeroes)
         eraseBall();
         if (player_scored) { score_p++; beepScore(); } else { score_c++; beepMiss(); }
         drawHud();
@@ -584,6 +623,27 @@ void act_gameScwong() {
         if (score_p >= 11 || score_c >= 11) { st = ST_OVER; gameOverBox(); return; }
         serve_dx = player_scored ? -1 : 1;                 // the loser receives
         placeServe();
+    };
+
+    // Attract mode: a Normal-vs-Normal pong exhibition. Both paddles run aiStep
+    // with their OWN aim error, which is what makes points happen at all — two
+    // deterministic paddles of equal skill would rally until the speed cap and
+    // then forever. It is a real game in every other respect (score, sounds,
+    // first to 11), so nothing below needs a demo special case except the input.
+    auto startDemo = [&]() {
+        demo = true;
+        mode = MODE_PONG;
+        diff = 1;                                       // Normal ball for both sides
+        newGame();
+    };
+
+    // Any key ends the exhibition and puts the title back up.
+    auto leaveDemo = [&]() {
+        demo = false;
+        paused = false;
+        st = ST_MENU;
+        idle = 0;
+        drawModeMenu();
     };
 
     // Drain whatever opened us (the Enter that activated the row).
@@ -601,6 +661,11 @@ void act_gameScwong() {
         ScwongAct prev_act = SA_NONE;
         while (kbd->virtualKeyAvailable()) {
             if (!ESPectrum::readKbd(&k) || !k.down) continue;
+            idle = 0;                       // any key at all is a sign of life
+            if (demo) {                     // ...and any key ends the exhibition
+                leaveDemo();
+                continue;                   // drain the rest, don't act on them
+            }
             const ScwongAct act = scwongAct(k.vk);
             if (act == SA_NONE || act == prev_act) continue;
             prev_act = act;
@@ -658,13 +723,18 @@ void act_gameScwong() {
         }
 
         if ((st == ST_SERVE || st == ST_PLAY) && !paused) {
-            // player paddle follows the held keys (arrows, Q/A, joystick)
-            const bool up = vkDown(fabgl::VK_UP)   || vkDown(fabgl::VK_MENU_UP)
-                         || vkDown(fabgl::VK_q)    || vkDown(fabgl::VK_Q);
-            const bool dn = vkDown(fabgl::VK_DOWN) || vkDown(fabgl::VK_MENU_DOWN)
-                         || vkDown(fabgl::VK_a)    || vkDown(fabgl::VK_A);
-            if (up && !dn) { py -= pv_player; if (py < iy0) py = iy0; }
-            if (dn && !up) { py += pv_player; if (py > iy1 - ph + 1) py = iy1 - ph + 1; }
+            if (demo) {
+                // the right-hand paddle is a player too — same AI, mirrored
+                py = aiStep(py, plane_p, +1, k_cpu[diff], demo_err);
+            } else {
+                // player paddle follows the held keys (arrows, Q/A, joystick)
+                const bool up = vkDown(fabgl::VK_UP)   || vkDown(fabgl::VK_MENU_UP)
+                             || vkDown(fabgl::VK_q)    || vkDown(fabgl::VK_Q);
+                const bool dn = vkDown(fabgl::VK_DOWN) || vkDown(fabgl::VK_MENU_DOWN)
+                             || vkDown(fabgl::VK_a)    || vkDown(fabgl::VK_A);
+                if (up && !dn) { py -= pv_player; if (py < iy0) py = iy0; }
+                if (dn && !up) { py += pv_player; if (py > iy1 - ph + 1) py = iy1 - ph + 1; }
+            }
             if (py != old_py) drawPaddle();
 
             if (mode == MODE_PONG) cpuStep();
@@ -676,7 +746,11 @@ void act_gameScwong() {
                     bx = (paddle_x - bw - sc) << 8;
                     if ((bx >> 8) != old_bx || (by >> 8) != old_by) drawBall();
                 }
-                if ((tick & 31) == 0) {                    // hint blinks
+                if (demo) {
+                    // no hint to blink — say what this is once, then serve
+                    if (demo_hold == 1) centerMsg("DEMO - PRESS ANY KEY", C_TEXT_DIM);
+                    if (++demo_hold > DEMO_SERVE_TICKS) serve();   // erases the panel
+                } else if ((tick & 31) == 0) {              // hint blinks
                     if (tick & 32) eraseCenterMsg();
                     else centerMsg("SPACE - SERVE", C_TEXT_DIM);
                 }
@@ -719,6 +793,7 @@ void act_gameScwong() {
                         dx = speed;
                         dy = (bc - (cy + ph / 2)) * 52;
                         if (dy > -64 && dy < 64) dy += (dy < 0 ? -64 : 64);
+                        demo_err = rnd(-(int)tune().err, (int)tune().err);
                         beepPaddle();
                     }
                 }
@@ -741,6 +816,12 @@ void act_gameScwong() {
                     drawBall();
                 }
             }
+        }
+
+        if (st == ST_MENU) {
+            if (++idle >= DEMO_IDLE_TICKS) startDemo();
+        } else if (demo && st == ST_OVER) {
+            if (++demo_hold > DEMO_OVER_TICKS) leaveDemo();
         }
 
         tick++;

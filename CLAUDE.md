@@ -1778,7 +1778,21 @@ and an option value jumps two steps per Left/Right. The collapse is safe
 because the twin is always queued immediately before its raw key, so both land
 in the same 60 Hz tick, and it keeps the no-twin keys working (KP-Enter, Q/A).
 **This was lost once already** — the 2026-08-30 branch rename to Pico-Scwong
-predated the fix and a wholesale file take at merge reverted it. 60 ticks/s
+predated the fix and a wholesale file take at merge reverted it.
+**Attract mode** (hw-confirmed 2026-08-31): 10 s without a key in the mode
+menu starts a CPU-vs-CPU pong exhibition (`demo`, Normal ball, both paddles on
+`aiStep`); any key DOWN event drops straight back to the title, and the
+game-over box dwells 3 s and does the same — title and demo alternate like an
+arcade cabinet. `predictY`/`cpuStep` were generalised into `predictYAt(plane)`
++ `aiStep(y, plane, sign, skill, err)` so the RIGHT paddle runs the same AI
+mirrored (`sign` picks which dx approaches and which third the `lazy` skill
+ignores); the pong CPU is unchanged — its one behavioural difference, `dx == 0`,
+is unreachable outside ST_SERVE, where `st != ST_PLAY` already recentres. The
+two paddles must keep SEPARATE aim errors (`cpu_err`/`demo_err`): two
+deterministic paddles of equal skill rally to the speed cap and then forever.
+`idle` is reset by EVERY key down whatever it was, which is also what stops a
+key-driven return from the Options page (where it does not count up) from
+starting a demo instantly. 60 ticks/s
 paced by `time_us_64`, positions in 8.8
 fixed point, paddle-plane collision is crossing-tested (no tunnelling at ×2 DS80
 speeds). Sound = square waves synthesized into a stack buffer through
