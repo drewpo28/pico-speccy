@@ -298,6 +298,11 @@ public:
   static bool gmx_border_dirty;          // top/bottom band needs a repaint
   static uint8_t gmx_border_col;         // last painted border colour
   static void gmxForceOff();             // immediate teardown (ESPectrum::reset)
+  // Top-border height in fb rows while the GMX 640x200 mode is live, 0 otherwise.
+  // OSD::notify needs it: unlike every other mode, that band is STATIC in GMX (the
+  // per-T-state border machine is parked), so a banner can live there with no
+  // column reservation — and its height is not the border machine's 24/48.
+  static int  gmxTopBandRows();
   // Cold EndFrame halves, flash-resident on purpose (EndFrame is RAM code):
   static void gmxApplyPending();         // deferred on/off switch, vblank only
   static void gmxBorderFrame(bool skipFrame); // top/bottom band repaint
@@ -438,6 +443,10 @@ public:
 
   // Fill 256-entry BMP palette (1024 bytes, BGRA format) matching current VGA palette
   static void getBmpPalette(uint8_t* out);
+  // Reverse of profi_pair_lookup for the packed-pair modes (Profi DS80, Scorpion
+  // GMX): out[slot] = (left << 4) | right, 0 for slots no pair maps to. Lets a
+  // BMP capture expand each framebuffer byte back into its two pixels.
+  static void getPairSlotReverse(uint8_t* out);   // 256 bytes
 
   // Custom palettes loaded from /palette.nvs
   static void loadCustomPalettes();

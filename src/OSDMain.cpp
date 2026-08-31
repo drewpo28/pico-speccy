@@ -1309,9 +1309,15 @@ static bool     notify_on = false;
 static bool     notify_nm = false;
 
 // Top border height in framebuffer rows = the border machine's lin_end:
-// 48 on the 360x288 full-border modes, 24 everywhere else. DS80 is excluded
+// 48 on the 360x288 full-border modes, 24 everywhere else. Profi DS80 is excluded
 // altogether — 640x480 has no top border at all (lin_end == 0), and the packed
-// pair-slot framebuffer is the guest palette's, not ours.
+// pair-slot framebuffer is the guest palette's, not ours. Scorpion GMX shares the
+// pair-slot framebuffer but DOES have a band (20 rows at 240, 44 at 288) and is
+// the easy case: its border machine is parked, so the band is static — no column
+// reservation is needed and nothing can erase the banner mid-frame. Colours come
+// from the classic zxColor branch there (the nm:: UI block would be read as pair
+// slots); they reach the right pixels through Graphics8BitPalette's DS80 remap,
+// the same path the F8 stats box and the FDD lamp take.
 static constexpr int NOTIFY_BAND_H = OSD_FONT_H + 4;
 
 // Widest banner the mode can take: leaves the corner FDD lamp at x=311 alone and
@@ -1319,9 +1325,10 @@ static constexpr int NOTIFY_BAND_H = OSD_FONT_H + 4;
 static int notifyMaxChars() { return ((int)OSD::scrW - 48) / OSD_FONT_W; }
 
 static bool notifyGeom(int textw, int& x, int& y) {
-    if (profi_ds80_active) return false;
+    const int gmx_top = VIDEO::gmxTopBandRows();
+    if (profi_ds80_active && !gmx_top) return false;
     if (notifyMaxChars() < 8) return false;      // no mode this narrow, but don't index off the row
-    const int top = VIDEO::isFullBorder288() ? 48 : 24;
+    const int top = gmx_top ? gmx_top : (VIDEO::isFullBorder288() ? 48 : 24);
     if (top < NOTIFY_BAND_H) return false;
     y = (top - NOTIFY_BAND_H) / 2;
     x = ((int)OSD::scrW - textw) / 2;
@@ -1350,7 +1357,9 @@ void OSD::notify(const string& msg, uint8_t warn_level, uint16_t millis) {
 
     notify_level    = warn_level;
     notify_until_us = (uint64_t)esp_timer_get_time() + (uint64_t)millis * 1000ull;
-    notify_nm       = nm::available();
+    // Pair-slot framebuffer (GMX): the UI palette block does not exist there —
+    // its byte would decode as an arbitrary colour pair. Classic colours only.
+    notify_nm       = nm::available() && !profi_ds80_active;
     notify_on       = true;
     drawNotify();                 // show it on the frame that asked for it
 }
@@ -1382,8 +1391,14 @@ void OSD::drawNotify() {
     // back what it actually reserved — paint exactly that, or the extra carved
     // columns keep a stale border colour.
     int px0 = x - 4, px1 = x + textw + 4;
-    VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
-    if (px1 - px0 < textw) { cancelNotify(); return; }
+    if (!VIDEO::gmxTopBandRows()) {
+        VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
+        if (px1 - px0 < textw) { cancelNotify(); return; }
+    }
+    // GMX: no reservation — the band is repainted only by gmxBorderFrame, which
+    // cancelNotify triggers through brdChange/brdnextframe on expiry, and
+    // EndFrame paints the bands BEFORE calling drawNotify, so a repaint frame
+    // still ends with the banner on top.
     const int bandw = px1 - px0;
     x = px0 + (bandw - textw) / 2;
 

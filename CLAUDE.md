@@ -2157,8 +2157,7 @@ gate exists).
   `VIDEO::gmxForceOff()` in ESPectrum::reset (before latches clear); VIDEO::Reset
   re-arms a live mode via pending-on (video-mode switch rebuilds driver tables).
   Cold halves deliberately NOT IRAM — RAM cost of the whole GMX feature is ~224 B.
-  Timex forced off on GMX (CPU::reset backstop). Stats-overlay carve-outs and
-  screenshots in GMX mode: not handled (same gap as DS80 screenshots).
+  Timex forced off on GMX (CPU::reset backstop).
 - **The whole-line renderer must take its fb row from `curline`, never from
   `linedraw_cnt`** (hw-confirmed 2026-08-31; user report "картинка подёргивается
   и смещается на пару пикселей вниз"). MainScreen's generic
@@ -2191,12 +2190,58 @@ gate exists).
   the pair-slot framebuffer; it now repaints the bands via `gmxBorderFrame`
   instead. (Its paper walk is `Draw(tStatesPerLine)`, i.e. the same whole-line
   path as the HALT flush above — it needed the `frow` fix to be correct at all.)
+- **Attribute bit 7 = FLASH** (2026-08-31, NOT hw-tested): fg/bg swap on the flash
+  phase, MAME's `invert_attrs`. bg is attr bits 3-6 and fg bit 3 is attr bit 6, so
+  bit 7 is the only free one. Driven by the renderer's own `flashing` mask (0x80 /
+  0x00, toggled every 16 frames in ESPectrum::loop) rather than MAME's
+  `m_frame_invert_count`, so GMX blinks in step with the standard ULA renderer.
+- **`profi_ds80_active` is the "framebuffer is in packed-pair mode" flag, and GMX
+  SETS IT** (it is defined in vga.c/hdmi.c and raised by `profi_ds80_driver_set`,
+  which `gmxApplyPending` calls) — so every `!profi_ds80_active` guard already
+  reads correctly in GMX, and that is what keeps the F8 stats box, the F9/F10
+  volume box, the FDD lamp and the paused badge on their CLASSIC zxColor path
+  there. That path is the right one: the nm:: UI palette block does not exist in
+  pair mode, its byte would decode as an arbitrary colour PAIR. **Do not swap
+  those tests for an is-Profi test.** Consequences worth knowing:
+  - **Stats/volume need no content carve-out in GMX** (they do in DS80): with only
+    200 content rows, `drawStats`/`drawVolumeBox`'s 144x16 rect at x 168 (320-wide)
+    / 188 (360-wide), y 220 (yres 240) / 268 (288) lands in the BOTTOM BAND. The
+    16:9 `Draw_OSD169` diversion in MainScreen_Blank is dead code project-wide
+    (nothing ever installs `MainScreen_OSD`), so rows 176-191 do render content.
+    `gmxBorderFrame` carves that rect out anyway — ESPectrum::loop redraws the box
+    after EndFrame, so blanking it reads as a blink, and while PAUSED that redraw
+    does not run at all and the box would simply vanish on any band repaint.
+  - **`OSD::notify` works in GMX** (2026-08-31, NOT hw-tested) and is the EASY
+    case: `VIDEO::gmxTopBandRows()` (20 rows at yres 240, 44 at 288) replaces the
+    border machine's 24/48, and because that machine is parked the band is static
+    — no `setNoticeBand` reservation, nothing can erase the banner mid-frame, and
+    EndFrame paints the bands BEFORE `drawNotify`, so even a repaint frame ends
+    with the banner on top. Expiry erases it through cancelNotify's
+    brdChange/brdnextframe. Profi DS80 still falls back to the blocking
+    `osdCenteredMsg` (`lin_end == 0`, no band at all).
+- **BMP capture handles packed-pair modes** (hw-confirmed in GMX 2026-08-31 — a
+  captured `ESP*.bmp` decodes exactly, colours/pair order/`x^2` all correct; DS80
+  not separately re-run) — this closes it for DS80 as well as GMX. A pair-slot byte cannot be written out as an
+  8-bit index, so `CaptureToBmp` expands each fb byte into its two 4-bit indices
+  through `VIDEO::getPairSlotReverse()` (256 B: slot → (left<<4)|right) and emits
+  **640x480 / 720x576** — twice as wide AND rows doubled. The doubling is not
+  cosmetic: a standard-mode capture is half resolution on both axes (320x240 of a
+  640x480 screen) so its aspect is right, while pair mode is full-width and
+  640x240 comes out squashed to half height; the driver line-doubles those rows to
+  the panel too, so the doubled image IS the screen (profi2png doubles by default
+  for the same reason). While here, `bfSize` is now filled in — the static
+  `bmp_header1` carries a stale 5174 for every capture the emulator has ever
+  written. `getBmpPalette` overrides entries 0..15
+  with `profi_palette_live` (crtTransform only — the ZX palette presets never
+  apply to a Profi palette) LAST so it wins. The reverse table keeps the FIRST
+  writer of each slot: a merged pair (`init_profi_pair_lookup`: paper 8 → 0 for
+  inks 0..5, and the HDMI-audio slot diet) shares its slot with the pair the
+  driver actually encoded, and with paper ascending that one comes first — the
+  same rule `tools/profi2png.py` uses, which is the cross-check. The GDB-side
+  screenshot path (`tools/screenshot_profi.gdb` + profi2png) was already
+  geometry-agnostic (WIDTH/HEIGHT are arguments) and needed nothing.
 - Known deliberate gaps: magic-lock register snapshots (no NMI button), Vpp/EWR
-  28F400 flash writes ignored, GMX state not in snapshots, and **attribute bit 7
-  = FLASH/invert is not implemented** (MAME `invert_attrs`, `m_frame_invert_count`
-  — bg is bits 3-6 and fg bit 3 is attr bit 6, so bit 7 is free and MAME inverts
-  fg/bg on it every ~25 frames). Ours draws it solid; add it with the standard
-  renderer's `flashing` mask if a GUI element that should blink does not.
+  28F400 flash writes ignored, GMX state not in snapshots.
 
 ## Murmuzavr extended RAM — page budget + descriptor cost
 

@@ -1364,6 +1364,41 @@ void VIDEO::getBmpPalette(uint8_t* out) {
             out[i * 4 + 3] = 0;
         }
     }
+    // Packed-pair modes (Profi DS80, Scorpion GMX) — LAST, so it wins: there a
+    // framebuffer byte is a pair slot, and CaptureToBmp expands it back into two
+    // 4-bit indices, so entries 0..15 must be the palette the DRIVER is running
+    // (profi_palette_live — the guest's Profi palette, the GMX default ZX 16, or
+    // the UI block while a full-screen menu owns it), not the ZX 16. Only
+    // crtTransform applies, exactly as profi_ds80_driver_set does — the ZX
+    // palette presets deliberately never touch a Profi palette.
+    if (profi_ds80_active) {
+        for (int i = 0; i < 16; i++) {
+            uint32_t c = Config::crt_filter ? crtTransform(profi_palette_live[i])
+                                            : profi_palette_live[i];
+            out[i * 4 + 0] = c & 0xFF;
+            out[i * 4 + 1] = (c >> 8) & 0xFF;
+            out[i * 4 + 2] = (c >> 16) & 0xFF;
+            out[i * 4 + 3] = 0;
+        }
+    }
+}
+
+// Reverse of profi_pair_lookup, for BMP capture in the packed-pair modes.
+// Scan order matters: a merged pair (see init_profi_pair_lookup — paper 8 folds
+// onto paper 0 for inks 0..5, and the HDMI-audio slot diet folds bright-on-bright
+// onto the base paper) shares its slot with the pair the driver actually encoded,
+// and that one always comes FIRST with paper ascending — so keep the first writer
+// of each slot and the table names the colours the screen really shows.
+void VIDEO::getPairSlotReverse(uint8_t* out) {
+    bool seen[256] = {};
+    memset(out, 0, 256);
+    for (int ink = 0; ink < 16; ink++)
+        for (int paper = 0; paper < 16; paper++) {
+            uint8_t slot = profi_pair_lookup[ink][paper];
+            if (seen[slot]) continue;
+            seen[slot] = true;
+            out[slot] = (uint8_t)((ink << 4) | paper);
+        }
 }
 
 const int redPins[] = {RED_PINS_6B};
@@ -3102,12 +3137,19 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
                 uint32_t off = srow * 80;
                 const uint8_t* bmp = gmx_frame_bmp;
                 const uint8_t* att = gmx_frame_att;
+                // Attr bit 7 = FLASH: fg/bg swap on the flash phase (MAME
+                // `invert_attrs`). bg is bits 3-6 and fg bit 3 is attr bit 6, so
+                // bit 7 is the only free one. `flashing` is the ULA flash mask
+                // (0x80 / 0x00, toggled every 16 frames in ESPectrum::loop), so
+                // GMX blinks in step with the standard renderer.
+                const uint8_t gmx_flash = flashing;
                 if (bmp) {
                     for (int j = 0; j < 80; j++) {
                         uint8_t b = bmp[off + j];
                         uint8_t a = att ? att[off + j] : 0x07;
                         uint8_t fg = (uint8_t)(((a >> 3) & 0x08) | (a & 0x07));
                         uint8_t bg = (uint8_t)((a >> 3) & 0x0F);
+                        if (a & gmx_flash) { uint8_t t = fg; fg = bg; bg = t; }
                         // 8 source pixels → 4 pair bytes, (k^2) pre-swizzled for the
                         // ISR's x^2 read pattern (same trick as the DS80 branch), one
                         // aligned uint32_t store per source byte.
@@ -3631,6 +3673,8 @@ void VIDEO::gmxApplyPending() {
     }
 }
 
+int VIDEO::gmxTopBandRows() { return gmx_ext_live ? (int)lin_end : 0; }
+
 // Frame-granular top/bottom border bands for the GMX mode — repainted only when
 // the border colour (or the mode itself) changed; side pads are per content line.
 // `brdnextframe` is part of the trip condition because it is the project-wide
@@ -3649,10 +3693,27 @@ void VIDEO::gmxBorderFrame(bool skipFrame) {
     brdnextframe = false;
     gmx_border_col = borderColor & 7;
     uint8_t slot = profi_pair_lookup[gmx_border_col][gmx_border_col];
+    // With only 200 content rows the F8 stats box and the F9/F10 volume box land
+    // in the BOTTOM band here (in DS80 they straddle the content, hence its
+    // carve-outs) — one rectangle covers both: drawStats/drawVolumeBox put 144x16
+    // px at x 168 (320-wide) / 188 (360-wide), y 220 (yres 240) / 268 (288).
+    // Leave it to them rather than blanking it: ESPectrum::loop redraws it after
+    // EndFrame, so a blank would read as a blink — and while PAUSED that redraw
+    // does not run at all, so the box would just disappear on any band repaint.
+    const bool carve = (OSD & 0x07) != 0;
+    const int cx0 = ((int)vga.xres >= 360) ? 188 : 168;
+    const int cx1 = cx0 + 24 * 6;
+    const int cy0 = ((int)vga.yres >= 288) ? 268 : 220;
     if (vga.frameBuffer) {
         for (int _y = 0; _y < (int)vga.yres; _y++) {
             if (_y >= lin_end && _y < lin_end2) continue;
-            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], slot, vga.xres);
+            uint8_t* row = (uint8_t*)vga.frameBuffer[_y];
+            if (!row) continue;
+            if (carve && _y >= cy0 && _y < cy0 + 16 && cx1 <= (int)vga.xres) {
+                memset(row, slot, cx0);
+                memset(row + cx1, slot, (size_t)vga.xres - cx1);
+            } else
+                memset(row, slot, vga.xres);
         }
     }
 }

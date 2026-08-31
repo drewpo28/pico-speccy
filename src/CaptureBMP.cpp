@@ -34,6 +34,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "stdio.h"
+#include <string.h>
 #define CAPTUREBMP_IMPL
 #include "CaptureBMP.h"
 #include "Video.h"
@@ -44,6 +45,11 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ff.h"
 
 size_t fwrite(const void* v, size_t sz1, size_t sz2, FIL* f);
+
+// "The framebuffer is in packed-pair mode" (Profi DS80 / Scorpion GMX): one byte
+// is a pair slot standing for TWO 4-bit palette indices, so it cannot be written
+// out as an 8-bit index — the capture has to expand it (see below).
+extern "C" volatile bool profi_ds80_active;
 
 void CaptureToBmp()
 {
@@ -59,8 +65,24 @@ void CaptureToBmp()
     int w = VIDEO::vga.xres;
     int h = OSD::scrH;
 
-    // number of uint32_t words
-    int count = w >> 2;
+    // Packed-pair modes: every fb byte expands to two pixels, so the image is
+    // twice as wide as the framebuffer. (Both fb widths, 320 and 360, keep the
+    // output width a multiple of 4 — BMP rows need no padding either way.)
+    // Rows are doubled with it, and that is not cosmetic: a standard-mode capture
+    // is half resolution on BOTH axes (320x240 of a 640x480 screen), so its aspect
+    // is right, while pair mode is full-width — 640x240 would come out squashed to
+    // half height. The driver line-doubles those rows to the panel as well, so
+    // 640x480 / 720x576 IS the screen. (tools/profi2png.py doubles by default for
+    // the same reason.)
+    const bool pair_mode = profi_ds80_active;
+    const int out_w = pair_mode ? w * 2 : w;
+    const int out_h = pair_mode ? h * 2 : h;
+    const int row_reps = pair_mode ? 2 : 1;
+    uint8_t pair_rev[256];
+    if (pair_mode) VIDEO::getPairSlotReverse(pair_rev);
+
+    // number of uint32_t words per OUTPUT row
+    int count = out_w >> 2;
 
     // allocate line buffer
     uint32_t *linebuf = new uint32_t[count];
@@ -120,12 +142,18 @@ void CaptureToBmp()
     uint32_t* biWidth     = (uint32_t*)(&bmp_header2[0]);
     uint32_t* biHeight    = (uint32_t*)(&bmp_header2[4]);
     uint32_t* biSizeImage = (uint32_t*)(&bmp_header2[16]);
-    *biWidth = w;
-    *biHeight = h;
-    *biSizeImage = w * h;
+    *biWidth = out_w;
+    *biHeight = out_h;
+    *biSizeImage = out_w * out_h;
 
-    // write header 1
-    fwrite(bmp_header1, BMP_HEADER1_SIZE, 1, f);
+    // write header 1 — with a real bfSize (the static header carries a stale one)
+    unsigned char hdr1[BMP_HEADER1_SIZE];
+    memcpy(hdr1, bmp_header1, sizeof(hdr1));
+    const uint32_t file_sz = (uint32_t)(BMP_HEADER1_SIZE + BMP_HEADER2_SIZE
+                                        + BMP_HEADER3_INFO_SIZE + BMP_PALETTE_SIZE)
+                           + (uint32_t)out_w * (uint32_t)out_h;
+    memcpy(hdr1 + 2, &file_sz, 4);
+    fwrite(hdr1, BMP_HEADER1_SIZE, 1, f);
 
     // write header 2
     fwrite(bmp_header2, BMP_HEADER2_SIZE, 1, f);
@@ -140,19 +168,35 @@ void CaptureToBmp()
 
     // process every scanline in reverse order (BMP is bottom-up)
     for (int y = h - 1; y >= 0; y--) {
-        uint32_t* src = (uint32_t*)VIDEO::vga.frameBuffer[y];
-        uint32_t* dst = linebuf;
-        // process every uint32 in scanline
-        for (int i = 0; i < count; i++) {
-            uint32_t srcval = *src++;
-            uint32_t dstval = 0;
-            // swap uint16 halves to undo x^2 XOR framebuffer indexing
-            dstval |= ((srcval & 0xFFFF0000) >> 16);
-            dstval |= ((srcval & 0x0000FFFF) << 16);
-            *dst++ = dstval;
+        if (pair_mode) {
+            // Each fb byte → its two 4-bit indices (left, right), and the same
+            // x^2 read pattern to undo: the physical bytes of every aligned group
+            // of four are the visual order rotated to [2,3,0,1].
+            const uint8_t* srcb = (const uint8_t*)VIDEO::vga.frameBuffer[y];
+            uint8_t* dstb = (uint8_t*)linebuf;
+            static const int ord[4] = { 2, 3, 0, 1 };
+            for (int i = 0; i < w; i += 4)
+                for (int k = 0; k < 4; k++) {
+                    const uint8_t rv = pair_rev[srcb[i + ord[k]]];
+                    *dstb++ = (uint8_t)(rv >> 4);     // left half-pixel
+                    *dstb++ = (uint8_t)(rv & 0x0F);   // right half-pixel
+                }
+        } else {
+            uint32_t* src = (uint32_t*)VIDEO::vga.frameBuffer[y];
+            uint32_t* dst = linebuf;
+            // process every uint32 in scanline
+            for (int i = 0; i < count; i++) {
+                uint32_t srcval = *src++;
+                uint32_t dstval = 0;
+                // swap uint16 halves to undo x^2 XOR framebuffer indexing
+                dstval |= ((srcval & 0xFFFF0000) >> 16);
+                dstval |= ((srcval & 0x0000FFFF) << 16);
+                *dst++ = dstval;
+            }
         }
-        // write line to file
-        fwrite(linebuf, sizeof(uint32_t), count, f);
+        // write line to file (twice in pair mode — see out_h above)
+        for (int rep = 0; rep < row_reps; rep++)
+            fwrite(linebuf, sizeof(uint32_t), count, f);
     }
 
     // cleanup
