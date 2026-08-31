@@ -186,8 +186,7 @@
 #define TXT_MACH_BYTE       "Byte"
 #define TXT_MACH_PROFI      "Profi"
 #define TXT_MACH_KARABAS    "Karabas"
-#define TXT_MACH_SCORP      "Scorpion 256K"
-#define TXT_MACH_GMX        "Scorpion GMX"
+#define TXT_MACH_SCORP      "Scorpion"
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
@@ -223,9 +222,14 @@
 #define TXT_ROM_KAR_FDI     "FDImage"
 // Scorpion PCB revisions (ZXMAK2's Yellow/Green): same v2.94 ROM, different
 // frame timing (312 vs 316 lines).
-#define TXT_ROM_SCORP       "Yellow PCB"
-#define TXT_ROM_SCORP_GR    "Green PCB"
-#define TXT_ROM_SCORP_GMX   "GMX"
+#define TXT_ROM_SCORP        "ZS-256 Turbo (Yellow)"
+#define TXT_ROM_SCORP_S      "ZS-256T"        // left-column short form (Option::slabel)
+#define TXT_ROM_SCORP_GR     "ZS-256 Turbo+ (Green)"
+#define TXT_ROM_SCORP_GR_S   "ZS-256T+"
+#define TXT_ROM_SCORP_GMX    "ZS-256 Turbo+ & GMX"
+#define TXT_ROM_SCORP_GMX_S  "GMX"
+#define TXT_ROM_SCORP_1024   "ZS-1024 Turbo+"
+#define TXT_ROM_SCORP_1024_S "ZS-1024T+"
 #define TXT_ROM_ALF         "ALF cartridge"
 
 // ── Options ────────────────────────────────────────────────────────────────────

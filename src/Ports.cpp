@@ -598,7 +598,7 @@ inline static size_t extendedZxRamPages() {
   if (Z80Ops::is512)
     return 32;
   if (Z80Ops::isScorpion)
-    return 16;
+    return g_scorp_gmx ? 128 : (g_scorp_1024 ? 64 : 16);
   if (Z80Ops::is128 || (Z80Ops::isPentagon || Z80Ops::isProfi))
     return 8;
   return 4;
@@ -1805,6 +1805,12 @@ static inline void gmxTapUpdate() {
 static inline uint32_t scorpionC000Page(uint32_t low3) {
   uint32_t page = low3 | ((Ports::port1FFD & 0x10) >> 1);
   if (g_scorp_gmx) page |= (uint32_t)(Ports::portDFFDgmx & 0x07) << 4;
+  // ZS-1024: 1FFD D6,D7 are two more page bits above D4 — 64 pages = 1 MB
+  // (MAME scorpion_update_memory `(1ffd & 0xc0) >> 2`; ZXMAK2
+  // MemoryScorpionProfRom1024 `sega |= (CMR1 & 0xC0) >> 5`). 256K boards leave
+  // the bits unwired — modelled by NOT composing them there (the bounds W/A
+  // below would catch stray writes anyway).
+  if (g_scorp_1024) page |= (uint32_t)(Ports::port1FFD & 0xC0) >> 2;
   uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
   if (page >= pages) page = low3;
   return page;

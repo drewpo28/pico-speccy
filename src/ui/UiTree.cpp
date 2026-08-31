@@ -284,18 +284,14 @@ static const Option opt_mach_karabas[] = {
     { TXT_ROM_KAR_FDI,    NM_MACH(A_KARABAS, R_PROFI_FDI) },
 };
 static const Option opt_mach_scorp[] = {
-    { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP)     },
-    { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR)  },
-};
+    { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP),      TXT_ROM_SCORP_S      },
+    { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR),   TXT_ROM_SCORP_GR_S   },
 #if GMX_IN_FLASH   // escape-hatch builds carry no GMX ROM (CMakeLists); with the ROM
-                   // in, a butter-less module reverts the pick in resolveConstraints.
-                   // GMX is its own top-level machine row (single-option radio, the
-                   // ALF pattern) — it is a different machine in practice (2 MB, own
-                   // boot ROM, 640x200), not a PCB variant of the ZS-256.
-static const Option opt_mach_gmx[] = {
-    { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX) },
-};
+                   // in, a butter-less module reverts the pick in resolveConstraints
+    { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX),  TXT_ROM_SCORP_GMX_S  },
 #endif
+    { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S },
+};
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
@@ -342,11 +338,8 @@ static const Node kMachine[] = {
     // running or staged) — Murmuzavr belongs to the three Pentagon rows above it.
     NM_SUB  (NM_IND TXT_MACH_MURM, kMurmuzavr, p_murmAvail),
     // Scorpion sits with the Soviet-clone block, right after the Pentagons.
-    // Its pages 8-15 need extended-RAM backing, same gate as P512.
+    // Its pages above the base 128K need extended-RAM backing, same gate as P512.
     NM_RADIO(TXT_MACH_SCORP, SET_MACHINE, opt_mach_scorp, p_extRam),
-#if GMX_IN_FLASH
-    NM_RADIO(TXT_MACH_GMX,   SET_MACHINE, opt_mach_gmx,   p_extRam),
-#endif
     NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
@@ -724,14 +717,17 @@ static const Option opt_pref_pent[] = {
     { TXT_ROM_CUSTOM,    1 },
     { TXT_ROM_LAST,      2 },
 };
+// Values are indices into UiStage's kPrefScorp — 1024 sits BEFORE the
+// conditional GMX entry so the indices are identical on both build variants.
 static const Option opt_pref_scorp[] = {
-    { TXT_ROM_SCORP,     0 },
-    { TXT_ROM_SCORP_GR,  1 },
+    { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      },
+    { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   },
+    { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S },
 #if GMX_IN_FLASH
-    { TXT_ROM_SCORP_GMX, 2 },
-    { TXT_ROM_LAST,      3 },
+    { TXT_ROM_SCORP_GMX,  3, TXT_ROM_SCORP_GMX_S  },
+    { TXT_ROM_LAST,       4 },
 #else
-    { TXT_ROM_LAST,      2 },
+    { TXT_ROM_LAST,       3 },
 #endif
 };
 

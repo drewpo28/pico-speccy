@@ -86,6 +86,7 @@ bool Z80Ops::isProfi = false;
 bool Z80Ops::isScorpion = false;
 bool g_scorp_even_m1 = false;
 bool g_scorp_gmx = false;
+bool g_scorp_1024 = false;
 bool g_gmx_tap = false;
 
 void CPU::updateStatesInFrame() {
@@ -154,6 +155,7 @@ void CPU::reset() {
     // Even-M1 is a Yellow-PCB-only trait (see CPU.h); Green and GMX dropped it.
     g_scorp_even_m1 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP);
     g_scorp_gmx = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_GMX);
+    g_scorp_1024 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_1024);
     g_gmx_tap = false;   // re-armed by Ports::scorpionRomUpdate once paging settles
     if (Config::arch == A_48K) {
         Z80Ops::isByte = (Config::romSet48 == R_48K_BY);

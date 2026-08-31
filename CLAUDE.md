@@ -1937,12 +1937,22 @@ scorpion`); bank2/3 raw in `src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT
 overlay: rom[4] already overlays the `trdos_505d` base pointer and
 `MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
 
-- **Two PCB revisions as two romsets over the SAME ROM** (2026-08-19, the ZXMAK2
-  `UlaScorpionYellow`/`UlaScorpionGreen` split; the Byte-over-48K pattern —
-  `Config::romSetScorp` drives the timing branch): `R_SCORP` "Scorp" = **Yellow
-  PCB**, 312 lines = 69888 T (default), `R_SCORP_GR` "ScorpGr" = **Green PCB**,
-  **316 lines = 70784 T** (= MAME scorpiontb's +4 lines) with its own exact audio
-  set (`ESP_AUDIO_*_SCORP_GR`: 632 samples = 70784/112, 31250 Hz at 49.4462 fps).
+- **Four romsets over the SAME v2.94 ROM** (one Machine → Scorpion radio; UI
+  labels "ZS-256 Turbo (Yellow)" / "ZS-256 Turbo+ (Green)" / "ZS-256 Turbo+ &
+  GMX" / "ZS-1024 Turbo+", with `Option::slabel` short forms; the Byte-over-48K
+  pattern — `Config::romSetScorp` drives the timing branch): `R_SCORP` "Scorp" =
+  **Yellow PCB**, 312 lines = 69888 T (default), `R_SCORP_GR` "ScorpGr" =
+  **Green PCB**, **316 lines = 70784 T** (= MAME scorpiontb's +4 lines) with its
+  own exact audio set (`ESP_AUDIO_*_SCORP_GR`: 632 samples = 70784/112, 31250 Hz
+  at 49.4462 fps). `R_SCORP_1024` "Scorp1024" = **ZS-1024** (hw-confirmed
+  2026-08-31 with the UMT memory test): Green/Turbo+ timing, no even-M1, and
+  1FFD D7,D6 as two more 0xC000 page bits above D4 — 64 pages = 1 MB
+  (`g_scorp_1024` in `scorpionC000Page`: page = D7D6<<4 | D4<<3 | 7FFD 0-2; MAME
+  scorpion_update_memory `(1ffd&0xc0)>>2` and ZXMAK2 MemoryScorpionProfRom1024
+  `sega |= (CMR1&0xC0)>>5` agree; MEM_PG_CNT=64 default already covers it, no
+  reboot boundary). The 256K boards leave D6/D7 unwired — deliberately NOT
+  composed there. In UiStage's `kPrefScorp`, 1024 sits BEFORE the conditional
+  GMX entry so opt_pref_scorp's indices match on GMX-less builds.
   Paper line 64 / geometry / ports identical, so Video.cpp needs NO green branch —
   only `statesInFrame`, `ESPectrum::target` (20224 µs) and the audio cascades
   differ. **Even-M1 is implemented for Yellow only** (`g_scorp_even_m1`, set in
@@ -1982,7 +1992,7 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
   raw bankLatch 8-15 corrupted the port byte (bit3=videoLatch) and derailed the
   page-skip loop into a malformed size. Tape loader128 reuses `loadpentagon` with
   `skip_rom_pages` (Profi pattern).
-- **UI**: Machine → "Scorpion 256K" (between the Pentagons and Byte; gated
+- **UI**: Machine → "Scorpion" (between the Pentagons and Byte; gated
   `p_extRam` like P512 — pages 8-15 need backing), pref-arch/pref-rom rows
   (`SET_PREF_ROM_SCORP` appended LAST in the UiStage X-macro per its APPEND ONLY
   rule), `MENU_RESETTO_SCORP` = Service monitor (a bare `Z80::triggerNMI()`, NO

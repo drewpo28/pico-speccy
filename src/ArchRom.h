@@ -53,9 +53,10 @@
     X(R_PROFI_PQ,       "ProfiPQ",          "PQDOS")              \
     X(R_PROFI_FT,       "ProfiKarabasFT",   "Flash Tool")         \
     X(R_PROFI_FDI,      "ProfiKarabasFDI",  "FDImage")            \
-    X(R_SCORP,          "Scorp",            "Yellow PCB")         \
-    X(R_SCORP_GR,       "ScorpGr",          "Green PCB")          \
-    X(R_SCORP_GMX,      "ScorpGMX",         "GMX")                \
+    X(R_SCORP,          "Scorp",            "ZS-256 Turbo (Yellow)")      \
+    X(R_SCORP_GR,       "ScorpGr",          "ZS-256 Turbo+ (Green)")      \
+    X(R_SCORP_GMX,      "ScorpGMX",         "ZS-256 Turbo+ & GMX")        \
+    X(R_SCORP_1024,     "Scorp1024",        "ZS-1024 Turbo+")             \
     X(R_ALF1,           "ALF1",             "ALF cartridge")
 
 #define NM_X_IDX(id, str) id,

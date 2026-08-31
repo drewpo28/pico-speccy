@@ -227,10 +227,12 @@ static const RomsetIdx kPref128[]  = {
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
+// 1024 sits BEFORE the conditional GMX entry so opt_pref_scorp's indices
+// (UiTree.cpp) are identical on both build variants.
 #if GMX_IN_FLASH
-static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_GMX, R_LAST };
+static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_GMX, R_LAST };
 #else
-static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_LAST };
+static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_LAST };
 #endif
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
