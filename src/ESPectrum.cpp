@@ -1296,6 +1296,26 @@ void ESPectrum::reset(uint8_t romInUse) {
   Ports::gmxMagicShift = 0;
   Ports::portDFFDgmx = 0;
   g_gmx_tap = false;
+  // ── EXPERIMENT (2026-08-31): GMX F11 = a COLD boot ──────────────────────────
+  // The GMX firmware keeps warm-boot state in guest RAM — its monitor skips its
+  // own memory test after an F11 and trusts what it finds there: the RAM thunks
+  // at 0xE3xx-0xE5xx, the shadows 0xDFEF (7EFD) / 0xE035, tables like 0xEB14, all
+  // in the 0xC000 window, i.e. pages >= 8. A program that uses extended pages
+  // destroys them, and the monitor then comes up on that wreckage (hw: after the
+  // game HQ it either walks into a bank with no 0x0038 handler and eats 32 KB of
+  // RAM with its stack, or lands in its own debugger reporting "Breakpoint #0").
+  // A real Scorpion's reset button does not clear RAM either, so this is NOT
+  // faithful — it is here because "F11 gives me the menu back" is what the user
+  // wants. Zeroing every page is exactly what makes the firmware take its cold
+  // path. cleanup() is the existing per-page zero (handles POINTER/butter/SPI/
+  // swap backings), and GMX requires butter PSRAM, so these are all direct
+  // pointers: ~2 MB of memset. Flip the condition to disable.
+  if (g_scorp_gmx) {
+    const uint64_t _t0 = esp_timer_get_time();
+    for (int i = 0; i < MEM_PG_CNT; i++) MemESP::ram[i].cleanup();
+    Debug::log("[RESET] GMX cold boot: %d RAM pages cleared in %u us",
+               (int)MEM_PG_CNT, (unsigned)(esp_timer_get_time() - _t0));
+  }
   Ports::serialMouseReset();
   // Profi SYSEN: boot into SYS ROM (bank0) with trdos=true to protect page0
   ESPectrum::trdos = (Config::arch == A_PROFI && romInUse == 0);

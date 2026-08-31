@@ -2391,6 +2391,30 @@ Two things came out of that diff:
   state, and the monitor's loop must be polling something — that half of the
   conversation was invisible.
 
+### FIXED (hw-confirmed 2026-08-31): GMX F11 zeroes all guest RAM
+
+`ESPectrum::reset`, gated on `g_scorp_gmx`: one `mem_desc_t::cleanup()` per page
+(the existing per-page zero — handles POINTER/butter/SPI/swap backings), ~2 MB on
+butter, timed in the `[RESET] GMX cold boot:` line. That is the whole fix: with the
+firmware's warm-boot state gone it takes its cold path — memory test, monitor,
+128 menu — and F11 after HQ works.
+
+**It is deliberately NOT faithful** (a real Scorpion's reset button leaves RAM
+alone) and it is deliberately **GMX-only**:
+- nothing else here has firmware that trusts RAM across a reset, and
+- on other machines a reset that wipes RAM would break software that relies on the
+  opposite — a TR-DOS/Gluk RAM disk, a monitor's saved state — so do NOT widen
+  this to all Scorpion romsets or all machines.
+Side effect worth knowing: F11 now blanks the screen (pages 5/7 go with the rest)
+instead of leaving the last frame up until the first repaint.
+
+**Open oddity, if this ever needs revisiting:** a full firmware reboot (F12) also
+leaves guest RAM alone — butter PSRAM survives a watchdog reboot and `assign_ram`
+does not clear pages — yet F12 recovers fine. So the discriminator the firmware
+actually keys on must live somewhere F12 happens to reinitialise (the SRAM-backed
+`.ram_128k` pages 0-7, or a heap page that comes back different), not in butter.
+Nobody has needed to find out which byte it is.
+
 ### …and the mechanism, from the heartbeat (hw 2026-08-31)
 
 `[GMX hb]` settled it in one capture. Both runs reach the monitor's plane-4/5
