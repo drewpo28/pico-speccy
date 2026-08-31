@@ -3073,7 +3073,19 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
                 gmx_frame_att = (bmpPg + 64 < MEM_PG_CNT) ? MemESP::ram[bmpPg + 64].direct() : nullptr;
                 gmx_frame_srow = ((((uint32_t)Ports::gmxScrollHi << 8) | Ports::gmxScrollLo) / 80u) % 200u;
             }
-            const uint32_t frow = (uint32_t)linedraw_cnt;   // content rows lin_end..lin_end2-1
+            // Framebuffer row for this content line — derived from curline (the
+            // line MainScreen_Blank set up for this call), NEVER from
+            // linedraw_cnt: the generic block above may ALREADY have advanced
+            // linedraw_cnt in this very call, which happens whenever one Draw
+            // call covers a whole line from column 0 — i.e. on every line of
+            // CPU::FlushOnHalt's `Draw(tStatesPerLine)` flush (and
+            // RedrawPausedFrame's). Reading the counter there put the whole
+            // flushed region one row DOWN (top content row left stale, source
+            // row 199 spilled into the bottom border band), and since the flush
+            // starts at the HALT's phase within the line, it shifted on some
+            // frames and not others — the "picture jitters / sits a couple of
+            // pixels low" report. Same pattern as the DS80 branch's ds80_voff.
+            const uint32_t frow = line + (uint32_t)lin_end;   // rows lin_end..lin_end2-1
             uint8_t* fb_row = (vga.frameBuffer && frow < (uint32_t)vga.yres)
                               ? (uint8_t*)vga.frameBuffer[frow] : nullptr;
             if (fb_row && line < 200) {
@@ -3621,10 +3633,20 @@ void VIDEO::gmxApplyPending() {
 
 // Frame-granular top/bottom border bands for the GMX mode — repainted only when
 // the border colour (or the mode itself) changed; side pads are per content line.
+// `brdnextframe` is part of the trip condition because it is the project-wide
+// "the chrome is gone, repaint the border on demand" signal (OSD::cancelNotify,
+// nm::chrome restore, videoModeConfirm, …) and in GMX these bands are the ONLY
+// thing that repaints it: the content renderer covers just the 200 middle rows,
+// so a menu's header/footer survived in the top/bottom bands after every menu
+// session. Cleared only here, i.e. only on a frame that actually paints (the
+// skipFrame early-out above), for the same reason cancelNotify sets both flags:
+// brdChange is cleared by EndFrame even on a skipped frame.
 void VIDEO::gmxBorderFrame(bool skipFrame) {
     if (skipFrame) return;
-    if (!(brdChange || gmx_border_dirty || gmx_border_col != (borderColor & 7))) return;
+    if (!(brdChange || brdnextframe || gmx_border_dirty
+          || gmx_border_col != (borderColor & 7))) return;
     gmx_border_dirty = false;
+    brdnextframe = false;
     gmx_border_col = borderColor & 7;
     uint8_t slot = profi_pair_lookup[gmx_border_col][gmx_border_col];
     if (vga.frameBuffer) {

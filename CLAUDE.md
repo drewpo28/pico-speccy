@@ -2159,8 +2159,28 @@ gate exists).
   Cold halves deliberately NOT IRAM — RAM cost of the whole GMX feature is ~224 B.
   Timex forced off on GMX (CPU::reset backstop). Stats-overlay carve-outs and
   screenshots in GMX mode: not handled (same gap as DS80 screenshots).
+- **The whole-line renderer must take its fb row from `curline`, never from
+  `linedraw_cnt`** (fixed 2026-08-31; user report "картинка подёргивается и
+  смещается на пару пикселей вниз", NOT yet hw-re-tested). MainScreen's generic
+  block advances `linedraw_cnt` BEFORE the mode branches whenever one Draw call
+  crosses column 32 — which never happens under normal execution (≤7 columns per
+  instruction) but happens on EVERY line of `CPU::FlushOnHalt`'s
+  `while (Draw != Blank) Draw(tStatesPerLine)` flush and of `RedrawPausedFrame`.
+  So the entire flushed region (i.e. everything after the guest's HALT — most of
+  the frame in a GUI that idles on HALT) was written ONE ROW DOWN: source row 0's
+  fb row kept the previous frame, source row 199 spilled into the bottom border
+  band, and because the flush inherits the HALT's phase within the line
+  (`video_rest >= 128` decides it) it shifted on some frames and not others —
+  hence jitter plus a "couple of pixels" (1 fb row = 2 output pixels after line
+  doubling) offset. `frow = line + lin_end` is phase-independent; the DS80 branch
+  beside it always did it this way (`ds80_voff`), which is why Profi never showed
+  this.
 - Known deliberate gaps: magic-lock register snapshots (no NMI button), Vpp/EWR
-  28F400 flash writes ignored, GMX state not in snapshots.
+  28F400 flash writes ignored, GMX state not in snapshots, and **attribute bit 7
+  = FLASH/invert is not implemented** (MAME `invert_attrs`, `m_frame_invert_count`
+  — bg is bits 3-6 and fg bit 3 is attr bit 6, so bit 7 is free and MAME inverts
+  fg/bg on it every ~25 frames). Ours draws it solid; add it with the standard
+  renderer's `flashing` mask if a GUI element that should blink does not.
 
 ## Murmuzavr extended RAM — page budget + descriptor cost
 
