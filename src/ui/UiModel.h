@@ -113,6 +113,11 @@ struct Node {
     // the nav's idle tick (UiNav previewTick), never on the cursor-move path.
     // For these nodes `lo` doubles as the refresh period in ms (0 = build once).
     const char* (*ptext)();
+    // Optional per-row icon painter for the preview: draws at (x, y) for preview
+    // line `idx` and returns the width consumed in logical px (text follows to the
+    // right of it). The LED legend uses it to put the real 8x8 LED sprite beside
+    // each label. nullptr = text-only preview.
+    int (*picon)(int idx, int x, int y);
 };
 
 // Counts are derived from the array, never written by hand: a hand-written count
@@ -140,6 +145,10 @@ struct Node {
 // `period` = refresh interval in ms while the row is selected (0 = build once).
 #define NM_PAGE_PV(lbl, f, pv, period, vis) \
     { lbl, nm::K_PAGE, 0, 0, nullptr, nullptr, vis, f, nullptr, nullptr, nullptr, period, 0, 0, nullptr, nullptr, nullptr, pv }
+// Action row with a right-pane preview; `ic` is the optional per-row icon painter
+// (nullptr for text-only). Same `pv`/`period` contract as NM_PAGE_PV.
+#define NM_ACTION_PV(lbl, f, pv, ic, period, vis) \
+    { lbl, nm::K_ACTION, 0, 0, nullptr, nullptr, vis, f, nullptr, nullptr, nullptr, period, 0, 0, nullptr, nullptr, nullptr, pv, ic }
 #define NM_RADIO(lbl, sid, opts_arr, vis) \
     { lbl, nm::K_RADIO, NM_COUNT(opts_arr), sid, opts_arr, nullptr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr }
 // Enable-gated variant: visible always, greyed and inert while en() is false.

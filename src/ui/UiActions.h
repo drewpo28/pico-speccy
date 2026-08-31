@@ -54,6 +54,9 @@ void slotsArmFile(const std::string& fname);
 
 // Devices
 void act_ledLegend();
+// LED legend preview: label lines + the real LED sprite per row (NM_ACTION_PV).
+const char* pv_ledLegend();
+int         pvicon_ledLegend(int idx, int x, int y);
 
 // Joystick / hot keys
 void act_joyDialog();

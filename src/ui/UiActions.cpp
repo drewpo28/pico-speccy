@@ -297,31 +297,54 @@ void act_helpRemapInfo() {
 // difference is that dotFast addresses the framebuffer in BYTES, i.e. half a logical
 // DS80 pixel column, so the glyph x is halved below — which also renders it 2 px per
 // pixel, matching the 2x horizontal glyph scale the DS80 text uses.
-void act_ledLegend() {
+// One X-macro list feeds the full-screen page, the right-pane preview text (a
+// compile-time literal — zero RAM) and the preview's per-row sprite painter, so
+// the three can never drift apart.
+#define LED_LEGEND_LIST(X) \
+    X(TAPE,       "Tape (EAR)")      \
+    X(FDD,        "Floppy/TR-DOS")   \
+    X(SD,         "SD (DivMMC/NGS)") \
+    X(ZCTRL,      "Z-Controller")    \
+    X(IDE,        "IDE/HDD")         \
+    X(BEEPER,     "Beeper")          \
+    X(AY,         "AY-3-8912")       \
+    X(COVOX,      "Covox DAC")       \
+    X(SAA,        "SAA1099")         \
+    X(MIDI,       "MIDI")            \
+    X(GS,         "General Sound")   \
+    X(ULAPLUS,    "ULA+")            \
+    X(TIMEX,      "Timex SCLD")      \
+    X(GIGASCREEN, "Gigascreen")      \
+    X(RAM,        "RAM paging")      \
+    X(DMA,        "Z80 DMA")         \
+    X(KEMPJOY,    "Kempston joy")    \
+    X(KEMPMOUSE,  "Kempston mouse")  \
+    X(NET,        "Network (ZiFi)")
 
-    struct Entry { LED::Id id; const char* label; };
-    static const Entry entries[] = {
-        { LED::TAPE,       "Tape (EAR)"     },
-        { LED::FDD,        "Floppy/TR-DOS"  },
-        { LED::SD,         "SD (DivMMC/NGS)" },
-        { LED::ZCTRL,      "Z-Controller"   },
-        { LED::IDE,        "IDE/HDD"        },
-        { LED::BEEPER,     "Beeper"         },
-        { LED::AY,         "AY-3-8912"      },
-        { LED::COVOX,      "Covox DAC"      },
-        { LED::SAA,        "SAA1099"        },
-        { LED::MIDI,       "MIDI"           },
-        { LED::GS,         "General Sound"  },
-        { LED::ULAPLUS,    "ULA+"           },
-        { LED::TIMEX,      "Timex SCLD"     },
-        { LED::GIGASCREEN, "Gigascreen"     },
-        { LED::RAM,        "RAM paging"     },
-        { LED::DMA,        "Z80 DMA"        },
-        { LED::KEMPJOY,    "Kempston joy"   },
-        { LED::KEMPMOUSE,  "Kempston mouse" },
-        { LED::NET,        "Network (ZiFi)" },
-    };
-    static constexpr int N = (int)(sizeof(entries) / sizeof(entries[0]));
+struct LedEntry { LED::Id id; const char* label; };
+#define LED_ROW(id, lbl) { LED::id, lbl },
+static const LedEntry kLedEntries[] = { LED_LEGEND_LIST(LED_ROW) };
+#undef LED_ROW
+static constexpr int kLedN = (int)(sizeof(kLedEntries) / sizeof(kLedEntries[0]));
+
+const char* pv_ledLegend() {
+#define LED_LINE(id, lbl) lbl "\n"
+    return LED_LEGEND_LIST(LED_LINE);
+#undef LED_LINE
+}
+
+// Preview row icon: the real LED sprite, exactly as the full page draws it (same
+// DS80 byte-column halving — see the comment above act_ledLegend).
+int pvicon_ledLegend(int idx, int x, int y) {
+    if (idx < 0 || idx >= kLedN) return 0;
+    LED::drawGlyph(kLedEntries[idx].id, Sf.ds80 ? (x >> 1) : x, y,
+                   uiPaletteSlot(C_ACCENT), uiPaletteSlot(C_PANEL));
+    return 10 * Sf.glyphScale;
+}
+
+void act_ledLegend() {
+    const LedEntry* entries = kLedEntries;
+    constexpr int N = kLedN;
 
     gfxResumePalette();
     const int sc  = Sf.glyphScale;

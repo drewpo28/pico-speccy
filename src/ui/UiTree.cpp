@@ -785,7 +785,7 @@ static const Node kInterface[] = {
     NM_BOOL     (TXT_HW_LED,           SET_LED_IND,   nullptr),
     // Always available: the legend is reference material, useful before you turn
     // the indicators on (to see what they will mean) as much as after.
-    NM_ACTION   (NM_IND TXT_HW_LEGEND, act_ledLegend, nullptr),
+    NM_ACTION_PV(NM_IND TXT_HW_LEGEND, act_ledLegend, pv_ledLegend, pvicon_ledLegend, 0, nullptr),
     NM_BOOL     (NM_IND TXT_HW_SDLED,  SET_SD_LED,    nullptr),
 };
 

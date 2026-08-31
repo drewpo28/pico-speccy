@@ -392,7 +392,9 @@ static void drawRightRow(int visRow) {
             int len = 0;
             const char* l = previewLine(n, idx, len);
             if (l) {
-                if (len) uiMarkupLine(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad, l, len);
+                int ind = n->picon ? n->picon(idx, LY.rx + LY.pad, y + 1) : 0;
+                if (len) uiMarkupLine(LY.rx + LY.pad + ind, y + 1,
+                                      LY.rw - 2 * LY.pad - ind, l, len);
             } else if (idx == 0) {
                 textClip(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad,
                          SYM_ENTER " to open", C_TEXT_DIM);
