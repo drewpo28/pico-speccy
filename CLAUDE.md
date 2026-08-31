@@ -2160,8 +2160,8 @@ gate exists).
   Timex forced off on GMX (CPU::reset backstop). Stats-overlay carve-outs and
   screenshots in GMX mode: not handled (same gap as DS80 screenshots).
 - **The whole-line renderer must take its fb row from `curline`, never from
-  `linedraw_cnt`** (fixed 2026-08-31; user report "картинка подёргивается и
-  смещается на пару пикселей вниз", NOT yet hw-re-tested). MainScreen's generic
+  `linedraw_cnt`** (hw-confirmed 2026-08-31; user report "картинка подёргивается
+  и смещается на пару пикселей вниз"). MainScreen's generic
   block advances `linedraw_cnt` BEFORE the mode branches whenever one Draw call
   crosses column 32 — which never happens under normal execution (≤7 columns per
   instruction) but happens on EVERY line of `CPU::FlushOnHalt`'s
@@ -2175,6 +2175,22 @@ gate exists).
   doubling) offset. `frow = line + lin_end` is phase-independent; the DS80 branch
   beside it always did it this way (`ds80_voff`), which is why Profi never showed
   this.
+- **The top/bottom bands must also repaint on `brdnextframe`** (hw-confirmed
+  2026-08-31; user report "после входа/выхода в меню остаются top/bottom
+  артефакты"). In GMX the content renderer owns only the 200 middle rows, so the
+  bands are the ONLY thing that can erase full-screen chrome from the bands — and
+  `gmxBorderFrame` tripped on `brdChange`/colour change only, while every menu
+  exit signals a border repaint through `brdnextframe` (processKeyboard after
+  every `do_OSD`, `OSD::cancelNotify`, the nm:: chrome restore,
+  `videoModeConfirm`). Result: the menu's header and footer survived in the bands
+  after every menu session. `brdnextframe` is now part of the trip condition and
+  is cleared only on a frame that actually paints (skipFrame returns first) — the
+  same reason `cancelNotify` raises both flags. Companion fix (not separately
+  exercised on hw) in `RedrawPausedFrame` (menu closed while PAUSED): it used to arm the STANDARD
+  border chain (`TopBorder_Blank`), which in GMX would write raw ZX indices into
+  the pair-slot framebuffer; it now repaints the bands via `gmxBorderFrame`
+  instead. (Its paper walk is `Draw(tStatesPerLine)`, i.e. the same whole-line
+  path as the HALT flush above — it needed the `frow` fix to be correct at all.)
 - Known deliberate gaps: magic-lock register snapshots (no NMI button), Vpp/EWR
   28F400 flash writes ignored, GMX state not in snapshots, and **attribute bit 7
   = FLASH/invert is not implemented** (MAME `invert_attrs`, `m_frame_invert_count`

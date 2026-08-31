@@ -4087,10 +4087,19 @@ void VIDEO::RedrawPausedFrame() {
 
     // Full border repaint: with tstates at end-of-frame the border state machine
     // walks Top→Middle→Bottom→Blank in one call, preserving the stats carve-outs.
+    // GMX 640x200 is the exception: its border machine is parked (a per-T-state
+    // writer would put raw ZX indices into the pair-slot framebuffer), the bands
+    // are frame-granular, and the side pads come with the content lines just
+    // walked above — so repaint the bands directly instead.
+    if (gmx_ext_live) {
+        gmx_border_dirty = true;
+        gmxBorderFrame(false);
+    } else {
     CPU::tstates = CPU::statesInFrame;
     lastBrdTstate = tStatesBorder;
     DrawBorder = &TopBorder_Blank;
     DrawBorder();
+    }
 
     CPU::tstates = saved_tstates;
     // Draw/DrawBorder are left "done" (Blank/Border_Blank); the per-frame
