@@ -239,9 +239,10 @@ SECTIONS
      * ships everywhere and GMX gates at runtime): the partition is 1.6875 MB so
      * firmware + ROM fit below it. The stock converted gm.dls (~1.59 MB) still
      * fits with ~100 KB margin; larger custom banks that used the old 2.375 MB
-     * ceiling no longer install. The 0x260000 branch survives only for the
-     * GMX_IN_FLASH=0 escape hatch (CMakeLists). */
-    __gm_bank_size  = DEFINED(__gmx_rom_in_flash) ? 0x1B0000 : 0x260000;   /* 1.6875 / 2.375 MB; multiple of 4 KB. Holds converted .dls banks (gm.dls ~1.59 MB fits with margin). Was 2.5 MB — 128 KB handed to the firmware partition for the new fullscreen UI (2026-07-26); moving the start is safe: gm_bank_view() fails the header check on stale data and the bank re-provisions from SD. */
+     * ceiling no longer install. The 0x240000 branch survives only for the
+     * GMX_IN_FLASH=0 escape hatch (CMakeLists), and keeps main's 2026-08-31
+     * value — without the ROM the firmware needs that partition back. */
+    __gm_bank_size  = DEFINED(__gmx_rom_in_flash) ? 0x1B0000 : 0x240000;   /* 1.6875 / 2.25 MB; multiple of 4 KB. Holds converted .dls banks (gm.dls ~1.59 MB fits with margin). The non-GMX branch was 2.5 MB, then 2.375 MB — 128 KB handed to the firmware partition for the new fullscreen UI (2026-07-26) and another 128 KB for the Byte test-ROM overlay (2026-08-31, m1p2 VGA-HDMI and z0p2 PIOUSB had overflowed by 2 KB / 13 KB); moving the start is safe: gm_bank_view() fails the header check on stale data and the bank re-provisions from SD. */
     __gm_bank_start = ORIGIN(FLASH) + LENGTH(FLASH) - __gm_bank_size;
     __gm_bank_end   = ORIGIN(FLASH) + LENGTH(FLASH);
     ASSERT(__flash_binary_end <= __gm_bank_start,
