@@ -1254,6 +1254,14 @@ void ESPectrum::reset(uint8_t romInUse) {
   else if (Config::joystick == JOY_FULLER)
     Ports::port[0x7f] = 0xff; // Fuller
   Ports::portAFF7 = 0;
+  // The #FE latch: a machine reset must leave the machine as a cold boot does, and
+  // at cold boot this is 0. It is not just the border colour — on Scorpion GMX its
+  // low three bits are read BACK as BRD0/1/2 in bit 7 of the #7AFD / #78FD / #7EFD
+  // register images, so a game's last border value leaked into the firmware's view
+  // of its own paging state: the first #78FD read of the F11 boot came back 0x80
+  // after one session and 0x00 after another (hw log 2026-08-31). Whatever else
+  // differs between an F11 and a cold boot, it must not be this.
+  Ports::resetBorderLatch();
   // If DS80 packed-pair HDMI mode was active before reset, disable it before
   // clearing DFFD — otherwise HDMI ISR keeps expanding bytes as pairs and the
   // normal-mode framebuffer renders as vertical scanline garbage.
@@ -1303,6 +1311,12 @@ void ESPectrum::reset(uint8_t romInUse) {
   // here so every [RESET] gets a fresh budget for its own disk activity.
   extern uint32_t g_fdcCmdCount;
   g_fdcCmdCount = 0;
+#endif
+#if GMX_TRACE
+  // Same reasoning as g_fdcCmdCount above: the 600-line budget is per SESSION, so
+  // after a game has been loaded and run there is nothing left for the boot that
+  // F11 starts — which is exactly the boot worth tracing. Re-arm it here.
+  gmxTraceReset();
 #endif
   // Memory
   MemESP::page0ram = 0;
@@ -2898,6 +2912,39 @@ void ESPectrum::loop() {
       g_kbd_us = (uint32_t)(time_us_64() - _kbd_t0);
     }
     GS::pollPerf();
+#if GMX_TRACE
+    // ~1 Hz GMX heartbeat: WHERE the machine is, once a second. The paging trace
+    // only fires on events, so a firmware that has wedged inside one repeating
+    // cycle (or wandered into a bank it should not be in) produces no new lines at
+    // all — which is exactly the state an F11-after-a-game hang leaves. Goes
+    // through gmxTraceHb, not gmxTrace: it must survive both the event budget and
+    // the collapsing ring. Counted in frames HERE, on the unconditional per-frame
+    // path: the 1-second block further down only runs while the F8 stats overlay
+    // is on, which is why the first version of this never logged a line at all.
+    if (g_scorp_gmx) {
+      static uint16_t gmx_hb_frames = 0;
+      if (++gmx_hb_frames >= 50) {
+        gmx_hb_frames = 0;
+        gmxTraceHb("[GMX hb] pc=%04X sp=%04X romU=%u 1FFD=%02X 7FFD=%02X plane=%u"
+                   " gfx=%u dos=%u p0ram=%u iff=%u mult=%u/%u 7EFD=%02X",
+                   Z80::getRegPC(), Z80::getRegSP(), (unsigned)MemESP::romInUse,
+                   Ports::port1FFD,
+                   (unsigned)((MemESP::romLatch << 4) | (MemESP::videoLatch << 3)
+                              | (MemESP::bankLatch & 7)),
+                   (unsigned)Ports::gmxPlane,
+                   (unsigned)((Ports::gmxPort7EFD >> 3) & 1),
+                   (unsigned)ESPectrum::trdos, (unsigned)MemESP::page0ram,
+                   (unsigned)(Z80::isIFF1() ? 1 : 0),
+                   // The firmware's clock request (7EFD D7) vs what we actually
+                   // run: with the user's turbo off, multUser is 0 and the request
+                   // is dropped, so the GMX firmware executes at half the speed it
+                   // was written for — which changes how much of its code fits
+                   // between two 50 Hz interrupts.
+                   (unsigned)ESPectrum::multiplicator, (unsigned)ESPectrum::multUser,
+                   Ports::gmxPort7EFD);
+      }
+    }
+#endif
     // NeoGS SD + MP3: execute a sector request posted by the GS-Z80 on core1
     // (FatFs/SD SPI are core0-only) and decode buffered MP3 frames. Cheap
     // no-ops when idle; also serviced from the frame-pacing waits below.

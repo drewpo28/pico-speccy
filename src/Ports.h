@@ -126,6 +126,8 @@ public:
     static uint8_t serialMouseIntEn; // #B3/#93 bit0 → RST20H on RX-ready (CPM only)
     static bool serialMouseIntAsserted();
     static void serialMouseReset();
+    // Clear the #FE latch on a machine reset (border + the GMX BRD read-backs).
+    static void resetBorderLatch();
     // Per-frame packet pump: INT-driven drivers (pcmsmous) never poll the
     // status port, so packet building can't be left to port reads alone —
     // without this tick the first RST20H would never assert.
@@ -178,7 +180,12 @@ private :
 // Ports.cpp; used from Ports.cpp and Z80_JLS.cpp.
 #include "Debug.h"
 extern uint32_t g_gmxTraceN;
-#define GMXT(...) do { if (g_gmxTraceN < 600) { g_gmxTraceN++; Debug::log(__VA_ARGS__); } } while (0)
+// Body in Ports.cpp: collapses the firmware's repeating paging cycles so the
+// 600-line budget is spent on distinct events (see the comment there).
+void gmxTrace(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void gmxTraceHb(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void gmxTraceReset();          // re-arm the budget (ESPectrum::reset)
+#define GMXT(...) gmxTrace(__VA_ARGS__)
 #endif
 
 #endif // Ports_h

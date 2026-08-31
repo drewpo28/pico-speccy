@@ -309,6 +309,7 @@ uint8_t Ports::speaker_values[8] = {0, 19, 34, 53, 97, 101, 130, 134};
 uint8_t Ports::port[128];
 uint8_t Ports::extPort[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t Ports::port254 = 0;
+void Ports::resetBorderLatch() { port254 = 0; }
 uint8_t Ports::sndriveLatch[6] = {0, 0, 0, 0, 0, 0};
 uint8_t Ports::sndriveUsed = 0;
 uint8_t Ports::portAFF7 = 0;
@@ -1766,6 +1767,72 @@ static inline void profiFdcSysWrite(uint8_t data) {
 // register write, magic reset and TR-DOS trap event, capped so the boot
 // sequence fits the UART without stalling emulation. Shared with Z80_JLS.cpp.
 uint32_t g_gmxTraceN = 0;
+// The budget must be spent on DISTINCT events. The firmware's paging is full of
+// tight cycles that repeat hundreds of times and say nothing after the first pass
+// — the loader's RAM sizing (1FFD D4 at pc=6A78), the service monitor's
+// byte-at-a-time thunk (1FFD D1 at pc=E4FC/E506, a 4-line cycle run 1000+ times)
+// and its plane-4/5 dance (7EFD C0/D0 + 1FFD 12/10 at pc=E3FD/E448/E429/E4E7, an
+// EIGHT-line cycle) each burn the whole budget on their own, and both a working
+// boot and a broken one die inside them — which made the traces indistinguishable
+// (hw 2026-08-31, three rounds lost to it).
+//
+// So: keep a ring of recent line HASHES and suppress anything matching one of
+// them, counting the suppressions and reporting the tally when a genuinely new
+// line arrives. Hashes, not strings, because the window has to be deep enough for
+// the longest cycle — 32 × 4 B is both deeper and smaller than the 4 × 96 B of
+// full lines it replaces (which caught the 4-line cycle and missed the 8-line
+// one). A hash collision only costs one suppressed line, and the tally says how
+// many were dropped. No PC or port is hard-coded as noise.
+#define GMXT_RING 32
+static uint32_t gmxt_ring[GMXT_RING];
+static uint8_t  gmxt_ring_w = 0;
+static uint32_t gmxt_reps = 0;
+
+void gmxTrace(const char* fmt, ...) {
+    char buf[144];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    uint32_t h = 2166136261u;                       // FNV-1a
+    for (const char* p = buf; *p; p++) { h ^= (uint8_t)*p; h *= 16777619u; }
+    if (!h) h = 1;                                  // 0 marks an empty slot
+    for (int i = 0; i < GMXT_RING; i++)
+        if (gmxt_ring[i] == h) { gmxt_reps++; return; }   // in the cycle: no budget
+    if (g_gmxTraceN >= 600) return;
+    if (gmxt_reps) {
+        g_gmxTraceN++;
+        Debug::log("[GMX] ... %u repeated lines collapsed", (unsigned)gmxt_reps);
+        gmxt_reps = 0;
+    }
+    gmxt_ring[gmxt_ring_w] = h;
+    gmxt_ring_w = (uint8_t)((gmxt_ring_w + 1) % GMXT_RING);
+    g_gmxTraceN++;
+    Debug::log("%s", buf);
+}
+
+// The 1 Hz heartbeat must NOT share the event budget: it exists precisely for the
+// case where the firmware has wedged and stops producing events, which is also
+// when the budget has just been burned by whatever cycle it is stuck in. Its own
+// (generous) cap keeps a forgotten session from filling the disk.
+void gmxTraceHb(const char* fmt, ...) {
+    static uint32_t hb = 0;
+    if (hb >= 900) return;                 // 15 minutes at 1 Hz
+    hb++;
+    char buf[144];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Debug::log("%s", buf);
+}
+
+void gmxTraceReset() {
+    g_gmxTraceN = 0;
+    gmxt_reps = 0;
+    gmxt_ring_w = 0;
+    for (int i = 0; i < GMXT_RING; i++) gmxt_ring[i] = 0;
+}
 #endif
 
 static inline void gmxTapUpdate() {
@@ -1974,6 +2041,12 @@ bool Ports::gmxPortRead(uint16_t address, uint8_t* out) {
   if (address == 0x78FD) {
     // BRD1 (last #FE bit1) | RAM-at-0x8000 page | magic shift-register bit 0
     *out = (uint8_t)((port254 & 0x02) << 6) | (gmxPort78FD & 0x7F) | (gmxMagicShift & 0x01);
+#if GMX_TRACE
+    // The loader reads this port eight times and assembles bit 0 of each read into
+    // its BOOT MODE (magic & 7), which is what picks the profile descriptor — and
+    // hence the plane it hands over to. Nothing else in the trace shows it.
+    GMXT("[GMX p78 rd] %02X shift=%02X pc=%04X", *out, gmxMagicShift, Z80::getRegPC());
+#endif
     gmxMagicShift >>= 1;
     return true;
   }
@@ -1983,6 +2056,9 @@ bool Ports::gmxPortRead(uint16_t address, uint8_t* out) {
          | (uint8_t)((portDFFDgmx & 0x07) << 4)
          | (uint8_t)((port1FFD & 0x10) >> 1)
          | (uint8_t)(MemESP::bankLatch & 0x07);
+#if GMX_TRACE
+    GMXT("[GMX p7A rd] %02X brd=%02X pc=%04X", *out, port254, Z80::getRegPC());
+#endif
     return true;
   }
   if (address == 0x7EFD) {
@@ -1996,6 +2072,14 @@ bool Ports::gmxPortRead(uint16_t address, uint8_t* out) {
          | (uint8_t)((gmxPort7EFD & 0x80) >> 5)
          | (uint8_t)((MemESP::videoLatch & 1) << 1)
          | (uint8_t)(MemESP::pagingLock & 1);
+#if GMX_TRACE
+    // The other half of the conversation: the monitor's plane-4/5 loop reads these
+    // back, and bit 7 of each read is a BRD bit straight out of the #FE latch —
+    // which a machine reset does NOT clear, so it is exactly the kind of leftover
+    // that can differ between a cold boot and an F11 after a game (the first
+    // #78FD read already came back 0x80 vs 0x00 between the two, hw 2026-08-31).
+    GMXT("[GMX p7E rd] %02X brd=%02X pc=%04X", *out, port254, Z80::getRegPC());
+#endif
     return true;
   }
   return false;
@@ -3266,7 +3350,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (Z80Ops::isScorpion && ((address & 0xC002) == 0) && (address & 0x0020)) {
     LED::touchW(LED::RAM);
 #if GMX_TRACE
-    if (data != port1FFD)
+    // D4-only changes are skipped: the GMX loader's RAM sizing toggles D4 (the +8
+    // page bit) hundreds of times per boot pass (pc=6A78 in the logs) and that
+    // flood alone burns the whole 600-line budget before anything interesting
+    // happens. D0 (RAM0), D1 (service ROM) and D2 (GMX DOS page) are what the
+    // paging questions are about, so trip on those.
+    if ((data & 0xEF) != (port1FFD & 0xEF))
       GMXT("[GMX 1FFD] %02X (addr=%04X) pc=%04X", data, address, Z80::getRegPC());
 #endif
     // GMX 1FFD D2 (hard-wired DOS page) FALLING edge: on real hardware DOSEN
