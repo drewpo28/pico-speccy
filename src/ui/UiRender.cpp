@@ -26,6 +26,7 @@
 #include "UiNav.h"
 #include "UiGfx.h"
 #include "UiFont.h"
+#include "UiDialog.h"   // uiMarkupLine for the right-pane page preview
 #include "UiStage.h"
 #include "OSDMain.h"
 #include "Config.h"
@@ -246,7 +247,18 @@ static void drawPaneTitles() {
     const Node* dynNode = dynOwner();
     const char* title = dynNode ? dynNode->label : rightTitle(curNode());
     while (*title == ' ') title++;          // NM_IND child rows: indent is left-pane only
-    textClip(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad, title, C_WHITE);
+    int tw = LY.rw - 2 * LY.pad;
+    // A scrollable preview shows its window position where a value row shows nothing.
+    if (!dynNode && previewFocusable(curNode())) {
+        char pos[16];
+        const int last = (S.rtop + LY.body_rows < S.rcount) ? S.rtop + LY.body_rows
+                                                            : S.rcount;
+        snprintf(pos, sizeof(pos), "%d-%d/%d", S.rtop + 1, last, S.rcount);
+        const int pw = textWidth(pos);
+        text(LY.rx + LY.rw - LY.pad - pw, y + 1, pos, C_TEXT_DIM);
+        tw -= pw + LY.pad;
+    }
+    textClip(LY.rx + LY.pad, y + 1, tw, title, C_WHITE);
     hline(LY.rx, y + LY.row_h - 1, LY.rw, C_SEP);
 }
 
@@ -373,11 +385,20 @@ static void drawRightRow(int visRow) {
             text(LY.rx + LY.rw - LY.pad - lw, y + 1, buf, sel ? C_WHITE : C_TEXT_DIM);
             break;
         }
-        default:
-            if (idx == 0)
+        default: {
+            // NM_PAGE_PV rows show their page's text right here (one preview line
+            // per row, scrolled via S.rtop); everything else keeps the plain hint
+            // until the preview is built on the idle tick.
+            int len = 0;
+            const char* l = previewLine(n, idx, len);
+            if (l) {
+                if (len) uiMarkupLine(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad, l, len);
+            } else if (idx == 0) {
                 textClip(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad,
                          SYM_ENTER " to open", C_TEXT_DIM);
+            }
             break;
+        }
     }
 }
 
@@ -389,12 +410,15 @@ static void drawFooter() {
     hline(LY.ix, y, LY.iw, C_SEP);
     const Node* fn_ = curLevel().dyn ? nullptr : curNode();
     const bool intPane = (S.focus == FOCUS_RIGHT) && fn_ && fn_->kind == K_INT;
+    const bool pvPane  = (S.focus == FOCUS_RIGHT) && fn_ && previewFocusable(fn_);
     const bool atHome = (S.depth <= S.home_depth);   // no level below: Left is a no-op
     const char* hint = (S.focus == FOCUS_LEFT)
         ? (atHome ? SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc Close"
                   : SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc / " SYM_LEFT SYM_LEFT " Back")
         : intPane
         ? SYM_UP SYM_DOWN " Adjust   " SYM_ENTER " / " SYM_LEFT " Back"
+        : pvPane
+        ? SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " Open   " SYM_LEFT " Back"
         : SYM_UP SYM_DOWN " Move   " SYM_ENTER " Change   " SYM_LEFT " Back";
     text(LY.ix + LY.pad, y + 3, hint, C_TEXT_DIM);
 

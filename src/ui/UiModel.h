@@ -105,6 +105,14 @@ struct Node {
     // are ignored and every reader goes through nodeOptions(). The table must be
     // stable for the menu session (per-board lists built once).
     const Option* (*dopts)(uint8_t& cnt);
+    // K_PAGE/K_ACTION only (NM_PAGE_PV): right-pane preview text. Returns the page's
+    // '\n'-separated body (uiMarkupLine colour escapes allowed) from a buffer that
+    // stays valid until the next provider call — the info pages all share
+    // osd_info_buf, which is exactly that contract. Rendered straight in the right
+    // pane with scrolling instead of the bare "Enter to open" hint; built lazily on
+    // the nav's idle tick (UiNav previewTick), never on the cursor-move path.
+    // For these nodes `lo` doubles as the refresh period in ms (0 = build once).
+    const char* (*ptext)();
 };
 
 // Counts are derived from the array, never written by hand: a hand-written count
@@ -128,6 +136,10 @@ struct Node {
     { lbl, nm::K_ACTION_ARG, 0, 0, nullptr, nullptr, vis, nullptr, nullptr, f, nullptr, arg, 0, 0, nullptr, nullptr }
 #define NM_PAGE(lbl, f, vis) \
     { lbl, nm::K_PAGE, 0, 0, nullptr, nullptr, vis, f, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr }
+// Page whose content also previews in the right pane: `pv` returns the page text,
+// `period` = refresh interval in ms while the row is selected (0 = build once).
+#define NM_PAGE_PV(lbl, f, pv, period, vis) \
+    { lbl, nm::K_PAGE, 0, 0, nullptr, nullptr, vis, f, nullptr, nullptr, nullptr, period, 0, 0, nullptr, nullptr, nullptr, pv }
 #define NM_RADIO(lbl, sid, opts_arr, vis) \
     { lbl, nm::K_RADIO, NM_COUNT(opts_arr), sid, opts_arr, nullptr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr }
 // Enable-gated variant: visible always, greyed and inert while en() is false.

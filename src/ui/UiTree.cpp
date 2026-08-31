@@ -368,15 +368,19 @@ static const Node kSpeedTest[] = {
 // odd one out (it actually writes to the card), but it belongs with the memory and board
 // numbers it exists to explain.
 static const Node kHelp[] = {
-    NM_PAGE  (TXT_HELP_KEYS,  act_helpHotkeys,    nullptr),
-    NM_PAGE  (TXT_HELP_REMAP, act_helpRemapInfo,  nullptr),
+    // Text pages preview straight in the right pane (NM_PAGE_PV); Enter still opens
+    // the full-width page. Non-zero period = live preview (rebuilt every N ms while
+    // the row is selected). Board Info is deliberately 0: its f_getfree walks the
+    // card's FAT, which is not something to repeat once a second.
+    NM_PAGE_PV(TXT_HELP_KEYS,  act_helpHotkeys,    pv_helpHotkeys,    0, nullptr),
+    NM_PAGE_PV(TXT_HELP_REMAP, act_helpRemapInfo,  pv_helpRemap,      0, nullptr),
     NM_PAGE  (TXT_HELP_ZXKBD, act_helpZxKeyboard, nullptr),
-    NM_PAGE  (TXT_HELP_ABOUT, act_helpAbout,      nullptr),
-    NM_PAGE  (TXT_INFO_CHIP,   act_chipInfo,     nullptr),
-    NM_PAGE  (TXT_INFO_BOARD,  act_boardInfo,    nullptr),
-    NM_PAGE  (TXT_INFO_MEMORY, act_memoryInfo,   nullptr),
-    NM_PAGE  (TXT_INFO_EMU,    act_emulatorInfo, nullptr),
-    NM_PAGE  (TXT_INFO_HID,    act_hidDevices,   nullptr),
+    NM_PAGE_PV(TXT_HELP_ABOUT, act_helpAbout,      pv_helpAbout,      0, nullptr),
+    NM_PAGE_PV(TXT_INFO_CHIP,   act_chipInfo,     pv_chipInfo,    1000, nullptr),
+    NM_PAGE_PV(TXT_INFO_BOARD,  act_boardInfo,    pv_boardInfo,      0, nullptr),
+    NM_PAGE_PV(TXT_INFO_MEMORY, act_memoryInfo,   pv_memoryInfo,  1000, nullptr),
+    NM_PAGE_PV(TXT_INFO_EMU,    act_emulatorInfo, pv_emuInfo,     1000, nullptr),
+    NM_PAGE_PV(TXT_INFO_HID,    act_hidDevices,   pv_hidInfo,     1000, nullptr),
     NM_SUB   (TXT_INFO_SPEED,  kSpeedTest,       nullptr),
 };
 

@@ -291,5 +291,10 @@ const char* hidInfoText();
 const char* emuInfoText();
 // Hot-key descriptions + current bindings (Help > Hot keys).
 const char* hotkeysText();
+// One-shot info-page text builders (also the right-pane previews of Help > ...).
+// All return the shared osd_info_buf.
+const char* chipInfoText();
+const char* boardInfoText();
+const char* memoryInfoText();
 
 #endif // ESPECTRUM_OSD_H

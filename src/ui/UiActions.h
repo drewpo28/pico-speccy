@@ -21,6 +21,16 @@ void act_helpHotkeys();
 void act_helpRemapInfo();
 void act_helpZxKeyboard();
 void act_helpAbout();
+// Right-pane preview text of the Help/Info pages (NM_PAGE_PV): each returns the
+// same text its full-screen page shows, from OSD's shared info buffer.
+const char* pv_helpHotkeys();
+const char* pv_helpRemap();
+const char* pv_helpAbout();
+const char* pv_chipInfo();
+const char* pv_boardInfo();
+const char* pv_memoryInfo();
+const char* pv_emuInfo();
+const char* pv_hidInfo();
 
 // Storage — actions, because they mount media or restart the machine
 void act_tapeSelect();

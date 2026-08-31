@@ -58,6 +58,17 @@ void act_todo() {
 // branch itself.
 void act_helpHotkeys()    { uiTextPage(TXT_HELP_KEYS, ::hotkeysText()); }
 
+// Right-pane previews (NM_PAGE_PV). The nav builds these lazily on its idle tick
+// and re-reads the live ones (Chip temperature, Emulator, HID) once a second.
+const char* pv_helpHotkeys() { return ::hotkeysText(); }
+const char* pv_helpRemap()   { return TXT_HELP_REMAP_BODY; }
+const char* pv_helpAbout()   { return TXT_HELP_ABOUT_BODY; }
+const char* pv_chipInfo()    { return ::chipInfoText(); }
+const char* pv_boardInfo()   { return ::boardInfoText(); }
+const char* pv_memoryInfo()  { return ::memoryInfoText(); }
+const char* pv_emuInfo()     { return ::emuInfoText(); }
+const char* pv_hidInfo()     { return ::hidInfoText(); }
+
 // Wait until the user closes an info page (Enter / Esc / F1 / Left).
 //
 // ONE physical key injects SEVERAL virtual events into the SAME queue: main.cpp's

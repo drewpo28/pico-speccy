@@ -179,6 +179,98 @@ const char* dynHint(int i) {
     return (i >= 0 && i < n) ? kDynHints[i] : nullptr;
 }
 
+// ── right-pane preview (NM_PAGE_PV) ────────────────────────────────────────────
+// The info/help pages render their text straight in the right pane, scrolled with
+// the same focus model as the K_INT slider; Enter still opens the full-screen page.
+
+#define PV_BUILD_DELAY_MS 150   // the cursor must rest on the row this long first
+#define PV_MAX_LINES      200   // S.rcount is uint8_t; osd_info_buf tops out well below
+
+static struct {
+    const Node* node;       // cache owner; nullptr = nothing built
+    const char* text;
+    uint8_t     nlines;
+    uint32_t    built_ms;   // for the per-node refresh period (Node::lo)
+} s_pv;
+static uint32_t s_pv_sel_ms;    // when the cursor landed on the current row
+
+static uint32_t pvNow() { return to_ms_since_boot(get_absolute_time()); }
+
+static uint8_t pvCountLines(const char* t) {
+    int n = 0;
+    for (const char* p = t; *p && n < PV_MAX_LINES; ) {
+        n++;
+        while (*p && *p != '\n') p++;
+        if (*p) p++;
+    }
+    return (uint8_t)n;
+}
+
+bool previewActive(const Node* n) {
+    return n && n->ptext && s_pv.node == n && s_pv.text && s_pv.nlines;
+}
+
+bool previewFocusable(const Node* n) {
+    return previewActive(n) && s_pv.nlines > LY.body_rows;
+}
+
+const char* previewLine(const Node* n, int idx, int& len) {
+    if (!previewActive(n) || idx < 0 || idx >= s_pv.nlines) return nullptr;
+    const char* p = s_pv.text;
+    for (int i = 0; i < idx; i++) {
+        while (*p && *p != '\n') p++;
+        if (*p) p++;
+    }
+    const char* e = p;
+    while (*e && *e != '\n') e++;
+    len = (int)(e - p);
+    return p;
+}
+
+// A modal may have rebuilt the shared info buffer under the cache — drop it. The
+// next idle tick rebuilds at once: the rest delay only gates after a cursor move.
+static void previewInvalidate() { s_pv.node = nullptr; }
+
+static bool previewBuild(const Node* n, bool keepScroll) {
+    const char* t = n->ptext();
+    if (!t || !*t) return false;
+    s_pv.node = n;
+    s_pv.text = t;
+    s_pv.nlines = pvCountLines(t);
+    s_pv.built_ms = pvNow();
+    S.rcount = s_pv.nlines;
+    const int maxTop = s_pv.nlines > LY.body_rows ? s_pv.nlines - LY.body_rows : 0;
+    if (!keepScroll) S.rtop = 0;
+    else if (S.rtop > maxTop) S.rtop = (uint8_t)maxTop;
+    markDirty(D_RIGHT | D_PTITLE | D_FOOT);
+    return true;
+}
+
+bool previewTick() {
+    if (curLevel().dyn) return false;
+    const Node* n = curNode();
+    if (!n || !n->ptext || !nodeEnabled(*n)) return false;
+    const uint32_t now = pvNow();
+    if (s_pv.node != n) {
+        if (now - s_pv_sel_ms < PV_BUILD_DELAY_MS) return false;
+        return previewBuild(n, false);
+    }
+    // Live pages (Chip temperature, Emulator info, ...) refresh in place.
+    if (n->lo > 0 && now - s_pv.built_ms >= (uint32_t)n->lo)
+        return previewBuild(n, true);
+    return false;
+}
+
+static void scrollPreview(int delta) {
+    const int maxTop = S.rcount > LY.body_rows ? S.rcount - LY.body_rows : 0;
+    int t = (int)S.rtop + delta;
+    if (t < 0) t = 0;
+    if (t > maxTop) t = maxTop;
+    if (t == (int)S.rtop) return;
+    S.rtop = (uint8_t)t;
+    markDirty(D_RIGHT | D_PTITLE | D_FOOT);
+}
+
 static void refreshRightPane() {
     if (curLevel().dyn) {
         const Node* o = dynOwner();
@@ -197,6 +289,10 @@ static void refreshRightPane() {
     S.rcount = (uint8_t)rightRowCount(n);
     S.rtop = 0;
     S.rsel = 0;
+    if (n && n->ptext) {
+        s_pv_sel_ms = pvNow();             // debounce clock for the lazy build
+        if (previewActive(n)) S.rcount = s_pv.nlines;  // cache still owns this row
+    }
     if (hasValuePane(n)) {                 // land on the currently selected option
         int32_t v = nodeValue(*n);
         uint8_t cnt; const Option* o = nodeOptions(*n, cnt);
@@ -316,6 +412,7 @@ static void runModal(void (*fn)()) {
     // A modal may have painted anywhere, including over the separator and the
     // window border, which flushDirty never repaints — restore the chrome first.
     drawFrameOnce();
+    previewInvalidate();        // the modal may have rebuilt the shared info buffer
     markDirty(D_ALL);
 }
 
@@ -325,6 +422,7 @@ static void runModalArg(void (*fn)(int32_t), int32_t arg) {
     fn(arg);
     gfxResumePalette();
     drawFrameOnce();
+    previewInvalidate();
     markDirty(D_ALL);
 }
 
@@ -342,6 +440,7 @@ static void dynInvoke(uint8_t key) {
     gfxSuspendPalette();
     owner->rowkey(tag, key);
     gfxResumePalette();
+    previewInvalidate();
 
     if (owner->build) { S.dyn.clear(); owner->build(S.dyn); }
     L.count = S.dyn.n;
@@ -393,9 +492,13 @@ static void activate() {
             break;
         case K_ACTION:
         case K_PAGE:
+            // A focused preview pane must not survive the modal: the cache is
+            // dropped inside runModal, and dead FOCUS_RIGHT would strand Up/Down.
+            S.focus = FOCUS_LEFT;
             runModal(n->fn);
             break;
         case K_ACTION_ARG:
+            S.focus = FOCUS_LEFT;
             runModalArg(n->pick, n->lo);
             break;
         default:
@@ -433,6 +536,19 @@ static bool handleKey(NmKey k) {
             default: break;                       // Enter/Left/Esc fall through below
         }
     }
+    // In the right pane of a preview row (NM_PAGE_PV) the vertical keys scroll the
+    // text; Enter (below) still opens the full-screen page.
+    if ((S.focus == FOCUS_RIGHT) && !curLevel().dyn && previewFocusable(curNode())) {
+        switch (k) {
+            case NK_UP:    scrollPreview(-1); return S.quit;
+            case NK_DOWN:  scrollPreview(+1); return S.quit;
+            case NK_PGUP:  scrollPreview(-LY.body_rows); return S.quit;
+            case NK_PGDN:  scrollPreview(+LY.body_rows); return S.quit;
+            case NK_HOME:  scrollPreview(-32767); return S.quit;
+            case NK_END:   scrollPreview(+32767); return S.quit;
+            default: break;                       // Enter/Left/Esc fall through below
+        }
+    }
     switch (k) {
         case NK_UP:    (S.focus == FOCUS_LEFT) ? moveLeft(-1, true) : moveRight(-1, true); break;
         case NK_DOWN:  (S.focus == FOCUS_LEFT) ? moveLeft(+1, true) : moveRight(+1, true); break;
@@ -445,6 +561,16 @@ static bool handleKey(NmKey k) {
         case NK_END:   (S.focus == FOCUS_LEFT) ? moveLeft(+NM_MAX_ROWS)
                                                : moveRight(+NM_MAX_ROWS); break;
         case NK_RIGHT:
+            // On a row whose preview overflows the pane, Right steps into the pane
+            // to scroll it (like a value row); Enter is what opens the full page.
+            if (S.focus == FOCUS_LEFT && !curLevel().dyn && previewFocusable(curNode())) {
+                S.focus = FOCUS_RIGHT;
+                markLeftRow(curLevel().sel - curLevel().top);
+                markDirty(D_RIGHT | D_FOOT);
+                break;
+            }
+            activate();
+            break;
         case NK_ENTER: activate(); break;
         case NK_LEFT:
             if (S.focus == FOCUS_RIGHT) {
@@ -537,6 +663,7 @@ static void runInternal(const Node* openAt) {
     VIDEO::SaveRect.clear();
 
     memset(&S, 0, sizeof(S));
+    previewInvalidate();        // the shared info buffer may have been reused since
     Stage::begin();
     netStatusInvalidate();      // WiFi state may have changed since the last session
     S.depth = 0;
@@ -583,6 +710,7 @@ resume:
                 markDirty(D_HEADER);
                 flushDirty();
             }
+            if (previewTick()) flushDirty();
         }
     }
 

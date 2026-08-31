@@ -58,5 +58,14 @@ const char* rightTitle(const Node* n);
 void        breadcrumb(char* out, size_t n);
 const char* dynHint(int i);          // right-pane verb list of a dynamic level
 
+// Right-pane preview of NM_PAGE_PV nodes (UiModel.h). The text is built lazily on
+// the nav's idle tick — the providers share OSD's info buffer and some are not free
+// (Board Info runs f_getfree on the card), so a cursor sweeping the Help list never
+// pays for the rows it passes.
+bool        previewActive(const Node* n);    // preview text is built for n
+bool        previewFocusable(const Node* n); // ... and taller than the pane (scrollable)
+const char* previewLine(const Node* n, int idx, int& len);  // nullptr past the end
+bool        previewTick();                   // idle: build/refresh; true = flush needed
+
 } // namespace nm
 

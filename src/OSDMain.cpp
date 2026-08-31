@@ -5198,7 +5198,7 @@ void OSD::HWInfo() {
     }
 }
 
-void OSD::ChipInfo() {
+const char* chipInfoText() {
     char (&buf)[OSD_INFO_BUF_SZ] = osd_info_buf;
     int pos = 0;
     uint32_t cpu_hz = clock_get_hz(clk_sys) / MHZ;
@@ -5284,10 +5284,14 @@ void OSD::ChipInfo() {
             temp_x10 / 10, (temp_x10 < 0 ? -temp_x10 : temp_x10) % 10);
     }
 
-    showTextDialog("Chip Info", buf);
+    return buf;
 }
 
-void OSD::BoardInfo() {
+void OSD::ChipInfo() {
+    showTextDialog("Chip Info", chipInfoText());
+}
+
+const char* boardInfoText() {
     char (&buf)[OSD_INFO_BUF_SZ] = osd_info_buf;
     int pos = 0;
 
@@ -5460,14 +5464,18 @@ void OSD::BoardInfo() {
         " commit [%s]\n",
         PICO_BUILD_NAME, __DATE__, __TIME__, PICO_GIT_BRANCH, PICO_GIT_COMMIT);
 
-    showTextDialog("Board Info", buf);
+    return buf;
+}
+
+void OSD::BoardInfo() {
+    showTextDialog("Board Info", boardInfoText());
 }
 
 // Memory Info — overall FLASH/SRAM/PSRAM occupancy plus the Buffer tier pools and the
 // SRAM cost of the features currently enabled via the Subsystem budget manager. Data
 // sources: linker symbols (firmware/static/heap extents), getFreeHeap/getLargestAllocatable,
 // butter_psram_size/psram_size + page counters, Buffer::poolStat() and Subsystems::feature*.
-void OSD::MemoryInfo() {
+const char* memoryInfoText() {
     extern char __flash_binary_start, __flash_binary_end;  // pico-sdk linker symbols
     extern char end, __HeapLimit;                          // heap arena [end, __HeapLimit)
 
@@ -5559,7 +5567,11 @@ void OSD::MemoryInfo() {
     if (psram_feat_n)
         pos += snprintf(buf + pos, sizeof(buf) - pos, "  %-14s : %d KB\n", "TOTAL", (int)((psram_feat_total + KB - 1) / KB));
 
-    showTextDialog("Memory Info", buf);
+    return buf;
+}
+
+void OSD::MemoryInfo() {
+    showTextDialog("Memory Info", memoryInfoText());
 }
 
 // snprintf-style append that returns what was ACTUALLY written, never the
