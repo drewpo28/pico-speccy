@@ -80,6 +80,12 @@ public:
     // The caller clears the range first.
     void gen(int16_t* bufL, int16_t* bufR, int count, int bufpos);
 
+    // True while the chip has produced sound within the last second. The
+    // mixer's mid-scale re-centre (+DC on a 0..255 rail) must only be paid
+    // while the chip actually plays — a merely ENABLED idle OPL3 would
+    // otherwise push every AY/beeper program against the clip ceiling.
+    bool audible() const { return m_quiet_samples < 31250; }
+
 private:
     struct Slot {
         uint32_t ar, dr, rr;      // internal rates (0 or 16 + r<<2)
@@ -184,6 +190,8 @@ private:
     int64_t  m_Tcnt[2];            // Q16 chip samples until overflow
     uint8_t  m_st[2];              // timer running flags
     uint32_t m_timer_step_q16;     // chip samples per output sample, Q16
+
+    uint32_t m_quiet_samples;      // consecutive all-EG_OFF samples (saturating)
 
     uint32_t m_address;            // register-number latch (9 bits)
     uint8_t  m_status;

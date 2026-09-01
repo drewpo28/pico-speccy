@@ -360,12 +360,18 @@ bool OplSubsys::apply() {
                 ? ESPectrum::audioBufferOPL_L + ESP_AUDIO_SAMPLES_PENTAGON : nullptr;
         }
         if (!oplfm) oplfm = new (std::nothrow) OplFm();
+        if (!ESPectrum::oplWriteQueue)
+            ESPectrum::oplWriteQueue = (uint32_t*)malloc(512 * sizeof(uint32_t));
+        ESPectrum::oplQHead = ESPectrum::oplQTail = 0;
+        // A missing queue is not fatal — OPLPortWrite degrades to direct writes.
         if (!ESPectrum::audioBufferOPL_L || !oplfm) {
             Debug::log("OplSubsys: OOM, free=%u", (unsigned)getFreeHeap());
             delete oplfm; oplfm = nullptr;
             free(ESPectrum::audioBufferOPL_L);
             ESPectrum::audioBufferOPL_L = nullptr;
             ESPectrum::audioBufferOPL_R = nullptr;
+            free(ESPectrum::oplWriteQueue);
+            ESPectrum::oplWriteQueue = nullptr;
             wanted = false;
             Config::opl3 = 0;
             return false;
@@ -379,6 +385,9 @@ bool OplSubsys::apply() {
         free(ESPectrum::audioBufferOPL_L);
         ESPectrum::audioBufferOPL_L = nullptr;
         ESPectrum::audioBufferOPL_R = nullptr;
+        free(ESPectrum::oplWriteQueue);
+        ESPectrum::oplWriteQueue = nullptr;
+        ESPectrum::oplQHead = ESPectrum::oplQTail = 0;
     }
     return true;
 }

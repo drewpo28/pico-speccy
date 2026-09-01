@@ -108,6 +108,7 @@ public:
     static void FMGenSound(int count, int bufpos);
     static void OPLGetSample();
     static void OPLGenSound(int count, int bufpos);
+    static void OPLPortWrite(uint8_t a, uint8_t v);
     static void CMSGetSample();
     static void SNGetSample();
     static void SNGenSound(int count, int bufpos);
@@ -194,6 +195,15 @@ public:
     // 2x SN76489 (SnSubsys): both chips box-filtered into one unipolar mono
     // buffer, mixed like the beeper. The CMS pair needs no buffer here — each
     // SAASound instance carries its own SamplebufSAA_L/R.
+    // OPL3 register-write queue: a heavy VGM writes hundreds of registers per
+    // frame, and generating the elapsed samples inside EVERY OUT re-faulted
+    // gen()'s flash code through the XIP cache each time (the Z80 core evicts
+    // it between writes) — IDL went negative on Adlib Tracker rips. Writes are
+    // queued with their sample position instead and applied inside ONE
+    // contiguous per-frame generation pass, so ordering and timing are exact.
+    // Entry: pos | (port<<16) | (val<<24). Allocated by OplSubsys.
+    static uint32_t* oplWriteQueue;
+    static uint16_t  oplQHead, oplQTail;
     static uint8_t* audioBufferSN;
     static uint32_t audbufcntSN;
     static uint32_t faudbufcntSN;

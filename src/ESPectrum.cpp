@@ -240,6 +240,9 @@ int16_t* ESPectrum::audioBufferOPL_L = nullptr;
 int16_t* ESPectrum::audioBufferOPL_R = nullptr;
 uint32_t ESPectrum::audbufcntOPL = 0;
 uint32_t ESPectrum::faudbufcntOPL = 0;
+uint32_t* ESPectrum::oplWriteQueue = nullptr;
+uint16_t  ESPectrum::oplQHead = 0;
+uint16_t  ESPectrum::oplQTail = 0;
 uint8_t* ESPectrum::audioBufferSN = nullptr;
 uint32_t ESPectrum::audbufcntSN = 0;
 uint32_t ESPectrum::faudbufcntSN = 0;
@@ -2290,20 +2293,56 @@ __not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
   if (opnfm[1]) opnfm[1]->gen(audioBufferFM, count, bufpos);
 }
 
+#define OPL_WRITE_QUEUE_LEN 512
+
 // YMF262 into audioBufferOPL_L/R[bufpos .. bufpos+count-1]; cleared first
-// because OplFm::gen accumulates.
+// because OplFm::gen accumulates. Queued register writes are applied at their
+// exact sample positions inside the pass (see oplWriteQueue in ESPectrum.h),
+// so one contiguous per-frame call reproduces the per-write catch-up stream
+// sample for sample.
 __not_in_flash("audio") void ESPectrum::OPLGenSound(int count, int bufpos) {
   if (!OplSubsys::enabled || !audioBufferOPL_L || !oplfm) return;
   memset(audioBufferOPL_L + bufpos, 0, count * sizeof(int16_t));
   memset(audioBufferOPL_R + bufpos, 0, count * sizeof(int16_t));
-  oplfm->gen(audioBufferOPL_L, audioBufferOPL_R, count, bufpos);
+  uint32_t cur = bufpos, end = bufpos + count;
+  while (cur < end) {
+    uint32_t next = end;
+    if (oplWriteQueue && oplQHead < oplQTail) {
+      uint32_t e = oplWriteQueue[oplQHead];
+      uint32_t p = e & 0xFFFF;
+      if (p <= cur) {          // due now — apply before generating further
+        oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
+        oplQHead++;
+        continue;
+      }
+      if (p < next) next = p;
+    }
+    oplfm->gen(audioBufferOPL_L, audioBufferOPL_R, next - cur, cur);
+    cur = next;
+  }
+  // writes stamped exactly at `end` belong before whatever comes next
+  while (oplWriteQueue && oplQHead < oplQTail && (oplWriteQueue[oplQHead] & 0xFFFF) <= end) {
+    uint32_t e = oplWriteQueue[oplQHead++];
+    oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
+  }
+  if (oplQHead == oplQTail) { oplQHead = oplQTail = 0; }
 }
 
-// Catch the OPL3 stream up to the current T-state. Called from every OPL port
-// access: a data write must land between the samples generated before and
-// after it, and a STATUS READ must see the timers advanced to "now" — the VGM
-// plugin's detect is "start timer 1, busy-wait ~950 us, expect 0xC0", and the
-// timers only move inside gen().
+// Queue one OPL register write at the current T-state's sample position.
+__not_in_flash("audio") void ESPectrum::OPLPortWrite(uint8_t a, uint8_t v) {
+  if (!OplSubsys::enabled || !oplfm) return;
+  if (!oplWriteQueue) { oplfm->write(a, v); return; }   // no queue: degrade to direct
+  if (oplQTail >= OPL_WRITE_QUEUE_LEN) OPLGetSample();  // overflow: flush (drains + resets)
+  uint32_t pos = CPU::tstates / audioAYDivider;
+  if (multiplicator) pos >>= multiplicator;
+  oplWriteQueue[oplQTail++] = (pos & 0xFFFF) | ((uint32_t)(a & 3) << 16) | ((uint32_t)v << 24);
+}
+
+// Catch the OPL3 stream (and its write queue) up to the current T-state.
+// Only STATUS reads and queue overflow need this now — the VGM plugin's
+// detect is "start timer 1, busy-wait ~950 us, expect 0xC0", and the timers
+// only move inside gen(); the queued timer-start write is applied at its own
+// position first, so the elapsed time it sees is exact.
 __not_in_flash("audio") void ESPectrum::OPLGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
   if (multiplicator) audbufpos >>= multiplicator;
@@ -2625,6 +2664,16 @@ void ESPectrum::loop() {
 
     audbufcntSAA = 0;
     audbufcntPIT = 0;
+    // Frame boundary: the frame-end OPLGenSound consumed every due entry; a
+    // skipped-mix frame (maxSpeed) may leave stragglers — apply them directly
+    // so no register write is ever lost, then restart the queue.
+    if (oplWriteQueue && oplfm) {
+      while (oplQHead < oplQTail) {
+        uint32_t e = oplWriteQueue[oplQHead++];
+        oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
+      }
+    }
+    oplQHead = oplQTail = 0;
     audbufcntOPL = 0;
     audbufcntSN = 0;
     audbufcntCMS = 0;
@@ -2875,7 +2924,11 @@ void ESPectrum::loop() {
         // a %11111 0 r c select. Generation still runs (timers and envelopes keep
         // going on a real card too) — only the DAC path is gated, as in the CPLD.
         bool mix_fm = TsfmSubsys::enabled && audioBufferFM && AySound::ts_fm_enabled;
-        bool mix_opl = OplSubsys::enabled && audioBufferOPL_L;
+        // Gated on audible(): the +128 re-centre below is a CONSTANT the clip
+        // ceiling pays for — a silent-but-enabled OPL3 must not tax AY/beeper
+        // programs with it (hw 2026-09-01: the DC pushed loud PSG music into
+        // the 255 ceiling and crushed it to a whisper).
+        bool mix_opl = OplSubsys::enabled && audioBufferOPL_L && oplfm && oplfm->audible();
         bool mix_sn  = SnSubsys::enabled && audioBufferSN;
         bool mix_cms = CmsSubsys::enabled && cmsChip[0] && cmsChip[1];
         bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
@@ -2908,13 +2961,18 @@ void ESPectrum::loop() {
             beeper_R += saaChip->SamplebufSAA_R[i];
           }
           if (mix_fm) {
-            // Bipolar (+/-127 per chip, two chips), so it needs a mid-scale
-            // offset the way MidiSynth's already-centred output has one, or the
-            // whole negative half would clip against 0 when FM plays alone. The
-            // DC lands on the constant 128 and pwm_audio removes it downstream.
+            // Bipolar, so it needs a mid-scale offset or the negative half
+            // would clip against 0 when FM plays alone — but the offset is a
+            // CONSTANT the 255 ceiling pays for on top of everything else.
+            // +64 covers a single YM2203's full +/-63 swing (after >>1)
+            // exactly; both chips flat out can dip a rare peak below the rail,
+            // which the final 0-clamp absorbs — far better than the +128 that
+            // shoved every loud SSG+FM mix into the ceiling and crushed it to
+            // a whisper (hw 2026-09-01, PC-88 YM2203 VGM rips). pwm_audio
+            // removes the residual DC downstream.
             int fm = audioBufferFM[i] >> 1;
-            beeper_L += 128 + fm;
-            beeper_R += 128 + fm;
+            beeper_L += 64 + fm;
+            beeper_R += 64 + fm;
           }
           if (mix_opl) {
             // Full-resolution chip output (a loud OPL3 tune peaks near +/-16k),

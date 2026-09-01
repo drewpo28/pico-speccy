@@ -441,9 +441,17 @@ void OplFm::advance() {
         }
     }
 
+    uint8_t rhy = m_rhythm & 0x20;
     for (int i = 0; i < 9 * 2 * 2; i++) {
         Chan* CH = &m_ch[i / 2];
         Slot* op = &CH->SLOT[i & 1];
+
+        /* A silent operator's phase is unobservable: key-on restarts Cnt at 0
+           and every output of an EG_OFF slot is gated off — EXCEPT in rhythm
+           mode, where HH/SD/TOP derive their phase from ch7 slot1 / ch8 slot2
+           regardless of those slots' own envelopes, so ch6-8 keep counting. */
+        if (op->state == EG_OFF && !(rhy && i >= 12 && i < 18))
+            continue;
 
         /* Phase Generator */
         if (op->vib) {
@@ -1302,8 +1310,10 @@ void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
             m_ch[i].SLOT[0].op1_out[0] = m_ch[i].SLOT[0].op1_out[1] = 0;
             m_ch[i].SLOT[1].op1_out[0] = m_ch[i].SLOT[1].op1_out[1] = 0;
         }
+        if (m_quiet_samples < 0x10000000u) m_quiet_samples += count;
         return;
     }
+    m_quiet_samples = 0;
 
     uint8_t rhythm = m_rhythm & 0x20;
 

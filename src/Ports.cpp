@@ -2143,11 +2143,11 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // border and corrupt paging mid-tune. oplfm is non-null only while
   // OplSubsys is up (Config::opl3), so nothing changes while the card is off.
   if (oplfm && (address & 0x00FC) == 0x00C4) {
-    // Catch the mixer up before a DATA write lands (address latches are
-    // free); MAME's UpdateHandler does the same split.
-    if ((address & 1) && Tape::tapeStatus != TAPE_LOADING)
-      ESPectrum::OPLGetSample();
-    oplfm->write(address & 3, data);
+    // Queued, not applied: generating the elapsed samples inside every OUT
+    // re-faulted gen()'s flash code through the XIP cache hundreds of times
+    // per frame on write-heavy VGMs (IDL < 0). OPLGenSound applies the queue
+    // at the exact sample positions, so timing is unchanged.
+    ESPectrum::OPLPortWrite(address & 3, data);
     ioContentionLate(MemESP::ramContended[rambank]);
     return;
   }

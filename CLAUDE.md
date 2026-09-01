@@ -909,7 +909,7 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   `ts_fm_enabled` stayed false and FM was mixed out), swallow the byte like
   the CPLD select. Mapping #F0→chip0 follows the plugin, note it is the
   OPPOSITE bit-0 sense from the hw-tested #FF→chip0/#FE→chip1 convention.
-- Config::opl3 (NVS "opl3", default off) → Audio → "OPL3 (YMF262)", ordinary
+- Config::opl3 (NVS "opl3", default off) → Audio → "YMF262 (OPL3)", ordinary
   AC_SUBSYS/F_SUBSYS live toggle (OplSubsys mirrors TsfmSubsys, incl. the OOM
   fall-back to Off). Machine reset (F11) re-derives rates + resets the chip
   (the card sits on the ZX reset line). VGM chip clocks in the file header are
@@ -978,7 +978,7 @@ ports, the two Ports.cpp decode blocks are the only thing to move:
   independence. **Re-run after any change.** Volume: sn_vol[0]=48 per channel,
   mixed unipolar like the beeper (no re-centre) — the knob if hw disagrees.
 - Config::cms / Config::sn76489 (NVS "cms"/"sn76489", default off) → Audio →
-  "CMS (2x SAA1099)" / "2x SN76489", ordinary AC_SUBSYS/F_SUBSYS live toggles.
+  "2x SAA1099 (CMS)" / "2x SN76489", ordinary AC_SUBSYS/F_SUBSYS live toggles.
   VGM chip clocks in file headers are irrelevant as ever — we fix 7.159090 /
   3.579545 MHz and the plugin streams raw writes.
 
