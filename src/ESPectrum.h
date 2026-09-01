@@ -106,6 +106,11 @@ public:
     static void CovoxGetSample();
     static void AYGetSample();
     static void FMGenSound(int count, int bufpos);
+    static void OPLGetSample();
+    static void OPLGenSound(int count, int bufpos);
+    static void CMSGetSample();
+    static void SNGetSample();
+    static void SNGenSound(int count, int bufpos);
     static void SAAGetSample();
     static void PITGetSample();
     static void FDDGenSound();
@@ -179,6 +184,21 @@ public:
     // (allocated by TsfmSubsys when Config::tsfm is on). Signed because FM is
     // bipolar; the mixer re-centres it on 128.
     static int16_t* audioBufferFM;
+    // YMF262/OPL3 stereo output (allocated by OplSubsys when Config::opl3 is
+    // on): one block, L first half, R second. Full chip resolution; the mixer
+    // scales it down and re-centres it on 128 like the TSFM buffer.
+    static int16_t* audioBufferOPL_L;
+    static int16_t* audioBufferOPL_R;
+    static uint32_t audbufcntOPL;
+    static uint32_t faudbufcntOPL;
+    // 2x SN76489 (SnSubsys): both chips box-filtered into one unipolar mono
+    // buffer, mixed like the beeper. The CMS pair needs no buffer here — each
+    // SAASound instance carries its own SamplebufSAA_L/R.
+    static uint8_t* audioBufferSN;
+    static uint32_t audbufcntSN;
+    static uint32_t faudbufcntSN;
+    static uint32_t audbufcntCMS;
+    static uint32_t faudbufcntCMS;
     static uint32_t audbufcntPIT;
     static uint32_t faudbufcntPIT;
     static bool SAA_emu;

@@ -237,6 +237,13 @@ public:
     // TurboSound FM (2 x YM2203). Gates the #F8..#FF pseudo-register family on
     // #FFFD, the OPN status read and the FM synthesis (OpnFm / TsfmSubsys).
     static uint8_t  tsfm;
+    // YMF262/OPL3 sound card (AlexZor DivMMC VGM player: address/data pairs on
+    // ports #C4/#C5 and #C6/#C7). Gates the port decode and OplFm/OplSubsys.
+    static uint8_t  opl3;
+    // Creative Music System (2x SAA1099 @7.159 MHz, ports #D4-#D7) and
+    // 2x SN76489 (ports #CC/#CD) — the same VGM-player card family.
+    static uint8_t  cms;
+    static uint8_t  sn76489;
     // Is there a SECOND PSG? A TurboSound FM board is a TurboSound board — it is
     // literally two YM2203s, each an AY plus an FM half — so enabling TSFM has to
     // bring AySound chip1 up too. Without this, ayChipFor()'s "chip1 missing ->
