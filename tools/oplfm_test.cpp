@@ -2,11 +2,10 @@
  * oplfm_test.cpp — host-side validation for src/OplFm.cpp (YMF262/OPL3 core).
  *
  * Build & run (OplFm.cpp has no project dependencies):
- *   gcc -O2 -o /tmp/gen_opl_tabs tools/gen_opl_tabs.c -lm   # if OplTabs.h needs regen
  *   g++ -O2 -Isrc -o /tmp/oplfm_test tools/oplfm_test.cpp src/OplFm.cpp && /tmp/oplfm_test
  *
- * Re-run after ANY change to OplFm.cpp / OplTabs.h — an FM core fails quietly
- * and by degrees. Checks:
+ * Re-run after ANY change to OplFm.cpp — an FM core fails quietly and by
+ * degrees. Checks:
  *   1. the AlexZor VGM plugin's detect sequence answers status 0xC0 (=192)
  *   2. a programmed 2-op tone comes out at the demanded frequency
  *   3. key-off decays to exact digital silence

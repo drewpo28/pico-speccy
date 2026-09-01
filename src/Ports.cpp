@@ -2167,14 +2167,20 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     ioContentionLate(MemESP::ramContended[rambank]);
     return;
   }
-  // 2x SN76489 (VGM-player card): single write-only register byte per chip,
-  // #CC = chip 1 (VGM cmd 0x50), #CD = chip 2 (VGM cmd 0x30). #CC has A0=0 —
-  // same placement rule as above.
-  if (snChip && (address & 0x00FE) == 0x00CC) {
-    if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SNGetSample();
-    snChip->write(address & 1, data);
-    ioContentionLate(MemESP::ramContended[rambank]);
-    return;
+  // 2x SN76489 (VGM-player card): single write-only register byte per chip.
+  // #C9 = chip 1 is the REAL plugin ABI (VGM Player 0.61a build of 2026-07-11,
+  // disassembled: its cmd-0x50 handler is `OUT (#C9),A`); #CD = chip 2 stays
+  // OUR proposal — no plugin build handles VGM cmd 0x30 yet. NB with NEMO IDE
+  // selected #C9 is shadowed by NEMO's `!(addr & 6)` + A0=1 write-latch decode
+  // (its block runs first) — the same clash the real cards would have.
+  if (snChip) {
+    uint8_t sn_lo = address & 0xFF;
+    if (sn_lo == 0xC9 || sn_lo == 0xCD) {
+      if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SNGetSample();
+      snChip->write(sn_lo == 0xCD ? 1 : 0, data);
+      ioContentionLate(MemESP::ramContended[rambank]);
+      return;
+    }
   }
   // ULA =======================================================================
   if ((address & 0x0001) == 0) {

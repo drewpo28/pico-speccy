@@ -21,8 +21,7 @@ the Free Software Foundation, either version 3 of the License, or
 
 #include <math.h>
 #include <string.h>
-
-#include "OplTabs.h"
+#include <stdlib.h>
 
 OplFm* oplfm = nullptr;
 
@@ -236,6 +235,50 @@ static const int8_t lfo_pm_table[8 * 8 * 2] = {
 3, 1, 0,-1,-3,-1, 0, 1,   7, 3, 0,-3,-7,-3, 0, 3
 };
 
+// ── shared tables (heap, reference counted — see OplFm.h) ───────────────────
+// tl_base: the x = 0..255 row of MAME's tl_tab; the other 12 rows are that row
+// shifted right, with the sign baked in as one's complement — re-applied at
+// the fetch. sin0: waveform 0 in the chip's logarithmic domain (value*2 +
+// sign bit, TL_TAB_LEN = "silent"); waveforms 1-7 are index transforms of it.
+// Byte-for-byte MAME init_tables() math; verified bit-exact against the flat
+// tables over every (p, wave, index).
+static int       s_tab_refs = 0;
+static uint16_t* s_tl_base = nullptr;   // 256 entries
+static uint16_t* s_sin0    = nullptr;   // SIN_LEN entries
+
+static void opl_build_tables() {
+    if (s_tab_refs++ > 0) return;
+    s_tl_base = (uint16_t*)malloc(TL_RES_LEN * sizeof(uint16_t));
+    s_sin0    = (uint16_t*)malloc(SIN_LEN * sizeof(uint16_t));
+    if (!s_tl_base || !s_sin0) {
+        free(s_tl_base); s_tl_base = nullptr;
+        free(s_sin0);    s_sin0 = nullptr;
+        return;
+    }
+    for (int x = 0; x < TL_RES_LEN; x++) {
+        double m = floor((1 << 16) / pow(2, (x + 1) * (ENV_STEP / 4.0) / 8.0));
+        int n = ((int)m) >> 4;
+        n = (n & 1) ? (n >> 1) + 1 : n >> 1;
+        s_tl_base[x] = (uint16_t)(n << 1);
+    }
+    for (int i = 0; i < SIN_LEN; i++) {
+        double m = sin(((i * 2) + 1) * M_PI / SIN_LEN);
+        double o = 8 * log((m > 0.0 ? 1.0 : -1.0) / m) / log(2.0);
+        o = o / (ENV_STEP / 4);
+        int n = (int)(2.0 * o);
+        n = (n & 1) ? (n >> 1) + 1 : n >> 1;
+        s_sin0[i] = (uint16_t)(n * 2 + (m >= 0.0 ? 0 : 1));
+    }
+}
+
+static void opl_free_tables() {
+    if (--s_tab_refs > 0) return;
+    free(s_tl_base); s_tl_base = nullptr;
+    free(s_sin0);    s_sin0 = nullptr;
+}
+
+bool OplFm::tablesReady() { return s_tl_base && s_sin0; }
+
 static inline int limit(int val, int max, int min) {
     if (val > max) return max;
     if (val < min) return min;
@@ -248,6 +291,11 @@ OplFm::OplFm() {
     // Standard-layout, no vtable, all-POD members: zero the lot, then the
     // subsystem calls setRates() + reset() before the first write.
     memset((void*)this, 0, sizeof(*this));
+    opl_build_tables();
+}
+
+OplFm::~OplFm() {
+    opl_free_tables();
 }
 
 void OplFm::setRates(int clock, int rate) {
@@ -429,18 +477,41 @@ void OplFm::advance() {
 
 // ── operator output ─────────────────────────────────────────────────────────
 
-static inline int32_t op_calc(uint32_t phase, uint32_t env, int32_t pm, uint32_t wave_tab) {
-    uint32_t p = (env << 4) +
-        opl_sin_tab[wave_tab + ((((int32_t)((phase & ~FREQ_MASK) + (pm << 16))) >> FREQ_SH) & SIN_MASK)];
-    if (p >= TL_TAB_LEN) return 0;
-    return opl_tl_tab[p];
+// sin_tab[wave][i] re-derived from waveform 0 (bit-exact vs the flat table)
+static inline uint32_t sin_fetch(uint32_t wave, uint32_t i) {
+    switch (wave) {
+    default: return s_sin0[i];
+    case 1:  return (i & 512) ? TL_TAB_LEN : s_sin0[i];
+    case 2:  return s_sin0[i & 511];
+    case 3:  return (i & 256) ? TL_TAB_LEN : s_sin0[i & 255];
+    case 4:  return (i & 512) ? TL_TAB_LEN : s_sin0[(i * 2) & 1023];
+    case 5:  return (i & 512) ? TL_TAB_LEN : s_sin0[(i * 2) & 511];
+    case 6:  return (i & 512) ? 1 : 0;
+    case 7: {
+        uint32_t x = (i & 512) ? ((1023 - i) * 16 + 1) : i * 16;
+        return x > TL_TAB_LEN ? TL_TAB_LEN : x;
+    }
+    }
 }
 
-static inline int32_t op_calc1(uint32_t phase, uint32_t env, int32_t pm, uint32_t wave_tab) {
+// tl_tab[p]: index = row (p>>9) | base entry ((p&511)>>1) | sign (p&1)
+static inline int32_t tl_fetch(uint32_t p) {
+    int32_t v = s_tl_base[(p & 511) >> 1] >> (p >> 9);
+    return (p & 1) ? ~v : v;
+}
+
+static inline int32_t op_calc(uint32_t phase, uint32_t env, int32_t pm, uint32_t wave) {
     uint32_t p = (env << 4) +
-        opl_sin_tab[wave_tab + ((((int32_t)((phase & ~FREQ_MASK) + pm)) >> FREQ_SH) & SIN_MASK)];
+        sin_fetch(wave, (((int32_t)((phase & ~FREQ_MASK) + (pm << 16))) >> FREQ_SH) & SIN_MASK);
     if (p >= TL_TAB_LEN) return 0;
-    return opl_tl_tab[p];
+    return tl_fetch(p);
+}
+
+static inline int32_t op_calc1(uint32_t phase, uint32_t env, int32_t pm, uint32_t wave) {
+    uint32_t p = (env << 4) +
+        sin_fetch(wave, (((int32_t)((phase & ~FREQ_MASK) + pm)) >> FREQ_SH) & SIN_MASK);
+    if (p >= TL_TAB_LEN) return 0;
+    return tl_fetch(p);
 }
 
 #define volume_calc(OP) ((OP)->TLL + ((uint32_t)(OP)->volume) + (m_LFO_AM & (OP)->AMmask))
@@ -1113,7 +1184,7 @@ void OplFm::writeReg(int r, int v) {
         CH->SLOT[slot & 1].waveform_number = v;
         if (!(m_OPL3_mode & 1))
             v &= 3;
-        CH->SLOT[slot & 1].wavetable = v * SIN_LEN;
+        CH->SLOT[slot & 1].wavetable = v;
         break;
     }
     }
@@ -1176,6 +1247,38 @@ void OplFm::write(int a, uint8_t v) {
     }
 }
 
+// A channel whose BOTH envelopes sit in EG_OFF contributes exactly zero:
+// env = TLL + MAX_ATT_INDEX >= ENV_QUIET gates every op_calc, and two silent
+// samples settle slot 1's feedback memory to zero — force that and skip the
+// whole per-sample walk. An envelope can only leave EG_OFF on a key-on, i.e.
+// between gen() calls, so the skip can never miss an attack.
+void OplFm::chanCalcOrSkip(Chan* CH) {
+    Slot* s = CH->SLOT;
+    if (s[0].state == EG_OFF && s[1].state == EG_OFF) {
+        s[0].op1_out[0] = s[0].op1_out[1] = 0;
+        return;
+    }
+    chanCalc(CH);
+}
+
+// Channel a of a 4-op-capable pair plus its partner a+3.
+void OplFm::pairCalc(int a) {
+    Chan* C = &m_ch[a];
+    if (C->extended) {
+        Chan* D = C + 3;
+        if (C->SLOT[0].state == EG_OFF && C->SLOT[1].state == EG_OFF &&
+            D->SLOT[0].state == EG_OFF && D->SLOT[1].state == EG_OFF) {
+            C->SLOT[0].op1_out[0] = C->SLOT[0].op1_out[1] = 0;
+            return;
+        }
+        chanCalc(C);
+        chanCalcExt(D);
+    } else {
+        chanCalcOrSkip(C);
+        chanCalcOrSkip(C + 3);
+    }
+}
+
 // ── generation ──────────────────────────────────────────────────────────────
 
 bool OplFm::allQuiet() const {
@@ -1210,32 +1313,26 @@ void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
         memset(m_chanout, 0, sizeof(m_chanout));
 
         /* register set #1 */
-        chanCalc(&m_ch[0]);
-        if (m_ch[0].extended) chanCalcExt(&m_ch[3]); else chanCalc(&m_ch[3]);
-        chanCalc(&m_ch[1]);
-        if (m_ch[1].extended) chanCalcExt(&m_ch[4]); else chanCalc(&m_ch[4]);
-        chanCalc(&m_ch[2]);
-        if (m_ch[2].extended) chanCalcExt(&m_ch[5]); else chanCalc(&m_ch[5]);
+        pairCalc(0);
+        pairCalc(1);
+        pairCalc(2);
 
         if (!rhythm) {
-            chanCalc(&m_ch[6]);
-            chanCalc(&m_ch[7]);
-            chanCalc(&m_ch[8]);
+            chanCalcOrSkip(&m_ch[6]);
+            chanCalcOrSkip(&m_ch[7]);
+            chanCalcOrSkip(&m_ch[8]);
         } else {
             chanCalcRhythm(m_noise_rng & 1);
         }
 
         /* register set #2 */
-        chanCalc(&m_ch[9]);
-        if (m_ch[9].extended)  chanCalcExt(&m_ch[12]); else chanCalc(&m_ch[12]);
-        chanCalc(&m_ch[10]);
-        if (m_ch[10].extended) chanCalcExt(&m_ch[13]); else chanCalc(&m_ch[13]);
-        chanCalc(&m_ch[11]);
-        if (m_ch[11].extended) chanCalcExt(&m_ch[14]); else chanCalc(&m_ch[14]);
+        pairCalc(9);
+        pairCalc(10);
+        pairCalc(11);
 
-        chanCalc(&m_ch[15]);
-        chanCalc(&m_ch[16]);
-        chanCalc(&m_ch[17]);
+        chanCalcOrSkip(&m_ch[15]);
+        chanCalcOrSkip(&m_ch[16]);
+        chanCalcOrSkip(&m_ch[17]);
 
         /* accumulate outputs A (left) and B (right); C/D are OPL4-only */
         int a = 0, b = 0;
