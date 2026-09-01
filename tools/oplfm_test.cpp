@@ -185,6 +185,20 @@ int main() {
     for (int i = 0; i < RATE / 8; i++) if (abs(bufL[i]) > peak) peak = abs(bufL[i]);
     CHECK(peak > 500, "bass drum peak %d", peak);
 
+    printf("[7b] half-rate mode: pitch exact, level comparable\n");
+    chip.setRates(OPL3_YMF262_CLOCK, RATE, true);
+    chip.reset();
+    tone(0, 580, 4, 0);
+    gen(RATE);
+    {
+        double fh = measure_freq(bufL, RATE);
+        CHECK(fabs(fh - 440.0) < 2.5, "half-rate tone %.1f Hz (want 440)", fh);
+        int16_t ph = 0;
+        for (int i = RATE / 4; i < RATE; i++) if (abs(bufL[i]) > ph) ph = abs(bufL[i]);
+        CHECK(ph > 3000, "half-rate peak %d", ph);
+    }
+    chip.setRates(OPL3_YMF262_CLOCK, RATE, false);
+
     printf("[7] waveform 2 (abs sine) never negative\n");
     chip.reset();
     wreg2(0x05, 0x01);                 // 4-waveform select needs OPL3 (or OPL2 test bit)

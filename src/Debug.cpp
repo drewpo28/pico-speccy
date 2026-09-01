@@ -47,18 +47,58 @@ void Debug::led_off()
 // stream and the FTP server / WiFi fail to start. With the console UART off, logging
 // falls through to printf (no stdio driver linked → dropped, harmless).
 #if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
+// TX ring: Debug::log never waits on the wire. The old bounded spin (~1 ms
+// ceiling PER BYTE) meant a ~100-char line at 115200 cost ~6 ms inside the
+// frame once the 32-byte FIFO filled — the 1 Hz HDMIAU line put a one-sample
+// kink into the audio every ~0.9 s and dipped IDL negative (hw 2026-09-01).
+// Bytes go into the ring (drop on overflow, never wait); Debug::pumpUart()
+// drains it from the frame-pacing idle, and each log call drains what fits
+// the FIFO for free so boot-time logging still flows without the main loop.
+#define DBG_TX_RING 4096
+static char s_dbg_ring[DBG_TX_RING];
+static volatile uint32_t s_dbg_w = 0, s_dbg_r = 0;
+
+static inline void dbg_uart_drain_fifo(void)
+{
+    while (s_dbg_r != s_dbg_w && uart_is_writable(uart_default)) {
+        uart_get_hw(uart_default)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
+        s_dbg_r = (s_dbg_r + 1) & (DBG_TX_RING - 1);
+    }
+}
+
 static inline bool dbg_uart_put(char c)
 {
-    // Bounded wait for FIFO space. At boot the 115200 UART keeps up if we wait a
-    // few microseconds, so whole lines (incl. their CRLF) get out intact instead
-    // of being truncated mid-line — which previously merged adjacent log lines.
-    // The spin cap means a pathological flood (e.g. ZIFI_TRACE per-packet logging)
-    // still drops bytes after the bound rather than ever freezing the main loop.
-    for (uint32_t spin = 0; !uart_is_writable(uart_default); ++spin)
-        if (spin >= 200000u) return false;   // ~1 ms ceiling per byte → drop, never hang
-    uart_get_hw(uart_default)->dr = (uint8_t)c;
+    uint32_t w = s_dbg_w, nx = (w + 1) & (DBG_TX_RING - 1);
+    if (nx == s_dbg_r) return false;     // ring full → drop, never wait
+    s_dbg_ring[w] = c;
+    s_dbg_w = nx;
     return true;
 }
+
+// Synchronous variant for the fault path only: we are crashing, blocking is
+// fine, and the line must reach the wire. Flushes the ring first so the
+// crash line lands in order after whatever was still queued.
+static inline void dbg_uart_put_sync(char c)
+{
+    for (uint32_t spin = 0; !uart_is_writable(uart_default); ++spin)
+        if (spin >= 200000u) return;
+    uart_get_hw(uart_default)->dr = (uint8_t)c;
+}
+
+static void dbg_uart_flush_sync(void)
+{
+    while (s_dbg_r != s_dbg_w) {
+        uint32_t spin = 0;
+        while (!uart_is_writable(uart_default))
+            if (++spin >= 200000u) return;
+        uart_get_hw(uart_default)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
+        s_dbg_r = (s_dbg_r + 1) & (DBG_TX_RING - 1);
+    }
+}
+
+void Debug::pumpUart() { dbg_uart_drain_fifo(); }
+#else
+void Debug::pumpUart() {}
 #endif
 
 void Debug::log(const char* fmt, ...)
@@ -73,11 +113,12 @@ void Debug::log(const char* fmt, ...)
 
 #if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
     for (int i = 0; i < n; i++) {
-        if (buf[i] == '\n' && !dbg_uart_put('\r')) return; // CRLF for terminals
-        if (!dbg_uart_put(buf[i])) return;                 // FIFO full → drop remainder
+        if (buf[i] == '\n' && !dbg_uart_put('\r')) break; // CRLF for terminals
+        if (!dbg_uart_put(buf[i])) break;                 // ring full → drop remainder
     }
-    if (!dbg_uart_put('\r')) return;
-    dbg_uart_put('\n');
+    if (dbg_uart_put('\r'))
+        dbg_uart_put('\n');
+    dbg_uart_drain_fifo();   // free: fills the 32-byte FIFO, never waits
 #else
     printf("%s\n", buf);
 #endif
@@ -134,12 +175,15 @@ void Debug::fault_log(const char* fmt, ...)
     if (n > (int)sizeof(bufs[0]) - 1) n = sizeof(bufs[0]) - 1;
 
 #if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
+    // Crashing: block as needed, and get the queued backlog out first so the
+    // fault lines land in order.
+    dbg_uart_flush_sync();
     for (int i = 0; i < n; i++) {
-        if (buf[i] == '\n' && !dbg_uart_put('\r')) return;
-        if (!dbg_uart_put(buf[i])) return;
+        if (buf[i] == '\n') dbg_uart_put_sync('\r');
+        dbg_uart_put_sync(buf[i]);
     }
-    dbg_uart_put('\r');
-    dbg_uart_put('\n');
+    dbg_uart_put_sync('\r');
+    dbg_uart_put_sync('\n');
 #else
     (void)n;  // no exception-safe sink without the debug UART
 #endif

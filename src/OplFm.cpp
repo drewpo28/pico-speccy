@@ -23,6 +23,20 @@ the Free Software Foundation, either version 3 of the License, or
 #include <string.h>
 #include <stdlib.h>
 
+// The per-SAMPLE code lives in RAM (.time_critical): even with the write
+// queue batching a frame into one contiguous gen() pass, the Z80 core still
+// evicts these ~6 KB from the XIP cache between frames, and re-faulting them
+// through flash showed up as rare IDL<0 frames with audible clicks on heavy
+// Adlib rips (hw 2026-09-01). Register-write code (writeReg, setters) stays
+// in flash — it runs in bursts inside the same pass and caches fine.
+// Host builds (tools/oplfm_test.cpp) have no pico headers: annotation off.
+#if __has_include("pico.h")
+#include "pico.h"
+#define OPL_HOT __not_in_flash("audio")
+#else
+#define OPL_HOT
+#endif
+
 OplFm* oplfm = nullptr;
 
 #ifndef M_PI
@@ -298,12 +312,18 @@ OplFm::~OplFm() {
     opl_free_tables();
 }
 
-void OplFm::setRates(int clock, int rate) {
+void OplFm::setRates(int clock, int rate, bool halfRate) {
     m_clock = clock;
     m_rate  = rate;
+    m_half  = halfRate ? 1 : 0;
+
+    // Every synthesis constant derives from the SYNTH rate (rate/2 in
+    // half-rate mode — that is what keeps the pitch exact); only the timers
+    // below stay in real output time.
+    int synth_rate = halfRate ? rate / 2 : rate;
 
     // divider is 8*36 = 288 for a YMF262 (chip sample rate ~49716 Hz)
-    double freqbase = rate ? ((double)clock / 288.0) / (double)rate : 0.0;
+    double freqbase = synth_rate ? ((double)clock / 288.0) / (double)synth_rate : 0.0;
 
     // fnumber -> phase increment (chip works in 10.10, we use 16.16)
     for (int i = 0; i < 1024; i++)
@@ -319,8 +339,9 @@ void OplFm::setRates(int clock, int rate) {
     m_eg_timer_add      = (uint32_t)((1 << EG_SH) * freqbase);
     m_eg_timer_overflow = 1 << EG_SH;
 
-    // timers count chip samples (T1 unit = 4 of them = 80.4 us)
-    m_timer_step_q16 = (uint32_t)(freqbase * 65536.0);
+    // timers count chip samples (T1 unit = 4 of them = 80.4 us), and they are
+    // advanced once per OUTPUT sample — real time, independent of half-rate
+    m_timer_step_q16 = (uint32_t)((rate ? ((double)clock / 288.0) / (double)rate : 0.0) * 65536.0);
 }
 
 // ── status / IRQ ────────────────────────────────────────────────────────────
@@ -353,7 +374,7 @@ void OplFm::timerOver(int c) {
     statusSet(c ? 0x20 : 0x40);
 }
 
-void OplFm::runTimers(int samples) {
+OPL_HOT void OplFm::runTimers(int samples) {
     for (int c = 0; c < 2; c++) {
         if (!m_st[c]) continue;
         m_Tcnt[c] -= (int64_t)samples * m_timer_step_q16;
@@ -367,7 +388,7 @@ void OplFm::runTimers(int samples) {
 
 // ── LFO / EG / phase advance, per output sample ─────────────────────────────
 
-void OplFm::advanceLfo() {
+OPL_HOT void OplFm::advanceLfo() {
     m_lfo_am_cnt += m_lfo_am_inc;
     if (m_lfo_am_cnt >= ((uint32_t)LFO_AM_TAB_ELEMENTS << LFO_SH))
         m_lfo_am_cnt -= ((uint32_t)LFO_AM_TAB_ELEMENTS << LFO_SH);
@@ -379,12 +400,25 @@ void OplFm::advanceLfo() {
     m_LFO_PM = ((m_lfo_pm_cnt >> LFO_SH) & 7) | m_lfo_pm_depth_range;
 }
 
-void OplFm::advance() {
+OPL_HOT void OplFm::advance() {
     m_eg_timer += m_eg_timer_add;
 
     while (m_eg_timer >= m_eg_timer_overflow) {
         m_eg_timer -= m_eg_timer_overflow;
         m_eg_cnt++;
+
+        if (m_eg_cnt < m_eg_next && !m_eg_dirty)
+            continue;               // provably no slot can act on this tick
+
+        // The walk also recomputes m_eg_next inline — the soonest eg_cnt at
+        // which any slot's rate mask can match again. Slots that cannot act
+        // are excluded: EG_OFF, sustain that holds (non-percussive, or
+        // percussive already clamped at maximum attenuation — nothing but a
+        // register write, which sets m_eg_dirty, can move those again), and
+        // the all-zero "infinity" eg_inc row. A separate 36-slot recompute
+        // pass doubled the cost of exactly the walk-heavy frames (hw
+        // 2026-09-01, Doom clicks).
+        uint32_t eg_next = 0xFFFFFFFFu;
 
         for (int i = 0; i < 9 * 2 * 2; i++) {
             Chan* CH = &m_ch[i / 2];
@@ -438,7 +472,26 @@ void OplFm::advance() {
             default:
                 break;
             }
+
+            // inline next-fire bound for this slot's (possibly new) state
+            uint8_t  nsh;
+            uint16_t nsel;
+            switch (op->state) {
+            case EG_ATT: nsh = op->eg_sh_ar; nsel = op->eg_sel_ar; break;
+            case EG_DEC: nsh = op->eg_sh_dr; nsel = op->eg_sel_dr; break;
+            case EG_SUS:
+                if (op->eg_type || op->volume >= MAX_ATT_INDEX) continue;
+                nsh = op->eg_sh_rr; nsel = op->eg_sel_rr; break;
+            case EG_REL: nsh = op->eg_sh_rr; nsel = op->eg_sel_rr; break;
+            default:     continue;          // EG_OFF
+            }
+            if (nsel == 14 * RATE_STEPS) continue;   // infinity row: never acts
+            uint32_t nx = ((m_eg_cnt >> nsh) + 1) << nsh;
+            if (nx < eg_next) eg_next = nx;
         }
+
+        m_eg_next = eg_next;
+        m_eg_dirty = 0;
     }
 
     uint8_t rhy = m_rhythm & 0x20;
@@ -525,7 +578,7 @@ static inline int32_t op_calc1(uint32_t phase, uint32_t env, int32_t pm, uint32_
 #define volume_calc(OP) ((OP)->TLL + ((uint32_t)(OP)->volume) + (m_LFO_AM & (OP)->AMmask))
 
 /* standard 2-operator channel (or 1st half of a 4-op channel) */
-void OplFm::chanCalc(Chan* CH) {
+OPL_HOT void OplFm::chanCalc(Chan* CH) {
     m_phase_modulation  = 0;
     m_phase_modulation2 = 0;
 
@@ -550,7 +603,7 @@ void OplFm::chanCalc(Chan* CH) {
 }
 
 /* 2nd half of a 4-op channel */
-void OplFm::chanCalcExt(Chan* CH) {
+OPL_HOT void OplFm::chanCalcExt(Chan* CH) {
     m_phase_modulation = 0;
 
     Slot* SLOT = &CH->SLOT[SLOT1];
@@ -571,7 +624,7 @@ void OplFm::chanCalcExt(Chan* CH) {
 
 /* rhythm mode: BD/HH/SD/TOM/TOP on channels 6-8, phase quirks as verified
    on real YM3812 (see ymf262.cpp for the full commentary) */
-void OplFm::chanCalcRhythm(unsigned int noise) {
+OPL_HOT void OplFm::chanCalcRhythm(unsigned int noise) {
     /* Bass Drum: connect=0 -> op1->op2->out, connect=1 -> op2 only; out x2 */
     m_phase_modulation = 0;
 
@@ -804,6 +857,7 @@ void OplFm::setSlRr(int slot, int v) {
 // ── register write ──────────────────────────────────────────────────────────
 
 void OplFm::writeReg(int r, int v) {
+    m_eg_dirty = 1;
     Chan* CH;
     unsigned int ch_offset = 0;
     int slot;
@@ -1203,6 +1257,8 @@ void OplFm::writeReg(int r, int v) {
 void OplFm::reset() {
     m_eg_timer = 0;
     m_eg_cnt   = 0;
+    m_eg_next  = 0;
+    m_eg_dirty = 1;
 
     m_noise_rng = 1;
     m_noise_p   = 0;
@@ -1260,7 +1316,7 @@ void OplFm::write(int a, uint8_t v) {
 // samples settle slot 1's feedback memory to zero — force that and skip the
 // whole per-sample walk. An envelope can only leave EG_OFF on a key-on, i.e.
 // between gen() calls, so the skip can never miss an attack.
-void OplFm::chanCalcOrSkip(Chan* CH) {
+OPL_HOT void OplFm::chanCalcOrSkip(Chan* CH) {
     Slot* s = CH->SLOT;
     if (s[0].state == EG_OFF && s[1].state == EG_OFF) {
         s[0].op1_out[0] = s[0].op1_out[1] = 0;
@@ -1270,7 +1326,7 @@ void OplFm::chanCalcOrSkip(Chan* CH) {
 }
 
 // Channel a of a 4-op-capable pair plus its partner a+3.
-void OplFm::pairCalc(int a) {
+OPL_HOT void OplFm::pairCalc(int a) {
     Chan* C = &m_ch[a];
     if (C->extended) {
         Chan* D = C + 3;
@@ -1289,14 +1345,14 @@ void OplFm::pairCalc(int a) {
 
 // ── generation ──────────────────────────────────────────────────────────────
 
-bool OplFm::allQuiet() const {
+OPL_HOT bool OplFm::allQuiet() const {
     for (int i = 0; i < 18; i++)
         if (m_ch[i].SLOT[0].state != EG_OFF || m_ch[i].SLOT[1].state != EG_OFF)
             return false;
     return true;
 }
 
-void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
+OPL_HOT void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
     if (count <= 0) return;
 
     // Timers first: they must keep true time even while the chip is silent —
@@ -1311,49 +1367,69 @@ void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
             m_ch[i].SLOT[1].op1_out[0] = m_ch[i].SLOT[1].op1_out[1] = 0;
         }
         if (m_quiet_samples < 0x10000000u) m_quiet_samples += count;
+        m_pA = m_pB = m_cA = m_cB = 0;
         return;
     }
     m_quiet_samples = 0;
 
-    uint8_t rhythm = m_rhythm & 0x20;
-
     for (int i = 0; i < count; i++) {
-        advanceLfo();
-
-        memset(m_chanout, 0, sizeof(m_chanout));
-
-        /* register set #1 */
-        pairCalc(0);
-        pairCalc(1);
-        pairCalc(2);
-
-        if (!rhythm) {
-            chanCalcOrSkip(&m_ch[6]);
-            chanCalcOrSkip(&m_ch[7]);
-            chanCalcOrSkip(&m_ch[8]);
+        int32_t a, b;
+        if (!m_half) {
+            renderSample(a, b);
+        } else if ((m_half_tick ^= 1)) {
+            // compute tick: new chip sample, output the midpoint (x2 lerp)
+            m_pA = m_cA; m_pB = m_cB;
+            renderSample(m_cA, m_cB);
+            a = (m_pA + m_cA) >> 1;
+            b = (m_pB + m_cB) >> 1;
         } else {
-            chanCalcRhythm(m_noise_rng & 1);
+            // hold tick
+            a = m_cA;
+            b = m_cB;
         }
-
-        /* register set #2 */
-        pairCalc(9);
-        pairCalc(10);
-        pairCalc(11);
-
-        chanCalcOrSkip(&m_ch[15]);
-        chanCalcOrSkip(&m_ch[16]);
-        chanCalcOrSkip(&m_ch[17]);
-
-        /* accumulate outputs A (left) and B (right); C/D are OPL4-only */
-        int a = 0, b = 0;
-        for (int ch = 0; ch < 18; ch++) {
-            a += m_chanout[ch] & m_pan[ch * 4];
-            b += m_chanout[ch] & m_pan[ch * 4 + 1];
-        }
-
         bufL[bufpos + i] = (int16_t)limit(bufL[bufpos + i] + a, 32767, -32768);
         bufR[bufpos + i] = (int16_t)limit(bufR[bufpos + i] + b, 32767, -32768);
-
-        advance();
     }
+}
+
+// One chip sample through the full pipeline (both output accumulators).
+OPL_HOT void OplFm::renderSample(int32_t& outA, int32_t& outB) {
+    advanceLfo();
+
+    memset(m_chanout, 0, sizeof(m_chanout));
+
+    uint8_t rhythm = m_rhythm & 0x20;
+
+    /* register set #1 */
+    pairCalc(0);
+    pairCalc(1);
+    pairCalc(2);
+
+    if (!rhythm) {
+        chanCalcOrSkip(&m_ch[6]);
+        chanCalcOrSkip(&m_ch[7]);
+        chanCalcOrSkip(&m_ch[8]);
+    } else {
+        chanCalcRhythm(m_noise_rng & 1);
+    }
+
+    /* register set #2 */
+    pairCalc(9);
+    pairCalc(10);
+    pairCalc(11);
+
+    chanCalcOrSkip(&m_ch[15]);
+    chanCalcOrSkip(&m_ch[16]);
+    chanCalcOrSkip(&m_ch[17]);
+
+    /* accumulate outputs A (left) and B (right); C/D are OPL4-only */
+    int32_t a = 0, b = 0;
+    for (int ch = 0; ch < 18; ch++) {
+        a += m_chanout[ch] & m_pan[ch * 4];
+        b += m_chanout[ch] & m_pan[ch * 4 + 1];
+    }
+    outA = a;
+    outB = b;
+
+    advance();
 }

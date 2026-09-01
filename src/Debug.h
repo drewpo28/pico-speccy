@@ -30,6 +30,13 @@ public:
     static void led_off();
 
     static void log(const char* fmt, ...);
+    // Drain the non-blocking debug-UART TX ring into the UART FIFO (no-op
+    // without DBG_UART). Called from the frame-pacing idle in ESPectrum::loop;
+    // Debug::log itself never waits on the wire (hw 2026-09-01: the 1 Hz
+    // HDMIAU line spent ~6 ms/line spinning on FIFO space INSIDE the frame —
+    // a one-sample audio kink every ~0.9 s and IDL<0 on otherwise-fine
+    // frames, visible only on DBG_UART builds).
+    static void pumpUart();
 
 #if NEO8_TRAP
     // Temporary wild-jump hunter (Neo8 SDz crash): call per executed

@@ -58,6 +58,8 @@ option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" OFF)
 option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
+option(HDMI_AUDIO_TRACE "Enable the 1 Hz HDMIAU: audio-health log line (hdmi_audio_health_dump)" OFF)
+option(OPL_PERF_TRACE "Enable the ~6 s 'OPL: gen us/fr' YMF262 cost line (ESPectrum.cpp)" OFF)
 option(GS_DEBUG_TRACE "Enable General Sound port-IO trace ring + auto-dumps (~50 KB SRAM)" OFF)
 option(NGS_TRACE "Enable NeoGS 1 Hz health line (GS-Z80 PC / SD counters; ~2-4 ms UART stall per line)" OFF)
 option(NGS_SD_TRACE "Also log every guest SD command (NGS_TRACE level 2; thousands of lines per directory scan)" OFF)
@@ -454,6 +456,20 @@ elseif (NGS_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE NGS_TRACE=1)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE NGS_TRACE=0)
+endif ()
+
+# HDMI audio 1 Hz health line + OPL3 per-frame cost meter. Their counters are
+# cheap, but each printed line costs UART time on DBG_UART builds — off unless
+# hunting an audio regression.
+if (HDMI_AUDIO_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_AUDIO_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_AUDIO_TRACE=0)
+endif ()
+if (OPL_PERF_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE OPL_PERF_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE OPL_PERF_TRACE=0)
 endif ()
 
 # Z-Controller/DivSD SPI-SD command tracing (DivMMC.cpp mmc engine).

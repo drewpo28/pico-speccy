@@ -40,6 +40,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "OpnFm.h"
 #include "OplFm.h"
 #include "SnSound.h"
+#include "hardware/clocks.h"
 #include "Subsystem.h"
 #include "CPU.h"
 #include "Config.h"
@@ -1451,7 +1452,10 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   // Reset the OPL3 the same way (the VGM-player card sits on the ZX reset
   // line); rate can have changed with the arch, so re-derive it too.
-  if (oplfm) { oplfm->setRates(OPL3_YMF262_CLOCK, Audio_freq); oplfm->reset(); }
+  if (oplfm) {
+    oplfm->setRates(OPL3_YMF262_CLOCK, Audio_freq, clock_get_hz(clk_sys) < 450000000u);
+    oplfm->reset();
+  }
 
   // Same for the card's CMS pair and the SN76489 pair. init() does not touch
   // the SAA clock scale, so the CMS chips keep their 7.159 MHz.
@@ -2300,8 +2304,18 @@ __not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
 // exact sample positions inside the pass (see oplWriteQueue in ESPectrum.h),
 // so one contiguous per-frame call reproduces the per-write catch-up stream
 // sample for sample.
+// OPL cost meter (OPL_PERF_TRACE builds): microseconds spent generating OPL
+// audio, dumped once per ~300 frames from the frame-boundary block below
+// while audible. This is the number that attributed the Doom IDL<0 dips.
+#if OPL_PERF_TRACE
+static uint32_t g_opl_gen_us = 0;
+#endif
+
 __not_in_flash("audio") void ESPectrum::OPLGenSound(int count, int bufpos) {
   if (!OplSubsys::enabled || !audioBufferOPL_L || !oplfm) return;
+#if OPL_PERF_TRACE
+  uint32_t _t0 = time_us_32();
+#endif
   memset(audioBufferOPL_L + bufpos, 0, count * sizeof(int16_t));
   memset(audioBufferOPL_R + bufpos, 0, count * sizeof(int16_t));
   uint32_t cur = bufpos, end = bufpos + count;
@@ -2326,6 +2340,9 @@ __not_in_flash("audio") void ESPectrum::OPLGenSound(int count, int bufpos) {
     oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
   }
   if (oplQHead == oplQTail) { oplQHead = oplQTail = 0; }
+#if OPL_PERF_TRACE
+  g_opl_gen_us += time_us_32() - _t0;
+#endif
 }
 
 // Queue one OPL register write at the current T-state's sample position.
@@ -2664,6 +2681,19 @@ void ESPectrum::loop() {
 
     audbufcntSAA = 0;
     audbufcntPIT = 0;
+#if OPL_PERF_TRACE
+    // OPL cost meter: ~us per frame averaged over 300 frames, only while the
+    // chip is audible. This is the number to read against the ~20500 us frame.
+    if (OplSubsys::enabled && oplfm) {
+      static uint16_t oplPerfFrames = 0;
+      if (++oplPerfFrames >= 300) {
+        if (oplfm->audible() && g_opl_gen_us)
+          Debug::log("OPL: gen %lu us/fr", (unsigned long)(g_opl_gen_us / oplPerfFrames));
+        oplPerfFrames = 0;
+        g_opl_gen_us = 0;
+      }
+    }
+#endif
     // Frame boundary: the frame-end OPLGenSound consumed every due entry; a
     // skipped-mix frame (maxSpeed) may leave stragglers — apply them directly
     // so no register write is ever lost, then restart the queue.
@@ -2781,7 +2811,9 @@ void ESPectrum::loop() {
         uint64_t now_au = time_us_64();
         if (now_au >= hdmiau_at) {
             hdmiau_at = now_au + 1000000ull;
+#if HDMI_AUDIO_TRACE
             hdmi_audio_health_dump();
+#endif
         }
     }
 #endif
@@ -3296,6 +3328,7 @@ void ESPectrum::loop() {
           // opportunities a second against the 38.28 a 44.1 kHz stream needs.
           // The SD mailbox does have to stay: the GS-Z80 blocks on it.
           if (GS::neogs) NgsSd::service();
+          Debug::pumpUart();
           if (v_sync) {
             v_sync = false;
             break;
@@ -3307,6 +3340,7 @@ void ESPectrum::loop() {
         VIDEO::profiPaletteApplyPending();
       } else {
         if (idle > 0) {
+          Debug::pumpUart();
           if (ZiFi::cdcNicActive) {
             int64_t e = (int64_t)time_us_64() + idle;
             while ((int64_t)time_us_64() < e) ZiFi::cdcPump();

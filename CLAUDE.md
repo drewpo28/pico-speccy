@@ -871,12 +871,55 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   — proven bit-exact against the flat tables over every (p, wave, index)
   entry before deleting them. Host cost +6% (304 vs 286 ns/sample,
   all-channels-active desktop worst case); the XIP relief is the point.
-  Result on the same rip: playback clean, IDL only dips slightly negative on
-  the heaviest passages (inaudible — accepted, hw 2026-09-01). The remaining
-  lever, `__not_in_flash("audio")` on gen/advance/chanCalc, costs ~3-4 KB of
-  PERMANENT .time_critical SRAM even with OPL3 off — deliberately NOT taken:
-  that is the margin class that caused the PICO_DV boot OOM panic in the
-  ZX-DMA session (+4128 B). Reach for it only if a tune audibly stutters.
+  Result on the same rip: playback clean, with rare IDL<0 dips + audible
+  clicks left — which took THREE more levers, all hw-driven 2026-09-01:
+- **OPL register-write queue** (ESPectrum::oplWriteQueue, 512 x u32 heap while
+  OPL3 is on): generating the elapsed samples inside EVERY OUT re-faulted
+  gen()'s flash code through the XIP cache hundreds of times per frame.
+  Writes are stamped with their sample position and applied inside ONE
+  contiguous per-frame pass — ordering/timing sample-exact, status reads
+  flush precisely (timer detect intact), frame boundary force-drains.
+- **Per-sample code of BOTH FM cores now lives in RAM** (`__not_in_flash
+  ("audio")`, ~4.1 KB each): OplFm gen/advance/chanCalc*/pairCalc/runTimers/
+  renderSample and OpnFm gen/chanCalc/advanceEg. The user approved the
+  permanent SRAM spend after clicks persisted; OpnFm needed it because PC-88
+  YM2203 VGM rips write hundreds of registers per frame where TheLink wrote
+  ~20 (every #BFFD data write runs the shared AY+FM catch-up). The write path
+  (writeReg + setters) deliberately stays in flash — bursty, caches fine.
+  Host builds see no annotation (`__has_include("pico.h")` gate).
+- **Half-rate OPL3 synthesis below 450 MHz sys clock** (`setRates(..., true)`,
+  picked in OplSubsys::apply + machine reset): a dense 18-channel score
+  (Doom II) costs ~4-5k cycles/sample flat-out — at 378 MHz that is ~7 ms of
+  a 20.5 ms frame (IDL -1750) and no placement trick fixes arithmetic. The
+  chip pipeline runs at 15625 Hz and the output is x2 linearly interpolated:
+  every synthesis constant re-derives from the synth rate so PITCH IS EXACT
+  (host-tested: 440.0 Hz, same peak), only content above ~7.8 kHz is lost;
+  the timers still count real output time (detect unchanged). 504 MHz parts
+  keep the full rate.
+- **EG-skip** (`m_eg_next`/`computeEgNext`, the biggest arithmetic lever):
+  profiling the actual Doom VGM on host showed advance() = 61-71% of the whole
+  cost, and inside it the envelope walk visits all 36 slots every ~49.7 kHz EG
+  tick while almost every visit is a masked-out no-op (non-percussive EG_SUS
+  slots NEVER act). computeEgNext() finds the soonest eg_cnt at which any
+  actionable slot's rate mask can match; ticks below it skip the walk, any
+  register write sets m_eg_dirty. Bit-exact (Doom render CRC identical) and
+  exactly 2x on the Doom bench (149.9 -> 75.2 us-host/frame at half-rate).
+  Follow-ups the per-frame distribution demanded (worst frames were 8x the
+  median): a percussive-sustain slot already clamped at MAX_ATT fires every
+  tick forever doing nothing — excluded from the bound (only a register
+  write, which sets m_eg_dirty, can move it again); and the recompute became
+  a SECOND 36-slot pass exactly on walk-heavy frames — now folded into the
+  walk itself. Doom bench (host us/frame, half-rate): avg 150 -> 65, worst
+  566 -> 316, CRC bit-identical throughout. Full rate at 378 MHz stays
+  unaffordable even after all of it (avg ~4.9 ms, p99 ~11 ms) — the <450 MHz
+  half-rate rule stands.
+- **`OPL: gen NNN us/fr`** (every ~300 frames while audible, builds with
+  `-DOPL_PERF_TRACE=ON` only) is the cost meter — read it against the
+  ~20500 us frame before touching any of this again. The 1 Hz `HDMIAU:` line
+  moved behind `-DHDMI_AUDIO_TRACE=ON` at the same time (2026-09-01): each
+  printed line costs UART time on DBG_UART builds, and both were on the
+  suspect list while hunting the Doom clicks. Doom II at 378 MHz measured 6343 us/fr with half-rate +
+  RAM code alone (advance() dominated), which is what motivated the EG-skip.
 - **Host test `tools/oplfm_test.cpp`** (`g++ -O2 -Isrc -o /tmp/oplfm_test
   tools/oplfm_test.cpp src/OplFm.cpp && /tmp/oplfm_test`): plugin detect
   sequence → status 0xC0, 440.0 Hz tone, key-off to exact silence, timer1

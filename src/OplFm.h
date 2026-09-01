@@ -63,7 +63,14 @@ public:
 
     // clock = YMF262 master clock in Hz, rate = our output sample rate.
     // Re-derives every rate-dependent constant; safe to call at any time.
-    void setRates(int clock, int rate);
+    // halfRate: synthesize the chip at rate/2 and linearly interpolate x2 on
+    // output — pitch is exact (every increment re-derives from the synth
+    // rate), only content above rate/4 is lost. 18 channels x 2 operators at
+    // the full 31250 Hz cost ~4-5k cycles per sample, which a 378 MHz core0
+    // cannot afford on dense OPL3 scores (Doom: IDL -1750 us, hw 2026-09-01);
+    // half-rate halves exactly the expensive part. The timers always count
+    // real output time, so the VGM plugin's detect stays sample-exact.
+    void setRates(int clock, int rate, bool halfRate = false);
     void reset();
 
     // The four Z80 ports: a = low two address bits, exactly MAME's OPL3Write.
@@ -153,6 +160,7 @@ private:
     void     writeReg(int r, int v);
     void     timerOver(int c);
     void     runTimers(int samples);   // Q16 countdowns, called from gen()
+    void     renderSample(int32_t& a, int32_t& b);  // one chip sample (L, R)
     bool     allQuiet() const;
 
     Chan     m_ch[18];
@@ -165,6 +173,15 @@ private:
     int32_t  m_phase_modulation2;  // phase modulation input (SLOT 3 of 4-op)
 
     uint32_t m_eg_cnt;
+    // The envelope walk visits all 36 slots every EG tick (~49.7 kHz), yet
+    // almost every visit is a no-op: the per-slot rate masks gate the action,
+    // and a non-percussive slot in EG_SUS never acts at all. m_eg_next is the
+    // soonest eg_cnt at which ANY slot can act — ticks below it skip the walk
+    // entirely (bit-exact: a skipped tick is provably a no-op for every
+    // slot). Recomputed after every walk; any register write sets m_eg_dirty
+    // because it can change rates/states between walks.
+    uint32_t m_eg_next;
+    uint8_t  m_eg_dirty;
     uint32_t m_eg_timer;
     uint32_t m_eg_timer_add;
     uint32_t m_eg_timer_overflow;
@@ -192,6 +209,12 @@ private:
     uint32_t m_timer_step_q16;     // chip samples per output sample, Q16
 
     uint32_t m_quiet_samples;      // consecutive all-EG_OFF samples (saturating)
+
+    // half-rate interpolation state (see setRates)
+    uint8_t  m_half;               // synthesizing at rate/2
+    uint8_t  m_half_tick;          // toggles: compute vs hold
+    int32_t  m_pA, m_pB;           // previous chip sample
+    int32_t  m_cA, m_cB;           // current chip sample
 
     uint32_t m_address;            // register-number latch (9 bits)
     uint8_t  m_status;

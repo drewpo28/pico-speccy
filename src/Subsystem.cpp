@@ -20,6 +20,7 @@ extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can re
 #include "OpnFm.h"
 #include "OplFm.h"
 #include "SnSound.h"
+#include "hardware/clocks.h"
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "MB02.h"
@@ -376,7 +377,12 @@ bool OplSubsys::apply() {
             Config::opl3 = 0;
             return false;
         }
-        oplfm->setRates(OPL3_YMF262_CLOCK, ESPectrum::Audio_freq);
+        // Below ~450 MHz a dense 18-channel OPL3 score does not fit the frame
+        // budget at the full mixing rate — synthesize at half rate with x2
+        // linear interpolation there (pitch exact, content above ~7.8 kHz
+        // lost); a 504 MHz part keeps the full rate.
+        oplfm->setRates(OPL3_YMF262_CLOCK, ESPectrum::Audio_freq,
+                        clock_get_hz(clk_sys) < 450000000u);
         oplfm->reset();
         enabled = true;
     } else {

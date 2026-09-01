@@ -35,6 +35,21 @@ Deliberate differences from fm.cpp, all of them size or platform driven:
 
 #include "Debug.h"
 
+// The per-SAMPLE code goes to RAM (.time_critical), the write path stays in
+// flash. This core was deliberately all-flash while its only user was TSFM
+// software with ~20 port writes per frame (TheLink); the VGM plugin's PC-88
+// YM2203 rips write HUNDREDS of registers per frame, and every #BFFD data
+// write runs the shared AY+FM catch-up — re-faulting gen()'s flash code
+// through the XIP cache each time showed as IDL<0 with audible clicks
+// (hw 2026-09-01, same mechanism as OplFm's). ~3.3 KB of .time_critical.
+// Host builds (tools/opnfm_test.cpp) have no pico headers: annotation off.
+#if __has_include("pico.h")
+#include "pico.h"
+#define OPN_HOT __not_in_flash("audio")
+#else
+#define OPN_HOT
+#endif
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -628,7 +643,7 @@ void OpnFm::refreshChan(Chan* ch) {
     }
 }
 
-void OpnFm::advanceEg(Slot* slot) {
+OPN_HOT void OpnFm::advanceEg(Slot* slot) {
     for (int i = 0; i < 4; i++, slot++) {
         unsigned int swap_flag = 0;
 
@@ -704,7 +719,7 @@ void OpnFm::advanceEg(Slot* slot) {
     }
 }
 
-void OpnFm::chanCalc(Chan* ch) {
+OPN_HOT void OpnFm::chanCalc(Chan* ch) {
     m_m2 = m_c1 = m_c2 = m_mem = 0;
     *ch->mem_connect = ch->mem_value;      // the one-sample MEM delay
 
@@ -750,7 +765,7 @@ void OpnFm::chanCalc(Chan* ch) {
 // the Z80 accessors, and the heap margin at VIDEO::Init is under 4 KB on
 // PICO_DV. If FM ever turns out to cost frames on hardware, adding
 // __not_in_flash("audio") here and on chanCalc/advanceEg is the whole change.
-void OpnFm::gen(int16_t* buf, int bufsize, int bufpos) {
+OPN_HOT void OpnFm::gen(int16_t* buf, int bufsize, int bufpos) {
     if (!s_sin_tab) return;
 
     refreshChan(&m_ch[0]);
