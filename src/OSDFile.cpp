@@ -333,6 +333,19 @@ static string rfd_choose_file(const string& start) {
     }
 }
 
+// A downloaded .vgz is a gzip-wrapped .vgm (the format vgmrips.net serves VGM
+// tracks in); the DivMMC VGM-player plugin reads plain .vgm, so unwrap right
+// after the transfer and drop the wrapper. Best-effort: on a failed unwrap the
+// .vgz stays as downloaded (the bytes are not lost, just still wrapped).
+static void rfd_gunzip_vgz(std::string& path) {
+    if (FileUtils::getLCaseExt(path) != "vgz") return;
+    std::string out = path.substr(0, path.size() - 4) + ".vgm";
+    if (!ZipExtract::gunzip(path, out).empty()) {
+        f_unlink(path.c_str());
+        path = out;
+    }
+}
+
 // Collect a directory's entries into a vector (one recursion level at a time) —
 // we can't recurse inside listStream's callback (channel reentrancy), so we
 // enumerate first, then act. Bounded per-level (fine for typical folders).
@@ -371,6 +384,7 @@ static bool rfd_copy_tree(RemoteFs* fs, const std::string& destSd, int depth) {
             bool got = fs->get(nm, fdst, rfd_progress);
             OSD::progressDialog("", "", 0, 2);
             if (!got) return false;
+            rfd_gunzip_vgz(fdst);       // .vgz → ready .vgm beside the rest
         }
     }
     return true;
@@ -383,6 +397,14 @@ static bool rfd_copy_tree(RemoteFs* fs, const std::string& destSd, int depth) {
 // the whole OSD so the freshly loaded program runs.
 static bool rfd_launch_tmp(string path) {
     string ext = FileUtils::getLCaseExt(path);
+
+    // A .vgz only needs its gzip wrapper removed — there is nothing to "launch"
+    // (VGM playback is the guest-side DivMMC plugin's job), but Enter shouldn't
+    // leave gzip bytes in /tmp either. F5 Save is the real path for VGM packs.
+    if (ext == "vgz") {
+        rfd_gunzip_vgz(path);
+        return false;
+    }
 
     // Downloaded archive: unpack to /tmp and launch the first usable inner file.
     if (ext == "zip") {
@@ -639,6 +661,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
                     string dst = destBase + (destBase.back() == '/' ? "" : "/") + base;
                     ok = fs->get(nm, dst, rfd_progress);
                     OSD::progressDialog("", "", 0, 2);
+                    if (ok) rfd_gunzip_vgz(dst);   // .vgz → ready .vgm on the SD
                 }
                 OSD::osdCenteredMsg(ok ? MSG_NET_XFER_OK : MSG_NET_XFER_ERR,
                                     ok ? LEVEL_INFO : LEVEL_WARN, 1800);
