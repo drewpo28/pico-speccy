@@ -149,15 +149,22 @@ inline void fclose(FIL& f) {
 // returns false so callers can refuse to write into a non-existent dir.
 bool FileUtils::mkdirParents(const char* path) {
     if (!path || !*path) return false;
-    char buf[128];
+    // 128 was too small for real catalog paths: a download dir plus an
+    // 80-char pack title overflows it and the whole folder copy fails as a
+    // generic transfer error before a single byte moves.
+    char buf[260];
     size_t len = strlen(path);
     if (len >= sizeof(buf)) return false;
     memcpy(buf, path, len);
     buf[len] = 0;
-    // Skip a volume prefix ("USB:/...") — f_mkdir("USB:") is an error, not FR_EXIST
+    // Skip a volume prefix ("USB:/...") — f_mkdir("USB:") is an error, not FR_EXIST.
+    // Only a ':' BEFORE the first '/' is a volume separator: a ':' later in the
+    // path is just (an illegal FAT char in) a directory name, and treating it as
+    // a prefix used to skip every parent mkdir for names like "Game: Subtitle".
     size_t start = 1;
     const char* colon = strchr(buf, ':');
-    if (colon) start = (size_t)(colon - buf) + 2;
+    const char* slash = strchr(buf, '/');
+    if (colon && (!slash || colon < slash)) start = (size_t)(colon - buf) + 2;
     for (size_t i = start; i < len; ++i) {
         if (buf[i] == '/') {
             buf[i] = 0;

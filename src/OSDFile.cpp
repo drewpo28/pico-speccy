@@ -333,6 +333,20 @@ static string rfd_choose_file(const string& start) {
     }
 }
 
+// FAT rejects \ / : * ? " < > | and control bytes in names — and catalog
+// display names routinely carry them (game titles like "Gulliver Boy: …").
+// Every SD path built from a catalog name goes through this, or f_mkdir/f_open
+// fails and the whole download dies as a generic transfer error. Trailing
+// dots/spaces go too (FatFs strips them itself, silently renaming the dir the
+// rest of the copy then misses). UTF-8 continuation bytes (>= 0x80) pass.
+static std::string rfd_fat_name(const std::string& n) {
+    std::string s = n;
+    for (char& c : s)
+        if ((uint8_t)c < 0x20 || strchr("\\/:*?\"<>|", c)) c = '-';
+    while (!s.empty() && (s.back() == ' ' || s.back() == '.')) s.pop_back();
+    return s.empty() ? "-" : s;
+}
+
 // A downloaded .vgz is a gzip-wrapped .vgm (the format vgmrips.net serves VGM
 // tracks in); the DivMMC VGM-player plugin reads plain .vgm, so unwrap right
 // after the transfer and drop the wrapper. Best-effort: on a failed unwrap the
@@ -366,9 +380,9 @@ static bool rfd_copy_tree(RemoteFs* fs, const std::string& destSd, int depth) {
     for (auto& rec : names) {
         bool isDir = (!rec.empty() && (uint8_t)rec[0] == DIR_MARKER);
         std::string nm = isDir ? rec.substr(1) : rec;
-        std::string dst = destSd + "/" + nm;
+        std::string dst = destSd + "/" + rfd_fat_name(nm);
         if (isDir) {
-            FileUtils::mkdirParents(dst.c_str());
+            if (!FileUtils::mkdirParents(dst.c_str())) return false;
             if (!fs->cwd(nm)) return false;
             bool ok = rfd_copy_tree(fs, dst, depth + 1);
             fs->cwd("..");
@@ -378,7 +392,7 @@ static bool rfd_copy_tree(RemoteFs* fs, const std::string& destSd, int depth) {
             // for FTP/SFTP downloadBasename() returns the name unchanged.
             std::string fbase = fs->downloadBasename(nm);
             if (fbase.empty()) fbase = nm;
-            std::string fdst = destSd + "/" + fbase;
+            std::string fdst = destSd + "/" + rfd_fat_name(fbase);
             rfd_xfer_title = MSG_NET_COPYING;
             OSD::progressDialog(rfd_xfer_title, nm, 0, 0, fs->utf8Names());
             bool got = fs->get(nm, fdst, rfd_progress);
@@ -647,18 +661,20 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
                 Config::saveWifiConfig();
                 bool ok;
                 if (isDir) {                 // recursive folder copy (keep the dir name)
-                    string dst = destBase + (destBase.back() == '/' ? "" : "/") + nm;
-                    FileUtils::mkdirParents(dst.c_str());
-                    fs->cwd(nm);
-                    ok = rfd_copy_tree(fs, dst, 0);
-                    fs->cwd("..");
+                    string dst = destBase + (destBase.back() == '/' ? "" : "/") + rfd_fat_name(nm);
+                    ok = FileUtils::mkdirParents(dst.c_str());
+                    if (ok) {
+                        fs->cwd(nm);
+                        ok = rfd_copy_tree(fs, dst, 0);
+                        fs->cwd("..");
+                    }
                 } else {                     // single file — use the real filename (catalog
                                              // display names carry no extension)
                     rfd_xfer_title = MSG_NET_DOWNLOADING;
                     OSD::progressDialog(rfd_xfer_title, nm, 0, 0, fs->utf8Names()); // show first
                     string base = fs->downloadBasename(nm);   // (catalog: HTTP listing read)
                     if (base.empty()) base = nm;
-                    string dst = destBase + (destBase.back() == '/' ? "" : "/") + base;
+                    string dst = destBase + (destBase.back() == '/' ? "" : "/") + rfd_fat_name(base);
                     ok = fs->get(nm, dst, rfd_progress);
                     OSD::progressDialog("", "", 0, 2);
                     if (ok) rfd_gunzip_vgz(dst);   // .vgz → ready .vgm on the SD
