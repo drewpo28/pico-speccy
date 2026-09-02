@@ -1009,6 +1009,310 @@ const Option* zifi_transportOpts(uint8_t& cnt) {
     return opts;
 }
 
+// ── WiFi in the right pane ─────────────────────────────────────────────────────
+// The enable half of act_wifi keeps a live, scrollable log of the ESP-01 AT
+// dialog in the menu's right pane — the scan AND the connect — while the SSID
+// list takes the LEFT pane (where the menu rows were; Esc hands it back) and only
+// the password keeps a modal box (the log is repainted underneath when it
+// closes). The action runs under runModal, which repaints the whole chrome on
+// return, so nothing here has to be undone.
+
+static inline int paneRowY(int i) { return LY.body_y + LY.row_h * (i + 1); }
+
+// The pane's title row (drawPaneTitles' slot). `right` is drawn right-aligned,
+// dimmed — the list's "3/12" position.
+static void paneTitle(const char* title, const char* right = nullptr) {
+    const int y = LY.body_y;
+    fill(LY.rx, y, LY.rw, LY.row_h, C_PANEL);
+    int avail = LY.rw - 2 * LY.pad;
+    if (right && right[0]) {
+        const int rw = textWidth(right);
+        text(LY.rx + LY.rw - LY.pad - rw, y + 1, right, C_TEXT_DIM);
+        avail -= rw + LY.pad;
+    }
+    textClip(LY.rx + LY.pad, y + 1, avail, title, C_WHITE);
+    hline(LY.rx, y + LY.row_h - 1, LY.rw, C_SEP);
+}
+
+static void paneClearBody() {
+    fill(LY.rx, LY.body_y + LY.row_h, LY.rw, LY.body_h - LY.row_h, C_PANEL);
+}
+
+static void paneRow(int i, const char* s, UiColor ink) {
+    if (i < 0 || i >= LY.body_rows) return;
+    const int y = paneRowY(i);
+    fill(LY.rx, y, LY.rw, LY.row_h, C_PANEL);
+    textClip(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad, s, ink);
+}
+
+// Footer hint for the flow's current step — drawFooter's geometry, our text.
+static void paneFooter(const char* hint) {
+    const int y = LY.iy + LY.ih - LY.foot_h;
+    fill(LY.ix, y, LY.iw, LY.foot_h, C_FOOT_BG);
+    hline(LY.ix, y, LY.iw, C_SEP);
+    text(LY.ix + LY.pad, y + 3, hint, C_TEXT_DIM);
+    roundRectBorder(LY.margin, LY.iy - 1, LY.w - 2 * LY.margin, LY.ih + 2, 4, C_SEP, C_BG);
+}
+
+// SSID list in the LEFT pane, over the menu rows (the log stays visible on the
+// right). Returns the chosen index, -1 on Esc/F1/Left — the caller returns and
+// runModal's repaint brings the menu rows back. Same key discipline as the nav
+// (only the VK_MENU_* twins move, single steps wrap). Whatever was typed while
+// the scan ran is drained first — a 5 s scan's typeahead must not land here.
+static int leftList(const char* title, const char* const* items, int n) {
+    if (n <= 0) return -1;
+    const int rows = LY.body_rows;
+    int sel = 0, top = 0;
+    const int maxTop = n > rows ? n - rows : 0;
+
+    auto drawIt = [&]() {
+        const int ty = LY.body_y;
+        fill(LY.lx, ty, LY.lw, LY.row_h, C_PANEL);
+        int avail = LY.lw - 2 * LY.pad;
+        if (n > rows) {
+            char pos[16];
+            snprintf(pos, sizeof(pos), "%d/%d", sel + 1, n);
+            const int pw = textWidth(pos);
+            text(LY.lx + LY.lw - LY.pad - pw, ty + 1, pos, C_TEXT_DIM);
+            avail -= pw + LY.pad;
+        }
+        textClip(LY.lx + LY.pad, ty + 1, avail, title, C_WHITE);
+        for (int r = 0; r < rows; r++) {
+            const int i = top + r;
+            const int y = paneRowY(r);
+            const bool s = (i == sel);
+            fill(LY.lx, y, LY.lw, LY.row_h, s ? C_SEL_BG : C_PANEL);
+            if (i < n)
+                textClip(LY.lx + LY.pad, y + 1, LY.lw - 2 * LY.pad, items[i],
+                         s ? C_WHITE : C_TEXT);
+        }
+    };
+    drawIt();
+    paneFooter(SYM_UP SYM_DOWN " Move   " SYM_ENTER " Select   Esc / " SYM_LEFT " Back");
+
+    auto kbd = ESPectrum::PS2Controller.keyboard();
+    { fabgl::VirtualKeyItem d; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d); }
+    fabgl::VirtualKeyItem k;
+    while (1) {
+        if (!kbd->virtualKeyAvailable()) { sleep_ms(5); continue; }
+        if (!ESPectrum::readKbd(&k) || !k.down) continue;
+        int ns = sel;
+        switch (k.vk) {
+            case fabgl::VK_MENU_UP:    ns = sel > 0 ? sel - 1 : n - 1; break;
+            case fabgl::VK_MENU_DOWN:  ns = sel < n - 1 ? sel + 1 : 0; break;
+            case fabgl::VK_PAGEUP:     ns = sel - rows; break;
+            case fabgl::VK_PAGEDOWN:   ns = sel + rows; break;
+            case fabgl::VK_MENU_HOME:
+            case fabgl::VK_HOME:       ns = 0; break;
+            case fabgl::VK_END:        ns = n - 1; break;
+            case fabgl::VK_MENU_ENTER:
+            case fabgl::VK_MENU_RIGHT: OSD::clickNoPause(); return sel;
+            case fabgl::VK_ESCAPE: case fabgl::VK_F1:
+            case fabgl::VK_MENU_LEFT:  OSD::clickNoPause(); return -1;
+            default: break;
+        }
+        if (ns < 0) ns = 0;
+        if (ns > n - 1) ns = n - 1;
+        if (ns == sel) continue;
+        sel = ns;
+        if (sel < top) top = sel;
+        if (sel >= top + rows) top = sel - rows + 1;
+        if (top > maxTop) top = maxTop;
+        drawIt();
+        OSD::clickNoPause();
+    }
+}
+
+// The connect log: full lines in one packed ring (ink byte + text + NUL per
+// record, oldest dropped when full), WRAPPED to the pane width at draw time so
+// a 70-char +CWLAP reply is readable whole — continuation rows are indented one
+// glyph. Tail-pinned while it fills, scrollable once the flow is done
+// (wlogView; scrolling is in DISPLAY rows, so a wrapped line scrolls smoothly).
+// Heap-allocated for the flow only (3 KB of .bss for a once-a-session dialog is
+// not worth it); without the buffer the lines still land in the pane, clipped
+// and unscrolled — the last row is overwritten once the pane is full.
+struct WifiLog {
+    enum { CAP = 3072, MAX_LINE = 120 };
+    uint16_t used;                  // bytes of buf in use
+    uint16_t n;                     // records
+    char     buf[CAP];
+};
+static WifiLog*    s_wlog;
+static uint8_t     s_wlog_row;      // fallback cursor when the buffer is missing
+static int         s_wlog_top;      // first shown display row; -1 = follow the tail
+static const char* s_wlog_title;
+
+extern "C" size_t getLargestAllocatable(void);
+
+// Characters per pane row, and per continuation row (one glyph of indent).
+static inline int wlogCols() {
+    const int c = (LY.rw - 2 * LY.pad) / glyphW();
+    return c > 4 ? c : 4;
+}
+
+// Display rows a record of `len` characters takes at `cw` columns.
+static inline int wlogRowsOf(int len, int cw) {
+    if (len <= cw) return 1;
+    return 1 + (len - cw + (cw - 2)) / (cw - 1);
+}
+
+static int wlogTotalRows() {
+    const int cw = wlogCols();
+    int rows = 0;
+    for (const char* p = s_wlog->buf; p < s_wlog->buf + s_wlog->used; ) {
+        const int len = (int)strlen(p + 1);
+        rows += wlogRowsOf(len, cw);
+        p += 2 + len;
+    }
+    return rows;
+}
+
+// Title + body from the buffer. The title carries "<last shown>/<total>" once
+// the log outgrows the pane, so a scrolled view says where it is.
+static void wlogDraw() {
+    const int rows  = LY.body_rows;
+    const int cw    = wlogCols();
+    const int total = wlogTotalRows();
+    const int maxTop = total > rows ? total - rows : 0;
+    int first = s_wlog_top < 0 ? maxTop : s_wlog_top;
+    if (first > maxTop) first = maxTop;
+    if (first < 0) first = 0;
+
+    char pos[16] = "";
+    if (total > rows) {
+        const int last = first + rows < total ? first + rows : total;
+        snprintf(pos, sizeof(pos), "%d/%d", last, total);
+    }
+    paneTitle(s_wlog_title, pos);
+
+    // Walk the records, skipping `first` display rows, painting `rows`.
+    int row = 0, skip = first;
+    char chunk[WifiLog::MAX_LINE + 1];
+    for (const char* p = s_wlog->buf; p < s_wlog->buf + s_wlog->used && row < rows; ) {
+        const UiColor ink = (UiColor)(uint8_t)p[0];
+        const char* t = p + 1;
+        const int len = (int)strlen(t);
+        int off = 0, part = 0;
+        while ((off < len || part == 0) && row < rows) {
+            const int take = part == 0 ? cw : cw - 1;
+            int c = len - off; if (c > take) c = take;
+            if (skip > 0) { skip--; }
+            else {
+                memcpy(chunk, t + off, c); chunk[c] = 0;
+                const int y = paneRowY(row);
+                fill(LY.rx, y, LY.rw, LY.row_h, C_PANEL);
+                text(LY.rx + LY.pad + (part ? glyphW() : 0), y + 1, chunk, ink);
+                row++;
+            }
+            off += c; part++;
+        }
+        p += 2 + len;
+    }
+    for (; row < rows; row++) paneRow(row, "", C_TEXT);
+}
+
+// Called at start and after every modal box that covered the pane (the
+// buffer-less fallback simply starts a fresh page).
+static void wlogRepaint(const char* title) {
+    s_wlog_title = title;
+    if (s_wlog) { wlogDraw(); return; }
+    paneTitle(title);
+    paneClearBody();
+    s_wlog_row = 0;
+}
+
+static void wlogBegin(const char* title) {
+    s_wlog = nullptr;
+    s_wlog_top = -1;
+    if (getLargestAllocatable() > sizeof(WifiLog) + 2048)
+        s_wlog = (WifiLog*)malloc(sizeof(WifiLog));
+    if (s_wlog) { s_wlog->used = 0; s_wlog->n = 0; }
+    wlogRepaint(title);
+}
+
+static void wlogEnd() {
+    free(s_wlog);
+    s_wlog = nullptr;
+}
+
+static void wlogAdd(const char* s, UiColor ink) {
+    if (!s_wlog) {
+        paneRow(s_wlog_row, s, ink);
+        if (s_wlog_row + 1 < LY.body_rows) s_wlog_row++;
+        return;
+    }
+    int len = (int)strlen(s);
+    if (len > WifiLog::MAX_LINE) len = WifiLog::MAX_LINE;
+    const int rec = 2 + len;
+    while (s_wlog->used + rec > WifiLog::CAP && s_wlog->n) {   // drop the oldest
+        const int old = 2 + (int)strlen(s_wlog->buf + 1);
+        memmove(s_wlog->buf, s_wlog->buf + old, s_wlog->used - old);
+        s_wlog->used -= old;
+        s_wlog->n--;
+    }
+    char* d = s_wlog->buf + s_wlog->used;
+    d[0] = (char)ink;
+    memcpy(d + 1, s, len);
+    d[1 + len] = 0;
+    s_wlog->used += rec;
+    s_wlog->n++;
+    s_wlog_top = -1;                 // a new line always re-pins the tail
+    wlogDraw();
+}
+
+// The closing wait: Up/Down/PgUp/PgDn/Home/End scroll the log (by display row),
+// Enter/Esc/F1/Left leave (the queue is drained like uiWaitPageClose, for the
+// same reason).
+static void wlogView() {
+    if (!s_wlog) { uiWaitPageClose(); return; }
+    const int rows  = LY.body_rows;
+    const int total = wlogTotalRows();
+    const int maxTop = total > rows ? total - rows : 0;
+    int top = maxTop;
+    auto kbd = ESPectrum::PS2Controller.keyboard();
+    fabgl::VirtualKeyItem k;
+    while (1) {
+        if (!kbd->virtualKeyAvailable()) { sleep_ms(5); continue; }
+        if (!ESPectrum::readKbd(&k) || !k.down) continue;
+        int nt = top;
+        switch (k.vk) {
+            case fabgl::VK_MENU_UP:    nt = top - 1; break;
+            case fabgl::VK_MENU_DOWN:  nt = top + 1; break;
+            case fabgl::VK_PAGEUP:     nt = top - rows; break;
+            case fabgl::VK_PAGEDOWN:   nt = top + rows; break;
+            case fabgl::VK_MENU_HOME:
+            case fabgl::VK_HOME:       nt = 0; break;
+            case fabgl::VK_END:        nt = maxTop; break;
+            case fabgl::VK_MENU_ENTER:
+            case fabgl::VK_ESCAPE: case fabgl::VK_F1:
+            case fabgl::VK_MENU_LEFT: {
+                fabgl::VirtualKeyItem d;
+                while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d);
+                OSD::clickNoPause();
+                return;
+            }
+            default: break;
+        }
+        if (nt < 0) nt = 0;
+        if (nt > maxTop) nt = maxTop;
+        if (nt == top) continue;
+        top = nt;
+        s_wlog_top = top;
+        wlogDraw();
+        OSD::clickNoPause();
+    }
+}
+
+// ZiFiAT::log_cb: "ZiFiAT tx: AT+CWMODE=1" → "> AT+CWMODE=1" (dim),
+// "ZiFiAT rx: WIFI CONNECTED" → "< WIFI CONNECTED". The password is already
+// masked by ZiFiAT's atLog (tx line AND the ESP's echo of it).
+static void wlogCb(const char* l) {
+    char b[WifiLog::MAX_LINE + 1];
+    if (strncmp(l, "ZiFiAT tx: ", 11) == 0)      { snprintf(b, sizeof(b), "> %s", l + 11); wlogAdd(b, C_TEXT_DIM); }
+    else if (strncmp(l, "ZiFiAT rx: ", 11) == 0) { snprintf(b, sizeof(b), "< %s", l + 11); wlogAdd(b, C_TEXT); }
+    else                                          wlogAdd(l, C_TEXT);
+}
+
 void act_wifi() {
     if (Config::wifi_enabled) {
         netStatusRefresh();
@@ -1037,42 +1341,82 @@ void act_wifi() {
         return;
     }
 
-    // Scan → pick SSID → password → connect (→ SNTP when the RTC is on).
-    uiBusy("Scanning for networks...");
+    // Scan → pick SSID → password → connect (→ SNTP when the RTC is on). The AT
+    // dialog of every step streams into the right pane; the SSID list takes the
+    // left pane and only the password prompt is a modal box over both.
+    gfxResumePalette();
+    wlogBegin(TXT_NET_WIFI);
+    paneFooter("Esc Cancel");
+    // The chrome repaint after the password box brings the menu rows back on the
+    // left and redraws the right pane as "Enter to open" — the log is painted
+    // back over it.
+    auto restorePane = [&]() {
+        drawFrameOnce();
+        markDirty(D_ALL);
+        flushDirty();
+        wlogRepaint(TXT_NET_WIFI);
+    };
+
+    ZiFiAT::log_cb = wlogCb;            // the AT exchange, passwords masked at the source
+    wlogAdd("Scanning for networks...", C_WHITE);
     // static, not on the 4 KB core stack: 24 std::strings under do_OSD overflowed
     // the stack in the classic flow — same hazard here. Single-use, non-reentrant.
     static string nets[24];
     const int n = ZiFiAT::scan(nets, 24);
-    if (n <= 0) { uiToast(TXT_MSG_NO_NETS, true, 2500); return; }
+    char m[72];
+    if (n <= 0) {
+        ZiFiAT::log_cb = nullptr;
+        wlogAdd(TXT_MSG_NO_NETS, C_ICON_R);
+        paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
+        wlogView();
+        wlogEnd();
+        return;
+    }
+    snprintf(m, sizeof(m), "Found %d network%s", n, n == 1 ? "" : "s");
+    wlogAdd(m, C_ACCENT);
 
     const char* items[24];
     for (int i = 0; i < n; i++) items[i] = nets[i].c_str();
-    const int sel = uiPickList(TXT_NET_PICK_TITLE, items, n);
-    if (sel < 0) return;
+    const int sel = leftList(TXT_NET_PICK_TITLE, items, n);
+    if (sel < 0) { ZiFiAT::log_cb = nullptr; wlogEnd(); return; }
 
     string pass;
     char pt[64];
     // Masked like the classic box; TAB toggles reveal (handled by uiEditLine).
     snprintf(pt, sizeof(pt), "Password for %.24s  (TAB shows)", nets[sel].c_str());
-    if (!uiPrompt(pt, pass, 64, true)) return;
+    const bool ok = uiPrompt(pt, pass, 64, true);
+    if (!ok) { ZiFiAT::log_cb = nullptr; wlogEnd(); return; }
+    restorePane();
 
-    uiBusy(MSG_WIFI_CONNECTING);
+    paneFooter(MSG_WIFI_CONNECTING);
+    snprintf(m, sizeof(m), "Connecting to %.40s", nets[sel].c_str());
+    wlogAdd(m, C_WHITE);
     const ZiFiAT::Status cst = ZiFiAT::connect(nets[sel], pass);
     string when;
-    if (cst == ZiFiAT::OK && Config::rtc_enabled)
+    if (cst == ZiFiAT::OK && Config::rtc_enabled) {
+        wlogAdd("Syncing time (SNTP)...", C_WHITE);
         ZiFiAT::syncTime(Config::wifi_tz, when);
+    }
+    ZiFiAT::log_cb = nullptr;
     if (cst == ZiFiAT::OK) {
         Config::wifi_ssid = nets[sel];
         Config::wifi_pass = pass;
         Config::wifi_enabled = true;
         Config::saveWifiConfig();
         netStatusInvalidate();
-        string msg = string(MSG_WIFI_CONNECTED) + "\n" + ZiFiAT::current_ip;
-        if (!when.empty()) msg += "\n" + when;
-        uiToast(msg.c_str(), false, 2500);
+        snprintf(m, sizeof(m), "%s  %s", MSG_WIFI_CONNECTED, ZiFiAT::current_ip.c_str());
+        wlogAdd(m, C_ACCENT);
+        if (!when.empty()) {
+            snprintf(m, sizeof(m), "Time: %s", when.c_str());
+            wlogAdd(m, C_TEXT);
+        }
     } else {
-        uiToast(MSG_WIFI_CONNECT_ERR, true, 2500);
+        wlogAdd(cst == ZiFiAT::TIMEOUT ? MSG_WIFI_CONNECT_ERR ": timeout" : MSG_WIFI_CONNECT_ERR,
+                C_ICON_R);
     }
+    paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
+    wlogView();
+    wlogEnd();
 }
 
 void act_sntp() {
