@@ -566,6 +566,12 @@ static const Option opt_gs_ram[] = {
     { "4 MB",   3 },
 };
 
+static const Option opt_sn_clock[] = {          // values are Config::sn_clock indices
+    { "3.58 MHz", 0 },   // SMS / the VGM default
+    { "2 MHz",    1 },   // Sega System 1/2 dual-SN arcades
+    { "4 MHz",    2 },   // Super Locomotive etc.
+};
+
 static const Option opt_gs_clock[] = {          // values are Config::gs_clock indices
     { "12 MHz", 0 },
     { "13 MHz", 1 },
@@ -621,6 +627,17 @@ static const Option opt_midi_storage[] = {      // values ARE Config::midi_stora
 };
 #endif
 
+// The chips only the DivMMC VGM-player plugin drives, grouped out of the
+// native-Spectrum rows. "All" flips the whole card family at once.
+static const Node kVgmChips[] = {
+    NM_BOOL (TXT_VGM_ALL,        SET_VGM_ALL,      nullptr),
+    NM_BOOL (TXT_AUD_OPL3,       SET_OPL3,         nullptr),
+    NM_BOOL (TXT_AUD_OPLL,       SET_YM2413,       nullptr),
+    NM_BOOL (TXT_AUD_CMS,        SET_CMS,          nullptr),
+    NM_BOOL (TXT_AUD_SN,         SET_SN76489,      nullptr),
+    NM_RADIO(NM_IND TXT_SN_CLOCK, SET_SN_CLOCK,    opt_sn_clock,   nullptr),
+};
+
 static const Node kAudio[] = {
     NM_RADIO(TXT_AUD_DRIVER,     SET_AUDIO_DRIVER, opt_audio_driver, nullptr),
     NM_BOOL (TXT_AUD_AY,         SET_AY48,         nullptr),
@@ -631,9 +648,9 @@ static const Node kAudio[] = {
     // together (single #FF chip vs the CMS/Game Blaster two-chip card), then
     // FM, then the SN pair, then the DACs.
     NM_BOOL (TXT_AUD_SAA,        SET_SAA1099,      nullptr),
-    NM_BOOL (TXT_AUD_CMS,        SET_CMS,          nullptr),
-    NM_BOOL (TXT_AUD_OPL3,       SET_OPL3,         nullptr),
-    NM_BOOL (TXT_AUD_SN,         SET_SN76489,      nullptr),
+
+
+    NM_SUB  (TXT_AUD_VGM,        kVgmChips,        nullptr),
     NM_RADIO(TXT_AUD_COVOX,      SET_COVOX,        opt_covox,      nullptr),
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
     NM_RADIO   (TXT_AUD_MIDI,           SET_MIDI_MODE,   opt_midi_mode,   nullptr),

@@ -100,6 +100,8 @@ uint8_t  Config::tsfm = 0;       // TurboSound FM off by default
 uint8_t  Config::opl3 = 0;       // OPL3 (YMF262) card off by default
 uint8_t  Config::cms = 0;        // CMS (2x SAA1099) off by default
 uint8_t  Config::sn76489 = 0;    // 2x SN76489 off by default
+uint8_t  Config::sn_clock = 0;   // 3.579545 MHz
+uint8_t  Config::ym2413 = 0;     // YM2413 (OPLL) off by default
 uint8_t  Config::covox = 1; // #FB
 uint8_t  Config::turbo = 0; // 3.5 MHz
 uint8_t  Config::soundrive = 2; // AUTO: on for Profi, off elsewhere
@@ -940,6 +942,9 @@ void Config::load() {
         nvs_get_u8("opl3", Config::opl3, sts);
         nvs_get_u8("cms", Config::cms, sts);
         nvs_get_u8("sn76489", Config::sn76489, sts);
+        nvs_get_u8("sn_clock", Config::sn_clock, sts);
+        nvs_get_u8("ym2413", Config::ym2413, sts);
+        if (Config::sn_clock > 2) Config::sn_clock = 0;
         // Setting is Yes/No now (3 = both chip-select schemes, 0 = off): fold the
         // old NedoPC-only (1) / old-TS-only (2) values in, or the menu row would
         // match no option at all.
@@ -1258,6 +1263,8 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"opl3", Config::opl3);
     nvs_set_u8(buf,"cms", Config::cms);
     nvs_set_u8(buf,"sn76489", Config::sn76489);
+    nvs_set_u8(buf,"sn_clock", Config::sn_clock);
+    nvs_set_u8(buf,"ym2413", Config::ym2413);
     nvs_set_u8(buf,"turbo", Config::turbo);
     nvs_set_u8(buf,"covox", Config::covox);
     nvs_set_u8(buf,"soundrive", Config::soundrive);

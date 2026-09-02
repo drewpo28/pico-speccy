@@ -38,6 +38,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "AySound.h"
 #include "OpnFm.h"
 #include "OplFm.h"
+#include "OpllFm.h"
 #include "SnSound.h"
 #include "SAASound.h"
 #include "CPU.h"
@@ -2151,33 +2152,30 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     ioContentionLate(MemESP::ramContended[rambank]);
     return;
   }
-  // CMS / Game Blaster (VGM-player card): two SAA1099s at 7.159 MHz on
-  // #D4-#D7, laid out like the PC original at 220h-223h — +0 chip-1 DATA,
-  // +1 chip-1 ADDR, +2 chip-2 DATA, +3 chip-2 ADDR. Write-only (a real
-  // SAA1099 has no readable registers on this card), so no input decode; the
-  // base avoids the NEMO IDE windows (which claim lo&6==0, i.e. #C0-#C3/#C8/
-  // #D0). Same early-return deviation as OPL3 — #D4/#D6 have A0=0 and would
-  // otherwise write the border.
-  if (cmsChip[0] && (address & 0x00FC) == 0x00D4) {
-    // catch up first — selectRegister can tick the external envelope clock
-    if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::CMSGetSample();
-    SAASound* chip = cmsChip[(address >> 1) & 1];
-    if (address & 1) chip->selectRegister(data);
-    else             chip->setRegisterData(data);
-    ioContentionLate(MemESP::ramContended[rambank]);
-    return;
+  // YM2413/OPLL (VGM-player card): address port #C0, data port #C1 (VGM cmd
+  // 0x51). Write-only silicon — no input decode. Both ports are even and sit
+  // BEFORE the ULA branch; NB NEMO IDE claims #C0/#C1 via its lo&6==0 decode
+  // (its block runs first), so with the NEMO scheme selected the OPLL loses —
+  // the same clash the real cards would have.
+  if (opllfm) {
+    uint8_t opll_lo = address & 0xFF;
+    if (opll_lo == 0xC0 || opll_lo == 0xC1) {
+      ESPectrum::OPLLPortWrite(opll_lo & 1, data);
+      ioContentionLate(MemESP::ramContended[rambank]);
+      return;
+    }
   }
   // 2x SN76489 (VGM-player card): single write-only register byte per chip.
-  // #C9 = chip 1 is the REAL plugin ABI (VGM Player 0.61a build of 2026-07-11,
-  // disassembled: its cmd-0x50 handler is `OUT (#C9),A`); #CD = chip 2 stays
-  // OUR proposal — no plugin build handles VGM cmd 0x30 yet. NB with NEMO IDE
-  // selected #C9 is shadowed by NEMO's `!(addr & 6)` + A0=1 write-latch decode
-  // (its block runs first) — the same clash the real cards would have.
+  // Current plugin map: chip 1 = #C3 (VGM cmd 0x50), chip 2 = #C2 (cmd 0x30);
+  // an older build wrote chip 1 to #C9 — kept as an alias. (The card family
+  // also reserves #C0 reg / #C1 data for a YM2413/OPLL — NOT emulated here
+  // yet; note NEMO IDE claims #C0/#C1 via its lo&6==0 decode, a clash to
+  // remember if OPLL ever lands.)
   if (snChip) {
     uint8_t sn_lo = address & 0xFF;
-    if (sn_lo == 0xC9 || sn_lo == 0xCD) {
+    if (sn_lo == 0xC3 || sn_lo == 0xC9 || sn_lo == 0xC2) {
       if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SNGetSample();
-      snChip->write(sn_lo == 0xCD ? 1 : 0, data);
+      snChip->write(sn_lo == 0xC2 ? 1 : 0, data);
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
     }
@@ -2399,26 +2397,44 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
     }
-    // SAA1099 Sound Chip
-    // Ports: 0x00FF/0x01FF (original), 0x04FF/0x05FF (Light/Middle revisions)
-    //        0x00FE/0x01FE (FPGA48all.tap and some other programs use a8=0xFE)
+    // SAA1099 Sound Chip — the #FF family, register select on A8:
+    //   single chip (Config::SAA1099, 8 MHz Karabas/SAM convention):
+    //     0x00FF/0x01FF (original), 0x04FF/0x05FF (Light/Middle revisions)
+    //   CMS pair (Config::cms, 7.159 MHz Game Blaster): A9 selects the chip —
+    //     chip 1 = 0x00FF data / 0x01FF addr, chip 2 = 0x02FF data / 0x03FF
+    //     addr (the VGM-plugin map, supplied by the author 2026-09-01).
+    // With BOTH features on, the CMS pair owns the family: same physical
+    // ports, one card at a time on real hardware too. Note chip 1's ports are
+    // exactly the classic single-SAA ports, so single-chip software still
+    // plays with CMS on — at the CMS clock (~12% lower pitch).
     // Accessible only when TR-DOS ROM is NOT mapped (DOS/ = 1).
     // Karabas-Pro manual: gate is "DOS=0" — for Profi this is the extended
     // periphery mode (CPM=1 AND ROM14=1). Other archs keep the TR-DOS gate.
-    if (ESPectrum::SAA_emu && saaChip && !ESPectrum::trdos && (a8 == 0xFF) &&
+    if ((a8 == 0xFF) && !ESPectrum::trdos &&
         !(Z80Ops::isProfi && (portDFFD & 0x20) && MemESP::romLatch)) {
-      LED::touchW(LED::SAA);
-      if (address & 0x0100) {
-        // Register select (bit 8 set): 0x01FF, 0x05FF, etc.
-        // Generate samples before selectRegister — it advances external envelope clock
-        if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SAAGetSample();
-        saaChip->selectRegister(data);
+      if (cmsChip[0] && cmsChip[1]) {
+        LED::touchW(LED::SAA);
+        SAASound* chip = cmsChip[(address >> 9) & 1];
+        // catch up first — selectRegister can tick the external envelope clock
+        if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::CMSGetSample();
+        if (address & 0x0100) chip->selectRegister(data);
+        else                  chip->setRegisterData(data);
         return;
-      } else {
-        // Data write (bit 8 clear): 0x00FF, 0x04FF, etc.
-        if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SAAGetSample();
-        saaChip->setRegisterData(data);
-        return;
+      }
+      if (ESPectrum::SAA_emu && saaChip) {
+        LED::touchW(LED::SAA);
+        if (address & 0x0100) {
+          // Register select (bit 8 set): 0x01FF, 0x05FF, etc.
+          // Generate samples before selectRegister — it advances external envelope clock
+          if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SAAGetSample();
+          saaChip->selectRegister(data);
+          return;
+        } else {
+          // Data write (bit 8 clear): 0x00FF, 0x04FF, etc.
+          if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SAAGetSample();
+          saaChip->setRegisterData(data);
+          return;
+        }
       }
     }
     // AY

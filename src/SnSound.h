@@ -31,7 +31,9 @@ the Free Software Foundation, either version 3 of the License, or
 
 #include <inttypes.h>
 
-// Standard NTSC colorburst clock — Sega arcades and the SMS alike.
+// Standard NTSC colorburst clock (SMS / the VGM default). The dual-chip
+// arcade rips actually run 2 MHz (Sega System 1/2) or 4 MHz — selectable via
+// Config::sn_clock, resolved by sn_clock_hz() in Subsystem.cpp.
 #define SN76489_CLOCK 3579545
 
 class SnSound {
@@ -74,5 +76,8 @@ private:
 
 // Allocated by SnSubsys while Config::sn76489 is on.
 extern SnSound* snChip;
+
+// Config::sn_clock resolved to Hz (Subsystem.cpp).
+int sn_clock_hz();
 
 #endif // SnSound_h

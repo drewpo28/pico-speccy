@@ -240,10 +240,18 @@ public:
     // YMF262/OPL3 sound card (AlexZor DivMMC VGM player: address/data pairs on
     // ports #C4/#C5 and #C6/#C7). Gates the port decode and OplFm/OplSubsys.
     static uint8_t  opl3;
-    // Creative Music System (2x SAA1099 @7.159 MHz, ports #D4-#D7) and
-    // 2x SN76489 (ports #CC/#CD) — the same VGM-player card family.
+    // Creative Music System (2x SAA1099 @7.159 MHz, #FF family / A9 select)
+    // and 2x SN76489 (#C9/#CD) — the same VGM-player card family.
     static uint8_t  cms;
     static uint8_t  sn76489;
+    // SN76489 master clock pick: 0 = 3.579545 MHz (SMS/VGM default),
+    // 1 = 2 MHz, 2 = 4 MHz. Every dual-SN arcade rip in the wild is 2 or
+    // 4 MHz (Sega System 1/2), and a plugin streaming raw register writes
+    // cannot rescale 2 MHz periods up (10-bit overflow) — so the clock has
+    // to be an emulator setting.
+    static uint8_t  sn_clock;
+    // YM2413 (OPLL) — the same VGM-player card family, addr #C0 / data #C1.
+    static uint8_t  ym2413;
     // Is there a SECOND PSG? A TurboSound FM board is a TurboSound board — it is
     // literally two YM2203s, each an AY plus an FM half — so enabling TSFM has to
     // bring AySound chip1 up too. Without this, ayChipFor()'s "chip1 missing ->

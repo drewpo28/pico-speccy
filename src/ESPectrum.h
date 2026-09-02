@@ -109,6 +109,9 @@ public:
     static void OPLGetSample();
     static void OPLGenSound(int count, int bufpos);
     static void OPLPortWrite(uint8_t a, uint8_t v);
+    static void OPLLGetSample();
+    static void OPLLGenSound(int count, int bufpos);
+    static void OPLLPortWrite(uint8_t a, uint8_t v);
     static void CMSGetSample();
     static void SNGetSample();
     static void SNGenSound(int count, int bufpos);
@@ -204,6 +207,12 @@ public:
     // Entry: pos | (port<<16) | (val<<24). Allocated by OplSubsys.
     static uint32_t* oplWriteQueue;
     static uint16_t  oplQHead, oplQTail;
+    // YM2413/OPLL: mono buffer + its own write queue, same scheme (OpllSubsys).
+    static int16_t* audioBufferOPLL;
+    static uint32_t audbufcntOPLL;
+    static uint32_t faudbufcntOPLL;
+    static uint32_t* opllWriteQueue;
+    static uint16_t  opllQHead, opllQTail;
     static uint8_t* audioBufferSN;
     static uint32_t audbufcntSN;
     static uint32_t faudbufcntSN;

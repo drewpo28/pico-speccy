@@ -952,7 +952,11 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   `ts_fm_enabled` stayed false and FM was mixed out), swallow the byte like
   the CPLD select. Mapping #F0→chip0 follows the plugin, note it is the
   OPPOSITE bit-0 sense from the hw-tested #FF→chip0/#FE→chip1 convention.
-- Config::opl3 (NVS "opl3", default off) → Audio → "YMF262 (OPL3)", ordinary
+- Config::opl3 (NVS "opl3", default off) → Audio → VGM chips → "YMF262
+  (OPL3)" — the plugin-only chips live in one **"VGM chips" submenu**
+  (kVgmChips: All / OPL3 / OPLL / CMS / 2x SN76489 / Clock; "All" =
+  SET_VGM_ALL flips every Config flag at once, reads Yes only when ALL are
+  on, and the four individual kSubsys bindings reconcile as usual) — ordinary
   AC_SUBSYS/F_SUBSYS live toggle (OplSubsys mirrors TsfmSubsys, incl. the OOM
   fall-back to Off). Machine reset (F11) re-derives rates + resets the chip
   (the card sits on the ZX reset line). VGM chip clocks in the file header are
@@ -960,6 +964,67 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   14.318 MHz (`OPL3_YMF262_CLOCK`), and timing comes from VGM wait commands.
 - Not implemented, on purpose: OPL outputs C/D (OPL4-only DO0 pair), IRQ line
   (no card IRQ wiring), FM state in snapshots (same policy as TSFM).
+
+### YM2413 (OPLL) — src/OpllFm.{h,cpp} (2026-09-01, NOT hw-tested)
+
+Port of MAME ym2413.cpp (mame0220, GPL-2.0+, same lineage), for the VGM
+card's **addr #C0 / data #C1** (VGM cmd 0x51; NEMO IDE claims those two via
+lo&6==0 and wins while that scheme is selected). 9ch x 2op, 15 ROM patches +
+user patch (writes to regs 0-7 re-apply live to every channel on inst 0),
+rhythm mode with the instrument swap-in/out on the 0x0E toggle, the OPLL
+**dump phase** (key-on ramps the old note down, THEN resets phase — keyOn
+must NOT reset it, verified on real YM2413), separate rs/rr release rates by
+sus/eg_type, and melody-mode modulators NEVER perform EG_REL. Write-only
+silicon: no status, no timers, no detect — plays blind, which is why the
+plugin needs no handshake. Carries the whole OplFm toolkit: heap tables
+(NOTE the sign is NEGATION here, not one's complement; 11 tl rows; env<<5;
+pm<<17; ksl_shift order differs; HH/TOP gate uses OR where OPL3 uses XOR),
+freqbase rate conversion off MAME's native clock/72 stream, EG-skip with the
+same clamped-percussive-sustain + excluded-modulator-REL bounds, quiet fast
+paths, half-rate <450 MHz, audible()-gated +128 mixer bias, its own write
+queue (256 entries; addr/data flag in bit 16), OPLL_HOT RAM residency
+(~8 KB .time_critical with -O3). Output = (melody + rhythm) << 1 — the x2
+puts a lone OPLL at OPL3-comparable level through the same >>7 mixer tap.
+Host test `tools/opllfm_test.cpp` (autocorrelation for pitch — FM timbres
+break zero-crossing counting): violin ROM patch 440.1 Hz, user patch 440.0,
+key-off to exact silence, rhythm BD, half-rate pitch equal. All four local
+OPLL VGM rips render 100% nonzero at peaks 9.8-16.6k. `Config::ym2413`
+(NVS "ym2413") → Audio → "YM2413 (OPLL)", AC_SUBSYS live toggle; OpllSubsys
+~9 KB heap while on; F11 re-derives rates + resets.
+
+### The FM chips leave DC behind — model the card's coupling cap (hw 2026-09-02)
+
+Every YM chip (YM2413/OPLL, YM3812/OPL2, YMF262/OPL3) left a steady level on
+the OBS meter AFTER a track stopped. Not a synth bug and not the plugin (its
+mute sequence is correct): a player's mute writes RR=0, which is the OPL
+family's INFINITE release — slots freeze mid-decay forever, and with the
+frequency regs also zeroed the operator phase stops, so the chip emits a
+frozen sine sample = pure DC. A real sound card AC-couples that away; the
+mixer summed it as a permanent offset (made worse by our own +128 bipolar
+re-centre, which is itself a constant the clip ceiling pays for).
+
+Fix (ESPectrum.cpp, one path for OPL3/OPLL/TSFM), three parts:
+- **DC blocker** on each chip's output buffer, modelling the coupling cap.
+  NOT the naive integer high-pass `y = x - x1 + y1 - (y1>>8)`: that has a
+  DEAD ZONE of +/-256 (the >>8 truncates to 0 for |y1|<256) and leaves up to
+  255 of residual DC. Instead estimate DC as a one-pole low-pass in Q16
+  (`dc += (((int64_t)x<<16) - dc) >> 8`) and subtract — residual under 1 LSB,
+  ~19 Hz corner, inaudible against music. The first version shipped the buggy
+  form and the residual sat above the gate threshold, so the gate never
+  cleared and OPLL (which had a working EG-state gate) regressed too.
+- **Bias gate by the FILTERED output, not EG state**: the mixer taps the
+  buffer as `y >> 7`, so |y| < 128 contributes exactly zero — that is the
+  precise silence test. EG-state gating (`audible()`) is wedged forever by
+  those frozen-in-EG_REL slots; the output test cannot be. Window 2048
+  samples (~65 ms).
+- **Ramped re-centre bias** (1/sample, ~4 ms) instead of stepping +128 with
+  the gate — a 128 step on the rail is an audible pop at every track edge.
+
+Host-verified: the Q16 filter converges to y<128 in ~900 samples; on a real
+OplFm frozen by an RR=0 mute the gate turns off ~100 ms after the note stops
+(tools/gate check in scratch). The synth cores are untouched — Doom render
+CRC unchanged. `audible()` on the chips stays for reference but is no longer
+the mixer's gate.
 
 ### CMS (2x SAA1099) + 2x SN76489 (2026-08-28, NOT hw-tested, port map is OURS)
 
@@ -970,25 +1035,38 @@ its dispatcher has no 0xBD/0x50/0x30), so the port map below is OUR proposal,
 documented in README as the spec for AlexZor — if his plugin lands on different
 ports, the two Ports.cpp decode blocks are the only thing to move:
 
-- **CMS = #D4-#D7**, PC 220h-223h layout (+0 chip-1 DATA, +1 chip-1 ADDR,
-  +2 chip-2 DATA, +3 chip-2 ADDR), write-only (no input decode at all — reads
-  fall to the ULA/floatbus like a real partial-decode bus). The base is NOT
-  #C0-#C3 next to OPL3 deliberately: NEMO IDE's decode (`!(address & 6)` +
-  window tests) claims lo&6==0 ports — #C0/#C1/#C3/#C8/#D0 — and a CMS there
-  would fight it for #C1/#C3 writes. #D4-#D7 and #CC/#CD clear every existing
-  decode (NEMO, MB02 #x0F, DivMMC #E3/#E7/#EB/#A3, ZC #57/#77, Covox #FB/#DD,
-  Profi #8B window and the SPI-probe list).
-- **2x SN76489 = #CC (VGM 0x50) / #CD (0x30)**, write-only, one register byte
-  per OUT. Both blocks sit with the OPL3 one BEFORE the ULA even-port branch
-  (#D4/#D6/#CC have A0=0) and RETURN — same shared-bus deviation as OPL3.
+- **CMS = the #FF family with A9 as the chip select** (the plugin author's
+  map, 2026-09-01, replacing our earlier #D4-#D7 proposal): chip 1 data/addr
+  = #00FF/#01FF — exactly the classic single-SAA ports — chip 2 = #02FF/
+  #03FF. One decode block in Ports.cpp handles the family: CMS pair first
+  (when CmsSubsys is up), else the single Karabas chip; with both features
+  enabled the CMS pair OWNS the ports (one card at a time, like real hw), so
+  single-SAA software then plays on cmsChip[0] at the CMS clock (~12% flat).
+  Write-only, same !trdos + Profi-CPM gates as the single chip always had
+  (#FF is the Beta SYS register under TR-DOS).
+- **2x SN76489 = #C3 (VGM 0x50) / #C2 (0x30)**, write-only, one register byte
+  per OUT (#C9, an older plugin build's chip-1 port, stays as an alias). The
+  SN block sits with the OPL3 one BEFORE the ULA even-port branch and
+  RETURNS — same shared-bus deviation as OPL3. The card family also reserves
+  **#C0 reg / #C1 data for a YM2413 (OPLL, VGM cmd 0x51) — not emulated**;
+  NEMO IDE claims #C0/#C1 via lo&6==0 if that ever lands.
+- **SN clock is a menu setting** (Audio → 2x SN76489 → Clock: 3.58/2/4 MHz,
+  `Config::sn_clock`, AC_LIVE via `sn_clock_hz()`): the census of every
+  SN76489 VGM on hand (2026-09-01) found ALL dual-chip arcade rips at 2 MHz
+  (Sega System 1/2: Wonder Boy in Monster Land 20 files, Brain 12, Heavy
+  Metal 11) or 4 MHz (Super Locomotive) — none at the SMS-standard 3.579545.
+  A plugin streaming raw register writes cannot rescale 2 MHz periods UP
+  (10-bit fnum overflow kills the bass), so the clock has to live here. All
+  four extracted rips render through SnSound at their header clock on host
+  (both chips active).
   **UPDATE 2026-09-01: chip 1 moved #CC → #C9, and this path is hw-confirmed
   (generated SN-scale.vgm plays via VGM Player 0.61a).** The user's SD carries a NEWER
   plugin build than any published zip (`vgm`, 3207 B, "ver 0.61a", file date
   2026-07-11 — the zips both contain a 3127 B build), and it already PLAYS
   single-SN76489 VGMs: header offset 0x0C → "SN76489", cmd 0x50 → `OUT (#C9),A`,
   no detect (write-only chip plays blind), sound_off mutes 4 channels via #C9.
-  So #C9 is the real ABI; #CD stays our proposal for a second chip (no build
-  handles cmd 0x30 yet). #C9 collides with NEMO IDE's write-latch decode
+  **LATER SAME DAY: the plugin's map settled on #C3 (chip 1) / #C2 (chip 2)**
+  — the decode moved there, #C9 kept as an alias; see the bullet above. #C9 collides with NEMO IDE's write-latch decode
   (lo&6==0, A0=1) — NEMO's block runs first and wins while that scheme is
   selected; documented, same clash real cards would have. That build also
   confirmed: OPL3 #C4-#C7 and the #F0/#F1 TSFM selects unchanged, and its

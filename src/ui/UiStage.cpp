@@ -10,6 +10,7 @@
 #include "UiModel.h"
 #include "UiGfx.h"
 #include "Config.h"
+#include "SnSound.h"
 #include "CPU.h"
 #include "Video.h"
 #include "ESPectrum.h"
@@ -86,8 +87,22 @@ NM_INT_ACCESS (ayCfg,     ayConfig)
 NM_INT_ACCESS (turbo,     turbosound)
 NM_INT_ACCESS (tsfm,      tsfm)
 NM_INT_ACCESS (opl3,      opl3)
+NM_INT_ACCESS (ym2413,    ym2413)
+// "VGM chips > All": one switch for the whole card family. get is true only
+// when EVERY chip is on (a mixed state reads No); put flips all four — the
+// four individual kSubsys bindings then reconcile the subsystems as usual.
+static int32_t get_vgmAll() {
+    return (Config::opl3 && Config::ym2413 && Config::cms && Config::sn76489) ? 1 : 0;
+}
+static void put_vgmAll(int32_t v) {
+    Config::opl3    = v ? 1 : 0;
+    Config::ym2413  = v ? 1 : 0;
+    Config::cms     = v ? 1 : 0;
+    Config::sn76489 = v ? 1 : 0;
+}
 NM_INT_ACCESS (cms,       cms)
 NM_INT_ACCESS (sn76489,   sn76489)
+NM_INT_ACCESS (snClock,   sn_clock)
 NM_INT_ACCESS (covox,     covox)
 NM_INT_ACCESS (soundrive, soundrive)
 NM_BOOL_ACCESS(saa,       SAA1099)
@@ -587,6 +602,12 @@ static bool hook_gsClock(int32_t, int32_t) {
     GS::setClock();     // timing constants only, no allocation (OSDMain.cpp:4421)
     return true;
 }
+static bool hook_snClock(int32_t, int32_t) {
+    // Timing constants only; the chip keeps its registers. put_ ran first, so
+    // sn_clock_hz() already resolves to the new pick.
+    if (snChip) snChip->setRates(sn_clock_hz(), ESPectrum::Audio_freq);
+    return true;
+}
 static bool hook_cobmect(int32_t nv, int32_t) {
     // BYTE and BYTE-compat are both overlays over Sinclair 48K (OSDMain.cpp:5259).
     // Config.cpp:263 applies the same choice when a machine is loaded, so this hook only
@@ -869,6 +890,7 @@ static bool want_covox() { return Config::covox != 0 || Config::soundriveEnabled
 static bool want_saa()   { return Config::SAA1099; }
 static bool want_tsfm()  { return Config::tsfm != 0; }
 static bool want_opl3()  { return Config::opl3 != 0; }
+static bool want_opll()  { return Config::ym2413 != 0; }
 static bool want_cms()   { return Config::cms != 0; }
 static bool want_sn()    { return Config::sn76489 != 0; }
 static bool want_dma()   { return Config::dma_mode != 0; }
@@ -886,6 +908,7 @@ NM_SUBSYS_THUNKS(covox, CovoxSubsys)
 NM_SUBSYS_THUNKS(saa,   SaaSubsys)
 NM_SUBSYS_THUNKS(tsfm,  TsfmSubsys)
 NM_SUBSYS_THUNKS(opl3,  OplSubsys)
+NM_SUBSYS_THUNKS(opll,  OpllSubsys)
 NM_SUBSYS_THUNKS(cms,   CmsSubsys)
 NM_SUBSYS_THUNKS(sn,    SnSubsys)
 NM_SUBSYS_THUNKS(dma,   DmaSubsys)
@@ -954,6 +977,7 @@ static const SubsysBinding kSubsys[] = {
     { FEAT_SAA,        want_saa,   on_saa,   req_saa,   app_saa,   nullptr, nullptr },
     { -1,              want_tsfm,  on_tsfm,  req_tsfm,  app_tsfm,  nullptr, nullptr },
     { -1,              want_opl3,  on_opl3,  req_opl3,  app_opl3,  nullptr, nullptr },
+    { -1,              want_opll,  on_opll,  req_opll,  app_opll,  nullptr, nullptr },
     { -1,              want_cms,   on_cms,   req_cms,   app_cms,   nullptr, nullptr },
     { -1,              want_sn,    on_sn,    req_sn,    app_sn,    nullptr, nullptr },
     { FEAT_DMA,        want_dma,   on_dma,   req_dma,   app_dma,   nullptr, nullptr },

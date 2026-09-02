@@ -83,6 +83,7 @@ SUBSYSTEM_DECL(CmsSubsys);     // Creative Music System: 2x SAA1099 @7.159 MHz (
 SUBSYSTEM_DECL(SnSubsys);      // 2x SN76489 (VGM card) + 640 B mix buffer
 SUBSYSTEM_DECL(TsfmSubsys);    // TurboSound FM: 2x OpnFm + 1280 B mix buffer
 SUBSYSTEM_DECL(OplSubsys);     // YMF262/OPL3 (VGM-player card): ~9 KB chip + 2x1280 B L/R
+SUBSYSTEM_DECL(OpllSubsys);    // YM2413/OPLL (VGM-player card): ~5 KB chip + 1280 B mono
 SUBSYSTEM_DECL(MidiSubsys);    // MIDI synth + 2x640 B L/R buffers
 SUBSYSTEM_DECL(DmaSubsys);     // Z80/zxnDMA per-scanline attr shadow (~7 KB heap)
 #ifdef VGA_HDMI

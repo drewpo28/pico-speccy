@@ -39,6 +39,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "SAASound.h"
 #include "OpnFm.h"
 #include "OplFm.h"
+#include "OpllFm.h"
 #include "SnSound.h"
 #include "hardware/clocks.h"
 #include "Subsystem.h"
@@ -244,6 +245,12 @@ uint32_t ESPectrum::faudbufcntOPL = 0;
 uint32_t* ESPectrum::oplWriteQueue = nullptr;
 uint16_t  ESPectrum::oplQHead = 0;
 uint16_t  ESPectrum::oplQTail = 0;
+int16_t* ESPectrum::audioBufferOPLL = nullptr;
+uint32_t ESPectrum::audbufcntOPLL = 0;
+uint32_t ESPectrum::faudbufcntOPLL = 0;
+uint32_t* ESPectrum::opllWriteQueue = nullptr;
+uint16_t  ESPectrum::opllQHead = 0;
+uint16_t  ESPectrum::opllQTail = 0;
 uint8_t* ESPectrum::audioBufferSN = nullptr;
 uint32_t ESPectrum::audbufcntSN = 0;
 uint32_t ESPectrum::faudbufcntSN = 0;
@@ -1093,6 +1100,7 @@ void ESPectrum::setup() {
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
+  OpllSubsys::request(!Config::tape_player && Config::ym2413 != 0);
   CmsSubsys::request(!Config::tape_player && Config::cms != 0);
   SnSubsys::request(!Config::tape_player && Config::sn76489 != 0);
   MidiSubsys::request(Config::midi != 0);
@@ -1424,6 +1432,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
   OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
+  OpllSubsys::request(!Config::tape_player && Config::ym2413 != 0);
   CmsSubsys::request(!Config::tape_player && Config::cms != 0);
   SnSubsys::request(!Config::tape_player && Config::sn76489 != 0);
   MidiSubsys::request(Config::midi != 0);
@@ -1456,13 +1465,17 @@ void ESPectrum::reset(uint8_t romInUse) {
     oplfm->setRates(OPL3_YMF262_CLOCK, Audio_freq, clock_get_hz(clk_sys) < 450000000u);
     oplfm->reset();
   }
+  if (opllfm) {
+    opllfm->setRates(OPLL_YM2413_CLOCK, Audio_freq, clock_get_hz(clk_sys) < 450000000u);
+    opllfm->reset();
+  }
 
   // Same for the card's CMS pair and the SN76489 pair. init() does not touch
   // the SAA clock scale, so the CMS chips keep their 7.159 MHz.
   for (int i = 0; i < 2; i++) {
     if (cmsChip[i]) { cmsChip[i]->init(); cmsChip[i]->set_sound_format(Audio_freq, 1, 8); cmsChip[i]->reset(); }
   }
-  if (snChip) { snChip->setRates(SN76489_CLOCK, Audio_freq); snChip->reset(); }
+  if (snChip) { snChip->setRates(sn_clock_hz(), Audio_freq); snChip->reset(); }
 
   // Reset SAA1099 emulation
   if (saaChip) {
@@ -2287,6 +2300,46 @@ __not_in_flash("audio") void ESPectrum::CovoxGetSample() {
   }
 }
 
+// One-pole DC blocker — the model of a sound card's output coupling cap.
+// The FM chips can legitimately emit a CONSTANT: a mute sequence that writes
+// RR=0 freezes slots mid-release forever (infinity rate), and with the phase
+// stopped the operator output is a frozen sine sample — pure DC. A real card
+// AC-couples that away; digitally it sat on the mix as a permanent level
+// after playback (hw 2026-09-02, "все YM чипы"). k = 255/256 (~20 Hz at
+// 31250), inaudible against music. The per-buffer quiet counters below gate
+// the mixer's mid-scale bias by the FILTERED output — EG-state-based gating
+// can be wedged forever by exactly those frozen slots.
+// dc = the running DC estimate in Q16 (a one-pole low-pass, ~19 Hz at
+// 31250). NOT the naive `y = x - x1 + y1 - (y1>>8)` integer high-pass: that
+// one has a dead zone of +/-256 (the >>8 rounds to zero for |y1|<256) and
+// leaves up to 255 of residual DC — above the 128 mix threshold, so the gate
+// never cleared (hw 2026-09-02). Estimating DC in Q16 and subtracting leaves
+// a residual under 1 LSB, so a frozen-DC chip really reads as silent.
+struct DcBlock { int32_t dc; };
+static DcBlock s_dcOplL, s_dcOplR, s_dcOpll, s_dcFm;
+static uint32_t s_oplOutQuiet = 1u << 30, s_opllOutQuiet = 1u << 30;
+
+__not_in_flash("audio") static void dcblock_run(int16_t* buf, int count, DcBlock& st, uint32_t* quiet) {
+  bool active = false;
+  int32_t dc = st.dc;
+  for (int i = 0; i < count; i++) {
+    int32_t x = buf[i];
+    dc += (int32_t)((((int64_t)x << 16) - dc) >> 8);
+    int32_t y = x - (dc >> 16);
+    if (y > 32767) y = 32767; else if (y < -32768) y = -32768;
+    buf[i] = (int16_t)y;
+    // "Active" means the sample actually contributes to the mix: the mixer
+    // taps this buffer as (y >> 7), so |y| < 128 adds exactly zero — the
+    // precise silence test the EG-state one could never be.
+    if (y >= 128 || y <= -128) active = true;
+  }
+  st.dc = dc;
+  if (quiet) {
+    if (active) *quiet = 0;
+    else if (*quiet < 0x40000000u) *quiet += count;
+  }
+}
+
 // Both YM2203 FM halves into audioBufferFM[bufpos .. bufpos+count-1]. The range
 // is cleared first because gen() accumulates: on a TFM board the two chips' FM
 // outputs are summed on the way to the DAC, exactly like this.
@@ -2295,6 +2348,7 @@ __not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
   memset(audioBufferFM + bufpos, 0, count * sizeof(int16_t));
   if (opnfm[0]) opnfm[0]->gen(audioBufferFM, count, bufpos);
   if (opnfm[1]) opnfm[1]->gen(audioBufferFM, count, bufpos);
+  dcblock_run(audioBufferFM + bufpos, count, s_dcFm, nullptr);
 }
 
 #define OPL_WRITE_QUEUE_LEN 512
@@ -2340,6 +2394,8 @@ __not_in_flash("audio") void ESPectrum::OPLGenSound(int count, int bufpos) {
     oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
   }
   if (oplQHead == oplQTail) { oplQHead = oplQTail = 0; }
+  dcblock_run(audioBufferOPL_L + bufpos, count, s_dcOplL, &s_oplOutQuiet);
+  dcblock_run(audioBufferOPL_R + bufpos, count, s_dcOplR, nullptr);
 #if OPL_PERF_TRACE
   g_opl_gen_us += time_us_32() - _t0;
 #endif
@@ -2366,6 +2422,61 @@ __not_in_flash("audio") void ESPectrum::OPLGetSample() {
   if (audbufpos > audbufcntOPL) {
     OPLGenSound(audbufpos - audbufcntOPL, audbufcntOPL);
     audbufcntOPL = audbufpos;
+  }
+}
+
+// YM2413/OPLL: the same queued-write scheme as the OPL3 above. The chip is
+// write-only (no status, no timers), so the queue only ever flushes on
+// overflow or at the frame boundary.
+#define OPLL_WRITE_QUEUE_LEN 256
+
+__not_in_flash("audio") void ESPectrum::OPLLGenSound(int count, int bufpos) {
+  if (!OpllSubsys::enabled || !audioBufferOPLL || !opllfm) return;
+  memset(audioBufferOPLL + bufpos, 0, count * sizeof(int16_t));
+  uint32_t cur = bufpos, end = bufpos + count;
+  while (cur < end) {
+    uint32_t next = end;
+    if (opllWriteQueue && opllQHead < opllQTail) {
+      uint32_t e = opllWriteQueue[opllQHead];
+      uint32_t p = e & 0xFFFF;
+      if (p <= cur) {
+        if (e & 0x10000) opllfm->writeData((uint8_t)(e >> 24));
+        else             opllfm->writeAddr((uint8_t)(e >> 24));
+        opllQHead++;
+        continue;
+      }
+      if (p < next) next = p;
+    }
+    opllfm->gen(audioBufferOPLL, next - cur, cur);
+    cur = next;
+  }
+  while (opllWriteQueue && opllQHead < opllQTail && (opllWriteQueue[opllQHead] & 0xFFFF) <= end) {
+    uint32_t e = opllWriteQueue[opllQHead++];
+    if (e & 0x10000) opllfm->writeData((uint8_t)(e >> 24));
+    else             opllfm->writeAddr((uint8_t)(e >> 24));
+  }
+  if (opllQHead == opllQTail) { opllQHead = opllQTail = 0; }
+  dcblock_run(audioBufferOPLL + bufpos, count, s_dcOpll, &s_opllOutQuiet);
+}
+
+__not_in_flash("audio") void ESPectrum::OPLLPortWrite(uint8_t a, uint8_t v) {
+  if (!OpllSubsys::enabled || !opllfm) return;
+  if (!opllWriteQueue) {
+    if (a & 1) opllfm->writeData(v); else opllfm->writeAddr(v);
+    return;
+  }
+  if (opllQTail >= OPLL_WRITE_QUEUE_LEN) OPLLGetSample();
+  uint32_t pos = CPU::tstates / audioAYDivider;
+  if (multiplicator) pos >>= multiplicator;
+  opllWriteQueue[opllQTail++] = (pos & 0xFFFF) | ((uint32_t)(a & 1) << 16) | ((uint32_t)v << 24);
+}
+
+__not_in_flash("audio") void ESPectrum::OPLLGetSample() {
+  uint32_t audbufpos = CPU::tstates / audioAYDivider;
+  if (multiplicator) audbufpos >>= multiplicator;
+  if (audbufpos > audbufcntOPLL) {
+    OPLLGenSound(audbufpos - audbufcntOPLL, audbufcntOPLL);
+    audbufcntOPLL = audbufpos;
   }
 }
 
@@ -2704,7 +2815,16 @@ void ESPectrum::loop() {
       }
     }
     oplQHead = oplQTail = 0;
+    if (opllWriteQueue && opllfm) {
+      while (opllQHead < opllQTail) {
+        uint32_t e = opllWriteQueue[opllQHead++];
+        if (e & 0x10000) opllfm->writeData((uint8_t)(e >> 24));
+        else             opllfm->writeAddr((uint8_t)(e >> 24));
+      }
+    }
+    opllQHead = opllQTail = 0;
     audbufcntOPL = 0;
+    audbufcntOPLL = 0;
     audbufcntSN = 0;
     audbufcntCMS = 0;
 
@@ -2834,6 +2954,7 @@ void ESPectrum::loop() {
     faudbufcntPIT = audbufcntPIT;
     faudbufcntSAA = audbufcntSAA;
     faudbufcntOPL = audbufcntOPL;
+    faudbufcntOPLL = audbufcntOPLL;
     faudbufcntSN = audbufcntSN;
     faudbufcntCMS = audbufcntCMS;
 
@@ -2922,6 +3043,8 @@ void ESPectrum::loop() {
         }
         if (OplSubsys::enabled && audioBufferOPL_L && faudbufcntOPL < samplesPerFrame)
             OPLGenSound(samplesPerFrame - faudbufcntOPL, faudbufcntOPL);
+        if (OpllSubsys::enabled && audioBufferOPLL && faudbufcntOPLL < samplesPerFrame)
+            OPLLGenSound(samplesPerFrame - faudbufcntOPLL, faudbufcntOPLL);
         if (SnSubsys::enabled && audioBufferSN && faudbufcntSN < samplesPerFrame)
             SNGenSound(samplesPerFrame - faudbufcntSN, faudbufcntSN);
         if (CmsSubsys::enabled && cmsChip[0] && cmsChip[1] && faudbufcntCMS < samplesPerFrame) {
@@ -2956,11 +3079,13 @@ void ESPectrum::loop() {
         // a %11111 0 r c select. Generation still runs (timers and envelopes keep
         // going on a real card too) — only the DAC path is gated, as in the CPLD.
         bool mix_fm = TsfmSubsys::enabled && audioBufferFM && AySound::ts_fm_enabled;
-        // Gated on audible(): the +128 re-centre below is a CONSTANT the clip
-        // ceiling pays for — a silent-but-enabled OPL3 must not tax AY/beeper
-        // programs with it (hw 2026-09-01: the DC pushed loud PSG music into
-        // the 255 ceiling and crushed it to a whisper).
-        bool mix_opl = OplSubsys::enabled && audioBufferOPL_L && oplfm && oplfm->audible();
+        // Gated on the FILTERED output having been non-silent within the last
+        // second — the +128 re-centre below is a CONSTANT the clip ceiling
+        // pays for, so a silent-but-enabled chip must not tax AY/beeper
+        // programs with it. EG-state gating was tried first and gets wedged
+        // by slots frozen mid-release (RR=0) after a player's mute sequence.
+        bool mix_opl = OplSubsys::enabled && audioBufferOPL_L && s_oplOutQuiet < 2048;
+        bool mix_opll = OpllSubsys::enabled && audioBufferOPLL && s_opllOutQuiet < 2048;
         bool mix_sn  = SnSubsys::enabled && audioBufferSN;
         bool mix_cms = CmsSubsys::enabled && cmsChip[0] && cmsChip[1];
         bool mix_covox = CovoxSubsys::enabled && audioBufferCovoxL;
@@ -3006,17 +3131,32 @@ void ESPectrum::loop() {
             beeper_L += 64 + fm;
             beeper_R += 64 + fm;
           }
-          if (mix_opl) {
-            // Full-resolution chip output (a loud OPL3 tune peaks near +/-16k),
-            // scaled to the +/-127 swing the TSFM path uses and saturated —
-            // bipolar, so it needs the same 128 re-centre. If hardware says
-            // it is too loud/quiet against AY, this shift is the one knob.
-            int opl = audioBufferOPL_L[i] >> 7;
-            if (opl > 127) opl = 127; else if (opl < -128) opl = -128;
-            beeper_L += 128 + opl;
-            opl = audioBufferOPL_R[i] >> 7;
-            if (opl > 127) opl = 127; else if (opl < -128) opl = -128;
-            beeper_R += 128 + opl;
+          // The re-centre biases RAMP (1/sample, ~4 ms full swing) instead of
+          // stepping with their gates — a 128 step on the rail is an audible
+          // pop at every track start/stop.
+          {
+            static int oplBias = 0, opllBias = 0;
+            int tgt = mix_opl ? 128 : 0;
+            if (oplBias < tgt) oplBias++; else if (oplBias > tgt) oplBias--;
+            if (oplBias) {
+              // Full-resolution chip output (a loud OPL3 tune peaks near
+              // +/-16k) scaled to a ~+/-127 swing; the shift is the one
+              // volume knob if hardware says it sits wrong against AY.
+              int opl = audioBufferOPL_L[i] >> 7;
+              if (opl > 127) opl = 127; else if (opl < -128) opl = -128;
+              beeper_L += oplBias + opl;
+              opl = audioBufferOPL_R[i] >> 7;
+              if (opl > 127) opl = 127; else if (opl < -128) opl = -128;
+              beeper_R += oplBias + opl;
+            }
+            tgt = mix_opll ? 128 : 0;
+            if (opllBias < tgt) opllBias++; else if (opllBias > tgt) opllBias--;
+            if (opllBias) {
+              int opll = audioBufferOPLL[i] >> 7;
+              if (opll > 127) opll = 127; else if (opll < -128) opll = -128;
+              beeper_L += opllBias + opll;
+              beeper_R += opllBias + opll;
+            }
           }
           if (mix_sn) {
             // unipolar like the beeper/AY, no re-centre needed

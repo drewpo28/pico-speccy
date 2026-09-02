@@ -19,6 +19,7 @@ extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can re
 #include "SAASound.h"
 #include "OpnFm.h"
 #include "OplFm.h"
+#include "OpllFm.h"
 #include "SnSound.h"
 #include "hardware/clocks.h"
 #include "Midi.h"
@@ -251,6 +252,55 @@ bool TsfmSubsys::apply() {
 }
 
 // ----------------------------------------------------------------------------
+// OpllSubsys — YM2413/OPLL for the VGM-player card (addr #C0 / data #C1):
+// one OpllFm (~5 KB incl. its fn table) + the mono int16 buffer + the write
+// queue; shared log tables ~2.5 KB more, refcounted.
+// ----------------------------------------------------------------------------
+volatile bool OpllSubsys::enabled = false;
+bool OpllSubsys::wanted = false;
+bool OpllSubsys::dirty = false;
+
+void OpllSubsys::request(bool on) {
+    wanted = on;
+    if (wanted != enabled) dirty = true;
+}
+
+bool OpllSubsys::apply() {
+    dirty = false;
+    if (wanted == enabled) return true;
+
+    if (wanted) {
+        if (!ESPectrum::audioBufferOPLL)
+            ESPectrum::audioBufferOPLL = (int16_t*)calloc(ESP_AUDIO_SAMPLES_PENTAGON, sizeof(int16_t));
+        if (!opllfm) opllfm = new (std::nothrow) OpllFm();
+        if (!ESPectrum::opllWriteQueue)
+            ESPectrum::opllWriteQueue = (uint32_t*)malloc(256 * sizeof(uint32_t));
+        ESPectrum::opllQHead = ESPectrum::opllQTail = 0;
+        // A missing queue is not fatal — OPLLPortWrite degrades to direct writes.
+        if (!ESPectrum::audioBufferOPLL || !opllfm || !OpllFm::tablesReady()) {
+            Debug::log("OpllSubsys: OOM, free=%u", (unsigned)getFreeHeap());
+            delete opllfm; opllfm = nullptr;
+            free(ESPectrum::audioBufferOPLL); ESPectrum::audioBufferOPLL = nullptr;
+            free(ESPectrum::opllWriteQueue);  ESPectrum::opllWriteQueue = nullptr;
+            wanted = false;
+            Config::ym2413 = 0;
+            return false;
+        }
+        opllfm->setRates(OPLL_YM2413_CLOCK, ESPectrum::Audio_freq,
+                         clock_get_hz(clk_sys) < 450000000u);
+        opllfm->reset();
+        enabled = true;
+    } else {
+        enabled = false;
+        delete opllfm; opllfm = nullptr;
+        free(ESPectrum::audioBufferOPLL); ESPectrum::audioBufferOPLL = nullptr;
+        free(ESPectrum::opllWriteQueue);  ESPectrum::opllWriteQueue = nullptr;
+        ESPectrum::opllQHead = ESPectrum::opllQTail = 0;
+    }
+    return true;
+}
+
+// ----------------------------------------------------------------------------
 // CmsSubsys — Creative Music System / Game Blaster for the VGM-player card:
 // two more SAA1099 instances (~1.5 KB each, sample buffers included) at the
 // CMS clock of 7.159 MHz, on ports #D4-#D7. Independent of SaaSubsys — the
@@ -308,6 +358,15 @@ void SnSubsys::request(bool on) {
     if (wanted != enabled) dirty = true;
 }
 
+// Config::sn_clock -> Hz (see Config.h for why this must be a setting).
+int sn_clock_hz() {
+    switch (Config::sn_clock) {
+    case 1:  return 2000000;
+    case 2:  return 4000000;
+    default: return SN76489_CLOCK;
+    }
+}
+
 bool SnSubsys::apply() {
     dirty = false;
     if (wanted == enabled) return true;
@@ -324,7 +383,7 @@ bool SnSubsys::apply() {
             Config::sn76489 = 0;
             return false;
         }
-        snChip->setRates(SN76489_CLOCK, ESPectrum::Audio_freq);
+        snChip->setRates(sn_clock_hz(), ESPectrum::Audio_freq);
         snChip->reset();
         enabled = true;
     } else {
@@ -1044,6 +1103,10 @@ void Subsystems::applyPending() {
     if (OplSubsys::dirty)   {
         Debug::log2SD("Subsys: Opl wanted=%d freeHeap=%u", (int)OplSubsys::wanted, (unsigned)getFreeHeap());
         OplSubsys::apply();
+    }
+    if (OpllSubsys::dirty)  {
+        Debug::log2SD("Subsys: Opll wanted=%d freeHeap=%u", (int)OpllSubsys::wanted, (unsigned)getFreeHeap());
+        OpllSubsys::apply();
     }
     if (CmsSubsys::dirty)   {
         Debug::log2SD("Subsys: Cms wanted=%d freeHeap=%u", (int)CmsSubsys::wanted, (unsigned)getFreeHeap());
