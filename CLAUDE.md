@@ -1879,6 +1879,13 @@ about NeoGS, which carries its own SD interface — NPL streamed an MP3 at ~78
 sector reads/s with the row showing no SD at all (hw 2026-08-07). Now also true
 for `Config::gs_enabled == 2`.
 
+Same fix applied for the VGM chips (2026-09-02, NOT hw-tested): OPL3/OPLL/SN
+port writes now `touchW(LED::AY)` (the music-note glyph — VGM playback is a
+continuous write stream, same signal as AY/TSFM), `case AY` visibility gained
+`opl3 || ym2413 || sn76489` (else invisible on 48K with AY48 off), and
+`case SAA` gained `Config::cms` — the CMS pair always touched SAA but the
+glyph only existed with the single Karabas chip enabled.
+
 Two more things learned there:
 
 - **Light NeoGS SD from `NgsSd::xfer()`, not only from `service()`.** The

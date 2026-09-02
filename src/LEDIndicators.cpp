@@ -217,7 +217,10 @@ bool isVisible(Id i) {
         case IDE:      return ::IDE::present();
         case FDD:      return Config::betadisk || Config::mb02 != 0 || MB02::enabled;
         case MIDI:     return Config::midi > 0;
-        case SAA:      return Config::SAA1099;
+        // The CMS pair (2x SAA1099, VGM card) touches the same SAA glyph as the
+        // single Karabas chip — the glyph must exist in the row for either
+        // (NeoGS-SD lesson: a touch on an invisible glyph shows nothing).
+        case SAA:      return Config::SAA1099 || Config::cms != 0;
         case TIMEX:    return Config::timex_video;
         case DMA:      return Config::dma_mode != 0;
         case GS:       return Config::gs_enabled != 0;
@@ -225,7 +228,12 @@ bool isVisible(Id i) {
         case GIGASCREEN: return Config::gigascreen_enabled;
         case NET:        return Config::wifi_enabled != 0; // networking is WiFi-driven (NIC requires it)
         case TAPE:     return true;
-        case AY:       return Config::AY48 || !Z80Ops::is48;
+        // The music-note glyph also reports the VGM-card FM/PSG chips (OPL3,
+        // OPLL, 2x SN76489 — their port writes touchW(AY)), so it must be in
+        // the row whenever any of them is enabled, 48K with AY48 off included.
+        case AY:       return Config::AY48 || !Z80Ops::is48
+                           || Config::opl3 != 0 || Config::ym2413 != 0
+                           || Config::sn76489 != 0;
         case BEEPER:   return true;
         case COVOX:    return Config::covox != 0 || Config::soundriveEnabled();
         case RAM:   return !Z80Ops::is48;

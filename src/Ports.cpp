@@ -2514,6 +2514,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // re-faulted gen()'s flash code through the XIP cache hundreds of times
     // per frame on write-heavy VGMs (IDL < 0). OPLGenSound applies the queue
     // at the exact sample positions, so timing is unchanged.
+    LED::touchW(LED::AY); // music-note glyph: VGM playback = a stream of writes
     ESPectrum::OPLPortWrite(address & 3, data);
     ioContentionLate(MemESP::ramContended[rambank]);
     return;
@@ -2526,6 +2527,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (opllfm) {
     uint8_t opll_lo = address & 0xFF;
     if (opll_lo == 0xC0 || opll_lo == 0xC1) {
+      LED::touchW(LED::AY); // music-note glyph
       ESPectrum::OPLLPortWrite(opll_lo & 1, data);
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
@@ -2540,6 +2542,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (snChip) {
     uint8_t sn_lo = address & 0xFF;
     if (sn_lo == 0xC3 || sn_lo == 0xC9 || sn_lo == 0xC2) {
+      LED::touchW(LED::AY); // music-note glyph
       if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::SNGetSample();
       snChip->write(sn_lo == 0xC2 ? 1 : 0, data);
       ioContentionLate(MemESP::ramContended[rambank]);
