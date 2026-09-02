@@ -326,6 +326,51 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     return finalPath;
 }
 
+string ZipExtract::gunzip(const string& gzPath, const string& outPath) {
+    s_zip_err = nullptr;
+
+    // Same memory posture as extract(): the emulator is paused behind the OSD,
+    // so the lent Gigascreen prev-FB can back the inflate state, LZ dict and
+    // alt-stack instead of the tight heap.
+    NetArenaLease arena;
+    ZipWorkGuard work;                  // FILs, freed on every exit
+    if (!work.ok()) return "";
+
+    FIL& in = s_work->zip;
+    if (f_open(&in, gzPath.c_str(), FA_READ) != FR_OK) return "";
+
+    // RFC 1952 header: 1f 8b, CM=8 (deflate), FLG, MTIME[4], XFL, OS — then the
+    // optional fields FLG selects. What's left is a raw deflate stream followed
+    // by an 8-byte CRC32+ISIZE trailer.
+    uint8_t h[10]; UINT br;
+    bool ok = f_read(&in, h, 10, &br) == FR_OK && br == 10 &&
+              h[0] == 0x1f && h[1] == 0x8b && h[2] == 8;
+    uint8_t flg = ok ? h[3] : 0;
+    if (ok && (flg & 0x04)) {                        // FEXTRA: 2-byte LE length
+        uint8_t xl[2];
+        ok = f_read(&in, xl, 2, &br) == FR_OK && br == 2 &&
+             f_lseek(&in, f_tell(&in) + (xl[0] | (xl[1] << 8))) == FR_OK;
+    }
+    for (uint8_t fbit = 0x08; ok && fbit <= 0x10; fbit <<= 1) {  // FNAME, FCOMMENT
+        if (!(flg & fbit)) continue;
+        uint8_t ch;                                   // NUL-terminated strings
+        do { ok = f_read(&in, &ch, 1, &br) == FR_OK && br == 1; } while (ok && ch);
+    }
+    if (ok && (flg & 0x02))                           // FHCRC: 2-byte header CRC
+        ok = f_lseek(&in, f_tell(&in) + 2) == FR_OK;
+    if (!ok) { f_close(&in); return ""; }             // not gzip / truncated header
+
+    OSD::osdCenteredMsg(OSD_ZIP_EXTRACTING, LEVEL_INFO, 0);
+
+    // compressedSize=0 = the zip streaming-packer path: inflate until the
+    // deflate stream self-terminates, bounded by EOF — the gzip trailer bytes
+    // left in the input buffer are ignored, exactly like a zip data descriptor.
+    ok = extractFile(&in, 8, 0, 0, outPath.c_str());
+    f_close(&in);
+    if (!ok) { f_unlink(outPath.c_str()); return ""; }
+    return outPath;
+}
+
 bool ZipExtract::hasMatchingExtension(const string& filename, uint8_t fileType) {
     return hasMatchingExt(filename.c_str(), fileType);
 }

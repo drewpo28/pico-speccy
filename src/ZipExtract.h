@@ -25,6 +25,11 @@ public:
     // Extract all files from ZIP to destDir. Returns number of files extracted.
     static int extractAll(const string& zipPath, const string& destDir);
 
+    // Unwrap a single-member gzip file (a .vgz is a gzip-wrapped .vgm — the
+    // format vgmrips.net serves tracks in) into outPath. Returns outPath, or
+    // "" on error (errMsg() then says why); the input file is left untouched.
+    static string gunzip(const string& gzPath, const string& outPath);
+
     // Show ZIP file info (name, size, file list) in OSD dialog
     static void viewInfo(const string& zipPath);
 

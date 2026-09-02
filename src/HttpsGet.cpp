@@ -26,6 +26,17 @@ static const char* UA =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 
+// …except vgmrips.net, which sits behind the Anubis proof-of-work anti-bot
+// wall: its policy challenges browser-like ("Mozilla…") UAs on EVERY path,
+// .vgz downloads included — the challenge HTML would land where the track was
+// expected — while an honestly named client is passed straight through
+// (probed live 2026-09-02). So that one host gets the truthful name.
+static const char* uaFor(const char* host) {
+    return strstr(host, "vgmrips.net")
+        ? "pico-speccy/1.0 (+https://github.com/drewpo28/pico-speccy)"
+        : UA;
+}
+
 namespace {
 
 // One connection over either TLS (RP2350-side) or plain ZiFiSock TCP. The TLS
@@ -135,7 +146,7 @@ HttpsGet::Result HttpsGet::get(const char* url, SinkCb sink, void* sinkCtx,
     int rl = snprintf(req, sizeof(req),
         "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: %s\r\n"
         "Accept: */*\r\n%s%sConnection: close\r\n\r\n",
-        path, host, UA, rangehdr, extraHeaders ? extraHeaders : "");
+        path, host, uaFor(host), rangehdr, extraHeaders ? extraHeaders : "");
     if (rl <= 0 || (size_t)rl >= sizeof(req) || c.wr((const uint8_t*)req, rl) != rl) {
         Debug::log("HttpsGet: send request failed");
         goto done;
