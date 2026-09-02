@@ -855,6 +855,24 @@ static void resolveConstraints(CommitReport& rep) {
                         changed |= force(trio[i], 0, rep, trioNote[i]);
         }
 
+        // Turning esxDOS OFF also turns the VGM chips off — they exist for the
+        // ESXDOS VGM-player plugin, and enabled-but-unreachable they only cost
+        // heap (~27 KB with all four on). Deliberately an EDGE, not a constraint:
+        // it fires only when THIS commit takes esxDOS from on to off
+        // (base != 0 && staged == 0), so the user may still enable any chip with
+        // esxDOS already off and nothing fights them. The g_seq guard keeps a
+        // chip the user touched AFTER the esxDOS toggle in the same session —
+        // their later edit wins, same tie-break as the SAA/Timex rule. force()
+        // never bumps g_seq, so a cascade (e.g. the storage trio above forcing
+        // esxDOS off) cannot out-sequence a real user edit.
+        if (bmGet(g_dirty, SET_ESXDOS) && staged(SET_ESXDOS) == 0 && g_base[SET_ESXDOS] != 0) {
+            static const uint16_t vgm[5] =
+                { SET_VGM_ALL, SET_OPL3, SET_YM2413, SET_CMS, SET_SN76489 };
+            for (int i = 0; i < 5; i++)
+                if (g_seq[vgm[i]] <= g_seq[SET_ESXDOS])
+                    changed |= force(vgm[i], 0, rep, "VGM chips off: esxDOS is off");
+        }
+
         // MB-02+ and Profi both claim the upper MemESP pages; enabling MB-02+ on Profi
         // corrupts Profi's working set and the machine fails to boot (OSDMain.cpp:3374).
         if (staged(SET_MB02) && stagedIsProfi())

@@ -973,6 +973,15 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   (the card sits on the ZX reset line). VGM chip clocks in the file header are
   irrelevant — the plugin streams raw register writes; we use the standard
   14.318 MHz (`OPL3_YMF262_CLOCK`), and timing comes from VGM wait commands.
+- **Turning esxDOS off auto-disables the VGM chips** (resolveConstraints,
+  UiStage.cpp, 2026-09-02, NOT hw-tested): the chips exist for the ESXDOS VGM
+  plugin and enabled-but-unreachable only cost heap (~27 KB all-on). It is an
+  EDGE (this commit takes esxDOS on→off), NOT a constraint — the user may
+  enable any chip with esxDOS already off and nothing reverts it; a chip
+  touched after the esxDOS toggle in the same session wins via the g_seq
+  tie-break (force() never bumps g_seq, so cascades can't out-sequence a real
+  edit). Covers SET_VGM_ALL + the four chips; TSFM deliberately NOT included
+  (demos drive it without esxDOS).
 - Not implemented, on purpose: OPL outputs C/D (OPL4-only DO0 pair), IRQ line
   (no card IRQ wiring), FM state in snapshots (same policy as TSFM).
 
