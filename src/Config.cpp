@@ -9,6 +9,8 @@
 #include "OSDMain.h"
 #include "psram_spi.h"
 #include "pwm_audio.h"
+#include "Buffer.h"
+#include "Debug.h"
 #include "graphics.h"
 #include <hardware/vreg.h>
 
@@ -20,6 +22,7 @@ RomsetIdx Config::romSetPent = R_PENT;
 RomsetIdx Config::romSetP512 = R_PENT;
 RomsetIdx Config::romSetP1M = R_PENT;
 RomsetIdx Config::romSetProfi = R_PROFI;
+RomsetIdx Config::romSetScorp = R_SCORP;
 ArchIdx   Config::pref_arch = A_LAST;
 RomsetIdx Config::pref_romSet_48 = R_LAST;
 RomsetIdx Config::pref_romSet_128 = R_LAST;
@@ -27,6 +30,7 @@ RomsetIdx Config::pref_romSetPent = R_LAST;
 RomsetIdx Config::pref_romSetP512 = R_LAST;
 RomsetIdx Config::pref_romSetP1M = R_LAST;
 RomsetIdx Config::pref_romSetProfi = R_LAST;
+RomsetIdx Config::pref_romSetScorp = R_LAST;
 string   Config::ram_file = NO_RAM_FILE;
 string   Config::last_ram_file = NO_RAM_FILE;
 string   Config::tape_file = "";
@@ -223,6 +227,22 @@ void Config::initHotkeys() {
 
 extern std::string g_snapshot_loading_path;  // Snapshot.cpp — snapshot mid-load
 
+#if GMX_IN_FLASH
+// Register the overlay of the GMX bank now live at 0x0000. Called from
+// gmxTapUpdate (Ports.cpp) on every romInUse change while GMX is active —
+// several GMX banks patch the SAME base pointer, so a one-time registration at
+// bind time cannot express the table (MemESP keys ONE overlay per base). Lives
+// HERE and not in Ports.cpp because the Sinclair 128K bases are header-defined
+// internal-linkage arrays: a second TU taking their address embeds a private
+// 16 KB copy each — 32 KB wasted, and worse, gmxTapUpdate would then register
+// addresses that never match the ones rom[] was bound to in this TU, so the
+// overlays would silently never apply.
+void gmxRegisterLiveOverlay(uint8_t bank) {
+    const scorpion_gmx_bank_t& bk = gb_rom_scorpion_gmx_banks[bank & 31];
+    MemESP::registerOverlay(bk.data, bk.overlay);
+}
+#endif
+
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 {
     // Karabas is a UI-level alias of Profi (see ArchRom.h) — the core never sees it.
@@ -248,6 +268,23 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     if (butter_psram_size() == 0 && (newArch == A_PROFI) != profiSramLayout) {
         arch = newArch;
         if (newRomSet != R_NONE) romSet = newRomSet;
+        if (!g_snapshot_loading_path.empty())
+            ram_file = g_snapshot_loading_path;
+        save();
+        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+    }
+    // GMX boundary: Scorpion GMX needs the 128-page (2 MB) strip, which — like
+    // the Profi layout — is sized once in setup() and never grows at runtime.
+    // Entering GMX on a 64-page session must reboot so setup() re-lays it out
+    // (setup raises MEM_PG_CNT to 128 for a persisted GMX pick). Leaving GMX
+    // needs nothing: the extra pages just sit unused until the next boot.
+    // (butter-less modules skip the reboot: the GMX pick falls back to Yellow
+    // PCB below anyway, so a power cycle would be wasted.)
+    if (newArch == A_SCORP && newRomSet == R_SCORP_GMX && MEM_PG_CNT < 128 &&
+        butter_psram_size() > 0) {
+        arch = newArch;
+        romSet = newRomSet;
+        romSetScorp = newRomSet;
         if (!g_snapshot_loading_path.empty())
             ram_file = g_snapshot_loading_path;
         save();
@@ -419,6 +456,60 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         }
         break;
     }
+    case A_SCORP: {
+        // Scorpion ZS-256 v2.94: bank0 (BASIC-128) and bank1 (BASIC-48) are tiny
+        // overlays over the Sinclair 128K halves; bank2 (service monitor) and bank3
+        // (the on-board TR-DOS 5.03 variant) are raw. TR-DOS runs from rom[3] — the
+        // machine's own bank, like Profi's rom[1] — so the shared rom[4] (bound in
+        // the unconditional tail below) is unused on Scorpion.
+        // R_SCORP (Yellow PCB) and R_SCORP_GR (Green PCB) share this binding — the
+        // romsets differ only in frame timing (CPU::updateStatesInFrame + audio).
+        // R_SCORP_GMX instead maps the flash-embedded GMX boot ROM (stored
+        // deduplicated + overlaid, scorpion_gmx_banks.h): 8 ProfROM planes x 4
+        // banks into rom[0..31], romInUse = (plane << 2) | slot (Ports::gmx*).
+        // The ROM is in flash on EVERY board (GMX_IN_FLASH — the escape hatch
+        // is off by default); what gates GMX is the RUNTIME butter probe: QSPI
+        // PSRAM is a property of the plugged-in Pico module (a Murmulator 1
+        // takes a CS1-PSRAM module fine), and the 2 MB page strip + the
+        // 640x200 attr pages need it live — a disabled/absent chip falls the
+        // pick back to Yellow (mid-session the menu retargets it earlier, in
+        // resolveConstraints, where the note is actually visible).
+        romSet = (newRomSet == R_NONE) ? R_SCORP : newRomSet;
+#if GMX_IN_FLASH
+        if (romSet == R_SCORP_GMX && butter_psram_size() == 0) {
+            OSD::bootNotice("GMX needs QSPI PSRAM - using Yellow PCB");
+            Debug::log("[GMX] butter PSRAM off/absent - falling back to Yellow");
+            romSet = R_SCORP;
+        }
+#else
+        // This build carries no GMX ROM (e.g. an NVS card written by another
+        // board's firmware picked it) — quiet fallback.
+        if (romSet == R_SCORP_GMX) romSet = R_SCORP;
+#endif
+        romSetScorp = romSet;
+#if GMX_IN_FLASH
+        if (romSet == R_SCORP_GMX) {
+            // Deduplicated bank table (rom_pack.py pack_gmx): .data is either a raw
+            // GMX bank or a base ROM already in flash; a non-NULL .overlay supplies
+            // the differing bytes on the fly (RomOverlay.h). NOT registered here:
+            // several banks patch the SAME base pointer, so gmxTapUpdate (Ports.cpp)
+            // re-registers the live bank's overlay on every romInUse change. The
+            // post-bind reset lands on plane 0 bank 0 (raw), so nothing is missed
+            // before the first page switch.
+            for (int i = 0; i < 32; ++i)
+                MemESP::rom[i].assign_rom(gb_rom_scorpion_gmx_banks[i].data);
+        } else
+#endif
+        {
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_scorpion_bank0);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_scorpion_bank1);
+            MemESP::rom[2].assign_rom(gb_rom_scorpion_bank2);
+            MemESP::rom[3].assign_rom(gb_rom_scorpion_bank3);
+        }
+        break;
+    }
     default: { // Pentagon / P512 / P1024
         romSet = (newRomSet == R_NONE) ? R_PENT : newRomSet;
         // Keep the slot of the ACTUAL arch (P512/P1024 used to spill into romSetPent,
@@ -451,7 +542,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // 5.03 / 5.04TM are small read-only overlays over the 5.05D base, applied on the
     // fly by MemESP (RomOverlay.h): rom[4] points at the 5.05D base in flash, and the
     // active overlay supplies the differing bytes. No slot, no flash write, no reboot.
-    {
+    // NOT on Scorpion GMX: there rom[4] IS a GMX bank (plane 1 slot 0 — romInUse is
+    // (plane<<2)|slot), so this binding would clobber it, and its registerOverlay on
+    // the 5.05D base would evict the GMX plane-1 TR-DOS overlay keyed to the same
+    // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
+    // own bank 3).
+    if (!(arch == A_SCORP && romSetScorp == R_SCORP_GMX)) {
         const uint8_t* base = gb_rom_4_trdos_505d;
         const uint8_t* ov = nullptr;
         switch (Config::trdosBios) {
@@ -808,6 +904,7 @@ void Config::load() {
         nvs_get_romset("romSetP512", romSetP512, sts);
         nvs_get_romset("romSetP1M", romSetP1M, sts);
         nvs_get_romset("romSetProfi", romSetProfi, sts);
+        nvs_get_romset("romSetScorp", romSetScorp, sts);
         nvs_get_arch("pref_arch", pref_arch, sts);
         pref_arch = archCanon(pref_arch);
         nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
@@ -816,6 +913,7 @@ void Config::load() {
         nvs_get_romset("pref_romSetP512", pref_romSetP512, sts);
         nvs_get_romset("pref_romSetP1M", pref_romSetP1M, sts);
         nvs_get_romset("pref_romSetProfi", pref_romSetProfi, sts);
+        nvs_get_romset("pref_romSetScorp", pref_romSetScorp, sts);
         nvs_get_str("ram", ram_file, sts);
         nvs_get_u8("ram_origin", ram_file_origin, sts); // provenance (default LOCAL)
         nvs_get_b("AY48", AY48, sts);
@@ -827,11 +925,6 @@ void Config::load() {
         // Mode 3 was "Software MIDI" (the procedural SoftSynth), removed along with its
         // preset. A stale NVS value must not select a synth that no longer exists.
         if (midi == 3) midi = 0;
-#if NO_GM_DLS
-        // GM.DLS wavetable (mode 4) is unavailable in ALF builds (no bank
-        // partition). Demote a stale NVS value so it never activates.
-        if (midi == 4) midi = 0;
-#endif
         nvs_get_u16("cpu_mhz", cpu_mhz, sts);
         if (cpu_mhz == 0) cpu_mhz = CPU_MHZ;
         nvs_get_u16("max_flash_freq", max_flash_freq, sts);
@@ -1233,6 +1326,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"romSetP512",romsetToStr(romSetP512));
     nvs_set_str(buf,"romSetP1M",romsetToStr(romSetP1M));
     nvs_set_str(buf,"romSetProfi",romsetToStr(romSetProfi));
+    nvs_set_str(buf,"romSetScorp",romsetToStr(romSetScorp));
     nvs_set_str(buf,"pref_arch",archToStr(pref_arch));
     nvs_set_str(buf,"pref_romSet_48",romsetToStr(pref_romSet_48));
     nvs_set_str(buf,"pref_romSet_128",romsetToStr(pref_romSet_128));
@@ -1240,6 +1334,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"pref_romSetP512",romsetToStr(pref_romSetP512));
     nvs_set_str(buf,"pref_romSetP1M",romsetToStr(pref_romSetP1M));
     nvs_set_str(buf,"pref_romSetProfi",romsetToStr(pref_romSetProfi));
+    nvs_set_str(buf,"pref_romSetScorp",romsetToStr(pref_romSetScorp));
     nvs_set_str(buf,"ram",ram_file.c_str());
     // Derive provenance from the file's actual location so the stored tag is never
     // stale: a /tmp path is a transient quick-start download, anything else is a

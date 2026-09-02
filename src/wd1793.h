@@ -310,6 +310,11 @@ typedef struct
 
 #define WD177XSTEPSTATES 112 // 112 states -> 14 states per bit
 
+// Motor spin-down: 15 disk revolutions at 5 RPS = 3 s = 150 frames (the WD179X
+// unloads the head after 15 index pulses of idleness; the drive's READY output
+// follows the motor). Same constant ZXMAK2 uses (idx_tmo = 15 turns).
+#define WD_MOTOR_FRAMES 150
+
 // Size of the per-drive MFM track buffer (UDI/FDI/MBD). Formerly an inline
 // array; now heap-allocated (see rvmWD1793AllocTrackBuf) so the second
 // MB-02 drive can release its 12.5 KB when MB-02 is disabled.
@@ -373,6 +378,16 @@ typedef struct
     // the audio motor-hum, the corner FDD lamp, and the FDD glyph in the LED
     // indicator strip — all three read this instead of LED::readActive/writeActive.
     uint8_t fdd_active_decay;
+
+    // Motor/READY model (real WD179X + drive): the spindle motor runs while
+    // commands flow and stops ~15 disk revolutions (~3 s) after the last one;
+    // with the motor stopped the drive drops its READY output, so an idle
+    // STATUS read returns NOT READY even with a disk inserted. Refreshed on
+    // every accepted command write, decremented once per frame beside
+    // fdd_active_decay (LEDIndicators.cpp). Consumed by rvmWD1793Read — gated
+    // on Scorpion there (the only guest that NEEDS it; see the comment at the
+    // read site), so the hw-proven Pentagon/Profi status behaviour is untouched.
+    uint16_t motor_frames;
 
     uint8_t* diskTrackBuf;        // MFM track buffer (DISK_TRACK_BUF_SZ); heap-allocated
     uint16_t diskTrackLen;        // length of current track

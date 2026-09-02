@@ -1,0 +1,24 @@
+{
+  "id": "scorpion",
+  "base": "sinclair_128k_0",
+  "base_sym": "gb_rom_0_sinclair_128k",
+  "base_len": 16384,
+  "variants": [
+    {
+      "name": "Scorpion bank0",
+      "sym": "gb_rom_scorpion_bank0",
+      "overlay_sym": "gb_overlay_scorpion_bank0",
+      "len": 434,
+      "runs": 22,
+      "diff_bytes": 290
+    },
+    {
+      "name": "Scorpion bank1",
+      "sym": "gb_rom_scorpion_bank1",
+      "overlay_sym": "gb_overlay_scorpion_bank1",
+      "len": 175,
+      "runs": 8,
+      "diff_bytes": 115
+    }
+  ]
+}

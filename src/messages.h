@@ -142,6 +142,9 @@ visit https://zxespectrum.speccy.org/contacto
 // Profi reset menu: Service ROM=1, TR-DOS=2, 128K=3, 48K=4
 #define MENU_RESETTO_PROFI "Reset to\n" "Service ROM\n" "TR-DOS\n" "128K\n" "48K\n"
 
+// Scorpion reset menu: Service monitor=1, TR-DOS=2, 128K=3, 48K=4
+#define MENU_RESETTO_SCORP "Reset to\n" "Service monitor\n" "TR-DOS\n" "128K\n" "48K\n"
+
 #define MOS_FILE "/.firmware"
 
 // DLS wavetable mode (4): a user-supplied bank (gm_bank.bin) lives either in butter

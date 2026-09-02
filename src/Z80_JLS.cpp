@@ -947,10 +947,12 @@ IRAM_ATTR void Z80::check_trdos() {
         MemESP::romInUse = nmiDos_savedRomInUse;
         ESPectrum::trdos = nmiDos_savedTrdos;
         if (ESPectrum::trdos) {
-            MemESP::ramCurrent[0] = MemESP::rom[4].direct();
+            MemESP::ramCurrent[0] = MemESP::rom[Config::arch == A_SCORP
+                ? ((g_scorp_gmx ? (Ports::gmxPlane << 2) : 0) | 3) : 4].direct();
         } else {
             MemESP::recoverPage0();
         }
+        if (g_scorp_gmx) Ports::gmxTapRecheck(); // re-arm tap + re-register the bank overlay
         return;
     }
 
@@ -977,12 +979,22 @@ IRAM_ATTR void Z80::check_trdos() {
                 // Karabas UNLOCK_128 (#008B bit7): the FPGA trap fires on
                 // "rom14=1 OR unlock_128" — with the bit set, TR-DOS is also
                 // enterable from the 128K ROM (our bank 2, rom14=0).
+                // Scorpion enters TR-DOS only from its 48 BASIC bank (romInUse==1 ⇒
+                // romLatch=1 and no 1FFD D1 service override, which forces bank 2) and
+                // only with ROM actually mapped at page 0 — 1FFD D0 (RAM0/page0ram)
+                // makes 0x3Dxx ordinary RAM, no trap (same reasoning as Profi's
+                // page0ram guard). Its TR-DOS is the machine's OWN bank 3, like Profi
+                // uses its own bank 1 — not the shared external rom[4].
                 if ((Z80Ops::is48 && MemESP::romInUse == 0) ||
                     (Config::arch == A_PROFI && MemESP::romInUse == 3 && !MemESP::newSRAM && !MemESP::page0ram) ||
                     (Config::arch == A_PROFI && MemESP::romInUse == 2 && (Ports::port008B & 0x80) && !MemESP::newSRAM && !MemESP::page0ram) ||
-                    (!Z80Ops::is48 && Config::arch != A_PROFI && MemESP::romInUse == 1 && !MemESP::newSRAM)) {
-                    // Profi uses its own TR-DOS in ROM bank 1; others use the external TR-DOS ROM (bank 4)
-                    uint8_t dosBank = (Config::arch == A_PROFI) ? 1 : 4;
+                    (Config::arch == A_SCORP && (MemESP::romInUse & (g_scorp_gmx ? 3 : 0xFF)) == 1 && !MemESP::newSRAM && !MemESP::page0ram) ||
+                    (!Z80Ops::is48 && Config::arch != A_PROFI && Config::arch != A_SCORP && MemESP::romInUse == 1 && !MemESP::newSRAM)) {
+                    // Profi uses its own TR-DOS in ROM bank 1; Scorpion its own bank 3
+                    // (on GMX inside the live ProfROM plane); others use the external
+                    // TR-DOS ROM (bank 4)
+                    uint8_t dosBank = (Config::arch == A_PROFI) ? 1
+                                    : (Config::arch == A_SCORP) ? (uint8_t)((Ports::gmxPlane << 2) | 3) : 4;
 #if FDD_PORT_TRACE
                     // trdos-transition trace (PQDOS RST8 chain: FE00 stub →
                     // CALL 3D38 automap → bank1 → JP 5C92 exit — chasing where
@@ -1003,9 +1015,15 @@ IRAM_ATTR void Z80::check_trdos() {
                                    REG_PC, (unsigned)dosBank, (unsigned)MemESP::romLatch,
                                    (unsigned)MemESP::bankLatch); } }
 #endif
+#if GMX_TRACE
+                    if (Config::arch == A_SCORP)
+                        GMXT("[GMX trap+] pc=%04X romU %u->%u", REG_PC,
+                             (unsigned)MemESP::romInUse, (unsigned)dosBank);
+#endif
                     MemESP::romInUse = dosBank;
                     MemESP::ramCurrent[0] = MemESP::rom[dosBank].direct();
                     ESPectrum::trdos = true;
+                    if (g_scorp_gmx) Ports::gmxTapRecheck();
                 } else if (Config::arch == A_PROFI) {
                 }
 
@@ -1021,6 +1039,9 @@ IRAM_ATTR void Z80::check_trdos() {
             // Karabas ONROM (#008B bit6): the FPGA's forced-DOS level outranks
             // the PC>=0x4000 exit — hold trdos until the guest clears the bit.
             if (Config::arch == A_PROFI && (Ports::port008B & 0x40)) doExit = false;
+            // GMX 1FFD D2: the DOS page is hard-wired at 0x0000 (Beta forced on) —
+            // hold trdos until the guest clears the bit (same shape as ONROM).
+            if (g_scorp_gmx && (Ports::port1FFD & 0x04)) doExit = false;
 
             if (doExit) {
 
@@ -1041,6 +1062,13 @@ IRAM_ATTR void Z80::check_trdos() {
                 else if (Config::arch == A_PROFI)
                     // trdos=false: bit4=0→bank2(128K), bit4=1→bank3(SOS/48K)
                     MemESP::romInUse = MemESP::romLatch ? 3 : 2;
+                else if (Config::arch == A_SCORP)
+                    // trdos=false: 1FFD D1 service override outranks 7FFD D4;
+                    // GMX keeps the bank inside the live ProfROM plane (and the
+                    // 0x0100 tap re-arms via scorpionRomUpdate on the next port
+                    // write — recomputed below through recoverPage0 either way)
+                    MemESP::romInUse = ((Ports::port1FFD & 0x02) ? 2 : MemESP::romLatch)
+                                     | (g_scorp_gmx ? (Ports::gmxPlane << 2) : 0);
                 else
                     MemESP::romInUse = MemESP::romLatch;
 #if PAGE_TRACE
@@ -1058,6 +1086,11 @@ IRAM_ATTR void Z80::check_trdos() {
 
                 MemESP::recoverPage0();
                 ESPectrum::trdos = false;
+                if (g_scorp_gmx) Ports::gmxTapRecheck();
+#if GMX_TRACE
+                if (Config::arch == A_SCORP)
+                    GMXT("[GMX trap-] pc=%04X romU=%u", REG_PC, (unsigned)MemESP::romInUse);
+#endif
 
             }
 
@@ -1213,6 +1246,18 @@ void Z80::doNMI(void) {
     if (MB02::enabled) {
         MB02::writePort17(0x60); // SRAM page 0, write enable
     }
+    // Scorpion magic button: the hardware asserts 1FFD D1 (service page) with
+    // the NMI pulse, so the 0x0066 handler always executes from the service
+    // monitor (MAME scorpion nmi_check_callback: port_1ffd |= 0x02 + pulse).
+    // A bare NMI landed at 0x0066 of whatever ROM happened to be paged — the
+    // Sinclair banks have no handler there, hence "enters the monitor only
+    // sometimes". Done at the ack point so not a single opcode is fetched from
+    // the swapped page before the NMI vectors; the monitor exits by clearing
+    // D1 itself.
+    if (Z80Ops::isScorpion) {
+        Ports::port1FFD |= 0x02;
+        Ports::scorpionRomUpdate();
+    }
     nmi();
 
 }
@@ -1230,9 +1275,14 @@ void Z80::doNMIDOS(void) {
 
     // Switch to TR-DOS ROM (slot 4) for Magic Button NMI
     // Note: Gluk ROM has no NMI handler (0x0066 = 0xFF filler) — it's RESET-only
-    MemESP::romInUse = 4;
-    MemESP::ramCurrent[0] = MemESP::rom[4].direct();
+    // Scorpion: TR-DOS is the machine's own bank 3 (rom[4] is unused there);
+    // on GMX inside the live ProfROM plane.
+    uint8_t nmiDosBank = (Config::arch == A_SCORP)
+                             ? (uint8_t)((g_scorp_gmx ? (Ports::gmxPlane << 2) : 0) | 3) : 4;
+    MemESP::romInUse = nmiDosBank;
+    MemESP::ramCurrent[0] = MemESP::rom[nmiDosBank].direct();
     ESPectrum::trdos = true; // Protect ROM from 7FFD changes
+    if (g_scorp_gmx) Ports::gmxTapRecheck(); // re-arm tap + re-register the bank overlay
 
     // Mark NMI-DOS in progress
     nmiDosInProgress = true;

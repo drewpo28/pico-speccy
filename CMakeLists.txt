@@ -51,6 +51,7 @@ option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
 option(MC7FFD_TRACE "One-shot capture of #7FFD write tstates when a frame carries >=90 of them (beam-raced multicolor phase diagnosis)" OFF)
+option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1FFD writes, romInUse transitions, TR-DOS trap entry/exit (capped)" OFF)
 option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
@@ -365,6 +366,20 @@ pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/rp2350-memmap.ld")
 
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections)
 target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
+
+# Scorpion GMX: the boot ROM (~345 KB after dedup/overlays) is embedded in flash
+# on EVERY board — QSPI(butter) PSRAM is a property of the plugged-in Pico 2
+# MODULE, not of the carrier board (a Murmulator 1 takes a module with PSRAM on
+# XIP CS1 = GPIO19 just fine), so the gate is the RUNTIME butter probe: without
+# a chip the GMX pick falls back to Yellow PCB (Config::requestMachine +
+# resolveConstraints). The linker shrinks the GM.DLS partition to 1.6875 MB
+# (rp2350-memmap.ld, __gmx_rom_in_flash) so firmware + ROM fit below it — the
+# stock converted gm.dls bank (~1.59 MB) still fits with ~100 KB margin; a
+# previously provisioned bank at the old address fails the header check and
+# re-provisions from SD. GMX_IN_FLASH=0 remains an escape hatch (drops the ROM,
+# the menu rows and the partition shrink together).
+target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_IN_FLASH=1)
+target_link_options(${PROJECT_NAME} PRIVATE -Wl,--defsym=__gmx_rom_in_flash=1)
 target_compile_definitions(${PROJECT_NAME} PRIVATE CONFIG_BOARD_TAG="${CONFIG_BOARD_TAG}")
 
 # IDE/HDD port tracing toggle (see Ports.cpp / IDE.cpp `#if IDE_PORT_TRACE`).
@@ -502,6 +517,10 @@ else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PROFI_PORT_TRACE=0)
 endif ()
 
+# Scorpion GMX paging trace (see Ports.cpp / Z80_JLS.cpp `#if GMX_TRACE`).
+if (GMX_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_TRACE=1)
+endif ()
 # One-shot #7FFD multicolor phase capture (see Ports.cpp `#if MC7FFD_TRACE`).
 if (MC7FFD_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE MC7FFD_TRACE=1)

@@ -283,6 +283,15 @@ static const Option opt_mach_karabas[] = {
     { TXT_ROM_KAR_FT,     NM_MACH(A_KARABAS, R_PROFI_FT)  },
     { TXT_ROM_KAR_FDI,    NM_MACH(A_KARABAS, R_PROFI_FDI) },
 };
+static const Option opt_mach_scorp[] = {
+    { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP),      TXT_ROM_SCORP_S      },
+    { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR),   TXT_ROM_SCORP_GR_S   },
+#if GMX_IN_FLASH   // escape-hatch builds carry no GMX ROM (CMakeLists); with the ROM
+                   // in, a butter-less module reverts the pick in resolveConstraints
+    { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX),  TXT_ROM_SCORP_GMX_S  },
+#endif
+    { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S },
+};
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
@@ -328,12 +337,13 @@ static const Node kMachine[] = {
     // grouping reads at a glance (they also only show while that machine is
     // running or staged) — Murmuzavr belongs to the three Pentagon rows above it.
     NM_SUB  (NM_IND TXT_MACH_MURM, kMurmuzavr, p_murmAvail),
+    // Scorpion sits with the Soviet-clone block, right after the Pentagons.
+    // Its pages above the base 128K need extended-RAM backing, same gate as P512.
+    NM_RADIO(TXT_MACH_SCORP, SET_MACHINE, opt_mach_scorp, p_extRam),
     NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
-    // Shared Profi-hardware options — shown while either Profi or Karabas is
-    // running or staged.
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by
@@ -606,11 +616,8 @@ static const Option opt_midi_mode[] = {
     { "Off",           0 },
     { "AY",            1 },
     { "ShamaZX",       2 },
-#if !NO_GM_DLS
     { "DLS Wavetable", 4 },
-#endif
 };
-#if !NO_GM_DLS
 static bool p_midiDls()  { return Stage::get(SET_MIDI_MODE) == 4; }
 static const Option opt_midi_bank_hints[] = {
     { SYM_ENTER " Select / install", 0 },
@@ -625,7 +632,6 @@ static const Option opt_midi_storage[] = {      // values ARE Config::midi_stora
     { "PSRAM", 0 },
     { "Flash", 1 },
 };
-#endif
 
 // The chips only the DivMMC VGM-player plugin drives, grouped out of the
 // native-Spectrum rows. "All" flips the whole card family at once.
@@ -654,14 +660,12 @@ static const Node kAudio[] = {
     NM_RADIO(TXT_AUD_COVOX,      SET_COVOX,        opt_covox,      nullptr),
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
     NM_RADIO   (TXT_AUD_MIDI,           SET_MIDI_MODE,   opt_midi_mode,   nullptr),
-#if !NO_GM_DLS
     NM_RADIO_EN(NM_IND TXT_MIDI_STORAGE, SET_MIDI_STORAGE, opt_midi_storage,
                 p_butterPsram, p_midiDls),
     // The bank list + on-device .dls conversion act immediately (like the disk slots):
     // a bank pick can applyBankLive() or defer a flash write to the next boot.
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,
                 opt_midi_bank_hints, p_hasSD, p_midiDls),
-#endif
     NM_RADIO_D (TXT_AUD_GS,          SET_GS_MODE,  gs_modeOpts,  p_gsAvail),
     NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK,  opt_gs_clock,  p_gsClockCls, p_gsClassic),
     NM_RADIO   (NM_IND TXT_GS_CLOCK, SET_NGS_CLOCK, opt_ngs_clock, p_gsNeo),
@@ -703,7 +707,8 @@ static const Option opt_pref_arch[] = {
     { TXT_MACH_PENT,  2 },
     { TXT_MACH_P512,  3 },
     { TXT_MACH_P1024, 4 },
-    { TXT_ROM_LAST,   5 },
+    { TXT_MACH_SCORP, 5 },
+    { TXT_ROM_LAST,   6 },
 };
 static const Option opt_pref48[] = {
     { TXT_ROM_48K,     0 },
@@ -735,6 +740,19 @@ static const Option opt_pref_pent[] = {
     { TXT_ROM_CUSTOM,    1 },
     { TXT_ROM_LAST,      2 },
 };
+// Values are indices into UiStage's kPrefScorp — 1024 sits BEFORE the
+// conditional GMX entry so the indices are identical on both build variants.
+static const Option opt_pref_scorp[] = {
+    { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      },
+    { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   },
+    { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S },
+#if GMX_IN_FLASH
+    { TXT_ROM_SCORP_GMX,  3, TXT_ROM_SCORP_GMX_S  },
+    { TXT_ROM_LAST,       4 },
+#else
+    { TXT_ROM_LAST,       3 },
+#endif
+};
 
 static const Node kPrefRom[] = {
     NM_RADIO(TXT_MACH_48K,   SET_PREF_ROM_48,    opt_pref48,    nullptr),
@@ -742,6 +760,7 @@ static const Node kPrefRom[] = {
     NM_RADIO(TXT_MACH_PENT,  SET_PREF_ROM_PENT,  opt_pref_pent, nullptr),
     NM_RADIO(TXT_MACH_P512,  SET_PREF_ROM_P512,  opt_pref_pent, nullptr),
     NM_RADIO(TXT_MACH_P1024, SET_PREF_ROM_P1024, opt_pref_pent, nullptr),
+    NM_RADIO(TXT_MACH_SCORP, SET_PREF_ROM_SCORP, opt_pref_scorp, nullptr),
 };
 
 // "Other" is gone: it held four unrelated rows behind one more keypress, so they sit at

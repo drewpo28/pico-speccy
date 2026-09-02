@@ -282,6 +282,30 @@ public:
   static volatile bool profi_ds80_deactivate_pending; // deferred on→off mode switch (set in Ports, applied in EndFrame)
   static bool profi_ds80_osd_active;     // true while an OSD is open over a DS80 screen
   static void rebuildDS80ColorLut();     // rebuild Graphics8BitPalette::ds80_color_lut from profi_pair_lookup
+
+  // ── Scorpion GMX 640x200x16 (gfx_ext, #7EFD D3) ────────────────────────────
+  // Reuses the whole DS80 pair-slot machinery (profi_pair_lookup, the driver
+  // pair tables via profi_ds80_driver_set, the Graphics8BitPalette remap): the
+  // two modes belong to different machines and can never be live together.
+  // Driver table rewrites are vblank-only (DS80 rule) — Ports only requests.
+  static volatile bool gmx_ext_pending_on;
+  static volatile bool gmx_ext_pending_off;
+  static bool gmx_ext_live;              // renderer + driver in 640x200 mode
+  static void gmxExtRequest(bool on);    // called from the #7EFD write handler
+  static uint8_t* gmx_frame_bmp;         // per-frame latched bitmap page (57/59)
+  static uint8_t* gmx_frame_att;         // per-frame latched attr page (121/123)
+  static uint32_t gmx_frame_srow;        // per-frame latched scroll, in rows
+  static bool gmx_border_dirty;          // top/bottom band needs a repaint
+  static uint8_t gmx_border_col;         // last painted border colour
+  static void gmxForceOff();             // immediate teardown (ESPectrum::reset)
+  // Top-border height in fb rows while the GMX 640x200 mode is live, 0 otherwise.
+  // OSD::notify needs it: unlike every other mode, that band is STATIC in GMX (the
+  // per-T-state border machine is parked), so a banner can live there with no
+  // column reservation — and its height is not the border machine's 24/48.
+  static int  gmxTopBandRows();
+  // Cold EndFrame halves, flash-resident on purpose (EndFrame is RAM code):
+  static void gmxApplyPending();         // deferred on/off switch, vblank only
+  static void gmxBorderFrame(bool skipFrame); // top/bottom band repaint
   // A full-screen OSD over DS80 owns all 16 palette entries while it is open, so it can
   // use its own colours natively at 512x240 — the new menu installs the UI palette, the
   // ZX-keyboard page the standard ZX one. One snapshot slot, so the calls must nest
@@ -303,8 +327,12 @@ public:
 
   static uint16_t spectrum_colors[NUM_SPECTRUM_COLORS];
 
-  static uint16_t offBmp[SPEC_H];
-  static uint16_t offAtt[SPEC_H];
+  // Sized 240, filled for SPEC_H (192): Scorpion GMX runs 200 content lines, and
+  // MainScreen_Blank indexes offBmp[curline] unconditionally — entries 192..239
+  // are never used for rendering (the GMX branch has its own addressing) but must
+  // be in bounds.
+  static uint16_t offBmp[240];
+  static uint16_t offAtt[240];
 
   static VGA8Bit vga;
 
@@ -415,6 +443,10 @@ public:
 
   // Fill 256-entry BMP palette (1024 bytes, BGRA format) matching current VGA palette
   static void getBmpPalette(uint8_t* out);
+  // Reverse of profi_pair_lookup for the packed-pair modes (Profi DS80, Scorpion
+  // GMX): out[slot] = (left << 4) | right, 0 for slots no pair maps to. Lets a
+  // BMP capture expand each framebuffer byte back into its two pixels.
+  static void getPairSlotReverse(uint8_t* out);   // 256 bytes
 
   // Custom palettes loaded from /palette.nvs
   static void loadCustomPalettes();

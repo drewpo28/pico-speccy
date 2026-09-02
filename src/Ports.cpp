@@ -312,11 +312,21 @@ uint8_t Ports::speaker_values[8] = {0, 19, 34, 53, 97, 101, 130, 134};
 uint8_t Ports::port[128];
 uint8_t Ports::extPort[8] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 uint8_t Ports::port254 = 0;
+void Ports::resetBorderLatch() { port254 = 0; }
 uint8_t Ports::sndriveLatch[6] = {0, 0, 0, 0, 0, 0};
 uint8_t Ports::sndriveUsed = 0;
 uint8_t Ports::portAFF7 = 0;
 uint8_t Ports::portDFFD = 0;
 uint8_t Ports::portEFF7 = 0;
+uint8_t Ports::port1FFD = 0;
+uint8_t Ports::gmxPort00 = 0;
+uint8_t Ports::gmxPort78FD = 0;
+uint8_t Ports::gmxPort7EFD = 0;
+uint8_t Ports::gmxScrollLo = 0;
+uint8_t Ports::gmxScrollHi = 0;
+uint8_t Ports::gmxPlane = 0;
+uint8_t Ports::gmxMagicShift = 0;
+uint8_t Ports::portDFFDgmx = 0;
 uint8_t Ports::port008B = 0;
 uint8_t Ports::port018B = 0;
 uint8_t Ports::port028B = 0;
@@ -591,6 +601,8 @@ inline static size_t extendedZxRamPages() {
     return 64;
   if (Z80Ops::is512)
     return 32;
+  if (Z80Ops::isScorpion)
+    return g_scorp_gmx ? 128 : (g_scorp_1024 ? 64 : 16);
   if (Z80Ops::is128 || (Z80Ops::isPentagon || Z80Ops::isProfi))
     return 8;
   return 4;
@@ -788,9 +800,14 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     }
     return 0x00;
   }
+  // Scorpion GMX register read-backs — cold flash dispatch, see gmxPortRead.
+  if (g_scorp_gmx) {
+    uint8_t gmxData;
+    if (gmxPortRead(address, &gmxData)) return gmxData;
+  }
   // ULA PORT
   if ((address & 0x0001) == 0) {
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
     if (ia && p8 == 0xFE) {
       data = nes_pad2_for_alf(); // default port value is 0xFF.
     } else {
@@ -1212,6 +1229,15 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // Any mounted disk — includes TRD/SCL which are not "raw" but still need
     // real FDC routing so Profi SYS ROM disk probe succeeds.
     bool has_any_disk = ESPectrum::fdd.disk[ESPectrum::fdd.diskS] != nullptr;
+    // Scorpion SYSEN (1FFD D1): the service monitor drives the WD1793 directly —
+    // ZXMAK2 FddController: "Ports active when DOSEN=1 or SYSEN=1". Without this
+    // the monitor's disk boot (reached from the guest 128 menu's TR-DOS row, the
+    // reset-to-TR-DOS chain and the magic NMI) polls #1F forever: the FDC branch
+    // declines (trdos=false — DOSEN drops at PC>=0x4000 while SYSEN stays), the
+    // Kempston block below answers 0x00, and the monitor's head-load wait
+    // `IN A,(#1F); AND #E0; JR Z` never exits (hw dump 2026-08-30: PC=0237 in
+    // bank2, romInUse=2, romLatch=1).
+    bool scorp_sysen = Z80Ops::isScorpion && (port1FFD & 0x02);
     // skip_real_fdc: bypass real WD1793 during Profi SYS ROM boot ONLY when
     // no disk is mounted at all.  With any disk (TRD/SCL/FDI/...), let the
     // real FDC handle it so the SYS ROM disk probe can succeed.
@@ -1301,7 +1327,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       return kRVMWD177XStatusNotReady | kRVMWD177XStatusSeek;
     }
 
-    if (!skip_real_fdc && (ESPectrum::trdos || has_raw_disk)) {
+    if (!skip_real_fdc && (ESPectrum::trdos || scorp_sysen || has_raw_disk)) {
 
       uint8_t dat;
 
@@ -1424,7 +1450,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // p.24 the FDC owns #1F only when CPM=1 (DOS=0) — i.e. an active loader
         // context: TR-DOS ROM paged in or Profi CP/M mode. Otherwise (a running
         // game polling the joystick) let it fall through to the Kempston block.
-        if (Config::joystick == JOY_KEMPSTON && !ESPectrum::trdos &&
+        if (Config::joystick == JOY_KEMPSTON && !ESPectrum::trdos && !scorp_sysen &&
             !(Z80Ops::isProfi && (portDFFD & 0x20)))
           break;
         // fallthrough — FDC owns #1F in loader/CP-M context
@@ -1450,8 +1476,10 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         // float — otherwise IN A,(0xFF) returns FDC status (~0x00) instead of
         // the floating bus, breaking floating-bus reads (games + halt2int's
         // Float test → "Unknown"). On Profi trdos is permanently asserted
-        // (SYSEN), so its SYS-register path is unaffected.
-        if (!ESPectrum::trdos)
+        // (SYSEN), so its SYS-register path is unaffected. Scorpion's SYSEN is
+        // a separate latch (1FFD D1) — the service monitor selects drives via
+        // #FF too, so it counts as "TR-DOS paged" here.
+        if (!ESPectrum::trdos && !scorp_sysen)
           break;
         // Port #FF (and #FF-family) is the SYS register only in the standard
         // scheme (CPM=0). In CP/M the SYS register is at #BF/#3F and the
@@ -1616,7 +1644,10 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         return rd;
       }
     }
-    if (!(Z80Ops::isPentagon || Z80Ops::isProfi)) {
+    // Scorpion has no float bus either (Fuse: unattached_port_none) — unmapped
+    // reads answer 0xFF and the 128K "IN #7FFD rewrites the latch" quirk (a
+    // 128K-ULA artifact) never happens there.
+    if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)) {
 #if HALT2INT_TRACE
       if (address == 0xFFFF)
         Debug::log("[FLOAT-IN] addr=%04X ts=%u ia=%d", address, CPU::tstates, (int)ia);
@@ -1745,6 +1776,334 @@ static inline void profiFdcSysWrite(uint8_t data) {
     ESPectrum::fdd.control |= kRVMWD177XDDEN;
 }
 
+// GMX ProfROM 0x0100-0x010F read tap: armed only while the SERVICE bank sits at
+// 0x0000 with ROM actually mapped (ZXMAK2 MemoryScorpionProfRom256 gates on SYSEN;
+// MAME taps 0x0100-0x010C when (bank & 3) == SYS && !romram). Recomputed on every
+// romInUse change for Scorpion, so the hot-path test in peek8/fetchOpcode is one
+// almost-always-false global load.
+#if GMX_TRACE
+// Scorpion GMX paging trace (-DGMX_TRACE=ON): every ROM-bank transition, GMX
+// register write, magic reset and TR-DOS trap event, capped so the boot
+// sequence fits the UART without stalling emulation. Shared with Z80_JLS.cpp.
+uint32_t g_gmxTraceN = 0;
+// The budget must be spent on DISTINCT events. The firmware's paging is full of
+// tight cycles that repeat hundreds of times and say nothing after the first pass
+// — the loader's RAM sizing (1FFD D4 at pc=6A78), the service monitor's
+// byte-at-a-time thunk (1FFD D1 at pc=E4FC/E506, a 4-line cycle run 1000+ times)
+// and its plane-4/5 dance (7EFD C0/D0 + 1FFD 12/10 at pc=E3FD/E448/E429/E4E7, an
+// EIGHT-line cycle) each burn the whole budget on their own, and both a working
+// boot and a broken one die inside them — which made the traces indistinguishable
+// (hw 2026-08-31, three rounds lost to it).
+//
+// So: keep a ring of recent line HASHES and suppress anything matching one of
+// them, counting the suppressions and reporting the tally when a genuinely new
+// line arrives. Hashes, not strings, because the window has to be deep enough for
+// the longest cycle — 32 × 4 B is both deeper and smaller than the 4 × 96 B of
+// full lines it replaces (which caught the 4-line cycle and missed the 8-line
+// one). A hash collision only costs one suppressed line, and the tally says how
+// many were dropped. No PC or port is hard-coded as noise.
+#define GMXT_RING 32
+static uint32_t gmxt_ring[GMXT_RING];
+static uint8_t  gmxt_ring_w = 0;
+static uint32_t gmxt_reps = 0;
+
+void gmxTrace(const char* fmt, ...) {
+    char buf[144];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    uint32_t h = 2166136261u;                       // FNV-1a
+    for (const char* p = buf; *p; p++) { h ^= (uint8_t)*p; h *= 16777619u; }
+    if (!h) h = 1;                                  // 0 marks an empty slot
+    for (int i = 0; i < GMXT_RING; i++)
+        if (gmxt_ring[i] == h) { gmxt_reps++; return; }   // in the cycle: no budget
+    if (g_gmxTraceN >= 600) return;
+    if (gmxt_reps) {
+        g_gmxTraceN++;
+        Debug::log("[GMX] ... %u repeated lines collapsed", (unsigned)gmxt_reps);
+        gmxt_reps = 0;
+    }
+    gmxt_ring[gmxt_ring_w] = h;
+    gmxt_ring_w = (uint8_t)((gmxt_ring_w + 1) % GMXT_RING);
+    g_gmxTraceN++;
+    Debug::log("%s", buf);
+}
+
+// The 1 Hz heartbeat must NOT share the event budget: it exists precisely for the
+// case where the firmware has wedged and stops producing events, which is also
+// when the budget has just been burned by whatever cycle it is stuck in. Its own
+// (generous) cap keeps a forgotten session from filling the disk.
+void gmxTraceHb(const char* fmt, ...) {
+    static uint32_t hb = 0;
+    if (hb >= 900) return;                 // 15 minutes at 1 Hz
+    hb++;
+    char buf[144];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    Debug::log("%s", buf);
+}
+
+void gmxTraceReset() {
+    g_gmxTraceN = 0;
+    gmxt_reps = 0;
+    gmxt_ring_w = 0;
+    for (int i = 0; i < GMXT_RING; i++) gmxt_ring[i] = 0;
+}
+#endif
+
+static inline void gmxTapUpdate() {
+  // The legacy ProfROM 0x0100-0x010F read tap is DISABLED on GMX (hw trace
+  // 2026-08-31): the v2.94 service monitor (plane 4 bank 2) checksums its whole
+  // 16K with 1FFD D1 set — the CPI loop at 0x31B8 reads straight through
+  // 0x0100-0x010F, and the tap flipped the plane to 0 mid-execution
+  // (GMX_TRACE: "[GMX romU] 18->2 ... plane=0 pc=31B9"), landing the CPU in
+  // plane 0's DATA bank — the striped-screen crash. The GMX firmware switches
+  // planes exclusively via #7EFD D4-6 (same trace: every deliberate plane
+  // change is a 7EFD write from the RAM thunks at E3FD/E429); the 0x010x tap
+  // belongs to the ProfROM add-on for the Yellow/Green boards (ZXMAK2
+  // MemoryScorpionProfRom256 — ZXMAK2 has no GMX machine at all, and MAME's
+  // scorpiongmx only inherits the tap from scorpiontb). Keep gmxProfRomTap /
+  // kProfPlaneMap for a future ProfROM romset — the arming condition there
+  // was ((romInUse & 3) == 2) && !page0ram, on M1 ONLY (the data-read hook in
+  // peek8 is what fired on the checksum; ZXMAK2 subscribes both, but ZXMAK2
+  // never ran this firmware).
+  g_gmx_tap = false;
+#if GMX_IN_FLASH
+  // GMX banks are stored deduplicated + as overlays over ROMs already in flash
+  // (scorpion_gmx_banks.h). MemESP's overlay registry keys ONE overlay per base
+  // pointer, and several GMX banks derive from the SAME base (plane 1 and plane 4
+  // both patch the Sinclair 128K halves) — so the registration is DYNAMIC: every
+  // romInUse change lands here (scorpionRomUpdate / gmxTapRecheck) and re-registers
+  // the overlay of the bank now live at 0x0000. Only the live bank's pointer is
+  // ever consulted, so a stale entry for a base that is not paged in is harmless.
+  // For a raw bank this registers nullptr — a no-op. The table itself must be
+  // touched only from Config.cpp (see gmxRegisterLiveOverlay's comment).
+  if (g_scorp_gmx) gmxRegisterLiveOverlay(MemESP::romInUse);
+#endif
+}
+
+// The 0xC000 RAM page from all three latches: 7FFD bits 0-2 (low3), 1FFD D4 (+8),
+// and on GMX the #DFFD 3 extra bits (<<4) — 128 pages = 2 MB (MAME scorpiongmx).
+// Bounds W/A like the Profi combine: never walk off the page strip.
+static inline uint32_t scorpionC000Page(uint32_t low3) {
+  uint32_t page = low3 | ((Ports::port1FFD & 0x10) >> 1);
+  if (g_scorp_gmx) page |= (uint32_t)(Ports::portDFFDgmx & 0x07) << 4;
+  // ZS-1024: 1FFD D6,D7 are two more page bits above D4 — 64 pages = 1 MB
+  // (MAME scorpion_update_memory `(1ffd & 0xc0) >> 2`; ZXMAK2
+  // MemoryScorpionProfRom1024 `sega |= (CMR1 & 0xC0) >> 5`). 256K boards leave
+  // the bits unwired — modelled by NOT composing them there (the bounds W/A
+  // below would catch stray writes anyway).
+  if (g_scorp_1024) page |= (uint32_t)(Ports::port1FFD & 0xC0) >> 2;
+  uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
+  if (page >= pages) page = low3;
+  return page;
+}
+
+// Scorpion ROM select — MAME's hardware-derived function (sinclair/scorpion.cpp):
+//   rom = 1FFD D1 ? 2 : ((dos << 1) | 7FFD D4)
+// bank0/1 = BASIC-128/BASIC-48, bank2 = service monitor, bank3 = TR-DOS. Note the
+// quirk that IS the hardware: in DOS with the 128 ROM selected (D4=0) the SERVICE
+// page appears, not TR-DOS — normal TR-DOS software always runs with D4=1.
+// GMX: the bank lands inside the live ProfROM plane (romInUse = plane*4 + bank),
+// and 1FFD D2 hard-wires the DOS page at 0x0000 (overriding even RAM0) with the
+// Beta interface forced on — MAME scorpiongmx scorpion_update_memory.
+// The ONLY place Scorpion's rom bank is derived — callers: the #1FFD handler, the
+// Scorpion arm of the #7FFD rom-select, check_trdos entry/exit, the .z80 loader.
+// recoverPage0() already orders newSRAM > page0ram > rom[romInUse], which matches
+// the hardware (RAM0 wins over the service override).
+void Ports::scorpionRomUpdate() {
+#if GMX_TRACE
+  uint8_t gmxt_prev = MemESP::romInUse;
+#endif
+  if (g_scorp_gmx && (port1FFD & 0x04)) {
+    MemESP::romInUse = (gmxPlane << 2) | 3;
+    ESPectrum::trdos = true;   // Beta on; check_trdos holds DOS while D2 is set
+    MemESP::ramCurrent[0] = MemESP::rom[MemESP::romInUse].direct();
+    gmxTapUpdate();
+#if GMX_TRACE
+    if (MemESP::romInUse != gmxt_prev)
+      GMXT("[GMX romU] %u->%u D2-hold 1FFD=%02X plane=%u pc=%04X",
+           gmxt_prev, (unsigned)MemESP::romInUse, port1FFD, gmxPlane, Z80::getRegPC());
+#endif
+    return;
+  }
+  uint8_t bank = (port1FFD & 0x02) ? 2
+               : ((((uint8_t)ESPectrum::trdos) << 1) | MemESP::romLatch);
+  MemESP::romInUse = (g_scorp_gmx ? (gmxPlane << 2) : 0) | bank;
+  MemESP::recoverPage0();
+  gmxTapUpdate();
+#if GMX_TRACE
+  if (MemESP::romInUse != gmxt_prev)
+    GMXT("[GMX romU] %u->%u 1FFD=%02X dos=%d rom14=%u plane=%u pc=%04X",
+         gmxt_prev, (unsigned)MemESP::romInUse, port1FFD, (int)ESPectrum::trdos,
+         (unsigned)MemESP::romLatch, gmxPlane, Z80::getRegPC());
+#endif
+}
+
+// MAME scorpiontb prof_plane_map — the legacy ProfROM plane-switch table driven
+// by reads of 0x0100/4/8/C from inside the service bank; clamps to planes 0-3
+// even on GMX (the full 0-7 range is reachable only via #7EFD D4-6).
+static const uint8_t kProfPlaneMap[16] = {
+    0, 1, 2, 3,
+    3, 3, 3, 2,
+    2, 2, 0, 1,
+    1, 0, 1, 0,
+};
+
+// Called from Z80Ops::peek8/fetchOpcode when g_gmx_tap is armed and the address
+// is 0x0100-0x010F (ZXMAK2 subscribes the whole 16-byte window; the plane slot
+// is addr bits 2-3). Out of line — the armed case is rare.
+void Ports::gmxProfRomTap(uint16_t address) {
+  uint8_t plane = kProfPlaneMap[(address & 0x0C) | (gmxPlane & 0x03)];
+  if (plane != gmxPlane) {
+    gmxPlane = plane;
+    scorpionRomUpdate();
+  }
+}
+
+void Ports::gmxTapRecheck() { gmxTapUpdate(); }
+
+// ── Scorpion GMX port family (MAME sinclair/scorpion.cpp scorpiongmx) ────────
+// Deliberately NOT IRAM: called from the RAM-resident Ports::output/input only
+// while g_scorp_gmx, and the register file is not on any hot path — keeping the
+// bodies in flash saves ~1 KB of the RAM code budget.
+bool Ports::gmxPortWrite(uint16_t address, uint8_t data) {
+  if ((address & 0x00FF) == 0) {
+    // Port #00 global config: D5=BLKEXT (GMX register file off), D4=fixrom
+    // (freeze the ProfROM plane), D3 arms the magic shift-register readout
+    // 0x88|(D0-2) and, with fixrom off, pulses CPU reset — the GMX "magic
+    // jump" into the boot ROM (MAME global_cfg_w).
+    gmxPort00 = data;
+#if GMX_TRACE
+    GMXT("[GMX p00] %02X blkext=%d fixrom=%d magic=%d pc=%04X",
+         data, (int)((data >> 5) & 1), (int)((data >> 4) & 1),
+         (int)((data >> 3) & 1), Z80::getRegPC());
+#endif
+    if (data & 0x08) {
+      gmxMagicShift = 0x88 | (data & 0x07);
+      if (!(data & 0x10)) {
+#if GMX_TRACE
+        GMXT("[GMX p00] magic reset shift=%02X (CPU only)", gmxMagicShift);
+#endif
+        Z80::reset();   // CPU only — RAM/paging stay
+      }
+    }
+    return true;
+  }
+  if (gmxPort00 & 0x20) return false;     // BLKEXT → register file off
+  switch (address) {                      // full 16-bit decode (MAME mirror 0)
+    case 0x78FD: {
+      // RAM page at 0x8000 (CPU bank 2): page = value ^ 2, so 0 = the
+      // default page 2. Full 7-bit page number (2 MB).
+      gmxPort78FD = data & 0x7F;
+      uint32_t pg = gmxPort78FD ^ 2;
+      uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
+      if (pg >= pages) pg = 2;
+      MemESP::ramCurrent[2] = MemESP::ram[pg].sync(2);
+      MemESP::ramContended[2] = false;
+      LED::touchW(LED::RAM);
+      return true;
+    }
+    case 0x7AFD: gmxScrollLo = data & 0xF0; return true;  // 640x200 v-scroll
+    case 0x7CFD: gmxScrollHi = data & 0x3F; return true;
+    case 0x7EFD: {
+#if GMX_TRACE
+      if (data != gmxPort7EFD)
+        GMXT("[GMX 7EFD] %02X plane=%u gfx=%d turbo=%d pc=%04X",
+             data, (unsigned)((data >> 4) & 7), (int)((data >> 3) & 1),
+             (int)((data >> 7) & 1), Z80::getRegPC());
+#endif
+      gmxPort7EFD = data;
+      // D7 turbo (7 MHz) — honored only while the USER has turbo on, same
+      // policy as Pentagon-1024SL #EFF7 D4 (the GMX boot ROM flips it at
+      // will and must not turbo a 3.5 MHz session).
+      if (ESPectrum::multUser) {
+        uint8_t want = (data & 0x80) ? ESPectrum::multUser : 0;
+        if (want != ESPectrum::multiplicator) {
+          ESPectrum::multiplicator = want;
+          CPU::updateStatesInFrame();
+        }
+      }
+      // D4-6 = ProfROM plane (28F400 A16-18), frozen by fixrom (port #00 D4)
+      if (!(gmxPort00 & 0x10)) {
+        uint8_t plane = (data >> 4) & 0x07;
+        if (plane != gmxPlane) {
+          gmxPlane = plane;
+          scorpionRomUpdate();
+        }
+      }
+      // D3 = gfx_ext 640x200x16 — applied in vblank (EndFrame), the driver
+      // palette tables must never be rewritten mid-scanout (DS80 precedent)
+      VIDEO::gmxExtRequest((data & 0x08) != 0);
+      // D2 = magic_disabled, D1 = Vpp, D0 = EWR (28F400 flash write) — ignored
+      return true;
+    }
+    case 0xDFFD:
+      // 3 extra RAM-page bits for the 0xC000 window ((dffd&7)<<4 → 2 MB)
+      portDFFDgmx = data & 0x07;
+      MemESP::bankLatch = scorpionC000Page(MemESP::bankLatch & 0x07);
+      MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);
+      MemESP::ramContended[3] = false;
+      LED::touchW(LED::RAM);
+      return true;
+    default: return false;
+  }
+}
+
+// GMX register read-backs (live state; the MAME magic-lock snapshots are not
+// modelled — no GMX Magic/NMI button in this port).
+bool Ports::gmxPortRead(uint16_t address, uint8_t* out) {
+  if (gmxPort00 & 0x20) return false;     // BLKEXT → register file off
+  if (address == 0x78FD) {
+    // BRD1 (last #FE bit1) | RAM-at-0x8000 page | magic shift-register bit 0
+    *out = (uint8_t)((port254 & 0x02) << 6) | (gmxPort78FD & 0x7F) | (gmxMagicShift & 0x01);
+#if GMX_TRACE
+    // The loader reads this port eight times and assembles bit 0 of each read into
+    // its BOOT MODE (magic & 7), which is what picks the profile descriptor — and
+    // hence the plane it hands over to. Nothing else in the trace shows it.
+    GMXT("[GMX p78 rd] %02X shift=%02X pc=%04X", *out, gmxMagicShift, Z80::getRegPC());
+#endif
+    gmxMagicShift >>= 1;
+    return true;
+  }
+  if (address == 0x7AFD) {
+    // BRD0 | the composed 0xC000 paging state: DFFD<<4 | 1FFD.D4<<3 | 7FFD 0-2
+    *out = (uint8_t)((port254 & 0x01) << 7)
+         | (uint8_t)((portDFFDgmx & 0x07) << 4)
+         | (uint8_t)((port1FFD & 0x10) >> 1)
+         | (uint8_t)(MemESP::bankLatch & 0x07);
+#if GMX_TRACE
+    GMXT("[GMX p7A rd] %02X brd=%02X pc=%04X", *out, port254, Z80::getRegPC());
+#endif
+    return true;
+  }
+  if (address == 0x7EFD) {
+    // BRD2 | 1FFD.D0(RAM0)<<6 | BLKEXT<<5 | port00.D7<<4 | gfx<<3 | turbo<<2
+    //      | videoLatch<<1 | pagingLock
+    *out = (uint8_t)((port254 & 0x04) << 5)
+         | (uint8_t)((port1FFD & 0x01) << 6)
+         | (uint8_t)(gmxPort00 & 0x20)
+         | (uint8_t)((gmxPort00 & 0x80) >> 3)
+         | (uint8_t)(gmxPort7EFD & 0x08)
+         | (uint8_t)((gmxPort7EFD & 0x80) >> 5)
+         | (uint8_t)((MemESP::videoLatch & 1) << 1)
+         | (uint8_t)(MemESP::pagingLock & 1);
+#if GMX_TRACE
+    // The other half of the conversation: the monitor's plane-4/5 loop reads these
+    // back, and bit 7 of each read is a BRD bit straight out of the #FE latch —
+    // which a machine reset does NOT clear, so it is exactly the kind of leftover
+    // that can differ between a cold boot and an F11 after a game (the first
+    // #78FD read already came back 0x80 vs 0x00 between the two, hw 2026-08-31).
+    GMXT("[GMX p7E rd] %02X brd=%02X pc=%04X", *out, port254, Z80::getRegPC());
+#endif
+    return true;
+  }
+  return false;
+}
+
 IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   int Audiobit;
 #if SND_PORT_TRACE
@@ -1870,6 +2229,13 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     ZiFi::unoUartWrite(address & 0x0100, data);
     return;
   }
+  // Scorpion GMX port family — cold flash-resident dispatch, see gmxPortWrite.
+  // Placed BEFORE the ULA and #7FFD blocks on purpose: port #00 is even (the
+  // ULA branch would repaint the border with config bytes — the Scorpion PAL
+  // decodes ULA as A5=1&A1=1&A0=0, so #00 never reaches it on hardware), and
+  // #78FD/#7AFD/#7CFD/#7EFD have A15=0/A1=0 (the loose 7FFD gate would eat
+  // them as paging writes).
+  if (g_scorp_gmx && gmxPortWrite(address, data)) return;
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
@@ -2228,7 +2594,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // Found via FPGA48_2026.tap: its OTDR section writes arbitrary bytes to #FE.
     if (VIDEO::borderColor != (data & 0x07)) {
       VIDEO::brdChange = true;
-      if (!(Z80Ops::isPentagon || Z80Ops::isProfi))
+      if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
@@ -2254,10 +2620,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
       ayPortWrite(address, data, true);     // A8 decode: old-TS second chip
-      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
+      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
       return;
     }
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)); // I/O Contention (Late)
   } else {
     // ULA+ ports (odd addresses: 0xBF3B register select, 0xFF3B data)
     if (Config::ulaplus) {
@@ -2778,8 +3144,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       return;
     }
 
-    // Check if TRDOS Rom is mapped, or a raw disk is loaded.
-    if (ESPectrum::trdos || out_has_raw_disk) {
+    // Check if TRDOS Rom is mapped, or a raw disk is loaded. Scorpion SYSEN
+    // (1FFD D1, the service monitor) opens the FDC ports too — see the
+    // matching read-side comment (ZXMAK2: "Ports active when DOSEN=1 or
+    // SYSEN=1").
+    if (ESPectrum::trdos || out_has_raw_disk ||
+        (Z80Ops::isScorpion && (port1FFD & 0x02))) {
 
       // Profi CP/M mode: FDC data registers shift to 0x83/0xA3/0xC3/0xE3
       // UnrealSpeccy decode: (addr & 0x9F) == 0x83 → reg index = (addr >> 5) & 3
@@ -3072,6 +3442,49 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         LED::touchW(LED::RAM);
     }
   }
+  // Scorpion #1FFD (write-only): D0=1 → RAM page 0 at 0x0000 (r/w), D1=1 → service
+  // monitor ROM (bank2) override, D4 → +8 on the 0xC000 RAM page (256K = 16 pages);
+  // D3 (RS-232) and D5 (Centronics strobe) are ignored. Decode per MAME's PAL mask
+  // (1FFD = 00xxxxxxxx1xxx01): A15=A14=0, A1=0, plus A5=1 so small-port OUT (n),A
+  // probes with n<0x20 can't land here; the #7FFD side below stays as loose as the
+  // rest of the codebase (A14=1 separates them — see the extracker note there).
+  // NEVER gated by pagingLock: the 7FFD D5 lock freezes only the 7FFD latch on
+  // real hardware, #1FFD stays live until reset.
+  if (Z80Ops::isScorpion && ((address & 0xC002) == 0) && (address & 0x0020)) {
+    LED::touchW(LED::RAM);
+#if GMX_TRACE
+    // D4-only changes are skipped: the GMX loader's RAM sizing toggles D4 (the +8
+    // page bit) hundreds of times per boot pass (pc=6A78 in the logs) and that
+    // flood alone burns the whole 600-line budget before anything interesting
+    // happens. D0 (RAM0), D1 (service ROM) and D2 (GMX DOS page) are what the
+    // paging questions are about, so trip on those.
+    if ((data & 0xEF) != (port1FFD & 0xEF))
+      GMXT("[GMX 1FFD] %02X (addr=%04X) pc=%04X", data, address, Z80::getRegPC());
+#endif
+    // GMX 1FFD D2 (hard-wired DOS page) FALLING edge: on real hardware DOSEN
+    // drops on the very next >=0x4000 read — MAME's beta_disable_r fires on ANY
+    // read, so dos survives a D2 clear by at most one instruction when the
+    // writer runs from RAM. Our DOS exit only runs at control-flow opcodes
+    // checking the NEW PC, so a jump straight INTO ROM (<0x4000) closes the
+    // window with trdos still latched — romInUse then decodes as
+    // (dos<<1)|rom14 = the wrong bank (GMX_TRACE 2026-08-31:
+    // "[GMX romU] 3->2 1FFD=00 dos=1" after the loader's D2 pulse at 0x5F4C —
+    // the 9B-pattern striped-screen crash class). Every D2 writer in the GMX
+    // firmware runs from RAM, so clear the latch right at the edge.
+    if (g_scorp_gmx && (port1FFD & 0x04) && !(data & 0x04) &&
+        Z80::getRegPC() >= 0x4000)
+      ESPectrum::trdos = false;
+    port1FFD = data;
+    uint32_t page = scorpionC000Page(MemESP::bankLatch & 0x07);
+    if (page != MemESP::bankLatch) {
+      MemESP::bankLatch = page;
+      MemESP::ramContended[3] = false;
+      MemESP::ramCurrent[3] = MemESP::ram[page].sync(3);
+    }
+    MemESP::page0ram = data & 0x01;
+    scorpionRomUpdate();   // D1 service / GMX D2 DOS / TR-DOS / romLatch + recoverPage0
+    return;
+  }
   // 128K, Pentagon
   // ==================================================================
   // ALF shares the 128K codepath but uses port #5F (A7=0, A0=1) for its ROM-bank
@@ -3087,6 +3500,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // does just that. That is honest Pentagon behaviour, not a bug here; see
   // the extracker-7ffd-loose-decode note before "fixing" it with A14.
   if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
+      (!Z80Ops::isScorpion || (address & 0x4000)) && // Scorpion: A14=1 → 7FFD, A14=0 is the 1FFD family (handled above)
       (!Z80Ops::isALF || (address & 0x0080))) { // 8002 !-> 7FFD
     ++Ports::port7ffd_cnt;
 #if MC7FFD_TRACE
@@ -3129,6 +3543,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         MemESP::pagingLock = D5;
       }
       uint32_t page = (data & 0x7);
+      // Scorpion: page = (GMX #DFFD bits << 4) | ((1FFD D4) >> 1) | (7FFD bits
+      // 0-2) — the extended-RAM bits live in the OTHER ports' latches,
+      // recombined on every write of any of them.
+      if (Z80Ops::isScorpion) {
+        page = scorpionC000Page(data & 0x07);
+      }
       if ((Z80Ops::is512 || Z80Ops::is1024) && !MemESP::notMore128 &&
           !MemESP::pagingLock) {
         uint8_t D6 = bitRead(data, 6);
@@ -3157,7 +3577,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       if (MemESP::bankLatch != page) {
         MemESP::bankLatch = page;
         MemESP::ramContended[3] =
-            (Z80Ops::isPentagon || Z80Ops::isProfi) ? false : (page & 0x01 ? true : false);
+            (Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ? false : (page & 0x01 ? true : false);
       }
       // Profi SCO (DFFD bit3): bank1=ramPage (full 0..63), bank3=page7; else bank3=ramPage
       if (Z80Ops::isProfi && (portDFFD & 0x08)) {
@@ -3197,6 +3617,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
           MemESP::romInUse = ESPectrum::trdos ? (MemESP::romLatch ? 1 : 0)
                                               : (MemESP::romLatch ? 3 : 2);
           MemESP::recoverPage0();
+        } else if (Z80Ops::isScorpion) {
+          // Live recompute like Profi's: the 1FFD D1 service override outranks
+          // D4, and TR-DOS stays mapped while trdos is true.
+          scorpionRomUpdate();
         } else if (!ia && !ESPectrum::trdos) {
           MemESP::romInUse = MemESP::romLatch;
         }

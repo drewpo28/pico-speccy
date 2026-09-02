@@ -2212,6 +2212,532 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 - On-hardware benchmark: OSD → Memory Info measures SPI PSRAM MB/s via the
   range functions (`OSDMain.cpp`).
 
+## Scorpion ZS-256 (A_SCORP, 2026-08-19; hw-debugged 2026-08-30, see the SYSEN/NMI/motor section below)
+
+New machine, modelled from MAME `sinclair/scorpion.cpp` + libspectrum `timings.c` +
+Fuse `machines/scorpion.c` (the speccy4ever docs the user linked are egress-blocked
+from the cloud env; all three sources agree). ROM = the user-supplied **v2.94**
+`scorp294.rom` (CRC32 99f57ce1, = MAME's; pages 0-1 byte-identical to v2.92):
+0=BASIC-128, 1=BASIC-48, 2=service monitor, 3=TR-DOS 5.03 variant. bank0/1 are
+overlays over the Sinclair 128K halves (290/115 diff bytes, `tools/rom_pack.py
+scorpion`); bank2/3 raw in `src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT be an
+overlay: rom[4] already overlays the `trdos_505d` base pointer and
+`MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
+
+- **Four romsets over the SAME v2.94 ROM** (one Machine → Scorpion radio; UI
+  labels "ZS-256 Turbo (Yellow)" / "ZS-256 Turbo+ (Green)" / "ZS-256 Turbo+ &
+  GMX" / "ZS-1024 Turbo+", with `Option::slabel` short forms; the Byte-over-48K
+  pattern — `Config::romSetScorp` drives the timing branch): `R_SCORP` "Scorp" =
+  **Yellow PCB**, 312 lines = 69888 T (default), `R_SCORP_GR` "ScorpGr" =
+  **Green PCB**, **316 lines = 70784 T** (= MAME scorpiontb's +4 lines) with its
+  own exact audio set (`ESP_AUDIO_*_SCORP_GR`: 632 samples = 70784/112, 31250 Hz
+  at 49.4462 fps). `R_SCORP_1024` "Scorp1024" = **ZS-1024** (hw-confirmed
+  2026-08-31 with the UMT memory test): Green/Turbo+ timing, no even-M1, and
+  1FFD D7,D6 as two more 0xC000 page bits above D4 — 64 pages = 1 MB
+  (`g_scorp_1024` in `scorpionC000Page`: page = D7D6<<4 | D4<<3 | 7FFD 0-2; MAME
+  scorpion_update_memory `(1ffd&0xc0)>>2` and ZXMAK2 MemoryScorpionProfRom1024
+  `sega |= (CMR1&0xC0)>>5` agree; MEM_PG_CNT=64 default already covers it, no
+  reboot boundary). The 256K boards leave D6/D7 unwired — deliberately NOT
+  composed there. In UiStage's `kPrefScorp`, 1024 sits BEFORE the conditional
+  GMX entry so opt_pref_scorp's indices match on GMX-less builds.
+  Paper line 64 / geometry / ports identical, so Video.cpp needs NO green branch —
+  only `statesInFrame`, `ESPectrum::target` (20224 µs) and the audio cascades
+  differ. **Even-M1 is implemented for Yellow only** (`g_scorp_even_m1`, set in
+  CPU::reset, one predicted-not-taken test in `Z80Ops::fetchOpcode`): an M1 cycle
+  fetching from 0x4000+ that would start on an odd T-state gets one wait T
+  (`VIDEO::Draw(1,false)` so the renderer accounts it). ZXMAK2 busRDM1 / Unreal
+  `evenM1_C0=0xC0` agree on the 0x4000+ gate (MAME aligns ROM fetches too — the
+  minority reading, not followed); MAME's scorpiontb drops even-M1 entirely,
+  which is why Green has none.
+- **Timing = the 48K numbers, uncontended**: 224 T/line × 312 = 69888 T/frame, paper
+  14336 T after INT (`TS_SCREEN_48` reused in the Video Reset branch), INT_END 36.
+  Takes the **48K audio branch** (624 samples — same rule as Profi), the 48K-family
+  border geometry (step=4 pair-write), the 48K/Profi 50 Hz video-mode planes. No
+  contention anywhere (`ramContended` false, all `Draw(3, …)` I/O-contention sites
+  and the border-change `Draw(0,true)` exclude it), no float bus (input twin
+  excluded; unmapped IN = 0xFF), no snow.
+- **#1FFD** (write-only, own handler BEFORE the loose #7FFD block in Ports::output,
+  decode `(addr & 0xC002)==0 && (addr & 0x20)` per MAME's PAL; NEVER gated by
+  pagingLock): D0 = RAM0 at 0x0000 (drives the existing `page0ram`), D1 = service
+  ROM override, D4 = +8 on the 0xC000 page (`page = ((1FFD&0x10)>>1)|(7FFD&7)`,
+  also composed inside the #7FFD handler). The #7FFD gate got
+  `(!isScorpion || (addr & 0x4000))` — A14 routes the two families.
+- **ROM select is ONE function**, `Ports::scorpionRomUpdate()`:
+  `romInUse = 1FFD.D1 ? 2 : ((trdos<<1) | romLatch)` — MAME's hardware quirk
+  included (DOS with 128 ROM selected shows the SERVICE page, not TR-DOS).
+  Callers: #1FFD handler, #7FFD rom-select arm, .z80 loader; check_trdos
+  entry/exit and doNMIDOS use their own dosBank=3 / D1-aware restores.
+- **TR-DOS = the machine's own bank 3** (like Profi's bank 1): check_trdos entry
+  `romInUse==1 && !newSRAM && !page0ram` (RAM0 makes 0x3Dxx ordinary RAM — no
+  trap), dosBank 3; exit at PC≥0x4000 → `D1 ? 2 : romLatch`. rom[4] + the TR-DOS
+  bios overlays are unused on Scorpion. betadisk forced on (CPU::reset backstop +
+  MachineSwitch), MB-02 mutually excluded.
+- **Snapshots**: .z80 v3 `mch==10` → A_SCORP; 1FFD restored from header[86] (the +3
+  field, ahb_len==55 only); block ids 3..18 → RAM 0..15. SNA: 128K-size files keep
+  a running Scorpion arch; tr_dos flag maps bank 3; **save clamps to the
+  7FFD-visible bank** (`curBank = bankLatch & 7`) — SNA has no 1FFD field, and the
+  raw bankLatch 8-15 corrupted the port byte (bit3=videoLatch) and derailed the
+  page-skip loop into a malformed size. Tape loader128 reuses `loadpentagon` with
+  `skip_rom_pages` (Profi pattern).
+- **UI**: Machine → "Scorpion" (between the Pentagons and Byte; gated
+  `p_extRam` like P512 — pages 8-15 need backing), pref-arch/pref-rom rows
+  (`SET_PREF_ROM_SCORP` appended LAST in the UiStage X-macro per its APPEND ONLY
+  rule), `MENU_RESETTO_SCORP` = Service monitor (a bare `Z80::triggerNMI()`, NO
+  reset — see the magic-button section below; the original cold reset(2)+D1 path
+  started the monitor's disk-boot code at PC=0 and hung in the FDC wait) /
+  TR-DOS / 128K / 48K (romLatch=1 + pagingLock). NVS keys
+  `romSetScorp`/`pref_romSetScorp`, on-disk arch spelling "Scorpion", romset
+  "Scorp".
+- Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle, SMUC.
+
+### Scorpion SYSEN ports + magic NMI + WD1793 motor model (hw-confirmed 2026-08-30)
+
+Three fixes from one hw session ("128 TR-DOS hangs", "NMI enters the monitor
+only sometimes"), all confirmed working by the user on hardware. The debugging
+itself ran off `/tmp/picospec_dump.log` (tools/memdump.gdb) + full disassembly
+of the v2.94 ROM pair — worth repeating on any Scorpion hang: the monitor's
+code paths are NOT TR-DOS-like and exercise WD1793 behaviour nothing else does.
+
+- **FDC ports are open under SYSEN (1FFD D1), not only DOSEN** — ZXMAK2
+  FddController: "Ports active when DOSEN=1 or SYSEN=1". `scorp_sysen` joins
+  `ESPectrum::trdos` in the Beta-128 IN gate, the OUT gate, the Kempston-on-#1F
+  exclusion and the #FF SYS-register case (Ports.cpp). Without it the service
+  monitor polled #1F forever: DOSEN drops at PC>=0x4000 while SYSEN stays, the
+  FDC branch declined and Kempston answered 0x00.
+- **The magic button (any NMI on Scorpion) asserts 1FFD D1 at the ACK point**
+  (`Z80::doNMI`, MAME scorpion nmi_check_callback) so 0x0066 always executes
+  from the service monitor — a bare NMI used to land in whatever ROM happened
+  to be paged ("works only sometimes"). Done in doNMI, not the hotkey, so not a
+  single opcode is fetched from the swapped page before the vector. The monitor
+  clears D1 itself on exit. The two NMI-DOS romInUse writes in Z80_JLS.cpp also
+  gained `gmxTapRecheck()` (they bypassed scorpionRomUpdate).
+- **WD1793 motor/READY model** (`motor_frames` in wd1793.h, refreshed to
+  `WD_MOTOR_FRAMES`=150 on every accepted command, per-frame decrement beside
+  `fdd_active_decay` in LEDIndicators.cpp, zeroed by rvmWD1793Reset): an IDLE
+  status read with the motor stopped returns NOT READY even with a disk in.
+  **This is the "128 menu → TR-DOS" deadlock fix**, and the mechanism is worth
+  remembering: the 128-menu TR-DOS row writes #1FFD=0x12 (D1+D4) via a stub at
+  bank0 0x0024, the monitor's cmd09 calls bank3 through the self-modifying RAM
+  thunk at 0xE358 (OUT 7FFD,10 / OUT 1FFD,10 / JP 0x3D30 — bank3 has RET at
+  0x3D30, so the 0x3Dxx automap trap + stacked address = a cross-bank CALL),
+  bank3 does RESTORE + READ ADDRESS (0xC4) and the monitor then parks in
+  `IN A,(#1F); AND #E0; JR Z` (bank2 0x0237) waiting for NOT READY | WP | HLD —
+  bits an idle, mounted, writable disk NEVER shows without motor spin-down.
+  ZXMAK2 carries the identical model with the comment "KLUDGE: motor emulation
+  to fix SCORPION 128 TRDOS dead lock" (Wd1793.cs). Deliberately gated on
+  `Z80Ops::isScorpion` in rvmWD1793Read so the hw-proven Pentagon/Profi status
+  expectations (e.g. Profi's no-disk 0x90 special case) stay byte-identical.
+  Expected UX: entering TR-DOS with a disk mounted pauses up to ~3 s (15 disk
+  revolutions — same on ZXMAK2 and real hardware) while the motor times out.
+
+### Scorpion GMX (R_SCORP_GMX, 2026-08-25; boots on hw since 2026-08-31 — tap/D2 fixes below; games untested)
+
+Third Scorpion romset ("ScorpGMX", UI "GMX"), modelled from MAME scorpiongmx_state.
+Green timing (70784 T), NO even-M1. **Needs QSPI(butter) PSRAM, gated at RUNTIME,
+not per board**: QSPI PSRAM is a property of the plugged-in Pico 2 module, not of
+the carrier (a Murmulator 1 takes a CS1-PSRAM module fine — its butter probe is
+GPIO19), so `GMX_IN_FLASH=1` on EVERY board (=0 stays an escape hatch that drops
+the ROM, the menu rows and the GM.DLS partition shrink together). A
+disabled/absent butter chip: the menu retargets a staged GMX pick to Yellow in
+`resolveConstraints` ("GMX needs QSPI PSRAM"); a persisted pick falls back in
+requestMachine with a bootNotice (visible at boot only — that is why the menu
+gate exists).
+
+- **ROM is EMBEDDED in flash, deduplicated + overlaid** (`#if GMX_IN_FLASH`,
+  all boards): the 512 KB GMX boot ROM
+  (`src/gmx13500.bin` = MAME gmx13500.rom, CRC 47c9df88) costs **~345 KB of
+  flash, not 512** — `tools/rom_pack.py gmx` (`pack_gmx`) splits it into 32
+  16K banks, folds the 6 exact duplicates (planes 2/3, the flashtool planes,
+  are near-mirrors), and stores 5 banks as RomOverlay patches over ROMs already
+  in flash: p1b0 ≡ Pentagon ROM0 exactly (reuses `gb_overlay_pentagon_rom0`
+  verbatim), p1b1/p4b1 over `sinclair_128k_1` (19/182 B), p4b0 over
+  `sinclair_128k_0` (443 B), p1b2(≡p1b3) over `trdos_505d` (817 B); p4b3 stays
+  raw (3856 diff bytes > the 1 KB threshold — not worth a wide run list on the
+  TR-DOS fetch path). The packer reconstructs all 512 KB and compares at pack
+  time. Emits `scorpion_gmx_rom.c` (raw banks + new overlays, plain C) and
+  `scorpion_gmx_banks.h` (the `gb_rom_scorpion_gmx_banks[32]` {data, overlay}
+  table — a C++ header because the Sinclair bases are header-defined
+  internal-linkage arrays a .c cannot reference). Binding: requestMachine
+  assigns rom[0..31] = .data, `romInUse = (plane << 2) | bank`. **Overlay
+  registration is DYNAMIC** — several banks patch the SAME base pointer, so a
+  static registerOverlay cannot express the table: `gmxTapUpdate` (Ports.cpp)
+  calls `gmxRegisterLiveOverlay(romInUse)` on every ROM bank change (all sites
+  already funnel through it / gmxTapRecheck; the two NMI-DOS romInUse writes in
+  Z80_JLS.cpp gained rechecks). Only the live page-0 pointer is ever consulted,
+  so stale entries for unpaged bases are harmless. **`gmxRegisterLiveOverlay`
+  lives in Config.cpp, and ONLY Config.cpp may reference the bank table**: the
+  Sinclair halves are internal-linkage, so a second referencing TU embeds 32 KB
+  of private copies whose ADDRESSES the pointer-keyed registry never matches —
+  Ports.cpp touching the table directly both cost 32 KB and silently disabled
+  the overlays (caught by nm before it shipped). Also fixed here: the
+  unconditional rom[4] TR-DOS tail in requestMachine is skipped on GMX — it was
+  clobbering plane 1 bank 0 (romInUse 4) and would fight the GMX 505d overlay.
+  To make room, **GMX builds shrink the GM.DLS flash partition 2.375 MB →
+  1.6875 MB** (`rp2350-memmap.ld`, `--defsym=__gmx_rom_in_flash=1` from
+  CMakeLists): the stock converted gm.dls bank (~1.59 MB) still fits with
+  ~100 KB margin, MidiSynth reads the bounds from the linker symbols so nothing
+  else changes, and a bank provisioned at the OLD address fails the header
+  check and re-provisions from SD. Firmware headroom on GMX builds ≈ 413 KB
+  (limit 2.3125 MB, firmware ~1.91 MB). An earlier SD-loaded-into-butter
+  version of this ROM was replaced — it worked but cost a boot-ordering dance
+  (requestMachine runs before Buffer::initPools). `Buffer::butterPoolReady()`
+  (kept) is the arena-readiness query from that round.
+- **2 MB RAM**: page = `(DFFDgmx&7)<<4 | (1FFD.D4)>>1 | (7FFD&7)` (`scorpionC000Page`,
+  one helper for all three writer ports) + #78FD pages CPU bank 2 (0x8000!) as
+  `value ^ 2`. Needs MEM_PG_CNT=128 — raised in setup for a persisted GMX pick and
+  guarded by a Profi-style reboot boundary in requestMachine (entering GMX on a
+  64-page session reboots; leaving needs nothing).
+- **Ports** (cold flash dispatch `Ports::gmxPortWrite/gmxPortRead` — Ports::output/
+  input are RAM code, the register file is not hot): #00 mirror ff00 (D5 BLKEXT
+  register-file off, D4 fixrom, D3 arms magic_shift 0x88|(D0-2) + CPU-only
+  Z80::reset when !fixrom), #7AFD/#7CFD scroll, #7EFD (D7 turbo — EFF7-D4 policy,
+  only while multUser>0; D4-6 plane; D3 gfx_ext; rest ignored), #DFFD (own latch
+  `portDFFDgmx`, NOT Profi's portDFFD). Read-backs mix BRD bits from port254.
+  1FFD D2 = hard-wired DOS page + Beta on (scorpionRomUpdate short-circuit +
+  check_trdos exit hold, the Karabas-ONROM shape).
+- **ProfROM plane switch = #7EFD D4-6 ONLY; the legacy 0x0100-0x010F read tap
+  is DISABLED on GMX (hw-traced 2026-08-31, this is what made GMX boot)**. The
+  v2.94 service monitor (plane 4 bank 2) checksums its whole 16K with 1FFD D1
+  set — its CPI loop at 0x31B8 reads straight through 0x0100-0x010F, and the
+  tap flipped the plane to 0 mid-execution (GMX_TRACE "[GMX romU] 18->2 ...
+  plane=0 pc=31B9"), landing the CPU in plane 0's DATA bank → the striped
+  9B-pattern crash. The GMX firmware switches planes exclusively via #7EFD
+  (every deliberate change in the trace is a 7EFD write from RAM thunks at
+  E3FD/E429); the tap is a ProfROM-add-on feature (ZXMAK2
+  MemoryScorpionProfRom256 — ZXMAK2 has NO GMX; MAME's scorpiongmx merely
+  inherits it from scorpiontb). `gmxTapUpdate` now pins `g_gmx_tap = false`;
+  `gmxProfRomTap`/`kProfPlaneMap` + the peek8/fetchOpcode hooks are kept for a
+  future Yellow/Green+ProfROM romset — if resurrected, arm on M1 ONLY (the
+  data-read hook is what fired on the checksum).
+- **1FFD D2 FALLING edge clears trdos** (same hw session): on real hardware
+  DOSEN drops on the next >=0x4000 read (MAME beta_disable_r fires on ANY
+  read), while our DOS exit runs only at control-flow opcodes checking the NEW
+  PC — so after the loader's D2 pulse (calling the plane's TR-DOS bank), a jump
+  straight into ROM closed the window with trdos latched and
+  (dos<<1)|rom14 decoded the WRONG bank (trace: "[GMX romU] 3->2 1FFD=00
+  dos=1"). The #1FFD handler clears trdos at the edge when PC>=0x4000 (every
+  D2 writer in the fw runs from RAM).
+- **GMX_TRACE** (CMake, default OFF): capped 600-line trace of port #00
+  (magic/reset), 7EFD (plane), 1FFD writes, every romInUse transition and the
+  0x3Dxx trap entry/exit — this is what cracked both bugs above; reach for it
+  on any GMX misbehavior. Also known from the same reverse-engineering round:
+  the GMX loader ROM (p0b0) is mostly LZ-COMPRESSED (bit-stream unpacker at
+  ROM 0x0178, streams at 0x01E1/0x101F → RAM 0x5C01; a Python reimplementation
+  is trivial — see the 2026-08-31 session), its shadow port copies live at
+  0x9447 (7FFD) / 0x9448 (1FFD) in the 0x8000 window, and the 0x3Dxx DOS trap
+  is a deliberate cross-bank CALL mechanism of this firmware (bank3 keeps RET /
+  thunk code at 0x3D0x-0x3D30), which our PC-based trap models correctly.
+- **640x200x16 (gfx_ext)** reuses the WHOLE DS80 pair-slot machinery — same
+  `profi_pair_lookup`, same `profi_ds80_driver_set` driver tables, same
+  `Graphics8BitPalette::ds80_active` OSD remap; the modes can never coexist
+  (different machines). 640 px = 320 fb bytes = the full 640x480 row (pad 20+20
+  in 360-wide modes); 200 lines centred via lin_end 20/44 (offBmp/offAtt grown to
+  [240] — MainScreen_Blank indexes offBmp[curline] unconditionally and GMX curline
+  reaches 199). Rendered **whole-line on the first Draw call of each line**
+  (nothing GMX races the beam; avoids the 80-bytes/32-columns mismatch and the
+  `coldraw_cnt>=32`/`MiddleBorder +128` literals). Bitmap page 57/59 (7FFD D3),
+  attrs byte-per-8px at same offset in page+64 (121/123 — hence 128 pages);
+  fg=((a>>3)&8)|(a&7), bg=(a>>3)&0xF; per-frame latched pages + scroll rows
+  ((hi<<8|lo)/80 % 200). Mode switch is vblank-deferred (`gmxExtRequest` →
+  EndFrame `gmxApplyPending`, DS80 rule); border machine parked (`Border_Blank`),
+  top/bottom bands frame-granular (`gmxBorderFrame`), side pads per line;
+  `VIDEO::gmxForceOff()` in ESPectrum::reset (before latches clear); VIDEO::Reset
+  re-arms a live mode via pending-on (video-mode switch rebuilds driver tables).
+  Cold halves deliberately NOT IRAM — RAM cost of the whole GMX feature is ~224 B.
+  Timex forced off on GMX (CPU::reset backstop).
+- **The whole-line renderer must take its fb row from `curline`, never from
+  `linedraw_cnt`** (hw-confirmed 2026-08-31; user report "картинка подёргивается
+  и смещается на пару пикселей вниз"). MainScreen's generic
+  block advances `linedraw_cnt` BEFORE the mode branches whenever one Draw call
+  crosses column 32 — which never happens under normal execution (≤7 columns per
+  instruction) but happens on EVERY line of `CPU::FlushOnHalt`'s
+  `while (Draw != Blank) Draw(tStatesPerLine)` flush and of `RedrawPausedFrame`.
+  So the entire flushed region (i.e. everything after the guest's HALT — most of
+  the frame in a GUI that idles on HALT) was written ONE ROW DOWN: source row 0's
+  fb row kept the previous frame, source row 199 spilled into the bottom border
+  band, and because the flush inherits the HALT's phase within the line
+  (`video_rest >= 128` decides it) it shifted on some frames and not others —
+  hence jitter plus a "couple of pixels" (1 fb row = 2 output pixels after line
+  doubling) offset. `frow = line + lin_end` is phase-independent; the DS80 branch
+  beside it always did it this way (`ds80_voff`), which is why Profi never showed
+  this.
+- **The top/bottom bands must also repaint on `brdnextframe`** (hw-confirmed
+  2026-08-31; user report "после входа/выхода в меню остаются top/bottom
+  артефакты"). In GMX the content renderer owns only the 200 middle rows, so the
+  bands are the ONLY thing that can erase full-screen chrome from the bands — and
+  `gmxBorderFrame` tripped on `brdChange`/colour change only, while every menu
+  exit signals a border repaint through `brdnextframe` (processKeyboard after
+  every `do_OSD`, `OSD::cancelNotify`, the nm:: chrome restore,
+  `videoModeConfirm`). Result: the menu's header and footer survived in the bands
+  after every menu session. `brdnextframe` is now part of the trip condition and
+  is cleared only on a frame that actually paints (skipFrame returns first) — the
+  same reason `cancelNotify` raises both flags. Companion fix (not separately
+  exercised on hw) in `RedrawPausedFrame` (menu closed while PAUSED): it used to arm the STANDARD
+  border chain (`TopBorder_Blank`), which in GMX would write raw ZX indices into
+  the pair-slot framebuffer; it now repaints the bands via `gmxBorderFrame`
+  instead. (Its paper walk is `Draw(tStatesPerLine)`, i.e. the same whole-line
+  path as the HALT flush above — it needed the `frow` fix to be correct at all.)
+- **Attribute bit 7 = FLASH** (2026-08-31, NOT hw-tested): fg/bg swap on the flash
+  phase, MAME's `invert_attrs`. bg is attr bits 3-6 and fg bit 3 is attr bit 6, so
+  bit 7 is the only free one. Driven by the renderer's own `flashing` mask (0x80 /
+  0x00, toggled every 16 frames in ESPectrum::loop) rather than MAME's
+  `m_frame_invert_count`, so GMX blinks in step with the standard ULA renderer.
+- **`profi_ds80_active` is the "framebuffer is in packed-pair mode" flag, and GMX
+  SETS IT** (it is defined in vga.c/hdmi.c and raised by `profi_ds80_driver_set`,
+  which `gmxApplyPending` calls) — so every `!profi_ds80_active` guard already
+  reads correctly in GMX, and that is what keeps the F8 stats box, the F9/F10
+  volume box, the FDD lamp and the paused badge on their CLASSIC zxColor path
+  there. That path is the right one: the nm:: UI palette block does not exist in
+  pair mode, its byte would decode as an arbitrary colour PAIR. **Do not swap
+  those tests for an is-Profi test.** Consequences worth knowing:
+  - **Stats/volume need no content carve-out in GMX** (they do in DS80): with only
+    200 content rows, `drawStats`/`drawVolumeBox`'s 144x16 rect at x 168 (320-wide)
+    / 188 (360-wide), y 220 (yres 240) / 268 (288) lands in the BOTTOM BAND. The
+    16:9 `Draw_OSD169` diversion in MainScreen_Blank is dead code project-wide
+    (nothing ever installs `MainScreen_OSD`), so rows 176-191 do render content.
+    `gmxBorderFrame` carves that rect out anyway — ESPectrum::loop redraws the box
+    after EndFrame, so blanking it reads as a blink, and while PAUSED that redraw
+    does not run at all and the box would simply vanish on any band repaint.
+  - **`OSD::notify` works in GMX** (2026-08-31, NOT hw-tested) and is the EASY
+    case: `VIDEO::gmxTopBandRows()` (20 rows at yres 240, 44 at 288) replaces the
+    border machine's 24/48, and because that machine is parked the band is static
+    — no `setNoticeBand` reservation, nothing can erase the banner mid-frame, and
+    EndFrame paints the bands BEFORE `drawNotify`, so even a repaint frame ends
+    with the banner on top. Expiry erases it through cancelNotify's
+    brdChange/brdnextframe. Profi DS80 still falls back to the blocking
+    `osdCenteredMsg` (`lin_end == 0`, no band at all).
+- **BMP capture handles packed-pair modes** (hw-confirmed in GMX 2026-08-31 — a
+  captured `ESP*.bmp` decodes exactly, colours/pair order/`x^2` all correct; DS80
+  not separately re-run) — this closes it for DS80 as well as GMX. A pair-slot byte cannot be written out as an
+  8-bit index, so `CaptureToBmp` expands each fb byte into its two 4-bit indices
+  through `VIDEO::getPairSlotReverse()` (256 B: slot → (left<<4)|right) and emits
+  **640x480 / 720x576** — twice as wide AND rows doubled. The doubling is not
+  cosmetic: a standard-mode capture is half resolution on both axes (320x240 of a
+  640x480 screen) so its aspect is right, while pair mode is full-width and
+  640x240 comes out squashed to half height; the driver line-doubles those rows to
+  the panel too, so the doubled image IS the screen (profi2png doubles by default
+  for the same reason). While here, `bfSize` is now filled in — the static
+  `bmp_header1` carries a stale 5174 for every capture the emulator has ever
+  written. `getBmpPalette` overrides entries 0..15
+  with `profi_palette_live` (crtTransform only — the ZX palette presets never
+  apply to a Profi palette) LAST so it wins. The reverse table keeps the FIRST
+  writer of each slot: a merged pair (`init_profi_pair_lookup`: paper 8 → 0 for
+  inks 0..5, and the HDMI-audio slot diet) shares its slot with the pair the
+  driver actually encoded, and with paper ascending that one comes first — the
+  same rule `tools/profi2png.py` uses, which is the cross-check. The GDB-side
+  screenshot path (`tools/screenshot_profi.gdb` + profi2png) was already
+  geometry-agnostic (WIDTH/HEIGHT are arguments) and needed nothing.
+- Known deliberate gaps: magic-lock register snapshots, Vpp/EWR 28F400 flash
+  writes ignored, GMX state not in snapshots. **The magic-lock spec, in case it is
+  ever needed** (MAME, derived 2026-08-31): on an NMI with magic enabled (7EFD D2
+  clear) the card freezes `port_7afd_r() & 0x7F` and `port_7efd_r() & 0x4F` into
+  lock registers and sets `magic_lock`; while it is set, `IN #7AFD` / `IN #7EFD`
+  return those snapshots (with the live BRD / port-00 bits still ORed in), and the
+  lock is **released by a read of port #FF**. That is the trap-and-restore path any
+  NMI-entered debugger needs — a GMX monitor reads it to learn the paging state it
+  interrupted. Not implemented here (there is no magic button in this port).
+
+### The GMX boot chain, decoded (2026-08-31) — read this before any GMX boot bug
+
+The whole hand-off is understood now; `tools/gmx_unlz.py` unpacks the loader so it
+can be disassembled (`tools/z80disasm.py`). Do NOT re-derive it.
+
+- **p0b0 is a two-stage LZ loader.** ROM 0x00FE: `OUT (#7EFD),0x84` (turbo on,
+  plane 0, magic disabled) → `CALL 0x013F` reads the **magic shift register** as
+  eight `IN (#78FD)` bit-0 samples → `RST 0x18` unpacks the stream named by the
+  word at ROM 0x0008 (0x01E1) to **RAM 0x5C01** (9215 bytes, exactly to 0x7FFF)
+  → `CALL 0x5C01` with **A = the magic byte**. The second stream (0x101F, 128 B,
+  unpacked only if stage 1 RETURNS) is the failure indicator: a red-border
+  blinker. The unpacker is a bit-stream LZ77 (bit set = literal); the format is
+  documented in the tool, which self-checks (stage 1 consumes exactly up to
+  stage 2's offset).
+- **`magic & 7` is the BOOT MODE** and it selects which of plane 0's four banks
+  supplies the boot descriptor (`0x5EFA`): mode 0/1 → bank 0 as paged, mode 2 →
+  `1FFD |= 4` → bank 3, mode 4/5 → `1FFD |= 2` → bank 2, mode 6/7 → `7FFD |= 0x10`
+  → bank 1, mode 3 → error. The magic byte is `0x88 | (port #00 D0-2)` latched by
+  a port #00 write with D3 — and it is CONSUMED by the eight reads, so a restart
+  without a new arm reads back mode 0.
+- **The descriptor lives at the END of each bank**: 0x1FEE = D, 0x1FEF = E,
+  0x1FF0-0x1FF9 = a 10-char name, 0x1FFA = checksum, 0x1FE6 = date. `0x5D54`
+  reads D/E, `0x5D32` writes **E & 0xF0 to #7EFD (the plane!)** and `0x5D4C`
+  writes `(D & 0xF0) | (magic & 7)` to port #00; `E == 0xFF` means "unset" and
+  defaults to **`A=0x40`, i.e. plane 4**. Then `JP 0x0000`. In gmx13500.rom the
+  three profiles are p0b1 "DK_test" → plane 2 (erased in this image), p0b2
+  "PentaGON" → plane 1, p0b3 "Work Sch" → **plane 4 = the Scorpion v2.94 set**;
+  p0b0's own bytes are 00/00 (staying in the loader).
+- **So a cold boot is TWO passes**, which the trace confirms line for line:
+  pass 1 arrives with magic 0 → mode 0 → `LD A,2; CALL 0x5EC9` checksums bank 3's
+  descriptor → valid → `OUT (0),0x0A` **resets the CPU only** (magic := 0x8A) →
+  pass 2 runs with mode 2 → bank 3 → E=0xFF → plane 4 → the memory-detect screen,
+  the service monitor and the 128 menu the user sees after F12.
+- Keys are read at 0x5CF9 (`IN (#EFFE)` bit0 = "0", `IN (#FEFE)` bit0 = CAPS) and
+  a held key routes to the loader's own menu at 0x6735 ("GMX Loader" banner);
+  0x6405 is its "activate slot" helper, `A = (plane << 4) | bank`.
+- **`OUT (0),0x0A`'s CPU-only reset is load-bearing** and it is what our port #00
+  handler models (`Z80::reset()` when D3 set and fixrom clear, MAME
+  `global_cfg_w`). Paging survives it — that is how pass 2 finds the loader again.
+
+The trace confirms the chain end to end (hw log 2026-08-31 12:27):
+`[GMX 7EFD] 84 plane=0 pc=0105` → eight `[GMX p78 rd] shift=00` → `[GMX p00] 00
+magic=0 pc=5C17` → the bank-3 descriptor checksum (`1FFD 04` at pc=5F4C, D2-hold)
+→ `[GMX p00] 0A ... magic reset shift=8A` → eight reads of 0x8A → `[GMX p00] 02
+pc=5C17` → `[GMX 7EFD] 40 plane=4 pc=5D37` → `[GMX romU] 0->16` → the v2.94 ROM's
+own `1FFD 12` at pc=001E → bank 2 = the service monitor. **F11 straight from the
+128 menu reproduces this byte for byte and works.**
+
+- **Plane 5 is part of the v2.94 set, not a bogus plane.** The service monitor's
+  RAM thunks at 0xE3FD / 0xE429 / 0xE478 / 0xE4C5 / 0xE4FC / 0xE506 flip between
+  plane 4 and plane 5 continuously (`7EFD C0` ↔ `7EFD D0`, romInUse 16/17/18 ↔
+  20/21/22), which is that firmware's cross-bank CALL mechanism. So a dump showing
+  `romInUse=21` (plane 5 bank 1) is a NORMAL monitor state — do not read it as a
+  bad hand-off, as an earlier analysis of this bug did.
+
+### OPEN: F11 after the game HQ lands in the weeds; F11 from the 128 menu is fine
+
+hw 2026-08-31. Dump: `romInUse=21` (plane 5 bank 1), `romLatch=1`, `1FFD=0x10`
+(bankLatch 8), PC=131A. Every one of those matches the working trace's
+`[GMX romU] 22->21 1FFD=10 dos=0 rom14=1 plane=5 pc=E478` — i.e. the machine DOES
+reach plane 4's service monitor and its plane-4/5 thunk dance, and then goes off
+the rails INSIDE it: PC=131A is bank 21 entered at 0 (eight NOPs → `JP 0x132E` at
+0x0008 → `CALL 0x1310`), which is what an **RST 8 executed with bank 21 paged**
+produces — a cross-bank RST landing in the wrong bank. The 32 KB above 0x788C is
+then filled with a repeating `05 01 44 8C CF E3` (3 words, so a runaway push/copy),
+SP=0x396A (in the ROM window, where writes are dropped).
+
+The loader itself is exonerated: reset() zeroes every GMX latch, the magic shift,
+romInUse and romLatch; the tap is pinned off; overlays are read-time (`romPeek`)
+and re-registered per romInUse change. Prime suspects are therefore the areas the
+monitor's thunks lean on — the 0x3Dxx trap (`[GMX trap+] pc=3D30 romU 21->23` in
+the working trace), the 1FFD D2 falling edge, and D4 page composition — plus what
+a game leaves in RAM: **the monitor skips its own memory test after F11** (user
+observation), so it has a warm/cold discriminator in RAM, and a game's leftovers
+are neither. Still needs the failing trace (HQ → F11) to localise.
+
+**It is HQ-specific**: F11 after a DIFFERENT disk game works (hw 2026-08-31), so
+generic "a game left garbage in RAM" is out — and the post-F11 boot trace is
+IDENTICAL to the working one, line for line, all the way to plane 4 and the
+monitor's first thunks. Both then end inside the monitor's byte-at-a-time thunk
+loop (`1FFD 10 pc=E4FC` / `1FFD 12 pc=E506`, 500+ iterations), because that loop
+burns the whole line budget — **the trace was blind exactly past the point where
+the two runs must differ.** Both sessions also had 640x200 live before the reset,
+so that is not the discriminator either.
+
+Instrumentation shipped for the next capture (the diagnostic being incomplete has
+now cost three rounds on this bug — same lesson as the NeoGS handshake ring):
+- `gmxTrace()` (Ports.cpp) replaces the raw GMXT macro and **collapses repeating
+  cycles**: a ring of the last 32 line HASHES, and anything matching one of them is
+  counted, not logged (`[GMX] ... N repeated lines collapsed` when a new line
+  arrives). Exact-duplicate suppression would NOT have worked — these cycles
+  alternate between several lines — and the window has to be DEEP: a first cut kept
+  4 full lines, collapsed the monitor's 4-line thunk cycle (`1020 repeated lines
+  collapsed`, hw 2026-08-31) and then died in its **8-line** plane-4/5 dance
+  (7EFD C0/D0 + 1FFD 12/10 at pc=E3FD/E448/E429/E4E7). 32 hashes are both deeper
+  and smaller (128 B vs 384 B); a collision costs one suppressed line, and the
+  tally says how many were dropped. No PC or port is hard-coded as noise.
+- `gmxTraceReset()` re-arms the budget on every machine reset (per-SESSION budget +
+  a game = EMPTY post-F11 logs, the same trap as `g_fdcCmdCount`).
+- #1FFD writes that change only D4 are not logged (the loader's RAM sizing toggles
+  it hundreds of times per pass at pc=6A78).
+- `[GMX p78 rd]` shows the magic-shift reads, i.e. the boot mode.
+- `[GMX hb]` — a 1 Hz heartbeat (pc/sp/romU/1FFD/7FFD/plane/gfx/dos/p0ram) from
+  ESPectrum::loop, because a firmware wedged inside one cycle emits no events at
+  all and the trace then says nothing about where it is. It goes through
+  `gmxTraceHb`, NOT `gmxTrace`: it must survive both the event budget and the
+  collapsing ring — the moment it is needed is exactly the moment the budget has
+  just been burned by the cycle it is stuck in (own cap, 900 = 15 min).
+Writer PCs worth knowing on a `[GMX 7EFD]` line: 0x0105 loader header, 0x5C1C pass
+entry, 0x5D37 descriptor hand-off, 0x0523 v2.94 boot, 0xE3FD/0xE429 monitor
+thunks, 0x6414 slot select. `[GMX romU] 18->16 pc=E4FC` / `16->18 pc=E506` is the
+monitor reading the 128 ROM a byte at a time through its D1 thunk — normal.
+
+**The divergence is now located to a single instruction (hw 2026-08-31, both
+resets in one log, diffed):** the monitor's plane-4/5 loop runs identically in
+both (same shape, iteration counts 651/62 vs 633/60 — data-dependent), and then
+
+    works:  [GMX 7EFD] 40 plane=4 gfx=0 turbo=0 pc=0523   ← the loop EXITS
+            [GMX 1FFD] 00 pc=000D → romU 18->16           ← BASIC-128 → the menu
+    broken: [GMX 7EFD] C0 plane=4 pc=E3FD                 ← another lap, forever
+
+So the monitor is scanning something through banks 1/2 of planes 4 and 5, and
+after HQ the terminator never appears. Its exit is `pc=0523` in the v2.94 ROM
+(plane 4, turbo off) — the same routine the working boot uses to hand over to the
+128 ROM. In the working run the handover is followed by the 0x3Dxx TR-DOS traps
+of the 128 ROM (`trap+ pc=3D03 romU 17->19`) and, later, the shell turning on
+640x200 (`[GMX 7EFD] C8 gfx=1 pc=6025`).
+
+Two things came out of that diff:
+- **`Ports::port254` is now cleared by `ESPectrum::reset`** (`Ports::resetBorderLatch()`).
+  The first #78FD read of the F11 boot came back **0x80 in one run and 0x00 in the
+  other** — that bit is BRD1, i.e. the guest's last border value, and on GMX the
+  low three bits of the #FE latch are read back as BRD0/1/2 in bit 7 of the #7AFD
+  / #78FD / #7EFD register images. A cold boot has 0 there; F11 must too. (This
+  particular difference is unlikely to BE the bug — the dirty bit was set in the
+  run that WORKS — but it has to stop being a variable.)
+- **#7AFD and #7EFD reads are traced now** (`[GMX p7A rd]` / `[GMX p7E rd]`, with
+  the live #FE latch): those read-backs are how the firmware learns its own paging
+  state, and the monitor's loop must be polling something — that half of the
+  conversation was invisible.
+
+### FIXED (hw-confirmed 2026-08-31): GMX F11 zeroes all guest RAM
+
+`ESPectrum::reset`, gated on `g_scorp_gmx`: one `mem_desc_t::cleanup()` per page
+(the existing per-page zero — handles POINTER/butter/SPI/swap backings), ~2 MB on
+butter, timed in the `[RESET] GMX cold boot:` line. That is the whole fix: with the
+firmware's warm-boot state gone it takes its cold path — memory test, monitor,
+128 menu — and F11 after HQ works.
+
+**It is deliberately NOT faithful** (a real Scorpion's reset button leaves RAM
+alone) and it is deliberately **GMX-only**:
+- nothing else here has firmware that trusts RAM across a reset, and
+- on other machines a reset that wipes RAM would break software that relies on the
+  opposite — a TR-DOS/Gluk RAM disk, a monitor's saved state — so do NOT widen
+  this to all Scorpion romsets or all machines.
+Side effect worth knowing: F11 now blanks the screen (pages 5/7 go with the rest)
+instead of leaving the last frame up until the first repaint.
+
+**Open oddity, if this ever needs revisiting:** a full firmware reboot (F12) also
+leaves guest RAM alone — butter PSRAM survives a watchdog reboot and `assign_ram`
+does not clear pages — yet F12 recovers fine. So the discriminator the firmware
+actually keys on must live somewhere F12 happens to reinitialise (the SRAM-backed
+`.ram_128k` pages 0-7, or a heap page that comes back different), not in butter.
+Nobody has needed to find out which byte it is.
+
+### …and the mechanism, from the heartbeat (hw 2026-08-31)
+
+`[GMX hb]` settled it in one capture. Both runs reach the monitor's plane-4/5
+dance; then
+
+    works:  hb pc=0038 sp=5BF9 romU=16 ... — the interrupt lands with the 128 ROM
+                                             paged, its handler runs, life goes on
+    broken: hb pc=0038 sp=396E romU=21 ... — the interrupt lands with PLANE 5
+             hb pc=0003 sp=396C romU=21     BANK 1 paged, and that bank has
+             hb pc=1313 sp=396A romU=21     `00 00 00` at 0x0038: no handler
+             hb pc=132F sp=396C romU=21
+
+**Plane 4 bank 2 (the monitor) has `JP 0x0092` at 0x0038; plane 5 bank 1 has
+NOPs.** So an IM1 interrupt taken while the dance has plane 5 paged is fatal by
+construction: PC → 0x0038 → NOPs → the CPU wanders the bank, hits its RST
+vectors (`JP 0x132E` at 0x0008 → the table routine at 0x1310), IFF1 stays 0
+because no handler ever runs EI/RETI, and the stack walks DOWN two bytes per RST
+through 32 KB of RAM. That is the earlier dump exactly: `PC=0002 SP=396C
+romInUse=21 IFF1=0`, RAM above 0x788C full of pushed return addresses, the
+monitor's own thunks and shadows (0xDFEF, 0xE035, 0xE3xx-0xE5xx = page 8) shredded
+— which is why a post-mortem dump only ever showed the consequence.
+
+The dance is data-dependent in length (651 vs 633 collapsed lines) and runs with
+interrupts ENABLED, so the whole thing is a race against the 50 Hz interrupt that
+the working run wins by a whisker. **Prime emulator-side suspect: we run the GMX
+firmware at HALF the clock it asks for.** `Ports::gmxPortWrite`'s #7EFD handler
+gates D7 on `ESPectrum::multUser` (the EFF7-D4 policy copied from
+Pentagon-1024SL), so with the user's turbo off the firmware's `OUT (#7EFD),0x84`
+— the very first instruction of the loader — is DROPPED and everything executes
+at 3.5 MHz, halving how much of its code fits between two interrupts. Unlike
+Pentagon's EFF7 D4 (which the Gluk RTC rewrites as a side effect and must not
+turbo a 3.5 session), GMX's D7 is the machine's own firmware-managed clock: the
+boot ROM turns it on immediately and the monitor applies its own flag (0xE035
+bit 6) through the routine at ROM 0x050B. `[GMX hb]` now carries
+`iff=`/`mult=live/user`/`7EFD=` so this is never a question again.
+
 ## Murmuzavr extended RAM — page budget + descriptor cost
 
 `MEM_PG_CNT` (Machine → Murmuzavr, 64/256/512/1024/2048 pages = Off/4/8/16/32 MB,

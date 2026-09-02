@@ -44,12 +44,19 @@ visit https://zxespectrum.speccy.org/contacto
 #define TSTATES_PER_FRAME_PENTAGON 71680
 #define TSTATES_PER_FRAME_PROFI 69888
 #define TSTATES_PER_FRAME_BYTE  69888
+// Scorpion ZS-256: 224 T/line, uncontended, paper starting 14336 T after INT.
+// Two PCB revisions differ ONLY in total frame length (ZXMAK2 UlaScorpion*/MAME):
+// Yellow = 312 lines (the 48K frame), Green = 316 lines (MAME scorpiontb's +4).
+#define TSTATES_PER_FRAME_SCORPION 69888
+#define TSTATES_PER_FRAME_SCORPION_GR 70784
 
 #define MICROS_PER_FRAME_48 19968
 #define MICROS_PER_FRAME_128 19992
 #define MICROS_PER_FRAME_PENTAGON 20480
 #define MICROS_PER_FRAME_PROFI 19968
 #define MICROS_PER_FRAME_BYTE  19968
+#define MICROS_PER_FRAME_SCORPION 19968
+#define MICROS_PER_FRAME_SCORPION_GR 20224   // 70784 T / 3.5 MHz
 
 #define INT_START48 0
 #define INT_END48 32
@@ -60,10 +67,31 @@ visit https://zxespectrum.speccy.org/contacto
 #define INT_END_PENTAGON 36
 #define INT_START_PROFI 0
 #define INT_END_PROFI 39
+#define INT_START_SCORPION 0
+#define INT_END_SCORPION 36   // libspectrum: 36 T INT pulse
+
 
 
 /// TODO:
 #define IRAM_ATTR
+
+// Scorpion Yellow-PCB even-M1: the board holds /WAIT so every M1 cycle fetching
+// from 0x4000+ starts on an even T-state (ZXMAK2 UlaScorpionYellow busRDM1,
+// Unreal evenM1_C0=0xC0, MAME is_m1_even — the Green/Turbo+ boards dropped it).
+// A plain global tested once per opcode fetch (the g_ngs_zxdma pattern) — set in
+// CPU::reset only, so it can never be stale mid-frame.
+extern bool g_scorp_even_m1;
+// Scorpion GMX romset live (R_SCORP_GMX) — set in CPU::reset, gates the GMX port
+// family, the 2 MB page composition and the ProfROM plane arithmetic.
+extern bool g_scorp_gmx;
+// Scorpion ZS-1024 (R_SCORP_1024): 1FFD D6,D7 extend the 0xC000 page to 64 pages
+// (1 MB) — page = D7D6<<4 | D4<<3 | 7FFD 0-2 (MAME scorpion_update_memory, ZXMAK2
+// MemoryScorpionProfRom1024 GetRamPage). Green/Turbo+ timing, no even-M1.
+extern bool g_scorp_1024;
+// GMX ProfROM 0x0100-0x010F read tap armed (service bank mapped at 0x0000, ROM
+// visible). Recomputed by Ports::scorpionRomUpdate/check_trdos — one almost-
+// always-false global test on the peek8/fetchOpcode hot paths.
+extern bool g_gmx_tap;
 
 class CPU
 {

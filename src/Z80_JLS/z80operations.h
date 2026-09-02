@@ -44,6 +44,7 @@ public:
     static bool is512;
     static bool is1024;
     static bool isProfi;
+    static bool isScorpion;
 };
 
 #endif // Z80OPERATIONS_H

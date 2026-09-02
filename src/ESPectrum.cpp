@@ -668,6 +668,15 @@ void ESPectrum::setup() {
   mem_desc_t::reset();
   Ports::portAFF7 = 0;
   Ports::portDFFD = 0;
+  Ports::port1FFD = 0;
+  Ports::gmxPort00 = 0;
+  Ports::gmxPort78FD = 0;
+  Ports::gmxPort7EFD = 0;
+  Ports::gmxScrollLo = 0;
+  Ports::gmxScrollHi = 0;
+  Ports::gmxPlane = 0;
+  Ports::gmxMagicShift = 0;
+  Ports::portDFFDgmx = 0;
   Ports::serialMouseReset();
   //=======================================================================================
   // LOAD CONFIG
@@ -751,6 +760,11 @@ void ESPectrum::setup() {
           Config::romSet = Config::pref_romSetProfi;
         else
           Config::romSet = Config::romSetProfi;
+      } else if (Config::arch == A_SCORP) {
+        if (Config::pref_romSetScorp != R_LAST)
+          Config::romSet = Config::pref_romSetScorp;
+        else
+          Config::romSet = Config::romSetScorp;
       } else {
         if (Config::pref_romSetPent != R_LAST)
           Config::romSet = Config::pref_romSetPent;
@@ -779,6 +793,16 @@ void ESPectrum::setup() {
                   (unsigned)MEM_PG_CNT, archToStr(Config::arch));
     MEM_PG_CNT = 64;
   }
+#if GMX_IN_FLASH
+  // Scorpion GMX is a 2 MB machine (7-bit page: DFFD<<4 | 1FFD.D4<<3 | 7FFD 0-2)
+  // AND its 640x200 mode reads attributes from bitmap-page+64 (pages 121/123) —
+  // both need the full 128-page strip regardless of the Murmuzavr pick. GMX
+  // requires live QSPI (butter) PSRAM (requestMachine falls the pick back to
+  // Yellow otherwise), so don't grow the strip without it.
+  if (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP_GMX && MEM_PG_CNT < 128 &&
+      butter_psram_size() > 0)
+    MEM_PG_CNT = 128;
+#endif
 
   //=======================================================================================
   // INIT PS/2 KEYBOARD
@@ -926,7 +950,8 @@ void ESPectrum::setup() {
 
   MemESP::ramContended[0] = false;
   MemESP::ramContended[1] = Config::arch == A_P1024 || Config::arch == A_P512 ||
-                                    Config::arch == A_PENT || Config::arch == A_PROFI
+                                    Config::arch == A_PENT || Config::arch == A_PROFI ||
+                                    Config::arch == A_SCORP
                                 ? false
                                 : true;
   MemESP::ramContended[2] = false;
@@ -1033,7 +1058,11 @@ void ESPectrum::setup() {
     if (ZiFi::enabled)
         ZiFi::init();
 
-  if (Config::arch == A_48K || Config::arch == A_PROFI) {
+  // Scorpion Yellow: 69888 T/frame — numerically the 48K frame, so the 48K audio
+  // branch is exact (the Pentagon branch would over-feed the DAC, see the reset()
+  // twin). Scorpion Green (316-line frame) gets its own exact set below.
+  if (Config::arch == A_48K || Config::arch == A_PROFI ||
+      (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP)) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1041,6 +1070,15 @@ void ESPectrum::setup() {
 
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
+  } else if (Config::arch == A_SCORP) {
+    // Green PCB: 70784 T / 632 samples = exactly 31250 Hz at 49.4462 fps.
+    samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
+    audioAYDivider = ESP_AUDIO_AY_DIV_SCORP_GR;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_SCORP_GR;
+
+    Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
   } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
@@ -1242,6 +1280,14 @@ void ESPectrum::reset(uint8_t romInUse) {
   else if (Config::joystick == JOY_FULLER)
     Ports::port[0x7f] = 0xff; // Fuller
   Ports::portAFF7 = 0;
+  // The #FE latch: a machine reset must leave the machine as a cold boot does, and
+  // at cold boot this is 0. It is not just the border colour — on Scorpion GMX its
+  // low three bits are read BACK as BRD0/1/2 in bit 7 of the #7AFD / #78FD / #7EFD
+  // register images, so a game's last border value leaked into the firmware's view
+  // of its own paging state: the first #78FD read of the F11 boot came back 0x80
+  // after one session and 0x00 after another (hw log 2026-08-31). Whatever else
+  // differs between an F11 and a cold boot, it must not be this.
+  Ports::resetBorderLatch();
   // If DS80 packed-pair HDMI mode was active before reset, disable it before
   // clearing DFFD — otherwise HDMI ISR keeps expanding bytes as pairs and the
   // normal-mode framebuffer renders as vertical scanline garbage.
@@ -1260,7 +1306,42 @@ void ESPectrum::reset(uint8_t romInUse) {
     }
     Debug::log("[RESET] DS80 off + FB cleared");
   }
+  // GMX 640x200: same rule — tear down BEFORE the latches are cleared, or the
+  // deferred EndFrame path never sees the off edge (see VIDEO::gmxForceOff).
+  VIDEO::gmxForceOff();
   Ports::portDFFD = 0;
+  Ports::port1FFD = 0;   // Scorpion: reset clears the 1FFD latch (RAM0/service off)
+  // GMX: warm reset clears the whole register file (MAME machine_reset), the
+  // ProfROM plane included; the 640x200 mode is torn down below with DS80's.
+  Ports::gmxPort00 = 0;
+  Ports::gmxPort78FD = 0;
+  Ports::gmxPort7EFD = 0;
+  Ports::gmxScrollLo = 0;
+  Ports::gmxScrollHi = 0;
+  Ports::gmxPlane = 0;
+  Ports::gmxMagicShift = 0;
+  Ports::portDFFDgmx = 0;
+  g_gmx_tap = false;
+  // ── EXPERIMENT (2026-08-31): GMX F11 = a COLD boot ──────────────────────────
+  // The GMX firmware keeps warm-boot state in guest RAM — its monitor skips its
+  // own memory test after an F11 and trusts what it finds there: the RAM thunks
+  // at 0xE3xx-0xE5xx, the shadows 0xDFEF (7EFD) / 0xE035, tables like 0xEB14, all
+  // in the 0xC000 window, i.e. pages >= 8. A program that uses extended pages
+  // destroys them, and the monitor then comes up on that wreckage (hw: after the
+  // game HQ it either walks into a bank with no 0x0038 handler and eats 32 KB of
+  // RAM with its stack, or lands in its own debugger reporting "Breakpoint #0").
+  // A real Scorpion's reset button does not clear RAM either, so this is NOT
+  // faithful — it is here because "F11 gives me the menu back" is what the user
+  // wants. Zeroing every page is exactly what makes the firmware take its cold
+  // path. cleanup() is the existing per-page zero (handles POINTER/butter/SPI/
+  // swap backings), and GMX requires butter PSRAM, so these are all direct
+  // pointers: ~2 MB of memset. Flip the condition to disable.
+  if (g_scorp_gmx) {
+    const uint64_t _t0 = esp_timer_get_time();
+    for (int i = 0; i < MEM_PG_CNT; i++) MemESP::ram[i].cleanup();
+    Debug::log("[RESET] GMX cold boot: %d RAM pages cleared in %u us",
+               (int)MEM_PG_CNT, (unsigned)(esp_timer_get_time() - _t0));
+  }
   Ports::serialMouseReset();
   // Profi SYSEN: boot into SYS ROM (bank0) with trdos=true to protect page0
   ESPectrum::trdos = (Config::arch == A_PROFI && romInUse == 0);
@@ -1276,6 +1357,12 @@ void ESPectrum::reset(uint8_t romInUse) {
   // here so every [RESET] gets a fresh budget for its own disk activity.
   extern uint32_t g_fdcCmdCount;
   g_fdcCmdCount = 0;
+#endif
+#if GMX_TRACE
+  // Same reasoning as g_fdcCmdCount above: the 600-line budget is per SESSION, so
+  // after a game has been loaded and run there is nothing left for the boot that
+  // F11 starts — which is exactly the boot worth tracing. Re-arm it here.
+  gmxTraceReset();
 #endif
   // Memory
   MemESP::page0ram = 0;
@@ -1304,7 +1391,8 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   MemESP::ramContended[0] = false;
   MemESP::ramContended[1] = Config::arch == A_P1024 || Config::arch == A_P512 ||
-                                    Config::arch == A_PENT || Config::arch == A_PROFI
+                                    Config::arch == A_PENT || Config::arch == A_PROFI ||
+                                    Config::arch == A_SCORP
                                 ? false
                                 : true;
   MemESP::ramContended[2] = false;
@@ -1386,13 +1474,23 @@ void ESPectrum::reset(uint8_t romInUse) {
   // 48K branch here, exactly like setup() does. Otherwise it falls through to the
   // Pentagon branch (640 samples/frame) and over-feeds the 31250 Hz DAC by ~2.6%
   // (640*50.08fps = 32051 > 31250), causing ring overrun → periodic clicks/buzz.
-  if (Config::arch == A_48K || Config::arch == A_PROFI) {
+  // Scorpion Yellow is the same 69888 T frame — same rule; Green (70784 T) gets
+  // its own exact 632-sample set below.
+  if (Config::arch == A_48K || Config::arch == A_PROFI ||
+      (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP)) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_48;
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
+  } else if (Config::arch == A_SCORP) {
+    samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
+    audioAYDivider = ESP_AUDIO_AY_DIV_SCORP_GR;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_SCORP_GR;
+    Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
   } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
@@ -3187,6 +3285,39 @@ void ESPectrum::loop() {
       g_kbd_us = (uint32_t)(time_us_64() - _kbd_t0);
     }
     GS::pollPerf();
+#if GMX_TRACE
+    // ~1 Hz GMX heartbeat: WHERE the machine is, once a second. The paging trace
+    // only fires on events, so a firmware that has wedged inside one repeating
+    // cycle (or wandered into a bank it should not be in) produces no new lines at
+    // all — which is exactly the state an F11-after-a-game hang leaves. Goes
+    // through gmxTraceHb, not gmxTrace: it must survive both the event budget and
+    // the collapsing ring. Counted in frames HERE, on the unconditional per-frame
+    // path: the 1-second block further down only runs while the F8 stats overlay
+    // is on, which is why the first version of this never logged a line at all.
+    if (g_scorp_gmx) {
+      static uint16_t gmx_hb_frames = 0;
+      if (++gmx_hb_frames >= 50) {
+        gmx_hb_frames = 0;
+        gmxTraceHb("[GMX hb] pc=%04X sp=%04X romU=%u 1FFD=%02X 7FFD=%02X plane=%u"
+                   " gfx=%u dos=%u p0ram=%u iff=%u mult=%u/%u 7EFD=%02X",
+                   Z80::getRegPC(), Z80::getRegSP(), (unsigned)MemESP::romInUse,
+                   Ports::port1FFD,
+                   (unsigned)((MemESP::romLatch << 4) | (MemESP::videoLatch << 3)
+                              | (MemESP::bankLatch & 7)),
+                   (unsigned)Ports::gmxPlane,
+                   (unsigned)((Ports::gmxPort7EFD >> 3) & 1),
+                   (unsigned)ESPectrum::trdos, (unsigned)MemESP::page0ram,
+                   (unsigned)(Z80::isIFF1() ? 1 : 0),
+                   // The firmware's clock request (7EFD D7) vs what we actually
+                   // run: with the user's turbo off, multUser is 0 and the request
+                   // is dropped, so the GMX firmware executes at half the speed it
+                   // was written for — which changes how much of its code fits
+                   // between two 50 Hz interrupts.
+                   (unsigned)ESPectrum::multiplicator, (unsigned)ESPectrum::multUser,
+                   Ports::gmxPort7EFD);
+      }
+    }
+#endif
     // NeoGS SD + MP3: execute a sector request posted by the GS-Z80 on core1
     // (FatFs/SD SPI are core0-only) and decode buffered MP3 frames. Cheap
     // no-ops when idle; also serviced from the frame-pacing waits below.
@@ -3281,8 +3412,10 @@ void ESPectrum::loop() {
     if (!(VIDEO::flash_ctr++ & 0x0f) && !VIDEO::ulaplus_enabled)
       VIDEO::flashing ^= 0x80;
 
-    // Draw fdd led indicator in top-right corner
-    bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
+    // Draw fdd led indicator in top-right corner. Scorpion carries the Beta
+    // interface on board (betadisk forced on), so it counts like Pentagon here.
+    bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ||
+                   (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
         && !DivMMC::enabled
         ;
     // Indicator sits at x=311 — inside the DS80 right border band / normal top border.

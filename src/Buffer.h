@@ -129,6 +129,9 @@ public:
     // detects the tier from the address (lent arena range, butter XIP >=0x11000000).
     static void* palloc(size_t bytes, uint32_t flags = ALLOC_AUTO);
     static void  pfree(void* p);
+    // True once initPools() has carved the butter arena — before that a
+    // PSRAM-tier palloc can only land on the heap (or fail).
+    static bool  butterPoolReady();
 
     // ── Tier-agnostic block load ───────────────────────────────────────────────
     // Source reader: fill `dst` with `n` bytes starting at source byte `off`. Return

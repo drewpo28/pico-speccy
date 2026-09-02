@@ -1530,6 +1530,7 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
         wd->control &= ~(kRVMWD177XINTRQ|kRVMWD177XFINTRQ);
 
         wd->command = value;
+        wd->motor_frames = WD_MOTOR_FRAMES; // motor on / spin-down timer restart
 
 #if FDD_PORT_TRACE
         if (wd->disk[wd->diskS] && wd->disk[wd->diskS]->IsTD0File)
@@ -1765,6 +1766,22 @@ IRAM_ATTR uint8_t rvmWD1793Read(rvmWD1793 *wd,uint8_t a) {
             r|=kRVMWD177XStatusHeadLoaded;
           }
         }
+        // Motor spin-down → drive drops READY (Scorpion only). The ZS-256
+        // service monitor's disk boot — reached from the guest 128 menu's
+        // TR-DOS row and from reset-to-TR-DOS (its TR-DOS variant chains back
+        // into the monitor) — parks in `IN A,(#1F); AND #E0; JR Z` (bank2
+        // 0x0237) after a READ ADDRESS (0xC4): it waits for NOT READY / WP /
+        // HLD, and on real hardware NOT READY rises when the motor stops ~15
+        // revolutions after the last command. Without a motor model the status
+        // of an idle, mounted, writable disk is 0x00 forever — hw dump
+        // 2026-08-30. ZXMAK2 carries the exact same model with the comment
+        // "KLUDGE: motor emulation to fix SCORPION 128 TRDOS dead lock"
+        // (Wd1793.cs process()/S_IDLE). Gated on Scorpion so the hw-proven
+        // Pentagon/Profi status expectations (e.g. the Profi no-disk 0x90
+        // special case in Ports.cpp) stay byte-identical.
+        if (Z80Ops::isScorpion && wd->motor_frames == 0 &&
+            !(r & kRVMWD177XStatusBusy))
+          r |= kRVMWD177XStatusNotReady;
       } else {
         r|=kRVMWD177XStatusNotReady;
       }
@@ -1848,6 +1865,7 @@ void rvmWD1793Reset(rvmWD1793 *wd) {
   wd->track = 0xff;
   wd->fdd_clicks = 0;
   wd->fdd_active_decay = 0;
+  wd->motor_frames = 0;        // hardware reset stops the spindle motor (ZXMAK2: motor = 0)
   wd->wtrackmark = 0;
   wd->headerI = 0;
   wd->retry = 0;
