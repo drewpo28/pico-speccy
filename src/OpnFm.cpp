@@ -41,7 +41,8 @@ Deliberate differences from fm.cpp, all of them size or platform driven:
 // YM2203 rips write HUNDREDS of registers per frame, and every #BFFD data
 // write runs the shared AY+FM catch-up — re-faulting gen()'s flash code
 // through the XIP cache each time showed as IDL<0 with audible clicks
-// (hw 2026-09-01, same mechanism as OplFm's). ~3.3 KB of .time_critical.
+// (hw 2026-09-01, same mechanism as OplFm's). ~1.6 KB of .time_critical at
+// the -O2 this TU compiles at (see CMakeLists — -O3 -funroll-loops doubled it).
 // Host builds (tools/opnfm_test.cpp) have no pico headers: annotation off.
 #if __has_include("pico.h")
 #include "pico.h"

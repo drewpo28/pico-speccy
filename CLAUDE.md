@@ -469,12 +469,12 @@ quietly and by degrees.
   path is safe only because an envelope can leave `EG_OFF` only on a key-on, i.e.
   a register write, i.e. between `gen()` calls — CSM is excluded from it for
   exactly that reason, since a timer A overflow keys channel 3 from inside.
-- **Everything is in FLASH**, deliberately, unlike `AySound::gen_sound` /
-  `SAASound::gen_sound`. Total new SRAM is ~130 B (19 B of BSS, an 84 B
-  `FMGenSound`, three veneers) against the ~4 KB heap headroom at `VIDEO::Init`
-  that a previous session's extra SRAM turned into a boot panic. If FM costs
-  frames on hardware, `__not_in_flash("audio")` on `gen`/`chanCalc`/`advanceEg`
-  is the whole change.
+- ~~**Everything is in FLASH**~~ — OUTDATED (2026-09-01): `gen`/`chanCalc`/
+  `advanceEg` moved to RAM (`OPN_HOT`, ~1.6 KB at -O2 since 2026-09-02) after
+  PC-88 YM2203 VGM rips exposed the per-write XIP catch-up cost; see the
+  "Per-sample code of BOTH FM cores" bullet in the OPL3 section. The write
+  path stays in flash. The original rationale (heap headroom at VIDEO::Init)
+  still governs — it is why the cores compile at -O2, not -O3.
 - **BUSY is always clear.** Every register write completes inside the OUT, so
   there is nothing to wait for, and a driver polling BUSY has to see it go away
   (that was the 2026-08-07 hang). The timer flags in bits 1..0 are now real.
@@ -880,13 +880,24 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   contiguous per-frame pass — ordering/timing sample-exact, status reads
   flush precisely (timer detect intact), frame boundary force-drains.
 - **Per-sample code of BOTH FM cores now lives in RAM** (`__not_in_flash
-  ("audio")`, ~4.1 KB each): OplFm gen/advance/chanCalc*/pairCalc/runTimers/
+  ("audio")`): OplFm gen/advance/chanCalc*/pairCalc/runTimers/
   renderSample and OpnFm gen/chanCalc/advanceEg. The user approved the
   permanent SRAM spend after clicks persisted; OpnFm needed it because PC-88
   YM2203 VGM rips write hundreds of registers per frame where TheLink wrote
   ~20 (every #BFFD data write runs the shared AY+FM catch-up). The write path
   (writeReg + setters) deliberately stays in flash — bursty, caches fine.
   Host builds see no annotation (`__has_include("pico.h")` gate).
+  **All three FM cores compile at `-O2` since 2026-09-02** (was `-O3
+  -funroll-loops`; NOT yet hw-tested): the RAM-resident hot code shrank
+  17.0 → 8.1 KB (OplFm 6.6→3.6, OpllFm 7.0→2.9, OpnFm 3.4→1.6) for ~+14%
+  worst-case synth cost (host bench, all channels loud, 226→258 ns/sample;
+  output bit-identical, all three host suites pass). -O3+unroll was paying
+  double: advance/renderSample inlined into gen() AND kept standalone, all
+  in SRAM even with every VGM chip off. EG-skip + half-rate are what made
+  dense scores affordable, not -O3. If clicks return on hw, the compromise
+  is `-O2 -funroll-loops` (+5% cost, saves 6.2 KB instead of 8.9), never
+  straight back to -O3. Hw gate: OPL_PERF_TRACE `us/fr` on the Doom II rip,
+  worst-frame especially (-O2 also slows the EG walk, where spikes lived).
 - **Half-rate OPL3 synthesis below 450 MHz sys clock** (`setRates(..., true)`,
   picked in OplSubsys::apply + machine reset): a dense 18-channel score
   (Doom II) costs ~4-5k cycles/sample flat-out — at 378 MHz that is ~7 ms of
@@ -983,7 +994,8 @@ freqbase rate conversion off MAME's native clock/72 stream, EG-skip with the
 same clamped-percussive-sustain + excluded-modulator-REL bounds, quiet fast
 paths, half-rate <450 MHz, audible()-gated +128 mixer bias, its own write
 queue (256 entries; addr/data flag in bit 16), OPLL_HOT RAM residency
-(~8 KB .time_critical with -O3). Output = (melody + rhythm) << 1 — the x2
+(~2.9 KB .time_critical at -O2 — see the -O2 note in the OPL3 section).
+Output = (melody + rhythm) << 1 — the x2
 puts a lone OPLL at OPL3-comparable level through the same >>7 mixer tap.
 Host test `tools/opllfm_test.cpp` (autocorrelation for pitch — FM timbres
 break zero-crossing counting): violin ROM patch 440.1 Hz, user patch 440.0,

@@ -25,7 +25,7 @@ the Free Software Foundation, either version 3 of the License, or
 
 // The per-SAMPLE code lives in RAM (.time_critical): even with the write
 // queue batching a frame into one contiguous gen() pass, the Z80 core still
-// evicts these ~6 KB from the XIP cache between frames, and re-faulting them
+// evicts these ~3.6 KB (at -O2, see CMakeLists) from the XIP cache between frames, and re-faulting them
 // through flash showed up as rare IDL<0 frames with audible clicks on heavy
 // Adlib rips (hw 2026-09-01). Register-write code (writeReg, setters) stays
 // in flash — it runs in bursts inside the same pass and caches fine.
