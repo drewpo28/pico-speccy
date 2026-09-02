@@ -882,13 +882,15 @@ static bool f5Locations() {
 }
 
 // ── FTP server: share the SD card to the LAN ─────────────────────────────────
-// Scrolling log ring for the on-screen terminal. Fixed char[][] (no heap churn),
-// holding the most recent lines; the renderer always shows the tail (auto-scroll).
+// Scrolling log ring for the on-screen terminal, holding the most recent lines;
+// the renderer always shows the tail (auto-scroll).
 #define FTPD_LOG_LINES 40
 #define FTPD_LOG_COLS  72
-// Lazy-heaped (2880 B) — costs 0 SRAM until the FTP server / WiFi-connect window
-// actually logs a line, so it never starves the razor-thin Profi heap at
-// VIDEO::Init (Profi forces ~80 KB of SRAM pages before the framebuffer alloc).
+// Session-scoped (2880 B): allocated on the first logged line, FREED at the end
+// of ftpdSessionRun — leaving it resident leaked ~3 KB per session, and on a
+// ~24 KB-free config that was enough to fail the SECOND server start (hw
+// 2026-09-02). Via Buffer::palloc like the rest of the FTP session's scratch:
+// arena/butter-first (NetArenaLease is live), NULL instead of an OOM panic.
 // Readers are gated by `li < ftpd_log_count`, and ftpd_log_count only advances
 // after a successful alloc here, so they never touch a null buffer.
 static char (*ftpd_log)[FTPD_LOG_COLS] = nullptr;
@@ -897,18 +899,25 @@ static int  ftpd_log_count = 0;  // total lines pushed (monotonic)
 static bool ftpd_log_dirty = true;
 static void ftpdLogLine(const char* s) {
     if (!ftpd_log) {
-        // Gate, don't null-check: pico_malloc wraps calloc too and PANICs on OOM
-        // instead of returning NULL, so "drop the line rather than crash" only
-        // works if we never make an ask that can fail (see Buffer::palloc).
-        if (getLargestAllocatable() < FTPD_LOG_LINES * FTPD_LOG_COLS + 8192) return;
-        ftpd_log = (char(*)[FTPD_LOG_COLS])calloc(FTPD_LOG_LINES, FTPD_LOG_COLS);
+        ftpd_log = (char(*)[FTPD_LOG_COLS])Buffer::palloc(
+            (size_t)FTPD_LOG_LINES * FTPD_LOG_COLS,
+            Buffer::NEED_POINTER | Buffer::USE_NET_ARENA);
         if (!ftpd_log) return;   // OOM — drop the line rather than crash
+        memset(ftpd_log, 0, (size_t)FTPD_LOG_LINES * FTPD_LOG_COLS);
     }
     int slot = ftpd_log_count % FTPD_LOG_LINES;
     strncpy(ftpd_log[slot], s ? s : "", FTPD_LOG_COLS - 1);
     ftpd_log[slot][FTPD_LOG_COLS - 1] = '\0';
     ftpd_log_count++;
     ftpd_log_dirty = true;
+}
+// Every exit path of ftpdSessionRun releases the ring — it must not outlive the
+// session (the NetArenaLease it may live in ends with ftpServerRun), and the
+// count reset at the next session start orphans its content anyway.
+static void ftpdLogFree() {
+    Buffer::pfree(ftpd_log);
+    ftpd_log = nullptr;
+    ftpd_log_count = 0;
 }
 
 
@@ -950,6 +959,7 @@ static void ftpdSessionRun(void* arg) {
     if (!Ftpd::begin(21, ftpdLogLine)) {
         OSD::osdCenteredMsg("FTP server start failed", LEVEL_WARN, 2500);
         Ftpd::stop();
+        ftpdLogFree();
         return;
     }
     ftpdLogLine("FTP server started");
@@ -958,20 +968,23 @@ static void ftpdSessionRun(void* arg) {
     ftpdLogLine(det);
     ftpdLogLine("Use ACTIVE mode. ESC to stop.");
 
-    // The session runs as a live log page (Esc closes → the server stops). The heap
-    // gate is there because pico_malloc's calloc PANICs on OOM instead of returning
-    // NULL; too tight to hold the page → no server rather than a panic.
-    if (getLargestAllocatable() < FTPD_PAGE_SZ + 8192 ||
-        (s_ftpd_page = (char*)calloc(1, FTPD_PAGE_SZ)) == nullptr) {
+    // The session runs as a live log page (Esc closes → the server stops).
+    // palloc, not calloc: arena/butter-first, and NULL on OOM where pico_malloc
+    // would panic — too tight to hold the page → no server rather than a panic.
+    s_ftpd_page = (char*)Buffer::palloc(FTPD_PAGE_SZ, Buffer::NEED_POINTER | Buffer::USE_NET_ARENA);
+    if (s_ftpd_page == nullptr) {
         Ftpd::stop();
+        ftpdLogFree();
         nm::uiToast("Not enough memory for the FTP log", true, 2500);
         return;
     }
+    memset(s_ftpd_page, 0, FTPD_PAGE_SZ);
     char title[64];
     snprintf(title, sizeof(title), "FTP server  ftp://%s:21  anonymous", ip);
     nm::uiTextPageLive(title, ftpdPageRefresh, 2);
-    free(s_ftpd_page); s_ftpd_page = nullptr;
+    Buffer::pfree(s_ftpd_page); s_ftpd_page = nullptr;
     Ftpd::stop();
+    ftpdLogFree();
     nm::uiToast("FTP server stopped", false, 1200);
 }
 

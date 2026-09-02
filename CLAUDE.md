@@ -3038,6 +3038,36 @@ hands off the keyboard does not. Three fixes in `drivers/ps2kbd/` +
   — keyboard noise faking one ACK would move the keyboard to GP14/15 for the
   whole session. Boot log now prints `main: pcm5122 present/absent, kbd CLK=GPn`.
 
+## FTP server session memory — everything through Buffer::palloc, everything freed (hw-confirmed 2026-09-02)
+
+"FTP server won't start the SECOND time" (user hw report: 24 KB free after boot,
+21 KB after one start/stop, second start fails). Two combined causes, both fixed
+(hw-confirmed: free heap identical before/after a start/stop cycle; a large STOR
+upload through the possibly-butter-backed wrBuf not separately re-timed):
+
+- **`ftpd_log` (OSDMain.cpp, 40x72 = 2880 B) leaked**: lazily allocated on the
+  first logged line, never freed — its old comment even sold that as a feature
+  ("no heap churn"). Now `ftpdLogFree()` runs on EVERY exit path of
+  `ftpdSessionRun` (normal, begin-failed, page-OOM), always AFTER `Ftpd::stop()`
+  (stop may still log; a log line after the free would re-allocate).
+- **`Ftpd::begin`'s gate wanted `sizeof(FtpdBuf)+16 KB` as ONE contiguous
+  block** (~20.5 KB) — with 21 KB total free that fails even though the ~4.1 KB
+  scratch itself fits easily. The 3 KB leak pushed a barely-passing config
+  under the gate; hence "second start".
+
+All four FTP-session buffers (FtpdBuf ~4.1 KB, STOR wrBuf 16 KB, ftpd_log
+2880 B, s_ftpd_page 2888 B) now go through
+`Buffer::palloc(NEED_POINTER | USE_NET_ARENA)` / `pfree`, like the net
+alt-stack and the ZiFiSock demux ring always did: `ftpServerRun`'s
+NetArenaLease is live for the whole session, so on boards with a dormant
+Gigascreen prevFB or butter PSRAM the session costs ~0 heap; palloc's heap
+tier keeps its own margin and its last-resort path returns NULL instead of
+pico_malloc's OOM panic (the manual `getLargestAllocatable` gates + raw
+malloc/calloc these replaced were reimplementing exactly that contract,
+more strictly). Session heap profile is now: allocate on entry, free on
+exit, zero residue — verify with Memory Info before/after a start/stop
+cycle; the two figures must match.
+
 ## ZiFi NIC — three host interfaces (all bridge to one ESP UART)
 
 Gated by `Config::zifi_enabled`. First two: port low byte `0xEF`, high address byte = register.

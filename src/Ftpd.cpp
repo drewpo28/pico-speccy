@@ -4,6 +4,7 @@
 
 #include "ZiFiSock.h"
 #include "ZiFi.h"
+#include "Buffer.h"
 #include "Debug.h"
 #include "ff.h"
 #include "pico/time.h"   // sleep_ms
@@ -15,19 +16,20 @@
 #include <stdarg.h>
 #include <memory>
 
-// All FTP-server scratch lives in ONE heap struct allocated in begin() and freed
-// in stop() — the server never runs in the background, so it costs 0 SRAM when
+// All FTP-server scratch lives in ONE struct allocated in begin() and freed in
+// stop() — the server never runs in the background, so it costs 0 SRAM when
 // idle (critical for the razor-thin Profi heap, which forces ~80 KB of SRAM pages
 // before the framebuffer alloc). These can't go on the stack (PICO_STACK_SIZE is
 // tiny, deep under do_OSD) and sharing is safe: a single command/transfer runs at
 // a time. Buffers with overlapping lifetimes get distinct members; leaf formatters
 // share. g_b is non-null for the whole begin()..stop() window (every deref happens
 // via poll(), which only runs between them).
-// pico_malloc PANICs on OOM instead of returning NULL (see Buffer.cpp), so every
-// heap ask here is gated on getLargestAllocatable() + this margin — never on the
-// allocation's own null result, which can't happen.
-extern "C" size_t getLargestAllocatable(void);   // OSDMain.cpp
-static const size_t FTPD_HEAP_MARGIN = 16 * 1024; // left free for the OSD/FatFS chain
+// Allocation goes through Buffer::palloc(NEED_POINTER | USE_NET_ARENA), like the
+// ZiFiSock demux ring and the net alt-stack: ftpServerRun holds a NetArenaLease
+// for the whole session, so on boards with a dormant Gigascreen prevFB (or butter
+// PSRAM) the scratch costs no heap at all. palloc's heap tier keeps its own
+// safety margin and its last-resort path returns NULL instead of hitting
+// pico_malloc's OOM panic — the caller's "FTP server start failed" is reachable.
 
 struct FtpdBuf {
     uint8_t  xfer[2048];   // RETR/STOR/LIST data transfer + recv (was g_buf)
@@ -242,17 +244,16 @@ static void doStor(const char* arg, bool append) {
     // ring right before every physical write (full 8 KB of headroom per stall) and
     // batch writes into a larger accumulator — fewer stall windows and fewer
     // mid-file FAT updates (f_expand is no help here: STOR doesn't know the size
-    // up front). Heap-transient like g_b; on a tight heap fall back to direct
-    // 2 KB writes from xfer.
-    // The gate is what makes that fallback reachable: pico_malloc PANICs on OOM
-    // ("*** PANIC *** Out of memory") instead of returning NULL, so std::nothrow
-    // alone never yields a null wrBuf — it took the whole firmware down mid-STOR
-    // (hw 2026-07-28: 16 KB ask with ~42 KB fragmented heap, two FDIs mounted).
-    // Same pattern as Buffer::palloc / mem_bounce_acquire.
+    // up front). Transient like g_b; on a tight heap fall back to direct
+    // 2 KB writes from xfer. Buffer::palloc, not raw new: it lands in the lent
+    // arena / butter first (no heap at all), its heap tier keeps a safety margin,
+    // and it returns NULL instead of pico_malloc's OOM panic — the panic that
+    // took the firmware down mid-STOR before the gate existed (hw 2026-07-28:
+    // 16 KB ask with ~42 KB fragmented heap, two FDIs mounted).
     static const size_t WR_CHUNK_SZ = 16 * 1024;
-    std::unique_ptr<uint8_t[]> wrBuf;
-    if (getLargestAllocatable() >= WR_CHUNK_SZ + FTPD_HEAP_MARGIN)
-        wrBuf.reset(new (std::nothrow) uint8_t[WR_CHUNK_SZ]);
+    std::unique_ptr<uint8_t, void (*)(void*)> wrBuf(
+        (uint8_t*)Buffer::palloc(WR_CHUNK_SZ, Buffer::NEED_POINTER | Buffer::USE_NET_ARENA),
+        Buffer::pfree);
     size_t wrFill = 0;
 
     bool ok = true;
@@ -473,13 +474,11 @@ static void handle(char* line) {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 bool Ftpd::begin(uint16_t port, LogCb log) {
-    // ~4 KB, freed in stop(). Gated, not null-checked: malloc panics rather than
-    // returning NULL, so an ungated ask would kill the firmware instead of
-    // surfacing "FTP server start failed" (the caller's OOM path).
-    if (!g_b) {
-        if (getLargestAllocatable() < sizeof(FtpdBuf) + FTPD_HEAP_MARGIN) return false;
-        g_b = (FtpdBuf*)malloc(sizeof(FtpdBuf));
-    }
+    // ~4 KB, freed in stop(). Arena/butter-first (NetArenaLease is live for the
+    // whole ftpServerRun session); palloc handles the OOM-panic gating internally
+    // and returns NULL, which surfaces as "FTP server start failed".
+    if (!g_b)
+        g_b = (FtpdBuf*)Buffer::palloc(sizeof(FtpdBuf), Buffer::NEED_POINTER | Buffer::USE_NET_ARENA);
     if (!g_b) return false;                              // OOM
     g_log = log;
     g_ctrl = -1;
@@ -487,7 +486,7 @@ bool Ftpd::begin(uint16_t port, LogCb log) {
     g_have_port = false;
     g_rnfr.clear();
     g_rest = 0;
-    if (!ZiFiSock::server_listen(port)) { free(g_b); g_b = nullptr; return false; }
+    if (!ZiFiSock::server_listen(port)) { Buffer::pfree(g_b); g_b = nullptr; return false; }
     return true;
 }
 
@@ -525,7 +524,7 @@ void Ftpd::stop() {
     if (g_ctrl >= 0) { ZiFiSock::sock_close(g_ctrl); g_ctrl = -1; }
     ZiFiSock::server_stop();
     g_log = nullptr;
-    free(g_b); g_b = nullptr;   // release the ~4 KB scratch — server is fully idle now
+    Buffer::pfree(g_b); g_b = nullptr;   // release the ~4 KB scratch — server is fully idle now
 }
 
 #endif // ZIFI_NET_CLIENT
