@@ -1419,13 +1419,30 @@ void act_wifi() {
     wlogEnd();
 }
 
+// Same pane log as the WiFi connect: the SNTP exchange is up to eight
+// AT+CIPSNTPTIME? polls answered with 1970 until the ESP has synced — seeing
+// them is what explains the wait (and a failure) that the old mute "Syncing..."
+// box hid.
 void act_sntp() {
-    uiBusy(MSG_RTC_SYNCING);
+    gfxResumePalette();
+    wlogBegin(TXT_NET_SYNC);
+    paneFooter(MSG_RTC_SYNCING);
+    char m[72];
+    snprintf(m, sizeof(m), "SNTP pool.ntp.org  UTC%+d", Config::wifi_tz);
+    wlogAdd(m, C_WHITE);
+    ZiFiAT::log_cb = wlogCb;
     string when;
-    if (ZiFiAT::syncTime(Config::wifi_tz, when) == ZiFiAT::OK)
-        uiToast((string(MSG_RTC_SYNCED) + "\n" + when).c_str(), false, 3000);
-    else
-        uiToast(MSG_RTC_SYNC_ERR, true, 3000);
+    const ZiFiAT::Status st = ZiFiAT::syncTime(Config::wifi_tz, when);
+    ZiFiAT::log_cb = nullptr;
+    if (st == ZiFiAT::OK) {
+        snprintf(m, sizeof(m), "%s  %s", MSG_RTC_SYNCED, when.c_str());
+        wlogAdd(m, C_ACCENT);
+    } else {
+        wlogAdd(MSG_RTC_SYNC_ERR, C_ICON_R);
+    }
+    paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
+    wlogView();
+    wlogEnd();
 }
 
 #if ZIFI_NET_CLIENT

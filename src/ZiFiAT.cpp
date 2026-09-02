@@ -178,6 +178,7 @@ ZiFiAT::Status ZiFiAT::syncTime(int tz, string& out_str) {
         ZiFi::sendRaw((const uint8_t*)q, strlen(q));
         const uint8_t crlf[] = {'\r', '\n'};
         ZiFi::sendRaw(crlf, 2);
+        atLog("ZiFiAT tx: %s", q);
 
         absolute_time_t deadline = make_timeout_time_ms(1500);
         while (!time_reached(deadline)) {
@@ -360,6 +361,7 @@ int ZiFiAT::scan(string* out, int maxn, uint32_t timeout_ms) {
         ZiFi::sendRaw((const uint8_t*)q, strlen(q));
         const uint8_t crlf[] = {'\r', '\n'};
         ZiFi::sendRaw(crlf, 2);
+        atLog("ZiFiAT tx: %s", q);
 
         absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
         while (!time_reached(deadline)) {
@@ -427,6 +429,7 @@ bool ZiFiAT::getStatus(string& ssid_out, string& ip_out) {
         ZiFi::sendRaw(cmd, sizeof(cmd) - 1);
         const uint8_t crlf[] = {'\r', '\n'};
         ZiFi::sendRaw(crlf, 2);
+        atLog("ZiFiAT tx: %s", (const char*)cmd);
 
         absolute_time_t deadline = make_timeout_time_ms(2000);
         while (!time_reached(deadline)) {
@@ -460,6 +463,7 @@ bool ZiFiAT::getStatus(string& ssid_out, string& ip_out) {
         ZiFi::sendRaw(cmd, sizeof(cmd) - 1);
         const uint8_t crlf[] = {'\r', '\n'};
         ZiFi::sendRaw(crlf, 2);
+        atLog("ZiFiAT tx: %s", (const char*)cmd);
 
         absolute_time_t deadline = make_timeout_time_ms(2000);
         while (!time_reached(deadline)) {
