@@ -20,7 +20,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 
 ## Features
 
-- ZX Spectrum 48K, 128K, Pentagon 128k/512k/1024k, Profi 1024K, Byte and ALF TV Game. 100% cycle accurate emulation.
+- ZX Spectrum 48K, 128K, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX, Byte and ALF TV Game. 100% cycle accurate emulation.
 - State of the art Z80 emulation (Authored by [José Luis Sánchez](https://github.com/jsanchezv/z80cpp))
 - Selectable Sinclair 48K, Sinclair 128K and Amstrad +2 english and spanish ROMs. Byte and ALF TV Game - russian ROMs, + Pentagons with Gluck services ROMs & selectable TR-DOS ROM (5.03 / 5.04TM / 5.05D / custom). Profi 1024K with selectable Karabas-Pro ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage).
 - Possibility of using custom ROM with easy flashing procedure from SD card.
@@ -29,6 +29,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Timex SCLD video modes emulation (hi-res 512->256 OR-merge, hi-color, dual-screen).
 - Pentagon 16-color video mode (Pentagon only): per-pixel 16-color attribute mode toggleable from the OSD Video menu.
 - Profi DS80 512×240 hi-res video mode (Profi only): switchable STD/DS80 output with a dedicated OSD palette option; CP/M and TR-DOS supported (RP2350 only).
+- Scorpion ZS-256 emulation: v2.94 ROM (BASIC-128/48, service monitor, on-board TR-DOS), 256K RAM via port #1FFD, magic-button NMI into the service monitor, .z80/.sna snapshots. Selectable board revisions — ZS-256 Turbo (Yellow PCB, 312-line frame with even-M1 alignment), ZS-256 Turbo+ (Green PCB, 316-line frame), ZS-1024 Turbo+ (1 MB RAM) — and the **GMX** firmware romset with 2 MB RAM, ProfROM planes and 640x200x16 graphics (GMX needs a Pico 2 module with QSPI PSRAM; F11 performs a full cold boot) (RP2350 only).
 - Karabas-Pro emulation on Profi: selectable flash ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage) switchable from setup or the **Menu** (Win) key hotkeys — Menu+F1–F4 pick a ROM set, plus Menu combos for Turbo FDC, AY stereo, CPU speed, drive swap and more (see F1 Help) — and serial (COM) mouse emulation for CP/M software (RP2350 only).
 - VGA/HDMI output with 4 selectable video modes: 640x480@60Hz, 640x480@50Hz, 720x480@60Hz, 720x576@50Hz.
 - Hot video mode switching without reboot (VGA/HDMI).
@@ -58,6 +59,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Covox 8-bit DAC emulation: selectable port (#FB or #DD) from the Audio menu.
 - SounDrive 8-bit stereo DAC emulation: left channel on ports #0F/#1F/#3F, right on #4F/#5F, both on #FB. Own Audio-menu item (Off/On/Auto; Auto enables it on Profi only, where CP/M games stream PCM there).
 - General Sound (GS) emulation: dedicated Z80 with selectable clock (12/13/14/20/24 MHz) on core1 with 2 MB sample RAM, ring-buffered DAC, host→GS FIFO for no-handshake loaders. Auto-enabled on RP2350 boards with butter PSRAM.
+- NeoGS emulation (Audio → General Sound → NeoGS): the NedoPC card with its original firmware 1.11, 512K/2M/4M RAM, SD card access through the card's own SPI ports, VS1011-style MP3 decoding (Neo Player Light, Z-Player), ZX-DMA transfers and a selectable card clock (24/20/12/10 MHz). Survives a ZX reset like the real card (RP2350 only).
 - MIDI support: external UART output (AY bit-bang, ShamaZX), a built-in procedural software synthesizer, and a **GM.DLS wavetable synth** that plays a real General MIDI sound bank loaded from SD (RP2350 only).
 - Beeper & Mic emulation (Cobra’s Arc).
 - Dual keyboard support: you can connect two devices: first using PS/2 protocol and second using USB at the same time.
@@ -74,10 +76,10 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - esxDOS support (DivMMC, DivIDE, DivSD) — [esxdos.org](https://esxdos.org/index.html).
 - Z-Controller emulation: raw SD card access via ports #57/#77, mutually exclusive with esxDOS and MB-02+ (RP2350 only).
 - FDD activity LED indicator and mechanical head click/seek sound emulation (optional, toggled via Betadisk menu).
-- ZiFi WiFi network interface via an ESP-01S module (stock Espressif AT firmware — no reflash): network access for ZX-Spectrum software (e.g. the MRF terminal), plus an MC146818 RTC (Pentagon "Mr Gluk" TimeKeeper) with SNTP time sync over WiFi (RP2350 only).
+- ZiFi WiFi network interface via an ESP-01S module (stock Espressif AT firmware — no reflash): network access for ZX-Spectrum software (e.g. the MRF terminal), plus an MC146818 RTC (Pentagon "Mr Gluk" TimeKeeper) with SNTP time sync over WiFi; WiFi connect and time sync show the live ESP AT dialog in a scrollable log (RP2350 only).
 - Unified F5 file browser with a location chooser (RP2350, when WiFi is configured): **Local (SD)**, **Remote (FTP/SFTP)**, **Web Archives** and **Add Remote** — all rendered in the same "Open File" window. **Enter** quick-starts a file (downloads to RAM and runs/mounts), **F5** saves it to a chosen SD folder; `..`/Backspace go up a level, Esc closes. Per-source listing cache (with manual F2 refresh) and remembered cursor/last location.
 - Network file transfer (FTP / SFTP / SSH client): saved connections with optional alias and start path (passwords optionally stored, masked entry; TAB reveals); browse / download / upload / copy (recursive) / delete; SSH/SFTP crypto (curve25519, AES-CTR, HMAC-SHA256) runs on the RP2350 via mbedTLS; SFTP host-key trust-on-first-use; selectable ESP-01S UART baud up to 921600. See the [Network wiki page](https://github.com/drewpo28/pico-speccy/wiki/EN-Network).
-- Web Archives: browse and download ZX disk/tape images and ALF cartridges from online catalogs (Virtual TR-DOS, Spectrum Computing, ZX-Art, ALF) over HTTPS straight to SD or RAM. Serverless GitHub-Pages catalog, on-device TLS, Cyrillic titles rendered (RP2350 only).
+- Web Archives: browse and download ZX disk/tape images, ALF cartridges and VGM music packs from online catalogs (Virtual TR-DOS, Spectrum Computing, ZX-Art, ALF, VGMRips) over HTTPS straight to SD or RAM; downloaded .vgz tracks are unpacked to .vgm in place, ready for the VGM player plugin. Serverless GitHub-Pages catalog, on-device TLS, Cyrillic titles rendered (RP2350 only).
 - FTP server: share the SD card over the LAN (anonymous, active mode) from the Network menu (RP2350 only).
 - Realtime (with OSD) TZX, TAP and PZX file loading.
 - Flashload of TZX/TAP/PZX files (standard loaders only).
@@ -88,12 +90,17 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - ZIP archive support: browse, extract, load and delete files inside ZIP archives.
 - Configurable keyboard hotkeys with hint display in menus.
 - Enhanced debugger: multi-breakpoint (up to 20), memory editor, port read/write breakpoints.
-- Hardware info menu: Chip Info (model, cores, frequency, VREG voltage), Board Info (flash, PSRAM, SDK version), Memory Info (live SRAM/PSRAM/flash occupancy and Buffer tier pools) and Emulator Info (machine, video, sound, input and storage configuration).
+- Debug → Paper: switch off paper rendering so the border effects paint straight through the screen area — a border-timing debugging aid.
+- Hardware info menu: Chip Info (model, cores, frequency, VREG voltage, on-chip temperature with per-chip offset calibration in Debug → Temp offset), Board Info (flash, PSRAM, SDK version), Memory Info (live SRAM/PSRAM/flash occupancy and Buffer tier pools) and Emulator Info (machine, video, sound, input and storage configuration).
 - Speed Test menu: benchmark CPU MIPS, SRAM read/write, PSRAM, SD card and USB drive throughput (individual or all at once).
 - ZX Keyboard overlay (main menu → ZX Keyboard): full-screen bitmap of the Spectrum keyboard for quick reference. Thanks to @const_bill and @tecnocat.
+- Pico-Scwong: a built-in native squash/pong game (tribute to andykarpov's Skvosh console) that runs on the RP2350 itself with no emulated machine and no SD card — last row of the Machine menu, or hold S at boot. Solo squash, Pong vs CPU with three difficulty levels, options for field/paddle/ball colours and sizes, and a CPU-vs-CPU attract mode after ten idle seconds.
 - Overclock menu: CPU frequency (252/378/504 MHz), Flash frequency (33–166 MHz), PSRAM frequency (66–166 MHz), VReg voltage (1.15–1.80 V).
+- Z80 turbo: emulated CPU speed selectable at 3.5/7/14/28 MHz (ALT+F2, remembered across reboots); machines with their own turbo control (Pentagon 1024SL #EFF7, Scorpion GMX #7EFD) can switch it from software while turbo is enabled.
 - Complete file navigation system with autoindexing, folder support and search functions.
 - Complete OSD menu (English).
+- Interface menu: Slate or classic ZX Spectrum menu theme, solid on-grid VGA menu colours (no dither texture) or the full-depth scheme, rounded or square window corners — all applied live; hot keys and LED indicator settings live there too.
+- Non-blocking notifications: hotkey messages (Gigascreen, max speed, turbo, LEDs, tape flashload, write-protect) appear as a short toast in the top border while the machine keeps running.
 - On-screen LED indicators: real-time overlay showing FDD activity, SD card, IDE/HDD, MIDI TX, tape, network (ZiFi TX/RX), and other port-driven hardware states.
 - Volume boost: configurable audio amplification (0–64) in the Audio menu.
 - Factory reset: hold R at boot to wipe all settings and restore defaults — an on-screen prompt guides the hold window, works with PS/2 and USB keyboards (with confirmation prompt).
@@ -106,6 +113,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - 128K ROM + TR-DOS + Mr. Gluk Reset Service
 - Sovmest (COBMECT) Mode (more accurate emulation of a real ZX Spectrum 48/128)
 - Support for the KR580VI53 (a clone of the Intel 8253) three-channel timer
+- Built-in ROM memory test (zxbyte.org/test.htm): genuine DD72/DD73 dumps with the DD71 additional-ROM switch; hold Ы+В+А (S+D+F) through F11 with COBMECT off to run it, melody included
 
 ## Installing
 
@@ -130,13 +138,13 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ~ (Tilde) Max speed toggle
 - Pause Pause
 - ALT+F1 Hardware info
-- ALT+F2 Turbo mode
+- ALT+F2 Turbo mode (the selected clock — 3.5/7/14/28 MHz — is shown as a top-border notification)
 - ALT+F5 Debug
 - ALT+F6 Disk menu
 - ALT+F8 Toggle LED indicators
 - ALT+F9 Input poke
-- ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options)
-- ALT+F11 Reset to... (modal menu: Service/Gluk/Service ROM, TR-DOS, 128K, 48K — depends on machine; Profi has its own Service ROM / TR-DOS / 128K / 48K set)
+- ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options; Scorpion: magic button into the service monitor)
+- ALT+F11 Reset to... (modal menu: Service/Gluk/Service ROM, TR-DOS, 128K, 48K — depends on machine; Profi has its own Service ROM / TR-DOS / 128K / 48K set, Scorpion offers Service monitor / TR-DOS / 128K / 48K)
 - ALT+F12 USB Boot / Update Firmware
 - ALT+PageUp Switch Gigascreen mode (Off → On → Auto cycle)
 - ALT+F3 Quick load snapshot
@@ -227,7 +235,7 @@ GND          ──────────── GND (e.g. pin 6)
 On RP2350 boards, an **ESP-01S** (ESP8266) module on the UART adds networking. It runs the **stock Espressif AT firmware** — no reflashing needed. Configured under the OSD **Network** menu:
 
 - **ZiFi NIC** — network interface for ZX-Spectrum software (port `#EF`, 16550-UART window); works with the **MRF** terminal/drivers (<https://zxart.ee/eng/software/prikladnoe-po/mrf/tabs:releases/>).
-- **WiFi** — scan / connect / autoconnect; **SNTP** time sync into the RTC.
+- **WiFi** — scan / connect / autoconnect, with the live ESP AT dialog shown in a scrollable log pane; **SNTP** time sync into the RTC (same live log).
 - **FTP server** — share the SD card over the LAN (anonymous, active mode).
 - **HTTP test (curl)** — fetch an arbitrary URL and show the result (TLS-over-ESP diagnostic).
 
@@ -235,7 +243,7 @@ File access (FTP/SFTP and the online archives) lives in the **F5 file browser** 
 
 - **Local (SD)** — the SD card.
 - **Remote (FTP/SFTP)** — saved connections (optional alias + start path; password optionally stored, masked entry with TAB reveal, SFTP host-key TOFU). Browse / download / upload / copy (recursive) / delete; baud 115200–921600.
-- **Web Archives** — online ZX catalogs (Virtual TR-DOS, Spectrum Computing, ZX-Art) over HTTPS.
+- **Web Archives** — online ZX catalogs (Virtual TR-DOS, Spectrum Computing, ZX-Art, ALF, VGMRips) over HTTPS; VGMRips .vgz packs are unpacked to .vgm on download.
 - **Add Remote** — store a new FTP/SFTP connection.
 
 In any of these, **Enter** quick-starts a file (download to RAM and run/mount) and **F5** saves it to a chosen SD folder; `..`/Backspace go up, Esc closes.
@@ -282,6 +290,10 @@ Your filesystem tree must be look like:
 | `-DTFT=ON` | TFT display output |
 | `-DILI9341=ON` | ILI9341 TFT display output |
 | `-DPICO_PC_DBG_UART=ON` | PICO_PC: enable UART0 on DBG1 header (GP0=TX, GP1=RX) for Debug Probe. Auto-remaps PS/2 keyboard to GP10/GP11 to free the pins. |
+| `-DMURM1_DBG_UART=ON` | MURM: enable Debug Probe UART0 on GP0/GP1 — moves the PS/2 keyboard to GP16/GP17 and disables NESPAD. |
+| `-DPICO_DV_DBG_UART=ON` / `-DZERO2_DBG_UART=ON` | PICO_DV / ZERO2: enable Debug Probe UART1 on GP20/GP21. |
+| `-DHDMI_TMDS_LEVEL_CLAMP=OFF` | HDMI: disable the channel-level clamp to [0x08..0xF6] (on by default; costs ~3% black / ~4% white, improves link stability on marginal receivers). |
+| `-DHDMI_SOFT_CLK=OFF` | HDMI: drive the clock pair at 12 mA + fast slew instead of the default 8 mA + slow slew. |
 | `-DTFT_ST7789=ON` | ST7789 TFT display variant |
 
 #### Multi-target build script
