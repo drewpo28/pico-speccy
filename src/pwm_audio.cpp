@@ -456,20 +456,39 @@ static void __not_in_flash_func(pcm_call_inner)() {
         gs_offL = ((int32_t)gL - 128) * (int32_t)vol8;
         gs_offR = ((int32_t)gR - 128) * (int32_t)vol8;
     }
+
+    // The ZX half of the sample: the next frame-buffer entry while there is
+    // one, else HOLD the last one. The frame buffer is exactly one frame of
+    // samples (632 @ 31250 Hz on the 316-line machines), so a frame that ends
+    // late leaves the timer with nothing to play for the whole overrun. The
+    // hold used to be applied to the MIXED output (or the PWM level simply
+    // left alone), which froze the GS contribution along with the ZX one:
+    // getLiveLR() kept draining the ring (so the GS perf counters stayed
+    // clean — und=0, int=37533) while its samples were thrown away. GMX at
+    // 7 MHz overruns 20-33 frames of every 50 by 3-5 ms and that came out as
+    // 25 GS dropouts a second (hw 2026-09-03). Only the ZX sample is frozen
+    // now; the live GS path stays continuous through a late frame
+    // (hw-confirmed same day: GMX + GS at 7 MHz plays clean, neg frames and all).
+    int32_t zL, zR;
+    if (m_off < m_size) {
+        zL = buff_L[m_off];
+        zR = buff_R[m_off];
+        ++m_off;
+    } else if (m_size > 0) {
+        zL = buff_L[m_size - 1];
+        zR = buff_R[m_size - 1];
+    } else {
+        zL = 0;
+        zR = 0;
+    }
+    int32_t sL = zL + gs_offL;
+    int32_t sR = zR + gs_offR;
+    if (sL < -32768) sL = -32768; else if (sL > 32767) sL = 32767;
+    if (sR < -32768) sR = -32768; else if (sR > 32767) sR = 32767;
+
 #if defined(VGA_HDMI)
     if (Config::audio_driver == 4) {
-        if (m_off < m_size) {
-            int32_t sL = (int32_t)buff_L[m_off] + gs_offL;
-            int32_t sR = (int32_t)buff_R[m_off] + gs_offR;
-            if (sL < -32768) sL = -32768; else if (sL > 32767) sL = 32767;
-            if (sR < -32768) sR = -32768; else if (sR > 32767) sR = 32767;
-            hdmi_audio_write_sample((int16_t)sL, (int16_t)sR);
-            m_off++;
-        } else if (m_size > 0) {
-            hdmi_audio_write_sample(buff_L[m_size - 1], buff_R[m_size - 1]);
-        } else {
-            hdmi_audio_write_sample(0, 0);
-        }
+        hdmi_audio_write_sample((int16_t)sL, (int16_t)sR);
         return;
     }
 #endif
@@ -477,39 +496,21 @@ static void __not_in_flash_func(pcm_call_inner)() {
 /// TODO:
     }
     else if (is_i2s_enabled) {
-        static int16_t v32[2];
-        if (m_off < m_size) {
-            int32_t sL = (int32_t)buff_L[m_off] + gs_offL;
-            int32_t sR = (int32_t)buff_R[m_off] + gs_offR;
-            if (sL < -32768) sL = -32768; else if (sL > 32767) sL = 32767;
-            if (sR < -32768) sR = -32768; else if (sR > 32767) sR = 32767;
-            v32[0] = (int16_t)sR;
-            v32[1] = (int16_t)sL;
-            ++m_off;
-        }
         if (!pio_sm_is_tx_fifo_full(i2s_config.pio, i2s_config.sm)) {
-            uint32_t w = ((uint32_t)(uint16_t)v32[0] << 16) | (uint16_t)v32[1];
+            uint32_t w = ((uint32_t)(uint16_t)(int16_t)sR << 16) | (uint16_t)(int16_t)sL;
             pio_sm_put(i2s_config.pio, i2s_config.sm, w);
         }
     } else {
-        uint16_t outL = 0;
-        uint16_t outR = 0;
-        if (m_off < m_size) {
-            static int16_t err_L = 0, err_R = 0;
-            int16_t* b_L = buff_L + m_off;
-            int16_t* b_R = buff_R + m_off;
-            ++m_off;
-            int32_t xL = ((int32_t)*b_L) + gs_offL + 0x8000 + err_L;
-            if (xL < 0) xL = 0; else if (xL > 0xFFFF) xL = 0xFFFF;
-            outL = (uint16_t)xL >> 8;
-            err_L = (int16_t)(xL - ((int32_t)outL << 8));
-            int32_t xR = ((int32_t)*b_R) + gs_offR + 0x8000 + err_R;
-            if (xR < 0) xR = 0; else if (xR > 0xFFFF) xR = 0xFFFF;
-            outR = (uint16_t)xR >> 8;
-            err_R = (int16_t)(xR - ((int32_t)outR << 8));
-        } else {
-            return;
-        }
+        // 8-bit PWM with first-order error feedback (dither) on each channel.
+        static int16_t err_L = 0, err_R = 0;
+        int32_t xL = sL + 0x8000 + err_L;
+        if (xL < 0) xL = 0; else if (xL > 0xFFFF) xL = 0xFFFF;
+        uint16_t outL = (uint16_t)xL >> 8;
+        err_L = (int16_t)(xL - ((int32_t)outL << 8));
+        int32_t xR = sR + 0x8000 + err_R;
+        if (xR < 0) xR = 0; else if (xR > 0xFFFF) xR = 0xFFFF;
+        uint16_t outR = (uint16_t)xR >> 8;
+        err_R = (int16_t)(xR - ((int32_t)outR << 8));
         pwm_set_gpio_level(PWM_PIN0, outR);
         pwm_set_gpio_level(PWM_PIN1, outL);
     }

@@ -828,6 +828,29 @@ UnrealSpeccy-heritage ack); behavior-neutral for known software — fw 1.11's
 source and NPL's card side never execute `OUT (02)` (only fw command 0x10
 "OUT to any port" could reach it).
 
+## A late frame used to mute the GS — the mixer's hold path (hw-confirmed 2026-09-03)
+
+"GMX + GS + 7 MHz: artifacts in the GS, clean at 3.5" was NOT a GS problem.
+`GS_PERF_TRACE` was unambiguous in both phases: GS-Z80 at 13.9-14.0 of 14 MHz,
+`int=37533/37500`, `und=0`, `clamp=0`, ring parked at 128 — the producer and the
+ring were perfect. What differed was core0: at 7 MHz GMX overruns 20-33 frames
+of every 50 by 3-5 ms (`IDL_min` -3000..-5400, `fr` 46-48) where 3.5 MHz has
++3..+11 ms of slack. The frame audio buffer is exactly one frame (632 samples
+on the 316-line machines at 31250 Hz), so a late frame leaves the 31250 Hz
+timer with nothing to play for the whole overrun — and `pcm_call_inner`
+(pwm_audio.cpp) applied that hold to the MIXED output: HDMI wrote the last ZX
+sample without `gs_off`, I2S re-pushed the previous mixed word, PWM did not
+update the level at all. `getLiveLR()` kept draining the ring (hence the clean
+counters) while its samples were thrown away — ~25 GS dropouts a second. Now
+the ZX sample alone is held and the live GS is mixed in on every tick, one
+path for all three drivers. Lessons: (1) a frame overrun on ANY machine/clock
+used to punch a hole in GS, turbo just made it chronic; (2) when the GS perf
+counters are clean and GS still glitches, look at what happens to the sample
+AFTER `getLiveLR` — the ring is not the only place a sample can die. The 7 MHz
+frame deficit itself is untouched (a capacity fact: the Z80 half of a GMX frame
+doubles); `[NEG2]` attribution is compiled for Profi only (ESPectrum.cpp) — lift
+that gate for Scorpion before investigating it.
+
 ## OPL3 (YMF262) + VGM plugin support (2026-08-28; hw-confirmed 2026-09-01)
 
 **hw-confirmed 2026-09-01** with generated test VGMs (`tools`-less one-offs in
