@@ -1390,20 +1390,22 @@ static void __not_in_flash_func(flash_info)() {
 // clearing the volatile-WE latch — hw-confirmed as "FIX FAILED" on ZERO2.
 // Preferred path is the volatile SR2 write (instant, zero wear, re-applied each
 // boot); if the chip ignores it, fall back to a one-time NON-volatile write
-// (06h + 31h + WIP poll — the fhoedemakers-proven sequence).
-// 0=n/a (not Puya)  1=already set  2=volatile  3=non-volatile 31h
-// 4=FAILED  5=non-volatile 01h 2-byte  6=raw-window self-test failed
+// (06h + 31h + WIP poll — the fhoedemakers-proven sequence), then as a last
+// resort the Winbond-style 2-byte 01h write (SR1+SR2) some Puya parts need.
+// Codes (0 = nothing to report — callers test `if (flash_qe)`; >= 4 = failure,
+// Hardware Info appends the flash_qe_diag dump for those):
+//   0 = n/a (not Puya)          1 = QE already set        2 = set, volatile 50h+31h
+//   3 = set, non-volatile 31h   4 = FIX FAILED (QE still 0 / WEL never latched)
+//   5 = set, non-volatile 01h   6 = raw exit-XIP window self-test failed
 uint8_t flash_qe = 0;
 
+// Successes print as the raw code ("01h".."05h", legend above); failures as
+// words so they stand out in Hardware Info and the boot log.
 const char* flash_qe_text() {
-    switch (flash_qe) {
-        case 1: return "set";
-        case 2: return "set (volatile)";
-        case 3: return "set (non-volatile)";
-        case 5: return "set (01h fallback)";
-        case 6: return "WINDOW FAULT";
-        default: return "FIX FAILED";
-    }
+    static const char* const kText[] = {
+        "00h", "01h", "02h", "03h", "04h", "05h", "06h",
+    };
+    return flash_qe < count_of(kText) ? kText[flash_qe] : "00h";
 }
 
 // One CS-framed command inside an open exit-XIP window (mirror of the QMI half
