@@ -1962,6 +1962,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             CPU::updateStatesInFrame();
             Config::turbo = ESPectrum::multUser;
             Config::save();
+            static const char* const mhz[4] =
+                { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
+            notify(mhz[ESPectrum::multUser], LEVEL_INFO, 900);
         } else
         if (hkIdx == Config::HK_DEBUG) {
             osdDebug();
