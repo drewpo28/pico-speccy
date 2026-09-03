@@ -406,26 +406,25 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
                 MemESP::rom[3].assign_rom(gb_rom_gluk);
             }
             break;
+        case R_P3:
+            // +2A/+3: FOUR ROMs, selected by (1FFD.D2 << 1) | 7FFD.D4 —
+            //   0 editor/menu   1 syntax checker   2 +3DOS   3 48 BASIC
+            // ROM 3 is the only one close enough to anything already in flash to
+            // overlay (~1.2 KB over the Sinclair 128K second half); 0/1/2 are Amstrad
+            // rewrites and stay raw. rom[4] (TR-DOS) is still bound below but is
+            // unreachable: Beta disk is forced off for this romset (MachineSwitch /
+            // CPU::reset).
+            MemESP::rom[0].assign_rom(gb_rom_0_plus3);
+            MemESP::rom[1].assign_rom(gb_rom_1_plus3);
+            MemESP::rom[2].assign_rom(gb_rom_2_plus3);
+            MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_plus3_rom3);
+            break;
         default:
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
             break;
         }
-        break;
-    }
-    case A_P3: {
-        // +2A/+3: FOUR ROMs, selected by (1FFD.D2 << 1) | 7FFD.D4 —
-        //   0 editor/menu   1 syntax checker   2 +3DOS   3 48 BASIC
-        // ROM 3 is the only one close enough to anything already in flash to overlay
-        // (~1.2 KB over the Sinclair 128K second half); 0/1/2 are Amstrad rewrites and
-        // stay raw.  rom[4] (TR-DOS) is still bound below but is unreachable: Beta disk
-        // is forced off for this arch (MachineSwitch / CPU::reset).
-        romSet = R_P3;
-        MemESP::rom[0].assign_rom(gb_rom_0_plus3);
-        MemESP::rom[1].assign_rom(gb_rom_1_plus3);
-        MemESP::rom[2].assign_rom(gb_rom_2_plus3);
-        MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
-        MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_plus3_rom3);
         break;
     }
     case A_PROFI: {
@@ -756,7 +755,7 @@ void Config::loadDiskMounts() {
                 if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
                     std::string fn = s.substr(plen);
                     p3DiskFile[i] = fn;
-                    if (!fn.empty() && Config::arch == A_P3 && FileUtils::waitVolumeReady(fn))
+                    if (!fn.empty() && Config::isPlus3() && FileUtils::waitVolumeReady(fn))
                         Plus3Fdc::mount(i, fn);
                 }
             }
@@ -1574,7 +1573,7 @@ void Config::save(const char* path) {
             // is only refreshed from the live mount while a +3 is the running machine —
             // otherwise nothing is mounted and writing the live "" would erase it.
             if (i < 2) {
-                if (Config::arch == A_P3)
+                if (Config::isPlus3())
                     p3DiskFile[i] = Plus3Fdc::fname(i);
                 persistFile("p3d" + to_string(i) + ".file", p3DiskFile[i]);
             }

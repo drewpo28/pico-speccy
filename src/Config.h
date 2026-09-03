@@ -259,6 +259,8 @@ public:
     // bring AySound chip1 up too. Without this, ayChipFor()'s "chip1 missing ->
     // use chip0" fallback lands every chip-1 PSG write of a TFM tune on chip 0.
     static bool twoAyChips() { return turbosound != 0 || tsfm != 0; }
+    // The running machine is a +2A/+3: the +3 romset over the 128K arch (like +2).
+    static bool isPlus3() { return arch == A_128K && isPlus3Romset(romSet); }
     static uint8_t  covox;
     // CPU turbo picked by the user (0..3 = 3.5/7/14/28 MHz), NVS-persisted.
     // Feeds ESPectrum::multUser at setup; the live speed may differ (EFF7 D4).

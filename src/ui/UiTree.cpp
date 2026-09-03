@@ -246,12 +246,10 @@ static const Option opt_mach_128[] = {
     { TXT_ROM_PLUS2_ES,   NM_MACH(A_128K, R_PLUS2_ES),  TXT_ROM_PLUS2_ES_S },
     { TXT_ROM_ZX81P,      NM_MACH(A_128K, R_ZX81P)    },
 #endif
+    // The +2A/+3 is a romset of the 128K machine, like the +2 (ArchRom.h): the
+    // English v4.0 four-bank image. Everything +3-specific keys on this romset.
+    { TXT_ROM_P3,         NM_MACH(A_128K, R_P3)       },
     { TXT_ROM_CUSTOM,     NM_MACH(A_128K, R_128K_CS)  },
-};
-// +3: one ROM set so far (the English v4.0 four-bank image). The row still needs an
-// option table — SET_MACHINE radios read their arch/romset pair from it.
-static const Option opt_mach_p3[] = {
-    { TXT_ROM_P3,         NM_MACH(A_P3, R_P3)         },
 };
 static const Option opt_mach_pent[] = {
     { TXT_ROM_PENT,       NM_MACH(A_PENT, R_PENT)      },
@@ -338,7 +336,6 @@ static const Node kMurmuzavr[] = {
 static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_48K,   SET_MACHINE, opt_mach_48,    nullptr),
     NM_RADIO(TXT_MACH_128K,  SET_MACHINE, opt_mach_128,   nullptr),
-    NM_RADIO(TXT_MACH_P3,    SET_MACHINE, opt_mach_p3,    nullptr),
     NM_RADIO(TXT_MACH_PENT,  SET_MACHINE, opt_mach_pent,  nullptr),
     NM_RADIO(TXT_MACH_P512,  SET_MACHINE, opt_mach_p512,  p_extRam),
     NM_RADIO(TXT_MACH_P1024, SET_MACHINE, opt_mach_p1024, p_extRam),
@@ -457,10 +454,12 @@ static bool p_esxImages() {
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
 // The +3 disk rows follow the machine, not a toggle: the interface is part of the
 // machine and cannot be turned off, so they appear whenever a +3 is staged or running.
+// The +3 is the R_P3 romset of the 128K arch, so this keys on the romset (as
+// p_byteActive does).
 static bool p_plus3On() {
     const int32_t m = Stage::get(SET_MACHINE);
-    if (m >= 0) return ((m >> 8) & 0xFF) == (int)A_P3;
-    return Config::arch == A_P3;
+    if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
+    return Config::isPlus3();
 }
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
 
@@ -726,12 +725,11 @@ static const Node kJoystick[] = {
 static const Option opt_pref_arch[] = {
     { TXT_MACH_48K,   0 },
     { TXT_MACH_128K,  1 },
-    { TXT_MACH_P3,    2 },
-    { TXT_MACH_PENT,  3 },
-    { TXT_MACH_P512,  4 },
-    { TXT_MACH_P1024, 5 },
-    { TXT_MACH_SCORP, 6 },
-    { TXT_ROM_LAST,   7 },
+    { TXT_MACH_PENT,  2 },
+    { TXT_MACH_P512,  3 },
+    { TXT_MACH_P1024, 4 },
+    { TXT_MACH_SCORP, 5 },
+    { TXT_ROM_LAST,   6 },
 };
 static const Option opt_pref48[] = {
     { TXT_ROM_48K,     0 },
@@ -751,11 +749,13 @@ static const Option opt_pref128[] = {
     { TXT_ROM_PLUS2,    2 },
     { TXT_ROM_PLUS2_ES, 3 },
     { TXT_ROM_ZX81P,    4 },
-    { TXT_ROM_CUSTOM,   5 },
-    { TXT_ROM_LAST,     6 },
+    { TXT_ROM_P3,       5 },
+    { TXT_ROM_CUSTOM,   6 },
+    { TXT_ROM_LAST,     7 },
 #else
-    { TXT_ROM_CUSTOM,   1 },
-    { TXT_ROM_LAST,     2 },
+    { TXT_ROM_P3,       1 },
+    { TXT_ROM_CUSTOM,   2 },
+    { TXT_ROM_LAST,     3 },
 #endif
 };
 static const Option opt_pref_pent[] = {

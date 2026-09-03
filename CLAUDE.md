@@ -1148,8 +1148,19 @@ ports, the two Ports.cpp decode blocks are the only thing to move:
   3.579545 MHz and the plugin streams raw writes.
 ## ZX Spectrum +3: the machine, uPD765 and .dsk (2026-08-17, NOT hw-tested)
 
-New arch `A_P3` + romset `R_P3`, a sector-level uPD765A and CPCEMU/Extended `.dsk`
-images in drives A:/B: with read, write and format. **Nothing here has run on hardware**
+**The +3 is a ROMSET of the 128K arch, not an arch** (reworked 2026-09-03): `R_P3`
+sits in `opt_mach_128` / `kPref128` beside `R_PLUS2`, exactly the way the +2 is
+offered, and `Config::romSet128` may hold it. Everything +3-specific keys on the
+romset — `Config::isPlus3()` (`arch == A_128K && romSet == R_P3`), `Z80Ops::isP3`
+(set from it in `CPU::reset`), `isPlus3Romset()` for staged/committed pairs in the
+menu and MachineSwitch. There is no `A_P3`; `archFromStr("P3")` folds the never-
+released arch spelling to `A_128K`. The +3 shares the 128K arch's frame timing and
+nothing else: `CPU::reset` clears `is128` for it (own paging, contention, no floating
+bus), `FileZ80::loader128` skips it (load128's registers point into ROM 1, which is the
+syntax checker on the four-ROM map), and a `.z80` with hardware mode 7/13 requests
+`(A_128K, R_P3)` via the `z80_plus3` flag. Plus: a sector-level uPD765A and
+CPCEMU/Extended `.dsk` images in drives A:/B: with read, write and format.
+**Nothing here has run on hardware**
 — the container had no Pico SDK — but every piece that could be tested on a host is,
 and each suite was mutation-checked (see the bottom of this section).
 
@@ -1184,7 +1195,8 @@ so raw.githubusercontent.com is the way to any of this.
   three collide on the port map, the last two automap on addresses inside the +3's own
   four ROMs. Enforced in three places, the same shape Profi uses: the menu's
   `resolveConstraints` (note), `MachineSwitch` (toast), and `ESPectrum::setup` /
-  `CPU::reset` as the backstop for boots that never pass through the menu.
+  `CPU::reset` as the backstop for boots that never pass through the menu. All three
+  test the ROMSET (`isPlus3Romset` / `Config::isPlus3`), the way Byte's exclusions do.
 - **ROMs**: the standard v4.0 English set. Banks 0-2 are raw (`src/roms/plus3/`); bank 3
   is 48 BASIC and overlays `gb_rom_1_sinclair_128k` in **1266 bytes**. The base has to be
   a RAW array — MemESP's overlay registry is keyed by base pointer and does NOT chain, so

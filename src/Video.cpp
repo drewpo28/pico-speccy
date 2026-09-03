@@ -1430,7 +1430,7 @@ const int bluPins[] = {BLU_PINS_6B};
 
 void VIDEO::vgataskinit(void *unused) {
     uint8_t Mode;
-    Mode = 16 + ((Config::arch == A_48K) ? 0 : (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3 ? 2 : 4));
+    Mode = 16 + ((Config::arch == A_48K) ? 0 : (Config::arch == A_128K || Config::arch == A_ALF ? 2 : 4));
     OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
     OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
     vga.useInterrupt_flag = true;
@@ -2305,13 +2305,13 @@ void VIDEO::changeMode() {
         switch (Config::vga_video_mode) {
             case Config::VM_640x480_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) video_mode = 3;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
                 else video_mode = 1;
                 break;
             case Config::VM_720x480_60: video_mode = 7; break;
             case Config::VM_720x576_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) video_mode = 6;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4;
                 break;
             default: video_mode = 0; break;
@@ -2321,13 +2321,13 @@ void VIDEO::changeMode() {
             case Config::VM_640x480_60: video_mode = 0; break;
             case Config::VM_640x480_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_P3) video_mode = 3;
+                else if (Config::arch == A_128K) video_mode = 3;
                 else video_mode = 1;
                 break;
             case Config::VM_720x480_60: video_mode = 7; break;
             case Config::VM_720x576_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) video_mode = 6;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4;
                 break;
             default: video_mode = 0; break;
@@ -2438,9 +2438,8 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) {
-        if (Config::arch != A_P3 &&
-            (Config::romSet128 == R_128K_BY || Config::romSet128 == R_128K_BY_GLUK)) {
+    } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+        if (Config::romSet128 == R_128K_BY || Config::romSet128 == R_128K_BY_GLUK) {
             tStatesPerLine = TSTATES_PER_LINE_BYTE;
             tStatesScreen = TS_SCREEN_BYTE;
             tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_BYTE : TS_BORDER_360x288_BYTE)
@@ -2606,11 +2605,11 @@ void VIDEO::Reset() {
 
     // The +2A/+3 ULA has no snow bug either (its RAM is not shared with the CPU the
     // way the 48K/128K ULA's is), so it joins the machines that never render snow.
-    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_P3) ? Config::render : false;
+    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && !Config::isPlus3()) ? Config::render : false;
 
     // +2A/+3 contention pattern (see wait_st_tab). Selected here, after the per-arch
     // timing block above, so every machine reset re-picks it.
-    wait_st = wait_st_tab[Config::arch == A_P3 ? 1 : 0];
+    wait_st = wait_st_tab[Config::isPlus3() ? 1 : 0];
 
     VIDEO::paper_off = !Config::render_paper;
 
@@ -2636,7 +2635,7 @@ void VIDEO::Reset() {
         switch (Config::vga_video_mode) {
             case Config::VM_640x480_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) video_mode = 3;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
@@ -2644,7 +2643,7 @@ void VIDEO::Reset() {
                 break;
             case Config::VM_720x576_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) video_mode = 6;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default: // VM_640x480_60
@@ -2661,7 +2660,7 @@ void VIDEO::Reset() {
                 break;
             case Config::VM_640x480_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_P3) video_mode = 3;
+                else if (Config::arch == A_128K) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
@@ -2669,7 +2668,7 @@ void VIDEO::Reset() {
                 break;
             case Config::VM_720x576_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) video_mode = 6;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default:

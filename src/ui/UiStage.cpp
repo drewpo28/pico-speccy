@@ -233,7 +233,7 @@ const char* romsetName(int32_t c) {
     }
 
 // Index-aligned with opt_pref_arch[] in UiTree.cpp — keep the two in step.
-static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_P3, A_PENT, A_P512, A_P1024, A_SCORP, A_LAST };
+static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_PENT, A_P512, A_P1024, A_SCORP, A_LAST };
 static const RomsetIdx kPref48[]   = {
     R_48K,
 #if !NO_SPAIN_ROM_48k
@@ -245,7 +245,7 @@ static const RomsetIdx kPref128[]  = {
 #if !NO_SPAIN_ROM_128k
     R_128K_ES, R_PLUS2, R_PLUS2_ES, R_ZX81P,
 #endif
-    R_128K_CS, R_LAST };
+    R_P3, R_128K_CS, R_LAST };
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
@@ -813,7 +813,12 @@ static bool stagedArchIs(ArchIdx a) {
     return Config::arch == a;                  // pair not in our tables: trust Config
 }
 static bool stagedIsProfi() { return stagedArchIs(A_PROFI) || stagedArchIs(A_KARABAS); }
-static bool stagedIsPlus3() { return stagedArchIs(A_P3); }
+// The +3 is a romset of the 128K arch, so this keys on the staged romset.
+static bool stagedIsPlus3() {
+    const int32_t m = staged(SET_MACHINE);
+    if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
+    return Config::isPlus3();
+}
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }

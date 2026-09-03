@@ -194,7 +194,6 @@
 #define TXT_MACH_PENT       "Pentagon 128K"
 #define TXT_MACH_P512       "Pentagon 512K"
 #define TXT_MACH_P1024      "Pentagon 1024K"
-#define TXT_MACH_P3         "Spectrum +3"
 #define TXT_MACH_BYTE       "Byte"
 #define TXT_MACH_PROFI      "Profi"
 #define TXT_MACH_KARABAS    "Karabas"

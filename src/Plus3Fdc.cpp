@@ -106,7 +106,7 @@ void reset() {
 }
 
 void frameTick() {
-    if (Config::arch != A_P3) return;
+    if (!Config::isPlus3()) return;
     updTick(&fdc, nowT());
 }
 

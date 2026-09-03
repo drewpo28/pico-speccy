@@ -107,9 +107,10 @@ void CPU::updateStatesInFrame() {
             IntStart = INT_START48;
             IntEnd = INT_END_BYTE48;
         }
-    } else if (Config::arch == A_128K || Z80Ops::isALF || Config::arch == A_P3) {
-        // The +2A/+3 keeps the 128K frame (70908 T, 228 T/line, screen at 14361) and
-        // differs only in the contention PATTERN and which pages are contended.
+    } else if (Config::arch == A_128K || Z80Ops::isALF) {
+        // The +2A/+3 (romset R_P3) keeps the 128K frame (70908 T, 228 T/line, screen
+        // at 14361) and differs only in the contention PATTERN and which pages are
+        // contended.
         statesInFrame = TSTATES_PER_FRAME_128;
         IntStart = INT_START128;
         IntEnd = INT_END128 + CPU::latetiming;
@@ -168,8 +169,11 @@ void CPU::reset() {
     g_scorp_1024 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_1024 ||
                                           Config::romSetScorp == R_SCORP_PROF);
     g_gmx_tap = false;   // re-armed by Ports::scorpionRomUpdate once paging settles
-    Z80Ops::isP3 = (Config::arch == A_P3);
-    if (Config::arch == A_P3) {
+    // The +2A/+3 is the R_P3 romset of the 128K arch (the way +2 is). It shares the
+    // arch's frame timing but NOT its paging, contention or floating bus, so the
+    // 128K branch below hands it a separate flag set.
+    Z80Ops::isP3 = Config::isPlus3();
+    if (Z80Ops::isP3) {
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;      // the +3 is NOT 128K here: it has its own paging,

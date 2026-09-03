@@ -147,15 +147,18 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         else if (Config::arch == A_SCORP && Config::pref_romSetScorp == R_LAST) Config::romSetScorp = Config::romSet;
         // Mutual exclusivity
         bool isByte = (romset == R_48K_BY || romset == R_128K_BY);
+        // The +3 is a romset of the 128K arch (like +2), so its exclusions key on the
+        // romset the same way Byte's do.
+        const bool isP3 = isPlus3Romset(romset);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || arch == A_SCORP || arch == A_P3 || isByte)) {
+            arch == A_PROFI || arch == A_SCORP || isP3 || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
         }
         // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
         // register / native RTC AS latch / SAA select (see CPU::reset backstop).
-        if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_P3)) {
+        if (Config::timex_video && (isByte || arch == A_PROFI || isP3)) {
             Config::timex_video = false;
             VIDEO::timex_port_ff = 0;
             VIDEO::timex_mode = 0;
@@ -169,7 +172,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // The +3 has no Beta Disk interface — it has the uPD765 instead, and the two
         // collide on port #1F/#FF as well as on the 0x3D00 ROM trap (which would fire
         // inside the +3's own four ROMs).
-        if (arch == A_P3 && Config::betadisk) {
+        if (isP3 && Config::betadisk) {
             Config::betadisk = false;
             if (ESPectrum::trdos) {
                 ESPectrum::trdos = false;
@@ -179,7 +182,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         }
         // DivMMC / Z-Controller automap on ROM addresses that belong to the +3's own
         // four ROMs, so their RAM would page over the ROM the machine is executing.
-        if (arch == A_P3 && (Config::esxdos || Config::zcontroller)) {
+        if (isP3 && (Config::esxdos || Config::zcontroller)) {
             Config::esxdos = 0;
             Config::zcontroller = false;
             DivMMC::init();   // teardown path frees buffers

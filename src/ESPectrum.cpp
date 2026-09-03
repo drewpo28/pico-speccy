@@ -743,11 +743,6 @@ void ESPectrum::setup() {
       else if (Config::arch == A_ALF) {
         Config::romSet = R_ALF1;
       }
-      else if (Config::arch == A_P3) {
-        // One romset so far, so no per-arch "last used" slot: an explicit arm is still
-        // required or the Pentagon fallback below would hand a +3 boot R_PENT.
-        Config::romSet = R_P3;
-      }
       else if (Config::arch == A_128K) {
         if (Config::pref_romSet_128 != R_LAST)
           Config::romSet = Config::pref_romSet_128;
@@ -789,7 +784,7 @@ void ESPectrum::setup() {
   // does the teardown when the user switches live; this is the boot-time twin, and it
   // has to run BEFORE DivMMC::init() below reads the flags. Not persisted: coming back
   // to another machine restores the user's pick.
-  if (Config::arch == A_P3) {
+  if (Config::isPlus3()) {
     Config::betadisk = false;
     Config::mb02 = false;
     Config::timex_video = false;
@@ -1107,7 +1102,7 @@ void ESPectrum::setup() {
 
     Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -1531,7 +1526,7 @@ void ESPectrum::reset(uint8_t romInUse) {
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_SCORP_GR;
     Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::arch == A_P3) {
+  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;

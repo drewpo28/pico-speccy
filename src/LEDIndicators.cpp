@@ -216,11 +216,11 @@ bool isVisible(Id i) {
         // indicator is meaningful there for the same reason it is for NeoGS.
         case SD:       return Config::esxdos != 0 || DivMMC::enabled
                            || Config::gs_enabled == 2   // 2 = NeoGS
-                           || Config::arch == A_P3;
+                           || Config::isPlus3();
         case ZCTRL:    return Config::zcontroller || DivMMC::zc_enabled;
         case IDE:      return ::IDE::present();
         case FDD:      return Config::betadisk || Config::mb02 != 0 || MB02::enabled
-                           || Config::arch == A_P3;   // the +3's drive is not optional
+                           || Config::isPlus3();   // the +3's drive is not optional
         case MIDI:     return Config::midi > 0;
         // The CMS pair (2x SAA1099, VGM card) touches the same SAA glyph as the
         // single Karabas chip — the glyph must exist in the row for either
@@ -299,7 +299,7 @@ static inline uint8_t fgColor(Id i) {
     // data-read green → permanent yellow; and a bare command write (bus-probing
     // software) would light the glyph with no real disk activity at all. The corner
     // lamp uses the same signal — see ESPectrum.cpp.
-    if (i == FDD && Config::arch == A_P3) {
+    if (i == FDD && Config::isPlus3()) {
         // The +3's controller keeps the same kind of signal under its own name:
         // Upd765::activity is set only by real head activity, not by port traffic.
         if (Plus3Fdc::fdc.activity) {

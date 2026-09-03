@@ -1639,7 +1639,7 @@ bool persistSaveNamed(uint8_t slotnumber, const string& slotName) {
     // A 128K .sna has nowhere to put the +3's #1FFD, and it dumps all eight banks
     // anyway, so the latch is the ONLY thing missing — a fourth sidecar line carries
     // it. Older sidecars simply lack the line, and the reader treats that as zero.
-    if (Config::arch == A_P3) {
+    if (Config::isPlus3()) {
         char x[16]; snprintf(x, sizeof(x), "1FFD=%02X\n", Ports::port1FFD);
         info += x;
     }
@@ -1776,7 +1776,7 @@ bool persistLoad(uint8_t slotnumber)
         }
         // Apply the +3 paging latch AFTER the snapshot, which restores #7FFD itself:
         // plus3Remap needs both to place the four banks and the ROM.
-        if (persist_1ffd >= 0 && Config::arch == A_P3) {
+        if (persist_1ffd >= 0 && Config::isPlus3()) {
             Ports::port1FFD = (uint8_t)persist_1ffd;
             MemESP::plus3Remap(Ports::port1FFD);
         }
@@ -2300,7 +2300,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         // A +3 disk. This branch predates ifaceForExt and still tests
                         // the extension directly, so the new one has to be added here
                         // as well as in the browser above.
-                        if (Config::arch == A_P3) {
+                        if (Config::isPlus3()) {
                             DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
                         } else {
                             OSD::osdCenteredMsg("Switch to the +3 first", LEVEL_WARN);
@@ -2557,14 +2557,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         forcePopup = false;
                         goto f5_retry;
                     }
-                    const bool needSwitch = (Config::arch != A_P3);
+                    const bool needSwitch = !Config::isPlus3();
                     DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
                     Config::save();
                     if (needSwitch) {
                         // commit() reboots on some boards and never returns; the mount
                         // above is already persisted, so Config::loadDiskMounts puts the
                         // disk back either way.
-                        MachineSwitch::commit(A_P3, R_P3);
+                        MachineSwitch::commit(A_128K, R_P3);
                         return;
                     }
                 }
