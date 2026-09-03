@@ -1353,7 +1353,9 @@ void __attribute__((naked, noreturn)) __printflike(1, 0) dummy_panic(__unused co
         Debug::fault_log(fmt);
 }
 
-void __not_in_flash() flash_timings(int mhz) {
+// QMI M0 (flash) timing for a given sys_clk: CLKDIV keeps SCK under
+// Config::max_flash_freq, RXDELAY (half sys-clock units) places the read sample.
+static void __not_in_flash_func(flash_timing_for)(int mhz, int* divisor_out, int* rxdelay_out) {
         const int max_flash_freq = Config::max_flash_freq * MHZ;
         const int clock_hz = mhz * MHZ;
         int divisor = (clock_hz + max_flash_freq - 1) / max_flash_freq;
@@ -1364,9 +1366,58 @@ void __not_in_flash() flash_timings(int mhz) {
         if (clock_hz / divisor > 100000000) {
             rxdelay += 1;
         }
+        *divisor_out = divisor;
+        *rxdelay_out = rxdelay;
+}
+
+static inline void flash_timing_write(int divisor, int rxdelay) {
         qmi_hw->m[0].timing = 0x60007000 |
                             rxdelay << QMI_M0_TIMING_RXDELAY_LSB |
                             divisor << QMI_M0_TIMING_CLKDIV_LSB;
+}
+
+void __not_in_flash() flash_timings(int mhz) {
+        int divisor, rxdelay;
+        flash_timing_for(mhz, &divisor, &rxdelay);
+        flash_timing_write(divisor, rxdelay);
+}
+
+// Flash timing to hold ACROSS a sys_clk change (from_mhz -> to_mhz).
+//
+// set_sys_clock_khz()/try_set_sys_clock_khz() live in flash and fetch their own
+// instructions through XIP while the PLL is being reprogrammed, so whatever
+// M0 timing is in force at that moment has to read correctly at BOTH clocks.
+// Neither steady-state value does: the boot2 default (CLKDIV 2, RXDELAY 2) is
+// far out of spec at 378 MHz, and our flash_timings(378) (CLKDIV 6, RXDELAY 6
+// at max_flash_freq 66) puts the sample point a full half-SCK late at the
+// 150 MHz boot clock — RXDELAY is an ABSOLUTE delay in half sys-clock units
+// (pad round trip + flash clock-to-Q), and "rxdelay = divisor" scales it with
+// the divider instead: 7.9 ns at 378 MHz becomes 20 ns at 150 MHz, i.e. the
+// sample lands on the SCK edge where the flash launches the next nibble.
+// Whether that fetch returns garbage depends on the chip, its temperature and
+// what the XIP cache happens to hold: UNDEFINSTR -> HardFault -> lockup, on
+// one board and not another. SpeccyP hit exactly this (SWD-diagnosed inside
+// set_sys_clock_pll, commit 8809b41) and fixed it with a fixed CLKDIV 4 /
+// RXDELAY 2 for the transition.
+//
+// Ours is derived instead of hard-coded: take the steady-state numbers for the
+// HIGHER of the two clocks (so SCK never exceeds max_flash_freq at either end)
+// and DOUBLE the divider while keeping RXDELAY. Halving SCK moves the nominal
+// sample point a whole SCK period away from the launching edge at the target
+// clock and puts it mid-window at the slower one; RXDELAY stays the same
+// absolute delay, which is what it compensates. Worked examples (max 66):
+//   150->378: CLKDIV 12 RXDELAY 6 — sample 60 ns into a 80 ns SCK period at 150,
+//             23.8 ns into 31.7 ns at 378; data valid ~[10, period+6] at both.
+//   378->504: CLKDIV 16 RXDELAY 8; 378->252: CLKDIV 12 RXDELAY 6.
+// SCK is slow (12-31 MHz) only for the few hundred us of the switch itself;
+// callers restore flash_timings(actual_mhz) right after.
+void __not_in_flash_func(flash_timings_transition)(int from_mhz, int to_mhz) {
+        int divisor, rxdelay;
+        flash_timing_for(from_mhz > to_mhz ? from_mhz : to_mhz, &divisor, &rxdelay);
+        divisor *= 2;
+        if (divisor > (int)(QMI_M0_TIMING_CLKDIV_BITS >> QMI_M0_TIMING_CLKDIV_LSB))
+            divisor = QMI_M0_TIMING_CLKDIV_BITS >> QMI_M0_TIMING_CLKDIV_LSB;
+        flash_timing_write(divisor, rxdelay);
 }
 
 static void __not_in_flash_func(flash_info)() {
@@ -1599,7 +1650,9 @@ static bool __not_in_flash_func(try_set_sys_clock_khz)(uint32_t freq_khz) {
 // block in main()). Buffer's flash-write window calls this to drop to 252 MHz for the
 // write and to restore the running clock + correct timing afterwards.
 void __not_in_flash_func(board_set_clock_and_timing)(uint32_t mhz) {
+    const uint32_t cur_mhz = clock_get_hz(clk_sys) / MHZ;
     const uint32_t ints = save_and_disable_interrupts();
+    flash_timings_transition((int)cur_mhz, (int)mhz);   // valid at both ends of the switch
     if (!try_set_sys_clock_khz(mhz * KHZ))
         set_sys_clock_khz(mhz * KHZ, true);
     flash_timings((int)mhz);
@@ -1717,13 +1770,22 @@ int main() {
     #else
         vreg_disable_voltage_limit();
         vreg_set_voltage(VREG_VOLTAGE_1_60);
-        flash_timings(CPU_MHZ);
-        sleep_ms(100);
-
+        sleep_ms(100);                          // regulator settles before the overclock
+        // The clock switch runs under a timing valid at BOTH clocks (see
+        // flash_timings_transition); the steady-state timing goes in only once the
+        // PLL has settled. Until 2026-09-03 the 378 MHz timing was applied HERE and
+        // the 100 ms sleep + set_sys_clock ran from flash at 150 MHz under it — the
+        // "board hangs on Hard RP2350 reset, power-cycle needed" class of bug (m1p2,
+        // no PSRAM; same fault SpeccyP traced over SWD in set_sys_clock_pll).
+        const int boot_mhz = clock_get_hz(clk_sys) / MHZ;
+        int applied_boot_mhz = CPU_MHZ;
+        flash_timings_transition(boot_mhz, applied_boot_mhz);
         if (!set_sys_clock_khz(CPU_MHZ * KHZ, 0)) {
-            #define CPU_MHZ 252
-            set_sys_clock_khz(CPU_MHZ * KHZ, 1); // fallback to failsafe clocks
+            applied_boot_mhz = 252;                 // fallback to failsafe clocks
+            flash_timings_transition(boot_mhz, applied_boot_mhz);
+            set_sys_clock_khz(applied_boot_mhz * KHZ, 1);
         }
+        flash_timings(applied_boot_mhz);
     #endif
 
 #if defined(DBG_UART_ENABLED)
@@ -1914,6 +1976,10 @@ int main() {
         {
             const uint32_t ints = save_and_disable_interrupts();
             if (clk_changed) {
+                // Timing valid at both clocks while try_set_sys_clock_khz (flash code)
+                // reprograms the PLL; flash_timings(applied_mhz) below restores the
+                // steady-state value whichever way the switch goes.
+                flash_timings_transition(running_mhz, Config::cpu_mhz);
                 clk_locked = try_set_sys_clock_khz(Config::cpu_mhz * KHZ);
                 if (!clk_locked) {
                     // PLL did not lock — restore original PLL

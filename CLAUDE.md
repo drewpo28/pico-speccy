@@ -1557,6 +1557,47 @@ internal pull-downs. Debugging trap that cost a round: while Hardware Info is OP
 the firmware rewrites AINSEL every second — OpenOCD channel scans race it (verify
 with CS readback beside every RESULT).
 
+## Flash QMI timing ACROSS a sys_clk switch (2026-09-03; PICO_DV regression-clean, m1p2 verdict pending)
+
+Report: one m1p2 (Murmulator 1.3 + Pico 2, NO PSRAM, VGA, PWM) hangs on "Hard
+RP2350 reset" (F12 / menu, = `esp_hard_reset` watchdog reboot) and needs a
+power cycle; nobody else sees it, and SpeccyP's identical `watchdog_enable(1,
+true)` reboot works on the same board. The reboot mechanism is byte-for-byte
+the same, so the difference is in the BOOT after it. SpeccyP commit 8809b41
+(2026-08-14, SWD-diagnosed: UNDEFINSTR HardFault inside `set_sys_clock_pll`)
+names the hazard: the clock-switch code lives in flash and fetches itself
+through XIP while the PLL is reprogrammed, so the M0 timing in force must read
+correctly at BOTH clocks. Ours did not: `main()` applied `flash_timings(378)`
+(CLKDIV 6, RXDELAY 6 at the default `max_flash_freq` 66) and then ran
+`sleep_ms(100)` + `set_sys_clock_khz` from flash at the 150 MHz boot clock.
+RXDELAY is an ABSOLUTE delay in half sys-clock units (datasheet: 0 = sample on
+the SCK rising edge; it compensates pad round trip + flash clock-to-Q), and
+`rxdelay = divisor` scales it with the divider: 7.9 ns at 378 MHz becomes 20 ns
+at 150 MHz, which puts the sample at 40.0 ns of a 40.0 ns SCK period — ON the
+edge where the flash launches the next nibble. Whether that reads garbage is
+per chip, temperature and XIP-cache content, i.e. "one board, only after a
+warm reboot" is exactly the expected shape.
+
+- **`flash_timings_transition(from, to)`** (main.cpp): steady-state numbers for
+  the HIGHER clock, CLKDIV doubled, RXDELAY kept. Derived, not SpeccyP's fixed
+  0x60007204 (their CLKDIV 4/RXDELAY 2 is for `FLASH_MAX_FREQ` 166; we default to
+  66). 150→378 gives CLKDIV 12 / RXDELAY 6: sample 60 of 80 ns at 150, 23.8 of
+  31.7 at 378 — mid-window at both. Host table for 66/100/133 and every
+  switch pair we do: `scratchpad tcheck.c` in the 2026-09-03 session.
+- Applied at all three clock switches: boot (`vreg` → `sleep_ms(100)` →
+  transition → `set_sys_clock_khz` → `flash_timings(applied)`), the
+  `Config::cpu_mhz` switch after setup (transition inside the IRQ-off block, before
+  `try_set_sys_clock_khz`), and `board_set_clock_and_timing` (Buffer's flash-write
+  window). The boot block's `#define CPU_MHZ 252` inside the fallback branch is
+  gone (a textual redefinition that leaked into the rest of main.cpp); the applied
+  clock is a local now.
+- Diagnostics without a UART, for the next report of this class: the LED blinks 6
+  times in `main()` AFTER the clock switch (no blink after a reboot = died before
+  or inside it), and `/.config/pico-speccy/debug.log` gets a `--- BOOT (WATCHDOG)
+  ---` header + `main: after ESPectrum::setup()` only when setup completed.
+- Still unaddressed, same family: butter PSRAM M1 timing is only retimed AFTER the
+  `cpu_mhz` switch while core1 (GS, video) may be fetching from PSRAM during it.
+
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 
 Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):
