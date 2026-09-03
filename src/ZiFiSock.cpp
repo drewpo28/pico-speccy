@@ -87,7 +87,15 @@ int      pending_connect = -1; // link id seen as "<id>,CONNECT" (server accept)
 // CLOSED (hw-observed: last ~3-8 frames + the FTP "226" vanished every transfer).
 bool     g_passive = false;        // CIPRECVMODE=1 acked (old AT firmware → false)
 int      g_recvdata_link = 0;      // link a pending AT+CIPRECVDATA was issued for
-bool     g_hdr_recvdata = false;   // parsing a "+CIPRECVDATA,<len>:" header
+bool     g_hdr_recvdata = false;   // parsing a +CIPRECVDATA header (either dialect)
+// The two AT firmware families disagree on the +CIPRECVDATA header punctuation:
+//   ESP8266 NONOS AT 1.7:  +CIPRECVDATA,<len>:<data>
+//   ESP-AT 2.x / 4.x:      +CIPRECVDATA:<len>,<data>
+// Both are accepted; this flag remembers which one the current header is, so the
+// state machine knows whether ':' or ',' ends the length field. Assumes
+// AT+CIPDINFO=0 (the default, never changed here) — with CIPDINFO=1 ESP-AT inserts
+// "<ip>",<port>, before the data and the ESP-AT 2.x/4.x form would need more fields.
+bool     g_hdr_recvdata_v4 = false;
 bool     g_drained[ZiFiSock::N_LINKS] = {false, false}; // post-CLOSED pull came back empty
 bool     g_trace_quiet = false;    // suppress ZIFI_TRACE for high-rate pull chatter
 
@@ -95,6 +103,7 @@ void reset_parser() {
     st = ST_SCAN; linelen = 0; ipd_len = 0; ipd_link = 0;
     ipd_field = 0; ipd_nfld = 0; ipd_tmp_id = 0;
     g_hdr_recvdata = false;
+    g_hdr_recvdata_v4 = false;
     last_line[0] = '\0';
     flag_prompt = flag_send_ok = flag_error = false;
     flag_send_fail = false;
@@ -187,12 +196,15 @@ void ZiFiSock::pump(uint32_t budget_ms) {
                     g_hdr_recvdata = false;
                     linelen = 0; linebuf[0] = '\0';
                 }
-                // Passive-mode pull response: "+CIPRECVDATA,<actual_len>:<data>".
+                // Passive-mode pull response: "+CIPRECVDATA,<actual_len>:<data>"
+                // (NONOS AT 1.7) or "+CIPRECVDATA:<actual_len>,<data>" (ESP-AT 2.x/4.x).
                 // No link id in the response — it belongs to whichever link the
                 // AT+CIPRECVDATA we just issued named (g_recvdata_link).
-                else if (linelen >= 13 && memcmp(linebuf + linelen - 13, "+CIPRECVDATA,", 13) == 0) {
+                else if (linelen >= 13 && memcmp(linebuf + linelen - 13, "+CIPRECVDATA", 12) == 0
+                         && (linebuf[linelen - 1] == ',' || linebuf[linelen - 1] == ':')) {
                     st = ST_IPD_HDR; ipd_field = 0; ipd_nfld = 0; ipd_tmp_id = 0;
                     g_hdr_recvdata = true;
+                    g_hdr_recvdata_v4 = (linebuf[linelen - 1] == ':');
                     ipd_link = g_recvdata_link;
                     linelen = 0; linebuf[0] = '\0';
                 }
@@ -201,9 +213,12 @@ void ZiFiSock::pump(uint32_t budget_ms) {
             case ST_IPD_HDR:
                 if (b >= '0' && b <= '9') {
                     ipd_field = ipd_field * 10 + (b - '0');
-                } else if (b == ',') {
+                } else if (b == ',' && !(g_hdr_recvdata && g_hdr_recvdata_v4)) {
                     ipd_tmp_id = ipd_field; ipd_field = 0; ipd_nfld++;
-                } else if (b == ':') {
+                } else if (b == ':' || b == ',') {
+                    // ':' ends the length in +IPD and the NONOS +CIPRECVDATA form;
+                    // ',' ends it in the ESP-AT 2.x/4.x +CIPRECVDATA form (the only
+                    // way a ',' reaches this branch, see the test above).
                     // Last field is length; if a comma preceded it, ipd_tmp_id is the link.
                     ipd_len  = ipd_field;
                     if (!g_hdr_recvdata) {
@@ -467,7 +482,7 @@ int ZiFiSock::sock_recv(int id, uint8_t* buf, size_t maxlen, uint32_t timeout_ms
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
 
     if (g_passive) {
-        // Pull model: ask the ESP for a ring-sized chunk; the "+CIPRECVDATA,<n>:"
+        // Pull model: ask the ESP for a ring-sized chunk; the "+CIPRECVDATA,<n>:" (or ESP-AT 4.x "+CIPRECVDATA:<n>,")
         // response payload is demuxed into our ring by pump() inside atCmd. An
         // empty answer / ERROR just means no data buffered yet. After a peer
         // close the ESP's buffer stays readable — keep pulling until it comes

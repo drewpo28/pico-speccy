@@ -3093,6 +3093,18 @@ Gated by `Config::zifi_enabled`. First two: port low byte `0xEF`, high address b
 - **Picker**: Network → first row `GPIO x/y` (or `GPIO Off`, `(def)` suffix when unset) → submenu listing `Off` + each board pair with a note (what it displaces, e.g. "off: NESPAD"). On select: save + `ZiFi::deinit()/init()` if NIC on. `BoardPins` is the reusable home for board pin-maps (extend for MIDI etc.).
 - **Yield-at-boot**: when a chosen pair shares pins with a peripheral (non-empty note), ZiFi has priority — at boot each conflicting peripheral calls `BoardPins::zifiOwnsPin(pin)` and **skips its own init** if ZiFi owns it: NESPAD (`main.cpp`, moved after `Config::load`, gated by `nespad_active`), MIDI (`ESPectrum.cpp` `Midi::enabled=0`), WAV (`pwm_audio.cpp` skip `inInit`), PCM5122 (`pwm_audio.cpp` skip I2S), AY-clock (`PinSerialData_595.c` via `extern "C" board_zifi_owns_pin`). The displaced peripheral only releases pins at boot, so selecting a conflicting pair **or** enabling the NIC with a conflicting default prompts `OSD_DLG_APPLYREBOOT` (`BoardPins::zifiActiveNote()` non-empty). Defaults that conflict by design: MURM2/PICO_PC 20/21 = NESPAD, MURM1_P2 16/17 = NESPAD.
 
+### +CIPRECVDATA header comes in two dialects (hw-confirmed 2026-09-03)
+
+Passive-mode pulls (`AT+CIPRECVMODE=1`, FTP STOR path) are answered by
+`+CIPRECVDATA,<len>:<data>` on ESP8266 NONOS AT 1.7 but by
+`+CIPRECVDATA:<len>,<data>` on stock ESP-AT 2.x/4.x — the keyword separator and
+the length terminator are swapped. `ZiFiSock.cpp` used to match only the NONOS
+form, so a stock ESP-AT module streamed every pulled chunk through as garbage
+status lines (Mike V73 had to patch his esp-at fork to emit the old form). Both
+are accepted now (`g_hdr_recvdata_v4`); `+IPD` parsing is untouched. Assumes
+`AT+CIPDINFO=0` (default, never sent) — with it on ESP-AT inserts `"<ip>",<port>,`
+before the data and the ESP-AT form would need two more fields.
+
 ### Baud ceilings (transport-dependent, `src/ZiFi.cpp`)
 
 - Menu (Network → Baud) offers 115200/230400/460800/921600; the link idles at
