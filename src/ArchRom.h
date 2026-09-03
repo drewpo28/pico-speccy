@@ -59,7 +59,8 @@
     X(R_SCORP_1024,     "Scorp1024",        "ZS-1024 Turbo+")             \
     X(R_SCORP_PROF,     "ScorpProf",        "ZS-1024 + ProfROM")          \
     X(R_ALF1,           "ALF1",             "ALF cartridge")      \
-    X(R_P3,             "P3",               "+3 v4.0")
+    X(R_P3,             "P3",               "+3 v4.0")             \
+    X(R_P3E,            "P3e",              "+3 (IDEDOS)")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -149,5 +150,11 @@ inline ArchIdx archDisplay(ArchIdx a, RomsetIdx r) {
 // uPD765, the contention pattern, no floating bus) hangs off this romset — see
 // Config::isPlus3() / Z80Ops::isP3.
 inline bool isPlus3Romset(RomsetIdx r) {
-    return r == R_P3;
+    return r == R_P3 || r == R_P3E;
+}
+// The +3e (Garry Lancaster's replacement ROM) is the same +3 hardware with IDEDOS in
+// ROM, so it is a romset of the romset: everything above stays true, and on top of it
+// the machine carries the "simple 8-bit" IDE interface on #xxEF (see Ports.cpp).
+inline bool isPlus3eRomset(RomsetIdx r) {
+    return r == R_P3E;
 }

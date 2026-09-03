@@ -65,6 +65,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "GS/GS.h"
 #include "DivMMC.h"
 #include "IDE.h"
+#include "Plus3eIde.h"
 #include "ZiFi.h"
 #include "RTC.h"
 #include "Nvram24.h"
@@ -620,6 +621,19 @@ inline static size_t extendedZxRamPages() {
   return 4;
 }
 
+
+// ── ZX Spectrum +3e (IDEDOS): the "simple 8-bit" IDE interface ─────────────────
+// The port map and the evidence for it are in Plus3eIde.h, which the host test
+// tools/plus3e_ide_test.cpp checks against the shipped ROM. Two notes belong here:
+// the decode sits AHEAD of ZiFi in both directions because their #xxEF windows
+// overlap (the NIC is forced off while a +3e runs, the same treatment Beta gets on
+// the +3), and the interface is 8 bits wide, which is why IDE::eight_bit steps the
+// data register two buffer bytes at a time and why IDEDOS images are half-sector.
+static inline bool p3eIde(uint16_t address) {
+    return Config::isPlus3e() && plus3eIdePort(address);
+}
+static inline uint8_t p3eIdeReg(uint16_t address) { return plus3eIdeReg(address); }
+
 IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   uint8_t data;
 #if SND_PORT_TRACE
@@ -889,6 +903,11 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     }
   } else {
     ioContentionLate(MemESP::ramContended[rambank]);
+    // +3e IDE (see p3eIde above). Ahead of ZiFi, whose windows overlap it.
+    if (p3eIde(address)) {
+      LED::touchR(LED::IDE);
+      return IDE::read8(p3eIdeReg(address));
+    }
     // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
     // 0xEFF7 (hi=0xEF > 0xC7) falls through to Pentagon mode16col handler below
     if (Config::zifi_enabled && p8 == 0xEF) {
@@ -2459,6 +2478,12 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (Z80Ops::isByte && !ESPectrum::trdos && (a8 & 0x7F) == 0x1F)
     Config::byteTestRomToggle();
 
+  // +3e IDE (see p3eIde above). Ahead of ZiFi, whose windows overlap it.
+  if (p3eIde(address)) {
+    LED::touchW(LED::IDE);
+    IDE::write8(p3eIdeReg(address), data);
+    return;
+  }
   // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
   // 0xEFF7 (hi=0xEF > 0xC7) falls through to Pentagon mode16col handler below
   if (Config::zifi_enabled && a8 == 0xEF) {

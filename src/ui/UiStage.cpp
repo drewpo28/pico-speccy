@@ -245,7 +245,7 @@ static const RomsetIdx kPref128[]  = {
 #if !NO_SPAIN_ROM_128k
     R_128K_ES, R_PLUS2, R_PLUS2_ES, R_ZX81P,
 #endif
-    R_P3, R_128K_CS, R_LAST };
+    R_P3, R_P3E, R_128K_CS, R_LAST };
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
@@ -819,6 +819,11 @@ static bool stagedIsPlus3() {
     if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
     return Config::isPlus3();
 }
+static bool stagedIsPlus3e() {
+    const int32_t m = staged(SET_MACHINE);
+    if (m >= 0) return isPlus3eRomset((RomsetIdx)(m & 0xFF));
+    return Config::isPlus3e();
+}
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }
@@ -868,6 +873,19 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on the +3");
             if (staged(SET_ZCONTROLLER))
                 changed |= force(SET_ZCONTROLLER, 0, rep, "Z-Controller is not available on the +3");
+        }
+
+        // The +3e's IDE interface is part of the machine, not a card: the ROM drives it
+        // and nothing else can be there, so the scheme follows the romset in both
+        // directions. Its ports (#xxEF) are also ZiFi's, so the NIC yields — same rule
+        // as Beta above, and the Web catalog (Config::wifi_enabled) is unaffected.
+        if (stagedIsPlus3e()) {
+            if (staged(SET_IDE_SCHEME) != 3)
+                changed |= force(SET_IDE_SCHEME, 3, rep, "IDE set to the +3e interface");
+            if (staged(SET_ZIFI_NIC))
+                changed |= force(SET_ZIFI_NIC, 0, rep, "ZiFi NIC off: it shares #xxEF with the +3e IDE");
+        } else if (staged(SET_IDE_SCHEME) == 3) {
+            changed |= force(SET_IDE_SCHEME, 0, rep, "IDE off: the +3e interface needs the +3e ROM");
         }
 
         // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so

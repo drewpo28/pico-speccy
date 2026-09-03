@@ -795,6 +795,17 @@ void ESPectrum::setup() {
     Config::betadisk = false;
     Config::mb02 = false;
     Config::timex_video = false;
+    // The +3e drives its own IDE interface and shares #xxEF with the ZiFi NIC.
+    // IDE::init() runs later in setup(), so setting the scheme here is enough.
+    if (Config::isPlus3e()) {
+      Config::ide_scheme = IDE::PLUS3E;
+      if (Config::zifi_enabled) {
+        Debug::log("setup: +3e — ZiFi NIC off (it shares #xxEF with the +3e IDE)");
+        Config::zifi_enabled = 0;
+      }
+    } else if (Config::ide_scheme == IDE::PLUS3E) {
+      Config::ide_scheme = IDE::OFF;   // the +3e interface without the +3e ROM
+    }
     if (Config::esxdos || Config::zcontroller) {
       Debug::log("setup: +3 — DivMMC/Z-Controller off (they automap over the +3 ROMs)");
       Config::esxdos = 0;

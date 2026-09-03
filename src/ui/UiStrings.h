@@ -215,6 +215,8 @@
 #define TXT_ROM_PLUS2_ES_S  "+2 ESP"
 #define TXT_ROM_ZX81P       "ZX81+"
 #define TXT_ROM_P3          "+3 v4.0"
+#define TXT_ROM_P3E         "+3 (IDEDOS)"
+#define TXT_ROM_P3E_S       "+3e v1.4: IDEDOS on an 8-bit IDE interface"
 #define TXT_ROM_PENT        "128K"
 #define TXT_ROM_PENT_S      "128K"
 #define TXT_ROM_PENT_GLUK   "128K + Mr Gluk"

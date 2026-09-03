@@ -23,6 +23,7 @@
 #include "DivMMC.h"
 #include "MB02.h"
 #include "ZiFi.h"
+#include "IDE.h"
 #include "ZiFiAT.h"
 #include "ZiFiSock.h"
 
@@ -182,6 +183,26 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         }
         // DivMMC / Z-Controller automap on ROM addresses that belong to the +3's own
         // four ROMs, so their RAM would page over the ROM the machine is executing.
+        // The +3e's IDE interface belongs to the machine (its ROM drives it), and its
+        // #xxEF ports are ZiFi's, so entering the +3e claims the scheme and drops the
+        // NIC; leaving it hands the scheme back. See resolveConstraints for the twin.
+        {
+            const bool isP3e = isPlus3eRomset(romset);
+            if (isP3e && Config::ide_scheme != IDE::PLUS3E) {
+                Config::ide_scheme = IDE::PLUS3E;
+                IDE::init();
+                OSD::osdCenteredMsg("+3e IDE enabled", LEVEL_WARN, 1500);
+            } else if (!isP3e && Config::ide_scheme == IDE::PLUS3E) {
+                Config::ide_scheme = IDE::OFF;
+                IDE::init();   // closes the images and frees the buffers
+                OSD::osdCenteredMsg("IDE disabled", LEVEL_WARN, 1500);
+            }
+            if (isP3e && Config::zifi_enabled) {
+                Config::zifi_enabled = 0;
+                ZiFi::deinit();
+                OSD::osdCenteredMsg("ZiFi NIC disabled", LEVEL_WARN, 2000);
+            }
+        }
         if (isP3 && (Config::esxdos || Config::zcontroller)) {
             Config::esxdos = 0;
             Config::zcontroller = false;

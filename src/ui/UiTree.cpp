@@ -249,6 +249,9 @@ static const Option opt_mach_128[] = {
     // The +2A/+3 is a romset of the 128K machine, like the +2 (ArchRom.h): the
     // English v4.0 four-bank image. Everything +3-specific keys on this romset.
     { TXT_ROM_P3,         NM_MACH(A_128K, R_P3)       },
+    // ...and the +3e is a romset of that: the same machine with Garry Lancaster's
+    // replacement ROM, which carries IDEDOS and an 8-bit IDE interface on #xxEF.
+    { TXT_ROM_P3E,        NM_MACH(A_128K, R_P3E), TXT_ROM_P3E_S },
     { TXT_ROM_CUSTOM,     NM_MACH(A_128K, R_128K_CS)  },
 };
 static const Option opt_mach_pent[] = {
@@ -461,14 +464,27 @@ static bool p_plus3On() {
     if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
     return Config::isPlus3();
 }
-static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
+// The +3e carries an IDE interface whether or not the scheme row has caught up yet
+// (resolveConstraints only forces it at commit), so the image rows follow the machine
+// there — the same rule the +3 disk rows use.
+// True when the staged (else running) machine is a +3e.
+static bool p_plus3eOn() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m >= 0) return isPlus3eRomset((RomsetIdx)(m & 0xFF));
+    return Config::isPlus3e();
+}
+static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0 || p_plus3eOn(); }
 
-// IDE/HDD scheme: the value IS Config::ide_scheme.
+// IDE/HDD scheme: the value IS Config::ide_scheme. "+3e" is not a card the user
+// plugs in — it is the interface the +3e ROM drives, so the romset forces that value
+// and forces it away again on any other machine (UiStage resolveConstraints). It is
+// listed here so the row can display it rather than showing a blank radio.
 static const Option opt_ide_scheme[] = {
     { "Off",   0 },
     { "NEMO",  1 },
     { "PROFI", 2 },
-    { "SMUC",  3 },
+    { "IDEDOS",   3 },
+    { "SMUC",  4 },
 };
 
 
@@ -750,12 +766,14 @@ static const Option opt_pref128[] = {
     { TXT_ROM_PLUS2_ES, 3 },
     { TXT_ROM_ZX81P,    4 },
     { TXT_ROM_P3,       5 },
-    { TXT_ROM_CUSTOM,   6 },
-    { TXT_ROM_LAST,     7 },
+    { TXT_ROM_P3E,      6 },
+    { TXT_ROM_CUSTOM,   7 },
+    { TXT_ROM_LAST,     8 },
 #else
     { TXT_ROM_P3,       1 },
-    { TXT_ROM_CUSTOM,   2 },
-    { TXT_ROM_LAST,     3 },
+    { TXT_ROM_P3E,      2 },
+    { TXT_ROM_CUSTOM,   3 },
+    { TXT_ROM_LAST,     4 },
 #endif
 };
 static const Option opt_pref_pent[] = {

@@ -25,6 +25,8 @@ bool IDE::sig_valid[2] = { false, false };
 bool IDE::profi_hidd_slot[2] = { false, false };
 
 uint32_t IDE::data_offset[2] = { 0, 0 };
+bool IDE::half_sector[2] = { false, false };
+bool IDE::eight_bit = false;
 uint16_t IDE::cylinders[2] = { 0, 0 };
 uint16_t IDE::heads[2]     = { 0, 0 };
 uint16_t IDE::sectors[2]   = { 0, 0 };
@@ -190,12 +192,19 @@ bool IDE::open_image(int slot, const char* path) {
 
     if (is_hdf) {
         data_offset[slot] = hdr[9] | (hdr[10] << 8);
+        // Flags bit 0 = "half sectors": written through an 8-bit interface, so only
+        // the low byte of each word was ever visible and only those 256 bytes are in
+        // the file. Every IDEDOS disk made for the +3e's 8-bit interface is like this
+        // (the sm8 ROM reads a sector as 256 INI), and reading it at 512 B/sector
+        // lands at twice the right offset and returns garbage.
+        half_sector[slot] = (hdr[8] & 0x01) != 0;
         memcpy(identity[slot], &hdr[0x16], 106);
         cylinders[slot] = identity[slot][2]  | (identity[slot][3]  << 8);
         heads[slot]     = identity[slot][6]  | (identity[slot][7]  << 8);
         sectors[slot]   = identity[slot][12] | (identity[slot][13] << 8);
-        Debug::log("IDE hd%d: HDF C=%u H=%u S=%u data@%u",
-                   slot, cylinders[slot], heads[slot], sectors[slot], data_offset[slot]);
+        Debug::log("IDE hd%d: HDF C=%u H=%u S=%u data@%u%s",
+                   slot, cylinders[slot], heads[slot], sectors[slot], data_offset[slot],
+                   half_sector[slot] ? " (half sectors, 8-bit)" : "");
         return true;
     }
 
@@ -294,6 +303,10 @@ void IDE::init() {
     close();
 
     scheme = Config::ide_scheme;
+    // The +3e interface is 8 bits wide; NEMO and PROFI carry the high byte in a latch.
+    // Set before the OFF exit so switching a scheme off cannot leave the stride behind.
+    eight_bit = (scheme == PLUS3E);
+    half_sector[0] = half_sector[1] = false;   // re-derived per image in open_image()
     if (scheme == OFF) return;
 
     // SMUC carries a 2 KB 24LC16 on the same card (ProfROM keeps its settings and
@@ -511,8 +524,24 @@ void IDE::read_sector() {
         return;
     }
     uint32_t l = lba();
-    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
     UINT br;
+    if (half_sector[d]) {
+        // 256 stored bytes are the LOW halves of the 512-byte sector: read them to the
+        // top of the buffer and spread them over the even positions, so the rest of the
+        // engine (and the 16-bit data path) sees an ordinary sector. The high halves
+        // were never recorded; 0xFF is what an absent byte reads as everywhere else here.
+        FSIZE_t hpos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256;
+        f_lseek(&file[d], hpos);
+        f_read(&file[d], buffer + 256, 256, &br);
+        if (br < 256) memset(buffer + 256 + br, 0xFF, 256 - br);
+        for (int i = 0; i < 256; i++) { buffer[i * 2] = buffer[256 + i]; buffer[i * 2 + 1] = 0xFF; }
+#if IDE_PORT_TRACE
+        Debug::log("IDE READ  hd%d lba=%u off=%u (half) -> %u bytes [%02X %02X ...]",
+                   d, l, (unsigned)hpos, (unsigned)br, buffer[0], buffer[2]);
+#endif
+        return;
+    }
+    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
     f_lseek(&file[d], pos);
     f_read(&file[d], buffer, 512, &br);
     if (br < 512) memset(buffer + br, 0xFF, 512 - br);
@@ -588,8 +617,22 @@ void IDE::write_sector_done() {
     int d = drive();
     if (!file_open[d]) return;
     uint32_t l = lba();
-    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
     UINT bw;
+    if (half_sector[d]) {
+        // Only the low halves exist in the file — squeeze the even bytes back out.
+        // Scratch lives in the second half of the buffer, which the 512-byte transfer
+        // has already been consumed from.
+        for (int i = 0; i < 256; i++) buffer[256 + i] = buffer[i * 2];
+        FSIZE_t hpos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256;
+        f_lseek(&file[d], hpos);
+        f_write(&file[d], buffer + 256, 256, &bw);
+        f_sync(&file[d]);
+#if IDE_PORT_TRACE
+        Debug::log("IDE WRITE hd%d lba=%u off=%u (half) <- %u bytes", d, l, (unsigned)hpos, (unsigned)bw);
+#endif
+        return;
+    }
+    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
     f_lseek(&file[d], pos);
     f_write(&file[d], buffer, 512, &bw);
     f_sync(&file[d]);
@@ -598,6 +641,26 @@ void IDE::write_sector_done() {
                d, l, (unsigned)pos, (unsigned)bw,
                buffer[0], buffer[1], buffer[2], buffer[3]);
 #endif
+}
+
+// Fill `buffer` from the sector under the current LBA, leaving every ATA register
+// alone — read_sector() reports errors and drives status, which a read-modify-write
+// must not do. A failure just leaves the buffer as it was.
+void IDE::preload_sector() {
+    int d = drive();
+    if (!file_open[d]) return;
+    uint32_t l = lba();
+    UINT br;
+    if (half_sector[d]) {
+        f_lseek(&file[d], (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256);
+        f_read(&file[d], buffer + 256, 256, &br);
+        if (br < 256) memset(buffer + 256 + br, 0xFF, 256 - br);
+        for (int i = 0; i < 256; i++) { buffer[i * 2] = buffer[256 + i]; buffer[i * 2 + 1] = 0xFF; }
+        return;
+    }
+    f_lseek(&file[d], (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512);
+    f_read(&file[d], buffer, 512, &br);
+    if (br < 512) memset(buffer + br, 0xFF, 512 - br);
 }
 
 void IDE::advance_lba() {
@@ -679,6 +742,12 @@ void IDE::execute_command(uint8_t cmd) {
 
         case 0x30: // WRITE SECTOR (retry)
         case 0x31: // WRITE SECTOR (no retry)
+            // An 8-bit host writes only the low half of every word; the high halves
+            // keep whatever the disk already held. Read the sector first so they
+            // survive instead of being written back from a stale buffer. Free for a
+            // half-sector image (the high halves are not stored at all), so the test
+            // is on the bus width, not the image.
+            if (eight_bit) preload_sector();
             data_index = 0;
             data_write = true;
             data_discard = false;
@@ -1061,7 +1130,10 @@ uint8_t IDE::read8(uint8_t reg) {
                 return val;
             }
             if (data_index >= 0 && !data_write) {
-                uint8_t val = buffer[data_index++];
+                // An 8-bit interface sees only the low half of each word, so it steps
+                // two buffer bytes per access and finishes a sector in 256 of them.
+                uint8_t val = buffer[data_index];
+                data_index += eight_bit ? 2 : 1;
                 if (data_index >= 512) {
                     data_index = -1;
                     if (reg_sector_count > 0) {
@@ -1114,7 +1186,8 @@ void IDE::write8(uint8_t reg, uint8_t value) {
                 break;
             }
             if (data_index >= 0 && data_write) {
-                buffer[data_index++] = value;
+                buffer[data_index] = value;
+                data_index += eight_bit ? 2 : 1;   // 8-bit bus: low halves only
                 if (data_index >= 512) {
                     if (!data_discard) write_sector_done();
                     data_index = -1;

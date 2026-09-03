@@ -1226,6 +1226,56 @@ in OSDMain's HK_STATS handler now also covers the +3 and Scorpion — it listed
 Pentagon/Profi/Byte/MB-02 only, so `maxMode` was 2 and the disk line was dead code on
 both. NOT hw-tested.
 
+### The +3e (IDEDOS): a romset of a romset, and its 8-bit IDE (2026-09-03, NOT hw-tested)
+
+`R_P3E` ("+3 (IDEDOS)") sits under `R_P3` the way `R_P3` sits under the 128K arch:
+`isPlus3Romset()` is true for both, so every +3 rule already written applies unchanged,
+and `isPlus3eRomset()` / `Config::isPlus3e()` add the IDE interface on top. It is Garry
+Lancaster's +3e v1.4, the **`sm8`** build (simple 8-bit interface) from `p3eroms.zip`
+on worldofspectrum.org/zxplus3e — that site also carries the IDEDOS partition spec, and
+the wiki page is sinclair.wiki.zxnet.co.uk/wiki/IDEDOS.
+
+- **The port map came out of the ROM, not a schematic** — worldofspectrum documents the
+  interfaces but publishes no port list. Diffing the `sm8`, `pe8` and `div` builds puts
+  the driver in bank 2 from ~0x24A3. Low byte is always `#EF`; the ATA register is
+  three bits of the HIGH byte, **A13 A12 A8**: `#CEEF` data, `#CFEF` error/features,
+  `#DEEF` count, `#DFEF` sector, `#EEEF` cyl lo, `#EFEF` cyl hi, `#FEEF` device/head,
+  `#FFEF` command/status. A9-A11 are NOT decoded (0x278B drives the same registers as
+  `#F0EF`/`#E0EF`); A14/A15 are 1 everywhere. The decode lives in `src/Plus3eIde.h` and
+  `tools/plus3e_ide_test.cpp` re-derives it FROM the shipped `rom2.bin` — it scans every
+  `LD BC,nnEF` and asserts all eight registers are reachable, which is what catches a
+  wrong bit (a mutated A13 shift collapses the ROM's 34 sites onto 4 registers).
+- **The bus is 8 bits wide, so a sector is 256 bytes** (0x252D: `LD B,#CE` then 256
+  `INI`). `IDE::eight_bit` steps the data register TWO buffer bytes per access, so the
+  512-byte engine is untouched. A `WRITE SECTOR` on an 8-bit bus first reads the sector
+  (`preload_sector`) — the host only supplies the low halves and the high ones must
+  survive, which a stale buffer would not give.
+- **HDF flags bit 0 = half sectors** and we were ignoring it (`IDE.cpp` and `DivMMC.cpp`
+  both read only the data offset at `hdr[9..10]`). Such an image stores 256 B/sector,
+  so reading it at 512 lands at twice the offset and returns garbage. `IDE::half_sector`
+  expands on read into the even bytes and compresses on write; DivMMC's divIDE path is
+  still unfixed. Every IDEDOS disk built for the 8-bit interface is like this — the
+  reference image (`Ocean.hdf`, 999/16/64, 1022976 sectors, ×256 + 128 = the file size
+  exactly) has `PLUSIDEDOS` type 0x01 at LBA 0 plus two type 0x03 (+3DOS) partitions.
+- **ZiFi is forced off on the +3e.** The NIC decodes `#xxEF` too and its two windows
+  (hi ≤ 0xC7, hi ≥ 0xF8) both overlap this interface; requiring A14/A15 clears the
+  bottom one but not the top. Same three-place treatment as Beta on the +3
+  (`resolveConstraints`, `MachineSwitch`, `ESPectrum::setup`). `Config::wifi_enabled`
+  and the Web catalog are untouched — only the guest-visible NIC goes.
+- **`IDE::PLUS3E` (scheme 3) follows the romset in BOTH directions.** The interface is
+  part of the machine, so entering the +3e claims the scheme and leaving it hands it
+  back; without the reverse rule a scheme nothing can reach would survive in NVS and
+  `IDE::present()` would light the indicator on a machine with no interface.
+- **Flash: ~36 KB.** Banks 0/1 overlay the STOCK +3 banks (7110 / 12787 B), bank 2 is
+  raw, and bank 3 is BYTE-IDENTICAL to the +3's — it binds the very same
+  `gb_overlay_plus3_rom3` and ships nothing (`pack_plus3e_raw` fails the build if that
+  ever stops being true). Both branches of the `R_P3`/`R_P3E` case must call
+  `registerOverlay` for EVERY base they assign, `nullptr` included: the registry is
+  keyed by base pointer and persists across romset switches, so a missing clear leaves
+  the +3e patch live on a plain +3.
+- An `.hdf` opened in the F5 browser goes to IDE hd0 on a +3e instead of the DivMMC
+  path (DivMMC is off there). The menu route, Storage → IDE images, already worked.
+
 ### The three uPD765 behaviours that are hangs, not wrong bytes
 
 Each has a named assertion in `tools/upd765_test.cpp`; if one regresses the machine
@@ -1284,6 +1334,7 @@ byte, never through DskImage's own writer, so a parser bug cannot hide behind a 
 writer bug.
 
 ```
+g++ -O2 -Wall -Wextra -Isrc -o /tmp/p3e tools/plus3e_ide_test.cpp && /tmp/p3e
 g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/dsk_test \
     tools/dsk_test.cpp src/DskImage.cpp && /tmp/dsk_test
 g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/upd765_test \

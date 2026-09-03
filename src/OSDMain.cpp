@@ -2606,10 +2606,26 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (loadAlfCart(fname)) return;   // clean exit into the running machine
                 }
                 else if (ext == "mmc" || ext == "hdf") {
+                    // On a +3e the hard disk hangs off the machine's OWN IDE interface
+                    // (DivMMC is forced off there), so an .hdf goes to hd0 of that —
+                    // this is the IDEDOS disk the +3e ROM boots from.
+                    if (Config::isPlus3e() && ext == "hdf") {
+                        FileUtils::IMG_Path = FileUtils::ALL_Path;
+                        if (forcePopup) {
+                            nm::runDiskSlots(IFACE_IDE, fname.c_str());
+                            Config::save();
+                            ESPectrum::reset();
+                            forcePopup = false;
+                            return;
+                        }
+                        DiskSlots::slotMount(IFACE_IDE, 0, fname);
+                        Config::save();
+                        ESPectrum::reset();
+                    }
                     // DivMMC/DivIDE image — Enter loads into hd0 (slot 0); F5 opens
                     // the slot popup which mounts in-place and keeps the popup open.
                     // A full ESPectrum::reset() runs after everything is settled.
-                    if (DivMMC::enabled) {
+                    else if (DivMMC::enabled) {
                         FileUtils::IMG_Path = FileUtils::ALL_Path;
                         if (forcePopup) {
                             // The slot chooser is a level of the menu.

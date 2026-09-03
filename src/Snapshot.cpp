@@ -537,9 +537,11 @@ bool FileZ80::load(const string& z80_fn) {
 
             if (z80_plus3) {
 
-                // A +3 snapshot on a 128K/+2: the four ROMs and #1FFD only exist on the
-                // +3 romset, so switch to it (the twin of the +2 case below).
-                if (Config::romSet != R_P3)
+                // A +3 snapshot on a 128K/+2: the four ROMs and #1FFD only exist on a
+                // +3 romset, so switch to one (the twin of the +2 case below). A running
+                // +3e already IS a +3 and keeps its own ROM — the snapshot says which
+                // machine, not which of its ROM revisions.
+                if (!Config::isPlus3())
                     Config::requestMachine(z80_arch, R_P3);
 
             } else if (mch == 12) { // +2

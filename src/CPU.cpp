@@ -45,6 +45,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Debug.h"
 #include "Z80DMA.h"
 #include "ZiFi.h"
+#include "IDE.h"
 #include "DivMMC.h"
 #include "GS/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
 
@@ -287,6 +288,12 @@ void CPU::reset() {
         if (Config::mb02) Config::mb02 = false;
         if (Config::timex_video) Config::timex_video = false;
     }
+    // The +3e's IDE scheme follows its romset in both directions (see MachineSwitch);
+    // this is the backstop for the paths that never pass through a menu. IDE::init()
+    // is not called here — a reset does not re-open images, and setup() already
+    // resolved this for the boot machine.
+    if (Config::isPlus3e()) Config::ide_scheme = IDE::PLUS3E;
+    else if (Config::ide_scheme == IDE::PLUS3E) Config::ide_scheme = IDE::OFF;
 
     // Timex video is incompatible with Byte ROM sets — auto-disable.
     // Also with Profi/Karabas: port #FF there is the Beta-128 FDC SYS register,
