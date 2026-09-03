@@ -2675,8 +2675,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // Show / hide OnScreen Stats
             {
                 uint8_t mode = VIDEO::OSD & 0x03;
-                bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi) || (Z80Ops::is128 && Z80Ops::isByte)
-                                || ((Z80Ops::is48 || Z80Ops::is128) && MB02::enabled))
+                // Same set as the corner-lamp hasFdd in ESPectrum::loop: Scorpion carries
+                // Beta on board, the +3 has its own uPD765 stats line.
+                bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)
+                                || (Z80Ops::is128 && Z80Ops::isByte)
+                                || ((Z80Ops::is48 || Z80Ops::is128) && MB02::enabled)
+                                || Z80Ops::isP3)
                         && Tape::tapeStatus != TAPE_LOADING
                     && !DivMMC::enabled
                     ;

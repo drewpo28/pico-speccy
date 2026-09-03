@@ -113,3 +113,8 @@ void    updTick      (Upd765* f, uint64_t nowT);
 // True while a transfer is waiting for the guest — the caller can use it to decide
 // whether it is worth pumping.
 bool    updBusy      (const Upd765* f);
+
+// Short (<= 6 chars) name of what the controller is doing, for the F8 stats line —
+// the uPD765 twin of rvmWD1793StepStateName(). Defined in the .cpp because the
+// command table it reads lives there.
+const char* updStateName(const Upd765* f);

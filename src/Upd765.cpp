@@ -69,6 +69,29 @@ static const uint8_t kCmdInvalid = (uint8_t)(sizeof(kCmd) / sizeof(kCmd[0]) - 1)
 
 static inline const UpdCmd& CMD(const Upd765* f) { return kCmd[f->cmdIdx]; }
 
+// What the F8 stats line shows. An exec phase names the command, because that is
+// the interesting state; a pending seek is reported only when the controller is
+// otherwise free, since a non-DMA SEEK returns to command phase immediately and
+// finishes in the background.
+const char* updStateName(const Upd765* f) {
+    if (f->phase == UPD_PH_EXE) {
+        switch (kCmd[f->cmdIdx].id) {
+            case C_READ_DATA:  return "READ";
+            case C_WRITE_DATA: return "WRITE";
+            case C_WRITE_ID:   return "FORMAT";
+            case C_READ_ID:    return "RDID";
+            case C_READ_DIAG:  return "DIAG";
+            case C_SCAN:       return "SCAN";
+            default:           return "EXEC";
+        }
+    }
+    if (f->phase == UPD_PH_RES) return "RESULT";
+    if (f->seekSt[0] == 2 || f->seekSt[1] == 2) return "RECAL";
+    if (f->seekSt[0] == 1 || f->seekSt[1] == 1) return "SEEK";
+    if (f->mainStatus & UPD_MS_CB) return "CMD";
+    return f->motor ? "IDLE" : "STOP";
+}
+
 static uint8_t cmdIdentify(uint8_t reg) {
     for (uint8_t i = 0; i < kCmdInvalid; i++)
         if ((reg & kCmd[i].mask) == kCmd[i].value) return i;

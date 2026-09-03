@@ -90,6 +90,13 @@ visit https://zxespectrum.speccy.org/contacto
 #include "GS/NgsSd.h"
 #include "GS/NgsMp3.h"
 
+// +3 disk auto-start (plus3AutoBoot*, below ESPectrum::reset). Guest frames.
+#define P3BOOT_DELAY_FRAMES  150
+#define P3BOOT_HOLD_FRAMES   4
+// watchdog scratch[1]: [0] is free too; [2] = MIDI reflash, [3] = uptime, 4..7 SDK.
+#define P3BOOT_SCRATCH  1
+#define P3BOOT_TAG      0x50334254u   // 'P3BT'
+
 using namespace std;
 
 extern size_t getFreeHeap(void);
@@ -1233,6 +1240,18 @@ void ESPectrum::setup() {
   Debug::log("setup: Config::loadDiskMounts done");
   Debug::log2SD("setup: Config::loadDiskMounts done, freeHeap=%u", (unsigned)getFreeHeap());
 
+  // A Web-catalog .dsk launch that had to reboot to reach the +3 (MachineSwitch::commit
+  // across the Profi SRAM boundary) left its auto-Enter request in scratch[1]; the disk
+  // itself came back through loadDiskMounts above. Cleared unconditionally so a stale
+  // tag can never fire on a later boot.
+  if (watchdog_hw->scratch[P3BOOT_SCRATCH] == P3BOOT_TAG) {
+    watchdog_hw->scratch[P3BOOT_SCRATCH] = 0;
+    if (watchdog_caused_reboot() && Config::isPlus3() && Plus3Fdc::mounted(0)) {
+      Debug::log("setup: +3 disk auto-start armed after reboot");
+      plus3AutoBootArm();
+    }
+  }
+
   // Re-reset MB-02 after disk mounts so boot EPROM starts with disks already inserted
   if (MB02::enabled && mb02_fdd.disk[0]) {
     Debug::log2SD("setup: MB02::reset (post-mount)");
@@ -1280,6 +1299,35 @@ void ESPectrum::setup() {
 //=======================================================================================
 // RESET
 //=======================================================================================
+// ── +3 disk auto-start (see ESPectrum.h) ────────────────────────────────────────
+// Frame countdown in GUEST frames, so it lands at the same point of the +3 ROM's
+// boot regardless of turbo / max speed. The 128 menu is up well before ~1.5 s on
+// a real +3 (RAM test + copyright screen); 3 s leaves margin for the slower boot
+// of a disk image that was just mounted. Enter is held for 4 frames — the ROM's
+// key scanner needs to see it in two consecutive interrupts.
+static int16_t s_p3boot_frames = 0;
+
+void ESPectrum::plus3AutoBootArm() {
+    watchdog_hw->scratch[P3BOOT_SCRATCH] = 0;       // a reboot request that never rebooted
+    s_p3boot_frames = P3BOOT_DELAY_FRAMES + P3BOOT_HOLD_FRAMES;
+}
+
+void ESPectrum::plus3AutoBootArmAcrossReboot() {
+    watchdog_hw->scratch[P3BOOT_SCRATCH] = P3BOOT_TAG;
+}
+
+void ESPectrum::plus3AutoBootTick() {
+    if (s_p3boot_frames <= 0) return;
+    // A user reset / machine switch while the countdown runs would otherwise press
+    // Enter into whatever came up instead of the Loader menu.
+    if (!Z80Ops::isP3 || !Plus3Fdc::mounted(0)) { s_p3boot_frames = 0; return; }
+    --s_p3boot_frames;
+    fabgl::Keyboard* kbd = PS2Controller.keyboard();
+    if (!kbd) { s_p3boot_frames = 0; return; }
+    if (s_p3boot_frames == P3BOOT_HOLD_FRAMES) kbd->injectVirtualKey(fabgl::VK_RETURN, true);
+    else if (s_p3boot_frames == 0)             kbd->injectVirtualKey(fabgl::VK_RETURN, false);
+}
+
 void ESPectrum::reset() {
   // Pentagon+Gluk: boot with Gluk ROM so it installs service monitor at 0xDB00
   // This matches real Pentagon hardware where Gluk always boots first
@@ -3439,6 +3487,17 @@ void ESPectrum::loop() {
                      ESPectrum::mb02_fdd.track, ESPectrum::mb02_fdd.sector,
                      ESPectrum::mb02_fdd.side);
             OSD::drawStats();
+          } else if (Z80Ops::isP3) {
+            // The +3's uPD765, in the WD1793 line's own format: state, the selected
+            // unit's head position (physical cylinder) and the sector ID. The
+            // controller has no "current sector" register the way the WD1793 does —
+            // R is what the last READ/WRITE asked for, and it advances per sector.
+            // "STOP" in the state field is the #1FFD D3 motor line being off.
+            const Upd765& f = Plus3Fdc::fdc;
+            snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2),
+                     "ST:%-6sTR:#%02X/SEC:#%02X ",
+                     updStateName(&f), f.drive[f.us & 1].pcn, f.dataReg[3]);
+            OSD::drawStats();
           } else
           {
             snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2),
@@ -3626,6 +3685,7 @@ void ESPectrum::loop() {
     // The +3 FDC is otherwise only pumped from its own port handlers, so a guest
     // sitting in HALT would never see a seek complete.
     Plus3Fdc::frameTick();
+    plus3AutoBootTick();
     // Deferred pool promotions (butter accessor banks): allow 1 inline
     // promotion per frame; the rest queue for the idle window below.  On
     // maxSpeed there is no idle window — run everything inline as before.

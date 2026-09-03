@@ -1203,6 +1203,29 @@ so raw.githubusercontent.com is the way to any of this.
   the +2's own (overlaid) 48 BASIC cannot be the base even though it is ~80 bytes closer.
   Regenerate with `python3 tools/rom_pack.py plus3`. ~50 KB of flash all told.
 
+### Web-catalog / Alt+Enter launch of a .dsk = mount + reset + a deferred Enter (2026-09-03)
+
+TR-DOS boots its `boot` file by itself, so `rfd_launch_tmp` (OSDFile.cpp) only needs
+`bootTrdos()`. The +3 ROM never boots a disk unprompted — the 128 menu's "Loader" entry
+has to be picked — so the `IFACE_PLUS3` branch mounts into A: (`DiskSlots::slotMount`,
+which also writes `Config::p3DiskFile` so the mount survives a reboot), switches to
+`(A_128K, R_P3)` via `MachineSwitch::commit` when needed, resets, and arms
+`ESPectrum::plus3AutoBootArm()`: a GUEST-frame countdown (150 frames, then Enter held 4
+frames via `injectVirtualKey(VK_RETURN)`, which updates the same `m_VKMap` the ZX matrix
+reads). Guest frames, not wall time, so turbo/max speed land at the same ROM point. The
+tick aborts if the machine is no longer a +3 or A: is empty. `commit()` reboots when it
+crosses the Profi SRAM boundary on butter-less boards, so the request is also written to
+watchdog `scratch[1]` (tag `P3BT`; scratch[0] is still free) and consumed in `setup()`
+right after `loadDiskMounts`, cleared unconditionally. `rfd_release_tmp` ejects a
+`/tmp/_run.dsk` still sitting in the uPD765 before re-downloading over it. F8 stats
+mode 3 shows the +3's controller in the WD1793 line's own format,
+`ST:READ  TR:#27/SEC:#C9` — `updStateName()` (Upd765.cpp, beside the command table it
+reads), the selected unit's head cylinder and the last command's R; `ST:STOP` is the
+`#1FFD` D3 motor line off. The mode is reachable at all only because the `hasFdd` gate
+in OSDMain's HK_STATS handler now also covers the +3 and Scorpion — it listed
+Pentagon/Profi/Byte/MB-02 only, so `maxMode` was 2 and the disk line was dead code on
+both. NOT hw-tested.
+
 ### The three uPD765 behaviours that are hangs, not wrong bytes
 
 Each has a named assertion in `tools/upd765_test.cpp`; if one regresses the machine

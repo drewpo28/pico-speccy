@@ -53,6 +53,9 @@ using namespace std;
 #include "Z80_JLS/z80.h"
 #include "Tape.h"
 #include "wd1793.h"
+#include "Plus3Fdc.h"
+#include "DiskSlots.h"
+#include "MachineSwitch.h"
 #include "ZipExtract.h"
 #include "FileInfo.h"
 #include "ui/OSDNewMenu.h"
@@ -406,9 +409,11 @@ static bool rfd_copy_tree(RemoteFs* fs, const std::string& destSd, int depth) {
 
 // Launch a file that was just downloaded to /tmp (Alt+Enter in the catalog
 // browser). Tape images auto-run (flashload), snapshots auto-run, TR-DOS disk
-// images mount into Drive A. A .zip is unpacked first and its first usable inner
-// file launched. Returns true if something was loaded — the caller then closes
-// the whole OSD so the freshly loaded program runs.
+// images mount into Drive A and cold-boot TR-DOS, +3 .dsk images mount into A:,
+// reset into the +3 and press Enter on the Loader menu for the user. A .zip is
+// unpacked first and its first usable inner file launched. Returns true if
+// something was loaded — the caller then closes the whole OSD so the freshly
+// loaded program runs.
 static bool rfd_launch_tmp(string path) {
     string ext = FileUtils::getLCaseExt(path);
 
@@ -470,6 +475,31 @@ static bool rfd_launch_tmp(string path) {
         OSD::bootTrdos();              // cold-boot into TR-DOS so the disk auto-runs
         return true;
     }
+    if (FileUtils::ifaceForExt(ext) == IFACE_PLUS3) {
+        // A +3 disk. Unlike TR-DOS the +3 ROM never boots a disk on its own — the
+        // 128 menu's "Loader" entry has to be picked — so the auto-start is a reset
+        // plus a deferred Enter (ESPectrum::plus3AutoBoot*). The mount is persisted
+        // (Config::p3DiskFile via slotMount + save) BEFORE the machine switch, because
+        // commit() reboots on some boards and never returns; loadDiskMounts then puts
+        // the disk back and setup() finds the Enter request in scratch.
+        FileUtils::DSK_Path = dir;
+        DiskSlots::slotMount(IFACE_PLUS3, 0, path);
+        if (!Plus3Fdc::mounted(0)) {
+            OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
+            return false;
+        }
+        Config::ram_file = NO_RAM_FILE;
+        Config::last_ram_file = NO_RAM_FILE;
+        Config::save();
+        if (!Config::isPlus3()) {
+            ESPectrum::plus3AutoBootArmAcrossReboot();
+            MachineSwitch::commit(A_128K, R_P3);   // resets (or reboots) into the +3
+        } else {
+            ESPectrum::reset();
+        }
+        ESPectrum::plus3AutoBootArm();             // reached only without a reboot
+        return true;
+    }
     if (ext == "rom" || ext == "bin") {
         return OSD::loadAlfCart(path); // ALF cartridge — lazy-mount from SD + switch into ALF
     }
@@ -487,6 +517,10 @@ static void rfd_release_tmp(const string& tmpp) {
     for (int u = 0; u < 4; u++)
         if (ESPectrum::fdd.disk[u] && ESPectrum::fdd.disk[u]->fname == tmpp)
             wdDiskEject(&ESPectrum::fdd, u);
+    // Same for a .dsk sitting in the +3's uPD765 (it holds the FIL open too).
+    for (uint8_t u = 0; u < 2; u++)
+        if (Plus3Fdc::mounted(u) && Plus3Fdc::fname(u) == tmpp)
+            DiskSlots::slotEject(IFACE_PLUS3, u);
     if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
         FileUtils::TAP_Path + Tape::tapeFileName == tmpp)
         Tape::Init();   // closes the open tape FIL

@@ -100,6 +100,17 @@ public:
     static void reset();
     static void reset(uint8_t romInUse);
 
+    // +3 disk auto-start. TR-DOS boots its "boot" file by itself; the +3 ROM only
+    // loads a disk when the user picks "Loader" on the 128 menu, i.e. presses Enter.
+    // arm() presses it for them a few seconds of guest time after the reset that
+    // follows a mount (OSDFile rfd_launch_tmp). armAcrossReboot() records the same
+    // request in a watchdog scratch register for a launch that goes through a
+    // MachineSwitch::commit() reboot (Profi boundary on butter-less boards); setup()
+    // picks it up once the disks are re-mounted. tick() runs once per frame.
+    static void plus3AutoBootArm();
+    static void plus3AutoBootArmAcrossReboot();
+    static void plus3AutoBootTick();
+
     // Kbd
     static void processKeyboard();
     static void bootKeyboard();
