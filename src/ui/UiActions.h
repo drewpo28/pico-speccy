@@ -58,7 +58,6 @@ void hotkeys_key(int32_t idx, uint8_t key);
 void midi_buildBanks(DynRows& d);
 void midi_keyBanks(int32_t tag, uint8_t key);
 void act_ideCreate();
-void act_p3Create();
 // The 40 persist slots are LEVELS of the new menu (like the disk slots): build
 // fills the pool, rowkey runs Enter / F6 rename / F8 remove on the focused slot.
 void persist_build(DynRows& d);

@@ -795,11 +795,13 @@ void ESPectrum::setup() {
     Config::betadisk = false;
     Config::mb02 = false;
     Config::timex_video = false;
-    // The +3e drives its own IDE interface and shares #xxEF with the ZiFi NIC.
-    // IDE::init() runs later in setup(), so setting the scheme here is enough.
+    // The +3e's interface is a card the user may not want (its ports are ZiFi's), so
+    // an explicit Off is left alone here — only a scheme the +3e ROM cannot reach is
+    // rewritten. IDE::init() runs later in setup(), so setting the value here is enough.
     if (Config::isPlus3e()) {
-      Config::ide_scheme = IDE::PLUS3E;
-      if (Config::zifi_enabled) {
+      if (Config::ide_scheme == IDE::NEMO || Config::ide_scheme == IDE::PROFI)
+        Config::ide_scheme = IDE::PLUS3E;
+      if (Config::ide_scheme == IDE::PLUS3E && Config::zifi_enabled) {
         Debug::log("setup: +3e — ZiFi NIC off (it shares #xxEF with the +3e IDE)");
         Config::zifi_enabled = 0;
       }

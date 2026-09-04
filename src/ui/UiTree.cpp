@@ -467,15 +467,9 @@ static bool p_plus3On() {
 // The +3e carries an IDE interface whether or not the scheme row has caught up yet
 // (resolveConstraints only forces it at commit), so the image rows follow the machine
 // there — the same rule the +3 disk rows use.
-// True when the staged (else running) machine is a +3e.
-static bool p_plus3eOn() {
-    const int32_t m = Stage::get(SET_MACHINE);
-    if (m >= 0) return isPlus3eRomset((RomsetIdx)(m & 0xFF));
-    return Config::isPlus3e();
-}
-static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0 || p_plus3eOn(); }
+static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
 
-// IDE/HDD scheme: the value IS Config::ide_scheme. "+3e" is not a card the user
+// IDE/HDD scheme: the value IS Config::ide_scheme. "IDEDOS" is not a card the user
 // plugs in — it is the interface the +3e ROM drives, so the romset forces that value
 // and forces it away again on any other machine (UiStage resolveConstraints). It is
 // listed here so the row can display it rather than showing a blank radio.
@@ -521,7 +515,6 @@ static const Node kHardware[] = {
     NM_DYN_EN  (NM_IND TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
     NM_RADIO_EN(NM_IND TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
     NM_DYN_EN  (TXT_P3_DRIVES,     slots_buildP3, slots_keyP3, p_hasSD, p_plus3On),
-    NM_ACTION_EN(NM_IND TXT_P3_CREATE,    act_p3Create,  p_hasSD, p_plus3On),
     NM_BOOL_EN (NM_IND TXT_P3_FASTDISK,   SET_P3_FASTDISK,  nullptr, p_plus3On),
     NM_BOOL_EN (NM_IND TXT_P3_SPEEDLOCK,  SET_P3_SPEEDLOCK, nullptr, p_plus3On),
     NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_hasSD),

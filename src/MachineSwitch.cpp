@@ -187,17 +187,21 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // #xxEF ports are ZiFi's, so entering the +3e claims the scheme and drops the
         // NIC; leaving it hands the scheme back. See resolveConstraints for the twin.
         {
+            // Entering the +3e gives it its interface, so a freshly picked machine finds
+            // its hard disk — but an explicit Off is the user's choice and is not undone
+            // (the menu's own edge does the same, see resolveConstraints).
             const bool isP3e = isPlus3eRomset(romset);
-            if (isP3e && Config::ide_scheme != IDE::PLUS3E) {
+            const bool wasP3e = Config::isPlus3e();
+            if (isP3e && !wasP3e && Config::ide_scheme != IDE::PLUS3E) {
                 Config::ide_scheme = IDE::PLUS3E;
                 IDE::init();
-                OSD::osdCenteredMsg("+3e IDE enabled", LEVEL_WARN, 1500);
+                OSD::osdCenteredMsg("IDEDOS enabled", LEVEL_WARN, 1500);
             } else if (!isP3e && Config::ide_scheme == IDE::PLUS3E) {
                 Config::ide_scheme = IDE::OFF;
                 IDE::init();   // closes the images and frees the buffers
                 OSD::osdCenteredMsg("IDE disabled", LEVEL_WARN, 1500);
             }
-            if (isP3e && Config::zifi_enabled) {
+            if (isP3e && Config::ide_scheme == IDE::PLUS3E && Config::zifi_enabled) {
                 Config::zifi_enabled = 0;
                 ZiFi::deinit();
                 OSD::osdCenteredMsg("ZiFi NIC disabled", LEVEL_WARN, 2000);

@@ -1381,6 +1381,33 @@ is more than a tight heap should give up but nothing on a butter-PSRAM board. Ca
 entries; past it the slow path still works. Copying a big image to the card fresh, so
 it lands contiguous, shrinks the table to a handful of entries.
 
+### These IDEDOS game collections are full of authoring errors — audit, don't guess
+
+Four games on the reference `Ocean.hdf` failed in four different ways, every one of
+them in the image and every one presenting as a bare "File not found" with no clue
+which name failed. `tools/idedos_audit.py` reads an .hdf and lists them all at once:
+it cross-checks every launcher menu entry ("key","title","program" triples in the
+extension-less BASIC pages) and every quoted `"name.ext"` literal in every loader
+against the partition's directory, and reports how full the directory is. Read-only.
+
+    python3 tools/idedos_audit.py ~/Downloads/zx/IDEDOS/Ocean.hdf
+
+Ocean.hdf: 3 menu entries name a program that is not there (BRUCE LEE → `BRUCE`, the
+loader is `BRUCELEE`; CHASE HQ 2 → `CHASEQ2` vs `CHASEHQ2`; NAVY SEALS → `NAVYSEA` vs
+`NAVYSEA1`/`2`/`L`), 9 loaders want a file nobody copied (RAMBO's `lock48k.bin`), and
+its directory is FULL at 512/512 entries, which breaks the two games that create a
+`temp.tmp`. US Gold.hdf: 38 of 101 menu entries name games that were never copied.
+NARC is a different class again — its machine-code loader calls DOS_INITIALISE and
+writes 'A' into +3DOS's current-drive variables (0x5B79/0x5B7A, the same two +3DOS
+itself defaults at ROM 0x0515), so it always talks to the empty floppy; it reports its
+OWN error 7 and the ROM prints that as "Unknown disk error". Nothing there is ours.
+
+**The lesson that cost the most: prove the emulator innocent before reading guest
+code.** Every `IDE READ` line carries the file offset it served, so a capture can be
+diffed against the image byte for byte — 132 of 132 matched on the first check, which
+turned every one of these into a data question instead of a firmware one. Do that
+first.
+
 ### The three uPD765 behaviours that are hangs, not wrong bytes
 
 Each has a named assertion in `tools/upd765_test.cpp`; if one regresses the machine

@@ -875,17 +875,38 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_ZCONTROLLER, 0, rep, "Z-Controller is not available on the +3");
         }
 
-        // The +3e's IDE interface is part of the machine, not a card: the ROM drives it
-        // and nothing else can be there, so the scheme follows the romset in both
-        // directions. Its ports (#xxEF) are also ZiFi's, so the NIC yields — same rule
-        // as Beta above, and the Web catalog (Config::wifi_enabled) is unaffected.
+        // The +3e's IDE interface is a CARD, not part of the machine — the ROM is built
+        // for it but works fine with none plugged in — so the user may switch it off and
+        // that must stick. Only two things are forced:
+        //   * NEMO/PROFI cannot be reached by the +3e ROM, so on a +3e they become the
+        //     +3e interface;
+        //   * the +3e scheme cannot be reached by anything else, so off it goes on any
+        //     other machine.
+        // Selecting it when ENTERING the +3e is an EDGE below, not a constraint, which
+        // is what lets Off survive. (An earlier version forced the scheme to +3e on
+        // every pass and the Devices row simply snapped back — that was wrong.)
         if (stagedIsPlus3e()) {
-            if (staged(SET_IDE_SCHEME) != 3)
+            if (staged(SET_IDE_SCHEME) == 1 || staged(SET_IDE_SCHEME) == 2)
                 changed |= force(SET_IDE_SCHEME, 3, rep, "IDE set to the +3e interface");
-            if (staged(SET_ZIFI_NIC))
+            // The two share #xxEF, so the NIC yields — but only while the interface is
+            // actually on. Same rule as Beta above; Config::wifi_enabled is unaffected.
+            if (staged(SET_IDE_SCHEME) == 3 && staged(SET_ZIFI_NIC))
                 changed |= force(SET_ZIFI_NIC, 0, rep, "ZiFi NIC off: it shares #xxEF with the +3e IDE");
         } else if (staged(SET_IDE_SCHEME) == 3) {
             changed |= force(SET_IDE_SCHEME, 0, rep, "IDE off: the +3e interface needs the +3e ROM");
+        }
+
+        // EDGE: this commit switches TO the +3e, so give it its interface — that is what
+        // makes a freshly picked +3e find its hard disk without a trip to Devices. It
+        // fires only on the transition (the machine is dirty and was not a +3e before),
+        // so a later "Off" is never undone. Same shape as the esxDOS -> VGM-chips edge
+        // below, including the g_seq tie-break: a scheme the user touched after the
+        // machine pick wins, because force() never bumps g_seq.
+        if (bmGet(g_dirty, SET_MACHINE) && stagedIsPlus3e()
+            && !isPlus3eRomset((RomsetIdx)(g_base[SET_MACHINE] & 0xFF))
+            && staged(SET_IDE_SCHEME) == 0
+            && g_seq[SET_IDE_SCHEME] <= g_seq[SET_MACHINE]) {
+            changed |= force(SET_IDE_SCHEME, 3, rep, "IDE set to the +3e interface");
         }
 
         // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so
