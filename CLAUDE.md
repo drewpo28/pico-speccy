@@ -1209,6 +1209,37 @@ artifacts: `TUNNELZX` disassembled from the TRD (runtime = file − 0x4810),
 - Still open (separate lever, only if some title still drops frames): the
   GS-Z80's genuine ~10-15% deficit vs a 24 MHz card on render-heavy loads.
 
+### Pentagon INT pulse is 32 T, not 36 (RTL-settled 2026-09-04, NOT hw-tested)
+
+`INT_END_PENTAGON` (CPU.h) was 36 — the 128K figure it was inherited from. The
+RTL settles it: Karabas-Pro `pentagon_video.vhd` re-evaluates `int_sig` only at
+`chr_col_cnt = 6 and hor_cnt(2 downto 0) = "111"` (once every 8 character
+columns) and drives it low for the single window `hor_cnt(5 downto 3) = "100"`
+(hor_cnt 32..39). A character column is 8 px = 4 T, so the pulse is 8 x 4 =
+**32 T**. Its TURBO branch narrows the window to 4 columns (hor_cnt 36..39),
+i.e. the CPU still sees 32 of ITS OWN T-states at 7 MHz — an independent
+confirmation of the same figure. ZXMAK2 `UlaPentagon.cs` (32) and Unreal
+(`intlen=32`, and it is an ini setting there) agree; **ZEsarUX alone says 36**
+(`cpu.c`, "en spectrum, 32. en pentagon, 36") with nothing behind it.
+
+Why it matters: a handler that returns 33..36 T after the INT took a **second
+interrupt**, shifting the whole frame by ~19-33 T — every frame, stably. That is
+invisible in ordinary software and fatal to cycle-exact border demos (found
+while diagnosing "Across the Edge" border artifacts on Pentagon). Same failure
+class as the Pentagon-1024 EFF7 D4 turbo window above. The opposite risk is real
+too and is the thing to watch on hardware: a shorter window can now MISS an
+interrupt that a long instruction used to straddle into — which is what real
+hardware does, but it is the regression shape to look for.
+
+Two related loose ends, deliberately NOT touched:
+- `CPU::reset` still does `IntEnd <<= m` for turbo (72 → 64 after this change),
+  modelling a fixed-wall-time pulse. The Karabas RTL instead narrows its TURBO
+  window so the CPU count stays 32; TheLink is hw-tested against the current
+  model, so leave it until something demands otherwise.
+- `INT_END_SCORPION` is 36 with the comment "libspectrum: 36 T INT pulse", while
+  ZXMAK2 `UlaScorpionYellow.cs` says `32; // according to fuse`. Unresolved.
+
+
 ## TurboSound FM (#FFFD select #F8..#FF) — the port layer, 2026-08-07
 
 (The FM synthesis that sits behind it is a separate section: "TurboSound FM —

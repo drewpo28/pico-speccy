@@ -64,7 +64,22 @@ visit https://zxespectrum.speccy.org/contacto
 #define INT_START128 0
 #define INT_END128 36 // 35 in real +2 and Weiv's Spectramine. I'll have to check those numbers
 #define INT_START_PENTAGON 0
-#define INT_END_PENTAGON 36
+// Pentagon INT pulse = 32 T, NOT the 36 T of a real 128K (which is where this
+// value came from before). Settled from RTL: Karabas-Pro's pentagon_video.vhd
+// re-evaluates int_sig only when `chr_col_cnt = 6 and hor_cnt(2 downto 0)="111"`
+// — once every 8 character columns — and drives it low for the single window
+// hor_cnt(5 downto 3)="100" (hor_cnt 32..39). One character column is 8 px = 4 T,
+// so the pulse is exactly 8 * 4 = 32 T. Its TURBO branch narrows the window to
+// 4 columns (hor_cnt 36..39), i.e. the CPU still sees 32 of ITS T-states at
+// 7 MHz — a second, independent confirmation of the 32 figure.
+// Cross-checks: ZXMAK2 UlaPentagon.cs c_ulaIntLength = 32, Unreal intlen = 32
+// (unreal.ini). ZEsarUX alone says 36 (cpu.c "en spectrum, 32. en pentagon, 36")
+// and the RTL does not support it.
+// Why it matters: with 36 T a handler that returns between 33 and 36 T after the
+// INT takes a SECOND interrupt, shifting every frame by ~19-33 T — cycle-exact
+// border demos then tear. Same failure class as the Pentagon-1024 EFF7 D4 turbo
+// window (see CLAUDE.md).
+#define INT_END_PENTAGON 32
 #define INT_START_PROFI 0
 #define INT_END_PROFI 39
 #define INT_START_SCORPION 0
