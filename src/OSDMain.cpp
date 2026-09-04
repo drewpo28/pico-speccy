@@ -359,6 +359,8 @@ IRAM_ATTR void OSD::clickNoPause() {
     pwm_audio_set_volume(ESPectrum::aud_volume);
 }
 void close_all(void);
+void flash_timings(int mhz);                        // main.cpp
+void flash_timings_transition(int from_mhz, int to_mhz);
 void OSD::esp_hard_reset() {
     Debug::log("esp_hard_reset called from %p", __builtin_return_address(0));
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
@@ -367,6 +369,28 @@ void OSD::esp_hard_reset() {
 #if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
     uart_tx_wait_blocking(uart_default);   // drain FIFO — 32B @115200 ≈ 3ms > watchdog delay
 #endif
+    // The SDK's watchdog_enable() reboot is a PSM-only reset (POWMAN CHIP_RESET
+    // HAD_WATCHDOG_RESET_PSM: "powman no, swcore no, does not change the power
+    // state"), so the chip comes back up with the core regulator still at our
+    // 1.60 V overclock setting, whereas a RUN/POR reset restores powman and its
+    // 1.10 V default. On one m1p2 (Murmulator 1.3 + Pico 2, no PSRAM) that warm
+    // restart never reached main() — no LED blink, monitor lost sync — while RUN
+    // recovered every time and SpeccyP's byte-identical watchdog reboot (at 1.30 V)
+    // worked on the same board (report 2026-09-03). So leave the chip in the state
+    // a RUN reset would: clock back to the 150 MHz boot default first (flash
+    // timing kept valid across the switch), then the regulator to 1.10 V, then
+    // the watchdog. Core1 (video/GS) is abandoned mid-flight; the reset follows
+    // within ~1 ms. IRQs stay off — nothing here needs them and an ISR landing
+    // on a half-switched clock would only add noise.
+    {
+        const uint32_t cur_mhz = clock_get_hz(clk_sys) / 1000000u;
+        save_and_disable_interrupts();
+        flash_timings_transition((int)cur_mhz, 150);
+        set_sys_clock_khz(150 * 1000, true);
+        flash_timings(150);
+        vreg_set_voltage(VREG_VOLTAGE_1_10);
+        busy_wait_ms(5);                  // let the regulator ramp settle before the reset
+    }
     watchdog_enable(1, true);
     while (true);
 }

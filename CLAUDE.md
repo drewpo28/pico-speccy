@@ -1588,7 +1588,33 @@ internal pull-downs. Debugging trap that cost a round: while Hardware Info is OP
 the firmware rewrites AINSEL every second — OpenOCD channel scans race it (verify
 with CS readback beside every RESULT).
 
-## Flash QMI timing ACROSS a sys_clk switch (2026-09-03; PICO_DV regression-clean, m1p2 verdict pending)
+## Hard RP2350 reset: the watchdog reboot keeps VREG at 1.60 V (m1p2, 2026-09-04; PICO_DV regression-clean, m1p2 verdict pending)
+
+**Round 2 (2026-09-03): the flash-timing patch above did NOT fix the m1p2.** Owner's
+report: after "Hard RP2350 reset" (menu or F12) the picture drops, the monitor loses
+sync, the Pico LED never blinks, and only RUN (header) or a power cycle brings it
+back. No LED blink = `main()` is never reached, so the boot dies in bootrom/boot2/
+crt0 — before any of our code. What RUN resets and the watchdog does not is spelled
+out in the POWMAN CHIP_RESET field docs (SDK `regs/powman.h`): the SDK's
+`watchdog_enable()` reboot is `HAD_WATCHDOG_RESET_PSM` — "powman no, swcore no,
+psm yes, and does not change the power state" — while `HAD_RUN_LOW` resets powman
+(so VREG returns to its 1.10 V default) and the switched core. We run the core at
+1.60 V (`vreg_disable_voltage_limit` + `VREG_VOLTAGE_1_60`); SpeccyP runs 1.30 V,
+and its byte-identical `watchdog_enable(1, true)` reboot works on that board. So
+every warm reboot of ours restarts the bootrom at 1.60 V on a still-powered core
+domain, which one die evidently does not survive. Fix in `OSD::esp_hard_reset`
+(OSDMain.cpp): before arming the watchdog, drop the clock to the 150 MHz boot
+default (through `flash_timings_transition`, then `flash_timings(150)`), set the
+regulator to `VREG_VOLTAGE_1_10`, wait 5 ms — i.e. hand the bootrom the exact state
+a RUN reset would. IRQs off, core1 abandoned (reset follows in ~1 ms). Alternative
+NOT taken: `powman_hw->wdsel = PASSWORD | RESET_POWMAN(_ASYNC)` makes the watchdog
+reset powman itself, but that also resets the switched-core domain and with it the
+watchdog scratch registers we rely on (`MIDI_REFLASH_SCRATCH`, the uptime tag) and
+probably `watchdog_caused_reboot()`. Worth knowing if the voltage drop alone is not
+enough. Cross-check to ask the owner: pico-spec also runs 1.60 V with the same
+reboot — if ITS F12 works on that board, this theory is wrong.
+
+### Round 1: flash QMI timing ACROSS a sys_clk switch (PICO_DV regression-clean, kept)
 
 Report: one m1p2 (Murmulator 1.3 + Pico 2, NO PSRAM, VGA, PWM) hangs on "Hard
 RP2350 reset" (F12 / menu, = `esp_hard_reset` watchdog reboot) and needs a
