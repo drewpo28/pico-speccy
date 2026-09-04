@@ -166,6 +166,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "MachineSwitch.h"
 #include "GS/GS.h"
 #include "RTC.h"
+#include "Nvram24.h"
 
 #include <malloc.h>
 
@@ -363,6 +364,17 @@ void flash_timings(int mhz);                        // main.cpp
 void flash_timings_transition(int from_mhz, int to_mhz);
 void OSD::esp_hard_reset() {
     Debug::log("esp_hard_reset called from %p", __builtin_return_address(0));
+    // Battery-backed state first, and FORCED past its debounce. Both stores are
+    // written by the guest and flushed lazily from ESPectrum::loop (1.5 s), so a
+    // reboot arriving inside that window threw the guest's last edit away — and
+    // EVERY reboot lands here (machine switch, F12, the memory-layout boundaries
+    // in requestMachine, the NVS recovery paths). Symptom it caused: after a
+    // machine switch ProfROM's first boot said "CMOS checksum error" and only the
+    // SECOND one came up clean, because the settings it had just saved never
+    // reached the card (hw 2026-09-05). Ordering matters: this writes to SD, so
+    // it has to happen before close_all() and long before IRQs go off.
+    RTC::flushNVRAM(true);
+    Nvram24::flush(true);
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
     close_all();
     Debug::log("ehr: close_all done, arming watchdog");

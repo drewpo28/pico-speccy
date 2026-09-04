@@ -47,7 +47,9 @@ public:
 
     // Persist CMOS NVRAM to SD (acts as the battery). flushNVRAM() is cheap when
     // not dirty — call it from the main loop; it writes at most every ~1.5s.
-    static void    flushNVRAM();
+    // Machine switch: flush this machine's CMOS and adopt the next one's.
+    static void    machineChanged();
+    static void    flushNVRAM(bool force = false); // force: skip the debounce (reboot path)
 
 private:
     static uint8_t regs[256];     // control + NVRAM live; time regs computed on read

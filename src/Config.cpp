@@ -1,5 +1,7 @@
 #include "Config.h"
 #include "MemESP.h"
+#include "RTC.h"
+#include "Nvram24.h"
 #include "roms.h"
 #include "FileUtils.h"
 #include "ESPectrum.h"
@@ -590,6 +592,13 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         MemESP::rom[4].assign_rom(base);
         MemESP::registerOverlay(gb_rom_4_trdos_505d, ov);
     }
+
+    // Battery-backed state follows the machine (see the note in RTC.cpp): push
+    // what the outgoing one wrote to its own file and adopt the incoming one's.
+    // Both are no-ops before their owners have initialised, so the boot-time
+    // call from setup() costs nothing.
+    RTC::machineChanged();
+    Nvram24::machineChanged();
 }
 
 // RAM fallback for Config when no SD card

@@ -5,9 +5,21 @@
 #include <pico/time.h>
 
 #include "FileUtils.h"
+#include "Config.h"
+#include <stdio.h>
 #include "Debug.h"
 
-#define NVRAM24_PATH CONFIG_DIR "/nvram.bin"
+#define NVRAM24_LEGACY CONFIG_DIR "/nvram.bin"
+
+// Per-machine for the same reason the CMOS is (see RTC.cpp): GMX and ProfROM
+// drive the same card with different firmware generations, and each rewrites
+// what the other stored.
+static char s_nv_path[64];
+static void nvPathSet() {
+    const char* tag = kRomsetName[Config::romSet < ROMSET_COUNT ? Config::romSet : 0];
+    snprintf(s_nv_path, sizeof(s_nv_path), CONFIG_DIR "/nvram_%s.bin", tag);
+}
+#define NVRAM24_PATH (s_nv_path[0] ? s_nv_path : NVRAM24_LEGACY)
 #define NVRAM24_SIZE 2048
 
 // Bit positions in the SMUC SYS byte (ZXMAK2 NvramChip.cs constants).
@@ -44,10 +56,20 @@ void Nvram24::init() {
 
 void Nvram24::close() {
     if (!mem) return;
-    flush_ms = 0;      // force the pending write through instead of debouncing
-    flush();
+    flush(true);       // push the pending write through instead of debouncing
     free(mem);
     mem = nullptr;
+    dirty = false;
+}
+
+// Machine switch — flush to the outgoing machine's file, adopt the incoming
+// one's. No-op while the chip is not allocated (scheme != SMUC).
+void Nvram24::machineChanged() {
+    if (!mem) return;
+    flush(true);
+    memset(mem, 0, NVRAM24_SIZE);
+    s_nv_path[0] = 0;
+    load();
     dirty = false;
 }
 
@@ -62,7 +84,9 @@ void Nvram24::reset() {
 
 void Nvram24::load() {
     if (!FileUtils::fsMount) return;
+    nvPathSet();
     FIL* f = fopen2(NVRAM24_PATH, FA_READ);
+    if (!f) f = fopen2(NVRAM24_LEGACY, FA_READ);   // adopt the shared image once
     if (!f) return;
     UINT br = 0;
     f_read(f, mem, NVRAM24_SIZE, &br);
@@ -70,10 +94,10 @@ void Nvram24::load() {
     Debug::log("NVRAM24: loaded %u bytes", (unsigned)br);
 }
 
-void Nvram24::flush() {
+void Nvram24::flush(bool force) {
     if (!mem || !dirty || !FileUtils::fsMount) return;
     uint32_t now = to_ms_since_boot(get_absolute_time());
-    if (flush_ms && (now - flush_ms) < 1500) return;   // debounce burst writes
+    if (!force && flush_ms && (now - flush_ms) < 1500) return;   // debounce bursts
     FIL* f = fopen2(NVRAM24_PATH, FA_WRITE | FA_CREATE_ALWAYS);
     if (!f) {
         FileUtils::mkdirParents(CONFIG_DIR);

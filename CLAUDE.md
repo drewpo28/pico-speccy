@@ -2895,8 +2895,9 @@ bit 6) through the routine at ROM 0x050B. `[GMX hb]` now carries
 fires on data reads.** Everything past the boot — the shell, TR-DOS out of the
 plane's bank 3, the 1 MB paging under this firmware, snapshots — is untested.
 
-"ZS-1024 + ProfROM" — Scorpion PROF-ROM **v4.01, image scorp401_91F513AB.rom**
-(CRC32 91F513AB), the firmware a real ZS-1024 Turbo+ shipped with (speccy4ever
+"ZS-1024 + ProfROM" — Scorpion PROF-ROM **v4.xx.015, image
+scorp4xx015_5D4BA991.ROM** (CRC32 5D4BA991, shipped as `src/roms/scorpion/src/
+profrom.bin`), the firmware a real ZS-1024 Turbo+ shipped with (speccy4ever
 files every ProfROM under "Prof ROM & ZX-1024"; ZXMAK2 has no 256K-only ProfROM
 machine either, and MAME's `profscorp` lists this exact CRC as a BIOS option).
 It is what makes the SMUC controller below useful — the stock ZS-256 v2.94/2.95
@@ -2953,12 +2954,12 @@ has partial support, 4.01 and 4.xx.015 full.
   in Config.cpp, the only TU allowed to touch the table). Plane 0 banks 0/1 are
   443/182 B overlays over the Sinclair 128K halves; plane 3 is four near-empty
   banks that overlay each other (~120 non-zero bytes each — the plane-switch
-  stubs) in the 520F4C15 image; in the shipped 91F513AB the ROM disk fills
-  plane 3 too, so 14 of 16 banks are raw and the pack costs 230003 B. **Deliberately NOT packed against
+  stubs) in the 520F4C15 image; in the shipped 4.xx.015 the ROM disk fills
+  plane 3 too, so 14 of 16 banks are raw and the pack costs 230561 B. **Deliberately NOT packed against
   the GMX banks**, which would save another ~48 KB: those arrays only exist under
   GMX_IN_FLASH, and one romset's flash layout must not depend on another's build
   switch. `PROFROM_IN_FLASH=0` drops the ROM and the menu row (the romset then
-  falls back to R_SCORP_1024). Firmware after this: 2354684 B against the
+  falls back to R_SCORP_1024). Firmware after this: 2355028 B against the
   2.3125 MB (2424832 B) GM.DLS partition base — ~68 KB of headroom left, which
   the linker ASSERT enforces.
 - Unlike GMX, plane 0 bank 0 is an OVERLAY bank, so `requestMachine` registers
@@ -2966,10 +2967,33 @@ has partial support, 4.01 and 4.xx.015 full.
   the plain-Scorpion overlay for the same Sinclair base from the previous romset.
 - Menu: Machine → Scorpion → "ZS-1024 + ProfROM"; the pref radio gained the same
   entry (before the conditional GMX one, so the indices stay build-independent).
-- Also swap-in ready if wanted later: **4.xx.015 (5D4BA991)** adds the second
-  (slave) HDD + Navigator; **4.02 is an emulator-only build** ("works only with
-  SPM ZX Spectrum Emulator from Andrew MOA") and 4.xx.004 is a FAT32 beta —
-  neither belongs here.
+- **Why 4.xx.015 and not one of the ten 4.01 variants** (swapped 2026-09-05):
+  it is the ONLY generation whose boot ROM carries the
+  `HDD boot / Monitor / Navigator / options / Exit !` menu (p0b0 0x237F). Every
+  other Scorpion ROM in this project's collection — v2.94, v2.95, ProfROM 3.2a,
+  3.30, 3.9F, all ten 4.01 builds, 4.02, 4.xx.004 — shows the identical classic
+  menu `128 / 128 TR-DOS / 128 BASIC / Calculator / 48 BASIC / 48 TR-DOS`, byte
+  for byte, so "the HDD boot entry I saw in a video" identifies the firmware
+  version exactly. 4.xx.015 also adds second (slave) HDD support and a partition
+  manager that knows NTFS / FAT32 / FAT32(LBA) / EXTENDED beside SMFS / TR-DOS /
+  MicroDOS / IsDOS. Costs ~0.5 KB more flash than the 4.01 it replaced.
+  **Its plane 0 is a different program**: the service monitor differs from
+  4.01's by 15736 of 16384 bytes (against 3 bytes between any two 4.01 builds),
+  so it drives the same hardware by different code and re-validates the SMUC and
+  paging emulation instead of merely repeating it.
+  Rejected: **4.02 is an emulator-only build** ("works only with SPM ZX Spectrum
+  Emulator from Andrew MOA") and 4.xx.004 is a FAT32 beta.
+- **Only ONE ProfROM image fits, and the arithmetic is settled** (2026-09-05):
+  shipping 4.01 beside 4.xx.015 as a second Machine row costs **+208.6 KB** even
+  when the packer reuses the first image's banks (they share only plane 0 banks
+  1 and 3; the ROM disks are entirely different and the monitors differ by
+  15736 bytes), for 433.8 KB total — firmware 2568679 against the 2424832 limit,
+  i.e. **140 KB over**, and the linker ASSERT rejects it. Nothing cheap frees
+  that: the GM.DLS partition has only ~100 KB of slack over the converted
+  gm.dls bank, and the 345 KB the GMX ROM would free costs a whole hw-debugged
+  machine. Decision: keep 4.xx.015 alone — what 4.01 uniquely offered was its
+  ROM DISK (MagOS, Real Commander, Cat HDD, HDST), and those run just as well
+  from a TRD on the SD card.
 
 - **"The RAM test shows 256K" is the FIRMWARE, not our paging** (hw 2026-09-04).
   Diffing all ten 4.01 variants settles it: **plane 0 — the boot, the service
@@ -3008,7 +3032,9 @@ The two "not found" lines are the deliberate ISA stubs (8259 at #7FBE, the
 serial), not defects.
 
 **End to end on hardware (2026-09-05): partition the disk as TR-DOS in the
-Shadow Monitor, mount a pseudo-disk, Quick-format it — and it all works.** So
+Shadow Monitor, mount a pseudo-disk, Quick-format it — and it all works, under
+the GMX romset as well as under ProfROM, i.e. against two different firmware
+generations driving the same emulated card.** So
 the sector path is exercised under a real guest filesystem in both directions:
 one capture alone carried 292 ATA commands (210 reads, 69 writes, IDENTIFY,
 INIT DEV PARAMS, DIAGNOSTIC). What remains untried is booting the machine FROM
@@ -3026,8 +3052,9 @@ main menu ... magic button monitor` — i.e. it carries its own partition manage
 (partition types include `SMFS` and `OS/2 Boot`, p1b1@2B63), so a disk is
 prepared in-place and no downloaded image is needed. The way in is our
 Machine -> Reset to -> **Service monitor**, which is a bare NMI = that "magic
-button". The ROM disk of the 91F513AB image additionally carries `HDST SMUC`
-(setup), `Cat HDD` and `HDD Doc SMUC` (p1b1@3244).
+button". (The 4.01 image 91F513AB carried `HDST SMUC` / `Cat HDD` /
+`HDD Doc SMUC` in its ROM disk at p1b1@3244; the shipped 4.xx.015 replaces that
+bundle with its own `HDD boot` menu entry and Navigator.)
 
 `IDE::SMUC` (scheme 3, Devices → IDE/HDD → SMUC) puts the existing 16-bit ATA
 engine behind the SMUC port map and adds the card's own 2 KB 24LC16 NVRAM. Port
@@ -3717,6 +3744,50 @@ config can no longer be true while Profi runs.
 - **Network menu** (RP2350, built dynamically): row 1 = `WiFi On <ssid> <ip>` / `WiFi Off` (live status, padded to fixed 32 width so geometry stays stable) then `Sync time (SNTP)` / `Time zone >` / `ZiFi NIC >`. Selecting the **WiFi** row is the all-in-one action — connected: SSID+IP + disconnect (msgDialog); not connected: `AT+CWLAP` scan → pick SSID → password → connect → saves SSID/pass to wifi.cfg. **In the nm:: UI (2026-09-02, NOT hw-tested) the ESP-01 AT dialog of the whole flow streams LIVE into the RIGHT PANE** (`act_wifi`, UiActions.cpp): the scan (CWMODE/CWLAP + a "Found N networks" line) and the connect (`> tx` dim / `< rx`; the password is masked at the source by ZiFiAT's `atLog`/`maskCwjap`, echo included) go through `ZiFiAT::log_cb`. The SSID list is drawn in the LEFT pane over the menu rows (`leftList`, menu selection bar, same VK_MENU_* key discipline as uiPickListCb, scan typeahead drained first; Esc/F1/Left return to the menu via runModal's repaint), only the password `uiPrompt` is a modal box — `wlogRepaint` paints the log back after it. The flow ends with the Connected+IP / failure line and a SCROLLABLE wait (`wlogView`: Up/Down/PgUp/PgDn/Home/End, title shows last/total; Enter/Esc leave). The log (`WifiLog`, a 3 KB packed ring of ink+text+NUL records, lines up to 120 chars, oldest dropped) is malloc'd for the flow only, gated on `getLargestAllocatable()`; lines are WRAPPED to the pane width at draw time (continuation rows indented one glyph; `wlogRowsOf` must agree with `wlogDraw`'s chunking — host-checked over every cw/len), and scrolling/the counter work in display rows. Without the buffer lines still land in the pane, clipped and without scrollback. Two earlier same-day cuts (list in the right pane; modal picker) were superseded at the user's request. Status is cached (`getStatus` is blocking) and refreshed on menu entry + after connect/disconnect/NIC-toggle. Connect/Disconnect/Reload items removed.
 - **wifi.cfg** lives in `CONFIG_DIR` (`/.config/pico-speccy/wifi.cfg`); legacy `/wifi.cfg` still read as fallback. `Config::saveWifiConfig()` writes ssid/pass/tz/autoconnect; `ZiFiAT::scan()` parses `+CWLAP`.
 - **Auto-sync on boot**: when `Config::wifi_enabled && wifi_ssid` set, `ESPectrum::loop` kicks off `ZiFiAT::autoSyncBegin()` ~4 s in, then `autoSyncPoll()` each tick. Non-blocking background state machine (CWMODE→CWJAP→CIPSNTPCFG→poll CIPSNTPTIME?, ~15 retries) — **no OSD, never freezes** audio/video; writes straight into RTC, silent on failure. Manual menu sync still uses the blocking `syncTime()`. **Network → Sync time (nm:: UI, 2026-09-02, NOT hw-tested) shows that exchange in the same right-pane log as the WiFi connect** (`act_sntp` reuses `wlogBegin`/`wlogCb`/`wlogView`); ZiFiAT now logs a `tx:` line for every raw send too (CWLAP, CIPSNTPTIME?, CWJAP?, CIFSR — they used to show only their replies). On **Profi** gated by a once-only heap check (`getLargestAllocatable() >= 16K` at the 4 s mark) instead of the old blanket `arch != "Profi"` exclusion — that exclusion left the ROMain/PQDOS clock permanently at 00.00.00 (butter-PSRAM Profi has the headroom; tight m1p2 Profi still skips, preserving the OOM fix).
+### The CMOS belongs to the MACHINE, not to the emulator (hw 2026-09-05)
+
+`cmos.nvr` was ONE file shared by every machine, i.e. one physical chip passed
+between them — and the firmwares stamp it incompatibly:
+
+- ProfROM **4.01** (and the driver generation inside GMX) keeps signature
+  **0x61** in cell 0x0E; ProfROM **4.xx.015** keeps **0x62** (verified in the
+  disassembly: 4.01 writes 0x61 at p1b3 0x20B2 and tests `CP #61` at 0x20CC,
+  4.xx.015 writes 0x62 at 0x2261 and tests `CP #62` at 0x227E — same routine,
+  same 0x10-0x3E checksum with the sum in 0x3F, different version stamp).
+  GMX's own variant of that bank carries the checksum loop but no `CP` on the
+  stamp at all, so it simply rewrites cells without maintaining the bookkeeping
+  4.xx.015 expects.
+- Mr Gluk owns cell **0x11**, which is INSIDE that checksummed range.
+
+So every machine switch ended in "CMOS checksum error", the incoming firmware
+re-initialising what the outgoing one had written — for ever, since each switch
+re-broke it for the other side. **Symptom worth recognising: the error appears
+after a machine SWITCH but not after F11**, because F11 does not reload the
+image and the firmware had already repaired the RAM copy.
+
+Fix: key the image on the romset — `cmos_<romset>.nvr` (and `nvram_<romset>.bin`
+for the SMUC 24LC16, which two firmware generations fight over the same way).
+A deliberate deviation: a real owner has one machine and one chip. The shared
+legacy file is still READ when a machine has no image of its own, so nothing
+already configured is orphaned — which costs exactly ONE error per machine on
+first use, while it adopts the other firmware's content, repairs it and saves
+its own. `RTC::machineChanged()` / `Nvram24::machineChanged()` (from
+`Config::requestMachine`, no-ops before their owners have initialised) flush to
+the outgoing machine's file and load the incoming one's, so a LIVE switch is
+handled as well as one that reboots. `[CMOS] load/save <file> sig0E= sum3F=`
+in the log names the file and the two bytes that decide everything.
+
+**Not the cause, though both were fixed on the way** (recorded so the next
+session does not re-suspect them): the lazy 1.5 s write-back losing the last
+edit to a reboot — every reboot funnels through `OSD::esp_hard_reset()`, which
+now force-flushes both stores past the debounce before `close_all()` and long
+before IRQs go off — and the idea that GMX and ProfROM could be separated **by
+port**: they cannot, GMX drives the same SMUC card through the same ports
+(13 `LD BC,#FFBA` sites, 10 `LD B,#DF`, and no Pentagon #DFF7/#BFF7 anywhere in
+its image). A port-level split would separate something else that IS two chips
+on real hardware — the SMUC clock at #DFBA versus the Pentagon/Karabas one at
+#DFF7/#BFF7 — but keying on the machine covers that case too.
+
 - **The Gluk marker may only be seeded into a CMOS that was never saved**
   (hw 2026-09-04). `RTC::init()` used to force `regs[0x11] = 0xAA` on every boot
   AFTER `loadNVRAM()`, i.e. it overwrote a byte the saved image owned — and

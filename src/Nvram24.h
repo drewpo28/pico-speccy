@@ -26,12 +26,13 @@ public:
     static void close();    // flush + free
     static bool ready() { return mem != nullptr; }
 
+    static void machineChanged();   // switch machines: flush ours, load theirs
     static void reset();            // bus idle (machine reset); contents kept
     static void    write(uint8_t v);  // SMUC SYS write (SCL/SDA/WP bits)
     static uint8_t read();            // 0xFF / 0xBF — SDA state in bit 6
 
     // Debounced write-back, called from the main loop beside RTC::flushNVRAM().
-    static void flush();
+    static void flush(bool force = false); // force: ignore the debounce (reboot path)
 
 private:
     enum State : uint8_t { IDLE = 0, RCV_CMD, RCV_ADDR, RCV_DATA, SEND_DATA, RD_ACK };

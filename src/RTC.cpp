@@ -3,11 +3,31 @@
 
 #include <pico/time.h>
 #include "FileUtils.h"
+#include "Config.h"
+#include <stdio.h>
 #if RTC_PORT_TRACE
 #include "Debug.h"
 #endif
 
-#define RTC_NVRAM_PATH CONFIG_DIR "/cmos.nvr"
+#define RTC_NVRAM_LEGACY CONFIG_DIR "/cmos.nvr"
+
+// The CMOS is battery-backed state that belongs to ONE machine, and different
+// firmwares stamp it differently: ProfROM 4.01 (and the driver inside GMX) keeps
+// signature 0x61 in cell 0x0E, ProfROM 4.xx.015 keeps 0x62, and Mr Gluk owns
+// 0x11 — which sits inside the 0x10-0x3E range both ProfROM generations
+// checksum. Sharing one file therefore made every machine switch end in "CMOS
+// checksum error", the switched-to firmware re-initialising what the other had
+// written (hw 2026-09-05; harmless but permanent, since each switch re-breaks
+// it for the other side). A deliberate deviation from hardware — a real owner
+// has one machine and one chip — keyed on the romset, which is what identifies
+// the firmware. The legacy shared file is still READ when a machine has no
+// image of its own yet, so nothing a user already configured is orphaned.
+static char s_nv_path[64];
+static void rtcNvPathSet() {
+    const char* tag = kRomsetName[Config::romSet < ROMSET_COUNT ? Config::romSet : 0];
+    snprintf(s_nv_path, sizeof(s_nv_path), CONFIG_DIR "/cmos_%s.nvr", tag);
+}
+#define RTC_NVRAM_PATH (s_nv_path[0] ? s_nv_path : RTC_NVRAM_LEGACY)
 
 uint8_t  RTC::regs[256] = {0};
 uint8_t  RTC::sel       = 0;
@@ -71,6 +91,19 @@ int RTC::decHour(uint8_t v) {
 }
 
 // ─── lifecycle ────────────────────────────────────────────────────────────────
+// A machine switch hands the guest a DIFFERENT chip: push whatever the outgoing
+// machine wrote to its own file, then load the incoming machine's. Called from
+// Config::requestMachine once the new romset is final; a no-op before init().
+void RTC::machineChanged() {
+    if (!s_nv_path[0]) return;          // RTC::init() has not run yet
+    flushNVRAM(true);                   // to the OLD path, past the debounce
+    for (unsigned i = 0x0E; i < sizeof(regs); i++) regs[i] = 0;
+    regs[0x0B] = 0x02;
+    regs[0x0D] = 0x80;
+    if (!loadNVRAM()) regs[0x11] = 0xAA;   // same rule as init()
+    nv_dirty = false;
+}
+
 void RTC::init() {
     for (unsigned i = 0; i < sizeof(regs); i++) regs[i] = 0;
     // Reg B power-on default: bit1 = 24-hour, DM (bit2) = 0 → BCD. The guest may
@@ -104,11 +137,21 @@ void RTC::init() {
 // reporting "NO CMOS" after it has initialised the chip once.
 bool RTC::loadNVRAM() {
     if (!FileUtils::fsMount) return false;
+    rtcNvPathSet();
     FIL* f = fopen2(RTC_NVRAM_PATH, FA_READ);
-    if (!f) return false;
+    // First run for this machine: adopt whatever the shared file holds rather
+    // than handing the guest a blank chip.
+    if (!f) {
+        f = fopen2(RTC_NVRAM_LEGACY, FA_READ);
+        if (f) Debug::log("[CMOS] %s absent - adopting the shared %s",
+                          s_nv_path, RTC_NVRAM_LEGACY);
+    }
+    if (!f) { Debug::log("[CMOS] no image for %s - blank chip", s_nv_path); return false; }
     uint8_t buf[256]; UINT br = 0;
     f_read(f, buf, sizeof(buf), &br);
     fclose2(f);
+    Debug::log("[CMOS] load %s (%u B) sig0E=%02X sum3F=%02X r11=%02X",
+               s_nv_path, (unsigned)br, buf[0x0E], buf[0x3F], buf[0x11]);
     if (br < 64) return false; // corrupt/short file
     // Restore only the battery-backed NVRAM (0x0E..) plus control-B mode byte;
     // time regs are computed live and control A/C/D are synthesised on read.
@@ -119,10 +162,13 @@ bool RTC::loadNVRAM() {
     return true;
 }
 
-void RTC::flushNVRAM() {
+void RTC::flushNVRAM(bool force) {
     if (!nv_dirty || !FileUtils::fsMount) return;
     uint32_t now = to_ms_since_boot(get_absolute_time());
-    if (nv_flush_ms && (now - nv_flush_ms) < 1500) return; // debounce burst writes
+    // The debounce exists for the write burst a guest makes while editing the
+    // clock; it must NOT survive into a reboot, or the last edit dies with the
+    // RAM copy (hw 2026-09-05 — see the note in OSD::esp_hard_reset).
+    if (!force && nv_flush_ms && (now - nv_flush_ms) < 1500) return;
     FIL* f = fopen2(RTC_NVRAM_PATH, FA_WRITE | FA_CREATE_ALWAYS);
     if (!f) {
         FileUtils::mkdirParents(CONFIG_DIR);
@@ -132,6 +178,9 @@ void RTC::flushNVRAM() {
     UINT bw = 0;
     f_write(f, regs, sizeof(regs), &bw);
     fclose2(f);
+    Debug::log("[CMOS] save %s (%u B) sig0E=%02X sum3F=%02X%s",
+               RTC_NVRAM_PATH, (unsigned)bw, regs[0x0E], regs[0x3F],
+               force ? " (forced)" : "");
     nv_dirty = false;
     nv_flush_ms = now;
 }
