@@ -27,7 +27,7 @@ namespace DiskSlots {
                 if (Config::esxdos == 2) return 2; // DivIDE: hd0+hd1
                 return 0;                          // OFF / DivSD: no slots
             case IFACE_IDE:
-                // NEMO/PROFI both expose master + slave; OFF exposes nothing.
+                // NEMO/PROFI/SMUC all expose master + slave; OFF exposes nothing.
                 return Config::ide_scheme ? 2 : 0;
             default: return 0;
         }

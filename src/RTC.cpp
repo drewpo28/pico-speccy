@@ -79,13 +79,21 @@ void RTC::init() {
     regs[0x0B] = 0x02;
     // Reg D: bit7 VRT = 1 (battery/RAM valid) so the service doesn't flag a dead clock
     regs[0x0D] = 0x80;
-    loadNVRAM(); // restore battery-backed CMOS contents (Gluk config + marker)
+    const bool restored = loadNVRAM(); // battery-backed CMOS (Gluk config + marker)
     // Mr Gluk Reset Service treats the CMOS as valid only when NVRAM reg 0x11 ==
     // 0xAA (checked at unpacked-RAM 0x6049: CP 0xAA / JR NZ → "NO CMOS"). Its
     // auto-init path writes a bogus 0x55 and never self-validates — the real
     // 0xAA/'G'(0x47) signature is written only when the user saves settings in
     // Gluk's menu. Seed the validity marker so the clock is usable out of the box.
-    regs[0x11] = 0xAA;
+    //
+    // ONLY on a CMOS that has never been saved. This is one chip shared by every
+    // machine, and 0x11 is somebody else's byte: ProfROM's MOA monitor checksums
+    // cells 0x10-0x3E (p1b3 0x2030: `LD B,#10` ... `INC B / CP #3F / JR NZ`),
+    // keeps its signature 0x61 at 0x0E and the sum at 0x3F. Re-seeding 0x11 after
+    // every load therefore corrupted that sum on EVERY boot — the user saved the
+    // settings, they came back, and the boot screen still said "CMOS checksum
+    // error" for ever (hw 2026-09-04). A guest that owns the cell now keeps it.
+    if (!restored) regs[0x11] = 0xAA;
 #if RTC_PORT_TRACE
     Debug::log("[RTC] PORT TRACE ACTIVE — logging IN/OUT with low byte 0xF7");
 #endif
@@ -94,20 +102,21 @@ void RTC::init() {
 // CMOS NVRAM is the battery-backed area Gluk uses for its config + a validity
 // marker. Persisting it to SD makes the marker survive cold boots, so Gluk stops
 // reporting "NO CMOS" after it has initialised the chip once.
-void RTC::loadNVRAM() {
-    if (!FileUtils::fsMount) return;
+bool RTC::loadNVRAM() {
+    if (!FileUtils::fsMount) return false;
     FIL* f = fopen2(RTC_NVRAM_PATH, FA_READ);
-    if (!f) return;
+    if (!f) return false;
     uint8_t buf[256]; UINT br = 0;
     f_read(f, buf, sizeof(buf), &br);
     fclose2(f);
-    if (br < 64) return; // corrupt/short file
+    if (br < 64) return false; // corrupt/short file
     // Restore only the battery-backed NVRAM (0x0E..) plus control-B mode byte;
     // time regs are computed live and control A/C/D are synthesised on read.
     // br==64 = pre-240-cell file format, restores what it has.
     regs[0x0B] = buf[0x0B];
     for (unsigned i = 0x0E; i < br && i < sizeof(regs); i++) regs[i] = buf[i];
     regs[0x0D] = 0x80; // keep VRT asserted regardless of saved bytes
+    return true;
 }
 
 void RTC::flushNVRAM() {

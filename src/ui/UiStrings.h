@@ -237,6 +237,8 @@
 #define TXT_ROM_SCORP_GMX_S  "GMX"
 #define TXT_ROM_SCORP_1024   "ZS-1024 Turbo+"
 #define TXT_ROM_SCORP_1024_S "ZS-1024T+"
+#define TXT_ROM_SCORP_PROF   "ZS-1024 + ProfROM"
+#define TXT_ROM_SCORP_PROF_S "ProfROM"
 #define TXT_ROM_ALF         "ALF cartridge"
 
 // ── Options ────────────────────────────────────────────────────────────────────

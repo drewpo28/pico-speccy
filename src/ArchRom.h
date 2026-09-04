@@ -57,6 +57,7 @@
     X(R_SCORP_GR,       "ScorpGr",          "ZS-256 Turbo+ (Green)")      \
     X(R_SCORP_GMX,      "ScorpGMX",         "ZS-256 Turbo+ & GMX")        \
     X(R_SCORP_1024,     "Scorp1024",        "ZS-1024 Turbo+")             \
+    X(R_SCORP_PROF,     "ScorpProf",        "ZS-1024 + ProfROM")          \
     X(R_ALF1,           "ALF1",             "ALF cartridge")
 
 #define NM_X_IDX(id, str) id,

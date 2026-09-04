@@ -5977,10 +5977,10 @@ static void buildEmulatorInfoText() {
             pos += infoAppend(buf, pos, bufsz,
                 " Z-Controller   : On (#77/#57)\n");
 
-        // IDE/HDD (NEMO/PROFI)
+        // IDE/HDD (NEMO/PROFI/SMUC)
         if (Config::ide_scheme != 0) {
-            static const char* idesc[] = { "Off", "NEMO", "PROFI" };
-            int si = Config::ide_scheme; if (si > 2) si = 0;
+            static const char* idesc[] = { "Off", "NEMO", "PROFI", "SMUC" };
+            int si = Config::ide_scheme; if (si > 3) si = 0;
             pos += infoAppend(buf, pos, bufsz, " IDE/HDD        : %s\n", idesc[si]);
             pos += infoAppend(buf, pos, bufsz, "  hd0           : ");
             pos += appendFilename(buf, pos, bufsz, Config::ide_image[0], 19);

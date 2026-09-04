@@ -291,6 +291,9 @@ static const Option opt_mach_scorp[] = {
     { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX),  TXT_ROM_SCORP_GMX_S  },
 #endif
     { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S },
+#if PROFROM_IN_FLASH
+    { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S },
+#endif
 };
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
@@ -453,6 +456,7 @@ static const Option opt_ide_scheme[] = {
     { "Off",   0 },
     { "NEMO",  1 },
     { "PROFI", 2 },
+    { "SMUC",  3 },
 };
 
 
@@ -746,11 +750,12 @@ static const Option opt_pref_scorp[] = {
     { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      },
     { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   },
     { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S },
+    { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S },
 #if GMX_IN_FLASH
-    { TXT_ROM_SCORP_GMX,  3, TXT_ROM_SCORP_GMX_S  },
-    { TXT_ROM_LAST,       4 },
+    { TXT_ROM_SCORP_GMX,  4, TXT_ROM_SCORP_GMX_S  },
+    { TXT_ROM_LAST,       5 },
 #else
-    { TXT_ROM_LAST,       3 },
+    { TXT_ROM_LAST,       4 },
 #endif
 };
 

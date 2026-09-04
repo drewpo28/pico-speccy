@@ -100,6 +100,18 @@ public:
     static bool gmxPortWrite(uint16_t address, uint8_t data);
     static bool gmxPortRead(uint16_t address, uint8_t* out);
 
+    // ── SMUC (Scorpion IDE + NVRAM + RTC + ISA card) ───────────────────────────
+    // Selected by IDE::scheme == IDE::SMUC. All of its ports live in the TR-DOS
+    // (DOSEN) address space and are decoded as A12=A11=A7=A5=A1=1, A0=0 — i.e.
+    // low byte #BA or #BE. Cold flash dispatch like the GMX family: return true
+    // when the access was ours (the handlers must NOT fall through — every SMUC
+    // port has A0=0 and would otherwise be swallowed by the ULA branch).
+    static bool smucPortWrite(uint16_t address, uint8_t data);
+    static bool smucPortRead(uint16_t address, uint8_t* out);
+    static void smucReset();      // machine reset: SYS/FDD latches + NVRAM bus
+    static uint8_t smucSys;       // #FFBA: D7 mode, D6 SCL, D5 WP, D4 SDA, D0 HDD reset
+    static uint8_t smucFdd;       // #7FBA: virtual-FDD control latch
+
     // PQ-DOS serial keyboard emulation (ports #F3 status / #D3 data). PQDOS uses
     // ONLY this controller for input (no IN A,(#FE) matrix reads anywhere in the
     // firmware), so keys must be fed here. pushKey() enqueues a driver scancode

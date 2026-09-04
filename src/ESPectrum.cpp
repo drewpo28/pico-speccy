@@ -83,6 +83,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ZiFiAT.h"
 #include "BoardPins.h"
 #include "RTC.h"
+#include "Nvram24.h"
 #include "Z80DMA.h"
 #include "GS/GS.h"
 #include "GS/NgsSd.h"
@@ -677,6 +678,7 @@ void ESPectrum::setup() {
   Ports::gmxPlane = 0;
   Ports::gmxMagicShift = 0;
   Ports::portDFFDgmx = 0;
+  Ports::smucReset();
   Ports::serialMouseReset();
   //=======================================================================================
   // LOAD CONFIG
@@ -1321,6 +1323,10 @@ void ESPectrum::reset(uint8_t romInUse) {
   Ports::gmxPlane = 0;
   Ports::gmxMagicShift = 0;
   Ports::portDFFDgmx = 0;
+  // SMUC: the card sits on the ZX reset line — its SYS/FDD latches and the
+  // NVRAM's I2C state machine go back to idle. The 2 KB image itself is the
+  // battery-backed part and survives (as does the RTC's CMOS).
+  Ports::smucReset();
   g_gmx_tap = false;
   // ── EXPERIMENT (2026-08-31): GMX F11 = a COLD boot ──────────────────────────
   // The GMX firmware keeps warm-boot state in guest RAM — its monitor skips its
@@ -2966,6 +2972,7 @@ void ESPectrum::loop() {
 
     if (ZiFi::enabled) ZiFi::tick();
     RTC::flushNVRAM(); // persist CMOS NVRAM to SD when dirty (debounced)
+    Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
     Ports::serialMouseTick(); // arm the COM-mouse RST20H when movement queued
 
     // Auto-sync the RTC over SNTP at startup when both ZiFi and RTC are on and a

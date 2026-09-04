@@ -73,7 +73,7 @@ private:
     static uint32_t nv_flush_ms;  // last flush time (debounce)
     static uint32_t last_uf_sec;  // second of the last reg C UF report
     static uint32_t last_c_ms;    // ms of the last reg C read (PF synthesis)
-    static void     loadNVRAM();  // restore NVRAM from SD at init
+    static bool     loadNVRAM();  // restore NVRAM from SD at init; true = a saved image was applied
 
     static uint32_t liveSecs();   // base_secs + elapsed
 };

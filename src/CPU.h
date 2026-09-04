@@ -103,6 +103,16 @@ extern bool g_scorp_gmx;
 // (1 MB) — page = D7D6<<4 | D4<<3 | 7FFD 0-2 (MAME scorpion_update_memory, ZXMAK2
 // MemoryScorpionProfRom1024 GetRamPage). Green/Turbo+ timing, no even-M1.
 extern bool g_scorp_1024;
+// Scorpion ProfROM romset live (R_SCORP_PROF): 4 ROM planes x 4 banks with the
+// plane picked by the legacy 0x0100-0x010F M1 tap (ZXMAK2 MemoryScorpionProfRom
+// BusProfRomGate), ZS-1024 paging, Green/Turbo+ timing, no even-M1. Set in
+// CPU::reset only, like the others.
+extern bool g_scorp_prof;
+// Either banked-ROM Scorpion romset (GMX or plain ProfROM): romInUse carries a
+// ProfROM plane in bits 2+, so every place that composes or masks a Scorpion ROM
+// bank has to know. What stays GMX-specific is the GMX hardware itself (the port
+// family, #1FFD D2, 2 MB paging, 640x200).
+extern bool g_scorp_banked;
 // GMX ProfROM 0x0100-0x010F read tap armed (service bank mapped at 0x0000, ROM
 // visible). Recomputed by Ports::scorpionRomUpdate/check_trdos — one almost-
 // always-false global test on the peek8/fetchOpcode hot paths.

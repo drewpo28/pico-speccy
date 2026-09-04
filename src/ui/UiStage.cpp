@@ -245,12 +245,12 @@ static const RomsetIdx kPref128[]  = {
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
-// 1024 sits BEFORE the conditional GMX entry so opt_pref_scorp's indices
-// (UiTree.cpp) are identical on both build variants.
+// 1024 and ProfROM sit BEFORE the conditional GMX entry so opt_pref_scorp's
+// indices (UiTree.cpp) are identical on both build variants.
 #if GMX_IN_FLASH
-static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_GMX, R_LAST };
+static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_PROF, R_SCORP_GMX, R_LAST };
 #else
-static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_LAST };
+static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_PROF, R_LAST };
 #endif
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
@@ -1258,6 +1258,15 @@ void commit(CommitReport& rep) {
         IdeSubsys::syncFromState();
         rep.constrained++;
         if (!rep.note) rep.note = " IDE turned off: esxDOS needs the same ports ";
+    }
+
+    // SMUC is a Scorpion card: Ports::smucPortRead/Write are gated on
+    // Z80Ops::isScorpion, so picking that scheme on another machine leaves the
+    // menu row set and the ports dead. Say so instead of forcing a scheme back —
+    // the user may be setting up the card before switching machine.
+    if (bmGet(g_dirty, SET_IDE_SCHEME) && g_val[SET_IDE_SCHEME] == IDE::SMUC &&
+        ((staged(SET_MACHINE) >> 8) & 0xFF) != A_SCORP) {
+        if (!rep.note) rep.note = " SMUC is a Scorpion card ";
     }
 
     if (bmGet(g_dirty, SET_GS_MODE) && g_val[SET_GS_MODE] && Config::esxdos == 2) {

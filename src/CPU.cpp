@@ -86,6 +86,8 @@ bool Z80Ops::isProfi = false;
 bool Z80Ops::isScorpion = false;
 bool g_scorp_even_m1 = false;
 bool g_scorp_gmx = false;
+bool g_scorp_prof = false;
+bool g_scorp_banked = false;
 bool g_scorp_1024 = false;
 bool g_gmx_tap = false;
 
@@ -155,7 +157,13 @@ void CPU::reset() {
     // Even-M1 is a Yellow-PCB-only trait (see CPU.h); Green and GMX dropped it.
     g_scorp_even_m1 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP);
     g_scorp_gmx = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_GMX);
-    g_scorp_1024 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_1024);
+    g_scorp_prof = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_PROF);
+    g_scorp_banked = g_scorp_gmx || g_scorp_prof;
+    // ProfROM ships on the ZS-1024 Turbo+ (speccy4ever files it under "Prof ROM
+    // & ZX-1024"; ZXMAK2 has no 256K-only ProfROM machine either), so it carries
+    // the same 1FFD D7,D6 page extension.
+    g_scorp_1024 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_1024 ||
+                                          Config::romSetScorp == R_SCORP_PROF);
     g_gmx_tap = false;   // re-armed by Ports::scorpionRomUpdate once paging settles
     if (Config::arch == A_48K) {
         Z80Ops::isByte = (Config::romSet48 == R_48K_BY);
@@ -444,12 +452,22 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
 // Read byte from RAM
 IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
-    // GMX ProfROM legacy plane switch: any read of 0x0100-0x010F while the
-    // service bank is at 0x0000 (g_gmx_tap, ZXMAK2 SubscribeRdMem window).
-    // One almost-always-false global test — the g_ngs_zxdma pattern.
-    if (g_gmx_tap && (address & 0xFFF0) == 0x0100)
+    // ProfROM plane switch — and on this firmware the switch IS a DATA read, so
+    // this hook is the load-bearing one (hw 2026-09-04: without it ProfROM ran
+    // its RAM test and then fell back into plane 0's 128 ROM = "black screen,
+    // then 48K"). Both users of the window read it: the monitor's plane-select
+    // at bank2 0x3C7E (LD HL,#0110+target / LD L,(HL) / LD L,(HL)) and the RAM
+    // trampoline every plane's bank 0 copies to 0x5BEE (LD HL,#010C /
+    // LD L,(HL)). Only ProfROM ever arms g_gmx_tap — GMX pins it false because
+    // its own monitor sweeps the window while checksumming itself.
+    // Order matters: the byte is fetched from the plane that was live when the
+    // access started and the switch applies to everything AFTER it, which is
+    // what MAME's install_read_tap does (the tap runs on the value already
+    // read). The monitor's routine keeps using L afterwards.
+    uint8_t v = gsDmaPeek8(address);
+    if (__builtin_expect(g_gmx_tap != 0, 0) && (address & 0xFFF0) == 0x0100)
         Ports::gmxProfRomTap(address);
-    return gsDmaPeek8(address);
+    return v;
 }
 
 // Fetch opcode from RAM (NON +2A/3 version)
@@ -467,8 +485,10 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     // wait T first. Draw(1) so the renderer accounts the extra tact too.
     if (g_scorp_even_m1 && (pc & 0xC000) && (CPU::tstates & 1))
         VIDEO::Draw(1, false);
-    // GMX ProfROM plane switch fires on M1 fetches of 0x0100-0x010F too
-    // (ZXMAK2 SubscribeRdMemM1 + SubscribeRdMem).
+    // The M1 half of the same tap (ZXMAK2 and MAME both hook fetch and read).
+    // ProfROM uses it for cross-plane jumps — plane 1 bank 3 does JP #010E at
+    // bank offset 0x0030 — while the ordinary plane switch is the data read in
+    // peek8 above.
     if (g_gmx_tap && (pc & 0xFFF0) == 0x0100)
         Ports::gmxProfRomTap(pc);
     VIDEO::Draw_Opcode(MemESP::ramContended[pg]);

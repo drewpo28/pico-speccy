@@ -27,4 +27,16 @@ extern "C" const unsigned char gb_rom_scorpion_bank3[];
 // match). Called from gmxTapUpdate (Ports.cpp) on every GMX romInUse change.
 void gmxRegisterLiveOverlay(uint8_t bank);
 #endif
+// Scorpion PROF-ROM v4.01 (romset R_SCORP_PROF) — 256 KB, 4 planes x 4 banks,
+// stored deduplicated + partly as overlays (~181 KB; tools/rom_pack.py prof).
+// This is the firmware a real ZS-1024 Turbo+ shipped with, and the one that
+// drives the SMUC HDD controller: the driver lives in plane 1 bank 3. Like the
+// GMX table, the {data, overlay} pairs are bound by Config::requestMachine and
+// the LIVE bank's overlay is re-registered on every romInUse change.
+#if PROFROM_IN_FLASH
+#include "scorpion_prof_banks.h"
+// Defined in Config.cpp — the ONLY TU that may reference the bank table (same
+// internal-linkage trap as the GMX one above). Called from gmxTapUpdate.
+void profRegisterLiveOverlay(uint8_t bank);
+#endif
 #include "scorpion_overlays.h"

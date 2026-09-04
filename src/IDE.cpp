@@ -1,4 +1,5 @@
 #include "IDE.h"
+#include "Nvram24.h"
 
 
 #include <cstdlib>
@@ -295,6 +296,11 @@ void IDE::init() {
     scheme = Config::ide_scheme;
     if (scheme == OFF) return;
 
+    // SMUC carries a 2 KB 24LC16 on the same card (ProfROM keeps its settings and
+    // the HDD partition table there). Allocated with the scheme, freed by close(),
+    // so it costs nothing under NEMO/PROFI/off.
+    if (scheme == SMUC) Nvram24::init();
+
     // 2048 B: 512 B suffices for ATA, but ATAPI transfers a full 2048-byte
     // logical block, so the shared buffer is sized for the larger case.
     if (!buffer)   buffer   = (uint8_t*)calloc(ATAPI_BLOCK, 1);
@@ -468,6 +474,7 @@ void IDE::close() {
     free(buffer);   buffer   = nullptr;
     free(identity); identity = nullptr;
     free(file);     file     = nullptr;
+    Nvram24::close();   // flushes to SD first; no-op when it was never up
 }
 
 bool IDE::present() {

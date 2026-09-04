@@ -46,12 +46,13 @@ option(HDMI_SOFT_CLK "HDMI: drive the clock pair at 8 mA + slow slew instead of 
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
 # Add new toggles here following the same option(...) + compile-definition pattern.
-option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" OFF)
+option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" ON)
 option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
 option(MC7FFD_TRACE "One-shot capture of #7FFD write tstates when a frame carries >=90 of them (beam-raced multicolor phase diagnosis)" OFF)
-option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1FFD writes, romInUse transitions, TR-DOS trap entry/exit (capped)" OFF)
+option(SMUC_TRACE "Trace SMUC port accesses, including ones the DOSEN/SYSEN gate rejected (capped)" ON)
+option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1FFD writes, romInUse transitions, TR-DOS trap entry/exit (capped)" ON)
 option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
@@ -75,7 +76,7 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 # Each enables stdio over the board's Debug-Probe header — see the block for pins.
 set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
 set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
-set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
+set(PICO_DV_DBG_UART ON CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
 set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
 
 # set(TFT ON)
@@ -379,8 +380,23 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
 # re-provisions from SD. GMX_IN_FLASH=0 remains an escape hatch (drops the ROM,
 # the menu rows and the partition shrink together).
 target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_IN_FLASH=1)
+# Scorpion PROF-ROM v4.01 (romset "ZS-1024 + ProfROM"): ~181 KB of flash for the
+# 256 KB image (tools/rom_pack.py prof). It rides the GM.DLS partition shrink the
+# GMX ROM above already asks for, so PROFROM_IN_FLASH=1 needs no defsym of its
+# own — but it does assume GMX_IN_FLASH=1; turning GMX off while leaving this on
+# would put firmware + ROM back above the old partition base.
+target_compile_definitions(${PROJECT_NAME} PRIVATE PROFROM_IN_FLASH=1)
 target_link_options(${PROJECT_NAME} PRIVATE -Wl,--defsym=__gmx_rom_in_flash=1)
 target_compile_definitions(${PROJECT_NAME} PRIVATE CONFIG_BOARD_TAG="${CONFIG_BOARD_TAG}")
+
+# SMUC port tracing (see Ports.cpp `#if SMUC_TRACE`): every accepted access plus,
+# crucially, every access the DOSEN/SYSEN gate REJECTED — the two are
+# indistinguishable in a log otherwise.
+if (SMUC_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE SMUC_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE SMUC_TRACE=0)
+endif ()
 
 # IDE/HDD port tracing toggle (see Ports.cpp / IDE.cpp `#if IDE_PORT_TRACE`).
 if (IDE_PORT_TRACE)

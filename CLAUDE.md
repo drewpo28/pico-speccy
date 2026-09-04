@@ -2426,6 +2426,13 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
   `romSetScorp`/`pref_romSetScorp`, on-disk arch spelling "Scorpion", romset
   "Scorp".
 - Deliberately NOT in v1: ProfROM banks, Turbo+ IN-#7FFD/#1FFD turbo toggle, SMUC.
+  ProfROM banks and SMUC landed 2026-09-04 (sections below). **Still missing: the
+  Turbo+ turbo toggle** — MAME scorpiontb maps a READ of #1FFD-ish (A15=0 A14=0
+  A5=1 A0=1, mirror 0x3FDC) to "3.5 MHz" and of #7FFD-ish (A14=1) to "7 MHz". Not
+  implemented because that partial decode also swallows ordinary reads (`IN A,(#FF)`
+  from a low BC would drop the machine to 3.5), and ESPectrum::multUser already owns
+  the clock — but ProfROM software that expects to turbo itself will run at whatever
+  the user picked.
 
 ### Scorpion SYSEN ports + magic NMI + WD1793 motor model (hw-confirmed 2026-08-30)
 
@@ -2700,8 +2707,15 @@ can be disassembled (`tools/z80disasm.py`). Do NOT re-derive it.
   writes `(D & 0xF0) | (magic & 7)` to port #00; `E == 0xFF` means "unset" and
   defaults to **`A=0x40`, i.e. plane 4**. Then `JP 0x0000`. In gmx13500.rom the
   three profiles are p0b1 "DK_test" → plane 2 (erased in this image), p0b2
-  "PentaGON" → plane 1, p0b3 "Work Sch" → **plane 4 = the Scorpion v2.94 set**;
-  p0b0's own bytes are 00/00 (staying in the loader).
+  "PentaGON" → plane 1, p0b3 "Work Sch" → **plane 4**; p0b0's own bytes are
+  00/00 (staying in the loader). **Plane 4 is ProfROM 4.01, NOT the v2.94 set**
+  (an earlier note here said v2.94 and it was wrong, corrected 2026-09-04 by
+  diffing the images): GMX banks 17 and 19 are BYTE-IDENTICAL to
+  `scorp401-520F4C15.rom` banks 1 and 3, bank 16 differs by 4 bytes — against
+  19 / 3856 bytes for v2.94. Only bank 18, the service monitor, is GMX's own
+  variant. Which is why the SMUC driver is already in our flash (plane 5 bank
+  3 = ProfROM 4.01 plane 1 bank 3) and why the R_SCORP_PROF romset shares this
+  firmware generation.
 - **So a cold boot is TWO passes**, which the trace confirms line for line:
   pass 1 arrives with magic 0 → mode 0 → `LD A,2; CALL 0x5EC9` checksums bank 3's
   descriptor → valid → `OUT (0),0x0A` **resets the CPU only** (magic := 0x8A) →
@@ -2874,6 +2888,246 @@ turbo a 3.5 session), GMX's D7 is the machine's own firmware-managed clock: the
 boot ROM turns it on immediately and the monitor applies its own flag (0xE035
 bit 6) through the routine at ROM 0x050B. `[GMX hb]` now carries
 `iff=`/`mult=live/user`/`7EFD=` so this is never a question again.
+
+### ProfROM romset (R_SCORP_PROF, 2026-09-04; BOOTS on hw after the read-tap fix below)
+
+**Status: it starts on hardware (2026-09-04, user-confirmed) once the plane tap
+fires on data reads.** Everything past the boot — the shell, TR-DOS out of the
+plane's bank 3, the 1 MB paging under this firmware, snapshots — is untested.
+
+"ZS-1024 + ProfROM" — Scorpion PROF-ROM **v4.01, image scorp401_91F513AB.rom**
+(CRC32 91F513AB), the firmware a real ZS-1024 Turbo+ shipped with (speccy4ever
+files every ProfROM under "Prof ROM & ZX-1024"; ZXMAK2 has no 256K-only ProfROM
+machine either, and MAME's `profscorp` lists this exact CRC as a BIOS option).
+It is what makes the SMUC controller below useful — the stock ZS-256 v2.94/2.95
+ROMs contain **zero** SMUC code (scanned for `LD BC,#xxBA/#xxBE`), ProfROM 3.2a
+has partial support, 4.01 and 4.xx.015 full.
+
+- **256 KB = 4 planes x 4 banks into rom[0..15]**, `romInUse = (plane << 2) |
+  bank`, exactly the GMX arithmetic (`g_scorp_banked` = GMX or ProfROM is the
+  flag every plane-composing site now tests — `Ports::scorpionRomUpdate`, both
+  `check_trdos` arms, the NMI-DOS restores). Green/Turbo+ timing (`!= R_SCORP`
+  already selected it), no even-M1, and `g_scorp_1024` is true so 1FFD D7,D6
+  extend the page — MAME's scorpiontb is the same machine with 1M RAM.
+- **The plane switch is the 0x0100-0x010F tap**, which existed unused since the
+  GMX work and is now armed for THIS romset only (`gmxTapUpdate`): SYSEN set
+  (1FFD D1, the service bank at 0x0000) and ROM actually visible there, i.e.
+  MAME's `!romram() && (entry & 3) == ROM_PAGE_SYS` and ZXMAK2's BusProfRomGate.
+  **The switch is a DATA READ, so `peek8` is the load-bearing hook** — the M1
+  half only serves cross-plane jumps (plane 1 bank 3 does `JP #010E` at bank
+  offset 0x0030). Both users of the window read it:
+    - the monitor's plane-select at bank 2 `0x3C7E`: `LD HL,#0110` + target,
+      `LD L,(HL)` (fetch the table entry — the tables are `p0b2: 0C 08 04`,
+      `p1b2: 0C 00 08 04`, `p2b2: 08 0C 00 04`, `p3b2: 0C 08 04 00`, indexed by
+      TARGET plane, an independent confirmation of `kProfPlaneMap`), then a
+      second `LD L,(HL)` on #010C/#0108/#0104 — that read IS the switch, and the
+      byte it returns is discarded;
+    - the RAM trampoline every plane's bank 0 copies to 0x5BEE (ROM 0x0111):
+      `OUT (#1FFD),2` (SYSEN on) / `LD HL,#010C` / `LD L,(HL)` / `OUT (#1FFD),0`
+      / `JP #0000`.
+  Both run RELOCATED TO RAM (0x5BEE, and the 0x3Cxx block is the master copy of
+  the 0xE0xx-0xE5xx thunks — `LD HL,#E478` sits at 0x3C33), which is what makes
+  switching the ROM under the running routine safe: bank 2 is a DIFFERENT
+  program in every plane (16219 bytes differ between p0b2 and p1b2).
+  **hw 2026-09-04, and the cost of getting this wrong:** shipped M1-only on the
+  strength of a byte-pattern scan that read `LD HL,#010C` + `LD L,(HL)` as
+  "`LD HL` then `JP (HL)`" — i.e. an inference from operand bytes, never from a
+  disassembly. ProfROM then ran its RAM test (10-15 s of black screen) and,
+  when the monitor tried to hand over to the ProfROM shell in another plane,
+  silently stayed in plane 0 and fell into its 128 ROM: **"black paper, then
+  48K"**. The tap order follows MAME's `install_read_tap`: fetch the byte from
+  the plane that was live, THEN switch.
+  We follow ZXMAK2 in switching on the WHOLE window rather than MAME's four
+  offsets 0/4/8/C, because ProfROM uses #0103 (ten sites, the identity slot that
+  re-enters common code) and #010E, neither of which MAME's rule would act on.
+- **GMX must keep its tap off and ProfROM must have it on, and the ROMs say
+  why**: the ProfROM monitor holds `E5 02 00 00...` at 0x0100 and its only
+  CPI/CPIR/CPDR loops are short table scans (BC = 5, 0x0A, 0x0B, 0x24) — it
+  never sweeps the window, so a live tap is safe; the GMX monitor checksums its
+  own 16K straight through it. Diagnostics: `-DGMX_TRACE=ON` now also prints
+  `[PROF arm]` on every arm/disarm of the tap and `[PROF tap]` on every fire —
+  a switch that silently does not happen otherwise looks like nothing at all.
+- **Flash: ~181 KB** for the 256 KB image (`tools/rom_pack.py prof` →
+  `scorpion_prof_rom.c` + `scorpion_prof_banks.h`, same {data, overlay} table and
+  same DYNAMIC per-bank overlay registration as GMX — `profRegisterLiveOverlay`
+  in Config.cpp, the only TU allowed to touch the table). Plane 0 banks 0/1 are
+  443/182 B overlays over the Sinclair 128K halves; plane 3 is four near-empty
+  banks that overlay each other (~120 non-zero bytes each — the plane-switch
+  stubs) in the 520F4C15 image; in the shipped 91F513AB the ROM disk fills
+  plane 3 too, so 14 of 16 banks are raw and the pack costs 230003 B. **Deliberately NOT packed against
+  the GMX banks**, which would save another ~48 KB: those arrays only exist under
+  GMX_IN_FLASH, and one romset's flash layout must not depend on another's build
+  switch. `PROFROM_IN_FLASH=0` drops the ROM and the menu row (the romset then
+  falls back to R_SCORP_1024). Firmware after this: 2354684 B against the
+  2.3125 MB (2424832 B) GM.DLS partition base — ~68 KB of headroom left, which
+  the linker ASSERT enforces.
+- Unlike GMX, plane 0 bank 0 is an OVERLAY bank, so `requestMachine` registers
+  it at bind time (`profRegisterLiveOverlay(0)`) — the registry may still hold
+  the plain-Scorpion overlay for the same Sinclair base from the previous romset.
+- Menu: Machine → Scorpion → "ZS-1024 + ProfROM"; the pref radio gained the same
+  entry (before the conditional GMX one, so the indices stay build-independent).
+- Also swap-in ready if wanted later: **4.xx.015 (5D4BA991)** adds the second
+  (slave) HDD + Navigator; **4.02 is an emulator-only build** ("works only with
+  SPM ZX Spectrum Emulator from Andrew MOA") and 4.xx.004 is a FAT32 beta —
+  neither belongs here.
+
+- **"The RAM test shows 256K" is the FIRMWARE, not our paging** (hw 2026-09-04).
+  Diffing all ten 4.01 variants settles it: **plane 0 — the boot, the service
+  monitor and every paging routine — is byte-identical across them**, differing
+  only in the 23-byte banner string and two patches (the monitor's
+  `JP NZ,#001E` self-restart on a checksum mismatch NOP'd at bank 2 0x1093, and
+  a `JP Z` made unconditional at 0x3152). The paging code walks 7FFD bits 0-2
+  plus 1FFD D4 and nothing else — 16 pages, 256 KB — e.g. the clear loop at
+  bank 2 0x0691 (`DEC A / OUT (#7FFD),A / CP #10 / JR NZ`, i.e. #17 down to
+  #10). So NO ProfROM 4.01 build uses the ZS-1024 bits; only two of them
+  (A3B10C26 and this one) even carry the "Scorpion ZS 1024 turbo+" name plate,
+  and that string is all the difference is. Our D6/D7 model stays right and
+  hw-proven — the UMT memory test finds 1 MB on R_SCORP_1024 — guest software
+  that knows the convention reaches all of it; this firmware simply does not.
+  **Do not go looking for an emulation bug behind that number again.**
+
+## SMUC — Scorpion HDD/NVRAM/RTC/ISA controller (2026-09-04; detect + IDENTIFY hw-confirmed)
+
+**Status (hw 2026-09-04, ProfROM's MOA Shadow Service Monitor boot screen):**
+
+    SMUC     : Ver. 2, rev. 0
+    128 bytes CMOS found
+    NVRAM found
+    Interrupt controller not found
+    Serial port not found
+    IDE/AT 31 MB Hard disk found
+    PICO-SPEC IDE HDD / Serial Number: PSPEC0000000000001 / Firmware rev.: 1.0
+
+Everything the card owns is confirmed: the **24LC16 NVRAM** (its I2C state
+machine answers a real bit-banged probe), the **MC146818 CMOS** — the monitor
+accepts its checksum AND sizes the chip at 128 bytes, which it measures by
+aliasing cells 0x3F and 0x7F (p1b3 0x2047), so it is genuinely talking to it —
+and the **ATA taskfile**, whose size and whole IDENTIFY block come back
+correctly. Its Set Up page keeps perfect time and date, day-of-week included.
+The two "not found" lines are the deliberate ISA stubs (8259 at #7FBE, the
+serial), not defects.
+
+**End to end on hardware (2026-09-05): partition the disk as TR-DOS in the
+Shadow Monitor, mount a pseudo-disk, Quick-format it — and it all works.** So
+the sector path is exercised under a real guest filesystem in both directions:
+one capture alone carried 292 ATA commands (210 reads, 69 writes, IDENTIFY,
+INIT DEV PARAMS, DIAGNOSTIC). What remains untried is booting the machine FROM
+the disk, and the NEMO scheme against the same ProfROM (it supports both).
+**Read the screen at 5x before quoting it** — at 320x240 the lines overlap and
+this session first mis-transcribed "NVRAM found" as "Clock not found" and
+"IDE/AT 123 MB Hard disk found" as "hard disk not found", i.e. read two
+successes as two failures. `PIL` crop + NEAREST upscale of the message block
+settles it in one step.
+The monitor's own capabilities are readable straight out of its tokenised
+message dictionary at **p1b1@122C**: `time date &Set Up ... Cylinders head
+partition manager global-delete part all local table information select create
+write restore autodetection mount dismount ... NVRAM ... SMUC mode LBA mirror
+main menu ... magic button monitor` — i.e. it carries its own partition manager
+(partition types include `SMFS` and `OS/2 Boot`, p1b1@2B63), so a disk is
+prepared in-place and no downloaded image is needed. The way in is our
+Machine -> Reset to -> **Service monitor**, which is a bare NMI = that "magic
+button". The ROM disk of the 91F513AB image additionally carries `HDST SMUC`
+(setup), `Cat HDD` and `HDD Doc SMUC` (p1b1@3244).
+
+`IDE::SMUC` (scheme 3, Devices → IDE/HDD → SMUC) puts the existing 16-bit ATA
+engine behind the SMUC port map and adds the card's own 2 KB 24LC16 NVRAM. Port
+map verified three ways — UnrealSpeccy 0.37 `Io.cpp`, ZXMAK2 `IdeSmuc.cs`, and a
+disassembly of the real driver (ProfROM 4.01 plane 1 bank 3 = GMX plane 5 bank 3,
+which we already ship) — and the decode was diffed against Unreal's masks over
+**all 65536 addresses, 0 mismatches**.
+
+- **Outer decode `A12=A11=A7=A5=A1=1, A0=0`** (low byte #BA/#BE) inside the DOS
+  address space; A6 must be 0. `#5FBA` version / `#5FBE` revision / `#7FBA`
+  virtual-FDD latch / `#7FBE` 8259 / `#DFBA` MC146818 / `#FFBA` SYS /
+  `#F8BE..#FFBE` ATA r0-r7 (register = A8-A10) / `#D8BE..#DFBE` the 16-bit
+  high-byte latch. The driver's own code is the proof: `LD BC,#F8BE / INC B /
+  OUT (C),A` walks the taskfile, `INI` from #F8BE + `INI` from #D8BE x256 reads a
+  sector (OUTD/OUTI decrement B first, hence #D9F9 in the write path), and
+  `IN D,(#FFBE) / BIT 7,D` is the BSY poll.
+- **SYS #FFBA**: D6=SCL, D5=WP, D4=SDA for the NVRAM, D0 = HDD reset, D7 = a mode
+  bit that does double duty — it picks the RTC address/data register AND
+  redirects the ATA window to Control/AltStatus (that is how the driver soft-
+  resets: `OR #80` → #FFBA, then #0C and 0 → #FEBE). Read-back: NVRAM SDA on D6.
+- **Presence detect is "not #FF"**: `IN A,(#5FBA) / INC A / JR Z,absent`. The
+  version number is then `(D7,D6,D5)` with D3 folded into the LSB, so the
+  constants only pick a version string — we answer ZXMAK2's 0x57/0x17.
+- **Deliberate deviations.** (1) SYS D0 resets on the 0→1 EDGE, where Unreal and
+  ZXMAK2 reset on the level — the driver HOLDS D0 set through normal operation
+  (`OR #81` at bank offset 0x1E78, later `AND #7F / OR #01`), so a level reset
+  would fire on every later SYS write, the RTC mux included, and kill transfers.
+  (2) INTRQ (SYS read D7) is always 0 — there is no interrupt model behind IDE::
+  and every known driver polls BSY. (3) The handlers RETURN instead of sharing
+  the bus: every SMUC port has A0=0 and would otherwise also hit the ULA (same
+  call as the OPL3 block). (4) WP is ignored on NVRAM writes, following both
+  emulators — guessing it strict the wrong way makes every settings write vanish
+  silently, guessing it permissive only stores bytes hardware would have dropped.
+- **Gated on `Z80Ops::isScorpion`** and on DOSEN **or** SYSEN (`port1FFD & 0x02`,
+  the same rule our Beta-128 FDC ports already follow on this machine). It is a
+  bus card, so any Scorpion romset may select it — but only GMX and ProfROM carry
+  firmware that drives it; the menu says " SMUC is a Scorpion card " when the
+  scheme is picked with another machine staged.
+- **NVRAM (`src/Nvram24.{h,cpp}`)**: 24LC16 I2C state machine ported from ZXMAK2
+  NvramChip.cs, 2 KB on the heap and ONLY while the scheme is active (IDE::init /
+  IDE::close own it, `FEAT_IDE` budget 4 KB → 6 KB), persisted to
+  `CONFIG_DIR/nvram.bin` — that file is the battery — with the same debounced
+  flush contract as `RTC::flushNVRAM` (both are pumped from ESPectrum::loop).
+  A machine reset idles the bus but keeps the contents, like the RTC's CMOS.
+  Host test `tools/nvram24_test.cpp` (build recipe in its header) drives it as a
+  real I2C master: byte write/read-back, 16-byte sequential read, page-write wrap
+  inside the 16-byte page, the three page-select bits, a foreign device address
+  being ignored, and the idle bus. **Re-run after any change there** — all three
+  hand-applied mutations (page-bit shift, wrap, ACK-slot skip) fail it.
+- The RTC is the existing `RTC::` singleton (MC146818), so the SMUC clock shares
+  `cmos.nvr` with the Pentagon/Gluk one and honors Options → RTC exactly the same
+  way (off → `RTC::readDisabled`, which answers UIP-clear).
+- **#7FBA reads back `latch | 0x3F`**, matching UnrealSpeccy's
+  `return comp.p7FBA | 0x3F`. It was `| 0x37` here — a transcription slip that
+  cleared bit 3 of the port Unreal names **VirtualFDD**, i.e. the one the TR-DOS
+  pseudo-disk mapping runs through.
+
+### How a SMUC disk is actually organised (smuc.pdf §3.2-3.3, the scanned manual)
+
+The scanned `doc/smuc.pdf` from speccy4ever is the authority and it answers the
+questions this port keeps raising; `pdftoppm -r 100 -png` renders it readably
+(the text layer is empty — it is images). Its Fig. 3 is the same boot screen we
+produce, down to the wording, with "64 bytes CMOS found" where we say 128.
+
+- **Two levels of partitioning.** The Global partition table (MBR) holds one
+  **MFS** partition — the only type the monitor itself can create, max 32 MB —
+  and inside it a **Local partition table** carries up to 63 sub-partitions
+  whose types are the ZX operating systems: **TR-DOS**, MicroDOS, IsDOS. Only
+  TR-DOS is served by the monitor's own firmware; the others need their own
+  drivers. `Global partition manager` vs `Local partition manager` in the menu
+  title tells you which level you are on.
+- **A TR-DOS sub-partition is a COLLECTION of pseudo-floppies**, not one disk:
+  you give it a name (≤6 chars) and a count (1..51), and each member is a
+  byte-exact ordinary TR-DOS diskette image.
+- **Mounting is two picks**: `Mount on C` → choose the collection → choose one
+  pseudo-disk inside it. The mounted name shows as `collection\disk`.
+- **A freshly created pseudo-disk is BLANK and must be formatted** — the manual
+  says so explicitly (Disk Utility → *Quick format disk*). Until then TR-DOS and
+  anything on top of it correctly report no disk, which is what "FATALL says NO
+  TR-DOS Disk" means. Nothing emulator-side is implicated by that message.
+- Programs that drive the FDC directly do not work with virtual disks (§3.3.4) —
+  the pseudo-disk exists only above TR-DOS's own API.
+
+### Trace design: collapse the noise or the trace lies (hw 2026-09-04)
+
+`SMUC_TRACE` (CMake, default OFF) logs SMUC port accesses. Its FIRST version had
+one 400-line budget shared by every port, and the NVRAM's bit-banged I2C plus the
+clock poll spend hundreds of #FFBA writes per second — so the budget was gone
+before the guest reached the disk, and a session that had in fact executed **292
+ATA commands** (210 reads, 69 writes, IDENTIFY, INIT DEV PARAMS, DIAGNOSTIC —
+proof the whole data path works) captured **zero** ATA lines. Reading that
+literally would have sent the next session hunting a phantom "the guest never
+touches the disk" bug. Now SYS/RTC/FDD are folded into a periodic count and the
+ATA window plus the VER/REV detect get their own budget. Two more rules learned
+the same evening: the gated-access tracer must apply the SAME A6 rule as the
+decoder (without it the keyboard port #FEFE matches the loose outer mask and
+fills the log with reads that were never ours), and **do not run SMUC_TRACE and
+IDE_PORT_TRACE together** — the UART drops and interleaves lines
+(`[IDE WR]E WR] reg=1 val reg=2 val=0x01`), which is the same flood that cost a
+round on the +3e IDE trace.
 
 ## Murmuzavr extended RAM — page budget + descriptor cost
 
@@ -3463,6 +3717,21 @@ config can no longer be true while Profi runs.
 - **Network menu** (RP2350, built dynamically): row 1 = `WiFi On <ssid> <ip>` / `WiFi Off` (live status, padded to fixed 32 width so geometry stays stable) then `Sync time (SNTP)` / `Time zone >` / `ZiFi NIC >`. Selecting the **WiFi** row is the all-in-one action — connected: SSID+IP + disconnect (msgDialog); not connected: `AT+CWLAP` scan → pick SSID → password → connect → saves SSID/pass to wifi.cfg. **In the nm:: UI (2026-09-02, NOT hw-tested) the ESP-01 AT dialog of the whole flow streams LIVE into the RIGHT PANE** (`act_wifi`, UiActions.cpp): the scan (CWMODE/CWLAP + a "Found N networks" line) and the connect (`> tx` dim / `< rx`; the password is masked at the source by ZiFiAT's `atLog`/`maskCwjap`, echo included) go through `ZiFiAT::log_cb`. The SSID list is drawn in the LEFT pane over the menu rows (`leftList`, menu selection bar, same VK_MENU_* key discipline as uiPickListCb, scan typeahead drained first; Esc/F1/Left return to the menu via runModal's repaint), only the password `uiPrompt` is a modal box — `wlogRepaint` paints the log back after it. The flow ends with the Connected+IP / failure line and a SCROLLABLE wait (`wlogView`: Up/Down/PgUp/PgDn/Home/End, title shows last/total; Enter/Esc leave). The log (`WifiLog`, a 3 KB packed ring of ink+text+NUL records, lines up to 120 chars, oldest dropped) is malloc'd for the flow only, gated on `getLargestAllocatable()`; lines are WRAPPED to the pane width at draw time (continuation rows indented one glyph; `wlogRowsOf` must agree with `wlogDraw`'s chunking — host-checked over every cw/len), and scrolling/the counter work in display rows. Without the buffer lines still land in the pane, clipped and without scrollback. Two earlier same-day cuts (list in the right pane; modal picker) were superseded at the user's request. Status is cached (`getStatus` is blocking) and refreshed on menu entry + after connect/disconnect/NIC-toggle. Connect/Disconnect/Reload items removed.
 - **wifi.cfg** lives in `CONFIG_DIR` (`/.config/pico-speccy/wifi.cfg`); legacy `/wifi.cfg` still read as fallback. `Config::saveWifiConfig()` writes ssid/pass/tz/autoconnect; `ZiFiAT::scan()` parses `+CWLAP`.
 - **Auto-sync on boot**: when `Config::wifi_enabled && wifi_ssid` set, `ESPectrum::loop` kicks off `ZiFiAT::autoSyncBegin()` ~4 s in, then `autoSyncPoll()` each tick. Non-blocking background state machine (CWMODE→CWJAP→CIPSNTPCFG→poll CIPSNTPTIME?, ~15 retries) — **no OSD, never freezes** audio/video; writes straight into RTC, silent on failure. Manual menu sync still uses the blocking `syncTime()`. **Network → Sync time (nm:: UI, 2026-09-02, NOT hw-tested) shows that exchange in the same right-pane log as the WiFi connect** (`act_sntp` reuses `wlogBegin`/`wlogCb`/`wlogView`); ZiFiAT now logs a `tx:` line for every raw send too (CWLAP, CIPSNTPTIME?, CWJAP?, CIFSR — they used to show only their replies). On **Profi** gated by a once-only heap check (`getLargestAllocatable() >= 16K` at the 4 s mark) instead of the old blanket `arch != "Profi"` exclusion — that exclusion left the ROMain/PQDOS clock permanently at 00.00.00 (butter-PSRAM Profi has the headroom; tight m1p2 Profi still skips, preserving the OOM fix).
+- **The Gluk marker may only be seeded into a CMOS that was never saved**
+  (hw 2026-09-04). `RTC::init()` used to force `regs[0x11] = 0xAA` on every boot
+  AFTER `loadNVRAM()`, i.e. it overwrote a byte the saved image owned — and
+  `cmos.nvr` is ONE chip shared by every machine. ProfROM's MOA Shadow monitor
+  checksums CMOS cells **0x10-0x3E** (p1b3 0x2030: `LD DE,#FFFF / LD B,#10` …
+  `INC B / LD A,#3F / CP B / JR NZ`), keeps signature **0x61 at 0x0E** and the
+  **sum at 0x3F** (written by the re-init path at 0x20B0), and validates reg D
+  bit 7 (VRT) first. 0x11 sits inside that range, so every boot re-corrupted the
+  sum: ProfROM re-initialised the CMOS, we clobbered it again, and its boot
+  screen said "CMOS checksum error" for ever while the clock itself kept perfect
+  time. `loadNVRAM()` now returns whether it applied a saved image and the
+  marker is seeded only when it did not. Its CMOS primitives (p1b3 0x1F59 read /
+  0x1FDD write: SYS D7=0 → select via #DFBA, SYS D7=1 → data via #DFBA) match our
+  SMUC model exactly, and it polls reg A UIP and reg C UF the datasheet way —
+  both synthesised here, both fine.
 - **"NO CMOS" fix (hw-confirmed)**: Gluk treats CMOS valid only when NVRAM **reg 0x11 == 0xAA** (unpacked-RAM check at 0x6049 `CP 0xAA / JR NZ`); reg 0x12 == 0x47 (`'G'`) gates loading the 27-byte config (regs 0x13–0x2D → RAM 0x63A1). No checksum. Gluk's auto-path writes a bogus 0x55 and never self-validates (real signature written only on menu-save). `RTC::init()` seeds `regs[0x11] = 0xAA` after `loadNVRAM()` so the clock works out of the box; Gluk then reads time regs 0x00–0x09.
 - NVRAM (0x0E–0xFF + reg B; full 8-bit index — Karabas exposes 240 DS1307 cells, no `&0x3F` mask or high cells would alias onto the time regs) persisted to `CONFIG_DIR/cmos.nvr` (256 bytes; old 64-byte files still load): `loadNVRAM()` at init, dirty-flushed from main loop via `RTC::flushNVRAM()`.
 - `RTC_PORT_TRACE` CMake option (default OFF) logs every `..F7` IN/OUT for debugging.

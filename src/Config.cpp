@@ -243,6 +243,16 @@ void gmxRegisterLiveOverlay(uint8_t bank) {
 }
 #endif
 
+#if PROFROM_IN_FLASH
+// Same job for the ProfROM 4.01 bank table (16 banks), and here for the same
+// reason: plane 3's banks all overlay plane 3 bank 0, and plane 0's two halves
+// overlay the Sinclair 128K arrays this TU owns. See gmxRegisterLiveOverlay.
+void profRegisterLiveOverlay(uint8_t bank) {
+    const scorpion_prof_bank_t& bk = gb_rom_scorpion_prof_banks[bank & 15];
+    MemESP::registerOverlay(bk.data, bk.overlay);
+}
+#endif
+
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 {
     // Karabas is a UI-level alias of Profi (see ArchRom.h) — the core never sees it.
@@ -486,7 +496,28 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         // board's firmware picked it) — quiet fallback.
         if (romSet == R_SCORP_GMX) romSet = R_SCORP;
 #endif
+#if !PROFROM_IN_FLASH
+        // This build carries no ProfROM image — quiet fallback to the plain
+        // ZS-1024 (same paging and timing, stock v2.94 ROM).
+        if (romSet == R_SCORP_PROF) romSet = R_SCORP_1024;
+#endif
         romSetScorp = romSet;
+#if PROFROM_IN_FLASH
+        if (romSet == R_SCORP_PROF) {
+            // ProfROM 4.01: 4 planes x 4 banks into rom[0..15], romInUse =
+            // (plane << 2) | bank, plane switched by the 0x0100-0x010F read tap
+            // (Ports::gmxProfRomTap). Overlays are registered dynamically per
+            // live bank, exactly like GMX — see profRegisterLiveOverlay.
+            for (int i = 0; i < 16; ++i)
+                MemESP::rom[i].assign_rom(gb_rom_scorpion_prof_banks[i].data);
+            // Unlike GMX (whose plane 0 bank 0 is a raw array), ProfROM's first
+            // bank IS an overlay over the Sinclair 128K half — and the registry
+            // may still hold the plain-Scorpion overlay for that same base from
+            // a previous romset. Register the boot bank now; every later change
+            // goes through gmxTapUpdate.
+            profRegisterLiveOverlay(0);
+        } else
+#endif
 #if GMX_IN_FLASH
         if (romSet == R_SCORP_GMX) {
             // Deduplicated bank table (rom_pack.py pack_gmx): .data is either a raw
@@ -547,7 +578,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // the 5.05D base would evict the GMX plane-1 TR-DOS overlay keyed to the same
     // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
     // own bank 3).
-    if (!(arch == A_SCORP && romSetScorp == R_SCORP_GMX)) {
+    if (!(arch == A_SCORP && (romSetScorp == R_SCORP_GMX || romSetScorp == R_SCORP_PROF))) {
         const uint8_t* base = gb_rom_4_trdos_505d;
         const uint8_t* ov = nullptr;
         switch (Config::trdosBios) {

@@ -6,7 +6,7 @@
 
 #include "ff.h"
 
-// IDE/HDD emulation for NEMO and PROFI port schemes.
+// IDE/HDD emulation for the NEMO, PROFI and SMUC port schemes.
 //
 // Reuses a self-contained 512-byte on-demand ATA engine (mirrored from the
 // proven DivIDE engine in DivMMC.cpp) so that DivIDE remains untouched. Adds:
@@ -19,7 +19,10 @@
 
 class IDE {
 public:
-    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2 };
+    // 3 = SMUC — the Scorpion "Spectrum Multi Unit Controller": the same 16-bit
+    // ATA engine behind a completely different port map (Ports::smuc*), plus the
+    // card's own 24LC16 NVRAM (Nvram24) and MC146818 clock (RTC).
+    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, SMUC = 3 };
 
     // Active scheme mirror of Config::ide_scheme (set in init()).
     static uint8_t scheme;

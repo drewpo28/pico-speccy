@@ -67,6 +67,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "IDE.h"
 #include "ZiFi.h"
 #include "RTC.h"
+#include "Nvram24.h"
 #include "MB02.h"
 #include "hardware/gpio.h"
 #include "sdcard.h"
@@ -327,6 +328,14 @@ uint8_t Ports::gmxScrollHi = 0;
 uint8_t Ports::gmxPlane = 0;
 uint8_t Ports::gmxMagicShift = 0;
 uint8_t Ports::portDFFDgmx = 0;
+// Defined next to the SMUC handlers below; the hot paths test it first.
+static inline bool smucActive();
+#if SMUC_TRACE
+void smucTraceGated(bool wr, uint16_t address, uint8_t v);
+#endif
+
+uint8_t Ports::smucSys = 0;
+uint8_t Ports::smucFdd = 0;
 uint8_t Ports::port008B = 0;
 uint8_t Ports::port018B = 0;
 uint8_t Ports::port028B = 0;
@@ -784,6 +793,15 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     }
     // else: not an IDE sub-address — fall through (don't shadow AY/ULA etc.)
   }
+  // IDE/HDD — SMUC scheme (Scorpion only, TR-DOS/service address space). Like
+  // NEMO this must precede the ULA even-port branch: every SMUC port has A0=0.
+  if (smucActive()) {
+    uint8_t v;
+    if (smucPortRead(address, &v)) return v;
+  }
+#if SMUC_TRACE
+  else if (Z80Ops::isScorpion) smucTraceGated(false, address, 0);
+#endif
   // OPL3 (YMF262) VGM-player card: the status register lives at the address
   // ports (#C4/#C6); data ports read 0x00, as verified on real YMF262 (MAME).
   // Bits 2..1 read LOW — that is how software tells an OPL3 from an OPL2 —
@@ -1871,6 +1889,33 @@ static inline void gmxTapUpdate() {
   // peek8 is what fired on the checksum; ZXMAK2 subscribes both, but ZXMAK2
   // never ran this firmware).
   g_gmx_tap = false;
+  // ...but it IS the mechanism on the plain ProfROM romset (R_SCORP_PROF), which
+  // is the firmware ZXMAK2's gate was written against. Armed exactly like its
+  // BusProfRomGate: only while SYSEN (1FFD D1 — the service bank at 0x0000) and
+  // only while ROM is actually visible there. M1 ONLY: ProfROM switches planes
+  // by jumping into the window (plane N bank 0 at 0x0118 does LD HL,#010C /
+  // JP (HL); bank 3 at 0x0030 does JP #010E), and its only DATA reads of the
+  // window are LD HL,(#0101) — address bits 2-3 = 0, i.e. the identity slot of
+  // kProfPlaneMap, so a data-read tap could only ever fire spuriously (which is
+  // exactly what took GMX down, see above).
+  if (g_scorp_prof) {
+    g_gmx_tap = (Ports::port1FFD & 0x02) && !MemESP::page0ram && !MemESP::newSRAM;
+#if GMX_TRACE
+    // A plane switch that silently does not happen is THE ProfROM failure mode
+    // (hw 2026-09-04), and it looks like nothing at all in a trace — so log the
+    // arm state itself, not just the fires.
+    { static int8_t was = -1;
+      if ((int8_t)g_gmx_tap != was) {
+        was = (int8_t)g_gmx_tap;
+        GMXT("[PROF arm] tap=%d 1FFD=%02X p0ram=%u romU=%u pc=%04X",
+             (int)g_gmx_tap, Ports::port1FFD, (unsigned)MemESP::page0ram,
+             (unsigned)MemESP::romInUse, Z80::getRegPC());
+      } }
+#endif
+  }
+#if PROFROM_IN_FLASH
+  if (g_scorp_prof) profRegisterLiveOverlay(MemESP::romInUse);
+#endif
 #if GMX_IN_FLASH
   // GMX banks are stored deduplicated + as overlays over ROMs already in flash
   // (scorpion_gmx_banks.h). MemESP's overlay registry keys ONE overlay per base
@@ -1932,7 +1977,9 @@ void Ports::scorpionRomUpdate() {
   }
   uint8_t bank = (port1FFD & 0x02) ? 2
                : ((((uint8_t)ESPectrum::trdos) << 1) | MemESP::romLatch);
-  MemESP::romInUse = (g_scorp_gmx ? (gmxPlane << 2) : 0) | bank;
+  // gmxPlane is the ProfROM plane on both banked romsets (GMX just widens it to
+  // 8 planes and drives it from #7EFD instead of the 0x010x tap).
+  MemESP::romInUse = (g_scorp_banked ? (gmxPlane << 2) : 0) | bank;
   MemESP::recoverPage0();
   gmxTapUpdate();
 #if GMX_TRACE
@@ -1943,9 +1990,16 @@ void Ports::scorpionRomUpdate() {
 #endif
 }
 
-// MAME scorpiontb prof_plane_map — the legacy ProfROM plane-switch table driven
-// by reads of 0x0100/4/8/C from inside the service bank; clamps to planes 0-3
-// even on GMX (the full 0-7 range is reachable only via #7EFD D4-6).
+// MAME scorpiontb prof_plane_map — the ProfROM plane-switch table, driven from
+// inside the service bank; clamps to planes 0-3 even on GMX (the full 0-7 range
+// is reachable only via #7EFD D4-6).
+//
+// The whole 16-byte window switches (ZXMAK2's rule: any address, plane slot =
+// address bits 2-3), NOT just the four offsets 0/4/8/C MAME accepts — because
+// ProfROM itself uses the others: plane 1 bank 3 jumps to #010E at bank offset
+// 0x0030, and ten sites across the image jump to #0103, the identity slot that
+// re-enters the common code without changing plane. Under MAME's stricter rule
+// neither address would do anything.
 static const uint8_t kProfPlaneMap[16] = {
     0, 1, 2, 3,
     3, 3, 3, 2,
@@ -1958,6 +2012,10 @@ static const uint8_t kProfPlaneMap[16] = {
 // is addr bits 2-3). Out of line — the armed case is rare.
 void Ports::gmxProfRomTap(uint16_t address) {
   uint8_t plane = kProfPlaneMap[(address & 0x0C) | (gmxPlane & 0x03)];
+#if GMX_TRACE
+  GMXT("[PROF tap] @%04X plane %u->%u pc=%04X", address, gmxPlane, plane,
+       Z80::getRegPC());
+#endif
   if (plane != gmxPlane) {
     gmxPlane = plane;
     scorpionRomUpdate();
@@ -2051,6 +2109,186 @@ bool Ports::gmxPortWrite(uint16_t address, uint8_t data) {
       return true;
     default: return false;
   }
+}
+
+// ── SMUC — Scorpion Multi Unit Controller (IDE + 24LC16 NVRAM + RTC + ISA) ────
+// Port map, verified three ways: UnrealSpeccy 0.37 Io.cpp, ZXMAK2 IdeSmuc.cs,
+// and a disassembly of the SMUC driver in ProfROM 4.01 plane 1 bank 3 (which is
+// also GMX plane 5 bank 3 — the same code we already ship).
+//
+//   outer decode  A12=A11=A7=A5=A1=1, A0=0    -> low byte #BA / #BE
+//   #5FBA  R   version   (#FF here means "no SMUC" to the ROM's detect)
+//   #5FBE  R   revision
+//   #7FBA  RW  virtual-FDD control latch
+//   #7FBE  R   8259 (ISA) — answered as "not installed"
+//   #DFBA  RW  MC146818 clock; SYS D7 picks address (0) vs data (1)
+//   #FFBA  RW  SYS: NVRAM I2C bits + HDD reset + the D7 mode bit
+//   #F8BE..#FFBE  RW  ATA registers 0..7 (register number = A8-A10)
+//   #D8BE..#DFBE  RW  16-bit data high-byte latch
+//
+// With SYS D7 set, the ATA window addresses the Control/AltStatus register
+// instead (ZXMAK2; Unreal does not model it) — that is how the driver issues
+// its software reset: OR #80 -> #FFBA, then #0C and 0 to #FEBE.
+//
+// Deliberate deviations, both documented in CLAUDE.md:
+//  - SYS D0 resets the drive on the 0->1 EDGE, where Unreal/ZXMAK2 reset on the
+//    level. The ProfROM driver HOLDS D0 set through normal operation (0x1E78:
+//    OR #81, later AND #7F / OR #01), so a level-triggered reset would fire on
+//    every later SYS write — including the RTC address/data mux — and kill a
+//    transfer in flight.
+//  - The ATA INTRQ bit (SYS read D7) is always 0: there is no interrupt model
+//    behind IDE::, and every known driver polls BSY.
+static inline bool smucActive() {
+  return IDE::scheme == IDE::SMUC && Z80Ops::isScorpion &&
+         (ESPectrum::trdos || (Ports::port1FFD & 0x02));   // DOSEN or SYSEN
+}
+
+#if SMUC_TRACE
+// SMUC port log. Two lessons are built in, both learned the hard way here:
+//
+//  - **The noise must be collapsed, not merely capped.** The first version
+//    logged every accepted access with one shared 400-line budget; the NVRAM's
+//    bit-banged I2C plus the clock poll spend hundreds of SYS writes per second,
+//    so the budget was gone before the guest ever reached the disk and the
+//    capture showed zero ATA traffic on a session that had in fact executed 292
+//    ATA commands (hw 2026-09-04). SYS/RTC/FDD are now counted and summarised;
+//    the ATA window and the VER/REV detect — the two things anyone actually
+//    traces this for — get their own budget.
+//  - **An access the DOSEN/SYSEN gate REJECTED must be visible**, or "the guest
+//    never found the card" and "we refused to answer" look identical.
+static uint16_t s_smuc_tr = 0;      // ATA + detect + gated budget
+static uint32_t s_smuc_quiet = 0;   // SYS/RTC/FDD accesses folded away
+#define SMUC_TR_CAP   600
+#define SMUC_QUIET_EVERY 512
+static const char* smucRegName(uint16_t a) {
+  if (a & 0x0040) return "?";
+  if (a & 0x0004) {
+    if (!(a & 0x8000)) return (a & 0x2000) ? "PIC(7FBE)" : "REV(5FBE)";
+    return (a & 0x2000) ? "ATA" : "HI-LATCH";
+  }
+  if (a & 0x8000) return (a & 0x2000) ? "SYS(FFBA)" : "RTC(DFBA)";
+  return (a & 0x2000) ? "FDD(7FBA)" : "VER(5FBA)";
+}
+// true for the accesses worth a line of their own: the ATA window, the high-byte
+// latch, and the version/revision ports a driver reads to decide the card exists.
+static inline bool smucInteresting(uint16_t a) {
+  if (a & 0x0004) return true;              // ...BE family: ATA, latch, REV, PIC
+  return !(a & 0x8000) && !(a & 0x2000);    // VER (#5FBA)
+}
+static void smucTrace(bool wr, uint16_t a, uint8_t v, bool gated) {
+  if (!gated && !smucInteresting(a)) {
+    if (++s_smuc_quiet % SMUC_QUIET_EVERY == 0)
+      Debug::log("[SMUC] ...%u NVRAM/clock/FDD accesses folded", (unsigned)s_smuc_quiet);
+    return;
+  }
+  if (s_smuc_tr >= SMUC_TR_CAP) return;
+  if (++s_smuc_tr == SMUC_TR_CAP) { Debug::log("[SMUC] ==== TRACE CAP ===="); return; }
+  Debug::log("[SMUC%s] %s %04X %-9s %02X reg=%u dos=%d 1FFD=%02X sys=%02X pc=%04X",
+             gated ? " GATED" : "", wr ? "wr" : "rd", a, smucRegName(a), v,
+             (unsigned)((a >> 8) & 7), (int)ESPectrum::trdos, Ports::port1FFD,
+             Ports::smucSys, Z80::getRegPC());
+}
+// Called from the hot paths ONLY under this option. Applies the SAME A6 rule as
+// the decoder — without it the keyboard port #FEFE matches the loose outer mask
+// and floods the log with reads that were never ours (hw 2026-09-04).
+void smucTraceGated(bool wr, uint16_t address, uint8_t v) {
+  if ((address & 0x18A3) != 0x18A2) return;
+  if (address & 0x0040) return;
+  smucTrace(wr, address, v, true);
+}
+#endif
+
+void Ports::smucReset() {
+  smucSys = 0;
+  smucFdd = 0;
+  Nvram24::reset();
+}
+
+bool Ports::smucPortWrite(uint16_t address, uint8_t data) {
+  if ((address & 0x18A3) != 0x18A2) return false;
+  if (address & 0x0040) return false;              // A6 must be 0
+#if SMUC_TRACE
+  smucTrace(true, address, data, false);
+#endif
+
+  if (address & 0x0004) {                          // ...#BE family
+    if (!(address & 0x8000)) {                     // #5FBE / #7FBE: read-only
+      return true;                                 // swallow (never reaches ULA)
+    }
+    LED::touchW(LED::IDE);
+    if (!(address & 0x2000)) { IDE::write_latch(data); return true; }  // #D8BE..
+    uint8_t reg = (address >> 8) & 7;
+    if (smucSys & 0x80) {
+      if (!(reg & 1)) IDE::write8(8, data);        // Control register
+    } else if (reg == 0) {
+      IDE::write_data_low(data);                   // low byte + the latched high
+    } else {
+      IDE::write8(reg, data);
+    }
+    return true;
+  }
+
+  // ...#BA family
+  if (address & 0x8000) {
+    if (address & 0x2000) {                        // #FFBA SYS
+      if ((data & 0x01) && !(smucSys & 0x01)) IDE::reset();
+      Nvram24::write(data);
+      smucSys = data;
+    } else {                                       // #DFBA clock
+      if (smucSys & 0x80) { if (Config::rtc_enabled) RTC::writeData(data); }
+      else                RTC::selectReg(data);
+    }
+  } else {
+    if (address & 0x2000) smucFdd = data;          // #7FBA virtual FDD
+    // else #5FBA version: read-only, swallowed
+  }
+  return true;
+}
+
+bool Ports::smucPortRead(uint16_t address, uint8_t* out) {
+  if ((address & 0x18A3) != 0x18A2) return false;
+  if (address & 0x0040) return false;              // A6 must be 0
+#if SMUC_TRACE
+  struct TrOut { uint16_t a; uint8_t* p; ~TrOut() { smucTrace(false, a, *p, false); } } tr{address, out};
+#endif
+
+  if (address & 0x0004) {                          // ...#BE family
+    if (!(address & 0x8000)) {
+      // #5FBE revision / #7FBE 8259. ZXMAK2 answers 0x17 / 0x57; the ROM only
+      // requires "not #FF" for the version pair (IN A,(#5FBA) / INC A / JR Z =
+      // "SMUC absent") and decodes the number from D7,D6,D5 with D3 folded into
+      // the LSB, so these values pick a version, not a behaviour.
+      *out = (address & 0x2000) ? 0x57 : 0x17;
+      return true;
+    }
+    LED::touchR(LED::IDE);
+    if (!(address & 0x2000)) { *out = IDE::read_latch(); return true; }
+    uint8_t reg = (address >> 8) & 7;
+    if (smucSys & 0x80) {
+      *out = (reg & 1) ? 0xFF : IDE::read8(8);     // AltStatus
+    } else {
+      *out = (reg == 0) ? IDE::read_data_low() : IDE::read8(reg);
+    }
+    return true;
+  }
+
+  if (address & 0x8000) {
+    if (address & 0x2000) {
+      // SYS read: NVRAM SDA comes back on D6; D7 would be the drive's INTRQ.
+      *out = Nvram24::read() & 0x7F;
+    } else {
+      *out = Config::rtc_enabled ? RTC::readData() : RTC::readDisabled();
+    }
+  } else {
+    // #5FBA version (must never be #FF) / #7FBA the FDD latch read-back.
+    // #7FBA read-back forces the low bits high exactly as UnrealSpeccy does
+    // (`return comp.p7FBA | 0x3F`). It was 0x37 here — a transcription slip that
+    // cleared bit 3 on a port Unreal calls VirtualFDD, i.e. the one the TR-DOS
+    // pseudo-disk mapping runs through, so a driver polling that bit for "disk
+    // present" would have been told no.
+    *out = (address & 0x2000) ? (uint8_t)(smucFdd | 0x3F) : 0x57;
+  }
+  return true;
 }
 
 // GMX register read-backs (live state; the MAME magic-lock snapshots are not
@@ -2499,6 +2737,11 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     // else: not an IDE sub-address — fall through (don't shadow AY/ULA etc.)
   }
+  // IDE/HDD — SMUC scheme (see the input twin).
+  if (smucActive()) { if (smucPortWrite(address, data)) return; }
+#if SMUC_TRACE
+  else if (Z80Ops::isScorpion) smucTraceGated(true, address, data);
+#endif
   // OPL3 (YMF262) — the AlexZor DivMMC VGM-player sound card: address/data
   // register pairs on #C4/#C5 (set #1) and #C6/#C7 (set #2), low-byte decode
   // (the plugin uses OUT (n),A, so the high address byte is the data byte).
