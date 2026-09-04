@@ -31,6 +31,8 @@ void reset();
 // Advance seeks and the transfer watchdog once per frame, so a guest sitting in HALT
 // still sees a seek complete. The port handlers pump it too.
 void frameTick();
+// Flush the FDD_PORT_TRACE command run (no-op unless that option is on).
+void traceFlush();
 
 uint8_t readStatus();          // IN  #2FFD
 uint8_t readData();            // IN  #3FFD

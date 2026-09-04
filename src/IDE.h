@@ -73,6 +73,11 @@ private:
     static uint32_t lba();
     static int  drive();
     static bool lbaBeyondEnd(int d, uint32_t l);   // past C*H*S -> a real drive errors
+    // Give the image a FatFs cluster link map, so a seek costs arithmetic instead of a
+    // walk down the FAT. See the comment on the definition — this is worth tens of
+    // seconds on a big image, not a micro-optimisation.
+    static void setupFastSeek(int slot);
+    static uint32_t* clmt[2];      // link map per slot (FatFs owns the format)
     static void read_sector();
     static void write_sector_done();
     static void execute_command(uint8_t cmd);

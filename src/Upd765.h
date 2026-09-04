@@ -94,6 +94,11 @@ struct Upd765 {
 
     bool     fastMode;        // collapse seek and byte pacing (a user setting)
 
+    // Commands dispatched since reset. The wrapper's trace watches this: a command
+    // with no result phase (RECALIBRATE, SEEK, SPECIFY) is already back in the command
+    // phase by the time the port write returns, so the phase alone cannot be used to
+    // notice one — and those are exactly the commands +3DOS uses to poll a drive.
+    uint32_t cmds;
     uint8_t  clicks;          // head steps since last read — drives the FDD sound
     uint8_t  activity;        // decays; drives the FDD lamp
     bool     wroteRecently;   // the lamp shows write differently from read

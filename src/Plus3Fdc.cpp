@@ -10,6 +10,9 @@
 #include "CPU.h"
 #include "Debug.h"
 #include "LEDIndicators.h"
+#if FDD_PORT_TRACE
+#include "Z80_JLS/z80.h"   // Z80::getRegPC() — the trace names the calling ROM routine
+#endif
 #include "ff.h"
 
 namespace Plus3Fdc {
@@ -110,13 +113,118 @@ void frameTick() {
     updTick(&fdc, nowT());
 }
 
+// ── command trace (FDD_PORT_TRACE) ─────────────────────────────────────────────
+//
+// It lives HERE and not in Upd765.cpp on purpose: that file depends on nothing from
+// the firmware, which is the only reason tools/upd765_test.cpp can build it on a
+// host. This wrapper sees every port access, which is enough.
+//
+// One line per COMMAND, logged the moment the last parameter byte lands (so the
+// CHS is complete), and one for its result. Identical consecutive commands collapse
+// into a count with the elapsed wall time, because the interesting question is
+// usually "how many times did +3DOS retry this, and how long did it spend" — a
+// diskless drive A: makes the +3e Loader retry, and a per-access log would bury it.
+#if FDD_PORT_TRACE
+static const char* updCmdName(uint8_t cmd) {
+    switch (cmd & 0x1F) {
+        case 0x02: return "READ DIAG";
+        case 0x03: return "SPECIFY";
+        case 0x04: return "SENSE DRV";
+        case 0x05: case 0x09: return "WRITE";
+        case 0x06: case 0x0C: return "READ";
+        case 0x07: return "RECALIB";
+        case 0x08: return "SENSE INT";
+        case 0x0A: return "READ ID";
+        case 0x0D: return "FORMAT";
+        case 0x0F: return "SEEK";
+        case 0x10: return "VERSION";
+        case 0x11: case 0x19: case 0x1D: return "SCAN";
+        default:   return "?";
+    }
+}
+static uint32_t s_tr_sig = 0xFFFFFFFF;   // command + unit + C/H/R of the pending run
+static uint32_t s_tr_n = 0;
+static int64_t  s_tr_t0 = 0;
+static bool     s_tr_want_result = false;
+static uint32_t s_tr_cmds = 0;           // last value of fdc.cmds we reported
+
+static void trFlush() {
+    if (!s_tr_n) return;
+    if (s_tr_n > 1)
+        Debug::log("[+3 FDC] ... x%lu over %ld ms",
+                   (unsigned long)s_tr_n,
+                   (long)((esp_timer_get_time() - s_tr_t0) / 1000));
+    s_tr_n = 0;
+    s_tr_sig = 0xFFFFFFFF;
+}
+
+// A command has just been fully assembled (phase moved to EXE).
+static void trCommand() {
+    const uint8_t cmd = fdc.cmdReg;
+    const uint32_t sig = (uint32_t)(cmd & 0x1F) | ((uint32_t)fdc.us << 8)
+                       | ((uint32_t)fdc.dataReg[1] << 12) | ((uint32_t)fdc.dataReg[3] << 20);
+    if (sig == s_tr_sig) { s_tr_n++; s_tr_want_result = false; return; }
+    trFlush();
+    s_tr_sig = sig;
+    s_tr_n = 1;
+    s_tr_t0 = esp_timer_get_time();
+    s_tr_want_result = true;
+    Debug::log("[+3 FDC] %-9s u%u C%u H%u R%u motor=%u pc=%04X",
+               updCmdName(cmd), (unsigned)fdc.us, (unsigned)fdc.dataReg[1],
+               (unsigned)fdc.dataReg[2], (unsigned)fdc.dataReg[3],
+               (unsigned)fdc.motor, Z80::getRegPC());
+}
+
+// The result phase has begun for a command we logged.
+static void trResult() {
+    if (!s_tr_want_result) return;
+    s_tr_want_result = false;
+    if ((fdc.cmdReg & 0x1F) == 0x08)     // SENSE INTERRUPT: ST0 + the head's cylinder
+        Debug::log("[+3 FDC]   -> SIS ST0=%02X PCN=%u", fdc.senseInt[0], fdc.senseInt[1]);
+    else
+        Debug::log("[+3 FDC]   -> ST0=%02X ST1=%02X ST2=%02X ST3=%02X %s",
+                   fdc.st0, fdc.st1, fdc.st2, fdc.st3, updStateName(&fdc));
+}
+#endif
+
 // ── ports ──────────────────────────────────────────────────────────────────────
-uint8_t readStatus()         { return updReadStatus(&fdc, nowT()); }
-uint8_t readData()           { return updReadData(&fdc, nowT()); }
-void    writeData(uint8_t d) { updWriteData(&fdc, nowT(), d); }
+uint8_t readStatus() { return updReadStatus(&fdc, nowT()); }
+
+uint8_t readData() {
+#if FDD_PORT_TRACE
+    const bool wasRes = (fdc.phase == UPD_PH_RES);
+    if (wasRes) trResult();
+#endif
+    return updReadData(&fdc, nowT());
+}
+
+void writeData(uint8_t d) {
+    updWriteData(&fdc, nowT(), d);
+#if FDD_PORT_TRACE
+    // Watch the dispatch counter, not the phase: RECALIBRATE, SEEK and SPECIFY have no
+    // result phase, so they are back in the command phase before this returns — and a
+    // phase test therefore logged nothing at all for the commands +3DOS actually uses
+    // to poll a drive, which is how a capture came out looking like the FDC was idle.
+    if (fdc.cmds != s_tr_cmds) { s_tr_cmds = fdc.cmds; trCommand(); }
+#endif
+}
 
 void writeAux(uint8_t d) {
+#if FDD_PORT_TRACE
+    if (((d & 0x08) != 0) != fdc.motor) {
+        trFlush();
+        Debug::log("[+3 FDC] motor %s pc=%04X", (d & 0x08) ? "ON" : "OFF", Z80::getRegPC());
+    }
+#endif
     updSetMotor(&fdc, (d & 0x08) != 0);
+}
+
+// Flush a pending collapsed run once per frame, so the last line of a retry storm
+// reaches the log instead of waiting for traffic that may never come.
+void traceFlush() {
+#if FDD_PORT_TRACE
+    trFlush();
+#endif
 }
 
 // ── mount / eject ──────────────────────────────────────────────────────────────

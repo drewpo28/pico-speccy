@@ -6,6 +6,7 @@
 #include <cstring>
 #include "Config.h"
 #include "Debug.h"
+#include "Buffer.h"
 #include "FileUtils.h"
 
 // IDE_PORT_TRACE (every ATA register/command access + sector read/write) is
@@ -26,6 +27,7 @@ bool IDE::profi_hidd_slot[2] = { false, false };
 
 uint32_t IDE::data_offset[2] = { 0, 0 };
 bool IDE::half_sector[2] = { false, false };
+uint32_t* IDE::clmt[2] = { nullptr, nullptr };
 bool IDE::eight_bit = false;
 uint16_t IDE::cylinders[2] = { 0, 0 };
 uint16_t IDE::heads[2]     = { 0, 0 };
@@ -299,6 +301,63 @@ bool IDE::open_image(int slot, const char* path) {
 // Lifecycle
 // ============================================================
 
+// FatFs `f_lseek` walks the cluster chain from the START of the file on any BACKWARD
+// seek, and in write mode it walks it through create_chain(). Every sector we serve is
+// one f_lseek, and an IDEDOS image is a quarter of a gigabyte: at 32 KB clusters that
+// is ~8000 links, i.e. dozens of FAT sector reads for every sector the guest asks for
+// out of order. That is what made the +3e's Loader take 30-60 s to reach the hard disk
+// (hw 2026-09-04) — the FDC trace proved the floppy was never even given a command, so
+// all of that time was ours.
+//
+// FatFs's own answer is a cluster link map (FF_USE_FASTSEEK, already enabled in
+// ffconf.h but never used anywhere in this tree): with `fp->cltbl` set, a seek is
+// arithmetic over the table and touches the card not at all. Two conditions come with
+// it and both hold here: the table is only valid while the file's size is fixed, and
+// it forbids EXTENDING the file — the geometry is fixed and a write beyond C*H*S is
+// refused (lbaBeyondEnd), so we can never want to.
+//
+// A contiguous image needs a 4-entry table. Fragmented ones need two entries per
+// fragment, and a real card fragments badly: the reference Ocean.hdf came back asking
+// for 2466 entries (~1233 fragments, ~9.6 KB) — far more than a tight heap should give
+// up, which is why the table goes through Buffer::palloc with PREFER_PSRAM. On a board
+// with butter PSRAM it costs no SRAM at all and the seek reads it through the XIP
+// cache; on a butter-less board palloc falls back to the heap and the cap keeps that
+// honest. Past the cap the slow path is still correct, just slow, and the log says so.
+//
+// Worth knowing when a big image feels sluggish: copying it to the card fresh (so it
+// lands contiguous) shrinks this table to a handful of entries.
+void IDE::setupFastSeek(int slot) {
+    static const uint32_t kFirstTry = 64;     // 256 B — covers up to 31 fragments
+    static const uint32_t kMaxTry   = 4096;   // 16 KB — 2047 fragments, PSRAM-backed
+    if (clmt[slot]) { Buffer::pfree(clmt[slot]); clmt[slot] = nullptr; }
+    file[slot].cltbl = nullptr;
+
+    for (uint32_t want = kFirstTry; want <= kMaxTry; ) {
+        uint32_t* tbl = (uint32_t*)Buffer::palloc(want * sizeof(uint32_t),
+                            Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!tbl) { Debug::log("IDE hd%d: no memory for a link map (%u entries)", slot, want); return; }
+        memset(tbl, 0, want * sizeof(uint32_t));
+        tbl[0] = want;
+        file[slot].cltbl = tbl;
+        FRESULT fr = f_lseek(&file[slot], CREATE_LINKMAP);
+        if (fr == FR_OK) {
+            clmt[slot] = tbl;
+            Debug::log("IDE hd%d: link map built, %u of %u entries used", slot, tbl[0], want);
+            f_lseek(&file[slot], 0);
+            return;
+        }
+        const uint32_t need = tbl[0];       // FatFs reports what it wanted
+        file[slot].cltbl = nullptr;
+        Buffer::pfree(tbl);
+        if (fr != FR_NOT_ENOUGH_CORE || need <= want || need > kMaxTry) {
+            Debug::log("IDE hd%d: no link map (fr=%d, needs %u entries) — seeks stay slow",
+                       slot, (int)fr, need);
+            return;
+        }
+        want = need;
+    }
+}
+
 void IDE::init() {
     close();
 
@@ -366,6 +425,9 @@ void IDE::init() {
             }
         }
     }
+
+    for (int d = 0; d < 2; d++)
+        if (file_open[d]) setupFastSeek(d);
 
     Debug::log("IDE: scheme=%u initialized (hd0=%d hd1=%d)",
                scheme, file_open[0], file_open[1]);
@@ -472,9 +534,11 @@ void IDE::reset() {
 void IDE::close() {
     for (int d = 0; d < 2; d++) {
         if (file && file_open[d]) {
+            file[d].cltbl = nullptr;   // FatFs must not hold a pointer we are freeing
             f_close(&file[d]);
             file_open[d] = false;
         }
+        if (clmt[d]) { Buffer::pfree(clmt[d]); clmt[d] = nullptr; }
         data_offset[d] = 0;
         cylinders[d] = heads[d] = sectors[d] = 0;
         is_atapi[d] = false;

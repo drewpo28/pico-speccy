@@ -712,6 +712,22 @@ static void testNotReady() {
       } }
     ckEq(h.status() & UPD_MS_CB, 0, "the controller is free afterwards");
 
+    // A SEEK on a not-ready drive reports interrupt code 01 (abnormal), NOT 10
+    // (invalid command). +3DOS's seek-result check tests bits 7-6 for 10 first and
+    // treats it as a controller error, so 0x80 there sends it into a ~100-iteration
+    // retry storm instead of concluding "drive not ready" (hw 2026-09-04). MAME:
+    // st0 = unit | ST0_NR | ST0_FAIL | ST0_SE.
+    h.cmd({ 0x0F, 0x00, 0x28 });          // SEEK unit 0 to cylinder 40
+    h.idle(4000000);                      // let the seek complete (and fail)
+    h.cmd({ 0x08 });                      // SENSE INTERRUPT
+    { auto r = h.results();
+      ckEq((long)r.size(), 2, "SENSE INTERRUPT after a not-ready seek returns two bytes");
+      if (r.size() == 2) {
+          ckEq(r[0] & 0xC0, 0x40, "ST0 interrupt code is 01 (abnormal), not 10 (invalid)");
+          ckEq(r[0] & 0x08, 0x08, "ST0 not ready");
+          ckEq(r[0] & 0x20, 0x20, "ST0 seek end");
+      } }
+
     // Unformatted track: the +3's boot poll must get an answer, not a hang.
     std::vector<std::vector<SecSpec>> t;
     t.push_back({});                      // cylinder 0 unformatted

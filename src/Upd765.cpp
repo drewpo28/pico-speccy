@@ -13,8 +13,19 @@
 #define ST0_NOT_READY   0x08
 #define ST0_EQUIP_CHK   0x10
 #define ST0_SEEK_END    0x20
+// Bits 7-6 are the INTERRUPT CODE, and they are a two-bit field, not two flags:
+//   00 normal   01 abnormal termination   10 invalid command
+//   11 abnormal because the drive's READY line changed state
+// Naming 0x80 "ready" invites exactly the bug this comment now guards: a seek that
+// ended because the drive is not ready must report 01, and reporting 0x80 tells the
+// host its COMMAND was invalid. +3DOS tests for that case explicitly (its seek-result
+// check at ROM 0x208D does `AND #C0 / XOR #80`) and answers with an error instead of
+// "drive not ready", so it retried the whole recalibrate-seek dance about a hundred
+// times at half a second each — the 30-60 s the +3e Loader took to give up on an
+// empty drive A: and reach the hard disk (hw 2026-09-04).
 #define ST0_INT_ABNORM  0x40
-#define ST0_INT_READY   0x80
+#define ST0_INT_INVALID 0x80
+#define ST0_INT_RDYCHG  0xC0
 
 #define ST1_MISSING_AM  0x01
 #define ST1_NOT_WRITE   0x02
@@ -178,7 +189,7 @@ static void endOfCylinder(Upd765* f) {
         f->st0 |= ST0_INT_ABNORM;
         f->st1 |= ST1_EOF_CYL;
     }
-    if (!(f->st0 & (ST0_INT_ABNORM | ST0_INT_READY))) {
+    if (!(f->st0 & (ST0_INT_ABNORM | ST0_INT_INVALID))) {
         f->dataReg[1]++;        // next cylinder
         f->dataReg[3] = 1;      // first sector
     }
@@ -325,6 +336,7 @@ void updReset(Upd765* f) {
     f->sec = -1;
     f->nonDma = 1;
     f->srtT = (uint16_t)(6u * 3546900u / 1000u / 2u);  // ~3 ms/cylinder until SPECIFY
+    f->cmds = 0;
     f->drive[0].rot = f->drive[1].rot = 0;
 }
 
@@ -576,6 +588,7 @@ void updWriteData(Upd765* f, uint64_t nowT, uint8_t data) {
     if (f->cycle < CMD(f).cmdLen) { f->cycle++; return; }
 
     // Every parameter is in: run the command.
+    f->cmds++;
     f->phase = UPD_PH_EXE;
     f->mainStatus &= (uint8_t)~UPD_MS_RQM;
     if (f->nonDma) f->mainStatus |= UPD_MS_EXM;
@@ -639,7 +652,9 @@ void updWriteData(Upd765* f, uint64_t nowT, uint8_t data) {
             if (f->seekSt[i] < 4) continue;
             f->st0 = (uint8_t)((f->st0 & ~0xC3) | ST0_SEEK_END | i);
             if (f->seekSt[i] == 5)      f->st0 |= ST0_INT_ABNORM;
-            else if (f->seekSt[i] == 6) f->st0 |= ST0_INT_READY | ST0_NOT_READY;
+            // MAME's seek_start/recalibrate_start on a not-ready drive:
+            // st0 = unit | ST0_NR | ST0_FAIL | ST0_SE, i.e. interrupt code 01.
+            else if (f->seekSt[i] == 6) f->st0 |= ST0_INT_ABNORM | ST0_NOT_READY;
             f->seekSt[i] = 0;
             f->senseInt[0] = (uint8_t)(f->st0 & 0xFB);   // head always reads back 0
             f->senseInt[1] = f->drive[i].pcn;

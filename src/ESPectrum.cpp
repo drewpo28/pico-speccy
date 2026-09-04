@@ -3703,6 +3703,7 @@ void ESPectrum::loop() {
     // The +3 FDC is otherwise only pumped from its own port handlers, so a guest
     // sitting in HALT would never see a seek complete.
     Plus3Fdc::frameTick();
+    Plus3Fdc::traceFlush();   // no-op unless FDD_PORT_TRACE
     plus3AutoBootTick();
     Ports::ideTraceFlush();   // no-op unless IDE_PORT_TRACE
     // Deferred pool promotions (butter accessor banks): allow 1 inline

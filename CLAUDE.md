@@ -1331,6 +1331,56 @@ those reports a mismatch on every access (the capture said "12 of 12 mismatched"
 noise). `IDE.cpp`'s own per-write line is suppressed on the +3e path. The Z80 PC on
 each line names the ROM routine, which is what makes a capture readable at all.
 
+### ST0 bits 7-6 are a two-bit INTERRUPT CODE, not two flags (hw-confirmed 2026-09-04)
+
+"After picking Loader the +3e polls drive A for 30-60 s before starting from IDE."
+`00 normal / 01 abnormal / 10 invalid command / 11 abnormal because READY changed` —
+and a seek that ended because the drive is not ready must report **01**. Ours reported
+0x80, i.e. 10, because the constant for it was named `ST0_INT_READY`, which reads like
+"READY changed" (that is 0xC0, both bits). +3DOS tests for code 10 FIRST and explicitly
+(`AND #C0 / XOR #80` at +3DOS ROM 0x208D) and answers with an error code instead of
+falling through to its "drive not ready" branch at 0x209F, so its caller retried the
+whole recalibrate-recalibrate-seek dance about a hundred times at ~0.5 s each. MAME's
+`seek_start`/`recalibrate_start` are unambiguous: `st0 = unit | ST0_NR | ST0_FAIL |
+ST0_SE` = 0x68. With that, +3DOS gives up on an empty drive in ONE pass. The constants
+are now named for the field they belong to and `tools/upd765_test.cpp` pins the code
+(mutation-checked: the old value fails with "got 0x80, want 0x40").
+
+Three things about the diagnosis are worth keeping:
+
+- **The trace hole cost two rounds.** It logged a command when the phase reached EXE
+  after a port write — but RECALIBRATE, SEEK and SPECIFY have no result phase and are
+  already back in the command phase by the time the write returns, so the commands
+  +3DOS uses to poll a drive were the exact ones that never appeared. A capture came
+  out showing motor on/off and nothing else, which is what led to "the floppy is not
+  even involved" and a wasted look at the IDE path. `Upd765::cmds` (a dispatch counter,
+  4 bytes, no new dependency) is what the wrapper watches now.
+- **The trace lives in `Plus3Fdc.cpp`, not `Upd765.cpp`**, on purpose: that file
+  depends on nothing from the firmware, which is the only reason its host test builds.
+  A `Debug::log` in there would end that. The wrapper sees every port access anyway.
+- **A memory dump is worth more than a screenshot here.** `PC=207E` with `ROM in use:
+  2` put the guest inside +3DOS's own software delay loop (`LD L,#DC / DEC L / JR NZ`),
+  and the stack named the callers; from there the ROM disassembly gave the whole
+  retry structure, including that one pass costs `(IX+0x12)`=40 steps x `(E42C)`=12 —
+  0.47 s of pure delay, which is authentic and is what made ~100 retries so visible.
+
+### FatFs `f_lseek` walks the FAT on every BACKWARD seek
+
+Our IDE sector reads are one `f_lseek` each and an IDEDOS image is a quarter of a
+gigabyte: FatFs restarts from the first cluster whenever the target is behind the
+current position (and in write mode it walks through `create_chain`), which at 32 KB
+clusters is ~8000 links, i.e. dozens of FAT sector reads per out-of-order sector.
+`IDE::setupFastSeek()` builds FatFs's cluster link map (`FF_USE_FASTSEEK` was already
+on in ffconf.h but nothing in the tree had ever used it), which turns the seek into
+arithmetic with no card access. Two conditions come with it and both hold: the table
+is only valid while the file size is fixed, and it forbids EXTENDING the file — the
+geometry is fixed and a write past `C*H*S` is refused, so we can never want to.
+The table goes through `Buffer::palloc(PREFER_PSRAM)`: a real card fragments badly
+(the reference `Ocean.hdf` asked for **2466 entries**, ~1233 fragments, ~9.6 KB), which
+is more than a tight heap should give up but nothing on a butter-PSRAM board. Cap 4096
+entries; past it the slow path still works. Copying a big image to the card fresh, so
+it lands contiguous, shrinks the table to a handful of entries.
+
 ### The three uPD765 behaviours that are hangs, not wrong bytes
 
 Each has a named assertion in `tools/upd765_test.cpp`; if one regresses the machine
