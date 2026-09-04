@@ -516,6 +516,21 @@ uint32_t IDE::lba() {
     }
 }
 
+// Is this sector beyond the drive? A real ATA device answers ID NOT FOUND; ours used
+// to read past the end of the file, pad with 0xFF and report SUCCESS. That is not a
+// cosmetic difference: software SIZES a drive by walking it until a read fails. The
+// +3e's probe steps the cylinder-high register 1, 2, 3, ... (cylinders 256, 512, 768,
+// ...) and records where reading stops, so a drive that never stops was measured as
+// 255 x 256 cylinders instead of 999 — and IDEDOS then found a disk whose own stored
+// geometry disagreed with the hardware and refused it (hw 2026-09-04: the trace walked
+// to `CHS cyl=2560 ... -> 0 bytes [FF FF ...]` with status 0x58, still "success").
+// NOTE this also makes NEMO/PROFI report the end of the disk truthfully, where they
+// used to read 0xFF for ever; in-range accesses are untouched.
+bool IDE::lbaBeyondEnd(int d, uint32_t l) {
+    const uint32_t total = (uint32_t)cylinders[d] * heads[d] * sectors[d];
+    return total != 0 && l >= total;
+}
+
 void IDE::read_sector() {
     int d = drive();
     if (!file_open[d]) {
@@ -524,7 +539,20 @@ void IDE::read_sector() {
         return;
     }
     uint32_t l = lba();
+    if (lbaBeyondEnd(d, l)) {
+        reg_error = IDE_ERROR_IDNF;
+        reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
+        data_index = -1;
+        return;
+    }
     UINT br;
+    // Fill the buffer. This branch decides ONLY where the bytes come from — it must
+    // not return, because everything below (the Profi header sync, and the tail that
+    // sets data_index and raises DRQ) belongs to every read. An early return here was
+    // the +3e's "drive stops responding after READ SECTORS": the sector was read
+    // correctly and then the status register was never touched, so it stayed 0x00 and
+    // the ROM polled a drive that would never raise DRQ (hw 2026-09-04, the trace read
+    // `WR cmd/stat 20` followed by `RD cmd/stat x748 00..00` for ever).
     if (half_sector[d]) {
         // 256 stored bytes are the LOW halves of the 512-byte sector: read them to the
         // top of the buffer and spread them over the even positions, so the rest of the
@@ -539,16 +567,16 @@ void IDE::read_sector() {
         Debug::log("IDE READ  hd%d lba=%u off=%u (half) -> %u bytes [%02X %02X ...]",
                    d, l, (unsigned)hpos, (unsigned)br, buffer[0], buffer[2]);
 #endif
-        return;
-    }
-    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
-    f_lseek(&file[d], pos);
-    f_read(&file[d], buffer, 512, &br);
-    if (br < 512) memset(buffer + br, 0xFF, 512 - br);
+    } else {
+        FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
+        f_lseek(&file[d], pos);
+        f_read(&file[d], buffer, 512, &br);
+        if (br < 512) memset(buffer + br, 0xFF, 512 - br);
 #if IDE_PORT_TRACE
-    Debug::log("IDE READ  hd%d lba=%u off=%u -> %u bytes [%02X %02X %02X %02X ...]",
-               d, l, (unsigned)pos, (unsigned)br, buffer[0], buffer[1], buffer[2], buffer[3]);
+        Debug::log("IDE READ  hd%d lba=%u off=%u -> %u bytes [%02X %02X %02X %02X ...]",
+                   d, l, (unsigned)pos, (unsigned)br, buffer[0], buffer[1], buffer[2], buffer[3]);
 #endif
+    }
 
     // Profi CP/M: the geometry sector (ProfiHiDD header) lives at CHS(1,0,1),
     // which maps to LBA = heads[d] * sectors[d] (first sector of cylinder 1).
@@ -619,13 +647,17 @@ void IDE::write_sector_done() {
     uint32_t l = lba();
     UINT bw;
     if (half_sector[d]) {
-        // Only the low halves exist in the file — squeeze the even bytes back out.
-        // Scratch lives in the second half of the buffer, which the 512-byte transfer
-        // has already been consumed from.
-        for (int i = 0; i < 256; i++) buffer[256 + i] = buffer[i * 2];
+        // Only the low halves exist in the file — fold the even bytes down into the
+        // FIRST 256 bytes of the buffer. Not into the second half: the destination
+        // 256+i collides with the source 2i for every i >= 128, so that version
+        // overwrote its own input and corrupted exactly half of every sector written.
+        // Folding down is safe because the write index i is always below the read
+        // index 2i. The low half is scratch by then — the transfer is complete, and a
+        // following sector is refilled from the host.
+        for (int i = 0; i < 256; i++) buffer[i] = buffer[i * 2];
         FSIZE_t hpos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256;
         f_lseek(&file[d], hpos);
-        f_write(&file[d], buffer + 256, 256, &bw);
+        f_write(&file[d], buffer, 256, &bw);
         f_sync(&file[d]);
 #if IDE_PORT_TRACE
         Debug::log("IDE WRITE hd%d lba=%u off=%u (half) <- %u bytes", d, l, (unsigned)hpos, (unsigned)bw);
@@ -742,6 +774,13 @@ void IDE::execute_command(uint8_t cmd) {
 
         case 0x30: // WRITE SECTOR (retry)
         case 0x31: // WRITE SECTOR (no retry)
+            // Beyond the drive: refuse rather than accept 512 bytes and drop them.
+            if (lbaBeyondEnd(drive(), lba())) {
+                reg_error = IDE_ERROR_IDNF;
+                reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
+                data_index = -1;
+                break;
+            }
             // An 8-bit host writes only the low half of every word; the high halves
             // keep whatever the disk already held. Read the sector first so they
             // survive instead of being written back from a stale buffer. Free for a
@@ -1174,7 +1213,10 @@ uint8_t IDE::read8(uint8_t reg) {
 
 void IDE::write8(uint8_t reg, uint8_t value) {
 #if IDE_PORT_TRACE
-    if (reg != 0)  // don't log data register writes (too noisy)
+    // The +3e path has its own trace in Ports.cpp — it collapses the probe's 256-write
+    // sector-count sweep into one line and checks the read-backs, where one line per
+    // access floods the UART badly enough to lose the commands that matter.
+    if (reg != 0 && !eight_bit)  // don't log data register writes (too noisy)
         Debug::log("[IDE WR] reg=%d val=0x%02X", reg, value);
 #endif
     switch (reg) {
@@ -1224,8 +1266,26 @@ void IDE::write8(uint8_t reg, uint8_t value) {
             int prev = drive();
             reg_head = value;
             int now = drive();
-            if (now != prev && sig_valid[now])
-                reset_signature();   // uses drive()==now, keeps reg_head
+            if (now != prev) {
+                if (sig_valid[now]) {
+                    reset_signature();   // uses drive()==now, keeps reg_head
+                } else {
+                    // The signature is gone (this device has been used), so the status
+                    // register still holds the OTHER device's last state — and there is
+                    // only one of it. Re-derive it for whoever is selected now: an empty
+                    // slot reads 0x00, a present drive reads READY. Without this a host
+                    // that probes the empty slave and comes back to the master finds the
+                    // master reporting the slave's 0x00 and concludes the drive is gone
+                    // (hw 2026-09-04: the +3e's probe did exactly that — `WR dev/head B0`,
+                    // then `WR dev/head A0` and 0x00 for ever, "IDE not found").
+                    // A transfer cannot survive a device switch either.
+                    data_index = -1;
+                    data_write = false;
+                    data_discard = false;
+                    reg_status = file_open[now] ? IDE_STATUS_READY : 0x00;
+                    reg_error = 0;
+                }
+            }
             break;
         }
         case 7: sig_valid[drive()] = false; execute_command(value); break;

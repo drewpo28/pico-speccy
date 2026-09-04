@@ -72,6 +72,7 @@ private:
     static bool open_image(int slot, const char* path);
     static uint32_t lba();
     static int  drive();
+    static bool lbaBeyondEnd(int d, uint32_t l);   // past C*H*S -> a real drive errors
     static void read_sector();
     static void write_sector_done();
     static void execute_command(uint8_t cmd);

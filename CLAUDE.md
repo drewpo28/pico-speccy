@@ -1276,6 +1276,61 @@ the wiki page is sinclair.wiki.zxnet.co.uk/wiki/IDEDOS.
 - An `.hdf` opened in the F5 browser goes to IDE hd0 on a +3e instead of the DivMMC
   path (DivMMC is off there). The menu route, Storage → IDE images, already worked.
 
+### hw-confirmed 2026-09-04: `CAT TAB` lists the partitions
+
+`IDE Unit 0 (999/16/64)` with PLUSIDEDOS / BOOT (already assigned `D:` on the disk) /
+OCEAN / 217 Mb free, and unit 1 correctly "not detected". The 16384K each partition
+reports is the half-sector arithmetic agreeing end to end (64 cyl x 16 x 64 x 256 B).
+Getting there took FOUR defects, all ours, all found from the `IDE_PORT_TRACE` capture
+— and each one presented as "IDE not found", which is why they had to be peeled one at
+a time:
+
+1. **`read_sector()`'s half-sector branch RETURNED**, skipping the common tail that
+   sets `data_index` and raises DRQ. The sector was read and expanded perfectly and
+   the drive then never announced it: `WR cmd/stat 20` followed by
+   `RD cmd/stat x748 00..00` for ever. A branch in that function may only choose
+   where the bytes come from.
+2. **An out-of-range sector must report ID NOT FOUND.** Ours read past the end of the
+   file, padded 0xFF and reported success — but software SIZES a drive by walking it
+   until a read fails. The +3e steps the cylinder-high register (cylinders 256, 512,
+   768, ...), so a drive that never fails measured as 255 x 256 cylinders instead of
+   999, and IDEDOS refused a disk whose own stored geometry disagreed. `lbaBeyondEnd()`
+   now errors past `C*H*S`. This also makes NEMO/PROFI report the end of a disk
+   truthfully where they used to read 0xFF for ever — in-range accesses are untouched,
+   but if Profi CP/M ever regresses around disk sizing, look here first.
+3. **`reg_status` is ONE register shared by both devices, so a device select has to
+   re-derive it.** It was only refreshed while the newly-selected device still held
+   its post-reset signature, and the first write to registers 2-5 clears that — i.e.
+   the probe's own drive test. So after probing the empty slave, coming back to the
+   master read the SLAVE's 0x00: `WR dev/head B0` … `WR dev/head A0` and 0x00 for
+   ever. `write8` case 6 now sets status from `file_open[now]` (and drops any transfer,
+   which belonged to the other device).
+4. **The half-sector WRITE fold was self-overwriting** — compressing the even bytes
+   into `buffer[256+i]` collides with its own source `buffer[2i]` for every i >= 128,
+   corrupting exactly half of every sector written (host-checked: 128 of 256 bytes
+   wrong). It folds down into `buffer[i]` now, where the write index is always below
+   the read index. Reads were never affected, so this one was invisible on hardware.
+
+Plus: **`ESPectrum::reset()` now calls `IDE::reset()`.** Only `IDE::init()` used to,
+so a cold boot handed the guest a clean register file and F11 handed it the previous
+session's half-finished transfer. That asymmetry is its own class of "works at boot,
+dead after reset".
+
+**The trace had to be rebuilt before any of this was visible, and that cost a round.**
+One line per access is ~1300 lines for a single +3e probe (a 256-write sector-count
+sweep, then up to 255 cylinders at five writes each); the first capture arrived with
+~87% of its bytes dropped by the UART, mangled mid-line, and missing exactly the few
+lines that mattered. The rules that made it usable, all in `Ports.cpp` under
+`IDE_PORT_TRACE`: collapse runs of accesses to the same REGISTER (keying on
+register+direction is useless — the drive test alternates write and read on one
+register, so it flushed on every access and printed 512 lines); count the data
+register instead of printing it (256 says the 8-bit stride is right, 512 says it is
+not); verify a read against what was just written, since that IS the drive test; and
+pair ONLY registers 2-6 — 7 is command/status and 1 is features/error, so pairing
+those reports a mismatch on every access (the capture said "12 of 12 mismatched", all
+noise). `IDE.cpp`'s own per-write line is suppressed on the +3e path. The Z80 PC on
+each line names the ROM routine, which is what makes a capture readable at all.
+
 ### The three uPD765 behaviours that are hangs, not wrong bytes
 
 Each has a named assertion in `tools/upd765_test.cpp`; if one regresses the machine

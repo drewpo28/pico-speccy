@@ -1530,6 +1530,13 @@ void ESPectrum::reset(uint8_t romInUse) {
   // in ~30 s anyway; this makes it immediate.
   if (GS::enabled) {
     if (GS::neogs) { GS::hostIfaceFlush(); GS::ngsReset(); NgsMp3::releaseNow(); }
+    // The ATA device: only IDE::init() used to reset it, so a COLD boot handed the
+    // guest a clean register file and F11 handed it whatever the last session had
+    // left — a half-consumed sector transfer with DRQ still up, most of the time.
+    // That asymmetry is exactly the difference between the +3e ROM finding its disk
+    // at boot and not finding it after a reset. The images stay open (a reset is not
+    // an eject); this is the device reset the interface's own RESET line would do.
+    if (IDE::scheme != IDE::OFF) IDE::reset();
     else           GS::reset();
   }
 
@@ -3697,6 +3704,7 @@ void ESPectrum::loop() {
     // sitting in HALT would never see a seek complete.
     Plus3Fdc::frameTick();
     plus3AutoBootTick();
+    Ports::ideTraceFlush();   // no-op unless IDE_PORT_TRACE
     // Deferred pool promotions (butter accessor banks): allow 1 inline
     // promotion per frame; the rest queue for the idle window below.  On
     // maxSpeed there is no idle window — run everything inline as before.

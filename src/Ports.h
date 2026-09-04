@@ -83,6 +83,10 @@ public:
     //  D0=1, D2 ROM select high bit when D0=0, D3 disk motor (both drives), D4
     //  printer strobe.
     static uint8_t port1FFD;
+    // Flush the +3e IDE trace's pending run once per frame, so the last line of a
+    // conversation reaches the log instead of waiting for traffic that never comes.
+    // Compiled to nothing unless IDE_PORT_TRACE is on.
+    static void ideTraceFlush();
     // Recompute Scorpion's rom bank from (port1FFD D1/D2, trdos, romLatch) — and on
     // GMX the ProfROM plane — then recoverPage0.
     static void scorpionRomUpdate();

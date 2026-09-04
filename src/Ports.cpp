@@ -634,6 +634,126 @@ static inline bool p3eIde(uint16_t address) {
 }
 static inline uint8_t p3eIdeReg(uint16_t address) { return plus3eIdeReg(address); }
 
+#if IDE_PORT_TRACE
+// The register conversation. It has to be LOW VOLUME or it destroys what it is
+// meant to observe: the +3e's drive probe writes the sector-count register 256
+// times and then scans up to 255 cylinders at five register writes each, which at
+// one line per access is ~1300 lines. A capture of that (hw 2026-09-04) arrived
+// with ~87% of its bytes dropped by the UART, mangled mid-line, and with the few
+// lines that mattered — the IDENTIFY command, the sector reads — missing entirely,
+// so nothing could be concluded from it. Three rules keep it readable:
+//
+//  * runs of accesses to the SAME register collapse into one line with a count and
+//    the first/last value,
+//  * the data register is only ever counted (256 accesses per sector), and the
+//    count is the useful part: 256 says the 8-bit stride is right, 512 says it is
+//    not,
+//  * a read of a register that was just written is checked against what was
+//    written, because that IS the probe's drive test — a mismatch is the answer,
+//    and it is reported with both values instead of leaving them to be inferred
+//    from a thousand lines.
+//
+// The Z80 PC names the ROM routine, which is what makes a capture readable:
+//   0x2745 device select (inside the ready-wait at 0x2741)   0x24E0/0x24E5 the
+//   sector-count write/read-back drive test   0x24F2 IDENTIFY   0x2501.. the
+//   READ SECTORS set-up   0x268D the status poll (mask #C0, expect #40)
+//   0x25C9 the 256 x INI burst
+static uint32_t p3e_data_rd = 0, p3e_data_wr = 0;
+static uint8_t  p3e_wrote[8];          // last value written to each register
+static bool     p3e_wr_valid[8];
+static uint32_t p3e_rb_pairs = 0, p3e_rb_bad = 0;   // read-back pairs / mismatches
+// A run is keyed on the REGISTER only. The drive test alternates write and read on
+// the same register, so keying on the direction as well flushed on every single
+// access — 512 lines for the one line this is meant to be.
+static int      p3e_run_reg = -1;      // -1 = nothing pending
+static uint32_t p3e_run_wr_n = 0, p3e_run_rd_n = 0;
+static uint8_t  p3e_run_first = 0, p3e_run_last = 0;
+static const char* const kP3eRegName[8] = {
+    "data", "err/feat", "count", "sector", "cyl-lo", "cyl-hi", "dev/head", "cmd/stat"
+};
+
+static void p3eRunFlush() {
+    if (p3e_run_reg < 0) return;
+    const char* nm = kP3eRegName[p3e_run_reg];
+    const uint32_t n = p3e_run_wr_n + p3e_run_rd_n;
+    if (n == 1)
+        Debug::log("[+3e IDE] %s %-8s %02X", p3e_run_wr_n ? "WR" : "RD", nm, p3e_run_first);
+    else
+        Debug::log("[+3e IDE] %-8s wr=%lu rd=%lu %02X..%02X", nm,
+                   (unsigned long)p3e_run_wr_n, (unsigned long)p3e_run_rd_n,
+                   p3e_run_first, p3e_run_last);
+    p3e_run_reg = -1;
+    p3e_run_wr_n = p3e_run_rd_n = 0;
+}
+
+static void p3eDataFlush() {
+    if (!p3e_data_rd && !p3e_data_wr) return;
+    p3eRunFlush();
+    Debug::log("[+3e IDE] data burst rd=%lu wr=%lu", (unsigned long)p3e_data_rd,
+               (unsigned long)p3e_data_wr);
+    p3e_data_rd = p3e_data_wr = 0;
+}
+
+// Called before the +3e trace goes quiet for a while, so a pending run/burst and the
+// read-back tally reach the log instead of waiting for traffic that may never come.
+static void p3eTraceIdle() {
+    p3eDataFlush();
+    p3eRunFlush();
+    if (p3e_rb_pairs) {
+        Debug::log("[+3e IDE] read-back: %lu pairs, %lu mismatched",
+                   (unsigned long)p3e_rb_pairs, (unsigned long)p3e_rb_bad);
+        p3e_rb_pairs = p3e_rb_bad = 0;
+    }
+}
+
+static void p3eTrace(uint16_t address, uint8_t reg, uint8_t val, bool write) {
+    if (reg == 0) {
+        p3eRunFlush();
+        if (write) p3e_data_wr++; else p3e_data_rd++;
+        return;
+    }
+    p3eDataFlush();
+
+    // The drive test is "write the sector-count register, read it straight back".
+    // Verify it here: a silent mismatch is exactly the failure that makes the +3e
+    // give up before it ever issues IDENTIFY. Only the task-file registers 2..6 read
+    // back what was written — register 7 is command on write and status on read, and
+    // register 1 is features on write and error on read, so pairing those two reports
+    // a mismatch on every single access and drowns the real ones.
+    const bool pairable = (reg >= 2 && reg <= 6);
+    if (!pairable) p3e_wr_valid[reg] = false;
+    if (!write && pairable && p3e_wr_valid[reg]) {
+        p3e_rb_pairs++;
+        if (val != p3e_wrote[reg]) {
+            p3e_rb_bad++;
+            if (p3e_rb_bad <= 4) {
+                p3eRunFlush();
+                Debug::log("[+3e IDE] READ-BACK MISMATCH %s wrote=%02X read=%02X pc=%04X",
+                           kP3eRegName[reg], p3e_wrote[reg], val, Z80::getRegPC());
+                return;
+            }
+        }
+    }
+    if (write && pairable) { p3e_wrote[reg] = val; p3e_wr_valid[reg] = true; }
+    else                   { p3e_wr_valid[reg] = false; }   // a read consumes the pairing
+
+    if (p3e_run_reg != reg) {
+        p3eRunFlush();
+        p3e_run_reg = reg;
+        p3e_run_first = val;
+    }
+    if (write) p3e_run_wr_n++; else p3e_run_rd_n++;
+    p3e_run_last = val;
+    (void)address;
+}
+#endif
+
+void Ports::ideTraceFlush() {
+#if IDE_PORT_TRACE
+    p3eTraceIdle();
+#endif
+}
+
 IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   uint8_t data;
 #if SND_PORT_TRACE
@@ -906,7 +1026,12 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // +3e IDE (see p3eIde above). Ahead of ZiFi, whose windows overlap it.
     if (p3eIde(address)) {
       LED::touchR(LED::IDE);
-      return IDE::read8(p3eIdeReg(address));
+      const uint8_t r = p3eIdeReg(address);
+      const uint8_t v = IDE::read8(r);
+#if IDE_PORT_TRACE
+      p3eTrace(address, r, v, false);
+#endif
+      return v;
     }
     // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
     // 0xEFF7 (hi=0xEF > 0xC7) falls through to Pentagon mode16col handler below
@@ -2481,7 +2606,11 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // +3e IDE (see p3eIde above). Ahead of ZiFi, whose windows overlap it.
   if (p3eIde(address)) {
     LED::touchW(LED::IDE);
-    IDE::write8(p3eIdeReg(address), data);
+    const uint8_t r = p3eIdeReg(address);
+#if IDE_PORT_TRACE
+    p3eTrace(address, r, data, true);
+#endif
+    IDE::write8(r, data);
     return;
   }
   // ZiFi NIC port: A0..A7 == 0xEF, A8..A15 selects register (0x00..0xC7)
