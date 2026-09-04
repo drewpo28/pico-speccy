@@ -3788,8 +3788,20 @@ its image). A port-level split would separate something else that IS two chips
 on real hardware — the SMUC clock at #DFBA versus the Pentagon/Karabas one at
 #DFF7/#BFF7 — but keying on the machine covers that case too.
 
-- **The Gluk marker may only be seeded into a CMOS that was never saved**
-  (hw 2026-09-04). `RTC::init()` used to force `regs[0x11] = 0xAA` on every boot
+- **The Gluk marker is seeded for the GLUK ROMSET, and only there** — the rule
+  took two hardware rounds to get right and both wrong versions are instructive.
+  Seeding `regs[0x11] = 0xAA` unconditionally after every load (the original)
+  corrupted ProfROM, which checksums cells 0x10-0x3E and therefore owns 0x11 as
+  well: "CMOS checksum error" on every boot (hw 2026-09-04). Making it
+  conditional on "nothing was restored" then broke **Gluk** instead — a machine
+  with a saved image never got its marker, so Mr Gluk reported NO CMOS
+  (hw 2026-09-05, "GLUK stopped working, it works in pico-spec"). Both firmwares
+  were right about their own chip; the defect was the SHARED image. With
+  `cmos_<romset>.nvr` in place the marker goes only into the file of the machine
+  that wants it (`rtcSeedGluk`, called from init() and machineChanged()), and
+  neither firmware can reach the other's.
+- (superseded, kept for the reasoning) **The Gluk marker may only be seeded into
+  a CMOS that was never saved** (hw 2026-09-04). `RTC::init()` used to force `regs[0x11] = 0xAA` on every boot
   AFTER `loadNVRAM()`, i.e. it overwrote a byte the saved image owned — and
   `cmos.nvr` is ONE chip shared by every machine. ProfROM's MOA Shadow monitor
   checksums CMOS cells **0x10-0x3E** (p1b3 0x2030: `LD DE,#FFFF / LD B,#10` …

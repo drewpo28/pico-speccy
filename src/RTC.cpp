@@ -94,15 +94,37 @@ int RTC::decHour(uint8_t v) {
 // A machine switch hands the guest a DIFFERENT chip: push whatever the outgoing
 // machine wrote to its own file, then load the incoming machine's. Called from
 // Config::requestMachine once the new romset is final; a no-op before init().
+static void rtcSeedGluk() {
+    if (Config::romSet == R_PENT_GLUK) RTC::glukMarker();
+}
+
 void RTC::machineChanged() {
     if (!s_nv_path[0]) return;          // RTC::init() has not run yet
     flushNVRAM(true);                   // to the OLD path, past the debounce
     for (unsigned i = 0x0E; i < sizeof(regs); i++) regs[i] = 0;
     regs[0x0B] = 0x02;
     regs[0x0D] = 0x80;
-    if (!loadNVRAM()) regs[0x11] = 0xAA;   // same rule as init()
+    loadNVRAM();
+    rtcSeedGluk();                      // same rule as init()
     nv_dirty = false;
 }
+
+// Mr Gluk Reset Service treats the CMOS as valid only when NVRAM reg 0x11 ==
+// 0xAA (checked at unpacked-RAM 0x6049: CP 0xAA / JR NZ -> "NO CMOS"). Its
+// auto-init path writes a bogus 0x55 and never self-validates — the real
+// signature is written only when the user saves settings in Gluk's menu — so
+// without this seed the clock is unusable out of the box.
+//
+// It is seeded for the GLUK ROMSET ONLY, and the history is worth keeping:
+// seeding it unconditionally corrupted ProfROM, whose monitor checksums cells
+// 0x10-0x3E and therefore owns 0x11 too (hw 2026-09-04, "CMOS checksum error"
+// on every boot). Making it conditional on "nothing was restored" then broke
+// GLUK instead, because a machine that HAS a saved image never got its marker
+// (hw 2026-09-05, "Gluk stopped working"). Both firmwares are right about
+// their own chip; what was wrong was one shared image. Now that the file is
+// per-machine, the marker goes only into the image of the machine that wants
+// it, and neither can touch the other.
+static void rtcSeedGluk();
 
 void RTC::init() {
     for (unsigned i = 0; i < sizeof(regs); i++) regs[i] = 0;
@@ -112,21 +134,8 @@ void RTC::init() {
     regs[0x0B] = 0x02;
     // Reg D: bit7 VRT = 1 (battery/RAM valid) so the service doesn't flag a dead clock
     regs[0x0D] = 0x80;
-    const bool restored = loadNVRAM(); // battery-backed CMOS (Gluk config + marker)
-    // Mr Gluk Reset Service treats the CMOS as valid only when NVRAM reg 0x11 ==
-    // 0xAA (checked at unpacked-RAM 0x6049: CP 0xAA / JR NZ → "NO CMOS"). Its
-    // auto-init path writes a bogus 0x55 and never self-validates — the real
-    // 0xAA/'G'(0x47) signature is written only when the user saves settings in
-    // Gluk's menu. Seed the validity marker so the clock is usable out of the box.
-    //
-    // ONLY on a CMOS that has never been saved. This is one chip shared by every
-    // machine, and 0x11 is somebody else's byte: ProfROM's MOA monitor checksums
-    // cells 0x10-0x3E (p1b3 0x2030: `LD B,#10` ... `INC B / CP #3F / JR NZ`),
-    // keeps its signature 0x61 at 0x0E and the sum at 0x3F. Re-seeding 0x11 after
-    // every load therefore corrupted that sum on EVERY boot — the user saved the
-    // settings, they came back, and the boot screen still said "CMOS checksum
-    // error" for ever (hw 2026-09-04). A guest that owns the cell now keeps it.
-    if (!restored) regs[0x11] = 0xAA;
+    loadNVRAM();                       // battery-backed CMOS (Gluk config + marker)
+    rtcSeedGluk();
 #if RTC_PORT_TRACE
     Debug::log("[RTC] PORT TRACE ACTIVE — logging IN/OUT with low byte 0xF7");
 #endif
@@ -161,6 +170,8 @@ bool RTC::loadNVRAM() {
     regs[0x0D] = 0x80; // keep VRT asserted regardless of saved bytes
     return true;
 }
+
+void RTC::glukMarker() { regs[0x11] = 0xAA; }
 
 void RTC::flushNVRAM(bool force) {
     if (!nv_dirty || !FileUtils::fsMount) return;
