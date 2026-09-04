@@ -634,7 +634,7 @@ static inline bool p3eIde(uint16_t address) {
 }
 static inline uint8_t p3eIdeReg(uint16_t address) { return plus3eIdeReg(address); }
 
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
 // The register conversation. It has to be LOW VOLUME or it destroys what it is
 // meant to observe: the +3e's drive probe writes the sector-count register 256
 // times and then scans up to 255 cylinders at five register writes each, which at
@@ -749,7 +749,7 @@ static void p3eTrace(uint16_t address, uint8_t reg, uint8_t val, bool write) {
 #endif
 
 void Ports::ideTraceFlush() {
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
     p3eTraceIdle();
 #endif
 }
@@ -1028,7 +1028,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
       LED::touchR(LED::IDE);
       const uint8_t r = p3eIdeReg(address);
       const uint8_t v = IDE::read8(r);
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
       p3eTrace(address, r, v, false);
 #endif
       return v;
@@ -2607,7 +2607,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (p3eIde(address)) {
     LED::touchW(LED::IDE);
     const uint8_t r = p3eIdeReg(address);
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
     p3eTrace(address, r, data, true);
 #endif
     IDE::write8(r, data);

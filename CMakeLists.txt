@@ -46,7 +46,7 @@ option(HDMI_SOFT_CLK "HDMI: drive the clock pair at 8 mA + slow slew instead of 
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
 # Add new toggles here following the same option(...) + compile-definition pattern.
-option(IDE_PORT_TRACE "Enable IDE/HDD port access tracing (PROFI/NEMO registers, +3e register conversation)" ON)
+option(IDE_PORT_TRACE "Enable IDE/HDD port access tracing (PROFI/NEMO registers, +3e register conversation)" OFF)
 option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)

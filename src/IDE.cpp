@@ -9,7 +9,15 @@
 #include "Buffer.h"
 #include "FileUtils.h"
 
-// IDE_PORT_TRACE (every ATA register/command access + sector read/write) is
+// IDE_PORT_TRACE is a LEVEL, not a flag — the diagnostic being too loud has cost this
+// port two debugging rounds already (see CLAUDE.md):
+//   1 = one line per ATA command and per sector transferred. Quiet enough that a whole
+//       boot plus a game load survives the UART intact, which is what a capture of a
+//       failing disk operation needs.
+//   2 = adds the per-access register conversation (status reads, the +3e register
+//       stream in Ports.cpp). Useful for a protocol-level bug, useless for anything
+//       that has to be watched over seconds: it drops ~85% of its own lines.
+// (every ATA register/command access + sector read/write) is
 // defined by CMake (default 0). One-time init/geometry logs stay unconditional.
 // Undefined → 0 in #if, so no fallback #define is needed here.
 
@@ -1262,7 +1270,7 @@ uint8_t IDE::read8(uint8_t reg) {
         case 6: return reg_head;
         case 7:
         case 8: {
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
             static uint8_t _last_st = 0xFF;
             if (reg_status != _last_st) {
                 Debug::log("[IDE RD] status=0x%02X", reg_status);
@@ -1276,7 +1284,7 @@ uint8_t IDE::read8(uint8_t reg) {
 }
 
 void IDE::write8(uint8_t reg, uint8_t value) {
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
     // The +3e path has its own trace in Ports.cpp — it collapses the probe's 256-write
     // sector-count sweep into one line and checks the read-backs, where one line per
     // access floods the UART badly enough to lose the commands that matter.
@@ -1356,7 +1364,7 @@ void IDE::write8(uint8_t reg, uint8_t value) {
         case 8: { // control register (nIEN/SRST)
             uint8_t prev = reg_control;
             reg_control = value;
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
             Debug::log("IDE OUT R8 ctrl=%02X", value);
 #endif
             // SRST asserted (1) then deasserted (0) -> device reset, load signature.
