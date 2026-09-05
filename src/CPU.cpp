@@ -218,9 +218,17 @@ void CPU::reset() {
         // Set emulation loop sync target
         ESPectrum::target = MICROS_PER_FRAME_PROFI;
     } else if (Config::arch == A_SCORP) {
-        // Scorpion ZS-256: no float bus (getFloatBusData stays unset — never called,
-        // same as Pentagon), no contention. Yellow PCB = 48K-length frame, Green
-        // PCB = 316 lines (70784 T).
+        // Scorpion ZS-256: HAS the port-#FF floating bus (proven by the "ТЕСТ
+        // SCORPION 1992" port-FF diagnostic, which fills screen attrs with
+        // 0x55/0xAA and requires IN #FF to read them back — hw 2026-09-05). Its
+        // line timing is the 48K one (224 T/line, paper at T 14336), so the 48K
+        // float function is bit-exact for both Yellow and Green PCBs (only the
+        // total frame length differs, which the per-line float math ignores).
+        // No contention. My earlier "no float bus (Fuse unattached_port_none)"
+        // was wrong for this hardware. Scorpion's float is ATTRIBUTE-dominant,
+        // not the 48K per-T bitmap/attribute alternation — the port-FF test does
+        // two reads 15 T apart (odd) and needs both equal; see getFloatBusDataScorp.
+        Ports::getFloatBusData = &Ports::getFloatBusDataScorp;
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;

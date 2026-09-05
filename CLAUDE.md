@@ -2391,8 +2391,39 @@ overlay: rom[4] already overlays the `trdos_505d` base pointer and
   Takes the **48K audio branch** (624 samples — same rule as Profi), the 48K-family
   border geometry (step=4 pair-write), the 48K/Profi 50 Hz video-mode planes. No
   contention anywhere (`ramContended` false, all `Draw(3, …)` I/O-contention sites
-  and the border-change `Draw(0,true)` exclude it), no float bus (input twin
-  excluded; unmapped IN = 0xFF), no snow.
+  and the border-change `Draw(0,true)` exclude it), no snow.
+  **Port-#FF floating bus: YES** (corrected hw 2026-09-05). Originally coded off
+  ("Fuse unattached_port_none"), but the "ТЕСТ SCORPION Д.К. СПб 1992" port-FF
+  diagnostic proved otherwise: it fills the bottom attribute row (0x5AE0) with
+  0x55/0xAA and loops `IN #FF`, requiring the read to return that screen byte —
+  ours answered a constant 0xFF, so the test looped 65536× then printed "ПОРТ FF
+  ОШИБКА". The Pentagon/Profi float exclusion in Ports::input was dropped for
+  Scorpion, and the 128K "IN #7FFD read rewrites the paging latch" quirk stays
+  OFF for Scorpion (added `!isScorpion` to its gate) — a 128K-ULA artifact that
+  would corrupt Scorpion's own paging on a stray float read.
+  **The float model is ATTRIBUTE-DOMINANT, not the 48K bmp/att alternation**
+  (`getFloatBusDataScorp`, hw-confirmed 2026-09-06 — the test PASSES) — the first
+  cut reused `getFloatBusData48` and STILL failed, and disassembling the test
+  from the dump says exactly why. The loop (RAM 0x7346): fill 0x5AE0..0x5AFF (attr row 23, all
+  32 cells) with the value, then `IN A,(#FF) / LD E,A / IN A,(#FF) / CP E /
+  CP D`, retried up to 65536×; it PASSES only when two consecutive reads are
+  EQUAL and equal to the written attribute. Those two `IN`s are **15 T-states
+  apart** (IN=11T + LD E,A=4T = odd), and the 48K float alternates bitmap↔
+  attribute every T-state (`halfpix & 0x01`), so an odd gap ALWAYS flips the
+  parity: read #1 gets the attribute 0x55, read #2 gets the bitmap 0x00 — never
+  equal (this is why the trace showed real screen bytes 0x38/0x00 but never a
+  stable 0x55). Real Scorpion passes, so its #FF float must hold the attribute
+  across consecutive readable T-states. `getFloatBusDataScorp` keeps the 48K
+  timing skeleton (224 T/line, paper T 14336, the `halfpix&4`/`>=125` no-data
+  windows → 0xFF) but returns `grmem[offAtt[line]+hpoffset]` regardless of
+  halfpix parity; with row 23 uniformly 0x55 both reads then land on 0x55.
+  Assigned in CPU::reset (was getFloatBusData48). Diagnosed from a Ctrl+Alt+D
+  memory dump: PC parked at the loop at RAM 0x7355 named the whole check, and the
+  dump's 0x5AE0=0x55 (page 5, = the page `grmem` reads) ruled out any page/grmem
+  mismatch, leaving the odd-spacing parity flip as the only cause; the
+  `SCORP_FF_TRACE` sampler (kept, gated off) had confirmed the float reached the
+  test but sampled bmp/att indiscriminately — a memory dump reads the guest's
+  live code, which a port trace cannot.
 - **#1FFD** (write-only, own handler BEFORE the loose #7FFD block in Ports::output,
   decode `(addr & 0xC002)==0 && (addr & 0x20)` per MAME's PAL; NEVER gated by
   pagingLock): D0 = RAM0 at 0x0000 (drives the existing `page0ram`), D1 = service

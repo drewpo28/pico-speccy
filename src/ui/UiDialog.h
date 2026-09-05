@@ -19,7 +19,10 @@ namespace nm {
 
 // Yes/No question. `text` may contain '\n'. Returns true on Yes.
 // Keys: Left/Right/Up/Down move, Enter accepts, Esc = No, Y/N direct.
-bool uiConfirm(const char* text, const char* title = nullptr);
+// `default_yes` puts the initial highlight on Yes — only for questions whose
+// answer is safe to take on a bare Enter (the F12 reboot); destructive ones
+// keep the default on No.
+bool uiConfirm(const char* text, const char* title = nullptr, bool default_yes = false);
 
 // uiConfirm with a live countdown line — the post-reboot video-mode confirm.
 // Standalone-safe (gfxBegin/gfxEnd around itself: it runs at boot, before any

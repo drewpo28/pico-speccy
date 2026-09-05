@@ -59,10 +59,14 @@ static uint8_t g_rawTrkDataBuf[8192];
 // First 8 bytes delivered for the current sector read — see [FDC RD-END] log.
 uint8_t g_rdFirst[8] = {0};
 uint8_t g_rdFirstN = 0;
+#endif
 
+#if FDD_PORT_TRACE || VDISK_TRACE
 // Last-command snapshot for the [FDC IDLE] marker (ESPectrum.cpp's per-frame
 // diagnostics): lets a boot-load hang be pinpointed as "disk activity stopped
 // at trk/sec/side X" without manually cross-referencing FDC CMD lines by hand.
+// Declared under the SAME guard as its use block below (FDD_PORT_TRACE ||
+// VDISK_TRACE) — a VDISK_TRACE-only build still references these.
 uint32_t g_fdcCmdCount = 0;
 uint16_t g_fdcLastTrk = 0;
 uint8_t  g_fdcLastSec = 0, g_fdcLastSide = 0, g_fdcLastCmd = 0;

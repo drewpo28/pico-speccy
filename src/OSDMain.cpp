@@ -407,11 +407,11 @@ void OSD::esp_hard_reset() {
     while (true);
 }
 
-static bool confirmReboot(const char* dlg) {
+static bool confirmReboot(const char* dlg, bool default_yes = false) {
     // Hotkeys arrive with no gfx session, hence the begin/end pair (nested callers
     // wrap us in their own suspend/resume, which re-installs after us).
     nm::gfxBegin();
-    const bool yes = nm::uiConfirm(dlg);
+    const bool yes = nm::uiConfirm(dlg, nullptr, default_yes);
     nm::gfxEnd();
     return yes;
 }
@@ -2668,7 +2668,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             } else
             ESPectrum::reset();
         } else if (hkIdx == Config::HK_REBOOT) { // ESP32 reset
-            if (confirmReboot(OSD_DLG_REBOOT)) {
+            // Yes is the default here: the user just pressed the reboot key, so a
+            // second Enter is the confirmation, not an accident.
+            if (confirmReboot(OSD_DLG_REBOOT, /*default_yes=*/true)) {
                 Config::ram_file = NO_RAM_FILE;
                 Config::save();
                 esp_hard_reset();

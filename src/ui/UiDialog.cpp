@@ -123,13 +123,13 @@ static void drawButtons(const Box& b, bool yes) {
     text(bx + (bw - 2 * glyphW()) / 2, by, "No", yes ? C_TEXT_DIM : C_WHITE);
 }
 
-bool uiConfirm(const char* text_body, const char* title) {
+bool uiConfirm(const char* text_body, const char* title, bool default_yes) {
     Debug::log("uiConfirm: sp=%08x\n", debug_sp());
     gfxResumePalette();
     const int lh = UI_FONT_H + 2;
     Box b = drawBox(text_body, title, lh + 6, C_SEP);
 
-    bool yes = false;                       // default lands on No: Enter must not destroy
+    bool yes = default_yes;                 // default lands on No: Enter must not destroy
     drawButtons(b, yes);
 
     fabgl::VirtualKeyItem k;

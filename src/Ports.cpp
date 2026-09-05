@@ -471,6 +471,32 @@ IRAM_ATTR uint8_t Ports::getFloatBusData48() {
   return fbdata;
 }
 
+// Scorpion's #FF floating bus is ATTRIBUTE-dominant — it does NOT alternate
+// bitmap/attribute on odd/even T-states the way the genuine 48K ULA does. The
+// "ТЕСТ SCORPION 1992" port-FF diagnostic proves it: it fills attribute row 23
+// (0x5AE0..0x5AFF) with 0x55/0xAA, then does two IN A,(#FF) reads *15 T-states
+// apart* (odd spacing: IN=11T + LD E,A=4T) and requires BOTH to read back that
+// value. Under a per-T bitmap/attribute alternation an odd gap always flips the
+// parity — one read sees the attribute (0x55), the next sees the bitmap (0x00)
+// — so the two can never be equal and the test can never pass. Returning the
+// attribute byte across the whole readable window makes both reads land on the
+// uniform 0x55/0xAA row. Timing skeleton (224 T/line, paper at T 14336, the
+// #FF/no-data windows) is otherwise identical to the 48K function.
+IRAM_ATTR uint8_t Ports::getFloatBusDataScorp() {
+  unsigned int currentTstates = CPU::tstates;
+
+  unsigned int line = (currentTstates / 224) - 64;
+  if (line >= 192)
+    return 0xFF;
+
+  unsigned char halfpix = (currentTstates % 224) - 3;
+  if ((halfpix >= 125) || (halfpix & 0x04))
+    return 0xFF;
+
+  int hpoffset = (halfpix >> 2) + ((halfpix >> 1) & 0x01);
+  return VIDEO::grmem[VIDEO::offAtt[line] + hpoffset];
+}
+
 IRAM_ATTR uint8_t Ports::getFloatBusData128() {
 
   unsigned int currentTstates = CPU::tstates - 1;
@@ -738,6 +764,23 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   }
   bool ia = Z80Ops::isALF;
   uint8_t p8 = address & 0xFF;
+#if SCORP_FF_TRACE
+  // SAMPLING trace (never exhausts): a "once each" or capped scheme burned its
+  // whole budget on TR-DOS's own #FF/keyboard polling during LOAD, before the
+  // test ever ran (hw 2026-09-05, "log only up to the test"). The port-FF test
+  // runs in a CONTINUOUS loop ("ЦИКЛ"), so sampling every Nth access catches it
+  // while it is looping, with no flood.
+  if (Z80Ops::isScorpion) {
+    static uint32_t inN=0; inN++;
+    if (p8 == 0xFF && (inN & 0x3F) == 0)             // every 64th #FF read
+      Debug::log("[FFin] pc=%04X addr=%04X trdos=%d sysen=%d val-next",
+        Z80::getRegPC(), address, (int)ESPectrum::trdos,
+        (int)((port1FFD&0x02)!=0));
+    if ((inN & 0x1FFF) == 0)                          // every 8192nd IN, any port
+      Debug::log("[Sin] port=%02X addr=%04X pc=%04X trdos=%d", p8, address,
+                 Z80::getRegPC(), (int)ESPectrum::trdos);
+  }
+#endif
 
   // «Байт»: any access to the Kempston-decoded port (#1F/#9F) toggles the
   // DD71 доп. ПЗУ overlay — the built-in test's switch stub at #387A is
@@ -1662,16 +1705,28 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         return rd;
       }
     }
-    // Scorpion has no float bus either (Fuse: unattached_port_none) — unmapped
-    // reads answer 0xFF and the 128K "IN #7FFD rewrites the latch" quirk (a
-    // 128K-ULA artifact) never happens there.
-    if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)) {
+    // Scorpion DOES have the port-#FF floating bus (see CPU::reset) — include it
+    // here. Pentagon/Profi keep 0xFF (no float bus). The 128K "IN #7FFD rewrites
+    // the latch" quirk below is a 128K-ULA artifact and must stay OFF for
+    // Scorpion (it has its own paging; a stray float-bus read would corrupt it).
+    if (!(Z80Ops::isPentagon || Z80Ops::isProfi)) {
 #if HALT2INT_TRACE
       if (address == 0xFFFF)
         Debug::log("[FLOAT-IN] addr=%04X ts=%u ia=%d", address, CPU::tstates, (int)ia);
 #endif
       data = getFloatBusData();
-      if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
+#if SCORP_FF_TRACE
+      if (Z80Ops::isScorpion && (address & 0xFF) == 0xFF) {
+        static uint32_t fn=0; fn++;
+        if ((fn & 0x3F) == 0) {
+          unsigned ts=CPU::tstates; int ln=(int)(ts/224)-64;
+          Debug::log("[FFval] data=%02X ts=%u line=%d grmem=%p offAtt184=%u",
+            data, ts, ln, (void*)VIDEO::grmem,
+            (unsigned)VIDEO::offAtt[184>=192?0:184]);
+        }
+      }
+#endif
+      if ((!Z80Ops::is48) && !Z80Ops::isScorpion && ((address & 0x8002) == 0) &&
           (!Z80Ops::isALF || (address & 0x0080))) { // ALF: #7FFD reflect, A7=1 only
         LED::touchR(LED::RAM);
         // //  Solo en el modelo 128K, pero no en los +2/+2A/+3, si se lee el
@@ -2375,6 +2430,19 @@ bool Ports::gmxPortRead(uint16_t address, uint8_t* out) {
 }
 
 IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
+#if SCORP_FF_TRACE
+  if (Z80Ops::isScorpion) {
+    static uint32_t outN=0; outN++;
+    uint8_t o8 = address & 0xFF;
+    if (o8 == 0xFF && (outN & 0x1F) == 0)            // every 32nd #FF write
+      Debug::log("[FFout] pc=%04X addr=%04X val=%02X trdos=%d sysen=%d",
+        Z80::getRegPC(), address, data, (int)ESPectrum::trdos,
+        (int)((port1FFD&0x02)!=0));
+    if ((outN & 0x1FFF) == 0)
+      Debug::log("[Sout] port=%02X addr=%04X val=%02X pc=%04X", o8, address, data,
+                 Z80::getRegPC());
+  }
+#endif
   int Audiobit;
 #if SND_PORT_TRACE
   sndTraceWr[address & 0xFF]++;

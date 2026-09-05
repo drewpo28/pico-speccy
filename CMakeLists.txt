@@ -51,6 +51,7 @@ option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
 option(MC7FFD_TRACE "One-shot capture of #7FFD write tstates when a frame carries >=90 of them (beam-raced multicolor phase diagnosis)" OFF)
+option(SCORP_FF_TRACE "Trace Scorpion IN/OUT on port #FF (ТЕСТ SCORPION port-FF diagnostic), capped" OFF)
 option(VDISK_TRACE "Trace the SMUC virtual-FDD bridge: #7FBA select + WD1793 RDSEC/WRSEC + HDD LBA, correlated, low-noise" OFF)
 option(SMUC_TRACE "Trace SMUC port accesses, including ones the DOSEN/SYSEN gate rejected (capped)" OFF)
 option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1FFD writes, romInUse transitions, TR-DOS trap entry/exit (capped)" OFF)
@@ -389,6 +390,15 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_IN_FLASH=1)
 target_compile_definitions(${PROJECT_NAME} PRIVATE PROFROM_IN_FLASH=1)
 target_link_options(${PROJECT_NAME} PRIVATE -Wl,--defsym=__gmx_rom_in_flash=1)
 target_compile_definitions(${PROJECT_NAME} PRIVATE CONFIG_BOARD_TAG="${CONFIG_BOARD_TAG}")
+
+# Scorpion port #FF trace (see Ports.cpp `#if SCORP_FF_TRACE`): logs every IN/OUT
+# on low byte #FF with pc/trdos/sysen/border — for the "ТЕСТ SCORPION" port-FF
+# diagnostic. Capped, default OFF.
+if (SCORP_FF_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE SCORP_FF_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE SCORP_FF_TRACE=0)
+endif ()
 
 # SMUC virtual-FDD bridge tracing (see `#if VDISK_TRACE` in Ports/IDE/wd1793):
 # correlates the #7FBA virtual-drive select, the WD1793 RDSEC/WRSEC track/sector,

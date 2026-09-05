@@ -54,6 +54,7 @@ public:
     static uint8_t (*getFloatBusData)();
     static uint8_t getFloatBusData48();
     static uint8_t getFloatBusData128();
+    static uint8_t getFloatBusDataScorp();
 
     static void FDDStep(bool force);
     static void dmaOutput(uint16_t address, uint8_t data);
