@@ -2216,15 +2216,35 @@ bool Ports::smucPortWrite(uint16_t address, uint8_t data) {
       return true;                                 // swallow (never reaches ULA)
     }
     LED::touchW(LED::IDE);
-    if (!(address & 0x2000)) { IDE::write_latch(data); return true; }  // #D8BE..
     uint8_t reg = (address >> 8) & 7;
-    if (smucSys & 0x80) {
-      if (!(reg & 1)) IDE::write8(8, data);        // Control register
-    } else if (reg == 0) {
-      IDE::write_data_low(data);                   // low byte + the latched high
-    } else {
-      IDE::write8(reg, data);
-    }
+#if VDISK_TRACE
+    // Raw ATA-window write: which address, which decoded register, what byte.
+    // The write sector routine addresses the data register at #F9BE (A8=1),
+    // the read routine at #F8BE (A8=0) — this shows whether our reg decode
+    // sends written sector data to the data buffer (reg 0) or elsewhere.
+    Debug::log("[VDISK ATAwr] %04X reg=%u lat=%d val=%02X sys=%02X", address, reg,
+               (int)!(address & 0x2000), data, smucSys);
+#endif
+    if (!(address & 0x2000)) { IDE::write_latch(data); return true; }  // #D8BE..
+    // SYS D7 remaps ONLY reg 6 (#FEBE) to the ATA Control block (Device Control
+    // write / AltStatus read) — that is the one address the driver's soft reset
+    // uses (`OR #80 -> #FFBA` then `#0C`/`#00 -> #FEBE`), and its SRST pulse is
+    // what makes the drive report DRDY afterwards (IDE::write8 case 8 ->
+    // reset_signature -> reg_status = READY). Every OTHER register — the DATA
+    // register (reg 0) and, critically, the STATUS register (reg 7) — stays the
+    // real command-block register regardless of D7.
+    //
+    // The earlier version remapped the WHOLE window under D7 (data -> Control,
+    // odd regs -> 0xFF). That broke virtual-disk WRITES on GMX (post-write status
+    // read at #FFBE came back 0xFF -> the driver's success test failed -> it
+    // rewrote the same LBA forever). Removing it ENTIRELY then broke ProfROM
+    // 4.xx.015 boot instead: its DRDY poll at #FFBE hung because the soft reset's
+    // #FEBE writes no longer reached the Control register, so SRST never ran and
+    // reg_status stayed 0x00 with DRDY clear (hw 2026-09-05, "boot menu hangs at
+    // the BIT 6,D loop"). Remapping reg 6 alone satisfies both.
+    if ((smucSys & 0x80) && reg == 6) IDE::write8(8, data);   // Device Control
+    else if (reg == 0)                IDE::write_data_low(data);
+    else                              IDE::write8(reg, data);
     return true;
   }
 
@@ -2239,7 +2259,16 @@ bool Ports::smucPortWrite(uint16_t address, uint8_t data) {
       else                RTC::selectReg(data);
     }
   } else {
-    if (address & 0x2000) smucFdd = data;          // #7FBA virtual FDD
+    if (address & 0x2000) {                        // #7FBA virtual FDD
+      smucFdd = data;
+#if VDISK_TRACE
+      // D6/D7 = which drive the SMUC firmware has switched to virtual (the
+      // bridge target). This is the correlation anchor for [VDISK FDC]/[VDISK IDE].
+      Debug::log("[VDISK 7FBA] %02X vsel=%d D6=%d D7=%d pc=%04X", data,
+                 (data >> 6) & 3, (data >> 6) & 1, (data >> 7) & 1,
+                 Z80::getRegPC());
+#endif
+    }
     // else #5FBA version: read-only, swallowed
   }
   return true;
@@ -2262,13 +2291,16 @@ bool Ports::smucPortRead(uint16_t address, uint8_t* out) {
       return true;
     }
     LED::touchR(LED::IDE);
-    if (!(address & 0x2000)) { *out = IDE::read_latch(); return true; }
     uint8_t reg = (address >> 8) & 7;
-    if (smucSys & 0x80) {
-      *out = (reg & 1) ? 0xFF : IDE::read8(8);     // AltStatus
-    } else {
-      *out = (reg == 0) ? IDE::read_data_low() : IDE::read8(reg);
-    }
+#if VDISK_TRACE
+    Debug::log("[VDISK ATArd] %04X reg=%u lat=%d sys=%02X", address, reg,
+               (int)!(address & 0x2000), smucSys);
+#endif
+    if (!(address & 0x2000)) { *out = IDE::read_latch(); return true; }
+    // reg 6 under D7 = AltStatus (= the real status byte, not 0xFF); everything
+    // else is the real command-block register. See the write-side note.
+    if ((smucSys & 0x80) && reg == 6) *out = IDE::read8(8);   // AltStatus
+    else *out = (reg == 0) ? IDE::read_data_low() : IDE::read8(reg);
     return true;
   }
 

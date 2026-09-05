@@ -20,6 +20,7 @@
 #include "wd1793.h"
 #include "roms.h"
 #include "pwm_audio.h"
+#include "Tape.h"       // Tape::Stop for the Real sound input hook
 #include "MachineSwitch.h"
 #include "DivMMC.h"
 #include "MB02.h"
@@ -125,6 +126,7 @@ NM_INT_ACCESS (trdosRom,  trdosBios)
 NM_BOOL_ACCESS(trdosBoot, trdosAutoBoot)
 NM_INT_ACCESS (mb02Led,   mb02SoundLed)
 NM_INT_ACCESS (tapePlayer, tape_player)
+NM_BOOL_ACCESS(tapeRealIn, real_player)
 NM_INT_ACCESS (midiMode,  midi)
 NM_INT_ACCESS (midiStorage, midi_storage)
 
@@ -441,6 +443,23 @@ static bool hook_tapePlayer(int32_t nv, int32_t) {
         ESPectrum::aud_volume = ESP_VOLUME_MAX;
         pwm_audio_set_volume(ESPectrum::aud_volume);
     }
+    return true;
+}
+static bool hook_tapeRealIn(int32_t nv, int32_t) {
+    // Real sound input (OSDMain.cpp:2850 of the classic cascade). Config::real_player
+    // is already nv here. On: a file load in progress would fight the pin for the EAR
+    // bit, so stop it — ESPectrum::loop then re-arms TAPE_LOADING as "REAL AUDIO"
+    // and starts the sampler; like Player mode it wants the full output level. Off:
+    // Tape::Stop → StopRealPlayer tears the sampler down, Stop also clears the
+    // TAPE_LOADING the loop had set up for the pin.
+    if (Tape::tapeStatus == TAPE_LOADING) Tape::Stop();
+    if (nv) {
+        ESPectrum::aud_volume = ESP_VOLUME_MAX;
+        pwm_audio_set_volume(ESPectrum::aud_volume);
+    }
+#if LOAD_WAV_PIO
+    else pcm_audio_in_stop();
+#endif
     return true;
 }
 static bool hook_volume(int32_t nv, int32_t) {
@@ -1277,10 +1296,10 @@ void commit(CommitReport& rep) {
 
 #if defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)
     // External MIDI (modes 1/2) shares its TX pin with the WAV loader on this board —
-    // the classic dialog warned with a 3 s toast (MSG_MIDI_PIN_CONFLICT). Nothing is
-    // undone: both stay on, exactly as before, but the user is told.
-    if (bmGet(g_dirty, SET_MIDI_MODE) &&
-        (g_val[SET_MIDI_MODE] == 1 || g_val[SET_MIDI_MODE] == 2) && Config::real_player) {
+    // the classic dialog warned with a 3 s toast (MSG_MIDI_PIN_CONFLICT) from BOTH
+    // rows. Nothing is undone: both stay on, exactly as before, but the user is told.
+    if ((bmGet(g_dirty, SET_MIDI_MODE) || bmGet(g_dirty, SET_TAPE_REALIN)) &&
+        (g_val[SET_MIDI_MODE] == 1 || g_val[SET_MIDI_MODE] == 2) && g_val[SET_TAPE_REALIN]) {
         if (!rep.note)
             rep.note = " MIDI and Real sound-in share GPIO " _PIN_XSTR(MIDI_TX_PIN) " ";
     }

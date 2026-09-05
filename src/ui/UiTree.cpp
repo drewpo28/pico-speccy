@@ -21,6 +21,7 @@
 #include "psram_spi.h"       // psram_size()
 #include "Buffer.h"          // Buffer::gsPsramAvailable() for the General Sound gate
 #include "BoardPins.h"       // the ESP-link predicate of the Network rows
+#include "messages.h"        // _PIN_XSTR for the Real sound input row label
 #include <hardware/vreg.h>   // VREG_VOLTAGE_* values used by the option table
 #include <stdio.h>           // snprintf (murmuzavrTag)
 
@@ -39,6 +40,14 @@ namespace nm {
 // ── shared predicates ──────────────────────────────────────────────────────────
 
 static bool p_hasSD() { return FileUtils::fsMount; }
+// Tape > Real sound input exists only where the board defines the pin; a build that
+// hands it a placeholder (PICO_DV with the debug UART sets 255) has no input at all.
+#if defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO < 48)
+#define NM_HAS_WAV_IN 1
+// ZiFi gets the pin when the user routes the ESP link over it (the WAV sampler
+// then skips its own init at boot) — the row is greyed rather than lying.
+static bool p_wavPinFree() { return !BoardPins::zifiOwnsPin(LOAD_WAV_PIO); }
+#endif
 
 // ── option tables ──────────────────────────────────────────────────────────────
 // Values are the ones actually stored in Config; display order is independent.
@@ -416,6 +425,10 @@ static const Node kTape[] = {
     NM_ACTION(TXT_TAPE_PLAYSTOP,  act_tapePlayStop, nullptr),
     NM_ACTION(TXT_TAPE_BROWSER,   act_tapeBrowser,  nullptr),
     NM_RADIO (TXT_TAPE_PLAYER,    SET_TAPE_PLAYER,  opt_player, nullptr),
+#ifdef NM_HAS_WAV_IN
+    NM_BOOL_EN(TXT_TAPE_REALIN " (GP" _PIN_XSTR(LOAD_WAV_PIO) ")",
+                                  SET_TAPE_REALIN,  nullptr, p_wavPinFree),
+#endif
     NM_BOOL  (TXT_TAPE_FASTLOAD,  SET_FLASHLOAD,    nullptr),
     NM_BOOL  (TXT_TAPE_RG,        SET_TAPE_RG,      nullptr),
     NM_BOOL  (TXT_TAPE_AUTOSTART, SET_TAPE_ASTART,  nullptr),

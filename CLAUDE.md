@@ -3078,6 +3078,49 @@ which we already ship) — and the decode was diffed against Unreal's masks over
 - **Presence detect is "not #FF"**: `IN A,(#5FBA) / INC A / JR Z,absent`. The
   version number is then `(D7,D6,D5)` with D3 folded into the LSB, so the
   constants only pick a version string — we answer ZXMAK2's 0x57/0x17.
+- **SMUC virtual TR-DOS disks: the data path is PURE IDE, and writes looped
+  forever on my own SYS-D7 redirect** (hw 2026-09-05, "can mount and read the
+  virtual disks but can't write"). Findings, in order, because several were
+  dead ends:
+  - The virtual disk is served by the firmware reading/writing HDD **sectors
+    directly through the ATA taskfile** (driver 0x17xx -> LBA setup 0x1DDF ->
+    sector I/O 0x1D73 read / 0x1D45 write), NOT through a WD1793 redirect. So
+    the `#7FBA` VirtualFDD latch does NOT need a WD1793->HDD bridge — that was
+    a wrong hypothesis. The RDSEC drv0 traffic in a mixed capture is a SEPARATE
+    real .trd the user had mounted in drive A via F5, unrelated to the HDD disk.
+  - The 16-bit data path is fine: the driver loads `B=#F9`/`#D9` for the OUTI/
+    OUTD sector write, and OUTI/OUTD decrement B **before** the bus cycle
+    (our Z80 core does this: `REG_B--` then `Ports::output`), so the write lands
+    on #F8BE/#D8BE (reg 0 + high latch) exactly like the read. Not the bug.
+  - **The bug was the SYS-D7 redirect I had added over the WHOLE ATA window**
+    (`smucSys & 0x80 -> reg 6 = Control, odd regs = 0xFF`). It hijacked the DATA
+    register (reg 0) and the STATUS register (reg 7) whenever D7 was set (D7 is
+    the RTC address/data mux, left set after clock reads — which a write does
+    more of), so a post-write status read at #FFBE came back **0xFF** instead of
+    the real status: the driver's `BIT 6,D` DRDY test / `(status & 0x71) == 0x50`
+    success test failed and it rewrote the same LBA forever (the `IDE CMD 30
+    lba=2` retry storm).
+  - **The redirect could NOT be removed wholesale either** — that broke ProfROM
+    4.xx.015 boot (hw 2026-09-05, debugger caught it hung at
+    `LD BC,#FFBE / IN D,(C) / BIT 6,D / JR NZ`, D=0x00). Its boot does a soft
+    reset via `#FEBE` writes under D7 (`OR #80 -> #FFBA`, then `#0C`/`#00 ->
+    #FEBE`), and that SRST pulse is what makes the drive report DRDY afterwards
+    (IDE::write8 case 8 -> reset_signature -> reg_status = READY). With the
+    redirect gone, `#FEBE` went to Device/Head, SRST never ran, reg_status stayed
+    0x00 (the master had been left non-ready after the "HDD slave not found"
+    probe selected the empty slave), and the DRDY poll hung. The old 0xFF had
+    been masking exactly this.
+  - **Fix: remap ONLY reg 6 (#FEBE) under D7** to the Control block (Device
+    Control write / AltStatus read); every other register — data (reg 0) and
+    STATUS (reg 7) especially — stays the real command-block register regardless
+    of D7. GMX's post-write status read at reg 7 gets the real 0x50; ProfROM's
+    soft reset at reg 6 runs SRST and the following DRDY poll at reg 7 reads the
+    real, now-READY status. Both work.
+  - Diagnostics: `-DVDISK_TRACE=ON` correlates `[VDISK 7FBA]` (virtual select),
+    `[VDISK FDC]` (WD1793 RDSEC/WRSEC), `[VDISK IDE]` (HDD LBA) and the raw
+    `[VDISK ATArd/ATAwr]` (address + decoded reg + `sys=`) in ONE low-noise log —
+    the one build to use here (do NOT combine IDE_PORT_TRACE + FDD_PORT_TRACE,
+    their per-write floods garble the UART and hid this for two rounds).
 - **Deliberate deviations.** (1) SYS D0 resets on the 0→1 EDGE, where Unreal and
   ZXMAK2 reset on the level — the driver HOLDS D0 set through normal operation
   (`OR #81` at bank offset 0x1E78, later `AND #7F / OR #01`), so a level reset

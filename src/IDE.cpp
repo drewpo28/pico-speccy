@@ -619,6 +619,10 @@ void IDE::execute_command(uint8_t cmd) {
 #endif
     reg_error = 0;
     reg_status = IDE_STATUS_READY;
+#if VDISK_TRACE
+    if (cmd == 0x20 || cmd == 0x21 || cmd == 0x30 || cmd == 0x31)
+        Debug::log("[VDISK IDE] %s lba=%u", (cmd & 0x10) ? "WR" : "RD", (unsigned)lba());
+#endif
 
     // ATAPI CD-ROM device: only the packet command set is valid. Everything
     // else (including ATA IDENTIFY 0xEC and READ SECTOR) must abort — that is

@@ -1537,7 +1537,7 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
             Debug::log("[TD0 cmd] OUT cmd=%02X trk=%d sec=%d side=%d pc=%04X",
                        value, wd->track, wd->sector, wd->side, Z80::getRegPC());
 #endif
-#if FDD_PORT_TRACE
+#if FDD_PORT_TRACE || VDISK_TRACE
         // FDD command trace — every accepted WD1793 command with key registers.
         // Enable via -DFDD_PORT_TRACE=ON. Originally Profi-only (decodes the
         // (ROM14,CPM) port scheme bug class: watch `side` vs the command side bit
@@ -1561,6 +1561,15 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
                        wd->diskS, (int)((Ports::portDFFD & 0x20) != 0),
                        (int)MemESP::romInUse, (int)wd->fastmode, pcNow);
             g_fdcCmdCount++;
+#if VDISK_TRACE
+            // Type II only (RDSEC/WRSEC) — that is the sector I/O whose track/
+            // sector the SMUC firmware must map to an HDD LBA. Correlate against
+            // the [VDISK 7FBA] and [VDISK IDE] lines by their interleaving.
+            if ((c & 0xC0) == 0x80)
+                Debug::log("[VDISK FDC] %s drv=%d trk=%d sec=%d side=%d pc=%04X",
+                           (c & 0x20) ? "WRSEC" : "RDSEC", wd->diskS, wd->track,
+                           wd->sector, wd->side, pcNow);
+#endif
             g_fdcLastTrk = wd->track; g_fdcLastSec = wd->sector;
             g_fdcLastSide = wd->side; g_fdcLastCmd = c; g_fdcLastPc = pcNow;
         }

@@ -46,13 +46,14 @@ option(HDMI_SOFT_CLK "HDMI: drive the clock pair at 8 mA + slow slew instead of 
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
 # Add new toggles here following the same option(...) + compile-definition pattern.
-option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" ON)
+option(IDE_PORT_TRACE "Enable PROFI IDE/HDD port access tracing" OFF)
 option(FDD_PORT_TRACE "Enable WD1793 (ВГ93) FDD command/port tracing" OFF)
 option(RTC_PORT_TRACE "Enable MC146818 Mr Gluk RTC port access tracing" OFF)
 option(PROFI_PORT_TRACE "Enable 0x7FFD/0xDFFD paging-port write tracing" OFF)
 option(MC7FFD_TRACE "One-shot capture of #7FFD write tstates when a frame carries >=90 of them (beam-raced multicolor phase diagnosis)" OFF)
-option(SMUC_TRACE "Trace SMUC port accesses, including ones the DOSEN/SYSEN gate rejected (capped)" ON)
-option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1FFD writes, romInUse transitions, TR-DOS trap entry/exit (capped)" ON)
+option(VDISK_TRACE "Trace the SMUC virtual-FDD bridge: #7FBA select + WD1793 RDSEC/WRSEC + HDD LBA, correlated, low-noise" OFF)
+option(SMUC_TRACE "Trace SMUC port accesses, including ones the DOSEN/SYSEN gate rejected (capped)" OFF)
+option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1FFD writes, romInUse transitions, TR-DOS trap entry/exit (capped)" OFF)
 option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
@@ -76,7 +77,7 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 # Each enables stdio over the board's Debug-Probe header — see the block for pins.
 set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
 set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
-set(PICO_DV_DBG_UART ON CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
+set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
 set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
 
 # set(TFT ON)
@@ -388,6 +389,17 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE GMX_IN_FLASH=1)
 target_compile_definitions(${PROJECT_NAME} PRIVATE PROFROM_IN_FLASH=1)
 target_link_options(${PROJECT_NAME} PRIVATE -Wl,--defsym=__gmx_rom_in_flash=1)
 target_compile_definitions(${PROJECT_NAME} PRIVATE CONFIG_BOARD_TAG="${CONFIG_BOARD_TAG}")
+
+# SMUC virtual-FDD bridge tracing (see `#if VDISK_TRACE` in Ports/IDE/wd1793):
+# correlates the #7FBA virtual-drive select, the WD1793 RDSEC/WRSEC track/sector,
+# and the HDD LBA in ONE low-noise log — the three facts needed to derive the
+# track/sector -> LBA mapping. Leave FDD_PORT_TRACE off with this (its per-write
+# [FDC SYS] flood is what garbles the correlation).
+if (VDISK_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VDISK_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VDISK_TRACE=0)
+endif ()
 
 # SMUC port tracing (see Ports.cpp `#if SMUC_TRACE`): every accepted access plus,
 # crucially, every access the DOSEN/SYSEN gate REJECTED — the two are
