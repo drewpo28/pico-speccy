@@ -58,7 +58,9 @@
     X(R_SCORP_GMX,      "ScorpGMX",         "ZS-256 Turbo+ & GMX")        \
     X(R_SCORP_1024,     "Scorp1024",        "ZS-1024 Turbo+")             \
     X(R_SCORP_PROF,     "ScorpProf",        "ZS-1024 + ProfROM")          \
-    X(R_ALF1,           "ALF1",             "ALF cartridge")
+    X(R_ALF1,           "ALF1",             "ALF cartridge")      \
+    X(R_P3,             "P3",               "+3 v4.0")             \
+    X(R_P3E,            "P3e",              "+3 (IDEDOS)")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -105,6 +107,7 @@ inline ArchIdx archFromStr(const std::string& s, ArchIdx def) {
     for (int i = 0; i < ARCH_COUNT; i++)
         if (s == kArchName[i]) return (ArchIdx)i;
     if (s == "Last") return A_LAST;
+    if (s == "P3")   return A_128K;  // the +3 was briefly an arch of its own (never released)
     return def;
 }
 inline RomsetIdx romsetFromStr(const std::string& s, RomsetIdx def) {
@@ -140,4 +143,18 @@ inline bool isKarabasRomset(RomsetIdx r) {
 }
 inline ArchIdx archDisplay(ArchIdx a, RomsetIdx r) {
     return (a == A_PROFI && isKarabasRomset(r)) ? A_KARABAS : a;
+}
+
+// The +2A/+3 is a 128K-family machine and is offered exactly the way the +2 is: a
+// romset under A_128K, not an arch. Everything that differs (four ROMs, #1FFD, the
+// uPD765, the contention pattern, no floating bus) hangs off this romset — see
+// Config::isPlus3() / Z80Ops::isP3.
+inline bool isPlus3Romset(RomsetIdx r) {
+    return r == R_P3 || r == R_P3E;
+}
+// The +3e (Garry Lancaster's replacement ROM) is the same +3 hardware with IDEDOS in
+// ROM, so it is a romset of the romset: everything above stays true, and on top of it
+// the machine carries the "simple 8-bit" IDE interface on #xxEF (see Ports.cpp).
+inline bool isPlus3eRomset(RomsetIdx r) {
+    return r == R_P3E;
 }

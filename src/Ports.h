@@ -55,6 +55,9 @@ public:
     static uint8_t getFloatBusData48();
     static uint8_t getFloatBusData128();
     static uint8_t getFloatBusDataScorp();
+    // +2A/+3: the ULA does not put the screen byte on an unattached port — reads
+    // return idle bus. Fuse models this as spectrum_unattached_port_none.
+    static uint8_t getFloatBusDataNone();
 
     static void FDDStep(bool force);
     static void dmaOutput(uint16_t address, uint8_t data);
@@ -73,10 +76,18 @@ public:
     static uint8_t portAFF7;
     static uint8_t portDFFD;
     static uint8_t portEFF7; // Extended feature register (Profi CP/M uses bit 1=EFF7_512)
-    // Scorpion #1FFD latch (write-only on real hardware — no read-back handler):
-    // D0=RAM0 at 0x0000, D1=service-monitor ROM override, D4=+8 on the 0xC000 page.
-    // GMX adds D2 = hard-wire the DOS page at 0x0000 + Beta on (MAME scorpiongmx).
+    // The #1FFD latch, shared by the two machines that have one (only one runs):
+    //  Scorpion (write-only on real hardware — no read-back handler): D0=RAM0 at
+    //  0x0000, D1=service-monitor ROM override, D4=+8 on the 0xC000 page. GMX adds
+    //  D2 = hard-wire the DOS page at 0x0000 + Beta on (MAME scorpiongmx).
+    //  +2A/+3: D0 special (all-RAM) paging enable, D1-2 which configuration when
+    //  D0=1, D2 ROM select high bit when D0=0, D3 disk motor (both drives), D4
+    //  printer strobe.
     static uint8_t port1FFD;
+    // Flush the +3e IDE trace's pending run once per frame, so the last line of a
+    // conversation reaches the log instead of waiting for traffic that never comes.
+    // Compiled to nothing unless IDE_PORT_TRACE is on.
+    static void ideTraceFlush();
     // Recompute Scorpion's rom bank from (port1FFD D1/D2, trdos, romLatch) — and on
     // GMX the ProfROM plane — then recoverPage0.
     static void scorpionRomUpdate();

@@ -220,6 +220,7 @@ static const char* typeLabel(const string& lcext) {
     if (lcext == "trd" || lcext == "scl" || lcext == "fdi"
                        || lcext == "udi")                   return "TR-DOS disk";
     if (lcext == "mbd")                                     return "MB-02 disk";
+    if (lcext == "dsk")                                     return "+3 disk";
     if (lcext == "mmc" || lcext == "hdf")                   return "esxDOS image";
     if (lcext == "rom" || lcext == "bin")                   return "ROM image";
     if (lcext == "zip")                                     return "ZIP archive";

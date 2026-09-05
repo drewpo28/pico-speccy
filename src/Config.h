@@ -259,6 +259,10 @@ public:
     // bring AySound chip1 up too. Without this, ayChipFor()'s "chip1 missing ->
     // use chip0" fallback lands every chip-1 PSG write of a TFM tune on chip 0.
     static bool twoAyChips() { return turbosound != 0 || tsfm != 0; }
+    // The running machine is a +2A/+3: the +3 romset over the 128K arch (like +2).
+    static bool isPlus3() { return arch == A_128K && isPlus3Romset(romSet); }
+    // ...and it is the +3e: the +3 with IDEDOS, which brings the 8-bit IDE interface.
+    static bool isPlus3e() { return arch == A_128K && isPlus3eRomset(romSet); }
     static uint8_t  covox;
     // CPU turbo picked by the user (0..3 = 3.5/7/14/28 MHz), NVS-persisted.
     // Feeds ESPectrum::multUser at setup; the live speed may differ (EFF7 D4).
@@ -320,6 +324,17 @@ public:
     static bool mb02WP[4];   // MB-02+ per-slot write protect
     static string mb02DiskFile[4]; // remembered MB-02+ disk paths; survive the interface being disabled
     static uint8_t mb02SoundLed;// MB-02+ disk sound & LED: 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+    // ZX Spectrum +3 disk interface (uPD765 + .dsk). Drive A: and B: only — the +3
+    // decodes US0 alone, so there is no third unit to remember.
+    static bool p3WP[2];         // per-drive write protect
+    static string p3DiskFile[2]; // remembered paths; survive the machine being switched away
+    // Speedlock's protection reads one sector twice and expects the reads to differ;
+    // the dumps carry a single copy, so the difference is manufactured. On by default,
+    // matching Fuse, and self-suppressing on a dump that records the variation for real.
+    static bool p3_speedlock;
+    // Transfers normally take the real 32 us per byte, which is what lights the drive
+    // lamp and keeps timed loaders honest. This collapses that for the impatient.
+    static bool p3_fastdisk;
     static bool zcontroller; // Z-Controller SD on ports 0x77/0x57 (mutually exclusive with esxDOS/MB-02+)
     static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
     static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)

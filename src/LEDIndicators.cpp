@@ -7,6 +7,7 @@
 
 #include "DivMMC.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "Midi.h"
 #include "IDE.h"
 #include "GS/GS.h"
@@ -211,11 +212,15 @@ bool isVisible(Id i) {
         // touchR/W could light it (hw 2026-08-07: NPL streaming an MP3 at ~78
         // sector reads/s, indicator dark, while Neo8Tracker "worked" only
         // because DivMMC happened to be enabled in that test).
+        // The +3's uPD765 also reads its images straight off the card, so the SD
+        // indicator is meaningful there for the same reason it is for NeoGS.
         case SD:       return Config::esxdos != 0 || DivMMC::enabled
-                           || Config::gs_enabled == 2;   // 2 = NeoGS
+                           || Config::gs_enabled == 2   // 2 = NeoGS
+                           || Config::isPlus3();
         case ZCTRL:    return Config::zcontroller || DivMMC::zc_enabled;
         case IDE:      return ::IDE::present();
-        case FDD:      return Config::betadisk || Config::mb02 != 0 || MB02::enabled;
+        case FDD:      return Config::betadisk || Config::mb02 != 0 || MB02::enabled
+                           || Config::isPlus3();   // the +3's drive is not optional
         case MIDI:     return Config::midi > 0;
         // The CMS pair (2x SAA1099, VGM card) touches the same SAA glyph as the
         // single Karabas chip — the glyph must exist in the row for either
@@ -255,6 +260,11 @@ void decay() {
     // WD1793 motor spin-down timers (wd1793.h motor_frames — Scorpion READY model)
     if (ESPectrum::fdd.motor_frames) ESPectrum::fdd.motor_frames--;
     if (ESPectrum::mb02_fdd.motor_frames) ESPectrum::mb02_fdd.motor_frames--;
+    // Upd765::activity is the +3's twin of the same signal. It counts down inside
+    // updTick, which runs once per frame from Plus3Fdc::frameTick, so there is nothing
+    // to decay here — but the write flag has to expire with it, or the lamp would stay
+    // red for every read after the first write of the session.
+    if (!Plus3Fdc::fdc.activity) Plus3Fdc::fdc.wroteRecently = false;
 }
 
 // Determine where to draw the strip given current video mode.
@@ -289,7 +299,16 @@ static inline uint8_t fgColor(Id i) {
     // data-read green → permanent yellow; and a bare command write (bus-probing
     // software) would light the glyph with no real disk activity at all. The corner
     // lamp uses the same signal — see ESPectrum.cpp.
-    if (i == FDD) {
+    if (i == FDD && Config::isPlus3()) {
+        // The +3's controller keeps the same kind of signal under its own name:
+        // Upd765::activity is set only by real head activity, not by port traffic.
+        if (Plus3Fdc::fdc.activity) {
+            zx = Plus3Fdc::fdc.wroteRecently ? BRI_RED : BRI_GREEN;
+        } else {
+            zx = (VIDEO::borderColor == WHITE) ? BLUE : WHITE;
+        }
+    }
+    else if (i == FDD) {
         rvmWD1793* f = &ESPectrum::fdd;
         if (MB02::enabled) f = &ESPectrum::mb02_fdd;
         if (f->fdd_active_decay) {

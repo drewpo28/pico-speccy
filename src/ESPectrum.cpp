@@ -77,6 +77,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "DivMMC.h"
 #include "IDE.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "Midi.h"
 #include "MidiSynth.h"
 #include "ZiFi.h"
@@ -88,6 +89,13 @@ visit https://zxespectrum.speccy.org/contacto
 #include "GS/GS.h"
 #include "GS/NgsSd.h"
 #include "GS/NgsMp3.h"
+
+// +3 disk auto-start (plus3AutoBoot*, below ESPectrum::reset). Guest frames.
+#define P3BOOT_DELAY_FRAMES  150
+#define P3BOOT_HOLD_FRAMES   4
+// watchdog scratch[1]: [0] is free too; [2] = MIDI reflash, [3] = uptime, 4..7 SDK.
+#define P3BOOT_SCRATCH  1
+#define P3BOOT_TAG      0x50334254u   // 'P3BT'
 
 using namespace std;
 
@@ -776,6 +784,37 @@ void ESPectrum::setup() {
     }
   }
 
+  // The +3 has no room for the other storage interfaces: Beta and MB-02+ collide on the
+  // port map, and DivMMC / Z-Controller automap on ROM addresses (0x0000/0x0008/0x0038/
+  // 0x0066) that on a +3 belong to its own four ROMs — the trap would page their RAM
+  // over the +3 ROM and the machine would never boot. MachineSwitch shows a toast and
+  // does the teardown when the user switches live; this is the boot-time twin, and it
+  // has to run BEFORE DivMMC::init() below reads the flags. Not persisted: coming back
+  // to another machine restores the user's pick.
+  if (Config::isPlus3()) {
+    Config::betadisk = false;
+    Config::mb02 = false;
+    Config::timex_video = false;
+    // The +3e's interface is a card the user may not want (its ports are ZiFi's), so
+    // an explicit Off is left alone here — only a scheme the +3e ROM cannot reach is
+    // rewritten. IDE::init() runs later in setup(), so setting the value here is enough.
+    if (Config::isPlus3e()) {
+      if (Config::ide_scheme == IDE::NEMO || Config::ide_scheme == IDE::PROFI)
+        Config::ide_scheme = IDE::PLUS3E;
+      if (Config::ide_scheme == IDE::PLUS3E && Config::zifi_enabled) {
+        Debug::log("setup: +3e — ZiFi NIC off (it shares #xxEF with the +3e IDE)");
+        Config::zifi_enabled = 0;
+      }
+    } else if (Config::ide_scheme == IDE::PLUS3E) {
+      Config::ide_scheme = IDE::OFF;   // the +3e interface without the +3e ROM
+    }
+    if (Config::esxdos || Config::zcontroller) {
+      Debug::log("setup: +3 — DivMMC/Z-Controller off (they automap over the +3 ROMs)");
+      Config::esxdos = 0;
+      Config::zcontroller = false;
+    }
+  }
+
   // The live page count is derived from the persisted pick HERE and nowhere else: the arch
   // for this boot is final and nothing has sized a page strip yet. Murmuzavr extended RAM
   // is Pentagon-only hardware (the #AFF7 plane latch), and it is expensive — 2048 pages
@@ -908,6 +947,8 @@ void ESPectrum::setup() {
   Debug::log2SD("setup: requestMachine done, freeHeap=%u", (unsigned)getFreeHeap());
 
   MemESP::page0ram = 0;
+  MemESP::p3special = 0;
+  Ports::port1FFD = 0;          // +3: normal paging, ROM 0, motors off
   ESPectrum::trdos = false;
   // Pentagon+Gluk: boot with Gluk ROM to install service monitor at 0xDB00
   // Profi: boot with SYS ROM (bank0), SYSEN=true — per ZXMAK2 BusReset() spec
@@ -1184,6 +1225,9 @@ void ESPectrum::setup() {
   // while MB-02 is disabled, which is the default).
   rvmWD1793AllocTrackBuf(&fdd);
   rvmWD1793Reset(&fdd);
+  // The +3's uPD765. Allocates nothing until a .dsk is mounted, so a session on any
+  // other machine pays only the controller struct.
+  Plus3Fdc::init();
   Debug::log("setup: WD1793 reset done");
   Debug::log2SD("setup: WD1793 reset done");
 
@@ -1208,6 +1252,18 @@ void ESPectrum::setup() {
   }
   Debug::log("setup: Config::loadDiskMounts done");
   Debug::log2SD("setup: Config::loadDiskMounts done, freeHeap=%u", (unsigned)getFreeHeap());
+
+  // A Web-catalog .dsk launch that had to reboot to reach the +3 (MachineSwitch::commit
+  // across the Profi SRAM boundary) left its auto-Enter request in scratch[1]; the disk
+  // itself came back through loadDiskMounts above. Cleared unconditionally so a stale
+  // tag can never fire on a later boot.
+  if (watchdog_hw->scratch[P3BOOT_SCRATCH] == P3BOOT_TAG) {
+    watchdog_hw->scratch[P3BOOT_SCRATCH] = 0;
+    if (watchdog_caused_reboot() && Config::isPlus3() && Plus3Fdc::mounted(0)) {
+      Debug::log("setup: +3 disk auto-start armed after reboot");
+      plus3AutoBootArm();
+    }
+  }
 
   // Re-reset MB-02 after disk mounts so boot EPROM starts with disks already inserted
   if (MB02::enabled && mb02_fdd.disk[0]) {
@@ -1256,6 +1312,35 @@ void ESPectrum::setup() {
 //=======================================================================================
 // RESET
 //=======================================================================================
+// ── +3 disk auto-start (see ESPectrum.h) ────────────────────────────────────────
+// Frame countdown in GUEST frames, so it lands at the same point of the +3 ROM's
+// boot regardless of turbo / max speed. The 128 menu is up well before ~1.5 s on
+// a real +3 (RAM test + copyright screen); 3 s leaves margin for the slower boot
+// of a disk image that was just mounted. Enter is held for 4 frames — the ROM's
+// key scanner needs to see it in two consecutive interrupts.
+static int16_t s_p3boot_frames = 0;
+
+void ESPectrum::plus3AutoBootArm() {
+    watchdog_hw->scratch[P3BOOT_SCRATCH] = 0;       // a reboot request that never rebooted
+    s_p3boot_frames = P3BOOT_DELAY_FRAMES + P3BOOT_HOLD_FRAMES;
+}
+
+void ESPectrum::plus3AutoBootArmAcrossReboot() {
+    watchdog_hw->scratch[P3BOOT_SCRATCH] = P3BOOT_TAG;
+}
+
+void ESPectrum::plus3AutoBootTick() {
+    if (s_p3boot_frames <= 0) return;
+    // A user reset / machine switch while the countdown runs would otherwise press
+    // Enter into whatever came up instead of the Loader menu.
+    if (!Z80Ops::isP3 || !Plus3Fdc::mounted(0)) { s_p3boot_frames = 0; return; }
+    --s_p3boot_frames;
+    fabgl::Keyboard* kbd = PS2Controller.keyboard();
+    if (!kbd) { s_p3boot_frames = 0; return; }
+    if (s_p3boot_frames == P3BOOT_HOLD_FRAMES) kbd->injectVirtualKey(fabgl::VK_RETURN, true);
+    else if (s_p3boot_frames == 0)             kbd->injectVirtualKey(fabgl::VK_RETURN, false);
+}
+
 void ESPectrum::reset() {
   // Pentagon+Gluk: boot with Gluk ROM so it installs service monitor at 0xDB00
   // This matches real Pentagon hardware where Gluk always boots first
@@ -1372,6 +1457,8 @@ void ESPectrum::reset(uint8_t romInUse) {
 #endif
   // Memory
   MemESP::page0ram = 0;
+  MemESP::p3special = 0;
+  Ports::port1FFD = 0;          // +3: normal paging, ROM 0, motors off
   MemESP::romInUse = romInUse;
   MemESP::bankLatch = 0;
   MemESP::videoLatch = 0;
@@ -1409,6 +1496,9 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Init disk controller
   rvmWD1793Reset(&fdd);
   if (MB02::enabled) MB02::reset();
+  // A machine reset resets the controller but not the drives — the disks stay in,
+  // exactly as they do when the reset button on a real +3 is pressed.
+  Plus3Fdc::reset();
   // Without this, GS-Z80 keeps running (still streaming previous module's
   // samples from PSRAM) when ZX side reboots — leftover state collides with
   // the new player's load, producing random garbled audio.
@@ -1442,6 +1532,13 @@ void ESPectrum::reset(uint8_t romInUse) {
   // in ~30 s anyway; this makes it immediate.
   if (GS::enabled) {
     if (GS::neogs) { GS::hostIfaceFlush(); GS::ngsReset(); NgsMp3::releaseNow(); }
+    // The ATA device: only IDE::init() used to reset it, so a COLD boot handed the
+    // guest a clean register file and F11 handed it whatever the last session had
+    // left — a half-consumed sector transfer with DRQ still up, most of the time.
+    // That asymmetry is exactly the difference between the +3e ROM finding its disk
+    // at boot and not finding it after a reset. The images stay open (a reset is not
+    // an eject); this is the device reset the interface's own RESET line would do.
+    if (IDE::scheme != IDE::OFF) IDE::reset();
     else           GS::reset();
   }
 
@@ -2647,6 +2744,27 @@ __not_in_flash("audio") void ESPectrum::PITGetSample() {
 }
 
 void ESPectrum::FDDGenSound() {
+    // The +3's uPD765 is a third controller in the same position: it keeps the same two
+    // signals (head steps to click on, activity to hum on) under its own names, so it
+    // feeds the shared generator through the same two locals.
+    if (Z80Ops::isP3) {
+        uint8_t clicks = Plus3Fdc::fdc.clicks;
+        Plus3Fdc::fdc.clicks = 0;
+        if (clicks > 8) clicks = 8;
+        if (clicks > 0) {
+            fddSound.click_count = clicks;
+            fddSound.motor_noise = false;
+            const int spacing = samplesPerFrame / (clicks + 1);
+            for (int c = 0; c < clicks; c++) fddSound.click_pos[c] = spacing * (c + 1);
+        } else {
+            fddSound.click_count = 0;
+            // The +3 ROM turns the motor off between accesses, so the motor bit alone
+            // is the honest "the drive is spinning" signal here — no need for the
+            // activity heuristic the WD1793 path has to use.
+            fddSound.motor_noise = Plus3Fdc::fdc.motor;
+        }
+        return;
+    }
     // MB-02+ and Betadisk are mutually exclusive, so the active controller's
     // click and LED state feeds the shared fddSound generator.
     rvmWD1793 *ctrl = &fdd;
@@ -3389,6 +3507,17 @@ void ESPectrum::loop() {
                      ESPectrum::mb02_fdd.track, ESPectrum::mb02_fdd.sector,
                      ESPectrum::mb02_fdd.side);
             OSD::drawStats();
+          } else if (Z80Ops::isP3) {
+            // The +3's uPD765, in the WD1793 line's own format: state, the selected
+            // unit's head position (physical cylinder) and the sector ID. The
+            // controller has no "current sector" register the way the WD1793 does —
+            // R is what the last READ/WRITE asked for, and it advances per sector.
+            // "STOP" in the state field is the #1FFD D3 motor line being off.
+            const Upd765& f = Plus3Fdc::fdc;
+            snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2),
+                     "ST:%-6sTR:#%02X/SEC:#%02X ",
+                     updStateName(&f), f.drive[f.us & 1].pcn, f.dataReg[3]);
+            OSD::drawStats();
           } else
           {
             snprintf(OSD::stats_lin2, sizeof(OSD::stats_lin2),
@@ -3420,9 +3549,10 @@ void ESPectrum::loop() {
       VIDEO::flashing ^= 0x80;
 
     // Draw fdd led indicator in top-right corner. Scorpion carries the Beta
-    // interface on board (betadisk forced on), so it counts like Pentagon here.
+    // interface on board (betadisk forced on), so it counts like Pentagon here;
+    // the +3 has its own uPD765.
     bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion) ||
-                   (Z80Ops::is128 && Z80Ops::isByte)) && Tape::tapeStatus != TAPE_LOADING
+                   (Z80Ops::is128 && Z80Ops::isByte) || Z80Ops::isP3) && Tape::tapeStatus != TAPE_LOADING
         && !DivMMC::enabled
         ;
     // Indicator sits at x=311 — inside the DS80 right border band / normal top border.
@@ -3437,6 +3567,10 @@ void ESPectrum::loop() {
     bool fdd_active = fctrl->fdd_active_decay != 0;
     bool fdd_write  = ((fctrl->command & 0xE0) == 0xA0) ||   // Write Sector (0xA_/0xB_)
                       ((fctrl->command & 0xF0) == 0xF0);     // Write Track  (0xF_)
+    if (Z80Ops::isP3) {                       // the +3's own controller, same signals
+        fdd_active = Plus3Fdc::fdc.activity != 0;
+        fdd_write  = Plus3Fdc::fdc.wroteRecently;
+    }
     // While active: draw ONLY the sprite's foreground pixels (border shows through);
     // dotFast maps the ZX index for the current mode (DS80 → solid pair slot).
     // On the active→idle edge: erase by scheduling a full border repaint instead of
@@ -3448,6 +3582,7 @@ void ESPectrum::loop() {
     // the black DS80 right border).
     bool lamp_on = fdd_active &&
                    ((MB02::enabled && (Config::mb02SoundLed & 1)) ||
+                    (Z80Ops::isP3 && (Config::trdosSoundLed & 1)) ||
                     (hasFdd && (Config::trdosSoundLed & 1)));
     static bool lamp_was_on = false;
     if (lamp_on) {
@@ -3567,6 +3702,12 @@ void ESPectrum::loop() {
     // including maxSpeed ones — a stale 'true' with no idle runner would leave
     // every track load waiting for wdTrackReady's in-frame fallback.
     g_wdDeferLoads = !maxSpeed && Z80Ops::isProfi;
+    // The +3 FDC is otherwise only pumped from its own port handlers, so a guest
+    // sitting in HALT would never see a seek complete.
+    Plus3Fdc::frameTick();
+    Plus3Fdc::traceFlush();   // no-op unless FDD_PORT_TRACE
+    plus3AutoBootTick();
+    Ports::ideTraceFlush();   // no-op unless IDE_PORT_TRACE
     // Deferred pool promotions (butter accessor banks): allow 1 inline
     // promotion per frame; the rest queue for the idle window below.  On
     // maxSpeed there is no idle window — run everything inline as before.

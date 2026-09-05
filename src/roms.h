@@ -44,6 +44,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "roms/128k/RomPlus2spanish.h"
 #include "roms/128k/rom128Kcustom.h"
 #include "roms/128k/S128_ZX81+_ROM.h"
+#include "roms/plus3/romPlus3.h"
+#include "roms/plus3e/romPlus3e.h"
 
 #include "roms/48k/byte/romByte48k.h"
 #include "romGluk.h"
@@ -61,6 +63,8 @@ extern "C" unsigned char gb_rom_4_trdos_505d[];
 #include "roms/48k/48k_overlays.h"
 #include "roms/128k/128k_overlays.h"
 #include "roms/pentagon/pentagon_overlays.h"
+#include "roms/plus3/plus3_overlays.h"
+#include "roms/plus3e/plus3e_overlays.h"
 extern "C" const unsigned char gb_rom_4_trdos_custom[];
 // gb_rom_pentagon_128k (32K blob) removed: Pentagon is a 101-byte overlay over the
 // Sinclair 128K base now (roms/pentagon/). Custom Pentagon uses the 128K custom slot.

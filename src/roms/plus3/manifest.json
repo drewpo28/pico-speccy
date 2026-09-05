@@ -1,0 +1,16 @@
+{
+  "id": "plus3",
+  "base": "sinclair_128k_1",
+  "base_sym": "gb_rom_1_sinclair_128k",
+  "base_len": 16384,
+  "variants": [
+    {
+      "name": "+3 48 BASIC",
+      "sym": "gb_rom_3_plus3",
+      "overlay_sym": "gb_overlay_plus3_rom3",
+      "len": 1266,
+      "runs": 35,
+      "diff_bytes": 1044
+    }
+  ]
+}

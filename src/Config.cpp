@@ -6,6 +6,7 @@
 #include "FileUtils.h"
 #include "ESPectrum.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "fabutils.h"
 #include "messages.h"
 #include "OSDMain.h"
@@ -139,6 +140,12 @@ uint8_t  Config::mb02 = 0;
 bool     Config::mb02WP[4] = { true, true, true, true };
 string   Config::mb02DiskFile[4] = { "", "", "", "" };
 uint8_t  Config::mb02SoundLed = 0; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+// +3 drives default to write-protected, like every other floppy slot here: a mounted
+// image is not written to until the user says so.
+bool     Config::p3WP[2] = { true, true };
+string   Config::p3DiskFile[2] = { "", "" };
+bool     Config::p3_speedlock = true;
+bool     Config::p3_fastdisk = false;
 bool     Config::zcontroller = true;
 uint8_t  Config::ide_scheme = 0;
 string   Config::ide_image[2] = {"", ""};
@@ -398,6 +405,32 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             if (romSet128 == R_128K_BY_GLUK) {
                 MemESP::rom[3].assign_rom(gb_rom_gluk);
             }
+            break;
+        case R_P3:
+        case R_P3E:
+            // +2A/+3: FOUR ROMs, selected by (1FFD.D2 << 1) | 7FFD.D4 —
+            //   0 editor/menu   1 syntax checker   2 +3DOS   3 48 BASIC
+            // ROM 3 is the only one close enough to anything already in flash to
+            // overlay (~1.2 KB over the Sinclair 128K second half); 0/1/2 are Amstrad
+            // rewrites and stay raw. rom[4] (TR-DOS) is still bound below but is
+            // unreachable: Beta disk is forced off for this romset (MachineSwitch /
+            // CPU::reset).
+            //
+            // The +3e is the same four banks with IDEDOS patched in: banks 0 and 1 are
+            // overlays over the STOCK +3 banks, bank 2 is its own raw array, and bank 3
+            // is byte-identical to the +3's, so it binds the very same overlay. Both
+            // branches set the overlay for EVERY base they assign — the registry is
+            // keyed by base pointer and persists across romset switches, so a missing
+            // nullptr would leave the +3e patch live on a plain +3.
+            MemESP::rom[0].assign_rom(gb_rom_0_plus3);
+            MemESP::rom[1].assign_rom(gb_rom_1_plus3);
+            MemESP::rom[2].assign_rom(romSet128 == R_P3E ? gb_rom_2_plus3e : gb_rom_2_plus3);
+            MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_0_plus3,
+                romSet128 == R_P3E ? gb_overlay_plus3e_rom0 : nullptr);
+            MemESP::registerOverlay(gb_rom_1_plus3,
+                romSet128 == R_P3E ? gb_overlay_plus3e_rom1 : nullptr);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_plus3_rom3);
             break;
         default:
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
@@ -721,6 +754,21 @@ void Config::loadDiskMounts() {
                         if (ESPectrum::mb02_fdd.disk[i])
                             ESPectrum::mb02_fdd.disk[i]->writeprotect = mb02WP[i];
                     }
+                }
+            }
+            // +3 disks: two drives, and only re-inserted when a +3 is the running
+            // machine. Same reasoning as the MB-02 guard above — mounting opens a FIL
+            // and claims the sector window at the tight-heap point, which is pure waste
+            // on a machine that has no uPD765. The path stays remembered either way.
+            for (size_t i = 0; i < 2; ++i) {
+                char prefix[16];
+                snprintf(prefix, sizeof(prefix), "p3d%u.file=", (unsigned)i);
+                const size_t plen = strlen(prefix);
+                if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
+                    std::string fn = s.substr(plen);
+                    p3DiskFile[i] = fn;
+                    if (!fn.empty() && Config::isPlus3() && FileUtils::waitVolumeReady(fn))
+                        Plus3Fdc::mount(i, fn);
                 }
             }
             s.clear();
@@ -1142,6 +1190,14 @@ void Config::load() {
             nvs_get_b("mb02SoundLed", old, sts);
             mb02SoundLed = old ? 3 : 0;
         }
+        for (int i = 0; i < 2; i++) {
+            char k[16]; snprintf(k, sizeof(k), "p3d%d.wp", i);
+            nvs_get_b(k, p3WP[i], sts);
+            snprintf(k, sizeof(k), "p3d%d.file", i);
+            nvs_get_str(k, p3DiskFile[i], sts);
+        }
+        nvs_get_b("p3_speedlock", p3_speedlock, sts);
+        nvs_get_b("p3_fastdisk", p3_fastdisk, sts);
         nvs_get_b("zcontroller", zcontroller, sts);
         nvs_get_u8("zifi_enabled", zifi_enabled, sts);
         nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
@@ -1485,6 +1541,12 @@ void Config::save(const char* path) {
         nvs_set_str(buf, k, mb02WP[i] ? "true" : "false");
     }
     nvs_set_u8(buf,"mb02SoundLedMode", mb02SoundLed);
+    for (int i = 0; i < 2; i++) {
+        char k[12]; snprintf(k, sizeof(k), "p3d%d.wp", i);
+        nvs_set_str(buf, k, p3WP[i] ? "true" : "false");
+    }
+    nvs_set_str(buf,"p3_speedlock", p3_speedlock ? "true" : "false");
+    nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
     nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
     nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());
@@ -1519,6 +1581,14 @@ void Config::save(const char* path) {
             if (Config::mb02)
                 mb02DiskFile[i] = ESPectrum::mb02_fdd.disk[i] ? ESPectrum::mb02_fdd.disk[i]->fname : "";
             persistFile(s + ".file", mb02DiskFile[i]);
+            // +3 disks, same rule as MB-02+: the remembered path is authoritative, and
+            // is only refreshed from the live mount while a +3 is the running machine —
+            // otherwise nothing is mounted and writing the live "" would erase it.
+            if (i < 2) {
+                if (Config::isPlus3())
+                    p3DiskFile[i] = Plus3Fdc::fname(i);
+                persistFile("p3d" + to_string(i) + ".file", p3DiskFile[i]);
+            }
         }
     }
     nvs_set_u8(buf,"scanlines",Config::scanlines);

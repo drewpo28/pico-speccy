@@ -1,0 +1,24 @@
+{
+  "id": "plus3e",
+  "base": "rom0",
+  "base_sym": "gb_rom_0_plus3",
+  "base_len": 16384,
+  "variants": [
+    {
+      "name": "+3e editor",
+      "sym": "gb_rom_0_plus3e",
+      "overlay_sym": "gb_overlay_plus3e_rom0",
+      "len": 7110,
+      "runs": 117,
+      "diff_bytes": 6396
+    },
+    {
+      "name": "+3e syntax",
+      "sym": "gb_rom_1_plus3e",
+      "overlay_sym": "gb_overlay_plus3e_rom1",
+      "len": 12787,
+      "runs": 447,
+      "diff_bytes": 10093
+    }
+  ]
+}

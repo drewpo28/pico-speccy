@@ -30,10 +30,12 @@ void act_tapeBrowser();
 // rowkey runs Enter / F2 / F8 on the focused slot.
 void slots_buildBeta(DynRows& d);
 void slots_buildMb02(DynRows& d);
+void slots_buildP3(DynRows& d);
 void slots_buildEsx(DynRows& d);
 void slots_buildIde(DynRows& d);
 void slots_keyBeta(int32_t slot, uint8_t key);
 void slots_keyMb02(int32_t slot, uint8_t key);
+void slots_keyP3(int32_t slot, uint8_t key);
 void slots_keyEsx(int32_t slot, uint8_t key);
 void slots_keyIde(int32_t slot, uint8_t key);
 

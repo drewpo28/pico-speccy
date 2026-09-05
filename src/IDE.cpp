@@ -6,9 +6,18 @@
 #include <cstring>
 #include "Config.h"
 #include "Debug.h"
+#include "Buffer.h"
 #include "FileUtils.h"
 
-// IDE_PORT_TRACE (every ATA register/command access + sector read/write) is
+// IDE_PORT_TRACE is a LEVEL, not a flag — the diagnostic being too loud has cost this
+// port two debugging rounds already (see CLAUDE.md):
+//   1 = one line per ATA command and per sector transferred. Quiet enough that a whole
+//       boot plus a game load survives the UART intact, which is what a capture of a
+//       failing disk operation needs.
+//   2 = adds the per-access register conversation (status reads, the +3e register
+//       stream in Ports.cpp). Useful for a protocol-level bug, useless for anything
+//       that has to be watched over seconds: it drops ~85% of its own lines.
+// (every ATA register/command access + sector read/write) is
 // defined by CMake (default 0). One-time init/geometry logs stay unconditional.
 // Undefined → 0 in #if, so no fallback #define is needed here.
 
@@ -25,6 +34,9 @@ bool IDE::sig_valid[2] = { false, false };
 bool IDE::profi_hidd_slot[2] = { false, false };
 
 uint32_t IDE::data_offset[2] = { 0, 0 };
+bool IDE::half_sector[2] = { false, false };
+uint32_t* IDE::clmt[2] = { nullptr, nullptr };
+bool IDE::eight_bit = false;
 uint16_t IDE::cylinders[2] = { 0, 0 };
 uint16_t IDE::heads[2]     = { 0, 0 };
 uint16_t IDE::sectors[2]   = { 0, 0 };
@@ -190,12 +202,19 @@ bool IDE::open_image(int slot, const char* path) {
 
     if (is_hdf) {
         data_offset[slot] = hdr[9] | (hdr[10] << 8);
+        // Flags bit 0 = "half sectors": written through an 8-bit interface, so only
+        // the low byte of each word was ever visible and only those 256 bytes are in
+        // the file. Every IDEDOS disk made for the +3e's 8-bit interface is like this
+        // (the sm8 ROM reads a sector as 256 INI), and reading it at 512 B/sector
+        // lands at twice the right offset and returns garbage.
+        half_sector[slot] = (hdr[8] & 0x01) != 0;
         memcpy(identity[slot], &hdr[0x16], 106);
         cylinders[slot] = identity[slot][2]  | (identity[slot][3]  << 8);
         heads[slot]     = identity[slot][6]  | (identity[slot][7]  << 8);
         sectors[slot]   = identity[slot][12] | (identity[slot][13] << 8);
-        Debug::log("IDE hd%d: HDF C=%u H=%u S=%u data@%u",
-                   slot, cylinders[slot], heads[slot], sectors[slot], data_offset[slot]);
+        Debug::log("IDE hd%d: HDF C=%u H=%u S=%u data@%u%s",
+                   slot, cylinders[slot], heads[slot], sectors[slot], data_offset[slot],
+                   half_sector[slot] ? " (half sectors, 8-bit)" : "");
         return true;
     }
 
@@ -290,10 +309,71 @@ bool IDE::open_image(int slot, const char* path) {
 // Lifecycle
 // ============================================================
 
+// FatFs `f_lseek` walks the cluster chain from the START of the file on any BACKWARD
+// seek, and in write mode it walks it through create_chain(). Every sector we serve is
+// one f_lseek, and an IDEDOS image is a quarter of a gigabyte: at 32 KB clusters that
+// is ~8000 links, i.e. dozens of FAT sector reads for every sector the guest asks for
+// out of order. That is what made the +3e's Loader take 30-60 s to reach the hard disk
+// (hw 2026-09-04) — the FDC trace proved the floppy was never even given a command, so
+// all of that time was ours.
+//
+// FatFs's own answer is a cluster link map (FF_USE_FASTSEEK, already enabled in
+// ffconf.h but never used anywhere in this tree): with `fp->cltbl` set, a seek is
+// arithmetic over the table and touches the card not at all. Two conditions come with
+// it and both hold here: the table is only valid while the file's size is fixed, and
+// it forbids EXTENDING the file — the geometry is fixed and a write beyond C*H*S is
+// refused (lbaBeyondEnd), so we can never want to.
+//
+// A contiguous image needs a 4-entry table. Fragmented ones need two entries per
+// fragment, and a real card fragments badly: the reference Ocean.hdf came back asking
+// for 2466 entries (~1233 fragments, ~9.6 KB) — far more than a tight heap should give
+// up, which is why the table goes through Buffer::palloc with PREFER_PSRAM. On a board
+// with butter PSRAM it costs no SRAM at all and the seek reads it through the XIP
+// cache; on a butter-less board palloc falls back to the heap and the cap keeps that
+// honest. Past the cap the slow path is still correct, just slow, and the log says so.
+//
+// Worth knowing when a big image feels sluggish: copying it to the card fresh (so it
+// lands contiguous) shrinks this table to a handful of entries.
+void IDE::setupFastSeek(int slot) {
+    static const uint32_t kFirstTry = 64;     // 256 B — covers up to 31 fragments
+    static const uint32_t kMaxTry   = 4096;   // 16 KB — 2047 fragments, PSRAM-backed
+    if (clmt[slot]) { Buffer::pfree(clmt[slot]); clmt[slot] = nullptr; }
+    file[slot].cltbl = nullptr;
+
+    for (uint32_t want = kFirstTry; want <= kMaxTry; ) {
+        uint32_t* tbl = (uint32_t*)Buffer::palloc(want * sizeof(uint32_t),
+                            Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!tbl) { Debug::log("IDE hd%d: no memory for a link map (%u entries)", slot, want); return; }
+        memset(tbl, 0, want * sizeof(uint32_t));
+        tbl[0] = want;
+        file[slot].cltbl = tbl;
+        FRESULT fr = f_lseek(&file[slot], CREATE_LINKMAP);
+        if (fr == FR_OK) {
+            clmt[slot] = tbl;
+            Debug::log("IDE hd%d: link map built, %u of %u entries used", slot, tbl[0], want);
+            f_lseek(&file[slot], 0);
+            return;
+        }
+        const uint32_t need = tbl[0];       // FatFs reports what it wanted
+        file[slot].cltbl = nullptr;
+        Buffer::pfree(tbl);
+        if (fr != FR_NOT_ENOUGH_CORE || need <= want || need > kMaxTry) {
+            Debug::log("IDE hd%d: no link map (fr=%d, needs %u entries) — seeks stay slow",
+                       slot, (int)fr, need);
+            return;
+        }
+        want = need;
+    }
+}
+
 void IDE::init() {
     close();
 
     scheme = Config::ide_scheme;
+    // The +3e interface is 8 bits wide; NEMO and PROFI carry the high byte in a latch.
+    // Set before the OFF exit so switching a scheme off cannot leave the stride behind.
+    eight_bit = (scheme == PLUS3E);
+    half_sector[0] = half_sector[1] = false;   // re-derived per image in open_image()
     if (scheme == OFF) return;
 
     // SMUC carries a 2 KB 24LC16 on the same card (ProfROM keeps its settings and
@@ -353,6 +433,9 @@ void IDE::init() {
             }
         }
     }
+
+    for (int d = 0; d < 2; d++)
+        if (file_open[d]) setupFastSeek(d);
 
     Debug::log("IDE: scheme=%u initialized (hd0=%d hd1=%d)",
                scheme, file_open[0], file_open[1]);
@@ -459,9 +542,11 @@ void IDE::reset() {
 void IDE::close() {
     for (int d = 0; d < 2; d++) {
         if (file && file_open[d]) {
+            file[d].cltbl = nullptr;   // FatFs must not hold a pointer we are freeing
             f_close(&file[d]);
             file_open[d] = false;
         }
+        if (clmt[d]) { Buffer::pfree(clmt[d]); clmt[d] = nullptr; }
         data_offset[d] = 0;
         cylinders[d] = heads[d] = sectors[d] = 0;
         is_atapi[d] = false;
@@ -503,6 +588,21 @@ uint32_t IDE::lba() {
     }
 }
 
+// Is this sector beyond the drive? A real ATA device answers ID NOT FOUND; ours used
+// to read past the end of the file, pad with 0xFF and report SUCCESS. That is not a
+// cosmetic difference: software SIZES a drive by walking it until a read fails. The
+// +3e's probe steps the cylinder-high register 1, 2, 3, ... (cylinders 256, 512, 768,
+// ...) and records where reading stops, so a drive that never stops was measured as
+// 255 x 256 cylinders instead of 999 — and IDEDOS then found a disk whose own stored
+// geometry disagreed with the hardware and refused it (hw 2026-09-04: the trace walked
+// to `CHS cyl=2560 ... -> 0 bytes [FF FF ...]` with status 0x58, still "success").
+// NOTE this also makes NEMO/PROFI report the end of the disk truthfully, where they
+// used to read 0xFF for ever; in-range accesses are untouched.
+bool IDE::lbaBeyondEnd(int d, uint32_t l) {
+    const uint32_t total = (uint32_t)cylinders[d] * heads[d] * sectors[d];
+    return total != 0 && l >= total;
+}
+
 void IDE::read_sector() {
     int d = drive();
     if (!file_open[d]) {
@@ -511,15 +611,44 @@ void IDE::read_sector() {
         return;
     }
     uint32_t l = lba();
-    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
+    if (lbaBeyondEnd(d, l)) {
+        reg_error = IDE_ERROR_IDNF;
+        reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
+        data_index = -1;
+        return;
+    }
     UINT br;
-    f_lseek(&file[d], pos);
-    f_read(&file[d], buffer, 512, &br);
-    if (br < 512) memset(buffer + br, 0xFF, 512 - br);
+    // Fill the buffer. This branch decides ONLY where the bytes come from — it must
+    // not return, because everything below (the Profi header sync, and the tail that
+    // sets data_index and raises DRQ) belongs to every read. An early return here was
+    // the +3e's "drive stops responding after READ SECTORS": the sector was read
+    // correctly and then the status register was never touched, so it stayed 0x00 and
+    // the ROM polled a drive that would never raise DRQ (hw 2026-09-04, the trace read
+    // `WR cmd/stat 20` followed by `RD cmd/stat x748 00..00` for ever).
+    if (half_sector[d]) {
+        // 256 stored bytes are the LOW halves of the 512-byte sector: read them to the
+        // top of the buffer and spread them over the even positions, so the rest of the
+        // engine (and the 16-bit data path) sees an ordinary sector. The high halves
+        // were never recorded; 0xFF is what an absent byte reads as everywhere else here.
+        FSIZE_t hpos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256;
+        f_lseek(&file[d], hpos);
+        f_read(&file[d], buffer + 256, 256, &br);
+        if (br < 256) memset(buffer + 256 + br, 0xFF, 256 - br);
+        for (int i = 0; i < 256; i++) { buffer[i * 2] = buffer[256 + i]; buffer[i * 2 + 1] = 0xFF; }
 #if IDE_PORT_TRACE
-    Debug::log("IDE READ  hd%d lba=%u off=%u -> %u bytes [%02X %02X %02X %02X ...]",
-               d, l, (unsigned)pos, (unsigned)br, buffer[0], buffer[1], buffer[2], buffer[3]);
+        Debug::log("IDE READ  hd%d lba=%u off=%u (half) -> %u bytes [%02X %02X ...]",
+                   d, l, (unsigned)hpos, (unsigned)br, buffer[0], buffer[2]);
 #endif
+    } else {
+        FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
+        f_lseek(&file[d], pos);
+        f_read(&file[d], buffer, 512, &br);
+        if (br < 512) memset(buffer + br, 0xFF, 512 - br);
+#if IDE_PORT_TRACE
+        Debug::log("IDE READ  hd%d lba=%u off=%u -> %u bytes [%02X %02X %02X %02X ...]",
+                   d, l, (unsigned)pos, (unsigned)br, buffer[0], buffer[1], buffer[2], buffer[3]);
+#endif
+    }
 
     // Profi CP/M: the geometry sector (ProfiHiDD header) lives at CHS(1,0,1),
     // which maps to LBA = heads[d] * sectors[d] (first sector of cylinder 1).
@@ -588,8 +717,26 @@ void IDE::write_sector_done() {
     int d = drive();
     if (!file_open[d]) return;
     uint32_t l = lba();
-    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
     UINT bw;
+    if (half_sector[d]) {
+        // Only the low halves exist in the file — fold the even bytes down into the
+        // FIRST 256 bytes of the buffer. Not into the second half: the destination
+        // 256+i collides with the source 2i for every i >= 128, so that version
+        // overwrote its own input and corrupted exactly half of every sector written.
+        // Folding down is safe because the write index i is always below the read
+        // index 2i. The low half is scratch by then — the transfer is complete, and a
+        // following sector is refilled from the host.
+        for (int i = 0; i < 256; i++) buffer[i] = buffer[i * 2];
+        FSIZE_t hpos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256;
+        f_lseek(&file[d], hpos);
+        f_write(&file[d], buffer, 256, &bw);
+        f_sync(&file[d]);
+#if IDE_PORT_TRACE
+        Debug::log("IDE WRITE hd%d lba=%u off=%u (half) <- %u bytes", d, l, (unsigned)hpos, (unsigned)bw);
+#endif
+        return;
+    }
+    FSIZE_t pos = (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512;
     f_lseek(&file[d], pos);
     f_write(&file[d], buffer, 512, &bw);
     f_sync(&file[d]);
@@ -598,6 +745,26 @@ void IDE::write_sector_done() {
                d, l, (unsigned)pos, (unsigned)bw,
                buffer[0], buffer[1], buffer[2], buffer[3]);
 #endif
+}
+
+// Fill `buffer` from the sector under the current LBA, leaving every ATA register
+// alone — read_sector() reports errors and drives status, which a read-modify-write
+// must not do. A failure just leaves the buffer as it was.
+void IDE::preload_sector() {
+    int d = drive();
+    if (!file_open[d]) return;
+    uint32_t l = lba();
+    UINT br;
+    if (half_sector[d]) {
+        f_lseek(&file[d], (FSIZE_t)data_offset[d] + (FSIZE_t)l * 256);
+        f_read(&file[d], buffer + 256, 256, &br);
+        if (br < 256) memset(buffer + 256 + br, 0xFF, 256 - br);
+        for (int i = 0; i < 256; i++) { buffer[i * 2] = buffer[256 + i]; buffer[i * 2 + 1] = 0xFF; }
+        return;
+    }
+    f_lseek(&file[d], (FSIZE_t)data_offset[d] + (FSIZE_t)l * 512);
+    f_read(&file[d], buffer, 512, &br);
+    if (br < 512) memset(buffer + br, 0xFF, 512 - br);
 }
 
 void IDE::advance_lba() {
@@ -683,6 +850,19 @@ void IDE::execute_command(uint8_t cmd) {
 
         case 0x30: // WRITE SECTOR (retry)
         case 0x31: // WRITE SECTOR (no retry)
+            // Beyond the drive: refuse rather than accept 512 bytes and drop them.
+            if (lbaBeyondEnd(drive(), lba())) {
+                reg_error = IDE_ERROR_IDNF;
+                reg_status = IDE_STATUS_READY | IDE_STATUS_ERR;
+                data_index = -1;
+                break;
+            }
+            // An 8-bit host writes only the low half of every word; the high halves
+            // keep whatever the disk already held. Read the sector first so they
+            // survive instead of being written back from a stale buffer. Free for a
+            // half-sector image (the high halves are not stored at all), so the test
+            // is on the bus width, not the image.
+            if (eight_bit) preload_sector();
             data_index = 0;
             data_write = true;
             data_discard = false;
@@ -1065,7 +1245,10 @@ uint8_t IDE::read8(uint8_t reg) {
                 return val;
             }
             if (data_index >= 0 && !data_write) {
-                uint8_t val = buffer[data_index++];
+                // An 8-bit interface sees only the low half of each word, so it steps
+                // two buffer bytes per access and finishes a sector in 256 of them.
+                uint8_t val = buffer[data_index];
+                data_index += eight_bit ? 2 : 1;
                 if (data_index >= 512) {
                     data_index = -1;
                     if (reg_sector_count > 0) {
@@ -1091,7 +1274,7 @@ uint8_t IDE::read8(uint8_t reg) {
         case 6: return reg_head;
         case 7:
         case 8: {
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
             static uint8_t _last_st = 0xFF;
             if (reg_status != _last_st) {
                 Debug::log("[IDE RD] status=0x%02X", reg_status);
@@ -1105,8 +1288,11 @@ uint8_t IDE::read8(uint8_t reg) {
 }
 
 void IDE::write8(uint8_t reg, uint8_t value) {
-#if IDE_PORT_TRACE
-    if (reg != 0)  // don't log data register writes (too noisy)
+#if IDE_PORT_TRACE >= 2
+    // The +3e path has its own trace in Ports.cpp — it collapses the probe's 256-write
+    // sector-count sweep into one line and checks the read-backs, where one line per
+    // access floods the UART badly enough to lose the commands that matter.
+    if (reg != 0 && !eight_bit)  // don't log data register writes (too noisy)
         Debug::log("[IDE WR] reg=%d val=0x%02X", reg, value);
 #endif
     switch (reg) {
@@ -1118,7 +1304,8 @@ void IDE::write8(uint8_t reg, uint8_t value) {
                 break;
             }
             if (data_index >= 0 && data_write) {
-                buffer[data_index++] = value;
+                buffer[data_index] = value;
+                data_index += eight_bit ? 2 : 1;   // 8-bit bus: low halves only
                 if (data_index >= 512) {
                     if (!data_discard) write_sector_done();
                     data_index = -1;
@@ -1155,15 +1342,33 @@ void IDE::write8(uint8_t reg, uint8_t value) {
             int prev = drive();
             reg_head = value;
             int now = drive();
-            if (now != prev && sig_valid[now])
-                reset_signature();   // uses drive()==now, keeps reg_head
+            if (now != prev) {
+                if (sig_valid[now]) {
+                    reset_signature();   // uses drive()==now, keeps reg_head
+                } else {
+                    // The signature is gone (this device has been used), so the status
+                    // register still holds the OTHER device's last state — and there is
+                    // only one of it. Re-derive it for whoever is selected now: an empty
+                    // slot reads 0x00, a present drive reads READY. Without this a host
+                    // that probes the empty slave and comes back to the master finds the
+                    // master reporting the slave's 0x00 and concludes the drive is gone
+                    // (hw 2026-09-04: the +3e's probe did exactly that — `WR dev/head B0`,
+                    // then `WR dev/head A0` and 0x00 for ever, "IDE not found").
+                    // A transfer cannot survive a device switch either.
+                    data_index = -1;
+                    data_write = false;
+                    data_discard = false;
+                    reg_status = file_open[now] ? IDE_STATUS_READY : 0x00;
+                    reg_error = 0;
+                }
+            }
             break;
         }
         case 7: sig_valid[drive()] = false; execute_command(value); break;
         case 8: { // control register (nIEN/SRST)
             uint8_t prev = reg_control;
             reg_control = value;
-#if IDE_PORT_TRACE
+#if IDE_PORT_TRACE >= 2
             Debug::log("IDE OUT R8 ctrl=%02X", value);
 #endif
             // SRST asserted (1) then deasserted (0) -> device reset, load signature.

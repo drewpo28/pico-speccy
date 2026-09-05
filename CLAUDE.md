@@ -1146,6 +1146,339 @@ ports, the two Ports.cpp decode blocks are the only thing to move:
   "2x SAA1099 (CMS)" / "2x SN76489", ordinary AC_SUBSYS/F_SUBSYS live toggles.
   VGM chip clocks in file headers are irrelevant as ever — we fix 7.159090 /
   3.579545 MHz and the plugin streams raw writes.
+## ZX Spectrum +3: the machine, uPD765 and .dsk (2026-08-17, NOT hw-tested)
+
+**The +3 is a ROMSET of the 128K arch, not an arch** (reworked 2026-09-03): `R_P3`
+sits in `opt_mach_128` / `kPref128` beside `R_PLUS2`, exactly the way the +2 is
+offered, and `Config::romSet128` may hold it. Everything +3-specific keys on the
+romset — `Config::isPlus3()` (`arch == A_128K && romSet == R_P3`), `Z80Ops::isP3`
+(set from it in `CPU::reset`), `isPlus3Romset()` for staged/committed pairs in the
+menu and MachineSwitch. There is no `A_P3`; `archFromStr("P3")` folds the never-
+released arch spelling to `A_128K`. The +3 shares the 128K arch's frame timing and
+nothing else: `CPU::reset` clears `is128` for it (own paging, contention, no floating
+bus), `FileZ80::loader128` skips it (load128's registers point into ROM 1, which is the
+syntax checker on the four-ROM map), and a `.z80` with hardware mode 7/13 requests
+`(A_128K, R_P3)` via the `z80_plus3` flag. Plus: a sector-level uPD765A and
+CPCEMU/Extended `.dsk` images in drives A:/B: with read, write and format.
+**Nothing here has run on hardware**
+— the container had no Pico SDK — but every piece that could be tested on a host is,
+and each suite was mutation-checked (see the bottom of this section).
+
+**Reference is Fuse**, not documentation: `machines/specplus3.c`,
+`machines/machines_periph.c`, `peripherals/disk/upd_fdc.c`, `peripherals/disk/disk.c`,
+`spectrum.c`. worldofspectrum.org and spectrum3.es are both behind this session's egress
+policy (403 on CONNECT), as are the WoS mirrors and rk.nvg.ntnu.no — GitHub is reachable,
+so raw.githubusercontent.com is the way to any of this.
+
+- **Port decodes are TIGHT and come from Fuse's own port table** (`plus3_memory_ports` /
+  `upd765_ports`): `#7FFD` = `(addr & 0xC002) == 0x4000`, `#1FFD` = `0xF002/0x1000`,
+  `#2FFD` = `0xF002/0x2000` (status, read only), `#3FFD` = `0xF002/0x3000`. The +3 block
+  in `Ports::input`/`output` RETURNS, because the loose 128K decode below it
+  (`0x8002/0x0000`) would otherwise swallow `#1FFD`. Like every other early-returning
+  handler in that file it skips `ioContentionLate` — so does the 128K `#7FFD` path.
+- **`MemESP::plus3Remap()` is the one place** that turns `(port1FFD, bankLatch,
+  romLatch)` into `ramCurrent[]`/`ramContended[]`/`romInUse`. ROM index is
+  `(1FFD.D2 << 1) | 7FFD.D4`; `1FFD.D0` swaps the normal map for one of four all-RAM
+  configurations `{0,1,2,3} {4,5,6,7} {4,5,6,3} {4,7,6,3}`. **`recoverPage0()` bows out
+  while one is mapped** (`MemESP::p3special`): its generic `page0ram` path always maps
+  `ram[0]`, which is wrong for configurations 1-3 — they hold page 4 there.
+  The arithmetic lives in `src/Plus3Paging.h` so `tools/plus3_paging_test.cpp` builds
+  against the shipped table rather than a copy.
+- **Contended pages are 4,5,6,7, not the odd ones**, and the delay pattern differs. In
+  this repo's phase (index 0 = `TS_SCREEN_128` = 14361) the +3 sequence is
+  `1,0,7,6,5,4,3,2` against the 128K's `6,5,4,3,2,1,0,0` — `wait_st` is now a table pair
+  picked in `VIDEO::Reset()`. **Known simplification:** the +3 contention window also
+  opens 3 T-states earlier (Fuse's offset 4 vs 1), which is not modelled.
+  Frame timing is the 128K's exactly; there is no floating bus (unattached ports read
+  0xFF) and no ULA snow.
+- **Beta, MB-02+, Timex, DivMMC and the Z-Controller are forced OFF on a +3** — the first
+  three collide on the port map, the last two automap on addresses inside the +3's own
+  four ROMs. Enforced in three places, the same shape Profi uses: the menu's
+  `resolveConstraints` (note), `MachineSwitch` (toast), and `ESPectrum::setup` /
+  `CPU::reset` as the backstop for boots that never pass through the menu. All three
+  test the ROMSET (`isPlus3Romset` / `Config::isPlus3`), the way Byte's exclusions do.
+- **ROMs**: the standard v4.0 English set. Banks 0-2 are raw (`src/roms/plus3/`); bank 3
+  is 48 BASIC and overlays `gb_rom_1_sinclair_128k` in **1266 bytes**. The base has to be
+  a RAW array — MemESP's overlay registry is keyed by base pointer and does NOT chain, so
+  the +2's own (overlaid) 48 BASIC cannot be the base even though it is ~80 bytes closer.
+  Regenerate with `python3 tools/rom_pack.py plus3`. ~50 KB of flash all told.
+
+### Web-catalog / Alt+Enter launch of a .dsk = mount + reset + a deferred Enter (2026-09-03)
+
+TR-DOS boots its `boot` file by itself, so `rfd_launch_tmp` (OSDFile.cpp) only needs
+`bootTrdos()`. The +3 ROM never boots a disk unprompted — the 128 menu's "Loader" entry
+has to be picked — so the `IFACE_PLUS3` branch mounts into A: (`DiskSlots::slotMount`,
+which also writes `Config::p3DiskFile` so the mount survives a reboot), switches to
+`(A_128K, R_P3)` via `MachineSwitch::commit` when needed, resets, and arms
+`ESPectrum::plus3AutoBootArm()`: a GUEST-frame countdown (150 frames, then Enter held 4
+frames via `injectVirtualKey(VK_RETURN)`, which updates the same `m_VKMap` the ZX matrix
+reads). Guest frames, not wall time, so turbo/max speed land at the same ROM point. The
+tick aborts if the machine is no longer a +3 or A: is empty. `commit()` reboots when it
+crosses the Profi SRAM boundary on butter-less boards, so the request is also written to
+watchdog `scratch[1]` (tag `P3BT`; scratch[0] is still free) and consumed in `setup()`
+right after `loadDiskMounts`, cleared unconditionally. `rfd_release_tmp` ejects a
+`/tmp/_run.dsk` still sitting in the uPD765 before re-downloading over it. F8 stats
+mode 3 shows the +3's controller in the WD1793 line's own format,
+`ST:READ  TR:#27/SEC:#C9` — `updStateName()` (Upd765.cpp, beside the command table it
+reads), the selected unit's head cylinder and the last command's R; `ST:STOP` is the
+`#1FFD` D3 motor line off. The mode is reachable at all only because the `hasFdd` gate
+in OSDMain's HK_STATS handler now also covers the +3 and Scorpion — it listed
+Pentagon/Profi/Byte/MB-02 only, so `maxMode` was 2 and the disk line was dead code on
+both. NOT hw-tested.
+
+### The +3e (IDEDOS): a romset of a romset, and its 8-bit IDE (2026-09-03, NOT hw-tested)
+
+`R_P3E` ("+3 (IDEDOS)") sits under `R_P3` the way `R_P3` sits under the 128K arch:
+`isPlus3Romset()` is true for both, so every +3 rule already written applies unchanged,
+and `isPlus3eRomset()` / `Config::isPlus3e()` add the IDE interface on top. It is Garry
+Lancaster's +3e v1.4, the **`sm8`** build (simple 8-bit interface) from `p3eroms.zip`
+on worldofspectrum.org/zxplus3e — that site also carries the IDEDOS partition spec, and
+the wiki page is sinclair.wiki.zxnet.co.uk/wiki/IDEDOS.
+
+- **The port map came out of the ROM, not a schematic** — worldofspectrum documents the
+  interfaces but publishes no port list. Diffing the `sm8`, `pe8` and `div` builds puts
+  the driver in bank 2 from ~0x24A3. Low byte is always `#EF`; the ATA register is
+  three bits of the HIGH byte, **A13 A12 A8**: `#CEEF` data, `#CFEF` error/features,
+  `#DEEF` count, `#DFEF` sector, `#EEEF` cyl lo, `#EFEF` cyl hi, `#FEEF` device/head,
+  `#FFEF` command/status. A9-A11 are NOT decoded (0x278B drives the same registers as
+  `#F0EF`/`#E0EF`); A14/A15 are 1 everywhere. The decode lives in `src/Plus3eIde.h` and
+  `tools/plus3e_ide_test.cpp` re-derives it FROM the shipped `rom2.bin` — it scans every
+  `LD BC,nnEF` and asserts all eight registers are reachable, which is what catches a
+  wrong bit (a mutated A13 shift collapses the ROM's 34 sites onto 4 registers).
+- **The bus is 8 bits wide, so a sector is 256 bytes** (0x252D: `LD B,#CE` then 256
+  `INI`). `IDE::eight_bit` steps the data register TWO buffer bytes per access, so the
+  512-byte engine is untouched. A `WRITE SECTOR` on an 8-bit bus first reads the sector
+  (`preload_sector`) — the host only supplies the low halves and the high ones must
+  survive, which a stale buffer would not give.
+- **HDF flags bit 0 = half sectors** and we were ignoring it (`IDE.cpp` and `DivMMC.cpp`
+  both read only the data offset at `hdr[9..10]`). Such an image stores 256 B/sector,
+  so reading it at 512 lands at twice the offset and returns garbage. `IDE::half_sector`
+  expands on read into the even bytes and compresses on write; DivMMC's divIDE path is
+  still unfixed. Every IDEDOS disk built for the 8-bit interface is like this — the
+  reference image (`Ocean.hdf`, 999/16/64, 1022976 sectors, ×256 + 128 = the file size
+  exactly) has `PLUSIDEDOS` type 0x01 at LBA 0 plus two type 0x03 (+3DOS) partitions.
+- **ZiFi is forced off on the +3e.** The NIC decodes `#xxEF` too and its two windows
+  (hi ≤ 0xC7, hi ≥ 0xF8) both overlap this interface; requiring A14/A15 clears the
+  bottom one but not the top. Same three-place treatment as Beta on the +3
+  (`resolveConstraints`, `MachineSwitch`, `ESPectrum::setup`). `Config::wifi_enabled`
+  and the Web catalog are untouched — only the guest-visible NIC goes.
+- **`IDE::PLUS3E` (scheme 3) follows the romset in BOTH directions.** The interface is
+  part of the machine, so entering the +3e claims the scheme and leaving it hands it
+  back; without the reverse rule a scheme nothing can reach would survive in NVS and
+  `IDE::present()` would light the indicator on a machine with no interface.
+- **Flash: ~36 KB.** Banks 0/1 overlay the STOCK +3 banks (7110 / 12787 B), bank 2 is
+  raw, and bank 3 is BYTE-IDENTICAL to the +3's — it binds the very same
+  `gb_overlay_plus3_rom3` and ships nothing (`pack_plus3e_raw` fails the build if that
+  ever stops being true). Both branches of the `R_P3`/`R_P3E` case must call
+  `registerOverlay` for EVERY base they assign, `nullptr` included: the registry is
+  keyed by base pointer and persists across romset switches, so a missing clear leaves
+  the +3e patch live on a plain +3.
+- An `.hdf` opened in the F5 browser goes to IDE hd0 on a +3e instead of the DivMMC
+  path (DivMMC is off there). The menu route, Storage → IDE images, already worked.
+
+### hw-confirmed 2026-09-04: `CAT TAB` lists the partitions
+
+`IDE Unit 0 (999/16/64)` with PLUSIDEDOS / BOOT (already assigned `D:` on the disk) /
+OCEAN / 217 Mb free, and unit 1 correctly "not detected". The 16384K each partition
+reports is the half-sector arithmetic agreeing end to end (64 cyl x 16 x 64 x 256 B).
+Getting there took FOUR defects, all ours, all found from the `IDE_PORT_TRACE` capture
+— and each one presented as "IDE not found", which is why they had to be peeled one at
+a time:
+
+1. **`read_sector()`'s half-sector branch RETURNED**, skipping the common tail that
+   sets `data_index` and raises DRQ. The sector was read and expanded perfectly and
+   the drive then never announced it: `WR cmd/stat 20` followed by
+   `RD cmd/stat x748 00..00` for ever. A branch in that function may only choose
+   where the bytes come from.
+2. **An out-of-range sector must report ID NOT FOUND.** Ours read past the end of the
+   file, padded 0xFF and reported success — but software SIZES a drive by walking it
+   until a read fails. The +3e steps the cylinder-high register (cylinders 256, 512,
+   768, ...), so a drive that never fails measured as 255 x 256 cylinders instead of
+   999, and IDEDOS refused a disk whose own stored geometry disagreed. `lbaBeyondEnd()`
+   now errors past `C*H*S`. This also makes NEMO/PROFI report the end of a disk
+   truthfully where they used to read 0xFF for ever — in-range accesses are untouched,
+   but if Profi CP/M ever regresses around disk sizing, look here first.
+3. **`reg_status` is ONE register shared by both devices, so a device select has to
+   re-derive it.** It was only refreshed while the newly-selected device still held
+   its post-reset signature, and the first write to registers 2-5 clears that — i.e.
+   the probe's own drive test. So after probing the empty slave, coming back to the
+   master read the SLAVE's 0x00: `WR dev/head B0` … `WR dev/head A0` and 0x00 for
+   ever. `write8` case 6 now sets status from `file_open[now]` (and drops any transfer,
+   which belonged to the other device).
+4. **The half-sector WRITE fold was self-overwriting** — compressing the even bytes
+   into `buffer[256+i]` collides with its own source `buffer[2i]` for every i >= 128,
+   corrupting exactly half of every sector written (host-checked: 128 of 256 bytes
+   wrong). It folds down into `buffer[i]` now, where the write index is always below
+   the read index. Reads were never affected, so this one was invisible on hardware.
+
+Plus: **`ESPectrum::reset()` now calls `IDE::reset()`.** Only `IDE::init()` used to,
+so a cold boot handed the guest a clean register file and F11 handed it the previous
+session's half-finished transfer. That asymmetry is its own class of "works at boot,
+dead after reset".
+
+**The trace had to be rebuilt before any of this was visible, and that cost a round.**
+One line per access is ~1300 lines for a single +3e probe (a 256-write sector-count
+sweep, then up to 255 cylinders at five writes each); the first capture arrived with
+~87% of its bytes dropped by the UART, mangled mid-line, and missing exactly the few
+lines that mattered. The rules that made it usable, all in `Ports.cpp` under
+`IDE_PORT_TRACE`: collapse runs of accesses to the same REGISTER (keying on
+register+direction is useless — the drive test alternates write and read on one
+register, so it flushed on every access and printed 512 lines); count the data
+register instead of printing it (256 says the 8-bit stride is right, 512 says it is
+not); verify a read against what was just written, since that IS the drive test; and
+pair ONLY registers 2-6 — 7 is command/status and 1 is features/error, so pairing
+those reports a mismatch on every access (the capture said "12 of 12 mismatched", all
+noise). `IDE.cpp`'s own per-write line is suppressed on the +3e path. The Z80 PC on
+each line names the ROM routine, which is what makes a capture readable at all.
+
+### ST0 bits 7-6 are a two-bit INTERRUPT CODE, not two flags (hw-confirmed 2026-09-04)
+
+"After picking Loader the +3e polls drive A for 30-60 s before starting from IDE."
+`00 normal / 01 abnormal / 10 invalid command / 11 abnormal because READY changed` —
+and a seek that ended because the drive is not ready must report **01**. Ours reported
+0x80, i.e. 10, because the constant for it was named `ST0_INT_READY`, which reads like
+"READY changed" (that is 0xC0, both bits). +3DOS tests for code 10 FIRST and explicitly
+(`AND #C0 / XOR #80` at +3DOS ROM 0x208D) and answers with an error code instead of
+falling through to its "drive not ready" branch at 0x209F, so its caller retried the
+whole recalibrate-recalibrate-seek dance about a hundred times at ~0.5 s each. MAME's
+`seek_start`/`recalibrate_start` are unambiguous: `st0 = unit | ST0_NR | ST0_FAIL |
+ST0_SE` = 0x68. With that, +3DOS gives up on an empty drive in ONE pass. The constants
+are now named for the field they belong to and `tools/upd765_test.cpp` pins the code
+(mutation-checked: the old value fails with "got 0x80, want 0x40").
+
+Three things about the diagnosis are worth keeping:
+
+- **The trace hole cost two rounds.** It logged a command when the phase reached EXE
+  after a port write — but RECALIBRATE, SEEK and SPECIFY have no result phase and are
+  already back in the command phase by the time the write returns, so the commands
+  +3DOS uses to poll a drive were the exact ones that never appeared. A capture came
+  out showing motor on/off and nothing else, which is what led to "the floppy is not
+  even involved" and a wasted look at the IDE path. `Upd765::cmds` (a dispatch counter,
+  4 bytes, no new dependency) is what the wrapper watches now.
+- **The trace lives in `Plus3Fdc.cpp`, not `Upd765.cpp`**, on purpose: that file
+  depends on nothing from the firmware, which is the only reason its host test builds.
+  A `Debug::log` in there would end that. The wrapper sees every port access anyway.
+- **A memory dump is worth more than a screenshot here.** `PC=207E` with `ROM in use:
+  2` put the guest inside +3DOS's own software delay loop (`LD L,#DC / DEC L / JR NZ`),
+  and the stack named the callers; from there the ROM disassembly gave the whole
+  retry structure, including that one pass costs `(IX+0x12)`=40 steps x `(E42C)`=12 —
+  0.47 s of pure delay, which is authentic and is what made ~100 retries so visible.
+
+### FatFs `f_lseek` walks the FAT on every BACKWARD seek
+
+Our IDE sector reads are one `f_lseek` each and an IDEDOS image is a quarter of a
+gigabyte: FatFs restarts from the first cluster whenever the target is behind the
+current position (and in write mode it walks through `create_chain`), which at 32 KB
+clusters is ~8000 links, i.e. dozens of FAT sector reads per out-of-order sector.
+`IDE::setupFastSeek()` builds FatFs's cluster link map (`FF_USE_FASTSEEK` was already
+on in ffconf.h but nothing in the tree had ever used it), which turns the seek into
+arithmetic with no card access. Two conditions come with it and both hold: the table
+is only valid while the file size is fixed, and it forbids EXTENDING the file — the
+geometry is fixed and a write past `C*H*S` is refused, so we can never want to.
+The table goes through `Buffer::palloc(PREFER_PSRAM)`: a real card fragments badly
+(the reference `Ocean.hdf` asked for **2466 entries**, ~1233 fragments, ~9.6 KB), which
+is more than a tight heap should give up but nothing on a butter-PSRAM board. Cap 4096
+entries; past it the slow path still works. Copying a big image to the card fresh, so
+it lands contiguous, shrinks the table to a handful of entries.
+
+### These IDEDOS game collections are full of authoring errors — audit, don't guess
+
+Four games on the reference `Ocean.hdf` failed in four different ways, every one of
+them in the image and every one presenting as a bare "File not found" with no clue
+which name failed. `tools/idedos_audit.py` reads an .hdf and lists them all at once:
+it cross-checks every launcher menu entry ("key","title","program" triples in the
+extension-less BASIC pages) and every quoted `"name.ext"` literal in every loader
+against the partition's directory, and reports how full the directory is. Read-only.
+
+    python3 tools/idedos_audit.py ~/Downloads/zx/IDEDOS/Ocean.hdf
+
+Ocean.hdf: 3 menu entries name a program that is not there (BRUCE LEE → `BRUCE`, the
+loader is `BRUCELEE`; CHASE HQ 2 → `CHASEQ2` vs `CHASEHQ2`; NAVY SEALS → `NAVYSEA` vs
+`NAVYSEA1`/`2`/`L`), 9 loaders want a file nobody copied (RAMBO's `lock48k.bin`), and
+its directory is FULL at 512/512 entries, which breaks the two games that create a
+`temp.tmp`. US Gold.hdf: 38 of 101 menu entries name games that were never copied.
+NARC is a different class again — its machine-code loader calls DOS_INITIALISE and
+writes 'A' into +3DOS's current-drive variables (0x5B79/0x5B7A, the same two +3DOS
+itself defaults at ROM 0x0515), so it always talks to the empty floppy; it reports its
+OWN error 7 and the ROM prints that as "Unknown disk error". Nothing there is ours.
+
+**The lesson that cost the most: prove the emulator innocent before reading guest
+code.** Every `IDE READ` line carries the file offset it served, so a capture can be
+diffed against the image byte for byte — 132 of 132 matched on the first check, which
+turned every one of these into a data question instead of a firmware one. Do that
+first.
+
+### The three uPD765 behaviours that are hangs, not wrong bytes
+
+Each has a named assertion in `tools/upd765_test.cpp`; if one regresses the machine
+stops rather than misbehaves, so check these first when a +3 will not boot:
+
+1. **SENSE INTERRUPT with nothing pending must rewrite itself to INVALID and return
+   exactly ONE byte, 0x80.** +3DOS polls it after every seek and never leaves the loop
+   otherwise.
+2. **`ST0=0x40` with `ST1=0x80` (end of cylinder) is the SUCCESS report** for a
+   multi-sector read that ran to EOT — the +3 never issues a terminal count, so that is
+   how transfers normally finish. `ST0=0x00` there looks like a lost last sector.
+3. **The rotational position is per drive and PERSISTS ACROSS COMMANDS.** Without it a
+   track carrying two sectors with the same ID can only ever return the first, and
+   Alkatraz / Speedlock-3 protections never pass.
+
+### Deliberate deviations from Fuse
+
+- **SK stays where the datasheet puts it** (command bit 5). Fuse re-reads it from bit 5
+  of the HD/US byte, which the datasheet defines as zero — so SK never engages there.
+- **0xFF during SCAN is the don't-care byte**, which Fuse omits entirely.
+- **Multi-track switches head**, where Fuse increments the cylinder.
+- **Weak sectors rotate through the recorded copies** (`actualLen / (128<<N)`) instead of
+  Fuse's randomised differing-bit bitmap: deterministic and replays what the dumper
+  captured. A surplus that is NOT a whole number of copies is "data in the gap" and stays
+  one copy — 1100 bytes of a 512-byte sector is ONE copy, not two.
+- **`READ DIAGNOSTIC` returns sector payloads only**, no gap or CRC bytes. +3DOS never
+  needs the difference; a few hardcore protections will fail on it. This is the one real
+  cost of the sector-level model.
+
+### DskImage, and why FORMAT dictates how blank images are made
+
+- A mount costs **one** read however big the image is — the track directory is pure
+  arithmetic over the 256-byte disk information block. A track costs one more when first
+  selected. Payload comes through a **caller-owned sliding window** (8 KB from the Buffer
+  pool, `HOT_SRAM`, halving to 1 KB rather than failing, freed by the last eject), so the
+  size is a pure performance knob: `tools/dsk_test.cpp` reruns the whole suite at 256
+  bytes to force a refill inside every sector read.
+- **`Disk-Info\r\n` sits at offset 0x17, not 0x22.** Both signatures are 34 bytes and
+  their vendor halves are the same length; keying on the marker rather than the vendor
+  string is what makes third-party writers' images load.
+- **Writes never move a byte outside the sector** — a size mismatch is refused before
+  anything is written — and a write repairs the sector's error flags, because a real one
+  does. FORMAT rewrites a track only when the new layout fits the space the file already
+  allots it; growing a track means shifting every later one and rewriting the size table,
+  which is refused with `ST1 NW`.
+- **That is why blank images are STANDARD, fully pre-formatted DSK** (40x1x9x512, IDs
+  0xC1..0xC9, filler 0xE5, ~190 KB): every track already has the +3's own geometry, so
+  `FORMAT "a:"` from +3 BASIC always hits the in-place path.
+
+### Testing
+
+`Upd765` and `DskImage` depend on nothing from the firmware — the backing store is a
+struct of function pointers and the clock is an argument — which is the only reason any
+of this could be tested without hardware. Reference images in the tests are built byte by
+byte, never through DskImage's own writer, so a parser bug cannot hide behind a matching
+writer bug.
+
+```
+g++ -O2 -Wall -Wextra -Isrc -o /tmp/p3e tools/plus3e_ide_test.cpp && /tmp/p3e
+g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/dsk_test \
+    tools/dsk_test.cpp src/DskImage.cpp && /tmp/dsk_test
+g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/upd765_test \
+    tools/upd765_test.cpp src/Upd765.cpp src/DskImage.cpp && /tmp/upd765_test
+g++ -O2 -Wall -Wextra -Isrc -o /tmp/p3 tools/plus3_paging_test.cpp && /tmp/p3
+```
+
+Run all three after any change to these files. Every assertion in them was checked to
+FAIL under a hand-applied mutation of the code it covers — two gaps found that way (DTL
+and SK) are now covered, and one mutation that looked uncaught turned out to need a
+1100-byte sector to expose. A suite that cannot fail is worth nothing here: an FDC
+misbehaves by degrees, as one game in twenty that will not load.
 
 ## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
 

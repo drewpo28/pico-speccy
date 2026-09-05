@@ -23,6 +23,7 @@
 #include "DivMMC.h"
 #include "MB02.h"
 #include "ZiFi.h"
+#include "IDE.h"
 #include "ZiFiAT.h"
 #include "ZiFiSock.h"
 
@@ -147,15 +148,18 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         else if (Config::arch == A_SCORP && Config::pref_romSetScorp == R_LAST) Config::romSetScorp = Config::romSet;
         // Mutual exclusivity
         bool isByte = (romset == R_48K_BY || romset == R_128K_BY);
+        // The +3 is a romset of the 128K arch (like +2), so its exclusions key on the
+        // romset the same way Byte's do.
+        const bool isP3 = isPlus3Romset(romset);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || arch == A_SCORP || isByte)) {
+            arch == A_PROFI || arch == A_SCORP || isP3 || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
         }
         // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
         // register / native RTC AS latch / SAA select (see CPU::reset backstop).
-        if (Config::timex_video && (isByte || arch == A_PROFI)) {
+        if (Config::timex_video && (isByte || arch == A_PROFI || isP3)) {
             Config::timex_video = false;
             VIDEO::timex_port_ff = 0;
             VIDEO::timex_mode = 0;
@@ -165,6 +169,49 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_SCORP) && !Config::betadisk) {
             Config::betadisk = true;
             OSD::osdCenteredMsg("Betadisk enabled", LEVEL_WARN, 1500);
+        }
+        // The +3 has no Beta Disk interface — it has the uPD765 instead, and the two
+        // collide on port #1F/#FF as well as on the 0x3D00 ROM trap (which would fire
+        // inside the +3's own four ROMs).
+        if (isP3 && Config::betadisk) {
+            Config::betadisk = false;
+            if (ESPectrum::trdos) {
+                ESPectrum::trdos = false;
+                MemESP::recoverPage0();
+            }
+            OSD::osdCenteredMsg("Betadisk disabled", LEVEL_WARN, 1500);
+        }
+        // DivMMC / Z-Controller automap on ROM addresses that belong to the +3's own
+        // four ROMs, so their RAM would page over the ROM the machine is executing.
+        // The +3e's IDE interface belongs to the machine (its ROM drives it), and its
+        // #xxEF ports are ZiFi's, so entering the +3e claims the scheme and drops the
+        // NIC; leaving it hands the scheme back. See resolveConstraints for the twin.
+        {
+            // Entering the +3e gives it its interface, so a freshly picked machine finds
+            // its hard disk — but an explicit Off is the user's choice and is not undone
+            // (the menu's own edge does the same, see resolveConstraints).
+            const bool isP3e = isPlus3eRomset(romset);
+            const bool wasP3e = Config::isPlus3e();
+            if (isP3e && !wasP3e && Config::ide_scheme != IDE::PLUS3E) {
+                Config::ide_scheme = IDE::PLUS3E;
+                IDE::init();
+                OSD::osdCenteredMsg("IDEDOS enabled", LEVEL_WARN, 1500);
+            } else if (!isP3e && Config::ide_scheme == IDE::PLUS3E) {
+                Config::ide_scheme = IDE::OFF;
+                IDE::init();   // closes the images and frees the buffers
+                OSD::osdCenteredMsg("IDE disabled", LEVEL_WARN, 1500);
+            }
+            if (isP3e && Config::ide_scheme == IDE::PLUS3E && Config::zifi_enabled) {
+                Config::zifi_enabled = 0;
+                ZiFi::deinit();
+                OSD::osdCenteredMsg("ZiFi NIC disabled", LEVEL_WARN, 2000);
+            }
+        }
+        if (isP3 && (Config::esxdos || Config::zcontroller)) {
+            Config::esxdos = 0;
+            Config::zcontroller = false;
+            DivMMC::init();   // teardown path frees buffers
+            OSD::osdCenteredMsg("DivMMC disabled", LEVEL_WARN, 1500);
         }
         // Byte 48K has no Beta Disk interface — force it off on entry.
         if (romset == R_48K_BY && Config::betadisk) {

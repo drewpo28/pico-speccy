@@ -569,7 +569,17 @@ static unsigned int attOffset;  // offset for attrib in graphic memory
 // Per-scanline DMA attr shadow: non-null when DMA wrote attrs for current scanline
 static const uint8_t* dma_attr_override = nullptr;
 
-static const uint8_t wait_st[128] = {
+// Sequences of wait states, indexed by (CPU::tstates - tstateDraw).
+//   [0] 48K/128K/Pentagon: 6,5,4,3,2,1,0,0
+//   [1] +2A/+3:            1,0,7,6,5,4,3,2
+// Fuse expresses both as one pattern rotated by the contention-window offset
+// (spectrum.c contention_pattern_65432100 / _76543210 with offsets 1 and 4); in this
+// repo's phase — index 0 == TS_SCREEN_128 == 14361 — they come out as the two rows
+// below. DELIBERATE SIMPLIFICATION: the +3 window also opens 3 T-states earlier than
+// the 128K one, which we do not model; the repeating table is applied from
+// tStatesScreen exactly as for 128K.
+static const uint8_t wait_st_tab[2][128] = {
+  {
     6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
     6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
     6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
@@ -578,7 +588,20 @@ static const uint8_t wait_st[128] = {
     6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
     6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
     6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
-}; // sequence of wait states
+  },
+  {
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+  },
+};
+// Selected once per machine reset; the readers pay one load from a hot static.
+static const uint8_t* wait_st = wait_st_tab[0];
 
 IRAM_ATTR void VGA8Bit::interrupt(void *arg) {
     static int64_t prevmicros = 0;
@@ -2580,7 +2603,13 @@ void VIDEO::Reset() {
     memset((uint8_t *)VIDEO::dirty_lines,0x01,SPEC_H);
     #endif // DIRTY_LINES
 
-    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP) ? Config::render : false;
+    // The +2A/+3 ULA has no snow bug either (its RAM is not shared with the CPU the
+    // way the 48K/128K ULA's is), so it joins the machines that never render snow.
+    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && !Config::isPlus3()) ? Config::render : false;
+
+    // +2A/+3 contention pattern (see wait_st_tab). Selected here, after the per-arch
+    // timing block above, so every machine reset re-picks it.
+    wait_st = wait_st_tab[Config::isPlus3() ? 1 : 0];
 
     VIDEO::paper_off = !Config::render_paper;
 

@@ -24,6 +24,7 @@
 #include "MachineSwitch.h"
 #include "DivMMC.h"
 #include "MB02.h"
+#include "Plus3Fdc.h"
 #include "IDE.h"
 #include "Debug.h"
 #include "GS/GS.h"
@@ -68,6 +69,8 @@ NM_INT_ACCESS (throtling, throtling)
 NM_BOOL_ACCESS(ledInd,    ledIndicators)
 NM_BOOL_ACCESS(sdLed,     sdLedBlink)
 NM_BOOL_ACCESS(rtc,       rtc_enabled)
+NM_BOOL_ACCESS(p3Fast,    p3_fastdisk)
+NM_BOOL_ACCESS(p3Slock,   p3_speedlock)
 NM_BOOL_ACCESS(psramOn,   psram_enabled)
 NM_INT_ACCESS (palette,   palette)
 NM_INT_ACCESS (scanlines, scanlines)
@@ -231,6 +234,7 @@ const char* romsetName(int32_t c) {
             Config::field = tab[v];                                           \
     }
 
+// Index-aligned with opt_pref_arch[] in UiTree.cpp — keep the two in step.
 static const ArchIdx kPrefArch[] = { A_48K, A_128K, A_PENT, A_P512, A_P1024, A_SCORP, A_LAST };
 static const RomsetIdx kPref48[]   = {
     R_48K,
@@ -243,7 +247,7 @@ static const RomsetIdx kPref128[]  = {
 #if !NO_SPAIN_ROM_128k
     R_128K_ES, R_PLUS2, R_PLUS2_ES, R_ZX81P,
 #endif
-    R_128K_CS, R_LAST };
+    R_P3, R_P3E, R_128K_CS, R_LAST };
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
@@ -420,6 +424,16 @@ static bool hook_betadisk(int32_t nv, int32_t) {
 }
 static bool hook_trdosFast(int32_t, int32_t) {
     rvmWD1793UpdateFastmode(&ESPectrum::fdd);
+    return true;
+}
+// Both +3 disk toggles are plain fields of the live controller, so they take effect on
+// the next command without touching the mounted images.
+static bool hook_p3Fast(int32_t nv, int32_t) {
+    Plus3Fdc::fdc.fastMode = (nv != 0);
+    return true;
+}
+static bool hook_p3Slock(int32_t nv, int32_t) {
+    Plus3Fdc::fdc.speedlock = nv ? 0 : -1;
     return true;
 }
 static bool hook_trdosRom(int32_t nv, int32_t) {
@@ -818,6 +832,17 @@ static bool stagedArchIs(ArchIdx a) {
     return Config::arch == a;                  // pair not in our tables: trust Config
 }
 static bool stagedIsProfi() { return stagedArchIs(A_PROFI) || stagedArchIs(A_KARABAS); }
+// The +3 is a romset of the 128K arch, so this keys on the staged romset.
+static bool stagedIsPlus3() {
+    const int32_t m = staged(SET_MACHINE);
+    if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
+    return Config::isPlus3();
+}
+static bool stagedIsPlus3e() {
+    const int32_t m = staged(SET_MACHINE);
+    if (m >= 0) return isPlus3eRomset((RomsetIdx)(m & 0xFF));
+    return Config::isPlus3e();
+}
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }
@@ -850,6 +875,58 @@ static void resolveConstraints(CommitReport& rep) {
         // screen into a Timex mode). Same rule as Gigascreen above.
         if (staged(SET_TIMEX) != 0 && stagedIsProfi())
             changed |= force(SET_TIMEX, 0, rep, "Timex is not available on Profi");
+
+        // The +3 has no Beta Disk (its FDC is the uPD765 on #2FFD/#3FFD) and no SCLD;
+        // both claim ports the +3 uses, and Beta's 0x3D00 trap would fire inside the
+        // +3's own four ROMs. MachineSwitch and CPU::reset enforce the same rule — this
+        // is what makes the menu agree with them instead of silently reverting.
+        if (stagedIsPlus3()) {
+            if (staged(SET_BETADISK))
+                changed |= force(SET_BETADISK, 0, rep, "Betadisk is not available on the +3");
+            if (staged(SET_TIMEX) != 0)
+                changed |= force(SET_TIMEX, 0, rep, "Timex is not available on the +3");
+            if (staged(SET_MB02))
+                changed |= force(SET_MB02, 0, rep, "MB-02+ is not available on the +3");
+            // DivMMC / Z-Controller automap on addresses inside the +3's own ROMs.
+            if (staged(SET_ESXDOS))
+                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on the +3");
+            if (staged(SET_ZCONTROLLER))
+                changed |= force(SET_ZCONTROLLER, 0, rep, "Z-Controller is not available on the +3");
+        }
+
+        // The +3e's IDE interface is a CARD, not part of the machine — the ROM is built
+        // for it but works fine with none plugged in — so the user may switch it off and
+        // that must stick. Only two things are forced:
+        //   * NEMO/PROFI cannot be reached by the +3e ROM, so on a +3e they become the
+        //     +3e interface;
+        //   * the +3e scheme cannot be reached by anything else, so off it goes on any
+        //     other machine.
+        // Selecting it when ENTERING the +3e is an EDGE below, not a constraint, which
+        // is what lets Off survive. (An earlier version forced the scheme to +3e on
+        // every pass and the Devices row simply snapped back — that was wrong.)
+        if (stagedIsPlus3e()) {
+            if (staged(SET_IDE_SCHEME) == 1 || staged(SET_IDE_SCHEME) == 2)
+                changed |= force(SET_IDE_SCHEME, 3, rep, "IDE set to the +3e interface");
+            // The two share #xxEF, so the NIC yields — but only while the interface is
+            // actually on. Same rule as Beta above; Config::wifi_enabled is unaffected.
+            if (staged(SET_IDE_SCHEME) == 3 && staged(SET_ZIFI_NIC))
+                changed |= force(SET_ZIFI_NIC, 0, rep, "ZiFi NIC off: it shares #xxEF with the +3e IDE");
+        } else if (staged(SET_IDE_SCHEME) == 3) {
+            changed |= force(SET_IDE_SCHEME, 0, rep, "IDE off: the +3e interface needs the +3e ROM");
+        }
+
+        // EDGE: this commit switches TO the +3e, so give it its interface — that is what
+        // makes a freshly picked +3e find its hard disk without a trip to Devices. It
+        // fires only on the transition (the machine is dirty and was not a +3e before),
+        // so a later "Off" is never undone. Same shape as the esxDOS -> VGM-chips edge
+        // below, including the g_seq tie-break: a scheme the user touched after the
+        // machine pick wins, because force() never bumps g_seq.
+        if (bmGet(g_dirty, SET_MACHINE) && stagedIsPlus3e()
+            && !isPlus3eRomset((RomsetIdx)(g_base[SET_MACHINE] & 0xFF))
+            && staged(SET_IDE_SCHEME) == 0
+            && g_seq[SET_IDE_SCHEME] <= g_seq[SET_MACHINE]) {
+            changed |= force(SET_IDE_SCHEME, 3, rep, "IDE set to the +3e interface");
+        }
 
         // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so
         // at most one may be on (OSDMain.cpp:3251, :3380, :3545). The classic menu enforces

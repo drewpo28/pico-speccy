@@ -255,6 +255,12 @@ static const Option opt_mach_128[] = {
     { TXT_ROM_PLUS2_ES,   NM_MACH(A_128K, R_PLUS2_ES),  TXT_ROM_PLUS2_ES_S },
     { TXT_ROM_ZX81P,      NM_MACH(A_128K, R_ZX81P)    },
 #endif
+    // The +2A/+3 is a romset of the 128K machine, like the +2 (ArchRom.h): the
+    // English v4.0 four-bank image. Everything +3-specific keys on this romset.
+    { TXT_ROM_P3,         NM_MACH(A_128K, R_P3)       },
+    // ...and the +3e is a romset of that: the same machine with Garry Lancaster's
+    // replacement ROM, which carries IDEDOS and an 8-bit IDE interface on #xxEF.
+    { TXT_ROM_P3E,        NM_MACH(A_128K, R_P3E), TXT_ROM_P3E_S },
     { TXT_ROM_CUSTOM,     NM_MACH(A_128K, R_128K_CS)  },
 };
 static const Option opt_mach_pent[] = {
@@ -462,14 +468,30 @@ static bool p_esxImages() {
     return v == 1 || v == 2;
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
+// The +3 disk rows follow the machine, not a toggle: the interface is part of the
+// machine and cannot be turned off, so they appear whenever a +3 is staged or running.
+// The +3 is the R_P3 romset of the 128K arch, so this keys on the romset (as
+// p_byteActive does).
+static bool p_plus3On() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
+    return Config::isPlus3();
+}
+// The +3e carries an IDE interface whether or not the scheme row has caught up yet
+// (resolveConstraints only forces it at commit), so the image rows follow the machine
+// there — the same rule the +3 disk rows use.
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
 
-// IDE/HDD scheme: the value IS Config::ide_scheme.
+// IDE/HDD scheme: the value IS Config::ide_scheme. "IDEDOS" is not a card the user
+// plugs in — it is the interface the +3e ROM drives, so the romset forces that value
+// and forces it away again on any other machine (UiStage resolveConstraints). It is
+// listed here so the row can display it rather than showing a blank radio.
 static const Option opt_ide_scheme[] = {
     { "Off",   0 },
     { "NEMO",  1 },
     { "PROFI", 2 },
-    { "SMUC",  3 },
+    { "IDEDOS",   3 },
+    { "SMUC",  4 },
 };
 
 
@@ -505,6 +527,9 @@ static const Node kHardware[] = {
     NM_BOOL    (TXT_MB02,          SET_MB02,  nullptr),
     NM_DYN_EN  (NM_IND TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
     NM_RADIO_EN(NM_IND TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
+    NM_DYN_EN  (TXT_P3_DRIVES,     slots_buildP3, slots_keyP3, p_hasSD, p_plus3On),
+    NM_BOOL_EN (NM_IND TXT_P3_FASTDISK,   SET_P3_FASTDISK,  nullptr, p_plus3On),
+    NM_BOOL_EN (NM_IND TXT_P3_SPEEDLOCK,  SET_P3_SPEEDLOCK, nullptr, p_plus3On),
     NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_hasSD),
     NM_RADIO   (TXT_HW_IDE,        SET_IDE_SCHEME, opt_ide_scheme, p_hasSD),
     NM_DYNH_EN (NM_IND TXT_IDE_IMAGES,   slots_buildIde, slots_keyIde,
@@ -718,6 +743,7 @@ static const Node kJoystick[] = {
 // ── Options ────────────────────────────────────────────────────────────────────
 // Preferred machine / ROM: what a cold boot loads. "Last used" defers to whatever was
 // running, which is also the fallback for any value not in these tables.
+// Index-aligned with kPrefArch[] in UiStage.cpp — keep the two in step.
 static const Option opt_pref_arch[] = {
     { TXT_MACH_48K,   0 },
     { TXT_MACH_128K,  1 },
@@ -745,11 +771,15 @@ static const Option opt_pref128[] = {
     { TXT_ROM_PLUS2,    2 },
     { TXT_ROM_PLUS2_ES, 3 },
     { TXT_ROM_ZX81P,    4 },
-    { TXT_ROM_CUSTOM,   5 },
-    { TXT_ROM_LAST,     6 },
+    { TXT_ROM_P3,       5 },
+    { TXT_ROM_P3E,      6 },
+    { TXT_ROM_CUSTOM,   7 },
+    { TXT_ROM_LAST,     8 },
 #else
-    { TXT_ROM_CUSTOM,   1 },
-    { TXT_ROM_LAST,     2 },
+    { TXT_ROM_P3,       1 },
+    { TXT_ROM_P3E,      2 },
+    { TXT_ROM_CUSTOM,   3 },
+    { TXT_ROM_LAST,     4 },
 #endif
 };
 static const Option opt_pref_pent[] = {
@@ -1000,6 +1030,7 @@ const Node* slotNodeFor(int iface) {
         case IFACE_BETA: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildBeta);
         case IFACE_MB02: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildMb02);
         case IFACE_ESX:  return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEsx);
+        case IFACE_PLUS3: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildP3);
         default:         return nullptr;
     }
 }

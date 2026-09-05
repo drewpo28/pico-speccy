@@ -22,7 +22,10 @@ public:
     // 3 = SMUC — the Scorpion "Spectrum Multi Unit Controller": the same 16-bit
     // ATA engine behind a completely different port map (Ports::smuc*), plus the
     // card's own 24LC16 NVRAM (Nvram24) and MC146818 clock (RTC).
-    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, SMUC = 3 };
+    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, SMUC = 3, PLUS3E = 4 };
+    // PLUS3E is the +3e's "simple 8-bit" interface: it is part of the machine (the
+    // ROM drives it), not a card the user plugs in, so the romset forces this value.
+    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, PLUS3E = 3 };
 
     // Active scheme mirror of Config::ide_scheme (set in init()).
     static uint8_t scheme;
@@ -69,6 +72,12 @@ private:
     static bool open_image(int slot, const char* path);
     static uint32_t lba();
     static int  drive();
+    static bool lbaBeyondEnd(int d, uint32_t l);   // past C*H*S -> a real drive errors
+    // Give the image a FatFs cluster link map, so a seek costs arithmetic instead of a
+    // walk down the FAT. See the comment on the definition — this is worth tens of
+    // seconds on a big image, not a micro-optimisation.
+    static void setupFastSeek(int slot);
+    static uint32_t* clmt[2];      // link map per slot (FatFs owns the format)
     static void read_sector();
     static void write_sector_done();
     static void execute_command(uint8_t cmd);
@@ -97,6 +106,18 @@ private:
 
     // Per-drive geometry / format.
     static uint32_t data_offset[2];   // byte offset to sector data (HDF header, else 0)
+    // HDF flags bit 0: the image stores only the LOW byte of each 16-bit word, i.e.
+    // 256 bytes per sector, because it was written through an 8-bit interface. The
+    // sector buffer is always 512 bytes here, so read_sector expands and
+    // write_sector_done compresses; nothing else in the engine has to know.
+    static bool half_sector[2];
+    // The bus is 8 bits wide (PLUS3E): the guest sees only the low byte of each word,
+    // so the data register steps TWO buffer bytes per access and a sector is 256 of
+    // them. Set from `scheme` in init().
+    static bool eight_bit;
+    // Read the sector under the current LBA into `buffer` without touching the ATA
+    // registers — the read half of the read-modify-write an 8-bit write needs.
+    static void preload_sector();
     static uint16_t cylinders[2];
     static uint16_t heads[2];
     static uint16_t sectors[2];
