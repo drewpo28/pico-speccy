@@ -2569,7 +2569,7 @@ __not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
 static uint32_t g_opl_gen_us = 0;
 #endif
 
-__not_in_flash("audio") void ESPectrum::OPLGenSound(int count, int bufpos) {
+void ESPectrum::OPLGenSound(int count, int bufpos) {
   if (!OplSubsys::enabled || !audioBufferOPL_L || !oplfm) return;
 #if OPL_PERF_TRACE
   uint32_t _t0 = time_us_32();
@@ -2606,7 +2606,7 @@ __not_in_flash("audio") void ESPectrum::OPLGenSound(int count, int bufpos) {
 }
 
 // Queue one OPL register write at the current T-state's sample position.
-__not_in_flash("audio") void ESPectrum::OPLPortWrite(uint8_t a, uint8_t v) {
+void ESPectrum::OPLPortWrite(uint8_t a, uint8_t v) {
   if (!OplSubsys::enabled || !oplfm) return;
   if (!oplWriteQueue) { oplfm->write(a, v); return; }   // no queue: degrade to direct
   if (oplQTail >= OPL_WRITE_QUEUE_LEN) OPLGetSample();  // overflow: flush (drains + resets)
@@ -2620,7 +2620,7 @@ __not_in_flash("audio") void ESPectrum::OPLPortWrite(uint8_t a, uint8_t v) {
 // detect is "start timer 1, busy-wait ~950 us, expect 0xC0", and the timers
 // only move inside gen(); the queued timer-start write is applied at its own
 // position first, so the elapsed time it sees is exact.
-__not_in_flash("audio") void ESPectrum::OPLGetSample() {
+void ESPectrum::OPLGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
   if (multiplicator) audbufpos >>= multiplicator;
   if (audbufpos > audbufcntOPL) {
@@ -2634,7 +2634,7 @@ __not_in_flash("audio") void ESPectrum::OPLGetSample() {
 // overflow or at the frame boundary.
 #define OPLL_WRITE_QUEUE_LEN 256
 
-__not_in_flash("audio") void ESPectrum::OPLLGenSound(int count, int bufpos) {
+void ESPectrum::OPLLGenSound(int count, int bufpos) {
   if (!OpllSubsys::enabled || !audioBufferOPLL || !opllfm) return;
   memset(audioBufferOPLL + bufpos, 0, count * sizeof(int16_t));
   uint32_t cur = bufpos, end = bufpos + count;
@@ -2663,7 +2663,7 @@ __not_in_flash("audio") void ESPectrum::OPLLGenSound(int count, int bufpos) {
   dcblock_run(audioBufferOPLL + bufpos, count, s_dcOpll, &s_opllOutQuiet);
 }
 
-__not_in_flash("audio") void ESPectrum::OPLLPortWrite(uint8_t a, uint8_t v) {
+void ESPectrum::OPLLPortWrite(uint8_t a, uint8_t v) {
   if (!OpllSubsys::enabled || !opllfm) return;
   if (!opllWriteQueue) {
     if (a & 1) opllfm->writeData(v); else opllfm->writeAddr(v);
@@ -2675,7 +2675,7 @@ __not_in_flash("audio") void ESPectrum::OPLLPortWrite(uint8_t a, uint8_t v) {
   opllWriteQueue[opllQTail++] = (pos & 0xFFFF) | ((uint32_t)(a & 1) << 16) | ((uint32_t)v << 24);
 }
 
-__not_in_flash("audio") void ESPectrum::OPLLGetSample() {
+void ESPectrum::OPLLGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
   if (multiplicator) audbufpos >>= multiplicator;
   if (audbufpos > audbufcntOPLL) {
@@ -2685,13 +2685,13 @@ __not_in_flash("audio") void ESPectrum::OPLLGetSample() {
 }
 
 // Both SN76489s into audioBufferSN[bufpos..]; cleared first, gen accumulates.
-__not_in_flash("audio") void ESPectrum::SNGenSound(int count, int bufpos) {
+void ESPectrum::SNGenSound(int count, int bufpos) {
   if (!SnSubsys::enabled || !audioBufferSN || !snChip) return;
   memset(audioBufferSN + bufpos, 0, count);
   snChip->gen(audioBufferSN, count, bufpos);
 }
 
-__not_in_flash("audio") void ESPectrum::SNGetSample() {
+void ESPectrum::SNGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
   if (multiplicator) audbufpos >>= multiplicator;
   if (audbufpos > audbufcntSN) {
@@ -2701,7 +2701,7 @@ __not_in_flash("audio") void ESPectrum::SNGetSample() {
 }
 
 // Catch the CMS pair up; each SAASound writes its own member buffers.
-__not_in_flash("audio") void ESPectrum::CMSGetSample() {
+void ESPectrum::CMSGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
   if (multiplicator) audbufpos >>= multiplicator;
   if (audbufpos > audbufcntCMS && cmsChip[0] && cmsChip[1]) {

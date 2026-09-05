@@ -469,8 +469,11 @@ quietly and by degrees.
   path is safe only because an envelope can leave `EG_OFF` only on a key-on, i.e.
   a register write, i.e. between `gen()` calls — CSM is excluded from it for
   exactly that reason, since a timer A overflow keys channel 3 from inside.
+- **All FM-core code is in FLASH again (2026-09-06, hw-confirmed on DVp2).** The
+  RAM-resident period (2026-09-01..06) is recorded in the OPL3 section bullet
+  below; the history that follows is kept for the reasoning.
 - ~~**Everything is in FLASH**~~ — OUTDATED (2026-09-01): `gen`/`chanCalc`/
-  `advanceEg` moved to RAM (`OPN_HOT`, ~1.6 KB at -O2 since 2026-09-02) after
+  `advanceEg` moved to RAM (~1.6 KB at -O2 since 2026-09-02) after
   PC-88 YM2203 VGM rips exposed the per-write XIP catch-up cost; see the
   "Per-sample code of BOTH FM cores" bullet in the OPL3 section. The write
   path stays in flash. The original rationale (heap headroom at VIDEO::Init)
@@ -902,7 +905,24 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   Writes are stamped with their sample position and applied inside ONE
   contiguous per-frame pass — ordering/timing sample-exact, status reads
   flush precisely (timer detect intact), frame boundary force-drains.
-- **Per-sample code of BOTH FM cores now lives in RAM** (`__not_in_flash
+- **The FM hot code is back in FLASH — no RAM residency, no switch (2026-09-06,
+  hw-confirmed on DVp2 by the owner: VGM playback sounds the same, Memory Info
+  free heap 9 KB -> 30 KB against the 1.0.4 release; the FM code accounts for
+  ~9 KB of that, the rest is other post-1.0.4 changes and heap state, not
+  isolated).** Why it was reopened: a user compared 1.0.3 vs 1.0.4 on m2p2 and
+  the static SRAM grew 12.7 KB, ~9.3 KB of it `.time_critical.audio` (OplFm
+  3.6, OpllFm 2.8, OpnFm 1.6, OPL/OPLL/SN glue ~1.3) — paid on EVERY build,
+  chips on or off, and code cannot be allocated at runtime (addresses are fixed
+  by the linker; the only runtime alternative is a fixed-VMA overlay under the
+  stack + a `_sbrk` override, judged not worth it). The residency had been
+  adopted in ONE bundle with half-rate + EG-skip (commit d686c57) and its own
+  contribution was never isolated; EG-skip since halved the arithmetic and -O2
+  shrank the code. A `FM_HOT_IN_RAM` CMake option was tried for a day and
+  removed as pointless. If clicks ever return: the strongest remaining case for
+  RAM is OpnFm's per-write catch-up (it has NO write queue) — give OpnFm an OPL-
+  style write queue first; a RAM placement, if it comes back, should be a build
+  switch, never unconditional.
+- ~~**Per-sample code of BOTH FM cores now lives in RAM**~~ (superseded above; `__not_in_flash
   ("audio")`): OplFm gen/advance/chanCalc*/pairCalc/runTimers/
   renderSample and OpnFm gen/chanCalc/advanceEg. The user approved the
   permanent SRAM spend after clicks persisted; OpnFm needed it because PC-88
@@ -1025,7 +1045,8 @@ pm<<17; ksl_shift order differs; HH/TOP gate uses OR where OPL3 uses XOR),
 freqbase rate conversion off MAME's native clock/72 stream, EG-skip with the
 same clamped-percussive-sustain + excluded-modulator-REL bounds, quiet fast
 paths, half-rate <450 MHz, audible()-gated +128 mixer bias, its own write
-queue (256 entries; addr/data flag in bit 16), OPLL_HOT RAM residency
+queue (256 entries; addr/data flag in bit 16), flash-resident code (a RAM-resident
+period 2026-09-01..06 is recorded in the OPL3 section)
 (~2.9 KB .time_critical at -O2 — see the -O2 note in the OPL3 section).
 Output = (melody + rhythm) << 1 — the x2
 puts a lone OPLL at OPL3-comparable level through the same >>7 mixer tap.

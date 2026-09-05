@@ -276,11 +276,12 @@ set_source_files_properties(src/AySound.cpp PROPERTIES
 set_source_files_properties(src/SAASound.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
 # YM2203 FM (TurboSound FM): 24 operators at the AY sample rate is the whole cost.
-# -O2, not -O3 -funroll-loops, for all three FM cores: their hot code is
-# RAM-resident (__not_in_flash "audio"), and -O3+unroll pays ~2x SRAM for ~14%
-# worst-case speed (measured 2026-09-02: hot code 17.3->8.1 KB, host bench
-# 226->258 ns/sample all-channels-loud; output bit-identical). EG-skip and
-# half-rate are the levers that made dense scores affordable, not -O3.
+# -O2, not -O3 -funroll-loops, for all three FM cores: -O3+unroll doubles the
+# hot code (17.3->8.1 KB at -O2, measured 2026-09-02) for ~14% worst-case speed
+# (host bench 226->258 ns/sample all-channels-loud; output bit-identical). The
+# code is flash-resident since 2026-09-06 (was __not_in_flash "audio"), so the
+# size now costs flash, not SRAM. EG-skip and half-rate are the levers that
+# made dense scores affordable, not -O3.
 set_source_files_properties(src/OpnFm.cpp PROPERTIES
     COMPILE_FLAGS "-O2")
 # YMF262 (OPL3, VGM-player card): 36 operators at the AY sample rate.

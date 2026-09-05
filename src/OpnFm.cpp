@@ -35,21 +35,12 @@ Deliberate differences from fm.cpp, all of them size or platform driven:
 
 #include "Debug.h"
 
-// The per-SAMPLE code goes to RAM (.time_critical), the write path stays in
-// flash. This core was deliberately all-flash while its only user was TSFM
-// software with ~20 port writes per frame (TheLink); the VGM plugin's PC-88
-// YM2203 rips write HUNDREDS of registers per frame, and every #BFFD data
-// write runs the shared AY+FM catch-up — re-faulting gen()'s flash code
-// through the XIP cache each time showed as IDL<0 with audible clicks
-// (hw 2026-09-01, same mechanism as OplFm's). ~1.6 KB of .time_critical at
-// the -O2 this TU compiles at (see CMakeLists — -O3 -funroll-loops doubled it).
-// Host builds (tools/opnfm_test.cpp) have no pico headers: annotation off.
-#if __has_include("pico.h")
-#include "pico.h"
-#define OPN_HOT __not_in_flash("audio")
-#else
-#define OPN_HOT
-#endif
+// All in flash. The per-sample code was RAM-resident 2026-09-01..09-06 because
+// the VGM plugin's PC-88 YM2203 rips write hundreds of registers per frame and
+// every #BFFD data write runs the shared AY+FM catch-up (OPN has no write
+// queue). Re-tested flash-resident on DVp2: no audible difference. If it ever
+// costs frames again, an OPN write queue like the OPL one is the first lever.
+// Compiled at -O2 (see CMakeLists).
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -644,7 +635,7 @@ void OpnFm::refreshChan(Chan* ch) {
     }
 }
 
-OPN_HOT void OpnFm::advanceEg(Slot* slot) {
+void OpnFm::advanceEg(Slot* slot) {
     for (int i = 0; i < 4; i++, slot++) {
         unsigned int swap_flag = 0;
 
@@ -720,7 +711,7 @@ OPN_HOT void OpnFm::advanceEg(Slot* slot) {
     }
 }
 
-OPN_HOT void OpnFm::chanCalc(Chan* ch) {
+void OpnFm::chanCalc(Chan* ch) {
     m_m2 = m_c1 = m_c2 = m_mem = 0;
     *ch->mem_connect = ch->mem_value;      // the one-sample MEM delay
 
@@ -759,14 +750,11 @@ OPN_HOT void OpnFm::chanCalc(Chan* ch) {
     ch->SLOT[3].phase += ch->SLOT[3].Incr;
 }
 
-// Deliberately left in flash, unlike AySound::gen_sound / SAASound::gen_sound.
-// The inner loop plus its helpers is a couple of KB and the two lookup tables it
-// reads are on the heap, so the XIP cache holds the whole working set; against
-// that, CLAUDE.md records a boot-time OOM panic caused by ~4 KB of extra SRAM in
-// the Z80 accessors, and the heap margin at VIDEO::Init is under 4 KB on
-// PICO_DV. If FM ever turns out to cost frames on hardware, adding
-// __not_in_flash("audio") here and on chanCalc/advanceEg is the whole change.
-OPN_HOT void OpnFm::gen(int16_t* buf, int bufsize, int bufpos) {
+// Deliberately in flash, unlike AySound::gen_sound / SAASound::gen_sound: the
+// two lookup tables it reads are on the heap, so the XIP cache holds the working
+// set, and the heap margin at VIDEO::Init is under 4 KB on PICO_DV (see the
+// header comment for the RAM-resident period).
+void OpnFm::gen(int16_t* buf, int bufsize, int bufpos) {
     if (!s_sin_tab) return;
 
     refreshChan(&m_ch[0]);

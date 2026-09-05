@@ -18,14 +18,8 @@ the Free Software Foundation, either version 3 of the License, or
 #include <string.h>
 #include <stdlib.h>
 
-// Per-sample code lives in RAM like the other FM cores (see OplFm.cpp for
-// the XIP-thrash war story). Host builds see no annotation.
-#if __has_include("pico.h")
-#include "pico.h"
-#define OPLL_HOT __not_in_flash("audio")
-#else
-#define OPLL_HOT
-#endif
+// All in flash, like the other FM cores (see OplFm.cpp for the history of the
+// RAM-resident period and why it ended).
 
 OpllFm* opllfm = nullptr;
 
@@ -659,7 +653,7 @@ void OpllFm::reset() {
 
 // ── per-sample pipeline ─────────────────────────────────────────────────────
 
-OPLL_HOT void OpllFm::advanceLfo() {
+void OpllFm::advanceLfo() {
     m_lfo_am_cnt += m_lfo_am_inc;
     if (m_lfo_am_cnt >= ((uint32_t)LFO_AM_TAB_ELEMENTS << LFO_SH))
         m_lfo_am_cnt -= ((uint32_t)LFO_AM_TAB_ELEMENTS << LFO_SH);
@@ -670,7 +664,7 @@ OPLL_HOT void OpllFm::advanceLfo() {
     m_LFO_PM = (m_lfo_pm_cnt >> LFO_SH) & 7;
 }
 
-OPLL_HOT void OpllFm::advance() {
+void OpllFm::advance() {
     m_eg_timer += m_eg_timer_add;
 
     while (m_eg_timer >= m_eg_timer_overflow) {
@@ -824,7 +818,7 @@ OPLL_HOT void OpllFm::advance() {
     }
 }
 
-OPLL_HOT void OpllFm::chanCalc(Chan* CH) {
+void OpllFm::chanCalc(Chan* CH) {
     /* SLOT 1 */
     Slot* SLOT = &CH->SLOT[SLOT1];
     uint32_t env = volume_calc(SLOT);
@@ -857,7 +851,7 @@ OPLL_HOT void OpllFm::chanCalc(Chan* CH) {
 // modulator's feedback would still evolve is exact for the audible output:
 // nothing hears it, and a re-key dumps both slots to MAX and resets phase
 // before anything becomes audible again.
-OPLL_HOT void OpllFm::chanCalcOrSkip(Chan* CH) {
+void OpllFm::chanCalcOrSkip(Chan* CH) {
     Slot* s = CH->SLOT;
     if (s[1].state == EG_OFF &&
         (s[0].state == EG_OFF || s[0].state == EG_REL)) {
@@ -867,7 +861,7 @@ OPLL_HOT void OpllFm::chanCalcOrSkip(Chan* CH) {
     chanCalc(CH);
 }
 
-OPLL_HOT void OpllFm::rhythmCalc(unsigned int noise) {
+void OpllFm::rhythmCalc(unsigned int noise) {
     /* Bass Drum: op1->op2 with the usual feedback path; out x2 */
     Slot* SLOT = &m_ch[6].SLOT[SLOT1];
     uint32_t env = volume_calc(SLOT);
@@ -955,7 +949,7 @@ bool OpllFm::allQuiet() const {
 
 // One chip sample (melody + rhythm, doubled like MAME's two output pins
 // summed; the x2 keeps a lone OPLL at a level comparable to the OPL3 core).
-OPLL_HOT void OpllFm::renderSample(int32_t& out) {
+void OpllFm::renderSample(int32_t& out) {
     advanceLfo();
 
     m_out_melody = 0;
@@ -977,7 +971,7 @@ OPLL_HOT void OpllFm::renderSample(int32_t& out) {
     advance();
 }
 
-OPLL_HOT void OpllFm::gen(int16_t* buf, int count, int bufpos) {
+void OpllFm::gen(int16_t* buf, int count, int bufpos) {
     if (count <= 0) return;
 
     if (allQuiet()) {

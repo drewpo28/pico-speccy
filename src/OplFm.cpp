@@ -6,9 +6,8 @@ register-for-register faithful to it. The two big lookup tables live in flash
 (OplTabs.h, generated); the small const tables below are copied verbatim.
 
 Everything is deliberately in FLASH, like OpnFm: the OPL3 path only runs while
-Config::opl3 is on, and the quiet fast path makes an idle chip nearly free. If
-FM playback costs frames on hardware, __not_in_flash("audio") on gen/chanCalc/
-advance is the whole change.
+Config::opl3 is on, and the quiet fast path makes an idle chip nearly free.
+(A RAM-resident period is recorded below the includes.)
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -23,19 +22,13 @@ the Free Software Foundation, either version 3 of the License, or
 #include <string.h>
 #include <stdlib.h>
 
-// The per-SAMPLE code lives in RAM (.time_critical): even with the write
-// queue batching a frame into one contiguous gen() pass, the Z80 core still
-// evicts these ~3.6 KB (at -O2, see CMakeLists) from the XIP cache between frames, and re-faulting them
-// through flash showed up as rare IDL<0 frames with audible clicks on heavy
-// Adlib rips (hw 2026-09-01). Register-write code (writeReg, setters) stays
-// in flash — it runs in bursts inside the same pass and caches fine.
-// Host builds (tools/oplfm_test.cpp) have no pico headers: annotation off.
-#if __has_include("pico.h")
-#include "pico.h"
-#define OPL_HOT __not_in_flash("audio")
-#else
-#define OPL_HOT
-#endif
+// All of this core is in FLASH, per-sample code included. It was RAM-resident
+// (__not_in_flash "audio", ~3.6 KB) from 2026-09-01 to 2026-09-06: adopted in
+// one bundle with half-rate + EG-skip against Doom II clicks, never isolated,
+// and a 1.0.3-vs-1.0.4 SRAM comparison (+12.7 KB static, ~9 KB of it FM code
+// paid with the chips OFF) prompted a re-test — flash-resident it plays the
+// same on DVp2. If clicks return, gate the RAM placement on a CMake switch
+// rather than restoring it unconditionally.
 
 OplFm* oplfm = nullptr;
 
@@ -374,7 +367,7 @@ void OplFm::timerOver(int c) {
     statusSet(c ? 0x20 : 0x40);
 }
 
-OPL_HOT void OplFm::runTimers(int samples) {
+void OplFm::runTimers(int samples) {
     for (int c = 0; c < 2; c++) {
         if (!m_st[c]) continue;
         m_Tcnt[c] -= (int64_t)samples * m_timer_step_q16;
@@ -388,7 +381,7 @@ OPL_HOT void OplFm::runTimers(int samples) {
 
 // ── LFO / EG / phase advance, per output sample ─────────────────────────────
 
-OPL_HOT void OplFm::advanceLfo() {
+void OplFm::advanceLfo() {
     m_lfo_am_cnt += m_lfo_am_inc;
     if (m_lfo_am_cnt >= ((uint32_t)LFO_AM_TAB_ELEMENTS << LFO_SH))
         m_lfo_am_cnt -= ((uint32_t)LFO_AM_TAB_ELEMENTS << LFO_SH);
@@ -400,7 +393,7 @@ OPL_HOT void OplFm::advanceLfo() {
     m_LFO_PM = ((m_lfo_pm_cnt >> LFO_SH) & 7) | m_lfo_pm_depth_range;
 }
 
-OPL_HOT void OplFm::advance() {
+void OplFm::advance() {
     m_eg_timer += m_eg_timer_add;
 
     while (m_eg_timer >= m_eg_timer_overflow) {
@@ -578,7 +571,7 @@ static inline int32_t op_calc1(uint32_t phase, uint32_t env, int32_t pm, uint32_
 #define volume_calc(OP) ((OP)->TLL + ((uint32_t)(OP)->volume) + (m_LFO_AM & (OP)->AMmask))
 
 /* standard 2-operator channel (or 1st half of a 4-op channel) */
-OPL_HOT void OplFm::chanCalc(Chan* CH) {
+void OplFm::chanCalc(Chan* CH) {
     m_phase_modulation  = 0;
     m_phase_modulation2 = 0;
 
@@ -603,7 +596,7 @@ OPL_HOT void OplFm::chanCalc(Chan* CH) {
 }
 
 /* 2nd half of a 4-op channel */
-OPL_HOT void OplFm::chanCalcExt(Chan* CH) {
+void OplFm::chanCalcExt(Chan* CH) {
     m_phase_modulation = 0;
 
     Slot* SLOT = &CH->SLOT[SLOT1];
@@ -624,7 +617,7 @@ OPL_HOT void OplFm::chanCalcExt(Chan* CH) {
 
 /* rhythm mode: BD/HH/SD/TOM/TOP on channels 6-8, phase quirks as verified
    on real YM3812 (see ymf262.cpp for the full commentary) */
-OPL_HOT void OplFm::chanCalcRhythm(unsigned int noise) {
+void OplFm::chanCalcRhythm(unsigned int noise) {
     /* Bass Drum: connect=0 -> op1->op2->out, connect=1 -> op2 only; out x2 */
     m_phase_modulation = 0;
 
@@ -1316,7 +1309,7 @@ void OplFm::write(int a, uint8_t v) {
 // samples settle slot 1's feedback memory to zero — force that and skip the
 // whole per-sample walk. An envelope can only leave EG_OFF on a key-on, i.e.
 // between gen() calls, so the skip can never miss an attack.
-OPL_HOT void OplFm::chanCalcOrSkip(Chan* CH) {
+void OplFm::chanCalcOrSkip(Chan* CH) {
     Slot* s = CH->SLOT;
     if (s[0].state == EG_OFF && s[1].state == EG_OFF) {
         s[0].op1_out[0] = s[0].op1_out[1] = 0;
@@ -1326,7 +1319,7 @@ OPL_HOT void OplFm::chanCalcOrSkip(Chan* CH) {
 }
 
 // Channel a of a 4-op-capable pair plus its partner a+3.
-OPL_HOT void OplFm::pairCalc(int a) {
+void OplFm::pairCalc(int a) {
     Chan* C = &m_ch[a];
     if (C->extended) {
         Chan* D = C + 3;
@@ -1345,14 +1338,14 @@ OPL_HOT void OplFm::pairCalc(int a) {
 
 // ── generation ──────────────────────────────────────────────────────────────
 
-OPL_HOT bool OplFm::allQuiet() const {
+bool OplFm::allQuiet() const {
     for (int i = 0; i < 18; i++)
         if (m_ch[i].SLOT[0].state != EG_OFF || m_ch[i].SLOT[1].state != EG_OFF)
             return false;
     return true;
 }
 
-OPL_HOT void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
+void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
     if (count <= 0) return;
 
     // Timers first: they must keep true time even while the chip is silent —
@@ -1393,7 +1386,7 @@ OPL_HOT void OplFm::gen(int16_t* bufL, int16_t* bufR, int count, int bufpos) {
 }
 
 // One chip sample through the full pipeline (both output accumulators).
-OPL_HOT void OplFm::renderSample(int32_t& outA, int32_t& outB) {
+void OplFm::renderSample(int32_t& outA, int32_t& outB) {
     advanceLfo();
 
     memset(m_chanout, 0, sizeof(m_chanout));
