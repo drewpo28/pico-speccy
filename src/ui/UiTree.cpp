@@ -490,8 +490,8 @@ static const Option opt_ide_scheme[] = {
     { "Off",   0 },
     { "NEMO",  1 },
     { "PROFI", 2 },
-    { "IDEDOS",   3 },
-    { "SMUC",  4 },
+    { "SMUC",  3 },   // IDE::SMUC
+    { "IDEDOS", 4 },  // IDE::PLUS3E — numbering follows IDE::Scheme, not this list
 };
 
 

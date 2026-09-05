@@ -1275,6 +1275,17 @@ the wiki page is sinclair.wiki.zxnet.co.uk/wiki/IDEDOS.
   the +3e patch live on a plain +3.
 - An `.hdf` opened in the F5 browser goes to IDE hd0 on a +3e instead of the DivMMC
   path (DivMMC is off there). The menu route, Storage → IDE images, already worked.
+- **`IDE::Scheme` numbering is `SMUC = 3, PLUS3E = 4`** (hw-confirmed 2026-09-06: +3e
+  IDEDOS sees its disk again on the merged build), and the value IS the NVS
+  `ide_scheme` byte. The +3e branch numbered PLUS3E 3 while main gave 3 to SMUC; the
+  2026-09-06 merge kept both enums side by side (a duplicate-definition compile
+  error) and its resolution left three tables on the branch's numbering — the
+  `opt_ide_scheme` menu radio (UiTree.cpp), the resolveConstraints literals
+  (UiStage.cpp) and Hardware Info's name table — so "IDEDOS" wrote SMUC into Config
+  and the +3e ports sat behind a Scorpion-gated scheme: "mounted disk not detected"
+  on a +3e. Every comparison now uses the enum names; the setup()/CPU::reset
+  backstops rewrite ANY card scheme (SMUC included) to PLUS3E on a +3e, which also
+  heals an NVS written by a pre-merge +3e build.
 
 ### hw-confirmed 2026-09-04: `CAT TAB` lists the partitions
 
@@ -1987,6 +1998,37 @@ warm reboot" is exactly the expected shape.
   ---` header + `main: after ESPectrum::setup()` only when setup completed.
 - Still unaddressed, same family: butter PSRAM M1 timing is only retimed AFTER the
   `cpu_mhz` switch while core1 (GS, video) may be fetching from PSRAM during it.
+
+## Flash ceiling: the firmware must stay below the GM.DLS partition (2026-09-06, build boots + IDEDOS hw-confirmed on DVp2)
+
+`rp2350-memmap.ld` ASSERTs `__flash_binary_end <= __gm_bank_start` — on GMX builds
+(every board) that is **2424832 B** (4 MB − 1.6875 MB). The failure looks like
+"ld returned 1" after a healthy-looking memory table; the actual message is
+`ERROR: firmware overflowed into the gm_bank flash partition`, one line above it.
+Merging the +3/+3e ROMs (~86 KB) overflowed it by 23 KB. Fixed by dropping ~89 KB
+of library dead weight rather than shrinking the partition again (which
+re-provisions every user's wavetable bank from SD):
+
+- **`sscanf` is banned** (`src/ScanLite.h` has the integer parsers; `parse_sntp_time`
+  in ZiFiAT.cpp). One call costs ~49 KB: newlib's float-capable `__ssvfscanf_r` +
+  `strtod` + `mprec`, and its `iswspace` drags the Unicode category tables
+  `jp2uc.o` + `categories.o` (28 KB). newlib's `tzset_r.o` pulls the same chain
+  through `siscanf` and is reached from `mktime`/`localtime_r` (pico_util
+  datetime.c) — `src/cxx_shims.cpp` defines a no-op `_tzset_unlocked_r` (the
+  firmware never sets TZ; the defaults it would compute are already in tzvars.o).
+- **`__gnu_cxx::__verbose_terminate_handler` is ours** (cxx_shims.cpp): libstdc++'s
+  pulls `cp-demangle.o`, 33 KB, to print an exception type under -fno-exceptions.
+- **`std::__throw_*` are ours** (same file): libstdc++'s build a COW-ABI
+  `std::logic_error` (functexcept + stdexcept + cow-stdexcept + cow-string-inst +
+  snprintf_lite, ~14 KB) to throw into a terminate. Signatures must match
+  `<bits/functexcept.h>` or functexcept.o comes back beside them as duplicates.
+- **Check the linker map's "Archive member included" section**, not the source,
+  after any change that touches libc/libstdc++ usage — that is where every one
+  of these showed up, and the per-object size table hides them. `unwind-arm.o`
+  (2.7 KB) legitimately stays: `string-inst.o` references it.
+- Variant spread (build-logs, same commit): ZERO2-PIOUSB is the fattest, ~+19 KB
+  over PICO_DV VGA-HDMI; SOFTTV/TFT are ~20-30 KB slimmer. Headroom after this:
+  ~66 KB on DVp2, ~47 KB on the fattest.
 
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 

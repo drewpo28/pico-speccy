@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <memory>
+#include "ScanLite.h"
 
 // Transfer-buffer size. Allocated on the heap per-transfer (not a permanent static)
 // so the NIC reserves no SRAM when idle — headroom for memory-tight machines (Profi).
@@ -83,12 +84,11 @@ bool Ftp::openPasvData() {
     // 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
     size_t lp = reply.find('(');
     if (lp == std::string::npos) return false;
-    int h[4], p[2];
-    if (sscanf(reply.c_str() + lp + 1, "%d,%d,%d,%d,%d,%d",
-               &h[0], &h[1], &h[2], &h[3], &p[0], &p[1]) != 6) return false;
+    int v[6];   // h1,h2,h3,h4,p1,p2
+    if (scanInts(reply.c_str() + lp + 1, ',', v, 6) != 6) return false;
     char ip[20];
-    snprintf(ip, sizeof(ip), "%d.%d.%d.%d", h[0], h[1], h[2], h[3]);
-    uint16_t dport = (uint16_t)(p[0] * 256 + p[1]);
+    snprintf(ip, sizeof(ip), "%d.%d.%d.%d", v[0], v[1], v[2], v[3]);
+    uint16_t dport = (uint16_t)(v[4] * 256 + v[5]);
     return ZiFiSock::sock_open(ip, dport, false, 12000) == DATA;
 }
 

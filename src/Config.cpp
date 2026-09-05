@@ -16,6 +16,7 @@
 #include "Debug.h"
 #include "graphics.h"
 #include <hardware/vreg.h>
+#include "ScanLite.h"
 
 ArchIdx   Config::arch = A_48K;
 RomsetIdx Config::romSet = R_48K;
@@ -1170,9 +1171,9 @@ void Config::load() {
         for (int s = 0; s < 2; s++) {
             char k[10]; snprintf(k, sizeof(k), "ide_chs%d", s);
             string chs; nvs_get_str(k, chs, sts);
-            unsigned c=0,h=0,se=0;
-            if (sscanf(chs.c_str(), "%u/%u/%u", &c,&h,&se) == 3) {
-                ide_chs[s][0]=c; ide_chs[s][1]=h; ide_chs[s][2]=se;
+            unsigned v[3];   // C/H/S
+            if (scanUints(chs.c_str(), '/', v, 3) == 3) {
+                ide_chs[s][0]=v[0]; ide_chs[s][1]=v[1]; ide_chs[s][2]=v[2];
             }
         }
         nvs_get_u8("mb02", mb02, sts);

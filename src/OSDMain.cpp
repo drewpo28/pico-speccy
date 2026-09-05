@@ -177,6 +177,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include <string>
 #include <cstdio>
 #include <cstdarg>   // infoAppend's vsnprintf
+#include "ScanLite.h"
 
 extern "C" uint8_t TFT_FLAGS;
 extern "C" uint8_t TFT_INVERSION;
@@ -1762,12 +1763,14 @@ bool persistLoad(uint8_t slotnumber)
         RomsetIdx persist_romset = romsetFromStr(buf, R_NONE);
         // Line 3 is the slot name; line 4, when present, is the +3's #1FFD. A sidecar
         // written before this existed simply ends after line 3, and the wrapper leaves
-        // an empty string there, so the sscanf fails and the value stays "absent".
+        // an empty string there, so the parse fails and the value stays "absent".
         int persist_1ffd = -1;
         buf[0] = 0; f_gets(buf, sizeof(buf), *f);       // slot name, not needed here
         buf[0] = 0; f_gets(buf, sizeof(buf), *f);
-        { unsigned v = 0;
-          if (sscanf(buf, "1FFD=%x", &v) == 1) persist_1ffd = (int)(v & 0xFF); }
+        if (strncmp(buf, "1FFD=", 5) == 0) {
+            char* end; unsigned long v = strtoul(buf + 5, &end, 16);
+            if (end != buf + 5) persist_1ffd = (int)(v & 0xFF);
+        }
         fclose2(f);
 
         if (!LoadSnapshot(string(DISK_PSNA_DIR) + "/" + persistfname, persist_arch, persist_romset)) {
@@ -6091,10 +6094,10 @@ static void buildEmulatorInfoText() {
             pos += infoAppend(buf, pos, bufsz,
                 " Z-Controller   : On (#77/#57)\n");
 
-        // IDE/HDD (NEMO/PROFI/SMUC)
+        // IDE/HDD (NEMO/PROFI/SMUC/IDEDOS) — indexed by IDE::Scheme
         if (Config::ide_scheme != 0) {
-            static const char* idesc[] = { "Off", "NEMO", "PROFI", "SMUC" };
-            int si = Config::ide_scheme; if (si > 3) si = 0;
+            static const char* idesc[] = { "Off", "NEMO", "PROFI", "SMUC", "IDEDOS" };
+            int si = Config::ide_scheme; if (si > 4) si = 0;
             pos += infoAppend(buf, pos, bufsz, " IDE/HDD        : %s\n", idesc[si]);
             pos += infoAppend(buf, pos, bufsz, "  hd0           : ");
             pos += appendFilename(buf, pos, bufsz, Config::ide_image[0], 19);
@@ -7815,7 +7818,7 @@ void ideSlotEdit(uint8_t slot) {
                 string in = cur;
                 if (!nm::uiPrompt("Cylinders (empty = auto)", in, 6, false, true)) continue;
                 unsigned c = 0;
-                if (!in.empty() && sscanf(in.c_str(), "%u", &c) != 1) {
+                if (!in.empty() && scanUints(in.c_str(), 0, &c, 1) != 1) {
                     nm::uiToast("Cylinders: number or empty", true, 2000);
                     continue;
                 }
@@ -7832,11 +7835,12 @@ void ideSlotEdit(uint8_t slot) {
                              IDE::geomH(slot), IDE::geomS(slot));
                 string in = cur;
                 if (!nm::uiPrompt("C/H/S (empty = auto)", in, 14, false, true)) continue;
-                unsigned c = 0, h = 0, s2 = 0;
-                if (!in.empty() && sscanf(in.c_str(), "%u/%u/%u", &c, &h, &s2) != 3) {
+                unsigned v[3] = {0, 0, 0};
+                if (!in.empty() && scanUints(in.c_str(), '/', v, 3) != 3) {
                     nm::uiToast("Format: C/H/S", true, 2000);
                     continue;
                 }
+                unsigned c = v[0], h = v[1], s2 = v[2];
                 if (!((c == 0 && h == 0 && s2 == 0) ||
                       (h >= 1 && h <= 16 && s2 >= 1 && s2 <= 63 && c >= 1))) {
                     nm::uiToast("Invalid CHS (H<=16 S<=63)", true, 2000);

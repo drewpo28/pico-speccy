@@ -905,14 +905,14 @@ static void resolveConstraints(CommitReport& rep) {
         // is what lets Off survive. (An earlier version forced the scheme to +3e on
         // every pass and the Devices row simply snapped back — that was wrong.)
         if (stagedIsPlus3e()) {
-            if (staged(SET_IDE_SCHEME) == 1 || staged(SET_IDE_SCHEME) == 2)
-                changed |= force(SET_IDE_SCHEME, 3, rep, "IDE set to the +3e interface");
+            if (staged(SET_IDE_SCHEME) != IDE::OFF && staged(SET_IDE_SCHEME) != IDE::PLUS3E)
+                changed |= force(SET_IDE_SCHEME, IDE::PLUS3E, rep, "IDE set to the +3e interface");
             // The two share #xxEF, so the NIC yields — but only while the interface is
             // actually on. Same rule as Beta above; Config::wifi_enabled is unaffected.
-            if (staged(SET_IDE_SCHEME) == 3 && staged(SET_ZIFI_NIC))
+            if (staged(SET_IDE_SCHEME) == IDE::PLUS3E && staged(SET_ZIFI_NIC))
                 changed |= force(SET_ZIFI_NIC, 0, rep, "ZiFi NIC off: it shares #xxEF with the +3e IDE");
-        } else if (staged(SET_IDE_SCHEME) == 3) {
-            changed |= force(SET_IDE_SCHEME, 0, rep, "IDE off: the +3e interface needs the +3e ROM");
+        } else if (staged(SET_IDE_SCHEME) == IDE::PLUS3E) {
+            changed |= force(SET_IDE_SCHEME, IDE::OFF, rep, "IDE off: the +3e interface needs the +3e ROM");
         }
 
         // EDGE: this commit switches TO the +3e, so give it its interface — that is what
@@ -923,9 +923,9 @@ static void resolveConstraints(CommitReport& rep) {
         // machine pick wins, because force() never bumps g_seq.
         if (bmGet(g_dirty, SET_MACHINE) && stagedIsPlus3e()
             && !isPlus3eRomset((RomsetIdx)(g_base[SET_MACHINE] & 0xFF))
-            && staged(SET_IDE_SCHEME) == 0
+            && staged(SET_IDE_SCHEME) == IDE::OFF
             && g_seq[SET_IDE_SCHEME] <= g_seq[SET_MACHINE]) {
-            changed |= force(SET_IDE_SCHEME, 3, rep, "IDE set to the +3e interface");
+            changed |= force(SET_IDE_SCHEME, IDE::PLUS3E, rep, "IDE set to the +3e interface");
         }
 
         // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so

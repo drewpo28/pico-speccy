@@ -15,6 +15,7 @@
 #include <ctype.h>
 #include <stdarg.h>
 #include <memory>
+#include "ScanLite.h"
 
 // All FTP-server scratch lives in ONE struct allocated in begin() and freed in
 // stop() — the server never runs in the background, so it costs 0 SRAM when
@@ -314,10 +315,10 @@ static void doStor(const char* arg, bool append) {
 
 // ── PORT / EPRT parsing (active mode target) ─────────────────────────────────
 static void doPort(const char* arg) {
-    int h1, h2, h3, h4, p1, p2;
-    if (arg && sscanf(arg, "%d,%d,%d,%d,%d,%d", &h1, &h2, &h3, &h4, &p1, &p2) == 6) {
-        snprintf(g_data_ip, sizeof(g_data_ip), "%d.%d.%d.%d", h1, h2, h3, h4);
-        g_data_port = (uint16_t)(p1 * 256 + p2);
+    int v[6];   // h1,h2,h3,h4,p1,p2
+    if (arg && scanInts(arg, ',', v, 6) == 6) {
+        snprintf(g_data_ip, sizeof(g_data_ip), "%d.%d.%d.%d", v[0], v[1], v[2], v[3]);
+        g_data_port = (uint16_t)(v[4] * 256 + v[5]);
         g_have_port = true;
         reply(200, "PORT command successful");
     } else reply(501, "Bad PORT syntax");

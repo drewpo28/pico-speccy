@@ -152,6 +152,31 @@ ZiFiAT::Status ZiFiAT::connect(const string& ssid, const string& pass, uint32_t 
     return TIMEOUT;
 }
 
+// Parse the tail of "+CIPSNTPTIME:Mon Jan 06 18:30:45 2026" (what sscanf
+// "%7s %7s %d %d:%d:%d %d" used to do — see ScanLite.h for why sscanf is gone).
+// `mon` receives the month abbreviation (up to 7 chars + NUL); the weekday is
+// skipped. Returns false unless every field is present.
+static bool parse_sntp_time(const char* p, char mon[8], int& day, int& hh, int& mm, int& ss, int& year) {
+    auto word = [](const char*& s, char* out, size_t cap) -> bool {
+        while (*s == ' ') s++;
+        if (!*s) return false;
+        size_t n = 0;
+        while (*s && *s != ' ') { if (out && n + 1 < cap) out[n++] = *s; s++; }
+        if (out) out[n] = 0;
+        return true;
+    };
+    auto num = [](const char*& s, int& out, char expect) -> bool {
+        if (expect) { if (*s != expect) return false; s++; }
+        while (*s == ' ') s++;
+        char* end; long v = strtol(s, &end, 10);
+        if (end == s) return false;
+        out = (int)v; s = end;
+        return true;
+    };
+    return word(p, nullptr, 0) && word(p, mon, 8) &&
+           num(p, day, 0) && num(p, hh, 0) && num(p, mm, ':') && num(p, ss, ':') && num(p, year, 0);
+}
+
 static int month_from_abbr(const char* m) {
     static const char* names = "JanFebMarAprMayJunJulAugSepOctNovDec";
     for (int i = 0; i < 12; i++)
@@ -190,10 +215,9 @@ ZiFiAT::Status ZiFiAT::syncTime(int tz, string& out_str) {
             char* p = strstr(line, "+CIPSNTPTIME:");
             if (p) {
                 p += 13;
-                char wday[8], mon[8];
+                char mon[8];
                 int day = 0, hh = 0, mm = 0, ss = 0, year = 0;
-                if (sscanf(p, "%7s %7s %d %d:%d:%d %d",
-                           wday, mon, &day, &hh, &mm, &ss, &year) == 7) {
+                if (parse_sntp_time(p, mon, day, hh, mm, ss, year)) {
                     int month = month_from_abbr(mon);
                     if (year >= 2020 && month >= 1) {
                         RTC::setDateTime(year, month, day, hh, mm, ss);
@@ -313,8 +337,8 @@ void ZiFiAT::autoSyncPoll() {
                 char* p = strstr(L, "+CIPSNTPTIME:");
                 if (p) {
                     p += 13;
-                    char wd[8], mo[8]; int d = 0, hh = 0, mm = 0, ss = 0, yr = 0;
-                    if (sscanf(p, "%7s %7s %d %d:%d:%d %d", wd, mo, &d, &hh, &mm, &ss, &yr) == 7) {
+                    char mo[8]; int d = 0, hh = 0, mm = 0, ss = 0, yr = 0;
+                    if (parse_sntp_time(p, mo, d, hh, mm, ss, yr)) {
                         int month = month_from_abbr(mo);
                         if (yr >= 2020 && month >= 1) {
                             RTC::setDateTime(yr, month, d, hh, mm, ss);

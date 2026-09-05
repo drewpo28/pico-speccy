@@ -22,10 +22,9 @@ public:
     // 3 = SMUC — the Scorpion "Spectrum Multi Unit Controller": the same 16-bit
     // ATA engine behind a completely different port map (Ports::smuc*), plus the
     // card's own 24LC16 NVRAM (Nvram24) and MC146818 clock (RTC).
-    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, SMUC = 3, PLUS3E = 4 };
     // PLUS3E is the +3e's "simple 8-bit" interface: it is part of the machine (the
     // ROM drives it), not a card the user plugs in, so the romset forces this value.
-    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, PLUS3E = 3 };
+    enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, SMUC = 3, PLUS3E = 4 };
 
     // Active scheme mirror of Config::ide_scheme (set in init()).
     static uint8_t scheme;

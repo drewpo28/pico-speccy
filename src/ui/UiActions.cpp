@@ -34,6 +34,7 @@
 #include "UiJoy.h"
 #include "LEDIndicators.h"
 #include <pico/bootrom.h>
+#include "ScanLite.h"
 
 // DS80 state + the standard Profi/ZX 16-colour palette (Video.cpp / vga.c): the ZX
 // keyboard page swaps to it so the bitmap keeps its own colours.
@@ -754,7 +755,7 @@ static void ideEditChs(uint8_t slot) {
         string in = cur;
         if (!uiPrompt("Cylinders (empty = auto)", in, 6, false, true)) return;
         unsigned c = 0;
-        if (!in.empty() && sscanf(in.c_str(), "%u", &c) != 1) {
+        if (!in.empty() && scanUints(in.c_str(), 0, &c, 1) != 1) {
             uiToast("Cylinders: number or empty", true, 2000);
             return;
         }
@@ -770,11 +771,12 @@ static void ideEditChs(uint8_t slot) {
                      IDE::geomS(slot));
         string in = cur;
         if (!uiPrompt("C/H/S (empty = auto)", in, 14, false, true)) return;
-        unsigned c = 0, h = 0, sec = 0;
-        if (!in.empty() && sscanf(in.c_str(), "%u/%u/%u", &c, &h, &sec) != 3) {
+        unsigned v[3] = {0, 0, 0};
+        if (!in.empty() && scanUints(in.c_str(), '/', v, 3) != 3) {
             uiToast("Format: C/H/S", true, 2000);
             return;
         }
+        unsigned c = v[0], h = v[1], sec = v[2];
         if (!((c == 0 && h == 0 && sec == 0) ||
               (h >= 1 && h <= 16 && sec >= 1 && sec <= 63 && c >= 1))) {
             uiToast("Invalid CHS (H<=16 S<=63)", true, 2000);

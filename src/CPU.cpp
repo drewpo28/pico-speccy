@@ -301,8 +301,8 @@ void CPU::reset() {
     // rewritten. IDE::init() is not called here — a reset does not re-open images, and
     // setup() already resolved this for the boot machine.
     if (Config::isPlus3e()) {
-        if (Config::ide_scheme == IDE::NEMO || Config::ide_scheme == IDE::PROFI)
-            Config::ide_scheme = IDE::PLUS3E;
+        if (Config::ide_scheme != IDE::OFF && Config::ide_scheme != IDE::PLUS3E)
+            Config::ide_scheme = IDE::PLUS3E;   // NEMO/PROFI/SMUC: cards the +3e cannot reach
     } else if (Config::ide_scheme == IDE::PLUS3E) {
         Config::ide_scheme = IDE::OFF;
     }

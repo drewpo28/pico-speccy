@@ -799,7 +799,10 @@ void ESPectrum::setup() {
     // an explicit Off is left alone here — only a scheme the +3e ROM cannot reach is
     // rewritten. IDE::init() runs later in setup(), so setting the value here is enough.
     if (Config::isPlus3e()) {
-      if (Config::ide_scheme == IDE::NEMO || Config::ide_scheme == IDE::PROFI)
+      // NEMO/PROFI/SMUC are cards the +3e cannot reach; only an explicit Off stays.
+      // (SMUC, 3, is also what a pre-merge +3e build persisted for IDEDOS — the
+      // +3e branch numbered it 3 before SMUC took that slot; this heals such a NVS.)
+      if (Config::ide_scheme != IDE::OFF && Config::ide_scheme != IDE::PLUS3E)
         Config::ide_scheme = IDE::PLUS3E;
       if (Config::ide_scheme == IDE::PLUS3E && Config::zifi_enabled) {
         Debug::log("setup: +3e — ZiFi NIC off (it shares #xxEF with the +3e IDE)");
