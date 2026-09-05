@@ -1695,9 +1695,10 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
   if (!rpt_info)
   {
     // ONCE per instance, never per report: this sits in the HID data path, which
-    // some devices drive at up to 1 kHz, and printf goes to a blocking 115200 UART
-    // when <BOARD>_DBG_UART is on (~4 ms per line — enough to stall the whole main
-    // loop and look like a freeze). The OSD's HID diagnostics page already reports
+    // some devices drive at up to 1 kHz, and printf used to go to a BLOCKING 115200
+    // UART on the old DBG_UART builds (~4 ms per line — enough to stall the whole
+    // main loop and look like a freeze; the runtime console now feeds a non-blocking
+    // ring, but a per-report line would still flood it). The OSD's HID diagnostics page already reports
     // the condition via last_handler, so the line is only a bring-up hint.
     if (instance < CFG_TUH_HID && !no_rpt_info_logged[instance]) {
       no_rpt_info_logged[instance] = true;

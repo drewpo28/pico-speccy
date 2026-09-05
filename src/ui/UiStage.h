@@ -299,7 +299,10 @@ const char* romsetName(int32_t composite);
     /* Tape > Real sound input (LOAD_WAV_PIO): the classic cascade's "Real sound-in"  */ \
     /* row, lost with it on 2026-07-31. Always in the enum (stable id); the row is    */ \
     /* only built on boards that define the pin.                                      */ \
-    X(SET_TAPE_REALIN,     AC_LIVE,   0,                     get_tapeRealIn, put_tapeRealIn, hook_tapeRealIn,-1)
+    X(SET_TAPE_REALIN,     AC_LIVE,   0,                     get_tapeRealIn, put_tapeRealIn, hook_tapeRealIn,-1)          \
+    /* Debug > UART console (Config::dbg_uart). Reboot-class: the peripherals the   */ \
+    /* console displaces (KBD pair, NESPAD, WAV input) yield at boot only.          */ \
+    X(SET_DBG_UART,        AC_REBOOT, 0,                     get_dbgUart,    put_dbgUart,    nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

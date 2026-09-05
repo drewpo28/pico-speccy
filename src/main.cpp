@@ -852,15 +852,60 @@ Ps2Kbd_Mrmltr ps2kbd(
 // Audio > Driver → keyboard moves to GP14/15 and the I2C takes GP2/3.
 // Called from init_sound() (pwm_audio.cpp) once Config::audio_driver is known;
 // the boot-time choice is made in main() below, before the PIO SM starts.
-extern "C" void board_kbd_set_alt_pins(bool alt) {
-#if defined(KBDUSB) && defined(KBD_ALT_CLOCK_PIN)
-    const uint want = alt ? KBD_ALT_CLOCK_PIN : KBD_CLOCK_PIN;
+// Two things can move the PS/2 pair off KBD_CLOCK_PIN: the ZERO2 DAC decision
+// (s_kbd_alt, above) and the Debug > UART console taking the clock pin as its TX
+// (MURM1/PICO_PC GP0 → DBG_UART_KBD_CLOCK_PIN). One resolver, so every caller —
+// main()'s first init, init_sound(), board_dbg_uart_apply() — lands on the same pin.
+static bool s_kbd_alt = false;
+static uint kbd_want_pin(void) {
+#if defined(KBD_ALT_CLOCK_PIN)
+    if (s_kbd_alt) return KBD_ALT_CLOCK_PIN;
+#endif
+#if defined(DBG_UART_KBD_CLOCK_PIN)
+    if (BoardPins::dbgUartOwnsPin(KBD_CLOCK_PIN)) return DBG_UART_KBD_CLOCK_PIN;
+#endif
+    return KBD_CLOCK_PIN;
+}
+static void kbd_apply_pins(void) {
+#ifdef KBDUSB
+    const uint want = kbd_want_pin();
     if (ps2kbd.clock_gpio() == want) return;
     Debug::log("kbd: moving PS/2 to GP%u/%u", want, want + 1);
     ps2kbd.init_gpio(want);
-#else
-    (void)alt;
 #endif
+}
+extern "C" void board_kbd_set_alt_pins(bool alt) {
+    s_kbd_alt = alt;
+    kbd_apply_pins();
+}
+
+// Debug > UART console — the Config-time decision (ESPectrum::setup, right after
+// the framebuffer reservation). A warm reboot may already have the console running
+// from main() entry (scratch tag); here it is reconciled with Config::dbg_uart and
+// with ZiFi, which keeps priority over its UART. The tag is rewritten to match, so
+// the next warm reboot starts (or does not start) the early console accordingly.
+extern "C" void osd_boot_notice(const char* msg);
+extern "C" void board_dbg_uart_apply(void) {
+    const bool blocked = Config::dbg_uart && BoardPins::dbgUartBlockedByZifi();
+    const bool want    = Config::dbg_uart && !blocked;
+    const int  inst    = BoardPins::dbgUartInstance();
+    if (want && !Debug::uartActive()) {
+        if (inst < 0 || !Debug::uartStart((unsigned)inst, BoardPins::dbgUartTxPin())) {
+            Debug::log2SD("dbg uart: console NOT started (no pin or no heap for the ring)");
+        } else {
+            Debug::log("dbg uart: console on GP%u (UART%d) from Config; %s",
+                       (unsigned)BoardPins::dbgUartTxPin(), inst, BoardPins::dbgUartNote());
+        }
+    } else if (!want && Debug::uartActive()) {
+        Debug::log("dbg uart: console off (%s)", blocked ? "ZiFi owns this UART" : "disabled in Config");
+        Debug::uartStop();
+    }
+    Debug::uartSetWanted(want && Debug::uartActive());
+    if (blocked) {
+        Debug::log2SD("dbg uart: yielded to ZiFi (same UART instance or pins)");
+        osd_boot_notice("UART console off: ZiFi uses the same UART");
+    }
+    kbd_apply_pins();   // the pair follows the console (MURM1/PICO_PC), no-op elsewhere
 }
 
 extern "C" unsigned board_kbd_clock_pin(void) {
@@ -1732,14 +1777,15 @@ extern "C" void picospeccy_usb_fifo_free(void* p) { Buffer::pfree(p); }
 
 int main() {
     uptime_init();   // capture pre-reboot uptime from watchdog scratch (see uptime_seconds)
-#if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
-    // Early console at the boot clock: proves bootrom/crt0 completed and logs the
-    // reset reason before any flash/clock/PSRAM bring-up (the pre-stdio window
-    // used to be silent, which made early-boot hangs undebuggable). The UART
-    // divider goes stale after set_sys_clock; stdio_init_all below re-inits it,
+    // Early console at the boot clock, on WARM reboots only: the previous session
+    // left the "console on" tag in a watchdog scratch register (Debug::uartSetWanted),
+    // so an F12 / crash reboot logs from here — reset reason, flash timing, PSRAM,
+    // VIDEO::Init — exactly like the old DBG_UART builds did. A cold boot has no
+    // tag (and no Config yet); its console starts in ESPectrum::setup. The UART
+    // divider goes stale after set_sys_clock; Debug::uartReclock() below fixes it,
     // so no prints in between.
-    uart_init(uart_default, 115200);
-    gpio_set_function(PICO_DEFAULT_UART_TX_PIN, GPIO_FUNC_UART);
+    if (Debug::uartBootWanted() && BoardPins::dbgUartInstance() >= 0)
+        Debug::uartStart((unsigned)BoardPins::dbgUartInstance(), BoardPins::dbgUartTxPin());
     Debug::log("main: entry, wd_reboot=%d", (int)watchdog_caused_reboot());
     // Decode WHY the chip reset (hw-traced 2026-07-21: "wd_reboot=0 mid-ZIP-extract"
     // reboots were undiagnosable — POR/BOR here means the supply sagged, RUN means
@@ -1755,8 +1801,7 @@ int main() {
                    (cr & POWMAN_CHIP_RESET_HAD_GLITCH_DETECT_BITS)        ? " GLITCH" : "",
                    (cr & POWMAN_CHIP_RESET_HAD_DP_RESET_REQ_BITS)         ? " DBG"    : "");
     }
-    uart_tx_wait_blocking(uart_default);   // drain before the clock switch garbles it
-#endif
+    Debug::uartFlushSync();   // drain before the clock switch garbles it
     flash_info();
     flash_qe_fix();
     if (flash_qe)
@@ -1788,13 +1833,10 @@ int main() {
         flash_timings(applied_boot_mhz);
     #endif
 
-#if defined(DBG_UART_ENABLED)
-    // Console UART explicitly enabled via <BOARD>_DBG_UART. We deliberately gate on
-    // DBG_UART_ENABLED, NOT on PICO_DEFAULT_UART_TX_PIN: the board header always
-    // defines a default UART (uart0/GP0-1 on pico2), which on PICO_DV is the ZiFi
-    // line — calling stdio_init_all() there would grab GP0/1 and break the NIC/FTP.
-    stdio_init_all();
-#endif
+    // clk_sys just changed → clk_peri with it: re-derive the early console's baud.
+    // (No stdio_init_all() anywhere: the pico2 board header's PICO_DEFAULT_UART is
+    // GP0/1, the ZiFi line on PICO_DV — the console has its own stdio driver.)
+    Debug::uartReclock();
 
 #ifdef KBDUSB
     #if defined(ZERO2_PIO_USB_HOST)
@@ -1811,7 +1853,6 @@ int main() {
     tuh_init(BOARD_TUH_RHPORT);
     #endif
     {
-        uint kbd_clk = KBD_CLOCK_PIN;
     #if defined(KBD_ALT_CLOCK_PIN) && defined(PCM5122_I2C_SDA)
         // GP2/3 is either the PS/2 port or the PCM5122's control I2C. Probe the
         // DAC *before* the PS/2 SM starts listening: an I2C transfer on a live
@@ -1820,13 +1861,13 @@ int main() {
         // is cached, so init_sound()'s Auto branch never re-probes on these pins.
         // Config isn't loaded yet — an explicit Audio > Driver = PCM5122 is
         // honoured later by board_kbd_set_alt_pins() from init_sound().
-        if (pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL))
-            kbd_clk = KBD_ALT_CLOCK_PIN;
-        Debug::log("main: pcm5122 %s, kbd CLK=GP%u",
-                   pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL) ? "present" : "absent",
-                   kbd_clk);
+        s_kbd_alt = pcm5122_present(PCM5122_I2C_SDA, PCM5122_I2C_SCL);
+        Debug::log("main: pcm5122 %s, kbd CLK=GP%u", s_kbd_alt ? "present" : "absent",
+                   kbd_want_pin());
     #endif
-        ps2kbd.init_gpio(kbd_clk);
+        // Before Config: a warm reboot's scratch tag already says whether the UART
+        // console owns the PS/2 clock pin (kbd_want_pin → DBG_UART_KBD_CLOCK_PIN).
+        ps2kbd.init_gpio(kbd_want_pin());
     }
 #else
     keyboard_init();
@@ -1892,17 +1933,21 @@ int main() {
 
 #if USE_NESPAD
     // Bring up the NES gamepad now that Config is loaded — unless ZiFi (RP2350)
-    // has claimed any of its pins, in which case yield so the UART owns them.
+    // or the UART console (MURM1: the PS/2 pair moves onto NES_GPIO_DATA 16/17)
+    // has claimed any of its pins, in which case yield so the owner keeps them.
     {
-        bool nes_yield = false;
-        nes_yield = BoardPins::zifiOwnsPin(NES_GPIO_CLK) ||
-                    BoardPins::zifiOwnsPin(NES_GPIO_DATA) ||
-                    BoardPins::zifiOwnsPin(NES_GPIO_LAT);
-        if (!nes_yield) {
+        const bool zifi_yield = BoardPins::zifiOwnsPin(NES_GPIO_CLK) ||
+                                BoardPins::zifiOwnsPin(NES_GPIO_DATA) ||
+                                BoardPins::zifiOwnsPin(NES_GPIO_LAT);
+        const bool dbg_yield  = BoardPins::dbgUartOwnsPin(NES_GPIO_CLK) ||
+                                BoardPins::dbgUartOwnsPin(NES_GPIO_DATA) ||
+                                BoardPins::dbgUartOwnsPin(NES_GPIO_LAT) ||
+                                BoardPins::dbgUartOwnsPin(NES_GPIO_DATA + 1);
+        if (!zifi_yield && !dbg_yield) {
             nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
             nespad_active = true;
         } else {
-            Debug::log("NESPAD: yielded to ZiFi (pins claimed)");
+            Debug::log("NESPAD: yielded to %s (pins claimed)", zifi_yield ? "ZiFi" : "the UART console");
         }
     }
 #endif
@@ -2001,6 +2046,7 @@ int main() {
             psram_update_clkdiv();
 #endif
             restore_interrupts(ints);
+            Debug::uartReclock();   // clk_peri moved with clk_sys — the console's baud too
         }
 
         if (clk_changed && clk_locked) {

@@ -151,6 +151,10 @@ public:
     // makes the firmware behave as if the board had no PSRAM — the runtime twin of the
     // CMake set(PSRAM OFF) kill-switch. See board_psram_disable() in main.cpp.
     static bool     psram_enabled;
+    // Debug > UART console: TX-only 115200 log on DBG_UART_TX_PIN (Debug::uart*).
+    // Reboot-class — the peripherals it displaces yield only at boot. Mirrored into
+    // a watchdog scratch tag so a warm reboot logs from main() entry.
+    static bool     dbg_uart;
     static bool     flashload;
     static bool     tape_player;
     static volatile bool real_player;

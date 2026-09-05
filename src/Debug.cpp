@@ -2,6 +2,10 @@
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
 #include "hardware/uart.h"
+#include "hardware/gpio.h"
+#include "pico/time.h"
+#include "pico/stdio/driver.h"
+#include <stdlib.h>
 #include "FileUtils.h"
 
 static uint32_t log_counter = 0;
@@ -34,34 +38,45 @@ void Debug::led_off()
 #endif
 }
 
-// Push one byte to the console UART only if the TX FIFO has room; returns false
-// (caller stops) when it's full so we DROP the rest instead of blocking. The
-// stock printf path uses uart_write_blocking, which stalls the moment the 32-byte
-// FIFO fills — a per-packet log flood in the ZiFi net pump then freezes the main
-// loop and breaks WiFi scan / FTP / transfers (timing-sensitive). Best-effort,
-// lossy-under-flood logging keeps the diagnostics without ever stalling.
+// ── UART console (Debug > UART console) ──────────────────────────────────────
+// Runtime, TX-only. s_dbg_uart is the single "console is live" flag: every writer
+// tests it first, so the whole path costs one predicted branch while the console
+// is off. The ring is heap-allocated by uartStart() (4 KB — see DBG_TX_RING), so
+// the .bss cost of the feature is the handful of pointers below; the old
+// DBG_UART builds carried the ring statically, ordinary builds nothing at all.
 //
-// Gate on DBG_UART_ENABLED (set by CMake only when <BOARD>_DBG_UART is ON), NOT on
-// PICO_DEFAULT_UART: the board header always defines a default UART (uart0/GP0-1 on
-// pico2), which on PICO_DV is the ZiFi UART. Writing logs there corrupts the ESP AT
-// stream and the FTP server / WiFi fail to start. With the console UART off, logging
-// falls through to printf (no stdio driver linked → dropped, harmless).
-#if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
-// TX ring: Debug::log never waits on the wire. The old bounded spin (~1 ms
-// ceiling PER BYTE) meant a ~100-char line at 115200 cost ~6 ms inside the
-// frame once the 32-byte FIFO filled — the 1 Hz HDMIAU line put a one-sample
-// kink into the audio every ~0.9 s and dipped IDL negative (hw 2026-09-01).
-// Bytes go into the ring (drop on overflow, never wait); Debug::pumpUart()
-// drains it from the frame-pacing idle, and each log call drains what fits
-// the FIFO for free so boot-time logging still flows without the main loop.
+// Debug::log never waits on the wire: bytes go into the ring (drop on overflow),
+// Debug::pumpUart() drains it from the frame-pacing idle, and each log call
+// drains what fits the 32-byte FIFO for free so boot-time logging still flows
+// without the main loop. A bounded spin was tried first (hw 2026-09-01): the 1 Hz
+// HDMIAU line cost ~6 ms inside the frame once the FIFO filled — audio kink every
+// ~0.9 s and IDL<0 on otherwise-fine frames.
+//
+// printf goes the same way: a private stdio_driver_t (s_dbg_stdio) hands its
+// characters to the ring, so the ~40 TUs that printf (TinyUSB HID bring-up
+// hints, the FDC, …) can never block on uart_write_blocking either — the SDK's
+// stdio_uart driver is deliberately NOT linked (CMake pico_enable_stdio_uart 0).
+// It must never bind to PICO_DEFAULT_UART either: the pico2 board header puts
+// that on GP0/1, which is the ZiFi UART on PICO_DV.
 #define DBG_TX_RING 4096
-static char s_dbg_ring[DBG_TX_RING];
+static uart_inst_t*     s_dbg_uart = nullptr;    // live console, or nullptr
+static char*            s_dbg_ring = nullptr;
 static volatile uint32_t s_dbg_w = 0, s_dbg_r = 0;
+static uint8_t          s_dbg_tx_pin = 0xFF;
+
+// Watchdog scratch tag: "the console was on" — survives every watchdog reboot
+// (F12, esp_hard_reset, the fault handlers), NOT a RUN/POR reset (the block is
+// cleared, and watchdog_caused_reboot() is false anyway). scratch[2] is the MIDI
+// reflash request, [3] the uptime carry, [4..7] belong to the SDK's own reboot
+// magic (watchdog_caused_reboot reads [4]) — so [1].
+#define DBG_UART_SCRATCH   1
+#define DBG_UART_TAG_ON    0xDB614A70u
+#define DBG_UART_TAG_OFF   0xDB610FF0u
 
 static inline void dbg_uart_drain_fifo(void)
 {
-    while (s_dbg_r != s_dbg_w && uart_is_writable(uart_default)) {
-        uart_get_hw(uart_default)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
+    while (s_dbg_r != s_dbg_w && uart_is_writable(s_dbg_uart)) {
+        uart_get_hw(s_dbg_uart)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
         s_dbg_r = (s_dbg_r + 1) & (DBG_TX_RING - 1);
     }
 }
@@ -80,29 +95,121 @@ static inline bool dbg_uart_put(char c)
 // crash line lands in order after whatever was still queued.
 static inline void dbg_uart_put_sync(char c)
 {
-    for (uint32_t spin = 0; !uart_is_writable(uart_default); ++spin)
+    for (uint32_t spin = 0; !uart_is_writable(s_dbg_uart); ++spin)
         if (spin >= 200000u) return;
-    uart_get_hw(uart_default)->dr = (uint8_t)c;
+    uart_get_hw(s_dbg_uart)->dr = (uint8_t)c;
 }
 
 static void dbg_uart_flush_sync(void)
 {
     while (s_dbg_r != s_dbg_w) {
         uint32_t spin = 0;
-        while (!uart_is_writable(uart_default))
+        while (!uart_is_writable(s_dbg_uart))
             if (++spin >= 200000u) return;
-        uart_get_hw(uart_default)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
+        uart_get_hw(s_dbg_uart)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
         s_dbg_r = (s_dbg_r + 1) & (DBG_TX_RING - 1);
     }
 }
 
-void Debug::pumpUart() { dbg_uart_drain_fifo(); }
-#else
-void Debug::pumpUart() {}
+// stdio driver: printf → ring. CRLF translation is left to the SDK (crlf_enabled),
+// which inserts the '\r' before handing us the '\n'.
+static void dbg_stdio_out_chars(const char* buf, int len)
+{
+    if (!s_dbg_uart) return;
+    for (int i = 0; i < len; i++)
+        if (!dbg_uart_put(buf[i])) break;
+    dbg_uart_drain_fifo();
+}
+static void dbg_stdio_out_flush(void)
+{
+    if (s_dbg_uart) dbg_uart_drain_fifo();
+}
+static stdio_driver_t s_dbg_stdio = {
+    .out_chars = dbg_stdio_out_chars,
+    .out_flush = dbg_stdio_out_flush,
+    .in_chars  = nullptr,
+    .set_chars_available_callback = nullptr,
+    .next = nullptr,
+#if PICO_STDIO_ENABLE_CRLF_SUPPORT
+    .last_ended_with_cr = false,
+    .crlf_enabled = true,
 #endif
+};
+
+void Debug::pumpUart() { if (s_dbg_uart) dbg_uart_drain_fifo(); }
+
+bool     Debug::uartActive() { return s_dbg_uart != nullptr; }
+unsigned Debug::uartTxPin()  { return s_dbg_uart ? s_dbg_tx_pin : 0xFFu; }
+
+bool Debug::uartBootWanted()
+{
+    return watchdog_caused_reboot() && watchdog_hw->scratch[DBG_UART_SCRATCH] == DBG_UART_TAG_ON;
+}
+
+void Debug::uartSetWanted(bool on)
+{
+    watchdog_hw->scratch[DBG_UART_SCRATCH] = on ? DBG_UART_TAG_ON : DBG_UART_TAG_OFF;
+}
+
+bool Debug::uartStart(unsigned uart_index, unsigned tx_pin)
+{
+    if (s_dbg_uart) return true;
+    if (!s_dbg_ring) {
+        s_dbg_ring = (char*)malloc(DBG_TX_RING);
+        if (!s_dbg_ring) return false;   // caller logs to SD; the console stays off
+    }
+    s_dbg_w = s_dbg_r = 0;
+    uart_inst_t* u = uart_index ? uart1 : uart0;
+    uart_init(u, 115200);
+    uart_set_format(u, 8, 1, UART_PARITY_NONE);
+    uart_set_fifo_enabled(u, true);
+    gpio_set_function(tx_pin, UART_FUNCSEL_NUM(u, tx_pin));
+    s_dbg_tx_pin = (uint8_t)tx_pin;
+    s_dbg_uart = u;                       // publish LAST: writers test this pointer
+    stdio_set_driver_enabled(&s_dbg_stdio, true);
+    return true;
+}
+
+void Debug::uartStop()
+{
+    if (!s_dbg_uart) return;
+    dbg_uart_flush_sync();
+    stdio_set_driver_enabled(&s_dbg_stdio, false);
+    uart_inst_t* u = s_dbg_uart;
+    s_dbg_uart = nullptr;                 // unpublish FIRST
+    uart_deinit(u);
+    gpio_set_function(s_dbg_tx_pin, GPIO_FUNC_SIO);
+    gpio_set_dir(s_dbg_tx_pin, false);
+    s_dbg_tx_pin = 0xFF;
+    // A writer on the other core that had already tested s_dbg_uart is inside a
+    // sub-microsecond ring store; give it time before the ring goes back to the heap.
+    busy_wait_us(200);
+    free(s_dbg_ring);
+    s_dbg_ring = nullptr;
+    s_dbg_w = s_dbg_r = 0;
+}
+
+// clk_peri follows clk_sys (set_sys_clock_pll re-derives it), so the divider
+// programmed at 150 MHz is wrong at 378. uart_set_baudrate keeps the FIFO
+// contents, unlike uart_init; drain first so the queued tail is not garbled.
+void Debug::uartReclock()
+{
+    if (!s_dbg_uart) return;
+    dbg_uart_flush_sync();
+    uart_tx_wait_blocking(s_dbg_uart);
+    uart_set_baudrate(s_dbg_uart, 115200);
+}
+
+void Debug::uartFlushSync()
+{
+    if (!s_dbg_uart) return;
+    dbg_uart_flush_sync();
+    uart_tx_wait_blocking(s_dbg_uart);   // 32 B @ 115200 ≈ 3 ms > the watchdog delay
+}
 
 void Debug::log(const char* fmt, ...)
 {
+    if (!s_dbg_uart) return;   // console off: no sink, so don't even format
     char buf[256];
     va_list args;
     va_start(args, fmt);
@@ -111,7 +218,6 @@ void Debug::log(const char* fmt, ...)
     if (n < 0) return;
     if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
 
-#if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
     for (int i = 0; i < n; i++) {
         if (buf[i] == '\n' && !dbg_uart_put('\r')) break; // CRLF for terminals
         if (!dbg_uart_put(buf[i])) break;                 // ring full → drop remainder
@@ -119,9 +225,6 @@ void Debug::log(const char* fmt, ...)
     if (dbg_uart_put('\r'))
         dbg_uart_put('\n');
     dbg_uart_drain_fifo();   // free: fills the 32-byte FIFO, never waits
-#else
-    printf("%s\n", buf);
-#endif
 }
 
 #if NEO8_TRAP
@@ -164,6 +267,7 @@ void Debug::fault_log(const char* fmt, ...)
 {
     // Per-core static buffers: the fault stack may itself be the problem
     // (overflow), and both cores can fault near-simultaneously.
+    if (!s_dbg_uart) return;   // no exception-safe sink without the console
     static char bufs[2][192];
     char* buf = bufs[*(volatile uint32_t*)0xD0000000u & 1];  // SIO CPUID
 
@@ -174,7 +278,6 @@ void Debug::fault_log(const char* fmt, ...)
     if (n < 0) return;
     if (n > (int)sizeof(bufs[0]) - 1) n = sizeof(bufs[0]) - 1;
 
-#if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
     // Crashing: block as needed, and get the queued backlog out first so the
     // fault lines land in order.
     dbg_uart_flush_sync();
@@ -184,9 +287,6 @@ void Debug::fault_log(const char* fmt, ...)
     }
     dbg_uart_put_sync('\r');
     dbg_uart_put_sync('\n');
-#else
-    (void)n;  // no exception-safe sink without the debug UART
-#endif
 }
 
 void Debug::log2SD_impl(const string& data)

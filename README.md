@@ -289,12 +289,19 @@ Your filesystem tree must be look like:
 | `-DTV=ON` | Hardware composite TV output |
 | `-DTFT=ON` | TFT display output |
 | `-DILI9341=ON` | ILI9341 TFT display output |
-| `-DPICO_PC_DBG_UART=ON` | PICO_PC: enable UART0 on DBG1 header (GP0=TX, GP1=RX) for Debug Probe. Auto-remaps PS/2 keyboard to GP10/GP11 to free the pins. |
-| `-DMURM1_DBG_UART=ON` | MURM: enable Debug Probe UART0 on GP0/GP1 — moves the PS/2 keyboard to GP16/GP17 and disables NESPAD. |
-| `-DPICO_DV_DBG_UART=ON` / `-DZERO2_DBG_UART=ON` | PICO_DV / ZERO2: enable Debug Probe UART1 on GP20/GP21. |
 | `-DHDMI_TMDS_LEVEL_CLAMP=OFF` | HDMI: disable the channel-level clamp to [0x08..0xF6] (on by default; costs ~3% black / ~4% white, improves link stability on marginal receivers). |
 | `-DHDMI_SOFT_CLK=OFF` | HDMI: drive the clock pair at 12 mA + fast slew instead of the default 8 mA + slow slew. |
 | `-DTFT_ST7789=ON` | ST7789 TFT display variant |
+
+The debug UART console is no longer a build option: **Debug > UART console** in the
+menu turns on a TX-only 115200 8N1 log (Debug::log and every printf) on the board's
+console pin — MURM1 / PICO_PC / MURM2 / ZERO2 GP0 (UART0), PICO_DV GP20 (UART1).
+Reboot-class. On MURM1 and PICO_PC the pin is the PS/2 clock, so the keyboard moves
+to GP16/17 (MURM1, which also disables the NESPAD) or GP10/11 (PICO_PC) while the
+console is on; on PICO_DV it takes the WAV input pin. The console yields to ZiFi
+when the NIC uses the same UART or pins. After a warm reboot (F12) the log starts
+from the very first instruction of `main()`; after a cold power-up the lines before
+the config is read are lost.
 
 #### Multi-target build script
 

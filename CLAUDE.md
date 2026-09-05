@@ -1287,6 +1287,53 @@ always clear, and has to be — see the OPN core section.)
 - The whole thing is gated on `Config::turbosound` (Audio → TurboSound). With it
   off, a TSFM demo still hangs — same as real hardware without the card.
 
+## Debug > UART console — the runtime replacement for `<BOARD>_DBG_UART` (2026-09-06, NOT hw-tested)
+
+The four CMake toggles (`MURM1/PICO_PC/PICO_DV/ZERO2_DBG_UART`) are gone. The console is
+`Config::dbg_uart` (NVS `dbg_uart`, default off) → **Debug > UART console**, an
+`AC_REBOOT` boolean; the row exists only where the board defines `DBG_UART_TX_PIN`
+(all five boards do — MURM2 never had a build option and has one now). Everything
+lives in `Debug::uart*` (Debug.cpp), `BoardPins::dbgUart*` and
+`board_dbg_uart_apply()` (main.cpp).
+
+- **TX-only, 115200 8N1.** Nothing in the firmware ever read the console (the only
+  `uart_getc` is ZiFi's), and dropping RX halves the pin conflicts. Pins are
+  board-defines like every other pin: DV GP20 (UART1, displaces the WAV input),
+  MURM1/PICO_PC/MURM2/ZERO2 GP0 (UART0). **ZERO2 moved off GP20/21** — GP21 is
+  `PCM5122_I2S_DATA` and UART1 is the instance of the default ZiFi pair 24/25, two
+  collisions the old build option silently had. Where GP0 is the PS/2 clock
+  (MURM1, PICO_PC) the keyboard moves to `DBG_UART_KBD_CLOCK_PIN` (16/17, 10/11)
+  via the same runtime `init_gpio` the ZERO2 DAC remap uses; on MURM1 that pair
+  is NES_GPIO_DATA, so the NESPAD yields (`USE_NESPAD` is unconditional now).
+- **Yield-at-boot, ZiFi wins.** `BoardPins::dbgUartOwnsPin()` is `zifiOwnsPin()`'s
+  twin (NESPAD, WAV, MIDI and `kbd_want_pin()` consult it), and
+  `dbgUartBlockedByZifi()` makes the console step aside when ZiFi's GPIO UART uses
+  the same INSTANCE (MURM1: every ZiFi pair but 26/27 is UART0; PICO_PC 2/3;
+  ZERO2 28/29 + 0/1), the TX pin or the relocated keyboard pair. The menu notes
+  it at commit, `board_dbg_uart_apply` logs it to SD + a bootNotice.
+- **The early boot IS logged, on warm reboots**: `put_dbgUart` and
+  `board_dbg_uart_apply` keep a tag in `watchdog_hw->scratch[1]` (`[2]` MIDI
+  reflash, `[3]` uptime, `[4..7]` the SDK's own reboot magic — `watchdog_caused_reboot`
+  reads `[4]`); `main()` starts the console at entry when the tag says so, so F12 /
+  crash reboots log chip_reset, flash timing, PSRAM and VIDEO::Init exactly as the
+  old builds did. A COLD boot with the option on loses the lines before
+  `Config::load` (there is no Config yet) — the user's verdict: not a problem,
+  "always press F12". Without an SD (no `Config::load`) `apply` is skipped, so a
+  tag-started console survives for debugging exactly that.
+- **stdio is our own driver.** `pico_enable_stdio_uart 0` (it was linked by default
+  and never initialised); `s_dbg_stdio` feeds printf into the same non-blocking
+  4 KB ring as `Debug::log`, so the ~40 TUs that printf can no longer block on
+  `uart_write_blocking` (the hid_app lesson). It must never bind to
+  `PICO_DEFAULT_UART`: the pico2 board header puts that on GP0/1 = ZiFi on PICO_DV.
+  `Debug::log` / `fault_log` return before formatting while the console is off.
+- **clk_peri follows clk_sys**, so the baud is re-derived (`uartReclock`) after the
+  boot clock switch and after the `Config::cpu_mhz` switch — `uart_set_baudrate`,
+  not `uart_init`, which would drop the FIFO.
+- **SRAM: the ring is heap, allocated by `uartStart`, so a console that is OFF costs
+  only the pointers** — measured in the session, see the table in the commit /
+  message; with it ON it is 4 KB of heap taken right after the framebuffer
+  reservation (before the GS/MIDI pools, which have PSRAM tiers).
+
 ## HDMI on MURM1: "no video at all" — PIO0 instruction memory (2026-08-12)
 
 **hw-confirmed 2026-08-12 on BOTH boards: m1p2 (the broken one) now has a picture,

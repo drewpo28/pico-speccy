@@ -51,6 +51,29 @@ bool zifiOwnsPin(uint8_t pin);
 // the yield-at-boot guards take effect.
 const char* zifiActiveNote();
 
+// ── Debug > UART console (Config::dbg_uart) ──────────────────────────────────
+// TX-only console on the board's DBG_UART_TX_PIN (CMake). Where that pin is the
+// PS/2 clock (MURM1 GP0, PICO_PC GP0) the keyboard moves to DBG_UART_KBD_CLOCK_PIN
+// while the console is on. Runtime since 2026-09-06 (the <BOARD>_DBG_UART build
+// options are gone); see Debug::uart* for the transport itself.
+uint8_t dbgUartTxPin();                 // PIN_OFF when the board defines none
+int     dbgUartInstance();              // 0/1, -1 when none
+uint8_t dbgUartKbdClockPin();           // relocated PS/2 clock, PIN_OFF if the console
+                                        // does not touch the keyboard on this board
+// True when the console is live or about to be (scratch tag at main() entry, Config
+// after load) AND it displaces `pin`: the TX pin itself, or the pair the keyboard
+// was moved onto. Same contract as zifiOwnsPin — conflicting peripherals (NESPAD,
+// WAV loader, MIDI) call it at boot and skip their own init.
+bool    dbgUartOwnsPin(uint8_t pin);
+// Whether the console can run at all beside the configured ZiFi UART: ZiFi has
+// priority (its pins were chosen by the user and the NIC/WiFi need them), so the
+// console yields when ZiFi's GPIO UART uses the same instance, the console TX pin,
+// or the relocated keyboard pair. Reads Config — call after Config::load().
+bool    dbgUartBlockedByZifi();
+// The ZiFi pin picker's twin for the note strings: what the console displaces on
+// this board ("" if nothing).
+const char* dbgUartNote();
+
 } // namespace BoardPins
 
 // PS/2 keyboard pin pair, implemented in main.cpp next to the driver instance.
@@ -59,4 +82,8 @@ const char* zifiActiveNote();
 // control I2C, alt pair GP14/15). Everywhere else the setter is a no-op.
 extern "C" void     board_kbd_set_alt_pins(bool alt);
 extern "C" unsigned board_kbd_clock_pin(void);   // live CLOCK pin (DATA = +1)
+// Debug > UART console: apply Config::dbg_uart (start/stop, ZiFi yield, scratch
+// tag, PS/2 re-pin). main.cpp; called from ESPectrum::setup right after the
+// framebuffer reservation, before any pin-yielding peripheral initialises.
+extern "C" void     board_dbg_uart_apply(void);
 

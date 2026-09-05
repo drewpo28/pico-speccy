@@ -3,6 +3,7 @@
 
 #include "Config.h"
 #include "ZiFi.h"          // ZiFi::linkUp() — UART link owns its pins even with the NIC off
+#include "Debug.h"         // Debug::uartActive/uartBootWanted — the console's live state
 #include "ChipPackage.h"   // IS_RP2350B — RUNTIME package detect (NOT usable in #if)
 
 namespace BoardPins {
@@ -56,7 +57,7 @@ static const UartPair ZIFI_PAIRS[] = {
     {14, 15, "off: NESPAD"},    // UART0
     {26, 27, "off: audio"},     // UART1 — the ONLY non-UART0 pair on this board, so
                                 // the only one that can coexist with the GP0/1 debug
-                                // UART (MURM1_DBG_UART). Every other UART1 pin pair is
+                                // console (Debug > UART console). Every other UART1 pin pair is
                                 // taken by SD/display/PSRAM and GP23 isn't broken out.
                                 // Displaces the I2S/PWM audio output on GP26/27 — see
                                 // init_sound() which yields these pins to ZiFi.
@@ -120,6 +121,66 @@ const char* zifiActiveNote() {
     return "";
 }
 
+// ── Debug > UART console ──────────────────────────────────────────────────────
+#ifndef DBG_UART_TX_PIN
+#define DBG_UART_TX_PIN 0xFF
+#endif
+#ifndef DBG_UART_KBD_CLOCK_PIN
+#define DBG_UART_KBD_CLOCK_PIN 0xFF
+#endif
+
+uint8_t dbgUartTxPin()       { return DBG_UART_TX_PIN; }
+int     dbgUartInstance()    { return DBG_UART_TX_PIN == 0xFF ? -1 : uartInstanceForTx(DBG_UART_TX_PIN); }
+uint8_t dbgUartKbdClockPin() { return DBG_UART_KBD_CLOCK_PIN; }
+
+// "Live or about to be": before Config::load only the scratch tag knows (the
+// console may already be running from main() entry); board_dbg_uart_apply()
+// then reconciles it with Config AND rewrites the tag, and it runs before any
+// of the yielding peripherals initialise — so after it both tests agree with
+// the console's real state. Deliberately NOT Config::dbg_uart: a console the
+// user asked for but ZiFi blocked must not make NESPAD/WAV/KBD yield to nothing.
+static bool dbgUartWanted() {
+    if (DBG_UART_TX_PIN == 0xFF) return false;
+    return Debug::uartActive() || Debug::uartBootWanted();
+}
+
+bool dbgUartOwnsPin(uint8_t pin) {
+    if (!dbgUartWanted()) return false;
+    if (pin == DBG_UART_TX_PIN) return true;
+    if (DBG_UART_KBD_CLOCK_PIN != 0xFF &&
+        (pin == DBG_UART_KBD_CLOCK_PIN || pin == DBG_UART_KBD_CLOCK_PIN + 1)) return true;
+    return false;
+}
+
+bool dbgUartBlockedByZifi() {
+    if (DBG_UART_TX_PIN == 0xFF) return true;
+    // Same "who may use the ESP UART" rule as zifiOwnsPin; a USB-CDC transport
+    // uses no GPIO UART at all.
+    if (!Config::zifi_enabled && !Config::wifi_enabled && !ZiFi::linkUp()) return false;
+    if (Config::zifi_transport == 1) return false;
+    uint8_t tx, rx;
+    if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return false;
+    if (uartInstanceForTx(tx) == dbgUartInstance()) return true;        // one peripheral, two owners
+    if (tx == DBG_UART_TX_PIN || rx == DBG_UART_TX_PIN) return true;
+    if (DBG_UART_KBD_CLOCK_PIN != 0xFF) {
+        const uint8_t k0 = DBG_UART_KBD_CLOCK_PIN, k1 = DBG_UART_KBD_CLOCK_PIN + 1;
+        if (tx == k0 || tx == k1 || rx == k0 || rx == k1) return true;
+    }
+    return false;
+}
+
+const char* dbgUartNote() {
+#if defined(PICO_DV)
+    return "off: WAV input";
+#elif defined(PICO_PC)
+    return "KBD -> GP10/11";
+#elif defined(MURM2) || defined(ZERO2)
+    return "";
+#else
+    return "KBD -> GP16/17, NESPAD off";
+#endif
+}
+
 } // namespace BoardPins
 
 // C-callable shim (PinSerialData_595.c is plain C and can't use the namespace).
@@ -127,3 +188,6 @@ extern "C" int board_zifi_owns_pin(unsigned pin) {
     return BoardPins::zifiOwnsPin((uint8_t)pin) ? 1 : 0;
 }
 
+extern "C" int board_dbg_uart_owns_pin(unsigned pin) {
+    return BoardPins::dbgUartOwnsPin((uint8_t)pin) ? 1 : 0;
+}
