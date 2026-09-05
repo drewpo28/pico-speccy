@@ -41,6 +41,7 @@ THE SOFTWARE.
 #include "td0.h"
 #include "psram_spi.h"
 #include "trdos_boot.h"
+#include "Buffer.h"
 #include <string.h>
 
 static bool sclConvertToTRD(rvmWD1793 *wd);
@@ -1924,12 +1925,36 @@ void rvmWD1793Reset(rvmWD1793 *wd) {
 
 bool rvmWD1793AllocTrackBuf(rvmWD1793 *wd) {
     if (wd->diskTrackBuf) return true;
-    wd->diskTrackBuf = (uint8_t *)malloc(DISK_TRACK_BUF_SZ);
+    if (butter_psram_size()) {
+        // Butter (QSPI) PSRAM board: keep the track cache out of the SRAM heap.
+        // NEED_POINTER|PREFER_PSRAM lands in the butter arena (XIP-addressable,
+        // CPU loads/stores only — the SD driver fills it via f_read, which is a
+        // CPU copy, never DMA) and falls back to the heap by itself if the arena
+        // is full or not yet initialized (MB02::init at boot runs before
+        // Buffer::initPools). Buffer::pfree tells the tiers apart by address.
+        wd->diskTrackBuf = (uint8_t *)Buffer::palloc(DISK_TRACK_BUF_SZ,
+                                                     Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (wd->diskTrackBuf)
+            Debug::log("WD1793: track buf %u B in %s", (unsigned)DISK_TRACK_BUF_SZ,
+                       rvmWD1793TrackBufInHeap(wd) ? "heap" : "butter");
+    } else {
+        wd->diskTrackBuf = (uint8_t *)malloc(DISK_TRACK_BUF_SZ);
+    }
     return wd->diskTrackBuf != nullptr;
 }
 
+// True when the track buffer occupies SRAM heap (vs the butter PSRAM arena).
+// Used by the feature-budget accounting: freeing a butter-resident buffer
+// returns no heap, so it must not be credited as reclaimable SRAM.
+bool rvmWD1793TrackBufInHeap(const rvmWD1793 *wd) {
+    if (!wd->diskTrackBuf) return false;
+    uint32_t bsz = butter_psram_size();
+    uintptr_t a = (uintptr_t)wd->diskTrackBuf;
+    return !(bsz && a >= (uintptr_t)PSRAM_DATA && a < (uintptr_t)PSRAM_DATA + bsz);
+}
+
 void rvmWD1793FreeTrackBuf(rvmWD1793 *wd) {
-    if (wd->diskTrackBuf) { free(wd->diskTrackBuf); wd->diskTrackBuf = nullptr; }
+    if (wd->diskTrackBuf) { Buffer::pfree(wd->diskTrackBuf); wd->diskTrackBuf = nullptr; }
     wd->diskLoadedCyl = -1;
     wd->diskLoadedSide = -1;
     wd->diskLoadedUnit = -1;

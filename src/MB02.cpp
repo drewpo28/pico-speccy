@@ -80,8 +80,9 @@ void MB02::init() {
     for (int i = 0; i < 4; i++)
         if (ESPectrum::mb02_fdd.disk[i]) has_disks = true;
     if (!has_disks) {
-        // Preserve the heap-allocated track buffer across the wipe so we don't
-        // leak it; the buffer is owned by Mb02Subsys (freed on MB-02 disable).
+        // Preserve the allocated track buffer (butter PSRAM or heap, see
+        // rvmWD1793AllocTrackBuf) across the wipe so we don't leak it; the
+        // buffer is owned by Mb02Subsys (freed on MB-02 disable).
         uint8_t* keepTrackBuf = ESPectrum::mb02_fdd.diskTrackBuf;
         memset(&ESPectrum::mb02_fdd, 0, sizeof(rvmWD1793));
         ESPectrum::mb02_fdd.diskTrackBuf = keepTrackBuf;

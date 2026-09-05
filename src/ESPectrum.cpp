@@ -1253,7 +1253,9 @@ void ESPectrum::setup() {
   Debug::log2SD("setup: WD1793 reset begin");
   // Primary Betadisk drive always needs its track buffer. The MB-02 drive's
   // buffer is allocated/freed on demand via Mb02Subsys (saves ~12.5 KB SRAM
-  // while MB-02 is disabled, which is the default).
+  // while MB-02 is disabled, which is the default). Runs AFTER
+  // Buffer::initPools, so on butter-PSRAM boards the buffer lands in the
+  // butter arena instead of the SRAM heap (rvmWD1793AllocTrackBuf).
   rvmWD1793AllocTrackBuf(&fdd);
   rvmWD1793Reset(&fdd);
   // The +3's uPD765. Allocates nothing until a .dsk is mounted, so a session on any

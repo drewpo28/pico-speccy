@@ -316,8 +316,10 @@ typedef struct
 #define WD_MOTOR_FRAMES 150
 
 // Size of the per-drive MFM track buffer (UDI/FDI/MBD). Formerly an inline
-// array; now heap-allocated (see rvmWD1793AllocTrackBuf) so the second
-// MB-02 drive can release its 12.5 KB when MB-02 is disabled.
+// array; now allocated via rvmWD1793AllocTrackBuf so the second MB-02 drive
+// can release its 12.5 KB when MB-02 is disabled. On boards with butter
+// (QSPI) PSRAM it is placed in the Buffer butter arena instead of the SRAM
+// heap (Buffer::palloc NEED_POINTER|PREFER_PSRAM, heap fallback).
 #define DISK_TRACK_BUF_SZ 12800
 
 typedef struct
@@ -389,7 +391,8 @@ typedef struct
     // read site), so the hw-proven Pentagon/Profi status behaviour is untouched.
     uint16_t motor_frames;
 
-    uint8_t* diskTrackBuf;        // MFM track buffer (DISK_TRACK_BUF_SZ); heap-allocated
+    uint8_t* diskTrackBuf;        // MFM track buffer (DISK_TRACK_BUF_SZ); Buffer::palloc'd
+                                  // (butter PSRAM on QSPI-PSRAM boards, else SRAM heap)
     uint16_t diskTrackLen;        // length of current track
     int diskLoadedCyl;            // loaded cylinder (-1 = none)
     int diskLoadedSide;           // loaded side
@@ -449,7 +452,12 @@ void rvmWD1793Reset(rvmWD1793 *wd);
 // (diskS) or toggling the config so fastmode tracks the active disk only.
 void rvmWD1793UpdateFastmode(rvmWD1793 *wd);
 // Allocate the MFM track buffer (idempotent). Returns false on OOM. RP2350 only.
+// Placed in the butter (QSPI) PSRAM arena via Buffer when the board has one
+// (heap fallback), plain SRAM heap otherwise.
 bool rvmWD1793AllocTrackBuf(rvmWD1793 *wd);
+// True when diskTrackBuf occupies SRAM heap rather than butter PSRAM — freeing
+// a butter-resident buffer returns no heap (feature-budget accounting).
+bool rvmWD1793TrackBufInHeap(const rvmWD1793 *wd);
 // Release the MFM track buffer (safe if already null). RP2350 only.
 void rvmWD1793FreeTrackBuf(rvmWD1793 *wd);
 bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string& Filename);
