@@ -4429,3 +4429,106 @@ OUT). Now masks `data & 0x07`.
   - Disassembly: `FPGA48all_disasm.txt`
   - Loader at 0x5E00, screen at 0x4000, main code at 0x6200
   - Main code starts with `CALL 0x817E` (IM 2 setup); exercises the ULA via port `0x01FE`
+
+## MURM_W / MURM2_W — Waveshare RP2350B-Plus-W (2026-09-06; m1p2w BOOTS on hw with picture, radio bring-up not yet confirmed)
+
+Two board targets = the Murmulator 1.x / 2.0 carriers with the Waveshare
+RP2350B-Plus-W module (RP2350B, Raspberry Pi Radio Module 2 = CYW43439, 16 MB
+flash, PSRAM pads on GPIO47). `MURM_W` turns `MURM` on and `MURM2_W` turns `MURM2`
+on, so every carrier pin arm and `#if MURM2` keeps working; `PICOSPECCY_WIFI` is
+the one "this image has a radio" switch (`src/WifiNet.{h,cpp}`, called last of the
+PIO users from `main()`). HDMI-only: the radio's pins are above GPIO31, so it needs
+pio0 at gpio_base 16, and VGA/SOFTTV/TFT all want pio0 at base 0 (CMake refuses
+them, `resolveVideoOutput()` forces SELECT_VGA off).
+
+- **The RM2 host pins are READ OFF THE SCHEMATIC** (`RP2350B-Plus-W.pdf` from
+  files.waveshare.com — the wiki page itself has no pin table and 403s WebFetch;
+  `curl -A Mozilla` gets both): **GPIO36 WL_ON, GPIO37 WL_D (DI/DO via R20/IRQ),
+  GPIO38 WL_CS, GPIO39 WL_CLK**; GPIO23 = LED2 (the Pico-style user LED), LED1 =
+  the radio's own WL_GPIO0, GPIO46 = VSYS_SENSE, GPIO47 = PSRAM_CS, VBUS_DET goes
+  to RM2 GPIO2. The first cut had CS/CLK swapped (a derivation, 38=CLK 39=CS).
+  They live as **static** `CYW43_DEFAULT_PIN_WL_*` in
+  `src/boards/picospeccy_rp2350b_w.h` with `CYW43_PIN_WL_DYNAMIC 0`, exactly like
+  `pico2_w.h` — the runtime `cyw43_set_pins_wl()` table was dropped.
+  **`CYW43_PIN_WL_DYNAMIC 1` WITHOUT the `CYW43_DEFAULT_PIN_WL_*` defines does not
+  compile** (SDK 2.3.0 `cyw43_bus_pio_spi.c` seeds its RAM table from them), which
+  is how the first cut failed; a board header must define the defaults either way.
+- Cost vs plain MURM (MinSizeRel, VGA-HDMI): **+2400 B static SRAM** (`cyw43_state`
+  2268 B + the async context), **+237 KB flash** (the 225 KB `w43439A0_7_95_49_00`
+  blob lands in `.rodata` at ~0x101E5E24; BT firmware is 0 B, not enabled). The
+  16 MB flash flows through the SDK-generated `pico_flash_region.ld`, so the GM.DLS
+  partition sits at 0x10E50000 and the firmware ceiling is a non-issue there.
+- **First hw run (2026-09-06): LED blinked 6 fast + 6 slow, NO PICTURE.** Two
+  ordering bugs, both in the original commit's `main()` placement, both fixed:
+  1. `WifiNet::init()` ran BEFORE `multicore_launch_core1(render_core)`, i.e.
+     before `graphics_init()`/`hdmi_init()` — the commit's "deliberately last of
+     the PIO users" was not what the code did. The SDK's
+     `pio_claim_free_sm_and_add_program_for_gpio_range()` walks **pio2 → pio1 →
+     pio0** and on its second pass re-bases ANY block whose four SMs are all free;
+     pio2 was empty, so the radio took **pio2 at gpio_base 16**. hdmi_init() (pins
+     6-13; only ZERO2 sets a base) then owned a block that cannot reach its pins:
+     radio up (that is why the second blink series was SLOW — `cyw43_arch_gpio_put`
+     inside it costs ms), screen dead, core0 running on. `pio_set_gpio_base` refuses
+     once a program is loaded, so there was no recovering it either. Now:
+     `graphics_init_done_semaphore` is used by WIFI builds too (was SOFTTV-only),
+     `WifiNet::init()` runs after core1 released it while core1 is parked on
+     `vga_start_semaphore`, AND `WifiNet::init()` pins **pio0 to base 16 itself**
+     first, so the SDK's first pass lands on pio0 deterministically.
+  2. The SDK's gSPI divider is a compile-time constant (`CYW43_PIO_CLOCK_DIV_INT 2`,
+     assumes 150 MHz: 75 MHz into a 2-cycles/bit program = 37.5 MHz). At clk_sys
+     378 MHz that is 94 MHz on a bus specced to 50. `CYW43_PIO_CLOCK_DIV_DYNAMIC=1`
+     (CMake) + `cyw43_set_pio_clkdiv_int_frac8(ceil(clk_sys/75 MHz), 0)` in
+     WifiNet::init (6 @378, 7 @504), which must run AFTER the `Config::cpu_mhz`
+     switch — the new call site is.
+  **hw 2026-09-06, after the fix: m1p2w boots with a picture** (Hardware Info:
+  RP2350B @252 MHz, VREG 1.50 V, 16 MB flash, **`+PSRAM on GP47: 8 MB (QSPI)`** —
+  the tester's module HAS a chip soldered and the butter path found it unchanged,
+  66 pages `s8:b58`, audio **i2s (auto)** — so I2S on pio0 @base 16 coexists with
+  the radio's claim). Whether cyw43_arch_init() succeeded is still unknown: only the
+  UART `WiFi:` lines or the LED1-on-module blink say so.
+  The `WiFi[pre]`/`[post]` claim dump (`pio2 sm=####`/`gpio_base=0` for HDMI,
+  `pio0 ... gpio_base=16` for the radio) is the check; it goes to the UART only.
+- **No sound on MURM_W (hw 2026-09-06, same tester; FIXED, sound back in Auto
+  with the mask fix below — the board was I2S-jumpered, so the probe was right):**
+  Hardware Info said
+  `Audio mode: i2s [0Ah] (auto)`. Two independent things, both in play:
+  1. **`audio_i2s.pio` program_init built its pin mask as `1u << data_pin`** and
+     used the 32-bit `pio_sm_set_pindirs_with_mask` — UB at data_pin 40, and the
+     32-bit form cannot express GPIO40-42 at all (the SDK shifts the mask by
+     gpio_base, i.e. it expects ABSOLUTE bit positions), so all three I2S pins
+     stayed INPUTS: no BCK, no data. Fixed with the `_mask64` pair, exactly like
+     nespad.cpp/hdmi.c (the earlier commit fixed nespad and missed this one). Any
+     other PIO program init that shifts a pin number into a 32-bit mask has the
+     same bug on the W boards — grep `1u <<` before trusting a driver there.
+  2. **The I2S/PWM auto-probe (`testPins` on DATA/BCK) read 0x0A = both pins
+     follow the pull = "floating" → I2S**, on a carrier that is usually jumpered
+     for PWM (Murmulator 1 offers both). Whether 0x0A is what a PWM-jumpered
+     MURM1 reads on a Pico 2 too is unknown; the escape hatch is
+     Audio → Driver → PWM (Config::audio_driver 1). Ask which jumper first.
+- `pico_cyw43_arch_none` = the **threadsafe_background** async context: one user
+  IRQ + its own alarm pool, servicing the radio from IRQ context on core0's 8 KB
+  stack. Not measured yet — if core0 stack faults or frame-pacing jitter appear
+  once lwIP is on, `pico_cyw43_arch_poll` pumped from `ESPectrum::loop` is the
+  alternative that keeps the emulator in control of when the driver runs.
+- **Soldering a PSRAM onto the module needs NO firmware change — hw-confirmed
+  2026-09-06 (`+PSRAM on GP47 : 8 MB (QSPI)` on a tester's module).** The U1 pads are
+  an SOP-8 on the RP2350's own QSPI bus (SD0-3 + SCLK shared with the flash, CS =
+  GPIO47 = XIP CS1) — the butter/QMI memory-mapped path, identical to PICO_DV and
+  ZERO2, NOT the MURM1 PIO-SPI path. Both W arms already set `BUTTER_PSRAM_GPIO 47`;
+  on RP2350B `main()` probes pin 47 (`psram_init` → `butter_psram_size`),
+  `psram_retiming` runs at the cpu_mhz switch, Buffer pools / GS / prevFB all key on
+  `butter_psram_size()`. Chip: **APS6404L-3SQR-SN** (8 MB, 3.3 V, SOP-8, the Pico
+  Plus 2 part — the probe wants KGD 0x5D; pin 1 CS, 2 SO/SD1, 3 SD2, 4 GND, 5
+  SI/SD0, 6 SCLK, 7 SD3, 8 VDD, matching the footprint). The MURM1-arm
+  `init_psram()` still runs on MURM_W but its body is `#ifdef PSRAM` (not defined
+  there), so `psram_size()` stays 0 and nothing touches the 255 pins.
+- **MURM_W drops the carrier's PIO SPI PSRAM**, and the module ships with NO PSRAM
+  soldered — so a stock MURM_W is a no-PSRAM board (pages to SD swap, no GS /
+  Gigascreen). The stated reason is pio0 instruction budget: CYW43 (5-7) + I2S (9,
+  17 for CS4334) + SPI PSRAM (18-20) > 32. But I2S is only loaded for a DAC board;
+  with PWM audio, CYW43 + SPI PSRAM (25-27) fits. Candidate follow-up: keep the
+  APS6404 on MURM_W and make I2S and SPI PSRAM mutually exclusive there instead.
+- **`.vscode/` is gitignored** — the F7 board picker (`tasks.json` →
+  `inputs.boardConfig`) is a LOCAL file and has to be edited by hand for every new
+  board; a commit can never update it. `build_all.*` / `check-release.sh` are the
+  tracked lists.

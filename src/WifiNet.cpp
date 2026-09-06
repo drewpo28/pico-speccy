@@ -8,34 +8,15 @@
 #include "pico/cyw43_driver.h"
 #include "hardware/pio.h"
 #include "hardware/dma.h"
+#include "hardware/clocks.h"
 
 // ── RM2 host pins ────────────────────────────────────────────────────────────
-// The Waveshare RP2350B-Plus-W does NOT wire the radio to the Pico 2 W defaults
-// (23/24/25/29 — GPIO23 is this board's LED2), and Waveshare's own Arduino
-// variant sets CYW43_PIN_WL_DYNAMIC for the same reason, so the numbers have to
-// come from us at runtime.
-//
-// !! These four are DERIVED, NOT YET READ OFF THE SCHEMATIC. !!
-// The module exposes GPIO0-22 and 40-42 on the header and GPIO24-35 and 43-45 on
-// bottom pads; that leaves 23 (LED2), 36-39, 46 and 47 (PSRAM CS) unexposed, and
-// RM2's gSPI needs exactly four host signals — hence 36-39. Confirm against
-// RP2350B-Plus-W.pdf before trusting a failure here. Each is overridable from the
-// build (-DCYW43_WL_PIN_CLOCK=nn) so a correction needs no source edit.
-//
-// Only "all four are above GPIO31" is load-bearing for the rest of the design:
-// that is what forces the radio onto a PIO block at gpio_base 16, i.e. pio0.
-#ifndef CYW43_WL_PIN_REG_ON
-#define CYW43_WL_PIN_REG_ON 36
-#endif
-#ifndef CYW43_WL_PIN_DATA
-#define CYW43_WL_PIN_DATA 37
-#endif
-#ifndef CYW43_WL_PIN_CLOCK
-#define CYW43_WL_PIN_CLOCK 38
-#endif
-#ifndef CYW43_WL_PIN_CS
-#define CYW43_WL_PIN_CS 39
-#endif
+// Fixed by the board header (src/boards/picospeccy_rp2350b_w.h), read off the
+// Waveshare schematic: WL_ON=36, WL_D=37, WL_CS=38, WL_CLK=39. They are static
+// (CYW43_PIN_WL_DYNAMIC 0) like every SDK W board, so the SDK's PIO SPI driver
+// reads them as constants and there is no runtime table to get wrong. All four
+// are above GPIO31, which is what forces the radio onto a PIO block at
+// gpio_base 16, i.e. pio0 — the rest of the design hangs off that.
 
 namespace {
 
@@ -67,37 +48,51 @@ void logPioDmaClaims(const char* when) {
 bool init() {
     if (s_ready) return true;
 
-    // Order matters and is the whole reason this runs from main() rather than
-    // ESPectrum::setup(): the SDK claims the bus SM with
-    // pio_claim_free_sm_and_add_program_for_gpio_range(), which picks a block
-    // that can reach the requested pins. Only pio0 can (pio1 is the keyboard at
-    // gpio_base 0, pio2 is HDMI at gpio_base 0), and it can only be picked if
-    // those two have already fixed their bases — i.e. after graphics_init() on
-    // core1 and after the keyboard/gamepad are up.
+    // Called from main() AFTER core1 has finished graphics_init() (semaphore
+    // handshake there) and after the Config::cpu_mhz switch — see the comment at
+    // the call site for the two hardware failures that fixed this order.
     logPioDmaClaims("pre");
 
-    uint pins[CYW43_PIN_INDEX_WL_COUNT];
-    pins[CYW43_PIN_INDEX_WL_REG_ON]    = CYW43_WL_PIN_REG_ON;
-    pins[CYW43_PIN_INDEX_WL_DATA_OUT]  = CYW43_WL_PIN_DATA;
-    pins[CYW43_PIN_INDEX_WL_DATA_IN]   = CYW43_WL_PIN_DATA;
-    pins[CYW43_PIN_INDEX_WL_HOST_WAKE] = CYW43_WL_PIN_DATA;
-    pins[CYW43_PIN_INDEX_WL_CLOCK]     = CYW43_WL_PIN_CLOCK;
-    pins[CYW43_PIN_INDEX_WL_CS]        = CYW43_WL_PIN_CS;
-    // Rejected pins would otherwise leave the driver on the SDK's Pico 2 W
-    // defaults (23/24/25/29) — GPIO23 is this board's LED2, so it would look like
-    // a dead radio rather than a bad pin table.
-    int prc = cyw43_set_pins_wl(pins);
-    if (prc) Debug::log("WiFi: cyw43_set_pins_wl rejected the pin table rc=%d", prc);
+    // Pin pio0 to gpio_base 16 OURSELVES before asking the SDK for a block. Its
+    // pio_claim_free_sm_and_add_program_for_gpio_range() walks pio2 -> pio1 -> pio0
+    // and, on a second pass, re-bases ANY block whose four state machines are all
+    // free — on hardware (2026-09-06) that was pio2, and hdmi_init() then found its
+    // block at base 16 with the display on GPIO6-13: radio up, screen dead. With
+    // pio0 already at 16 the FIRST pass finds it compatible (pio1/pio2 at base 0
+    // are not), so the pick is deterministic whatever else has or has not run.
+    // I2S (MURM_W) / NESPAD (MURM2_W) may have set the same base already; the
+    // SDK refuses a re-base once a program is loaded, which is fine if it is 16.
+    if (pio_get_gpio_base(pio0) != 16) {
+        int brc = pio_set_gpio_base(pio0, 16);
+        if (brc != PICO_OK)
+            Debug::log("WiFi: pio0 gpio_base 16 refused rc=%d (base=%u, programs already loaded?)",
+                       brc, (unsigned)pio_get_gpio_base(pio0));
+    }
 
-    Debug::log("WiFi: cyw43_arch_init pins REG_ON=%u DATA=%u CLK=%u CS=%u",
-               (unsigned)CYW43_WL_PIN_REG_ON, (unsigned)CYW43_WL_PIN_DATA,
-               (unsigned)CYW43_WL_PIN_CLOCK, (unsigned)CYW43_WL_PIN_CS);
+    // The SDK's default divider (CYW43_PIO_CLOCK_DIV_INT 2) assumes a 150 MHz Pico
+    // 2 W: 75 MHz into a 2-cycles-per-bit program = 37.5 MHz gSPI. We run clk_sys
+    // at 378 MHz (or Config::cpu_mhz), which with /2 would clock the bus at 94 MHz,
+    // far past the CYW43439's 50 MHz. Keep the PIO clock at or under the SDK's own
+    // 75 MHz: ceil(clk_sys / 75 MHz) — 6 at 378 (31.5 MHz), 7 at 504 (36 MHz).
+    // Integer only (a fractional divider jitters the clock edge). Needs
+    // CYW43_PIO_CLOCK_DIV_DYNAMIC=1 (CMakeLists), and this must run AFTER the
+    // Config::cpu_mhz switch — main() orders it so.
+    const uint32_t sys_hz = clock_get_hz(clk_sys);
+    uint32_t div = (sys_hz + 75000000u - 1u) / 75000000u;
+    if (div < 2) div = 2;
+    cyw43_set_pio_clkdiv_int_frac8(div, 0);
+
+    Debug::log("WiFi: cyw43_arch_init pins REG_ON=%u DATA=%u CLK=%u CS=%u, sys=%u MHz pio_div=%u (gSPI %u kHz)",
+               (unsigned)CYW43_PIN_WL_REG_ON, (unsigned)CYW43_PIN_WL_DATA_OUT,
+               (unsigned)CYW43_PIN_WL_CLOCK, (unsigned)CYW43_PIN_WL_CS,
+               (unsigned)(sys_hz / 1000000u), (unsigned)div,
+               (unsigned)(sys_hz / div / 2u / 1000u));
 
     int rc = cyw43_arch_init();
     if (rc) {
         // Do NOT panic: a board whose radio never answers must still be a
-        // working emulator. The likeliest cause during bring-up is the pin
-        // guess above; the second likeliest is that something took pio0 first.
+        // working emulator. The likeliest cause during bring-up is that
+        // something took pio0 first — see logPioDmaClaims("pre") just above.
         Debug::log("WiFi: cyw43_arch_init FAILED rc=%d — radio off for this session", rc);
         logPioDmaClaims("failed");
         return false;

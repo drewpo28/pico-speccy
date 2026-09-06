@@ -17,11 +17,10 @@
 
 namespace WifiNet {
 
-// Bring up the CYW43 bus. Call ONCE, from the main loop's context, and only
-// AFTER video (core1 graphics_init) and the keyboard/gamepad have claimed their
-// PIO blocks — the SDK picks a block that can reach the radio's pins, and it can
-// only land on the right one if the others are already fixed at gpio_base 0.
-// Safe to call on a board without a radio: it is a no-op returning false.
+// Bring up the CYW43 bus. Call ONCE, from main(), only AFTER core1 has finished
+// graphics_init() (HDMI owns pio2) and after the Config::cpu_mhz clock switch
+// (the bus divider is derived from clk_sys at init). It pins pio0 to gpio_base 16
+// itself before the SDK picks a block. Failure is logged, never fatal.
 // Returns true when the radio answered.
 bool init();
 

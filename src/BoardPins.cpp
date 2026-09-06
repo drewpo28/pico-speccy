@@ -25,8 +25,8 @@ int uartInstanceForTx(uint8_t tx) {
 // Murmulator 2.0 + RP2350B-Plus-W. Same carrier as MURM2, but two of its pairs
 // are gone: {20,21} is NESPAD CLK/LAT as before, and {26,27} / {38,39} must NOT
 // be offered — the header positions of GP26/27 carry GPIO40/41 (the pad's data
-// pair on this module) and GPIO38/39 are expected to belong to the radio module,
-// so offering them from the Network menu would take WiFi down. GP0/GP1 are free
+// pair on this module) and GPIO38/39 ARE the radio's WL_CS/WL_CLK (Waveshare
+// schematic), so offering them from the Network menu would take WiFi down. GP0/GP1 are free
 // on this carrier and are a UART0 pair, so they lead.
 static const UartPair ZIFI_PAIRS[] = {
     {0, 1, ""},                 // UART0 (free)

@@ -77,7 +77,7 @@ uint8_t CURSOR_X, CURSOR_Y = 0;
 uint8_t rx[4] = { 0 };
 
 struct semaphore vga_start_semaphore;
-#if SOFTTV
+#if SOFTTV || PICOSPECCY_WIFI
 struct semaphore graphics_init_done_semaphore;
 #endif
 #include "Video.h"
@@ -993,7 +993,7 @@ void __scratch_x("render") render_core() {
     { extern size_t getFreeHeap(void); Debug::log("render: graphics_init begin, freeHeap=%u", (unsigned)getFreeHeap()); }
     graphics_init();
     { extern size_t getFreeHeap(void); Debug::log("render: graphics_init done, freeHeap=%u", (unsigned)getFreeHeap()); }
-#if SOFTTV
+#if SOFTTV || PICOSPECCY_WIFI
     sem_release(&graphics_init_done_semaphore);
 #endif
 #ifdef VGA_HDMI
@@ -1907,26 +1907,14 @@ int main() {
         }
     }
 #endif
-#if PICOSPECCY_WIFI
-    // On-chip radio (MURM_W / MURM2_W). Deliberately LAST of the PIO users: the
-    // SDK picks whichever block can reach the radio's pins, and only pio0 can —
-    // so video (core1 graphics_init) and the keyboard/gamepad must already have
-    // fixed pio1/pio2 at gpio_base 0 before we ask. Failure is not fatal; the
-    // emulator runs on without a radio and the log says why.
-    WifiNet::init();
-#endif
+    // NOTE: the on-chip radio (MURM_W / MURM2_W) is NOT brought up here — see the
+    // WifiNet::init() call after multicore_launch_core1() below, and why.
     #if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
     for (int i = 0; i < 6; i++) {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, true);
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, false);
-#if PICOSPECCY_WIFI
-        // LED1 lives on the radio module's own GPIO0, so it only blinks once the
-        // bus is really up — a one-glance "the radio answered" indicator that
-        // needs no console.
-        WifiNet::ledSet(i & 1);
-#endif
     }
     #endif
     #ifdef VGA_HDMI
@@ -2038,7 +2026,7 @@ int main() {
     }
 
     sem_init(&vga_start_semaphore, 0, 1);
-#if SOFTTV
+#if SOFTTV || PICOSPECCY_WIFI
     sem_init(&graphics_init_done_semaphore, 0, 1);
 #endif
     { extern size_t getFreeHeap(void); Debug::log("main: launching core1, freeHeap=%u", (unsigned)getFreeHeap()); }
@@ -2050,6 +2038,41 @@ int main() {
     Debug::log2SD("main: graphics_init done, calling applyPalette");
     VIDEO::applyPalette();
     Debug::log2SD("main: applyPalette done");
+#endif
+#if PICOSPECCY_WIFI
+    // On-chip radio (MURM_W / MURM2_W) — brought up HERE and nowhere earlier, for
+    // two reasons that both bit on hardware (2026-09-06: LED blinked, no picture):
+    //
+    //  1. The SDK's pio_claim_free_sm_and_add_program_for_gpio_range() walks the
+    //     blocks pio2 -> pio1 -> pio0 and, on its second pass, moves the gpio_base
+    //     of ANY block whose four state machines are all still free. Before
+    //     graphics_init() that is pio2 — so the radio took pio2 at base 16, and
+    //     hdmi_init() (pins 6-13, base 0 on every board but ZERO2) then found a
+    //     block it could not drive: radio up, screen dead. core1 has to finish
+    //     graphics_init() first, and WifiNet::init() pins pio0 explicitly on top.
+    //  2. The radio bus divider is derived from clk_sys once, at init. The
+    //     Config::cpu_mhz switch above has already happened here, so the divider
+    //     is computed for the clock the machine will actually run at.
+    //
+    // core1 is parked in sem_acquire_blocking(&vga_start_semaphore) meanwhile, so
+    // nothing races the PIO claims. Failure is not fatal: the emulator runs on
+    // without a radio and the log says why.
+    Debug::log2SD("main: waiting for graphics_init_done (WiFi)");
+    sem_acquire_blocking(&graphics_init_done_semaphore);
+    WifiNet::init();
+    #if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
+    // LED1 lives on the radio module's own GPIO0, so it only blinks once the bus
+    // is really up — a one-glance "the radio answered" indicator that needs no
+    // console. LED2 (GPIO23) blinks alongside so the pair is easy to read.
+    for (int i = 0; i < 6; i++) {
+        gpio_put(PICO_DEFAULT_LED_PIN, true);
+        WifiNet::ledSet(true);
+        sleep_ms(33);
+        gpio_put(PICO_DEFAULT_LED_PIN, false);
+        WifiNet::ledSet(false);
+        sleep_ms(33);
+    }
+    #endif
 #endif
     Debug::log2SD("main: releasing vga_start_semaphore");
     sem_release(&vga_start_semaphore);

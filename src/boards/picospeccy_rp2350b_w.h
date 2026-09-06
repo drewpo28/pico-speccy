@@ -16,9 +16,8 @@
 // plain Pi Pico 2 in four ways that matter to the firmware:
 //
 //   1. A Raspberry Pi Radio Module 2 (RM2 = CYW43439) is on board. Its four host
-//      pins are NOT the Pico 2 W defaults, so PICO_CYW43_SUPPORTED is turned on
-//      here but the pins are set at RUNTIME via cyw43_set_pins_wl() — see
-//      CYW43_PIN_WL_DYNAMIC below and WifiNet.cpp.
+//      pins are NOT the Pico 2 W defaults (23/24/25/29) but GPIO36-39 — see the
+//      WIRELESS block below, read off the Waveshare schematic.
 //   2. 16 MB of flash instead of 4 MB. That is what makes the ~230 KB CYW43
 //      firmware blob affordable: with __gmx_rom_in_flash the gm_bank partition
 //      takes 1.6875 MB off the top, leaving ~2.3 MB on a 4 MB board (which main
@@ -117,15 +116,32 @@ pico_board_cmake_set_default(PICO_FLASH_SIZE_BYTES, (16 * 1024 * 1024))
 pico_board_cmake_set(PICO_CYW43_SUPPORTED, 1)
 #define PICO_CYW43_SUPPORTED 1
 
-// The RM2 host pins on this module are NOT the Pico 2 W defaults (23/24/25/29 —
-// GPIO23 is LED2 here). Waveshare's own Arduino variant sets them at runtime for
-// the same reason, so we do too: CYW43_PIN_WL_DYNAMIC makes the cyw43 driver read
-// its pin table from RAM, and WifiNet::init() fills it with cyw43_set_pins_wl()
-// before cyw43_arch_init(). Confirm the four numbers against the board schematic
-// (RP2350B-Plus-W.pdf) — the unexposed GPIOs are 23 (LED2), 36-39, 46 and 47
-// (PSRAM CS), so RM2 is expected on 36-39.
+// RM2 host pins, read off RP2350B-Plus-W.pdf (Waveshare schematic, sheet 1):
+//   GPIO36 WL_ON  -> RM2 B5_WLON       GPIO37 WL_D -> A5_DI / A6_DO (via R20) / B3_IRQ
+//   GPIO38 WL_CS  -> RM2 B2_CS         GPIO39 WL_CLK -> A3
+// None of the four is a header pin or a bottom pad, so they are fixed for the board:
+// static pins, exactly like pico2_w.h (CYW43_PIN_WL_DYNAMIC 0). Each stays
+// overridable from the build (-DCYW43_DEFAULT_PIN_WL_CLOCK=nn) via the #ifndef.
 #ifndef CYW43_PIN_WL_DYNAMIC
-#define CYW43_PIN_WL_DYNAMIC 1
+#define CYW43_PIN_WL_DYNAMIC 0
+#endif
+#ifndef CYW43_DEFAULT_PIN_WL_REG_ON
+#define CYW43_DEFAULT_PIN_WL_REG_ON 36u
+#endif
+#ifndef CYW43_DEFAULT_PIN_WL_DATA_OUT
+#define CYW43_DEFAULT_PIN_WL_DATA_OUT 37u
+#endif
+#ifndef CYW43_DEFAULT_PIN_WL_DATA_IN
+#define CYW43_DEFAULT_PIN_WL_DATA_IN 37u
+#endif
+#ifndef CYW43_DEFAULT_PIN_WL_HOST_WAKE
+#define CYW43_DEFAULT_PIN_WL_HOST_WAKE 37u
+#endif
+#ifndef CYW43_DEFAULT_PIN_WL_CLOCK
+#define CYW43_DEFAULT_PIN_WL_CLOCK 39u
+#endif
+#ifndef CYW43_DEFAULT_PIN_WL_CS
+#define CYW43_DEFAULT_PIN_WL_CS 38u
 #endif
 
 // LED1 hangs off the radio module's own GPIO0 (LED2 is PICO_DEFAULT_LED_PIN
@@ -141,7 +157,7 @@ pico_board_cmake_set(PICO_CYW43_SUPPORTED, 1)
 
 // NOTE: deliberately NO PICO_SMPS_MODE_PIN / PICO_VBUS_PIN / PICO_VSYS_PIN.
 // Those are 23/24/29 on a Pico; here 23 is LED2 and 24/29 are ordinary pads (and
-// 36-39 are expected to belong to RM2), so the Pico meanings do not carry over.
+// 36-39 are RM2's WL_ON/WL_D/WL_CS/WL_CLK), so the Pico meanings do not carry over.
 
 pico_board_cmake_set_default(PICO_RP2350_A2_SUPPORTED, 1)
 #ifndef PICO_RP2350_A2_SUPPORTED

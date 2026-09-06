@@ -417,7 +417,10 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 # set, which is what makes the pin/gpio_base bring-up cheap to test. lwIP arrives
 # with WifiNet/WifiSock (pico_cyw43_arch_lwip_poll + pico_lwip_dns/sntp).
 if (PICOSPECCY_WIFI)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=1)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=1
+        # The SDK's fixed divider assumes 150 MHz; WifiNet::init() computes one
+        # for the real clk_sys (378/504 MHz) — see the gSPI note there.
+        CYW43_PIO_CLOCK_DIV_DYNAMIC=1)
     target_link_libraries(${PROJECT_NAME} PRIVATE pico_cyw43_arch_none)
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
@@ -764,7 +767,7 @@ set_source_files_properties(src/GS/NgsMp3.cpp PROPERTIES COMPILE_FLAGS "-O3")
 #   * the user LED is GPIO23 (LED2), not GPIO25.
 #   * GP29 is not a header pin on any Pico, so MURM1/MURM2's CLK_AY_PIN2=29 never
 #     reached the carrier anyway; here GPIO29 is a bottom pad and GPIO36-39 are
-#     expected to belong to the radio module, so the AY clock output is dropped
+#     the radio's WL_ON/WL_D/WL_CS/WL_CLK (schematic), so the AY clock output is dropped
 #     rather than pointed at a pin we do not own.
 #
 # GPIO24-35 and 43-45 exist on bottom pads that a Murmulator socket cannot reach.
@@ -775,7 +778,7 @@ if(PICOSPECCY_WIFI)
     set(W_LED_PIN 23)               # LED2
     # GP29 is not a header pin on any Pico, so this AY clock output never reached
     # a Murmulator carrier in the first place; on the W module GPIO29 is a bottom
-    # pad and GPIO36-39 are expected to belong to the radio, so there is no pin to
+    # pad and GPIO36-39 are the radio's (WL_ON/WL_D/WL_CS/WL_CLK), so there is no pin to
     # point it at. 255 = absent, the same sentinel PSRAM_PIN_* and ZERO2's LED use;
     # PinSerialData_595.c skips it exactly like a pin ZiFi has claimed.
     set(W_AY_CLK2 255)
