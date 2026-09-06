@@ -872,9 +872,11 @@ static void __not_in_flash_func(gs_cb_write)(void* ctx, zuint16 address, zuint8 
 // card RAM already has (real hardware arbitrates with waits instead).
 // g_ngs_zxdma is the hot-path gate: 0 whenever the window is closed.
 volatile uint8_t g_ngs_zxdma = 0;
+extern void ts_fastmem_recalc();
 
 static inline void ngs_zxdma_gate() {
     g_ngs_zxdma = (s_ngs && GS::enabled && s_ngs_dma_mod == 1 && (s_ngs_dma_cst & 0x80)) ? 1 : 0;
+    ts_fastmem_recalc();   // TS-Conf fast memory path must see the window open/close (TsFastMem.h)
 }
 
 // Both of these run on core0. They deliberately BYPASS the private 64-byte

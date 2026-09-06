@@ -186,6 +186,13 @@ public:
   // where the renderer otherwise never runs — e.g. to erase a closed OSD menu).
   static void RedrawPausedFrame();
   static void Blank(unsigned int statestoadd, bool contended);
+  // TS-Conf whole-line modes: the beam-race machinery is dead weight there, so
+  // Draw becomes a T-state counter that renders one line per line boundary.
+  static void TsDraw(unsigned int statestoadd, bool contended);
+  static void TsDraw_Opcode(bool contended);
+  static void tsDrawTick();
+  static uint32_t ts_line_t;        // T-state of the next line render; UINT32_MAX = no more lines (Blank)
+  static void tsFastMemRecalc();    // recompute g_ts_fastmem (TsFastMem.h)
   static void Blank_Opcode(bool contended);
   static void Blank_Snow(unsigned int statestoadd, bool contended);
   static void Blank_Snow_Opcode(bool contended);

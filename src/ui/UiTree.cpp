@@ -181,6 +181,9 @@ static const Option opt_flash_freq[] = {
 static const Option opt_psram_freq[] = {
     { "66 MHz", 66 }, { "84 MHz", 84 }, { "100 MHz", 100 },
     { "133 MHz", 133 }, { "166 MHz", 166 },
+    // No 180: QMI divisor 3 at 504 MHz = 168 MHz SCK, tried 2026-09-07 for the
+    // TS-Conf PSRAM-miss budget — the APS6404 on the DVp2 does not hold it
+    // (Config::load clamps a stored value back to 166).
 };
 
 // ── Machine ────────────────────────────────────────────────────────────────────

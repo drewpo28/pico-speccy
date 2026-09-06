@@ -1835,29 +1835,108 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   map after any change there. The PERF line carries `tsRender=` (whole renderer) and
   `tsu` (TSU compose) so the split is visible; `build-perf/` is the PERF_TRACE=ON twin
   of `build/`.
-- **Where the Z80 time goes — measured before theorising (2026-09-06, from the
-  PERF logs in `logs/`):** a Pentagon game at 3.5 MHz costs `cpu=10-14 ms` for
-  70k T, TMNT at 14 MHz `cpu≈57 ms` (renderer subtracted) for 280k T — the SAME
-  ~100 sys cycles per T-state ≈ 450 cycles per Z80 instruction on both, so TS-Conf
-  pays no extra penalty, it just runs 4x the T-states. 450 cycles is ~5x what a
-  RAM-resident core of this shape should need, and the whole core is FLASH code
-  (`Z80_JLS.cpp` 44 KB of text at -O3; the 256 base handlers alone are 16.9 KB,
-  scattered over a 42 KB extent; `Z80Ops::peek8/poke8/...` ARE in RAM, reached
-  through flash `_veneer` stubs because `bl` cannot span 0x1005xxxx→0x2002xxxx)
-  running through the 16 KB XIP cache that butter-PSRAM guest RAM also uses. Two
-  instruments now live under PERF_TRACE for exactly this question: the `[PERF] 60f`
-  line carries `xip=hit/acc (hit%, M miss/s)` from the RP2350's own XIP_CTR_HIT /
-  XIP_CTR_ACC (one counter pair for both cores, flash + PSRAM together), and every
-  600 frames `[PERF] z80:` prints instr/frame, ns/instr and the top-20 base opcodes
-  (`z80_op_hist[256]`, counted in `exec_nocheck`; prefix bytes count as
-  themselves). `Z80_CORE_OPT` (CMake cache var, default `-O3 -funroll-loops`) picks
-  the core's optimisation level: `-Os` makes it 24 KB (`build-perf-os/`). The
-  candidate levers, in order: (1) -Os core if the hit ratio says misses dominate;
-  (2) `xip_cache_pin_range` of a contiguous `.text.z80hot` section ≤8 KB (pinned
-  lines must be distinct mod 16 KB and are lost on every `xip_cache_invalidate_all`,
-  i.e. after every flash write — re-pin); (3) `Config::max_flash_freq` (NVS only, no
-  menu row) 66→133 would halve every miss's cost but has no safe fallback if the
-  chip cannot do it. SPLIT_WAYS is Secure/Non-secure, not CS0/CS1 — useless here.
+- **Where the TS-Conf frame time went — measured, then fixed in two rounds (hw
+  2026-09-06, TMNT in-game 256c at 14 MHz: cpu 60 ms / 15 FPS → 30 ms / 30 FPS).**
+  The cache-thrash theory was WRONG and the PERF_TRACE counters proved it before
+  any code moved: the `[PERF] 60f` line now carries `xip=hit/acc (hit%, M miss/s)`
+  from the RP2350's own XIP_CTR_HIT/XIP_CTR_ACC (one pair for both cores, flash +
+  butter PSRAM together), and it read 99.8% hits; a `-Os` Z80 core (24 KB instead
+  of 44 KB, `Z80_CORE_OPT` CMake cache var, `build-perf-os/`) changed nothing.
+  What the histograms found instead (`[PERF] z80:` every 600 frames = instr/frame,
+  % through the checked path, ns/instr, top-20 opcodes; `[PERF] pages:` = guest
+  accesses by PHYSICAL page with `*` on SRAM-backed ones, plus `dma src/dst` pages):
+  1. **The checked frame path was the whole cost of a HALT-waiting game.** A title
+     that arms LINE INT runs the frame through Stage D, where a HALTed CPU stepped
+     4 T per `Z80::execute()` = ~72k empty calls per frame — a flat 43.4 ms
+     whatever was on screen. `CPU::haltAdvanceTo(TsConf::nextIntEvent())` now
+     sleeps to the next INT event and walks the video machine a line at a time
+     (NOT `FlushOnHaltTo`, which flushes the rest of the frame's video and would
+     break per-line effects programmed after the wake).
+  2. **Stage D itself is event-driven now**: unchecked `exec_nocheck()` slices to
+     the next INT event (`nextIntEvent`: next LINE start, DMA end, FRAME window),
+     `Z80::checkINT()` right after the slice (the INT is accepted after the
+     instruction that crossed the boundary, the same sampling point execute()
+     had), one checked `execute()` only while the line is up and IFF1 set (that
+     keeps pendingEI's one-instruction delay). With IFF1 clear the slice runs to
+     frame end and **EI / RETI / RETN call `TsConf::intEnableHook()`** to end it
+     when a source is already pending; INTMask/DMACtrl writes end it through
+     `tsWakeLoop` as before. In-game TMNT went from 40% to 0% checked.
+  3. **DMA was 0.6 us per WORD** through the per-word `rd()/wr()` page-cache path:
+     16 ms of a 60 ms frame for a ~19k-word screen copy. `dmaStart` now moves
+     bulk modes run by run (to the page end or the 256/512 alignment window) with
+     direct pointers — memcpy for RAM→RAM (forward byte loop when the regions
+     overlap: hardware copies ascending), memset for FILL, byte loops for
+     BLT1/BLT2 — 6 ms now, which is close to the PSRAM-through-XIP floor for
+     38 KB read + 38 KB written in 8-byte lines.
+  4. **The Z80 core in SRAM: −34% on the Z80 share (25 → 16.5 ms), the biggest
+     single lever left.** `Z80_CORE_IN_RAM=ON` (CMake option, default OFF) makes
+     `rp2350-memmap.ld` — now a `configure_file` template with two `@...@` slots,
+     the real script is `<build>/rp2350-memmap.ld` — place every function of
+     `Z80_JLS.cpp` in `.data`: 24.5 KB of SRAM at `-Os` (44 KB at -O3, too much).
+     Why it beats the "1 vs ~1.5 cycles per fetch" estimate: the XIP port is ONE
+     queue, so while a butter-PSRAM line fill is in flight (~1M/s on TMNT: game
+     data, the 76.8 KB screen read by the renderer, the DMA's 38 KB each way)
+     even a cache HIT for core code waits behind it; SRAM code never does. It
+     therefore pays most on PSRAM-heavy machines (TS-Conf, GMX, Profi DS80).
+     Hw 2026-09-06: A (flash core) 25 FPS, C (-Os core in SRAM) 33-37 FPS, same
+     scene; `freeHeap=58040` at VIDEO::Init on DVp2 — z0p2 at 720x576 + NeoGS +
+     MIDI has not been checked and is the board that would feel the 24 KB.
+     Cheaper alternative if that bites: a curated hot subset (exec_nocheck,
+     decodeED + ldi/ldd, the top ~40 base handlers) at -O3 via a
+     `.time_critical` attribute — ~10-12 KB for ~85% of executed instructions.
+  5. **TS-Conf fast Draw (`VIDEO::TsDraw`/`TsDraw_Opcode`, armed per frame in
+     EndFrame while `ts_render_live`)**: a T-state counter that renders a line at
+     each line boundary and hands over to `Blank` after the last, instead of
+     MainScreen's column machinery on every guest memory access. Worth ~1 ms of
+     the 25 (MainScreen was cheaper than it looked); kept because it is correct
+     and TS-only. FlushOnHalt/RedrawPausedFrame's "until Draw == &Blank" loops
+     rely on that hand-over.
+  Instrumentation costs: the per-access histograms (`[PERF] z80:` / `pages:` /
+  `dma src/dst`) cost ~5 ms per TMNT frame and now sit behind `PERF_HIST` (CMake,
+  default OFF) — **PERF_TRACE itself defaults ON and ships in releases**, so
+  nothing per-access may live under PERF_TRACE alone. Every A-vs-C comparison
+  made with PERF_HIST on is pessimistic by that amount.
+  6. **`Z80_CORE_IN_RAM=ON` + `Z80_CORE_OPT=-Os` are the DEFAULTS since 2026-09-07**
+     (owner's decision, all boards). Existing build dirs keep their cached values —
+     set both explicitly (`cmake -DZ80_CORE_IN_RAM=ON -DZ80_CORE_OPT=-Os .`) or
+     delete the cache; `build_all.sh` and fresh configures pick the defaults up.
+  7. **TS-Conf fast guest-memory path (`src/TsFastMem.h`, `g_ts_fastmem`)**: while
+     a whole-line mode is live, exec_nocheck's fetch and `Z80Ops::peek8/poke8/
+     peek16/poke16` skip the indirect Draw call and every overlay/DivMMC/accessor
+     test — `tsFastTick(n)` (T-state add + line-boundary compare) and a direct
+     `ramCurrent[pg][off]`; poke keeps the W0_WE/FMAddr gate (`g_tsconf_wr`), the
+     ROM-window filter (pointer < 0x11000000) and `bank_dirty`. Recomputed by
+     `VIDEO::tsFastMemRecalc()` at the EndFrame arming and from GS.cpp when the
+     NeoGS ZX-DMA window toggles; memory breakpoints switch it off. **No overlay
+     test in the gate** — TS-Conf bank pointers are never overlay bases and the
+     registry is rarely empty (other romsets' entries persist), the first cut
+     tested `overlayCount == 0` and never engaged. Logs `[TSF] fast memory path
+     ON/off (...)` on every change. Hw: ~45 → ~12 ARM instructions per guest byte,
+     XIP accesses −33% per frame, ~2.5-3 ms per TMNT frame; other machines pay one
+     byte load + branch per access.
+  8. **Hardware-DMA offload of the TS DMA copy: hw-REFUTED, code removed
+     (2026-09-07).** Two RP2350 DMA channels (control-block chain through the
+     cached butter alias) moved the RAM→RAM/FILL runs while the CPU emulated.
+     Result: `hdmiGapMax` 34 → 1000-1700 us and the picture dropped — the
+     XIP-bound transfers hold the DMA engine's shared bus masters and the HDMI
+     line DMA (same engine, SRAM framebuffer) starves; and the transfer finished
+     LATER than the memcpy it replaced (4-byte transfers vs the CPU's 8-byte line
+     streaming), so `dma=` did not even drop. Do not retry a DMA-through-XIP
+     scheme while HDMI streams from the same engine; the same applies to a
+     DMA line prefetch for the renderer.
+  Where it stands (in-game TMNT, hw 2026-09-07, no histograms): `cpu≈21-22 ms`
+  (max ~30) → 38-42 FPS; render 4.2 ms (76.8 KB of screen through XIP), DMA memcpy
+  6 ms (38 KB each way, PSRAM floor), Z80 ~11.5 ms for ~24k instructions.
+  ~28k XIP misses per frame ≈ 8 ms of the 22 are PSRAM line fills spread over
+  all three. Pages 0/2/5 — 90% of CPU traffic — are SRAM already; the 256c
+  screen is a 512x512 bitmap = 16 pages, so "video pages in SRAM" is not an
+  option. PSRAM runs at 126 MHz (divisor 4 at 504); a PSRAM limit of 180 (divisor 3 =
+  168 MHz SCK) was offered in the Overclock menu for one build and **hw-refuted
+  the same evening — the DVp2's APS6404 does not hold it**; `Config::load` clamps
+  a stored value back to 166. Remaining software levers are small: -O3 on the hottest -Os
+  handlers, trimming exec_nocheck's per-instruction checks.
+  `Z80Ops::peek8/poke8/...` ARE RAM, reached via flash `_veneer` stubs
+  (`bl` cannot span 0x1005xxxx→0x2002xxxx).
 - **"Frameskip" (`Config::throtling`, Options → Other) is NOT a throttle.** When
   the previous frame's idle time was below the threshold it skips the AUDIO
   finish/mix for this frame (ESPectrum::loop, the `t_us` gate) and nothing else —
