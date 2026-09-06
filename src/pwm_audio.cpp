@@ -245,13 +245,21 @@ esp_err_t __not_in_flash_func(pwm_audio_write)(
 }
 
 //------------------------------------------------------------
+// Which PIO block I2S runs on. pio1 everywhere by default (beside the PS/2
+// keyboard and NESPAD); MURM_W moves it to pio0 because that board's audio lands
+// on GPIO40/41/42 and pio1 is pinned to gpio_base 0 by the keyboard on GP0/1 and
+// NESPAD on GP14-16. audio.c sets the base from the pins.
+#ifndef I2S_PIO
+#define I2S_PIO pio1
+#endif
+
 static i2s_config_t i2s_config = {
 		.sample_freq = 31250, 
 		.channel_count = 2,
         .data_pin = I2S_DATA_PIO,
         .bck_pin = I2S_BCK_PIO,
         .lck_pin = I2S_LCK_PIO,
-		.pio = pio1,
+		.pio = I2S_PIO,
 		.sm = 0,
         .dma_channel = 0,
         .dma_trans_count = 0,

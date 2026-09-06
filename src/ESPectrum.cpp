@@ -650,6 +650,18 @@ static void resolveVideoOutput() {
   extern bool SELECT_VGA;
   extern uint8_t linkVGA01;
   extern uint8_t video_driver;
+#if PICOSPECCY_WIFI
+  // W boards are HDMI-only, and this is not a preference. The CYW43 radio's pins
+  // are above GPIO31, so it needs a PIO block at gpio_base 16, and pio1 (keyboard)
+  // and pio2 (HDMI, pins 6-19) are both pinned to base 0 — pio0 is the only
+  // candidate. VGA also lives on pio0 (PIO_VGA) and needs base 0, so choosing it
+  // would silently cost the radio its only block. HDMI runs on pio2 and leaves
+  // pio0 free. CMakeLists refuses SOFTTV/TV/TFT builds for the same reason; this
+  // is the runtime half, for a VGA_HDMI image whose link pins or video_driver
+  // setting would otherwise ask for VGA.
+  SELECT_VGA = false;
+  return;
+#endif
   if (video_driver == 0) {
       #if defined(ZERO2) || defined(PICO_DV)
           SELECT_VGA = linkVGA01 == 0x1F;

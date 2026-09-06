@@ -21,7 +21,30 @@ int uartInstanceForTx(uint8_t tx) {
 // ── Per-board ZiFi UART TX/RX candidate pairs (index 0 = default) ─────────────
 // Hard conflicts (display, SD, QSPI/SPI-PSRAM, LED, KBD, core audio) are excluded;
 // reassignable peripherals are offered with a note describing what they displace.
-#if defined(PICO_DV)
+#if defined(MURM2_W)
+// Murmulator 2.0 + RP2350B-Plus-W. Same carrier as MURM2, but two of its pairs
+// are gone: {20,21} is NESPAD CLK/LAT as before, and {26,27} / {38,39} must NOT
+// be offered — the header positions of GP26/27 carry GPIO40/41 (the pad's data
+// pair on this module) and GPIO38/39 are expected to belong to the radio module,
+// so offering them from the Network menu would take WiFi down. GP0/GP1 are free
+// on this carrier and are a UART0 pair, so they lead.
+static const UartPair ZIFI_PAIRS[] = {
+    {0, 1, ""},                 // UART0 (free)
+    {20, 21, "off: NESPAD"},    // UART1
+    {22, 23, "off: MIDI/WAV"},  // UART1
+};
+#elif defined(MURM_W)
+// Murmulator 1.x + RP2350B-Plus-W. MURM1's {26,27} "off: audio" pair becomes
+// {40,41} here (same header positions, and still the audio pins). GP18-21 are
+// free on this board — the carrier's PIO SPI PSRAM is not built on MURM_W — but
+// they stay off the list: the APS6404 is still soldered to them and would drive
+// MISO whenever its CS floats low.
+static const UartPair ZIFI_PAIRS[] = {
+    {16, 17, "off: NESPAD"},    // UART0
+    {14, 15, "off: NESPAD"},    // UART0
+    {40, 41, "off: audio"},     // UART1 — the only non-UART0 pair here, as on MURM1
+};
+#elif defined(PICO_DV)
 static const UartPair ZIFI_PAIRS[] = {
     {0, 1, ""},                 // UART0, dedicated ZiFi header
     {20, 21, "off: WAV+MIDI"},  // UART1

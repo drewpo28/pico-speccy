@@ -14,7 +14,10 @@ Board supported:
  - "Murmulator 2.0" + Raspberry "Pi Pico 2" or compatible;
  - Waveshare "RP2350-PiZero" + use PCM5122 for best sound;
  - Pimoroni "Pico DV Demo Base" + Raspberry "Pi Pico 2" or compatible;
- - Olimex "RP2040-PICO-PC" carrier board + Raspberry "Pi Pico 2" or compatible.
+ - Olimex "RP2040-PICO-PC" carrier board + Raspberry "Pi Pico 2" or compatible;
+ - "Murmulator 1.x" or "Murmulator 2.0" + Waveshare "RP2350B-Plus-W" — the same two
+   carriers with a module that has WiFi/Bluetooth (Raspberry Pi Radio Module 2),
+   16 MB of flash and PSRAM pads on GPIO47.
 
 Best performance for case Pimoroni "Pico Plus 2" is used.
 
@@ -283,6 +286,8 @@ Your filesystem tree must be look like:
 | `-DPICO_PC=ON` | Build for Olimex RP2040-PICO-PC carrier board |
 | `-DPICO_DV=ON` | Build for Pimoroni Pico DV Demo Base |
 | `-DZERO2=ON` | Build for Waveshare RP2350-PiZero |
+| `-DMURM_W=ON` | Build for Murmulator 1.x + Waveshare RP2350B-Plus-W (on-chip CYW43439 WiFi). Same carrier as `-DMURM=ON`; the module moves audio to GPIO40/41/42, the LED to GPIO23 and PSRAM to GPIO47, and the carrier's PIO SPI PSRAM is dropped so the radio fits on pio0. |
+| `-DMURM2_W=ON` | Build for Murmulator 2.0 + Waveshare RP2350B-Plus-W (on-chip CYW43439 WiFi). Same carrier as `-DMURM2=ON`; audio is unchanged, the gamepad data pins move to GPIO40/41, the LED to GPIO23 and PSRAM to GPIO47. |
 | `-DZERO2_PIO_USB=ON` | ZERO2: USB host on the second Type-C port (J2, PIO-USB on GP28/GP29). **Default OFF** — the bit-banged host costs ~18 KB of SRAM (RAM-resident code + endpoint pool), so it ships as a separate `z0p2-speccy-VGA-HDMI-PIOUSB-*.uf2` image instead. |
 | `-DVGA_HDMI=ON` | VGA/HDMI output (default) |
 | `-DSOFTTV=ON` | Software composite TV output |

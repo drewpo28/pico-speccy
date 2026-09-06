@@ -25,6 +25,13 @@ option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
 option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
 option(PICO_DV "Pimoroni Pico DV Demo Base + Pi Pico 2" OFF)
 option(ZERO2 "Waveshare RP2350-PiZero" OFF)
+# Waveshare RP2350B-Plus-W in a Murmulator socket. The module is an RP2350B with
+# 16 MB flash, PSRAM pads on GPIO47 and a Raspberry Pi Radio Module 2 (CYW43439)
+# on board, so these are the SAME carriers as MURM/MURM2 with a different module:
+# each option turns its carrier on and then overrides the handful of pins that the
+# module moves. See src/boards/picospeccy_rp2350b_w.h.
+option(MURM_W "Murmulator 1.x + Waveshare RP2350B-Plus-W (on-chip CYW43439 WiFi)" OFF)
+option(MURM2_W "Murmulator 2.0 + Waveshare RP2350B-Plus-W (on-chip CYW43439 WiFi)" OFF)
 # OFF by default and shipped as a SEPARATE z0p2 firmware ("-PIOUSB" in the file name):
 # Pico-PIO-USB costs 17.7 KB of SRAM that cannot be reclaimed at runtime — 11.0 KB of
 # .time_critical code (the bit-banged host has to run from RAM) plus 6.7 KB of .bss,
@@ -97,6 +104,33 @@ set(CPU_MHZ 378)
 set (PORT_VERSION "1.0.4")
 string(LENGTH "${PORT_VERSION}" PORT_VERSION_LEN)
 
+# A W target IS its carrier, plus a different plugged-in module: turn the carrier
+# on so every pin arm, display matrix and runtime `#if MURM2` below keeps working,
+# and raise PICOSPECCY_WIFI as the single "this image has a radio" switch. Must run
+# BEFORE the default-board guard, or -DMURM_W=ON alone would also default MURM2 on.
+if(MURM_W)
+    set(MURM ON)
+endif()
+if(MURM2_W)
+    set(MURM2 ON)
+endif()
+if(MURM_W OR MURM2_W)
+    set(PICOSPECCY_WIFI ON)
+    # The radio is only reachable from a PIO block at gpio_base 16 (its pins are
+    # above GPIO31), and pio1/pio2 are pinned to base 0 by the keyboard and HDMI —
+    # so it has to be pio0. Every non-HDMI display driver ALSO wants pio0, at base
+    # 0: VGA (PIO_VGA, pins from VGA_BASE_PIN 6/12), SOFTTV (PIO_VIDEO = pio0) and
+    # ST7789/TFT. Those cannot coexist with the radio in the same image, and the
+    # failure would be silent — cyw43_arch_init() simply never finds a block, and
+    # you get a WiFi board with no WiFi. Refuse the combination at configure time.
+    if(SOFTTV OR TV OR TFT OR ILI9341 OR ST7789)
+        message(FATAL_ERROR
+            "MURM_W/MURM2_W support HDMI output only: the CYW43 radio needs pio0 at "
+            "gpio_base 16, and the SOFTTV/TV/TFT drivers take pio0 at gpio_base 0. "
+            "Build these boards with -DVGA_HDMI=ON (the default).")
+    endif()
+endif()
+
 # Target board (default: MURM2; override with -D flags, e.g. cmake -DPICO_DV=ON)
 if(NOT MURM AND NOT MURM2 AND NOT PICO_PC AND NOT PICO_DV AND NOT ZERO2)
     set(MURM2 ON)
@@ -116,6 +150,12 @@ IF(ZERO2)
     set(PICO_BOARD waveshare_rp2350_pizero CACHE STRING "Board type" FORCE)
     set(PICO_PLATFORM rp2350-arm-s)
     set(CPU_MHZ 252)
+ELSEIF(PICOSPECCY_WIFI)
+    # Waveshare RP2350B-Plus-W: same RP2350B package as the header below, plus the
+    # on-board CYW43439, 16 MB of flash and PSRAM pads on GPIO47.
+    set(PICO_BOARD_HEADER_DIRS ${CMAKE_SOURCE_DIR}/src/boards)
+    set(PICO_BOARD picospeccy_rp2350b_w CACHE STRING "Board type" FORCE)
+    set(PICO_PLATFORM rp2350-arm-s)
 else()
     # All remaining boards (MURM2, PICO_PC, PICO_DV, MURM1/default) build for the
     # RP2350B (48-GPIO) package so GPIO 30..47 are valid for any peripheral.
@@ -131,11 +171,25 @@ message(STATUS "PICO_BOARD: ${PICO_BOARD}")
 include(pico_sdk_import.cmake)
 
 SET(PROJECT_NAME speccy)
-set(FLASH_SIZE 4096)
+# 16 MB on the RP2350B-Plus-W module, 4 MB everywhere else. This is what buys room
+# for the ~230 KB CYW43 firmware blob: with __gmx_rom_in_flash the gm_bank partition
+# takes 1.6875 MB off the top (rp2350-memmap.ld), leaving ~2.3 MB of firmware
+# partition on 4 MB — which main has already overflowed once — against ~14.3 MB here.
+if(PICOSPECCY_WIFI)
+    set(FLASH_SIZE 16384)
+else()
+    set(FLASH_SIZE 4096)
+endif()
 
 # Board tag: prefix of the firmware file name and the per-board NVS config dir.
 # No chip suffix anymore — every target is RP2350.
-IF(MURM2)
+IF(MURM2_W)
+    set(BOARD_TAG "m2p2w")
+    set (BUTTER_PSRAM_GPIO 47)      # module pads; 0 until a chip is soldered on
+ELSEIF(MURM_W)
+    set(BOARD_TAG "m1p2w")
+    set (BUTTER_PSRAM_GPIO 47)
+ELSEIF(MURM2)
     set(BOARD_TAG "m2p2")
     set (BUTTER_PSRAM_GPIO 8)
 ELSEIF(PICO_PC)
@@ -351,8 +405,55 @@ target_include_directories(${PROJECT_NAME} PRIVATE
         external/embeded-midi-synth
 )
 
-if (PICO_CYW43_SUPPORTED)
-    target_link_libraries(${PROJECT_NAME} pico_cyw43_arch_none)
+# On-chip WiFi (MURM_W / MURM2_W: Raspberry Pi Radio Module 2 = CYW43439).
+# This replaces a hook that had been dormant since it was written: it keyed off
+# PICO_CYW43_SUPPORTED, which no board header here defined, and it used the
+# keyword-less target_link_libraries() signature that CMake refuses to mix with
+# the PRIVATE form used everywhere else on this target — so it would have failed
+# the configure the first time it ever fired.
+#
+# Phase 1 links the bus driver only (pico_cyw43_arch_none): that brings up the
+# radio and its PIO/DMA claims for ~0 heap, with no lwIP and no ~30 KB working
+# set, which is what makes the pin/gpio_base bring-up cheap to test. lwIP arrives
+# with WifiNet/WifiSock (pico_cyw43_arch_lwip_poll + pico_lwip_dns/sntp).
+if (PICOSPECCY_WIFI)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=1)
+    target_link_libraries(${PROJECT_NAME} PRIVATE pico_cyw43_arch_none)
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
+endif()
+# Board identity for the sources. MURM2 already defines MURM2=1 in its pin arm;
+# MURM1 defines nothing and is the `#else` fallback everywhere, so MURM_W needs
+# its own macro for src/BoardPins.cpp to tell the two Murmulator-1 modules apart.
+if (MURM_W)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MURM_W=1)
+endif()
+if (MURM2_W)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE MURM2_W=1)
+endif()
+
+# PIO block assignment on the W boards. An RP2350 PIO reaches 32 CONSECUTIVE
+# GPIOs from its gpio_base (0 or 16), and the radio sits above GPIO31 — so CYW43
+# needs a block at base 16, which pio1 (keyboard on GP0-3) and pio2 (HDMI on
+# GP6-19) cannot be. That leaves pio0, and whatever else has moved above GPIO31
+# has to join it there:
+#
+#   MURM_W  — audio is on GPIO40/41/42, so I2S moves pio1 -> pio0.
+#             pio0: CYW43 (5-7) + I2S (9, or 17 for CS4334)   = 14..24 / 32
+#             pio1: PS/2 (7) + NESPAD (7)                     = 14 / 32
+#   MURM2_W — audio stays on GP9/10/11 (below GP23, so unmoved), but the pad's
+#             data pair is on GPIO40/41, so NESPAD moves pio1 -> pio0.
+#             pio0: CYW43 (5-7) + NESPAD (7)                  = 12..14 / 32
+#             pio1: PS/2 (7) + I2S (9, or 17)                 = 16..24 / 32
+#
+# pio2 keeps HDMI (18 / 32) on both. cyw43_arch_init() must therefore run AFTER
+# graphics_init() and the keyboard have fixed their blocks at base 0, or the SDK's
+# pio_claim_free_sm_and_add_program_for_gpio_range() can take the wrong one.
+if (MURM_W)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE I2S_PIO=pio0)
+endif()
+if (MURM2_W)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE NESPAD_PIO=pio0)
 endif()
 
 # create map/bin/hex file etc.
@@ -653,6 +754,68 @@ set_source_files_properties(src/GS/GS.cpp PROPERTIES
 # frame must fit comfortably inside a frame-pacing idle slot on core0.
 set_source_files_properties(src/GS/NgsMp3.cpp PROPERTIES COMPILE_FLAGS "-O3")
 
+# ── RP2350B-Plus-W pin overrides (MURM_W / MURM2_W) ──────────────────────────
+# The module's 40-pin header is Pico-compatible for GPIO0..GPIO22, so keyboard,
+# SD, display, MIDI/WAV and (on MURM2) audio all keep their numbers. Three things
+# move, and the carrier arms below take them from these variables:
+#
+#   * the three positions a Pico exposes as GP26/27/28 carry GPIO40/41/42 here.
+#     That is MURM1's whole audio block, and MURM2's NESPAD data pair.
+#   * the user LED is GPIO23 (LED2), not GPIO25.
+#   * GP29 is not a header pin on any Pico, so MURM1/MURM2's CLK_AY_PIN2=29 never
+#     reached the carrier anyway; here GPIO29 is a bottom pad and GPIO36-39 are
+#     expected to belong to the radio module, so the AY clock output is dropped
+#     rather than pointed at a pin we do not own.
+#
+# GPIO24-35 and 43-45 exist on bottom pads that a Murmulator socket cannot reach.
+if(PICOSPECCY_WIFI)
+    set(W_HDR26 40)                 # what the Pico header position of GP26 carries
+    set(W_HDR27 41)                 # ... GP27
+    set(W_HDR28 42)                 # ... GP28
+    set(W_LED_PIN 23)               # LED2
+    # GP29 is not a header pin on any Pico, so this AY clock output never reached
+    # a Murmulator carrier in the first place; on the W module GPIO29 is a bottom
+    # pad and GPIO36-39 are expected to belong to the radio, so there is no pin to
+    # point it at. 255 = absent, the same sentinel PSRAM_PIN_* and ZERO2's LED use;
+    # PinSerialData_595.c skips it exactly like a pin ZiFi has claimed.
+    set(W_AY_CLK2 255)
+else()
+    set(W_HDR26 26)
+    set(W_HDR27 27)
+    set(W_HDR28 28)
+    set(W_LED_PIN 25)
+    set(W_AY_CLK2 29)
+endif()
+
+# MURM_W only: the carrier's own PIO SPI PSRAM comes off. pio0 is the only block
+# that can reach both the radio (GPIO36-39) and MURM1's relocated audio
+# (GPIO40/41/42) — RP2350 PIO sees 32 consecutive GPIOs from gpio_base, and pio1
+# (keyboard GP0/1, NESPAD GP14-16) and pio2 (HDMI GP6-13) are pinned to base 0.
+# pio0 then has to hold CYW43 (5-7 instructions) plus I2S (9, or 17 for CS4334),
+# and the SPI PSRAM's two programs are another 18-20 — 34..44 of 32. Since the
+# module carries QSPI PSRAM pads on GPIO47 (memory-mapped butter PSRAM, which is
+# strictly faster than the PIO SPI part), dropping the carrier chip is the right
+# half of the trade; it also frees 3 DMA channels and GP18-21.
+if(MURM_W)
+    set(M1_PSRAM_DEFS
+        PSRAM_SPINLOCK=255
+        PSRAM_ASYNC=255
+        PSRAM_PIN_CS=255
+        PSRAM_PIN_SCK=255
+        PSRAM_PIN_MOSI=255
+        PSRAM_PIN_MISO=255)
+else()
+    set(M1_PSRAM_DEFS
+        PSRAM
+        PSRAM_SPINLOCK=1
+        PSRAM_ASYNC=1
+        PSRAM_MAX_SCK_MHZ=63
+        PSRAM_PIN_CS=18
+        PSRAM_PIN_SCK=19
+        PSRAM_PIN_MOSI=20
+        PSRAM_PIN_MISO=21)
+endif()
+
 IF(MURM2)
     target_compile_definitions(${PROJECT_NAME} PRIVATE
         PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}
@@ -668,7 +831,7 @@ IF(MURM2)
         LATCH_595_PIN=9
         CLK_595_PIN=10
         DATA_595_PIN=11
-        CLK_AY_PIN2=29
+        CLK_AY_PIN2=${W_AY_CLK2}
 
         I2S_DATA_PIO=9 #
         I2S_BCK_PIO=10 #
@@ -699,7 +862,7 @@ IF(MURM2)
         USE_NESPAD
         NES_GPIO_CLK=20
         NES_GPIO_LAT=21
-        NES_GPIO_DATA=26
+        NES_GPIO_DATA=${W_HDR26}     # +1 (joy2) is implicit: W_HDR27
 
         # VGA 8 pins starts from pin:
         VGA_BASE_PIN=12
@@ -718,7 +881,7 @@ IF(MURM2)
         TFT_INV=${TFT_INV}
 
         DEFAULT_THROTTLING=0
-        PICO_DEFAULT_LED_PIN=25
+        PICO_DEFAULT_LED_PIN=${W_LED_PIN}
     )
 ELSEIF(PICO_PC)
     # Debug-Probe UART toggle PICO_PC_DBG_UART declared at top. Enables UART0 on the
@@ -991,19 +1154,21 @@ ELSE()
 
         LOAD_WAV_PIO=22
 
-        I2S_DATA_PIO=26 #
-        I2S_BCK_PIO=27 #
-        I2S_LCK_PIO=28
+        # Audio: GP26/27/28 on a Pi Pico 2, GPIO40/41/42 on the RP2350B-Plus-W —
+        # same three header positions, different GPIO numbers (see W_HDR* above).
+        I2S_DATA_PIO=${W_HDR26} #
+        I2S_BCK_PIO=${W_HDR27} #
+        I2S_LCK_PIO=${W_HDR28}
 
         CLK_AY_PIN1=21 # not in use
-        LATCH_595_PIN=26
-        CLK_595_PIN=27
-        DATA_595_PIN=28
-        CLK_AY_PIN2=29
+        LATCH_595_PIN=${W_HDR26}
+        CLK_595_PIN=${W_HDR27}
+        DATA_595_PIN=${W_HDR28}
+        CLK_AY_PIN2=${W_AY_CLK2}
 
-        PWM_PIN0=26 #
-        PWM_PIN1=27 #
-        BEEPER_PIN=28
+        PWM_PIN0=${W_HDR26} #
+        PWM_PIN1=${W_HDR27} #
+        BEEPER_PIN=${W_HDR28}
         MIDI_TX_PIN=22
 
         # SDCARD
@@ -1012,26 +1177,19 @@ ELSE()
         SDCARD_PIN_SPI0_MOSI=3
         SDCARD_PIN_SPI0_MISO=4
 
-        PSRAM
         # PSRAM_MUTEX=1
-        PSRAM_SPINLOCK=1
-        PSRAM_ASYNC=1
-
-        # SPI clock ceiling. At 126 MHz (default) sys_clk=378 gives clkdiv=1.5 —
-        # a fractional divider that makes SCK jitter and corrupts this board's
-        # APS6404 8 MB chip (~930 KB/1 MB bad at boot, size probe flaps 8M↔1M).
-        # 94 MHz targets clkdiv=2.0 at 378 MHz (round(378/188)=2 → SCK=94.5 MHz,
-        # still an integer divider with a clean waveform — same reason 63 MHz /
-        # clkdiv=3.0 was safe, one step faster: +50% bandwidth). init_psram()
-        # runs an at-speed write/verify memtest and drops the target back to
-        # PSRAM_FALLBACK_SCK_MHZ (63) if this chip fails at 94.5 MHz;
+        # The carrier's PIO SPI PSRAM on GP18-21 — present on MURM, dropped on
+        # MURM_W to keep pio0 inside 32 instructions (see M1_PSRAM_DEFS above).
+        # PSRAM_MAX_SCK_MHZ, when it is set: at 126 MHz (default) sys_clk=378 gives
+        # clkdiv=1.5 — a fractional divider that makes SCK jitter and corrupts this
+        # board's APS6404 8 MB chip (~930 KB/1 MB bad at boot, size probe flaps
+        # 8M↔1M). 94 MHz targets clkdiv=2.0 at 378 MHz (round(378/188)=2 →
+        # SCK=94.5 MHz, still an integer divider with a clean waveform — same reason
+        # 63 MHz / clkdiv=3.0 was safe, one step faster: +50% bandwidth).
+        # init_psram() runs an at-speed write/verify memtest and drops the target
+        # back to PSRAM_FALLBACK_SCK_MHZ (63) if this chip fails at 94.5 MHz;
         # psram_update_clkdiv() keeps the chosen target after CPU overclock too.
-        PSRAM_MAX_SCK_MHZ=63
-
-        PSRAM_PIN_CS=18
-        PSRAM_PIN_SCK=19
-        PSRAM_PIN_MOSI=20
-        PSRAM_PIN_MISO=21
+        ${M1_PSRAM_DEFS}
 
         # NES Gamepad — disabled when MURM1_DBG_UART=ON (KBD moves to GP16/GP17, conflicts with NES_GPIO_DATA=16)
         $<$<NOT:$<BOOL:${MURM1_DBG_UART}>>:USE_NESPAD>
@@ -1055,7 +1213,7 @@ ELSE()
         TFT_INV=${TFT_INV}
 
         DEFAULT_THROTTLING=0
-        PICO_DEFAULT_LED_PIN=25
+        PICO_DEFAULT_LED_PIN=${W_LED_PIN}
     )
 ENDIF()
 

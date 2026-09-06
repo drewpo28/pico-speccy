@@ -40,7 +40,24 @@
  */
 void i2s_init(i2s_config_t *i2s_config) {
     if (is_i2s_enabled) {
-        uint8_t func = GPIO_FUNC_PIO1;    // TODO: GPIO_FUNC_PIO0 for pio0 or GPIO_FUNC_PIO1 for pio1
+        // Derive the pad function from the block we were actually given — this
+        // used to be a hardcoded GPIO_FUNC_PIO1 with a TODO beside it, which
+        // silently routed the pads to pio1 no matter what .pio said. MURM_W runs
+        // I2S on pio0 (its audio sits on GPIO40/41/42, above pio1's gpio_base 0
+        // window), so the wrong constant there would be three dead pins.
+        uint8_t func = GPIO_FUNC_PIO1;
+        if (i2s_config->pio == pio0) func = GPIO_FUNC_PIO0;
+#if NUM_PIOS > 2
+        else if (i2s_config->pio == pio2) func = GPIO_FUNC_PIO2;
+#endif
+        // An RP2350 PIO block reaches 32 consecutive GPIOs from its gpio_base
+        // (0 or 16); audio above GPIO31 needs the window moved up, exactly like
+        // the ZERO2 display path in hdmi_init() (drivers/hdmi/hdmi.c).
+        uint8_t max_pin = i2s_config->data_pin;
+        if (i2s_config->bck_pin > max_pin) max_pin = i2s_config->bck_pin;
+        if (i2s_config->lck_pin > max_pin) max_pin = i2s_config->lck_pin;
+        if (max_pin >= 32) pio_set_gpio_base(i2s_config->pio, 16);
+
         gpio_set_function(i2s_config->data_pin, func);
         gpio_set_function(i2s_config->bck_pin, func);
         gpio_set_function(i2s_config->lck_pin, func);

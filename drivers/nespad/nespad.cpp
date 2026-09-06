@@ -28,7 +28,14 @@ static inline pio_sm_config nespad_program_get_default_config(uint offset) {
   return c;
 }
 
-static PIO pio = pio1;
+// Which PIO block the pad runs on. pio1 everywhere by default (beside the PS/2
+// keyboard and I2S); MURM2_W moves it to pio0 because that board's pad data pins
+// land on GPIO40/41 and pio1 is pinned to gpio_base 0 by the keyboard on GP2/3.
+#ifndef NESPAD_PIO
+#define NESPAD_PIO pio1
+#endif
+
+static PIO pio = NESPAD_PIO;
 static uint8_t sm = -1;
 uint32_t nespad_state  = 0;  // Joystick 1
 uint32_t nespad_state2 = 0;  // Joystick 2
@@ -38,6 +45,17 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
       ((sm = pio_claim_unused_sm(pio, true)) >= 0)) {
     uint offset = pio_add_program(pio, &nespad_program);
     pio_sm_config c = nespad_program_get_default_config(offset);
+
+    // An RP2350 PIO block reaches 32 CONSECUTIVE GPIOs starting at its gpio_base
+    // (0 or 16), so a pad wired above GPIO31 (MURM2_W: data on 40/41) needs the
+    // window moved up. Same shape as the ZERO2 HDMI path in hdmi_init()
+    // (drivers/hdmi/hdmi.c): set the base first, then keep passing ABSOLUTE GPIO
+    // numbers to sm_config_*/pio_gpio_init — that is the combination running on
+    // hardware there with the display on GPIO32-39.
+    uint8_t maxPin = clkPin;
+    if (latPin      > maxPin) maxPin = latPin;
+    if (dataPin + 1 > maxPin) maxPin = dataPin + 1;
+    if (maxPin >= 32) pio_set_gpio_base(pio, 16);
 
     sm_config_set_sideset_pins(&c, clkPin);
     sm_config_set_in_pins(&c, dataPin);
@@ -49,11 +67,14 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
     gpio_set_pulls(dataPin, true, false); // Pull data high, 0xFF if unplugged
     gpio_set_pulls(dataPin+1, true, false); // Pull data high, 0xFF if unplugged for Joystick2
 
-    pio_sm_set_pindirs_with_mask(pio, sm,
-                                 (1 << clkPin) | (1 << latPin), // Outputs
-                                 (1 << clkPin) | (1 << latPin) | 
-                                 (1 << dataPin) | (1 << (dataPin+1))
-                                ); // All pins
+    // 64-bit masks: `1 << 40` is undefined behaviour on a 32-bit int, and these
+    // pins really are above 31 on MURM2_W. hdmi.c hit the same trap on ZERO2 and
+    // its comment says so. The 64-bit variants take absolute GPIO bit positions
+    // and are correct for low pins too, so there is one path, not two.
+    const uint64_t outMask = ((uint64_t)1 << clkPin) | ((uint64_t)1 << latPin);
+    const uint64_t allMask = outMask | ((uint64_t)1 << dataPin)
+                                     | ((uint64_t)1 << (dataPin + 1));
+    pio_sm_set_pindirs_with_mask64(pio, sm, outMask, allMask);
     sm_config_set_in_shift(&c, true, true, 32); // R shift, autopush @ 8 bits (@ 16 bits for 2 Joystick)
 
     sm_config_set_clkdiv_int_frac(&c, cpu_khz / 1000, 0); // 1 MHz clock
