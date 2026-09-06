@@ -73,4 +73,11 @@ public:
     static bool load(const string& p_fn);
 };
 
+// TS-Conf .spg program (src/TsSpg.cpp): forces the TS-Conf machine.
+class FileSPG
+{
+public:
+    static bool load(const string& spg_fn);
+};
+
 #endif

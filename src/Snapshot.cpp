@@ -85,6 +85,8 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
         res = FileZ80::load(filename);
     } else if (FileUtils::hasPextension(filename)) {
         res = FileP::load(filename);
+    } else if (FileUtils::hasSPGextension(filename)) {
+        res = FileSPG::load(filename);
     }
     g_snapshot_loading_path.clear();
     if (res && OSDprev) {
