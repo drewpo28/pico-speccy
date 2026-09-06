@@ -16,9 +16,11 @@ Phase 1 scope — the machine core only:
   - FRAME interrupt with programmable HSINT/VSINT position, IM2 vector #FF.
   - SysConfig ZCLK 3.5/7/14 MHz -> ESPectrum::multiplicator.
   - CRAM/SFILE storage (written via #nnAF only in this phase).
-Not in this phase (registers stored, hardware inert): DMA, LINE/DMA
-interrupts, the TSU, 16c/256c/text video modes, FMAddr, W0_WE write
-protect, VDOS, the read cache.
+Phase 2 (2026-09-06) adds the DMA controller (RAM/BLT1/BLT2/FILL/CRAM/SFILE
+and SPI via the Z-Controller; IDE is a warn-once stub), the LINE and DMA
+interrupt sources with the hardware's priority/acknowledge rules, and the
+W0_WE write protect. Still inert: the TSU, 16c/256c/text video modes, VDOS,
+the read cache.
 
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -85,6 +87,7 @@ public:
         uint8_t  palsel, palsel_d;
         uint8_t  border;       // full 8-bit CRAM index
         uint16_t g_xoffs, g_yoffs;
+        bool     g_yoffs_updated; // GYOffs written since the last rendered line (Unreal g_yoffs_updated)
         uint16_t t0_xoffs, t0_yoffs, t1_xoffs, t1_yoffs;
         uint8_t  tmpage, t0gpage, t1gpage, sgpage;
         // -- dma (stored only in this phase) --
@@ -109,16 +112,39 @@ public:
     static void portWrite(uint8_t reg, uint8_t val);
     static void write7ffd(uint8_t val);
     static void fmWrite(uint16_t addr, uint8_t val); // FMAddr window (CPU write funnel)
-    static void applyZclk();     // SysConfig ZCLK -> ESPectrum::multiplicator
+    // CPU write funnel hook, entered only while g_tsconf_wr != 0: routes the
+    // FMAddr window and applies the W0_WE protect. Returns true when the RAM
+    // store must be SUPPRESSED (window 0 is RAM with W0_WE = 0).
+    static bool cpuWriteGate(uint16_t addr, uint8_t val);
+    // SysConfig ZCLK -> ESPectrum::multiplicator. The guest's register IS the
+    // clock (there is no user turbo on a ZX-Evo); fromGuest=true shows the
+    // same top-border toast as the Turbo hotkey when the effective clock moves.
+    static void applyZclk(bool fromGuest = false);
     static void setBanks();      // recompute MemESP::ramCurrent[0..3]
     static void trdosTrap(uint8_t pcH); // check_trdos() replacement (Z80_JLS.cpp)
 
-    // FRAME INT plumbing. frameIntRecalc() maps (vsint,hsint) onto
-    // CPU::IntStart/IntEnd in scaled T-states; frameIntEnabled() gates
-    // Z80Ops::isActiveINT.
+    // Interrupt controller (zint.v). Three latched sources: FRAME (the
+    // programmable 32-clock window at VSINT/HSINT), LINE (every line start
+    // while enabled), DMA (transaction end). intLine() is the level the CPU
+    // samples (Z80Ops::isActiveINT); intAck() runs the acknowledge — it picks
+    // the highest-priority pending source (FRAME > LINE > DMA), clears it and
+    // returns its IM2 vector (#FF / #FD / #FB). frameIntRecalc() maps
+    // (vsint,hsint) onto CPU::IntStart/IntEnd in scaled T-states.
     static void frameIntRecalc();
     static inline bool frameIntEnabled() { return r.intmask & 0x01; }
-    static uint8_t im2Vector();  // INT-ack bus byte (#FF for FRAME)
+    static bool intLine();
+    static uint8_t intAck();
+    // True while a LINE or DMA interrupt may fire: CPU::loop then runs the
+    // rest of the frame instruction-checked instead of the unchecked slices
+    // (only the FRAME window is checked otherwise).
+    static bool needsCheckedFrame();
+    static void endFrame();      // frame-relative INT/DMA timestamps wrap here
+
+    // DMA controller. A DMACtrl write runs the whole transaction at once;
+    // DMA_ACT then stays up for the time the hardware would have needed, and
+    // the DMA interrupt is raised when it drops.
+    static void dmaStart(uint8_t ctrl);
+    static uint8_t dmaStatus();  // DMAStatus register image (b7 = DMA_ACT)
 
     // 16 KB RAM page as a direct pointer, or nullptr when the page is not
     // POINTER-backed (degraded boot only — see the residency self-heal in
@@ -131,8 +157,10 @@ public:
     static void refreshGrmem();
 };
 
-// Nonzero while TS-Conf runs with FMAddr enabled — the CPU write funnel's
-// predicted-not-taken gate (the g_ngs_zxdma pattern; see CPU.cpp).
-extern uint8_t g_tsconf_fm;
+// Nonzero while a TS-Conf write-side hook is armed — the CPU write funnel's
+// predicted-not-taken gate (the g_ngs_zxdma pattern; see CPU.cpp). Bits:
+// 0x10 | window = FMAddr enabled (TsConf::fmWrite), 0x20 = window 0 is RAM
+// with W0_WE = 0 (writes below #4000 dropped). Zero for every other machine.
+extern uint8_t g_tsconf_wr;
 
 #endif // TSCONF_H

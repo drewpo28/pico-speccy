@@ -22,25 +22,60 @@ the Free Software Foundation, either version 3 of the License, or
 #include "ESPectrum.h"
 #include "Video.h"
 #include "Debug.h"
+#include "RTC.h"
+#include "DivMMC.h"
+#include "LEDIndicators.h"
+#include "OSDMain.h"
 #include "roms/tsconf/romTsBios.h"
 
 TsConf::Regs TsConf::r;
 uint16_t TsConf::cram[256];
 uint16_t TsConf::sfile[256];
 
-// Nonzero while TS-Conf runs with FMAddr mapping enabled: (fmaddr & 0x0F) | 0x10.
-// Tested predicted-not-taken in the CPU write funnel (gsDmaPoke8) — the
-// g_ngs_zxdma pattern; zero for every other machine, so the cost elsewhere is
-// one byte-load-and-test per guest write.
-uint8_t g_tsconf_fm = 0;
+// Write-side gate (see TsConf.h): 0x10|window while FMAddr is enabled, 0x20
+// while window 0 is write-protected RAM. Tested predicted-not-taken in the CPU
+// write funnel (gsDmaPoke8) — the g_ngs_zxdma pattern; zero for every other
+// machine, so the cost elsewhere is one byte-load-and-test per guest write.
+uint8_t g_tsconf_wr = 0;
 
 // FMAddr 512-byte windows latch the even byte here and commit the word on the
 // odd address (reference temp.fm_tmp).
 static uint8_t s_fm_tmp = 0;
 
-static void tsUpdateFmGate() {
-    g_tsconf_fm = (Z80Ops::isTsconf && (TsConf::r.fmaddr & 0x10))
-                      ? ((TsConf::r.fmaddr & 0x0F) | 0x10) : 0;
+static void tsUpdateWrGate() {
+    uint8_t g = 0;
+    if (Z80Ops::isTsconf) {
+        if (TsConf::r.fmaddr & 0x10) g |= (TsConf::r.fmaddr & 0x0F) | 0x10;
+        if (TsConf::r.w0_ram() && !TsConf::r.w0_we()) g |= 0x20;
+    }
+    g_tsconf_wr = g;
+}
+
+// ------------------------------------------------ INT / DMA state ----
+// Frame-relative, in scaled CPU T-states (CPU::tstates units). The sources are
+// evaluated LAZILY from CPU::tstates when the CPU samples the line or reads
+// DMAStatus — there is no per-line hook, and none is needed: while LINE or DMA
+// interrupts are armed CPU::loop runs instruction-checked, so intLine() is
+// consulted after every instruction anyway.
+static bool     s_frm_acked;    // FRAME taken this frame (int_frm cleared by the ack)
+static bool     s_lin_pending;  // int_lin latch
+static uint32_t s_lin_next;     // T of the next line start that raises LINE
+static bool     s_dma_busy;     // DMA_ACT: transaction "in flight"
+static uint32_t s_dma_end;      // T at which it completes
+static bool     s_dma_pending;  // int_dma latch
+
+static inline uint32_t tsLineT() {
+    return (uint32_t)TSTATES_PER_LINE_PENTAGON << ESPectrum::multiplicator;
+}
+static inline uint32_t tsNextLineStart(uint32_t t) {
+    const uint32_t lt = tsLineT();
+    return (t / lt + 1) * lt;
+}
+// Leave an unchecked exec_nocheck() slice early so CPU::loop re-evaluates
+// needsCheckedFrame() — called when LINE/DMA interrupts become possible mid-
+// frame. stFrame == 0 means "HALTed" to the loop, hence the floor of 1.
+static inline void tsWakeLoop() {
+    if (CPU::stFrame > CPU::tstates) CPU::stFrame = CPU::tstates ? CPU::tstates : 1;
 }
 
 // ---------------------------------------------------------------- ROM ----
@@ -117,6 +152,7 @@ void TsConf::setBanks() {
     MemESP::ramContended[0] = MemESP::ramContended[1] = false;
     MemESP::ramContended[2] = MemESP::ramContended[3] = false;
 
+    tsUpdateWrGate();   // W0_RAM / W0_WE live in memconf
     refreshGrmem();
 }
 
@@ -179,7 +215,7 @@ uint8_t TsConf::portRead(uint8_t reg) {
         }
         case TSR_PAGE2:     return r.page[2];
         case TSR_PAGE3:     return r.page[3];
-        case TSR_DMASTATUS: return 0x00; // DMA not implemented yet — never busy
+        case TSR_DMASTATUS: return dmaStatus();
         default:            return 0xFF;
     }
 }
@@ -192,7 +228,7 @@ void TsConf::portWrite(uint8_t reg, uint8_t val) {
             // Writing CACHE copies it into all four CacheConfig bits
             // (datasheet); the cache itself is timing-only and not modelled.
             r.cacheconf = (val & 0x04) ? 0x0F : 0x00;
-            applyZclk();
+            applyZclk(true);
             break;
         case TSW_CACHECONF:
             r.cacheconf = val & 0x0F;
@@ -200,10 +236,19 @@ void TsConf::portWrite(uint8_t reg, uint8_t val) {
         case TSW_FDDVIRT:
             r.fddvirt = val & 0x8F;  // stored; VDOS is a later phase
             break;
-        case TSW_INTMASK:
-            r.intmask = val & 0x07;  // b1/b2 (LINE/DMA) stored, never fire yet
+        case TSW_INTMASK: {
+            // zint.v: a source's latch is held at 0 while its mask bit is 0
+            // ("writing 0 to a pending source resets it"); writing 1 leaves a
+            // pending one alone and re-arms the source at its next event.
+            const uint8_t old = r.intmask;
+            r.intmask = val & 0x07;
+            if (!(val & 0x02)) s_lin_pending = false;
+            else if (!(old & 0x02)) s_lin_next = tsNextLineStart(CPU::tstates);
+            if (!(val & 0x04)) s_dma_pending = false;
+            if (needsCheckedFrame()) tsWakeLoop();
             frameIntRecalc();
             break;
+        }
         case TSW_HSINT:
             r.hsint = val;
             frameIntRecalc();
@@ -230,7 +275,7 @@ void TsConf::portWrite(uint8_t reg, uint8_t val) {
         case TSW_PAGE3: r.page[3] = val; setBanks(); break;
         case TSW_FMADDR:
             r.fmaddr = val & 0x1F;
-            tsUpdateFmGate();
+            tsUpdateWrGate();
             break;
 
         // -- video (stored; committed immediately until the phase-3
@@ -264,8 +309,8 @@ void TsConf::portWrite(uint8_t reg, uint8_t val) {
             break;
         case TSW_GXOFFSL: r.g_xoffs = (r.g_xoffs & 0x100) | val; break;
         case TSW_GXOFFSH: r.g_xoffs = (r.g_xoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
-        case TSW_GYOFFSL: r.g_yoffs = (r.g_yoffs & 0x100) | val; break;
-        case TSW_GYOFFSH: r.g_yoffs = (r.g_yoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
+        case TSW_GYOFFSL: r.g_yoffs = (r.g_yoffs & 0x100) | val; r.g_yoffs_updated = true; break;
+        case TSW_GYOFFSH: r.g_yoffs = (r.g_yoffs & 0xFF) | ((uint16_t)(val & 1) << 8); r.g_yoffs_updated = true; break;
         case TSW_T0XOFFSL: r.t0_xoffs = (r.t0_xoffs & 0x100) | val; break;
         case TSW_T0XOFFSH: r.t0_xoffs = (r.t0_xoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
         case TSW_T0YOFFSL: r.t0_yoffs = (r.t0_yoffs & 0x100) | val; break;
@@ -284,21 +329,24 @@ void TsConf::portWrite(uint8_t reg, uint8_t val) {
         case TSW_DMADAX: r.daddr = (r.daddr & 0x003FFF) | ((uint32_t)val << 14); break;
         case TSW_DMALEN: r.dmalen = val; break;
         case TSW_DMANUM: r.dmanum = val; break;
-        case TSW_DMACTR: {
+        case TSW_DMACTR:
             r.dmactrl = val;
-            static bool warned = false;
-            if (!warned) {
-                warned = true;
-                Debug::log("TsConf: DMA start (ctrl=%02X) — not implemented yet", val);
-            }
+            dmaStart(val);
             break;
-        }
         default:
             break;
     }
 }
 
-// -------------------------------------------------- FMAddr memory window ----
+// -------------------------------------------------- CPU write funnel ----
+
+bool TsConf::cpuWriteGate(uint16_t addr, uint8_t val) {
+    if (g_tsconf_wr & 0x10) fmWrite(addr, val);
+    // W0_WE = 0 with RAM in window 0: the page reads as ROM (TS-BIOS's "boot
+    // from VROM" maps a ROM image copied into RAM this way). The FMAddr
+    // array still took the byte above — the hardware stores in parallel.
+    return (g_tsconf_wr & 0x20) && addr < 0x4000;
+}
 
 // Guest write with FMAddr enabled — called from the CPU write funnel
 // (gsDmaPoke8) BEFORE the normal store, which still proceeds (the hardware
@@ -353,30 +401,265 @@ void TsConf::frameIntRecalc() {
     if (CPU::IntEnd > CPU::statesInFrame) CPU::IntEnd = CPU::statesInFrame;
 }
 
-uint8_t TsConf::im2Vector() {
-    // FRAME = #FF; LINE (#FD) and DMA (#FB) come with their sources in a
-    // later phase.
-    return 0xFF;
+// Poll the lazily-evaluated sources against the current T-state.
+static void tsIntPoll() {
+    const uint32_t t = CPU::tstates;
+    if ((TsConf::r.intmask & 0x02) && t >= s_lin_next) {
+        s_lin_pending = true;                 // latched until acknowledged
+        s_lin_next = tsNextLineStart(t);
+    }
+    if (s_dma_busy && t >= s_dma_end) {
+        s_dma_busy = false;
+        if (TsConf::r.intmask & 0x04) s_dma_pending = true;
+    }
+}
+
+// FRAME: the 32-clock window at (VSINT, HSINT), auto-expiring (intctr_fin in
+// zint.v) and cleared by the acknowledge — same latetiming shift as the
+// generic Z80Ops::isActiveINT so the two agree to the T-state.
+static inline bool tsFrmActive() {
+    if (!TsConf::frameIntEnabled() || s_frm_acked) return false;
+    int32_t tmp = (int32_t)CPU::tstates + CPU::latetiming;
+    if (tmp >= (int32_t)CPU::statesInFrame) tmp -= CPU::statesInFrame;
+    return tmp >= CPU::IntStart && tmp < CPU::IntEnd;
+}
+
+bool TsConf::intLine() {
+    tsIntPoll();
+    return tsFrmActive() || s_lin_pending || s_dma_pending;
+}
+
+uint8_t TsConf::intAck() {
+    // zint.v: int_sel picks by priority at the ack edge; int_frm clears on
+    // any ack, int_lin only when FRAME is not pending, int_dma only when
+    // neither is — i.e. exactly the source whose vector is driven.
+    tsIntPoll();
+    if (tsFrmActive())  { s_frm_acked = true;    return 0xFF; }
+    if (s_lin_pending)  { s_lin_pending = false; return 0xFD; }
+    if (s_dma_pending)  { s_dma_pending = false; return 0xFB; }
+    return 0xFF;   // spurious (source dropped between sample and ack)
+}
+
+bool TsConf::needsCheckedFrame() {
+    return (r.intmask & 0x02) || s_lin_pending ||
+           ((r.intmask & 0x04) && (s_dma_busy || s_dma_pending));
+}
+
+void TsConf::endFrame() {
+    const uint32_t f = CPU::statesInFrame;
+    s_frm_acked = false;
+    s_lin_next = (s_lin_next >= f) ? s_lin_next - f : 0;
+    s_dma_end  = (s_dma_end  >= f) ? s_dma_end  - f : 0;
+}
+
+// ------------------------------------------------------------------ DMA ----
+//
+// Port of the reference dma_init/dma_next_burst/dma_* (tsconf.cpp) with the
+// per-memory-cycle state machine collapsed: the whole transaction executes
+// inside the DMACtrl write, and DMA_ACT + the DMA interrupt follow the time
+// the hardware would have taken (per-word cost below, scaled to the CPU
+// clock). Instant completion is the safe direction — software waits on
+// DMA_ACT or the interrupt, and nothing can observe a half-written block.
+//
+// Addresses are 22-bit; bit 0 is forced even (word transfers). With S_ALGN /
+// D_ALGN a block advances inside a 256/512-byte window (wrapping), and the
+// REGISTER steps by the window size per block; without alignment the
+// register follows the running address. That register update is what the
+// next transaction starts from, so it is kept exactly as the reference does.
+
+namespace {
+struct DmaRam {
+    uint32_t page = 0xFFFFFFFFu;
+    uint8_t* ptr = nullptr;
+    inline uint8_t* at(uint32_t a) {
+        const uint32_t pg = a >> 14;
+        if (pg != page) { page = pg; ptr = TsConf::pagePtr(pg); }
+        return ptr ? ptr + (a & 0x3FFE) : nullptr;
+    }
+    inline uint16_t rd(uint32_t a) {
+        const uint8_t* p = at(a);
+        return p ? (uint16_t)(p[0] | (p[1] << 8)) : 0xFFFF;
+    }
+    inline void wr(uint32_t a, uint16_t v) {
+        uint8_t* p = at(a);
+        if (p) { p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); }
+    }
+};
+}
+
+// Per-word cost in 3.5 MHz T-states, before the CPU-clock scaling: the DRAM
+// controller serves one access per ~4 clocks at 28 MHz, so RAM→RAM (read +
+// write) is ~2 T per word, one-sided transfers ~1 T, SPI is bound by the
+// card's clock (~4 T per word at 14 MHz SCK).
+static const uint8_t kDmaCostRam  = 2;
+static const uint8_t kDmaCostOne  = 1;
+static const uint8_t kDmaCostSpi  = 4;
+
+void TsConf::dmaStart(uint8_t ctrl) {
+    const bool     rw    = ctrl & 0x80;
+    const uint8_t  dev   = ctrl & 0x07;
+    const bool     asz   = ctrl & 0x08;
+    const bool     dalgn = ctrl & 0x10;
+    const bool     salgn = ctrl & 0x20;
+    const bool     opt   = ctrl & 0x40;   // BLT2: saturate
+    const uint32_t m1    = asz ? 0x3FFE00 : 0x3FFF00;
+    const uint32_t m2    = asz ? 0x0001FF : 0x0000FF;
+    const uint32_t asize = asz ? 512 : 256;
+    const uint8_t  mode  = (uint8_t)((rw ? 8 : 0) | dev);
+    enum { M_RAM = 0x01, M_SPIRAM = 0x02, M_IDERAM = 0x03, M_FILL = 0x04, M_BLT2 = 0x06,
+           M_BLT1 = 0x09, M_RAMSPI = 0x0A, M_RAMIDE = 0x0B, M_CRAM = 0x0C, M_SFILE = 0x0D };
+
+    uint32_t ss = r.saddr, dd = r.daddr;
+    uint32_t len = (uint32_t)r.dmalen + 1;
+    uint32_t num = r.dmanum;
+    uint32_t words = 0;
+    uint8_t cost = kDmaCostRam;
+    DmaRam src, dst;
+    uint16_t fill = 0;
+
+    auto ss_inc = [&]() { ss = salgn ? ((ss & m1) | ((ss + 2) & m2)) : ((ss + 2) & 0x3FFFFF); };
+    auto dd_inc = [&]() { dd = dalgn ? ((dd & m1) | ((dd + 2) & m2)) : ((dd + 2) & 0x3FFFFF); };
+
+    switch (mode) {
+        case M_RAM: case M_BLT1: case M_BLT2: case M_FILL: case M_CRAM: case M_SFILE:
+        case M_SPIRAM: case M_RAMSPI:
+            break;
+        case M_IDERAM: case M_RAMIDE: {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                Debug::log("TsConf: IDE DMA (ctrl=%02X) not implemented — transaction dropped", ctrl);
+            }
+            return;   // reference: DMA_ST_NOP — DMA_ACT never rises
+        }
+        default:
+            return;   // reserved device: no-op, like the reference
+    }
+    if (mode == M_FILL) {           // dma_fill: ONE source word, read up front
+        fill = src.rd(ss);
+        ss_inc();
+        cost = kDmaCostOne;
+    } else if (mode == M_CRAM || mode == M_SFILE) {
+        cost = kDmaCostOne;
+    } else if (mode == M_SPIRAM || mode == M_RAMSPI) {
+        cost = kDmaCostSpi;
+        LED::touchR(LED::ZCTRL);
+    }
+
+    for (;;) {
+        for (uint32_t i = 0; i < len; i++) {
+            switch (mode) {
+                case M_RAM:
+                    dst.wr(dd, src.rd(ss));
+                    break;
+                case M_BLT1: {                 // transparent copy: 0 pixels keep dst
+                    uint16_t s = src.rd(ss), d = dst.rd(dd), o;
+                    if (asz) {                 // 256c: byte pixels
+                        o = (uint16_t)(((s & 0x00FF) ? (s & 0x00FF) : (d & 0x00FF)) |
+                                       ((s & 0xFF00) ? (s & 0xFF00) : (d & 0xFF00)));
+                    } else {                   // 16c: nibble pixels
+                        o = 0;
+                        for (int n = 0; n < 16; n += 4) {
+                            const uint16_t msk = (uint16_t)(0xF << n);
+                            o |= (s & msk) ? (s & msk) : (d & msk);
+                        }
+                    }
+                    dst.wr(dd, o);
+                    break;
+                }
+                case M_BLT2: {                 // additive blit, optional saturation
+                    uint16_t s = src.rd(ss), d = dst.rd(dd), o = 0;
+                    if (asz) {
+                        for (int n = 0; n < 16; n += 8) {
+                            uint32_t v = ((s >> n) & 0xFF) + ((d >> n) & 0xFF);
+                            if (v > 0xFF && opt) v = 0xFF;
+                            o |= (uint16_t)((v & 0xFF) << n);
+                        }
+                    } else {
+                        for (int n = 0; n < 16; n += 4) {
+                            uint32_t v = ((s >> n) & 0xF) + ((d >> n) & 0xF);
+                            if (v > 0xF && opt) v = 0xF;
+                            o |= (uint16_t)((v & 0xF) << n);
+                        }
+                    }
+                    dst.wr(dd, o);
+                    break;
+                }
+                case M_FILL:
+                    dst.wr(dd, fill);
+                    break;
+                case M_CRAM: {
+                    const uint8_t idx = (uint8_t)(dd >> 1);
+                    cram[idx] = src.rd(ss);
+                    VIDEO::tsCramDirty = true;
+                    break;
+                }
+                case M_SFILE:
+                    sfile[(uint8_t)(dd >> 1)] = src.rd(ss);
+                    break;
+                case M_SPIRAM: {               // Zc.Rd(0x10057) x2, low byte first
+                    uint16_t v = DivMMC::zc_read_data();
+                    v |= (uint16_t)DivMMC::zc_read_data() << 8;
+                    dst.wr(dd, v);
+                    break;
+                }
+                case M_RAMSPI: {
+                    const uint16_t v = src.rd(ss);
+                    DivMMC::zc_write_data((uint8_t)v);
+                    DivMMC::zc_write_data((uint8_t)(v >> 8));
+                    break;
+                }
+            }
+            if (mode != M_FILL && mode != M_SPIRAM) ss_inc();
+            if (mode != M_RAMSPI) dd_inc();
+            words++;
+        }
+        // dma_next_burst
+        if (salgn) { r.saddr = (r.saddr + asize) & 0x3FFFFF; ss = r.saddr; }
+        else         r.saddr = ss;
+        if (dalgn) { r.daddr = (r.daddr + asize) & 0x3FFFFF; dd = r.daddr; }
+        else         r.daddr = dd;
+        if (num) { num--; len = (uint32_t)r.dmalen + 1; }
+        else break;
+    }
+
+    // DMA_ACT for the hardware's duration; the DMA interrupt is raised when it
+    // drops (tsIntPoll). A transaction started while a previous one is still
+    // "busy" simply supersedes it — the data is long written either way.
+    s_dma_busy = true;
+    s_dma_end = CPU::tstates + ((words * cost) << ESPectrum::multiplicator);
+    if (needsCheckedFrame()) tsWakeLoop();
+}
+
+uint8_t TsConf::dmaStatus() {
+    tsIntPoll();
+    return s_dma_busy ? 0x80 : 0x00;
 }
 
 // ------------------------------------------------------------ CPU clock ----
 
-void TsConf::applyZclk() {
+void TsConf::applyZclk(bool fromGuest) {
     // ZCLK 00/01/10 = 3.5/7/14 MHz -> multiplicator 0/1/2 (11 is reserved —
-    // treated as 14). The user's turbo pick is a FLOOR, never a cap: the
-    // guest's clock choice is deliberate (TS-BIOS writes it at boot), unlike
-    // Pentagon-1024 #EFF7 D4 which only ever pulls the clock down.
+    // treated as 14), capped by Config::tsconf_clk_cap for boards that cannot
+    // keep 14 MHz. The register is authoritative — TS-BIOS sets it at boot from
+    // its Setup, an .spg header carries it, games write it — so the user's
+    // Alt+F2 pick is NOT folded in here: the hotkey acts as an override that
+    // lasts until the guest's next SysConfig write (the hotkey handlers no
+    // longer call this). Was "user pick is a floor" until 2026-09-06.
     uint8_t zclk = r.sysconf & 0x03;
     if (zclk == 3) zclk = 2;
     if (zclk > Config::tsconf_clk_cap) zclk = Config::tsconf_clk_cap;
-    uint8_t want = (zclk > ESPectrum::multUser) ? zclk : ESPectrum::multUser;
-    if (want != ESPectrum::multiplicator) {
-        ESPectrum::multiplicator = want;
+    if (zclk != ESPectrum::multiplicator) {
+        ESPectrum::multiplicator = zclk;
         CPU::updateStatesInFrame();  // calls frameIntRecalc() for TS-Conf
         static bool warned14 = false;
         if (zclk == 2 && !warned14) {
             warned14 = true;
             Debug::log("TsConf: guest selected 14 MHz — may overrun the frame budget");
+        }
+        if (fromGuest) {
+            static const char* const mhz[3] = { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz " };
+            OSD::notify(mhz[zclk], LEVEL_INFO, 900);
         }
     }
 }
@@ -401,6 +684,7 @@ void TsConf::reset(bool cold) {
     r.palsel = r.palsel_d = 0x0F;   // gpal = 15 -> CRAM #F0-#FF (the ZX bank)
     r.border = 0xF0;
     r.g_xoffs = r.g_yoffs = 0;
+    r.g_yoffs_updated = false;
     r.t0_xoffs = r.t0_yoffs = r.t1_xoffs = r.t1_yoffs = 0;
     r.tmpage = r.t0gpage = r.t1gpage = r.sgpage = 0;
     r.dmalen = r.dmanum = r.dmactrl = 0;
@@ -420,9 +704,18 @@ void TsConf::reset(bool cold) {
         for (int i = 0; i < 256; i++) sfile[i] = 0;
     }
     s_fm_tmp = 0;
-    tsUpdateFmGate();
+    s_frm_acked = false;
+    s_lin_pending = s_dma_pending = s_dma_busy = false;
+    s_lin_next = 0;
+    s_dma_end = 0;
+    tsUpdateWrGate();
     setBanks();
     applyZclk();
     frameIntRecalc();
     VIDEO::tsCramDirty = true;
+    // TS-BIOS validates its NVRAM config (Gluk cells #B0..#E7) at every START
+    // and falls into the text-mode SETUP — invisible until phase 3 — when the
+    // CRC fails. Re-check here on every reset: a no-op (logged "valid") when
+    // the BIOS would accept the cells, its own defaults + CRC otherwise.
+    RTC::tsBiosSeed();
 }
