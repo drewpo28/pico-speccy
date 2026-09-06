@@ -955,6 +955,9 @@ static const Option opt_zifi_baud[] = {
 // everything below it) greys out. Reads Config directly: the transport is
 // F_PREVIEW, so the live value tracks the radio as it is edited.
 static bool p_espLink() {
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return true;   // on-chip CYW43, no external link
+#endif
 #if defined(KBDUSB)
     if (Config::zifi_transport == 1) return true;
 #endif
@@ -965,20 +968,30 @@ static bool p_espLink() {
 // says "turn WiFi on first" instead of a toast after the fact. Transport and baud
 // stay editable regardless: the link is CONFIGURED before it is brought up.
 static bool p_wifiOn() { return Config::wifi_enabled && p_espLink(); }
+// Rows that only make sense with an ESP-01 on a serial link: its baud rate, and
+// the guest-visible NIC (raw AT pass-through to the ESP) — neither exists on the
+// on-chip radio, where the TCP/IP stack is ours.
+static bool p_espSerial() {
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return false;
+#endif
+    return true;
+}
+static bool p_nicAvail() { return p_wifiOn() && p_espSerial(); }
 
 static const Node kNetwork[] = {
     NM_ACTIONV_EN(TXT_NET_WIFI, act_wifi, vl_wifi, nullptr, p_espLink),
     // The ESP link settings, shared by WiFi and the NIC — indented under WiFi.
     // Transport's option list is per-board (GPIO pairs), hence the runtime radio.
     NM_RADIO_D(NM_IND TXT_NET_TRANSPORT, SET_ZIFI_TRANSPORT, zifi_transportOpts, nullptr),
-    NM_RADIO  (NM_IND TXT_NET_BAUD,      SET_ZIFI_BAUD,      opt_zifi_baud,     nullptr),
+    NM_RADIO_EN(NM_IND TXT_NET_BAUD,     SET_ZIFI_BAUD,      opt_zifi_baud,     nullptr, p_espSerial),
     NM_RADIO    (TXT_NET_TZ,   SET_WIFI_TZ, opt_tz, nullptr),
     NM_ACTION_EN(TXT_NET_SYNC, act_sntp, nullptr, p_wifiOn),
 #if ZIFI_NET_CLIENT
     NM_ACTION_EN(TXT_NET_FTP,  act_ftpServer, nullptr, p_wifiOn),
     NM_ACTION_EN(TXT_NET_HTTP, act_httpTest,  nullptr, p_wifiOn),
 #endif
-    NM_BOOL_EN  (TXT_NET_NIC_SUB, SET_ZIFI_NIC, nullptr, p_wifiOn),
+    NM_BOOL_EN  (TXT_NET_NIC_SUB, SET_ZIFI_NIC, nullptr, p_nicAvail),
 };
 
 // Right-pane verb lists of the persist levels (NM_DYNH).

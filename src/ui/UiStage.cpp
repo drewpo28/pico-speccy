@@ -292,6 +292,9 @@ static void    put_zifiNic(int32_t v) { Config::zifi_enabled = (uint8_t)(v != 0)
 // 1 = USB-CDC, 10+i = the board's GPIO pair i. The pair list is fixed per board,
 // so the encoding is stable for the session (all a staged value needs).
 static int32_t get_zifiTransport() {
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return 2;     // on-chip CYW43
+#endif
     if (Config::zifi_transport == 1) return 1;
     if (Config::zifi_tx_pin == BoardPins::PIN_OFF) return 0;
     uint8_t tx, rx;
@@ -302,6 +305,15 @@ static int32_t get_zifiTransport() {
     return 0;
 }
 static void put_zifiTransport(int32_t v) {
+#if PICOSPECCY_WIFI
+    // On-chip radio: no ESP UART pair may stay resolvable, or BoardPins would
+    // still hand its pins to ZiFi at boot (NESPAD/audio yield for nothing).
+    if (v == 2) {
+        Config::zifi_transport = 2;
+        Config::zifi_tx_pin = Config::zifi_rx_pin = BoardPins::PIN_OFF;
+        return;
+    }
+#endif
     if (v == 1) { Config::zifi_transport = 1; return; }
     Config::zifi_transport = 0;
     if (v >= 10) {
@@ -541,6 +553,9 @@ static bool hook_zifiNic(int32_t nv, int32_t) {
 // persist the choice itself — the commit's save has not happened yet.
 static bool hook_zifiTransport(int32_t nv, int32_t ov) {
     if (ZiFi::linkUp()) { ZiFi::deinit(); ZiFi::init(); }
+    // The cached "connected" belongs to the radio we are leaving: forget it, so
+    // the re-join below runs on the new transport (ESP <-> on-chip CYW43 alike).
+    if (nv != ov) { ZiFiAT::connected = false; ZiFiAT::current_ip.clear(); }
     netStatusInvalidate();
     const char* nvNote = nullptr;
     if (nv >= 10) {

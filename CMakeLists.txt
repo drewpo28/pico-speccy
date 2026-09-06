@@ -420,8 +420,14 @@ if (PICOSPECCY_WIFI)
     target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=1
         # The SDK's fixed divider assumes 150 MHz; WifiNet::init() computes one
         # for the real clk_sys (378/504 MHz) — see the gSPI note there.
-        CYW43_PIO_CLOCK_DIV_DYNAMIC=1)
-    target_link_libraries(${PROJECT_NAME} PRIVATE pico_cyw43_arch_none)
+        CYW43_PIO_CLOCK_DIV_DYNAMIC=1
+        CYW43_HOST_NAME="pico-speccy")
+    # lwIP in POLL mode (NO_SYS, src/lwipopts.h): every stack callback runs inside
+    # cyw43_arch_poll() from core0 — WifiNet::poll() once per frame plus the waits in
+    # WifiNet/WifiSock — so the emulator, not a background IRQ context, decides when
+    # the network runs. All lwIP memory is heap/net-arena via Buffer::palloc (see
+    # lwipopts.h); the static footprint is a few hundred bytes.
+    target_link_libraries(${PROJECT_NAME} PRIVATE pico_cyw43_arch_lwip_poll)
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
 endif()

@@ -3,6 +3,8 @@
 #if ZIFI_NET_CLIENT
 
 #include "ZiFi.h"
+#include "WifiNet.h"
+#include "WifiSock.h"
 #include "Debug.h"
 #include "Buffer.h"
 #include <pico/time.h>
@@ -317,6 +319,9 @@ static void drainQuiet(uint32_t quiet_ms, uint32_t max_ms) {
 
 // ── Public API ───────────────────────────────────────────────────────────────
 bool ZiFiSock::begin(bool mux) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::begin(mux);
+#endif
     ZiFi::init(); // idempotent — ensure the UART backend is up
     if (!ensureRxBuf()) return false;   // OOM (shouldn't happen — begin runs with heap free)
     reset_parser();
@@ -352,9 +357,17 @@ bool ZiFiSock::begin(bool mux) {
     return is_ready;
 }
 
-bool ZiFiSock::ready() { return is_ready; }
+bool ZiFiSock::ready() {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::ready();
+#endif
+    return is_ready;
+}
 
 bool ZiFiSock::isClosed(int id) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::isClosed(id);
+#endif
     if (id < 0 || id >= N_LINKS) return true;
     // Passive mode: after CLOSED the ESP can still hold buffered tail data we
     // haven't pulled yet — only a post-CLOSED pull that came back empty
@@ -364,6 +377,9 @@ bool ZiFiSock::isClosed(int id) {
 }
 
 int ZiFiSock::sock_open(const char* host, uint16_t port, bool tls, uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::sock_open(host, port, tls, timeout_ms);
+#endif
     if (!is_ready) return -1;
     int id = 0;
     if (mux_mode) {
@@ -405,6 +421,9 @@ int ZiFiSock::sock_open(const char* host, uint16_t port, bool tls, uint32_t time
 }
 
 int ZiFiSock::sock_send(int id, const uint8_t* buf, size_t len, uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::sock_send(id, buf, len, timeout_ms);
+#endif
     if (id < 0 || id >= N_LINKS || !opened[id]) return -1;
     size_t sent = 0;
     while (sent < len) {
@@ -470,6 +489,9 @@ int ZiFiSock::sock_send(int id, const uint8_t* buf, size_t len, uint32_t timeout
 }
 
 int ZiFiSock::sock_recv(int id, uint8_t* buf, size_t maxlen, uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::sock_recv(id, buf, maxlen, timeout_ms);
+#endif
     if (id < 0 || id >= N_LINKS) return -1;
     // Spill the IRQ ring to the SD swap so it can't overflow. Normally driven
     // per-frame by ZiFi::tick(), but a blocking transfer (catalog over TLS, OSD
@@ -517,6 +539,9 @@ int ZiFiSock::sock_recv(int id, uint8_t* buf, size_t maxlen, uint32_t timeout_ms
 }
 
 bool ZiFiSock::sock_recv_line(int id, char* buf, size_t maxlen, uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::sock_recv_line(id, buf, maxlen, timeout_ms);
+#endif
     size_t pos = 0;
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
     while (!time_reached(deadline)) {
@@ -538,6 +563,9 @@ bool ZiFiSock::sock_recv_line(int id, char* buf, size_t maxlen, uint32_t timeout
 }
 
 void ZiFiSock::sock_close(int id) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) { WifiSock::sock_close(id); return; }
+#endif
     if (id < 0 || id >= N_LINKS || !opened[id]) return;
     // If the peer already closed (e.g. an FTP server drops the PASV data link at
     // end of transfer), AT+CIPCLOSE would just return ERROR on an already-closed
@@ -554,6 +582,9 @@ void ZiFiSock::sock_close(int id) {
 }
 
 bool ZiFiSock::sock_closed(int id) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::sock_closed(id);
+#endif
     if (id < 0 || id >= N_LINKS) return true;
     // Drain anything pending so a CLOSED line that's already on the wire is seen.
     pump(0);
@@ -562,6 +593,9 @@ bool ZiFiSock::sock_closed(int id) {
 
 // ── Server side ──────────────────────────────────────────────────────────────
 bool ZiFiSock::server_listen(uint16_t port) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::server_listen(port);
+#endif
     ZiFi::init(); // idempotent — bring the UART backend up
     // The 4 KB demux ring is lazy-alloc'd (Profi OOM fix) and freed by server_stop().
     // begin() allocates it for the client path; the FTP-server path comes through
@@ -601,6 +635,9 @@ bool ZiFiSock::server_listen(uint16_t port) {
 }
 
 int ZiFiSock::server_accept(uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) return WifiSock::server_accept(timeout_ms);
+#endif
     if (!is_ready) return -1;
     accepted_link = -1;
     absolute_time_t deadline = make_timeout_time_ms(timeout_ms);
@@ -619,6 +656,9 @@ int ZiFiSock::server_accept(uint32_t timeout_ms) {
 }
 
 void ZiFiSock::server_stop() {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) { WifiSock::server_stop(); return; }
+#endif
     for (int i = 0; i < N_LINKS; i++)
         if (opened[i]) sock_close(i);
     atCmd("AT+CIPSERVER=0", "OK", 2000);          // these still pump() → need rx_buf
@@ -635,6 +675,9 @@ void ZiFiSock::server_stop() {
 }
 
 void ZiFiSock::end() {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) { WifiSock::end(); return; }
+#endif
     for (int i = 0; i < N_LINKS; i++)
         if (opened[i]) sock_close(i);
     if (g_passive) { atCmd("AT+CIPRECVMODE=0", "OK", 1000); g_passive = false; }

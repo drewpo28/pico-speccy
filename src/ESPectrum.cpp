@@ -82,6 +82,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "MidiSynth.h"
 #include "ZiFi.h"
 #include "ZiFiAT.h"
+#include "WifiNet.h"
 #include "BoardPins.h"
 #include "RTC.h"
 #include "Nvram24.h"
@@ -3134,6 +3135,9 @@ void ESPectrum::loop() {
     }
 
     if (ZiFi::enabled) ZiFi::tick();
+#if PICOSPECCY_WIFI
+    WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
+#endif
     RTC::flushNVRAM(); // persist CMOS NVRAM to SD when dirty (debounced)
     Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
     Ports::serialMouseTick(); // arm the COM-mouse RST20H when movement queued

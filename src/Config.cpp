@@ -154,7 +154,11 @@ uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
 uint8_t  Config::zifi_enabled = 0;
 uint8_t  Config::zifi_tx_pin = 0xFE; // 0xFE = board default (BoardPins)
 uint8_t  Config::zifi_rx_pin = 0xFE;
-uint8_t  Config::zifi_transport = 0; // 0=GPIO UART, 1=USB-CDC
+#if PICOSPECCY_WIFI
+uint8_t  Config::zifi_transport = 2; // 0=GPIO UART, 1=USB-CDC, 2=on-chip CYW43 (W boards default)
+#else
+uint8_t  Config::zifi_transport = 0; // 0=GPIO UART, 1=USB-CDC (2 = on-chip CYW43 exists only on W boards)
+#endif
 uint32_t Config::zifi_baud = 115200;
 string   Config::wifi_ssid;
 string   Config::wifi_pass;
@@ -1204,6 +1208,9 @@ void Config::load() {
         nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
         nvs_get_u8("zifi_rx_pin", zifi_rx_pin, sts);
         nvs_get_u8("zifi_transport", zifi_transport, sts);
+#if !PICOSPECCY_WIFI
+        if (zifi_transport == 2) zifi_transport = 0;   // on-chip radio exists only on W boards
+#endif
         nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
         nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
         nvs_get_str("DSK_Path", FileUtils::DSK_Path, sts);

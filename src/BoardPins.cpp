@@ -129,6 +129,9 @@ bool zifiOwnsPin(uint8_t pin) {
     // MURM1_P2) and silently killed a live WiFi link until a full reboot; gating
     // without wifi_enabled meant a WiFi-only setup (NIC off) lost the boot pin race
     // to NESPAD on boards whose default UART pair overlaps it (MURM2/PICO_PC 20/21).
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return false;   // on-chip radio: no UART pins at all
+#endif
     if (!Config::zifi_enabled && !Config::wifi_enabled && !ZiFi::linkUp()) return false;
     uint8_t tx, rx;
     if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return false;
@@ -136,6 +139,9 @@ bool zifiOwnsPin(uint8_t pin) {
 }
 
 const char* zifiActiveNote() {
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return "";
+#endif
     uint8_t tx, rx;
     if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return "";
     for (int i = 0; i < ZIFI_PAIRS_N; i++)

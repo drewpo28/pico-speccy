@@ -4430,7 +4430,7 @@ OUT). Now masks `data & 0x07`.
   - Loader at 0x5E00, screen at 0x4000, main code at 0x6200
   - Main code starts with `CALL 0x817E` (IM 2 setup); exercises the ULA via port `0x01FE`
 
-## MURM_W / MURM2_W — Waveshare RP2350B-Plus-W (2026-09-06; m1p2w BOOTS on hw with picture, radio bring-up not yet confirmed)
+## MURM_W / MURM2_W — Waveshare RP2350B-Plus-W (2026-09-06; m1p2w hw-confirmed: picture, I2S sound, 8 MB QSPI PSRAM, CYW43 WiFi + FTP server)
 
 Two board targets = the Murmulator 1.x / 2.0 carriers with the Waveshare
 RP2350B-Plus-W module (RP2350B, Raspberry Pi Radio Module 2 = CYW43439, 16 MB
@@ -4484,8 +4484,11 @@ them, `resolveVideoOutput()` forces SELECT_VGA off).
   RP2350B @252 MHz, VREG 1.50 V, 16 MB flash, **`+PSRAM on GP47: 8 MB (QSPI)`** —
   the tester's module HAS a chip soldered and the butter path found it unchanged,
   66 pages `s8:b58`, audio **i2s (auto)** — so I2S on pio0 @base 16 coexists with
-  the radio's claim). Whether cyw43_arch_init() succeeded is still unknown: only the
-  UART `WiFi:` lines or the LED1-on-module blink say so.
+  the radio's claim). Same evening, with the lwIP transport, the tester's board
+  joined the WiFi through the on-chip radio and the **FTP server accepted and
+  served a session** — so the pin table (incl. the CS/CLK swap fix), pio0 @base
+  16, the gSPI divider at 252 MHz, DHCP/DNS and WifiSock's listen/accept/data
+  path are all hw-confirmed at once.
   The `WiFi[pre]`/`[post]` claim dump (`pio2 sm=####`/`gpio_base=0` for HDMI,
   `pio0 ... gpio_base=16` for the radio) is the check; it goes to the UART only.
 - **No sound on MURM_W (hw 2026-09-06, same tester; FIXED, sound back in Auto
@@ -4505,11 +4508,51 @@ them, `resolveVideoOutput()` forces SELECT_VGA off).
      for PWM (Murmulator 1 offers both). Whether 0x0A is what a PWM-jumpered
      MURM1 reads on a Pico 2 too is unknown; the escape hatch is
      Audio → Driver → PWM (Config::audio_driver 1). Ask which jumper first.
-- `pico_cyw43_arch_none` = the **threadsafe_background** async context: one user
-  IRQ + its own alarm pool, servicing the radio from IRQ context on core0's 8 KB
-  stack. Not measured yet — if core0 stack faults or frame-pacing jitter appear
-  once lwIP is on, `pico_cyw43_arch_poll` pumped from `ESPectrum::loop` is the
-  alternative that keeps the emulator in control of when the driver runs.
+### On-chip network transport = lwIP under the ZiFi facades (2026-09-06; hw-confirmed on m1p2w: WiFi join + FTP server work)
+
+Network → **Transport** gained "On-chip WiFi (CYW43)" (`Config::zifi_transport == 2`,
+the DEFAULT on W builds; non-W builds fold a stray 2 back to 0 in `Config::load`).
+Nothing above the two network facades knows which radio it is on:
+
+- **`ZiFiSock` and `ZiFiAT` dispatch on `WifiNet::selected()`** at the top of every
+  public function (`#if PICOSPECCY_WIFI` blocks) to `WifiSock` / `WifiNet`. TLS
+  (TlsSock's BIO), FTP client + server, SSH, HttpsGet/HttpGet, the catalog,
+  scan/connect/status/SNTP and the boot auto-sync FSM therefore run unchanged on
+  either radio. Do NOT add a third caller path — add to the facade.
+- `src/WifiSock.{h,cpp}`: ZiFiSock's contract on the lwIP **raw** API — 2 link
+  slots (FTP ctrl 0 / data 1; single mode = slot 0, re-opening slot 0 closes the
+  old one like the ESP would), rx = pbuf chain per link with `tcp_recved()` only
+  for bytes the caller took (window = flow control), send = `tcp_write(COPY)` in
+  ≤4 KB chunks bounded by `tcp_sndbuf`, `server_listen/accept` = `tcp_listen` +
+  accept callback into a free slot, the `tls` flag ignored (callers do TLS
+  themselves). Every wait is `cyw43_arch_wait_for_work_until` + `cyw43_arch_poll`.
+  DNS lookups carry a generation tag so a late callback cannot write into a dead
+  stack frame after a timeout.
+- `src/WifiNet.{h,cpp}` station side: `connect` = `cyw43_arch_wifi_connect_timeout_ms`
+  (WPA2-mixed, or OPEN when the password is empty), `scan` via `cyw43_wifi_scan`
+  with dedupe, `ipString` from `cyw43_state.netif[STA]`, and an **own 48-byte SNTP
+  client over raw UDP** (pool.ntp.org, 4 tries, civil-date conversion done in-house
+  — newlib's localtime drags in the tzset chain this firmware keeps out of flash)
+  in both a blocking (`sntpSync`) and a background (`autoBegin/autoPoll`, join +
+  SNTP) shape, feeding `RTC::setDateTime` exactly like the AT path.
+- **lwIP is `pico_cyw43_arch_lwip_poll`** (NO_SYS, `src/lwipopts.h`), NOT the
+  threadsafe_background arch: every stack callback runs inside `cyw43_arch_poll()`
+  on core0 — `WifiNet::poll()` once per frame from `ESPectrum::loop` (beside
+  `ZiFi::tick`) plus the waits above — so the emulator decides when the network
+  runs and nothing touches core0's 8 KB stack from an IRQ.
+- **All lwIP memory comes from `Buffer::palloc(NEED_POINTER|USE_NET_ARENA)`**
+  (`MEM_CUSTOM_ALLOCATOR` + `MEMP_MEM_MALLOC`, hooks in WifiNet.cpp): NULL on
+  exhaustion where pico_malloc would panic, and the lent Gigascreen arena during a
+  paused session. Measured: the whole radio + lwIP adds **+3520 B** of static SRAM
+  over plain MURM (`cyw43_state` 2448 incl. the netif, `dns_table` 288) — the
+  pico-examples lwipopts would have been ~40 KB of .bss.
+- With transport 2: `ZiFi::init()` is a no-op (no UART pins claimed —
+  `BoardPins::zifiOwnsPin/zifiActiveNote` return false/"" so NESPAD/audio keep
+  their pins), the Baud row and the guest **ZiFi NIC** row are greyed
+  (`p_espSerial`/`p_nicAvail`): the NIC is raw AT pass-through to an ESP and has no
+  meaning on a stack we own. Bridging the guest NIC to lwIP would need an AT-command
+  emulator — a separate project. Switching transports clears
+  `ZiFiAT::connected` so the hook's re-join runs on the new radio.
 - **Soldering a PSRAM onto the module needs NO firmware change — hw-confirmed
   2026-09-06 (`+PSRAM on GP47 : 8 MB (QSPI)` on a tester's module).** The U1 pads are
   an SOP-8 on the RP2350's own QSPI bus (SD0-3 + SCLK shared with the flash, CS =

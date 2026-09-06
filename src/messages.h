@@ -204,6 +204,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define MSG_RTC_SYNCED "Time set:"
 #define MSG_RTC_SYNC_ERR "Time sync failed"
 #define MENU_ZIFI_USB_LABEL "USB (CH340)"
+#define MENU_WIFI_ONCHIP_LABEL "On-chip WiFi (CYW43)"
 // ─── SRAM budget manager strings ────────────────────────────────────────────
 // Heavy features (Gigascreen / General Sound / DivMMC / Profi / ZiFi) don't all
 // fit in SRAM on butter-less boards. When enabling one would overflow, the OSD
