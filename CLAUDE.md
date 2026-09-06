@@ -1820,6 +1820,50 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   out of pads, TEXT chars and the composite output — the same rule as
   `Update_Border_DS80` / `gmxBorderFrame`; without it a mode whose content covers
   those rows overwrote the box every frame and it blinked (hw 2026-09-06).
+- **Performance, first PERF_TRACE numbers (TMNT .spg, 256c 320x240, no TSU, hw
+  2026-09-06):** intro `cpu=11-13 ms` of which `tsRender=9.5-10.3 ms` — the generic
+  per-pixel renderer (5 KB of -O3 FLASH code) cost ~130 ns/pixel with the source in
+  butter PSRAM sharing the XIP path; in-game `cpu=49.3 ms → 20 FPS`, i.e. **the Z80
+  core at 14 MHz alone is ~39 ms per busy frame** (3.5 MHz ≈ 10 ms, scales
+  linearly) — no renderer work fixes that; the levers are `tsconf_clk_cap` (now a
+  menu row: Machine → TS-Conf → Options → CPU clock cap), a 504 MHz sys clock, or a
+  faster core. The renderer side: `tsFast256`/`tsFast16` are RAM inner loops (~600 B
+  `.time_critical`, `optimize("O2","no-unroll-loops")` so Video.cpp's -O3/unroll does
+  not bloat them) for TSU-free 256c/16c rows — four pixels per aligned uint32 store
+  in the ISR's x^2 order. **Never put a lambda inside a `__not_in_flash_func`**: GCC
+  split it into a `.text` clone called per pixel (`*.isra.0` in the map) — check the
+  map after any change there. The PERF line carries `tsRender=` (whole renderer) and
+  `tsu` (TSU compose) so the split is visible; `build-perf/` is the PERF_TRACE=ON twin
+  of `build/`.
+- **Where the Z80 time goes — measured before theorising (2026-09-06, from the
+  PERF logs in `logs/`):** a Pentagon game at 3.5 MHz costs `cpu=10-14 ms` for
+  70k T, TMNT at 14 MHz `cpu≈57 ms` (renderer subtracted) for 280k T — the SAME
+  ~100 sys cycles per T-state ≈ 450 cycles per Z80 instruction on both, so TS-Conf
+  pays no extra penalty, it just runs 4x the T-states. 450 cycles is ~5x what a
+  RAM-resident core of this shape should need, and the whole core is FLASH code
+  (`Z80_JLS.cpp` 44 KB of text at -O3; the 256 base handlers alone are 16.9 KB,
+  scattered over a 42 KB extent; `Z80Ops::peek8/poke8/...` ARE in RAM, reached
+  through flash `_veneer` stubs because `bl` cannot span 0x1005xxxx→0x2002xxxx)
+  running through the 16 KB XIP cache that butter-PSRAM guest RAM also uses. Two
+  instruments now live under PERF_TRACE for exactly this question: the `[PERF] 60f`
+  line carries `xip=hit/acc (hit%, M miss/s)` from the RP2350's own XIP_CTR_HIT /
+  XIP_CTR_ACC (one counter pair for both cores, flash + PSRAM together), and every
+  600 frames `[PERF] z80:` prints instr/frame, ns/instr and the top-20 base opcodes
+  (`z80_op_hist[256]`, counted in `exec_nocheck`; prefix bytes count as
+  themselves). `Z80_CORE_OPT` (CMake cache var, default `-O3 -funroll-loops`) picks
+  the core's optimisation level: `-Os` makes it 24 KB (`build-perf-os/`). The
+  candidate levers, in order: (1) -Os core if the hit ratio says misses dominate;
+  (2) `xip_cache_pin_range` of a contiguous `.text.z80hot` section ≤8 KB (pinned
+  lines must be distinct mod 16 KB and are lost on every `xip_cache_invalidate_all`,
+  i.e. after every flash write — re-pin); (3) `Config::max_flash_freq` (NVS only, no
+  menu row) 66→133 would halve every miss's cost but has no safe fallback if the
+  chip cannot do it. SPLIT_WAYS is Secure/Non-secure, not CS0/CS1 — useless here.
+- **"Frameskip" (`Config::throtling`, Options → Other) is NOT a throttle.** When
+  the previous frame's idle time was below the threshold it skips the AUDIO
+  finish/mix for this frame (ESPectrum::loop, the `t_us` gate) and nothing else —
+  the Z80 still executes every T-state and the frame is still rendered. It cannot
+  help a machine whose cost IS the Z80; the only real TS-Conf throttle is the CPU
+  clock cap.
 - **Known Phase-1 deviations**: LCK128 Auto=512K; INT window truncated at frame
   end; 14 MHz overruns the ~20 ms frame budget and simply runs slow ([NEG2]);
   turbo does not rescale the raster constants (pre-existing — same for Profi

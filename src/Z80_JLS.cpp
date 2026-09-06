@@ -1322,6 +1322,13 @@ IRAM_ATTR void Z80::incRegR(uint8_t inc) {
 
 }
 
+#if PERF_TRACE
+// PERF_TRACE: base-opcode histogram from exec_nocheck (prefix bytes CB/DD/ED/FD
+// count as themselves — the prefixed instruction is dispatched by decodeXX, not
+// by dcOpcode). Read + cleared by the [PERF] dump in Video.cpp every 600 frames.
+uint32_t z80_op_hist[256];
+#endif
+
 IRAM_ATTR void Z80::execute() {
 
     // CPU::tstates_diff += (CPU::tstates - CPU::prev_tstates);
@@ -1422,6 +1429,9 @@ IRAM_ATTR void Z80::exec_nocheck() {
 
         regR++;
         REG_PC++;
+#if PERF_TRACE
+        z80_op_hist[opCode]++;
+#endif
 
         if (prefixOpcode == 0) {
             flagQ = pendingEI = false;
