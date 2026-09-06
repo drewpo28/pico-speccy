@@ -50,6 +50,8 @@ public:
     // Machine switch: flush this machine's CMOS and adopt the next one's.
     static void    machineChanged();
     static void    glukMarker();   // stamp NVRAM 0x11 = 0xAA (Gluk validity)
+    static bool    tsBiosSeed();   // TS-Conf: write TS-BIOS's own NVRAM defaults + CRC16 if the
+                                   // cells would fail its CRC check; true = seeded
     static void    flushNVRAM(bool force = false); // force: skip the debounce (reboot path)
 
 private:
