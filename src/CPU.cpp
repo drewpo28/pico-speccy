@@ -48,7 +48,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "IDE.h"
 #include "DivMMC.h"
 #include "GS/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
-#include "TsConf.h"     // g_tsconf_fm + TsConf::fmWrite (FMAddr window)
+#include "TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
 
 // Place hot CPU functions in SRAM instead of XIP flash
 #undef IRAM_ATTR
@@ -346,8 +346,15 @@ void CPU::reset() {
     // updateStatesInFrame so applyZclk/frameIntRecalc see the final frame
     // geometry, and after ESPectrum::reset's standard ramCurrent assignment,
     // which its setBanks() overrides with the TS-Conf window mapping.
-    // Warm reset: pwr_up and CRAM survive (only a STATUS read clears pwr_up).
-    if (Z80Ops::isTsconf) TsConf::reset(false);
+    // Cold = the first TS-Conf reset of this session (boot, or a live switch
+    // into TS-Conf): raises the STATUS pwr_up flag (b6) that TS-BIOS tests at
+    // START to run its one-time init (FDV_RES → WRITE_NVRAM, dual-SD CMD0) and
+    // seeds CRAM. Every later reset is warm: pwr_up and CRAM survive (only a
+    // STATUS read clears pwr_up) — the old unconditional `false` never let the
+    // BIOS see a power-up at all (hw 2026-09-06).
+    static bool s_tsconf_live = false;
+    if (Z80Ops::isTsconf) { TsConf::reset(!s_tsconf_live); s_tsconf_live = true; }
+    else s_tsconf_live = false;
 
     tstates = 0;
     global_tstates = 0;
@@ -393,21 +400,58 @@ IRAM_ATTR void CPU::loop() {
     // straddling the frame end is truncated at statesInFrame by
     // frameIntRecalc, so no wrap handling is needed here.
     if (Z80Ops::isTsconf) {
-        // Stage A: [now, IntStart) unchecked.
-        if (tstates < IntStart) {
-            if (Z80::isHalted()) {
-                tstates_active = tstates;
-                FlushOnHaltTo(IntStart);
-            } else {
-                stFrame = IntStart;
-                Z80::exec_nocheck();
-                if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(IntStart); }
+        // With LINE or DMA interrupts armed the level can rise at any
+        // instruction, so the frame (or what is left of it) runs checked —
+        // the "Stage D" tail below. The unchecked slices are taken only while
+        // needsCheckedFrame() is false, and a port write that arms a source
+        // mid-slice pulls stFrame down to leave exec_nocheck() early
+        // (TsConf's tsWakeLoop), after which the tail takes over.
+        bool ts_halted = false;
+        if (!TsConf::needsCheckedFrame()) {
+            // Stage A: [now, IntStart) unchecked.
+            if (tstates < IntStart) {
+                if (Z80::isHalted()) {
+                    tstates_active = tstates;
+                    FlushOnHaltTo(IntStart);
+                } else {
+                    stFrame = IntStart;
+                    Z80::exec_nocheck();
+                    if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(IntStart); }
+                }
+                BREAKPOINTS
             }
-            BREAKPOINTS
+            if (!TsConf::needsCheckedFrame()) {
+                // Stage B: the FRAME INT window, checked — Z80::execute()
+                // samples isActiveINT and takes the interrupt here.
+                while (tstates < IntEnd) {
+                    Z80::execute();
+                    if (Config::dma_mode) Z80DMA::handleDMA();
+                    if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
+                        zifi_pump_due = tstates + 3500;
+                        ZiFi::cdcPump();
+                    }
+                    BREAKPOINTS
+                }
+                // Stage C: [IntEnd, statesInFrame) unchecked — no frame-end
+                // INT straddle is possible (frameIntRecalc truncates the
+                // window).
+                if (!TsConf::needsCheckedFrame()) {
+                    ts_halted = Z80::isHalted();
+                    if (!ts_halted) {
+                        stFrame = statesInFrame;
+                        Z80::exec_nocheck();
+                        if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(statesInFrame); ts_halted = true; }
+                    } else {
+                        tstates_active = tstates;
+                        FlushOnHaltTo(statesInFrame);
+                    }
+                    BREAKPOINTS
+                }
+            }
         }
-        // Stage B: the INT window, checked — Z80::execute() samples
-        // isActiveINT and takes the interrupt here.
-        while (tstates < IntEnd) {
+        // Stage D: whatever is left, instruction-checked (empty unless a
+        // LINE/DMA source is armed or a slice above was cut short).
+        while (tstates < statesInFrame) {
             Z80::execute();
             if (Config::dma_mode) Z80DMA::handleDMA();
             if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
@@ -416,18 +460,7 @@ IRAM_ATTR void CPU::loop() {
             }
             BREAKPOINTS
         }
-        // Stage C: [IntEnd, statesInFrame) unchecked — no frame-end INT
-        // straddle is possible (frameIntRecalc truncates the window).
-        bool ts_halted = Z80::isHalted();
-        if (!ts_halted) {
-            stFrame = statesInFrame;
-            Z80::exec_nocheck();
-            if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(statesInFrame); ts_halted = true; }
-        } else {
-            tstates_active = tstates;
-            FlushOnHaltTo(statesInFrame);
-        }
-        BREAKPOINTS
+        TsConf::endFrame();
         // Frame tail — a faithful copy of the shared tail below (kept
         // duplicated so the hot path of every other machine stays textually
         // untouched).
@@ -592,11 +625,12 @@ static inline uint8_t gsDmaPeek8(uint16_t address) {
 static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000)
         GS::zxDmaWrite(value);
-    // TS-Conf FMAddr window (CRAM/SFILE/register file). Like the NeoGS DMA
-    // write, it does NOT replace the normal store — the hardware writes RAM
-    // and the FPGA array in parallel (reference z80_main.inl:108).
-    if (__builtin_expect(g_tsconf_fm != 0, 0))
-        TsConf::fmWrite(address, value);
+    // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
+    // does NOT replace the normal store, the hardware writes RAM and the FPGA
+    // array in parallel, reference z80_main.inl:108) and the W0_WE protect
+    // (which does suppress the store).
+    if (__builtin_expect(g_tsconf_wr != 0, 0))
+        if (TsConf::cpuWriteGate(address, value)) return;
     MemESP::writebyte(address, value);
 }
 
@@ -921,9 +955,9 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // execute() loops (like the frame INT), so worst-case latency is one
     // exec_nocheck stretch — fine for a level line the device keeps high.
     if (Ports::serialMouseIntAsserted()) return true;
-    // TS-Conf: INTMask bit 0 gates the FRAME source (the only one wired in
-    // this phase); LINE/DMA arrive with their sources later.
-    if (Z80Ops::isTsconf && !TsConf::frameIntEnabled()) return false;
+    // TS-Conf: three latched sources behind INTMask (FRAME window, LINE, DMA
+    // end) — the controller owns the level; see TsConf::intLine.
+    if (Z80Ops::isTsconf) return TsConf::intLine();
     // Adding latetiming shifts the check 1T later for Late mode.
     // At end of frame (tstates=statesInFrame-1), tmp wraps to 0, firing
     // the Late INT via straddle — this is the correct hardware behaviour.
