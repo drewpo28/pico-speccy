@@ -306,7 +306,9 @@ const char* romsetName(int32_t composite);
     X(SET_TSCONF_RAM,      AC_REBOOT, 0,                     get_tsconfRam,  put_tsconfRam,  nullptr,        -1) \
     /* Video > Capture-safe colours (HDMI single-symbol palette snap). Appended last  */ \
     /* per the APPEND ONLY rule; the hook re-runs the whole palette pipeline.         */ \
-    X(SET_HDMI_SNAP,       AC_LIVE,   F_PREVIEW | F_PALETTE, get_hdmiSnap,   put_hdmiSnap,   hook_hdmiSnap,  -1)
+    X(SET_HDMI_SNAP,       AC_LIVE,   F_PREVIEW | F_PALETTE, get_hdmiSnap,   put_hdmiSnap,   hook_hdmiSnap,  -1) \
+    /* TS-Conf CPU clock cap (Config::tsconf_clk_cap): live, re-applies ZCLK.       */ \
+    X(SET_TSCONF_CLK,      AC_LIVE,   0,                     get_tsconfClk,  put_tsconfClk,  hook_tsconfClk, -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

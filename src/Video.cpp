@@ -33,6 +33,10 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#if PERF_TRACE
+#include "hardware/regs/xip.h"
+#include "hardware/regs/addressmap.h"
+#endif
 #include "Video.h"
 #include <math.h>       // powf() — CRT filter gamma curve (cold path, init only)
 #include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
@@ -416,6 +420,10 @@ uint8_t* VIDEO::gmx_frame_att = nullptr;
 uint32_t VIDEO::gmx_frame_srow = 0;
 bool VIDEO::gmx_border_dirty = false;
 uint8_t VIDEO::gmx_border_col = 0xFF;
+
+// Per-frame cost meters for the TS-Conf whole-line renderer (PERF_TRACE line).
+volatile uint32_t ts_render_us = 0;   // tsRenderLine, incl. tsuComposeLine
+volatile uint32_t ts_tsu_us = 0;      // tsuComposeLine alone
 
 uint8_t  VIDEO::ts_vmode_live = 0;
 uint8_t  VIDEO::ts_render_live = 0;
@@ -4115,7 +4123,80 @@ void VIDEO::tsVideoApplyPending() {
 // (linedraw_cnt - lin_end); the TS source line is curline + ts_crop_top and the
 // graphics Y counter follows Unreal's vid.ygctr: reloaded from GYOffs at the
 // first line and whenever GYOffs was written, +1 per line otherwise.
+// ── RAM inner loops for the TSU-free 256c / 16c lines (the TMNT case) ────────
+// hw 2026-09-06 (PERF_TRACE): the generic per-pixel path, compiled -O3/unrolled
+// into 5 KB of FLASH code, cost 9.5-10.3 ms per frame for a 320x240 256c screen
+// with NO TSU — ~130 ns a pixel, XIP code fetches queueing behind the butter
+// PSRAM source reads. These are the only two loops that run per pixel; they are
+// small, in RAM, and write four pixels per aligned uint32 store in the ISR's x^2
+// order (byte k of an aligned group holds pixel k^2 → word = p2|p3<<8|p0<<16|
+// p1<<24). fx0..fx1 = fb byte range already clipped to the row; sx = source pixel
+// index at fx0 (wraps at 512).
+__attribute__((optimize("O2", "no-unroll-loops")))
+static void __not_in_flash_func(tsFast256)(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
+                                            uint32_t sx, const uint8_t* map) {
+    int fx = fx0;
+    while (fx < fx1 && (fx & 3)) { fb[fx ^ 2] = map[ln[sx & 0x1FF]]; fx++; sx++; }
+    if ((sx & 3) == 0) {
+        // Source aligned with the destination groups: one 32-bit PSRAM read per
+        // four pixels (the XIP path is the expensive half of this loop).
+        while (fx + 4 <= fx1) {
+            const uint32_t s4 = *(const uint32_t*)(ln + (sx & 0x1FC));
+            const uint32_t p0 = map[s4 & 0xFF], p1 = map[(s4 >> 8) & 0xFF];
+            const uint32_t p2 = map[(s4 >> 16) & 0xFF], p3 = map[s4 >> 24];
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    } else {
+        while (fx + 4 <= fx1) {
+            const uint32_t p0 = map[ln[sx & 0x1FF]], p1 = map[ln[(sx + 1) & 0x1FF]];
+            const uint32_t p2 = map[ln[(sx + 2) & 0x1FF]], p3 = map[ln[(sx + 3) & 0x1FF]];
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    }
+    while (fx < fx1) { fb[fx ^ 2] = map[ln[sx & 0x1FF]]; fx++; sx++; }
+}
+// 16c: two pixels per byte, high nibble first; `map` = ts256_map (palette bank
+// applied through gpal) or nullptr for the plain 0..15 slot output.
+__attribute__((optimize("O2", "no-unroll-loops")))
+static void __not_in_flash_func(tsFast16)(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
+                                           uint32_t sx, const uint8_t* map, uint8_t gpal) {
+    // No lambda here on purpose: GCC split it into a .text (flash) clone called
+    // per pixel from this RAM loop (seen in the map as *.isra.0).
+#define TSPX(s_) ({ const uint32_t t_ = (s_) & 0x1FF; const uint8_t b_ = ln[t_ >> 1]; \
+                    const uint8_t n_ = (t_ & 1) ? (uint8_t)(b_ & 0x0F) : (uint8_t)(b_ >> 4); \
+                    (uint32_t)(map ? map[gpal | n_] : n_); })
+    int fx = fx0;
+    while (fx < fx1 && (fx & 3)) { fb[fx ^ 2] = (uint8_t)TSPX(sx); fx++; sx++; }
+    if ((sx & 3) == 0) {
+        // Four pixels = two source bytes = one aligned 16-bit read.
+        while (fx + 4 <= fx1) {
+            const uint32_t s2 = *(const uint16_t*)(ln + ((sx & 0x1FF) >> 1));
+            const uint32_t n0 = (s2 >> 4) & 15, n1 = s2 & 15, n2 = (s2 >> 12) & 15, n3 = (s2 >> 8) & 15;
+            const uint32_t p0 = map ? map[gpal | n0] : n0, p1 = map ? map[gpal | n1] : n1;
+            const uint32_t p2 = map ? map[gpal | n2] : n2, p3 = map ? map[gpal | n3] : n3;
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    } else {
+        while (fx + 4 <= fx1) {
+            const uint32_t p0 = TSPX(sx), p1 = TSPX(sx + 1), p2 = TSPX(sx + 2), p3 = TSPX(sx + 3);
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    }
+    while (fx < fx1) { fb[fx ^ 2] = (uint8_t)TSPX(sx); fx++; sx++; }
+#undef TSPX
+}
+
 void VIDEO::tsRenderLine(uint32_t curline) {
+    const uint64_t t0 = time_us_64();
+    tsRenderLineBody(curline);
+    ts_render_us += (uint32_t)(time_us_64() - t0);
+}
+
+void VIDEO::tsRenderLineBody(uint32_t curline) {
     const uint32_t frow = curline + lin_end;
     if (!vga.frameBuffer || frow >= (uint32_t)vga.yres) return;
     uint8_t* fb_row = (uint8_t*)vga.frameBuffer[frow];
@@ -4200,6 +4281,26 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         return;
     }
 
+    // Fast paths: 256c / 16c with no TSU layers and no stats carve on this row —
+    // the RAM loops above; everything else (ZX base, TSU compose, GFXOVR, carve
+    // rows) takes the generic path below.
+    if (!ts_tsu_live && !carveRow && (ts_vmode_live == TSV_256C || ts_vmode_live == TSV_16C)) {
+        const int fx0 = x0 < 0 ? 0 : x0, fx1 = x1 > xres ? x1 : xres > x1 ? x1 : xres;
+        const uint32_t sx = (uint32_t)TsConf::r.g_xoffs + (uint32_t)(fx0 - x0);
+        if (ts_vmode_live == TSV_256C) {
+            const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF0) + (ts_ygctr >> 5));
+            if (ln) { tsFast256(fb_row, fx0, fx1, ln + ((ts_ygctr & 31) << 9), sx, ts256_map); return; }
+        } else {
+            const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF8) + (ts_ygctr >> 6));
+            if (ln) {
+                tsFast16(fb_row, fx0, fx1, ln + ((ts_ygctr & 63) << 8), sx,
+                         ts_pal256_live ? ts256_map : nullptr, (uint8_t)((TsConf::r.palsel & 0x0F) << 4));
+                return;
+            }
+        }
+        // unbacked page → fall through to the generic path (border fill)
+    }
+
     // ── Base graphics layer + TSU compose (video_render.v) ──────────────────
     // Per area pixel: bits 7..0 = CRAM index, bit 8 = "gfx pixel visible"
     // (pixv: ZX ink dot after flash, non-zero colour in 16c/256c) — the
@@ -4263,7 +4364,11 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         }
     }
 
-    if (ts_tsu_live) tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline);
+    if (ts_tsu_live) {
+        const uint64_t t1 = time_us_64();
+        tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline);
+        ts_tsu_us += (uint32_t)(time_us_64() - t1);
+    }
 
     // Output. Without the ts256 remap the fb byte is the palette slot itself:
     // 16c's gpal bank sits on slots 0..15 (low nibble of the index).
@@ -4603,16 +4708,60 @@ IRAM_ATTR void VIDEO::EndFrame() {
         cpu_frame_us = 0;
         fdd_step_us = 0;
         Ports::fdd_ports_us = 0;
+        extern volatile uint32_t ts_render_us, ts_tsu_us;
+        static uint32_t tsr_accum = 0, tsr_max = 0, tsu_accum = 0;
+        tsr_accum += ts_render_us; if (ts_render_us > tsr_max) tsr_max = ts_render_us;
+        tsu_accum += ts_tsu_us;
+        ts_render_us = ts_tsu_us = 0;
         if (++port_log_frame >= 60) {
             uint64_t now = time_us_64();
             float fps = wall_t0 ? (60.0f * 1000000.0f / (float)(now - wall_t0)) : 0.0f;
             wall_t0 = now;
             port_log_frame = 0;
-            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus realFPS=%.2f",
+            // XIP cache hit ratio over the window (both cores, flash + butter
+            // PSRAM together — the RP2350 has ONE XIP cache and one counter pair).
+            // Saturating 32-bit counters, write-any-to-clear.
+            volatile uint32_t *xip_hit = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_HIT_OFFSET);
+            volatile uint32_t *xip_acc = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_ACC_OFFSET);
+            uint32_t xh = *xip_hit, xa = *xip_acc;
+            *xip_hit = 0; *xip_acc = 0;
+            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus tsRender=%.1fms (max %.1fms, tsu %.1fms) xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f",
                 cpu_accum / 60000.0f, cpu_max / 1000.0f,
                 fdd_step_accum / 60000.0f, fdd_step_max / 1000.0f,
                 fdd_ports_accum / 60000.0f, fdd_ports_max / 1000.0f,
-                (unsigned)gap_max, (unsigned)dur_max, fps);
+                (unsigned)gap_max, (unsigned)dur_max,
+                tsr_accum / 60000.0f, tsr_max / 1000.0f, tsu_accum / 60000.0f,
+                (unsigned)xh, (unsigned)xa, xa ? 100.0f * (float)xh / (float)xa : 0.0f,
+                (float)(xa - xh) * fps / 60.0f / 1e6f, fps);
+            // Z80 opcode mix, every 600 frames: instructions/frame, ns per
+            // instruction (against cpu= of the same window) and the top 20
+            // base opcodes — the data the XIP-pinning choice needs.
+            {
+                extern uint32_t z80_op_hist[256];
+                static uint32_t hist_cpu_us = 0, hist_windows = 0;
+                hist_cpu_us += cpu_accum;
+                if (++hist_windows >= 10) {
+                    uint64_t total = 0;
+                    for (int i = 0; i < 256; i++) total += z80_op_hist[i];
+                    char line[256]; int pos = 0;
+                    uint8_t used[256] = {0};
+                    for (int k = 0; k < 20 && pos < (int)sizeof(line) - 12; k++) {
+                        int best = -1; uint32_t bv = 0;
+                        for (int i = 0; i < 256; i++)
+                            if (!used[i] && z80_op_hist[i] > bv) { bv = z80_op_hist[i]; best = i; }
+                        if (best < 0 || bv == 0) break;
+                        used[best] = 1;
+                        pos += snprintf(line + pos, sizeof(line) - pos, " %02X:%.1f", best,
+                                        total ? 100.0 * (double)bv / (double)total : 0.0);
+                    }
+                    Debug::log("[PERF] z80: %u instr/frame, %.0f ns/instr, top%%:%s",
+                        (unsigned)(total / (hist_windows * 60)),
+                        total ? 1000.0 * (double)hist_cpu_us / (double)total : 0.0, line);
+                    for (int i = 0; i < 256; i++) z80_op_hist[i] = 0;
+                    hist_cpu_us = 0; hist_windows = 0;
+                }
+            }
+            tsr_accum = tsr_max = tsu_accum = 0;
             cpu_accum = cpu_max = gap_max = dur_max = 0;
             fdd_step_accum = fdd_step_max = 0;
             fdd_ports_accum = fdd_ports_max = 0;

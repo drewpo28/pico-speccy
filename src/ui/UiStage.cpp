@@ -10,6 +10,7 @@
 #include "UiModel.h"
 #include "UiGfx.h"
 #include "Config.h"
+#include "TsConf.h"
 #include "SnSound.h"
 #include "CPU.h"
 #include "Video.h"
@@ -320,6 +321,12 @@ static int32_t get_memPgCnt()          { return (int32_t)Config::mem_pg_cnt; }
 static void    put_memPgCnt(int32_t v) { Config::mem_pg_cnt = (uint16_t)v; }
 static int32_t get_tsconfRam()          { return (int32_t)Config::tsconf_ram; }
 static void    put_tsconfRam(int32_t v) { Config::tsconf_ram = (uint16_t)v; }
+static int32_t get_tsconfClk()          { return (int32_t)Config::tsconf_clk_cap; }
+static void    put_tsconfClk(int32_t v) { Config::tsconf_clk_cap = (uint8_t)v; }
+static bool    hook_tsconfClk(int32_t, int32_t) {
+    if (Config::arch == A_TSCONF) TsConf::applyZclk(true);   // re-derive the live clock under the new cap
+    return true;
+}
 
 // The video mode lives in one of two fields depending on which output is live;
 // VIDEO::activeVideoMode() already encodes that choice for reads.

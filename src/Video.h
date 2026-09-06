@@ -322,7 +322,8 @@ public:
   static void     tsVideoForceOff();     // ESPectrum::reset: leave the pair-slot driver mode now
   static uint32_t tsCramToRgb(uint16_t cram);   // RGB555 cell → RGB888 through the real-PWM gamma
   static uint8_t  tsBorderSlot();        // Border register → fb byte for the live mode
-  static void     tsRenderLine(uint32_t curline); // whole-line renderer (non-ZX modes / TSU)
+  static void     tsRenderLine(uint32_t curline); // whole-line renderer (non-ZX modes / TSU); timed wrapper
+  static void     tsRenderLineBody(uint32_t curline);
   static void     tsuComposeLine(uint32_t line, uint8_t* ts512); // TSU layers → 512-px CRAM line buffer
   // Top-border height in fb rows while the GMX 640x200 mode is live, 0 otherwise.
   // OSD::notify needs it: unlike every other mode, that band is STATIC in GMX (the

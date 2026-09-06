@@ -338,6 +338,14 @@ static const Option opt_tsconf_ram[] = {
     { "2 MB", 128 },
     { "4 MB", 256 },
 };
+// Ceiling for the guest's SysConfig ZCLK (a 14 MHz Z80 costs ~4x a 3.5 MHz frame
+// of core0 time — TS titles that ask for 14 MHz can be pinned to 7 here; the
+// guest keeps its own timing, it just gets fewer T-states per frame).
+static const Option opt_tsconf_clk[] = {
+    { "3.5 MHz", 0 },
+    { "7 MHz",   1 },
+    { "14 MHz",  2 },
+};
 
 // Murmuzavr mode is the extended page count, not a machine — values are page counts, and
 // MEM_PG_CNT == 64 is the "no extra RAM" state. The pages live in PSRAM as far as the
@@ -380,6 +388,7 @@ const char* tsconfTag() {
 
 static const Node kTsconf[] = {
     NM_RADIO(TXT_MACH_TSCONF_RAM, SET_TSCONF_RAM, opt_tsconf_ram, nullptr),
+    NM_RADIO(TXT_MACH_TSCONF_CLK, SET_TSCONF_CLK, opt_tsconf_clk, nullptr),
 };
 
 static const Node kMachine[] = {

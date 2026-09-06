@@ -58,7 +58,7 @@ option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1
 option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
-option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" OFF)
+option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" ON)
 option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
@@ -300,9 +300,15 @@ set_source_files_properties(src/midi_wt.c PROPERTIES
     COMPILE_FLAGS "-O3 -ffast-math -funroll-loops")
 set_source_files_properties(src/Video.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -funroll-loops")
-# Z80 эмулятор — самый горячий код, критично для производительности
+# Z80 эмулятор — самый горячий код, критично для производительности.
+# Z80_CORE_OPT is a cache variable so a perf build can try another level
+# (e.g. -DZ80_CORE_OPT=-Os: the core is 24 KB instead of 44 KB of flash text,
+# which matters because the whole core runs from flash through the 16 KB XIP
+# cache it shares with butter-PSRAM guest RAM — see the TS-Conf performance
+# notes in CLAUDE.md).
+set(Z80_CORE_OPT "-O3 -funroll-loops" CACHE STRING "Compiler optimisation flags for src/Z80_JLS.cpp")
 set_source_files_properties(src/Z80_JLS.cpp PROPERTIES
-    COMPILE_FLAGS "-O3 -funroll-loops")
+    COMPILE_FLAGS "${Z80_CORE_OPT}")
 set_source_files_properties(src/CPU.cpp PROPERTIES
     COMPILE_FLAGS "-O3")
 set_source_files_properties(src/Ports.cpp PROPERTIES
