@@ -4437,9 +4437,16 @@ RP2350B-Plus-W module (RP2350B, Raspberry Pi Radio Module 2 = CYW43439, 16 MB
 flash, PSRAM pads on GPIO47). `MURM_W` turns `MURM` on and `MURM2_W` turns `MURM2`
 on, so every carrier pin arm and `#if MURM2` keeps working; `PICOSPECCY_WIFI` is
 the one "this image has a radio" switch (`src/WifiNet.{h,cpp}`, called last of the
-PIO users from `main()`). HDMI-only: the radio's pins are above GPIO31, so it needs
-pio0 at gpio_base 16, and VGA/SOFTTV/TFT all want pio0 at base 0 (CMake refuses
-them, `resolveVideoOutput()` forces SELECT_VGA off).
+PIO users from `main()`). **Either video output works**: the radio's pins are above
+GPIO31, so it needs a PIO block at gpio_base 16, pio1 is the keyboard at base 0, and
+the block that qualifies is the one the DISPLAY is not using — pio0 under HDMI (HDMI
+owns pio2), pio2 under VGA (VGA owns pio0). `BoardPins::auxPio()` is that single
+decision; the radio, MURM_W's I2S (GPIO40-42) and MURM2_W's NESPAD (data 40/41) all
+take their block from it at init (the compile-time `I2S_PIO`/`NESPAD_PIO` are only
+the HDMI-case defaults). The first cut forced HDMI (`SELECT_VGA=false` in
+`resolveVideoOutput`) — the owner pointed out MURM_W is a VGA_HDMI board like any
+Murmulator; lifted 2026-09-06, VGA path NOT hw-tested. CMake still refuses
+SOFTTV/TV/TFT for the W boards (unpaired, not impossible).
 
 - **The RM2 host pins are READ OFF THE SCHEMATIC** (`RP2350B-Plus-W.pdf` from
   files.waveshare.com — the wiki page itself has no pin table and 403s WebFetch;
@@ -4508,6 +4515,53 @@ them, `resolveVideoOutput()` forces SELECT_VGA off).
      for PWM (Murmulator 1 offers both). Whether 0x0A is what a PWM-jumpered
      MURM1 reads on a Pico 2 too is unknown; the escape hatch is
      Audio → Driver → PWM (Config::audio_driver 1). Ask which jumper first.
+### HDMI at 378 MHz on the RP2350B-Plus-W: sync loss + TMDS streaks; 252 is clean (hw video 2026-09-06)
+
+`debug/video_2026-09-06_20-32-12.mp4`: the monitor drops to black every few
+seconds and, when it holds, shows random coloured horizontal segments over the
+whole field plus an occasional horizontally shifted frame — TMDS bit/clock errors
+at the receiver, while the emulator underneath runs fine (stats drawn, 48.8 FPS).
+Two things differ from a Pico 2 carrier at the same clock, and both point the
+same way:
+
+1. **The module's 3V3 is an LDO — U4 = ME6217C33M5G (SOT-23-5)** — where a Pico 2
+   has the RT6150 buck-boost. The RP2350 core VREG is itself linear off 3V3, so at
+   378 MHz / 1.60 V the core current, the radio, PSRAM and flash all sit on that
+   one LDO; the Murmulator's TMDS swing is derived from the same 3V3 through
+   resistors, so rail sag/noise shrinks the eye directly. (5 V − 3.3 V) × I of
+   dissipation in a SOT-23-5 is the ceiling.
+2. **`pio_clk_div = cpu_mhz / 252` is 1.5 at 378** — a FRACTIONAL PIO divider on the
+   TMDS bit clock (one sys-cycle of jitter, ~2.6 ns on a 4 ns bit) that other
+   boards tolerate with a healthy eye; 252 gives 1.0, 504 gives 2.0.
+
+**Counter-evidence from the tester: rh1tech/frank-386 holds 378 MHz with HDMI on
+the same module.** Its hdmi.c (fetched 2026-09-06) uses the SAME fractional
+divider (`clock_get_hz(clk_sys) / 252e6` = 1.5) and the same 1.60 V at 378 — so
+neither of those is the discriminator. What differs: frank drives the **clock pair
+at 12 mA + fast slew**; ours is 8 mA + slow slew under `HDMI_SOFT_CLK=1` (default
+ON, ported from pico-spec for m1p1 + Samsung S27AG300N, where the clock was the
+aggressor next to the blue pair). Frank also uses the classic TMDS pair (no
+balanced pair, no level clamp) and still works, so the LDO's smaller 3V3 swing
+plus a softened clock edge is the current best hypothesis: the receiver's clock
+recovery, not the data eye. A test build with `-DHDMI_SOFT_CLK=OFF` was handed to
+the tester (verdict pending). If it does NOT hold 378: fall back to ZERO2's
+precedent (`CPU_MHZ 252` default for RP2350B-with-LDO boards), and try
+Transport = Off to isolate the radio's current.
+
+**Video > HDMI submenu (2026-09-06, owner's request, NOT hw-tested):** `kHdmi`
+(UiTree.cpp), a `NM_SUB` right under Mode, visible only while HDMI is the live
+output (`p_hdmiOut` = `!SELECT_VGA` on VGA_HDMI, true on HDMI-only, false on
+SOFTTV/TFT). Two rows: **Dithering** (the former "HDMI dither" row, moved here) and
+**Clock drive** = Normal (12 mA, fast edge) / Soft (8 mA, slow edge) —
+`Config::hdmi_clock_drive` (NVS `hdmi_clkdrv`), `SET_HDMI_CLKDRV` (AC_LIVE +
+F_PREVIEW: pad-register writes only, no PIO reprogramming, so the preview is
+instant and reversible). hdmi.c keeps a runtime `hdmi_clk_soft` that
+`hdmi_init()` reads for the clock pads and `hdmi_set_clock_drive()` re-applies
+live; `VIDEO::Init()` pushes the persisted pick before core1's graphics_init.
+**The build option `HDMI_SOFT_CLK` is now only the DEFAULT of that setting and
+defaults to OFF (= Normal)** — the m1p1 + Samsung S27AG300N case that Soft was
+introduced for is now one menu pick away instead of a rebuild.
+
 ### On-chip network transport = lwIP under the ZiFi facades (2026-09-06; hw-confirmed on m1p2w: WiFi join + FTP server work)
 
 Network → **Transport** gained "On-chip WiFi (CYW43)" (`Config::zifi_transport == 2`,

@@ -5,7 +5,19 @@
 #include "ZiFi.h"          // ZiFi::linkUp() — UART link owns its pins even with the NIC off
 #include "ChipPackage.h"   // IS_RP2350B — RUNTIME package detect (NOT usable in #if)
 
+#if defined(VGA_HDMI)
+extern bool SELECT_VGA;
+#endif
+
 namespace BoardPins {
+
+PIO auxPio() {
+#if defined(VGA_HDMI) && NUM_PIOS > 2
+    return SELECT_VGA ? pio2 : pio0;
+#else
+    return pio0;
+#endif
+}
 
 // ── Authoritative RP2350 UART pinmux (from rp2350[ab]_interface_pins.json) ────
 // TX pins are even; RX is the odd partner on the same instance. The simplified

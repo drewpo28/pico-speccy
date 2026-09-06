@@ -370,6 +370,11 @@ void init_sound() {
         Debug::log("init_sound: audio output pins GP%d/%d yielded to ZiFi UART",
                    PWM_PIN0, PWM_PIN1);
     } else {
+#if PICOSPECCY_WIFI
+        // The I2S block is decided by the live video output on W boards (see
+        // BoardPins::auxPio); the static I2S_PIO initialiser is only the HDMI case.
+        i2s_config.pio = BoardPins::auxPio();
+#endif
         if (link_i2s_code == 0xFF) {
             if (I2S_BCK_PIO != I2S_LCK_PIO && I2S_LCK_PIO != I2S_DATA_PIO && I2S_BCK_PIO != I2S_DATA_PIO) {
                 // Drain residual charge before probing: after a warm restart the

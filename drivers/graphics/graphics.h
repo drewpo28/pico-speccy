@@ -81,6 +81,9 @@ void graphics_set_scanlines(uint8_t level);
 // in VIDEO::applyCrtFilter() and arrives here as ordinary palette values.
 void graphics_set_crt(uint8_t level);
 void graphics_set_dither(bool enabled);
+// HDMI clock-pair drive: false = Normal (12 mA, fast slew), true = Soft (8 mA, slow).
+// Live-safe (pad registers only). No-op on outputs without an HDMI backend.
+void graphics_set_hdmi_clock_drive(bool soft);
 
 // Profi DS80 "packed nibble" mode — HDMI path.
 // active=true: takes palette snapshot, then writes TMDS pairs for each (ink,paper) entry

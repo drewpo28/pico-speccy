@@ -377,6 +377,14 @@ static bool hook_crtFilter(int32_t, int32_t) {
 // trigger (F_PALETTE re-install / F_MODAL chrome restore) is the whole apply.
 static bool hook_uiLook(int32_t, int32_t) { return true; }
 
+// Video > HDMI > Clock drive: 0 = Normal (12 mA fast), 1 = Soft (8 mA slow). Pad
+// registers only, so the preview is live and instantly reversible.
+static int32_t get_hdmiClkDrv()          { return Config::hdmi_clock_drive; }
+static void    put_hdmiClkDrv(int32_t v) { Config::hdmi_clock_drive = (uint8_t)(v ? 1 : 0); }
+static bool hook_hdmiClkDrv(int32_t nv, int32_t) {
+    graphics_set_hdmi_clock_drive(nv == 1);
+    return true;
+}
 static bool hook_dither(int32_t nv, int32_t) {
     // Only has an effect while ULA+ is active; the HDMI ISR OR-masks indices 0..63
     // with 0x40 to sample palette[64..127].

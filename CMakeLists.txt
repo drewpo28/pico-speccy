@@ -48,7 +48,7 @@ option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 # that were never explained; see the "WHAT WAS TRIED AND REMOVED" note in hdmi.c
 # before considering it again.
 option(HDMI_TMDS_LEVEL_CLAMP "HDMI: keep channel levels inside [0x08..0xF6] (costs ~3% black, ~4% white)" ON)
-option(HDMI_SOFT_CLK "HDMI: drive the clock pair at 8 mA + slow slew instead of 12 mA + fast" ON)
+option(HDMI_SOFT_CLK "HDMI: BUILD DEFAULT for Video > HDMI > Clock drive — ON = Soft (8 mA + slow slew), OFF = Normal (12 mA + fast). The user setting (Config::hdmi_clock_drive) overrides it." OFF)
 
 # Per-subsystem port-access tracing toggles (debugging). OFF by default — when
 # ON, gated `#if XXX_TRACE` Debug::log() calls in the sources become active.
@@ -117,16 +117,17 @@ endif()
 if(MURM_W OR MURM2_W)
     set(PICOSPECCY_WIFI ON)
     # The radio is only reachable from a PIO block at gpio_base 16 (its pins are
-    # above GPIO31), and pio1/pio2 are pinned to base 0 by the keyboard and HDMI —
-    # so it has to be pio0. Every non-HDMI display driver ALSO wants pio0, at base
-    # 0: VGA (PIO_VGA, pins from VGA_BASE_PIN 6/12), SOFTTV (PIO_VIDEO = pio0) and
-    # ST7789/TFT. Those cannot coexist with the radio in the same image, and the
-    # failure would be silent — cyw43_arch_init() simply never finds a block, and
-    # you get a WiFi board with no WiFi. Refuse the combination at configure time.
+    # above GPIO31), pio1 is pinned to base 0 by the keyboard, so it needs the block
+    # the DISPLAY is not using: pio0 with HDMI on pio2, pio2 with VGA on pio0 — a
+    # VGA_HDMI image works either way (BoardPins::auxPio decides at boot, and I2S /
+    # NESPAD follow it). The single-output SOFTTV/TV/TFT drivers take pio0 at base 0
+    # and their images never build hdmi.c, so pio2 would be free there too — but
+    # that combination has not been wired or tested, so refuse it rather than ship
+    # a WiFi board with a silently dead radio.
     if(SOFTTV OR TV OR TFT OR ILI9341 OR ST7789)
         message(FATAL_ERROR
-            "MURM_W/MURM2_W support HDMI output only: the CYW43 radio needs pio0 at "
-            "gpio_base 16, and the SOFTTV/TV/TFT drivers take pio0 at gpio_base 0. "
+            "MURM_W/MURM2_W are built VGA_HDMI only for now: the SOFTTV/TV/TFT "
+            "drivers have not been paired with the CYW43's PIO block. "
             "Build these boards with -DVGA_HDMI=ON (the default).")
     endif()
 endif()

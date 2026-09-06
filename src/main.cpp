@@ -394,6 +394,11 @@ extern "C" bool handleScancode(const uint32_t ps2scancode) {
 // reset and push a duplicate press → button stuck.
 static uint32_t nespad_prev_state = 0;
 static bool nespad_active = false; // false until nespad_begin(); stays false if yielded to ZiFi
+#if PICOSPECCY_WIFI
+// C-callable shim for drivers/nespad (see BoardPins::auxPio): the pad's PIO block
+// follows the live video output on the W boards.
+extern "C" PIO board_aux_pio(void) { return BoardPins::auxPio(); }
+#endif
 
 static void nespad_tick1(void) {
     if (!nespad_active) return;

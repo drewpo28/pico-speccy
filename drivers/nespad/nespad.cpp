@@ -41,7 +41,15 @@ static uint8_t sm = -1;
 uint32_t nespad_state  = 0;  // Joystick 1
 uint32_t nespad_state2 = 0;  // Joystick 2
 
+#if PICOSPECCY_WIFI
+extern "C" PIO board_aux_pio(void);   // main.cpp -> BoardPins::auxPio()
+#endif
 bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latPin) {
+#if PICOSPECCY_WIFI
+    // W boards: the block is the one the display is not using (pio0 on HDMI, pio2
+    // on VGA); NESPAD_PIO is only the compile-time default for the HDMI case.
+    pio = board_aux_pio();
+#endif
   if (pio_can_add_program(pio, &nespad_program) &&
       ((sm = pio_claim_unused_sm(pio, true)) >= 0)) {
     uint offset = pio_add_program(pio, &nespad_program);

@@ -554,8 +554,29 @@ static const Node kTft[] = {
 #endif
 
 // ── Video ──────────────────────────────────────────────────────────────────────
+// Video > HDMI — the HDMI link's own knobs, shown only while HDMI is the live
+// output (a VGA_HDMI image on VGA, and the SOFTTV/TFT builds, have no link).
+static bool p_hdmiOut() {
+#if defined(VGA_HDMI)
+    return !SELECT_VGA;
+#elif defined(HDMI)
+    return true;
+#else
+    return false;
+#endif
+}
+static const Option opt_hdmi_clkdrv[] = {
+    { "Normal (12 mA, fast edge)",           0, "Normal" },
+    { "Soft (8 mA, slow edge: less crosstalk)", 1, "Soft" },
+};
+static const Node kHdmi[] = {
+    NM_BOOL (TXT_VID_DITHER,     SET_HDMI_DITHER, nullptr),
+    NM_RADIO(TXT_VID_CLKDRV,     SET_HDMI_CLKDRV, opt_hdmi_clkdrv, nullptr),
+};
+
 static const Node kVideo[] = {
     NM_RADIO(TXT_VID_MODE,       SET_VIDEO_MODE, opt_video_mode, nullptr),
+    NM_SUB  (TXT_VID_HDMI,       kHdmi,          p_hdmiOut),
     NM_RADIO(TXT_VID_PALETTE,    SET_PALETTE,    opt_palette,    nullptr),
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),
@@ -565,7 +586,6 @@ static const Node kVideo[] = {
     NM_BOOL (TXT_VID_ULAPLUS,    SET_ULAPLUS,    nullptr),
     NM_BOOL (TXT_VID_TIMEX,      SET_TIMEX,      nullptr),
     NM_RADIO(TXT_VID_DMA,        SET_DMA,        opt_dma,        nullptr),
-    NM_BOOL (TXT_VID_DITHER,     SET_HDMI_DITHER, nullptr),
     NM_BOOL (TXT_VID_16COL,      SET_16COL,      nullptr),
 #if TFT
     NM_SUB  (TXT_VID_TFT,        kTft,           nullptr),

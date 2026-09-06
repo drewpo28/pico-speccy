@@ -63,6 +63,7 @@ extern "C" void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t he
 extern "C" void graphics_set_scanlines(uint8_t level);
 extern "C" void graphics_set_crt(uint8_t level);
 extern "C" void graphics_set_dither(bool enabled);
+extern "C" void graphics_set_hdmi_clock_drive(bool soft);
 extern "C" void hdmi_reinit(void);
 extern "C" void vga_reinit(void);
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
@@ -2180,6 +2181,10 @@ void VIDEO::reserveFrameBuffer() {
 }
 
 void VIDEO::Init() {
+    // Before core1's graphics_init(): hdmi_init() programs the clock pads from
+    // this (Video > HDMI > Clock drive). Pad registers only, so it is also what
+    // the live menu hook calls.
+    graphics_set_hdmi_clock_drive(Config::hdmi_clock_drive == 1);
     int Mode = fbModeIndex();
     OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
     OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];

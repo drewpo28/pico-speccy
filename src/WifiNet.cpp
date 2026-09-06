@@ -6,6 +6,7 @@
 #include "Buffer.h"
 #include "Config.h"
 #include "RTC.h"
+#include "BoardPins.h"
 
 #include "pico/cyw43_arch.h"
 #include "pico/cyw43_driver.h"
@@ -91,11 +92,14 @@ bool init() {
     // are not), so the pick is deterministic whatever else has or has not run.
     // I2S (MURM_W) / NESPAD (MURM2_W) may have set the same base already; the
     // SDK refuses a re-base once a program is loaded, which is fine if it is 16.
-    if (pio_get_gpio_base(pio0) != 16) {
-        int brc = pio_set_gpio_base(pio0, 16);
+    // "pio0" above is the HDMI case; with VGA live it is pio2 (VGA owns pio0 at
+    // base 0 and HDMI is not started) — BoardPins::auxPio() is the one decision.
+    PIO aux = BoardPins::auxPio();
+    if (pio_get_gpio_base(aux) != 16) {
+        int brc = pio_set_gpio_base(aux, 16);
         if (brc != PICO_OK)
-            Debug::log("WiFi: pio0 gpio_base 16 refused rc=%d (base=%u, programs already loaded?)",
-                       brc, (unsigned)pio_get_gpio_base(pio0));
+            Debug::log("WiFi: pio%u gpio_base 16 refused rc=%d (base=%u, programs already loaded?)",
+                       (unsigned)PIO_NUM(aux), brc, (unsigned)pio_get_gpio_base(aux));
     }
 
     // The SDK's default divider (CYW43_PIO_CLOCK_DIV_INT 2) assumes a 150 MHz Pico

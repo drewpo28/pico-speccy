@@ -119,8 +119,33 @@ static uint32_t irq_inx = 0;
 // long before the TMDS level machinery it belongs with — see the HDMI_SOFT_CLK
 // block in hdmi_init() for the rationale and the hw provenance.
 #ifndef HDMI_SOFT_CLK
-#define HDMI_SOFT_CLK 1
+#define HDMI_SOFT_CLK 0
 #endif
+// Runtime copy of the build default: Video > HDMI > Clock drive (Config::
+// hdmi_clock_drive) flips it live through hdmi_set_clock_drive(); hdmi_init()
+// reads it when it programs the clock pads.
+static bool hdmi_clk_soft = HDMI_SOFT_CLK != 0;
+static bool hdmi_clk_pins_ready = false;   // clock pads are PIO-owned and may be re-driven
+static uint hdmi_clk_pin_base = 0;
+
+static void hdmi_apply_clk_drive(void) {
+    for (int i = 0; i < 2; i++) {
+        if (hdmi_clk_soft) {
+            gpio_set_drive_strength(hdmi_clk_pin_base + i, GPIO_DRIVE_STRENGTH_8MA);
+            gpio_set_slew_rate(hdmi_clk_pin_base + i, GPIO_SLEW_RATE_SLOW);
+        } else {
+            gpio_set_drive_strength(hdmi_clk_pin_base + i, GPIO_DRIVE_STRENGTH_12MA);
+            gpio_set_slew_rate(hdmi_clk_pin_base + i, GPIO_SLEW_RATE_FAST);
+        }
+    }
+}
+
+// Pad-register writes only — no PIO reprogramming — so this is safe while the
+// link is live and takes effect on the next clock edge.
+void hdmi_set_clock_drive(bool soft) {
+    hdmi_clk_soft = soft;
+    if (hdmi_clk_pins_ready) hdmi_apply_clk_drive();
+}
 
 // Per-level scanline gray (RGB888). Index by level 1..4, dark -> light.
 // Level 2 == 0x202020 == the legacy look and the default. [0] unused.
@@ -886,27 +911,23 @@ static inline bool hdmi_init() {
     //настройка side set
     sm_config_set_sideset_pins(&c_c,beginHDMI_PIN_clk);
     sm_config_set_sideset(&c_c, 2,false,false);
-    for (int i = 0; i < 2; i++) {
-        pio_gpio_init(PIO_VIDEO, beginHDMI_PIN_clk + i);
-#if HDMI_SOFT_CLK
-        // Drive the clock pair softly — 8 mA + slow slew, against the 12 mA + fast
-        // slew the data pairs keep below. The clock is the board's strongest
-        // aggressor and it runs right next to a data pair (with display base 6 the
-        // blue pair on GPIO 8/9 sits beside the clock pair on 6/7 — which is why
-        // blue is the channel that breaks up there), while the receiver has clock
-        // margin to spare on a short cable.
-        // Ported from pico-spec 43ea8c8, picked there as the best variant over
-        // several resets in an A/B against the 12 mA/fast default (m1p1 + Samsung
-        // S27AG300N), and confirmed good here too (hw 2026-08-06, pico-speccy with
-        // a capture card, together with HDMI_TMDS_LEVEL_CLAMP). A rebuild with
-        // `cmake -DHDMI_SOFT_CLK=OFF` restores the harder edge if a board needs it.
-        gpio_set_drive_strength(beginHDMI_PIN_clk + i, GPIO_DRIVE_STRENGTH_8MA);
-        gpio_set_slew_rate(beginHDMI_PIN_clk + i, GPIO_SLEW_RATE_SLOW);
-#else
-        gpio_set_drive_strength(beginHDMI_PIN_clk + i, GPIO_DRIVE_STRENGTH_12MA);
-        gpio_set_slew_rate(beginHDMI_PIN_clk + i, GPIO_SLEW_RATE_FAST);
-#endif
-    }
+    for (int i = 0; i < 2; i++) pio_gpio_init(PIO_VIDEO, beginHDMI_PIN_clk + i);
+    // Clock-pair drive is a USER setting (Video > HDMI > Clock drive), applied here
+    // and re-applied live by hdmi_set_clock_drive():
+    //  * Normal = 12 mA + fast slew, the same as the data pairs. Needed on the
+    //    Waveshare RP2350B-Plus-W at 378 MHz (hw 2026-09-06): its 3V3 is an LDO
+    //    (ME6217) with a smaller TMDS swing, and a softened clock edge there cost
+    //    the receiver its clock recovery — sync loss + coloured streaks in every
+    //    channel, while frank-386 with a 12 mA clock held the same board fine.
+    //  * Soft = 8 mA + slow slew. The clock is the board's strongest aggressor
+    //    and runs right next to a data pair (display base 6: blue on GPIO 8/9
+    //    beside the clock on 6/7 — which is why blue breaks up there). Ported from
+    //    pico-spec 43ea8c8 as the best A/B variant on m1p1 + Samsung S27AG300N and
+    //    confirmed with a capture card here (hw 2026-08-06, with LEVEL_CLAMP).
+    // The build default is -DHDMI_SOFT_CLK (OFF = Normal); Config overrides it.
+    hdmi_clk_pin_base = beginHDMI_PIN_clk;
+    hdmi_apply_clk_drive();
+    hdmi_clk_pins_ready = true;
 
 #if ZERO2
     // Настройка направлений пинов для state machines
