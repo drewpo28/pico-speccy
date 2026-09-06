@@ -49,6 +49,16 @@ visit https://zxespectrum.speccy.org/contacto
 #include "DivMMC.h"
 #include "GS/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
 #include "TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
+#include "TsFastMem.h"
+#if PERF_TRACE && PERF_HIST
+// TS-Conf guest-memory access histogram by PHYSICAL page (the page each CPU
+// bank is mapped to), fetch + peek8 + poke8. Tells which pages a title hammers,
+// i.e. what an SRAM page policy would have to hold. Dumped by the [PERF] block.
+uint32_t ts_page_hist[257];   // [256] = bank-0 ROM
+#define TS_PAGE_HIT(addr) do { if (Z80Ops::isTsconf) ts_page_hist[TsConf::r.page[(addr) >> 14]]++; } while (0)
+#else
+#define TS_PAGE_HIT(addr) do {} while (0)
+#endif
 
 // Place hot CPU functions in SRAM instead of XIP flash
 #undef IRAM_ATTR
@@ -452,7 +462,38 @@ IRAM_ATTR void CPU::loop() {
         // Stage D: whatever is left, instruction-checked (empty unless a
         // LINE/DMA source is armed or a slice above was cut short).
         while (tstates < statesInFrame) {
-            Z80::execute();
+            if (Z80::isHalted()) {
+                // A HALTed CPU leaves HALT only on an interrupt, so sleep straight
+                // to the next T-state where the INT line can rise (frame end with
+                // interrupts disabled) instead of stepping 4 T per execute(): with
+                // LINE INT armed at 14 MHz that was ~72k execute() calls of pure
+                // spinning per frame (TMNT: a flat 43 ms/frame, hw 2026-09-06).
+                // The video machine is walked line by line, not flushed, so a
+                // per-line effect programmed after the wake still renders right.
+                uint32_t wake = Z80::isIFF1() ? TsConf::nextIntEvent() : statesInFrame;
+                if (wake > statesInFrame) wake = statesInFrame;
+                if (wake > tstates) { haltAdvanceTo(wake); continue; }
+            }
+            if (Z80::isIFF1() && TsConf::intLine()) {
+                // INT line up and accepted: one checked instruction takes it
+                // (pendingEI after an EI defers it by exactly one instruction).
+                Z80::execute();
+            } else {
+                // Nothing can interrupt before the next INT event (frame end
+                // while interrupts are disabled — EI/RETN/RETI re-enabling them
+                // end the slice through TsConf::intEnableHook, as do INTMask
+                // and DMACtrl writes through tsWakeLoop), so run unchecked to
+                // it. Per-instruction execute() here was 3x the cost of
+                // exec_nocheck() on TMNT (100% of its frame ran checked).
+                uint32_t next = Z80::isIFF1() ? TsConf::nextIntEvent() : statesInFrame;
+                if (next <= tstates) next = tstates + 1;
+                stFrame = next;
+                Z80::exec_nocheck();
+                if (stFrame == 0) continue;           // HALTed: the sleep above takes over
+                // The INT is accepted after the instruction that crossed the
+                // event boundary — same sampling point as execute().
+                Z80::checkINT();
+            }
             if (Config::dma_mode) Z80DMA::handleDMA();
             if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
                 zifi_pump_due = tstates + 3500;
@@ -548,6 +589,21 @@ IRAM_ATTR void CPU::FlushOnHalt() {
 // The classic frame loop always targets statesInFrame - IntEnd; TS-Conf's
 // sliced loop targets IntStart (a HALT before the programmable INT window
 // wakes at the window) or statesInFrame.
+// Advance a HALTed CPU to stEnd through the video state machine one line at a
+// time (TS-Conf has no memory contention and no snow, so no per-4T stepping is
+// needed). Unlike FlushOnHaltTo this does NOT flush the rest of the frame's
+// video, so rendering stays in step with register writes made after the wake.
+IRAM_ATTR void CPU::haltAdvanceTo(uint32_t stEnd) {
+    tstates_active = tstates;
+    const uint32_t pre = tstates;
+    while (tstates < stEnd) {
+        uint32_t n = stEnd - tstates;
+        if (n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
+        VIDEO::Draw(n, false);
+    }
+    Z80::incRegR((uint8_t)((tstates - pre) >> 2));
+}
+
 IRAM_ATTR void CPU::FlushOnHaltTo(uint32_t stEnd) {
 
     uint8_t page = Z80::getRegPC() >> 14;
@@ -636,6 +692,11 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
 
 // Read byte from RAM
 IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
+    TS_PAGE_HIT(address);
+    if (g_ts_fastmem) {                       // TsFastMem.h
+        tsFastTick(3);
+        return MemESP::ramCurrent[address >> 14][address & 0x3FFF];
+    }
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
     // ProfROM plane switch — and on this firmware the switch IS a DATA read, so
     // this hook is the load-bearing one (hw 2026-09-04: without it ProfROM ran
@@ -693,6 +754,7 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     if (pg == 0 && MemESP::divmmc_mapped) {
         return (pc < 0x2000) ? MemESP::page0_lo[pc] : MemESP::page0_hi[pc & 0x1FFF];
     }
+    TS_PAGE_HIT(pc);
     return MemESP::romPeek(pg, MemESP::ramCurrent[pg], pc & 0x3fff);
 }
 
@@ -764,6 +826,18 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
 
 // Write byte to RAM
 IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
+    TS_PAGE_HIT(address);
+    if (g_ts_fastmem) {                       // TsFastMem.h
+        tsFastTick(3);
+        if (__builtin_expect(g_tsconf_wr != 0, 0))
+            if (TsConf::cpuWriteGate(address, value)) return;
+        const uint8_t pg = address >> 14;
+        uint8_t* p = MemESP::ramCurrent[pg];
+        if ((uintptr_t)p < 0x11000000u) return;   // TS-BIOS ROM window (flash pointer)
+        *mem_desc_t::bank_dirty[pg] = true;
+        p[address & 0x3FFF] = value;
+        return;
+    }
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
     gsDmaPoke8(address, value);
 }
@@ -772,6 +846,14 @@ IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
 IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
 
     uint8_t page = address >> 14;
+    TS_PAGE_HIT(address);
+    if (g_ts_fastmem) {                       // TsFastMem.h — lsb first, like the generic path
+        tsFastTick(6);
+        const uint16_t a1 = address + 1;
+        const uint8_t lsb = MemESP::ramCurrent[page][address & 0x3FFF];
+        const uint8_t msb = MemESP::ramCurrent[a1 >> 14][a1 & 0x3FFF];
+        return (uint16_t)((msb << 8) | lsb);
+    }
 
     if (page == ((address + 1) >> 14)) {    // Check if address is between two different pages
 
@@ -810,6 +892,17 @@ IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
 
 // Write word to RAM
 IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
+    TS_PAGE_HIT(address);
+    if (g_ts_fastmem && !g_tsconf_wr) {       // TsFastMem.h (write gates take the generic path)
+        tsFastTick(6);
+        const uint16_t a1 = address + 1;
+        const uint8_t pg0 = address >> 14, pg1 = a1 >> 14;
+        uint8_t* p0 = MemESP::ramCurrent[pg0];
+        uint8_t* p1 = MemESP::ramCurrent[pg1];
+        if ((uintptr_t)p0 >= 0x11000000u) { *mem_desc_t::bank_dirty[pg0] = true; p0[address & 0x3FFF] = word.byte8.lo; }
+        if ((uintptr_t)p1 >= 0x11000000u) { *mem_desc_t::bank_dirty[pg1] = true; p1[a1 & 0x3FFF] = word.byte8.hi; }
+        return;
+    }
     uint8_t page = address >> 14;
     uint16_t page_addr = address & 0x3fff;
 

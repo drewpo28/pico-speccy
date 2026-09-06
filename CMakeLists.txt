@@ -58,7 +58,12 @@ option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1
 option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
-option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" ON)
+option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" OFF)
+# Per-ACCESS histograms on top of PERF_TRACE (Z80 opcode mix, TS-Conf physical
+# page hits, TS-Conf DMA src/dst pages — the `[PERF] z80:` / `pages:` / `dma` lines).
+# They cost ~5 ms per TMNT frame (a counter on every guest memory access), so they
+# are off unless a profiling session asks for them; PERF_TRACE stays cheap.
+option(PERF_HIST "Per-access Z80/TS-Conf histograms in the PERF log (slow; needs PERF_TRACE)" OFF)
 option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
@@ -78,7 +83,7 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 # Each enables stdio over the board's Debug-Probe header — see the block for pins.
 set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
 set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
-set(PICO_DV_DBG_UART ON CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
+set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
 set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
 
 # set(TFT ON)
@@ -301,12 +306,12 @@ set_source_files_properties(src/midi_wt.c PROPERTIES
 set_source_files_properties(src/Video.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -funroll-loops")
 # Z80 эмулятор — самый горячий код, критично для производительности.
-# Z80_CORE_OPT is a cache variable so a perf build can try another level
-# (e.g. -DZ80_CORE_OPT=-Os: the core is 24 KB instead of 44 KB of flash text,
-# which matters because the whole core runs from flash through the 16 KB XIP
-# cache it shares with butter-PSRAM guest RAM — see the TS-Conf performance
-# notes in CLAUDE.md).
-set(Z80_CORE_OPT "-O3 -funroll-loops" CACHE STRING "Compiler optimisation flags for src/Z80_JLS.cpp")
+# Since 2026-09-06 the whole core is SRAM-resident (Z80_CORE_IN_RAM, below) and
+# therefore compiled -Os: 24.5 KB of SRAM against 44 KB at -O3. Measured on TS-Conf
+# TMNT: the -Os core in SRAM beats the -O3 core in flash by a third of the Z80
+# time — code fetches from flash queue behind butter-PSRAM line fills on the single
+# XIP port. See the TS-Conf performance notes in CLAUDE.md before changing either.
+set(Z80_CORE_OPT "-Os" CACHE STRING "Compiler optimisation flags for src/Z80_JLS.cpp (-Os: the core lives in SRAM, see Z80_CORE_IN_RAM)")
 set_source_files_properties(src/Z80_JLS.cpp PROPERTIES
     COMPILE_FLAGS "${Z80_CORE_OPT}")
 set_source_files_properties(src/CPU.cpp PROPERTIES
@@ -372,7 +377,20 @@ pico_add_extra_outputs(${PROJECT_NAME})
 # separate RAM region. The two regions sit in different SRAM banks with
 # independent AHB ports — HDMI DMA reading the framebuffer cannot stall
 # CPU access to Z80 RAM and vice versa.
-pico_set_linker_script(${PROJECT_NAME} "${CMAKE_SOURCE_DIR}/rp2350-memmap.ld")
+# The linker script is a configure_file template: Z80_CORE_IN_RAM=ON (default since
+# 2026-09-06) places every function of src/Z80_JLS.cpp in SRAM (.data) instead of
+# flash (~24.5 KB at -Os, ~44 KB at -O3). OFF is the escape hatch for a board that
+# cannot spare the SRAM — see the TS-Conf performance notes in CLAUDE.md.
+option(Z80_CORE_IN_RAM "Place the Z80 core (src/Z80_JLS.cpp) in SRAM instead of flash" ON)
+if (Z80_CORE_IN_RAM)
+    set(Z80_CORE_TEXT_EXCLUDE "*Z80_JLS.cpp.o")
+    set(Z80_CORE_RAM_RULE "*Z80_JLS.cpp.o(.text .text.*)")
+else()
+    set(Z80_CORE_TEXT_EXCLUDE "")
+    set(Z80_CORE_RAM_RULE "")
+endif()
+configure_file("${CMAKE_SOURCE_DIR}/rp2350-memmap.ld" "${CMAKE_BINARY_DIR}/rp2350-memmap.ld" @ONLY)
+pico_set_linker_script(${PROJECT_NAME} "${CMAKE_BINARY_DIR}/rp2350-memmap.ld")
 
 target_link_options(${PROJECT_NAME} PRIVATE -Xlinker --print-memory-usage --data-sections)
 target_compile_definitions(${PROJECT_NAME} PRIVATE FLASH_SIZE=${FLASH_SIZE})
@@ -471,6 +489,11 @@ foreach (HDMI_SI_OPT HDMI_TMDS_LEVEL_CLAMP HDMI_SOFT_CLK)
 endforeach ()
 
 # Per-60-frame CPU/HDMI/FPS performance logging (see Video.cpp `#if PERF_TRACE`).
+if (PERF_HIST)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=1)
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=0)
+endif()
 if (PERF_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_TRACE=1)
 else ()

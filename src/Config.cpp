@@ -1051,7 +1051,7 @@ void Config::load() {
         nvs_get_u16("max_flash_freq", max_flash_freq, sts);
         if (max_flash_freq == 0) max_flash_freq = 66;
         nvs_get_u16("max_psram_freq", max_psram_freq, sts);
-        if (max_psram_freq == 0) max_psram_freq = 166;
+        if (max_psram_freq == 0 || max_psram_freq > 166) max_psram_freq = 166;   // 180 (168 MHz SCK) was offered briefly 2026-09-07; the chip does not hold it
         nvs_get_u16("max_tft_freq", max_tft_freq, sts);
         if (max_tft_freq == 0) max_tft_freq = 126;
         graphics_max_tft_freq_mhz = max_tft_freq;

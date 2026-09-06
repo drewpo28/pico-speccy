@@ -42,6 +42,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
 #include "Debug.h"
 #include "TsConf.h"
+#include "TsFastMem.h"
 #include "Subsystem.h"
 #include "Buffer.h"
 #include "Tape.h"
@@ -427,6 +428,11 @@ volatile uint32_t ts_tsu_us = 0;      // tsuComposeLine alone
 
 uint8_t  VIDEO::ts_vmode_live = 0;
 uint8_t  VIDEO::ts_render_live = 0;
+// TsDraw / TsFastMem.h state (see the TS-Conf fast video path further down)
+uint32_t VIDEO::ts_line_t   = 0xFFFFFFFFu;   // T-state at which the next content line renders
+static uint32_t ts_line_idx = 0;             // that line, 0..(lin_end2 - lin_end - 1)
+static bool     ts_fast_armed = false;       // TsDraw armed for this frame (EndFrame)
+uint8_t g_ts_fastmem = 0;
 bool     VIDEO::ts_tsu_live = false;
 bool     VIDEO::ts_pal256_live = false;
 uint8_t  VIDEO::ts_rres_live = 0;
@@ -2921,6 +2927,7 @@ void VIDEO::Reset() {
         Draw = &Blank;
         Draw_Opcode = &Blank_Opcode;
     }
+    ts_fast_armed = false; ts_line_t = 0xFFFFFFFFu; g_ts_fastmem = 0;   // TsFastMem.h: re-armed by EndFrame
 
     // Restart border drawing + main screen draw state
     linedraw_cnt = lin_end;
@@ -3958,6 +3965,60 @@ IRAM_ATTR void VIDEO::MainScreen_Snow_Opcode(bool contended) {
 #endif
 
 IRAM_ATTR void VIDEO::Blank(unsigned int statestoadd, bool contended) { CPU::tstates += statestoadd; }
+
+// ---------------------------------------------------------------------------
+// TS-Conf fast video path. In the whole-line modes (TEXT/16c/256c/NOGFX, or the
+// TSU over anything) nothing races the beam, yet every guest memory access still
+// ran MainScreen's column/contention bookkeeping through Draw(3)/Draw(4) — two to
+// three such calls per Z80 instruction, a good third of the core's cost (hw
+// 2026-09-06, TMNT). Here Draw only advances the T-state counter and renders a
+// line each time it crosses a line boundary; after the last content line it hands
+// over to Blank exactly like MainScreen does, so FlushOnHalt / RedrawPausedFrame's
+// "until Draw == &Blank" loops keep working. Armed per frame in EndFrame.
+
+// See TsFastMem.h. Called at the EndFrame arming and from the NeoGS ZX-DMA
+// window toggles (GS.cpp) — anything that must revoke the fast path mid-frame.
+void ts_fastmem_recalc() { VIDEO::tsFastMemRecalc(); }
+void VIDEO::tsFastMemRecalc() {
+    extern volatile uint8_t g_ngs_zxdma;
+    // No overlay test: TS-Conf's bank pointers are TsConf::romPtr() flash pages or
+    // plain RAM pages, neither of which is a registered overlay base — and the
+    // registry itself is rarely empty (other romsets' overlays persist in it).
+    const uint8_t v = (Z80Ops::isTsconf && ts_fast_armed && ts_render_live
+                       && Config::numMemReadBP == 0 && Config::numMemWriteBP == 0
+                       && !g_ngs_zxdma && !MemESP::divmmc_mapped) ? 1 : 0;
+    if (v != g_ts_fastmem) {
+        g_ts_fastmem = v;
+        Debug::log("[TSF] fast memory path %s (render=%u armed=%u bp=%d/%d zxdma=%u divmmc=%u)", v ? "ON" : "off",
+                   ts_render_live, (unsigned)ts_fast_armed, Config::numMemReadBP, Config::numMemWriteBP,
+                   (unsigned)g_ngs_zxdma, (unsigned)MemESP::divmmc_mapped);
+    }
+}
+
+IRAM_ATTR void VIDEO::tsDrawTick() {
+    const uint32_t lines = lin_end2 - lin_end;
+    do {
+        linedraw_cnt = lin_end + ts_line_idx;   // keep the shared counters coherent
+        curline = ts_line_idx;
+        tsRenderLine(ts_line_idx);
+        ts_line_t += tStatesPerLine;
+        if (++ts_line_idx >= lines) {
+            linedraw_cnt = lin_end2;
+            ts_line_t = 0xFFFFFFFFu;          // tsFastTick == Blank from here on
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+            return;
+        }
+    } while (CPU::tstates >= ts_line_t);
+}
+IRAM_ATTR void VIDEO::TsDraw(unsigned int statestoadd, bool) {
+    CPU::tstates += statestoadd;
+    if (__builtin_expect(CPU::tstates >= ts_line_t, 0)) tsDrawTick();
+}
+IRAM_ATTR void VIDEO::TsDraw_Opcode(bool) {
+    CPU::tstates += 4;
+    if (__builtin_expect(CPU::tstates >= ts_line_t, 0)) tsDrawTick();
+}
 IRAM_ATTR void VIDEO::Blank_Opcode(bool contended) { CPU::tstates += 4; }
 IRAM_ATTR void VIDEO::Blank_Snow(unsigned int statestoadd, bool contended) { CPU::tstates += statestoadd; }
 IRAM_ATTR void VIDEO::Blank_Snow_Opcode(bool contended) { CPU::tstates += 4; }
@@ -4708,11 +4769,12 @@ IRAM_ATTR void VIDEO::EndFrame() {
         cpu_frame_us = 0;
         fdd_step_us = 0;
         Ports::fdd_ports_us = 0;
-        extern volatile uint32_t ts_render_us, ts_tsu_us;
-        static uint32_t tsr_accum = 0, tsr_max = 0, tsu_accum = 0;
+        extern volatile uint32_t ts_render_us, ts_tsu_us, ts_dma_us, ts_dma_words;
+        static uint32_t tsr_accum = 0, tsr_max = 0, tsu_accum = 0, dma_accum = 0, dmaw_accum = 0;
         tsr_accum += ts_render_us; if (ts_render_us > tsr_max) tsr_max = ts_render_us;
         tsu_accum += ts_tsu_us;
-        ts_render_us = ts_tsu_us = 0;
+        dma_accum += ts_dma_us; dmaw_accum += ts_dma_words;
+        ts_render_us = ts_tsu_us = ts_dma_us = ts_dma_words = 0;
         if (++port_log_frame >= 60) {
             uint64_t now = time_us_64();
             float fps = wall_t0 ? (60.0f * 1000000.0f / (float)(now - wall_t0)) : 0.0f;
@@ -4725,19 +4787,22 @@ IRAM_ATTR void VIDEO::EndFrame() {
             volatile uint32_t *xip_acc = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_ACC_OFFSET);
             uint32_t xh = *xip_hit, xa = *xip_acc;
             *xip_hit = 0; *xip_acc = 0;
-            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus tsRender=%.1fms (max %.1fms, tsu %.1fms) xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f",
+            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus tsRender=%.1fms (max %.1fms, tsu %.1fms) dma=%.1fms/%uw xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f",
                 cpu_accum / 60000.0f, cpu_max / 1000.0f,
                 fdd_step_accum / 60000.0f, fdd_step_max / 1000.0f,
                 fdd_ports_accum / 60000.0f, fdd_ports_max / 1000.0f,
                 (unsigned)gap_max, (unsigned)dur_max,
                 tsr_accum / 60000.0f, tsr_max / 1000.0f, tsu_accum / 60000.0f,
+                dma_accum / 60000.0f, (unsigned)(dmaw_accum / 60),
                 (unsigned)xh, (unsigned)xa, xa ? 100.0f * (float)xh / (float)xa : 0.0f,
                 (float)(xa - xh) * fps / 60.0f / 1e6f, fps);
+#if PERF_HIST
             // Z80 opcode mix, every 600 frames: instructions/frame, ns per
             // instruction (against cpu= of the same window) and the top 20
             // base opcodes — the data the XIP-pinning choice needs.
             {
                 extern uint32_t z80_op_hist[256];
+                extern uint32_t z80_chk_cnt;
                 static uint32_t hist_cpu_us = 0, hist_windows = 0;
                 hist_cpu_us += cpu_accum;
                 if (++hist_windows >= 10) {
@@ -4754,14 +4819,47 @@ IRAM_ATTR void VIDEO::EndFrame() {
                         pos += snprintf(line + pos, sizeof(line) - pos, " %02X:%.1f", best,
                                         total ? 100.0 * (double)bv / (double)total : 0.0);
                     }
-                    Debug::log("[PERF] z80: %u instr/frame, %.0f ns/instr, top%%:%s",
+                    Debug::log("[PERF] z80: %u instr/frame (%.0f%% checked), %.0f ns/instr, top%%:%s",
                         (unsigned)(total / (hist_windows * 60)),
+                        total ? 100.0 * (double)z80_chk_cnt / (double)total : 0.0,
                         total ? 1000.0 * (double)hist_cpu_us / (double)total : 0.0, line);
                     for (int i = 0; i < 256; i++) z80_op_hist[i] = 0;
+                    z80_chk_cnt = 0;
+                    if (Config::arch == A_TSCONF) {
+                        extern uint32_t ts_page_hist[257];
+                        extern uint32_t ts_dma_src_hist[256], ts_dma_dst_hist[256];
+                        // Top pages of one histogram as " page[*]:share" (* = SRAM-backed).
+                        auto top = [&](uint32_t* h, int cnt, int k, char* out, int outsz) {
+                            uint64_t tot = 0; for (int i = 0; i < cnt; i++) tot += h[i];
+                            int p = 0; uint8_t used[257] = {0};
+                            for (int j = 0; j < k && p < outsz - 14; j++) {
+                                int best = -1; uint32_t bv = 0;
+                                for (int i = 0; i < cnt; i++) if (!used[i] && h[i] > bv) { bv = h[i]; best = i; }
+                                if (best < 0 || bv == 0) break;
+                                used[best] = 1;
+                                const char* tag = "";
+                                if (best == 256) tag = "ROM";
+                                else if (((uintptr_t)TsConf::pagePtr((uint32_t)best) >> 28) == 2) tag = "*";
+                                p += snprintf(out + p, outsz - p, " %d%s:%.1f", best == 256 ? 0 : best, tag,
+                                              tot ? 100.0 * (double)bv / (double)tot : 0.0);
+                            }
+                            return tot;
+                        };
+                        uint64_t ptot = top(ts_page_hist, 257, 14, line, sizeof(line));
+                        Debug::log("[PERF] pages: cpu %u acc/frame (* = SRAM), vpage=%u:%s",
+                            (unsigned)(ptot / (10 * 60)), TsConf::r.vpage, line);
+                        uint64_t stot = top(ts_dma_src_hist, 256, 8, line, sizeof(line));
+                        Debug::log("[PERF] dma src %u w/frame:%s", (unsigned)(stot / (10 * 60)), line);
+                        uint64_t dtot = top(ts_dma_dst_hist, 256, 8, line, sizeof(line));
+                        Debug::log("[PERF] dma dst %u w/frame:%s", (unsigned)(dtot / (10 * 60)), line);
+                        for (int i = 0; i < 257; i++) ts_page_hist[i] = 0;
+                        for (int i = 0; i < 256; i++) ts_dma_src_hist[i] = ts_dma_dst_hist[i] = 0;
+                    }
                     hist_cpu_us = 0; hist_windows = 0;
                 }
             }
-            tsr_accum = tsr_max = tsu_accum = 0;
+#endif // PERF_HIST
+            tsr_accum = tsr_max = tsu_accum = dma_accum = dmaw_accum = 0;
             cpu_accum = cpu_max = gap_max = dur_max = 0;
             fdd_step_accum = fdd_step_max = 0;
             fdd_ports_accum = fdd_ports_max = 0;
@@ -4894,10 +4992,20 @@ IRAM_ATTR void VIDEO::EndFrame() {
             memset(vga.frameBuffer[y], border, vga.xres);
     }
     wasMaxSpeed = ESPectrum::maxSpeed;
+    ts_fast_armed = false;
+    ts_line_t = 0xFFFFFFFFu;
     if (skipFrame) {
         // Skip rendering: 1/1024 frames during tape loading, 1/256 otherwise
         Draw = VIDEO::snow_toggle ? &Blank_Snow : &Blank;
         Draw_Opcode = VIDEO::snow_toggle ? &Blank_Snow_Opcode : &Blank_Opcode;
+        ts_fast_armed = ts_render_live != 0;   // fast path == Blank on a skipped frame
+    } else if (ts_render_live) {
+        // TS-Conf whole-line renderer: T-state counter instead of the beam machine.
+        ts_line_t = tStatesScreen;
+        ts_line_idx = 0;
+        Draw = &TsDraw;
+        Draw_Opcode = &TsDraw_Opcode;
+        ts_fast_armed = true;
     } else if (VIDEO::snow_toggle
         && !(Config::timex_video && VIDEO::timex_mode != 0)
     ) {
@@ -4907,6 +5015,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
         Draw = &MainScreen_Blank;
         Draw_Opcode = &MainScreen_Blank_Opcode;
     }
+    tsFastMemRecalc();
 
     // DS80 borders are rendered by the state machine with DS80 geometry
     // (applyDS80BorderGeometry).  TopBorder_Blank handles lin_end==0 and

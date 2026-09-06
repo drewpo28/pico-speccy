@@ -35,7 +35,7 @@ SECTIONS
         *libgcc.a:unwind-arm.o(.text* .rodata*)
         *libgcc.a:pr-support.o(.text* .rodata*)
         *libgcc.a:libunwind.o(.text* .rodata*)
-        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .text*)
+        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a: @Z80_CORE_TEXT_EXCLUDE@) .text*)
         *(.fini)
         *crtbegin.o(.ctors)
         *crtbegin?.o(.ctors)
@@ -132,6 +132,9 @@ SECTIONS
         __data_start__ = .;
         *(vtable)
 
+        /* Z80_CORE_IN_RAM (CMake option, off by default): the whole Z80 core's
+         * text lands in SRAM instead of flash — see CMakeLists.txt. Empty otherwise. */
+        @Z80_CORE_RAM_RULE@
         *(.time_critical*)
 
         *(.text*)

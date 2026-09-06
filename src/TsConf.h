@@ -138,6 +138,10 @@ public:
     // rest of the frame instruction-checked instead of the unchecked slices
     // (only the FRAME window is checked otherwise).
     static bool needsCheckedFrame();
+    // Earliest T-state (>= CPU::tstates, <= statesInFrame) at which intLine()
+    // can become true — where a HALTed CPU may sleep to (CPU::loop Stage D).
+    static uint32_t nextIntEvent();
+    static void intEnableHook();   // EI/RETN/RETI: wake the unchecked slice if INT is up
     static void endFrame();      // frame-relative INT/DMA timestamps wrap here
 
     // DMA controller. A DMACtrl write runs the whole transaction at once;
