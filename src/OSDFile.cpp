@@ -452,7 +452,7 @@ static bool rfd_launch_tmp(string path) {
         Tape::LoadTape((Config::tape_autostart ? "R" : "L") + base); // LoadTape prepends TAP_Path
         return true;
     }
-    if (ext == "sna" || ext == "z80" || ext == "p") {
+    if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg") {
         FileUtils::SNA_Path = dir;
         Config::save();
         if (!LoadSnapshot(path, A_NONE, R_NONE)) {
@@ -736,7 +736,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         // name from the locator), which is the authoritative source of the extension.
         auto isLaunchExt = [](const string& lc) {
             return lc == "tap" || lc == "tzx" || lc == "pzx" || lc == "wav" || lc == "mp3"
-                || lc == "sna" || lc == "z80" || lc == "p"   || lc == "zip"
+                || lc == "sna" || lc == "z80" || lc == "p"   || lc == "spg" || lc == "zip"
                 || lc == "rom" || lc == "bin"
                 || FileUtils::ifaceForExt(lc) != IFACE_NONE; // trd/scl/fdi/udi/td0/pro/mbd/mmc/hdf
         };

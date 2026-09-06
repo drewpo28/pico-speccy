@@ -73,12 +73,12 @@ string FileUtils::IMG_Path = "/";
 string FileUtils::ALL_Path = "/";
 string FileUtils::DLS_Path = "/";
 DISK_FTYPE FileUtils::fileTypes[7] = {
-    {".sna,.SNA,.z80,.Z80,.p,.P,.zip,.ZIP",2,2,0,""},
+    {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.zip,.ZIP",2,2,0,""},
     {".tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.zip,.ZIP",2,2,0,""},
     {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.zip,.ZIP",2,2,0,""},
     {".rom,.ROM,.bin,.BIN,.zip,.ZIP",2,2,0,""},
     {".mmc,.MMC,.hdf,.HDF,.hdd,.HDD,.vhd,.VHD,.img,.IMG,.iso,.ISO,.zip,.ZIP",2,2,0,""},
-    {".sna,.SNA,.z80,.Z80,.p,.P,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.rom,.ROM,.bin,.BIN,.dls,.DLS,.zip,.ZIP",2,2,0,""},
+    {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.rom,.ROM,.bin,.BIN,.dls,.DLS,.zip,.ZIP",2,2,0,""},
     {".dls,.DLS",2,2,0,""}   // DISK_DLSFILE (GM.DLS soundbank conversion)
 };
 
@@ -381,6 +381,13 @@ bool FileUtils::hasPextension(const string& filename)
     if (filename.substr(filename.size()-2,2) == ".p") return true;
     if (filename.substr(filename.size()-2,2) == ".P") return true;
     return false;
+}
+
+bool FileUtils::hasSPGextension(const string& filename)
+{
+    if (filename.size() < 4) return false;
+    const string e = filename.substr(filename.size()-4,4);
+    return e == ".spg" || e == ".SPG";
 }
 
 bool FileUtils::hasTAPextension(const string& filename)

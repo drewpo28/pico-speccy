@@ -1512,7 +1512,7 @@ and SK) are now covered, and one mutation that looked uncaught turned out to nee
 1100-byte sector to expose. A suite that cannot fail is worth nothing here: an FDC
 misbehaves by degrees, as one game in twenty that will not load.
 
-## TS-Conf (ZX-Evo) — Phase 1: the machine core (2026-08-17, NOT hw-tested)
+## TS-Conf (ZX-Evo) — Phase 1: the machine core (2026-08-17; boots on hw since 2026-09-06)
 
 `A_TSCONF` / `R_TSCONF` ("TSconf"/"TSbios" on disk). Reference: tslabs/zx-evo —
 `pentevo/unreal/Unreal/{tsconf.*,io.cpp,memory.cpp,z80_main.inl}` (the ported
@@ -1530,9 +1530,13 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   doesn't have), `trdosTrap` (DOS enter at #3Dxx w/ ROM128+ROM; exit on
   executing RAM — `check_trdos()` short-circuits to it), the FRAME INT
   (programmable HSINT/VSINT → `CPU::IntStart/IntEnd`; window straddling frame
-  end truncated), `applyZclk` (ZCLK 3.5/7/14 → multiplicator; **user turbo is a
-  floor, never a cap** — both turbo hotkeys re-apply it; `tsconf_clk_cap` NVS
-  escape hatch). Reset = `tsinit()` values; **`MemConfig` reset is 0 (mapped
+  end truncated), `applyZclk` (ZCLK 3.5/7/14 → multiplicator; **the register is
+  authoritative since 2026-09-06** — TS-BIOS Setup, an .spg header and games all
+  write it, so a guest write sets the clock outright and shows the Turbo hotkey's
+  top-border toast (`OSD::notify " CPU: 14 MHz "`); Alt+F2 / Menu+F11 are an
+  override that lasts until the next SysConfig write and no longer re-apply ZCLK.
+  It was "user pick is a floor" before. `tsconf_clk_cap` NVS caps 14 MHz on boards
+  that cannot keep it). Reset = `tsinit()` values; **`MemConfig` reset is 0 (mapped
   mode)** — the datasheet's `!W0_MAP=1` table row is wrong, Unreal's code is
   right. Boot in RM_SYS: `ESPectrum::trdos = true` at reset → Service ROM.
   ROM: `src/roms/tsconf/romTsBios.c` (64 KB, byte-identical to zxevo.rom's
@@ -1582,6 +1586,240 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   the "invalidate after DMA" rule is trivially satisfied), W0_WE (ROM is
   naturally read-only via the flash-pointer write filter; RAM-with-WE=0 not
   enforced yet).
+- **First hw run (2026-09-06, DVp2): "boots to a BLACK screen, emulator alive, key
+  beeps, F11 → TR-DOS" — that is TS-BIOS SETUP, not a hang.** `START` reads its
+  56-byte config out of the Gluk NVRAM (#B0..#E8, via #DFF7/#BFF7 under the
+  #EFF7 SHADOW bit) and CRC16-checks it; a mismatch runs `LOAD_DEFAULTS` (which
+  falls through into `WRITE_NVRAM`) and jumps to SETUP, which is drawn in the
+  80x30 TEXT mode (`TX_MODE`: `VCONFIG = RRES_320X240 | MODE_TEXT`) that Phase 1
+  does not render. The F11 boot then passed the CRC on the defaults the first
+  boot had just written and took the normal `RESET` path (ZX mode → TR-DOS).
+  Three fixes, **hw-confirmed together 2026-09-06 (cold boot → TR-DOS)**: (1) `RTC::tsBiosSeed()` — if the cells
+  would fail the BIOS's CRC, pre-initialise them with its own `nv_def` bytes
+  (lifted from the embedded ROM at Service-ROM 0x161F, 55 bytes incl. the
+  font byte the BIOS over-copies) + CRC16, so the first boot goes straight to
+  TR-DOS; a valid saved Setup is never touched. (2) The Gluk RTC/NVRAM ports are
+  ALWAYS live on TS-Conf (`Config::rtc_enabled || Z80Ops::isTsconf` in both
+  #BFF7 handlers) — with the RTC off the BIOS reads 0xFF, its writes are
+  swallowed and it sits in SETUP for ever. (3) `CPU::reset` now passes
+  `cold=true` on the first TS-Conf reset of the session (`TsConf::reset(true)`
+  raises STATUS pwr_up b6, which MN2 tests for `FDV_RES` + `sd_reset_init`);
+  it was hard-wired `false`, so the BIOS never saw a power-up. Still true:
+  SETUP itself (CS held at boot, or a rejected CMOS) stays black until the
+  phase-3 text mode. `CLS_ZX` at RESET is a `DMAFILL` (DMA stub → screen page
+  not cleared; TR-DOS clears it anyway) and `RST 8`/`DWT` returns at once
+  because DSTATUS never reports busy. Source: `pentevo/rom/src/ts-bios.asm`
+  (raw.githubusercontent.com, CRLF + CP866 — grep needs `-a`).
+- **Phase 2 (2026-09-06, NOT hw-tested): DMA + LINE/DMA interrupts + W0_WE.**
+  - *Interrupt controller* is a port of `fpga/current/z80/zint.v`: three LATCHED
+    sources — FRAME (the 32-clock window at VSINT/HSINT, auto-expiring, cleared by
+    the ack), LINE (set at every line start = `line*224<<m` while INTMask b1),
+    DMA (set when DMA_ACT drops while b2) — priority FRAME > LINE > DMA, vectors
+    #FF/#FD/#FB. The ack lives in `Z80::interrupt()` for EVERY IM (`TsConf::intAck`
+    clears exactly the source whose vector it drives; `int_frm` clears on any
+    ack, `int_lin` only when FRAME is not pending, `int_dma` only when neither is).
+    Writing 0 to a mask bit drops that source's latch; writing 1 re-arms it at its
+    next event (LINE: `s_lin_next` = next line start). Sources are evaluated
+    LAZILY from `CPU::tstates` (`tsIntPoll`) — there is no per-line hook, and
+    none is needed because **CPU::loop runs the frame instruction-checked while
+    a LINE/DMA source is armed** (`needsCheckedFrame()`: mask b1, LINE pending,
+    or mask b2 with a DMA busy/pending): Stage D in the TS branch; the three
+    unchecked slices are taken only while it is false, and a port write that
+    arms a source mid-slice pulls `CPU::stFrame` down to `tstates` (`tsWakeLoop`;
+    floor 1 because 0 means HALT to the loop) so `exec_nocheck()` returns and the
+    checked tail takes over. `TsConf::endFrame()` (before `tstates -=
+    statesInFrame`) wraps the frame-relative timestamps and clears the FRAME ack.
+  - *DMA* (`TsConf::dmaStart`, port of the reference dma_init/next_burst/dma_*
+    with the per-memory-cycle state machine collapsed): the whole transaction
+    runs inside the DMACtrl write; `DMA_ACT` then stays up for `words × cost <<
+    m` T-states (RAM→RAM/BLT 2 T per word, one-sided FILL/CRAM/SFILE 1 T, SPI
+    4 T — approximations of the 28 MHz DRAM controller / 14 MHz SCK) and the DMA
+    INT fires when it drops. Instant completion is the safe direction: software
+    waits on DMA_ACT or the INT, and nothing can observe a half-written block.
+    Modes by `(W/R<<3)|DDEV`: 01 RAM, 09 BLT1 (transparent: a 0 nibble/byte in the
+    SOURCE keeps dst — the datasheet sentence is inverted, Unreal + RTL agree),
+    06 BLT2 (additive, b6 = saturate — undocumented, from Unreal), 04 FILL (one
+    source word read up front), 0C CRAM / 0D SFILE (index = `daddr>>1`), 02/0A SPI
+    via `DivMMC::zc_read_data/zc_write_data` (low byte first, one byte per SPI
+    exchange — what `Zc.Rd(0x10057)` does), 03/0B IDE = **warn-once stub,
+    DMA_ACT never rises** (the reference's DMA_ST_NOP). Alignment exactly as the
+    reference: with S/D_ALGN a block wraps inside its 256/512-byte window and the
+    REGISTER steps by the window per block, otherwise the register follows the
+    running address — the next transaction starts from those registers, which
+    software relies on. Word access goes through a two-entry page cache over
+    `pagePtr()` (`DmaRam`); a non-POINTER page (degraded boot) reads 0xFFFF and
+    swallows writes.
+  - *W0_WE*: `g_tsconf_wr` replaces `g_tsconf_fm` in the CPU write funnel
+    (`gsDmaPoke8`): 0x10|window = FMAddr on, 0x20 = window 0 is RAM with W0_WE=0 →
+    `TsConf::cpuWriteGate` suppresses the store below #4000 (the FMAddr array
+    still takes the byte — parallel stores). TS-BIOS "boot from VROM" maps a ROM
+    image copied into RAM this way. Re-derived in `setBanks()`/FMAddr writes.
+  - *Diagnostics*: `tools/memdump.gdb` now dumps the TS-Conf register file, the
+    16 ZX-bank CRAM cells and TS-BIOS's NVRAM cells (#B0..#E7) into the memory
+    dump (`TS-Conf` block; `nv[B0]:` rows read as the BIOS config, CRC at #E6/#E7).
+- **Phase 3 step 1 (2026-09-06, hw-confirmed the same day: the TS-BIOS Setup Utility
+  renders 80x30 in full — after two fixes: text columns are `w>>2` (hires: 80
+  chars at RRES 320, each 4 pair bytes), and `tsRenderLine` de-duplicates the
+  line, because MainScreen reaches it with `start_col == 0` TWICE per line — the
+  priming `Draw(0)` from MainScreen_Blank and the first real slice; GMX never
+  noticed since its renderer is idempotent, the `ygctr` counter is not and the
+  Setup came out half height): TEXT / 16c / NOGFX video modes.** Getting INTO the
+  Setup: TS-BIOS samples Symbol Shift at START (`IN (#7FFE)` b1; the asm comment
+  says "CS" and lies) and Caps Shift for its alternate boot target — both live in
+  the "Reset to..." dialog (Alt+F11, which is also why they cannot be held
+  physically: `MENU_RESETTO_TSCONF`, `ESPectrum::tsBootKeyArm` injects the VK on
+  every frame of a 12-frame window, since the hotkey path empties the VK queue and
+  the matrix copy is event-gated — AND presses the row bit in `Ports::port[]`
+  directly at arm time: a WARM START samples the key ~2 ms after reset, a frame
+  before the first copy; only the cold path's FDV_RES + SD init was slow enough,
+  hence "Setup only after F12, never after F11", hw 2026-09-06). Its keys (KBD_POLL/keys_caps): arrows = CS+7/6
+  (our cursor keys), Enter = Enter (each Enter also WRITES the NVRAM), and **"F12 -
+  exit" means RESET**: on the ZX-Evo F12 is the AVR keyboard controller's hardware
+  reset, and the Setup has no key-driven exit at all — the shipped ROM's event
+  handler (0x02F6) tests evt 2/3/4 only and `EV0_H` is unreachable (the help branch
+  is commented out in the source too; KBD_POLL's CS+SS = code 36 → 14 goes nowhere,
+  hw 2026-09-06: Shift+Ctrl did nothing). So leave the Setup with F11.
+  `VIDEO::tsVideoApplyPending()` (EndFrame, vblank only — the DS80 rule) reads
+  VConfig (VM[1:0], NOGFX b5, RRES[7:6]) and switches renderer + geometry +
+  driver: **TEXT is a packed-pair mode** on the whole DS80/GMX machinery
+  (`profi_ds80_driver_set`, `profi_pair_lookup`, `Graphics8BitPalette::ds80_active`;
+  `init_profi_pair_lookup` now also runs for TS-Conf in Reset) with
+  `profi_palette_live` = the gpal CRAM bank (`tsPairPaletteLoad`, refreshed via
+  `profi_palette_dirty` when CRAM/PalSel change); **16c renders palette indices
+  0..15** straight into the 8bpp fb (the gpal bank already sits on hardware slots
+  0..15 via `tsPaletteFlush`); **NOGFX and 256c paint the border** (256c needs a
+  256→~210-slot remap — next step). Whole-line renderer `tsRenderLine(curline)`,
+  dispatched FIRST in MainScreen (one byte test `ts_vmode_live != 0`; zero on every
+  other machine), Unreal `draw_tstx`/`draw_ts16` layouts: text rows are 256 bytes
+  (chars +0, attrs +0x80, 64 rows/page), font = page vpage^1, paper/ink =
+  gpal|atr>>4 / gpal|atr&15; 16c = 512x512 4bpp, 256 B/line over 8 pages
+  (vpage&0xF8), GXOffs pixel scroll wrapping at 512. Y counter `ts_ygctr` follows
+  `vid.ygctr` (reloaded from GYOffs at line 0 and after any GYOffs write —
+  `r.g_yoffs_updated` — else +1 per line). **Geometry** from the datasheet raster
+  table (`kTsRres`: 256x192/ub48/lb52, 320x200/44/20, 320x240/24/20, 360x288/0/0):
+  our 240-row fb shows TS lines 56..295 and pixels 108..427, so `lin_end = ub-24`
+  (+24 on a 288-row fb), overhang is cropped (`ts_crop_top`, negative pads), and
+  `tStatesScreen` moves to the first rendered line (`TS_SCREEN_PENTAGON +
+  (ub-48+crop)*224`) — it is restored on the way back to ZX (VIDEO::Reset
+  re-derives it anyway). Border in non-ZX modes: machine parked
+  (`Border_Blank`), bands frame-granular through `gmxBorderFrame` (now mode-aware:
+  its tracked value is the painted SLOT, `tsBorderSlot()` = nearest gpal colour to
+  CRAM[Border], as pair slot in TEXT, as index in 16c), side pads per line.
+  `tsVideoForceOff()` in ESPectrum::reset next to gmxForceOff (same reason:
+  TsConf::reset clears VConfig before the deferred path could see the edge).
+  `offBmp/offAtt` grew to 288 (RRES 360x288 → curline 287). The TS-BIOS SETUP
+  (text 80x30 at RRES 320x240) is the first consumer — CS+F11.
+  **Verified against the RTL, not just Unreal** (`fpga/current/video/video_mode.v`
+  + `video_render.v`, tslabs/zx-evo): `addr_tx` = `{vpage[7:1], vpage[0], row[8:3],
+  char|attr, col[7:2]}` words (256-byte rows, attrs at +0x80, font at `vpage^1`,
+  `char*8+line`), `tx_pix = {palsel, dot ? attr[3:0] : attr[7:4]}`; 16c
+  `{vpage[7:3], row[8:0], col[6:0]}` (high nibble first), 256c `{vpage[7:4], row,
+  col[7:0]}` (byte = colour, no palsel); raster `vp_beg` 80/76/56/32, `hp_beg`
+  140/108/108/88 = `kTsRres`; `tv_hires` only in text; NOGFX shows `border_in` but
+  TSU sprites stay visible over it (phase 4). For anything video-related go to
+  the RTL first — `video_ts.v`/`video_ts_render.v` for the TSU, `video_ports.v`
+  for the line-delay latches.
+- **Phase 3 step 2 (2026-09-06, NOT hw-tested): 256c.** The 8bpp fb has 256 slots but
+  184..199/216..239 are HDMI Data-Island words, 240..244 sync/scanline, 255 the
+  border fill and 152..167 the nm:: UI block — 184 usable (`ts256_pool`). CRAM cells
+  get their own slot while any remain (identical colours share), then the NEAREST
+  placed colour by RGB555 distance (`tsPalette256Flush`, from EndFrame on CRAM dirty;
+  a 256-cell shadow makes only changed slots re-encode). Entering 256c writes every
+  assigned slot; leaving it (mode switch, reset, ForceOff) calls `applyPalette()` to
+  hand the standard ramp + ZX solids back — the ULA+ precedent (it owns 0..63 the same
+  way). Renderer = `addr_256c`: `{vpage[7:4], row, col[7:0]}`, 512 B/line, 32 lines
+  per page, byte = CRAM index → `ts256_map`. OSD overlays drawn with ZX indices 0..16
+  (F8 stats, FDD lamp, notify) take whatever CRAM put there — same as under ULA+.
+  Cost: ~950 B .bss.
+- **Phase 3b (2026-09-06, NOT hw-tested): .spg loader** (`src/TsSpg.cpp`, `FileSPG::load`
+  behind `LoadSnapshot`; `.spg` registered in the snapshot filters, F5/Web launch
+  paths and the browser type label). SPG = "SpectrumProg" (`pentevo/docs/Formats/
+  SPGv1_0.txt`), THE distribution format of TS-Conf software: 1 KB header (magic at
+  0x20, version 0x2C, start 0x30, SP 0x32, Page3 0x34, clock byte 0x35 = ZCLK[1:0] +
+  EI b2, block count 0x3A), 256 block descriptors at 0x100 `{addr:5 (x512 in page),
+  last:7 | size:5 (x512, -1), comp:6-7 | page}`, data follows. Loaded like Unreal
+  `readSPG`: force the machine to TS-Conf (`requestMachine` — the page-strip reboot
+  resumes through `ram_file` like any snapshot; esxDOS is dropped first, the #AF
+  collision), `ESPectrum::reset`, unpack every block straight into `pagePtr(page)`
+  bounded by the page end, then Basic48 ROM at #0000 (`p7ffd = 0x10`, DOS off), pages
+  5/2/Page3, VPage 5, ZCLK from the header (`applyZclk`), the standard ZX palette in
+  CRAM #F0-#FF (`load_spec_colors`), I=#3F, IM1, IY=#5C3A, HL'=#2758, SP, PC, IFF from
+  the EI bit. The header's "pager"/"resident" stubs are ignored (Unreal too); SPG
+  v0.x is refused. **Depackers** (MegaLZ, Hrust1) are ports of `unreal/depack.cpp`
+  with input AND output bounds, header-only in `src/TsSpgDepack.h` so
+  `tools/spg_test.cpp` can diff them against the original on the host: all blocks
+  of `debug/TSCONF/*.spg` (Bruce Lee: 6 MLZ + 3 Hrust; Digger, Lode Runner: raw
+  only) are byte-identical. Facts from those headers: all three ask for **ZCLK 2 =
+  14 MHz**, Lode Runner touches page 193 (needs the 256-page / 4 MB pick), Digger
+  page 73. Re-run the test after any change to the depackers.
+- **Phase 4 (2026-09-06, NOT hw-tested): TSU — tiles and sprites** (`VIDEO::tsuComposeLine`,
+  `video_ts.v` + `video_ts_render.v`, cross-read with Unreal `render_ts`). Found by
+  Bruce Lee: the game runs (music, HALT on the frame INT at VSINT 272, palette via
+  RAM→CRAM DMA) but draws EVERYTHING with the TSU (`tsconf=EC`: S/T1/T0 enabled)
+  over a black ZX page — so "black screen but music" on a TS title means TSU, not
+  video mode. Model: per content line a 512-entry CRAM-index buffer, layers
+  bottom→top S0, T0, S1, T1, S2, each overwriting, nibble 0 transparent. Tiles:
+  TMPage rows of 256 bytes = 64 words layer 0 at +0, layer 1 at +128 (RTL dram_addr
+  `{tmpage, row, layer, line, num}`), tile word tnum:12 pal:2 xflp yflp, tile row/
+  line = (line + TyOffs) & 511 (the RTL's split adds come out the same after its
+  4-row buffer), columns (TxOffs>>3)+i wrapping at 64, screen x = i*8 - (TxOffs&7),
+  **num_tiles per RRES = 34/42/42/47** (RTL x_tile; Unreal's fixed 46 is wrong for
+  256), tile 0 skipped unless TxZ_EN (TSConfig b2/b3), palette {TxPAL (PalSel
+  b5:4/b7:6), pal:2, pixel:4}. Bitmaps 512x512 4bpp = 8 pages (page & 0xF8),
+  element = 8x8 at bitmap line (tnum>>6)*8, byte column (tnum&63)*4, high nibble
+  = left pixel. Sprites: 85 SFILE descriptors {y:9 ys:3 - act leap yflp | x:9 xs:3
+  - - - xflp | tnum:12 pal:4} consumed IN ORDER across the three layers, `leap`
+  closes the layer after that descriptor, visible when (line - y) & 511 < (ys+1)*8,
+  xs+1 elements wide from the same bitmap line (sprites span elements linearly).
+  Compose per `video_render.v`: tsu_visible = low nibble != 0 (and !NOTSU, VConfig
+  b4), gfx_visible = ZX ink dot after FLASH / non-zero colour in 16c/256c; default
+  TSU over gfx, **GFXOVR (VConfig b3)** puts visible gfx pixels over the TSU; NOGFX
+  shows border under the TSU. **Consequence for the palette**: TSU pixels are
+  {pal:4, pixel:4} = any CRAM cell, so `ts_pal256_live` (the 256c remap) is on
+  whenever the TSU is, in ZX and 16c too — the ZX base layer is then rendered by
+  `tsRenderLine` (addr_zx layout, 32 columns wrapping, {palsel, bright, colour})
+  instead of the beam-raced renderer, i.e. no per-T-state ZX effects while the TSU
+  is on. `ts_render_live` is the single byte MainScreen tests; `ts_vmode_live`,
+  `ts_tsu_live`, `ts_pal256_live` are the state behind it. Cost ~1.5 KB .bss
+  (`s_gline[512]` u16 + `s_tsline[512]`); the renderer runs from flash — measure
+  FPS on a TSU title before moving it to RAM. Not modelled: TSU sprites in the
+  border (hvtspix / ts_rres_ext), the one-line render pipeline delay, mid-line
+  register changes.
+- **Gigascreen is incompatible with the TS-Conf renderer, and the guard was a no-op
+  (hw 2026-09-06, Digger intro: full-screen 1-px purple/black stripes; toggling
+  Gigascreen off restored the picture).** `MachineSwitch` has called
+  `VIDEO::disableGigascreenForProfi()` for TS-Conf since Phase 1, but that function
+  returned immediately unless `arch == A_PROFI`. With Gigascreen live, the prev-FB
+  window (`pwKick`, geometry laid out for the standard content band) writes back
+  packed 4-bit rows while the TS whole-line renderer owns rows [0,240) — the
+  writeback lands outside the prev-FB, i.e. in the main framebuffer that shares its
+  block, and the blend-LUT rebuild (`initGigascreenBlendLUT`, slots 17..136)
+  overwrites the ts256 palette pool. Now: the function accepts TS-Conf, the Alt+PgUp
+  hotkey refuses on TS-Conf like Profi, the .spg loader and
+  `tsVideoApplyPending` (when the TS renderer takes over) call it as backstops, and
+  `applyPalette()` re-flushes the ts256 remap with a fresh shadow — any external
+  palette rewrite used to leave "picture right, colours wrong". Diagnosis aid:
+  the GDB dump's TS-Conf block now prints `video:` (renderer/driver flags),
+  `gigascreen: cfg= live= crt=` and the whole CRAM. Remember that BOTH screenshot
+  decoders lie in these modes: the profi tool splits every byte into a pair, the
+  standard one uses the ZX palette — only the HDMI capture is the truth.
+- **Video → Capture-safe colours (`Config::hdmi_snap`, NVS "hdmi_snap", default off,
+  2026-09-06):** the capture-card fix for runtime palettes. `paletteFinal()` gained a
+  last stage, `snapTransform`, that maps each channel level (after the CRT stage) to
+  the nearest level whose doubled TMDS pair is one repeated symbol, judged AFTER the
+  driver's 0x08..0xF6 clamp (`tmds_balanced_pair` from `tmds_pair.h`, LUT built once):
+  112 of 256 levels qualify, worst error 5 code units (~2%), invisible on a monitor.
+  Covers TS-Conf CRAM (all three flush paths), ULA+, Gigascreen blends, the standard
+  ramp; NOT the DS80/GMX/TEXT pair path (a pair there is two different colours by
+  design). Toggle hook = `applyCrtFilter()` + `tsCramDirty`. Why it exists: the Digger
+  intro (TS 16c, PWM-gamma palette) was perfect on the monitor and 1-px purple/black
+  stripes on the capture card — the same mechanism as the UI-palette snap, now
+  reachable for guest palettes.
+- **F8 stats / F9-F10 volume box over TS modes**: `tsRenderLine` carves the
+  144x16 rect (fb bytes 168../188.., rows 220../268.., `(OSD & 3) && !(OSD & 4)`)
+  out of pads, TEXT chars and the composite output — the same rule as
+  `Update_Border_DS80` / `gmxBorderFrame`; without it a mode whose content covers
+  those rows overwrote the box every frame and it blinked (hw 2026-09-06).
 - **Known Phase-1 deviations**: LCK128 Auto=512K; INT window truncated at frame
   end; 14 MHz overruns the ~20 ms frame budget and simply runs slow ([NEG2]);
   turbo does not rescale the raster constants (pre-existing — same for Profi
