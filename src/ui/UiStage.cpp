@@ -77,6 +77,7 @@ NM_INT_ACCESS (scanlines, scanlines)
 NM_INT_ACCESS (crtFilter, crt_filter)
 NM_BOOL_ACCESS(vsync,     v_sync_enabled)
 NM_BOOL_ACCESS(dither,    hdmi_dither)
+NM_BOOL_ACCESS(hdmiSnap,  hdmi_snap)
 NM_BOOL_ACCESS(flashload, flashload)
 NM_BOOL_ACCESS(tapeRG,    tape_timing_rg)
 NM_BOOL_ACCESS(tapeAuto,  tape_autostart)
@@ -367,6 +368,14 @@ static bool hook_crtFilter(int32_t, int32_t) {
 // trigger (F_PALETTE re-install / F_MODAL chrome restore) is the whole apply.
 static bool hook_uiLook(int32_t, int32_t) { return true; }
 
+static bool hook_hdmiSnap(int32_t, int32_t) {
+    // paletteFinal() reads Config::hdmi_snap; applyCrtFilter re-runs every palette
+    // through it (standard ramp + ZX solids now, ULA+/Gigascreen via their deferred
+    // paths) and the TS-Conf CRAM flush is re-armed for the next EndFrame.
+    VIDEO::applyCrtFilter();
+    VIDEO::tsCramDirty = true;
+    return true;
+}
 static bool hook_dither(int32_t nv, int32_t) {
     // Only has an effect while ULA+ is active; the HDMI ISR OR-masks indices 0..63
     // with 0x40 to sample palette[64..127].

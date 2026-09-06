@@ -451,6 +451,11 @@ public:
     static uint8_t gigascreen_onoff; // 0=Off, 1=On, 2=Auto
     static bool ulaplus;
     static bool hdmi_dither;
+    // Video > Capture-safe colours: snap every runtime palette colour (TS-Conf CRAM,
+    // ULA+, Gigascreen blends) to the nearest per-channel level whose doubled TMDS
+    // pair is one repeated symbol — what a USB capture card needs (monitors do not
+    // care). <= 5 code units of error per channel (112 of 256 levels qualify after the clamp). HDMI only.
+    static bool hdmi_snap;
     // New-menu look preferences. ui_vga_solid: on VGA output the menu uses its on-grid
     // 2:2:2 palette twin (solid fills, no Bayer texture); off = the full-depth scheme,
     // dithered. ui_rounded: window/dialog corners rounded vs square.

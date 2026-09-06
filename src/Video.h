@@ -298,6 +298,32 @@ public:
   static bool gmx_border_dirty;          // top/bottom band needs a repaint
   static uint8_t gmx_border_col;         // last painted border colour
   static void gmxForceOff();             // immediate teardown (ESPectrum::reset)
+
+  // ── TS-Conf video modes (VConfig VM[1:0] / NOGFX / RRES[1:0]) ─────────────
+  // TEXT (80x30, 640 px wide) borrows the DS80/GMX packed-pair framebuffer and
+  // driver tables; 16c renders straight 0..15 palette indices (the gpal CRAM
+  // bank sits on hardware slots 0..15 via tsPaletteFlush); NOGFX/256c paint
+  // the border (256c needs a 256-colour slot remap — not yet). In every non-ZX
+  // mode the per-T-state border machine is parked and the bands are painted
+  // frame-granular exactly like GMX (gmxBorderFrame). Mode/geometry switches
+  // are applied from EndFrame only (vblank — the driver pair tables are read
+  // by the scanout DMA in real time).
+  enum TsVMode : uint8_t { TSV_ZX = 0, TSV_16C = 1, TSV_256C = 2, TSV_TEXT = 3, TSV_NOGFX = 4 };
+  static uint8_t  ts_vmode_live;         // TSV_* the renderer/driver are in
+  static uint8_t  ts_render_live;        // 1 = tsRenderLine owns the content rows (any non-ZX mode, or
+                                         //     the TSU over ZX); 0 on every other machine — the one byte
+                                         //     MainScreen tests
+  static bool     ts_tsu_live;           // TSU layers composed (TSConfig S/T0/T1 enables, !NOTSU)
+  static bool     ts_pal256_live;        // hardware palette = ts256 remap (256c, or TSU over anything)
+  static uint8_t  ts_rres_live;          // RRES the geometry is set up for
+  static uint8_t  ts_crop_top;           // content lines cut at the top (RRES 288 on a 240-row fb)
+  static uint32_t ts_ygctr;              // running graphics Y counter (Unreal vid.ygctr)
+  static void     tsVideoApplyPending(); // EndFrame: VConfig → renderer mode + geometry + driver
+  static void     tsVideoForceOff();     // ESPectrum::reset: leave the pair-slot driver mode now
+  static uint32_t tsCramToRgb(uint16_t cram);   // RGB555 cell → RGB888 through the real-PWM gamma
+  static uint8_t  tsBorderSlot();        // Border register → fb byte for the live mode
+  static void     tsRenderLine(uint32_t curline); // whole-line renderer (non-ZX modes / TSU)
+  static void     tsuComposeLine(uint32_t line, uint8_t* ts512); // TSU layers → 512-px CRAM line buffer
   // Top-border height in fb rows while the GMX 640x200 mode is live, 0 otherwise.
   // OSD::notify needs it: unlike every other mode, that band is STATIC in GMX (the
   // per-T-state border machine is parked), so a banner can live there with no
@@ -331,8 +357,8 @@ public:
   // MainScreen_Blank indexes offBmp[curline] unconditionally — entries 192..239
   // are never used for rendering (the GMX branch has its own addressing) but must
   // be in bounds.
-  static uint16_t offBmp[240];
-  static uint16_t offAtt[240];
+  static uint16_t offBmp[288];   // TS-Conf RRES 360x288 → curline reaches 287
+  static uint16_t offAtt[288];
 
   static VGA8Bit vga;
 

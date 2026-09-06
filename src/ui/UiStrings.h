@@ -70,6 +70,7 @@
 #define TXT_VID_CRT         "CRT filter"
 #define TXT_VID_VSYNC       "V-Sync"
 #define TXT_VID_DITHER      "HDMI dither"
+#define TXT_VID_SNAP        "Capture-safe colours"
 
 // ── Audio ──────────────────────────────────────────────────────────────────────
 #define TXT_AUD_DRIVER      "Audio driver"
@@ -201,9 +202,9 @@
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
 #define TXT_MACH_TSCONF      "TS-Conf (ZX-Evo)"
-#define TXT_MACH_TSCONF_OPTS "TS-Conf options"
+#define TXT_MACH_TSCONF_OPTS "Options"
 #define TXT_MACH_TSCONF_RAM  "RAM"
-#define TXT_ROM_TSBIOS       "TS-BIOS"
+#define TXT_ROM_TSBIOS       "TS-Conf"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
 
 // ROM set labels, shared by the machine rows and the Preferred rom rows.

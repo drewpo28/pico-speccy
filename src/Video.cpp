@@ -417,6 +417,39 @@ uint32_t VIDEO::gmx_frame_srow = 0;
 bool VIDEO::gmx_border_dirty = false;
 uint8_t VIDEO::gmx_border_col = 0xFF;
 
+uint8_t  VIDEO::ts_vmode_live = 0;
+uint8_t  VIDEO::ts_render_live = 0;
+bool     VIDEO::ts_tsu_live = false;
+bool     VIDEO::ts_pal256_live = false;
+uint8_t  VIDEO::ts_rres_live = 0;
+uint8_t  VIDEO::ts_crop_top = 0;
+uint32_t VIDEO::ts_ygctr = 0;
+
+// ESPectrum::reset teardown for TS-Conf's pair-slot TEXT mode — same reason as
+// gmxForceOff right below: TsConf::reset clears VConfig, so the deferred
+// EndFrame switch would run against already-rebuilt driver tables.
+void VIDEO::tsVideoForceOff() {
+    if (!ts_render_live) return;
+    const bool pair = (ts_vmode_live == TSV_TEXT);
+    const bool c256 = ts_pal256_live;
+    ts_vmode_live = 0;
+    ts_render_live = 0;
+    ts_tsu_live = false;
+    ts_pal256_live = false;
+    if (c256) applyPalette();     // the ts256 remap had taken over the hardware palette
+    ts_rres_live = 0;
+    ts_crop_top = 0;
+    if (pair) {
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+    }
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++)
+            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+    }
+    Debug::log("[RESET] TS-Conf video mode off + FB cleared");
+}
+
 // Immediate 640x200 teardown for ESPectrum::reset — the port latches are about
 // to be cleared, so the deferred path would never see the "off" edge. Mirrors
 // the DS80 reset teardown right above it in ESPectrum.cpp: driver back to
@@ -449,8 +482,8 @@ void VIDEO::gmxExtRequest(bool on) {
         gmx_ext_pending_on = false;
     }
 }
-uint16_t VIDEO::offBmp[240];   // see Video.h — GMX curline reaches 199
-uint16_t VIDEO::offAtt[240];
+uint16_t VIDEO::offBmp[288];   // see Video.h — GMX curline reaches 199, TS-Conf 287
+uint16_t VIDEO::offAtt[288];
 SaveRectT VIDEO::SaveRect;
 int VIDEO::VsyncFinetune[2];
 uint32_t VIDEO::framecnt = 0;
@@ -1124,10 +1157,66 @@ static inline uint32_t crtTransform(uint32_t rgb) {
          |  (uint32_t)crt_curve[ c        & 0xFF];
 }
 
+// ── Capture-safe palette snap (Config::hdmi_snap) ───────────────────────────
+// Every framebuffer byte leaves the HDMI link as TWO TMDS characters per channel
+// (pixel doubling), DC-balanced as v and v±1 (tmds_pair.h). A monitor decodes both
+// faithfully; a USB capture card has a pixel-phase-dependent stage that turns any
+// pair whose two characters differ into two unrelated colours on alternate
+// output pixels — measured on the UI palette (0x4ADE80 → (209,252,255)/(0,8,30))
+// and, hw 2026-09-06, on TS-Conf's PWM-gamma palette: the Digger intro came out as
+// 1-px purple/black stripes on the card and perfect on the monitor. Only levels
+// whose pair is ONE repeated symbol survive (112 of 256 after the clamp; the {00,55,AA,FF}
+// grid is among them). This LUT maps each channel level, AFTER the driver's
+// level clamp, to the nearest such level (≤ 5 code units, ~2%; host-checked) — the UI palette was
+// snapped the same way by hand. Off by default; HDMI only (VGA has no pairs).
+#ifdef VGA_HDMI
+#include "tmds_pair.h"
+static uint8_t s_snap_lut[256];
+static bool    s_snap_lut_ready = false;
+static void snapLutBuild() {
+    // Mirrors hdmi.c's HDMI_TMDS_LEVEL_LO/HI clamp (with HDMI_TMDS_LEVEL_CLAMP):
+    // the pair is built from the CLAMPED level, so "single-symbol" must be judged
+    // there — a raw 0xFF and a clamped 0xF6 are the same wire pattern.
+    bool single[256];
+    for (int v = 0; v < 256; v++) {
+#if HDMI_TMDS_LEVEL_CLAMP
+        const uint8_t cv = (v < 0x08) ? 0x08 : (v > 0xF6 ? 0xF6 : (uint8_t)v);
+#else
+        const uint8_t cv = (uint8_t)v;
+#endif
+        uint16_t a, b;
+        tmds_balanced_pair(cv, &a, &b);
+        single[v] = (a == b);
+    }
+    for (int v = 0; v < 256; v++) {
+        int best = v;
+        if (!single[v]) {
+            for (int d = 1; d < 256; d++) {
+                if (v - d >= 0 && single[v - d]) { best = v - d; break; }
+                if (v + d < 256 && single[v + d]) { best = v + d; break; }
+            }
+        }
+        s_snap_lut[v] = (uint8_t)best;
+    }
+    s_snap_lut_ready = true;
+}
+static inline uint32_t snapTransform(uint32_t rgb) {
+    extern bool SELECT_VGA;
+    if (!Config::hdmi_snap || SELECT_VGA) return rgb;
+    if (!s_snap_lut_ready) snapLutBuild();
+    return ((uint32_t)s_snap_lut[(rgb >> 16) & 0xFF] << 16)
+         | ((uint32_t)s_snap_lut[(rgb >>  8) & 0xFF] <<  8)
+         |  (uint32_t)s_snap_lut[ rgb        & 0xFF];
+}
+#else
+static inline uint32_t snapTransform(uint32_t rgb) { return rgb; }
+#endif
+
 // The single colour entry point for every palette write: palette preset first,
-// CRT filter second. Every former paletteTransform() call site uses this.
+// CRT filter second, capture-safe snap last (it must see the final levels).
+// Every former paletteTransform() call site uses this.
 static inline uint32_t paletteFinal(uint32_t rgb) {
-    return crtTransform(paletteTransform(rgb));
+    return snapTransform(crtTransform(paletteTransform(rgb)));
 }
 
 // ULA+ G3R3B2 to full RGB888 conversion
@@ -1282,6 +1371,8 @@ void VIDEO::mode16colUpdatePlanes() {
 
 // Apply palette: rebuild spectrum_rgb888 from current palette's brightness levels,
 // then apply color matrix to all palette entries.
+static void tsPalette256Flush(bool invalidate);   // TS-Conf 256-slot remap (defined below)
+
 void VIDEO::applyPalette() {
     uint8_t p = Config::palette < total_palette_count() ? Config::palette : 0;
     Debug::log2SD("applyPalette: palette=%d", p);
@@ -1308,6 +1399,11 @@ void VIDEO::applyPalette() {
     // Re-apply GigaScreen blend palette if active
     if (Config::gigascreen_enabled)
         initGigascreenBlendLUT();
+    // The TS-Conf 256-slot remap owns most of the hardware palette; everything
+    // above just rewrote it, so its slot shadow is stale — write every assigned
+    // slot again (hw 2026-09-06: "picture right, colours wrong" after a palette
+    // rewrite from a hotkey).
+    if (ts_pal256_live) tsPalette256Flush(true);
 }
 
 // ── TS-Conf CRAM → hardware palette ────────────────────────────────────────────
@@ -1318,25 +1414,138 @@ void VIDEO::applyPalette() {
 bool VIDEO::tsCramDirty = false;
 static bool s_ts_pal_active = false;
 
+// The reference's real-PWM gamma (tsconf.cpp pwm[], base colours
+// #00-#5D-#A2-#FF measured by DDp) — 5-bit channel → 8-bit.
+static const uint8_t ts_pwm[32] = {
+      0,  36,  50,  60,  68,  75,  82,  88,  93, 105, 115, 124, 133, 141, 148, 155,
+    162, 177, 190, 203, 215, 226, 236, 246, 255, 255, 255, 255, 255, 255, 255, 255,
+};
+
+uint32_t VIDEO::tsCramToRgb(uint16_t t) {
+    return ((uint32_t)ts_pwm[(t >> 10) & 0x1F] << 16) |
+           ((uint32_t)ts_pwm[(t >> 5) & 0x1F] << 8) |
+           ts_pwm[t & 0x1F];
+}
+
+// Fill profi_palette_live[] (the pair-slot driver palette) from the gpal CRAM
+// bank — TEXT mode's 16 colours. Applied by profiPaletteApplyPending (vblank).
+static void tsPairPaletteLoad() {
+    const uint8_t gpal = (TsConf::r.palsel & 0x0F) << 4;
+    for (int i = 0; i < 16; i++)
+        VIDEO::profi_palette_live[i] = VIDEO::tsCramToRgb(TsConf::cram[gpal | i]) & 0x00FFFFFF;
+}
+
+// ── 256c: CRAM → hardware palette slots ─────────────────────────────────────
+// The 8bpp framebuffer has 256 slots but not all are ours: 184..199 and
+// 216..239 are HDMI Data-Island words (audio), 240..244 sync/scanline, 255 the
+// border fill, and 152..167 the nm:: UI block (UI_PAL_BASE — the menu must keep
+// working over a 256c screen). That leaves 184 slots for 256 CRAM cells, so a
+// cell gets its own slot while any remain (identical colours share one), and
+// after that the NEAREST already-placed colour (RGB555 distance). Rebuilt from
+// EndFrame when CRAM is dirty; only slots whose colour changed are re-encoded
+// (the shadow below), so a per-frame palette fade costs its changed entries.
+static uint8_t  ts256_map[256];        // CRAM index → slot
+static uint16_t ts256_slot_col[256];   // slot → CRAM555 it currently shows, 0xFFFF = none
+static uint8_t  ts256_pool[184];
+static uint8_t  ts256_pool_n = 0;
+
+static void ts256PoolInit() {
+    if (ts256_pool_n) return;
+    uint8_t n = 0;
+    for (int i = 0; i < 256 && n < (int)sizeof(ts256_pool); i++) {
+        if (i >= 152 && i < 168) continue;          // UI palette block
+        if (i >= 184 && i < 200) continue;          // HDMI DI set 1
+        if (i >= 216) continue;                     // DI set 0, sync, border
+        ts256_pool[n++] = (uint8_t)i;
+    }
+    ts256_pool_n = n;
+}
+
+static inline uint32_t ts555Dist(uint16_t a, uint16_t b) {
+    int dr = (int)((a >> 10) & 31) - (int)((b >> 10) & 31);
+    int dg = (int)((a >> 5) & 31) - (int)((b >> 5) & 31);
+    int db = (int)(a & 31) - (int)(b & 31);
+    return (uint32_t)(dr * dr + dg * dg + db * db);
+}
+
+// invalidate = forget what the hardware slots hold (mode entry: they hold the
+// standard palette, every assigned slot must be written).
+static void tsPalette256Flush(bool invalidate) {
+    ts256PoolInit();
+    if (invalidate) for (int i = 0; i < 256; i++) ts256_slot_col[i] = 0xFFFF;
+    // Colour placed in this pass, indexed by pool position.
+    uint16_t placed[184];
+    uint8_t  nplaced = 0;
+    for (int i = 0; i < 256; i++) {
+        const uint16_t c = TsConf::cram[i] & 0x7FFF;
+        int hit = -1;
+        for (int k = 0; k < nplaced; k++) if (placed[k] == c) { hit = k; break; }
+        if (hit < 0) {
+            if (nplaced < ts256_pool_n) {
+                placed[nplaced] = c;
+                hit = nplaced++;
+            } else {
+                uint32_t bestd = 0xFFFFFFFFu;
+                for (int k = 0; k < nplaced; k++) {
+                    const uint32_t d = ts555Dist(placed[k], c);
+                    if (d < bestd) { bestd = d; hit = k; }
+                }
+            }
+        }
+        ts256_map[i] = ts256_pool[hit];
+    }
+    for (int k = 0; k < nplaced; k++) {
+        const uint8_t slot = ts256_pool[k];
+        if (ts256_slot_col[slot] == placed[k]) continue;
+        ts256_slot_col[slot] = placed[k];
+        const uint32_t col = paletteFinal(VIDEO::tsCramToRgb(placed[k]));
+        graphics_set_palette(slot, col);
+        vga_set_palette_entry_solid(slot, col);
+    }
+}
+
 void VIDEO::tsPaletteFlush() {
-    // The reference's real-PWM gamma (tsconf.cpp pwm[], base colours
-    // #00-#5D-#A2-#FF measured by DDp) — 5-bit channel → 8-bit.
-    static const uint8_t ts_pwm[32] = {
-          0,  36,  50,  60,  68,  75,  82,  88,  93, 105, 115, 124, 133, 141, 148, 155,
-        162, 177, 190, 203, 215, 226, 236, 246, 255, 255, 255, 255, 255, 255, 255, 255,
-    };
     tsCramDirty = false;
+    if (ts_pal256_live) {
+        tsPalette256Flush(false);
+        return;
+    }
+    if (ts_vmode_live == TSV_TEXT) {
+        // Pair mode: the driver tables carry the palette — rebuild through the
+        // DS80 deferred path instead of the 16 hardware slots.
+        tsPairPaletteLoad();
+        profi_palette_dirty = true;
+        return;
+    }
     s_ts_pal_active = true;
     uint8_t gpal = (TsConf::r.palsel & 0x0F) << 4;
     for (int i = 0; i < 16; i++) {
-        uint16_t t = TsConf::cram[gpal | i];
-        uint32_t rgb = ((uint32_t)ts_pwm[(t >> 10) & 0x1F] << 16) |
-                       ((uint32_t)ts_pwm[(t >> 5) & 0x1F] << 8) |
-                       ts_pwm[t & 0x1F];
-        uint32_t c = paletteFinal(rgb);
+        uint32_t c = paletteFinal(tsCramToRgb(TsConf::cram[gpal | i]));
         graphics_set_palette(i, c);
         vga_set_palette_entry_solid(i, c);
     }
+}
+
+// Border register (an 8-bit CRAM index) → the byte the bands/pads are painted
+// with in the live mode: the nearest of the 16 gpal colours, as a pair slot in
+// TEXT mode and as the palette index itself in 16c/NOGFX (where the framebuffer
+// byte IS the hardware slot 0..15).
+uint8_t VIDEO::tsBorderSlot() {
+    if (ts_pal256_live) return ts256_map[TsConf::r.border];
+    const uint8_t gpal = (TsConf::r.palsel & 0x0F) << 4;
+    const uint16_t want = TsConf::cram[TsConf::r.border];
+    uint8_t best = 0;
+    uint32_t bestd = 0xFFFFFFFFu;
+    for (int i = 0; i < 16; i++) {
+        const uint16_t c = TsConf::cram[gpal | i];
+        if (c == want) { best = (uint8_t)i; break; }
+        int dr = (int)((c >> 10) & 31) - (int)((want >> 10) & 31);
+        int dg = (int)((c >> 5) & 31) - (int)((want >> 5) & 31);
+        int db = (int)(c & 31) - (int)(want & 31);
+        uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (d < bestd) { bestd = d; best = (uint8_t)i; }
+    }
+    return (ts_vmode_live == TSV_TEXT) ? profi_pair_lookup[best][best] : best;
 }
 
 // Leaving TS-Conf: hand slots 0..15 back to the standard Spectrum colours
@@ -2104,7 +2313,14 @@ size_t VIDEO::gigascreenPrevFBBytes() {
 }
 
 void VIDEO::disableGigascreenForProfi() {
-    if (Config::arch != A_PROFI) return; // only Profi is incompatible
+    // Profi (no coherent prev-FB) and TS-Conf: its whole-line renderer owns the
+    // content rows with a geometry the prev-FB window (pwKick) was never laid out
+    // for — hw 2026-09-06, Digger intro: the window's writeback ran outside the
+    // 4-bit prev-FB into the main framebuffer and painted the whole screen with
+    // 1-px stripes, and the blend LUT rebuild overwrote the ts256 palette slots.
+    // MachineSwitch has called this for TS-Conf since Phase 1; the guard below
+    // used to make that a no-op.
+    if (Config::arch != A_PROFI && Config::arch != A_TSCONF) return;
     // Clear the persisted/live enable flags so nothing re-arms it (Auto mode
     // checks gigascreen_onoff; force it Off too) and free the prev-FB.
     Config::gigascreen_enabled = false;
@@ -2634,7 +2850,25 @@ void VIDEO::Reset() {
         gmx_ext_pending_on = gmx_ext_pending_off = false;
     }
 
-    if (Config::arch == A_PROFI || g_scorp_gmx) {
+    // TS-Conf: VIDEO::Reset rebuilt the standard driver tables and geometry;
+    // a live non-ZX mode must redo its activation from EndFrame (deferred
+    // path compares VConfig against ts_vmode_live, so zeroing the live state
+    // is the whole request). Drop the pair driver first if it was up.
+    if (ts_render_live) {
+        if (ts_vmode_live == TSV_TEXT) {
+            profi_ds80_driver_set(false, nullptr, nullptr);
+            Graphics8BitPalette::ds80_active = false;
+        }
+        // (ts256 palette: Reset's own applyPalette pass below restores the slots.)
+        ts_vmode_live = 0;
+        ts_render_live = 0;
+        ts_tsu_live = false;
+        ts_pal256_live = false;
+        ts_rres_live = 0;
+        ts_crop_top = 0;
+    }
+
+    if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF) {
         // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
         // GMX shares it: its 640x200 mode uses the same 16-colour pair-slot scheme
         // (fixed ZX palette — profiPaletteReset defaults, no palette port on GMX).
@@ -3137,6 +3371,15 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
         loopCount -= coldraw_cnt - 32;
     }
 
+    if (__builtin_expect(ts_render_live != 0, 0)) {
+        // TS-Conf TEXT/16c/NOGFX/256c, or the TSU over any mode — whole line on the first Draw call of
+        // each line (the GMX pattern: nothing here races the beam), source row
+        // from `curline` (see the GMX branch below for why never linedraw_cnt).
+        unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
+        unsigned int start_col = end_col - loopCount;
+        if (start_col == 0) tsRenderLine(curline);
+        lineptr32 += loopCount * 2;
+    } else
     if (Config::timex_video && VIDEO::timex_mode == 6) {
         // Hi-res mode 6 (512->256): real SCLD alternates byte-columns from
         // screen0 and screen1 at same address, 64 cols x 8 bits = 512 pixels.
@@ -3761,7 +4004,391 @@ void VIDEO::gmxApplyPending() {
     }
 }
 
-int VIDEO::gmxTopBandRows() { return gmx_ext_live ? (int)lin_end : 0; }
+int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin_end : 0; }
+
+// ── TS-Conf video modes ──────────────────────────────────────────────────────
+// Raster geometry per RRES (tsconf_en.md "Raster timings"): pixel area width in
+// lores pixels, content lines, upper border lines, left border pixels. The TS
+// frame is 320 lines x 448 px; the visible field is lines 32..319 and pixels
+// 88..447 (360 wide). Our 320x240 framebuffer shows the central 320x240 of
+// that field (TS lines 56..295, pixels 108..427), the 360x288 full-border
+// modes show all of it.
+struct TsRres { uint16_t w; uint16_t h; uint8_t ub; uint8_t lb; };
+static const TsRres kTsRres[4] = {
+    { 256, 192, 48, 52 },
+    { 320, 200, 44, 20 },
+    { 320, 240, 24, 20 },
+    { 360, 288,  0,  0 },
+};
+
+// Cold: runs once per mode change, from EndFrame (vblank).
+void VIDEO::tsVideoApplyPending() {
+    const uint8_t vc = TsConf::r.vconf;
+    const uint8_t want = (vc & 0x20) ? (uint8_t)TSV_NOGFX : (uint8_t)(vc & 0x03);
+    const uint8_t rres = vc >> 6;
+    // TSU layers: any of S_EN/T1_EN/T0_EN (TSConfig b7..b5) and not NOTSU
+    // (VConfig b4). Text mode is hires and pair-slot — no TSU over it.
+    const bool wantTsu = (TsConf::r.tsconf & 0xE0) != 0 && !(vc & 0x10) && want != TSV_TEXT;
+    const uint8_t wantRender = (want != TSV_ZX || wantTsu) ? 1 : 0;
+    if (want == ts_vmode_live && wantTsu == ts_tsu_live &&
+        (!wantRender || rres == ts_rres_live)) return;
+
+    const bool wasPair  = (ts_vmode_live == TSV_TEXT);
+    const bool wantPair = (want == TSV_TEXT);
+    if (wantPair && !wasPair) {
+        // Same driver path as DS80/GMX: pair tables from profi_pair_lookup with
+        // the gpal CRAM bank as the 16-colour palette; ISR expands 1 fb byte → 2 px.
+        tsPairPaletteLoad();
+        profi_palette_dirty = false;
+        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        rebuildDS80ColorLut();
+        Graphics8BitPalette::ds80_active = true;
+    } else if (!wantPair && wasPair) {
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+    }
+    if (wasPair != wantPair) {
+        // Pair-slot bytes are garbage under the standard tables and vice versa.
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+    }
+    // The ts256 remap owns (almost) the whole hardware palette: 256c always, and
+    // the TSU over anything (its pixels are {palette:4, pixel:4} = any CRAM
+    // cell). Hand it back on the way out (applyPalette rewrites the standard
+    // ramp + the 16 ZX solids), take it over on the way in (full write — the
+    // slots hold the standard palette now).
+    const bool wantPal256 = (want == TSV_256C) || (wantTsu && !wantPair);
+    if (ts_pal256_live && !wantPal256) applyPalette();
+    ts_vmode_live = want;
+    ts_tsu_live = wantTsu;
+    ts_render_live = wantRender;
+    ts_rres_live = rres;
+    if (wantPal256) { tsPalette256Flush(!ts_pal256_live); tsCramDirty = false; }
+    ts_pal256_live = wantPal256;
+
+    if (wantRender && Config::gigascreen_enabled) {
+        // Backstop for the paths that never pass through MachineSwitch (the .spg
+        // loader's requestMachine, Alt+PgUp Auto arming): see disableGigascreenForProfi.
+        disableGigascreenForProfi();
+        Debug::log("[TSV] Gigascreen disabled (incompatible with the TS-Conf renderer)");
+    }
+    if (!wantRender) {
+        // Back to the standard renderer: Pentagon line window (Reset's generic
+        // block) and the per-T-state border machine.
+        if (isFullBorder && !isFullBorder240()) { lin_end = 48; lin_end2 = 240; }
+        else                                    { lin_end = 24; lin_end2 = 216; }
+        ts_crop_top = 0;
+        tStatesScreen = TS_SCREEN_PENTAGON;
+        DrawBorder = &Border_Blank;   // mid-frame border state is stale — skip this frame
+        brdChange = true;
+        brdnextframe = true;
+        tsCramDirty = true;           // slots 0..15 back to the gpal bank
+    } else {
+        const TsRres& g = kTsRres[rres & 3];
+        // Content start: TS line 32 + ub → fb row ub - 24 (240 rows) / ub (288).
+        int top = (int)g.ub - 24 + (((int)vga.yres >= 288) ? 24 : 0);
+        int crop = top < 0 ? -top : 0;
+        if (top < 0) top = 0;
+        int rows = (int)g.h - crop;
+        if (top + rows > (int)vga.yres) rows = (int)vga.yres - top;
+        lin_end  = top;
+        lin_end2 = top + rows;
+        ts_crop_top = (uint8_t)crop;
+        // The renderer is paced by tstateDraw, seeded from tStatesScreen each
+        // frame: move it to the first RENDERED content line (ZX's own start is
+        // TS line 80 = ub 48).
+        tStatesScreen = TS_SCREEN_PENTAGON + ((int)g.ub - 48 + crop) * (int)tStatesPerLine;
+        DrawBorder = &Border_Blank;   // bands are painted frame-granular instead
+        gmx_border_dirty = true;
+        if (!wantPal256) tsCramDirty = true;   // 16c / TEXT re-derive their 16
+    }
+    tstateDraw   = tStatesScreen;
+    linedraw_cnt = lin_end;
+    Debug::log("[TSV] mode %u rres %u tsu=%d: lin_end=%u..%u crop=%u tsScreen=%d pair=%d pal256=%d",
+               want, rres, (int)wantTsu, lin_end, lin_end2, ts_crop_top, tStatesScreen,
+               (int)wantPair, (int)wantPal256);
+}
+
+// Whole-line renderer for the non-ZX modes. `curline` = content line index
+// (linedraw_cnt - lin_end); the TS source line is curline + ts_crop_top and the
+// graphics Y counter follows Unreal's vid.ygctr: reloaded from GYOffs at the
+// first line and whenever GYOffs was written, +1 per line otherwise.
+void VIDEO::tsRenderLine(uint32_t curline) {
+    const uint32_t frow = curline + lin_end;
+    if (!vga.frameBuffer || frow >= (uint32_t)vga.yres) return;
+    uint8_t* fb_row = (uint8_t*)vga.frameBuffer[frow];
+    if (!fb_row) return;
+
+    // MainScreen reaches this with start_col == 0 TWICE per line — the Draw(0)
+    // MainScreen_Blank issues to prime the line, then the first real slice —
+    // and the GMX renderer never noticed because it is idempotent. The Y
+    // counter below is not (hw 2026-09-06: SETUP came out half height), so a
+    // repeat of the line just rendered is dropped here.
+    static uint32_t s_last_curline = 0xFFFFFFFFu;
+    if (curline == s_last_curline) return;   // line 0 of the next frame follows the last line, never 0
+    s_last_curline = curline;
+
+    if (curline == 0) {
+        ts_ygctr = ((uint32_t)TsConf::r.g_yoffs + ts_crop_top) & 0x1FF;
+        TsConf::r.g_yoffs_updated = false;
+    } else if (TsConf::r.g_yoffs_updated) {
+        ts_ygctr = TsConf::r.g_yoffs & 0x1FF;
+        TsConf::r.g_yoffs_updated = false;
+    } else {
+        ts_ygctr = (ts_ygctr + 1) & 0x1FF;
+    }
+
+    const TsRres& g = kTsRres[ts_rres_live & 3];
+    const int xres = (int)vga.xres;
+    // Left pad in fb bytes (lores px): border pixels visible left of the area.
+    const int pad_l = (int)g.lb - ((xres >= 360) ? 0 : 20);
+    const uint8_t brd = tsBorderSlot();
+
+    // F8 stats / F9-F10 volume box: OSD::drawStats owns a 144x16 rect at fb bytes
+    // 168.. (320-wide) / 188.. (360-wide), rows 220.. (yres 240) / 268.. (288) and
+    // repaints it only after EndFrame — a content line that overwrites it makes it
+    // blink (hw 2026-09-06, TS modes whose content covers those rows). Same
+    // carve-out as Update_Border_DS80 / gmxBorderFrame: leave those bytes alone.
+    const bool osdCarve = (VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04);
+    const int cx0 = (xres >= 360) ? 188 : 168, cx1 = cx0 + 24 * 6;
+    const int cy0 = ((int)vga.yres >= 288) ? 268 : 220;
+    const bool carveRow = osdCarve && (int)frow >= cy0 && (int)frow < cy0 + 16;
+    auto fillPad = [&](int a, int b) {           // memset [a,b) minus the carve
+        if (a < 0) a = 0; if (b > xres) b = xres;
+        if (b <= a) return;
+        if (!carveRow || b <= cx0 || a >= cx1) { memset(fb_row + a, brd, b - a); return; }
+        if (a < cx0) memset(fb_row + a, brd, cx0 - a);
+        if (b > cx1) memset(fb_row + cx1, brd, b - cx1);
+    };
+
+    // Side pads (the area may also overhang the fb: RRES 360 on a 320 fb).
+    int x0 = pad_l, x1 = pad_l + (int)g.w;          // area in fb bytes
+    if (x0 > 0) fillPad(0, x0);
+    if (x1 < xres) fillPad(x1, xres);
+
+    if (ts_vmode_live == TSV_TEXT) {
+        // draw_tstx / addr_tx: 256-byte text rows (chars at +0, attrs at +0x80,
+        // 128 columns max), font = page vpage^1 (8 bytes/char), row = ygctr>>3
+        // (64 rows per page), char line = ygctr&7; paper = gpal|atr>>4, ink =
+        // gpal|atr&15; 8 hires px per char = 4 pair bytes, (k^2) pre-swizzled
+        // for the ISR's x^2 read pattern (same trick as GMX/DS80).
+        const uint8_t* scr = TsConf::pagePtr(TsConf::r.vpage);
+        const uint8_t* fnt = TsConf::pagePtr(TsConf::r.vpage ^ 0x01);
+        if (!scr || !fnt) { fillPad(x0, x1); return; }
+        const uint32_t s = (ts_ygctr & 0x1F8) << 5;
+        const uint8_t  cl = ts_ygctr & 7;
+        // Text is hires: g.w lores pixels = 2*g.w hires pixels = g.w/4 chars
+        // of 8 (80 at RRES 320) — each char = 4 pair bytes.
+        const int cols = (int)g.w >> 2;
+        for (int j = 0; j < cols; j++) {
+            const int bx = x0 + j * 4;
+            if (bx < 0 || bx + 4 > xres) continue;            // cropped column
+            if (carveRow && bx + 4 > cx0 && bx < cx1) continue; // stats box
+            const uint8_t sym = scr[s + j];
+            const uint8_t atr = scr[s + j + 0x80];
+            const uint8_t b   = fnt[cl + ((uint32_t)sym << 3)];
+            const uint8_t fg = atr & 0x0F, bg = atr >> 4;
+            const uint8_t p0 = profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg]; // k=2 → +0
+            const uint8_t p1 = profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]; // k=3 → +1
+            const uint8_t p2 = profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg]; // k=0 → +2
+            const uint8_t p3 = profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg]; // k=1 → +3
+            *(uint32_t*)(fb_row + bx) =
+                (uint32_t)p0 | ((uint32_t)p1 << 8) | ((uint32_t)p2 << 16) | ((uint32_t)p3 << 24);
+        }
+        return;
+    }
+
+    // ── Base graphics layer + TSU compose (video_render.v) ──────────────────
+    // Per area pixel: bits 7..0 = CRAM index, bit 8 = "gfx pixel visible"
+    // (pixv: ZX ink dot after flash, non-zero colour in 16c/256c) — the
+    // GFXOVR priority input. TSU pixels land in s_tsline as CRAM indices, 0 =
+    // transparent (video_render.v: tsu_visible = |tsdata[3:0]).
+    static uint16_t s_gline[512];
+    static uint8_t  s_tsline[512];
+    const int w = (int)g.w;
+    const uint8_t gpal = (uint8_t)((TsConf::r.palsel & 0x0F) << 4);
+    const uint8_t border_idx = TsConf::r.border;
+    const bool nogfx = (ts_vmode_live == TSV_NOGFX);
+    const bool gfxovr = TsConf::r.vconf & 0x08;
+
+    if (nogfx) {
+        for (int x = 0; x < w; x++) s_gline[x] = border_idx;
+    } else if (ts_vmode_live == TSV_ZX) {
+        // addr_zx: gfx {row[7:6], row[2:0], row[5:3], col}, attr {110, row[7:3],
+        // col}, 32 columns wrapping (cnt_col[4:1]) across a wider area; colour
+        // {palsel, attr[6], dot ? attr[2:0] : attr[5:3]}, FLASH swaps.
+        const uint8_t* scr = TsConf::pagePtr(TsConf::r.vpage);
+        const uint32_t row = ts_ygctr & 0xFF;
+        const uint32_t goff = ((row & 0xC0) << 5) | ((row & 7) << 8) | ((row & 0x38) << 2);
+        const uint32_t aoff = 0x1800 | ((row & 0xF8) << 2);
+        if (!scr) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
+        else for (int x = 0; x < w; x++) {
+            const uint32_t col = (uint32_t)(x >> 3) & 31;
+            const uint8_t b = scr[goff | col];
+            const uint8_t a = scr[aoff | col];
+            uint8_t dot = (b >> (7 - (x & 7))) & 1;
+            if (a & flashing) dot ^= 1;
+            const uint8_t c = (uint8_t)(gpal | (a & 0x40) >> 3 | (dot ? (a & 7) : ((a >> 3) & 7)));
+            s_gline[x] = (uint16_t)c | (dot ? 0x100 : 0);
+        }
+    } else if (ts_vmode_live == TSV_16C) {
+        // addr_16c {vpage[7:3], row[8:0], col[6:0]}: 512x512 4 bpp, 256 B/line
+        // over 8 pages (64 lines each), window at GXOffs wrapping at 512, high
+        // nibble = left pixel; colour {palsel, nibble}.
+        const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF8) + (ts_ygctr >> 6));
+        if (!ln) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
+        else {
+            ln += (ts_ygctr & 63) << 8;
+            uint32_t sx = TsConf::r.g_xoffs;
+            for (int x = 0; x < w; x++, sx++) {
+                const uint32_t t = sx & 0x1FF;
+                const uint8_t nib = (t & 1) ? (uint8_t)(ln[t >> 1] & 0x0F) : (uint8_t)(ln[t >> 1] >> 4);
+                s_gline[x] = (uint16_t)(gpal | nib) | (nib ? 0x100 : 0);
+            }
+        }
+    } else { // TSV_256C
+        // addr_256c {vpage[7:4], row, col[7:0]}: 512 B/line, 32 lines per page,
+        // byte = CRAM index.
+        const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF0) + (ts_ygctr >> 5));
+        if (!ln) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
+        else {
+            ln += (ts_ygctr & 31) << 9;
+            uint32_t sx = TsConf::r.g_xoffs;
+            for (int x = 0; x < w; x++, sx++) {
+                const uint8_t c = ln[sx & 0x1FF];
+                s_gline[x] = (uint16_t)c | (c ? 0x100 : 0);
+            }
+        }
+    }
+
+    if (ts_tsu_live) tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline);
+
+    // Output. Without the ts256 remap the fb byte is the palette slot itself:
+    // 16c's gpal bank sits on slots 0..15 (low nibble of the index).
+    for (int x = 0; x < w; x++) {
+        const int fx = x0 + x;
+        if (fx < 0 || fx >= xres) continue;
+        if (carveRow && fx >= cx0 && fx < cx1) continue;   // stats box (OSD::drawStats owns it)
+        uint8_t out;
+        if (ts_tsu_live) {
+            const uint8_t t = s_tsline[x];
+            const bool tsu_vis = (t & 0x0F) != 0;
+            const bool gfx_vis = (s_gline[x] & 0x100) != 0;
+            if (gfxovr) out = gfx_vis ? (uint8_t)s_gline[x] : (tsu_vis ? t : border_idx);
+            else        out = tsu_vis ? t : (uint8_t)s_gline[x];
+        } else {
+            out = (uint8_t)s_gline[x];
+        }
+        fb_row[fx ^ 2] = ts_pal256_live ? ts256_map[out] : (uint8_t)(out & 0x0F);
+    }
+}
+
+// ── TSU: the Tile-Sprite Unit's line buffer (video_ts.v / Unreal render_ts) ──
+// Layers bottom→top: sprites 0, tiles 0, sprites 1, tiles 1, sprites 2 — each
+// overwrites, transparent nibble 0 is skipped. Tiles: TMPage rows of 256 bytes
+// (layer 0 at +0, layer 1 at +128; 64 words per layer), tile word = tnum:12
+// pal:2 xflp yflp, num_tiles per RRES (x_tile 34/42/42/47), column (xoffs>>3)+i
+// wrapping at 64, screen x = i*8 - (xoffs&7); tile row/line from (line+yoffs).
+// Bitmaps: 512x512 4 bpp = 8 pages (page & 0xF8), element (tnum) = 8x8 at
+// bitmap line (tnum>>6)*8, byte column (tnum&63)*4. Sprites: 85 SFILE
+// descriptors {y:9 ys:3 - act leap yflp | x:9 xs:3 - - - xflp | tnum:12 pal:4},
+// walked in order; `leap` closes the current sprite layer after that sprite;
+// visible when (line - y) & 511 <= ys*8+7. Palette: {tXpal(2) tile.pal(2)}
+// or sprite pal(4), high nibble of the CRAM index.
+void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts) {
+    memset(ts, 0, 512);
+    const uint8_t tsc = TsConf::r.tsconf;
+    const bool s_en = tsc & 0x80, t1_en = tsc & 0x40, t0_en = tsc & 0x20;
+    const bool t1z = tsc & 0x08, t0z = tsc & 0x04;
+    static const uint8_t kTiles[4] = { 34, 42, 42, 47 };
+    const int ntiles = kTiles[ts_rres_live & 3];
+
+    // 8 pixels of a bitmap element line into the buffer at pos, direction dir.
+    auto blit8 = [&](const uint8_t* src, uint32_t pos, int dir, uint8_t pal) {
+        for (int i = 0; i < 4; i++) {
+            const uint8_t c = src[i];
+            if (c & 0xF0) ts[pos] = (uint8_t)(pal | (c >> 4));
+            pos = (pos + dir) & 0x1FF;
+            if (c & 0x0F) ts[pos] = (uint8_t)(pal | (c & 0x0F));
+            pos = (pos + dir) & 0x1FF;
+        }
+        return pos;
+    };
+    auto bmLine = [&](uint8_t gpage, uint32_t bline) -> const uint8_t* {
+        const uint8_t* p = TsConf::pagePtr((gpage & 0xF8) + ((bline >> 6) & 7));
+        return p ? p + ((bline & 63) << 8) : nullptr;
+    };
+
+    auto tiles = [&](int layer) {
+        const bool en = layer ? t1_en : t0_en;
+        if (!en) return;
+        const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+        if (!tm) return;
+        const uint16_t xoffs = layer ? TsConf::r.t1_xoffs : TsConf::r.t0_xoffs;
+        const uint16_t yoffs = layer ? TsConf::r.t1_yoffs : TsConf::r.t0_yoffs;
+        const uint8_t  gpage = layer ? TsConf::r.t1gpage : TsConf::r.t0gpage;
+        const uint8_t  tpal  = (uint8_t)(((TsConf::r.palsel >> (layer ? 6 : 4)) & 3) << 6);
+        const bool     tz    = layer ? t1z : t0z;
+        const uint32_t ty = (line + yoffs) & 0x1FF;
+        const uint8_t* row = tm + ((ty >> 3) << 8) + (layer ? 128 : 0);
+        const uint32_t tline = ty & 7;
+        uint32_t col = xoffs >> 3;
+        uint32_t pos = (0u - (xoffs & 7)) & 0x1FF;
+        for (int i = 0; i < ntiles; i++, col++, pos = (pos + 8) & 0x1FF) {
+            const uint8_t* e = row + ((col & 63) << 1);
+            const uint16_t tw = (uint16_t)(e[0] | (e[1] << 8));
+            const uint16_t tnum = tw & 0x0FFF;
+            if (!tnum && !tz) continue;
+            const uint32_t bl = ((tnum >> 6) << 3) + ((tw & 0x8000) ? (tline ^ 7) : tline);
+            const uint8_t* src = bmLine(gpage, bl);
+            if (!src) continue;
+            src += (tnum & 63) << 2;
+            const uint8_t pal = (uint8_t)(tpal | ((tw >> 12) & 3) << 4);
+            if (tw & 0x4000) blit8(src, (pos + 7) & 0x1FF, -1, pal);
+            else             blit8(src, pos, 1, pal);
+        }
+    };
+
+    // Sprite descriptors are consumed in order across the three layers.
+    unsigned snum = 0;
+    auto sprites = [&](int layerIdx) {
+        (void)layerIdx;
+        if (!s_en) { return; }
+        while (snum < 85) {
+            const uint16_t* d = &TsConf::sfile[snum * 3];
+            snum++;
+            const uint16_t w0 = d[0], w1 = d[1], w2 = d[2];
+            const bool leap = w0 & 0x4000;
+            if (w0 & 0x2000) {                          // ACT
+                const uint32_t ysz = (((w0 >> 9) & 7) + 1) << 3;
+                const uint32_t sy = (line - (w0 & 0x1FF)) & 0x1FF;
+                if (sy < ysz) {
+                    const uint32_t xsz = (((w1 >> 9) & 7) + 1) << 3;
+                    const uint16_t tnum = w2 & 0x0FFF;
+                    const uint32_t bline = ((tnum >> 6) << 3) + ((w0 & 0x8000) ? (ysz - 1 - sy) : sy);
+                    const uint8_t* src = bmLine(TsConf::r.sgpage, bline);
+                    if (src) {
+                        src += (tnum & 63) << 2;
+                        const uint8_t pal = (uint8_t)((w2 >> 12) << 4);
+                        const bool xflp = w1 & 0x8000;
+                        uint32_t pos = xflp ? ((w1 & 0x1FF) + xsz - 1) & 0x1FF : (w1 & 0x1FF);
+                        for (uint32_t k = 0; k < (xsz >> 3); k++, src += 4)
+                            pos = blit8(src, pos, xflp ? -1 : 1, pal);
+                    }
+                }
+            }
+            if (leap) return;                           // layer closed after this sprite
+        }
+    };
+
+    sprites(0);
+    tiles(0);
+    sprites(1);
+    tiles(1);
+    sprites(2);
+}
 
 // Frame-granular top/bottom border bands for the GMX mode — repainted only when
 // the border colour (or the mode itself) changed; side pads are per content line.
@@ -3775,12 +4402,15 @@ int VIDEO::gmxTopBandRows() { return gmx_ext_live ? (int)lin_end : 0; }
 // brdChange is cleared by EndFrame even on a skipped frame.
 void VIDEO::gmxBorderFrame(bool skipFrame) {
     if (skipFrame) return;
-    if (!(brdChange || brdnextframe || gmx_border_dirty
-          || gmx_border_col != (borderColor & 7))) return;
+    // TS-Conf shares the band painter: its border byte comes from the Border
+    // register through the live mode's palette (tsBorderSlot), GMX's from the
+    // 3-bit #FE latch through the pair table. Repaint on any change of it.
+    const uint8_t slot = ts_render_live ? tsBorderSlot()
+                       : profi_pair_lookup[borderColor & 7][borderColor & 7];
+    if (!(brdChange || brdnextframe || gmx_border_dirty || gmx_border_col != slot)) return;
     gmx_border_dirty = false;
     brdnextframe = false;
-    gmx_border_col = borderColor & 7;
-    uint8_t slot = profi_pair_lookup[gmx_border_col][gmx_border_col];
+    gmx_border_col = slot;
     // With only 200 content rows the F8 stats box and the F9/F10 volume box land
     // in the BOTTOM band here (in DS80 they straddle the content, hence its
     // carve-outs) — one rectangle covers both: drawStats/drawVolumeBox put 144x16
@@ -3903,6 +4533,8 @@ IRAM_ATTR void VIDEO::EndFrame() {
         // ── Scorpion GMX 640x200 deferred mode switch — same vblank-only rule ──
         // (cold flash body; the checks stay cheap in this RAM function)
         if (gmx_ext_pending_on || gmx_ext_pending_off) gmxApplyPending();
+        // ── TS-Conf VConfig mode/geometry switch — same vblank-only rule ──
+        if (Z80Ops::isTsconf) tsVideoApplyPending();
     }
 
     // Profi palette refresh. EndFrame is NOT in the display blanking window:
@@ -4134,10 +4766,10 @@ IRAM_ATTR void VIDEO::EndFrame() {
     ds80_osd_carve = ds80_border_geom && (VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04);
     ds80_carve240  = (int)vga.yres < 288;
 
-    if (gmx_ext_live) {
-        // GMX 640x200: the per-T-state border machine stays parked (its writers
-        // would put raw ZX indices into a pair-slot framebuffer) — cold flash
-        // body in gmxBorderFrame, cheap check here.
+    if (gmx_ext_live || ts_render_live) {
+        // GMX 640x200 / TS-Conf non-ZX modes: the per-T-state border machine
+        // stays parked (its writers would put raw ZX indices into a pair-slot
+        // framebuffer) — cold flash body in gmxBorderFrame, cheap check here.
         gmxBorderFrame(skipFrame);
         brdGigascreenChange = false;
         DrawBorder = &Border_Blank;
@@ -4244,7 +4876,7 @@ void VIDEO::RedrawPausedFrame() {
     // writer would put raw ZX indices into the pair-slot framebuffer), the bands
     // are frame-granular, and the side pads come with the content lines just
     // walked above — so repaint the bands directly instead.
-    if (gmx_ext_live) {
+    if (gmx_ext_live || ts_render_live) {
         gmx_border_dirty = true;
         gmxBorderFrame(false);
     } else {

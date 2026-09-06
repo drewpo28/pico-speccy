@@ -605,6 +605,7 @@ static const Node kVideo[] = {
     NM_BOOL (TXT_VID_TIMEX,      SET_TIMEX,      nullptr),
     NM_RADIO(TXT_VID_DMA,        SET_DMA,        opt_dma,        nullptr),
     NM_BOOL (TXT_VID_DITHER,     SET_HDMI_DITHER, nullptr),
+    NM_BOOL (TXT_VID_SNAP,       SET_HDMI_SNAP,   nullptr),
     NM_BOOL (TXT_VID_16COL,      SET_16COL,      nullptr),
 #if TFT
     NM_SUB  (TXT_VID_TFT,        kTft,           nullptr),
