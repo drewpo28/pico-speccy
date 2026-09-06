@@ -217,6 +217,7 @@ static const char* typeLabel(const string& lcext) {
     if (lcext == "tap" || lcext == "tzx" || lcext == "pzx") return "Tape image";
     if (lcext == "wav" || lcext == "mp3")                   return "Audio tape";
     if (lcext == "sna" || lcext == "z80" || lcext == "p")   return "Snapshot";
+    if (lcext == "spg")                                     return "TS-Conf program";
     if (lcext == "trd" || lcext == "scl" || lcext == "fdi"
                        || lcext == "udi")                   return "TR-DOS disk";
     if (lcext == "mbd")                                     return "MB-02 disk";
