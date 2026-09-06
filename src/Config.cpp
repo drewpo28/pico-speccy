@@ -201,6 +201,7 @@ bool     Config::hdmi_dither = false;
 #define HDMI_SOFT_CLK 0
 #endif
 uint8_t  Config::hdmi_clock_drive = HDMI_SOFT_CLK ? 1 : 0;   // build default, see hdmi.c
+bool     Config::hdmi_snap = false;
 bool     Config::ui_vga_solid = true;
 bool     Config::ui_rounded = true;
 uint8_t  Config::ui_theme = 0;
@@ -1305,6 +1306,7 @@ void Config::load() {
         nvs_get_b("hdmi_dither", hdmi_dither, sts);
         nvs_get_u8("hdmi_clkdrv", hdmi_clock_drive, sts);
         if (hdmi_clock_drive > 1) hdmi_clock_drive = 0;
+        nvs_get_b("hdmi_snap", hdmi_snap, sts);
         nvs_get_b("ui_vga_solid", ui_vga_solid, sts);
         nvs_get_b("ui_rounded", ui_rounded, sts);
         nvs_get_u8("ui_theme", ui_theme, sts);
@@ -1668,6 +1670,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"ulaplus", Config::ulaplus ? "true" : "false");
     nvs_set_str(buf,"hdmi_dither", Config::hdmi_dither ? "true" : "false");
     nvs_set_u8(buf,"hdmi_clkdrv", Config::hdmi_clock_drive);
+    nvs_set_str(buf,"hdmi_snap", Config::hdmi_snap ? "true" : "false");
     nvs_set_str(buf,"ui_vga_solid", Config::ui_vga_solid ? "true" : "false");
     nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
     nvs_set_u8(buf,"ui_theme", Config::ui_theme);

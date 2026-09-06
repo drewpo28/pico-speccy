@@ -627,6 +627,7 @@ static const Option opt_hdmi_clkdrv[] = {
 static const Node kHdmi[] = {
     NM_BOOL (TXT_VID_DITHER,     SET_HDMI_DITHER, nullptr),
     NM_RADIO(TXT_VID_CLKDRV,     SET_HDMI_CLKDRV, opt_hdmi_clkdrv, nullptr),
+    NM_BOOL (TXT_VID_SNAP,       SET_HDMI_SNAP,   nullptr),
 };
 
 static const Node kVideo[] = {
