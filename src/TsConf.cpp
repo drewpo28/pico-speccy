@@ -15,6 +15,8 @@ the Free Software Foundation, either version 3 of the License, or
 */
 
 #include "TsConf.h"
+#include <string.h>
+#include "pico/time.h"
 #include "CPU.h"
 #include "Z80_JLS/z80.h"
 #include "Config.h"
@@ -440,6 +442,28 @@ uint8_t TsConf::intAck() {
     return 0xFF;   // spurious (source dropped between sample and ack)
 }
 
+uint32_t TsConf::nextIntEvent() {
+    tsIntPoll();
+    const uint32_t now = CPU::tstates;
+    if (tsFrmActive() || s_lin_pending || s_dma_pending) return now;
+    uint32_t t = CPU::statesInFrame;
+    if ((r.intmask & 0x02) && s_lin_next < t) t = s_lin_next;
+    if (s_dma_busy && (r.intmask & 0x04) && s_dma_end < t) t = s_dma_end;
+    if (frameIntEnabled() && !s_frm_acked) {
+        // First T-state whose latetiming-shifted value enters [IntStart, IntEnd).
+        int32_t ws = (int32_t)CPU::IntStart - CPU::latetiming;
+        if (ws > (int32_t)now && (uint32_t)ws < t) t = (uint32_t)ws;
+    }
+    return t < now ? now : t;
+}
+
+// EI / RETN / RETI re-enabled interrupts inside an unchecked slice: if a source
+// is already up, end the slice so CPU::loop can take the interrupt at the
+// right instruction (Stage D runs unchecked between INT events).
+void TsConf::intEnableHook() {
+    if (intLine()) tsWakeLoop();
+}
+
 bool TsConf::needsCheckedFrame() {
     return (r.intmask & 0x02) || s_lin_pending ||
            ((r.intmask & 0x04) && (s_dma_busy || s_dma_pending));
@@ -495,7 +519,18 @@ static const uint8_t kDmaCostRam  = 2;
 static const uint8_t kDmaCostOne  = 1;
 static const uint8_t kDmaCostSpi  = 4;
 
+#if PERF_TRACE
+volatile uint32_t ts_dma_us = 0;      // wall time inside dmaStart per frame (PERF line)
+volatile uint32_t ts_dma_words = 0;   // words moved per frame
+#if PERF_HIST
+uint32_t ts_dma_src_hist[256], ts_dma_dst_hist[256];   // words per physical page
+#endif
+#endif
+
 void TsConf::dmaStart(uint8_t ctrl) {
+#if PERF_TRACE
+    const uint64_t dma_t0 = time_us_64();
+#endif
     const bool     rw    = ctrl & 0x80;
     const uint8_t  dev   = ctrl & 0x07;
     const bool     asz   = ctrl & 0x08;
@@ -546,48 +581,68 @@ void TsConf::dmaStart(uint8_t ctrl) {
         LED::touchR(LED::ZCTRL);
     }
 
+    // Words a run may cover from address `a` before it leaves its 16 KB page
+    // or, with alignment on, wraps inside its 256/512-byte window.
+    auto run = [&](uint32_t a, bool algn, uint32_t want) -> uint32_t {
+        uint32_t n = (0x4000u - (a & 0x3FFFu)) >> 1;
+        if (algn) { const uint32_t w = (asize - (a & (asize - 1))) >> 1; if (w < n) n = w; }
+        return n < want ? n : want;
+    };
+    auto ss_add = [&](uint32_t n) { ss = salgn ? ((ss & m1) | ((ss + 2 * n) & m2)) : ((ss + 2 * n) & 0x3FFFFF); };
+    auto dd_add = [&](uint32_t n) { dd = dalgn ? ((dd & m1) | ((dd + 2 * n) & m2)) : ((dd + 2 * n) & 0x3FFFFF); };
+    const bool bulk = (mode == M_RAM || mode == M_BLT1 || mode == M_BLT2 || mode == M_FILL);
+
     for (;;) {
-        for (uint32_t i = 0; i < len; i++) {
-            switch (mode) {
-                case M_RAM:
-                    dst.wr(dd, src.rd(ss));
-                    break;
-                case M_BLT1: {                 // transparent copy: 0 pixels keep dst
-                    uint16_t s = src.rd(ss), d = dst.rd(dd), o;
-                    if (asz) {                 // 256c: byte pixels
-                        o = (uint16_t)(((s & 0x00FF) ? (s & 0x00FF) : (d & 0x00FF)) |
-                                       ((s & 0xFF00) ? (s & 0xFF00) : (d & 0xFF00)));
-                    } else {                   // 16c: nibble pixels
-                        o = 0;
-                        for (int n = 0; n < 16; n += 4) {
-                            const uint16_t msk = (uint16_t)(0xF << n);
-                            o |= (s & msk) ? (s & msk) : (d & msk);
+        // Bulk modes go run by run with direct pointers: a 320x240 256c screen
+        // copy is ~38k words per frame, and the per-word rd()/wr() path cost
+        // 0.6 us a word (TMNT: dma=16 ms of a 60 ms frame, hw 2026-09-06).
+        for (uint32_t rem = len; rem; ) {
+            uint32_t n = 1;
+            if (bulk) {
+                n = run(dd, dalgn, rem);
+                if (mode != M_FILL) n = run(ss, salgn, n);
+                uint8_t* dp = dst.at(dd);
+                const uint8_t* sp = (mode != M_FILL) ? src.at(ss) : nullptr;
+                if (!dp) {
+                    // destination not POINTER-backed (degraded boot): swallow
+                } else if (mode == M_FILL) {
+                    if ((fill & 0xFF) == (fill >> 8)) memset(dp, fill & 0xFF, n * 2);
+                    else for (uint32_t i = 0; i < n; i++) { dp[2*i] = (uint8_t)fill; dp[2*i+1] = (uint8_t)(fill >> 8); }
+                } else if (!sp) {
+                    memset(dp, 0xFF, n * 2);            // unbacked source reads 0xFFFF
+                } else if (mode == M_RAM) {
+                    // Hardware copies word by word ascending: overlapping regions
+                    // propagate forwards, which memmove would not reproduce.
+                    if (dp + n * 2 <= sp || sp + n * 2 <= dp) memcpy(dp, sp, n * 2);
+                    else for (uint32_t i = 0; i < n * 2; i++) dp[i] = sp[i];
+                } else if (mode == M_BLT1) {          // transparent copy: 0 pixels keep dst
+                    if (asz) {                        // 256c: byte pixels
+                        for (uint32_t i = 0; i < n * 2; i++) if (sp[i]) dp[i] = sp[i];
+                    } else {                          // 16c: nibble pixels
+                        for (uint32_t i = 0; i < n * 2; i++) {
+                            const uint8_t sv = sp[i]; uint8_t dv = dp[i];
+                            if (sv & 0xF0) dv = (dv & 0x0F) | (sv & 0xF0);
+                            if (sv & 0x0F) dv = (dv & 0xF0) | (sv & 0x0F);
+                            dp[i] = dv;
                         }
                     }
-                    dst.wr(dd, o);
-                    break;
-                }
-                case M_BLT2: {                 // additive blit, optional saturation
-                    uint16_t s = src.rd(ss), d = dst.rd(dd), o = 0;
+                } else {                              // M_BLT2: additive, optional saturation
                     if (asz) {
-                        for (int n = 0; n < 16; n += 8) {
-                            uint32_t v = ((s >> n) & 0xFF) + ((d >> n) & 0xFF);
+                        for (uint32_t i = 0; i < n * 2; i++) {
+                            uint32_t v = (uint32_t)sp[i] + dp[i];
                             if (v > 0xFF && opt) v = 0xFF;
-                            o |= (uint16_t)((v & 0xFF) << n);
+                            dp[i] = (uint8_t)v;
                         }
                     } else {
-                        for (int n = 0; n < 16; n += 4) {
-                            uint32_t v = ((s >> n) & 0xF) + ((d >> n) & 0xF);
-                            if (v > 0xF && opt) v = 0xF;
-                            o |= (uint16_t)((v & 0xF) << n);
+                        for (uint32_t i = 0; i < n * 2; i++) {
+                            const uint8_t sv = sp[i], dv = dp[i];
+                            uint32_t lo = (sv & 0xF) + (dv & 0xF), hi = (sv >> 4) + (dv >> 4);
+                            if (opt) { if (lo > 0xF) lo = 0xF; if (hi > 0xF) hi = 0xF; }
+                            dp[i] = (uint8_t)(((hi & 0xF) << 4) | (lo & 0xF));
                         }
                     }
-                    dst.wr(dd, o);
-                    break;
                 }
-                case M_FILL:
-                    dst.wr(dd, fill);
-                    break;
+            } else switch (mode) {
                 case M_CRAM: {
                     const uint8_t idx = (uint8_t)(dd >> 1);
                     cram[idx] = src.rd(ss);
@@ -609,10 +664,16 @@ void TsConf::dmaStart(uint8_t ctrl) {
                     DivMMC::zc_write_data((uint8_t)(v >> 8));
                     break;
                 }
+                default: break;
             }
-            if (mode != M_FILL && mode != M_SPIRAM) ss_inc();
-            if (mode != M_RAMSPI) dd_inc();
-            words++;
+#if PERF_TRACE && PERF_HIST
+            if (mode != M_FILL && mode != M_SPIRAM) ts_dma_src_hist[(ss >> 14) & 0xFF] += n;
+            if (mode != M_RAMSPI) ts_dma_dst_hist[(dd >> 14) & 0xFF] += n;
+#endif
+            if (mode != M_FILL && mode != M_SPIRAM) ss_add(n);
+            if (mode != M_RAMSPI) dd_add(n);
+            words += n;
+            rem -= n;
         }
         // dma_next_burst
         if (salgn) { r.saddr = (r.saddr + asize) & 0x3FFFFF; ss = r.saddr; }
@@ -629,6 +690,10 @@ void TsConf::dmaStart(uint8_t ctrl) {
     s_dma_busy = true;
     s_dma_end = CPU::tstates + ((words * cost) << ESPectrum::multiplicator);
     if (needsCheckedFrame()) tsWakeLoop();
+#if PERF_TRACE
+    ts_dma_us += (uint32_t)(time_us_64() - dma_t0);
+    ts_dma_words += words;
+#endif
 }
 
 uint8_t TsConf::dmaStatus() {

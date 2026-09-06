@@ -24,6 +24,7 @@
 #include "Z80_JLS/z80.h"
 #include "Ports.h"
 #include "Video.h"
+#include "TsFastMem.h"
 #include "MemESP.h"
 #include "CPU.h"
 #include "Tape.h"
@@ -1322,11 +1323,12 @@ IRAM_ATTR void Z80::incRegR(uint8_t inc) {
 
 }
 
-#if PERF_TRACE
-// PERF_TRACE: base-opcode histogram from exec_nocheck (prefix bytes CB/DD/ED/FD
+#if PERF_TRACE && PERF_HIST
+// PERF_HIST: base-opcode histogram from exec_nocheck (prefix bytes CB/DD/ED/FD
 // count as themselves — the prefixed instruction is dispatched by decodeXX, not
 // by dcOpcode). Read + cleared by the [PERF] dump in Video.cpp every 600 frames.
 uint32_t z80_op_hist[256];
+uint32_t z80_chk_cnt;   // instructions that went through the checked execute() path
 #endif
 
 IRAM_ATTR void Z80::execute() {
@@ -1374,6 +1376,10 @@ IRAM_ATTR void Z80::execute() {
     if (!halted) {
 
         REG_PC++;
+#if PERF_TRACE && PERF_HIST
+        z80_op_hist[opCode]++;
+        z80_chk_cnt++;
+#endif
 
         if (prefixOpcode == 0) {
             flagQ = pendingEI = false;
@@ -1411,6 +1417,10 @@ IRAM_ATTR void Z80::exec_nocheck() {
         Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
 #endif
         uint8_t pg = REG_PCh >> 6;
+        if (g_ts_fastmem) {                   // TsFastMem.h: TS-Conf, plain POINTER banks, counter video
+            tsFastTick(4);
+            opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+        } else {
         VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
         if (DivMMC::enabled) {
             DivMMC::preOpcFetch(REG_PC);
@@ -1426,11 +1436,17 @@ IRAM_ATTR void Z80::exec_nocheck() {
             opCode = (REG_PC < 0x2000) ? MemESP::page0_lo[REG_PC] : MemESP::page0_hi[REG_PC & 0x1FFF];
         } else
         opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC & 0x3fff);
+        }
 
         regR++;
         REG_PC++;
-#if PERF_TRACE
+#if PERF_TRACE && PERF_HIST
         z80_op_hist[opCode]++;
+        if (Z80Ops::isTsconf) {
+            extern uint32_t ts_page_hist[257];
+            const uintptr_t bp = (uintptr_t)MemESP::ramCurrent[pg];
+            ts_page_hist[(bp >= 0x10000000u && bp < 0x11000000u) ? 256 : TsConf::r.page[pg]]++;
+        }
 #endif
 
         if (prefixOpcode == 0) {
@@ -3353,6 +3369,7 @@ void Z80::decodeOpcodefb() /* EI */
 {
     ffIFF1 = ffIFF2 = true;
     pendingEI = true;
+    if (Z80Ops::isTsconf) TsConf::intEnableHook();
 }
 
 void Z80::decodeOpcodefc() /* CALL M,nn */
@@ -6161,6 +6178,7 @@ void Z80::decodeED(void) {
             ffIFF1 = ffIFF2;
             REG_PC = REG_WZ = pop();
             check_trdos();
+            if (Z80Ops::isTsconf && ffIFF1) TsConf::intEnableHook();
             break;
         }
         case 0x45:
@@ -6174,6 +6192,7 @@ void Z80::decodeED(void) {
             ffIFF1 = ffIFF2;
             REG_PC = REG_WZ = pop();
             check_trdos();
+            if (Z80Ops::isTsconf && ffIFF1) TsConf::intEnableHook();
             break;
         }
         case 0x46:

@@ -134,6 +134,7 @@ public:
     // Flush screen
     static void FlushOnHalt();
     static void FlushOnHaltTo(uint32_t stEnd); // explicit target (TS-Conf sliced loop)
+    static void haltAdvanceTo(uint32_t stEnd); // HALT sleep, video walked per line (TS-Conf Stage D)
 
     // CPU Tstates elapsed in current frame
     static uint32_t tstates;
