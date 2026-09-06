@@ -110,6 +110,10 @@ public:
     static void plus3AutoBootArm();
     static void plus3AutoBootArmAcrossReboot();
     static void plus3AutoBootTick();
+    // TS-Conf "Reset to...": hold a ZX key (as its PC VirtualKey) through the
+    // reset that follows, for the frames TS-BIOS needs to sample it at START.
+    static void tsBootKeyArm(fabgl::VirtualKey vk);
+    static void tsBootKeyTick();
 
     // Kbd
     static void processKeyboard();

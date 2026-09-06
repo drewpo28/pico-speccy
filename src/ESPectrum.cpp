@@ -1401,6 +1401,42 @@ void ESPectrum::plus3AutoBootTick() {
     else if (s_p3boot_frames == 0)             kbd->injectVirtualKey(fabgl::VK_RETURN, false);
 }
 
+// TS-Conf boot key: injected as held on EVERY frame of the window rather than
+// once, because a reset's hotkey path empties the VK queue and the PS2cols ->
+// Ports::port copy in processKeyboard is event-gated — a single "down" could be
+// consumed before the matrix ever saw it. Re-injecting a held key is idempotent
+// in m_VKMap and simply produces another event, i.e. another copy. TS-BIOS
+// samples the key within its first frame; a 12-frame hold (~240 ms) gives it
+// margin and is released long before Setup's own key scanner cares.
+#define TSBOOT_HOLD_FRAMES 12
+static int16_t s_tsboot_frames = 0;
+static fabgl::VirtualKey s_tsboot_vk = fabgl::VK_NONE;
+
+void ESPectrum::tsBootKeyArm(fabgl::VirtualKey vk) {
+    s_tsboot_vk = vk;
+    s_tsboot_frames = TSBOOT_HOLD_FRAMES;
+    fabgl::Keyboard* kbd = PS2Controller.keyboard();
+    if (kbd) kbd->injectVirtualKey(vk, true);
+    // Press the ZX key in the matrix NOW as well: the injected VK reaches
+    // Ports::port[] only on the next processKeyboard copy, a frame away, and a
+    // WARM TS-BIOS START samples the key ~2 ms after reset (READ_NVRAM + CRC,
+    // then `IN (#7FFE)`). Only the cold path — FDV_RES + the SD init that
+    // pwr_up enables — was slow enough for the copy to land first (hw
+    // 2026-09-06: Setup reachable after F12, never after F11). reset() keeps
+    // rows 0-7, and the frame-by-frame re-injection keeps the copy consistent
+    // until the release.
+    if (vk == fabgl::VK_LCTRL || vk == fabgl::VK_RCTRL)        Ports::port[7] &= ~0x02;  // Symbol Shift
+    else if (vk == fabgl::VK_LSHIFT || vk == fabgl::VK_RSHIFT) Ports::port[0] &= ~0x01;  // Caps Shift
+}
+
+void ESPectrum::tsBootKeyTick() {
+    if (s_tsboot_frames <= 0) return;
+    fabgl::Keyboard* kbd = PS2Controller.keyboard();
+    if (!kbd || !Z80Ops::isTsconf) { s_tsboot_frames = 0; return; }
+    if (--s_tsboot_frames > 0) kbd->injectVirtualKey(s_tsboot_vk, true);
+    else                       kbd->injectVirtualKey(s_tsboot_vk, false);
+}
+
 void ESPectrum::reset() {
   // Pentagon+Gluk: boot with Gluk ROM so it installs service monitor at 0xDB00
   // This matches real Pentagon hardware where Gluk always boots first
@@ -1456,6 +1492,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   // GMX 640x200: same rule — tear down BEFORE the latches are cleared, or the
   // deferred EndFrame path never sees the off edge (see VIDEO::gmxForceOff).
   VIDEO::gmxForceOff();
+  VIDEO::tsVideoForceOff();   // TS-Conf TEXT/16c: same rule (TsConf::reset clears VConfig below)
   Ports::portDFFD = 0;
   Ports::port1FFD = 0;   // Scorpion: reset clears the 1FFD latch (RAM0/service off)
   // GMX: warm reset clears the whole register file (MAME machine_reset), the
@@ -1958,8 +1995,7 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           ESPectrum::multUser = (ESPectrum::multUser + 1) % 3;
           ESPectrum::multiplicator = ESPectrum::multUser;
           CPU::updateStatesInFrame();
-          // TS-Conf: the guest's SysConfig ZCLK stays a floor (see applyZclk).
-          if (Z80Ops::isTsconf) TsConf::applyZclk();
+          // TS-Conf: an override until the guest's next SysConfig write (applyZclk).
           Config::turbo = ESPectrum::multUser;
           Config::save();
           menuToast(mhz[ESPectrum::multUser]);
@@ -3772,6 +3808,7 @@ void ESPectrum::loop() {
     Plus3Fdc::frameTick();
     Plus3Fdc::traceFlush();   // no-op unless FDD_PORT_TRACE
     plus3AutoBootTick();
+    tsBootKeyTick();
     Ports::ideTraceFlush();   // no-op unless IDE_PORT_TRACE
     // Deferred pool promotions (butter accessor banks): allow 1 inline
     // promotion per frame; the rest queue for the idle window below.  On

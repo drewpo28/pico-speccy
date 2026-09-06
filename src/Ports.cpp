@@ -1103,7 +1103,10 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) && address == 0xBFF7) {
       // RTC off → static response (see RTC::readDisabled) instead of leaving the
       // port unclaimed; keeps the boot clock's UIP-wait from hanging.
-      uint8_t rv = Config::rtc_enabled ? RTC::readData() : RTC::readDisabled();
+      // TS-Conf: the clock is on the ZX-Evo board and TS-BIOS keeps its setup in
+      // its NVRAM (#B0..#E8, CRC16-checked at every START) — with the RTC off the
+      // BIOS lands in SETUP on every boot, so Options > RTC does not apply there.
+      uint8_t rv = (Config::rtc_enabled || Z80Ops::isTsconf) ? RTC::readData() : RTC::readDisabled();
 #if RTC_PORT_TRACE
       // Rate cap: the ROMain status clock polls 6 regs per 50 Hz frame — an
       // uncapped log (~300 lines/s) exceeds the 115200 console and stalls
@@ -2769,7 +2772,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // returns the right static value (RTC::readDisabled). Data writes only take
     // effect when enabled — disabled = "ports don't act" but still respond.
     if (address == 0xDFF7) { RTC::selectReg(data); return; }
-    if (address == 0xBFF7) { if (Config::rtc_enabled) RTC::writeData(data); return; }
+    if (address == 0xBFF7) { if (Config::rtc_enabled || Z80Ops::isTsconf) RTC::writeData(data); return; }  // TS-Conf: always live (see input)
   }
   // Karabas-Pro's own native RTC ports (#FF/#BF AS, #DF/#9F DS) are handled
   // LATER in this function, after the Beta-128/FDC write switch — see the

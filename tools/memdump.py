@@ -19,6 +19,7 @@ OUT_FILE  = "/tmp/picospec_dump.log"
 NGS_LOW_FILE  = "/tmp/picospec_ngs_low.bin"
 NGS_REGS_FILE = "/tmp/picospec_ngs.txt"
 NGS_BANK_FILES = [f"/tmp/picospec_ngs_b{i}.bin" for i in (4, 5, 6, 7)]
+TSCONF_FILE = "/tmp/picospec_tsconf.txt"
 
 MEM_TYPE_NAME = {0: "SRAM", 1: "PSRAM_SPI", 2: "SWAP"}
 
@@ -237,6 +238,33 @@ def main():
                           "---\n")
                 for a in range(0, 0x8000, 16):
                     out.write(hex_line(0x8000 + a, bank, a))
+            out.write("\n")
+
+        # TS-Conf register file + TS-BIOS NVRAM cells (memdump.gdb writes them
+        # only while the machine is TS-Conf). Printed in file order — the nv[]
+        # run reads as the BIOS's 56-cell config block, CRC at #E6/#E7.
+        if os.path.exists(TSCONF_FILE):
+            out.write("=" * 40 + "\n")
+            out.write("TS-Conf\n")
+            nv = []
+            cram = []
+            with open(TSCONF_FILE, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith('~"') and line.endswith('"'):
+                        line = line[2:-1].replace("\\n", "").replace("\\r", "").strip()
+                    if not line:
+                        continue
+                    if line.startswith("nv["):
+                        nv.append(line[6:8])
+                    elif line.startswith("cram["):
+                        cram.append(line[10:14])
+                    else:
+                        out.write(line + "\n")
+            for i in range(0, len(cram), 16):
+                out.write("cram[%02X]: %s\n" % (i, " ".join(cram[i:i + 16])))
+            for i in range(0, len(nv), 16):
+                out.write("nv[%02X]: %s\n" % (0xB0 + i, " ".join(nv[i:i + 16])))
             out.write("\n")
 
     print(f"Dump written to {OUT_FILE}")

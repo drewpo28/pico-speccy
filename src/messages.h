@@ -147,6 +147,10 @@ visit https://zxespectrum.speccy.org/contacto
 
 // Scorpion reset menu: Service monitor=1, TR-DOS=2, 128K=3, 48K=4
 #define MENU_RESETTO_SCORP "Reset to\n" "Service monitor\n" "TR-DOS\n" "128K\n" "48K\n"
+// TS-Conf: TS-BIOS picks the boot target itself (NVRAM "Boot from/bank"); the two
+// keys it samples at START are Symbol Shift (-> Setup) and Caps Shift (-> the
+// alternate "CS boot" target, boot.$c from the SD card by default).
+#define MENU_RESETTO_TSCONF "Reset to\n" "TS-BIOS Setup\n" "Boot from SD (boot.$c)\n" "Default (BIOS)\n"
 
 #define MOS_FILE "/.firmware"
 

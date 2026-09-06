@@ -194,3 +194,32 @@ if GS::neogs && GS::enabled
 end
 
 echo \nMemory dump files written to /tmp/picospec_mem{0-3}.bin, /tmp/picospec_ram{0-7}.bin and /tmp/picospec_regs.txt\n
+
+# TS-Conf: register file, the 16 ZX-bank CRAM cells and TS-BIOS's NVRAM config
+# cells (#B0..#E7, CRC16 at #E6/#E7 — see RTC::tsBiosSeed). Last on purpose:
+# these symbols exist only in builds that carry the machine.
+shell rm -f /tmp/picospec_tsconf.txt
+if Z80Ops::isTsconf
+  set logging file /tmp/picospec_tsconf.txt
+  set logging overwrite on
+  set logging redirect on
+  set logging enabled on
+  printf "memconf=%02X p7ffd=%02X page0=%02X page1=%02X page2=%02X page3=%02X trdos=%d\n", (unsigned char)TsConf::r.memconf, (unsigned char)TsConf::r.p7ffd, (unsigned char)TsConf::r.page[0], (unsigned char)TsConf::r.page[1], (unsigned char)TsConf::r.page[2], (unsigned char)TsConf::r.page[3], (int)ESPectrum::trdos
+  printf "sysconf=%02X intmask=%02X hsint=%02X vsint=%03X pwr_up=%02X fmaddr=%02X fddvirt=%02X\n", (unsigned char)TsConf::r.sysconf, (unsigned char)TsConf::r.intmask, (unsigned char)TsConf::r.hsint, (unsigned)TsConf::r.vsint, (unsigned char)TsConf::r.pwr_up, (unsigned char)TsConf::r.fmaddr, (unsigned char)TsConf::r.fddvirt
+  printf "vconf=%02X vpage=%02X tsconf=%02X palsel=%02X border=%02X gxoffs=%03X gyoffs=%03X\n", (unsigned char)TsConf::r.vconf, (unsigned char)TsConf::r.vpage, (unsigned char)TsConf::r.tsconf, (unsigned char)TsConf::r.palsel, (unsigned char)TsConf::r.border, (unsigned)TsConf::r.g_xoffs, (unsigned)TsConf::r.g_yoffs
+  printf "dma: saddr=%06X daddr=%06X len=%02X num=%02X ctrl=%02X\n", (unsigned)TsConf::r.saddr, (unsigned)TsConf::r.daddr, (unsigned char)TsConf::r.dmalen, (unsigned char)TsConf::r.dmanum, (unsigned char)TsConf::r.dmactrl
+  printf "video: render=%d vmode=%d tsu=%d pal256=%d rres=%d crop=%d ds80_drv=%d ds80_gfx=%d lin_end=%d..%d tmpage=%02X t0g=%02X t1g=%02X sg=%02X t0=%03X,%03X t1=%03X,%03X\n", (int)VIDEO::ts_render_live, (int)VIDEO::ts_vmode_live, (int)VIDEO::ts_tsu_live, (int)VIDEO::ts_pal256_live, (int)VIDEO::ts_rres_live, (int)VIDEO::ts_crop_top, (int)profi_ds80_active, (int)Graphics8BitPalette::ds80_active, (int)'Video.cpp'::lin_end, (int)'Video.cpp'::lin_end2, (unsigned char)TsConf::r.tmpage, (unsigned char)TsConf::r.t0gpage, (unsigned char)TsConf::r.t1gpage, (unsigned char)TsConf::r.sgpage, (unsigned)TsConf::r.t0_xoffs, (unsigned)TsConf::r.t0_yoffs, (unsigned)TsConf::r.t1_xoffs, (unsigned)TsConf::r.t1_yoffs
+  printf "gigascreen: cfg=%d live=%d crt=%d\n", (int)Config::gigascreen_enabled, (int)VIDEO::gigascreen_enabled, (int)Config::crt_filter
+  set $i = 0
+  while $i < 256
+    printf "cram[%02X]=%04X\n", $i, (unsigned)TsConf::cram[$i]
+    set $i = $i + 1
+  end
+  set $i = 0xB0
+  while $i < 0xE8
+    printf "nv[%02X]=%02X\n", $i, (unsigned char)RTC::regs[$i]
+    set $i = $i + 1
+  end
+  set logging enabled off
+  set logging redirect off
+end

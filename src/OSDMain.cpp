@@ -2033,10 +2033,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
             ESPectrum::multiplicator = ESPectrum::multUser;
             CPU::updateStatesInFrame();
-            // TS-Conf: the guest's SysConfig ZCLK is a floor under the user
-            // pick — re-apply it so cycling turbo down cannot underclock a
-            // guest that asked for 7/14 MHz.
-            if (Z80Ops::isTsconf) TsConf::applyZclk();
+            // TS-Conf: this is an override of the guest's SysConfig ZCLK; the
+            // guest's next write to it takes the clock back (TsConf::applyZclk).
             Config::turbo = ESPectrum::multUser;
             Config::save();
             static const char* const mhz[4] =
@@ -2095,6 +2093,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     reset_menu = MENU_RESETTO_SCORP;
                 } else if (Z80Ops::isP3) {
                     reset_menu = MENU_RESETTO_P3;
+                } else if (Z80Ops::isTsconf) {
+                    reset_menu = MENU_RESETTO_TSCONF;
                 } else if ((Z80Ops::isPentagon || Z80Ops::isProfi)) {
                     if (Config::romSet == R_PENT_GLUK)
                         reset_menu = MENU_RESETTO_PENTGLUK;
@@ -2110,6 +2110,17 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
                     Config::last_ram_file = NO_RAM_FILE;
 
+                    if (Z80Ops::isTsconf) {
+                        // TS-BIOS Setup=1, CS boot=2, Default=3. TS-BIOS reads the
+                        // keys at START (`IN (#7FFE)` bit 1 = Symbol Shift -> SETUP,
+                        // `IN (#FEFE)` bit 0 = Caps Shift -> the alternate boot
+                        // target), so hold the ZX key through the reset for it —
+                        // physically impossible from here because Ctrl+F11 IS this
+                        // dialog's hotkey.
+                        if (opt == 1)      ESPectrum::tsBootKeyArm(fabgl::VK_LCTRL);   // Symbol Shift
+                        else if (opt == 2) ESPectrum::tsBootKeyArm(fabgl::VK_LSHIFT);  // Caps Shift
+                        ESPectrum::reset();
+                    } else
                     if (Config::arch == A_PROFI) {
                         // Service ROM=1, TR-DOS=2, 128K=3, 48K=4
                         if (opt == 1) {
@@ -2349,8 +2360,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // touches the prev-FB coherently) — same guard as the Video menu;
             // without it the Alt+PgUp toggle enabled it mid-Profi and the
             // render path SIGBUS-stormed (hw, PICO_DV).
-            if (Z80Ops::isProfi) {
-                notify(" Gigascreen: not available on Profi ", LEVEL_WARN, 1800);
+            if (Z80Ops::isProfi || Z80Ops::isTsconf) {
+                notify(Z80Ops::isTsconf ? " Gigascreen: not available on TS-Conf "
+                                        : " Gigascreen: not available on Profi ", LEVEL_WARN, 1800);
                 return;
             }
             Config::gigascreen_onoff = (Config::gigascreen_onoff + 1) % 3; // Off -> On -> Auto -> Off
@@ -2598,8 +2610,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
                     }
                 }
-                else if (ext == "sna" || ext == "z80" || ext == "p") {
-                    // Snapshot
+                else if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg") {
+                    // Snapshot (.spg = TS-Conf program, switches the machine)
                     if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
                     Config::save();
                     if (!LoadSnapshot(fname, A_NONE, R_NONE)) {
@@ -5845,7 +5857,7 @@ static void buildEmulatorInfoText() {
 
     // RTC: the live reading plus the register format the guest picked. Both are
     // here because a wrong-looking clock is nearly always one of the two.
-    if (!Config::rtc_enabled) {
+    if (!Config::rtc_enabled && Config::arch != A_TSCONF) {   // TS-Conf: always live (TS-BIOS config store)
         pos += infoAppend(buf, pos, bufsz, " RTC + NVRAM    : Off\n");
     } else {
         int ry, rmo, rd, rh, rmi, rs;

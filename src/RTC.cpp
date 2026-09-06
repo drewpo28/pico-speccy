@@ -96,6 +96,7 @@ int RTC::decHour(uint8_t v) {
 // Config::requestMachine once the new romset is final; a no-op before init().
 static void rtcSeedGluk() {
     if (Config::romSet == R_PENT_GLUK) RTC::glukMarker();
+    if (Config::romSet == R_TSCONF)   RTC::tsBiosSeed();
 }
 
 void RTC::machineChanged() {
@@ -105,8 +106,8 @@ void RTC::machineChanged() {
     regs[0x0B] = 0x02;
     regs[0x0D] = 0x80;
     loadNVRAM();
-    rtcSeedGluk();                      // same rule as init()
     nv_dirty = false;
+    rtcSeedGluk();                      // same rule as init(); a TS-BIOS seed leaves nv_dirty set
 }
 
 // Mr Gluk Reset Service treats the CMOS as valid only when NVRAM reg 0x11 ==
@@ -172,6 +173,63 @@ bool RTC::loadNVRAM() {
 }
 
 void RTC::glukMarker() { regs[0x11] = 0xAA; }
+
+// TS-BIOS (ZX-Evo TS-Conf) keeps its setup in Gluk NVRAM cells #B0..#E7: 54
+// option/palette bytes + a CRC16 (poly 0x1021, init 0xFFFF, MSB-first) over
+// cells #B1..#E5 (53 bytes), low byte at #E6, high at #E7. At START it reads
+// them back and on a CRC mismatch runs LOAD_DEFAULTS + WRITE_NVRAM and drops
+// into SETUP — which is drawn in the 80x30 TEXT video mode, i.e. a BLACK SCREEN
+// with key beeps until the Phase-3 rasterizer exists (hw 2026-09-06). So a chip
+// the BIOS would reject is pre-initialised here EXACTLY the way its own
+// LOAD_DEFAULTS does; cells the BIOS accepts are left alone (a saved Setup
+// survives). Returns true when it wrote.
+//
+// THE LAYOUT COMES FROM THE SHIPPED ROM'S DISASSEMBLY, NOT FROM ts-bios.asm ON
+// MASTER (hw 2026-09-06, cost one round): master declares 57 cells (10 dummy
+// bytes, CRC over 54 at #E7/#E8) and LOAD_DEFAULTS over-copies one byte; the
+// binary we embed is an older build — CALC_CRC = `LD DE,5D14 / LD C,#35`,
+// READ_NVRAM reads #38 = 56 cells, LOAD_DEFAULTS copies #36 = 54 bytes from
+// nv_def at Service-ROM 0x161F and stores HL at 5D49 = nv_buf+54. Seeded with
+// the master layout, the BIOS rejected the cells, rewrote them itself and sat
+// in the invisible SETUP — exactly the symptom the seed exists to prevent.
+static uint16_t tsBiosCrc16(const uint8_t* p, unsigned n) {
+    uint16_t crc = 0xFFFF;
+    while (n--) {
+        crc ^= (uint16_t)(*p++) << 8;
+        for (int b = 0; b < 8; b++)
+            crc = (crc & 0x8000) ? (uint16_t)((crc << 1) ^ 0x1021) : (uint16_t)(crc << 1);
+    }
+    return crc;
+}
+
+bool RTC::tsBiosSeed() {
+    // nv_def, 54 bytes, lifted from the embedded ROM at 0x161F: 13 options
+    // (FDDVirt, CPU clock, boot dev, cache, boot from/bank, CS boot from/bank,
+    // #7FFD span, ZX palette, NGS reset, FT reset, INT offset), 9 pad, the
+    // 16-word custom palette.
+    static const uint8_t kNvDef[54] = {
+        0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x42, 0x08, 0x84, 0x10, 0xC6, 0x18, 0x08, 0x21, 0x4A,
+        0x29, 0x8C, 0x31, 0xCE, 0x39, 0x21, 0x04, 0x63, 0x0C, 0xA5, 0x14,
+        0xE7, 0x1C, 0x29, 0x25, 0x6B, 0x2D, 0xAD, 0x35, 0xEF, 0x3D,
+    };
+    const unsigned base = 0xB0, ncrc = 53, lo = 54, hi = 55;
+    uint16_t have = tsBiosCrc16(&regs[base + 1], ncrc);
+    if (regs[base + lo] == (uint8_t)have && regs[base + hi] == (uint8_t)(have >> 8)) {
+        Debug::log("[CMOS] TS-BIOS NVRAM valid (crc=%04X)", have);
+        return false;
+    }
+    const uint8_t oldLo = regs[base + lo], oldHi = regs[base + hi];
+    for (unsigned i = 0; i < sizeof(kNvDef); i++) regs[base + i] = kNvDef[i];
+    uint16_t crc = tsBiosCrc16(&regs[base + 1], ncrc);   // = 0xB251 for the defaults
+    regs[base + lo] = (uint8_t)crc;
+    regs[base + hi] = (uint8_t)(crc >> 8);
+    nv_dirty = true;
+    Debug::log("[CMOS] TS-BIOS NVRAM seeded with defaults (crc=%04X; cells had crc %04X, stored %02X%02X)",
+               crc, have, oldHi, oldLo);
+    return true;
+}
 
 void RTC::flushNVRAM(bool force) {
     if (!nv_dirty || !FileUtils::fsMount) return;
