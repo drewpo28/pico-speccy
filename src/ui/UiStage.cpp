@@ -82,6 +82,7 @@ NM_INT_ACCESS (scanlines, scanlines)
 NM_INT_ACCESS (crtFilter, crt_filter)
 NM_BOOL_ACCESS(vsync,     v_sync_enabled)
 NM_BOOL_ACCESS(dither,    hdmi_dither)
+NM_BOOL_ACCESS(hdmiSnap,  hdmi_snap)
 NM_BOOL_ACCESS(flashload, flashload)
 NM_BOOL_ACCESS(tapeRG,    tape_timing_rg)
 NM_BOOL_ACCESS(tapeAuto,  tape_autostart)
@@ -390,6 +391,14 @@ static int32_t get_hdmiClkDrv()          { return Config::hdmi_clock_drive; }
 static void    put_hdmiClkDrv(int32_t v) { Config::hdmi_clock_drive = (uint8_t)(v ? 1 : 0); }
 static bool hook_hdmiClkDrv(int32_t nv, int32_t) {
     graphics_set_hdmi_clock_drive(nv == 1);
+    return true;
+}
+static bool hook_hdmiSnap(int32_t, int32_t) {
+    // paletteFinal() reads Config::hdmi_snap; applyCrtFilter re-runs every palette
+    // through it (standard ramp + ZX solids now, ULA+/Gigascreen via their deferred
+    // paths) and the TS-Conf CRAM flush is re-armed for the next EndFrame.
+    VIDEO::applyCrtFilter();
+    VIDEO::tsCramDirty = true;
     return true;
 }
 static bool hook_dither(int32_t nv, int32_t) {
