@@ -1168,13 +1168,16 @@ void Z80::interrupt(void) {
     const uint16_t pgIntPC = REG_PC;   // interrupted address, for the alarm below
 #endif
     push(REG_PC); // el push añadirá 6 t-estados (+contended si toca)
+    // TS-Conf: the INT acknowledge cycle clears the source being taken and
+    // selects its vector — in EVERY interrupt mode (zint.v latches on intack),
+    // so it runs before the IM branch below.
+    const uint8_t tsVect = Z80Ops::isTsconf ? TsConf::intAck() : 0xFF;
     if (modeINT == IntMode::IM2) {
 
         // INT-ack bus byte: the Karabas serial-mouse hw_int drives 0xE7
         // (RST20H) while its request is asserted; the ULA default is 0xFF.
-        // TS-Conf drives a per-source vector (#FF FRAME / #FD LINE / #FB DMA;
-        // only FRAME is wired in this phase).
-        uint8_t busByte = Z80Ops::isTsconf ? TsConf::im2Vector()
+        // TS-Conf drives a per-source vector (#FF FRAME / #FD LINE / #FB DMA).
+        uint8_t busByte = Z80Ops::isTsconf ? tsVect
                         : (Ports::serialMouseIntAsserted() ? 0xE7 : 0xFF);
         REG_PC = Z80Ops::peek16((regI << 8) | busByte); // +6 t-estados
 
