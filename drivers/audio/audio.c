@@ -51,8 +51,10 @@ void i2s_init(i2s_config_t *i2s_config) {
         else if (i2s_config->pio == pio2) func = GPIO_FUNC_PIO2;
 #endif
         // An RP2350 PIO block reaches 32 consecutive GPIOs from its gpio_base
-        // (0 or 16); audio above GPIO31 needs the window moved up, exactly like
-        // the ZERO2 display path in hdmi_init() (drivers/hdmi/hdmi.c).
+        // (0 or 16); audio above GPIO31 needs the window moved up. Pin numbers
+        // stay absolute: with PICO_RP2350A 0 the SDK defaults
+        // PICO_PIO_USE_GPIO_BASE to 1, and sm_config_/pio_gpio_init then take
+        // real 0-47 pin numbers. Same shape as hdmi_init() on ZERO2.
         uint8_t max_pin = i2s_config->data_pin;
         if (i2s_config->bck_pin > max_pin) max_pin = i2s_config->bck_pin;
         if (i2s_config->lck_pin > max_pin) max_pin = i2s_config->lck_pin;

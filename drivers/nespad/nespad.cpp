@@ -1,3 +1,4 @@
+#include <cstdio>
 #include "hardware/pio.h"
 
 #define nespad_wrap_target 0
@@ -48,10 +49,11 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
 
     // An RP2350 PIO block reaches 32 CONSECUTIVE GPIOs starting at its gpio_base
     // (0 or 16), so a pad wired above GPIO31 (MURM2_W: data on 40/41) needs the
-    // window moved up. Same shape as the ZERO2 HDMI path in hdmi_init()
-    // (drivers/hdmi/hdmi.c): set the base first, then keep passing ABSOLUTE GPIO
-    // numbers to sm_config_*/pio_gpio_init — that is the combination running on
-    // hardware there with the display on GPIO32-39.
+    // window moved up. Pin numbers stay ABSOLUTE either way: with PICO_RP2350A 0
+    // the SDK defaults PICO_PIO_USE_GPIO_BASE to 1, and its own note on
+    // sm_config_ pin arguments says those helpers then "always take real pin
+    // numbers in the full range" 0-47. Same shape as the ZERO2 display path in
+    // hdmi_init() (drivers/hdmi/hdmi.c), which runs on hardware at GPIO32-39.
     uint8_t maxPin = clkPin;
     if (latPin      > maxPin) maxPin = latPin;
     if (dataPin + 1 > maxPin) maxPin = dataPin + 1;
@@ -83,7 +85,18 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
 
     pio_sm_clear_fifos(pio, sm);
 
-    pio_sm_init(pio, sm, offset, &c);
+    // On RP2350 this can refuse the configuration (PICO_ERROR_BAD_ALIGNMENT) when
+    // the pins straddle the gpio_base window — the one way the block choice above
+    // can be wrong, and otherwise silent: the pad would just read 0xFF forever.
+    int rc = pio_sm_init(pio, sm, offset, &c);
+    if (rc) {
+        printf("NESPAD: pio_sm_init failed rc=%d (clk=%u dat=%u lat=%u base=%u)\n",
+               rc, (unsigned)clkPin, (unsigned)dataPin, (unsigned)latPin,
+               (unsigned)pio_get_gpio_base(pio));
+        pio_remove_program(pio, &nespad_program, offset);
+        pio_sm_unclaim(pio, sm);
+        return false;
+    }
     pio_sm_set_enabled(pio, sm, true);
     pio->txf[sm]=0;
     return true; // Success

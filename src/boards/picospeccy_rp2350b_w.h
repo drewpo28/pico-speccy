@@ -128,6 +128,17 @@ pico_board_cmake_set(PICO_CYW43_SUPPORTED, 1)
 #define CYW43_PIN_WL_DYNAMIC 1
 #endif
 
+// LED1 hangs off the radio module's own GPIO0 (LED2 is PICO_DEFAULT_LED_PIN
+// above). Reachable only once cyw43_arch_init() has succeeded, via
+// cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, ...) — which makes it a useful
+// "the radio is actually alive" indicator during bring-up.
+#ifndef CYW43_WL_GPIO_COUNT
+#define CYW43_WL_GPIO_COUNT 3
+#endif
+#ifndef CYW43_WL_GPIO_LED_PIN
+#define CYW43_WL_GPIO_LED_PIN 0
+#endif
+
 // NOTE: deliberately NO PICO_SMPS_MODE_PIN / PICO_VBUS_PIN / PICO_VSYS_PIN.
 // Those are 23/24/29 on a Pico; here 23 is LED2 and 24/29 are ordinary pads (and
 // 36-39 are expected to belong to RM2), so the Pico meanings do not carry over.

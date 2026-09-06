@@ -29,6 +29,7 @@
 #include "MidiSynth.h"
 #include "Config.h"
 #include "BoardPins.h"
+#include "WifiNet.h"
 #include "FileUtils.h"
 #include "GS/GS.h"
 #include "MemESP.h"
@@ -1906,12 +1907,26 @@ int main() {
         }
     }
 #endif
+#if PICOSPECCY_WIFI
+    // On-chip radio (MURM_W / MURM2_W). Deliberately LAST of the PIO users: the
+    // SDK picks whichever block can reach the radio's pins, and only pio0 can —
+    // so video (core1 graphics_init) and the keyboard/gamepad must already have
+    // fixed pio1/pio2 at gpio_base 0 before we ask. Failure is not fatal; the
+    // emulator runs on without a radio and the log says why.
+    WifiNet::init();
+#endif
     #if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
     for (int i = 0; i < 6; i++) {
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, true);
         sleep_ms(33);
         gpio_put(PICO_DEFAULT_LED_PIN, false);
+#if PICOSPECCY_WIFI
+        // LED1 lives on the radio module's own GPIO0, so it only blinks once the
+        // bus is really up — a one-glance "the radio answered" indicator that
+        // needs no console.
+        WifiNet::ledSet(i & 1);
+#endif
     }
     #endif
     #ifdef VGA_HDMI
