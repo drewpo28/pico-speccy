@@ -504,30 +504,12 @@ private:
     // PUSH
     static inline void push(uint16_t word);
 
-    // LDI
-    static void ldi(void);
+    // LDI/LDD, CPI/CPD, INI/IND, OUTI/OUTD — one body per pair, d = +1 / -1
+    static void ldx(int d);
+    static void cpx(int d);
+    static void inx(int d);
+    static void otx(int d);
     static void blockRepeat(bool up);     // LDIR/LDDR block fast path (Z80_JLS.cpp)
-
-    // LDD
-    static void ldd(void);
-
-    // CPI
-    static void cpi(void);
-
-    // CPD
-    static void cpd(void);
-
-    // INI
-    static void ini(void);
-
-    // IND
-    static void ind(void);
-
-    // OUTI
-    static void outi(void);
-
-    // OUTD
-    static void outd(void);
 
     static void SetAbortedINxR_OTxRFlags();
 
@@ -543,9 +525,8 @@ private:
     // Decode main opcodes
     // static void decodeOpcode();
 
-    // Subconjunto de instrucciones 0xCB
-    // decode CBXX opcodes
-    // static void decodeCB(void);
+    // 0xCB prefix: one generic decoder (rot/shift, BIT, RES, SET x 8 registers)
+    static void decodeCB(void);
 
     //Subconjunto de instrucciones 0xDD / 0xFD
     // Decode DD/FD opcodes
@@ -560,7 +541,6 @@ private:
     static void decodeED(void);
 
     static void (*dcOpcode[256])();
-    static void (*dcCB[256])();
 
     static void decodeOpcode00(void);
     static void decodeOpcode01(void);
@@ -834,278 +814,6 @@ private:
     static void decodeOpcodefd(void);                    
     static void decodeOpcodefe(void);                    
     static void decodeOpcodeff(void);                    
-
-    static void dcCB00(void);
-    static void dcCB01(void);
-    static void dcCB02(void);
-    static void dcCB03(void);
-    static void dcCB04(void);
-    static void dcCB05(void);
-    static void dcCB06(void);                        
-    static void dcCB07(void);
-    static void dcCB08(void);
-    static void dcCB09(void);
-    static void dcCB0A(void);
-    static void dcCB0B(void);                    
-    static void dcCB0C(void);                    
-    static void dcCB0D(void);                    
-    static void dcCB0E(void);                    
-    static void dcCB0F(void);                    
-
-    static void dcCB10(void);
-    static void dcCB11(void);
-    static void dcCB12(void);
-    static void dcCB13(void);
-    static void dcCB14(void);
-    static void dcCB15(void);
-    static void dcCB16(void);                        
-    static void dcCB17(void);
-    static void dcCB18(void);
-    static void dcCB19(void);
-    static void dcCB1A(void);
-    static void dcCB1B(void);                    
-    static void dcCB1C(void);                    
-    static void dcCB1D(void);                    
-    static void dcCB1E(void);                    
-    static void dcCB1F(void);                    
-
-    static void dcCB20(void);
-    static void dcCB21(void);
-    static void dcCB22(void);
-    static void dcCB23(void);
-    static void dcCB24(void);
-    static void dcCB25(void);
-    static void dcCB26(void);                        
-    static void dcCB27(void);
-    static void dcCB28(void);
-    static void dcCB29(void);
-    static void dcCB2A(void);
-    static void dcCB2B(void);                    
-    static void dcCB2C(void);                    
-    static void dcCB2D(void);                    
-    static void dcCB2E(void);                    
-    static void dcCB2F(void);                    
-
-    static void dcCB30(void);
-    static void dcCB31(void);
-    static void dcCB32(void);
-    static void dcCB33(void);
-    static void dcCB34(void);
-    static void dcCB35(void);
-    static void dcCB36(void);                        
-    static void dcCB37(void);
-    static void dcCB38(void);
-    static void dcCB39(void);
-    static void dcCB3A(void);
-    static void dcCB3B(void);                    
-    static void dcCB3C(void);                    
-    static void dcCB3D(void);                    
-    static void dcCB3E(void);                    
-    static void dcCB3F(void);                    
-
-    static void dcCB40(void);
-    static void dcCB41(void);
-    static void dcCB42(void);
-    static void dcCB43(void);
-    static void dcCB44(void);
-    static void dcCB45(void);
-    static void dcCB46(void);                        
-    static void dcCB47(void);
-    static void dcCB48(void);
-    static void dcCB49(void);
-    static void dcCB4A(void);
-    static void dcCB4B(void);                    
-    static void dcCB4C(void);                    
-    static void dcCB4D(void);                    
-    static void dcCB4E(void);                    
-    static void dcCB4F(void);                    
-
-    static void dcCB50(void);
-    static void dcCB51(void);
-    static void dcCB52(void);
-    static void dcCB53(void);
-    static void dcCB54(void);
-    static void dcCB55(void);
-    static void dcCB56(void);                        
-    static void dcCB57(void);
-    static void dcCB58(void);
-    static void dcCB59(void);
-    static void dcCB5A(void);
-    static void dcCB5B(void);                    
-    static void dcCB5C(void);                    
-    static void dcCB5D(void);                    
-    static void dcCB5E(void);                    
-    static void dcCB5F(void);                    
-
-    static void dcCB60(void);
-    static void dcCB61(void);
-    static void dcCB62(void);
-    static void dcCB63(void);
-    static void dcCB64(void);
-    static void dcCB65(void);
-    static void dcCB66(void);                        
-    static void dcCB67(void);
-    static void dcCB68(void);
-    static void dcCB69(void);
-    static void dcCB6A(void);
-    static void dcCB6B(void);                    
-    static void dcCB6C(void);                    
-    static void dcCB6D(void);                    
-    static void dcCB6E(void);                    
-    static void dcCB6F(void);                    
-
-    static void dcCB70(void);
-    static void dcCB71(void);
-    static void dcCB72(void);
-    static void dcCB73(void);
-    static void dcCB74(void);
-    static void dcCB75(void);
-    static void dcCB76(void);                        
-    static void dcCB77(void);
-    static void dcCB78(void);
-    static void dcCB79(void);
-    static void dcCB7A(void);
-    static void dcCB7B(void);                    
-    static void dcCB7C(void);                    
-    static void dcCB7D(void);                    
-    static void dcCB7E(void);                    
-    static void dcCB7F(void);                    
-
-    static void dcCB80(void);
-    static void dcCB81(void);
-    static void dcCB82(void);
-    static void dcCB83(void);
-    static void dcCB84(void);
-    static void dcCB85(void);
-    static void dcCB86(void);                        
-    static void dcCB87(void);
-    static void dcCB88(void);
-    static void dcCB89(void);
-    static void dcCB8A(void);
-    static void dcCB8B(void);                    
-    static void dcCB8C(void);                    
-    static void dcCB8D(void);                    
-    static void dcCB8E(void);                    
-    static void dcCB8F(void);                    
-
-    static void dcCB90(void);
-    static void dcCB91(void);
-    static void dcCB92(void);
-    static void dcCB93(void);
-    static void dcCB94(void);
-    static void dcCB95(void);
-    static void dcCB96(void);                        
-    static void dcCB97(void);
-    static void dcCB98(void);
-    static void dcCB99(void);
-    static void dcCB9A(void);
-    static void dcCB9B(void);                    
-    static void dcCB9C(void);                    
-    static void dcCB9D(void);                    
-    static void dcCB9E(void);                    
-    static void dcCB9F(void);                    
-
-    static void dcCBA0(void);
-    static void dcCBA1(void);
-    static void dcCBA2(void);
-    static void dcCBA3(void);
-    static void dcCBA4(void);
-    static void dcCBA5(void);
-    static void dcCBA6(void);                        
-    static void dcCBA7(void);
-    static void dcCBA8(void);
-    static void dcCBA9(void);
-    static void dcCBAA(void);
-    static void dcCBAB(void);                    
-    static void dcCBAC(void);                    
-    static void dcCBAD(void);                    
-    static void dcCBAE(void);                    
-    static void dcCBAF(void);                    
-
-    static void dcCBB0(void);
-    static void dcCBB1(void);
-    static void dcCBB2(void);
-    static void dcCBB3(void);
-    static void dcCBB4(void);
-    static void dcCBB5(void);
-    static void dcCBB6(void);                        
-    static void dcCBB7(void);
-    static void dcCBB8(void);
-    static void dcCBB9(void);
-    static void dcCBBA(void);
-    static void dcCBBB(void);                    
-    static void dcCBBC(void);                    
-    static void dcCBBD(void);                    
-    static void dcCBBE(void);                    
-    static void dcCBBF(void);                    
-
-    static void dcCBC0(void);
-    static void dcCBC1(void);
-    static void dcCBC2(void);
-    static void dcCBC3(void);
-    static void dcCBC4(void);
-    static void dcCBC5(void);
-    static void dcCBC6(void);                        
-    static void dcCBC7(void);
-    static void dcCBC8(void);
-    static void dcCBC9(void);
-    static void dcCBCA(void);
-    static void dcCBCB(void);                    
-    static void dcCBCC(void);                    
-    static void dcCBCD(void);                    
-    static void dcCBCE(void);                    
-    static void dcCBCF(void);                    
-
-    static void dcCBD0(void);
-    static void dcCBD1(void);
-    static void dcCBD2(void);
-    static void dcCBD3(void);
-    static void dcCBD4(void);
-    static void dcCBD5(void);
-    static void dcCBD6(void);                        
-    static void dcCBD7(void);
-    static void dcCBD8(void);
-    static void dcCBD9(void);
-    static void dcCBDA(void);
-    static void dcCBDB(void);                    
-    static void dcCBDC(void);                    
-    static void dcCBDD(void);                    
-    static void dcCBDE(void);                    
-    static void dcCBDF(void);                    
-
-    static void dcCBE0(void);
-    static void dcCBE1(void);
-    static void dcCBE2(void);
-    static void dcCBE3(void);
-    static void dcCBE4(void);
-    static void dcCBE5(void);
-    static void dcCBE6(void);                        
-    static void dcCBE7(void);
-    static void dcCBE8(void);
-    static void dcCBE9(void);
-    static void dcCBEA(void);
-    static void dcCBEB(void);                    
-    static void dcCBEC(void);                    
-    static void dcCBED(void);                    
-    static void dcCBEE(void);                    
-    static void dcCBEF(void);                    
-
-    static void dcCBF0(void);
-    static void dcCBF1(void);
-    static void dcCBF2(void);
-    static void dcCBF3(void);
-    static void dcCBF4(void);
-    static void dcCBF5(void);
-    static void dcCBF6(void);                        
-    static void dcCBF7(void);
-    static void dcCBF8(void);
-    static void dcCBF9(void);
-    static void dcCBFA(void);
-    static void dcCBFB(void);                    
-    static void dcCBFC(void);                    
-    static void dcCBFD(void);                    
-    static void dcCBFE(void);                    
-    static void dcCBFF(void);                    
 
     static void check_trdos();                 
     static void check_trdos_unpage();                 

@@ -364,7 +364,8 @@ set_source_files_properties(src/Video.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -funroll-loops")
 # Z80 эмулятор — самый горячий код, критично для производительности.
 # Since 2026-09-06 the whole core is SRAM-resident (Z80_CORE_IN_RAM, below) and
-# therefore compiled -Os: 24.5 KB of SRAM against 44 KB at -O3. Measured on TS-Conf
+# therefore compiled -Os: 24.5 KB of SRAM against 44 KB at -O3 (18.8 KB + 1 KB dispatch
+# table since the 2026-09-07 CB/block-op rewrite, see CLAUDE.md). Measured on TS-Conf
 # TMNT: the -Os core in SRAM beats the -O3 core in flash by a third of the Z80
 # time — code fetches from flash queue behind butter-PSRAM line fills on the single
 # XIP port. See the TS-Conf performance notes in CLAUDE.md before changing either.

@@ -2830,6 +2830,30 @@ The ledger, for when the next feature has to justify its bytes:
   under `if (s_ngs)`. Off/classic GS pays nothing but NgsMp3.cpp's own 395 B.
 - TinyUSB 0.21 costs +2.4 KB over 0.18 (`_usbh_epbuf`, `_hidh_epbuf`, `hid_snap`).
 - Video.cpp `.time_critical.video` 16568 → 18896.
+- **the Z80 core in SRAM (`Z80_CORE_IN_RAM`, -Os) is 20.2 KB, down from 26.9
+  (2026-09-07, hw-confirmed: games + the ULA test set pass)**: `.text` 24904 →
+  19212 B and `.data` 2048 → 1024 B, by de-duplicating code rather than moving
+  it to flash. (1) The 256 `dcCBXX` handlers + their 1 KB `dcCB` table became one
+  `Z80::decodeCB()` (308 B): opcode bits [7:6] group / [5:3] n / [2:0] r, the
+  register via a `cbReg8[8]` pointer table (`nullptr` = (HL)); same helpers, same
+  `addressOnBus` before the (HL) write-back, BIT n,(HL) keeps the REG_W 5/3 fixup.
+  The table MUST carry `section(".time_critical.z80")` — a function-local
+  `static const` goes to `.rodata`, which the linker script sends to FLASH (the
+  Z80_CORE_IN_RAM rule covers `.text` only), i.e. one XIP fetch per CB op; check
+  `nm` for `cbReg8` at 0x2xxxxxxx. (2) ldi/ldd, cpi/cpd, ini/ind, outi/outd →
+  `ldx/cpx/inx/otx(int d)`, d = ±1 (−548 B; `REG_C + d` replaces the `+1`/`-1` of
+  INI/IND's parity term). **Measured but NOT applied**, owner's call after a hw
+  A/B on `[PERF] 60f: cpu=` (TMNT, GMX 7 MHz): LD r,r' 0x40-0x7F + ALU r
+  0x80-0xBE → `decodeLD8/decodeALU8` over a shared `reg8[8]` (−1954 B), and
+  RET cc / JP cc / CALL cc / RST / INC r / DEC r → five generics + `condMet(cc)`
+  (−1440 B) — both add a table load + `(HL)` test to the HOTTEST opcodes (est.
+  +2-4% Z80 time). 0xBF (CP A, the tape LOAD trap) and 0x76 (HALT) stay
+  individual handlers in any variant. Prototype recipe: copy `src/` to scratch,
+  edit, compile with the exact command from `build/compile_commands.json`,
+  compare `size -A` `.text` sums — every number above was taken that way. Left
+  for a further round (estimated): `decodeDDFD` 2452 B via `reg8` (~600-800),
+  `decodeDDFDCB` 700 → the decodeCB shape (~400), IN r,(C)/OUT (C),r in
+  `decodeED` (~300).
 
 **`alignas(N)` in `.bss` costs the fill as well as the object.** `conv_color_b`
 (4 KB, must be 4 KB-aligned because the PIO address converter rebuilds the read

@@ -683,238 +683,20 @@ void Z80::push(uint16_t word) {
 }
 
 // LDI
-IRAM_ATTR void Z80::ldi(void) {
-
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t work8,REG_HL);
-
-    Z80Ops::poke8(REG_DE, work8);
-    Z80Ops::addressOnBus(REG_DE, 2);
-    REG_HL++;
-    REG_DE++;
-    REG_BC--;
-    work8 += regA;
-
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZ_MASK) | (work8 & BIT3_MASK);
-
-    if ((work8 & ADDSUB_MASK) != 0) {
-        sz5h3pnFlags |= BIT5_MASK;
-    }
-
-    if (REG_BC != 0) {
-        sz5h3pnFlags |= PARITY_MASK;
-    }
-    flagQ = true;
-}
 
 // LDD
-IRAM_ATTR void Z80::ldd(void) {
-
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t work8,REG_HL);
-
-    Z80Ops::poke8(REG_DE, work8);
-    Z80Ops::addressOnBus(REG_DE, 2);
-    REG_HL--;
-    REG_DE--;
-    REG_BC--;
-    work8 += regA;
-
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZ_MASK) | (work8 & BIT3_MASK);
-
-    if ((work8 & ADDSUB_MASK) != 0) {
-        sz5h3pnFlags |= BIT5_MASK;
-    }
-
-    if (REG_BC != 0) {
-        sz5h3pnFlags |= PARITY_MASK;
-    }
-    flagQ = true;
-}
 
 // CPI
-IRAM_ATTR void Z80::cpi(void) {
-
-    uint8_t memHL = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t memHL,REG_HL);
-
-    bool carry = carryFlag; // lo guardo porque cp lo toca
-    cp(memHL);
-    carryFlag = carry;
-    Z80Ops::addressOnBus(REG_HL, 5);
-    REG_HL++;
-    REG_BC--;
-    memHL = regA - memHL - ((sz5h3pnFlags & HALFCARRY_MASK) != 0 ? 1 : 0);
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHN_MASK) | (memHL & BIT3_MASK);
-
-    if ((memHL & ADDSUB_MASK) != 0) {
-        sz5h3pnFlags |= BIT5_MASK;
-    }
-
-    if (REG_BC != 0) {
-        sz5h3pnFlags |= PARITY_MASK;
-    }
-
-    REG_WZ++;
-    flagQ = true;
-}
 
 // CPD
-IRAM_ATTR void Z80::cpd(void) {
-
-    uint8_t memHL = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t memHL,REG_HL);
-
-    bool carry = carryFlag; // lo guardo porque cp lo toca
-    cp(memHL);
-    carryFlag = carry;
-    Z80Ops::addressOnBus(REG_HL, 5);
-    REG_HL--;
-    REG_BC--;
-    memHL = regA - memHL - ((sz5h3pnFlags & HALFCARRY_MASK) != 0 ? 1 : 0);
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHN_MASK) | (memHL & BIT3_MASK);
-
-    if ((memHL & ADDSUB_MASK) != 0) {
-        sz5h3pnFlags |= BIT5_MASK;
-    }
-
-    if (REG_BC != 0) {
-        sz5h3pnFlags |= PARITY_MASK;
-    }
-
-    REG_WZ--;
-    flagQ = true;
-}
 
 // INI
-IRAM_ATTR void Z80::ini(void) {
-    REG_WZ = REG_BC;
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    uint8_t work8 = Ports::input(REG_WZ++);
-    Z80Ops::poke8(REG_HL, work8);
-
-    REG_B--;
-    REG_HL++;
-
-    sz5h3pnFlags = sz53pn_addTable[REG_B];
-    if (work8 > 0x7f) {
-        sz5h3pnFlags |= ADDSUB_MASK;
-    }
-
-    carryFlag = false;
-    uint16_t tmp = work8 + ((REG_C + 1) & 255);
-    if (tmp > 0xff) {
-        sz5h3pnFlags |= HALFCARRY_MASK;
-        carryFlag = true;
-    }
-
-    if ((sz53pn_addTable[((tmp & 0x07) ^ REG_B)]
-            & PARITY_MASK) == PARITY_MASK) {
-        sz5h3pnFlags |= PARITY_MASK;
-    } else {
-        sz5h3pnFlags &= ~PARITY_MASK;
-    }
-    flagQ = true;
-}
 
 // IND
-IRAM_ATTR void Z80::ind(void) {
-    REG_WZ = REG_BC;
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    uint8_t work8 = Ports::input(REG_WZ--);
-    Z80Ops::poke8(REG_HL, work8);
-
-    REG_B--;
-    REG_HL--;
-
-    sz5h3pnFlags = sz53pn_addTable[REG_B];
-    if (work8 > 0x7f) {
-        sz5h3pnFlags |= ADDSUB_MASK;
-    }
-
-    carryFlag = false;
-    uint16_t tmp = work8 + ((REG_C - 1) & 255);
-    if (tmp > 0xff) {
-        sz5h3pnFlags |= HALFCARRY_MASK;
-        carryFlag = true;
-    }
-
-    if ((sz53pn_addTable[((tmp & 0x07) ^ REG_B)]
-            & PARITY_MASK) == PARITY_MASK) {
-        sz5h3pnFlags |= PARITY_MASK;
-    } else {
-        sz5h3pnFlags &= ~PARITY_MASK;
-    }
-    flagQ = true;
-}
 
 // OUTI
-IRAM_ATTR void Z80::outi(void) {
-
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-
-    REG_B--;
-    REG_WZ = REG_BC;
-
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t work8,REG_HL);
-
-    Ports::output(REG_WZ++, work8);
-
-    REG_HL++;
-
-    carryFlag = false;
-    if (work8 > 0x7f) {
-        sz5h3pnFlags = sz53n_subTable[REG_B];
-    } else {
-        sz5h3pnFlags = sz53n_addTable[REG_B];
-    }
-
-    if ((REG_L + work8) > 0xff) {
-        sz5h3pnFlags |= HALFCARRY_MASK;
-        carryFlag = true;
-    }
-
-    if ((sz53pn_addTable[(((REG_L + work8) & 0x07) ^ REG_B)]
-            & PARITY_MASK) == PARITY_MASK) {
-        sz5h3pnFlags |= PARITY_MASK;
-    }
-    flagQ = true;
-}
 
 // OUTD
-IRAM_ATTR void Z80::outd(void) {
-
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-
-    REG_B--;
-    REG_WZ = REG_BC;
-
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t work8,REG_HL);
-
-    Ports::output(REG_WZ--, work8);
-
-    REG_HL--;
-
-    carryFlag = false;
-    if (work8 > 0x7f) {
-        sz5h3pnFlags = sz53n_subTable[REG_B];
-    } else {
-        sz5h3pnFlags = sz53n_addTable[REG_B];
-    }
-
-    if ((REG_L + work8) > 0xff) {
-        sz5h3pnFlags |= HALFCARRY_MASK;
-        carryFlag = true;
-    }
-
-    if ((sz53pn_addTable[(((REG_L + work8) & 0x07) ^ REG_B)]
-            & PARITY_MASK) == PARITY_MASK) {
-        sz5h3pnFlags |= PARITY_MASK;
-    }
-    flagQ = true;
-}
 
 // Pone a 1 el Flag Z si el bit b del registro
 // r es igual a 0
@@ -1490,7 +1272,7 @@ IRAM_ATTR void Z80::exec_nocheck() {
 }
 
 // LDIR/LDDR block fast path: run every iteration but the LAST as one block copy,
-// then let the normal ldi()/ldd() do the final one so flags, WZ and the exit
+// then let the normal ldx(1)/ldx(-1) do the final one so flags, WZ and the exit
 // timing are exactly the core's. Each batched iteration accounts 21 T (16 + the
 // 5-T repeat) and two opcode fetches (R += 2); WZ = the repeat opcode's address,
 // as the repeat path sets it. Only inside exec_nocheck (z80_in_nocheck) and
@@ -2877,32 +2659,11 @@ void Z80::decodeOpcodeca()
 }
 
 void Z80::decodeOpcodecb()
-{ /* Subconjunto de instrucciones */
-
-
-    // uint8_t pg = REG_PC >> 14;
-    // VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
-    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
-    // // FETCH_OPCODE(opCode, REG_PC);
-
-    // uint8_t pg = REG_PC >> 14;
-    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
-    // if (MemESP::ramContended[pg]) {
-    //     MemESP::lastContendedMemReadWrite = opCode;
-    //     VIDEO::Draw_Opcode(true);
-    // } else {
-    //     VIDEO::Draw_Opcode(false);
-    // };
-
+{ /* 0xCB prefix */
     opCode = Z80Ops::fetchOpcode();
-
     REG_PC++;
     regR++;
-
-    // decodeCB();
-
-    dcCB[opCode]();
-
+    decodeCB();
 }
 
 void Z80::decodeOpcodecc()
@@ -3599,1440 +3360,57 @@ void (*Z80::dcOpcode[256])() = {
 
 //Subconjunto de instrucciones 0xCB
 
-void Z80::dcCB00()
-{ /* RLC B */
-    rlc(REG_B);
 
+// Generic CB decoder. Opcode bits: [7:6] group, [5:3] n, [2:0] r.
+// group 0 = rotate/shift #n (RLC RRC RL RR SLA SRA SLL SRL), 1 = BIT n,r,
+// 2 = RES n,r, 3 = SET n,r; r = B C D E H L (HL) A. One routine replaces the
+// 256 per-opcode handlers + their 1 KB dispatch table (-6.2 KB of SRAM, 2026-09-07)
+// with the same semantics and the same bus timing (addressOnBus before the (HL) write-back).
+void Z80::decodeCB() {
+    // Read on every CB instruction: keep it in SRAM with the core. A plain
+    // `static const` lands in .rodata, which the linker script sends to FLASH
+    // (the Z80_CORE_IN_RAM rule covers .text only) — one XIP fetch per CB op.
+    static uint8_t* const cbReg8[8] __attribute__((section(".time_critical.z80"))) = {
+        &regBC.byte8.hi, &regBC.byte8.lo, &regDE.byte8.hi, &regDE.byte8.lo,
+        &regHL.byte8.hi, &regHL.byte8.lo, nullptr, &regA };
+    const uint8_t op = opCode;
+    const uint8_t r = op & 7;
+    const uint8_t n = (op >> 3) & 7;
+    const uint8_t mask = 1u << n;
+    uint8_t* reg = cbReg8[r];
+    uint8_t work8 = reg ? *reg : Z80Ops::peek8(REG_HL);
+    switch (op >> 6) {
+        case 0:
+            switch (n) {
+                case 0: rlc(work8); break;
+                case 1: rrc(work8); break;
+                case 2: rl(work8);  break;
+                case 3: rr(work8);  break;
+                case 4: sla(work8); break;
+                case 5: sra(work8); break;
+                case 6: sll(work8); break;
+                default: srl(work8); break;
+            }
+            break;
+        case 1:
+            bitTest(mask, work8);
+            if (!reg) {
+                sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
+                Z80Ops::addressOnBus(REG_HL, 1);
+            }
+            return;
+        case 2: work8 &= (uint8_t)~mask; break;
+        default: work8 |= mask; break;
+    }
+    if (reg) {
+        *reg = work8;
+    } else {
+        Z80Ops::addressOnBus(REG_HL, 1);
+        Z80Ops::poke8(REG_HL, work8);
+    }
 }
-void Z80::dcCB01()
-{ /* RLC C */
-    rlc(REG_C);
 
-}
-void Z80::dcCB02()
-{ /* RLC D */
-    rlc(REG_D);
-
-}
-void Z80::dcCB03()
-{ /* RLC E */
-    rlc(REG_E);
-
-}
-void Z80::dcCB04()
-{ /* RLC H */
-    rlc(REG_H);
-
-}
-void Z80::dcCB05()
-{ /* RLC L */
-    rlc(REG_L);
-
-}
-void Z80::dcCB06()
-{ /* RLC (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    rlc(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB07()
-{ /* RLC A */
-    rlc(regA);
-
-}
-void Z80::dcCB08()
-{ /* RRC B */
-    rrc(REG_B);
-
-}
-void Z80::dcCB09()
-{ /* RRC C */
-    rrc(REG_C);
-
-}
-void Z80::dcCB0A()
-{ /* RRC D */
-    rrc(REG_D);
-}
-void Z80::dcCB0B()
-{ /* RRC E */
-    rrc(REG_E);
-
-}
-void Z80::dcCB0C()
-{ /* RRC H */
-    rrc(REG_H);
-
-}
-void Z80::dcCB0D()
-{ /* RRC L */
-    rrc(REG_L);
-
-}
-void Z80::dcCB0E()
-{ /* RRC (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    rrc(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB0F()
-{ /* RRC A */
-    rrc(regA);
-
-}
-void Z80::dcCB10()
-{ /* RL B */
-    rl(REG_B);
-
-}
-void Z80::dcCB11()
-{ /* RL C */
-    rl(REG_C);
-
-}
-void Z80::dcCB12()
-{ /* RL D */
-    rl(REG_D);
-
-}
-void Z80::dcCB13()
-{ /* RL E */
-    rl(REG_E);
-
-}
-void Z80::dcCB14()
-{ /* RL H */
-    rl(REG_H);
-
-}
-void Z80::dcCB15()
-{ /* RL L */
-    rl(REG_L);
-
-}
-void Z80::dcCB16()
-{ /* RL (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    rl(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB17()
-{ /* RL A */
-    rl(regA);
-
-}
-void Z80::dcCB18()
-{ /* RR B */
-    rr(REG_B);
-
-}
-void Z80::dcCB19()
-{ /* RR C */
-    rr(REG_C);
-
-}
-void Z80::dcCB1A()
-{ /* RR D */
-    rr(REG_D);
-
-}
-void Z80::dcCB1B()
-{ /* RR E */
-    rr(REG_E);
-
-}
-void Z80::dcCB1C()
-{ /*RR H*/
-    rr(REG_H);
-
-}
-void Z80::dcCB1D()
-{ /* RR L */
-    rr(REG_L);
-
-}
-void Z80::dcCB1E()
-{ /* RR (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    rr(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB1F()
-{ /* RR A */
-    rr(regA);
-
-}
-void Z80::dcCB20()
-{ /* SLA B */
-    sla(REG_B);
-
-}
-void Z80::dcCB21()
-{ /* SLA C */
-    sla(REG_C);
-
-}
-void Z80::dcCB22()
-{ /* SLA D */
-    sla(REG_D);
-
-}
-void Z80::dcCB23()
-{ /* SLA E */
-    sla(REG_E);
-
-}
-void Z80::dcCB24()
-{ /* SLA H */
-    sla(REG_H);
-
-}
-void Z80::dcCB25()
-{ /* SLA L */
-    sla(REG_L);
-
-}
-void Z80::dcCB26()
-{ /* SLA (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    sla(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB27()
-{ /* SLA A */
-    sla(regA);
-
-}
-void Z80::dcCB28()
-{ /* SRA B */
-    sra(REG_B);
-
-}
-void Z80::dcCB29()
-{ /* SRA C */
-    sra(REG_C);
-
-}
-void Z80::dcCB2A()
-{ /* SRA D */
-    sra(REG_D);
-
-}
-void Z80::dcCB2B()
-{ /* SRA E */
-    sra(REG_E);
-
-}
-void Z80::dcCB2C()
-{ /* SRA H */
-    sra(REG_H);
-
-}
-void Z80::dcCB2D()
-{ /* SRA L */
-    sra(REG_L);
-
-}
-void Z80::dcCB2E()
-{ /* SRA (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    sra(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB2F()
-{ /* SRA A */
-    sra(regA);
-
-}
-void Z80::dcCB30()
-{ /* SLL B */
-    sll(REG_B);
-
-}
-void Z80::dcCB31()
-{ /* SLL C */
-    sll(REG_C);
-
-}
-void Z80::dcCB32()
-{ /* SLL D */
-    sll(REG_D);
-
-}
-void Z80::dcCB33()
-{ /* SLL E */
-    sll(REG_E);
-
-}
-void Z80::dcCB34()
-{ /* SLL H */
-    sll(REG_H);
-
-}
-void Z80::dcCB35()
-{ /* SLL L */
-    sll(REG_L);
-
-}
-void Z80::dcCB36()
-{ /* SLL (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    sll(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB37()
-{ /* SLL A */
-    sll(regA);
-
-}
-void Z80::dcCB38()
-{ /* SRL B */
-    srl(REG_B);
-
-}
-void Z80::dcCB39()
-{ /* SRL C */
-    srl(REG_C);
-
-}
-void Z80::dcCB3A()
-{ /* SRL D */
-    srl(REG_D);
-
-}
-void Z80::dcCB3B()
-{ /* SRL E */
-    srl(REG_E);
-
-}
-void Z80::dcCB3C()
-{ /* SRL H */
-    srl(REG_H);
-
-}
-void Z80::dcCB3D()
-{ /* SRL L */
-    srl(REG_L);
-
-}
-void Z80::dcCB3E()
-{ /* SRL (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    srl(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB3F()
-{ /* SRL A */
-    srl(regA);
-
-}
-void Z80::dcCB40()
-{ /* BIT 0,B */
-    bitTest(0x01, REG_B);
-
-}
-void Z80::dcCB41()
-{ /* BIT 0,C */
-    bitTest(0x01, REG_C);
-
-}
-void Z80::dcCB42()
-{ /* BIT 0,D */
-    bitTest(0x01, REG_D);
-
-}
-void Z80::dcCB43()
-{ /* BIT 0,E */
-    bitTest(0x01, REG_E);
-
-}
-void Z80::dcCB44()
-{ /* BIT 0,H */
-    bitTest(0x01, REG_H);
-
-}
-void Z80::dcCB45()
-{ /* BIT 0,L */
-    bitTest(0x01, REG_L);
-
-}
-void Z80::dcCB46()
-{ /* BIT 0,(HL) */
-    bitTest(0x01, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB47()
-{ /* BIT 0,A */
-    bitTest(0x01, regA);
-
-}
-void Z80::dcCB48()
-{ /* BIT 1,B */
-    bitTest(0x02, REG_B);
-
-}
-void Z80::dcCB49()
-{ /* BIT 1,C */
-    bitTest(0x02, REG_C);
-
-}
-void Z80::dcCB4A()
-{ /* BIT 1,D */
-    bitTest(0x02, REG_D);
-
-}
-void Z80::dcCB4B()
-{ /* BIT 1,E */
-    bitTest(0x02, REG_E);
-
-}
-void Z80::dcCB4C()
-{ /* BIT 1,H */
-    bitTest(0x02, REG_H);
-
-}
-void Z80::dcCB4D()
-{ /* BIT 1,L */
-    bitTest(0x02, REG_L);
-
-}
-void Z80::dcCB4E()
-{ /* BIT 1,(HL) */
-    bitTest(0x02, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB4F()
-{ /* BIT 1,A */
-    bitTest(0x02, regA);
-
-}
-void Z80::dcCB50()
-{ /* BIT 2,B */
-    bitTest(0x04, REG_B);
-
-}
-void Z80::dcCB51()
-{ /* BIT 2,C */
-    bitTest(0x04, REG_C);
-
-}
-void Z80::dcCB52()
-{ /* BIT 2,D */
-    bitTest(0x04, REG_D);
-
-}
-void Z80::dcCB53()
-{ /* BIT 2,E */
-    bitTest(0x04, REG_E);
-
-}
-void Z80::dcCB54()
-{ /* BIT 2,H */
-    bitTest(0x04, REG_H);
-
-}
-void Z80::dcCB55()
-{ /* BIT 2,L */
-    bitTest(0x04, REG_L);
-
-}
-void Z80::dcCB56()
-{ /* BIT 2,(HL) */
-    bitTest(0x04, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB57()
-{ /* BIT 2,A */
-    bitTest(0x04, regA);
-
-}
-void Z80::dcCB58()
-{ /* BIT 3,B */
-    bitTest(0x08, REG_B);
-
-}
-void Z80::dcCB59()
-{ /* BIT 3,C */
-    bitTest(0x08, REG_C);
-
-}
-void Z80::dcCB5A()
-{ /* BIT 3,D */
-    bitTest(0x08, REG_D);
-
-}
-void Z80::dcCB5B()
-{ /* BIT 3,E */
-    bitTest(0x08, REG_E);
-
-}
-void Z80::dcCB5C()
-{ /* BIT 3,H */
-    bitTest(0x08, REG_H);
-
-}
-void Z80::dcCB5D()
-{ /* BIT 3,L */
-    bitTest(0x08, REG_L);
-
-}
-void Z80::dcCB5E()
-{ /* BIT 3,(HL) */
-    bitTest(0x08, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB5F()
-{ /* BIT 3,A */
-    bitTest(0x08, regA);
-
-}
-void Z80::dcCB60()
-{ /* BIT 4,B */
-    bitTest(0x10, REG_B);
-
-}
-void Z80::dcCB61()
-{ /* BIT 4,C */
-    bitTest(0x10, REG_C);
-
-}
-void Z80::dcCB62()
-{ /* BIT 4,D */
-    bitTest(0x10, REG_D);
-
-}
-void Z80::dcCB63()
-{ /* BIT 4,E */
-    bitTest(0x10, REG_E);
-
-}
-void Z80::dcCB64()
-{ /* BIT 4,H */
-    bitTest(0x10, REG_H);
-
-}
-void Z80::dcCB65()
-{ /* BIT 4,L */
-    bitTest(0x10, REG_L);
-
-}
-void Z80::dcCB66()
-{ /* BIT 4,(HL) */
-    bitTest(0x10, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB67()
-{ /* BIT 4,A */
-    bitTest(0x10, regA);
-
-}
-void Z80::dcCB68()
-{ /* BIT 5,B */
-    bitTest(0x20, REG_B);
-
-}
-void Z80::dcCB69()
-{ /* BIT 5,C */
-    bitTest(0x20, REG_C);
-
-}
-void Z80::dcCB6A()
-{ /* BIT 5,D */
-    bitTest(0x20, REG_D);
-
-}
-void Z80::dcCB6B()
-{ /* BIT 5,E */
-    bitTest(0x20, REG_E);
-
-}
-void Z80::dcCB6C()
-{ /* BIT 5,H */
-    bitTest(0x20, REG_H);
-
-}
-void Z80::dcCB6D()
-{ /* BIT 5,L */
-    bitTest(0x20, REG_L);
-
-}
-void Z80::dcCB6E()
-{ /* BIT 5,(HL) */
-    bitTest(0x20, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB6F()
-{ /* BIT 5,A */
-    bitTest(0x20, regA);
-
-}
-void Z80::dcCB70()
-{ /* BIT 6,B */
-    bitTest(0x40, REG_B);
-
-}
-void Z80::dcCB71()
-{ /* BIT 6,C */
-    bitTest(0x40, REG_C);
-
-}
-void Z80::dcCB72()
-{ /* BIT 6,D */
-    bitTest(0x40, REG_D);
-
-}
-void Z80::dcCB73()
-{ /* BIT 6,E */
-    bitTest(0x40, REG_E);
-
-}
-void Z80::dcCB74()
-{ /* BIT 6,H */
-    bitTest(0x40, REG_H);
-
-}
-void Z80::dcCB75()
-{ /* BIT 6,L */
-    bitTest(0x40, REG_L);
-
-}
-void Z80::dcCB76()
-{ /* BIT 6,(HL) */
-    bitTest(0x40, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB77()
-{ /* BIT 6,A */
-    bitTest(0x40, regA);
-
-}
-void Z80::dcCB78()
-{ /* BIT 7,B */
-    bitTest(0x80, REG_B);
-
-}
-void Z80::dcCB79()
-{ /* BIT 7,C */
-    bitTest(0x80, REG_C);
-
-}
-void Z80::dcCB7A()
-{ /* BIT 7,D */
-    bitTest(0x80, REG_D);
-
-}
-void Z80::dcCB7B()
-{ /* BIT 7,E */
-    bitTest(0x80, REG_E);
-
-}
-void Z80::dcCB7C()
-{ /* BIT 7,H */
-    bitTest(0x80, REG_H);
-
-}
-void Z80::dcCB7D()
-{ /* BIT 7,L */
-    bitTest(0x80, REG_L);
-
-}
-void Z80::dcCB7E()
-{ /* BIT 7,(HL) */
-    bitTest(0x80, Z80Ops::peek8(REG_HL));
-    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
-    Z80Ops::addressOnBus(REG_HL, 1);
-
-}
-void Z80::dcCB7F()
-{ /* BIT 7,A */
-    bitTest(0x80, regA);
-
-}
-void Z80::dcCB80()
-{ /* RES 0,B */
-    REG_B &= 0xFE;
-
-}
-void Z80::dcCB81()
-{ /* RES 0,C */
-    REG_C &= 0xFE;
-
-}
-void Z80::dcCB82()
-{ /* RES 0,D */
-    REG_D &= 0xFE;
-
-}
-void Z80::dcCB83()
-{ /* RES 0,E */
-    REG_E &= 0xFE;
-
-}
-void Z80::dcCB84()
-{ /* RES 0,H */
-    REG_H &= 0xFE;
-
-}
-void Z80::dcCB85()
-{ /* RES 0,L */
-    REG_L &= 0xFE;
-
-}
-void Z80::dcCB86()
-{ /* RES 0,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0xFE;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB87()
-{ /* RES 0,A */
-    regA &= 0xFE;
-
-}
-void Z80::dcCB88()
-{ /* RES 1,B */
-    REG_B &= 0xFD;
-
-}
-void Z80::dcCB89()
-{ /* RES 1,C */
-    REG_C &= 0xFD;
-
-}
-void Z80::dcCB8A()
-{ /* RES 1,D */
-    REG_D &= 0xFD;
-
-}
-void Z80::dcCB8B()
-{ /* RES 1,E */
-    REG_E &= 0xFD;
-
-}
-void Z80::dcCB8C()
-{ /* RES 1,H */
-    REG_H &= 0xFD;
-
-}
-void Z80::dcCB8D()
-{ /* RES 1,L */
-    REG_L &= 0xFD;
-
-}
-void Z80::dcCB8E()
-{ /* RES 1,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0xFD;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB8F()
-{ /* RES 1,A */
-    regA &= 0xFD;
-
-}
-void Z80::dcCB90()
-{ /* RES 2,B */
-    REG_B &= 0xFB;
-
-}
-void Z80::dcCB91()
-{ /* RES 2,C */
-    REG_C &= 0xFB;
-
-}
-void Z80::dcCB92()
-{ /* RES 2,D */
-    REG_D &= 0xFB;
-
-}
-void Z80::dcCB93()
-{ /* RES 2,E */
-    REG_E &= 0xFB;
-
-}
-void Z80::dcCB94()
-{ /* RES 2,H */
-    REG_H &= 0xFB;
-
-}
-void Z80::dcCB95()
-{ /* RES 2,L */
-    REG_L &= 0xFB;
-
-}
-void Z80::dcCB96()
-{ /* RES 2,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0xFB;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB97()
-{ /* RES 2,A */
-    regA &= 0xFB;
-
-}
-void Z80::dcCB98()
-{ /* RES 3,B */
-    REG_B &= 0xF7;
-
-}
-void Z80::dcCB99()
-{ /* RES 3,C */
-    REG_C &= 0xF7;
-
-}
-void Z80::dcCB9A()
-{ /* RES 3,D */
-    REG_D &= 0xF7;
-
-}
-void Z80::dcCB9B()
-{ /* RES 3,E */
-    REG_E &= 0xF7;
-
-}
-void Z80::dcCB9C()
-{ /* RES 3,H */
-    REG_H &= 0xF7;
-
-}
-void Z80::dcCB9D()
-{ /* RES 3,L */
-    REG_L &= 0xF7;
-
-}
-void Z80::dcCB9E()
-{ /* RES 3,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0xF7;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCB9F()
-{ /* RES 3,A */
-    regA &= 0xF7;
-
-}
-void Z80::dcCBA0()
-{ /* RES 4,B */
-    REG_B &= 0xEF;
-
-}
-void Z80::dcCBA1()
-{ /* RES 4,C */
-    REG_C &= 0xEF;
-
-}
-void Z80::dcCBA2()
-{ /* RES 4,D */
-    REG_D &= 0xEF;
-
-}
-void Z80::dcCBA3()
-{ /* RES 4,E */
-    REG_E &= 0xEF;
-
-}
-void Z80::dcCBA4()
-{ /* RES 4,H */
-    REG_H &= 0xEF;
-
-}
-void Z80::dcCBA5()
-{ /* RES 4,L */
-    REG_L &= 0xEF;
-
-}
-void Z80::dcCBA6()
-{ /* RES 4,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0xEF;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBA7()
-{ /* RES 4,A */
-    regA &= 0xEF;
-
-}
-void Z80::dcCBA8()
-{ /* RES 5,B */
-    REG_B &= 0xDF;
-
-}
-void Z80::dcCBA9()
-{ /* RES 5,C */
-    REG_C &= 0xDF;
-
-}
-void Z80::dcCBAA()
-{ /* RES 5,D */
-    REG_D &= 0xDF;
-
-}
-void Z80::dcCBAB()
-{ /* RES 5,E */
-    REG_E &= 0xDF;
-
-}
-void Z80::dcCBAC()
-{ /* RES 5,H */
-    REG_H &= 0xDF;
-
-}
-void Z80::dcCBAD()
-{ /* RES 5,L */
-    REG_L &= 0xDF;
-
-}
-void Z80::dcCBAE()
-{ /* RES 5,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0xDF;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBAF()
-{ /* RES 5,A */
-    regA &= 0xDF;
-
-}
-void Z80::dcCBB0()
-{ /* RES 6,B */
-    REG_B &= 0xBF;
-
-}
-void Z80::dcCBB1()
-{ /* RES 6,C */
-    REG_C &= 0xBF;
-
-}
-void Z80::dcCBB2()
-{ /* RES 6,D */
-    REG_D &= 0xBF;
-
-}
-void Z80::dcCBB3()
-{ /* RES 6,E */
-    REG_E &= 0xBF;
-
-}
-void Z80::dcCBB4()
-{ /* RES 6,H */
-    REG_H &= 0xBF;
-
-}
-void Z80::dcCBB5()
-{ /* RES 6,L */
-    REG_L &= 0xBF;
-
-}
-void Z80::dcCBB6()
-{ /* RES 6,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0xBF;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBB7()
-{ /* RES 6,A */
-    regA &= 0xBF;
-
-}
-void Z80::dcCBB8()
-{ /* RES 7,B */
-    REG_B &= 0x7F;
-
-}
-void Z80::dcCBB9()
-{ /* RES 7,C */
-    REG_C &= 0x7F;
-
-}
-void Z80::dcCBBA()
-{ /* RES 7,D */
-    REG_D &= 0x7F;
-
-}
-void Z80::dcCBBB()
-{ /* RES 7,E */
-    REG_E &= 0x7F;
-
-}
-void Z80::dcCBBC()
-{ /* RES 7,H */
-    REG_H &= 0x7F;
-
-}
-void Z80::dcCBBD()
-{ /* RES 7,L */
-    REG_L &= 0x7F;
-
-}
-void Z80::dcCBBE()
-{ /* RES 7,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) & 0x7F;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBBF()
-{ /* RES 7,A */
-    regA &= 0x7F;
-
-}
-void Z80::dcCBC0()
-{ /* SET 0,B */
-    REG_B |= 0x01;
-
-}
-void Z80::dcCBC1()
-{ /* SET 0,C */
-    REG_C |= 0x01;
-
-}
-void Z80::dcCBC2()
-{ /* SET 0,D */
-    REG_D |= 0x01;
-
-}
-void Z80::dcCBC3()
-{ /* SET 0,E */
-    REG_E |= 0x01;
-
-}
-void Z80::dcCBC4()
-{ /* SET 0,H */
-    REG_H |= 0x01;
-
-}
-void Z80::dcCBC5()
-{ /* SET 0,L */
-    REG_L |= 0x01;
-
-}
-void Z80::dcCBC6()
-{ /* SET 0,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x01;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBC7()
-{ /* SET 0,A */
-    regA |= 0x01;
-
-}
-void Z80::dcCBC8()
-{ /* SET 1,B */
-    REG_B |= 0x02;
-
-}
-void Z80::dcCBC9()
-{ /* SET 1,C */
-    REG_C |= 0x02;
-
-}
-void Z80::dcCBCA()
-{ /* SET 1,D */
-    REG_D |= 0x02;
-
-}
-void Z80::dcCBCB()
-{ /* SET 1,E */
-    REG_E |= 0x02;
-
-}
-void Z80::dcCBCC()
-{ /* SET 1,H */
-    REG_H |= 0x02;
-
-}
-void Z80::dcCBCD()
-{ /* SET 1,L */
-    REG_L |= 0x02;
-
-}
-void Z80::dcCBCE()
-{ /* SET 1,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x02;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBCF()
-{ /* SET 1,A */
-    regA |= 0x02;
-
-}
-void Z80::dcCBD0()
-{ /* SET 2,B */
-    REG_B |= 0x04;
-
-}
-void Z80::dcCBD1()
-{ /* SET 2,C */
-    REG_C |= 0x04;
-
-}
-void Z80::dcCBD2()
-{ /* SET 2,D */
-    REG_D |= 0x04;
-
-}
-void Z80::dcCBD3()
-{ /* SET 2,E */
-    REG_E |= 0x04;
-
-}
-void Z80::dcCBD4()
-{ /* SET 2,H */
-    REG_H |= 0x04;
-
-}
-void Z80::dcCBD5()
-{ /* SET 2,L */
-    REG_L |= 0x04;
-
-}
-void Z80::dcCBD6()
-{ /* SET 2,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x04;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBD7()
-{ /* SET 2,A */
-    regA |= 0x04;
-
-}
-void Z80::dcCBD8()
-{ /* SET 3,B */
-    REG_B |= 0x08;
-
-}
-void Z80::dcCBD9()
-{ /* SET 3,C */
-    REG_C |= 0x08;
-
-}
-void Z80::dcCBDA()
-{ /* SET 3,D */
-    REG_D |= 0x08;
-
-}
-void Z80::dcCBDB()
-{ /* SET 3,E */
-    REG_E |= 0x08;
-
-}
-void Z80::dcCBDC()
-{ /* SET 3,H */
-    REG_H |= 0x08;
-
-}
-void Z80::dcCBDD()
-{ /* SET 3,L */
-    REG_L |= 0x08;
-
-}
-void Z80::dcCBDE()
-{ /* SET 3,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x08;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBDF()
-{ /* SET 3,A */
-    regA |= 0x08;
-
-}
-void Z80::dcCBE0()
-{ /* SET 4,B */
-    REG_B |= 0x10;
-
-}
-void Z80::dcCBE1()
-{ /* SET 4,C */
-    REG_C |= 0x10;
-
-}
-void Z80::dcCBE2()
-{ /* SET 4,D */
-    REG_D |= 0x10;
-
-}
-void Z80::dcCBE3()
-{ /* SET 4,E */
-    REG_E |= 0x10;
-
-}
-void Z80::dcCBE4()
-{ /* SET 4,H */
-    REG_H |= 0x10;
-
-}
-void Z80::dcCBE5()
-{ /* SET 4,L */
-    REG_L |= 0x10;
-
-}
-void Z80::dcCBE6()
-{ /* SET 4,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x10;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBE7()
-{ /* SET 4,A */
-    regA |= 0x10;
-
-}
-void Z80::dcCBE8()
-{ /* SET 5,B */
-    REG_B |= 0x20;
-
-}
-void Z80::dcCBE9()
-{ /* SET 5,C */
-    REG_C |= 0x20;
-
-}
-void Z80::dcCBEA()
-{ /* SET 5,D */
-    REG_D |= 0x20;
-
-}
-void Z80::dcCBEB()
-{ /* SET 5,E */
-    REG_E |= 0x20;
-
-}
-void Z80::dcCBEC()
-{ /* SET 5,H */
-    REG_H |= 0x20;
-
-}
-void Z80::dcCBED()
-{ /* SET 5,L */
-    REG_L |= 0x20;
-
-}
-void Z80::dcCBEE()
-{ /* SET 5,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x20;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBEF()
-{ /* SET 5,A */
-    regA |= 0x20;
-
-}
-void Z80::dcCBF0()
-{ /* SET 6,B */
-    REG_B |= 0x40;
-
-}
-void Z80::dcCBF1()
-{ /* SET 6,C */
-    REG_C |= 0x40;
-
-}
-void Z80::dcCBF2()
-{ /* SET 6,D */
-    REG_D |= 0x40;
-
-}
-void Z80::dcCBF3()
-{ /* SET 6,E */
-    REG_E |= 0x40;
-
-}
-void Z80::dcCBF4()
-{ /* SET 6,H */
-    REG_H |= 0x40;
-
-}
-void Z80::dcCBF5()
-{ /* SET 6,L */
-    REG_L |= 0x40;
-
-}
-void Z80::dcCBF6()
-{ /* SET 6,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x40;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBF7()
-{ /* SET 6,A */
-    regA |= 0x40;
-
-}
-void Z80::dcCBF8()
-{ /* SET 7,B */
-    REG_B |= 0x80;
-
-}
-void Z80::dcCBF9()
-{ /* SET 7,C */
-    REG_C |= 0x80;
-
-}
-void Z80::dcCBFA()
-{ /* SET 7,D */
-    REG_D |= 0x80;
-
-}
-void Z80::dcCBFB()
-{ /* SET 7,E */
-    REG_E |= 0x80;
-
-}
-void Z80::dcCBFC()
-{ /* SET 7,H */
-    REG_H |= 0x80;
-
-}
-void Z80::dcCBFD()
-{ /* SET 7,L */
-    REG_L |= 0x80;
-
-}
-void Z80::dcCBFE()
-{ /* SET 7,(HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL) | 0x80;
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-
-}
-void Z80::dcCBFF()
-{ /* SET 7,A */
-    regA |= 0x80;
-
-}
-
-void (*Z80::dcCB[256])() = {
-    &dcCB00, &dcCB01, &dcCB02, &dcCB03,
-    &dcCB04, &dcCB05, &dcCB06, &dcCB07,
-    &dcCB08, &dcCB09, &dcCB0A, &dcCB0B,
-    &dcCB0C, &dcCB0D, &dcCB0E, &dcCB0F,
-
-    &dcCB10, &dcCB11, &dcCB12, &dcCB13,
-    &dcCB14, &dcCB15, &dcCB16, &dcCB17,
-    &dcCB18, &dcCB19, &dcCB1A, &dcCB1B,
-    &dcCB1C, &dcCB1D, &dcCB1E, &dcCB1F,
-
-    &dcCB20, &dcCB21, &dcCB22, &dcCB23,
-    &dcCB24, &dcCB25, &dcCB26, &dcCB27,
-    &dcCB28, &dcCB29, &dcCB2A, &dcCB2B,
-    &dcCB2C, &dcCB2D, &dcCB2E, &dcCB2F,
-
-    &dcCB30, &dcCB31, &dcCB32, &dcCB33,
-    &dcCB34, &dcCB35, &dcCB36, &dcCB37,
-    &dcCB38, &dcCB39, &dcCB3A, &dcCB3B,
-    &dcCB3C, &dcCB3D, &dcCB3E, &dcCB3F,
-
-    &dcCB40, &dcCB41, &dcCB42, &dcCB43,
-    &dcCB44, &dcCB45, &dcCB46, &dcCB47,
-    &dcCB48, &dcCB49, &dcCB4A, &dcCB4B,
-    &dcCB4C, &dcCB4D, &dcCB4E, &dcCB4F,
-
-    &dcCB50, &dcCB51, &dcCB52, &dcCB53,
-    &dcCB54, &dcCB55, &dcCB56, &dcCB57,
-    &dcCB58, &dcCB59, &dcCB5A, &dcCB5B,
-    &dcCB5C, &dcCB5D, &dcCB5E, &dcCB5F,
-
-    &dcCB60, &dcCB61, &dcCB62, &dcCB63,
-    &dcCB64, &dcCB65, &dcCB66, &dcCB67,
-    &dcCB68, &dcCB69, &dcCB6A, &dcCB6B,
-    &dcCB6C, &dcCB6D, &dcCB6E, &dcCB6F,
-
-    &dcCB70, &dcCB71, &dcCB72, &dcCB73,
-    &dcCB74, &dcCB75, &dcCB76, &dcCB77,
-    &dcCB78, &dcCB79, &dcCB7A, &dcCB7B,
-    &dcCB7C, &dcCB7D, &dcCB7E, &dcCB7F,
-
-    &dcCB80, &dcCB81, &dcCB82, &dcCB83,
-    &dcCB84, &dcCB85, &dcCB86, &dcCB87,
-    &dcCB88, &dcCB89, &dcCB8A, &dcCB8B,
-    &dcCB8C, &dcCB8D, &dcCB8E, &dcCB8F,
-
-    &dcCB90, &dcCB91, &dcCB92, &dcCB93,
-    &dcCB94, &dcCB95, &dcCB96, &dcCB97,
-    &dcCB98, &dcCB99, &dcCB9A, &dcCB9B,
-    &dcCB9C, &dcCB9D, &dcCB9E, &dcCB9F,
-
-    &dcCBA0, &dcCBA1, &dcCBA2, &dcCBA3,
-    &dcCBA4, &dcCBA5, &dcCBA6, &dcCBA7,
-    &dcCBA8, &dcCBA9, &dcCBAA, &dcCBAB,
-    &dcCBAC, &dcCBAD, &dcCBAE, &dcCBAF,
-
-    &dcCBB0, &dcCBB1, &dcCBB2, &dcCBB3,
-    &dcCBB4, &dcCBB5, &dcCBB6, &dcCBB7,
-    &dcCBB8, &dcCBB9, &dcCBBA, &dcCBBB,
-    &dcCBBC, &dcCBBD, &dcCBBE, &dcCBBF,
-
-    &dcCBC0, &dcCBC1, &dcCBC2, &dcCBC3,
-    &dcCBC4, &dcCBC5, &dcCBC6, &dcCBC7,
-    &dcCBC8, &dcCBC9, &dcCBCA, &dcCBCB,
-    &dcCBCC, &dcCBCD, &dcCBCE, &dcCBCF,
-
-    &dcCBD0, &dcCBD1, &dcCBD2, &dcCBD3,
-    &dcCBD4, &dcCBD5, &dcCBD6, &dcCBD7,
-    &dcCBD8, &dcCBD9, &dcCBDA, &dcCBDB,
-    &dcCBDC, &dcCBDD, &dcCBDE, &dcCBDF,
-
-    &dcCBE0, &dcCBE1, &dcCBE2, &dcCBE3,
-    &dcCBE4, &dcCBE5, &dcCBE6, &dcCBE7,
-    &dcCBE8, &dcCBE9, &dcCBEA, &dcCBEB,
-    &dcCBEC, &dcCBED, &dcCBEE, &dcCBEF,
-
-    &dcCBF0, &dcCBF1, &dcCBF2, &dcCBF3,
-    &dcCBF4, &dcCBF5, &dcCBF6, &dcCBF7,
-    &dcCBF8, &dcCBF9, &dcCBFA, &dcCBFB,
-    &dcCBFC, &dcCBFD, &dcCBFE, &dcCBFF
 
-};
 
 // // Trim from end (in place) (for SAVE trap, clean this up later)
 // static inline void rtrim(std::string &s) {
@@ -6611,48 +4989,48 @@ void Z80::decodeED(void) {
         }
         case 0xA0:
         { /* LDI */
-            ldi();
+            ldx(1);
             break;
         }
         case 0xA1:
         { /* CPI */
-            cpi();
+            cpx(1);
             break;
         }
         case 0xA2:
         { /* INI */
-            ini();
+            inx(1);
             break;
         }
         case 0xA3:
         { /* OUTI */
-            outi();
+            otx(1);
             break;
         }
         case 0xA8:
         { /* LDD */
-            ldd();
+            ldx(-1);
             break;
         }
         case 0xA9:
         { /* CPD */
-            cpd();
+            cpx(-1);
             break;
         }
         case 0xAA:
         { /* IND */
-            ind();
+            inx(-1);
             break;
         }
         case 0xAB:
         { /* OUTD */
-            outd();
+            otx(-1);
             break;
         }
         case 0xB0:
         { /* LDIR */
             blockRepeat(true);
-            ldi();
+            ldx(1);
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;
                 REG_WZ = REG_PC + 1;
@@ -6664,7 +5042,7 @@ void Z80::decodeED(void) {
         }
         case 0xB1:
         { /* CPIR */
-            cpi();
+            cpx(1);
             if ((sz5h3pnFlags & PARITY_MASK) == PARITY_MASK
                     && (sz5h3pnFlags & ZERO_MASK) == 0) {
                 REG_PC = REG_PC - 2;
@@ -6677,7 +5055,7 @@ void Z80::decodeED(void) {
         }
         case 0xB2:
         { /* INIR */
-            ini();
+            inx(1);
             if (REG_B != 0) {
                 REG_PC = REG_PC - 2;
                 REG_WZ = REG_PC + 1;
@@ -6688,7 +5066,7 @@ void Z80::decodeED(void) {
         }
         case 0xB3:
         { /* OTIR */
-            outi();
+            otx(1);
             if (REG_B != 0) {
                 REG_PC = REG_PC - 2;
                 REG_WZ = REG_PC + 1;
@@ -6700,7 +5078,7 @@ void Z80::decodeED(void) {
         case 0xB8:
         { /* LDDR */
             blockRepeat(false);
-            ldd();
+            ldx(-1);
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;
                 REG_WZ = REG_PC + 1;
@@ -6712,7 +5090,7 @@ void Z80::decodeED(void) {
         }
         case 0xB9:
         { /* CPDR */
-            cpd();
+            cpx(-1);
             if ((sz5h3pnFlags & PARITY_MASK) == PARITY_MASK
                     && (sz5h3pnFlags & ZERO_MASK) == 0) {
                 REG_PC = REG_PC - 2;
@@ -6725,7 +5103,7 @@ void Z80::decodeED(void) {
         }
         case 0xBA:
         { /* INDR */
-            ind();
+            inx(-1);
             if (REG_B != 0) {
                 REG_PC = REG_PC - 2;
                 REG_WZ = REG_PC + 1;
@@ -6736,7 +5114,7 @@ void Z80::decodeED(void) {
         }
         case 0xBB:
         { /* OTDR */
-            outd();
+            otx(-1);
             if (REG_B != 0) {
                 REG_PC = REG_PC - 2;
                 REG_WZ = REG_PC + 1;
@@ -6786,6 +5164,62 @@ IRAM_ATTR void Z80::copyToRegister(uint8_t value)
         default:
             break;
     }
+}
+
+// LDI/LDD, CPI/CPD, INI/IND, OUTI/OUTD share one body each; d = +1 / -1.
+IRAM_ATTR void Z80::ldx(int d) {
+    uint8_t work8 = Z80Ops::peek8(REG_HL);
+    Z80Ops::poke8(REG_DE, work8);
+    Z80Ops::addressOnBus(REG_DE, 2);
+    REG_HL += d; REG_DE += d; REG_BC--;
+    work8 += regA;
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZ_MASK) | (work8 & BIT3_MASK);
+    if ((work8 & ADDSUB_MASK) != 0) sz5h3pnFlags |= BIT5_MASK;
+    if (REG_BC != 0) sz5h3pnFlags |= PARITY_MASK;
+    flagQ = true;
+}
+IRAM_ATTR void Z80::cpx(int d) {
+    uint8_t memHL = Z80Ops::peek8(REG_HL);
+    bool carry = carryFlag;
+    cp(memHL);
+    carryFlag = carry;
+    Z80Ops::addressOnBus(REG_HL, 5);
+    REG_HL += d; REG_BC--;
+    memHL = regA - memHL - ((sz5h3pnFlags & HALFCARRY_MASK) != 0 ? 1 : 0);
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHN_MASK) | (memHL & BIT3_MASK);
+    if ((memHL & ADDSUB_MASK) != 0) sz5h3pnFlags |= BIT5_MASK;
+    if (REG_BC != 0) sz5h3pnFlags |= PARITY_MASK;
+    REG_WZ += d;
+    flagQ = true;
+}
+IRAM_ATTR void Z80::inx(int d) {
+    REG_WZ = REG_BC;
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    uint8_t work8 = Ports::input(REG_WZ);
+    REG_WZ += d;
+    Z80Ops::poke8(REG_HL, work8);
+    REG_B--; REG_HL += d;
+    sz5h3pnFlags = sz53pn_addTable[REG_B];
+    if (work8 > 0x7f) sz5h3pnFlags |= ADDSUB_MASK;
+    carryFlag = false;
+    uint16_t tmp = work8 + ((REG_C + d) & 255);
+    if (tmp > 0xff) { sz5h3pnFlags |= HALFCARRY_MASK; carryFlag = true; }
+    if ((sz53pn_addTable[((tmp & 0x07) ^ REG_B)] & PARITY_MASK) == PARITY_MASK) sz5h3pnFlags |= PARITY_MASK;
+    else sz5h3pnFlags &= ~PARITY_MASK;
+    flagQ = true;
+}
+IRAM_ATTR void Z80::otx(int d) {
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    REG_B--;
+    REG_WZ = REG_BC;
+    uint8_t work8 = Z80Ops::peek8(REG_HL);
+    Ports::output(REG_WZ, work8);
+    REG_WZ += d; REG_HL += d;
+    carryFlag = false;
+    sz5h3pnFlags = (work8 > 0x7f) ? sz53n_subTable[REG_B] : sz53n_addTable[REG_B];
+    if ((REG_L + work8) > 0xff) { sz5h3pnFlags |= HALFCARRY_MASK; carryFlag = true; }
+    if ((sz53pn_addTable[(((REG_L + work8) & 0x07) ^ REG_B)] & PARITY_MASK) == PARITY_MASK) sz5h3pnFlags |= PARITY_MASK;
+    flagQ = true;
 }
 
 void Z80::SetAbortedINxR_OTxRFlags() {
