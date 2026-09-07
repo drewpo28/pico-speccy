@@ -1924,9 +1924,63 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
      streaming), so `dma=` did not even drop. Do not retry a DMA-through-XIP
      scheme while HDMI streams from the same engine; the same applies to a
      DMA line prefetch for the renderer.
-  Where it stands (in-game TMNT, hw 2026-09-07, no histograms): `cpu≈21-22 ms`
-  (max ~30) → 38-42 FPS; render 4.2 ms (76.8 KB of screen through XIP), DMA memcpy
-  6 ms (38 KB each way, PSRAM floor), Z80 ~11.5 ms for ~24k instructions.
+  9. **Core micro-optimisations (2026-09-07, hw-confirmed: TMNT `cpu` 21-22 →
+     16.5-16.9 ms, max 21.4, 47.6 FPS; XIP accesses per frame −27%):**
+     `Z80::tsBlockRepeat` — LDIR/LDDR in the TS fast-memory mode batch every
+     iteration but the last as one block copy (bounded by the source/destination
+     pages, the write gate `g_tsconf_wr`, a ROM destination, and `CPU::stFrame`,
+     where the INT is sampled — 21 T per repeated iteration; only inside
+     `exec_nocheck`, flagged by `z80_in_nocheck`, since execute() samples INT per
+     instruction); the final iteration runs the normal ldi()/ldd() so flags, WZ and
+     exit timing are the core's own. `Z80Ops::addressOnBus` takes `tsFastTick` in
+     fast mode. `DivMMC::preOpcFetch` returns at once for PC >= 0x4000 (every
+     automap entry/off point is in ROM space) and `postOpcFetch` consumes the
+     flags it acts on — every esxDOS session, all machines.
+  10. **LDIR/LDDR batching for EVERY machine (`Z80::blockRepeat`, 2026-09-07, NOT
+     yet hw-tested outside TS-Conf):** the TS-only version generalised, with guards
+     for every side effect the per-byte path has and a batch would skip — page 0
+     (ROM/overlays/DivMMC/NeoGS window) as source or destination, contended pages
+     and the snow machine (per-access timing), a destination in the page the beam
+     renderer reads (`grmem`, DS80, GMX 640x200, 16col planes — those bytes must
+     land per beam position), memory breakpoints, ROM/accessor banks. Beam-raced
+     machines batch at most one video line (10 iterations, `Draw()` handles one
+     line crossing per call) and account the T-states through `VIDEO::Draw(21n)`.
+  11. **ROM overlays materialised into butter PSRAM (`MemESP::materializeOverlays`,
+     `RomOverlay.h rom_overlay_flatten`, 2026-09-07, NOT hw-tested):** every byte
+     read from an overlaid ROM (Pentagon ROM0, TR-DOS 5.03/5.04TM, 48K variants,
+     Scorpion banks, GMX/ProfROM planes, +3e) used to run `rom_overlay_byte`'s
+     binary search over the run list in flash. Now `overlayFlat[i]` is a flat 16 KB
+     page (base + runs applied) in butter PSRAM, filled lazily one entry per frame
+     from ESPectrum::loop (the registry is populated in requestMachine, before
+     `Buffer::initPools`), cached per (base, ov) in 8 LRU slots so GMX/ProfROM's
+     per-bank-switch re-registration is a pointer swap. `romPeek` takes the flat
+     page when present, the run list otherwise; a board without a butter pool (or a
+     palloc that lands on the heap — refused and freed) keeps the run list for the
+     session. `tools/rom_overlay_flat_test.cpp` proves flatten == byte-resolver over
+     random overlays — re-run after touching either.
+  12. **Leaf accessors (2026-09-07):** the TS fast paths of `Z80Ops::peek8/poke8/
+     peek16/poke16` are leaves — the line tick, the write gate and the generic
+     path are `noinline` helpers reached by tail calls, so the hot path has no
+     push/pop. **Trap that cost a round:** CPU.cpp's RAM residency is per FUNCTION
+     (`#define IRAM_ATTR __not_in_flash("cpu")` at the top of CPU.cpp; CPU.h's
+     IRAM_ATTR is empty), not a linker rule for the file — a new `static` helper
+     without IRAM_ATTR lands in FLASH, and the first cut put the whole generic
+     read/write path there. Check `nm` for `t <helper>` at 0x2xxxxxxx after adding
+     any function to CPU.cpp/Ports.cpp/Video.cpp.
+  13. **Core at `-O2 -finline-limit=5`** (tested in build-perf only): -O2's size
+     blow-up (24 → 41 KB) is inlining of the ALU helpers into 256 handlers; with
+     inlining limited to tiny functions the core is 27.9 KB, +3 KB SRAM over -Os,
+     and TMNT read 17.6 ms vs 17.8 on -Os at equal DMA load — within noise.
+     `-Os` stays the default; the flag pair is the option to try if 3 KB become
+     cheap.
+  Pentagon check of the general changes (hw 2026-09-07, TR-DOS game): both ROM
+  overlays materialised at boot (`[ROM] overlay materialised` x2), loading and
+  play clean, `cpu=6.0 ms` (max 6.3) at 48.8 FPS where the same class of game
+  measured 10-14 ms before the SRAM core — visual check of LDIR-heavy scrollers
+  still owed.
+  Where it stands (in-game TMNT, hw 2026-09-07, no histograms): `cpu≈16.5-17 ms`
+  (max ~21) → ~48 FPS; render 3.9 ms (76.8 KB of screen through XIP), DMA memcpy
+  4 ms (PSRAM floor), Z80 ~8.8 ms for ~24k instructions.
   ~28k XIP misses per frame ≈ 8 ms of the 22 are PSRAM line fills spread over
   all three. Pages 0/2/5 — 90% of CPU traffic — are SRAM already; the 256c
   screen is a 512x512 bitmap = 16 pages, so "video pages in SRAM" is not an

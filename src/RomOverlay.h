@@ -49,4 +49,26 @@ static inline uint8_t rom_overlay_byte(const uint8_t* ov, const uint8_t* base, u
     return base[off];
 }
 
+// Materialise `base` with overlay `ov` applied into `dst` (rom_len bytes): the
+// same bytes rom_overlay_byte() would return for every offset, as one flat page
+// a bank pointer can be aimed at. Used by MemESP::materializeOverlays() on
+// boards with butter PSRAM so ROM reads stop paying the binary search; verified
+// against rom_overlay_byte() by tools/rom_overlay_flat_test.cpp.
+static inline void rom_overlay_flatten(const uint8_t* ov, const uint8_t* base, uint8_t* dst) {
+    uint32_t rom_len = (uint32_t)ov[4] | ((uint32_t)ov[5] << 8) |
+                       ((uint32_t)ov[6] << 16) | ((uint32_t)ov[7] << 24);
+    uint32_t nruns = (uint32_t)ov[8] | ((uint32_t)ov[9] << 8) |
+                     ((uint32_t)ov[10] << 16) | ((uint32_t)ov[11] << 24);
+    const uint8_t* runs = ov + ROM_OVERLAY_HDR;
+    const uint8_t* repl = runs + nruns * ROM_OVERLAY_RUN;
+    for (uint32_t i = 0; i < rom_len; i++) dst[i] = base[i];
+    for (uint32_t r = 0; r < nruns; r++) {
+        const uint8_t* rr = runs + r * ROM_OVERLAY_RUN;
+        uint32_t start = (uint32_t)(rr[0] | (rr[1] << 8));
+        uint32_t len   = (uint32_t)(rr[2] | (rr[3] << 8));
+        uint32_t dof   = (uint32_t)(rr[4] | (rr[5] << 8));
+        for (uint32_t i = 0; i < len && start + i < rom_len; i++) dst[start + i] = repl[dof + i];
+    }
+}
+
 #endif // ROMOVERLAY_H

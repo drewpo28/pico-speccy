@@ -506,6 +506,7 @@ private:
 
     // LDI
     static void ldi(void);
+    static void blockRepeat(bool up);     // LDIR/LDDR block fast path (Z80_JLS.cpp)
 
     // LDD
     static void ldd(void);

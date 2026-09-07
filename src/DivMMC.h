@@ -178,6 +178,12 @@ private:
 // ZEsarUX-style automap: pre-fetch check
 // Called BEFORE opcode is fetched
 inline void DivMMC::preOpcFetch(uint16_t pc) {
+    // Every entry point (0000/0008/0038/0066/04C6/0562), the 3D00-3DFF instant
+    // map and the 1FF8-1FFF off-points live below 0x4000, so a fetch from RAM
+    // space cannot arm anything: one compare instead of six plus two stores on
+    // every instruction of an esxDOS session (the flags are consumed and
+    // cleared by postOpcFetch, so nothing stale survives an early return).
+    if (__builtin_expect(pc >= 0x4000, 1)) return;
     trap_after = false;
     unmap_after = false;
 
@@ -207,10 +213,12 @@ inline void DivMMC::preOpcFetch(uint16_t pc) {
 // Called AFTER opcode is fetched (and PC incremented)
 inline void DivMMC::postOpcFetch() {
     if (trap_after) {
+        trap_after = false;
         automap = true;
         if (!conmem) applyMapping();
     }
     if (unmap_after) {
+        unmap_after = false;
         automap = false;
         if (!conmem) applyMapping();
     }

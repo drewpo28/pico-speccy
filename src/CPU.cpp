@@ -691,12 +691,25 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
 }
 
 // Read byte from RAM
+// TS-Conf fast path (TsFastMem.h). The accessors below are shaped so that the
+// fast path is a LEAF: every call (the line tick, the write gate, the generic
+// path) is a tail call into a noinline helper, so the hot path runs without a
+// push/pop pair — that prologue was a third of the fast path's instructions.
+static IRAM_ATTR __attribute__((noinline)) uint8_t peek8_generic(uint16_t address);
+static IRAM_ATTR __attribute__((noinline)) uint8_t peek8_tick(uint16_t address) {
+    VIDEO::tsDrawTick();
+    return MemESP::ramCurrent[address >> 14][address & 0x3FFF];
+}
 IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
     TS_PAGE_HIT(address);
-    if (g_ts_fastmem) {                       // TsFastMem.h
-        tsFastTick(3);
+    if (g_ts_fastmem) {
+        CPU::tstates += 3;
+        if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return peek8_tick(address);
         return MemESP::ramCurrent[address >> 14][address & 0x3FFF];
     }
+    return peek8_generic(address);
+}
+static IRAM_ATTR __attribute__((noinline)) uint8_t peek8_generic(uint16_t address) {
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
     // ProfROM plane switch — and on this firmware the switch IS a DATA read, so
     // this hook is the load-bearing one (hw 2026-09-04: without it ProfROM ran
@@ -825,35 +838,59 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
 // }
 
 // Write byte to RAM
+static inline void tsPoke8Store(uint16_t address, uint8_t value) {
+    const uint8_t pg = address >> 14;
+    uint8_t* p = MemESP::ramCurrent[pg];
+    if ((uintptr_t)p < 0x11000000u) return;       // TS-BIOS ROM window (flash pointer)
+    *mem_desc_t::bank_dirty[pg] = true;
+    p[address & 0x3FFF] = value;
+}
+static IRAM_ATTR __attribute__((noinline)) void poke8_generic(uint16_t address, uint8_t value);
+static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uint8_t value) {
+    // line boundary and/or the FMAddr / W0_WE write gate
+    if (CPU::tstates >= VIDEO::ts_line_t) VIDEO::tsDrawTick();
+    if (g_tsconf_wr && TsConf::cpuWriteGate(address, value)) return;
+    tsPoke8Store(address, value);
+}
 IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
     TS_PAGE_HIT(address);
-    if (g_ts_fastmem) {                       // TsFastMem.h
-        tsFastTick(3);
-        if (__builtin_expect(g_tsconf_wr != 0, 0))
-            if (TsConf::cpuWriteGate(address, value)) return;
-        const uint8_t pg = address >> 14;
-        uint8_t* p = MemESP::ramCurrent[pg];
-        if ((uintptr_t)p < 0x11000000u) return;   // TS-BIOS ROM window (flash pointer)
-        *mem_desc_t::bank_dirty[pg] = true;
-        p[address & 0x3FFF] = value;
+    if (g_ts_fastmem) {
+        CPU::tstates += 3;
+        if (__builtin_expect((CPU::tstates >= VIDEO::ts_line_t) | g_tsconf_wr, 0)) return poke8_cold(address, value);
+        tsPoke8Store(address, value);
         return;
     }
+    return poke8_generic(address, value);
+}
+static IRAM_ATTR __attribute__((noinline)) void poke8_generic(uint16_t address, uint8_t value) {
     VIDEO::Draw(3, MemESP::ramContended[address >> 14]);
     gsDmaPoke8(address, value);
 }
 
 // Read word from RAM
+static inline uint16_t tsPeek16Load(uint16_t address) {   // lsb first, like the generic path
+    const uint16_t a1 = address + 1;
+    const uint8_t lsb = MemESP::ramCurrent[address >> 14][address & 0x3FFF];
+    const uint8_t msb = MemESP::ramCurrent[a1 >> 14][a1 & 0x3FFF];
+    return (uint16_t)((msb << 8) | lsb);
+}
+static IRAM_ATTR __attribute__((noinline)) uint16_t peek16_generic(uint16_t address);
+static IRAM_ATTR __attribute__((noinline)) uint16_t peek16_tick(uint16_t address) {
+    VIDEO::tsDrawTick();
+    return tsPeek16Load(address);
+}
 IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
+    TS_PAGE_HIT(address);
+    if (g_ts_fastmem) {
+        CPU::tstates += 6;
+        if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return peek16_tick(address);
+        return tsPeek16Load(address);
+    }
+    return peek16_generic(address);
+}
+static IRAM_ATTR __attribute__((noinline)) uint16_t peek16_generic(uint16_t address) {
 
     uint8_t page = address >> 14;
-    TS_PAGE_HIT(address);
-    if (g_ts_fastmem) {                       // TsFastMem.h — lsb first, like the generic path
-        tsFastTick(6);
-        const uint16_t a1 = address + 1;
-        const uint8_t lsb = MemESP::ramCurrent[page][address & 0x3FFF];
-        const uint8_t msb = MemESP::ramCurrent[a1 >> 14][a1 & 0x3FFF];
-        return (uint16_t)((msb << 8) | lsb);
-    }
 
     if (page == ((address + 1) >> 14)) {    // Check if address is between two different pages
 
@@ -891,18 +928,26 @@ IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
 }
 
 // Write word to RAM
+static inline void tsPoke16Store(uint16_t address, RegisterPair word) {
+    tsPoke8Store(address, word.byte8.lo);
+    tsPoke8Store((uint16_t)(address + 1), word.byte8.hi);
+}
+static IRAM_ATTR __attribute__((noinline)) void poke16_generic(uint16_t address, RegisterPair word);
+static IRAM_ATTR __attribute__((noinline)) void poke16_tick(uint16_t address, RegisterPair word) {
+    VIDEO::tsDrawTick();
+    tsPoke16Store(address, word);
+}
 IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
     TS_PAGE_HIT(address);
-    if (g_ts_fastmem && !g_tsconf_wr) {       // TsFastMem.h (write gates take the generic path)
-        tsFastTick(6);
-        const uint16_t a1 = address + 1;
-        const uint8_t pg0 = address >> 14, pg1 = a1 >> 14;
-        uint8_t* p0 = MemESP::ramCurrent[pg0];
-        uint8_t* p1 = MemESP::ramCurrent[pg1];
-        if ((uintptr_t)p0 >= 0x11000000u) { *mem_desc_t::bank_dirty[pg0] = true; p0[address & 0x3FFF] = word.byte8.lo; }
-        if ((uintptr_t)p1 >= 0x11000000u) { *mem_desc_t::bank_dirty[pg1] = true; p1[a1 & 0x3FFF] = word.byte8.hi; }
+    if (g_ts_fastmem && !g_tsconf_wr) {       // the write gate takes the generic (per-byte) path
+        CPU::tstates += 6;
+        if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return poke16_tick(address, word);
+        tsPoke16Store(address, word);
         return;
     }
+    return poke16_generic(address, word);
+}
+static IRAM_ATTR __attribute__((noinline)) void poke16_generic(uint16_t address, RegisterPair word) {
     uint8_t page = address >> 14;
     uint16_t page_addr = address & 0x3fff;
 
@@ -1034,6 +1079,7 @@ IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
 
 /* Put an address on bus lasting 'tstates' cycles */
 IRAM_ATTR void Z80Ops::addressOnBus(uint16_t address, int32_t wstates) {
+    if (g_ts_fastmem) { tsFastTick((uint32_t)wstates); return; }   // TsFastMem.h: no contention on TS-Conf
     if (MemESP::ramContended[address >> 14]) {
         for (int idx = 0; idx < wstates; idx++)
             VIDEO::Draw(1, true);
