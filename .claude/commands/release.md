@@ -29,8 +29,9 @@ yourself):
 4. **Draft exists and matches**: release `v<VERSION>` must exist, be a draft,
    and every asset name must end with `-<VERSION>.uf2`. Wrong version in
    assets → tell the user to re-run /draft-release. Expect one asset per
-   build_all.sh pair — currently **12**: five boards × VGA-HDMI, MURM and
-   MURM2 × (ILI9341, ST7789, TV-SOFT), plus z0p2's PIOUSB variant. If the
+   build_all.sh pair — currently **14**: seven boards × VGA-HDMI (m1p2, m2p2,
+   PCp2, DVp2, z0p2, m1p2w, m2p2w), MURM and MURM2 × (ILI9341, ST7789,
+   TV-SOFT), plus z0p2's PIOUSB variant. If the
    count differs, mention it in the confirmation so the user decides.
 
 5. **Are you sure**: use AskUserQuestion with a summary (version, asset count,
