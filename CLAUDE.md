@@ -1539,8 +1539,10 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   that cannot keep it). Reset = `tsinit()` values; **`MemConfig` reset is 0 (mapped
   mode)** — the datasheet's `!W0_MAP=1` table row is wrong, Unreal's code is
   right. Boot in RM_SYS: `ESPectrum::trdos = true` at reset → Service ROM.
-  ROM: `src/roms/tsconf/romTsBios.c` (64 KB, byte-identical to zxevo.rom's
-  first 64 KB; pages Service/TR-DOS/128/48), read via `TsConf::romPtr()` —
+  ROM: `src/roms/tsconf/romTsBios.c` (64 KB = zxevo.rom's first 64 KB with ONE
+  byte patched, 2026-09-07: the Setup footer says "F11 - exit" instead of
+  "F12 - exit", since F11 is our machine reset and F12 reboots the RP2350 —
+  manifest.json keeps both md5s; pages Service/TR-DOS/128/48), read via `TsConf::romPtr()` —
   **no `MemESP::rom[]` slots consumed**; pages 4-31 = `gb_rom_Alf_ep` zeros.
 - **CPU::loop has a third shape for TS-Conf**: since 2026-09-07 the whole frame
   is the event-driven "Stage D" (see item 15 of the performance list — the
