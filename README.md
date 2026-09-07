@@ -23,7 +23,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 
 ## Features
 
-- ZX Spectrum 48K, 128K, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX, Byte and ALF TV Game. 100% cycle accurate emulation.
+- ZX Spectrum 48K, 128K, +3 / +3e, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, Byte and ALF TV Game. 100% cycle accurate emulation.
 - State of the art Z80 emulation (Authored by [José Luis Sánchez](https://github.com/jsanchezv/z80cpp))
 - Selectable Sinclair 48K, Sinclair 128K and Amstrad +2 english and spanish ROMs. Byte and ALF TV Game - russian ROMs, + Pentagons with Gluck services ROMs & selectable TR-DOS ROM (5.03 / 5.04TM / 5.05D / custom). Profi 1024K with selectable Karabas-Pro ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage).
 - Possibility of using custom ROM with easy flashing procedure from SD card.
@@ -32,13 +32,15 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Timex SCLD video modes emulation (hi-res 512->256 OR-merge, hi-color, dual-screen).
 - Pentagon 16-color video mode (Pentagon only): per-pixel 16-color attribute mode toggleable from the OSD Video menu.
 - Profi DS80 512×240 hi-res video mode (Profi only): switchable STD/DS80 output with a dedicated OSD palette option; CP/M and TR-DOS supported (RP2350 only).
-- Scorpion ZS-256 emulation: v2.94 ROM (BASIC-128/48, service monitor, on-board TR-DOS), 256K RAM via port #1FFD, magic-button NMI into the service monitor, .z80/.sna snapshots. Selectable board revisions — ZS-256 Turbo (Yellow PCB, 312-line frame with even-M1 alignment), ZS-256 Turbo+ (Green PCB, 316-line frame), ZS-1024 Turbo+ (1 MB RAM) — and the **GMX** firmware romset with 2 MB RAM, ProfROM planes and 640x200x16 graphics (GMX needs a Pico 2 module with QSPI PSRAM; F11 performs a full cold boot) (RP2350 only).
+- Scorpion ZS-256 emulation: v2.94 ROM (BASIC-128/48, service monitor, on-board TR-DOS), 256K RAM via port #1FFD, magic-button NMI into the service monitor, .z80/.sna snapshots. Selectable board revisions — ZS-256 Turbo (Yellow PCB, 312-line frame with even-M1 alignment), ZS-256 Turbo+ (Green PCB, 316-line frame), ZS-1024 Turbo+ (1 MB RAM), **ZS-1024 + ProfROM** (PROF-ROM v4.xx.015 firmware: HDD boot menu, Navigator, Shadow service monitor with its own HDD partition manager) — and the **GMX** firmware romset with 2 MB RAM, ProfROM planes and 640x200x16 graphics (GMX needs a Pico 2 module with QSPI PSRAM; F11 performs a full cold boot). Port #FF floating bus emulated the Scorpion way (RP2350 only).
+- ZX Spectrum +3 emulation: the +3 v4.0 ROM set (as a romset of the 128K machine), #1FFD paging with the four all-RAM configurations, +2A/+3 contention, and a sector-level **uPD765A** floppy controller with two drives and CPCEMU / Extended **.dsk** images (read, write, format; weak and copy-protected sectors, Speedlock/Alkatraz style) — drives, "Create blank disk" and the Fast disk / Speedlock protection toggles live in the Storage menu, and a .dsk opened from the file browser switches to the +3 and auto-starts it from the Loader. The **+3e (IDEDOS)** romset adds Garry Lancaster's replacement ROM with its 8-bit IDE interface: IDEDOS .hdf images (including 256-byte half-sector ones) mount from Storage → IDE/HDD, and `tools/idedos_audit.py` checks a game collection image for authoring errors (RP2350 only).
 - Karabas-Pro emulation on Profi: selectable flash ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage) switchable from setup or the **Menu** (Win) key hotkeys — Menu+F1–F4 pick a ROM set, plus Menu combos for Turbo FDC, AY stereo, CPU speed, drive swap and more (see F1 Help) — and serial (COM) mouse emulation for CP/M software (RP2350 only).
 - VGA/HDMI output with 4 selectable video modes: 640x480@60Hz, 640x480@50Hz, 720x480@60Hz, 720x576@50Hz.
 - Hot video mode switching without reboot (VGA/HDMI).
 - VGA/HDMI scanlines effect with 5 selectable brightness levels (Off, Darkest, Dark, Light, Lightest).
 - VGA/HDMI CRT filter with 7 selectable levels (Off, Soft, Medium, Strong, Grille soft/med/hard): gamma correction, phosphor tint, black lift and a vertical aperture-grille mask.
 - HDMI dither effect for ULA+ (RP2350 only): optional Bayer-look palette dithering applied via ISR.
+- HDMI clock drive setting (Video → HDMI → Clock drive): Normal (12 mA, fast edge) or Soft (8 mA, slow edge, less crosstalk on marginal receivers), switchable at runtime (RP2350 only).
 - HDMI audio output (RP2350 only).
 - TV-composite video out.
 - PCM5122 I2S audio DAC support (Waveshare PiZero boards - https://www.waveshare.com/wiki/PCM5122-Audio-Board-A).
@@ -46,6 +48,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Border effects emulated (Aquaplane, The Sentinel, Overscan demo).
 - Floating bus effect emulated (Arkanoid, Sidewize).
 - Snow effect accurate emulation (as [described](https://spectrumcomputing.co.uk/forums/viewtopic.php?t=8240) by Weiv and MartianGirl).
+- Authentic DRAM power-on garbage on cold boot (the КР565РУ5/4164 checkerboard of black and flashing squares with sparse defective cells); F11 keeps RAM like a real reset button.
 - Gigascreen support (Choose between three modes: Off, On, or Auto; memory released when Off) (RP2350 only).
 - Selectable color palettes: Pulsar (default), Alone, Grayscale, Mars, Ocean (Unreal Speccy compatible format).
 - Custom palettes support: load user-defined palettes from `/palette.nvs` file on SD card (up to 11 custom palettes, 3x3 RGB color transform matrix).
@@ -72,19 +75,20 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - USB HID gamepad support: XInput (Xbox 360/One), DualShock 4 (PS4), DualSense (PS5), generic HID gamepads with auto-detected report descriptors and analog trigger support.
 - Emulation of Betadisk interface with four drives and TRD, SCL, UDI, FDI (read and write) and TD0 (Teledisk, read-only) support. Fast and realtime modes. Per-drive Write Protect, inline drive status in the Drives menu, F5 slot-picker popup (F2 toggle WP, F8 eject) when mounting from the file browser.
 - TR-DOS auto-boot: optionally inject a boot loader into TRD/SCL images that lack one, so downloaded disks auto-start (Storage → Betadisk → Auto-boot) (RP2350 only).
-- IDE/HDD emulation: NEMO and Profi schemes, HDF / raw .hdd / Fixed VHD images, create-empty-image helper, mounted from the Storage → IDE/HDD menu (RP2350 only).
+- IDE/HDD emulation: NEMO, Profi, **SMUC** (the Scorpion HDD/NVRAM/RTC controller driven by the ProfROM and GMX firmware — partition the disk and mount TR-DOS pseudo-disks from the Shadow monitor) and **IDEDOS** (+3e) schemes, HDF / raw .hdd / Fixed VHD images, create-empty-image helper, mounted from the Storage → IDE/HDD menu (RP2350 only).
 - MB-02+ disk interface emulation: WD2797 FDC, Z80-DMA, 512KB SRAM paging, BS-DOS 308, MBD disk images, 4 drives, NMI menu (RP2350 only).
 - USB flash drive support: browse and load images from a USB mass-storage stick (mounted as a FatFs `USB:` volume) at ~0.9 MB/s; appears as a location in the F5 file browser and, when no SD card is present at boot, becomes the default storage (RP2350 only).
 - SD card hot-insert: a card inserted after boot is mounted automatically, no reboot needed.
 - esxDOS support (DivMMC, DivIDE, DivSD) — [esxdos.org](https://esxdos.org/index.html).
 - Z-Controller emulation: raw SD card access via ports #57/#77, mutually exclusive with esxDOS and MB-02+ (RP2350 only).
 - FDD activity LED indicator and mechanical head click/seek sound emulation (optional, toggled via Betadisk menu).
-- ZiFi WiFi network interface via an ESP-01S module (stock Espressif AT firmware — no reflash): network access for ZX-Spectrum software (e.g. the MRF terminal), plus an MC146818 RTC (Pentagon "Mr Gluk" TimeKeeper) with SNTP time sync over WiFi; WiFi connect and time sync show the live ESP AT dialog in a scrollable log (RP2350 only).
+- ZiFi WiFi network interface via an ESP-01S module (stock Espressif AT firmware — no reflash) or, on the Waveshare RP2350B-Plus-W (MURM_W / MURM2_W), the module's on-chip CYW43439 radio (Network → Transport → On-chip WiFi, lwIP on the RP2350): network access for ZX-Spectrum software (e.g. the MRF terminal), plus an MC146818 RTC (Pentagon "Mr Gluk" TimeKeeper) with SNTP time sync over WiFi; WiFi connect and time sync show the live ESP AT dialog in a scrollable log (RP2350 only).
 - Unified F5 file browser with a location chooser (RP2350, when WiFi is configured): **Local (SD)**, **Remote (FTP/SFTP)**, **Web Archives** and **Add Remote** — all rendered in the same "Open File" window. **Enter** quick-starts a file (downloads to RAM and runs/mounts), **F5** saves it to a chosen SD folder; `..`/Backspace go up a level, Esc closes. Per-source listing cache (with manual F2 refresh) and remembered cursor/last location.
 - Network file transfer (FTP / SFTP / SSH client): saved connections with optional alias and start path (passwords optionally stored, masked entry; TAB reveals); browse / download / upload / copy (recursive) / delete; SSH/SFTP crypto (curve25519, AES-CTR, HMAC-SHA256) runs on the RP2350 via mbedTLS; SFTP host-key trust-on-first-use; selectable ESP-01S UART baud up to 921600. See the [Network wiki page](https://github.com/drewpo28/pico-speccy/wiki/EN-Network).
 - Web Archives: browse and download ZX disk/tape images, ALF cartridges and VGM music packs from online catalogs (Virtual TR-DOS, Spectrum Computing, ZX-Art, ALF, VGMRips) over HTTPS straight to SD or RAM; downloaded .vgz tracks are unpacked to .vgm in place, ready for the VGM player plugin. Serverless GitHub-Pages catalog, on-device TLS, Cyrillic titles rendered (RP2350 only).
 - FTP server: share the SD card over the LAN (anonymous, active mode) from the Network menu (RP2350 only).
 - Realtime (with OSD) TZX, TAP and PZX file loading.
+- Real tape input from the board's WAV pin (Tape → Real sound input, labelled with the GPIO number; greyed out when ZiFi owns that pin).
 - Flashload of TZX/TAP/PZX files (standard loaders only).
 - Rodolfo Guerra's ROMs fast load routines support with on the fly standard speed blocks translation.
 - TAP file saving to SD card.
@@ -94,6 +98,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Configurable keyboard hotkeys with hint display in menus.
 - Enhanced debugger: multi-breakpoint (up to 20), memory editor, port read/write breakpoints.
 - Debug → Paper: switch off paper rendering so the border effects paint straight through the screen area — a border-timing debugging aid.
+- Debug → UART console: TX-only 115200 8N1 log (Debug::log and printf) on the board's console pin, switchable from the menu instead of a build option (see the build notes for the per-board pin).
 - Hardware info menu: Chip Info (model, cores, frequency, VREG voltage, on-chip temperature with per-chip offset calibration in Debug → Temp offset), Board Info (flash, PSRAM, SDK version), Memory Info (live SRAM/PSRAM/flash occupancy and Buffer tier pools) and Emulator Info (machine, video, sound, input and storage configuration).
 - Speed Test menu: benchmark CPU MIPS, SRAM read/write, PSRAM, SD card and USB drive throughput (individual or all at once).
 - ZX Keyboard overlay (main menu → ZX Keyboard): full-screen bitmap of the Spectrum keyboard for quick reference. Thanks to @const_bill and @tecnocat.
@@ -235,7 +240,7 @@ GND          ──────────── GND (e.g. pin 6)
 
 ## Network (ZiFi / ESP-01S)
 
-On RP2350 boards, an **ESP-01S** (ESP8266) module on the UART adds networking. It runs the **stock Espressif AT firmware** — no reflashing needed. Configured under the OSD **Network** menu:
+On RP2350 boards, an **ESP-01S** (ESP8266) module on the UART adds networking. It runs the **stock Espressif AT firmware** — no reflashing needed. On the Waveshare RP2350B-Plus-W (MURM_W / MURM2_W builds) the module's own **CYW43439** radio can be used instead — pick **On-chip WiFi (CYW43)** under Network → Transport; the TCP/IP stack then runs on the RP2350 and no ESP module is required. Configured under the OSD **Network** menu:
 
 - **ZiFi NIC** — network interface for ZX-Spectrum software (port `#EF`, 16550-UART window); works with the **MRF** terminal/drivers (<https://zxart.ee/eng/software/prikladnoe-po/mrf/tabs:releases/>).
 - **WiFi** — scan / connect / autoconnect, with the live ESP AT dialog shown in a scrollable log pane; **SNTP** time sync into the RTC (same live log).
@@ -295,7 +300,7 @@ Your filesystem tree must be look like:
 | `-DTFT=ON` | TFT display output |
 | `-DILI9341=ON` | ILI9341 TFT display output |
 | `-DHDMI_TMDS_LEVEL_CLAMP=OFF` | HDMI: disable the channel-level clamp to [0x08..0xF6] (on by default; costs ~3% black / ~4% white, improves link stability on marginal receivers). |
-| `-DHDMI_SOFT_CLK=OFF` | HDMI: drive the clock pair at 12 mA + fast slew instead of the default 8 mA + slow slew. |
+| `-DHDMI_SOFT_CLK=ON` | HDMI: build DEFAULT for Video → HDMI → Clock drive — ON = Soft (8 mA + slow slew), OFF (default) = Normal (12 mA + fast slew). The user's menu setting overrides it. |
 | `-DTFT_ST7789=ON` | ST7789 TFT display variant |
 
 The debug UART console is no longer a build option: **Debug > UART console** in the
