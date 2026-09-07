@@ -69,7 +69,9 @@
 #define TXT_VID_SCANLINES   "Scanlines"
 #define TXT_VID_CRT         "CRT filter"
 #define TXT_VID_VSYNC       "V-Sync"
-#define TXT_VID_DITHER      "HDMI dither"
+#define TXT_VID_DITHER      "Dithering"
+#define TXT_VID_HDMI        "HDMI"
+#define TXT_VID_CLKDRV      "Clock drive"
 
 // ── Audio ──────────────────────────────────────────────────────────────────────
 #define TXT_AUD_DRIVER      "Audio driver"

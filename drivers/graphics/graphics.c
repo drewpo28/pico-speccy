@@ -268,6 +268,10 @@ extern void hdmi_set_dither(bool enabled);
 void graphics_set_dither(bool enabled) {
     hdmi_set_dither(enabled);
 }
+extern void hdmi_set_clock_drive(bool soft);
+void graphics_set_hdmi_clock_drive(bool soft) {
+    hdmi_set_clock_drive(soft);
+}
 #else
 void graphics_set_scanlines(uint8_t level) {
     (void)level;
@@ -282,9 +286,16 @@ extern void hdmi_set_dither(bool enabled);
 void graphics_set_dither(bool enabled) {
     hdmi_set_dither(enabled);
 }
+extern void hdmi_set_clock_drive(bool soft);
+void graphics_set_hdmi_clock_drive(bool soft) {
+    hdmi_set_clock_drive(soft);
+}
 #else
 void graphics_set_dither(bool enabled) {
     (void)enabled;
+}
+void graphics_set_hdmi_clock_drive(bool soft) {
+    (void)soft;
 }
 #endif
 #endif

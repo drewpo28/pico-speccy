@@ -992,12 +992,15 @@ const char* vl_wifi() {
 // ("GPIO 20/21  off: WAV+MIDI") carry a short slabel ("20/21") for the left
 // column. Built once — the board's pins never change at runtime.
 const Option* zifi_transportOpts(uint8_t& cnt) {
-    static Option opts[2 + BoardPins::ZIFI_MAX_PAIRS];
+    static Option opts[3 + BoardPins::ZIFI_MAX_PAIRS];
     static char lbl[BoardPins::ZIFI_MAX_PAIRS][40];
     static char slbl[BoardPins::ZIFI_MAX_PAIRS][8];
     static uint8_t n = 0;
     if (!n) {
         opts[n++] = { "Off", 0, nullptr };
+#if PICOSPECCY_WIFI
+        opts[n++] = { MENU_WIFI_ONCHIP_LABEL, 2, "CYW43" };
+#endif
 #if defined(KBDUSB)
         opts[n++] = { MENU_ZIFI_USB_LABEL, 1, "USB" };
 #endif

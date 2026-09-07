@@ -455,6 +455,16 @@ bool __not_in_flash("zifi") ZiFi::rxAvailable() {
 
 void ZiFi::init() {
     if (hw_initialized) return;
+#if PICOSPECCY_WIFI
+    // The on-chip radio is the network transport: there is no ESP-01 to bring up,
+    // and claiming the UART pins for one would steal them from the peripheral
+    // that owns them (NESPAD, audio). ZiFiAT/ZiFiSock dispatch to WifiNet instead;
+    // the guest-visible NIC windows stay dark on this transport.
+    if (Config::zifi_transport == 2) {
+        Debug::log("ZiFi: transport is on-chip WiFi — ESP link not started");
+        return;
+    }
+#endif
     // Allocate the RX/TX rings on the heap (freed in deinit) so they cost nothing
     // when the NIC is off. RP2350 malloc panics on true OOM; ZiFi is only enabled
     // from the menu (plenty of heap), never during a memory-tight machine boot.

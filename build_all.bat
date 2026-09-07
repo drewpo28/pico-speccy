@@ -76,7 +76,7 @@ if !errorlevel! equ 0 (
 )
 
 :: All available targets (RP2350 only — RP2040 boards were dropped)
-set "ALL_TARGETS=MURM MURM2 PICO_PC PICO_DV ZERO2"
+set "ALL_TARGETS=MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W"
 set "TFT_TARGETS=MURM MURM2"
 set "TFT_ST_TARGETS="
 set "SOFTTV_TARGETS=MURM MURM2"
@@ -252,7 +252,7 @@ goto :eof
 echo Usage: %~nx0 [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 echo.
 echo Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR
-echo Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 (default: all)
+echo Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W (default: all)
 exit /b 0
 
 :::::::::::::::::::::::::::::::::::::::::::::::::::::

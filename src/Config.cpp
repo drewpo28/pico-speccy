@@ -155,7 +155,11 @@ uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
 uint8_t  Config::zifi_enabled = 0;
 uint8_t  Config::zifi_tx_pin = 0xFE; // 0xFE = board default (BoardPins)
 uint8_t  Config::zifi_rx_pin = 0xFE;
-uint8_t  Config::zifi_transport = 0; // 0=GPIO UART, 1=USB-CDC
+#if PICOSPECCY_WIFI
+uint8_t  Config::zifi_transport = 2; // 0=GPIO UART, 1=USB-CDC, 2=on-chip CYW43 (W boards default)
+#else
+uint8_t  Config::zifi_transport = 0; // 0=GPIO UART, 1=USB-CDC (2 = on-chip CYW43 exists only on W boards)
+#endif
 uint32_t Config::zifi_baud = 115200;
 string   Config::wifi_ssid;
 string   Config::wifi_pass;
@@ -187,6 +191,10 @@ bool     Config::gigascreen_enabled = true;
 uint8_t  Config::gigascreen_onoff = 2;
 bool     Config::ulaplus = true;
 bool     Config::hdmi_dither = false;
+#ifndef HDMI_SOFT_CLK
+#define HDMI_SOFT_CLK 0
+#endif
+uint8_t  Config::hdmi_clock_drive = HDMI_SOFT_CLK ? 1 : 0;   // build default, see hdmi.c
 bool     Config::ui_vga_solid = true;
 bool     Config::ui_rounded = true;
 uint8_t  Config::ui_theme = 0;
@@ -1206,6 +1214,9 @@ void Config::load() {
         nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
         nvs_get_u8("zifi_rx_pin", zifi_rx_pin, sts);
         nvs_get_u8("zifi_transport", zifi_transport, sts);
+#if !PICOSPECCY_WIFI
+        if (zifi_transport == 2) zifi_transport = 0;   // on-chip radio exists only on W boards
+#endif
         nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
         nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
         nvs_get_str("DSK_Path", FileUtils::DSK_Path, sts);
@@ -1256,6 +1267,8 @@ void Config::load() {
         nvs_get_u8("gigascreen_onoff", gigascreen_onoff, sts);
         nvs_get_b("ulaplus", ulaplus, sts);
         nvs_get_b("hdmi_dither", hdmi_dither, sts);
+        nvs_get_u8("hdmi_clkdrv", hdmi_clock_drive, sts);
+        if (hdmi_clock_drive > 1) hdmi_clock_drive = 0;
         nvs_get_b("ui_vga_solid", ui_vga_solid, sts);
         nvs_get_b("ui_rounded", ui_rounded, sts);
         nvs_get_u8("ui_theme", ui_theme, sts);
@@ -1609,6 +1622,7 @@ void Config::save(const char* path) {
     nvs_set_u8(buf,"gigascreen_onoff", Config::gigascreen_onoff);
     nvs_set_str(buf,"ulaplus", Config::ulaplus ? "true" : "false");
     nvs_set_str(buf,"hdmi_dither", Config::hdmi_dither ? "true" : "false");
+    nvs_set_u8(buf,"hdmi_clkdrv", Config::hdmi_clock_drive);
     nvs_set_str(buf,"ui_vga_solid", Config::ui_vga_solid ? "true" : "false");
     nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
     nvs_set_u8(buf,"ui_theme", Config::ui_theme);

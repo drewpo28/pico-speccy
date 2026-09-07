@@ -28,7 +28,7 @@ while [ $# -gt 0 ]; do
 Usage: $0 [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 
 Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR
-Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 (default: all)
+Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W (default: all)
 EOF
             exit 0 ;;
         *) POSITIONAL+=("$1"); shift ;;
@@ -87,7 +87,7 @@ else
 fi
 
 # All available targets (RP2350 only — RP2040 boards were dropped)
-ALL_TARGETS="MURM MURM2 PICO_PC PICO_DV ZERO2"
+ALL_TARGETS="MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W"
 
 # Targets that support TFT+ILI9341 display variant
 TFT_TARGETS="MURM MURM2"

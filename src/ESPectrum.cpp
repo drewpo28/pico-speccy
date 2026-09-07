@@ -82,6 +82,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "MidiSynth.h"
 #include "ZiFi.h"
 #include "ZiFiAT.h"
+#include "WifiNet.h"
 #include "BoardPins.h"
 #include "RTC.h"
 #include "Nvram24.h"
@@ -650,6 +651,9 @@ static void resolveVideoOutput() {
   extern bool SELECT_VGA;
   extern uint8_t linkVGA01;
   extern uint8_t video_driver;
+  // W boards (RP2350B-Plus-W) take either output: the block the display does not
+  // use — pio0 on HDMI, pio2 on VGA — is where the radio, I2S and NESPAD go at
+  // gpio_base 16 (BoardPins::auxPio). Everything below therefore also runs there.
   if (video_driver == 0) {
       #if defined(ZERO2) || defined(PICO_DV)
           SELECT_VGA = linkVGA01 == 0x1F;
@@ -3130,6 +3134,9 @@ void ESPectrum::loop() {
     }
 
     if (ZiFi::enabled) ZiFi::tick();
+#if PICOSPECCY_WIFI
+    WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
+#endif
     RTC::flushNVRAM(); // persist CMOS NVRAM to SD when dirty (debounced)
     Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
     Ports::serialMouseTick(); // arm the COM-mouse RST20H when movement queued

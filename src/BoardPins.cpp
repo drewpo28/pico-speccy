@@ -6,7 +6,19 @@
 #include "Debug.h"         // Debug::uartActive/uartBootWanted — the console's live state
 #include "ChipPackage.h"   // IS_RP2350B — RUNTIME package detect (NOT usable in #if)
 
+#if defined(VGA_HDMI)
+extern bool SELECT_VGA;
+#endif
+
 namespace BoardPins {
+
+PIO auxPio() {
+#if defined(VGA_HDMI) && NUM_PIOS > 2
+    return SELECT_VGA ? pio2 : pio0;
+#else
+    return pio0;
+#endif
+}
 
 // ── Authoritative RP2350 UART pinmux (from rp2350[ab]_interface_pins.json) ────
 // TX pins are even; RX is the odd partner on the same instance. The simplified
@@ -22,7 +34,30 @@ int uartInstanceForTx(uint8_t tx) {
 // ── Per-board ZiFi UART TX/RX candidate pairs (index 0 = default) ─────────────
 // Hard conflicts (display, SD, QSPI/SPI-PSRAM, LED, KBD, core audio) are excluded;
 // reassignable peripherals are offered with a note describing what they displace.
-#if defined(PICO_DV)
+#if defined(MURM2_W)
+// Murmulator 2.0 + RP2350B-Plus-W. Same carrier as MURM2, but two of its pairs
+// are gone: {20,21} is NESPAD CLK/LAT as before, and {26,27} / {38,39} must NOT
+// be offered — the header positions of GP26/27 carry GPIO40/41 (the pad's data
+// pair on this module) and GPIO38/39 ARE the radio's WL_CS/WL_CLK (Waveshare
+// schematic), so offering them from the Network menu would take WiFi down. GP0/GP1 are free
+// on this carrier and are a UART0 pair, so they lead.
+static const UartPair ZIFI_PAIRS[] = {
+    {0, 1, ""},                 // UART0 (free)
+    {20, 21, "off: NESPAD"},    // UART1
+    {22, 23, "off: MIDI/WAV"},  // UART1
+};
+#elif defined(MURM_W)
+// Murmulator 1.x + RP2350B-Plus-W. MURM1's {26,27} "off: audio" pair becomes
+// {40,41} here (same header positions, and still the audio pins). GP18-21 are
+// free on this board — the carrier's PIO SPI PSRAM is not built on MURM_W — but
+// they stay off the list: the APS6404 is still soldered to them and would drive
+// MISO whenever its CS floats low.
+static const UartPair ZIFI_PAIRS[] = {
+    {16, 17, "off: NESPAD"},    // UART0
+    {14, 15, "off: NESPAD"},    // UART0
+    {40, 41, "off: audio"},     // UART1 — the only non-UART0 pair here, as on MURM1
+};
+#elif defined(PICO_DV)
 static const UartPair ZIFI_PAIRS[] = {
     {0, 1, ""},                 // UART0, dedicated ZiFi header
     {20, 21, "off: WAV+MIDI"},  // UART1
@@ -107,6 +142,9 @@ bool zifiOwnsPin(uint8_t pin) {
     // MURM1_P2) and silently killed a live WiFi link until a full reboot; gating
     // without wifi_enabled meant a WiFi-only setup (NIC off) lost the boot pin race
     // to NESPAD on boards whose default UART pair overlaps it (MURM2/PICO_PC 20/21).
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return false;   // on-chip radio: no UART pins at all
+#endif
     if (!Config::zifi_enabled && !Config::wifi_enabled && !ZiFi::linkUp()) return false;
     uint8_t tx, rx;
     if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return false;
@@ -114,6 +152,9 @@ bool zifiOwnsPin(uint8_t pin) {
 }
 
 const char* zifiActiveNote() {
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return "";
+#endif
     uint8_t tx, rx;
     if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return "";
     for (int i = 0; i < ZIFI_PAIRS_N; i++)

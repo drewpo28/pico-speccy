@@ -70,7 +70,7 @@ if (Get-Command ccache -ErrorAction SilentlyContinue) {
 }
 
 # RP2350 only — the RP2040 targets (MURM_P1/MURM2_P1/ZERO) were dropped.
-$AllTargets    = @("MURM", "MURM2", "PICO_PC", "PICO_DV", "ZERO2")
+$AllTargets    = @("MURM", "MURM2", "PICO_PC", "PICO_DV", "ZERO2", "MURM_W", "MURM2_W")
 $TftTargets    = @("MURM", "MURM2")
 $TftStTargets  = @()
 $SofttvTargets = @("MURM", "MURM2")

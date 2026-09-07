@@ -4476,3 +4476,203 @@ OUT). Now masks `data & 0x07`.
   - Disassembly: `FPGA48all_disasm.txt`
   - Loader at 0x5E00, screen at 0x4000, main code at 0x6200
   - Main code starts with `CALL 0x817E` (IM 2 setup); exercises the ULA via port `0x01FE`
+
+## MURM_W / MURM2_W — Waveshare RP2350B-Plus-W (2026-09-06; m1p2w hw-confirmed: picture, I2S sound, 8 MB QSPI PSRAM, CYW43 WiFi + FTP server)
+
+Two board targets = the Murmulator 1.x / 2.0 carriers with the Waveshare
+RP2350B-Plus-W module (RP2350B, Raspberry Pi Radio Module 2 = CYW43439, 16 MB
+flash, PSRAM pads on GPIO47). `MURM_W` turns `MURM` on and `MURM2_W` turns `MURM2`
+on, so every carrier pin arm and `#if MURM2` keeps working; `PICOSPECCY_WIFI` is
+the one "this image has a radio" switch (`src/WifiNet.{h,cpp}`, called last of the
+PIO users from `main()`). **Either video output works**: the radio's pins are above
+GPIO31, so it needs a PIO block at gpio_base 16, pio1 is the keyboard at base 0, and
+the block that qualifies is the one the DISPLAY is not using — pio0 under HDMI (HDMI
+owns pio2), pio2 under VGA (VGA owns pio0). `BoardPins::auxPio()` is that single
+decision; the radio, MURM_W's I2S (GPIO40-42) and MURM2_W's NESPAD (data 40/41) all
+take their block from it at init (the compile-time `I2S_PIO`/`NESPAD_PIO` are only
+the HDMI-case defaults). The first cut forced HDMI (`SELECT_VGA=false` in
+`resolveVideoOutput`) — the owner pointed out MURM_W is a VGA_HDMI board like any
+Murmulator; lifted 2026-09-06, VGA path NOT hw-tested. CMake still refuses
+SOFTTV/TV/TFT for the W boards (unpaired, not impossible).
+
+- **The RM2 host pins are READ OFF THE SCHEMATIC** (`RP2350B-Plus-W.pdf` from
+  files.waveshare.com — the wiki page itself has no pin table and 403s WebFetch;
+  `curl -A Mozilla` gets both): **GPIO36 WL_ON, GPIO37 WL_D (DI/DO via R20/IRQ),
+  GPIO38 WL_CS, GPIO39 WL_CLK**; GPIO23 = LED2 (the Pico-style user LED), LED1 =
+  the radio's own WL_GPIO0, GPIO46 = VSYS_SENSE, GPIO47 = PSRAM_CS, VBUS_DET goes
+  to RM2 GPIO2. The first cut had CS/CLK swapped (a derivation, 38=CLK 39=CS).
+  They live as **static** `CYW43_DEFAULT_PIN_WL_*` in
+  `src/boards/picospeccy_rp2350b_w.h` with `CYW43_PIN_WL_DYNAMIC 0`, exactly like
+  `pico2_w.h` — the runtime `cyw43_set_pins_wl()` table was dropped.
+  **`CYW43_PIN_WL_DYNAMIC 1` WITHOUT the `CYW43_DEFAULT_PIN_WL_*` defines does not
+  compile** (SDK 2.3.0 `cyw43_bus_pio_spi.c` seeds its RAM table from them), which
+  is how the first cut failed; a board header must define the defaults either way.
+- Cost vs plain MURM (MinSizeRel, VGA-HDMI): **+2400 B static SRAM** (`cyw43_state`
+  2268 B + the async context), **+237 KB flash** (the 225 KB `w43439A0_7_95_49_00`
+  blob lands in `.rodata` at ~0x101E5E24; BT firmware is 0 B, not enabled). The
+  16 MB flash flows through the SDK-generated `pico_flash_region.ld`, so the GM.DLS
+  partition sits at 0x10E50000 and the firmware ceiling is a non-issue there.
+- **First hw run (2026-09-06): LED blinked 6 fast + 6 slow, NO PICTURE.** Two
+  ordering bugs, both in the original commit's `main()` placement, both fixed:
+  1. `WifiNet::init()` ran BEFORE `multicore_launch_core1(render_core)`, i.e.
+     before `graphics_init()`/`hdmi_init()` — the commit's "deliberately last of
+     the PIO users" was not what the code did. The SDK's
+     `pio_claim_free_sm_and_add_program_for_gpio_range()` walks **pio2 → pio1 →
+     pio0** and on its second pass re-bases ANY block whose four SMs are all free;
+     pio2 was empty, so the radio took **pio2 at gpio_base 16**. hdmi_init() (pins
+     6-13; only ZERO2 sets a base) then owned a block that cannot reach its pins:
+     radio up (that is why the second blink series was SLOW — `cyw43_arch_gpio_put`
+     inside it costs ms), screen dead, core0 running on. `pio_set_gpio_base` refuses
+     once a program is loaded, so there was no recovering it either. Now:
+     `graphics_init_done_semaphore` is used by WIFI builds too (was SOFTTV-only),
+     `WifiNet::init()` runs after core1 released it while core1 is parked on
+     `vga_start_semaphore`, AND `WifiNet::init()` pins **pio0 to base 16 itself**
+     first, so the SDK's first pass lands on pio0 deterministically.
+  2. The SDK's gSPI divider is a compile-time constant (`CYW43_PIO_CLOCK_DIV_INT 2`,
+     assumes 150 MHz: 75 MHz into a 2-cycles/bit program = 37.5 MHz). At clk_sys
+     378 MHz that is 94 MHz on a bus specced to 50. `CYW43_PIO_CLOCK_DIV_DYNAMIC=1`
+     (CMake) + `cyw43_set_pio_clkdiv_int_frac8(ceil(clk_sys/75 MHz), 0)` in
+     WifiNet::init (6 @378, 7 @504), which must run AFTER the `Config::cpu_mhz`
+     switch — the new call site is.
+  **hw 2026-09-06, after the fix: m1p2w boots with a picture** (Hardware Info:
+  RP2350B @252 MHz, VREG 1.50 V, 16 MB flash, **`+PSRAM on GP47: 8 MB (QSPI)`** —
+  the tester's module HAS a chip soldered and the butter path found it unchanged,
+  66 pages `s8:b58`, audio **i2s (auto)** — so I2S on pio0 @base 16 coexists with
+  the radio's claim). Same evening, with the lwIP transport, the tester's board
+  joined the WiFi through the on-chip radio and the **FTP server accepted and
+  served a session** — so the pin table (incl. the CS/CLK swap fix), pio0 @base
+  16, the gSPI divider at 252 MHz, DHCP/DNS and WifiSock's listen/accept/data
+  path are all hw-confirmed at once.
+  The `WiFi[pre]`/`[post]` claim dump (`pio2 sm=####`/`gpio_base=0` for HDMI,
+  `pio0 ... gpio_base=16` for the radio) is the check; it goes to the UART only.
+- **No sound on MURM_W (hw 2026-09-06, same tester; FIXED, sound back in Auto
+  with the mask fix below — the board was I2S-jumpered, so the probe was right):**
+  Hardware Info said
+  `Audio mode: i2s [0Ah] (auto)`. Two independent things, both in play:
+  1. **`audio_i2s.pio` program_init built its pin mask as `1u << data_pin`** and
+     used the 32-bit `pio_sm_set_pindirs_with_mask` — UB at data_pin 40, and the
+     32-bit form cannot express GPIO40-42 at all (the SDK shifts the mask by
+     gpio_base, i.e. it expects ABSOLUTE bit positions), so all three I2S pins
+     stayed INPUTS: no BCK, no data. Fixed with the `_mask64` pair, exactly like
+     nespad.cpp/hdmi.c (the earlier commit fixed nespad and missed this one). Any
+     other PIO program init that shifts a pin number into a 32-bit mask has the
+     same bug on the W boards — grep `1u <<` before trusting a driver there.
+  2. **The I2S/PWM auto-probe (`testPins` on DATA/BCK) read 0x0A = both pins
+     follow the pull = "floating" → I2S**, on a carrier that is usually jumpered
+     for PWM (Murmulator 1 offers both). Whether 0x0A is what a PWM-jumpered
+     MURM1 reads on a Pico 2 too is unknown; the escape hatch is
+     Audio → Driver → PWM (Config::audio_driver 1). Ask which jumper first.
+### HDMI at 378 MHz on the RP2350B-Plus-W: sync loss + TMDS streaks; 252 is clean (hw video 2026-09-06)
+
+`debug/video_2026-09-06_20-32-12.mp4`: the monitor drops to black every few
+seconds and, when it holds, shows random coloured horizontal segments over the
+whole field plus an occasional horizontally shifted frame — TMDS bit/clock errors
+at the receiver, while the emulator underneath runs fine (stats drawn, 48.8 FPS).
+Two things differ from a Pico 2 carrier at the same clock, and both point the
+same way:
+
+1. **The module's 3V3 is an LDO — U4 = ME6217C33M5G (SOT-23-5)** — where a Pico 2
+   has the RT6150 buck-boost. The RP2350 core VREG is itself linear off 3V3, so at
+   378 MHz / 1.60 V the core current, the radio, PSRAM and flash all sit on that
+   one LDO; the Murmulator's TMDS swing is derived from the same 3V3 through
+   resistors, so rail sag/noise shrinks the eye directly. (5 V − 3.3 V) × I of
+   dissipation in a SOT-23-5 is the ceiling.
+2. **`pio_clk_div = cpu_mhz / 252` is 1.5 at 378** — a FRACTIONAL PIO divider on the
+   TMDS bit clock (one sys-cycle of jitter, ~2.6 ns on a 4 ns bit) that other
+   boards tolerate with a healthy eye; 252 gives 1.0, 504 gives 2.0.
+
+**Counter-evidence from the tester: rh1tech/frank-386 holds 378 MHz with HDMI on
+the same module.** Its hdmi.c (fetched 2026-09-06) uses the SAME fractional
+divider (`clock_get_hz(clk_sys) / 252e6` = 1.5) and the same 1.60 V at 378 — so
+neither of those is the discriminator. What differs: frank drives the **clock pair
+at 12 mA + fast slew**; ours is 8 mA + slow slew under `HDMI_SOFT_CLK=1` (default
+ON, ported from pico-spec for m1p1 + Samsung S27AG300N, where the clock was the
+aggressor next to the blue pair). Frank also uses the classic TMDS pair (no
+balanced pair, no level clamp) and still works, so the LDO's smaller 3V3 swing
+plus a softened clock edge is the current best hypothesis: the receiver's clock
+recovery, not the data eye. A test build with `-DHDMI_SOFT_CLK=OFF` was handed to
+the tester (verdict pending). If it does NOT hold 378: fall back to ZERO2's
+precedent (`CPU_MHZ 252` default for RP2350B-with-LDO boards), and try
+Transport = Off to isolate the radio's current.
+
+**Video > HDMI submenu (2026-09-06, owner's request, NOT hw-tested):** `kHdmi`
+(UiTree.cpp), a `NM_SUB` right under Mode, visible only while HDMI is the live
+output (`p_hdmiOut` = `!SELECT_VGA` on VGA_HDMI, true on HDMI-only, false on
+SOFTTV/TFT). Two rows: **Dithering** (the former "HDMI dither" row, moved here) and
+**Clock drive** = Normal (12 mA, fast edge) / Soft (8 mA, slow edge) —
+`Config::hdmi_clock_drive` (NVS `hdmi_clkdrv`), `SET_HDMI_CLKDRV` (AC_LIVE +
+F_PREVIEW: pad-register writes only, no PIO reprogramming, so the preview is
+instant and reversible). hdmi.c keeps a runtime `hdmi_clk_soft` that
+`hdmi_init()` reads for the clock pads and `hdmi_set_clock_drive()` re-applies
+live; `VIDEO::Init()` pushes the persisted pick before core1's graphics_init.
+**The build option `HDMI_SOFT_CLK` is now only the DEFAULT of that setting and
+defaults to OFF (= Normal)** — the m1p1 + Samsung S27AG300N case that Soft was
+introduced for is now one menu pick away instead of a rebuild.
+
+### On-chip network transport = lwIP under the ZiFi facades (2026-09-06; hw-confirmed on m1p2w: WiFi join + FTP server work)
+
+Network → **Transport** gained "On-chip WiFi (CYW43)" (`Config::zifi_transport == 2`,
+the DEFAULT on W builds; non-W builds fold a stray 2 back to 0 in `Config::load`).
+Nothing above the two network facades knows which radio it is on:
+
+- **`ZiFiSock` and `ZiFiAT` dispatch on `WifiNet::selected()`** at the top of every
+  public function (`#if PICOSPECCY_WIFI` blocks) to `WifiSock` / `WifiNet`. TLS
+  (TlsSock's BIO), FTP client + server, SSH, HttpsGet/HttpGet, the catalog,
+  scan/connect/status/SNTP and the boot auto-sync FSM therefore run unchanged on
+  either radio. Do NOT add a third caller path — add to the facade.
+- `src/WifiSock.{h,cpp}`: ZiFiSock's contract on the lwIP **raw** API — 2 link
+  slots (FTP ctrl 0 / data 1; single mode = slot 0, re-opening slot 0 closes the
+  old one like the ESP would), rx = pbuf chain per link with `tcp_recved()` only
+  for bytes the caller took (window = flow control), send = `tcp_write(COPY)` in
+  ≤4 KB chunks bounded by `tcp_sndbuf`, `server_listen/accept` = `tcp_listen` +
+  accept callback into a free slot, the `tls` flag ignored (callers do TLS
+  themselves). Every wait is `cyw43_arch_wait_for_work_until` + `cyw43_arch_poll`.
+  DNS lookups carry a generation tag so a late callback cannot write into a dead
+  stack frame after a timeout.
+- `src/WifiNet.{h,cpp}` station side: `connect` = `cyw43_arch_wifi_connect_timeout_ms`
+  (WPA2-mixed, or OPEN when the password is empty), `scan` via `cyw43_wifi_scan`
+  with dedupe, `ipString` from `cyw43_state.netif[STA]`, and an **own 48-byte SNTP
+  client over raw UDP** (pool.ntp.org, 4 tries, civil-date conversion done in-house
+  — newlib's localtime drags in the tzset chain this firmware keeps out of flash)
+  in both a blocking (`sntpSync`) and a background (`autoBegin/autoPoll`, join +
+  SNTP) shape, feeding `RTC::setDateTime` exactly like the AT path.
+- **lwIP is `pico_cyw43_arch_lwip_poll`** (NO_SYS, `src/lwipopts.h`), NOT the
+  threadsafe_background arch: every stack callback runs inside `cyw43_arch_poll()`
+  on core0 — `WifiNet::poll()` once per frame from `ESPectrum::loop` (beside
+  `ZiFi::tick`) plus the waits above — so the emulator decides when the network
+  runs and nothing touches core0's 8 KB stack from an IRQ.
+- **All lwIP memory comes from `Buffer::palloc(NEED_POINTER|USE_NET_ARENA)`**
+  (`MEM_CUSTOM_ALLOCATOR` + `MEMP_MEM_MALLOC`, hooks in WifiNet.cpp): NULL on
+  exhaustion where pico_malloc would panic, and the lent Gigascreen arena during a
+  paused session. Measured: the whole radio + lwIP adds **+3520 B** of static SRAM
+  over plain MURM (`cyw43_state` 2448 incl. the netif, `dns_table` 288) — the
+  pico-examples lwipopts would have been ~40 KB of .bss.
+- With transport 2: `ZiFi::init()` is a no-op (no UART pins claimed —
+  `BoardPins::zifiOwnsPin/zifiActiveNote` return false/"" so NESPAD/audio keep
+  their pins), the Baud row and the guest **ZiFi NIC** row are greyed
+  (`p_espSerial`/`p_nicAvail`): the NIC is raw AT pass-through to an ESP and has no
+  meaning on a stack we own. Bridging the guest NIC to lwIP would need an AT-command
+  emulator — a separate project. Switching transports clears
+  `ZiFiAT::connected` so the hook's re-join runs on the new radio.
+- **Soldering a PSRAM onto the module needs NO firmware change — hw-confirmed
+  2026-09-06 (`+PSRAM on GP47 : 8 MB (QSPI)` on a tester's module).** The U1 pads are
+  an SOP-8 on the RP2350's own QSPI bus (SD0-3 + SCLK shared with the flash, CS =
+  GPIO47 = XIP CS1) — the butter/QMI memory-mapped path, identical to PICO_DV and
+  ZERO2, NOT the MURM1 PIO-SPI path. Both W arms already set `BUTTER_PSRAM_GPIO 47`;
+  on RP2350B `main()` probes pin 47 (`psram_init` → `butter_psram_size`),
+  `psram_retiming` runs at the cpu_mhz switch, Buffer pools / GS / prevFB all key on
+  `butter_psram_size()`. Chip: **APS6404L-3SQR-SN** (8 MB, 3.3 V, SOP-8, the Pico
+  Plus 2 part — the probe wants KGD 0x5D; pin 1 CS, 2 SO/SD1, 3 SD2, 4 GND, 5
+  SI/SD0, 6 SCLK, 7 SD3, 8 VDD, matching the footprint). The MURM1-arm
+  `init_psram()` still runs on MURM_W but its body is `#ifdef PSRAM` (not defined
+  there), so `psram_size()` stays 0 and nothing touches the 255 pins.
+- **MURM_W drops the carrier's PIO SPI PSRAM**, and the module ships with NO PSRAM
+  soldered — so a stock MURM_W is a no-PSRAM board (pages to SD swap, no GS /
+  Gigascreen). The stated reason is pio0 instruction budget: CYW43 (5-7) + I2S (9,
+  17 for CS4334) + SPI PSRAM (18-20) > 32. But I2S is only loaded for a DAC board;
+  with PWM audio, CYW43 + SPI PSRAM (25-27) fits. Candidate follow-up: keep the
+  APS6404 on MURM_W and make I2S and SPI PSRAM mutually exclusive there instead.
+- **`.vscode/` is gitignored** — the F7 board picker (`tasks.json` →
+  `inputs.boardConfig`) is a LOCAL file and has to be edited by hand for every new
+  board; a commit can never update it. `build_all.*` / `check-release.sh` are the
+  tracked lists.

@@ -296,6 +296,9 @@ static void    put_zifiNic(int32_t v) { Config::zifi_enabled = (uint8_t)(v != 0)
 // 1 = USB-CDC, 10+i = the board's GPIO pair i. The pair list is fixed per board,
 // so the encoding is stable for the session (all a staged value needs).
 static int32_t get_zifiTransport() {
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return 2;     // on-chip CYW43
+#endif
     if (Config::zifi_transport == 1) return 1;
     if (Config::zifi_tx_pin == BoardPins::PIN_OFF) return 0;
     uint8_t tx, rx;
@@ -306,6 +309,15 @@ static int32_t get_zifiTransport() {
     return 0;
 }
 static void put_zifiTransport(int32_t v) {
+#if PICOSPECCY_WIFI
+    // On-chip radio: no ESP UART pair may stay resolvable, or BoardPins would
+    // still hand its pins to ZiFi at boot (NESPAD/audio yield for nothing).
+    if (v == 2) {
+        Config::zifi_transport = 2;
+        Config::zifi_tx_pin = Config::zifi_rx_pin = BoardPins::PIN_OFF;
+        return;
+    }
+#endif
     if (v == 1) { Config::zifi_transport = 1; return; }
     Config::zifi_transport = 0;
     if (v >= 10) {
@@ -369,6 +381,14 @@ static bool hook_crtFilter(int32_t, int32_t) {
 // trigger (F_PALETTE re-install / F_MODAL chrome restore) is the whole apply.
 static bool hook_uiLook(int32_t, int32_t) { return true; }
 
+// Video > HDMI > Clock drive: 0 = Normal (12 mA fast), 1 = Soft (8 mA slow). Pad
+// registers only, so the preview is live and instantly reversible.
+static int32_t get_hdmiClkDrv()          { return Config::hdmi_clock_drive; }
+static void    put_hdmiClkDrv(int32_t v) { Config::hdmi_clock_drive = (uint8_t)(v ? 1 : 0); }
+static bool hook_hdmiClkDrv(int32_t nv, int32_t) {
+    graphics_set_hdmi_clock_drive(nv == 1);
+    return true;
+}
 static bool hook_dither(int32_t nv, int32_t) {
     // Only has an effect while ULA+ is active; the HDMI ISR OR-masks indices 0..63
     // with 0x40 to sample palette[64..127].
@@ -545,6 +565,9 @@ static bool hook_zifiNic(int32_t nv, int32_t) {
 // persist the choice itself — the commit's save has not happened yet.
 static bool hook_zifiTransport(int32_t nv, int32_t ov) {
     if (ZiFi::linkUp()) { ZiFi::deinit(); ZiFi::init(); }
+    // The cached "connected" belongs to the radio we are leaving: forget it, so
+    // the re-join below runs on the new transport (ESP <-> on-chip CYW43 alike).
+    if (nv != ov) { ZiFiAT::connected = false; ZiFiAT::current_ip.clear(); }
     netStatusInvalidate();
     const char* nvNote = nullptr;
     if (nv >= 10) {

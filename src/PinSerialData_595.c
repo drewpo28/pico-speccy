@@ -32,6 +32,14 @@ static void PWM_deinit_pin(uint pinN){
 	}
 }
 
+// A configured AY-clock pin may be unusable for two reasons: the board does not
+// route one at all (255 — MURM_W/MURM2_W, whose module has no free GPIO where a
+// Murmulator expects GP29), or ZiFi has claimed it for its UART. Same answer to
+// both: leave the pad alone.
+static inline bool ay_clk_usable(unsigned pin) {
+	return pin != 255 && !board_zifi_owns_pin(pin);
+}
+
 void Init_PWM_175(uint8_t tspin_mode){
 	if (!ts_595_enabled) {
 		//printf("Init 595\n");
@@ -42,7 +50,7 @@ void Init_PWM_175(uint8_t tspin_mode){
 				pwm_set_gpio_level(CLK_AY_PIN1, 2);
 				break;
 			case TSPIN_MODE_GP29:
-				if (!board_zifi_owns_pin(CLK_AY_PIN2)) // yield AY clock pin to ZiFi
+				if (ay_clk_usable(CLK_AY_PIN2))
 				{
 					PWM_init_pin(CLK_AY_PIN2);
 					pwm_set_gpio_level(CLK_AY_PIN2, 2);
@@ -51,7 +59,7 @@ void Init_PWM_175(uint8_t tspin_mode){
 			case TSPIN_MODE_BOTH:
 				PWM_init_pin(CLK_AY_PIN1);
 				pwm_set_gpio_level(CLK_AY_PIN1, 2);
-				if (!board_zifi_owns_pin(CLK_AY_PIN2)) // yield AY clock pin to ZiFi
+				if (ay_clk_usable(CLK_AY_PIN2))
 				{
 					PWM_init_pin(CLK_AY_PIN2);
 					pwm_set_gpio_level(CLK_AY_PIN2, 2);
@@ -71,7 +79,7 @@ void Deinit_PWM_175() {
 	if (ts_595_enabled) {
 		//printf("DeInit 595\n");
 		PWM_deinit_pin(CLK_AY_PIN1);
-		PWM_deinit_pin(CLK_AY_PIN2);
+		if (CLK_AY_PIN2 != 255) PWM_deinit_pin(CLK_AY_PIN2);
 		gpio_deinit(CLK_595_PIN);
 		gpio_deinit(DATA_595_PIN);
 		gpio_deinit(LATCH_595_PIN);

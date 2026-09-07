@@ -2,6 +2,7 @@
 
 
 #include "ZiFi.h"
+#include "WifiNet.h"
 #include "RTC.h"
 #include "Debug.h"
 #include <pico/time.h>
@@ -104,6 +105,19 @@ ZiFiAT::Status ZiFiAT::sendCmd(const char* cmd, const char* expect, uint32_t tim
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 ZiFiAT::Status ZiFiAT::connect(const string& ssid, const string& pass, uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        WifiNet::setLog(log_cb);
+        const int rc = WifiNet::connect(ssid.c_str(), pass.c_str(), timeout_ms);
+        if (rc == 0) {
+            connected = true; current_ssid = ssid;
+            char ip[20]; current_ip = WifiNet::ipString(ip, sizeof(ip)) ? ip : "";
+            return OK;
+        }
+        connected = false;
+        return rc == PICO_ERROR_TIMEOUT ? TIMEOUT : ERROR;
+    }
+#endif
     // Ensure UART backend is up even if the NIC toggle was never switched on,
     // otherwise sendRaw writes to an uninitialized UART and no RX IRQ is armed.
     ZiFi::init();
@@ -185,6 +199,12 @@ static int month_from_abbr(const char* m) {
 }
 
 ZiFiAT::Status ZiFiAT::syncTime(int tz, string& out_str) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        WifiNet::setLog(log_cb);
+        return WifiNet::sntpSync(tz, out_str) ? OK : TIMEOUT;
+    }
+#endif
     ZiFi::init(); // idempotent — ensure UART backend
 
     // Enable SNTP with the requested timezone offset (hours) and a public pool.
@@ -288,10 +308,22 @@ void as_retry(uint32_t now) {
 } // namespace
 
 bool ZiFiAT::autoSyncBusy() {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        return WifiNet::autoBusy();
+    }
+#endif
     return as_state != AS_IDLE && as_state != AS_DONE && as_state != AS_FAIL;
 }
 
 void ZiFiAT::autoSyncBegin(const string& ssid, const string& pass, int tz) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        current_ssid = ssid;
+        WifiNet::autoBegin(ssid.c_str(), pass.c_str(), tz);
+        return;
+    }
+#endif
     ZiFi::init(); // ensure UART backend
     as_ssid = ssid; as_pass = pass; as_tz = tz;
     as_attempts = 0; as_got_ip = false; as_linelen = 0;
@@ -300,6 +332,16 @@ void ZiFiAT::autoSyncBegin(const string& ssid, const string& pass, int tz) {
 }
 
 void ZiFiAT::autoSyncPoll() {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        WifiNet::autoPoll();
+        // Mirror the link into the cached status the menu reads (cheap: a state
+        // read, no radio traffic).
+        char ip[20];
+        if (WifiNet::ipString(ip, sizeof(ip))) { connected = true; current_ip = ip; }
+        return;
+    }
+#endif
     if (!autoSyncBusy()) return;
     uint32_t now = as_now();
 
@@ -370,6 +412,12 @@ void ZiFiAT::autoSyncPoll() {
 }
 
 int ZiFiAT::scan(string* out, int maxn, uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        WifiNet::setLog(log_cb);
+        return WifiNet::scan(out, maxn, timeout_ms);
+    }
+#endif
     ZiFi::init();
     sendCmd("AT+CWMODE=1", "OK", 2000); // ensure station mode (required for CWLAP)
 
@@ -427,6 +475,14 @@ int ZiFiAT::scan(string* out, int maxn, uint32_t timeout_ms) {
 }
 
 ZiFiAT::Status ZiFiAT::disconnect(uint32_t timeout_ms) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        (void)timeout_ms;
+        WifiNet::disconnect();
+        connected = false; current_ssid.clear(); current_ip.clear();
+        return OK;
+    }
+#endif
     Status s = sendCmd("AT+CWQAP", "OK", timeout_ms);
     if (s == OK) {
         connected = false;
@@ -437,6 +493,20 @@ ZiFiAT::Status ZiFiAT::disconnect(uint32_t timeout_ms) {
 }
 
 bool ZiFiAT::getStatus(string& ssid_out, string& ip_out) {
+#if PICOSPECCY_WIFI
+    if (WifiNet::selected()) {
+        char ip[20];
+        if (WifiNet::ipString(ip, sizeof(ip))) {
+            connected = true; current_ip = ip;
+            if (current_ssid.empty()) current_ssid = WifiNet::ssid();
+            ssid_out = current_ssid; ip_out = current_ip;
+            return true;
+        }
+        connected = false; current_ip.clear();
+        ssid_out = current_ssid; ip_out.clear();
+        return false;
+    }
+#endif
     ZiFi::init(); // idempotent — ensure UART backend before talking to the ESP
     ssid_out.clear();
     ip_out.clear();
