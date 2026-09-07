@@ -527,6 +527,16 @@ private:
 
     // 0xCB prefix: one generic decoder (rot/shift, BIT, RES, SET x 8 registers)
     static void decodeCB(void);
+    // Regular opcode groups decoded generically over reg8[] (see Z80_JLS.cpp)
+    static uint8_t* const reg8[8];
+    static void decodeLD8(void);
+    static void decodeALU8(void);
+    static bool condMet(uint8_t cc);
+    static void decodeRETcc(void);
+    static void decodeJPcc(void);
+    static void decodeCALLcc(void);
+    static void decodeRST(void);
+    static void decodeINCDEC8(void);
 
     //Subconjunto de instrucciones 0xDD / 0xFD
     // Decode DD/FD opcodes
@@ -546,16 +556,12 @@ private:
     static void decodeOpcode01(void);
     static void decodeOpcode02(void);
     static void decodeOpcode03(void);
-    static void decodeOpcode04(void);
-    static void decodeOpcode05(void);
     static void decodeOpcode06(void);                        
     static void decodeOpcode07(void);
     static void decodeOpcode08(void);
     static void decodeOpcode09(void);
     static void decodeOpcode0a(void);
     static void decodeOpcode0b(void);                    
-    static void decodeOpcode0c(void);                    
-    static void decodeOpcode0d(void);                    
     static void decodeOpcode0e(void);                    
     static void decodeOpcode0f(void);                    
 
@@ -563,16 +569,12 @@ private:
     static void decodeOpcode11(void);
     static void decodeOpcode12(void);
     static void decodeOpcode13(void);
-    static void decodeOpcode14(void);
-    static void decodeOpcode15(void);
     static void decodeOpcode16(void);                        
     static void decodeOpcode17(void);
     static void decodeOpcode18(void);
     static void decodeOpcode19(void);
     static void decodeOpcode1a(void);
     static void decodeOpcode1b(void);                    
-    static void decodeOpcode1c(void);                    
-    static void decodeOpcode1d(void);                    
     static void decodeOpcode1e(void);                    
     static void decodeOpcode1f(void);                    
 
@@ -580,16 +582,12 @@ private:
     static void decodeOpcode21(void);
     static void decodeOpcode22(void);
     static void decodeOpcode23(void);
-    static void decodeOpcode24(void);
-    static void decodeOpcode25(void);
     static void decodeOpcode26(void);                        
     static void decodeOpcode27(void);
     static void decodeOpcode28(void);
     static void decodeOpcode29(void);
     static void decodeOpcode2a(void);
     static void decodeOpcode2b(void);                    
-    static void decodeOpcode2c(void);                    
-    static void decodeOpcode2d(void);                    
     static void decodeOpcode2e(void);                    
     static void decodeOpcode2f(void);                    
 
@@ -597,223 +595,61 @@ private:
     static void decodeOpcode31(void);
     static void decodeOpcode32(void);
     static void decodeOpcode33(void);
-    static void decodeOpcode34(void);
-    static void decodeOpcode35(void);
     static void decodeOpcode36(void);                        
     static void decodeOpcode37(void);
     static void decodeOpcode38(void);
     static void decodeOpcode39(void);
     static void decodeOpcode3a(void);
     static void decodeOpcode3b(void);                    
-    static void decodeOpcode3c(void);                    
-    static void decodeOpcode3d(void);                    
     static void decodeOpcode3e(void);                    
     static void decodeOpcode3f(void);                    
 
-    static void decodeOpcode40(void);
-    static void decodeOpcode41(void);
-    static void decodeOpcode42(void);
-    static void decodeOpcode43(void);
-    static void decodeOpcode44(void);
-    static void decodeOpcode45(void);
-    static void decodeOpcode46(void);                        
-    static void decodeOpcode47(void);
-    static void decodeOpcode48(void);
-    static void decodeOpcode49(void);
-    static void decodeOpcode4a(void);
-    static void decodeOpcode4b(void);                    
-    static void decodeOpcode4c(void);                    
-    static void decodeOpcode4d(void);                    
-    static void decodeOpcode4e(void);                    
-    static void decodeOpcode4f(void);                    
 
-    static void decodeOpcode50(void);
-    static void decodeOpcode51(void);
-    static void decodeOpcode52(void);
-    static void decodeOpcode53(void);
-    static void decodeOpcode54(void);
-    static void decodeOpcode55(void);
-    static void decodeOpcode56(void);                        
-    static void decodeOpcode57(void);
-    static void decodeOpcode58(void);
-    static void decodeOpcode59(void);
-    static void decodeOpcode5a(void);
-    static void decodeOpcode5b(void);                    
-    static void decodeOpcode5c(void);                    
-    static void decodeOpcode5d(void);                    
-    static void decodeOpcode5e(void);                    
-    static void decodeOpcode5f(void);                    
 
-    static void decodeOpcode60(void);
-    static void decodeOpcode61(void);
-    static void decodeOpcode62(void);
-    static void decodeOpcode63(void);
-    static void decodeOpcode64(void);
-    static void decodeOpcode65(void);
-    static void decodeOpcode66(void);                        
-    static void decodeOpcode67(void);
-    static void decodeOpcode68(void);
-    static void decodeOpcode69(void);
-    static void decodeOpcode6a(void);
-    static void decodeOpcode6b(void);                    
-    static void decodeOpcode6c(void);                    
-    static void decodeOpcode6d(void);                    
-    static void decodeOpcode6e(void);                    
-    static void decodeOpcode6f(void);                    
 
-    static void decodeOpcode70(void);
-    static void decodeOpcode71(void);
-    static void decodeOpcode72(void);
-    static void decodeOpcode73(void);
-    static void decodeOpcode74(void);
-    static void decodeOpcode75(void);
     static void decodeOpcode76(void);                        
-    static void decodeOpcode77(void);
-    static void decodeOpcode78(void);
-    static void decodeOpcode79(void);
-    static void decodeOpcode7a(void);
-    static void decodeOpcode7b(void);                    
-    static void decodeOpcode7c(void);                    
-    static void decodeOpcode7d(void);                    
-    static void decodeOpcode7e(void);                    
-    static void decodeOpcode7f(void);                    
 
-    static void decodeOpcode80(void);
-    static void decodeOpcode81(void);
-    static void decodeOpcode82(void);
-    static void decodeOpcode83(void);
-    static void decodeOpcode84(void);
-    static void decodeOpcode85(void);
-    static void decodeOpcode86(void);                        
-    static void decodeOpcode87(void);
-    static void decodeOpcode88(void);
-    static void decodeOpcode89(void);
-    static void decodeOpcode8a(void);
-    static void decodeOpcode8b(void);                    
-    static void decodeOpcode8c(void);                    
-    static void decodeOpcode8d(void);                    
-    static void decodeOpcode8e(void);                    
-    static void decodeOpcode8f(void);                    
 
-    static void decodeOpcode90(void);
-    static void decodeOpcode91(void);
-    static void decodeOpcode92(void);
-    static void decodeOpcode93(void);
-    static void decodeOpcode94(void);
-    static void decodeOpcode95(void);
-    static void decodeOpcode96(void);                        
-    static void decodeOpcode97(void);
-    static void decodeOpcode98(void);
-    static void decodeOpcode99(void);
-    static void decodeOpcode9a(void);
-    static void decodeOpcode9b(void);                    
-    static void decodeOpcode9c(void);                    
-    static void decodeOpcode9d(void);                    
-    static void decodeOpcode9e(void);                    
-    static void decodeOpcode9f(void);                    
 
-    static void decodeOpcodea0(void);
-    static void decodeOpcodea1(void);
-    static void decodeOpcodea2(void);
-    static void decodeOpcodea3(void);
-    static void decodeOpcodea4(void);
-    static void decodeOpcodea5(void);
-    static void decodeOpcodea6(void);                        
-    static void decodeOpcodea7(void);
-    static void decodeOpcodea8(void);
-    static void decodeOpcodea9(void);
-    static void decodeOpcodeaa(void);
-    static void decodeOpcodeab(void);                    
-    static void decodeOpcodeac(void);                    
-    static void decodeOpcodead(void);                    
-    static void decodeOpcodeae(void);                    
-    static void decodeOpcodeaf(void);                    
 
-    static void decodeOpcodeb0(void);
-    static void decodeOpcodeb1(void);
-    static void decodeOpcodeb2(void);
-    static void decodeOpcodeb3(void);
-    static void decodeOpcodeb4(void);
-    static void decodeOpcodeb5(void);
-    static void decodeOpcodeb6(void);                        
-    static void decodeOpcodeb7(void);
-    static void decodeOpcodeb8(void);
-    static void decodeOpcodeb9(void);
-    static void decodeOpcodeba(void);
-    static void decodeOpcodebb(void);                    
-    static void decodeOpcodebc(void);                    
-    static void decodeOpcodebd(void);                    
-    static void decodeOpcodebe(void);                    
 
     static void decodeOpcodebf(void); // Used for LOAD TRAP
 
-    static void decodeOpcodec0(void);
     static void decodeOpcodec1(void);
-    static void decodeOpcodec2(void);
     static void decodeOpcodec3(void);
-    static void decodeOpcodec4(void);
     static void decodeOpcodec5(void);
     static void decodeOpcodec6(void);                        
-    static void decodeOpcodec7(void);
-    static void decodeOpcodec8(void);
     static void decodeOpcodec9(void);
-    static void decodeOpcodeca(void);
     static void decodeOpcodecb(void);                    
-    static void decodeOpcodecc(void);                    
     static void decodeOpcodecd(void);                    
     static void decodeOpcodece(void);                    
-    static void decodeOpcodecf(void);                    
 
-    static void decodeOpcoded0(void);
     static void decodeOpcoded1(void);
-    static void decodeOpcoded2(void);
     static void decodeOpcoded3(void);
-    static void decodeOpcoded4(void);
     static void decodeOpcoded5(void);
     static void decodeOpcoded6(void);                        
-    static void decodeOpcoded7(void);
-    static void decodeOpcoded8(void);
     static void decodeOpcoded9(void);
-    static void decodeOpcodeda(void);
     static void decodeOpcodedb(void);                    
-    static void decodeOpcodedc(void);                    
     static void decodeOpcodedd(void);                    
     static void decodeOpcodede(void);                    
-    static void decodeOpcodedf(void);                    
 
-    static void decodeOpcodee0(void);
     static void decodeOpcodee1(void);
-    static void decodeOpcodee2(void);
     static void decodeOpcodee3(void);
-    static void decodeOpcodee4(void);
     static void decodeOpcodee5(void);
     static void decodeOpcodee6(void);                        
-    static void decodeOpcodee7(void);
-    static void decodeOpcodee8(void);
     static void decodeOpcodee9(void);
-    static void decodeOpcodeea(void);
     static void decodeOpcodeeb(void);                    
-    static void decodeOpcodeec(void);                    
     static void decodeOpcodeed(void);                    
     static void decodeOpcodeee(void);                    
-    static void decodeOpcodeef(void);                    
 
-    static void decodeOpcodef0(void);
     static void decodeOpcodef1(void);
-    static void decodeOpcodef2(void);
     static void decodeOpcodef3(void);
-    static void decodeOpcodef4(void);
     static void decodeOpcodef5(void);
     static void decodeOpcodef6(void);                        
-    static void decodeOpcodef7(void);
-    static void decodeOpcodef8(void);
     static void decodeOpcodef9(void);
-    static void decodeOpcodefa(void);
     static void decodeOpcodefb(void);                    
-    static void decodeOpcodefc(void);                    
     static void decodeOpcodefd(void);                    
     static void decodeOpcodefe(void);                    
-    static void decodeOpcodeff(void);                    
 
     static void check_trdos();                 
     static void check_trdos_unpage();                 

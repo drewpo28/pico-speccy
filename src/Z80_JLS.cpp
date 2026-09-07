@@ -1364,15 +1364,7 @@ void Z80::decodeOpcode03()
     REG_BC++;
 }
 
-void Z80::decodeOpcode04()
-{ /* INC B */
-    inc8(REG_B);
-}
 
-void Z80::decodeOpcode05()
-{ /* DEC B */
-    dec8(REG_B);
-}
 
 void Z80::decodeOpcode06()
 { /* LD B,n */
@@ -1423,15 +1415,7 @@ void Z80::decodeOpcode0b()
 
 }
 
-void Z80::decodeOpcode0c()
-{ /* INC C */
-    inc8(REG_C);
-}
 
-void Z80::decodeOpcode0d()
-{ /* DEC C */
-    dec8(REG_C);
-}
 
 void Z80::decodeOpcode0e()
 { /* LD C,n */
@@ -1488,17 +1472,7 @@ void Z80::decodeOpcode13()
     REG_DE++;
 }
 
-void Z80::decodeOpcode14()
-//         case 0x14:
-{ /* INC D */
-    inc8(REG_D);
-}
 
-void Z80::decodeOpcode15()
-//         case 0x15:
-{ /* DEC D */
-    dec8(REG_D);
-}
 
 void Z80::decodeOpcode16()
 //         case 0x16:
@@ -1553,17 +1527,7 @@ void Z80::decodeOpcode1b()
     REG_DE--;
 }
 
-void Z80::decodeOpcode1c()
-//         case 0x1C:
-{ /* INC E */
-    inc8(REG_E);
-}
 
-void Z80::decodeOpcode1d()
-// case 0x1D:
-{ /* DEC E */
-    dec8(REG_E);
-}
 
 void Z80::decodeOpcode1e()
 //         case 0x1E:
@@ -1618,15 +1582,7 @@ void Z80::decodeOpcode23()
     REG_HL++;
 }
 
-void Z80::decodeOpcode24()
-{ /* INC H */
-    inc8(REG_H);
-}
 
-void Z80::decodeOpcode25()
-{ /* DEC H */
-    dec8(REG_H);
-}
 
 void Z80::decodeOpcode26()
 { /* LD H,n */
@@ -1672,15 +1628,7 @@ void Z80::decodeOpcode2b()
     REG_HL--;
 }
 
-void Z80::decodeOpcode2c()
-{ /* INC L */
-    inc8(REG_L);
-}
 
-void Z80::decodeOpcode2d()
-{ /* DEC L */
-    dec8(REG_L);
-}
 
 void Z80::decodeOpcode2e()
 { /* LD L,n */
@@ -1729,23 +1677,7 @@ void Z80::decodeOpcode33()
     REG_SP++;
 }
 
-void Z80::decodeOpcode34()
-{ /* INC (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t work8, REG_HL);
-    inc8(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-}
 
-void Z80::decodeOpcode35()
-{ /* DEC (HL) */
-    uint8_t work8 = Z80Ops::peek8(REG_HL);
-    // PEEK8(uint8_t work8, REG_HL);
-    dec8(work8);
-    Z80Ops::addressOnBus(REG_HL, 1);
-    Z80Ops::poke8(REG_HL, work8);
-}
 
 void Z80::decodeOpcode36()
 { /* LD (HL),n */
@@ -1796,15 +1728,7 @@ void Z80::decodeOpcode3b()
     REG_SP--;
 }
 
-void Z80::decodeOpcode3c()
-{ /* INC A */
-    inc8(regA);
-}
 
-void Z80::decodeOpcode3d()
-{ /* DEC A */
-    dec8(regA);
-}
 
 void Z80::decodeOpcode3e()
 { /* LD A,n */
@@ -1824,280 +1748,63 @@ void Z80::decodeOpcode3f()
     flagQ = true;
 }
 
-void Z80::decodeOpcode40()
-{
-         /* LD B,B */
-}
-
-void Z80::decodeOpcode41()
-{ /* LD B,C */
-    REG_B = REG_C;
-}
-
-void Z80::decodeOpcode42()
-{ /* LD B,D */
-    REG_B = REG_D;
-}
-
-void Z80::decodeOpcode43()
-{ /* LD B,E */
-    REG_B = REG_E;
-}
-
-void Z80::decodeOpcode44()
-{ /* LD B,H */
-    REG_B = REG_H;
-}
-
-void Z80::decodeOpcode45()
-{ /* LD B,L */
-    REG_B = REG_L;
-}
-
-void Z80::decodeOpcode46()
-{ /* LD B,(HL) */
-    REG_B = Z80Ops::peek8(REG_HL);
-    // PEEK8(REG_B, REG_HL);
-}
-
-void Z80::decodeOpcode47()
-{ /* LD B,A */
-    REG_B = regA;
-}
-
-void Z80::decodeOpcode48()
-{ /* LD C,B */
-    REG_C = REG_B;
-}
-
-void Z80::decodeOpcode49()
-{
-}
-
-void Z80::decodeOpcode4a()
-{ /* LD C,D */
-    REG_C = REG_D;
-}
-
-void Z80::decodeOpcode4b()
-{ /* LD C,E */
-    REG_C = REG_E;
-}
-
-void Z80::decodeOpcode4c()
-{ /* LD C,H */
-    REG_C = REG_H;
-}
-
-void Z80::decodeOpcode4d()
-{ /* LD C,L */
-    REG_C = REG_L;
-}
-
-void Z80::decodeOpcode4e()
-{ /* LD C,(HL) */
-    REG_C = Z80Ops::peek8(REG_HL);
-    // PEEK8(REG_C, REG_HL);
-}
-
-void Z80::decodeOpcode4f()
-{ /* LD C,A */
-    REG_C = regA;
-}
-
-void Z80::decodeOpcode50()
-{ /* LD D,B */
-    REG_D = REG_B;
-}
-
-void Z80::decodeOpcode51()
-{ /* LD D,C */
-    REG_D = REG_C;
-}
-
-void Z80::decodeOpcode52()
-{
-}
-
-void Z80::decodeOpcode53()
-{ /* LD D,E */
-    REG_D = REG_E;
-}
 
 
-void Z80::decodeOpcode54()
-{ /* LD D,H */
-    REG_D = REG_H;
-}
 
 
-void Z80::decodeOpcode55()
-{ /* LD D,L */
-    REG_D = REG_L;
-}
 
 
-void Z80::decodeOpcode56()
-{ /* LD D,(HL) */
-    REG_D = Z80Ops::peek8(REG_HL);
-    // PEEK8(REG_D, REG_HL);
-}
 
 
-void Z80::decodeOpcode57()
-{ /* LD D,A */
-    REG_D = regA;
-}
 
-void Z80::decodeOpcode58()
-{ /* LD E,B */
-    REG_E = REG_B;
-}
 
-void Z80::decodeOpcode59()
-{ /* LD E,C */
-    REG_E = REG_C;
-}
 
-void Z80::decodeOpcode5a()
-{ /* LD E,D */
-    REG_E = REG_D;
-}
 
-void Z80::decodeOpcode5b()
-{
-}
 
-void Z80::decodeOpcode5c()
-{ /* LD E,H */
-    REG_E = REG_H;
-}
 
-void Z80::decodeOpcode5d()
-{ /* LD E,L */
-    REG_E = REG_L;
-}
 
-void Z80::decodeOpcode5e()
-{ /* LD E,(HL) */
-    REG_E = Z80Ops::peek8(REG_HL);
-    // PEEK8(REG_E, REG_HL);
-}
 
-void Z80::decodeOpcode5f()
-{ /* LD E,A */
-    REG_E = regA;
-}
 
-void Z80::decodeOpcode60()
-{ /* LD H,B */
-    REG_H = REG_B;
-}
 
-void Z80::decodeOpcode61()
-{ /* LD H,C */
-    REG_H = REG_C;
-}
 
-void Z80::decodeOpcode62()
-{ /* LD H,D */
-    REG_H = REG_D;
-}
 
-void Z80::decodeOpcode63()
-{ /* LD H,E */
-    REG_H = REG_E;
-}
 
-void Z80::decodeOpcode64()
-{
-}
 
-void Z80::decodeOpcode65()
-{ /* LD H,L */
-    REG_H = REG_L;
-}
 
-void Z80::decodeOpcode66()
-{ /* LD H,(HL) */
-    REG_H = Z80Ops::peek8(REG_HL);
-    // PEEK8(REG_H, REG_HL);
-}
 
-void Z80::decodeOpcode67()
-{ /* LD H,A */
-    REG_H = regA;
-}
 
-void Z80::decodeOpcode68()
-{ /* LD L,B */
-    REG_L = REG_B;
-}
 
-void Z80::decodeOpcode69()
-{ /* LD L,C */
-    REG_L = REG_C;
-}
 
-void Z80::decodeOpcode6a()
-{ /* LD L,D */
-    REG_L = REG_D;
-}
 
-void Z80::decodeOpcode6b()
-{ /* LD L,E */
-    REG_L = REG_E;
-}
 
-void Z80::decodeOpcode6c()
-{ /* LD L,H */
-    REG_L = REG_H;
-}
 
-void Z80::decodeOpcode6d()
-{
-}
 
-void Z80::decodeOpcode6e()
-{ /* LD L,(HL) */
-    REG_L = Z80Ops::peek8(REG_HL);
-    // PEEK8(REG_L, REG_HL);
-}
 
-void Z80::decodeOpcode6f()
-{ /* LD L,A */
-    REG_L = regA;
-}
 
-void Z80::decodeOpcode70()
-{ /* LD (HL),B */
-    Z80Ops::poke8(REG_HL, REG_B);
-}
 
-void Z80::decodeOpcode71()
-{ /* LD (HL),C */
-    Z80Ops::poke8(REG_HL, REG_C);
-}
 
-void Z80::decodeOpcode72()
-{ /* LD (HL),D */
-    Z80Ops::poke8(REG_HL, REG_D);
-}
 
-void Z80::decodeOpcode73()
-{ /* LD (HL),E */
-    Z80Ops::poke8(REG_HL, REG_E);
-}
 
-void Z80::decodeOpcode74()
-{ /* LD (HL),H */
-    Z80Ops::poke8(REG_HL, REG_H);
-}
 
-void Z80::decodeOpcode75()
-{ /* LD (HL),L */
-    Z80Ops::poke8(REG_HL, REG_L);
-}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 void Z80::decodeOpcode76()
 { /* HALT */
@@ -2109,401 +1816,45 @@ void Z80::decodeOpcode76()
 
 }
 
-void Z80::decodeOpcode77()
-{ /* LD (HL),A */
-    Z80Ops::poke8(REG_HL, regA);
-}
-
-void Z80::decodeOpcode78()
-{ /* LD A,B */
-    regA = REG_B;
-}
-
-void Z80::decodeOpcode79()
-{ /* LD A,C */
-    regA = REG_C;
-}
-
-void Z80::decodeOpcode7a()
-{ /* LD A,D */
-    regA = REG_D;
-}
-
-void Z80::decodeOpcode7b()
-{ /* LD A,E */
-    regA = REG_E;
-}
-
-void Z80::decodeOpcode7c()
-{ /* LD A,H */
-    regA = REG_H;
-}
-
-void Z80::decodeOpcode7d()
-{ /* LD A,L */
-    regA = REG_L;
-}
-
-void Z80::decodeOpcode7e()
-{ /* LD A,(HL) */
-    regA = Z80Ops::peek8(REG_HL);
-    // PEEK8(regA, REG_HL);
-}
-
-void Z80::decodeOpcode7f()
-{
-}
-
-void Z80::decodeOpcode80()
-{ /* ADD A,B */
-    add(REG_B);
-}
-void Z80::decodeOpcode81()
-{ /* ADD A,C */
-    add(REG_C);
-}
-void Z80::decodeOpcode82()
-{ /* ADD A,D */
-    add(REG_D);
-
-}
-void Z80::decodeOpcode83()
-{ /* ADD A,E */
-    add(REG_E);
-
-}
-void Z80::decodeOpcode84()
-{ /* ADD A,H */
-    add(REG_H);
-
-}
-void Z80::decodeOpcode85()
-{ /* ADD A,L */
-    add(REG_L);
-
-}
-void Z80::decodeOpcode86()
-{ /* ADD A,(HL) */
-
-    // PEEK8(uint8_t value,REG_HL);
-    // add(value);
-
-    add(Z80Ops::peek8(REG_HL));
-
-}
-void Z80::decodeOpcode87()
-{ /* ADD A,A */
-    add(regA);
-
-}
-void Z80::decodeOpcode88()
-{ /* ADC A,B */
-    adc(REG_B);
-
-}
-void Z80::decodeOpcode89()
-{ /* ADC A,C */
-    adc(REG_C);
-
-}
-void Z80::decodeOpcode8a()
-{ /* ADC A,D */
-    adc(REG_D);
-
-}
-void Z80::decodeOpcode8b()
-{ /* ADC A,E */
-    adc(REG_E);
-
-}
-void Z80::decodeOpcode8c()
-{ /* ADC A,H */
-    adc(REG_H);
-
-}
-void Z80::decodeOpcode8d()
-{ /* ADC A,L */
-    adc(REG_L);
-
-}
-void Z80::decodeOpcode8e()
-{ /* ADC A,(HL) */
-
-    // PEEK8(uint8_t value,REG_HL);
-    // adc(value);
-
-    adc(Z80Ops::peek8(REG_HL));
-
-}
-void Z80::decodeOpcode8f()
-{ /* ADC A,A */
-    adc(regA);
-
-}
-
-void Z80::decodeOpcode90()
-{ /* SUB B */
-    sub(REG_B);
-
-}
-void Z80::decodeOpcode91()
-{ /* SUB C */
-    sub(REG_C);
-
-}
-void Z80::decodeOpcode92()
-{ /* SUB D */
-    sub(REG_D);
-
-}
-void Z80::decodeOpcode93()
-{ /* SUB E */
-    sub(REG_E);
-
-}
-void Z80::decodeOpcode94()
-{ /* SUB H */
-    sub(REG_H);
 
-}
-void Z80::decodeOpcode95()
-{ /* SUB L */
-    sub(REG_L);
 
-}
-void Z80::decodeOpcode96()
-{ /* SUB (HL) */
 
-    // PEEK8(uint8_t value,REG_HL);
-    // sub(value);
 
-    sub(Z80Ops::peek8(REG_HL));
 
-}
-void Z80::decodeOpcode97()
-{ /* SUB A */
-    sub(regA);
 
-}
-void Z80::decodeOpcode98()
-{ /* SBC A,B */
-    sbc(REG_B);
 
-}
-void Z80::decodeOpcode99()
-{ /* SBC A,C */
-    sbc(REG_C);
 
-}
-void Z80::decodeOpcode9a()
-{ /* SBC A,D */
-    sbc(REG_D);
 
-}
-void Z80::decodeOpcode9b()
-{ /* SBC A,E */
-    sbc(REG_E);
 
-}
-void Z80::decodeOpcode9c()
-{ /* SBC A,H */
-    sbc(REG_H);
 
-}
-void Z80::decodeOpcode9d()
-{ /* SBC A,L */
-    sbc(REG_L);
 
-}
-void Z80::decodeOpcode9e()
-{ /* SBC A,(HL) */
 
-    // PEEK8(uint8_t value,REG_HL);
-    // sbc(value);
 
-    sbc(Z80Ops::peek8(REG_HL));
 
-}
-void Z80::decodeOpcode9f()
-{ /* SBC A,A */
-    sbc(regA);
 
-}
 
-void Z80::decodeOpcodea0()
-{ /* AND B */
-    and_(REG_B);
-}
 
-void Z80::decodeOpcodea1()
-{ /* AND C */
-    and_(REG_C);
 
-}
-void Z80::decodeOpcodea2()
-{ /* AND D */
-    and_(REG_D);
 
-}
-void Z80::decodeOpcodea3()
-{ /* AND E */
-    and_(REG_E);
 
-}
 
-void Z80::decodeOpcodea4() { /* AND H */ and_(REG_H); }
 
-void Z80::decodeOpcodea5() { /* AND L */ and_(REG_L); }
 
-void Z80::decodeOpcodea6() {
-    // PEEK8(uint8_t value,REG_HL);
-    // and_(value);
-    /* AND (HL) */ and_(Z80Ops::peek8(REG_HL));
-}
 
-void Z80::decodeOpcodea7() { /* AND A */ and_(regA); }
 
-void Z80::decodeOpcodea8() { /* XOR B */ xor_(REG_B); }
 
-void Z80::decodeOpcodea9() { /* XOR C */ xor_(REG_C); }
 
-void Z80::decodeOpcodeaa()
-{ /* XOR D */
-    xor_(REG_D);
 
-}
 
-void Z80::decodeOpcodeab()
-{ /* XOR E */
-    xor_(REG_E);
 
-}
 
-void Z80::decodeOpcodeac()
-{ /* XOR H */
-    xor_(REG_H);
 
-}
 
-void Z80::decodeOpcodead()
-{ /* XOR L */
-    xor_(REG_L);
 
-}
 
-void Z80::decodeOpcodeae()
-{ /* XOR (HL) */
 
-    // PEEK8(uint8_t value,REG_HL);
-    // xor_(value);
 
-    xor_(Z80Ops::peek8(REG_HL));
 
-}
-
-void Z80::decodeOpcodeaf()
-{ /* XOR A */
-    xor_(regA);
-
-}
-
-void Z80::decodeOpcodeb0()
-{ /* OR B */
-    or_(REG_B);
-
-}
-
-void Z80::decodeOpcodeb1()
-{ /* OR C */
-    or_(REG_C);
-
-}
-
-void Z80::decodeOpcodeb2()
-{ /* OR D */
-    or_(REG_D);
-
-}
-
-void Z80::decodeOpcodeb3()
-{ /* OR E */
-    or_(REG_E);
-
-}
-
-void Z80::decodeOpcodeb4()
-{ /* OR H */
-    or_(REG_H);
-
-}
-
-void Z80::decodeOpcodeb5()
-{ /* OR L */
-    or_(REG_L);
-
-}
-
-void Z80::decodeOpcodeb6()
-{ /* OR (HL) */
-
-    // PEEK8(uint8_t value,REG_HL);
-    // or_(value);
-
-    or_(Z80Ops::peek8(REG_HL));
-
-}
-
-void Z80::decodeOpcodeb7()
-{ /* OR A */
-    or_(regA);
-
-}
-
-void Z80::decodeOpcodeb8()
-{ /* CP B */
-    cp(REG_B);
-
-}
-
-void Z80::decodeOpcodeb9()
-{ /* CP C */
-    cp(REG_C);
-
-}
-
-void Z80::decodeOpcodeba()
-{ /* CP D */
-    cp(REG_D);
-
-}
-
-void Z80::decodeOpcodebb()
-{ /* CP E */
-    cp(REG_E);
-
-}
-
-void Z80::decodeOpcodebc()
-{ /* CP H */
-    cp(REG_H);
-
-}
-
-void Z80::decodeOpcodebd()
-{ /* CP L */
-    cp(REG_L);
-
-}
-
-void Z80::decodeOpcodebe()
-{ /* CP (HL) */
-
-    // PEEK8(uint8_t value,REG_HL);
-    // cp(value);
-
-    cp(Z80Ops::peek8(REG_HL));
-
-}
 
 /*IRAM_ATTR*/ void Z80::decodeOpcodebf()
 { /* CP A */
@@ -2543,18 +1894,6 @@ void Z80::decodeOpcodebe()
     }
 }
 
-void Z80::decodeOpcodec0()
-{ /* RET NZ */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if ((sz5h3pnFlags & ZERO_MASK) == 0) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-        // check_trdos_unpage();
-
-    }
-
-}
 
 void Z80::decodeOpcodec1()
 { /* POP BC */
@@ -2562,18 +1901,6 @@ void Z80::decodeOpcodec1()
 
 }
 
-void Z80::decodeOpcodec2()
-{ /* JP NZ,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & ZERO_MASK) == 0) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodec3()
 { /* JP nn */
@@ -2583,20 +1910,6 @@ void Z80::decodeOpcodec3()
 
 }
 
-void Z80::decodeOpcodec4()
-{ /* CALL NZ,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & ZERO_MASK) == 0) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodec5()
 { /* PUSH BC */
@@ -2616,25 +1929,7 @@ void Z80::decodeOpcodec6()
 
 }
 
-void Z80::decodeOpcodec7()
-{ /* RST 00H */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x00;
-}
 
-void Z80::decodeOpcodec8()
-{ /* RET Z */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if ((sz5h3pnFlags & ZERO_MASK) != 0) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-        // check_trdos_unpage();
-
-    }
-
-}
 
 void Z80::decodeOpcodec9()
 { /* RET */
@@ -2645,18 +1940,6 @@ void Z80::decodeOpcodec9()
 
 }
 
-void Z80::decodeOpcodeca()
-{ /* JP Z,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & ZERO_MASK) != 0) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodecb()
 { /* 0xCB prefix */
@@ -2666,20 +1949,6 @@ void Z80::decodeOpcodecb()
     decodeCB();
 }
 
-void Z80::decodeOpcodecc()
-{ /* CALL Z,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & ZERO_MASK) != 0) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodecd()
 { /* CALL nn */
@@ -2702,41 +1971,13 @@ void Z80::decodeOpcodece()
     REG_PC++;
 }
 
-void Z80::decodeOpcodecf()
-{ /* RST 08H */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x08;
-}
 
-void Z80::decodeOpcoded0()
-{ /* RET NC */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if (!carryFlag) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-
-    }
-}
 
 void Z80::decodeOpcoded1()
 { /* POP DE */
     REG_DE = pop();
 }
 
-void Z80::decodeOpcoded2()
-{ /* JP NC,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (!carryFlag) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcoded3()
 { /* OUT (n),A */
@@ -2748,20 +1989,6 @@ void Z80::decodeOpcoded3()
     REG_WZ |= (work8 + 1);
 }
 
-void Z80::decodeOpcoded4()
-{ /* CALL NC,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (!carryFlag) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcoded5()
 { /* PUSH DE */
@@ -2778,23 +2005,7 @@ void Z80::decodeOpcoded6()
     REG_PC++;
 }
 
-void Z80::decodeOpcoded7()
-{ /* RST 10H */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x10;
-}
 
-void Z80::decodeOpcoded8()
-{ /* RET C */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if (carryFlag) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-
-    }
-}
 
 void Z80::decodeOpcoded9()
 { /* EXX */
@@ -2812,18 +2023,6 @@ void Z80::decodeOpcoded9()
     REG_HLx = tmp;
 }
 
-void Z80::decodeOpcodeda()
-{ /* JP C,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (carryFlag) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodedb()
 { /* IN A,(n) */
@@ -2837,20 +2036,6 @@ void Z80::decodeOpcodedb()
     REG_WZ++;
 }
 
-void Z80::decodeOpcodedc()
-{ /* CALL C,nn */
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (carryFlag) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodedd()
 { /* Subconjunto de instrucciones */
@@ -2886,40 +2071,13 @@ void Z80::decodeOpcodede()
     REG_PC++;
 }
 
-void Z80::decodeOpcodedf()
-{ /* RST 18H */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x18;
-}
 
-void Z80::decodeOpcodee0() /* RET PO */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if ((sz5h3pnFlags & PARITY_MASK) == 0) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-    }
-}
 
 void Z80::decodeOpcodee1() /* POP HL */
 {
     REG_HL = pop();
 }
 
-void Z80::decodeOpcodee2() /* JP PO,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & PARITY_MASK) == 0) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodee3()
 { /* EX (SP),HL */
@@ -2934,21 +2092,6 @@ void Z80::decodeOpcodee3()
     REG_WZ = REG_HL;
 }
 
-void Z80::decodeOpcodee4() /* CALL PO,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & PARITY_MASK) == 0) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodee5() /* PUSH HL */
 {
@@ -2965,22 +2108,7 @@ void Z80::decodeOpcodee6() /* AND n */
     REG_PC++;
 }
 
-void Z80::decodeOpcodee7() /* RST 20H */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x20;
-}
 
-void Z80::decodeOpcodee8() /* RET PE */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if ((sz5h3pnFlags & PARITY_MASK) != 0) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-    }
-}
 
 void Z80::decodeOpcodee9() /* JP (HL) */
 {
@@ -2990,19 +2118,6 @@ void Z80::decodeOpcodee9() /* JP (HL) */
 
 }
 
-void Z80::decodeOpcodeea() /* JP PE,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & PARITY_MASK) != 0) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodeeb()
 { /* EX DE,HL */
@@ -3011,20 +2126,6 @@ void Z80::decodeOpcodeeb()
     REG_DE = tmp;
 }
 
-void Z80::decodeOpcodeec() /* CALL PE,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if ((sz5h3pnFlags & PARITY_MASK) != 0) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodeed() /*Subconjunto de instrucciones*/
 {
@@ -3060,23 +2161,7 @@ void Z80::decodeOpcodeee() /* XOR n */
     REG_PC++;
 }
 
-void Z80::decodeOpcodeef() /* RST 28H */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x28;
-}
 
-void Z80::decodeOpcodef0() /* RET P */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if (sz5h3pnFlags < SIGN_MASK) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-
-    }
-}
 
 void Z80::decodeOpcodef1() /* POP AF */
 {
@@ -3125,38 +2210,12 @@ void Z80::decodeOpcodef1() /* POP AF */
     setRegAF(pop());
 }
 
-void Z80::decodeOpcodef2() /* JP P,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (sz5h3pnFlags < SIGN_MASK) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodef3() /* DI */
 {
     ffIFF1 = ffIFF2 = false;
 }
 
-void Z80::decodeOpcodef4() /* CALL P,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (sz5h3pnFlags < SIGN_MASK) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodef5() /* PUSH AF */
 {
@@ -3174,23 +2233,7 @@ void Z80::decodeOpcodef6() /* OR n */
     REG_PC++;
 }
 
-void Z80::decodeOpcodef7() /* RST 30H */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x30;
-}
 
-void Z80::decodeOpcodef8() /* RET M */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    if (sz5h3pnFlags > 0x7f) {
-        REG_PC = REG_WZ = pop();
-
-        check_trdos();
-
-    }
-}
 
 void Z80::decodeOpcodef9() /* LD SP,HL */
 {
@@ -3198,18 +2241,6 @@ void Z80::decodeOpcodef9() /* LD SP,HL */
     REG_SP = REG_HL;
 }
 
-void Z80::decodeOpcodefa() /* JP M,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (sz5h3pnFlags > 0x7f) {
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodefb() /* EI */
 {
@@ -3218,20 +2249,6 @@ void Z80::decodeOpcodefb() /* EI */
     if (Z80Ops::isTsconf) TsConf::intEnableHook();
 }
 
-void Z80::decodeOpcodefc() /* CALL M,nn */
-{
-    REG_WZ = Z80Ops::peek16(REG_PC);
-    if (sz5h3pnFlags > 0x7f) {
-        Z80Ops::addressOnBus(REG_PC + 1, 1);
-        push(REG_PC + 2);
-        REG_PC = REG_WZ;
-
-        check_trdos();
-
-        return;
-    }
-    REG_PC = REG_PC + 2;
-}
 
 void Z80::decodeOpcodefd() /* Subconjunto de instrucciones */
 {
@@ -3268,98 +2285,186 @@ void Z80::decodeOpcodefe() /* CP n */
     REG_PC++;
 }
 
-void Z80::decodeOpcodeff() /* RST 38H */
-{
-    Z80Ops::addressOnBus(getPairIR().word, 1);
-    push(REG_PC);
-    REG_PC = REG_WZ = 0x38;
-}
 
 void (*Z80::dcOpcode[256])() = {
     &decodeOpcode00, &decodeOpcode01, &decodeOpcode02, &decodeOpcode03,
-    &decodeOpcode04, &decodeOpcode05, &decodeOpcode06, &decodeOpcode07,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode06, &decodeOpcode07,
     &decodeOpcode08, &decodeOpcode09, &decodeOpcode0a, &decodeOpcode0b,
-    &decodeOpcode0c, &decodeOpcode0d, &decodeOpcode0e, &decodeOpcode0f,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode0e, &decodeOpcode0f,
 
     &decodeOpcode10, &decodeOpcode11, &decodeOpcode12, &decodeOpcode13,
-    &decodeOpcode14, &decodeOpcode15, &decodeOpcode16, &decodeOpcode17,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode16, &decodeOpcode17,
     &decodeOpcode18, &decodeOpcode19, &decodeOpcode1a, &decodeOpcode1b,
-    &decodeOpcode1c, &decodeOpcode1d, &decodeOpcode1e, &decodeOpcode1f,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode1e, &decodeOpcode1f,
 
     &decodeOpcode20, &decodeOpcode21, &decodeOpcode22, &decodeOpcode23,
-    &decodeOpcode24, &decodeOpcode25, &decodeOpcode26, &decodeOpcode27,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode26, &decodeOpcode27,
     &decodeOpcode28, &decodeOpcode29, &decodeOpcode2a, &decodeOpcode2b,
-    &decodeOpcode2c, &decodeOpcode2d, &decodeOpcode2e, &decodeOpcode2f,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode2e, &decodeOpcode2f,
 
     &decodeOpcode30, &decodeOpcode31, &decodeOpcode32, &decodeOpcode33,
-    &decodeOpcode34, &decodeOpcode35, &decodeOpcode36, &decodeOpcode37,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode36, &decodeOpcode37,
     &decodeOpcode38, &decodeOpcode39, &decodeOpcode3a, &decodeOpcode3b,
-    &decodeOpcode3c, &decodeOpcode3d, &decodeOpcode3e, &decodeOpcode3f,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode3e, &decodeOpcode3f,
 
-    &decodeOpcode40, &decodeOpcode41, &decodeOpcode42, &decodeOpcode43,
-    &decodeOpcode44, &decodeOpcode45, &decodeOpcode46, &decodeOpcode47,
-    &decodeOpcode48, &decodeOpcode49, &decodeOpcode4a, &decodeOpcode4b,
-    &decodeOpcode4c, &decodeOpcode4d, &decodeOpcode4e, &decodeOpcode4f,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
 
-    &decodeOpcode50, &decodeOpcode51, &decodeOpcode52, &decodeOpcode53,
-    &decodeOpcode54, &decodeOpcode55, &decodeOpcode56, &decodeOpcode57,
-    &decodeOpcode58, &decodeOpcode59, &decodeOpcode5a, &decodeOpcode5b,
-    &decodeOpcode5c, &decodeOpcode5d, &decodeOpcode5e, &decodeOpcode5f,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
 
-    &decodeOpcode60, &decodeOpcode61, &decodeOpcode62, &decodeOpcode63,
-    &decodeOpcode64, &decodeOpcode65, &decodeOpcode66, &decodeOpcode67,
-    &decodeOpcode68, &decodeOpcode69, &decodeOpcode6a, &decodeOpcode6b,
-    &decodeOpcode6c, &decodeOpcode6d, &decodeOpcode6e, &decodeOpcode6f,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
 
-    &decodeOpcode70, &decodeOpcode71, &decodeOpcode72, &decodeOpcode73,
-    &decodeOpcode74, &decodeOpcode75, &decodeOpcode76, &decodeOpcode77,
-    &decodeOpcode78, &decodeOpcode79, &decodeOpcode7a, &decodeOpcode7b,
-    &decodeOpcode7c, &decodeOpcode7d, &decodeOpcode7e, &decodeOpcode7f,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeOpcode76, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
 
-    &decodeOpcode80, &decodeOpcode81, &decodeOpcode82, &decodeOpcode83,
-    &decodeOpcode84, &decodeOpcode85, &decodeOpcode86, &decodeOpcode87,
-    &decodeOpcode88, &decodeOpcode89, &decodeOpcode8a, &decodeOpcode8b,
-    &decodeOpcode8c, &decodeOpcode8d, &decodeOpcode8e, &decodeOpcode8f,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
 
-    &decodeOpcode90, &decodeOpcode91, &decodeOpcode92, &decodeOpcode93,
-    &decodeOpcode94, &decodeOpcode95, &decodeOpcode96, &decodeOpcode97,
-    &decodeOpcode98, &decodeOpcode99, &decodeOpcode9a, &decodeOpcode9b,
-    &decodeOpcode9c, &decodeOpcode9d, &decodeOpcode9e, &decodeOpcode9f,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
 
-    &decodeOpcodea0, &decodeOpcodea1, &decodeOpcodea2, &decodeOpcodea3,
-    &decodeOpcodea4, &decodeOpcodea5, &decodeOpcodea6, &decodeOpcodea7,
-    &decodeOpcodea8, &decodeOpcodea9, &decodeOpcodeaa, &decodeOpcodeab,
-    &decodeOpcodeac, &decodeOpcodead, &decodeOpcodeae, &decodeOpcodeaf,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
 
-    &decodeOpcodeb0, &decodeOpcodeb1, &decodeOpcodeb2, &decodeOpcodeb3,
-    &decodeOpcodeb4, &decodeOpcodeb5, &decodeOpcodeb6, &decodeOpcodeb7,
-    &decodeOpcodeb8, &decodeOpcodeb9, &decodeOpcodeba, &decodeOpcodebb,
-    &decodeOpcodebc, &decodeOpcodebd, &decodeOpcodebe, &decodeOpcodebf,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeOpcodebf,
 
-    &decodeOpcodec0, &decodeOpcodec1, &decodeOpcodec2, &decodeOpcodec3,
-    &decodeOpcodec4, &decodeOpcodec5, &decodeOpcodec6, &decodeOpcodec7,
-    &decodeOpcodec8, &decodeOpcodec9, &decodeOpcodeca, &decodeOpcodecb,
-    &decodeOpcodecc, &decodeOpcodecd, &decodeOpcodece, &decodeOpcodecf,
+    &decodeRETcc, &decodeOpcodec1, &decodeJPcc, &decodeOpcodec3,
+    &decodeCALLcc, &decodeOpcodec5, &decodeOpcodec6, &decodeRST,
+    &decodeRETcc, &decodeOpcodec9, &decodeJPcc, &decodeOpcodecb,
+    &decodeCALLcc, &decodeOpcodecd, &decodeOpcodece, &decodeRST,
 
-    &decodeOpcoded0, &decodeOpcoded1, &decodeOpcoded2, &decodeOpcoded3,
-    &decodeOpcoded4, &decodeOpcoded5, &decodeOpcoded6, &decodeOpcoded7,
-    &decodeOpcoded8, &decodeOpcoded9, &decodeOpcodeda, &decodeOpcodedb,
-    &decodeOpcodedc, &decodeOpcodedd, &decodeOpcodede, &decodeOpcodedf,
+    &decodeRETcc, &decodeOpcoded1, &decodeJPcc, &decodeOpcoded3,
+    &decodeCALLcc, &decodeOpcoded5, &decodeOpcoded6, &decodeRST,
+    &decodeRETcc, &decodeOpcoded9, &decodeJPcc, &decodeOpcodedb,
+    &decodeCALLcc, &decodeOpcodedd, &decodeOpcodede, &decodeRST,
 
-    &decodeOpcodee0, &decodeOpcodee1, &decodeOpcodee2, &decodeOpcodee3,
-    &decodeOpcodee4, &decodeOpcodee5, &decodeOpcodee6, &decodeOpcodee7,
-    &decodeOpcodee8, &decodeOpcodee9, &decodeOpcodeea, &decodeOpcodeeb,
-    &decodeOpcodeec, &decodeOpcodeed, &decodeOpcodeee, &decodeOpcodeef,
+    &decodeRETcc, &decodeOpcodee1, &decodeJPcc, &decodeOpcodee3,
+    &decodeCALLcc, &decodeOpcodee5, &decodeOpcodee6, &decodeRST,
+    &decodeRETcc, &decodeOpcodee9, &decodeJPcc, &decodeOpcodeeb,
+    &decodeCALLcc, &decodeOpcodeed, &decodeOpcodeee, &decodeRST,
 
-    &decodeOpcodef0, &decodeOpcodef1, &decodeOpcodef2, &decodeOpcodef3,
-    &decodeOpcodef4, &decodeOpcodef5, &decodeOpcodef6, &decodeOpcodef7,
-    &decodeOpcodef8, &decodeOpcodef9, &decodeOpcodefa, &decodeOpcodefb,
-    &decodeOpcodefc, &decodeOpcodefd, &decodeOpcodefe, &decodeOpcodeff
+    &decodeRETcc, &decodeOpcodef1, &decodeJPcc, &decodeOpcodef3,
+    &decodeCALLcc, &decodeOpcodef5, &decodeOpcodef6, &decodeRST,
+    &decodeRETcc, &decodeOpcodef9, &decodeJPcc, &decodeOpcodefb,
+    &decodeCALLcc, &decodeOpcodefd, &decodeOpcodefe, &decodeRST
 
 };
 
 //Subconjunto de instrucciones 0xCB
 
+
+// 8-bit register pointer table shared by the regular opcode groups (index r of the
+// opcode: B C D E H L (HL) A; nullptr = (HL), the caller does the memory access).
+// Read on every LD r,r' / ALU r / INC r / CB op: it MUST live in SRAM with the core —
+// a plain `static const` goes to .rodata, which the linker script sends to FLASH
+// (the Z80_CORE_IN_RAM rule covers .text only), i.e. one XIP fetch per instruction.
+uint8_t* const Z80::reg8[8] __attribute__((section(".time_critical.z80"))) = {
+    &regBC.byte8.hi, &regBC.byte8.lo, &regDE.byte8.hi, &regDE.byte8.lo,
+    &regHL.byte8.hi, &regHL.byte8.lo, nullptr, &regA };
+
+void Z80::decodeLD8() {   /* LD r,r' 0x40-0x7F (0x76 = HALT keeps its own handler) */
+    const uint8_t op = opCode;
+    uint8_t* src = reg8[op & 7];
+    const uint8_t v = src ? *src : Z80Ops::peek8(REG_HL);
+    uint8_t* dst = reg8[(op >> 3) & 7];
+    if (dst) *dst = v; else Z80Ops::poke8(REG_HL, v);
+}
+
+void Z80::decodeALU8() {  /* ADD/ADC/SUB/SBC/AND/XOR/OR/CP A,r 0x80-0xBE (0xBF = CP A keeps the tape LOAD trap) */
+    const uint8_t op = opCode;
+    uint8_t* src = reg8[op & 7];
+    const uint8_t v = src ? *src : Z80Ops::peek8(REG_HL);
+    switch ((op >> 3) & 7) {
+        case 0: add(v); break;
+        case 1: adc(v); break;
+        case 2: sub(v); break;
+        case 3: sbc(v); break;
+        case 4: and_(v); break;
+        case 5: xor_(v); break;
+        case 6: or_(v); break;
+        default: cp(v); break;
+    }
+}
+
+// Condition cc = (opcode >> 3) & 7: NZ Z NC C PO PE P M
+bool Z80::condMet(uint8_t cc) {
+    bool f;
+    switch (cc >> 1) {
+        case 0:  f = (sz5h3pnFlags & ZERO_MASK) != 0; break;
+        case 1:  f = carryFlag; break;
+        case 2:  f = (sz5h3pnFlags & PARITY_MASK) != 0; break;
+        default: f = (sz5h3pnFlags & SIGN_MASK) != 0; break;
+    }
+    return f == (bool)(cc & 1);
+}
+
+void Z80::decodeRETcc() {  /* RET cc */
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    if (condMet((opCode >> 3) & 7)) {
+        REG_PC = REG_WZ = pop();
+        check_trdos();
+    }
+}
+
+void Z80::decodeJPcc() {   /* JP cc,nn */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    if (condMet((opCode >> 3) & 7)) {
+        REG_PC = REG_WZ;
+        check_trdos();
+        return;
+    }
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeCALLcc() { /* CALL cc,nn */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    if (condMet((opCode >> 3) & 7)) {
+        Z80Ops::addressOnBus(REG_PC + 1, 1);
+        push(REG_PC + 2);
+        REG_PC = REG_WZ;
+        check_trdos();
+        return;
+    }
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeRST() {    /* RST p */
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    push(REG_PC);
+    REG_PC = REG_WZ = opCode & 0x38;
+}
+
+void Z80::decodeINCDEC8() { /* INC r (bit 0 clear) / DEC r (bit 0 set), incl. (HL) */
+    const uint8_t op = opCode;
+    uint8_t* p = reg8[(op >> 3) & 7];
+    if (p) {
+        if (op & 1) dec8(*p); else inc8(*p);
+        return;
+    }
+    uint8_t work8 = Z80Ops::peek8(REG_HL);
+    if (op & 1) dec8(work8); else inc8(work8);
+    Z80Ops::addressOnBus(REG_HL, 1);
+    Z80Ops::poke8(REG_HL, work8);
+}
 
 // Generic CB decoder. Opcode bits: [7:6] group, [5:3] n, [2:0] r.
 // group 0 = rotate/shift #n (RLC RRC RL RR SLA SRA SLL SRL), 1 = BIT n,r,
@@ -3367,17 +2472,11 @@ void (*Z80::dcOpcode[256])() = {
 // 256 per-opcode handlers + their 1 KB dispatch table (-6.2 KB of SRAM, 2026-09-07)
 // with the same semantics and the same bus timing (addressOnBus before the (HL) write-back).
 void Z80::decodeCB() {
-    // Read on every CB instruction: keep it in SRAM with the core. A plain
-    // `static const` lands in .rodata, which the linker script sends to FLASH
-    // (the Z80_CORE_IN_RAM rule covers .text only) — one XIP fetch per CB op.
-    static uint8_t* const cbReg8[8] __attribute__((section(".time_critical.z80"))) = {
-        &regBC.byte8.hi, &regBC.byte8.lo, &regDE.byte8.hi, &regDE.byte8.lo,
-        &regHL.byte8.hi, &regHL.byte8.lo, nullptr, &regA };
     const uint8_t op = opCode;
     const uint8_t r = op & 7;
     const uint8_t n = (op >> 3) & 7;
     const uint8_t mask = 1u << n;
-    uint8_t* reg = cbReg8[r];
+    uint8_t* reg = reg8[r];
     uint8_t work8 = reg ? *reg : Z80Ops::peek8(REG_HL);
     switch (op >> 6) {
         case 0:
