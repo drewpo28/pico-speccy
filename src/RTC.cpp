@@ -4,6 +4,8 @@
 #include <pico/time.h>
 #include "FileUtils.h"
 #include "Config.h"
+#include "ZxEvoAvr.h"
+#include "Z80_JLS/z80.h"
 #include <stdio.h>
 #if RTC_PORT_TRACE
 #include "Debug.h"
@@ -286,6 +288,14 @@ uint8_t RTC::readDisabled() {
 }
 
 void RTC::writeData(uint8_t v) {
+    // TS-Conf: the Gluk clock is the ZX-Evo AVR, which repurposes reg C's spare
+    // bits, reg E and the 0xF0..0xFF window (see ZxEvoAvr.h). Reg A stays an
+    // ordinary stored register below — it is the EEPROM page pointer there.
+    if (Z80Ops::isTsconf) {
+        if (sel >= 0xF0) { ZxEvoAvr::writeExt(sel, v, regs[0x0A]); return; }
+        if (sel == 0x0C) { ZxEvoAvr::writeRegC(v); return; }
+        if (sel == 0x0E) return;    // keyboard status register, read-only on the AVR
+    }
     if (sel <= 0x09) {
         // Time/alarm registers: accepted only inside the datasheet set-time
         // sequence (reg B SET=1 → write regs → SET=0 commits). Writes without
@@ -352,6 +362,13 @@ uint32_t RTC::liveSecs() {
 }
 
 uint8_t RTC::readData() {
+    // TS-Conf: ZX-Evo AVR registers (version extension / PS/2 scancode log /
+    // keyboard modifier statuses) — see ZxEvoAvr.h and writeData().
+    if (Z80Ops::isTsconf) {
+        if (sel >= 0xF0)  return ZxEvoAvr::readExt(sel, regs[0x0A]);
+        if (sel == 0x0D)  return ZxEvoAvr::regD();
+        if (sel == 0x0E)  return ZxEvoAvr::regE();
+    }
     // While SET is up the update cycle is halted on the real chip — expose the
     // shadow buffer instead of the running clock (clock-setter UIs re-read the
     // fields they just wrote).
@@ -415,6 +432,7 @@ uint8_t RTC::readData() {
                 if (cur != last_uf_sec) { last_uf_sec = cur; c |= 0x10; }
             }
             if (c & regs[0x0B] & 0x70) c |= 0x80;
+            if (Z80Ops::isTsconf) c |= ZxEvoAvr::regCBits();   // AVR: SD detect / NUM LED
             return c;
         }
         case 0x0D: return regs[0x0D] | 0x80; // reg D: VRT always set
