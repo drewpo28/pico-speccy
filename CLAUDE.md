@@ -1542,11 +1542,12 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   ROM: `src/roms/tsconf/romTsBios.c` (64 KB, byte-identical to zxevo.rom's
   first 64 KB; pages Service/TR-DOS/128/48), read via `TsConf::romPtr()` —
   **no `MemESP::rom[]` slots consumed**; pages 4-31 = `gb_rom_Alf_ep` zeros.
-- **CPU::loop has a third shape for TS-Conf**: unchecked to IntStart, checked
-  across the INT window, unchecked to frame end (`FlushOnHaltTo(target)` is the
-  parameterized FlushOnHalt; a HALT before the window wakes at IntStart). The
-  frame tail is a faithful copy — kept duplicated so other machines' hot path
-  stays textually untouched. `isActiveINT` gates on `intmask` bit 0.
+- **CPU::loop has a third shape for TS-Conf**: since 2026-09-07 the whole frame
+  is the event-driven "Stage D" (see item 15 of the performance list — the
+  earlier fixed three-slice shape with `FlushOnHaltTo` broke raster splits that
+  move VSINT). The frame tail is a faithful copy — kept duplicated so other
+  machines' hot path stays textually untouched. `isActiveINT` gates on
+  `intmask` bit 0.
 - **FMAddr window is live in Phase 1** (TS-BIOS programs CRAM through it — the
   plan's phase-2 deferral was self-contradictory): `g_tsconf_fm` gate tested in
   `gsDmaPoke8` (the `g_ngs_zxdma` pattern — NEVER in `MemESP::writebyte`), the
@@ -1623,11 +1624,11 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
     LAZILY from `CPU::tstates` (`tsIntPoll`) — there is no per-line hook, and
     none is needed because **CPU::loop runs the frame instruction-checked while
     a LINE/DMA source is armed** (`needsCheckedFrame()`: mask b1, LINE pending,
-    or mask b2 with a DMA busy/pending): Stage D in the TS branch; the three
-    unchecked slices are taken only while it is false, and a port write that
-    arms a source mid-slice pulls `CPU::stFrame` down to `tstates` (`tsWakeLoop`;
+    or mask b2 with a DMA busy/pending) — since 2026-09-07 EVERY TS frame runs
+    the event-driven Stage D (item 15 below), and a port write that arms or moves
+    a source mid-slice pulls `CPU::stFrame` down to `tstates` (`tsWakeLoop`;
     floor 1 because 0 means HALT to the loop) so `exec_nocheck()` returns and the
-    checked tail takes over. `TsConf::endFrame()` (before `tstates -=
+    loop re-slices. `TsConf::endFrame()` (before `tstates -=
     statesInFrame`) wraps the frame-relative timestamps and clears the FRAME ack.
   - *DMA* (`TsConf::dmaStart`, port of the reference dma_init/next_burst/dma_*
     with the per-memory-cycle state machine collapsed): the whole transaction
@@ -2076,6 +2077,48 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
      write-allocate fill, ~1 ms). The Z80 mix in TMNT is the game's own `RLA /
      JR C` bit loops (19%) — core work, no emulator shortcut. Test firmwares of
      this session are `debug/M-core1*.elf` (k = final).
+  15. **The FRAME INT is per WINDOW, not per frame, and a HALT must never flush
+     the frame (Ninja Gaiden background flicker, hw-confirmed fixed 2026-09-07 —
+     `debug/M-core2a`; four defects in three rounds, all below).** Symptom: from the moment the background starts
+     scrolling the picture alternated every frame between the level's FIRST
+     frame and the real scrolled one (video: frame i == i+2, i != i+1; the
+     "stale" frame is exactly the T0X=0 view). Two defects, found by
+     disassembling the game's INT handler out of the memory dump (E4C5): it
+     does a raster split by MOVING VSINT — INT at line 272: T0X=T1X=0,
+     VSINT:=94; INT at line 94: T0X=X, VSINT:=272 — i.e. two FRAME INTs per
+     frame. (a) `s_frm_acked` was a once-per-frame latch, so the second window
+     of the frame was suppressed and the handler ran on alternate frames
+     (trace: `L272 T0X=000` on even frames, `L094 T0X=X` on odd ones). zint.v
+     sets `int_frm` on every `int_start_frm` strobe and clears it on the ack or
+     the 32-clock expiry — no frame latch. Now `frameIntRecalc` re-arms the
+     latch whenever (VSINT, HSINT) changes and ends the running unchecked slice
+     (`tsWakeLoop`). (b) CPU::loop's TS branch was a FIXED three-slice shape
+     (unchecked to IntStart / checked window / unchecked to frame end) whose
+     Stage A `FlushOnHaltTo` rendered the REST OF THE FRAME at the HALT with the
+     pre-INT registers — the game HALTs before the line-94 INT, so the whole
+     picture was drawn at T0X=0. The TS frame now runs the event-driven Stage D
+     only (`nextIntEvent` slices, `haltAdvanceTo` walks lines), which follows a
+     moved window and renders each line at its own time. Idle accounting sums
+     the HALT sleeps (`ts_idle`). PERF ts line gained `frmInt=N/60f` — a
+     raster-split title must read ~120, a plain one 60. (c) With (a)+(b) it
+     STILL read 60: the line-94 handler runs with IFF1 clear, so Stage D had
+     sized its slice to the frame end, and `intEnableHook` only ended a slice
+     when a source was already up — the 272 window, created inside the handler,
+     was slept through unchecked. The hook now also re-slices when
+     `nextIntEvent() < statesInFrame`. (d) Then the picture tore in random
+     places: `TsDraw`'s line clock used the unscaled raster constants while
+     `CPU::tstates` are turbo-scaled (x4 at ZCLK 14 MHz), so the whole picture
+     rendered in the first quarter of the frame, before the T0X write — invisible
+     for as long as every frame was flushed at the HALT. `ts_line_t` start and
+     step are `<< ESPectrum::multiplicator` now. The beam-raced ZX-mode renderer
+     still has the pre-existing "turbo does not rescale the raster" deviation.
+     Trace lessons that cost rounds here: the TSVT budget re-armed to 400 per
+     reset went blind ~8 s into the game (now 4000, and FRAME acks are counted,
+     not printed); a per-frame register trace showed the alternation clearly
+     but only the GAME CODE said why — take the dump and disassemble the
+     handler before theorising about the renderer; and `ffmpeg` + a PIL
+     diff/shift script over the capture (`d1`/`d2` = changed pixels vs the
+     previous frame / two back) settles period-2 questions in minutes.
   Pentagon check of the general changes (hw 2026-09-07, TR-DOS game): both ROM
   overlays materialised at boot (`[ROM] overlay materialised` x2), loading and
   play clean, `cpu=6.0 ms` (max 6.3) at 48.8 FPS where the same class of game

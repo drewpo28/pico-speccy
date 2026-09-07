@@ -481,6 +481,33 @@ static uint32_t   ts_c1_tsu_job[TS_C1_TSU];     // ts_c1_w of the last job refer
 static uint32_t   ts_c1_sf_job[TS_C1_SFILE];
 static uint32_t   ts_c1_tsu_cur = 0;            // entry of the last posted line
 static uint32_t   ts_c1_sf_cur = 0, ts_c1_sf_gen = 0xFFFFFFFFu;
+// TSU tile-map PREFETCH (video_ts.v `tm_line = line + 16`): during raster line
+// l the hardware fetches, for tile-map row ((l+16)>>3 + TyOffs>>3), the 8 tiles
+// of burst (l & 7) for each layer into a 4-row buffer; the line is rendered 9-16
+// lines later from that buffer. A game that rewrites the map while the frame
+// is displayed ("behind the fetch") relies on the write showing up next frame
+// — reading the map at render time showed it a frame early: Ninja Gaiden's
+// background, scrolled by rewriting the map, drew the old and the new position
+// mixed (hw 2026-09-07). So core0 captures one 32-byte burst per posted line
+// into a ring indexed like the job ring (queue path: ts_c1_w; sync path:
+// ts_line_seq), plus a 16-burst "preroll" at content line 0 for the rows the
+// hardware fetched during the top border (captured with line-0 registers — the
+// only approximation). tsuComposeLine reads tiles from these captures only.
+#define TS_TMB_WORDS 16                     // 8 tiles x 2 layers per burst
+static uint16_t* ts_tmb = nullptr;          // [TS_C1_RING][TS_TMB_WORDS]
+static uint16_t* ts_tmb_pre = nullptr;      // [2][16][TS_TMB_WORDS]
+static uint8_t   ts_tmb_par = 0;            // preroll buffer of the frame being posted
+static uint32_t  ts_line_seq = 0;           // sync-path line counter (ring index)
+static void tsTmbCapture(uint16_t* dst, uint32_t tm_line) {
+    for (int layer = 0; layer < 2; layer++) {
+        const uint16_t yoffs = layer ? TsConf::r.t1_yoffs : TsConf::r.t0_yoffs;
+        const uint32_t row = ((tm_line >> 3) + (yoffs >> 3)) & 63;
+        const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+        uint16_t* d = dst + layer * 8;
+        if (!tm) { memset(d, 0, 16); continue; }
+        memcpy(d, tm + (row << 8) + (layer ? 128 : 0) + ((tm_line & 7) << 4), 16);
+    }
+}
 #define TS_C1_RING 512
 static TsRenderJob*      ts_c1_ring = nullptr;
 static volatile uint32_t ts_c1_w = 0, ts_c1_r = 0;     // producer / consumer indices (free-running)
@@ -523,6 +550,7 @@ void VIDEO::tsRenderDrain() {
             ts_c1_enabled = false;
             ts_c1_r = ts_c1_w;
             ts_c1_dma_done = ts_c1_dma_posted;
+            TsConf::wrGateRecalc();
             break;
         }
         tight_loop_contents();
@@ -573,23 +601,76 @@ void VIDEO::tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, ui
 bool VIDEO::tsRenderOverlaps(uint32_t addr, uint32_t len) {
     const uint32_t r = ts_c1_r, w = ts_c1_w;
     if (r == w) return false;
-    if (ts_vmode_live == TSV_NOGFX) return false;
     const TsRenderJob a = ts_c1_ring[r & (TS_C1_RING - 1)];
     const TsRenderJob b = ts_c1_ring[(w - 1) & (TS_C1_RING - 1)];
-    if (a.l.kind || b.l.kind) return true;            // a DMA job at either end: be safe
+    if ((a.l.kind | b.l.kind) & 1) return true;        // a DMA job at either end: be safe
     if (a.l.vpage != b.l.vpage) return true;          // page flip inside the backlog: be safe
     const uint32_t end = addr + len;
     auto hit = [&](uint32_t lo, uint32_t hi) { return addr < hi && end > lo; };
+    // Graphics layer: the bitmap rows between the oldest and newest pending line.
     if (ts_vmode_live == TSV_TEXT) {
         const uint32_t p0 = (uint32_t)a.l.vpage << 14, p1 = (uint32_t)(a.l.vpage ^ 1) << 14;
-        return hit(p0, p0 + 0x4000) || hit(p1, p1 + 0x4000);
+        if (hit(p0, p0 + 0x4000) || hit(p1, p1 + 0x4000)) return true;
+    } else if (ts_vmode_live == TSV_ZX) {
+        const uint32_t p0 = (uint32_t)a.l.vpage << 14;   // ZX base under the TSU: 6912 B, row math not worth it
+        if (hit(p0, p0 + 0x1B00)) return true;
+    } else if (ts_vmode_live != TSV_NOGFX) {
+        const bool c256 = (ts_vmode_live == TSV_256C);
+        const uint32_t base = c256 ? ((uint32_t)(a.l.vpage & 0xF0) << 14) : ((uint32_t)(a.l.vpage & 0xF8) << 14);
+        const uint32_t sh = c256 ? 9 : 8;
+        const uint32_t y0 = a.l.ygctr & 0x1FF, y1 = b.l.ygctr & 0x1FF;
+        if (y0 <= y1) { if (hit(base + (y0 << sh), base + ((y1 + 1) << sh))) return true; }
+        else if (hit(base + (y0 << sh), base + (512u << sh)) || hit(base, base + ((y1 + 1) << sh))) return true;
     }
-    const bool c256 = (ts_vmode_live == TSV_256C);
-    const uint32_t base = c256 ? ((uint32_t)(a.l.vpage & 0xF0) << 14) : ((uint32_t)(a.l.vpage & 0xF8) << 14);
-    const uint32_t sh = c256 ? 9 : 8;
-    const uint32_t y0 = a.l.ygctr & 0x1FF, y1 = b.l.ygctr & 0x1FF;
-    if (y0 <= y1) return hit(base + (y0 << sh), base + ((y1 + 1) << sh));
-    return hit(base + (y0 << sh), base + (512u << sh)) || hit(base, base + ((y1 + 1) << sh));
+    // TSU: the tile-map rows those lines read (256 B per 8 screen lines, per
+    // layer, from each pending state at the two ends of the backlog) and the
+    // whole tile/sprite bitmap ranges (any element can be referenced — a write
+    // there waits for every pending line; tilesets are rarely rewritten
+    // mid-frame). Found by Ninja Gaiden (hw 2026-09-07): a NOGFX + TSU title
+    // whose background — the tile map in a page nothing else looked at — was
+    // rewritten while core1 still read it: flicker, sprites (SFILE snapshot) fine.
+    if (ts_tsu_live && ts_c1_tsu) {
+        const TsuState* sts[2] = { &ts_c1_tsu[a.l.tsu & (TS_C1_TSU - 1)], &ts_c1_tsu[b.l.tsu & (TS_C1_TSU - 1)] };
+        for (int k = 0; k < 2; k++) {
+            const TsuState& st = *sts[k];
+            for (int layer = 0; layer < 2; layer++) {
+                if (!(st.tsconf & (layer ? 0x40 : 0x20))) continue;
+                // The tile MAP is not read here any more (prefetch captures);
+                // the tile bitmaps are.
+                const uint32_t g = (uint32_t)((layer ? st.t1gpage : st.t0gpage) & 0xF8) << 14;
+                if (hit(g, g + (8u << 14))) return true;
+            }
+            if (st.tsconf & 0x80) {
+                const uint32_t g = (uint32_t)(st.sgpage & 0xF8) << 14;
+                if (hit(g, g + (8u << 14))) return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Is physical page `page` something a queued line may read right now? Drives
+// the CPU write watch (TsConf::tsUpdateWrGate → g_tsconf_wr bit 0x40 +
+// g_ts_bank_watch): a guest write into such a page goes through
+// tsRenderDrainOverlap. Live registers, not the queue — the mask is recomputed
+// on bank/register changes, the precise test happens at the write.
+bool VIDEO::tsWatchedPage(uint32_t page) {
+    if (!tsRenderQueueOn()) return false;
+    const uint8_t vp = TsConf::r.vpage;
+    switch (ts_vmode_live) {
+        case TSV_TEXT: if (page == vp || page == (uint32_t)(vp ^ 1)) return true; break;
+        case TSV_ZX:   if (page == vp) return true; break;
+        case TSV_16C:  if ((page & 0xF8) == (vp & 0xF8)) return true; break;
+        case TSV_256C: if ((page & 0xF0) == (vp & 0xF0)) return true; break;
+        default: break;
+    }
+    if (ts_tsu_live) {
+        const uint8_t tsc = TsConf::r.tsconf;
+        if ((tsc & 0x20) && (page & 0xF8) == (TsConf::r.t0gpage & 0xF8)) return true;
+        if ((tsc & 0x40) && (page & 0xF8) == (TsConf::r.t1gpage & 0xF8)) return true;
+        if ((tsc & 0x80) && (page & 0xF8) == (TsConf::r.sgpage & 0xF8)) return true;
+    }
+    return false;
 }
 
 // core0: wait only until no queued line still reads [addr, addr+len) — core1
@@ -615,7 +696,7 @@ void VIDEO::tsRenderCore1Pump() {
     const uint64_t t0 = time_us_64();
     for (int n = 0; n < 8 && ts_c1_r != ts_c1_w; n++) {
         const TsRenderJob j = ts_c1_ring[ts_c1_r & (TS_C1_RING - 1)];
-        if (j.l.kind == 1) {
+        if (j.l.kind & 1) {
             const uint64_t d0 = time_us_64();
             TsConf::dmaExecBulk(j.d.ctrl, (uint32_t)j.d.s[0] | ((uint32_t)j.d.s[1] << 8) | ((uint32_t)j.d.s[2] << 16),
                                 (uint32_t)j.d.d[0] | ((uint32_t)j.d.d[1] << 8) | ((uint32_t)j.d.d[2] << 16),
@@ -627,7 +708,7 @@ void VIDEO::tsRenderCore1Pump() {
             break;                                    // a DMA is long; let pcm_call/GS::pump run
         }
         const TsuState& st = ts_c1_tsu[j.l.tsu & (TS_C1_TSU - 1)];
-        tsRenderExec(j, &st, ts_c1_sf + (uint32_t)(st.sfidx & (TS_C1_SFILE - 1)) * 256);
+        tsRenderExec(j, &st, ts_c1_sf + (uint32_t)(st.sfidx & (TS_C1_SFILE - 1)) * 256, ts_c1_r);
         __dmb();
         ts_c1_r = ts_c1_r + 1;
         ts_c1_jobs = ts_c1_jobs + 1;
@@ -649,6 +730,7 @@ void VIDEO::tsVideoForceOff() {
     ts_tsu_live = false;
     ts_pal256_live = false;
     if (c256) applyPalette();     // the ts256 remap had taken over the hardware palette
+    TsConf::wrGateRecalc();
     ts_rres_live = 0;
     ts_crop_top = 0;
     if (pair) {
@@ -3085,6 +3167,7 @@ void VIDEO::Reset() {
         ts_pal256_live = false;
         ts_rres_live = 0;
         ts_crop_top = 0;
+        TsConf::wrGateRecalc();
     }
 
     if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF) {
@@ -4207,7 +4290,7 @@ IRAM_ATTR void VIDEO::tsDrawTick() {
         linedraw_cnt = lin_end + ts_line_idx;   // keep the shared counters coherent
         curline = ts_line_idx;
         tsRenderLine(ts_line_idx);
-        ts_line_t += tStatesPerLine;
+        ts_line_t += tStatesPerLine << ESPectrum::multiplicator;   // CPU::tstates are turbo-scaled, the raster constants are not
         if (++ts_line_idx >= lines) {
             linedraw_cnt = lin_end2;
             ts_line_t = 0xFFFFFFFFu;          // tsFastTick == Blank from here on
@@ -4304,7 +4387,13 @@ void VIDEO::tsVideoApplyPending() {
     const uint8_t rres = vc >> 6;
     // TSU layers: any of S_EN/T1_EN/T0_EN (TSConfig b7..b5) and not NOTSU
     // (VConfig b4). Text mode is hires and pair-slot — no TSU over it.
-    const bool wantTsu = (TsConf::r.tsconf & 0xE0) != 0 && !(vc & 0x10) && want != TSV_TEXT;
+    // Hysteresis: layers enabled at ANY point of the frame count (TsConf::tsuSeen,
+    // set by every TSConfig write) — a game that switches its layers off around
+    // the INT handler and back must not lose a whole frame of tiles because
+    // EndFrame sampled the off window. Cleared here, once per frame.
+    const uint8_t seen = (uint8_t)(TsConf::r.tsconf | TsConf::tsuSeen);
+    TsConf::tsuSeen = 0;
+    const bool wantTsu = (seen & 0xE0) != 0 && !(vc & 0x10) && want != TSV_TEXT;
     const uint8_t wantRender = (want != TSV_ZX || wantTsu) ? 1 : 0;
     if (want == ts_vmode_live && wantTsu == ts_tsu_live &&
         (!wantRender || rres == ts_rres_live)) return;
@@ -4341,6 +4430,16 @@ void VIDEO::tsVideoApplyPending() {
     ts_tsu_live = wantTsu;
     ts_render_live = wantRender;
     ts_rres_live = rres;
+    if (wantRender && !ts_tmb) {
+        const size_t bytes = (size_t)TS_C1_RING * TS_TMB_WORDS * 2 + 2 * 16 * TS_TMB_WORDS * 2;
+        uint8_t* blk = (uint8_t*)Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (blk) {
+            memset(blk, 0, bytes);
+            ts_tmb = (uint16_t*)blk;
+            ts_tmb_pre = (uint16_t*)(blk + (size_t)TS_C1_RING * TS_TMB_WORDS * 2);
+        }
+        Debug::log("[TSU] tile-map prefetch ring %s (%u B)", blk ? "ON" : "unavailable (no RAM) - reading the map at render time", (unsigned)bytes);
+    }
     if (wantRender && ts_c1_enabled && !ts_c1_ring) {
         const size_t bytes = sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU + 512 * TS_C1_SFILE;
         uint8_t* blk = (uint8_t*)Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
@@ -4353,12 +4452,14 @@ void VIDEO::tsVideoApplyPending() {
             ts_c1_tsu_cur = ts_c1_sf_cur = 0; ts_c1_sf_gen = 0xFFFFFFFFu;
         }
         ts_c1_r = ts_c1_w = 0;
+        TsConf::wrGateRecalc();
         Debug::log("[TSC1] core1 line renderer %s (%u-job ring + %u TSU states + %u SFILE slots, %u B)",
                    ts_c1_ring ? "ON" : "unavailable (no RAM)", (unsigned)TS_C1_RING, (unsigned)TS_C1_TSU,
                    (unsigned)TS_C1_SFILE, (unsigned)bytes);
     }
     if (wantPal256) { tsPalette256Flush(!ts_pal256_live); tsCramDirty = false; }
     ts_pal256_live = wantPal256;
+    TsConf::wrGateRecalc();
 
     if (wantRender && Config::gigascreen_enabled) {
         // Backstop for the paths that never pass through MachineSwitch (the .spg
@@ -4496,6 +4597,76 @@ void VIDEO::tsRenderLine(uint32_t curline) {
 
     TsRenderJob j;
     j.l.kind = 0; j.l.tsu = 0;
+    const bool queued = ts_c1_ring && ts_c1_enabled;
+    const uint32_t seq = queued ? ts_c1_w : ts_line_seq;
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+    if (ts_tsu_live && (curline == 0 || curline == 16 || curline == 100 || curline == 190)) {
+        // Map signature at several points of the frame: first non-zero tile
+        // column of layer 0 in rows 2..23 — shows writes landing mid-frame.
+        static uint32_t sig_frames = 0, sig_budget = 0;
+        if (curline == 0) sig_frames++;
+        if (sig_budget && (sig_frames % 200) < 8) {
+            const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+            if (tm) {
+                sig_budget--;
+                char buf[120]; int n = 0;
+                for (int row = 2; row < 24 && n < 100; row++) {
+                    const uint16_t* w = (const uint16_t*)(tm + (row << 8));
+                    int c = 0; while (c < 64 && (w[c] & 0xFFF) == 0) c++;
+                    n += snprintf(buf + n, sizeof(buf) - n, "%c", c >= 64 ? '.' : (char)(c < 10 ? '0' + c : (c < 36 ? 'a' + c - 10 : 'A' + c - 36)));
+                }
+                Debug::log("[TSVG] f%u L%u sig=%s", (unsigned)sig_frames, (unsigned)curline, buf);
+            }
+        }
+    }
+    if (ts_tsu_live && curline == 0) {
+        // Does the visible tile map change frame to frame? CRC of rows 0..23
+        // (both layers) at the first content line + the first words of row 0.
+        static uint32_t last_crc = 0, frames = 0, last_sfgen = 0;
+        static uint32_t budget = 300;
+        const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+        if (tm && budget) {
+            uint32_t crc = 2166136261u;
+            const uint32_t* w = (const uint32_t*)tm;
+            for (uint32_t i = 0; i < (24 * 256) / 4; i++) crc = (crc ^ w[i]) * 16777619u;
+            frames++;
+            if (crc != last_crc) {
+                budget--;
+                const uint16_t* r0 = (const uint16_t*)tm;
+                Debug::log("[TSVM] f%u map crc=%08X sfgen=%u(+%u) row0 L0: %04X %04X %04X %04X %04X %04X L1: %04X %04X %04X %04X",
+                           (unsigned)frames, (unsigned)crc, (unsigned)TsConf::sfileGen, (unsigned)(TsConf::sfileGen - last_sfgen),
+                           r0[0], r0[1], r0[2], r0[3], r0[4], r0[5], r0[64], r0[65], r0[66], r0[67]);
+                last_crc = crc;
+            }
+            last_sfgen = TsConf::sfileGen;
+        }
+        // Sprite set of the frame: active count, leaps, and the first few
+        // descriptors (y x tnum ysz xsz flags) — is the game alternating sets?
+        static uint32_t sbudget = 0;
+        if (sbudget && (frames % 50) < 4) {   // four consecutive frames every second
+            sbudget--;
+            unsigned act = 0, leaps = 0; char buf[160]; int n = 0;
+            for (unsigned i = 0; i < 85; i++) {
+                const uint16_t w0 = TsConf::sfile[i * 3], w1 = TsConf::sfile[i * 3 + 1], w2 = TsConf::sfile[i * 3 + 2];
+                if (w0 & 0x2000) act++;
+                if (w0 & 0x4000) leaps++;
+                if (i < 6 && n < 150) n += snprintf(buf + n, sizeof(buf) - n, " %u,%u,%u%s%s", w0 & 0x1FF, w1 & 0x1FF, w2 & 0xFFF,
+                                                    (w0 & 0x2000) ? "" : "-", (w0 & 0x4000) ? "L" : "");
+            }
+            Debug::log("[TSVS] f%u act=%u leaps=%u sf:%s", (unsigned)frames, act, leaps, buf);
+        }
+    }
+#endif
+    if (ts_tsu_live && ts_tmb) {
+        const uint32_t tsl = curline + ts_crop_top;             // the TSU's `line`
+        tsTmbCapture(ts_tmb + (seq & (TS_C1_RING - 1)) * TS_TMB_WORDS, tsl + 16);
+        if (curline == 0) {
+            ts_tmb_par ^= 1;
+            for (uint32_t k = 0; k < 16; k++)
+                tsTmbCapture(ts_tmb_pre + ((uint32_t)ts_tmb_par * 16 + k) * TS_TMB_WORDS, ts_crop_top + k);
+        }
+        j.l.kind = (uint8_t)(ts_tmb_par << 1);
+    }
     j.l.line = (uint16_t)curline; j.l.ygctr = (uint16_t)ts_ygctr; j.l.g_xoffs = TsConf::r.g_xoffs & 0x1FF;
     j.l.vpage = TsConf::r.vpage; j.l.palsel = TsConf::r.palsel; j.l.vconf = TsConf::r.vconf;
     j.l.border = TsConf::r.border;
@@ -4509,7 +4680,7 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         st.sfidx = 0; st.pad = 0;
     }
 
-    if (ts_c1_ring && ts_c1_enabled) {
+    if (queued) {
         if (ts_tsu_live) {
             // SFILE changed since the last snapshot: copy it into the next slot
             // (waiting for core1 if a queued line still reads that slot).
@@ -4544,13 +4715,14 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         return;
     }
     const uint64_t t0 = time_us_64();
-    tsRenderExec(j, ts_tsu_live ? &st : nullptr, TsConf::sfile);
+    tsRenderExec(j, ts_tsu_live ? &st : nullptr, TsConf::sfile, seq);
+    ts_line_seq++;
     ts_render_us += (uint32_t)(time_us_64() - t0);
 }
 
 // Renders one job. Runs on core1 (queued) or core0 (TSU lines, no ring). Reads
 // nothing from TsConf::r except through tsuComposeLine (core0 only).
-void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile) {
+void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile, uint32_t seq) {
     const uint32_t curline = j.l.line;
     const uint32_t ygctr = j.l.ygctr;
     const uint32_t frow = curline + lin_end;
@@ -4709,7 +4881,7 @@ void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_
     uint64_t t1 = time_us_64();
     ts_base_us += (uint32_t)(t1 - t0b);
     if (ts_tsu_live) {
-        tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline, *st, sfile, j.l.palsel);
+        tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline, *st, sfile, j.l.palsel, seq, (uint8_t)((j.l.kind >> 1) & 1));
         const uint64_t t2 = time_us_64();
         ts_tsu_us += (uint32_t)(t2 - t1);
         t1 = t2;
@@ -4777,7 +4949,7 @@ void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_
 // walked in order; `leap` closes the current sprite layer after that sprite;
 // visible when (line - y) & 511 <= ys*8+7. Palette: {tXpal(2) tile.pal(2)}
 // or sprite pal(4), high nibble of the CRAM index.
-void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const uint16_t* sfile, uint8_t palsel) {
+void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const uint16_t* sfile, uint8_t palsel, uint32_t seq, uint8_t par) {
     memset(ts, 0, 512);
     const uint8_t tsc = st.tsconf;
     const bool s_en = tsc & 0x80, t1_en = tsc & 0x40, t0_en = tsc & 0x20;
@@ -4816,11 +4988,26 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const
         const uint32_t ty = (line + yoffs) & 0x1FF;
         const uint8_t* row = tm + ((ty >> 3) << 8) + (layer ? 128 : 0);
         const uint32_t tline = ty & 7;
+        // Prefetched bursts for this row (see tsTmbCapture): burst b of the row
+        // displayed at `line` was fetched at raster line
+        // ((line + (yoffs & 7)) & ~7) - 16 + b — a preroll slot when that is
+        // above the first content line, else the capture of the job posted
+        // (line - l_b) lines before this one.
+        const int32_t fbase = (int32_t)((line + (yoffs & 7)) & ~7u) - 16;
+        const uint16_t* bursts[8];
+        for (int b = 0; b < 8; b++) {
+            const int32_t lb = fbase + b;
+            if (!ts_tmb) bursts[b] = nullptr;
+            else if (lb < (int32_t)ts_crop_top) bursts[b] = ts_tmb_pre + ((uint32_t)par * 16 + (uint32_t)(lb - ((int32_t)ts_crop_top - 16))) * TS_TMB_WORDS + layer * 8;
+            else bursts[b] = ts_tmb + ((seq - (uint32_t)((int32_t)line - lb)) & (TS_C1_RING - 1)) * TS_TMB_WORDS + layer * 8;
+        }
         uint32_t col = xoffs >> 3;
         uint32_t pos = (0u - (xoffs & 7)) & 0x1FF;
         for (int i = 0; i < ntiles; i++, col++, pos = (pos + 8) & 0x1FF) {
-            const uint8_t* e = row + ((col & 63) << 1);
-            const uint16_t tw = (uint16_t)(e[0] | (e[1] << 8));
+            const uint32_t c = col & 63;
+            uint16_t tw;
+            if (bursts[c >> 3]) tw = bursts[c >> 3][c & 7];
+            else { const uint8_t* e = row + (c << 1); tw = (uint16_t)(e[0] | (e[1] << 8)); }
             const uint16_t tnum = tw & 0x0FFF;
             if (!tnum && !tz) continue;
             const uint32_t bl = ((tnum >> 6) << 3) + ((tw & 0x8000) ? (tline ^ 7) : tline);
@@ -5089,9 +5276,10 @@ IRAM_ATTR void VIDEO::EndFrame() {
         extern volatile uint32_t ts_base_us, ts_out_us;
         static uint32_t base_accum = 0, out_accum = 0;
         base_accum += ts_base_us; out_accum += ts_out_us; ts_base_us = ts_out_us = 0;
-        extern volatile uint32_t ts_poll_ff, ts_poll_ff_t, ts_poll_reads;
-        static uint32_t pff_accum = 0, pfft_accum = 0, prd_accum = 0;
+        extern volatile uint32_t ts_poll_ff, ts_poll_ff_t, ts_poll_reads, ts_int_frm;
+        static uint32_t pff_accum = 0, pfft_accum = 0, prd_accum = 0, frm_accum = 0;
         pff_accum += ts_poll_ff; pfft_accum += ts_poll_ff_t; prd_accum += ts_poll_reads; ts_poll_ff = ts_poll_ff_t = ts_poll_reads = 0;
+        frm_accum += ts_int_frm; ts_int_frm = 0;
         extern volatile uint32_t ts_c1_us, ts_c1_wait_us, ts_c1_jobs, ts_c1_waits, ts_dma_c1_us, ts_c1_wait_dma_us;
         static uint32_t tsr_accum = 0, tsr_max = 0, tsu_accum = 0, dma_accum = 0, dmaw_accum = 0;
         static uint32_t c1_accum = 0, c1w_accum = 0, c1w_max = 0, c1j_accum = 0, c1n_accum = 0, c1d_accum = 0, c1wd_accum = 0, c1wd_max = 0;
@@ -5127,13 +5315,13 @@ IRAM_ATTR void VIDEO::EndFrame() {
                 (float)(xa - xh) * fps / 60.0f / 1e6f, fps);
             // TS-Conf half on its own line: Debug::log truncates at 256 bytes.
             if (Z80Ops::isTsconf)
-                Debug::log("[PERF] ts: tsRender=%.1fms (max %.1fms, base %.1f tsu %.1f out %.1f) c1=%.1fms/%ul wait=%.1fms (max %.1fms, %u/60) dmaC1=%.1fms waitDma=%.1fms (max %.1fms) dma=%.1fms/%uw (ram %u blt %u fill %u) poll=%u ff=%u/%ukT",
+                Debug::log("[PERF] ts: tsRender=%.1fms (max %.1fms, base %.1f tsu %.1f out %.1f) c1=%.1fms/%ul wait=%.1fms (max %.1fms, %u/60) dmaC1=%.1fms waitDma=%.1fms (max %.1fms) dma=%.1fms/%uw (ram %u blt %u fill %u) poll=%u ff=%u/%ukT frmInt=%u/60f",
                     tsr_accum / 60000.0f, tsr_max / 1000.0f, base_accum / 60000.0f, tsu_accum / 60000.0f, out_accum / 60000.0f,
                     c1_accum / 60000.0f, (unsigned)(c1j_accum / 60), c1w_accum / 60000.0f, c1w_max / 1000.0f, (unsigned)c1n_accum,
                     c1d_accum / 60000.0f, c1wd_accum / 60000.0f, c1wd_max / 1000.0f,
                     dma_accum / 60000.0f, (unsigned)(dmaw_accum / 60), (unsigned)(dmar_accum / 60), (unsigned)(dmab_accum / 60), (unsigned)(dmaf_accum / 60),
-                    (unsigned)(prd_accum / 60), (unsigned)(pff_accum / 60), (unsigned)(pfft_accum / 60000));
-            pff_accum = pfft_accum = prd_accum = 0; base_accum = out_accum = 0;
+                    (unsigned)(prd_accum / 60), (unsigned)(pff_accum / 60), (unsigned)(pfft_accum / 60000), (unsigned)frm_accum);
+            pff_accum = pfft_accum = prd_accum = frm_accum = 0; base_accum = out_accum = 0;
 #if PERF_HIST
             // Z80 opcode mix, every 600 frames: instructions/frame, ns per
             // instruction (against cpu= of the same window) and the top 20
@@ -5347,7 +5535,11 @@ IRAM_ATTR void VIDEO::EndFrame() {
         ts_fast_armed = ts_render_live != 0;   // fast path == Blank on a skipped frame
     } else if (ts_render_live) {
         // TS-Conf whole-line renderer: T-state counter instead of the beam machine.
-        ts_line_t = tStatesScreen;
+        // Scaled to the CPU clock: at ZCLK 14 MHz a line is 224<<2 T of CPU::tstates,
+        // and an unscaled clock rendered the whole picture in the first quarter of
+        // the frame — invisible while every frame was flushed at the HALT, torn
+        // pictures once lines rendered at their own time (Ninja Gaiden, hw 2026-09-07).
+        ts_line_t = tStatesScreen << ESPectrum::multiplicator;
         ts_line_idx = 0;
         Draw = &TsDraw;
         Draw_Opcode = &TsDraw_Opcode;

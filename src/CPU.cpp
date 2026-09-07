@@ -405,62 +405,23 @@ IRAM_ATTR void CPU::loop() {
     uint32_t zifi_pump_due = tstates + 3500; // ~1 ms at 3.5 MHz guest clock
 
     // TS-Conf: the FRAME INT window is programmable and can sit anywhere in
-    // the frame (every other machine has IntStart = 0). Same three-stage
-    // shape as below with one extra unchecked slice up to IntStart. A window
-    // straddling the frame end is truncated at statesInFrame by
-    // frameIntRecalc, so no wrap handling is needed here.
+    // the frame (every other machine has IntStart = 0) — and it can MOVE
+    // mid-frame: a raster-split title rewrites VSINT inside the handler and
+    // gets two windows per frame (Ninja Gaiden: 272 -> 94 -> 272, hw
+    // 2026-09-07). The whole frame therefore runs the event-driven "Stage D"
+    // below: unchecked exec_nocheck() slices to the next INT event
+    // (TsConf::nextIntEvent — window start, LINE start, DMA end), one checked
+    // instruction while a line is up, and HALT sleeps that WALK the video
+    // machine line by line. The earlier fixed three-slice shape
+    // (unchecked to IntStart / checked window / unchecked to frame end) could
+    // not follow a moved window, and its FlushOnHaltTo rendered the rest of
+    // the frame at the HALT with the pre-INT registers — the picture then
+    // showed the level's first frame on every other frame. A window written
+    // mid-slice ends the slice through tsWakeLoop (frameIntRecalc), exactly
+    // like an INTMask/DMACtrl write.
     if (Z80Ops::isTsconf) {
-        // With LINE or DMA interrupts armed the level can rise at any
-        // instruction, so the frame (or what is left of it) runs checked —
-        // the "Stage D" tail below. The unchecked slices are taken only while
-        // needsCheckedFrame() is false, and a port write that arms a source
-        // mid-slice pulls stFrame down to leave exec_nocheck() early
-        // (TsConf's tsWakeLoop), after which the tail takes over.
-        bool ts_halted = false;
-        if (!TsConf::needsCheckedFrame()) {
-            // Stage A: [now, IntStart) unchecked.
-            if (tstates < IntStart) {
-                if (Z80::isHalted()) {
-                    tstates_active = tstates;
-                    FlushOnHaltTo(IntStart);
-                } else {
-                    stFrame = IntStart;
-                    Z80::exec_nocheck();
-                    if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(IntStart); }
-                }
-                BREAKPOINTS
-            }
-            if (!TsConf::needsCheckedFrame()) {
-                // Stage B: the FRAME INT window, checked — Z80::execute()
-                // samples isActiveINT and takes the interrupt here.
-                while (tstates < IntEnd) {
-                    Z80::execute();
-                    if (Config::dma_mode) Z80DMA::handleDMA();
-                    if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
-                        zifi_pump_due = tstates + 3500;
-                        ZiFi::cdcPump();
-                    }
-                    BREAKPOINTS
-                }
-                // Stage C: [IntEnd, statesInFrame) unchecked — no frame-end
-                // INT straddle is possible (frameIntRecalc truncates the
-                // window).
-                if (!TsConf::needsCheckedFrame()) {
-                    ts_halted = Z80::isHalted();
-                    if (!ts_halted) {
-                        stFrame = statesInFrame;
-                        Z80::exec_nocheck();
-                        if (stFrame == 0) { tstates_active = tstates; FlushOnHaltTo(statesInFrame); ts_halted = true; }
-                    } else {
-                        tstates_active = tstates;
-                        FlushOnHaltTo(statesInFrame);
-                    }
-                    BREAKPOINTS
-                }
-            }
-        }
-        // Stage D: whatever is left, instruction-checked (empty unless a
-        // LINE/DMA source is armed or a slice above was cut short).
+        // Stage D: the whole TS-Conf frame, event-driven.
+        uint32_t ts_idle = 0;   // T-states slept in HALT this frame (several sleeps per frame with a raster split)
         while (tstates < statesInFrame) {
             if (Z80::isHalted()) {
                 // A HALTed CPU leaves HALT only on an interrupt, so sleep straight
@@ -472,7 +433,7 @@ IRAM_ATTR void CPU::loop() {
                 // per-line effect programmed after the wake still renders right.
                 uint32_t wake = Z80::isIFF1() ? TsConf::nextIntEvent() : statesInFrame;
                 if (wake > statesInFrame) wake = statesInFrame;
-                if (wake > tstates) { haltAdvanceTo(wake); continue; }
+                if (wake > tstates) { ts_idle += wake - tstates; haltAdvanceTo(wake); continue; }
             }
             if (Z80::isIFF1() && TsConf::intLine()) {
                 // INT line up and accepted: one checked instruction takes it
@@ -521,7 +482,7 @@ IRAM_ATTR void CPU::loop() {
         cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
         global_tstates += statesInFrame;
         tstates_frame = tstates;
-        if (!ts_halted) tstates_active = tstates_frame;
+        tstates_active = tstates_frame - ts_idle;   // load = frame minus the HALT sleeps (haltAdvanceTo's own stamp is per sleep)
         tstates -= statesInFrame;
         CPU::prev_tstates = tstates;
         return;

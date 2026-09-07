@@ -35,6 +35,29 @@ the Free Software Foundation, either version 3 of the License, or
 // and the DMA copy itself. In flash they queued behind the PSRAM line fills of
 // the core1 renderer and the DMA data on the ONE XIP port (929 ns/instr in the
 // ship scene against 587 in a light one, hw 2026-09-07). ~3 KB of SRAM.
+#ifndef TS_VIDEO_TRACE
+#define TS_VIDEO_TRACE 0
+#endif
+#if TS_VIDEO_TRACE
+// Capped trace of the video-mode registers a game may flip mid-frame, with the
+// frame line and the writer's PC — for "which register did the game toggle
+// around its INT handler" questions (Ninja Gaiden background flicker, 2026-09-07).
+static uint32_t s_vtrace_left = 1u << 30;
+static uint32_t s_vtrace_frame = 0;
+#define TSVT(fmt, ...) do { if (s_vtrace_left) { s_vtrace_left--; \
+    Debug::log("[TSVT] f%u L%03u pc=%04X " fmt, (unsigned)s_vtrace_frame, (unsigned)(CPU::tstates / tsLineT()), Z80::getRegPC(), ##__VA_ARGS__); } } while (0)
+// Offsets: log only a CHANGE of the 9-bit value (a game rewrites them every frame).
+#define TSVT_CHG(name, before, after) do { if ((before) != (after)) TSVT(name "=%03X", (unsigned)(after)); } while (0)
+#else
+#define TSVT(fmt, ...) do {} while (0)
+#define TSVT_CHG(name, before, after) do { (void)(before); (void)(after); } while (0)
+#endif
+// Mode registers seen ENABLED at any point of the frame: a game may switch TSU
+// layers / VConfig off around its INT handler and back before the frame ends,
+// and the EndFrame-sampled mode must not follow that window (a whole frame
+// without tiles otherwise — hw 2026-09-07). Consumed by VIDEO::tsVideoApplyPending.
+uint8_t TsConf::tsuSeen = 0;
+
 #if TSCONF_HOT_IN_RAM
 #define TS_HOT __not_in_flash("tsconf")
 #else
@@ -51,18 +74,28 @@ uint32_t TsConf::sfileGen = 0;
 // write funnel (gsDmaPoke8) — the g_ngs_zxdma pattern; zero for every other
 // machine, so the cost elsewhere is one byte-load-and-test per guest write.
 uint8_t g_tsconf_wr = 0;
+uint8_t g_ts_bank_watch = 0;
+static uint8_t s_bank_phys[4];   // physical page per CPU bank (setBanks)
 
 // FMAddr 512-byte windows latch the even byte here and commit the word on the
 // odd address (reference temp.fm_tmp).
 static uint8_t s_fm_tmp = 0;
 
 static void tsUpdateWrGate() {
-    uint8_t g = 0;
+    uint8_t g = 0, wt = 0;
     if (Z80Ops::isTsconf) {
         if (TsConf::r.fmaddr & 0x10) g |= (TsConf::r.fmaddr & 0x0F) | 0x10;
         if (TsConf::r.w0_ram() && !TsConf::r.w0_we()) g |= 0x20;
+        for (int b = 0; b < 4; b++)
+            if ((b || TsConf::r.w0_ram()) && VIDEO::tsWatchedPage(s_bank_phys[b])) wt |= (uint8_t)(1u << b);
+        if (wt) g |= 0x40;
     }
+    g_ts_bank_watch = wt;
     g_tsconf_wr = g;
+}
+void TsConf::wrGateRecalc() { tsUpdateWrGate(); }
+uint32_t TsConf::bankPhys(uint8_t bank, uint16_t off) {
+    return ((uint32_t)s_bank_phys[bank & 3] << 14) | (off & 0x3FFF);
 }
 
 // ------------------------------------------------ INT / DMA state ----
@@ -71,12 +104,16 @@ static void tsUpdateWrGate() {
 // DMAStatus — there is no per-line hook, and none is needed: while LINE or DMA
 // interrupts are armed CPU::loop runs instruction-checked, so intLine() is
 // consulted after every instruction anyway.
-static bool     s_frm_acked;    // FRAME taken this frame (int_frm cleared by the ack)
+static bool     s_frm_acked;    // int_frm cleared by the ack — for the CURRENT window only (see frameIntRecalc)
+static uint16_t s_frm_vsint = 0xFFFF, s_frm_hsint = 0xFFFF;   // window position the latch belongs to
 static bool     s_lin_pending;  // int_lin latch
 static uint32_t s_lin_next;     // T of the next line start that raises LINE
 static bool     s_dma_busy;     // DMA_ACT: transaction "in flight"
 static uint32_t s_dma_end;      // T at which it completes
 static bool     s_dma_pending;  // int_dma latch
+#if PERF_TRACE
+volatile uint32_t ts_int_frm = 0;   // FRAME INT acks per PERF window (a raster-split title acks 2 per frame)
+#endif
 
 static inline uint32_t tsLineT() {
     return (uint32_t)TSTATES_PER_LINE_PENTAGON << ESPectrum::multiplicator;
@@ -134,6 +171,7 @@ void TsConf::setBanks() {
     MemESP::ramCurrent[1] = MemESP::ram[r.page[1] & mask].sync(1);
     MemESP::ramCurrent[2] = MemESP::ram[r.page[2] & mask].sync(2);
     MemESP::ramCurrent[3] = MemESP::ram[r.page[3] & mask].sync(3);
+    s_bank_phys[1] = (uint8_t)(r.page[1] & mask); s_bank_phys[2] = (uint8_t)(r.page[2] & mask); s_bank_phys[3] = (uint8_t)(r.page[3] & mask);
 
     // Window 0: reference memory.cpp set_banks() MM_TSL. In mapped mode the
     // page number's low bits come from the DOS signal (bit 1) and ROM128
@@ -146,6 +184,7 @@ void TsConf::setBanks() {
         p0 = (ESPectrum::trdos ? (rom128 ? 1 : 0) : (rom128 ? 3 : 2))
              | (r.page[0] & 0xFC);
     }
+    s_bank_phys[0] = (uint8_t)(p0 & mask);
     if (r.w0_ram()) {
         // RAM at #0000. W0_WE=0 write protect is not modelled yet (phase 2);
         // writes land in the page.
@@ -250,7 +289,7 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
         case TSW_FDDVIRT:
             r.fddvirt = val & 0x8F;  // stored; VDOS is a later phase
             break;
-        case TSW_INTMASK: {
+        case TSW_INTMASK: TSVT("INTMASK=%02X", val);  {
             // zint.v: a source's latch is held at 0 while its mask bit is 0
             // ("writing 0 to a pending source resets it"); writing 1 leaves a
             // pending one alone and re-arms the source at its next event.
@@ -263,15 +302,15 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
             frameIntRecalc();
             break;
         }
-        case TSW_HSINT:
+        case TSW_HSINT: TSVT("HSINT=%02X", val);
             r.hsint = val;
             frameIntRecalc();
             break;
-        case TSW_VSINTL:
+        case TSW_VSINTL: TSVT("VSINTL=%02X", val);
             r.vsint = (r.vsint & 0x100) | val;
             frameIntRecalc();
             break;
-        case TSW_VSINTH:
+        case TSW_VSINTH: TSVT("VSINTH=%02X", val);
             r.vsint = (r.vsint & 0xFF) | ((uint16_t)(val & 1) << 8);
             frameIntRecalc();
             break;
@@ -294,15 +333,16 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
 
         // -- video (stored; committed immediately until the phase-3
         //    rasterizer takes over the *_d line latch) --
-        case TSW_VCONF:  r.vconf  = r.vconf_d  = val; break;
+        case TSW_VCONF:  TSVT("VCONF=%02X", val); r.vconf  = r.vconf_d  = val; tsUpdateWrGate(); break;
         case TSW_VPAGE:
+            TSVT("VPAGE=%02X", val);
             r.vpage = r.vpage_d = val;
             refreshGrmem();
-            break;
-        case TSW_TMPAGE:  r.tmpage  = val; break;
-        case TSW_T0GPAGE: r.t0gpage = val; break;
-        case TSW_T1GPAGE: r.t1gpage = val; break;
-        case TSW_SGPAGE:  r.sgpage  = val; break;
+            tsUpdateWrGate(); break;
+        case TSW_TMPAGE:  TSVT("TMPAGE=%02X", val); r.tmpage  = val; tsUpdateWrGate(); break;
+        case TSW_T0GPAGE: TSVT("T0GPAGE=%02X", val); r.t0gpage = val; tsUpdateWrGate(); break;
+        case TSW_T1GPAGE: TSVT("T1GPAGE=%02X", val); r.t1gpage = val; tsUpdateWrGate(); break;
+        case TSW_SGPAGE: TSVT("SGPAGE=%02X", val);  r.sgpage  = val; tsUpdateWrGate(); break;
         case TSW_BORDER:
             r.border = val;
             // Phase-1 border: reuse the beam-raced 3-bit border machine.
@@ -316,7 +356,7 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
                 VIDEO::brd = VIDEO::border32[val & 0x07];
             }
             break;
-        case TSW_TSCONF: r.tsconf = r.tsconf_d = val; break;
+        case TSW_TSCONF: TSVT("TSCONF=%02X", val); r.tsconf = r.tsconf_d = val; tsuSeen |= val & 0xE0; tsUpdateWrGate(); break;
         case TSW_PALSEL:
             r.palsel = r.palsel_d = val;
             VIDEO::tsCramDirty = true;  // gpal re-points the 16 ZX slots
@@ -325,14 +365,14 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
         case TSW_GXOFFSH: r.g_xoffs = (r.g_xoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
         case TSW_GYOFFSL: r.g_yoffs = (r.g_yoffs & 0x100) | val; r.g_yoffs_updated = true; break;
         case TSW_GYOFFSH: r.g_yoffs = (r.g_yoffs & 0xFF) | ((uint16_t)(val & 1) << 8); r.g_yoffs_updated = true; break;
-        case TSW_T0XOFFSL: r.t0_xoffs = (r.t0_xoffs & 0x100) | val; break;
-        case TSW_T0XOFFSH: r.t0_xoffs = (r.t0_xoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
-        case TSW_T0YOFFSL: r.t0_yoffs = (r.t0_yoffs & 0x100) | val; break;
-        case TSW_T0YOFFSH: r.t0_yoffs = (r.t0_yoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
-        case TSW_T1XOFFSL: r.t1_xoffs = (r.t1_xoffs & 0x100) | val; break;
-        case TSW_T1XOFFSH: r.t1_xoffs = (r.t1_xoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
-        case TSW_T1YOFFSL: r.t1_yoffs = (r.t1_yoffs & 0x100) | val; break;
-        case TSW_T1YOFFSH: r.t1_yoffs = (r.t1_yoffs & 0xFF) | ((uint16_t)(val & 1) << 8); break;
+        case TSW_T0XOFFSL: { r.t0_xoffs = (r.t0_xoffs & 0x100) | val; TSVT("T0X=%03X", (unsigned)r.t0_xoffs); break; }
+        case TSW_T0XOFFSH: { r.t0_xoffs = (r.t0_xoffs & 0xFF) | ((uint16_t)(val & 1) << 8); TSVT("T0XH=%03X", (unsigned)r.t0_xoffs); break; }
+        case TSW_T0YOFFSL: { const uint16_t o = r.t0_yoffs; r.t0_yoffs = (r.t0_yoffs & 0x100) | val; TSVT_CHG("T0Y", o, r.t0_yoffs); break; }
+        case TSW_T0YOFFSH: { const uint16_t o = r.t0_yoffs; r.t0_yoffs = (r.t0_yoffs & 0xFF) | ((uint16_t)(val & 1) << 8); TSVT_CHG("T0Y", o, r.t0_yoffs); break; }
+        case TSW_T1XOFFSL: { r.t1_xoffs = (r.t1_xoffs & 0x100) | val; TSVT("T1X=%03X", (unsigned)r.t1_xoffs); break; }
+        case TSW_T1XOFFSH: { r.t1_xoffs = (r.t1_xoffs & 0xFF) | ((uint16_t)(val & 1) << 8); TSVT("T1XH=%03X", (unsigned)r.t1_xoffs); break; }
+        case TSW_T1YOFFSL: { const uint16_t o = r.t1_yoffs; r.t1_yoffs = (r.t1_yoffs & 0x100) | val; TSVT_CHG("T1Y", o, r.t1_yoffs); break; }
+        case TSW_T1YOFFSH: { const uint16_t o = r.t1_yoffs; r.t1_yoffs = (r.t1_yoffs & 0xFF) | ((uint16_t)(val & 1) << 8); TSVT_CHG("T1Y", o, r.t1_yoffs); break; }
 
         // -- dma (registers stored; the engine is a later phase) --
         case TSW_DMASAL: r.saddr = (r.saddr & 0x3FFF00) | (val & 0xFE); break;
@@ -355,6 +395,8 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
 // -------------------------------------------------- CPU write funnel ----
 
 TS_HOT bool TsConf::cpuWriteGate(uint16_t addr, uint8_t val) {
+    if ((g_tsconf_wr & 0x40) && ((g_ts_bank_watch >> (addr >> 14)) & 1))
+        VIDEO::tsRenderDrainOverlap(bankPhys((uint8_t)(addr >> 14), addr), 1);
     if (g_tsconf_wr & 0x10) fmWrite(addr, val);
     // W0_WE = 0 with RAM in window 0: the page reads as ROM (TS-BIOS's "boot
     // from VROM" maps a ROM image copied into RAM this way). The FMAddr
@@ -402,7 +444,23 @@ void TsConf::frameIntRecalc() {
     // (reference intctrl.frame_t = -1). A window straddling the frame end is
     // truncated at statesInFrame (documented Phase-1 limitation; the reset
     // position 2/0 and everything observed sit at the frame start).
+    //
+    // The window is NOT once per frame. zint.v sets int_frm on every
+    // int_start_frm strobe — i.e. every time the raster counters hit
+    // (VSINT, HSINT) — and clears it on the ack or the 32-clock expiry; a
+    // guest that moves VSINT inside the handler gets a second window in the
+    // same frame. Ninja Gaiden does exactly that for its raster split (INT at
+    // 272: T0X=0, VSINT:=94; INT at 94: T0X=X, VSINT:=272), and a per-frame
+    // ack latch lost every other one — hw 2026-09-07, the background alternated
+    // between the level's first frame and the scrolled one. So the ack latch
+    // belongs to a window POSITION: moving the window re-arms it, and a running
+    // unchecked slice is ended so CPU::loop re-slices against the new window.
     if (!Z80Ops::isTsconf) return;
+    if (r.vsint != s_frm_vsint || r.hsint != s_frm_hsint) {
+        s_frm_vsint = r.vsint; s_frm_hsint = r.hsint;
+        s_frm_acked = false;
+        tsWakeLoop();
+    }
     uint8_t m = ESPectrum::multiplicator;
     if (r.hsint > 223 || r.vsint > 319) {
         CPU::IntStart = 0;
@@ -450,7 +508,12 @@ TS_HOT uint8_t TsConf::intAck() {
     // any ack, int_lin only when FRAME is not pending, int_dma only when
     // neither is — i.e. exactly the source whose vector is driven.
     tsIntPoll();
-    if (tsFrmActive())  { s_frm_acked = true;    return 0xFF; }
+    if (!tsFrmActive()) TSVT("INT ack frm=0 lin=%d dma=%d", (int)s_lin_pending, (int)s_dma_pending);   // FRAME acks are the norm — count them (PERF ts frmInt=) instead
+    if (tsFrmActive())  { s_frm_acked = true;
+#if PERF_TRACE
+        ts_int_frm++;
+#endif
+        return 0xFF; }
     if (s_lin_pending)  { s_lin_pending = false; return 0xFD; }
     if (s_dma_pending)  { s_dma_pending = false; return 0xFB; }
     return 0xFF;   // spurious (source dropped between sample and ack)
@@ -475,7 +538,13 @@ TS_HOT uint32_t TsConf::nextIntEvent() {
 // is already up, end the slice so CPU::loop can take the interrupt at the
 // right instruction (Stage D runs unchecked between INT events).
 TS_HOT void TsConf::intEnableHook() {
-    if (intLine()) tsWakeLoop();
+    // Two reasons to end the slice: a source is already up (take it at the right
+    // instruction), or an INT event still lies AHEAD in this frame — the slice was
+    // sized with IFF1 clear, i.e. to the frame end, and would run straight through
+    // the window. Ninja Gaiden: the line-94 handler moves VSINT back to 272 and
+    // re-enables with EI; without this the 272 window was never sampled (hw
+    // 2026-09-07, frmInt=60 where the raster split needs 120).
+    if (intLine() || nextIntEvent() < CPU::statesInFrame) tsWakeLoop();
 }
 
 TS_HOT bool TsConf::needsCheckedFrame() {
@@ -484,6 +553,15 @@ TS_HOT bool TsConf::needsCheckedFrame() {
 }
 
 TS_HOT void TsConf::endFrame() {
+#if TS_VIDEO_TRACE
+    if (frameIntEnabled() && !s_frm_acked) {
+        static uint32_t miss_budget = 200;
+        if (miss_budget) { miss_budget--;
+            TSVT("FRAME INT NOT TAKEN: IntStart=%u (L%u) iff1=%d im=%d halted=%d intmask=%02X", (unsigned)CPU::IntStart,
+                 (unsigned)(CPU::IntStart / tsLineT()), (int)Z80::isIFF1(), (int)Z80::getIM(), (int)Z80::isHalted(), r.intmask); }
+    }
+    s_vtrace_frame++;
+#endif
     const uint32_t f = CPU::statesInFrame;
     s_frm_acked = false;
     s_lin_next = (s_lin_next >= f) ? s_lin_next - f : 0;
@@ -682,6 +760,25 @@ TS_HOT void TsConf::dmaStart(uint8_t ctrl) {
     // DMA_ACT for the hardware's duration; the DMA interrupt is raised when it
     // drops (tsIntPoll). A transaction started while a previous one is still
     // "busy" simply supersedes it — the data is long written either way.
+#if TS_VIDEO_TRACE
+    // Tile-animation element copies (RAM->RAM, both aligns, 2 words x 8 blocks)
+    // come ~50 a frame and drowned the UART — whole lines were dropped, the
+    // register trace with them (hw 2026-09-07). Skip those; cap the rest per frame.
+    static uint32_t dma_trace_frame = 0xFFFFFFFFu, dma_trace_n = 0;
+    if (dma_trace_frame != s_vtrace_frame) { dma_trace_frame = s_vtrace_frame; dma_trace_n = 0; }
+    if (!(ctrl == 0x31 && r.dmalen == 1 && r.dmanum == 7) && mode != M_CRAM && mode != M_SFILE && dma_trace_n < 6) {
+        dma_trace_n++;
+        // collapse identical repeats
+        static uint32_t last_key[3] = {0xFFFFFFFFu, 0, 0}, rep = 0;
+        const uint32_t key[3] = { ((uint32_t)ctrl << 24) | ((uint32_t)r.dmalen << 8) | r.dmanum, r.saddr, r.daddr };
+        if (key[0] == last_key[0] && key[1] == last_key[1] && key[2] == last_key[2]) rep++;
+        else {
+            if (rep) TSVT("  (previous DMA x%u)", (unsigned)(rep + 1));
+            TSVT("DMA ctrl=%02X s=%06X d=%06X len=%u num=%u (end regs)", ctrl, (unsigned)r.saddr, (unsigned)r.daddr, (unsigned)r.dmalen, (unsigned)r.dmanum);
+            last_key[0] = key[0]; last_key[1] = key[1]; last_key[2] = key[2]; rep = 0;
+        }
+    }
+#endif
     s_dma_busy = true;
     s_dma_end = CPU::tstates + ((words * cost) << ESPectrum::multiplicator);
     if (needsCheckedFrame()) tsWakeLoop();
@@ -851,13 +948,25 @@ TS_HOT uint8_t TsConf::dmaStatus() {
 #if PERF_TRACE
     ts_poll_reads++;
 #endif
-    if (pc == s_poll_pc && (uint32_t)(t - s_poll_t) < 64u) {
+#ifndef TS_POLL_FF
+#define TS_POLL_FF 1
+#endif
+    if (TS_POLL_FF && pc == s_poll_pc && (uint32_t)(t - s_poll_t) < 64u) {
         uint32_t end = s_dma_end;
         if (Z80::isIFF1()) { const uint32_t e = nextIntEvent(); if (e < end) end = e; }
         if (end > CPU::statesInFrame) end = CPU::statesInFrame;
         if (end > t) {
 #if PERF_TRACE
             ts_poll_ff++; ts_poll_ff_t += end - t;
+#endif
+#if TS_VIDEO_TRACE
+            // Would this jump carry the guest over the FRAME INT window with
+            // interrupts disabled? On hardware that only happens if the DI
+            // section really spans the window; here the DMA_ACT duration is a
+            // model, so a too-long DMA makes us lose an INT the hardware kept.
+            if (!Z80::isIFF1() && frameIntEnabled() && !s_frm_acked &&
+                (uint32_t)CPU::IntStart >= t && (uint32_t)CPU::IntStart < end)
+                TSVT("POLL-FF over FRAME window with DI: t=%u end=%u IntStart=%u", (unsigned)t, (unsigned)end, (unsigned)CPU::IntStart);
 #endif
             CPU::haltAdvanceTo(end);
         }
@@ -937,7 +1046,12 @@ void TsConf::reset(bool cold) {
         sfileGen++;
     }
     s_fm_tmp = 0;
+    tsuSeen = 0;
+#if TS_VIDEO_TRACE
+    s_vtrace_left = 4000;  // re-arm per machine reset (an .spg load resets first); 400 went blind after ~8 s of INT acks
+#endif
     s_frm_acked = false;
+    s_frm_vsint = s_frm_hsint = 0xFFFF;
     s_lin_pending = s_dma_pending = s_dma_busy = false;
     s_lin_next = 0;
     s_dma_end = 0;
