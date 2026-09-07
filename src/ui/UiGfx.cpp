@@ -210,6 +210,7 @@ void gfxInstallPalette() {
 }
 
 void gfxBegin() {
+    VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
     gfxComputeSurface();
     gfxInstallPalette();
 }

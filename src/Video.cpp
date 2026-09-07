@@ -45,6 +45,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "TsFastMem.h"
 #include "Subsystem.h"
 #include "Buffer.h"
+#include <hardware/sync.h>   // __dmb (core1 render queue)
 #include "Tape.h"
 #include "FileUtils.h"
 #include "VidPrecalc.h"
@@ -426,6 +427,8 @@ uint8_t VIDEO::gmx_border_col = 0xFF;
 // Per-frame cost meters for the TS-Conf whole-line renderer (PERF_TRACE line).
 volatile uint32_t ts_render_us = 0;   // tsRenderLine, incl. tsuComposeLine
 volatile uint32_t ts_tsu_us = 0;      // tsuComposeLine alone
+volatile uint32_t ts_base_us = 0;     // generic path: base layer fill (either core)
+volatile uint32_t ts_out_us = 0;      // generic path: composite/output loop (either core)
 
 uint8_t  VIDEO::ts_vmode_live = 0;
 uint8_t  VIDEO::ts_render_live = 0;
@@ -440,11 +443,205 @@ uint8_t  VIDEO::ts_rres_live = 0;
 uint8_t  VIDEO::ts_crop_top = 0;
 uint32_t VIDEO::ts_ygctr = 0;
 
+// ── TS-Conf line rendering on core1 ─────────────────────────────────────────
+// A content line is a pure function of {line, y counter, GXOffs, VPage, PalSel,
+// VConfig(GFXOVR), Border} plus frame-stable state (mode, geometry, ts256_map,
+// pair tables, OSD flags, flashing). core0 snapshots those seven at the line
+// boundary (tsDrawTick) into a job and core1's render loop executes it, so the
+// ~11 us of PSRAM line reads per row leave core0's frame. The queue keeps the
+// order relative to the guest's DMA/CPU writes only loosely (core1 lags a few
+// lines) — the same race the hardware beam has against a program writing the
+// visible page. Frame-stable inputs may change only after tsRenderDrain():
+// EndFrame (before the palette flush), mode switches, Reset, RedrawPausedFrame.
+// TSU lines (tsuComposeLine reads SFILE + the tile registers live) stay on
+// core0. Ring: 512 jobs x 8 B from the heap, allocated when a whole-line mode
+// first goes live (TS-Conf only, so other boards pay nothing).
+union TsRenderJob {
+    // `kind` sits at offset 0 in both members: 0 = line, 1 = DMA transaction.
+    struct { uint8_t kind, vpage, palsel, vconf, border, tsu; uint16_t line, ygctr, g_xoffs; } l;
+    struct { uint8_t kind, ctrl, len, num, s[3], d[3]; } d;   // 22-bit addresses, little-endian
+};
+static_assert(sizeof(TsRenderJob) == 12, "TsRenderJob packing");
+// TSU inputs of a line, snapshotted on core0 when they differ from the last
+// posted set (a per-line raster effect posts one per line): the tile/sprite
+// registers plus which SFILE snapshot to use. Lines reference them by index
+// (`l.tsu`); an entry or an SFILE slot is reusable once core1 has consumed the
+// last job that referenced it.
+struct TsuState {
+    uint16_t t0x, t0y, t1x, t1y;
+    uint8_t  tsconf, tmpage, t0gpage, t1gpage, sgpage, sfidx;
+    uint16_t pad;
+};
+static_assert(sizeof(TsuState) == 16, "TsuState packing");
+#define TS_C1_TSU   128
+#define TS_C1_SFILE 4
+static TsuState*  ts_c1_tsu = nullptr;          // [TS_C1_TSU]
+static uint16_t*  ts_c1_sf  = nullptr;          // [TS_C1_SFILE][256]
+static uint32_t   ts_c1_tsu_job[TS_C1_TSU];     // ts_c1_w of the last job referencing entry i (+1; 0 = never)
+static uint32_t   ts_c1_sf_job[TS_C1_SFILE];
+static uint32_t   ts_c1_tsu_cur = 0;            // entry of the last posted line
+static uint32_t   ts_c1_sf_cur = 0, ts_c1_sf_gen = 0xFFFFFFFFu;
+#define TS_C1_RING 512
+static TsRenderJob*      ts_c1_ring = nullptr;
+static volatile uint32_t ts_c1_w = 0, ts_c1_r = 0;     // producer / consumer indices (free-running)
+static bool              ts_c1_enabled = (TS_RENDER_CORE1 != 0);
+volatile uint32_t ts_c1_us = 0;        // core1 time inside tsRenderExec (PERF)
+volatile uint32_t ts_c1_wait_us = 0;   // core0 time spent in tsRenderDrain (PERF)
+volatile uint32_t ts_c1_waits = 0;     // drains that actually waited (PERF)
+// DMA jobs posted (core0) / executed (core1): two monotonic counters, one writer
+// each — a shared "pending" count with RMW from both cores loses updates.
+static volatile uint32_t ts_c1_dma_posted = 0, ts_c1_dma_done = 0;
+static inline bool tsC1DmaPending() { return ts_c1_dma_posted != ts_c1_dma_done; }
+volatile uint32_t ts_dma_c1_us = 0;        // core1 time inside DMA jobs (PERF)
+volatile uint32_t ts_c1_wait_dma_us = 0;   // core0 time waiting for a queued DMA (PERF)
+bool VIDEO::tsRenderQueueOn() { return ts_c1_ring && ts_c1_enabled && ts_render_live; }
+volatile uint32_t ts_c1_jobs = 0;      // lines rendered on core1 (PERF)
+static inline bool tsC1Pending() { return ts_c1_r != ts_c1_w; }
+
+// core0: wait until core1 has consumed job index `w1 - 1` (w1 = the ts_c1_w
+// value right after that job was posted). Bounded like tsRenderDrain.
+static void tsC1WaitJob(uint32_t w1) {
+    if (!w1 || (int32_t)(ts_c1_r - w1) >= 0) return;
+    const uint64_t t0 = time_us_64();
+    while ((int32_t)(ts_c1_r - w1) < 0) {
+        if (time_us_64() - t0 > 100000) { VIDEO::tsRenderDrain(); break; }
+        tight_loop_contents();
+    }
+    ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// core0: wait until core1 has finished every posted line. Bounded — a wedged
+// core1 (lockout, fault) must not take core0 with it; the ring is then dropped
+// for the session and lines render on core0 again.
+void VIDEO::tsRenderDrain() {
+    if (!tsC1Pending()) return;
+    const uint64_t t0 = time_us_64();
+    while (tsC1Pending()) {
+        if (time_us_64() - t0 > 100000) {
+            Debug::log("[TSC1] core1 render queue stuck (r=%u w=%u) - falling back to core0", (unsigned)ts_c1_r, (unsigned)ts_c1_w);
+            ts_c1_enabled = false;
+            ts_c1_r = ts_c1_w;
+            ts_c1_dma_done = ts_c1_dma_posted;
+            break;
+        }
+        tight_loop_contents();
+    }
+    ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// core0: wait until every queued DMA transaction has executed — the guest has
+// reached DMA_ACT's drop (tsIntPoll / the line tick / a DMAStatus read), or a
+// synchronous DMA mode is about to read RAM a queued one writes. Lines posted
+// after the last DMA job may still be pending afterwards; that is fine.
+void VIDEO::tsRenderDrainDma() {
+    if (!tsC1DmaPending()) return;
+    const uint64_t t0 = time_us_64();
+    while (tsC1DmaPending()) {
+        if (time_us_64() - t0 > 100000) { tsRenderDrain(); break; }   // stuck → the full drain's fallback
+        tight_loop_contents();
+    }
+    ts_c1_wait_dma_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// core0 (TsConf::dmaStart): queue a bulk DMA transaction behind the lines
+// already posted, so a line renders from the memory the beam would have seen.
+void VIDEO::tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, uint32_t daddr) {
+    TsRenderJob j;
+    j.d.kind = 1;
+    j.d.ctrl = ctrl; j.d.len = len; j.d.num = num;
+    j.d.s[0] = (uint8_t)saddr; j.d.s[1] = (uint8_t)(saddr >> 8); j.d.s[2] = (uint8_t)(saddr >> 16);
+    j.d.d[0] = (uint8_t)daddr; j.d.d[1] = (uint8_t)(daddr >> 8); j.d.d[2] = (uint8_t)(daddr >> 16);
+    while (ts_c1_w - ts_c1_r >= TS_C1_RING) tight_loop_contents();
+    ts_c1_dma_posted = ts_c1_dma_posted + 1;        // before the publish; core1 bumps done after executing
+    ts_c1_ring[ts_c1_w & (TS_C1_RING - 1)] = j;
+    __dmb();
+    ts_c1_w = ts_c1_w + 1;
+}
+
+// core0: does a guest-RAM write of [addr, addr+len) (4 MB physical space) touch
+// memory a queued line still has to read? The queue is consumed in order, so
+// the pending set is ring[r..w) and its bitmap rows are the ygctr range between
+// the oldest and the newest job (wrapping at 512). 256c: row = 512 B at
+// (vpage&0xF0)<<14 + ygctr<<9; 16c: 256 B at (vpage&0xF8)<<14 + ygctr<<8; TEXT:
+// the char page and its font page (vpage^1) whole; NOGFX reads nothing. r may
+// advance underneath us — that only widens the range (conservative). Called by
+// TsConf::dmaStart: TMNT issues ~15 DMAs a frame, most of them into work pages,
+// and draining on every one cost 4.7 ms/frame (hw 2026-09-07).
+bool VIDEO::tsRenderOverlaps(uint32_t addr, uint32_t len) {
+    const uint32_t r = ts_c1_r, w = ts_c1_w;
+    if (r == w) return false;
+    if (ts_vmode_live == TSV_NOGFX) return false;
+    const TsRenderJob a = ts_c1_ring[r & (TS_C1_RING - 1)];
+    const TsRenderJob b = ts_c1_ring[(w - 1) & (TS_C1_RING - 1)];
+    if (a.l.kind || b.l.kind) return true;            // a DMA job at either end: be safe
+    if (a.l.vpage != b.l.vpage) return true;          // page flip inside the backlog: be safe
+    const uint32_t end = addr + len;
+    auto hit = [&](uint32_t lo, uint32_t hi) { return addr < hi && end > lo; };
+    if (ts_vmode_live == TSV_TEXT) {
+        const uint32_t p0 = (uint32_t)a.l.vpage << 14, p1 = (uint32_t)(a.l.vpage ^ 1) << 14;
+        return hit(p0, p0 + 0x4000) || hit(p1, p1 + 0x4000);
+    }
+    const bool c256 = (ts_vmode_live == TSV_256C);
+    const uint32_t base = c256 ? ((uint32_t)(a.l.vpage & 0xF0) << 14) : ((uint32_t)(a.l.vpage & 0xF8) << 14);
+    const uint32_t sh = c256 ? 9 : 8;
+    const uint32_t y0 = a.l.ygctr & 0x1FF, y1 = b.l.ygctr & 0x1FF;
+    if (y0 <= y1) return hit(base + (y0 << sh), base + ((y1 + 1) << sh));
+    return hit(base + (y0 << sh), base + (512u << sh)) || hit(base, base + ((y1 + 1) << sh));
+}
+
+// core0: wait only until no queued line still reads [addr, addr+len) — core1
+// consumes in ygctr order, so the pending range shrinks from its oldest end and
+// a write into rows near the front of the backlog waits a few lines, not the
+// whole queue (the full drain here cost 5 ms on 1 frame in 3 in TMNT's ship
+// scene = the frame-time peaks, hw 2026-09-07).
+void VIDEO::tsRenderDrainOverlap(uint32_t addr, uint32_t len) {
+    if (!tsRenderOverlaps(addr, len)) return;
+    const uint64_t t0 = time_us_64();
+    while (tsRenderOverlaps(addr, len)) {
+        if (time_us_64() - t0 > 100000) { tsRenderDrain(); break; }
+        tight_loop_contents();
+    }
+    ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// core1 (render_core loop): execute queued lines, a few per call so pcm_call /
+// GS::pump keep their cadence.
+void VIDEO::tsRenderCore1Pump() {
+    if (ts_c1_r == ts_c1_w) return;
+    const uint64_t t0 = time_us_64();
+    for (int n = 0; n < 8 && ts_c1_r != ts_c1_w; n++) {
+        const TsRenderJob j = ts_c1_ring[ts_c1_r & (TS_C1_RING - 1)];
+        if (j.l.kind == 1) {
+            const uint64_t d0 = time_us_64();
+            TsConf::dmaExecBulk(j.d.ctrl, (uint32_t)j.d.s[0] | ((uint32_t)j.d.s[1] << 8) | ((uint32_t)j.d.s[2] << 16),
+                                (uint32_t)j.d.d[0] | ((uint32_t)j.d.d[1] << 8) | ((uint32_t)j.d.d[2] << 16),
+                                j.d.len, j.d.num);
+            ts_dma_c1_us += (uint32_t)(time_us_64() - d0);
+            __dmb();
+            ts_c1_r = ts_c1_r + 1;
+            ts_c1_dma_done = ts_c1_dma_done + 1;
+            break;                                    // a DMA is long; let pcm_call/GS::pump run
+        }
+        const TsuState& st = ts_c1_tsu[j.l.tsu & (TS_C1_TSU - 1)];
+        tsRenderExec(j, &st, ts_c1_sf + (uint32_t)(st.sfidx & (TS_C1_SFILE - 1)) * 256);
+        __dmb();
+        ts_c1_r = ts_c1_r + 1;
+        ts_c1_jobs = ts_c1_jobs + 1;
+    }
+    ts_c1_us += (uint32_t)(time_us_64() - t0);
+}
+extern "C" void ts_render_core1_pump() { VIDEO::tsRenderCore1Pump(); }
+
 // ESPectrum::reset teardown for TS-Conf's pair-slot TEXT mode — same reason as
 // gmxForceOff right below: TsConf::reset clears VConfig, so the deferred
 // EndFrame switch would run against already-rebuilt driver tables.
 void VIDEO::tsVideoForceOff() {
     if (!ts_render_live) return;
+    tsRenderDrain();
     const bool pair = (ts_vmode_live == TSV_TEXT);
     const bool c256 = ts_pal256_live;
     ts_vmode_live = 0;
@@ -1389,6 +1586,7 @@ void VIDEO::mode16colUpdatePlanes() {
 static void tsPalette256Flush(bool invalidate);   // TS-Conf 256-slot remap (defined below)
 
 void VIDEO::applyPalette() {
+    tsRenderDrain();   // rewrites slots the core1 line queue maps into
     uint8_t p = Config::palette < total_palette_count() ? Config::palette : 0;
     Debug::log2SD("applyPalette: palette=%d", p);
     // Rebuild base 16 colors from brightness levels
@@ -1545,10 +1743,11 @@ void VIDEO::tsPaletteFlush() {
 // with in the live mode: the nearest of the 16 gpal colours, as a pair slot in
 // TEXT mode and as the palette index itself in 16c/NOGFX (where the framebuffer
 // byte IS the hardware slot 0..15).
-uint8_t VIDEO::tsBorderSlot() {
-    if (ts_pal256_live) return ts256_map[TsConf::r.border];
-    const uint8_t gpal = (TsConf::r.palsel & 0x0F) << 4;
-    const uint16_t want = TsConf::cram[TsConf::r.border];
+uint8_t VIDEO::tsBorderSlot() { return tsBorderSlotFor(TsConf::r.border, TsConf::r.palsel); }
+uint8_t VIDEO::tsBorderSlotFor(uint8_t border, uint8_t palsel) {
+    if (ts_pal256_live) return ts256_map[border];
+    const uint8_t gpal = (palsel & 0x0F) << 4;
+    const uint16_t want = TsConf::cram[border];
     uint8_t best = 0;
     uint32_t bestd = 0xFFFFFFFFu;
     for (int i = 0; i < 16; i++) {
@@ -2873,6 +3072,7 @@ void VIDEO::Reset() {
     // a live non-ZX mode must redo its activation from EndFrame (deferred
     // path compares VConfig against ts_vmode_live, so zeroing the live state
     // is the whole request). Drop the pair driver first if it was up.
+    tsRenderDrain();
     if (ts_render_live) {
         if (ts_vmode_live == TSV_TEXT) {
             profi_ds80_driver_set(false, nullptr, nullptr);
@@ -4002,6 +4202,7 @@ void VIDEO::tsFastMemRecalc() {
 
 IRAM_ATTR void VIDEO::tsDrawTick() {
     const uint32_t lines = lin_end2 - lin_end;
+    TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
     do {
         linedraw_cnt = lin_end + ts_line_idx;   // keep the shared counters coherent
         curline = ts_line_idx;
@@ -4097,6 +4298,7 @@ static const TsRres kTsRres[4] = {
 
 // Cold: runs once per mode change, from EndFrame (vblank).
 void VIDEO::tsVideoApplyPending() {
+    tsRenderDrain();
     const uint8_t vc = TsConf::r.vconf;
     const uint8_t want = (vc & 0x20) ? (uint8_t)TSV_NOGFX : (uint8_t)(vc & 0x03);
     const uint8_t rres = vc >> 6;
@@ -4139,6 +4341,22 @@ void VIDEO::tsVideoApplyPending() {
     ts_tsu_live = wantTsu;
     ts_render_live = wantRender;
     ts_rres_live = rres;
+    if (wantRender && ts_c1_enabled && !ts_c1_ring) {
+        const size_t bytes = sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU + 512 * TS_C1_SFILE;
+        uint8_t* blk = (uint8_t*)Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+        if (blk) {
+            ts_c1_ring = (TsRenderJob*)blk;
+            ts_c1_tsu  = (TsuState*)(blk + sizeof(TsRenderJob) * TS_C1_RING);
+            ts_c1_sf   = (uint16_t*)(blk + sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU);
+            memset(ts_c1_tsu_job, 0, sizeof ts_c1_tsu_job);
+            memset(ts_c1_sf_job, 0, sizeof ts_c1_sf_job);
+            ts_c1_tsu_cur = ts_c1_sf_cur = 0; ts_c1_sf_gen = 0xFFFFFFFFu;
+        }
+        ts_c1_r = ts_c1_w = 0;
+        Debug::log("[TSC1] core1 line renderer %s (%u-job ring + %u TSU states + %u SFILE slots, %u B)",
+                   ts_c1_ring ? "ON" : "unavailable (no RAM)", (unsigned)TS_C1_RING, (unsigned)TS_C1_TSU,
+                   (unsigned)TS_C1_SFILE, (unsigned)bytes);
+    }
     if (wantPal256) { tsPalette256Flush(!ts_pal256_live); tsCramDirty = false; }
     ts_pal256_live = wantPal256;
 
@@ -4257,17 +4475,6 @@ static void __not_in_flash_func(tsFast16)(uint8_t* fb, int fx0, int fx1, const u
 }
 
 void VIDEO::tsRenderLine(uint32_t curline) {
-    const uint64_t t0 = time_us_64();
-    tsRenderLineBody(curline);
-    ts_render_us += (uint32_t)(time_us_64() - t0);
-}
-
-void VIDEO::tsRenderLineBody(uint32_t curline) {
-    const uint32_t frow = curline + lin_end;
-    if (!vga.frameBuffer || frow >= (uint32_t)vga.yres) return;
-    uint8_t* fb_row = (uint8_t*)vga.frameBuffer[frow];
-    if (!fb_row) return;
-
     // MainScreen reaches this with start_col == 0 TWICE per line — the Draw(0)
     // MainScreen_Blank issues to prime the line, then the first real slice —
     // and the GMX renderer never noticed because it is idempotent. The Y
@@ -4287,11 +4494,75 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
         ts_ygctr = (ts_ygctr + 1) & 0x1FF;
     }
 
+    TsRenderJob j;
+    j.l.kind = 0; j.l.tsu = 0;
+    j.l.line = (uint16_t)curline; j.l.ygctr = (uint16_t)ts_ygctr; j.l.g_xoffs = TsConf::r.g_xoffs & 0x1FF;
+    j.l.vpage = TsConf::r.vpage; j.l.palsel = TsConf::r.palsel; j.l.vconf = TsConf::r.vconf;
+    j.l.border = TsConf::r.border;
+
+    TsuState st;
+    if (ts_tsu_live) {
+        st.t0x = TsConf::r.t0_xoffs; st.t0y = TsConf::r.t0_yoffs;
+        st.t1x = TsConf::r.t1_xoffs; st.t1y = TsConf::r.t1_yoffs;
+        st.tsconf = TsConf::r.tsconf; st.tmpage = TsConf::r.tmpage;
+        st.t0gpage = TsConf::r.t0gpage; st.t1gpage = TsConf::r.t1gpage; st.sgpage = TsConf::r.sgpage;
+        st.sfidx = 0; st.pad = 0;
+    }
+
+    if (ts_c1_ring && ts_c1_enabled) {
+        if (ts_tsu_live) {
+            // SFILE changed since the last snapshot: copy it into the next slot
+            // (waiting for core1 if a queued line still reads that slot).
+            if (TsConf::sfileGen != ts_c1_sf_gen) {
+                const uint32_t slot = (ts_c1_sf_cur + 1) & (TS_C1_SFILE - 1);
+                tsC1WaitJob(ts_c1_sf_job[slot]);
+                memcpy(ts_c1_sf + slot * 256, TsConf::sfile, 512);
+                ts_c1_sf_cur = slot;
+                ts_c1_sf_gen = TsConf::sfileGen;
+            }
+            st.sfidx = (uint8_t)ts_c1_sf_cur;
+            // A new state entry only when the inputs moved.
+            TsuState& cur = ts_c1_tsu[ts_c1_tsu_cur & (TS_C1_TSU - 1)];
+            if (ts_c1_tsu_job[ts_c1_tsu_cur & (TS_C1_TSU - 1)] == 0 || memcmp(&cur, &st, sizeof(TsuState)) != 0) {
+                const uint32_t nxt = (ts_c1_tsu_cur + 1) & (TS_C1_TSU - 1);
+                tsC1WaitJob(ts_c1_tsu_job[nxt]);
+                ts_c1_tsu[nxt] = st;
+                ts_c1_tsu_cur = nxt;
+            }
+            j.l.tsu = (uint8_t)ts_c1_tsu_cur;
+        }
+        // Full ring (a HALT fast-forward posts a whole frame in microseconds):
+        // wait for a slot — core0 would be idle for exactly that render anyway.
+        while (ts_c1_w - ts_c1_r >= TS_C1_RING) tight_loop_contents();
+        ts_c1_ring[ts_c1_w & (TS_C1_RING - 1)] = j;
+        __dmb();
+        ts_c1_w = ts_c1_w + 1;
+        if (ts_tsu_live) {
+            ts_c1_tsu_job[ts_c1_tsu_cur & (TS_C1_TSU - 1)] = ts_c1_w;   // "consumed once r reaches this"
+            ts_c1_sf_job[ts_c1_sf_cur & (TS_C1_SFILE - 1)] = ts_c1_w;
+        }
+        return;
+    }
+    const uint64_t t0 = time_us_64();
+    tsRenderExec(j, ts_tsu_live ? &st : nullptr, TsConf::sfile);
+    ts_render_us += (uint32_t)(time_us_64() - t0);
+}
+
+// Renders one job. Runs on core1 (queued) or core0 (TSU lines, no ring). Reads
+// nothing from TsConf::r except through tsuComposeLine (core0 only).
+void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile) {
+    const uint32_t curline = j.l.line;
+    const uint32_t ygctr = j.l.ygctr;
+    const uint32_t frow = curline + lin_end;
+    if (!vga.frameBuffer || frow >= (uint32_t)vga.yres) return;
+    uint8_t* fb_row = (uint8_t*)vga.frameBuffer[frow];
+    if (!fb_row) return;
+
     const TsRres& g = kTsRres[ts_rres_live & 3];
     const int xres = (int)vga.xres;
     // Left pad in fb bytes (lores px): border pixels visible left of the area.
     const int pad_l = (int)g.lb - ((xres >= 360) ? 0 : 20);
-    const uint8_t brd = tsBorderSlot();
+    const uint8_t brd = tsBorderSlotFor(j.l.border, j.l.palsel);
 
     // F8 stats / F9-F10 volume box: OSD::drawStats owns a 144x16 rect at fb bytes
     // 168.. (320-wide) / 188.. (360-wide), rows 220.. (yres 240) / 268.. (288) and
@@ -4321,11 +4592,11 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
         // (64 rows per page), char line = ygctr&7; paper = gpal|atr>>4, ink =
         // gpal|atr&15; 8 hires px per char = 4 pair bytes, (k^2) pre-swizzled
         // for the ISR's x^2 read pattern (same trick as GMX/DS80).
-        const uint8_t* scr = TsConf::pagePtr(TsConf::r.vpage);
-        const uint8_t* fnt = TsConf::pagePtr(TsConf::r.vpage ^ 0x01);
+        const uint8_t* scr = TsConf::pagePtr(j.l.vpage);
+        const uint8_t* fnt = TsConf::pagePtr(j.l.vpage ^ 0x01);
         if (!scr || !fnt) { fillPad(x0, x1); return; }
-        const uint32_t s = (ts_ygctr & 0x1F8) << 5;
-        const uint8_t  cl = ts_ygctr & 7;
+        const uint32_t s = (ygctr & 0x1F8) << 5;
+        const uint8_t  cl = ygctr & 7;
         // Text is hires: g.w lores pixels = 2*g.w hires pixels = g.w/4 chars
         // of 8 (80 at RRES 320) — each char = 4 pair bytes.
         const int cols = (int)g.w >> 2;
@@ -4352,15 +4623,15 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
     // rows) takes the generic path below.
     if (!ts_tsu_live && !carveRow && (ts_vmode_live == TSV_256C || ts_vmode_live == TSV_16C)) {
         const int fx0 = x0 < 0 ? 0 : x0, fx1 = x1 > xres ? x1 : xres > x1 ? x1 : xres;
-        const uint32_t sx = (uint32_t)TsConf::r.g_xoffs + (uint32_t)(fx0 - x0);
+        const uint32_t sx = (uint32_t)j.l.g_xoffs + (uint32_t)(fx0 - x0);
         if (ts_vmode_live == TSV_256C) {
-            const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF0) + (ts_ygctr >> 5));
-            if (ln) { tsFast256(fb_row, fx0, fx1, ln + ((ts_ygctr & 31) << 9), sx, ts256_map); return; }
+            const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF0) + (ygctr >> 5));
+            if (ln) { tsFast256(fb_row, fx0, fx1, ln + ((ygctr & 31) << 9), sx, ts256_map); return; }
         } else {
-            const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF8) + (ts_ygctr >> 6));
+            const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF8) + (ygctr >> 6));
             if (ln) {
-                tsFast16(fb_row, fx0, fx1, ln + ((ts_ygctr & 63) << 8), sx,
-                         ts_pal256_live ? ts256_map : nullptr, (uint8_t)((TsConf::r.palsel & 0x0F) << 4));
+                tsFast16(fb_row, fx0, fx1, ln + ((ygctr & 63) << 8), sx,
+                         ts_pal256_live ? ts256_map : nullptr, (uint8_t)((j.l.palsel & 0x0F) << 4));
                 return;
             }
         }
@@ -4374,11 +4645,12 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
     // transparent (video_render.v: tsu_visible = |tsdata[3:0]).
     static uint16_t s_gline[512];
     static uint8_t  s_tsline[512];
+    const uint64_t t0b = time_us_64();
     const int w = (int)g.w;
-    const uint8_t gpal = (uint8_t)((TsConf::r.palsel & 0x0F) << 4);
-    const uint8_t border_idx = TsConf::r.border;
+    const uint8_t gpal = (uint8_t)((j.l.palsel & 0x0F) << 4);
+    const uint8_t border_idx = j.l.border;
     const bool nogfx = (ts_vmode_live == TSV_NOGFX);
-    const bool gfxovr = TsConf::r.vconf & 0x08;
+    const bool gfxovr = j.l.vconf & 0x08;
 
     if (nogfx) {
         for (int x = 0; x < w; x++) s_gline[x] = border_idx;
@@ -4386,8 +4658,8 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
         // addr_zx: gfx {row[7:6], row[2:0], row[5:3], col}, attr {110, row[7:3],
         // col}, 32 columns wrapping (cnt_col[4:1]) across a wider area; colour
         // {palsel, attr[6], dot ? attr[2:0] : attr[5:3]}, FLASH swaps.
-        const uint8_t* scr = TsConf::pagePtr(TsConf::r.vpage);
-        const uint32_t row = ts_ygctr & 0xFF;
+        const uint8_t* scr = TsConf::pagePtr(j.l.vpage);
+        const uint32_t row = ygctr & 0xFF;
         const uint32_t goff = ((row & 0xC0) << 5) | ((row & 7) << 8) | ((row & 0x38) << 2);
         const uint32_t aoff = 0x1800 | ((row & 0xF8) << 2);
         if (!scr) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
@@ -4404,25 +4676,29 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
         // addr_16c {vpage[7:3], row[8:0], col[6:0]}: 512x512 4 bpp, 256 B/line
         // over 8 pages (64 lines each), window at GXOffs wrapping at 512, high
         // nibble = left pixel; colour {palsel, nibble}.
-        const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF8) + (ts_ygctr >> 6));
+        const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF8) + (ygctr >> 6));
         if (!ln) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
         else {
-            ln += (ts_ygctr & 63) << 8;
-            uint32_t sx = TsConf::r.g_xoffs;
-            for (int x = 0; x < w; x++, sx++) {
-                const uint32_t t = sx & 0x1FF;
-                const uint8_t nib = (t & 1) ? (uint8_t)(ln[t >> 1] & 0x0F) : (uint8_t)(ln[t >> 1] >> 4);
-                s_gline[x] = (uint16_t)(gpal | nib) | (nib ? 0x100 : 0);
+            ln += (ygctr & 63) << 8;
+            uint16_t g16[16];
+            for (int n = 0; n < 16; n++) g16[n] = (uint16_t)(gpal | n) | (n ? 0x100 : 0);
+            uint32_t sx = j.l.g_xoffs & 0x1FF;
+            int x = 0;
+            if (sx & 1) { s_gline[0] = g16[ln[sx >> 1] & 0x0F]; x = 1; sx = (sx + 1) & 0x1FF; }
+            for (; x + 1 < w; x += 2, sx = (sx + 2) & 0x1FF) {
+                const uint8_t b = ln[sx >> 1];
+                s_gline[x] = g16[b >> 4]; s_gline[x + 1] = g16[b & 0x0F];
             }
+            if (x < w) s_gline[x] = g16[ln[sx >> 1] >> 4];
         }
     } else { // TSV_256C
         // addr_256c {vpage[7:4], row, col[7:0]}: 512 B/line, 32 lines per page,
         // byte = CRAM index.
-        const uint8_t* ln = TsConf::pagePtr((TsConf::r.vpage & 0xF0) + (ts_ygctr >> 5));
+        const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF0) + (ygctr >> 5));
         if (!ln) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
         else {
-            ln += (ts_ygctr & 31) << 9;
-            uint32_t sx = TsConf::r.g_xoffs;
+            ln += (ygctr & 31) << 9;
+            uint32_t sx = j.l.g_xoffs;
             for (int x = 0; x < w; x++, sx++) {
                 const uint8_t c = ln[sx & 0x1FF];
                 s_gline[x] = (uint16_t)c | (c ? 0x100 : 0);
@@ -4430,30 +4706,63 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
         }
     }
 
+    uint64_t t1 = time_us_64();
+    ts_base_us += (uint32_t)(t1 - t0b);
     if (ts_tsu_live) {
-        const uint64_t t1 = time_us_64();
-        tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline);
-        ts_tsu_us += (uint32_t)(time_us_64() - t1);
+        tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline, *st, sfile, j.l.palsel);
+        const uint64_t t2 = time_us_64();
+        ts_tsu_us += (uint32_t)(t2 - t1);
+        t1 = t2;
     }
 
     // Output. Without the ts256 remap the fb byte is the palette slot itself:
-    // 16c's gpal bank sits on slots 0..15 (low nibble of the index).
-    for (int x = 0; x < w; x++) {
-        const int fx = x0 + x;
-        if (fx < 0 || fx >= xres) continue;
-        if (carveRow && fx >= cx0 && fx < cx1) continue;   // stats box (OSD::drawStats owns it)
-        uint8_t out;
-        if (ts_tsu_live) {
-            const uint8_t t = s_tsline[x];
-            const bool tsu_vis = (t & 0x0F) != 0;
-            const bool gfx_vis = (s_gline[x] & 0x100) != 0;
-            if (gfxovr) out = gfx_vis ? (uint8_t)s_gline[x] : (tsu_vis ? t : border_idx);
-            else        out = tsu_vis ? t : (uint8_t)s_gline[x];
-        } else {
-            out = (uint8_t)s_gline[x];
+    // 16c's gpal bank sits on slots 0..15 (low nibble of the index). The clip
+    // to the fb row is done once; the pixel rule is picked once; four pixels go
+    // out per aligned uint32 store in the ISR's x^2 order (the per-pixel
+    // clip/carve/mode test version cost ~120 ns a pixel on core1).
+    static uint8_t s_nibmap[256];
+    static bool s_nibmap_ok = false;
+    if (!s_nibmap_ok) { for (int i = 0; i < 256; i++) s_nibmap[i] = (uint8_t)(i & 0x0F); s_nibmap_ok = true; }
+    const uint8_t* map = ts_pal256_live ? ts256_map : s_nibmap;
+    const int xa = x0 < 0 ? -x0 : 0;
+    const int xb = (x0 + w > xres) ? xres - x0 : w;
+    if (carveRow) {
+        for (int x = xa; x < xb; x++) {
+            const int fx = x0 + x;
+            if (fx >= cx0 && fx < cx1) continue;   // stats box (OSD::drawStats owns it)
+            uint8_t out;
+            if (ts_tsu_live) {
+                const uint8_t t = s_tsline[x];
+                const bool tsu_vis = (t & 0x0F) != 0;
+                const bool gfx_vis = (s_gline[x] & 0x100) != 0;
+                if (gfxovr) out = gfx_vis ? (uint8_t)s_gline[x] : (tsu_vis ? t : border_idx);
+                else        out = tsu_vis ? t : (uint8_t)s_gline[x];
+            } else {
+                out = (uint8_t)s_gline[x];
+            }
+            fb_row[fx ^ 2] = map[out];
         }
-        fb_row[fx ^ 2] = ts_pal256_live ? ts256_map[out] : (uint8_t)(out & 0x0F);
+    } else {
+#define TS_OUT_LOOP(EXPR) do { \
+        int x = xa; int fx = x0 + x; \
+        while (x < xb && (fx & 3)) { fb_row[fx ^ 2] = map[EXPR(x)]; x++; fx++; } \
+        while (x + 4 <= xb) { \
+            const uint32_t p0 = map[EXPR(x)], p1 = map[EXPR(x + 1)], p2 = map[EXPR(x + 2)], p3 = map[EXPR(x + 3)]; \
+            *(uint32_t*)(fb_row + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24); \
+            x += 4; fx += 4; } \
+        while (x < xb) { fb_row[fx ^ 2] = map[EXPR(x)]; x++; fx++; } } while (0)
+#define TS_PX_G(x) ((uint8_t)s_gline[x])
+#define TS_PX_T(x) ((s_tsline[x] & 0x0F) ? s_tsline[x] : (uint8_t)s_gline[x])
+#define TS_PX_O(x) ((s_gline[x] & 0x100) ? (uint8_t)s_gline[x] : ((s_tsline[x] & 0x0F) ? s_tsline[x] : border_idx))
+        if (!ts_tsu_live)  TS_OUT_LOOP(TS_PX_G);
+        else if (!gfxovr)  TS_OUT_LOOP(TS_PX_T);
+        else               TS_OUT_LOOP(TS_PX_O);
+#undef TS_OUT_LOOP
+#undef TS_PX_G
+#undef TS_PX_T
+#undef TS_PX_O
     }
+    ts_out_us += (uint32_t)(time_us_64() - t1);
 }
 
 // ── TSU: the Tile-Sprite Unit's line buffer (video_ts.v / Unreal render_ts) ──
@@ -4468,9 +4777,9 @@ void VIDEO::tsRenderLineBody(uint32_t curline) {
 // walked in order; `leap` closes the current sprite layer after that sprite;
 // visible when (line - y) & 511 <= ys*8+7. Palette: {tXpal(2) tile.pal(2)}
 // or sprite pal(4), high nibble of the CRAM index.
-void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts) {
+void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const uint16_t* sfile, uint8_t palsel) {
     memset(ts, 0, 512);
-    const uint8_t tsc = TsConf::r.tsconf;
+    const uint8_t tsc = st.tsconf;
     const bool s_en = tsc & 0x80, t1_en = tsc & 0x40, t0_en = tsc & 0x20;
     const bool t1z = tsc & 0x08, t0z = tsc & 0x04;
     static const uint8_t kTiles[4] = { 34, 42, 42, 47 };
@@ -4478,6 +4787,8 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts) {
 
     // 8 pixels of a bitmap element line into the buffer at pos, direction dir.
     auto blit8 = [&](const uint8_t* src, uint32_t pos, int dir, uint8_t pal) {
+        uint32_t s4; memcpy(&s4, src, 4);
+        if (!s4) return (uint32_t)((pos + 8 * dir) & 0x1FF);   // whole element transparent
         for (int i = 0; i < 4; i++) {
             const uint8_t c = src[i];
             if (c & 0xF0) ts[pos] = (uint8_t)(pal | (c >> 4));
@@ -4495,12 +4806,12 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts) {
     auto tiles = [&](int layer) {
         const bool en = layer ? t1_en : t0_en;
         if (!en) return;
-        const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+        const uint8_t* tm = TsConf::pagePtr(st.tmpage);
         if (!tm) return;
-        const uint16_t xoffs = layer ? TsConf::r.t1_xoffs : TsConf::r.t0_xoffs;
-        const uint16_t yoffs = layer ? TsConf::r.t1_yoffs : TsConf::r.t0_yoffs;
-        const uint8_t  gpage = layer ? TsConf::r.t1gpage : TsConf::r.t0gpage;
-        const uint8_t  tpal  = (uint8_t)(((TsConf::r.palsel >> (layer ? 6 : 4)) & 3) << 6);
+        const uint16_t xoffs = layer ? st.t1x : st.t0x;
+        const uint16_t yoffs = layer ? st.t1y : st.t0y;
+        const uint8_t  gpage = layer ? st.t1gpage : st.t0gpage;
+        const uint8_t  tpal  = (uint8_t)(((palsel >> (layer ? 6 : 4)) & 3) << 6);
         const bool     tz    = layer ? t1z : t0z;
         const uint32_t ty = (line + yoffs) & 0x1FF;
         const uint8_t* row = tm + ((ty >> 3) << 8) + (layer ? 128 : 0);
@@ -4528,7 +4839,7 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts) {
         (void)layerIdx;
         if (!s_en) { return; }
         while (snum < 85) {
-            const uint16_t* d = &TsConf::sfile[snum * 3];
+            const uint16_t* d = &sfile[snum * 3];
             snum++;
             const uint16_t w0 = d[0], w1 = d[1], w2 = d[2];
             const bool leap = w0 & 0x4000;
@@ -4539,7 +4850,7 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts) {
                     const uint32_t xsz = (((w1 >> 9) & 7) + 1) << 3;
                     const uint16_t tnum = w2 & 0x0FFF;
                     const uint32_t bline = ((tnum >> 6) << 3) + ((w0 & 0x8000) ? (ysz - 1 - sy) : sy);
-                    const uint8_t* src = bmLine(TsConf::r.sgpage, bline);
+                    const uint8_t* src = bmLine(st.sgpage, bline);
                     if (src) {
                         src += (tnum & 63) << 2;
                         const uint8_t pal = (uint8_t)((w2 >> 12) << 4);
@@ -4774,12 +5085,27 @@ IRAM_ATTR void VIDEO::EndFrame() {
         cpu_frame_us = 0;
         fdd_step_us = 0;
         Ports::fdd_ports_us = 0;
-        extern volatile uint32_t ts_render_us, ts_tsu_us, ts_dma_us, ts_dma_words;
+        extern volatile uint32_t ts_render_us, ts_tsu_us, ts_dma_us, ts_dma_words, ts_dma_words_ram, ts_dma_words_blt, ts_dma_words_fill;
+        extern volatile uint32_t ts_base_us, ts_out_us;
+        static uint32_t base_accum = 0, out_accum = 0;
+        base_accum += ts_base_us; out_accum += ts_out_us; ts_base_us = ts_out_us = 0;
+        extern volatile uint32_t ts_poll_ff, ts_poll_ff_t, ts_poll_reads;
+        static uint32_t pff_accum = 0, pfft_accum = 0, prd_accum = 0;
+        pff_accum += ts_poll_ff; pfft_accum += ts_poll_ff_t; prd_accum += ts_poll_reads; ts_poll_ff = ts_poll_ff_t = ts_poll_reads = 0;
+        extern volatile uint32_t ts_c1_us, ts_c1_wait_us, ts_c1_jobs, ts_c1_waits, ts_dma_c1_us, ts_c1_wait_dma_us;
         static uint32_t tsr_accum = 0, tsr_max = 0, tsu_accum = 0, dma_accum = 0, dmaw_accum = 0;
+        static uint32_t c1_accum = 0, c1w_accum = 0, c1w_max = 0, c1j_accum = 0, c1n_accum = 0, c1d_accum = 0, c1wd_accum = 0, c1wd_max = 0;
         tsr_accum += ts_render_us; if (ts_render_us > tsr_max) tsr_max = ts_render_us;
         tsu_accum += ts_tsu_us;
         dma_accum += ts_dma_us; dmaw_accum += ts_dma_words;
+        static uint32_t dmar_accum = 0, dmab_accum = 0, dmaf_accum = 0;
+        dmar_accum += ts_dma_words_ram; dmab_accum += ts_dma_words_blt; dmaf_accum += ts_dma_words_fill;
+        ts_dma_words_ram = ts_dma_words_blt = ts_dma_words_fill = 0;
+        c1_accum += ts_c1_us; c1w_accum += ts_c1_wait_us; if (ts_c1_wait_us > c1w_max) c1w_max = ts_c1_wait_us;
+        c1j_accum += ts_c1_jobs; c1n_accum += ts_c1_waits;
+        c1d_accum += ts_dma_c1_us; c1wd_accum += ts_c1_wait_dma_us; if (ts_c1_wait_dma_us > c1wd_max) c1wd_max = ts_c1_wait_dma_us;
         ts_render_us = ts_tsu_us = ts_dma_us = ts_dma_words = 0;
+        ts_c1_us = ts_c1_wait_us = ts_c1_jobs = ts_c1_waits = ts_dma_c1_us = ts_c1_wait_dma_us = 0;
         if (++port_log_frame >= 60) {
             uint64_t now = time_us_64();
             float fps = wall_t0 ? (60.0f * 1000000.0f / (float)(now - wall_t0)) : 0.0f;
@@ -4792,15 +5118,22 @@ IRAM_ATTR void VIDEO::EndFrame() {
             volatile uint32_t *xip_acc = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_ACC_OFFSET);
             uint32_t xh = *xip_hit, xa = *xip_acc;
             *xip_hit = 0; *xip_acc = 0;
-            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus tsRender=%.1fms (max %.1fms, tsu %.1fms) dma=%.1fms/%uw xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f",
+            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f",
                 cpu_accum / 60000.0f, cpu_max / 1000.0f,
                 fdd_step_accum / 60000.0f, fdd_step_max / 1000.0f,
                 fdd_ports_accum / 60000.0f, fdd_ports_max / 1000.0f,
                 (unsigned)gap_max, (unsigned)dur_max,
-                tsr_accum / 60000.0f, tsr_max / 1000.0f, tsu_accum / 60000.0f,
-                dma_accum / 60000.0f, (unsigned)(dmaw_accum / 60),
                 (unsigned)xh, (unsigned)xa, xa ? 100.0f * (float)xh / (float)xa : 0.0f,
                 (float)(xa - xh) * fps / 60.0f / 1e6f, fps);
+            // TS-Conf half on its own line: Debug::log truncates at 256 bytes.
+            if (Z80Ops::isTsconf)
+                Debug::log("[PERF] ts: tsRender=%.1fms (max %.1fms, base %.1f tsu %.1f out %.1f) c1=%.1fms/%ul wait=%.1fms (max %.1fms, %u/60) dmaC1=%.1fms waitDma=%.1fms (max %.1fms) dma=%.1fms/%uw (ram %u blt %u fill %u) poll=%u ff=%u/%ukT",
+                    tsr_accum / 60000.0f, tsr_max / 1000.0f, base_accum / 60000.0f, tsu_accum / 60000.0f, out_accum / 60000.0f,
+                    c1_accum / 60000.0f, (unsigned)(c1j_accum / 60), c1w_accum / 60000.0f, c1w_max / 1000.0f, (unsigned)c1n_accum,
+                    c1d_accum / 60000.0f, c1wd_accum / 60000.0f, c1wd_max / 1000.0f,
+                    dma_accum / 60000.0f, (unsigned)(dmaw_accum / 60), (unsigned)(dmar_accum / 60), (unsigned)(dmab_accum / 60), (unsigned)(dmaf_accum / 60),
+                    (unsigned)(prd_accum / 60), (unsigned)(pff_accum / 60), (unsigned)(pfft_accum / 60000));
+            pff_accum = pfft_accum = prd_accum = 0; base_accum = out_accum = 0;
 #if PERF_HIST
             // Z80 opcode mix, every 600 frames: instructions/frame, ns per
             // instruction (against cpu= of the same window) and the top 20
@@ -4864,7 +5197,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
                 }
             }
 #endif // PERF_HIST
-            tsr_accum = tsr_max = tsu_accum = dma_accum = dmaw_accum = 0;
+            tsr_accum = tsr_max = tsu_accum = dma_accum = dmaw_accum = 0; dmar_accum = dmab_accum = dmaf_accum = 0; c1_accum = c1w_accum = c1w_max = c1j_accum = c1n_accum = c1d_accum = c1wd_accum = c1wd_max = 0;
             cpu_accum = cpu_max = gap_max = dur_max = 0;
             fdd_step_accum = fdd_step_max = 0;
             fdd_ports_accum = fdd_ports_max = 0;
@@ -4985,6 +5318,14 @@ IRAM_ATTR void VIDEO::EndFrame() {
 
     // TS-Conf CRAM → the 16 ZX palette slots, same deferred-to-blanking rule
     // as the ULA+ flush above (16 entries ≈ 65 µs).
+    // NO tsRenderDrain() here: the core1 line queue is allowed to run across the
+    // frame boundary (the HALT fast-forward posts most of a frame in one burst
+    // and waiting for it here cost core0 ~3.3 ms/frame on TMNT, hw 2026-09-07).
+    // Whoever writes what a pending line READS drains first: TsConf::dmaStart
+    // (guest memory), do_OSD / osdCenteredMsg / progressDialog / gfxBegin (the
+    // framebuffer), mode switches and Reset. The palette flush below runs with
+    // lines pending on purpose — ts256_map is read byte by byte, so a pending
+    // line takes old-or-new slots per pixel for one frame on a palette change.
     if (Z80Ops::isTsconf && tsCramDirty) tsPaletteFlush();
 
     static uint8_t skipCnt = 0;
@@ -5149,6 +5490,7 @@ void VIDEO::RedrawPausedFrame() {
     DrawBorder();
     }
 
+    if (ts_render_live) tsRenderDrain();   // the menu/border repaint that follows writes the same rows
     CPU::tstates = saved_tstates;
     // Draw/DrawBorder are left "done" (Blank/Border_Blank); the per-frame
     // EndFrame call in CPU::loop's paused branch re-arms them as usual.

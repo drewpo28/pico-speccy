@@ -1030,6 +1030,7 @@ void repeat_me_for_input() {
 #endif
 }
 
+extern "C" void ts_render_core1_pump(void);
 #ifdef VGA_HDMI
 extern "C" void hdmi_poll_reinit(void);
 extern "C" void vga_reinit(void);
@@ -1071,6 +1072,7 @@ void __scratch_x("render") render_core() {
         // because video_timer_callbackTV at 30 kHz would starve it here.
         GS::pump();
 #endif
+        ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
         tight_loop_contents();
     }
     __unreachable();
