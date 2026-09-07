@@ -25,6 +25,8 @@
 #include "Ports.h"
 #include "Video.h"
 #include "TsFastMem.h"
+#include <string.h>
+#include "graphics.h"   // profi_ds80_active (blockRepeat guard)
 #include "MemESP.h"
 #include "CPU.h"
 #include "Tape.h"
@@ -1406,13 +1408,20 @@ IRAM_ATTR void Z80::execute() {
 
 }
 
+// True only while exec_nocheck() runs: the INT line is sampled at the slice
+// boundary (CPU::stFrame) and nowhere inside it, which is what lets LDIR/LDDR
+// batch iterations up to that boundary (blockRepeat). execute() steps one
+// instruction and samples INT after each, so batching there would defer it.
+static bool z80_in_nocheck = false;
+
 IRAM_ATTR void Z80::exec_nocheck() {
 
     int nbp = Config::numPcBP;
+    z80_in_nocheck = true;
 
     while (CPU::tstates < CPU::stFrame) {
 
-        if (nbp > 0 && Config::hasBreakPoint(REG_PC, Config::BP_PC)) return;
+        if (nbp > 0 && Config::hasBreakPoint(REG_PC, Config::BP_PC)) { z80_in_nocheck = false; return; }
 #if NEO8_TRAP
         Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
 #endif
@@ -1470,7 +1479,71 @@ IRAM_ATTR void Z80::exec_nocheck() {
         if (prefixOpcode == 0) lastFlagQ = flagQ;
 
     }
+    z80_in_nocheck = false;
 
+}
+
+// LDIR/LDDR block fast path: run every iteration but the LAST as one block copy,
+// then let the normal ldi()/ldd() do the final one so flags, WZ and the exit
+// timing are exactly the core's. Each batched iteration accounts 21 T (16 + the
+// 5-T repeat) and two opcode fetches (R += 2); WZ = the repeat opcode's address,
+// as the repeat path sets it. Only inside exec_nocheck (z80_in_nocheck) and
+// never across CPU::stFrame, where the INT is sampled. What may NOT be batched,
+// because the per-byte path has a side effect the batch would skip:
+//  - page 0 (ROM/overlays/DivMMC/NeoGS ZX-DMA window) as source or destination,
+//  - contended pages (the contention is per access) and the ULA snow machine,
+//  - a destination in the page the beam renderer reads (grmem, the DS80 pair,
+//    GMX 640x200, the 16col planes): those bytes must land per beam position,
+//  - memory breakpoints, a ROM destination, an accessor (SPI-PSRAM) bank,
+//  - TS-Conf: the FMAddr/W0_WE write gate (g_tsconf_wr).
+// Beam-raced machines take at most one video line per batch (Draw() handles a
+// single line crossing per call); the TS fast path (TsFastMem.h) has no such
+// limit. TMNT: 21% of its instructions are LDIR iterations (hw 2026-09-07).
+void Z80::blockRepeat(bool up) {
+    if (!z80_in_nocheck) return;
+    uint32_t n = REG_BC;
+    if (n < 3) return;                              // batch = n - 1 >= 2 to be worth the setup
+    n -= 1;
+    const uint16_t hl = REG_HL, de = REG_DE;
+    const uint8_t spg = hl >> 14, dpg = de >> 14;
+    if (spg == 0 || dpg == 0) return;
+    uint8_t* dbase = MemESP::ramCurrent[dpg];
+    const uint8_t* sbase = MemESP::ramCurrent[spg];
+    if ((uintptr_t)dbase < 0x11000000u || sbase == nullptr) return;   // ROM / accessor banks
+    if (g_ts_fastmem) {
+        if (g_tsconf_wr) return;
+    } else {
+        if (MemESP::ramContended[spg] || MemESP::ramContended[dpg] || VIDEO::snow_toggle) return;
+        if (Config::numMemReadBP | Config::numMemWriteBP) return;
+        if (dbase == VIDEO::grmem || profi_ds80_active || VIDEO::gmx_ext_live || VIDEO::mode16col_enabled) return;
+        const uint32_t cap = VIDEO::tStatesPerLine / 21u;
+        if (n > cap) n = cap;
+    }
+    const uint32_t room = (CPU::stFrame > CPU::tstates) ? (CPU::stFrame - CPU::tstates) / 21u : 0;
+    if (n > room) n = room;
+    const uint32_t rs = up ? (0x4000u - (hl & 0x3FFFu)) : ((hl & 0x3FFFu) + 1u);
+    const uint32_t rd = up ? (0x4000u - (de & 0x3FFFu)) : ((de & 0x3FFFu) + 1u);
+    if (n > rs) n = rs;
+    if (n > rd) n = rd;
+    if (n < 2) return;
+    const uint8_t* sp = sbase + (hl & 0x3FFFu);
+    uint8_t* dp = dbase + (de & 0x3FFFu);
+    if (up) {
+        if (dp + n <= sp || sp + n <= dp) memcpy(dp, sp, n);
+        else for (uint32_t i = 0; i < n; i++) dp[i] = sp[i];           // ascending, like the hardware
+    } else {
+        const uint8_t* s0 = sp - (n - 1); uint8_t* d0 = dp - (n - 1);
+        if (d0 + n <= s0 || s0 + n <= d0) memcpy(d0, s0, n);
+        else for (uint32_t i = 0; i < n; i++) dp[-(int)i] = sp[-(int)i]; // descending
+    }
+    *mem_desc_t::bank_dirty[dpg] = true;
+    if (g_ts_fastmem) tsFastTick(21u * n);
+    else VIDEO::Draw(21u * n, false);
+    regR += (uint8_t)(2u * n);
+    REG_HL = up ? (uint16_t)(hl + n) : (uint16_t)(hl - n);
+    REG_DE = up ? (uint16_t)(de + n) : (uint16_t)(de - n);
+    REG_BC = (uint16_t)(REG_BC - n);
+    REG_WZ = REG_PC - 1;                            // the repeat path's WZ = PC + 1 after PC -= 2
 }
 
 void Z80::decodeOpcode00()
@@ -6566,6 +6639,7 @@ void Z80::decodeED(void) {
         }
         case 0xB0:
         { /* LDIR */
+            blockRepeat(true);
             ldi();
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;
@@ -6613,6 +6687,7 @@ void Z80::decodeED(void) {
         }
         case 0xB8:
         { /* LDDR */
+            blockRepeat(false);
             ldd();
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;

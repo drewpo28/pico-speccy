@@ -3206,6 +3206,7 @@ void ESPectrum::loop() {
     WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
 #endif
     RTC::flushNVRAM(); // persist CMOS NVRAM to SD when dirty (debounced)
+    MemESP::materializeOverlays(); // one pending ROM overlay page per frame into butter PSRAM
     Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
     Ports::serialMouseTick(); // arm the COM-mouse RST20H when movement queued
 

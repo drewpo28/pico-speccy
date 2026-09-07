@@ -346,6 +346,12 @@ public:
     // coexist. Empty registry => zero hot-path cost (default ROMs).
     static const uint8_t* overlayBase[8];
     static const uint8_t* overlayPtr[8];
+    // Flat 16 KB copy of base+overlay in butter PSRAM, or nullptr while the
+    // binary-search path (rom_overlay_byte) still serves this entry. Filled
+    // lazily by materializeOverlays() (ESPectrum::loop), cached per (base, ov)
+    // across re-registrations — GMX/ProfROM re-register on every bank switch.
+    static const uint8_t* overlayFlat[8];
+    static void materializeOverlays();
     static uint8_t        overlayCount;
     // ov == nullptr unregisters `base`. Call at ROM-bank assignment.
     static void registerOverlay(const uint8_t* base, const uint8_t* ov);
@@ -360,8 +366,11 @@ public:
     // (readbyte, fetchOpcode, the Z80 core's inline fetch) so overlays are consistent.
     static inline uint8_t romPeek(uint8_t page, uint8_t* p, uint16_t off) {
         if (__builtin_expect(overlayCount != 0, 0) && page == 0) {
-            const uint8_t* ov = overlayFor(p);
-            if (ov) return rom_overlay_byte(ov, p, off);
+            for (uint8_t i = 0; i < overlayCount; i++)
+                if (overlayBase[i] == p) {
+                    const uint8_t* f = overlayFlat[i];
+                    return f ? f[off] : rom_overlay_byte(overlayPtr[i], p, off);
+                }
         }
         // Accessor-mode bank (sync() deferred the 16KB load): serve per-byte.
         if (__builtin_expect(p == nullptr, 0)) return accessorRead(page, off);

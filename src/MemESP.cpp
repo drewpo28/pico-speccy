@@ -34,6 +34,8 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "MemESP.h"
+#include "Debug.h"
+#include "Buffer.h"
 #include "Plus3Paging.h"
 #include <stddef.h>
 #include <stdlib.h>
@@ -703,16 +705,35 @@ void MemESP::plus3Remap(uint8_t p1ffd) {
 
 const uint8_t* MemESP::overlayBase[8] = {0};
 const uint8_t* MemESP::overlayPtr[8]  = {0};
+const uint8_t* MemESP::overlayFlat[8] = {0};
+
+// Materialised (base, overlay) pages in butter PSRAM — see overlayFlat. 8 slots
+// of 16 KB; a slot is reused LRU when no registry entry points at it. Nothing
+// is ever freed: the pool is not a heap, and the working set is a few pages.
+namespace {
+struct FlatSlot { const uint8_t* base; const uint8_t* ov; uint8_t* flat; uint32_t stamp; };
+static FlatSlot s_flat[8];
+static uint32_t s_flat_stamp = 0;
+static bool     s_flat_off = false;     // no butter page could be had — stop trying
+
+static const uint8_t* flatLookup(const uint8_t* base, const uint8_t* ov) {
+    for (auto& f : s_flat)
+        if (f.flat && f.base == base && f.ov == ov) { f.stamp = ++s_flat_stamp; return f.flat; }
+    return nullptr;
+}
+} // namespace
 uint8_t        MemESP::overlayCount   = 0;
 
 void MemESP::registerOverlay(const uint8_t* base, const uint8_t* ov) {
     for (uint8_t i = 0; i < overlayCount; i++) {
         if (overlayBase[i] == base) {
             if (ov) {
-                overlayPtr[i] = ov;                       // update existing
+                overlayPtr[i]  = ov;                      // update existing
+                overlayFlat[i] = flatLookup(base, ov);    // cached page or pending
             } else {                                      // unregister: swap-remove
                 overlayBase[i] = overlayBase[overlayCount - 1];
                 overlayPtr[i]  = overlayPtr[overlayCount - 1];
+                overlayFlat[i] = overlayFlat[overlayCount - 1];
                 overlayCount--;
             }
             return;
@@ -721,8 +742,48 @@ void MemESP::registerOverlay(const uint8_t* base, const uint8_t* ov) {
     if (ov && overlayCount < 8) {
         overlayBase[overlayCount] = base;
         overlayPtr[overlayCount]  = ov;
+        overlayFlat[overlayCount] = flatLookup(base, ov);
         overlayCount++;
     }
+}
+
+// Per frame from ESPectrum::loop: give one pending registry entry its flat page.
+// Butter PSRAM only — a 16 KB heap block here would be the framebuffer's margin;
+// boards without the butter pool keep the binary-search path for good.
+void MemESP::materializeOverlays() {
+    if (s_flat_off || overlayCount == 0) return;
+    int pending = -1;
+    for (uint8_t i = 0; i < overlayCount; i++) if (!overlayFlat[i]) { pending = i; break; }
+    if (pending < 0) return;
+    if (!Buffer::butterPoolReady()) return;
+    const uint8_t* base = overlayBase[pending];
+    const uint8_t* ov   = overlayPtr[pending];
+    // A slot: free, else the LRU one that no registry entry is using right now.
+    FlatSlot* slot = nullptr;
+    for (auto& f : s_flat) if (!f.flat) { slot = &f; break; }
+    if (!slot) {
+        for (auto& f : s_flat) {
+            bool inUse = false;
+            for (uint8_t i = 0; i < overlayCount; i++) if (overlayFlat[i] == f.flat) inUse = true;
+            if (!inUse && (!slot || f.stamp < slot->stamp)) slot = &f;
+        }
+        if (!slot) return;                                // all eight referenced — leave it
+    }
+    if (!slot->flat) {
+        void* p = Buffer::palloc(MEM_PG_SZ, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!p) { s_flat_off = true; return; }
+        if ((uintptr_t)p < 0x11000000u || (uintptr_t)p >= 0x20000000u) {   // not butter: give it back, never again
+            Buffer::pfree(p);
+            s_flat_off = true;
+            Debug::log("[ROM] overlay pages: no butter PSRAM, keeping the run-list path");
+            return;
+        }
+        slot->flat = (uint8_t*)p;
+    }
+    rom_overlay_flatten(ov, base, slot->flat);
+    slot->base = base; slot->ov = ov; slot->stamp = ++s_flat_stamp;
+    overlayFlat[pending] = slot->flat;
+    Debug::log("[ROM] overlay materialised: base=%p ov=%p -> %p", base, ov, slot->flat);
 }
 
 uint8_t* MemESP::page0_lo = nullptr;
