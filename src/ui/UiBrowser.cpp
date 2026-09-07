@@ -1179,7 +1179,30 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
             case fabgl::VK_F8: case fabgl::VK_DELETE:
                 if (allowF8 && total > 0) { ret = sel; rkey = OSD::FDK_F8; goto out; }
                 continue;
-            default: continue;
+            default:
+                // First-letter jump, the F5 browser's rule: a letter/digit moves to
+                // the next row whose DISPLAY name (catalog names are UTF-8 →
+                // CP1251, so compare what is on screen) starts with it, cycling
+                // from the row after the cursor when the cursor already matches.
+                // ".." never matches. There is no search mode here, so every
+                // printable key is a jump.
+                if (k.ASCII >= 32 && k.ASCII < 127 && isalnum((uint8_t)k.ASCII) && total > 0) {
+                    const char want = (char)toupper((uint8_t)k.ASCII);
+                    auto firstOf = [&](int v) -> char {
+                        const string rec = fdIndexGet((size_t)v);
+                        if (isUpRec(rec)) return 0;
+                        const string d = disp(rec);
+                        return d.empty() ? 0 : (char)toupper((uint8_t)d[0]);
+                    };
+                    const int start = (firstOf(sel) == want) ? sel + 1 : 0;
+                    for (int i = 0; i < total; i++) {
+                        const int v = (start + i) % total;
+                        if (firstOf(v) == want) { ns = v; break; }
+                    }
+                    if (ns == sel) continue;          // no such letter: nothing to do
+                    break;
+                }
+                continue;
         }
         if (ns < 0) ns = 0;
         if (ns > total - 1) ns = total ? total - 1 : 0;
