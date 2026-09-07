@@ -77,6 +77,11 @@ public:
     // 0x20 = LED toggle. Reset/NMI are latched and consumed by the GS-Z80
     // loop on core1 (never mutate s_cpu from core0 while z80_run is in flight).
     static void    hostWriteCtrl(uint8_t data);
+    // The card is being USED: a host port access or a change of the mixed DAC
+    // output within the last GS_IDLE_US (the inverse of the idle throttle's
+    // test, minus its boot gate). core1's render_core gives the TS-Conf line
+    // renderer priority over pump() only while this is false.
+    static bool    hostActive();
     // NeoGS warm reset — exactly what the guest gets by writing GSCTR (#33)
     // bit 7: registers and the GS-Z80 restart from ROM, sample RAM survives.
     // Latched for core1 like every other GSCTR request, so it is safe to call

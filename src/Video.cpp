@@ -45,6 +45,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "TsFastMem.h"
 #include "Subsystem.h"
 #include "Buffer.h"
+#include "GS/GS.h"   // GS::enabled / hostActive — renderer placement policy (tsC1PlacementPoll)
 #include <hardware/sync.h>   // __dmb (core1 render queue)
 #include "Tape.h"
 #include "FileUtils.h"
@@ -510,6 +511,7 @@ static void tsTmbCapture(uint16_t* dst, uint32_t tm_line) {
 static TsRenderJob*      ts_c1_ring = nullptr;
 static volatile uint32_t ts_c1_w = 0, ts_c1_r = 0;     // producer / consumer indices (free-running)
 static bool              ts_c1_enabled = (TS_RENDER_CORE1 != 0);
+static bool              ts_c1_stuck = false;    // the 100 ms drain timeout fired once: queue off for the session
 volatile uint32_t ts_c1_us = 0;        // core1 time inside tsRenderExec (PERF)
 volatile uint32_t ts_c1_wait_us = 0;   // core0 time spent in tsRenderDrain (PERF)
 volatile uint32_t ts_c1_waits = 0;     // drains that actually waited (PERF)
@@ -522,6 +524,23 @@ volatile uint32_t ts_c1_wait_dma_us = 0;   // core0 time waiting for a queued DM
 bool VIDEO::tsRenderQueueOn() { return ts_c1_ring && ts_c1_enabled && ts_render_live; }
 volatile uint32_t ts_c1_jobs = 0;      // lines rendered on core1 (PERF)
 static inline bool tsC1Pending() { return ts_c1_r != ts_c1_w; }
+// core0 is inside one of the drain loops below. core1 reads it (ts_render_core1_prio,
+// main.cpp render_core) to run queued lines ahead of GS::pump: while core0 is
+// blocked on the renderer, every GS slice on core1 lands directly on the frame
+// time — hw 2026-09-07, demo 0x7e1 with a NeoGS booting: wait 7.1 → 13.3 ms,
+// realFPS 48.8 → 43.5, GS-Z80 at 8 MHz of the 190 its turbo-boot asked for.
+static volatile bool ts_c1_core0_waiting = false;
+// Spin body of every core0 wait. Deliberately does NOT pump the NeoGS SD
+// mailbox (tried 2026-09-07): a booting card's SD walk is bound by the GS-Z80's
+// own speed (~350M T of boot either way — 45 s at 8.2 MHz, 50 s at 6.5), while
+// a 512-byte SPI read inside this wait made core0 leave it up to ~250 µs late
+// per sector, +1.3 ms of `wait` a frame for the whole boot. The mailbox keeps
+// its ESPectrum::loop / frame-wait service points.
+static inline void tsC1Spin() {
+    ts_c1_core0_waiting = true;
+    tight_loop_contents();
+}
+static inline void tsC1SpinEnd() { ts_c1_core0_waiting = false; }
 
 // core0: wait until core1 has consumed job index `w1 - 1` (w1 = the ts_c1_w
 // value right after that job was posted). Bounded like tsRenderDrain.
@@ -530,8 +549,9 @@ static void tsC1WaitJob(uint32_t w1) {
     const uint64_t t0 = time_us_64();
     while ((int32_t)(ts_c1_r - w1) < 0) {
         if (time_us_64() - t0 > 100000) { VIDEO::tsRenderDrain(); break; }
-        tight_loop_contents();
+        tsC1Spin();
     }
+    tsC1SpinEnd();
     ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
     ts_c1_waits = ts_c1_waits + 1;
 }
@@ -546,13 +566,15 @@ void VIDEO::tsRenderDrain() {
         if (time_us_64() - t0 > 100000) {
             Debug::log("[TSC1] core1 render queue stuck (r=%u w=%u) - falling back to core0", (unsigned)ts_c1_r, (unsigned)ts_c1_w);
             ts_c1_enabled = false;
+            ts_c1_stuck = true;        // sticky: the placement policy must not re-enable it
             ts_c1_r = ts_c1_w;
             ts_c1_dma_done = ts_c1_dma_posted;
             TsConf::wrGateRecalc();
             break;
         }
-        tight_loop_contents();
+        tsC1Spin();
     }
+    tsC1SpinEnd();
     ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
     ts_c1_waits = ts_c1_waits + 1;
 }
@@ -566,8 +588,9 @@ void VIDEO::tsRenderDrainDma() {
     const uint64_t t0 = time_us_64();
     while (tsC1DmaPending()) {
         if (time_us_64() - t0 > 100000) { tsRenderDrain(); break; }   // stuck → the full drain's fallback
-        tight_loop_contents();
+        tsC1Spin();
     }
+    tsC1SpinEnd();
     ts_c1_wait_dma_us += (uint32_t)(time_us_64() - t0);
     ts_c1_waits = ts_c1_waits + 1;
 }
@@ -580,7 +603,7 @@ void VIDEO::tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, ui
     j.d.ctrl = ctrl; j.d.len = len; j.d.num = num;
     j.d.s[0] = (uint8_t)saddr; j.d.s[1] = (uint8_t)(saddr >> 8); j.d.s[2] = (uint8_t)(saddr >> 16);
     j.d.d[0] = (uint8_t)daddr; j.d.d[1] = (uint8_t)(daddr >> 8); j.d.d[2] = (uint8_t)(daddr >> 16);
-    while (ts_c1_w - ts_c1_r >= TS_C1_RING) tight_loop_contents();
+    { while (ts_c1_w - ts_c1_r >= TS_C1_RING) tsC1Spin(); tsC1SpinEnd(); }
     ts_c1_dma_posted = ts_c1_dma_posted + 1;        // before the publish; core1 bumps done after executing
     ts_c1_ring[ts_c1_w & (TS_C1_RING - 1)] = j;
     __dmb();
@@ -681,10 +704,41 @@ void VIDEO::tsRenderDrainOverlap(uint32_t addr, uint32_t len) {
     const uint64_t t0 = time_us_64();
     while (tsRenderOverlaps(addr, len)) {
         if (time_us_64() - t0 > 100000) { tsRenderDrain(); break; }
-        tight_loop_contents();
+        tsC1Spin();
     }
+    tsC1SpinEnd();
     ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
     ts_c1_waits = ts_c1_waits + 1;
+}
+
+// Adaptive placement of the whole-line renderer (hw 2026-09-07, Lode Runner, TS-Conf
+// .spg with NeoGS module music): a GS whose firmware is mixing a module takes
+// ~ALL of core1 at 20 MHz — `p04` ≈ one status poll per INT, i.e. the fw never
+// leaves its mixer, ~25 core1 cycles per GS T-state — and this title's TSU compose
+// wants ~46% of core1 as well. Shared 50/50 through the render_core loop the GS
+// ran at 10.3 of 20 MHz and the music at half tempo (int=19.5k/37.5k, one dt
+// clamp per frame) while core0 idled 7.5 ms a frame; in the menu (no lines
+// posted) it played at tempo. Lowering the GS clock is no way out either: the fw
+// needs the whole INT period for that module. So while the card is ACTIVE
+// (GS::hostActive) the lines render synchronously on core0 — the TS_RENDER_CORE1=0
+// code path — and the queue takes them back once the card has been quiet for
+// TS_C1_GS_QUIET_FRAMES. Evaluated at EndFrame: a switch drains the queue first,
+// so it must not flap on a title with intermittent GS effects (instant leave,
+// slow return). Cost of the core0 placement: ~7 ms of core0 a frame here.
+#define TS_C1_GS_QUIET_FRAMES 250            // ~5 s at 48.8 fps
+static uint32_t ts_c1_gs_quiet = TS_C1_GS_QUIET_FRAMES;   // frames GS::hostActive() has been false (starts "quiet")
+static void tsC1PlacementPoll() {
+    if (!ts_c1_ring || ts_c1_stuck) return;
+    const bool gs = GS::enabled && GS::hostActive();
+    if (gs) ts_c1_gs_quiet = 0;
+    else if (ts_c1_gs_quiet < TS_C1_GS_QUIET_FRAMES) ts_c1_gs_quiet++;
+    const bool want = ts_c1_gs_quiet >= TS_C1_GS_QUIET_FRAMES;
+    if (want == ts_c1_enabled) return;
+    VIDEO::tsRenderDrain();               // nothing may be pending when the producer changes lanes
+    ts_c1_enabled = want;
+    TsConf::wrGateRecalc();
+    Debug::log("[TSC1] whole-line renderer -> %s (GS %s)", want ? "core1 queue" : "core0 sync",
+               want ? "quiet" : "active: the card needs core1");
 }
 
 // core1 (render_core loop): execute queued lines, a few per call so pcm_call /
@@ -714,6 +768,13 @@ void VIDEO::tsRenderCore1Pump() {
     ts_c1_us += (uint32_t)(time_us_64() - t0);
 }
 extern "C" void ts_render_core1_pump() { VIDEO::tsRenderCore1Pump(); }
+// core1 (render_core): queued lines pre-empt GS::pump while core0 is blocked on
+// them or the backlog is deep (a HALT fast-forward posts a frame in microseconds).
+// The GS then runs on core1's slack only — for a TS title that is BOTH saturating
+// the renderer and playing GS music the music will run slow; video wins.
+extern "C" bool ts_render_core1_prio() {
+    return ts_c1_ring && (ts_c1_core0_waiting || (ts_c1_w - ts_c1_r) > 32);
+}
 
 // ESPectrum::reset teardown for TS-Conf's pair-slot TEXT mode — same reason as
 // gmxForceOff right below: TsConf::reset clears VConfig, so the deferred
@@ -4294,7 +4355,7 @@ void VIDEO::tsVideoApplyPending() {
             ts_tmb = (uint16_t*)blk;
             ts_tmb_pre = (uint16_t*)(blk + (size_t)TS_C1_RING * TS_TMB_WORDS * 2);
         }
-        Debug::log("[TSU] tile-map prefetch ring %s (%u B)", blk ? "ON" : "unavailable (no RAM) - reading the map at render time", (unsigned)bytes);
+        Debug::log("[TSU] tile-map prefetch ring %s (%u B @%08lX)", blk ? "ON" : "unavailable (no RAM) - reading the map at render time", (unsigned)bytes, (unsigned long)(uintptr_t)blk);
     }
     if (wantRender && ts_c1_enabled && !ts_c1_ring) {
         const size_t bytes = sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU + 512 * TS_C1_SFILE;
@@ -4309,9 +4370,12 @@ void VIDEO::tsVideoApplyPending() {
         }
         ts_c1_r = ts_c1_w = 0;
         TsConf::wrGateRecalc();
-        Debug::log("[TSC1] core1 line renderer %s (%u-job ring + %u TSU states + %u SFILE slots, %u B)",
+        // The address names the tier: 0x2000xxxx = SRAM heap, 0x11xxxxxx = butter
+        // PSRAM (HOT_SRAM falls through to it on a thin heap — core1 then reads
+        // every job/TSU state/SFILE snapshot through XIP).
+        Debug::log("[TSC1] core1 line renderer %s (%u-job ring + %u TSU states + %u SFILE slots, %u B @%08lX)",
                    ts_c1_ring ? "ON" : "unavailable (no RAM)", (unsigned)TS_C1_RING, (unsigned)TS_C1_TSU,
-                   (unsigned)TS_C1_SFILE, (unsigned)bytes);
+                   (unsigned)TS_C1_SFILE, (unsigned)bytes, (unsigned long)(uintptr_t)blk);
     }
     if (wantPal256) { tsPalette256Flush(!ts_pal256_live); tsCramDirty = false; }
     ts_pal256_live = wantPal256;
@@ -4560,7 +4624,7 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         }
         // Full ring (a HALT fast-forward posts a whole frame in microseconds):
         // wait for a slot — core0 would be idle for exactly that render anyway.
-        while (ts_c1_w - ts_c1_r >= TS_C1_RING) tight_loop_contents();
+        { while (ts_c1_w - ts_c1_r >= TS_C1_RING) tsC1Spin(); tsC1SpinEnd(); }
         ts_c1_ring[ts_c1_w & (TS_C1_RING - 1)] = j;
         __dmb();
         ts_c1_w = ts_c1_w + 1;
@@ -5384,6 +5448,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
     wasMaxSpeed = ESPectrum::maxSpeed;
     ts_fast_armed = false;
     ts_line_t = 0xFFFFFFFFu;
+    if (ts_render_live) tsC1PlacementPoll();   // GS active → render on core0, see the function
     if (skipFrame) {
         // Skip rendering: 1/1024 frames during tape loading, 1/256 otherwise
         Draw = VIDEO::snow_toggle ? &Blank_Snow : &Blank;

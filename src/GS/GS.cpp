@@ -312,6 +312,27 @@ static volatile uint32_t s_run_state = GS_RUN_IDLE;
 static uint32_t s_pump_last_us = 0;
 static int32_t  s_pump_credit_t = 0;
 static uint32_t s_pump_frac_t = 0;
+// Idle throttle. An "unused" card is not idle on real hardware or here: fw 1.11
+// runs its 37.5 kHz INT mixer plus the dispatcher poll loop at full clock, and
+// emulating that costs most of core1 (~25 cycles per GS T-state) — which the
+// TS-Conf line renderer on the same core then has to fight for (hw 2026-09-07:
+// TS-Conf + NeoGS enabled but unused → FPS/IDL sag). When nothing can observe
+// the card's pace — host silent on #B3/#BB/#33 for GS_IDLE_US AND the mixed DAC
+// output flat for GS_IDLE_US (the card's only two outputs; it has no clock of
+// its own) — pump() advances GS time at 1/2^GS_IDLE_SHIFT of wall clock. The
+// first host access ends it on the next pump() call (microseconds), long before
+// the card would have answered a command anyway. Boot is excluded (turbo-boot
+// gate is s_gs_main_loop, same as here); a player polling status keeps the card
+// at full speed by definition.
+static constexpr uint32_t GS_IDLE_US    = 500000;   // both silences required, wall time
+static constexpr unsigned GS_IDLE_SHIFT = 3;        // 1/8 wall clock while idle
+static volatile uint32_t s_host_last_us  = 0;       // core0: last host port access
+static volatile uint32_t s_out_change_us = 0;       // core0 audio IRQ: last change of the mixed output
+static volatile bool     s_idle_throttled = false;  // core1: pump running at reduced rate
+static volatile uint32_t s_idle_entries = 0;        // diagnostics: throttle episodes
+static constexpr uint32_t GS_IDLE_BACKOFF_US = 100; // throttled: sleep between empty pump() calls
+static uint32_t          s_idle_next_us = 0;        // core1: next pump() entry while throttled
+static inline void gs_host_touch() { s_host_last_us = time_us_32(); }
 // s_gs_booted: set on first GS OUT(03) (end of RAM test).
 // s_gs_main_loop: set on second GS OUT(03) (end of C000 init — command
 // dispatch table ready). Also set if GS polls port 4 from main loop PCs.
@@ -386,6 +407,7 @@ static volatile uint32_t s_perf_pc_miss = 0;
 // busy GS-Z80 is and where its time goes; cross-correlated with core0's
 // per-frame IDL minimum to spot stalls.
 static volatile uint32_t s_perf_pump_calls = 0;     // total pump() entries
+static volatile uint32_t s_perf_idle_calls = 0;     // pump() entries taken at the idle rate
 static volatile uint32_t s_perf_pump_skip  = 0;     // pump() returned early (ring full)
 static volatile uint32_t s_perf_dt_max     = 0;     // longest gap between pump() calls (µs)
 static volatile uint32_t s_perf_dt_clamps  = 0;     // gaps > 1 ms (GS time silently dropped)
@@ -2207,6 +2229,16 @@ void __not_in_flash_func(GS::topUpBudget)(int tstates) {
 }
 
 void GS::pollPerf() {
+    // Idle-throttle transitions, logged from core0 (pump() lives on core1).
+    {
+        static bool s_idle_logged = false;
+        const bool t = s_idle_throttled;
+        if (t != s_idle_logged) {
+            s_idle_logged = t;
+            Debug::log("GS: idle throttle %s (episode %lu)", t ? "ON — card unobserved, GS-Z80 at 1/8 wall clock" : "off",
+                       (unsigned long)s_idle_entries);
+        }
+    }
 #if NGS_TRACE
     // NeoGS 1 Hz health line: where the GS-Z80 is executing (fw ROM idle
     // ~0x0xxx vs uploaded code high), mapping state, host handshake status
@@ -2323,6 +2355,7 @@ void GS::pollPerf() {
 
     // Snapshot + reset core1 counters
     uint32_t pc_calls = s_perf_pump_calls;
+    uint32_t pc_idle  = s_perf_idle_calls;
     uint32_t pc_skip  = s_perf_pump_skip;
     uint32_t tst      = s_perf_tstates;
     uint32_t p04t     = s_perf_p04_total;
@@ -2331,6 +2364,7 @@ void GS::pollPerf() {
     uint32_t clamps   = s_perf_dt_clamps;
     int32_t  credmax  = s_perf_credit_max;
     s_perf_pump_calls = 0;
+    s_perf_idle_calls = 0;
     s_perf_pump_skip  = 0;
     s_perf_tstates    = 0;
     s_perf_p04_total  = 0;
@@ -2403,7 +2437,7 @@ void GS::pollPerf() {
         // between pump() calls, clamp = gaps >1 ms (that GS time is DROPPED),
         // cred = deepest T-state backlog. The jitter is the distortion suspect:
         // average GS MHz can sit on target while the DAC updates arrive in bursts.
-        Debug::log("PERF[%u/%uMHz]: fr=%u IDL_min=%d neg=%u | GS:%u.%uMhz dtmax=%u clamp=%u cred=%d pump=%u/%u p04=%u(spin=%u) pc_miss=%u/%u(%u%%) fifo=%u | host: B3=%uw/%ur BB=%uw/%ur spin=%uus",
+        Debug::log("PERF[%u/%uMHz]: fr=%u IDL_min=%d neg=%u | GS:%u.%uMhz dtmax=%u clamp=%u cred=%d pump=%u/%u p04=%u(spin=%u) pc_miss=%u/%u(%u%%) fifo=%u idle=%u%% | host: B3=%uw/%ur BB=%uw/%ur spin=%uus",
                (unsigned)(clock_get_hz(clk_sys) / 1000000u),
                (unsigned)(GS_CLOCK_HZ / 1000000u),
                (unsigned)fr,
@@ -2421,6 +2455,7 @@ void GS::pollPerf() {
                (unsigned)(pc_h + pc_m),
                (unsigned)pc_miss_pct,
                (unsigned)fifo_used,
+               (unsigned)(pc_calls ? pc_idle * 100u / pc_calls : 0u),
                (unsigned)b3w,
                (unsigned)b3r,
                (unsigned)bbw,
@@ -2465,6 +2500,14 @@ void __not_in_flash_func(GS::pump)() {
     GS_DBG_PUMP(gs_dbg_pump_entries++);
     if (s_ngs_boot_hold) {
         s_pump_last_us = time_us_32();       // no giant dt on release
+        GS_DBG_PUMP(gs_dbg_pump_exits++);
+        return;
+    }
+    // Idle-throttled: the core1 loop calls pump() ~1M/s and every call paid the
+    // lock + pacing arithmetic for 1/8 of the credit (hw 2026-09-07: 863k
+    // calls/s at idle=26%). Back off GS_IDLE_BACKOFF_US after an empty call —
+    // far under the 1 ms dt clamp, so no GS time is dropped.
+    if (s_idle_throttled && (int32_t)(time_us_32() - s_idle_next_us) < 0) {
         GS_DBG_PUMP(gs_dbg_pump_exits++);
         return;
     }
@@ -2522,6 +2565,20 @@ void __not_in_flash_func(GS::pump)() {
         // 8x the rate needs 8x the headroom before dt_us * q16 overflows 32
         // bits; 250 µs still buys the boot 2 ms of GS time per call.
         dt_cap = 250;
+    } else {
+        // Idle throttle (see GS_IDLE_US): card unobserved → 1/8 wall clock.
+        const bool idle = s_gs_main_loop
+                       && (uint32_t)(now - s_host_last_us)  > GS_IDLE_US
+                       && (uint32_t)(now - s_out_change_us) > GS_IDLE_US;
+        if (idle != s_idle_throttled) {
+            s_idle_throttled = idle;
+            if (idle) s_idle_entries++;
+        }
+        if (idle) {
+            q16 >>= GS_IDLE_SHIFT;
+            cap >>= GS_IDLE_SHIFT;
+            GS_PERF(s_perf_idle_calls++);
+        }
     }
     if (dt_us > dt_cap) {
         GS_PERF(s_perf_dt_clamps++);
@@ -2545,6 +2602,7 @@ void __not_in_flash_func(GS::pump)() {
 
     constexpr int GS_PUMP_MIN_TSTATES = 128;
     if (s_pump_credit_t < GS_PUMP_MIN_TSTATES) {
+        if (s_idle_throttled) s_idle_next_us = now + GS_IDLE_BACKOFF_US;
         gs_end_pump();
         return;
     }
@@ -2771,6 +2829,7 @@ extern "C" void gs_host_clock(uint32_t* tstates, uint32_t* states_in_frame,
 
 uint8_t GS::hostReadB3() {
     GS_PERF(s_perf_h_b3r++);
+    gs_host_touch();
     s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_host_sd_service();
     uint8_t v;
@@ -2856,6 +2915,7 @@ uint8_t GS::hostReadBB() {
     }
 #endif
     GS_PERF(s_perf_h_bbr++);
+    gs_host_touch();
     gs_host_sd_service();
     // Stale-COMMAND flush — the twin of the rot flush below, on the D0 side,
     // and gated on the same card-side liveness signal for the same reason.
@@ -3052,6 +3112,7 @@ static uint32_t s_b3_drain_us = 0;
 
 void GS::hostWriteB3(uint8_t data) {
     GS_PERF(s_perf_h_b3w++);
+    gs_host_touch();
     s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_trace_host(TR_B3w, data, reg_status);
     // NeoGS co-scheduling: while the card is ACTIVELY draining, wait for the
@@ -3143,6 +3204,7 @@ void GS::hostWriteB3(uint8_t data) {
 
 void GS::hostWriteBB(uint8_t data) {
     GS_PERF(s_perf_h_bbw++);
+    gs_host_touch();
     s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_trace_host(TR_BBw, data, reg_status);
 #ifdef GS_DEBUG_TRACE
@@ -3289,8 +3351,16 @@ void GS::ngsReset() {
     s_ngs_grst_pending = true;   // consumed by step() on core1, like C_GRST
 }
 
+bool GS::hostActive() {
+    if (!enabled) return false;
+    const uint32_t now = time_us_32();
+    return (uint32_t)(now - s_host_last_us)  <= GS_IDLE_US
+        || (uint32_t)(now - s_out_change_us) <= GS_IDLE_US;
+}
+
 void GS::hostWriteCtrl(uint8_t data) {
     if (!enabled || !neogs) return;
+    gs_host_touch();
     gs_hs('N', data, reg_status);
     gs_host_sd_service();
     if (data & 0x80) s_ngs_grst_pending = true;   // C_GRST — warm reset
@@ -3361,7 +3431,9 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
     // Proportional only: the residual error is what parks the ring just below
     // the target, which is exactly where we want it. Averaged over a 256-call
     // (~8 ms) window because avail jitters by ±2 entries call to call.
-    if (w != 0) {
+    // Frozen while idle-throttled: the producer is deliberately starving the
+    // ring then, and adapting to that would resume playback 3% slow.
+    if (w != 0 && !s_idle_throttled) {
         s_depth_acc += avail;
         if (++s_depth_cnt >= GS_DEPTH_WINDOW) {
             int32_t mean = (int32_t)(s_depth_acc / GS_DEPTH_WINDOW);
@@ -3381,7 +3453,7 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
         // Producer starvation: the same sample is emitted again. Counted
         // separately from `part` below because a full repeat is the audible
         // one (zipper/crackle), while a short drain only shifts the average.
-        GS_PERF(s_perf_ring_und++);
+        GS_PERF(if (!s_idle_throttled) s_perf_ring_und++);   // expected while throttled
         uint32_t last = (w - 1) & GS_RING_MASK;
         L = gs_to_u8(s_ring_L[last]);
         R = gs_to_u8(s_ring_R[last]);
@@ -3414,6 +3486,7 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
     static uint8_t s_led_prevL = 0, s_led_prevR = 0;
     if (L != s_led_prevL || R != s_led_prevR) {
         s_led_prevL = L; s_led_prevR = R;
+        s_out_change_us = time_us_32();     // idle-throttle input (see GS_IDLE_US)
         LED::touchR(LED::GS);
     }
 }
