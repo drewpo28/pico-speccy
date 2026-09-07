@@ -3,11 +3,13 @@
   "source": "tslabs/zx-evo pentevo/rom/bin/ts-bios.rom",
   "sym": "gb_rom_tsbios",
   "len": 65536,
-  "md5": "9a0a7f6c10ffa0a556748c4b40088554",
+  "md5": "284bb246f180b3872e8ac692cb75c6aa",
   "pages": [
     "Service",
     "TR-DOS",
     "128 BASIC",
     "48 BASIC"
-  ]
+  ],
+  "stock_md5": "9a0a7f6c10ffa0a556748c4b40088554",
+  "patch": "ROM offset 0x1183: 'F12 - exit' -> 'F11 - exit' (Setup footer; F11 is this emulator's machine reset)"
 }
