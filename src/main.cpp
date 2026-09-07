@@ -1037,6 +1037,7 @@ void repeat_me_for_input() {
 }
 
 extern "C" void ts_render_core1_pump(void);
+extern "C" bool ts_render_core1_prio(void);   // render queue pre-empts GS::pump (Video.cpp)
 #ifdef VGA_HDMI
 extern "C" void hdmi_poll_reinit(void);
 extern "C" void vga_reinit(void);
@@ -1072,13 +1073,22 @@ void __scratch_x("render") render_core() {
         refresh_lcd();
 #endif
         pcm_call();
+        ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
 #ifndef SOFTTV
         // Wall-clock-locked: runs GS-Z80 at exactly 12 MHz off core0.
         // Under SOFTTV, GS::pump() runs in pcm_call_inner (core0) instead,
         // because video_timer_callbackTV at 30 kHz would starve it here.
-        GS::pump();
+        // Skipped while core0 is blocked on the TS render queue — but ONLY for a
+        // card nobody is using (booting, or enabled and idle): those lines are
+        // the frame's critical path and the GS runs on the slack (hw 2026-09-07:
+        // a booting NeoGS cost 5 FPS on demo 0x7e1 otherwise). A card that is
+        // playing keeps the plain alternation: Lode Runner (TS-Conf, GS music,
+        // HALT-synced so a whole frame of lines is queued at once) had pump()
+        // skipped ~12 ms per frame under the unconditional rule, one dt clamp
+        // per frame, GS at 9.6 of 20 MHz — music at half tempo — while core0
+        // idled 7.5 ms (hw 2026-09-07).
+        if (!ts_render_core1_prio() || GS::hostActive()) GS::pump();
 #endif
-        ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
         tight_loop_contents();
     }
     __unreachable();

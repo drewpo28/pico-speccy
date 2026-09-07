@@ -2867,6 +2867,109 @@ After this there are 162 bytes of alignment fill left in `.bss`+`.data` combined
 — nothing more to reclaim there. SCRATCH_Y is now full; SCRATCH_X has ~760 B.
 NOT hw-tested.
 
+## TS-Conf SRAM audit + GS idle throttle + core1 sharing (2026-09-07, hw-confirmed)
+
+Map diff DVp2 1.0.2 (2026-09-03, pre-TS-Conf) → HEAD: static SRAM +34.4 KB, of
+which Z80 core in SRAM 24.3 KB (all boards, all machines), Video +5.4, CPU +1.8,
+TsConf +1.1, Ports +0.9 (TS hooks inside the RAM-resident input/output), stubs
++0.3. TS-Conf-specific without the core ≈ 10 KB; ~4.6 KB of it was `.bss` paid
+by EVERY board in EVERY session. Two changes:
+
+- **TS scratch block — TRIED AND REVERTED the same day (hw: FPS dropped, GS off).**
+  `s_gline`/`s_tsline`/`s_nibmap`, `ts256_map`/`ts256_slot_col`/`ts256_pool`,
+  `ts_c1_tsu_job`/`ts_c1_sf_job` (3272 B) went into one HOT_SRAM palloc made when a
+  whole-line mode first goes live, and `TsConf::cram`/`sfile` became a 1 KB palloc
+  on the first `TsConf::reset` (`.bss` 90616 → 86376). The owner measured LOWER FPS
+  with GS disabled and the change was backed out (`git checkout` of Video.cpp,
+  TsConf.cpp, TsConf.h; the GS throttle below stayed). Cause NOT established — no
+  log was captured. Two candidates for whoever retries: (1) HOT_SRAM's heap rule
+  (`HEAP_HOT_MARGIN` 8 KB against `getLargestAllocatable()`) can send the block to
+  BUTTER on a fragmented heap, and `ts256_map`/`s_gline` are read per PIXEL on
+  core1 — a PSRAM placement there is the XIP-thrash pattern; (2) the compose loops
+  in `tsRenderExec` stored through pointer locals instead of static arrays, and a
+  `uint8_t*` store aliases everything, so -O3 may have lost register-resident
+  values in the inner loops. A retry must (a) verify the returned address is SRAM
+  (0x2000xxxx) and fall back to plain heap, (b) mark the locals `__restrict`, and
+  (c) A/B the PERF `c1`/`tsRender` figures on Digger + TMNT before shipping.
+
+- **GS idle throttle** (`GS_IDLE_US`/`GS_IDLE_SHIFT`, GS.cpp): an unused card is
+  NOT idle — fw 1.11 runs the 37.5 kHz INT mixer + dispatcher poll at full clock,
+  ~25 cycles per GS T-state = most of core1, which the TS line renderer shares
+  (symptom: TS-Conf + NeoGS enabled but unused → FPS/IDL sag; plus the fw ROM is
+  fetched from flash through the XIP path core0's PSRAM traffic queues behind).
+  When the host has not touched #B3/#BB/#33 for 500 ms AND the mixed DAC output
+  (getLiveLR, the LED change detector) has been flat for 500 ms, `pump()` runs GS
+  time at 1/8 wall clock. Unobservable by construction: the card's only outputs
+  are those two, and it has no clock of its own. First host access restores full
+  rate on the next pump() call. Boot excluded (`s_gs_main_loop`, same gate as
+  turbo-boot); classic GS covered too (main loop detected at 0x0270/0x0281).
+  While throttled the drain-rate controller is FROZEN (else it adapts to the
+  starved ring and playback resumes 3% slow) and `und` is not counted. Log:
+  `GS: idle throttle ON/off` from core0 (pollPerf); PERF line gained `idle=%`.
+  Hw check owed: NPL/ZP4/TheLink (they poll → never throttled) + TMNT with NeoGS
+  on: `c1`/`wait`/IDL must recover to the GS-off figures.
+  **First hw log (demo 0x7e1, DVp2, 2026-09-07 17:25) — the throttle works but
+  engaged only after ~45 s, and that window IS the symptom** ("тормозит только
+  вначале, потом разгоняется"): no GS → c1 12.5 / wait 7.1 ms, 48.83 FPS; GS on,
+  first 45 s → GS-Z80 at 8.2 MHz (of the 190 turbo-boot asks), `clamp` 36-48/s,
+  wait 13.3 ms, 43.5 FPS; then `GS: RAM test found 63 pages` + `idle throttle ON`
+  → GS 2.9 MHz, wait 8.1, 48.86 FPS. The 45 s were the NeoGS **boot**: its SD
+  walk is serviced by core0's `NgsSd::service()` from the frame-pacing idle, and
+  a TS demo has none (core0 waits on core1 instead) — one mailbox round trip per
+  frame — while the GS-Z80 fought the renderer for core1 the whole time. The
+  ring block was in SRAM in both runs (`@20077C18`), so the tier theory was out.
+  Fixes, **hw-confirmed on the second log (same demo, 17:33)**: (1) **core1
+  render priority** — `render_core` runs `ts_render_core1_pump()` first and calls
+  `GS::pump()` only when `ts_render_core1_prio()` is false (core0 not inside a
+  drain loop, `ts_c1_core0_waiting`; backlog ≤ 32 lines). The GS runs on core1's
+  slack: 6.5 MHz during its boot instead of 8.2 MHz stolen from the renderer, and
+  realFPS stayed 48.8 from the first frame (one 45.78 dip), wait 8.4-8.7 vs 7.4
+  without GS, cpu 17.1 vs 15.6. **The priority applies only while the card is
+  UNUSED (`GS::hostActive()` false: no host port access and a flat DAC output for
+  500 ms — the throttle's own pair of tests without the boot gate).** The first
+  cut applied it unconditionally and Lode Runner (TS-Conf .spg, GS music, HALT-
+  synced so `haltAdvanceTo` queues a whole frame of lines at once) played its
+  menu music at half tempo: backlog > 32 for the ~12 ms core1 spent rendering,
+  `pump()` skipped that long → one 1 ms dt clamp per frame, GS 9.6 of 20 MHz —
+  while core0 idled 7.5 ms (hw log 17:52). **With the plain alternation restored
+  the music was STILL at half tempo (same log, later): GS 10.3 of 20 MHz,
+  `pump` 2600 calls/s = one 4000-T chunk per render_core iteration, the other
+  ~200 µs of each iteration being ≤8 render lines. That is core1's CAPACITY, not
+  a scheduling bug** — the fw is inside its mixer for the whole INT period
+  (`p04` ≈ 37k polls/s = one per INT), ~25 core1 cycles per GS T-state, so a
+  20 MHz GS playing a module alone wants ~100% of core1, and this title's TSU
+  compose another ~46% (in the menu, with no lines posted, the music runs at
+  tempo — owner's observation). Lowering the GS clock is no answer: the mixer
+  needs the whole period. **Placement policy (`tsC1PlacementPoll`, EndFrame) — hw-confirmed
+  2026-09-07 on Lode Runner: music at tempo AND no FPS drop (owner):** while
+  `GS::enabled && GS::hostActive()` the lines render synchronously on core0 (the
+  TS_RENDER_CORE1=0 path; core0 had 7.5 ms idle, a line costs ~30 µs there) and the
+  queue takes them back after 250 quiet frames (~5 s; a switch drains the queue,
+  so no flapping on intermittent effects). The stuck-queue fallback is sticky
+  (`ts_c1_stuck`). The only real lever beyond this is GS-core speed (redcode
+  with per-access callbacks, fw ROM fetched from flash through the shared XIP
+  path) — the owner's original point 2. (2) Throttled `pump()` backs
+  off 100 µs after an empty call (`GS_IDLE_BACKOFF_US`): 863k → 6.1k calls/s,
+  `idle=100%`, GS 1.8 MHz, wait 7.7 / cpu 16.0 with the card fully idle.
+  (3) Pumping `NgsSd::service()` from the drain spins was TRIED AND REMOVED: the
+  boot is bound by the GS-Z80's own speed (~350M T of boot: 45 s at 8.2 MHz, 50 s
+  at 6.5 — the fw's NEOGS.ROM search walks the card with ~1163 SPI exchanges per
+  sector), so it changed nothing, while a 512-byte SPI read inside the wait made
+  core0 leave it ~250 µs late per sector. So: with a heavy TS scene already
+  running, a NeoGS boots in ~50 s on slack; started from TS-BIOS/TR-DOS it boots
+  in seconds as before. The ~100 ms `IDL_min=-101145` spike seen once per GS
+  boot in BOTH logs predates all of this (an SD card stall during the fw's walk).
+
+Still on the list from the same audit (not done): `tsFast16/256` (892 B RAM
+code) run on core1 only now → candidate for flash under `!TS_RENDER_CORE1`,
+measure `c1`; the 10 KB core1 ring block → PREFER_PSRAM, measure `c1`; Z80 core
+cold functions (create/reset/doNMI/doNMIDOS/interrupt, ~0.9 KB) → flash. Non-TS
+statics worth a lazy palloc: `g_rawTrkDataBuf` 8 KB (wd1793, 20 sites),
+`Plus3Fdc::s_slot` 2.7 KB, `td0_enc_sec` 2 KB, `saveWifiConfig::buf` 1 KB,
+`osd_info_buf` 1.5 KB, Buffer pools `g_spi`/`g_swapAlloc` 780 B each on boards
+that have no SPI PSRAM / swap. GS-Z80 core efficiency (redcode + per-access
+callbacks) is the second lever and only matters for TS + a GS that is PLAYING.
+
 ## The framebuffer is claimed FIRST, and the MP3 decoder is lazy (2026-08-13)
 
 **hw-confirmed 2026-08-13 on z0p2** (ZERO2 + Pico 2, butter 8 MB): 720x576 + NeoGS +
