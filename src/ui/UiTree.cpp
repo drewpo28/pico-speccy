@@ -199,6 +199,7 @@ static bool p_hasPsram()  { return butter_psram_size() || psram_size() > 0; }
 // butter_psram_size()/psram_size() report 0 all session, and a p_hasPsram() row would
 // disappear as soon as it was used — with no way back short of a reflash.
 static bool p_psramChip() { return butter_psram_probed() || psram_probed_size() > 0; }
+static bool p_dbgUartPin() { return BoardPins::dbgUartTxPin() != BoardPins::PIN_OFF; }
 
 // Profi needs PSRAM for the DS80 hires framebuffer, and DS80 itself only exists in the
 // VGA/HDMI drivers (set_profi_ds80_mode is a stub on TFT/SOFTTV/TV), so on those builds
@@ -915,6 +916,9 @@ static const Node kDebug[] = {
     // it would run on the raster (per-T-state — multicolour effects included).
     NM_BOOL  (TXT_DBG_PAPER,  SET_PAPER,       nullptr),
     NM_RADIO (TXT_DBG_TEMPOFF, SET_TEMP_OFFSET, opt_tempOffset, nullptr),
+    // TX-only 115200 log on the board's DBG_UART_TX_PIN — Debug::log, fault_log and
+    // every printf. Reboot-class; the row exists only where the board defines the pin.
+    NM_BOOL  (TXT_DBG_UART,   SET_DBG_UART,    p_dbgUartPin),
 };
 
 // ── Reset ──────────────────────────────────────────────────────────────────────

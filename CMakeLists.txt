@@ -72,14 +72,11 @@ option(NEO8_TRAP "Wild-jump hunter: log PC history + frame snapshot when executi
 option(ZIFI_TRACE "Enable ZiFi (ESP-01S WiFi NIC) port/UART tracing" OFF)
 option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend); floods logs" OFF)
 
-# Per-board Debug-Probe UART toggles (logging over UART). Declared here together;
-# the board-specific `if(<board>_DBG_UART)` blocks below consume them (they call
-# pico_enable_stdio_uart() + remap pins, which needs the target to exist first).
-# Each enables stdio over the board's Debug-Probe header — see the block for pins.
-set(MURM1_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART0 on GP0/GP1 (MURM1) — moves KBD to GP16/GP17, disables NESPAD")
-set(PICO_PC_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART0 on DBG1 header GP0/GP1 (PICO_PC)")
-set(PICO_DV_DBG_UART OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (PICO_DV)")
-set(ZERO2_DBG_UART   OFF CACHE BOOL "Enable Debug Probe UART1 on GP20/GP21 (ZERO2)")
+# Debug UART console is a RUNTIME setting now (Debug > UART console, Config::dbg_uart),
+# not a build option: the per-board <BOARD>_DBG_UART toggles were removed 2026-09-06.
+# Each board block below defines DBG_UART_TX_PIN (TX-only — nothing ever reads the
+# console) and, where that pin belongs to the PS/2 port, DBG_UART_KBD_CLOCK_PIN = the
+# pair the keyboard moves to while the console is on. See Debug::uart* + BoardPins.
 
 # set(TFT ON)
 # set(TFT_INV ON)
@@ -357,6 +354,11 @@ endif()
 
 # create map/bin/hex file etc.
 pico_add_extra_outputs(${PROJECT_NAME})
+# No SDK stdio drivers: the Debug > UART console registers its OWN stdio_driver_t
+# (Debug.cpp) that feeds the non-blocking TX ring, and it must never bind to
+# PICO_DEFAULT_UART (GP0/1 in the pico2 board header = the ZiFi UART on PICO_DV).
+pico_enable_stdio_uart(${PROJECT_NAME} 0)
+pico_enable_stdio_usb(${PROJECT_NAME} 0)
 
 # add url via pico_set_program_url
 
@@ -521,7 +523,7 @@ else ()
 endif ()
 
 # HDMI audio 1 Hz health line + OPL3 per-frame cost meter. Their counters are
-# cheap, but each printed line costs UART time on DBG_UART builds — off unless
+# cheap, but each printed line costs UART time with the UART console on — off unless
 # hunting an audio regression.
 if (HDMI_AUDIO_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_AUDIO_TRACE=1)
@@ -664,6 +666,11 @@ IF(MURM2)
 
         LOAD_WAV_PIO=22
 
+        # Debug > UART console: TX-only on GP0 (UART0, a FREE pin here). Collides only
+        # with the ZiFi pair 0/1 (and with any other UART0 ZiFi pair) — the console
+        # yields to ZiFi in that case.
+        DBG_UART_TX_PIN=0
+
         CLK_AY_PIN1=21 # not in use
         LATCH_595_PIN=9
         CLK_595_PIN=10
@@ -721,24 +728,7 @@ IF(MURM2)
         PICO_DEFAULT_LED_PIN=25
     )
 ELSEIF(PICO_PC)
-    # Debug-Probe UART toggle PICO_PC_DBG_UART declared at top. Enables UART0 on the
-    # on-board DBG1 header (GP0=TX, GP1=RX) of Olimex RP2040-PICO-PC.
-    # DBG1 shares pins with KBD_CLOCK/KBD_DATA → keyboard is auto-remapped to FREE
-    # pins GP10/GP11 when DBG_UART is enabled.
-    if(PICO_PC_DBG_UART)
-        pico_enable_stdio_uart(${PROJECT_NAME} 1)
-        set(PICO_PC_KBD_CLOCK 10) # GP0 taken by UART TX → move KBD to FREE pin
-        set(PICO_PC_KBD_DATA 11)  # GP1 taken by UART RX → move KBD to FREE pin
-    else()
-        set(PICO_PC_KBD_CLOCK 0)
-        set(PICO_PC_KBD_DATA 1)
-    endif()
     target_compile_definitions(${PROJECT_NAME} PRIVATE
-        $<$<BOOL:${PICO_PC_DBG_UART}>:PICO_DEFAULT_UART=0>
-        $<$<BOOL:${PICO_PC_DBG_UART}>:PICO_DEFAULT_UART_TX_PIN=0>
-        $<$<BOOL:${PICO_PC_DBG_UART}>:PICO_DEFAULT_UART_RX_PIN=1>
-        $<$<BOOL:${PICO_PC_DBG_UART}>:DBG_UART_ENABLED=1>
-
         PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}
         CPU_MHZ=${CPU_MHZ}
 
@@ -752,9 +742,13 @@ ELSEIF(PICO_PC)
 
         # QWST1 3/4 - GP2/3
 
-        # DBG1 1/2  (GP0=UART0_TX, GP1=UART0_RX) — used by PICO_PC_DBG_UART
-        KBD_CLOCK_PIN=${PICO_PC_KBD_CLOCK}
-        KBD_DATA_PIN=${PICO_PC_KBD_DATA}
+        # DBG1 1/2  (GP0=UART0_TX, GP1=UART0_RX) — the on-board Debug header.
+        KBD_CLOCK_PIN=0
+        KBD_DATA_PIN=1
+        # Debug > UART console: TX on the DBG1 header (UART0). GP0 is the PS/2 clock,
+        # so the keyboard moves to the FREE pair GP10/GP11 while the console is on.
+        DBG_UART_TX_PIN=0
+        DBG_UART_KBD_CLOCK_PIN=10
 
         LOAD_WAV_PIO=5 # UXT1-10
 
@@ -805,26 +799,7 @@ ELSEIF(PICO_PC)
         PICO_DEFAULT_LED_PIN=25
     )
 ELSEIF(PICO_DV)
-    # Debug-Probe UART toggle PICO_DV_DBG_UART declared at top. Enables UART1 on GP20/GP21.
-    # Note: GP20 is also LOAD_WAV_PIO default — auto-remapped to GP3 when UART enabled.
-    if(PICO_DV_DBG_UART)
-        pico_enable_stdio_uart(${PROJECT_NAME} 1)
-        set(PICO_DV_LOAD_WAV_PIO 255)  # GP20 taken by UART → use FREE pin
-        set(MIDI_TX_PIN 255) # GP21 taken by UART → use FREE pin
-    else()
-        set(PICO_DV_LOAD_WAV_PIO 20)
-        set(MIDI_TX_PIN 21)
-    endif()
     target_compile_definitions(${PROJECT_NAME} PRIVATE
-        $<$<BOOL:${PICO_DV_DBG_UART}>:PICO_DEFAULT_UART=1>
-        $<$<BOOL:${PICO_DV_DBG_UART}>:PICO_DEFAULT_UART_TX_PIN=20>
-        $<$<BOOL:${PICO_DV_DBG_UART}>:PICO_DEFAULT_UART_RX_PIN=21>
-        # Console UART intentionally enabled. The board header (pico2.h) ALWAYS
-        # defines PICO_DEFAULT_UART=0 on GP0/GP1 — which is exactly the ZiFi UART
-        # on PICO_DV — so Debug::log/stdio must gate on this explicit flag, NOT on
-        # PICO_DEFAULT_UART, or logs corrupt the ESP AT stream and FTP won't start.
-        $<$<BOOL:${PICO_DV_DBG_UART}>:DBG_UART_ENABLED=1>
-
         PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}
         CPU_MHZ=${CPU_MHZ}
 
@@ -834,7 +809,12 @@ ELSEIF(PICO_DV)
         KBD_CLOCK_PIN=14
         KBD_DATA_PIN=15
 
-        LOAD_WAV_PIO=${PICO_DV_LOAD_WAV_PIO}
+        LOAD_WAV_PIO=20
+        # Debug > UART console: TX-only on GP20 (UART1). The board header (pico2.h)
+        # ALWAYS defines PICO_DEFAULT_UART=0 on GP0/GP1 — which is the ZiFi UART on
+        # PICO_DV — so the console must never use uart_default/stdio_init_all.
+        # GP20 is also the WAV loader input, which yields at boot while the console is on.
+        DBG_UART_TX_PIN=20
 
         CLK_AY_PIN1=21 # not in use
         LATCH_595_PIN=26
@@ -849,7 +829,7 @@ ELSEIF(PICO_DV)
         PWM_PIN0=26 # R
         PWM_PIN1=27 # L
         BEEPER_PIN=28 # not implemented
-        MIDI_TX_PIN=${MIDI_TX_PIN}
+        MIDI_TX_PIN=21
 
         # SDCARD
         SDCARD_SPI_BUS=spi1
@@ -886,19 +866,15 @@ ELSEIF(PICO_DV)
         PICO_DEFAULT_LED_PIN=25
 )
 ELSEIF(ZERO2)
-    # Debug-Probe UART toggle ZERO2_DBG_UART declared at top (UART1 on GP20/GP21).
-    if(ZERO2_DBG_UART)
-        pico_enable_stdio_uart(${PROJECT_NAME} 1)
-    endif()
     target_compile_definitions(${PROJECT_NAME} PRIVATE
-        $<$<BOOL:${ZERO2_DBG_UART}>:PICO_DEFAULT_UART=1>
-        $<$<BOOL:${ZERO2_DBG_UART}>:PICO_DEFAULT_UART_TX_PIN=20>
-        $<$<BOOL:${ZERO2_DBG_UART}>:PICO_DEFAULT_UART_RX_PIN=21>
-        $<$<BOOL:${ZERO2_DBG_UART}>:DBG_UART_ENABLED=1>
-
         PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}
         CPU_MHZ=${CPU_MHZ}
         ZERO2=1
+
+        # Debug > UART console: TX-only on GP0 (UART0, a FREE pin here). NOT GP20/21
+        # as the old ZERO2_DBG_UART option had it: GP21 is PCM5122_I2S_DATA and UART1
+        # is the instance of the default ZiFi pair (24/25) — both collided.
+        DBG_UART_TX_PIN=0
 
         # PS/2 keyboard. GP2/3 is the default pair and is shared with the PCM5122
         # DAC board's control I2C — when that board is detected at boot (or picked
@@ -967,27 +943,17 @@ ELSEIF(ZERO2)
         DEFAULT_THROTTLING=0
     )
 ELSE()
-    # Debug-Probe UART toggle MURM1_DBG_UART declared at top (UART0 on GP0/GP1;
-    # moves KBD to GP16/GP17, disables NESPAD).
-    if(MURM1_DBG_UART)
-        pico_enable_stdio_uart(${PROJECT_NAME} 1)
-        set(MURM1_KBD_CLOCK_PIN 16)
-        set(MURM1_KBD_DATA_PIN  17)
-    else()
-        set(MURM1_KBD_CLOCK_PIN 0)
-        set(MURM1_KBD_DATA_PIN  1)
-    endif()
     target_compile_definitions(${PROJECT_NAME} PRIVATE
-        $<$<BOOL:${MURM1_DBG_UART}>:PICO_DEFAULT_UART=0>
-        $<$<BOOL:${MURM1_DBG_UART}>:PICO_DEFAULT_UART_TX_PIN=0>
-        $<$<BOOL:${MURM1_DBG_UART}>:PICO_DEFAULT_UART_RX_PIN=1>
-        $<$<BOOL:${MURM1_DBG_UART}>:DBG_UART_ENABLED=1>
-
         PORT_VERSION="${PORT_VERSION}" PORT_VERSION_LEN=${PORT_VERSION_LEN}
         CPU_MHZ=${CPU_MHZ}
 
-        KBD_CLOCK_PIN=${MURM1_KBD_CLOCK_PIN}
-        KBD_DATA_PIN=${MURM1_KBD_DATA_PIN}
+        KBD_CLOCK_PIN=0
+        KBD_DATA_PIN=1
+        # Debug > UART console: TX-only on GP0 (UART0, the J6 Debug header). GP0 is the
+        # PS/2 clock, so the keyboard moves to GP16/GP17 while the console is on — which
+        # is NES_GPIO_DATA, so the NESPAD yields at boot (see nespad_begin in main.cpp).
+        DBG_UART_TX_PIN=0
+        DBG_UART_KBD_CLOCK_PIN=16
 
         LOAD_WAV_PIO=22
 
@@ -1033,8 +999,9 @@ ELSE()
         PSRAM_PIN_MOSI=20
         PSRAM_PIN_MISO=21
 
-        # NES Gamepad — disabled when MURM1_DBG_UART=ON (KBD moves to GP16/GP17, conflicts with NES_GPIO_DATA=16)
-        $<$<NOT:$<BOOL:${MURM1_DBG_UART}>>:USE_NESPAD>
+        # NES Gamepad — yields at RUNTIME while the UART console is on (KBD moves to
+        # GP16/GP17, which is NES_GPIO_DATA); see the nespad_begin() guard in main.cpp.
+        USE_NESPAD
         NES_GPIO_CLK=14
         NES_GPIO_DATA=16
         NES_GPIO_LAT=15

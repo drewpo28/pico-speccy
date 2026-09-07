@@ -284,6 +284,8 @@
 // (per-T-state, like top/bottom border) — shows border effects "under" the paper.
 #define TXT_DBG_PAPER       "Paper"
 #define TXT_DBG_TEMPOFF     "Temp offset"
+// TX-only 115200 log on the board's DBG_UART_TX_PIN (reboot-class; Debug::uart*).
+#define TXT_DBG_UART        "UART console"
 
 // ── Hardware info ──────────────────────────────────────────────────────────────
 // Alt+F1 live page (no menu row of its own — hotkey only, Esc closes).

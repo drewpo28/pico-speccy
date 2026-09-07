@@ -72,6 +72,10 @@ NM_BOOL_ACCESS(rtc,       rtc_enabled)
 NM_BOOL_ACCESS(p3Fast,    p3_fastdisk)
 NM_BOOL_ACCESS(p3Slock,   p3_speedlock)
 NM_BOOL_ACCESS(psramOn,   psram_enabled)
+// The scratch tag is written with the setting so the reboot this commit prompts
+// already logs from main() entry (Debug::uartBootWanted).
+static int32_t get_dbgUart()          { return Config::dbg_uart ? 1 : 0; }
+static void    put_dbgUart(int32_t v) { Config::dbg_uart = (v != 0); Debug::uartSetWanted(v != 0); }
 NM_INT_ACCESS (palette,   palette)
 NM_INT_ACCESS (scanlines, scanlines)
 NM_INT_ACCESS (crtFilter, crt_filter)
@@ -1369,6 +1373,13 @@ void commit(CommitReport& rep) {
         Config::esxdos = 0;
         rep.constrained++;
         if (!rep.note) rep.note = " DivIDE turned off: General Sound needs ports B3/BB ";
+    }
+
+    // Debug > UART console vs ZiFi: ZiFi keeps its UART, the console yields at boot
+    // (BoardPins::dbgUartBlockedByZifi) — say so here instead of discovering it as
+    // a silent terminal after the reboot. Nothing is undone.
+    if (bmGet(g_dirty, SET_DBG_UART) && g_val[SET_DBG_UART] && BoardPins::dbgUartBlockedByZifi()) {
+        if (!rep.note) rep.note = " UART console yields to ZiFi (same UART/pins) ";
     }
 
 #if defined(MIDI_TX_PIN) && defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO == MIDI_TX_PIN)

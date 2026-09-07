@@ -297,7 +297,8 @@ void init_sound() {
     if (Config::midi != 1 && Config::midi != 2)
 #endif
     {
-        if (!BoardPins::zifiOwnsPin(LOAD_WAV_PIO)) // yield WAV input pin to ZiFi
+        if (!BoardPins::zifiOwnsPin(LOAD_WAV_PIO) &&      // yield WAV input pin to ZiFi
+            !BoardPins::dbgUartOwnsPin(LOAD_WAV_PIO))     // … and to the UART console (PICO_DV GP20)
             inInit(LOAD_WAV_PIO);
     }
 #endif

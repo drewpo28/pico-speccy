@@ -738,6 +738,14 @@ void ESPectrum::setup() {
   // the framebuffer does not.
   resolveVideoOutput();
   VIDEO::reserveFrameBuffer();
+  // Debug > UART console: start/stop per Config now that the framebuffer is safe
+  // (its 4 KB ring comes off the heap) and BEFORE any peripheral that yields a pin
+  // to it (PS/2 pair, NESPAD, WAV input, MIDI) initialises. A warm reboot may
+  // already have it running from main() entry via the scratch tag — this is where
+  // that early decision is reconciled with Config (and with ZiFi, which wins).
+  // No SD → no Config → nothing to reconcile: a tag-started console stays up, which
+  // is precisely the tool for debugging "the SD does not mount".
+  if (FileUtils::fsMount) board_dbg_uart_apply();
   // Mount the ALF cartridge from SD (served lazily on demand like a wd1793 disk),
   // per Config::alfCartPath. Empty drive if none is set or the SD file is missing —
   // there is no built-in cart. Must run before ALF banking can read it.
@@ -1113,7 +1121,7 @@ void ESPectrum::setup() {
     Midi::enabled = Config::midi;
 #if defined(MIDI_TX_PIN)
     // Yield the MIDI TX pin to ZiFi when it owns it (boot-time, after Config).
-    if (BoardPins::zifiOwnsPin(MIDI_TX_PIN)) Midi::enabled = 0;
+    if (BoardPins::zifiOwnsPin(MIDI_TX_PIN) || BoardPins::dbgUartOwnsPin(MIDI_TX_PIN)) Midi::enabled = 0;
 #endif
     if (Midi::enabled) {
         Debug::log2SD("setup: Midi::init mode=%d", (int)Midi::enabled);

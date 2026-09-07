@@ -67,6 +67,7 @@ bool     Config::Issue2 = true;
 uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
 bool     Config::rtc_enabled = false;
 bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
+bool     Config::dbg_uart = false;       // Debug > UART console
 bool     Config::flashload = true;
 bool     Config::tape_player = false; // Tape player mode
 volatile bool Config::real_player = false;
@@ -1041,6 +1042,7 @@ void Config::load() {
         nvs_get_b("Issue2", Issue2, sts);
         nvs_get_b("rtc_enabled", rtc_enabled, sts);
         nvs_get_b("psram_enabled", psram_enabled, sts);
+        nvs_get_b("dbg_uart", dbg_uart, sts);
         nvs_get_b("debug_log", Debug::log_enabled, sts);
         nvs_get_b("flashload", flashload, sts);
         nvs_get_b("rightSpace", rightSpace, sts);
@@ -1467,6 +1469,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"Issue2", Issue2 ? "true" : "false");
     nvs_set_str(buf,"rtc_enabled", rtc_enabled ? "true" : "false");
     nvs_set_str(buf,"psram_enabled", psram_enabled ? "true" : "false");
+    nvs_set_str(buf,"dbg_uart", dbg_uart ? "true" : "false");
     nvs_set_str(buf,"debug_log", Debug::log_enabled ? "true" : "false");
     nvs_set_str(buf,"flashload", flashload ? "true" : "false");
     nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");

@@ -381,9 +381,7 @@ void OSD::esp_hard_reset() {
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
     close_all();
     Debug::log("ehr: close_all done, arming watchdog");
-#if defined(DBG_UART_ENABLED) && defined(PICO_DEFAULT_UART)
-    uart_tx_wait_blocking(uart_default);   // drain FIFO — 32B @115200 ≈ 3ms > watchdog delay
-#endif
+    Debug::uartFlushSync();   // drain ring + FIFO (no-op with the console off)
     // The SDK's watchdog_enable() reboot is a PSM-only reset (POWMAN CHIP_RESET
     // HAD_WATCHDOG_RESET_PSM: "powman no, swcore no, does not change the power
     // state"), so the chip comes back up with the core regulator still at our
@@ -5600,6 +5598,12 @@ void OSD::BoardInfo() {
         // live pair — on ZERO2 it moves to KBD_ALT_* when the PCM5122 takes GP2/3
         "  Kbd CLK/DATA  : %d/%d\n", (int)board_kbd_clock_pin(),
         (int)board_kbd_clock_pin() + 1);
+    // Debug > UART console: live TX pin, or why it is not up.
+    if (Debug::uartActive())
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "  Dbg UART TX   : %u\n", Debug::uartTxPin());
+    else if (Config::dbg_uart)
+        pos += snprintf(buf + pos, sizeof(buf) - pos, "  Dbg UART TX   : off (%s)\n",
+                        BoardPins::dbgUartBlockedByZifi() ? "ZiFi" : "no RAM");
 #ifdef VGA_BASE_PIN
     pos += snprintf(buf + pos, sizeof(buf) - pos,
         "  VGA base      : %d\n", VGA_BASE_PIN);
