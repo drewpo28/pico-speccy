@@ -33,6 +33,7 @@
 #include "FileUtils.h"
 #include "GS/GS.h"
 #include "MemESP.h"
+#include "ZxEvoAvr.h"
 #include "ChipPackage.h"
 #include "pwm_audio.h"
 #include "messages.h"
@@ -803,6 +804,9 @@ void __not_in_flash_func(process_kbd_report)(
     hid_keyboard_report_t const *report,
     hid_keyboard_report_t const *prev_report
 ) {
+    // ZX-Evo AVR PS/2 scancode log (TS-Conf only; no-op elsewhere) — fed here
+    // because this is the one funnel both USB and PS/2 keyboards go through.
+    ZxEvoAvr::hidModifiers(report->modifier, prev_report->modifier);
     for (int i = 0; i < sizeof(mod2key) / sizeof(mod2key[0]); ++i) {
         if (report->modifier & mod2key[i].mod) { // LALT
             if (!pressed_key[mod2key[i].key]) {
@@ -826,12 +830,14 @@ void __not_in_flash_func(process_kbd_report)(
             }
         }
         if (!key_still_pressed) {
+            ZxEvoAvr::hidKey(pkc, false);
             kbdExtraMapping((fabgl::VirtualKey)pressed_key[pkc], false);
             pressed_key[pkc] = 0;
         }
     }
     for (uint8_t kc: report->keycode) {
         if (!kc) continue;
+        if (!isInReport(prev_report, kc)) ZxEvoAvr::hidKey(kc, true);
         uint8_t* pk = pressed_key + kc;
         fabgl::VirtualKey vk = (fabgl::VirtualKey)*pk;
         if (vk == fabgl::VirtualKey::VK_NONE) { // it was not yet pressed

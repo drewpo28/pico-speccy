@@ -25,6 +25,7 @@ the Free Software Foundation, either version 3 of the License, or
 #include "Video.h"
 #include "Debug.h"
 #include "RTC.h"
+#include "ZxEvoAvr.h"
 #include "DivMMC.h"
 #include "LEDIndicators.h"
 #include "OSDMain.h"
@@ -1032,6 +1033,7 @@ void TsConf::reset(bool cold) {
     r.saddr = r.daddr = 0;
     if (cold) {
         r.pwr_up = 0x40;
+        ZxEvoAvr::reset();   // the AVR keyboard controller powers up with the board
         // Real CRAM is undefined at power-up and TS-BIOS programs it via
         // FMAddr. Seed the ZX bank with the standard palette anyway so a
         // guest that skips CRAM init stays visible. RGB555: R=t>>10 G=t>>5
