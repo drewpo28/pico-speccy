@@ -1919,6 +1919,7 @@ void OSD::nmiAction() {
 }
 
 void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
+    VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
 
     // A live top-border banner belongs to the running machine: EndFrame() stops
     // while the OSD owns the screen, so it could neither age out nor be erased.
@@ -2883,6 +2884,7 @@ void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level) {
 }
 
 void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millispause) {
+    VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
     // New-skin toasts. The persistent (millispause == 0) form leaves the UI
     // palette installed, which recolours a DS80 guest screen — keep the classic
     // renderer there; every timed toast is self-contained and safe everywhere.
@@ -7084,6 +7086,7 @@ void (*OSD::progressOverride)(const char* title, const char* msg, int percent,
                               int action, bool cyrillic) = nullptr;
 
 void OSD::progressDialog(const string& title, const string& msg, int percent, int action, bool cyrillic) {
+    VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
     if (progressOverride) {
         progressOverride(title.c_str(), msg.c_str(), percent, action, cyrillic);
         return;

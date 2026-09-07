@@ -325,8 +325,16 @@ public:
   static uint32_t tsCramToRgb(uint16_t cram);   // RGB555 cell → RGB888 through the real-PWM gamma
   static uint8_t  tsBorderSlot();        // Border register → fb byte for the live mode
   static void     tsRenderLine(uint32_t curline); // whole-line renderer (non-ZX modes / TSU); timed wrapper
-  static void     tsRenderLineBody(uint32_t curline);
-  static void     tsuComposeLine(uint32_t line, uint8_t* ts512); // TSU layers → 512-px CRAM line buffer
+  static void     tsRenderExec(const union TsRenderJob& j, const struct TsuState* st, const uint16_t* sfile); // one line, core1 or core0
+  static void     tsRenderCore1Pump();   // core1 render loop: run queued lines
+  static void     tsRenderDrain();       // core0: wait for the core1 queue to empty
+  static bool     tsRenderOverlaps(uint32_t addr, uint32_t len); // a RAM write would race a queued line
+  static bool     tsRenderQueueOn();     // lines (and bulk DMA) go to core1 right now
+  static void     tsRenderDrainOverlap(uint32_t addr, uint32_t len); // wait until no queued line reads the range
+  static void     tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, uint32_t daddr);
+  static void     tsRenderDrainDma();    // core0: wait for every queued DMA transaction
+  static uint8_t  tsBorderSlotFor(uint8_t border, uint8_t palsel);
+  static void     tsuComposeLine(uint32_t line, uint8_t* ts512, const struct TsuState& st, const uint16_t* sfile, uint8_t palsel); // TSU layers → 512-px CRAM line buffer
   // Top-border height in fb rows while the GMX 640x200 mode is live, 0 otherwise.
   // OSD::notify needs it: unlike every other mode, that band is STATIC in GMX (the
   // per-T-state border machine is parked), so a banner can live there with no

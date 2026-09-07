@@ -103,6 +103,7 @@ public:
     static Regs r;
     static uint16_t cram[256];   // RGB555 xRRrrrGGgggBBbbb
     static uint16_t sfile[256];  // 85 sprite descriptors x 3 words
+    static uint32_t sfileGen;    // bumped on every SFILE write (core1 render snapshots, Video.cpp)
 
     // Machine reset (tsinit() values). Cold=true additionally raises pwr_up.
     static void reset(bool cold);
@@ -149,6 +150,11 @@ public:
     // the DMA interrupt is raised when it drops.
     static void dmaStart(uint8_t ctrl);
     static uint8_t dmaStatus();  // DMAStatus register image (b7 = DMA_ACT)
+    // Memory movement of one bulk transaction (RAM/BLT1/BLT2/FILL), register
+    // file untouched — runs on core1 from the render queue (Video.cpp) or on
+    // core0 when the queue is off.
+    static void dmaExecBulk(uint8_t ctrl, uint32_t saddr, uint32_t daddr, uint8_t dmalen, uint8_t dmanum);
+    static void dmaLineTick();   // per content line: DMA_ACT dropped → make sure the queued copy is done
 
     // 16 KB RAM page as a direct pointer, or nullptr when the page is not
     // POINTER-backed (degraded boot only — see the residency self-heal in

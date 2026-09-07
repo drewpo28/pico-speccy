@@ -1973,6 +1973,109 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
      and TMNT read 17.6 ms vs 17.8 on -Os at equal DMA load — within noise.
      `-Os` stays the default; the flag pair is the option to try if 3 KB become
      cheap.
+  14. **Whole-line rendering on core1 (`TS_RENDER_CORE1`, default ON, hw-confirmed
+     2026-09-07 — TMNT ship scene, the heaviest so far: cpu 19.0 → 16.0 ms, max
+     26 → 21.8, realFPS 48.84 = full frame rate; hdmiGapMax/DurMax unchanged at
+     34/19 us).** core1's `render_core` loop was idle apart from the HDMI ISR,
+     `pcm_call` and `GS::pump`. `VIDEO::tsRenderLine` snapshots the seven per-line
+     inputs (line, y counter, GXOffs, VPage, PalSel, VConfig, Border — `TsRenderJob`,
+     12 B, `kind` 0) into a 512-entry heap ring (allocated when a whole-line mode
+     first goes live, TS-Conf only) and `tsRenderCore1Pump` (core1 loop, ≤8 lines
+     per call) runs `tsRenderExec`, which reads nothing from `TsConf::r`. TSU lines
+     stay on core0. core1 needs ~24 us a line against core0's 16 (the HDMI ISR takes
+     its share), which is free as long as it overlaps. What it took to make it
+     overlap — three hw rounds, each one a rule:
+     - **No drain at EndFrame.** The first cut waited for the queue there and won
+       nothing: TMNT HALTs mid-frame, `haltAdvanceTo` posts the remaining ~150
+       lines in microseconds and core0 then sat 3.3 ms waiting. The queue runs
+       across the frame boundary; only writers of what a queued line READS wait:
+       guest RAM (DMA, below), the framebuffer (`do_OSD`, `osdCenteredMsg`,
+       `progressDialog`, `nm::gfxBegin`, `RedrawPausedFrame`), and the palette /
+       mode state (`applyPalette`, `tsVideoApplyPending`, `ForceOff`, `Reset`).
+       The per-frame palette flush runs with lines pending on purpose —
+       `ts256_map` is read a byte at a time, worst case one frame's tail with
+       old-or-new slots per pixel on a palette change.
+     - **A DMA waits only for the lines that read its destination**
+       (`VIDEO::tsRenderDrainOverlap`): TMNT issues ~170 DMAs a frame, mostly into
+       work pages — draining on every one cost 4.7 ms; draining on overlap but for
+       the WHOLE queue cost 5 ms on one frame in three (the 26 ms peaks). Pending
+       lines are `ring[r..w)`, in ygctr order, so the read range is the bitmap rows
+       between the oldest and newest job (256c 512 B/row, 16c 256 B/row, TEXT the
+       char+font pages) and it shrinks from the front as core1 consumes; the DMA
+       spins only until its rows are behind `r`. CPU pokes into the video pages are
+       NOT gated (TMNT's CPU traffic is 90% pages 0/2; a game that draws with the
+       CPU into pending rows would show them a frame early).
+     - **Bulk DMA through the queue is hw-REFUTED** (`kTsDmaOnCore1 = false`, the
+       `tsPostDma` / `TsConf::dmaExecBulk`-on-core1 path is kept but off): every
+       one of those 170 blits is followed by a DMAStatus poll, so the copy's
+       DMA_ACT drop waited for the whole line backlog ahead of it — waitDma 24 ms,
+       cpu 18.5 → 36 ms. The queue only pays for a guest that does work between
+       DMACtrl and the DMA_ACT drop, and this one does not.
+     - **Cross-core counters are two monotonic writers, never one shared RMW**
+       (`ts_c1_r`/`ts_c1_w`, `ts_c1_dma_posted`/`done`) — a `pending++/--` from
+       both cores loses updates.
+     - `dmaExecBulk` is the memory movement alone (register file untouched);
+       `dmaStart` derives SAddr/DAddr/DMA_ACT arithmetically (with S/D_ALGN the
+       register steps by the window per block, else follows the running address;
+       FILL reads one source word). BLT1 goes four bytes a step with a SWAR
+       "pixel non-zero" mask — but the destination is never READ for a fully
+       opaque or fully transparent group: a first cut that read four dst bytes per
+       group for the merge made the blits SLOWER (a dst read is a PSRAM line fill),
+       dma 6.3 → 8.5 ms. BLT1 is a third of TMNT's words (ram 10.5k / blt 6k /
+       fill 1.5k per frame), the gain is in the noise.
+     - **DMAStatus busy-poll fast-forward** (`TsConf::dmaStatus`): the same PC
+       reading a busy status twice within 64 T advances guest time to the DMA_ACT
+       drop or the next INT event (`CPU::haltAdvanceTo`, video walked line by
+       line). TMNT: ~122 fast-forwards a frame, ~32k T (11% of the frame) skipped;
+       2400 DMAStatus reads a frame remain in loops that are not tight.
+     - PERF is two lines now (`Debug::log` truncates at 256 bytes): `[PERF] 60f:`
+       cpu/fdd/hdmi/xip/realFPS and `[PERF] ts:` tsRender / `c1=<ms>/<lines>` /
+       `wait` (+ count) / dmaC1 / waitDma / `dma=<ms>/<words> (ram blt fill)` /
+       `poll=<DMAStatus reads> ff=<fast-forwards>/<kT skipped>`.
+     - **TsConf's hot path in SRAM is a CMake option, default OFF**
+       (`TSCONF_HOT_IN_RAM` → `TS_HOT` = `__not_in_flash("tsconf")`, ~4 KB:
+       portRead/portWrite, dmaStatus/dmaStart/dmaExecBulk, tsIntPoll, the
+       INT-source functions, endFrame, fmWrite, cpuWriteGate). The PERF_HIST mix
+       of the ship scene motivated it: the same ~19.5k instructions a frame as a
+       light scene, but 929 ns each against 587, with `ED` (IN/OUT (C)) at 19.4%
+       — ~3800 `#nnAF` accesses a frame (2400 DMAStatus polls + ~1400 DMA register
+       writes) each fetching flash code through an XIP cache full of PSRAM lines.
+       Hw: cpu 16.0 → 15.2 ms, max 21.8 → 21.0 — at a scene already at full frame
+       rate, so the owner declined 4 KB on every board for it. If it comes back
+       on, `nm` must show no lambda clones left in flash (dmaExecBulk/dmaStart
+       carry lambdas).
+     - **TSU lines go to core1 too** (second round, hw-confirmed 2026-09-07 on
+       demo 200.spg, 0x7e1.spg, Bruce Lee, Digger): `tsuComposeLine` reads its
+       inputs from a `TsuState` snapshot (tile/sprite registers, 16 B, ring of 128
+       — a new entry only when the registers differ from the last posted line's,
+       so per-line raster effects cost one entry per line) plus an SFILE snapshot
+       (4 slots x 512 B, copied only when `TsConf::sfileGen` moved — bumped by the
+       FMAddr word commit, DMA→SFILE and reset). The line job carries the state
+       index in its spare byte; a slot is reused only after core1 consumed the
+       last job referencing it (`tsC1WaitJob`). All of it lives in one 10 KB
+       palloc block with the ring. The generic composite (TSU, ZX/16c/256c base,
+       NOGFX) then had to get faster because core1 runs it ~30% slower than
+       core0 did: the clip is computed once, the pixel rule (plain / TSU /
+       TSU+GFXOVR) picked once, four pixels per aligned uint32 store; the 16c base
+       goes through a 16-entry table two pixels per byte; `blit8` skips a fully
+       transparent 8-pixel element on one 32-bit read. Demo 200: tsRender 13.3 ms
+       on core0 → c1 12.4 ms on core1 (base 2.7 / tsu 7.1 / out 2.3) with core0
+       at cpu 13.2 of which `wait` 7 ms (it is core1-bound now, and the audio
+       dropouts the owner heard are gone); Bruce Lee c1 9.5; TMNT unchanged at
+       cpu 16.0 / realFPS 48.84. `[PERF] ts:` carries `base/tsu/out` per phase.
+       A `wait` of one drain per frame on a TSU title = a small DMA/FILL into the
+       visible page right after the frame INT waiting for the rows core1 has not
+       reached — harmless while c1 < 20.48 ms, and the next lever if a title
+       pushes c1 past the frame (the TSU compose itself: 47 tiles x 2 layers +
+       sprites per line, ~30 us a line on core1).
+     Where it stands (hw 2026-09-07 evening): TMNT ship scene cpu 16.0 (max 22)
+     = Z80 ~10 + DMA 6.0 (37 KB moved through XIP with write-allocate: ~1.3 us
+     per 8 bytes while core1 reads 77 KB of screen from the same PSRAM), realFPS
+     48.84; TSU demos core1-bound at c1 9-13 ms. Untried: DMA destination writes
+     through the uncached XIP alias + per-line invalidate (saves the
+     write-allocate fill, ~1 ms). The Z80 mix in TMNT is the game's own `RLA /
+     JR C` bit loops (19%) — core work, no emulator shortcut. Test firmwares of
+     this session are `debug/M-core1*.elf` (k = final).
   Pentagon check of the general changes (hw 2026-09-07, TR-DOS game): both ROM
   overlays materialised at boot (`[ROM] overlay materialised` x2), loading and
   play clean, `cpu=6.0 ms` (max 6.3) at 48.8 FPS where the same class of game

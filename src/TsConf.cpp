@@ -30,9 +30,21 @@ the Free Software Foundation, either version 3 of the License, or
 #include "OSDMain.h"
 #include "roms/tsconf/romTsBios.h"
 
+// Hot path in SRAM: every #nnAF port access (TMNT: ~4000 a frame — DMA register
+// programming + DMAStatus polls), every INT-source poll from CPU::loop's Stage D
+// and the DMA copy itself. In flash they queued behind the PSRAM line fills of
+// the core1 renderer and the DMA data on the ONE XIP port (929 ns/instr in the
+// ship scene against 587 in a light one, hw 2026-09-07). ~3 KB of SRAM.
+#if TSCONF_HOT_IN_RAM
+#define TS_HOT __not_in_flash("tsconf")
+#else
+#define TS_HOT
+#endif
+
 TsConf::Regs TsConf::r;
 uint16_t TsConf::cram[256];
 uint16_t TsConf::sfile[256];
+uint32_t TsConf::sfileGen = 0;
 
 // Write-side gate (see TsConf.h): 0x10|window while FMAddr is enabled, 0x20
 // while window 0 is write-protected RAM. Tested predicted-not-taken in the CPU
@@ -207,7 +219,7 @@ void TsConf::write7ffd(uint8_t val) {
 
 // --------------------------------------------------------------- ports ----
 
-uint8_t TsConf::portRead(uint8_t reg) {
+TS_HOT uint8_t TsConf::portRead(uint8_t reg) {
     switch (reg) {
         case TSR_STATUS: {
             // b6 pwr_up (self-clearing cold-boot flag), b2:0 VDAC id (0 = PWM).
@@ -222,7 +234,7 @@ uint8_t TsConf::portRead(uint8_t reg) {
     }
 }
 
-void TsConf::portWrite(uint8_t reg, uint8_t val) {
+TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
     switch (reg) {
         // -- system --
         case TSW_SYSCONF:
@@ -342,7 +354,7 @@ void TsConf::portWrite(uint8_t reg, uint8_t val) {
 
 // -------------------------------------------------- CPU write funnel ----
 
-bool TsConf::cpuWriteGate(uint16_t addr, uint8_t val) {
+TS_HOT bool TsConf::cpuWriteGate(uint16_t addr, uint8_t val) {
     if (g_tsconf_wr & 0x10) fmWrite(addr, val);
     // W0_WE = 0 with RAM in window 0: the page reads as ROM (TS-BIOS's "boot
     // from VROM" maps a ROM image copied into RAM this way). The FMAddr
@@ -353,7 +365,7 @@ bool TsConf::cpuWriteGate(uint16_t addr, uint8_t val) {
 // Guest write with FMAddr enabled — called from the CPU write funnel
 // (gsDmaPoke8) BEFORE the normal store, which still proceeds (the hardware
 // writes RAM and the FPGA array in parallel; reference z80_main.inl:108).
-void TsConf::fmWrite(uint16_t addr, uint8_t val) {
+TS_HOT void TsConf::fmWrite(uint16_t addr, uint8_t val) {
     if (((addr >> 12) & 0x0F) != (r.fmaddr & 0x0F)) return;
 
     if (((addr >> 8) & 0x0F) == 0x04) {           // TSF_REGS: 0100 a[11:8]
@@ -374,6 +386,7 @@ void TsConf::fmWrite(uint16_t addr, uint8_t val) {
             break;
         case 1:
             sfile[(addr >> 1) & 0xFF] = w;
+            sfileGen++;
             break;
         default:
             break;
@@ -404,7 +417,7 @@ void TsConf::frameIntRecalc() {
 }
 
 // Poll the lazily-evaluated sources against the current T-state.
-static void tsIntPoll() {
+TS_HOT static void tsIntPoll() {
     const uint32_t t = CPU::tstates;
     if ((TsConf::r.intmask & 0x02) && t >= s_lin_next) {
         s_lin_pending = true;                 // latched until acknowledged
@@ -412,6 +425,7 @@ static void tsIntPoll() {
     }
     if (s_dma_busy && t >= s_dma_end) {
         s_dma_busy = false;
+        VIDEO::tsRenderDrainDma();   // the guest may read the result from here on
         if (TsConf::r.intmask & 0x04) s_dma_pending = true;
     }
 }
@@ -426,12 +440,12 @@ static inline bool tsFrmActive() {
     return tmp >= CPU::IntStart && tmp < CPU::IntEnd;
 }
 
-bool TsConf::intLine() {
+TS_HOT bool TsConf::intLine() {
     tsIntPoll();
     return tsFrmActive() || s_lin_pending || s_dma_pending;
 }
 
-uint8_t TsConf::intAck() {
+TS_HOT uint8_t TsConf::intAck() {
     // zint.v: int_sel picks by priority at the ack edge; int_frm clears on
     // any ack, int_lin only when FRAME is not pending, int_dma only when
     // neither is — i.e. exactly the source whose vector is driven.
@@ -442,7 +456,7 @@ uint8_t TsConf::intAck() {
     return 0xFF;   // spurious (source dropped between sample and ack)
 }
 
-uint32_t TsConf::nextIntEvent() {
+TS_HOT uint32_t TsConf::nextIntEvent() {
     tsIntPoll();
     const uint32_t now = CPU::tstates;
     if (tsFrmActive() || s_lin_pending || s_dma_pending) return now;
@@ -460,16 +474,16 @@ uint32_t TsConf::nextIntEvent() {
 // EI / RETN / RETI re-enabled interrupts inside an unchecked slice: if a source
 // is already up, end the slice so CPU::loop can take the interrupt at the
 // right instruction (Stage D runs unchecked between INT events).
-void TsConf::intEnableHook() {
+TS_HOT void TsConf::intEnableHook() {
     if (intLine()) tsWakeLoop();
 }
 
-bool TsConf::needsCheckedFrame() {
+TS_HOT bool TsConf::needsCheckedFrame() {
     return (r.intmask & 0x02) || s_lin_pending ||
            ((r.intmask & 0x04) && (s_dma_busy || s_dma_pending));
 }
 
-void TsConf::endFrame() {
+TS_HOT void TsConf::endFrame() {
     const uint32_t f = CPU::statesInFrame;
     s_frm_acked = false;
     s_lin_next = (s_lin_next >= f) ? s_lin_next - f : 0;
@@ -519,24 +533,34 @@ static const uint8_t kDmaCostRam  = 2;
 static const uint8_t kDmaCostOne  = 1;
 static const uint8_t kDmaCostSpi  = 4;
 
+// Bulk DMA through the core1 render queue: hw-REFUTED 2026-09-07 (TMNT ship
+// scene: ~170 sprite blits per frame, each followed by a DMAStatus poll — every
+// poll waited for the whole line backlog ahead of its blit, waitDma=24 ms/frame,
+// cpu 18.5 → 36 ms). The queue path (VIDEO::tsPostDma / TsConf::dmaExecBulk on
+// core1) is kept for a workload that does real work between DMACtrl and the
+// DMA_ACT drop; it is off here.
+static const bool kTsDmaOnCore1 = false;
+
 #if PERF_TRACE
 volatile uint32_t ts_dma_us = 0;      // wall time inside dmaStart per frame (PERF line)
 volatile uint32_t ts_dma_words = 0;   // words moved per frame
+volatile uint32_t ts_dma_words_ram = 0, ts_dma_words_blt = 0, ts_dma_words_fill = 0;   // by bulk mode
 #if PERF_HIST
 uint32_t ts_dma_src_hist[256], ts_dma_dst_hist[256];   // words per physical page
 #endif
 #endif
 
-void TsConf::dmaStart(uint8_t ctrl) {
+TS_HOT void TsConf::dmaStart(uint8_t ctrl) {
 #if PERF_TRACE
     const uint64_t dma_t0 = time_us_64();
+    extern volatile uint32_t ts_c1_wait_us;
+    const uint32_t dma_w0 = ts_c1_wait_us;    // the overlap drain inside is reported as `wait`, not `dma`
 #endif
     const bool     rw    = ctrl & 0x80;
     const uint8_t  dev   = ctrl & 0x07;
     const bool     asz   = ctrl & 0x08;
     const bool     dalgn = ctrl & 0x10;
     const bool     salgn = ctrl & 0x20;
-    const bool     opt   = ctrl & 0x40;   // BLT2: saturate
     const uint32_t m1    = asz ? 0x3FFE00 : 0x3FFF00;
     const uint32_t m2    = asz ? 0x0001FF : 0x0000FF;
     const uint32_t asize = asz ? 512 : 256;
@@ -550,7 +574,6 @@ void TsConf::dmaStart(uint8_t ctrl) {
     uint32_t words = 0;
     uint8_t cost = kDmaCostRam;
     DmaRam src, dst;
-    uint16_t fill = 0;
 
     auto ss_inc = [&]() { ss = salgn ? ((ss & m1) | ((ss + 2) & m2)) : ((ss + 2) & 0x3FFFFF); };
     auto dd_inc = [&]() { dd = dalgn ? ((dd & m1) | ((dd + 2) & m2)) : ((dd + 2) & 0x3FFFFF); };
@@ -570,79 +593,49 @@ void TsConf::dmaStart(uint8_t ctrl) {
         default:
             return;   // reserved device: no-op, like the reference
     }
-    if (mode == M_FILL) {           // dma_fill: ONE source word, read up front
-        fill = src.rd(ss);
-        ss_inc();
-        cost = kDmaCostOne;
-    } else if (mode == M_CRAM || mode == M_SFILE) {
+    const bool bulk = (mode == M_RAM || mode == M_BLT1 || mode == M_BLT2 || mode == M_FILL);
+    if (bulk) {
+        // Memory movement in dmaExecBulk (on core1 behind the queued lines when
+        // the TS-Conf render queue is on — a line then reads the memory the beam
+        // would have seen — else right here). The register file and DMA_ACT are
+        // derived arithmetically from what the run-by-run loop would leave:
+        // with S/D_ALGN the register steps by the window per block, otherwise it
+        // follows the running address; FILL reads ONE source word (ss + 2).
+        const uint32_t blocks = num + 1;
+        words = len * blocks;
+        cost = (mode == M_FILL) ? kDmaCostOne : kDmaCostRam;
+        if (mode == M_FILL) r.saddr = salgn ? ((r.saddr + asize * blocks) & 0x3FFFFF) : ((ss + 2) & 0x3FFFFF);
+        else                r.saddr = salgn ? ((r.saddr + asize * blocks) & 0x3FFFFF) : ((ss + 2 * len * blocks) & 0x3FFFFF);
+        r.daddr = dalgn ? ((r.daddr + asize * blocks) & 0x3FFFFF) : ((dd + 2 * len * blocks) & 0x3FFFFF);
+        if (kTsDmaOnCore1 && VIDEO::tsRenderQueueOn()) {
+            VIDEO::tsPostDma(ctrl, r.dmalen, r.dmanum, ss, dd);
+        } else {
+            // Synchronous: a queued line that reads the destination must render
+            // first (conservative footprint: blocks x max(len, alignment window)).
+            const uint32_t span = blocks * (dalgn ? (2 * len > asize ? 2 * len : asize) : 2 * len);
+            VIDEO::tsRenderDrainOverlap(dd, span);
+            dmaExecBulk(ctrl, ss, dd, r.dmalen, r.dmanum);
+        }
+#if PERF_TRACE
+        if (mode == M_RAM) ts_dma_words_ram += words; else if (mode == M_FILL) ts_dma_words_fill += words; else ts_dma_words_blt += words;
+#endif
+    } else {
+    // Synchronous modes read RAM (CRAM/SFILE/RAMSPI source) or write it
+    // (SPIRAM): a queued bulk DMA must land first, and a SPIRAM write must not
+    // overtake a queued line that reads its destination.
+    VIDEO::tsRenderDrainDma();
+    if (mode == M_SPIRAM && VIDEO::tsRenderOverlaps(dd, 2 * len * (num + 1) + asize * (num + 1))) VIDEO::tsRenderDrain();
+    if (mode == M_CRAM || mode == M_SFILE) {
         cost = kDmaCostOne;
     } else if (mode == M_SPIRAM || mode == M_RAMSPI) {
         cost = kDmaCostSpi;
         LED::touchR(LED::ZCTRL);
     }
 
-    // Words a run may cover from address `a` before it leaves its 16 KB page
-    // or, with alignment on, wraps inside its 256/512-byte window.
-    auto run = [&](uint32_t a, bool algn, uint32_t want) -> uint32_t {
-        uint32_t n = (0x4000u - (a & 0x3FFFu)) >> 1;
-        if (algn) { const uint32_t w = (asize - (a & (asize - 1))) >> 1; if (w < n) n = w; }
-        return n < want ? n : want;
-    };
-    auto ss_add = [&](uint32_t n) { ss = salgn ? ((ss & m1) | ((ss + 2 * n) & m2)) : ((ss + 2 * n) & 0x3FFFFF); };
-    auto dd_add = [&](uint32_t n) { dd = dalgn ? ((dd & m1) | ((dd + 2 * n) & m2)) : ((dd + 2 * n) & 0x3FFFFF); };
-    const bool bulk = (mode == M_RAM || mode == M_BLT1 || mode == M_BLT2 || mode == M_FILL);
-
     for (;;) {
-        // Bulk modes go run by run with direct pointers: a 320x240 256c screen
-        // copy is ~38k words per frame, and the per-word rd()/wr() path cost
-        // 0.6 us a word (TMNT: dma=16 ms of a 60 ms frame, hw 2026-09-06).
         for (uint32_t rem = len; rem; ) {
-            uint32_t n = 1;
-            if (bulk) {
-                n = run(dd, dalgn, rem);
-                if (mode != M_FILL) n = run(ss, salgn, n);
-                uint8_t* dp = dst.at(dd);
-                const uint8_t* sp = (mode != M_FILL) ? src.at(ss) : nullptr;
-                if (!dp) {
-                    // destination not POINTER-backed (degraded boot): swallow
-                } else if (mode == M_FILL) {
-                    if ((fill & 0xFF) == (fill >> 8)) memset(dp, fill & 0xFF, n * 2);
-                    else for (uint32_t i = 0; i < n; i++) { dp[2*i] = (uint8_t)fill; dp[2*i+1] = (uint8_t)(fill >> 8); }
-                } else if (!sp) {
-                    memset(dp, 0xFF, n * 2);            // unbacked source reads 0xFFFF
-                } else if (mode == M_RAM) {
-                    // Hardware copies word by word ascending: overlapping regions
-                    // propagate forwards, which memmove would not reproduce.
-                    if (dp + n * 2 <= sp || sp + n * 2 <= dp) memcpy(dp, sp, n * 2);
-                    else for (uint32_t i = 0; i < n * 2; i++) dp[i] = sp[i];
-                } else if (mode == M_BLT1) {          // transparent copy: 0 pixels keep dst
-                    if (asz) {                        // 256c: byte pixels
-                        for (uint32_t i = 0; i < n * 2; i++) if (sp[i]) dp[i] = sp[i];
-                    } else {                          // 16c: nibble pixels
-                        for (uint32_t i = 0; i < n * 2; i++) {
-                            const uint8_t sv = sp[i]; uint8_t dv = dp[i];
-                            if (sv & 0xF0) dv = (dv & 0x0F) | (sv & 0xF0);
-                            if (sv & 0x0F) dv = (dv & 0xF0) | (sv & 0x0F);
-                            dp[i] = dv;
-                        }
-                    }
-                } else {                              // M_BLT2: additive, optional saturation
-                    if (asz) {
-                        for (uint32_t i = 0; i < n * 2; i++) {
-                            uint32_t v = (uint32_t)sp[i] + dp[i];
-                            if (v > 0xFF && opt) v = 0xFF;
-                            dp[i] = (uint8_t)v;
-                        }
-                    } else {
-                        for (uint32_t i = 0; i < n * 2; i++) {
-                            const uint8_t sv = sp[i], dv = dp[i];
-                            uint32_t lo = (sv & 0xF) + (dv & 0xF), hi = (sv >> 4) + (dv >> 4);
-                            if (opt) { if (lo > 0xF) lo = 0xF; if (hi > 0xF) hi = 0xF; }
-                            dp[i] = (uint8_t)(((hi & 0xF) << 4) | (lo & 0xF));
-                        }
-                    }
-                }
-            } else switch (mode) {
+            const uint32_t n = 1;
+            switch (mode) {
                 case M_CRAM: {
                     const uint8_t idx = (uint8_t)(dd >> 1);
                     cram[idx] = src.rd(ss);
@@ -651,6 +644,7 @@ void TsConf::dmaStart(uint8_t ctrl) {
                 }
                 case M_SFILE:
                     sfile[(uint8_t)(dd >> 1)] = src.rd(ss);
+                    sfileGen++;
                     break;
                 case M_SPIRAM: {               // Zc.Rd(0x10057) x2, low byte first
                     uint16_t v = DivMMC::zc_read_data();
@@ -670,8 +664,8 @@ void TsConf::dmaStart(uint8_t ctrl) {
             if (mode != M_FILL && mode != M_SPIRAM) ts_dma_src_hist[(ss >> 14) & 0xFF] += n;
             if (mode != M_RAMSPI) ts_dma_dst_hist[(dd >> 14) & 0xFF] += n;
 #endif
-            if (mode != M_FILL && mode != M_SPIRAM) ss_add(n);
-            if (mode != M_RAMSPI) dd_add(n);
+            if (mode != M_SPIRAM) ss_inc();
+            if (mode != M_RAMSPI) dd_inc();
             words += n;
             rem -= n;
         }
@@ -683,6 +677,7 @@ void TsConf::dmaStart(uint8_t ctrl) {
         if (num) { num--; len = (uint32_t)r.dmalen + 1; }
         else break;
     }
+    }   // !bulk
 
     // DMA_ACT for the hardware's duration; the DMA interrupt is raised when it
     // drops (tsIntPoll). A transaction started while a previous one is still
@@ -691,13 +686,185 @@ void TsConf::dmaStart(uint8_t ctrl) {
     s_dma_end = CPU::tstates + ((words * cost) << ESPectrum::multiplicator);
     if (needsCheckedFrame()) tsWakeLoop();
 #if PERF_TRACE
-    ts_dma_us += (uint32_t)(time_us_64() - dma_t0);
+    ts_dma_us += (uint32_t)(time_us_64() - dma_t0) - (ts_c1_wait_us - dma_w0);
     ts_dma_words += words;
 #endif
 }
 
-uint8_t TsConf::dmaStatus() {
+// The bulk copy itself, run by run with direct pointers (a 320x240 256c screen
+// copy is ~38k words per frame; the per-word rd()/wr() path cost 0.6 us a word —
+// TMNT: dma=16 ms of a 60 ms frame, hw 2026-09-06). Register file untouched:
+// local copies replay dma_next_burst so the running addresses match dmaStart's
+// arithmetic. Safe on either core — reads only MemESP::ram descriptors.
+TS_HOT void TsConf::dmaExecBulk(uint8_t ctrl, uint32_t saddr, uint32_t daddr, uint8_t dmalen, uint8_t dmanum) {
+    const bool     rw    = ctrl & 0x80;
+    const uint8_t  dev   = ctrl & 0x07;
+    const bool     asz   = ctrl & 0x08;
+    const bool     dalgn = ctrl & 0x10;
+    const bool     salgn = ctrl & 0x20;
+    const bool     opt   = ctrl & 0x40;   // BLT2: saturate
+    const uint32_t m1    = asz ? 0x3FFE00 : 0x3FFF00;
+    const uint32_t m2    = asz ? 0x0001FF : 0x0000FF;
+    const uint32_t asize = asz ? 512 : 256;
+    const uint8_t  mode  = (uint8_t)((rw ? 8 : 0) | dev);
+    enum { M_RAM = 0x01, M_FILL = 0x04, M_BLT2 = 0x06, M_BLT1 = 0x09 };
+
+    uint32_t ss = saddr, dd = daddr, sreg = saddr, dreg = daddr;
+    uint32_t len = (uint32_t)dmalen + 1;
+    uint32_t num = dmanum;
+    DmaRam src, dst;
+    uint16_t fill = 0;
+    if (mode == M_FILL) {           // dma_fill: ONE source word, read up front
+        fill = src.rd(ss);
+    }
+    // Words a run may cover from address `a` before it leaves its 16 KB page
+    // or, with alignment on, wraps inside its 256/512-byte window.
+    auto run = [&](uint32_t a, bool algn, uint32_t want) -> uint32_t {
+        uint32_t n = (0x4000u - (a & 0x3FFFu)) >> 1;
+        if (algn) { const uint32_t w = (asize - (a & (asize - 1))) >> 1; if (w < n) n = w; }
+        return n < want ? n : want;
+    };
+    auto ss_add = [&](uint32_t n) { ss = salgn ? ((ss & m1) | ((ss + 2 * n) & m2)) : ((ss + 2 * n) & 0x3FFFFF); };
+    auto dd_add = [&](uint32_t n) { dd = dalgn ? ((dd & m1) | ((dd + 2 * n) & m2)) : ((dd + 2 * n) & 0x3FFFFF); };
+
+    for (;;) {
+        for (uint32_t rem = len; rem; ) {
+            uint32_t n = run(dd, dalgn, rem);
+            if (mode != M_FILL) n = run(ss, salgn, n);
+            uint8_t* dp = dst.at(dd);
+            const uint8_t* sp = (mode != M_FILL) ? src.at(ss) : nullptr;
+            if (!dp) {
+                // destination not POINTER-backed (degraded boot): swallow
+            } else if (mode == M_FILL) {
+                if ((fill & 0xFF) == (fill >> 8)) memset(dp, fill & 0xFF, n * 2);
+                else for (uint32_t i = 0; i < n; i++) { dp[2*i] = (uint8_t)fill; dp[2*i+1] = (uint8_t)(fill >> 8); }
+            } else if (!sp) {
+                memset(dp, 0xFF, n * 2);            // unbacked source reads 0xFFFF
+            } else if (mode == M_RAM) {
+                // Hardware copies word by word ascending: overlapping regions
+                // propagate forwards, which memmove would not reproduce.
+                if (dp + n * 2 <= sp || sp + n * 2 <= dp) memcpy(dp, sp, n * 2);
+                else for (uint32_t i = 0; i < n * 2; i++) dp[i] = sp[i];
+            } else if (mode == M_BLT1) {          // transparent copy: 0 pixels keep dst
+                // Four bytes a step: build a per-pixel "source non-zero" mask
+                // without branches and merge — the byte-at-a-time version did a
+                // read-modify-write per pixel into PSRAM through the XIP cache
+                // (TMNT: ~170 sprite blits a frame). Unaligned 32-bit access is
+                // fine on the M33; memcpy keeps it explicit.
+                const uint32_t bytes = n * 2;
+                uint32_t i = 0;
+                // The destination is never READ for a group that is fully opaque
+                // (one 32-bit store) or fully transparent (skipped); only a mixed
+                // group falls back to per-pixel stores. A first cut read four
+                // destination bytes per group for the merge and made the blits
+                // SLOWER (dma 6.3 → 8.5 ms, hw 2026-09-07): the byte loop never
+                // read dst, and a dst read is a PSRAM line fill through XIP.
+                if (asz) {                        // 256c: byte pixels
+                    for (; i + 4 <= bytes; i += 4) {
+                        uint32_t sv; memcpy(&sv, sp + i, 4);
+                        if (!sv) continue;
+                        uint32_t t = (sv | (sv >> 4)) & 0x0F0F0F0Fu;
+                        t |= (t >> 2) & 0x03030303u;
+                        t = (t | (t >> 1)) & 0x01010101u;
+                        if (t == 0x01010101u) { memcpy(dp + i, &sv, 4); continue; }
+                        for (uint32_t k = i; k < i + 4; k++) if (sp[k]) dp[k] = sp[k];
+                    }
+                    for (; i < bytes; i++) if (sp[i]) dp[i] = sp[i];
+                } else {                          // 16c: nibble pixels
+                    for (; i + 4 <= bytes; i += 4) {
+                        uint32_t sv; memcpy(&sv, sp + i, 4);
+                        if (!sv) continue;
+                        uint32_t t = (sv | (sv >> 2)) & 0x33333333u;
+                        t = (t | (t >> 1)) & 0x11111111u;
+                        if (t == 0x11111111u) { memcpy(dp + i, &sv, 4); continue; }
+                        for (uint32_t k = i; k < i + 4; k++) {
+                            const uint8_t s8 = sp[k]; uint8_t dv = dp[k];
+                            if (s8 & 0xF0) dv = (dv & 0x0F) | (s8 & 0xF0);
+                            if (s8 & 0x0F) dv = (dv & 0xF0) | (s8 & 0x0F);
+                            dp[k] = dv;
+                        }
+                    }
+                    for (; i < bytes; i++) {
+                        const uint8_t sv = sp[i]; uint8_t dv = dp[i];
+                        if (sv & 0xF0) dv = (dv & 0x0F) | (sv & 0xF0);
+                        if (sv & 0x0F) dv = (dv & 0xF0) | (sv & 0x0F);
+                        dp[i] = dv;
+                    }
+                }
+            } else {                              // M_BLT2: additive, optional saturation
+                if (asz) {
+                    for (uint32_t i = 0; i < n * 2; i++) {
+                        uint32_t v = (uint32_t)sp[i] + dp[i];
+                        if (v > 0xFF && opt) v = 0xFF;
+                        dp[i] = (uint8_t)v;
+                    }
+                } else {
+                    for (uint32_t i = 0; i < n * 2; i++) {
+                        const uint8_t sv = sp[i], dv = dp[i];
+                        uint32_t lo = (sv & 0xF) + (dv & 0xF), hi = (sv >> 4) + (dv >> 4);
+                        if (opt) { if (lo > 0xF) lo = 0xF; if (hi > 0xF) hi = 0xF; }
+                        dp[i] = (uint8_t)(((hi & 0xF) << 4) | (lo & 0xF));
+                    }
+                }
+            }
+#if PERF_TRACE && PERF_HIST
+            if (mode != M_FILL) ts_dma_src_hist[(ss >> 14) & 0xFF] += n;
+            ts_dma_dst_hist[(dd >> 14) & 0xFF] += n;
+#endif
+            if (mode != M_FILL) ss_add(n);
+            dd_add(n);
+            rem -= n;
+        }
+        // dma_next_burst
+        if (salgn) { sreg = (sreg + asize) & 0x3FFFFF; ss = sreg; }
+        if (dalgn) { dreg = (dreg + asize) & 0x3FFFFF; dd = dreg; }
+        if (num) { num--; len = (uint32_t)dmalen + 1; }
+        else break;
+    }
+}
+
+TS_HOT void TsConf::dmaLineTick() {
+    if (s_dma_busy && CPU::tstates >= s_dma_end) tsIntPoll();
+}
+
+// DMAStatus, with the busy-poll fast-forward. The data is long written (the
+// copy ran inside the DMACtrl write), only DMA_ACT's guest-time window remains,
+// and software waits it out in a tight `IN / BIT 7 / JR NZ` loop — TMNT's ship
+// scene: ~170 blits a frame, 18k words x 8 T = ~147k T of polling, i.e. half
+// the frame's guest time spent emulating that loop (hw 2026-09-07). When the
+// SAME PC reads a busy status twice within a few dozen T-states, guest time is
+// advanced straight to the DMA_ACT drop — or to the next interrupt event, so a
+// LINE/FRAME/DMA interrupt due inside the window is still taken where it would
+// have been — walking the video machine line by line like a HALT does
+// (CPU::haltAdvanceTo). A loop that does anything else between polls is not
+// tight and never triggers it.
+static uint16_t s_poll_pc = 0xFFFF;
+static uint32_t s_poll_t  = 0;
+#if PERF_TRACE
+volatile uint32_t ts_poll_ff = 0, ts_poll_ff_t = 0, ts_poll_reads = 0;   // fast-forwards, T skipped, DMAStatus reads
+#endif
+TS_HOT uint8_t TsConf::dmaStatus() {
     tsIntPoll();
+    if (!s_dma_busy) { s_poll_pc = 0xFFFF; return 0x00; }
+    const uint16_t pc = Z80::getRegPC();
+    const uint32_t t  = CPU::tstates;
+#if PERF_TRACE
+    ts_poll_reads++;
+#endif
+    if (pc == s_poll_pc && (uint32_t)(t - s_poll_t) < 64u) {
+        uint32_t end = s_dma_end;
+        if (Z80::isIFF1()) { const uint32_t e = nextIntEvent(); if (e < end) end = e; }
+        if (end > CPU::statesInFrame) end = CPU::statesInFrame;
+        if (end > t) {
+#if PERF_TRACE
+            ts_poll_ff++; ts_poll_ff_t += end - t;
+#endif
+            CPU::haltAdvanceTo(end);
+        }
+        tsIntPoll();
+    }
+    s_poll_pc = pc;
+    s_poll_t  = CPU::tstates;
     return s_dma_busy ? 0x80 : 0x00;
 }
 
@@ -767,6 +934,7 @@ void TsConf::reset(bool cold) {
         for (int i = 0; i < 256; i++) cram[i] = 0;
         for (int i = 0; i < 16; i++) cram[0xF0 + i] = zx555[i];
         for (int i = 0; i < 256; i++) sfile[i] = 0;
+        sfileGen++;
     }
     s_fm_tmp = 0;
     s_frm_acked = false;
