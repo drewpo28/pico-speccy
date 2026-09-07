@@ -103,7 +103,10 @@ public:
     static Regs r;
     static uint16_t cram[256];   // RGB555 xRRrrrGGgggBBbbb
     static uint16_t sfile[256];  // 85 sprite descriptors x 3 words
+    static uint32_t bankPhys(uint8_t bank, uint16_t off);   // physical address of a CPU-bank offset
+    static void     wrGateRecalc();                          // recompute g_tsconf_wr / g_ts_bank_watch
     static uint32_t sfileGen;    // bumped on every SFILE write (core1 render snapshots, Video.cpp)
+    static uint8_t  tsuSeen;     // TSConfig layer bits seen set since the last EndFrame (mode hysteresis)
 
     // Machine reset (tsinit() values). Cold=true additionally raises pwr_up.
     static void reset(bool cold);
@@ -172,5 +175,9 @@ public:
 // 0x10 | window = FMAddr enabled (TsConf::fmWrite), 0x20 = window 0 is RAM
 // with W0_WE = 0 (writes below #4000 dropped). Zero for every other machine.
 extern uint8_t g_tsconf_wr;
+// Bit 0x40 of g_tsconf_wr: some CPU bank maps a page the core1 render queue
+// may still read; g_ts_bank_watch has one bit per bank. A guest write into such
+// a bank waits for the queued lines that read it (VIDEO::tsRenderDrainOverlap).
+extern uint8_t g_ts_bank_watch;
 
 #endif // TSCONF_H

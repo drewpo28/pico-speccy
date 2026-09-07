@@ -1161,6 +1161,16 @@ void Z80::interrupt(void) {
 
     halted = false;
 
+    // TS-Conf: the INT acknowledge cycle clears the source being taken and
+    // selects its vector — in EVERY interrupt mode (zint.v latches on intack).
+    // It must be evaluated HERE, at the T-state where the line was sampled:
+    // the FRAME source is a 32-clock auto-expiring window (32 T at 3.5 MHz),
+    // and taking it after the 7 T response + the 6 T push below put the ack
+    // 13 T past the sample — on ~40% of frames the window had expired, the ack
+    // came back "spurious" (0xFF, source not marked acknowledged) and the
+    // frame counted as INT-not-taken (hw 2026-09-07, TS-BIOS/BASIC idle).
+    const uint8_t tsVect = Z80Ops::isTsconf ? TsConf::intAck() : 0xFF;
+
     // Z80Ops::interruptHandlingTime(7);
     VIDEO::Draw(7, false);
 
@@ -1171,10 +1181,6 @@ void Z80::interrupt(void) {
     const uint16_t pgIntPC = REG_PC;   // interrupted address, for the alarm below
 #endif
     push(REG_PC); // el push añadirá 6 t-estados (+contended si toca)
-    // TS-Conf: the INT acknowledge cycle clears the source being taken and
-    // selects its vector — in EVERY interrupt mode (zint.v latches on intack),
-    // so it runs before the IM branch below.
-    const uint8_t tsVect = Z80Ops::isTsconf ? TsConf::intAck() : 0xFF;
     if (modeINT == IntMode::IM2) {
 
         // INT-ack bus byte: the Karabas serial-mouse hw_int drives 0xE7
@@ -1511,7 +1517,13 @@ void Z80::blockRepeat(bool up) {
     const uint8_t* sbase = MemESP::ramCurrent[spg];
     if ((uintptr_t)dbase < 0x11000000u || sbase == nullptr) return;   // ROM / accessor banks
     if (g_ts_fastmem) {
-        if (g_tsconf_wr) return;
+        if (g_tsconf_wr & ~0x40) return;            // FMAddr / W0_WE: per-byte path
+        if ((g_tsconf_wr & 0x40) && ((g_ts_bank_watch >> dpg) & 1)) {
+            // Destination is a page the core1 render queue may still read: wait
+            // for the lines that read this range (the per-byte path does the same).
+            const uint32_t lo = up ? (de & 0x3FFFu) : ((de & 0x3FFFu) - (n - 1));
+            VIDEO::tsRenderDrainOverlap(TsConf::bankPhys(dpg, (uint16_t)lo), n);
+        }
     } else {
         if (MemESP::ramContended[spg] || MemESP::ramContended[dpg] || VIDEO::snow_toggle) return;
         if (Config::numMemReadBP | Config::numMemWriteBP) return;
