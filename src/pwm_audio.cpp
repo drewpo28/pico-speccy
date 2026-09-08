@@ -447,7 +447,15 @@ void pcm_audio_in_stop(void) {
 }
 #endif
 
+// Audio-path health counters, read-and-reset by the [PERF] aud: line (Video.cpp).
+// ticks = timer callbacks (31250/s expected: fewer means the core0 alarm IRQ is
+// being starved), hold = ticks that found the frame buffer exhausted (the ZX
+// sample is then frozen: a late frame, or a frame that never arrived).
+volatile uint32_t g_pcm_tick_ct = 0;
+volatile uint32_t g_pcm_hold_ct = 0;
+
 static void __not_in_flash_func(pcm_call_inner)() {
+    g_pcm_tick_ct++;
     // Live GS contribution (signed offset around silence=128 × vol8).
     // Sampled here at the audio output rate (31.25 kHz) so playback tracks
     // the GS-Z80 DAC state in real time, not a pre-rendered frame buffer.
@@ -483,6 +491,7 @@ static void __not_in_flash_func(pcm_call_inner)() {
         zR = buff_R[m_off];
         ++m_off;
     } else if (m_size > 0) {
+        g_pcm_hold_ct++;
         zL = buff_L[m_size - 1];
         zR = buff_R[m_size - 1];
     } else {

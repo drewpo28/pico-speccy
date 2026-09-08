@@ -2289,6 +2289,17 @@ void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, 
 // isr_gap<45 guard and the ~32 µs line period are the scales to read them
 // against). NB: Video.cpp's PERF_TRACE block read-and-resets gap/dur too — with
 // both enabled each line sees only its share.
+// Read-and-reset the audio health counters for a caller's own log line (the
+// [PERF] aud: line in Video.cpp). Same counters as hdmi_audio_health_dump —
+// with both enabled each sees only its share of the window.
+void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup,
+                                uint32_t *qmin, uint32_t *qmax) {
+    *und = hdmi_au_und_ct; *skip = hdmi_au_skip_ct; *dup = hdmi_au_dup_ct;
+    *qmin = (hdmi_au_qmin == 0xFFFFFFFFu) ? 0 : hdmi_au_qmin; *qmax = hdmi_au_qmax;
+    hdmi_au_und_ct = 0; hdmi_au_skip_ct = 0; hdmi_au_dup_ct = 0;
+    hdmi_au_qmin = 0xFFFFFFFFu; hdmi_au_qmax = 0;
+}
+
 void hdmi_audio_health_dump(void) {
     if (!hdmi_audio_enabled) return;
     const uint32_t qmin = hdmi_au_qmin, qmax = hdmi_au_qmax;

@@ -132,6 +132,7 @@ void joyPushData(fabgl::VirtualKey virtualKey, bool down) {
 volatile uint32_t g_aud_write_us = 0;
 volatile uint32_t g_kbd_us = 0;        // processKeyboard() per frame ([NEG2])
 volatile uint32_t g_mix_us = 0;        // audio synth+mix block per frame ([NEG2])
+volatile uint32_t g_aud_flat_frames = 0; // frames whose mixed L buffer was one constant (silence/DC) — [PERF] aud:
 
 volatile static uint32_t tickKbdRep = 0;
 volatile static fabgl::VirtualKey last_key_pressed = fabgl::VirtualKey::VK_NONE;
@@ -3435,6 +3436,7 @@ void ESPectrum::loop() {
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;
         bool mix_fdd = fddSndEnabledMix && (fddSound.click_count > 0 || fddSound.motor_noise);
+        int flat_mn = 255, flat_mx = 0;
         for (int i = 0; i < samplesPerFrame; i++)
         {
           int beeper_L = overSamplebuf[i];
@@ -3517,7 +3519,10 @@ void ESPectrum::loop() {
           // not here — burst-sampling on core0 would time-compress it.
           audioBuffer_L[i] = beeper_L > 255 ? 255 : (beeper_L < 0 ? 0 : beeper_L);
           audioBuffer_R[i] = beeper_R > 255 ? 255 : (beeper_R < 0 ? 0 : beeper_R);
+          if (audioBuffer_L[i] < flat_mn) flat_mn = audioBuffer_L[i];
+          if (audioBuffer_L[i] > flat_mx) flat_mx = audioBuffer_L[i];
         }
+        if (flat_mn == flat_mx) g_aud_flat_frames++;
       }
     }
     g_mix_us = (uint32_t)(time_us_64() - _mix_t0);

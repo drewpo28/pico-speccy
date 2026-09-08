@@ -87,6 +87,8 @@ void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, 
 // worst ISR gap+duration). No-op unless HDMI audio is live. Call from the
 // core0 main loop about once a second.
 void hdmi_audio_health_dump(void);
+// Read-and-reset of the same counters for another log line (see hdmi.c).
+void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
 
 // Re-publish the vertical timing of the CURRENT video mode (get_video_mode()) to
 // the line ISR. The 50 Hz modes differ ONLY in v_total — it is tuned per machine
