@@ -156,6 +156,12 @@ public:
     // (0/1/2 = 3.5/7/14 MHz) for boards that cannot keep up with 14 MHz.
     static uint16_t tsconf_ram;
     static uint8_t  tsconf_clk_cap;
+    // TS-Conf render frameskip (0 = every frame, 1 = every 2nd, 2 = every 3rd).
+    // The whole-line renderer is the one part of a TS frame that can be dropped
+    // without touching guest timing: the Z80 still executes every T-state, the
+    // frame is just not painted, so the picture judders instead of the machine
+    // running slow. Nothing else in the frame is skipped (border bands, OSD).
+    static uint8_t  tsconf_render_skip;
     // The page-strip length the NEXT boot of `a` needs. The single source for
     // the live MEM_PG_CNT (ESPectrum::setup) and for the boot-layout reboot
     // boundary in requestMachine()/MachineSwitch::commit() — the two must

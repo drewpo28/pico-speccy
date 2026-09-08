@@ -340,6 +340,8 @@ static int32_t get_tsconfRam()          { return (int32_t)Config::tsconf_ram; }
 static void    put_tsconfRam(int32_t v) { Config::tsconf_ram = (uint16_t)v; }
 static int32_t get_tsconfClk()          { return (int32_t)Config::tsconf_clk_cap; }
 static void    put_tsconfClk(int32_t v) { Config::tsconf_clk_cap = (uint8_t)v; }
+static int32_t get_tsconfRskip()          { return (int32_t)Config::tsconf_render_skip; }
+static void    put_tsconfRskip(int32_t v) { Config::tsconf_render_skip = (uint8_t)v; }
 static bool    hook_tsconfClk(int32_t, int32_t) {
     if (Config::arch == A_TSCONF) TsConf::applyZclk(true);   // re-derive the live clock under the new cap
     return true;

@@ -75,7 +75,12 @@ option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
 # TS-Conf whole-line renderer on core1 (Video.cpp tsRenderCore1Pump): core0 posts
 # one job per content line, core1's render loop executes it. OFF = render on core0.
 option(TS_RENDER_CORE1 "TS-Conf: render whole-line video modes on core1 (one job per line)" ON)
-option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" OFF)
+# ON since 2026-09-08: measured cpu 16.0 -> 15.2 ms on TMNT's ship scene (hw
+# 2026-09-07). It was declined then because 4 KB of SRAM on every board bought
+# ~0.8 ms at a scene already holding full frame rate; the Z80-core de-duplication
+# of the same week handed 10 KB back, so the trade is affordable now. Turn it OFF
+# again if a board runs out of contiguous heap at VIDEO::Init.
+option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" ON)
 option(TS_VIDEO_TRACE "TS-Conf: capped trace of VConfig/TSConfig/page/offset register writes with frame line + PC" OFF)
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)

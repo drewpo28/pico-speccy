@@ -38,6 +38,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include <hardware/flash.h>
 #include <hardware/vreg.h>
 #include <hardware/adc.h>
+#include <hardware/structs/qmi.h>
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
 
@@ -5245,6 +5246,22 @@ int chipTempX10() {
     return 270 - (uv10 - 7060) * 1000 / 1721 + Config::temp_offset * 10;
 }
 
+// The XIP clocks the two memory limits actually produce. Both are clk_sys over
+// an INTEGER divider (main.cpp flash_timing_for / psram_retiming pick
+// ceil(clk_sys / limit)), so "Flash 166 / PSRAM 166" at 504 MHz is really
+// 126 MHz on both — the divisor, not the limit, is what a TS-Conf frame feels,
+// and it was invisible until this line. Read from the live QMI registers rather
+// than recomputed, so an override anywhere else in the boot still shows here.
+static int xipSckLine(char* buf, int cap) {
+    const uint32_t hz = clock_get_hz(clk_sys);
+    const uint32_t df = (qmi_hw->m[0].timing & QMI_M0_TIMING_CLKDIV_BITS) >> QMI_M0_TIMING_CLKDIV_LSB;
+    const uint32_t dp = (qmi_hw->m[1].timing & QMI_M1_TIMING_CLKDIV_BITS) >> QMI_M1_TIMING_CLKDIV_LSB;
+    const uint32_t ff = df ? (hz / df) : 0, fp = dp ? (hz / dp) : 0;
+    return snprintf(buf, cap, " XIP SCK        : flash %u.%u MHz /%u, psram %u.%u MHz /%u\n",
+                    (unsigned)(ff / MHZ), (unsigned)((ff % MHZ) / 100000u), (unsigned)df,
+                    (unsigned)(fp / MHZ), (unsigned)((fp % MHZ) / 100000u), (unsigned)dp);
+}
+
 static void buildHWInfoText() {
     char (&hwtext)[OSD_INFO_BUF_SZ] = osd_info_buf;
     int pos = 0;
@@ -5302,6 +5319,7 @@ static void buildHWInfoText() {
             " Flash size     : %d MB\n"
             " Flash JEDEC ID : %02X-%02X-%02X-%02X\n",
             (int)(flash_size >> 20), rx[0], rx[1], rx[2], rx[3]);
+        pos += xipSckLine(hwtext + pos, sizeof(hwtext) - pos);
         if (flash_qe) {
             pos += snprintf(hwtext + pos, sizeof(hwtext) - pos,
                 " Flash QE bit   : %s\n", flash_qe_text());
@@ -5454,6 +5472,7 @@ void OSD::ChipInfo() {
             " Flash size     : %d MB\n"
             " Flash JEDEC ID : %02X-%02X-%02X-%02X\n",
             (int)(flash_size >> 20), rx[0], rx[1], rx[2], rx[3]);
+        pos += xipSckLine(buf + pos, sizeof(buf) - pos);
         if (flash_qe) {
             pos += snprintf(buf + pos, sizeof(buf) - pos,
                 " Flash QE bit   : %s\n", flash_qe_text());

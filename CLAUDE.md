@@ -2121,6 +2121,77 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
      handler before theorising about the renderer; and `ffmpeg` + a PIL
      diff/shift script over the capture (`d1`/`d2` = changed pixels vs the
      previous frame / two back) settles period-2 questions in minutes.
+  16. **Speed levers, 2026-09-08 (NONE hw-tested — every one of them is a
+     knob for the next hw session, and each is separable):**
+     - **core0 shares the line rendering when core1 is behind** (Video.cpp
+       `TS_C1_SHARE` + `tsC0BudgetPoll`). A TSU demo is core1-bound — demo 200:
+       c1 12.4 ms against core0's 6.2 ms of guest work plus 7 ms of `wait` — and
+       that wait is core0 spinning for a queue it could be emptying. Instead of
+       a second consumer of `ts_c1_r` (which needs a claim protocol), the
+       PRODUCER decides: it renders the line inline instead of queueing it, so
+       the line never enters the ring and the two cores can never contend for
+       one. **The gate is not the backlog** — that reads the same when core1 is
+       saturated and when core0 has just dumped a HALT burst it has no reason to
+       render itself (TMNT posts ~150 lines in microseconds and then goes on to
+       the next frame's guest work; rendering them inline would move ~2 ms onto
+       the core that is already the bottleneck there). It is core0's own
+       measured lateness: `ts_c1_wait_frame` (all four spin sites feed it) drives
+       a per-frame budget of lines, +16 above 1 ms of wait, −8 below 0.2 ms, and
+       the backlog test on top stops core0 taking work while core1 is idle.
+       Expected shape on hw: `wait` falls and `cpu` with it on TSU demos, TMNT
+       unchanged with `c0=0`. PERF ts line carries `c0=<lines>/<budget>`.
+     - Two things that change made this possible and are worth keeping straight:
+       `tsRenderExec`'s `s_gline`/`s_tsline` scratch is **per core** now (both
+       cores can be inside it), `__restrict` because the reverted 2026-09-07
+       palloc attempt's leading suspicion was pointer aliasing; and the
+       tile-map capture index is ONE free-running line counter for both
+       placements (`ts_line_seq`, carried per queued job in `ts_c1_jseq`) —
+       it used to be `ts_c1_w` for queued lines, which also silently assumed
+       every ring entry is a line (a queued DMA job would have shifted
+       tsuComposeLine's 16-line lookback; kTsDmaOnCore1 is off, so it was
+       latent). While there: the producer's ring-full wait now stops at
+       `TS_C1_RING_MAX` = 512−32, because posting at a 511-deep backlog had
+       core0 capturing into slot (r−1)&511 while core1 still read r−16..r.
+     - **Render frameskip** (`Config::tsconf_render_skip`, Machine → TS-Conf →
+       Options → Render: every frame / 2nd / 3rd). The renderer is the only part
+       of a TS frame that can be dropped without touching guest timing — the Z80
+       still executes every T-state — so a renderer-bound title judders instead
+       of running slow. Implemented as the maxSpeed skip's twin in EndFrame
+       (Draw parked at `Blank`, `ts_line_t` left at 0xFFFFFFFF, fast memory path
+       still armed); border bands and OSD keep their normal path.
+     - **`TSCONF_HOT_IN_RAM` is ON by default** (~0.8 ms, 4 KB): declined in the
+       2026-09-07 audit because it cost 4 KB on every board at a scene already
+       at full frame rate, affordable now that the Z80-core de-duplication of
+       the same week handed 10 KB back.
+     - **The XIP clock is NOT the Overclock menu's limit, and "504/166/166" was
+       really 504/126/126.** Both timings are clk_sys over an INTEGER divider
+       (`ceil(clk_sys / limit)`), so 252 → /2, 378 → /3 and 504 → /4 all land on
+       **126 MHz** for flash AND PSRAM. The video PIO divider must be an integer
+       or half-integer of clk_sys/252 (graphics.h), which allows only multiples
+       of 126 — so **630 MHz is the one step that moves the XIP clock** (/4 =
+       157.5 MHz, +25% on the Z80 core, the flash path and the PSRAM SCK at
+       once), and it is now offered. ~8 ms of a TMNT frame is PSRAM line fills,
+       so this is the largest single lever left; it is also a 25% overclock —
+       raise VREG (the menu's pick is applied right before the switch), and drop
+       the Flash limit to 133 (→ /5 = 126) if the flash chip will not hold
+       157.5 MHz. Hardware Info / Chip Info print ` XIP SCK` (rate + divisor,
+       read from the live QMI registers) so the difference is finally visible.
+     - Two QMI field overflows found by reading the register layout while
+       checking 630 (not on hardware, both clamped now): `psram_retiming`'s
+       MAX_SELECT is a 6-bit field that 504 MHz already fills exactly (63), so
+       630 computed 78 and would have spilled into SELECT_HOLD; and
+       `flash_timing_for`'s RXDELAY is 3 bits, which a low Flash limit overflows
+       at any clock (Flash 33 MHz at 504 already computes 16).
+     - Still untried, in rough order of expected value: front-stealing from the
+       queue in the drain loops (a hardware-spinlock claim + a done-flag retire,
+       which is what would also shorten a wait core0 is ALREADY inside); DMA
+       destination writes through the uncached XIP alias with a per-line
+       invalidate (~1 ms, but check whether the butter window is write-back
+       before trusting it); inlining the TS fast path of `Z80Ops::peek8/poke8`
+       into the core (a call+return of ~8 cycles against ~184 per instruction,
+       paid ~2.5 times per instruction — but it is SRAM code growth in the place
+       that was just shrunk).
+
   Pentagon check of the general changes (hw 2026-09-07, TR-DOS game): both ROM
   overlays materialised at boot (`[ROM] overlay materialised` x2), loading and
   play clean, `cpu=6.0 ms` (max 6.3) at 48.8 FPS where the same class of game

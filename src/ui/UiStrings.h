@@ -207,6 +207,7 @@
 #define TXT_MACH_TSCONF_OPTS "Options"
 #define TXT_MACH_TSCONF_RAM  "RAM"
 #define TXT_MACH_TSCONF_CLK  "CPU cap"
+#define TXT_MACH_TSCONF_RSKIP "Render"
 #define TXT_ROM_TSBIOS       "TS-Conf"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
 

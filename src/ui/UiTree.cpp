@@ -161,10 +161,27 @@ static const Option opt_dma[] = {
 };
 
 // ── Overclock: every value here is read once at boot ───────────────────────────
+// The XIP clock is clk_sys / ceil(clk_sys / limit) (main.cpp flash_timing_for /
+// psram_retiming), so the limits below are ceilings, not rates — with both set to
+// 166 every clock in this list lands on the SAME 126 MHz SCK:
+//   252 -> /2 = 126   378 -> /3 = 126   504 -> /4 = 126   630 -> /4 = 157.5
+// The video PIO divider must be an integer or a half-integer of clk_sys/252
+// (graphics.h), which leaves only multiples of 126 — 630 is the one step above
+// 504 that qualifies, and it is the only way to move the XIP clock at all
+// (504 /3 = 168 MHz was tried 2026-09-07 and the DVp2's APS6404 does not hold it).
+// 630 = +25% on the Z80 core, the flash XIP path AND the PSRAM SCK at once, which
+// is what a TS-Conf frame is made of — but it is a 25% overclock: expect to raise
+// VREG, and drop the Flash limit to 133 (-> /5 = 126) if the flash chip is the
+// half that will not hold 157.5 MHz. A PLL that does not lock falls back by
+// itself (main.cpp); silicon that locks and then misbehaves does not — the way
+// back in from a clock that boots and then dies is the boot-time factory-reset
+// probe (hold R at boot: it unlinks the config, so every value here goes back
+// to its default).
 static const Option opt_cpu_mhz[] = {
     { "252 MHz", 252 },
     { "378 MHz", 378 },
     { "504 MHz", 504 },
+    { "630 MHz", 630 },
 };
 static const Option opt_vreg[] = {               // VREG_VOLTAGE_* enum values
     { "1.15 V", VREG_VOLTAGE_1_15 }, { "1.20 V", VREG_VOLTAGE_1_20 },
@@ -405,9 +422,21 @@ const char* tsconfTag() {
     return buf;
 }
 
+// Render frameskip: the whole-line renderer is the only part of a TS frame that
+// can be dropped without changing guest timing (the Z80 runs every T-state
+// either way), so a title whose renderer is the bottleneck trades a juddering
+// picture for the frame rate instead of running slow. Costs nothing when the
+// renderer is not the bottleneck.
+static const Option opt_tsconf_rskip[] = {
+    { "Every frame", 0 },
+    { "Every 2nd",   1 },
+    { "Every 3rd",   2 },
+};
+
 static const Node kTsconf[] = {
     NM_RADIO(TXT_MACH_TSCONF_RAM, SET_TSCONF_RAM, opt_tsconf_ram, nullptr),
     NM_RADIO(TXT_MACH_TSCONF_CLK, SET_TSCONF_CLK, opt_tsconf_clk, nullptr),
+    NM_RADIO(TXT_MACH_TSCONF_RSKIP, SET_TSCONF_RSKIP, opt_tsconf_rskip, nullptr),
 };
 
 static const Node kMachine[] = {

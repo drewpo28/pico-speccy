@@ -71,6 +71,7 @@ bool     Config::Issue2 = true;
 uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
 uint16_t Config::tsconf_ram = 256;     // TS-Conf 4 MB default (64/128/256 pages)
 uint8_t  Config::tsconf_clk_cap = 2;   // ZCLK cap: 14 MHz allowed
+uint8_t  Config::tsconf_render_skip = 0;   // render every frame
 bool     Config::rtc_enabled = false;
 bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
 bool     Config::dbg_uart = false;       // Debug > UART console
@@ -1350,6 +1351,9 @@ void Config::load() {
         int tsc = -1;
         nvs_get_i("tsconf_clk_cap", tsc, sts);
         tsconf_clk_cap = (tsc >= 0 && tsc <= 2) ? (uint8_t)tsc : 2;
+        int tsrs = 0;
+        nvs_get_i("tsconf_rskip", tsrs, sts);
+        tsconf_render_skip = (tsrs >= 0 && tsrs <= 2) ? (uint8_t)tsrs : 0;
     }
     loaded = true;
     if (FileUtils::fsMount)
@@ -1698,6 +1702,7 @@ void Config::save(const char* path) {
     nvs_set_i(buf,"MEM_PG_CNT", mem_pg_cnt);
     nvs_set_i(buf,"tsconf_ram", tsconf_ram);
     nvs_set_i(buf,"tsconf_clk_cap", tsconf_clk_cap);
+    nvs_set_i(buf,"tsconf_rskip", tsconf_render_skip);
 
     if (handle) {
         // f_sync flushes FAT before close so we don't commit the

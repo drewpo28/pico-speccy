@@ -1155,8 +1155,20 @@ static void __not_in_flash_func(psram_retiming)() {
     int rxdelay = divisor;
     if (clock_hz / divisor > 100000000) rxdelay += 1;
     const int clock_period_fs = 1000000000000000ll / clock_hz;
-    const int max_select = (125 * 1000000) / clock_period_fs;
-    const int min_deselect = (18 * 1000000 + (clock_period_fs - 1)) / clock_period_fs - (divisor + 1) / 2;
+    int max_select = (125 * 1000000) / clock_period_fs;
+    int min_deselect = (18 * 1000000 + (clock_period_fs - 1)) / clock_period_fs - (divisor + 1) / 2;
+    // These are 6- and 5-bit fields (MAX_SELECT 22:17, MIN_DESELECT 16:12) and the
+    // arithmetic above walks out of them as clk_sys rises: 504 MHz lands MAX_SELECT
+    // exactly on 63, so 630 MHz computes 78 and, unclamped, would have spilled its
+    // top bit into SELECT_HOLD while the field itself truncated to 14 (2026-09-08,
+    // found by reading the register layout, not on hardware). Clamp instead: a
+    // shorter CS assertion than the tCEM budget is always safe, a corrupted
+    // neighbouring field is not.
+    if (max_select > 63) max_select = 63;
+    if (min_deselect < 0) min_deselect = 0;
+    if (min_deselect > 31) min_deselect = 31;
+    if (rxdelay > 7) rxdelay = 7;
+    if (divisor > 255) divisor = 255;
     qmi_hw->m[1].timing = 1 << QMI_M1_TIMING_COOLDOWN_LSB |
                           QMI_M1_TIMING_PAGEBREAK_VALUE_1024 << QMI_M1_TIMING_PAGEBREAK_LSB |
                           max_select << QMI_M1_TIMING_MAX_SELECT_LSB |
@@ -1435,6 +1447,12 @@ static void __not_in_flash_func(flash_timing_for)(int mhz, int* divisor_out, int
         if (clock_hz / divisor > 100000000) {
             rxdelay += 1;
         }
+        // RXDELAY is a 3-bit field (10:8) and CLKDIV an 8-bit one: a low limit on a
+        // high clock walks out of the first (Flash = 33 MHz at 504 MHz already
+        // computes rxdelay 16, which would spill into MIN_DESELECT). Clamping
+        // costs only sampling margin at a divisor nobody needs it at.
+        if (rxdelay > 7) rxdelay = 7;
+        if (divisor > 255) divisor = 255;
         *divisor_out = divisor;
         *rxdelay_out = rxdelay;
 }
