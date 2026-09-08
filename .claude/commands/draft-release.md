@@ -5,10 +5,11 @@ argument-hint: [new-version e.g. 1.2.27]
 
 Create a draft GitHub release with auto-generated Change History notes.
 
-Previous release tag: !`git tag --sort=-v:refname | grep '^v' | head -1`
+Last PUBLISHED release tag (changelog baseline): !`B=$(gh release list -R drewpo28/pico-speccy --json tagName,isDraft,isPrerelease --jq 'map(select(.isDraft==false and .isPrerelease==false)) | .[0].tagName' 2>/dev/null); [ -n "$B" ] || B=$(git tag --sort=-v:refname | grep '^v' | head -1); echo $B`
+Newest tag (may be this version's own pre-release): !`git tag --sort=-v:refname | grep '^v' | head -1`
 Current PORT_VERSION: !`grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt`
 Release for this version: !`VER=$(grep -oP 'set \(PORT_VERSION "\K[0-9.]+' CMakeLists.txt); gh release view "v$VER" -R drewpo28/pico-speccy --json name,isDraft,targetCommitish,assets --template '{{.name}} draft={{.isDraft}} target={{.targetCommitish}} assets={{len .assets}}' 2>&1 || true`
-Commits since previous tag: !`git log --oneline $(git tag --sort=-v:refname | grep '^v' | head -1)..HEAD`
+Commits since the PUBLISHED baseline: !`B=$(gh release list -R drewpo28/pico-speccy --json tagName,isDraft,isPrerelease --jq 'map(select(.isDraft==false and .isPrerelease==false)) | .[0].tagName' 2>/dev/null); [ -n "$B" ] || B=$(git tag --sort=-v:refname | grep '^v' | head -1); git log --oneline $B..HEAD`
 
 Steps:
 
@@ -19,8 +20,13 @@ Steps:
    - existing with `draft=false` → STOP: this version is already published;
      the user must bump PORT_VERSION (or pass a new version argument) first.
 
-1. **Generate the Change History** for the commit range above, following the
-   rules in `.claude/commands/getch.md` exactly (grouping, skip-list, entry
+1. **Generate the Change History** for the commit range above — that range is
+   `<last PUBLISHED release tag>..HEAD`, NOT `<newest tag>..HEAD`. A version
+   that exists only as a pre-release has NOT been released: its notes must
+   describe the whole version against the last full release, so re-releasing
+   the same version always regenerates the COMPLETE list (the recreated page
+   replaces the old one entirely — users never see the superseded notes).
+   Follow the rules in `.claude/commands/getch.md` exactly (grouping, skip-list, entry
    format `- **Added/Fixed/Improved <Name>** — ...`). If there are no
    meaningful commits, stop and tell the user there is nothing to release.
 
