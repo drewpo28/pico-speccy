@@ -212,6 +212,16 @@ void act_gameScwong() {
     int pw = 3, ph = 26, bw = 4, bh = 4, pv_player = 4;
     int paddle_x = 0, plane_p = 0, plane_c = 0;
     UiColor colField = C_BG, colPad = C_ACCENT, colBall = C_WHITE;
+    // The attract mode plays a REAL game, so its paddles have to MISS — with
+    // k_cpu[Normal] they never did and the score sat at 00:00 for ever: both
+    // sides chase the ball's own y with a +-8 px aim error while the catch
+    // window is (ph + bh) / 2 = 15 px at the default paddle, i.e. every error
+    // the AI could roll was still inside the paddle. The error is therefore
+    // derived from the CURRENT catch window (paddle SIZE is a user option,
+    // 16/26/38 px, and the ball size moves it too), so about one return in
+    // three is aimed wide whatever the options say. Everything else — ball
+    // serve speed, cap, acceleration, paddle px/tick — stays Normal's.
+    CpuSkill demo_sk = k_cpu[1];
     auto applyOpts = [&]() {
         colField  = gmFieldCol(Config::gm_field);
         colPad    = gmPadCol(Config::gm_pad);
@@ -224,6 +234,16 @@ void act_gameScwong() {
         paddle_x  = ox1 - pw - 2 * sc;
         plane_p   = paddle_x - bw;                  // ball x when it meets the player
         plane_c   = cpu_x + pw;                     // ball x when it meets the CPU
+        // A ball centre within +-(ph + bh) / 2 of the paddle centre is returned
+        // (the crossing test below spans py - bh/2 .. py + ph + bh/2 - 1), so an
+        // aim error uniform in +-E misses with probability (E - catch) / E:
+        // E = catch * 3 / 2 puts that at 1 in 3 before the court-edge clamp
+        // takes a few back. Never below the Normal +-8, so a tiny paddle does
+        // not turn the exhibition into pure luck.
+        int aim = ((ph + bh) / 2) * 3 / 2;          // catch window, half again
+        if (aim < (int)k_cpu[1].err) aim = k_cpu[1].err;
+        if (aim > 120) aim = 120;                   // err is a uint8_t half-range
+        demo_sk.err = (uint8_t)aim;
     };
     applyOpts();
 
@@ -274,7 +294,8 @@ void act_gameScwong() {
     bool ball_on = false;
 
     auto tune = [&]() -> const CpuSkill& {
-        return mode == MODE_PONG ? k_cpu[diff] : k_solo;
+        if (mode != MODE_PONG) return k_solo;
+        return demo ? demo_sk : k_cpu[diff];        // the demo misses on purpose
     };
     auto rnd = [](int lo, int hi) {                 // inclusive
         return lo + (int)(get_rand_32() % (uint32_t)(hi - lo + 1));
@@ -609,7 +630,7 @@ void act_gameScwong() {
     };
 
     auto cpuStep = [&]() {
-        cy = aiStep(cy, plane_c, -1, k_cpu[diff], cpu_err);
+        cy = aiStep(cy, plane_c, -1, tune(), cpu_err);   // pong only, so never k_solo
         if (cy != old_cy) drawCpuPaddle();
     };
 
@@ -625,11 +646,13 @@ void act_gameScwong() {
         placeServe();
     };
 
-    // Attract mode: a Normal-vs-Normal pong exhibition. Both paddles run aiStep
-    // with their OWN aim error, which is what makes points happen at all — two
-    // deterministic paddles of equal skill would rally until the speed cap and
-    // then forever. It is a real game in every other respect (score, sounds,
-    // first to 11), so nothing below needs a demo special case except the input.
+    // Attract mode: a Normal-vs-Normal pong exhibition on the demo skill. Both
+    // paddles run aiStep with their OWN aim error (rolled per rally, see
+    // demo_sk in applyOpts) — two deterministic paddles of equal skill would
+    // rally until the speed cap and then forever, and an error smaller than the
+    // paddle is the same thing with extra steps. It is a real game in every
+    // other respect (score, sounds, first to 11), so nothing below needs a demo
+    // special case except the input.
     auto startDemo = [&]() {
         demo = true;
         mode = MODE_PONG;
@@ -725,7 +748,7 @@ void act_gameScwong() {
         if ((st == ST_SERVE || st == ST_PLAY) && !paused) {
             if (demo) {
                 // the right-hand paddle is a player too — same AI, mirrored
-                py = aiStep(py, plane_p, +1, k_cpu[diff], demo_err);
+                py = aiStep(py, plane_p, +1, tune(), demo_err);
             } else {
                 // player paddle follows the held keys (arrows, Q/A, joystick)
                 const bool up = vkDown(fabgl::VK_UP)   || vkDown(fabgl::VK_MENU_UP)

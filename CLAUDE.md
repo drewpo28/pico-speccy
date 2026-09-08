@@ -2689,6 +2689,18 @@ ignores); the pong CPU is unchanged — its one behavioural difference, `dx == 0
 is unreachable outside ST_SERVE, where `st != ST_PLAY` already recentres. The
 two paddles must keep SEPARATE aim errors (`cpu_err`/`demo_err`): two
 deterministic paddles of equal skill rally to the speed cap and then forever.
+**Separate errors were necessary and NOT sufficient — the demo has its own
+skill, `demo_sk` (2026-09-08, NOT hw-tested).** On `k_cpu[Normal]` the error is
++-8 px while a return is scored for any ball centre within `(ph + bh) / 2` of
+the paddle centre — 15 px at the default paddle — so every error the AI could
+roll was still inside the paddle and the exhibition sat at 00:00 for ever
+(user report). `applyOpts` now derives `demo_sk.err` from that catch window
+(`* 3 / 2`, floored at Normal's 8), which is a ~1-in-3 nominal miss per return
+BEFORE the court-edge clamp saves a few near the walls, and holds at any paddle
+SIZE / ball size the Options page offers. Everything else is Normal's — serve
+speed, cap, accel, px/tick — and `tune()` is what routes it, so both `cpuStep`
+and the mirrored right paddle read the live skill instead of `k_cpu[diff]`
+(normal pong is untouched: `tune()` returns `k_cpu[diff]` unless `demo`).
 `idle` is reset by EVERY key down whatever it was, which is also what stops a
 key-driven return from the Options page (where it does not count up) from
 starting a demo instantly. 60 ticks/s
