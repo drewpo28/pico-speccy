@@ -108,7 +108,8 @@ def create_hdf(filename, size_mb):
     # RS-IDE HDF v1.1 format:
     # 0x00-0x06: "RS-IDE" + 0x1A
     # 0x07: HDF version (0x11 = v1.1)
-    # 0x08: flags (bit0: LBA28)
+    # 0x08: flags (bit0: half sectors - only the low byte of each 16-bit word
+    #             is stored, i.e. 256 bytes per sector; NOT LBA28)
     # 0x09-0x0A: data offset (little-endian, in bytes)
     # 0x0B-0x15: reserved
     # 0x16-0x7F: ATA IDENTIFY data (first 106 bytes of the 512-byte response)
@@ -117,7 +118,10 @@ def create_hdf(filename, size_mb):
     header[0:6] = b'RS-IDE'
     header[6] = 0x1A
     header[7] = 0x11  # v1.1
-    header[8] = 0x01  # LBA28 mode
+    # Flags: 0 = full 512-byte sectors.  Bit 0 means "half sectors" (a 256-byte
+    # payload per sector, as written through an 8-bit interface) - setting it
+    # makes IDE.cpp read this image at 256 B/sector and return garbage.
+    header[8] = 0x00
 
     # Data offset = 128 + 384 (padding to align to 512) = 512
     # Actually, simplest: data starts right after header at 128
