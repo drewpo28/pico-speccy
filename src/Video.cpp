@@ -5128,11 +5128,15 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const
     const int ntiles = kTiles[ts_rres_live & 3];
 
     // 8 pixels of a bitmap element line into the buffer at pos, direction dir.
+    // The four source bytes are the ONE PSRAM read of a tile — take the pixels
+    // out of the word already loaded instead of re-reading src[i] (those are
+    // cache hits, but four loads plus address arithmetic per tile, on the
+    // hottest line in the renderer).
     auto blit8 = [&](const uint8_t* src, uint32_t pos, int dir, uint8_t pal) {
         uint32_t s4; memcpy(&s4, src, 4);
         if (!s4) return (uint32_t)((pos + 8 * dir) & 0x1FF);   // whole element transparent
-        for (int i = 0; i < 4; i++) {
-            const uint8_t c = src[i];
+        for (int i = 0; i < 4; i++, s4 >>= 8) {
+            const uint8_t c = (uint8_t)s4;
             if (c & 0xF0) ts[pos] = (uint8_t)(pal | (c >> 4));
             pos = (pos + dir) & 0x1FF;
             if (c & 0x0F) ts[pos] = (uint8_t)(pal | (c & 0x0F));
@@ -5140,8 +5144,31 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const
         }
         return pos;
     };
+    // A bitmap set is 8 pages (page & 0xF8) and one line picks one of them, so
+    // the page pointers are resolved ONCE per set instead of once per tile:
+    // `TsConf::pagePtr` walks MemESP::ram[]'s pooled descriptor (two dependent
+    // loads plus a type test) and lives in FLASH, so on core1 those ~84 calls
+    // per line were also ~84 XIP code fetches through a cache full of PSRAM
+    // lines. 0xFF can never be a set (they are multiples of 8), so it is the
+    // "nothing cached yet" sentinel.
+    // TWO slots, because the layers alternate sprites/tiles/sprites/tiles and a
+    // one-slot memo would re-resolve on every switch: the sprite set and the
+    // tile set of the layer being composed both stay resolved (and a title that
+    // shares one bitmap set between them never fills the second).
+    uint8_t bm_set[2] = { 0xFF, 0xFF };
+    const uint8_t* bm_page[2][8];
+    uint8_t bm_next = 0;
     auto bmLine = [&](uint8_t gpage, uint32_t bline) -> const uint8_t* {
-        const uint8_t* p = TsConf::pagePtr((gpage & 0xF8) + ((bline >> 6) & 7));
+        const uint8_t set = (uint8_t)(gpage & 0xF8);
+        int slot;
+        if (set == bm_set[0])      slot = 0;
+        else if (set == bm_set[1]) slot = 1;
+        else {
+            slot = bm_next; bm_next ^= 1;
+            bm_set[slot] = set;
+            for (int k = 0; k < 8; k++) bm_page[slot][k] = TsConf::pagePtr(set + k);
+        }
+        const uint8_t* p = bm_page[slot][(bline >> 6) & 7];
         return p ? p + ((bline & 63) << 8) : nullptr;
     };
 

@@ -2182,6 +2182,45 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
        630 computed 78 and would have spilled into SELECT_HOLD; and
        `flash_timing_for`'s RXDELAY is 3 bits, which a low Flash limit overflows
        at any clock (Flash 33 MHz at 504 already computes 16).
+     - **The TSU compose is PSRAM MISS LATENCY, not arithmetic — and that is
+       what a TSU demo's frame time is made of (arithmetic, 2026-09-08; the
+       measurement to confirm it is now in Speed Test).** One visible tile costs
+       exactly ONE 4-byte read of the tile bitmap, and `bmLine`'s rows are
+       256 bytes apart, so every one of them is a full 8-byte XIP cache-line
+       fill that nothing can amortise: 42 tiles x 2 layers = 84 fills per line,
+       ~300 ns each at 126 MHz SCK (0xEB = 8 command + 6 address + 6 dummy
+       clocks of overhead for 16 clocks of data — **the tileset layout wastes
+       half of every fill**, the other 4 bytes being tile `tnum^1`), i.e. ~25 us
+       of the ~30 us `tsu` costs per line. Demo 200's c1 = 12.4 ms is therefore
+       ~6.4 ms of PSRAM stall, and the working set (a few hundred distinct tiles
+       x 8 rows ≈ 25 KB per frame) cannot fit the 8 KB cache, which is why the
+       hit rate on this path is ~0 however the loop is written.
+       Consequences worth keeping: (a) fetching a tile's 8 rows together buys
+       NOTHING (they are 8 separate lines), and neither does a per-frame tile
+       cache smaller than the working set; (b) sharing the render with core0
+       still helps, but sub-linearly — the PSRAM port is one queue, so only the
+       compute half of the split overlaps; (c) the levers that WOULD move this
+       are fewer bytes per fill (nothing to do — the line is 8 bytes) or a
+       faster SCK, which is what makes the clock lever above the big one.
+       Micro-optimisations from the same reading, both in `tsuComposeLine`:
+       `blit8` takes its four pixels out of the word it already loaded instead
+       of re-reading `src[i]`, and the bitmap page pointers are resolved once
+       per BITMAP SET (two memo slots, because the layers alternate
+       sprites/tiles) instead of once per tile — `TsConf::pagePtr` is a pooled
+       descriptor walk in FLASH, so those ~84 calls per line were also ~84 XIP
+       code fetches competing with the tile data for the same port.
+     - **Speed Test → PSRAM now measures the patterns this machine uses**, not
+       just sequential MB/s (which predicts nothing here): `QSPI miss` = ns per
+       scattered 4-byte read at the tile-row stride of 256 B over a 1 MB window
+       (bigger than the cache, so every access really misses), the same figure
+       through the NOCACHE alias beside it, and a NOCACHE write throughput
+       against the cached one. Those three numbers decide, without another
+       guess: whether the tile path should bypass the cache, whether routing the
+       DMA destination through the uncached alias is worth its
+       cache-maintenance rules (a cached write miss pays a read-allocate fill
+       plus the write-back, i.e. the DMA reads 37 KB it is about to overwrite),
+       and what a higher SCK would actually buy. Expect ~300 ns cached at
+       126 MHz if the reasoning above is right.
      - Still untried, in rough order of expected value: front-stealing from the
        queue in the drain loops (a hardware-spinlock claim + a done-flag retire,
        which is what would also shorten a wait core0 is ALREADY inside); DMA

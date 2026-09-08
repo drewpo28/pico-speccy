@@ -39,6 +39,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include <hardware/vreg.h>
 #include <hardware/adc.h>
 #include <hardware/structs/qmi.h>
+#include <hardware/regs/addressmap.h>   // XIP_BASE / XIP_NOCACHE_NOALLOC_BASE (Speed Test)
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
 
@@ -6834,6 +6835,7 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
         float sram_rd = 0.0f, sram_wr = 0.0f;
         float spi_rd = 0.0f, spi_wr = 0.0f;
         float qspi_rd = 0.0f, qspi_wr = 0.0f;
+        float qspi_miss_ns = 0.0f, qspi_wr_nc = 0.0f, qspi_miss_nc_ns = 0.0f;
         float sd_rd = 0.0f, sd_wr = 0.0f;
         float usb_rd = 0.0f, usb_wr = 0.0f;
         bool sd_ok = false, usb_ok = false;
@@ -6954,7 +6956,7 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 elapsed = time_us_64() - t0;
                 qspi_wr = (float)total / (float)elapsed;
 
-                progressDialog(title, "QSPI PSRAM rd...", 50, 1);
+                progressDialog(title, "QSPI PSRAM rd...", 40, 1);
                 total = 0;
                 t0 = time_us_64();
                 do {
@@ -6967,6 +6969,74 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 } while (time_us_64() - t0 < 300000ULL);
                 elapsed = time_us_64() - t0;
                 qspi_rd = (float)total / (float)elapsed;
+
+                // --- The patterns a TS-Conf frame is actually made of ---------
+                // Sequential MB/s above says almost nothing about this machine:
+                // the XIP cache line is 8 bytes, and the renderer's and the
+                // TSU's reads are SCATTERED — one 4-byte fetch per tile per
+                // line, tile rows 256 bytes apart (Video.cpp tsuComposeLine
+                // bmLine). Every such fetch is a full cache-line fill, so what
+                // decides a TSU demo's frame time is the LATENCY of one miss,
+                // measured here directly. The 256-byte stride is the tile-row
+                // stride, and the window is 1 MB so the touched lines (8 KB of
+                // them) cannot sit in the 8 KB cache and turn into hits.
+                {
+                    const uint32_t STRIDE = 256;
+                    uint32_t win = (uint32_t)butter_psram_size();
+                    if (win > 0x100000u) win = 0x100000u;
+                    const uint32_t nacc = win / STRIDE;
+                    progressDialog(title, "QSPI miss (tile)...", 55, 1);
+                    uint32_t acc = 0, hits = 0;
+                    t0 = time_us_64();
+                    do {
+                        for (uint32_t a = 0; a < win; a += STRIDE)
+                            acc ^= *(const uint32_t*)(PSRAM_DATA + a);
+                        hits += nacc;
+                    } while (time_us_64() - t0 < 300000ULL);
+                    elapsed = time_us_64() - t0;
+                    volatile uint32_t _s1 = acc; (void)_s1;
+                    if (hits) qspi_miss_ns = (float)elapsed * 1000.0f / (float)hits;
+
+                    // Same pattern through the NOCACHE alias: one 4-byte bus
+                    // transaction instead of an 8-byte fill. If this comes out
+                    // FASTER, the scattered readers should bypass the cache.
+                    progressDialog(title, "QSPI miss (nc)...", 70, 1);
+                    const uint8_t* nc = (const uint8_t*)(XIP_NOCACHE_NOALLOC_BASE
+                                        + ((uintptr_t)PSRAM_DATA - XIP_BASE));
+                    acc = 0; hits = 0;
+                    t0 = time_us_64();
+                    do {
+                        for (uint32_t a = 0; a < win; a += STRIDE)
+                            acc ^= *(const uint32_t*)(nc + a);
+                        hits += nacc;
+                    } while (time_us_64() - t0 < 300000ULL);
+                    elapsed = time_us_64() - t0;
+                    volatile uint32_t _s2 = acc; (void)_s2;
+                    if (hits) qspi_miss_nc_ns = (float)elapsed * 1000.0f / (float)hits;
+
+                    // Writes through the NOCACHE alias, against the cached
+                    // memset above: a cached write MISS costs a line fill
+                    // (read-allocate) plus the later write-back, so the TS DMA
+                    // pays for reading memory it is about to overwrite. This is
+                    // the number that says whether routing the DMA destination
+                    // through the uncached alias is worth its cache-maintenance
+                    // rules. Deliberately the SAME 64 KB region the cached
+                    // write test already dirtied — the two views of it are
+                    // incoherent, which only matters to guest RAM the speed
+                    // test has overwritten anyway.
+                    progressDialog(title, "QSPI wr (nc)...", 85, 1);
+                    uint8_t* ncw = (uint8_t*)(XIP_NOCACHE_NOALLOC_BASE
+                                   + ((uintptr_t)PSRAM_DATA - XIP_BASE));
+                    total = 0;
+                    t0 = time_us_64();
+                    do {
+                        for (uint32_t a = 0; a < sz; a += 4)
+                            *(uint32_t*)(ncw + a) = 0xAAAAAAAAu;
+                        total += sz;
+                    } while (time_us_64() - t0 < 300000ULL);
+                    elapsed = time_us_64() - t0;
+                    qspi_wr_nc = (float)total / (float)elapsed;
+                }
 
                 progressDialog(title, "", 100, 1);
                 progressDialog("", "", 0, 2);
@@ -7024,8 +7094,9 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
             if (has_qspi) {
                 pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
                     " QSPI PSRAM rd: %.2f MB/s\n"
-                    " QSPI PSRAM wr: %.2f MB/s\n\n",
-                    qspi_rd, qspi_wr);
+                    " QSPI PSRAM wr: %.2f MB/s (nc %.2f)\n"
+                    " QSPI miss    : %.0f ns (nc %.0f)\n\n",
+                    qspi_rd, qspi_wr, qspi_wr_nc, qspi_miss_ns, qspi_miss_nc_ns);
             }
         }
         if (do_sd) {
