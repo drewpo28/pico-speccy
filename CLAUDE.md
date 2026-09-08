@@ -4012,8 +4012,8 @@ On RP2350, UART TX available via two funcsel:
 | 17 | — | FREE | |
 | 18 | SD MOSI | FIXED | SPI1 PCB |
 | 19 | SD MISO | FIXED | SPI1 PCB |
-| 20 | LOAD_WAV_PIO / NES_DATA | REASSIGN | No USE_NESPAD |
-| 21 | MIDI_TX / NES_DATA2 | REASSIGN | **BUG: GPIO 21 odd = UART RX, not TX! MIDI broken** |
+| 20 | MIDI_TX / LOAD_WAV_PIO / DBG_UART_TX / NES_DATA | REASSIGN | UART1 TX funcsel 2 — works; mutually exclusive with WAV-in and the UART console. No USE_NESPAD |
+| 21 | CLK_AY_PIN1 / NES_DATA2 | REASSIGN | not in use; odd GPIO = UART RX only |
 | 22 | SD CS | FIXED | SPI1 PCB |
 | 23 | — | FREE | |
 | 24 | — | FREE | |
@@ -4085,13 +4085,13 @@ On RP2350, UART TX available via two funcsel:
 |-------|-----|------|-------|----------|------|------|--------|
 | MURM2 | RP2350A | 0-29 | 15 | 9 | 5 | OK (GPIO 22) | **Conflict with PSRAM** (CLK=20, LAT=21) |
 | PICO_PC | RP2350A | 0-29 | 13 | 10 | 6 | OK (GPIO 26) | OK |
-| PICO_DV | RP2350 | 0-29,47 | 14 | 8 | 9 | **BUG** (GPIO 21=RX!) | Conflict with display (8,9) |
+| PICO_DV | RP2350 | 0-29,47 | 14 | 8 | 9 | OK (GPIO 20) | Conflict with display (8,9) |
 | ZERO2 | RP2350B | 0-47 | 14 | 12 | 22 | OK (GPIO 22) | Disabled |
 | MURM | RP2350 | 0-29 | 18 | 10 | 0 | OK (GPIO 22) | OK |
 
 ### Known bugs and conflicts
 
-1. **PICO_DV MIDI_TX_PIN=21** — odd GPIO, hardware UART1 RX not TX. MIDI broken. Fix: move to GPIO 20
+1. ~~**PICO_DV MIDI_TX_PIN=21**~~ — FIXED 2026-09-08 (NOT hw-tested): moved to GPIO 20 (UART1 TX, funcsel 2). GP20 is now shared by MIDI / WAV-in / the Debug UART console — the generic handling already covers it (`pwm_audio.cpp` skips `inInit` while external MIDI is on, `UiStage` notes the WAV clash, `ESPectrum::setup` disables MIDI when the console or ZiFi owns the pin)
 2. **MURM2 NESPAD vs PSRAM** — NES_CLK=20, NES_LAT=21 overlap PSRAM_MOSI=20, PSRAM_MISO=21. Cannot coexist
 3. **PICO_DV NESPAD vs Display** — NES_CLK=8, NES_LAT=9 inside display range (6-13). USE_NESPAD correctly not set
 4. **MURM2/MURM MIDI_TX=LOAD_WAV_PIO=22** — mutually exclusive features on same pin. Handled in code (warning in messages.h)
