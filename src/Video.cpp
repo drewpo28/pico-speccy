@@ -73,6 +73,7 @@ extern "C" void graphics_set_crt(uint8_t level);
 extern "C" void graphics_set_dither(bool enabled);
 extern "C" void graphics_set_hdmi_clock_drive(bool soft);
 extern "C" void hdmi_reinit(void);
+extern "C" void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
 extern "C" void vga_reinit(void);
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" void vga_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
@@ -5377,6 +5378,26 @@ IRAM_ATTR void VIDEO::EndFrame() {
                 (unsigned)gap_max, (unsigned)dur_max,
                 (unsigned)xh, (unsigned)xa, xa ? 100.0f * (float)xh / (float)xa : 0.0f,
                 (float)(xa - xh) * fps / 60.0f / 1e6f, fps);
+            // Audio path on its own line (every machine): timer ticks per 60 frames
+            // (expect ~38400 = 60 x 20.48 ms x 31250 Hz; fewer = the core0 alarm IRQ
+            // starved), ticks that found the frame buffer exhausted (hold = ZX sample
+            // frozen — a late/missing frame), frames whose mix was one constant (the
+            // guest itself was silent), and the HDMI packet-queue health (und = queue
+            // empty at a pop = producer starved; skip/dup = late line ISR; q = depth
+            // watermarks against the 64 target / 128 cap). Which of hold / flat / und
+            // moves during a dropout names the stage where the sample died.
+            {
+                extern volatile uint32_t g_pcm_tick_ct, g_pcm_hold_ct, g_aud_flat_frames;
+                uint32_t ticks = g_pcm_tick_ct, hold = g_pcm_hold_ct, flat = g_aud_flat_frames;
+                g_pcm_tick_ct = 0; g_pcm_hold_ct = 0; g_aud_flat_frames = 0;
+                uint32_t und = 0, skip = 0, dup = 0, qmin = 0, qmax = 0;
+#if defined(VGA_HDMI)
+                if (Config::audio_driver == 4) hdmi_audio_health_snapshot(&und, &skip, &dup, &qmin, &qmax);
+#endif
+                Debug::log("[PERF] aud: ticks=%u hold=%u flat=%u/60 hdmi: und=%u skip=%u dup=%u q=%u..%u",
+                    (unsigned)ticks, (unsigned)hold, (unsigned)flat,
+                    (unsigned)und, (unsigned)skip, (unsigned)dup, (unsigned)qmin, (unsigned)qmax);
+            }
             // TS-Conf half on its own line: Debug::log truncates at 256 bytes.
             if (Z80Ops::isTsconf)
                 Debug::log("[PERF] ts: tsRender=%.1fms (max %.1fms, base %.1f tsu %.1f out %.1f) c1=%.1fms/%ul wait=%.1fms (max %.1fms, %u/60) dmaC1=%.1fms waitDma=%.1fms (max %.1fms) dma=%.1fms/%uw (ram %u blt %u fill %u) poll=%u ff=%u/%ukT frmInt=%u/60f",
