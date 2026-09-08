@@ -759,7 +759,10 @@ size_t featureCost(FeatureId f) {
         case FEAT_ZCONTROLLER:   return 512;         // mmc_sector_buf (shared with DivMMC)
         // 2K sector buf + 212B identity + 2x FIL (~1.1K), plus the SMUC card's
         // 2 KB 24LC16 NVRAM image when that scheme is the one being enabled.
-        case FEAT_IDE:           return (Config::ide_scheme == IDE::SMUC ? 6 : 4) * 1024;
+        // 4 KB = sector buffer + identity + 2x FIL. The SMUC card's own 2 KB
+        // 24LC16 is NOT counted here any more: it belongs to the card (CMOS +
+        // NVRAM), not to the disk, and is allocated with the machine.
+        case FEAT_IDE:           return 4 * 1024;
         case FEAT_SAA:           return 2 * 1024;    // SAASound object (~1.5K: state + 2x640B buffers)
         case FEAT_COVOX:         return 2 * 1024;    // 2x640B stereo sample buffer (~1.25K)
 #ifdef VGA_HDMI

@@ -1694,6 +1694,21 @@ lives in `Debug::uart*` (Debug.cpp), `BoardPins::dbgUart*` and
 - **clk_peri follows clk_sys**, so the baud is re-derived (`uartReclock`) after the
   boot clock switch and after the `Config::cpu_mhz` switch — `uart_set_baudrate`,
   not `uart_init`, which would drop the FIFO.
+- **One line at a time, across cores** (2026-09-08): `dbg_uart_put` is a plain
+  read-modify-write of the ring's write index and the byte loop that emits a line
+  is not atomic, so core0 and core1 logging together used to interleave AT BYTE
+  GRANULARITY (and lose a byte when both read the same index). A capture of seven
+  boots had it in five of them — core0's `[CMOS] load` spliced with core1's
+  GS/NgsSd init into `cmos_Saw SD, 31207424 corpProf.nvr`, which reads as a
+  corrupted FILENAME, plus mangled `NgsSd: rd#N` dumps. `Debug::log` and the
+  printf driver now hold a hardware spinlock for the length of one line
+  (`dbg_lock`/`dbg_unlock`; IRQ-saving, so an interrupt on the SAME core that
+  also logs cannot deadlock, and the other core spins only for that line). The
+  claim is optional — no free spinlock leaves the console working, unsynchronised
+  as before — and `Debug::fault_log` deliberately stays lock-free, because on a
+  crash the holder may be the context that died. Same lesson as the psram_spi
+  per-core scratch invariant: **before believing a capture, know that its lines
+  are whole.**
 - **SRAM: the ring is heap, allocated by `uartStart`, so a console that is OFF costs
   only the pointers** — measured in the session, see the table in the commit /
   message; with it ON it is 4 KB of heap taken right after the framebuffer
@@ -2973,10 +2988,17 @@ not per board**: QSPI PSRAM is a property of the plugged-in Pico 2 module, not o
 the carrier (a Murmulator 1 takes a CS1-PSRAM module fine — its butter probe is
 GPIO19), so `GMX_IN_FLASH=1` on EVERY board (=0 stays an escape hatch that drops
 the ROM, the menu rows and the GM.DLS partition shrink together). A
-disabled/absent butter chip: the menu retargets a staged GMX pick to Yellow in
-`resolveConstraints` ("GMX needs QSPI PSRAM"); a persisted pick falls back in
-requestMachine with a bootNotice (visible at boot only — that is why the menu
-gate exists).
+disabled/absent butter chip: **the romset is not OFFERED at all since 2026-09-08**
+— `mach_scorpOpts` / `pref_scorpOpts` (UiTree.cpp) build the Scorpion radios at
+runtime and drop the GMX entry when `butter_psram_size()` is 0, the same
+`NM_RADIO_D` shape NeoGS uses in `gs_modeOpts`. It used to be listed and then
+snap back to Yellow in `resolveConstraints`, which reads as a menu refusing its
+own row (owner's call). Both fallbacks STAY as backstops for a pick that arrives
+from NVS written on a board that has the chip: the `resolveConstraints` retarget
+("GMX needs QSPI PSRAM") and `requestMachine`'s bootNotice. The preferred-romset
+values are indices into `kPrefScorp`, which is why dropping the entry does not
+move "Last" — that is what the "1024 and ProfROM sit BEFORE the conditional GMX
+entry" rule buys.
 
 - **ROM is EMBEDDED in flash, deduplicated + overlaid** (`#if GMX_IN_FLASH`,
   all boards): the 512 KB GMX boot ROM
@@ -3386,9 +3408,10 @@ bit 6) through the routine at ROM 0x050B. `[GMX hb]` now carries
 fires on data reads.** Everything past the boot — the shell, TR-DOS out of the
 plane's bank 3, the 1 MB paging under this firmware, snapshots — is untested.
 
-"ZS-1024 + ProfROM" — Scorpion PROF-ROM **v4.xx.015, image
-scorp4xx015_5D4BA991.ROM** (CRC32 5D4BA991, shipped as `src/roms/scorpion/src/
-profrom.bin`), the firmware a real ZS-1024 Turbo+ shipped with (speccy4ever
+"ZS-1024 + ProfROM" — Scorpion PROF-ROM **4.01, image 91F513AB** (CRC32
+91F513AB, shipped as `src/roms/scorpion/src/profrom.bin`; verify with
+`python3 -c "import zlib;print('%08X'%zlib.crc32(open('src/roms/scorpion/src/profrom.bin','rb').read()))"`),
+the firmware a real ZS-1024 Turbo+ shipped with (speccy4ever
 files every ProfROM under "Prof ROM & ZX-1024"; ZXMAK2 has no 256K-only ProfROM
 machine either, and MAME's `profscorp` lists this exact CRC as a BIOS option).
 It is what makes the SMUC controller below useful — the stock ZS-256 v2.94/2.95
@@ -3458,8 +3481,22 @@ has partial support, 4.01 and 4.xx.015 full.
   the plain-Scorpion overlay for the same Sinclair base from the previous romset.
 - Menu: Machine → Scorpion → "ZS-1024 + ProfROM"; the pref radio gained the same
   entry (before the conditional GMX one, so the indices stay build-independent).
-- **Why 4.xx.015 and not one of the ten 4.01 variants** (swapped 2026-09-05):
-  it is the ONLY generation whose boot ROM carries the
+- **4.xx.015 was tried on 2026-09-05 and REVERTED the same day — the shipped
+  image is 4.01 / 91F513AB, and the paragraphs below describing 4.xx.015 as
+  shipped are the record of that attempt, not of the tree** (the version claim
+  survived the revert and misled this file until 2026-09-08, when a user's
+  `[CMOS] save … sig0E=61` gave it away: 4.xx.015 stamps 0x62 there). Why it went
+  back: on 4.xx.015 the **virtual-disk A→B copy fails** (its newer driver hits an
+  emulation gap the status fix did not cover) while 91F513AB copies fine, same
+  driver generation as GMX plane 5. Its boot selector cannot be grafted onto
+  91F513AB either — plane 1 bank 2 differs by ~11700 of 16384 bytes and the
+  128-menu region alone has 266 cross-references at version-specific addresses.
+  The workaround on 91F513AB is the monitor's Disk Utility → **Autostart** +
+  **from drive**, which is why that setting matters. Full reasoning in the
+  `profrom-boot-selector-deferred` memory; **if it is ever reopened, start from
+  a `-DVDISK_TRACE=ON` capture of the failing A→B copy.**
+- **Why 4.xx.015 was picked in the first place** (2026-09-05, reverted — see
+  above): it is the ONLY generation whose boot ROM carries the
   `HDD boot / Monitor / Navigator / options / Exit !` menu (p0b0 0x237F). Every
   other Scorpion ROM in this project's collection — v2.94, v2.95, ProfROM 3.2a,
   3.30, 3.9F, all ten 4.01 builds, 4.02, 4.xx.004 — shows the identical classic
@@ -3482,7 +3519,7 @@ has partial support, 4.01 and 4.xx.015 full.
   i.e. **140 KB over**, and the linker ASSERT rejects it. Nothing cheap frees
   that: the GM.DLS partition has only ~100 KB of slack over the converted
   gm.dls bank, and the 345 KB the GMX ROM would free costs a whole hw-debugged
-  machine. Decision: keep 4.xx.015 alone — what 4.01 uniquely offered was its
+  machine. Decision at the time: keep one image alone — what 4.01 uniquely offered was its
   ROM DISK (MagOS, Real Commander, Cat HDD, HDST), and those run just as well
   from a TRD on the SD card.
 
@@ -3638,13 +3675,106 @@ which we already ship) — and the decode was diffed against Unreal's masks over
   inside the 16-byte page, the three page-select bits, a foreign device address
   being ignored, and the idle bus. **Re-run after any change there** — all three
   hand-applied mutations (page-bit shift, wrap, ACK-slot skip) fail it.
-- The RTC is the existing `RTC::` singleton (MC146818), so the SMUC clock shares
-  `cmos.nvr` with the Pentagon/Gluk one and honors Options → RTC exactly the same
-  way (off → `RTC::readDisabled`, which answers UIP-clear).
+- **The card is FITTED by Devices → "CMOS + NVRAM", not by the IDE row
+  (2026-09-07, NOT hw-tested)** — see the section below; the RTC is the existing
+  `RTC::` singleton (MC146818) behind the SMUC's own `#DFBA` port, persisted per
+  romset (`cmos_<romset>.nvr`, see the CMOS section), and once the card is fitted
+  its clock and NVRAM are live with no second switch of their own.
 - **#7FBA reads back `latch | 0x3F`**, matching UnrealSpeccy's
   `return comp.p7FBA | 0x3F`. It was `| 0x37` here — a transcription slip that
   cleared bit 3 of the port Unreal names **VirtualFDD**, i.e. the one the TR-DOS
   pseudo-disk mapping runs through.
+
+### The card is fitted by CMOS + NVRAM; the IDE row only attaches a disk (2026-09-07, NOT hw-tested)
+
+The whole card used to hang on ONE gate, `IDE::scheme == SMUC`, which conflated
+two unrelated questions and produced the report "настройки БИОС не сохраняются
+между F12": with the default **CMOS + NVRAM = off** and no HDD image picked, the
+card did not exist, so ProfROM's Setup had no CMOS to write — every boot said
+"CMOS checksum error" and its settings lived only in the firmware's RAM copy,
+which F11 keeps and F12 throws away. Now:
+
+- **`smucCardFitted()` = `isScorpion && (Config::rtc_enabled || IDE::scheme ==
+  SMUC)`.** Both switches describe the SAME board, which is why it is an OR and
+  not an exclusion: you cannot have the card's IDE connector without its clock
+  chips. Note `IDE::scheme`, not `portScheme`: a card does not unplug itself
+  when the disk is ejected, so an SMUC scheme with no image still means "the
+  card is installed" — only its ATA half goes quiet. The card's own ports —
+  `#5FBA`/`#5FBE` version+revision, `#FFBA` SYS
+  (24LC16 bit-bang + HDD reset), `#DFBA` MC146818, `#7FBA` virtual-FDD latch,
+  the `#7FBE` 8259 stub — answer whenever it is fitted, and the CMOS/NVRAM have
+  no second switch of their own (testing `rtc_enabled` per access was the bug).
+- **`smucDiskActive()` = `IDE::portScheme == SMUC`** gates the ATA window ALONE
+  (`portScheme` also requires a mounted image — see the IDE port-gate section
+  below). Without it the taskfile answers **0x00 = device absent** (BSY clear,
+  DRDY clear — the same thing our own empty slave presents, which is what the
+  ProfROM and GMX probes read as "hard disk not found"), writes are swallowed,
+  and SYS D0 does NOT call `IDE::reset()`: with a NEMO/PROFI scheme selected,
+  `IDE::` holds another card's register file. The window still DECODES, because
+  the card is fitted — letting those addresses reach the ULA is the shared-bus
+  deviation the handlers exist to avoid. **Hw check owed:** a fitted card with NO
+  disk is a configuration ProfROM had never seen here; if its boot ever wedges in
+  a BSY/DRDY poll, this is the first thing to look at (0xFF is the other
+  plausible floating-bus answer, and it survives the drive test the same way).
+- **The 24LC16's lifecycle moved out of `IDE::init`/`close`** into
+  `Ports::smucCardUpdate()` (2 KB heap, `Config`-side view of the same rule),
+  called from `Config::requestMachine` — the funnel every boot and live machine
+  switch passes through — and from the tail of the menu commit, where both
+  switches are settled. Idempotent both ways. `IDE::close()` deliberately no
+  longer frees it: closing a disk must not unplug the card's battery.
+  `Subsystems::featureCost(FEAT_IDE)` dropped its SMUC-only +2 KB with it.
+- **Menu**: picking IDE/HDD = SMUC turns CMOS + NVRAM on as an EDGE (a note, the
+  usual `g_seq` tie-break, `resolveConstraints`) — one direction only. Turning
+  CMOS + NVRAM off afterwards does NOT unmount the disk: the disk keeps the card
+  fitted by itself, and Hardware Info's `SMUC card` row says which half is live
+  (`CMOS + NVRAM + HDD` / `CMOS + NVRAM, no HDD` / `not fitted`).
+- **Both of the card's stores survive a power cut, and the two SD files ARE the
+  battery**: `CONFIG_DIR/cmos_<romset>.nvr` (256 B — the MC146818 register file
+  from 0x0E up plus reg B, i.e. ProfROM's 0x62 signature at 0x0E and its
+  checksummed 0x10-0x3E block with the sum at 0x3F) and
+  `CONFIG_DIR/nvram_<romset>.bin` (2 KB — the 24LC16, where ProfROM keeps its
+  own settings and the HDD partition table). `RTC::flushNVRAM()` and
+  `Nvram24::flush()` run from `ESPectrum::loop` every frame and are RATE
+  LIMITED, not deferred: the first change after a quiet period is on the card
+  within one frame and a write burst costs one write per 1.5 s, so a power cut
+  can only lose changes made in the last 1.5 s. `OSD::esp_hard_reset` forces
+  both past the limiter, which is what covers F12 / the menu / a machine switch.
+  No SD card means no battery (Config's own RAM fallback does not extend here).
+  Both stores log their file: `[CMOS] save … sig0E= sum3F=` and `[NVRAM24]
+  save/load … sig0= sum=` (the NVRAM lines were added 2026-09-08 — "the settings
+  are gone" had no way to answer whether the card's own chip ever reached the SD
+  card).
+- **The two stores hold different things, and NEITHER is written per keypress**
+  (2026-09-08, read out of the shipped 91F513AB driver in plane 1 bank 3):
+    - **CMOS**: `0x00-0x09` clock, `0x0A`/`0x0B` control, `0x0D` VRT, **`0x0E` =
+      signature `0x61`**, **`0x10-0x3E` the config block under checksum**, `0x3F`
+      the checksum byte, `0x7F` only as an aliasing probe. Exported entries are
+      `0x1F59` read cell, `0x1FDD` write cell, **`0x2023` write cell AND refresh
+      the checksum** (`0x2030` = CRC over `0x10-0x3E`, folded to one byte and
+      stored at `0x3F`), plus `0x1F93`/`0x1FB2` = read/write the CLOCK through the
+      datasheet SET sequence (reg B `0x9E` → time regs → `0x5E`). The block's
+      consumers live in other banks and reach them through the driver's vectors —
+      nothing in this bank reads `0x10-0x3E` cell by cell.
+    - **24LC16**: a 2 KB image the monitor MIRRORS IN RAM at `0x7530`
+      (`0x0DAD` loads all 2 KB in, `0x0DC7` writes all 2 KB back plus a fresh
+      checksum), signature `0x61` at byte 0 and a checksum at `0x00FE/0x00FF`
+      (`0x0D51` reads it, `0x0DE8` recomputes over `0x000-0x0FD`, `0x0D62`
+      validates and re-initialises on a mismatch). **Autostart / "from drive"
+      live here** (smuc.pdf §3.3.4), i.e. in that RAM mirror until something
+      flushes the whole image.
+  So a keypress that changes a setting need not touch the card at all — expect
+  the write when the page or the monitor is LEFT, and a whole-image flush shows
+  as `[NVRAM24] save … wr≈2048`. And a boot with NO user change still logs
+  `[CMOS] save`: the size probe at `0x2047` writes `0x55`/`0xAA` into cell `0x3F`
+  and `0x55` into `0x7F` and restores both, which dirties the image every time
+  (it is also why `sum3F=AA` can appear — that is the probe's own value, caught
+  if the write-back lands inside it). The `wr=`/`last=` fields on both save lines
+  exist to tell those apart. The I2C model was re-checked against the same
+  driver: device address `0xA0 | page<<1` (`0x0EA5`), MSB-first bytes (`0x0EF7`
+  write / `0x0EB8` read with SDA on D6), ACK read at `0x0EDE`, START = SDA low
+  while SCL high (`0x0F2C`), WP cleared before every access and set again after
+  (`0x0F42` / `0x0F3E`) — all as `src/Nvram24.cpp` implements them, and the WP
+  bit being ignored on writes is why its bracketing does not matter here.
 
 ### How a SMUC disk is actually organised (smuc.pdf §3.2-3.3, the scanned manual)
 
@@ -3689,6 +3819,46 @@ fills the log with reads that were never ours), and **do not run SMUC_TRACE and
 IDE_PORT_TRACE together** — the UART drops and interleaves lines
 (`[IDE WR]E WR] reg=1 val reg=2 val=0x01`), which is the same flood that cost a
 round on the +3e IDE trace.
+
+## IDE / HDD: a scheme with no image is OFF to the guest (2026-09-08, hw-confirmed for SMUC only)
+
+`IDE::portScheme` is the scheme the PORT DECODERS answer for: `IDE::scheme`
+while at least one image is really open, `OFF` otherwise. `IDE::scheme` and
+`Config::ide_scheme` stay what they were — the configuration — and the menu, the
+image rows, Hardware Info's scheme name and the budget all keep reading those.
+One rule for every interface: selecting NEMO / PROFI / SMUC / IDEDOS and
+mounting nothing is indistinguishable from Off, so the guest can never find a
+phantom controller with no disk behind it (the owner's rule).
+
+- **It is a plain mirror, not a `present()` call.** The five gates sit in the
+  RAM-resident `Ports::input`/`output` decode chain (NEMO in+out, PROFI in+out,
+  the `p3eIde()` helper) plus `smucDiskActive()`, so the test has to stay one
+  byte load. `IDE::init()` sets it (`present() ? scheme : OFF`) and `close()`
+  clears it — every mount, eject, geometry edit and remount funnels through
+  `init()`, so there is no third writer. The boot log says
+  `- no image, ports off` when a configured scheme comes up dead.
+- **The +3e gate never tested the scheme at all** (`Config::isPlus3e() &&
+  plus3eIdePort(address)`), so an explicit Off in Devices did not silence it
+  either, against that section's own claim that the interface is a card the user
+  may switch off. It tests `portScheme == PLUS3E` now, which fixes both.
+- **SMUC is the one place where "off" is not silence**: the CARD is fitted by
+  CMOS + NVRAM (see the SMUC section), so its ATA window keeps decoding and
+  answers `0x00` = device absent; only the disk goes away.
+- **The risk to watch on hardware** is a guest that polls BSY on a port nobody
+  answers: unattached reads are 0xFF on the +3 (no floating bus) and the float
+  value elsewhere, i.e. BSY stuck at 1 until the driver's own timeout. Profi
+  CP/M and the +3e boot are the two to try WITHOUT an image (both used to see an
+  absent device instead). If either wedges, the fallback is the SMUC shape —
+  keep the window decoding and answer 0x00 — which is one line per gate.
+- Diagnostics: the `IDE_PORT_TRACE` probe lines print `scheme=<config>/<port>`,
+  because a capture that says `scheme=2` while nothing answers otherwise sends
+  the next session hunting a decode bug.
+- **User-visible consequence on Scorpion**: ProfROM's Disk Utility → Autostart
+  boots `boot<B>` from a PSEUDO-DISK, which lives inside the MFS partition on the
+  HDD, so it works only with an image mounted (owner, 2026-09-08) — ejecting it
+  now silently disables the whole interface, by this rule. Hardware Info's
+  `SMUC card` row says which of the two halves is live, which is the quick check
+  before suspecting the setting was lost.
 
 ## Murmuzavr extended RAM — page budget + descriptor cost
 
@@ -4272,6 +4442,17 @@ config can no longer be true while Profi runs.
   - `OUT (#DFF7), reg` — latch register index (confirmed via `OUT (C),H` at Gluk ROM 0x11BA)
   - `OUT (#BFF7), data` / `IN A,(#BFF7)` — data register (runtime-unpacked, not in static ROM)
   - Wired in `Ports::input`/`Ports::output`; responds on `isPentagon||isProfi` (NOT gated on EFF7 bit7 CMOS, for robustness — those ports are RTC-specific on these machines)
+- **Reg 6 (day of week) is 1 = SUNDAY .. 7 = Saturday, the datasheet's own
+  numbering** (fixed 2026-09-08; it was 1=Mon..7=Sun, "the Russian week", which
+  the chip knows nothing about). Mr Gluk is the one consumer and it gave the bug
+  away: on Tuesday 08.09.2026 its corner clock printed **ПН**, i.e. it read our 2
+  through a Sunday-first table. ProfROM/SMUC was right all along for a reason
+  that confirms the rule — its CMOS block reader (plane 1 bank 3, `0x1F93`)
+  fetches cells 0x00/0x02/0x04 and 0x07/0x08/0x09 only, never register 6, and
+  DERIVES the weekday from the date. Host-checked against a real calendar over
+  60 years, 0 mismatches. The SET shadow in `writeData` carries the same value so
+  a clock-setter UI does not show a stale byte; a guest WRITE to it is ignored,
+  since the day is derived (`commitTimeRegs`).
 - Reg B=0x02 (24h, BCD — what Gluk expects); Reg D bit7 VRT=1 (battery valid). Clock regs 0x00-0x09 computed live from `base_secs + elapsed_ms` (no per-register tick). Reg A synthesizes a UIP pulse (last ~2 ms of each second); reg C synthesizes UF once per second + PF @~1 kHz with read-clear semantics (no RTC IRQ line on Karabas — software must poll these). Guest can SET the clock via the datasheet protocol only: reg B SET=1 (snapshots live time into the 0x00-0x09 shadow buffer, reads return it) → write time regs → SET=0 commits via `commitTimeRegs()` (BCD/binary per DM bit, range-checked). Blind writes without SET stay ignored (protects SNTP time from ROM auto-init).
 - Time source: SNTP via ZiFi ESP — `ZiFiAT::syncTime(tz, out)` sends `AT+CIPSNTPCFG=1,tz,"pool.ntp.org"` then polls `AT+CIPSNTPTIME?` (parses `+CIPSNTPTIME:Www Mmm dd hh:mm:ss yyyy`, accepts year≥2020).
 - Trigger: **manual** — Network menu → "Sync time (SNTP)". Timezone via Network → "Time zone" (UTC−12..+14 list → `Config::wifi_tz`, saved to wifi.cfg key `tz`).
@@ -4352,7 +4533,7 @@ on real hardware — the SMUC clock at #DFBA versus the Pentagon/Karabas one at
 - **"NO CMOS" fix (hw-confirmed)**: Gluk treats CMOS valid only when NVRAM **reg 0x11 == 0xAA** (unpacked-RAM check at 0x6049 `CP 0xAA / JR NZ`); reg 0x12 == 0x47 (`'G'`) gates loading the 27-byte config (regs 0x13–0x2D → RAM 0x63A1). No checksum. Gluk's auto-path writes a bogus 0x55 and never self-validates (real signature written only on menu-save). `RTC::init()` seeds `regs[0x11] = 0xAA` after `loadNVRAM()` so the clock works out of the box; Gluk then reads time regs 0x00–0x09.
 - NVRAM (0x0E–0xFF + reg B; full 8-bit index — Karabas exposes 240 DS1307 cells, no `&0x3F` mask or high cells would alias onto the time regs) persisted to `CONFIG_DIR/cmos.nvr` (256 bytes; old 64-byte files still load): `loadNVRAM()` at init, dirty-flushed from main loop via `RTC::flushNVRAM()`.
 - `RTC_PORT_TRACE` CMake option (default OFF) logs every `..F7` IN/OUT for debugging.
-- **Toggle**: Options → Other → "RTC + NVRAM" (Yes/No → `Config::rtc_enabled`, default **off** — `Config::rtc_enabled = false`, NVS-persisted). when off, the RTC ports still RESPOND STATICALLY (not bypassed): reads float 0xFF (Gluk shows "NO CMOS"; Karabas clock shows FF), but status regs A/C read UIP/flags clear so the Karabas ROMain boot's MC146818 "wait until UIP clears" loop can't hang (was the "ROMain won't start with RTC off" bug); register-select is still latched, data writes swallowed (`RTC::readDisabled()`, four handlers in Ports.cpp).
+- **Toggle**: Devices → **"CMOS + NVRAM"** (renamed from "RTC + NVRAM" 2026-09-07; Yes/No → `Config::rtc_enabled`, NVS key still `rtc_enabled`, default **off**). It governs **every battery-backed chip in the firmware**: the Pentagon/Profi **Mr Gluk** MC146818 (`#DFF7`/`#BFF7`), the **Karabas-Pro native** DS1307 path (`#FF`/`#BF` under CPM+ROM14), and — since 2026-09-07 — whether the Scorpion's **SMUC** card is fitted at all (its MC146818 + 24LC16; see the SMUC section). Two deliberate non-members: **TS-Conf**, where those same Gluk ports are the ZX-Evo AVR and MUST stay live or TS-BIOS sits in an invisible Setup, and SNTP (Network → Sync time / the boot auto-sync), which only *writes* the clock when the option is on. Machines with no clock (48K/128K/+2/+3/+3e/Byte) show the row and ignore it. When off, the Gluk/Karabas ports still RESPOND STATICALLY (not bypassed): reads float 0xFF (Gluk shows "NO CMOS"; Karabas clock shows FF), but status regs A/C read UIP/flags clear so the Karabas ROMain boot's MC146818 "wait until UIP clears" loop can't hang (was the "ROMain won't start with RTC off" bug); register-select is still latched, data writes swallowed (`RTC::readDisabled()`, four handlers in Ports.cpp).
 
 ## FDI copy protection — physical damage emulation (`src/wd1793.cpp`)
 

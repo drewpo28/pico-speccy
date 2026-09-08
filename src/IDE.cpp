@@ -1,5 +1,4 @@
 #include "IDE.h"
-#include "Nvram24.h"
 
 
 #include <cstdlib>
@@ -25,6 +24,7 @@
 // Static storage
 // ============================================================
 
+uint8_t IDE::portScheme = IDE::OFF;
 uint8_t IDE::scheme = IDE::OFF;
 
 FIL* IDE::file = nullptr;
@@ -370,16 +370,17 @@ void IDE::init() {
     close();
 
     scheme = Config::ide_scheme;
+    portScheme = OFF;            // nothing is visible to the guest until an image opens
     // The +3e interface is 8 bits wide; NEMO and PROFI carry the high byte in a latch.
     // Set before the OFF exit so switching a scheme off cannot leave the stride behind.
     eight_bit = (scheme == PLUS3E);
     half_sector[0] = half_sector[1] = false;   // re-derived per image in open_image()
     if (scheme == OFF) return;
 
-    // SMUC carries a 2 KB 24LC16 on the same card (ProfROM keeps its settings and
-    // the HDD partition table there). Allocated with the scheme, freed by close(),
-    // so it costs nothing under NEMO/PROFI/off.
-    if (scheme == SMUC) Nvram24::init();
+    // The 2 KB 24LC16 on the SMUC card is NOT ours: the card is fitted by
+    // Devices -> "CMOS + NVRAM" (or by this scheme), and its clock and NVRAM
+    // have to keep working with no disk attached. Ports::smucCardUpdate() owns
+    // that lifecycle; it runs from Config::requestMachine and the menu commit.
 
     // 2048 B: 512 B suffices for ATA, but ATAPI transfers a full 2048-byte
     // logical block, so the shared buffer is sized for the larger case.
@@ -437,8 +438,11 @@ void IDE::init() {
     for (int d = 0; d < 2; d++)
         if (file_open[d]) setupFastSeek(d);
 
-    Debug::log("IDE: scheme=%u initialized (hd0=%d hd1=%d)",
-               scheme, file_open[0], file_open[1]);
+    // A scheme with no disk on it reads as OFF to the port decoders (see IDE.h).
+    portScheme = present() ? scheme : OFF;
+    Debug::log("IDE: scheme=%u initialized (hd0=%d hd1=%d)%s",
+               scheme, file_open[0], file_open[1],
+               portScheme == OFF && scheme != OFF ? " - no image, ports off" : "");
     reset();
 }
 
@@ -540,6 +544,7 @@ void IDE::reset() {
 }
 
 void IDE::close() {
+    portScheme = OFF;
     for (int d = 0; d < 2; d++) {
         if (file && file_open[d]) {
             file[d].cltbl = nullptr;   // FatFs must not hold a pointer we are freeing
@@ -559,7 +564,8 @@ void IDE::close() {
     free(buffer);   buffer   = nullptr;
     free(identity); identity = nullptr;
     free(file);     file     = nullptr;
-    Nvram24::close();   // flushes to SD first; no-op when it was never up
+    // NB: the SMUC 24LC16 is deliberately NOT freed here — closing the disk
+    // must not unplug the card's battery-backed chips (Ports::smucCardUpdate).
 }
 
 bool IDE::present() {

@@ -121,6 +121,7 @@ public:
     static bool smucPortWrite(uint16_t address, uint8_t data);
     static bool smucPortRead(uint16_t address, uint8_t* out);
     static void smucReset();      // machine reset: SYS/FDD latches + NVRAM bus
+    static void smucCardUpdate(); // (re)decide whether the card's 24LC16 exists
     static uint8_t smucSys;       // #FFBA: D7 mode, D6 SCL, D5 WP, D4 SDA, D0 HDD reset
     static uint8_t smucFdd;       // #7FBA: virtual-FDD control latch
 

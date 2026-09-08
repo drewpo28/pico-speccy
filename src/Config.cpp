@@ -2,6 +2,7 @@
 #include "MemESP.h"
 #include "RTC.h"
 #include "Nvram24.h"
+#include "Ports.h"
 #include "roms.h"
 #include "FileUtils.h"
 #include "ESPectrum.h"
@@ -642,6 +643,10 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // call from setup() costs nothing.
     RTC::machineChanged();
     Nvram24::machineChanged();
+    // ...and the SMUC card only exists on a Scorpion, so its NVRAM is created
+    // or dropped here too (a live machine switch must not leave the guest with
+    // a card whose chip was never allocated).
+    Ports::smucCardUpdate();
 }
 
 // RAM fallback for Config when no SD card

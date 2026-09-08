@@ -17,9 +17,11 @@
 // bits in D3-D1 (that is how a 24LC16 addresses 2 KB through one 8-bit
 // register), and a page write wraps inside its 16-byte page.
 //
-// The 2 KB image lives on the heap and only while the SMUC scheme is active
-// (IDE::init/close own the lifecycle), so it costs zero SRAM otherwise, and is
-// persisted to CONFIG_DIR/nvram.bin — that file IS the battery.
+// The 2 KB image lives on the heap and only while the SMUC card is FITTED —
+// Devices -> "CMOS + NVRAM", or an IDE/HDD scheme of SMUC, since both mean the
+// same board (Ports::smucCardUpdate owns the lifecycle) — so it costs zero SRAM
+// otherwise, and is persisted to CONFIG_DIR/nvram_<romset>.bin: that file IS
+// the battery.
 class Nvram24 {
 public:
     static void init();     // allocate + load from SD (no-op if already up)

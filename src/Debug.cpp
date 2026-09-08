@@ -2,6 +2,7 @@
 #include "pico/stdlib.h"
 #include "hardware/watchdog.h"
 #include "hardware/uart.h"
+#include "hardware/sync.h"
 #include "hardware/gpio.h"
 #include "pico/time.h"
 #include "pico/stdio/driver.h"
@@ -60,6 +61,30 @@ void Debug::led_off()
 // that on GP0/1, which is the ZiFi UART on PICO_DV.
 #define DBG_TX_RING 4096
 static uart_inst_t*     s_dbg_uart = nullptr;    // live console, or nullptr
+
+// Cross-core line lock. `dbg_uart_put` is a plain read-modify-write of the write
+// index, and the byte loop that emits ONE line is not atomic, so two cores
+// logging at once used to interleave at BYTE granularity — and lose a byte
+// whenever both read the same index. Caught 2026-09-08 in a capture where
+// core0's setup lines and core1's GS/NgsSd init lines came out spliced into each
+// other:
+//   "[CMOS] load /.config/pico-speccy/cmos_Saw SD, 31207424 corpProf.nvr"
+//   "GS::init: work/rings on butter/butter/butte24 sectors on host SD"
+// which reads as a corrupted FILENAME, i.e. the log inventing a bug that was not
+// there. Same class as the psram_spi per-core scratch invariant, and the same
+// lesson this file's own trace notes keep repeating: a diagnostic that lies
+// costs more than the bug.
+//
+// spin_lock_blocking saves and disables IRQs, which is what makes it deadlock
+// free against an interrupt on the SAME core that also logs; the other core can
+// only spin for the length of one line (a few microseconds of trivial loop).
+// The FAULT path deliberately does NOT take it: on a crash the holder may be
+// the context that died, and dbg_uart_put_sync writes straight to the UART.
+static spin_lock_t*     s_dbg_lock = nullptr;
+// A board with every hardware spinlock already taken must still get its console,
+// so the claim is optional and these degrade to the old unsynchronised push.
+static inline uint32_t dbg_lock(void) { return s_dbg_lock ? spin_lock_blocking(s_dbg_lock) : 0; }
+static inline void dbg_unlock(uint32_t save) { if (s_dbg_lock) spin_unlock(s_dbg_lock, save); }
 static char*            s_dbg_ring = nullptr;
 static volatile uint32_t s_dbg_w = 0, s_dbg_r = 0;
 static uint8_t          s_dbg_tx_pin = 0xFF;
@@ -116,8 +141,10 @@ static void dbg_uart_flush_sync(void)
 static void dbg_stdio_out_chars(const char* buf, int len)
 {
     if (!s_dbg_uart) return;
+    const uint32_t save = dbg_lock();
     for (int i = 0; i < len; i++)
         if (!dbg_uart_put(buf[i])) break;
+    dbg_unlock(save);
     dbg_uart_drain_fifo();
 }
 static void dbg_stdio_out_flush(void)
@@ -157,6 +184,10 @@ bool Debug::uartStart(unsigned uart_index, unsigned tx_pin)
     if (!s_dbg_ring) {
         s_dbg_ring = (char*)malloc(DBG_TX_RING);
         if (!s_dbg_ring) return false;   // caller logs to SD; the console stays off
+    }
+    if (!s_dbg_lock) {
+        const int id = spin_lock_claim_unused(false);   // false: never panic for a log
+        if (id >= 0) s_dbg_lock = spin_lock_instance((uint)id);
     }
     s_dbg_w = s_dbg_r = 0;
     uart_inst_t* u = uart_index ? uart1 : uart0;
@@ -218,12 +249,14 @@ void Debug::log(const char* fmt, ...)
     if (n < 0) return;
     if (n > (int)sizeof(buf) - 1) n = sizeof(buf) - 1;
 
+    const uint32_t save = dbg_lock();
     for (int i = 0; i < n; i++) {
         if (buf[i] == '\n' && !dbg_uart_put('\r')) break; // CRLF for terminals
         if (!dbg_uart_put(buf[i])) break;                 // ring full → drop remainder
     }
     if (dbg_uart_put('\r'))
         dbg_uart_put('\n');
+    dbg_unlock(save);
     dbg_uart_drain_fifo();   // free: fills the 32-byte FIFO, never waits
 }
 

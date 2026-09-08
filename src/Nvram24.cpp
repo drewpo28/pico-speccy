@@ -30,6 +30,11 @@ static const uint8_t SDA_1   = 0xFF;   // chip releases / drives the line high
 static const uint8_t SDA_0   = 0xBF;   // chip pulls SDA (bit 6) low
 static const int     SDA_IN_SHIFT = 4; // host SDA arrives on D4
 
+// Same reasoning as the CMOS counters (RTC.cpp): the save line has to name
+// what moved, or "did the partition table reach the card" is unanswerable.
+static uint16_t wr_n = 0;           // byte writes since the last write-back
+static uint16_t wr_last = 0;        // the last address written
+
 uint8_t* Nvram24::mem      = nullptr;
 uint16_t Nvram24::address  = 0;
 uint8_t  Nvram24::datain   = 0;
@@ -91,7 +96,16 @@ void Nvram24::load() {
     UINT br = 0;
     f_read(f, mem, NVRAM24_SIZE, &br);
     fclose2(f);
-    Debug::log("NVRAM24: loaded %u bytes", (unsigned)br);
+    // Path and length both matter when a setting "did not survive": the file is
+    // per romset, and a short read is a write cut off by a power loss (the tail
+    // then reads as the calloc zeros, which the firmware re-initialises).
+    // sig/sum are the two things ProfROM decides on: byte 0 must be 0x61 and
+    // bytes 0xFE/0xFF hold its checksum over 0x000-0x0FD. If those come back
+    // intact the firmware has nothing to rewrite, which is why a healthy
+    // session logs a load and never a save (see the SMUC section of CLAUDE.md).
+    Debug::log("[NVRAM24] load %s (%u of %u B) sig0=%02X sum=%02X%02X",
+               NVRAM24_PATH, (unsigned)br, (unsigned)NVRAM24_SIZE,
+               mem[0x000], mem[0x0FF], mem[0x0FE]);
 }
 
 void Nvram24::flush(bool force) {
@@ -107,6 +121,14 @@ void Nvram24::flush(bool force) {
     UINT bw = 0;
     f_write(f, mem, NVRAM24_SIZE, &bw);
     fclose2(f);
+    // The twin of RTC's "[CMOS] save": without it "my SMUC settings are gone"
+    // had no answer to the first question — did the card's own NVRAM ever reach
+    // the SD card at all. Rate-limited by the debounce above, so it is one line
+    // per write burst, not per byte.
+    Debug::log("[NVRAM24] save %s (%u B) wr=%u last=%03X%s", NVRAM24_PATH,
+               (unsigned)bw, (unsigned)wr_n, (unsigned)wr_last,
+               force ? " (forced)" : "");
+    wr_n = 0;
     dirty = false;
     flush_ms = now;
 }
@@ -169,6 +191,7 @@ void Nvram24::write(uint8_t val) {
                     // A page write wraps inside its own 16-byte page.
                     mem[address] = datain;
                     dirty = true;
+                    wr_n++; wr_last = address;
                     address = (uint16_t)((address & 0x7F0) + ((address + 1) & 0x0F));
                 }
                 out = SDA_0;                        // the EEPROM always ACKs

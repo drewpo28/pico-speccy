@@ -26,6 +26,7 @@
 #include "MB02.h"
 #include "Plus3Fdc.h"
 #include "IDE.h"
+#include "Ports.h"
 #include "Debug.h"
 #include "GS/GS.h"
 #include "ZiFi.h"
@@ -955,6 +956,18 @@ static void resolveConstraints(CommitReport& rep) {
             changed |= force(SET_IDE_SCHEME, IDE::PLUS3E, rep, "IDE set to the +3e interface");
         }
 
+        // EDGE: the SMUC HDD hangs on the very card that carries the CMOS + NVRAM, so
+        // picking that scheme fits the card and the switch follows — better than a
+        // scheme that quietly depends on a row three lines above it. Only on the
+        // transition, and only while the scheme is the newer edit (force() never bumps
+        // g_seq), so turning CMOS + NVRAM off afterwards is respected: the disk keeps
+        // the card fitted by itself (Ports.cpp smucCardFitted) and Hardware Info says
+        // which half is live, so nothing is lost either way.
+        if (bmGet(g_dirty, SET_IDE_SCHEME) && staged(SET_IDE_SCHEME) == IDE::SMUC
+            && !staged(SET_RTC) && g_seq[SET_RTC] <= g_seq[SET_IDE_SCHEME]) {
+            changed |= force(SET_RTC, 1, rep, "CMOS + NVRAM on: the SMUC HDD is on that card");
+        }
+
         // esxDOS / MB-02+ / Z-Controller all rewire page 0 and overlap in the port map, so
         // at most one may be on (OSDMain.cpp:3251, :3380, :3545). The classic menu enforces
         // this inside each handler, which means the rule only ever fires in the direction
@@ -1464,6 +1477,13 @@ void commit(CommitReport& rep) {
         if (!d.hook(g_val[id], g_base[id])) rep.failed++;
         if (d.flags & F_PALETTE) gfxInstallPalette();
     }
+
+    // ── the SMUC card ──────────────────────────────────────────────────────────
+    // Its 24LC16 exists only while the card is fitted, and BOTH switches that
+    // fit it live in this commit (CMOS + NVRAM, IDE/HDD). Unconditional and
+    // idempotent: a bool test when nothing moved. A machine change is covered
+    // by Config::requestMachine below, which calls the same thing.
+    Ports::smucCardUpdate();
 
     // ── the machine, last of all ───────────────────────────────────────────────
     // Last because MachineSwitch::commit is the one step that can reboot, reset the Z80,

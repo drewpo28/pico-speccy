@@ -29,6 +29,15 @@ public:
     // Active scheme mirror of Config::ide_scheme (set in init()).
     static uint8_t scheme;
 
+    // What the PORT DECODERS answer for: the scheme, but only while a disk is
+    // actually mounted on it. A scheme with no image is treated as OFF — one
+    // rule for NEMO / PROFI / SMUC / IDEDOS — so the guest never finds a
+    // phantom controller with nothing behind it (2026-09-08). Kept as a plain
+    // mirror, not a present() call, because the gates sit in the RAM-resident
+    // Ports::input/output decode chain: one byte load, same as `scheme` was.
+    // Updated by init()/close() only — every mount and eject funnels there.
+    static uint8_t portScheme;
+
     static void init();    // open images per Config::ide_image[], build IDENTIFY
     static void reset();    // reset ATA register/transfer state
     static void close();    // close image files, free buffers

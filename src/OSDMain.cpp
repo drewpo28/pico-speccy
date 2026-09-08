@@ -5842,20 +5842,30 @@ static void buildEmulatorInfoText() {
         pos += infoAppend(buf, pos, bufsz,
             " SD swap        : %u MB\n", (unsigned)(MEM_PG_CNT / 64));
 
-    // RTC: the live reading plus the register format the guest picked. Both are
-    // here because a wrong-looking clock is nearly always one of the two.
+    // CMOS + NVRAM: the live reading plus the register format the guest picked.
+    // Both are here because a wrong-looking clock is nearly always one of the two.
     if (!Config::rtc_enabled) {
-        pos += infoAppend(buf, pos, bufsz, " RTC + NVRAM    : Off\n");
+        pos += infoAppend(buf, pos, bufsz, " CMOS + NVRAM   : Off\n");
     } else {
         int ry, rmo, rd, rh, rmi, rs;
         if (RTC::now(ry, rmo, rd, rh, rmi, rs))
             pos += infoAppend(buf, pos, bufsz,
-                " RTC + NVRAM    : On (%s)\n"
+                " CMOS + NVRAM   : On (%s)\n"
                 "  time          : %02d.%02d.%04d %02d:%02d\n",
                 RTC::formatStr(), rd, rmo, ry, rh, rmi);
         else
             pos += infoAppend(buf, pos, bufsz,
-                " RTC + NVRAM    : On (not set)\n");
+                " CMOS + NVRAM   : On (not set)\n");
+    }
+    // On a Scorpion the clock and NVRAM sit on the SMUC card, and the IDE/HDD
+    // row only decides whether a disk hangs off it — so say which half is live
+    // rather than leaving "no HDD" and "no CMOS" indistinguishable.
+    if (Config::arch == A_SCORP) {
+        const bool smucDisk = (IDE::portScheme == IDE::SMUC);  // live AND a mounted image
+        pos += infoAppend(buf, pos, bufsz, " SMUC card      : %s\n",
+            smucDisk                ? "CMOS + NVRAM + HDD"
+            : Config::rtc_enabled   ? "CMOS + NVRAM, no HDD"
+                                    : "not fitted");
     }
 
     // --- Video ---

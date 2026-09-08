@@ -299,18 +299,33 @@ static const Option opt_mach_karabas[] = {
     { TXT_ROM_KAR_FT,     NM_MACH(A_KARABAS, R_PROFI_FT)  },
     { TXT_ROM_KAR_FDI,    NM_MACH(A_KARABAS, R_PROFI_FDI) },
 };
-static const Option opt_mach_scorp[] = {
-    { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP),      TXT_ROM_SCORP_S      },
-    { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR),   TXT_ROM_SCORP_GR_S   },
-#if GMX_IN_FLASH   // escape-hatch builds carry no GMX ROM (CMakeLists); with the ROM
-                   // in, a butter-less module reverts the pick in resolveConstraints
-    { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX),  TXT_ROM_SCORP_GMX_S  },
+// Built at runtime (NM_RADIO_D) for one reason: **GMX needs QSPI (butter) PSRAM**
+// and that is a property of the plugged-in module, not of the build — its 2 MB page
+// strip and the 640x200 attribute pages are read through POINTERS, which SPI PSRAM
+// cannot hand out. On a module with no butter chip the entry is not OFFERED at all;
+// it used to be listed and then snap back to Yellow in resolveConstraints, i.e. a
+// menu that refuses its own row (owner, 2026-09-08). Same shape as gs_modeOpts and
+// NeoGS below. The runtime fallbacks stay as the backstop for a pick that arrives
+// from NVS written on a board that HAS the chip (requestMachine + bootNotice).
+// `#if GMX_IN_FLASH` is still the build escape hatch that drops the ROM entirely.
+static const Option* mach_scorpOpts(uint8_t& cnt) {
+    static Option opts[5];
+    static uint8_t n = 0;
+    if (!n) {
+        opts[n++] = { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP),      TXT_ROM_SCORP_S      };
+        opts[n++] = { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR),   TXT_ROM_SCORP_GR_S   };
+#if GMX_IN_FLASH
+        if (butter_psram_size())
+        opts[n++] = { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX),  TXT_ROM_SCORP_GMX_S  };
 #endif
-    { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S },
+        opts[n++] = { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S };
 #if PROFROM_IN_FLASH
-    { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S },
+        opts[n++] = { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S };
 #endif
-};
+    }
+    cnt = n;
+    return opts;
+}
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
@@ -358,7 +373,7 @@ static const Node kMachine[] = {
     NM_SUB  (NM_IND TXT_MACH_MURM, kMurmuzavr, p_murmAvail),
     // Scorpion sits with the Soviet-clone block, right after the Pentagons.
     // Its pages above the base 128K need extended-RAM backing, same gate as P512.
-    NM_RADIO(TXT_MACH_SCORP, SET_MACHINE, opt_mach_scorp, p_extRam),
+    NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
@@ -808,20 +823,29 @@ static const Option opt_pref_pent[] = {
     { TXT_ROM_CUSTOM,    1 },
     { TXT_ROM_LAST,      2 },
 };
-// Values are indices into UiStage's kPrefScorp — 1024 sits BEFORE the
-// conditional GMX entry so the indices are identical on both build variants.
-static const Option opt_pref_scorp[] = {
-    { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      },
-    { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   },
-    { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S },
-    { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S },
+// Values are indices into UiStage's kPrefScorp — 1024 and ProfROM sit BEFORE the
+// conditional GMX entry so the indices are identical on both build variants, which
+// is also what lets the GMX entry be dropped at RUNTIME on a butter-less module
+// (see mach_scorpOpts) without moving "Last".
+static const Option* pref_scorpOpts(uint8_t& cnt) {
+    static Option opts[6];
+    static uint8_t n = 0;
+    if (!n) {
+        opts[n++] = { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      };
+        opts[n++] = { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   };
+        opts[n++] = { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S };
+        opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
 #if GMX_IN_FLASH
-    { TXT_ROM_SCORP_GMX,  4, TXT_ROM_SCORP_GMX_S  },
-    { TXT_ROM_LAST,       5 },
+        if (butter_psram_size())
+        opts[n++] = { TXT_ROM_SCORP_GMX,  4, TXT_ROM_SCORP_GMX_S  };
+        opts[n++] = { TXT_ROM_LAST,       5, nullptr };
 #else
-    { TXT_ROM_LAST,       4 },
+        opts[n++] = { TXT_ROM_LAST,       4, nullptr };
 #endif
-};
+    }
+    cnt = n;
+    return opts;
+}
 
 static const Node kPrefRom[] = {
     NM_RADIO(TXT_MACH_48K,   SET_PREF_ROM_48,    opt_pref48,    nullptr),
@@ -829,7 +853,7 @@ static const Node kPrefRom[] = {
     NM_RADIO(TXT_MACH_PENT,  SET_PREF_ROM_PENT,  opt_pref_pent, nullptr),
     NM_RADIO(TXT_MACH_P512,  SET_PREF_ROM_P512,  opt_pref_pent, nullptr),
     NM_RADIO(TXT_MACH_P1024, SET_PREF_ROM_P1024, opt_pref_pent, nullptr),
-    NM_RADIO(TXT_MACH_SCORP, SET_PREF_ROM_SCORP, opt_pref_scorp, nullptr),
+    NM_RADIO_D(TXT_MACH_SCORP, SET_PREF_ROM_SCORP, pref_scorpOpts, nullptr),
 };
 
 // "Other" is gone: it held four unrelated rows behind one more keypress, so they sit at

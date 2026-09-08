@@ -29,6 +29,14 @@ static void rtcNvPathSet() {
 }
 #define RTC_NVRAM_PATH (s_nv_path[0] ? s_nv_path : RTC_NVRAM_LEGACY)
 
+// What changed since the last write-back. The save line alone cannot answer
+// "did my setting reach the chip": ProfROM's own boot-time CMOS SIZE PROBE
+// writes 0x55/0xAA into cell 0x3F (and 0x55 into 0x7F) and restores them, which
+// dirties the image on EVERY boot — so a save with no user action is normal, and
+// telling the two apart needs the cell number (2026-09-08).
+static uint16_t nv_wr_n   = 0;      // accepted cell writes since the last save
+static uint8_t  nv_wr_sel = 0, nv_wr_val = 0;   // the last of them
+
 uint8_t  RTC::regs[256] = {0};
 uint8_t  RTC::sel       = 0;
 bool     RTC::time_valid = false;
@@ -189,9 +197,11 @@ void RTC::flushNVRAM(bool force) {
     UINT bw = 0;
     f_write(f, regs, sizeof(regs), &bw);
     fclose2(f);
-    Debug::log("[CMOS] save %s (%u B) sig0E=%02X sum3F=%02X%s",
+    Debug::log("[CMOS] save %s (%u B) sig0E=%02X sum3F=%02X wr=%u last=%02X:%02X%s",
                RTC_NVRAM_PATH, (unsigned)bw, regs[0x0E], regs[0x3F],
+               (unsigned)nv_wr_n, nv_wr_sel, nv_wr_val,
                force ? " (forced)" : "");
+    nv_wr_n = 0;
     nv_dirty = false;
     nv_flush_ms = now;
 }
@@ -246,6 +256,12 @@ void RTC::writeData(uint8_t v) {
                 regs[0x00] = encField(ss); regs[0x02] = encField(mi);
                 regs[0x04] = encHour(hh);  regs[0x07] = encField(dd);
                 regs[0x08] = encField(mo); regs[0x09] = encField(yy % 100);
+                // Same 1=Sunday rule as the read path: while SET is up the reads
+                // come from this shadow, so a setter that shows the weekday must
+                // not see the stale byte. commitTimeRegs ignores what the guest
+                // writes here — the day of week is DERIVED from the date.
+                const int32_t dws = days_from_civil(yy, (unsigned)mo, (unsigned)dd);
+                regs[0x06] = (uint8_t)(((dws + 4) % 7) + 1);
             }
         } else if (prev & 0x80) {
             commitTimeRegs(); // SET 1→0: apply the buffered time
@@ -255,6 +271,7 @@ void RTC::writeData(uint8_t v) {
     if (regs[sel] != v) {
         regs[sel] = v;
         nv_dirty = true; // schedule SD persist (flushed from main loop)
+        nv_wr_n++; nv_wr_sel = sel; nv_wr_val = v;
     }
 }
 
@@ -288,9 +305,20 @@ uint8_t RTC::readData() {
         int hh = dsec / 3600, mm = (dsec % 3600) / 60, ss = dsec % 60;
         int y; unsigned mo, dd;
         civil_from_days(days, y, mo, dd);
-        // Mr Gluk uses the Russian/European week: 1=Mon..7=Sun. days=0 is
-        // 1970-01-01 (Thursday=4), so offset by +3 (not +4, which gives Sun=1).
-        unsigned dow = (unsigned)(((days % 7) + 3) % 7) + 1; // 1=Mon..7=Sun
+        // Register 6 is the DATASHEET's day of week: 1 = Sunday .. 7 = Saturday.
+        // days=0 is 1970-01-01, a Thursday, so +4 puts Sunday at 1.
+        //
+        // It read 1=Mon..7=Sun here until 2026-09-08 — "the Russian week", which
+        // the chip knows nothing about — and Mr Gluk gave it away: on Tuesday
+        // 08.09.2026 it printed ПН, i.e. it read our 2 through a Sunday-first
+        // table and landed one day short. ProfROM/SMUC showed the right weekday
+        // the whole time for a reason that also proves the point: its CMOS block
+        // reader (plane 1 bank 3, 0x1F93) fetches cells 0x00/0x02/0x04 and
+        // 0x07/0x08/0x09 only — it never reads register 6 and derives the day
+        // from the date. So the register had exactly one consumer, and that
+        // consumer follows the datasheet, as anything that works on real
+        // hardware must.
+        unsigned dow = (unsigned)((days + 4) % 7) + 1;   // 1=Sun..7=Sat
         switch (sel) {
             case 0x00: return encField(ss);
             case 0x02: return encField(mm);

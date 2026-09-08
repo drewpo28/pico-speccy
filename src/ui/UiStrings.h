@@ -179,7 +179,7 @@
 // The board's own LED (GPIO 25), blinking on real SD traffic — internal /tmp
 // files (swap, .idx) are deliberately not indicated. Not an on-screen indicator.
 #define TXT_HW_SDLED        "Board LED on SD access"
-#define TXT_HW_RTC          "RTC + NVRAM"
+#define TXT_HW_RTC          "CMOS + NVRAM"
 #define TXT_HW_OVERCLOCK    "Overclock"
 
 // ── Joystick ───────────────────────────────────────────────────────────────────

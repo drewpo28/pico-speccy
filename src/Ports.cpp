@@ -656,7 +656,11 @@ inline static size_t extendedZxRamPages() {
 // the +3), and the interface is 8 bits wide, which is why IDE::eight_bit steps the
 // data register two buffer bytes at a time and why IDEDOS images are half-sector.
 static inline bool p3eIde(uint16_t address) {
-    return Config::isPlus3e() && plus3eIdePort(address);
+    // IDE::portScheme, not the romset: the interface is a CARD (the ROM works
+    // with none plugged in), so an explicit Off — and a scheme with no image
+    // mounted, which is the same thing to the guest — has to silence it. This
+    // gate used to test isPlus3e() alone, so neither did.
+    return IDE::portScheme == IDE::PLUS3E && plus3eIdePort(address);
 }
 static inline uint8_t p3eIdeReg(uint16_t address) { return plus3eIdeReg(address); }
 
@@ -961,7 +965,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   // via A0 latch. Authentic NEMO is mapped outside TR-DOS; on Profi the SYSEN
   // line keeps ESPectrum::trdos permanently asserted (not real TR-DOS paging),
   // so the !trdos rule is bypassed there.
-  if (IDE::scheme == IDE::NEMO && !(address & 6) && (Z80Ops::isProfi || !ESPectrum::trdos)) {
+  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (Z80Ops::isProfi || !ESPectrum::trdos)) {
     if (address & 1) { LED::touchR(LED::IDE); return IDE::read_latch(); } // A0=1: high-byte latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {          // control / alt-status
       LED::touchR(LED::IDE); return IDE::read8(8);
@@ -1236,8 +1240,9 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // and cpm/rom14 gates below. See the matching comment near the top of this
     // function for why (same investigation as the FDC/RTC probes).
     if (Z80Ops::isProfi && ((address & 0xFF) & 0x9F) == 0x8B) {
-      Debug::log("[IDE IN probe] addr=%04X scheme=%d cpm=%d rom14=%d trdos=%d pc=%04X",
-                 address, (int)IDE::scheme, (portDFFD & 0x20) != 0, MemESP::romLatch,
+      Debug::log("[IDE IN probe] addr=%04X scheme=%d/%d cpm=%d rom14=%d trdos=%d pc=%04X",
+                 address, (int)IDE::scheme, (int)IDE::portScheme,
+                 (portDFFD & 0x20) != 0, MemESP::romLatch,
                  ESPectrum::trdos, Z80::getRegPC());
     }
 #endif
@@ -1251,7 +1256,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     //   Port decode: (p1 & 0x9F)==0x8B, then A6 selects CS1 vs CS3.
     //   16-bit latch: #xxCB(A6=1,A5=0) → read_data()+latch_hi, return lo;
     //                 #xxEB(A6=1,A5=1) → return latch_hi (HIGH byte).
-    if (IDE::scheme == IDE::PROFI && Z80Ops::isProfi) {
+    if (IDE::portScheme == IDE::PROFI && Z80Ops::isProfi) {
       bool cpm = (portDFFD & 0x20), rom14 = MemESP::romLatch, dos = ESPectrum::trdos;
       // UnrealSpeccy's gate (cpm&&rom14, "MBOOTHDD" scheme) never covered the
       // DOS=1&&!ROM14 case from the manual's own CS formula above (line 647):
@@ -2349,10 +2354,34 @@ bool Ports::gmxPortWrite(uint16_t address, uint8_t data) {
 //    transfer in flight.
 //  - The ATA INTRQ bit (SYS read D7) is always 0: there is no interrupt model
 //    behind IDE::, and every known driver polls BSY.
+
+// Is the card FITTED? Two switches bring it up and both describe the same
+// board: Devices -> "CMOS + NVRAM" (its MC146818 + 24LC16 — the reason the card
+// is in most machines) and Devices -> IDE/HDD -> SMUC (its ATA connector). One
+// card, so the disk cannot be there without the clock, and — the point of the
+// split — the clock must not need the disk. The old gate was the IDE scheme
+// alone: with the default "CMOS + NVRAM" off and no HDD image picked the WHOLE
+// card vanished, so ProfROM's Setup had nowhere to keep its settings and every
+// boot re-initialised them ("настройки БИОС не сохраняются между F12",
+// 2026-09-07). Config, not Z80Ops, for the two switches: they are read live.
+static inline bool smucCardFitted() {
+  return Z80Ops::isScorpion &&
+         (Config::rtc_enabled || IDE::scheme == IDE::SMUC);
+}
 static inline bool smucActive() {
-  return IDE::scheme == IDE::SMUC && Z80Ops::isScorpion &&
+  return smucCardFitted() &&
          (ESPectrum::trdos || (Ports::port1FFD & 0x02));   // DOSEN or SYSEN
 }
+// Whether a DRIVE hangs on the card's ATA bus is the IDE/HDD row's business
+// alone — and `portScheme` is OFF unless an image is really mounted, so "scheme
+// SMUC, no image" reads exactly like "no scheme" here. Either way the taskfile
+// answers 0x00 — device absent, which is what our own empty slave presents and
+// what the ProfROM and GMX probes read as "hard disk not found" (they time out
+// of the BSY/DRDY polls). Note the window still DECODES, because the card is
+// fitted: letting these addresses fall through to the ULA is the shared-bus
+// deviation the handlers exist to avoid. It must also never serve another
+// scheme's images: NEMO/PROFI are different cards.
+static inline bool smucDiskActive() { return IDE::portScheme == IDE::SMUC; }
 
 #if SMUC_TRACE
 // SMUC port log. Two lessons are built in, both learned the hard way here:
@@ -2409,6 +2438,20 @@ void smucTraceGated(bool wr, uint16_t address, uint8_t v) {
 }
 #endif
 
+// The 2 KB 24LC16 image lives on the heap and only while the card is fitted.
+// It cannot be created from a port handler (init() reads the file off the SD
+// card), so the decision is refreshed wherever either switch or the machine can
+// change: Config::requestMachine and the tail of the menu commit. Both calls
+// are idempotent — init() no-ops while it is up, close() while it is down.
+static bool smucCardConfigured() {
+  return Config::arch == A_SCORP &&
+         (Config::rtc_enabled || Config::ide_scheme == IDE::SMUC);
+}
+void Ports::smucCardUpdate() {
+  if (smucCardConfigured()) Nvram24::init();
+  else                      Nvram24::close();
+}
+
 void Ports::smucReset() {
   smucSys = 0;
   smucFdd = 0;
@@ -2426,6 +2469,7 @@ bool Ports::smucPortWrite(uint16_t address, uint8_t data) {
     if (!(address & 0x8000)) {                     // #5FBE / #7FBE: read-only
       return true;                                 // swallow (never reaches ULA)
     }
+    if (!smucDiskActive()) return true;            // card fitted, no drive on it
     LED::touchW(LED::IDE);
     uint8_t reg = (address >> 8) & 7;
 #if VDISK_TRACE
@@ -2462,11 +2506,20 @@ bool Ports::smucPortWrite(uint16_t address, uint8_t data) {
   // ...#BA family
   if (address & 0x8000) {
     if (address & 0x2000) {                        // #FFBA SYS
-      if ((data & 0x01) && !(smucSys & 0x01)) IDE::reset();
+      // D0 0->1 resets the drive — but only OUR drive: with another scheme
+      // selected, IDE:: holds a NEMO/PROFI register file we must not touch.
+      if ((data & 0x01) && !(smucSys & 0x01) && smucDiskActive()) IDE::reset();
       Nvram24::write(data);
       smucSys = data;
     } else {                                       // #DFBA clock
-      if (smucSys & 0x80) { if (Config::rtc_enabled) RTC::writeData(data); }
+      // The MC146818 is ON THE CARD: once the card is fitted its clock is live,
+      // with no second switch of its own. Testing Config::rtc_enabled HERE was
+      // the bug — that switch decides whether the card exists (smucCardFitted),
+      // and a card that exists always has its chip. With it read per access the
+      // Setup's writes were swallowed and its reads came back 0xFF: every boot
+      // said "CMOS checksum error" and the settings lived only in the
+      // firmware's RAM copy — kept across F11, lost on every F12 (2026-09-07).
+      if (smucSys & 0x80) RTC::writeData(data);
       else                RTC::selectReg(data);
     }
   } else {
@@ -2501,6 +2554,7 @@ bool Ports::smucPortRead(uint16_t address, uint8_t* out) {
       *out = (address & 0x2000) ? 0x57 : 0x17;
       return true;
     }
+    if (!smucDiskActive()) { *out = 0x00; return true; }   // device absent
     LED::touchR(LED::IDE);
     uint8_t reg = (address >> 8) & 7;
 #if VDISK_TRACE
@@ -2520,7 +2574,7 @@ bool Ports::smucPortRead(uint16_t address, uint8_t* out) {
       // SYS read: NVRAM SDA comes back on D6; D7 would be the drive's INTRQ.
       *out = Nvram24::read() & 0x7F;
     } else {
-      *out = Config::rtc_enabled ? RTC::readData() : RTC::readDisabled();
+      *out = RTC::readData();       // the card's own clock: always live (see the write side)
     }
   } else {
     // #5FBA version (must never be #FF) / #7FBA the FDD latch read-back.
@@ -2990,7 +3044,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // (NEMO register ports have A0=0). 16-bit data via A0 latch. On Profi the
   // SYSEN line keeps ESPectrum::trdos permanently asserted, so the !trdos rule
   // (authentic NEMO is outside TR-DOS) is bypassed there.
-  if (IDE::scheme == IDE::NEMO && !(address & 6) && (Z80Ops::isProfi || !ESPectrum::trdos)) {
+  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (Z80Ops::isProfi || !ESPectrum::trdos)) {
     if (address & 1) { LED::touchW(LED::IDE); IDE::write_latch(data); return; } // A0=1: high latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {                // control
       LED::touchW(LED::IDE); IDE::write8(8, data); return;
@@ -3459,8 +3513,9 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
 #if IDE_PORT_TRACE
     // Unconditional probe — see the matching read-side comment above.
     if (Z80Ops::isProfi && ((address & 0xFF) & 0x9F) == 0x8B) {
-      Debug::log("[IDE OUT probe] addr=%04X data=%02X scheme=%d cpm=%d rom14=%d trdos=%d pc=%04X",
-                 address, data, (int)IDE::scheme, (portDFFD & 0x20) != 0, MemESP::romLatch,
+      Debug::log("[IDE OUT probe] addr=%04X data=%02X scheme=%d/%d cpm=%d rom14=%d trdos=%d pc=%04X",
+                 address, data, (int)IDE::scheme, (int)IDE::portScheme,
+                 (portDFFD & 0x20) != 0, MemESP::romLatch,
                  ESPectrum::trdos, Z80::getRegPC());
     }
 #endif
@@ -3470,7 +3525,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     //   16-bit latch: #xxCB(A5=0) → store HIGH byte in write_latch;
     //                 #xxEB(A5=1, reg=0) → write 16-bit: data|(latch<<8).
     //   CS3: #xxAB(A6=0,A5=1, reg=6) → ATA control register (SRST/nIEN).
-    if (IDE::scheme == IDE::PROFI && Z80Ops::isProfi) {
+    if (IDE::portScheme == IDE::PROFI && Z80Ops::isProfi) {
       bool cpm = (portDFFD & 0x20), rom14 = MemESP::romLatch, dos = ESPectrum::trdos;
       // Same DOS&&!ROM14&&!CPM OR-term as the read side above — the SYS-ROM
       // self-test's HDD probe issues its ATA soft-reset (OUT #06AB,0x06/0x02)
