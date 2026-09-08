@@ -3279,7 +3279,7 @@ void ESPectrum::loop() {
     }
 #endif
 
-    // GS-Z80 runs on core1 alongside pcm_call(); core0 only reads the ring.
+    // GS-Z80 runs on core1 alongside the TS renderer; core0 only reads the ring.
 
     // Профилирование AY (только для отладки - закомментируйте после)
     // static uint64_t ay_total = 0, ay_count = 0;

@@ -1750,16 +1750,24 @@ void hdmi_set_dither(bool enabled) {
 // ============================================================
 
 // TERC4 encoding table: 4-bit value → 10-bit codeword (HDMI 1.4b Table 5-4)
-static const uint16_t terc4_table[16] = {
+static const uint16_t __not_in_flash("hdmi_audio") terc4_table[16] = {
     0b1010011100, 0b1001100011, 0b1011100100, 0b1011100010,
     0b0101110001, 0b0100011110, 0b0110001110, 0b0100111100,
     0b1011001100, 0b0100111001, 0b0110011100, 0b1011000110,
     0b1010001110, 0b1001110001, 0b0101100011, 0b1011000011
 };
 
-// BCH(64,56)/(32,24) ECC table, polynomial x^8+x^4+x^3+x^2+1 (in RAM: the
-// encoder runs in IRQ context and XIP flash stalls under PSRAM traffic)
-static uint8_t hdmi_bch_table[256] = {
+// BCH(64,56)/(32,24) ECC table, polynomial x^8+x^4+x^3+x^2+1 — in RAM because
+// the encoder runs in IRQ context and XIP flash stalls under PSRAM traffic.
+// The annotation is LOAD-BEARING and was missing until 2026-09-08: a plain
+// `static uint8_t tbl[] = {...}` is never written, so GCC promotes it to
+// .rodata, which this project's linker script sends to FLASH — nm put it at
+// 0x101f7d92 while this very comment claimed RAM. Same trap as Z80::reg8.
+// 12000 audio packets/s on core0, each a handful of lookups here plus a call
+// to hdmi_bch3/7, all of it competing for the XIP cache with the TS-Conf
+// renderer's PSRAM stream: this is why HDMI audio costs more frame time than
+// I2S. Check with nm (0x2xxxxxxx) after touching any of it.
+static const uint8_t __not_in_flash("hdmi_audio") hdmi_bch_table[256] = {
     0x00, 0xd9, 0xb5, 0x6c, 0x6d, 0xb4, 0xd8, 0x01, 0xda, 0x03, 0x6f, 0xb6, 0xb7, 0x6e, 0x02, 0xdb,
     0xb3, 0x6a, 0x06, 0xdf, 0xde, 0x07, 0x6b, 0xb2, 0x69, 0xb0, 0xdc, 0x05, 0x04, 0xdd, 0xb1, 0x68,
     0x61, 0xb8, 0xd4, 0x0d, 0x0c, 0xd5, 0xb9, 0x60, 0xbb, 0x62, 0x0e, 0xd7, 0xd6, 0x0f, 0x63, 0xba,
@@ -1778,25 +1786,25 @@ static uint8_t hdmi_bch_table[256] = {
     0x93, 0x4a, 0x26, 0xff, 0xfe, 0x27, 0x4b, 0x92, 0x49, 0x90, 0xfc, 0x25, 0x24, 0xfd, 0x91, 0x48,
 };
 
-static inline uint8_t hdmi_bch3(const uint8_t *p) {
+static inline uint8_t __not_in_flash_func(hdmi_bch3)(const uint8_t *p) {
     uint8_t v = hdmi_bch_table[p[0]];
     v = hdmi_bch_table[p[1] ^ v];
     v = hdmi_bch_table[p[2] ^ v];
     return v;
 }
 
-static inline uint8_t hdmi_bch7(const uint8_t *p) {
+static inline uint8_t __not_in_flash_func(hdmi_bch7)(const uint8_t *p) {
     uint8_t v = hdmi_bch_table[p[0]];
     for (int i = 1; i < 7; i++) v = hdmi_bch_table[p[i] ^ v];
     return v;
 }
 
 // Byte parity (even parity bit), packed 1 bit per value (in RAM, IRQ path)
-static uint8_t hdmi_parity_table[32] = {
+static const uint8_t __not_in_flash("hdmi_audio") hdmi_parity_table[32] = {
     0x96, 0x69, 0x69, 0x96, 0x69, 0x96, 0x96, 0x69, 0x69, 0x96, 0x96, 0x69, 0x96, 0x69, 0x69, 0x96,
     0x69, 0x96, 0x96, 0x69, 0x96, 0x69, 0x69, 0x96, 0x96, 0x69, 0x69, 0x96, 0x69, 0x96, 0x96, 0x69
 };
-static inline uint8_t hdmi_parity8(uint8_t x) {
+static inline uint8_t __not_in_flash_func(hdmi_parity8)(uint8_t x) {
     return (hdmi_parity_table[x >> 3] >> (x & 7)) & 1;
 }
 

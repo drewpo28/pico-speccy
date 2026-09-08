@@ -1070,7 +1070,11 @@ void __scratch_x("render") render_core() {
 #ifdef TFT
         refresh_lcd();
 #endif
-        pcm_call();
+        // (pcm_call() used to be called here. It has been an empty no-op since
+        // audio moved into timer_callback, it lived in FLASH, and core1 spins
+        // this loop thousands of times a frame right beside the TS-Conf
+        // renderer — so every iteration paid an XIP fetch, through the cache
+        // that renderer's own PSRAM reads are thrashing, for nothing.)
         ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
 #ifndef SOFTTV
         // Wall-clock-locked: runs GS-Z80 at exactly 12 MHz off core0.

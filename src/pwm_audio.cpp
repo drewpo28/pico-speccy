@@ -539,11 +539,6 @@ static bool __not_in_flash_func(timer_callback)(repeating_timer_t *rt) {
     return true;
 }
 
-void pcm_call() {
-    // Called from core1 busy-loop — now a no-op since audio is driven directly
-    // from timer_callback interrupt. Kept for compatibility with render_core().
-}
-
 void pcm_cleanup(void) {
     cancel_repeating_timer(&m_timer);
     m_timer.delay_us = 0;
@@ -566,7 +561,7 @@ void pcm_cleanup(void) {
 
 /// size - bytes
 void pcm_setup(int hz) {
-    // Flush output buffer so pcm_call() outputs silence until new data arrives
+    // Flush output buffer so the audio timer outputs silence until new data arrives
     m_size = 0;
     m_off = 0;
     if (Config::audio_driver == 4) {

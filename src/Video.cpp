@@ -443,6 +443,33 @@ uint8_t  VIDEO::ts_rres_live = 0;
 uint8_t  VIDEO::ts_crop_top = 0;
 uint32_t VIDEO::ts_ygctr = 0;
 
+// TSCONF_RENDER_IN_RAM (CMake, default ON): the generic render path in SRAM.
+// tsFast256/tsFast16 have always been RAM inner loops, but they only serve
+// TSU-FREE 256c/16c rows — on a TSU title every line goes through
+// tsRenderExec + tsuComposeLine instead, which were flash-resident: core1
+// fetching its hottest code through the same XIP cache and the same QMI port
+// its own tile reads are saturating. Verify with nm that BOTH land at
+// 0x2xxxxxxx after any change here, the outlined `tiles` lambda included — a
+// lambda inside a __not_in_flash_func is exactly what GCC likes to leave
+// behind in .text (see the tsFast256 note further down).
+#if TSCONF_RENDER_IN_RAM
+#define TS_RENDER_HOT __not_in_flash("tsrender")
+// Read-only data needs its OWN section name: one named section cannot hold both
+// code and read-only data (GCC: "causes a section type conflict").
+#define TS_RENDER_RO  __not_in_flash("tsrender_ro")
+#else
+#define TS_RENDER_HOT
+#define TS_RENDER_RO
+#endif
+
+// The per-phase PERF timers run FOUR times per line on the generic path and are
+// not gated on PERF_TRACE, and the SDK's time_us_64() is a flash function
+// reached through a veneer — four XIP fetches per line out of code that was
+// just moved to RAM to avoid exactly that. timer_hw->timerawl is the register
+// time_us_32() reads, inlined here so the render path makes no call at all;
+// every use is a microsecond delta inside one line, so 32 bits is ample.
+static inline uint32_t tsRenderUs() { return timer_hw->timerawl; }
+
 // ── TS-Conf line rendering on core1 ─────────────────────────────────────────
 // A content line is a pure function of {line, y counter, GXOffs, VPage, PalSel,
 // VConfig(GFXOVR), Border} plus frame-stable state (mode, geometry, ts256_map,
@@ -1881,7 +1908,7 @@ void VIDEO::tsPaletteFlush() {
 // TEXT mode and as the palette index itself in 16c/NOGFX (where the framebuffer
 // byte IS the hardware slot 0..15).
 uint8_t VIDEO::tsBorderSlot() { return tsBorderSlotFor(TsConf::r.border, TsConf::r.palsel); }
-uint8_t VIDEO::tsBorderSlotFor(uint8_t border, uint8_t palsel) {
+uint8_t TS_RENDER_HOT VIDEO::tsBorderSlotFor(uint8_t border, uint8_t palsel) {
     if (ts_pal256_live) return ts256_map[border];
     const uint8_t gpal = (palsel & 0x0F) << 4;
     const uint16_t want = TsConf::cram[border];
@@ -4290,7 +4317,7 @@ int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin
 // that field (TS lines 56..295, pixels 108..427), the 360x288 full-border
 // modes show all of it.
 struct TsRres { uint16_t w; uint16_t h; uint8_t ub; uint8_t lb; };
-static const TsRres kTsRres[4] = {
+static const TsRres TS_RENDER_RO kTsRres[4] = {
     { 256, 192, 48, 52 },
     { 320, 200, 44, 20 },
     { 320, 240, 24, 20 },
@@ -4643,7 +4670,7 @@ void VIDEO::tsRenderLine(uint32_t curline) {
 
 // Renders one job. Runs on core1 (queued) or core0 (TSU lines, no ring). Reads
 // nothing from TsConf::r except through tsuComposeLine (core0 only).
-void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile, uint32_t seq) {
+void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile, uint32_t seq) {
     const uint32_t curline = j.l.line;
     const uint32_t ygctr = j.l.ygctr;
     const uint32_t frow = curline + lin_end;
@@ -4738,7 +4765,7 @@ void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_
     // transparent (video_render.v: tsu_visible = |tsdata[3:0]).
     static uint16_t s_gline[512];
     static uint8_t  s_tsline[512];
-    const uint64_t t0b = time_us_64();
+    const uint32_t t0b = tsRenderUs();
     const int w = (int)g.w;
     const uint8_t gpal = (uint8_t)((j.l.palsel & 0x0F) << 4);
     const uint8_t border_idx = j.l.border;
@@ -4799,12 +4826,12 @@ void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_
         }
     }
 
-    uint64_t t1 = time_us_64();
-    ts_base_us += (uint32_t)(t1 - t0b);
+    uint32_t t1 = tsRenderUs();
+    ts_base_us += t1 - t0b;
     if (ts_tsu_live) {
         tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline, *st, sfile, j.l.palsel, seq, (uint8_t)((j.l.kind >> 1) & 1));
-        const uint64_t t2 = time_us_64();
-        ts_tsu_us += (uint32_t)(t2 - t1);
+        const uint32_t t2 = tsRenderUs();
+        ts_tsu_us += t2 - t1;
         t1 = t2;
     }
 
@@ -4855,7 +4882,7 @@ void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_
 #undef TS_PX_T
 #undef TS_PX_O
     }
-    ts_out_us += (uint32_t)(time_us_64() - t1);
+    ts_out_us += tsRenderUs() - t1;
 }
 
 // ── TSU: the Tile-Sprite Unit's line buffer (video_ts.v / Unreal render_ts) ──
@@ -4870,12 +4897,12 @@ void VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_
 // walked in order; `leap` closes the current sprite layer after that sprite;
 // visible when (line - y) & 511 <= ys*8+7. Palette: {tXpal(2) tile.pal(2)}
 // or sprite pal(4), high nibble of the CRAM index.
-void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const uint16_t* sfile, uint8_t palsel, uint32_t seq, uint8_t par) {
+void TS_RENDER_HOT VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const uint16_t* sfile, uint8_t palsel, uint32_t seq, uint8_t par) {
     memset(ts, 0, 512);
     const uint8_t tsc = st.tsconf;
     const bool s_en = tsc & 0x80, t1_en = tsc & 0x40, t0_en = tsc & 0x20;
     const bool t1z = tsc & 0x08, t0z = tsc & 0x04;
-    static const uint8_t kTiles[4] = { 34, 42, 42, 47 };
+    static const uint8_t TS_RENDER_RO kTiles[4] = { 34, 42, 42, 47 };
     const int ntiles = kTiles[ts_rres_live & 3];
 
     // 8 pixels of a bitmap element line into the buffer at pos, direction dir.
@@ -4896,7 +4923,7 @@ void VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const
         return p ? p + ((bline & 63) << 8) : nullptr;
     };
 
-    auto tiles = [&](int layer) {
+    auto tiles = [&](int layer) TS_RENDER_HOT {
         const bool en = layer ? t1_en : t0_en;
         if (!en) return;
         const uint8_t* tm = TsConf::pagePtr(st.tmpage);

@@ -152,7 +152,12 @@ void TsConf::bindRoms() {
 
 // -------------------------------------------------------------- paging ----
 
-uint8_t* TsConf::pagePtr(uint32_t page) {
+// RAM unconditionally (36 bytes): tsuComposeLine calls this once per TILE —
+// ~84 times per rendered line, plus once per sprite element — and it is on
+// core1, where a flash fetch queues behind that same line's PSRAM tile reads.
+// It stays out of the TSCONF_HOT_IN_RAM group on purpose: the renderer needs
+// it whether or not the port/DMA code is resident.
+uint8_t* __not_in_flash("tsconf_pageptr") TsConf::pagePtr(uint32_t page) {
     mem_desc_t& d = MemESP::ram[page & (MEM_PG_CNT - 1)];
     return (d.memType() == mem_type_t::POINTER) ? d.direct() : nullptr;
 }
