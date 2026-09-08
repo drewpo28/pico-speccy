@@ -72,7 +72,7 @@
 #define TXT_VID_DITHER      "Dithering"
 #define TXT_VID_HDMI        "HDMI"
 #define TXT_VID_CLKDRV      "Clock drive"
-#define TXT_VID_SNAP        "Capture-safe colours"
+#define TXT_VID_SNAP        "Capture card compatibility"
 
 // ── Audio ──────────────────────────────────────────────────────────────────────
 #define TXT_AUD_DRIVER      "Audio driver"
