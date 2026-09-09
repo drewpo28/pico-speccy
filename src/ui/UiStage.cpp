@@ -923,10 +923,11 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_TIMEX, 0, rep, "Timex turned off: SAA1099 needs it off");
         }
 
-        // Gigascreen has no coherent prev-FB on Profi — enabling it from the menu while
-        // Profi runs was a SIGBUS storm in the render path (OSDMain.cpp:4773, hw PICO_DV).
-        if (staged(SET_GIGASCREEN) != 0 && stagedIsProfi())
-            changed |= force(SET_GIGASCREEN, 0, rep, "Gigascreen is not available on Profi");
+        // (Gigascreen is NOT constrained by the machine. Profi/Karabas and TS-Conf
+        // draw the standard ZX screen with the ordinary beam renderer, where it
+        // works; only their whole-line modes — DS80, TEXT/16c/256c, the TSU — are
+        // incompatible, and VIDEO::gigascreenModeGate() suspends it for as long as
+        // one of those is live, without touching the setting.)
 
         // TS-Conf owns the whole video path (CRAM palette, VPage) — the same
         // set of exclusions as Profi, plus its own: Timex (#FF is the Beta
@@ -935,8 +936,6 @@ static void resolveConstraints(CommitReport& rep) {
         // has its own 16c mode, not the #EFF7 one), Murmuzavr (TS-Conf sizes
         // RAM through SET_TSCONF_RAM).
         if (stagedIsTsconf()) {
-            if (staged(SET_GIGASCREEN) != 0)
-                changed |= force(SET_GIGASCREEN, 0, rep, "Gigascreen is not available on TS-Conf");
             if (staged(SET_TIMEX) != 0)
                 changed |= force(SET_TIMEX, 0, rep, "Timex is not available on TS-Conf");
             if (staged(SET_MB02))
@@ -1120,7 +1119,10 @@ static bool want_opll()  { return Config::ym2413 != 0; }
 static bool want_cms()   { return Config::cms != 0; }
 static bool want_sn()    { return Config::sn76489 != 0; }
 static bool want_dma()   { return Config::dma_mode != 0; }
-static bool want_gs()    { return Config::gigascreen_onoff != 0; }
+// Gigascreen: while a whole-line video mode is live the prev-FB is deliberately
+// handed back (VIDEO::gigascreenModeGate), so a reconcile must NOT bring it up
+// again — the gate does that itself when the mode returns to standard.
+static bool want_gs()    { return Config::gigascreen_onoff != 0 && !VIDEO::gigascreen_mode_block; }
 static bool want_divmmc(){ return Config::esxdos != 0; }
 static bool want_mb02()  { return Config::mb02 != 0; }
 

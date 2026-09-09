@@ -322,7 +322,14 @@ void TsConf::write7ffd(uint8_t val) {
             break;
     }
     r.p7ffd = val;
-    r.vpage = r.vpage_d = (val & 0x08) ? 7 : 5;  // SCR bit — no line latch
+    // SCR bit — no line latch. A change of the displayed page is what arms
+    // Gigascreen's Auto mode: every other machine bumps the countdown from its
+    // own #7FFD videoLatch flip, and TS-Conf takes this handler INSTEAD of that
+    // one (Ports.cpp early-delegates), so without this Auto never engaged here.
+    const uint8_t scr_page = (val & 0x08) ? 7 : 5;
+    if (r.vpage != scr_page && Config::gigascreen_onoff == 2)
+        VIDEO::gigascreen_auto_countdown = 3;
+    r.vpage = r.vpage_d = scr_page;
     setBanks();
 }
 
@@ -406,6 +413,10 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
         case TSW_VCONF:  TSVT("VCONF=%02X", val); r.vconf  = r.vconf_d  = val; tsUpdateWrGate(); break;
         case TSW_VPAGE:
             TSVT("VPAGE=%02X", val);
+            // The native way a TS program flips screens (the #7FFD SCR bit is the
+            // 128K-compatible one) — Gigascreen Auto has to see it too.
+            if (r.vpage != val && Config::gigascreen_onoff == 2)
+                VIDEO::gigascreen_auto_countdown = 3;
             r.vpage = r.vpage_d = val;
             refreshGrmem();
             tsUpdateWrGate(); break;

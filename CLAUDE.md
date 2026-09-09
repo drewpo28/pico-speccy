@@ -1859,11 +1859,11 @@ of `aligned(4096)` padding. Free heads: DVp2 82.7 KB, z0p2 79.1, z0p2-PIOUSB 64.
   packed 4-bit rows while the TS whole-line renderer owns rows [0,240) — the
   writeback lands outside the prev-FB, i.e. in the main framebuffer that shares its
   block, and the blend-LUT rebuild (`initGigascreenBlendLUT`, slots 17..136)
-  overwrites the ts256 palette pool. Now: the function accepts TS-Conf, the Alt+PgUp
-  hotkey refuses on TS-Conf like Profi, the .spg loader and
-  `tsVideoApplyPending` (when the TS renderer takes over) call it as backstops, and
-  `applyPalette()` re-flushes the ts256 remap with a fresh shadow — any external
-  palette rewrite used to leave "picture right, colours wrong". Diagnosis aid:
+  overwrites the ts256 palette pool. The first fix made the function accept TS-Conf
+  and disabled Gigascreen per MACHINE (menu constraint, Alt+PgUp refusal, .spg and
+  `tsVideoApplyPending` backstops); **that is SUPERSEDED — see the mode-gate section
+  below.** `applyPalette()` re-flushes the ts256 remap with a fresh shadow — any
+  external palette rewrite used to leave "picture right, colours wrong". Diagnosis aid:
   the GDB dump's TS-Conf block now prints `video:` (renderer/driver flags),
   `gigascreen: cfg= live= crt=` and the whole CRAM. Remember that BOTH screenshot
   decoders lie in these modes: the profi tool splits every byte into a pair, the
@@ -2379,6 +2379,67 @@ in the log, CAPS/NUM LEDs, the SPI-flash interface; keys typed into the OSD
 menu still land in the log (as they would on a real Evo). avrconf's own "Save
 and Soft Reset" needs nothing from us — after CFGIF command 0xF7 it resets
 itself via MemConfig=4 / SysConfig=0 / RST 0. Cost ~1.3 KB flash, ~100 B RAM.
+
+## Gigascreen is suspended by the MODE, not forbidden by the machine (2026-09-09, NOT hw-tested)
+
+`VIDEO::disableGigascreenForProfi()` is GONE. Gigascreen used to be turned off and
+**persisted Off** for the whole machine — Profi/Karabas by `Config::arch`, TS-Conf
+since Phase 1 — in five places (`VIDEO::Init`, `MachineSwitch`, `FileSPG::load`,
+`tsVideoApplyPending`, the menu's `resolveConstraints`) plus an Alt+PgUp refusal.
+But those machines draw the standard ZX screen with the ordinary beam renderer,
+where Gigascreen is as valid as on a Pentagon; only the **whole-line modes** are
+incompatible, and switching into such a machine also destroyed the user's setting
+for good.
+
+- **The predicate is `VIDEO::gigascreenModeIncompatible()`** = `profi_ds80_active
+  || gmx_ext_live || ts_render_live`, i.e. Profi/Karabas DS80, Scorpion GMX
+  640x200 and every TS-Conf non-ZX mode (TEXT/16c/256c/NOGFX **and** the TSU over
+  ZX). GMX was never covered by the old machine rule at all — same hazard, one
+  latent bug closed with it.
+- **`VIDEO::gigascreenModeGate()` runs from `EndFrame`, immediately after the
+  three deferred mode switches settle** (DS80 activate/deactivate, `gmxApplyPending`,
+  `tsVideoApplyPending`) — one call for all three, and it is the vblank context the
+  prev-FB alloc/free and the palette rewrite need. Edge-triggered on
+  `gigascreen_mode_block`: suspend drops the live flags and hands the prev-FB back
+  through `GsSubsys` (38-52 KB the whole-line mode itself may want); resume
+  re-allocates, `InitPrevBuffer()`s and sets `gigascreen_lut_rebuild_deferred`,
+  which the SAME EndFrame drains a few hundred lines below — slots 17..136 belonged
+  to the mode just left (ts256 pool / DS80-GMX pair table).
+- **Config is never rewritten by the gate.** `Config::gigascreen_onoff` stays the
+  user's pick and `Config::gigascreen_enabled` keeps meaning "armed and paid for"
+  (the boot pre-allocation and the memory budget read it). The one predicate the
+  palette/blend code uses is **`VIDEO::gigascreenArmed()`** = enabled && !blocked —
+  `applyPalette`, `ulaPlusDisable`, `applyCrtFilter`, `changeMode`, the deferred LUT
+  rebuild and the Auto-mode re-arm all moved onto it. A failed re-allocation is not
+  latched: `onoff` survives, so the next return to a standard mode tries again.
+- **`ensurePrevFB` had `if (Config::arch == A_PROFI) return true;`** — success
+  WITHOUT allocating, so `GsSubsys::apply()` built the row-pointer array over a NULL
+  base and the renderer SIGBUS-stormed. That is what "Gigascreen is incompatible
+  with Profi" actually was; it is deleted.
+- Two knock-on rules: `want_gs()` (UiStage) now includes `!gigascreen_mode_block`,
+  or a menu commit taken during a suspension would bring the prev-FB back up under
+  a whole-line mode; and `featureEnabled(FEAT_GIGASCREEN)` answers
+  `gigascreenArmed()`, so the commit path cannot "yield" a suspended Gigascreen
+  that would free nothing and write the user's setting Off. **`autoDisabledMask
+  (FEAT_PROFI)` lost `FEAT_GIGASCREEN`**: the Profi switch no longer frees that
+  prev-FB, and crediting bytes nobody frees would let a butter-less board take the
+  switch and then find no heap at `VIDEO::Init`. It is an ordinary manual candidate
+  in the free-list now.
+- **Auto mode had no trigger on TS-Conf** (reported 2026-09-09, fixed, NOT hw-tested).
+  The countdown that arms Auto (`VIDEO::gigascreen_auto_countdown = 3`) is bumped
+  from each machine's own `#7FFD` videoLatch flip — and `Ports::output`
+  early-delegates `#7FFD` to `TsConf::write7ffd`, so TS-Conf reached none of those
+  three sites and Auto could never engage (plain "On" always worked). The bump now
+  sits in `write7ffd` (the SCR bit, on a real CHANGE of the page) and in the
+  `TSW_VPAGE` register write — the native way a TS program flips screens. Same trap
+  shape as the LED-indicator one: a machine that takes its own port handler silently
+  loses every side effect the generic one carried.
+- Hardware Info says `On (off in this mode)` while suspended, and the log carries
+  `VIDEO: Gigascreen suspended for this video mode` / `resumed (standard video
+  mode)`. **What to check on hardware**: Profi DS80 in and out (the old SIGBUS
+  path), a TS-Conf title that flips 16c/256c per screen (Digger's intro is the
+  known stripe case), GMX 640x200, and Gigascreen actually working in Profi and
+  TS-Conf ZX mode — nothing in that combination has ever run.
 
 ## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
 

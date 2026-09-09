@@ -441,10 +441,20 @@ public:
   static bool gigascreen_enabled;
   static uint8_t gigascreen_auto_countdown;
 
-  // Profi has no Gigascreen (incompatible video path). Force it off and free
-  // the 52 KB prev-FB. Safe to call when arch is not Profi (no-op). Called both
-  // at boot (VIDEO::Init) and on a runtime switch into Profi.
-  static void disableGigascreenForProfi();
+  // ── Gigascreen vs the whole-line video modes ──────────────────────────────
+  // Gigascreen blends the previous frame out of a 4-bit prev-FB and owns palette
+  // slots 17..136 for the blends. Both are incompatible with every mode whose
+  // renderer owns the entire framebuffer row: Profi/Karabas DS80, Scorpion GMX
+  // 640x200 and every TS-Conf non-ZX mode (TEXT/16c/256c/NOGFX, or the TSU over
+  // ZX) — packed pair slots / palette-index rows the prev-FB window was never
+  // laid out for, and (256c/TSU) a slot pool the blend LUT would overwrite.
+  // The MODE decides, not the machine: Gigascreen stays available in the standard
+  // ZX mode of those machines and is SUSPENDED while such a mode is live, coming
+  // back on the way out. Config keeps the user's pick throughout.
+  static bool gigascreen_mode_block;         // a whole-line mode owns the fb now
+  static bool gigascreenModeIncompatible();  // ... one is live right now
+  static bool gigascreenArmed();             // user has it on AND it is not suspended
+  static void gigascreenModeGate();          // EndFrame: suspend/resume on the edge
 
   // Timex SCLD video modes
   static uint8_t timex_port_ff;   // bits 0-5 of port 0xFF

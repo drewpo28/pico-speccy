@@ -87,8 +87,9 @@ bool FileSPG::load(const string& fn) {
         Config::requestMachine(A_TSCONF, R_NONE);
 #endif
     }
-    // Gigascreen is incompatible with the TS-Conf renderer (VIDEO::disableGigascreenForProfi).
-    if (Config::gigascreen_enabled) VIDEO::disableGigascreenForProfi();
+    // (No Gigascreen handling here: VIDEO::gigascreenModeGate() suspends it from
+    // EndFrame the moment the program puts a whole-line mode up, and hands it back
+    // if the program runs in the standard ZX mode.)
     ESPectrum::resetForLoad();
 
     // Blocks: descriptor = {addr:5 (x512 in page) .. last:7, size:5 (x512 - 1)

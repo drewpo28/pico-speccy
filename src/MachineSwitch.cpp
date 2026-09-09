@@ -239,14 +239,11 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             }
             OSD::osdCenteredMsg("Betadisk disabled", LEVEL_WARN, 1500);
         }
-        // Switching into Profi: Gigascreen is incompatible —
-        // turn it off and free its 52 KB prev-FB before saving
-        // so the Off-state persists across reboots. Config::arch
-        // is already committed above (pref_arch=="Last" path).
-        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF) && Config::gigascreen_enabled) {
-            VIDEO::disableGigascreenForProfi();
-            OSD::osdCenteredMsg("Gigascreen disabled", LEVEL_WARN, 1500);
-        }
+        // (Gigascreen used to be turned off and persisted Off here for Profi and
+        // TS-Conf. It is not a machine property: those machines render the standard
+        // ZX screen through the ordinary beam renderer, where it works. Only the
+        // whole-line MODES are incompatible, and VIDEO::gigascreenModeGate()
+        // suspends it for exactly as long as one of them is live.)
         // Switching into Profi: turn the ZiFi NIC off and free its
         // ~12 KB of heap rings — Profi forces ~80 KB of SRAM pages
         // and OOMs at VIDEO::Init otherwise. Persist Off so the boot

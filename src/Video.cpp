@@ -1140,6 +1140,7 @@ bool VIDEO::paper_off = false;
 bool VIDEO::brdnextframe = true;
 bool VIDEO::brdGigascreenChange = true;
 bool VIDEO::gigascreen_enabled = false;
+bool VIDEO::gigascreen_mode_block = false;
 uint8_t VIDEO::gigascreen_auto_countdown = 0;
 
 // void precalcColors() {
@@ -1692,7 +1693,7 @@ void VIDEO::ulaPlusDisable() {
     // When GigaScreen is enabled we must NOT touch slots 17..63 — those hold blend
     // values built at boot, and rewriting them here would force a heavy 120-entry
     // re-emit and race with HDMI DMA reading conv_color from port-write context.
-    int g3r3b2_upper = Config::gigascreen_enabled ? 17 : 64;
+    int g3r3b2_upper = gigascreenArmed() ? 17 : 64;
     for (int i = 0; i < g3r3b2_upper; i++)
         graphics_set_palette(i, paletteFinal(grb_to_rgb888(i)));
     for (int i = 0; i < 16; i++) {
@@ -1700,7 +1701,7 @@ void VIDEO::ulaPlusDisable() {
         graphics_set_palette(i, color);
         vga_set_palette_entry_solid(i, color);
     }
-    if (Config::gigascreen_enabled) {
+    if (gigascreenArmed()) {
         // ULA+ active phase clobbered Gigascreen blend slots 17..127 via applyUlaPlusPalette.
         // Signal EndFrame to rebuild them from the safe blanking context.
         gigascreen_lut_rebuild_deferred = true;
@@ -1787,7 +1788,7 @@ void VIDEO::applyPalette() {
     Debug::log2SD("applyPalette: done, 240+16+1 entries written");
 
     // Re-apply GigaScreen blend palette if active
-    if (Config::gigascreen_enabled)
+    if (gigascreenArmed())
         initGigascreenBlendLUT();
     // The TS-Conf 256-slot remap owns most of the hardware palette; everything
     // above just rewrote it, so its slot shadow is stale — write every assigned
@@ -1962,7 +1963,7 @@ void VIDEO::tsPaletteRestore() {
 void VIDEO::applyCrtFilter() {
     crtBuildLut(Config::crt_filter);
     applyPalette();                              // 0..239 + the 16 ZX solids
-    if (Config::gigascreen_enabled)
+    if (gigascreenArmed())
         gigascreen_lut_rebuild_deferred = true;  // blends 17..136 carry the old curve
     if (ulaplus_enabled)
         ulaplus_alubytes_dirty = true;           // CLUT 0..63 (+ dither twins) likewise
@@ -2244,7 +2245,11 @@ static bool prevFBAllocChunked(int lines, int prev_stride, size_t want) {
 }
 
 static bool ensurePrevFB(int lines, int stride) {
-    if (Config::arch == A_PROFI) return true; // Gigascreen not available for Profi
+    // (There used to be an `arch == A_PROFI -> return true` here, which reported
+    // success without allocating anything: GsSubsys::apply() then built the prev-FB
+    // row-pointer array over a NULL base and the render path SIGBUS-stormed. That
+    // is the whole reason Gigascreen looked "incompatible with Profi" — the mode
+    // gate now handles the modes that really are.)
     const int prev_stride = stride / 2;
     size_t want = fbPrevBytes(lines, stride);
     if (sharedFB_prev && sharedFB_prev_size == want) return true;
@@ -2703,23 +2708,83 @@ size_t VIDEO::gigascreenPrevFBBytes() {
     return fbPrevBytes(sharedFB_lines, sharedFB_stride);
 }
 
-void VIDEO::disableGigascreenForProfi() {
-    // Profi (no coherent prev-FB) and TS-Conf: its whole-line renderer owns the
-    // content rows with a geometry the prev-FB window (pwKick) was never laid out
-    // for — hw 2026-09-06, Digger intro: the window's writeback ran outside the
-    // 4-bit prev-FB into the main framebuffer and painted the whole screen with
-    // 1-px stripes, and the blend LUT rebuild overwrote the ts256 palette slots.
-    // MachineSwitch has called this for TS-Conf since Phase 1; the guard below
-    // used to make that a no-op.
-    if (Config::arch != A_PROFI && Config::arch != A_TSCONF) return;
-    // Clear the persisted/live enable flags so nothing re-arms it (Auto mode
-    // checks gigascreen_onoff; force it Off too) and free the prev-FB.
-    Config::gigascreen_enabled = false;
-    VIDEO::gigascreen_enabled  = false;
-    Config::gigascreen_onoff   = 0; // Off — also disarms Auto countdown
+// ── Gigascreen vs the whole-line video modes ──────────────────────────────────
+// A mode whose renderer owns the entire framebuffer row cannot coexist with
+// Gigascreen — hw 2026-09-06, Digger intro (TS-Conf 16c): the prev-FB window
+// (pwKick) writes back rows laid out for the standard content band, so with a
+// whole-line renderer in charge the writeback landed in the main framebuffer that
+// shares its block and painted 1-px stripes over the picture, while the blend-LUT
+// rebuild (slots 17..136) overwrote the ts256 palette pool. DS80/GMX/TEXT are the
+// same hazard one step further: their framebuffer bytes are packed PAIR slots, so
+// a 4-bit prev nibble is not even a colour there.
+//
+// But that is a property of the MODE, not of the machine: Profi, Karabas and
+// TS-Conf all render the standard ZX screen through the ordinary beam renderer,
+// where Gigascreen is exactly as valid as on a Pentagon. So it is suspended for
+// the duration of such a mode and restored on the way out, and Config keeps the
+// user's pick the whole time (an earlier version cleared it, which killed the
+// setting for good on the first switch into Profi).
+bool VIDEO::gigascreenModeIncompatible() {
+    return profi_ds80_active            // Profi/Karabas DS80 512x240 (pair slots)
+        || gmx_ext_live                 // Scorpion GMX 640x200x16 (pair slots)
+        || ts_render_live != 0;         // TS-Conf TEXT/16c/256c/NOGFX, or the TSU
+}
+
+// The one predicate every palette/blend decision uses: the user wants Gigascreen
+// AND no whole-line mode has taken the framebuffer away. Config::gigascreen_enabled
+// alone still means "armed and paid for" (it is what the boot pre-allocation and
+// the memory budget read).
+bool VIDEO::gigascreenArmed() {
+    return Config::gigascreen_enabled && !gigascreen_mode_block;
+}
+
+void VIDEO::gigascreenModeGate() {
+    const bool bad = gigascreenModeIncompatible();
+    if (bad == gigascreen_mode_block) return;      // edge-triggered: nothing to do
+    gigascreen_mode_block = bad;
+
+    if (bad) {
+        // Suspend. The prev-FB really is handed back (38-52 KB the whole-line mode
+        // itself may want — the TS core1 ring, DS80's clrmem SRAM), so the live
+        // flags have to go first: renderers pair them with a prevFrameBuffer null
+        // check, and pwShutdown inside apply() waits out the window DMA.
+        VIDEO::gigascreen_enabled = false;
+        VIDEO::gigascreen_auto_countdown = 0;
+        if (GsSubsys::enabled) {
+            GsSubsys::request(false);
+            GsSubsys::apply();
+            Debug::log("VIDEO: Gigascreen suspended for this video mode (prevFB freed)");
+        }
+        return;
+    }
+
+    // Resume. gigascreen_onoff is the user's pick and the only thing a menu edit
+    // taken during the suspension wrote — mirror it into gigascreen_enabled the way
+    // pre_gs()/post_gs() do, so a "turn it off while suspended" does not come back.
+    Config::gigascreen_enabled = (Config::gigascreen_onoff != 0);
+    if (!Config::gigascreen_enabled) return;
+    GsSubsys::request(true);
+    if (!GsSubsys::apply() || !vga.prevFrameBuffer) {
+        // apply()'s own OOM path clears Config::gigascreen_enabled; the user's choice
+        // is not ours to drop over a transient heap state (the same rule as
+        // gigascreenRestoreAfterNet). onoff survives, so the NEXT return to a standard
+        // mode tries again — this is edge-triggered, so it never becomes a per-frame
+        // retry storm.
+        Config::gigascreen_enabled = false;
+        VIDEO::gigascreen_enabled  = false;
+        VIDEO::gigascreen_auto_countdown = 0;
+        Debug::log("VIDEO: Gigascreen prevFB not recoverable after the mode switch"
+                   " (freeHeap=%u) — off until the next one", (unsigned)getFreeHeap());
+        return;
+    }
+    // Slots 17..136 belonged to the mode we just left (ts256 pool, DS80/GMX pair
+    // table): rebuild the blends. EndFrame drains this a few hundred lines below,
+    // still inside this frame's blanking — the same deferral the ULA+ exit uses.
+    gigascreen_lut_rebuild_deferred = true;
+    InitPrevBuffer();                                // no blending against stale rows
+    VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1);  // On=live, Auto=armed
     VIDEO::gigascreen_auto_countdown = 0;
-    GsSubsys::request(false);
-    GsSubsys::apply();
+    Debug::log("VIDEO: Gigascreen resumed (standard video mode)");
 }
 
 // Row accessors used by the render hot paths. Window active → SRAM buffer;
@@ -2857,11 +2922,10 @@ void VIDEO::Init() {
         free(sharedFB_arr1); sharedFB_arr1 = nullptr;
         free(sharedFB_main); sharedFB_main = nullptr; sharedFB_main_size = 0;
     }
-    // If we boot into Profi, Gigascreen is incompatible: clear the flags so the
-    // prev-FB is never allocated below (and any stale NVS enable is dropped).
-    disableGigascreenForProfi();
     // Pre-allocate prev framebuffer if Gigascreen is enabled at boot,
-    // BEFORE the heap fragments.
+    // BEFORE the heap fragments. A boot straight into a whole-line mode (Profi
+    // DS80, a TS-Conf romset that opens in TEXT) hands it back at the first
+    // EndFrame — gigascreenModeGate() — and takes it again on the way out.
     if (sharedFB_main && Config::gigascreen_enabled) {
         GsSubsys::request(true);
         GsSubsys::apply();
@@ -4422,12 +4486,6 @@ void VIDEO::tsVideoApplyPending() {
     ts_pal256_live = wantPal256;
     TsConf::wrGateRecalc();
 
-    if (wantRender && Config::gigascreen_enabled) {
-        // Backstop for the paths that never pass through MachineSwitch (the .spg
-        // loader's requestMachine, Alt+PgUp Auto arming): see disableGigascreenForProfi.
-        disableGigascreenForProfi();
-        Debug::log("[TSV] Gigascreen disabled (incompatible with the TS-Conf renderer)");
-    }
     if (!wantRender) {
         // Back to the standard renderer: Pentagon line window (Reset's generic
         // block) and the per-T-state border machine.
@@ -5177,6 +5235,12 @@ IRAM_ATTR void VIDEO::EndFrame() {
         if (gmx_ext_pending_on || gmx_ext_pending_off) gmxApplyPending();
         // ── TS-Conf VConfig mode/geometry switch — same vblank-only rule ──
         if (Z80Ops::isTsconf) tsVideoApplyPending();
+
+        // Every mode that can take the framebuffer away from the standard renderer
+        // has just settled (DS80 above, GMX and TS-Conf here) — suspend or resume
+        // Gigascreen on that edge. One place for all three, and it is vblank, which
+        // is what the prev-FB alloc/free and the palette rewrite need.
+        gigascreenModeGate();
     }
 
     // Profi palette refresh. EndFrame is NOT in the display blanking window:
@@ -5504,7 +5568,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
 
     // Rebuild Gigascreen blend palette if a ULA+ session clobbered its slots.
     // Safe here: EndFrame runs during blanking, HDMI DMA is not reading conv_color.
-    if (gigascreen_lut_rebuild_deferred && Config::gigascreen_enabled) {
+    if (gigascreen_lut_rebuild_deferred && gigascreenArmed()) {
         gigascreen_lut_rebuild_deferred = false;
         gigsBlendLUTReady = false;
         initGigascreenBlendLUT();
@@ -5615,7 +5679,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
     brdChange = false;
     }
 
-    if (Config::gigascreen_onoff == 2) { // Auto mode
+    if (Config::gigascreen_onoff == 2 && gigascreenArmed()) { // Auto mode
         if (gigascreen_auto_countdown > 0) {
             gigascreen_auto_countdown--;
             if (!gigascreen_enabled) {
@@ -5929,7 +5993,7 @@ IRAM_ATTR static void Update_Border_Span_Generic(int n) {
 static void Select_Update_Border() {
     pwRefreshGate();  // geometry may have changed — re-evaluate the DMA window
     if (ds80_border_geom) {
-        Update_Border = &Update_Border_DS80;  // Gigascreen incompatible with Profi
+        Update_Border = &Update_Border_DS80;  // Gigascreen is suspended in DS80
         Update_Border_Span = &Update_Border_Span_Generic;
         return;
     }

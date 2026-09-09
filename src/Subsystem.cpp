@@ -802,7 +802,12 @@ size_t featurePsramCost(FeatureId f) {
 
 bool featureEnabled(FeatureId f) {
     switch (f) {
-        case FEAT_GIGASCREEN:    return Config::gigascreen_enabled;
+        // Not Config::gigascreen_enabled: while a whole-line video mode is live the
+        // prev-FB is really handed back (VIDEO::gigascreenModeGate), so the memory is
+        // already in the free heap this function's callers measure — reporting it as
+        // enabled would make the commit path "yield" a Gigascreen that frees nothing
+        // and write the user's setting Off for it.
+        case FEAT_GIGASCREEN:    return VIDEO::gigascreenArmed();
         case FEAT_GENERAL_SOUND: return Config::gs_enabled != 0;
         case FEAT_DIVMMC:        return Config::esxdos != 0;
         case FEAT_PROFI:         return Config::arch == A_PROFI;
@@ -945,9 +950,13 @@ static uint32_t autoDisabledMask(FeatureId f) {
     // Entering Profi auto-disables these (OSDMain arch-switch) — credited as freed
     // and excluded from the manual free-list popup. FEAT_MIDI is deliberately NOT
     // here: GM.DLS stays on across the Profi switch; on tight boards the budget
-    // popup offers it as a manual free candidate instead.
-    if (f == FEAT_PROFI) return (1u << FEAT_GIGASCREEN) | (1u << FEAT_ZIFI)
-                              | (1u << FEAT_DIVMMC);
+    // popup offers it as a manual free candidate instead. FEAT_GIGASCREEN left the
+    // list when the Profi switch stopped disabling it (it is only suspended while
+    // DS80 is up, and Profi's standard ZX mode keeps it): its prev-FB is NOT freed
+    // by the switch any more, so crediting those bytes would let a butter-less
+    // board take the switch and then find no heap at VIDEO::Init. It is now an
+    // ordinary manual candidate in the free-list instead.
+    if (f == FEAT_PROFI) return (1u << FEAT_ZIFI) | (1u << FEAT_DIVMMC);
     // Z-Controller and IDE both displace esxDOS DivMMC (shared SD ports) — credit
     // its freed SRAM and exclude it from the manual free-list.
     if (f == FEAT_ZCONTROLLER || f == FEAT_IDE) return (1u << FEAT_DIVMMC);

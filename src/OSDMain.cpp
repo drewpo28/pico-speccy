@@ -2360,13 +2360,13 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             }
         }
         else if (hkIdx == Config::HK_GIGASCREEN) {
-            // Profi is incompatible with Gigascreen (renderer geometry never
-            // touches the prev-FB coherently) — same guard as the Video menu;
-            // without it the Alt+PgUp toggle enabled it mid-Profi and the
-            // render path SIGBUS-stormed (hw, PICO_DV).
-            if (Z80Ops::isProfi || Z80Ops::isTsconf) {
-                notify(Z80Ops::isTsconf ? " Gigascreen: not available on TS-Conf "
-                                        : " Gigascreen: not available on Profi ", LEVEL_WARN, 1800);
+            // Not the machine — the live video MODE. DS80, GMX 640x200 and every
+            // TS-Conf non-ZX mode own the whole framebuffer row, so Gigascreen is
+            // suspended while one of them is up (VIDEO::gigascreenModeGate) and
+            // toggling it here would only fight that. In the standard ZX mode of
+            // those same machines it is available like anywhere else.
+            if (VIDEO::gigascreenModeIncompatible()) {
+                notify(" Gigascreen: not in this video mode ", LEVEL_WARN, 1800);
                 return;
             }
             Config::gigascreen_onoff = (Config::gigascreen_onoff + 1) % 3; // Off -> On -> Auto -> Off
@@ -5944,7 +5944,12 @@ static void buildEmulatorInfoText() {
             VIDEO::paletteName(Config::palette));
         {
             const char* gs;
-            if (!Config::gigascreen_enabled || Config::gigascreen_onoff == 0) gs = "Off";
+            if (Config::gigascreen_onoff == 0) gs = "Off";
+            // Suspended for the duration of a whole-line mode (DS80, GMX 640x200,
+            // any TS-Conf non-ZX mode) — the setting is untouched and comes back
+            // with the standard renderer, so say so instead of claiming On.
+            else if (VIDEO::gigascreenModeIncompatible()) gs = "On (off in this mode)";
+            else if (!Config::gigascreen_enabled) gs = "Off (no memory)";
             else if (Config::gigascreen_onoff == 1) gs = "On";
             else gs = "Auto";
             pos += infoAppend(buf, pos, bufsz,
