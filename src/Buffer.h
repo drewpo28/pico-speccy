@@ -99,6 +99,12 @@ public:
     // True when GS's sample RAM can be reserved at all: butter PSRAM always has room,
     // an SPI-only board must hold GS + the minimum arena + a usable swap pool.
     static bool   gsPsramAvailable();
+    // Total size of the butter-PSRAM arena carved by initPools(), 0 on a board without
+    // butter (or before initPools). This is the CAPABILITY figure — what a pointer
+    // allocation could ever get here — not the free space right now; use it to decide
+    // whether something is placeable at all (the GM.DLS bank picker does), never to
+    // predict a specific alloc.
+    static size_t butterArenaBytes();
 
     // Register the flash partition that backs TIER_FLASH (e.g. the GM.DLS bank
     // region). `xipBase` is the partition's XIP address (>= XIP_BASE), `size` its

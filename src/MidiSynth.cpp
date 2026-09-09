@@ -205,7 +205,7 @@ static FIL* tryOpenBank(const char* path, size_t* outSize, gm_bank_header_t* out
     if (!f) return nullptr;
     size_t size = (size_t)f_size(f);
     UINT br = 0;
-    if (size >= sizeof(*outHdr) && size <= bankRegionSize() &&
+    if (size >= sizeof(*outHdr) && size <= MidiSynth::maxBankBytes() &&
         f_read(f, outHdr, sizeof(*outHdr), &br) == FR_OK && br == sizeof(*outHdr) &&
         outHdr->magic[0] == 'G' && outHdr->magic[1] == 'M' &&
         outHdr->magic[2] == 'W' && outHdr->magic[3] == 'B' &&
@@ -230,6 +230,51 @@ static FIL* openValidSdBank(size_t* outSize, gm_bank_header_t* outHdr) {
         if (f) return f;
     }
     return nullptr;
+}
+
+// Header-valid size of one candidate, IGNORING any placement cap — the question
+// "how big is the selected bank" must not depend on where it could go.
+static size_t bankFileBytes(const char* path) {
+    FIL* f = fopen2(path, FA_READ);
+    if (!f) return 0;
+    gm_bank_header_t h;
+    UINT br = 0;
+    const size_t size = (size_t)f_size(f);
+    const bool ok = size >= sizeof(h) &&
+                    f_read(f, &h, sizeof(h), &br) == FR_OK && br == sizeof(h) &&
+                    h.magic[0] == 'G' && h.magic[1] == 'M' &&
+                    h.magic[2] == 'W' && h.magic[3] == 'B' &&
+                    h.version == GM_BANK_VERSION;
+    fclose2(f);
+    return ok ? size : 0;
+}
+
+size_t MidiSynth::selectedBankBytes() {
+    if (!Config::midi_bank.empty()) {
+        const size_t n = bankFileBytes(Config::midi_bank.c_str());
+        if (n) return n;
+    }
+    for (size_t i = 0; i < sizeof(kBankPaths) / sizeof(kBankPaths[0]); i++) {
+        const size_t n = bankFileBytes(kBankPaths[i]);
+        if (n) return n;
+    }
+    return 0;
+}
+
+// What a bank may weigh here. The flash partition (1.6875 MB on a GMX build) is the
+// FLOOR, not the limit: with PSRAM storage the bank is copied into the butter arena
+// and never touches flash, so on a butter board the arena is the real ceiling. Gating
+// on the partition alone made every bank above it invisible in the picker and made the
+// on-device converter delete its own output (DLSbyXG.dls -> ~2.0 MB). Flash storage
+// (Config::midi_storage == 1) pins the bank to the partition, so the floor is the cap.
+// This is a CAPABILITY figure: the arena's total, not its current free space — a live
+// apply may still fail on occupancy, and then the reboot path (provisionAtBoot, empty
+// arena) places it.
+size_t MidiSynth::maxBankBytes() {
+    const size_t flash = bankRegionSize();
+    if (Config::midi_storage == 1) return flash;
+    const size_t psram = Buffer::butterArenaBytes();
+    return psram > flash ? psram : flash;
 }
 
 // True if there is a valid gm_bank.bin on SD that is NOT already identical in the
@@ -302,7 +347,17 @@ size_t MidiSynth::scanBanks(std::vector<std::string>& paths,
             if (dup) continue;
             size_t size; gm_bank_header_t hdr;
             FIL* f = tryOpenBank(full.c_str(), &size, &hdr);
-            if (!f) continue;
+            if (!f) {
+                // A valid bank rejected only by the size cap used to vanish here with
+                // no trace at all ("the picker does not see my .bin"). Say so.
+                const size_t vs = bankFileBytes(full.c_str());
+                if (vs > MidiSynth::maxBankBytes())
+                    Debug::log("MidiSynth: bank %s skipped (%uKB > %uKB max, storage=%s)",
+                               nm, (unsigned)(vs >> 10),
+                               (unsigned)(MidiSynth::maxBankBytes() >> 10),
+                               Config::midi_storage == 1 ? "flash" : "psram");
+                continue;
+            }
             fclose2(f);
             paths.push_back(full);
             names.push_back(nm);

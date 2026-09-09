@@ -38,10 +38,20 @@ public:
     static bool needsProvision();
     // True if a valid gm_bank.bin exists on SD (gates the "reinstall" offer).
     static bool sdBankAvailable();
-    // Size in bytes of the flash bank partition. A bank larger than this cannot be
-    // installed (scanBanks/tryOpenBank reject it) — the OSD warns when a freshly
-    // converted .dls overflows it.
+    // Size in bytes of the flash bank partition. With Flash storage this IS the limit;
+    // with PSRAM storage it is only the floor (see maxBankBytes).
     static size_t flashBankCapacity();
+    // The biggest bank this board can actually BIND, i.e. what the picker and the
+    // .dls converter must measure against. The flash partition is only the floor: with
+    // PSRAM storage on a butter board the bank lands in the butter arena, which is
+    // usually several MB — a bank that overflows the 1.6875 MB partition is perfectly
+    // playable there, and gating on the partition alone silently hid it from the
+    // picker (DLSbyXG.dls converts to ~2.0 MB). Flash storage pins it to the partition.
+    static size_t maxBankBytes();
+    // File size of the bank the picker has selected (Config::midi_bank, else the
+    // default gm_bank.bin locations), 0 if none is valid. Lets the UI refuse a switch
+    // to Flash storage that the partition could not hold.
+    static size_t selectedBankBytes();
     // Enumerate selectable banks on SD (*.bin with a valid GMWB v5 header) in
     // CONFIG_DIR + card root. Fills index-aligned full paths + display names;
     // returns the count. Used by the OSD "instrument set" picker.

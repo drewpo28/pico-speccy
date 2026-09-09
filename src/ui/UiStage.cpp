@@ -648,8 +648,21 @@ static bool hook_midiMode(int32_t nv, int32_t ov) {
 // early-boot write, so it asks and reboots. This runs in the commit's live-hook pass,
 // after Config::save() — the pick is already persisted, which is exactly what
 // provisionAtBoot() reads on the way back up.
-static bool hook_midiStorage(int32_t, int32_t ov) {
+static bool hook_midiStorage(int32_t nv, int32_t ov) {
     if (Config::midi != 4) return true;         // takes effect when DLS is next selected
+    // Flash is a FIXED 1.6875 MB partition while PSRAM storage is bounded by the butter
+    // arena (usually several MB), so a bank the arena happily holds can be too big to
+    // pin to flash. Refuse instead of "installing" it: openValidSdBank would drop the
+    // selected bank on the floor and silently fall back to a default gm_bank.bin.
+    if (nv == 1) {
+        const size_t need = MidiSynth::selectedBankBytes();
+        if (need > MidiSynth::flashBankCapacity()) {
+            uiToast("Bank too big for flash - storage stays on PSRAM", true, 3000);
+            Config::midi_storage = (uint8_t)ov;
+            Config::save();
+            return false;
+        }
+    }
     if (MidiSynth::applyBankLive()) {
         uiToast(MSG_MIDI_BANK_OK, false, 2000);
         return true;

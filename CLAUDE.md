@@ -2130,6 +2130,38 @@ re-provisions every user's wavetable bank from SD):
   over PICO_DV VGA-HDMI; SOFTTV/TFT are ~20-30 KB slimmer. Headroom after this:
   ~66 KB on DVp2, ~47 KB on the fattest.
 
+## A GM.DLS bank bigger than the flash partition is still playable in PSRAM (hw-confirmed 2026-09-09)
+
+"The picker does not see DLSbyXG.bin, not even the one it converted itself." Nothing
+was wrong with the file: `DLSbyXG.dls` (2.62 MB) packs to a **2,052,616 B** bank
+(482 instruments, 3105 regions, 477 waves, 1.71 MB of µ-law PCM) and every size gate
+in the bank path measured against `bankRegionSize()` — the **flash** partition, which
+is 0x1B0000 = **1,769,472 B** on every board since GMX went into flash. So the bank
+was 283 KB over, `tryOpenBank` refused it, `scanBanks` skipped it **silently**, and
+the on-device converter wrote it to SD and then **deleted its own output**.
+
+The partition is only the FLOOR. With PSRAM storage (`Config::midi_storage == 0`,
+the default) the bank is copied into the butter arena and never touches flash, and
+that arena is megabytes wide (8 MB butter − pages/DivMMC/GS: ~6.9 MB with GS off,
+~2.8 MB with a 4 MB NeoGS). `MidiSynth::maxBankBytes()` is now the gate everywhere —
+`max(flash partition, Buffer::butterArenaBytes())`, and the partition alone whenever
+storage is pinned to Flash. **hw-confirmed 2026-09-09 on a butter-PSRAM board: the
+2.0 MB DLSbyXG bank is listed, selected and plays from PSRAM.**
+
+- It is a **capability** figure (arena total, not free space) on purpose: a live
+  apply may still fail on occupancy, and the reboot path places it anyway
+  (`provisionAtBoot` runs against an empty arena). A board with no butter PSRAM keeps
+  the old, correct answer — such a bank genuinely cannot be bound there.
+- **Switching storage to Flash with an oversized bank is refused** in
+  `hook_midiStorage` (toast + revert). Without that, `openValidSdBank` would drop the
+  selected bank and silently fall back to a default `gm_bank.bin`.
+- `scanBanks` now LOGS a bank it rejects for size (name, size, cap, storage). The
+  original bug was undiagnosable from the device: a valid file simply was not in the
+  list, with nothing in the log and nothing on screen.
+- The engine itself has no count limits — `wt_find_instrument` is a linear scan over
+  `instrument_count` and everything else is offset-driven, so 482 instruments only
+  cost a longer scan per note-on.
+
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 
 Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):

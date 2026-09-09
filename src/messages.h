@@ -165,10 +165,11 @@ visit https://zxespectrum.speccy.org/contacto
 #define MSG_MIDI_CONVERTING "Converting .dls to bank..."
 #define MSG_MIDI_CONVERT_OK "Soundbank created."
 #define MSG_MIDI_CONVERT_FAIL "Conversion failed (bad .dls or low\nspace). See debug log."
-// A converted bank can exceed the fixed flash partition (~1.6 MB) — it is then
-// written to SD but cannot be installed, so the picker hides it. Tell the user
-// (the actual KB sizes are appended at runtime). Single short line for msgDialog.
-#define MSG_MIDI_BANK_TOOBIG "Bank too big for flash"
+// A converted bank can exceed what this board can place — the flash partition
+// (~1.6 MB) with Flash storage, the butter arena with PSRAM storage. It is then
+// written to SD but cannot be bound, so the picker hides it. Tell the user (the
+// actual KB sizes are appended at runtime). Single short line for msgDialog.
+#define MSG_MIDI_BANK_TOOBIG "Bank too big to install"
 
 #define OSD_DBG_HELP_EN \
     " [Space]      Step CPU\n"\
