@@ -2152,6 +2152,141 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   question: does TS-BIOS Setup (SS+F12) need the ZX-Evo AVR (`slavespi`)
   keyboard path? Plain #FE should cover boot + TR-DOS.
 
+### fishbone: the hang is the demo's player missing its own interrupt-free window (root cause found 2026-09-09, NOT fixed)
+
+Symptom: after 1-3 minutes the scroll freezes while the background keeps moving
+and the sound distorts. **Deterministic** — three dumps agreed down to the T-state
+(same ring write index, same lines 165..187, same `lat` values).
+
+The demo's design is the whole story. Its handler steps VSINT one line per
+interrupt through the sequence **32,33,...,319,0 and back to 32** — hence exactly
+**289 windows a frame** (`frmInt=17340/60f`), and hence a deliberate **32-line
+stretch with no interrupt at all** (lines 1..31). That gap is where it calls its
+PT3-style player, whose `LD (0x9643),SP` / `LD SP,HL` / `POP` reads have **no DI
+around them** (there is not one DI in 0x9400-0x9A00). Overrun the gap and the
+next interrupt lands inside an SP trick, its 10 pushed bytes land on the demo's
+own return addresses, and the chain is: player RETs into free RAM at 0x9F02 →
+NOP-slides through 0x9ACF-0xBBBA → hits the `JP 0x8254` the demo put at 0xBBBB
+(that address is its IM2 vector target, I=0xBE) → executes the handler body as
+ordinary code → RETs into 48K ROM (PC=0514 SA-BYTES, SP=9097 inside its own data
+table, whose consecutive words 0507,0508,... then read as return addresses).
+One frame was caught crossing the line: `work=32.67` against the 32.00 budget,
+with the player still running at line 32 (`pc=945B sp=5F54`) where the healthy
+frame before it was back at its HALT (`pc=80AA sp=6000`).
+
+**Our emulation was measured innocent of the timing**, which is why no fix
+shipped:
+- Handler cost **375 T measured vs 374 hand-counted** from the disassembly of
+  8254-82AD (19 IM2 ack + 355 body); the 1 T is where the hook samples `EI`.
+  This matters ×289 per frame, so it was the first thing to check.
+- `frmLate=0` in every capture — no accept ever came later than 32 T into the
+  window, so the window length was never truncating anything.
+- `plyrHit=0` — no interrupt ever landed in the player outside the safe one, in
+  65 of 65 clean windows. Frame work is 19-20 lines of the 32-line budget.
+- Frame overruns are NORMAL and survivable: frames of 129, 146 and 215 lines were
+  observed with `plyrHit=0`. The SP tricks are only in the player, which runs
+  first; the sprite work that overruns after it is interrupt-safe.
+- The demo uses **no DMA at all** (`dma=0.0ms/0w`), so the band buffer theory and
+  everything downstream of it was wrong.
+
+What determines survival is PHASE, not headroom: the frame flag is set by the
+line-319 handler but the main loop only tests it after finishing its 12-line
+palette-upload cycle (`80A9 EI/HALT → CALL 82AE → LD A,<flag@80AE> → CP 1 →
+CALL 971B`), and 320 mod 12 = 8, so the player's start walks 8 lines per frame
+through every offset. Start late enough and it does not fit.
+
+**Diagnostics built for this and left in the tree** (all `#if PERF_TRACE`):
+`TsConf::intTrace` + a 512-entry INT-accept ring (`ts_int_ring`, pc/sp/prev-pc/
+VSINT/frame-T/latency/vector), dumped as ONE binary transfer by
+`tools/memdump.gdb` into `/tmp/picospec_intring.bin` and decoded by
+`tools/intring.py`; `TS_INT_FREEZE` to stop the ring on a failure signature;
+`[PERF] tsw:` with the frame-work budget in lines, `plyrHit`, and the measured
+ISR cost; `intMiss`/`brdT`/`d`/`intT`/`haltT` in `[PERF] 60f`.
+
+**Traps this cost time on, worth not repeating:**
+- The ring record's `t` was `uint16_t` while a TS-Conf frame is 71680 T: every
+  accept past line 292 wrapped and read as "line 0". A trace bug that looked
+  exactly like the failure and false-fired a trigger.
+- Three freeze triggers were wrong before one worked: a RAM→ROM PC crossing
+  (the demo legitimately calls 48K ROM routines), a cadence break (the demo's own
+  VSINT sequence has a legitimate 32-line jump every frame), and a write
+  watchpoint on 0x6000 (the demo parks its stack on top of the module's ASCII
+  title — "Vortex Tracker II 1.0 module: ..." — which the player never reads, so
+  that word is rewritten constantly and legitimately).
+- A PC breakpoint costs ~7 ms/frame: `exec_nocheck` calls
+  `Config::hasBreakPoint` on EVERY instruction while `numPcBP > 0`. Guest timing
+  is unaffected, so a deterministic bug still reproduces — but do not read FPS
+  from a run with a breakpoint armed.
+- `checkMemWriteBP` only sets `CPU::portBasedBP`; the debugger stops at the next
+  `BREAKPOINTS` in `CPU::loop`, i.e. at the end of a SLICE. The reported PC can be
+  many instructions past the write.
+
+### "Across the Edge" border is 6 T late on TS-Conf and Pentagon is exact — OPEN
+
+Same demo, same firmware, two machines: on Pentagon the border split is a clean
+vertical line at fb x=160 on every row; on TS-Conf the top and bottom border
+bands sit at x=176 (the middle rows measure the paper content, which is identical
+— do not read them as border). 16 px = 8 T. Measure with a per-scanline
+first-dark-pixel scan; eyeballing a 16 px step in a border band does not work.
+
+**Our CPU is exact and that is measured**: the guest spends an identical
+**1638 T** between taking the interrupt and its first `OUT (#FE)` on both
+machines (`d=` in `[PERF] 60f`). The whole difference is WHERE the interrupt is
+accepted: `intT` = 0..3 on Pentagon, 6..9 on TS-Conf.
+
+What the RTL says (`video_sync.v:132`):
+```verilog
+assign int_start_s = (hcount == {hint_beg, 1'b0}) && (vcount == vint_beg) && c0;
+```
+`hcount` counts 7 MHz pixel periods, so HSINT is in 3.5 MHz T-states and our
+`vsint*224 + hsint` is right. With the reset hsint=2 the interrupt is at hcount 4
+of line 0; paper (256x192) starts at vp_beg=80 / hp_beg=140; so hardware puts
+**(80*448 + 140 - 4)/2 = 17988 T** between the interrupt and the first paper
+pixel. Ours is `TS_SCREEN_PENTAGON (17983) - 2 = 17981`. Whether the right
+correction is 2 or 7 depends on whether our Pentagon constant already carries a
+convention offset against the textbook 17988 — unresolved, and guessing between
+them is what wasted the evening. The datasheet's own
+`Pentagon-128 compatibility / INT position` section is an EMPTY STUB.
+
+**Dead ends, all reverted (2026-09-09):**
+- Biasing the INT position by 2 (moved the split 176 → 168, did not land) and by
+  **7 — which BREAKS THE MACHINE**: `vsint=0/hsint=2` makes the position
+  negative, it wraps to 71675, and `frameIntRecalc`'s straddle truncation cuts
+  the window from 32 T to 5. Interrupts are lost wholesale and the keyboard dies
+  with them, since TS-BIOS and TR-DOS read it from the handler. **That truncation
+  is a real mine for any VSINT near the frame end and should be fixed by making
+  the window wrap.**
+- Rounding the HALT sleep up to whole NOPs in Stage D. A HALTed Z80 really does
+  sample INT only on its 4 T grid (Pentagon gets this free by stepping
+  `Z80::execute()`, and Unreal's `z80loop_TSL` steps instruction by instruction),
+  and `haltAdvanceTo` teleports straight to the event instead — but the change
+  moved the border without fixing it, so it was backed out. Re-open only with a
+  test it decides.
+- Unreal cannot arbitrate the FRAME window: `frame_len` is **never assigned** in
+  any of its 168 source files, in the 2015, 2020 and 2024 revisions
+  (`COMPUTER comp;` is a plain global, so it is 0 forever), which makes
+  `f1 = (cpu.t - frame_t) < 0u` always false. Also note its `cpu.t` counts
+  3.5 MHz T-states (`cputact(a) → tt += a*rate`, `turbo(a) → rate = 256/a`), not
+  Z80 clocks, so any constant taken from it needs converting.
+
+### LDIR/LDDR batching removed, and the SRAM-layout lever it exposed (2026-09-09)
+
+`Z80::blockRepeat` is **gone** (option and all). It ran the repeated iterations as
+one memcpy bounded by `CPU::stFrame`, and on TS-Conf that meant one
+`VIDEO::tsRenderDrainOverlap` over the WHOLE batch range instead of one byte at a
+time — a wide range overlaps far more lines core1 has not drawn, so core0 stalled.
+Same scene, identical `c1/base/tsu`: **cpu 21.6 → 19.9 ms, core1 wait 4.4 → 3.7,
+realFPS 43.5 → 47.1 with it OFF.** It had no effect on the fishbone hang.
+
+While measuring that, three runs of the same scene with only the diagnostic
+ring's size changed (1 KB / 4 KB / 8 KB of `.bss`) gave core1 render costs of
+**17.3 / 15.2 / 17.2 ms** — `base` and `tsu` moving together by 13% with the
+render code untouched. That is SRAM bank contention between the cores over
+`s_gline` / `s_tsline` / `ts256_map`, which core1 reads per pixel, and it is
+worth ~2 ms/frame if placed deliberately. It also explains the unresolved "TS
+scratch block — TRIED AND REVERTED, FPS dropped, cause NOT established" entry
+above: that change moved exactly those buffers.
+
 ### The ZX-Evo AVR behind the Gluk ports — PS/2 scancode log (2026-09-07, NOT hw-tested)
 
 `avrconf.spg` (the ZX-Evo AVR configuration utility) started and no key did

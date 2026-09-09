@@ -5249,10 +5249,12 @@ IRAM_ATTR void VIDEO::EndFrame() {
         extern volatile uint32_t ts_base_us, ts_out_us;
         static uint32_t base_accum = 0, out_accum = 0;
         base_accum += ts_base_us; out_accum += ts_out_us; ts_base_us = ts_out_us = 0;
-        extern volatile uint32_t ts_poll_ff, ts_poll_ff_t, ts_poll_reads, ts_int_frm;
+        extern volatile uint32_t ts_poll_ff, ts_poll_ff_t, ts_poll_reads, ts_int_frm, ts_int_late, ts_int_miss;
+        static uint32_t late_accum = 0, miss_accum = 0;
         static uint32_t pff_accum = 0, pfft_accum = 0, prd_accum = 0, frm_accum = 0;
         pff_accum += ts_poll_ff; pfft_accum += ts_poll_ff_t; prd_accum += ts_poll_reads; ts_poll_ff = ts_poll_ff_t = ts_poll_reads = 0;
         frm_accum += ts_int_frm; ts_int_frm = 0;
+        late_accum += ts_int_late; ts_int_late = 0; miss_accum += ts_int_miss; ts_int_miss = 0;
         extern volatile uint32_t ts_c1_us, ts_c1_wait_us, ts_c1_jobs, ts_c1_waits, ts_dma_c1_us, ts_c1_wait_dma_us;
         static uint32_t tsr_accum = 0, tsr_max = 0, tsu_accum = 0, dma_accum = 0, dmaw_accum = 0;
         static uint32_t c1_accum = 0, c1w_accum = 0, c1w_max = 0, c1j_accum = 0, c1n_accum = 0, c1d_accum = 0, c1wd_accum = 0, c1wd_max = 0;
@@ -5279,13 +5281,17 @@ IRAM_ATTR void VIDEO::EndFrame() {
             volatile uint32_t *xip_acc = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_ACC_OFFSET);
             uint32_t xh = *xip_hit, xa = *xip_acc;
             *xip_hit = 0; *xip_acc = 0;
-            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f",
+            extern uint32_t g_frm_int_miss, g_brd_min, g_brd_max, g_brd_delta, g_int_last_t, g_halt_t;
+            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f intMiss=%u/60f brdT=%u..%u d=%u intT=%u haltT=%u",
                 cpu_accum / 60000.0f, cpu_max / 1000.0f,
                 fdd_step_accum / 60000.0f, fdd_step_max / 1000.0f,
                 fdd_ports_accum / 60000.0f, fdd_ports_max / 1000.0f,
                 (unsigned)gap_max, (unsigned)dur_max,
                 (unsigned)xh, (unsigned)xa, xa ? 100.0f * (float)xh / (float)xa : 0.0f,
-                (float)(xa - xh) * fps / 60.0f / 1e6f, fps);
+                (float)(xa - xh) * fps / 60.0f / 1e6f, fps, (unsigned)g_frm_int_miss,
+                (unsigned)(g_brd_max ? g_brd_min : 0), (unsigned)g_brd_max, (unsigned)g_brd_delta, (unsigned)(CPU::statesInFrame ? g_int_last_t % CPU::statesInFrame : 0),
+                (unsigned)(CPU::statesInFrame ? g_halt_t % CPU::statesInFrame : 0));
+            g_frm_int_miss = 0; g_brd_min = 0xFFFFFFFF; g_brd_max = 0;
             // Audio path on its own line (every machine): timer ticks per 60 frames
             // (expect ~38400 = 60 x 20.48 ms x 31250 Hz; fewer = the core0 alarm IRQ
             // starved), ticks that found the frame buffer exhausted (hold = ZX sample
@@ -5308,13 +5314,32 @@ IRAM_ATTR void VIDEO::EndFrame() {
             }
             // TS-Conf half on its own line: Debug::log truncates at 256 bytes.
             if (Z80Ops::isTsconf)
-                Debug::log("[PERF] ts: tsRender=%.1fms (max %.1fms, base %.1f tsu %.1f out %.1f) c1=%.1fms/%ul wait=%.1fms (max %.1fms, %u/60) dmaC1=%.1fms waitDma=%.1fms (max %.1fms) dma=%.1fms/%uw (ram %u blt %u fill %u) poll=%u ff=%u/%ukT frmInt=%u/60f",
+                Debug::log("[PERF] ts: tsRender=%.1fms (max %.1fms, base %.1f tsu %.1f out %.1f) c1=%.1fms/%ul wait=%.1fms (max %.1fms, %u/60) dmaC1=%.1fms waitDma=%.1fms (max %.1fms) dma=%.1fms/%uw (ram %u blt %u fill %u) poll=%u ff=%u/%ukT frmInt=%u/60f frmLate=%u frmMiss=%u",
                     tsr_accum / 60000.0f, tsr_max / 1000.0f, base_accum / 60000.0f, tsu_accum / 60000.0f, out_accum / 60000.0f,
                     c1_accum / 60000.0f, (unsigned)(c1j_accum / 60), c1w_accum / 60000.0f, c1w_max / 1000.0f, (unsigned)c1n_accum,
                     c1d_accum / 60000.0f, c1wd_accum / 60000.0f, c1wd_max / 1000.0f,
                     dma_accum / 60000.0f, (unsigned)(dmaw_accum / 60), (unsigned)(dmar_accum / 60), (unsigned)(dmab_accum / 60), (unsigned)(dmaf_accum / 60),
-                    (unsigned)(prd_accum / 60), (unsigned)(pff_accum / 60), (unsigned)(pfft_accum / 60000), (unsigned)frm_accum);
-            pff_accum = pfft_accum = prd_accum = frm_accum = 0; base_accum = out_accum = 0;
+                    (unsigned)(prd_accum / 60), (unsigned)(pff_accum / 60), (unsigned)(pfft_accum / 60000), (unsigned)frm_accum, (unsigned)late_accum, (unsigned)miss_accum);
+            // Frame-work budget against fishbone's 32-line interrupt-free window.
+            // Its own line: the ts line above is already near Debug::log's 256-byte cut.
+            if (Z80Ops::isTsconf) {
+                extern uint32_t ts_work_max, ts_work_min, ts_work_sum, ts_work_cnt, ts_plyr_hit;
+                extern uint32_t ts_isr_min, ts_isr_max, ts_isr_sum, ts_isr_cnt;
+                extern uint32_t ts_miss_ei, ts_miss_di, ts_miss_halt;
+                if (ts_work_cnt) {
+                    const float perLine = (float)(TSTATES_PER_LINE_PENTAGON << ESPectrum::multiplicator);
+                    Debug::log("[PERF] tsw: work=%.2f/%.2f/%.2f lines (avg/min/max of %u frames, window=32.00) plyrHit=%u/60f isr=%u/%u/%u T x%u miss ei=%u di=%u halted=%u",
+                        (ts_work_sum / (float)ts_work_cnt) / perLine, ts_work_min / perLine, ts_work_max / perLine,
+                        (unsigned)ts_work_cnt, (unsigned)ts_plyr_hit,
+                        (unsigned)(ts_isr_cnt ? ts_isr_sum / ts_isr_cnt : 0), (unsigned)(ts_isr_cnt ? ts_isr_min : 0),
+                        (unsigned)ts_isr_max, (unsigned)(ts_isr_cnt / 60),
+                        (unsigned)ts_miss_ei, (unsigned)ts_miss_di, (unsigned)ts_miss_halt);
+                }
+                ts_work_max = 0; ts_work_min = 0xFFFFFFFF; ts_work_sum = 0; ts_work_cnt = 0; ts_plyr_hit = 0;
+                ts_isr_min = 0xFFFFFFFF; ts_isr_max = 0; ts_isr_sum = 0; ts_isr_cnt = 0;
+                ts_miss_ei = ts_miss_di = ts_miss_halt = 0;
+            }
+            pff_accum = pfft_accum = prd_accum = frm_accum = 0; base_accum = out_accum = 0; late_accum = miss_accum = 0;
 #if PERF_HIST
             // Z80 opcode mix, every 600 frames: instructions/frame, ns per
             // instruction (against cpu= of the same window) and the top 20

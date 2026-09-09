@@ -210,6 +210,16 @@ if Z80Ops::isTsconf
   printf "dma: saddr=%06X daddr=%06X len=%02X num=%02X ctrl=%02X\n", (unsigned)TsConf::r.saddr, (unsigned)TsConf::r.daddr, (unsigned char)TsConf::r.dmalen, (unsigned char)TsConf::r.dmanum, (unsigned char)TsConf::r.dmactrl
   printf "video: render=%d vmode=%d tsu=%d pal256=%d rres=%d crop=%d ds80_drv=%d ds80_gfx=%d lin_end=%d..%d tmpage=%02X t0g=%02X t1g=%02X sg=%02X t0=%03X,%03X t1=%03X,%03X\n", (int)VIDEO::ts_render_live, (int)VIDEO::ts_vmode_live, (int)VIDEO::ts_tsu_live, (int)VIDEO::ts_pal256_live, (int)VIDEO::ts_rres_live, (int)VIDEO::ts_crop_top, (int)profi_ds80_active, (int)Graphics8BitPalette::ds80_active, (int)'Video.cpp'::lin_end, (int)'Video.cpp'::lin_end2, (unsigned char)TsConf::r.tmpage, (unsigned char)TsConf::r.t0gpage, (unsigned char)TsConf::r.t1gpage, (unsigned char)TsConf::r.sgpage, (unsigned)TsConf::r.t0_xoffs, (unsigned)TsConf::r.t0_yoffs, (unsigned)TsConf::r.t1_xoffs, (unsigned)TsConf::r.t1_yoffs
   printf "gigascreen: cfg=%d live=%d crt=%d\n", (int)Config::gigascreen_enabled, (int)VIDEO::gigascreen_enabled, (int)Config::crt_filter
+  # INT-accept ring (PERF_TRACE builds): the last 64 interrupts TAKEN, oldest
+  # first. pc/sp = the interrupted program (frame is pushed at sp-2..sp-1 and
+  # below), line = raster line of the accept, lat = T-states after the window
+  # opened (bit 7 = woke from HALT), src FF FRAME / FD LINE / FB DMA.
+  printf "intring: late=%u miss=%u frozen=%u w=%u n=%u\n", (unsigned)ts_int_late, (unsigned)ts_int_miss, (unsigned)ts_int_frozen, (unsigned)ts_int_ring_w, (unsigned)(sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
+  # The ring is 256 x 16 B now, so it goes out as ONE binary transfer instead of
+  # 256 printfs: each printf is a separate target read over OpenOCD and that is
+  # what made a dump of the old 64-entry ring slow (and twice appear to hang).
+  # Decode with tools/intring.py, which reads the header line above for w/n.
+  dump binary memory /tmp/picospec_intring.bin &ts_int_ring[0] (&ts_int_ring[0] + sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
   set $i = 0
   while $i < 256
     printf "cram[%02X]=%04X\n", $i, (unsigned)TsConf::cram[$i]

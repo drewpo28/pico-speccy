@@ -65,27 +65,13 @@ option(GMX_TRACE "Trace Scorpion GMX paging: port #00 magic/reset, 7EFD plane, 1
 option(TSFM_TRACE "1 Hz TSFM budget probe: status-read/write counts per frame + how late in the frame the FM player runs" OFF)
 option(PAGE_TRACE "Trace ROM selection: every 0x7FFD write, TR-DOS map/unmap, and an alarm when an IM1 interrupt enters the 128K ROM with a dead 0x5B00 stub" OFF)
 option(SND_PORT_TRACE "Enable per-port I/O histogram (sound-DAC port hunting)" OFF)
-option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" ON)
+option(PERF_TRACE "Enable per-60-frame CPU/HDMI/FPS performance logging" OFF)
 # Per-ACCESS histograms on top of PERF_TRACE (Z80 opcode mix, TS-Conf physical
 # page hits, TS-Conf DMA src/dst pages — the `[PERF] z80:` / `pages:` / `dma` lines).
 # They cost ~5 ms per TMNT frame (a counter on every guest memory access), so they
 # are off unless a profiling session asks for them; PERF_TRACE stays cheap.
 option(PERF_HIST "Per-access Z80/TS-Conf histograms in the PERF log (slow; needs PERF_TRACE)" OFF)
 option(NEG2_TRACE "Enable Profi negative-IDL attribution ([NEG2] lines)" OFF)
-# TS-Conf whole-line renderer on core1 (Video.cpp tsRenderCore1Pump): core0 posts
-# one job per content line, core1's render loop executes it. OFF = render on core0.
-option(TS_RENDER_CORE1 "TS-Conf: render whole-line video modes on core1 (one job per line)" ON)
-option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" ON)
-# The whole-line renderer's GENERIC path — tsRenderExec (7.4 KB) + tsuComposeLine
-# (1.5 KB + a 1.3 KB outlined lambda) — lived in FLASH until 2026-09-08, while
-# only the TSU-free fast paths (tsFast256/tsFast16) were RAM-resident. On a TSU
-# title that generic path IS the frame: it runs on core1 and fetches its own code
-# through the XIP cache that its own tile reads (84 PSRAM line fills per line)
-# are thrashing — flash and butter PSRAM share one cache and one port. Same class
-# as the two biggest wins in this project's history (the flash memcpy in the HDMI
-# line ISR, the OPL3 tables). ~10 KB of SRAM: turn it OFF first on a board that
-# runs out of contiguous heap at VIDEO::Init.
-option(TSCONF_RENDER_IN_RAM "TS-Conf: keep the whole-line renderer (tsRenderExec + tsuComposeLine) in SRAM (~10 KB)" ON)
 option(TS_VIDEO_TRACE "TS-Conf: capped trace of VConfig/TSConfig/page/offset register writes with frame line + PC" OFF)
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
@@ -98,6 +84,21 @@ option(ZC_PORT_TRACE "Enable Z-Controller/DivSD SPI-SD command tracing (CS edges
 option(NEO8_TRAP "Wild-jump hunter: log PC history + frame snapshot when execution enters screen memory (per-instruction hook; debug builds only)" OFF)
 option(ZIFI_TRACE "Enable ZiFi (ESP-01S WiFi NIC) port/UART tracing" OFF)
 option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend); floods logs" OFF)
+
+# TS-Conf whole-line renderer on core1 (Video.cpp tsRenderCore1Pump): core0 posts
+# one job per content line, core1's render loop executes it. OFF = render on core0.
+# The whole-line renderer's GENERIC path — tsRenderExec (7.4 KB) + tsuComposeLine
+# (1.5 KB + a 1.3 KB outlined lambda) — lived in FLASH until 2026-09-08, while
+# only the TSU-free fast paths (tsFast256/tsFast16) were RAM-resident. On a TSU
+# title that generic path IS the frame: it runs on core1 and fetches its own code
+# through the XIP cache that its own tile reads (84 PSRAM line fills per line)
+# are thrashing — flash and butter PSRAM share one cache and one port. Same class
+# as the two biggest wins in this project's history (the flash memcpy in the HDMI
+# line ISR, the OPL3 tables). ~10 KB of SRAM: turn it OFF first on a board that
+# runs out of contiguous heap at VIDEO::Init.
+option(TS_RENDER_CORE1 "TS-Conf: render whole-line video modes on core1 (one job per line)" ON)
+option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" ON)
+option(TSCONF_RENDER_IN_RAM "TS-Conf: keep the whole-line renderer (tsRenderExec + tsuComposeLine) in SRAM (~10 KB)" ON)
 
 # Debug UART console is a RUNTIME setting now (Debug > UART console, Config::dbg_uart),
 # not a build option: the per-board <BOARD>_DBG_UART toggles were removed 2026-09-06.

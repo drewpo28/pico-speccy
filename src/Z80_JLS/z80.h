@@ -509,7 +509,6 @@ private:
     static void cpx(int d);
     static void inx(int d);
     static void otx(int d);
-    static void blockRepeat(bool up);     // LDIR/LDDR block fast path (Z80_JLS.cpp)
 
     static void SetAbortedINxR_OTxRFlags();
 

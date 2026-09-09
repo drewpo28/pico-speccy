@@ -26,7 +26,7 @@
 #include "Video.h"
 #include "TsFastMem.h"
 #include <string.h>
-#include "graphics.h"   // profi_ds80_active (blockRepeat guard)
+#include "graphics.h"
 #include "MemESP.h"
 #include "CPU.h"
 #include "Tape.h"
@@ -79,6 +79,9 @@ bool Z80::regRbit7;
 bool Z80::ffIFF1 = false;
 bool Z80::ffIFF2 = false;
 bool Z80::pendingEI = false;
+#if PERF_TRACE
+uint32_t g_frm_int_taken = 0, g_frm_int_miss = 0, g_int_last_t = 0;   // see the [PERF] 60f intMiss= field
+#endif
 bool Z80::activeNMI = false;
 bool Z80::activeNMIDOS = false;
 bool Z80::nmiDosInProgress = false;
@@ -940,7 +943,12 @@ IRAM_ATTR void Z80::check_trdos() {
  *      M5: 3 T-Estados -> leer byte alto y saltar a la rutina de INT
  */
 void Z80::interrupt(void) {
+#if PERF_TRACE
+    g_frm_int_taken++;   // machine-independent: was an interrupt taken this frame at all
+    g_int_last_t = CPU::tstates;   // anchor for brdT's delta (see the [PERF] 60f d= field)
+#endif
 
+    const bool wasHalted = halted;   // for TsConf::intTrace
     halted = false;
 
     // TS-Conf: the INT acknowledge cycle clears the source being taken and
@@ -952,6 +960,7 @@ void Z80::interrupt(void) {
     // came back "spurious" (0xFF, source not marked acknowledged) and the
     // frame counted as INT-not-taken (hw 2026-09-07, TS-BIOS/BASIC idle).
     const uint8_t tsVect = Z80Ops::isTsconf ? TsConf::intAck() : 0xFF;
+    if (Z80Ops::isTsconf) TsConf::intTrace(REG_PC, REG_SP, tsVect, wasHalted);   // PERF_TRACE ring, before the push
 
     // Z80Ops::interruptHandlingTime(7);
     VIDEO::Draw(7, false);
@@ -1197,9 +1206,9 @@ IRAM_ATTR void Z80::execute() {
 }
 
 // True only while exec_nocheck() runs: the INT line is sampled at the slice
-// boundary (CPU::stFrame) and nowhere inside it, which is what lets LDIR/LDDR
-// batch iterations up to that boundary (blockRepeat). execute() steps one
-// instruction and samples INT after each, so batching there would defer it.
+// boundary (CPU::stFrame) and nowhere inside it. Kept after the LDIR/LDDR
+// batching that needed it was removed (see the note further down) — a future
+// batcher would need exactly this distinction again.
 static bool z80_in_nocheck = false;
 
 IRAM_ATTR void Z80::exec_nocheck() {
@@ -1287,58 +1296,18 @@ IRAM_ATTR void Z80::exec_nocheck() {
 // Beam-raced machines take at most one video line per batch (Draw() handles a
 // single line crossing per call); the TS fast path (TsFastMem.h) has no such
 // limit. TMNT: 21% of its instructions are LDIR iterations (hw 2026-09-07).
-void Z80::blockRepeat(bool up) {
-    if (!z80_in_nocheck) return;
-    uint32_t n = REG_BC;
-    if (n < 3) return;                              // batch = n - 1 >= 2 to be worth the setup
-    n -= 1;
-    const uint16_t hl = REG_HL, de = REG_DE;
-    const uint8_t spg = hl >> 14, dpg = de >> 14;
-    if (spg == 0 || dpg == 0) return;
-    uint8_t* dbase = MemESP::ramCurrent[dpg];
-    const uint8_t* sbase = MemESP::ramCurrent[spg];
-    if ((uintptr_t)dbase < 0x11000000u || sbase == nullptr) return;   // ROM / accessor banks
-    if (g_ts_fastmem) {
-        if (g_tsconf_wr & ~0x40) return;            // FMAddr / W0_WE: per-byte path
-        if ((g_tsconf_wr & 0x40) && ((g_ts_bank_watch >> dpg) & 1)) {
-            // Destination is a page the core1 render queue may still read: wait
-            // for the lines that read this range (the per-byte path does the same).
-            const uint32_t lo = up ? (de & 0x3FFFu) : ((de & 0x3FFFu) - (n - 1));
-            VIDEO::tsRenderDrainOverlap(TsConf::bankPhys(dpg, (uint16_t)lo), n);
-        }
-    } else {
-        if (MemESP::ramContended[spg] || MemESP::ramContended[dpg] || VIDEO::snow_toggle) return;
-        if (Config::numMemReadBP | Config::numMemWriteBP) return;
-        if (dbase == VIDEO::grmem || profi_ds80_active || VIDEO::gmx_ext_live || VIDEO::mode16col_enabled) return;
-        const uint32_t cap = VIDEO::tStatesPerLine / 21u;
-        if (n > cap) n = cap;
-    }
-    const uint32_t room = (CPU::stFrame > CPU::tstates) ? (CPU::stFrame - CPU::tstates) / 21u : 0;
-    if (n > room) n = room;
-    const uint32_t rs = up ? (0x4000u - (hl & 0x3FFFu)) : ((hl & 0x3FFFu) + 1u);
-    const uint32_t rd = up ? (0x4000u - (de & 0x3FFFu)) : ((de & 0x3FFFu) + 1u);
-    if (n > rs) n = rs;
-    if (n > rd) n = rd;
-    if (n < 2) return;
-    const uint8_t* sp = sbase + (hl & 0x3FFFu);
-    uint8_t* dp = dbase + (de & 0x3FFFu);
-    if (up) {
-        if (dp + n <= sp || sp + n <= dp) memcpy(dp, sp, n);
-        else for (uint32_t i = 0; i < n; i++) dp[i] = sp[i];           // ascending, like the hardware
-    } else {
-        const uint8_t* s0 = sp - (n - 1); uint8_t* d0 = dp - (n - 1);
-        if (d0 + n <= s0 || s0 + n <= d0) memcpy(d0, s0, n);
-        else for (uint32_t i = 0; i < n; i++) dp[-(int)i] = sp[-(int)i]; // descending
-    }
-    *mem_desc_t::bank_dirty[dpg] = true;
-    if (g_ts_fastmem) tsFastTick(21u * n);
-    else VIDEO::Draw(21u * n, false);
-    regR += (uint8_t)(2u * n);
-    REG_HL = up ? (uint16_t)(hl + n) : (uint16_t)(hl - n);
-    REG_DE = up ? (uint16_t)(de + n) : (uint16_t)(de - n);
-    REG_BC = (uint16_t)(REG_BC - n);
-    REG_WZ = REG_PC - 1;                            // the repeat path's WZ = PC + 1 after PC -= 2
-}
+// LDIR/LDDR batching (Z80::blockRepeat) was REMOVED on 2026-09-09 after being
+// measured a net LOSS on the machine it was written for. It ran the repeated
+// iterations as one memcpy bounded by CPU::stFrame, and on TS-Conf that meant
+// one VIDEO::tsRenderDrainOverlap over the WHOLE batch range instead of one
+// byte at a time: a wide range overlaps far more lines the core1 renderer has
+// not drawn yet, so core0 stalled waiting for it. Measured on fishbone at
+// 14 MHz, same scene (identical c1/base/tsu): cpu 21.6 -> 19.9 ms, core1 wait
+// 4.4 -> 3.7 ms, realFPS 43.5 -> 47.1 WITH THE BATCHING OFF. It also had no
+// effect whatsoever on the hang it was suspected of (see the fishbone section).
+// If it is ever reinstated, the drain is the thing to fix first, and it must be
+// re-measured per machine — the win it was introduced for was never isolated
+// from the other changes in its commit.
 
 void Z80::decodeOpcode00()
 { /* NOP */
@@ -4128,7 +4097,6 @@ void Z80::decodeED(void) {
         }
         case 0xB0:
         { /* LDIR */
-            blockRepeat(true);
             ldx(1);
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;
@@ -4176,7 +4144,6 @@ void Z80::decodeED(void) {
         }
         case 0xB8:
         { /* LDDR */
-            blockRepeat(false);
             ldx(-1);
             if (REG_BC != 0) {
                 REG_PC = REG_PC - 2;

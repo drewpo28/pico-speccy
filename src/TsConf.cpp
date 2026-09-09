@@ -114,6 +114,61 @@ static uint32_t s_dma_end;      // T at which it completes
 static bool     s_dma_pending;  // int_dma latch
 #if PERF_TRACE
 volatile uint32_t ts_int_frm = 0;   // FRAME INT acks per PERF window (a raster-split title acks 2 per frame)
+#if PERF_TRACE
+// FRAME accepts taken 32+ T after the window opened. Our window is 32 T at
+// 3.5 MHz scaled by the clock (32 << m, i.e. 128 T at ZCLK 14) — IF zint.v's
+// intctr counts Z80 clocks, hardware closes it after 32 T of the CURRENT
+// clock, and every accept counted here is one real hardware would have
+// dropped. Unverified against the RTL; that is what this counter is for.
+volatile uint32_t ts_int_late = 0;
+// FRAME windows armed at frame end and never acknowledged (counted in
+// endFrame — a missed window stays put until the guest moves it, so the one
+// at frame end is the one that was missed).
+volatile uint32_t ts_int_miss = 0;
+// The ring itself: oldest entry at ts_int_ring_w, newest at w-1.
+#define TS_INT_FREEZE 0   // 1 = stop the ring on fishbone's failure signatures; 0 = always keep the last N accepts
+#define TS_INT_RING_N 512   // accepts kept (power of two); 512 ~ 1.6 fishbone frames
+struct TsIntRec { uint16_t pc, sp, ppc, vs; uint32_t t; uint8_t lat, src; };  // ppc = prev accept's pc; vs = VSINT
+// t is the frame T-state (>> m) and MUST be 32-bit: a TS-Conf frame is 71680
+// unscaled T, so a uint16 silently wrapped everything past line 292 (65536/224)
+// and made healthy late-frame accepts read as "line 0" — a trace bug that
+// false-fired the freeze trigger below (hw 2026-09-09).
+TsIntRec ts_int_ring[TS_INT_RING_N];
+uint16_t ts_int_ring_w = 0;
+uint8_t  ts_int_frozen = 0;           // 1 = trigger fired, ring holds the transition (see intTrace)
+static uint8_t  s_int_last_lat = 0;   // set by intAck for the record intTrace is about to write
+static uint16_t s_int_prev_pc  = 0;
+static uint32_t s_int_prev_t   = 0;   // previous accept's frame T (>> m), for the cadence trigger
+static uint16_t s_int_run      = 0;   // consecutive accepts inside the music player
+// How much of fishbone's deliberate 32-line interrupt-free window its frame
+// work actually uses. The demo steps VSINT 32,33,...,319,0 and back to 32, so
+// after the line-0 window there are 32 lines with no interrupt at all — that is
+// where it runs the PT3 player, whose LD SP,HL / POP reads have no DI around
+// them. Overrun that window and the next interrupt lands inside an SP trick:
+// that is the whole failure (hw 2026-09-09, the ring caught one frame fitting
+// and the next one not). Measured from the line-0 ack to the HALT that ends the
+// frame work, in T-states at the current ZCLK; 32 lines = 32*224<<m.
+uint32_t ts_work_max = 0, ts_work_min = 0xFFFFFFFF, ts_work_sum = 0, ts_work_cnt = 0;
+// THE danger event, counted directly: an interrupt accepted inside the player
+// (0x9400-0x9AD0) that is NOT the line-0 one. A healthy frame has exactly zero
+// of these — the only accept that legitimately lands in the player is the vs==0
+// window, which arrives one line after the player starts and hits it before the
+// first LD SP,HL. Everything after that is supposed to run inside the demo's
+// 32-line interrupt-free gap. Any other hit means an interrupt fell into an SP
+// trick's window, which is what destroys the demo (hw 2026-09-09).
+uint32_t ts_plyr_hit = 0;
+uint32_t ts_miss_ei = 0, ts_miss_di = 0, ts_miss_halt = 0;
+// ISR cost, measured from the FRAME ack to the EI that ends the handler. The
+// demo takes 289 interrupts a frame, so this figure is multiplied by 289: an
+// error of 16 T per interrupt is 5 raster lines a frame, which is exactly the
+// scale that decides whether the player fits in its 32-line window. Hand-count
+// from the disassembly of 8254-82AD is 19 (IM2 ack) + 355 (to the end of EI).
+uint32_t ts_isr_min = 0xFFFFFFFF, ts_isr_max = 0, ts_isr_sum = 0, ts_isr_cnt = 0;
+static uint32_t s_isr_t0 = 0;
+static bool     s_isr_armed = false;
+static uint32_t s_work_t0 = 0;
+static bool     s_work_armed = false;
+#endif
 #endif
 
 static inline uint32_t tsLineT() {
@@ -473,8 +528,58 @@ void TsConf::frameIntRecalc() {
         CPU::IntEnd = 0;
         return;
     }
-    uint32_t t = ((uint32_t)r.vsint * TSTATES_PER_LINE_PENTAGON + r.hsint) << m;
-    uint32_t len = 32u << m;
+    // HSINT is measured from TS-Conf's own raster origin, which sits
+    // TS_HSINT_RASTER_BIAS T-states before the point our Pentagon-derived
+    // raster calls T=0. The ZX-Evo is Pentagon-compatible, so its RESET value
+    // (hsint = 2) has to put the frame interrupt exactly where a Pentagon's
+    // lands — otherwise no Pentagon software would keep its raster on an Evo.
+    // Measured: "Across the Edge" executes an identical 1638 T between the
+    // interrupt and its first OUT (#FE) on both machines, yet the interrupt
+    // itself was taken at T=0 on Pentagon and T~6 on TS-Conf, and its border
+    // split came out 8 px right (hw 2026-09-09).
+    // 0 = the hardware formula, and it stays 0: three biases were tried on
+    // 2026-09-09 against "Across the Edge" and none fixed its border on TS-Conf.
+    //
+    // What the RTL does say (video_sync.v:132,
+    //   assign int_start_s = (hcount == {hint_beg, 1'b0}) && (vcount == vint_beg))
+    // is that hcount counts 7 MHz pixel periods, so HSINT is in 3.5 MHz T-states
+    // and our vsint*224 + hsint is right. It also fixes the one distance that
+    // matters: with the reset hsint=2 the interrupt sits at hcount 4 of line 0,
+    // paper (256x192) starts at vp_beg=80 / hp_beg=140, so hardware puts
+    // (80*448 + 140 - 4) / 2 = 17988 T between the interrupt and the first paper
+    // pixel. Ours is TS_SCREEN_PENTAGON (17983) - 2 = 17981, i.e. 7 T short —
+    // which is where the empirically "right" bias of 7 came from. Applying it to
+    // the INT position is WRONG though: that is the one direction that breaks,
+    // because pos goes negative and the straddle truncation below cuts the
+    // window from 32 T to 5 (interrupts lost wholesale, keyboard dead with them).
+    // If this is retried, move the RASTER instead — tStatesScreen for TS-Conf —
+    // and check the datasheet's own "Pentagon-128 compatibility / INT position"
+    // section, which is an empty stub as of this writing.
+    // Measured on "Across the Edge" (hw 2026-09-09), same effect on both
+    // machines: the guest spends an identical 1638 T between the interrupt and
+    // its first OUT (#FE), yet the interrupt was taken at T=0..3 on Pentagon and
+    // T=6..9 on TS-Conf, and the border split came out 16 px right. Those 6 T
+    // are 2 of window offset plus 4 of snapping: a HALTed Z80 samples INT only
+    // on its 4 T NOP grid, the grid is aligned to the frame end (71680 % 4 == 0)
+    // so its points are 0, 4, 8..., and a window opening at 2 is first seen at 4.
+    // With the bias the window opens at 0 and both effects vanish together.
+    // DO NOT make this larger than hsint: 7 was tried and BROKE THE MACHINE —
+    // pos goes negative, wraps to 71675, and the straddle truncation below cuts
+    // the window from 32 T to 5, so interrupts are lost wholesale and the
+    // keyboard dies with them (TS-BIOS and TR-DOS read it from the handler).
+    static constexpr int TS_HSINT_RASTER_BIAS = 0;
+    int32_t pos = (int32_t)r.vsint * TSTATES_PER_LINE_PENTAGON + (int32_t)r.hsint - TS_HSINT_RASTER_BIAS;
+    if (pos < 0) pos += (int32_t)(CPU::statesInFrame >> m);
+    uint32_t t = (uint32_t)pos << m;
+    // zint.v counts the pulse in ZPOS ticks — Z80 clocks at the CURRENT ZCLK —
+    // so the window is 32 of OUR T-states at every clock, not 32 scaled ones.
+    // It was `32u << m` (128 at 14 MHz, 4x the hardware). Nothing observed was
+    // ever accepted past 32 (frmLate stayed 0 over every capture), so this is a
+    // correctness fix, not a behaviour change — but it is the only length the
+    // RTL supports. WATCH frmLate on a raster-split title (Ninja Gaiden): a
+    // non-zero count there would mean the shorter window is dropping an
+    // interrupt a long instruction used to straddle into.
+    uint32_t len = 32u;
     CPU::IntStart = t;
     CPU::IntEnd = t + len;
     if (CPU::IntEnd > CPU::statesInFrame) CPU::IntEnd = CPU::statesInFrame;
@@ -499,7 +604,12 @@ TS_HOT static void tsIntPoll() {
 // generic Z80Ops::isActiveINT so the two agree to the T-state.
 static inline bool tsFrmActive() {
     if (!TsConf::frameIntEnabled() || s_frm_acked) return false;
-    int32_t tmp = (int32_t)CPU::tstates + CPU::latetiming;
+    // NO latetiming here: that is the ULA's Early/Late sampling shift, and
+    // TS-Conf's interrupt comes from zint.v's own counter, not from a ULA.
+    // The reference (Unreal ts_frame_int) applies no such shift either. It used
+    // to add CPU::latetiming, i.e. Config::AluTiming, so a user running Late
+    // timing moved every TS-Conf interrupt one T-state.
+    int32_t tmp = (int32_t)CPU::tstates;
     if (tmp >= (int32_t)CPU::statesInFrame) tmp -= CPU::statesInFrame;
     return tmp >= CPU::IntStart && tmp < CPU::IntEnd;
 }
@@ -518,12 +628,81 @@ TS_HOT uint8_t TsConf::intAck() {
     if (tsFrmActive())  { s_frm_acked = true;
 #if PERF_TRACE
         ts_int_frm++;
+        {   // how deep into the window the accept came (see ts_int_late)
+            int32_t tmp = (int32_t)CPU::tstates;
+            if (tmp >= (int32_t)CPU::statesInFrame) tmp -= CPU::statesInFrame;
+            const int32_t lat = tmp - (int32_t)CPU::IntStart;
+            s_int_last_lat = (uint8_t)(lat < 0 ? 0 : lat > 127 ? 127 : lat);
+            if (lat >= 32) ts_int_late++;
+        }
+        if (r.vsint == 0) { s_work_t0 = CPU::tstates; s_work_armed = true; }   // the interrupt-free window opens here
+        s_isr_t0 = CPU::tstates; s_isr_armed = true;
 #endif
         return 0xFF; }
     if (s_lin_pending)  { s_lin_pending = false; return 0xFD; }
     if (s_dma_pending)  { s_dma_pending = false; return 0xFB; }
     return 0xFF;   // spurious (source dropped between sample and ack)
 }
+
+#if PERF_TRACE
+// Called from CPU::loop the moment the guest goes HALTed (Stage D). Closes the
+// frame-work measurement armed by the line-0 ack.
+TS_HOT void TsConf::workHalt() {
+    if (!s_work_armed) return;
+    s_work_armed = false;
+    uint32_t d = CPU::tstates - s_work_t0;
+    if ((int32_t)d < 0) d += CPU::statesInFrame;
+    if (d > ts_work_max) ts_work_max = d;
+    if (d < ts_work_min) ts_work_min = d;
+    ts_work_sum += d; ts_work_cnt++;
+}
+
+TS_HOT void TsConf::intTrace(uint16_t pc, uint16_t sp, uint8_t vect, bool halted) {
+    // Freeze when the MAIN THREAD starts executing memory that holds nothing
+    // but zeros, which is the FIRST visible step of fishbone's failure and
+    // comes long before the ROM PC an earlier trigger keyed on. In this demo
+    // 0x9ACF-0xBBBA is free RAM (the IM2 table at I=BE points every vector at
+    // 0xBBBB, where the demo put its JP 0x8254; everything below is filler),
+    // so a PC in there is always a NOP slide from a bad jump — and the slide
+    // ends in that JP, entering the handler body as ordinary code.
+    // Freezing on the ROM PC instead left all 256 records post-mortem: the
+    // three dumps of 2026-09-09 were IDENTICAL down to the lat values
+    // (w=196, lines 165..187), i.e. the failure is fully deterministic, so
+    // the trigger can be moved earlier and earlier until it catches the
+    // origin. ROM is kept as a fallback for a run that skips the slide.
+    if (ts_int_frozen) { s_int_prev_pc = pc; s_int_last_lat = 0; return; }
+    const uint32_t t = CPU::tstates >> ESPectrum::multiplicator;
+    TsIntRec& r_ = ts_int_ring[ts_int_ring_w & (TS_INT_RING_N - 1)];
+    r_.pc = pc; r_.sp = sp; r_.ppc = s_int_prev_pc; r_.t = t; r_.vs = r.vsint;
+    r_.lat = (uint8_t)(s_int_last_lat | (halted ? 0x80 : 0));   // bit 7 = woke from HALT
+    r_.src = vect;                                                // FF FRAME / FD LINE / FB DMA
+    ts_int_ring_w = (uint16_t)((ts_int_ring_w + 1) & (TS_INT_RING_N - 1));
+    // Primary trigger: the player is RUNNING AWAY. fishbone calls its PT3-style
+    // player once per frame from the main loop (0x80B3), which is ~13 lines of
+    // work, i.e. ~13 accepts land inside it. A run of 40+ consecutive accepts
+    // in 0x9400-0x9AD0 means it is looping, and that happens ~1.5 frames before
+    // anything else shows: by the time the PC reaches free RAM or ROM the ring
+    // is already all post-mortem (three identical dumps proved it).
+    // NB do NOT trigger on writes to 0x6000: the demo parks its stack on top of
+    // the module's ASCII title (the player never reads it), so that word is
+    // rewritten constantly and legitimately — a write breakpoint there fires on
+    // the fourth T-state of the demo (hw 2026-09-09).
+    if (pc >= 0x9400 && pc < 0x9AD0) {
+        if (vect == 0xFF && r.vsint != 0) ts_plyr_hit++;   // an interrupt inside the player, outside the safe one
+        if (s_int_run < 0xFFFF) s_int_run++;
+    }
+    else s_int_run = 0;
+#if TS_INT_FREEZE
+    if (s_int_run > 40) ts_int_frozen = 1;
+#endif
+#if TS_INT_FREEZE
+    if (pc < 0x4000 || (pc >= 0x9B00 && pc < 0xBBBB)) ts_int_frozen = 1;   // fallbacks
+#endif
+    s_int_prev_t = t;
+    s_int_prev_pc = pc;
+    s_int_last_lat = 0;
+}
+#endif
 
 TS_HOT uint32_t TsConf::nextIntEvent() {
     tsIntPoll();
@@ -534,7 +713,7 @@ TS_HOT uint32_t TsConf::nextIntEvent() {
     if (s_dma_busy && (r.intmask & 0x04) && s_dma_end < t) t = s_dma_end;
     if (frameIntEnabled() && !s_frm_acked) {
         // First T-state whose latetiming-shifted value enters [IntStart, IntEnd).
-        int32_t ws = (int32_t)CPU::IntStart - CPU::latetiming;
+        int32_t ws = (int32_t)CPU::IntStart;
         if (ws > (int32_t)now && (uint32_t)ws < t) t = (uint32_t)ws;
     }
     return t < now ? now : t;
@@ -544,6 +723,17 @@ TS_HOT uint32_t TsConf::nextIntEvent() {
 // is already up, end the slice so CPU::loop can take the interrupt at the
 // right instruction (Stage D runs unchecked between INT events).
 TS_HOT void TsConf::intEnableHook() {
+#if PERF_TRACE
+    if (s_isr_armed) {   // the first EI after an accept is the handler's own (82AC)
+        s_isr_armed = false;
+        uint32_t d = CPU::tstates - s_isr_t0;
+        if ((int32_t)d >= 0 && d < 4000) {
+            if (d < ts_isr_min) ts_isr_min = d;
+            if (d > ts_isr_max) ts_isr_max = d;
+            ts_isr_sum += d; ts_isr_cnt++;
+        }
+    }
+#endif
     // Two reasons to end the slice: a source is already up (take it at the right
     // instruction), or an INT event still lies AHEAD in this frame — the slice was
     // sized with IFF1 clear, i.e. to the frame end, and would run straight through
@@ -567,6 +757,17 @@ TS_HOT void TsConf::endFrame() {
                  (unsigned)(CPU::IntStart / tsLineT()), (int)Z80::isIFF1(), (int)Z80::getIM(), (int)Z80::isHalted(), r.intmask); }
     }
     s_vtrace_frame++;
+#endif
+#if PERF_TRACE
+    if (frameIntEnabled() && !s_frm_acked && CPU::IntEnd) {
+        ts_int_miss++;
+        // Split the miss by WHY, which is the whole question: with IFF1 clear
+        // the guest had interrupts disabled and real hardware would have lost
+        // the pulse too (its 32 clocks simply expire); with IFF1 SET we failed
+        // to deliver a window the guest was waiting for, and that is ours.
+        if (Z80::isIFF1()) ts_miss_ei++; else ts_miss_di++;
+        if (Z80::isHalted()) ts_miss_halt++;
+    }
 #endif
     const uint32_t f = CPU::statesInFrame;
     s_frm_acked = false;
@@ -1060,6 +1261,10 @@ void TsConf::reset(bool cold) {
     s_frm_acked = false;
     s_frm_vsint = s_frm_hsint = 0xFFFF;
     s_lin_pending = s_dma_pending = s_dma_busy = false;
+#if PERF_TRACE
+    ts_int_frozen = 0; ts_int_ring_w = 0;                      // re-arm the INT-accept trigger per load
+    s_int_prev_pc = 0; s_int_prev_t = 0; s_int_run = 0;
+#endif
     s_lin_next = 0;
     s_dma_end = 0;
     tsUpdateWrGate();

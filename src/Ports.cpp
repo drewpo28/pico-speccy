@@ -35,6 +35,11 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "Ports.h"
+#if PERF_TRACE
+uint32_t g_brd_first_t = 0, g_brd_min = 0xFFFFFFFF, g_brd_max = 0, g_brd_delta = 0;
+uint32_t g_halt_t = 0; bool g_halt_set = false;
+bool g_brd_first_set = false;
+#endif
 #include "AySound.h"
 #include "OpnFm.h"
 #include "OplFm.h"
@@ -3176,6 +3181,19 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // and re-arms brdChange (whole-border repaint) for no visual change.
     // Found via FPGA48_2026.tap: its OTDR section writes arbitrary bytes to #FE.
     if (VIDEO::borderColor != (data & 0x07)) {
+#if PERF_TRACE
+      // Anchor for comparing machines: the T-state of the FIRST border change
+      // of each frame. A frame-synced border demo puts it at a fixed T, so the
+      // same title on two machines must report the same number — that is how
+      // "Across the Edge" was pinned to 8 T late on TS-Conf against Pentagon.
+      { extern uint32_t g_brd_first_t; extern bool g_brd_first_set;
+        extern uint32_t g_int_last_t; extern uint32_t g_brd_delta;
+        if (!g_brd_first_set) { g_brd_first_t = CPU::tstates; g_brd_first_set = true;
+            // Time the guest itself spent between taking the interrupt and this
+            // OUT. Same code on both machines, so this MUST match; if it does,
+            // any brdT difference is the interrupt's raster position, not us.
+            g_brd_delta = CPU::tstates - g_int_last_t; } }
+#endif
       VIDEO::brdChange = true;
       if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention

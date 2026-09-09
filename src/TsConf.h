@@ -138,6 +138,19 @@ public:
     static inline bool frameIntEnabled() { return r.intmask & 0x01; }
     static bool intLine();
     static uint8_t intAck();
+    // INT-accept trace (PERF_TRACE builds): where the guest was when each
+    // interrupt was TAKEN — Z80::interrupt() calls it right after intAck(),
+    // before the push. Ring of TS_INT_RING_N in TsConf.cpp (ts_int_ring), dumped by
+    // tools/memdump.gdb. Written for fishbone (hw 2026-09-09): a raster-split
+    // title that runs SP-pointer tricks with interrupts enabled, so WHERE the
+    // 10-byte interrupt frame lands is the whole question.
+#if PERF_TRACE
+    static void intTrace(uint16_t pc, uint16_t sp, uint8_t vect, bool halted);
+    static void workHalt();
+#else
+    static inline void intTrace(uint16_t, uint16_t, uint8_t, bool) {}
+    static inline void workHalt() {}
+#endif
     // True while a LINE or DMA interrupt may fire: CPU::loop then runs the
     // rest of the frame instruction-checked instead of the unchecked slices
     // (only the FRAME window is checked otherwise).

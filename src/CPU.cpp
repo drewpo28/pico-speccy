@@ -424,6 +424,11 @@ IRAM_ATTR void CPU::loop() {
         uint32_t ts_idle = 0;   // T-states slept in HALT this frame (several sleeps per frame with a raster split)
         while (tstates < statesInFrame) {
             if (Z80::isHalted()) {
+                TsConf::workHalt();   // PERF_TRACE: close the frame-work measurement
+#if PERF_TRACE
+                { extern uint32_t g_halt_t; extern bool g_halt_set;
+                  if (!g_halt_set) { g_halt_t = CPU::tstates; g_halt_set = true; } }
+#endif
                 // A HALTed CPU leaves HALT only on an interrupt, so sleep straight
                 // to the next T-state where the INT line can rise (frame end with
                 // interrupts disabled) instead of stepping 4 T per execute(): with
@@ -433,6 +438,12 @@ IRAM_ATTR void CPU::loop() {
                 // per-line effect programmed after the wake still renders right.
                 uint32_t wake = Z80::isIFF1() ? TsConf::nextIntEvent() : statesInFrame;
                 if (wake > statesInFrame) wake = statesInFrame;
+                // NB a HALTed Z80 really does sample INT only on its own 4 T NOP
+                // grid, so sleeping straight to the event accepts up to 3 T early.
+                // Rounding the sleep up to whole NOPs was tried on 2026-09-09 and
+                // REVERTED: it changed "Across the Edge"'s border on TS-Conf but
+                // did not fix it, and unproven timing changes on this path are not
+                // worth their risk. Re-open it only with a test that it decides.
                 if (wake > tstates) { ts_idle += wake - tstates; haltAdvanceTo(wake); continue; }
             }
             if (Z80::isIFF1() && TsConf::intLine()) {
@@ -480,6 +491,15 @@ IRAM_ATTR void CPU::loop() {
         }
         CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
         cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+#if PERF_TRACE
+        { extern uint32_t g_frm_int_taken, g_frm_int_miss;
+          if (!g_frm_int_taken) g_frm_int_miss++;   // no interrupt reached the guest this whole frame
+          g_frm_int_taken = 0;
+          extern uint32_t g_brd_first_t, g_brd_min, g_brd_max; extern bool g_brd_first_set;
+          if (g_brd_first_set) { if (g_brd_first_t < g_brd_min) g_brd_min = g_brd_first_t;
+                                 if (g_brd_first_t > g_brd_max) g_brd_max = g_brd_first_t; }
+          g_brd_first_set = false; { extern bool g_halt_set; g_halt_set = false; } }
+#endif
         global_tstates += statesInFrame;
         tstates_frame = tstates;
         tstates_active = tstates_frame - ts_idle;   // load = frame minus the HALT sleeps (haltAdvanceTo's own stamp is per sleep)
@@ -534,6 +554,15 @@ IRAM_ATTR void CPU::loop() {
 
     cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
 
+#if PERF_TRACE
+    { extern uint32_t g_frm_int_taken, g_frm_int_miss;
+      if (!g_frm_int_taken) g_frm_int_miss++;
+      g_frm_int_taken = 0;
+      extern uint32_t g_brd_first_t, g_brd_min, g_brd_max; extern bool g_brd_first_set;
+      if (g_brd_first_set) { if (g_brd_first_t < g_brd_min) g_brd_min = g_brd_first_t;
+                             if (g_brd_first_t > g_brd_max) g_brd_max = g_brd_first_t; }
+      g_brd_first_set = false; { extern bool g_halt_set; g_halt_set = false; } }
+#endif
     global_tstates += statesInFrame; // increase global Tstates
     tstates_frame = tstates;
     if (!halted) tstates_active = tstates_frame; // no HALT this frame: full load
@@ -543,6 +572,10 @@ IRAM_ATTR void CPU::loop() {
 }
 
 IRAM_ATTR void CPU::FlushOnHalt() {
+#if PERF_TRACE
+    { extern uint32_t g_halt_t; extern bool g_halt_set;
+      if (!g_halt_set) { g_halt_t = CPU::tstates; g_halt_set = true; } }
+#endif
     FlushOnHaltTo(statesInFrame - IntEnd);
 }
 
