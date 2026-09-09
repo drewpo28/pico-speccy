@@ -207,7 +207,13 @@
 #define TXT_MACH_TSCONF_OPTS "Options"
 #define TXT_MACH_TSCONF_RAM  "RAM"
 #define TXT_MACH_TSCONF_CLK  "CPU cap"
-#define TXT_ROM_TSBIOS       "TS-Conf"
+// The ZX-Evo BIOS images differ ONLY in the 128 service ROM at ROM page 2
+// (tslabs/zx-evo pentevo/rom/bin) — the TS-BIOS itself and its TR-DOS are the same
+// bytes in both, so the label names the service ROM, not the BIOS.
+#define TXT_ROM_TSBIOS       "TS-BIOS + 128"
+#define TXT_ROM_TSBIOS_S     "128"            // left-column short form (Option::slabel)
+#define TXT_ROM_TSBIOS_GLUK  "TS-BIOS + Mr Gluk"
+#define TXT_ROM_TSBIOS_GLUK_S "Mr Gluk"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
 
 // ROM set labels, shared by the machine rows and the Preferred rom rows.

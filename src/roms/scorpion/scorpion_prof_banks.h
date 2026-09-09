@@ -2,7 +2,7 @@
 // Scorpion PROF-ROM v4.01 (scorp401_91F513AB.rom, CRC32 91F513AB), 4 planes
 // x 4 x 16K banks, deduplicated and partly expressed as overlays over ROMs
 // the firmware already ships — see the pack_prof comment in
-// tools/rom_pack.py. 230003 B in flash instead of 262144.
+// tools/rom_pack.py. 230028 B in flash instead of 262144.
 // Regenerate: python3 tools/rom_pack.py prof
 // Include via romScorpion.h only (needs the base ROM symbols in scope).
 #pragma once
@@ -31,7 +31,7 @@ typedef struct { const unsigned char* data; const unsigned char* overlay; } scor
 // gmxTapUpdate (Ports.cpp) — several banks share a base pointer, so a static
 // registration cannot express this. Duplicate banks share a pointer.
 static const scorpion_prof_bank_t gb_rom_scorpion_prof_banks[16] = {
-    { gb_rom_0_sinclair_128k, gb_overlay_scorpion_prof_p0b0 },   // plane 0 bank 0
+    { gb_rom_0_pentagon_128k, gb_overlay_scorpion_prof_p0b0 },   // plane 0 bank 0
     { gb_rom_1_sinclair_128k, gb_overlay_scorpion_prof_p0b1 },   // plane 0 bank 1
     { gb_rom_scorpion_prof_p0b2, nullptr },   // plane 0 bank 2
     { gb_rom_scorpion_prof_p0b3, nullptr },   // plane 0 bank 3

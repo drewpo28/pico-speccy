@@ -1539,11 +1539,73 @@ ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
   that cannot keep it). Reset = `tsinit()` values; **`MemConfig` reset is 0 (mapped
   mode)** — the datasheet's `!W0_MAP=1` table row is wrong, Unreal's code is
   right. Boot in RM_SYS: `ESPectrum::trdos = true` at reset → Service ROM.
-  ROM: `src/roms/tsconf/romTsBios.c` (64 KB = zxevo.rom's first 64 KB with ONE
-  byte patched, 2026-09-07: the Setup footer says "F11 - exit" instead of
-  "F12 - exit", since F11 is our machine reset and F12 reboots the RP2350 —
-  manifest.json keeps both md5s; pages Service/TR-DOS/128/48), read via `TsConf::romPtr()` —
-  **no `MemESP::rom[]` slots consumed**; pages 4-31 = `gb_rom_Alf_ep` zeros.
+  ROM: two BIOS sets, one byte patched (2026-09-07: the Setup footer reads
+  "F11 - exit" instead of "F12 - exit", since F11 is our machine reset and F12
+  reboots the RP2350), read via `TsConf::romPtr()` — **no `MemESP::rom[]` slots
+  consumed**; pages 4-31 = `gb_rom_Alf_ep` zeros. See the BIOS-sets section below.
+### The TS-BIOS sets, and why two overlay families were INVERTED (hw-confirmed 2026-09-09)
+
+`pentevo/rom/bin` carries four images and `rom/src/compile.bat` says what they are:
+each is `ts-bios.bin + trdos504T.rom + <service ROM> + <48 BASIC>`, i.e. **pages 0
+and 1 are byte-identical in all four** and only ROM page 2 — the 128 service ROM —
+changes, with page 3 following it from the 128K second half to the plain 48K ROM:
+
+| romset | page 2 | page 3 |
+|---|---|---|
+| `R_TSCONF` "TS-BIOS + 128" | `128.rom` half 0 = **the Pentagon 128 ROM** | 128 half 1 |
+| `R_TSCONF_GLUK` | `glukpen.rom` (Mr Gluk Reset Service) | 48 BASIC |
+
+**Two of the four upstream images are deliberately NOT shipped** (owner, 2026-09-09):
+`ts-bios-qc311.rom` (QC 3.11) and `ts-bios-rc196.rom` (RC 1.96) differ from these
+only in that same page 2, so each would cost a flat 16 KB of flash — re-adding one
+is a `.bin` in `roms/tsconf/src/`, an md5 in `TSCONF_SRC_MD5`, an entry in
+pack_tsconf's raw list, a romset in `NM_ROMSET_TABLE` and one row in
+`opt_mach_tsconf`.
+
+**TS-Conf reads window 0 as a RAW POINTER** (`TsConf::romPtr` → `ramCurrent[0]`,
+read by the TsFastMem path), so it cannot see a RomOverlay — whatever it needs has
+to BE a base. That is the whole reason two families were inverted:
+
+- **trdos**: base is **5.04T** (`gb_rom_4_trdos_504t`, TS-BIOS page 1); 5.05D / 5.03
+  / 5.04TM are overlays over it (360 / 572 / 114 B against the old 855+454).
+- **pentagon**: base is **`gb_rom_0_pentagon_128k`** (TS-BIOS page 2); the stock
+  Sinclair 128K ROM0 is the 101-byte `gb_overlay_pentagon_sinclair_128k_0`. The raw
+  array left `romSinclair128K.h` — it must have EXTERNAL linkage (generated
+  `pentagon_base.c`), or every TU that included the header would get its own copy at
+  its own address and the pointer-keyed overlay registry would never match it.
+
+So the only unique bytes TS-Conf owns are page 0 and the Mr Gluk service ROM
+(`roms/tsconf/tsconf_roms.c`, `python3 tools/rom_pack.py tsconf`). Overlays cannot
+help THERE: a service ROM is an entirely different program (smallest overlay against
+anything in flash 16.7 KB, i.e. bigger than the 16384 raw). **Measured: the Gluk set
+costs −36 KB** — it adds 16 KB and hands back the 48 KB of near-duplicates the old
+single 64 KB `romTsBios.c` blob carried (its page 1 was 5.04TM ± 30 bytes, page 2
+the Pentagon ROM0, page 3 `gb_rom_1_sinclair_128k` verbatim) plus that blob's 4 KB
+of `aligned(4096)` padding. Free heads: DVp2 82.7 KB, z0p2 79.1, z0p2-PIOUSB 64.0.
+
+- **Owner's hw verdict 2026-09-09: "работает"** — the inverted bases boot on real
+  hardware. What that run covered is not itemised beyond "it works", so treat the
+  OTHER machines' ROM paths through the re-based overlays (128K/+2/Byte-128 on the
+  Pentagon base, Profi/Karabas bank 2, Scorpion bank 0, GMX/ProfROM planes, and the
+  TR-DOS 5.03/5.04TM/5.05D menu switch) as covered by `rom_verify.py` and the
+  linked-image byte check, not by a hardware pass each.
+- **`tools/rom_verify.py` is the safety net — run it after ANY change to a ROM
+  source, to `rom_pack.py`, or to a base choice.** It reassembles both shipped
+  ZX-Evo images and every re-based variant out of the GENERATED arrays and diffs
+  them against the `.bin` dumps. A wrong base choice is 65 bytes in a 128 ROM: it
+  boots.
+- `isTsconfRomset()` (ArchRom.h) is the "either set" test — `RTC::tsBiosSeed`
+  needed it, and `requestMachine(A_TSCONF, R_NONE)` (the .spg loader) keeps the
+  user's pick instead of snapping back to the stock set.
+- **Both sets share ONE `cmos_TS-Conf.nvr`** (RTC.cpp): the BIOS that owns that
+  CMOS is page 0, identical in both, so splitting the file per romset would throw
+  away the user's Setup on every BIOS switch.
+- GMX/ProfROM re-based onto the new bases automatically (`rom_pack.py gmx prof`):
+  GMX −347 B (its plane-1 bank 0 IS the Pentagon ROM0, so it now binds the base with
+  a nullptr overlay), ProfROM +25 B. Nothing crossed the 1 KB raw threshold.
+- zxevo.rom (512 KB) is the stock four pages plus the OTHER configurations' ROMs
+  (compile.bat appends the tail of the original image); TS-Conf never selects them.
+
 - **CPU::loop has a third shape for TS-Conf**: since 2026-09-07 the whole frame
   is the event-driven "Stage D" (see item 15 of the performance list — the
   earlier fixed three-slice shape with `FlushOnHaltTo` broke raster splits that
@@ -3889,8 +3951,8 @@ from the cloud env; all three sources agree). ROM = the user-supplied **v2.94**
 0=BASIC-128, 1=BASIC-48, 2=service monitor, 3=TR-DOS 5.03 variant. bank0/1 are
 overlays over the Sinclair 128K halves (290/115 diff bytes, `tools/rom_pack.py
 scorpion`); bank2/3 raw in `src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT be an
-overlay: rom[4] already overlays the `trdos_505d` base pointer and
-`MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
+overlay: rom[4] already overlays the shared TR-DOS base pointer (5.05D until
+2026-09-09, 5.04T since) and `MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
 
 - **Four romsets over the SAME v2.94 ROM** (one Machine → Scorpion radio; UI
   labels "ZS-256 Turbo (Yellow)" / "ZS-256 Turbo+ (Green)" / "ZS-256 Turbo+ &
@@ -4062,9 +4124,10 @@ entry" rule buys.
   flash, not 512** — `tools/rom_pack.py gmx` (`pack_gmx`) splits it into 32
   16K banks, folds the 6 exact duplicates (planes 2/3, the flashtool planes,
   are near-mirrors), and stores 5 banks as RomOverlay patches over ROMs already
-  in flash: p1b0 ≡ Pentagon ROM0 exactly (reuses `gb_overlay_pentagon_rom0`
-  verbatim), p1b1/p4b1 over `sinclair_128k_1` (19/182 B), p4b0 over
-  `sinclair_128k_0` (443 B), p1b2(≡p1b3) over `trdos_505d` (817 B); p4b3 stays
+  in flash: p1b0 ≡ Pentagon ROM0 exactly (since 2026-09-09 that IS the family base,
+  so the bank binds it with a nullptr overlay), p1b1/p4b1 over `sinclair_128k_1`
+  (19/182 B), p4b0 over the Pentagon base (468 B), p1b2(≡p1b3) over the TR-DOS
+  5.04T base (534 B); p4b3 stays
   raw (3856 diff bytes > the 1 KB threshold — not worth a wide run list on the
   TR-DOS fetch path). The packer reconstructs all 512 KB and compares at pack
   time. Emits `scorpion_gmx_rom.c` (raw banks + new overlays, plain C) and

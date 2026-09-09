@@ -2,7 +2,7 @@
 // Scorpion GMX boot ROM "GMX Boot Rom 1.3 V5.00" (MAME gmx13500.rom, CRC32
 // 47c9df88), 8 ProfROM planes x 4 x 16K banks, deduplicated and partly
 // expressed as overlays over ROMs the firmware already ships — see the
-// pack_gmx comment in tools/rom_pack.py. 345525 B in flash instead of 524288.
+// pack_gmx comment in tools/rom_pack.py. 345267 B in flash instead of 524288.
 // Regenerate: python3 tools/rom_pack.py gmx
 // Include via romScorpion.h only (needs the base ROM symbols in scope).
 #pragma once
@@ -44,10 +44,10 @@ static const scorpion_gmx_bank_t gb_rom_scorpion_gmx_banks[32] = {
     { gb_rom_scorpion_gmx_p0b1, nullptr },   // plane 0 bank 1
     { gb_rom_scorpion_gmx_p0b2, nullptr },   // plane 0 bank 2
     { gb_rom_scorpion_gmx_p0b3, nullptr },   // plane 0 bank 3
-    { gb_rom_0_sinclair_128k, gb_overlay_pentagon_rom0 },   // plane 1 bank 0
+    { gb_rom_0_pentagon_128k, nullptr },   // plane 1 bank 0
     { gb_rom_1_sinclair_128k, gb_overlay_scorpion_gmx_p1b1 },   // plane 1 bank 1
-    { gb_rom_4_trdos_505d, gb_overlay_scorpion_gmx_p1b2 },   // plane 1 bank 2
-    { gb_rom_4_trdos_505d, gb_overlay_scorpion_gmx_p1b2 },   // plane 1 bank 3  = bank 6
+    { gb_rom_4_trdos_504t, gb_overlay_scorpion_gmx_p1b2 },   // plane 1 bank 2
+    { gb_rom_4_trdos_504t, gb_overlay_scorpion_gmx_p1b2 },   // plane 1 bank 3  = bank 6
     { gb_rom_scorpion_gmx_p2b0, nullptr },   // plane 2 bank 0
     { gb_rom_scorpion_gmx_p2b1, nullptr },   // plane 2 bank 1
     { gb_rom_scorpion_gmx_p2b1, nullptr },   // plane 2 bank 2  = bank 9
@@ -56,7 +56,7 @@ static const scorpion_gmx_bank_t gb_rom_scorpion_gmx_banks[32] = {
     { gb_rom_scorpion_gmx_p2b1, nullptr },   // plane 3 bank 1  = bank 9
     { gb_rom_scorpion_gmx_p2b1, nullptr },   // plane 3 bank 2  = bank 9
     { gb_rom_scorpion_gmx_p2b3, nullptr },   // plane 3 bank 3  = bank 11
-    { gb_rom_0_sinclair_128k, gb_overlay_scorpion_gmx_p4b0 },   // plane 4 bank 0
+    { gb_rom_0_pentagon_128k, gb_overlay_scorpion_gmx_p4b0 },   // plane 4 bank 0
     { gb_rom_1_sinclair_128k, gb_overlay_scorpion_gmx_p4b1 },   // plane 4 bank 1
     { gb_rom_scorpion_gmx_p4b2, nullptr },   // plane 4 bank 2
     { gb_rom_scorpion_gmx_p4b3, nullptr },   // plane 4 bank 3

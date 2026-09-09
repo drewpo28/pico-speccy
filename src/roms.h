@@ -55,13 +55,21 @@ visit https://zxespectrum.speccy.org/contacto
 // (see AlfCart). gb_rom_Alf = ALF system ROM; gb_rom_Alf_ep = open-bus filler.
 extern "C" const unsigned char gb_rom_Alf[];
 extern "C" const unsigned char gb_rom_Alf_ep[];
-extern "C" unsigned char gb_rom_4_trdos_505d[];
-// gb_rom_4_trdos_503 / _504tm are no longer raw arrays: they are stored as small
-// read-only overlays over 5.05D (src/roms/trdos/, tools/rom_pack.py) and applied on
-// the fly by MemESP (see RomOverlay.h) — no RAM copy, no flash write, no reboot.
+// TR-DOS: ONE raw base, 5.04T, and 5.03 / 5.04TM / 5.05D as small read-only
+// overlays over it (src/roms/trdos/, tools/rom_pack.py), applied on the fly by
+// MemESP (see RomOverlay.h) — no RAM copy, no flash write, no reboot. The base is
+// 5.04T rather than 5.05D because TS-BIOS ROM page 1 IS 5.04T and TS-Conf reads its
+// ROM window as a RAW POINTER (TsConf::romPtr), i.e. it cannot see an overlay: what
+// that machine needs has to be the base. Costs 1046 B of overlays instead of 855+454
+// and saves the 16 KB copy that used to sit inside the TS-BIOS blob.
+#include "roms/trdos/trdos_base.h"
 #include "roms/trdos/trdos_overlays.h"
 #include "roms/48k/48k_overlays.h"
 #include "roms/128k/128k_overlays.h"
+// rom[0] of the 128K family: the raw base is the PENTAGON ROM0 and the stock
+// Sinclair 128K first half is the 101-byte overlay (same reason as TR-DOS above —
+// this ROM is TS-BIOS page 2). rom[1] is shared by both with no overlay at all.
+#include "roms/pentagon/pentagon_base.h"
 #include "roms/pentagon/pentagon_overlays.h"
 #include "roms/plus3/plus3_overlays.h"
 #include "roms/plus3e/plus3e_overlays.h"
@@ -72,5 +80,5 @@ extern "C" unsigned char gb_rom_esxdos[];
 extern "C" unsigned char gb_rom_esxide[];
 #include "roms/profi/romProfi.h"
 #include "roms/scorpion/romScorpion.h"
-#include "roms/tsconf/romTsBios.h"
+#include "roms/tsconf/tsconf_roms.h"
 #endif

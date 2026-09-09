@@ -110,7 +110,11 @@ public:
 
     // Machine reset (tsinit() values). Cold=true additionally raises pwr_up.
     static void reset(bool cold);
-    static void bindRoms();      // called from Config::requestMachine
+    // The four ROM pages of the TS-BIOS set, supplied by Config::requestMachine —
+    // TsConf.cpp must not name them itself: page 3 (and page 2 of the stock set) are
+    // header-defined `const` arrays with internal linkage, so a second referencing
+    // TU would get its own 16 KB copy at its own address.
+    static void bindRoms(const uint8_t* const pages[4]);
 
     static uint8_t portRead(uint8_t reg);
     static void portWrite(uint8_t reg, uint8_t val);

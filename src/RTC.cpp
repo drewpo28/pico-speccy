@@ -26,7 +26,11 @@
 // image of its own yet, so nothing a user already configured is orphaned.
 static char s_nv_path[64];
 static void rtcNvPathSet() {
-    const char* tag = kRomsetName[Config::romSet < ROMSET_COUNT ? Config::romSet : 0];
+    // The four TS-Conf sets share ONE file: the BIOS that owns this CMOS (ROM page
+    // 0) is byte-identical in all of them — only the 128 service ROM differs — so
+    // splitting them would make a BIOS switch throw away the user's Setup.
+    RomsetIdx rs = isTsconfRomset(Config::romSet) ? R_TSCONF : Config::romSet;
+    const char* tag = kRomsetName[rs < ROMSET_COUNT ? rs : 0];
     snprintf(s_nv_path, sizeof(s_nv_path), CONFIG_DIR "/cmos_%s.nvr", tag);
 }
 #define RTC_NVRAM_PATH (s_nv_path[0] ? s_nv_path : RTC_NVRAM_LEGACY)
@@ -106,7 +110,7 @@ int RTC::decHour(uint8_t v) {
 // Config::requestMachine once the new romset is final; a no-op before init().
 static void rtcSeedGluk() {
     if (Config::romSet == R_PENT_GLUK) RTC::glukMarker();
-    if (Config::romSet == R_TSCONF)   RTC::tsBiosSeed();
+    if (isTsconfRomset(Config::romSet)) RTC::tsBiosSeed();   // any of the four BIOS sets
 }
 
 void RTC::machineChanged() {

@@ -340,8 +340,14 @@ static const Option* mach_scorpOpts(uint8_t& cnt) {
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
+// One machine, two BIOS sets: pages 0 (the BIOS) and 1 (TR-DOS 5.04T) are
+// byte-identical across the ZX-Evo images and only the 128 service ROM at page 2
+// changes (with page 3 following it from the 128K second half to the plain 48K
+// ROM). Costs 16 KB of flash for the Mr Gluk service ROM — paid for several times
+// over by the 48 KB of near-duplicates the old single 64 KB TS-BIOS blob carried.
 static const Option opt_mach_tsconf[] = {
-    { TXT_ROM_TSBIOS,     NM_MACH(A_TSCONF, R_TSCONF) },
+    { TXT_ROM_TSBIOS,      NM_MACH(A_TSCONF, R_TSCONF),      TXT_ROM_TSBIOS_S      },
+    { TXT_ROM_TSBIOS_GLUK, NM_MACH(A_TSCONF, R_TSCONF_GLUK), TXT_ROM_TSBIOS_GLUK_S },
 };
 // TS-Conf RAM size: values are page counts (the real configurations are 1/2/4 MB).
 static const Option opt_tsconf_ram[] = {

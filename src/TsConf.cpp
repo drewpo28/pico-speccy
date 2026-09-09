@@ -29,7 +29,6 @@ the Free Software Foundation, either version 3 of the License, or
 #include "DivMMC.h"
 #include "LEDIndicators.h"
 #include "OSDMain.h"
-#include "roms/tsconf/romTsBios.h"
 
 // Hot path in SRAM: every #nnAF port access (TMNT: ~4000 a frame — DMA register
 // programming + DMAStatus polls), every INT-source poll from CPU::loop's Stage D
@@ -187,22 +186,32 @@ static inline void tsWakeLoop() {
 
 // ---------------------------------------------------------------- ROM ----
 
-// 32-page ROM window. Only the 4 TS-BIOS pages are embedded (they are
-// byte-identical to the first 64 KB of the real 512 KB flash); pages 4..31
-// answer like unbonded flash. gb_rom_Alf_ep (the ALF open-bus 16 KB zero
-// page) is reused as the filler — reads there are deterministic 0x00.
+// 32-page ROM window. Only the 4 pages of the selected TS-BIOS set are bound
+// (they are the first 64 KB of the real 512 KB flash — the ZX-Evo images differ
+// from each other in page 2 alone, which is what Config::romSetTsconf picks);
+// pages 4..31 answer like unbonded flash. gb_rom_Alf_ep (the ALF open-bus 16 KB
+// zero page) is reused as the filler — reads there are deterministic 0x00.
 extern "C" const unsigned char gb_rom_Alf_ep[];
+
+// Set by bindRoms() before the machine runs; the filler covers the window before
+// the first bind (a boot that never passes through requestMachine cannot happen,
+// but a null here would be a hard fault instead of open bus).
+static const uint8_t* s_rom_page[4] = { nullptr, nullptr, nullptr, nullptr };
 
 const uint8_t* TsConf::romPtr(uint8_t page) {
     page &= 0x1F;
-    if (page < 4) return gb_rom_tsbios + ((uint32_t)page << 14);
+    if (page < 4 && s_rom_page[page]) return s_rom_page[page];
     return gb_rom_Alf_ep;
 }
 
-void TsConf::bindRoms() {
-    // Nothing to bind into MemESP::rom[] — window 0 gets flash pointers from
-    // romPtr() directly, and rom[4] (TR-DOS, bound unconditionally by
-    // requestMachine's tail) stays untouched for the Beta-128 path.
+void TsConf::bindRoms(const uint8_t* const pages[4]) {
+    // Window 0 is a RAW POINTER into flash (setBanks -> ramCurrent[0], read by the
+    // TsFastMem path), so these four pages must be raw arrays — which is why the
+    // TR-DOS and 128K-ROM0 overlay families were inverted to make the variants
+    // TS-Conf needs their bases (tools/rom_pack.py). Nothing goes into MemESP::rom[]:
+    // rom[4] (TR-DOS, bound by requestMachine's tail) stays for the Beta-128 path,
+    // which TS-BIOS never uses — it carries its own TR-DOS in page 1.
+    for (int i = 0; i < 4; ++i) s_rom_page[i] = pages[i];
 }
 
 // -------------------------------------------------------------- paging ----

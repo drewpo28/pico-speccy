@@ -1,5 +1,7 @@
 ; ============================================================
-; Z80 Disassembly of romTsBios.c
+; Z80 Disassembly of the TS-BIOS 64 KB set (pages 0-3 of the stock ts-bios.rom).
+; Bytes unchanged; the array they lived in (romTsBios.c) is gone - page 0 is now
+; gb_rom_tsbios_p0, page 1 the TR-DOS 5.04T base, pages 2/3 the 128 ROM halves.
 ; ============================================================
 ; ORG: 0x0000
 ; Length: 348737 bytes (0x55241)

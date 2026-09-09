@@ -62,7 +62,8 @@
     X(R_ALF1,           "ALF1",             "ALF cartridge")      \
     X(R_P3,             "P3",               "+3 v4.0")             \
     X(R_P3E,            "P3e",              "+3 (IDEDOS)")      \
-    X(R_TSCONF,         "TS-Conf",          "TS-Conf")
+    X(R_TSCONF,         "TS-Conf",          "TS-BIOS + 128")              \
+    X(R_TSCONF_GLUK,    "TS-Gluk",          "TS-BIOS + Mr Gluk")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -160,4 +161,12 @@ inline bool isPlus3Romset(RomsetIdx r) {
 // the machine carries the "simple 8-bit" IDE interface on #xxEF (see Ports.cpp).
 inline bool isPlus3eRomset(RomsetIdx r) {
     return r == R_P3E;
+}
+
+// The ZX-Evo BIOS images are one romset family over the same machine: pages 0 and 1
+// are byte-identical and only the 128 service ROM at page 2 changes (stock 128.rom
+// or Mr Gluk). Anything that asks "is this TS-Conf?" by romset must accept both —
+// the machine is identical in every other respect.
+inline bool isTsconfRomset(RomsetIdx r) {
+    return r == R_TSCONF || r == R_TSCONF_GLUK;
 }

@@ -428,7 +428,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 #endif
         case R_128K_BY:
         case R_128K_BY_GLUK:
-            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_pentagon_sinclair_128k_0);
             // rom[1] = BYTE 48K, now a read-only overlay over the Sinclair 48K base
             // (applied on the fly by MemESP when this bank is paged to page 0).
             MemESP::rom[1].assign_rom(gb_rom_0_sinclair_48k);
@@ -464,7 +465,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_plus3_rom3);
             break;
         default:
-            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_pentagon_sinclair_128k_0);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
             break;
         }
@@ -485,8 +487,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_profi_pq_bank0);
             MemESP::rom[1].assign_rom(gb_rom_profi_bank1);
             MemESP::registerOverlay(gb_rom_profi_bank1, gb_overlay_profi_bank1_pq);
-            MemESP::rom[2].assign_rom(gb_rom_0_sinclair_128k);
-            MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_profi_bank2_pq);
+            MemESP::rom[2].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_profi_bank2_pq);
             MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3_pq);
             break;
@@ -498,8 +500,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_profi_bank0_karabas);
             MemESP::rom[1].assign_rom(gb_rom_profi_bank1);
             MemESP::registerOverlay(gb_rom_profi_bank1, gb_overlay_profi_bank1_romain);
-            MemESP::rom[2].assign_rom(gb_rom_0_sinclair_128k);
-            MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_profi_bank2);
+            MemESP::rom[2].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_profi_bank2);
             MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, nullptr);
             break;
@@ -524,8 +526,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_profi_bank0);
             MemESP::rom[1].assign_rom(gb_rom_profi_bank1);
             MemESP::registerOverlay(gb_rom_profi_bank1, nullptr);
-            MemESP::rom[2].assign_rom(gb_rom_0_sinclair_128k);
-            MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_profi_bank2);
+            MemESP::rom[2].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_profi_bank2);
             MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3);
             break;
@@ -598,8 +600,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         } else
 #endif
         {
-            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
-            MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_scorpion_bank0);
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_scorpion_bank0);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_scorpion_bank1);
             MemESP::rom[2].assign_rom(gb_rom_scorpion_bank2);
@@ -608,13 +610,32 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         break;
     }
     case A_TSCONF: {
-        romSet = (newRomSet == R_NONE) ? R_TSCONF : newRomSet;
+        // R_NONE keeps the remembered BIOS pick (a .spg launch or a plain machine
+        // switch must not silently drop the user back to the stock set).
+        romSet = (newRomSet == R_NONE) ? (isTsconfRomset(romSetTsconf) ? romSetTsconf
+                                                                      : R_TSCONF)
+                                       : newRomSet;
         romSetTsconf = romSet;
-        // TS-Conf window 0 reads flash through TsConf::romPtr(), not
-        // MemESP::rom[] — nothing to bind here. rom[4] (TR-DOS) is still
-        // bound by the tail below for the Beta-128 path; TS-BIOS carries its
-        // own TR-DOS in ROM page 1 and never uses rom[4].
-        TsConf::bindRoms();
+        // TS-Conf window 0 reads flash through TsConf::romPtr(), not MemESP::rom[],
+        // so these are RAW pointers and never overlays. The ZX-Evo BIOS images
+        // (tslabs/zx-evo pentevo/rom/bin) share pages 0 and 1 byte for byte and
+        // differ only in the 128 service ROM at page 2 — with page 3 following it
+        // from the 128K second half to the plain 48K ROM. Pages 1-3 are bases other
+        // machines overlay; only page 0 and the Mr Gluk service ROM are TS-Conf's own
+        // bytes (roms/tsconf/, tools/rom_pack.py). rom[4] (TR-DOS) is still bound by
+        // the tail below for the Beta-128 path; TS-BIOS carries its own TR-DOS in
+        // page 1 and never uses rom[4].
+        const uint8_t* pages[4] = {
+            gb_rom_tsbios_p0,
+            gb_rom_4_trdos_504t,
+            gb_rom_0_pentagon_128k,      // 128.rom half 0 == the Pentagon 128 ROM
+            gb_rom_1_sinclair_128k,      // 128.rom half 1
+        };
+        if (romSetTsconf == R_TSCONF_GLUK) {     // ts-bios-gluk.rom
+            pages[2] = gb_rom_tsbios_gluk;
+            pages[3] = gb_rom_0_sinclair_48k;
+        }
+        TsConf::bindRoms(pages);
         break;
     }
     default: { // Pentagon / P512 / P1024
@@ -634,10 +655,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::rom[1].assign_rom(gb_rom_Alf_cart + (16 << 10)); /// 16392;
 #endif
         } else {
-            // Pentagon = Sinclair 128K with a 101-byte overlay on rom[0]; rom[1] is
-            // byte-identical to the Sinclair 128K second half (no overlay needed).
-            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_128k);
-            MemESP::registerOverlay(gb_rom_0_sinclair_128k, gb_overlay_pentagon_rom0);
+            // Pentagon ROM0 IS the raw base of this family (the stock Sinclair first
+            // half is the 101-byte overlay, the other way round since 2026-09-09 —
+            // TS-Conf needs these bytes as a base). rom[1] is byte-identical to the
+            // Sinclair 128K second half, so it needs no overlay either way.
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, nullptr);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
             if (romSet == R_PENT_GLUK) {
                 MemESP::rom[3].assign_rom(gb_rom_gluk);
@@ -655,16 +678,16 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
     // own bank 3).
     if (!(arch == A_SCORP && (romSetScorp == R_SCORP_GMX || romSetScorp == R_SCORP_PROF))) {
-        const uint8_t* base = gb_rom_4_trdos_505d;
-        const uint8_t* ov = nullptr;
+        const uint8_t* base = gb_rom_4_trdos_504t;
+        const uint8_t* ov = gb_overlay_trdos_505d;   // the base is 5.04T now
         switch (Config::trdosBios) {
             case 0: ov = gb_overlay_trdos_503;   break;  // 5.03
             case 1: ov = gb_overlay_trdos_504tm; break;  // 5.04TM
             case 3: base = gb_rom_4_trdos_custom; break; // user-uploaded custom (raw)
-            default: break;                              // 5.05D base
+            default: break;                              // 5.05D = overlay over 5.04T
         }
         MemESP::rom[4].assign_rom(base);
-        MemESP::registerOverlay(gb_rom_4_trdos_505d, ov);
+        MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);
     }
 
     // Battery-backed state follows the machine (see the note in RTC.cpp): push

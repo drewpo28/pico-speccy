@@ -83,7 +83,8 @@ bool FileSPG::load(const string& fn) {
         // Same cascade MachineSwitch applies: DivMMC's #AF collides with the
         // TS register file.
         if (Config::esxdos) { Config::esxdos = 0; DivMMC::init(); }
-        Config::requestMachine(A_TSCONF, R_TSCONF);
+        // R_NONE: keep whichever TS-BIOS set the user picked.
+        Config::requestMachine(A_TSCONF, R_NONE);
 #endif
     }
     // Gigascreen is incompatible with the TS-Conf renderer (VIDEO::disableGigascreenForProfi).

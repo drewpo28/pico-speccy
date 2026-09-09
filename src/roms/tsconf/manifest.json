@@ -1,15 +1,27 @@
 {
   "id": "tsconf",
-  "source": "tslabs/zx-evo pentevo/rom/bin/ts-bios.rom",
-  "sym": "gb_rom_tsbios",
-  "len": 65536,
-  "md5": "284bb246f180b3872e8ac692cb75c6aa",
+  "source": "tslabs/zx-evo pentevo/rom/src/rom + bin/ts-bios*.rom",
+  "patch": "page 0 offset 0x1183: 'F12 - exit' -> 'F11 - exit'",
   "pages": [
-    "Service",
-    "TR-DOS",
-    "128 BASIC",
-    "48 BASIC"
+    "0 Service (raw, patched)",
+    "1 TR-DOS 5.04T = gb_rom_4_trdos_504t (trdos family base)",
+    "2 service ROM: gb_rom_0_pentagon_128k (stock) or gluk",
+    "3 gb_rom_1_sinclair_128k (stock) or gb_rom_0_sinclair_48k"
   ],
-  "stock_md5": "9a0a7f6c10ffa0a556748c4b40088554",
-  "patch": "ROM offset 0x1183: 'F12 - exit' -> 'F11 - exit' (Setup footer; F11 is this emulator's machine reset)"
+  "raw": [
+    {
+      "key": "ts-bios",
+      "sym": "gb_rom_tsbios_p0",
+      "name": "TS-BIOS service page (F11-patched)",
+      "len": 16384,
+      "md5": "c4c1a8e4290bc5eca8244424e452508c"
+    },
+    {
+      "key": "glukpen",
+      "sym": "gb_rom_tsbios_gluk",
+      "name": "Mr Gluk Reset Service (Pentagon)",
+      "len": 16384,
+      "md5": "412f3f3a655334ca2777709a168051f6"
+    }
+  ]
 }
