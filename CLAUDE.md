@@ -2506,6 +2506,48 @@ logs its reply bytes too. The lesson: a recovery path that runs on the happy
 path (a long hold is NORMAL) must validate the device speaks the protocol
 before rewriting state from its answers.
 
+### ...and the probe must earn trust in the DIRECTION it is used (2026-09-09, NOT hw-tested)
+
+User report: on a USB keyboard auto-repeat is dead in the 128 menu and gives ~4
+steps in the esxDOS browser before stopping; PS/2 is fine; not reproducible on
+the owner's keyboard. **The idle probe above cannot tell a device that reports
+LIVE state from one whose GET_REPORT always answers the all-idle boot report** —
+while idle BOTH answer the same zeros, so a lying device passes the probe and is
+then believed when it says "nothing is held" 400 ms into a legitimate hold. The
+guest's own typematic never gets to start: the 128 ROM's REPDEL is 35 frames =
+700 ms (so zero repeats), esxDOS's faster browser repeat fits a few steps into
+the 400 ms window. Nothing else in the keyboard path can do this, and the PS/2
+comparison PROVES it rather than merely suggesting it: `handleHidKeyPress`
+(ps2kbd_mrmltr.cpp:223) swallows a repeated make code, so a PS/2 typematic hold
+produces exactly ONE key-down event too — during a hold the two keyboards are
+indistinguishable to the emulator, and only USB has a resync. (The other half of
+that report, "USB also works while a PS/2 keyboard is plugged in", cannot be a
+code path: an idle PS/2 keyboard emits nothing at all — both lines sit on their
+pull-ups, the PIO SM sees no frame, no handler runs.)
+
+Fix: a release is honored only once the device has PROVEN it answers from live
+state — `kbd_resync_live`, set the first time a reply confirms a key we believe
+held. Until then an all-idle reply is inconclusive and only the long-silence
+fallback (`KBD_RESYNC_UNPROVEN_MS` 5 s of a believed hold with no traffic at all)
+acts on it. That fallback costs almost nothing, and the reason is worth keeping:
+**a stuck key heals by itself on the keyboard's next real report** (the interrupt
+path applies both directions), so the resync only ever matters while the device
+says NOTHING — i.e. the 400 ms threshold was buying no recovery it does not still
+have at 5 s. Residual cost, documented: on a lying keyboard a single-key hold
+longer than 5 s is still let go.
+`kbd_hold_since_ms` (set when our state goes from nothing-held to held) is the
+fallback's clock, NOT `kbd_last_report_ms` — the refused reply has to restart the
+request interval without also restarting the stuck-key clock.
+
+**The diagnostic was ZERO2-only and that is why this took a user report**: the
+`HID kbd:` health line was wrapped in `#if defined(ZERO2_PIO_USB_HOST)` for the
+sake of ONE field (`epst`, the PIO-USB endpoint view). It now prints on every
+board with the field stubbed, and Hardware Info gained a
+`USB kbd rsync : i0 ver=1 live=0 off=0 fix=N unpr=N st=N` row
+(`usb_kbd_resync_stats`, hid_app.cpp) so a remote user with no UART can
+photograph it: **live=0 with unpr climbing IS this bug**, fix>0 with live=1 is a
+device whose releases are real.
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the

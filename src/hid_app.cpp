@@ -481,8 +481,26 @@ static hid_keyboard_report_t prev_report = { 0 , 0 , {0}};
 // reserved byte is OEM-defined and ignored). Junk instead disables the resync
 // for this device for the session (the pico-spec behavior, where such keyboards
 // work); a stall goes through the existing 5-strikes path.
+//
+// TRUST IS STILL NOT FREE IN THE OTHER DIRECTION: the idle probe above cannot
+// tell a device that reports LIVE state from one whose GET_REPORT always answers
+// the all-idle boot report (it does not remember what the interrupt pipe sent, or
+// it simply has no live snapshot) — while idle, both answer exactly the same
+// zeros. Such a device passes the probe and then RELEASES every key 400 ms into a
+// legitimate hold, because we believe the reply. The guest sees a key that is let
+// go before its own typematic ever starts: the 128 menu (REPDEL 35 frames = 700
+// ms) never repeats at all, esxDOS's faster browser repeat gets a few steps and
+// stops (hw report 2026-09-09, USB keyboard; PS/2 unaffected — it has no resync,
+// and its own typematic re-sends the make code anyway). So a release is honored
+// only once the device has PROVEN it reports live state: a reply that confirms a
+// key we believe held (`kbd_resync_live`). Until then the reply is only observed,
+// and a genuinely stuck key still recovers through the long-silence fallback
+// below — which costs nothing, because any real report from the keyboard heals a
+// stuck key by itself (the interrupt path applies both directions); the resync
+// only matters while the device says NOTHING at all.
 #define KBD_RESYNC_SILENCE_MS 400   // silence with a key held before we ask the device
 #define KBD_PROBE_SILENCE_MS 1000   // idle silence before the one-time trust probe
+#define KBD_RESYNC_UNPROVEN_MS 5000 // held-with-no-traffic before an UNPROVEN device may release
 static uint8_t  kbd_resync_daddr    = 0;
 static uint8_t  kbd_resync_instance = 0xFF;
 static uint32_t kbd_last_report_ms  = 0;
@@ -494,6 +512,9 @@ static uint32_t kbd_resync_fixes    = 0;
 static uint32_t kbd_report_seq      = 0;      // interrupt reports processed, ever
 static uint32_t kbd_resync_seq      = 0;      // kbd_report_seq when the GET_REPORT went out
 static uint32_t kbd_resync_stale    = 0;      // replies discarded as overtaken
+static bool     kbd_resync_live      = false; // a reply once confirmed a key we believe held
+static uint32_t kbd_resync_unproven  = 0;     // all-idle replies refused for lack of that proof
+static uint32_t kbd_hold_since_ms    = 0;     // when our state last went from "nothing" to "held"
 
 static bool kbd_state_has_key(void) {
   if (prev_report.modifier) return true;
@@ -509,7 +530,6 @@ static bool kbd_state_has_key(void) {
 //                                          GET_REPORT resync is what must fix it
 //   failed>0 / timeouts rising             bus errors (PRE/LS through the hub)
 static void kbd_health_log(void) {
-#if defined(ZERO2_PIO_USB_HOST)
   static uint32_t last_ms = 0;
   const uint32_t now = kbd_now_ms();
   if (kbd_resync_instance == 0xFF) return;
@@ -527,21 +547,43 @@ static void kbd_health_log(void) {
   tuh_bus_info_get(kbd_resync_daddr, &bus);
   const uint8_t inst = kbd_resync_instance;
   const uint8_t ep_in = tuh_hid_ep_in(kbd_resync_daddr, inst);
+#if defined(ZERO2_PIO_USB_HOST)
   const uint32_t epdbg = pio_usb_host_ep_debug(kbd_resync_daddr, ep_in);
+#else
+  const uint32_t epdbg = ~0u;   // the PIO-USB layer's own view; native host has none
+#endif
   extern volatile uint32_t g_tusb_assert_count;   // dropped events land here
   Debug::log("HID kbd: rhport=%u daddr=%u inst=%u ep=%02X held=%u silent=%ums reports=%u "
-             "resync(fix=%u fail=%u off=%u ver=%u stale=%u) rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
+             "resync(fix=%u fail=%u off=%u ver=%u live=%u unproven=%u stale=%u) "
+             "rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
              bus.rhport, kbd_resync_daddr, inst, ep_in, (unsigned)held,
              (unsigned)silent,
              (unsigned)(inst < CFG_TUH_HID ? hid_snap[inst].report_total : 0),
              (unsigned)kbd_resync_fixes, (unsigned)kbd_resync_fails,
              (unsigned)kbd_resync_off, (unsigned)kbd_resync_verified,
+             (unsigned)kbd_resync_live, (unsigned)kbd_resync_unproven,
              (unsigned)kbd_resync_stale,
              (unsigned)hid_rearm_recoveries,
              (unsigned)hid_desync_recoveries, (unsigned)g_tusb_assert_count,
              (unsigned)tuh_hid_receive_ready(kbd_resync_daddr, inst),
              (unsigned)epdbg);
-#endif
+}
+
+// Hardware Info's "USB kbd rsync" row: the resync counters are invisible without
+// the UART console, and they are what tells a broken auto-repeat ("the device
+// answers GET_REPORT with an all-idle report", live=0 with unpr climbing) from a
+// dead endpoint. Everything a remote user can photograph instead of capturing.
+extern "C" void usb_kbd_resync_stats(unsigned *inst, unsigned *flags,
+                                     unsigned *fixes, unsigned *unproven,
+                                     unsigned *stale)
+{
+  if (inst)     *inst  = kbd_resync_instance;
+  if (flags)    *flags = (kbd_resync_verified ? 1u : 0u) |
+                         (kbd_resync_live     ? 2u : 0u) |
+                         (kbd_resync_off      ? 4u : 0u);
+  if (fixes)    *fixes    = kbd_resync_fixes;
+  if (unproven) *unproven = kbd_resync_unproven;
+  if (stale)    *stale    = kbd_resync_stale;
 }
 
 static void kbd_resync_tick(void) {
@@ -654,7 +696,29 @@ void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t repor
       if (k2 == kc) { merged.keycode[nk++] = kc; break; }
   }
 
+  // Does the reply CONFIRM something we believe is held? Then this device really
+  // answers GET_REPORT from live state and its releases can be acted on.
+  bool confirms = (now->modifier & prev_report.modifier) != 0;
+  for (uint8_t kc : now->keycode) {
+    if (!kc) continue;
+    for (uint8_t pk : prev_report.keycode)
+      if (pk == kc) { confirms = true; break; }
+  }
+  if (confirms && !kbd_resync_live) {
+    kbd_resync_live = true;
+    Debug::log("HID kbd: GET_REPORT reports live state, releases now trusted");
+  }
+
   if (memcmp(&merged, &prev_report, sizeof(prev_report)) != 0) {
+    // Unproven device: an all-idle reply is INCONCLUSIVE, not a release (see the
+    // block comment above). Only a hold that has produced no traffic at all for
+    // KBD_RESYNC_UNPROVEN_MS is treated as stuck.
+    if (!kbd_resync_live &&
+        (uint32_t)(kbd_now_ms() - kbd_hold_since_ms) < KBD_RESYNC_UNPROVEN_MS) {
+      kbd_resync_unproven++;
+      kbd_last_report_ms = kbd_now_ms();   // ask again after the normal interval
+      return;
+    }
     kbd_resync_fixes++;
     Debug::log("HID kbd: state resynced via GET_REPORT (total %u, stale %u, "
                "reply %02X %02X %02X %02X %02X %02X %02X %02X)",
@@ -743,13 +807,19 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
         kbd_resync_probing  = false;
         kbd_resync_off      = false;
         kbd_resync_fails    = 0;
+        kbd_resync_live     = false;
       }
       kbd_resync_daddr    = dev_addr;
       kbd_resync_instance = instance;
       kbd_last_report_ms  = kbd_now_ms();
       kbd_report_seq++;               // lets a resync reply see it was overtaken
-      process_kbd_report( (hid_keyboard_report_t const*) report, &prev_report );
-      prev_report = *(hid_keyboard_report_t const*)report;
+      {
+        const bool was_held = kbd_state_has_key();
+        process_kbd_report( (hid_keyboard_report_t const*) report, &prev_report );
+        prev_report = *(hid_keyboard_report_t const*)report;
+        // Start of a believed hold: the clock the unproven-device fallback runs on.
+        if (!was_held && kbd_state_has_key()) kbd_hold_since_ms = kbd_now_ms();
+      }
     break;
 
     case HID_ITF_PROTOCOL_MOUSE:

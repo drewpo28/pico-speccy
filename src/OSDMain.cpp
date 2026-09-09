@@ -934,6 +934,13 @@ static bool f5Locations() {
 // Readers are gated by `li < ftpd_log_count`, and ftpd_log_count only advances
 // after a successful alloc here, so they never touch a null buffer.
 static char (*ftpd_log)[FTPD_LOG_COLS] = nullptr;
+#ifdef KBDUSB
+// hid_app.cpp — USB keyboard state-resync counters for the Hardware Info row.
+// At file scope because a linkage specification is not permitted at block scope.
+extern "C" void usb_kbd_resync_stats(unsigned *inst, unsigned *flags,
+                                     unsigned *fixes, unsigned *unproven,
+                                     unsigned *stale);
+#endif
 extern "C" size_t getLargestAllocatable(void);   // defined at the bottom of this file
 static int  ftpd_log_count = 0;  // total lines pushed (monotonic)
 static bool ftpd_log_dirty = true;
@@ -5601,6 +5608,20 @@ void OSD::BoardInfo() {
         // live pair — on ZERO2 it moves to KBD_ALT_* when the PCM5122 takes GP2/3
         "  Kbd CLK/DATA  : %d/%d\n", (int)board_kbd_clock_pin(),
         (int)board_kbd_clock_pin() + 1);
+#ifdef KBDUSB
+    // USB keyboard state resync (hid_app.cpp). Only once a USB keyboard has
+    // reported; live=0 with unpr climbing is a device whose GET_REPORT answers
+    // all-idle even with a key held — the auto-repeat killer.
+    {
+        unsigned uinst = 0xFF, uflags = 0, ufix = 0, uunpr = 0, ustale = 0;
+        usb_kbd_resync_stats(&uinst, &uflags, &ufix, &uunpr, &ustale);
+        if (uinst != 0xFF)
+            pos += snprintf(buf + pos, sizeof(buf) - pos,
+                "  USB kbd rsync : i%u ver=%u live=%u off=%u fix=%u unpr=%u st=%u\n",
+                uinst, (uflags & 1) ? 1 : 0, (uflags & 2) ? 1 : 0,
+                (uflags & 4) ? 1 : 0, ufix, uunpr, ustale);
+    }
+#endif
     // Debug > UART console: live TX pin, or why it is not up.
     if (Debug::uartActive())
         pos += snprintf(buf + pos, sizeof(buf) - pos, "  Dbg UART TX   : %u\n", Debug::uartTxPin());
