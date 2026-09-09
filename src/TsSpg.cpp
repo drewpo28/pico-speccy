@@ -88,7 +88,7 @@ bool FileSPG::load(const string& fn) {
     }
     // Gigascreen is incompatible with the TS-Conf renderer (VIDEO::disableGigascreenForProfi).
     if (Config::gigascreen_enabled) VIDEO::disableGigascreenForProfi();
-    ESPectrum::reset();
+    ESPectrum::resetForLoad();
 
     // Blocks: descriptor = {addr:5 (x512 in page) .. last:7, size:5 (x512 - 1)
     // .. comp:6-7, page}. Compressed input is at most 16 KB; output is bounded

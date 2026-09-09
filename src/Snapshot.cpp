@@ -146,7 +146,7 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
             }
         }
     }
-    ESPectrum::reset();
+    ESPectrum::resetForLoad();
 
     // printf("FileSNA::load: Opening %s: size = %d\n", sna_fn.c_str(), sna_size);
 
@@ -585,7 +585,7 @@ bool FileZ80::load(const string& z80_fn) {
 
     }
     
-    ESPectrum::reset();
+    ESPectrum::resetForLoad();
 
     // Get file size
     fseek(file,0,SEEK_END);
@@ -922,7 +922,7 @@ void FileZ80::loader48() {
     unsigned char *z80_array = (unsigned char *) load48;
     uint32_t dataOffset = 86;
 
-    ESPectrum::reset();
+    ESPectrum::resetForLoad();
 
     // begin loading registers
     Z80::setRegA  (z80_array[0]);
@@ -1089,7 +1089,7 @@ void FileZ80::loader128() {
 
     if (!z80_array) {
         // No loader snapshot available for this architecture — just reset.
-        ESPectrum::reset();
+        ESPectrum::resetForLoad();
         return;
     }
 
@@ -1100,9 +1100,9 @@ void FileZ80::loader128() {
     // ESPectrum::reset() no-arg always calls reset(0) for Profi → SYS ROM +
     // trdos=true, which is wrong for tape loading.
     if (Config::arch == A_PROFI)
-        ESPectrum::reset(2);
+        ESPectrum::resetForLoad(2);
     else
-        ESPectrum::reset();
+        ESPectrum::resetForLoad();
 
     // begin loading registers
     Z80::setRegA  (z80_array[0]);

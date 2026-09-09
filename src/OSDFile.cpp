@@ -488,7 +488,7 @@ static bool rfd_launch_tmp(string path) {
             ESPectrum::plus3AutoBootArmAcrossReboot();
             MachineSwitch::commit(A_128K, R_P3);   // resets (or reboots) into the +3
         } else {
-            ESPectrum::reset();
+            ESPectrum::resetForLoad();
         }
         ESPectrum::plus3AutoBootArm();             // reached only without a reboot
         return true;

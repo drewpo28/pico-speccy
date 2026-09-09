@@ -771,7 +771,12 @@ static void tsC1PlacementPoll() {
 
 // core1 (render_core loop): execute queued lines, a few per call so pcm_call /
 // GS::pump keep their cadence.
-void VIDEO::tsRenderCore1Pump() {
+// RAM unconditionally, not under TSCONF_RENDER_IN_RAM: core1's render_core loop
+// calls this (and ts_render_core1_prio below) on EVERY iteration — hundreds of
+// thousands of times a second, on every machine, TS-Conf or not — so a flash
+// body is an XIP fetch per iteration out of the loop that also runs the
+// renderer and the GS. Same reason pcm_call() was taken out of that loop.
+void __not_in_flash("core1loop") VIDEO::tsRenderCore1Pump() {
     if (ts_c1_r == ts_c1_w) return;
     const uint64_t t0 = time_us_64();
     for (int n = 0; n < 8 && ts_c1_r != ts_c1_w; n++) {
@@ -795,13 +800,21 @@ void VIDEO::tsRenderCore1Pump() {
     }
     ts_c1_us += (uint32_t)(time_us_64() - t0);
 }
-extern "C" void ts_render_core1_pump() { VIDEO::tsRenderCore1Pump(); }
+extern "C" void __not_in_flash("core1loop") ts_render_core1_pump() { VIDEO::tsRenderCore1Pump(); }
 // core1 (render_core): queued lines pre-empt GS::pump while core0 is blocked on
 // them or the backlog is deep (a HALT fast-forward posts a frame in microseconds).
 // The GS then runs on core1's slack only — for a TS title that is BOTH saturating
 // the renderer and playing GS music the music will run slow; video wins.
-extern "C" bool ts_render_core1_prio() {
+extern "C" bool __not_in_flash("core1loop") ts_render_core1_prio() {
     return ts_c1_ring && (ts_c1_core0_waiting || (ts_c1_w - ts_c1_r) > 32);
+}
+// core1 (GS::pump): are TS-Conf lines being rendered on this core right now?
+// Gates the NeoGS turbo-boot (see pump): 8x GS time per wall second on core1
+// while the renderer needs ~75% of it is what made every demo open at 42 FPS
+// for the ~6 s of a card boot (hw 2026-09-09). Statics read directly — the
+// member tsRenderQueueOn() lives in flash.
+extern "C" bool __not_in_flash("core1loop") ts_render_queue_on_c() {
+    return ts_c1_ring && ts_c1_enabled && VIDEO::ts_render_live;
 }
 
 // ESPectrum::reset teardown for TS-Conf's pair-slot TEXT mode — same reason as
@@ -5055,6 +5068,18 @@ void VIDEO::gmxBorderFrame(bool skipFrame) {
 
 
 IRAM_ATTR void VIDEO::EndFrame() {
+
+    // Console drain, once per frame. Debug::log lands in a 4 KB ring that
+    // pumpUart() empties into the 32-byte UART FIFO, and until 2026-09-09 the
+    // only two pump sites were inside the frame-pacing idle wait — so a frame
+    // that overran EVERY time (fishbone on the PERF_HIST build: cpu 20.7 against
+    // a 20.48 ms frame) never pumped, the ring filled within ~7 PERF windows and
+    // every line thereafter came out as the one FIFO's worth its own write could
+    // push: `[PERF] aud: ticks=41495 hold=3095[PERF] aud: ...`. That is the
+    // console going dark exactly when the emulator is in trouble. This call
+    // never waits (it stops the moment the FIFO is full), and 60 x 32 bytes per
+    // PERF window comfortably carries the ~600 bytes those lines write.
+    Debug::pumpUart();
 
     linedraw_cnt = lin_end;
 

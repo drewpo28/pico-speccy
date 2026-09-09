@@ -254,6 +254,29 @@ static volatile uint32_t aq_wr = 0, aq_rd = 0;
 // starves the sink into a permanent mute. ±1% absorbs that and any
 // per-mode counting quirks.
 #define HDMI_AU_TARGET 64
+
+// Data-Island guard: how long the line ISR waits, from its own entry, before
+// rewriting the OTHER buffer's island set. The line that has just started
+// consumes its island bytes within ~1.8 µs of ISR entry (see the call site);
+// this is the margin over that.
+//
+// It was a hard-coded 5. That spin runs on CORE1 in every render ISR — one per
+// two scanlines, i.e. one per 63.5 µs — so it burned 5/63.5 = 7.9% of the core
+// the TS-Conf renderer runs on, standing still, to protect a 1.8 µs window.
+// Measured cost of HDMI audio as a whole (hw 2026-09-08, correlating
+// hdmiDurMax against the packet queue over three firmware builds): the ISR
+// takes 9 µs with HDMI audio off and 18-19 µs with it on, i.e. HDMI audio
+// costs ~16% of core1 whether or not anything is playing — which is why a
+// TS-Conf title that saturates core1 runs slower on HDMI audio than on I2S.
+//
+// 3 µs still leaves two thirds of margin over the 1.8 µs the guard needs.
+// If a sink starts muting (~0.5 s dropouts = torn packet, bad BCH), build with
+// -DHDMI_AU_DI_GUARD_US=5 to restore the old behaviour; the next step in the
+// other direction is to drop the spin entirely by loading the island AFTER the
+// render, which already takes ~9 µs (mind the early returns in that path).
+#ifndef HDMI_AU_DI_GUARD_US
+#define HDMI_AU_DI_GUARD_US 3
+#endif
 static uint32_t hdmi_au_spl24_hi = 0, hdmi_au_spl24_lo = 0;
 static uint32_t hdmi_au_pos = 0;       // consumer-only (core1)
 
@@ -638,7 +661,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         // previous packet repeats (valid, minor artifact, no mute).
         if (au_ok_prev && !(hdmi_scanlines && (line + 1) <= modep->v_active)) {
             if (isr_gap < 45) {
-                while (time_us_32() - isr_t0 < 5) tight_loop_contents();
+                while (time_us_32() - isr_t0 < HDMI_AU_DI_GUARD_US) tight_loop_contents();
                 hdmi_di_load(b ^ 1, line - 1);
             } else {
                 // The stale set transmits again. A repeated Null/ACR is free;
@@ -1849,7 +1872,14 @@ static void hdmi_build_terc_luts(void) {
 //   ch1: D0..D3 = bit 2t of subpackets 0..3
 //   ch2: D0..D3 = bit 2t+1 of subpackets 0..3
 // Sync levels and D3 come pre-baked in di_ch0_data (mode geometry dependent).
-static void __not_in_flash_func(hdmi_pack_blob_ch0)(uint64_t out[32], const uint8_t hdr[4],
+// `outb` is the second palette page (conv_color_b) or NULL. The island bytes
+// must decode identically through both pages, and this used to be pack-into-A
+// followed by a 32-uint64 copy A->B in the caller — a whole extra pass over
+// 256 bytes through nf_copy64's volatile loop, in the core1 ISR. Storing each
+// character to both pages as it is computed costs one predictable branch per
+// character instead (2026-09-08).
+static void __not_in_flash_func(hdmi_pack_blob_ch0)(uint64_t out[32], uint64_t outb[32],
+                                                    const uint8_t hdr[4],
                                                     const uint8_t sp[4][8], const uint8_t *ch0base) {
     uint32_t hdr_bits = hdr[0] | (hdr[1] << 8) | ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
     for (int i = 0; i < 8; i++) {
@@ -1864,14 +1894,16 @@ static void __not_in_flash_func(hdmi_pack_blob_ch0)(uint64_t out[32], const uint
                                 (uint8_t)((v >> 12) & 15), (uint8_t)((v >> 28) & 15) };
         for (int k = 0; k < 4; k++) {
             uint8_t ch0 = ch0base[pc + k] | (((hdr_bits >> (pc + k)) & 1) << 2);
-            out[pc + k] = terc_lut_a1[c2[k]] | terc_lut_a2[c1[k]] | terc_lut_a3[ch0];
+            const uint64_t w = terc_lut_a1[c2[k]] | terc_lut_a2[c1[k]] | terc_lut_a3[ch0];
+            out[pc + k] = w;
+            if (outb) outb[pc + k] = w;
         }
     }
 }
 
-static void __not_in_flash_func(hdmi_pack_blob)(uint64_t out[32], const uint8_t hdr[4],
-                                                const uint8_t sp[4][8]) {
-    hdmi_pack_blob_ch0(out, hdr, sp, di_ch0_data);
+static void __not_in_flash_func(hdmi_pack_blob)(uint64_t out[32], uint64_t outb[32],
+                                                const uint8_t hdr[4], const uint8_t sp[4][8]) {
+    hdmi_pack_blob_ch0(out, outb, hdr, sp, di_ch0_data);
 }
 
 // ---------- static packets ----------
@@ -1880,8 +1912,8 @@ static void hdmi_build_null_blob(void) {
     uint8_t hdr[4] = { 0, 0, 0, 0 };
     uint8_t sp[4][8];
     nf_memset(sp, 0, sizeof(sp));
-    hdmi_pack_blob(blob_null, hdr, sp);
-    hdmi_pack_blob_ch0(blob_null_vs, hdr, sp, di_ch0_data_vs);
+    hdmi_pack_blob(blob_null, NULL, hdr, sp);
+    hdmi_pack_blob_ch0(blob_null_vs, NULL, hdr, sp, di_ch0_data_vs);
 }
 
 static void hdmi_build_acr_blob(uint32_t cts, uint32_t n) {
@@ -1898,7 +1930,7 @@ static void hdmi_build_acr_blob(uint32_t cts, uint32_t n) {
     sp[0][6] = n & 0xFF;
     sp[0][7] = hdmi_bch7(sp[0]);
     for (int s = 1; s < 4; s++) memcpy(sp[s], sp[0], 8);
-    hdmi_pack_blob(blob_acr, hdr, sp);
+    hdmi_pack_blob(blob_acr, NULL, hdr, sp);
 }
 
 // InfoFrame checksum over header + payload, stored in PB0
@@ -1922,7 +1954,7 @@ static void hdmi_build_audio_if_blob(void) {
     sp[0][4] = 0x00;  // CA = FL/FR
     sp[0][5] = 0x00;  // LSV=0, DM_INH=0
     hdmi_if_checksum(hdr, sp);
-    hdmi_pack_blob(blob_audio_if, hdr, sp);
+    hdmi_pack_blob(blob_audio_if, NULL, hdr, sp);
 }
 
 static void hdmi_build_avi_if_blob(int active_width, int active_height) {
@@ -1947,7 +1979,7 @@ static void hdmi_build_avi_if_blob(int active_width, int active_height) {
     sp[0][4] = vic;
     sp[0][5] = 0x00;  // no pixel repetition
     hdmi_if_checksum(hdr, sp);
-    hdmi_pack_blob(blob_avi_if, hdr, sp);
+    hdmi_pack_blob(blob_avi_if, NULL, hdr, sp);
 }
 
 static void hdmi_build_vendor_if_blob(void) {
@@ -1958,7 +1990,7 @@ static void hdmi_build_vendor_if_blob(void) {
     sp[0][2] = 0x0C;
     sp[0][3] = 0x00;
     hdmi_if_checksum(hdr, sp);
-    hdmi_pack_blob(blob_vendor_if, hdr, sp);
+    hdmi_pack_blob(blob_vendor_if, NULL, hdr, sp);
 }
 
 // ---------- audio sample packets (IEC 60958 framing) ----------
@@ -2072,13 +2104,19 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
     // nf_copy64, not plain loops: GCC turns these into flash-resident memcpy
     // calls, which stall behind GS/Gigascreen XIP traffic (see hdmi_isr_mode).
     if (from_q) {
-        // Encode the raw audio packet straight into conv_color (replaces the
-        // 32-uint64 copy — see hdmi_audio_pkt_t). hdmi_pack_blob writes all 32.
-        hdmi_pack_blob(dst, qpkt->hdr, qpkt->sp);
-        nf_copy64(dstb, dst, 32);
+        // Encode the raw audio packet straight into both palette pages (see
+        // hdmi_audio_pkt_t). hdmi_pack_blob writes all 32 characters of each.
+        hdmi_pack_blob(dst, dstb, qpkt->hdr, qpkt->sp);
         __dmb();
         aq_rd = aq_rd + 1;
     } else {
+        // Skipping this copy when the set already holds the same static blob was
+        // tried and REVERTED (hw 2026-09-08): measured nothing. nf_copy64 of 32
+        // uint64 is ~128 cycles, the sets alternate with audio packets so a
+        // same-blob repeat lands ~38% of the time, and 0.38 x 2 x 0.34 µs is
+        // 0.06 ms a frame — below the noise on c1, which did not move (15.3 ms
+        // before and after). Not worth the per-set state plus an invalidation
+        // contract resting on three other places continuing to skip the DI slots.
         nf_copy64(dst, src, 32);
         nf_copy64(dstb, src, 32);
     }

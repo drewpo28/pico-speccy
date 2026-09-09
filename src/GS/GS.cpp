@@ -208,6 +208,7 @@ extern int butter_pages;
 // We can't pull that header in here because Z80_redcode.h already defines
 // a different `struct Z80`, so the two TUs must stay disjoint.
 extern "C" uint16_t gs_host_z80_pc(void);
+extern "C" bool     ts_render_queue_on_c(void);   // Video.cpp: TS-Conf lines on core1 right now
 extern "C" uint16_t gs_host_z80_ret(void);
 
 // =================================================================
@@ -326,6 +327,18 @@ static uint32_t s_pump_frac_t = 0;
 // at full speed by definition.
 static constexpr uint32_t GS_IDLE_US    = 500000;   // both silences required, wall time
 static constexpr unsigned GS_IDLE_SHIFT = 3;        // 1/8 wall clock while idle
+// "Making sound" is a VARYING output, not a moving one. The channel latches
+// hold whatever the firmware last wrote and an idle mixer dithers around that
+// DC value, so a detector that stamped on any 1-LSB step never let the throttle
+// hold: hw 2026-09-08 logged 898 throttle episodes in a single session — it
+// re-armed roughly every 0.7 s and the GS-Z80 ran at FULL clock on core1 in
+// between, beside the TS renderer. That is the "fishbone plus an unused GS
+// still drops frames while fishbone alone is stable" report. Peak-to-peak per
+// channel over a short window instead: DC offset and +/-1 dither never clear
+// the deadband, any real tune clears it inside one window (50 ms holds a full
+// cycle of even a 20 Hz tone, and ten of them fit in GS_IDLE_US).
+static constexpr uint32_t GS_PP_WINDOW_US = 50000;
+static constexpr uint8_t  GS_PP_DEADBAND  = 2;      // peak-to-peak > this = sound
 static volatile uint32_t s_host_last_us  = 0;       // core0: last host port access
 static volatile uint32_t s_out_change_us = 0;       // core0 audio IRQ: last change of the mixed output
 static volatile bool     s_idle_throttled = false;  // core1: pump running at reduced rate
@@ -2559,7 +2572,14 @@ void __not_in_flash_func(GS::pump)() {
     uint32_t q16 = s_t_per_us_q16;
     int32_t  cap = s_credit_cap;
     uint32_t dt_cap = 1000;                  // clamp: max 1 ms of GS time per pump
-    if (s_ngs && !s_gs_main_loop) {          // turbo-boot: 8x wall clock
+    // Turbo-boot is OFF while the TS-Conf renderer has core1: at 8x the boot
+    // wanted more of this core than the renderer could spare, and a card
+    // rebooting under a running demo (F11, a boot with a title autoloaded) cost
+    // it ~6 s at 42 FPS. At 1x the boot takes ~50 s on the slack instead — the
+    // trade CLAUDE.md already records for a card booting under a heavy scene.
+    // The common case, a program load, no longer reboots the card at all
+    // (ESPectrum::resetForLoad), so this is the safety net, not the fix.
+    if (s_ngs && !s_gs_main_loop && !ts_render_queue_on_c()) {   // turbo-boot: 8x wall clock
         q16 <<= 3;
         cap <<= 3;
         // 8x the rate needs 8x the headroom before dt_us * q16 overflows 32
@@ -3351,7 +3371,9 @@ void GS::ngsReset() {
     s_ngs_grst_pending = true;   // consumed by step() on core1, like C_GRST
 }
 
-bool GS::hostActive() {
+// RAM: render_core evaluates this on every loop iteration whenever the TS
+// renderer has priority (see main.cpp), i.e. exactly while core1 is busiest.
+bool __not_in_flash_func(GS::hostActive)() {
     if (!enabled) return false;
     const uint32_t now = time_us_32();
     return (uint32_t)(now - s_host_last_us)  <= GS_IDLE_US
@@ -3486,8 +3508,24 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
     static uint8_t s_led_prevL = 0, s_led_prevR = 0;
     if (L != s_led_prevL || R != s_led_prevR) {
         s_led_prevL = L; s_led_prevR = R;
-        s_out_change_us = time_us_32();     // idle-throttle input (see GS_IDLE_US)
-        LED::touchR(LED::GS);
+        LED::touchR(LED::GS);               // the indicator stays 1-LSB sensitive
+    }
+    // Idle-throttle input, per channel so a fixed stereo imbalance cannot look
+    // like signal for ever (see GS_PP_WINDOW_US).
+    {
+        static uint8_t  s_ppL_lo = 255, s_ppL_hi = 0, s_ppR_lo = 255, s_ppR_hi = 0;
+        static uint32_t s_pp_t0 = 0;
+        if (L < s_ppL_lo) s_ppL_lo = L;
+        if (L > s_ppL_hi) s_ppL_hi = L;
+        if (R < s_ppR_lo) s_ppR_lo = R;
+        if (R > s_ppR_hi) s_ppR_hi = R;
+        const uint32_t now = time_us_32();
+        if ((uint32_t)(now - s_pp_t0) >= GS_PP_WINDOW_US) {
+            if ((uint8_t)(s_ppL_hi - s_ppL_lo) > GS_PP_DEADBAND ||
+                (uint8_t)(s_ppR_hi - s_ppR_lo) > GS_PP_DEADBAND)
+                s_out_change_us = now;
+            s_ppL_lo = s_ppR_lo = 255; s_ppL_hi = s_ppR_hi = 0; s_pp_t0 = now;
+        }
     }
 }
 

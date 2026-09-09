@@ -1450,6 +1450,12 @@ void ESPectrum::tsBootKeyTick() {
     else                       kbd->injectVirtualKey(s_tsboot_vk, false);
 }
 
+// See resetForLoad() in the header: true only for the duration of a loader's
+// reset, read by the GS block inside reset(uint8_t).
+static bool s_reset_keeps_card = false;
+void ESPectrum::resetForLoad()            { s_reset_keeps_card = true; reset();  s_reset_keeps_card = false; }
+void ESPectrum::resetForLoad(uint8_t rom) { s_reset_keeps_card = true; reset(rom); s_reset_keeps_card = false; }
+
 void ESPectrum::reset() {
   // Pentagon+Gluk: boot with Gluk ROM so it installs service monitor at 0xDB00
   // This matches real Pentagon hardware where Gluk always boots first
@@ -1643,17 +1649,31 @@ void ESPectrum::reset(uint8_t romInUse) {
   // there is nothing left to hold it for, and the next session gets a fresh (and
   // possibly better-placed) allocation when it asks. The idle timer would get there
   // in ~30 s anyway; this makes it immediate.
+  //
+  // A LOADER's reset (resetForLoad: snapshot / .spg / disk launch) flushes the
+  // host FIFOs but leaves the NeoGS running — that is what real hardware does
+  // when a program is loaded, and the card's reboot cost the first ~6 s of
+  // every TS-Conf demo (see the header). The MP3 decoder stays with it: the
+  // card may still be streaming. Classic GS is reset on every path: its reset
+  // is instant (ROM restart, no boot walk) and the leftover-state garbage that
+  // motivated it shows up exactly when a new player LOADS.
   if (GS::enabled) {
-    if (GS::neogs) { GS::hostIfaceFlush(); GS::ngsReset(); NgsMp3::releaseNow(); }
-    // The ATA device: only IDE::init() used to reset it, so a COLD boot handed the
-    // guest a clean register file and F11 handed it whatever the last session had
-    // left — a half-consumed sector transfer with DRQ still up, most of the time.
-    // That asymmetry is exactly the difference between the +3e ROM finding its disk
-    // at boot and not finding it after a reset. The images stay open (a reset is not
-    // an eject); this is the device reset the interface's own RESET line would do.
-    if (IDE::scheme != IDE::OFF) IDE::reset();
-    else           GS::reset();
+    if (GS::neogs) {
+      GS::hostIfaceFlush();
+      if (!s_reset_keeps_card) { GS::ngsReset(); NgsMp3::releaseNow(); }
+    }
+    else GS::reset();
   }
+  // The ATA device: only IDE::init() used to reset it, so a COLD boot handed the
+  // guest a clean register file and F11 handed it whatever the last session had
+  // left — a half-consumed sector transfer with DRQ still up, most of the time.
+  // That asymmetry is exactly the difference between the +3e ROM finding its disk
+  // at boot and not finding it after a reset. The images stay open (a reset is not
+  // an eject); this is the device reset the interface's own RESET line would do.
+  // NB until 2026-09-09 this line sat INSIDE the GS block, between `if (neogs)`
+  // and its `else GS::reset()`: the classic GS was never reset while an IDE
+  // scheme was selected, and the IDE was never reset while the GS was off.
+  if (IDE::scheme != IDE::OFF) IDE::reset();
 
   Tape::tapeFileName = "none";
   if (Tape::tape.obj.fs != NULL) {

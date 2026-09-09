@@ -99,6 +99,16 @@ public:
     static void loop();
     static void reset();
     static void reset(uint8_t romInUse);
+    // A PROGRAM LOAD (snapshot, .spg, disk launch) restarts the Spectrum side
+    // only. A real machine loading a program does not touch its NeoGS, and the
+    // emulated card's reboot is not free: every .spg load was rebooting it and
+    // the firmware's SD boot walk then ran ~6 s at turbo-boot speed on core1,
+    // stealing it from the TS-Conf renderer — fishbone opened every run at
+    // 42 FPS / wait 6 ms and stepped to 48 / 3.4 exactly on "NGS: fw dispatcher
+    // ready" (hw 2026-09-09, three logs). F11 / Reset-to keep rebooting the
+    // card (ESPectrum.cpp explains that deliberate deviation).
+    static void resetForLoad();
+    static void resetForLoad(uint8_t romInUse);
 
     // +3 disk auto-start. TR-DOS boots its "boot" file by itself; the +3 ROM only
     // loads a disk when the user picks "Loader" on the 128 menu, i.e. presses Enter.
