@@ -440,6 +440,19 @@ public:
 
   static bool gigascreen_enabled;
   static uint8_t gigascreen_auto_countdown;
+  static uint32_t gigascreen_auto_flips;   // page flips seen while Auto is picked (diagnostic)
+
+  // The ONE trigger of Auto mode. Every machine's paging port calls it when the
+  // DISPLAYED page changes — 48K/128K/Pentagon/+3/Scorpion `#7FFD` D3, TS-Conf's
+  // own `TsConf::write7ffd` SCR bit and its `TSW_VPAGE` register. Auto engages on
+  // nothing else, so a machine that takes its own paging handler and forgets this
+  // call has no Auto at all (TS-Conf, 2026-09-09) — hence one named function
+  // instead of five copies of the same two lines.
+  static inline void gigascreenAutoFlip() {
+      if (Config::gigascreen_onoff != 2) return;   // Auto only
+      gigascreen_auto_countdown = 3;
+      gigascreen_auto_flips++;
+  }
 
   // ── Gigascreen vs the whole-line video modes ──────────────────────────────
   // Gigascreen blends the previous frame out of a 4-bit prev-FB and owns palette

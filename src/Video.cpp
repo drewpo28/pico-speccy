@@ -1142,6 +1142,7 @@ bool VIDEO::brdGigascreenChange = true;
 bool VIDEO::gigascreen_enabled = false;
 bool VIDEO::gigascreen_mode_block = false;
 uint8_t VIDEO::gigascreen_auto_countdown = 0;
+uint32_t VIDEO::gigascreen_auto_flips = 0;
 
 // void precalcColors() {
     
@@ -2267,7 +2268,13 @@ static bool ensurePrevFB(int lines, int stride) {
     // addressable for the per-pixel blend; SPI PSRAM / SD-swap are never picked.
     // One block is preferred (butter/XIP placement, lendable, DMA window eligible);
     // whole-row chunks only when the heap has no hole that big.
-    if (getLargestAllocatable() >= want + PREV_CHUNK_SLACK &&
+    // The probe is a HEAP question, and PREFER_PSRAM answers it from butter first —
+    // so on a butter board it must not veto the single-block placement: a thin heap
+    // (TS-Conf: page descriptors + the core1 ring) sent a perfectly placeable 38 KB
+    // buffer down the chunked path, which is slower AND disables the prev-FB DMA
+    // window (pwRefreshGate declines a chunked buffer). palloc's own last-resort
+    // heap tier returns NULL rather than panicking, so nothing is lost by asking it.
+    if ((butter_psram_size() != 0 || getLargestAllocatable() >= want + PREV_CHUNK_SLACK) &&
         sharedFB_prevBuf.alloc(want, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) {
         uint8_t *p = sharedFB_prevBuf.data();
         memset(p, 0, want);
@@ -5677,6 +5684,59 @@ IRAM_ATTR void VIDEO::EndFrame() {
         DrawBorder = &TopBorder_Blank;
     lastBrdTstate = tStatesBorder;
     brdChange = false;
+    }
+
+    // ── Gigascreen Auto, why it is (not) engaging ─────────────────────────────
+    // Auto engages on ONE thing: gigascreenAutoFlip() from the machine's paging
+    // port. So the question a report of "Auto does nothing" asks is always which
+    // of four states we are in, and this line answers it without a special build:
+    //   flips=0            the guest never changed the displayed page — nothing to
+    //                      detect, and no Gigascreen state is at fault
+    //   cfg=0              the user's pick never armed (prev-FB refused: see the
+    //                      "prevFB alloc failed" line above it)
+    //   blk=1              a whole-line video mode owns the framebuffer
+    //                      (VIDEO::gigascreenModeGate — DS80/GMX/TS non-ZX/TSU)
+    //   prevFB=0           armed but the buffer is gone (network lease, OOM)
+    // Quiet by construction: it prints on a state CHANGE, and once a second only
+    // while flips are arriving without Gigascreen going live — i.e. exactly the
+    // failure. A healthy machine emits one line when Auto engages and one when it
+    // stops, whatever the console is doing.
+    if (Config::gigascreen_onoff == 2) {
+        static uint8_t  gs_dbg_fr = 0, gs_dbg_left = 30;
+        static uint32_t gs_dbg_sig = 0xFFFFFFFFu;
+        const uint32_t sig = (uint32_t)gigascreen_enabled
+                           | ((uint32_t)Config::gigascreen_enabled << 1)
+                           | ((uint32_t)gigascreen_mode_block << 2)
+                           | ((uint32_t)(vga.prevFrameBuffer != nullptr) << 3)
+                           | ((uint32_t)(ts_render_live != 0) << 4);
+        // Periodic follow-up ONLY on the true failure signature — page flips are
+        // arriving and Gigascreen still does not go live — bounded to ~30 s per
+        // episode and re-armed by any state change. Quiet everywhere else: a screen
+        // that never flips prints the one state line and nothing more, which is
+        // itself the answer (`flips=0` = nothing to detect).
+        const bool stuck = !gigascreen_enabled && gigascreen_auto_flips != 0
+                        && gs_dbg_left != 0;
+        if (sig != gs_dbg_sig || (stuck && ++gs_dbg_fr >= 50)) {
+            if (sig != gs_dbg_sig) gs_dbg_left = 30; else gs_dbg_left--;
+            gs_dbg_sig = sig; gs_dbg_fr = 0;
+            if (Z80Ops::isTsconf)
+                Debug::log("[GS] auto: flips=%u live=%d cfg=%d blk=%d prevFB=%d cd=%u"
+                           " tsRender=%u  TS: 7ffd=%u lock=%u vpage=%u",
+                           (unsigned)gigascreen_auto_flips, (int)gigascreen_enabled,
+                           (int)Config::gigascreen_enabled, (int)gigascreen_mode_block,
+                           (int)(vga.prevFrameBuffer != nullptr),
+                           (unsigned)gigascreen_auto_countdown, (unsigned)ts_render_live,
+                           (unsigned)TsConf::dbg_p7ffd, (unsigned)TsConf::dbg_p7ffd_locked,
+                           (unsigned)TsConf::r.vpage);
+            else
+                Debug::log("[GS] auto: flips=%u live=%d cfg=%d blk=%d prevFB=%d cd=%u",
+                           (unsigned)gigascreen_auto_flips, (int)gigascreen_enabled,
+                           (int)Config::gigascreen_enabled, (int)gigascreen_mode_block,
+                           (int)(vga.prevFrameBuffer != nullptr),
+                           (unsigned)gigascreen_auto_countdown);
+            gigascreen_auto_flips = 0;
+            TsConf::dbg_p7ffd = TsConf::dbg_p7ffd_locked = 0;
+        }
     }
 
     if (Config::gigascreen_onoff == 2 && gigascreenArmed()) { // Auto mode

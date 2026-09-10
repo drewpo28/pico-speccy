@@ -299,11 +299,14 @@ void TsConf::trdosTrap(uint8_t pcH) {
     }
 }
 
+uint16_t TsConf::dbg_p7ffd = 0, TsConf::dbg_p7ffd_locked = 0;
+
 void TsConf::write7ffd(uint8_t val) {
+    dbg_p7ffd++;
     // 48-lock: bit 5 of the LATCHED value blocks further writes (no unlock
     // backdoor on TS-Conf — reference io.cpp:707). LCK128=11 clears bit 5
     // before latching, so 1024K mode can never lock.
-    if (r.p7ffd & 0x20) return;
+    if (r.p7ffd & 0x20) { dbg_p7ffd_locked++; return; }
 
     switch (r.lck128()) {
         case 0: // 512K: Page3[4:0] = #7FFD[7:6],#7FFD[2:0]
@@ -327,8 +330,7 @@ void TsConf::write7ffd(uint8_t val) {
     // own #7FFD videoLatch flip, and TS-Conf takes this handler INSTEAD of that
     // one (Ports.cpp early-delegates), so without this Auto never engaged here.
     const uint8_t scr_page = (val & 0x08) ? 7 : 5;
-    if (r.vpage != scr_page && Config::gigascreen_onoff == 2)
-        VIDEO::gigascreen_auto_countdown = 3;
+    if (r.vpage != scr_page) VIDEO::gigascreenAutoFlip();
     r.vpage = r.vpage_d = scr_page;
     setBanks();
 }
@@ -415,8 +417,7 @@ TS_HOT void TsConf::portWrite(uint8_t reg, uint8_t val) {
             TSVT("VPAGE=%02X", val);
             // The native way a TS program flips screens (the #7FFD SCR bit is the
             // 128K-compatible one) — Gigascreen Auto has to see it too.
-            if (r.vpage != val && Config::gigascreen_onoff == 2)
-                VIDEO::gigascreen_auto_countdown = 3;
+            if (r.vpage != val) VIDEO::gigascreenAutoFlip();
             r.vpage = r.vpage_d = val;
             refreshGrmem();
             tsUpdateWrGate(); break;

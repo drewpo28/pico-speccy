@@ -119,6 +119,12 @@ public:
     static uint8_t portRead(uint8_t reg);
     static void portWrite(uint8_t reg, uint8_t val);
     static void write7ffd(uint8_t val);
+    // Diagnostics for "Gigascreen Auto does nothing" (read + zeroed by the [GS]
+    // line in VIDEO::EndFrame): how many #7FFD writes reached this handler and how
+    // many the 48-lock (bit 5, latched, cleared only by a reset) swallowed. Auto is
+    // armed by a CHANGE of the SCR bit, so "wr=0" and "wr=N lock=N" are two very
+    // different answers to the same report.
+    static uint16_t dbg_p7ffd, dbg_p7ffd_locked;
     static void fmWrite(uint16_t addr, uint8_t val); // FMAddr window (CPU write funnel)
     // CPU write funnel hook, entered only while g_tsconf_wr != 0: routes the
     // FMAddr window and applies the W0_WE protect. Returns true when the RAM

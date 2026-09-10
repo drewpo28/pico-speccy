@@ -1318,6 +1318,22 @@ static void reconcileSubsystems(CommitReport& rep) {
         // apply()'s own OOM path writes Config back, so re-check and report.
         if (!b.wanted() || !b.isOn()) rep.failed++;
     }
+
+    // Gigascreen is Off/On/Auto, and a binding is a BOOLEAN: both On and Auto read
+    // as "wanted", and the loop above skips anything already on — so an On<->Auto
+    // edit never reached pre_gs/post_gs and the live mirrors kept the previous mode.
+    // Picking On while the prev-FB was already up did nothing until a reboot, and
+    // picking Auto after On left it blending continuously. The prev-FB itself is the
+    // subsystem's business; only the mode mirrors are settled here.
+    if (GsSubsys::enabled && Config::gigascreen_enabled) {
+        const bool on = (Config::gigascreen_onoff == 1);
+        if (on && !VIDEO::gigascreen_enabled) {
+            initGigascreenBlendLUT();
+            VIDEO::InitPrevBuffer();   // no blending against a stale previous frame
+        }
+        VIDEO::gigascreen_enabled = on;   // Auto starts disarmed: it waits for a page flip
+        VIDEO::gigascreen_auto_countdown = 0;
+    }
 }
 
 void commit(CommitReport& rep) {

@@ -1935,7 +1935,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
               VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
               if (Z80Ops::isProfi) VIDEO::profi_clrmem = nullptr;
             }
-            if (Config::gigascreen_onoff == 2) VIDEO::gigascreen_auto_countdown = 3;
+            VIDEO::gigascreenAutoFlip();          // Gigascreen Auto: the displayed page changed
             if (VIDEO::mode16col_enabled) VIDEO::mode16colUpdatePlanes();
           }
           MemESP::romLatch = bitRead(data, 4);
@@ -4106,7 +4106,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       if (MemESP::videoLatch != bitRead(data, 3)) {
         MemESP::videoLatch = bitRead(data, 3);
         VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
-        if (Config::gigascreen_onoff == 2) VIDEO::gigascreen_auto_countdown = 3;
+        VIDEO::gigascreenAutoFlip();          // Gigascreen Auto: the displayed page changed
       }
       MemESP::plus3Remap(Ports::port1FFD);
       return;
@@ -4292,7 +4292,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
           VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
           if (Z80Ops::isProfi) VIDEO::profi_clrmem = nullptr;
         }
-        if (Config::gigascreen_onoff == 2) VIDEO::gigascreen_auto_countdown = 3;
+        VIDEO::gigascreenAutoFlip();          // Gigascreen Auto: the displayed page changed
         if (VIDEO::mode16col_enabled) VIDEO::mode16colUpdatePlanes();
       }
     }

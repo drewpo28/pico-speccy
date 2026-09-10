@@ -2380,7 +2380,7 @@ menu still land in the log (as they would on a real Evo). avrconf's own "Save
 and Soft Reset" needs nothing from us — after CFGIF command 0xF7 it resets
 itself via MemConfig=4 / SysConfig=0 / RST 0. Cost ~1.3 KB flash, ~100 B RAM.
 
-## Gigascreen is suspended by the MODE, not forbidden by the machine (2026-09-09, NOT hw-tested)
+## Gigascreen is suspended by the MODE, not forbidden by the machine (2026-09-09; standard-mode half hw-confirmed 2026-09-10)
 
 `VIDEO::disableGigascreenForProfi()` is GONE. Gigascreen used to be turned off and
 **persisted Off** for the whole machine — Profi/Karabas by `Config::arch`, TS-Conf
@@ -2425,6 +2425,36 @@ for good.
   prev-FB, and crediting bytes nobody frees would let a butter-less board take the
   switch and then find no heap at `VIDEO::Init`. It is an ordinary manual candidate
   in the free-list now.
+- **What arms Auto is a video-PAGE FLIP and nothing else** — `VIDEO::gigascreenAutoFlip()`
+  (Video.h), called from every machine's paging port when the DISPLAYED page changes:
+  `#7FFD` D3 on 48K/128K/Pentagon/+3/Scorpion, `TsConf::write7ffd`'s SCR bit and the
+  `TSW_VPAGE` register on TS-Conf. So a gigascreen program that redraws ONE screen
+  (the 48K technique) can never arm Auto on ANY machine — that is the first thing to
+  rule out before suspecting the emulator, and the `[GS] auto:` line below prints
+  exactly that (`flips=0`). The five copies of the two-line trigger became one named
+  function precisely because a machine with its own paging handler kept losing it.
+- **`[GS] auto:` diagnostic** (Video.cpp EndFrame, no build flag — it prints on a
+  state CHANGE, plus once a second for ~30 s while Auto is picked and NOT engaging):
+  `flips` (page flips since the last line) / `live` (VIDEO::gigascreen_enabled) /
+  `cfg` (Config::gigascreen_enabled — armed and paid for) / `blk` (a whole-line mode
+  owns the fb) / `prevFB` (the buffer exists) / `cd` (countdown), and on TS-Conf also
+  `7ffd=` (writes that reached `write7ffd`), `lock=` (writes the 48-lock bit 5
+  swallowed) and `vpage`. Those three separate "the guest never writes #7FFD" from
+  "it writes but never changes D3" from "paging is locked" — the whole question a
+  report of "Auto does nothing" asks.
+- **The Off/On/Auto radio is a MODE and the subsystem binding is a BOOLEAN**
+  (`reconcileSubsystems`, fixed 2026-09-10, NOT hw-tested): both On and Auto read as
+  "wanted" and the loop skips any binding that is already on, so an On<->Auto edit —
+  or picking On while the prev-FB was already allocated — never reached
+  `pre_gs`/`post_gs` and the live mirrors kept the PREVIOUS mode (On did nothing
+  until a reboot; Auto after On kept blending continuously). A small explicit block
+  at the end of reconcile settles `VIDEO::gigascreen_enabled` from
+  `Config::gigascreen_onoff`.
+- **`ensurePrevFB`'s `getLargestAllocatable()` probe is a HEAP question** and the
+  allocation is `PREFER_PSRAM`, so on a butter board it must not veto the
+  single-block placement: TS-Conf's thin heap sent a perfectly placeable 38 KB
+  buffer down the chunked path, which also disables the prev-FB DMA window
+  (`pwRefreshGate` declines a chunked buffer). Butter boards skip the probe now.
 - **Auto mode had no trigger on TS-Conf** (reported 2026-09-09, fixed, NOT hw-tested).
   The countdown that arms Auto (`VIDEO::gigascreen_auto_countdown = 3`) is bumped
   from each machine's own `#7FFD` videoLatch flip — and `Ports::output`
@@ -2434,6 +2464,12 @@ for good.
   `TSW_VPAGE` register write — the native way a TS program flips screens. Same trap
   shape as the LED-indicator one: a machine that takes its own port handler silently
   loses every side effect the generic one carried.
+- **hw 2026-09-10, owner: Auto works on TS-Conf, Profi AND GMX** — i.e. Gigascreen
+  really is available in the standard ZX mode of all three machines, which is the
+  half this rework existed for. What that run does NOT cover: the SUSPEND edge
+  itself (into and out of DS80 / GMX 640x200 / a TS non-ZX mode, and the prev-FB
+  coming back afterwards) and the picture inside those modes — the old
+  1-px-stripe hazard.
 - Hardware Info says `On (off in this mode)` while suspended, and the log carries
   `VIDEO: Gigascreen suspended for this video mode` / `resumed (standard video
   mode)`. **What to check on hardware**: Profi DS80 in and out (the old SIGBUS
