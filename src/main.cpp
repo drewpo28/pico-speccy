@@ -1042,6 +1042,7 @@ extern "C" void ts_render_core1_pump(void);
 extern "C" bool ts_render_core1_prio(void);   // render queue pre-empts GS::pump (Video.cpp)
 extern "C" volatile bool g_ts_c1_live;       // TS-Conf lines on core1 right now (Video.cpp)
 #ifdef VGA_HDMI
+extern "C" void hdmi_lut_clear(void);       // zero the .hdmi_lut section (hdmi.c)
 extern "C" void vga_reinit(void);
 #endif
 #ifdef TFT
@@ -1959,6 +1960,13 @@ int main() {
     #endif
 
     Debug::log("main: before ESPectrum::setup()");
+    // The HDMI palette/TMDS LUT lives in .hdmi_lut (ORIGIN(RAM), 4 KB-aligned for
+    // free) instead of .bss, so crt0 does not zero it — do it here, before ANY
+    // palette slot is written. VIDEO::Init inside setup() is the first writer, and
+    // it runs on core0 well before core1 reaches hdmi_init().
+    #ifdef VGA_HDMI
+    hdmi_lut_clear();
+    #endif
     ESPectrum::setup();
     Debug::log("main: after ESPectrum::setup()");
     Debug::log2SD("main: after ESPectrum::setup()");

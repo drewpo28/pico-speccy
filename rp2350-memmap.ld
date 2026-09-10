@@ -119,7 +119,37 @@ SECTIONS
         . = ALIGN(4);
     } > RAM_128K
 
+    /* HDMI palette/TMDS LUT + DMA line buffers (drivers/hdmi/hdmi.c conv_color,
+     * 4 960 B). It needs 4096-byte alignment — the PIO address converter rebuilds
+     * the read address as (reg << 12) | offset, the same rule conv_color_b follows
+     * in SCRATCH_Y — and inside .bss that alignment forced the WHOLE section's
+     * start to a 4 KB boundary: 3 100 B of pure padding as measured on 2026-09-10,
+     * anywhere in 0..4095 depending on where .data happened to end, so every
+     * change of .data's size moved it at random and made SRAM measurements noisy.
+     * ORIGIN(RAM) is already 4 KB-aligned, so the alignment is FREE here and .bss
+     * drops to its next-highest alignment (32 B).
+     *
+     * NOLOAD and outside crt0's __bss_start__..__bss_end__ range, so crt0 does NOT
+     * zero it — hdmi_lut_clear() from main() does, and it has to run before the
+     * FIRST palette write, which happens on core0 inside VIDEO::Init, i.e. BEFORE
+     * core1 ever reaches hdmi_init(). Zeroing matters because hdmi.c snapshots all
+     * 1240 words on a pair-mode switch (conv_color_std_snapshot) and writes them
+     * back, so a byte nobody initialised would survive as a live palette entry. */
+    .hdmi_lut (NOLOAD): {
+        . = ALIGN(4096);
+        *hdmi.c.o(.bss.conv_color)
+        . = ALIGN(4);
+    } > RAM
+
+    /* VTOR alignment, and it is NOT optional: the table is 272 B, so the core
+     * requires it aligned to the next power of two, 512. It used to sit at
+     * ORIGIN(RAM) and was aligned by luck; putting .hdmi_lut in front of it left
+     * it at 0x...360 and the very first runtime_init_default_alarm_pool() read
+     * garbage vectors -> irq_set_exclusive_handler()'s "a handler is already
+     * installed" hard_assert -> panic before main(). Keep the ALIGN whatever
+     * moves in ahead of it. */
     .ram_vector_table (NOLOAD): {
+        . = ALIGN(512);
         *(.ram_vector_table)
     } > RAM
 

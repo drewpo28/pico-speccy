@@ -76,6 +76,8 @@ extern "C" {
 bool hdmi_audio_init(void);
 // Stops island emission (waits out the in-flight core1 ISR) and frees the
 // buffers allocated by hdmi_audio_init().
+// Zero the .hdmi_lut section (conv_color): crt0 does not, see rp2350-memmap.ld.
+void hdmi_lut_clear(void);
 void hdmi_audio_deinit(void);
 void hdmi_audio_write_sample(int16_t left, int16_t right);
 // Diagnostic stage of the staged-injection debug build:

@@ -67,6 +67,12 @@ static uint8_t hdmi_scanline_buf[400];
 //ДМА палитра для конвертации
 //в хвосте этой памяти выделяется dma_data
 static alignas(4096) uint32_t conv_color[1240];
+
+// conv_color lives in its own linker section (.hdmi_lut at ORIGIN(RAM), see
+// rp2350-memmap.ld) so its 4 KB alignment costs nothing. That puts it outside the
+// range crt0 zeroes, so main() clears it explicitly before anything writes a
+// palette slot — same starting state as .bss gave, without .bss's padding.
+void hdmi_lut_clear(void) { memset(conv_color, 0, sizeof conv_color); }
 // Palette page B — odd source pixels (see pio_program_instructions_conv_HDMI).
 // Only 1024 words: the two line buffers live in page A's tail, outside the 4 KB
 // window the PIO can address. With the CRT filter off this is an exact copy of

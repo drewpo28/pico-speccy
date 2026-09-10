@@ -566,8 +566,13 @@ option(AY_STEREO_SLOT "AY: share one SRAM slot between the three stereo mixers i
 # the ASSERTs in the script. AUTO sizes each window from the options that feed it,
 # because spare bytes ARE wasted on a session that loads the window (they are
 # heap on every other one). Measured on PICO_DV/MinSizeRel 2026-09-10:
-#   .tsovl  renderer alone 11 148 B, both halves 14 724 B; PERF_TRACE adds 2 950
+#   .tsovl  14 724 B on PICO_DV/VGA_HDMI, but 16 900 B on a SOFTTV build — the
+#           renderer compiles differently per display variant, so AUTO has to
+#           cover the WORST variant, not the one you happen to be building. That
+#           cost one broken build_all run; re-measure across variants after
+#           touching the renderer.
 #   .gsovl  redcode 13 900 + GS.cpp 9 932 + NgsSd 1 444 + NgsMp3 146 = 25 422
+#           (identical on SOFTTV — only the TS window varies)
 # Override with a number or an ld size suffix if an ASSERT fires; re-measure with
 # `arm-none-eabi-size -A <elf> | grep -E '\.(ts|gs)ovl'`.
 set(TSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the TS-Conf code overlay window, or AUTO (rp2350-memmap.ld)")
@@ -577,10 +582,10 @@ set(DMAOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the Z80 DMA code overlay window
 if (TSOVL_WIN_SIZE STREQUAL "AUTO")
     set(_TSOVL_BYTES 0)
     if (TSCONF_RENDER_IN_RAM)
-        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 12288")
+        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 14336")
     endif()
     if (TSCONF_HOT_IN_RAM)
-        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 3584")
+        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 3840")
     endif()
     # PERF_TRACE pulls TsConf::intTrace + the INT-ring code into the window as
     # well (measured +2950 B). Without this the ASSERT fires on every PERF build,
