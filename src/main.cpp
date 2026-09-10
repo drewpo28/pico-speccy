@@ -1040,6 +1040,7 @@ void repeat_me_for_input() {
 
 extern "C" void ts_render_core1_pump(void);
 extern "C" bool ts_render_core1_prio(void);   // render queue pre-empts GS::pump (Video.cpp)
+extern "C" volatile bool g_ts_c1_live;       // TS-Conf lines on core1 right now (Video.cpp)
 #ifdef VGA_HDMI
 extern "C" void vga_reinit(void);
 #endif
@@ -1075,7 +1076,11 @@ void __scratch_x("render") render_core() {
         // this loop thousands of times a frame right beside the TS-Conf
         // renderer — so every iteration paid an XIP fetch, through the cache
         // that renderer's own PSRAM reads are thrashing, for nothing.)
-        ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
+        // g_ts_c1_live (Video.cpp, .data) is what makes the two calls below safe:
+        // their bodies live in the TS-Conf code overlay, whose SRAM belongs to the
+        // heap on every other machine, so calling them there would be a jump into
+        // heap data. The flag is only ever true while TS-Conf has the queue up.
+        if (g_ts_c1_live) ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
 #ifndef SOFTTV
         // Wall-clock-locked: runs GS-Z80 at exactly 12 MHz off core0.
         // Under SOFTTV, GS::pump() runs in pcm_call_inner (core0) instead,
@@ -1089,7 +1094,13 @@ void __scratch_x("render") render_core() {
         // skipped ~12 ms per frame under the unconditional rule, one dt clamp
         // per frame, GS at 9.6 of 20 MHz — music at half tempo — while core0
         // idled 7.5 ms (hw 2026-09-07).
-        if (!ts_render_core1_prio() || GS::hostActive()) GS::pump();
+        // GS::enabled leads, and not only as an optimisation: GS::pump() and
+        // GS::hostActive() both live in the GS code overlay (src/CodeOverlay.h),
+        // whose SRAM belongs to the heap on a session that came up with General
+        // Sound = Off, so calling either there would be a jump into heap data.
+        // This is the ONLY GS entry point outside src/GS/ that was not already
+        // behind GS::enabled / GS::neogs / g_ngs_zxdma.
+        if (GS::enabled && (!g_ts_c1_live || !ts_render_core1_prio() || GS::hostActive())) GS::pump();
 #endif
         tight_loop_contents();
     }

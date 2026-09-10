@@ -335,6 +335,9 @@ public:
   static void     tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, uint32_t daddr);
   static void     tsRenderDrainDma();    // core0: wait for every queued DMA transaction
   static uint8_t  tsBorderSlotFor(uint8_t border, uint8_t palsel);
+  // Claim core1's job/TSU/SFILE block. Called from setup() on a TS-Conf boot (a
+  // pristine heap keeps it in SRAM) and lazily from tsVideoApplyPending.
+  static void     tsC1RingAlloc();
   static void     tsuComposeLine(uint32_t line, uint8_t* ts512, const struct TsuState& st, const uint16_t* sfile, uint8_t palsel, uint32_t seq, uint8_t par); // TSU layers → 512-px CRAM line buffer
   // Top-border height in fb rows while the GMX 640x200 mode is live, 0 otherwise.
   // OSD::notify needs it: unlike every other mode, that band is STATIC in GMX (the

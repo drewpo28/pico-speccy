@@ -96,7 +96,10 @@ option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend)
 # as the two biggest wins in this project's history (the flash memcpy in the HDMI
 # line ISR, the OPL3 tables). ~10 KB of SRAM: turn it OFF first on a board that
 # runs out of contiguous heap at VIDEO::Init.
-option(TS_RENDER_CORE1 "TS-Conf: render whole-line video modes on core1 (one job per line)" ON)
+# TS_RENDER_CORE1 is GONE: it never compiled anything out — it only set the
+# initial value of the runtime flag ts_c1_enabled, which tsC1PlacementPoll()
+# already drives (core0 sync while a NeoGS is playing, core1 queue otherwise).
+# The queue is started lazily and only on TS-Conf, so there was nothing to gate.
 option(TSCONF_HOT_IN_RAM "TS-Conf: keep the #nnAF port / DMA / INT-source code in SRAM (~4 KB; ~0.8 ms/frame on port-heavy titles)" ON)
 option(TSCONF_RENDER_IN_RAM "TS-Conf: keep the whole-line renderer (tsRenderExec + tsuComposeLine) in SRAM (~10 KB)" ON)
 
@@ -519,6 +522,133 @@ else()
     set(Z80_CORE_TEXT_EXCLUDE "")
     set(Z80_CORE_RAM_RULE "")
 endif()
+# Code overlays (src/CodeOverlay.h explains the mechanism, the ordering rule and
+# the reachability rule for what may live in a window). Two families of hot code
+# are SRAM-resident and useless to most sessions, and code cannot be allocated at
+# runtime, so each gets a FIXED VMA under the core0 stack instead of an address
+# inside .data; CodeOverlay::apply() copies in the windows a given boot needs and
+# our own _sbrk() hands the rest to the heap.
+#
+#   .gsovl  General Sound / NeoGS: the GS-Z80 redcode core, its memory callbacks,
+#           the SD and MP3 paths. ~25 KB. Collected BY OBJECT FILE (src/GS/ is
+#           GS-only) and the same objects are excluded from .data's .time_critical
+#           sweep below — an object-file rule cannot be forgotten the way a
+#           per-function mark can. Needs no runtime claim: Audio > General Sound
+#           is AC_REBOOT and GS::init() has exactly one call site, gated on the
+#           same Config::gs_enabled the window is.
+#   .tsovl  TS-Conf renderer + #nnAF port/DMA/INT path, ~14.7 KB, marked per
+#           function (Video.cpp and TsConf.cpp also hold non-TS RAM code).
+#
+# .gsovl is the HIGHER window on purpose — there is one sbrk ceiling and the heap
+# grows up, so the lower window is the one that can be handed back while the
+# upper one is reserved, and TS-Conf is the rarer feature. Measured on PICO_DV:
+# a session with neither gets ~40 KB of heap back, GS-on/TS-off gets ~14.7 KB.
+#
+# OFF puts a family's code back in .data, i.e. resident on every machine, which
+# is what it was before 2026-09-10. TSCONF_HOT_IN_RAM / TSCONF_RENDER_IN_RAM
+# still decide whether the TS code is RAM-resident AT ALL — with both OFF the
+# .tsovl window is simply empty and the heap gets all of it on every machine.
+option(TSCONF_CODE_OVERLAY "TS-Conf: put the TS-only hot code in a fixed-VMA SRAM overlay, handed to the heap on other machines (~14.7 KB)" ON)
+option(GS_CODE_OVERLAY "General Sound/NeoGS: put src/GS/'s SRAM-resident code in a fixed-VMA overlay, handed to the heap when GS is Off (~25 KB)" ON)
+
+# A window base is fixed, so its size cannot be derived from the collected
+# content (ld places the section before it knows the size) — hence a constant and
+# the ASSERTs in the script. AUTO sizes each window from the options that feed it,
+# because spare bytes ARE wasted on a session that loads the window (they are
+# heap on every other one). Measured on PICO_DV/MinSizeRel 2026-09-10:
+#   .tsovl  renderer alone 11 148 B, both halves 14 724 B; PERF_TRACE adds 2 950
+#   .gsovl  redcode 13 900 + GS.cpp 9 932 + NgsSd 1 444 + NgsMp3 146 = 25 422
+# Override with a number or an ld size suffix if an ASSERT fires; re-measure with
+# `arm-none-eabi-size -A <elf> | grep -E '\.(ts|gs)ovl'`.
+set(TSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the TS-Conf code overlay window, or AUTO (rp2350-memmap.ld)")
+set(GSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the GS/NeoGS code overlay window, or AUTO (rp2350-memmap.ld)")
+
+if (TSOVL_WIN_SIZE STREQUAL "AUTO")
+    set(_TSOVL_BYTES 0)
+    if (TSCONF_RENDER_IN_RAM)
+        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 12288")
+    endif()
+    if (TSCONF_HOT_IN_RAM)
+        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 3584")
+    endif()
+    # PERF_TRACE pulls TsConf::intTrace + the INT-ring code into the window as
+    # well (measured +2950 B). Without this the ASSERT fires on every PERF build,
+    # which is exactly when you need one.
+    if (PERF_TRACE)
+        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 3072")
+    endif()
+    set(TSOVL_WIN_SIZE_EFFECTIVE ${_TSOVL_BYTES})
+else()
+    set(TSOVL_WIN_SIZE_EFFECTIVE ${TSOVL_WIN_SIZE})
+endif()
+if (NOT TSCONF_CODE_OVERLAY)
+    set(TSOVL_WIN_SIZE_EFFECTIVE 0)
+endif()
+
+if (GSOVL_WIN_SIZE STREQUAL "AUTO")
+    set(_GSOVL_BYTES 26624)   # 26 KB: 25 422 measured + ~1.2 KB for edits
+    # The GS trace options add code to the same objects (counters, the handshake
+    # ring writer, the per-command SD log), so the window has to grow with them.
+    if (GS_PERF_TRACE OR NGS_TRACE OR NGS_SD_TRACE OR GS_DEBUG_TRACE)
+        math(EXPR _GSOVL_BYTES "${_GSOVL_BYTES} + 6144")
+    endif()
+    set(GSOVL_WIN_SIZE_EFFECTIVE ${_GSOVL_BYTES})
+else()
+    set(GSOVL_WIN_SIZE_EFFECTIVE ${GSOVL_WIN_SIZE})
+endif()
+if (NOT GS_CODE_OVERLAY)
+    set(GSOVL_WIN_SIZE_EFFECTIVE 0)
+endif()
+
+# The GS objects whose .time_critical code moves into .gsovl, and which .data
+# must therefore stop collecting.
+set(GSOVL_OBJECTS "*GS.cpp.o *Z80_redcode.c.o *NgsSd.cpp.o *NgsMp3.cpp.o")
+
+if (TSCONF_CODE_OVERLAY)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TSCONF_CODE_OVERLAY=1)
+    set(TSOVL_SECTION "\
+    .tsovl __tsovl_win_start : {\n\
+        __tsovl_start = .;\n\
+        *(.tsovl .tsovl.*)\n\
+        . = ALIGN(4);\n\
+        *(.tsovl_ro .tsovl_ro.*)\n\
+        . = ALIGN(4);\n\
+        __tsovl_end = .;\n\
+    } AT > FLASH\n\
+    __tsovl_source = LOADADDR(.tsovl);\n")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE TSCONF_CODE_OVERLAY=0)
+    set(TSOVL_SECTION "\
+    PROVIDE(__tsovl_start  = __tsovl_win_start);\n\
+    PROVIDE(__tsovl_end    = __tsovl_win_start);\n\
+    PROVIDE(__tsovl_source = __tsovl_win_start);\n")
+endif()
+
+if (GS_CODE_OVERLAY)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GS_CODE_OVERLAY=1)
+    set(GSOVL_SECTION "\
+    .gsovl __gsovl_win_start : {\n\
+        __gsovl_start = .;\n\
+        *GS.cpp.o(.time_critical*)\n\
+        *Z80_redcode.c.o(.time_critical*)\n\
+        *NgsSd.cpp.o(.time_critical*)\n\
+        *NgsMp3.cpp.o(.time_critical*)\n\
+        . = ALIGN(4);\n\
+        __gsovl_end = .;\n\
+    } AT > FLASH\n\
+    __gsovl_source = LOADADDR(.gsovl);\n")
+    set(TIME_CRITICAL_RULE "*(EXCLUDE_FILE(${GSOVL_OBJECTS}) .time_critical*)")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE GS_CODE_OVERLAY=0)
+    set(GSOVL_SECTION "\
+    PROVIDE(__gsovl_start  = __gsovl_win_start);\n\
+    PROVIDE(__gsovl_end    = __gsovl_win_start);\n\
+    PROVIDE(__gsovl_source = __gsovl_win_start);\n")
+    set(TIME_CRITICAL_RULE "*(.time_critical*)")
+endif()
+message(STATUS "Code overlays: .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
+
+
 configure_file("${CMAKE_SOURCE_DIR}/rp2350-memmap.ld" "${CMAKE_BINARY_DIR}/rp2350-memmap.ld" @ONLY)
 pico_set_linker_script(${PROJECT_NAME} "${CMAKE_BINARY_DIR}/rp2350-memmap.ld")
 
@@ -623,11 +753,6 @@ if (PERF_HIST)
     target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=1)
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PERF_HIST=0)
-endif()
-if(TS_RENDER_CORE1)
-    target_compile_definitions(${PROJECT_NAME} PRIVATE TS_RENDER_CORE1=1)
-else()
-    target_compile_definitions(${PROJECT_NAME} PRIVATE TS_RENDER_CORE1=0)
 endif()
 if(TSCONF_HOT_IN_RAM)
     target_compile_definitions(${PROJECT_NAME} PRIVATE TSCONF_HOT_IN_RAM=1)

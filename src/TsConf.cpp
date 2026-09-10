@@ -15,6 +15,7 @@ the Free Software Foundation, either version 3 of the License, or
 */
 
 #include "TsConf.h"
+#include "CodeOverlay.h"
 #include <string.h>
 #include "pico/time.h"
 #include "CPU.h"
@@ -58,8 +59,14 @@ static uint32_t s_vtrace_frame = 0;
 // without tiles otherwise — hw 2026-09-07). Consumed by VIDEO::tsVideoApplyPending.
 uint8_t TsConf::tsuSeen = 0;
 
+// TSCONF_HOT_IN_RAM decides whether this code is SRAM-resident at all;
+// TSCONF_CODE_OVERLAY (CodeOverlay.h) decides WHERE that SRAM is — a fixed-VMA
+// window the heap owns on every other machine, instead of an address inside
+// .data that every machine pays for. Every function marked here is reached only
+// through the a8 == 0xAF port decode, g_tsconf_wr, or Z80Ops::isTsconf, which is
+// the reachability argument the overlay needs.
 #if TSCONF_HOT_IN_RAM
-#define TS_HOT __not_in_flash("tsconf")
+#define TS_HOT TS_OVL_CODE
 #else
 #define TS_HOT
 #endif
@@ -221,7 +228,7 @@ void TsConf::bindRoms(const uint8_t* const pages[4]) {
 // core1, where a flash fetch queues behind that same line's PSRAM tile reads.
 // It stays out of the TSCONF_HOT_IN_RAM group on purpose: the renderer needs
 // it whether or not the port/DMA code is resident.
-uint8_t* __not_in_flash("tsconf_pageptr") TsConf::pagePtr(uint32_t page) {
+uint8_t* TS_OVL_CODE TsConf::pagePtr(uint32_t page) {
     mem_desc_t& d = MemESP::ram[page & (MEM_PG_CNT - 1)];
     return (d.memType() == mem_type_t::POINTER) ? d.direct() : nullptr;
 }

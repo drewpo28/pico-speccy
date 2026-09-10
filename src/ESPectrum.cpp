@@ -89,6 +89,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Z80DMA.h"
 #include "GS/GS.h"
 #include "TsConf.h"
+#include "CodeOverlay.h"
 #include "GS/NgsSd.h"
 #include "GS/NgsMp3.h"
 
@@ -748,6 +749,14 @@ void ESPectrum::setup() {
     board_psram_disable();
     Debug::log("setup: PSRAM disabled by config (Debug > PSRAM)");
   }
+  // TS-Conf code overlay (src/CodeOverlay.h): hand the ~14 KB window to the heap
+  // unless this boot comes up as TS-Conf. Same window as the PSRAM kill-switch
+  // above and for the same reason — the machine for this boot is final and no
+  // consumer has taken heap near the top of RAM yet (the framebuffer was claimed
+  // at the bottom, from a pristine heap, before Config::load()). It must precede
+  // the reserveFrameBuffer() re-check below, which is the first allocation that
+  // can want the extra room.
+  CodeOverlay::apply(Config::arch == A_TSCONF, Config::gs_enabled != 0);
   // Framebuffer re-check: the block was already claimed at the top of setup(), from
   // a pristine heap and for the DEFAULT mode. This is where the mode the user
   // actually picked is honoured — a no-op when it matches, a resize when it does
@@ -763,6 +772,17 @@ void ESPectrum::setup() {
   // the framebuffer does not.
   resolveVideoOutput();
   VIDEO::reserveFrameBuffer();
+  // core1's TS-Conf line-render block (job ring + TSU/SFILE snapshots, ~10.5 KB),
+  // claimed HERE and not on first use. Same reason the framebuffer is claimed
+  // early: it needs one contiguous SRAM block plus HOT_SRAM's 8 KB of spare, and
+  // by the time a whole-line mode first goes live the heap is fragmented far below
+  // that — hw 2026-09-10 on a TS-Conf + NeoGS boot, `largest` was 28 492 right
+  // here against 15 420 by VIDEO::Init, so the lazy claim landed in BUTTER PSRAM
+  // and core1 read every job, TSU state and 512-byte SFILE snapshot through XIP,
+  // per line, while already being the frame's critical path. Unlike the
+  // framebuffer this one CAN degrade (butter, then core0 rendering), so a failure
+  // here is not fatal — the lazy path in tsVideoApplyPending still runs.
+  if (Config::arch == A_TSCONF) VIDEO::tsC1RingAlloc();
   // Debug > UART console: start/stop per Config now that the framebuffer is safe
   // (its 4 KB ring comes off the heap) and BEFORE any peripheral that yields a pin
   // to it (PS/2 pair, NESPAD, WAV input, MIDI) initialises. A warm reboot may

@@ -135,7 +135,7 @@ SECTIONS
         /* Z80_CORE_IN_RAM (CMake option, off by default): the whole Z80 core's
          * text lands in SRAM instead of flash — see CMakeLists.txt. Empty otherwise. */
         @Z80_CORE_RAM_RULE@
-        *(.time_critical*)
+        @TIME_CRITICAL_RULE@
 
         *(.text*)
         . = ALIGN(4);
@@ -225,6 +225,53 @@ SECTIONS
         KEEP(*(.stack*))
     } > RAM
 
+    /* Reserved by the Murmulator launcher at the very top of RAM — see the
+     * __StackTop comment further down. Assigned here because the .tsovl window
+     * below derives its base from it, and ld resolves address expressions in
+     * script order. */
+    __mos_mailbox = 32;   /* 8 bytes used, 32 reserved for alignment + headroom */
+
+    /* ── Code overlay windows ────────────────────────────────────────────────
+     * Fixed-VMA windows just under the core0 stack, holding code that only an
+     * OPTIONAL subsystem executes: .gsovl = the whole General Sound / NeoGS
+     * family (collected BY OBJECT FILE — src/GS/ is GS-only, so no per-function
+     * mark can be forgotten), .tsovl = the TS-Conf renderer and #nnAF path.
+     * Their LOAD images live in flash like any .data section, but crt0 does NOT
+     * copy them (it copies only __data_start__..__data_end__ and the scratch
+     * banks) — CodeOverlay::apply() does, at boot, for the windows this boot
+     * needs. The rest go to the heap, by our own _sbrk() raising its ceiling.
+     *
+     * No relocation and no PIC: the VMAs are fixed, so every branch and literal
+     * was resolved by the linker for exactly the address we copy to. See
+     * src/CodeOverlay.h for the rule on what may live here — and for why .gsovl
+     * is the HIGHER window (one sbrk ceiling, heap grows up, so only the lower
+     * window can be handed back while the upper one is reserved).
+     *
+     * Deliberately NOT assigned to > RAM: ld's --print-memory-usage reports a
+     * region by its location counter, not by the sum of section sizes, so a
+     * section placed at the TOP of RAM makes the RAM line read ~96% used and
+     * hides the .data/.bss figure this project actually watches. The windows are
+     * heap on most machines anyway; the boot log's [OVL] lines say which. The
+     * ASSERTs keep the bound honest either way.
+     *
+     * A window whose option is OFF gets size 0 and no section, and its three
+     * content symbols are PROVIDEd equal to its base so CodeOverlay's arithmetic
+     * comes out zero. */
+    __gsovl_win_size  = @GSOVL_WIN_SIZE_EFFECTIVE@;
+    __tsovl_win_size  = @TSOVL_WIN_SIZE_EFFECTIVE@;
+    __gsovl_win_start = ORIGIN(RAM) + LENGTH(RAM) - __mos_mailbox - SIZEOF(.stack_dummy) - __gsovl_win_size;
+    __gsovl_win_end   = __gsovl_win_start + __gsovl_win_size;
+    __tsovl_win_start = __gsovl_win_start - __tsovl_win_size;
+    __tsovl_win_end   = __tsovl_win_start + __tsovl_win_size;
+
+@GSOVL_SECTION@
+@TSOVL_SECTION@
+    ASSERT(__gsovl_end <= __gsovl_win_end,
+        "ERROR: .gsovl overflowed the GS code overlay window. Re-link with -DGSOVL_WIN_SIZE=40960, read the real size from `arm-none-eabi-size -A <elf> | grep .gsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
+    ASSERT(__tsovl_end <= __tsovl_win_end,
+        "ERROR: .tsovl overflowed the TS-Conf code overlay window. Re-link with -DTSOVL_WIN_SIZE=24576, read the real size from `arm-none-eabi-size -A <elf> | grep .tsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
+    ASSERT(__end__ <= __tsovl_win_start,
+        "ERROR: .bss/heap start reaches into the code overlay windows")
     .flash_end : {
         KEEP(*(.embedded_end_block*))
         PROVIDE(__flash_binary_end = .);
@@ -266,7 +313,8 @@ SECTIONS
      * the watchdog reset that hands control to an installed firmware. Its own layout
      * never touches them (stack in SCRATCH_Y, heap ceiling below), and neither did we
      * until the stack moved here — our very first push would land on the mailbox. */
-    __mos_mailbox = 32;   /* 8 bytes used, 32 reserved for alignment + headroom */
+    /* __mos_mailbox is assigned above the .tsovl window, whose base is derived
+     * from it (ld resolves address expressions in script order). */
     __StackTop = ORIGIN(RAM) + LENGTH(RAM) - __mos_mailbox;
     __StackBottom = __StackTop - SIZEOF(.stack_dummy);
     __StackLimit = __StackBottom;

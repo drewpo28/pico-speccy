@@ -42,6 +42,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
 #include "Debug.h"
 #include "TsConf.h"
+#include "CodeOverlay.h"
 #include "TsFastMem.h"
 #include "Subsystem.h"
 #include "Buffer.h"
@@ -452,11 +453,14 @@ uint32_t VIDEO::ts_ygctr = 0;
 // 0x2xxxxxxx after any change here, the outlined `tiles` lambda included — a
 // lambda inside a __not_in_flash_func is exactly what GCC likes to leave
 // behind in .text (see the tsFast256 note further down).
+// TSCONF_RENDER_IN_RAM decides whether this code is SRAM-resident at all;
+// TSCONF_CODE_OVERLAY (CodeOverlay.h) decides WHERE — the fixed-VMA window the
+// heap owns on every other machine. TS_OVL_CODE / TS_OVL_RO keep the code/rodata
+// split for the same reason the two names existed before: one named section
+// cannot hold both (GCC: "causes a section type conflict").
 #if TSCONF_RENDER_IN_RAM
-#define TS_RENDER_HOT __not_in_flash("tsrender")
-// Read-only data needs its OWN section name: one named section cannot hold both
-// code and read-only data (GCC: "causes a section type conflict").
-#define TS_RENDER_RO  __not_in_flash("tsrender_ro")
+#define TS_RENDER_HOT TS_OVL_CODE
+#define TS_RENDER_RO  TS_OVL_RO
 #else
 #define TS_RENDER_HOT
 #define TS_RENDER_RO
@@ -504,8 +508,15 @@ static_assert(sizeof(TsuState) == 16, "TsuState packing");
 #define TS_C1_SFILE 4
 static TsuState*  ts_c1_tsu = nullptr;          // [TS_C1_TSU]
 static uint16_t*  ts_c1_sf  = nullptr;          // [TS_C1_SFILE][256]
-static uint32_t   ts_c1_tsu_job[TS_C1_TSU];     // ts_c1_w of the last job referencing entry i (+1; 0 = never)
-static uint32_t   ts_c1_sf_job[TS_C1_SFILE];
+// Bookkeeping for the two snapshot rings: ts_c1_w of the last job referencing
+// entry i (+1; 0 = never). Read and written ONLY under `queued` (which requires
+// ts_c1_ring) and at the allocation below, so they live in the same lazy block
+// as the ring instead of costing 528 B of .bss on every board — the arrays the
+// RENDERER reads per pixel (s_gline, s_tsline, ts256_map) deliberately stay
+// static: moving those to a palloc block was tried on 2026-09-07 and reverted
+// the same day after FPS dropped (cause never established — see CLAUDE.md).
+static uint32_t*  ts_c1_tsu_job = nullptr;      // [TS_C1_TSU]
+static uint32_t*  ts_c1_sf_job = nullptr;       // [TS_C1_SFILE]
 static uint32_t   ts_c1_tsu_cur = 0;            // entry of the last posted line
 static uint32_t   ts_c1_sf_cur = 0, ts_c1_sf_gen = 0xFFFFFFFFu;
 // TSU tile-map PREFETCH (video_ts.v `tm_line = line + 16`): during raster line
@@ -538,7 +549,7 @@ static void tsTmbCapture(uint16_t* dst, uint32_t tm_line) {
 #define TS_C1_RING 512
 static TsRenderJob*      ts_c1_ring = nullptr;
 static volatile uint32_t ts_c1_w = 0, ts_c1_r = 0;     // producer / consumer indices (free-running)
-static bool              ts_c1_enabled = (TS_RENDER_CORE1 != 0);
+static bool              ts_c1_enabled = true;   // tsC1PlacementPoll() owns it from here on
 static bool              ts_c1_stuck = false;    // the 100 ms drain timeout fired once: queue off for the session
 volatile uint32_t ts_c1_us = 0;        // core1 time inside tsRenderExec (PERF)
 volatile uint32_t ts_c1_wait_us = 0;   // core0 time spent in tsRenderDrain (PERF)
@@ -549,7 +560,16 @@ static volatile uint32_t ts_c1_dma_posted = 0, ts_c1_dma_done = 0;
 static inline bool tsC1DmaPending() { return ts_c1_dma_posted != ts_c1_dma_done; }
 volatile uint32_t ts_dma_c1_us = 0;        // core1 time inside DMA jobs (PERF)
 volatile uint32_t ts_c1_wait_dma_us = 0;   // core0 time waiting for a queued DMA (PERF)
-bool VIDEO::tsRenderQueueOn() { return ts_c1_ring && ts_c1_enabled && ts_render_live; }
+// "TS-Conf lines are being rendered on core1 right now", as ONE byte in .data
+// rather than three loads behind a call. It is what core1's render_core loop and
+// GS::pump test before calling anything in the overlay — those two run on every
+// machine, and on a non-TS boot the overlay window belongs to the heap, so a
+// call into it would be a jump into heap data. Deliberately NOT in the overlay.
+extern "C" volatile bool g_ts_c1_live = false;
+static inline void tsC1LiveRecalc() {
+    g_ts_c1_live = (ts_c1_ring != nullptr) && ts_c1_enabled && (VIDEO::ts_render_live != 0);
+}
+bool VIDEO::tsRenderQueueOn() { return g_ts_c1_live; }
 volatile uint32_t ts_c1_jobs = 0;      // lines rendered on core1 (PERF)
 static inline bool tsC1Pending() { return ts_c1_r != ts_c1_w; }
 // core0 is inside one of the drain loops below. core1 reads it (ts_render_core1_prio,
@@ -587,6 +607,39 @@ static void tsC1WaitJob(uint32_t w1) {
 // core0: wait until core1 has finished every posted line. Bounded — a wedged
 // core1 (lockout, fault) must not take core0 with it; the ring is then dropped
 // for the session and lines render on core0 again.
+// core1's job ring + the TSU/SFILE snapshots, in ONE block. Hoisted out of
+// tsVideoApplyPending so ESPectrum::setup() can claim it on a TS-Conf boot while
+// the heap is still pristine — the lazy claim is 10 768 B needing HOT_SRAM's
+// bytes+8 KB, and by the time a whole-line mode first goes live the heap is
+// fragmented well below that: hw 2026-09-10, `largest` 28 492 right after the
+// framebuffer against 15 420 by VIDEO::Init, so the block landed in BUTTER
+// (@11414D00) — the documented slow path, where core1 reads every job, TSU state
+// and 512-byte SFILE snapshot through XIP, per line, while it is already the
+// frame's critical path (fishbone: c1 16.7 ms of a 20.48 ms frame, core0 waiting
+// 4.1 ms). Same lesson as "the framebuffer is claimed FIRST".
+// Idempotent; a failure leaves ts_c1_ring null and the renderer on core0.
+void VIDEO::tsC1RingAlloc() {
+    if (ts_c1_ring) return;
+    const size_t bytes = sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU + 512 * TS_C1_SFILE
+                       + sizeof(uint32_t) * (TS_C1_TSU + TS_C1_SFILE);
+    uint8_t* blk = (uint8_t*)Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+    if (blk) {
+        ts_c1_ring = (TsRenderJob*)blk;
+        ts_c1_tsu  = (TsuState*)(blk + sizeof(TsRenderJob) * TS_C1_RING);
+        ts_c1_sf   = (uint16_t*)(blk + sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU);
+        ts_c1_tsu_job = (uint32_t*)(blk + sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU
+                                        + 512 * TS_C1_SFILE);
+        ts_c1_sf_job  = ts_c1_tsu_job + TS_C1_TSU;
+        memset(ts_c1_tsu_job, 0, sizeof(uint32_t) * TS_C1_TSU);
+        memset(ts_c1_sf_job, 0, sizeof(uint32_t) * TS_C1_SFILE);
+        ts_c1_tsu_cur = ts_c1_sf_cur = 0; ts_c1_sf_gen = 0xFFFFFFFFu;
+    }
+    // The address names the tier: 0x2000xxxx = SRAM heap, 0x11xxxxxx = butter PSRAM.
+    Debug::log("[TSC1] core1 line renderer %s (%u-job ring + %u TSU states + %u SFILE slots, %u B @%08lX)",
+               ts_c1_ring ? "ON" : "unavailable (no RAM)", (unsigned)TS_C1_RING, (unsigned)TS_C1_TSU,
+               (unsigned)TS_C1_SFILE, (unsigned)bytes, (unsigned long)(uintptr_t)blk);
+}
+
 void VIDEO::tsRenderDrain() {
     if (!tsC1Pending()) return;
     const uint64_t t0 = time_us_64();
@@ -597,7 +650,7 @@ void VIDEO::tsRenderDrain() {
             ts_c1_stuck = true;        // sticky: the placement policy must not re-enable it
             ts_c1_r = ts_c1_w;
             ts_c1_dma_done = ts_c1_dma_posted;
-            TsConf::wrGateRecalc();
+            TsConf::wrGateRecalc(); tsC1LiveRecalc();
             break;
         }
         tsC1Spin();
@@ -764,19 +817,22 @@ static void tsC1PlacementPoll() {
     if (want == ts_c1_enabled) return;
     VIDEO::tsRenderDrain();               // nothing may be pending when the producer changes lanes
     ts_c1_enabled = want;
-    TsConf::wrGateRecalc();
+    TsConf::wrGateRecalc(); tsC1LiveRecalc();
     Debug::log("[TSC1] whole-line renderer -> %s (GS %s)", want ? "core1 queue" : "core0 sync",
                want ? "quiet" : "active: the card needs core1");
 }
 
 // core1 (render_core loop): execute queued lines, a few per call so pcm_call /
 // GS::pump keep their cadence.
-// RAM unconditionally, not under TSCONF_RENDER_IN_RAM: core1's render_core loop
-// calls this (and ts_render_core1_prio below) on EVERY iteration — hundreds of
-// thousands of times a second, on every machine, TS-Conf or not — so a flash
-// body is an XIP fetch per iteration out of the loop that also runs the
-// renderer and the GS. Same reason pcm_call() was taken out of that loop.
-void __not_in_flash("core1loop") VIDEO::tsRenderCore1Pump() {
+// In the TS-Conf overlay, and therefore NOT callable on another machine: core1's
+// render_core loop would otherwise reach it on EVERY iteration — hundreds of
+// thousands of times a second — while the window belongs to the heap. That is
+// what g_ts_c1_live guards; the flag lives in .data and is the ONLY thing those
+// per-iteration callers touch when TS-Conf is not running. (It also keeps the
+// old property that mattered here: no flash body, so no XIP fetch per iteration
+// out of the loop that also runs the renderer and the GS. Same reason pcm_call()
+// was taken out of that loop.)
+void TS_RENDER_HOT VIDEO::tsRenderCore1Pump() {
     if (ts_c1_r == ts_c1_w) return;
     const uint64_t t0 = time_us_64();
     for (int n = 0; n < 8 && ts_c1_r != ts_c1_w; n++) {
@@ -800,22 +856,19 @@ void __not_in_flash("core1loop") VIDEO::tsRenderCore1Pump() {
     }
     ts_c1_us += (uint32_t)(time_us_64() - t0);
 }
-extern "C" void __not_in_flash("core1loop") ts_render_core1_pump() { VIDEO::tsRenderCore1Pump(); }
+extern "C" void TS_RENDER_HOT ts_render_core1_pump() { VIDEO::tsRenderCore1Pump(); }
 // core1 (render_core): queued lines pre-empt GS::pump while core0 is blocked on
 // them or the backlog is deep (a HALT fast-forward posts a frame in microseconds).
 // The GS then runs on core1's slack only — for a TS title that is BOTH saturating
 // the renderer and playing GS music the music will run slow; video wins.
-extern "C" bool __not_in_flash("core1loop") ts_render_core1_prio() {
+extern "C" bool TS_RENDER_HOT ts_render_core1_prio() {
     return ts_c1_ring && (ts_c1_core0_waiting || (ts_c1_w - ts_c1_r) > 32);
 }
-// core1 (GS::pump): are TS-Conf lines being rendered on this core right now?
-// Gates the NeoGS turbo-boot (see pump): 8x GS time per wall second on core1
-// while the renderer needs ~75% of it is what made every demo open at 42 FPS
-// for the ~6 s of a card boot (hw 2026-09-09). Statics read directly — the
-// member tsRenderQueueOn() lives in flash.
-extern "C" bool __not_in_flash("core1loop") ts_render_queue_on_c() {
-    return ts_c1_ring && ts_c1_enabled && VIDEO::ts_render_live;
-}
+// (ts_render_queue_on_c() is gone: GS::pump reads g_ts_c1_live directly. It
+// gates the NeoGS turbo-boot — 8x GS time per wall second on core1 while the
+// renderer needs ~75% of it is what made every demo open at 42 FPS for the ~6 s
+// of a card boot, hw 2026-09-09 — and it must not be a CALL any more, because
+// its body would live in the overlay while GS::pump runs on every machine.)
 
 // ESPectrum::reset teardown for TS-Conf's pair-slot TEXT mode — same reason as
 // gmxForceOff right below: TsConf::reset clears VConfig, so the deferred
@@ -830,7 +883,7 @@ void VIDEO::tsVideoForceOff() {
     ts_tsu_live = false;
     ts_pal256_live = false;
     if (c256) applyPalette();     // the ts256 remap had taken over the hardware palette
-    TsConf::wrGateRecalc();
+    TsConf::wrGateRecalc(); tsC1LiveRecalc();
     ts_rres_live = 0;
     ts_crop_top = 0;
     if (pair) {
@@ -3275,7 +3328,7 @@ void VIDEO::Reset() {
         ts_pal256_live = false;
         ts_rres_live = 0;
         ts_crop_top = 0;
-        TsConf::wrGateRecalc();
+        TsConf::wrGateRecalc(); tsC1LiveRecalc();
     }
 
     if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF) {
@@ -4576,28 +4629,13 @@ void VIDEO::tsVideoApplyPending() {
         Debug::log("[TSU] tile-map prefetch ring %s (%u B @%08lX)", blk ? "ON" : "unavailable (no RAM) - reading the map at render time", (unsigned)bytes, (unsigned long)(uintptr_t)blk);
     }
     if (wantRender && ts_c1_enabled && !ts_c1_ring) {
-        const size_t bytes = sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU + 512 * TS_C1_SFILE;
-        uint8_t* blk = (uint8_t*)Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
-        if (blk) {
-            ts_c1_ring = (TsRenderJob*)blk;
-            ts_c1_tsu  = (TsuState*)(blk + sizeof(TsRenderJob) * TS_C1_RING);
-            ts_c1_sf   = (uint16_t*)(blk + sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU);
-            memset(ts_c1_tsu_job, 0, sizeof ts_c1_tsu_job);
-            memset(ts_c1_sf_job, 0, sizeof ts_c1_sf_job);
-            ts_c1_tsu_cur = ts_c1_sf_cur = 0; ts_c1_sf_gen = 0xFFFFFFFFu;
-        }
+        tsC1RingAlloc();
         ts_c1_r = ts_c1_w = 0;
-        TsConf::wrGateRecalc();
-        // The address names the tier: 0x2000xxxx = SRAM heap, 0x11xxxxxx = butter
-        // PSRAM (HOT_SRAM falls through to it on a thin heap — core1 then reads
-        // every job/TSU state/SFILE snapshot through XIP).
-        Debug::log("[TSC1] core1 line renderer %s (%u-job ring + %u TSU states + %u SFILE slots, %u B @%08lX)",
-                   ts_c1_ring ? "ON" : "unavailable (no RAM)", (unsigned)TS_C1_RING, (unsigned)TS_C1_TSU,
-                   (unsigned)TS_C1_SFILE, (unsigned)bytes, (unsigned long)(uintptr_t)blk);
+        TsConf::wrGateRecalc(); tsC1LiveRecalc();
     }
     if (wantPal256) { tsPalette256Flush(!ts_pal256_live); tsCramDirty = false; }
     ts_pal256_live = wantPal256;
-    TsConf::wrGateRecalc();
+    TsConf::wrGateRecalc(); tsC1LiveRecalc();
 
     if (!wantRender) {
         // Back to the standard renderer: Pentagon line window (Reset's generic
@@ -4650,7 +4688,7 @@ void VIDEO::tsVideoApplyPending() {
 // p1<<24). fx0..fx1 = fb byte range already clipped to the row; sx = source pixel
 // index at fx0 (wraps at 512).
 __attribute__((optimize("O2", "no-unroll-loops")))
-static void __not_in_flash_func(tsFast256)(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
+static void TS_RENDER_HOT tsFast256(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
                                             uint32_t sx, const uint8_t* map) {
     int fx = fx0;
     while (fx < fx1 && (fx & 3)) { fb[fx ^ 2] = map[ln[sx & 0x1FF]]; fx++; sx++; }
@@ -4677,7 +4715,7 @@ static void __not_in_flash_func(tsFast256)(uint8_t* fb, int fx0, int fx1, const 
 // 16c: two pixels per byte, high nibble first; `map` = ts256_map (palette bank
 // applied through gpal) or nullptr for the plain 0..15 slot output.
 __attribute__((optimize("O2", "no-unroll-loops")))
-static void __not_in_flash_func(tsFast16)(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
+static void TS_RENDER_HOT tsFast16(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
                                            uint32_t sx, const uint8_t* map, uint8_t gpal) {
     // No lambda here on purpose: GCC split it into a .text (flash) clone called
     // per pixel from this RAM loop (seen in the map as *.isra.0).

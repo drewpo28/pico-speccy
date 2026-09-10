@@ -208,7 +208,9 @@ extern int butter_pages;
 // We can't pull that header in here because Z80_redcode.h already defines
 // a different `struct Z80`, so the two TUs must stay disjoint.
 extern "C" uint16_t gs_host_z80_pc(void);
-extern "C" bool     ts_render_queue_on_c(void);   // Video.cpp: TS-Conf lines on core1 right now
+// Video.cpp: TS-Conf lines on core1 right now. A FLAG, not a call — the code
+// behind it lives in the TS-Conf overlay and GS::pump runs on every machine.
+extern "C" volatile bool g_ts_c1_live;
 extern "C" uint16_t gs_host_z80_ret(void);
 
 // =================================================================
@@ -2579,7 +2581,7 @@ void __not_in_flash_func(GS::pump)() {
     // trade CLAUDE.md already records for a card booting under a heavy scene.
     // The common case, a program load, no longer reboots the card at all
     // (ESPectrum::resetForLoad), so this is the safety net, not the fix.
-    if (s_ngs && !s_gs_main_loop && !ts_render_queue_on_c()) {   // turbo-boot: 8x wall clock
+    if (s_ngs && !s_gs_main_loop && !g_ts_c1_live) {   // turbo-boot: 8x wall clock
         q16 <<= 3;
         cap <<= 3;
         // 8x the rate needs 8x the headroom before dt_us * q16 overflows 32

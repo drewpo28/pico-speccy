@@ -5061,13 +5061,22 @@ extern bool is_i2s_enabled;
 
 extern char __HeapLimit;
 extern "C" void *sbrk(intptr_t incr);
+// The heap ceiling is a RUNTIME value now, not the link-time &__HeapLimit: the
+// TS-Conf code overlay (src/CodeOverlay.h) keeps the top ~16 KB of RAM reserved
+// for code on a TS-Conf boot and hands it to the heap on every other machine.
+// Reading the link-time symbol would over-report by the whole window while it is
+// reserved — and getContiguousHeap() below is an allocation GATE, so promising
+// memory that _sbrk() then refuses ends in pico_malloc's panic-on-OOM.
+// Answers &__HeapLimit when the overlay is compiled out.
+extern "C" char* heap_ceiling_now(void);
 
 size_t getFreeHeap(void) {
     struct mallinfo mi = mallinfo();
     // fordblks = free blocks in free list + sbrk headroom (total really free memory)
     // Add remaining sbrk space that mallinfo doesn't account for
     char *brk = (char *)sbrk(0);
-    size_t sbrk_free = (brk < &__HeapLimit) ? (size_t)(&__HeapLimit - brk) : 0;
+    char *lim = heap_ceiling_now();
+    size_t sbrk_free = (brk < lim) ? (size_t)(lim - brk) : 0;
     return mi.fordblks + sbrk_free;
 }
 
@@ -5076,7 +5085,8 @@ size_t getFreeHeap(void) {
 // trusts only sbrk headroom, which is always contiguous.
 size_t getContiguousHeap(void) {
     char *brk = (char *)sbrk(0);
-    return (brk < &__HeapLimit) ? (size_t)(&__HeapLimit - brk) : 0;
+    char *lim = heap_ceiling_now();
+    return (brk < lim) ? (size_t)(lim - brk) : 0;
 }
 
 // Largest single block that malloc() can actually satisfy RIGHT NOW, without
@@ -5760,16 +5770,19 @@ void OSD::BoardInfo() {
 // butter_psram_size/psram_size + page counters, Buffer::poolStat() and Subsystems::feature*.
 void OSD::MemoryInfo() {
     extern char __flash_binary_start, __flash_binary_end;  // pico-sdk linker symbols
-    extern char end, __HeapLimit;                          // heap arena [end, __HeapLimit)
+    extern char end, __HeapLimit;                          // heap arena [end, ceiling)
 
     char (&buf)[OSD_INFO_BUF_SZ] = osd_info_buf;
     int pos = 0;
     const int KB = 1024;
 
     // ── SRAM ───────────────────────────────────────────────────────────────────
-    size_t sram_total  = (size_t)((uintptr_t)&__HeapLimit - SRAM_BASE);  // up to stack top
+    // Ceiling, not &__HeapLimit: while the TS-Conf overlay window is reserved the
+    // arena really does end 16 KB lower (src/CodeOverlay.h).
+    char*  heap_lim    = heap_ceiling_now();
+    size_t sram_total  = (size_t)((uintptr_t)heap_lim - SRAM_BASE);  // up to stack top
     size_t sram_static = (size_t)((uintptr_t)&end - SRAM_BASE);          // data + bss
-    size_t heap_total  = (size_t)((uintptr_t)&__HeapLimit - (uintptr_t)&end);
+    size_t heap_total  = (size_t)((uintptr_t)heap_lim - (uintptr_t)&end);
     size_t heap_free   = getFreeHeap();
     size_t heap_used   = heap_total > heap_free ? heap_total - heap_free : 0;
     pos += snprintf(buf + pos, sizeof(buf) - pos, " SRAM (%d KB usable):\n", (int)(sram_total / KB));

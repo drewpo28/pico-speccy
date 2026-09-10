@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "CodeOverlay.h"
 #include "MemESP.h"
 #include "RTC.h"
 #include "Nvram24.h"
@@ -332,6 +333,22 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // ram[MEM_PG_CNT + romLatch], and the strip is sized once in setup() —
     // any change of wantedPages() must reboot. Unlike the Profi guard this
     // is NOT butter-exempt.
+    // TS-Conf code-overlay boundary (src/CodeOverlay.h): the TS-only hot code lives
+    // in a fixed-VMA SRAM window that the heap owns on every other machine. Claim
+    // it back if the heap has not grown into it — the heap grows upward and the
+    // window is the top ~16 KB, so this normally just works and costs no reboot.
+    // If it HAS grown in, the overlay cannot be loaded at all and the machine must
+    // come up with the window reserved from the start, i.e. reboot — same shape
+    // and same failure policy as the three boundaries above (an atomic config
+    // write, so a failed save leaves the next boot unchanged and cannot loop).
+    if (newArch == A_TSCONF && !CodeOverlay::claimForTsconf()) {
+        arch = newArch;
+        if (newRomSet != R_NONE) romSet = newRomSet;
+        if (!g_snapshot_loading_path.empty())
+            ram_file = g_snapshot_loading_path;
+        save();
+        OSD::esp_hard_reset();   // never returns; setup() reserves the window
+    }
     if (wantedPages(newArch, newRomSet) != MEM_PG_CNT) {
         arch = newArch;
         if (newRomSet != R_NONE) romSet = newRomSet;
