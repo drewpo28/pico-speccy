@@ -234,9 +234,15 @@ static FATFS fs;
 bool FileUtils::fsMount = false;
 bool FileUtils::usbRoot = false;
 bool FileUtils::mountSDCard() {
-    // f_mount with opt=1 is delayed mount — always succeeds without touching the card.
-    // Probe the physical drive up front so absence of a card is detected here instead of
-    // blocking the first FatFS call later (e.g. OSD SaveRect.clear → f_unlink → 500 ms SPI stall per op).
+    // Probe the physical drive up front: disk_initialize() is the one call that
+    // answers "is there a card at all" cheaply (a single failed CMD0, a few ms),
+    // it separates that from "card present, no filesystem", and its STA_NOINIT is
+    // what the automount probe polls on. Without it the absence of a card would
+    // first show up inside some later FatFs call (e.g. OSD SaveRect.clear →
+    // f_unlink → a 500 ms SPI stall per op).
+    // NB opt=1 below is FORCE MOUNT — f_mount checks the volume right there
+    // (disk_initialize + boot sector). It is 0 that is the delayed mount; an
+    // earlier comment here had the two the wrong way round.
     if (disk_initialize(0) & STA_NOINIT) { fsMount = false; return false; }
     // "SD:" with the colon — with FF_FS_RPATH a bare "SD" parses as "no volume
     // prefix" and would target the CURRENT volume instead.

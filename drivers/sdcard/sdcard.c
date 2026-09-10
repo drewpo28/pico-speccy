@@ -169,15 +169,40 @@ void init_spi(void)
     gpio_set_dir(SDCARD_PIN_SPI0_MISO, GPIO_OUT);
     gpio_set_dir(SDCARD_PIN_SPI0_MOSI, GPIO_OUT);
 
+	// The PIO program and the state machine are claimed ONCE and kept: init_spi()
+	// runs again on every disk_initialize(), i.e. on every automount probe (~2 s
+	// apart for as long as the machine is up with no card) and on every
+	// remountSD(). Both of the calls this replaces were unrepeatable:
+	//   - pio_add_program() leaked 2 instructions per probe. pio1 holds 32 and
+	//     the PS/2 keyboard already occupies 7, so a card-less boot exhausted it
+	//     in ~12 probes (~25 s) and the SDK's hard_assert took the firmware down.
+	//   - the hardwired SDCARD_PIO_SM (0) is the SM the keyboard claims through
+	//     pio_claim_unused_sm() in main(), which runs BEFORE ESPectrum::setup()
+	//     opens the card — so pio_spi_init() reprogrammed the keyboard's own SM
+	//     with the SPI program. Claim a free one instead and remember it.
+	// Falling back to the configured SM when the block is full keeps the old
+	// behaviour rather than leaving the card unusable; it cannot happen on
+	// PICO_DV (the only SDCARD_PIO board), where pio1 carries the keyboard alone.
+	static bool  pio_ready = false;
+	static uint  pio_prog_offs = 0;
+	if (!pio_ready) {
+		int free_sm = pio_claim_unused_sm(pio_spi.pio, false);
+		if (free_sm >= 0) pio_spi.sm = (uint)free_sm;
+		pio_prog_offs = pio_add_program(pio_spi.pio, &spi_cpha0_program);
+		pio_ready = true;
+	}
+
 	// PIO program is 4 cycles per SPI bit (out/mov+[1]/in). Keep SCK ≤ 20 MHz
 	// so it works across 125–504 MHz clk_sys (SD SPI spec max is 25 MHz).
+	// Re-derived on every call on purpose: clk_sys moves at the Config::cpu_mhz
+	// switch, and re-running pio_spi_init() on the same SM/offset is what puts
+	// the bus back into a known state after a failed probe or a hot swap.
 	float clkdiv = (float)clock_get_hz(clk_sys) / (4.0f * 20000000.0f);
 	if (clkdiv < 1.0f) clkdiv = 1.0f;
 	int cpol = 0;
 	int cpha = 0;
-	uint cpha0_prog_offs = pio_add_program(pio_spi.pio, &spi_cpha0_program);
 	pio_spi_init(pio_spi.pio, pio_spi.sm,
-				cpha0_prog_offs,
+				pio_prog_offs,
 				8,       // 8 bits per SPI frame
 				clkdiv,
 				cpha,
