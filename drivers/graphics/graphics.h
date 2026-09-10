@@ -84,6 +84,12 @@ void graphics_set_dither(bool enabled);
 // HDMI clock-pair drive: false = Normal (12 mA, fast slew), true = Soft (8 mA, slow).
 // Live-safe (pad registers only). No-op on outputs without an HDMI backend.
 void graphics_set_hdmi_clock_drive(bool soft);
+// Re-publish the current video mode's vertical timing to the active backend.
+// The 50 Hz modes are per machine (v_total tuned so one display frame is one
+// emulated frame), so this must run whenever VIDEO::video_mode changes — i.e.
+// on every machine reset. HDMI needs it (its line ISR reads a snapshot); VGA is
+// already live. No-op on the other outputs.
+void graphics_update_mode_timing(void);
 
 // Profi DS80 "packed nibble" mode — HDMI path.
 // active=true: takes palette snapshot, then writes TMDS pairs for each (ink,paper) entry

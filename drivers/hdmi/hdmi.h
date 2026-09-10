@@ -88,6 +88,17 @@ void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, 
 // core0 main loop about once a second.
 void hdmi_audio_health_dump(void);
 
+// Re-publish the vertical timing of the CURRENT video mode (get_video_mode()) to
+// the line ISR. The 50 Hz modes differ ONLY in v_total — it is tuned per machine
+// so that one display frame is exactly one emulated frame (644 Pentagon 48.83 Hz,
+// 629 128K 50.02 Hz, 628 48K/Profi/Scorpion 50.08 Hz) — and VIDEO::Reset() picks
+// the variant on every machine reset. The ISR reads a snapshot taken in
+// hdmi_init(), so without this call a machine switch left the display (and, with
+// v_sync pacing, the emulated frame rate) on the OLD machine's timing until a
+// reboot. Call from core0 after changing the mode index; ignores a mode that
+// would need the PIO/DMA reprogrammed (that is reboot-class).
+void hdmi_update_mode_timing(void);
+
 // TODO: Сделать настраиваемо
 static const uint8_t textmode_palette[16] = {
     200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215

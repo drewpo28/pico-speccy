@@ -62,6 +62,7 @@ extern "C" void vga_set_palette_entry_solid(uint8_t i, uint32_t color888);
 extern "C" void graphics_set_scanlines(uint8_t level);
 extern "C" void graphics_set_crt(uint8_t level);
 extern "C" void graphics_set_dither(bool enabled);
+extern "C" void graphics_update_mode_timing(void);
 extern "C" void graphics_set_hdmi_clock_drive(bool soft);
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" void vga_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
@@ -2534,6 +2535,15 @@ void VIDEO::Reset() {
                 break;
         }
     }
+    // The 50 Hz modes above are per MACHINE — one display frame is tuned to be
+    // exactly one emulated frame (v_total 644 Pentagon 48.83 Hz / 629 128K
+    // 50.02 Hz / 628 48K, Profi, Scorpion 50.08 Hz) — and with v_sync pacing the
+    // display's refresh IS the emulated frame rate. So the pick has to reach the
+    // driver here, on every machine reset, not just at boot: the HDMI line ISR
+    // reads a snapshot taken in hdmi_init(), and without this a Pentagon -> 128K
+    // switch kept running the new machine at the old machine's 48.83 fps until a
+    // full reboot (the VGA ISR reads the table live and never had the bug).
+    graphics_update_mode_timing();
 #endif
 
     // Restore stats mode that was active before reset

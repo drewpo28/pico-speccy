@@ -1119,6 +1119,33 @@ static inline bool hdmi_init() {
 extern void vga_set_palette_entry(uint8_t i, uint32_t color888);
 #endif
 
+// Live vertical-timing update — see hdmi.h for what it is for.
+//
+// The 50 Hz mode families ([1] Pentagon / [2] 48K / [3] 128K at 640x480, and
+// [4]/[5]/[6] at 720x576) are IDENTICAL except for v_total, so publishing that
+// one field needs no PIO clock, DMA length or Data-Island rebuild: it is a
+// single aligned 32-bit store, which the line ISR on core1 either sees or does
+// not — at worst one frame comes out a line long or short. Anything else
+// differing means the CONFIGURED video mode changed, which is reboot-class here
+// (Config::savePendingVideoMode + esp_hard_reset), so refuse rather than hand
+// the ISR a snapshot the hardware disagrees with.
+void hdmi_update_mode_timing(void) {
+    if (!hdmi_progs_loaded) return;   // hdmi_init() has not run yet: it fills the snapshot itself
+    struct video_mode_t m = graphics_get_video_mode(get_video_mode());
+    if (m.v_total == hdmi_isr_mode.v_total) return;
+    if (m.v_active     != hdmi_isr_mode.v_active     ||
+        m.vsync_start  != hdmi_isr_mode.vsync_start  ||
+        m.vsync_end    != hdmi_isr_mode.vsync_end    ||
+        m.screen_width != hdmi_isr_mode.screen_width ||
+        m.h_sync_bytes != hdmi_isr_mode.h_sync_bytes ||
+        m.h_bp_bytes   != hdmi_isr_mode.h_bp_bytes   ||
+        m.h_fp_bytes   != hdmi_isr_mode.h_fp_bytes   ||
+        m.line_bytes   != hdmi_isr_mode.line_bytes   ||
+        m.v_offset     != hdmi_isr_mode.v_offset     ||
+        m.pio_clk_div  != hdmi_isr_mode.pio_clk_div) return;
+    hdmi_isr_mode.v_total = m.v_total;
+}
+
 // Write the TMDS pair for one palette slot. left888 is the first output pixel of
 // the pair, right888 the second. Both DS80 (two different source pixels) and the
 // CRT aperture grille (same pixel, dimmed twin) go through here.

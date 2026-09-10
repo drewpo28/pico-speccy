@@ -272,6 +272,13 @@ extern void hdmi_set_clock_drive(bool soft);
 void graphics_set_hdmi_clock_drive(bool soft) {
     hdmi_set_clock_drive(soft);
 }
+// Only the HDMI backend caches the mode: its line ISR reads a snapshot taken in
+// hdmi_init(). The VGA ISR fetches graphics_get_video_mode(get_video_mode())
+// every line, and the 50 Hz variants of one resolution differ only in
+// (vga_)v_total, so VGA already follows a machine switch live.
+void graphics_update_mode_timing(void) {
+    hdmi_update_mode_timing();
+}
 #else
 void graphics_set_scanlines(uint8_t level) {
     (void)level;
@@ -290,12 +297,19 @@ extern void hdmi_set_clock_drive(bool soft);
 void graphics_set_hdmi_clock_drive(bool soft) {
     hdmi_set_clock_drive(soft);
 }
+void graphics_update_mode_timing(void) {
+    hdmi_update_mode_timing();
+}
 #else
 void graphics_set_dither(bool enabled) {
     (void)enabled;
 }
 void graphics_set_hdmi_clock_drive(bool soft) {
     (void)soft;
+}
+// No cached mode timing on TV/SOFTTV/TFT: those drivers have their own,
+// output-fixed frame rate.
+void graphics_update_mode_timing(void) {
 }
 #endif
 #endif

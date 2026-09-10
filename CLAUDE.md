@@ -1936,6 +1936,41 @@ lateness (find what blocks core1/IRQs); sound cut + `und>0`/qmin=0 = core0
 producer starvation (flash ops, IRQ-off regions); picture drop with clean
 counters = link/TMDS-level issue (SOFT_CLK/CLAMP territory), not timing.
 
+### ...and that snapshot froze the PER-MACHINE refresh (hw-confirmed 2026-09-10)
+
+"Pentagon 128 -> ZX Spectrum 128 in the menu: the timings do not switch, F11 does
+not switch them either, only a full restart does." Everything the emulator derives
+per machine was already correct — `CPU::updateStatesInFrame` (71680 -> 70908),
+`ESPectrum::target` (20480 -> 19992 us), the audio set, `VIDEO::Reset`'s line
+timing — all re-derived on every `ESPectrum::reset()`. What did NOT switch was the
+DISPLAY: the 50 Hz video modes are **per machine** and differ ONLY in `v_total`
+(640x480: [1] 644 = Pentagon 48.83 Hz, [2] 628 = 48K/Profi/Scorpion 50.08,
+[3] 629 = 128K 50.02; the 720x576 family [4]/[5]/[6] the same way), `VIDEO::Reset`
+re-picks the index into `VIDEO::video_mode` on every machine reset — and **nothing
+carried it to the driver**. With V-Sync on, `ESPectrum_vsync()` fires once per
+display frame, so the display's refresh IS the emulated frame rate: the new machine
+kept running at the old machine's fps (with V-Sync off the pacing is right and the
+mismatch shows as ~1 judder/s instead).
+
+- **The regression is `hdmi_isr_mode` (f2632b9, 2026-08-09, v1.0.2)** — before it the
+  line ISR called `graphics_get_video_mode(get_video_mode())` EVERY LINE, so the
+  refresh followed a machine switch for free. Freezing the struct to kill the
+  per-IRQ flash memcpy also froze `v_total`. **VGA never had the bug**:
+  `dma_handler_VGA` still reads the table per line, and within one resolution the
+  50 Hz variants share `vga_pixel_clk` and layout — only `vga_v_total` differs. So
+  the broken combination was exactly HDMI + V-Sync.
+- Fix: `hdmi_update_mode_timing()` (hdmi.c) publishes `v_total` into the snapshot —
+  one aligned 32-bit store, so the ISR either sees it or does not and at worst one
+  frame is a line long/short; it REFUSES if any other field moved (that means the
+  configured video mode changed, which is reboot-class here). Reached from
+  `VIDEO::Reset()` through `graphics_update_mode_timing()`, which is a no-op on
+  VGA-only/TV/SOFTTV/TFT.
+- Lesson to carry: **an ISR snapshot of state that used to be read live is a
+  cache, and every writer of that state now needs a publish path.** Also, when a
+  machine-switch symptom survives F11 but dies at a power cycle, the stale thing
+  is on the far side of a boot-only init (here: core1's `hdmi_init`), not in the
+  reset path — that is where to look first, not at `Config::arch`.
+
 ## Gigascreen auto-yield + boot notices (2026-08-13, NOT hw-tested)
 
 The menu commit path never shows `featureBudgetGate`'s free-list (it reboots
