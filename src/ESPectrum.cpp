@@ -700,6 +700,21 @@ void ESPectrum::setup() {
   // Build stamp — distinguishes freshly-flashed images during debug sessions
   // (the version string alone doesn't change between local rebuilds).
   Debug::log("build: " __DATE__ " " __TIME__);
+  // The framebuffer is claimed BEFORE the filesystem, not just before the
+  // file-touching calls further down. On a card-less boot initFileSystem() spends
+  // up to 3 s inside UsbMsc::waitReady() pumping tuh_task(), and USB enumeration
+  // leaves its own ~10 KB in the MIDDLE of the heap: the free TOTAL stays large
+  // while the largest HOLE drops below the one contiguous block the framebuffer
+  // needs, and there is no second chance for it (hw 2026-09-10, PCp2 with no SD:
+  // "VIDEO::Init begin, freeHeap=132560 largest=75228" — 132 KB free, 75 228 below
+  // the USB block, 57 332 above it, 77 120 wanted — then *** PANIC *** Out of
+  // memory, because Init's fallback goes through pico_malloc, which panics instead
+  // of returning NULL). Config is not loaded yet, so this claims the mode the
+  // compiled defaults plus the link pins give; the reserveFrameBuffer() call after
+  // Config::load() re-sizes the block if the user picked a different mode, and is
+  // a no-op when the size already matches.
+  resolveVideoOutput();
+  VIDEO::reserveFrameBuffer();
   Debug::log("setup: initFileSystem begin");
   FileUtils::initFileSystem();
   Debug::log("setup: initFileSystem done, fsMount=%d", FileUtils::fsMount);
@@ -733,8 +748,12 @@ void ESPectrum::setup() {
     board_psram_disable();
     Debug::log("setup: PSRAM disabled by config (Debug > PSRAM)");
   }
-  // Output + framebuffer FIRST — before even the file-touching calls below, so the
-  // block lands in a heap nothing has cut into yet. Everything further down (ZX RAM
+  // Framebuffer re-check: the block was already claimed at the top of setup(), from
+  // a pristine heap and for the DEFAULT mode. This is where the mode the user
+  // actually picked is honoured — a no-op when it matches, a resize when it does
+  // not. Claiming it early costs the later consumers nothing they were entitled to:
+  // each of them (ZX RAM pages, Buffer::initPools, GS/NeoGS, the GM.DLS bank) has a
+  // PSRAM/SD-swap tier to fall back on, the framebuffer does not. Everything further down (ZX RAM
   // pages, Buffer::initPools, GS/NeoGS, the GM.DLS bank) draws on this same heap,
   // and the FB is the one block that is both large and un-negotiable: at 720x576 it
   // is 104 040 CONTIGUOUS bytes, and by VIDEO::Init time the heap no longer holds a

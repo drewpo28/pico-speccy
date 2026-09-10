@@ -2101,13 +2101,23 @@ extern size_t getContiguousHeap(void);
 // ensureMainFB / ensurePrevFB.
 // prevFrameBuffer is 4-bit packed (2 px/byte): Gigascreen blendLUT only uses
 // prev & 0x0F, so the upper nibble is free for the next pixel.
-#define FB_MAX_LINES 289   // calcLines(288), the largest mode (360x288)
+#define FB_MAX_LINES 289   // 288 rows (the largest mode, 360x288) + one spare
+                           // POINTER slot (4 B) that setupSharedFBPointers pads,
+                           // so an out-of-range row index cannot read past the array
 
+// Rows the framebuffer needs for a mode `count` scanlines high — exactly that
+// many. The +1 spare row this used to add for 240/288 (and the 480/400 entries,
+// dead code: fbModeLines() already divides by vDiv, so it never saw those) came
+// from the initial commit and nothing writes it: every full-screen writer is
+// bounded by `vga.yres` (= vRes / vDiv, independent of this function), the border
+// machine by `lin_end2`, which VIDEO::Reset clamps to vga.yres, and the beam
+// renderers by `linedraw_cnt == lin_end2` / `frow = line + lin_end`. The drivers
+// fetch row `(line >> 1) + v_offset`, bounded by graphics_buffer_height.
+// setupSharedFBPointers() now also pads the tail of the pointer array, so a row
+// index that does escape those bounds lands on the last real row instead of an
+// uninitialised pointer — which is what it would have hit before, since the array
+// was only ever filled to `lines`.
 static int fbCalcLines(int count) {
-    if (count == 288) return 289;
-    if (count == 240) return 241;
-    if (count == 480) return 241;
-    if (count == 400) return 201;
     return count;
 }
 
@@ -2115,6 +2125,18 @@ static int fbCalcLines(int count) {
 // Splitting them lets GsSubsys free up to 52 020 B of SRAM when Gigascreen is off.
 // Each block is sized to fit the current video mode, not the build-time maximum,
 // and grown/shrunk via realloc on mode changes (see ensureMainFB/ensurePrevFB).
+// The main FB is normally ONE block, but a heap with no hole that big is not a
+// dead end: the render path reaches its rows only through the sharedFB_arr1
+// pointer array (getLineBuffer / frameBuffer[y]), exactly like the prev-FB, so it
+// can be split into whole-row chunks. That is what stands between a fragmented
+// heap and "*** PANIC *** Out of memory" from vga.init()'s own allocator (hw
+// 2026-09-10, PCp2 with no SD: 132 KB free, largest hole 75 228, 76 800 wanted).
+#define MAIN_CHUNKS_MIN 2
+#define MAIN_CHUNKS_MAX 4
+static uint8_t *sharedFB_mainChunk[MAIN_CHUNKS_MAX] = { nullptr };
+static int      sharedFB_main_nchunks = 0;   // 0 = single block
+static int      sharedFB_main_chunk_rows = 0;
+
 static uint8_t *sharedFB_main = nullptr;  // sized for current mode
 static uint8_t *sharedFB_prev = nullptr;  // sized for current mode (Gigascreen only)
 static size_t sharedFB_main_size = 0;     // actual byte capacity of sharedFB_main
@@ -2167,22 +2189,77 @@ static inline size_t fbPrevBytes(int lines, int stride) {
 extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp — malloc panics on OOM
 extern size_t getFreeHeap(void);                // OSDMain.cpp (also declared below)
 
+// Row `row` of the main FB, whichever way it is backed. Chunking is invisible
+// above the pointer arrays this fills.
+static inline uint8_t* mainRowPtr(int row, int stride) {
+    if (!sharedFB_main_nchunks) return sharedFB_main + (size_t)row * stride;
+    const int c = row / sharedFB_main_chunk_rows;
+    return sharedFB_mainChunk[c]
+         + (size_t)(row - c * sharedFB_main_chunk_rows) * stride;
+}
+
+static void mainFBFree() {
+    if (sharedFB_main_nchunks) {
+        for (int c = 0; c < sharedFB_main_nchunks; c++) {
+            free(sharedFB_mainChunk[c]);
+            sharedFB_mainChunk[c] = nullptr;
+        }
+    } else {
+        free(sharedFB_main);
+    }
+    sharedFB_main = nullptr;
+    sharedFB_main_size = 0;
+    sharedFB_main_nchunks = 0;
+    sharedFB_main_chunk_rows = 0;
+}
+
 static bool ensureMainFB(int lines, int stride) {
     size_t want = fbMainBytes(lines, stride);
     if (sharedFB_main && sharedFB_main_size == want) return true;
-    if (sharedFB_main) { free(sharedFB_main); sharedFB_main = nullptr; sharedFB_main_size = 0; }
+    if (sharedFB_main) mainFBFree();
     // Probe before asking: pico_malloc PANICS on OOM instead of returning NULL, so
     // the `!p` branch below never fires on this SDK and a too-small heap took the
     // whole firmware down with "*** PANIC *** Out of memory" (hw 2026-08-13: 720x576
     // + NeoGS + MIDI, 149 KB free but no contiguous 104 040 B block). With the probe
     // the caller gets false and can fall back / report.
-    if (getLargestAllocatable() < want) return false;
-    uint8_t *p = (uint8_t*)malloc(want);
-    if (!p) return false;
-    memset(p, 0, want);
-    sharedFB_main = p;
-    sharedFB_main_size = want;
-    return true;
+    if (getLargestAllocatable() >= want) {
+        uint8_t *p = (uint8_t*)malloc(want);
+        if (p) {
+            memset(p, 0, want);
+            sharedFB_main = p;
+            sharedFB_main_size = want;
+            return true;
+        }
+    }
+    // No hole that big: split across whole-row chunks, fewest first.
+    for (int n = MAIN_CHUNKS_MIN; n <= MAIN_CHUNKS_MAX; n *= 2) {
+        const int rows = (lines + n - 1) / n;
+        int got = 0;
+        bool ok = true;
+        for (int c = 0; c < n; c++) {
+            const int r0 = c * rows;
+            if (r0 >= lines) break;                      // fewer chunks than n suffice
+            const int rc = (r0 + rows <= lines) ? rows : (lines - r0);
+            const size_t bytes = (size_t)rc * stride;
+            if (getLargestAllocatable() < bytes) { ok = false; break; }
+            uint8_t *cp = (uint8_t*)malloc(bytes);
+            if (!cp) { ok = false; break; }
+            memset(cp, 0, bytes);
+            sharedFB_mainChunk[c] = cp;
+            got = c + 1;
+        }
+        if (ok) {
+            sharedFB_main_nchunks    = got;
+            sharedFB_main_chunk_rows = rows;
+            sharedFB_main            = sharedFB_mainChunk[0];  // also the "exists" marker
+            sharedFB_main_size       = want;
+            Debug::log("VIDEO: main FB %uKB in %d chunks x %d rows (fragmented heap)",
+                       (unsigned)(want >> 10), got, rows);
+            return true;
+        }
+        for (int c = 0; c < got; c++) { free(sharedFB_mainChunk[c]); sharedFB_mainChunk[c] = nullptr; }
+    }
+    return false;
 }
 
 // Row `row` of the prev-FB, whichever way it is backed. The ONLY way the render
@@ -2293,7 +2370,14 @@ static void setupSharedFBPointers(Graphics<unsigned char> &vga, int lines, int s
     sharedFB_lines = lines;
     sharedFB_stride = stride;
     for (int i = 0; i < lines; i++) {
-        sharedFB_arr1[i] = sharedFB_main + i * stride;
+        sharedFB_arr1[i] = mainRowPtr(i, stride);
+    }
+    // Pad the tail with the LAST row. Two reasons: a stray row index (one past the
+    // end) then writes a real row instead of dereferencing whatever the slot held,
+    // and a mode SHRINK (288 -> 240 rows) no longer leaves the slots above `lines`
+    // pointing into the freed block.
+    for (int i = lines; i < FB_MAX_LINES; i++) {
+        sharedFB_arr1[i] = mainRowPtr(lines - 1, stride);
     }
     vga.frameBuffer = (unsigned char **)sharedFB_arr1;
     if (sharedFB_prev && sharedFB_arr2) {
@@ -2301,6 +2385,8 @@ static void setupSharedFBPointers(Graphics<unsigned char> &vga, int lines, int s
         for (int i = 0; i < lines; i++) {
             sharedFB_arr2[i] = prevRowPtr(i, prev_stride);
         }
+        for (int i = lines; i < FB_MAX_LINES; i++)
+            sharedFB_arr2[i] = prevRowPtr(lines - 1, prev_stride);
         vga.prevFrameBuffer = (unsigned char **)sharedFB_arr2;
     } else {
         vga.prevFrameBuffer = nullptr;
@@ -2927,7 +3013,7 @@ void VIDEO::Init() {
     } else {
         // Out of memory for shared FB — fall back to legacy allocator path.
         free(sharedFB_arr1); sharedFB_arr1 = nullptr;
-        free(sharedFB_main); sharedFB_main = nullptr; sharedFB_main_size = 0;
+        mainFBFree();
     }
     // Pre-allocate prev framebuffer if Gigascreen is enabled at boot,
     // BEFORE the heap fragments. A boot straight into a whole-line mode (Profi
