@@ -286,12 +286,6 @@ void inInit(uint gpio) {
     gpio_set_dir(gpio, GPIO_IN);
     gpio_pull_up(gpio);
 }
-static bool hw_get_bit_LOAD() {
-    uint8_t out = 0;
-    out = gpio_get(LOAD_WAV_PIO);
-    // valLoad=out*10;
-    return out > 0;
-};
 #endif
 
 void init_sound() {

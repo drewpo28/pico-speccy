@@ -675,7 +675,6 @@ void DivMMC::storeSector(uint32_t sector) {
 //   Some clones (ZP4-style): bit 1 (active-low)
 // Treat CS as active if EITHER bit 0 or bit 1 is 0.
 void DivMMC::mmc_cs(uint8_t value) {
-    bool was_active = mmc_cs_active;
     mmc_cs_active = (value & 0x01) == 0;  // Active low
 
     // Reset protocol state on CS change (like ZEsarUX)

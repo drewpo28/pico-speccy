@@ -1546,7 +1546,6 @@ void hdmi_set_profi_ds80_mode(bool active,
     if (active && (!palette16_rgb888 || !pair_lut)) return;
     if (!active && !profi_ds80_active) return;
 
-    uint64_t *cc64 = (uint64_t *)conv_color;
     if (active) {
         // Snapshot only on first activation, not on refresh
         if (!profi_ds80_active) {

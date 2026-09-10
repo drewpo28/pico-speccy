@@ -456,8 +456,7 @@ static void viewSCL(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
         memcpy(name, entry, 8);
         name[8] = 0;
         char ext = entry[8];
-        uint16_t start = entry[9] | (entry[10] << 8);
-        uint8_t lenParam = entry[11];
+        // entry[9..10] start address, entry[11] length in bytes % 256 — not listed
         uint16_t lenSectors = entry[12] | (entry[13] << 8);
 
         uint32_t size = (uint32_t)lenSectors * 256;
@@ -508,7 +507,7 @@ static void viewSNA(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     uint16_t BC = hdr[13] | (hdr[14] << 8);
     uint16_t IY = hdr[15] | (hdr[16] << 8);
     uint16_t IX = hdr[17] | (hdr[18] << 8);
-    uint8_t IFF2 = (hdr[19] & 0x04) ? 1 : 0;
+    // hdr[19] bit 2 = IFF2 — not listed
     uint8_t R = hdr[20];
     uint16_t AF = hdr[21] | (hdr[22] << 8);
     uint16_t SP = hdr[23] | (hdr[24] << 8);

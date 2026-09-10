@@ -214,12 +214,11 @@ void __time_critical_func() dma_handler_VGA() {
         return;
     } //если нет видеобуфера - рисуем пустую строку
 
-    int y, line_number;
+    int y;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
     switch (graphics_mode) {
         case GRAPHICSMODE_DEFAULT:
-            line_number = screen_line / 2;
             y = screen_line / 2 - graphics_buffer_shift_y;
             break;
 /**
@@ -334,7 +333,6 @@ if (!text_buffer) return;
     // Индекс палитры в зависимости от настроек чередования строк и кадров
 ///    uint16_t* current_palette = palette[(y & is_flash_line) + (frame_number & is_flash_frame) & 1];
 
-    uint8_t* output_buffer_8bit;
     switch (graphics_mode) {
         case GRAPHICSMODE_DEFAULT: {
             // Unrolled by 2 so even/odd source pixels can read different tables
@@ -640,27 +638,6 @@ static void vga_bayer4(uint32_t color888, uint8_t p[4]) {
     p[3] = ((r_sub >= 2 ? r_hi : r_lo) << 4) | ((g_sub >= 2 ? g_hi : g_lo) << 2) | (b_sub >= 2 ? b_hi : b_lo); // x1,y1
 }
 
-// Build the packed pixel pairs for one palette index. left888 drives the even-x
-// column, right888 the odd-x column; each keeps its own Bayer thresholds for the
-// positions it occupies, so passing the same colour twice reproduces the original
-// single-colour dither bit for bit. Passing a dimmed right888 is the aperture
-// grille — the odd column then dithers over 2 positions instead of 4, i.e. fewer
-// effective levels than the even column.
-static void vga_rgb888_pair(uint32_t left888, uint32_t right888,
-                            uint16_t *even_pair, uint16_t *odd_pair) {
-    uint8_t l[4], r[4];
-    vga_bayer4(left888, l);
-    if (((left888 ^ right888) & 0x00ffffff) == 0) {
-        r[1] = l[1]; r[3] = l[3];
-    } else {
-        vga_bayer4(right888, r);
-    }
-
-    // Pack pixel pairs: LSB = first pixel (PIO right-shift), MSB = second pixel
-    *even_pair = ((r[1] << 8) | l[0]) & 0x3f3f | palette16_mask;
-    *odd_pair  = ((r[3] << 8) | l[2]) & 0x3f3f | palette16_mask;
-}
-
 // Per-level scanline brightness, as a 0..256 multiplier applied to each RGB
 // channel. Index by level (1..4); level 2 == 128/256 == the legacy ~50% look.
 // dark -> light. Index 0 is unused (scanlines off).
@@ -761,8 +738,9 @@ void vga_set_palette_entry_solid(uint8_t i, uint32_t color888) {
 // high byte = VGA pixel for p1 (right). PIO right-shifts LSB first → correct order.
 // Two tables (even/odd scan lines) implement Bayer 2×2 checkerboard dithering:
 //   p0 is always at even screen x, p1 at odd screen x.
-//   vga_rgb888_pair() gives: even_pair=low(even_x,even_y)/high(odd_x,even_y),
-//                               odd_pair =low(even_x,odd_y) /high(odd_x,odd_y).
+//   The even-line pair is low(even_x,even_y)/high(odd_x,even_y), the odd-line one
+//   low(even_x,odd_y)/high(odd_x,odd_y) — Bayer positions 0/1 and 2/3 of vga_bayer4(),
+//   packed by vga_pack_pair().
 void vga_set_profi_ds80_mode(bool active,
                               const uint32_t *palette16_rgb888,
                               const uint8_t  *pair_lut) {

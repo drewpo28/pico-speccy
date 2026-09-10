@@ -212,14 +212,6 @@ static bool p_showProfi() {
 #endif
 }
 
-// Rows that only make sense for the machine that is about to be running: the staged pick
-// if the user just chose one, otherwise the live machine.
-static bool p_profiActive() {
-    const int32_t m = Stage::get(SET_MACHINE);
-    if (m < 0) return Config::arch == A_PROFI;   // Config never holds A_KARABAS
-    const int a = (m >> 8) & 0xFF;
-    return a == A_PROFI || a == A_KARABAS;       // Karabas = Profi hardware
-}
 // Murmuzavr is a Pentagon extension (the #AFF7 plane latch on top of #7FFD paging), so
 // its submenu is offered for the Pentagon family only — staged pick first, else the live
 // machine, like the other *Active predicates.

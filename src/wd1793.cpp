@@ -1204,22 +1204,19 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
       break;
     }
 
-    uint8_t d=0x0;
     uint8_t s=0x0;
     uint8_t dd=0x0;
 
     if(wd->disk[wd->diskS]) { // If active disk exists ..
 
-      uint8_t t;
       uint16_t w = 0;
 
       if((wd->control & kRVMWD177XWriting) && !wd->disk[wd->diskS]->writeprotect) {
         w |= kRVMwdDiskControlWrite | wd->wb;
       }
 
-      t = rvmwdDiskStep(wd, w);
+      rvmwdDiskStep(wd, w);   // advances the disk byte stream; return value unused here
 
-      d = t;
       dd = wd->disk[wd->diskS]->a;
       s = wd->disk[wd->diskS]->s;
 
@@ -2080,7 +2077,7 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
     char magic[8];
     UINT br;
     //fread(&magic, 1, 8, wd->disk[UnitNum]->Diskfile);
-    FRESULT res = f_read(wd->disk[UnitNum]->Diskfile, &magic, 8, &br);
+    f_read(wd->disk[UnitNum]->Diskfile, &magic, 8, &br);
 
     if (std::strncmp(magic,"SINCLAIR",8) == 0) {
         // SCL file
@@ -2629,7 +2626,6 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
       f_lseek(wd->disk[UnitNum]->Diskfile, 0);
       long diskbytes = f_size(wd->disk[UnitNum]->Diskfile);
       if( diskbytes > wd->disk[UnitNum]->sides * wd->disk[UnitNum]->tracks * 16 * 256 ) {
-        int i;
         for( int i = wd->disk[UnitNum]->tracks + 1; i < 83; i++ ) {
           if( wd->disk[UnitNum]->sides * i * 16 * 256 >= diskbytes ) {
             wd->disk[UnitNum]->tracks = i;
@@ -4197,7 +4193,6 @@ void SCLtoTRD(rvmwdDisk *d, unsigned char* track0) {
 
         int n = i << 4;
 
-        UINT bw;
         for (int j = 0; j < 13; j++) {
             // fread(&data,1,1,d->Diskfile);
             f_read(d->Diskfile, &data,1,&br);

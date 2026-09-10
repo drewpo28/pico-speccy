@@ -177,7 +177,9 @@ static volatile uint16_t s_hdat1 = 0, s_hdat0 = 0;
 // that starts 49 44 33 is a real MP3 with an ID3 tag, anything constant or
 // obviously not file content means the SD_RSTR → MD_SEND transport is at fault.
 #define MP3_SNIFF_LEN 32
+#if NGS_TRACE
 static uint8_t  s_sniff[MP3_SNIFF_LEN];
+#endif
 static volatile uint32_t s_sniff_len = 0;
 static volatile bool     s_sniff_ready = false;
 

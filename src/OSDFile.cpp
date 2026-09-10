@@ -116,13 +116,6 @@ void fgets(char* b, size_t sz, FIL& f) {
 #define ftell(x) f_tell(&x)
 #define feof(x) f_eof(&x)
 
-// Display-only volume prefix for the dialog's path row: unprefixed paths live
-// on the default volume — "SD:" normally, "USB:" when the stick is the root
-// (booted without an SD card). "USB:/..." paths already carry their volume.
-static string fdDisplayPath(const string& fdir) {
-    if (fdir.find(':') != string::npos) return fdir;
-    return (FileUtils::usbRoot ? "USB:" : "SD:") + fdir;
-}
 
 
 

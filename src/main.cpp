@@ -959,7 +959,9 @@ void repeat_me_for_input() {
     // 60 FPS loop
 #define frame_tick (16666)
     static uint64_t tick = time_us_64();
+#ifdef USE_NESPAD
     static bool tick1 = true;
+#endif
     static uint64_t last_input_tick = tick;
         if (tick >= last_input_tick + frame_tick) {
 #ifdef KBDUSB

@@ -875,7 +875,6 @@ static bool f5Locations() {
         };
         if (usb)
             rows.insert(rows.begin() + 1, string(1, (char)DIR_MARKER) + MSG_F5_USB);
-        int key;
         int loc;
         {
             // The chooser is a LEVEL of the fullscreen browser (same chrome), not a
@@ -897,7 +896,6 @@ static bool f5Locations() {
             hints[hi++] = "Online archives (vtrd.in, ...)";
             loc = nm::browseLocations(items, hints, n, lf - 2);
             lf = loc >= 0 ? loc + 2 : 2;
-            key = OSD::FDK_ENTER;
         }
         if (loc < 0) return false;                    // Esc → close OSD
         if (usb && loc == 1) {                        // USB Drive → browse the stick
@@ -1982,9 +1980,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         }
     } ds80Guard;
 
-    static uint8_t last_sna_row = 0;
-    fabgl::VirtualKeyItem Nextkey;
-
     // Find matching configurable hotkey
     int hkIdx = -1;
     for (int i = 0; i < Config::HK_COUNT; i++) {
@@ -2899,7 +2894,6 @@ void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millisp
     const unsigned short y = scrAlignCenterY(h);
     unsigned short paper;
     unsigned short ink;
-    unsigned int j;
 
     const unsigned short w = (maxlen + 2) * OSD_FONT_W;
     const unsigned short x = scrAlignCenterX(w);
@@ -7084,7 +7078,6 @@ void OSD::progressDialog(const string& title, const string& msg, int percent, in
     static unsigned short x;
     static unsigned short progress_x;
     static unsigned short progress_y;
-    static unsigned int j;
     static bool cyr;   // remembered from SHOW so UPDATE/CLOSE keep the same face
 
     if (action == 0 ) { // SHOW

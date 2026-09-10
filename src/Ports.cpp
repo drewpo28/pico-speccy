@@ -1551,8 +1551,6 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
 
     if (!skip_real_fdc && (ESPectrum::trdos || scorp_sysen || has_raw_disk)) {
 
-      uint8_t dat;
-
       // Profi CP/M port 0x3F: per manual "Порты FDD", in the ROM14=1 & CPM=1
       // (MBOOTHDD) scheme #3F is the WD93 SYS register (RQ93) — read returns the
       // status (INTRQ bit7, DRQ bit6), used in the sector-read loop at 0x86A4
@@ -4203,8 +4201,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         }
       }
 #endif
-      { uint8_t prevLatch = MemESP::romLatch;
-        MemESP::romLatch = bitRead(data, 4);
+      { MemESP::romLatch = bitRead(data, 4);
         if (Z80Ops::isProfi) {
           // Profi/Karabas: the ROM bank is a LIVE 2-bit function of
           // (DOS, ROM14) — FPGA memory.vhd: rom_page <= not(TRDOS) & ROM_BANK:

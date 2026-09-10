@@ -1030,11 +1030,6 @@ static void buildSpectrumRGB(const PaletteDef &pal, uint32_t out[16]) {
 // Standard Spectrum RGB888 palette (default, rebuilt on palette change)
 static uint32_t spectrum_rgb888[16];
 
-// Initialize spectrum_rgb888 with default palette
-static void initDefaultPalette() {
-    buildSpectrumRGB(builtin_palette_defs[0], spectrum_rgb888);
-}
-
 void initGigascreenBlendLUT();
 
 // Apply color matrix transform to an RGB888 color
@@ -3220,8 +3215,7 @@ IRAM_ATTR void VIDEO::MainScreen_OSD(unsigned int statestoadd, bool contended) {
     statestoadd += video_rest;
     video_rest = statestoadd & 0x03;
     unsigned int loopCount = statestoadd >> 2;
-    unsigned int coldraw_osd = coldraw_cnt;
-    
+
     coldraw_cnt += loopCount;
 
     if (coldraw_cnt >= 32) {
@@ -3339,7 +3333,6 @@ IRAM_ATTR void VIDEO::MainScreen_Snow(unsigned int statestoadd, bool contended) 
 IRAM_ATTR void VIDEO::MainScreen_Snow_Opcode(bool contended) {
 
     int snow_effect = 0;
-    unsigned int addr;
     bool do_stats = false;
 
     unsigned int statestoadd = video_opcode_rest ? video_opcode_rest : 4;

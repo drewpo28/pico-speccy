@@ -543,7 +543,9 @@ IRAM_ATTR void Z80DMA::executeTransfer() {
     dma_in_progress = true;
 
     uint16_t dest_start = transfer_dir ? cur_port_b : cur_port_a;
+#if Z80DMA_LOG
     uint16_t src_start  = transfer_dir ? cur_port_a : cur_port_b;
+#endif
 
 #if Z80DMA_LOG
     static uint32_t _dma_log_cnt = 0;

@@ -117,11 +117,6 @@ void breadcrumb(char* out, size_t cap) {
     }
 }
 
-// A node the user can act on (submenus, values, actions). Dimmed dynamic rows are
-// skipped by the row builder itself, so nothing else needs to filter here.
-static bool isDescendable(const Node* n) {
-    return n && (n->kind == K_SUB || n->kind == K_DYNAMIC);
-}
 static bool hasValuePane(const Node* n) {
     return n && (n->kind == K_RADIO || n->kind == K_BOOL);
 }
