@@ -715,7 +715,7 @@ void ESPectrum::setup() {
   // Config::load() re-sizes the block if the user picked a different mode, and is
   // a no-op when the size already matches.
   resolveVideoOutput();
-  VIDEO::reserveFrameBuffer();
+  VIDEO::reserveFrameBuffer(/*configKnown=*/false);
   Debug::log("setup: initFileSystem begin");
   FileUtils::initFileSystem();
   Debug::log("setup: initFileSystem done, fsMount=%d", FileUtils::fsMount);

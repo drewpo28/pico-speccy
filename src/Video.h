@@ -162,10 +162,14 @@ public:
 
   // Claim the main framebuffer early in setup() — see the note at the definition.
   // Optional and idempotent: Init() does the same allocation if this never ran.
-  static void reserveFrameBuffer();
+  // configKnown=false for the pre-Config::load() claim in setup(): the mode is the
+  // compiled default there, so the failure branch must not downgrade or announce it.
+  static void reserveFrameBuffer(bool configKnown = true);
 
-  // Heap bytes a VM_* video mode costs: return value = main FB (one contiguous
-  // block), *prevBytes = the Gigascreen prev-FB that goes with it (0 on butter
+  // Heap bytes a VM_* video mode costs: return value = main FB (one block where the
+  // heap has a hole that big, otherwise 2-8 whole-row chunks — so this is a TOTAL,
+  // which is what the caller's gate wants),
+  // *prevBytes = the Gigascreen prev-FB that goes with it (0 on butter
   // boards, where the prev-FB lives in PSRAM). Pure arithmetic over vidmodes[] —
   // used by the menu's video-mode budget gate to refuse 720x480/576 on a board
   // that cannot fit them (the boot would OOM-hang otherwise).

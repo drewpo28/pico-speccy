@@ -242,6 +242,10 @@ build_one() {
         else
             target_flags+=(-DZERO2_PIO_USB=OFF)
         fi
+        # Same rule for the framebuffer-chunking debug knob: a build dir configured
+        # while it was set would keep forcing the split into every image built from
+        # it, release ones included.
+        target_flags+=(-DFB_FORCE_CHUNKS=0)
 
         local cmake_args=(
             -B "$build_dir" -S "$SCRIPT_DIR"

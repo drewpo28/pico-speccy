@@ -2184,8 +2184,23 @@ static int fbCalcLines(int count) {
 // can be split into whole-row chunks. That is what stands between a fragmented
 // heap and "*** PANIC *** Out of memory" from vga.init()'s own allocator (hw
 // 2026-09-10, PCp2 with no SD: 132 KB free, largest hole 75 228, 76 800 wanted).
+// Unlike the prev-FB below, the chunks take NO slack: getLargestAllocatable()
+// binary-searches with the real allocator, so a probe that says `bytes` fit means
+// malloc(bytes) succeeds, and there is no lower tier to protect here — every later
+// consumer has a PSRAM/SD-swap fallback and the framebuffer has none, so the last
+// hole in the heap is exactly the one it is entitled to take.
 #define MAIN_CHUNKS_MIN 2
-#define MAIN_CHUNKS_MAX 4
+#define MAIN_CHUNKS_MAX 8
+// Debug knob (CMake -DFB_FORCE_CHUNKS=2/4/8): split the framebuffer even when one
+// block would fit, so the chunked path runs on an ordinary boot. Without it the
+// path only executes on the fragmented heap that produced it, i.e. it ships
+// untested — the failure mode this project keeps rediscovering.
+#ifndef FB_FORCE_CHUNKS
+#define FB_FORCE_CHUNKS 0
+#endif
+#if FB_FORCE_CHUNKS && (FB_FORCE_CHUNKS < MAIN_CHUNKS_MIN || FB_FORCE_CHUNKS > MAIN_CHUNKS_MAX)
+#error "FB_FORCE_CHUNKS must be 0 or between MAIN_CHUNKS_MIN and MAIN_CHUNKS_MAX"
+#endif
 static uint8_t *sharedFB_mainChunk[MAIN_CHUNKS_MAX] = { nullptr };
 static int      sharedFB_main_nchunks = 0;   // 0 = single block
 static int      sharedFB_main_chunk_rows = 0;
@@ -2251,6 +2266,40 @@ static inline uint8_t* mainRowPtr(int row, int stride) {
          + (size_t)(row - c * sharedFB_main_chunk_rows) * stride;
 }
 
+// Prove the chunk map before anything renders through it: every row must be
+// 4-byte aligned (the renderers write rows as uint32/uint16 pairs — lineptr32,
+// brdptr16, the DS80/GMX pair path) and must own its bytes, i.e. a write to one
+// row may never land in another. Markers rather than pointer arithmetic on
+// purpose: re-deriving mainRowPtr() here would only restate it, while writing
+// every row and reading it back also catches an allocation/split disagreement and
+// proves the memory is there. ~200 KB touched once at boot, well under a
+// millisecond, and only on the chunked path.
+// -Os + noinline: Video.cpp compiles at -O3, which unrolls these boot-time row
+// loops into ~2 KB of flash for a function that runs once. (Same reason
+// tsFast256/tsFast16 pin their own optimisation level.)
+static bool __attribute__((optimize("Os"), noinline))
+mainFBSelfCheck(int lines, int stride) {
+    for (int r = 0; r < lines; r++) {
+        uint8_t *row = mainRowPtr(r, stride);
+        if ((uintptr_t)row & 3) {
+            Debug::log("VIDEO: main FB chunk map FAILED - row %d at %p not 4-aligned", r, row);
+            return false;
+        }
+        memset(row, (uint8_t)(r & 0xFF), stride);
+    }
+    for (int r = 0; r < lines; r++) {
+        const uint8_t *row = mainRowPtr(r, stride);
+        const uint8_t want = (uint8_t)(r & 0xFF);
+        if (row[0] != want || row[stride / 2] != want || row[stride - 1] != want) {
+            Debug::log("VIDEO: main FB chunk map FAILED - row %d overlaps (%02X/%02X/%02X want %02X)",
+                       r, row[0], row[stride / 2], row[stride - 1], want);
+            return false;
+        }
+    }
+    for (int r = 0; r < lines; r++) memset(mainRowPtr(r, stride), 0, stride);
+    return true;
+}
+
 static void mainFBFree() {
     if (sharedFB_main_nchunks) {
         for (int c = 0; c < sharedFB_main_nchunks; c++) {
@@ -2275,7 +2324,7 @@ static bool ensureMainFB(int lines, int stride) {
     // whole firmware down with "*** PANIC *** Out of memory" (hw 2026-08-13: 720x576
     // + NeoGS + MIDI, 149 KB free but no contiguous 104 040 B block). With the probe
     // the caller gets false and can fall back / report.
-    if (getLargestAllocatable() >= want) {
+    if (!FB_FORCE_CHUNKS && getLargestAllocatable() >= want) {
         uint8_t *p = (uint8_t*)malloc(want);
         if (p) {
             memset(p, 0, want);
@@ -2285,7 +2334,8 @@ static bool ensureMainFB(int lines, int stride) {
         }
     }
     // No hole that big: split across whole-row chunks, fewest first.
-    for (int n = MAIN_CHUNKS_MIN; n <= MAIN_CHUNKS_MAX; n *= 2) {
+    for (int n = FB_FORCE_CHUNKS ? FB_FORCE_CHUNKS : MAIN_CHUNKS_MIN;
+         n <= MAIN_CHUNKS_MAX; n *= 2) {
         const int rows = (lines + n - 1) / n;
         int got = 0;
         bool ok = true;
@@ -2306,8 +2356,12 @@ static bool ensureMainFB(int lines, int stride) {
             sharedFB_main_chunk_rows = rows;
             sharedFB_main            = sharedFB_mainChunk[0];  // also the "exists" marker
             sharedFB_main_size       = want;
-            Debug::log("VIDEO: main FB %uKB in %d chunks x %d rows (fragmented heap)",
-                       (unsigned)(want >> 10), got, rows);
+            // A broken map must not reach the renderer: fail the allocation instead,
+            // which the callers already handle (mode downgrade / legacy path).
+            if (!mainFBSelfCheck(lines, stride)) { mainFBFree(); return false; }
+            Debug::log("VIDEO: main FB %uKB in %d chunks x %d rows%s",
+                       (unsigned)(want >> 10), got, rows,
+                       FB_FORCE_CHUNKS ? " (FB_FORCE_CHUNKS)" : " (fragmented heap)");
             return true;
         }
         for (int c = 0; c < got; c++) { free(sharedFB_mainChunk[c]); sharedFB_mainChunk[c] = nullptr; }
@@ -2990,22 +3044,26 @@ size_t VIDEO::fbBytesForVM(uint8_t vm, size_t* prevBytes) {
 // hw 2026-08-13 OOM-panicked in Init with 149 KB free but no hole that big:
 // 576p + NeoGS + MIDI. Idempotent, and safe to skip — Init() allocates exactly the
 // same way if this was never called, or if it failed.
-void VIDEO::reserveFrameBuffer() {
+void VIDEO::reserveFrameBuffer(bool configKnown) {
     int Mode = fbModeIndex();
     int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
     if (!sharedFB_arr1) sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
     if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
-        Debug::log("VIDEO: FB reserved %ux%u (%u B), freeHeap=%u largest=%u",
+        Debug::log("VIDEO: FB reserved %ux%u (%u B) in %d block(s), freeHeap=%u largest=%u",
                    (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
+                   sharedFB_main_nchunks ? sharedFB_main_nchunks : 1,
                    (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
         return;
     }
     // Nothing else has claimed the heap yet, so this means the mode simply does not
     // fit this board. Say so here rather than letting Init() report it later, when
     // the pools and the GS have muddied the numbers.
-    Debug::log("VIDEO: FB reserve FAILED %ux%u (%u B), freeHeap=%u largest=%u",
+    // Not even MAIN_CHUNKS_MAX whole-row pieces fit — this is a heap that is simply
+    // too small, not one that is merely fragmented, so `largest` alone no longer
+    // tells the story and the free total is the number to read.
+    Debug::log("VIDEO: FB reserve FAILED %ux%u (%u B, up to %d chunks tried), freeHeap=%u largest=%u",
                (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
-               (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+               MAIN_CHUNKS_MAX, (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
 #ifdef VGA_HDMI
     // Self-heal instead of hanging. Downstream there is no recovery: Init()'s
     // legacy-allocator fallback goes through pico_malloc, which PANICS on OOM —
@@ -3016,7 +3074,15 @@ void VIDEO::reserveFrameBuffer() {
     // repeats this — and drop any pending-mode record so videoModeConfirm doesn't
     // ask to keep a mode that never ran. The bootNotice explains the change once
     // video is up.
-    if (isFullBorderMode()) {
+    // Only once Config is real. This runs TWICE per boot (see ESPectrum::setup):
+    // the first call is before Config::load(), where the mode is the compiled
+    // default — downgrading and announcing THAT would name a mode the user never
+    // picked, and Config::save() would be writing defaults over a file it has not
+    // read. The heap is pristine there, so the branch is unreachable in practice;
+    // the call after Config::load() is the one that is allowed to self-heal, and it
+    // must still do so on a card-less boot (no SD = no load, but a mode that cannot
+    // be placed is exactly as fatal).
+    if (configKnown && isFullBorderMode()) {
         char note[64];
         snprintf(note, sizeof(note), "%s: not enough RAM - using 640x480",
                  isFullBorder240() ? "720x480" : "720x576");

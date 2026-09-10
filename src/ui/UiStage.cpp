@@ -1409,8 +1409,9 @@ void commit(CommitReport& rep) {
         }
     }
 
-    // 720x480/576 need a bigger main framebuffer — one CONTIGUOUS block, claimed at
-    // boot (VIDEO::reserveFrameBuffer) — and, with Gigascreen on a butter-less board,
+    // 720x480/576 need a bigger main framebuffer — claimed at boot
+    // (VIDEO::reserveFrameBuffer), as one block where the heap has a hole that big
+    // and otherwise as 2-8 whole-row chunks — and, with Gigascreen on a butter-less board,
     // a bigger prev-FB on top. A video mode has no budgetCheck FeatureId, so it is
     // gated here: without this the "Apply & reboot" came back to a board that could
     // not place the FB and OOM-hung in vga.init()'s legacy allocator (m1p2,

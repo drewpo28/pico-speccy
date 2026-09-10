@@ -125,6 +125,11 @@ set(CPU_MHZ 378)
 set (PORT_VERSION "1.0.5")
 string(LENGTH "${PORT_VERSION}" PORT_VERSION_LEN)
 
+# Framebuffer chunking exercise (Video.cpp ensureMainFB): force the main
+# framebuffer into N whole-row chunks even when one block would fit, so the
+# fragmented-heap path runs on an ordinary boot. 0 = normal (one block first).
+set(FB_FORCE_CHUNKS "0" CACHE STRING "Debug: split the main framebuffer into N whole-row chunks (0 = off, 2/4/8)")
+
 # A W target IS its carrier, plus a different plugged-in module: turn the carrier
 # on so every pin arm, display matrix and runtime `#if MURM2` below keeps working,
 # and raise PICOSPECCY_WIFI as the single "this image has a radio" switch. Must run
@@ -942,6 +947,15 @@ if (PROFI_PORT_TRACE)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PROFI_PORT_TRACE=0)
 endif ()
+
+# Framebuffer chunking exercise (see Video.cpp `FB_FORCE_CHUNKS`). Defined only
+# when actually set: a target-wide definition recompiles every TU and would cost
+# every ordinary build a ccache miss for a debug knob nobody turned on. Video.cpp
+# carries the `#ifndef` default.
+if (NOT FB_FORCE_CHUNKS STREQUAL "0")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FB_FORCE_CHUNKS=${FB_FORCE_CHUNKS})
+    message(STATUS "FB_FORCE_CHUNKS=${FB_FORCE_CHUNKS}: main framebuffer forced into chunks (debug)")
+endif()
 
 # Scorpion GMX paging trace (see Ports.cpp / Z80_JLS.cpp `#if GMX_TRACE`).
 if (GMX_TRACE)

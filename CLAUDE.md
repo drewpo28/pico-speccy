@@ -3448,6 +3448,89 @@ reduction left, and costs speed), `IMDCTInfo` ~6944, `HuffmanInfo` 4624. minimp3
 is bigger and traps (see the NeoGS session notes), libmad is bigger and slower —
 there is no better driver to switch to, only lazier allocation.
 
+### The main framebuffer no longer has to be ONE block (2026-09-10)
+
+Claiming it first is not enough on a card-less boot: `FileUtils::initFileSystem()`
+spends up to 3 s in `UsbMsc::waitReady()` pumping `tuh_task()`, and USB enumeration
+leaves ~10 KB in the MIDDLE of the heap — the free TOTAL stays large while the
+largest HOLE drops below what the framebuffer needs, with no second chance (hw
+2026-09-10, PCp2 with no SD: `freeHeap=132560 largest=75228` against 76 800 wanted,
+then `*** PANIC *** Out of memory`). Two answers, both in:
+
+- **The claim moved above `initFileSystem()`**, i.e. before Config exists. So
+  `reserveFrameBuffer()` runs TWICE per boot: once for the compiled default mode
+  from a pristine heap, once after `Config::load()` for the mode the user actually
+  picked (a no-op when the size matches, a resize when it does not). The early call
+  passes `configKnown=false` and must NOT self-heal — its `isFullBorderMode()` reads
+  defaults, so a downgrade there would announce a mode the user never picked and
+  `Config::save()` would write over a file it has not read.
+- **The framebuffer may be 2-8 whole-row chunks** (`MAIN_CHUNKS_MIN/MAX`,
+  `mainRowPtr`, `mainFBFree`) — the prev-FB's scheme, applied to the main one. The
+  single block is still tried first, so a healthy heap is byte-for-byte unchanged.
+
+Why that is even possible: **DMA never reads the framebuffer.** Every driver
+(hdmi, vga-nextgen, st7789, tv, tv-software) reaches it through `getLineBuffer(line)`
+→ `VIDEO::vga.frameBuffer[line]`, CPU-copies that row into its own line buffer
+(`lines_pattern` / `activ_buf`) and DMA streams THAT into the PIO —
+`graphics_set_buffer(NULL, w, h)` never hands them a base pointer. So the row-pointer
+indirection already existed and costs nothing; no DMA control-block chain is needed
+(if a future HSTX/direct-DMA scanout ever lands, whole-row bands are exactly the
+shape its block list wants). Everything above the drivers is per-row too — the ONE
+whole-buffer writer was `changeMode()`'s border memset, now a per-row loop.
+
+Invariants, in the order they will bite:
+
+1. **A chunk is a whole number of ROWS.** Every writer treats a row as contiguous
+   (`lineptr32`, `brdptr16`, the DS80/GMX pair path, `memset(frameBuffer[y], .., xres)`,
+   UiGfx, CaptureBMP, SaveRect).
+2. **Every row stays 4-byte aligned** — the renderers write rows as uint32/uint16.
+   `stride = (xres+3)&~3` and malloc's 8-byte alignment give it; `mainFBSelfCheck`
+   asserts it rather than trusting it.
+3. **SRAM only.** Unlike the prev-FB, the main FB is written per pixel, so
+   `PREFER_PSRAM` here would be the documented XIP-thrash mistake.
+4. **The chunks take no slack** (the prev-FB keeps `PREV_CHUNK_SLACK`):
+   `getLargestAllocatable()` binary-searches with the real allocator, so a passing
+   probe means the malloc succeeds, and there is no lower tier to protect — every
+   later consumer has a PSRAM/SD-swap fallback and the framebuffer has none.
+5. The pointer array is read by the core1 scanout ISR, so a re-allocation is only
+   safe while nothing scans — which is why a runtime resolution change still reboots.
+
+**`fbCalcLines()` is now the identity** — the +1 spare row it used to add for
+240/288 was never written (every full-screen writer is bounded by `vga.yres`, the
+border machine by `lin_end2`, the drivers by `graphics_buffer_height`), and the
+bottom-border paths check `brdlin_cnt` BEFORE fetching the row. `setupSharedFBPointers`
+instead pads the tail of both pointer arrays to `FB_MAX_LINES` with the LAST REAL
+row, so a stray index writes a visible row rather than dereferencing a stale slot
+from a previous, larger mode. Sizes are therefore 240*320 = **76 800** / 240*360 =
+86 400 / 288*360 = **103 680** (`fbBytesForVM`, which the menu's video-mode budget
+gate reads — that gate still measures TOTAL free, since a reboot defragments).
+
+**hw 2026-09-10 (owner): a DVp2 build with `FB_FORCE_CHUNKS=8` renders correctly** — the
+chunked path is exercised, not merely compiled. What that run covers is not itemised
+beyond "picture fine", so the mode matrix at the end of this section is still owed,
+and so is a REAL fragmented-heap placement (the forced build proves the row map, not
+the allocator's fallback ladder). A speed-up seen in the same session was NOT this:
+it was HDMI audio being off in that build.
+
+**Exercise the path or it ships untested**: `cmake -DFB_FORCE_CHUNKS=4` splits the
+framebuffer on a healthy heap, and `mainFBSelfCheck()` (which runs on EVERY chunked
+allocation, forced or real) writes a per-row marker through `mainRowPtr`, reads it
+back at three offsets and re-zeroes — it catches an allocation/split disagreement,
+an unaligned chunk and a row that overlaps its neighbour, and a failure fails the
+allocation rather than reaching the renderer. It is pinned to `-Os` + `noinline`:
+Video.cpp compiles at -O3, which unrolled those boot-time loops into ~2 KB of flash
+(the whole feature is +588 B flash, +16 B .bss with the check at -Os).
+What to check on hardware: `VIDEO: FB reserved ... in N block(s)` / `main FB %uKB in
+N chunks x R rows`, then an identical picture at 640x480 / 720x480 / 720x576 on VGA
+and HDMI, with Gigascreen on (its prev-FB may be chunked at the same time), in
+Profi DS80 / GMX 640x200 / a TS-Conf whole-line mode, and over the menu, the F8
+stats box, the FDD lamp, a notify banner and a BMP capture. Put the chunk boundary
+in the middle of the picture — a row that crossed a chunk shows exactly there.
+
+**New risk class**: a write past the end of a row used to land in the next row of
+the same block (a harmless artifact); with chunks it can land in another malloc
+block or its metadata.
+
 ## Launching from the Web catalog: never unlink a temp file that is still open (2026-08-13)
 
 **hw-confirmed 2026-08-13 on z0p2**: two demos launched in a row from Web Archives
