@@ -88,11 +88,6 @@ void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, 
 // core0 main loop about once a second.
 void hdmi_audio_health_dump(void);
 
-// Hot video mode reinit (reuses existing PIO/DMA resources)
-void hdmi_reinit(void);
-// Call from core1 loop to process pending reinit
-void hdmi_poll_reinit(void);
-
 // TODO: Сделать настраиваемо
 static const uint8_t textmode_palette[16] = {
     200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215

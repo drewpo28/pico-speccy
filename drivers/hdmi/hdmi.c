@@ -961,8 +961,8 @@ static inline bool hdmi_init() {
 
     struct video_mode_t hdmi_mode = graphics_get_video_mode(get_video_mode());
     // ISR mode snapshot (see hdmi_isr_mode): filled here because the line ISR is
-    // guaranteed not to be running yet — first init installs it below, reinit
-    // (hdmi_poll_reinit) has all DMA channels aborted before calling us.
+    // guaranteed not to be running yet — this runs once, before it is installed
+    // below.
     hdmi_isr_mode = hdmi_mode;
     // Use pre-computed clean divider (integer or half-integer) to avoid PIO clock jitter
     sm_config_set_clkdiv(&c_c, hdmi_mode.pio_clk_div);
@@ -1118,38 +1118,6 @@ static inline bool hdmi_init() {
 #ifdef VGA_HDMI
 extern void vga_set_palette_entry(uint8_t i, uint32_t color888);
 #endif
-
-// Cross-core reinit: core0 sets flag, core1 executes hdmi_init()
-static volatile bool hdmi_reinit_pending = false;
-static volatile bool hdmi_reinit_done = false;
-
-void hdmi_reinit() {
-    // Stop DMA channels from core0 so the DMA IRQ stops firing.
-    // This frees core1 from back-to-back ISR calls, allowing its
-    // main loop to reach hdmi_poll_reinit().
-    dma_hw->abort = (1u << dma_chan_ctrl) | (1u << dma_chan)
-                  | (1u << dma_chan_pal_conv) | (1u << dma_chan_pal_conv_ctrl);
-    while (dma_hw->abort) tight_loop_contents();
-
-    // Signal core1 to do the reinit (IRQ handler must be registered on core1)
-    hdmi_reinit_done = false;
-    __dmb();
-    hdmi_reinit_pending = true;
-    __sev();
-    // Wait for core1 to complete
-    while (!hdmi_reinit_done) {
-        tight_loop_contents();
-    }
-}
-
-void hdmi_poll_reinit() {
-    if (hdmi_reinit_pending) {
-        hdmi_reinit_pending = false;
-        hdmi_init();
-        __dmb();
-        hdmi_reinit_done = true;
-    }
-}
 
 // Write the TMDS pair for one palette slot. left888 is the first output pixel of
 // the pair, right888 the second. Both DS80 (two different source pixels) and the

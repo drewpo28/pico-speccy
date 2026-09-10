@@ -175,11 +175,6 @@ public:
   // Reset video
   static void Reset();
 
-#ifdef VGA_HDMI
-  // Hot video mode switch (no reboot)
-  static void changeMode();
-#endif
-
   // Video draw functions
   static void EndFrame();
   // Repaint a full frame from the frozen machine state (used while CPU::paused,

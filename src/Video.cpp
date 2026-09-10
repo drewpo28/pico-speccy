@@ -59,13 +59,10 @@ visit https://zxespectrum.speccy.org/contacto
 #include "hardware/regs/addressmap.h"
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
 extern "C" void vga_set_palette_entry_solid(uint8_t i, uint32_t color888);
-extern "C" void graphics_set_buffer(uint8_t* buffer, uint16_t width, uint16_t height);
 extern "C" void graphics_set_scanlines(uint8_t level);
 extern "C" void graphics_set_crt(uint8_t level);
 extern "C" void graphics_set_dither(bool enabled);
 extern "C" void graphics_set_hdmi_clock_drive(bool soft);
-extern "C" void hdmi_reinit(void);
-extern "C" void vga_reinit(void);
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" void vga_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
 extern "C" volatile bool profi_ds80_active;
@@ -2248,150 +2245,6 @@ void VIDEO::Init() {
         initGigascreenBlendLUT(); // Pre-compute blend palette entries
     }
 }
-
-static void freeFrameBuffer(void **fb) {
-    if (!fb) return;
-    free(fb[0]);  // contiguous data block allocated by heap_caps_malloc
-    free(fb);     // pointer array allocated by malloc
-}
-
-#ifdef VGA_HDMI
-void VIDEO::changeMode() {
-    // 1. Determine new VGA Mode index (same logic as Init())
-    int Mode;
-    if (VIDEO::isFullBorder288()) {
-        Mode = 22;
-    } else if (VIDEO::isFullBorder240()) {
-        Mode = 23;
-    } else {
-        Mode = 0;
-    }
-
-    int newW = vidmodes[Mode][vmodeproperties::hRes];
-    int newH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
-
-    bool sameDims = (vga.frameBuffer && vga.xres == newW && vga.yres == newH);
-
-    // Shared block path: realloc to fit the new mode (saves SRAM at smaller
-    // resolutions; grows on the way up). Pointer arrays rebuilt afterwards.
-    if (sharedFB_main) {
-        if (!sameDims) {
-            // Runtime resolution change is not supported — mode-switch callers
-            // savePendingVideoMode() then esp_hard_reset(). If we got here with
-            // a dim change anyway, refuse: heap fragmentation has no in-place
-            // remedy and a NULL frameBuffer would SIGBUS-storm the renderer.
-            Debug::log("changeMode: ignored runtime dim change %dx%d -> %dx%d",
-                       (int)vga.xres, (int)vga.yres, newW, newH);
-            return;
-        }
-    } else
-    {
-        // Non-shared fallback (only if the shared alloc failed).
-        // prevFrameBuffer is RP2350-only (Gigascreen) — guard the cleanup.
-        // freeFrameBuffer frees fb[0] as "the one data block", which is only true for
-        // an allocateFrameBuffer() array — the shared array's row 0 belongs to
-        // sharedFB_prevBuf/prevChunk[0] and is owned by GsSubsys. Reaching here with
-        // it installed would be a double free (this branch means the shared scheme was
-        // never used, so it cannot happen; the check keeps it that way).
-        if (vga.prevFrameBuffer && (void**)vga.prevFrameBuffer != sharedFB_arr2) {
-            auto oldPrev = vga.prevFrameBuffer;
-            vga.prevFrameBuffer = nullptr;
-            freeFrameBuffer((void**)oldPrev);
-        }
-        // Only null FB when dims change (alloc step below will rebuild it).
-        // If sameDims, keep current FB to avoid driver reading NULL.
-        if (!sameDims) {
-            vga.frameBuffer = nullptr;
-        }
-    }
-
-    // 2. Update video_mode BEFORE reinit (hdmi_init reads it via get_video_mode())
-    if (SELECT_VGA) {
-        switch (Config::vga_video_mode) {
-            case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
-                else video_mode = 1;
-                break;
-            case Config::VM_720x480_60: video_mode = 7; break;
-            case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
-                else video_mode = 4;
-                break;
-            default: video_mode = 0; break;
-        }
-    } else {
-        switch (Config::hdmi_video_mode) {
-            case Config::VM_640x480_60: video_mode = 0; break;
-            case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
-                else if (Config::arch == A_128K) video_mode = 3;
-                else video_mode = 1;
-                break;
-            case Config::VM_720x480_60: video_mode = 7; break;
-            case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
-                else video_mode = 4;
-                break;
-            default: video_mode = 0; break;
-        }
-    }
-
-    // 3. Update driver buffer dimensions + reinit video output
-    vga.mode = Mode;
-    vga.xres = newW;
-    vga.yres = newH;
-    OSD::scrW = newW;
-    OSD::scrH = newH;
-    graphics_set_buffer(NULL, newW, newH);
-    graphics_set_scanlines(Config::scanlines);
-    graphics_set_crt(Config::crt_filter);
-    if (SELECT_VGA) {
-        vga_reinit();
-    } else {
-        hdmi_reinit();
-    }
-
-    // 4. Allocate framebuffer (non-shared path only)
-    if (!sharedFB_main) {
-        if (sameDims) {
-            // frameBuffer already nulled above for non-shared; won't reach here for shared
-        } else {
-            auto oldFB = vga.frameBuffer;
-            vga.frameBuffer = nullptr;
-            freeFrameBuffer((void**)oldFB);
-            vga.frameBuffer = vga.allocateFrameBuffer();
-            SaveRect.clear();
-        }
-    }
-
-    // 5. Recalculate border timing + precalc tables (preserve border color)
-    uint8_t savedBorderColor = borderColor;
-    VIDEO::Reset();
-    borderColor = savedBorderColor;
-    updateBorderBrd();
-    precalcborder32();
-
-    // 6. Repaint framebuffer with current border color
-    if (vga.frameBuffer) {
-        int stride = (vga.xres + 3) & ~3;
-        memset(vga.frameBuffer[0], zxColor(borderColor, 0), vga.yres * stride);
-    }
-
-    // 7. Gigascreen
-    if (Config::gigascreen_enabled && vga.prevFrameBuffer) {
-        VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1);
-    } else if (Config::gigascreen_enabled) {
-        InitPrevBuffer();
-        if (!vga.prevFrameBuffer) {
-            Config::gigascreen_enabled = false;
-            VIDEO::gigascreen_enabled = false;
-        }
-    }
-}
-#endif
 
 void VIDEO::Reset() {
 

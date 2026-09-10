@@ -1031,7 +1031,6 @@ void repeat_me_for_input() {
 }
 
 #ifdef VGA_HDMI
-extern "C" void hdmi_poll_reinit(void);
 extern "C" void vga_reinit(void);
 #endif
 #ifdef TFT
@@ -1058,9 +1057,6 @@ void __scratch_x("render") render_core() {
     graphics_set_flashmode(true, false);
     sem_acquire_blocking(&vga_start_semaphore);
     while (true) {
-#ifdef VGA_HDMI
-        hdmi_poll_reinit();
-#endif
 #ifdef TFT
         refresh_lcd();
 #endif
