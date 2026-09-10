@@ -45,6 +45,7 @@ public:
 
 private:
     uint32_t tick_q16 = 1u << 16;   // clock / 8 MHz, Q16 (see set_clock)
+    uint32_t rem_scale_q16 = 1u << 16;  // 65536 / tick_q16, Q16 (see set_clock)
     uint8_t regs[32];
     uint8_t selectedRegister;
     bool outputEnabled;

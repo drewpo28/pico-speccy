@@ -138,6 +138,9 @@ void SAASound::set_sound_format(int freq, int chans, int bits) {
 
 void SAASound::set_clock(int hz) {
     tick_q16 = (uint32_t)(((uint64_t)hz << 16) / 8000000u);
+    // Reciprocal used by the sub-sample edge position in gen_sound: 65536 /
+    // tick_q16 in Q16, i.e. exactly 65536 (1.0) at the stock 8 MHz clock.
+    rem_scale_q16 = tick_q16 ? (uint32_t)((65536ull << 16) / tick_q16) : (1u << 16);
 }
 
 //////////////////////////////////////////////////////////////////////
@@ -530,9 +533,56 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
             // --- Tone tick (CSAAFreq::Tick) ---
             // Q16: increment scaled by clock/8MHz; period compared in Q16 too,
             // so at the default clock this is the old integer math times 65536.
-            c.counter += (tick_q16 << c.octave);
+            //
+            // The mixer below takes the TIME AVERAGE of the square over this
+            // output sample (lvl_acc), not the level at the sample point.
+            // Taking the level alone snaps every edge to the 31250 Hz grid
+            // (32 us), and that jitter is broadband noise only ~19 dB below a
+            // 500 Hz tone — 8-10 dB dirtier than AySound at every pitch, which
+            // oversamples 7x per output sample (ChipTacts_per_outcount) and
+            // box-averages, so its edges land at 1/7-sample resolution. On a
+            // real SAA1099 there is no such jitter at all: the output is an
+            // analogue square whose edges fall wherever they fall. Measured on
+            // the host with tools/saa_clock_test.cpp's harness (single channel,
+            // full amplitude, harmonic energy vs everything else):
+            //
+            //     f0        AY 7x    SAA level-only    SAA time-average
+            //     122 Hz    34.7      26.0              34.5
+            //     500 Hz    28.9      19.0              29.1
+            //    1215 Hz    23.4      14.6              23.9
+            //    3216 Hz    17.2       9.6              17.5
+            //
+            // i.e. this puts the SAA exactly on the AY, and unlike 7x
+            // oversampling it costs work per EDGE, not per sub-tick: inc is at
+            // most half of period<<16 by construction (2^octave <= 128, period
+            // >= 256), so there is never more than one edge per sample and
+            // usually one per 10-30. In a sample with no edge lvl_acc is
+            // level<<16 and the arithmetic is bit-identical to the old code.
+            const uint8_t oct = c.octave;         // the octave THIS sample runs at
+            const uint32_t inc = (tick_q16 << oct);
+            uint32_t lvl_acc = 0;                 // sum of level * duration, Q16 time
+            uint32_t t_prev = 0;                  // position in the sample, Q16 (0..65536)
+            c.counter += inc;
             while (c.counter >= (c.period << 16)) {
                 c.counter -= (c.period << 16);
+                {
+                    // What is left in the counter after the subtraction is how
+                    // far past the threshold the sample already carried us,
+                    // i.e. how much of the sample remains AFTER this edge:
+                    // rem = c.counter / inc, in Q16 of one sample. Shifting
+                    // by the octave first turns that into c.counter>>oct
+                    // divided by tick_q16, and set_clock keeps the reciprocal
+                    // (rem_scale_q16 = 65536/tick_q16, exactly 1.0 at the stock
+                    // 8 MHz clock) so this is one multiply rather than a divide
+                    // in a loop the compiler unrolls six times. Resolution is
+                    // 1/65536 of a sample either way.
+                    uint32_t rem = (uint32_t)
+                        (((uint64_t)(c.counter >> oct) * rem_scale_q16) >> 16);
+                    uint32_t t_flip = rem >= 65536u ? 0u : 65536u - rem;
+                    if (t_flip < t_prev) t_flip = t_prev;   // keep it monotonic
+                    lvl_acc += (uint32_t)c.level * (t_flip - t_prev);
+                    t_prev = t_flip;
+                }
                 c.level ^= 1;
 
                 // Trigger connected devices (from CSAAFreq constructor wiring):
@@ -559,16 +609,23 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
                 toneUpdateData(ch);
             }
 
+            lvl_acc += (uint32_t)c.level * (65536u - t_prev);
+
             // --- Mixer (CSAAAmp::Tick + TickAndOutputStereo) ---
-            int tone_level = c.level;
+            // tone_level and intermediate are Q16 now (65536 == the old 1):
+            // the noise sources tick at most once per output sample (source 0
+            // is clock/256 = the sample rate itself) and are advanced before
+            // this loop, so noise_level is constant across the sample and only
+            // the tone needs the time average.
+            uint32_t tone_level = lvl_acc;
             int noise_level = noise[ng].rand & 1;
-            int intermediate;
+            uint32_t intermediate;   // Q16, 0..131072 (= the old 0..2)
 
             switch (c.mix_mode) {
             case 0: intermediate = 0; break;
             case 1: intermediate = tone_level * 2; break;
-            case 2: intermediate = noise_level * 2; break;
-            case 3: intermediate = tone_level * (2 - noise_level); break;
+            case 2: intermediate = (uint32_t)noise_level * (2u << 16); break;
+            case 3: intermediate = tone_level * (uint32_t)(2 - noise_level); break;
             default: intermediate = 0; break;
             }
 
@@ -582,12 +639,16 @@ IRAM_ATTR void SAASound::gen_sound(int bufsize, int bufpos) {
                 int er = envs[env_idx].right_level;
                 int al_div2 = c.amp_left >> 1;
                 int ar_div2 = c.amp_right >> 1;
-                output_l += pdm_x4[al_div2][el] * (2 - intermediate);
-                output_r += pdm_x4[ar_div2][er] * (2 - intermediate);
+                // 32-bit throughout: the largest product here is
+                // pdm_x4[7][15] (212) * 131072 = 27.8M, well inside uint32_t.
+                uint32_t inv = (2u << 16) - intermediate;   // (2 - intermediate), Q16
+                output_l += (int)((pdm_x4[al_div2][el] * inv) >> 16);
+                output_r += (int)((pdm_x4[ar_div2][er] * inv) >> 16);
             } else {
                 // Non-envelope channel: simple amplitude * intermediate
-                output_l += c.amp_left * intermediate * 16;
-                output_r += c.amp_right * intermediate * 16;
+                // (240 * 131072 = 31.5M, also inside uint32_t)
+                output_l += (int)((c.amp_left  * 16u * intermediate) >> 16);
+                output_r += (int)((c.amp_right * 16u * intermediate) >> 16);
             }
         }
 
