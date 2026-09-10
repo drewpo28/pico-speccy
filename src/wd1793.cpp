@@ -54,7 +54,42 @@ static int8_t     g_wdSyncPendingUnit = -1;
 // Shared 8 KB track scratch for raw-format loads: FDI whole-track bulk read and
 // TD0 streaming decode fetch a track in ONE SD multi-block read instead of one
 // SPI transaction per sector (~1.4 ms each on plain SPI cards).
-static uint8_t g_rawTrkDataBuf[8192];
+//
+// LAZY since 2026-09-10: it was a flat 8 KB of .bss on every board, in every
+// session — the single largest static buffer outside the framebuffer — while a
+// session that never inserts a raw-format disk (or any disk at all) cannot touch
+// a byte of it. All three bulk paths below already had a per-sector fallback for
+// "the span does not fit the scratch", so a failed allocation costs speed and
+// nothing else. The one path with NO fallback is the SCL track-0 cache, which
+// aliases the first 2304 B (see claim_scl_track0) — hence the second, much
+// smaller allocation attempt: 2304 B is reachable on any heap that is still
+// alive at all.
+//
+// PREFER_PSRAM, not HOT_SRAM: butter first, so on a board that has it the 8 KB
+// leave SRAM unconditionally rather than only when the heap happens to be tight.
+// The access pattern tolerates it — one sequential f_read per track load, then a
+// memcpy per sector, nothing per-sample — and the precedent is right beside it:
+// the 12 800 B track buffer this scratch feeds has lived in butter all along
+// ("WD1793: track buf 12800 B in butter"). HOT_SRAM would also be the wrong
+// contract: it is documented for blocks the caller FREES when done, and this one
+// is held for the session. Butter-less boards fall through to the heap (the flash
+// tier needs an explicit ALLOW_FLASH, so a write buffer can never land there).
+#define RAW_TRK_SZ 8192u
+#define SCL_T0_SZ  2304u
+static_assert(RAW_TRK_SZ >= 7 + 32 * 7, "scratch too small for a track block");
+static uint8_t* g_rawTrkDataBuf = nullptr;
+static uint32_t g_rawTrkCap = 0;
+static bool rawTrkEnsure(uint32_t need) {
+    if (g_rawTrkCap >= need) return true;
+    if (g_rawTrkDataBuf) return false;      // the small buffer is all this heap gave
+    void* p = Buffer::palloc(RAW_TRK_SZ, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    uint32_t cap = RAW_TRK_SZ;
+    if (!p) { p = Buffer::palloc(SCL_T0_SZ, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM); cap = SCL_T0_SZ; }
+    if (!p) { Debug::log("WD1793: raw-track scratch unavailable (no RAM) - per-sector reads"); return false; }
+    g_rawTrkDataBuf = (uint8_t*)p; g_rawTrkCap = cap;
+    Debug::log("WD1793: raw-track scratch %u B @%08lX", (unsigned)cap, (unsigned long)(uintptr_t)p);
+    return g_rawTrkCap >= need;
+}
 
 #if FDD_PORT_TRACE
 // First 8 bytes delivered for the current sector read — see [FDC RD-END] log.
@@ -84,7 +119,7 @@ uint16_t g_fdcLastPc = 0;
 // next SCL read (a few ms, only in that rare mix).
 // so it keeps a dedicated buffer.
 static rvmWD1793 *s_scl_track0_owner = nullptr;
-static unsigned char* const s_scl_track0 = (unsigned char*)g_rawTrkDataBuf;
+// s_scl_track0 is now the lazily allocated scratch itself — see claim_scl_track0.
 static inline void invalidateSclCacheForScratch() {
     if (s_scl_track0_owner) {
         s_scl_track0_owner->sclConverted = false;
@@ -92,12 +127,15 @@ static inline void invalidateSclCacheForScratch() {
     }
 }
 
+// nullptr when the scratch could not be allocated at all — the two SCL callers
+// check, because unlike the bulk paths this one has no per-sector fallback.
 static unsigned char* claim_scl_track0(rvmWD1793 *wd) {
+    if (!rawTrkEnsure(SCL_T0_SZ)) return nullptr;
     if (s_scl_track0_owner && s_scl_track0_owner != wd) {
         s_scl_track0_owner->sclConverted = false;
     }
     s_scl_track0_owner = wd;
-    return s_scl_track0;
+    return (unsigned char*)g_rawTrkDataBuf;
 }
 
 // KNOWN, currently UNFIXED: reading an image past its end GROWS the file.
@@ -2188,11 +2226,14 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
         uint32_t dmgFilePos[FDI_DMG_MAX];
         uint16_t dmgLen[FDI_DMG_MAX];
         uint32_t dmgStaged = 0;                 // bytes of sector data to stage
-        const UINT winMax = sizeof(g_rawTrkDataBuf);
+        // No scratch -> no header window, so the whole scan is skipped and the
+        // damaged sectors stay FDI_DMG_UNKNOWN, which is a state the emulation
+        // already handles (writes are taken in full and simply never heal).
+        const UINT winMax = rawTrkEnsure(RAW_TRK_SZ) ? (UINT)g_rawTrkCap : 0u;
+        if (!winMax) totalTracks = 0;
         const uint32_t trkHdrMax = 7 + 32 * 7;  // largest possible track block
         // The window must hold a whole track block, or a track's later sector
         // descriptors would fall outside it and be skipped.
-        static_assert(sizeof(g_rawTrkDataBuf) >= 7 + 32 * 7, "scratch too small for a track block");
         uint32_t winPos = trkHdrPos;
         UINT winLen = 0;
 
@@ -2972,7 +3013,7 @@ void fdiLoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side) {
     // then memcpy from RAM instead of hitting the SD card individually. Falls back
     // to per-sector f_read if the span exceeds the scratch buffer (rare).
     bool bulkOK = false;
-    if (dataMaxEnd > dataMinOff && (dataMaxEnd - dataMinOff) <= sizeof(g_rawTrkDataBuf)) {
+    if (dataMaxEnd > dataMinOff && rawTrkEnsure(RAW_TRK_SZ) && (dataMaxEnd - dataMinOff) <= g_rawTrkCap) {
         f_lseek(disk->Diskfile, disk->fdiDataOffset + trkDataOffset + dataMinOff);
         f_read(disk->Diskfile, g_rawTrkDataBuf, dataMaxEnd - dataMinOff, &br);
         invalidateSclCacheForScratch();  // scratch shares SRAM with the SCL track-0 cache
@@ -3140,7 +3181,14 @@ void td0LoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side) {
     // Per-sector staging for the fallback path (track record > 8 KB): holds
     // one sector's encoded TD0 data at a time, up to a 1 KB raw sector
     // (method byte + 1024 data bytes). Static — no heap fragmentation.
-    static uint8_t g_td0_enc_sec[2048];
+    // TD0 RLE-decode staging, lazy for the same reason as the raw-track scratch:
+    // 2 KB of .bss that only a compressed .td0 image ever touches.
+    #define TD0_ENC_SZ 2048u
+    static uint8_t* g_td0_enc_sec = nullptr;
+    if (!g_td0_enc_sec) {
+        g_td0_enc_sec = (uint8_t*)Buffer::palloc(TD0_ENC_SZ, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!g_td0_enc_sec) { Debug::log("WD1793: TD0 decode buffer unavailable (no RAM)"); }
+    }
 
     uint32_t filePos = disk->fdiTrackHdrOffsets[trkIdx];
     UINT br = 0;
@@ -3166,9 +3214,9 @@ void td0LoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side) {
     UINT bulkLen = 0;
     {
         FSIZE_t rem = f_size(disk->td0Stream) - spanStart;
-        UINT want = (rem > (FSIZE_t)sizeof(g_rawTrkDataBuf))
-                    ? (UINT)sizeof(g_rawTrkDataBuf) : (UINT)rem;
-        f_read(disk->td0Stream, g_rawTrkDataBuf, want, &bulkLen);
+        UINT want = rawTrkEnsure(RAW_TRK_SZ)
+                    ? (UINT)((rem > (FSIZE_t)g_rawTrkCap) ? (FSIZE_t)g_rawTrkCap : rem) : 0u;
+        if (want) f_read(disk->td0Stream, g_rawTrkDataBuf, want, &bulkLen);
         invalidateSclCacheForScratch();  // scratch shares SRAM with the SCL track-0 cache
     }
 
@@ -3319,12 +3367,16 @@ void td0LoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side) {
                                       d.encLen, slen, buf + pos);
                 } else {
                     // Fetch this sector's encoded data from the file on demand.
-                    uint16_t readLen = d.encLen < (uint16_t)sizeof(g_td0_enc_sec)
-                                       ? d.encLen : (uint16_t)sizeof(g_td0_enc_sec);
+                    uint16_t readLen = d.encLen < (uint16_t)TD0_ENC_SZ
+                                       ? d.encLen : (uint16_t)TD0_ENC_SZ;
                     UINT br2 = 0;
-                    f_lseek(disk->td0Stream, d.encFileOff);
-                    f_read(disk->td0Stream, g_td0_enc_sec, readLen, &br2);
-                    td0_decode_sector(g_td0_enc_sec, (uint16_t)br2, slen, buf + pos);
+                    if (g_td0_enc_sec) {
+                        f_lseek(disk->td0Stream, d.encFileOff);
+                        f_read(disk->td0Stream, g_td0_enc_sec, readLen, &br2);
+                        td0_decode_sector(g_td0_enc_sec, (uint16_t)br2, slen, buf + pos);
+                    } else {
+                        memset(buf + pos, 0, slen);   // no decode buffer: blank sector
+                    }
                 }
             } else if (toEmit > 0)
                 memset(buf + pos, 0, toEmit);
@@ -4015,6 +4067,7 @@ IRAM_ATTR uint8_t rvmwdDiskStep(rvmWD1793 *wd, uint32_t control) {
 
           // Create track0 from SCL file if not already done
           unsigned char* t0 = claim_scl_track0(wd);
+          // No track-0 cache (allocation failed): the SCL image cannot be translated.
           if (!wd->sclConverted) {
               SCLtoTRD(disk, t0);
               wd->sclConverted = true;
@@ -4312,6 +4365,7 @@ static bool sclConvertToTRD(rvmWD1793 *wd) {
 
     // Ensure Track0 is populated
     unsigned char* t0 = claim_scl_track0(wd);
+    // No track-0 cache (allocation failed): the SCL image cannot be translated.
     if (!wd->sclConverted) {
         SCLtoTRD(disk, t0);
         wd->sclConverted = true;

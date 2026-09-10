@@ -1,4 +1,5 @@
 #include "DivMMC.h"
+#include "Buffer.h"
 
 
 #include <cstring>
@@ -87,7 +88,18 @@ uint8_t* DivMMC::mmc_sector_buf = nullptr;
 uint32_t DivMMC::mmc_sector_buf_addr = 0xFFFFFFFF;
 bool DivMMC::mmc_sector_dirty = false;
 
-FIL DivMMC::mmc_file[2];
+FIL* DivMMC::mmc_file = nullptr;
+// One allocation for both handles, on the first open. Never freed: the handles
+// outlive individual mounts and 1 216 B is not worth churning. A member so it can
+// touch the private pointer (init() is void, hence the bool return is consumed by
+// the callers' own guards rather than returned).
+bool DivMMC::mmcFilesEnsure() {
+    if (mmc_file) return true;
+    mmc_file = (FIL*)Buffer::palloc(sizeof(FIL) * 2, Buffer::NEED_POINTER);
+    if (!mmc_file) { Debug::log("DivMMC: no memory for the image handles"); return false; }
+    memset(mmc_file, 0, sizeof(FIL) * 2);
+    return true;
+}
 bool DivMMC::mmc_file_open[2] = {false, false};
 uint32_t DivMMC::mmc_file_size[2] = {0, 0};
 
@@ -134,7 +146,7 @@ void DivMMC::init() {
         // Close open image files
         for (int d = 0; d < 2; d++) {
             if (mmc_file_open[d]) {
-                f_close(&mmc_file[d]);
+                if (mmc_file) f_close(&mmc_file[d]);
                 mmc_file_open[d] = false;
                 mmc_file_size[d] = 0;
             }
@@ -222,7 +234,7 @@ void DivMMC::init() {
     for (int d = 0; d < 2; d++) {
         if (mmc_file_open[d]) {
             if (d == 0) flushWriteBuffer();
-            f_close(&mmc_file[d]);
+            if (mmc_file) f_close(&mmc_file[d]);
             mmc_file_open[d] = false;
             mmc_file_size[d] = 0;
         }
@@ -262,6 +274,7 @@ void DivMMC::init() {
             if (image_path[0] == '\0') continue; // no slave configured
             // "USB:/..." image at boot: wait for the stick to enumerate first.
             if (!FileUtils::waitVolumeReady(image_path)) continue;
+            if (!mmcFilesEnsure()) continue;
             FRESULT fr = f_open(&mmc_file[d], image_path, FA_READ | FA_WRITE);
             if (fr == FR_OK) {
                 mmc_file_open[d] = true;
@@ -290,6 +303,7 @@ void DivMMC::init() {
         // "USB:/..." image at boot: wait for the stick to enumerate first
         // (if it never shows up the opens below just fail like a missing file).
         FileUtils::waitVolumeReady(image_path);
+        if (!mmcFilesEnsure()) return;
         FRESULT fr = f_open(&mmc_file[0], image_path, FA_READ | FA_WRITE);
         if (fr == FR_OK) {
             mmc_file_open[0] = true;

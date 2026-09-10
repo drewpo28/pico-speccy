@@ -4,6 +4,7 @@
  */
 
 #include "Subsystem.h"
+#include "CodeOverlay.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -924,6 +925,13 @@ void featureSetEnabled(FeatureId f, bool on) {
             break;
         case FEAT_DMA:
             if (!on) Config::dma_mode = 0;
+            // The transfer engine's hot code lives in a fixed-VMA overlay window
+            // (src/CodeOverlay.h) that the heap owns on a session that came up with
+            // DMA off. SET_DMA is a live AC_SUBSYS toggle with no reboot of its own,
+            // so if the heap has already grown into the window the feature simply
+            // stays off — better than a wild jump into heap data.
+            else if (!CodeOverlay::claimForDma())
+                Debug::log("DMA: overlay window unavailable this session - stays off");
             else if (Config::dma_mode == 0) Config::dma_mode = 1;       // default Z80 DMA
             break;
         case FEAT_16COL:

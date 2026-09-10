@@ -111,7 +111,10 @@ private:
     static uint32_t mmc_sector_buf_addr;
     static bool mmc_sector_dirty;
 
-    static FIL mmc_file[2];        // [0]=primary/master, [1]=slave (DivIDE only)
+    // Lazily allocated (1 216 B of .bss otherwise): only a session with a DivMMC/
+    // divIDE image mounted needs them. Null until the first successful open.
+    static FIL* mmc_file;          // [0]=primary/master, [1]=slave (DivIDE only)
+    static bool mmcFilesEnsure();  // lazily allocates the pair; false = no memory
     static bool mmc_file_open[2];
     static uint32_t mmc_file_size[2];
 

@@ -22,10 +22,15 @@
 // gains the heap those bytes (ceiling moves up to .gsovl's base), but releasing
 // .gsovl under a reserved .tsovl gains nothing — its address range is stranded
 // above the ceiling. TS-Conf is the rarer feature, so it takes the lower slot:
-//   neither          -> heap gains both windows
-//   GS on, TS off    -> heap gains .tsovl          (the common case)
-//   TS on, GS off    -> heap gains nothing         (the rare one)
-//   both on          -> heap gains nothing (there is nothing to give)
+// Layout, heap at the bottom: [heap ...][.tsovl][.dmaovl][.gsovl][stack], ordered
+// by DESCENDING probability of being released. The heap gains the contiguous
+// prefix of released windows, so e.g.:
+//   nothing on             -> heap gains all three
+//   GS on, TS+DMA off      -> heap gains .tsovl + .dmaovl   (the common case)
+//   DMA on, TS off         -> heap gains .tsovl only
+//   TS on                  -> heap gains nothing (there is nothing below it)
+// A window whose feature is ON is never given back — only a boot decision (or a
+// mid-session claim, below) settles that.
 //
 // No relocation is involved and no PIC: the VMA is fixed, so the linker resolved
 // every branch and literal for exactly the address we copy to. This is the same
@@ -73,19 +78,23 @@ namespace CodeOverlay {
 // condition that gates the single GS::init() call site, which is why the GS
 // window needs no runtime claim: Audio > General Sound is AC_REBOOT, so a guest
 // can never bring the card up on a session that released its window.
-void apply(bool tsconf, bool gs);
+void apply(bool tsconf, bool gs, bool dma);
 
-// A machine switch INTO TS-Conf outside that window: load the overlay if the
-// window is still untouched (the heap grows upward and rarely reaches the top
-// 16 KB, so this normally succeeds), false if the heap has already grown into
-// it — the caller must then reboot so apply() reserves it from the start.
+// Enabling a feature OUTSIDE that window: load its overlay if the window is
+// still untouched (the heap grows upward and rarely reaches the top tens of KB,
+// so this normally succeeds), false if the heap has already grown into it.
+// TS-Conf's caller then reboots (requestMachine already has that shape); the
+// Z80 DMA caller leaves the feature off, because SET_DMA is a live AC_SUBSYS
+// toggle with no reboot of its own.
 bool claimForTsconf();
+bool claimForDma();
 
 // Diagnostics for Hardware/Memory Info: window size, bytes used by the content,
 // and whether the window is currently code (true) or heap (false).
-unsigned windowBytes(bool gs);
-unsigned contentBytes(bool gs);
-bool     loaded(bool gs);
+enum Which { WIN_TS = 0, WIN_DMA, WIN_GS };
+unsigned windowBytes(Which w);
+unsigned contentBytes(Which w);
+bool     loaded(Which w);
 
 } // namespace CodeOverlay
 

@@ -756,7 +756,7 @@ void ESPectrum::setup() {
   // at the bottom, from a pristine heap, before Config::load()). It must precede
   // the reserveFrameBuffer() re-check below, which is the first allocation that
   // can want the extra room.
-  CodeOverlay::apply(Config::arch == A_TSCONF, Config::gs_enabled != 0);
+  CodeOverlay::apply(Config::arch == A_TSCONF, Config::gs_enabled != 0, Config::dma_mode != 0);
   // Framebuffer re-check: the block was already claimed at the top of setup(), from
   // a pristine heap and for the DEFAULT mode. This is where the mode the user
   // actually picked is honoured — a no-op when it matches, a resize when it does

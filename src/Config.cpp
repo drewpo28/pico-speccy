@@ -934,10 +934,16 @@ void Config::saveWifiConfig() {
     FileUtils::mkdirParents(CONFIG_DIR);
     FIL* f = fopen2(WIFI_CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS);
     if (!f) return;
-    // Static (not on the stack): this runs deep under do_OSD (F5 → Add Remote) where the
-    // 4 KB core stack is tight — a 1 KB local here overflowed it (stackOvf). Not reentrant.
-    static char buf[1024];
-    int n = snprintf(buf, sizeof(buf),
+    // Not on the stack: this runs deep under do_OSD (F5 → Add Remote) where the
+    // core stack is tight — a 1 KB local here overflowed it (stackOvf). It used to be
+    // `static`, i.e. 1 KB of .bss for the whole session to serve one write; it is now
+    // borrowed for the length of the call.
+    const size_t bufSz = 1024;
+    char* buf = (char*)Buffer::palloc(bufSz, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!buf) { fclose2(f); return; }
+    // bufSz, NOT sizeof(buf): buf is a pointer now, and sizeof() on it would
+    // silently cap every write at 4 bytes.
+    int n = snprintf(buf, bufSz,
                      "ssid=%s\npass=%s\ntz=%d\nautoconnect=%d\n"
                      "net_host=%s\nnet_user=%s\nnet_port=%u\nnet_proto=%u\nbaud=%u\n"
                      "net_dl=%s\nnet_ul=%s\ncatalog_host=%s\ncatalog_port=%u\nlast_loc=%s\n",
@@ -949,6 +955,7 @@ void Config::saveWifiConfig() {
                      catalog_host.c_str(), (unsigned)catalog_port, last_loc.c_str());
     UINT bw;
     if (n > 0) f_write(f, buf, n, &bw);
+    Buffer::pfree(buf);
     fclose2(f);
 }
 

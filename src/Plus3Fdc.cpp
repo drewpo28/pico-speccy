@@ -1,6 +1,7 @@
 // Plus3Fdc — FatFs, the Buffer pool and the clock, wired to Upd765/DskImage.
 
 #include "Plus3Fdc.h"
+#include <new>
 
 #include <string.h>
 
@@ -33,7 +34,11 @@ struct Slot {
     FIL*        fp = nullptr;
     std::string name;
 };
-static Slot s_slot[2];
+// Lazily allocated alongside the sector window (same refcount): 2 688 B of .bss
+// that only a session with a +3 disk mounted ever needs. `new`, not palloc — Slot
+// holds a std::string, so the storage has to be constructed. Every reader below
+// tolerates a null array, which is the state whenever nothing is mounted.
+static Slot* s_slot = nullptr;
 
 // ── FatFs backing store ────────────────────────────────────────────────────────
 // LED::SD is the card indicator, and these really are card accesses — the same
@@ -65,6 +70,8 @@ static inline uint64_t nowT() { return CPU::global_tstates + CPU::tstates; }
 // ── window lifetime ────────────────────────────────────────────────────────────
 static bool windowAcquire() {
     if (s_windowUsers == 0) {
+        if (!s_slot) s_slot = new (std::nothrow) Slot[2];
+        if (!s_slot) { Debug::log("+3 FDC: no memory for the drive slots"); return false; }
         // HOT_SRAM: this is hot working state read a byte at a time, allocated well
         // after boot, and the generic heap-safety margin would exile it to PSRAM.
         // NEED_POINTER keeps butter PSRAM as the fallback if the heap cannot.
@@ -82,7 +89,10 @@ static bool windowAcquire() {
     return true;
 }
 static void windowRelease() {
-    if (s_windowUsers && --s_windowUsers == 0) s_window.free();
+    if (s_windowUsers && --s_windowUsers == 0) {
+        s_window.free();
+        delete[] s_slot; s_slot = nullptr;   // nothing is mounted: the slots are dead state
+    }
 }
 
 // ── lifecycle ──────────────────────────────────────────────────────────────────
@@ -91,6 +101,8 @@ void init() {
     fdc.drive[0].present = true;
     // Drive B: exists only once something is mounted in it — a +3 with one drive must
     // report "not ready" for B:, which is what +3DOS uses to decide the drive is absent.
+    if (!s_slot) { fdc.drive[0].present = fdc.drive[1].present = false;
+                   fdc.drive[0].img = fdc.drive[1].img = nullptr; return; }
     fdc.drive[1].present = (s_slot[1].fp != nullptr);
     fdc.drive[0].img = s_slot[0].fp ? &s_slot[0].img : nullptr;
     fdc.drive[1].img = s_slot[1].fp ? &s_slot[1].img : nullptr;
@@ -228,15 +240,15 @@ void traceFlush() {
 }
 
 // ── mount / eject ──────────────────────────────────────────────────────────────
-bool mounted(uint8_t unit) { return unit < 2 && s_slot[unit].fp != nullptr; }
+bool mounted(uint8_t unit) { return s_slot && unit < 2 && s_slot[unit].fp != nullptr; }
 
 const std::string& fname(uint8_t unit) {
     static const std::string empty;
-    return unit < 2 ? s_slot[unit].name : empty;
+    return (s_slot && unit < 2) ? s_slot[unit].name : empty;
 }
 
 void eject(uint8_t unit) {
-    if (unit >= 2 || !s_slot[unit].fp) return;
+    if (!s_slot || unit >= 2 || !s_slot[unit].fp) return;
     dskClose(&s_slot[unit].img);
     fclose2(s_slot[unit].fp);
     s_slot[unit].fp = nullptr;
@@ -292,7 +304,7 @@ bool mount(uint8_t unit, const std::string& path) {
 void setWriteProtect(uint8_t unit, bool wp) {
     if (unit >= 2) return;
     fdc.drive[unit].wrprot = wp;
-    if (s_slot[unit].fp) s_slot[unit].img.wrprot = wp || (s_slot[unit].img.io.wr == nullptr);
+    if (s_slot && s_slot[unit].fp) s_slot[unit].img.wrprot = wp || (s_slot[unit].img.io.wr == nullptr);
 }
 
 // ── blank image ────────────────────────────────────────────────────────────────

@@ -550,6 +550,16 @@ endif()
 # .tsovl window is simply empty and the heap gets all of it on every machine.
 option(TSCONF_CODE_OVERLAY "TS-Conf: put the TS-only hot code in a fixed-VMA SRAM overlay, handed to the heap on other machines (~14.7 KB)" ON)
 option(GS_CODE_OVERLAY "General Sound/NeoGS: put src/GS/'s SRAM-resident code in a fixed-VMA overlay, handed to the heap when GS is Off (~25 KB)" ON)
+option(DMA_CODE_OVERLAY "Z80 DMA / zxnDMA: put Z80DMA.cpp's SRAM-resident code in a fixed-VMA overlay, handed to the heap when DMA is Off (~5 KB)" ON)
+# The AY stereo slot is a different shape from the three windows above: it is not
+# "reserved or released" but "one of three bodies loaded". AySound::gen_sound_ABC /
+# _ACB / _MONO are 1 732 B each, all three resident, and a single
+# `switch (Config::ayConfig)` picks one — so two are dead weight in every session
+# on every board. They share ONE slot (ld OVERLAY + NOCROSSREFS) sized max instead
+# of sum, saving 3 464 B unconditionally. It lives in .data, NOT in the window
+# chain: AY is always present, so a slot there would be permanently reserved and
+# would strand every releasable window above it.
+option(AY_STEREO_SLOT "AY: share one SRAM slot between the three stereo mixers instead of keeping all three resident (~3.4 KB)" ON)
 
 # A window base is fixed, so its size cannot be derived from the collected
 # content (ld places the section before it knows the size) — hence a constant and
@@ -562,6 +572,7 @@ option(GS_CODE_OVERLAY "General Sound/NeoGS: put src/GS/'s SRAM-resident code in
 # `arm-none-eabi-size -A <elf> | grep -E '\.(ts|gs)ovl'`.
 set(TSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the TS-Conf code overlay window, or AUTO (rp2350-memmap.ld)")
 set(GSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the GS/NeoGS code overlay window, or AUTO (rp2350-memmap.ld)")
+set(DMAOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the Z80 DMA code overlay window, or AUTO (rp2350-memmap.ld)")
 
 if (TSOVL_WIN_SIZE STREQUAL "AUTO")
     set(_TSOVL_BYTES 0)
@@ -600,9 +611,25 @@ if (NOT GS_CODE_OVERLAY)
     set(GSOVL_WIN_SIZE_EFFECTIVE 0)
 endif()
 
-# The GS objects whose .time_critical code moves into .gsovl, and which .data
-# must therefore stop collecting.
-set(GSOVL_OBJECTS "*GS.cpp.o *Z80_redcode.c.o *NgsSd.cpp.o *NgsMp3.cpp.o")
+if (DMAOVL_WIN_SIZE STREQUAL "AUTO")
+    set(DMAOVL_WIN_SIZE_EFFECTIVE 5632)   # 5 120 measured + headroom
+else()
+    set(DMAOVL_WIN_SIZE_EFFECTIVE ${DMAOVL_WIN_SIZE})
+endif()
+if (NOT DMA_CODE_OVERLAY)
+    set(DMAOVL_WIN_SIZE_EFFECTIVE 0)
+endif()
+
+# The objects whose .time_critical code moves into a window, and which .data must
+# therefore stop collecting. Built from the options that are actually on.
+set(OVL_EXCLUDE_OBJECTS "")
+if (GS_CODE_OVERLAY)
+    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *GS.cpp.o *Z80_redcode.c.o *NgsSd.cpp.o *NgsMp3.cpp.o")
+endif()
+if (DMA_CODE_OVERLAY)
+    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *Z80DMA.cpp.o")
+endif()
+string(STRIP "${OVL_EXCLUDE_OBJECTS}" OVL_EXCLUDE_OBJECTS)
 
 if (TSCONF_CODE_OVERLAY)
     target_compile_definitions(${PROJECT_NAME} PRIVATE TSCONF_CODE_OVERLAY=1)
@@ -637,16 +664,69 @@ if (GS_CODE_OVERLAY)
         __gsovl_end = .;\n\
     } AT > FLASH\n\
     __gsovl_source = LOADADDR(.gsovl);\n")
-    set(TIME_CRITICAL_RULE "*(EXCLUDE_FILE(${GSOVL_OBJECTS}) .time_critical*)")
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE GS_CODE_OVERLAY=0)
     set(GSOVL_SECTION "\
     PROVIDE(__gsovl_start  = __gsovl_win_start);\n\
     PROVIDE(__gsovl_end    = __gsovl_win_start);\n\
     PROVIDE(__gsovl_source = __gsovl_win_start);\n")
-    set(TIME_CRITICAL_RULE "*(.time_critical*)")
 endif()
-message(STATUS "Code overlays: .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
+
+if (DMA_CODE_OVERLAY)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE DMA_CODE_OVERLAY=1)
+    set(DMAOVL_SECTION "\
+    .dmaovl __dmaovl_win_start : {\n\
+        __dmaovl_start = .;\n\
+        *Z80DMA.cpp.o(.time_critical*)\n\
+        . = ALIGN(4);\n\
+        __dmaovl_end = .;\n\
+    } AT > FLASH\n\
+    __dmaovl_source = LOADADDR(.dmaovl);\n")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE DMA_CODE_OVERLAY=0)
+    set(DMAOVL_SECTION "\
+    PROVIDE(__dmaovl_start  = __dmaovl_win_start);\n\
+    PROVIDE(__dmaovl_end    = __dmaovl_win_start);\n\
+    PROVIDE(__dmaovl_source = __dmaovl_win_start);\n")
+endif()
+
+if (OVL_EXCLUDE_OBJECTS STREQUAL "")
+    set(TIME_CRITICAL_RULE "*(.time_critical*)")
+else()
+    set(TIME_CRITICAL_RULE "*(EXCLUDE_FILE(${OVL_EXCLUDE_OBJECTS}) .time_critical*)")
+endif()
+if (AY_STEREO_SLOT)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE AY_STEREO_SLOT=1)
+    set(AYOVL_SECTION "\
+    /* AY stereo mixer slot: three bodies, one VMA, chosen at runtime by\n\
+     * AySound::gen_sound (see aySlotLoad). NOCROSSREFS makes the linker refuse a\n\
+     * reference from one body to another — they may only reach shared code and\n\
+     * data OUTSIDE the block, which they do. Placed after __data_end__ so crt0\n\
+     * does not copy it: the slot is filled by the first aySlotLoad() instead.\n\
+     *\n\
+     * KEEP is load-bearing: with the dispatch calling only ONE of the three names\n\
+     * (they share the VMA, so any name reaches the resident body) the other two\n\
+     * have no references left and --gc-sections drops them from the image — the\n\
+     * slot then only ever holds ABC and the stereo setting silently stops working.\n\
+     * __attribute__((used)) does not help: that stops the COMPILER discarding\n\
+     * them, not the linker. */\n\
+    OVERLAY : NOCROSSREFS {\n\
+        .ayovl_abc  { KEEP(*(.ayovl_abc))  }\n\
+        .ayovl_acb  { KEEP(*(.ayovl_acb))  }\n\
+        .ayovl_mono { KEEP(*(.ayovl_mono)) }\n\
+    } > RAM AT > FLASH\n\
+    __ay_slot      = ADDR(.ayovl_abc);\n\
+    __ay_abc_lma   = LOADADDR(.ayovl_abc);\n\
+    __ay_abc_len   = SIZEOF(.ayovl_abc);\n\
+    __ay_acb_lma   = LOADADDR(.ayovl_acb);\n\
+    __ay_acb_len   = SIZEOF(.ayovl_acb);\n\
+    __ay_mono_lma  = LOADADDR(.ayovl_mono);\n\
+    __ay_mono_len  = SIZEOF(.ayovl_mono);\n")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE AY_STEREO_SLOT=0)
+    set(AYOVL_SECTION "")
+endif()
+message(STATUS "Code overlays: .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .dmaovl ${DMAOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
 
 
 configure_file("${CMAKE_SOURCE_DIR}/rp2350-memmap.ld" "${CMAKE_BINARY_DIR}/rp2350-memmap.ld" @ONLY)

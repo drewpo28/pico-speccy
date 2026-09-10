@@ -166,6 +166,7 @@ SECTIONS
 
     __etext = LOADADDR(.data);
 
+@AYOVL_SECTION@
     .tbss (NOLOAD) : {
         . = ALIGN(4);
         __bss_start__ = .;
@@ -257,17 +258,23 @@ SECTIONS
      * A window whose option is OFF gets size 0 and no section, and its three
      * content symbols are PROVIDEd equal to its base so CodeOverlay's arithmetic
      * comes out zero. */
-    __gsovl_win_size  = @GSOVL_WIN_SIZE_EFFECTIVE@;
-    __tsovl_win_size  = @TSOVL_WIN_SIZE_EFFECTIVE@;
-    __gsovl_win_start = ORIGIN(RAM) + LENGTH(RAM) - __mos_mailbox - SIZEOF(.stack_dummy) - __gsovl_win_size;
-    __gsovl_win_end   = __gsovl_win_start + __gsovl_win_size;
-    __tsovl_win_start = __gsovl_win_start - __tsovl_win_size;
-    __tsovl_win_end   = __tsovl_win_start + __tsovl_win_size;
+    __gsovl_win_size   = @GSOVL_WIN_SIZE_EFFECTIVE@;
+    __dmaovl_win_size  = @DMAOVL_WIN_SIZE_EFFECTIVE@;
+    __tsovl_win_size   = @TSOVL_WIN_SIZE_EFFECTIVE@;
+    __gsovl_win_start  = ORIGIN(RAM) + LENGTH(RAM) - __mos_mailbox - SIZEOF(.stack_dummy) - __gsovl_win_size;
+    __gsovl_win_end    = __gsovl_win_start + __gsovl_win_size;
+    __dmaovl_win_start = __gsovl_win_start - __dmaovl_win_size;
+    __dmaovl_win_end   = __dmaovl_win_start + __dmaovl_win_size;
+    __tsovl_win_start  = __dmaovl_win_start - __tsovl_win_size;
+    __tsovl_win_end    = __tsovl_win_start + __tsovl_win_size;
 
 @GSOVL_SECTION@
+@DMAOVL_SECTION@
 @TSOVL_SECTION@
     ASSERT(__gsovl_end <= __gsovl_win_end,
         "ERROR: .gsovl overflowed the GS code overlay window. Re-link with -DGSOVL_WIN_SIZE=40960, read the real size from `arm-none-eabi-size -A <elf> | grep .gsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
+    ASSERT(__dmaovl_end <= __dmaovl_win_end,
+        "ERROR: .dmaovl overflowed the Z80 DMA overlay window. Re-link with -DDMAOVL_WIN_SIZE=12288, read the real size from `arm-none-eabi-size -A <elf> | grep .dmaovl`, then fix the AUTO arithmetic in CMakeLists.txt")
     ASSERT(__tsovl_end <= __tsovl_win_end,
         "ERROR: .tsovl overflowed the TS-Conf code overlay window. Re-link with -DTSOVL_WIN_SIZE=24576, read the real size from `arm-none-eabi-size -A <elf> | grep .tsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
     ASSERT(__end__ <= __tsovl_win_start,
