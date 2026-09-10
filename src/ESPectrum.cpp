@@ -1041,13 +1041,21 @@ void ESPectrum::setup() {
   // reset (F11 → ESPectrum::reset) keeps RAM contents, matching hardware.
   // PSRAM_SPI/SWAP pages are skipped (extended pages, not used by 48K; butter is
   // already cleared at boot).  Runs once at cold setup, before romset/snapshot load.
+  // ...except on Karabas-Pro, whose ROMain draws its OWN boot screen instead of
+  // clearing to BASIC: the wake-up checkerboard survives underneath it as visible
+  // junk, so those romsets get the plain zero fill (equally deterministic).
+  const bool dramPattern = !isKarabasRomset(Config::romSet);
   for (size_t i = 0; i < MEM_PG_CNT; ++i) {
     if (MemESP::ram[i].memType() == mem_type_t::POINTER) {
       uint8_t *p = MemESP::ram[i].direct();
-      if (p && p >= (uint8_t *)0x11000000) powerOnDramFill(p, i);
+      if (!p || p < (uint8_t *)0x11000000) continue;
+      if (dramPattern) powerOnDramFill(p, i);
+      else             memset(p, 0, MEM_PG_SZ);
     }
   }
-  Debug::log("setup: ZX RAM pages set to DRAM power-on pattern, freeHeap=%u", getFreeHeap());
+  Debug::log("setup: ZX RAM pages %s, freeHeap=%u",
+             dramPattern ? "set to DRAM power-on pattern" : "cleared (Karabas own boot screen)",
+             getFreeHeap());
   // Load romset
   Debug::log("setup: requestMachine begin, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: requestMachine begin arch=%s romSet=%s freeHeap=%u",
