@@ -198,7 +198,27 @@ echo \nMemory dump files written to /tmp/picospec_mem{0-3}.bin, /tmp/picospec_ra
 # TS-Conf: register file, the 16 ZX-bank CRAM cells and TS-BIOS's NVRAM config
 # cells (#B0..#E7, CRC16 at #E6/#E7 — see RTC::tsBiosSeed). Last on purpose:
 # these symbols exist only in builds that carry the machine.
-shell rm -f /tmp/picospec_tsconf.txt
+shell rm -f /tmp/picospec_tsconf.txt /tmp/picospec_intring.bin /tmp/picospec_symprobe.txt /tmp/picospec_symprobe.gdb
+
+# The INT-accept ring exists only in PERF_TRACE builds, and GDB's command
+# language has no try/catch: an unknown symbol ABORTS the sourced file, and
+# because these blocks run with `logging redirect on` the MI error record goes
+# into the log file instead of the console — the VS Code extension's `evaluate`
+# request then never gets its reply and the dump hangs on "Dumping via GDB..."
+# for ever with the target still paused (hit 2026-09-10 on a PERF_TRACE=OFF
+# build; the dump had already written every .bin and died on ts_int_late).
+# So PROBE first: `info variables <re>` prints nothing and errors on nothing
+# when there is no match, and an untaken `if` body is never evaluated.
+set logging file /tmp/picospec_symprobe.txt
+set logging overwrite on
+set logging redirect on
+set logging enabled on
+info variables ^ts_int_ring$
+set logging enabled off
+set logging redirect off
+shell grep -v "regular expression" /tmp/picospec_symprobe.txt | grep -q ts_int_ring && echo 'set $has_intring = 1' > /tmp/picospec_symprobe.gdb || echo 'set $has_intring = 0' > /tmp/picospec_symprobe.gdb
+source /tmp/picospec_symprobe.gdb
+
 if Z80Ops::isTsconf
   set logging file /tmp/picospec_tsconf.txt
   set logging overwrite on
@@ -210,16 +230,6 @@ if Z80Ops::isTsconf
   printf "dma: saddr=%06X daddr=%06X len=%02X num=%02X ctrl=%02X\n", (unsigned)TsConf::r.saddr, (unsigned)TsConf::r.daddr, (unsigned char)TsConf::r.dmalen, (unsigned char)TsConf::r.dmanum, (unsigned char)TsConf::r.dmactrl
   printf "video: render=%d vmode=%d tsu=%d pal256=%d rres=%d crop=%d ds80_drv=%d ds80_gfx=%d lin_end=%d..%d tmpage=%02X t0g=%02X t1g=%02X sg=%02X t0=%03X,%03X t1=%03X,%03X\n", (int)VIDEO::ts_render_live, (int)VIDEO::ts_vmode_live, (int)VIDEO::ts_tsu_live, (int)VIDEO::ts_pal256_live, (int)VIDEO::ts_rres_live, (int)VIDEO::ts_crop_top, (int)profi_ds80_active, (int)Graphics8BitPalette::ds80_active, (int)'Video.cpp'::lin_end, (int)'Video.cpp'::lin_end2, (unsigned char)TsConf::r.tmpage, (unsigned char)TsConf::r.t0gpage, (unsigned char)TsConf::r.t1gpage, (unsigned char)TsConf::r.sgpage, (unsigned)TsConf::r.t0_xoffs, (unsigned)TsConf::r.t0_yoffs, (unsigned)TsConf::r.t1_xoffs, (unsigned)TsConf::r.t1_yoffs
   printf "gigascreen: cfg=%d live=%d crt=%d\n", (int)Config::gigascreen_enabled, (int)VIDEO::gigascreen_enabled, (int)Config::crt_filter
-  # INT-accept ring (PERF_TRACE builds): the last 64 interrupts TAKEN, oldest
-  # first. pc/sp = the interrupted program (frame is pushed at sp-2..sp-1 and
-  # below), line = raster line of the accept, lat = T-states after the window
-  # opened (bit 7 = woke from HALT), src FF FRAME / FD LINE / FB DMA.
-  printf "intring: late=%u miss=%u frozen=%u w=%u n=%u\n", (unsigned)ts_int_late, (unsigned)ts_int_miss, (unsigned)ts_int_frozen, (unsigned)ts_int_ring_w, (unsigned)(sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
-  # The ring is 256 x 16 B now, so it goes out as ONE binary transfer instead of
-  # 256 printfs: each printf is a separate target read over OpenOCD and that is
-  # what made a dump of the old 64-entry ring slow (and twice appear to hang).
-  # Decode with tools/intring.py, which reads the header line above for w/n.
-  dump binary memory /tmp/picospec_intring.bin &ts_int_ring[0] (&ts_int_ring[0] + sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
   set $i = 0
   while $i < 256
     printf "cram[%02X]=%04X\n", $i, (unsigned)TsConf::cram[$i]
@@ -230,6 +240,24 @@ if Z80Ops::isTsconf
     printf "nv[%02X]=%02X\n", $i, (unsigned char)RTC::regs[$i]
     set $i = $i + 1
   end
+  # INT-accept ring (PERF_TRACE builds only — see the probe above): the last
+  # TS_INT_RING_N interrupts TAKEN, oldest first. pc/sp = the interrupted
+  # program (the frame is pushed at sp-2..sp-1 and below), t = frame T-state
+  # (line = t/224), lat = T-states after the window opened (bit 7 = woke from
+  # HALT), src FF FRAME / FD LINE / FB DMA. It goes out as ONE binary transfer
+  # instead of a printf per entry: each printf is a separate target read over
+  # OpenOCD and that is what made a dump of the old 64-entry ring slow (and
+  # twice appear to hang). Decode with tools/intring.py, which reads the header
+  # line below for w/n. LAST in the block so that a build whose ring layout
+  # ever changes cannot cost the register/CRAM/NVRAM dump above it.
+  if $has_intring
+    printf "intring: late=%u miss=%u frozen=%u w=%u n=%u\n", (unsigned)ts_int_late, (unsigned)ts_int_miss, (unsigned)ts_int_frozen, (unsigned)ts_int_ring_w, (unsigned)(sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
+  end
   set logging enabled off
   set logging redirect off
+  if $has_intring
+    dump binary memory /tmp/picospec_intring.bin &ts_int_ring[0] (&ts_int_ring[0] + sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
+  else
+    echo \nintring: not in this build (PERF_TRACE=OFF)\n
+  end
 end

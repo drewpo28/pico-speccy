@@ -1958,8 +1958,11 @@ of `aligned(4096)` padding. Free heads: DVp2 82.7 KB, z0p2 79.1, z0p2-PIOUSB 64.
      rely on that hand-over.
   Instrumentation costs: the per-access histograms (`[PERF] z80:` / `pages:` /
   `dma src/dst`) cost ~5 ms per TMNT frame and now sit behind `PERF_HIST` (CMake,
-  default OFF) — **PERF_TRACE itself defaults ON and ships in releases**, so
-  nothing per-access may live under PERF_TRACE alone. Every A-vs-C comparison
+  default OFF) — **PERF_TRACE is meant to stay cheap enough to leave on**, so
+  nothing per-access may live under PERF_TRACE alone. (Both DEFAULT to OFF in
+  CMakeLists and `build_all.sh` passes neither, so a release carries no PERF
+  lines and a plain `build/` has no `ts_int_ring` — checked 2026-09-10, an
+  earlier note here claimed PERF_TRACE shipped ON.) Every A-vs-C comparison
   made with PERF_HIST on is pessimistic by that amount.
   6. **`Z80_CORE_IN_RAM=ON` + `Z80_CORE_OPT=-Os` are the DEFAULTS since 2026-09-07**
      (owner's decision, all boards). Existing build dirs keep their cached values —
@@ -2266,6 +2269,20 @@ VSINT/frame-T/latency/vector), dumped as ONE binary transfer by
 ISR cost; `intMiss`/`brdT`/`d`/`intT`/`haltT` in `[PERF] 60f`.
 
 **Traps this cost time on, worth not repeating:**
+- **A missing symbol in `memdump.gdb` HANGS Ctrl+Alt+D, it does not just lose a
+  line** (2026-09-10, an ordinary `build/`: `PERF_TRACE` defaults OFF in
+  CMakeLists, so the ring is absent unless a session asked for it): GDB has no
+  try/catch, so an unknown symbol aborts the sourced file — and those blocks run
+  with `set logging redirect on`, so the MI `^error` record goes into the log
+  file instead of the console, the extension's `evaluate` request never gets its
+  reply, and the notification sits on "Dumping via GDB..." for ever with the
+  target still PAUSED. The tell is in the .txt itself (`No symbol "..." in
+  current context` at the end of `/tmp/picospec_tsconf.txt`), and the .bin files
+  written before it carry the right timestamp while everything after does not.
+  Build-optional symbols are therefore PROBED (`info variables ^name$` matches
+  nothing without erroring; an untaken `if` body is never evaluated) and their
+  block goes last; the extension also bounds the wait at 60 s and
+  un-redirects. Any new symbol from a `#if`-gated feature needs the same probe.
 - The ring record's `t` was `uint16_t` while a TS-Conf frame is 71680 T: every
   accept past line 292 wrapped and read as "line 0". A trace bug that looked
   exactly like the failure and false-fired a trigger.

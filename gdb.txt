@@ -1,0 +1,1 @@
+All variables matching regular expression "^ts_int_ring$":
