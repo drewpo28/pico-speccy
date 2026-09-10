@@ -341,6 +341,14 @@ public:
   // per-T-state border machine is parked), so a banner can live there with no
   // column reservation — and its height is not the border machine's 24/48.
   static int  gmxTopBandRows();
+  // True while such a whole-line renderer is live at all (GMX 640x200 or any
+  // TS-Conf non-ZX mode) — the band height above is then authoritative and may
+  // be 0, where the border machine's 24/48 would be a lie.
+  static bool bandBorderMode();
+  // OSD::notify in a TS-Conf mode with no top band: the banner sits on the first
+  // content rows and tsRenderLine carves them out, like the F8 stats rectangle.
+  static void setNoticeCarve(int x0, int y0, int x1, int y1);
+  static void clearNoticeCarve();
   // Cold EndFrame halves, flash-resident on purpose (EndFrame is RAM code):
   static void gmxApplyPending();         // deferred on/off switch, vblank only
   static void gmxBorderFrame(bool skipFrame); // top/bottom band repaint

@@ -1377,21 +1377,49 @@ static bool     notify_nm = false;
 // from the classic zxColor branch there (the nm:: UI block would be read as pair
 // slots); they reach the right pixels through Graphics8BitPalette's DS80 remap,
 // the same path the F8 stats box and the FDD lamp take.
+//
+// TS-Conf is the third case and it has BOTH shapes: its band is lin_end as well
+// (24 rows at RRES 256x192, 20 at 320x200) but RRES 320x240 and 360x288 start
+// their content at fb row 0 and have NO band at all. Asking the parked border
+// machine for its 24/48 there put the banner inside the rows tsRenderLine
+// repaints every frame — the banner then flickered at frame rate (hw 2026-09-10,
+// "OSD notify моргает в видеорежимах TS-Conf"). Instead the banner takes the
+// first content rows and the renderer carves them out, exactly like the F8 stats
+// rectangle in the same modes; that also covers the core1 line queue, which is
+// NOT drained at EndFrame and would otherwise redraw over the banner.
 static constexpr int NOTIFY_BAND_H = OSD_FONT_H + 4;
 
 // Widest banner the mode can take: leaves the corner FDD lamp at x=311 alone and
 // keeps a margin at both ends.
 static int notifyMaxChars() { return ((int)OSD::scrW - 48) / OSD_FONT_W; }
 
-static bool notifyGeom(int textw, int& x, int& y) {
-    const int gmx_top = VIDEO::gmxTopBandRows();
-    if (profi_ds80_active && !gmx_top) return false;
+// carve = the banner does not fit in a border band and sits on the first content
+// rows instead, which only the TS-Conf renderer can hand back.
+static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr) {
     if (notifyMaxChars() < 8) return false;      // no mode this narrow, but don't index off the row
-    const int top = gmx_top ? gmx_top : (VIDEO::isFullBorder288() ? 48 : 24);
+    bool cv = false;
+    int top;
+    if (VIDEO::bandBorderMode()) {               // GMX 640x200 / TS-Conf non-ZX
+        top = VIDEO::gmxTopBandRows();           // = lin_end, authoritative, may be 0
+        if (top < NOTIFY_BAND_H) {
+            if (!VIDEO::ts_render_live) return false;
+            // Carved out of the content instead. Keep the 24-row band's own
+            // offset so the banner sits where it does on every other machine
+            // (6 fb rows down) rather than flush against the screen edge — the
+            // carve is NOTIFY_BAND_H rows wherever they are put.
+            top = 24;
+            cv  = true;
+        }
+    } else if (profi_ds80_active) {
+        return false;
+    } else {
+        top = VIDEO::isFullBorder288() ? 48 : 24;
+    }
     if (top < NOTIFY_BAND_H) return false;
     y = (top - NOTIFY_BAND_H) / 2;
     x = ((int)OSD::scrW - textw) / 2;
     if (x < 4) x = 4;
+    if (carve) *carve = cv;
     return true;
 }
 
@@ -1427,6 +1455,7 @@ void OSD::cancelNotify() {
     if (!notify_on) return;
     notify_on = false;
     VIDEO::clearNoticeBand();     // hand the columns back to the border machine
+    VIDEO::clearNoticeCarve();    // ... and the rows back to the TS-Conf renderer
     // The border repaint is what erases the band — never a colour-matched fill.
     // Both flags: brdChange is cleared by EndFrame even on a SKIPPED frame (max
     // speed), so on its own it can be swallowed before any border is painted;
@@ -1441,7 +1470,8 @@ void OSD::drawNotify() {
 
     const int textw = (int)strlen(notify_text) * OSD_FONT_W;
     int x, y;
-    if (!notifyGeom(textw, x, y)) { cancelNotify(); return; }   // mode changed under us
+    bool carve = false;
+    if (!notifyGeom(textw, x, y, &carve)) { cancelNotify(); return; }   // mode changed under us
 
     // Reserve the band so the border state machine stops painting it: without
     // this the banner is erased on every brdChange and only comes back at the
@@ -1450,14 +1480,29 @@ void OSD::drawNotify() {
     // back what it actually reserved — paint exactly that, or the extra carved
     // columns keep a stale border colour.
     int px0 = x - 4, px1 = x + textw + 4;
-    if (!VIDEO::gmxTopBandRows()) {
+    if (VIDEO::bandBorderMode()) {
+        // The band is repainted only by gmxBorderFrame, which cancelNotify
+        // triggers through brdChange/brdnextframe on expiry, and EndFrame paints
+        // the bands BEFORE calling drawNotify — so a repaint frame still ends
+        // with the banner on top and no column reservation is needed. With no
+        // band the banner is on content rows: reserve them from tsRenderLine
+        // (core0 AND the core1 line queue read the rect at render time), which
+        // also erases the banner authoritatively the moment the rect is cleared.
+        // Snap to 4 (the fb is stored in the ISR's x^2 order, so the renderer's
+        // own border fill is a linear memset only on 4-aligned boundaries — the
+        // same reason setNoticeBand snaps to brdcol_step): paint exactly what is
+        // carved, or a stray pixel of either side survives at each edge.
+        px0 &= ~3;
+        px1 = (px1 + 3) & ~3;
+        if (px0 < 0) px0 = 0;
+        if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
+        if (px1 - px0 < textw) { cancelNotify(); return; }
+        if (carve) VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
+        else       VIDEO::clearNoticeCarve();
+    } else {
         VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
         if (px1 - px0 < textw) { cancelNotify(); return; }
     }
-    // GMX: no reservation — the band is repainted only by gmxBorderFrame, which
-    // cancelNotify triggers through brdChange/brdnextframe on expiry, and
-    // EndFrame paints the bands BEFORE calling drawNotify, so a repaint frame
-    // still ends with the banner on top.
     const int bandw = px1 - px0;
     x = px0 + (bandw - textw) / 2;
 

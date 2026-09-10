@@ -3516,6 +3516,29 @@ for anything raised while the MENU owns the screen.
   (`lin_end == 0`) and its framebuffer bytes are packed pair slots. `notify()`
   falls back to the old blocking `osdCenteredMsg` there rather than dropping the
   message.
+- **In a whole-line mode the band is `lin_end` and may be ZERO — never fall back
+  to the border machine's 24/48** (`VIDEO::bandBorderMode()` = GMX 640x200 or any
+  TS-Conf non-ZX mode; hw-confirmed 2026-09-10 on DVp2). GMX always has a band
+  (20/44) and TS-Conf has one at RRES 256x192 (24) and 320x200 (20), but **RRES
+  320x240 and 360x288 start their content at fb row 0**, so the old
+  `gmx_top ? gmx_top : 24` put the banner inside rows `tsRenderLine` repaints
+  every frame — it flickered at frame rate, and the core1 line queue (not drained
+  at EndFrame) redrew over it as well. With no band the banner takes the first
+  content rows and the renderer **carves them out** (`VIDEO::setNoticeCarve`, a
+  second rect beside the F8 stats one in `tsRenderLine` — the two can never share
+  a row, so one `cx0/cx1` pair serves both). Both cores read the rect at render
+  time, so the carve is also what erases the banner authoritatively when it is
+  cleared. The rect is snapped to 4: the fb is stored in the ISR's `x^2` order,
+  so the renderer's own border memset only lines up with pixel coordinates on
+  4-aligned boundaries — the same reason `setNoticeBand` snaps to `brdcol_step`.
+- **Every branch must yield the SAME `y`, or a mode switch under a live banner
+  reads as a JUMP** (hw 2026-09-10). The first paint comes from `notify()` itself,
+  in whatever mode is live at the keypress; every later one from `EndFrame`, i.e.
+  AFTER `tsVideoApplyPending` has applied a deferred switch — so the two can see
+  different geometry one frame apart. A carved banner therefore keeps the nominal
+  24-row band's offset (`y = 6`) instead of sitting flush at row 0: the carve is
+  `NOTIFY_BAND_H` rows wherever they are put, and 6 is where the banner sits on
+  every other machine.
 - **The band MUST be carved out of the border state machine** (`TopBorder_OSD`,
   the twin of `BottomBorder_OSD` for the F8 stats rect; reserved through
   `VIDEO::setNoticeBand`, released by `clearNoticeBand`). Drawing it once per

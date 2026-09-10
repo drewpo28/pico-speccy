@@ -4479,6 +4479,26 @@ void VIDEO::gmxApplyPending() {
 
 int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin_end : 0; }
 
+// True while a whole-line renderer owns the content rows and the per-T-state
+// border machine is parked (Scorpion GMX 640x200, every TS-Conf non-ZX mode):
+// the top/bottom bands are painted frame-granularly by gmxBorderFrame and their
+// height is lin_end — which can be ZERO, unlike the border machine's 24/48.
+bool VIDEO::bandBorderMode() { return gmx_ext_live || ts_render_live; }
+
+// OSD::notify over a TS-Conf mode whose content starts at fb row 0 (RRES
+// 320x240 and 360x288 have NO top band at all): the banner is painted on the
+// first content rows and tsRenderLine skips them, the same carve-out the F8
+// stats rectangle already gets there. Without it the renderer overwrote the
+// banner on every frame and it flickered at frame rate (hw 2026-09-10).
+static int ts_notice_x0 = 0, ts_notice_x1 = 0, ts_notice_y0 = 0, ts_notice_y1 = -1;
+
+void VIDEO::setNoticeCarve(int x0, int y0, int x1, int y1) {
+    ts_notice_x0 = x0; ts_notice_x1 = x1;
+    ts_notice_y0 = y0; ts_notice_y1 = y1;
+}
+
+void VIDEO::clearNoticeCarve() { ts_notice_y1 = -1; }
+
 // ── TS-Conf video modes ──────────────────────────────────────────────────────
 // Raster geometry per RRES (tsconf_en.md "Raster timings"): pixel area width in
 // lores pixels, content lines, upper border lines, left border pixels. The TS
@@ -4854,9 +4874,15 @@ void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st,
     // blink (hw 2026-09-06, TS modes whose content covers those rows). Same
     // carve-out as Update_Border_DS80 / gmxBorderFrame: leave those bytes alone.
     const bool osdCarve = (VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04);
-    const int cx0 = (xres >= 360) ? 188 : 168, cx1 = cx0 + 24 * 6;
+    int cx0 = (xres >= 360) ? 188 : 168, cx1 = cx0 + 24 * 6;
     const int cy0 = ((int)vga.yres >= 288) ? 268 : 220;
-    const bool carveRow = osdCarve && (int)frow >= cy0 && (int)frow < cy0 + 16;
+    bool carveRow = osdCarve && (int)frow >= cy0 && (int)frow < cy0 + 16;
+    // ... and the OSD::notify banner, when this mode has no top border band to
+    // put it in. The two rects can never share a row (top vs bottom), so one
+    // (cx0, cx1) pair covers both.
+    if (!carveRow && (int)frow >= ts_notice_y0 && (int)frow < ts_notice_y1) {
+        carveRow = true; cx0 = ts_notice_x0; cx1 = ts_notice_x1;
+    }
     auto fillPad = [&](int a, int b) {           // memset [a,b) minus the carve
         if (a < 0) a = 0; if (b > xres) b = xres;
         if (b <= a) return;
@@ -5013,7 +5039,7 @@ void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st,
     if (carveRow) {
         for (int x = xa; x < xb; x++) {
             const int fx = x0 + x;
-            if (fx >= cx0 && fx < cx1) continue;   // stats box (OSD::drawStats owns it)
+            if (fx >= cx0 && fx < cx1) continue;   // stats box / notify banner (the OSD owns it)
             uint8_t out;
             if (ts_tsu_live) {
                 const uint8_t t = s_tsline[x];
