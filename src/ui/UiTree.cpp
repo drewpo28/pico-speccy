@@ -949,8 +949,9 @@ static const Option opt_ui_corners[] = {
 };
 
 // ── Interface ──────────────────────────────────────────────────────────────────
-// Everything about the firmware's own UI and indication, split out of Options
-// (which stays machine preferences): menu look, hot keys, LED indication.
+// Everything about the firmware's own UI and indication, gathered in one submenu
+// of Options (whose own rows stay machine preferences): menu look, hot keys, LED
+// indication.
 static const Node kInterface[] = {
     // Menu look: all three apply live (the corner switch redraws the chrome on the
     // spot, the theme and palette switches re-install the UI palette block, which
@@ -983,12 +984,13 @@ static const Node kOptions[] = {
     NM_RADIO (TXT_OTHER_ALU,        SET_ALU_TIMING, opt_alu,       nullptr),
     NM_BOOL  (TXT_OTHER_ISSUE2,     SET_ISSUE2,     nullptr),
     NM_RADIO (TXT_OTHER_FRAMESKIP,  SET_FRAMESKIP,  opt_frameskip, nullptr),
-    NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),
+    NM_SUB   (TXT_INTERFACE,        kInterface,     nullptr),
     // Named config profiles: a full snapshot of storage.nvs per slot, loaded by
     // copying it back and rebooting. The right pane IS the slot list (K_PICK) and
     // the verbs are function keys, so picking one is one keypress from here.
     NM_PICK  (TXT_OPT_PROFILES, SET_PROFILE_SLOT, profiles_rows, profiles_key,
               profiles_vlabel, opt_profile_foot, p_hasSD),
+    NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),
     NM_ACTION(TXT_OPT_UPDATE_FW,    act_updateFirmware, nullptr),
 };
 
@@ -1126,7 +1128,6 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_AUDIO,     kAudio,    nullptr),
     NM_SUB   (TXT_JOYSTICK,  kJoystick, nullptr),
     NM_SUB   (TXT_OPTIONS,   kOptions,  nullptr),
-    NM_SUB   (TXT_INTERFACE, kInterface, nullptr),
     NM_SUB   (TXT_NETWORK,   kNetwork,  nullptr),
     NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),
     NM_SUB   (TXT_RESET,     kReset,    nullptr),
