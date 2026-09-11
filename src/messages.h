@@ -207,6 +207,18 @@ visit https://zxespectrum.speccy.org/contacto
 // ...and a DIFFERENT card went in: the volume works, but nothing that was
 // mounted from the old one is reopened (see FileUtils::storageTick).
 #define MSG_SD_SWAPPED "Card changed - disks not restored"
+// The card that just turned up carries settings this session never loaded;
+// only a boot can apply them, so the loop offers one (and says so if the
+// offer was declined and a save is then refused).
+#define MSG_SD_CFG_TITLE "Settings found on card"
+#define MSG_SD_CFG_ASK "Reboot to use them?"
+#define MSG_SD_CFG_BODY MSG_SD_CFG_TITLE "\n" MSG_SD_CFG_ASK
+#define MSG_SD_CFG_YES "Reboot"
+#define MSG_SD_CFG_NO  "Later"
+#define MSG_CFG_NOT_SAVED "Not saved - reboot to use card settings"
+// ...and the other half of the same answer: the card mounted, but it carries
+// no config for this firmware version, so there is nothing to offer.
+#define MSG_SD_CFG_NONE "No settings on card for this version"
 
 // ─── ZiFi / Network menu strings ─────────────────────────────────────────────
 

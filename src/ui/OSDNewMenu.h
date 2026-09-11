@@ -31,5 +31,11 @@ void runPersist(bool save);
 // entrance in ESPectrum::setup. Owns its own gfx session, needs no SD card.
 void gameScwongStandalone();
 
+// A yes/no question in THIS UI, asked from outside the menu while the machine
+// runs (the SD automount's "settings found on the card — reboot?"). Owns its
+// own gfx session like the game page above. `body` may carry '\n'. True = the
+// first button; Esc answers the second.
+bool uiConfirmStandalone(const char* body, const char* yes_btn, const char* no_btn);
+
 } // namespace nm
 

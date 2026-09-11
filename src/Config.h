@@ -63,6 +63,11 @@ public:
     static void loadMb02DiskMounts(); // (re)mount only MB-02+ disks (on enable at runtime)
     static void save(const char* path = nullptr); // nullptr = STORAGE_NVS (normal path)
     static bool loaded;  // true after successful load() from file/RAM
+    // Set when save() refused to write because this session never loaded the
+    // card's config (see the guard in save()). ESPectrum::loop turns it into a
+    // toast: the refusal is right, but it used to happen in silence and read as
+    // "the menu forgot my setting".
+    static bool save_blocked;
 
     // newRomSet == R_NONE resets the arch to its default romset (the old "" argument).
     static void requestMachine(ArchIdx newArch, RomsetIdx newRomSet);

@@ -115,6 +115,23 @@ public:
     // Call it from every loop that can be on screen while a card is swapped:
     // the nm:: menu and the file browser both block ESPectrum::loop while up.
     static StorageEvent storageTick();
+    // What the automount found out about the card's config, latched at the mount
+    // and consumed once by ESPectrum::loop (which owns the UI part, and is the
+    // only context where a dialog may block — never inside a menu that owns the
+    // screen). CFG_NONE also covers the ordinary case of a session that loaded
+    // its config normally.
+    //   CFG_FOUND   the card carries settings this session never loaded
+    //               (Config::load() bailed out at boot with no file to read, so
+    //               Config::save() is now refusing to write — the guard that
+    //               stops a card-less session from overwriting a real
+    //               configuration with compiled-in defaults). Only a boot can
+    //               apply them.
+    //   CFG_ABSENT  this session is on compiled-in defaults AND the card has no
+    //               config for this firmware version either, so there is nothing
+    //               a reboot would pick up and the first save will simply create
+    //               the file.
+    enum CardConfig : uint8_t { CFG_NONE = 0, CFG_FOUND, CFG_ABSENT };
+    static CardConfig cardConfigState();
     static void unmountSDCard();
     // Boot-time guard for remembered "USB:/..." paths (disk mounts, tape):
     // they are reopened before the main loop ever pumps tuh_task, so the stick

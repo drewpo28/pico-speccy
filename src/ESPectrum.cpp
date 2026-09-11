@@ -3063,6 +3063,7 @@ void ESPectrum::loop() {
       }
   }
 
+
   // Factory reset: hold R at boot -> confirm -> wipe storage.nvs (+ skip the
   // user's default.nvs this boot) -> reboot to compiled-in defaults.
   // My-Default reset: hold M at boot -> confirm -> wipe storage.nvs only
@@ -3183,6 +3184,42 @@ void ESPectrum::loop() {
     // Anything that self-disabled during setup() (no video yet) queued a message —
     // show it once, now that the OSD can draw. No-op from the second frame on.
     OSD::flushBootNotices();
+
+    // A card turned up under a session that booted without one, and it carries
+    // settings this session never loaded. Only a boot can apply them — arch,
+    // video mode, memory layout and most subsystems are reboot-class — and
+    // half-applying some of them live is exactly the ambiguity this offer avoids.
+    // Asked at the top of a FRAME, beside flushBootNotices() and for the same
+    // reason: this is before the frame's own pwm_audio_write, so a blocking
+    // dialog does not sit between an emulated frame and the audio that belongs to
+    // it. NOT at the top of loop() — everything above the for(;;) runs exactly
+    // once, at boot, long before a card can be inserted (that is what made the
+    // first cut of this offer never appear). The flag is latched at the mount, so
+    // a card inserted while the menu or the browser owned the screen is asked
+    // about once they close, never over them.
+    switch (FileUtils::cardConfigState()) {
+        case FileUtils::CFG_FOUND:
+            // nm:: is the UI; OSD::msgDialog is the classic chrome and only
+            // stands in where the fullscreen layout does not fit at all.
+            if (nm::available()
+                    ? nm::uiConfirmStandalone(MSG_SD_CFG_BODY, MSG_SD_CFG_YES, MSG_SD_CFG_NO)
+                    : (OSD::msgDialog(MSG_SD_CFG_TITLE, MSG_SD_CFG_ASK) == DLG_YES))
+                OSD::esp_hard_reset();
+            // Declined: nothing is applied and Config::save() keeps refusing to
+            // write — which is right (it would overwrite the card's configuration
+            // with this session's defaults) but used to be silent. The refusal
+            // announces itself now, from the storage block further down.
+            break;
+        case FileUtils::CFG_ABSENT:
+            // The card has no config for this firmware version, so a reboot would
+            // pick up nothing and the first save will just create the file. Say
+            // so rather than leave the user wondering why nothing was offered —
+            // this is also the line that tells the two branches apart on hardware.
+            OSD::notify(MSG_SD_CFG_NONE, LEVEL_INFO, 2000);
+            break;
+        default: break;
+    }
+
     ts_start = time_us_64();
 
     if (!CPU::paused) {
@@ -3334,6 +3371,10 @@ void ESPectrum::loop() {
             OSD::notify(MSG_SD_REMOVED, LEVEL_WARN, 2000);
             break;
         default: break;
+    }
+    if (Config::save_blocked) {
+        Config::save_blocked = false;
+        OSD::notify(MSG_CFG_NOT_SAVED, LEVEL_WARN, 2500);
     }
 
 #if defined(VGA_HDMI)

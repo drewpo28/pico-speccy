@@ -46,6 +46,7 @@ string   Config::tape_file = "";
 uint8_t  Config::ram_file_origin = Config::ORIGIN_LOCAL;
 
 bool     Config::loaded = false;
+bool     Config::save_blocked = false;
 bool     Config::slog_on = false;
 bool     Config::ledIndicators = false;
 bool     Config::sdLedBlink = false;
@@ -1473,6 +1474,7 @@ void Config::save(const char* path) {
             if (f_stat(STORAGE_NVS, &fi) == FR_OK) {
                 Debug::log("Config::save BLOCKED — not loaded, file exists (%lu bytes)",
                            (unsigned long)fi.fsize);
+                save_blocked = true;    // the loop says so out loud
                 return;
             }
         }

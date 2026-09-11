@@ -269,7 +269,35 @@ static FileUtils::StorageEvent storageLost() {
 // Everything here is already a live-callable path (the menu mounts and ejects
 // images exactly this way), and everything self-gates on its own Config flag,
 // so calling it on a machine that uses none of it costs a handful of no-ops.
+// See FileUtils::cardConfigState(). Latched here rather than tested by the
+// caller so the answer is taken once, at the moment of the mount, before
+// anything in this session can have written a storage.nvs of its own.
+static FileUtils::CardConfig s_card_cfg = FileUtils::CFG_NONE;
+
+FileUtils::CardConfig FileUtils::cardConfigState() {
+    const CardConfig c = s_card_cfg;
+    s_card_cfg = CFG_NONE;              // answer once
+    return c;
+}
+
 static void bringUpFromCard() {
+    if (!Config::loaded) {
+        // This session runs on compiled-in defaults. If the card holds either
+        // of the files Config::load() would have read, its settings are the
+        // real ones and only a boot can apply them (arch, video mode, memory
+        // layout and most subsystems are all reboot-class). Note both paths are
+        // per firmware VERSION (storage.nvs) or at least per board
+        // (default.nvs), so a card whose newest config belongs to another
+        // version legitimately has nothing for this one to pick up.
+        FILINFO fi;
+        const bool has_storage = (f_stat(STORAGE_NVS, &fi) == FR_OK);
+        const bool has_default = (f_stat(DEFAULT_NVS, &fi) == FR_OK);
+        s_card_cfg = (has_storage || has_default) ? FileUtils::CFG_FOUND : FileUtils::CFG_ABSENT;
+        Debug::log("FileUtils: card config %s (%s / %s)\n",
+                   s_card_cfg == FileUtils::CFG_FOUND ? "found" : "absent",
+                   has_storage ? STORAGE_NVS : "no storage.nvs",
+                   has_default ? DEFAULT_NVS : "no default.nvs");
+    }
     // Karabas: ROMain reads karabas_boot.$c off the card itself, through the
     // Z-Controller — so the file has to exist before the guest looks for it.
     if (Config::arch == A_PROFI && isKarabasRomset(Config::romSet))

@@ -728,5 +728,20 @@ bool uiPrompt(const char* title, string& io, size_t maxlen, bool mask, bool allo
     return ok && (allowEmpty || !io.empty());
 }
 
+// A yes/no question asked from OUTSIDE the menu — by the machine itself, while
+// it is running. Everything the menu's own dialogs rely on (the surface, the UI
+// palette) belongs to a gfx session, so this opens one for the duration, the
+// way gameScwongStandalone() does for the game page. No SaveRect: the dialog
+// blocks the emulation loop while it is up and the paper repaints itself on the
+// first frame after it closes, so there is nothing to restore.
+bool uiConfirmStandalone(const char* body, const char* yes_btn, const char* no_btn) {
+    gfxBegin();
+    const char* btns[2] = { yes_btn, no_btn };
+    const int r = uiChoice(body, btns, 2, 0, /*esc_result=*/1);
+    gfxEnd();
+    VIDEO::brdnextframe = true;   // the border does not repaint on its own
+    return r == 0;
+}
+
 } // namespace nm
 
