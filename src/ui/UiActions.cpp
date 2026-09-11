@@ -464,83 +464,179 @@ void midi_keyBanks(int32_t tag, uint8_t key) {
 void act_ideCreate() { ::ideCreateImage(); }
 void act_p3Create()  { ::plus3CreateImage(); }
 
-// ── fast snapshots ─────────────────────────────────────────────────────────────
-// The 40 slots as dynamic levels (they were classic 40-row menuRun pickers).
-// Primitives live in OSDMain.cpp (getSlotName/persistSaveNamed/...), shared with
-// the classic hotkey paths so both stay in step.
+// Both collapsed rows below ("My settings", "Quick slots") are 11 glyphs against a
+// ~24-glyph pane, so their value column has about 12 to live in. A value is clipped
+// HERE rather than by the renderer, which would clip the label instead — and a row
+// whose own name is missing says nothing at all.
+#define ROW_VALUE_CAP 12
+static void capRowValue(char* buf) {
+    if (strlen(buf) <= ROW_VALUE_CAP) return;
+    buf[ROW_VALUE_CAP - 2] = buf[ROW_VALUE_CAP - 1] = '.';
+    buf[ROW_VALUE_CAP] = '\0';
+}
 
-void persist_build(DynRows& d) {
+// ── fast snapshots ─────────────────────────────────────────────────────────────
+// The 40 slots as ONE K_PICK list in the right pane of Snapshots, with the verbs
+// on the function keys — the config-profile shape (see "config profiles" below),
+// for the same reason: Save and Load as two levels of the same 40 slots said one
+// thing twice. Primitives live in OSDMain.cpp (getSlotName/persistSaveNamed/...),
+// shared with the classic hotkey paths so both stay in step.
+//
+// Enter is whichever verb the user arrived with: F4 from the game means "save",
+// F3 and the menu row mean "load". That is not a mode for its own sake — a slot
+// LOAD asks nothing and replaces the running machine, so "F4, pick a slot, Enter"
+// must not throw the session away. The footer says which, every time.
+
+#define SNAP_LBL_LEN 20                 // the right pane shows ~15 glyphs
+struct SnapRows {
+    Option opts[NM_DYN_MAX_ROWS];
+    char   lbl[NM_DYN_MAX_ROWS][SNAP_LBL_LEN];
+};
+static SnapRows* s_snap = nullptr;
+static bool      s_snap_valid = false;
+static bool      s_snap_enter_saves = false;
+
+extern "C" size_t getLargestAllocatable(void);
+
+// The footer line, and the only place the list's verbs are written down. Mutable
+// on purpose: the node points at it and the entry key decides what Enter does.
+Option persist_foot[1] = {{ SYM_ENTER " Load  F4 Save  F6 Name  F8 Del", 0, nullptr }};
+
+static void snapInvalidate() { s_snap_valid = false; }
+
+// Called by the F3/F4 hot keys before the menu opens, and by the menu session
+// itself (which is the "load" default).
+void persistEnterVerb(bool save) {
+    s_snap_enter_saves = save;
+    persist_foot[0].label = save ? SYM_ENTER " Save  F3 Load  F6 Name  F8 Del"
+                                 : SYM_ENTER " Load  F4 Save  F6 Name  F8 Del";
+}
+
+void snapSessionBegin() { s_snap_valid = false; }
+
+void snapSessionEnd() {
+    free(s_snap);
+    s_snap = nullptr;
+    s_snap_valid = false;
+}
+
+const Option* persist_rows(uint8_t& cnt) {
+    if (!s_snap) {
+        if (getLargestAllocatable() > sizeof(SnapRows) + 2048)
+            s_snap = (SnapRows*)malloc(sizeof(SnapRows));
+        if (!s_snap) { cnt = 0; return nullptr; }
+        s_snap_valid = false;
+    }
+    cnt = NM_DYN_MAX_ROWS;
+    if (s_snap_valid) return s_snap->opts;
     for (uint8_t i = 1; i <= NM_DYN_MAX_ROWS; i++) {
         const string name = getSlotName(i);
-        char lbl[NM_DYN_LABEL_LEN];
-        if (name.empty()) {
-            // Empty slots keep the placeholder in the value column (dim look).
-            snprintf(lbl, sizeof(lbl), "#%02u", i);
-            d.add(lbl, "<empty>", i, false);
-        } else {
-            // The name follows the slot number; the menu marquee scrolls it when
-            // it overflows the pane.
-            snprintf(lbl, sizeof(lbl), "#%02u %s", i,
-                     name == "\x01" ? "(no name)" : name.c_str());
-            d.add(lbl, nullptr, i, false);
-        }
+        char* lbl = s_snap->lbl[i - 1];
+        if (name.empty())
+            snprintf(lbl, SNAP_LBL_LEN, "#%02u", i);
+        else
+            snprintf(lbl, SNAP_LBL_LEN, "#%02u %s", i,
+                     name == "\x01" ? TXT_SLOT_NONAME : name.c_str());
+        s_snap->opts[i - 1] = { lbl, (int32_t)i, nullptr };
     }
-    d.focusTag(Config::persist_slot);       // open on the last used slot
+    s_snap_valid = true;
+    return s_snap->opts;
 }
 
-// Shared verbs: F6 rename, F8 remove. Returns true when it handled the key.
-static bool persistCommonKey(uint8_t slot, uint8_t key) {
-    Debug::log("persistKey: slot=%u key=%u sp=%08x\n", slot, key, debug_sp());
-    const string name = getSlotName(slot);
-    if (key == 6) {
-        if (name.empty()) return true;          // empty slot: nothing to rename
-        string nn = (name == "\x01") ? "" : name;
-        char title[24];
-        snprintf(title, sizeof(title), "Name for slot #%02u", slot);
-        if (uiPrompt(title, nn, 40)) persistSetName(slot, nn);
-        return true;
+// The row shows the slot the hot keys would act on — Alt+F3/Alt+F4 save and load
+// it with no dialog at all, so it is worth seeing from outside the list.
+static char s_snap_vlabel[NM_DYN_VALUE_LEN];
+static int  s_snap_vlabel_slot = -1;
+
+const char* persist_vlabel() {
+    const uint8_t slot = Config::persist_slot;
+    if (!slot) return nullptr;
+    if (!s_snap_valid) s_snap_vlabel_slot = -1;      // a rename may have changed it
+    if (s_snap_vlabel_slot != (int)slot) {
+        const string name = getSlotName(slot);
+        snprintf(s_snap_vlabel, sizeof(s_snap_vlabel), "#%02u %s", slot,
+                 name.empty() ? "-" : (name == "\x01" ? TXT_SLOT_NONAME : name.c_str()));
+        capRowValue(s_snap_vlabel);
+        s_snap_vlabel_slot = slot;
     }
-    if (key == 8) {
-        if (name.empty()) return true;
+    return s_snap_vlabel;
+}
+
+void persist_key(int32_t tag, uint8_t key) {
+    const uint8_t slot = (uint8_t)tag;
+    if (key == 0) key = s_snap_enter_saves ? 4 : 3;  // Enter = the verb we came with
+    const string name = getSlotName(slot);
+    const bool empty = name.empty();
+
+    if (key == 6) {                                  // F6 rename
+        if (empty) return;
+        string nn = (name == "\x01") ? "" : name;
+        if (uiPrompt(TXT_SLOT_NAME, nn, 40)) { persistSetName(slot, nn); snapInvalidate(); }
+        return;
+    }
+    if (key == 8) {                                  // F8 remove
+        if (empty) return;
         char q[64];
         snprintf(q, sizeof(q), "Remove snapshot #%02u ?", slot);
-        if (uiConfirm(q)) persistDelete(slot);
-        return true;
+        if (uiConfirm(q)) { persistDelete(slot); snapInvalidate(); }
+        return;
     }
-    return false;
-}
-
-void persist_keySave(int32_t slot, uint8_t key) {
-    if (key == 4) key = 0;                      // F4 opened this level; F4 = Enter
-    if (persistCommonKey((uint8_t)slot, key)) return;
-    if (key != 0) return;
-    Config::persist_slot = (uint8_t)slot;
-    string name = getSlotName((uint8_t)slot);
-    if (!name.empty()) {                        // occupied: confirm the overwrite
-        if (!uiConfirm("Slot is not empty. Overwrite?")) return;
-        if (name == "\x01") name = "";
-    } else {                                    // empty: ask for a name (tape/disk default)
-        name = getDefaultSnapshotName();
-        char title[24];
-        snprintf(title, sizeof(title), "Name for slot #%02u", slot);
-        if (!uiPrompt(title, name, 40)) return;
+    if (key == 4) {                                  // F4 save here
+        Config::persist_slot = slot;
+        string nm_ = name;
+        if (!empty) {                                // occupied: confirm the overwrite
+            // Yes by default here, against uiConfirm's usual rule that Enter must
+            // not destroy: the user arrived saying "save to THIS slot", so
+            // overwriting it is the answer they have already given. F8 Remove keeps
+            // the No default — there the destruction IS the question.
+            if (!uiConfirm(TXT_DLG_SLOT_OVER, nullptr, /*default_yes=*/true)) return;
+            if (nm_ == "\x01") nm_.clear();
+        } else {                                     // empty: offer the tape/disk name
+            nm_ = getDefaultSnapshotName();
+            if (!uiPrompt(TXT_SLOT_NAME, nm_, 40)) return;
+        }
+        uiBusy(TXT_MSG_SAVING_SNAP);
+        snapInvalidate();
+        if (persistSaveNamed(slot, nm_)) requestClose();
+        else uiToast(TXT_MSG_SNAP_SAVE_ERR, true, 2000);
+        return;
     }
-    uiBusy(" Saving... ");
-    if (persistSaveNamed((uint8_t)slot, name)) requestClose();
-    else uiToast("Cannot save the snapshot", true, 2000);
-}
-
-void persist_keyLoad(int32_t slot, uint8_t key) {
-    if (key == 3) key = 0;                      // F3 opened this level; F3 = Enter
-    if (persistCommonKey((uint8_t)slot, key)) return;
-    if (key != 0) return;
-    if (getSlotName((uint8_t)slot).empty()) { uiToast("Slot is empty", true, 1200); return; }
-    Config::persist_slot = (uint8_t)slot;
-    uiBusy(" Loading... ");
-    if (persistLoad((uint8_t)slot)) {
-        Stage::invalidate(SET_NONE);            // the snapshot may switch the machine
+    if (key != 3) return;                            // F3 load
+    if (empty) { uiToast(TXT_MSG_SLOT_EMPTY, true, 1200); return; }
+    Config::persist_slot = slot;
+    uiBusy(TXT_MSG_LOADING);
+    if (persistLoad(slot)) {
+        Stage::invalidate(SET_NONE);                 // the snapshot may switch the machine
         requestClose();
     }
+}
+
+// Snapshots > Load from file: the F2 flow, and the F2 hot key runs this very
+// function — it was a hot key with no menu row of its own, which is how it went
+// missing when the classic cascade was deleted.
+void loadSnapshotFile() {
+    if (!FileUtils::fsMount) return;
+    string mFile = nm::browseFile(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE);
+    if (mFile == "") return;
+    Config::save();
+    mFile.erase(0, 1);
+    string fname = FileUtils::SNA_Path + mFile;
+    if (FileUtils::getLCaseExt(fname) == "zip") {
+        string zipFname = ZipExtract::extract(fname, DISK_SNAFILE);
+        if (zipFname.empty())      { OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN); return; }
+        else if (zipFname == "\x1b") return;          // the user backed out of the archive
+        fname = zipFname;
+    }
+    // The classic box, not uiToast: the F2 hot key runs this with no menu session
+    // around it (browseFile owns and closes its own), so there is no chrome to draw
+    // a toast into. From the menu, runModal repaints over it on the way back.
+    if (!LoadSnapshot(fname, A_NONE, R_NONE)) {
+        OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+        return;
+    }
+    Config::ram_file = fname;
+    Config::last_ram_file = fname;
+    requestClose();               // no-op outside a menu session
 }
 
 // ── firmware / ROM replacement ─────────────────────────────────────────────────
@@ -1026,7 +1122,7 @@ const Option* profiles_rows(uint8_t& cnt) {
             snprintf(lbl, PROF_LBL_LEN, "#%02u", i);
         else
             snprintf(lbl, PROF_LBL_LEN, "#%02u %s", i,
-                     name == "\x01" ? TXT_PROF_NONAME : name.c_str());
+                     name == "\x01" ? TXT_SLOT_NONAME : name.c_str());
         s_prof->opts[i - 1] = { lbl, (int32_t)i, nullptr };
     }
     s_prof_valid = true;
@@ -1046,7 +1142,8 @@ const char* profiles_vlabel() {
         const string name = Config::profileName(slot);
         if (name.empty()) return nullptr;             // points at a deleted slot
         snprintf(s_prof_vlabel, sizeof(s_prof_vlabel), "%s",
-                 name == "\x01" ? TXT_PROF_NONAME : name.c_str());
+                 name == "\x01" ? TXT_SLOT_NONAME : name.c_str());
+        capRowValue(s_prof_vlabel);
         s_prof_vlabel_slot = slot;
     }
     return s_prof_vlabel;
@@ -1084,7 +1181,7 @@ void profiles_key(int32_t tag, uint8_t key) {
         if (Stage::anyDirty() && !uiConfirm(TXT_DLG_PROF_DIRTY)) return;
         string nm_ = empty ? string() : name;
         if (!empty) {                                 // occupied: confirm the overwrite
-            if (!uiConfirm(TXT_DLG_PROF_OVER)) return;
+            if (!uiConfirm(TXT_DLG_SLOT_OVER, nullptr, /*default_yes=*/true)) return;
             if (nm_ == "\x01") nm_.clear();
         } else if (!uiPrompt(TXT_PROF_NAME, nm_, 40)) {
             return;
@@ -1096,7 +1193,7 @@ void profiles_key(int32_t tag, uint8_t key) {
         return;
     }
     if (key != 0 && key != 3) return;                 // Enter and F3 both load
-    if (empty) { uiToast(TXT_MSG_PROF_EMPTY, true, 1200); return; }
+    if (empty) { uiToast(TXT_MSG_SLOT_EMPTY, true, 1200); return; }
     if (!uiConfirm(TXT_DLG_PROF_LOAD)) return;
     // The profile replaces the whole config, so staged edits are moot — and the
     // reboot is not optional: most of what a profile carries is reboot-class.

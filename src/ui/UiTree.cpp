@@ -970,6 +970,12 @@ static const Node kInterface[] = {
     NM_BOOL     (NM_IND TXT_HW_SDLED,  SET_SD_LED,    nullptr),
 };
 
+// The footer verb line of the profile list (K_PICK keeps it in opts[0]; the right
+// pane is the list itself, so this is where its verbs are written down).
+static const Option opt_profile_foot[] = {
+    { SYM_ENTER "/F3 Load  F4 Save  F6 Name  F8 Del", 0 },
+};
+
 static const Node kOptions[] = {
     NM_SUB   (TXT_HW_OVERCLOCK,     kOverclock,     nullptr),
     NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
@@ -982,7 +988,7 @@ static const Node kOptions[] = {
     // copying it back and rebooting. The right pane IS the slot list (K_PICK) and
     // the verbs are function keys, so picking one is one keypress from here.
     NM_PICK  (TXT_OPT_PROFILES, SET_PROFILE_SLOT, profiles_rows, profiles_key,
-              profiles_vlabel, p_hasSD),
+              profiles_vlabel, opt_profile_foot, p_hasSD),
     NM_ACTION(TXT_OPT_UPDATE_FW,    act_updateFirmware, nullptr),
 };
 
@@ -1098,18 +1104,15 @@ static const Node kNetwork[] = {
     NM_BOOL_EN  (TXT_NET_NIC_SUB, SET_ZIFI_NIC, nullptr, p_nicAvail),
 };
 
-// Right-pane verb lists of the persist levels (NM_DYNH).
-static const Option opt_persist_save_hints[] = {
-    { SYM_ENTER " Save here", 0 },
-    { "F6  Rename", 0 },
-    { "F8  Remove", 0 },
-    { "F4  = Enter", 0 },
-};
-static const Option opt_persist_load_hints[] = {
-    { SYM_ENTER " Load", 0 },
-    { "F6  Rename", 0 },
-    { "F8  Remove", 0 },
-    { "F3  = Enter", 0 },
+// ── Snapshots ──────────────────────────────────────────────────────────────────
+// One level: the file loader (the F2 flow, which had no menu row at all) and the
+// 40 fast slots as a K_PICK list in the right pane. The slots used to be two root
+// rows, Save and Load, over the same 40 slots — see the profile section for why
+// that shape went.
+static const Node kSnapshots[] = {
+    NM_ACTION(TXT_SNAP_FROMFILE, loadSnapshotFile, p_hasSD),
+    NM_PICK  (TXT_SNAP_SLOTS, SET_PERSIST_SLOT, persist_rows, persist_key,
+              persist_vlabel, persist_foot, p_hasSD),
 };
 
 // ── root ───────────────────────────────────────────────────────────────────────
@@ -1117,8 +1120,7 @@ static const Option opt_persist_load_hints[] = {
 static const Node kRoot[] = {
     NM_SUB   (TXT_HELP,      kHelp,     nullptr),
     NM_SUB   (TXT_MACHINE,   kMachine,  nullptr),
-    NM_DYNH  (TXT_SNAP_SAVE, persist_build, persist_keySave, opt_persist_save_hints, p_hasSD),
-    NM_DYNH  (TXT_SNAP_LOAD, persist_build, persist_keyLoad, opt_persist_load_hints, p_hasSD),
+    NM_SUB   (TXT_SNAPSHOTS, kSnapshots, p_hasSD),
     NM_SUB   (TXT_HW,        kHardware, nullptr),
     NM_SUB   (TXT_VIDEO,     kVideo,    nullptr),
     NM_SUB   (TXT_AUDIO,     kAudio,    nullptr),
@@ -1152,12 +1154,11 @@ const Node* slotNodeFor(int iface) {
     }
 }
 
-const Node* persistNodeFor(bool save) {
-    // Both persist rows share persist_build as their builder, so identity has to
-    // come from the rowkey (findDyn matches by builder and cannot tell them apart).
-    void (*rk)(int32_t, uint8_t) = save ? persist_keySave : persist_keyLoad;
-    for (uint8_t i = 0; i < NM_COUNT(kRoot); i++)
-        if (kRoot[i].kind == K_DYNAMIC && kRoot[i].rowkey == rk) return &kRoot[i];
+const Node* persistNodeFor() {
+    // One node for both hot keys now — what F3 and F4 differ in is only what Enter
+    // means inside it, which runPersist passes to the session, not to the lookup.
+    for (uint8_t i = 0; i < NM_COUNT(kSnapshots); i++)
+        if (kSnapshots[i].kind == K_PICK) return &kSnapshots[i];
     return nullptr;
 }
 

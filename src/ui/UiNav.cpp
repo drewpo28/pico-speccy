@@ -586,7 +586,10 @@ static void openPath(const Node* target) {
     }
 }
 
-static void runInternal(const Node* openAt) {
+// enterSaves: what Enter means in a focused K_PICK for this session. Only the F4
+// hot key sets it — every other way in is a "load" (or a list where it means
+// nothing), so it must be re-stated on every open rather than left standing.
+static void runInternal(const Node* openAt, bool enterSaves = false) {
     Debug::log("runInternal: sp=%08x\n", debug_sp());
     gfxBegin();               // installs the UI palette (own 16 colours)
     computeLayout();
@@ -606,6 +609,8 @@ static void runInternal(const Node* openAt) {
     Stage::begin();
     netStatusInvalidate();      // WiFi state may have changed since the last session
     profilesSessionBegin();     // ...and so may the profiles on the card
+    snapSessionBegin();         // ...and the snapshot slots
+    persistEnterVerb(enterSaves);
     S.depth = 0;
     S.focus = FOCUS_LEFT;
     Level& L = curLevel();
@@ -615,7 +620,18 @@ static void runInternal(const Node* openAt) {
     buildVisible(L);
     refreshRightPane();
 
-    if (openAt) { openPath(openAt); S.home_depth = S.depth; }
+    if (openAt) {
+        openPath(openAt);
+        S.home_depth = S.depth;
+        // openPath only calls refreshRightPane while it DESCENDS; its last hop just
+        // lands the cursor, so a target that is a row and not a level leaves the
+        // right pane holding the previous row's list.
+        refreshRightPane();
+        // A pick list opened by its hot key should be ready to act on: the row is
+        // no use focused, the LIST is. (openPath stops at the row because a K_PICK
+        // is not a level to descend into.)
+        if (openAt->kind == K_PICK && S.rcount) S.focus = FOCUS_RIGHT;
+    }
 
     drawFrameOnce();
     markDirty(D_ALL);
@@ -714,7 +730,8 @@ resume:
     // palette, so skipping this leaves the guest's screen painted in UI colours.
     OSD::textPageOverride = nullptr;
     OSD::progressOverride = nullptr;
-    profilesSessionEnd();       // hand the profile row table back
+    profilesSessionEnd();       // hand the row tables back
+    snapSessionEnd();
     gfxEnd();
 }
 
@@ -731,8 +748,8 @@ void runDiskSlots(int iface, const char* fname) {
 
 void runPersist(bool save) {
     if (!available()) return;   // call sites fall back to the classic dialogs
-    const Node* target = persistNodeFor(save);
-    if (target) runInternal(target);
+    const Node* target = persistNodeFor();
+    if (target) runInternal(target, save);
 }
 
 } // namespace nm

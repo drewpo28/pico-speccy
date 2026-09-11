@@ -5940,7 +5940,47 @@ damage offset** (Black Raven: ±10 in 2-byte compare units = ±20 bytes).
   must be 12..249 and within ±10 of the table value. The crack NOP'd those three
   branches.
 
-## Config profiles replace default.nvs, and take its boot roles with them (2026-09-11, NOT hw-tested)
+## Snapshots: one level, one slot list, and the file loader that had gone missing (owner: "работает", 2026-09-11)
+
+The root rows `Save snapshot` / `Load snapshot` are replaced by one `Snapshots`
+level holding **`Load from file`** and **`Quick slots`**. The F3/F4 hot keys open
+the slot list directly (`runPersist` → `persistNodeFor()` → `runInternal(target,
+save)`), and F2 runs the same `nm::loadSnapshotFile()` the menu row does.
+
+- **`Load from file` is the F2 flow, which had never had a menu row** — it was a
+  hot key only, and the classic cascade that used to carry it is gone, so browsing
+  the card for a `.sna`/`.z80`/`.p` was unreachable from the menu. Both paths call
+  one function now, so they cannot drift. It reports errors with the CLASSIC
+  `osdCenteredMsg`, not `uiToast`: the F2 path has no menu session around it
+  (`browseFile` owns and closes its own), so there would be no chrome to draw a
+  toast into; from the menu, `runModal` repaints over it on the way back.
+- **The 40 slots are a `K_PICK` list** (see the config-profile section for the kind
+  itself), for the same reason profiles are: Save and Load as two levels of the
+  same 40 slots said one thing twice.
+- **Enter is whichever verb the user ARRIVED with** — F4 means save, F3 and the
+  menu row mean load — and that is not a mode for its own sake: a slot load asks
+  nothing and replaces the running machine, so "F4, pick a slot, Enter" must not
+  throw the session away. It is carried by `runInternal(openAt, enterSaves)` and
+  re-stated on every open, never left standing; `persistNodeFor()` deliberately has
+  no side effect, so the lookup cannot set it by accident. The footer says which
+  verb Enter is, every time — which is why `NM_PICK` takes its footer line as a
+  one-entry Option array (the `NM_DYNH` hint-list convention) and the snapshot one
+  points at a MUTABLE array.
+- **`openPath` only refreshes the right pane while it DESCENDS**: its last hop just
+  lands the cursor, so a target that is a row rather than a level (every K_PICK)
+  left the pane holding the previous row's list — one `refreshRightPane()` after it.
+  The hot-key entry then focuses the list, since focusing the row it sits on would
+  make the user press Right before anything could happen.
+- The collapsed row shows the slot the quick keys act on (`#07 Elite`), capped to
+  12 glyphs by `capRowValue` — the renderer clips the LABEL to fit a value, and a
+  row whose own name is missing says nothing at all. Same cap on the profile row.
+
+## Config profiles replace default.nvs, and take its boot roles with them (owner: works, 2026-09-11)
+
+**What that verdict covers is not itemised beyond "it works"** — it was given on the
+menu as it appears and on the flows the owner drove. So treat the file layer
+(profileSave/Load/Rename/Delete, the `ram=` neutering, the copy-over-storage.nvs
+reboot) and the no-card path as covered by inspection, not by a pass.
 
 `Options > My settings` is a **`K_PICK` row whose RIGHT PANE is the slot list** —
 40 numbered slots in `/.config/pico-speccy/<board>/profiles/` (`CONFIG_DIR_PROFILES`),

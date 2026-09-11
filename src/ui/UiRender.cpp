@@ -404,8 +404,8 @@ static void drawFooter() {
                   : SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc / " SYM_LEFT SYM_LEFT " Back")
         : intPane
         ? SYM_UP SYM_DOWN " Adjust   " SYM_ENTER " / " SYM_LEFT " Back"
-        : pickPane
-        ? SYM_ENTER "/F3 Load  F4 Save  F6 Name  F8 Del"
+        : pickPane && fn_->opts && fn_->count && fn_->opts[0].label
+        ? fn_->opts[0].label
         : SYM_UP SYM_DOWN " Move   " SYM_ENTER " Change   " SYM_LEFT " Back";
     text(LY.ix + LY.pad, y + 3, hint, C_TEXT_DIM);
 

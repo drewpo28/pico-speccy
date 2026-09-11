@@ -24,8 +24,15 @@ void run();
 // `iface` is a FileUtils DiskIface.
 void runDiskSlots(int iface, const char* fname);
 
-// Open the menu positioned on the Save/Load-snapshot slot level — the F3/F4 hot keys.
+// Open the menu positioned on the fast-snapshot slot list (Snapshots > Quick slots)
+// — the F3/F4 hot keys. `save` only says what Enter means there: F4 arrives meaning
+// "save", F3 and the menu row mean "load".
 void runPersist(bool save);
+
+// Snapshots > Load from file: browse the card for a .sna/.z80/.p (or a zip holding
+// one) and load it. The F2 hot key runs this same function, so the row and the key
+// can never drift apart.
+void loadSnapshotFile();
 
 // Pico-Scwong (the built-in game) outside the menu: the boot-time "hold S"
 // entrance in ESPectrum::setup. Owns its own gfx session, needs no SD card.

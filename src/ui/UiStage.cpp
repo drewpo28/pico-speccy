@@ -282,6 +282,8 @@ static int32_t get_tempOffset()          { return (int32_t)Config::temp_offset; 
 static void    put_tempOffset(int32_t v) { Config::temp_offset = (int8_t)v; }
 static int32_t get_profileSlot()          { return (int32_t)Config::profile_slot; }
 static void    put_profileSlot(int32_t v) { Config::profile_slot = (uint8_t)v; }
+static int32_t get_persistSlot()          { return (int32_t)Config::persist_slot; }
+static void    put_persistSlot(int32_t v) { Config::persist_slot = (uint8_t)v; }
 
 // Master volume lives in ESPectrum::aud_volume (live) + Config::aud_volume
 // (persisted); the hook is the classic HK_VOL_UP/DOWN body.

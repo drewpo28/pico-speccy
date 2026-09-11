@@ -285,6 +285,10 @@ const char* romsetName(int32_t composite);
     /* of which Stage::invalidate afterwards). put_ exists because every setting has  */ \
     /* one; nothing ever stages this id, so it never runs.                            */ \
     X(SET_PROFILE_SLOT,    AC_PURE,   0,                     get_profileSlot, put_profileSlot, nullptr,       -1)          \
+    /* Snapshots > Quick slots: the slot the Alt+F3/Alt+F4 quick save and load act  */ \
+    /* on. Same contract as SET_PROFILE_SLOT — the pick list reads it to open on    */ \
+    /* that row and mark it, and it moves only inside a save or a load.             */ \
+    X(SET_PERSIST_SLOT,    AC_PURE,   0,                     get_persistSlot, put_persistSlot, nullptr,       -1)          \
     /* Debug > Paper: No = don't render the paper area; the border state machine    */ \
     /* paints straight through it (per-T-state, like top/bottom border), exposing   */ \
     /* what the border "under" the paper carries — a border-timing debugging aid.   */ \

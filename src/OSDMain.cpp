@@ -2463,25 +2463,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         CPU::paused = !CPU::paused;
         click();
         } else if (FileUtils::fsMount && hkIdx == Config::HK_LOAD_SNA) {
-            string mFile = nm::browseFile(FileUtils::SNA_Path, MENU_SNA_TITLE, DISK_SNAFILE);
-            if (mFile != "") {
-                Config::save();
-                mFile.erase(0, 1);
-                string fname = FileUtils::SNA_Path + mFile;
-                if (FileUtils::getLCaseExt(fname) == "zip") {
-                    string zipFname = ZipExtract::extract(fname, DISK_SNAFILE);
-                    if (zipFname.empty()) { OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN); }
-                    else if (zipFname != "\x1b") fname = zipFname;
-                    else fname.clear();
-                }
-                if (!fname.empty()) {
-                    if(!LoadSnapshot(fname, A_NONE, R_NONE)) {
-                        OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
-                    }
-                    Config::ram_file = fname;
-                    Config::last_ram_file = fname;
-                }
-            }
+            // Snapshots > Load from file, run straight from the hot key: ONE
+            // implementation, so the row and the key can never drift apart.
+            nm::loadSnapshotFile();
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
         } else if (FileUtils::fsMount && hkIdx == Config::HK_PERSIST_LOAD) {
             // The menu's native slot level (same rows F1 shows), like runDiskSlots.

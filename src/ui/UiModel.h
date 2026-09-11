@@ -161,9 +161,13 @@ struct Node {
 // NM_RADIO otherwise — same right-pane rings, same staged value.
 // Right-pane pick list (K_PICK): `df` builds the rows, `rk` acts on the chosen one,
 // `vl` labels the left row with what is current inside it. `sid` is read for the
-// marker and the landing row and is never written from here.
-#define NM_PICK(lbl, sid, df, rk, vl, vis) \
-    { lbl, nm::K_PICK, 0, sid, nullptr, nullptr, vis, nullptr, nullptr, nullptr, rk, 0, 0, 0, vl, nullptr, df }
+// marker and the landing row and is never written from here. `foot` is a ONE-entry
+// Option array whose label is the footer's verb line — the same use of opts[] that
+// NM_DYNH makes of its hint list, and the list's verbs have nowhere else to live
+// (the right pane is the list). Pointing it at a MUTABLE array is how a node whose
+// Enter depends on the key that opened it keeps the footer honest.
+#define NM_PICK(lbl, sid, df, rk, vl, foot, vis) \
+    { lbl, nm::K_PICK, NM_COUNT(foot), sid, foot, nullptr, vis, nullptr, nullptr, nullptr, rk, 0, 0, 0, vl, nullptr, df }
 #define NM_RADIO_D(lbl, sid, df, vis) \
     { lbl, nm::K_RADIO, 0, sid, nullptr, nullptr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr, df }
 
@@ -176,7 +180,7 @@ const Node* rootNodes();
 const char* murmuzavrTag();
 const char* tsconfTag();
 const Node* slotNodeFor(int iface);   // DiskIface -> its K_DYNAMIC slot level
-const Node* persistNodeFor(bool save);// the Save/Load-snapshot K_DYNAMIC level
+const Node* persistNodeFor();        // the fast-snapshot slot list (Snapshots > Quick slots)
 uint8_t     rootNodeCount();
 
 // True when the node's enable gate (if any) allows interaction.

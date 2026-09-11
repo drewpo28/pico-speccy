@@ -129,7 +129,10 @@ bool uiConfirm(const char* text_body, const char* title, bool default_yes) {
     const int lh = UI_FONT_H + 2;
     Box b = drawBox(text_body, title, lh + 6, C_SEP);
 
-    bool yes = default_yes;                 // default lands on No: Enter must not destroy
+    // Enter must not destroy, so the default is No — except where the destruction is
+    // what the user just asked for (the slot-overwrite question, whose caller passes
+    // default_yes) rather than what the question is about.
+    bool yes = default_yes;
     drawButtons(b, yes);
 
     fabgl::VirtualKeyItem k;

@@ -60,9 +60,17 @@ void midi_keyBanks(int32_t tag, uint8_t key);
 void act_ideCreate();
 // The 40 persist slots are LEVELS of the new menu (like the disk slots): build
 // fills the pool, rowkey runs Enter / F6 rename / F8 remove on the focused slot.
-void persist_build(DynRows& d);
-void persist_keySave(int32_t slot, uint8_t key);
-void persist_keyLoad(int32_t slot, uint8_t key);
+// Fast snapshots: one K_PICK list (the config-profile shape). `persist_foot` is the
+// footer verb line the node points at — mutable, because Enter is whichever verb
+// the user arrived with (persistEnterVerb).
+const Option* persist_rows(uint8_t& cnt);
+void persist_key(int32_t slot, uint8_t key);
+const char* persist_vlabel();
+extern Option persist_foot[1];
+void persistEnterVerb(bool save);
+void snapSessionBegin();
+void snapSessionEnd();
+void loadSnapshotFile();
 void act_updateFirmware();
 #if TFT
 // Video > TFT panel > Restore defaults: stages the driver's own default MADCTL /
