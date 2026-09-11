@@ -197,6 +197,10 @@ visit https://zxespectrum.speccy.org/contacto
 // ...and the same tick can adopt a USB stick as the root volume instead
 // (no card, or the stick that WAS the root came back after a re-plug).
 #define MSG_USB_AUTOMOUNT "USB drive mounted"
+// ...and the stick pulled back out. Its own message, because it is NOT a
+// storageTick() verdict: with a card mounted the stick is a second volume whose
+// coming and going changes nothing about the root one (see UsbMsc::takeEvent).
+#define MSG_USB_REMOVED "USB drive removed"
 // A card pulled out from under a running session: the volume is dropped
 // (FatFs cache included) and the watch waits for it — or another — to return.
 #define MSG_SD_REMOVED "SD card removed"

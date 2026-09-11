@@ -43,6 +43,12 @@ struct UsbFsMem {
 };
 static UsbFsMem* g_mem = nullptr;
 
+// Hotplug latch (UsbMsc::Event). Written by the mount/umount callbacks, read by
+// UsbMsc::takeEvent() — both core0, both outside any ISR (TinyUSB defers class
+// callbacks to tuh_task), so a plain byte is the whole synchronisation needed.
+static volatile uint8_t s_event  = (uint8_t)UsbMsc::Event::None;
+static uint64_t         s_arm_at = 0;   // events before this are boot state
+
 // ── tuh_task pump guard ──────────────────────────────────────────────────────
 // Same hazard as ZiFi's usbService(): tuh_task() must never run re-entrantly
 // (re-entering the host stack from inside a tuh callback corrupts transfer
@@ -231,6 +237,10 @@ void tuh_msc_mount_cb(uint8_t dev_addr) {
         }
     }
     f_mount(&g_mem->fs, "USB:", 0);          // deferred — registers the volume only
+    s_event = (uint8_t)UsbMsc::Event::Mounted;   // only now: the two returns above
+                                                 // leave a stick that never became
+                                                 // a volume, and announcing one
+                                                 // would be a lie
     // USB-as-root (booted without an SD card): a re-plugged stick brings the
     // default volume back to life, so re-enable the filesystem flag. Normally
     // umount_cb has already cleared usbRoot and it is FileUtils::storageTick()
@@ -242,7 +252,11 @@ void tuh_msc_mount_cb(uint8_t dev_addr) {
 
 void tuh_msc_umount_cb(uint8_t dev_addr) {
     if (dev_addr != g_daddr) return;
+    // Read before g_daddr is cleared: a stick we refused (odd sector size, no
+    // heap for the volume state) was never announced and must not be mourned.
+    const bool was_usable = UsbMsc::ready();
     g_daddr = 0;
+    if (was_usable) s_event = (uint8_t)UsbMsc::Event::Removed;
     f_unmount("USB:");                       // bookkeeping only, no disk I/O
     // Don't leave the file manager pointing into the void: next F5 falls back
     // to the SD root instead of a dead "USB:/..." path.
@@ -276,6 +290,21 @@ bool UsbMsc::waitReady(uint32_t timeout_ms) {
         mscService();
     }
     return true;
+}
+
+UsbMsc::Event UsbMsc::takeEvent() {
+    const Event e = (Event)s_event;
+    s_event = (uint8_t)Event::None;
+    return time_us_64() < s_arm_at ? Event::None : e;   // swallowed, not deferred
+}
+
+void UsbMsc::armHotplug() {
+    // Called at the end of ESPectrum::setup(), i.e. one frame before tuh_task()
+    // is first pumped, so this window has to cover a whole enumeration plus the
+    // MSC inquiry/capacity round trips — generous on purpose, since the cost of
+    // being too long is one silent hotplug in the first seconds of a session
+    // and the cost of being too short is a toast on every single boot.
+    s_arm_at = time_us_64() + 5000000ull;
 }
 
 uint64_t UsbMsc::sizeBytes() {

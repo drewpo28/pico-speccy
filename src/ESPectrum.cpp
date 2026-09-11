@@ -47,6 +47,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Config.h"
 #include "ESPectrum.h"
 #include "FileUtils.h"
+#include "UsbMsc.h"
 #include "sdcard.h"
 #include "MemESP.h"
 #include "Buffer.h"
@@ -1425,6 +1426,15 @@ void ESPectrum::setup() {
   // Re-mount the tape remembered from a previous session (NVS) so it is present
   // at cold boot, the same way disk mounts are restored by loadDiskMounts above.
   Tape::LoadRemembered();
+
+  // From here on a stick turning up is a hotplug, not the state we booted in.
+  // The anchor has to be HERE and not in FileUtils::initFileSystem(): with a
+  // card present nothing waits for USB there, and tuh_task() is pumped only
+  // from the emulator loop (main.cpp) — so a stick already in the port cannot
+  // even begin enumerating until this function has returned, and a window
+  // measured from the mount would expire before the event it exists to
+  // swallow (hw 2026-09-11: it announced itself on every boot and every F12).
+  UsbMsc::armHotplug();
 
   Debug::log("setup: COMPLETE, freeHeap=%u", getFreeHeap());
   Debug::log2SD("setup: COMPLETE, freeHeap=%u", (unsigned)getFreeHeap());
@@ -3344,10 +3354,34 @@ void ESPectrum::loop() {
     // FileUtils::storageTick(); here we only own the toast. The same tick runs
     // from the menu and browser idle loops, which block this one while they are
     // up — that is the whole reason it is a shared function.
+    //
+    // A USB stick is drained FIRST and from its own latch: while a card is
+    // mounted the tick above returns at its first line, so a stick plugged in
+    // beside one is invisible to it — and a stick pulled out clears fsMount in
+    // the umount callback itself, so it never reaches storageLost() either.
+    // usb_announced then keeps the one stick that IS about to become the root
+    // volume from being announced twice: the adoption arrives as Online a
+    // couple of seconds after the latch this drained.
+    static bool usb_announced = false;
+    switch (UsbMsc::takeEvent()) {
+        case UsbMsc::Event::Mounted:
+            OSD::notify(MSG_USB_AUTOMOUNT, LEVEL_INFO, 1500);
+            usb_announced = true;
+            break;
+        case UsbMsc::Event::Removed:
+            OSD::notify(MSG_USB_REMOVED, LEVEL_WARN, 2000);
+            usb_announced = false;
+            break;
+        default: break;
+    }
     switch (FileUtils::storageTick()) {
         case FileUtils::StorageEvent::Online:
-            OSD::notify(FileUtils::usbRoot ? MSG_USB_AUTOMOUNT : MSG_SD_AUTOMOUNT,
-                        LEVEL_INFO, 1500);
+            if (!FileUtils::usbRoot)
+                OSD::notify(MSG_SD_AUTOMOUNT, LEVEL_INFO, 1500);
+            else if (!usb_announced) {   // enumerated inside the boot grace
+                OSD::notify(MSG_USB_AUTOMOUNT, LEVEL_INFO, 1500);
+                usb_announced = true;
+            }
             break;
         case FileUtils::StorageEvent::Swapped:
             OSD::notify(MSG_SD_SWAPPED, LEVEL_WARN, 2500);

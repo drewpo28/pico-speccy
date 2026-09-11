@@ -5593,7 +5593,31 @@ before the data and the ESP-AT form would need two more fields.
 
 ## USB flash stick (MSC host → FatFs volume "USB:")
 
-NOT hw-confirmed yet.
+NOT hw-confirmed yet, except the hotplug toasts (below, 2026-09-11).
+
+- **Hotplug is a LATCH, not a probe** (`UsbMsc::takeEvent`, hw-confirmed
+  2026-09-11): a stick is the one storage that comes and goes without changing
+  the ROOT volume, so `FileUtils::storageTick()` can never see it — with a card
+  mounted it returns at its first line (`if (fsMount) return sdStillThere()...`),
+  and a pulled stick has already had `fsMount` cleared by `tuh_msc_umount_cb`,
+  so `storageLost()` is not reached either. Hence: the TinyUSB callbacks latch
+  (they run inside `tuh_task` and must not paint), `ESPectrum::loop` drains the
+  latch BEFORE the storage switch and toasts `MSG_USB_AUTOMOUNT` /
+  `MSG_USB_REMOVED`. `Mounted` is latched only after the `f_mount` (the two
+  early returns leave a stick that never became a volume) and `Removed` only
+  when `ready()` held. Two details that are not cosmetic: `usb_announced`
+  suppresses the second toast when the stick is ALSO about to become the root
+  volume (`storageTick` reports that as `Online` up to 2 s later, with the same
+  text), and `UsbMsc::armHotplug()` swallows everything for 5 s so a permanently
+  fitted stick does not greet the user on every boot. **That call belongs at the
+  end of `ESPectrum::setup()`, NOT in `initFileSystem()`** (hw 2026-09-11 — it
+  greeted on every boot and every F12): `tuh_task()` is pumped only from the
+  emulator loop, so with a card present the stick cannot even BEGIN enumerating
+  until setup has returned, and a window anchored at the mount expires before
+  the event it exists to swallow. Deliberately NOT routed through `StorageEvent`: the menu and
+  browser idle loops call `storageTick()` too and discard its verdict, so the
+  message would be eaten by whichever ticked first — and a toast raised while
+  the menu owns the screen is invisible anyway (`do_OSD` cancels it).
 
 - **FatFs two volumes**: `FF_VOLUMES=2`, `FF_STR_VOLUME_ID=1`, `VolumeStr {"SD","USB"}`
   (ffconf.h). Unprefixed paths → current volume (normally SD) — zero changes for

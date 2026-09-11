@@ -20,4 +20,17 @@ namespace UsbMsc {
     // expires. Boot-time only (FileUtils no-SD fallback): nothing else pumps
     // tuh_task that early, so enumeration progresses only while we pump here.
     bool     waitReady(uint32_t timeout_ms);
+
+    // Hotplug, one report per transition. A stick is the one storage that comes
+    // and goes WITHOUT changing the root volume, so FileUtils::storageTick()'s
+    // probe never sees it: with a card mounted that function returns at its
+    // first line. The TinyUSB callbacks therefore latch the transition here
+    // (they run inside tuh_task and must not paint anything), and the emulator
+    // loop drains it and raises the toast.
+    enum class Event : uint8_t { None, Mounted, Removed };
+    Event    takeEvent();
+    // A stick already in the port at power-on is the machine's state, not an
+    // event: anything latched within a moment of this call is discarded, so a
+    // permanently fitted stick does not announce itself on every boot.
+    void     armHotplug();
 }
