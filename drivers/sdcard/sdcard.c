@@ -123,10 +123,35 @@ static inline void cs_deselect(uint cs_pin) {
     asm volatile("nop \n nop \n nop"); // FIXME
 }
 
+#ifdef SDCARD_PIO
+/* The PIO program clocks one SPI bit per 4 SM cycles, so SCK = clk_sys/(4*div).
+ * init_spi() computes the fast divider; the init sequence needs the slow one.
+ * Both are applied with the FIFOs empty (we only ever change speed between
+ * transfers) and the divider counter restarted, which is what pio_sm_set_clkdiv
+ * alone does NOT do. */
+static float pio_div_fast = 1.0f;
+
+static void pio_set_sck(uint32_t hz)
+{
+    float div = (float)clock_get_hz(clk_sys) / (4.0f * (float)hz);
+    if (div < 1.0f) div = 1.0f;
+    if (div > 65535.0f) div = 65535.0f;
+    pio_sm_set_clkdiv(pio_spi.pio, pio_spi.sm, div);
+    pio_sm_clkdiv_restart(pio_spi.pio, pio_spi.sm);
+}
+#endif
+
+/* The card only guarantees 100-400 kHz until it has been initialised — the
+ * whole CMD0/CMD8/ACMD41 sequence is specified at that speed. On the hardware
+ * SPI path this has always been honoured; on the PIO path both of these were
+ * empty, so init ran at the full ~20 MHz. Cards that tolerate it work anyway,
+ * which is exactly how this survives until the one card that does not. */
 static void FCLK_SLOW(void)
 {
 #ifndef SDCARD_PIO
     spi_set_baudrate(SDCARD_SPI_BUS, CLK_SLOW);
+#else
+    pio_set_sck(CLK_SLOW);   /* the same 100 kHz the hardware-SPI path uses */
 #endif
 }
 
@@ -134,6 +159,9 @@ static void FCLK_FAST(void)
 {
 #ifndef SDCARD_PIO
     spi_set_baudrate(SDCARD_SPI_BUS, CLK_FAST);
+#else
+    pio_sm_set_clkdiv(pio_spi.pio, pio_spi.sm, pio_div_fast);
+    pio_sm_clkdiv_restart(pio_spi.pio, pio_spi.sm);
 #endif
 }
 
@@ -226,6 +254,7 @@ void init_spi(void)
 	// the bus back into a known state after a failed probe or a hot swap.
 	float clkdiv = (float)clock_get_hz(clk_sys) / (4.0f * 20000000.0f);
 	if (clkdiv < 1.0f) clkdiv = 1.0f;
+	pio_div_fast = clkdiv;			/* what FCLK_FAST() goes back to */
 	int cpol = 0;
 	int cpha = 0;
 	pio_spi_init(pio_spi.pio, pio_spi.sm,
@@ -426,11 +455,31 @@ DSTATUS disk_initialize (
 	if (Stat & STA_NODISK) return Stat;	/* Is card existing in the soket? */
 
 	FCLK_SLOW();
-	CS_LOW();
-	for (n = 10; n; n--) xchg_spi(0xFF);	/* Send 80 dummy clocks */
+	/* The 74+ dummy clocks that put the card into SPI mode are specified with
+	 * CS HIGH and DI high — with CS asserted they are just a transfer to a card
+	 * that has not been addressed yet. This used to drive them with CS LOW, and
+	 * the cards that need the documented sequence are exactly the ones that
+	 * "sometimes" fail to initialise. Keep CS high here; send_cmd() asserts it
+	 * for the command itself. */
+	CS_HIGH();
+	for (n = 10; n; n--) xchg_spi(0xFF);	/* >= 80 clocks with CS deasserted */
 
 	ty = 0;
-	if (send_cmd(CMD0, 0) == 1) {			/* Put the card SPI/Idle state */
+	/* CMD0 is retried: a card that has just been pushed into the socket may
+	 * still be settling (contacts, its own power ramp), and one refusal used to
+	 * fail the whole probe. The pause between tries is only taken when the card
+	 * ANSWERED something other than idle — that is the settling signature, and
+	 * it is worth a millisecond. A flat 0xFF is "nothing is driving the bus",
+	 * i.e. almost always an empty socket: retry immediately and let the caller's
+	 * 2 s cadence be the settle loop, instead of sleeping 8 ms inside a running
+	 * machine every time it probes an empty slot. */
+	BYTE r1 = 0xFF;
+	for (n = 0; n < 5; n++) {
+		r1 = send_cmd(CMD0, 0);
+		if (r1 == 1) break;
+		if (r1 != 0xFF) sleep_ms(1);
+	}
+	if (r1 == 1) {				/* Put the card SPI/Idle state */
 		t = _millis();
 		if (send_cmd(CMD8, 0x1AA) == 1) {	/* SDv2? */
 			for (n = 0; n < 4; n++) ocr[n] = xchg_spi(0xFF);	/* Get 32 bit return value of R7 resp */
