@@ -393,6 +393,13 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::registerOverlay(gb_rom_0_sinclair_48k,
                 Config::byte_cobmect_mode ? gb_overlay_48k_byte_sovmest : gb_overlay_48k_byte);
             break;
+        case R_TC2048:
+            // Timex TC2048 — the Sinclair 48K ROM plus seven bytes (rom_pack.py 48k):
+            // the boot path is redirected through OUT (#FF),A so the SCLD mode
+            // register is initialised. Everything else about the machine is a 48K.
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_tc2048);
+            break;
         default:
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);

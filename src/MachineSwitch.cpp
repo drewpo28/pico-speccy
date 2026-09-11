@@ -180,7 +180,22 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             Config::timex_video = false;
             VIDEO::timex_port_ff = 0;
             VIDEO::timex_mode = 0;
+            VIDEO::timexHiresForceOff();
             OSD::osdCenteredMsg("Timex disabled", LEVEL_WARN, 2000);
+        }
+        // The TC2048's ULA is the SCLD — Timex video is the machine, not a card, and
+        // the SAA1099 cannot share the #FF family with it. Same three-place
+        // treatment as every other machine rule (menu note, toast here, CPU::reset
+        // backstop for boots that never pass through the menu).
+        if (arch == A_48K && isTc2048Romset(romset)) {
+            if (Config::SAA1099) {
+                Config::SAA1099 = false;
+                OSD::osdCenteredMsg("SAA1099 disabled", LEVEL_WARN, 1500);
+            }
+            if (!Config::timex_video) {
+                Config::timex_video = true;
+                OSD::osdCenteredMsg("Timex SCLD enabled", LEVEL_WARN, 1500);
+            }
         }
         // TR-DOS is mandatory on Pentagon / Profi / Scorpion / TS-Conf (Beta-128 on board)
         if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF) && !Config::betadisk) {

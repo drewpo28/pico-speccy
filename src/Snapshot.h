@@ -47,6 +47,12 @@ using namespace std;
 // force_arch == A_NONE / force_romset == R_NONE = nothing forced (the old "" args).
 bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_romset);
 
+// True when the loader that just failed ALREADY put a message on screen naming the
+// reason. Callers must then skip their own generic box: it would paint straight
+// over the specific one and the user is left with "ERROR Loading Persist Snapshot"
+// for a file that actually said which machine code it carries.
+bool snapshotLoadReported();
+
 class FileSNA
 {
 public:

@@ -248,7 +248,7 @@ static const RomsetIdx kPref48[]   = {
 #if !NO_SPAIN_ROM_48k
     R_48K_ES,
 #endif
-    R_48K_CS, R_LAST };
+    R_TC2048, R_48K_CS, R_LAST };
 static const RomsetIdx kPref128[]  = {
     R_128K,
 #if !NO_SPAIN_ROM_128k
@@ -908,6 +908,11 @@ static bool stagedIsPlus3e() {
     return Config::isPlus3e();
 }
 static bool stagedIsTsconf() { return stagedArchIs(A_TSCONF); }
+static bool stagedIsTc2048() {
+    const int32_t m = staged(SET_MACHINE);
+    if (m >= 0) return isTc2048Romset((RomsetIdx)(m & 0xFF));
+    return Config::arch == A_48K && isTc2048Romset(Config::romSet);
+}
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
 }
@@ -917,6 +922,20 @@ static void resolveConstraints(CommitReport& rep) {
     // cap makes that structural rather than a matter of trust.
     for (int pass = 0; pass < 4; pass++) {
         bool changed = false;
+
+        // The TC2048's ULA IS the SCLD: Timex video is the machine, not an option
+        // (MAME tc2048_io decodes exactly #FE and #FF), and a SAA1099 card cannot
+        // be on the same port family. This rule runs BEFORE the mutual exclusion
+        // below on purpose: that one resolves by g_seq, so leaving it to turn the
+        // SAA off would let a later SAA edit turn Timex back off and this rule turn
+        // it on again — the one way to make this fixpoint loop oscillate. Forcing
+        // both here settles it in a single pass (force() never bumps g_seq).
+        if (stagedIsTc2048()) {
+            if (staged(SET_SAA1099))
+                changed |= force(SET_SAA1099, 0, rep, "SAA1099 is not available on the TC2048");
+            if (!staged(SET_TIMEX))
+                changed |= force(SET_TIMEX, 1, rep, "Timex SCLD is part of the TC2048");
+        }
 
         // SAA1099 and Timex are mutually exclusive, in both directions
         // (OSDMain.cpp:4181 and :4899). The one the user touched LAST wins.

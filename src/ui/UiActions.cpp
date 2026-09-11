@@ -631,7 +631,8 @@ void loadSnapshotFile() {
     // around it (browseFile owns and closes its own), so there is no chrome to draw
     // a toast into. From the menu, runModal repaints over it on the way back.
     if (!LoadSnapshot(fname, A_NONE, R_NONE)) {
-        OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+        if (!snapshotLoadReported())   // the loader already named the reason
+            OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
         return;
     }
     Config::ram_file = fname;

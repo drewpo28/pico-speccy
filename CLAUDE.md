@@ -2494,6 +2494,331 @@ for good.
   known stripe case), GMX 640x200, and Gigascreen actually working in Profi and
   TS-Conf ZX mode — nothing in that combination has ever run.
 
+## The Machine menu is by FAMILY now, and the subheader names both halves (2026-09-11, NOT hw-tested)
+
+Five rows became three: **Spectrum** (48K, 48K Spanish, 128K, 128K Spanish, +2,
++2 Spanish, +3, +3 (IDEDOS), ZX81+, Custom 48K, Custom 128K), **Timex** (TC2048)
+and **Pentagon** (128K, 128K + Mr Gluk, 512K, 512K + Mr Gluk, 1024K, 1024K + Mr
+Gluk, Custom). Everything below them — Murmuzavr, Scorpion, Byte, Profi, Karabas,
+TS-Conf, ALF, the game — is untouched. `opt_mach_48/128/pent/p512/p1024` are gone.
+
+- **The shape did not change, only the grouping.** A machine row was always a
+  `K_RADIO` over ITS OWN romsets sharing `SET_MACHINE`, and `NM_MACH()` still
+  spells the arch out per entry — so `A_P512` is simply an option inside the
+  Pentagon row instead of a row of its own. Nothing in staging, constraints or
+  `MachineSwitch` knows about menu rows, so none of it moved.
+- **Pentagon had to become `NM_RADIO_D`**: 512K/1024K were gated by `p_extRam`
+  on the ROW, and an option table has no per-entry predicate. `mach_pentOpts()`
+  rebuilds on EVERY call, unlike `mach_scorpOpts()` which caches — `p_extRam()`
+  includes `FileUtils::fsMount`, so a card inserted mid-session must make the two
+  bigger machines appear. Cost: 84 B of `.bss` for the table.
+- **Custom stayed, against the sketch, and that was deliberate.** `Devices >
+  Replace ROM` writes a user ROM AND sets `Config::romSet = R_48K_CS/R_128K_CS`
+  plus the preferred romset, so without a row to select it the feature is
+  write-only and the running machine would be an unmarked radio. There are TWO
+  images — slot "48K" writes `gb_rom_0_48k_custom` (16 KB), slot "128K" writes
+  `gb_rom_0_128k_custom` (16/32 KB) — hence two rows; the "Pentagon" slot writes
+  the SAME array as "128K", so Pentagon's Custom is that image on Pentagon
+  timing and one row covers it.
+- **What this DOES lose: `(A_P512, R_128K_CS)` and `(A_P1024, R_128K_CS)`** — a
+  custom ROM on the two bigger Pentagons. An NVS still holding one keeps running
+  it; the radio just shows nothing marked until the user picks something. Two
+  lines in `mach_pentOpts` bring them back if anyone wants them.
+- **`machineMenuName()` (UiTree.cpp) reads the subheader's text out of kMachine
+  itself**: the family row's label and the selected option's `slabel ?: label`,
+  looked up by `NM_MACH(archDisplay(arch, romSet), romSet)` — the exact value
+  `get_machine()` stores, so Karabas resolves through `archDisplay` like
+  everywhere else. The subheader is `Machine: Pentagon (128K+Gluk)` and falls
+  back to the arch spelling when the pair is in no table. Adding a machine
+  therefore needs no second place to name it, and Scorpion's runtime table is
+  reached through `nodeOptions()` like any other.
+
+## Timex SCLD hi-res 512x192 through the DS80 packed-pair path (hw-confirmed 2026-09-11)
+
+Mode %110 of port #FF used to be an OR-merge of the two screens into 256 pixels
+(a placeholder from the Timex merge). It is now **native 512x192**, rendered
+through the same packed-pair framebuffer Profi DS80 and Scorpion GMX use — one
+fb byte = two DIFFERENT output pixels via `profi_pair_lookup` + the driver pair
+tables, instead of one pixel doubled.
+
+**The fit is exact, which is the whole reason this is cheap.** A hi-res line is
+64 source bytes = 512 pixels = **256 fb bytes** — the same 256 content bytes a
+standard 256-pixel line already occupies, at the same `lineptr_offset` pad, in
+the same 192-line window (`lin_end/lin_end2` = 24/216 at yres 240, 48/240 at
+288). So there is **no geometry change at all**: the border state machine, the
+24/48-row bands the F8 stats box and the FDD lamp live in, `BottomBorder_OSD`'s
+carve-out, `OSD::notify`'s fallback, BMP capture — all unchanged. The only
+things that change are the byte VALUES and one function pointer's worth of
+renderer.
+
+- **Reference, and where the three sources disagree**: WoS `tmxreference.htm`
+  (bits 0-2 mode, 3-5 hi-res colour, 6 = INT disable — not implemented, 7 =
+  DOCK/EX-ROM), MAME `sinclair/timex_v.cpp` `_64col_scanline`, Fuse
+  `peripherals/scld.c` `hires_convert_dec`. All three agree that **screen 0
+  (grmem+0) supplies the LEFT byte of each column pair** and screen 1
+  (grmem+0x2000) the right one (Fuse: `hires_data = (data << 8) + data2`; MAME
+  plots scr1 then scr2), and that **ink = bits 3-5, paper = ink ^ 7** — Fuse's
+  `BLACKWHITE`/`WHITEBLACK` constants are named PAPER-first, which reads as the
+  opposite until you notice `BLACKWHITE == 0x07` and `hirescol 1 → 0x71` =
+  blue-on-yellow, i.e. the reference's table exactly. **BRIGHT: the reference
+  ("in this mode all colours, including the BORDER, are BRIGHT") and Fuse (0x40
+  in every entry) say yes, MAME alone renders the non-bright half** — we follow
+  the reference. Border = paper.
+- The old code passed `(port >> 3) & 7` to `AluByte` **as an attribute byte**,
+  so paper came out black and nothing was bright. Fixed in the fallback path too.
+- **`timex_hr_lut[16]` is indexed by NIBBLE**: `pair(bit3,bit2) | pair(bit1,bit0)
+  << 8`, so a source byte becomes `lut[b & 15] | (lut[b >> 4] << 16)` — one
+  aligned uint32 store per 8 pixels, and the four pair bytes land in the fb's
+  (k^2) order (physical +0..+3 = display k 2,3,0,1), the permutation `AluByte`
+  bakes in as `b2,b3,b0,b1` and the DS80 branch spells out per bit. Checked
+  against that per-bit form over all 256 bytes x 16 colour pairs on the host.
+- **The renderer derives its source address from the COLUMN counter**, not from
+  the running `bmpOffset`/`attOffset` `MainScreen_Blank` sets up: the guest can
+  leave mode 6 mid-frame, which flips those back to the standard bitmap/attribute
+  pair a frame before `timex_hires_live` drops — and while that flag is up the
+  framebuffer IS packed pairs, so hi-res is the only self-consistent thing to
+  render into it.
+- **Border needed one line**: `updateBorderBrd()` answers
+  `profi_pair_lookup[paper][paper]`. Both border machines work unchanged, because
+  a T-state covers the same number of fb BYTES in either mode (48K/128K
+  `Update_Border_Pair`: 8 bytes per 4T step; Pentagon `Update_Border_XOR`: one
+  uint16 per T, with the same `^1` the DS80 variant uses) — only their meaning
+  changes.
+- **The 16 pair colours are the machine's OWN ZX palette** (`spectrum_rgb888`
+  through `paletteTransform`, with `crtTransform` added by
+  `profi_ds80_driver_set`), NOT `profi_palette_live` — that exists because DS80
+  has a guest palette port and a Timex does not. Three places had to learn the
+  difference: `profiPaletteApplyPending` (would overwrite ours with Profi's),
+  `restoreUiDS80Palette` (the menu swaps the UI block into `profi_palette_live`
+  and puts it back), and `getBmpPalette` (unless the UI still owns it —
+  `profi_palette_ui_saved_valid`). `applyPalette()` re-pushes the pair tables.
+- **A colour change (bits 3-5) is beam-exact and legal mid-frame** — the
+  reference's "more than two colours on a hi-res screen" trick. It costs no
+  driver-table rewrite at all, because the 16 pair colours are fixed and the ink
+  field only picks two of them: `timexHiresColour()` rebuilds the 16-entry LUT
+  and the border byte after flushing paper + border up to the current T-state,
+  the way `OUT (#FE)` does. A conv_color rewrite there would have to wait for
+  vblank and would tear. `timexHiresRefresh()` (LUT + driver + border) is the
+  vblank-only twin, for a palette rebuild.
+- **Entering/leaving the mode IS vblank-only** (`timexHiresRequest` from the port
+  handler, `timexHiresApplyPending` from EndFrame beside `gmxApplyPending`, before
+  `gigascreenModeGate`) — the driver's ~250 pair slots are rewritten there.
+  **Deliberate deviation**: a guest that flips mode mid-FRAME gets the whole
+  frame in one mode. The reference describes that trick (top half hi-colour,
+  bottom half hi-res) and says it believes no commercial title ever shipped it.
+- **Fallback, not failure**: SOFTTV/TFT builds have no pair driver
+  (`profi_ds80_driver_set` is a stub) and `hdmi_set_profi_ds80_mode` refuses when
+  its ~5 KB snapshot will not allocate. Either way `profi_ds80_active` stays
+  false, `timex_hires_live` is not set, and the old 256-pixel OR-merge renders —
+  now with the right colours. A refusal is not retried until the guest rewrites
+  port #FF.
+- **`profi_ds80_active` is "the framebuffer is packed pairs"**, and this mode
+  raises it, so everything already keyed on it reads correctly for free:
+  `gigascreenModeIncompatible()` (Gigascreen suspends and comes back),
+  `getPairSlotReverse` + the 640x480/720x576 doubled BMP capture, the classic
+  zxColor path for the stats box / volume box / FDD lamp / paused badge,
+  `DS80Guard` (its re-arm tests `isProfiDS80()`, which is false here, so no
+  spurious reactivation), and the nm:: UI's full-screen `Sf.ds80` surface.
+  `ulaPlusUpdateBorder` was the one place that wrote a raw palette index into
+  `brd` — it delegates now (a nonsense combination, but the two features have
+  separate switches).
+- Force-off follows the `gmxForceOff`/`tsVideoForceOff` pattern: `VIDEO::Reset`
+  (which rebuilds the standard driver tables under us and zeroes `timex_mode`),
+  `ESPectrum::reset`, and `MachineSwitch` where Timex is switched off for
+  Byte/Profi/+3/TS-Conf.
+- **Cost: +4488 B flash, +416 B SRAM** (DVp2 VGA-HDMI MinSizeRel) — most of the
+  RAM is the new branch inside `MainScreen`, which is `.time_critical` code; the
+  LUT itself is 32 B.
+- Still not implemented, on purpose: port #FF **bit 6** (hardware DI) and the
+  DOCK/EX-ROM horizontal MMU (bit 7 + port #F4); Timex state in snapshots (there
+  never was any — `timex_port_ff` is not saved or restored by any loader).
+- **`IN A,(#FF)` now returns the WHOLE last byte written**, not `& 0x3F`. The
+  reference is explicit ("reading 0xFF on the Timex returns the last byte sent to
+  the port"), and TS2068 code round-trips it — `IN A,(#FF) / SET 7,A /
+  OUT (#FF),A` to flip the DOCK↔EX-ROM select — which the mask silently broke.
+  Bits 6-7 are stored and readable but still not acted on.
+
+### A TS2068 .tap will NOT reach hi-res here — the mode is set through the EX-ROM
+
+`debug/Timex/wordtsar.tap` looked like the obvious test and is not one: its three
+entry points (35800/35803/35806) all begin `CALL 0x8C2D`, and that routine does
+
+    IN A,(#FF) / SET 7,A / OUT (#FF),A      ; select EX-ROM
+    IN A,(#F4) / LD (save),A / LD A,1 / OUT (#F4),A   ; page EX-ROM bank 0 at #0000
+    LD A,B / CALL 0x0E8E                    ; the EX-ROM's set-screen-mode service
+    ... restore #F4, RES 7 on #FF
+
+i.e. the screen mode is never written to port #FF at all — B is 6 or 0 and the
+work is done by a routine in the TS2068 **extended BASIC EX-ROM**, paged in
+through the **horizontal MMU (port #F4)**. We emulate neither, so `OUT (#F4)` is
+a no-op and `CALL 0x0E8E` lands in the 48K ROM's print code: black screen (the
+program clears #4000 and #6000 itself at 0x8C55) with ROM garbage at the top,
+standard 256-pixel geometry, which is exactly what the reported screenshot shows.
+**Nothing there is the renderer's.** A TC2048 title works differently and IS a
+valid test — it has no EX-ROM and sets the mode with a plain `OUT (255),6`.
+
+**The second screenshot proves it from the other end** (2026-09-11, now on
+TC2048): the program runs and draws its status line, and that line reads
+`CNNM.O PG  LN 3 0 1   ISR N` — which is the **even characters** of a 64-column
+hi-res line, packed into 32 cells. `INSERT ON` → `ISR N`, `PAGE` → `PG`,
+`C:NONAME.TXT` → `CNNM.X`: at 512 px an 8-pixel character IS one byte-column, and
+the columns alternate between the two data areas, so displaying screen 0 alone
+shows every other character. The emulator is doing mode 0 exactly right; the
+guest simply never asked for mode 6. (Its `OUT (#F4)` writes, meanwhile, land on
+the ULA — A0 = 0, so an even port — which is why the first capture had a blue
+border and this one a white one: the restore writes back what `IN A,(#F4)` read
+from the keyboard. A real TC2048 does the same; MAME's `tc2048_io` maps the ULA
+with `select(0xfffe)`.) Verified too: the program contains **no** `OUT (C),A` at
+all — the `ED 79` an early scan reported was the `18 ED` displacement of a `JR`
+followed by `LD A,C`. The two writes in the EX-ROM wrapper touch bit 7 only.
+
+`debug/Timex/timex_hires_test.tap` (generated in this session, `debug/` is
+gitignored) is the self-contained check: a 79-byte fill routine puts `FF`/`00` in
+the top third of screens 0/1, `AA`/`55` in the middle and `00`/`FF` in the
+bottom, then BASIC cycles `OUT 255,6+8*n` through all eight colours. Reading it:
+the middle band is 1-pixel vertical stripes ONLY at 512 px; the top band's comb
+starts with **ink** if screen 0 really supplies the left byte of each pair (paper
+first = the interleave is swapped); and if the packed-pair path did not engage,
+the OR-merge fallback makes the whole screen SOLID INK (`FF|00` = `AA|55` =
+`00|FF` = `FF`), which is an unmistakable "native path off".
+- **hw-confirmed 2026-09-11**: Andrew Owen's *TC2048 Hi-Res Colour Demo for Grok
+  Developments* renders in full — 512 px of 1-pixel dither in the portrait, thin
+  strokes in the title, **yellow ink on blue paper** (combination `110` =
+  "Yellow on Blue", both bright) with the **border following paper**. So the
+  renderer, the packed-pair geometry, the ink/paper derivation, the BRIGHT
+  reading and the border rule are all right on real hardware, and the
+  screen-0-on-the-left interleave is right too (a swapped one would mangle the
+  text). The capture came out 640x480 through the pair-aware path, exactly as
+  the BMP section describes. The owner reports it also runs **on 128K** — which
+  is the design, not a surprise: `Config::timex_video` is a card-like option on
+  any 48K/128K/Pentagon (ULA+ and Gigascreen work the same way), and the TC2048
+  romset only forces it on and supplies the right ROM. Hi-res software drives
+  port #FF itself and does not care which BASIC is underneath.
+- **Still NOT covered by that run**, in rough order of risk: entering and
+  LEAVING the mode (one cleared frame each way, and the border bands coming
+  back); a guest cycling the colour mid-screen; Gigascreen armed BEFORE entering
+  (it must suspend and resume); a menu session, the F8 box and the FDD lamp over
+  a live hi-res screen; and **a VGA build** — VGA has its own pair path
+  (`vga_set_profi_ds80_mode`) and only HDMI has been seen.
+
+### A TC2048 `.z80` was refused outright — hardware mode 14 (hw-confirmed 2026-09-11)
+
+`debug/Timex/GVD42048.z80` (a Portuguese schools title, "Regioes agricolas da
+URSS") did not load at all, and the header says why in one byte: it is a
+**version-2** file (additional-header length 23) with **hardware mode 14 =
+TC2048**, and `FileZ80::load`'s v2 switch only knew 0/1/3/4. `z80_arch` stayed
+`A_NONE`, so the loader took the "unknown machine" exit before touching a thing.
+
+Three defects, all in that one path:
+
+- **mch 14 → `A_48K` + `R_TC2048`**, in BOTH the v2 and v3 switches (14 means
+  TC2048 in either version). Also handled: the machine is already 48K, which
+  used to skip the whole romset block — that `else` branch only ever considered
+  128K, so a TC2048 snapshot loaded onto a plain 48K would have come up without
+  the SCLD forced on.
+- **mch 15 (TC2068) and 128 (TS2068) are refused by name** rather than as
+  "unknown machine": they need the `#F4` horizontal MMU and the DOCK/EX-ROM
+  planes, which do not exist here.
+- **Header byte 36 is the last `OUT (#FF)`** on a Timex — the SCLD register, i.e.
+  the screen mode, the hi-res colour and the DOCK/EX-ROM select — and nothing
+  restored it. **That one is the interesting half**: this snapshot's byte 36 is
+  `0x01`, i.e. **screen 1**, and rendering both display files out of the file
+  shows the same map with DIFFERENT legend panels. The program pages its text
+  through the Timex **double buffer** (`%000` ↔ `%001`), so without byte 36 the
+  snapshot restores showing screen 0 — a plausible-looking picture with the
+  wrong caption, not a visible failure. (Byte 35 is the last `OUT (#F4)`; there
+  is nothing to restore it into until a TS2068 exists.) The write goes in the
+  `A_48K` block AFTER `resetForLoad()`, which is what zeroes those registers.
+
+`VIDEO::timexHiresRequest` is called from there too, so a snapshot taken in mode
+%110 comes back in hi-res through the ordinary vblank path. There is no `.z80`
+WRITER in this project, so nothing on the save side needed the same treatment.
+
+**...and the reason it took a screenshot to even ask the question: every loader's
+own message was painted over.** All four `LoadSnapshot` callers (OSDFile's
+browser, `nm::loadSnapshotFile`, the old OSDMain browser, the persist-slot load)
+answered a `false` with the same generic `OSD_PSNA_LOAD_ERR` box — "ERROR Loading
+Persist Snapshot", which is wrong for a browsed file AND lands on top of the
+specific one the loader had just shown for its 1000 ms. The user sees the generic
+box and cannot read what was underneath. `snapshotLoadReported()` (Snapshot.h) is
+the flag: cleared at the top of every `LoadSnapshot`, set by `loadFailMsg()`, and
+every caller skips its own box when it is true. The three `.z80` messages now also
+**name the numbers** — `Z80: unknown machine 14 (v2)`, `Z80: unsupported header
+(ahb len N)` — and go to `printf` as well, so one photograph of the screen is
+enough to add a machine, and a UART console or `debug.log` has it either way.
+A message that only a developer can decode is not a diagnostic.
+
+**hw 2026-09-11, and both halves reported for themselves**: `GVD42048.z80` loads
+and runs, and a DIFFERENT `.z80` the owner tried in the same session came up as
+`Z80: TS2068 is not emulated` in the log — i.e. the named refusal immediately
+separated "our loader is broken" from "that file is a machine we do not have",
+which the old generic box could not. Worth knowing for the TS2068 decision: there
+are TS2068 snapshots in the owner's collection, so that machine has demand beyond
+wordtsar. Not separately checked: that the restored screen-1 page is the one the
+program then flips from (the caption should read "Criacao de gado miudo"), and a
+hi-res snapshot (`%110` in byte 36) coming back in hi-res — no such file to hand.
+
+### Timex TC2048 — a whole machine for 37 bytes (2026-09-11, boots; ROM path not separately confirmed)
+
+`R_TC2048` ("TC2048") is a **ROMSET of the 48K arch**, listed in Machine → ZX
+Spectrum 48K just before Custom (and in Options → Preferred rom, index-aligned
+with `kPref48[]` in UiStage.cpp). That is the whole machine, because MAME
+`sinclair/timex.cpp` is unambiguous about how little a TC2048 is:
+
+- `tc2048_io` decodes exactly **`#FE` (ULA) and `#FF` (SCLD)** — no `#F4`, no AY,
+  no banking;
+- `tc2048_mem` is plain ROM `0000-3FFF` / RAM `4000-FFFF`;
+- timing is `spectrum(config)` with the screen re-declared at `448*2` half-pixels
+  × 312 lines, i.e. our 48K's own 224 T/line, 69888 T/frame at 3.5 MHz — MAME's
+  own comment says "timings not confirmed! now same as spec48". (The WoS FAQ
+  guesses 3.528 MHz / 226 T for the Timex machines; nobody has measured it, and
+  following MAME keeps us on a path that is already hw-proven.)
+
+**Note what the romset is and is not for.** Hi-res software drives port #FF
+itself, so it runs on a plain 48K or 128K with the Timex option on — the owner
+confirmed exactly that with the Grok demo on 2026-09-11. TC2048 exists so the
+machine can be picked as a machine: the right BASIC, the SCLD on by default and
+not switchable off, and the SAA1099 out of the way. What that hardware run does
+NOT cover is this romset's own ROM path (the 37-byte overlay in `rom[0]`); the
+pack-time round-trip and a read-back of the shipped C array are what stand
+behind it so far.
+
+So the only hardware difference from a 48K is the SCLD, which we already
+emulate — hence `Config::timex_video` is **forced ON** and `Config::SAA1099`
+forced OFF while TC2048 runs, in the usual three places: `resolveConstraints`
+(UiStage), `MachineSwitch::commit` (toast) and the `CPU::reset` backstop.
+
+- **The rule has to run BEFORE the SAA/Timex mutual exclusion**, not leave the SAA
+  to it. That exclusion resolves by `g_seq` (last edit wins), so a later SAA edit
+  would turn Timex off and the TC2048 rule would turn it back on — the one way to
+  make that fixpoint loop oscillate. Forcing both explicitly settles it in one
+  pass, and `force()` never bumps `g_seq`, so nothing else is perturbed.
+- **ROM: 37 bytes**, `gb_overlay_48k_tc2048` over `gb_rom_0_sinclair_48k`
+  (`python3 tools/rom_pack.py 48k`; dump from speccy4ever.speccy.org/_TI.htm,
+  md5 `9dd7ecf784a6c04265c073c236f5fadb`). The diff is **seven bytes in three
+  runs** and explains itself:
+
+      129A: 0A 0C        -> 6E 38            ; a CALL operand redirected to 0x386E
+      386E: FF           -> D3               ; in the ROM's unused 0xFF tail:
+      3870: FF FF FF FF  -> CD 0A 0C C9      ;   OUT (#FF),A / CALL 0x0C0A / RET
+
+  i.e. the boot writes A into the SCLD mode register and falls through to the
+  original routine. A dump that did NOT show exactly this would not be a TC2048.
+
+**TS2068 was costed at the same time and deliberately NOT done.** Its two ROMs
+(`TS2068-0.ROM` 16 KB HOME, `ts2068-1.rom` 8 KB EX-ROM) have no usable base:
+measured against every ROM in the tree and against each other, the best overlay
+is 16455 B / 7793 B — **bigger than raw** — and the longest identical positional
+run is 654 / 914 bytes. They would have to ship raw, **24 576 B**, which the
+fattest variant (ZERO2-PIOUSB) can afford only down to ~18.7 KB of headroom. And
+the ROM is the small half of the work: `ts2068_io` needs the horizontal MMU on
+`#F4` (eight 8 KB banks over the whole 64 KB map, read and write mapped
+separately), `#FF` bit 7 as the DOCK↔EX-ROM select, an **AY-3-8912 on `#F5`/`#F6`**
+at 1.764 MHz, 3.528 MHz / 228 T / 311 lines (60 Hz on US machines), a HOME ROM
+that is not Sinclair-derived (every tape trap and ROM-keyed path needs
+re-checking) and DOCK cartridge images we do not have. That is +3/Scorpion-sized
+work, not a romset — revisit after hi-res is confirmed on hardware.
+
 ## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
 
 TheLink (pouet 53778, Pentagon 1024SL + NeoGS + TSFM, REQUIRES 7 MHz turbo)
@@ -6006,7 +6331,7 @@ menu as it appears and on the flows the owner drove. So treat the file layer
 (profileSave/Load/Rename/Delete, the `ram=` neutering, the copy-over-storage.nvs
 reboot) and the no-card path as covered by inspection, not by a pass.
 
-`Options > My settings` is a **`K_PICK` row whose RIGHT PANE is the slot list** —
+`Options > Config profiles` is a **`K_PICK` row whose RIGHT PANE is the slot list** —
 40 numbered slots in `/.config/pico-speccy/<board>/profiles/` (`CONFIG_DIR_PROFILES`),
 with the verbs on the function keys: Enter/F3 load, F4 save, F6 rename, F8 remove.
 `Config::profile*` (Config.cpp) owns the files; UiActions owns only the dialogue.
@@ -6016,6 +6341,14 @@ single list is not, and the two shapes that came first are why:
 - two flat `NM_DYNH` rows of Options (Save / Load) each carried the same value
   label — the screen read `Save my .. #01 Pentagon>` / `Load my .. #01 Pentagon>`,
   one fact said twice with both labels clipped to say it;
+
+**The row was called "My settings" until 2026-09-11.** Renamed because the whole
+feature already had a vocabulary and that label was the one thing outside it: the
+code says profile (`Config::profileSave/Load`, `CONFIG_DIR_PROFILES`, the
+`profile_name=` line) and so do all three of its dialogs. It also repeated the
+breadcrumb — "Settings > Options > My settings" — and undersold a slot that
+carries the mounted tape/disks/IDE images and the browser paths, not just
+settings.
 - folding them into one `NM_SUB` fixed the duplication and still cost a level plus
   a pick to reach 40 slots that are the same 40 slots either way.
 

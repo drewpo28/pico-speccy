@@ -39,6 +39,7 @@
     X(R_48K_ES,         "48Kes",            "48K Spanish")        \
     X(R_48K_CS,         "48Kcs",            "Custom 48K")         \
     X(R_48K_BY,         "48Kby",            "Byte 48K")           \
+    X(R_TC2048,         "TC2048",           "TC2048")             \
     X(R_128K,           "128K",             "128K")               \
     X(R_128K_ES,        "128Kes",           "128K Spanish")       \
     X(R_PLUS2,          "+2",               "+2")                 \
@@ -153,6 +154,12 @@ inline ArchIdx archDisplay(ArchIdx a, RomsetIdx r) {
 // romset under A_128K, not an arch. Everything that differs (four ROMs, #1FFD, the
 // uPD765, the contention pattern, no floating bus) hangs off this romset — see
 // Config::isPlus3() / Z80Ops::isP3.
+// Timex TC2048: a ROMSET of the 48K machine, not an arch. MAME's tc2048_io is
+// only #FE and #FF and its memory map is plain ROM 0000-3FFF / RAM 4000-FFFF at
+// spec48 timing, so the only hardware difference from a 48K is the SCLD — which
+// is why the whole machine costs a 37-byte ROM overlay and one forced flag.
+inline bool isTc2048Romset(RomsetIdx r) { return r == R_TC2048; }
+
 inline bool isPlus3Romset(RomsetIdx r) {
     return r == R_P3 || r == R_P3E;
 }

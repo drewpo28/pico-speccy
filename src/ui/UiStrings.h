@@ -191,6 +191,12 @@
 // ── Machine ────────────────────────────────────────────────────────────────────
 // Machine rows carry their ROM set in the right pane, so a machine and its ROM are
 // chosen in one gesture instead of the classic two-level walk.
+// Machine-menu FAMILY rows. The specific machine is the selected option inside
+// the row, so the subheader reads "Machine: <family> (<option>)".
+#define TXT_MACH_SPECTRUM   "Spectrum"
+#define TXT_MACH_TIMEX      "Timex"
+#define TXT_MACH_PENTAGON   "Pentagon"
+// ...and the ARCH names, still used by Options > Preferred machine/rom.
 #define TXT_MACH_48K        "Spectrum 48K"
 #define TXT_MACH_128K       "Spectrum 128K"
 #define TXT_MACH_PENT       "Pentagon 128K"
@@ -234,12 +240,24 @@
 #define TXT_ROM_PENT_S      "128K"
 #define TXT_ROM_PENT_GLUK   "128K + Mr Gluk"
 #define TXT_ROM_PENT_GLUK_S "128K+Gluk"     // left-column short form (Option::slabel)
+#define TXT_ROM_P512        "512K"
+#define TXT_ROM_P512_GLUK   "512K + Mr Gluk"
+#define TXT_ROM_P512_GLUK_S "512K+Gluk"
+#define TXT_ROM_P1024       "1024K"
+#define TXT_ROM_P1024_GLUK  "1024K + Mr Gluk"
+#define TXT_ROM_P1024_GLUK_S "1024K+Gluk"
 #define TXT_ROM_PENT_ORIG   "Original"
 #define TXT_ROM_BYTE_48     "48K"
 #define TXT_ROM_BYTE_128    "128K"
 #define TXT_ROM_BYTE_GLUK   "128K + Mr Gluk"
 #define TXT_ROM_BYTE_GLUK_S "128K+Gluk"  // left-column short form (Option::slabel)
+#define TXT_ROM_TC2048      "TC2048"
 #define TXT_ROM_CUSTOM      "Custom"
+// Two DIFFERENT flash images (Devices > Replace ROM slots "48K" and "128K"),
+// so they cannot share one row. Pentagon reuses the 128K image and keeps the
+// plain "Custom" label.
+#define TXT_ROM_CUSTOM_48   "Custom 48K"
+#define TXT_ROM_CUSTOM_128  "Custom 128K"
 #define TXT_ROM_LAST        "Last used"
 #define TXT_ROM_PROFI_ORIG  "Original"
 // Karabas machine row — the real board's four ROMSET slots.
@@ -270,7 +288,12 @@
 #define TXT_OPT_THEME        "Theme"
 #define TXT_OPT_VGA_MENU_PAL "VGA colors"
 #define TXT_OPT_UI_CORNERS   "Corners"
-#define TXT_OPT_PROFILES     "My settings"
+// One vocabulary for the feature: the code says profile (Config::profileSave/
+// Load, CONFIG_DIR_PROFILES, the profile_name= line) and so do all three of
+// its dialogs below, so the row says it too. It was "My settings", which both
+// repeated the breadcrumb ("Settings > Options > My settings") and undersold
+// a slot that also carries the mounted tape/disks/IDE images and the paths.
+#define TXT_OPT_PROFILES     "Config profiles"
 #define TXT_OPT_REPLACE_ROM  "Replace ZX rom"
 #define TXT_OPT_UPDATE_FW    "Update firmware"
 #define TXT_ROM_PICK         "Select ROM file"
@@ -297,8 +320,8 @@
 #define TXT_DBG_PSRAM       "PSRAM"
 // No = hide the paper area and render the border colour through it instead
 // (per-T-state, like top/bottom border) — shows border effects "under" the paper.
-#define TXT_DBG_PAPER       "Paper"
-#define TXT_DBG_TEMPOFF     "Temp offset"
+#define TXT_DBG_PAPER       "Render paper"
+#define TXT_DBG_TEMPOFF     "Chip temp offset"
 // TX-only 115200 log on the board's DBG_UART_TX_PIN (reboot-class; Debug::uart*).
 #define TXT_DBG_UART        "UART console"
 // The firmware's own two folders on the card, opened in the F5 browser for

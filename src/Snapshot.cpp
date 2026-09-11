@@ -68,7 +68,18 @@ using namespace std;
 // Config::ram_file and resumed by setup() after the reboot.
 std::string g_snapshot_loading_path;
 
+// Set by any loader path that shows its own message; read by the callers through
+// snapshotLoadReported(). Cleared at the top of every LoadSnapshot.
+static bool s_load_reported = false;
+bool snapshotLoadReported() { return s_load_reported; }
+static void loadFailMsg(const string& msg) {
+    s_load_reported = true;
+    printf("%s\n", msg.c_str());        // also to the UART console / debug.log
+    OSD::osdCenteredMsg(msg, LEVEL_ERROR, 4000);
+}
+
 bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_romset) {
+    s_load_reported = false;
     if (!FileUtils::fsMount) return false;
     // No snapshot format expresses TS-Conf state (its register file, CRAM and
     // 4 MB paging are outside SNA/Z80) — a TS-Conf force can only come from a
@@ -419,6 +430,11 @@ bool FileZ80::load(const string& z80_fn) {
     // so the arch alone cannot carry it — this flag picks the romset and the #1FFD
     // handling below.
     bool z80_plus3 = false;
+    // Timex hardware modes (14 TC2048, 15 TC2068, 128 TS2068). Only the TC2048 is a
+    // machine we have — it is the 48K arch's R_TC2048 romset — and the flag also
+    // says that header bytes 35/36 are the SCLD pair (last OUT to #F4 / #FF), not
+    // the 128K paging byte and the Interface-1 flag.
+    bool z80_timex = false;
     uint16_t ahb_len;
 
     fseek(file,6,SEEK_SET);
@@ -440,8 +456,7 @@ bool FileZ80::load(const string& z80_fn) {
         else if (ahb_len == 54 || ahb_len == 55)
             z80version = 3;
         else {
-            OSD::osdCenteredMsg("Z80 load: unknown version", LEVEL_ERROR);
-            printf("Z80.load: unknown version, ahblen = %u\n", (unsigned int) ahb_len);
+            loadFailMsg("Z80: unsupported header (ahb len " + to_string((unsigned)ahb_len) + ")");
             fclose2(file);
             return false;
         }
@@ -455,6 +470,7 @@ bool FileZ80::load(const string& z80_fn) {
             // if (mch == 2) z80_arch = "SAMRAM";
             if (mch == 3) z80_arch = A_128K;
             if (mch == 4) z80_arch = A_128K; // + if1
+            if (mch == 14) { z80_arch = A_48K; z80_timex = true; }   // Timex TC2048
         }
         else if (z80version == 3) {
             if (mch == 0) z80_arch = A_48K;
@@ -471,15 +487,25 @@ bool FileZ80::load(const string& z80_fn) {
             // A +2A is a +3 without the disk drive, so it runs on the same machine
             // here; the snapshot carries no disk state either way.
             if (mch == 13) { z80_arch = A_128K; z80_plus3 = true; } // Spectrum +2A
-/// TODO:            if (mch == 15) z80_arch = A_P512; + P1024
+            if (mch == 14) { z80_arch = A_48K; z80_timex = true; }  // Timex TC2048
         }
 
     }
 
     // printf("Z80 version %u, AHB Len: %u, machine code: %u\n",(unsigned char)z80version,(unsigned int)ahb_len, (unsigned char)mch);
 
+    // 15 = TC2068, 128 = TS2068: both need the horizontal MMU (#F4) and the
+    // DOCK/EX-ROM planes, which are not emulated. Say so instead of "unknown".
+    if (z80version >= 2 && (mch == 15 || mch == 128)) {
+        loadFailMsg(string("Z80: ") + (mch == 15 ? "TC2068" : "TS2068") + " is not emulated");
+        fclose2(file);
+        return false;
+    }
+
     if (z80_arch == A_NONE) {
-        OSD::osdCenteredMsg("Z80 load: unknown machine", LEVEL_ERROR);
+        // Name the byte: a photo of this box is then enough to add the machine.
+        loadFailMsg("Z80: unknown machine " + to_string((unsigned)mch)
+                    + " (v" + to_string((unsigned)z80version) + ")");
         ///printf("Z80.load: unknown machine, machine code = %u\n", (unsigned char)mch);
         fclose2(file);
         return false;
@@ -496,7 +522,9 @@ bool FileZ80::load(const string& z80_fn) {
         // printf("z80_arch: %s mch: %d pref_romset48: %s pref_romset128: %s z80_romset: %s\n",z80_arch.c_str(),mch,Config::pref_romSet_48.c_str(),Config::pref_romSet_128.c_str(),z80_romset.c_str());
 
         if (z80_arch == A_48K) {
-            if (Config::pref_romSet_48 == R_48K || Config::pref_romSet_48 == R_48K_ES || Config::pref_romSet_48 == R_48K_BY)
+            if (z80_timex)
+                z80_romset = R_TC2048;   // the SCLD is the machine, not a preference
+            else if (Config::pref_romSet_48 == R_48K || Config::pref_romSet_48 == R_48K_ES || Config::pref_romSet_48 == R_48K_BY)
                 z80_romset = Config::pref_romSet_48;
         } else
         if (z80_arch == A_128K) {
@@ -536,6 +564,12 @@ bool FileZ80::load(const string& z80_fn) {
         Config::requestMachine(z80_arch, z80_romset);
                         
     } else {
+
+        // Already on the 48K arch, but a TC2048 snapshot needs that romset — it is
+        // what forces Config::timex_video on (CPU::reset backstop) and supplies the
+        // TC2048 ROM. Same shape as the +2 / +3 cases below.
+        if (z80_arch == A_48K && z80_timex && Config::romSet != R_TC2048)
+            Config::requestMachine(A_48K, R_TC2048);
 
         if (z80_arch == A_128K) {
             
@@ -721,6 +755,20 @@ bool FileZ80::load(const string& z80_fn) {
         Z80::setRegPC(RegPC);
 
         if (z80_arch == A_48K) {
+
+            // Timex: byte 36 is the last OUT to #FF — the SCLD register, i.e. the
+            // screen mode (bits 0-2), the hi-res colour (3-5) and the DOCK/EX-ROM
+            // select (7). Without it a snapshot taken on screen 1 or in hi-res
+            // restores showing screen 0, which is the wrong picture rather than a
+            // visible failure. (Byte 35 is the last OUT to #F4, the horizontal MMU
+            // — nothing to restore it into until a TS2068 exists.)
+            if (z80_timex) {
+                const uint8_t scld = header[36];
+                VIDEO::timex_port_ff   = scld;
+                VIDEO::timex_mode      = scld & 0x07;
+                VIDEO::timex_hires_ink = (scld >> 3) & 0x07;
+                VIDEO::timexHiresRequest(VIDEO::timex_mode == 6);
+            }
 
             MemESP::page0ram = 0;
             MemESP::romLatch = 0;

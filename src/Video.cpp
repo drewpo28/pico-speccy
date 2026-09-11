@@ -306,7 +306,11 @@ void VIDEO::restoreUiDS80Palette() {
     // menu may already have left DS80, and re-arming it over a standard framebuffer
     // gives a shifted/garbled screen (same hazard DS80Guard documents).
     if (profi_ds80_active) {
-        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        // Timex hi-res drives the same pair tables from the machine's own ZX
+        // palette, not from profi_palette_live (which exists because DS80 has a
+        // guest palette port) — hand the guest ITS colours back, not Profi's.
+        if (timex_hires_live) timexHiresRefresh();
+        else profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         rebuildDS80ColorLut();
     }
 }
@@ -335,6 +339,10 @@ void VIDEO::profiPaletteReset() {
 }
 
 void VIDEO::profiPaletteApplyPending() {
+    // Timex hi-res raises profi_ds80_active but is NOT driven by the Profi
+    // palette port — refreshing from profi_palette_live here would replace the
+    // machine's own ZX palette with Profi's.
+    if (timex_hires_live) { profi_palette_dirty = false; return; }
     if (profi_palette_dirty && profi_ds80_active
         && !profi_ds80_activate_pending && !profi_ds80_deactivate_pending) {
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
@@ -419,10 +427,31 @@ bool VIDEO::isProfiDS80() {
 volatile bool VIDEO::gmx_ext_pending_on = false;
 volatile bool VIDEO::gmx_ext_pending_off = false;
 bool VIDEO::gmx_ext_live = false;
+
 uint8_t* VIDEO::gmx_frame_bmp = nullptr;
 uint8_t* VIDEO::gmx_frame_att = nullptr;
 uint32_t VIDEO::gmx_frame_srow = 0;
 bool VIDEO::gmx_border_dirty = false;
+
+// ── Timex hi-res 512x192 — see Video.h ────────────────────────────────────────
+volatile bool VIDEO::timex_hires_pending_on  = false;
+volatile bool VIDEO::timex_hires_pending_off = false;
+bool VIDEO::timex_hires_live = false;
+// One source byte = 8 pixels = 4 packed-pair bytes = one aligned uint32 store.
+// Indexed by NIBBLE: entry = pair(bit3,bit2) | pair(bit1,bit0) << 8, so a byte
+// becomes  lut[b & 15] | (lut[b >> 4] << 16)  — which lands the four pair bytes
+// in the framebuffer's (k^2) order (physical +0..+3 = display k 2,3,0,1), the
+// same permutation AluByte bakes in (b2,b3,b0,b1) and the DS80 branch spells out.
+static uint16_t timex_hr_lut[16];
+
+// "In this mode all colours, including the BORDER, are BRIGHT, and the BORDER
+// colour is the same as the PAPER colour" (WoS Timex reference); paper is the
+// ink's complement — 000 = black on white ... 111 = white on black.  MAME
+// (tc2048_state::_64col_scanline: paper = 7 - inkcolor) and Fuse
+// (hires_convert_dec) agree on the pairing; Fuse and the reference also agree
+// on BRIGHT, MAME alone renders the non-bright half of the palette.
+uint8_t VIDEO::timexHiresInk()   { return (uint8_t)((timex_hires_ink & 7) | 8); }
+uint8_t VIDEO::timexHiresPaper() { return (uint8_t)((~timex_hires_ink & 7) | 8); }
 uint8_t VIDEO::gmx_border_col = 0xFF;
 
 // Per-frame cost meters for the TS-Conf whole-line renderer (PERF_TRACE line).
@@ -1280,6 +1309,16 @@ void precalcborder32()
 }
 
 void VIDEO::updateBorderBrd() {
+    if (timex_hires_live) {
+        // Hi-res border = the PAPER colour, bright, as a solid pair slot.  The
+        // 48K/128K (Update_Border_Pair) and Pentagon (Update_Border_XOR) border
+        // machines need nothing else: a T-state covers the same number of fb
+        // BYTES in either mode, only their meaning changes.
+        uint8_t pi = timexHiresPaper();
+        uint8_t b = profi_pair_lookup[pi][pi];
+        brd = (uint32_t)b * 0x01010101u;
+        return;
+    }
     if (isProfiDS80()) {
         // DS80 border colour = Palette[(~borderIndex) & 7] (inverse index, per
         // ZXMAK2 ProfiRenderer m_borderColorPaper), mapped to its solid pair slot.
@@ -1727,6 +1766,10 @@ void VIDEO::ulaPlusFlushPalette() {
 }
 
 void VIDEO::ulaPlusUpdateBorder() {
+    // Timex hi-res owns the framebuffer as packed pairs — a raw ULA+ CLUT index
+    // there is not a colour at all.  (A nonsense combination, but reachable: the
+    // two features have separate switches.)
+    if (timex_hires_live) { updateBorderBrd(); brdChange = true; return; }
     // ULA+ border = paper color from CLUT 0 for current borderColor
     // CLUT 0 paper entries are at indices 8-15, so index = 8 + borderColor
     uint8_t brd_color = 8 + borderColor;
@@ -1849,6 +1892,154 @@ void VIDEO::applyPalette() {
     // slot again (hw 2026-09-06: "picture right, colours wrong" after a palette
     // rewrite from a hotkey).
     if (ts_pal256_live) tsPalette256Flush(true);
+    // Timex hi-res owns the hardware palette as PAIR slots — the loops above
+    // just wrote the standard 8-bit entries over them.
+    if (timex_hires_live) timexHiresRefresh();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timex SCLD hi-res 512x192 (port #FF, screen mode %110)
+//
+// The SCLD builds a 512-pixel line by taking byte-columns ALTERNATELY from the
+// two 6912-byte data areas: screen 0 (0x4000, grmem + 0) supplies the first 8
+// pixels of each pair, screen 1 (0x6000, grmem + 0x2000) the next 8.  The
+// attribute areas are unused; the two colours come from port #FF bits 3-5.
+// (Fuse display.c builds `hires_data = (data << 8) + data2`, MAME plots scr1
+// then scr2 — both put screen 0 on the left.)
+//
+// We render that natively through the packed-pair framebuffer the Profi DS80
+// and Scorpion GMX modes already use: the ISR expands one fb byte into two
+// DIFFERENT output pixels instead of doubling one, so 256 content bytes become
+// 512 pixels in exactly the screen area the 256-pixel picture occupied.  Hence
+// no geometry change at all — same lin_end/lin_end2, same lineptr_offset pad,
+// same border machine, same 24/48-row bands for the F8 box and the FDD lamp.
+//
+// What it costs, and why it is deferred to vblank like every other pair mode:
+// the driver's colour tables are rewritten on the switch, which must not happen
+// mid-scanout.  A guest that flips mode mid-FRAME (the reference's "top half
+// hi-colour, bottom half hi-res" trick, which it also says no commercial title
+// ever shipped) therefore gets the whole frame in one mode.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void timexHiresBuildLut() {
+    const uint8_t ink = VIDEO::timexHiresInk(), pap = VIDEO::timexHiresPaper();
+    for (int n = 0; n < 16; n++) {
+        uint8_t c3 = (n & 8) ? ink : pap, c2 = (n & 4) ? ink : pap;
+        uint8_t c1 = (n & 2) ? ink : pap, c0 = (n & 1) ? ink : pap;
+        timex_hr_lut[n] = (uint16_t)(VIDEO::profi_pair_lookup[c3][c2]
+                        | ((uint16_t)VIDEO::profi_pair_lookup[c1][c0] << 8));
+    }
+}
+
+// The 16 pair-slot colours are the machine's OWN ZX palette (the user's preset),
+// not Profi's fixed one: profi_palette_live exists because DS80 has a guest
+// palette port, a Timex does not.  crtTransform is applied by
+// profi_ds80_driver_set, so stop at paletteTransform here — same two stages the
+// standard path gets, minus snapTransform, which no pair mode has ever had.
+static void timexHiresDriverPalette() {
+    uint32_t pal[16];
+    for (int i = 0; i < 16; i++) pal[i] = paletteTransform(spectrum_rgb888[i]) & 0x00FFFFFF;
+    profi_ds80_driver_set(true, pal, &VIDEO::profi_pair_lookup[0][0]);
+}
+
+void VIDEO::timexHiresRequest(bool on) {
+    if (on) {
+        if (timex_hires_live) { timex_hires_pending_off = false; return; }
+        timex_hires_pending_on = true;
+        timex_hires_pending_off = false;
+    } else {
+        if (!timex_hires_live) { timex_hires_pending_on = false; return; }
+        timex_hires_pending_off = true;
+        timex_hires_pending_on = false;
+    }
+}
+
+// Port #FF bits 3-5 changed.  This does NOT touch the driver's colour tables:
+// the 16 pair colours are the fixed ZX palette and the ink field only picks two
+// of them, so all that moves is our 16-entry pixel LUT and the border byte.
+// Which is what makes a hi-res colour change beam-exact and legal mid-frame —
+// the reference's "more than two colours on a hi-res screen" trick — where a
+// conv_color rewrite would have to wait for vblank and tear if it did not.
+void VIDEO::timexHiresColour() {
+    if (!timex_hires_live) return;
+    timexHiresBuildLut();
+    updateBorderBrd();
+    brdChange = true;
+}
+
+// The ZX palette itself was rebuilt (preset change, CRT filter, a menu handing
+// the pair tables back): everything above plus the driver's 250 pair slots.
+// Callers are all vblank-or-full-rebuild contexts — never the port handler.
+void VIDEO::timexHiresRefresh() {
+    if (!timex_hires_live) return;
+    timexHiresBuildLut();
+    timexHiresDriverPalette();
+    updateBorderBrd();
+    brdChange = brdnextframe = true;
+}
+
+void VIDEO::timexHiresApplyPending() {
+    if (timex_hires_pending_on) {
+        timex_hires_pending_on = false;
+        if (timex_hires_live) return;
+        // pair_lookup is built in Reset only for the machines that always need
+        // it (Profi/GMX/TS-Conf); build it here for everyone else.  It also
+        // depends on whether HDMI audio owns its Data Island slots, so a rebuild
+        // on every activation is the cheap way to stay in step.
+        init_profi_pair_lookup();
+        timexHiresBuildLut();
+        timexHiresDriverPalette();
+        // SOFTTV/TFT builds have no pair driver at all (profi_ds80_driver_set is
+        // a stub) and hdmi_set_profi_ds80_mode itself refuses when its ~5 KB
+        // snapshot will not allocate.  Either way: stay in the 256-pixel
+        // OR-merge fallback rather than render pair slots nothing decodes.
+        if (!profi_ds80_active) {
+            Debug::log("[TIMEX] hi-res: no packed-pair mode here, using 256px fallback");
+            return;
+        }
+        rebuildDS80ColorLut();
+        Graphics8BitPalette::ds80_active = true;
+        timex_hires_live = true;
+        // Every byte on screen now decodes as a pair slot — clear and let the
+        // border machine repaint authoritatively.
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        updateBorderBrd();
+        brdChange = brdnextframe = true;
+        Debug::log("[TIMEX] hi-res 512x192 on (ink=%u paper=%u)",
+                   (unsigned)timexHiresInk(), (unsigned)timexHiresPaper());
+    } else if (timex_hires_pending_off) {
+        timex_hires_pending_off = false;
+        if (!timex_hires_live) return;
+        timex_hires_live = false;
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        updateBorderBrd();
+        brdChange = brdnextframe = true;
+        Debug::log("[TIMEX] hi-res 512x192 off");
+    }
+}
+
+// Machine reset / the mode is gone while the deferred path cannot see the edge
+// (VIDEO::Reset rebuilds the standard driver tables under us — same reason
+// gmxForceOff and tsVideoForceOff exist).
+void VIDEO::timexHiresForceOff() {
+    timex_hires_pending_on = timex_hires_pending_off = false;
+    if (!timex_hires_live) return;
+    timex_hires_live = false;
+    profi_ds80_driver_set(false, nullptr, nullptr);
+    Graphics8BitPalette::ds80_active = false;
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++)
+            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+    }
+    Debug::log("[RESET] Timex hi-res off + FB cleared");
 }
 
 // ── TS-Conf CRAM → hardware palette ────────────────────────────────────────────
@@ -2093,9 +2284,13 @@ void VIDEO::getBmpPalette(uint8_t* out) {
     // crtTransform applies, exactly as profi_ds80_driver_set does — the ZX
     // palette presets deliberately never touch a Profi palette.
     if (profi_ds80_active) {
+        // ... except Timex hi-res, whose 16 are the machine's own ZX palette
+        // (preset included) — unless a full-screen menu has swapped the UI block
+        // into profi_palette_live, which is then what the driver is running.
+        const bool tmx = timex_hires_live && !profi_palette_ui_saved_valid;
         for (int i = 0; i < 16; i++) {
-            uint32_t c = Config::crt_filter ? crtTransform(profi_palette_live[i])
-                                            : profi_palette_live[i];
+            uint32_t src = tmx ? paletteTransform(spectrum_rgb888[i]) : profi_palette_live[i];
+            uint32_t c = Config::crt_filter ? crtTransform(src) : src;
             out[i * 4 + 0] = c & 0xFF;
             out[i * 4 + 1] = (c >> 8) & 0xFF;
             out[i * 4 + 2] = (c >> 16) & 0xFF;
@@ -3397,6 +3592,11 @@ void VIDEO::Reset() {
         TsConf::wrGateRecalc(); tsC1LiveRecalc();
     }
 
+    // Timex hi-res: Reset rebuilds the standard driver tables and the ZX
+    // palette below, so a live packed-pair mode has to go first.  timex_mode was
+    // zeroed at the top of Reset, so there is nothing to re-request.
+    timexHiresForceOff();
+
     if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF) {
         // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
         // GMX shares it: its 640x200 mode uses the same 16-colour pair-slot scheme
@@ -3919,12 +4119,37 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
         if (start_col == 0) tsRenderLine(curline);
         lineptr32 += loopCount * 2;
     } else
-    if (Config::timex_video && VIDEO::timex_mode == 6) {
-        // Hi-res mode 6 (512->256): real SCLD alternates byte-columns from
-        // screen0 and screen1 at same address, 64 cols x 8 bits = 512 pixels.
-        // For 256px output, OR-merge each pair (s0[addr] | s1[addr]) into
-        // 8 output pixels — preserves all set bits, covers all 32 addresses.
-        uint8_t hires_att = VIDEO::timex_hires_ink;
+    if (timex_hires_live) {
+        // Timex SCLD hi-res 512x192, native — packed pair slots, 8 fb bytes per
+        // 4T column, exactly the DS80 shape.  Screen 0 supplies the LEFT byte of
+        // each column pair, screen 1 (+0x2000) the right one; attributes are
+        // unused and both colours are baked into timex_hr_lut.
+        //
+        // The source address is derived from the column counter, NOT from the
+        // running bmpOffset/attOffset MainScreen_Blank sets up: the guest can
+        // leave mode 6 mid-frame, which flips those two back to the standard
+        // bitmap/attribute pair a frame before timex_hires_live drops — and
+        // while it is up, the framebuffer IS packed pairs, so hi-res is the only
+        // self-consistent thing to render into it.
+        const unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
+        const uint16_t base = offBmp[curline];
+        for (unsigned int j = end_col - loopCount; j < end_col; j++) {
+            uint8_t e = grmem[base + j];            // screen 0 → pixels 0..7
+            uint8_t o = grmem[base + j + 0x2000];   // screen 1 → pixels 8..15
+            *lineptr32++ = (uint32_t)timex_hr_lut[e & 0x0F]
+                         | ((uint32_t)timex_hr_lut[e >> 4] << 16);
+            *lineptr32++ = (uint32_t)timex_hr_lut[o & 0x0F]
+                         | ((uint32_t)timex_hr_lut[o >> 4] << 16);
+        }
+    } else if (Config::timex_video && VIDEO::timex_mode == 6) {
+        // Hi-res fallback for builds/boards with no packed-pair driver (SOFTTV,
+        // TFT, or a refused DS80 snapshot allocation): 512->256 by OR-merging
+        // each screen0/screen1 byte pair — preserves every set bit at half the
+        // horizontal resolution.  Colours are the real ones (bright ink on its
+        // bright complement), which the old attribute-byte shortcut got wrong:
+        // it left paper black and nothing bright.
+        uint8_t hires_att = (uint8_t)(0x40 | ((~VIDEO::timex_hires_ink & 7) << 3)
+                                           | (VIDEO::timex_hires_ink & 7));
         for (; loopCount--; ) {
             uint8_t combined = grmem[bmpOffset++] | grmem[attOffset++];
             *lineptr32++ = AluByte[combined >> 4][hires_att];
@@ -5456,6 +5681,8 @@ IRAM_ATTR void VIDEO::EndFrame() {
         // ── Scorpion GMX 640x200 deferred mode switch — same vblank-only rule ──
         // (cold flash body; the checks stay cheap in this RAM function)
         if (gmx_ext_pending_on || gmx_ext_pending_off) gmxApplyPending();
+        // ── Timex hi-res 512x192 packed-pair switch — same vblank-only rule ──
+        if (timex_hires_pending_on || timex_hires_pending_off) timexHiresApplyPending();
         // ── TS-Conf VConfig mode/geometry switch — same vblank-only rule ──
         if (Z80Ops::isTsconf) tsVideoApplyPending();
 
@@ -6008,7 +6235,7 @@ void VIDEO::RedrawPausedFrame() {
     linedraw_cnt = lin_end;
     tstateDraw = tStatesScreen;
     void (*blank)(unsigned int, bool);
-    if (snow_toggle) {
+    if (snow_toggle && !(Config::timex_video && VIDEO::timex_mode != 0)) {
         Draw = &MainScreen_Blank_Snow;
         Draw_Opcode = &MainScreen_Blank_Snow_Opcode;
         blank = &Blank_Snow;

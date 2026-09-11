@@ -35,6 +35,14 @@
       "len": 167,
       "runs": 11,
       "diff_bytes": 89
+    },
+    {
+      "name": "TC2048",
+      "sym": "gb_rom_0_tc2048",
+      "overlay_sym": "gb_overlay_48k_tc2048",
+      "len": 37,
+      "runs": 3,
+      "diff_bytes": 7
     }
   ]
 }

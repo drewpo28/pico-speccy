@@ -252,44 +252,63 @@ static bool p_byteActive() {
     return r == R_48K_BY || r == R_128K_BY || r == R_128K_BY_GLUK;
 }
 
-static const Option opt_mach_48[] = {
-    { TXT_ROM_48K,        NM_MACH(A_48K, R_48K)    },
+// ── the three machine FAMILIES ─────────────────────────────────────────────────
+// One row per family, the specific machine is the option inside it — so the
+// subheader can read "Machine: Pentagon (128K+Gluk)" and a family's members sit
+// together instead of one row each. NM_MACH() still spells the arch out in every
+// entry, so a ROM cannot end up under the wrong machine.
+static const Option opt_mach_spectrum[] = {
+    { TXT_ROM_48K,        NM_MACH(A_48K,  R_48K)      },
 #if !NO_SPAIN_ROM_48k
-    { TXT_ROM_48K_ES,     NM_MACH(A_48K, R_48K_ES),     TXT_ROM_48K_ES_S },
+    { TXT_ROM_48K_ES,     NM_MACH(A_48K,  R_48K_ES),    TXT_ROM_48K_ES_S },
 #endif
-    { TXT_ROM_CUSTOM,     NM_MACH(A_48K, R_48K_CS) },
-};
-static const Option opt_mach_128[] = {
     { TXT_ROM_128K,       NM_MACH(A_128K, R_128K)     },
 #if !NO_SPAIN_ROM_128k
     { TXT_ROM_128K_ES,    NM_MACH(A_128K, R_128K_ES),   TXT_ROM_128K_ES_S },
     { TXT_ROM_PLUS2,      NM_MACH(A_128K, R_PLUS2)    },
     { TXT_ROM_PLUS2_ES,   NM_MACH(A_128K, R_PLUS2_ES),  TXT_ROM_PLUS2_ES_S },
-    { TXT_ROM_ZX81P,      NM_MACH(A_128K, R_ZX81P)    },
 #endif
     // The +2A/+3 is a romset of the 128K machine, like the +2 (ArchRom.h): the
     // English v4.0 four-bank image. Everything +3-specific keys on this romset.
     { TXT_ROM_P3,         NM_MACH(A_128K, R_P3)       },
     // ...and the +3e is a romset of that: the same machine with Garry Lancaster's
     // replacement ROM, which carries IDEDOS and an 8-bit IDE interface on #xxEF.
-    { TXT_ROM_P3E,        NM_MACH(A_128K, R_P3E), TXT_ROM_P3E_S },
-    { TXT_ROM_CUSTOM,     NM_MACH(A_128K, R_128K_CS)  },
+    { TXT_ROM_P3E,        NM_MACH(A_128K, R_P3E),       TXT_ROM_P3E_S },
+#if !NO_SPAIN_ROM_128k
+    { TXT_ROM_ZX81P,      NM_MACH(A_128K, R_ZX81P)    },
+#endif
+    // Two rows because they are two different flash images — see UiStrings.h.
+    { TXT_ROM_CUSTOM_48,  NM_MACH(A_48K,  R_48K_CS)   },
+    { TXT_ROM_CUSTOM_128, NM_MACH(A_128K, R_128K_CS)  },
 };
-static const Option opt_mach_pent[] = {
-    { TXT_ROM_PENT,       NM_MACH(A_PENT, R_PENT)      },
-    { TXT_ROM_PENT_GLUK,  NM_MACH(A_PENT, R_PENT_GLUK), TXT_ROM_PENT_GLUK_S },
-    { TXT_ROM_CUSTOM,     NM_MACH(A_PENT, R_128K_CS)   },
+// Timex TC2048 — a 48K with the SCLD (Config::timex_video is forced on while it
+// runs; see resolveConstraints). 37 bytes of ROM overlay, ArchRom.h. Its own
+// family row because it is a different manufacturer's machine, not a ZX romset.
+static const Option opt_mach_timex[] = {
+    { TXT_ROM_TC2048,     NM_MACH(A_48K, R_TC2048) },
 };
-static const Option opt_mach_p512[] = {
-    { TXT_ROM_PENT,       NM_MACH(A_P512, R_PENT)      },
-    { TXT_ROM_PENT_GLUK,  NM_MACH(A_P512, R_PENT_GLUK), TXT_ROM_PENT_GLUK_S },
-    { TXT_ROM_CUSTOM,     NM_MACH(A_P512, R_128K_CS)   },
-};
-static const Option opt_mach_p1024[] = {
-    { TXT_ROM_PENT,       NM_MACH(A_P1024, R_PENT)      },
-    { TXT_ROM_PENT_GLUK,  NM_MACH(A_P1024, R_PENT_GLUK), TXT_ROM_PENT_GLUK_S },
-    { TXT_ROM_CUSTOM,     NM_MACH(A_P1024, R_128K_CS)   },
-};
+// Pentagon is built at runtime, not static: 512K/1024K need extended-RAM backing
+// and that gate used to live on their rows. Rebuilt on every call (NOT cached like
+// mach_scorpOpts) because p_extRam() includes FileUtils::fsMount — a card inserted
+// mid-session must make the two bigger machines appear.
+static const Option* mach_pentOpts(uint8_t& cnt) {
+    static Option opts[7];
+    uint8_t n = 0;
+    opts[n++] = { TXT_ROM_PENT,        NM_MACH(A_PENT,  R_PENT)      };
+    opts[n++] = { TXT_ROM_PENT_GLUK,   NM_MACH(A_PENT,  R_PENT_GLUK),  TXT_ROM_PENT_GLUK_S  };
+    if (p_extRam()) {
+        opts[n++] = { TXT_ROM_P512,      NM_MACH(A_P512,  R_PENT)      };
+        opts[n++] = { TXT_ROM_P512_GLUK, NM_MACH(A_P512,  R_PENT_GLUK), TXT_ROM_P512_GLUK_S  };
+        opts[n++] = { TXT_ROM_P1024,     NM_MACH(A_P1024, R_PENT)      };
+        opts[n++] = { TXT_ROM_P1024_GLUK,NM_MACH(A_P1024, R_PENT_GLUK), TXT_ROM_P1024_GLUK_S };
+    }
+    // The custom ROM here is the SAME flash image as Spectrum's "Custom 128K"
+    // (Replace ROM slots "128K" and "Pentagon" write one array) — this row is the
+    // Pentagon timing/paging for it. 512K/1024K + custom is not offered.
+    opts[n++] = { TXT_ROM_CUSTOM,      NM_MACH(A_PENT,  R_128K_CS)   };
+    cnt = n;
+    return opts;
+}
 // Byte is not an arch of its own: it is a ROM set over 48K or 128K, which is why the
 // entries below switch arch as well.
 static const Option opt_mach_byte[] = {
@@ -409,14 +428,12 @@ static const Node kTsconf[] = {
 };
 
 static const Node kMachine[] = {
-    NM_RADIO(TXT_MACH_48K,   SET_MACHINE, opt_mach_48,    nullptr),
-    NM_RADIO(TXT_MACH_128K,  SET_MACHINE, opt_mach_128,   nullptr),
-    NM_RADIO(TXT_MACH_PENT,  SET_MACHINE, opt_mach_pent,  nullptr),
-    NM_RADIO(TXT_MACH_P512,  SET_MACHINE, opt_mach_p512,  p_extRam),
-    NM_RADIO(TXT_MACH_P1024, SET_MACHINE, opt_mach_p1024, p_extRam),
+    NM_RADIO  (TXT_MACH_SPECTRUM, SET_MACHINE, opt_mach_spectrum, nullptr),
+    NM_RADIO  (TXT_MACH_TIMEX,    SET_MACHINE, opt_mach_timex,    nullptr),
+    NM_RADIO_D(TXT_MACH_PENTAGON, SET_MACHINE, mach_pentOpts,     nullptr),
     // Machine-dependent options sit right under their machine, indented so the
     // grouping reads at a glance (they also only show while that machine is
-    // running or staged) — Murmuzavr belongs to the three Pentagon rows above it.
+    // running or staged) — Murmuzavr belongs to the Pentagon row above it.
     NM_SUB  (NM_IND TXT_MACH_MURM, kMurmuzavr, p_murmAvail),
     // Scorpion sits with the Soviet-clone block, right after the Pentagons.
     // Its pages above the base 128K need extended-RAM backing, same gate as P512.
@@ -433,6 +450,30 @@ static const Node kMachine[] = {
     // holding S during the boot R/M probe window.
     NM_PAGE (TXT_GAME,       act_gameScwong, nullptr),
 };
+
+// The subheader's "Machine: <family> (<option>)" — read straight out of kMachine,
+// so a new machine row names itself. Byte/Profi/Karabas/Scorpion/TS-Conf/ALF all
+// resolve the same way; Scorpion's runtime table is reached through nodeOptions().
+bool machineMenuName(const char*& family, const char*& romShort) {
+    const int32_t want = NM_MACH(archDisplay(Config::arch, Config::romSet), Config::romSet);
+    for (uint8_t i = 0; i < NM_COUNT(kMachine); i++) {
+        const Node& n = kMachine[i];
+        if (n.kind != K_RADIO || n.setting != SET_MACHINE) continue;
+        uint8_t cnt = 0;
+        const Option* o = nodeOptions(n, cnt);
+        for (uint8_t k = 0; k < cnt; k++) {
+            if (o[k].value != want) continue;
+            // Row labels carry no NM_IND today, but skip leading pad anyway so an
+            // indented family row would not put spaces in the subheader.
+            const char* lbl = n.label;
+            while (*lbl == ' ') lbl++;
+            family   = lbl;
+            romShort = o[k].slabel ? o[k].slabel : o[k].label;
+            return true;
+        }
+    }
+    return false;
+}
 
 // ── Speed test ─────────────────────────────────────────────────────────────────
 // A level of the menu, not a popup. Row order is presentation only — the arg is
@@ -839,15 +880,18 @@ static const Option opt_pref_arch[] = {
     { TXT_MACH_SCORP, 5 },
     { TXT_ROM_LAST,   6 },
 };
+// Index-aligned with kPref48[] in UiStage.cpp — keep the two in step.
 static const Option opt_pref48[] = {
     { TXT_ROM_48K,     0 },
 #if !NO_SPAIN_ROM_48k
     { TXT_ROM_48K_ES,  1 },
+    { TXT_ROM_TC2048,  2 },
+    { TXT_ROM_CUSTOM,  3 },
+    { TXT_ROM_LAST,    4 },
+#else
+    { TXT_ROM_TC2048,  1 },
     { TXT_ROM_CUSTOM,  2 },
     { TXT_ROM_LAST,    3 },
-#else
-    { TXT_ROM_CUSTOM,  1 },
-    { TXT_ROM_LAST,    2 },
 #endif
 };
 static const Option opt_pref128[] = {
@@ -979,17 +1023,17 @@ static const Option opt_profile_foot[] = {
 
 static const Node kOptions[] = {
     NM_SUB   (TXT_HW_OVERCLOCK,     kOverclock,     nullptr),
-    NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
-    NM_SUB   (TXT_OPT_PREF_ROM,     kPrefRom,       nullptr),
-    NM_RADIO (TXT_OTHER_ALU,        SET_ALU_TIMING, opt_alu,       nullptr),
-    NM_BOOL  (TXT_OTHER_ISSUE2,     SET_ISSUE2,     nullptr),
-    NM_RADIO (TXT_OTHER_FRAMESKIP,  SET_FRAMESKIP,  opt_frameskip, nullptr),
     NM_SUB   (TXT_INTERFACE,        kInterface,     nullptr),
     // Named config profiles: a full snapshot of storage.nvs per slot, loaded by
     // copying it back and rebooting. The right pane IS the slot list (K_PICK) and
     // the verbs are function keys, so picking one is one keypress from here.
     NM_PICK  (TXT_OPT_PROFILES, SET_PROFILE_SLOT, profiles_rows, profiles_key,
               profiles_vlabel, opt_profile_foot, p_hasSD),
+    NM_RADIO (TXT_OTHER_ALU,        SET_ALU_TIMING, opt_alu,       nullptr),
+    NM_BOOL  (TXT_OTHER_ISSUE2,     SET_ISSUE2,     nullptr),
+    NM_RADIO (TXT_OTHER_FRAMESKIP,  SET_FRAMESKIP,  opt_frameskip, nullptr),
+    NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
+    NM_SUB   (TXT_OPT_PREF_ROM,     kPrefRom,       nullptr),
     NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),
     NM_ACTION(TXT_OPT_UPDATE_FW,    act_updateFirmware, nullptr),
 };
@@ -1015,20 +1059,20 @@ static const Option opt_tempOffset[] = {
 static const Node kDebug[] = {
     NM_ACTION(TXT_DBG_DIALOG, act_debugDialog, nullptr),
     NM_ACTION(TXT_DBG_POKE,   act_debugPoke,   nullptr),
+    // TX-only 115200 log on the board's DBG_UART_TX_PIN — Debug::log, fault_log and
+    // every printf. Reboot-class; the row exists only where the board defines the pin.
+    NM_BOOL  (TXT_DBG_UART,   SET_DBG_UART,    p_dbgUartPin),
     NM_BOOL  (TXT_DBG_LOG,    SET_DEBUG_LOG,   nullptr),
+    // The firmware's own folders on the card, in the F5 browser (rename / delete /
+    // new folder). Needs a card: with none, there is nothing to open.
+    NM_ACTION(TXT_DBG_FOLDERS, act_configFolders, p_hasSD),
     // Testing aid: run the firmware as if the board had no PSRAM (see SET_PSRAM_ON).
     NM_BOOL  (TXT_DBG_PSRAM,  SET_PSRAM_ON,    p_psramChip),
     // Border-timing aid: No = the paper area is not rendered; the border state
     // machine paints through it, showing the border colour "under" the paper as
     // it would run on the raster (per-T-state — multicolour effects included).
     NM_BOOL  (TXT_DBG_PAPER,  SET_PAPER,       nullptr),
-    NM_RADIO (TXT_DBG_TEMPOFF, SET_TEMP_OFFSET, opt_tempOffset, nullptr),
-    // TX-only 115200 log on the board's DBG_UART_TX_PIN — Debug::log, fault_log and
-    // every printf. Reboot-class; the row exists only where the board defines the pin.
-    NM_BOOL  (TXT_DBG_UART,   SET_DBG_UART,    p_dbgUartPin),
-    // The firmware's own folders on the card, in the F5 browser (rename / delete /
-    // new folder). Needs a card: with none, there is nothing to open.
-    NM_ACTION(TXT_DBG_FOLDERS, act_configFolders, p_hasSD),
+    NM_RADIO (TXT_DBG_TEMPOFF, SET_TEMP_OFFSET, opt_tempOffset, nullptr)
 };
 
 // ── Reset ──────────────────────────────────────────────────────────────────────
@@ -1127,10 +1171,10 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_VIDEO,     kVideo,    nullptr),
     NM_SUB   (TXT_AUDIO,     kAudio,    nullptr),
     NM_SUB   (TXT_JOYSTICK,  kJoystick, nullptr),
-    NM_SUB   (TXT_OPTIONS,   kOptions,  nullptr),
     NM_SUB   (TXT_NETWORK,   kNetwork,  nullptr),
-    NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),
+    NM_SUB   (TXT_OPTIONS,   kOptions,  nullptr),
     NM_SUB   (TXT_RESET,     kReset,    nullptr),
+    NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),
     NM_INT   (TXT_VOLUME,    SET_VOLUME, -16, 0, 1, nullptr),
 };
 

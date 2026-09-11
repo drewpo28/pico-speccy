@@ -1826,7 +1826,8 @@ bool persistLoad(uint8_t slotnumber)
         fclose2(f);
 
         if (!LoadSnapshot(string(DISK_PSNA_DIR) + "/" + persistfname, persist_arch, persist_romset)) {
-            OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+            if (!snapshotLoadReported())   // the loader already named the reason
+                OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
             return false;
         }
         // Apply the +3 paging latch AFTER the snapshot, which restores #7FFD itself:
@@ -2648,7 +2649,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
                     Config::save();
                     if (!LoadSnapshot(fname, A_NONE, R_NONE)) {
-                        OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+                        if (!snapshotLoadReported())   // ... already named the reason
+                            OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
                     } else if (!fromZip) {
                         Config::ram_file = fname;
                         Config::last_ram_file = fname;
@@ -6001,7 +6003,9 @@ static void buildEmulatorInfoText() {
                 " V-Sync         : %s\n",
                 gs,
                 Config::ulaplus ? "On" : "Off",
-                Config::timex_video ? "On (#FF)" : "Off",
+                !Config::timex_video ? "Off"
+                    : VIDEO::timex_hires_live ? "On (#FF) - hi-res 512x192"
+                    : "On (#FF)",
                 Config::v_sync_enabled ? "On" : "Off");
         }
         // 16col is a Pentagon-only port (#EFF7 D0); dither only exists on HDMI.

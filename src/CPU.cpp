@@ -345,6 +345,15 @@ void CPU::reset() {
     // GMX 640x200 pair-slot framebuffer.
     if ((Z80Ops::isByte || Z80Ops::isProfi || g_scorp_gmx || Z80Ops::isTsconf) && Config::timex_video) Config::timex_video = false;
 
+    // ...and the converse for the Timex TC2048, whose ULA IS the SCLD: Timex video
+    // is the machine, and the SAA1099 cannot share the #FF family with it. Backstop
+    // for the paths that never pass through the menu (boot with a stale config, a
+    // snapshot that forces the machine).
+    if (Config::arch == A_48K && isTc2048Romset(Config::romSet)) {
+        Config::timex_video = true;
+        if (Config::SAA1099) Config::SAA1099 = false;
+    }
+
     // «Байт»: RESET returns the DD66 map to native state — the built-in test's
     // dispatch (#39F9) must land on DD73's own base test at #3A00, not on the
     // DD71 blocks a previous test run left switched in.

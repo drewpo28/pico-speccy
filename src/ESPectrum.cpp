@@ -1575,6 +1575,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   // deferred EndFrame path never sees the off edge (see VIDEO::gmxForceOff).
   VIDEO::gmxForceOff();
   VIDEO::tsVideoForceOff();   // TS-Conf TEXT/16c: same rule (TsConf::reset clears VConfig below)
+  VIDEO::timexHiresForceOff();// Timex hi-res 512x192: ditto (VIDEO::Reset zeroes timex_mode)
   Ports::portDFFD = 0;
   Ports::port1FFD = 0;   // Scorpion: reset clears the 1FFD latch (RAM0/service off)
   // GMX: warm reset clears the whole register file (MAME machine_reset), the

@@ -449,7 +449,8 @@ static bool rfd_launch_tmp(string path) {
         FileUtils::SNA_Path = dir;
         Config::save();
         if (!LoadSnapshot(path, A_NONE, R_NONE)) {
-            OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+            if (!snapshotLoadReported())   // the loader already named the reason
+                OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
             return false;
         }
         // /tmp snapshots are transient — don't pin them as the Alt+Backspace reload slot.

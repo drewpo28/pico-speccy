@@ -151,14 +151,21 @@ static void drawSubHeader() {
         x += text(x, y + 2, p->label, d == S.depth ? C_WHITE : C_TEXT_DIM);
     }
 
-    // "Machine: Pentagon 128K + MZ[8MB]" — the Murmuzavr tag only appears while the
-    // mode is on, so the common case reads exactly as before.
-    char mach[56];
+    // "Machine: Pentagon (128K+Gluk) + MZ[8MB]" — family and romset both named by the
+    // Machine menu itself (machineMenuName), so the subheader says exactly which of a
+    // family's machines is running. The Murmuzavr/TS tag only appears while that mode
+    // is on. A machine in no menu table falls back to the arch spelling alone.
+    char mach[80];
     const char* mz = murmuzavrTag();
     if (!mz) mz = tsconfTag();   // TS[4MB] — same slot, the two never coexist
-    snprintf(mach, sizeof(mach), "Machine: %s%s%s",
-             archToStr(archDisplay(Config::arch, Config::romSet)),
-             mz ? " + " : "", mz ? mz : "");
+    const char* fam = nullptr; const char* rom = nullptr;
+    if (machineMenuName(fam, rom))
+        snprintf(mach, sizeof(mach), "Machine: %s (%s)%s%s",
+                 fam, rom, mz ? " + " : "", mz ? mz : "");
+    else
+        snprintf(mach, sizeof(mach), "Machine: %s%s%s",
+                 archToStr(archDisplay(Config::arch, Config::romSet)),
+                 mz ? " + " : "", mz ? mz : "");
     const int mw = textWidth(mach);
     if (x + mw + 2 * LY.pad < LY.ix + LY.iw)
         text(LY.ix + LY.iw - mw - LY.pad, y + 2, mach, C_TEXT_DIM);

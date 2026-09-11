@@ -485,9 +485,29 @@ public:
   static void gigascreenModeGate();          // EndFrame: suspend/resume on the edge
 
   // Timex SCLD video modes
-  static uint8_t timex_port_ff;   // bits 0-5 of port 0xFF
+  static uint8_t timex_port_ff;   // last byte written to port 0xFF (read back whole)
   static uint8_t timex_mode;      // cached (timex_port_ff & 7)
   static uint8_t timex_hires_ink; // mode 6: ink palette index (0-7)
+
+  // ── Timex hi-res 512x192 (port #FF mode %110) ──────────────────────────────
+  // Rendered through the DS80/GMX packed-pair framebuffer (1 fb byte = 2 output
+  // pixels via profi_pair_lookup + the driver pair tables).  The fit is exact:
+  // a hi-res line is 64 source bytes = 512 pixels = 256 fb bytes, which is the
+  // SAME 256 content bytes a standard 256-pixel line occupies, at the same pad
+  // and the same 192-line window — so the geometry, the border state machine
+  // and the 24/48-row bands are the standard ZX ones and only the byte VALUES
+  // change meaning.  Driver pair tables are vblank-only (the DS80 rule): the
+  // port handler only requests, EndFrame applies.
+  static volatile bool timex_hires_pending_on;
+  static volatile bool timex_hires_pending_off;
+  static bool timex_hires_live;          // renderer + driver in packed-pair mode
+  static void timexHiresRequest(bool on);      // from the port #FF write handler
+  static void timexHiresApplyPending();        // EndFrame
+  static void timexHiresForceOff();            // machine reset / mode gone
+  static void timexHiresColour();              // port #FF bits 3-5 changed (cheap)
+  static void timexHiresRefresh();             // ... or the ZX palette was rebuilt
+  static uint8_t timexHiresInk();              // 4-bit pair index, always BRIGHT
+  static uint8_t timexHiresPaper();            // ... = ink ^ 7, also the border
 
   // ULA+
   static bool ulaplus_enabled;

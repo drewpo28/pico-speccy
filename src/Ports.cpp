@@ -3358,9 +3358,30 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // Skip when TR-DOS is active — port 0xFF is the Beta-128 system register
     if (Config::timex_video && !ESPectrum::trdos && a8 == 0xFF && !(address & 0x0100)) {
       LED::touchW(LED::TIMEX);
-      VIDEO::timex_port_ff = data & 0x3F;
+      const uint8_t prev_mode = VIDEO::timex_mode;
+      const uint8_t prev_ink  = VIDEO::timex_hires_ink;
+      // Read-back is the WHOLE byte: "reading 0xFF on the Timex returns the last
+      // byte sent to the port" (WoS reference) — and TS2068 code round-trips it
+      // (IN / SET 7 / OUT) to flip the DOCK<->EX-ROM select in bit 7, so masking
+      // to the six video bits silently broke that read-modify-write.  Bits 6
+      // (hardware DI) and 7 (bank select) are stored and readable but still not
+      // acted on: the horizontal MMU is port #F4 and a machine of its own.
+      VIDEO::timex_port_ff = data;
       VIDEO::timex_mode = data & 0x07;
       VIDEO::timex_hires_ink = (data >> 3) & 0x07;
+      // Hi-res (%110) renders through the packed-pair framebuffer; the driver's
+      // colour tables may only be rewritten in vblank, so request and let
+      // VIDEO::EndFrame apply (the DS80/GMX rule).
+      if ((VIDEO::timex_mode == 6) != (prev_mode == 6))
+          VIDEO::timexHiresRequest(VIDEO::timex_mode == 6);
+      else if (VIDEO::timex_hires_ink != prev_ink && VIDEO::timex_hires_live) {
+          // Colour change inside hi-res is beam-exact and costs no driver
+          // rewrite (see VIDEO::timexHiresColour) — flush paper and border up
+          // to this T-state in the old pair first, the way OUT (#FE) does.
+          VIDEO::Draw(0, false);
+          VIDEO::DrawBorder();
+          VIDEO::timexHiresColour();
+      }
       ioContentionLate(MemESP::ramContended[rambank]);
       return;
     }

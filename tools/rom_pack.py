@@ -202,6 +202,13 @@ FAMILIES = {
             {'key': 'byte',         'name': 'BYTE',        'sym': 'gb_rom_0_byte_48k'},
             {'key': 'byte_test',    'name': 'BYTE test',   'sym': 'gb_rom_0_byte_test_48k'},
             {'key': 'byte_sovmest', 'name': 'BYTE compat', 'sym': 'gb_rom_0_byte_sovmest_48k'},
+            # Timex TC2048 (speccy4ever, md5 9dd7ecf784a6c04265c073c236f5fadb): the
+            # Sinclair 48K ROM plus SEVEN bytes — the operand at 0x129A is redirected
+            # into the ROM's 0xFF-filled tail, where 0x386E now holds
+            #   OUT (#FF),A / CALL 0x0C0A / RET
+            # i.e. the boot writes A to the SCLD mode register and falls through to
+            # the original routine. 37 B of overlay for a whole machine.
+            {'key': 'tc2048',       'name': 'TC2048',      'sym': 'gb_rom_0_tc2048'},
         ],
     },
     # 128K: only the SECOND ROM half (rom[1], the 48K BASIC core) is overlaid — it is

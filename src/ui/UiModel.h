@@ -179,6 +179,13 @@ const Node* rootNodes();
 // appends it to the machine name. Defined next to the option table in UiTree.cpp.
 const char* murmuzavrTag();
 const char* tsconfTag();
+// The Machine menu's own names for what is running: the FAMILY row's label
+// ("Pentagon") and the selected option's short label ("128K+Gluk"), so the
+// subheader reads "Machine: Pentagon (128K+Gluk)". Both come out of the menu
+// tables, which is why adding a machine needs no second place to name it.
+// False when the running (arch, romset) is in no table — then the caller falls
+// back to the arch spelling.
+bool machineMenuName(const char*& family, const char*& romShort);
 const Node* slotNodeFor(int iface);   // DiskIface -> its K_DYNAMIC slot level
 const Node* persistNodeFor();        // the fast-snapshot slot list (Snapshots > Quick slots)
 uint8_t     rootNodeCount();
