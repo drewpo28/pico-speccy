@@ -93,7 +93,8 @@ int rightRowCount(const Node* n) {
     if (!n) return 0;
     switch (n->kind) {
         case K_RADIO:
-        case K_BOOL: { uint8_t c; nodeOptions(*n, c); return c; }
+        case K_BOOL:
+        case K_PICK: { uint8_t c; nodeOptions(*n, c); return c; }
         case K_SUB: {
             int v = 0;
             for (uint8_t k = 0; k < n->count; k++)
@@ -119,8 +120,12 @@ void breadcrumb(char* out, size_t cap) {
 }
 
 static bool hasValuePane(const Node* n) {
-    return n && (n->kind == K_RADIO || n->kind == K_BOOL);
+    // "the right pane is a list you move through". K_PICK is one even though the
+    // rows are not values — the cursor, the scrolling and the landing row are the
+    // same machinery either way.
+    return n && (n->kind == K_RADIO || n->kind == K_BOOL || n->kind == K_PICK);
 }
+static bool isPickNode(const Node* n) { return n && n->kind == K_PICK; }
 static bool isIntNode(const Node* n) {
     return n && n->kind == K_INT;
 }
@@ -370,6 +375,30 @@ static void dynInvoke(uint8_t key) {
     markDirty(D_ALL);
 }
 
+// Run a verb on the highlighted row of a K_PICK list, then rebuild it: saving,
+// renaming and removing all change the very rows being looked at. The handler may
+// have drawn modal boxes over the menu (name prompts, confirmations), so the chrome
+// is restored exactly as runModal does.
+static void pickInvoke(uint8_t key) {
+    const Node* n = curNode();
+    if (!isPickNode(n) || !n->rowkey || !nodeEnabled(*n)) return;
+    uint8_t cnt; const Option* o = nodeOptions(*n, cnt);
+    if (!cnt || S.rsel >= cnt) return;
+    const int32_t tag = o[S.rsel].value;
+
+    gfxSuspendPalette();
+    n->rowkey(tag, key);
+    gfxResumePalette();
+
+    // The value behind the marker (which profile is current) moves inside the
+    // handler, not through Stage — so nothing else would notice it had changed.
+    Stage::invalidate(n->setting);
+    S.rcount = (uint8_t)rightRowCount(n);
+    if (S.rcount && S.rsel >= S.rcount) S.rsel = S.rcount - 1;
+    drawFrameOnce();
+    markDirty(D_ALL);
+}
+
 static void activate() {
     if (curLevel().dyn) { dynInvoke(0); return; }
     const Node* n = curNode();
@@ -398,6 +427,15 @@ static void activate() {
                 if (Stage::editDrawsModal(n->setting)) drawFrameOnce();
                 markDirty(Stage::editDrawsModal(n->setting)
                               ? D_ALL : (D_LEFT | D_RIGHT | D_FOOT));
+            }
+            break;
+        case K_PICK:
+            if (S.focus == FOCUS_LEFT) {           // Right/Enter: step into the list
+                S.focus = FOCUS_RIGHT;
+                markLeftRow(curLevel().sel - curLevel().top);
+                markDirty(D_RIGHT | D_FOOT);
+            } else {
+                pickInvoke(0);                     // Enter on a row = its default verb
             }
             break;
         case K_INT:
@@ -437,6 +475,12 @@ static void stepInt(int mult) {
     markRightRow(0);
     markLeftRow(curLevel().sel - curLevel().top);
     markDirty(D_FOOT);
+}
+
+// A verb key goes to whichever list is in front of the user.
+static void pickOrDyn(uint8_t key) {
+    if (curLevel().dyn) { dynInvoke(key); return; }
+    if (S.focus == FOCUS_RIGHT) pickInvoke(key);
 }
 
 static bool handleKey(NmKey k) {
@@ -484,13 +528,15 @@ static bool handleKey(NmKey k) {
                 leaveLevel(true);
             }
             break;
-        case NK_F2: if (curLevel().dyn) dynInvoke(2); break;
-        // F3/F4 mirror the classic persist dialogs, where the opening key repeated
-        // acts as Enter. Handlers that don't know them ignore them.
-        case NK_F3: if (curLevel().dyn) dynInvoke(3); break;
-        case NK_F4: if (curLevel().dyn) dynInvoke(4); break;
-        case NK_F6: if (curLevel().dyn) dynInvoke(6); break;
-        case NK_F8: if (curLevel().dyn) dynInvoke(8); break;
+        // Per-row verbs: a dynamic level dispatches on its own rows, a focused
+        // K_PICK on the right-pane row under the cursor. F3/F4 also mirror the
+        // classic persist dialogs, where the opening key repeated acts as Enter.
+        // Handlers that don't know a key ignore it.
+        case NK_F2: pickOrDyn(2); break;
+        case NK_F3: pickOrDyn(3); break;
+        case NK_F4: pickOrDyn(4); break;
+        case NK_F6: pickOrDyn(6); break;
+        case NK_F8: pickOrDyn(8); break;
         case NK_CLOSE: S.quit = true; break;
         default: break;
     }
@@ -559,6 +605,7 @@ static void runInternal(const Node* openAt) {
     memset(&S, 0, sizeof(S));
     Stage::begin();
     netStatusInvalidate();      // WiFi state may have changed since the last session
+    profilesSessionBegin();     // ...and so may the profiles on the card
     S.depth = 0;
     S.focus = FOCUS_LEFT;
     Level& L = curLevel();
@@ -667,6 +714,7 @@ resume:
     // palette, so skipping this leaves the guest's screen painted in UI colours.
     OSD::textPageOverride = nullptr;
     OSD::progressOverride = nullptr;
+    profilesSessionEnd();       // hand the profile row table back
     gfxEnd();
 }
 

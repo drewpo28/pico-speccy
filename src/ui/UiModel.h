@@ -36,6 +36,13 @@ enum Kind : uint8_t {
                   //   are eight rows over ONE function instead of eight wrappers — and the
                   //   slot index sits in the row, not in its position
     K_PAGE,     // full-screen info page; fn() owns its own key loop
+    K_PICK,     // a LIST in the right pane that is not a value: rows come from dopts()
+                //   at runtime and Enter/F-keys call rowkey(value, key) instead of
+                //   storing anything. The setting is read-only here — it only says
+                //   which row is the current one, so the pane opens on it and marks
+                //   it. Config profiles are the first user: a slot list where the
+                //   verbs (load, save, rename, remove) differ per key, which a radio
+                //   cannot express and a whole level of its own over-serves.
 };
 
 struct Option {
@@ -152,6 +159,11 @@ struct Node {
 // Radio whose option table is built at RUNTIME (`df`): per-board lists like the ESP
 // transport's GPIO pairs, which no static array can spell out. Behaves exactly like
 // NM_RADIO otherwise — same right-pane rings, same staged value.
+// Right-pane pick list (K_PICK): `df` builds the rows, `rk` acts on the chosen one,
+// `vl` labels the left row with what is current inside it. `sid` is read for the
+// marker and the landing row and is never written from here.
+#define NM_PICK(lbl, sid, df, rk, vl, vis) \
+    { lbl, nm::K_PICK, 0, sid, nullptr, nullptr, vis, nullptr, nullptr, nullptr, rk, 0, 0, 0, vl, nullptr, df }
 #define NM_RADIO_D(lbl, sid, df, vis) \
     { lbl, nm::K_RADIO, 0, sid, nullptr, nullptr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr, df }
 

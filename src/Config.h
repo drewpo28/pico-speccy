@@ -61,7 +61,19 @@ public:
     static void load();           // load main settings before emulator init
     static void loadDiskMounts(); // mount disks from storage.nvs after FDD/MB02 init
     static void loadMb02DiskMounts(); // (re)mount only MB-02+ disks (on enable at runtime)
-    static void save(const char* path = nullptr); // nullptr = STORAGE_NVS (normal path)
+    static void save(const char* path = nullptr, const char* profileName = nullptr);
+                                  // nullptr path = STORAGE_NVS (normal path)
+
+    // ── named config profiles (Options > Save/Load my settings) ────────────────
+    // A profile is a full copy of storage.nvs under CONFIG_DIR_PROFILES, named by
+    // slot number; its display name is the file's first line. Loading one is a
+    // reboot by definition (most of the config is reboot-class), so profileLoad
+    // only stages the file — the caller reboots.
+    static std::string profileName(uint8_t slot);   // "" = empty slot
+    static bool profileSave(uint8_t slot, const std::string& name);
+    static bool profileRename(uint8_t slot, const std::string& name);
+    static bool profileLoad(uint8_t slot);          // copies over storage.nvs
+    static void profileDelete(uint8_t slot);
     static bool loaded;  // true after successful load() from file/RAM
     // Set when save() refused to write because this session never loaded the
     // card's config (see the guard in save()). ESPectrum::loop turns it into a
@@ -341,6 +353,10 @@ public:
     // showing the border colour "under" the paper — for border-timing debugging.
     static bool render_paper;
     static uint8_t persist_slot;
+    // Options > Save/Load my settings: the profile slot this config was last
+    // saved to or loaded from (1..CONFIG_PROFILE_SLOTS; 0 = none). Shown on both
+    // menu rows and used to focus their lists.
+    static uint8_t profile_slot;
 
     static bool TABasfire1; 
 

@@ -286,21 +286,19 @@ FileUtils::CardConfig FileUtils::cardConfigState() {
 
 static void bringUpFromCard() {
     if (!Config::loaded) {
-        // This session runs on compiled-in defaults. If the card holds either
-        // of the files Config::load() would have read, its settings are the
-        // real ones and only a boot can apply them (arch, video mode, memory
-        // layout and most subsystems are all reboot-class). Note both paths are
-        // per firmware VERSION (storage.nvs) or at least per board
-        // (default.nvs), so a card whose newest config belongs to another
-        // version legitimately has nothing for this one to pick up.
+        // This session runs on compiled-in defaults. If the card holds the file
+        // Config::load() would have read, its settings are the real ones and
+        // only a boot can apply them (arch, video mode, memory layout and most
+        // subsystems are all reboot-class). Note the path is per firmware
+        // VERSION, so a card whose newest config belongs to another version
+        // legitimately has nothing for this one to pick up — saved profiles are
+        // version-independent but are never read without the user asking.
         FILINFO fi;
         const bool has_storage = (f_stat(STORAGE_NVS, &fi) == FR_OK);
-        const bool has_default = (f_stat(DEFAULT_NVS, &fi) == FR_OK);
-        s_card_cfg = (has_storage || has_default) ? FileUtils::CFG_FOUND : FileUtils::CFG_ABSENT;
-        Debug::log("FileUtils: card config %s (%s / %s)\n",
+        s_card_cfg = has_storage ? FileUtils::CFG_FOUND : FileUtils::CFG_ABSENT;
+        Debug::log("FileUtils: card config %s (%s)\n",
                    s_card_cfg == FileUtils::CFG_FOUND ? "found" : "absent",
-                   has_storage ? STORAGE_NVS : "no storage.nvs",
-                   has_default ? DEFAULT_NVS : "no default.nvs");
+                   has_storage ? STORAGE_NVS : "no storage.nvs");
     }
     // Karabas: ROMain reads karabas_boot.$c off the card itself, through the
     // Z-Controller — so the file has to exist before the guest looks for it.

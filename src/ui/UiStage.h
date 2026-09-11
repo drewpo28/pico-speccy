@@ -279,6 +279,12 @@ const char* romsetName(int32_t composite);
     /* z0p2 unit reads ~55 C low with a verified-good reference). Pure config: the    */ \
     /* readout paths add it at display time.                                          */ \
     X(SET_TEMP_OFFSET,     AC_PURE,   0,                     get_tempOffset, put_tempOffset, nullptr,        -1)          \
+    /* Options > My settings: which config profile this session came from. Read-only  */ \
+    /* from the menu — the pick list uses it to open on the current row and to mark   */ \
+    /* it, while the value itself moves only when a profile is saved or loaded (both  */ \
+    /* of which Stage::invalidate afterwards). put_ exists because every setting has  */ \
+    /* one; nothing ever stages this id, so it never runs.                            */ \
+    X(SET_PROFILE_SLOT,    AC_PURE,   0,                     get_profileSlot, put_profileSlot, nullptr,       -1)          \
     /* Debug > Paper: No = don't render the paper area; the border state machine    */ \
     /* paints straight through it (per-T-state, like top/bottom border), exposing   */ \
     /* what the border "under" the paper carries — a border-timing debugging aid.   */ \

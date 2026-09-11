@@ -188,6 +188,7 @@ uint8_t Config::crt_filter = 0;
 uint8_t Config::render = 0;
 bool Config::render_paper = true;
 uint8_t Config::persist_slot = 1;
+uint8_t Config::profile_slot = 0;
 
 bool     Config::TABasfire1 = false;
 signed char Config::aud_volume = 0;
@@ -1037,15 +1038,13 @@ void Config::load() {
     initHotkeys(); // fill defaults before overriding from NVS
     vector<string> sts;
     if (FileUtils::fsMount) {
-        // One-shot marker set by a true factory reset (Hold-R / menu
-        // "Defaults"): consume it and skip the user's saved default.nvs this
-        // boot, falling straight through to compiled-in defaults.
-        bool skipDefault = (f_unlink(SKIP_DEFAULT_FLAG) == FR_OK);
+        // storage.nvs or nothing: there is no fallback to a saved profile. A
+        // firmware update lands in a new per-version directory and therefore
+        // starts from compiled-in defaults, by design — the user loads a
+        // profile from Options once. (A factory reset is the same state, which
+        // is why it needs no marker file any more.)
         string nvs = STORAGE_NVS;
         FIL* handle = fopen2(nvs.c_str(), FA_READ);
-        if (!handle && !skipDefault) {
-            handle = fopen2(DEFAULT_NVS, FA_READ);
-        }
         if (!handle) {
             return;
         }
@@ -1358,6 +1357,10 @@ void Config::load() {
         nvs_get_b("ui_vga_solid", ui_vga_solid, sts);
         nvs_get_b("ui_rounded", ui_rounded, sts);
         nvs_get_u8("ui_theme", ui_theme, sts);
+        // Which named profile this config came from, so the menu can show it and
+        // open its list on it. 0 = none (never loaded one, or a factory start).
+        nvs_get_u8("profile_slot", profile_slot, sts);
+        if (profile_slot > CONFIG_PROFILE_SLOTS) profile_slot = 0;
         nvs_get_b("timex_video", timex_video, sts);
         nvs_get_u8("dma_mode", dma_mode, sts);
         nvs_get_b("mode16col_onoff", mode16col_onoff, sts);
@@ -1446,18 +1449,21 @@ static void nvs_set_sc(NvsWriter& buf, const char* name, signed char val) {
 }
 
 // Dump actual config to FS. path==nullptr writes the normal per-version/
-// per-board storage.nvs; a caller passes DEFAULT_NVS to snapshot the current
-// live settings as the user's own default (see "Save as Default").
-void Config::save(const char* path) {
-    const bool toDefault = (path != nullptr);
-    if (toDefault && !FileUtils::fsMount) return; // no SD: nothing to persist a default to
-    string nvs_path_s = toDefault ? path : STORAGE_NVS;
+// per-board storage.nvs; a caller passes a profile path to snapshot the current
+// live settings under a name (see profileSave). `profileName` is written as the
+// FIRST line of the file so the menu can read a profile's name off the head of
+// it instead of parsing a whole config — every other reader is a pull model
+// (nvs_get_*), so an unknown key costs nothing and the order never matters.
+void Config::save(const char* path, const char* profileName) {
+    const bool toFile = (path != nullptr);
+    if (toFile && !FileUtils::fsMount) return; // no SD: nothing to persist a profile to
+    string nvs_path_s = toFile ? path : STORAGE_NVS;
     string nvs_tmp_s = nvs_path_s + ".tmp";
     const char* nvs_tmp = nvs_tmp_s.c_str();
     const char* nvs_path = nvs_path_s.c_str();
     FIL* handle = nullptr;
     if (FileUtils::fsMount) {
-        if (!toDefault && !loaded) {
+        if (!toFile && !loaded) {
             // Config was never loaded from file — refuse to overwrite
             // existing storage.nvs with defaults. The guard is for a file we
             // could not READ (SD hiccup at boot); a file THIS session created
@@ -1480,8 +1486,15 @@ void Config::save(const char* path) {
         }
         // Make sure the target directory exists before writing. If mkdir
         // fails (broken/full SD), refuse to write — otherwise the following
-        // f_open would silently fail and we'd lose original state.
-        const char* dir = toDefault ? CONFIG_DIR_BOARD_ANYVER : CONFIG_DIR_BOARD;
+        // f_open would silently fail and we'd lose original state. The
+        // directory comes from the path itself: a profile lives in a folder
+        // of its own and a hardcoded pair of names cannot cover both.
+        string dir_s = CONFIG_DIR_BOARD;
+        if (toFile) {
+            const size_t sl = nvs_path_s.rfind('/');
+            dir_s = (sl == string::npos) ? string(CONFIG_DIR) : nvs_path_s.substr(0, sl);
+        }
+        const char* dir = dir_s.c_str();
         if (!FileUtils::mkdirParents(dir)) {
             Debug::log("Config::save FAILED — cannot create %s", dir);
         } else {
@@ -1490,6 +1503,11 @@ void Config::save(const char* path) {
             if (!handle) Debug::log("Config::save FAILED — cannot open %s", nvs_tmp);
         }
     }
+    // The RAM fallback below is the session copy of storage.nvs. A profile has no
+    // such thing: it exists to outlive the session, and dumping it into that
+    // buffer would both pretend the save worked and leave the session's config
+    // carrying someone else's profile_name.
+    if (!handle && toFile) return;
     NvsWriter buf;
     if (handle) {
         buf.f = handle;
@@ -1498,6 +1516,7 @@ void Config::save(const char* path) {
         nvs_ram_buf.clear();
         buf.ram = &nvs_ram_buf;
     }
+    if (profileName) nvs_set_str(buf, "profile_name", profileName);
     nvs_set_u16(buf,"cpu_mhz", cpu_mhz);
     nvs_set_u16(buf,"max_flash_freq", max_flash_freq);
     nvs_set_u16(buf,"max_psram_freq", max_psram_freq);
@@ -1723,6 +1742,7 @@ void Config::save(const char* path) {
     nvs_set_str(buf,"ui_vga_solid", Config::ui_vga_solid ? "true" : "false");
     nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
     nvs_set_u8(buf,"ui_theme", Config::ui_theme);
+    nvs_set_u8(buf,"profile_slot", Config::profile_slot);
     nvs_set_str(buf,"timex_video", Config::timex_video ? "true" : "false");
     nvs_set_u8(buf,"dma_mode",Config::dma_mode);
     nvs_set_str(buf,"mode16col_onoff", Config::mode16col_onoff ? "true" : "false");
@@ -1764,7 +1784,7 @@ void Config::save(const char* path) {
             if (rn != FR_OK) {
                 Debug::log("Config::save FAILED — rename error (rn=%d)", rn);
                 // Leave .tmp behind for manual recovery if needed.
-            } else if (!toDefault) {
+            } else if (!toFile) {
                 // File is authoritative — drop any stale RAM copy
                 nvs_ram_buf.clear();
                 nvs_ram_buf.shrink_to_fit();
@@ -1778,6 +1798,174 @@ void Config::save(const char* path) {
             f_unlink(nvs_tmp);
             Debug::log("Config::save FAILED — write error (ok=%d, sy=%d)", (int)buf.ok, sy);
         }
+    }
+}
+
+// ── named config profiles ──────────────────────────────────────────────────────
+// A profile is a byte-for-byte storage.nvs written to CONFIG_DIR_PROFILES and
+// named by SLOT NUMBER, with the display name carried inside the file as its
+// first line (profile_name=). That is the fast-snapshot slots' model, and it is
+// why a profile name has no charset rules, no length limit that matters and no
+// collisions: nothing about it ever reaches the filesystem.
+//
+// The contents are a FULL snapshot — mounted media, browser paths and all — so
+// loading one is "put me back exactly where I was", not "apply these preferences".
+// The single exception is `ram`, which is not a setting at all: it is the one-shot
+// baton the file browser leaves for the next boot ("come up running this
+// snapshot"), consumed and cleared by ESPectrum::setup. Carried into a profile it
+// would launch some long-forgotten game every time that profile is loaded.
+
+static string profilePath(uint8_t slot) {
+    char name[32];
+    snprintf(name, sizeof(name), "/profile%02u.nvs", slot);
+    return string(CONFIG_DIR_PROFILES) + name;
+}
+
+// FF_USE_STRFUNC is 0 in this build, so there is no f_gets: one small buffered
+// line reader serves the three functions below.
+namespace {
+struct LineReader {
+    FIL*  f;
+    char  buf[128];
+    UINT  n = 0, i = 0;
+    explicit LineReader(FIL* fp) : f(fp) {}
+    // Returns false at EOF. The terminator is stripped; a trailing CR with it.
+    bool line(string& out) {
+        out.clear();
+        bool any = false;
+        for (;;) {
+            if (i >= n) {
+                if (f_read(f, buf, sizeof(buf), &n) != FR_OK || n == 0) return any;
+                i = 0;
+            }
+            any = true;
+            const char c = buf[i++];
+            if (c == '\n') {
+                if (!out.empty() && out.back() == '\r') out.pop_back();
+                return true;
+            }
+            out += c;
+        }
+    }
+};
+} // namespace
+
+static bool lineIsKey(const string& l, const char* key) {
+    const size_t k = strlen(key);
+    return l.size() >= k + 1 && l.compare(0, k, key) == 0 && l[k] == '=';
+}
+
+// "" = the slot is empty; "\x01" = it holds a profile that was never named.
+string Config::profileName(uint8_t slot) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return "";
+    FIL* f = fopen2(profilePath(slot).c_str(), FA_READ);
+    if (!f) return "";
+    LineReader rd(f);
+    string first;
+    const bool got = rd.line(first);
+    fclose2(f);
+    if (!got || !lineIsKey(first, "profile_name")) return "\x01";
+    string name = first.substr(strlen("profile_name="));
+    return name.empty() ? "\x01" : name;
+}
+
+bool Config::profileSave(uint8_t slot, const string& name) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return false;
+    const string path = profilePath(slot);
+    const uint8_t prev = profile_slot;
+    profile_slot = slot;            // both files record which profile this is
+    save(path.c_str(), name.c_str());
+    FILINFO fi;
+    if (f_stat(path.c_str(), &fi) != FR_OK) { profile_slot = prev; return false; }
+    save();                         // storage.nvs, now carrying profile_slot
+    return true;
+}
+
+// Rewrite the name line in place, keeping every setting. Streamed, because the
+// menu's heap is whatever the running machine left over.
+bool Config::profileRename(uint8_t slot, const string& name) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return false;
+    const string path = profilePath(slot);
+    const string tmp  = path + ".tmp";
+    FIL* in = fopen2(path.c_str(), FA_READ);
+    if (!in) return false;
+    FIL* out = fopen2(tmp.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (!out) { fclose2(in); return false; }
+    bool ok = true;
+    {
+        const string hdr = "profile_name=" + name + "\n";
+        UINT bw;
+        ok = (f_write(out, hdr.c_str(), hdr.size(), &bw) == FR_OK && bw == hdr.size());
+    }
+    LineReader rd(in);
+    string l;
+    while (ok && rd.line(l)) {
+        if (lineIsKey(l, "profile_name")) continue;
+        l += '\n';
+        UINT bw;
+        ok = (f_write(out, l.c_str(), l.size(), &bw) == FR_OK && bw == l.size());
+    }
+    if (ok) ok = (f_sync(out) == FR_OK);
+    fclose2(out);
+    fclose2(in);
+    if (!ok) { f_unlink(tmp.c_str()); return false; }
+    FRESULT rn = f_rename(tmp.c_str(), path.c_str());
+    if (rn == FR_EXIST) {
+        f_unlink(path.c_str());
+        rn = f_rename(tmp.c_str(), path.c_str());
+    }
+    return rn == FR_OK;
+}
+
+// Copy the profile over storage.nvs; the caller reboots, and Config::load() then
+// reads it like any other config — keys this firmware no longer knows are
+// ignored, keys it has gained keep their compiled-in defaults.
+bool Config::profileLoad(uint8_t slot) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return false;
+    FIL* in = fopen2(profilePath(slot).c_str(), FA_READ);
+    if (!in) return false;
+    if (!FileUtils::mkdirParents(CONFIG_DIR_BOARD)) { fclose2(in); return false; }
+    const string tmp = string(STORAGE_NVS) + ".tmp";
+    FIL* out = fopen2(tmp.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (!out) { fclose2(in); return false; }
+    bool ok = true;
+    LineReader rd(in);
+    string l;
+    while (ok && rd.line(l)) {
+        // Both are rewritten below: `ram` is the next-boot baton (see the note at
+        // the top of this section) and profile_slot has to name THIS slot however
+        // the file was produced.
+        if (lineIsKey(l, "ram") || lineIsKey(l, "profile_slot")) continue;
+        l += '\n';
+        UINT bw;
+        ok = (f_write(out, l.c_str(), l.size(), &bw) == FR_OK && bw == l.size());
+    }
+    if (ok) {
+        char tail[48];
+        const int len = snprintf(tail, sizeof(tail), "ram=%s\nprofile_slot=%u\n",
+                                 NO_RAM_FILE, slot);
+        UINT bw;
+        ok = (f_write(out, tail, len, &bw) == FR_OK && bw == (UINT)len);
+    }
+    if (ok) ok = (f_sync(out) == FR_OK);
+    fclose2(out);
+    fclose2(in);
+    if (!ok) { f_unlink(tmp.c_str()); return false; }
+    FRESULT rn = f_rename(tmp.c_str(), STORAGE_NVS);
+    if (rn == FR_EXIST) {
+        f_unlink(STORAGE_NVS);
+        rn = f_rename(tmp.c_str(), STORAGE_NVS);
+    }
+    if (rn != FR_OK) { f_unlink(tmp.c_str()); return false; }
+    return true;
+}
+
+void Config::profileDelete(uint8_t slot) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return;
+    f_unlink(profilePath(slot).c_str());
+    if (profile_slot == slot) {     // the row it pointed at is gone
+        profile_slot = 0;
+        save();
     }
 }
 

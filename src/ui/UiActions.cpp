@@ -965,27 +965,144 @@ void act_resetMOS() {
 
 void act_resetFactory() {
     if (!confirm(TXT_DLG_FACTORY)) return;
-    // Wipe storage.nvs AND skip the user's default.nvs on the next load()
-    // (SKIP_DEFAULT_FLAG, consumed in Config::load()).
+    // Wiping storage.nvs IS the factory state now: load() has no fallback to fall
+    // into, so no marker file is needed to suppress one. Saved profiles are left
+    // alone — this resets the settings, it does not throw away the user's work.
     Stage::discard();             // this replaces the whole config: staged edits are moot
-    FIL* flag = fopen2(SKIP_DEFAULT_FLAG, FA_WRITE | FA_CREATE_ALWAYS);
-    if (flag) fclose2(flag);
     f_unlink(STORAGE_NVS);
     OSD::esp_hard_reset();
 }
 
-void act_saveCustomCfg() {
-    if (!confirm(TXT_DLG_SAVE_CFG)) return;
-    Config::save(DEFAULT_NVS);
-    uiToast(TXT_MSG_CFG_SAVED, false, 700);
+// ── config profiles ────────────────────────────────────────────────────────────
+// Options > My settings: one K_PICK row whose right pane IS the slot list, with
+// the verbs on the function keys (Enter/F3 load, F4 save, F6 rename, F8 remove).
+// Slot numbering and the name-inside-the-file are the fast-snapshot slots' model;
+// the single list is not, and it exists because Save and Load as two levels of
+// the same 40 slots said one thing twice. Config owns the files
+// (Config::profile*); this is only the dialogue around them.
+
+// The list itself: a runtime Option table (K_PICK reads it through dopts), value =
+// slot number. It has to be CACHED — the renderer asks for it once per drawn row
+// and the nav on every cursor move, while each row costs an SD read; that is the
+// same reason a dynamic LEVEL is built only when it is entered. And it has to be
+// ALLOCATED — 40 rows of label plus table is ~1.2 KB, which is not worth carrying
+// in .bss on every board for a list opened once in a while. One block for the
+// menu session, freed on the way out (profilesSessionEnd).
+#define PROF_LBL_LEN 20                 // the right pane shows ~15 glyphs
+struct ProfRows {
+    Option opts[CONFIG_PROFILE_SLOTS];
+    char   lbl[CONFIG_PROFILE_SLOTS][PROF_LBL_LEN];
+};
+static ProfRows* s_prof = nullptr;
+static bool      s_prof_valid = false;
+
+extern "C" size_t getLargestAllocatable(void);
+
+static void profilesInvalidate() { s_prof_valid = false; }
+
+void profilesSessionBegin() { s_prof_valid = false; }
+
+void profilesSessionEnd() {
+    free(s_prof);
+    s_prof = nullptr;
+    s_prof_valid = false;
 }
 
-void act_loadCustomCfg() {
-    if (!confirm(TXT_DLG_LOAD_CFG)) return;
-    // Wipe storage.nvs only — default.nvs stays, so the next load() falls back to it.
+const Option* profiles_rows(uint8_t& cnt) {
+    if (!s_prof) {
+        // No room: an empty list is honest — the row greys out rather than lying
+        // about what is on the card.
+        if (getLargestAllocatable() > sizeof(ProfRows) + 2048)
+            s_prof = (ProfRows*)malloc(sizeof(ProfRows));
+        if (!s_prof) { cnt = 0; return nullptr; }
+        s_prof_valid = false;
+    }
+    cnt = CONFIG_PROFILE_SLOTS;
+    if (s_prof_valid) return s_prof->opts;
+    for (uint8_t i = 1; i <= CONFIG_PROFILE_SLOTS; i++) {
+        const string name = Config::profileName(i);
+        char* lbl = s_prof->lbl[i - 1];
+        if (name.empty())
+            snprintf(lbl, PROF_LBL_LEN, "#%02u", i);
+        else
+            snprintf(lbl, PROF_LBL_LEN, "#%02u %s", i,
+                     name == "\x01" ? TXT_PROF_NONAME : name.c_str());
+        s_prof->opts[i - 1] = { lbl, (int32_t)i, nullptr };
+    }
+    s_prof_valid = true;
+    return s_prof->opts;
+}
+
+// The row carries the active profile, so it is visible without stepping into the
+// list. The NAME only: the list is right there and spells out the slot number.
+static char s_prof_vlabel[NM_DYN_VALUE_LEN];
+static int  s_prof_vlabel_slot = -1;      // -1 = not resolved yet
+
+const char* profiles_vlabel() {
+    const uint8_t slot = Config::profile_slot;
+    if (!slot) return nullptr;
+    if (!s_prof_valid) s_prof_vlabel_slot = -1;   // a rename may have changed it
+    if (s_prof_vlabel_slot != (int)slot) {
+        const string name = Config::profileName(slot);
+        if (name.empty()) return nullptr;             // points at a deleted slot
+        snprintf(s_prof_vlabel, sizeof(s_prof_vlabel), "%s",
+                 name == "\x01" ? TXT_PROF_NONAME : name.c_str());
+        s_prof_vlabel_slot = slot;
+    }
+    return s_prof_vlabel;
+}
+
+// One handler for every verb the list offers. `key` is 0 for Enter and the
+// function-key number otherwise, exactly as a dynamic level's rowkey.
+void profiles_key(int32_t tag, uint8_t key) {
+    const uint8_t slot = (uint8_t)tag;
+    const string name = Config::profileName(slot);
+    const bool empty = name.empty();
+
+    if (key == 6) {                                   // F6 rename
+        if (empty) return;
+        string nn = (name == "\x01") ? "" : name;
+        if (uiPrompt(TXT_PROF_NAME, nn, 40)) {
+            Config::profileRename(slot, nn);
+            profilesInvalidate();
+        }
+        return;
+    }
+    if (key == 8) {                                   // F8 remove
+        if (empty) return;
+        char q[64];
+        snprintf(q, sizeof(q), "Remove profile #%02u ?", slot);
+        if (uiConfirm(q)) {
+            Config::profileDelete(slot);
+            profilesInvalidate();
+        }
+        return;
+    }
+    if (key == 4) {                                   // F4 save here
+        // A profile records the APPLIED config, which is what Config holds; staged
+        // edits have not been committed and would silently not be in it.
+        if (Stage::anyDirty() && !uiConfirm(TXT_DLG_PROF_DIRTY)) return;
+        string nm_ = empty ? string() : name;
+        if (!empty) {                                 // occupied: confirm the overwrite
+            if (!uiConfirm(TXT_DLG_PROF_OVER)) return;
+            if (nm_ == "\x01") nm_.clear();
+        } else if (!uiPrompt(TXT_PROF_NAME, nm_, 40)) {
+            return;
+        }
+        uiBusy(TXT_MSG_SAVING);
+        const bool ok = Config::profileSave(slot, nm_);
+        profilesInvalidate();
+        uiToast(ok ? TXT_MSG_CFG_SAVED : TXT_MSG_CFG_SAVE_ERR, !ok, ok ? 700 : 2000);
+        return;
+    }
+    if (key != 0 && key != 3) return;                 // Enter and F3 both load
+    if (empty) { uiToast(TXT_MSG_PROF_EMPTY, true, 1200); return; }
+    if (!uiConfirm(TXT_DLG_PROF_LOAD)) return;
+    // The profile replaces the whole config, so staged edits are moot — and the
+    // reboot is not optional: most of what a profile carries is reboot-class.
     Stage::discard();
-    f_unlink(STORAGE_NVS);
-    OSD::esp_hard_reset();
+    if (!Config::profileLoad(slot)) { uiToast(TXT_MSG_PROF_LOAD_ERR, true, 2000); return; }
+    OSD::esp_hard_reset();                            // never returns
 }
 
 // ── Network ────────────────────────────────────────────────────────────────────
@@ -1184,8 +1301,6 @@ static WifiLog*    s_wlog;
 static uint8_t     s_wlog_row;      // fallback cursor when the buffer is missing
 static int         s_wlog_top;      // first shown display row; -1 = follow the tail
 static const char* s_wlog_title;
-
-extern "C" size_t getLargestAllocatable(void);
 
 // Characters per pane row, and per continuation row (one glyph of indent).
 static inline int wlogCols() {

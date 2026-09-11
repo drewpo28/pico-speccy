@@ -978,6 +978,11 @@ static const Node kOptions[] = {
     NM_BOOL  (TXT_OTHER_ISSUE2,     SET_ISSUE2,     nullptr),
     NM_RADIO (TXT_OTHER_FRAMESKIP,  SET_FRAMESKIP,  opt_frameskip, nullptr),
     NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),
+    // Named config profiles: a full snapshot of storage.nvs per slot, loaded by
+    // copying it back and rebooting. The right pane IS the slot list (K_PICK) and
+    // the verbs are function keys, so picking one is one keypress from here.
+    NM_PICK  (TXT_OPT_PROFILES, SET_PROFILE_SLOT, profiles_rows, profiles_key,
+              profiles_vlabel, p_hasSD),
     NM_ACTION(TXT_OPT_UPDATE_FW,    act_updateFirmware, nullptr),
 };
 
@@ -1028,8 +1033,6 @@ static const Node kReset[] = {
     NM_ACTION(TXT_RESET_RPI,      act_resetBoard,   nullptr),
     NM_ACTION(TXT_RESET_MOS,      act_resetMOS,     p_mosPresent),
     NM_ACTION(TXT_RESET_FACTORY,  act_resetFactory, nullptr),
-    NM_ACTION(TXT_RESET_SAVE_CFG, act_saveCustomCfg, nullptr),
-    NM_ACTION(TXT_RESET_LOAD_CFG, act_loadCustomCfg, nullptr),
 };
 
 // ── Network ────────────────────────────────────────────────────────────────────

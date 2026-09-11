@@ -96,12 +96,8 @@ visit https://zxespectrum.speccy.org/contacto
 // Factory reset: hold R at boot → confirm → wipe storage.nvs → reboot to defaults.
 #define MSG_FACTORY_RESET_TITLE "Factory reset"
 #define MSG_FACTORY_RESET_Q "Reset all settings to defaults?"
-// "My Default" reset: hold M at boot → confirm → wipe storage.nvs (keeps
-// default.nvs) → reboot, which then falls back to the user's saved default.
-#define MSG_MYDEFAULT_RESET_TITLE "Reset to my Default"
-#define MSG_MYDEFAULT_RESET_Q "Reset settings to your saved Default?"
-// Guided boot prompt shown while the "hold R / hold M" reset window is open.
-#define MSG_FACTORY_RESET_HOLD "Hold R: Factory Reset\nHold M: My Default\nHold S: Pico-Scwong"
+// Guided boot prompt shown while the "hold R / hold S" boot window is open.
+#define MSG_FACTORY_RESET_HOLD "Hold R: Factory Reset\nHold S: Pico-Scwong"
 
 #define OSD_NOROMFILE_ERR "No custom ROM file found."
 

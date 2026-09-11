@@ -149,8 +149,7 @@
 #define TXT_RESET_RPI       "Hard RP2350 reset"
 #define TXT_RESET_MOS       "MurmulatorOS"
 #define TXT_RESET_FACTORY   "Reset to defaults"
-#define TXT_RESET_SAVE_CFG  "Save my settings"
-#define TXT_RESET_LOAD_CFG  "Load my settings"
+
 
 // ── Additional hardware ────────────────────────────────────────────────────────
 #define TXT_BETA            "Betadisk"
@@ -270,6 +269,7 @@
 #define TXT_OPT_THEME        "Theme"
 #define TXT_OPT_VGA_MENU_PAL "VGA colors"
 #define TXT_OPT_UI_CORNERS   "Corners"
+#define TXT_OPT_PROFILES     "My settings"
 #define TXT_OPT_REPLACE_ROM  "Replace ZX rom"
 #define TXT_OPT_UPDATE_FW    "Update firmware"
 #define TXT_ROM_PICK         "Select ROM file"
@@ -321,11 +321,17 @@
 // ── dialogs ────────────────────────────────────────────────────────────────────
 #define TXT_DLG_REBOOT       "Reboot the board?"
 #define TXT_DLG_FACTORY      "Reset all settings and reboot?"
-#define TXT_DLG_SAVE_CFG     "Save the current settings as your custom configuration?"
-#define TXT_DLG_LOAD_CFG     "Load your custom configuration and reboot?"
+#define TXT_DLG_PROF_OVER    "Slot is not empty. Overwrite?"
+#define TXT_DLG_PROF_DIRTY   "Unapplied changes are NOT saved. Save the applied settings?"
+#define TXT_DLG_PROF_LOAD    "Load this profile and reboot?"
 #define TXT_DLG_MOS          "Remove MurmulatorOS and reboot?"
 #define TXT_DLG_APPLY_REBOOT "Some changes need a reboot. Apply and reboot now?"
-#define TXT_MSG_CFG_SAVED    " Custom configuration saved "
+#define TXT_MSG_CFG_SAVED    " Settings saved "
+#define TXT_MSG_CFG_SAVE_ERR " Cannot save the profile "
+#define TXT_MSG_PROF_LOAD_ERR " Cannot load the profile "
+#define TXT_MSG_PROF_EMPTY   " Slot is empty "
+#define TXT_PROF_NAME        "Profile name"
+#define TXT_PROF_NONAME      "(no name)"
 #define TXT_MSG_SNAP_ERR     " Cannot load the snapshot "
 #define TXT_MSG_SAVING       " Saving settings... "
 #define TXT_MSG_ZIP_ERR      " Cannot extract the archive "

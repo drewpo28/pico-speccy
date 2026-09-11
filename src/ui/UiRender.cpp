@@ -332,7 +332,8 @@ static void drawRightRow(int visRow) {
 
     const Node* n = curNode();
 
-    const bool pick = n && (n->kind == K_RADIO || n->kind == K_BOOL || n->kind == K_INT);
+    const bool pick = n && (n->kind == K_RADIO || n->kind == K_BOOL || n->kind == K_INT ||
+                            n->kind == K_PICK);
     const bool sel  = pick && idx == S.rsel && idx < S.rcount;
     fill(LY.rx, y, LY.rw, LY.row_h,
          sel ? (S.focus == FOCUS_RIGHT ? C_SEL_BG : C_SEL_BAND) : C_PANEL);
@@ -340,7 +341,11 @@ static void drawRightRow(int visRow) {
 
     switch (n->kind) {
         case K_RADIO:
-        case K_BOOL: {
+        case K_BOOL:
+        // A pick list draws like a radio on purpose: the ring is not "the value you
+        // are choosing" here but "the one you are on now" — which profile this
+        // session came from — and that is the same thing to look at.
+        case K_PICK: {
             uint8_t cnt; const Option* os = nodeOptions(*n, cnt);
             if (idx >= cnt) break;
             const Option& o = os[idx];
@@ -390,12 +395,17 @@ static void drawFooter() {
     hline(LY.ix, y, LY.iw, C_SEP);
     const Node* fn_ = curLevel().dyn ? nullptr : curNode();
     const bool intPane = (S.focus == FOCUS_RIGHT) && fn_ && fn_->kind == K_INT;
+    // A pick list's verbs are function keys and live nowhere else on the screen —
+    // the right pane is the list itself, so this line is their only home.
+    const bool pickPane = (S.focus == FOCUS_RIGHT) && fn_ && fn_->kind == K_PICK;
     const bool atHome = (S.depth <= S.home_depth);   // no level below: Left is a no-op
     const char* hint = (S.focus == FOCUS_LEFT)
         ? (atHome ? SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc Close"
                   : SYM_UP SYM_DOWN " Move   " SYM_RIGHT " Select   Esc / " SYM_LEFT SYM_LEFT " Back")
         : intPane
         ? SYM_UP SYM_DOWN " Adjust   " SYM_ENTER " / " SYM_LEFT " Back"
+        : pickPane
+        ? SYM_ENTER "/F3 Load  F4 Save  F6 Name  F8 Del"
         : SYM_UP SYM_DOWN " Move   " SYM_ENTER " Change   " SYM_LEFT " Back";
     text(LY.ix + LY.pad, y + 3, hint, C_TEXT_DIM);
 

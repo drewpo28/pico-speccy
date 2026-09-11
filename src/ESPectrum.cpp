@@ -3064,16 +3064,17 @@ void ESPectrum::loop() {
   }
 
 
-  // Factory reset: hold R at boot -> confirm -> wipe storage.nvs (+ skip the
-  // user's default.nvs this boot) -> reboot to compiled-in defaults.
-  // My-Default reset: hold M at boot -> confirm -> wipe storage.nvs only
-  // (default.nvs kept) -> reboot, which then falls back to it.
+  // Factory reset: hold R at boot -> confirm -> wipe storage.nvs -> reboot to
+  // compiled-in defaults. (That is all it takes now: Config::load() has no
+  // fallback to suppress. The Hold-M twin that reverted to the user's saved
+  // default.nvs went with the file itself — saved configs are named profiles
+  // under Options now, and loading one needs a working screen anyway.)
   // Pico-Scwong: hold S at boot -> the built-in game, straight from the same
   // window (no SD card needed); boot continues normally when it exits.
   // Pump the keyboard at FULL SPEED here, BEFORE the emulation for(;;)
   // starts: once it runs, a thrashing machine (Profi DS80 on SPI-PSRAM, ~4 FPS)
   // pumps tuh_task too rarely for USB to even enumerate, so a per-frame check inside
-  // the loop never saw the key. R/M read as VK_R/VK_r or VK_M/VK_m depending on CAPSLOCK.
+  // the loop never saw the key. R/S read as VK_R/VK_r or VK_S/VK_s depending on CAPSLOCK.
   //
   // Reliability (was ~50/50): the window is now guided and keyboard-aware.
   //  - We poll until the keyboard is actually READY (PS/2: instant; USB: mounted),
@@ -3086,7 +3087,7 @@ void ESPectrum::loop() {
       extern void repeat_me_for_input();
       auto Kbd = PS2Controller.keyboard();
 
-      // R/M state can't survive a reset (crt0 zeroes .bss, incl. the keyboard's
+      // R/S state can't survive a reset (crt0 zeroes .bss, incl. the keyboard's
       // "currently down" bitmap, on every boot) and PS/2 has no "what's held
       // right now" query — only a fresh down-edge after this point sets it.
       // So the window below is the only chance to catch it; keep it generous.
@@ -3097,15 +3098,13 @@ void ESPectrum::loop() {
       uint32_t fr_t0 = time_us_32();
       uint32_t fr_ready_at = 0;        // elapsed us when the keyboard became available
       bool rHeld = false;
-      bool mHeld = false;
       bool sHeld = false;
       bool promptShown = false;
-      Debug::log("factory-reset: probing for held R/M (guided window)");
+      Debug::log("factory-reset: probing for held R/S (guided window)");
       for (;;) {
           uint32_t el = (uint32_t)(time_us_32() - fr_t0);
           repeat_me_for_input();       // pump USB (tuh_task) + PS/2 at full speed
           if (Kbd && (Kbd->isVKDown(fabgl::VK_R) || Kbd->isVKDown(fabgl::VK_r))) { rHeld = true; break; }
-          if (Kbd && (Kbd->isVKDown(fabgl::VK_M) || Kbd->isVKDown(fabgl::VK_m))) { mHeld = true; break; }
           if (Kbd && (Kbd->isVKDown(fabgl::VK_S) || Kbd->isVKDown(fabgl::VK_s))) { sHeld = true; break; }
 
           if (!fr_ready_at) {
@@ -3123,7 +3122,7 @@ void ESPectrum::loop() {
           }
 
           if (el >= FR_MAX_US) break;                             // no keyboard ever seen
-          if (fr_ready_at && (el - fr_ready_at) >= FR_GRACE_US) break;  // ready + grace, no R/M
+          if (fr_ready_at && (el - fr_ready_at) >= FR_GRACE_US) break;  // ready + grace, no R/S
           sleep_ms(2);
       }
       if (rHeld) {
@@ -3131,32 +3130,18 @@ void ESPectrum::loop() {
           if (OSD::msgDialog(MSG_FACTORY_RESET_TITLE,
                              MSG_FACTORY_RESET_Q) == DLG_YES) {
               bool ok = false;
-              if (FileUtils::fsMount) {
-                  FIL* flag = fopen2(SKIP_DEFAULT_FLAG, FA_WRITE | FA_CREATE_ALWAYS);
-                  if (flag) fclose2(flag);
-                  ok = (f_unlink(STORAGE_NVS) == FR_OK);
-              }
+              if (FileUtils::fsMount) ok = (f_unlink(STORAGE_NVS) == FR_OK);
               Debug::log("factory-reset: unlink %s -> reboot", ok ? "OK" : "FAIL");
               OSD::esp_hard_reset();   // never returns; Config::load() then uses compiled defaults
           }
           Debug::log("factory-reset: declined");
-      } else if (mHeld) {
-          Debug::log("my-default-reset: M held -> confirm");
-          if (OSD::msgDialog(MSG_MYDEFAULT_RESET_TITLE,
-                             MSG_MYDEFAULT_RESET_Q) == DLG_YES) {
-              bool ok = false;
-              if (FileUtils::fsMount) ok = (f_unlink(STORAGE_NVS) == FR_OK);
-              Debug::log("my-default-reset: unlink %s -> reboot", ok ? "OK" : "FAIL");
-              OSD::esp_hard_reset();   // never returns; Config::load() then falls back to default.nvs
-          }
-          Debug::log("my-default-reset: declined");
       } else if (sHeld) {
           // The built-in game, before the emulation loop ever runs. Blocks
           // until the player leaves it, then boot continues normally.
           Debug::log("boot-game: S held -> Pico-Scwong");
           nm::gameScwongStandalone();
       } else {
-          Debug::log("factory-reset: no R/M/S (continue)");
+          Debug::log("factory-reset: no R/S (continue)");
       }
   }
 

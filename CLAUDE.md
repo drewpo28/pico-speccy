@@ -5940,6 +5940,78 @@ damage offset** (Black Raven: ±10 in 2-byte compare units = ±20 bytes).
   must be 12..249 and within ±10 of the table value. The crack NOP'd those three
   branches.
 
+## Config profiles replace default.nvs, and take its boot roles with them (2026-09-11, NOT hw-tested)
+
+`Options > My settings` is a **`K_PICK` row whose RIGHT PANE is the slot list** —
+40 numbered slots in `/.config/pico-speccy/<board>/profiles/` (`CONFIG_DIR_PROFILES`),
+with the verbs on the function keys: Enter/F3 load, F4 save, F6 rename, F8 remove.
+`Config::profile*` (Config.cpp) owns the files; UiActions owns only the dialogue.
+Slot numbering and the name-inside-the-file are the fast-snapshot slots' model; the
+single list is not, and the two shapes that came first are why:
+
+- two flat `NM_DYNH` rows of Options (Save / Load) each carried the same value
+  label — the screen read `Save my .. #01 Pentagon>` / `Load my .. #01 Pentagon>`,
+  one fact said twice with both labels clipped to say it;
+- folding them into one `NM_SUB` fixed the duplication and still cost a level plus
+  a pick to reach 40 slots that are the same 40 slots either way.
+
+- **A profile is a FULL copy of storage.nvs** — mounted tape/disks/IDE images and
+  the browser paths included. It is "put me back where I was", not "apply these
+  preferences" (the owner's call, 2026-09-11). The ONE exception is `ram=`, which
+  is not a setting at all but the one-shot baton the file browser leaves for the
+  next boot; `profileLoad` rewrites it to `none`, or every load of that profile
+  would launch a long-forgotten snapshot. `profile_slot` is rewritten the same way.
+- **The display name lives INSIDE the file** as its first line (`profile_name=`),
+  so slot numbers are the only thing that reaches the filesystem: no charset
+  rules, no slug, no collisions. The reader is a pull model (`nvs_get_*`), so the
+  extra key is ignored by every other consumer and line order never matters. The
+  menu reads a name off the head of the file (`LineReader`, ~1 sector) — there is
+  no `f_gets` here, `FF_USE_STRFUNC` is 0.
+- **Loading = copy over storage.nvs + `esp_hard_reset()`.** Most of a config is
+  reboot-class (cpu_mhz, video mode, PSRAM, page counts), and nothing on the
+  reboot path re-saves Config, so the copy survives. Missing keys fall back to
+  compiled-in defaults and unknown ones are ignored, which is what makes a
+  profile written by an older firmware safe with no version stamp.
+- **`default.nvs`, `SKIP_DEFAULT_FLAG` and the `Hold M` boot rescue are DELETED.**
+  Consequence, accepted deliberately: `storage.nvs` is per firmware VERSION, so an
+  update now starts from **compiled-in defaults** — `Config::load()` has no
+  fallback any more and the user loads a profile from the menu once. A factory
+  reset is therefore just `f_unlink(STORAGE_NVS)`, with no marker file to suppress
+  anything. `Hold R` (factory) and `Hold S` (Pico-Scwong) remain; `Hold M` reverted
+  to `default.nvs` and had nothing left to point at. There is NO migration — a
+  stale `default.nvs` on an old card is dead weight nothing reads and nothing
+  deletes.
+- **`Config::save(path, profileName)`** derives its mkdir target from the path (it
+  used to pick between two hardcoded directories) and **refuses the RAM fallback
+  for a profile**: `nvs_ram_buf` is the session copy of storage.nvs, and dumping a
+  profile into it would both pretend the save worked and leave the session
+  carrying someone else's `profile_name`.
+- **`K_PICK` is a right-pane list that is NOT a value** (UiModel.h): rows come from
+  the node's runtime `dopts()` and Enter/F2/F3/F4/F6/F8 call `rowkey(value, key)`
+  instead of storing anything. It reuses the radio machinery wholesale — the cursor,
+  the scrolling, the landing row and the ring marker — and its `setting`
+  (`SET_PROFILE_SLOT`, AC_PURE) is READ ONLY from the menu: it says which row is
+  current so the pane opens on it and marks it, and it moves only inside a
+  save/load, which is why `pickInvoke` calls `Stage::invalidate` afterwards.
+  Function keys reach it through `pickOrDyn` — a dynamic LEVEL dispatches on its own
+  rows, a focused K_PICK on the right-pane row under the cursor.
+- **A pick list's verbs live in the footer and nowhere else.** The right pane is the
+  list itself, so there is no room for the hint column a dynamic level gets; the
+  footer swaps to `↵/F3 Load  F4 Save  F6 Name  F8 Del` while the list is focused.
+  Losing that line would leave every verb but Enter undiscoverable.
+- **The row table is allocated per menu session** (`profilesSessionBegin/End`,
+  called beside `netStatusInvalidate()` and `gfxEnd()`): 40 labels plus the Option
+  table is ~1.2 KB, which is not worth carrying in `.bss` on every board for a list
+  opened once in a while — static cost is 32 B. It has to be cached all the same:
+  the renderer asks for it once per drawn row and the nav on every cursor move,
+  while each row costs an SD read. Same reason a dynamic level is built only on
+  entry, and the session boundary is also what re-reads a profile added from the
+  file browser in between.
+- The left row's value is the active profile's NAME (`profiles_vlabel`), the slot
+  number being right there in the list.
+- Saving with staged edits pending warns first (`Stage::anyDirty()`): a profile
+  records the APPLIED config, and uncommitted edits would silently not be in it.
+
 ## The card's two folders, and Debug > Config folders (hw-confirmed 2026-09-11)
 
 The user-visible data root is **`/pico-speccy`** (`SPEC_DIR_ROOT`, holding

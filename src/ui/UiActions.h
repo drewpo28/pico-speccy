@@ -102,8 +102,16 @@ void act_resetHard();
 void act_resetBoard();
 void act_resetMOS();
 void act_resetFactory();
-void act_saveCustomCfg();
-void act_loadCustomCfg();
+// Config profiles (Options > My settings): a K_PICK row — the slot list lives in
+// the right pane and the verbs are on the function keys.
+const Option* profiles_rows(uint8_t& cnt);
+void profiles_key(int32_t slot, uint8_t key);
+const char* profiles_vlabel();
+// The row table is allocated for the length of one menu session (~1.2 KB) and
+// dropped on the way out; begin also re-reads the card, so a profile added from
+// the file browser in between is not missed.
+void profilesSessionBegin();
+void profilesSessionEnd();
 bool p_mosPresent();
 
 // Hardware info
