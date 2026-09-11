@@ -56,6 +56,10 @@ using namespace std;
 #define DISK_IMGFILE 4
 #define DISK_ALLFILE 5
 #define DISK_DLSFILE 6   // GM.DLS soundbank picker (on-device .dls -> gm_bank.bin conversion)
+// Debug > Config folders: the firmware's own directories, browsed for housekeeping
+// (rename / delete / new folder) rather than to pick a file. Its own slot so the F5
+// browser's remembered position is not clobbered by a trip through the config tree.
+#define DISK_CFGFILE 7
 
 struct DISK_FTYPE {
     string fileExts;
@@ -86,7 +90,7 @@ class FileUtils
 public:
     static bool fsMount;
     // No SD card at boot and a USB stick took over as the default FatFs volume
-    // (f_chdrive "USB:") — all unprefixed paths (configs, /tmp, /spec) resolve
+    // (f_chdrive "USB:") — all unprefixed paths (configs, /tmp, /pico-speccy) resolve
     // on the stick. SD always wins when a card is present.
     static bool usbRoot;
 
@@ -191,7 +195,7 @@ public:
     static string ALL_Path; // Current path for unified file dialog
     static string DLS_Path; // Current .dls path (GM.DLS soundbank conversion)
 
-    static DISK_FTYPE fileTypes[7];
+    static DISK_FTYPE fileTypes[8];
 
 private:
     friend class Config;
@@ -227,8 +231,11 @@ private:
 // CONFIG_DIR (/.config/pico-speccy) holds configs + logs (per-version/per-board NVS).
 #define DISK_BOOT_FILENAME CONFIG_DIR "/boot.cfg"
 
-// User data lives in a separate visible root /spec on the SD card.
-#define SPEC_DIR_ROOT "/spec"
+// User data lives in a separate visible root /pico-speccy on the SD card.
+// (It was /spec until 2026-09-11; the rename is deliberate and NOT migrated —
+// an existing card keeps its /spec folder, the user moves it by hand if they
+// want the old screenshots and snapshots back.)
+#define SPEC_DIR_ROOT "/pico-speccy"
 #define DISK_SCR_DIR  SPEC_DIR_ROOT "/screenshots"
 #define DISK_PSNA_DIR SPEC_DIR_ROOT "/snapshots"
 #define DISK_PSNA_FILE "persist"

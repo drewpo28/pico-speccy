@@ -19,13 +19,20 @@
 
 namespace nm {
 
-std::string browseFile(std::string& fdir, const std::string& title, uint8_t ftype);
+// `root`, when given, is the highest directory this browse may go up to (it must be
+// a prefix of fdir and end with '/'): Debug > Config folders opens one system folder
+// and the rest of the card stays out of reach. With OSD::fd_root_parent set, ".."
+// there returns "\x02UP" to the level above, as it does at a volume root.
+std::string browseFile(std::string& fdir, const std::string& title, uint8_t ftype,
+                       const char* root = nullptr);
 
 // The F5 "Open from" level, drawn IN the browser chrome (header / location bar /
 // panes / footer) rather than as a floating modal — visually it IS the browser,
 // one level above the volume roots. Returns the chosen index, or -1 on Esc.
-// `hints` (optional, same length) fills the right pane for the focused row.
-int browseLocations(const char* const* items, const char* const* hints, int n, int initial);
+// `hints` (optional, same length) fills the right pane for the focused row; `title`
+// and `bar` override the header and the location-bar label ("Open file"/"Open from").
+int browseLocations(const char* const* items, const char* const* hints, int n, int initial,
+                    const char* title = nullptr, const char* bar = nullptr);
 
 // Renderer of the shared row index (fdIndexGet) — the body of OSD::fdChromeNav.
 // Serves the Remote host list,

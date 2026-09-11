@@ -300,6 +300,13 @@
 #define TXT_DBG_TEMPOFF     "Temp offset"
 // TX-only 115200 log on the board's DBG_UART_TX_PIN (reboot-class; Debug::uart*).
 #define TXT_DBG_UART        "UART console"
+// The firmware's own two folders on the card, opened in the F5 browser for
+// housekeeping (rename / delete / new folder). /.config is invisible to the normal
+// browser, which skips dot-entries, so this is the only way in.
+#define TXT_DBG_FOLDERS     "Config folders"
+#define TXT_DBG_FOLDERS_BAR "Open folder"
+#define TXT_DBG_FOLDERS_CFG "Settings, saved configs, logs"
+#define TXT_DBG_FOLDERS_USR "Screenshots and snapshots"
 
 // ── Hardware info ──────────────────────────────────────────────────────────────
 // Alt+F1 live page (no menu row of its own — hotkey only, Esc closes).

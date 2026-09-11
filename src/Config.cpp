@@ -177,8 +177,8 @@ string   Config::net_host;
 string   Config::net_user;
 uint16_t Config::net_port = 0;
 uint8_t  Config::net_proto = 0;
-string   Config::net_dl_dir = "/spec";
-string   Config::net_ul_dir = "/spec";
+string   Config::net_dl_dir = SPEC_DIR_ROOT;
+string   Config::net_ul_dir = SPEC_DIR_ROOT;
 string   Config::catalog_host;
 uint16_t Config::catalog_port = 0;
 string   Config::last_loc;   // last F5 browse location (all sources); see Config.h

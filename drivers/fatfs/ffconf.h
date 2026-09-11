@@ -155,7 +155,7 @@
 
 // 1: f_chdrive() support — when no SD card is present at boot, FileUtils
 // switches the default volume to a USB flash stick, so every unprefixed path
-// (configs, /tmp, /spec) transparently lands on the stick. CAUTION: with
+// (configs, /tmp, /pico-speccy) transparently lands on the stick. CAUTION: with
 // RPATH enabled an unprefixed path resolves on the CURRENT volume (not
 // volume 0), so volume-level calls must always spell the volume out with a
 // colon ("SD:", "USB:") — a bare "SD" parses as "no prefix".

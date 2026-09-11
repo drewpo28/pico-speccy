@@ -1013,6 +1013,9 @@ static const Node kDebug[] = {
     // TX-only 115200 log on the board's DBG_UART_TX_PIN — Debug::log, fault_log and
     // every printf. Reboot-class; the row exists only where the board defines the pin.
     NM_BOOL  (TXT_DBG_UART,   SET_DBG_UART,    p_dbgUartPin),
+    // The firmware's own folders on the card, in the F5 browser (rename / delete /
+    // new folder). Needs a card: with none, there is nothing to open.
+    NM_ACTION(TXT_DBG_FOLDERS, act_configFolders, p_hasSD),
 };
 
 // ── Reset ──────────────────────────────────────────────────────────────────────

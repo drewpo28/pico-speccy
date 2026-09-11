@@ -76,14 +76,18 @@ string FileUtils::ROM_Path = "/";
 string FileUtils::IMG_Path = "/";
 string FileUtils::ALL_Path = "/";
 string FileUtils::DLS_Path = "/";
-DISK_FTYPE FileUtils::fileTypes[7] = {
+DISK_FTYPE FileUtils::fileTypes[8] = {
     {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.zip,.ZIP",2,2,0,""},
     {".tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.zip,.ZIP",2,2,0,""},
     {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.zip,.ZIP",2,2,0,""},
     {".rom,.ROM,.bin,.BIN,.zip,.ZIP",2,2,0,""},
     {".mmc,.MMC,.hdf,.HDF,.hdd,.HDD,.vhd,.VHD,.img,.IMG,.iso,.ISO,.zip,.ZIP",2,2,0,""},
     {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.rom,.ROM,.bin,.BIN,.dls,.DLS,.zip,.ZIP",2,2,0,""},
-    {".dls,.DLS",2,2,0,""}   // DISK_DLSFILE (GM.DLS soundbank conversion)
+    {".dls,.DLS",2,2,0,""},  // DISK_DLSFILE (GM.DLS soundbank conversion)
+    // DISK_CFGFILE (Debug > Config folders). No extension list on purpose: nothing
+    // here is "of interest" over anything else, so an empty list means every name
+    // draws as a normal entry (extMatches in UiBrowser.cpp).
+    {"",2,2,0,""}
 };
 
 string toLower(const std::string& str) {
@@ -188,7 +192,7 @@ void FileUtils::initFileSystem() {
         // No SD card — fall back to a USB flash stick as the default volume.
         // SD is always the primary storage when a card is present; the stick
         // becomes the root only when the SD probe failed. f_chdrive() makes
-        // every unprefixed path (CONFIG_DIR, /tmp, /spec, storage.nvs, ...)
+        // every unprefixed path (CONFIG_DIR, /tmp, /pico-speccy, storage.nvs, ...)
         // resolve on the stick, so no caller changes. The wait covers USB
         // enumeration time: tuh_init already ran (main.cpp) but nothing has
         // pumped tuh_task yet.
@@ -210,7 +214,7 @@ void FileUtils::initFileSystem() {
 void FileUtils::ensureBootDirs() {
     f_mkdir("/tmp");
     mkdirParents(CONFIG_DIR);
-    // User data (snapshots/screenshots) lives under visible /spec root.
+    // User data (snapshots/screenshots) lives under the visible /pico-speccy root.
     f_mkdir(SPEC_DIR_ROOT);
     f_mkdir(DISK_SCR_DIR);
     f_mkdir(DISK_PSNA_DIR);

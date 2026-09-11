@@ -3,7 +3,7 @@
 //  +-----------------------------------------------------+
 //  | [rainbow] Open file                          12/345 |  header
 //  |-----------------------------------------------------|
-//  | SD:/spec/games/                                     |  path bar
+//  | SD:/pico-speccy/games/                               |  path bar
 //  |----------------------------------+------------------|
 //  | .. (up)                        » | game.tap         |  info pane: full name,
 //  | demos                          » | Tape image       |  size, date, then the
@@ -45,6 +45,7 @@
 #include "PinSerialData_595.h"
 #include "Debug.h"
 #include "SortedFiles.h"
+#include "Buffer.h"
 #include <pico/stdlib.h>
 
 using std::string;
@@ -56,6 +57,11 @@ namespace nm {
 static sorted_files s_idx;
 
 static string  s_dir;             // current directory, always ends with '/'
+// Highest directory this session may go up to, "" for the volume root. Set by
+// browseFile's `root` argument (Debug > Config folders): the config tree is opened
+// at a fixed folder, and walking out of it into the rest of the card would defeat
+// the point of the level above, which offers exactly the two system folders.
+static string  s_root;
 static string  s_title;
 static uint8_t s_ftype;
 static std::vector<string> s_exts;   // ".tap", ".sna", ... (with the dot)
@@ -205,7 +211,17 @@ static string plainName(const string& rec) {
     return rec.substr(i);
 }
 
+// Two orthogonal questions the ftype answers. `manageMode` = the housekeeping verbs
+// (info / rename / new dir / delete) are offered; `pickMode` = Enter on a file
+// returns it to the caller. The full F5 browser is both; Debug > Config folders is
+// housekeeping only; a per-type picker is neither (it just picks).
+static bool manageMode() { return s_ftype == DISK_ALLFILE || s_ftype == DISK_CFGFILE; }
+static bool pickMode()   { return s_ftype != DISK_CFGFILE; }
+
 static bool extMatches(const string& name) {
+    // No extension list (DISK_CFGFILE): nothing here is more interesting than
+    // anything else, so every name draws in the normal ink instead of all-dim.
+    if (s_exts.empty()) return true;
     const size_t dot = name.find_last_of('.');
     if (dot == string::npos) return false;
     const string e = name.substr(dot);
@@ -227,7 +243,25 @@ static const char* typeLabel(const string& lcext) {
     if (lcext == "zip")                                     return "ZIP archive";
     if (lcext == "scr")                                     return "ZX screen";
     if (lcext == "dls")                                     return "DLS soundbank";
+    // Plain text, as found under CONFIG_DIR — named so the viewer's Enter verb
+    // reads as an offer rather than a surprise.
+    if (lcext == "nvs")                                     return "Saved config";
+    if (lcext == "cfg" || lcext == "ini")                   return "Config file";
+    if (lcext == "tsv" || lcext == "csv")                   return "Table";
+    if (lcext == "log")                                     return "Log file";
+    if (lcext == "txt")                                     return "Text file";
+    if (lcext == "pem")                                     return "Certificate";
     return "File";
+}
+
+// Files the built-in viewer will show. Everything pico-speccy itself writes under
+// CONFIG_DIR is line-oriented text (NvsWriter's key=value, wifi.cfg, remotes.tsv,
+// debug.log, cacert.pem), which is exactly what is worth reading on the device.
+static bool viewableExt(const string& lcext) {
+    static const char* const kExt[] = { "nvs", "cfg", "tsv", "log", "txt", "pem",
+                                        "csv", "ini" };
+    for (const char* e : kExt) if (lcext == e) return true;
+    return false;
 }
 
 // ── drawing ────────────────────────────────────────────────────────────────────
@@ -378,17 +412,22 @@ static void drawInfo() {
     y += 3;
     struct Verb { const char* k; const char* what; bool on; };
     const bool all = (s_ftype == DISK_ALLFILE);
+    const bool mng = manageMode();
     const bool zip = !dir && FileUtils::hasZIPextension(nm_);
     const bool dsk = !dir && FileUtils::ifaceForExt(FileUtils::getLCaseExt(nm_)) != IFACE_NONE;
+    const bool view = !dir && !pickMode() && viewableExt(FileUtils::getLCaseExt(nm_));
     const Verb verbs[] = {
-        { SYM_ENTER, dir ? "Open" : "Run",  true },
+        // Nothing in the config tree is runnable: Enter there reads a text file and
+        // does nothing at all for anything else, so it is advertised accordingly.
+        { SYM_ENTER, dir ? "Open" : (view ? "View" : "Run"),
+                     dir || pickMode() || view },
         { "F1", "Info",     all && !dir },
         { "F3", "Find",     true },
         { "F4", "Unzip",    all && zip },
         { "F5", "To slot",  all && dsk },
-        { "F6", "Rename",   all && !up },
-        { "F7", "New dir",  all },
-        { "F8", "Delete",   all && !up },
+        { "F6", "Rename",   mng && !up },
+        { "F7", "New dir",  mng },
+        { "F8", "Delete",   mng && !up },
         { "F9", "New TRD",  all },
     };
     for (const auto& vb : verbs) {
@@ -579,6 +618,217 @@ static bool footerAsk(const char* label, string& io) {
     return ok && !io.empty();
 }
 
+// ── text viewer ────────────────────────────────────────────────────────────────
+// Enter on a plain-text file in the config browser shows it here. The file is
+// STREAMED: the only thing held that grows with it is a 4-bytes-per-line offset
+// index, so a debug.log costs a few KB however long it got. Both axes scroll
+// (lines are up to VIEW_LINE_MAX display columns wide, tabs expanded so a .tsv
+// lines up), Esc leaves. The FIL handle, the read window and the index are two
+// Buffer::palloc blocks freed on every exit path — nothing here is permanently
+// resident, and none of it is on the stack (a FIL alone is ~570 B of the 8 KB
+// core0 stack, under an already deep menu chain).
+
+#define VIEW_LINE_MAX  512      // display columns kept per line
+#define VIEW_RAW       512      // bytes read per line (beyond this a line is cut)
+#define VIEW_MAX_LINES 8192     // index ceiling, ~32 KB before the fallbacks below
+#define VIEW_MAX_SCAN  (2u << 20)   // never scan more than 2 MB looking for lines
+#define VIEW_HSTEP     8        // columns per Left/Right
+
+static void viewTextFile(const string& path, const string& name) {
+    // FIL is ~570 B (it carries a 512-byte sector window) and core0's stack is 8 KB
+    // with the menu chain already on it, so the handle lives in the block too.
+    const size_t scratchBytes = sizeof(FIL) + VIEW_RAW + VIEW_LINE_MAX + 1;
+    uint8_t* blk = (uint8_t*)Buffer::palloc(scratchBytes, Buffer::NEED_POINTER);
+    if (!blk) { uiToast("Not enough memory", true, 1500); return; }
+    FIL*  f    = (FIL*)blk;
+    char* raw  = (char*)(blk + sizeof(FIL));
+    char* disp = raw + VIEW_RAW;
+
+    if (f_open(f, path.c_str(), FA_READ) != FR_OK) {
+        Buffer::pfree(blk);
+        uiToast("Cannot open file", true, 1500);
+        return;
+    }
+
+    // Pass 1: count lines and measure the widest one, in DISPLAY columns (tabs
+    // expanded exactly as the renderer will expand them, or the pan limit lies).
+    status("Reading...", -1);
+    uint32_t nlines = 0, col = 0, maxw = 0, scanned = 0;
+    bool cut = false;                       // file longer than we are willing to index
+    bool lineOpen = false;                  // bytes seen since the last newline
+    for (;;) {
+        UINT br = 0;
+        if (f_read(f, raw, VIEW_RAW, &br) != FR_OK || !br) break;
+        scanned += br;
+        for (UINT i = 0; i < br; i++) {
+            const char c = raw[i];
+            if (c == '\n') { if (col > maxw) maxw = col; col = 0; nlines++; lineOpen = false; continue; }
+            lineOpen = true;
+            if (c == '\r') continue;
+            col = (c == '\t') ? ((col + 8) & ~7u) : col + 1;
+            if (col > VIEW_LINE_MAX) col = VIEW_LINE_MAX;
+        }
+        if (nlines >= VIEW_MAX_LINES || scanned >= VIEW_MAX_SCAN) { cut = true; break; }
+        if (abortKey()) { cut = true; break; }
+    }
+    if (lineOpen) { if (col > maxw) maxw = col; nlines++; }   // last line without \n
+    if (nlines > VIEW_MAX_LINES) nlines = VIEW_MAX_LINES;
+
+    // Pass 2: the offset index. A tight heap gets a shorter file rather than no
+    // file at all — the head is what a config or a log is read for.
+    uint32_t* off = nullptr;
+    uint32_t   cap = nlines;
+    while (cap && !(off = (uint32_t*)Buffer::palloc(cap * 4, Buffer::NEED_POINTER)))
+        cap /= 2;
+    if (nlines && !off) {                 // an empty file legitimately needs none
+        f_close(f);
+        Buffer::pfree(blk);
+        uiToast("Not enough memory", true, 1500);
+        return;
+    }
+    if (cap < nlines) { nlines = cap; cut = true; }
+
+    f_lseek(f, 0);
+    uint32_t n = 0, pos = 0;
+    if (n < nlines) off[n++] = 0;
+    while (n < nlines) {   // off is non-null whenever nlines is non-zero
+        UINT br = 0;
+        if (f_read(f, raw, VIEW_RAW, &br) != FR_OK || !br) break;
+        for (UINT i = 0; i < br && n < nlines; i++)
+            if (raw[i] == '\n') off[n++] = pos + i + 1;
+        pos += br;
+    }
+    nlines = n;
+
+    // One display line, read on demand from its indexed offset.
+    auto readLine = [&](uint32_t li) -> int {
+        f_lseek(f, off[li]);
+        UINT br = 0;
+        if (f_read(f, raw, VIEW_RAW, &br) != FR_OK) br = 0;
+        int dl = 0;
+        for (UINT i = 0; i < br && dl < VIEW_LINE_MAX; i++) {
+            const char c = raw[i];
+            if (c == '\n') break;
+            if (c == '\r') continue;
+            if (c == '\t') {            // to the next 8-column stop
+                do { disp[dl++] = ' '; } while (dl < VIEW_LINE_MAX && (dl & 7));
+                continue;
+            }
+            // A file that turned out not to be text stays readable as a shape
+            // instead of painting control codes through the font.
+            disp[dl++] = (c >= 32 && (uint8_t)c < 127) ? c : '.';
+        }
+        disp[dl] = 0;
+        return dl;
+    };
+
+    const int lh    = L.row_h;
+    const int rows  = L.body_h / lh;
+    const int tw    = L.iw - 2 * L.pad;
+    const int cols_ = tw / glyphW();
+    const int maxTop = (int)nlines > rows ? (int)nlines - rows : 0;
+    const int maxCol = (int)maxw > cols_ ? (int)maxw - cols_ : 0;
+    int top = 0, hoff = 0;
+
+    auto drawViewChrome = [&]() {
+        fill(0, 0, Sf.w, Sf.h, C_BG);
+        roundRect(L.margin, L.iy - 1, Sf.w - 2 * L.margin, L.ih + 2, 4, C_SEP, C_PANEL);
+        // header: name + rainbow, like every other page of this UI
+        fill(L.ix, L.iy, L.iw, L.hdr_h, C_PANEL);
+        rainbow(L.ix + L.pad, L.iy + 3);
+        textClip(L.ix + L.pad + rainbowW() + 2 * L.pad, L.iy + 4,
+                 L.iw - 4 * L.pad - rainbowW(), name.c_str(), C_WHITE);
+        hline(L.ix, L.iy + L.hdr_h - 1, L.iw, C_SEP);
+        // path bar: the folder it came from, plus "cut" when the index is short
+        const int py = L.iy + L.hdr_h;
+        fill(L.ix, py, L.iw, L.path_h, C_PANEL_ALT);
+        string sub = displayPath(s_dir);
+        if (cut) sub += "  (first " + std::to_string((unsigned)nlines) + " lines)";
+        textClip(L.ix + L.pad, py + 2, L.iw - 2 * L.pad, sub.c_str(), C_TEXT);
+        hline(L.ix, py + L.path_h - 1, L.iw, C_SEP);
+        const int fy = L.iy + L.ih - L.foot_h;
+        fill(L.ix, fy, L.iw, L.foot_h, C_FOOT_BG);
+        hline(L.ix, fy, L.iw, C_SEP);
+        text(L.ix + L.pad, fy + 3,
+             SYM_UP SYM_DOWN " Scroll  " SYM_LEFT SYM_RIGHT " Pan  Esc Close", C_TEXT_DIM);
+        roundRectBorder(L.margin, L.iy - 1, Sf.w - 2 * L.margin, L.ih + 2, 4, C_SEP, C_BG);
+    };
+
+    auto drawViewBody = [&]() {
+        for (int r = 0; r < rows; r++) {
+            const int y = L.body_y + r * lh;
+            fill(L.ix, y, L.iw, lh, C_PANEL);
+            const uint32_t li = (uint32_t)(top + r);
+            if (li >= nlines) continue;
+            const int dl = readLine(li);
+            if (dl > hoff) textClip(L.ix + L.pad, y + 1, tw, disp + hoff, C_TEXT);
+        }
+        // Position, right-aligned in the footer: line span, and the pan offset
+        // only while panning (a column number on an unpanned file is noise).
+        const int fy = L.iy + L.ih - L.foot_h;
+        char posbuf[28];
+        if (hoff)
+            snprintf(posbuf, sizeof(posbuf), "%u-%u/%u +%d", (unsigned)(top + 1),
+                     (unsigned)((uint32_t)(top + rows) < nlines ? top + rows : (int)nlines),
+                     (unsigned)nlines, hoff);
+        else
+            snprintf(posbuf, sizeof(posbuf), "%u-%u/%u", (unsigned)(top + 1),
+                     (unsigned)((uint32_t)(top + rows) < nlines ? top + rows : (int)nlines),
+                     (unsigned)nlines);
+        const int pw = textWidth(posbuf);
+        fill(L.ix + L.iw - pw - 2 * L.pad, fy + 1, pw + 2 * L.pad, L.foot_h - 2, C_FOOT_BG);
+        text(L.ix + L.iw - pw - L.pad, fy + 3, posbuf, C_TEXT_DIM);
+    };
+
+    drawViewChrome();
+    if (!nlines) {
+        fill(L.ix, L.body_y, L.iw, L.body_h, C_PANEL);
+        text(L.ix + L.pad, L.body_y + 2, "(empty file)", C_TEXT_DIM);
+    } else {
+        drawViewBody();
+    }
+
+    ::flushKbd();                      // the Enter that opened this must not close it
+    fabgl::VirtualKeyItem k;
+    while (1) {
+        if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
+            sleep_ms(5);
+            continue;
+        }
+        if (!ESPectrum::readKbd(&k) || !k.down) continue;
+        int nt = top, nh = hoff;
+        switch (k.vk) {
+            case fabgl::VK_MENU_UP:    nt = top - 1; break;
+            case fabgl::VK_MENU_DOWN:  nt = top + 1; break;
+            case fabgl::VK_PAGEUP:     nt = top - rows; break;
+            case fabgl::VK_PAGEDOWN:   nt = top + rows; break;
+            case fabgl::VK_MENU_HOME:
+            case fabgl::VK_HOME:       nt = 0; nh = 0; break;
+            case fabgl::VK_END:        nt = maxTop; break;
+            // Left is "back" everywhere else in this UI; here both arrows pan,
+            // which is why the footer names Esc as the only way out.
+            case fabgl::VK_MENU_LEFT:  nh = hoff - VIEW_HSTEP; break;
+            case fabgl::VK_MENU_RIGHT: nh = hoff + VIEW_HSTEP; break;
+            case fabgl::VK_ESCAPE: case fabgl::VK_F1: case fabgl::VK_MENU_ENTER:
+                OSD::clickNoPause();
+                f_close(f);
+                Buffer::pfree(off);
+                Buffer::pfree(blk);
+                return;
+            default: break;
+        }
+        if (nt < 0) nt = 0;
+        if (nt > maxTop) nt = maxTop;
+        if (nh < 0) nh = 0;
+        if (nh > maxCol) nh = maxCol;
+        if (nt != top || nh != hoff) {
+            top = nt; hoff = nh;
+            drawViewBody();
+            OSD::clickNoPause();
+        }
+    }
+}
+
 // ── main loop ──────────────────────────────────────────────────────────────────
 
 static string runLoop() {
@@ -606,8 +856,10 @@ static string runLoop() {
     while (1) {                                       // per directory
         DIR probe;
         if (f_opendir(&probe, s_dir.c_str()) != FR_OK) {
-            Debug::log("UiBrowser: cannot open '%s', falling back to /\n", s_dir.c_str());
-            s_dir = "/";
+            const string back = s_root.empty() ? string("/") : s_root;
+            Debug::log("UiBrowser: cannot open '%s', falling back to %s\n",
+                       s_dir.c_str(), back.c_str());
+            s_dir = back;
             s_sel = s_top = 0;
             if (f_opendir(&probe, s_dir.c_str()) != FR_OK) return leave("");
         }
@@ -675,9 +927,13 @@ static string runLoop() {
             if (wantUp) {
                 Debug::log("UiBrowser: UP from '%s' (stack=%d)\n", s_dir.c_str(), s_stack_top);
                 OSD::clickNoPause();
-                if (s_dir == "/" || s_dir == "USB:/") {
+                // The ceiling is the session root when one was given, the volume
+                // root otherwise.
+                const bool atTop = s_root.empty() ? (s_dir == "/" || s_dir == "USB:/")
+                                                  : (s_dir == s_root);
+                if (atTop) {
                     if (OSD::fd_root_parent) return leave("\x02UP");
-                    if (s_dir == "/") continue;               // nowhere higher
+                    if (!s_root.empty() || s_dir == "/") continue;   // nowhere higher
                     // Out of the stick to the SD root (per-type dialog case).
                     s_dir = "/";
                 } else {
@@ -702,6 +958,15 @@ static string runLoop() {
                     break;                            // rescan the child
                 }
                 if (k.vk == fabgl::VK_MENU_RIGHT) continue;   // Right only navigates
+                if (!pickMode()) {
+                    // Nothing in the config tree is runnable, so Enter reads the
+                    // file instead when it is one we can render as text.
+                    if (viewableExt(FileUtils::getLCaseExt(name))) {
+                        viewTextFile(s_dir + name, name);
+                        drawAll();
+                    }
+                    continue;
+                }
                 return leave("R" + name);
             }
 
@@ -729,8 +994,13 @@ static string runLoop() {
                 continue;
             }
 
-            // ── per-file verbs (full browser only) ─────────────────────────────
+            // ── per-file verbs ─────────────────────────────────────────────────
+            // `all` = the emulator's own verbs (unzip / to slot / new TRD), full
+            // browser only; `mng` = housekeeping, also on in Debug > Config folders.
             const bool all = (s_ftype == DISK_ALLFILE);
+            const bool mng = manageMode();
+            // Info parses emulator formats only, so it stays with the full browser;
+            // everywhere else F1 keeps its usual "close" meaning.
             if (all && k.vk == fabgl::VK_F1 && !onDir && s_visTotal) {
                 OSD::clickNoPause();
                 gfxSuspendPalette();
@@ -753,7 +1023,7 @@ static string runLoop() {
                 OSD::clickNoPause();
                 return leave("P" + name);
             }
-            if (all && k.vk == fabgl::VK_F6 && !onUp && s_visTotal) {   // rename
+            if (mng && k.vk == fabgl::VK_F6 && !onUp && s_visTotal) {   // rename
                 Debug::log("UiBrowser: F6 rename '%s' sp=%08x\n", name.c_str(), debug_sp());
                 OSD::clickNoPause();
                 string nn = name;
@@ -764,7 +1034,7 @@ static string runLoop() {
                 }
                 continue;
             }
-            if (all && k.vk == fabgl::VK_F7) {                          // mkdir
+            if (mng && k.vk == fabgl::VK_F7) {                          // mkdir
                 OSD::clickNoPause();
                 string nn;
                 if (footerAsk("New dir:", nn)) {
@@ -774,7 +1044,7 @@ static string runLoop() {
                 }
                 continue;
             }
-            if (all && (k.vk == fabgl::VK_F8 || k.vk == fabgl::VK_DELETE)
+            if (mng && (k.vk == fabgl::VK_F8 || k.vk == fabgl::VK_DELETE)
                     && !onUp && s_visTotal) {                           // delete
                 OSD::clickNoPause();
                 char q[80];
@@ -876,7 +1146,8 @@ void uiProgressStatus(const char* title, const char* msg, int percent, int actio
 // Same chrome as the file browser: this is the level ABOVE the volume roots, so
 // it must look like part of the browser, not a modal on top of it.
 
-int browseLocations(const char* const* items, const char* const* hints, int n, int initial) {
+int browseLocations(const char* const* items, const char* const* hints, int n, int initial,
+                    const char* title, const char* bar) {
     if (n <= 0) return -1;
     gfxBegin();
     computeBL();
@@ -921,7 +1192,7 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
         // Location bar: where the path normally lives — this level's "path".
         const int py = L.iy + L.hdr_h;
         fill(L.ix, py, L.iw, L.path_h, C_PANEL_ALT);
-        text(L.ix + L.pad, py + 2, "Open from", C_TEXT);
+        text(L.ix + L.pad, py + 2, bar ? bar : "Open from", C_TEXT);
         hline(L.ix, py + L.path_h - 1, L.iw, C_SEP);
         for (int r = 0; r < L.rows; r++) drawRow(r);
         drawInfoPane();
@@ -934,7 +1205,7 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
     };
 
     // Borrow the header state so drawHeader shows title + n/N like the browser.
-    s_title = "Open file";
+    s_title = title ? title : "Open file";
     s_visTotal = n;
     s_sel = sel;
     s_top = 0;
@@ -1238,7 +1509,7 @@ out:
 
 // ── entry point ────────────────────────────────────────────────────────────────
 
-string browseFile(string& fdir, const string& title, uint8_t ftype) {
+string browseFile(string& fdir, const string& title, uint8_t ftype, const char* root) {
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
 
     gfxBegin();
@@ -1248,30 +1519,35 @@ string browseFile(string& fdir, const string& title, uint8_t ftype) {
     void (*prevOverride)(const char*, const char*) = OSD::textPageOverride;
     OSD::textPageOverride = uiTextPage;
 
+    s_root  = root ? root : "";
     s_dir   = fdir;
     // Self-heal: an earlier bug could persist "/../../" chains (Right on the ".."
     // row descended into a literal ".."). FatFs resolves them to the root anyway.
-    if (s_dir.find("..") != string::npos) s_dir = "/";
+    if (s_dir.find("..") != string::npos) s_dir = s_root.empty() ? string("/") : s_root;
+    // A remembered path from outside the ceiling (the root moved, the card changed)
+    // would open the browser somewhere it can never go up from.
+    if (!s_root.empty() && s_dir.compare(0, s_root.size(), s_root) != 0) s_dir = s_root;
     s_title = title;
     s_ftype = ftype;
-    Debug::log("UiBrowser: open dir='%s' ftype=%u root_parent=%d\n",
-               s_dir.c_str(), (unsigned)ftype, (int)OSD::fd_root_parent);
+    Debug::log("UiBrowser: open dir='%s' ftype=%u root='%s' root_parent=%d\n",
+               s_dir.c_str(), (unsigned)ftype, s_root.c_str(), (int)OSD::fd_root_parent);
 
     // Split the type's extension list once ("(.tap,.tzx,...)" style comma list).
     s_exts.clear();
     string ss = FileUtils::fileTypes[ftype].fileExts;
     size_t pos;
     while ((pos = ss.find(',')) != string::npos) {
-        s_exts.push_back(ss.substr(0, pos));
+        if (pos) s_exts.push_back(ss.substr(0, pos));
         ss.erase(0, pos + 1);
     }
-    s_exts.push_back(ss);
+    if (!ss.empty()) s_exts.push_back(ss);
 
     const string ret = runLoop();
     fdir = s_dir;                         // navigation is part of the contract
     Debug::log("UiBrowser: close ret='%.1s%s' dir='%s'\n",
                ret.c_str(), ret.size() > 1 ? "..." : "", s_dir.c_str());
 
+    s_root.clear();                       // never leaks into the next browse
     OSD::textPageOverride = prevOverride;
     gfxEnd();
     if (Config::audio_driver == 3) send_to_595(HIGH(AY_Enable));

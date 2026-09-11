@@ -5602,7 +5602,7 @@ NOT hw-confirmed yet.
 - **USB-as-root fallback**: no SD card at boot → `FileUtils::initFileSystem` waits
   up to 3 s for a stick (`UsbMsc::waitReady` pumps tuh_task — nothing else pumps
   that early) then `f_chdrive("USB:")` + `FileUtils::usbRoot=true` — all unprefixed
-  paths (CONFIG_DIR, /tmp, /spec, storage.nvs) transparently land on the stick.
+  paths (CONFIG_DIR, /tmp, /pico-speccy, storage.nvs) transparently land on the stick.
   SD always wins when a card is present. Requires `FF_FS_RPATH=1` +
   `FF_PATH_DEPTH=16`. **exFAT depth trap** (hw-confirmed, was "video-mode switch
   fails only on USB"): with RPATH on, FatFs's follow_path() on an **exFAT** volume
@@ -5939,6 +5939,59 @@ damage offset** (Black Raven: ±10 in 2-byte compare units = ±20 bytes).
   `CP 0xFA` / `CP 0x0C` / `SUB C; ADD A,0x0A; CP 0x16` — i.e. the mismatch index
   must be 12..249 and within ±10 of the table value. The crack NOP'd those three
   branches.
+
+## The card's two folders, and Debug > Config folders (hw-confirmed 2026-09-11)
+
+The user-visible data root is **`/pico-speccy`** (`SPEC_DIR_ROOT`, holding
+`screenshots/` and `snapshots/`); it was `/spec` until 2026-09-11, finishing the
+rebrand. **There is deliberately NO migration** — an existing card keeps its `/spec`
+folder untouched and the owner moves it by hand if they want the old captures back;
+the only thing that follows the rename is where new files are written (and the
+default download/upload folder, `Config::net_dl_dir`/`net_ul_dir`). Configs stay in
+`/.config/pico-speccy`.
+
+**Debug > Config folders** (`act_configFolders`, UiActions.cpp) opens those two
+directories in the ordinary F5 browser so a stale log, an old version's NVS tree or a
+screenshot can be renamed or deleted from the device. It exists because
+**`CONFIG_DIR` is unreachable from the normal browser**: `indexCurrent` skips every
+entry whose name starts with `.`, so `/.config` is invisible there and always will be.
+
+- Two levels, both of the browser's own chrome: `nm::browseLocations` (now taking a
+  title and a location-bar label) lists exactly the two folders, then
+  `nm::browseFile(..., DISK_CFGFILE, root)` browses the chosen one.
+- **`root` is a new ceiling in the browser** (`s_root`): going up from it returns
+  `"\x02UP"` to the chooser exactly as a volume root does under
+  `OSD::fd_root_parent`, and the "cannot open this dir" and `".."`-chain self-heals
+  fall back to it instead of `/`. Cleared on the way out so it cannot leak into the
+  next browse. Without it, one Left key lands in the rest of the card and the level
+  above it is pointless.
+- **The ftype now answers two separate questions** (`manageMode()` / `pickMode()`),
+  because `DISK_CFGFILE` is the first type that wants the housekeeping verbs without
+  being a file picker: F6 rename / F7 new dir / F8 delete are `manageMode`, Enter on
+  a file returns it only under `pickMode`, and the emulator's own verbs (F4 unzip,
+  F5 to slot, F9 new TRD, **and F1 Info** — `FileInfo::viewInfo` parses emulator
+  formats and shows nothing at all for a `.nvs` or a `.log`) stay full-browser-only.
+- **Enter on a text file opens a built-in viewer** (`viewTextFile`, UiBrowser.cpp):
+  everything the firmware writes under `CONFIG_DIR` is line-oriented text
+  (NvsWriter's `key=value`, `wifi.cfg`, `remotes.tsv`, `debug.log`, `cacert.pem`),
+  and `FileInfo::viewInfo` parses emulator containers only, so it showed nothing at
+  all for any of them. The file is STREAMED — the only thing that grows with it is a
+  4-bytes-per-line offset index, built by one scan (capped at 8192 lines / 2 MB, and
+  HALVED until the allocation succeeds, so a tight heap gets the head of the file
+  rather than nothing). Scrolls both ways (Left/Right pan 8 columns — which is why
+  Esc is the only way out there, unlike everywhere else in this UI), tabs expand to
+  8-column stops so a `.tsv` lines up, non-printable bytes render as `.`. Both
+  buffers are `Buffer::palloc` blocks freed on every exit path, and the `FIL` is in
+  one of them on purpose: it is ~570 B and core0's stack is 8 KB under an already
+  deep menu chain. The two passes and the tab/CRLF/long-line/chunk-boundary edge
+  cases were checked on the host against a reference line split before shipping.
+  (Both the folder browser and the viewer are hw-confirmed on DVp2, 2026-09-11.)
+- `DISK_CFGFILE` is its own slot in `FileUtils::fileTypes[8]` so a trip through the
+  config tree does not clobber the F5 browser's remembered cursor; it is NOT
+  persisted to NVS (`Config::load`/`save` still loop over the first 6), so its
+  position is session-only. Its extension list is **empty**, and `extMatches` now
+  answers true for an empty list — otherwise every name in the config tree would
+  draw dimmed as "not of interest".
 
 ## Tools
 

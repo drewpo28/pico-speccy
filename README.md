@@ -159,7 +159,7 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+F4 Quick save snapshot
 - ALT+CTRL+Home Switch HDMI video mode (60Hz cycle)
 - ALT+CTRL+End Switch HDMI video mode (50Hz cycle)
-- PrntScr BMP screen capture (Folder /spec/.c at SDCard)
+- PrntScr BMP screen capture (Folder /pico-speccy/screenshots at SDCard)
 - WASD/KL - Kempston joystick parallel-emulation
 - Menu (Win) key (Profi / Karabas-Pro): ROM-set and quick-setting hotkeys — press F1 for the full list
 

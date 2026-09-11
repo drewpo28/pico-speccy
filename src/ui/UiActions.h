@@ -87,6 +87,8 @@ void netStatusInvalidate();
 
 // Debug
 void act_debugDialog();
+// Debug > Config folders: the chooser + the rooted browser session (see UiActions.cpp).
+void act_configFolders();
 void act_debugPoke();
 
 // Pico-Scwong — the built-in native paddle game (UiGame.cpp).

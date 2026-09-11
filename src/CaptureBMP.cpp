@@ -93,7 +93,7 @@ void CaptureToBmp()
 
     static const char scrdir[] = DISK_SCR_DIR;
 
-    // Create dir (and its /spec parent) if it doesn't exist
+    // Create dir (and its /pico-speccy parent) if it doesn't exist
     FILINFO stat_buf;
     if (f_stat(scrdir, &stat_buf) != FR_OK) {
         f_mkdir(SPEC_DIR_ROOT);

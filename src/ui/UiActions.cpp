@@ -583,6 +583,41 @@ void act_replaceRom(int32_t slot) {
 // ── Debug ──────────────────────────────────────────────────────────────────────
 void act_debugDialog() { OSD::osdDebug(); }
 
+// Debug > Config folders. Two levels of the ordinary F5 browser: a chooser listing
+// the only two directories the firmware owns on the card, then that folder browsed
+// with the housekeeping verbs (F1 info, F6 rename, F7 new dir, F8 delete) and
+// nothing else — there is nothing runnable down there, so Enter on a file does not
+// pick it. CONFIG_DIR is unreachable from the normal browser (it skips every
+// dot-entry), which is why this exists at all.
+//
+// The browse is ROOTED at the chosen folder: walking up out of it would land in the
+// rest of the card and make the chooser pointless, so ".." at the top comes back
+// here instead (the same contract the F5 "Open from" level uses).
+void act_configFolders() {
+    static const char* const kItems[] = { CONFIG_DIR, SPEC_DIR_ROOT };
+    static const char* const kHints[] = { TXT_DBG_FOLDERS_CFG, TXT_DBG_FOLDERS_USR };
+    // Where each folder was left, so a second visit reopens where it closed.
+    static string dirs[2] = { CONFIG_DIR "/", SPEC_DIR_ROOT "/" };
+
+    int sel = 0;
+    while (1) {
+        sel = nm::browseLocations(kItems, kHints, 2, sel,
+                                  TXT_DBG_FOLDERS, TXT_DBG_FOLDERS_BAR);
+        if (sel < 0) return;                       // Esc at the chooser closes
+        const string root = string(kItems[sel]) + "/";
+        // A card that never ran this firmware (or a folder deleted from here) has
+        // neither; without this the browser would fall back to its own root anyway,
+        // but an empty folder is the honest answer.
+        FileUtils::mkdirParents(kItems[sel]);
+        const bool prevRootParent = OSD::fd_root_parent;
+        OSD::fd_root_parent = true;                // ".." at the root returns here
+        const string r = nm::browseFile(dirs[sel], TXT_DBG_FOLDERS, DISK_CFGFILE,
+                                        root.c_str());
+        OSD::fd_root_parent = prevRootParent;
+        if (r != "\x02UP") return;                 // Esc closes the whole flow
+    }
+}
+
 // "12345" decimal, or hex with a '#', '$' or '0x' prefix.
 static bool pokeParseNum(const string& s, uint32_t& out) {
     const char* p = s.c_str();
