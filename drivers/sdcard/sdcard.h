@@ -31,6 +31,12 @@ extern "C" {
 
 void disk_invalidate(void);
 
+/* Liveness probe for callers that generate no I/O of their own (the OSD menu
+ * can sit on screen for minutes). 1 = a card answered, 0 = gone — and in that
+ * case the drive is flagged STA_NOINIT, so the next mount runs a full
+ * CMD0/ACMD41 cycle, which a re-inserted (power-cycled) card requires. */
+int sdcard_alive(void);
+
 /* Enable/disable onboard LED (GPIO 25) blink on physical SD card access */
 void sdcard_set_led_blink(int enable);
 

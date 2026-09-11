@@ -201,6 +201,12 @@ visit https://zxespectrum.speccy.org/contacto
 // ...and the same tick can adopt a USB stick as the root volume instead
 // (no card, or the stick that WAS the root came back after a re-plug).
 #define MSG_USB_AUTOMOUNT "USB drive mounted"
+// A card pulled out from under a running session: the volume is dropped
+// (FatFs cache included) and the watch waits for it — or another — to return.
+#define MSG_SD_REMOVED "SD card removed"
+// ...and a DIFFERENT card went in: the volume works, but nothing that was
+// mounted from the old one is reopened (see FileUtils::storageTick).
+#define MSG_SD_SWAPPED "Card changed - disks not restored"
 
 // ─── ZiFi / Network menu strings ─────────────────────────────────────────────
 

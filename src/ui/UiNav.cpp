@@ -324,13 +324,14 @@ static void runModalArg(void (*fn)(int32_t), int32_t arg) {
     markDirty(D_ALL);
 }
 
-// Storage came online (a card inserted, a stick plugged) while the menu was up.
-// ESPectrum::loop does not run for as long as we do, so this is the only place
-// the probe can happen — and every row, every right-pane value and every
-// dynamically built level (disk slots, ROM lists, ...) was drawn against a
-// filesystem that did not exist. Rebuild the level the same way dynInvoke does
-// after a row has changed the world under it.
-static void storageCameOnline() {
+// Storage appeared or went away (a card inserted or pulled, a stick plugged)
+// while the menu was up. ESPectrum::loop does not run for as long as we do, so
+// this is the only place either can be noticed — and every row, every
+// right-pane value and every dynamically built level (disk slots, ROM lists,
+// ...) is now drawn against a filesystem that is not the one it was built from.
+// Rebuild the level the same way dynInvoke does after a row changed the world
+// under it.
+static void storageChanged() {
     Level& L = curLevel();
     if (L.dyn) {
         const Node* owner = L.parent;
@@ -602,7 +603,8 @@ resume:
                 markDirty(D_HEADER);
                 flushDirty();
             }
-            if (FileUtils::storageTick()) storageCameOnline();
+            if (FileUtils::storageTick() != FileUtils::StorageEvent::None)
+                storageChanged();
         }
     }
 

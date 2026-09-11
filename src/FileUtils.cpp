@@ -213,27 +213,120 @@ void FileUtils::ensureBootDirs() {
     mkdirParents(CONFIG_DIR_BOARD);
 }
 
-// Runtime automount: probe for storage while the filesystem is offline (booted
-// with no card, or the stick that was the root volume got pulled). On the tick
-// something comes online it mounts the volume, creates the boot dir tree and
-// flips fsMount/SDReady true, so the OSD menus and file dialogs (which gate on
-// fsMount at render time) light up without a reboot.
-//
-// The throttle lives HERE, not in the callers: the probe is a few ms with no
-// card (a single failed CMD0) but it must not run every frame, and there is
-// more than one caller now — ESPectrum::loop stops running for as long as the
-// menu or the file browser is up, so those idle loops tick it too.
-//
-// We deliberately DON'T reload Config: video-mode / arch settings from the card
-// can only be applied by a reboot, so a live session keeps the RAM defaults and
-// only gains file access plus the remembered mounts.
-bool FileUtils::storageTick() {
-    if (fsMount) return false;                  // already online (SD or USB root)
+// True while an SD card that WAS mounted is missing — the difference between
+// "this machine booted without a card" and "the card was pulled out from under
+// a running session", which is the difference between restoring the remembered
+// mounts and reopening the files that are still open.
+static bool sd_was_lost = false;
 
+// Volume serial of the mounted card (written at format time, so two cards
+// effectively never share one). Recovery reopens the disk images, the tape and
+// the swap file ONLY when this still matches: continuing to write at a saved
+// file position into a same-named file on a DIFFERENT card is the one outcome
+// here that destroys data instead of merely failing.
+static DWORD s_sd_vsn = 0;
+
+static DWORD sdVolumeSerial() {
+    DWORD vsn = 0;
+    return f_getlabel("SD:", nullptr, &vsn) == FR_OK ? vsn : 0;
+}
+
+// Is the mounted volume still physically there? Two sources, because neither
+// covers the other's case: disk_status() carries the verdict of real I/O (the
+// driver counts consecutive failures), and the CMD13 probe covers a caller that
+// generates no I/O at all — the OSD menu, which can own the screen for minutes.
+static bool sdStillThere() {
+    if (FileUtils::usbRoot) return true;    // the stick's removal arrives via
+                                            // tuh_msc_umount_cb, not from here
+    if (disk_status(0) & STA_NOINIT) return false;
+    return sdcard_alive() != 0;
+}
+
+// The card left. Dropping fsMount is the cosmetic half; the load-bearing half
+// is f_mount(NULL): FatFs still holds the pulled card's cached FAT window and
+// directory state, and writing THAT onto a different card put in next is the
+// one way this ends in destroyed data rather than a failed operation.
+static FileUtils::StorageEvent storageLost() {
+    f_mount(NULL, "SD:", 0);
+    disk_invalidate();
+    FileUtils::fsMount = false;
+    FileUtils::SDReady = false;
+    sd_was_lost = true;
+    Debug::log("FileUtils: SD card gone, volume dropped\n");
+    return FileUtils::StorageEvent::Lost;
+}
+
+// Runtime storage watch, both directions. No board here wires a card-detect
+// line, so every transition has to be inferred; the throttle lives HERE, not in
+// the callers, because there is more than one — ESPectrum::loop stops running
+// for as long as the menu or the file browser is up, so those idle loops tick
+// it too.
+//
+// Offline → Online: mount whatever showed up, create the boot dir tree and flip
+// fsMount/SDReady, so the OSD menus and file dialogs (which gate on fsMount at
+// render time) light up without a reboot. We deliberately DON'T reload Config:
+// video-mode / arch settings from the card can only be applied by a reboot, so
+// a live session keeps the RAM defaults and only gains file access.
+//
+// Online → Lost: see storageLost() below for why this is not merely cosmetic.
+FileUtils::StorageEvent FileUtils::storageTick() {
     static uint64_t next_probe = 0;
+    static uint32_t backoff_s  = 0;             // 0 = the normal 2 s cadence
     const uint64_t now = time_us_64();
-    if (now < next_probe) return false;
+    if (now < next_probe) return StorageEvent::None;
     next_probe = now + 2000000ull;              // ~2 s between probes
+
+    if (fsMount) return sdStillThere() ? StorageEvent::None : storageLost();
+
+    // A card that answers CMD0 and then never finishes its ACMD41 init (a bad
+    // contact, a dying card, a brown-out) costs disk_initialize()'s full 1 s
+    // timeout per attempt. At the 2 s cadence that is half of every second
+    // spent inside a failing retry — the emulator would crawl for as long as
+    // the card sits in the slot. So: time the attempt, and back a SLOW failure
+    // off to 4, 8, 16, 30 s. A fast failure (an empty slot answers nothing and
+    // costs a couple of ms) keeps the responsive cadence, and any success
+    // resets it.
+    const uint64_t t0 = now;
+    struct Backoff {
+        uint64_t t0; uint64_t& next; uint32_t& s; bool ok = false;
+        ~Backoff() {
+            const uint64_t took = time_us_64() - t0;
+            if (ok) { s = 0; return; }
+            if (took < 100000ull) { s = 0; return; }   // fast failure: no backoff
+            s = s ? (s < 16 ? s * 2 : 30) : 4;
+            next = time_us_64() + (uint64_t)s * 1000000ull;
+        }
+    } guard{t0, next_probe, backoff_s};
+
+    if (sd_was_lost) {
+        // A card that went away while mounted. Deliberately NOT falling back to
+        // a USB stick here: every path this session holds names the card, and
+        // swapping the root volume under open files would be worse than waiting.
+        const DWORD was = s_sd_vsn;
+        f_mount(NULL, "SD:", 0);
+        disk_invalidate();
+        if (!mountSDCard()) return StorageEvent::None;
+        sd_was_lost = false;
+        SDReady = true;
+        ensureBootDirs();
+        // A zero serial means f_getlabel could not answer (either side); treat
+        // that as "cannot prove it is the same card" and take the safe branch —
+        // the cost is disks that need remounting by hand, not a corrupted one.
+        if (was != 0 && s_sd_vsn == was) {
+            reopenMedia();
+            guard.ok = true;
+            Debug::log("FileUtils: SD card back, volume remounted\n");
+            return StorageEvent::Online;
+        }
+        // Different card: the volume is usable (menus, browser) but nothing the
+        // old one carried is reopened. The stale handles cannot reach it either
+        // — FatFs refuses them after the remount — so this is a decision about
+        // what to restore, not a race to close something.
+        guard.ok = true;
+        Debug::log("FileUtils: different SD card (vsn %08lx -> %08lx), media not reopened\n",
+                   (unsigned long)was, (unsigned long)s_sd_vsn);
+        return StorageEvent::Swapped;
+    }
 
     if (mountSDCard()) {
         // A card always wins over a stick. After a USB-as-root session the
@@ -252,14 +345,15 @@ bool FileUtils::storageTick() {
         fsMount = true;
         Debug::log("FileUtils: USB stick adopted as the root volume\n");
     } else {
-        return false;
+        return StorageEvent::None;
     }
 
     SDReady = true;
+    guard.ok = true;
     ensureBootDirs();
     Config::loadDiskMounts();                   // remembered disk images
     Tape::LoadRemembered();                     // and the remembered tape
-    return true;
+    return StorageEvent::Online;
 }
 
 static FATFS fs;
@@ -279,6 +373,7 @@ bool FileUtils::mountSDCard() {
     // "SD:" with the colon — with FF_FS_RPATH a bare "SD" parses as "no volume
     // prefix" and would target the CURRENT volume instead.
     fsMount = f_mount(&fs, "SD:", 1) == FR_OK;
+    if (fsMount) s_sd_vsn = sdVolumeSerial();
     return fsMount;
 }
 
@@ -355,7 +450,16 @@ bool FileUtils::remountSD() {
         disk_invalidate();
         if (!mountSDCard()) return false;
     }
+    reopenMedia();
+    return true;
+}
 
+// Everything that holds a FIL across a remount. Note what does NOT need doing
+// here: FatFs stamps every mount with a fresh id, so a handle opened before the
+// volume went away is refused (FR_INVALID_OBJECT) instead of reaching the card
+// that is in the slot now — which is what makes "reopen" a policy decision
+// rather than a safety requirement.
+void FileUtils::reopenMedia() {
     // Reopen WD1793 disk image files
     rvmWD1793 &wd = ESPectrum::fdd;
     for (int i = 0; i < 4; i++) {
@@ -395,8 +499,6 @@ bool FileUtils::remountSD() {
 
     DivMMC::reopenFiles();
     if (IDE::scheme != IDE::OFF) IDE::init();  // reopen IDE images after remount
-
-    return true;
 }
 
 bool FileUtils::hasSNAextension(const string& filename)

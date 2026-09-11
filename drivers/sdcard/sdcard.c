@@ -38,6 +38,7 @@ extern DRESULT usb_disk_ioctl(BYTE cmd, void* buff);
 #define CMD9	(9)			/* SEND_CSD */
 #define CMD10	(10)		/* SEND_CID */
 #define CMD12	(12)		/* STOP_TRANSMISSION */
+#define CMD13	(13)		/* SEND_STATUS (R2) — used as the card-present probe */
 #define ACMD13	(0x80+13)	/* SD_STATUS (SDC) */
 #define CMD16	(16)		/* SET_BLOCKLEN */
 #define CMD17	(17)		/* READ_SINGLE_BLOCK */
@@ -67,6 +68,32 @@ DSTATUS Stat = STA_NOINIT;	/* Physical drive status */
 
 static
 BYTE CardType;			/* Card type flags */
+
+/* ── Card-gone detection ───────────────────────────────────────────────────
+ * No board here wires a card-detect line, so a card pulled out of a running
+ * machine shows up only as I/O that stops working — and it stops SILENTLY:
+ * with the slot empty MISO sits on its pull-up, so send_cmd() reads 0xFF (no
+ * R1 within 10 bytes) and every transfer fails fast, with no stall at all.
+ * Nothing cleared Stat, so the driver never re-ran CMD0/ACMD41, and a card put
+ * back in — power-cycled, hence REQUIRING that init — kept failing for the
+ * rest of the session.
+ *
+ * Count CONSECUTIVE failures instead of reacting to the first: one failed
+ * transfer is a bad sector or a card still finishing an internal write, and a
+ * false STA_NOINIT costs a full unmount + remount of the volume.
+ */
+#define SD_FAIL_LIMIT 3
+static BYTE FailCnt;
+
+static void io_done(int ok)
+{
+	if (ok) { FailCnt = 0; return; }
+	if (Stat & STA_NOINIT) return;
+	if (++FailCnt >= SD_FAIL_LIMIT) {
+		Stat |= STA_NOINIT;	/* next mount does the full CMD0/ACMD41 cycle */
+		FailCnt = 0;
+	}
+}
 
 #ifdef SDCARD_PIO
 pio_spi_inst_t pio_spi = {
@@ -457,6 +484,51 @@ DSTATUS disk_status (
 void disk_invalidate (void)
 {
 	Stat = STA_NOINIT;
+	FailCnt = 0;
+}
+
+
+/*-----------------------------------------------------------------------*/
+/* Is the card still in the slot?                                        */
+/*-----------------------------------------------------------------------*/
+/* For callers that generate no traffic of their own: the failure counter
+ * above can only trip on real I/O, and the OSD menu sits there for minutes
+ * without touching the card, so a removal during it would go unnoticed until
+ * the next file operation failed. CMD13 (SEND_STATUS) is ~12 bytes on the bus,
+ * changes nothing on the card, and is answered by R2 = R1 plus one more byte,
+ * which has to be consumed to leave the bus in sync. A valid R1 (bit 7 clear)
+ * means a card is there. Retried SD_FAIL_LIMIT times inside the one call —
+ * microseconds apart, so a removal is still caught by the first probe after it
+ * happens, while a single NAK from a busy card does not unmount the volume.
+ */
+int sdcard_alive (void)
+{
+	if (Stat & STA_NOINIT) return 0;	/* already known to be gone */
+
+	/* A card still finishing an internal write holds MISO LOW, which is the one
+	 * thing an empty slot can never do — so "busy" answers the question by
+	 * itself, and answering it here is also what keeps send_cmd()'s _select()
+	 * from parking the emulator in its 500 ms wait_ready() right after a write.
+	 * An empty slot reads 0xFF and falls through to the command immediately. */
+	CS_LOW();
+	xchg_spi(0xFF);				/* dummy clock, forces DO enabled */
+	int busy = !wait_ready(5);
+	deselect();
+	if (busy) { FailCnt = 0; return 1; }
+
+	for (int i = 0; i < SD_FAIL_LIMIT; i++) {
+		BYTE res = send_cmd(CMD13, 0);
+		if (!(res & 0x80)) {		/* R1 received */
+			xchg_spi(0xFF);		/* R2's second byte */
+			deselect();
+			FailCnt = 0;
+			return 1;
+		}
+		deselect();
+	}
+	Stat |= STA_NOINIT;
+	FailCnt = 0;
+	return 0;
 }
 
 
@@ -577,6 +649,7 @@ DRESULT disk_read (
 
 	sd_led(0);
 
+	io_done(count == 0);
 	return count ? RES_ERROR : RES_OK;	/* Return result */
 }
 
@@ -648,7 +721,7 @@ DRESULT disk_write (
 
 	if (!(CardType & CT_BLOCK)) sector *= 512;	/* LBA ==> BA conversion (byte addressing cards) */
 
-	if (!_select()) return RES_NOTRDY;
+	if (!_select()) { io_done(0); return RES_NOTRDY; }
 
 	sd_led(1);
 
@@ -672,6 +745,7 @@ DRESULT disk_write (
 
 	sd_led(0);
 
+	io_done(count == 0);
 	return count ? RES_ERROR : RES_OK;	/* Return result */
 }
 #endif
@@ -701,6 +775,7 @@ DRESULT disk_ioctl (
 	switch (cmd) {
 	case CTRL_SYNC :		/* Wait for end of internal write process of the drive */
 		if (_select()) res = RES_OK;
+		io_done(res == RES_OK);
 		break;
 
 	case GET_SECTOR_COUNT :	/* Get drive capacity in unit of sector (DWORD) */

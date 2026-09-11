@@ -3310,15 +3310,25 @@ void ESPectrum::loop() {
         }
     }
 
-    // Storage automount: when the machine booted with no card (or the stick that
-    // was the root volume was pulled), probe periodically for one to come back.
-    // The probe, its throttle and the storage-side follow-ups live in
+    // Storage watch: a card inserted into a machine that booted without one (or
+    // a stick re-plugged), and a card pulled out from under a running session.
+    // The probes, the throttle and every storage-side consequence live in
     // FileUtils::storageTick(); here we only own the toast. The same tick runs
     // from the menu and browser idle loops, which block this one while they are
     // up — that is the whole reason it is a shared function.
-    if (FileUtils::storageTick())
-        OSD::notify(FileUtils::usbRoot ? MSG_USB_AUTOMOUNT : MSG_SD_AUTOMOUNT,
-                    LEVEL_INFO, 1500);
+    switch (FileUtils::storageTick()) {
+        case FileUtils::StorageEvent::Online:
+            OSD::notify(FileUtils::usbRoot ? MSG_USB_AUTOMOUNT : MSG_SD_AUTOMOUNT,
+                        LEVEL_INFO, 1500);
+            break;
+        case FileUtils::StorageEvent::Swapped:
+            OSD::notify(MSG_SD_SWAPPED, LEVEL_WARN, 2500);
+            break;
+        case FileUtils::StorageEvent::Lost:
+            OSD::notify(MSG_SD_REMOVED, LEVEL_WARN, 2000);
+            break;
+        default: break;
+    }
 
 #if defined(VGA_HDMI)
     // HDMI-audio health heartbeat (1 Hz, no-op unless the driver is live).

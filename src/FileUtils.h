@@ -99,14 +99,22 @@ public:
     static void initFileSystem();
     static void ensureBootDirs();
     static bool mountSDCard();
-    // Runtime automount, THROTTLED INTERNALLY (~2 s): while the filesystem is
-    // offline, probe for an SD card and, failing that, for a USB stick to adopt
-    // as the root volume. On the tick storage comes online it mounts the volume,
-    // creates the dir tree, restores the remembered disk images and tape, and
-    // returns true — the caller only owns the UI part (a notify, a redraw).
-    // Call it from every loop that can be on screen while a card is inserted:
+    // Swapped = storage is back, but it is a DIFFERENT card than the one that
+    // went away (volume serial changed), so nothing mounted on the old one
+    // was reopened.
+    enum class StorageEvent : uint8_t { None, Online, Swapped, Lost };
+    // Runtime storage watch, THROTTLED INTERNALLY (~2 s). Offline: probe for an
+    // SD card and, failing that, for a USB stick to adopt as the root volume;
+    // on the tick it comes online the volume is mounted, the dir tree created,
+    // and either the open files are reopened (a card that came back) or the
+    // remembered disk images and tape are restored (a card-less boot) — Online.
+    // Online: notice a card that left (no board wires card-detect, so this is
+    // the verdict of real I/O plus a CMD13 probe for idle callers) and drop the
+    // volume before its stale FatFs cache can be written onto whatever card
+    // goes in next — Lost. The caller owns only the UI part (a toast, a redraw).
+    // Call it from every loop that can be on screen while a card is swapped:
     // the nm:: menu and the file browser both block ESPectrum::loop while up.
-    static bool storageTick();
+    static StorageEvent storageTick();
     static void unmountSDCard();
     // Boot-time guard for remembered "USB:/..." paths (disk mounts, tape):
     // they are reopened before the main loop ever pumps tuh_task, so the stick
@@ -122,6 +130,11 @@ public:
     static bool ensureKarabasBoot();
     static bool checkSDCard();
     static bool remountSD();
+    // The reopen tail of remountSD(): disk images, tape, CSW, swap, DivMMC,
+    // IDE — everything that holds a FIL across a remount. Split out because
+    // the automatic recovery must decide whether to run it (same card) or
+    // deliberately skip it (a different card went in).
+    static void reopenMedia();
     // static String         getAllFilesFrom(const String path);
     // static void           listAllFiles();
     // static void           sanitizeFilename(String filename); // in-place
