@@ -11,6 +11,7 @@
 #include "OSDNewMenu.h"
 
 
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -477,6 +478,54 @@ static void stepInt(int mult) {
     markDirty(D_FOOT);
 }
 
+// ── first-letter jump ──────────────────────────────────────────────────────────
+//
+// The same gesture the F5 browser has: an ordinary letter or digit moves the cursor
+// to the next row whose name starts with it, wrapping, so a long list (the root
+// menu, the ROM sets, 40 profile slots) is one keypress away instead of a dozen
+// Downs. Only the list the user is LOOKING at is searched — the left pane, or a
+// focused right pane that is itself a list; a K_INT slider and a dynamic level's
+// hint column have no rows to land on.
+//
+// The search starts one past the cursor and wraps, so repeating the key cycles
+// through every row sharing that initial.
+static char firstAlnum(const char* s) {
+    // Match on the first letter or digit, so a leading marker never swallows the
+    // key ("#07 Elite" answers to '0', the way the list reads).
+    if (!s) return 0;
+    for (; *s; s++) if (isalnum((uint8_t)*s)) return (char)toupper((uint8_t)*s);
+    return 0;
+}
+
+static const char* leftRowLabel(const Level& L, int i) {
+    if (i < 0 || i >= L.nvis) return nullptr;
+    const uint8_t r = L.vis[i];
+    return L.dyn ? S.dyn.label[r] : L.nodes[r].label;
+}
+
+static bool jumpToLetter(char c) {
+    const char want = (char)toupper((uint8_t)c);
+    if (S.focus == FOCUS_RIGHT) {
+        const Node* n = curLevel().dyn ? nullptr : curNode();
+        if (!hasValuePane(n) || !S.rcount) return false;
+        uint8_t cnt; const Option* o = nodeOptions(*n, cnt);
+        if (cnt > S.rcount) cnt = S.rcount;
+        if (!cnt) return false;
+        for (int i = 1; i <= cnt; i++) {
+            const int v = (S.rsel + i) % cnt;
+            if (firstAlnum(o[v].label) == want) { moveRight(v - S.rsel); return true; }
+        }
+        return false;
+    }
+    Level& L = curLevel();
+    if (!L.nvis) return false;
+    for (int i = 1; i <= L.nvis; i++) {
+        const int v = (L.sel + i) % L.nvis;
+        if (firstAlnum(leftRowLabel(L, v)) == want) { moveLeft(v - L.sel); return true; }
+    }
+    return false;
+}
+
 // A verb key goes to whichever list is in front of the user.
 static void pickOrDyn(uint8_t key) {
     if (curLevel().dyn) { dynInvoke(key); return; }
@@ -645,7 +694,14 @@ resume:
             if (!ESPectrum::readKbd(&k)) continue;
             if (!k.down) continue;
             NmKey nk = decode(k);
-            if (nk == NK_NONE) continue;
+            if (nk == NK_NONE) {
+                // Nothing in this UI types, so a plain letter or digit is the
+                // first-letter jump. A key that matches no row is silent.
+                if (k.ASCII >= 32 && k.ASCII < 127 && isalnum((uint8_t)k.ASCII) &&
+                    jumpToLetter((char)k.ASCII))
+                    acted = true;
+                continue;
+            }
             acted = true;
             if (handleKey(nk)) break;
         }
