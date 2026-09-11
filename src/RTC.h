@@ -49,6 +49,11 @@ public:
     // not dirty — call it from the main loop; it writes at most every ~1.5s.
     // Machine switch: flush this machine's CMOS and adopt the next one's.
     static void    machineChanged();
+    // A card appeared under a session that booted without one: the battery-backed
+    // image on it, not the blank chip this session has been using, is the truth.
+    // Adopts the card's CMOS and drops our dirty flag, so the debounced flush
+    // cannot write a session's worth of defaults over the user's saved settings.
+    static void    adoptCardImage();
     static void    glukMarker();   // stamp NVRAM 0x11 = 0xAA (Gluk validity)
     static bool    tsBiosSeed();   // TS-Conf: write TS-BIOS's own NVRAM defaults + CRC16 if the
                                    // cells would fail its CRC check; true = seeded

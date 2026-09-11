@@ -29,6 +29,11 @@ public:
     static bool ready() { return mem != nullptr; }
 
     static void machineChanged();   // switch machines: flush ours, load theirs
+    // A card appeared after a card-less boot: adopt the image it carries. Like
+    // machineChanged() but without the flush — the chip this session has been
+    // running never had a file behind it, and writing it out would erase the
+    // card's own. No-op while the chip is not allocated (card not fitted).
+    static void adoptCardImage();
     static void reset();            // bus idle (machine reset); contents kept
     static void    write(uint8_t v);  // SMUC SYS write (SCL/SDA/WP bits)
     static uint8_t read();            // 0xFF / 0xBF — SDA state in bit 6

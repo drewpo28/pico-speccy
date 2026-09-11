@@ -1171,7 +1171,13 @@ void ESPectrum::setup() {
   // (flash CS0 + PSRAM CS1), so once the HDMI engine streams the framebuffer out of
   // XIP-PSRAM it would stall the bus and hang. Still single core (core1 launches
   // later in main()). No-op unless GM.DLS mode (Config::midi==4) is selected.
-  if (FileUtils::fsMount) MidiSynth::provisionAtBoot();
+  // Called even with no card: its own first statement registers the flash
+  // partition with the Buffer pool (which every later runtime decision compares
+  // against), and its fallback binds a bank already persisted there — so a
+  // card-less boot keeps working GM.DLS instead of losing it with the card. The
+  // SD-reading half self-gates: with no volume there is no bank file to read and
+  // no flash write happens.
+  MidiSynth::provisionAtBoot();
 
   //=======================================================================================
   // VIDEO

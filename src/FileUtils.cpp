@@ -56,6 +56,10 @@ visit https://zxespectrum.speccy.org/contacto
 #include "UsbMsc.h"
 #include "DivMMC.h"
 #include "IDE.h"
+#include "RTC.h"
+#include "Nvram24.h"
+#include "MidiSynth.h"
+#include "ArchRom.h"
 
 extern "C" void mem_swap_reopen(void);
 
@@ -256,6 +260,44 @@ static FileUtils::StorageEvent storageLost() {
     return FileUtils::StorageEvent::Lost;
 }
 
+// Everything a card-less boot could not do, done now that a card is here. This
+// is the twin of reopenMedia(): that one reopens handles a running session
+// already had, this one brings up from Config what was never opened at all —
+// on a card-less boot DivMMC and IDE found no images, the battery-backed chips
+// found no files, and the GM.DLS bank could not be read.
+//
+// Everything here is already a live-callable path (the menu mounts and ejects
+// images exactly this way), and everything self-gates on its own Config flag,
+// so calling it on a machine that uses none of it costs a handful of no-ops.
+static void bringUpFromCard() {
+    // Karabas: ROMain reads karabas_boot.$c off the card itself, through the
+    // Z-Controller — so the file has to exist before the guest looks for it.
+    if (Config::arch == A_PROFI && isKarabasRomset(Config::romSet))
+        FileUtils::ensureKarabasBoot();
+
+    Config::loadDiskMounts();                   // remembered disk images
+    Tape::LoadRemembered();                     // and the remembered tape
+
+    DivMMC::init();                             // esxDOS .hdf images
+    IDE::init();                                // IDE/HDD images
+
+    // The battery-backed chips adopt the card's image rather than flushing the
+    // blank one this session has been running — see RTC::adoptCardImage().
+    RTC::adoptCardImage();
+    Nvram24::adoptCardImage();
+
+    // GM.DLS: binds live when the bank lands in PSRAM (or the flash partition
+    // already holds it). A flash WRITE cannot happen here — erasing flash drops
+    // XIP for the whole QMI, and the display is streaming out of XIP-PSRAM by
+    // now — so that one case honestly needs a reboot and says so.
+    if (Config::midi == 4 && !MidiSynth::bankReady()) {
+        if (MidiSynth::applyBankLive())
+            Debug::log("FileUtils: GM.DLS bank bound live\n");
+        else
+            Debug::log("FileUtils: GM.DLS bank needs a flash write - reboot to use it\n");
+    }
+}
+
 // Runtime storage watch, both directions. No board here wires a card-detect
 // line, so every transition has to be inferred; the throttle lives HERE, not in
 // the callers, because there is more than one — ESPectrum::loop stops running
@@ -321,7 +363,10 @@ FileUtils::StorageEvent FileUtils::storageTick() {
         // Different card: the volume is usable (menus, browser) but nothing the
         // old one carried is reopened. The stale handles cannot reach it either
         // — FatFs refuses them after the remount — so this is a decision about
-        // what to restore, not a race to close something.
+        // what to restore, not a race to close something. The battery-backed
+        // chips are deliberately NOT re-adopted from the new card: the machine
+        // has one battery and it is the image in RAM, the card being only where
+        // it gets stored, so the next debounced flush writes ours onto it.
         guard.ok = true;
         Debug::log("FileUtils: different SD card (vsn %08lx -> %08lx), media not reopened\n",
                    (unsigned long)was, (unsigned long)s_sd_vsn);
@@ -351,8 +396,7 @@ FileUtils::StorageEvent FileUtils::storageTick() {
     SDReady = true;
     guard.ok = true;
     ensureBootDirs();
-    Config::loadDiskMounts();                   // remembered disk images
-    Tape::LoadRemembered();                     // and the remembered tape
+    bringUpFromCard();
     return StorageEvent::Online;
 }
 

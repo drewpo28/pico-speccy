@@ -116,6 +116,16 @@ static void rtcSeedGluk() {
 void RTC::machineChanged() {
     if (!s_nv_path[0]) return;          // RTC::init() has not run yet
     flushNVRAM(true);                   // to the OLD path, past the debounce
+    adoptCardImage();
+}
+
+// The same adoption without the flush — for a card that turned up after a
+// card-less boot. Flushing first would be exactly wrong there: the chip this
+// session has been running is a blank one (loadNVRAM found no file at boot),
+// and writing it out would erase the battery the card is carrying. Whatever the
+// guest wrote meanwhile loses to the card's image on purpose, for the same
+// reason: a session with no card never had a battery to write to.
+void RTC::adoptCardImage() {
     for (unsigned i = 0x0E; i < sizeof(regs); i++) regs[i] = 0;
     regs[0x0B] = 0x02;
     regs[0x0D] = 0x80;

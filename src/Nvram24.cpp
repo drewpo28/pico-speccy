@@ -72,6 +72,11 @@ void Nvram24::close() {
 void Nvram24::machineChanged() {
     if (!mem) return;
     flush(true);
+    adoptCardImage();
+}
+
+void Nvram24::adoptCardImage() {
+    if (!mem) return;
     memset(mem, 0, NVRAM24_SIZE);
     s_nv_path[0] = 0;
     load();

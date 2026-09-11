@@ -304,7 +304,11 @@ void MidiSynth::provisionAtBoot() {
     if (Config::midi != 4) return;              // only GM.DLS mode provisions a bank
 
     bool force = (watchdog_hw->scratch[MIDI_REFLASH_SCRATCH] == MIDI_REFLASH_MAGIC);
-    if (force) watchdog_hw->scratch[MIDI_REFLASH_SCRATCH] = 0;   // consume it
+    // Consume the request only when there is a volume to satisfy it from: this
+    // function now runs on a card-less boot too (for initFlashPool above and the
+    // bindFromFlash fallback below), and eating the flag there would silently
+    // drop a reflash the user asked for.
+    if (force && FileUtils::fsMount) watchdog_hw->scratch[MIDI_REFLASH_SCRATCH] = 0;
     Debug::log("MidiSynth: provisionAtBoot enter @%u ms (force=%d)",
                   (unsigned)to_ms_since_boot(get_absolute_time()), (int)force);
 
