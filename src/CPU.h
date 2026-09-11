@@ -99,6 +99,8 @@ extern bool g_scorp_even_m1;
 // Scorpion GMX romset live (R_SCORP_GMX) — set in CPU::reset, gates the GMX port
 // family, the 2 MB page composition and the ProfROM plane arithmetic.
 extern bool g_scorp_gmx;
+// See CPU.cpp: a Timex machine decodes #FF on the low byte alone.
+extern bool g_timex_machine;
 // Scorpion ZS-1024 (R_SCORP_1024): 1FFD D6,D7 extend the 0xC000 page to 64 pages
 // (1 MB) — page = D7D6<<4 | D4<<3 | 7FFD 0-2 (MAME scorpion_update_memory, ZXMAK2
 // MemoryScorpionProfRom1024 GetRamPage). Green/Turbo+ timing, no even-M1.

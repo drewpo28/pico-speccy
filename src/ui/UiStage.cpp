@@ -248,7 +248,11 @@ static const RomsetIdx kPref48[]   = {
 #if !NO_SPAIN_ROM_48k
     R_48K_ES,
 #endif
-    R_TC2048, R_48K_CS, R_LAST };
+    // R_LAST must stay the LAST entry: get_pref48() answers with the final index for
+    // any stored romset that is not in the table, and "Last used" is the only sane
+    // fallback. Everything before it may be reordered freely — Config stores the
+    // RomsetIdx, not the index; only opt_pref48[] in UiTree.cpp has to stay aligned.
+    R_TC2048, R_TC2068, R_48K_CS, R_LAST };
 static const RomsetIdx kPref128[]  = {
     R_128K,
 #if !NO_SPAIN_ROM_128k
@@ -908,10 +912,15 @@ static bool stagedIsPlus3e() {
     return Config::isPlus3e();
 }
 static bool stagedIsTsconf() { return stagedArchIs(A_TSCONF); }
-static bool stagedIsTc2048() {
+static bool stagedIsTimex() {
     const int32_t m = staged(SET_MACHINE);
-    if (m >= 0) return isTc2048Romset((RomsetIdx)(m & 0xFF));
-    return Config::arch == A_48K && isTc2048Romset(Config::romSet);
+    if (m >= 0) return isTimexRomset((RomsetIdx)(m & 0xFF));
+    return Config::isTimex();
+}
+static bool stagedIsTc2068() {
+    const int32_t m = staged(SET_MACHINE);
+    if (m >= 0) return isTc2068Romset((RomsetIdx)(m & 0xFF));
+    return Config::isTc2068();
 }
 static bool stagedIsPentagon() {
     return stagedArchIs(A_PENT) || stagedArchIs(A_P512) || stagedArchIs(A_P1024);
@@ -930,11 +939,21 @@ static void resolveConstraints(CommitReport& rep) {
         // SAA off would let a later SAA edit turn Timex back off and this rule turn
         // it on again — the one way to make this fixpoint loop oscillate. Forcing
         // both here settles it in a single pass (force() never bumps g_seq).
-        if (stagedIsTc2048()) {
+        if (stagedIsTimex()) {
+            const bool is68 = stagedIsTc2068();
             if (staged(SET_SAA1099))
-                changed |= force(SET_SAA1099, 0, rep, "SAA1099 is not available on the TC2048");
+                changed |= force(SET_SAA1099, 0, rep,
+                                 is68 ? "SAA1099 is not available on the TC2068"
+                                      : "SAA1099 is not available on the TC2048");
             if (!staged(SET_TIMEX))
-                changed |= force(SET_TIMEX, 1, rep, "Timex SCLD is part of the TC2048");
+                changed |= force(SET_TIMEX, 1, rep,
+                                 is68 ? "Timex SCLD is part of the TC2068"
+                                      : "Timex SCLD is part of the TC2048");
+            // The TC2068 also owns the whole 64 KB map through the SCLD and boots a
+            // ROM that is not Sinclair-derived, so the DivMMC automap traps fire on
+            // unrelated code — see the CPU::reset backstop.
+            if (is68 && staged(SET_ESXDOS))
+                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on the TC2068");
         }
 
         // SAA1099 and Timex are mutually exclusive, in both directions

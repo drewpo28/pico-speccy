@@ -40,6 +40,7 @@
     X(R_48K_CS,         "48Kcs",            "Custom 48K")         \
     X(R_48K_BY,         "48Kby",            "Byte 48K")           \
     X(R_TC2048,         "TC2048",           "TC2048")             \
+    X(R_TC2068,         "TC2068",           "TC2068")             \
     X(R_128K,           "128K",             "128K")               \
     X(R_128K_ES,        "128Kes",           "128K Spanish")       \
     X(R_PLUS2,          "+2",               "+2")                 \
@@ -159,6 +160,16 @@ inline ArchIdx archDisplay(ArchIdx a, RomsetIdx r) {
 // spec48 timing, so the only hardware difference from a 48K is the SCLD — which
 // is why the whole machine costs a 37-byte ROM overlay and one forced flag.
 inline bool isTc2048Romset(RomsetIdx r) { return r == R_TC2048; }
+// Timex TC2068: the SAME 48K frame timing (224 T/line, 312 lines, 3.5 MHz — the
+// TS2068's 60 Hz/262-line/3.528 MHz set is the only thing that separates the two
+// machines, libspectrum timings.c), the same SCLD video, and on top of it the
+// machine's own 16 KB HOME ROM, an 8 KB EX-ROM, the eight-slot horizontal MMU on
+// port #F4 (src/Timex.cpp) and an AY-3-8912 on #F5/#F6. Still a romset of A_48K,
+// because none of that changes the arch's timing or its RAM layout.
+inline bool isTc2068Romset(RomsetIdx r) { return r == R_TC2068; }
+// "Is the SCLD the machine's own ULA?" — both Timex romsets force Config::timex_video
+// on and the SAA1099 off, and both take the SCLD #FF register unconditionally.
+inline bool isTimexRomset(RomsetIdx r) { return r == R_TC2048 || r == R_TC2068; }
 
 inline bool isPlus3Romset(RomsetIdx r) {
     return r == R_P3 || r == R_P3E;

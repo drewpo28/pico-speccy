@@ -81,4 +81,5 @@ extern "C" unsigned char gb_rom_esxide[];
 #include "roms/profi/romProfi.h"
 #include "roms/scorpion/romScorpion.h"
 #include "roms/tsconf/tsconf_roms.h"
+#include "roms/timex/timex_roms.h"
 #endif

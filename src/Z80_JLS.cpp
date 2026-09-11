@@ -40,6 +40,7 @@
 
 #include "DivMMC.h"
 #include "MB02.h"
+#include "Timex.h"   // g_timex_mmu + Timex::rd/read8 (TC2068 SCLD window, exec_nocheck fetch)
 #include "TsConf.h"
 
 
@@ -1240,6 +1241,16 @@ IRAM_ATTR void Z80::exec_nocheck() {
             DivMMC::postOpcFetch();
         } else if (pg == 0 && MemESP::divmmc_mapped) {
             opCode = (REG_PC < 0x2000) ? MemESP::page0_lo[REG_PC] : MemESP::page0_hi[REG_PC & 0x1FFF];
+        } else if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[REG_PC >> 13]) {
+            // Timex TC2068 SCLD window (Timex.h). This fetch is a SECOND copy of
+            // Z80Ops::fetchOpcode() and it is the one that matters: exec_nocheck
+            // runs every instruction outside the INT window, so hooking only
+            // fetchOpcode() left the machine executing the HOME ROM the moment it
+            // jumped into the EX-ROM — which its own boot does (HOME 0x0E05:
+            // LD HL,0x08E7 / CALL 0x6815 -> pages the EX-ROM in and JP (HL)).
+            // hw 2026-09-12: that is why the TC2068 reached its copyright screen
+            // and then fell apart on its own with no input.
+            opCode = Timex::read8(REG_PC);
         } else
         opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC & 0x3fff);
         }
@@ -1835,7 +1846,44 @@ void Z80::decodeOpcode76()
     //   0x056B = Spanish 48K ROM (CP A at 0x056A) -> RET at 0x05E2
     //   0x056D = Byte 48K ROM    (CP A at 0x056C) -> RET at 0x05E4
     //   0x057D = Sinclair 48K ROM(CP A at 0x057C) -> RET at 0x0606
-    if (REG_PC == 0x56b || REG_PC == 0x56d || REG_PC == 0x57d) {
+    // ROM FlashLoad traps. These are bare PC values, so they are only meaningful
+    // while a ROM whose LD-BYTES lives there is paged in — which on a TC2068 the
+    // HOME ROM is not (0x056B there is the middle of an unrelated routine).
+    //
+    // The TC2068 gets its OWN trap instead, because its loader is the same routine
+    // relocated into the EX-ROM by 0x045A: CP A at 0x0110 (so PC after fetch
+    // 0x0111, against the Sinclair 0x056B) and the RET after `LD A,H / CP 0x01` at
+    // 0x0188 (against 0x05E2). 157 of the 202 bytes of LD-BYTES + LD-EDGE are
+    // byte-identical to the Sinclair ROM's and the two only diverge past that exit.
+    // Gated on the SCLD actually having the EX-ROM in slot 0, so HOME ROM code at
+    // 0x0111 can never trigger it — and that gate is what makes a bare PC value
+    // safe on a machine whose page 0 is not one fixed ROM.
+    const bool tcTrap = __builtin_expect(g_timex_mmu != 0, 0) &&
+                        Timex::exromSel && Timex::rd[0] && REG_PC == 0x0111;
+#if TIMEX_PORT_TRACE
+    // The trap is a bare PC value, so the FIRST question is whether the ROM reaches
+    // it at all and with what paged — not whether the trap body is right. Log every
+    // CP A executed in ROM space on this machine (there are few, and they collapse),
+    // so a trap that never fires says WHY: wrong address, EX-ROM not mapped, or the
+    // routine never entered.
+    if (Z80Ops::isTc2068 && REG_PC < 0x4000) {
+        static uint32_t budget = 40; static uint16_t last = 0xFFFF; static uint32_t runs = 0;
+        if (REG_PC == last) runs++;
+        else if (budget) {
+            if (runs) { Debug::log("[TMXLD]   ... x%u", (unsigned)runs); runs = 0; }
+            last = REG_PC; budget--;
+            Debug::log("[TMXLD] CP A pc=%04X mmu=%u ex=%d rd0=%p hsr=%02X trap=%d "
+                       "ftype=%d name=%s fl=%d st=%d blk=%d",
+                       (unsigned)REG_PC, (unsigned)g_timex_mmu, (int)Timex::exromSel,
+                       (void*)Timex::rd[0], (unsigned)Timex::hsr, (int)tcTrap,
+                       (int)Tape::tapeFileType, Tape::tapeFileName.c_str(),
+                       (int)Config::flashload, (int)Tape::tapeStatus,
+                       (int)Tape::tapeCurBlock);
+        }
+    }
+#endif
+    if ((((REG_PC == 0x56b || REG_PC == 0x56d || REG_PC == 0x57d)) && !Z80Ops::isTc2068)
+        || tcTrap) {
 
         if ((Tape::tapeFileType == TAPE_FTYPE_TAP || Tape::tapeFileType == TAPE_FTYPE_TZX || Tape::tapeFileType == TAPE_FTYPE_PZX) && (Tape::tapeFileName != "none")) {
               // Skip ROM FlashLoad while JJ screen animation is in progress —
@@ -1844,7 +1892,14 @@ void Z80::decodeOpcode76()
               if (Config::flashload && !Tape::jjScreenAnimating) {
                 // Save return PC before FlashLoad (it doesn't modify REG_PC)
                 uint16_t trapPC = REG_PC;
-                if (Tape::FlashLoad()) {
+                const bool flOk = Tape::FlashLoad();
+#if TIMEX_PORT_TRACE
+                if (tcTrap)
+                    Debug::log("[TMXLD] FlashLoad -> %d  blk=%d/%d  IX=%04X DE=%04X A'=%02X",
+                               (int)flOk, (int)Tape::tapeCurBlock, (int)Tape::tapeNumBlocks,
+                               (unsigned)REG_IX, (unsigned)REG_DE, (unsigned)REG_Ax);
+#endif
+                if (flOk) {
                     // Stop tape if it was auto-started.
                     // Preserve tapePhase if pzxFlashCont is set (partial PZX load
                     // set up DATA1 phase for real-mode continuation by auto-start).
@@ -1854,7 +1909,8 @@ void Z80::decodeOpcode76()
                             Tape::tapePhase = TAPE_PHASE_STOPPED;
                     }
                     // Jump to RET after CP 0x01 in the active ROM's LD-BYTES
-                    if (trapPC == 0x56d)      REG_PC = 0x5e4; // Byte ROM
+                    if (tcTrap)               REG_PC = 0x0188; // TC2068 EX-ROM
+                    else if (trapPC == 0x56d) REG_PC = 0x5e4; // Byte ROM
                     else if (trapPC == 0x57d) REG_PC = 0x606; // Sinclair ROM
                     else                      REG_PC = 0x5e2; // Spanish ROM
                 }

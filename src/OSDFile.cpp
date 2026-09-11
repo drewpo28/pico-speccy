@@ -41,6 +41,7 @@ visit https://zxespectrum.speccy.org/contacto
 using namespace std;
 
 #include "OSDMain.h"
+#include "Timex.h"
 #include "FileUtils.h"
 #include "UsbMsc.h"
 #include "AlfCart.h"
@@ -494,6 +495,11 @@ static bool rfd_launch_tmp(string path) {
         ESPectrum::plus3AutoBootArm();             // reached only without a reboot
         return true;
     }
+    if (ext == "dck") {
+        FileUtils::ROM_Path = dir;
+        Config::save();
+        return OSD::loadDckCart(path);  // Timex DOCK cartridge — mount + boot the TC2068
+    }
     if (ext == "rom" || ext == "bin") {
         return OSD::loadAlfCart(path); // ALF cartridge — lazy-mount from SD + switch into ALF
     }
@@ -521,6 +527,13 @@ static void rfd_release_tmp(const string& tmpp) {
     // An ALF cart mounted lazily from this temp path holds the FIL open; release it
     // so the next quick-start can truncate/rewrite the same /tmp/_run.<ext> file.
     if (AlfCart::active() && AlfCart::path() == tmpp) AlfCart::unmount();
+    // A DOCK cartridge read out of the same temp path: the file is closed (mountDck
+    // copies it into RAM), but the slot must be emptied so the next quick-start does
+    // not leave the previous cartridge plugged in under a fresh download.
+    if (Timex::dckMounted() && Timex::dckPath() == tmpp) {
+        Timex::ejectDck();
+        Config::dckCartPath = "";
+    }
 }
 
 // ── Listing-index cache (Remote/Web) ─────────────────────────────────────────

@@ -49,6 +49,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "DivMMC.h"
 #include "GS/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
 #include "TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
+#include "Timex.h"      // g_timex_mmu + Timex::rd/wr (TC2068 SCLD horizontal MMU)
 #include "TsFastMem.h"
 #if PERF_TRACE && PERF_HIST
 // TS-Conf guest-memory access histogram by PHYSICAL page (the page each CPU
@@ -104,6 +105,14 @@ bool g_scorp_1024 = false;
 bool g_gmx_tap = false;
 bool Z80Ops::isP3 = false;
 bool Z80Ops::isTsconf = false;
+bool Z80Ops::isTc2068 = false;
+// "The SCLD is this machine's own ULA" (either Timex romset), as opposed to the
+// Timex video option ticked as a CARD on an ordinary 48K/128K. It decides the #FF
+// decode: on a real Timex the SCLD answers the LOW BYTE alone (MAME tc2048_io /
+// ts2068_io both `mirror(0xff00)`, Fuse's periph mask is 0x00ff), while the card
+// case has to keep the A8=0 qualifier because the SAA1099 shares the #FF family
+// there (0x00FF data / 0x01FF address).
+bool g_timex_machine = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -189,6 +198,8 @@ void CPU::reset() {
     // arch's frame timing but NOT its paging, contention or floating bus, so the
     // 128K branch below hands it a separate flag set.
     Z80Ops::isTsconf = (Config::arch == A_TSCONF);
+    Z80Ops::isTc2068 = Config::isTc2068();
+    g_timex_machine  = Config::isTimex();
     Z80Ops::isP3 = Config::isPlus3();
     if (Z80Ops::isP3) {
         Z80Ops::isByte = false;
@@ -345,13 +356,18 @@ void CPU::reset() {
     // GMX 640x200 pair-slot framebuffer.
     if ((Z80Ops::isByte || Z80Ops::isProfi || g_scorp_gmx || Z80Ops::isTsconf) && Config::timex_video) Config::timex_video = false;
 
-    // ...and the converse for the Timex TC2048, whose ULA IS the SCLD: Timex video
-    // is the machine, and the SAA1099 cannot share the #FF family with it. Backstop
-    // for the paths that never pass through the menu (boot with a stale config, a
-    // snapshot that forces the machine).
-    if (Config::arch == A_48K && isTc2048Romset(Config::romSet)) {
+    // ...and the converse for both Timex machines, whose ULA IS the SCLD: Timex
+    // video is the machine, and the SAA1099 cannot share the #FF family with it.
+    // Backstop for the paths that never pass through the menu (boot with a stale
+    // config, a snapshot that forces the machine).
+    if (Config::isTimex()) {
         Config::timex_video = true;
         if (Config::SAA1099) Config::SAA1099 = false;
+        // TC2068 only: esxDOS/DivMMC automaps on Sinclair-ROM entry addresses
+        // (0x0000/0x0008/0x0038/0x0066/0x04C6/0x0562), which on this machine's own
+        // HOME ROM are unrelated code — and its page-0 window would fight the SCLD
+        // for the same 8 KB slots. Same three-place treatment as Beta on the +3.
+        if (Z80Ops::isTc2068 && Config::esxdos) Config::esxdos = 0;
     }
 
     // «Байт»: RESET returns the DD66 map to native state — the built-in test's
@@ -674,7 +690,22 @@ IRAM_ATTR void CPU::FlushOnHaltTo(uint32_t stEnd) {
 // Opcode fetch is deliberately not hooked — the doc's own rule is that
 // interrupts must be off while the window is open (or the ZX RSTs to $38 and
 // executes card data), so nothing legitimately runs code from the window.
+//
+// Timex TC2068 SCLD horizontal MMU (Timex.h). While port #F4 selects a DOCK or
+// EX-ROM chunk for an 8 KB slot, that slot is NOT the HOME bank and never reaches
+// MemESP at all — so the test has to come first, and it has to be here rather
+// than in MemESP::readbyte/writebyte, which are inlined into ~170 sites.
+// g_timex_mmu is zero on every other machine and on a TC2068 whose map is all
+// HOME, which is the normal state right up to the moment a cartridge starts.
+static IRAM_ATTR __attribute__((noinline)) uint8_t timexPeek8(uint16_t address) {
+    uint8_t* p = Timex::rd[address >> 13];
+    return (p == Timex::kOpen) ? 0xFF          // nothing plugged into that chunk
+                               : p[address & 0x1FFF];
+}
+
 static inline uint8_t gsDmaPeek8(uint16_t address) {
+    if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[address >> 13])
+        return timexPeek8(address);
     if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000
         && !MemESP::page0ram && !MemESP::newSRAM && !MemESP::divmmc_mapped)
         return GS::zxDmaRead();
@@ -682,6 +713,13 @@ static inline uint8_t gsDmaPeek8(uint16_t address) {
 }
 
 static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
+    if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[address >> 13]) {
+        // A mapped slot swallows the write: a ROM cartridge chunk and the EX-ROM
+        // drop it, a RAM chunk takes it. Either way it must NOT fall through to
+        // the HOME bank underneath — the SCLD has disconnected it.
+        Timex::write8(address, value);
+        return;
+    }
     if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000)
         GS::zxDmaWrite(value);
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
@@ -770,6 +808,12 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     if (pg == 0 && MemESP::divmmc_mapped) {
         return (pc < 0x2000) ? MemESP::page0_lo[pc] : MemESP::page0_hi[pc & 0x1FFF];
     }
+    // Timex SCLD: unlike the NeoGS ZX-DMA window this one MUST be hooked on the
+    // fetch path — a DOCK cartridge and the EX-ROM are code, and running them is
+    // the whole point (the TS2068 extended BASIC lives in the EX-ROM, and every
+    // LROS cartridge takes over from 0x0000).
+    if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[pc >> 13])
+        return timexPeek8(pc);
     TS_PAGE_HIT(pc);
     return MemESP::romPeek(pg, MemESP::ramCurrent[pg], pc & 0x3fff);
 }
@@ -1100,6 +1144,10 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // TS-Conf: three latched sources behind INTMask (FRAME window, LINE, DMA
     // end) — the controller owns the level; see TsConf::intLine.
     if (Z80Ops::isTsconf) return TsConf::intLine();
+    // Timex DEC (#FF) bit 6 — "17ms Interrupt Inhibit" (MAME port_ff_w). The SCLD
+    // gates the line itself, so the window still opens and closes on time; the CPU
+    // simply never sees it. Cleared on reset with the rest of the DEC register.
+    if (__builtin_expect(VIDEO::timex_int_inhibit, 0)) return false;
     // Adding latetiming shifts the check 1T later for Late mode.
     // At end of frame (tstates=statesInFrame-1), tmp wraps to 0, firing
     // the Late INT via straddle — this is the correct hardware behaviour.

@@ -244,6 +244,14 @@ static bool p_tsconfActive() {
     return ((m >> 8) & 0xFF) == A_TSCONF;
 }
 
+// The TC2068 is running or staged — gates its cartridge submenu. (The TC2048 has no
+// cartridge port at all: no EX-ROM, no DOCK, no #F4.)
+static bool p_tc2068Active() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m < 0) return Config::isTc2068();
+    return (m & 0xFF) == R_TC2068;
+}
+
 static bool p_byteActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::romSet == R_48K_BY || Config::romSet == R_128K_BY ||
@@ -281,11 +289,14 @@ static const Option opt_mach_spectrum[] = {
     { TXT_ROM_CUSTOM_48,  NM_MACH(A_48K,  R_48K_CS)   },
     { TXT_ROM_CUSTOM_128, NM_MACH(A_128K, R_128K_CS)  },
 };
-// Timex TC2048 — a 48K with the SCLD (Config::timex_video is forced on while it
-// runs; see resolveConstraints). 37 bytes of ROM overlay, ArchRom.h. Its own
-// family row because it is a different manufacturer's machine, not a ZX romset.
+// The Timex machines — 48K-arch romsets with the SCLD as their ULA (Config::timex_video
+// is forced on while either runs; see resolveConstraints). Their own family row because
+// they are a different manufacturer's machines, not ZX romsets. The TC2048 is a 48K plus
+// 37 bytes of ROM overlay; the TC2068 brings its own 16 KB HOME ROM, an 8 KB EX-ROM, the
+// eight-slot #F4 memory map and a DOCK cartridge port (ArchRom.h, src/Timex.cpp).
 static const Option opt_mach_timex[] = {
     { TXT_ROM_TC2048,     NM_MACH(A_48K, R_TC2048) },
+    { TXT_ROM_TC2068,     NM_MACH(A_48K, R_TC2068) },
 };
 // Pentagon is built at runtime, not static: 512K/1024K need extended-RAM backing
 // and that gate used to live on their rows. Rebuilt on every call (NOT cached like
@@ -427,9 +438,18 @@ static const Node kTsconf[] = {
     NM_RADIO(TXT_MACH_TSCONF_CLK, SET_TSCONF_CLK, opt_tsconf_clk, nullptr),
 };
 
+// Timex TC2068 cartridge port. A cartridge is not a setting: it is mounted and
+// ejected right here, like a tape or a disk, and the machine restarts on it (the
+// HOME ROM probes the DOCK at reset and starts what it finds there by itself).
+static const Node kTimexCart[] = {
+    NM_ACTION(TXT_DCK_INSERT, act_dckInsert, p_hasSD),
+    NM_ACTION(TXT_DCK_EJECT,  act_dckEject,  nullptr),
+};
+
 static const Node kMachine[] = {
     NM_RADIO  (TXT_MACH_SPECTRUM, SET_MACHINE, opt_mach_spectrum, nullptr),
     NM_RADIO  (TXT_MACH_TIMEX,    SET_MACHINE, opt_mach_timex,    nullptr),
+    NM_SUB    (NM_IND TXT_MACH_TIMEX_CART, kTimexCart, p_tc2068Active),
     NM_RADIO_D(TXT_MACH_PENTAGON, SET_MACHINE, mach_pentOpts,     nullptr),
     // Machine-dependent options sit right under their machine, indented so the
     // grouping reads at a glance (they also only show while that machine is
@@ -886,12 +906,14 @@ static const Option opt_pref48[] = {
 #if !NO_SPAIN_ROM_48k
     { TXT_ROM_48K_ES,  1 },
     { TXT_ROM_TC2048,  2 },
-    { TXT_ROM_CUSTOM,  3 },
-    { TXT_ROM_LAST,    4 },
+    { TXT_ROM_TC2068,  3 },
+    { TXT_ROM_CUSTOM,  4 },
+    { TXT_ROM_LAST,    5 },
 #else
     { TXT_ROM_TC2048,  1 },
-    { TXT_ROM_CUSTOM,  2 },
-    { TXT_ROM_LAST,    3 },
+    { TXT_ROM_TC2068,  2 },
+    { TXT_ROM_CUSTOM,  3 },
+    { TXT_ROM_LAST,    4 },
 #endif
 };
 static const Option opt_pref128[] = {

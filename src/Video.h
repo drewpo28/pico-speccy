@@ -488,6 +488,10 @@ public:
   static uint8_t timex_port_ff;   // last byte written to port 0xFF (read back whole)
   static uint8_t timex_mode;      // cached (timex_port_ff & 7)
   static uint8_t timex_hires_ink; // mode 6: ink palette index (0-7)
+  // DEC (#FF) bit 6, TC2068 only: "17ms Interrupt Inhibit" — the SCLD holds the
+  // 50 Hz interrupt off the CPU while it is set (MAME port_ff_w, Fuse
+  // scld_dec_write). Tested by Z80Ops::isActiveINT; cleared by VIDEO::Reset().
+  static bool    timex_int_inhibit;
 
   // ── Timex hi-res 512x192 (port #FF mode %110) ──────────────────────────────
   // Rendered through the DS80/GMX packed-pair framebuffer (1 fb byte = 2 output

@@ -195,6 +195,13 @@
 // the row, so the subheader reads "Machine: <family> (<option>)".
 #define TXT_MACH_SPECTRUM   "Spectrum"
 #define TXT_MACH_TIMEX      "Timex"
+#define TXT_MACH_TIMEX_CART "Cartridge (DOCK)"
+#define TXT_DCK_INSERT      "Insert cartridge"
+#define TXT_DCK_EJECT       "Eject cartridge"
+#define TXT_DCK_PICK        "Select cartridge"
+#define TXT_DCK_NONE        "No cartridge in the slot"
+#define TXT_DCK_EJECTED     "Cartridge ejected"
+#define TXT_DCK_NOT_ROM     "A .dck is a cartridge: Machine > Cartridge (DOCK)"
 #define TXT_MACH_PENTAGON   "Pentagon"
 // ...and the ARCH names, still used by Options > Preferred machine/rom.
 #define TXT_MACH_48K        "Spectrum 48K"
@@ -252,6 +259,7 @@
 #define TXT_ROM_BYTE_GLUK   "128K + Mr Gluk"
 #define TXT_ROM_BYTE_GLUK_S "128K+Gluk"  // left-column short form (Option::slabel)
 #define TXT_ROM_TC2048      "TC2048"
+#define TXT_ROM_TC2068      "TC2068"
 #define TXT_ROM_CUSTOM      "Custom"
 // Two DIFFERENT flash images (Devices > Replace ROM slots "48K" and "128K"),
 // so they cannot share one row. Pentagon reuses the 128K image and keeps the

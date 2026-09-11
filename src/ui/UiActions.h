@@ -24,6 +24,8 @@ void act_helpAbout();
 
 // Storage — actions, because they mount media or restart the machine
 void act_tapeSelect();
+void act_dckInsert();
+void act_dckEject();
 void act_tapePlayStop();
 void act_tapeBrowser();
 // The slot editors are LEVELS of the new menu, not modals: build fills the row pool,

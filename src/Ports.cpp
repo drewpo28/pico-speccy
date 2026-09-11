@@ -69,6 +69,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "Z80DMA.h"
 #include "GS/GS.h"
 #include "TsConf.h"
+#include "Timex.h"
 #include "DivMMC.h"
 #include "IDE.h"
 #include "Plus3eIde.h"
@@ -238,6 +239,122 @@ static inline void ayPortWrite(uint16_t address, uint8_t data, bool genSample) {
     if (chip) chip->setRegisterData(data);
     if (fm)   fm->writeData(data);
   }
+}
+
+// ── Timex TC2068: #F4 (SCLD horizontal MMU) and the AY-3-8912 on #F5/#F6 ──────
+// Low-byte decode only, on both ports and in both directions: Fuse's periph table
+// masks 0x00ff ({0x00ff,0x00f4} SCLD HSR, {0x00ff,0x00f5} AY address,
+// {0x00ff,0x00f6} AY data) and MAME's ts2068_io mirrors 0xff00 over the same three.
+// Cold flash code — these run on a port access, never per instruction. The #F5
+// register-number latch lives in Timex::ayReg so a machine reset clears it with the
+// rest of the SCLD state.
+
+// The two built-in joysticks are read through AY port A (register 14), active LOW,
+// with A8 selecting joystick 1 and A9 joystick 2 (Fuse tc2068_ay_dataport_read).
+// Bit layout is the Timex one, NOT Kempston's: up/down/left/right/fire =
+// 0x01/0x02/0x04/0x08/0x80 (Fuse joystick.c timex_mask).
+// DELIBERATE SIMPLIFICATION: the bits are re-mapped from the Kempston byte the
+// input layer already maintains, so the machine's joysticks work when the user has
+// picked Kempston in Options and read as "unplugged" (0xFF) otherwise. Joystick 2
+// is always idle — there is one pad mapping in this firmware.
+static inline uint8_t tc2068JoyBits(uint8_t which) {
+    if (which != 0 || Config::joystick != JOY_KEMPSTON) return 0;
+    const uint8_t k = Ports::port[Config::kempstonPort];   // 0=right 1=left 2=down 3=up 4=fire
+    uint8_t v = 0;
+    if (k & 0x08) v |= 0x01;   // up
+    if (k & 0x04) v |= 0x02;   // down
+    if (k & 0x02) v |= 0x04;   // left
+    if (k & 0x01) v |= 0x08;   // right
+    if (k & 0x10) v |= 0x80;   // fire
+    return v;
+}
+
+#if TIMEX_PORT_TRACE
+// Every SCLD/AY access with the PC that made it. The ROM's own bank switcher builds
+// each new #F4 value out of a READ-BACK of #F4 and #FF (EX-ROM 0x64BE-0x64F4), so
+// the only way to see a paging fault is the two registers side by side with the PC.
+// Runs of the same (port, direction, value, pc) are collapsed — the key scan polls
+// #FE and the dispatcher polls #F4 in tight loops, and an uncollapsed log floods the
+// UART and drowns the one line that matters (the GMX trace lesson).
+static void timexTrace(char dir, uint8_t port, uint8_t val) {
+    static uint32_t budget = 800;
+    static uint32_t key_last = 0xFFFFFFFF, runs = 0;
+    if (!budget) return;
+    const uint16_t pc = Z80::getRegPC();
+    const uint32_t key = ((uint32_t)dir << 24) | ((uint32_t)port << 16) | ((uint32_t)val << 8) | (pc & 0xFF);
+    if (key == key_last) { runs++; return; }
+    if (runs) { Debug::log("[TMX]   ... x%u", (unsigned)runs); runs = 0; }
+    key_last = key;
+    budget--;
+    Debug::log("[TMX] %c %02X=%02X pc=%04X hsr=%02X dec=%02X ex=%d mmu=%d",
+               dir, port, val, pc, (unsigned)Timex::hsr,
+               (unsigned)VIDEO::timex_port_ff, (int)Timex::exromSel,
+               (unsigned)g_timex_mmu);
+}
+#define TMX_TRACE(d, p, v) timexTrace(d, p, v)
+#else
+#define TMX_TRACE(d, p, v) do {} while (0)
+#endif
+
+// Returns true when the access belonged to one of the three ports.
+static bool tc2068PortRead(uint16_t address, uint8_t* out) {
+    switch (address & 0xFF) {
+    case 0xF4:                                   // HSR read-back
+        *out = Timex::hsr;
+        TMX_TRACE('r', 0xF4, Timex::hsr);
+        return true;
+    case 0xF5:
+    case 0xF6: {
+        AySound* chip = chips[0];
+        // Fuse returns 0xFF for register 14 on the ADDRESS port and only serves the
+        // joysticks on the DATA port; the chip's own getRegisterData() already
+        // implements the "port A is an input → 0xFF" rule from mixer bit 6.
+        uint8_t v = 0xFF;
+        if (Timex::ayReg == 14) {
+            if ((address & 0xFF) == 0xF6) {
+                v = chip ? chip->getRegisterData() : 0xFF;
+                if (address & 0x0100) v &= (uint8_t)~tc2068JoyBits(0);
+                if (address & 0x0200) v &= (uint8_t)~tc2068JoyBits(1);
+            }
+        } else {
+            v = chip ? chip->getRegisterData() : 0xFF;
+        }
+        LED::touchR(LED::AY);
+        TMX_TRACE('r', (uint8_t)(address & 0xFF), v);
+        *out = v;
+        return true;
+    }
+    default:
+        return false;
+    }
+}
+
+static bool tc2068PortWrite(uint16_t address, uint8_t data) {
+    switch (address & 0xFF) {
+    case 0xF4:
+        LED::touchW(LED::RAM);
+        TMX_TRACE('w', 0xF4, data);
+        Timex::writeHsr(data);
+        return true;
+    case 0xF5: {
+        TMX_TRACE('w', 0xF5, data);
+        Timex::ayReg = data;
+        AySound* chip = chips[0];
+        if (chip) chip->selectRegister(data);   // also ticks the external envelope clock
+        LED::touchW(LED::AY);
+        return true;
+    }
+    case 0xF6: {
+        AySound* chip = chips[0];
+        TMX_TRACE('w', 0xF6, data);
+        if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::AYGetSample();
+        if (chip) chip->setRegisterData(data);
+        LED::touchW(LED::AY);
+        return true;
+    }
+    default:
+        return false;
+    }
 }
 
 #if PROFI_PORT_TRACE
@@ -605,6 +722,15 @@ void alfBindCart() {
     } else {
         AlfCart::unmount();
     }
+}
+
+// Same at boot for the Timex DOCK cartridge: put back whatever was in the slot, so
+// a TC2068 that was running a cartridge comes back running it. A missing SD file
+// just leaves the slot empty (the machine then boots its own BASIC) — never hang.
+void timexBindCart() {
+    if (Config::dckCartPath.empty()) { Timex::ejectDck(); return; }
+    if (Timex::dckMounted() && Timex::dckPath() == Config::dckCartPath) return;
+    if (!Timex::mountDck(Config::dckCartPath)) Config::dckCartPath = "";
 }
 static uint8_t profi_fdc_busy = 0;
 // Profi CP/M: detect DSKKE9A "CALL 0x40EA → JR 0x40D9" re-issue loop.
@@ -1019,6 +1145,24 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     uint8_t gmxData;
     if (gmxPortRead(address, &gmxData)) return gmxData;
   }
+  // Timex TC2068: the SCLD horizontal-select register (#F4) and the AY-3-8912 on
+  // #F5/#F6. Low-byte decode only (Fuse periph mask 0x00ff; MAME ts2068_io mirrors
+  // 0xff00), and BEFORE the ULA even-port branch because #F4 and #F6 have A0=0 and
+  // would otherwise read back as keyboard rows.
+  if (Z80Ops::isTc2068) {
+    uint8_t tData;
+    if (tc2068PortRead(address, &tData)) { ioContentionLate(MemESP::ramContended[rambank]); return tData; }
+    // The Timex ULA is FULLY decoded — it answers only when the low byte is 0xFE
+    // (MAME ts2068_io `map(0xfe,0xfe).select(0xff00)`, Fuse PERIPH_TYPE_ULA_FULL_DECODE
+    // for every Timex machine). A 48K or a TC2048 decodes A0 alone (MAME keeps
+    // `select(0xfffe)` in tc2048_io), so this is a TC2068-only rule: without it every
+    // even port the machine's own software touches reads back keyboard rows. There is
+    // no floating bus either (Fuse: spectrum_unattached_port_none), hence 0xFF.
+    if ((address & 0x0001) == 0 && p8 != 0xFE) {
+      ioContentionLate(MemESP::ramContended[rambank]);
+      return 0xFF;
+    }
+  }
   // ULA PORT
   if ((address & 0x0001) == 0) {
     VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf)); // I/O Contention (Late)
@@ -1184,9 +1328,20 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         return (a8 == 0xB3) ? GS::hostReadB3() : GS::hostReadBB();
       }
     }
-    // Timex SCLD port read (port 0x00FF) — skip when TR-DOS is active (port conflict)
-    if (Config::timex_video && !ESPectrum::trdos && address == 0x00FF) {
+    // Timex SCLD port read — skip when TR-DOS is active (port conflict).
+    // DECODE: on a real Timex machine the SCLD answers the LOW BYTE alone (MAME
+    // tc2048_io / ts2068_io both `map(0xff,0xff).mirror(0xff00)`, Fuse's periph
+    // mask is 0x00ff). That matters because `IN A,(#FF)` puts **A** on the high
+    // address byte, and the TC2068's own boot does exactly that with A=1: its
+    // read-modify-write of the DEC register (ROM 0x0E0F and EX-ROM 0x6818 —
+    // IN / SET 7 / OUT, which is how the machine pages its EX-ROM in at reset)
+    // never matched an `address == 0x00FF` test. When Timex video is a CARD on an
+    // ordinary 48K/128K the A8=0 qualifier has to stay: the SAA1099 shares the
+    // #FF family there (0x00FF data / 0x01FF address).
+    if (Config::timex_video && !ESPectrum::trdos && p8 == 0xFF &&
+        (g_timex_machine || !(address & 0x0100))) {
       LED::touchR(LED::TIMEX);
+      TMX_TRACE('r', 0xFF, VIDEO::timex_port_ff);
       ioContentionLate(MemESP::ramContended[rambank]);
       return VIDEO::timex_port_ff;
     }
@@ -3131,6 +3286,20 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       return;
     }
   }
+  // Timex TC2068: the SCLD horizontal MMU (#F4) and the AY-3-8912 (#F5/#F6), and
+  // the machine's FULL ULA decode. Both #F4 and #F6 are EVEN, so this has to come
+  // before the ULA branch or the generic A0=0 decode repaints the border with a
+  // paging byte (the trap OPL3 and NEMO are placed above the same branch for).
+  if (Z80Ops::isTc2068) {
+    if (tc2068PortWrite(address, data)) {
+      ioContentionLate(MemESP::ramContended[rambank]);
+      return;
+    }
+    if ((address & 0x0001) == 0 && (address & 0xFF) != 0xFE) {
+      ioContentionLate(MemESP::ramContended[rambank]);   // decodes nowhere on this machine
+      return;
+    }
+  }
   // ULA =======================================================================
   if ((address & 0x0001) == 0) {
     // KR580VI53 (8253 PIT) — Byte computer synthesizer at #8E/#AE/#CE (data)
@@ -3356,17 +3525,33 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     }
     // Timex SCLD video mode register (port 0x00FF, bit 8 clear)
     // Skip when TR-DOS is active — port 0xFF is the Beta-128 system register
-    if (Config::timex_video && !ESPectrum::trdos && a8 == 0xFF && !(address & 0x0100)) {
+    if (Config::timex_video && !ESPectrum::trdos && a8 == 0xFF &&
+        (g_timex_machine || !(address & 0x0100))) {   // low-byte decode on a real Timex
       LED::touchW(LED::TIMEX);
       const uint8_t prev_mode = VIDEO::timex_mode;
       const uint8_t prev_ink  = VIDEO::timex_hires_ink;
       // Read-back is the WHOLE byte: "reading 0xFF on the Timex returns the last
       // byte sent to the port" (WoS reference) — and TS2068 code round-trips it
       // (IN / SET 7 / OUT) to flip the DOCK<->EX-ROM select in bit 7, so masking
-      // to the six video bits silently broke that read-modify-write.  Bits 6
-      // (hardware DI) and 7 (bank select) are stored and readable but still not
-      // acted on: the horizontal MMU is port #F4 and a machine of its own.
+      // to the six video bits silently broke that read-modify-write.
       VIDEO::timex_port_ff = data;
+      // Bit 7 picks what the #F4 window shows for the WHOLE map — DOCK (0) or
+      // EX-ROM (1); bit 6 inhibits the 50 Hz interrupt. Both exist only on the
+      // TC2068 (a TC2048 has neither an EX-ROM nor a cartridge port); on it the
+      // register the two halves share is one latch, which is why they are read
+      // out of the same byte here.
+      if (Z80Ops::isTc2068) {
+          Timex::decWrite(data);
+          TMX_TRACE('w', 0xFF, data);
+          // Bit 6 is the SCLD's interrupt inhibit. Fuse's scld_dec_write calls
+          // z80_interrupt() when the bit is cleared, because ITS interrupt is an
+          // event at a point in time and would otherwise be lost. Ours is a LEVEL
+          // (Z80Ops::isActiveINT answers "are we inside the window"), so clearing
+          // the bit inside the window is picked up at the next instruction boundary
+          // by itself — which is what the real gate does. Calling Z80::checkINT()
+          // here would instead acknowledge the interrupt in the middle of this OUT.
+          VIDEO::timex_int_inhibit = (data & 0x40) != 0;
+      }
       VIDEO::timex_mode = data & 0x07;
       VIDEO::timex_hires_ink = (data >> 3) & 0x07;
       // Hi-res (%110) renders through the packed-pair framebuffer; the driver's

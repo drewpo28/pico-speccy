@@ -412,6 +412,15 @@ public:
     static void writebyte(uint16_t addr, uint8_t data);
     static void writeword(uint16_t addr, uint16_t data);
 
+    // What the Z80 ACTUALLY sees, for the cold paths that show memory to a human
+    // (the debugger, its disassembly and hex panels, the dump file). Unlike
+    // readbyte/writebyte these go through the TC2068 SCLD window — that hook
+    // deliberately lives in Z80Ops and not in readbyte, which is inlined into
+    // ~170 sites (see Timex.h) — and they never trip a memory breakpoint: a
+    // debugger reading memory must not fire the breakpoints it is displaying.
+    static uint8_t dbgPeek(uint16_t addr);
+    static void    dbgPoke(uint16_t addr, uint8_t data);
+
     // Cold out-of-line breakpoint checks: keep the 20-entry scan and the
     // portBasedBP store out of every inlined readbyte/writebyte expansion
     // in the Z80 core (icache footprint), entered only when mem BPs exist.

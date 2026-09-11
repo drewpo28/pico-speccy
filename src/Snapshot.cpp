@@ -42,6 +42,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "MemESP.h"
 #include "ESPectrum.h"
 #include "Ports.h"
+#include "Timex.h"
 #include "messages.h"
 #include "OSDMain.h"
 #include "Tape.h"
@@ -430,11 +431,12 @@ bool FileZ80::load(const string& z80_fn) {
     // so the arch alone cannot carry it — this flag picks the romset and the #1FFD
     // handling below.
     bool z80_plus3 = false;
-    // Timex hardware modes (14 TC2048, 15 TC2068, 128 TS2068). Only the TC2048 is a
-    // machine we have — it is the 48K arch's R_TC2048 romset — and the flag also
-    // says that header bytes 35/36 are the SCLD pair (last OUT to #F4 / #FF), not
-    // the 128K paging byte and the Interface-1 flag.
-    bool z80_timex = false;
+    // Timex hardware modes (14 TC2048, 15 TC2068, 128 TS2068). TC2048 and TC2068
+    // are both romsets of the 48K arch here; the TS2068 is the 60 Hz machine and is
+    // refused by name. The flag also says that header bytes 35/36 are the SCLD pair
+    // (last OUT to #F4 / #FF), not the 128K paging byte and the Interface-1 flag.
+    bool z80_timex  = false;
+    bool z80_tc2068 = false;
     uint16_t ahb_len;
 
     fseek(file,6,SEEK_SET);
@@ -471,6 +473,7 @@ bool FileZ80::load(const string& z80_fn) {
             if (mch == 3) z80_arch = A_128K;
             if (mch == 4) z80_arch = A_128K; // + if1
             if (mch == 14) { z80_arch = A_48K; z80_timex = true; }   // Timex TC2048
+            if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
         }
         else if (z80version == 3) {
             if (mch == 0) z80_arch = A_48K;
@@ -488,18 +491,21 @@ bool FileZ80::load(const string& z80_fn) {
             // here; the snapshot carries no disk state either way.
             if (mch == 13) { z80_arch = A_128K; z80_plus3 = true; } // Spectrum +2A
             if (mch == 14) { z80_arch = A_48K; z80_timex = true; }  // Timex TC2048
+            if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
         }
 
     }
 
     // printf("Z80 version %u, AHB Len: %u, machine code: %u\n",(unsigned char)z80version,(unsigned int)ahb_len, (unsigned char)mch);
 
-    // 15 = TC2068, 128 = TS2068: both need the horizontal MMU (#F4) and the
-    // DOCK/EX-ROM planes, which are not emulated. Say so instead of "unknown".
-    if (z80version >= 2 && (mch == 15 || mch == 128)) {
-        loadFailMsg(string("Z80: ") + (mch == 15 ? "TC2068" : "TS2068") + " is not emulated");
-        fclose2(file);
-        return false;
+    // Hardware mode 128 is the TS2068 — the same machine as the TC2068 apart from
+    // three numbers (60 Hz / 262 lines / 58688 T, 3.528 MHz, AY at 1.764 MHz; see
+    // libspectrum timings.c). A snapshot is RAM plus registers, so it runs perfectly
+    // well on the TC2068 and only its sense of time is ~17% slow. Load it and SAY
+    // SO, rather than refusing a file the machine can actually run.
+    bool z80_ts2068 = false;
+    if (z80version >= 2 && mch == 128) {
+        z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; z80_ts2068 = true;
     }
 
     if (z80_arch == A_NONE) {
@@ -523,7 +529,8 @@ bool FileZ80::load(const string& z80_fn) {
 
         if (z80_arch == A_48K) {
             if (z80_timex)
-                z80_romset = R_TC2048;   // the SCLD is the machine, not a preference
+                z80_romset = z80_tc2068 ? R_TC2068 : R_TC2048;   // the SCLD is the
+                                        // machine, not a preference
             else if (Config::pref_romSet_48 == R_48K || Config::pref_romSet_48 == R_48K_ES || Config::pref_romSet_48 == R_48K_BY)
                 z80_romset = Config::pref_romSet_48;
         } else
@@ -565,11 +572,16 @@ bool FileZ80::load(const string& z80_fn) {
                         
     } else {
 
-        // Already on the 48K arch, but a TC2048 snapshot needs that romset — it is
+        // Already on the 48K arch, but a Timex snapshot needs a Timex romset — it is
         // what forces Config::timex_video on (CPU::reset backstop) and supplies the
-        // TC2048 ROM. Same shape as the +2 / +3 cases below.
-        if (z80_arch == A_48K && z80_timex && Config::romSet != R_TC2048)
-            Config::requestMachine(A_48K, R_TC2048);
+        // right ROM. Same shape as the +2 / +3 cases below. WHICH Timex matters:
+        // this branch used to force R_TC2048 for every timex snapshot, so loading a
+        // TC2068/TS2068 file while already on the TC2068 threw the machine back to
+        // the TC2048 and its whole EX-ROM/DOCK half (hw 2026-09-12).
+        if (z80_arch == A_48K && z80_timex) {
+            const RomsetIdx want = z80_tc2068 ? R_TC2068 : R_TC2048;
+            if (Config::romSet != want) Config::requestMachine(A_48K, want);
+        }
 
         if (z80_arch == A_128K) {
             
@@ -760,14 +772,26 @@ bool FileZ80::load(const string& z80_fn) {
             // screen mode (bits 0-2), the hi-res colour (3-5) and the DOCK/EX-ROM
             // select (7). Without it a snapshot taken on screen 1 or in hi-res
             // restores showing screen 0, which is the wrong picture rather than a
-            // visible failure. (Byte 35 is the last OUT to #F4, the horizontal MMU
-            // — nothing to restore it into until a TS2068 exists.)
+            // visible failure. Byte 35 is the last OUT to #F4 — the horizontal MMU,
+            // which only the TC2068 has; note the ORDER, the DEC's bit 7 decides
+            // what the HSR window shows, so it goes in first.
             if (z80_timex) {
                 const uint8_t scld = header[36];
                 VIDEO::timex_port_ff   = scld;
                 VIDEO::timex_mode      = scld & 0x07;
                 VIDEO::timex_hires_ink = (scld >> 3) & 0x07;
+                VIDEO::timex_int_inhibit = z80_tc2068 && (scld & 0x40);
                 VIDEO::timexHiresRequest(VIDEO::timex_mode == 6);
+                if (z80_tc2068) {
+                    Timex::decWrite(scld);
+                    Timex::writeHsr(header[35]);
+                }
+                // A TS2068 snapshot on a TC2068 runs, but 17% slow: 50 Hz / 312
+                // lines here against its own 60 Hz / 262. Say it once rather than
+                // let the user wonder why the music drags.
+                if (z80_ts2068)
+                    OSD::osdCenteredMsg(" TS2068 snapshot: running at 50 Hz ",
+                                        LEVEL_INFO, 1600);
             }
 
             MemESP::page0ram = 0;
@@ -1080,6 +1104,168 @@ void FileZ80::loader48() {
 
     VIDEO::grmem = MemESP::ram[5].direct();
 
+}
+
+// Timex TC2068 tape auto-run — the equivalent of loader48() for a machine whose ROM
+// the 48K snapshot cannot resume on (see the banner in loaders.h).
+//
+// HOW THE SNAPSHOT WAS MADE, because it can only be remade the same way: on real
+// hardware, with Fast load OFF so nothing intercepts the loader, mount a .tap, type
+// LOAD "" and press Enter; the machine then sits in LD-EDGE waiting for tape edges
+// that never come. Ctrl+Alt+D there gives 48 KB + registers + (since this session)
+// the SCLD block. The capture is then REWOUND two instructions, from PC=0x0199
+// inside LD-EDGE back to the CP A at EX-ROM 0x0110 — undoing the CALL at 0x0112, so
+// SP goes 0x61EC -> 0x61EE and A takes C's value from the LD C,A at 0x010F. That
+// matters: the flashload trap fires on CP A, so a snapshot resumed any later than
+// that would never be intercepted and would wait for a real tape instead.
+// LD-EDGE touches only A/B/C/HL, so IX/DE/AF' — the destination, length and flag
+// byte FlashLoad needs — are the dump's own.
+//
+// The SCLD state has to be restored too and is NOT in the .z80 container: the
+// capture had HSR=0x01 / DEC=0x80, i.e. the EX-ROM windowed into slot 0, which is
+// where PC=0x0110 lives. It is applied LAST, after the pages: resetForLoad() clears
+// it, and the page writes go through MemESP::writebyte, which is deliberately blind
+// to the window and must land in HOME RAM.
+void FileZ80::loaderTc2068() {
+
+    unsigned char *z80_array = (unsigned char *) load_tc2068;
+    uint32_t dataOffset = 86;
+
+    ESPectrum::resetForLoad();
+
+    // begin loading registers
+    Z80::setRegA  (z80_array[0]);
+    Z80::setFlags (z80_array[1]);
+    Z80::setRegBC (mkword(z80_array[2], z80_array[3]));
+    Z80::setRegHL (mkword(z80_array[4], z80_array[5]));
+    Z80::setRegPC (mkword(z80_array[6], z80_array[7]));
+    Z80::setRegSP (mkword(z80_array[8], z80_array[9]));
+    Z80::setRegI  (z80_array[10]);
+
+    uint8_t regR = z80_array[11] & 0x7f;
+    if ((z80_array[12] & 0x01) != 0) {
+        regR |= 0x80;
+    }
+    Z80::setRegR(regR);
+
+    VIDEO::borderColor = (z80_array[12] >> 1) & 0x07;
+    VIDEO::brd = VIDEO::border32[VIDEO::borderColor];
+
+    Z80::setRegDE (mkword(z80_array[13], z80_array[14]));
+    Z80::setRegBCx(mkword(z80_array[15], z80_array[16]));
+    Z80::setRegDEx(mkword(z80_array[17], z80_array[18]));
+    Z80::setRegHLx(mkword(z80_array[19], z80_array[20]));
+    
+    Z80::setRegAx(z80_array[21]);
+    Z80::setRegFx(z80_array[22]);
+    
+    Z80::setRegIY (mkword(z80_array[23], z80_array[24]));
+    Z80::setRegIX (mkword(z80_array[25], z80_array[26]));
+    Z80::setIFF1  (z80_array[27] ? true : false);
+    Z80::setIFF2  (z80_array[28] ? true : false);
+    Z80::setIM((Z80::IntMode)(z80_array[29] & 0x03));
+
+    // program counter
+    uint16_t RegPC = mkword(z80_array[32], z80_array[33]);
+    Z80::setRegPC(RegPC);
+
+    z80_array += dataOffset;
+
+    MemESP::page0ram = 0;
+    MemESP::romLatch = 0;
+    MemESP::romInUse = 0;
+    MemESP::bankLatch = 0;
+    MemESP::pagingLock = 1;
+    MemESP::videoLatch = 0;
+
+    uint16_t pageStart[12] = {0, 0, 0, 0, 0x8000, 0xC000, 0, 0, 0x4000, 0, 0};
+
+    uint32_t dataLen = sizeof(load_tc2068);
+    while (dataOffset < dataLen) {
+        uint8_t hdr0 = z80_array[0]; dataOffset ++;
+        uint8_t hdr1 = z80_array[1]; dataOffset ++;
+        uint8_t hdr2 = z80_array[2]; dataOffset ++;
+        z80_array += 3;
+        uint16_t compDataLen = mkword(hdr0, hdr1);
+        
+        uint16_t memoff = pageStart[hdr2];
+        
+        {
+
+            uint16_t dataOff = 0;
+            uint8_t ed_cnt = 0;
+            uint8_t repcnt = 0;
+            uint8_t repval = 0;
+            uint16_t memidx = 0;
+
+            while(dataOff < compDataLen && memidx < MEM_PG_SZ) {
+                uint8_t databyte = z80_array[0]; z80_array ++;
+                if (ed_cnt == 0) {
+                    if (databyte != 0xED)
+                        MemESP::writebyte(memoff + memidx++, databyte);
+                    else
+                        ed_cnt++;
+                }
+                else if (ed_cnt == 1) {
+                    if (databyte != 0xED) {
+                        MemESP::writebyte(memoff + memidx++, 0xED);
+                        MemESP::writebyte(memoff + memidx++, databyte);
+                        ed_cnt = 0;
+                    }
+                    else
+                        ed_cnt++;
+                }
+                else if (ed_cnt == 2) {
+                    repcnt = databyte;
+                    ed_cnt++;
+                }
+                else if (ed_cnt == 3) {
+                    repval = databyte;
+                    for (uint16_t i = 0; i < repcnt; i++)
+                        MemESP::writebyte(memoff + memidx++, repval);
+                    ed_cnt = 0;
+                }
+            }
+
+        }
+
+        dataOffset += compDataLen;
+
+    }
+
+    MemESP::ram[2].cleanup();
+
+    MemESP::recoverPage0();
+    MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);
+    MemESP::ramContended[3] = false;
+
+    VIDEO::grmem = MemESP::ram[5].direct();
+
+    // ...and the SCLD window the captured PC lives in. Set the DEC register the way
+    // the port handler does, not just Timex::decWrite(): the READABLE copy of that
+    // register is VIDEO::timex_port_ff, and the ROM's bank switcher builds every new
+    // value out of an `IN A,(#FF)` (EX-ROM 0x64BE/0x64CF). Leaving it at 0 tells the
+    // switcher the DOCK is selected, so it maps an EMPTY cartridge — 0xFF, i.e.
+    // RST 0x38 — into slot 0 and the machine runs on garbage (hw 2026-09-12: the
+    // snapshot restored fine and the screen filled with colour stripes a moment
+    // later, which is what executing an unplugged cartridge port looks like).
+    VIDEO::timex_port_ff     = 0x80;   // EX-ROM selected, video mode 0
+    VIDEO::timex_mode        = 0x80 & 0x07;
+    VIDEO::timex_hires_ink   = (0x80 >> 3) & 0x07;
+    VIDEO::timex_int_inhibit = false;
+    Timex::decWrite(0x80);      // EX-ROM, not DOCK
+    Timex::writeHsr(0x01);      // slot 0 = the window
+#if TIMEX_PORT_TRACE
+    // These two go straight to Timex:: and so never reach the port handler the rest
+    // of the trace hangs off — without this line the log cannot tell "the window was
+    // never opened" from "it was opened and something closed it again".
+    Debug::log("[TMXLD] loaderTc2068 done: pc=%04X sp=%04X ix=%04X de=%04X hsr=%02X "
+               "dec=%02X ex=%d mmu=%u rd0=%p",
+               (unsigned)Z80::getRegPC(), (unsigned)Z80::getRegSP(),
+               (unsigned)Z80::getRegIX(), (unsigned)Z80::getRegDE(),
+               (unsigned)Timex::hsr, (unsigned)VIDEO::timex_port_ff,
+               (int)Timex::exromSel, (unsigned)g_timex_mmu, (void*)Timex::rd[0]);
+#endif
 }
 
 void FileZ80::loader128() {

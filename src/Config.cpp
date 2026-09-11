@@ -143,6 +143,7 @@ uint8_t  Config::trdosSoundLed = 1; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
 uint8_t  Config::trdosBios = 1; // Default: 5.04T
 uint8_t  Config::alfCartBanks = 0; // 0 = built-in Elf-1; >0 = loaded cart size in 16K banks
 string   Config::alfCartPath = ""; // pending cart to flash into the shared region at boot
+string   Config::dckCartPath = ""; // Timex DOCK cartridge in the TC2068 slot
 bool     Config::driveWP[4] = { true, true, true, true };
 uint8_t  Config::esxdos = 0;
 string   Config::esxdos_hdf_image[2] = {"", ""};
@@ -399,6 +400,15 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             // register is initialised. Everything else about the machine is a 48K.
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_tc2048);
+            break;
+        case R_TC2068:
+            // Timex TC2068 — its own 16 KB HOME ROM, nothing to do with the Sinclair
+            // one (measured: the cheapest overlay against anything in the tree is
+            // 16455 B, i.e. bigger than the raw array). The 8 KB EX-ROM beside it is
+            // not a rom[] slot: the SCLD maps it into 8 KB windows, so Timex.cpp
+            // takes gb_rom_tc2068_exrom directly.
+            MemESP::rom[0].assign_rom(gb_rom_tc2068_home);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);
             break;
         default:
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
@@ -1257,6 +1267,7 @@ void Config::load() {
         nvs_get_u8("trdosBios", trdosBios, sts);
         nvs_get_u8("alfCartBanks", alfCartBanks, sts);
         nvs_get_str("alfcart", alfCartPath, sts);
+        nvs_get_str("dckcart", dckCartPath, sts);
         for (int i = 0; i < 4; i++) {
             char k[12]; snprintf(k, sizeof(k), "drive%d.wp", i);
             nvs_get_b(k, driveWP[i], sts);
@@ -1659,6 +1670,7 @@ void Config::save(const char* path, const char* profileName) {
     nvs_set_u8(buf,"trdosBios", trdosBios);
     nvs_set_u8(buf,"alfCartBanks", alfCartBanks);
     nvs_set_str(buf,"alfcart", alfCartPath.c_str());
+    nvs_set_str(buf,"dckcart", dckCartPath.c_str());
     for (int i = 0; i < 4; i++) {
         char k[12]; snprintf(k, sizeof(k), "drive%d.wp", i);
         nvs_set_str(buf, k, driveWP[i] ? "true" : "false");

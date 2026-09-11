@@ -90,6 +90,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Z80DMA.h"
 #include "GS/GS.h"
 #include "TsConf.h"
+#include "Timex.h"
 #include "CodeOverlay.h"
 #include "GS/NgsSd.h"
 #include "GS/NgsMp3.h"
@@ -796,6 +797,9 @@ void ESPectrum::setup() {
   // per Config::alfCartPath. Empty drive if none is set or the SD file is missing —
   // there is no built-in cart. Must run before ALF banking can read it.
   { extern void alfBindCart(); alfBindCart(); }
+  // ...and the Timex DOCK cartridge, for the same reason: the machine can only find
+  // and start it if it is in the slot before the first reset.
+  { extern void timexBindCart(); timexBindCart(); }
   // NOTE: the GM.DLS bank (MidiSynth::provisionAtBoot) is set up later — after
   // Buffer::initPools() so the butter PSRAM arena exists — but still before
   // VIDEO::Init() (flash erase must precede the live HDMI DMA over XIP).
@@ -1202,7 +1206,10 @@ void ESPectrum::setup() {
   // AUDIO
   //=======================================================================================
   // Set samples per frame and AY_emu flag depending on arch
-    AY_emu = Config::AY48;
+    // The TC2068 has an AY-3-8912 SOLDERED IN, on its own ports #F5/#F6 — it is
+    // the machine, not the "AY on 48K" card Config::AY48 offers, so the setting
+    // cannot switch it off (the user's AY48 pick is left alone for other 48Ks).
+    AY_emu = Config::AY48 || Config::isTc2068();
     SAA_emu = Config::SAA1099;
     Midi::enabled = Config::midi;
 #if defined(MIDI_TX_PIN)
@@ -1576,6 +1583,11 @@ void ESPectrum::reset(uint8_t romInUse) {
   VIDEO::gmxForceOff();
   VIDEO::tsVideoForceOff();   // TS-Conf TEXT/16c: same rule (TsConf::reset clears VConfig below)
   VIDEO::timexHiresForceOff();// Timex hi-res 512x192: ditto (VIDEO::Reset zeroes timex_mode)
+  // Timex TC2068 SCLD: HSR = 0 and DEC bit 7 = 0, i.e. the whole 64 KB is HOME
+  // again. A plugged-in DOCK cartridge deliberately SURVIVES a machine reset —
+  // that is what a cartridge does, and it is how the HOME ROM finds and starts
+  // it on the boot that follows.
+  Timex::reset();
   Ports::portDFFD = 0;
   Ports::port1FFD = 0;   // Scorpion: reset clears the 1FFD latch (RAM0/service off)
   // GMX: warm reset clears the whole register file (MAME machine_reset), the
@@ -1763,7 +1775,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   memset(Ports::sndriveLatch, 0, sizeof(Ports::sndriveLatch));
   Ports::sndriveUsed = 0;
 
-  AY_emu = Config::AY48;
+  AY_emu = Config::AY48 || Config::isTc2068();   // built in on a TC2068 — see setup()
     SAA_emu = Config::SAA1099;
     Midi::enabled = Config::midi;
     if (Midi::enabled) Midi::init();

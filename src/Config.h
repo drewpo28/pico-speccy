@@ -317,6 +317,12 @@ public:
     static bool isPlus3() { return arch == A_128K && isPlus3Romset(romSet); }
     // ...and it is the +3e: the +3 with IDEDOS, which brings the 8-bit IDE interface.
     static bool isPlus3e() { return arch == A_128K && isPlus3eRomset(romSet); }
+    // The running machine is a Timex TC2068: the 2068 romset over the 48K arch. It
+    // brings the SCLD horizontal MMU (#F4), the EX-ROM, a DOCK cartridge port and an
+    // AY-3-8912 on #F5/#F6 — see src/Timex.cpp and Z80Ops::isTc2068.
+    static bool isTc2068() { return arch == A_48K && isTc2068Romset(romSet); }
+    // ...either Timex, i.e. "the SCLD is this machine's ULA".
+    static bool isTimex() { return arch == A_48K && isTimexRomset(romSet); }
     static uint8_t  covox;
     // CPU turbo picked by the user (0..3 = 3.5/7/14/28 MHz), NVS-persisted.
     // Feeds ESPectrum::multUser at setup; the live speed may differ (EFF7 D4).
@@ -373,6 +379,10 @@ public:
     // nothing pending. Deferred to boot because a large synchronous flash with
     // multicore_lockout deadlocks the HDMI ISR (same reason gm_bank is boot-flashed).
     static string alfCartPath;
+    // Timex DOCK cartridge (.dck) mounted in the TC2068's cartridge port. Persisted
+    // like a mounted disk, so the cartridge is still in the slot after a reboot —
+    // which is what makes it start again (the HOME ROM probes the DOCK at reset).
+    static string dckCartPath;
     static bool driveWP[4];   // TR-DOS per-slot write protect (Drive A..D)
     static uint8_t esxdos;   // 0=OFF 1=DivMMC 2=DivIDE 3=DivSD
     // Unified hd0/hd1 image slots — [0]=hd0, [1]=hd1.

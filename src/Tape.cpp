@@ -43,6 +43,7 @@ visit https://zxespectrum.speccy.org/contacto
 using namespace std;
 
 #include "Tape.h"
+#include "Timex.h"
 #include "FileUtils.h"
 #include "CPU.h"
 #include "Video.h"
@@ -256,6 +257,19 @@ void StopRealPlayer(void) {
 }
 
 // Load tape file (.wav, .tap, .tzx)
+bool Tape::flashloadAvailable() {
+    return Config::flashload && Config::arch != A_ALF &&
+           Config::romSet != R_ZX81P && Config::romSet != R_48K_CS &&
+           Config::romSet != R_128K_CS;
+}
+
+bool Tape::autoRunAvailable() {
+    // Every machine whose ROM one of the loader snapshots can resume on. The TC2068
+    // has its own (FileZ80::loaderTc2068, captured from real hardware) — the 48K one
+    // cannot be used there, see loaders.h.
+    return flashloadAvailable();
+}
+
 void Tape::LoadTape(const string& mFile_) {
     if (!FileUtils::fsMount) {
         OSD::osdCenteredMsg(OSD_TAPE_LOAD_ERR, LEVEL_WARN);
@@ -290,13 +304,13 @@ void Tape::LoadTape(const string& mFile_) {
     } else if (FileUtils::hasTAPextension(mFile)) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
-        // Flashload .tap if needed
-        if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
-             (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
-        ) {
+        // Flashload .tap if needed — see Tape::flashloadAvailable().
+        if ((keySel == "R") && Tape::autoRunAvailable()) {
                 OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
-                if (Z80Ops::is48)
+                if (Config::isTc2068())
+                    FileZ80::loaderTc2068();
+                else if (Z80Ops::is48)
                     FileZ80::loader48();
                 else
                     FileZ80::loader128();
@@ -325,12 +339,12 @@ void Tape::LoadTape(const string& mFile_) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
         // Flashload .tzx if needed
-        if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
-             (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
-        ) {
+        if ((keySel == "R") && Tape::autoRunAvailable()) {
                 OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
-                if (Z80Ops::is48)
+                if (Config::isTc2068())
+                    FileZ80::loaderTc2068();
+                else if (Z80Ops::is48)
                     FileZ80::loader48();
                 else
                     FileZ80::loader128();
@@ -357,12 +371,12 @@ void Tape::LoadTape(const string& mFile_) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
         // Flashload .pzx if needed
-        if ((keySel == "R") && (Config::flashload) && (Config::arch != A_ALF) &&
-             (Config::romSet != R_ZX81P) && (Config::romSet != R_48K_CS) && (Config::romSet != R_128K_CS)
-        ) {
+        if ((keySel == "R") && Tape::autoRunAvailable()) {
                 OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
-                if (Z80Ops::is48)
+                if (Config::isTc2068())
+                    FileZ80::loaderTc2068();
+                else if (Z80Ops::is48)
                     FileZ80::loader48();
                 else
                     FileZ80::loader128();
@@ -388,6 +402,42 @@ void Tape::LoadTape(const string& mFile_) {
     else {
         OSD::osdCenteredMsg(OSD_TAPE_LOAD_ERR, LEVEL_WARN);
     }
+
+    // "R" means RUN, and where NO fast path exists at all the only way to honour it
+    // is the real tape: press Play, exactly as the flashload-off path does. It has
+    // to be HERE rather than in the callers — the F5 browser and the web launcher
+    // deliberately do not press Play, they rely on fast loading doing the work.
+    //
+    // The test is flashloadAvailable(), NOT autoRunAvailable(): where the in-ROM
+    // trap works the tape must stay STOPPED. The trap fills the block straight from
+    // the file and never needs the tape running, so pressing Play would only spool
+    // it past the header while the user types LOAD "" — which is what an earlier cut
+    // of this did on the TC2068 (hw 2026-09-12: "play=1" in the trace and the load
+    // still failing).
+    const bool runKey = !mFile_.empty() && mFile_[0] == 'R';
+    const bool playFallback = runKey && Config::tape_autostart &&
+        !Tape::flashloadAvailable() && Tape::tapeStatus == TAPE_STOPPED &&
+        Tape::tapeFileType != TAPE_FTYPE_EMPTY && Tape::tapeFileName != "none";
+#if TIMEX_PORT_TRACE
+    // "the tape does nothing" has four possible causes and they are indistinguishable
+    // from the screen: the caller asked for L not R, auto-start is off, flashload's
+    // auto-run took it, or the file never opened. Say which.
+    Debug::log("[TMXLD] LoadTape key=%c autostart=%d flAvail=%d ftype=%d blocks=%d "
+               "name=%s -> play=%d",
+               mFile_.empty() ? '?' : mFile_[0], (int)Config::tape_autostart,
+               (int)Tape::flashloadAvailable(), (int)Tape::tapeFileType,
+               (int)Tape::tapeNumBlocks, Tape::tapeFileName.c_str(), (int)playFallback);
+#endif
+    if (playFallback) Tape::Play();
+#if TIMEX_PORT_TRACE
+    if (Config::isTc2068())
+        Debug::log("[TMXLD] LoadTape exit: pc=%04X hsr=%02X dec=%02X ex=%d mmu=%u "
+                   "curBlock=%d flashload=%d",
+                   (unsigned)Z80::getRegPC(), (unsigned)Timex::hsr,
+                   (unsigned)VIDEO::timex_port_ff, (int)Timex::exromSel,
+                   (unsigned)g_timex_mmu, (int)Tape::tapeCurBlock,
+                   (int)Config::flashload);
+#endif
 }
 
 void Tape::Init() {
@@ -2475,7 +2525,15 @@ bool Tape::TapePortRead() {
     // generic turbo autostart below arms on, and it also means "a RAM loader is
     // polling the tape right now" — whatever address it was assembled for.
     auto isTapeEdgePoll = [](uint16_t pc) -> bool {
-        if (pc < 0x4000 || MemESP::readbyte(pc - 2) != 0xDB) return false;
+        // The 0x4000 floor keeps the Sinclair ROM's own keyboard reads from looking
+        // like tape edges. On a TC2068 it is simply wrong while the SCLD has the
+        // EX-ROM in that slot: page 0 is then not the HOME ROM at all, and the
+        // machine's whole tape loader lives there (LD-SAMPLE at EX-ROM 0x00D5:
+        // LD A,0x7F / IN A,(#FE) / RRA / RET NC — the 48K idiom this very test
+        // matches). Without this the tape is stopped at every pilot tone and never
+        // restarted, so a multi-block TAP stalls after the first block.
+        const bool exromHere = g_timex_mmu && Timex::exromSel && Timex::rd[pc >> 13];
+        if ((pc < 0x4000 && !exromHere) || MemESP::readbyte(pc - 2) != 0xDB) return false;
         uint8_t nextOp = MemESP::readbyte(pc);
         return (nextOp == 0x1F) || (nextOp == 0x07) ||
                (nextOp == 0xE6 && (MemESP::readbyte(pc + 1) & 0x60)) ||

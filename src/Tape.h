@@ -208,6 +208,18 @@ public:
 
     static void Init();
     static void LoadTape(const string& mFile);
+    // Does FAST loading work on this machine at all? That is the in-ROM `CP A` trap
+    // (Z80_JLS.cpp decodeOpcodebf): the guest enters its own LD-BYTES and the block
+    // is filled from the file — the tape does NOT have to be playing. Covers the
+    // TC2068, whose LD-BYTES is the Sinclair routine relocated into the EX-ROM.
+    // False only where no such routine exists to trap (ALF, ZX81+, custom ROMs).
+    static bool flashloadAvailable();
+    // ...and can the flashload AUTO-RUN be used? That is a second, stronger thing:
+    // it restores a hardcoded 48K/128K snapshot (FileZ80::loader48/loader128) whose
+    // PC points into the SINCLAIR ROM, so it needs a ROM derived from that one. The
+    // TC2068's is a different program, so it loads fast but the user has to type
+    // LOAD "" — exactly as on the real machine.
+    static bool autoRunAvailable();
     static void LoadRemembered(); // re-mount Config::tape_file after F11/boot; auto-plays if tape_autostart
     static void Eject();          // take the tape out: close, drop the listing, forget Config::tape_file
     static void Play();

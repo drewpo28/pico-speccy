@@ -11,6 +11,7 @@
 #include "UiDialog.h"
 #include "UiGfx.h"
 #include "OSDMain.h"
+#include "Timex.h"
 #include "Config.h"
 #include "ESPectrum.h"
 #include "Snapshot.h"
@@ -674,7 +675,42 @@ void act_replaceRom(int32_t slot) {
         if (zf == "\x1b") return;
         fname = zf;
     }
+    // .dck shares this picker's extension list with the ALF/.rom images, but a DOCK
+    // cartridge is mounted, not flashed — say so instead of failing on its size.
+    if (FileUtils::getLCaseExt(fname) == "dck") {
+        uiToast(TXT_DCK_NOT_ROM, true, 2000);
+        return;
+    }
     if (OSD::updateROM(fname, (uint8_t)slot)) requestClose();
+}
+
+// ── Timex DOCK cartridge ───────────────────────────────────────────────────────
+// Insert = mount the .dck and restart the machine on it; the TC2068's own HOME ROM
+// finds the LROS/AROS header in the cartridge and starts it, so there is nothing
+// else to "run". Eject is the same in reverse — a machine with an empty slot boots
+// its own BASIC.
+void act_dckInsert() {
+    string mFile = nm::browseFile(FileUtils::ROM_Path, TXT_DCK_PICK, DISK_ROMFILE);
+    if (mFile.empty()) return;
+    string fname = FileUtils::ROM_Path + mFile.substr(1);
+    if (FileUtils::getLCaseExt(fname) == "zip") {
+        string zf = ZipExtract::extract(fname, DISK_ROMFILE);
+        if (zf.empty()) { uiToast(TXT_MSG_ZIP_ERR, true, 1500); return; }
+        if (zf == "\x1b") return;
+        fname = zf;
+    }
+    Config::save();          // the remembered browse path
+    if (OSD::loadDckCart(fname)) requestClose();
+}
+
+void act_dckEject() {
+    if (!Timex::dckMounted()) { uiToast(TXT_DCK_NONE, false, 1200); return; }
+    Timex::ejectDck();
+    Config::dckCartPath = "";
+    Config::save();
+    ESPectrum::reset();      // the machine has to come back up without the cartridge
+    uiToast(TXT_DCK_EJECTED, false, 1200);
+    requestClose();
 }
 
 // ── Debug ──────────────────────────────────────────────────────────────────────
@@ -794,7 +830,11 @@ void act_tapeSelect() {
     Tape::LoadTape(mFile);
     // Auto-start presses Play after a manual mount, but not with flashload on: there the
     // loader already ran the program during LoadTape.
-    if (Config::tape_autostart && !Config::flashload &&
+    // ...and where no fast path exists at all (Tape::flashloadAvailable) the tape
+    // must be PLAYED here, or it is mounted and nothing ever starts it. A machine
+    // that only lacks the AUTO-RUN keeps the tape stopped — its in-ROM trap loads
+    // from the file and playing would just spool past the header.
+    if (Config::tape_autostart && !Tape::flashloadAvailable() &&
         Tape::tapeStatus == TAPE_STOPPED && Tape::tapeFileName != "none")
         Tape::Play();
     requestClose();

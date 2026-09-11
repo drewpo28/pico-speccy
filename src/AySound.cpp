@@ -714,6 +714,18 @@ void AySound::reset()
     for (int i=0;i<16;i++) regs[i] = 0; // All registers are set to 0
     
     regs[7] = 0xff; // Mixer register
+    // The I/O port LATCHES power up HIGH, not at 0. A real AY-3-8912 resets its
+    // mixer to 0 — i.e. port A is an INPUT — and an input port with nothing driving
+    // it reads 0xFF through its pull-ups. We reset the mixer to 0xFF instead, to
+    // mute every channel at boot, and bit 6 of that is "port A is an OUTPUT", so a
+    // read of register 14 returns this latch rather than the 0xFF an idle port
+    // gives. Leaving the latch at 0 therefore reported EVERY bit low.
+    // Nothing on a 48K/128K reads register 14, which is why this never showed until
+    // the Timex TC2068: its ROM polls port A for the built-in joysticks and wraps
+    // its own port-A use in a save/restore (EX-ROM 0x1168), so a stuck 0x00 reads as
+    // every direction and fire held down (they are ACTIVE LOW) — and the machine
+    // never leaves its keyboard scan (hw 2026-09-12).
+    regs[14] = regs[15] = 0xff;
 
     selectedRegister = 0xff;
 

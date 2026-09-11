@@ -1,0 +1,19 @@
+{
+  "id": "timex",
+  "source": "fuse-emulator/fuse roms/tc2068-0.rom + tc2068-1.rom",
+  "note": "identical to MAME ts2068_h.rom / ts2068_x.rom; both ship raw",
+  "raw": [
+    {
+      "key": "tc2068_home",
+      "sym": "gb_rom_tc2068_home",
+      "len": 16384,
+      "md5": "55d462fccc6c536037404ef4ced08bec"
+    },
+    {
+      "key": "tc2068_exrom",
+      "sym": "gb_rom_tc2068_exrom",
+      "len": 8192,
+      "md5": "575d203c6e15e679fba0b73f854ec7a2"
+    }
+  ]
+}

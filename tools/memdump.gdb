@@ -261,3 +261,38 @@ if Z80Ops::isTsconf
     echo \nintring: not in this build (PERF_TRACE=OFF)\n
   end
 end
+
+# Timex TC2068 SCLD. Everything about this machine goes through two registers and
+# eight pointers, and the ROM's own bank switcher READS BOTH BACK to build the next
+# value (EX-ROM 0x64BE-0x64F4: IN A,(#F4) / CPL / OR E / CPL / OUT (#F4),A), so a
+# wrong read-back sends the machine into the wrong bank and the ZX half only ever
+# says "PC is somewhere odd". rd[i]: 0 = HOME, 2 = open bus (nothing in that DOCK
+# chunk), anything else = the 8 KB block serving that slot. Placed after the blocks
+# above for the same reason the TS-Conf one is: an unresolved symbol here must not
+# cost the main dump.
+if Z80Ops::isTc2068
+  set logging file /tmp/picospec_timex.txt
+  set logging overwrite on
+  set logging redirect on
+  set logging enabled on
+  printf "== Timex TC2068 ==\n"
+  printf "hsr(#F4)=%02X  dec(#FF)=%02X  exromSel=%d  int_inhibit=%d  mmu=%d\n", (unsigned char)Timex::hsr, (unsigned char)VIDEO::timex_port_ff, (int)Timex::exromSel, (int)VIDEO::timex_int_inhibit, (unsigned char)g_timex_mmu
+  printf "timex_mode=%d  hires_ink=%d  ay_reg=%d\n", (unsigned char)VIDEO::timex_mode, (unsigned char)VIDEO::timex_hires_ink, (unsigned char)Timex::ayReg
+  # The main dump walks MemESP::ramCurrent[] and knows nothing about the SCLD, so
+  # while any slot is windowed the logical dump shows the HOME bank there and a PC
+  # inside the window decodes as unrelated HOME-ROM bytes. Say so, loudly: reading
+  # it the other way costs an analysis round (hw 2026-09-12 — PC=0x0194 looked like
+  # the BASIC keyword table and was really LD-SAMPLE in the EX-ROM).
+  if Timex::hsr != 0
+    printf "WARNING: the logical dump above shows HOME for every slot; the slots\n"
+    printf "         marked rd!=0 below are really %s — add 0x045A to a Sinclair\n", Timex::exromSel ? "the EX-ROM" : "the DOCK"
+    printf "         ROM address to find its EX-ROM twin.\n"
+  end
+  set $i = 0
+  while $i < 8
+    printf "slot%d %04X-%04X  rd=%p  wr=%p\n", $i, $i*0x2000, $i*0x2000+0x1FFF, Timex::rd[$i], Timex::wr[$i]
+    set $i = $i + 1
+  end
+  set logging enabled off
+  set logging redirect off
+end

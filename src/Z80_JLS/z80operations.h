@@ -47,6 +47,7 @@ public:
     static bool isScorpion;
     static bool isP3;       // ZX Spectrum +3 (+2A memory map, uPD765, no floating bus)
     static bool isTsconf;
+    static bool isTc2068;   // Timex TC2068 (SCLD MMU on #F4, EX-ROM/DOCK, AY on #F5/#F6)
 };
 
 #endif // Z80OPERATIONS_H

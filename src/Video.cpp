@@ -1001,6 +1001,7 @@ static void Select_Update_Border(); // forward declaration
 uint8_t VIDEO::timex_port_ff = 0;
 uint8_t VIDEO::timex_mode = 0;
 uint8_t VIDEO::timex_hires_ink = 0;
+bool    VIDEO::timex_int_inhibit = false;
 
 
 // ULA+
@@ -3378,6 +3379,7 @@ void VIDEO::Reset() {
     timex_port_ff = 0;
     timex_mode = 0;
     timex_hires_ink = 0;
+    timex_int_inhibit = false;
 
     // Reset ULA+ state
     if (ulaplus_enabled) ulaPlusDisable();

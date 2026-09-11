@@ -187,7 +187,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // the SAA1099 cannot share the #FF family with it. Same three-place
         // treatment as every other machine rule (menu note, toast here, CPU::reset
         // backstop for boots that never pass through the menu).
-        if (arch == A_48K && isTc2048Romset(romset)) {
+        if (arch == A_48K && isTimexRomset(romset)) {
             if (Config::SAA1099) {
                 Config::SAA1099 = false;
                 OSD::osdCenteredMsg("SAA1099 disabled", LEVEL_WARN, 1500);
@@ -195,6 +195,13 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             if (!Config::timex_video) {
                 Config::timex_video = true;
                 OSD::osdCenteredMsg("Timex SCLD enabled", LEVEL_WARN, 1500);
+            }
+            // The TC2068's SCLD owns the whole 64 KB map in 8 KB slots and its HOME
+            // ROM is not Sinclair-derived, so the DivMMC's automap entry points land
+            // on unrelated code — see the CPU::reset backstop.
+            if (isTc2068Romset(romset) && Config::esxdos) {
+                Config::esxdos = 0;
+                OSD::osdCenteredMsg("esxDOS disabled", LEVEL_WARN, 1500);
             }
         }
         // TR-DOS is mandatory on Pentagon / Profi / Scorpion / TS-Conf (Beta-128 on board)

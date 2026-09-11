@@ -80,9 +80,9 @@ DISK_FTYPE FileUtils::fileTypes[8] = {
     {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.zip,.ZIP",2,2,0,""},
     {".tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.zip,.ZIP",2,2,0,""},
     {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.zip,.ZIP",2,2,0,""},
-    {".rom,.ROM,.bin,.BIN,.zip,.ZIP",2,2,0,""},
+    {".rom,.ROM,.bin,.BIN,.dck,.DCK,.zip,.ZIP",2,2,0,""},
     {".mmc,.MMC,.hdf,.HDF,.hdd,.HDD,.vhd,.VHD,.img,.IMG,.iso,.ISO,.zip,.ZIP",2,2,0,""},
-    {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.rom,.ROM,.bin,.BIN,.dls,.DLS,.zip,.ZIP",2,2,0,""},
+    {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.rom,.ROM,.bin,.BIN,.dck,.DCK,.dls,.DLS,.zip,.ZIP",2,2,0,""},
     {".dls,.DLS",2,2,0,""},  // DISK_DLSFILE (GM.DLS soundbank conversion)
     // DISK_CFGFILE (Debug > Config folders). No extension list on purpose: nothing
     // here is "of interest" over anything else, so an empty list means every name

@@ -66,7 +66,9 @@ class FileZ80
 {
 public:
     static bool load(const string& z80_fn);
-    static void loader48();    
+    static void loader48();
+    // Timex TC2068: the same thing for a machine the 48K snapshot cannot resume on.
+    static void loaderTc2068();    
     static void loader128();        
 private:
     static void loadCompressedMemData(FIL* f, uint16_t dataLen, uint16_t memStart, uint16_t memlen);

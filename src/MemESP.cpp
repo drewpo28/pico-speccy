@@ -37,6 +37,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Debug.h"
 #include "Buffer.h"
 #include "Plus3Paging.h"
+#include "Timex.h"   // g_timex_mmu + Timex::rd/read8: the SCLD window the debugger must see
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
@@ -794,3 +795,32 @@ bool* MemESP::divmmc_lo_dirty = nullptr;
 bool MemESP::mb02_write_gate = true; // default: allow writes (DivMMC needs this)
 bool* MemESP::mb02_page_dirty = nullptr; // set by MB02::applyMapping (SRAM page window)
 
+
+// ── The debugger's view of guest memory ──────────────────────────────────────
+// readbyte() is the CPU's hot path and deliberately knows nothing about the
+// TC2068 SCLD window (Timex.h explains why the hook lives in Z80Ops instead), so
+// a debugger built on it shows the HOME bank while the Z80 is executing out of
+// the EX-ROM or a DOCK cartridge — plausible-looking bytes that are simply the
+// wrong program (hw 2026-09-12: PC=019C disassembled as the BASIC keyword table
+// and was really LD-SAMPLE in the EX-ROM). These two go through the window.
+// They also skip the memory-breakpoint checks: reading memory to DISPLAY it must
+// not fire the breakpoints the display exists to show.
+uint8_t MemESP::dbgPeek(uint16_t addr) {
+    if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[addr >> 13])
+        return Timex::read8(addr);
+    uint8_t page = addr >> 14;
+    if (page == 0 && divmmc_mapped)
+        return (addr < 0x2000) ? page0_lo[addr] : page0_hi[addr & 0x1FFF];
+    return romPeek(page, ramCurrent[page], addr & 0x3fff);
+}
+
+void MemESP::dbgPoke(uint16_t addr, uint8_t data) {
+    if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[addr >> 13]) {
+        Timex::write8(addr, data);   // nullptr wr[] = read-only slot: drops the byte
+        return;
+    }
+    int saved = Config::numMemWriteBP;
+    Config::numMemWriteBP = 0;
+    writebyte(addr, data);           // ROM filter, dirty flags, accessor banks
+    Config::numMemWriteBP = saved;
+}

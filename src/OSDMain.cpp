@@ -169,6 +169,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "Plus3Fdc.h"
 #include "DiskSlots.h"
 #include "MachineSwitch.h"
+#include "Timex.h"
 #include "GS/GS.h"
 #include "TsConf.h"
 #include "RTC.h"
@@ -2656,6 +2657,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         Config::last_ram_file = fname;
                     }
                 }
+                else if (ext == "dck") {
+                    // Timex DOCK cartridge — mount it and boot the TC2068 on it.
+                    if (!fromZip) FileUtils::ROM_Path = FileUtils::ALL_Path;
+                    Config::save();
+                    if (loadDckCart(fname)) return;   // clean exit into the running machine
+                }
                 else if (ext == "rom" || ext == "bin") {
                     // ALF cartridge — lazy-mount from SD (no flash) and switch into ALF in place.
                     if (loadAlfCart(fname)) return;   // clean exit into the running machine
@@ -2816,6 +2823,21 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 Config::ram_file = NO_RAM_FILE;
             }
             Config::last_ram_file = NO_RAM_FILE;
+            // A TC2068 DOCK cartridge comes OUT here. `Timex::reset()` deliberately
+            // keeps it — a cartridge really does survive the reset button, which is
+            // how a cart game restarts — but a DOCK cartridge is not a mounted disk:
+            // the ROM probes the slot at boot and the cartridge TAKES THE MACHINE
+            // OVER, so leaving it in makes F11 unable to reach BASIC at all (owner's
+            // call, 2026-09-12: "after a dck, F11 always resets into the last dck").
+            // Done HERE and not inside ESPectrum::reset(): that is also the path
+            // OSD::loadDckCart and the snapshot/tape loaders take, and ejecting there
+            // would throw away the cartridge the user has just asked for.
+            if (Timex::dckMounted()) {
+                Timex::ejectDck();
+                Config::dckCartPath = "";
+                Config::save();          // ...and it must not come back on a reboot
+                OSD::notify(" Cartridge ejected ", LEVEL_INFO, 1200);
+            }
             if (Config::arch == A_PROFI) {
                 // Profi hard reset = boot Service ROM (bank0, SYSEN), same as
                 // Alt-F11 → "Service ROM". reset(0) sets trdos=true to hold SYSEN.
@@ -3191,68 +3213,68 @@ const static char* mnem[256] {
 
     "RET NZ", // C0
     "POP BC", // C1
-    "JP NZ,(nn)", // C2
-    "JP (nn)", // C3
-    "CALL NZ,(nn)", // C4
+    "JP NZ,nn", // C2
+    "JP nn", // C3
+    "CALL NZ,nn", // C4
     "PUSH BC", // C5
     "ADD A,n", // C6
     "RST 0H", // C7
     "RET Z", // C8
     "RET", // C9
-    "JP Z,(nn)", // CA
+    "JP Z,nn", // CA
     "bo", // CB
-    "CALL Z,(nn)", // CC
-    "CALL (nn)", // CD
+    "CALL Z,nn", // CC
+    "CALL nn", // CD
     "ADC A,n", // CE
     "RST 8H", // CF
 
     "RET NC", // D0
     "POP DE", // D1
-    "JP NC,(nn)", // D2
+    "JP NC,nn", // D2
     "OUT (n),A", // D3
-    "CALL NC,(nn)", // D4
+    "CALL NC,nn", // D4
     "PUSH DE", // D5
     "SUB A,n", // D6
     "RST 10H", // D7
     "RET C", // D8
     "EXX", // D9
-    "JP C,(nn)", // DA
+    "JP C,nn", // DA
     "IN A,(n)", // DB
-    "CALL C,(nn)", // DC
+    "CALL C,nn", // DC
     "op IX:", // DD
     "SBC A,n", // DE
     "RST 18H", // DF
 
     "RET PO", // E0
     "POP HL", // E1
-    "JP PO,(nn)", // E2
+    "JP PO,nn", // E2
     "EX (SP),HL", // E3
-    "CALL PO,(nn)", // E4
+    "CALL PO,nn", // E4
     "PUSH HL", // E5
     "AND A,n", // E6
     "RST 20H", // E7
     "RET PE", // E8
     "JP (HL)", // E9
-    "JP PE,(nn)", // EA
+    "JP PE,nn", // EA
     "EX DE,HL", // EB
-    "CALL PE,(nn)", // EC
+    "CALL PE,nn", // EC
     "ext:", // ED
     "XOR A,n", // EE
     "RST 28H", // EF
 
     "RET P", // F0
     "POP AF", // F1
-    "JP P,(nn)", // F2
+    "JP P,nn", // F2
     "DI", // F3
-    "CALL P,(nn)", // F4
+    "CALL P,nn", // F4
     "PUSH AF", // F5
     "OR A,n", // F6
     "RST 30H", // F7
     "RET M", // F8
     "LD SP,HL", // F9
-    "JP M,(nn)", // FA
+    "JP M,nn", // FA
     "EI", // FB
-    "CALL M,(nn)", // FC
+    "CALL M,nn", // FC
     "op IY:", // FD
     "CP A,n", // FE
     "RST 38H", // FF
@@ -3822,7 +3844,7 @@ static void saveDumpToFile(uint16_t addr_from, uint16_t addr_to) {
     uint16_t sp = Z80::getRegSP();
     for (int i = 0; i < 8; i++) {
         uint16_t addr = sp + i * 2;
-        uint16_t val = MemESP::readbyte(addr) | (MemESP::readbyte(addr + 1) << 8);
+        uint16_t val = MemESP::dbgPeek(addr) | (MemESP::dbgPeek(addr + 1) << 8);
         snprintf(line, sizeof(line), "  SP+%02X [%04X] = %04X\n", i * 2, addr, val);
         f_write(f, line, strlen(line), &bw);
     }
@@ -3875,17 +3897,17 @@ static void saveDumpToFile(uint16_t addr_from, uint16_t addr_to) {
         int n = snprintf(line, sizeof(line),
             "%04X: %02X %02X %02X %02X %02X %02X %02X %02X  %02X %02X %02X %02X %02X %02X %02X %02X  |",
             addr,
-            MemESP::readbyte(addr+0),  MemESP::readbyte(addr+1),
-            MemESP::readbyte(addr+2),  MemESP::readbyte(addr+3),
-            MemESP::readbyte(addr+4),  MemESP::readbyte(addr+5),
-            MemESP::readbyte(addr+6),  MemESP::readbyte(addr+7),
-            MemESP::readbyte(addr+8),  MemESP::readbyte(addr+9),
-            MemESP::readbyte(addr+10), MemESP::readbyte(addr+11),
-            MemESP::readbyte(addr+12), MemESP::readbyte(addr+13),
-            MemESP::readbyte(addr+14), MemESP::readbyte(addr+15));
+            MemESP::dbgPeek(addr+0),  MemESP::dbgPeek(addr+1),
+            MemESP::dbgPeek(addr+2),  MemESP::dbgPeek(addr+3),
+            MemESP::dbgPeek(addr+4),  MemESP::dbgPeek(addr+5),
+            MemESP::dbgPeek(addr+6),  MemESP::dbgPeek(addr+7),
+            MemESP::dbgPeek(addr+8),  MemESP::dbgPeek(addr+9),
+            MemESP::dbgPeek(addr+10), MemESP::dbgPeek(addr+11),
+            MemESP::dbgPeek(addr+12), MemESP::dbgPeek(addr+13),
+            MemESP::dbgPeek(addr+14), MemESP::dbgPeek(addr+15));
         // ASCII representation
         for (int j = 0; j < 16; j++) {
-            uint8_t ch = MemESP::readbyte((addr + j) & 0xFFFF);
+            uint8_t ch = MemESP::dbgPeek((addr + j) & 0xFFFF);
             line[n++] = (ch >= 0x20 && ch < 0x7F) ? ch : '.';
         }
         line[n++] = '|';
@@ -3945,15 +3967,15 @@ static uint32_t memDoSearch(uint16_t startAddr);
 
 // Disassemble instruction at addr into out buffer (max maxlen chars)
 static void disasmAt(uint16_t addr, char* out, int maxlen) {
-    uint8_t b = MemESP::readbyte(addr);
+    uint8_t b = MemESP::dbgPeek(addr);
     std::string m;
     int off = 1; // offset to first operand byte
     bool isIY = false;
     if (b == 0xDD || b == 0xFD) {
         isIY = (b == 0xFD);
-        uint8_t b1 = MemESP::readbyte(addr + 1);
+        uint8_t b1 = MemESP::dbgPeek(addr + 1);
         if (b1 == 0xCB) {
-            m = mnemCB[MemESP::readbyte(addr + 3)];
+            m = mnemCB[MemESP::dbgPeek(addr + 3)];
             auto sp = m.find(" ");
             if (sp != std::string::npos) m.replace(sp, 1, isIY ? " (IY+d)," : " (IX+d),");
             off = 2;
@@ -3963,10 +3985,10 @@ static void disasmAt(uint16_t addr, char* out, int maxlen) {
             off = 2;
         }
     } else if (b == 0xED) {
-        m = mnemED(MemESP::readbyte(addr + 1));
+        m = mnemED(MemESP::dbgPeek(addr + 1));
         off = 2;
     } else if (b == 0xCB) {
-        m = mnemCB[MemESP::readbyte(addr + 1)];
+        m = mnemCB[MemESP::dbgPeek(addr + 1)];
         off = 2;
     } else {
         m = mnem[b];
@@ -3974,25 +3996,25 @@ static void disasmAt(uint16_t addr, char* out, int maxlen) {
     // Substitute operands
     auto pnn = m.find("nn");
     if (pnn != std::string::npos) {
-        uint16_t val = MemESP::readbyte(addr + off) | (MemESP::readbyte(addr + off + 1) << 8);
+        uint16_t val = MemESP::dbgPeek(addr + off) | (MemESP::dbgPeek(addr + off + 1) << 8);
         char tmp[5]; snprintf(tmp, 5, "%04X", val);
         m.replace(pnn, 2, tmp);
     } else {
         auto pd = m.find("+d");
         if (pd != std::string::npos) {
-            int8_t disp = (int8_t)MemESP::readbyte(addr + off);
+            int8_t disp = (int8_t)MemESP::dbgPeek(addr + off);
             char tmp[8]; snprintf(tmp, 8, "%+d", disp);
             m.replace(pd, 2, tmp);
         } else {
             auto pn = m.find("n");
             if (pn != std::string::npos) {
-                uint8_t val = MemESP::readbyte(addr + off);
+                uint8_t val = MemESP::dbgPeek(addr + off);
                 char tmp[3]; snprintf(tmp, 3, "%02X", val);
                 m.replace(pn, 1, tmp);
             } else {
                 auto pe = m.find("d");
                 if (pe != std::string::npos) {
-                    int8_t disp = (int8_t)MemESP::readbyte(addr + off);
+                    int8_t disp = (int8_t)MemESP::dbgPeek(addr + off);
                     uint16_t target = addr + 2 + disp; // JR/DJNZ are always 2 bytes
                     char tmp[5]; snprintf(tmp, 5, "%04X", target);
                     m.replace(pe, 1, tmp);
@@ -4005,9 +4027,9 @@ static void disasmAt(uint16_t addr, char* out, int maxlen) {
 }
 
 static int instrLen(uint16_t addr) {
-    uint8_t b = MemESP::readbyte(addr);
+    uint8_t b = MemESP::dbgPeek(addr);
     if (b == 0xDD || b == 0xFD) {
-        uint8_t b1 = MemESP::readbyte(addr + 1);
+        uint8_t b1 = MemESP::dbgPeek(addr + 1);
         if (b1 == 0xCB) return 4;
         const char* m = mnemIX(b1);
         if (strstr(m, "nn")) return 4;
@@ -4018,7 +4040,7 @@ static int instrLen(uint16_t addr) {
         return 2;
     }
     if (b == 0xED) {
-        const char* m = mnemED(MemESP::readbyte(addr + 1));
+        const char* m = mnemED(MemESP::dbgPeek(addr + 1));
         if (strstr(m, "nn")) return 4;
         return 2;
     }
@@ -4286,7 +4308,7 @@ void OSD::osdDump() {
             int n = snprintf(buf, sizeof(buf), "%04X  ", pci);
             for (int b = 0; b < 16; b++)
                 n += snprintf(buf + n, sizeof(buf) - n, (b & 1) ? "%02X " : "%02X",
-                              MemESP::readbyte((uint16_t)(pci + b)));
+                              MemESP::dbgPeek((uint16_t)(pci + b)));
             dbgText(0, i, buf, DBG_NORM);
         }
         while (!Kbd->virtualKeyAvailable()) sleep_ms(5);
@@ -4388,7 +4410,7 @@ c:
         int len = instrLen(pci);
         uint8_t bytes[4];
         for (int b = 0; b < len && b < 4; b++)
-            bytes[b] = MemESP::readbyte(pci + b);
+            bytes[b] = MemESP::dbgPeek(pci + b);
         // Highlight: red ink for PC, cursor-bar bg for the cursor row
         bool isCursor = (i == cursor_row && activeSection == 0);
         const DbgInk rowInk = (pci == pc && isCursor) ? DBG_PC_CUR
@@ -4438,20 +4460,20 @@ c:
         const char* memc = mem.c_str();
         if (strstr(memc, "nn") != 0) {
             int off = (isED || isIX || isIY) ? 2 : 1;
-            uint16_t addr = MemESP::readbyte(pci + off) | (MemESP::readbyte(pci + off + 1) << 8);
+            uint16_t addr = MemESP::dbgPeek(pci + off) | (MemESP::dbgPeek(pci + off + 1) << 8);
             char tmp[5]; snprintf(tmp, sizeof(tmp), "%04X", addr);
             auto p = mem.find("nn");
             if (p != string::npos) mem.replace(p, 2, tmp);
         } else if (strstr(memc, "n") != 0) {
             int off = (isED || isIX || isIY) ? 2 : 1;
-            uint8_t val = MemESP::readbyte(pci + off);
+            uint8_t val = MemESP::dbgPeek(pci + off);
             char tmp[3]; snprintf(tmp, sizeof(tmp), "%02X", val);
             auto p = mem.find("n");
             if (p != string::npos) mem.replace(p, 1, tmp);
         } else if (strstr(memc, "d") != 0) {
             bool ixiy = isIX || isIY;
             int off = ixiy ? 2 : 1;
-            int8_t disp = (int8_t)MemESP::readbyte(pci + off);
+            int8_t disp = (int8_t)MemESP::dbgPeek(pci + off);
             char tmp[8];
             if (ixiy) {
                 snprintf(tmp, sizeof(tmp), "%+d", disp);
@@ -4491,7 +4513,7 @@ c:
             if (memAsciiMode) {
                 // ASCII: 20 chars per row (4+1+20 = 25 cols)
                 for (int col = 0; col < memBytesPerRow; col++) {
-                    uint8_t val = MemESP::readbyte((addr + col) & 0xFFFF);
+                    uint8_t val = MemESP::dbgPeek((addr + col) & 0xFFFF);
                     char s[2] = {(char)((val >= 32 && val < 127) ? val : '.'), 0};
                     dbgText(6 + col, r, s,
                             (isRow && col == memCursorCol) ? DBG_SEL_BYTE : rowInk);
@@ -4500,7 +4522,7 @@ c:
             } else {
                 // HEX: 8 bytes per row as BBBB BBBB BBBB BBBB, cursor byte marked
                 for (int col = 0; col < 8; col++) {
-                    uint8_t val = MemESP::readbyte((addr + col) & 0xFFFF);
+                    uint8_t val = MemESP::dbgPeek((addr + col) & 0xFFFF);
                     char s[3]; snprintf(s, 3, "%02X", val);
                     const int c = 6 + col * 2 + (col / 2);
                     dbgText(c, r, s, (isRow && col == memCursorCol) ? DBG_SEL_BYTE : rowInk);
@@ -4947,12 +4969,12 @@ c:
                     int bpr = memAsciiMode ? 20 : 8;
                     uint16_t addr = (memViewAddr + memCursorRow * bpr + memCursorCol) & 0xFFFF;
                     char hexbuf[3];
-                    snprintf(hexbuf, 3, "%02X", MemESP::readbyte(addr));
+                    snprintf(hexbuf, 3, "%02X", MemESP::dbgPeek(addr));
                     int ccx = memAsciiMode
                         ? (6 + memCursorCol)
                         : (6 + memCursorCol * 2 + (memCursorCol / 2));
                     if (inlineHexEdit(ccx, s_dbg.mem_hdr_row + 1 + memCursorRow, hexbuf, 2)) {
-                        MemESP::writebyte(addr, (uint8_t)parseHex(hexbuf, 2));
+                        MemESP::dbgPoke(addr, (uint8_t)parseHex(hexbuf, 2));
                     }
                 } else if (activeSection == 3) {
                     // Registers: inline edit
@@ -6008,6 +6030,26 @@ static void buildEmulatorInfoText() {
                     : "On (#FF)",
                 Config::v_sync_enabled ? "On" : "Off");
         }
+        // The TC2068's cartridge port and its SCLD memory map. Nothing else in the
+        // firmware reports these, and "the cartridge did not start" is the first
+        // question a DOCK image raises — so say what is in the slot and what the
+        // horizontal-select register currently shows.
+        if (Z80Ops::isTc2068) {
+            char slot[48];
+            if (!Timex::dckMounted()) {
+                snprintf(slot, sizeof(slot), "empty");
+            } else {
+                const string& p = Timex::dckPath();
+                const size_t sl = p.rfind('/');
+                snprintf(slot, sizeof(slot), "%s", (sl == string::npos ? p : p.substr(sl + 1)).c_str());
+            }
+            pos += infoAppend(buf, pos, bufsz,
+                " DOCK cartridge : %s\n"
+                " SCLD map (#F4) : HSR %02X -> %s\n",
+                slot, (unsigned)Timex::hsr,
+                Timex::hsr == 0 ? "all HOME"
+                                : (Timex::exromSel ? "EX-ROM" : "DOCK"));
+        }
         // 16col is a Pentagon-only port (#EFF7 D0); dither only exists on HDMI.
         if (Z80Ops::isPentagon)
             pos += infoAppend(buf, pos, bufsz,
@@ -6491,6 +6533,27 @@ bool OSD::loadAlfCart(const string& fname) {
     }
     Config::requestMachine(A_ALF, R_ALF1);   // in-place machine switch (no reboot)
     ESPectrum::reset();
+    return true;
+}
+
+// Timex DOCK cartridge (.dck): mount it and boot the TC2068 on top of it. There is
+// nothing to "start" afterwards — the 2068's HOME ROM probes the DOCK at reset,
+// finds the LROS/AROS header the cartridge carries in its first chunk and runs it
+// itself, which is exactly how a real machine starts a cartridge.
+bool OSD::loadDckCart(const string& fname) {
+    if (!Timex::mountDck(fname)) {
+        osdCenteredMsg(string(" ") + Timex::errMsg() + " ", LEVEL_WARN, 2200);
+        return false;
+    }
+    // The cartridge is the reason the machine is switched, so persist it BEFORE the
+    // switch: MachineSwitch::commit() reboots on some boards and never returns.
+    Config::dckCartPath = fname;
+    Config::save();
+    if (!Config::isTc2068()) {
+        if (!MachineSwitch::commit(A_48K, R_TC2068)) return false;   // resets or reboots
+    } else {
+        ESPectrum::reset();
+    }
     return true;
 }
 
@@ -8266,7 +8329,7 @@ static uint32_t memDoSearch(uint16_t startAddr) {
         uint16_t addr = (startAddr + off) & 0xFFFF;
         bool match = true;
         for (int i = 0; i < nBytes; i++) {
-            if (MemESP::readbyte((addr + i) & 0xFFFF) != pattern[i]) { match = false; break; }
+            if (MemESP::dbgPeek((addr + i) & 0xFFFF) != pattern[i]) { match = false; break; }
         }
         if (match) {
             memSearchLastFound = addr;
