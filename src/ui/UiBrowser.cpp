@@ -628,6 +628,13 @@ static string runLoop() {
                 sleep_ms(5);
                 if (mqTick()) drawListRow(s_sel - s_top);
                 if (uiClockDirty()) drawHeader();
+                // Storage came back while we were sitting here — the only way to
+                // reach this with a dead volume is a USB stick that was the root
+                // and got pulled (FileUtils::storageTick then adopts a card, or
+                // the stick when it returns). Break out to the per-directory
+                // loop: it re-opens s_dir and falls back to "/" when the path
+                // belonged to the volume that went away.
+                if (FileUtils::storageTick()) break;
                 continue;
             }
             if (!ESPectrum::readKbd(&k) || !k.down) continue;

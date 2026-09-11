@@ -26,6 +26,7 @@
 #include "ESPectrum.h"
 #include "Video.h"
 #include "Config.h"
+#include "FileUtils.h"
 #include "fabutils.h"
 #include "Debug.h"
 #include <pico/stdlib.h>
@@ -323,6 +324,29 @@ static void runModalArg(void (*fn)(int32_t), int32_t arg) {
     markDirty(D_ALL);
 }
 
+// Storage came online (a card inserted, a stick plugged) while the menu was up.
+// ESPectrum::loop does not run for as long as we do, so this is the only place
+// the probe can happen — and every row, every right-pane value and every
+// dynamically built level (disk slots, ROM lists, ...) was drawn against a
+// filesystem that did not exist. Rebuild the level the same way dynInvoke does
+// after a row has changed the world under it.
+static void storageCameOnline() {
+    Level& L = curLevel();
+    if (L.dyn) {
+        const Node* owner = L.parent;
+        if (owner && owner->build) {
+            S.dyn.clear();
+            owner->build(S.dyn);
+            L.count = S.dyn.n;
+        }
+    }
+    buildVisible(L);
+    refreshRightPane();
+    drawFrameOnce();
+    markDirty(D_ALL);
+    flushDirty();
+}
+
 // Run a dynamic row's verb, then rebuild the pool: mounting or ejecting changes exactly
 // the rows we are looking at.
 static void dynInvoke(uint8_t key) {
@@ -578,6 +602,7 @@ resume:
                 markDirty(D_HEADER);
                 flushDirty();
             }
+            if (FileUtils::storageTick()) storageCameOnline();
         }
     }
 

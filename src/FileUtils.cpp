@@ -213,20 +213,52 @@ void FileUtils::ensureBootDirs() {
     mkdirParents(CONFIG_DIR_BOARD);
 }
 
-// Runtime SD automount: probe for a card only while the filesystem is offline
-// (booted with no card, and no USB stick took over as root). On the first
-// successful probe it mounts "SD:", creates the boot dir tree, and flips
-// fsMount/SDReady true so the OSD menus and file dialogs (which gate on fsMount
-// live) light up without a reboot. Returns true only on the tick the card
-// comes online, so the caller can run the one-shot follow-up (disk mounts,
-// notice). The physical probe is a few ms with no card (a single failed CMD0),
-// so callers must still throttle it — never call this every frame.
-bool FileUtils::automountSD() {
-    if (fsMount || usbRoot) return false;   // already online (SD or USB-as-root)
-    if (!mountSDCard()) return false;       // still no card
+// Runtime automount: probe for storage while the filesystem is offline (booted
+// with no card, or the stick that was the root volume got pulled). On the tick
+// something comes online it mounts the volume, creates the boot dir tree and
+// flips fsMount/SDReady true, so the OSD menus and file dialogs (which gate on
+// fsMount at render time) light up without a reboot.
+//
+// The throttle lives HERE, not in the callers: the probe is a few ms with no
+// card (a single failed CMD0) but it must not run every frame, and there is
+// more than one caller now — ESPectrum::loop stops running for as long as the
+// menu or the file browser is up, so those idle loops tick it too.
+//
+// We deliberately DON'T reload Config: video-mode / arch settings from the card
+// can only be applied by a reboot, so a live session keeps the RAM defaults and
+// only gains file access plus the remembered mounts.
+bool FileUtils::storageTick() {
+    if (fsMount) return false;                  // already online (SD or USB root)
+
+    static uint64_t next_probe = 0;
+    const uint64_t now = time_us_64();
+    if (now < next_probe) return false;
+    next_probe = now + 2000000ull;              // ~2 s between probes
+
+    if (mountSDCard()) {
+        // A card always wins over a stick. After a USB-as-root session the
+        // current drive is still "USB:", so unprefixed paths would keep
+        // resolving there — point them back at the card.
+        usbRoot = false;
+        f_chdrive("SD:");
+        Debug::log("FileUtils: SD card detected at runtime, automounted\n");
+    } else if (UsbMsc::ready()) {
+        // No card, but a stick is enumerated: make it the root volume exactly as
+        // a card-less boot would have. This covers a stick plugged in after boot
+        // and — since tuh_msc_umount_cb drops the flag — one re-plugged after
+        // being pulled, which is otherwise a dead end.
+        usbRoot = true;
+        f_chdrive("USB:");
+        fsMount = true;
+        Debug::log("FileUtils: USB stick adopted as the root volume\n");
+    } else {
+        return false;
+    }
+
+    SDReady = true;
     ensureBootDirs();
-    SDReady = true;                         // fsMount set by mountSDCard()
-    Debug::log("FileUtils: SD card detected at runtime, automounted\n");
+    Config::loadDiskMounts();                   // remembered disk images
+    Tape::LoadRemembered();                     // and the remembered tape
     return true;
 }
 

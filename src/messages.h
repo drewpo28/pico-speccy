@@ -198,6 +198,9 @@ visit https://zxespectrum.speccy.org/contacto
 // Runtime SD automount toast (the probe runs on every board, so
 // this must live OUTSIDE the RP2350-only network block below).
 #define MSG_SD_AUTOMOUNT "SD card mounted"
+// ...and the same tick can adopt a USB stick as the root volume instead
+// (no card, or the stick that WAS the root came back after a re-plug).
+#define MSG_USB_AUTOMOUNT "USB drive mounted"
 
 // ─── ZiFi / Network menu strings ─────────────────────────────────────────────
 

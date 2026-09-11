@@ -3310,25 +3310,15 @@ void ESPectrum::loop() {
         }
     }
 
-    // SD automount: when the machine booted with no card (fsMount==false, and no
-    // USB stick took over as root), probe periodically for one being inserted.
-    // On the tick it comes online we mount it live — the OSD menus and file
-    // dialogs gate on fsMount at render time, so they light up without a reboot.
-    // We deliberately DON'T reload Config here: video-mode / arch settings from
-    // the card can only be applied by a reboot, so live use keeps the RAM
-    // defaults and only enables file access + the remembered disk mounts.
-    if (!FileUtils::fsMount && !FileUtils::usbRoot) {
-        static uint64_t sd_probe_at = 0;   // next allowed probe (throttle)
-        uint64_t now = time_us_64();
-        if (now >= sd_probe_at) {
-            sd_probe_at = now + 2000000ull; // ~2 s between probes (each is a few ms)
-            if (FileUtils::automountSD()) {
-                Config::loadDiskMounts();   // restore remembered disk images
-                Tape::LoadRemembered();     // and the remembered tape
-                OSD::notify(MSG_SD_AUTOMOUNT, LEVEL_INFO, 1500);
-            }
-        }
-    }
+    // Storage automount: when the machine booted with no card (or the stick that
+    // was the root volume was pulled), probe periodically for one to come back.
+    // The probe, its throttle and the storage-side follow-ups live in
+    // FileUtils::storageTick(); here we only own the toast. The same tick runs
+    // from the menu and browser idle loops, which block this one while they are
+    // up — that is the whole reason it is a shared function.
+    if (FileUtils::storageTick())
+        OSD::notify(FileUtils::usbRoot ? MSG_USB_AUTOMOUNT : MSG_SD_AUTOMOUNT,
+                    LEVEL_INFO, 1500);
 
 #if defined(VGA_HDMI)
     // HDMI-audio health heartbeat (1 Hz, no-op unless the driver is live).

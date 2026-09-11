@@ -232,7 +232,11 @@ void tuh_msc_mount_cb(uint8_t dev_addr) {
     }
     f_mount(&g_mem->fs, "USB:", 0);          // deferred — registers the volume only
     // USB-as-root (booted without an SD card): a re-plugged stick brings the
-    // default volume back to life, so re-enable the filesystem flag.
+    // default volume back to life, so re-enable the filesystem flag. Normally
+    // umount_cb has already cleared usbRoot and it is FileUtils::storageTick()
+    // that re-adopts the stick (it can do the f_chdrive and the dir tree, which
+    // a tuh_task callback must not); this stays for a stick that re-enumerates
+    // without an intervening unmount.
     if (FileUtils::usbRoot) FileUtils::fsMount = true;
 }
 
@@ -244,9 +248,16 @@ void tuh_msc_umount_cb(uint8_t dev_addr) {
     // to the SD root instead of a dead "USB:/..." path.
     if (FileUtils::ALL_Path.compare(0, 4, "USB:") == 0)
         FileUtils::ALL_Path = "/";
-    // USB-as-root: the stick WAS the whole filesystem — flag storage as gone
-    // so menus degrade the same way as a missing SD card.
-    if (FileUtils::usbRoot) FileUtils::fsMount = false;
+    // USB-as-root: the stick WAS the whole filesystem — flag storage as gone so
+    // menus degrade the same way as a missing SD card, and drop usbRoot with it.
+    // While that flag stands the current FatFs drive is still "USB:" and
+    // FileUtils::storageTick() would keep handing the dead volume back, so an SD
+    // card inserted after the stick was pulled could never take over. A stick
+    // plugged back in is re-adopted by the same tick (it watches UsbMsc::ready).
+    if (FileUtils::usbRoot) {
+        FileUtils::fsMount = false;
+        FileUtils::usbRoot = false;
+    }
     Debug::log("UsbMsc: stick removed\n");
 }
 

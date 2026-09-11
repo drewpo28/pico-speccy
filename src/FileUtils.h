@@ -99,10 +99,14 @@ public:
     static void initFileSystem();
     static void ensureBootDirs();
     static bool mountSDCard();
-    // Runtime automount: while the FS is offline (card-less boot, no USB root),
-    // probe for an inserted SD card; on the tick it comes online mount it,
-    // create the dir tree, set fsMount/SDReady and return true. Throttle calls.
-    static bool automountSD();
+    // Runtime automount, THROTTLED INTERNALLY (~2 s): while the filesystem is
+    // offline, probe for an SD card and, failing that, for a USB stick to adopt
+    // as the root volume. On the tick storage comes online it mounts the volume,
+    // creates the dir tree, restores the remembered disk images and tape, and
+    // returns true — the caller only owns the UI part (a notify, a redraw).
+    // Call it from every loop that can be on screen while a card is inserted:
+    // the nm:: menu and the file browser both block ESPectrum::loop while up.
+    static bool storageTick();
     static void unmountSDCard();
     // Boot-time guard for remembered "USB:/..." paths (disk mounts, tape):
     // they are reopened before the main loop ever pumps tuh_task, so the stick
