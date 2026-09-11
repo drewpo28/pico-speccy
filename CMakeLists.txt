@@ -84,6 +84,7 @@ option(NGS_SD_TRACE "Also log every guest SD command (NGS_TRACE level 2; thousan
 option(ZC_PORT_TRACE "Enable Z-Controller/DivSD SPI-SD command tracing (CS edges + command frames)" OFF)
 option(NEO8_TRAP "Wild-jump hunter: log PC history + frame snapshot when execution enters screen memory (per-instruction hook; debug builds only)" OFF)
 option(ZIFI_TRACE "Enable ZiFi (ESP-01S WiFi NIC) port/UART tracing" OFF)
+option(HID_TRACE "Enable the periodic 'HID kbd:' USB-keyboard health line (stuck-key / dead-endpoint diagnosis)" OFF)
 option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend); floods logs" OFF)
 
 # TS-Conf whole-line renderer on core1 (Video.cpp tsRenderCore1Pump): core0 posts
@@ -985,6 +986,16 @@ if (ZIFI_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE ZIFI_TRACE=1)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE ZIFI_TRACE=0)
+endif ()
+
+# USB keyboard health line (hid_app.cpp `#if HID_TRACE`): repeats every 2 s while a
+# key is held and every 10 s while the interface is quiet, i.e. for the whole of an
+# ordinary session. The one-shot GET_REPORT trust-probe verdicts stay unconditional,
+# and Hardware Info's "USB kbd rsync" row carries the same counters without a UART.
+if (HID_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HID_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HID_TRACE=0)
 endif ()
 
 if (CMAKE_C_COMPILER_ID STREQUAL "GNU")

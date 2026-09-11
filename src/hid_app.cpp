@@ -521,14 +521,19 @@ static bool kbd_state_has_key(void) {
   return false;
 }
 
-// Health line for the keyboard interface: printed at most every 2 s and ONLY while we
-// believe a key is held (i.e. exactly the "keyboard is stuck/hung" situation), so it
-// costs nothing in normal use. Tells the three failure modes apart:
+// Health line for the keyboard interface: at most every 2 s while we believe a key is
+// held (i.e. exactly the "keyboard is stuck/hung" situation) and every 10 s while the
+// interface has gone quiet. Tells the three failure modes apart:
 //   ep=---- (~0)          the PIO layer has no endpoint for it -> arm/enumeration lost
 //   ep flags bit0=1, failed=0, no reports  the device NAKs: our state is stale, the
 //                                          GET_REPORT resync is what must fix it
 //   failed>0 / timeouts rising             bus errors (PRE/LS through the hub)
+// It repeats for the whole of an ordinary session (every 10 s once the keyboard has
+// been quiet for 5 s), so it lives behind -DHID_TRACE=ON; the one-shot GET_REPORT
+// verdicts below stay unconditional, and Hardware Info's "USB kbd rsync" row carries
+// the same counters with no UART at all.
 static void kbd_health_log(void) {
+#if HID_TRACE
   static uint32_t last_ms = 0;
   const uint32_t now = kbd_now_ms();
   if (kbd_resync_instance == 0xFF) return;
@@ -566,6 +571,7 @@ static void kbd_health_log(void) {
              (unsigned)hid_desync_recoveries, (unsigned)g_tusb_assert_count,
              (unsigned)tuh_hid_receive_ready(kbd_resync_daddr, inst),
              (unsigned)epdbg);
+#endif  // HID_TRACE
 }
 
 // Hardware Info's "USB kbd rsync" row: the resync counters are invisible without

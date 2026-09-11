@@ -4428,8 +4428,11 @@ request interval without also restarting the stuck-key clock.
 
 **The diagnostic was ZERO2-only and that is why this took a user report**: the
 `HID kbd:` health line was wrapped in `#if defined(ZERO2_PIO_USB_HOST)` for the
-sake of ONE field (`epst`, the PIO-USB endpoint view). It now prints on every
-board with the field stubbed, and Hardware Info gained a
+sake of ONE field (`epst`, the PIO-USB endpoint view). It prints on every board
+with the field stubbed — but behind **`-DHID_TRACE=ON`** (2026-09-12), because it
+repeats every 10 s for as long as the keyboard is merely quiet, i.e. for a whole
+ordinary session; the one-shot GET_REPORT trust verdicts beside it stay
+unconditional, and the path that needs no UART at all is Hardware Info, which gained a
 `USB kbd rsync : i0 ver=1 live=0 off=0 fix=N unpr=N st=N` row
 (`usb_kbd_resync_stats`, hid_app.cpp) so a remote user with no UART can
 photograph it: **live=0 with unpr climbing IS this bug**, fix>0 with live=1 is a
