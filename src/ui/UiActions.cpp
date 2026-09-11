@@ -820,10 +820,20 @@ void act_tapeBrowser() {
     }
     const uint32_t bckPos = f_tell(&Tape::tape);
     const string title = Tape::tapeFileName.substr(0, 28);
+    uint8_t fkey = 0;
     const int sel = uiPickListCb(title.c_str(), Tape::tapeNumBlocks, tapeRowCb,
-                                 Tape::tapeCurBlock, 36);
+                                 Tape::tapeCurBlock, 36, &fkey, 0,
+                                 SYM_ENTER " Select   F8 Eject   Esc Close");
     if (sel < 0) {
         f_lseek(&Tape::tape, bckPos);           // untouched, like Esc in the classic
+        return;
+    }
+    if (fkey == 8) {
+        // Eject takes the whole tape out, so the block under the cursor is
+        // irrelevant and there is no file left to restore the read position in.
+        Tape::Eject();
+        Config::save();                         // or the ejected tape comes back at boot
+        uiToast("Tape ejected", false, 900);
         return;
     }
     if (Tape::tapeFileType == TAPE_FTYPE_TAP) Tape::CalcTapBlockPos(sel);

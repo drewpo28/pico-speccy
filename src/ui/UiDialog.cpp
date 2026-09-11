@@ -421,18 +421,20 @@ void uiBusy(const char* msg) {
 // ── modal list picker ──────────────────────────────────────────────────────────
 
 int uiPickListCb(const char* title, int n, UiRowCb cb, int initial, int wchars,
-                 uint8_t* fkey, int fixedRows) {
+                 uint8_t* fkey, int fixedRows, const char* footer) {
     if (n <= 0) return -1;
     if (fkey) *fkey = 0;
     gfxResumePalette();
     const int pad = 4 * Sf.glyphScale;
     const int lh  = UI_FONT_H + 2;
+    if (footer && !*footer) footer = nullptr;
 
     int tw = wchars * glyphW();
     { const int t2 = textWidth(title); if (t2 > tw) tw = t2; }
+    if (footer) { const int t3 = textWidth(footer); if (t3 > tw) tw = t3; }
 
     int rows = fixedRows > 0 ? fixedRows : n;
-    const int maxRows = (Sf.h - 6 * lh) / lh;
+    const int maxRows = (Sf.h - (footer ? 7 : 6) * lh) / lh;
     if (rows > maxRows) rows = maxRows;
     if (rows < 1) rows = 1;
 
@@ -440,7 +442,7 @@ int uiPickListCb(const char* title, int n, UiRowCb cb, int initial, int wchars,
     b.w = tw + 3 * pad;
     const int wmax = Sf.w - 8 * Sf.glyphScale;
     if (b.w > wmax) b.w = wmax;
-    b.h = (lh + 2) + rows * lh + 2 * pad;
+    b.h = (lh + 2) + rows * lh + 2 * pad + (footer ? lh + 1 : 0);
     b.x = (Sf.w - b.w) / 2;
     b.y = (Sf.h - b.h) / 2;
 
@@ -471,6 +473,13 @@ int uiPickListCb(const char* title, int n, UiRowCb cb, int initial, int wchars,
                 cb(i, row, sizeof(row));
                 textClip(b.x + pad, y, b.w - 2 * pad, row, s ? C_WHITE : C_TEXT);
             }
+        }
+        // The verb line: the list's keys exist nowhere else on screen, so it is
+        // drawn like the menu's own footer — a rule, then dim ink on the panel.
+        if (footer) {
+            const int fy = ly0 + rows * lh + 1;
+            hline(b.x + pad, fy, b.w - 2 * pad, C_SEP);
+            textClip(b.x + pad, fy + 2, b.w - 2 * pad, footer, C_TEXT_DIM);
         }
     };
     drawIt();

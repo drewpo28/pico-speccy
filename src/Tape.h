@@ -209,6 +209,7 @@ public:
     static void Init();
     static void LoadTape(const string& mFile);
     static void LoadRemembered(); // re-mount Config::tape_file after F11/boot; auto-plays if tape_autostart
+    static void Eject();          // take the tape out: close, drop the listing, forget Config::tape_file
     static void Play();
     static void Stop();
     static void Read();

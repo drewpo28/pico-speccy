@@ -71,9 +71,13 @@ int uiPickList(const char* title, const char* const* items, int n, int initial =
 // for a picker that gets reopened with a different list each time (the download
 // folder chooser), so the box never shrinks and leaves the previous one showing
 // around it. Rows past `n` are drawn empty. Clamped to what the screen fits.
+// `footer` (optional) is the verb line under the list, in the menu footer's ink.
+// A picker that enables `fkey` has to name that verb somewhere or it is
+// undiscoverable — here, or in the title (the debugger's breakpoint list does
+// the latter, and predates this).
 typedef void (*UiRowCb)(int idx, char* out, size_t outsz);
 int uiPickListCb(const char* title, int n, UiRowCb cb, int initial = 0, int wchars = 36,
-                 uint8_t* fkey = nullptr, int fixedRows = 0);
+                 uint8_t* fkey = nullptr, int fixedRows = 0, const char* footer = nullptr);
 
 // Boxed one-line prompt (title + edit field). Returns true on Enter with
 // non-empty text (`allowEmpty` accepts an empty Enter too — optional form

@@ -395,6 +395,33 @@ void Tape::Init() {
     tapeFileType = TAPE_FTYPE_EMPTY;
 }
 
+// Take the tape out — the F8 verb of the tape browser, i.e. the counterpart of
+// LoadTape rather than of Stop. Everything a mounted tape owns goes: the file
+// handles (a TZX may still hold the inflated CSW block open), the TZX symbol
+// tables, the block listing's heap, and — the part a plain close would miss —
+// Config::tape_file, or the next F11 / boot would re-mount through
+// LoadRemembered() exactly what the user just ejected. Deliberately NOT saved
+// here: Config::save() is the caller's (the menu already saves on the way out,
+// and an eject is cheap to repeat).
+void Tape::Eject() {
+    Stop();
+    StopRealPlayer();
+    FreeSymDefTable();
+    if (cswBlock.obj.fs) f_close(&cswBlock);
+    f_close(&tape);
+    tapeFileType = TAPE_FTYPE_EMPTY;
+    tapeFileName = "none";
+    tapeCurBlock = 0;
+    tapeNumBlocks = 0;
+    tapeFileSize = 0;
+    tapebufByteCount = 0;
+    tapePlayOffset = 0;
+    TapeListing.clear();
+    std::vector<TapeBlock>().swap(TapeListing);   // free the heap, not just the size
+    Config::tape_file = "";
+    ESPectrum::TapeNameScroller = 0;
+}
+
 // Re-mount the tape remembered in Config::tape_file, so a tape survives an F11
 // reset / power-cycle the same way a mounted TRD disk does (ESPectrum::reset()
 // otherwise wipes Tape::tapeFileName). Only TAP/TZX/PZX are remembered. Loads
