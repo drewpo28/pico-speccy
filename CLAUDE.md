@@ -5043,15 +5043,35 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 
 New machine, modelled from MAME `sinclair/scorpion.cpp` + libspectrum `timings.c` +
 Fuse `machines/scorpion.c` (the speccy4ever docs the user linked are egress-blocked
-from the cloud env; all three sources agree). ROM = the user-supplied **v2.94**
-`scorp294.rom` (CRC32 99f57ce1, = MAME's; pages 0-1 byte-identical to v2.92):
-0=BASIC-128, 1=BASIC-48, 2=service monitor, 3=TR-DOS 5.03 variant. bank0/1 are
-overlays over the Sinclair 128K halves (290/115 diff bytes, `tools/rom_pack.py
-scorpion`); bank2/3 raw in `src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT be an
-overlay: rom[4] already overlays the shared TR-DOS base pointer (5.05D until
-2026-09-09, 5.04T since) and `MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
+from the cloud env; all three sources agree). ROM = **v2.95**, CRC32 `0C6C1EF6`
+(speccy4ever.speccy.org/_SC.htm -> `rom/scorp295-0C6C1EF7.rom` — the FILE NAME's CRC
+is a typo, the table's `0C6C1EF6` is the image; md5
+`fe4e3c88972065ce5e2bc48618eb02a8`): 0=BASIC-128, 1=BASIC-48, 2=service monitor,
+3=TR-DOS 5.03 variant. bank0/1 are overlays over the Sinclair 128K halves (290/116
+diff bytes, `tools/rom_pack.py scorpion`); bank2/3 raw in
+`src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT be an overlay: rom[4] already
+overlays the shared TR-DOS base pointer (5.05D until 2026-09-09, 5.04T since) and
+`MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
 
-- **Four romsets over the SAME v2.94 ROM** (one Machine → Scorpion radio; UI
+**It shipped v2.94 (`scorp294.rom`, CRC32 99f57ce1) until 2026-09-13** and every
+analysis below — the SYSEN/NMI/motor session, the port-#FF float diagnosis, the GMX
+plane-4/5 work — was done against that image. The two differ by 8294 bytes and
+essentially all of it is ONE bank: bank0 identical, bank1 one byte, **bank2 (the
+service monitor) 8271**, bank3 22. **Neither release carries a version string** — the
+banner in bank 0 reads "1992-94 Scorpion ZS 256" in both — so the monitor is the only
+way to tell them apart on screen, and a PC inside it will not match the old notes.
+NOT hw-tested on v2.95.
+
+That swap also exposed a trap worth keeping: `scorpion_banks.c` was a HAND-WRITTEN C
+array of bytes that come from `src/bank{2,3}.bin`, so `rom_pack.py scorpion`
+regenerated both overlays and left the v2.94 monitor sitting in flash — a 64 KB image
+that reassembles to the WRONG CRC while every generated file looks freshly built. It
+is generated now (`emit_raw` in the family descriptor), `romScorpion.h` includes the
+generated header instead of declaring the symbols itself, and `rom_verify.py` grew a
+whole-image check with the CRC pinned. **Anything derived from a .bin must be
+generated**; the same shape would bite any other family that keeps a raw bank.
+
+- **Four romsets over the SAME v2.95 ROM** (one Machine → Scorpion radio; UI
   labels "ZS-256 Turbo (Yellow)" / "ZS-256 Turbo+ (Green)" / "ZS-256 Turbo+ &
   GMX" / "ZS-1024 Turbo+", with `Option::slabel` short forms; the Byte-over-48K
   pattern — `Config::romSetScorp` drives the timing branch): `R_SCORP` "Scorp" =

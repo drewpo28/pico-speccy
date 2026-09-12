@@ -16,9 +16,19 @@
       "name": "Scorpion bank1",
       "sym": "gb_rom_scorpion_bank1",
       "overlay_sym": "gb_overlay_scorpion_bank1",
-      "len": 175,
-      "runs": 8,
-      "diff_bytes": 115
+      "len": 182,
+      "runs": 9,
+      "diff_bytes": 116
+    }
+  ],
+  "raw": [
+    {
+      "sym": "gb_rom_scorpion_bank2",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_scorpion_bank3",
+      "len": 16384
     }
   ]
 }

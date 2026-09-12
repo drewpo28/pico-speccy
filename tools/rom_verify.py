@@ -53,6 +53,30 @@ check('Sinclair 128K rom0',
                                    'gb_overlay_pentagon_sinclair_128k_0')),
       dump('pentagon/src/sinclair_128k_0.bin'))
 
+# The Scorpion ZS-256 service ROM, reassembled the way requestMachine binds it: banks
+# 0/1 are overlays over the stock Sinclair 128K ROM0, banks 2/3 raw. Worth checking as
+# a WHOLE image rather than per bank — the four are one firmware and the version is
+# only identifiable from bank 2 (the service monitor), the banner in bank 0 saying
+# "1992-94" in every release.
+print("Scorpion ZS-256 (banks 0/1 overlaid, 2/3 raw):")
+# NOTE the two halves: bank0 overlays Sinclair 128K ROM0, bank1 overlays ROM1 (the
+# family's default base is ROM0 and bank1 carries its own 'base' override in
+# rom_pack.py). Using one base for both still "reassembles" 64 KB and is wrong by
+# 24 KB — which is exactly the class of silent mistake this script exists to catch.
+s128_0 = dump('pentagon/src/sinclair_128k_0.bin')
+s128_1 = dump('128k/src/sinclair_128k_1.bin')
+scorp = b''.join((
+    apply_overlay(s128_0, arr('scorpion/scorpion_overlays.c', 'gb_overlay_scorpion_bank0')),
+    apply_overlay(s128_1, arr('scorpion/scorpion_overlays.c', 'gb_overlay_scorpion_bank1')),
+    arr('scorpion/scorpion_banks.c', 'gb_rom_scorpion_bank2'),
+    arr('scorpion/scorpion_banks.c', 'gb_rom_scorpion_bank3')))
+check('Scorpion v2.95 image',
+      scorp,
+      b''.join(dump('scorpion/src/bank%d.bin' % i) for i in range(4)))
+import zlib
+crc = zlib.crc32(scorp) & 0xffffffff
+check('Scorpion v2.95 CRC32', '%08X' % crc, '0C6C1EF6')
+
 # The ZX-Evo BIOS sets we ship, reassembled from what is actually in flash. Page 0 is
 # the only page with a patch (the Setup footer's exit key); pages 1-3 must be verbatim.
 print("TS-Conf BIOS sets (page 0 patched, pages 1-3 verbatim):")

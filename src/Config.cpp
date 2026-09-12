@@ -585,7 +585,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         break;
     }
     case A_SCORP: {
-        // Scorpion ZS-256 v2.94: bank0 (BASIC-128) and bank1 (BASIC-48) are tiny
+        // Scorpion ZS-256 v2.95: bank0 (BASIC-128) and bank1 (BASIC-48) are tiny
         // overlays over the Sinclair 128K halves; bank2 (service monitor) and bank3
         // (the on-board TR-DOS 5.03 variant) are raw. TR-DOS runs from rom[3] — the
         // machine's own bank, like Profi's rom[1] — so the shared rom[4] (bound in
@@ -623,7 +623,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 #endif
 #if !PROFROM_IN_FLASH
         // This build carries no ProfROM image — quiet fallback to the plain
-        // ZS-1024 (same paging and timing, stock v2.94 ROM).
+        // ZS-1024 (same paging and timing, stock v2.95 ROM).
         if (romSet == R_SCORP_PROF) romSet = R_SCORP_1024;
 #endif
         romSetScorp = romSet;
