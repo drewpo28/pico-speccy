@@ -3063,6 +3063,55 @@ extern "C" int hdmi_audio_dbg_stage(void);
 extern "C" void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, uint32_t *s_cons);
 extern "C" void hdmi_audio_health_dump(void);
 #endif
+// One step of the background network housekeeping, shared by the emulation loop
+// and the OSD's idle loops (nm::uiIdle). Everything here is asynchronous and
+// therefore only advances when something pumps it: the CYW43/lwIP poll delivers
+// the join result, DHCP and the SNTP reply, and the boot state machine steps one
+// AT command / one link check per call. Left to loop() alone it stopped dead for
+// as long as the menu was open — "it connects in seconds unless you sit in
+// Network, where it never connects at all".
+void ESPectrum::netBackgroundTick() {
+#if PICOSPECCY_WIFI
+    WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
+#endif
+
+    // A WiFi dialog on screen owns the radio (its scan/connect cancelled the FSM
+    // on purpose) — don't start or step it underneath the user.
+    if (ZiFiAT::uiBusy()) return;
+
+    // Auto-sync the RTC over SNTP at startup when both ZiFi and RTC are on and a
+    // WiFi network is configured. Runs entirely in the background (non-blocking
+    // state machine, no OSD) so it never freezes audio/video. Kicked off ~4s into
+    // the run so the ESP has time to auto-reconnect; then stepped each tick.
+    static bool     rtc_autosync_begun = false;
+    static uint32_t rtc_autosync_at    = 0;
+    // Reconnect WiFi at boot whenever WiFi is enabled and an SSID is saved. This is
+    // driven ONLY by the WiFi switch — the NIC is no longer a trigger (it used to
+    // pull WiFi up as a side effect via `ZiFi::enabled && rtc_enabled`, which is
+    // exactly the leak that made FTP/SSH work only with the NIC on). The background
+    // state machine also runs SNTP, harmless when RTC is off.
+    if (!Config::wifi_ssid.empty() && Config::wifi_enabled) {
+        if (!rtc_autosync_begun) {
+            uint32_t now = to_ms_since_boot(get_absolute_time());
+            if (rtc_autosync_at == 0) rtc_autosync_at = now + 4000;
+            else if (now >= rtc_autosync_at) {
+                rtc_autosync_begun = true;
+                // Profi heap guard (decided once, replaces the old blanket
+                // `arch != "Profi"` exclusion that left the ROMain/PQDOS clock
+                // permanently at 00.00.00): autoSyncBegin brings the ESP link up
+                // (ZiFi::init allocs the 8 KB RX ring + TX FIFO on the heap) —
+                // fine on butter-PSRAM Profi (~68 KB free with CDC up), but the
+                // SPI-PSRAM m1p2 Profi runs with ~10 KB free and OOMs (see
+                // profi_zifi_oom_fix). Skip only when the headroom isn't there.
+                if (Config::arch != A_PROFI || getLargestAllocatable() >= 16384)
+                    ZiFiAT::autoSyncBegin(Config::wifi_ssid, Config::wifi_pass, Config::wifi_tz);
+            }
+        } else {
+            ZiFiAT::autoSyncPoll(); // no-op unless autoSyncBegin actually ran
+        }
+    }
+}
+
 //=======================================================================================
 // MAIN LOOP
 //=======================================================================================
@@ -3321,45 +3370,13 @@ void ESPectrum::loop() {
     }
 
     if (ZiFi::enabled) ZiFi::tick();
-#if PICOSPECCY_WIFI
-    WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
-#endif
     RTC::flushNVRAM(); // persist CMOS NVRAM to SD when dirty (debounced)
     MemESP::materializeOverlays(); // one pending ROM overlay page per frame into butter PSRAM
     Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
     Ports::serialMouseTick(); // arm the COM-mouse RST20H when movement queued
 
-    // Auto-sync the RTC over SNTP at startup when both ZiFi and RTC are on and a
-    // WiFi network is configured. Runs entirely in the background (non-blocking
-    // state machine, no OSD) so it never freezes audio/video. Kicked off ~4s into
-    // the run so the ESP has time to auto-reconnect; then stepped each loop tick.
-    static bool     rtc_autosync_begun = false;
-    static uint32_t rtc_autosync_at    = 0;
-    // Reconnect WiFi at boot whenever WiFi is enabled and an SSID is saved. This is
-    // driven ONLY by the WiFi switch — the NIC is no longer a trigger (it used to
-    // pull WiFi up as a side effect via `ZiFi::enabled && rtc_enabled`, which is
-    // exactly the leak that made FTP/SSH work only with the NIC on). The background
-    // state machine also runs SNTP, harmless when RTC is off.
-    if (!Config::wifi_ssid.empty() && Config::wifi_enabled) {
-        if (!rtc_autosync_begun) {
-            uint32_t now = to_ms_since_boot(get_absolute_time());
-            if (rtc_autosync_at == 0) rtc_autosync_at = now + 4000;
-            else if (now >= rtc_autosync_at) {
-                rtc_autosync_begun = true;
-                // Profi heap guard (decided once, replaces the old blanket
-                // `arch != "Profi"` exclusion that left the ROMain/PQDOS clock
-                // permanently at 00.00.00): autoSyncBegin brings the ESP link up
-                // (ZiFi::init allocs the 8 KB RX ring + TX FIFO on the heap) —
-                // fine on butter-PSRAM Profi (~68 KB free with CDC up), but the
-                // SPI-PSRAM m1p2 Profi runs with ~10 KB free and OOMs (see
-                // profi_zifi_oom_fix). Skip only when the headroom isn't there.
-                if (Config::arch != A_PROFI || getLargestAllocatable() >= 16384)
-                    ZiFiAT::autoSyncBegin(Config::wifi_ssid, Config::wifi_pass, Config::wifi_tz);
-            }
-        } else {
-            ZiFiAT::autoSyncPoll(); // no-op unless autoSyncBegin actually ran
-        }
-    }
+    netBackgroundTick();      // radio poll + the boot join/SNTP FSM (also pumped
+                              // from the OSD idle loops — see nm::uiIdle)
 
     // Storage watch: a card inserted into a machine that booted without one (or
     // a stick re-plugged), and a card pulled out from under a running session.

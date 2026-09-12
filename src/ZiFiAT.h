@@ -42,10 +42,23 @@ public:
     static bool autoSyncBusy();
 
     // Optional sink for the AT exchange (tx/rx lines), independent of ZIFI_TRACE.
-    // Set it to mirror the ESP-01 dialog into an OSD window (e.g. live during a
+    // Set it to mirror the radio dialog into an OSD window (e.g. live during a
     // WiFi connect); nullptr (default) = no UI logging. Foreground calls only.
+    //
+    // setLog() is the ONLY writer: the on-chip (CYW43) path keeps its own copy of
+    // the pointer inside WifiNet, and a plain `log_cb = x` would leave that copy
+    // behind — the background join FSM then keeps calling a UI sink whose pane is
+    // long gone. `log_cb` itself stays public because the free atLog() helper in
+    // ZiFiAT.cpp reads it; treat it as read-only from outside.
     typedef void (*LogCb)(const char* line);
     static LogCb log_cb;
+    static void  setLog(LogCb cb);
+
+    // True while an OSD flow owns the radio (its log sink is armed): the WiFi
+    // scan/connect page or the SNTP page. The background boot FSM must not start
+    // a join underneath one of those — since it is now stepped from the menu's
+    // idle loop as well, "the user is mid-dialog" is a state it can actually meet.
+    static bool uiBusy() { return log_cb != nullptr; }
 
     // Last known connected state (updated by connect/disconnect/getStatus).
     static bool connected;

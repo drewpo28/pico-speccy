@@ -30,6 +30,8 @@
 #include "OSDMain.h"
 #include "Config.h"
 #include "RTC.h"
+#include "ESPectrum.h"
+#include <pico/stdlib.h>
 
 namespace nm {
 
@@ -189,6 +191,12 @@ bool uiClockDirty() {
     char clk[8];
     if (!uiClockText(clk)) return false;
     return strcmp(clk, s_clk_drawn) != 0;
+}
+
+// See UiRender.h: the shared idle wait of the UI's key loops.
+void uiIdle(int ms) {
+    ESPectrum::netBackgroundTick();
+    if (ms > 0) sleep_ms(ms);
 }
 
 void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg, UiColor ink) {

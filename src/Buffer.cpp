@@ -490,12 +490,22 @@ bool Buffer::lendArena(void* base, size_t size) {
 
 bool Buffer::reclaimArena() {
     if (!g_arena_on) return true;
-    bool clean = g_arena.empty();
-    if (!clean) Debug::log("Buffer: reclaimArena with allocations still outstanding!");
+    // REFUSE while anything is still allocated. This used to reclaim anyway and
+    // only log, on the assumption that every arena user was freed by the end of
+    // the session (the demux ring and the alt-stack were). The on-chip lwIP stack
+    // broke that: its state is session-scoped, not action-scoped (the SNTP udp_pcb
+    // is created once and never freed), so a reclaim here would hand the region
+    // back to Gigascreen, which memsets it and then blends over live network
+    // structures. Keeping the lease is the safe direction — the borrower loses
+    // Gigascreen until a reboot, instead of the stack losing its memory.
+    if (!g_arena.empty()) {
+        Debug::log("Buffer: reclaimArena REFUSED — allocations still outstanding");
+        return false;
+    }
     g_arena_on = false;
     g_arena_base = nullptr;
     g_arena_size = 0;
-    return clean;
+    return true;
 }
 
 bool Buffer::arenaActive() { return g_arena_on; }

@@ -83,7 +83,7 @@ static void uiWaitPageClose() {
                 return;
             }
         }
-        sleep_ms(10);
+        uiIdle(10);
     }
 }
 // ZX keyboard bitmap in a new-UI page. The image itself keeps its authentic ZX
@@ -245,7 +245,7 @@ static void uiAboutPage() {
     { fabgl::VirtualKeyItem d; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d); }
     fabgl::VirtualKeyItem k;
     while (1) {
-        if (!kbd->virtualKeyAvailable()) { sleep_ms(5); continue; }
+        if (!kbd->virtualKeyAvailable()) { uiIdle(); continue; }
         if (!ESPectrum::readKbd(&k) || !k.down) continue;
         int nt = top;
         switch (k.vk) {
@@ -1262,7 +1262,25 @@ static bool s_netStValid = false;
 static bool s_netConn = false;
 static char s_wifiLabel[NM_DYN_VALUE_LEN];
 
-void netStatusInvalidate() { s_netStValid = false; }
+// Tracks the link state the cached label was built from; -1 = unknown, which
+// makes the next netStatusTick() re-seed instead of reporting a change (the
+// label is about to be rebuilt by vl_wifi() anyway).
+static int s_netStSig = -1;
+
+void netStatusInvalidate() { s_netStValid = false; s_netStSig = -1; }
+
+// See UiActions.h. Built only from flags the two state machines already keep —
+// no radio traffic — so it is safe to call from the 200 Hz idle loop; the
+// blocking AT query on the ESP path still happens once per change, lazily,
+// inside the vl_wifi() that follows.
+bool netStatusTick() {
+    const int sig = (ZiFiAT::connected ? 1 : 0) | (ZiFiAT::autoSyncBusy() ? 2 : 0);
+    if (s_netStSig == sig) return false;
+    const bool changed = (s_netStSig >= 0);   // first sample after an invalidate: seed only
+    s_netStSig = sig;
+    if (changed) s_netStValid = false;
+    return changed;
+}
 
 static void netStatusRefresh() {
     if (s_netStValid) return;
@@ -1402,7 +1420,7 @@ static int leftList(const char* title, const char* const* items, int n) {
     { fabgl::VirtualKeyItem d; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d); }
     fabgl::VirtualKeyItem k;
     while (1) {
-        if (!kbd->virtualKeyAvailable()) { sleep_ms(5); continue; }
+        if (!kbd->virtualKeyAvailable()) { uiIdle(); continue; }
         if (!ESPectrum::readKbd(&k) || !k.down) continue;
         int ns = sel;
         switch (k.vk) {
@@ -1449,6 +1467,11 @@ static WifiLog*    s_wlog;
 static uint8_t     s_wlog_row;      // fallback cursor when the buffer is missing
 static int         s_wlog_top;      // first shown display row; -1 = follow the tail
 static const char* s_wlog_title;
+// Is the log pane actually on screen? A NULL s_wlog means only "no scrollback"
+// (the buffer-less fallback draws straight into the pane), so it can NOT stand in
+// for "the menu is gone" — that conflation is what let a late network callback
+// paint text over the running machine's border after the menu had closed.
+static bool        s_wlog_live;
 
 // Characters per pane row, and per continuation row (one glyph of indent).
 static inline int wlogCols() {
@@ -1530,6 +1553,7 @@ static void wlogRepaint(const char* title) {
 static void wlogBegin(const char* title) {
     s_wlog = nullptr;
     s_wlog_top = -1;
+    s_wlog_live = true;
     if (getLargestAllocatable() > sizeof(WifiLog) + 2048)
         s_wlog = (WifiLog*)malloc(sizeof(WifiLog));
     if (s_wlog) { s_wlog->used = 0; s_wlog->n = 0; }
@@ -1539,9 +1563,12 @@ static void wlogBegin(const char* title) {
 static void wlogEnd() {
     free(s_wlog);
     s_wlog = nullptr;
+    s_wlog_live = false;   // nothing may paint the pane from here on
+    ZiFiAT::setLog(nullptr);   // backstop: no exit path can leave the sink armed
 }
 
 static void wlogAdd(const char* s, UiColor ink) {
+    if (!s_wlog_live) return;   // pane is gone — a late callback must not draw
     if (!s_wlog) {
         paneRow(s_wlog_row, s, ink);
         if (s_wlog_row + 1 < LY.body_rows) s_wlog_row++;
@@ -1578,7 +1605,7 @@ static void wlogView() {
     auto kbd = ESPectrum::PS2Controller.keyboard();
     fabgl::VirtualKeyItem k;
     while (1) {
-        if (!kbd->virtualKeyAvailable()) { sleep_ms(5); continue; }
+        if (!kbd->virtualKeyAvailable()) { uiIdle(); continue; }
         if (!ESPectrum::readKbd(&k) || !k.down) continue;
         int nt = top;
         switch (k.vk) {
@@ -1663,7 +1690,7 @@ void act_wifi() {
         wlogRepaint(TXT_NET_WIFI);
     };
 
-    ZiFiAT::log_cb = wlogCb;            // the AT exchange, passwords masked at the source
+    ZiFiAT::setLog(wlogCb);            // the AT exchange, passwords masked at the source
     wlogAdd("Scanning for networks...", C_WHITE);
     // static, not on the 4 KB core stack: 24 std::strings under do_OSD overflowed
     // the stack in the classic flow — same hazard here. Single-use, non-reentrant.
@@ -1671,7 +1698,7 @@ void act_wifi() {
     const int n = ZiFiAT::scan(nets, 24);
     char m[72];
     if (n <= 0) {
-        ZiFiAT::log_cb = nullptr;
+        ZiFiAT::setLog(nullptr);
         wlogAdd(TXT_MSG_NO_NETS, C_ICON_R);
         paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
         wlogView();
@@ -1684,14 +1711,14 @@ void act_wifi() {
     const char* items[24];
     for (int i = 0; i < n; i++) items[i] = nets[i].c_str();
     const int sel = leftList(TXT_NET_PICK_TITLE, items, n);
-    if (sel < 0) { ZiFiAT::log_cb = nullptr; wlogEnd(); return; }
+    if (sel < 0) { ZiFiAT::setLog(nullptr); wlogEnd(); return; }
 
     string pass;
     char pt[64];
     // Masked like the classic box; TAB toggles reveal (handled by uiEditLine).
     snprintf(pt, sizeof(pt), "Password for %.24s  (TAB shows)", nets[sel].c_str());
     const bool ok = uiPrompt(pt, pass, 64, true);
-    if (!ok) { ZiFiAT::log_cb = nullptr; wlogEnd(); return; }
+    if (!ok) { ZiFiAT::setLog(nullptr); wlogEnd(); return; }
     restorePane();
 
     paneFooter(MSG_WIFI_CONNECTING);
@@ -1703,7 +1730,7 @@ void act_wifi() {
         wlogAdd("Syncing time (SNTP)...", C_WHITE);
         ZiFiAT::syncTime(Config::wifi_tz, when);
     }
-    ZiFiAT::log_cb = nullptr;
+    ZiFiAT::setLog(nullptr);
     if (cst == ZiFiAT::OK) {
         Config::wifi_ssid = nets[sel];
         Config::wifi_pass = pass;
@@ -1736,10 +1763,10 @@ void act_sntp() {
     char m[72];
     snprintf(m, sizeof(m), "SNTP pool.ntp.org  UTC%+d", Config::wifi_tz);
     wlogAdd(m, C_WHITE);
-    ZiFiAT::log_cb = wlogCb;
+    ZiFiAT::setLog(wlogCb);
     string when;
     const ZiFiAT::Status st = ZiFiAT::syncTime(Config::wifi_tz, when);
-    ZiFiAT::log_cb = nullptr;
+    ZiFiAT::setLog(nullptr);
     if (st == ZiFiAT::OK) {
         snprintf(m, sizeof(m), "%s  %s", MSG_RTC_SYNCED, when.c_str());
         wlogAdd(m, C_ACCENT);

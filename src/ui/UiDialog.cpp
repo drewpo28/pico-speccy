@@ -153,7 +153,7 @@ bool uiConfirm(const char* text_body, const char* title, bool default_yes) {
                 default: break;
             }
         }
-        sleep_ms(5);
+        uiIdle();
     }
 }
 
@@ -197,7 +197,7 @@ bool uiConfirmTimeout(const char* text_body, const char* title, int timeout_sec)
                 default: break;
             }
         }
-        sleep_ms(5);
+        uiIdle();
         if (++tick >= 200) { tick = 0; remaining--; drawCount(); }
     }
     gfxEnd();
@@ -248,7 +248,7 @@ int uiChoice(const char* text_body, const char* const* btns, int n, int initial,
                 default: break;
             }
         }
-        sleep_ms(5);
+        uiIdle();
     }
 }
 
@@ -262,7 +262,7 @@ void uiToast(const char* msg, bool warn, int timeout_ms) {
     int waited = 0;
     while (timeout_ms == 0 || waited < timeout_ms) {
         if (nextKeyDown(k)) return;
-        sleep_ms(5);
+        uiIdle();
         waited += 5;
     }
 }
@@ -306,7 +306,7 @@ void uiOsdMsg(const char* msg, uint8_t level, uint16_t ms) {
     int waited = 0;
     while (waited < (int)ms) {
         if (nextKeyDown(k)) break;
-        sleep_ms(5);
+        uiIdle();
         waited += 5;
     }
     gfxEnd();
@@ -365,7 +365,7 @@ bool uiEditLine(int x, int y, int wpx, string& io, size_t maxlen, bool mask) {
         // Wait for a key, blinking at ~300 ms.
         while (1) {
             if (nextKeyDown(k)) break;
-            sleep_ms(5);
+            uiIdle();
             if ((++blink & 0x3F) == 0) { cursorOn = !cursorOn; goto repaint; }
         }
         cursorOn = true;
@@ -516,7 +516,7 @@ int uiPickListCb(const char* title, int n, UiRowCb cb, int initial, int wchars,
                 OSD::clickNoPause();
             }
         }
-        sleep_ms(5);
+        uiIdle();
     }
 }
 
@@ -688,7 +688,7 @@ static void textPageRun(const char* title, const char* body,
             if (nt > maxTop) nt = maxTop;
             if (nt != top) { top = nt; drawBody(); OSD::clickNoPause(); }
         }
-        sleep_ms(5);
+        uiIdle();
         if (refresh && (idle_ms += 5) >= period_ms) {
             idle_ms = 0;
             const char* nb = refresh();

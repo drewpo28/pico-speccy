@@ -15,6 +15,19 @@ string ZiFiAT::current_ssid;
 string ZiFiAT::current_ip;
 ZiFiAT::LogCb ZiFiAT::log_cb = nullptr;
 
+// The one writer of log_cb. The on-chip radio path keeps its OWN copy of the
+// pointer (WifiNet::s_log) because its background join FSM logs from outside any
+// ZiFiAT call, so the two have to move together: a caller that cleared log_cb
+// directly left WifiNet still holding the UI sink, and the next bg line
+// ("WiFi(bg): join try N ended link=1") painted itself over the running machine
+// once the menu had closed. Set it here, not by assignment.
+void ZiFiAT::setLog(LogCb cb) {
+    log_cb = cb;
+#if PICOSPECCY_WIFI
+    WifiNet::setLog(cb);
+#endif
+}
+
 // Mask the WiFi password in an AT+CWJAP line in place. The ESP echoes the command
 // back, so even a masked tx leaks the password on the rx echo — scrub both:
 //   AT+CWJAP="ssid","pass"[,...]  →  AT+CWJAP="ssid",***
@@ -107,7 +120,6 @@ ZiFiAT::Status ZiFiAT::sendCmd(const char* cmd, const char* expect, uint32_t tim
 ZiFiAT::Status ZiFiAT::connect(const string& ssid, const string& pass, uint32_t timeout_ms) {
 #if PICOSPECCY_WIFI
     if (WifiNet::selected()) {
-        WifiNet::setLog(log_cb);
         const int rc = WifiNet::connect(ssid.c_str(), pass.c_str(), timeout_ms);
         if (rc == 0) {
             connected = true; current_ssid = ssid;
@@ -201,7 +213,6 @@ static int month_from_abbr(const char* m) {
 ZiFiAT::Status ZiFiAT::syncTime(int tz, string& out_str) {
 #if PICOSPECCY_WIFI
     if (WifiNet::selected()) {
-        WifiNet::setLog(log_cb);
         return WifiNet::sntpSync(tz, out_str) ? OK : TIMEOUT;
     }
 #endif
@@ -414,7 +425,6 @@ void ZiFiAT::autoSyncPoll() {
 int ZiFiAT::scan(string* out, int maxn, uint32_t timeout_ms) {
 #if PICOSPECCY_WIFI
     if (WifiNet::selected()) {
-        WifiNet::setLog(log_cb);
         return WifiNet::scan(out, maxn, timeout_ms);
     }
 #endif

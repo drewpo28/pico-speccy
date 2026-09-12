@@ -877,7 +877,7 @@ static string runLoop() {
         fabgl::VirtualKeyItem k;
         while (1) {                                   // keys
             if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-                sleep_ms(5);
+                uiIdle();
                 if (mqTick()) drawListRow(s_sel - s_top);
                 if (uiClockDirty()) drawHeader();
                 // The volume under us changed while we were sitting here — a
@@ -1215,7 +1215,7 @@ int browseLocations(const char* const* items, const char* const* hints, int n, i
     fabgl::VirtualKeyItem k;
     while (1) {
         if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            sleep_ms(5);
+            uiIdle();
             if (uiClockDirty()) drawHeader();
             continue;
         }
@@ -1417,7 +1417,7 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
     fabgl::VirtualKeyItem k;
     while (1) {
         if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            sleep_ms(5);
+            uiIdle();
             if (mqTick()) drawRowN(sel - top);
             if (uiClockDirty()) drawHeader();
             continue;

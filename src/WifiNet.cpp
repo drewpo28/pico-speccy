@@ -24,15 +24,23 @@
 
 // ── lwIP memory (see lwipopts.h) ────────────────────────────────────────────
 // Every lwIP allocation — heap AND pools — lands here. Buffer::palloc returns
-// NULL on exhaustion (pico_malloc would panic the firmware) and may draw from the
-// lent Gigascreen arena during a paused network session, like every other net
-// buffer in this firmware. All calls come from cyw43_arch_poll() on core0.
+// NULL on exhaustion (pico_malloc would panic the firmware). All calls come from
+// cyw43_arch_poll() on core0.
+//
+// Deliberately NOT USE_NET_ARENA, unlike every other net buffer here. That arena
+// is the Gigascreen prev-FB, lent for the duration of ONE paused OSD action and
+// then memset and handed back. lwIP's state does not fit that lifetime: it is
+// session-scoped (the netif, DHCP/ARP entries and the SNTP udp_pcb outlive any
+// single action — the pcb is created once and never freed), so anything of its
+// that landed in the arena would be blended over by Gigascreen the moment the
+// action ended. The arena exists for the TLS/socket working set, which IS
+// action-scoped; lwIP takes the ordinary heap/butter tiers instead.
 extern "C" void* picospeccy_lwip_malloc(size_t n) {
-    return Buffer::palloc(n, Buffer::NEED_POINTER | Buffer::USE_NET_ARENA);
+    return Buffer::palloc(n, Buffer::NEED_POINTER);
 }
 extern "C" void* picospeccy_lwip_calloc(size_t n, size_t sz) {
     const size_t total = n * sz;
-    void* p = Buffer::palloc(total, Buffer::NEED_POINTER | Buffer::USE_NET_ARENA);
+    void* p = Buffer::palloc(total, Buffer::NEED_POINTER);
     if (p) memset(p, 0, total);
     return p;
 }
@@ -268,6 +276,15 @@ char      a_pass[65] = {0};
 
 uint32_t nowMs() { return to_ms_since_boot(get_absolute_time()); }
 
+// Stop the background join/SNTP FSM. Any FOREGROUND use of the radio (the menu's
+// scan, connect or disconnect) takes it over, and the boot FSM must not keep
+// driving it from behind: its state survives a WiFi off/on (autoPoll is only
+// called while Config::wifi_enabled, so the FSM freezes rather than ending), and
+// on the next tick after the user reconnected it would find its 20 s deadline
+// long expired, log "join try N ended link=..." over whatever is on screen and
+// re-issue cyw43_arch_wifi_connect_async under the association just made.
+void autoCancel() { a_state = A_IDLE; }
+
 void autoJoin() {
     a_join_tries++;
     cyw43_arch_enable_sta_mode();
@@ -322,6 +339,7 @@ bool ipString(char* out, size_t cap) {
 
 int connect(const char* ssid_, const char* pass, uint32_t timeout_ms) {
     if (!s_ready) { wlog("WiFi: radio not up"); return PICO_ERROR_GENERIC; }
+    autoCancel();               // the user is driving the radio now
     snprintf(s_ssid, sizeof(s_ssid), "%s", ssid_ ? ssid_ : "");
     cyw43_arch_enable_sta_mode();
     wlog("WiFi: joining \"%s\" ...", s_ssid);
@@ -342,6 +360,7 @@ int connect(const char* ssid_, const char* pass, uint32_t timeout_ms) {
 
 void disconnect() {
     if (!s_ready) return;
+    autoCancel();               // or the boot FSM re-joins behind the user's back
     cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
     wlog("WiFi: disconnected");
 }
@@ -362,6 +381,7 @@ int scanCb(void* env_, const cyw43_ev_scan_result_t* r) {
 
 int scan(std::string* out, int maxn, uint32_t timeout_ms) {
     if (!s_ready) return 0;
+    autoCancel();               // a scan cannot share the radio with a join
     ScanEnv env{ out, 0, maxn };
     cyw43_arch_enable_sta_mode();
     cyw43_wifi_scan_options_t opts; memset(&opts, 0, sizeof(opts));
@@ -394,6 +414,16 @@ void autoBegin(const char* ssid_, const char* pass, int tz) {
     snprintf(s_ssid, sizeof(s_ssid), "%s", ssid_ ? ssid_ : "");
     snprintf(a_pass, sizeof(a_pass), "%s", pass ? pass : "");
     a_tz = tz; a_join_tries = 0; a_sntp_tries = 0;
+    // Already associated — the user joined by hand from the menu before the boot
+    // timer fired (now possible at any moment, since the FSM is stepped from the
+    // OSD's idle loops too). Re-issuing connect_async would drop a working
+    // association and redo it; only the time is still missing, so start at SNTP.
+    if (isConnected()) {
+        if (!sntpStart()) { a_state = A_FAIL; return; }
+        a_send_deadline = 0;
+        a_state = A_SNTP; a_deadline = nowMs() + 15000;
+        return;
+    }
     autoJoin();
 }
 

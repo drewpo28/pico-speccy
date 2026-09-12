@@ -255,7 +255,7 @@ void joyMappingPage() {
             } else testExit = 0;
         }
 
-        if (!kbd->virtualKeyAvailable()) { sleep_ms(s_test ? 50 : 5); continue; }
+        if (!kbd->virtualKeyAvailable()) { uiIdle(s_test ? 50 : 5); continue; }
         if (!ESPectrum::readKbd(&k) || !k.down) continue;
 
         if (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1) {

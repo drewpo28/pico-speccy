@@ -79,5 +79,14 @@ bool uiClockDirty();             // minute rolled over since the last draw
 void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg,
                    UiColor ink = C_TEXT_DIM);
 
+// The idle wait of EVERY key loop in this UI — use it instead of sleep_ms().
+// The menu owns the CPU while it is open (ESPectrum::loop does not run), so
+// anything asynchronous the firmware is in the middle of stops dead for as long
+// as the user sits in a menu. This hands those a step before sleeping: today the
+// WiFi join / SNTP state machine and the CYW43+lwIP poll, which otherwise never
+// completed while the Network page — the one place you actually watch for it —
+// was on screen.
+void uiIdle(int ms = 5);
+
 } // namespace nm
 

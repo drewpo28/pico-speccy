@@ -94,6 +94,11 @@ const Option* zifi_transportOpts(uint8_t& cnt);
 // invalidation). Invalidate whenever an action changed the link state.
 const char* vl_wifi();
 void netStatusInvalidate();
+// Idle-loop poll: true when the link state moved under us (the background join
+// finished, or dropped) and the WiFi row's label has to be redrawn. Cheap — it
+// only reads flags the state machines already keep; the blocking status query
+// still happens at most once per change, inside the next vl_wifi().
+bool netStatusTick();
 
 // Debug
 void act_debugDialog();

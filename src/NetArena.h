@@ -48,7 +48,13 @@ struct NetArenaLease {
         }
     }
     ~NetArenaLease() {
-        if (held) { Buffer::reclaimArena(); VIDEO::gigascreenReclaimRegion(); }
+        // Only take the region back if the allocator actually released it. A
+        // refusal means something still lives in there (the on-chip lwIP stack
+        // keeps state for the whole session, not just this action), and
+        // gigascreenReclaimRegion() memsets the region before re-attaching it —
+        // which would wipe live network structures. Keep the lease instead:
+        // Gigascreen stays quiet until a reboot, nothing gets corrupted.
+        if (held && Buffer::reclaimArena()) { held = false; VIDEO::gigascreenReclaimRegion(); }
         if (released) VIDEO::gigascreenRestoreAfterNet();
     }
 };

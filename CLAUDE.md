@@ -6349,6 +6349,41 @@ are accepted now (`g_hdr_recvdata_v4`); `+IPD` parsing is untouched. Assumes
 `AT+CIPDINFO=0` (default, never sent) — with it on ESP-AT inserts `"<ip>",<port>,`
 before the data and the ESP-AT form would need two more fields.
 
+### The menu owns the CPU — anything asynchronous must be pumped from `nm::uiIdle` (2026-09-12, NOT hw-tested)
+
+"WiFi connects in 5-10 s if you leave the menu alone, and NEVER connects while you
+sit on the Network page." Nothing was wrong with the radio: `ESPectrum::loop` does
+not run while the OSD is open, and it was the only caller of `WifiNet::poll()`
+(the CYW43/lwIP poll that delivers the join result, DHCP and the SNTP reply) and
+of the boot join/SNTP state machine. Both simply froze for as long as a menu was
+on screen — including the one page where the user is actually watching for the
+result.
+
+- **`ESPectrum::netBackgroundTick()`** is that work, extracted out of `loop()`
+  (its two `static`s went with it, so the 4 s boot timer is unchanged). loop()
+  calls it once per frame; **`nm::uiIdle(ms)` (UiRender.cpp) calls it and then
+  sleeps**, and every key loop in `src/ui/` uses `uiIdle()` in place of
+  `sleep_ms(5)`. The classic dialogs the nm:: UI still calls into —
+  `showTextDialog`, `msgDialog`, `inlineTextEdit` — pump it directly. Deliberately
+  NOT pumped: `errorHalt` (fatal) and the debugger's key loops.
+- **`ZiFiAT::uiBusy()`** (its log sink is armed = a WiFi/SNTP page is on screen)
+  gates the FSM half. Those flows call `WifiNet::autoCancel()` on purpose — the
+  user is driving the radio — and without the gate the now-always-running boot
+  timer could fire `autoSyncBegin` while the user is mid-password. `WifiNet::poll()`
+  still runs there, which is what the log pane's own wait needs.
+- **`WifiNet::autoBegin` starts at SNTP when the link is already up** instead of
+  re-issuing `connect_async`: joining by hand from the menu before the 4 s timer
+  fires is now reachable, and a blind re-join would drop the association just made.
+- `netStatusTick()` (UiActions.cpp) is the nav loop's cheap "did the link move?"
+  test — built only from `ZiFiAT::connected` / `autoSyncBusy()`, never a status
+  query — so the WiFi row repaints "connecting..." → "On <ip>" live, while the ESP
+  path's BLOCKING `getStatus` still runs at most once per transition (lazily, in
+  the next `vl_wifi()`).
+
+The general rule this leaves behind: **a menu key loop is a second main loop.**
+Anything the firmware advances one step at a time — a radio join, a transfer, a
+state machine — needs a call from `uiIdle()`, or it stops the moment F1 is pressed.
+
 ### Baud ceilings (transport-dependent, `src/ZiFi.cpp`)
 
 - Menu (Network → Baud) offers 115200/230400/460800/921600; the link idles at

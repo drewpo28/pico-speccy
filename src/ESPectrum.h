@@ -125,6 +125,14 @@ public:
     static void tsBootKeyArm(fabgl::VirtualKey vk);
     static void tsBootKeyTick();
 
+    // One step of the background network housekeeping: the on-chip radio / lwIP
+    // poll and the boot-time WiFi join + SNTP state machine. loop() calls it once
+    // per frame, and the OSD's key loops call it from their idle sleeps
+    // (nm::uiIdle) — the join is asynchronous, so without a pump from inside the
+    // menu it simply freezes for as long as the menu is open, which is exactly
+    // where the user is most likely to be waiting for it.
+    static void netBackgroundTick();
+
     // Kbd
     static void processKeyboard();
     static void bootKeyboard();

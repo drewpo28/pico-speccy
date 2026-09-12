@@ -713,13 +713,21 @@ resume:
             flushDirty();
         }
         if (!S.quit) {
-            sleep_ms(5);
+            uiIdle();
             if (menuMarqueeTick()) {
                 markLeftRow(curLevel().sel - curLevel().top);
                 flushDirty();
             }
             if (uiClockDirty()) {
                 markDirty(D_HEADER);
+                flushDirty();
+            }
+            // The background join steps inside uiIdle() above, so its result
+            // arrives while the user is sitting on the Network page watching the
+            // WiFi row. Repaint it (and the right pane, which carries the same
+            // value) the moment it moves: "connecting..." -> "On <ip>".
+            if (netStatusTick()) {
+                markDirty(D_LEFT | D_RIGHT);
                 flushDirty();
             }
             if (FileUtils::storageTick() != FileUtils::StorageEvent::None)

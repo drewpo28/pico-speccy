@@ -285,6 +285,7 @@ string OSD::inlineTextEdit(int ex, int ey, int maxlen, const string& initial_tex
     while (1) {
         // Blink cursor while waiting for keypress
         while (!Kbd->virtualKeyAvailable()) {
+            ESPectrum::netBackgroundTick();  // a field can be open for minutes
             sleep_ms(5);
             if ((++blinkCtr & 0x7) == 0)
                 redraw((blinkCtr & 0x20) == 0);
@@ -5226,7 +5227,7 @@ void OSD::showTextDialog(const char* title, const char* text, bool blocking, int
             needRedraw = false;
         }
         if (!ESPectrum::PS2Controller.keyboard()->virtualKeyAvailable()) {
-            if (blocking) { sleep_ms(5); continue; }
+            if (blocking) { ESPectrum::netBackgroundTick(); sleep_ms(5); continue; }
             else break;  // очередь пуста — выходим, caller сам перерисует позже
         }
         ESPectrum::PS2Controller.keyboard()->getNextVirtualKey(&Nextkey);
@@ -7391,6 +7392,7 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
                 }
             }
         }
+        ESPectrum::netBackgroundTick();   // the dialog may sit open indefinitely
         sleep_ms(5);
     }
 
