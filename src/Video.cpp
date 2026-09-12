@@ -5245,7 +5245,12 @@ void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st,
     // repaints it only after EndFrame — a content line that overwrites it makes it
     // blink (hw 2026-09-06, TS modes whose content covers those rows). Same
     // carve-out as Update_Border_DS80 / gmxBorderFrame: leave those bytes alone.
-    const bool osdCarve = (VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04);
+    // One rectangle covers BOTH boxes — they share it and are never up at the
+    // same time (drawVolumeBox takes over while OSD bit 2 is set) — so the test
+    // is gmxBorderFrame's `any OSD box`, not "stats only": the volume box is
+    // drawn once per keypress and nothing repaints it per frame outside DS80,
+    // so excluding it left the content line erasing it a frame later.
+    const bool osdCarve = (VIDEO::OSD & 0x07) != 0;
     int cx0 = (xres >= 360) ? 188 : 168, cx1 = cx0 + 24 * 6;
     const int cy0 = ((int)vga.yres >= 288) ? 268 : 220;
     bool carveRow = osdCarve && (int)frow >= cy0 && (int)frow < cy0 + 16;

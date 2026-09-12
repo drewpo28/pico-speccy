@@ -2758,7 +2758,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 bool hasFdd = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion)
                                 || (Z80Ops::is128 && Z80Ops::isByte)
                                 || ((Z80Ops::is48 || Z80Ops::is128) && MB02::enabled)
-                                || Z80Ops::isP3)
+                                || Z80Ops::isP3
+                                || Z80Ops::isTsconf)
                         && Tape::tapeStatus != TAPE_LOADING
                     && !DivMMC::enabled
                     ;
