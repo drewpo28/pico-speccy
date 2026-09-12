@@ -2300,20 +2300,62 @@ ISR cost; `intMiss`/`brdT`/`d`/`intT`/`haltT` in `[PERF] 60f`.
   `BREAKPOINTS` in `CPU::loop`, i.e. at the end of a SLICE. The reported PC can be
   many instructions past the write.
 
-### "Across the Edge" border is 6 T late on TS-Conf and Pentagon is exact — OPEN
+### "Across the Edge" border was 8 T late on TS-Conf — FIXED 2026-09-12, NOT hw-tested
 
 Same demo, same firmware, two machines: on Pentagon the border split is a clean
 vertical line at fb x=160 on every row; on TS-Conf the top and bottom border
-bands sit at x=176 (the middle rows measure the paper content, which is identical
+bands sat at x=176 (the middle rows measure the paper content, which is identical
 — do not read them as border). 16 px = 8 T. Measure with a per-scanline
 first-dark-pixel scan; eyeballing a 16 px step in a border band does not work.
 
-**Our CPU is exact and that is measured**: the guest spends an identical
+**Our CPU is exact and that was measured**: the guest spends an identical
 **1638 T** between taking the interrupt and its first `OUT (#FE)` on both
-machines (`d=` in `[PERF] 60f`). The whole difference is WHERE the interrupt is
-accepted: `intT` = 0..3 on Pentagon, 6..9 on TS-Conf.
+machines (`d=` in `[PERF] 60f`). The whole difference was WHERE the interrupt is
+accepted: `intT` = 0..3 on Pentagon, 6..9 on TS-Conf. **Two defects, both
+shifting the effect the same way (right), and they account for that delta
+exactly**: of the ~6 T, **4 T** is an emulator bug (defect 1 below) and **2 T**
+is the window legitimately opening at hsint=2 — which is only a difference at
+all because the raster was anchored as if it opened at 0 (defect 2). Fixing one
+without the other moves the split without landing it, which is what the
+2026-09-09 session kept seeing.
 
-What the RTL says (`video_sync.v:132`):
+**1. The interrupt was delivered a whole instruction late (4 T out of HALT).**
+Stage D (`CPU::loop`) answered "the INT line is up at an instruction boundary"
+with `Z80::execute()` — and `execute()` FETCHES AND RUNS a whole instruction and
+only calls `checkINT()` at its END. Out of HALT that is the 4 T fetch of a NOP
+the CPU never had to execute; elsewhere it is one full instruction. Every other
+machine takes its interrupt on the boundary for a reason worth knowing: their
+checked loop reaches the window from the PREVIOUS frame's tail — the last
+`execute()` of `while (tstates < statesInFrame)` overshoots the frame end, and
+the wrap inside `Z80Ops::isActiveINT` (`tmp -= statesInFrame`) already has the
+line up there, so the INT is taken at the overshoot itself, i.e. `intT` = 0..3.
+Stage D now calls `Z80::checkINT()` at the boundary and only falls back to
+`execute()` when it did not fire (pendingEI — an EI defers by exactly one
+instruction — or a half-decoded prefix). Side effect worth keeping: the skipped
+NOP was also double-counting `regR`, which `haltAdvanceTo` already accounts for
+the whole sleep.
+- **`checkINT()` from outside `execute()` needs a prefix guard**, hence the new
+  `Z80::atInstrBoundary()` (`prefixOpcode == 0`). Both `execute()` and
+  `exec_nocheck()` can RETURN with a DD/FD/ED/CB byte fetched and the
+  instruction unfinished (`else continue` in exec_nocheck's loop), and a Z80
+  never samples INT between a prefix and its opcode. The pre-existing
+  `checkINT()` after `exec_nocheck()` in Stage D had the same hole and now
+  shares the guard.
+
+**2. The raster was anchored 2 T early (the remaining 2 T).**
+TS-Conf's frame counter is anchored on the RASTER ORIGIN (hcount=0, vcount=0),
+not on the interrupt, because the FRAME INT is programmable and sits at
+`vsint*224 + hsint` = 2 at reset, where every other machine has `IntStart = 0`.
+The paper anchor therefore has to be Pentagon's **+ 2**, or the INT→paper
+distance every border effect is timed against comes out 2 T short. New
+`TS_SCREEN_TSCONF` (17985) and `TS_BORDER_{320x240,360x240,360x288}_TSCONF`
+(Pentagon + 2) in Video.h, used by `VIDEO::Reset` and by both `tStatesScreen`
+sites in `tsVideoApplyPending`. The whole-line renderer's `ts_line_t` and the
+LINE-INT `tsNextLineStart()` (multiples of `tsLineT()` from T=0) already read
+the raster origin correctly and needed nothing — which is itself confirmation
+that T=0 = raster origin is the right model.
+
+The arithmetic, from the RTL (`video_sync.v:132`):
 ```verilog
 assign int_start_s = (hcount == {hint_beg, 1'b0}) && (vcount == vint_beg) && c0;
 ```
@@ -2321,32 +2363,55 @@ assign int_start_s = (hcount == {hint_beg, 1'b0}) && (vcount == vint_beg) && c0;
 `vsint*224 + hsint` is right. With the reset hsint=2 the interrupt is at hcount 4
 of line 0; paper (256x192) starts at vp_beg=80 / hp_beg=140; so hardware puts
 **(80*448 + 140 - 4)/2 = 17988 T** between the interrupt and the first paper
-pixel. Ours is `TS_SCREEN_PENTAGON (17983) - 2 = 17981`. Whether the right
-correction is 2 or 7 depends on whether our Pentagon constant already carries a
-convention offset against the textbook 17988 — unresolved, and guessing between
-them is what wasted the evening. The datasheet's own
+pixel — **exactly Pentagon's own 17988**, which is what makes a ZX-Evo
+Pentagon-compatible. The earlier session could not decide whether the correction
+was 2 or 7; it is **2**, because our Pentagon constant 17983 already carries this
+renderer's 5 T pipeline convention (every border constant in Video.h spells out
+the same `+5`/`+4`, and `TS_BORDER_320x240_PENTAGON` is exactly
+`17983 - 24*224 - 16 + 4`). 17990 − 5 = 17985. The datasheet's own
 `Pentagon-128 compatibility / INT position` section is an EMPTY STUB.
 
-**Dead ends, all reverted (2026-09-09):**
-- Biasing the INT position by 2 (moved the split 176 → 168, did not land) and by
-  **7 — which BREAKS THE MACHINE**: `vsint=0/hsint=2` makes the position
+**Dead ends, all reverted (2026-09-09), and still dead:**
+- **Biasing the INT position** by 2 (moved the split 176 → 168, did not land) and
+  by **7 — which BREAKS THE MACHINE**: `vsint=0/hsint=2` makes the position
   negative, it wraps to 71675, and `frameIntRecalc`'s straddle truncation cuts
   the window from 32 T to 5. Interrupts are lost wholesale and the keyboard dies
-  with them, since TS-BIOS and TR-DOS read it from the handler. **That truncation
-  is a real mine for any VSINT near the frame end and should be fixed by making
-  the window wrap.**
+  with them, since TS-BIOS and TR-DOS read it from the handler. The fix is to
+  move the RASTER, as above — `hsint` keeps meaning what the RTL says it means.
+  **That truncation is still a real mine for any VSINT near the frame end and
+  should be fixed by making the window wrap.**
 - Rounding the HALT sleep up to whole NOPs in Stage D. A HALTed Z80 really does
-  sample INT only on its 4 T grid (Pentagon gets this free by stepping
-  `Z80::execute()`, and Unreal's `z80loop_TSL` steps instruction by instruction),
-  and `haltAdvanceTo` teleports straight to the event instead — but the change
-  moved the border without fixing it, so it was backed out. Re-open only with a
-  test it decides.
+  sample INT only on its 4 T grid, and `haltAdvanceTo` teleports straight to the
+  event instead — but the change moved the border without fixing it, so it was
+  backed out. With defect 1 fixed the wake lands exactly on the window start, so
+  there is even less to gain; re-open only with a test it decides.
 - Unreal cannot arbitrate the FRAME window: `frame_len` is **never assigned** in
   any of its 168 source files, in the 2015, 2020 and 2024 revisions
   (`COMPUTER comp;` is a plain global, so it is 0 forever), which makes
   `f1 = (cpu.t - frame_t) < 0u` always false. Also note its `cpu.t` counts
   3.5 MHz T-states (`cputact(a) → tt += a*rate`, `turbo(a) → rate = 256/a`), not
   Z80 clocks, so any constant taken from it needs converting.
+
+**What to check on hardware**: "Across the Edge" on TS-Conf against Pentagon
+(the split must land on the same fb column, x=160), `intT` in `[PERF] 60f` (must
+now read Pentagon's value **+2** — 2..5 where it read 6..9 — with the raster
+anchor carrying the other 2, and `d=` must still be 1638), Ninja
+Gaiden's raster split (`frmInt` ≈ 120/60f, `frmLate` 0 — the interrupt now
+arrives one instruction earlier inside its handler-driven VSINT walk), fishbone
+(its 289 windows a frame put the most pressure on the accept path), and a plain
+TS-BIOS / TR-DOS boot plus one .spg for "the keyboard still works".
+
+**Still open and NOT this bug: the ZX-mode beam renderer does not rescale for
+turbo.** `CPU::tstates` are turbo-scaled (`statesInFrame <<= m`) while
+`tStatesScreen` / `tStatesBorder` / `tStatesPerLine` and every column counter
+inside `MainScreen`/`Border*` are not, so at ZCLK 7/14 MHz the ZX picture is
+drawn in half / a quarter of the frame and any border effect the guest times
+itself lands compressed by the same factor. It bites TS-Conf hardest because
+there the clock is a REGISTER the guest writes (TS-BIOS Setup, .spg headers and
+games all ask for 14 MHz), where on Pentagon-1024 / Profi it needs the user to
+opt into turbo. The whole-line TS renderer already scales (`ts_line_t =
+tStatesScreen << m`, `+= tStatesPerLine << m`); fixing the beam-raced one means
+scaling every threshold in the hot path of EVERY machine, so it is its own job.
 
 ### LDIR/LDDR batching removed, and the SRAM-layout lever it exposed (2026-09-09)
 

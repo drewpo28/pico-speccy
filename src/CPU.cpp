@@ -472,9 +472,36 @@ IRAM_ATTR void CPU::loop() {
                 if (wake > tstates) { ts_idle += wake - tstates; haltAdvanceTo(wake); continue; }
             }
             if (Z80::isIFF1() && TsConf::intLine()) {
-                // INT line up and accepted: one checked instruction takes it
-                // (pendingEI after an EI defers it by exactly one instruction).
-                Z80::execute();
+                // The INT line is up and, prefixes aside, we are AT an
+                // instruction boundary: every way into this test lands on one
+                // (a HALT sleep that stopped exactly on the event,
+                // exec_nocheck's slice end, or a completed execute()). A Z80
+                // samples INT at that boundary, so take it HERE.
+                //
+                // This used to call Z80::execute(), which FETCHES AND RUNS a
+                // whole instruction and only checks the line at its END — 4 T
+                // late out of HALT (the fetch of a NOP the CPU never had to
+                // execute), one full instruction late otherwise. Every other
+                // machine gets the boundary for free: its checked loop reaches
+                // the window from the PREVIOUS frame's tail, where the wrap in
+                // Z80Ops::isActiveINT already has the line up, so the INT is
+                // taken at the frame-end overshoot itself. That is why the same
+                // demo read intT = 0..3 on Pentagon and 6..9 on TS-Conf, and
+                // why its border split landed right of Pentagon's (hw
+                // 2026-09-09). The other 2 T of that delta are the window
+                // legitimately opening at hsint=2, and the raster anchor
+                // carries them (TS_SCREEN_TSCONF, Video.h).
+                //
+                // ...unless a DD/FD/ED/CB prefix byte has been fetched and the
+                // instruction is unfinished — execute()/exec_nocheck() can both
+                // return in that state, and a Z80 never samples INT there.
+                if (Z80::atInstrBoundary()) Z80::checkINT();
+                // Not taken means pendingEI (an EI defers the interrupt by
+                // exactly one instruction) or a half-decoded prefix: either way
+                // run the instruction and let its own checkINT() take it.
+                // (checkINT clears IFF1 when it fires, so this doubles as the
+                // "was it taken" test.)
+                if (Z80::isIFF1()) Z80::execute();
             } else {
                 // Nothing can interrupt before the next INT event (frame end
                 // while interrupts are disabled — EI/RETN/RETI re-enabling them
@@ -488,8 +515,11 @@ IRAM_ATTR void CPU::loop() {
                 Z80::exec_nocheck();
                 if (stFrame == 0) continue;           // HALTed: the sleep above takes over
                 // The INT is accepted after the instruction that crossed the
-                // event boundary — same sampling point as execute().
-                Z80::checkINT();
+                // event boundary — same sampling point as execute(). The slice
+                // can end on a fetched prefix byte, though (exec_nocheck's
+                // `else continue` path), and that is mid-instruction: leave it
+                // to the next iteration, which finishes the instruction first.
+                if (Z80::atInstrBoundary()) Z80::checkINT();
             }
             if (Config::dma_mode) Z80DMA::handleDMA();
             if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {

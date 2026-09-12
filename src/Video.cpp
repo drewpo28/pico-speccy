@@ -3477,11 +3477,16 @@ void VIDEO::Reset() {
                       : TS_BORDER_320x240;
     } else if (Config::arch == A_TSCONF) {
         // TS-Conf raster is identical to Pentagon (320 lines x 448 px-periods
-        // = 224 T/line, 71680 T/frame) — every constant is reused verbatim.
+        // = 224 T/line, 71680 T/frame) — but our frame counter is anchored on
+        // the RASTER ORIGIN here, not on the interrupt, because the FRAME INT
+        // is programmable (vsint*224 + hsint, = 2 at reset). The paper/border
+        // anchors are therefore Pentagon's + 2, which is what puts the same
+        // 17988 T between the accepted interrupt and the first paper pixel on
+        // both machines. See TS_SCREEN_TSCONF in Video.h.
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
-        tStatesScreen = TS_SCREEN_PENTAGON;
-        tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
-                      : TS_BORDER_320x240_PENTAGON;
+        tStatesScreen = TS_SCREEN_TSCONF;
+        tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_TSCONF : TS_BORDER_360x288_TSCONF)
+                      : TS_BORDER_320x240_TSCONF;
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
 
@@ -4936,7 +4941,7 @@ void VIDEO::tsVideoApplyPending() {
         if (isFullBorder && !isFullBorder240()) { lin_end = 48; lin_end2 = 240; }
         else                                    { lin_end = 24; lin_end2 = 216; }
         ts_crop_top = 0;
-        tStatesScreen = TS_SCREEN_PENTAGON;
+        tStatesScreen = TS_SCREEN_TSCONF;
         DrawBorder = &Border_Blank;   // mid-frame border state is stale — skip this frame
         brdChange = true;
         brdnextframe = true;
@@ -4955,7 +4960,7 @@ void VIDEO::tsVideoApplyPending() {
         // The renderer is paced by tstateDraw, seeded from tStatesScreen each
         // frame: move it to the first RENDERED content line (ZX's own start is
         // TS line 80 = ub 48).
-        tStatesScreen = TS_SCREEN_PENTAGON + ((int)g.ub - 48 + crop) * (int)tStatesPerLine;
+        tStatesScreen = TS_SCREEN_TSCONF + ((int)g.ub - 48 + crop) * (int)tStatesPerLine;
         DrawBorder = &Border_Blank;   // bands are painted frame-granular instead
         gmx_border_dirty = true;
         if (!wantPal256) tsCramDirty = true;   // 16c / TEXT re-derive their 16

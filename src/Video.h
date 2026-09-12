@@ -69,6 +69,19 @@ static constexpr size_t GIGASCREEN_PREVFB_HEADROOM = 16 * 1024;
 #define TS_SCREEN_48           14335  // START OF ULA DRAW PAPER 48K
 #define TS_SCREEN_128          14361  // START OF ULA DRAW PAPER 128K
 #define TS_SCREEN_PENTAGON     17983  // START OF ULA DRAW PAPER PENTAGON
+// TS-Conf's frame counter is anchored on the RASTER ORIGIN (hcount=0, vcount=0),
+// not on the interrupt: its FRAME INT is programmable and sits at vsint*224 +
+// hsint, which at reset (hsint=2, vsint=0) is T=2 — where every other machine
+// has IntStart=0. So the paper has to be anchored 2 T later than Pentagon's, or
+// the INT->paper distance every border effect is timed against comes out 2 T
+// short. The RTL gives the distance directly (video_sync.v / tsconf_en.md):
+// the interrupt is at hcount {hsint,0} = 4, paper (RRES 256x192) at vp_beg=80 /
+// hp_beg=140, so hardware puts (80*448 + 140 - 4) / 2 = 17988 T between them —
+// exactly Pentagon's own 17988, which is what makes a ZX-Evo Pentagon-compatible.
+// 17985 = 17990 (raster origin -> paper, (80*448 + 140) / 2) minus this
+// renderer's 5 T pipeline convention, the same one Pentagon's 17983 carries.
+// Independent of hsint on purpose: hsint moves the INTERRUPT, never the raster.
+#define TS_SCREEN_TSCONF       17985  // START OF ULA DRAW PAPER TS-CONF (PENTAGON + 2)
 #define TS_SCREEN_PROFI        12583  // START OF ULA DRAW PAPER PROFI (56*224+39)
 #define TS_SCREEN_BYTE         14392  // START OF ULA DRAW PAPER BYTE (64*224+56)
 
@@ -91,6 +104,7 @@ static constexpr size_t GIGASCREEN_PREVFB_HEADROOM = 16 * 1024;
 #define TS_BORDER_320x240 8948  // START OF BORDER 48 (+5 correction)
 #define TS_BORDER_320x240_128 8878  // START OF BORDER 128 (+5 correction)
 #define TS_BORDER_320x240_PENTAGON 12595  // START OF BORDER PENTAGON
+#define TS_BORDER_320x240_TSCONF 12597 // START OF BORDER TS-CONF (= PENTAGON + 2)
 #define TS_BORDER_320x240_PROFI 7195      // START OF BORDER PROFI (24 top lines, centred: 12583 - 24*224 - 16 + 4)
 #define TS_BORDER_320x240_BYTE 9005       // START OF BORDER BYTE (formula 9000 + 5)
 
@@ -103,12 +117,14 @@ static constexpr size_t GIGASCREEN_PREVFB_HEADROOM = 16 * 1024;
 #define TS_BORDER_360x288 3564          // START OF BORDER 48 FULL (formula 3559 + 5)
 #define TS_BORDER_360x288_128 3398      // START OF BORDER 128 FULL (formula 3393 + 5)
 #define TS_BORDER_360x288_PENTAGON 7209 // START OF BORDER PENTAGON FULL (formula 7205 + 4)
+#define TS_BORDER_360x288_TSCONF 7211 // START OF BORDER TS-CONF FULL (= PENTAGON + 2)
 #define TS_BORDER_360x288_PROFI 1809    // START OF BORDER PROFI FULL (= PENTAGON - 5400)
 #define TS_BORDER_360x288_BYTE 3621     // START OF BORDER BYTE FULL (formula 3616 + 5)
 
 #define TS_BORDER_360x240 8940          // START OF BORDER 48 HALF (formula 8935 + 5)
 #define TS_BORDER_360x240_128 8870      // START OF BORDER 128 HALF (formula 8865 + 5)
 #define TS_BORDER_360x240_PENTAGON 12585 // START OF BORDER PENTAGON HALF (formula 12581 + 4)
+#define TS_BORDER_360x240_TSCONF 12587 // START OF BORDER TS-CONF HALF (= PENTAGON + 2)
 #define TS_BORDER_360x240_PROFI 7185    // START OF BORDER PROFI HALF (24 top lines, centred: 12583 - 24*224 - 26 + 4)
 #define TS_BORDER_360x240_BYTE 8997     // START OF BORDER BYTE HALF (formula 8992 + 5)
 

@@ -366,6 +366,14 @@ public:
     // Acceso a los flip-flops de interrupción
     // Interrupt flip-flops
     static bool isIFF1(void) { return ffIFF1; }
+
+    // True when the core sits at an INSTRUCTION boundary, i.e. the only place a
+    // Z80 samples INT. A DD/FD/ED/CB prefix byte leaves prefixOpcode set and the
+    // instruction unfinished, and both execute() and exec_nocheck() can return
+    // in that state — so anything calling checkINT() from OUTSIDE execute()
+    // (CPU::loop's TS-Conf Stage D) has to ask first, or an interrupt can land
+    // between a prefix and its opcode.
+    static bool atInstrBoundary(void) { return prefixOpcode == 0; }
     static void setIFF1(bool state) { ffIFF1 = state; }
 
     static bool isIFF2(void) { return ffIFF2; }

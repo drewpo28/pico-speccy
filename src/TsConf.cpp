@@ -556,49 +556,31 @@ void TsConf::frameIntRecalc() {
         CPU::IntEnd = 0;
         return;
     }
-    // HSINT is measured from TS-Conf's own raster origin, which sits
-    // TS_HSINT_RASTER_BIAS T-states before the point our Pentagon-derived
-    // raster calls T=0. The ZX-Evo is Pentagon-compatible, so its RESET value
-    // (hsint = 2) has to put the frame interrupt exactly where a Pentagon's
-    // lands — otherwise no Pentagon software would keep its raster on an Evo.
-    // Measured: "Across the Edge" executes an identical 1638 T between the
-    // interrupt and its first OUT (#FE) on both machines, yet the interrupt
-    // itself was taken at T=0 on Pentagon and T~6 on TS-Conf, and its border
-    // split came out 8 px right (hw 2026-09-09).
-    // 0 = the hardware formula, and it stays 0: three biases were tried on
-    // 2026-09-09 against "Across the Edge" and none fixed its border on TS-Conf.
+    // The position is the hardware formula and nothing else: our frame counter
+    // is anchored on TS-Conf's RASTER ORIGIN (hcount=0, vcount=0), so the FRAME
+    // INT sits at vsint*224 + hsint verbatim. video_sync.v:132,
+    //   assign int_start_s = (hcount == {hint_beg, 1'b0}) && (vcount == vint_beg)
+    // — hcount counts 7 MHz pixel periods, so HSINT is in 3.5 MHz T-states and
+    // vsint*224 + hsint is right.
     //
-    // What the RTL does say (video_sync.v:132,
-    //   assign int_start_s = (hcount == {hint_beg, 1'b0}) && (vcount == vint_beg))
-    // is that hcount counts 7 MHz pixel periods, so HSINT is in 3.5 MHz T-states
-    // and our vsint*224 + hsint is right. It also fixes the one distance that
-    // matters: with the reset hsint=2 the interrupt sits at hcount 4 of line 0,
-    // paper (256x192) starts at vp_beg=80 / hp_beg=140, so hardware puts
-    // (80*448 + 140 - 4) / 2 = 17988 T between the interrupt and the first paper
-    // pixel. Ours is TS_SCREEN_PENTAGON (17983) - 2 = 17981, i.e. 7 T short —
-    // which is where the empirically "right" bias of 7 came from. Applying it to
-    // the INT position is WRONG though: that is the one direction that breaks,
-    // because pos goes negative and the straddle truncation below cuts the
-    // window from 32 T to 5 (interrupts lost wholesale, keyboard dead with them).
-    // If this is retried, move the RASTER instead — tStatesScreen for TS-Conf —
-    // and check the datasheet's own "Pentagon-128 compatibility / INT position"
-    // section, which is an empty stub as of this writing.
-    // Measured on "Across the Edge" (hw 2026-09-09), same effect on both
-    // machines: the guest spends an identical 1638 T between the interrupt and
-    // its first OUT (#FE), yet the interrupt was taken at T=0..3 on Pentagon and
-    // T=6..9 on TS-Conf, and the border split came out 16 px right. Those 6 T
-    // are 2 of window offset plus 4 of snapping: a HALTed Z80 samples INT only
-    // on its 4 T NOP grid, the grid is aligned to the frame end (71680 % 4 == 0)
-    // so its points are 0, 4, 8..., and a window opening at 2 is first seen at 4.
-    // With the bias the window opens at 0 and both effects vanish together.
-    // DO NOT make this larger than hsint: 7 was tried and BROKE THE MACHINE —
-    // pos goes negative, wraps to 71675, and the straddle truncation below cuts
-    // the window from 32 T to 5, so interrupts are lost wholesale and the
-    // keyboard dies with them (TS-BIOS and TR-DOS read it from the handler).
-    static constexpr int TS_HSINT_RASTER_BIAS = 0;
-    int32_t pos = (int32_t)r.vsint * TSTATES_PER_LINE_PENTAGON + (int32_t)r.hsint - TS_HSINT_RASTER_BIAS;
-    if (pos < 0) pos += (int32_t)(CPU::statesInFrame >> m);
-    uint32_t t = (uint32_t)pos << m;
+    // DO NOT BIAS THIS to make the interrupt land at T=0 the way every other
+    // machine's does. That was tried three times on 2026-09-09 and a bias of 7
+    // BREAKS THE MACHINE: with the reset vsint=0/hsint=2 the position goes
+    // negative, wraps to 71675, and the straddle truncation below cuts the
+    // window from 32 T to 5 — interrupts are lost wholesale and the keyboard
+    // dies with them (TS-BIOS and TR-DOS read it from the handler).
+    //
+    // The distance that actually matters — accepted interrupt to first paper
+    // pixel — is 17988 T on hardware, the same as a Pentagon's, which is what
+    // makes a ZX-Evo Pentagon-compatible. It is held by anchoring the RASTER
+    // two T later instead (TS_SCREEN_TSCONF / TS_BORDER_*_TSCONF, Video.h), so
+    // this window and the paper move together and hsint keeps meaning what the
+    // RTL says it means. The other half of the border error this used to carry
+    // was the interrupt being delivered a whole instruction late out of Stage D
+    // (CPU::loop, now Z80::checkINT() at the boundary instead of execute()).
+    // Bounded by the range check above (vsint <= 319, hsint <= 223), so it can
+    // never wrap the frame.
+    uint32_t t = ((uint32_t)r.vsint * TSTATES_PER_LINE_PENTAGON + r.hsint) << m;
     // zint.v counts the pulse in ZPOS ticks — Z80 clocks at the CURRENT ZCLK —
     // so the window is 32 of OUR T-states at every clock, not 32 scaled ones.
     // It was `32u << m` (128 at 14 MHz, 4x the hardware). Nothing observed was
