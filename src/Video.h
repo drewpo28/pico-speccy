@@ -69,18 +69,38 @@ static constexpr size_t GIGASCREEN_PREVFB_HEADROOM = 16 * 1024;
 #define TS_SCREEN_48           14335  // START OF ULA DRAW PAPER 48K
 #define TS_SCREEN_128          14361  // START OF ULA DRAW PAPER 128K
 #define TS_SCREEN_PENTAGON     17983  // START OF ULA DRAW PAPER PENTAGON
-// TS-Conf's frame counter is anchored on the RASTER ORIGIN (hcount=0, vcount=0),
-// not on the interrupt: its FRAME INT is programmable and sits at vsint*224 +
-// hsint, which at reset (hsint=2, vsint=0) is T=2 — where every other machine
-// has IntStart=0. So the paper has to be anchored 2 T later than Pentagon's, or
-// the INT->paper distance every border effect is timed against comes out 2 T
-// short. The RTL gives the distance directly (video_sync.v / tsconf_en.md):
-// the interrupt is at hcount {hsint,0} = 4, paper (RRES 256x192) at vp_beg=80 /
-// hp_beg=140, so hardware puts (80*448 + 140 - 4) / 2 = 17988 T between them —
-// exactly Pentagon's own 17988, which is what makes a ZX-Evo Pentagon-compatible.
-// 17985 = 17990 (raster origin -> paper, (80*448 + 140) / 2) minus this
-// renderer's 5 T pipeline convention, the same one Pentagon's 17983 carries.
-// Independent of hsint on purpose: hsint moves the INTERRUPT, never the raster.
+// TS-Conf's paper/border anchors are Pentagon's + 2, and the +2 is MEASURED,
+// not derived — one revert happened because it had only been derived.
+//
+// hw 2026-09-12, PERF_TRACE, "Across the Edge", the same scene on both machines,
+// 9 and 10 consecutive 60-frame windows, from [PERF] 60f:
+//     Pentagon  brdT min 1638   accept at raw t = 71680 (= statesInFrame, p = 0)
+//     TS-Conf   brdT min 1640   accept pinned at 2      intT = 2
+// with the SAME pair of guest INT->OUT deltas (1638 / 2266) on both, which is
+// what proves the guest is executing identically and the whole difference is
+// where the interrupt is accepted. brdT is CPU::tstates at the OUT (#FE), i.e.
+// pure guest time and independent of these constants, so the painted column
+// (tstates - tStatesBorder) matches Pentagon's only with tStatesBorder + 2.
+//
+// The reason is the accept, not the RTL: our frame counter is anchored on the
+// raster origin here, the FRAME INT is programmable and sits at vsint*224 +
+// hsint (= 2 at reset), and haltAdvanceTo teleports exactly onto that window
+// start — so TS-Conf's accept is PINNED at 2, while Pentagon's rides the Z80's
+// own 4 T NOP grid and reaches 0. (The RTL arithmetic — interrupt at hcount 4,
+// paper at vp_beg 80 / hp_beg 140, (80*448 + 140 - 4)/2 = 17988 T, Pentagon's
+// own figure, which is what makes a ZX-Evo Pentagon-compatible — lands on the
+// same +2, but it was not what settled it.)
+//
+// KNOWN RESIDUAL, do not chase it with another constant: Pentagon's accept is
+// not a constant. p = t_halt mod 4 jitters 0..3 between windows (intT in the
+// same capture reads 0,1,2,3), so +2 is exact only while p = 0, as it is in
+// this demo's border-effect scene; in its static scenes the two machines sit
+// within +-1 T of each other. The residual is bounded by Pentagon's own jitter
+// and no raster constant removes it for every title.
+//
+// 17985 = 17990 (raster origin -> paper) minus this renderer's 5 T pipeline
+// convention, the same one Pentagon's 17983 carries. Independent of hsint on
+// purpose: hsint moves the INTERRUPT, never the raster.
 #define TS_SCREEN_TSCONF       17985  // START OF ULA DRAW PAPER TS-CONF (PENTAGON + 2)
 #define TS_SCREEN_PROFI        12583  // START OF ULA DRAW PAPER PROFI (56*224+39)
 #define TS_SCREEN_BYTE         14392  // START OF ULA DRAW PAPER BYTE (64*224+56)

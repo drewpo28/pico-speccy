@@ -405,6 +405,11 @@ IRAM_ATTR void CPU::step() {
 #define BREAKPOINTS if (pbbp || (nbp > 0 && Config::hasBreakPoint(Z80::getRegPC(), Config::BP_PC))) { VIDEO::EndFrame(); return; }
 
 
+// Phase of the CPU's own 4 T NOP grid while it sits in HALT, taken at the
+// instant it entered one. File scope because a HALT spans the frame boundary.
+static uint32_t ts_halt_phase = 0;
+static bool     ts_halt_phase_set = false;
+
 IRAM_ATTR void CPU::loop() {
     uint64_t _loop_t0 = time_us_64();
     bool pbbp = CPU::portBasedBP;
@@ -463,14 +468,37 @@ IRAM_ATTR void CPU::loop() {
                 // per-line effect programmed after the wake still renders right.
                 uint32_t wake = Z80::isIFF1() ? TsConf::nextIntEvent() : statesInFrame;
                 if (wake > statesInFrame) wake = statesInFrame;
-                // NB a HALTed Z80 really does sample INT only on its own 4 T NOP
-                // grid, so sleeping straight to the event accepts up to 3 T early.
-                // Rounding the sleep up to whole NOPs was tried on 2026-09-09 and
-                // REVERTED: it changed "Across the Edge"'s border on TS-Conf but
-                // did not fix it, and unproven timing changes on this path are not
-                // worth their risk. Re-open it only with a test that it decides.
+                // A HALTed Z80 samples INT only on its own 4 T NOP grid, and that
+                // grid is anchored where it ENTERED HALT — not on the raster. So
+                // sleeping straight to the event accepts up to 3 T early, and the
+                // error is the guest's HALT phase, which is why it moves from
+                // scene to scene and no raster constant can absorb it.
+                //
+                // Snapping the wake back onto the grid is what makes TS-Conf agree
+                // with Pentagon in EVERY frame: the distance from the HALT to the
+                // interrupt is a property of the guest, identical on both machines,
+                // so both then accept at the same offset past their own interrupt.
+                // Without it TS-Conf accepts exactly AT its window (offset 0) while
+                // Pentagon accepts p = (halt T) mod 4 past its own — measured on
+                // "Across the Edge" (hw 2026-09-12): Pentagon's intT read 0, 1 and 3
+                // in consecutive windows of one scene while TS-Conf sat pinned at 2,
+                // and its border effect came out exactly p columns left of
+                // Pentagon's (2 px per column).
+                //
+                // An earlier attempt on 2026-09-09 was reverted as "moved the
+                // border but did not fix it" — it predates both the INT-at-the-
+                // boundary fix and the +2 raster anchor, either of which alone
+                // leaves the border in the wrong place anyway.
+                if (!ts_halt_phase_set) { ts_halt_phase = tstates & 3u; ts_halt_phase_set = true; }
+                if (wake < statesInFrame) {
+                    // statesInFrame is a multiple of 4, so the phase survives the
+                    // frame wrap; never round past the frame end, where the loop
+                    // would exit with the interrupt unhandled.
+                    uint32_t d = (wake - ts_halt_phase) & 3u;
+                    if (d) { uint32_t w2 = wake + (4u - d); if (w2 < statesInFrame) wake = w2; }
+                }
                 if (wake > tstates) { ts_idle += wake - tstates; haltAdvanceTo(wake); continue; }
-            }
+            } else ts_halt_phase_set = false;   // re-taken at the next HALT
             if (Z80::isIFF1() && TsConf::intLine()) {
                 // The INT line is up and, prefixes aside, we are AT an
                 // instruction boundary: every way into this test lands on one

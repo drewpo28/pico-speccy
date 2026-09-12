@@ -2300,24 +2300,49 @@ ISR cost; `intMiss`/`brdT`/`d`/`intT`/`haltT` in `[PERF] 60f`.
   `BREAKPOINTS` in `CPU::loop`, i.e. at the end of a SLICE. The reported PC can be
   many instructions past the write.
 
-### "Across the Edge" border was 8 T late on TS-Conf — FIXED 2026-09-12, NOT hw-tested
+### "Across the Edge" border was 8 T late on TS-Conf — FIXED, hw-confirmed 2026-09-12
 
 Same demo, same firmware, two machines: on Pentagon the border split is a clean
-vertical line at fb x=160 on every row; on TS-Conf the top and bottom border
-bands sat at x=176 (the middle rows measure the paper content, which is identical
-— do not read them as border). 16 px = 8 T. Measure with a per-scanline
-first-dark-pixel scan; eyeballing a 16 px step in a border band does not work.
+vertical line at fb x=160; on TS-Conf the top and bottom border bands sat 16 px
+right of it. **Measure with a per-scanline first-dark-pixel scan over a
+framebuffer capture**, and know the scale: `brdcol_cnt` counts T-states and the
+Pentagon border machine (`Update_Border_XOR`, `brdcol_step` 1) writes one
+`uint16` = **2 px per T-state**, so 16 px = 8 T and 4 px = 2 T.
 
-**Our CPU is exact and that was measured**: the guest spends an identical
-**1638 T** between taking the interrupt and its first `OUT (#FE)` on both
-machines (`d=` in `[PERF] 60f`). The whole difference was WHERE the interrupt is
-accepted: `intT` = 0..3 on Pentagon, 6..9 on TS-Conf. **Two defects, both
-shifting the effect the same way (right), and they account for that delta
-exactly**: of the ~6 T, **4 T** is an emulator bug (defect 1 below) and **2 T**
-is the window legitimately opening at hsint=2 — which is only a difference at
-all because the raster was anchored as if it opened at 0 (defect 2). Fixing one
-without the other moves the split without landing it, which is what the
-2026-09-09 session kept seeing.
+**`[PERF] brd:` is the instrument that cracked it — keep it.** It records the
+COLUMN the border machine is about to paint with a new colour, for changes
+landing in the visible top band (`video_perf_border_mark`, called from the
+`OUT (#FE)` handler right after `DrawBorder()` has caught up with the old
+colour, so `brdcol_cnt` is the first column not yet painted — exactly the
+"first changed pixel" a screenshot measures, at fb byte 2*col). Three things
+about getting there are worth not repeating:
+
+- **`brdT` cannot answer this question.** It is the FIRST border change of the
+  frame, and this demo makes that one at T=1638 — line 7, deep in the invisible
+  overscan — while the split being measured is painted thousands of T later
+  inside the band. `brdT` pins the two machines' guest TIMELINES (1638 vs 1640),
+  which is necessary and was not sufficient.
+- **min..max is useless here; log DISTINCT columns with hit counts.** A wipe
+  demo rewrites the border colour at the START of every line as well as at the
+  split, so the min is pinned to column 0 for ever and says nothing. Six slots
+  with counts separate them: the line-start write shows as col 0 with a big
+  count, each effect column as its own with ~24 (one per band line).
+- **Screenshots cannot settle it and cost three rounds.** The border edge and
+  the paper edge need not coincide (the paper comes from screen data at a fixed
+  fb column, the border from a timed `OUT`), an animating demo puts them in
+  different places in different scenes, and two captures from different builds
+  or different scenes are not comparable. Every wrong conclusion in this
+  investigation came from comparing captures; every right one from the counters.
+  A capture IS reliable for one thing: edges are perfectly sharp (checked
+  pixel by pixel), so within ONE capture the band-vs-paper offset is exact.
+
+**THREE defects, all shifting the effect right, and only all three together land
+it**: 4 T is a plain emulator bug (defect 1), 2 T is TS-Conf's interrupt window
+legitimately opening at hsint=2 while the raster was anchored as if it opened at
+0 (defect 2), and a residual that is NOT a constant — it moves from scene to
+scene — is the HALT wake ignoring the Z80's own 4 T NOP grid (defect 3). Fixing
+any subset moves the split without landing it, which is what the 2026-09-09
+session and two rounds of 2026-09-12 kept seeing.
 
 **1. The interrupt was delivered a whole instruction late (4 T out of HALT).**
 Stage D (`CPU::loop`) answered "the INT line is up at an instruction boundary"
@@ -2346,20 +2371,53 @@ the whole sleep.
 TS-Conf's frame counter is anchored on the RASTER ORIGIN (hcount=0, vcount=0),
 not on the interrupt, because the FRAME INT is programmable and sits at
 `vsint*224 + hsint` = 2 at reset, where every other machine has `IntStart = 0`.
-The paper anchor therefore has to be Pentagon's **+ 2**, or the INT→paper
-distance every border effect is timed against comes out 2 T short. New
-`TS_SCREEN_TSCONF` (17985) and `TS_BORDER_{320x240,360x240,360x288}_TSCONF`
-(Pentagon + 2) in Video.h, used by `VIDEO::Reset` and by both `tStatesScreen`
-sites in `tsVideoApplyPending`. The whole-line renderer's `ts_line_t` and the
-LINE-INT `tsNextLineStart()` (multiples of `tsLineT()` from T=0) already read
-the raster origin correctly and needed nothing — which is itself confirmation
-that T=0 = raster origin is the right model.
+So the paper anchor is Pentagon's **+ 2**: `TS_SCREEN_TSCONF` (17985) and
+`TS_BORDER_{320x240,360x240,360x288}_TSCONF` in Video.h, used by `VIDEO::Reset`
+and by both `tStatesScreen` sites in `tsVideoApplyPending`. The whole-line
+renderer's `ts_line_t` and the LINE-INT `tsNextLineStart()` (multiples of
+`tsLineT()` from T=0) already read the raster origin correctly and needed
+nothing — itself confirmation that T=0 = raster origin is the right model.
 
-The arithmetic, from the RTL (`video_sync.v:132`):
+**This +2 was reverted once and had to be put back the same day, so read the
+measurement before touching it again.** The revert was argued from a SCREENSHOT,
+comparing the border band's split against the PAPER's split inside one TS-Conf
+capture and assuming the two must coincide. They need not — the paper edge comes
+from screen data at a fixed fb column, the border edge from an `OUT (#FE)` at a
+guest T-state — and two captures taken in DIFFERENT SCENES of an animating demo
+cannot be compared to each other either. Both mistakes are easy to make and both
+were made.
+
+**What settles it is `[PERF] 60f` on the two machines** (hw 2026-09-12,
+`PERF_TRACE=ON`, same scene, 9 and 10 consecutive 60-frame windows):
+
+|          | accept T                        | guest INT→OUT | `brdT` min |
+|----------|---------------------------------|---------------|------------|
+| Pentagon | **0** (raw `t` = 71680)         | 1638 / 2266   | **1638**   |
+| TS-Conf  | **2** (`intT=2`, pinned)        | 1638 / 2266   | **1640**   |
+
+The identical PAIR of guest deltas is what proves the guest is executing the same
+code, so the whole 2 T is the accept. `brdT` is `CPU::tstates` at the `OUT (#FE)`
+— pure guest time, independent of the raster constants — so the painted column
+(`tstates - tStatesBorder`) equals Pentagon's only at `tStatesBorder + 2`.
+Pentagon's `d=` prints as a huge unsigned because its interrupt is taken at the
+previous frame's tail and `g_int_last_t` is not wrapped: subtract 2^32 and it
+decodes to `g_int_last_t` = 71680 exactly, which is the p=0 above.
+
+**Why the accept differs, and the residual that no constant can remove.**
+TS-Conf's accept is PINNED: `haltAdvanceTo` teleports exactly onto the window
+start, `IntStart = hsint = 2`, every frame. Pentagon's rides the Z80's own 4 T
+NOP grid — `p = t_halt mod 4`, and 71680 ≡ 0 mod 4 — so it jitters 0..3 between
+windows (`intT` in the same capture reads 0, 1, 2 and 3). The +2 is therefore
+exact only while p = 0, which is the case in this demo's border-effect scene; in
+its static scenes (`brdT` min == max) the two machines sit within ±1 T. **The
+residual is bounded by Pentagon's own jitter — do not add a third constant.**
+
+The RTL arithmetic lands on the same +2 and is worth keeping as a cross-check,
+but it is NOT what decided this. `video_sync.v:132`:
 ```verilog
 assign int_start_s = (hcount == {hint_beg, 1'b0}) && (vcount == vint_beg) && c0;
 ```
-`hcount` counts 7 MHz pixel periods, so HSINT is in 3.5 MHz T-states and our
+`hcount` counts 7 MHz pixel periods, so HSINT is in 3.5 MHz T-states and
 `vsint*224 + hsint` is right. With the reset hsint=2 the interrupt is at hcount 4
 of line 0; paper (256x192) starts at vp_beg=80 / hp_beg=140; so hardware puts
 **(80*448 + 140 - 4)/2 = 17988 T** between the interrupt and the first paper
@@ -2371,7 +2429,40 @@ the same `+5`/`+4`, and `TS_BORDER_320x240_PENTAGON` is exactly
 `17983 - 24*224 - 16 + 4`). 17990 − 5 = 17985. The datasheet's own
 `Pentagon-128 compatibility / INT position` section is an EMPTY STUB.
 
-**Dead ends, all reverted (2026-09-09), and still dead:**
+**3. The HALT wake ignored the Z80's 4 T NOP grid (the part that is not a
+constant).** A HALTed Z80 samples INT only on its own NOP grid, and that grid is
+anchored where it ENTERED HALT — not on the raster. Pentagon gets this free: its
+HALT is stepped by `Z80::execute()` 4 T at a time, so it accepts at
+`p = (halt T) mod 4` past its interrupt. Stage D instead teleports
+(`haltAdvanceTo`) exactly onto the window start, so TS-Conf accepted at offset 0,
+every frame. The error is therefore the guest's HALT PHASE, which is why it
+changes with the scene and why no raster constant can absorb it.
+
+Measured (hw 2026-09-12, `[PERF] brd:` + `[PERF] 60f`, same scene): Pentagon's
+`intT` read **0, 1, 3, 3, 1, 1** over six consecutive windows while TS-Conf sat
+pinned at **2**, and the band's border columns came out exactly p left of
+Pentagon's — TS-Conf `159 151 147 143 135` against Pentagon
+`(160) 152 148 144 136`, the same (-4,-4,-8) wipe pattern one column apart.
+
+The fix is to round the sleep up onto the grid, and it is exact for every phase
+rather than on average, because the HALT->interrupt distance is a property of the
+GUEST and is identical on both machines. TS-Conf's frame coordinate is 2 T ahead
+of Pentagon's (raster origin vs interrupt), so its halt phase is `(p + 2) & 3`:
+
+| p (Pentagon) | TS phase | TS accept = first grid point >= 2 | `c_TS - c_P = accept - p - 2` |
+|---|---|---|---|
+| 0 | 2 | 2 | **0** |
+| 1 | 3 | 3 | **0** |
+| 2 | 0 | 4 | **0** |
+| 3 | 1 | 5 | **0** |
+
+So `intT` on TS-Conf should now read 2/3/4/5 where Pentagon reads 0/1/2/3, and
+the painted column matches in every frame and every scene. `ts_halt_phase` is
+taken at the instant the CPU is first seen halted and survives the frame wrap
+(`statesInFrame` is a multiple of 4); the rounding never crosses the frame end,
+where the loop would exit with the interrupt unhandled.
+
+**Dead ends, all reverted, and still dead:**
 - **Biasing the INT position** by 2 (moved the split 176 → 168, did not land) and
   by **7 — which BREAKS THE MACHINE**: `vsint=0/hsint=2` makes the position
   negative, it wraps to 71675, and `frameIntRecalc`'s straddle truncation cuts
@@ -2380,11 +2471,15 @@ the same `+5`/`+4`, and `TS_BORDER_320x240_PENTAGON` is exactly
   move the RASTER, as above — `hsint` keeps meaning what the RTL says it means.
   **That truncation is still a real mine for any VSINT near the frame end and
   should be fixed by making the window wrap.**
-- Rounding the HALT sleep up to whole NOPs in Stage D. A HALTed Z80 really does
-  sample INT only on its 4 T grid, and `haltAdvanceTo` teleports straight to the
-  event instead — but the change moved the border without fixing it, so it was
-  backed out. With defect 1 fixed the wake lands exactly on the window start, so
-  there is even less to gain; re-open only with a test it decides.
+- **Rounding the HALT sleep up to whole NOPs in Stage D — this is defect 3 and it
+  is the FIX, not a dead end.** It was tried on 2026-09-09, reverted as "moved the
+  border but did not fix it", and that verdict was right at the time: it predates
+  both the boundary-accurate INT and the +2 raster anchor, either of which alone
+  leaves the border in the wrong place anyway. It was then argued dead a second
+  time, on 2026-09-12, by an analysis that anchored the NOP grid to the RASTER and
+  concluded snapping would be "further from Pentagon on average". The grid is
+  anchored to the HALT. Anchored correctly, snapping is exact for all four phases
+  (table above) — which is the one thing a constant could never be.
 - Unreal cannot arbitrate the FRAME window: `frame_len` is **never assigned** in
   any of its 168 source files, in the 2015, 2020 and 2024 revisions
   (`COMPUTER comp;` is a plain global, so it is 0 forever), which makes
@@ -2392,14 +2487,15 @@ the same `+5`/`+4`, and `TS_BORDER_320x240_PENTAGON` is exactly
   3.5 MHz T-states (`cputact(a) → tt += a*rate`, `turbo(a) → rate = 256/a`), not
   Z80 clocks, so any constant taken from it needs converting.
 
-**What to check on hardware**: "Across the Edge" on TS-Conf against Pentagon
-(the split must land on the same fb column, x=160), `intT` in `[PERF] 60f` (must
-now read Pentagon's value **+2** — 2..5 where it read 6..9 — with the raster
-anchor carrying the other 2, and `d=` must still be 1638), Ninja
-Gaiden's raster split (`frmInt` ≈ 120/60f, `frmLate` 0 — the interrupt now
-arrives one instruction earlier inside its handler-driven VSINT walk), fishbone
-(its 289 windows a frame put the most pressure on the accept path), and a plain
-TS-BIOS / TR-DOS boot plus one .spg for "the keyboard still works".
+**hw 2026-09-12, owner: "теперь выглядит правильно"** — the border split lands on
+the paper split with all three fixes in. That is a VISUAL confirmation of the
+combination; what it does not itemise, and is still owed: the `[PERF] brd:`
+columns actually matching machine to machine (and `intT` on TS-Conf reading
+2/3/4/5 instead of a pinned 2), Ninja Gaiden's raster split (`frmInt` ~ 120/60f,
+`frmLate` 0), fishbone (its 289 windows a frame put the most pressure on the
+accept path), and a plain TS-BIOS / TR-DOS boot plus one .spg for "the keyboard
+still works". Defect 3 changes guest-visible interrupt timing on TS-Conf, so that
+regression set is not optional.
 
 **Still open and NOT this bug: the ZX-mode beam renderer does not rescale for
 turbo.** `CPU::tstates` are turbo-scaled (`statesInFrame <<= m`) while

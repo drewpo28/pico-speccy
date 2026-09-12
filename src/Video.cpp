@@ -1049,7 +1049,43 @@ static unsigned int tstateDraw; // Drawing start point (in Tstates)
 static unsigned int linedraw_cnt;
 static int brdcol_cnt = 0;
 static int brdlin_cnt = 0;
+
 static unsigned int lin_end, lin_end2 /*, lin_end3*/;
+
+#if PERF_TRACE
+// The fb COLUMN the border machine is about to paint with a new colour, for
+// changes landing in the visible TOP BAND — i.e. the position of the split a
+// border demo draws, in the same units a screenshot measures (fb byte = 2*col).
+//
+// brdT (the first border change of the frame) cannot answer this: "Across the
+// Edge" makes that one at T=1638, which is line 7 of the frame, deep in the
+// invisible overscan, while the split we care about is painted inside the band
+// thousands of T later. Two machines running the same demo must report the same
+// column here, and comparing it against where the PAPER edge falls is what says
+// whether the border machine and the paper renderer agree with each other.
+// Distinct columns, not min..max: a wipe demo resets the border colour at the
+// START of every line as well as at the split, so a min/max pair is always
+// pinned to 0 by the line-start write and says nothing about the split. Six
+// slots with hit counts separate them — the line-start write shows up as
+// column 0 with ~24 hits per frame, the split as its own column with the same
+// count. All zero-initialised (a non-zero initialiser puts the variable in
+// .data, which for this TU lands in a section nm reports as text).
+#define BRD_COL_SLOTS 6
+uint16_t g_brd_col_v[BRD_COL_SLOTS], g_brd_col_n[BRD_COL_SLOTS];
+uint8_t  g_brd_col_used;
+void video_perf_border_mark() {
+    if (brdlin_cnt >= lin_end) return;   // top band only
+    // DrawBorder() has just caught up with the OLD colour, so brdcol_cnt is the
+    // first column NOT yet painted — the one the new colour lands in, i.e. the
+    // fb byte a screenshot sees change at 2*col.
+    uint16_t c = (uint16_t)brdcol_cnt;
+    for (uint8_t i = 0; i < g_brd_col_used; i++)
+        if (g_brd_col_v[i] == c) { if (g_brd_col_n[i] != 0xFFFF) g_brd_col_n[i]++; return; }
+    if (g_brd_col_used < BRD_COL_SLOTS) {
+        g_brd_col_v[g_brd_col_used] = c; g_brd_col_n[g_brd_col_used] = 1; g_brd_col_used++;
+    }
+}
+#endif
 
 static unsigned int coldraw_cnt;
 static unsigned int video_rest;
@@ -5813,6 +5849,20 @@ IRAM_ATTR void VIDEO::EndFrame() {
                 (unsigned)(g_brd_max ? g_brd_min : 0), (unsigned)g_brd_max, (unsigned)g_brd_delta, (unsigned)(CPU::statesInFrame ? g_int_last_t % CPU::statesInFrame : 0),
                 (unsigned)(CPU::statesInFrame ? g_halt_t % CPU::statesInFrame : 0));
             g_frm_int_miss = 0; g_brd_min = 0xFFFFFFFF; g_brd_max = 0;
+            // Border landing position, its own line for the same reason. Both
+            // numbers are fb columns (fb byte = 2*col) of border changes inside
+            // the top band, so they are directly comparable with a screenshot
+            // and, machine to machine, with each other.
+            {
+extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
+                char bcb[160]; int bp = 0;
+                for (uint8_t i = 0; i < g_brd_col_used && bp < 130; i++)
+                    bp += snprintf(bcb + bp, sizeof(bcb) - bp, " col%u/fb%u x%u",
+                                   g_brd_col_v[i], g_brd_col_v[i] * 2u, g_brd_col_n[i]);
+                bcb[bp] = 0;
+                Debug::log("[PERF] brd:%s", bp ? bcb : " none");
+                g_brd_col_used = 0;
+            }
             // Audio path on its own line (every machine): timer ticks per 60 frames
             // (expect ~38400 = 60 x 20.48 ms x 31250 Hz; fewer = the core0 alarm IRQ
             // starved), ticks that found the frame buffer exhausted (hold = ZX sample

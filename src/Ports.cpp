@@ -3368,6 +3368,9 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
+#if PERF_TRACE
+      { extern void video_perf_border_mark(); video_perf_border_mark(); }
+#endif
       VIDEO::borderColor = data & 0x07;
       if (VIDEO::ulaplus_enabled)
         VIDEO::ulaPlusUpdateBorder();

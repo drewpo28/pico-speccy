@@ -216,7 +216,7 @@
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
-#define TXT_MACH_TSCONF      "TS-Conf (ZX-Evo)"
+#define TXT_MACH_TSCONF      "TS-Conf"
 #define TXT_MACH_TSCONF_OPTS "Options"
 #define TXT_MACH_TSCONF_RAM  "RAM"
 #define TXT_MACH_TSCONF_CLK  "CPU cap"
