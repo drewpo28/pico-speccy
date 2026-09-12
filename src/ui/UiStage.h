@@ -261,7 +261,6 @@ const char* romsetName(int32_t composite);
     /* PSRAM applies live, and only the flash direction needs the early-boot write — the  */ \
     /* hook runs the same applyBankLive()/confirm-install flow as the bank picker, after  */ \
     /* the commit's Config::save() has already persisted the pick.                        */ \
-    X(SET_MIDI_STORAGE,    AC_LIVE,   0,                     get_midiStorage, put_midiStorage, hook_midiStorage, -1) \
     /* ── Video > TFT panel (rows exist on TFT builds only) ───────────────────── */      \
     /* TFT_INVERSION / TFT_FLAGS are read once, while st7789_init() builds its command  */ \
     /* list, so all four are reboot-class; the accessors are no-ops off a TFT build.     */ \

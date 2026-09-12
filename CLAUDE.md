@@ -3978,6 +3978,84 @@ storage is pinned to Flash. **hw-confirmed 2026-09-09 on a butter-PSRAM board: t
   `instrument_count` and everything else is offset-driven, so 482 instruments only
   cost a longer scan per note-on.
 
+### ...and on a board WITHOUT PSRAM a big bank eats the PSRAM-only ROMs, automatically (2026-09-13, hw: "works")
+
+The flash layout is fixed at link time, but that does not make the decision a build
+variant: `.psramroms` (rp2350-memmap.ld) is a **flash overlay with two mutually
+exclusive occupants**, arbitrated at runtime exactly like `.gsovl`/`.tsovl` do in RAM —
+and the GM.DLS partition was already one such overlay with a single occupant (written
+by `flash_range_program` in `provisionAtBoot()`, pre-`VIDEO::Init`, one core).
+
+- **Occupant A**: the Scorpion GMX boot ROM + the two TS-BIOS pages, **378 056 B**,
+  collected BY OBJECT FILE (`scorpion_gmx_rom.c.o`, `tsconf_roms.c.o` — the `.gsovl`
+  discipline; a generated ROM .c is all-ROM so no per-array mark can be forgotten),
+  4 KB-aligned, last in the image, directly below `__gm_bank_start`.
+- **Occupant B**: the bank, when it does not fit the plain partition on a board that
+  cannot reach those ROMs anyway. It then starts at `__psramrom_start` and the first
+  thing its write destroys is the 16-byte `.psramrom_magic` record — which is the whole
+  of `FlashRoms::intact()`.
+- **Why exactly those two families**: both gate on BUTTER PSRAM at runtime
+  (`mach_scorpOpts`'s `butter_psram_size()`, `p_showTsconf`'s ≥ 1 MB) and SPI PSRAM on
+  a MURM1 carrier qualifies for neither, so without a QSPI chip those bytes are dead
+  for the life of that firmware. **Profi/Karabas are deliberately NOT in the set** —
+  `p_showProfi` accepts SPI PSRAM, so they stay useful on MURM1.
+
+Measured per board (all 14 variants link): flash bank ceiling **1 703 936 →
+2 088 960…2 134 016 B**, i.e. **+385…430 KB**, and **DLSbyXG (2 052 616 B) then fits
+everywhere**, worst case z0p2-PIOUSB with 36 KB to spare. Firmware headroom below the
+bank pays the 4 KB alignment: 8 804 → 6 968 B on z0p2-PIOUSB, 32 100 → 23 352 on DVp2
+(1.8–9 KB depending on where the boundary falls). W boards are listed for completeness
+only — 16 MB of flash makes the trade pointless there; the right fix for them is
+`__gm_bank_size` derived from `LENGTH(FLASH)`.
+
+**There is NO setting, and `Config::midi_storage` was deleted with the menu row.** It
+offered PSRAM vs flash, which is what `PREFER_PSRAM | ALLOW_FLASH` already decides by
+itself, and a first cut that reused it for the trade (0/1/2) made the user answer a
+question with no wrong answer: on a board that can trade, both machines are already
+absent from the menu, so the choice was between giving away bytes nothing there can
+use and not giving them away. What survives of that cut is the rule that makes it safe
+to automate:
+
+- **The trade happens only when a bank actually needs the room**, never merely because
+  the board could afford it (`FlashRoms::extendedLive()`). The one real cost of
+  spending the ROMs is that plugging a QSPI module into the same carrier afterwards
+  finds GMX and TS-Conf gone until the next UF2 — so an ordinary ≤1.62 MB bank must
+  leave them standing. `MidiSynth::maxBankBytes()` still reports the EXTENDED ceiling,
+  or a bank could never become the reason the window grows.
+- **The decision is LATCHED, not recomputed** — it reads the SD card, and it must not
+  move under a running machine. An answer of "no bank visible yet" (unmounted card, or
+  a query before the filesystem) is returned WITHOUT latching, or the window would be
+  pinned small by a guess.
+- **`FlashRoms::bankStart()` answers from the FLASH first**: `!intact()` means a bank
+  body is already there and the window simply IS the bigger one — reading it at
+  `__gm_bank_start` would parse the middle of that bank as its header.
+- **`romsUsable()` is consulted at the TOP of `Config::requestMachine()`** — before the
+  reboot boundaries and before the switch that binds ROM pointers and populates the
+  pointer-keyed overlay registry. `provisionAtBoot()` erases the region ~120 lines
+  later in `setup()`, so steering TS-Conf/GMX away afterwards would be too late.
+  `resolveConstraints` repeats it so the menu says so mid-session.
+- **A reflash restores the ROMs and destroys the first 378 KB of an extended bank**
+  (the UF2 covers that range). `gm_bank_view()` fails its header check and the bank
+  re-provisions from SD — the path that already existed.
+- Memory Info says `DLS (flash+)` for the extended window, and the boot log carries
+  `MidiSynth: bank window @<addr> <N>KB (overlay intact|spending|traded|absent)` plus
+  `[FlashRoms] bank NKB > NKB partition - trading ...` — the lines that separate "my
+  bank is too big" from "my Scorpion GMX vanished", two reports of the same state.
+
+**What removing the row costs**: the old "Flash" pick was also the way to *install* a
+bank into flash on a butter board so it plays with no SD card. Nothing writes flash
+there any more — a butter board loads from SD every boot. If that comes back it should
+be an ACTION ("install bank to flash"), not a storage mode.
+
+**Hw scope, 2026-09-13**: the owner's verdict is "works" and is NOT itemised, so read
+it as the no-regression half — the firmware comes up with the ROMs moved to the top of
+flash, the menu has no bank-storage row, and MIDI/GM.DLS still plays. What it does not
+establish is the TRADE itself, which needs a board with no QSPI PSRAM and a bank over
+1.62 MB: the `[FlashRoms] ... trading` line, the bank landing at `__psramrom_start`,
+`intact()` going false on the next boot, `romsUsable()` then keeping GMX and TS-Conf
+out of `requestMachine`, and a reflash putting the ROMs back while the bank
+re-provisions. Those five are still owed.
+
 ## SRAM budget — why pico-speccy has ~35 KB less heap than pico-spec
 
 Measured 2026-08-10 on the same board and config (PICO_DV, MinSizeRel, VGA-HDMI):

@@ -17,7 +17,8 @@
 #include "UiRender.h"   // SYM_* glyphs for the persist verb lists
 #include "Config.h"
 #include "FileUtils.h"
-#include "MemESP.h"          // butter_psram_size() for the Profi / ext-RAM predicates
+#include "MemESP.h"         // butter_psram_size() for the Profi / ext-RAM predicates
+#include "FlashRoms.h"      // romsUsable()/extendable() for the GMX, TS-Conf and bank rows
 #include "psram_spi.h"       // psram_size()
 #include "Buffer.h"          // Buffer::gsPsramAvailable() for the General Sound gate
 #include "BoardPins.h"       // the ESP-link predicate of the Network rows
@@ -235,7 +236,7 @@ static bool p_showTsconf() {
 #if !defined(VGA_HDMI)
     return false;
 #else
-    return butter_psram_size() >= (1u << 20);
+    return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
 static bool p_tsconfActive() {
@@ -356,7 +357,9 @@ static const Option* mach_scorpOpts(uint8_t& cnt) {
         opts[n++] = { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP),      TXT_ROM_SCORP_S      };
         opts[n++] = { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR),   TXT_ROM_SCORP_GR_S   };
 #if GMX_IN_FLASH
-        if (butter_psram_size())
+        // butter PSRAM is what GMX needs; romsUsable() is whether its ROM is still
+        // in flash at all (FlashRoms.h — the GM.DLS bank may have been given it).
+        if (butter_psram_size() && FlashRoms::romsUsable())
         opts[n++] = { TXT_ROM_SCORP_GMX,  NM_MACH(A_SCORP, R_SCORP_GMX),  TXT_ROM_SCORP_GMX_S  };
 #endif
         opts[n++] = { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S };
@@ -816,12 +819,6 @@ static const Option opt_midi_bank_hints[] = {
 // the flash partition is the sole home and the row would be a lie. PSRAM reloads from
 // SD each boot (a bank swap applies live); Flash survives reboots and a missing card
 // but is written only at early boot, so switching to it costs one reboot.
-static bool p_butterPsram() { return butter_psram_size() > 0; }
-static const Option opt_midi_storage[] = {      // values ARE Config::midi_storage
-    { "PSRAM", 0 },
-    { "Flash", 1 },
-};
-
 // The chips only the DivMMC VGM-player plugin drives, grouped out of the
 // native-Spectrum rows. "All" flips the whole card family at once.
 static const Node kVgmChips[] = {
@@ -849,8 +846,6 @@ static const Node kAudio[] = {
     NM_RADIO(TXT_AUD_COVOX,      SET_COVOX,        opt_covox,      nullptr),
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
     NM_RADIO   (TXT_AUD_MIDI,           SET_MIDI_MODE,   opt_midi_mode,   nullptr),
-    NM_RADIO_EN(NM_IND TXT_MIDI_STORAGE, SET_MIDI_STORAGE, opt_midi_storage,
-                p_butterPsram, p_midiDls),
     // The bank list + on-device .dls conversion act immediately (like the disk slots):
     // a bank pick can applyBankLive() or defer a flash write to the next boot.
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,
@@ -952,7 +947,7 @@ static const Option* pref_scorpOpts(uint8_t& cnt) {
         opts[n++] = { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S };
         opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
 #if GMX_IN_FLASH
-        if (butter_psram_size())
+        if (butter_psram_size() && FlashRoms::romsUsable())
         opts[n++] = { TXT_ROM_SCORP_GMX,  4, TXT_ROM_SCORP_GMX_S  };
         opts[n++] = { TXT_ROM_LAST,       5, nullptr };
 #else

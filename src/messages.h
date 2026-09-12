@@ -152,8 +152,8 @@ visit https://zxespectrum.speccy.org/contacto
 
 // DLS wavetable mode (4): a user-supplied bank (gm_bank.bin) lives either in butter
 // PSRAM (reloaded from SD each boot) or, provisioned once from SD, in a flash
-// partition read via XIP (persistent, the only option without QSPI PSRAM).
-// See Config::midi_storage.
+// partition read via XIP (persistent, and the only home without QSPI PSRAM). Which
+// one is automatic — see src/MidiSynth.cpp and src/FlashRoms.h.
 #define MSG_MIDI_BANK_OK "DLS wavetable bank loaded."
 // msgDialog sizes its width to the message length and is single-line only — keep
 // this to ONE short line (a multi-line string makes the box span the whole screen).

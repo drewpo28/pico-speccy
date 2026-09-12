@@ -109,7 +109,6 @@
 
 #define TXT_AUD_MIDI        "MIDI"
 #define TXT_MIDI_BANK       "Bank set"
-#define TXT_MIDI_STORAGE    "Bank storage"
 #define TXT_MIDI_CONVERT    "[+] Convert a .dls..."
 #define TXT_MIDI_DLS_PICK   "Select .dls soundbank"
 #define TXT_AUD_GS          "General Sound"
@@ -269,7 +268,7 @@
 #define TXT_ROM_LAST        "Last used"
 #define TXT_ROM_PROFI_ORIG  "Original"
 // Karabas machine row — the real board's four ROMSET slots.
-#define TXT_ROM_KAR_MAIN    "ROMain"
+#define TXT_ROM_KAR_MAIN    "Main"
 #define TXT_ROM_KAR_PQ      "PQDOS"
 #define TXT_ROM_KAR_FT      "Flash Tool"
 #define TXT_ROM_KAR_FDI     "FDImage"

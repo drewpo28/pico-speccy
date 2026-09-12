@@ -81,7 +81,12 @@ SECTIONS
         "ERROR: Pico second stage bootloader must be no more than 256 bytes in size")
 
     .rodata : {
-        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:) .rodata*)
+        /* The two EXCLUDE_FILEd ROM objects go to .psramroms at the very top of
+         * flash — see that section. They must be excluded HERE and in .data below,
+         * because ld assigns an input section to the FIRST output section that
+         * matches it in script order, and both of those come earlier. */
+        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:
+                       *scorpion_gmx_rom.c.o *tsconf_roms.c.o) .rodata*)
         *(.srodata*)
         . = ALIGN(4);
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
@@ -169,7 +174,7 @@ SECTIONS
 
         *(.text*)
         . = ALIGN(4);
-        *(.rodata*)
+        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o *tsconf_roms.c.o) .rodata*)
         . = ALIGN(4);
 
         *(.data*)
@@ -311,8 +316,41 @@ SECTIONS
         "ERROR: .bss/heap start reaches into the code overlay windows")
     .flash_end : {
         KEEP(*(.embedded_end_block*))
-        PROVIDE(__flash_binary_end = .);
     } > FLASH =0xaa
+
+    /* ── PSRAM-only ROM overlay ──────────────────────────────────────────────
+     * The Scorpion GMX boot ROM and the two TS-BIOS pages, collected BY OBJECT
+     * FILE (the .gsovl discipline: a generated ROM .c is all-ROM, so no per-array
+     * mark can be forgotten) and placed at the very top of the image, directly
+     * below the GM.DLS bank partition.
+     *
+     * Both machines gate on BUTTER/QSPI PSRAM at runtime (mach_scorpOpts's
+     * butter_psram_size(), p_showTsconf's >= 1 MB) — SPI PSRAM on a MURM1 carrier
+     * does not qualify for either — so on a board whose module carries no QSPI
+     * PSRAM these ~370 KB are unreachable for the whole life of that firmware.
+     * Config::midi_storage == 2 therefore lets the GM.DLS bank START HERE instead
+     * of at __gm_bank_start and swallow them (plus the alignment gap above), which
+     * is what makes a ~2 MB bank fit on a 4 MB board. Same arbitration the bank
+     * already uses for its own region: it is written by flash_range_program in
+     * MidiSynth::provisionAtBoot(), pre-VIDEO::Init, on one core.
+     *
+     * .psramrom_magic must come FIRST: it is the 16 bytes a bank write overwrites
+     * before anything else, so FlashRoms::intact() reading it is the whole "are the
+     * ROMs still there" test (see src/FlashRoms.h).
+     *
+     * 4 KB-aligned because that is the flash erase granularity, and last in the
+     * image so the eaten range is contiguous with the bank partition. .flash_end's
+     * marker deliberately sits BELOW it — it must survive being eaten — and
+     * __flash_binary_end covers the ROMs so the UF2 and the overflow ASSERT do. */
+    .psramroms : ALIGN(4096) {
+        KEEP(*(.psramrom_magic))
+        KEEP(*scorpion_gmx_rom.c.o(.rodata*))
+        KEEP(*tsconf_roms.c.o(.rodata*))
+        . = ALIGN(4);
+    } > FLASH =0xaa
+    __psramrom_start = ADDR(.psramroms);
+    __psramrom_end   = ADDR(.psramroms) + SIZEOF(.psramroms);
+    PROVIDE(__flash_binary_end = __psramrom_end);
 
     /* ── GM.DLS wavetable bank flash partition ───────────────────────────────
      * Fixed ~1.6 MB region at the TOP of flash for the user-provisioned wavetable

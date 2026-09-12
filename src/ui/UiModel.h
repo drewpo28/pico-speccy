@@ -170,6 +170,11 @@ struct Node {
     { lbl, nm::K_PICK, NM_COUNT(foot), sid, foot, nullptr, vis, nullptr, nullptr, nullptr, rk, 0, 0, 0, vl, nullptr, df }
 #define NM_RADIO_D(lbl, sid, df, vis) \
     { lbl, nm::K_RADIO, 0, sid, nullptr, nullptr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr, df }
+// ...and the enable-gated twin (NM_RADIO_EN's relation to NM_RADIO): visible always,
+// greyed and inert while en() is false. The GM.DLS bank-storage row needs both — its
+// option list is per-board and it greys out when the DLS synth is not selected.
+#define NM_RADIO_DE(lbl, sid, df, vis, en) \
+    { lbl, nm::K_RADIO, 0, sid, nullptr, nullptr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, en, df }
 
 extern const Option opt_onoff[2];
 

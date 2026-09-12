@@ -16,7 +16,8 @@
 // pointer), so there are exactly two: butter QSPI PSRAM — reloaded from SD each boot,
 // a bank change applies live — or a fixed flash partition (top of flash, see
 // rp2350-memmap.ld), provisioned once from SD at early boot and read via XIP, which
-// persists across reboots and needs no card. Config::midi_storage picks between them
+// persists across reboots and needs no card. Which one is used is automatic — butter
+// PSRAM when the board has it, flash otherwise; there is no setting
 // on a QSPI board; SPI PSRAM is accessor-only, so a board without QSPI always uses
 // flash. Buffer does the placement — MidiSynth never branches on memory type.
 //
@@ -81,7 +82,7 @@ public:
     static size_t bankPsramBytes();
 
     // Where the bound bank actually lives ("PSRAM" / "flash" / "no bank") — the real
-    // placement, not Config::midi_storage's request. For the Memory Info MIDI line.
+    // placement, not what was asked for. For the Memory Info MIDI line.
     static const char* bankLocation();
 
 private:

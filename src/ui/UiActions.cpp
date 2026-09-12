@@ -442,7 +442,7 @@ void midi_keyBanks(int32_t tag, uint8_t key) {
         Config::save();
         uiToast(MSG_MIDI_BANK_OK, false, 2000);
     } else if (uiConfirm(MSG_MIDI_BANK_INSTALL_Q, "DLS Wavetable")) {
-        // Flash storage (Config::midi_storage, or no PSRAM to choose from) and the
+        // The bank landed in flash (no butter PSRAM to hold it) and the
         // partition holds a different bank → it must be written at EARLY BOOT
         // (single core, pre-video). Commit + reboot. The mode may still be a staged
         // edit this session — carry it into Config so the reboot comes up in DLS mode

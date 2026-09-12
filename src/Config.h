@@ -143,11 +143,6 @@ public:
     // procedural SoftSynth) — removed; the value is retired and demoted to 0 on load.
     static uint8_t  midi;
     static string   midi_bank;    // GM.DLS wavetable: chosen bank .bin path on SD ("" = default gm_bank.bin)
-    // Where the GM.DLS bank lives: 0 = PSRAM (default — reloaded from SD each boot, a
-    // bank change applies without a reboot), 1 = the persistent flash partition (written
-    // once at early boot, survives a missing SD card). Only offered on butter-PSRAM
-    // boards; everywhere else flash is the only pointer-addressable home anyway.
-    static uint8_t  midi_storage;
     static bool     timex_video;  // Timex SCLD video modes (port 0xFF)
     static uint8_t  dma_mode;     // 0=Off, 1=Port #0B (Z80 DMA), 2=Port #6B (zxnDMA)
     static bool     mode16col_onoff; // Pentagon 16col video mode (port #EFF7 D0)
