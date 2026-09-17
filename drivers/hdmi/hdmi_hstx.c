@@ -62,10 +62,23 @@ static uint32_t hstx_want_hz(unsigned tmds_mhz) {
     return (uint32_t)(tmds_mhz ? tmds_mhz : 252) * (1000000u / HDMI_HSTX_SHIFT);
 }
 
+// clk_hstx's divider is NOT the 16.16 int+frac every other clock in the block has:
+// CLOCKS_CLK_HSTX_DIV_INT is TWO BITS (0x00030000) and there is no FRAC field at
+// all, so the only dividers that exist are 1, 2, 3 and 4 — the datasheet's "0 ->
+// max+1" is what makes 4 reachable, and it is why writing a plain 4 works: the 2-bit
+// field takes the low bits, 4 lands as 0, and the hardware reads that back as 4.
+// Do not "fix" that into a mask-and-clamp.
+//
+// It is also why the 25.2 MHz pixel clock is so comfortable here (126 MHz from
+// 252/2, 378/3, 504/4) and why the VGA path cannot use the serializer at all: its
+// 19.96 and 27 MHz pixel clocks are not clk_sys/{1..4}/N for any N (see the plan
+// doc). The PIO has an 8-bit fractional divider and absorbs any ratio; HSTX does not.
+#define HSTX_DIV_MAX 4
 static uint32_t hstx_div_for(unsigned tmds_mhz, uint32_t sys) {
     const uint32_t want = hstx_want_hz(tmds_mhz);
     uint32_t div = (sys + want / 2) / want;
-    return div ? div : 1;
+    if (div == 0) div = 1;
+    return div;
 }
 
 uint32_t hdmi_hstx_pixel_hz(unsigned tmds_mhz) {
@@ -93,6 +106,10 @@ bool hdmi_hstx_start(unsigned tmds_mhz) {
     if (want > 150000000u) {
         printf("hdmi_hstx: %u MHz TMDS wants clk_hstx %u Hz, past the 150 MHz rating\n",
                tmds_mhz, (unsigned)want);
+    }
+    if (div > HSTX_DIV_MAX) {
+        printf("hdmi_hstx: clk_sys/%u is past the 2-bit divider (max %u) - clamping, "
+               "the video clock will be WRONG\n", (unsigned)div, HSTX_DIV_MAX);
     }
 
     hdmi_hstx_stop();

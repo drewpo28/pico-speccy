@@ -232,6 +232,13 @@ static int optLabelGlyphs() {
 // the CPU clock with a fast mode staged only resolves at commit, where the g_seq
 // tie-break decides which of the two gives way.
 static bool vmFastOffered() {
+#if HDMI_HSTX && defined(VGA_HDMI)
+    // On an HSTX build the row edits hdmi_video_mode whenever HDMI is the live
+    // output (see put_videoMode), and the serializer cannot make that pixel clock
+    // inside its rating — so the set is simply not on offer there. With the VGA
+    // jumper in, the same row edits vga_video_mode and the PIO path can.
+    if (!SELECT_VGA) return false;
+#endif
     return (unsigned)Stage::get(SET_CPU_MHZ) == Config::VM_FAST_CPU_MHZ;
 }
 static bool vmRowVisible(int32_t vm, bool fastOk, int32_t staged) {

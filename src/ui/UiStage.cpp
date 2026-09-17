@@ -1187,6 +1187,18 @@ static void resolveConstraints(CommitReport& rep) {
                              Config::baseVideoMode((uint8_t)staged(SET_VIDEO_MODE)), rep,
                              "90/75 Hz needs an HDMI or VGA output");
 #else
+#if HDMI_HSTX && defined(VGA_HDMI)
+            // The serializer cannot make a 37.8 MHz pixel clock inside its rating
+            // (clk_hstx 189 MHz against 150), so on an HSTX build the set exists for
+            // the VGA output only — and this row edits the HDMI mode while HDMI is
+            // live. video_modeOpts() does not offer it there; this catches a value
+            // that arrived some other way.
+            if (!SELECT_VGA) {
+                changed |= force(SET_VIDEO_MODE,
+                                 Config::baseVideoMode((uint8_t)staged(SET_VIDEO_MODE)), rep,
+                                 "90/75 Hz is past the HSTX rating");
+            } else
+#endif
             if (staged(SET_CPU_MHZ) != Config::VM_FAST_CPU_MHZ) {
                 if (g_seq[SET_VIDEO_MODE] >= g_seq[SET_CPU_MHZ])
                     changed |= force(SET_CPU_MHZ, Config::VM_FAST_CPU_MHZ, rep,

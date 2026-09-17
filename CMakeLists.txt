@@ -1653,10 +1653,14 @@ ELSE()
     # HSTX drives the same eight pins as the PIO TMDS program and only exists in
     # this branch — the TFT/TV/SOFTTV displays have no HDMI at all.
     IF(HDMI_HSTX STREQUAL "AUTO")
-        IF(PICO_PC)
-            SET(HDMI_HSTX_ON 1)   # the board this is being brought up on
+        IF(PICO_PC OR MURM2)
+            # PCp2 is hw-confirmed (picture + HDMI audio, 2026-09-17). m2p2 and
+            # m2p2w run the SAME code with one row of the lane table changed
+            # ({2,4,6} against PCp2's {2,6,4}), and that table is proved pin by pin
+            # on the host — but nobody has put this image on a Murmulator 2 yet.
+            SET(HDMI_HSTX_ON 1)
         ELSE()
-            SET(HDMI_HSTX_ON 0)   # MURM2 / MURM2_W qualify too — after a hw run
+            SET(HDMI_HSTX_ON 0)
         ENDIF()
     ELSEIF(HDMI_HSTX)
         SET(HDMI_HSTX_ON 1)

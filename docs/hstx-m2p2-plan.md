@@ -103,7 +103,9 @@ file goes away.
   the pixel PERIOD stays exact at two cycles, and the fraction only moves the split
   between the two phase pairs inside a pixel (a systematic ~5% duty skew, worth
   about one code unit after the ladder integrates it).
-- Still to do: the vga.c wiring itself (palette tables to PWM words, line buffers to
+- **Step 3 is CANCELLED as designed** — see the 2-bit divider section at the top.
+  What remains of it is a PIO-based PWM, which is a separate feature.
+- Still to do (superseded): the vga.c wiring itself (palette tables to PWM words, line buffers to
   32-bit words, the ISR loops, the sync templates, the DMA to the HSTX FIFO, and the
   VGA branch of the HSTX config), the 90/75 Hz mode gate, then the hardware run on
   PCp2. **An HSTX build's VGA output already works** — it is the untouched PIO path;
@@ -149,6 +151,42 @@ a register core1 has not programmed yet.**
 Still unexercised on hardware: the other CPU clocks (252/504), scanlines, the CRT
 grille, dither, DS80/GMX/Timex pair modes, a capture card, and `[PERF] 60f` before
 and after — which is the reason the port exists.
+
+## The VGA half cannot use HSTX at all — a 2-bit register field (2026-09-17)
+
+**`CLOCKS_CLK_HSTX_DIV_INT` is TWO BITS (`0x00030000`) and there is no FRAC field.**
+Every other clock in the block has a 16.16 int+frac divider; clk_hstx has integer
+1, 2, 3, 4 and nothing in between (the datasheet's "0 -> max+1" is what makes 4
+reachable, and it is why writing a plain 4 works — the low bits land as 0 and the
+hardware reads that back as 4; there is a comment at `hstx_div_for` saying so).
+
+Combined with the 150 MHz rating — which forces div >= 3 at clk_sys 378, >= 2 at 252
+and exactly 4 at 504 — and with pixel = clk_hstx / N_SHIFTS (N_SHIFTS 1..32), the
+reachable VGA pixel clocks are, exhaustively:
+
+| VGA pixel | 252 MHz | 378 MHz | 504 MHz |
+|---|---|---|---|
+| **19.96 MHz** (640x480 @50 — the default on every ZX machine) | none | none | none |
+| 25.20 MHz (640x480 @60) | div 2, N 5 | div 3, N 5 | div 4, N 5 |
+| 27.00 MHz (720x576 @50, 720x480 @60) | none | none | none |
+
+So the only VGA mode the serializer could drive is 640x480 @60, which is not the one
+this emulator uses. **The 4-phase PWM over HSTX is dead, and no amount of work on
+vga.c changes that** — the blocker is a register field. The PIO never had the problem
+because its divider is int.frac(8) and absorbs any ratio, which is also how it
+reaches 19.96 MHz today (badly: see the truncation section below).
+
+**The feature itself is not dead — it belongs on the PIO.** `out pins, 8` at FOUR
+times the pixel clock, four bytes per output pixel in the line buffer, and the same
+13 levels per channel: no clock constraint at all, works on every board including the
+ones whose display is on GPIO 6 or 32, and entirely independent of HSTX.
+`drivers/vga-nextgen/vga_pwm.h` and its 792-check test stay valid as they are — the
+level and phase construction is transport-independent; only the packing changes from
+one 32-bit HSTX word to four consecutive bytes. Cost is the same +12 KB of line
+buffers and 4x the VGA DMA (20 -> 80 MB/s), and it wants its own hardware run.
+
+**Found before any vga.c was written**, which is the one piece of luck here: the
+design was checked against the register before the renderer was touched.
 
 ## Goal
 

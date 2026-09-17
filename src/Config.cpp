@@ -1474,6 +1474,13 @@ void Config::load() {
             hdmi_video_mode = baseVideoMode(hdmi_video_mode);
             vga_video_mode  = baseVideoMode(vga_video_mode);
         }
+#if HDMI_HSTX
+        // The 37.8 MHz pixel clock is out of reach for the serializer whatever the
+        // CPU clock: it wants clk_hstx at 189 MHz against the datasheet's 150, i.e.
+        // 378 Mbps per pin against 300. Only the HDMI mode is degraded — the VGA
+        // one still drives the PIO path, which can do it.
+        hdmi_video_mode = baseVideoMode(hdmi_video_mode);
+#endif
         nvs_get_b("v_sync_enabled", v_sync_enabled, sts);
         // ...and they drive the display faster than the machine, so v_sync pacing
         // (one emulated frame per display frame) would run it 50% fast.
