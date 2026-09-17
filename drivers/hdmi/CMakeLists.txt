@@ -1,6 +1,6 @@
 add_library(hdmi INTERFACE)
 
-target_sources(hdmi INTERFACE ${CMAKE_CURRENT_LIST_DIR}/hdmi.c)
+target_sources(hdmi INTERFACE ${CMAKE_CURRENT_LIST_DIR}/hdmi.c ${CMAKE_CURRENT_LIST_DIR}/hdmi_hstx.c)
 
 target_link_libraries(hdmi INTERFACE hardware_pio hardware_clocks hardware_dma)
 

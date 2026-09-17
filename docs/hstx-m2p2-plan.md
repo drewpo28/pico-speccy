@@ -1,38 +1,213 @@
-# HSTX video backend for m2p2 — analysis and plan
+# HSTX video backend for the GPIO 12-19 boards — analysis and plan
 
 **Status: PLAN, not a record of anything built.** Nothing here has been implemented or
 run on hardware. Written 2026-09-16 from a read of the tree, the RP2350 HSTX
-documentation, `raspberrypi/pico-examples` and `DnCraptor/quakegeneric`. When this
-lands, the confirmed parts belong in CLAUDE.md and this file goes away.
+documentation, `raspberrypi/pico-examples` and `DnCraptor/quakegeneric`; retargeted to
+PCp2 on 2026-09-17. When this lands, the confirmed parts belong in CLAUDE.md and this
+file goes away.
+
+## Progress
+
+- **Steps 0 and 1 are DONE (2026-09-17), still uncommitted.**
+  - `drivers/hdmi/hdmi_word.h` — the board pin/lane map, both back-ends' packers,
+    `hdmi_word_t` and the slot-index macros. `HDMI_HSTX` selects a 32-bit raw word
+    over the 64-bit differential one; **the 16-byte palette slot does not move**
+    (the PIO converter's `(byte << 4)` fixes it), so a slot is indexed through
+    `HDMI_SLOT_IX` and a Data-Island character through `HDMI_CHAR_AT` — `slot*2+px`
+    is only right for one of the two.
+  - `hdmi.c` — every word site now goes through those: the blob type, the TERC4
+    LUTs, `hdmi_write_pair`, the control entries, DS80's pair table, the Data-Island
+    packers and `hdmi_di_load`. `nf_copy64` became `nf_copy_words` + `nf_copy_slots`
+    (the strided one; with 64-bit words it IS the old flat run, with 32-bit ones it
+    also halves what the line ISR moves). Blobs stay packed, so HSTX builds save
+    768 B of them.
+  - `tools/hdmi_hstx_test.c` — **143577 checks, 0 failures, in BOTH word modes**,
+    across PCp2, m2p2, m1p2 and z0p2: the PIO words are byte-identical to the
+    shipped bodies, the TERC4 OR composition holds, both pair-flip masks are exactly
+    "flip D0-7 and D9" on the pins, the palette layout lands every slot on its
+    16-byte boundary, and the HSTX raw word driven through `bit[]` puts the same
+    stream on all 8 pins over all 10 bit-times. **18 hand-applied mutations each
+    make it fail.**
+
+        gcc -O2 -Wall -Wextra                -Idrivers/hdmi -o /tmp/t0 tools/hdmi_hstx_test.c && /tmp/t0
+        gcc -O2 -Wall -Wextra -DHDMI_HSTX=1  -Idrivers/hdmi -o /tmp/t1 tools/hdmi_hstx_test.c && /tmp/t1
+
+  - PIO builds are unchanged: `hdmi.c`'s object is 10 B smaller, `.bss`/`.data`
+    identical, and the PCp2 firmware links at the same 2459268 B as before. It also
+    compiles with `-DHDMI_HSTX=1` (it cannot link yet — that is step 2).
+  - The `bit[]` table the test prints is what step 2 programs, verbatim.
+- **Step 2 (the HDMI back-end) and step 4 (the build wiring) are DONE (2026-09-17),
+  still uncommitted.**
+  - `drivers/hdmi/hdmi_hstx.{h,c}` — `clk_hstx` at an integer divider, the CSR
+    (raw mode: no command expander, one word per pixel, ten bits per lane two at a
+    time), the eight `bit[]` entries **built by the same `hdmi_hstx_bits()` the host
+    test checks**, and the pads. Every HSTX register name stays in that file;
+    `hdmi.c` reaches the FIFO through an accessor.
+  - **`CLKPHASE` is 5, not 0, and that is a hardware finding**: the datasheet says
+    CLKPHASE 0 starts the generated clock LOW, while the PIO program starts a pixel
+    with the clock pair's second pin HIGH (side-set 2). CLKPHASE counts half
+    clk_hstx periods, so `CLKPHASE = CLKDIV` shifts it by half a generated period
+    and the two back-ends put the same waveform on the same wire. The pin model in
+    the header follows the constant, so an A/B still has to agree with the PIO.
+  - `hdmi.c` — under `HDMI_HSTX` the TMDS program is not loaded, `SM_video` is not
+    claimed (ten instructions and one SM handed back to pio2), the palette DMA
+    writes `hstx_fifo_hw->fifo` with `DREQ_HSTX` and `HDMI_DMA_WORDS_PER_INDEX`
+    transfers, and the ACR takes the real pixel clock from `clk_hstx`. The clock-pad
+    drive setting (Video > HDMI > Clock drive) is pad state and works either way.
+  - Build: `HDMI_HSTX` is a **tri-state cache variable** (`AUTO`/`ON`/`OFF`), AUTO =
+    on for PCp2. A plain `option()` would not do — an explicit `-DHDMI_HSTX=OFF`
+    would be indistinguishable from the default and the board arm would override the
+    escape hatch. A board whose display is not on GPIO 12-19 is refused at configure
+    time.
+  - Measured, all three linking from one tree:
+
+    | build | image | flash | RAM |
+    |---|---|---|---|
+    | PCp2, AUTO | `PCp2-speccy-VGA-HDMI-**HSTX**-1.0.6` | 2455172 | 167872 |
+    | PCp2, `-DHDMI_HSTX=OFF` | `PCp2-speccy-VGA-HDMI-1.0.6` | 2459268 | 168864 |
+    | m2p2, AUTO | `m2p2-speccy-VGA-HDMI-1.0.6` | 2455172 | 168864 |
+
+    i.e. HSTX costs **-4096 B of flash and -992 B of SRAM**, the PIO build is
+    byte-for-byte the numbers it had before any of this, and the HSTX image carries
+    no reference to the TMDS PIO program at all.
+- **Step 3, first half (the PWM layer) is DONE (2026-09-17); the vga.c wiring is
+  not.** `drivers/vga-nextgen/vga_pwm.h` + `tools/vga_pwm_test.c`: 8-bit channel ->
+  nearest of 13 levels -> four 2-bit sub-samples spread 0,2,1,3 -> the 32-bit word
+  (`p0 | p1<<8 | p2<<16 | p3<<24`), the pad map, and the clock helpers. **792 checks,
+  0 failures; 12 mutations each make it fail.** Worst quantisation 11/255, which is
+  the 13-level grid itself.
+- **Two findings from that work, both worth keeping whatever happens to HSTX:**
+  1. **`CSR.SHIFT` is a right-ROTATE, not a shift** — the datasheet says so and says
+     why: it is what lets N_SHIFTS repeat data when `SHIFT * N_SHIFTS > 32`. Inside
+     32 bits the two are identical, which both back-ends stay inside; there is now a
+     `_Static_assert` in each header saying so, and it fires if anyone changes the
+     settings into the wrapping regime.
+  2. **The VGA divider truncation in `vga.c` is LOAD-BEARING, and the mode table's
+     `vga_pixel_clk` is not what the hardware runs.** `div32 = fdiv * 65536` is
+     TRUNCATED and then masked to 1/16, and `378000000 / 19894737` is 18.999999849,
+     so the shipped divider is **18.9375, not 19** — a pixel clock of 19.9604 MHz,
+     0.33% above nominal, and fractional where the comment on that very line says
+     "integer div only". That is not a bug to fix blind: the empirically tuned
+     `vga_v_total` values were measured against it — 511 gives **48.827 Hz** (the
+     Pentagon target) with the real clock and 48.666 Hz with the nominal one, 499
+     gives 50.001 Hz against 49.837. So **the HSTX VGA clock must mirror the
+     quantised PIO divider, not `vga_pixel_clk`**, or every 50 Hz VGA mode moves by
+     0.33% and takes the refresh with it. `vga_hstx_clkdiv_q16()` does exactly that
+     (half of whatever `vga_pio_clkdiv_q16()` returns) and the test pins the 378 MHz
+     case to the shipped 18.9375.
+- **The 4-phase clock arithmetic, measured** (`clk_hstx = 2 x pixel`, one word per
+  output pixel, N_SHIFTS=2): an INTEGER clk_hstx divider exists for exactly one of
+  the twelve mode/clock combinations (720x576 at 378 MHz, /7). Everywhere else the
+  divider is fractional — 9.46875 for the default mode at 378 MHz — which is fine
+  and is not a new class of problem: it is finer than the PIO's 1/16 quantisation,
+  the pixel PERIOD stays exact at two cycles, and the fraction only moves the split
+  between the two phase pairs inside a pixel (a systematic ~5% duty skew, worth
+  about one code unit after the ladder integrates it).
+- Still to do: the vga.c wiring itself (palette tables to PWM words, line buffers to
+  32-bit words, the ISR loops, the sync templates, the DMA to the HSTX FIFO, and the
+  VGA branch of the HSTX config), the 90/75 Hz mode gate, then the hardware run on
+  PCp2. **An HSTX build's VGA output already works** — it is the untouched PIO path;
+  what it does not have yet is the PWM colour.
+
+## Hardware verdict (PCp2, 2026-09-17)
+
+**The HDMI half works: picture and HDMI audio both confirmed on PCp2.** What the
+runs actually establish, in the order they were measured:
+
+- `func=0` on GP12..19 — the pads' function select is HSTX, i.e. the hardware says
+  who owns the pins — and the `bit[]` registers read back as the PCp2 lane table
+  exactly (`SEL_P 0x14` = lane 2 on GP16/17, `SEL_P 0x0A` = lane 1 on GP18/19).
+- `csr=55050201`: en=1 shift=2 n_shifts=5 clkdiv=5 **clkphase=5** — the clock starts
+  high, matching the PIO side-set, and the receiver locks on it.
+- **31500 line IRQs/s** measured at the far end of the DMA chain. The chain is paced
+  by `DREQ_HSTX`, so that figure IS the pixel clock: if the engine were not draining,
+  the FIFO would sit FULL and the line IRQ would stop. FIFO level 7-8 of 8, **WOF
+  clear** — the DMA never overran it.
+- Colours correct, which on PCp2 is the board whose lane order is not the identity —
+  a wrong table swaps red and green there and would have hidden on m2p2.
+- The Data-Island slots dumped bit-for-bit as predicted from the shipped TERC4 table
+  (`29ca72e4` then 31 x `29ca719c`, guards `1334cd63`, video guard `2cc4cecc`),
+  `0/32 words zero, 0 tail words dirty` — so the strided island copy, the one piece
+  of genuinely new logic, is right.
+- HDMI audio plays cleanly after the ACR fix below.
+
+**The one real bug the hardware found, and it was mine:** `hdmi_hstx_pixel_hz()` read
+the LIVE `clk_hstx` register, but `hdmi_audio_hw_init()` runs on core0 inside
+`ESPectrum::setup()` — **before** core1 reaches `graphics_init()` and configures the
+serializer. It therefore got the SDK's boot default (150 MHz) and derived a 30 MHz
+pixel clock: `CTS=30000` instead of 25200 and `lps=37500` instead of 31500. Both
+sides were then consistently wrong — the sink regenerated 25.2e6 x 6144 / (128 x
+30000) = **40320 Hz** and we delivered exactly 40320 samples/s — so audio played
+CONTINUOUSLY, 16% slow, while the producer's honest 48000/s overflowed the
+128-packet queue every 67 ms. The owner heard it as "a wave, quieter then louder,
+but always playing", which is that 15 Hz overflow. Fixed by making the function pure
+arithmetic over `clk_sys` and the mode, exactly as the PIO path has always done; the
+start-up log now cross-checks the live clock against it and says `DISAGREES` if they
+ever part. **General rule this leaves: anything the audio path derives must not read
+a register core1 has not programmed yet.**
+
+Still unexercised on hardware: the other CPU clocks (252/504), scanlines, the CRT
+grille, dither, DS80/GMX/Timex pair modes, a capture card, and `[PERF] 60f` before
+and after — which is the reason the port exists.
 
 ## Goal
 
-Drive the display from the RP2350's **HSTX** serializer instead of PIO, on the
-Murmulator 2.0 + Pico 2 board (`m2p2` / CMake target `MURM2`).
+Drive the display from the RP2350's **HSTX** serializer instead of PIO, on the boards
+whose display sits on GPIO 12-19. **The hardware the owner will test on is `PCp2`
+(Olimex RP2040-PICO-PC + Pico 2, CMake target `PICO_PC`)**; `m2p2` (`MURM2`) and
+`m2p2w` are the same code with one table row changed.
 
 Owner's constraints, from the session that produced this plan:
 
-1. **One firmware**, named `m2p2-speccy-VGA-HDMI-HSTX-<ver>.uf2`, exactly the way
-   `quakegeneric` does it (`IF(MURM2) if(VGA_HDMI) set(DVI_HSTX ON)` plus a `-HSTX`
-   suffix). No extra pair in the build matrix, no second release asset.
+1. **One firmware per board**, named `PCp2-speccy-VGA-HDMI-HSTX-<ver>.uf2`, exactly
+   the way `quakegeneric` does it (`IF(MURM2) if(VGA_HDMI) set(DVI_HSTX ON)` plus a
+   `-HSTX` suffix). No extra pair in the build matrix, no second release asset.
 2. **Do not split the work into a VGA half and an HDMI half.** One HSTX backend
    serves both outputs and lands as one feature.
 3. Other boards keep the PIO path untouched.
 
-## Why only m2p2 (and which other boards could follow)
+## Which boards qualify, and the one thing that differs between them
 
 HSTX exists **only on GPIO 12-19**. Per board:
 
 | board | `HDMI_BASE_PIN` / `VGA_BASE_PIN` | HSTX |
 |---|---|---|
-| **MURM2 (m2p2)** | 12 -> 12..19 | **yes** |
-| PICO_PC (PCp2) | 12 -> 12..19 | yes, electrically — needs its own lane map (`get_ser_diff_data` swaps R/G there under `#ifdef PICO_PC`) |
+| **PICO_PC (PCp2)** | 12 -> 12..19 | **yes — the test board** |
+| MURM2 (m2p2) | 12 -> 12..19 | yes |
 | MURM2_W (m2p2w) | 12 (inherits the MURM2 arm) | yes |
 | MURM1, PICO_DV | 6 | no |
 | ZERO2 | 32 | no |
 
-So the real criterion is `HDMI_BASE_PIN == 12`. Write the pin/lane map as a per-board
-table from the start; PCp2 and m2p2w then cost one entry each plus a hardware run.
+So the real criterion is `HDMI_BASE_PIN == 12`, and the pin/lane map is a per-board
+table from the start.
+
+**PCp2 is the cleaner of the two carriers**: nothing else on that board touches
+GPIO 12-19 (keyboard 0/1, SD 4/6/7/22, NESPAD 5/9/20/21, audio 26-28, AY 29, PIO
+PSRAM disabled with `PSRAM_PIN_*=255`), and it has no TFT variant in the build matrix
+at all, where m2p2's TFT build claims the same pins.
+
+**The whole board difference is that lanes 1 and 2 are on swapped pin pairs:**
+
+| | GP12/13 | GP14/15 | GP16/17 | GP18/19 |
+|---|---|---|---|---|
+| m2p2 / m2p2w | CK-/CK+ | ch0 (blue, carries sync) | ch1 | ch2 |
+| **PCp2** | CK-/CK+ | ch0 | **ch2** | **ch1** |
+
+That is the `#ifdef PICO_PC` in `get_ser_diff_data()`, and it is **duplicated in
+`hdmi_ser_one_arg()`** (the TERC4 LUT for audio Data Islands) — i.e. the swap is
+purely which wire a channel leaves on, and it already applies to both of the places
+that build a word. Everything else is shared: `HDMI_PIN_invert_diffpairs=1`,
+`HDMI_PIN_RGB_notBGR=1` and clock-at-the-base come from the same `#else` arm of
+hdmi.h, whose only exception is ZERO2.
+
+In HSTX that is one table row — `lane_to_bit = {2,4,6}` for m2p2 against `{2,6,4}`
+for PCp2 (bit index = GPIO - 12). PCp2's data order is the one `pico-examples` uses
+for the Pico DVI Sock (`lane_to_output_bit = {0,6,4}`, same order with the clock in
+another pair), so it is a standard pinout, not an oddity.
+
+**The VGA half needs no per-board difference at all**: `VGA_BASE_PIN` is 12 on both
+and the colour bit order (`(r<<4)|(g<<2)|b`, HS/VS in bits 6/7) is the driver's own,
+not the board's. The lane swap touches the TMDS half only.
 
 ## The two outputs share one pin group, and the choice is boot-time only
 
@@ -106,12 +281,16 @@ of the accumulator and the PIO's `out pins,6` with `shift_right` emits the low b
 first, i.e. symbol bit 0 first; HSTX shifts the register right, also bit 0 first. The
 four control symbols are the same constants (`0x354/0x0AB/0x154/0x2AB`).
 
-**m2p2 lane map.** Today `d6 = (bR<<4)|(bG<<2)|bB` with `invert_diffpairs=1`, so
-GP14/15 = ch0 (blue, carries sync), GP16/17 = ch1, GP18/19 = ch2, the **even** pin of
-each pair inverted, clock on GP12/13. In HSTX that is `bit[2..7]` with `SEL_P/SEL_N` as
-above and `INV` on the even pin, `bit[0] = CLK|INV`, `bit[1] = CLK`. Wire-identical to
-what ships today — which is the point: the port cannot introduce a new pinout or
-polarity bug, and that is provable offline (see "Verification").
+**Lane map.** Today `d6 = (bR<<4)|(bG<<2)|bB` with `invert_diffpairs=1`, so the
+**even** pin of each pair is inverted and the clock is on GP12/13. In HSTX that is
+`bit[0] = CLK|INV`, `bit[1] = CLK`, and for each lane a pin pair carrying
+`SEL_P = lane*10`, `SEL_N = lane*10+1` with `INV` on the even pin — the lane-to-pair
+assignment being the one per-board row (`{2,4,6}` m2p2, `{2,6,4}` PCp2, see the board
+section). Wire-identical to what ships today — which is the point: the port cannot
+introduce a new pinout or polarity bug, and that is provable offline (see
+"Verification"). **PCp2 is the better board to prove it on**: it is the one whose lane
+order is NOT the identity, so a table or `INV` mistake shows up there and would hide on
+m2p2.
 
 ### VGA word format — 4-phase PWM
 
@@ -234,7 +413,7 @@ separate releases.
 4. **Build** — five lines, no matrix change:
    ```cmake
    option(HDMI_HSTX "..." OFF)            # engineering A/B only, not in the matrix
-   IF(MURM2)
+   IF(PICO_PC)                            # ... and IF(MURM2), once m2p2 is confirmed
        if(NOT TFT AND NOT TV AND NOT SOFTTV)
            set(HDMI_HSTX ON)              # their `if (VGA_HDMI) set(DVI_HSTX ON)`
        endif()
@@ -245,17 +424,26 @@ separate releases.
        SET(DISPLAY_TAG "${DISPLAY_TAG}HSTX")
    endif()
    ```
-   `build_all.sh` untouched. `check-release.sh` needs its m2p2 glob updated — note
+   The lane table is written for every 12-19 board from the start, but the
+   auto-enable lands on **PCp2 alone** — m2p2/m2p2w keep the PIO path until someone
+   runs the same image on one, and flipping them on afterwards is that one `IF()`.
+   `build_all.sh` untouched. `check-release.sh` needs its PCp2 glob updated — note
    that its `BOARDS` table still matches `m2-speccy-...`/`PC-speccy-...` while the real
    tags have been `m2p2`/`PCp2` for a long time, so that SRAM-headroom check currently
    matches nothing on any board. Separate one-line fix.
    `.vscode/tasks.json` is gitignored — the F7 picker entry is added by hand.
-5. **Hardware** (only the owner can): picture and sync on m2p2 at 252/378/504; the
-   same image on the VGA jumper (PWM colour, ZX palette solid-looking without
-   `vgaGridSnap`, TS-Conf 256c artwork); HDMI audio (`HDMIAU: dur/gap/skip/dup/und`);
+5. **Hardware — on PCp2** (only the owner can): picture and sync at 252/378/504
+   (the Overclock row moves `clk_hstx` by an integer divider at each: 2/3/4); the
+   **colours in the right order**, which on this board is the whole point of the lane
+   table — a swapped `{2,4,6}` shows as red and green exchanged, a wrong `INV` as a
+   dead or sparkling channel; the same image on the VGA jumper (PWM colour, ZX palette
+   solid-looking without `vgaGridSnap`, TS-Conf 256c artwork); HDMI audio
+   (`HDMIAU: dur/gap/skip/dup/und` — the Data-Island TERC4 words go through the same
+   per-board lane map, so a lane bug can mute a sink while the picture looks fine);
    menu, F8 stats, FDD lamp, notify banner; DS80/GMX/Timex pair modes; scanlines; CRT
    grille; a capture card; and `[PERF] 60f` before/after, which is the reason for all
-   of this.
+   of this. PCp2 has no TFT/SOFTTV variant to regress, and no PIO PSRAM to collide
+   with, so a failure there is the HSTX path and nothing else.
 6. **Optional afterwards**: LUT slot stride 16 -> 8 bytes (`in x,20` -> `in x,21` in the
    converter, page base 2 KB-aligned) returns ~2 KB of SRAM to both outputs.
 
@@ -269,7 +457,9 @@ separate releases.
 - Whether the resistor ladder plus the monitor's input integrate 4 phases cleanly at
   ~10 ns steps. It works on their hardware; ours is the same class of board, but this
   is the one part that cannot be reasoned about.
-- This container has no Pico SDK, so nothing but step 0 can be compiled here.
+- The owner's machine has the Pico SDK toolchain (`~/.pico-sdk`, which `build_all.sh`
+  bootstraps), so everything here builds and links locally; a container without it can
+  only run step 0's host test.
 
 ## Rejected / already considered, do not re-derive
 

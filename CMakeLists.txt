@@ -20,6 +20,20 @@ option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
+
+# HDMI back-end. AUTO = on for the boards whose display sits on GPIO 12-19, which is
+# where the RP2350's HSTX serializer lives — one firmware per board, exactly like
+# quakegeneric's `IF(MURM2) if (VGA_HDMI) set(DVI_HSTX ON)`, not a second image.
+# ON/OFF force it, and OFF is the A/B escape hatch back to the PIO TMDS program.
+# A tri-state rather than option(): with option() an explicit -DHDMI_HSTX=OFF is
+# indistinguishable from the default and the board arm below would override it.
+set(HDMI_HSTX AUTO CACHE STRING "HDMI back-end: AUTO / ON / OFF (HSTX serializer)")
+set_property(CACHE HDMI_HSTX PROPERTY STRINGS AUTO ON OFF)
+# Per-boot HSTX diagnostics: the engine settings, the eight bit[] entries, a 4 ms
+# line-rate measurement and the Data-Island slot dump. Off by default — that is
+# ~20 UART lines and a 4 ms stall on core1 at every boot, and the one line that
+# names the back-end and its clock prints unconditionally anyway.
+option(HDMI_HSTX_TRACE "HSTX: dump the pad map, the line rate and the Data Island at boot" OFF)
 option(MURM "Murmulator 1.x + Pi Pico 2" OFF)
 option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
 option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
@@ -1635,6 +1649,35 @@ ELSE()
     # substitutes the output that actually came up. Every other DISPLAY_TAG above is
     # a real build-time choice and needs no such treatment.
     SET(DISPLAY_TAG "VGAHDMI")
+
+    # HSTX drives the same eight pins as the PIO TMDS program and only exists in
+    # this branch — the TFT/TV/SOFTTV displays have no HDMI at all.
+    IF(HDMI_HSTX STREQUAL "AUTO")
+        IF(PICO_PC)
+            SET(HDMI_HSTX_ON 1)   # the board this is being brought up on
+        ELSE()
+            SET(HDMI_HSTX_ON 0)   # MURM2 / MURM2_W qualify too — after a hw run
+        ENDIF()
+    ELSEIF(HDMI_HSTX)
+        SET(HDMI_HSTX_ON 1)
+    ELSE()
+        SET(HDMI_HSTX_ON 0)
+    ENDIF()
+    IF(HDMI_HSTX_ON)
+        IF(NOT (PICO_PC OR MURM2))
+            message(FATAL_ERROR
+                "HDMI_HSTX needs the display on GPIO 12-19 (HDMI_BASE_PIN=12): "
+                "that is PICO_PC, MURM2 and MURM2_W only")
+        ENDIF()
+        target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX=1)
+        IF(HDMI_HSTX_TRACE)
+            target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX_TRACE=1)
+        ENDIF()
+        # The name is tagged below, beside PIOUSB's: a VGA_HDMI build's Hardware Info
+        # line is built from CONFIG_BOARD_TAG + the LIVE output + VARIANT_TAG, not
+        # from DISPLAY_TAG, so a variant that only touches DISPLAY_TAG is invisible
+        # on screen — and telling the two images apart there is the whole point.
+    ENDIF()
 ENDIF()
 
 # The PIO-USB host is a build-time variant of the same board, not a display mode, so
@@ -1643,6 +1686,13 @@ SET(VARIANT_TAG "")
 IF(ZERO2 AND ZERO2_PIO_USB)
     SET(BUILD_NAME "${BUILD_NAME}-PIOUSB")
     SET(VARIANT_TAG "+PIOUSB")
+    SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
+ENDIF()
+# Same shape for the HSTX back-end: PCp2-speccy-VGA-HDMI-HSTX-<version>, and
+# "PCp2 / HDMI+HSTX [v...]" in Hardware Info.
+IF(HDMI_HSTX_ON)
+    SET(BUILD_NAME "${BUILD_NAME}-HSTX")
+    SET(VARIANT_TAG "+HSTX")
     SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
 ENDIF()
 

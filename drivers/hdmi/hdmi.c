@@ -10,6 +10,15 @@
 #include "hardware/clocks.h"
 #include "hardware/structs/bus_ctrl.h"
 
+// TMDS word packing + this board's pin/lane map. Kept in its own header so
+// tools/hdmi_hstx_test.c validates the SHIPPED packers instead of a copy — see
+// the header, and re-run that test after touching anything it covers.
+#include "hdmi_word.h"
+#include "hdmi_hstx.h"
+
+// Expands hdmi.h's macros; the pinout has exactly one definition and this is it.
+static const hdmi_pinmap_t hdmi_pins = HDMI_PINMAP_INIT;
+
 //PIO параметры
 static uint offs_prg0 = 0;
 static uint offs_prg1 = 0;
@@ -223,13 +232,14 @@ static volatile bool hdmi_audio_enabled = false;
     (HDMI_AUDIO_FS) == 176400 ? 6 : \
     (HDMI_AUDIO_FS) == 192000 ? 7 : 0)
 
-// Encoded-packet blobs: 32 uint64 = 16 conv_color entry pairs = one island payload
-typedef uint64_t hdmi_di_blob_t[32];
+// Encoded-packet blobs: 32 words = 16 conv_color slot pairs = one island payload
+typedef hdmi_word_t hdmi_di_blob_t[32];   // 32 characters, packed two per slot
 static hdmi_di_blob_t blob_null, blob_acr;
 static hdmi_di_blob_t blob_null_vs;  // Null packet with VSYNC=0 baked (vsync lines)
 
 // Raw (un-encoded) packet: 4-byte header + 4x8-byte subpackets, ECC filled.
-// 36 bytes vs 256 for the encoded blob — the TERC4 expansion (hdmi_pack_blob)
+// 36 bytes against a blob's 32 words (256 B on PIO, 128 on HSTX) — the TERC4
+// expansion (hdmi_pack_blob)
 // is done by the ISR consumer straight into conv_color. Used for the three
 // InfoFrames below and as the ISR's scratch for an audio packet rebuilt from
 // its 16-byte queue entry (hdmi_aq_pkt_t / hdmi_aq_expand).
@@ -237,7 +247,7 @@ typedef struct { uint8_t hdr[4]; uint8_t sp[4][8]; } hdmi_audio_pkt_t;
 // The three InfoFrames go out ONCE per frame each, on three vblank lines where
 // the ISR renders nothing, so they are kept RAW (36 B each) and TERC4-encoded
 // by hdmi_di_load exactly like an audio packet — instead of three pre-encoded
-// 256 B blobs (2026-09-22, -660 B of .bss). Null and ACR stay pre-encoded: Null
+// blobs (2026-09-22, -660 B of .bss on the PIO back-end). Null and ACR stay pre-encoded: Null
 // goes out on every line without audio and ACR on every 4th vblank line.
 static hdmi_audio_pkt_t if_avi, if_vendor, if_audio;
 
@@ -338,7 +348,7 @@ static uint di_if_base = 0;
 static uint di_vs_start = 0, di_vs_end = 0;
 
 // Per-argument TERC4 serialization LUTs: full pixel = lut_a1[ch2]|lut_a2[ch1]|lut_a3[ch0]
-static uint64_t terc_lut_a1[16], terc_lut_a2[16], terc_lut_a3[16];
+static hdmi_word_t terc_lut_a1[16], terc_lut_a2[16], terc_lut_a3[16];
 
 // Forward declarations
 static void __attribute__((noinline)) hdmi_audio_hw_init(void);
@@ -410,41 +420,14 @@ static const struct pio_program program_PIO_HDMI = {
     .origin = -1,
 };
 
-static uint64_t get_ser_diff_data(const uint16_t dataR, const uint16_t dataG, const uint16_t dataB) {
-    uint64_t out64 = 0;
-    for (int i = 0; i < 10; i++) {
-        out64 <<= 6;
-        if (i == 5) out64 <<= 2;
-#ifdef PICO_PC
-        uint8_t bG = (dataR >> (9 - i)) & 1;
-        uint8_t bR = (dataG >> (9 - i)) & 1;
-#else
-        uint8_t bR = (dataR >> (9 - i)) & 1;
-        uint8_t bG = (dataG >> (9 - i)) & 1;
-#endif
-        uint8_t bB = (dataB >> (9 - i)) & 1;
-
-        bR |= (bR ^ 1) << 1;
-        bG |= (bG ^ 1) << 1;
-        bB |= (bB ^ 1) << 1;
-
-        if (HDMI_PIN_invert_diffpairs) {
-            bR ^= 0b11;
-            bG ^= 0b11;
-            bB ^= 0b11;
-        }
-        uint8_t d6;
-        if (HDMI_PIN_RGB_notBGR) {
-            d6 = (bR << 4) | (bG << 2) | (bB << 0);
-        }
-        else {
-            d6 = (bB << 4) | (bG << 2) | (bR << 0);
-        }
-
-
-        out64 |= d6;
-    }
-    return out64;
+// One output pixel's palette word — the 64-bit differential one on the PIO path,
+// the 30-bit raw triple on HSTX (hdmi_word.h picks). Argument order is the
+// historical (R, G, B) of every call site below, i.e. (ch2, ch1, ch0) — ch0 is
+// blue and is the channel that carries the sync levels. The body, the board's
+// R/G swap included, now lives in hdmi_word.h so the host test can prove the
+// HSTX back-end drives every pin identically.
+static hdmi_word_t get_ser_diff_data(const uint16_t dataR, const uint16_t dataG, const uint16_t dataB) {
+    return hdmi_pack3(&hdmi_pins, dataR, dataG, dataB);
 }
 
 //конвертор TMDS
@@ -542,13 +525,29 @@ static inline void* __not_in_flash_func(nf_memset)(void* ptr, int value, size_t 
 // the ISR reads it through a pointer and never touches flash at all.
 static struct video_mode_t hdmi_isr_mode;
 
-// RAM-resident 64-bit copy for the ISR path. A plain assignment loop here is
+// RAM-resident word copy for the ISR path. A plain assignment loop here is
 // converted by GCC's loop-distribute-patterns into a call to libc memcpy —
 // which lives in FLASH (see hdmi_isr_mode above for why that is poison on this
 // path). The volatile destination blocks the libcall transform.
-static inline void __not_in_flash_func(nf_copy64)(uint64_t *dst, const uint64_t *src, int n) {
-    volatile uint64_t *d = dst;
+static inline void __not_in_flash_func(nf_copy_words)(hdmi_word_t *dst, const hdmi_word_t *src, int n) {
+    volatile hdmi_word_t *d = dst;
     for (int i = 0; i < n; i++) d[i] = src[i];
+}
+
+// Copy `nslots` Data-Island slots out of a packed blob into the palette table,
+// honouring the slot stride. With 64-bit words the stride IS the packing and this
+// is the plain run it always was; with 32-bit ones it writes the two used words of
+// each 16-byte slot and skips the tail, which also halves what the ISR moves.
+static inline void __not_in_flash_func(nf_copy_slots)(hdmi_word_t *dst, const hdmi_word_t *src, int nslots) {
+#if HDMI_SLOT_WORDS == 2
+    nf_copy_words(dst, src, nslots * 2);
+#else
+    volatile hdmi_word_t *d = dst;
+    for (int i = 0; i < nslots; i++) {
+        d[HDMI_SLOT_IX(i, 0)] = src[i * 2 + 0];
+        d[HDMI_SLOT_IX(i, 1)] = src[i * 2 + 1];
+    }
+#endif
 }
 
 // Current HDMI scanline counter (exposed for Profi palette refresh sync).
@@ -894,8 +893,12 @@ static inline bool hdmi_init() {
     pio_set_gpio_base(PIO_VIDEO_ADDR, 16);
 #endif
 
+#if HDMI_HSTX
+    hdmi_hstx_stop();
+#else
     // pio_sm_restart(PIO_VIDEO, SM_video);
     pio_sm_set_enabled(PIO_VIDEO, SM_video, false);
+#endif
 
     //pio_sm_restart(PIO_VIDEO_ADDR, SM_conv);
     pio_sm_set_enabled(PIO_VIDEO_ADDR, SM_conv, false);
@@ -907,7 +910,9 @@ static inline bool hdmi_init() {
     // yet — silently, since pio_remove_program only asserts in debug builds.
     if (hdmi_progs_loaded) {
         pio_remove_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI, offs_prg1);
+#if !HDMI_HSTX
         pio_remove_program(PIO_VIDEO, &program_PIO_HDMI, offs_prg0);
+#endif
         hdmi_progs_loaded = false;
     }
 
@@ -920,11 +925,13 @@ static inline bool hdmi_init() {
                (int)PIO_NUM(PIO_VIDEO_ADDR), (int)pio_program_conv_addr_HDMI.length);
     }
     offs_prg1 = pio_add_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI);
+#if !HDMI_HSTX
     if (!pio_can_add_program(PIO_VIDEO, &program_PIO_HDMI)) {
         printf("hdmi_init: PIO%d has no room for the %d-instruction TMDS program\n",
                (int)PIO_NUM(PIO_VIDEO), (int)program_PIO_HDMI.length);
     }
     offs_prg0 = pio_add_program(PIO_VIDEO, &program_PIO_HDMI);
+#endif
     hdmi_progs_loaded = true;
     pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color >> 12));
     pio_set_y(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color_b >> 12));
@@ -943,24 +950,24 @@ static inline bool hdmi_init() {
     // the same index is consumed at even and odd source-pixel offsets and must
     // decode identically either way. Same rule for every non-colour index.
     for (int pg = 0; pg < 2; pg++) {
-    uint64_t* conv_color64 = (uint64_t *)(pg ? conv_color_b : conv_color);
+    hdmi_word_t* conv_color_w = (hdmi_word_t *)(pg ? conv_color_b : conv_color);
     const uint16_t b0 = 0b1101010100;
     const uint16_t b1 = 0b0010101011;
     const uint16_t b2 = 0b0101010100;
     const uint16_t b3 = 0b1010101011;
     const int base_inx = BASE_HDMI_CTRL_INX;
 
-    conv_color64[2 * base_inx + 0] = get_ser_diff_data(b0, b0, b3);
-    conv_color64[2 * base_inx + 1] = get_ser_diff_data(b0, b0, b3);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 0, 0)] = get_ser_diff_data(b0, b0, b3);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 0, 1)] = get_ser_diff_data(b0, b0, b3);
 
-    conv_color64[2 * (base_inx + 1) + 0] = get_ser_diff_data(b0, b0, b2);
-    conv_color64[2 * (base_inx + 1) + 1] = get_ser_diff_data(b0, b0, b2);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 1, 0)] = get_ser_diff_data(b0, b0, b2);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 1, 1)] = get_ser_diff_data(b0, b0, b2);
 
-    conv_color64[2 * (base_inx + 2) + 0] = get_ser_diff_data(b0, b0, b1);
-    conv_color64[2 * (base_inx + 2) + 1] = get_ser_diff_data(b0, b0, b1);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 2, 0)] = get_ser_diff_data(b0, b0, b1);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 2, 1)] = get_ser_diff_data(b0, b0, b1);
 
-    conv_color64[2 * (base_inx + 3) + 0] = get_ser_diff_data(b0, b0, b0);
-    conv_color64[2 * (base_inx + 3) + 1] = get_ser_diff_data(b0, b0, b0);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 3, 0)] = get_ser_diff_data(b0, b0, b0);
+    conv_color_w[HDMI_SLOT_IX(base_inx + 3, 1)] = get_ser_diff_data(b0, b0, b0);
     }
 
     //настройка PIO SM для конвертации
@@ -972,6 +979,19 @@ static inline bool hdmi_init() {
     pio_sm_init(PIO_VIDEO_ADDR, SM_conv, offs_prg1, &c_c);
     pio_sm_set_enabled(PIO_VIDEO_ADDR, SM_conv, true);
 
+    struct video_mode_t hdmi_mode = graphics_get_video_mode(get_video_mode());
+    // ISR mode snapshot (see hdmi_isr_mode): filled here because the line ISR is
+    // guaranteed not to be running yet — this runs once, before it is installed
+    // below.
+    hdmi_isr_mode = hdmi_mode;
+
+#if HDMI_HSTX
+    // The serializer replaces the whole TMDS state machine — no program, no SM, no
+    // side-set clock, and the eight function selects are its own (hdmi_hstx.c). The
+    // line ISR, the converter SM and the DMA chain above are untouched; only the
+    // word format (hdmi_word.h) and the sink below it change.
+    hdmi_hstx_start((unsigned)(hdmi_mode.tmds_mhz ? hdmi_mode.tmds_mhz : 252));
+#else
     //настройка PIO SM для вывода данных
     c_c = pio_get_default_sm_config();
     sm_config_set_wrap(&c_c, offs_prg0, offs_prg0 + (program_PIO_HDMI.length - 1));
@@ -980,22 +1000,6 @@ static inline bool hdmi_init() {
     sm_config_set_sideset_pins(&c_c,beginHDMI_PIN_clk);
     sm_config_set_sideset(&c_c, 2,false,false);
     for (int i = 0; i < 2; i++) pio_gpio_init(PIO_VIDEO, beginHDMI_PIN_clk + i);
-    // Clock-pair drive is a USER setting (Video > HDMI > Clock drive), applied here
-    // and re-applied live by hdmi_set_clock_drive():
-    //  * Normal = 12 mA + fast slew, the same as the data pairs. Needed on the
-    //    Waveshare RP2350B-Plus-W at 378 MHz (hw 2026-09-06): its 3V3 is an LDO
-    //    (ME6217) with a smaller TMDS swing, and a softened clock edge there cost
-    //    the receiver its clock recovery — sync loss + coloured streaks in every
-    //    channel, while frank-386 with a 12 mA clock held the same board fine.
-    //  * Soft = 8 mA + slow slew. The clock is the board's strongest aggressor
-    //    and runs right next to a data pair (display base 6: blue on GPIO 8/9
-    //    beside the clock on 6/7 — which is why blue breaks up there). Ported from
-    //    pico-spec 43ea8c8 as the best A/B variant on m1p1 + Samsung S27AG300N and
-    //    confirmed with a capture card here (hw 2026-08-06, with LEVEL_CLAMP).
-    // The build default is -DHDMI_SOFT_CLK (OFF = Normal); Config overrides it.
-    hdmi_clk_pin_base = beginHDMI_PIN_clk;
-    hdmi_apply_clk_drive();
-    hdmi_clk_pins_ready = true;
 
 #if ZERO2
     // Настройка направлений пинов для state machines
@@ -1027,15 +1031,30 @@ static inline bool hdmi_init() {
     sm_config_set_out_shift(&c_c, true, true, 30);
     sm_config_set_fifo_join(&c_c, PIO_FIFO_JOIN_TX);
 
-    struct video_mode_t hdmi_mode = graphics_get_video_mode(get_video_mode());
-    // ISR mode snapshot (see hdmi_isr_mode): filled here because the line ISR is
-    // guaranteed not to be running yet — this runs once, before it is installed
-    // below.
-    hdmi_isr_mode = hdmi_mode;
     // Use pre-computed clean divider (integer or half-integer) to avoid PIO clock jitter
     sm_config_set_clkdiv(&c_c, hdmi_mode.pio_clk_div);
     pio_sm_init(PIO_VIDEO, SM_video, offs_prg0, &c_c);
     pio_sm_set_enabled(PIO_VIDEO, SM_video, true);
+#endif  // !HDMI_HSTX
+
+    // Clock-pair drive is a USER setting (Video > HDMI > Clock drive), applied here
+    // and re-applied live by hdmi_set_clock_drive():
+    //  * Normal = 12 mA + fast slew, the same as the data pairs. Needed on the
+    //    Waveshare RP2350B-Plus-W at 378 MHz (hw 2026-09-06): its 3V3 is an LDO
+    //    (ME6217) with a smaller TMDS swing, and a softened clock edge there cost
+    //    the receiver its clock recovery — sync loss + coloured streaks in every
+    //    channel, while frank-386 with a 12 mA clock held the same board fine.
+    //  * Soft = 8 mA + slow slew. The clock is the board's strongest aggressor
+    //    and runs right next to a data pair (display base 6: blue on GPIO 8/9
+    //    beside the clock on 6/7 — which is why blue breaks up there). Ported from
+    //    pico-spec 43ea8c8 as the best A/B variant on m1p1 + Samsung S27AG300N and
+    //    confirmed with a capture card here (hw 2026-08-06, with LEVEL_CLAMP).
+    // The build default is -DHDMI_SOFT_CLK (OFF = Normal); Config overrides it.
+    // Pad state only, so it is the same call whichever back-end owns the pins —
+    // but it has to come AFTER whatever set their function select.
+    hdmi_clk_pin_base = beginHDMI_PIN_clk;
+    hdmi_apply_clk_drive();
+    hdmi_clk_pins_ready = true;
 
     //настройки DMA
     int line_u32 = hdmi_mode.line_bytes / 4; // uint32_t per line buffer
@@ -1121,16 +1140,26 @@ static inline bool hdmi_init() {
     channel_config_set_read_increment(&cfg_dma, true);
     channel_config_set_write_increment(&cfg_dma, false);
 
+#if HDMI_HSTX
+    dreq = DREQ_HSTX;
+#else
     dreq = pio_get_dreq(PIO_VIDEO, SM_video, true);
+#endif
 
     channel_config_set_dreq(&cfg_dma, dreq);
 
+    // Two output pixels per palette index, whatever a pixel is: four 32-bit
+    // transfers for the PIO's pair of 64-bit words, two for HSTX's pair of raw ones.
     dma_channel_configure(
         dma_chan_pal_conv,
         &cfg_dma,
+#if HDMI_HSTX
+        hdmi_hstx_fifo(), // Write address
+#else
         &PIO_VIDEO->txf[SM_video], // Write address
+#endif
         &conv_color[0], // read address
-        4, //
+        HDMI_DMA_WORDS_PER_INDEX, //
         false // Don't start yet
     );
 
@@ -1392,20 +1421,20 @@ static inline uint32_t hdmi_tmds_level888(uint32_t c) { return c; }
 #include "tmds_pair.h"
 #endif // HDMI_TMDS_BALANCED_PAIR
 
-static void hdmi_write_pair(uint64_t *cc64, uint8_t slot, uint32_t left888, uint32_t right888) {
+static void hdmi_write_pair(hdmi_word_t *ccw, uint8_t slot, uint32_t left888, uint32_t right888) {
     if (((left888 ^ right888) & 0x00ffffff) == 0) {
 #if HDMI_TMDS_BALANCED_PAIR
         uint16_t rA, rB, gA, gB, bA, bB;
         tmds_balanced_pair((left888 >> 16) & 0xff, &rA, &rB);
         tmds_balanced_pair((left888 >>  8) & 0xff, &gA, &gB);
         tmds_balanced_pair( left888        & 0xff, &bA, &bB);
-        cc64[slot * 2 + 0] = get_ser_diff_data(rA, gA, bA);
-        cc64[slot * 2 + 1] = get_ser_diff_data(rB, gB, bB);
+        ccw[HDMI_SLOT_IX(slot, 0)] = get_ser_diff_data(rA, gA, bA);
+        ccw[HDMI_SLOT_IX(slot, 1)] = get_ser_diff_data(rB, gB, bB);
 #else
-        cc64[slot * 2 + 0] = get_ser_diff_data(tmds_encoder((left888 >> 16) & 0xff),
+        ccw[HDMI_SLOT_IX(slot, 0)] = get_ser_diff_data(tmds_encoder((left888 >> 16) & 0xff),
                                                tmds_encoder((left888 >>  8) & 0xff),
                                                tmds_encoder( left888        & 0xff));
-        cc64[slot * 2 + 1] = cc64[slot * 2 + 0] ^ 0x3F03FFFFFFFFFFFFull;
+        ccw[HDMI_SLOT_IX(slot, 1)] = ccw[HDMI_SLOT_IX(slot, 0)] ^ HDMI_PAIR_FLIP_MASK;
 #endif
         return;
     }
@@ -1413,12 +1442,12 @@ static void hdmi_write_pair(uint64_t *cc64, uint8_t slot, uint32_t left888, uint
     const uint R_l = tmds_encoder((left888 >> 16) & 0xff);
     const uint G_l = tmds_encoder((left888 >>  8) & 0xff);
     const uint B_l = tmds_encoder( left888        & 0xff);
-    cc64[slot * 2 + 0] = get_ser_diff_data(R_l, G_l, B_l);
+    ccw[HDMI_SLOT_IX(slot, 0)] = get_ser_diff_data(R_l, G_l, B_l);
 
     const uint R_r = tmds_encoder((right888 >> 16) & 0xff);
     const uint G_r = tmds_encoder((right888 >>  8) & 0xff);
     const uint B_r = tmds_encoder( right888        & 0xff);
-    cc64[slot * 2 + 1] = get_ser_diff_data(
+    ccw[HDMI_SLOT_IX(slot, 1)] = get_ser_diff_data(
         R_r ^ ((hdmi_tmds_disp(R_l) * hdmi_tmds_disp(R_r) >= 0) ? 0xFF : 0),
         G_r ^ ((hdmi_tmds_disp(G_l) * hdmi_tmds_disp(G_r) >= 0) ? 0xFF : 0),
         B_r ^ ((hdmi_tmds_disp(B_l) * hdmi_tmds_disp(B_r) >= 0) ? 0xFF : 0));
@@ -1540,9 +1569,9 @@ static inline void hdmi_emit_slot(uint8_t i, uint32_t c) {
     // Level conditioning happens HERE, not in graphics_set_palette: palette[] and
     // the VGA LUT must keep the exact colour (see hdmi_tmds_level888).
     c = hdmi_tmds_level888(c);
-    hdmi_write_pair((uint64_t *)conv_color,   i, c,
+    hdmi_write_pair((hdmi_word_t *)conv_color,   i, c,
                     hdmi_crt_tap(c, hdmi_crt_tap1));
-    hdmi_write_pair((uint64_t *)conv_color_b, i, hdmi_crt_tap(c, hdmi_crt_tap2),
+    hdmi_write_pair((hdmi_word_t *)conv_color_b, i, hdmi_crt_tap(c, hdmi_crt_tap2),
                     hdmi_crt_tap(c, hdmi_crt_tap3));
 }
 
@@ -1568,7 +1597,7 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
 
 static void hdmi_rebuild_page_b(void) {
     if (!conv_color) return;
-    uint64_t *ccb = (uint64_t *)conv_color_b;
+    hdmi_word_t *ccb = (hdmi_word_t *)conv_color_b;
     for (int i = 0; i < 256; i++) {
         if (!hdmi_palette_slot_writable((uint8_t)i)) continue;
         // Same conditioning as hdmi_emit_slot — page B must not diverge from page A.
@@ -1587,7 +1616,7 @@ static void hdmi_rebuild_page_b(void) {
 // a TS-Conf frame that mixes a TEXT band with graphics then lost the whole band.
 static void hdmi_rebuild_page_a(void) {
     if (!conv_color) return;
-    uint64_t *cca = (uint64_t *)conv_color;
+    hdmi_word_t *cca = (hdmi_word_t *)conv_color;
     for (int i = 0; i < 256; i++) {
         if (!hdmi_palette_slot_writable((uint8_t)i)) continue;
         const uint32_t c = hdmi_tmds_level888(palette[i]);
@@ -1678,7 +1707,7 @@ void hdmi_set_profi_ds80_mode(bool active,
         int disp_R[2][16], disp_G[2][16], disp_B[2][16];
         uint R_pap[2][16], G_pap[2][16], B_pap[2][16];
         int disp_R_p[2][16], disp_G_p[2][16], disp_B_p[2][16];
-        uint64_t tmds16_pg[2][16];
+        hdmi_word_t tmds16_pg[2][16];
         for (int p = 0; p < 16; p++) {
             // Conditioned like every other colour entering the TMDS path — this also
             // covers the (black, black) border slot 255 written from entry 0 below.
@@ -1711,7 +1740,7 @@ void hdmi_set_profi_ds80_mode(bool active,
         // (via ^ 0xFF on the 10-bit TMDS value) when ink and paper have same-sign
         // disparity on that channel.  Channels with opposite-sign disparity are already
         // balanced without complementing.  Per-channel decisions are passed to
-        // get_ser_diff_data, which assembles the 64-bit differential pair normally.
+        // get_ser_diff_data, which assembles the pair word normally.
         //
         // pair_lut normalises paper=8 → paper=0 (bright-black bg = black bg), so
         // (ink, paper=8) shares the slot of (ink, paper=0).  The written[] guard
@@ -1720,7 +1749,7 @@ void hdmi_set_profi_ds80_mode(bool active,
         // independently; changing palette[8] cannot corrupt black-ink pixels.
         bool written[256] = {};
         for (int pg = 0; pg < 2; pg++) {
-            uint64_t *ccp = (uint64_t *)(pg ? conv_color_b : conv_color);
+            hdmi_word_t *ccp = (hdmi_word_t *)(pg ? conv_color_b : conv_color);
             for (int i = 0; i < 256; i++) written[i] = false;
             for (int ink = 0; ink < 16; ink++) {
                 for (int paper = 0; paper < 16; paper++) {
@@ -1728,19 +1757,19 @@ void hdmi_set_profi_ds80_mode(bool active,
                     // pair_lut guarantees slot is never in sync/border range
                     if (!written[slot]) {
                         written[slot] = true;
-                        ccp[slot * 2 + 0] = tmds16_pg[pg][ink];
+                        ccp[HDMI_SLOT_IX(slot, 0)] = tmds16_pg[pg][ink];
                         // Per-channel complement: flip data bits 0-7 when same-sign disparity.
                         uint R_p = R_pap[pg][paper] ^ ((disp_R[pg][ink] * disp_R_p[pg][paper] >= 0) ? 0xFF : 0);
                         uint G_p = G_pap[pg][paper] ^ ((disp_G[pg][ink] * disp_G_p[pg][paper] >= 0) ? 0xFF : 0);
                         uint B_p = B_pap[pg][paper] ^ ((disp_B[pg][ink] * disp_B_p[pg][paper] >= 0) ? 0xFF : 0);
-                        ccp[slot * 2 + 1] = get_ser_diff_data(R_p, G_p, B_p);
+                        ccp[HDMI_SLOT_IX(slot, 1)] = get_ser_diff_data(R_p, G_p, B_p);
                     }
                 }
             }
             // Slot 255: border fill byte — must be (black, black) in both pages.
             // Black: all channels disp=-8 (same-sign self) → complement all channels.
-            ccp[255 * 2 + 0] = tmds16_pg[pg][0];
-            ccp[255 * 2 + 1] = get_ser_diff_data(R_ink[pg][0] ^ 0xFF,
+            ccp[HDMI_SLOT_IX(255, 0)] = tmds16_pg[pg][0];
+            ccp[HDMI_SLOT_IX(255, 1)] = get_ser_diff_data(R_ink[pg][0] ^ 0xFF,
                                                  G_ink[pg][0] ^ 0xFF,
                                                  B_ink[pg][0] ^ 0xFF);
         }
@@ -1780,11 +1809,17 @@ void graphics_init_hdmi() {
     // (z0p2 2026-08-13, when PIO-USB and HDMI both wanted pio2 — see PIO_VIDEO
     // in hdmi.h). Claim non-fatally first, report, then let the fatal claim run:
     // there is nothing to fall back to, but at least the message says which PIO.
+#if !HDMI_HSTX
     int sm = pio_claim_unused_sm(PIO_VIDEO, false);
     if (sm < 0)
         printf("graphics_init_hdmi: PIO%d has no free state machine\n", (int)PIO_NUM(PIO_VIDEO));
     SM_video = sm >= 0 ? sm : pio_claim_unused_sm(PIO_VIDEO, true);
     sm = pio_claim_unused_sm(PIO_VIDEO_ADDR, false);
+#else
+    // The serializer needs no state machine: only the address converter is left on
+    // PIO, so an HSTX build hands ten instructions and one SM back to the block.
+    int sm = pio_claim_unused_sm(PIO_VIDEO_ADDR, false);
+#endif
     if (sm < 0)
         printf("graphics_init_hdmi: PIO%d has no free state machine\n", (int)PIO_NUM(PIO_VIDEO_ADDR));
     SM_conv = sm >= 0 ? sm : pio_claim_unused_sm(PIO_VIDEO_ADDR, true);
@@ -1795,6 +1830,28 @@ void graphics_init_hdmi() {
 
     // Palette is initialized centrally by Video.cpp Init()
     hdmi_init();
+
+#if HDMI_HSTX && HDMI_HSTX_TRACE
+    // Proof that the serializer is the thing driving the pins, and that it is
+    // draining at the pixel rate. The whole DMA chain is paced by DREQ_HSTX: if the
+    // engine were not consuming, the FIFO would sit FULL, the palette channel would
+    // block, and the line IRQ would never advance. So a line rate of ~31.5 kHz is
+    // not a hint — it is the pixel clock, measured at the far end of the chain.
+    {
+        hdmi_hstx_dump_config();
+        const uint32_t i0 = irq_inx, s0 = hdmi_hstx_fifo_stat();
+        const uint32_t t0 = time_us_32();
+        sleep_ms(4);
+        const uint32_t dt = time_us_32() - t0;
+        const uint32_t i1 = irq_inx, s1 = hdmi_hstx_fifo_stat();
+        const uint32_t rate = dt ? (uint32_t)(((uint64_t)(i1 - i0) * 1000000u) / dt) : 0;
+        printf("hdmi_hstx: %u line IRQs in %u us = %u/s (one per scanline), "
+               "fifo %08x -> %08x%s\n",
+               (unsigned)(i1 - i0), (unsigned)dt, (unsigned)rate,
+               (unsigned)s0, (unsigned)s1,
+               (s1 & (1u << 10)) ? "  <-- WOF: the DMA wrote a FULL fifo" : "");
+    }
+#endif
 
     if (hdmi_audio_enabled) {
         hdmi_audio_hw_init();
@@ -1911,26 +1968,10 @@ static inline uint8_t __not_in_flash_func(hdmi_parity8)(uint8_t x) {
 // zero bits). full_pixel == ser_arg(a,1)|ser_arg(b,2)|ser_arg(c,3) for
 // get_ser_diff_data(a,b,c) — channel bit positions in each 6-bit group are
 // disjoint, so per-channel LUTs can be OR-combined.
-static uint64_t hdmi_ser_one_arg(uint16_t data, int arg) {
-    uint64_t out64 = 0;
-    for (int i = 0; i < 10; i++) {
-        out64 <<= 6;
-        if (i == 5) out64 <<= 2;
-        uint8_t bit = (data >> (9 - i)) & 1;
-        uint8_t b2 = bit | ((bit ^ 1) << 1);
-        if (HDMI_PIN_invert_diffpairs) b2 ^= 0b11;
-        // wire: 0=R position, 1=G position, 2=B position of the d6 group
-#ifdef PICO_PC
-        int wire = (arg == 1) ? 1 : (arg == 2) ? 0 : 2;  // R/G swapped (see get_ser_diff_data)
-#else
-        int wire = (arg == 1) ? 0 : (arg == 2) ? 1 : 2;
-#endif
-        int shift;
-        if (HDMI_PIN_RGB_notBGR) shift = (wire == 0) ? 4 : (wire == 1) ? 2 : 0;
-        else                     shift = (wire == 2) ? 4 : (wire == 1) ? 2 : 0;
-        out64 |= (uint64_t)(b2 << shift);
-    }
-    return out64;
+static hdmi_word_t hdmi_ser_one_arg(uint16_t data, int arg) {
+    // arg 1/2/3 are this file's R/G/B, i.e. ch2/ch1/ch0.
+    const int ch = (arg == 1) ? 2 : (arg == 2) ? 1 : 0;
+    return hdmi_pack1(&hdmi_pins, data, ch);
 }
 
 static void hdmi_build_terc_luts(void) {
@@ -1950,13 +1991,16 @@ static void hdmi_build_terc_luts(void) {
 // Sync levels and D3 come pre-baked in di_ch0_data (mode geometry dependent).
 // `outb` is the second palette page (conv_color_b) or NULL. The island bytes
 // must decode identically through both pages, and this used to be pack-into-A
-// followed by a 32-uint64 copy A->B in the caller — a whole extra pass over
-// 256 bytes through nf_copy64's volatile loop, in the core1 ISR. Storing each
+// followed by a 32-character copy A->B in the caller — a whole extra pass over
+// the island through nf_copy_words' volatile loop, in the core1 ISR. Storing each
 // character to both pages as it is computed costs one predictable branch per
 // character instead (2026-09-08).
-static void __not_in_flash_func(hdmi_pack_blob_ch0)(uint64_t out[32], uint64_t outb[32],
+// `sw` is the destination's slot stride in words: HDMI_BLOB_SW for a standalone
+// blob (packed), HDMI_SLOT_WORDS when packing straight into the palette table.
+static void __not_in_flash_func(hdmi_pack_blob_ch0)(hdmi_word_t *out, hdmi_word_t *outb,
                                                     const uint8_t hdr[4],
-                                                    const uint8_t sp[4][8], const uint8_t *ch0base) {
+                                                    const uint8_t sp[4][8], const uint8_t *ch0base,
+                                                    const int sw) {
     uint32_t hdr_bits = hdr[0] | (hdr[1] << 8) | ((uint32_t)hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
     for (int i = 0; i < 8; i++) {
         // 4x8 bit transpose (PICO-BK encode_subpacket)
@@ -1970,16 +2014,17 @@ static void __not_in_flash_func(hdmi_pack_blob_ch0)(uint64_t out[32], uint64_t o
                                 (uint8_t)((v >> 12) & 15), (uint8_t)((v >> 28) & 15) };
         for (int k = 0; k < 4; k++) {
             uint8_t ch0 = ch0base[pc + k] | (((hdr_bits >> (pc + k)) & 1) << 2);
-            const uint64_t w = terc_lut_a1[c2[k]] | terc_lut_a2[c1[k]] | terc_lut_a3[ch0];
-            out[pc + k] = w;
-            if (outb) outb[pc + k] = w;
+            const hdmi_word_t w = terc_lut_a1[c2[k]] | terc_lut_a2[c1[k]] | terc_lut_a3[ch0];
+            out[HDMI_CHAR_AT(sw, pc + k)] = w;
+            if (outb) outb[HDMI_CHAR_AT(sw, pc + k)] = w;
         }
     }
 }
 
-static void __not_in_flash_func(hdmi_pack_blob)(uint64_t out[32], uint64_t outb[32],
-                                                const uint8_t hdr[4], const uint8_t sp[4][8]) {
-    hdmi_pack_blob_ch0(out, outb, hdr, sp, di_ch0_data);
+static void __not_in_flash_func(hdmi_pack_blob)(hdmi_word_t *out, hdmi_word_t *outb,
+                                                const uint8_t hdr[4], const uint8_t sp[4][8],
+                                                const int sw) {
+    hdmi_pack_blob_ch0(out, outb, hdr, sp, di_ch0_data, sw);
 }
 
 // ---------- static packets ----------
@@ -1988,8 +2033,8 @@ static void hdmi_build_null_blob(void) {
     uint8_t hdr[4] = { 0, 0, 0, 0 };
     uint8_t sp[4][8];
     nf_memset(sp, 0, sizeof(sp));
-    hdmi_pack_blob(blob_null, NULL, hdr, sp);
-    hdmi_pack_blob_ch0(blob_null_vs, NULL, hdr, sp, di_ch0_data_vs);
+    hdmi_pack_blob(blob_null, NULL, hdr, sp, HDMI_BLOB_SW);
+    hdmi_pack_blob_ch0(blob_null_vs, NULL, hdr, sp, di_ch0_data_vs, HDMI_BLOB_SW);
 }
 
 static void hdmi_build_acr_blob(uint32_t cts, uint32_t n) {
@@ -2006,7 +2051,7 @@ static void hdmi_build_acr_blob(uint32_t cts, uint32_t n) {
     sp[0][6] = n & 0xFF;
     sp[0][7] = hdmi_bch7(sp[0]);
     for (int s = 1; s < 4; s++) memcpy(sp[s], sp[0], 8);
-    hdmi_pack_blob(blob_acr, NULL, hdr, sp);
+    hdmi_pack_blob(blob_acr, NULL, hdr, sp, HDMI_BLOB_SW);
 }
 
 // InfoFrame checksum over header + payload, stored in PB0
@@ -2142,7 +2187,7 @@ static void __not_in_flash_func(hdmi_aq_expand)(const hdmi_aq_pkt_t *in, hdmi_au
 // every 4th vblank line after (strict sinks need a dense ACR stream); audio
 // packets whenever the producer queue has one; Null packet otherwise.
 static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
-    const uint64_t *src = NULL;
+    const hdmi_word_t *src = NULL;
     const hdmi_audio_pkt_t *qpkt = NULL;
     hdmi_audio_pkt_t apkt;      // an audio packet rebuilt from its queue entry
     bool from_q = false;
@@ -2186,32 +2231,32 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
 
     // Both palette pages: the island sits at line bytes [0..21], so consecutive
     // island indices land on alternating source-pixel parities and each one must
-    // decode identically through either page. Cost is one extra 32-uint64 store
+    // decode identically through either page. Cost is one extra 32-character store
     // run (~0.3 µs at 378 MHz against a 63.55 µs budget), and only with audio on.
-    const uint slot = (set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE) * 2;
-    uint64_t *dst  = ((uint64_t *)conv_color)   + slot;
-    uint64_t *dstb = ((uint64_t *)conv_color_b) + slot;
-    // nf_copy64, not plain loops: GCC turns these into flash-resident memcpy
+    const uint slot = HDMI_SLOT_IX(set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE, 0);
+    hdmi_word_t *dst  = ((hdmi_word_t *)conv_color)   + slot;
+    hdmi_word_t *dstb = ((hdmi_word_t *)conv_color_b) + slot;
+    // nf_copy_*, not plain loops: GCC turns these into flash-resident memcpy
     // calls, which stall behind GS/Gigascreen XIP traffic (see hdmi_isr_mode).
     if (qpkt) {
         // Encode the raw packet (an audio packet from the queue, or one of the
         // three InfoFrames) straight into both palette pages (see
         // hdmi_audio_pkt_t). hdmi_pack_blob writes all 32 characters of each.
-        hdmi_pack_blob(dst, dstb, qpkt->hdr, qpkt->sp);
+        hdmi_pack_blob(dst, dstb, qpkt->hdr, qpkt->sp, HDMI_SLOT_WORDS);
         if (from_q) {
             __dmb();
             aq_rd = aq_rd + 1;
         }
     } else {
         // Skipping this copy when the set already holds the same static blob was
-        // tried and REVERTED (hw 2026-09-08): measured nothing. nf_copy64 of 32
-        // uint64 is ~128 cycles, the sets alternate with audio packets so a
+        // tried and REVERTED (hw 2026-09-08): measured nothing. copying the 32
+        // characters is ~128 cycles, the sets alternate with audio packets so a
         // same-blob repeat lands ~38% of the time, and 0.38 x 2 x 0.34 µs is
         // 0.06 ms a frame — below the noise on c1, which did not move (15.3 ms
         // before and after). Not worth the per-set state plus an invalidation
         // contract resting on three other places continuing to skip the DI slots.
-        nf_copy64(dst, src, 32);
-        nf_copy64(dstb, src, 32);
+        nf_copy_slots(dst, src, 16);
+        nf_copy_slots(dstb, src, 16);
     }
 }
 
@@ -2253,7 +2298,7 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
     // All conv_color entries and static blobs are constants of the video mode
     // (which can't change without a reboot). On subsequent resets, skip the
     // write entirely: overwriting conv_color preamble/guard entries while the
-    // core1 HDMI ISR is reading them produces a torn 64-bit symbol → invalid
+    // core1 HDMI ISR is reading them produces a torn symbol → invalid
     // TERC4 → TV loses signal lock (picture goes black).
     if (hdmi_audio_enabled) return;
 
@@ -2282,7 +2327,7 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
     // whatever source-pixel parity their byte offset happens to be, so each must
     // decode identically through page A and page B.
     for (int pg = 0; pg < 2; pg++) {
-    uint64_t *cc = (uint64_t *)(pg ? conv_color_b : conv_color);
+    hdmi_word_t *cc = (hdmi_word_t *)(pg ? conv_color_b : conv_color);
     const uint16_t CTL00 = 0b1101010100;        // CTLx = {0,0}
     const uint16_t CTL01 = 0b0010101011;        // CTLx = {0,1}
     const uint16_t SYNC_H1V1 = 0b1010101011;    // ch0 control: blanking idle
@@ -2293,29 +2338,29 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
 
     // Data island preamble: CTL0=1 CTL1=0 CTL2=1 CTL3=0; px 0..7, inside the
     // hsync pulse (ch0 carries the asserted sync levels)
-    uint64_t pre = get_ser_diff_data(CTL01, CTL01, SYNC_H0V1);
-    cc[IDX_DI_PREAMBLE * 2] = pre;
-    cc[IDX_DI_PREAMBLE * 2 + 1] = pre;
-    uint64_t pre_vs = get_ser_diff_data(CTL01, CTL01, SYNC_H0V0);
-    cc[IDX_DI_PREAMBLE_VS * 2] = pre_vs;
-    cc[IDX_DI_PREAMBLE_VS * 2 + 1] = pre_vs;
+    hdmi_word_t pre = get_ser_diff_data(CTL01, CTL01, SYNC_H0V1);
+    cc[HDMI_SLOT_IX(IDX_DI_PREAMBLE, 0)] = pre;
+    cc[HDMI_SLOT_IX(IDX_DI_PREAMBLE, 1)] = pre;
+    hdmi_word_t pre_vs = get_ser_diff_data(CTL01, CTL01, SYNC_H0V0);
+    cc[HDMI_SLOT_IX(IDX_DI_PREAMBLE_VS, 0)] = pre_vs;
+    cc[HDMI_SLOT_IX(IDX_DI_PREAMBLE_VS, 1)] = pre_vs;
     // Island guard bands: ch0 = TERC4({1,1,VSYNC,HSYNC}), ch1=ch2=0b0100110011.
     // Leading guard px 8,9 (inside hsync); trailing guard px 42,43.
     for (int p = 0; p < 2; p++) {
         const uint8_t h_trail = ((42 + p) < hs_px) ? 0 : 1;
-        cc[IDX_DI_GUARD * 2 + p]          = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1110]);
-        cc[IDX_DI_GUARD_TRAIL * 2 + p]    = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1110 | h_trail]);
-        cc[IDX_DI_GUARD_VS * 2 + p]       = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1100]);
-        cc[IDX_DI_GUARD_TRAIL_VS * 2 + p] = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1100 | h_trail]);
+        cc[HDMI_SLOT_IX(IDX_DI_GUARD, p)]          = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1110]);
+        cc[HDMI_SLOT_IX(IDX_DI_GUARD_TRAIL, p)]    = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1110 | h_trail]);
+        cc[HDMI_SLOT_IX(IDX_DI_GUARD_VS, p)]       = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1100]);
+        cc[HDMI_SLOT_IX(IDX_DI_GUARD_TRAIL_VS, p)] = get_ser_diff_data(GB_DI, GB_DI, terc4_table[0b1100 | h_trail]);
     }
     // Video preamble: CTL0=1 CTL1=0 CTL2=0 CTL3=0; sits at the end of back porch
-    uint64_t vp = get_ser_diff_data(CTL00, CTL01, SYNC_H1V1);
-    cc[IDX_VIDEO_PREAMBLE * 2] = vp;
-    cc[IDX_VIDEO_PREAMBLE * 2 + 1] = vp;
+    hdmi_word_t vp = get_ser_diff_data(CTL00, CTL01, SYNC_H1V1);
+    cc[HDMI_SLOT_IX(IDX_VIDEO_PREAMBLE, 0)] = vp;
+    cc[HDMI_SLOT_IX(IDX_VIDEO_PREAMBLE, 1)] = vp;
     // Video guard band: fixed 10-bit patterns per HDMI 1.4b §5.2.2.1
-    uint64_t vg = get_ser_diff_data(GB_VID, GB_DI, GB_VID);
-    cc[IDX_VIDEO_GUARD * 2] = vg;
-    cc[IDX_VIDEO_GUARD * 2 + 1] = vg;
+    hdmi_word_t vg = get_ser_diff_data(GB_VID, GB_DI, GB_VID);
+    cc[HDMI_SLOT_IX(IDX_VIDEO_GUARD, 0)] = vg;
+    cc[HDMI_SLOT_IX(IDX_VIDEO_GUARD, 1)] = vg;
     }
 
     // The static scanline (gray) buffer plays as active video — it needs the
@@ -2327,7 +2372,11 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
     }
 
     // ACR for the real pixel clock; 31250 Hz is declared via N/CTS only
+#if HDMI_HSTX
+    uint32_t pix_hz = hdmi_hstx_pixel_hz((unsigned)mode.tmds_mhz);
+#else
     uint32_t pix_hz = (uint32_t)((float)clock_get_hz(clk_sys) / (mode.pio_clk_div * 10.0f));
+#endif
     uint32_t acr_n, acr_cts;
     hdmi_pick_acr(pix_hz, &acr_n, &acr_cts);
 
@@ -2382,13 +2431,49 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
         // sets itself, and a concurrent memcpy would produce a torn BCH packet
         // that makes the TV mute for ~0.5 s.
         // Both pages, same reason as the preamble/guard entries above.
-        uint64_t *ccp[2] = { (uint64_t *)conv_color, (uint64_t *)conv_color_b };
+        hdmi_word_t *ccp[2] = { (hdmi_word_t *)conv_color, (hdmi_word_t *)conv_color_b };
         for (int pg = 0; pg < 2; pg++) {
-            memcpy(&ccp[pg][IDX_DI_DATA_BASE * 2],  blob_null, sizeof(blob_null));
-            memcpy(&ccp[pg][IDX_DI_DATA2_BASE * 2], blob_null, sizeof(blob_null));
+            nf_copy_slots(&ccp[pg][HDMI_SLOT_IX(IDX_DI_DATA_BASE, 0)],  blob_null, 16);
+            nf_copy_slots(&ccp[pg][HDMI_SLOT_IX(IDX_DI_DATA2_BASE, 0)], blob_null, 16);
         }
         aq_set_audio[0] = aq_set_audio[1] = false;
         hdmi_au_pos = 0;
+#if HDMI_HSTX && HDMI_HSTX_TRACE
+        // The Data Island is the one place where the HSTX word size changes the
+        // LAYOUT and not just the content: 32 characters into 16 slots of which
+        // only the first two words are used. Print what actually landed — a flat
+        // copy would fill eight slots and leave eight stale, which the sink reports
+        // as nothing at all while the picture stays perfect.
+        {
+            const hdmi_word_t *cc0 = (const hdmi_word_t *)conv_color;
+            int zero = 0, tail = 0;
+            for (int i = 0; i < 16; i++) {
+                for (int px = 0; px < 2; px++)
+                    if (!cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i, px)]) zero++;
+                for (int w = 2; w < HDMI_SLOT_WORDS; w++)
+                    if (cc0[(IDX_DI_DATA_BASE + i) * HDMI_SLOT_WORDS + w]) tail++;
+            }
+            printf("hdmi_hstx: DI set0 slots %d..%d: %d/32 words zero, %d tail words dirty\n",
+                   IDX_DI_DATA_BASE, IDX_DI_DATA_BASE + 15, zero, tail);
+            for (int i = 0; i < 16; i += 4) {
+                printf("hdmi_hstx:   %2d: %08x %08x  %08x %08x  %08x %08x  %08x %08x\n", i,
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 0, 0)],
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 0, 1)],
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 1, 0)],
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 1, 1)],
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 2, 0)],
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 2, 1)],
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 3, 0)],
+                    (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_DATA_BASE + i + 3, 1)]);
+            }
+            printf("hdmi_hstx: DI pre=%08x guard=%08x trail=%08x vidpre=%08x vidguard=%08x\n",
+                   (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_PREAMBLE, 0)],
+                   (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_GUARD, 0)],
+                   (unsigned)cc0[HDMI_SLOT_IX(IDX_DI_GUARD_TRAIL, 0)],
+                   (unsigned)cc0[HDMI_SLOT_IX(IDX_VIDEO_PREAMBLE, 0)],
+                   (unsigned)cc0[HDMI_SLOT_IX(IDX_VIDEO_GUARD, 0)]);
+        }
+#endif
         // Pre-fill the latency cushion with silent audio packets (the sample
         // ring is still zeroed — audio isn't enabled yet, so no concurrency):
         // the full target depth exists from the very first emitted island and
