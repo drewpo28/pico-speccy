@@ -5474,6 +5474,45 @@ warm reboot" is exactly the expected shape.
 - Still unaddressed, same family: butter PSRAM M1 timing is only retimed AFTER the
   `cpu_mhz` switch while core1 (GS, video) may be fetching from PSRAM during it.
 
+### Custom ROM flashing runs at 252 MHz now, and re-tunes QMI per block (2026-09-21, NOT hw-tested)
+
+`OSD::updateROM` (Devices > Replace ROM, every custom slot: 48K, 128K, Pentagon#0/#1,
+TR-DOS) writes the image with `flash_block` — 512 bytes at a time, each taking
+`multicore_lockout` and doing its own erase/program. **That path never lowered clk_sys
+and never re-applied the flash timing**, so at 378/504 MHz a write "did not always take".
+The claim that the fix "was in pico-spec and disappeared here" is not right: the donor
+(`drewpo28/pico-spec`) has the SAME code, byte for byte, with no clock guard — what both
+projects have is the 252 MHz window around the **GM.DLS bank** write
+(`Buffer::flashClockEnter/Exit`, "mirrors the proven approach in the old MidiSynth
+provisioning"). It is the ROM path that never got it.
+
+- **`flashRomClockWindow(bool)`** brackets the whole write loop with
+  `Buffer::flashClockEnter/Exit` — one PLL change each way, not one per block. It parks
+  **core1 for the switch itself**: core1 fetches code from flash and must not run while
+  clk_sys and the QMI timing move (`flash_timings_transition` covers the transition, and
+  the `xip_cache_invalidate_all()` inside `board_set_clock_and_timing` is what makes
+  core1's parked spin loop re-fetch at the new timing). The window is deliberately SHORT
+  — a LONG `multicore_lockout` deadlocks the HDMI ISR, which is the documented reason the
+  ALF cart is flashed at boot instead (`Config::alfCartPath`), so the per-block lockouts
+  stay as they are and core1 keeps breathing between blocks.
+- **The bigger half is the per-block re-tune.** The bootrom flash API hands XIP back with
+  **boot2's DEFAULT timing** (derived for the 150 MHz boot clock), and `flash_block`
+  released core1 straight into flash code with it — every block, ~32-64 times per ROM.
+  `flash_timings(mhz)` + `xip_cache_invalidate_all()` now run inside the lockout, before
+  core1 is released. Buffer's bank window gets away with doing this once at the end
+  because it is single-core and runs before `VIDEO::Init`; this one is not.
+  `mhz` is sampled at the TOP of `flash_block`, while XIP is still healthy — the re-tune
+  must not itself be the first thing to fetch flash code at boot2's timing.
+- Side effect to expect on hardware: the display glitches/loses sync for the ~tens of ms
+  of the write, because clk_sys moves under the HDMI/VGA PIO dividers and nothing calls
+  `graphics_set_sys_clk_mhz()` — `OSD::esp_hard_reset()` reboots immediately afterwards,
+  so it was not worth re-deriving them. `esp_hard_reset` drops to 150 MHz / 1.10 V by
+  itself, so the `flashClockExit` before it is only for the `Config::save()` in between.
+- Hw check owed (nothing here has run): flash a custom 48K and a 32K Pentagon ROM at
+  **378 MHz** repeatedly — the failure this fixes was intermittent, so one success proves
+  little — then the same at 252 (no clock change happens there, only the re-tune) and at
+  504; and a TR-DOS custom BIOS, which is the one slot whose target is `rom[4]`.
+
 ## Flash ceiling: the firmware competes with the GM.DLS bank (partition made DYNAMIC 2026-09-20, NOT hw-tested)
 
 **The GM.DLS bank is no longer a fixed partition.** `rp2350-memmap.ld` now derives
