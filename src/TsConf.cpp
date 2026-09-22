@@ -47,6 +47,19 @@ the Free Software Foundation, either version 3 of the License, or
 // around its INT handler" questions (Ninja Gaiden background flicker, 2026-09-07).
 static uint32_t s_vtrace_left = 1u << 30;
 static uint32_t s_vtrace_frame = 0;
+// DMA EVENT RING — every DMA transaction the guest starts, in memory, read out
+// by Ctrl+Alt+D (tools/memdump.gdb probes ts_dma_ring, tools/dmaring.py decodes
+// /tmp/picospec_dmaring.bin). Exists because the UART cannot carry a per-DMA
+// trace of a heavy frame: TMNT's menu issues ~14 DMAs inside one 20 ms frame,
+// ~40 KB/s of text against the console's 11.5, and every capture of it came
+// back with the frame's first lines shredded (2026-09-22). frame/line = raster
+// position at the DMACtrl write, dur = modelled DMA_ACT window in lines,
+// pend = core1 lines still queued at that instant, posted = lines of this
+// frame already handed to the renderer. Oldest entry at ts_dma_ring_w.
+struct TsDmaRec { uint16_t frame, line; uint8_t ctrl, dur; uint16_t words; uint32_t saddr, daddr; uint16_t pend, posted; };
+#define TS_DMA_RING_N 128
+TsDmaRec ts_dma_ring[TS_DMA_RING_N];
+uint16_t ts_dma_ring_w = 0;
 #define TSVT(fmt, ...) do { if (s_vtrace_left) { s_vtrace_left--; \
     Debug::log("[TSVT] f%u L%03u pc=%04X " fmt, (unsigned)s_vtrace_frame, (unsigned)(CPU::tstates / tsLineT()), Z80::getRegPC(), ##__VA_ARGS__); } } while (0)
 // Offsets: log only a CHANGE of the 9-bit value (a game rewrites them every frame).
@@ -984,7 +997,10 @@ TS_HOT uint8_t TsConf::intAck() {
     // any ack, int_lin only when FRAME is not pending, int_dma only when
     // neither is — i.e. exactly the source whose vector is driven.
     tsIntPoll();
-    if (!tsFrmActive()) TSVT("INT ack frm=0 lin=%d dma=%d", (int)s_lin_pending, (int)s_dma_pending);   // FRAME acks are the norm — count them (PERF ts frmInt=) instead
+    // FRAME acks are the norm (counted in PERF ts frmInt=), and a per-line LINE
+    // INT player (TMNT's Covox sample loop, 320 acks a frame) drowns the trace
+    // budget in seconds — only a DMA ack is worth a line here (2026-09-22).
+    if (!tsFrmActive() && s_dma_pending) TSVT("INT ack frm=0 lin=%d dma=1", (int)s_lin_pending);
     if (tsFrmActive())  { s_frm_acked = true;
 #if PERF_TRACE
         ts_int_frm++;
@@ -1382,8 +1398,17 @@ TS_HOT void TsConf::dmaStart(uint8_t ctrl) {
     // come ~50 a frame and drowned the UART — whole lines were dropped, the
     // register trace with them (hw 2026-09-07). Skip those; cap the rest per frame.
     static uint32_t dma_trace_frame = 0xFFFFFFFFu, dma_trace_n = 0;
+    {
+        TsDmaRec& d_ = ts_dma_ring[ts_dma_ring_w & (TS_DMA_RING_N - 1)];
+        ts_dma_ring_w = (uint16_t)((ts_dma_ring_w + 1) & (TS_DMA_RING_N - 1));
+        const uint32_t vs = VIDEO::tsTraceState();
+        d_.frame = (uint16_t)s_vtrace_frame; d_.line = (uint16_t)(CPU::tstates / tsLineT());
+        d_.ctrl = ctrl; d_.dur = (uint8_t)((s_dma_end - CPU::tstates) / tsLineT());
+        d_.words = (uint16_t)(((uint32_t)r.dmalen + 1) * ((uint32_t)r.dmanum + 1));
+        d_.saddr = r.saddr; d_.daddr = r.daddr; d_.pend = (uint16_t)(vs >> 16); d_.posted = (uint16_t)vs;
+    }
     if (dma_trace_frame != s_vtrace_frame) { dma_trace_frame = s_vtrace_frame; dma_trace_n = 0; }
-    if (!(ctrl == 0x31 && r.dmalen == 1 && r.dmanum == 7) && mode != M_CRAM && mode != M_SFILE && dma_trace_n < 6) {
+    if (!(ctrl == 0x31 && r.dmalen == 1 && r.dmanum == 7) && mode != M_CRAM && mode != M_SFILE && dma_trace_n < 16) {
         dma_trace_n++;
         // collapse identical repeats
         static uint32_t last_key[3] = {0xFFFFFFFFu, 0, 0}, rep = 0;
@@ -1391,8 +1416,12 @@ TS_HOT void TsConf::dmaStart(uint8_t ctrl) {
         if (key[0] == last_key[0] && key[1] == last_key[1] && key[2] == last_key[2]) rep++;
         else {
             if (rep) TSVT("  (previous DMA x%u)", (unsigned)(rep + 1));
-            TSVT("DMA ctrl=%02X s=%06X d=%06X len=%u num=%u (end regs) dur=%u lines", ctrl, (unsigned)r.saddr, (unsigned)r.daddr, (unsigned)r.dmalen, (unsigned)r.dmanum,
-                 (unsigned)((s_dma_end - CPU::tstates) / tsLineT()));
+            // Short on purpose: the UART ring is 4 KB and a heavy frame issues a
+            // dozen of these (TMNT's menu, 2026-09-22 — the long form lost the
+            // frame's first lines). words = (len+1)*(num+1) as programmed; s/d are
+            // the END registers; dur = the modelled DMA_ACT window in lines.
+            TSVT("DMA %02X %uw s=%06X d=%06X +%uL", ctrl, (unsigned)(((uint32_t)r.dmalen + 1) * ((uint32_t)r.dmanum + 1)),
+                 (unsigned)r.saddr, (unsigned)r.daddr, (unsigned)((s_dma_end - CPU::tstates) / tsLineT()));
             last_key[0] = key[0]; last_key[1] = key[1]; last_key[2] = key[2]; rep = 0;
         }
     }
@@ -1611,6 +1640,10 @@ TS_HOT uint8_t TsConf::dmaStatus() {
                 (uint32_t)CPU::IntStart >= t && (uint32_t)CPU::IntStart < end)
                 TSVT("POLL-FF over FRAME window with DI: t=%u end=%u IntStart=%u", (unsigned)t, (unsigned)end, (unsigned)CPU::IntStart);
 #endif
+            // The jump walks the video machine over (end - t) raster lines with
+            // VRAM already holding this DMA's result — a TMNT-menu tear at 576p
+            // was traced to exactly that window (2026-09-22).
+            if (end - t >= tsLineT()) TSVT("POLL-FF +%u lines (to L%03u)", (unsigned)((end - t) / tsLineT()), (unsigned)(end / tsLineT()));
             CPU::haltAdvanceTo(end);
         }
         tsIntPoll();

@@ -377,6 +377,7 @@ public:
   static bool     tsWatchedPage(uint32_t page);   // a queued line may read this physical page
   static bool     tsRenderQueueOn();     // lines (and bulk DMA) go to core1 right now
   static void     tsRenderDrainOverlap(uint32_t addr, uint32_t len); // wait until no queued line reads the range
+  static uint32_t tsTraceState();       // (pending core1 lines << 16) | lines posted this frame — for the DMA event ring (TS_VIDEO_TRACE)
   static void     tsVramDmaNote(uint32_t addr, uint32_t len);   // bulk DMA into video pages → next CRAM change is a re-index
   static void     tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, uint32_t daddr);
   static void     tsRenderDrainDma();    // core0: wait for every queued DMA transaction

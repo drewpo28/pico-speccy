@@ -198,7 +198,7 @@ echo \nMemory dump files written to /tmp/picospec_mem{0-3}.bin, /tmp/picospec_ra
 # TS-Conf: register file, the 16 ZX-bank CRAM cells and TS-BIOS's NVRAM config
 # cells (#B0..#E7, CRC16 at #E6/#E7 — see RTC::tsBiosSeed). Last on purpose:
 # these symbols exist only in builds that carry the machine.
-shell rm -f /tmp/picospec_tsconf.txt /tmp/picospec_intring.bin /tmp/picospec_symprobe.txt /tmp/picospec_symprobe.gdb
+shell rm -f /tmp/picospec_tsconf.txt /tmp/picospec_intring.bin /tmp/picospec_dmaring.bin /tmp/picospec_symprobe.txt /tmp/picospec_symprobe.gdb
 
 # The INT-accept ring exists only in PERF_TRACE builds, and GDB's command
 # language has no try/catch: an unknown symbol ABORTS the sourced file, and
@@ -214,9 +214,11 @@ set logging overwrite on
 set logging redirect on
 set logging enabled on
 info variables ^ts_int_ring$
+info variables ^ts_dma_ring$
 set logging enabled off
 set logging redirect off
 shell grep -v "regular expression" /tmp/picospec_symprobe.txt | grep -q ts_int_ring && echo 'set $has_intring = 1' > /tmp/picospec_symprobe.gdb || echo 'set $has_intring = 0' > /tmp/picospec_symprobe.gdb
+shell grep -v "regular expression" /tmp/picospec_symprobe.txt | grep -q ts_dma_ring && echo 'set $has_dmaring = 1' >> /tmp/picospec_symprobe.gdb || echo 'set $has_dmaring = 0' >> /tmp/picospec_symprobe.gdb
 source /tmp/picospec_symprobe.gdb
 
 if Z80Ops::isTsconf
@@ -253,12 +255,21 @@ if Z80Ops::isTsconf
   if $has_intring
     printf "intring: late=%u miss=%u frozen=%u w=%u n=%u\n", (unsigned)ts_int_late, (unsigned)ts_int_miss, (unsigned)ts_int_frozen, (unsigned)ts_int_ring_w, (unsigned)(sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
   end
+  # DMA event ring (TS_VIDEO_TRACE builds): every DMACtrl write with its raster
+  # position, modelled duration and the renderer's state. Decode with
+  # tools/dmaring.py. Probed like the INT ring; last, for the same reason.
+  if $has_dmaring
+    printf "dmaring: w=%u n=%u\n", (unsigned)ts_dma_ring_w, (unsigned)(sizeof(ts_dma_ring)/sizeof(ts_dma_ring[0]))
+  end
   set logging enabled off
   set logging redirect off
   if $has_intring
     dump binary memory /tmp/picospec_intring.bin &ts_int_ring[0] (&ts_int_ring[0] + sizeof(ts_int_ring)/sizeof(ts_int_ring[0]))
   else
     echo \nintring: not in this build (PERF_TRACE=OFF)\n
+  end
+  if $has_dmaring
+    dump binary memory /tmp/picospec_dmaring.bin &ts_dma_ring[0] (&ts_dma_ring[0] + sizeof(ts_dma_ring)/sizeof(ts_dma_ring[0]))
   end
 end
 

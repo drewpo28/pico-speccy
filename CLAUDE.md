@@ -6307,7 +6307,60 @@ Lessons that cost a round or were nearly shipped wrong:
 - **Compare boots with the SAME config**: an SCL in A: costs ~2 KB of heap (its converted image), Gigascreen on/off moves the arena and the prevFB; two of the step verdicts had to be re-read for that.
 - Still on the "measure first" list: `rc_*` palette-reduce tables (2.3 KB in the window, core0-only but inside Kolbass' release window), TSU states 128 -> 64 (~1.3 KB, `tsC1WaitJob` on raster demos), redcode at -O2 (KBs of `.gsovl`, GS-Z80 MHz at risk), the Z80 `tsRenderUs`/memset flash calls above.
 
-**OPEN, found on the way and NOT ours: TMNT's MENU screen tears one frame in ~8 at 720x576** (in-game clean, faint at 480p) — logo top right, the rest of the field displaced ~100 rows down, next frame whole. Present on the pre-branch base ELF and unchanged by ring 320/512. The 576p TS_VIDEO_TRACE capture shows `hold=0 blit=0 rel=0` throughout, i.e. it is NOT the nb=1 re-index hold path; `cpu` 21 ms and realFPS 46 in that menu at 576p. Investigation started 2026-09-22 (see the section that follows it, when written).
+Found on the way and NOT ours: TMNT's menu tore one frame in ~8 at 720x576 — pre-existing, fixed the same day; see "The re-index release inside the tick" below.
+
+## The re-index release inside the tick re-posted the frame with a stale Y counter (TMNT menu at 576p; hw-confirmed fixed 2026-09-22)
+
+TMNT's menu screen tore ONE frame in ~8 at 720x576: logo right, everything from
+content line ~68 down showing the clean city background from BELOW the visible
+window (no "FIGHTERS", no menu text), the next frame whole. In-game clean, 480p
+clean, present on the pre-SRAM-pass base ELF, unchanged by the core1 ring size —
+first reported as a regression of the SRAM pass and cleared by bisecting the saved
+ELFs. Three wrong hypotheses cost a round each (palette version banks, the
+DMAStatus fast-forward, a UART-capturable DMA trace); the decisive instrument was a
+one-line-per-frame CONSISTENCY DETECTOR, not a trace of events.
+
+- **Mechanism.** `tsDrawTick` calls `tsPalettePoll` at its top, and with the beam
+  outside the picture and a re-index held, the poll runs `tsReindexRelease()`,
+  which renders all 240 lines itself (Y counter 0..239) and "parks" the tick
+  (`ts_line_idx = lines`, `Draw = Blank`, `ts_line_t = MAX`). Control then returns
+  INTO THE SAME TICK, whose `do` loop continues at the current `ts_row_idx`:
+  `ts_line_idx = row - lin_end` overwrites the park, the row is posted with
+  ygctr 239 + 1 = 240, `ts_line_t += tStatesPerLine` wraps the MAX sentinel to a
+  small number, so the loop condition stays true and every remaining row of the
+  frame is re-posted with ygctr running 240..411 — bitmap rows below the visible
+  window, where this title keeps its background artwork. Fix: after the poll,
+  `if (ts_line_t == 0xFFFFFFFFu) return;` — the sentinel the release itself sets.
+- **Why 576p only**: the release lands inside a tick there (the beam-out moment
+  falls into the posting phase at that geometry: lin_end 24, 288 rows, the v-sync
+  lead); at 480p it lands in EndFrame or a pacing wait, where the park sticks.
+- **`[TSYGC]` (TS_VIDEO_TRACE builds)** is the detector that named it: with
+  GYOffs == 0 every posted line must have `ygctr == curline`; the first violation
+  per frame logs line, ygctr, the poster (`src` 1 tick / 2 MainScreen / 4 release),
+  `lin_end`, `row_idx`, core1 `pend` and `posted`. `frame 57 line 68 ygctr 240
+  src 1 ... pend 146 posted 68` every 8 frames was the whole diagnosis. Keep it;
+  extend the same shape (a per-frame invariant, one line) before building a trace
+  of events next time.
+- **`ts_dma_ring` (TS_VIDEO_TRACE builds, 128 x 20 B) + `tools/dmaring.py`**: every
+  DMACtrl write with raster frame/line, mode, words, addresses, modelled duration,
+  and core1's `pend`/`posted` at that instant, read out by Ctrl+Alt+D
+  (`tools/memdump.gdb` probes it like `ts_int_ring`). Built because the UART cannot
+  carry a per-DMA trace of a heavy frame (~14 DMAs in 20 ms ≈ 40 KB/s against
+  115200 baud = 11.5 KB/s — every capture came back with the frame's first lines
+  shredded, twice). The TSVT `INT ack` line is now DMA-only (a per-line LINE-INT
+  sample player — TMNT's Covox loop — printed 320 of them a frame) and `POLL-FF`
+  logs only jumps of a whole line.
+- What the ring showed about TMNT's menu, for the record: no background restore at
+  all in the menu — the static picture plus, on a key press, a 1920-word BLT of
+  the highlight bar at raster line ~302 and ~20 32-word glyph BLTs into rows
+  138-185 across the frame boundary; the LINE INT is the Covox sample player
+  (`OUT (#FB)` per line, pages via `#10AF`); FRAME INT at VSINT 0x128 = 296.
+  `pend` 46-52 at line 300 every ~10 frames = the release's 240-line burst.
+- **Hw 2026-09-22, owner: "да, работает"** — the 576p menu no longer tears on
+  `debug/DVp2-tmnt-fix-plain-1.0.6.elf`. Not itemised: Kolbass/nygift (the hold
+  path this release serves) and RobFgift/Ninja Gaiden after the change are covered
+  by inspection only — the fix alters nothing but the tick's continuation after an
+  in-tick release.
 
 ## What belongs in a machine overlay: the audit (2026-09-14, NOT hw-tested)
 

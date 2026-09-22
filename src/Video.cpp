@@ -774,6 +774,11 @@ void VIDEO::tsC1RingAlloc() {
                (unsigned)TS_C1_SFILE, (unsigned)bytes, (unsigned long)(uintptr_t)blk);
 }
 
+uint32_t VIDEO::tsTraceState() {
+    const uint32_t pend = ts_c1_ring ? (ts_c1_w - ts_c1_r) : 0;
+    return (pend << 16) | (ts_line_idx & 0xFFFF);
+}
+
 void VIDEO::tsRenderDrain() {
     if (!tsC1Pending()) return;
     const uint64_t t0 = time_us_64();
@@ -2386,6 +2391,19 @@ static int32_t  ts_pal_row0 = 0;               // fb row of this frame's first C
 static bool     ts_reindex_hold = false;       // skip posting lines while set
 static bool     ts_reindex_held_prev = false;  // a release happened this frame: no new hold until EndFrame
 static uint32_t ts_last_curline = 0xFFFFFFFFu; // tsRenderLine's repeat filter (reset by the release)
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+// Y-counter consistency detector (TMNT menu tear at 576p, 2026-09-22): with
+// GYOffs == 0 every rendered line must satisfy ygctr == curline; anything else
+// is a displaced picture. Counted per line, logged once per frame with the
+// poster's origin (bit 0..2 of ts_ygc_src: 1 = tsDrawTick, 2 = MainScreen,
+// 4 = tsReindexRelease) and the state of the queue.
+volatile uint32_t ts_ygc_bad = 0;
+static uint8_t  ts_ygc_src = 0;
+static uint32_t ts_ygc_logged_frame = 0xFFFFFFFFu;
+#define TS_YGC_SRC(bit) (ts_ygc_src = (uint8_t)(bit))
+#else
+#define TS_YGC_SRC(bit) do {} while (0)
+#endif
 static bool     ts_reindex_ready_seen = false;  // tsReindexReady was already up at the previous EndFrame
 #if TSPAL_DBG
 static uint32_t ts_dbg_rel = 0, ts_dbg_rel_dirty = 0, ts_dbg_rel_forced = 0, ts_dbg_hold_blit = 0, ts_dbg_hold_wide = 0, ts_dbg_hold_spread = 0;
@@ -3122,6 +3140,7 @@ static void tsReindexRelease() {
     for (uint32_t i = 0; i < lines; i++) {
         linedraw_cnt = lin_end + i;
         curline = i;
+        TS_YGC_SRC(4);
         VIDEO::tsRenderLine(i);
     }
     // Stop the guest's ticks re-posting THIS frame — but only if the frame is
@@ -5209,7 +5228,7 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
         // from `curline` (see the GMX branch below for why never linedraw_cnt).
         unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
         unsigned int start_col = end_col - loopCount;
-        if (start_col == 0) tsRenderLine(curline);
+        if (start_col == 0) { TS_YGC_SRC(2); tsRenderLine(curline); }
         lineptr32 += loopCount * 2;
     } else
     if (timex_hires_live) {
@@ -5912,13 +5931,25 @@ void VIDEO::tsBandReplay() {
 IRAM_ATTR void VIDEO::tsDrawTick() {
     const uint32_t rows = vga.yres;
     TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
-    if (__builtin_expect(tsCramDirty, 0)) tsPalettePoll(false);   // beam-scheduled palette apply, once per line
+    if (__builtin_expect(tsCramDirty, 0)) {
+        tsPalettePoll(false);   // beam-scheduled palette apply, once per line
+        // The poll may have RELEASED a held re-index: tsReindexRelease renders
+        // the rest of this frame itself and parks the tick (ts_line_t = MAX,
+        // Draw = Blank). Falling through into the loop below then re-posted the
+        // current row with the release's Y counter (239 + 1) and, because the
+        // sentinel + tStatesPerLine wraps, every row after it — the picture
+        // from that row down came from bitmap rows 240.. (TMNT's menu at 576p:
+        // clean background under the logo, one frame in 8; hw 2026-09-22,
+        // [TSYGC] "line 68 ygctr 240 src 1").
+        if (ts_line_t == 0xFFFFFFFFu) return;
+    }
     do {
         const uint32_t row = ts_row_idx;
         if (row >= lin_end && row < lin_end2) {
             ts_line_idx = row - lin_end;
             linedraw_cnt = row;               // keep the shared counters coherent
             curline = ts_line_idx;
+            TS_YGC_SRC(1);
             tsRenderLine(ts_line_idx);
             ts_line_idx = row - lin_end + 1;  // "the next line to render" (tsCramChanged reads it)
         } else {
@@ -6399,6 +6430,17 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         j.l.kind = (uint8_t)(ts_tmb_par << 1);
     }
     jobSetLyx(j, curline, ts_ygctr, TsConf::r.g_xoffs);
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+    if (TsConf::r.g_yoffs == 0 && ts_ygctr != (curline & 0x1FF)) {
+        ts_ygc_bad++;
+        if (ts_ygc_logged_frame != ts_frame_seq) {
+            ts_ygc_logged_frame = ts_frame_seq;
+            Debug::log("[TSYGC] frame %u line %u ygctr %u src %u lin_end %u row_idx %u pend %u posted %u",
+                       (unsigned)ts_frame_seq, (unsigned)curline, (unsigned)ts_ygctr, (unsigned)ts_ygc_src, (unsigned)lin_end,
+                       (unsigned)ts_row_idx, (unsigned)(ts_c1_ring ? (ts_c1_w - ts_c1_r) : 0), (unsigned)ts_line_idx);
+        }
+    }
+#endif
     j.l.vpage = TsConf::r.vpage; j.l.palsel = TsConf::r.palsel; j.l.vconf = TsConf::r.vconf;
     j.l.border = TsConf::r.border;
     if ((j.l.vconf & 0x08) && !tsGlineEnsure()) j.l.vconf &= (uint8_t)~0x08;   // GFXOVR needs s_gline
