@@ -183,6 +183,15 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             VIDEO::timexHiresForceOff();
             OSD::osdCenteredMsg("Timex disabled", LEVEL_WARN, 2000);
         }
+        // TS-Conf's only VGM player (Wild Commander's VGMPLAY.WMF) drives OPL3, AY
+        // and SAA — OPLL and SN76489 there are ~7.5 KB of heap for nothing. Same
+        // three-place rule as above (menu note, toast here, ESPectrum backstop
+        // ahead of the subsystem requests for boots that never see the menu).
+        if (arch == A_TSCONF && (Config::ym2413 || Config::sn76489)) {
+            Config::ym2413  = 0;
+            Config::sn76489 = 0;
+            OSD::osdCenteredMsg("YM2413 / SN76489 disabled", LEVEL_WARN, 2000);
+        }
         // The TC2048's ULA is the SCLD — Timex video is the machine, not a card, and
         // the SAA1099 cannot share the #FF family with it. Same three-place
         // treatment as every other machine rule (menu note, toast here, CPU::reset

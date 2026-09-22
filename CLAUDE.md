@@ -1077,8 +1077,9 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
 - **`src/OplFm.{h,cpp}` is a port of MAME ymf262.cpp** (mame0220, GPL-2.0+,
   same Burczynski lineage as OpnFm/fm.cpp): 18ch x 2op, 8 waveforms, 4-op
   pairing, rhythm mode, tremolo/vibrato LFO, both timers. **~16 B .bss**;
-  ~14 KB heap only while enabled (OplSubsys: ~9 KB chip state + 2x1280 B
-  stereo buffers + 2.5 KB shared tables). Timers are Q16 chip-sample
+  ~10 KB heap only while enabled (OplSubsys: ~4.3 KB chip state + 2x1280 B
+  stereo buffers + 2 KB write queue + 2.5 KB shared tables; it was ~9 KB of
+  chip state until fn_tab became a multiplier — see the fn_tab bullet below). Timers are Q16 chip-sample
   countdowns advanced in gen() (MAME uses attotime callbacks); a whole-chip
   quiet fast path makes an idle enabled chip nearly free, and
   chanCalcOrSkip/pairCalc skip individual all-EG_OFF channels the same way
@@ -1179,6 +1180,77 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   sequence → status 0xC0, 440.0 Hz tone, key-off to exact silence, timer1
   48/s + timer2 12/s, OPL3-mode bank-2 + pan routing, rhythm BD, waveform 2
   non-negative. **Re-run after ANY change there.**
+- **`m_fn_tab[1024]` is a Q32 MULTIPLIER in OplFm AND OpllFm (2026-09-22;
+  hw-confirmed the same day on `debug/DVp2-vgm-fntab2-1.0.6.elf` — owner: "работает",
+  covering this, the shared tables and both TS-Conf rules below in one run, not
+  itemised)** — the OpnFm precedent
+  applied to the other two cores. MAME's `fn_tab[i] = (uint32_t)(i * 64 * freqbase
+  * 64)` is linear in i, so `fnInc(fn) = (fn * Kq32) >> 32` reproduces it
+  BIT-EXACTLY at every fn for both synth rates (checked exhaustively; Q32 has
+  ~2^-22 of slack, and OPL3 and OPLL share the same K because 14318180/288 ==
+  3579545/72). Cost: one inlined `umull` per VIBRATING slot per sample (the
+  `op->vib` branch of `advance()` — check `objdump --disassemble=_ZN5OplFm7advanceEv`
+  shows `umull` and no `bl`) and one on the fc register write. Saves 4 KB of heap
+  PER CHIP: `sizeof(OplFm)` 8368 -> 4288, `sizeof(OpllFm)` 5940 -> 1856; static
+  SRAM of every VGM chip was already 4-12 B (pointers only), so heap while
+  enabled is the ONLY lever these chips have. Same commit: `opl_build_tables` /
+  `opll_build_tables` allocate through `tryMalloc` — they used raw `malloc`,
+  which panics on NULL, so the OOM branch and the `tablesReady()` test in
+  `OplSubsys`/`OpllSubsys::apply` were dead code (the 2026-09-14 tryMalloc sweep
+  missed them). The host tests therefore stub `tryMalloc`/`tryCalloc` now.
+  **`tools/vgm_render_crc.cpp` is the gate that proved the rewrite**
+  (`g++ -O2 -Wall -Isrc -o /tmp/vgm_render_crc tools/vgm_render_crc.cpp
+  src/OplFm.cpp src/OpllFm.cpp src/FmTables.cpp -lz`, then any .vgm/.vgz): renders the file through
+  both cores at full and half rate and prints a CRC32 of the output. Baseline vs
+  after on Doom II 01/02, Doom 02 and the OPLL Disc Station title were identical
+  on all ten lines. **Take the CRC BEFORE any bit-exactness-sensitive change to
+  these cores** — the EG-skip and -O2 work had this check only in session scratch,
+  so it had to be rebuilt here. Judged and NOT taken in the same audit: smaller
+  write queues (overflow already flushes, but a mid-frame flush is the XIP
+  re-fault the queue exists to avoid — measure with `OPL_PERF_TRACE` first), a
+  shared OPL3+OPLL accumulator and a shared CMS-pair buffer (~1.3 KB each; the
+  per-chip DC blocker / bias gate are hw-confirmed), `m_pan[72]` as bit flags (a
+  per-sample branch).
+- **The OPL3 and OPLL tables are ONE table — `src/FmTables.{h,cpp}` (same day,
+  hw-confirmed with the bullet above).** Both cores are
+  the same Burczynski lineage with the same ENV_STEP / SIN_LEN / TL_RES_LEN: the
+  1024-entry waveform-0 sine is byte-identical (ymf262's `(m > 0 ? 1 : -1) / m`
+  and ym2413's `1 / fabs(m)` are the same IEEE value), and the 256-entry tl row
+  differs only by the `<< 1` ymf262 bakes in — held UNSHIFTED (the OPLL form) and
+  re-applied in OplFm's `tl_fetch`, which is exact because floor((2n) >> k) is
+  floor((n << 1) >> k). Checked exhaustively (0 mismatches) and by the render CRCs.
+  `FmTab::acquire()/release()` is refcounted across both chips' constructors and
+  destructors, allocates through `tryMalloc`, and `tablesReady()` on either class
+  is `FmTab::ready()`. Saves 2.5 KB whenever both chips are on. Every host recipe
+  that links OplFm.cpp or OpllFm.cpp now needs `src/FmTables.cpp` beside it.
+- **OPLL and SN76489 are NOT AVAILABLE on TS-Conf (same day, hw-confirmed with the
+  bullet above)** —
+  owner's call, and the reason is the only VGM player that machine has: Wild
+  Commander's `VGMPLAY.WMF` drives OPL3 (#C4-#C7, both sets), AY and SAA and
+  nothing else. Verified against the binary, not the strings: the code page
+  (#8000-#BFFF, file offset 0x200) loads C4/C6 and no C0-C3/C9 anywhere; the
+  `YM2413` / `SN76489` strings in the file are the header's chip-name table for
+  its "Chip:" line, and the `0E C0 0E C1 ...` runs a byte scan turns up are data.
+  So on TS-Conf the two chips would be ~7.5 KB of heap for nothing (owner measured
+  28 KB free without VGM chips vs 8 KB with all four — the remaining OPL3 + CMS
+  cost ~14.5 KB). Three places, the usual shape: `resolveConstraints` forces
+  `SET_YM2413` / `SET_SN76489` to 0 with a note while TS-Conf is staged and the
+  two rows are greyed (`p_vgmOpllSn`, `NM_BOOL_EN`); `MachineSwitch::commit`
+  toasts "YM2413 / SN76489 disabled"; and `ESPectrum::setup`/`reset` zero both
+  flags right before the `OpllSubsys`/`SnSubsys::request` lines, so a persisted
+  On never allocates there. **"All" on TS-Conf means OPL3 + CMS** (`get_vgmAll` /
+  `put_vgmAll` consult `Stage::stagedIsTsconf()` — note the helper lives in
+  `nm::Stage`, a forward declaration in `nm` does not link), else the row would
+  read No for ever and every press would fight the constraint.
+- **Leaving TS-Conf turns ALL VGM chips off (same day, owner's rule, hw-confirmed
+  with the bullet above)** — the TS-Conf twin of the esxDOS edge in `resolveConstraints`: it
+  fires only when THIS commit takes the BASE machine (`g_base[SET_MACHINE]`, valid
+  because `g_dirty` is tested first) from TS-Conf to anything else, forces the five
+  VGM settings to 0 with "VGM chips off: TS-Conf is off", and the `g_seq` guard
+  keeps a chip the user touched after the machine pick. An EDGE, not a
+  constraint: a chip enabled on a Pentagon stays enabled, and a snapshot or .spg
+  that switches the machine outside the menu does not run it (neither does the
+  esxDOS one).
 - **Port decode ordering is load-bearing**: both OPL blocks in Ports.cpp sit
   **BEFORE the ULA even-port branches** (like NEMO) — #C4/#C6 have A0=0 and
   would otherwise be swallowed (input: read back keyboard rows; output:
@@ -1255,7 +1327,8 @@ break zero-crossing counting): violin ROM patch 440.1 Hz, user patch 440.0,
 key-off to exact silence, rhythm BD, half-rate pitch equal. All four local
 OPLL VGM rips render 100% nonzero at peaks 9.8-16.6k. `Config::ym2413`
 (NVS "ym2413") → Audio → "YM2413 (OPLL)", AC_SUBSYS live toggle; OpllSubsys
-~9 KB heap while on; F11 re-derives rates + resets.
+~5.5 KB heap while on (chip 1856 B since the fn_tab multiplier, 1280 B buffer,
+1 KB write queue, 2.5 KB shared tables); F11 re-derives rates + resets.
 
 ### The FM chips leave DC behind — model the card's coupling cap (hw 2026-09-02)
 

@@ -26,8 +26,9 @@ Deliberate differences, all size or platform driven:
    read, which catches the sample stream up first, so flag timing is sample-
    accurate (~32 us) — enough for the VGM plugin's ~950 us detect wait.
  - The struct padding MAME keeps "to pump the struct size to a power of 2" is
-   dropped; state is ~9 KB on the heap (fn_tab kept — the vibrato path reads
-   it per sample).
+   dropped, and fn_tab (4 KB) is a Q32 multiplier — the vibrato path pays one
+   umull per vibrating slot per sample instead of a table read; state is
+   ~4.3 KB on the heap.
  - Only outputs A (left) and B (right) are accumulated — the card has a
    two-channel DAC; C/D are the OPL4-only DO0 pair.
  - A whole-chip quiet fast path: with every operator in EG_OFF, gen() only
@@ -186,7 +187,12 @@ private:
     uint32_t m_eg_timer_add;
     uint32_t m_eg_timer_overflow;
 
-    uint32_t m_fn_tab[1024];       // fnumber -> increment counter
+    // fnumber -> phase increment. MAME keeps fn_tab[1024] (4 KB per chip); the
+    // table is linear in fn, so it is one Q32 multiplier here — bit-exact
+    // against the double formula at every fn for both synth rates (checked
+    // exhaustively; tools/vgm_render_crc.cpp is the render-level gate).
+    uint64_t m_fn_mul_q32;
+    uint32_t fnInc(uint32_t fn) const { return (uint32_t)(((uint64_t)fn * m_fn_mul_q32) >> 32); }
 
     uint32_t m_LFO_AM;
     int32_t  m_LFO_PM;

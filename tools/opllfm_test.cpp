@@ -1,7 +1,7 @@
 /*
  * opllfm_test.cpp — host-side validation for src/OpllFm.cpp (YM2413/OPLL).
  *
- *   g++ -O2 -Isrc -o /tmp/opllfm_test tools/opllfm_test.cpp src/OpllFm.cpp && /tmp/opllfm_test
+ *   g++ -O2 -Isrc -o /tmp/opllfm_test tools/opllfm_test.cpp src/OpllFm.cpp src/FmTables.cpp && /tmp/opllfm_test
  *
  * Re-run after ANY change there — an FM core fails quietly and by degrees.
  * Checks: a ROM-instrument note at the demanded frequency, key-off decay to
@@ -15,6 +15,11 @@
 #include <math.h>
 
 #include "OpllFm.h"
+
+// OplFm/OpllFm allocate their shared tables through the firmware's
+// non-panicking tryMalloc; on the host that is plain malloc.
+extern "C" void* tryMalloc(size_t n) { return malloc(n); }
+extern "C" void* tryCalloc(size_t n) { return calloc(n, 1); }
 
 #define RATE 31250
 

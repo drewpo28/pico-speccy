@@ -17,6 +17,7 @@ the Free Software Foundation, either version 3 of the License, or
 */
 
 #include "OplFm.h"
+#include "FmTables.h"
 
 #include <math.h>
 #include <string.h>
@@ -242,49 +243,18 @@ static const int8_t lfo_pm_table[8 * 8 * 2] = {
 3, 1, 0,-1,-3,-1, 0, 1,   7, 3, 0,-3,-7,-3, 0, 3
 };
 
-// ── shared tables (heap, reference counted — see OplFm.h) ───────────────────
-// tl_base: the x = 0..255 row of MAME's tl_tab; the other 12 rows are that row
-// shifted right, with the sign baked in as one's complement — re-applied at
-// the fetch. sin0: waveform 0 in the chip's logarithmic domain (value*2 +
-// sign bit, TL_TAB_LEN = "silent"); waveforms 1-7 are index transforms of it.
-// Byte-for-byte MAME init_tables() math; verified bit-exact against the flat
-// tables over every (p, wave, index).
-static int       s_tab_refs = 0;
-static uint16_t* s_tl_base = nullptr;   // 256 entries
-static uint16_t* s_sin0    = nullptr;   // SIN_LEN entries
+// ── shared tables ───────────────────────────────────────────────────────────
+// FmTab (FmTables.h): tl_base = the x = 0..255 row of MAME's tl_tab, held
+// UNSHIFTED and shared with the OPLL — the OPL3 row is that << 1, re-applied
+// at the fetch together with the row shift and the one's-complement sign;
+// sin0 = waveform 0 in the log domain (value*2 + sign bit, TL_TAB_LEN =
+// "silent"), waveforms 1-7 are index transforms of it. Verified bit-exact
+// against MAME's flat tables over every (p, wave, index), and the shared
+// form against the private one by tools/vgm_render_crc.cpp.
+static void opl_build_tables() { FmTab::acquire(); }
+static void opl_free_tables()  { FmTab::release(); }
 
-static void opl_build_tables() {
-    if (s_tab_refs++ > 0) return;
-    s_tl_base = (uint16_t*)malloc(TL_RES_LEN * sizeof(uint16_t));
-    s_sin0    = (uint16_t*)malloc(SIN_LEN * sizeof(uint16_t));
-    if (!s_tl_base || !s_sin0) {
-        free(s_tl_base); s_tl_base = nullptr;
-        free(s_sin0);    s_sin0 = nullptr;
-        return;
-    }
-    for (int x = 0; x < TL_RES_LEN; x++) {
-        double m = floor((1 << 16) / pow(2, (x + 1) * (ENV_STEP / 4.0) / 8.0));
-        int n = ((int)m) >> 4;
-        n = (n & 1) ? (n >> 1) + 1 : n >> 1;
-        s_tl_base[x] = (uint16_t)(n << 1);
-    }
-    for (int i = 0; i < SIN_LEN; i++) {
-        double m = sin(((i * 2) + 1) * M_PI / SIN_LEN);
-        double o = 8 * log((m > 0.0 ? 1.0 : -1.0) / m) / log(2.0);
-        o = o / (ENV_STEP / 4);
-        int n = (int)(2.0 * o);
-        n = (n & 1) ? (n >> 1) + 1 : n >> 1;
-        s_sin0[i] = (uint16_t)(n * 2 + (m >= 0.0 ? 0 : 1));
-    }
-}
-
-static void opl_free_tables() {
-    if (--s_tab_refs > 0) return;
-    free(s_tl_base); s_tl_base = nullptr;
-    free(s_sin0);    s_sin0 = nullptr;
-}
-
-bool OplFm::tablesReady() { return s_tl_base && s_sin0; }
+bool OplFm::tablesReady() { return FmTab::ready(); }
 
 static inline int limit(int val, int max, int min) {
     if (val > max) return max;
@@ -318,9 +288,10 @@ void OplFm::setRates(int clock, int rate, bool halfRate) {
     // divider is 8*36 = 288 for a YMF262 (chip sample rate ~49716 Hz)
     double freqbase = synth_rate ? ((double)clock / 288.0) / (double)synth_rate : 0.0;
 
-    // fnumber -> phase increment (chip works in 10.10, we use 16.16)
-    for (int i = 0; i < 1024; i++)
-        m_fn_tab[i] = (uint32_t)((double)i * 64 * freqbase * (1 << (FREQ_SH - 10)));
+    // fnumber -> phase increment (chip works in 10.10, we use 16.16):
+    // MAME's fn_tab[i] = (uint32_t)(i * 64 * freqbase * (1 << (FREQ_SH - 10)))
+    // as one Q32 multiplier (i <= 1023, product < 2^56).
+    m_fn_mul_q32 = (uint64_t)(64.0 * freqbase * (double)(1 << (FREQ_SH - 10)) * 4294967296.0);
 
     // AM: one lfo_am_table entry lasts 64 chip samples; PM: one level = 1024
     m_lfo_am_inc = (uint32_t)((1.0 / 64.0)   * (1 << LFO_SH) * freqbase);
@@ -508,7 +479,7 @@ void OplFm::advance() {
             if (lfo_fn_table_index_offset) {  /* LFO phase modulation active */
                 block_fnum += lfo_fn_table_index_offset;
                 uint8_t block = (block_fnum & 0x1c00) >> 10;
-                op->Cnt += (m_fn_tab[block_fnum & 0x03ff] >> (7 - block)) * op->mul;
+                op->Cnt += (fnInc(block_fnum & 0x03ff) >> (7 - block)) * op->mul;
             } else {
                 op->Cnt += op->Incr;
             }
@@ -534,12 +505,12 @@ void OplFm::advance() {
 // sin_tab[wave][i] re-derived from waveform 0 (bit-exact vs the flat table)
 static inline uint32_t sin_fetch(uint32_t wave, uint32_t i) {
     switch (wave) {
-    default: return s_sin0[i];
-    case 1:  return (i & 512) ? TL_TAB_LEN : s_sin0[i];
-    case 2:  return s_sin0[i & 511];
-    case 3:  return (i & 256) ? TL_TAB_LEN : s_sin0[i & 255];
-    case 4:  return (i & 512) ? TL_TAB_LEN : s_sin0[(i * 2) & 1023];
-    case 5:  return (i & 512) ? TL_TAB_LEN : s_sin0[(i * 2) & 511];
+    default: return FmTab::sin0[i];
+    case 1:  return (i & 512) ? TL_TAB_LEN : FmTab::sin0[i];
+    case 2:  return FmTab::sin0[i & 511];
+    case 3:  return (i & 256) ? TL_TAB_LEN : FmTab::sin0[i & 255];
+    case 4:  return (i & 512) ? TL_TAB_LEN : FmTab::sin0[(i * 2) & 1023];
+    case 5:  return (i & 512) ? TL_TAB_LEN : FmTab::sin0[(i * 2) & 511];
     case 6:  return (i & 512) ? 1 : 0;
     case 7: {
         uint32_t x = (i & 512) ? ((1023 - i) * 16 + 1) : i * 16;
@@ -548,9 +519,10 @@ static inline uint32_t sin_fetch(uint32_t wave, uint32_t i) {
     }
 }
 
-// tl_tab[p]: index = row (p>>9) | base entry ((p&511)>>1) | sign (p&1)
+// tl_tab[p]: index = row (p>>9) | base entry ((p&511)>>1) | sign (p&1).
+// The shared tl_base is the OPLL's unshifted row; MAME's ymf262 row is n << 1.
 static inline int32_t tl_fetch(uint32_t p) {
-    int32_t v = s_tl_base[(p & 511) >> 1] >> (p >> 9);
+    int32_t v = ((int32_t)FmTab::tl_base[(p & 511) >> 1] << 1) >> (p >> 9);
     return (p & 1) ? ~v : v;
 }
 
@@ -1039,7 +1011,7 @@ void OplFm::writeReg(int r, int v) {
 
             CH->block_fnum = block_fnum;
             CH->ksl_base   = ksl_tab[block_fnum >> 6];
-            CH->fc         = m_fn_tab[block_fnum & 0x03ff] >> (7 - block);
+            CH->fc         = fnInc(block_fnum & 0x03ff) >> (7 - block);
 
             /* BLK 2,1,0 bits -> bits 3,2,1 of kcode; NTS picks the lsb —
                opposite to the manuals, verified on real YMF262 (MAME) */

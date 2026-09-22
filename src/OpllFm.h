@@ -136,7 +136,10 @@ private:
     uint32_t m_eg_timer_add;
     uint32_t m_eg_timer_overflow;
 
-    uint32_t m_fn_tab[1024];
+    // fnumber -> phase increment as a Q32 multiplier (see OplFm.h — same
+    // linear table, same exactness argument; -4 KB per chip).
+    uint64_t m_fn_mul_q32;
+    uint32_t fnInc(uint32_t fn) const { return (uint32_t)(((uint64_t)fn * m_fn_mul_q32) >> 32); }
 
     uint32_t m_LFO_AM;
     int32_t  m_LFO_PM;
