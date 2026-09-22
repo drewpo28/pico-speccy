@@ -745,7 +745,10 @@ size_t featureCost(FeatureId f) {
         // The SPI figure is 8 KB lower than it used to be because a butter-less board
         // halves the DAC rings (2×4 KB instead of 2×8 KB — see GS_RING_SIZE_MAX in
         // GS.cpp), which is what lets it sit beside Gigascreen at all.
-        case FEAT_GENERAL_SOUND: return spi ? 30 * 1024 : 5 * 1024;
+        // Butter: the ~4.4 KB prefetch cache is classic GS only since 2026-09-22
+        // (NeoGS is pointer-backed there and skips it), so a NeoGS card costs the
+        // heap ~1 KB of small state.
+        case FEAT_GENERAL_SOUND: return spi ? 30 * 1024 : (Config::gs_enabled == 2 ? 1 * 1024 : 5 * 1024);
         case FEAT_DIVMMC:        return spi ? 33 * 1024 : 9 * 1024; // SPI: 3x8K cache+8K ROM+misc
         // Profi's *marginal* SRAM cost relative to a non-Profi baseline, NOT the
         // absolute forced-page reservation (~80-96 KB). Switching arch re-lays out
@@ -768,10 +771,10 @@ size_t featureCost(FeatureId f) {
         case FEAT_SAA:           return 2 * 1024;    // SAASound object (~1.5K: state + 2x640B buffers)
         case FEAT_COVOX:         return 2 * 1024;    // 2x640B stereo sample buffer (~1.25K)
 #ifdef VGA_HDMI
-        // 128x36 B packet queue + 2x512x2 B sample rings = 6656 B (blobs shared with
+        // 128x16 B sample queue + 2x256x2 B sample rings = 3072 B (blobs shared with
         // HDMI video). Rings were 1024 deep until the ~0.5 KB Gigascreen shortfall
         // sent us looking — see the HDMI_AUDIO_RING_SIZE note in drivers/hdmi/hdmi.c.
-        case FEAT_HDMI_AUDIO:    return 7 * 1024;
+        case FEAT_HDMI_AUDIO:    return 3 * 1024;
 #endif
         case FEAT_ULAPLUS:       return 0;           // AluBytes table lives in flash; only ~68B static state
         case FEAT_TIMEX:         return 0;           // ~3B static state, no heap

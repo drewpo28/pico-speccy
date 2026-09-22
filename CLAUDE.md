@@ -6081,7 +6081,7 @@ ceiling was the base of the LOWEST resident window and `.tsovl` is the lowest �
 own table said "TS on -> heap gains nothing"). The TS window itself (22 272, of which
 19 152 used: 12 460 code/ro/data + 6 692 bss) is real TS-Conf cost; so are the ring and
 the descriptors. Everything else — VIDEO::Init, audio, the 17.5 KB tail from `audio init
-done` to `COMPLETE` (HDMI audio queue+rings 8 704, the inserted TRD's `rvmwdDisk` ~2.8 KB,
+done` to `COMPLETE` (HDMI audio queue+rings 6 656 (was 8 704 with the 1024-deep rings), the inserted TRD's `rvmwdDisk` ~2.8 KB,
 tape/Z80/CPU reset, the rest) — costs both machines the same.
 
 **Fix: `_sbrk` JUMPS over a resident window** (`src/HeapRegions.h`, used by
@@ -6102,7 +6102,7 @@ gap to `sbrked_mem`, so `mallinfo().arena/uordblks` over-report by the window si
   → ~60 KB free at 480p, ~33 KB at 576p (FB 103 680 vs 76 800).
 - TS-Conf + GS: base + `[dma]` = +4 032 B — the DMA window alone is one usable page.
   **576p + TS-Conf + NeoGS stays at the edge**: both big windows are resident and the
-  remaining levers are the ring (10.8 KB: 512 jobs could be ~320, TSU states 128 → 64,
+  remaining levers are the ring (10.8 KB — 320 x 10 B since 2026-09-22, see the SRAM pass section; TSU states 128 → 64,
   or the block into the TS window's 3 120 B slack + a bigger AUTO term), the page
   descriptors (6 KB; PSRAM would put `pagePtr()` reads behind XIP) and the common tail.
 - Pentagon (+GS): unchanged — one region, the heap already reached through TS+DMA.
@@ -6165,7 +6165,7 @@ further levers below are recorded, not scheduled:
 **What is left for 576p + TS-Conf + NeoGS, with sizes, all owner decisions** (measured
 14 KB free with Covox + TSFM on and the console off; ~10 KB with it on): `TSCONF_HOT_IN_RAM` OFF = −3 840 B of
 window on TS sessions (~0.8 ms/frame on port-heavy titles, measured at a scene already at
-full rate); the TSC1 block (10 768 B: 512 jobs are needed — `haltAdvanceTo` posts a whole
+full rate); the TSC1 block (10 768 B then, 7 824 since the 2026-09-22 SRAM pass: 320 x 10 B jobs suffice — `haltAdvanceTo` posts a whole
 288-line frame at once and the poster waits on a full ring — but TSU states 128 → 64 and
 SFILE slots 4 → 2 are −2.3 KB against more `tsC1WaitJob` stalls on titles that stream
 sprites/raster effects; or move the TSU states + job tags, 2 576 B, into the TS window's
@@ -6278,6 +6278,36 @@ in FLASH (no `.time_critical` from OpnFm.cpp in the map). Heap ONLY while Audio 
 TurboSound FM is on: 2 x `sizeof(OpnFm)` = **2 016 B** + shared tables 2 560 B (sine 2 048
 + tl base 512) + `audioBufferFM` 1 280 B = **5 856 B**, plus the second AY (`AySound`
 chip1, 1 612 B) if TurboSound was not already on → **~7.5 KB**, freed on Off. Not a lever.
+
+## SRAM optimisation pass, branch drew-sram-opt (2026-09-21/22; every step hw-confirmed on DVp2)
+
+The target session was 720x576 + TS-Conf + NeoGS + HDMI audio + Covox + TSFM, which booted
+with **14 KB free / largest block 9 KB**. Baseline and every step's figures are in
+`debug/BASELINE-sram-2026-09-21.md` (gitignored, with the test ELFs `debug/DVp2-s*-*.elf`);
+the rule was one change, one ELF, one hardware verdict, `setup: COMPLETE` and Memory Info
+as the meter. Result: **COMPLETE 19 464 -> 37 248, largest block 9 -> 24 KB**, nothing
+switched off, PERF titles (fishbone, TMNT, demo 200, Ninja Gaiden, Kolbass, RobFgift,
+Digger, Bruce Lee) within noise of the step-0 table.
+
+| step | change | gain on the target session |
+|---|---|---|
+| 1 | `.tsovl` AUTO terms 26 112 -> 24 064 -> 23 040 (data term after s_gline left), `.gsovl` 28 672 -> 27 648; `hdmi_audio_init` calloc -> **tryCalloc** | +3.0 KB |
+| 2 | NeoGS on butter skips the 4.4 KB `s_pc_*` prefetch cache (`GS::init`: every window is pointer-backed, `gs_pc_read` unreachable — `pc_miss=0/0` in 156 GS_PERF windows) | +4.4 KB |
+| 3a | HDMI audio rings 512 -> 256 (drop cap 192); AVI/Vendor/Audio InfoFrames kept RAW (36 B) and TERC4-encoded in the ISR like an audio packet | +1.7 KB (660 of it static, every HDMI board) |
+| 3b | queue entry 36 -> 16 B (`hdmi_aq_pkt_t`); header/parity/BCH + the IEC 192-frame counter rebuilt at pop on core1 (`hdmi_aq_expand`) | +2.5 KB; `dur` unchanged at 17-18 us |
+| 4 | core1 ring 512 -> **320** jobs (`TS_C1_SLOT` = modulo), `TsRenderJob` 12 -> 10 B (line/ygctr/GXOffs 9 bits each in two uint16), `s_gline` -> heap block claimed on the first GFXOVR line | +4.0 KB |
+| 5b | Z80 core: DD/FD LD+ALU (62 cases) -> `decodeDDFDLD8/ALU8` via `ixyReg8`, `decodeDDFDCB` -> one decodeCB-shaped body, ED IN/OUT (C) -> two bodies, `copyToRegister` via `reg8`; `create/destroy/reset/nmi/doNMI/doNMIDOS` -> flash (`Z80_COLD`, section `.z80cold`, collected by the flash .text rule) | +2.3 KB **on every board** (core 13 942 -> 11 594 B RAM) |
+
+Lessons that cost a round or were nearly shipped wrong:
+- **A PERF build did not fit the target session and PANICKED in `hdmi_audio_init`**: pico_malloc panics on NULL, so its `if (!blk) return false` was dead — 17 KB free but no 6.6 KB hole. Any `calloc`/`malloc` on a path that can run at the heap edge must be `tryCalloc`/`tryMalloc` (this was the one the 2026-09-14 tryMalloc sweep missed). After steps 1-3a the PERF build boots 576p+NeoGS (10 KB free).
+- **Shrinking `ts_band_slot` 289 -> 96 was REVERTED**: -193 B in the TS window, +104 B of `.data` on every board — the index arithmetic inlined into three RAM-resident functions. Check the per-symbol `nm -S` delta of BOTH `.data` and the window before believing a `.bss` win.
+- **`optimize("O2")` on `tsRenderExec` stops GCC inlining ACROSS it**: the new `jobLine/jobYgctr/jobGxoffs` accessors became `.isra.0` clones in FLASH reached through veneers from the RAM renderer, one XIP fetch per line. `always_inline`, and nm must show no such symbol. The same mechanism already puts `tsRenderUs` (9 calls/line) and libc `memset`/`memcpy` (12 calls/line) in flash on the render path in the BASE build — a perf lever for another session, not memory.
+- **Ring 320 is enough** (one 288-line frame + 32; `haltAdvanceTo` posts a frame at once): `wait` 0.2 -> 0.4 ms on fishbone at 480p, 0.0 (max 3.1) on TMNT at 576p, realFPS unchanged. Non-power-of-two size = the free-running uint32 counters wrap differently every ~85 h of continuous rendering (one possibly garbled frame). A 512 variant was built to bisect the TMNT tear below and changed nothing.
+- **Step 5a (page descriptors -> PSRAM, -3 KB) was declined**: `readbyte/writebyte` read `_int->mem_type` and `_int->p` on every access of the generic path, which is every machine and TS-Conf in every ZX mode without the TSU — two XIP-queued loads per guest byte, the mechanism the SRAM Z80 core was adopted to escape. Packing the descriptor to 8 B is ~1 KB for flag-unpacking on the same path. Not worth it.
+- **Compare boots with the SAME config**: an SCL in A: costs ~2 KB of heap (its converted image), Gigascreen on/off moves the arena and the prevFB; two of the step verdicts had to be re-read for that.
+- Still on the "measure first" list: `rc_*` palette-reduce tables (2.3 KB in the window, core0-only but inside Kolbass' release window), TSU states 128 -> 64 (~1.3 KB, `tsC1WaitJob` on raster demos), redcode at -O2 (KBs of `.gsovl`, GS-Z80 MHz at risk), the Z80 `tsRenderUs`/memset flash calls above.
+
+**OPEN, found on the way and NOT ours: TMNT's MENU screen tears one frame in ~8 at 720x576** (in-game clean, faint at 480p) — logo top right, the rest of the field displaced ~100 rows down, next frame whole. Present on the pre-branch base ELF and unchanged by ring 320/512. The 576p TS_VIDEO_TRACE capture shows `hold=0 blit=0 rel=0` throughout, i.e. it is NOT the nb=1 re-index hold path; `cpu` 21 ms and realFPS 46 in that menu at 576p. Investigation started 2026-09-22 (see the section that follows it, when written).
 
 ## What belongs in a machine overlay: the audit (2026-09-14, NOT hw-tested)
 

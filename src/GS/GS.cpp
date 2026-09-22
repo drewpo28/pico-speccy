@@ -780,6 +780,7 @@ static uint32_t       s_pc_last_line = ~0u;
 static const uint8_t* s_pc_last_buf  = nullptr;
 
 static inline void __not_in_flash_func(gs_pc_invalidate_line)(uint32_t psram_off) {
+    if (!s_pc_tag) return;   // no cache (NeoGS on butter PSRAM — see GS::init)
     uint32_t line = psram_off >> GS_PC_LINE_BITS;
     uint32_t set  = line & GS_PC_SETS_MASK;
     for (int w = 0; w < GS_PC_WAYS; w++) {
@@ -789,6 +790,10 @@ static inline void __not_in_flash_func(gs_pc_invalidate_line)(uint32_t psram_off
 }
 
 static inline zuint8 __not_in_flash_func(gs_pc_read)(uint32_t psram_off) {
+    // Unreachable for NeoGS on butter (every s_fetch_page slot is a pointer
+    // there, so the callers never fall through to here) — but a missed path
+    // must read memory, not a null table. Butter is memory-mapped: read it.
+    if (__builtin_expect(!s_pc_data, 0)) return s_gs_ram[psram_off];
     uint32_t line = psram_off >> GS_PC_LINE_BITS;
     uint32_t col  = psram_off & GS_PC_LINE_MASK;
     if (line == s_pc_last_line) { GS_PERF(s_perf_pc_hit++); return s_pc_last_buf[col]; }
@@ -2186,9 +2191,23 @@ bool GS::init(uint32_t ram_size_bytes) {
                s_workRamBuf.ok() ? s_workRamBuf.tierName() : "gsram-alias",
                s_ringLBuf.tierName(), s_ringRBuf.tierName());
     // PC prefetch cache stays in SRAM/heap — it hides PSRAM latency, don't move it.
-    if (!s_pc_data)     s_pc_data     = new uint8_t[GS_PC_SETS][GS_PC_WAYS][GS_PC_LINE_SZ];
-    if (!s_pc_tag)      s_pc_tag      = new uint32_t[GS_PC_SETS][GS_PC_WAYS];
-    if (!s_pc_next)     s_pc_next     = new uint8_t[GS_PC_SETS];
+    // NOT allocated for NeoGS on butter PSRAM (2026-09-22): ngs_map_half16 gives
+    // every 8 KB window a pointer there (ROM chunk / blank / low RAM / s_gs_ram),
+    // so gs_mem_raw_read and gs_cb_read never fall through to gs_pc_read — the
+    // hw 2026-08-06 measurement ("private-cache calls -> 0") is that fact. The
+    // 4.4 KB of heap it cost were pure waste on the one configuration that is
+    // at the heap edge (576p + TS-Conf + NeoGS). Classic GS keeps it: its
+    // gs_map_addr path still reads banked pages through the cache on butter
+    // too. SPI PSRAM (MURM1) keeps it for both. gs_pc_invalidate_line and
+    // GS::reset are no-ops without it; gs_pc_read reads butter directly.
+    const bool want_pc = !(s_ngs && !s_gs_use_spi);
+    if (want_pc) {
+        if (!s_pc_data)     s_pc_data     = new uint8_t[GS_PC_SETS][GS_PC_WAYS][GS_PC_LINE_SZ];
+        if (!s_pc_tag)      s_pc_tag      = new uint32_t[GS_PC_SETS][GS_PC_WAYS];
+        if (!s_pc_next)     s_pc_next     = new uint8_t[GS_PC_SETS];
+    } else {
+        Debug::log("GS::init: prefetch cache skipped (NeoGS on butter: every window pointer-backed)");
+    }
 
     if (s_ngs) {
         memset(s_ngs_low_ram, 0, NGS_LOW_RAM_SIZE);
@@ -2204,9 +2223,11 @@ bool GS::init(uint32_t ram_size_bytes) {
         memset(s_gs_work_ram, 0, GS_WORK_RAM_SIZE);
         gs_init_fetch_pages();   // hot-path fetch table: see gs_cb_fetch_opcode
     }
-    for (int i = 0; i < GS_PC_SETS; i++) {
-        for (int w = 0; w < GS_PC_WAYS; w++) s_pc_tag[i][w] = ~0u;
-        s_pc_next[i] = 0;
+    if (s_pc_tag) {
+        for (int i = 0; i < GS_PC_SETS; i++) {
+            for (int w = 0; w < GS_PC_WAYS; w++) s_pc_tag[i][w] = ~0u;
+            s_pc_next[i] = 0;
+        }
     }
 
     memset(&s_cpu, 0, sizeof(s_cpu));
@@ -2298,9 +2319,11 @@ void GS::reset() {
     s_depth_acc  = 0;
     s_depth_cnt  = 0;
     for (uint32_t i = 0; i < GS_RING_SIZE; i++) { s_ring_L[i] = 0; s_ring_R[i] = 0; }
-    for (int i = 0; i < GS_PC_SETS; i++) {
-        for (int w = 0; w < GS_PC_WAYS; w++) s_pc_tag[i][w] = ~0u;
-        s_pc_next[i] = 0;
+    if (s_pc_tag) {
+        for (int i = 0; i < GS_PC_SETS; i++) {
+            for (int w = 0; w < GS_PC_WAYS; w++) s_pc_tag[i][w] = ~0u;
+            s_pc_next[i] = 0;
+        }
     }
     s_pc_last_line = ~0u;
     s_pc_last_buf  = nullptr;
