@@ -534,6 +534,9 @@ static bool hook_trdosRom(int32_t nv, int32_t) {
     }
     MemESP::rom[4].assign_rom(base);
     MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);
+    // TS-Conf window 0 caches a raw pointer to ROM page 1 = this very ROM
+    // (TsConf::romPtr); re-derive it so the pick lands without a reset.
+    if (Z80Ops::isTsconf) TsConf::setBanks();
     return true;
 }
 static bool hook_tapePlayer(int32_t nv, int32_t) {

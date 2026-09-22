@@ -745,12 +745,15 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         // differ only in the 128 service ROM at page 2 — with page 3 following it
         // from the 128K second half to the plain 48K ROM. Pages 1-3 are bases other
         // machines overlay; only page 0 and the Mr Gluk service ROM are TS-Conf's own
-        // bytes (roms/tsconf/, tools/rom_pack.py). rom[4] (TR-DOS) is still bound by
-        // the tail below for the Beta-128 path; TS-BIOS carries its own TR-DOS in
-        // page 1 and never uses rom[4].
+        // bytes (roms/tsconf/, tools/rom_pack.py). Page 1 (TR-DOS) is NOT taken from
+        // this table: TsConf::romPtr(1) serves rom[4] — the Beta-128 ROM picked in
+        // Devices > Beta 128 > ROM, bound by the tail below — so TS-Conf follows that
+        // setting exactly like a Pentagon (2026-09-22). The 504T here is only the
+        // image's own byte for the record; the ZX-Evo ships it, and it is also the
+        // setting's default base.
         const uint8_t* pages[4] = {
             gb_rom_tsbios_p0,
-            gb_rom_4_trdos_504t,
+            gb_rom_4_trdos_504t,   // ignored — see TsConf::romPtr
             gb_rom_0_pentagon_128k,      // 128.rom half 0 == the Pentagon 128 ROM
             gb_rom_1_sinclair_128k,      // 128.rom half 1
         };

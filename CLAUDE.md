@@ -2089,6 +2089,21 @@ to BE a base. That is the whole reason two families were inverted:
 
 - **trdos**: base is **5.04T** (`gb_rom_4_trdos_504t`, TS-BIOS page 1); 5.05D / 5.03
   / 5.04TM are overlays over it (360 / 572 / 114 B against the old 855+454).
+  **Since 2026-09-22 TS-Conf's ROM page 1 IS the Beta-128 ROM the user picked**
+  (Devices > Beta 128 > ROM, i.e. `MemESP::rom[4]`), exactly like a Pentagon —
+  `TsConf::romPtr(1)` returns `rom[4]`'s base or, for an overlaid version, its FLAT
+  page, which `MemESP::overlayFlatFor()` materialises SYNCHRONOUSLY the first time
+  window 0 asks for it (a raw-pointer window cannot take the lazy per-frame path:
+  the page has to be complete before it is mapped, or the guest would see the ROM
+  change under it). `hook_trdosRom` calls `TsConf::setBanks()` so a live pick lands
+  without a reset. The `pages[1]` entry in requestMachine is ignored and kept only
+  for the record. **Hw 2026-09-22, owner: "работает"** — not itemised, so read it
+  as the pick reaching TS-Conf's TR-DOS page on a real boot. Consequence: 6.11e
+  ("BETA1024", a different TR-DOS generation) is now selectable under TS-BIOS —
+  whether TS-BIOS's own `TR-DOS` boot entry and VDOS (Wild Commander) work with
+  it is not separately established. The old 504T page still
+  serves when no butter page can be had (logged once, `[TSC] TR-DOS overlay page
+  unavailable`).
 - **pentagon**: base is **`gb_rom_0_pentagon_128k`** (TS-BIOS page 2); the stock
   Sinclair 128K ROM0 is the 101-byte `gb_overlay_pentagon_sinclair_128k_0`. The raw
   array left `romSinclair128K.h` — it must have EXTERNAL linkage (generated

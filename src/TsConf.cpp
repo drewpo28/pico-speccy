@@ -362,6 +362,28 @@ static const uint8_t* s_rom_page[4] = { nullptr, nullptr, nullptr, nullptr };
 
 const uint8_t* TsConf::romPtr(uint8_t page) {
     page &= 0x1F;
+    // ROM page 1 (TR-DOS) is the SAME external Beta-128 ROM every other machine
+    // gets — Devices > Beta 128 > ROM, bound to MemESP::rom[4] by requestMachine
+    // and re-bound live by hook_trdosRom (which then calls setBanks() so the
+    // cached window-0 pointer follows). The ZX-Evo image ships 5.04T there,
+    // which is exactly that setting's default base. Window 0 is a RAW pointer,
+    // so an overlaid version (5.03 / 5.05D / 6.11e) has to be the FLAT page:
+    // MemESP materialises it synchronously here, before the window is ever
+    // mapped, so the guest never sees a half-swapped ROM. If no butter page can
+    // be had (cannot happen on a running TS-Conf — the machine needs butter),
+    // the base 5.04T serves, logged once.
+    if (page == 1) {
+        const uint8_t* base = MemESP::rom[4].direct();
+        if (base) {
+            const uint8_t* flat = MemESP::overlayFlatFor(base);
+            if (flat) return flat;
+            if (MemESP::overlayFor(base)) {
+                static bool warned = false;
+                if (!warned) { warned = true; Debug::log("[TSC] TR-DOS overlay page unavailable, using the base ROM"); }
+            }
+            return base;
+        }
+    }
     if (page < 4 && s_rom_page[page]) return s_rom_page[page];
     return gb_rom_Alf_ep;
 }
@@ -370,9 +392,9 @@ void TsConf::bindRoms(const uint8_t* const pages[4]) {
     // Window 0 is a RAW POINTER into flash (setBanks -> ramCurrent[0], read by the
     // TsFastMem path), so these four pages must be raw arrays — which is why the
     // TR-DOS and 128K-ROM0 overlay families were inverted to make the variants
-    // TS-Conf needs their bases (tools/rom_pack.py). Nothing goes into MemESP::rom[]:
-    // rom[4] (TR-DOS, bound by requestMachine's tail) stays for the Beta-128 path,
-    // which TS-BIOS never uses — it carries its own TR-DOS in page 1.
+    // TS-Conf needs their bases (tools/rom_pack.py). Nothing goes into MemESP::rom[]
+    // from here; pages[1] is IGNORED — romPtr(1) serves TR-DOS out of rom[4], the
+    // Beta-128 ROM the user picked (see romPtr).
     for (int i = 0; i < 4; ++i) s_rom_page[i] = pages[i];
 }
 

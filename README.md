@@ -25,7 +25,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 
 - ZX Spectrum 48K, 128K, +3 / +3e, Timex TC2048/TC2068, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, TS-Conf (ZX-Evo), Byte and ALF TV Game. 100% cycle accurate emulation.
 - State of the art Z80 emulation (Authored by [José Luis Sánchez](https://github.com/jsanchezv/z80cpp))
-- Selectable Sinclair 48K, Sinclair 128K and Amstrad +2 english and spanish ROMs. Byte and ALF TV Game - russian ROMs, + Pentagons with Gluck services ROMs & selectable TR-DOS ROM (5.03 / 5.04TM / 5.05D / custom). Profi 1024K with selectable Karabas-Pro ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage).
+- Selectable Sinclair 48K, Sinclair 128K and Amstrad +2 english and spanish ROMs. Byte and ALF TV Game - russian ROMs, + Pentagons with Gluck services ROMs & selectable TR-DOS ROM (5.03 / 5.04TM / 5.05D / 6.11e / custom; the same pick also serves TS-Conf's TR-DOS page). Profi 1024K with selectable Karabas-Pro ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage).
 - Possibility of using custom ROM with easy flashing procedure from SD card.
 - ALF TV Game cartridge loading: load any ALF cartridge (up to 1 MB) from the SD card into a dedicated flash region and boot it (RP2350 only).
 - ZX81+ IF2 ROM by courtesy Paul Farrow with .P file loading from SD card.
