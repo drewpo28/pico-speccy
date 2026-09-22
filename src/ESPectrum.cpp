@@ -1350,6 +1350,9 @@ void ESPectrum::setup() {
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
+  // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
+  if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
   OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
   OpllSubsys::request(!Config::tape_player && Config::ym2413 != 0);
   CmsSubsys::request(!Config::tape_player && Config::cms != 0);
@@ -1877,6 +1880,9 @@ void ESPectrum::reset(uint8_t romInUse) {
   PitSubsys::request(Z80Ops::isByte);
   SaaSubsys::request(!Config::tape_player && Config::SAA1099);
   TsfmSubsys::request(!Config::tape_player && Config::tsfm != 0);
+  // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
+  // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
+  if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
   OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
   OpllSubsys::request(!Config::tape_player && Config::ym2413 != 0);
   CmsSubsys::request(!Config::tape_player && Config::cms != 0);

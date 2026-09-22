@@ -102,7 +102,13 @@ uint8_t Z80::sz53pn_subTable[256];
 ///////////////////////////////////////////////////////////////////////////////
 
 // Constructor de la clase
-void Z80::create() {
+// Cold half of the core: runs at boot, on a machine reset or when an NMI is
+// taken — never per instruction — so it lives in FLASH even with the core in
+// SRAM (Z80_CORE_IN_RAM). The linker script sends `.z80cold` to the flash .text
+// ahead of the object-wide RAM rule (rp2350-memmap.ld). Z80::interrupt() is NOT
+// cold: TS-Conf's LINE INT takes it up to 320 times a frame. (2026-09-22, -824 B)
+#define Z80_COLD __attribute__((section(".z80cold"), noinline))
+Z80_COLD void Z80::create() {
 
     bool evenBits;
 
@@ -146,7 +152,7 @@ void Z80::create() {
 
 }
 
-void Z80::destroy(void)
+Z80_COLD void Z80::destroy(void)
 {
 }
 
@@ -231,7 +237,7 @@ void Z80::setSignFlag(bool state) {
  *             modelo Zilog Z8400APS. Z80A CPU.
  *             http://www.worldofspectrum.org/forums/showthread.php?t=34574
  */
-void Z80::reset(void) {
+Z80_COLD void Z80::reset(void) {
     if (pinReset) {
         pinReset = false;
     } else {
@@ -1026,7 +1032,7 @@ void Z80::interrupt(void) {
  * M2: 3 T-Estados -> escribe byte alto de PC y decSP
  * M3: 3 T-Estados -> escribe byte bajo de PC y PC=0x0066
  */
-void Z80::nmi(void) {
+Z80_COLD void Z80::nmi(void) {
 
     halted = false;
 
@@ -1044,7 +1050,7 @@ void Z80::nmi(void) {
 
 }
 
-void Z80::doNMI(void) {
+Z80_COLD void Z80::doNMI(void) {
 
     activeNMI = false;
     lastFlagQ = false;
@@ -1077,7 +1083,7 @@ void Z80::doNMI(void) {
 
 }
 
-void Z80::doNMIDOS(void) {
+Z80_COLD void Z80::doNMIDOS(void) {
 
     activeNMIDOS = false;
     lastFlagQ = false;
@@ -2565,6 +2571,53 @@ void Z80::decodeCB() {
  * Naturalmente, en una serie repetida de DDFD no hay que comprobar las
  * interrupciones entre cada prefijo.
  */
+// DD/FD register operand: H and L stand for IXh/IXl. Never called with r == 6.
+inline __attribute__((always_inline)) uint8_t* Z80::ixyReg8(int r, RegisterPair& ixy) {
+    return r == 4 ? &ixy.byte8.hi : r == 5 ? &ixy.byte8.lo : reg8[r];
+}
+
+void Z80::decodeDDFDLD8(RegisterPair& regIXY) {   /* LD r,r' block under DD/FD, 0x76 excluded */
+    const uint8_t op = opCode;
+    const int s = op & 7, d = (op >> 3) & 7;
+    if (s == 6) {                 // LD r,(IX+d): r is the REAL register, H/L included
+        REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC++;
+        *reg8[d] = Z80Ops::peek8(REG_WZ);
+    } else if (d == 6) {          // LD (IX+d),r: likewise
+        REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC++;
+        Z80Ops::poke8(REG_WZ, *reg8[s]);
+    } else {
+        *ixyReg8(d, regIXY) = *ixyReg8(s, regIXY);
+    }
+}
+
+void Z80::decodeDDFDALU8(RegisterPair& regIXY) {  /* ADD..CP A,r / A,(IX+d) under DD/FD, 0x80-0xBE */
+    const uint8_t op = opCode;
+    const int s = op & 7;
+    uint8_t v;
+    if (s == 6) {
+        REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC++;
+        v = Z80Ops::peek8(REG_WZ);
+    } else {
+        v = *ixyReg8(s, regIXY);
+    }
+    switch ((op >> 3) & 7) {
+        case 0: add(v); break;
+        case 1: adc(v); break;
+        case 2: sub(v); break;
+        case 3: sbc(v); break;
+        case 4: and_(v); break;
+        case 5: xor_(v); break;
+        case 6: or_(v); break;
+        default: cp(v); break;
+    }
+}
+
 void Z80::decodeDDFD(RegisterPair& regIXY) {
     switch (opCode) {
         case 0x09:
@@ -2764,378 +2817,34 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
             add16(regIXY, REG_SP);
             break;
         }
-        case 0x44:
-        { /* LD B,IXh */
-            REG_B = regIXY.byte8.hi;
+        // LD r,r' / LD r,(IX+d) / LD (IX+d),r — one handler for the whole 0x40-0x7F
+        // block (0x76 = HALT keeps the default path) and ALU A,r / A,(IX+d) for
+        // 0x80-0xBE (0xBF = CP A keeps its tape-trap handler via the default path).
+        // Under DD/FD, H and L mean IXh/IXl EXCEPT in the (IX+d) forms, where the
+        // other operand is the real H/L — decodeDDFDLD8 / decodeDDFDALU8 encode
+        // exactly that rule (2026-09-22: 60 hand-written cases, ~1.3 KB of SRAM).
+        case 0x40: case 0x41: case 0x42: case 0x43: case 0x44: case 0x45: case 0x46: case 0x47:
+        case 0x48: case 0x49: case 0x4A: case 0x4B: case 0x4C: case 0x4D: case 0x4E: case 0x4F:
+        case 0x50: case 0x51: case 0x52: case 0x53: case 0x54: case 0x55: case 0x56: case 0x57:
+        case 0x58: case 0x59: case 0x5A: case 0x5B: case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+        case 0x60: case 0x61: case 0x62: case 0x63: case 0x64: case 0x65: case 0x66: case 0x67:
+        case 0x68: case 0x69: case 0x6A: case 0x6B: case 0x6C: case 0x6D: case 0x6E: case 0x6F:
+        case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75:            case 0x77:
+        case 0x78: case 0x79: case 0x7A: case 0x7B: case 0x7C: case 0x7D: case 0x7E: case 0x7F:
+        {
+            decodeDDFDLD8(regIXY);
             break;
         }
-        case 0x45:
-        { /* LD B,IXl */
-            REG_B = regIXY.byte8.lo;
-            break;
-        }
-        case 0x46:
-        { /* LD B,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            REG_B = Z80Ops::peek8(REG_WZ);
-            break;
-        }
-        case 0x4C:
-        { /* LD C,IXh */
-            REG_C = regIXY.byte8.hi;
-            break;
-        }
-        case 0x4D:
-        { /* LD C,IXl */
-            REG_C = regIXY.byte8.lo;
-            break;
-        }
-        case 0x4E:
-        { /* LD C,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            REG_C = Z80Ops::peek8(REG_WZ);
-            break;
-        }
-        case 0x54:
-        { /* LD D,IXh */
-            REG_D = regIXY.byte8.hi;
-            break;
-        }
-        case 0x55:
-        { /* LD D,IXl */
-            REG_D = regIXY.byte8.lo;
-            break;
-        }
-        case 0x56:
-        { /* LD D,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            REG_D = Z80Ops::peek8(REG_WZ);
-            break;
-        }
-        case 0x5C:
-        { /* LD E,IXh */
-            REG_E = regIXY.byte8.hi;
-            break;
-        }
-        case 0x5D:
-        { /* LD E,IXl */
-            REG_E = regIXY.byte8.lo;
-            break;
-        }
-        case 0x5E:
-        { /* LD E,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            REG_E = Z80Ops::peek8(REG_WZ);
-            break;
-        }
-        case 0x60:
-        { /* LD IXh,B */
-            regIXY.byte8.hi = REG_B;
-            break;
-        }
-        case 0x61:
-        { /* LD IXh,C */
-            regIXY.byte8.hi = REG_C;
-            break;
-        }
-        case 0x62:
-        { /* LD IXh,D */
-            regIXY.byte8.hi = REG_D;
-            break;
-        }
-        case 0x63:
-        { /* LD IXh,E */
-            regIXY.byte8.hi = REG_E;
-            break;
-        }
-        case 0x64:
-        { /* LD IXh,IXh */
-            break;
-        }
-        case 0x65:
-        { /* LD IXh,IXl */
-            regIXY.byte8.hi = regIXY.byte8.lo;
-            break;
-        }
-        case 0x66:
-        { /* LD H,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            REG_H = Z80Ops::peek8(REG_WZ);
-            break;
-        }
-        case 0x67:
-        { /* LD IXh,A */
-            regIXY.byte8.hi = regA;
-            break;
-        }
-        case 0x68:
-        { /* LD IXl,B */
-            regIXY.byte8.lo = REG_B;
-            break;
-        }
-        case 0x69:
-        { /* LD IXl,C */
-            regIXY.byte8.lo = REG_C;
-            break;
-        }
-        case 0x6A:
-        { /* LD IXl,D */
-            regIXY.byte8.lo = REG_D;
-            break;
-        }
-        case 0x6B:
-        { /* LD IXl,E */
-            regIXY.byte8.lo = REG_E;
-            break;
-        }
-        case 0x6C:
-        { /* LD IXl,IXh */
-            regIXY.byte8.lo = regIXY.byte8.hi;
-            break;
-        }
-        case 0x6D:
-        { /* LD IXl,IXl */
-            break;
-        }
-        case 0x6E:
-        { /* LD L,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            REG_L = Z80Ops::peek8(REG_WZ);
-            break;
-        }
-        case 0x6F:
-        { /* LD IXl,A */
-            regIXY.byte8.lo = regA;
-            break;
-        }
-        case 0x70:
-        { /* LD (IX+d),B */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            Z80Ops::poke8(REG_WZ, REG_B);
-            break;
-        }
-        case 0x71:
-        { /* LD (IX+d),C */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            Z80Ops::poke8(REG_WZ, REG_C);
-            break;
-        }
-        case 0x72:
-        { /* LD (IX+d),D */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            Z80Ops::poke8(REG_WZ, REG_D);
-            break;
-        }
-        case 0x73:
-        { /* LD (IX+d),E */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            Z80Ops::poke8(REG_WZ, REG_E);
-            break;
-        }
-        case 0x74:
-        { /* LD (IX+d),H */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            Z80Ops::poke8(REG_WZ, REG_H);
-            break;
-        }
-        case 0x75:
-        { /* LD (IX+d),L */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            Z80Ops::poke8(REG_WZ, REG_L);
-            break;
-        }
-        case 0x77:
-        { /* LD (IX+d),A */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            Z80Ops::poke8(REG_WZ, regA);
-            break;
-        }
-        case 0x7C:
-        { /* LD A,IXh */
-            regA = regIXY.byte8.hi;
-            break;
-        }
-        case 0x7D:
-        { /* LD A,IXl */
-            regA = regIXY.byte8.lo;
-            break;
-        }
-        case 0x7E:
-        { /* LD A,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            regA = Z80Ops::peek8(REG_WZ);
-            break;
-        }
-        case 0x84:
-        { /* ADD A,IXh */
-            add(regIXY.byte8.hi);
-            break;
-        }
-        case 0x85:
-        { /* ADD A,IXl */
-            add(regIXY.byte8.lo);
-            break;
-        }
-        case 0x86:
-        { /* ADD A,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            add(Z80Ops::peek8(REG_WZ));
-            break;
-        }
-        case 0x8C:
-        { /* ADC A,IXh */
-            adc(regIXY.byte8.hi);
-            break;
-        }
-        case 0x8D:
-        { /* ADC A,IXl */
-            adc(regIXY.byte8.lo);
-            break;
-        }
-        case 0x8E:
-        { /* ADC A,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            adc(Z80Ops::peek8(REG_WZ));
-            break;
-        }
-        case 0x94:
-        { /* SUB IXh */
-            sub(regIXY.byte8.hi);
-            break;
-        }
-        case 0x95:
-        { /* SUB IXl */
-            sub(regIXY.byte8.lo);
-            break;
-        }
-        case 0x96:
-        { /* SUB (IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            sub(Z80Ops::peek8(REG_WZ));
-            break;
-        }
-        case 0x9C:
-        { /* SBC A,IXh */
-            sbc(regIXY.byte8.hi);
-            break;
-        }
-        case 0x9D:
-        { /* SBC A,IXl */
-            sbc(regIXY.byte8.lo);
-            break;
-        }
-        case 0x9E:
-        { /* SBC A,(IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            sbc(Z80Ops::peek8(REG_WZ));
-            break;
-        }
-        case 0xA4:
-        { /* AND IXh */
-            and_(regIXY.byte8.hi);
-            break;
-        }
-        case 0xA5:
-        { /* AND IXl */
-            and_(regIXY.byte8.lo);
-            break;
-        }
-        case 0xA6:
-        { /* AND (IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            and_(Z80Ops::peek8(REG_WZ));
-            break;
-        }
-        case 0xAC:
-        { /* XOR IXh */
-            xor_(regIXY.byte8.hi);
-            break;
-        }
-        case 0xAD:
-        { /* XOR IXl */
-            xor_(regIXY.byte8.lo);
-            break;
-        }
-        case 0xAE:
-        { /* XOR (IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            xor_(Z80Ops::peek8(REG_WZ));
-            break;
-        }
-        case 0xB4:
-        { /* OR IXh */
-            or_(regIXY.byte8.hi);
-            break;
-        }
-        case 0xB5:
-        { /* OR IXl */
-            or_(regIXY.byte8.lo);
-            break;
-        }
-        case 0xB6:
-        { /* OR (IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            or_(Z80Ops::peek8(REG_WZ));
-            break;
-        }
-        case 0xBC:
-        { /* CP IXh */
-            cp(regIXY.byte8.hi);
-            break;
-        }
-        case 0xBD:
-        { /* CP IXl */
-            cp(regIXY.byte8.lo);
-            break;
-        }
-        case 0xBE:
-        { /* CP (IX+d) */
-            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
-            Z80Ops::addressOnBus(REG_PC, 5);
-            REG_PC++;
-            cp(Z80Ops::peek8(REG_WZ));
+        case 0x80: case 0x81: case 0x82: case 0x83: case 0x84: case 0x85: case 0x86: case 0x87:
+        case 0x88: case 0x89: case 0x8A: case 0x8B: case 0x8C: case 0x8D: case 0x8E: case 0x8F:
+        case 0x90: case 0x91: case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x97:
+        case 0x98: case 0x99: case 0x9A: case 0x9B: case 0x9C: case 0x9D: case 0x9E: case 0x9F:
+        case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: case 0xA6: case 0xA7:
+        case 0xA8: case 0xA9: case 0xAA: case 0xAB: case 0xAC: case 0xAD: case 0xAE: case 0xAF:
+        case 0xB0: case 0xB1: case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+        case 0xB8: case 0xB9: case 0xBA: case 0xBB: case 0xBC: case 0xBD: case 0xBE:
+        {
+            decodeDDFDALU8(regIXY);
             break;
         }
         case 0xCB:
@@ -3221,523 +2930,65 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
 
 // Subconjunto de instrucciones 0xDDCB
 void Z80::decodeDDFDCB(uint16_t address) {
-
-    switch (opCode) {
-        case 0x00: /* RLC (IX+d),B */
-        case 0x01: /* RLC (IX+d),C */
-        case 0x02: /* RLC (IX+d),D */
-        case 0x03: /* RLC (IX+d),E */
-        case 0x04: /* RLC (IX+d),H */
-        case 0x05: /* RLC (IX+d),L */
-        case 0x06: /* RLC (IX+d)   */
-        case 0x07: /* RLC (IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address);
-            rlc(work8);
+    // One body for all 256 DD/FD CB opcodes (2026-09-22; was a 32-block switch,
+    // ~700 B): bits [7:6] pick rotate / BIT / RES / SET, [5:3] the rotate kind or
+    // the bit, [2:0] the register the undocumented forms copy the result to
+    // (6 = none). Same sequence as every block had: read, operate, one bus
+    // cycle, write back, copy — BIT reads, tests, takes its 5/3 flags from the
+    // address high byte and takes the bus cycle without writing.
+    const uint8_t op = opCode;
+    const uint8_t n = (op >> 3) & 7;
+    const uint8_t mask = 1u << n;
+    uint8_t work8 = Z80Ops::peek8(address);
+    switch (op >> 6) {
+        case 0:
+            switch (n) {
+                case 0: rlc(work8); break;
+                case 1: rrc(work8); break;
+                case 2: rl(work8);  break;
+                case 3: rr(work8);  break;
+                case 4: sla(work8); break;
+                case 5: sra(work8); break;
+                case 6: sll(work8); break;
+                default: srl(work8); break;
+            }
+            break;
+        case 1:
+            bitTest(mask, work8);
+            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | ((address >> 8) & FLAG_53_MASK);
             Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x08: /* RRC (IX+d),B */
-        case 0x09: /* RRC (IX+d),C */
-        case 0x0A: /* RRC (IX+d),D */
-        case 0x0B: /* RRC (IX+d),E */
-        case 0x0C: /* RRC (IX+d),H */
-        case 0x0D: /* RRC (IX+d),L */
-        case 0x0E: /* RRC (IX+d)   */
-        case 0x0F: /* RRC (IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address);
-            rrc(work8);
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x10: /* RL (IX+d),B */
-        case 0x11: /* RL (IX+d),C */
-        case 0x12: /* RL (IX+d),D */
-        case 0x13: /* RL (IX+d),E */
-        case 0x14: /* RL (IX+d),H */
-        case 0x15: /* RL (IX+d),L */
-        case 0x16: /* RL (IX+d)   */
-        case 0x17: /* RL (IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address);
-            rl(work8);
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x18: /* RR (IX+d),B */
-        case 0x19: /* RR (IX+d),C */
-        case 0x1A: /* RR (IX+d),D */
-        case 0x1B: /* RR (IX+d),E */
-        case 0x1C: /* RR (IX+d),H */
-        case 0x1D: /* RR (IX+d),L */
-        case 0x1E: /* RR (IX+d)   */
-        case 0x1F: /* RR (IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address);
-            rr(work8);
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x20: /* SLA (IX+d),B */
-        case 0x21: /* SLA (IX+d),C */
-        case 0x22: /* SLA (IX+d),D */
-        case 0x23: /* SLA (IX+d),E */
-        case 0x24: /* SLA (IX+d),H */
-        case 0x25: /* SLA (IX+d),L */
-        case 0x26: /* SLA (IX+d)   */
-        case 0x27: /* SLA (IX+d),A */
-        {
-             uint8_t work8 = Z80Ops::peek8(address);
-             sla(work8);
-             Z80Ops::addressOnBus(address, 1);
-             Z80Ops::poke8(address, work8);
-             copyToRegister(work8);
-            break;
-        }
-        case 0x28: /* SRA (IX+d),B */
-        case 0x29: /* SRA (IX+d),C */
-        case 0x2A: /* SRA (IX+d),D */
-        case 0x2B: /* SRA (IX+d),E */
-        case 0x2C: /* SRA (IX+d),H */
-        case 0x2D: /* SRA (IX+d),L */
-        case 0x2E: /* SRA (IX+d)   */
-        case 0x2F: /* SRA (IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address);
-            sra(work8);
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x30: /* SLL (IX+d),B */
-        case 0x31: /* SLL (IX+d),C */
-        case 0x32: /* SLL (IX+d),D */
-        case 0x33: /* SLL (IX+d),E */
-        case 0x34: /* SLL (IX+d),H */
-        case 0x35: /* SLL (IX+d),L */
-        case 0x36: /* SLL (IX+d)   */
-        case 0x37: /* SLL (IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address);
-            sll(work8);
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x38: /* SRL (IX+d),B */
-        case 0x39: /* SRL (IX+d),C */
-        case 0x3A: /* SRL (IX+d),D */
-        case 0x3B: /* SRL (IX+d),E */
-        case 0x3C: /* SRL (IX+d),H */
-        case 0x3D: /* SRL (IX+d),L */
-        case 0x3E: /* SRL (IX+d)   */
-        case 0x3F: /* SRL (IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address);
-            srl(work8);
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x40:
-        case 0x41:
-        case 0x42:
-        case 0x43:
-        case 0x44:
-        case 0x45:
-        case 0x46:
-        case 0x47:
-        { /* BIT 0,(IX+d) */
-            bitTest(0x01, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x48:
-        case 0x49:
-        case 0x4A:
-        case 0x4B:
-        case 0x4C:
-        case 0x4D:
-        case 0x4E:
-        case 0x4F:
-        { /* BIT 1,(IX+d) */
-            bitTest(0x02, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x50:
-        case 0x51:
-        case 0x52:
-        case 0x53:
-        case 0x54:
-        case 0x55:
-        case 0x56:
-        case 0x57:
-        { /* BIT 2,(IX+d) */
-            bitTest(0x04, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x58:
-        case 0x59:
-        case 0x5A:
-        case 0x5B:
-        case 0x5C:
-        case 0x5D:
-        case 0x5E:
-        case 0x5F:
-        { /* BIT 3,(IX+d) */
-            bitTest(0x08, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x60:
-        case 0x61:
-        case 0x62:
-        case 0x63:
-        case 0x64:
-        case 0x65:
-        case 0x66:
-        case 0x67:
-        { /* BIT 4,(IX+d) */
-            bitTest(0x10, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x68:
-        case 0x69:
-        case 0x6A:
-        case 0x6B:
-        case 0x6C:
-        case 0x6D:
-        case 0x6E:
-        case 0x6F:
-        { /* BIT 5,(IX+d) */
-            bitTest(0x20, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x70:
-        case 0x71:
-        case 0x72:
-        case 0x73:
-        case 0x74:
-        case 0x75:
-        case 0x76:
-        case 0x77:
-        { /* BIT 6,(IX+d) */
-            bitTest(0x40, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x78:
-        case 0x79:
-        case 0x7A:
-        case 0x7B:
-        case 0x7C:
-        case 0x7D:
-        case 0x7E:
-        case 0x7F:
-        { /* BIT 7,(IX+d) */
-            bitTest(0x80, Z80Ops::peek8(address));
-            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK)
-                    | ((address >> 8) & FLAG_53_MASK);
-            Z80Ops::addressOnBus(address, 1);
-            break;
-        }
-        case 0x80: /* RES 0,(IX+d),B */
-        case 0x81: /* RES 0,(IX+d),C */
-        case 0x82: /* RES 0,(IX+d),D */
-        case 0x83: /* RES 0,(IX+d),E */
-        case 0x84: /* RES 0,(IX+d),H */
-        case 0x85: /* RES 0,(IX+d),L */
-        case 0x86: /* RES 0,(IX+d)   */
-        case 0x87: /* RES 0,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0xFE;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x88: /* RES 1,(IX+d),B */
-        case 0x89: /* RES 1,(IX+d),C */
-        case 0x8A: /* RES 1,(IX+d),D */
-        case 0x8B: /* RES 1,(IX+d),E */
-        case 0x8C: /* RES 1,(IX+d),H */
-        case 0x8D: /* RES 1,(IX+d),L */
-        case 0x8E: /* RES 1,(IX+d)   */
-        case 0x8F: /* RES 1,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0xFD;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x90: /* RES 2,(IX+d),B */
-        case 0x91: /* RES 2,(IX+d),C */
-        case 0x92: /* RES 2,(IX+d),D */
-        case 0x93: /* RES 2,(IX+d),E */
-        case 0x94: /* RES 2,(IX+d),H */
-        case 0x95: /* RES 2,(IX+d),L */
-        case 0x96: /* RES 2,(IX+d)   */
-        case 0x97: /* RES 2,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0xFB;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0x98: /* RES 3,(IX+d),B */
-        case 0x99: /* RES 3,(IX+d),C */
-        case 0x9A: /* RES 3,(IX+d),D */
-        case 0x9B: /* RES 3,(IX+d),E */
-        case 0x9C: /* RES 3,(IX+d),H */
-        case 0x9D: /* RES 3,(IX+d),L */
-        case 0x9E: /* RES 3,(IX+d)   */
-        case 0x9F: /* RES 3,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0xF7;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xA0: /* RES 4,(IX+d),B */
-        case 0xA1: /* RES 4,(IX+d),C */
-        case 0xA2: /* RES 4,(IX+d),D */
-        case 0xA3: /* RES 4,(IX+d),E */
-        case 0xA4: /* RES 4,(IX+d),H */
-        case 0xA5: /* RES 4,(IX+d),L */
-        case 0xA6: /* RES 4,(IX+d)   */
-        case 0xA7: /* RES 4,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0xEF;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xA8: /* RES 5,(IX+d),B */
-        case 0xA9: /* RES 5,(IX+d),C */
-        case 0xAA: /* RES 5,(IX+d),D */
-        case 0xAB: /* RES 5,(IX+d),E */
-        case 0xAC: /* RES 5,(IX+d),H */
-        case 0xAD: /* RES 5,(IX+d),L */
-        case 0xAE: /* RES 5,(IX+d)   */
-        case 0xAF: /* RES 5,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0xDF;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xB0: /* RES 6,(IX+d),B */
-        case 0xB1: /* RES 6,(IX+d),C */
-        case 0xB2: /* RES 6,(IX+d),D */
-        case 0xB3: /* RES 6,(IX+d),E */
-        case 0xB4: /* RES 6,(IX+d),H */
-        case 0xB5: /* RES 6,(IX+d),L */
-        case 0xB6: /* RES 6,(IX+d)   */
-        case 0xB7: /* RES 6,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0xBF;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xB8: /* RES 7,(IX+d),B */
-        case 0xB9: /* RES 7,(IX+d),C */
-        case 0xBA: /* RES 7,(IX+d),D */
-        case 0xBB: /* RES 7,(IX+d),E */
-        case 0xBC: /* RES 7,(IX+d),H */
-        case 0xBD: /* RES 7,(IX+d),L */
-        case 0xBE: /* RES 7,(IX+d)   */
-        case 0xBF: /* RES 7,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) & 0x7F;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xC0: /* SET 0,(IX+d),B */
-        case 0xC1: /* SET 0,(IX+d),C */
-        case 0xC2: /* SET 0,(IX+d),D */
-        case 0xC3: /* SET 0,(IX+d),E */
-        case 0xC4: /* SET 0,(IX+d),H */
-        case 0xC5: /* SET 0,(IX+d),L */
-        case 0xC6: /* SET 0,(IX+d)   */
-        case 0xC7: /* SET 0,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x01;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xC8: /* SET 1,(IX+d),B */
-        case 0xC9: /* SET 1,(IX+d),C */
-        case 0xCA: /* SET 1,(IX+d),D */
-        case 0xCB: /* SET 1,(IX+d),E */
-        case 0xCC: /* SET 1,(IX+d),H */
-        case 0xCD: /* SET 1,(IX+d),L */
-        case 0xCE: /* SET 1,(IX+d)   */
-        case 0xCF: /* SET 1,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x02;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xD0: /* SET 2,(IX+d),B */
-        case 0xD1: /* SET 2,(IX+d),C */
-        case 0xD2: /* SET 2,(IX+d),D */
-        case 0xD3: /* SET 2,(IX+d),E */
-        case 0xD4: /* SET 2,(IX+d),H */
-        case 0xD5: /* SET 2,(IX+d),L */
-        case 0xD6: /* SET 2,(IX+d)   */
-        case 0xD7: /* SET 2,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x04;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xD8: /* SET 3,(IX+d),B */
-        case 0xD9: /* SET 3,(IX+d),C */
-        case 0xDA: /* SET 3,(IX+d),D */
-        case 0xDB: /* SET 3,(IX+d),E */
-        case 0xDC: /* SET 3,(IX+d),H */
-        case 0xDD: /* SET 3,(IX+d),L */
-        case 0xDE: /* SET 3,(IX+d)   */
-        case 0xDF: /* SET 3,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x08;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xE0: /* SET 4,(IX+d),B */
-        case 0xE1: /* SET 4,(IX+d),C */
-        case 0xE2: /* SET 4,(IX+d),D */
-        case 0xE3: /* SET 4,(IX+d),E */
-        case 0xE4: /* SET 4,(IX+d),H */
-        case 0xE5: /* SET 4,(IX+d),L */
-        case 0xE6: /* SET 4,(IX+d)   */
-        case 0xE7: /* SET 4,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x10;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xE8: /* SET 5,(IX+d),B */
-        case 0xE9: /* SET 5,(IX+d),C */
-        case 0xEA: /* SET 5,(IX+d),D */
-        case 0xEB: /* SET 5,(IX+d),E */
-        case 0xEC: /* SET 5,(IX+d),H */
-        case 0xED: /* SET 5,(IX+d),L */
-        case 0xEE: /* SET 5,(IX+d)   */
-        case 0xEF: /* SET 5,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x20;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xF0: /* SET 6,(IX+d),B */
-        case 0xF1: /* SET 6,(IX+d),C */
-        case 0xF2: /* SET 6,(IX+d),D */
-        case 0xF3: /* SET 6,(IX+d),E */
-        case 0xF4: /* SET 6,(IX+d),H */
-        case 0xF5: /* SET 6,(IX+d),L */
-        case 0xF6: /* SET 6,(IX+d)   */
-        case 0xF7: /* SET 6,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x40;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
-        case 0xF8: /* SET 7,(IX+d),B */
-        case 0xF9: /* SET 7,(IX+d),C */
-        case 0xFA: /* SET 7,(IX+d),D */
-        case 0xFB: /* SET 7,(IX+d),E */
-        case 0xFC: /* SET 7,(IX+d),H */
-        case 0xFD: /* SET 7,(IX+d),L */
-        case 0xFE: /* SET 7,(IX+d)   */
-        case 0xFF: /* SET 7,(IX+d),A */
-        {
-            uint8_t work8 = Z80Ops::peek8(address) | 0x80;
-            Z80Ops::addressOnBus(address, 1);
-            Z80Ops::poke8(address, work8);
-            copyToRegister(work8);
-            break;
-        }
+            return;
+        case 2: work8 &= (uint8_t)~mask; break;
+        default: work8 |= mask; break;
     }
+    Z80Ops::addressOnBus(address, 1);
+    Z80Ops::poke8(address, work8);
+    copyToRegister(work8);
 }
 
 //Subconjunto de instrucciones 0xED
 
 void Z80::decodeED(void) {
     switch (opCode) {
-        case 0x40:
-        { /* IN B,(C) */
+        // IN r,(C) / OUT (C),r — one body per direction for the eight registers
+        // (2026-09-22; was 16 cases). r = 6 is the undocumented IN (C) (flags only,
+        // nothing stored) and OUT (C),0 (an NMOS Z80 puts 0x00 on the bus).
+        case 0x40: case 0x48: case 0x50: case 0x58: case 0x60: case 0x68: case 0x70: case 0x78:
+        { /* IN r,(C) */
             REG_WZ = REG_BC;
-            REG_B = Ports::input(REG_WZ);
-            REG_WZ++;
-            sz5h3pnFlags = sz53pn_addTable[REG_B];
+            const uint8_t v = Ports::input(REG_WZ++);
+            uint8_t* r = reg8[(opCode >> 3) & 7];
+            if (r) *r = v;
+            sz5h3pnFlags = sz53pn_addTable[v];
             flagQ = true;
             break;
         }
-        case 0x41:
-        { /* OUT (C),B */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ, REG_B);
-            // REG_WZ++;
-
-            Ports::output(REG_BC, REG_B);
+        case 0x41: case 0x49: case 0x51: case 0x59: case 0x61: case 0x69: case 0x71: case 0x79:
+        { /* OUT (C),r */
+            uint8_t* r = reg8[(opCode >> 3) & 7];
+            Ports::output(REG_BC, r ? *r : 0x00);
             REG_WZ = REG_BC + 1;
-
             return;
-            // break;
         }
         case 0x42:
         { /* SBC HL,BC */
@@ -3808,28 +3059,6 @@ void Z80::decodeED(void) {
             regI = regA;
             break;
         }
-        case 0x48:
-        { /* IN C,(C) */
-            REG_WZ = REG_BC;
-            REG_C = Ports::input(REG_WZ);
-            REG_WZ++;
-            sz5h3pnFlags = sz53pn_addTable[REG_C];
-            flagQ = true;
-            break;
-        }
-        case 0x49:
-        { /* OUT (C),C */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ, REG_C);
-            // REG_WZ++;
-
-            Ports::output(REG_BC, REG_C);
-            REG_WZ = REG_BC + 1;
-
-            return;
-            // break;
-
-        }
         case 0x4A:
         { /* ADC HL,BC */
             Z80Ops::addressOnBus(getPairIR().word, 7);
@@ -3853,26 +3082,6 @@ void Z80::decodeED(void) {
             Z80Ops::addressOnBus(getPairIR().word, 1);
             setRegR(regA);
             break;
-        }
-        case 0x50:
-        { /* IN D,(C) */
-            REG_WZ = REG_BC;
-            REG_D = Ports::input(REG_WZ);
-            REG_WZ++;
-            sz5h3pnFlags = sz53pn_addTable[REG_D];
-            flagQ = true;
-            break;
-        }
-        case 0x51:
-        { /* OUT (C),D */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ++, REG_D);
-
-            Ports::output(REG_BC, REG_D);
-            REG_WZ = REG_BC + 1;
-
-            return;
-            // break;
         }
         case 0x52:
         { /* SBC HL,DE */
@@ -3904,25 +3113,6 @@ void Z80::decodeED(void) {
             flagQ = true;
             break;
         }
-        case 0x58:
-        { /* IN E,(C) */
-            REG_WZ = REG_BC;
-            REG_E = Ports::input(REG_WZ++);
-            sz5h3pnFlags = sz53pn_addTable[REG_E];
-            flagQ = true;
-            break;
-        }
-        case 0x59:
-        { /* OUT (C),E */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ++, REG_E);
-
-            Ports::output(REG_BC, REG_E);
-            REG_WZ = REG_BC + 1;
-
-            return;
-            // break;
-        }
         case 0x5A:
         { /* ADC HL,DE */
             Z80Ops::addressOnBus(getPairIR().word, 7);
@@ -3952,25 +3142,6 @@ void Z80::decodeED(void) {
             }
             flagQ = true;
             break;
-        }
-        case 0x60:
-        { /* IN H,(C) */
-            REG_WZ = REG_BC;
-            REG_H = Ports::input(REG_WZ++);
-            sz5h3pnFlags = sz53pn_addTable[REG_H];
-            flagQ = true;
-            break;
-        }
-        case 0x61:
-        { /* OUT (C),H */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ++, REG_H);
-
-            Ports::output(REG_BC, REG_H);
-            REG_WZ = REG_BC + 1;
-
-            return;
-            // break;
         }
         case 0x62:
         { /* SBC HL,HL */
@@ -4003,25 +3174,6 @@ void Z80::decodeED(void) {
             flagQ = true;
             break;
         }
-        case 0x68:
-        { /* IN L,(C) */
-            REG_WZ = REG_BC;
-            REG_L = Ports::input(REG_WZ++);
-            sz5h3pnFlags = sz53pn_addTable[REG_L];
-            flagQ = true;
-            break;
-        }
-        case 0x69:
-        { /* OUT (C),L */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ++, REG_L);
-
-            Ports::output(REG_BC, REG_L);
-            REG_WZ = REG_BC + 1;
-
-            return;
-            // break;
-        }
         case 0x6A:
         { /* ADC HL,HL */
             Z80Ops::addressOnBus(getPairIR().word, 7);
@@ -4053,27 +3205,6 @@ void Z80::decodeED(void) {
             flagQ = true;
             break;
         }
-        case 0x70:
-        { /* IN (C) */
-            REG_WZ = REG_BC;
-            uint8_t inPort = Ports::input(REG_WZ++);
-            sz5h3pnFlags = sz53pn_addTable[inPort];
-            flagQ = true;
-            break;
-        }
-        case 0x71:
-        { /* OUT (C),0 */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ++, 0x00);
-
-            Ports::output(REG_BC, 0x00); // NMOS Z80 returns 0x00
-            // Ports::output(REG_BC, 0xFF); // CMOS Z80 returns 0xFF
-
-            REG_WZ = REG_BC + 1;
-
-            return;
-            // break;
-        }
         case 0x72:
         { /* SBC HL,SP */
             Z80Ops::addressOnBus(getPairIR().word, 7);
@@ -4086,25 +3217,6 @@ void Z80::decodeED(void) {
             Z80Ops::poke16(REG_WZ++, regSP);
             REG_PC = REG_PC + 2;
             break;
-        }
-        case 0x78:
-        { /* IN A,(C) */
-            REG_WZ = REG_BC;
-            regA = Ports::input(REG_WZ++);
-            sz5h3pnFlags = sz53pn_addTable[regA];
-            flagQ = true;
-            break;
-        }
-        case 0x79:
-        { /* OUT (C),A */
-            // REG_WZ = REG_BC;
-            // Ports::output(REG_WZ++, regA);
-
-            Ports::output(REG_BC, regA);
-            REG_WZ = REG_BC + 1;
-
-            return;
-            // break;
         }
         case 0x7A:
         { /* ADC HL,SP */
@@ -4269,31 +3381,8 @@ void Z80::decodeED(void) {
 
 IRAM_ATTR void Z80::copyToRegister(uint8_t value)
 {
-    switch (opCode & 0x07)
-    {
-        case 0x00:
-            REG_B = value;
-            break;
-        case 0x01:
-            REG_C = value;
-            break;
-        case 0x02:
-            REG_D = value;
-            break;
-        case 0x03:
-            REG_E = value;
-            break;
-        case 0x04:
-            REG_H = value;
-            break;
-        case 0x05:
-            REG_L = value;
-            break;
-        case 0x07:
-            regA = value;
-        default:
-            break;
-    }
+    uint8_t* r = reg8[opCode & 0x07];   // 6 = (HL): the documented form copies nowhere
+    if (r) *r = value;
 }
 
 // LDI/LDD, CPI/CPD, INI/IND, OUTI/OUTD share one body each; d = +1 / -1.

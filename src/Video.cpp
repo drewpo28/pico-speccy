@@ -594,14 +594,30 @@ static inline uint32_t tsRenderUs() { return timer_hw->timerawl; }
 // visible page. Frame-stable inputs may change only after tsRenderDrain():
 // EndFrame (before the palette flush), mode switches, Reset, RedrawPausedFrame.
 // TSU lines (tsuComposeLine reads SFILE + the tile registers live) stay on
-// core0. Ring: 512 jobs x 8 B from the heap, allocated when a whole-line mode
+// core0. Ring: 320 jobs x 10 B from the heap, allocated when a whole-line mode
 // first goes live (TS-Conf only, so other boards pay nothing).
 union TsRenderJob {
     // `kind` sits at offset 0 in both members: 0 = line, 1 = DMA transaction.
-    struct { uint8_t kind, vpage, palsel, vconf, border, tsu; uint16_t line, ygctr, g_xoffs; } l;
+    // line (0..319), ygctr (0..511) and GXOffs (0..511) are 9 bits each and share
+    // two uint16s (lyx0 = line | ygctr<<9, lyx1 = ygctr>>7 | gxoffs<<2): 10 B per
+    // job instead of 12 (2026-09-22, -640 B of the SRAM ring). Use the accessors.
+    struct { uint8_t kind, vpage, palsel, vconf, border, tsu; uint16_t lyx0, lyx1; } l;
     struct { uint8_t kind, ctrl, len, num, s[3], d[3]; } d;   // 22-bit addresses, little-endian
 };
-static_assert(sizeof(TsRenderJob) == 12, "TsRenderJob packing");
+static_assert(sizeof(TsRenderJob) == 10, "TsRenderJob packing");
+// always_inline, not merely inline: at -O3 GCC turned these into `.isra.0`
+// clones in FLASH and the RAM renderer reached them through veneers — one XIP
+// fetch per line out of code that was moved to RAM to avoid exactly that (the
+// same shape as the lambda trap in the CLAUDE.md render notes). Check nm for
+// `jobLine` after touching them: it must not exist as a symbol at all.
+#define TS_JOB_INLINE static inline __attribute__((always_inline))
+TS_JOB_INLINE uint32_t jobLine(const TsRenderJob& j)   { return j.l.lyx0 & 0x1FF; }
+TS_JOB_INLINE uint32_t jobYgctr(const TsRenderJob& j)  { return (j.l.lyx0 >> 9) | ((uint32_t)(j.l.lyx1 & 3) << 7); }
+TS_JOB_INLINE uint32_t jobGxoffs(const TsRenderJob& j) { return j.l.lyx1 >> 2; }
+TS_JOB_INLINE void jobSetLyx(TsRenderJob& j, uint32_t line, uint32_t ygctr, uint32_t gxoffs) {
+    j.l.lyx0 = (uint16_t)((line & 0x1FF) | ((ygctr & 0x7F) << 9));
+    j.l.lyx1 = (uint16_t)(((ygctr >> 7) & 3) | ((gxoffs & 0x1FF) << 2));
+}
 // TSU inputs of a line, snapshotted on core0 when they differ from the last
 // posted set (a per-line raster effect posts one per line): the tile/sprite
 // registers plus which SFILE snapshot to use. Lines reference them by index
@@ -655,8 +671,17 @@ static void tsTmbCapture(uint16_t* dst, uint32_t tm_line) {
         memcpy(d, tm + (row << 8) + (layer ? 128 : 0) + ((tm_line & 7) << 4), 16);
     }
 }
-#define TS_C1_RING 512
+// 320 jobs: one whole 288-line frame (haltAdvanceTo posts a frame at once and
+// the poster waits on a full ring) plus 32 of slack. Was 512 only because the
+// index was a power-of-two mask; 320 x 10 B = 3200 B against 512 x 12 = 6144.
+// The index is a modulo now (UDIV, a few cycles, once per line). Producer and
+// consumer counters are free-running uint32s, so the only cost of a non-power-
+// of-two size is that slots repeat differently across the 2^32 wrap — one
+// possibly garbled frame every ~85 hours of continuous TS-Conf rendering.
+#define TS_C1_RING 320
+#define TS_C1_SLOT(x) ((x) % TS_C1_RING)
 static TsRenderJob*      ts_c1_ring = nullptr;
+static bool tsGlineEnsure();   // GFXOVR line buffer, claimed on the first GFXOVR line posted (defined by the renderer)
 static volatile uint32_t ts_c1_w = 0, ts_c1_r = 0;     // producer / consumer indices (free-running)
 static bool              ts_c1_enabled = true;   // tsC1PlacementPoll() owns it from here on
 static bool              ts_c1_stuck = false;    // the 100 ms drain timeout fired once: queue off for the session
@@ -749,6 +774,11 @@ void VIDEO::tsC1RingAlloc() {
                (unsigned)TS_C1_SFILE, (unsigned)bytes, (unsigned long)(uintptr_t)blk);
 }
 
+uint32_t VIDEO::tsTraceState() {
+    const uint32_t pend = ts_c1_ring ? (ts_c1_w - ts_c1_r) : 0;
+    return (pend << 16) | (ts_line_idx & 0xFFFF);
+}
+
 void VIDEO::tsRenderDrain() {
     if (!tsC1Pending()) return;
     const uint64_t t0 = time_us_64();
@@ -795,7 +825,7 @@ void VIDEO::tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, ui
     j.d.d[0] = (uint8_t)daddr; j.d.d[1] = (uint8_t)(daddr >> 8); j.d.d[2] = (uint8_t)(daddr >> 16);
     { while (ts_c1_w - ts_c1_r >= TS_C1_RING) tsC1Spin(); tsC1SpinEnd(); }
     ts_c1_dma_posted = ts_c1_dma_posted + 1;        // before the publish; core1 bumps done after executing
-    ts_c1_ring[ts_c1_w & (TS_C1_RING - 1)] = j;
+    ts_c1_ring[TS_C1_SLOT(ts_c1_w)] = j;
     __dmb();
     ts_c1_w = ts_c1_w + 1;
 }
@@ -812,8 +842,8 @@ void VIDEO::tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, ui
 bool VIDEO::tsRenderOverlaps(uint32_t addr, uint32_t len) {
     const uint32_t r = ts_c1_r, w = ts_c1_w;
     if (r == w) return false;
-    const TsRenderJob a = ts_c1_ring[r & (TS_C1_RING - 1)];
-    const TsRenderJob b = ts_c1_ring[(w - 1) & (TS_C1_RING - 1)];
+    const TsRenderJob a = ts_c1_ring[TS_C1_SLOT(r)];
+    const TsRenderJob b = ts_c1_ring[TS_C1_SLOT(w - 1)];
     if ((a.l.kind | b.l.kind) & 1) return true;        // a DMA job at either end: be safe
     if (a.l.vpage != b.l.vpage) return true;          // page flip inside the backlog: be safe
     const uint32_t end = addr + len;
@@ -829,7 +859,7 @@ bool VIDEO::tsRenderOverlaps(uint32_t addr, uint32_t len) {
         const bool c256 = (ts_vmode_live == TSV_256C);
         const uint32_t base = c256 ? ((uint32_t)(a.l.vpage & 0xF0) << 14) : ((uint32_t)(a.l.vpage & 0xF8) << 14);
         const uint32_t sh = c256 ? 9 : 8;
-        const uint32_t y0 = a.l.ygctr & 0x1FF, y1 = b.l.ygctr & 0x1FF;
+        const uint32_t y0 = jobYgctr(a), y1 = jobYgctr(b);
         if (y0 <= y1) { if (hit(base + (y0 << sh), base + ((y1 + 1) << sh))) return true; }
         else if (hit(base + (y0 << sh), base + (512u << sh)) || hit(base, base + ((y1 + 1) << sh))) return true;
     }
@@ -945,7 +975,7 @@ void TS_RENDER_HOT VIDEO::tsRenderCore1Pump() {
     if (ts_c1_r == ts_c1_w) return;
     const uint64_t t0 = time_us_64();
     for (int n = 0; n < 8 && ts_c1_r != ts_c1_w; n++) {
-        const TsRenderJob j = ts_c1_ring[ts_c1_r & (TS_C1_RING - 1)];
+        const TsRenderJob j = ts_c1_ring[TS_C1_SLOT(ts_c1_r)];
         if (j.l.kind & 1) {
             const uint64_t d0 = time_us_64();
             TsConf::dmaExecBulk(j.d.ctrl, (uint32_t)j.d.s[0] | ((uint32_t)j.d.s[1] << 8) | ((uint32_t)j.d.s[2] << 16),
@@ -2361,6 +2391,19 @@ static int32_t  ts_pal_row0 = 0;               // fb row of this frame's first C
 static bool     ts_reindex_hold = false;       // skip posting lines while set
 static bool     ts_reindex_held_prev = false;  // a release happened this frame: no new hold until EndFrame
 static uint32_t ts_last_curline = 0xFFFFFFFFu; // tsRenderLine's repeat filter (reset by the release)
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+// Y-counter consistency detector (TMNT menu tear at 576p, 2026-09-22): with
+// GYOffs == 0 every rendered line must satisfy ygctr == curline; anything else
+// is a displaced picture. Counted per line, logged once per frame with the
+// poster's origin (bit 0..2 of ts_ygc_src: 1 = tsDrawTick, 2 = MainScreen,
+// 4 = tsReindexRelease) and the state of the queue.
+volatile uint32_t ts_ygc_bad = 0;
+static uint8_t  ts_ygc_src = 0;
+static uint32_t ts_ygc_logged_frame = 0xFFFFFFFFu;
+#define TS_YGC_SRC(bit) (ts_ygc_src = (uint8_t)(bit))
+#else
+#define TS_YGC_SRC(bit) do {} while (0)
+#endif
 static bool     ts_reindex_ready_seen = false;  // tsReindexReady was already up at the previous EndFrame
 #if TSPAL_DBG
 static uint32_t ts_dbg_rel = 0, ts_dbg_rel_dirty = 0, ts_dbg_rel_forced = 0, ts_dbg_hold_blit = 0, ts_dbg_hold_wide = 0, ts_dbg_hold_spread = 0;
@@ -3097,6 +3140,7 @@ static void tsReindexRelease() {
     for (uint32_t i = 0; i < lines; i++) {
         linedraw_cnt = lin_end + i;
         curline = i;
+        TS_YGC_SRC(4);
         VIDEO::tsRenderLine(i);
     }
     // Stop the guest's ticks re-posting THIS frame — but only if the frame is
@@ -5184,7 +5228,7 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
         // from `curline` (see the GMX branch below for why never linedraw_cnt).
         unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
         unsigned int start_col = end_col - loopCount;
-        if (start_col == 0) tsRenderLine(curline);
+        if (start_col == 0) { TS_YGC_SRC(2); tsRenderLine(curline); }
         lineptr32 += loopCount * 2;
     } else
     if (timex_hires_live) {
@@ -5887,13 +5931,25 @@ void VIDEO::tsBandReplay() {
 IRAM_ATTR void VIDEO::tsDrawTick() {
     const uint32_t rows = vga.yres;
     TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
-    if (__builtin_expect(tsCramDirty, 0)) tsPalettePoll(false);   // beam-scheduled palette apply, once per line
+    if (__builtin_expect(tsCramDirty, 0)) {
+        tsPalettePoll(false);   // beam-scheduled palette apply, once per line
+        // The poll may have RELEASED a held re-index: tsReindexRelease renders
+        // the rest of this frame itself and parks the tick (ts_line_t = MAX,
+        // Draw = Blank). Falling through into the loop below then re-posted the
+        // current row with the release's Y counter (239 + 1) and, because the
+        // sentinel + tStatesPerLine wraps, every row after it — the picture
+        // from that row down came from bitmap rows 240.. (TMNT's menu at 576p:
+        // clean background under the logo, one frame in 8; hw 2026-09-22,
+        // [TSYGC] "line 68 ygctr 240 src 1").
+        if (ts_line_t == 0xFFFFFFFFu) return;
+    }
     do {
         const uint32_t row = ts_row_idx;
         if (row >= lin_end && row < lin_end2) {
             ts_line_idx = row - lin_end;
             linedraw_cnt = row;               // keep the shared counters coherent
             curline = ts_line_idx;
+            TS_YGC_SRC(1);
             tsRenderLine(ts_line_idx);
             ts_line_idx = row - lin_end + 1;  // "the next line to render" (tsCramChanged reads it)
         } else {
@@ -6365,7 +6421,7 @@ void VIDEO::tsRenderLine(uint32_t curline) {
 #endif
     if (ts_tsu_live && ts_tmb) {
         const uint32_t tsl = curline + ts_crop_top;             // the TSU's `line`
-        tsTmbCapture(ts_tmb + (seq & (TS_C1_RING - 1)) * TS_TMB_WORDS, tsl + 16);
+        tsTmbCapture(ts_tmb + TS_C1_SLOT(seq) * TS_TMB_WORDS, tsl + 16);
         if (curline == 0) {
             ts_tmb_par ^= 1;
             for (uint32_t k = 0; k < 16; k++)
@@ -6373,9 +6429,21 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         }
         j.l.kind = (uint8_t)(ts_tmb_par << 1);
     }
-    j.l.line = (uint16_t)curline; j.l.ygctr = (uint16_t)ts_ygctr; j.l.g_xoffs = TsConf::r.g_xoffs & 0x1FF;
+    jobSetLyx(j, curline, ts_ygctr, TsConf::r.g_xoffs);
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+    if (TsConf::r.g_yoffs == 0 && ts_ygctr != (curline & 0x1FF)) {
+        ts_ygc_bad++;
+        if (ts_ygc_logged_frame != ts_frame_seq) {
+            ts_ygc_logged_frame = ts_frame_seq;
+            Debug::log("[TSYGC] frame %u line %u ygctr %u src %u lin_end %u row_idx %u pend %u posted %u",
+                       (unsigned)ts_frame_seq, (unsigned)curline, (unsigned)ts_ygctr, (unsigned)ts_ygc_src, (unsigned)lin_end,
+                       (unsigned)ts_row_idx, (unsigned)(ts_c1_ring ? (ts_c1_w - ts_c1_r) : 0), (unsigned)ts_line_idx);
+        }
+    }
+#endif
     j.l.vpage = TsConf::r.vpage; j.l.palsel = TsConf::r.palsel; j.l.vconf = TsConf::r.vconf;
     j.l.border = TsConf::r.border;
+    if ((j.l.vconf & 0x08) && !tsGlineEnsure()) j.l.vconf &= (uint8_t)~0x08;   // GFXOVR needs s_gline
 
     TsuState st;
     if (ts_tsu_live) {
@@ -6412,7 +6480,7 @@ void VIDEO::tsRenderLine(uint32_t curline) {
         // wait for a slot — core0 would be idle for exactly that render anyway.
         { while (ts_c1_w - ts_c1_r >= TS_C1_RING) tsC1Spin(); tsC1SpinEnd(); }
         j.l.kind = (uint8_t)((j.l.kind & 3) | (ts256_cur_bank << 2) | ((ts_frame_seq & 0x0F) << 4));   // palette bank + frame tag
-        ts_c1_ring[ts_c1_w & (TS_C1_RING - 1)] = j;
+        ts_c1_ring[TS_C1_SLOT(ts_c1_w)] = j;
         __dmb();
         ts_c1_w = ts_c1_w + 1;
         if (ts_tsu_live) {
@@ -6437,8 +6505,20 @@ void VIDEO::tsRenderLine(uint32_t curline) {
 // Read and written only by tsRenderExec / tsuComposeLine / tsRenderExecOvr, all
 // of which are TS-only entry points (the first two live in the same overlay
 // window), so they ride in it as well — see TS_OVL_BSS.
-static uint16_t TS_OVL_BSS s_gline[512];
+// s_gline is the GFXOVR path's only buffer and that path is FLASH code no known
+// title takes, so it is a heap block claimed by the poster (core0) the first
+// time a GFXOVR line is posted (tsGlineEnsure) rather than 1 KB of the overlay
+// window on every TS-Conf session (2026-09-22). If the claim fails the line is
+// posted without the GFXOVR bit and renders on the ordinary compose path.
+static uint16_t* s_gline = nullptr;
 static uint8_t  TS_OVL_BSS s_tsline[512];
+static __attribute__((noinline)) bool tsGlineEnsure() {
+    if (s_gline) return true;
+    s_gline = (uint16_t*)Buffer::palloc(512 * sizeof(uint16_t), Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+    Debug::log("[TSV] GFXOVR line buffer %s (1024 B @%08lX)", s_gline ? "claimed" : "unavailable - GFXOVR rendered as plain",
+               (unsigned long)(uintptr_t)s_gline);
+    return s_gline != nullptr;
+}
 
 // What the GFXOVR path needs from tsRenderExec's prologue.
 struct TsLineCtx {
@@ -6490,7 +6570,7 @@ void VIDEO::tsRenderExecOvr(const TsRenderJob& j, const TsuState* st, const uint
             ln += (ygctr & 63) << 8;
             uint16_t g16[16];
             for (int n = 0; n < 16; n++) g16[n] = (uint16_t)(gpal | n) | (n ? 0x100 : 0);
-            uint32_t sx = j.l.g_xoffs & 0x1FF;
+            uint32_t sx = jobGxoffs(j);
             int x = 0;
             if (sx & 1) { s_gline[0] = g16[ln[sx >> 1] & 0x0F]; x = 1; sx = (sx + 1) & 0x1FF; }
             for (; x + 1 < w; x += 2, sx = (sx + 2) & 0x1FF) {
@@ -6506,7 +6586,7 @@ void VIDEO::tsRenderExecOvr(const TsRenderJob& j, const TsuState* st, const uint
         if (!ln) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
         else {
             ln += (ygctr & 31) << 9;
-            uint32_t sx = j.l.g_xoffs;
+            uint32_t sx = jobGxoffs(j);
             for (int x = 0; x < w; x++, sx++) {
                 const uint8_t c = ln[sx & 0x1FF];
                 s_gline[x] = (uint16_t)c | (c ? 0x100 : 0);
@@ -6578,8 +6658,8 @@ static inline __attribute__((always_inline)) void tsFillPad(uint8_t* fb_row, int
 }
 __attribute__((optimize("O2", "no-unroll-loops")))
 void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile, uint32_t seq) {
-    const uint32_t curline = j.l.line;
-    const uint32_t ygctr = j.l.ygctr;
+    const uint32_t curline = jobLine(j);
+    const uint32_t ygctr = jobYgctr(j);
     const uint32_t frow = curline + lin_end;
     ts_render_pos = ((uint32_t)(j.l.kind >> 4) << 16) | curline;   // lines below this one are done (tsPalettePoll)
 #if TSPAL_DBG
@@ -6736,7 +6816,7 @@ void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st,
                                 : framePair      ? s_pairmap : nullptr;
     if (!ts_tsu_live && !carveRow && (lvm == TSV_256C || lvm == TSV_16C)) {
         const int fx0 = x0 < 0 ? 0 : x0, fx1 = x1 > xres ? x1 : xres > x1 ? x1 : xres;
-        const uint32_t sx = (uint32_t)j.l.g_xoffs + (uint32_t)(fx0 - x0);
+        const uint32_t sx = jobGxoffs(j) + (uint32_t)(fx0 - x0);
         if (lvm == TSV_256C) {
             const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF0) + (ygctr >> 5));
             // 256c needs a map: with none (a pair frame has s_pairmap, pal256 has
@@ -6822,7 +6902,7 @@ void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st,
             if (!ln) memset(bl, border_idx, (size_t)w);
             else {
                 ln += (ygctr & 63) << 8;
-                uint32_t sx = j.l.g_xoffs & 0x1FF;
+                uint32_t sx = jobGxoffs(j);
                 int x = 0;
                 // Up to the next 4-byte source boundary one pixel at a time, then
                 // 8 pixels per aligned 32-bit PSRAM read (the XIP fill is the
@@ -6848,7 +6928,7 @@ void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st,
             if (!ln) memset(bl, border_idx, (size_t)w);
             else {
                 ln += (ygctr & 31) << 9;
-                const uint32_t sx = j.l.g_xoffs & 0x1FF;
+                const uint32_t sx = jobGxoffs(j);
                 const int n1 = (int)(512 - sx) < w ? (int)(512 - sx) : w;
                 memcpy(bl, ln + sx, (size_t)n1);
                 if (w > n1) memcpy(bl + n1, ln, (size_t)(w - n1));
@@ -6940,7 +7020,7 @@ void TS_RENDER_HOT VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuSt
             const int32_t lb = fbase + b;
             if (!ts_tmb) bursts[b] = nullptr;
             else if (lb < (int32_t)ts_crop_top) bursts[b] = ts_tmb_pre + ((uint32_t)par * 16 + (uint32_t)(lb - ((int32_t)ts_crop_top - 16))) * TS_TMB_WORDS + layer * 8;
-            else bursts[b] = ts_tmb + ((seq - (uint32_t)((int32_t)line - lb)) & (TS_C1_RING - 1)) * TS_TMB_WORDS + layer * 8;
+            else bursts[b] = ts_tmb + TS_C1_SLOT(seq - (uint32_t)((int32_t)line - lb)) * TS_TMB_WORDS + layer * 8;
         }
         uint32_t col = xoffs >> 3;
         uint32_t pos = (0u - (xoffs & 7)) & 0x1FF;

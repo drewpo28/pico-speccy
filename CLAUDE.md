@@ -1077,8 +1077,9 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
 - **`src/OplFm.{h,cpp}` is a port of MAME ymf262.cpp** (mame0220, GPL-2.0+,
   same Burczynski lineage as OpnFm/fm.cpp): 18ch x 2op, 8 waveforms, 4-op
   pairing, rhythm mode, tremolo/vibrato LFO, both timers. **~16 B .bss**;
-  ~14 KB heap only while enabled (OplSubsys: ~9 KB chip state + 2x1280 B
-  stereo buffers + 2.5 KB shared tables). Timers are Q16 chip-sample
+  ~10 KB heap only while enabled (OplSubsys: ~4.3 KB chip state + 2x1280 B
+  stereo buffers + 2 KB write queue + 2.5 KB shared tables; it was ~9 KB of
+  chip state until fn_tab became a multiplier — see the fn_tab bullet below). Timers are Q16 chip-sample
   countdowns advanced in gen() (MAME uses attotime callbacks); a whole-chip
   quiet fast path makes an idle enabled chip nearly free, and
   chanCalcOrSkip/pairCalc skip individual all-EG_OFF channels the same way
@@ -1179,6 +1180,77 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   sequence → status 0xC0, 440.0 Hz tone, key-off to exact silence, timer1
   48/s + timer2 12/s, OPL3-mode bank-2 + pan routing, rhythm BD, waveform 2
   non-negative. **Re-run after ANY change there.**
+- **`m_fn_tab[1024]` is a Q32 MULTIPLIER in OplFm AND OpllFm (2026-09-22;
+  hw-confirmed the same day on `debug/DVp2-vgm-fntab2-1.0.6.elf` — owner: "работает",
+  covering this, the shared tables and both TS-Conf rules below in one run, not
+  itemised)** — the OpnFm precedent
+  applied to the other two cores. MAME's `fn_tab[i] = (uint32_t)(i * 64 * freqbase
+  * 64)` is linear in i, so `fnInc(fn) = (fn * Kq32) >> 32` reproduces it
+  BIT-EXACTLY at every fn for both synth rates (checked exhaustively; Q32 has
+  ~2^-22 of slack, and OPL3 and OPLL share the same K because 14318180/288 ==
+  3579545/72). Cost: one inlined `umull` per VIBRATING slot per sample (the
+  `op->vib` branch of `advance()` — check `objdump --disassemble=_ZN5OplFm7advanceEv`
+  shows `umull` and no `bl`) and one on the fc register write. Saves 4 KB of heap
+  PER CHIP: `sizeof(OplFm)` 8368 -> 4288, `sizeof(OpllFm)` 5940 -> 1856; static
+  SRAM of every VGM chip was already 4-12 B (pointers only), so heap while
+  enabled is the ONLY lever these chips have. Same commit: `opl_build_tables` /
+  `opll_build_tables` allocate through `tryMalloc` — they used raw `malloc`,
+  which panics on NULL, so the OOM branch and the `tablesReady()` test in
+  `OplSubsys`/`OpllSubsys::apply` were dead code (the 2026-09-14 tryMalloc sweep
+  missed them). The host tests therefore stub `tryMalloc`/`tryCalloc` now.
+  **`tools/vgm_render_crc.cpp` is the gate that proved the rewrite**
+  (`g++ -O2 -Wall -Isrc -o /tmp/vgm_render_crc tools/vgm_render_crc.cpp
+  src/OplFm.cpp src/OpllFm.cpp src/FmTables.cpp -lz`, then any .vgm/.vgz): renders the file through
+  both cores at full and half rate and prints a CRC32 of the output. Baseline vs
+  after on Doom II 01/02, Doom 02 and the OPLL Disc Station title were identical
+  on all ten lines. **Take the CRC BEFORE any bit-exactness-sensitive change to
+  these cores** — the EG-skip and -O2 work had this check only in session scratch,
+  so it had to be rebuilt here. Judged and NOT taken in the same audit: smaller
+  write queues (overflow already flushes, but a mid-frame flush is the XIP
+  re-fault the queue exists to avoid — measure with `OPL_PERF_TRACE` first), a
+  shared OPL3+OPLL accumulator and a shared CMS-pair buffer (~1.3 KB each; the
+  per-chip DC blocker / bias gate are hw-confirmed), `m_pan[72]` as bit flags (a
+  per-sample branch).
+- **The OPL3 and OPLL tables are ONE table — `src/FmTables.{h,cpp}` (same day,
+  hw-confirmed with the bullet above).** Both cores are
+  the same Burczynski lineage with the same ENV_STEP / SIN_LEN / TL_RES_LEN: the
+  1024-entry waveform-0 sine is byte-identical (ymf262's `(m > 0 ? 1 : -1) / m`
+  and ym2413's `1 / fabs(m)` are the same IEEE value), and the 256-entry tl row
+  differs only by the `<< 1` ymf262 bakes in — held UNSHIFTED (the OPLL form) and
+  re-applied in OplFm's `tl_fetch`, which is exact because floor((2n) >> k) is
+  floor((n << 1) >> k). Checked exhaustively (0 mismatches) and by the render CRCs.
+  `FmTab::acquire()/release()` is refcounted across both chips' constructors and
+  destructors, allocates through `tryMalloc`, and `tablesReady()` on either class
+  is `FmTab::ready()`. Saves 2.5 KB whenever both chips are on. Every host recipe
+  that links OplFm.cpp or OpllFm.cpp now needs `src/FmTables.cpp` beside it.
+- **OPLL and SN76489 are NOT AVAILABLE on TS-Conf (same day, hw-confirmed with the
+  bullet above)** —
+  owner's call, and the reason is the only VGM player that machine has: Wild
+  Commander's `VGMPLAY.WMF` drives OPL3 (#C4-#C7, both sets), AY and SAA and
+  nothing else. Verified against the binary, not the strings: the code page
+  (#8000-#BFFF, file offset 0x200) loads C4/C6 and no C0-C3/C9 anywhere; the
+  `YM2413` / `SN76489` strings in the file are the header's chip-name table for
+  its "Chip:" line, and the `0E C0 0E C1 ...` runs a byte scan turns up are data.
+  So on TS-Conf the two chips would be ~7.5 KB of heap for nothing (owner measured
+  28 KB free without VGM chips vs 8 KB with all four — the remaining OPL3 + CMS
+  cost ~14.5 KB). Three places, the usual shape: `resolveConstraints` forces
+  `SET_YM2413` / `SET_SN76489` to 0 with a note while TS-Conf is staged and the
+  two rows are greyed (`p_vgmOpllSn`, `NM_BOOL_EN`); `MachineSwitch::commit`
+  toasts "YM2413 / SN76489 disabled"; and `ESPectrum::setup`/`reset` zero both
+  flags right before the `OpllSubsys`/`SnSubsys::request` lines, so a persisted
+  On never allocates there. **"All" on TS-Conf means OPL3 + CMS** (`get_vgmAll` /
+  `put_vgmAll` consult `Stage::stagedIsTsconf()` — note the helper lives in
+  `nm::Stage`, a forward declaration in `nm` does not link), else the row would
+  read No for ever and every press would fight the constraint.
+- **Leaving TS-Conf turns ALL VGM chips off (same day, owner's rule, hw-confirmed
+  with the bullet above)** — the TS-Conf twin of the esxDOS edge in `resolveConstraints`: it
+  fires only when THIS commit takes the BASE machine (`g_base[SET_MACHINE]`, valid
+  because `g_dirty` is tested first) from TS-Conf to anything else, forces the five
+  VGM settings to 0 with "VGM chips off: TS-Conf is off", and the `g_seq` guard
+  keeps a chip the user touched after the machine pick. An EDGE, not a
+  constraint: a chip enabled on a Pentagon stays enabled, and a snapshot or .spg
+  that switches the machine outside the menu does not run it (neither does the
+  esxDOS one).
 - **Port decode ordering is load-bearing**: both OPL blocks in Ports.cpp sit
   **BEFORE the ULA even-port branches** (like NEMO) — #C4/#C6 have A0=0 and
   would otherwise be swallowed (input: read back keyboard rows; output:
@@ -1255,7 +1327,8 @@ break zero-crossing counting): violin ROM patch 440.1 Hz, user patch 440.0,
 key-off to exact silence, rhythm BD, half-rate pitch equal. All four local
 OPLL VGM rips render 100% nonzero at peaks 9.8-16.6k. `Config::ym2413`
 (NVS "ym2413") → Audio → "YM2413 (OPLL)", AC_SUBSYS live toggle; OpllSubsys
-~9 KB heap while on; F11 re-derives rates + resets.
+~5.5 KB heap while on (chip 1856 B since the fn_tab multiplier, 1280 B buffer,
+1 KB write queue, 2.5 KB shared tables); F11 re-derives rates + resets.
 
 ### The FM chips leave DC behind — model the card's coupling cap (hw 2026-09-02)
 
@@ -6120,7 +6193,7 @@ ceiling was the base of the LOWEST resident window and `.tsovl` is the lowest �
 own table said "TS on -> heap gains nothing"). The TS window itself (22 272, of which
 19 152 used: 12 460 code/ro/data + 6 692 bss) is real TS-Conf cost; so are the ring and
 the descriptors. Everything else — VIDEO::Init, audio, the 17.5 KB tail from `audio init
-done` to `COMPLETE` (HDMI audio queue+rings 8 704, the inserted TRD's `rvmwdDisk` ~2.8 KB,
+done` to `COMPLETE` (HDMI audio queue+rings 6 656 (was 8 704 with the 1024-deep rings), the inserted TRD's `rvmwdDisk` ~2.8 KB,
 tape/Z80/CPU reset, the rest) — costs both machines the same.
 
 **Fix: `_sbrk` JUMPS over a resident window** (`src/HeapRegions.h`, used by
@@ -6141,7 +6214,7 @@ gap to `sbrked_mem`, so `mallinfo().arena/uordblks` over-report by the window si
   → ~60 KB free at 480p, ~33 KB at 576p (FB 103 680 vs 76 800).
 - TS-Conf + GS: base + `[dma]` = +4 032 B — the DMA window alone is one usable page.
   **576p + TS-Conf + NeoGS stays at the edge**: both big windows are resident and the
-  remaining levers are the ring (10.8 KB: 512 jobs could be ~320, TSU states 128 → 64,
+  remaining levers are the ring (10.8 KB — 320 x 10 B since 2026-09-22, see the SRAM pass section; TSU states 128 → 64,
   or the block into the TS window's 3 120 B slack + a bigger AUTO term), the page
   descriptors (6 KB; PSRAM would put `pagePtr()` reads behind XIP) and the common tail.
 - Pentagon (+GS): unchanged — one region, the heap already reached through TS+DMA.
@@ -6204,7 +6277,7 @@ further levers below are recorded, not scheduled:
 **What is left for 576p + TS-Conf + NeoGS, with sizes, all owner decisions** (measured
 14 KB free with Covox + TSFM on and the console off; ~10 KB with it on): `TSCONF_HOT_IN_RAM` OFF = −3 840 B of
 window on TS sessions (~0.8 ms/frame on port-heavy titles, measured at a scene already at
-full rate); the TSC1 block (10 768 B: 512 jobs are needed — `haltAdvanceTo` posts a whole
+full rate); the TSC1 block (10 768 B then, 7 824 since the 2026-09-22 SRAM pass: 320 x 10 B jobs suffice — `haltAdvanceTo` posts a whole
 288-line frame at once and the poster waits on a full ring — but TSU states 128 → 64 and
 SFILE slots 4 → 2 are −2.3 KB against more `tsC1WaitJob` stalls on titles that stream
 sprites/raster effects; or move the TSU states + job tags, 2 576 B, into the TS window's
@@ -6317,6 +6390,89 @@ in FLASH (no `.time_critical` from OpnFm.cpp in the map). Heap ONLY while Audio 
 TurboSound FM is on: 2 x `sizeof(OpnFm)` = **2 016 B** + shared tables 2 560 B (sine 2 048
 + tl base 512) + `audioBufferFM` 1 280 B = **5 856 B**, plus the second AY (`AySound`
 chip1, 1 612 B) if TurboSound was not already on → **~7.5 KB**, freed on Off. Not a lever.
+
+## SRAM optimisation pass, branch drew-sram-opt (2026-09-21/22; every step hw-confirmed on DVp2)
+
+The target session was 720x576 + TS-Conf + NeoGS + HDMI audio + Covox + TSFM, which booted
+with **14 KB free / largest block 9 KB**. Baseline and every step's figures are in
+`debug/BASELINE-sram-2026-09-21.md` (gitignored, with the test ELFs `debug/DVp2-s*-*.elf`);
+the rule was one change, one ELF, one hardware verdict, `setup: COMPLETE` and Memory Info
+as the meter. Result: **COMPLETE 19 464 -> 37 248, largest block 9 -> 24 KB**, nothing
+switched off, PERF titles (fishbone, TMNT, demo 200, Ninja Gaiden, Kolbass, RobFgift,
+Digger, Bruce Lee) within noise of the step-0 table.
+
+| step | change | gain on the target session |
+|---|---|---|
+| 1 | `.tsovl` AUTO terms 26 112 -> 24 064 -> 23 040 (data term after s_gline left), `.gsovl` 28 672 -> 27 648; `hdmi_audio_init` calloc -> **tryCalloc** | +3.0 KB |
+| 2 | NeoGS on butter skips the 4.4 KB `s_pc_*` prefetch cache (`GS::init`: every window is pointer-backed, `gs_pc_read` unreachable — `pc_miss=0/0` in 156 GS_PERF windows) | +4.4 KB |
+| 3a | HDMI audio rings 512 -> 256 (drop cap 192); AVI/Vendor/Audio InfoFrames kept RAW (36 B) and TERC4-encoded in the ISR like an audio packet | +1.7 KB (660 of it static, every HDMI board) |
+| 3b | queue entry 36 -> 16 B (`hdmi_aq_pkt_t`); header/parity/BCH + the IEC 192-frame counter rebuilt at pop on core1 (`hdmi_aq_expand`) | +2.5 KB; `dur` unchanged at 17-18 us |
+| 4 | core1 ring 512 -> **320** jobs (`TS_C1_SLOT` = modulo), `TsRenderJob` 12 -> 10 B (line/ygctr/GXOffs 9 bits each in two uint16), `s_gline` -> heap block claimed on the first GFXOVR line | +4.0 KB |
+| 5b | Z80 core: DD/FD LD+ALU (62 cases) -> `decodeDDFDLD8/ALU8` via `ixyReg8`, `decodeDDFDCB` -> one decodeCB-shaped body, ED IN/OUT (C) -> two bodies, `copyToRegister` via `reg8`; `create/destroy/reset/nmi/doNMI/doNMIDOS` -> flash (`Z80_COLD`, section `.z80cold`, collected by the flash .text rule) | +2.3 KB **on every board** (core 13 942 -> 11 594 B RAM) |
+
+Lessons that cost a round or were nearly shipped wrong:
+- **A PERF build did not fit the target session and PANICKED in `hdmi_audio_init`**: pico_malloc panics on NULL, so its `if (!blk) return false` was dead — 17 KB free but no 6.6 KB hole. Any `calloc`/`malloc` on a path that can run at the heap edge must be `tryCalloc`/`tryMalloc` (this was the one the 2026-09-14 tryMalloc sweep missed). After steps 1-3a the PERF build boots 576p+NeoGS (10 KB free).
+- **Shrinking `ts_band_slot` 289 -> 96 was REVERTED**: -193 B in the TS window, +104 B of `.data` on every board — the index arithmetic inlined into three RAM-resident functions. Check the per-symbol `nm -S` delta of BOTH `.data` and the window before believing a `.bss` win.
+- **`optimize("O2")` on `tsRenderExec` stops GCC inlining ACROSS it**: the new `jobLine/jobYgctr/jobGxoffs` accessors became `.isra.0` clones in FLASH reached through veneers from the RAM renderer, one XIP fetch per line. `always_inline`, and nm must show no such symbol. The same mechanism already puts `tsRenderUs` (9 calls/line) and libc `memset`/`memcpy` (12 calls/line) in flash on the render path in the BASE build — a perf lever for another session, not memory.
+- **Ring 320 is enough** (one 288-line frame + 32; `haltAdvanceTo` posts a frame at once): `wait` 0.2 -> 0.4 ms on fishbone at 480p, 0.0 (max 3.1) on TMNT at 576p, realFPS unchanged. Non-power-of-two size = the free-running uint32 counters wrap differently every ~85 h of continuous rendering (one possibly garbled frame). A 512 variant was built to bisect the TMNT tear below and changed nothing.
+- **Step 5a (page descriptors -> PSRAM, -3 KB) was declined**: `readbyte/writebyte` read `_int->mem_type` and `_int->p` on every access of the generic path, which is every machine and TS-Conf in every ZX mode without the TSU — two XIP-queued loads per guest byte, the mechanism the SRAM Z80 core was adopted to escape. Packing the descriptor to 8 B is ~1 KB for flag-unpacking on the same path. Not worth it.
+- **Compare boots with the SAME config**: an SCL in A: costs ~2 KB of heap (its converted image), Gigascreen on/off moves the arena and the prevFB; two of the step verdicts had to be re-read for that.
+- Still on the "measure first" list: `rc_*` palette-reduce tables (2.3 KB in the window, core0-only but inside Kolbass' release window), TSU states 128 -> 64 (~1.3 KB, `tsC1WaitJob` on raster demos), redcode at -O2 (KBs of `.gsovl`, GS-Z80 MHz at risk), the Z80 `tsRenderUs`/memset flash calls above.
+
+Found on the way and NOT ours: TMNT's menu tore one frame in ~8 at 720x576 — pre-existing, fixed the same day; see "The re-index release inside the tick" below.
+
+## The re-index release inside the tick re-posted the frame with a stale Y counter (TMNT menu at 576p; hw-confirmed fixed 2026-09-22)
+
+TMNT's menu screen tore ONE frame in ~8 at 720x576: logo right, everything from
+content line ~68 down showing the clean city background from BELOW the visible
+window (no "FIGHTERS", no menu text), the next frame whole. In-game clean, 480p
+clean, present on the pre-SRAM-pass base ELF, unchanged by the core1 ring size —
+first reported as a regression of the SRAM pass and cleared by bisecting the saved
+ELFs. Three wrong hypotheses cost a round each (palette version banks, the
+DMAStatus fast-forward, a UART-capturable DMA trace); the decisive instrument was a
+one-line-per-frame CONSISTENCY DETECTOR, not a trace of events.
+
+- **Mechanism.** `tsDrawTick` calls `tsPalettePoll` at its top, and with the beam
+  outside the picture and a re-index held, the poll runs `tsReindexRelease()`,
+  which renders all 240 lines itself (Y counter 0..239) and "parks" the tick
+  (`ts_line_idx = lines`, `Draw = Blank`, `ts_line_t = MAX`). Control then returns
+  INTO THE SAME TICK, whose `do` loop continues at the current `ts_row_idx`:
+  `ts_line_idx = row - lin_end` overwrites the park, the row is posted with
+  ygctr 239 + 1 = 240, `ts_line_t += tStatesPerLine` wraps the MAX sentinel to a
+  small number, so the loop condition stays true and every remaining row of the
+  frame is re-posted with ygctr running 240..411 — bitmap rows below the visible
+  window, where this title keeps its background artwork. Fix: after the poll,
+  `if (ts_line_t == 0xFFFFFFFFu) return;` — the sentinel the release itself sets.
+- **Why 576p only**: the release lands inside a tick there (the beam-out moment
+  falls into the posting phase at that geometry: lin_end 24, 288 rows, the v-sync
+  lead); at 480p it lands in EndFrame or a pacing wait, where the park sticks.
+- **`[TSYGC]` (TS_VIDEO_TRACE builds)** is the detector that named it: with
+  GYOffs == 0 every posted line must have `ygctr == curline`; the first violation
+  per frame logs line, ygctr, the poster (`src` 1 tick / 2 MainScreen / 4 release),
+  `lin_end`, `row_idx`, core1 `pend` and `posted`. `frame 57 line 68 ygctr 240
+  src 1 ... pend 146 posted 68` every 8 frames was the whole diagnosis. Keep it;
+  extend the same shape (a per-frame invariant, one line) before building a trace
+  of events next time.
+- **`ts_dma_ring` (TS_VIDEO_TRACE builds, 128 x 20 B) + `tools/dmaring.py`**: every
+  DMACtrl write with raster frame/line, mode, words, addresses, modelled duration,
+  and core1's `pend`/`posted` at that instant, read out by Ctrl+Alt+D
+  (`tools/memdump.gdb` probes it like `ts_int_ring`). Built because the UART cannot
+  carry a per-DMA trace of a heavy frame (~14 DMAs in 20 ms ≈ 40 KB/s against
+  115200 baud = 11.5 KB/s — every capture came back with the frame's first lines
+  shredded, twice). The TSVT `INT ack` line is now DMA-only (a per-line LINE-INT
+  sample player — TMNT's Covox loop — printed 320 of them a frame) and `POLL-FF`
+  logs only jumps of a whole line.
+- What the ring showed about TMNT's menu, for the record: no background restore at
+  all in the menu — the static picture plus, on a key press, a 1920-word BLT of
+  the highlight bar at raster line ~302 and ~20 32-word glyph BLTs into rows
+  138-185 across the frame boundary; the LINE INT is the Covox sample player
+  (`OUT (#FB)` per line, pages via `#10AF`); FRAME INT at VSINT 0x128 = 296.
+  `pend` 46-52 at line 300 every ~10 frames = the release's 240-line burst.
+- **Hw 2026-09-22, owner: "да, работает"** — the 576p menu no longer tears on
+  `debug/DVp2-tmnt-fix-plain-1.0.6.elf`. Not itemised: Kolbass/nygift (the hold
+  path this release serves) and RobFgift/Ninja Gaiden after the change are covered
+  by inspection only — the fix alters nothing but the tick's continuation after an
+  in-tick release.
 
 ## What belongs in a machine overlay: the audit (2026-09-14, NOT hw-tested)
 

@@ -35,6 +35,11 @@ SECTIONS
         *libgcc.a:unwind-arm.o(.text* .rodata*)
         *libgcc.a:pr-support.o(.text* .rodata*)
         *libgcc.a:libunwind.o(.text* .rodata*)
+        /* The Z80 core's cold half (create/reset/NMI entry — Z80_COLD in
+         * Z80_JLS.cpp) stays in flash whether or not Z80_CORE_IN_RAM puts the
+         * rest of the object in SRAM: it is a named section, so the object-wide
+         * RAM rule below never sees it. */
+        *(.z80cold .z80cold.*)
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a: @Z80_CORE_TEXT_EXCLUDE@) .text*)
         *(.fini)
         *crtbegin.o(.ctors)

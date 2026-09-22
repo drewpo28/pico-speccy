@@ -13,6 +13,7 @@ the Free Software Foundation, either version 3 of the License, or
 */
 
 #include "OpllFm.h"
+#include "FmTables.h"
 
 #include <math.h>
 #include <string.h>
@@ -233,58 +234,27 @@ static inline int limit(int val, int max, int min) {
     return val;
 }
 
-// ── shared tables (heap, reference counted — same scheme as OplFm) ──────────
-// tl_base: the x = 0..255 row of MAME's tl_tab (rows 1..10 = shifted, sign =
-// NEGATION on the OPLL, not one's complement); sin0: waveform 0 in the log
-// domain (value*2 + sign), waveform 1 = positive half only. Byte-for-byte
+// ── shared tables ───────────────────────────────────────────────────────────
+// FmTab (FmTables.h), shared with OplFm: tl_base = the x = 0..255 row of
+// MAME's tl_tab (rows 1..10 = shifted, sign = NEGATION on the OPLL, not one's
+// complement — applied at the fetch); sin0 = waveform 0 in the log domain
+// (value*2 + sign), waveform 1 = positive half only. Byte-for-byte
 // device_start() math.
-static int       s_tab_refs = 0;
-static uint16_t* s_tl_base = nullptr;   // 256 entries
-static uint16_t* s_sin0    = nullptr;   // SIN_LEN entries
+static void opll_build_tables() { FmTab::acquire(); }
+static void opll_free_tables()  { FmTab::release(); }
 
-static void opll_build_tables() {
-    if (s_tab_refs++ > 0) return;
-    s_tl_base = (uint16_t*)malloc(TL_RES_LEN * sizeof(uint16_t));
-    s_sin0    = (uint16_t*)malloc(SIN_LEN * sizeof(uint16_t));
-    if (!s_tl_base || !s_sin0) {
-        free(s_tl_base); s_tl_base = nullptr;
-        free(s_sin0);    s_sin0 = nullptr;
-        return;
-    }
-    for (int x = 0; x < TL_RES_LEN; x++) {
-        double m = floor((1 << 16) / pow(2, (x + 1) * (ENV_STEP / 4.0) / 8.0));
-        int n = ((int)m) >> 4;
-        n = (n & 1) ? (n >> 1) + 1 : n >> 1;
-        s_tl_base[x] = (uint16_t)n;
-    }
-    for (int i = 0; i < SIN_LEN; i++) {
-        double m = sin(((i * 2) + 1) * M_PI / SIN_LEN);
-        double o = 8 * log(1.0 / fabs(m)) / log(2.0);
-        o = o / (ENV_STEP / 4);
-        int n = (int)(2.0 * o);
-        n = (n & 1) ? (n >> 1) + 1 : n >> 1;
-        s_sin0[i] = (uint16_t)(n * 2 + (m >= 0.0 ? 0 : 1));
-    }
-}
-
-static void opll_free_tables() {
-    if (--s_tab_refs > 0) return;
-    free(s_tl_base); s_tl_base = nullptr;
-    free(s_sin0);    s_sin0 = nullptr;
-}
-
-bool OpllFm::tablesReady() { return s_tl_base && s_sin0; }
+bool OpllFm::tablesReady() { return FmTab::ready(); }
 
 // tl_tab[p]: base entry ((p&511)>>1), row (p>>9), sign (p&1) as negation
 static inline int32_t tl_fetch(uint32_t p) {
-    int32_t v = s_tl_base[(p & 511) >> 1] >> (p >> 9);
+    int32_t v = FmTab::tl_base[(p & 511) >> 1] >> (p >> 9);
     return (p & 1) ? -v : v;
 }
 
 // sin_tab[wave][i]: wave 1 silences the negative half
 static inline uint32_t sin_fetch(uint32_t wave, uint32_t i) {
     if (wave && (i & 512)) return TL_TAB_LEN;
-    return s_sin0[i];
+    return FmTab::sin0[i];
 }
 
 static inline int32_t op_calc(uint32_t phase, uint32_t env, int32_t pm, uint32_t wave) {
@@ -324,8 +294,9 @@ void OpllFm::setRates(int clock, int rate, bool halfRate) {
     int synth_rate = halfRate ? rate / 2 : rate;
     double freqbase = synth_rate ? ((double)clock / 72.0) / (double)synth_rate : 0.0;
 
-    for (int i = 0; i < 1024; i++)
-        m_fn_tab[i] = (uint32_t)((double)i * 64 * freqbase * (1 << (FREQ_SH - 10)));
+    // MAME's fn_tab[i] = (uint32_t)(i * 64 * freqbase * (1 << (FREQ_SH - 10)))
+    // as one Q32 multiplier (i <= 1023, product < 2^56).
+    m_fn_mul_q32 = (uint64_t)(64.0 * freqbase * (double)(1 << (FREQ_SH - 10)) * 4294967296.0);
 
     m_lfo_am_inc = (uint32_t)(((1 << LFO_SH) / 64.0)   * freqbase);
     m_lfo_pm_inc = (uint32_t)(((1 << LFO_SH) / 1024.0) * freqbase);
@@ -575,7 +546,7 @@ void OpllFm::writeReg(int r, int v) {
 
             block_fnum   = block_fnum * 2;
             uint8_t block = (block_fnum & 0x1c00) >> 10;
-            CH->fc       = m_fn_tab[block_fnum & 0x03ff] >> (7 - block);
+            CH->fc       = fnInc(block_fnum & 0x03ff) >> (7 - block);
 
             CH->SLOT[SLOT1].TLL = CH->SLOT[SLOT1].TL + (CH->ksl_base >> CH->SLOT[SLOT1].ksl);
             CH->SLOT[SLOT2].TLL = CH->SLOT[SLOT2].TL + (CH->ksl_base >> CH->SLOT[SLOT2].ksl);
@@ -799,7 +770,7 @@ void OpllFm::advance() {
             if (lfo_fn_table_index_offset) {
                 block_fnum += lfo_fn_table_index_offset;
                 uint8_t block = (block_fnum & 0x1c00) >> 10;
-                op->phase += (m_fn_tab[block_fnum & 0x03ff] >> (7 - block)) * op->mul;
+                op->phase += (fnInc(block_fnum & 0x03ff) >> (7 - block)) * op->mul;
             } else {
                 op->phase += op->freq;
             }

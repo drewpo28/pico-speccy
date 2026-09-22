@@ -106,14 +106,25 @@ NM_INT_ACCESS (ym2413,    ym2413)
 // "VGM chips > All": one switch for the whole card family. get is true only
 // when EVERY chip is on (a mixed state reads No); put flips all four — the
 // four individual kSubsys bindings then reconcile the subsystems as usual.
+// On TS-Conf the family is OPL3 + CMS: the only VGM player there is Wild
+// Commander's VGMPLAY.WMF, which drives OPL3 (#C4-#C7), AY and SAA and nothing
+// else (its YM2413/SN76489 strings are the header's chip-name table for the
+// "Chip:" line, not playback), so OPLL and SN are forced off on that machine
+// (resolveConstraints) and "All" must neither set them nor read No for ever.
+namespace Stage { static bool stagedIsTsconf(); }   // defined with the other staged-arch helpers below
+static bool vgmOpllSnAvailable() { return !Stage::stagedIsTsconf(); }
 static int32_t get_vgmAll() {
-    return (Config::opl3 && Config::ym2413 && Config::cms && Config::sn76489) ? 1 : 0;
+    if (!(Config::opl3 && Config::cms)) return 0;
+    if (vgmOpllSnAvailable() && !(Config::ym2413 && Config::sn76489)) return 0;
+    return 1;
 }
 static void put_vgmAll(int32_t v) {
     Config::opl3    = v ? 1 : 0;
-    Config::ym2413  = v ? 1 : 0;
     Config::cms     = v ? 1 : 0;
-    Config::sn76489 = v ? 1 : 0;
+    if (vgmOpllSnAvailable()) {
+        Config::ym2413  = v ? 1 : 0;
+        Config::sn76489 = v ? 1 : 0;
+    }
 }
 NM_INT_ACCESS (cms,       cms)
 NM_INT_ACCESS (sn76489,   sn76489)
@@ -977,6 +988,13 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_MB02, 0, rep, "MB-02+ is not available on TS-Conf");
             if (staged(SET_ESXDOS))
                 changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on TS-Conf");
+            // The VGM chips exist for a player; the one on TS-Conf (Wild Commander's
+            // VGMPLAY.WMF) drives OPL3 + AY + SAA only, so OPLL and SN would cost
+            // ~7.5 KB of heap for nothing there (see put_vgmAll).
+            if (staged(SET_YM2413))
+                changed |= force(SET_YM2413, 0, rep, "YM2413 is not available on TS-Conf");
+            if (staged(SET_SN76489))
+                changed |= force(SET_SN76489, 0, rep, "SN76489 is not available on TS-Conf");
             if (staged(SET_16COL))
                 changed |= force(SET_16COL, 0, rep, "16col needs Pentagon or Profi");
             if (staged(SET_MEM_PG_CNT) > 64)
@@ -1123,6 +1141,27 @@ static void resolveConstraints(CommitReport& rep) {
             for (int i = 0; i < 5; i++)
                 if (g_seq[vgm[i]] <= g_seq[SET_ESXDOS])
                     changed |= force(vgm[i], 0, rep, "VGM chips off: esxDOS is off");
+        }
+
+        // LEAVING TS-Conf turns the VGM chips off the same way (owner's rule,
+        // 2026-09-22): on TS-Conf they exist for Wild Commander's player, and a
+        // machine switch away from it is the moment they stop being reachable
+        // — carrying OPL3 + CMS (~14.5 KB) into a Pentagon session that never
+        // asked for them is the TS-Conf twin of the esxDOS edge above. Same
+        // shape: an EDGE keyed on the BASE machine being TS-Conf and the staged
+        // one not, so a user may still enable any chip on any machine, and the
+        // g_seq tie-break keeps a chip they touched after the machine pick.
+        {
+            const int32_t bm = g_base[SET_MACHINE];
+            const bool baseTsconf = bm >= 0 ? (((bm >> 8) & 0xFF) == (int)A_TSCONF)
+                                            : (Config::arch == A_TSCONF);
+            if (bmGet(g_dirty, SET_MACHINE) && baseTsconf && !stagedIsTsconf()) {
+                static const uint16_t vgm[5] =
+                    { SET_VGM_ALL, SET_OPL3, SET_YM2413, SET_CMS, SET_SN76489 };
+                for (int i = 0; i < 5; i++)
+                    if (g_seq[vgm[i]] <= g_seq[SET_MACHINE])
+                        changed |= force(vgm[i], 0, rep, "VGM chips off: TS-Conf is off");
+            }
         }
 
         // The 90/75 Hz video modes run the HDMI PIO at a 378 MHz TMDS clock

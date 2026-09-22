@@ -548,6 +548,9 @@ private:
     //Subconjunto de instrucciones 0xDD / 0xFD
     // Decode DD/FD opcodes
     static void decodeDDFD(RegisterPair& regIXY);
+    static uint8_t* ixyReg8(int r, RegisterPair& ixy);  // H/L -> IXh/IXl, r != 6
+    static void decodeDDFDLD8(RegisterPair& regIXY);   // LD block 0x40-0x7F under DD/FD
+    static void decodeDDFDALU8(RegisterPair& regIXY);  // ALU block 0x80-0xBE under DD/FD
 
     // Subconjunto de instrucciones 0xDD / 0xFD 0xCB
     // Decode DD / FD CB opcodes

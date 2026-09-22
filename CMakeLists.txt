@@ -608,7 +608,7 @@ if (TSOVL_WIN_SIZE STREQUAL "AUTO")
         # 248 B of linker veneers the window needs for calls out of it. It was
         # 14 776 B before the 2026-09-13 renderer split (tsRenderExec at -O2
         # without unrolling, the GFXOVR merge left in flash).
-        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 9216")
+        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 8448")
     endif()
     if (TSCONF_HOT_IN_RAM)
         # TsConf.cpp's .tsovl: 4556 B (portRead/portWrite, dmaStatus/dmaStart/
@@ -617,7 +617,7 @@ if (TSOVL_WIN_SIZE STREQUAL "AUTO")
         # term had in fact been under-counting for a while and was living on the
         # renderer term's slack, which is exactly how an AUTO that is a sum of
         # lumped terms fails: raise the term whose CODE grew, not the total.
-        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 5632")
+        math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 5376")
     endif()
     # PERF_TRACE pulls TsConf::intTrace + the INT-ring code into the window as
     # well (measured +2572 B: TsConf +2484, Video +80). Without this the ASSERT
@@ -632,9 +632,12 @@ if (TSOVL_WIN_SIZE STREQUAL "AUTO")
     # line buffers, s_pairmap, ts_band_slot) + .tsovl_data 560 B (the DRAM-cache
     # rows' 0xFF fill and the row->page maps, loaded so a claim re-initialises
     # them from flash) = 10 620 B.
-    math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 11264")
-    # 26 112 B against 23 520 B in use, i.e. ~2.5 KB of slack — spent only on a
-    # TS-Conf session, since every other machine gets the whole window as heap.
+    math(EXPR _TSOVL_BYTES "${_TSOVL_BYTES} + 9216")
+    # 23 040 B against ~22 500 B in use (2026-09-22: Video ~8.1 K + TsConf 5116 +
+    # veneers 248 loaded, 9 036 .tsovl_bss after s_gline left), i.e. ~0.5 KB of slack —
+    # spent only on a TS-Conf session, since every other machine gets the whole
+    # window as heap. Tight on purpose: the ASSERT is the guard, and a term is
+    # raised when ITS code grows, not the total.
     set(TSOVL_WIN_SIZE_EFFECTIVE ${_TSOVL_BYTES})
 else()
     set(TSOVL_WIN_SIZE_EFFECTIVE ${TSOVL_WIN_SIZE})
@@ -644,7 +647,7 @@ if (NOT TSCONF_CODE_OVERLAY)
 endif()
 
 if (GSOVL_WIN_SIZE STREQUAL "AUTO")
-    set(_GSOVL_BYTES 28672)   # 28 KB: 26 776 plain / 27 912 NGS_TRACE measured 2026-09-21 (C_GRST/boot-gate/idle-throttle rounds) + slack
+    set(_GSOVL_BYTES 27648)   # 27 KB: 26 936 B measured 2026-09-21 (plain DVp2; NGS_TRACE adds the +6144 below) + ~0.7 KB slack
     # The GS trace options add code to the same objects (counters, the handshake
     # ring writer, the per-command SD log), so the window has to grow with them.
     if (GS_PERF_TRACE OR NGS_TRACE OR NGS_SD_TRACE OR GS_DEBUG_TRACE)

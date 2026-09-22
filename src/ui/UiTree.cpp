@@ -1042,12 +1042,16 @@ static const Option opt_midi_bank_hints[] = {
 // but is written only at early boot, so switching to it costs one reboot.
 // The chips only the DivMMC VGM-player plugin drives, grouped out of the
 // native-Spectrum rows. "All" flips the whole card family at once.
+// OPLL and SN76489 are greyed on TS-Conf: Wild Commander's VGM player (the
+// only one on that machine) drives OPL3 + AY + SAA, and resolveConstraints
+// forces the two off there anyway — a row that cannot stay on should say so.
+static bool p_vgmOpllSn() { return !p_tsconfActive(); }
 static const Node kVgmChips[] = {
-    NM_BOOL (TXT_VGM_ALL,        SET_VGM_ALL,      nullptr),
-    NM_BOOL (TXT_AUD_OPL3,       SET_OPL3,         nullptr),
-    NM_BOOL (TXT_AUD_OPLL,       SET_YM2413,       nullptr),
-    NM_BOOL (TXT_AUD_CMS,        SET_CMS,          nullptr),
-    NM_BOOL (TXT_AUD_SN,         SET_SN76489,      nullptr),
+    NM_BOOL   (TXT_VGM_ALL,      SET_VGM_ALL,      nullptr),
+    NM_BOOL   (TXT_AUD_OPL3,     SET_OPL3,         nullptr),
+    NM_BOOL_EN(TXT_AUD_OPLL,     SET_YM2413,       nullptr, p_vgmOpllSn),
+    NM_BOOL   (TXT_AUD_CMS,      SET_CMS,          nullptr),
+    NM_BOOL_EN(TXT_AUD_SN,       SET_SN76489,      nullptr, p_vgmOpllSn),
     NM_RADIO(NM_IND TXT_SN_CLOCK, SET_SN_CLOCK,    opt_sn_clock,   nullptr),
 };
 
