@@ -36,6 +36,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include <hardware/uart.h>
 #include <hardware/clocks.h>
 #include <hardware/flash.h>
+#include <hardware/xip_cache.h>   // xip_cache_invalidate_all (post-write QMI re-tune)
 #include <hardware/vreg.h>
 #include <hardware/adc.h>
 #include <pico/bootrom.h>
@@ -6675,7 +6676,23 @@ void OSD::HIDDevices() {
 
 extern "C" uint8_t __gm_bank_start[];   // shared flash region (RP2350) — ALF cart load target
 
+// main.cpp: re-apply the QMI flash timing for `mhz` (RAM-resident, see below).
+extern void flash_timings(int mhz);
+
+// Park core1 for the clock switch itself — it fetches code from flash and must not
+// run while clk_sys and the QMI timing move. The window is kept SHORT for the same
+// reason flash_block takes the lockout per block: a long multicore_lockout deadlocks
+// the HDMI ISR (which is why the ALF cart is flashed at boot instead).
+static void flashRomClockWindow(bool enter) {
+    multicore_lockout_start_blocking();
+    if (enter) Buffer::flashClockEnter(); else Buffer::flashClockExit();
+    multicore_lockout_end_blocking();
+}
+
 static void __not_in_flash_func(flash_block)(const uint8_t* buffer, size_t flash_target_offset) {
+    // Read the running clock while XIP is still healthy: the re-tune after the write
+    // must not itself be the first thing to fetch flash code at boot2's timing.
+    const int mhz = (int)(clock_get_hz(clk_sys) / 1000000u);
     // ensure it is required to write block (may be, it is already the same)
     for (size_t i = 0; i < 512; ++i) {
         if (buffer[i] != *(uint8_t*)(XIP_BASE + flash_target_offset + i)) {
@@ -6693,6 +6710,13 @@ flash_it:
         flash_range_erase(flash_target_offset, FLASH_SECTOR_SIZE);
     }
     flash_range_program(flash_target_offset, buffer, 512);
+    // The bootrom flash API hands XIP back with boot2's DEFAULT timing, which is
+    // derived for the 150 MHz boot clock and is wrong at ours — the next flash
+    // code-fetch then faults intermittently. Re-tune BEFORE core1 is released: it
+    // resumes straight into flash code. (Buffer's bank window does this once at the
+    // end because it is single-core; here core1 runs between blocks.)
+    flash_timings(mhz);
+    xip_cache_invalidate_all();
     restore_interrupts(ints);
     multicore_lockout_end_blocking();
     #if defined(PICO_DEFAULT_LED_PIN) && PICO_DEFAULT_LED_PIN != 255
@@ -6977,9 +7001,14 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
     const size_t sz = 512;
     uint8_t* buffer = (uint8_t*)malloc(sz);
     FSIZE_t i = 0;
+    // Erase/program at a conservative 252 MHz — at the overclock the write does not
+    // always take (the QMI hazard documented on board_set_clock_and_timing). The
+    // GM.DLS bank window has always done this; this path never did.
+    flashRomClockWindow(true);
     for (; i < bytesfirmware && i < max_rom_size; i += sz) {
         memset(buffer, 0, sz);
         if ( f_read(f, buffer, sz, &br) != FR_OK) {
+            flashRomClockWindow(false);
             osdCenteredMsg(fname + " - unable to read", LEVEL_ERROR, 5000);
             free(buffer);
             fclose2(f);
@@ -6992,6 +7021,7 @@ bool OSD::updateROM(const string& fname, uint8_t arch) {
     for (; i < max_rom_size; i += sz) {
         flash_block(buffer, flash_target_offset + (size_t)(i & 0xFFFFFFFF));
     }
+    flashRomClockWindow(false);   // restore the running clock + its QMI timing
     free(buffer);
     Config::save();
 ///    Config::requestMachine(Config::arch, Config::romSet);
