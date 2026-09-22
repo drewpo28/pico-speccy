@@ -352,14 +352,6 @@ public:
     // across re-registrations — GMX/ProfROM re-register on every bank switch.
     static const uint8_t* overlayFlat[8];
     static void materializeOverlays();
-    // The flat page of the overlay registered on `base`, materialising it NOW
-    // if it is still pending (a 16 KB butter page + one flatten, sub-ms, once).
-    // nullptr when no overlay is registered on that base or no butter page can
-    // be had — the caller then reads the base itself. For consumers that hold
-    // a RAW pointer into the page (TS-Conf window 0) and therefore cannot take
-    // the lazy per-frame path: the page must be complete before it is mapped.
-    static const uint8_t* overlayFlatFor(const uint8_t* base);
-    static bool materializeEntry(uint8_t i);   // one registry entry -> its flat page
     static uint8_t        overlayCount;
     // ov == nullptr unregisters `base`. Call at ROM-bank assignment.
     static void registerOverlay(const uint8_t* base, const uint8_t* ov);
