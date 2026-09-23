@@ -16,6 +16,11 @@ extern "C" volatile bool profi_ds80_active;
 // would resolve to nm::SELECT_VGA and fail to link (same note as UiStage.cpp).
 extern bool SELECT_VGA;   // vga.c
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
+#if defined(VGA_HDMI)
+// 1 while the VGA pixels really carry per-pixel PWM — not the same as
+// Config::vga_pwm, which is only what was asked for (see vga.c).
+extern "C" int  vga_pwm_active(void);
+#endif
 
 namespace nm {
 
@@ -120,11 +125,16 @@ static const uint32_t kUiPaletteZx[C_COUNT] = {
 // The palette the active output actually shows. The ZX theme is one table for every
 // output (its values are on the VGA grid already); the Slate theme keeps the
 // VGA solid/dithered choice — the on-grid twin unless the user prefers the
-// full-depth scheme through the dither (Options > VGA menu colors).
+// full-depth scheme through the dither (Interface > Theme > VGA menu colors).
+//
+// ...and that choice only exists while there IS a dither. With per-pixel PWM the
+// full-depth scheme renders exactly, so the on-grid twin would be a pointless
+// quantisation to 64 colours — the twin exists to stop the Bayer block shimmering,
+// and PWM has no block. The row is hidden in the same case (p_vgaDither).
 static const uint32_t* uiPaletteActive() {
     if (Config::ui_theme == 1) return kUiPaletteZx;
 #if defined(VGA_HDMI)
-    if (::SELECT_VGA && Config::ui_vga_solid) return kUiPaletteVga;
+    if (::SELECT_VGA && Config::ui_vga_solid && !vga_pwm_active()) return kUiPaletteVga;
 #endif
     return kUiPalette;
 }

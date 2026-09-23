@@ -5552,6 +5552,124 @@ a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
   CRT grille, dither, DS80/GMX/Timex, a capture card, menu/F8/FDD lamp, the Speed Test
   row against RAW and PIO, a TS-Conf 256c title (pool 240).
 
+## VGA per-pixel PWM: a runtime setting, on the PIO as well as HSTX (2026-09-23, the PIO half NOT hw-tested)
+
+**Video > VGA > Colour** — `Config::vga_pwm` (NVS `vga_pwm`, `SET_VGA_PWM`,
+**AC_REBOOT**) — picks between four PWM sub-samples per output pixel and the Bayer
+2x2 block, and it works on **every** board, not just the GPIO 12-19 ones. The plan
+file always said this belonged on the PIO; what makes it one feature rather than two
+is that the packing is IDENTICAL: `out pins, 8` with a right-shifting OSR emits a
+32-bit word's bytes in the order p0, p1, p2, p3 — exactly the order HSTX's
+`SHIFT = 16` rotate produces — so `vga_pwm_word()` serves both and only the clock
+and the DMA sink differ.
+
+- **A pair is the unit and it has two WIDTHS, chosen at boot.** Narrow (2 B) is one
+  VGA pin byte per pixel, the 2-bit DAC code the Bayer block quantised to — what the
+  PIO has always driven. Wide (8 B) is four bytes per pixel. `vga_wide` and
+  `vga_pwm_live` are separate flags because HSTX pins the WIDTH but not the CONTENT:
+  one pixel is one 32-bit FIFO word there whatever it carries, so PWM off on HSTX
+  still sends wide words holding the same byte four times — which is the
+  colour-vs-transport bisect, and it replaced the `VGA_HSTX_PWM` CMake option and
+  its `-NOPWM` image. A menu row beats a second firmware for a remote tester.
+- **On the PIO the SM runs at FOUR times the pixel clock** (`vga_pio_set_pixel_clk`,
+  the one place that knows it) — one byte per SM cycle, four phases per pixel. Both
+  rates are exact 16.16 dividers at 252/378/504 for every clock in the shipped table
+  (21 MHz -> 3 / 4.5 / 6 narrow and 12 / 18 / 24 wide; 25.2 -> 2.5 / 3.75 / 5 and
+  10 / 15 / 20), which is a second payoff of the re-timing: 19.894737 could not do it
+  even at 1x. Video > Mode's divider label divides by `vga_sm_px_bytes()` so it keeps
+  saying what the PIO is actually given.
+- **Why AC_REBOOT**: the width decides how many bytes a palette entry and a
+  line-buffer pixel are, and both are allocated once at boot. Cost when on:
+  templates 3.5 -> 14 KB, palettes ~5 -> ~20 KB, and the line DMA 21 -> 84 MB/s (the
+  HDMI path is hw-proven at 100). Cost when off: **+256 B** — the 1 KB level table
+  is heap and only exists while PWM is live, and a failed allocation falls back to
+  the dither with a log line rather than to nothing.
+- **The four line templates are allocated SEPARATELY** (`vga_alloc_templates`), and
+  under PWM that is what makes them fit: the control channel is pointed at one of
+  them per line and the data channel never runs past its end, so nothing requires
+  them to be adjacent — one 14 KB contiguous request became four of 3.5 KB, against
+  a heap that at this point (core1, right after setup) is both thin and fragmented.
+  `VGA_MAX_LINE_SIZE` also came down 1024 -> **896** and moved into
+  `video_modes.h`, where `tools/vga_timing_test.c` pins it against the SHIPPED
+  table instead of the copy it used to keep (the widest mode is 840 — 640x480 50 Hz
+  at 21 MHz; every other one is 800 or 824). Raise it there the moment a mode needs
+  a longer line: under PWM a pixel is four bytes and this is four buffers.
+  `lines_pattern_data` survives only as the "templates exist" flag (= `[0]`).
+- **Default follows the back-end**: ON where a wide pixel is free (HSTX), OFF on the
+  PIO, where it is a real 4x of DMA. NVS overrides either way.
+- **Interface > Theme > VGA menu colors goes with it** (owner, 2026-09-23): the
+  on-grid UI palette (`kUiPaletteVga`) exists only to stop the Bayer block
+  shimmering under the menu's own colours, so with PWM there is nothing for it to
+  avoid — and leaving it ON was not merely a pointless row, it quantised the menu to
+  64 colours that PWM would have rendered exactly. `uiPaletteActive()` ignores
+  `ui_vga_solid` while `vga_pwm_active()`, and the row hides on the same predicate.
+  NB that accessor is the LIVE flag, not `Config::vga_pwm`: the level table is heap
+  and a failed allocation falls back to the dither, where the on-grid twin is again
+  the right answer.
+- **The Bayer row is hidden while PWM is live** (`p_vgaDither`, reading the STAGED
+  value so it appears and disappears as the row above it is edited): with PWM the
+  solid and dithered setters produce the same pair, so Colour depth would be a switch
+  that does nothing.
+- **PRESS AUTO ADJUST ON THE MONITOR after turning VGA PWM on (hw 2026-09-23,
+  m1p2 — the owner's own finding, and it resolved every colour symptom in this
+  section at once).** The feature depends on where inside the output pixel the
+  monitor puts its sample point, and a monitor still carrying the settings it
+  derived for a different signal puts it in the wrong place. The symptoms that
+  produces are worth recognising, because none of them looks like a sampling
+  problem: every colour BRIGHT, the dark end crushed to black, or a channel ramp
+  that only changes on every OTHER step. They are one phenomenon — the eight 3-bit
+  ULA+ levels collapsing pairwise onto the four DAC codes — and which one you get
+  depends on the phase. First thing to try, before reading any of the below.
+- **The analogue path does NOT integrate the sub-samples — and the answer is the
+  MONITOR, not the table (hw 2026-09-23, m1p2).** The ladder's RC is faster than a
+  phase and the monitor's ADC takes ONE point per output pixel, so the temporal
+  average never happens and it reads one sub-phase of every pixel. The proof is
+  unusually clean: with **byte-identical firmware** (7 differing bytes, all ASCII
+  digits inside the build timestamp) turning the monitor's phase moved the symptom
+  between "every colour is BRIGHT" and "the dark end is crushed to black". Auto
+  Adjust settles it; see the note above.
+  - **TRIED AND HW-REFUTED the same day: offsetting the RIGHT pixel of a pair by one
+    phase.** It makes adjacent output pixels carry adjacent phases so the eye
+    averages ph[p] and ph[p+1], and on paper it is a clear win — every EVEN level
+    becomes exact at every sample point and the odd ones halve their error (measured:
+    the 8 ULA+ levels went from 4 distinct readings out of 8 to 5-7). On the screen
+    it put a **1-pixel vertical stripe** on every colour whose adjacent phases
+    differ, i.e. most of them: it had traded the level error for the very dither PWM
+    exists to remove, and at a 1-pixel period that is MORE visible, not less. Owner:
+    "это не вариант". Both pixels of a pair carry the same word; the only ordering
+    that matters is the one INSIDE a pixel (the ripple criterion below). The idea is
+    pinned in `vga_pwm.h` and in the host test so it cannot come back by accident.
+  - The general lesson, and it is the third time this feature has taught it: **on a
+    2-bit DAC you cannot buy levels without averaging somewhere, and the only
+    question is who does it.** The Bayer block makes the EYE do it (always works,
+    costs a visible pattern). PWM makes the ANALOGUE do it (costs nothing visible —
+    when the monitor's sample point allows). Moving the averaging back to the eye is
+    not a fix, it is the dither again under another name.
+- **The ARRANGEMENT of the four phases is load-bearing, and getting it wrong looks
+  like BRIGHT (hw 2026-09-23, m1p2).** The level search picks the nearest weighted
+  sum, then the flattest set of VALUES — and that is not enough: enumerating the 256
+  combinations in ascending order puts the high phases FIRST, so a non-BRIGHT ZX
+  colour came out `FF FF EA EA`, i.e. the first half of the pixel at the full DAC
+  code. A monitor samples one point per pixel (and the ladder hands it one, its RC
+  being faster than a 12 ns phase), so every normal colour read as BRIGHT. The third
+  tie-break is the 4-point sequence's component at the PIXEL rate,
+  `(p0-p2)^2 + (p1-p3)^2`: minimising it pushes the ripple to Nyquist and turns
+  3,3,2,2 into **3,2,3,2** (`FF EA FF EA`). This is exactly what the original
+  header's `vga_pwm_bump_order = {0, 2, 1, 3}` did — it was lost when the table was
+  generalised to weighted sums, and nothing caught it because every test measured
+  the AVERAGE, which a permutation does not change. `tools/vga_pwm_test.c` now pins
+  the criterion for every value and the 0xCD case by name; dropping the tie-break
+  fails it 289 times.
+- `tools/vga_pwm_test.c` covers **k=2, which IS the PIO path** (four equal phase
+  slots, weights 1,1,1,1, all 13 levels reachable with zero error) alongside the HSTX
+  k=3..8. Same table, same test, 12519 checks.
+- **Hw check owed, and this half IS testable — m1p2 VGA**: turn Colour to PWM,
+  reboot, and compare against Dither on a ULA+ title, a TS-Conf 256c screen and a
+  plain ZX screen — the 2x2 pattern should be gone with the same 13 levels per
+  channel. Then the cost: FPS/IDL in the F8 box against the same scene with PWM off
+  (84 MB/s of line DMA), scanlines, the CRT grille, DS80/GMX/Timex, and a machine
+  switch between 640x480 and 720x576.
+
 ## VGA on HSTX (2026-09-23; re-timing hw-confirmed on m1p2, TRANSPORT hw-confirmed on PCp2, the COLOUR still untested)
 
 The VGA half of the GPIO 12-19 boards runs off the same serializer as HDMI, with
@@ -5613,9 +5731,11 @@ more than the 640x480 geometry; it wants h_total 720 and a 1.33 us back porch.
   representations take DIFFERENT inputs: the PIO gets the 6-bit values the Bayer
   block quantised to, HSTX gets the tap COLOURS. That is why `vga_crt_subpixels()`
   now also hands back `tap[4]`.
-- **`VGA_HSTX_PWM=0`** builds the palette with all four phases equal, i.e. exactly
-  the byte the PIO would have driven. It is the bisect for an untestable path: a
-  wrong colour there is the transport, a wrong colour only with PWM on is the table.
+- **The bisect is Video > VGA > Colour = Dither** (it was a CMake option and an
+  image until the setting landed the same day): on HSTX that still sends wide words,
+  they just carry the same byte four times, i.e. exactly what the PIO would have
+  driven. A wrong colour there is the transport; a wrong colour only with PWM is the
+  table.
 - **Every arbitrary guest palette loses the Bayer block, not just the ZX 16** —
   ULA+ (`applyUlaPlusPalette` -> `graphics_set_palette` -> `vga_set_palette_entry`),
   TS-Conf CRAM, Gigascreen blends and the custom palettes all arrive through the
@@ -5635,9 +5755,9 @@ more than the 640x480 geometry; it wants h_total 720 and a 1.33 us back porch.
   backstops in `VIDEO::Reset` and `Config::load`): 126/37.8 = 3.333 is not a whole
   number of cycles. The HDMI half already hid them for the other reason (189 MHz
   clk_hstx, past the rating).
-- Cost: ~26.6 KB of heap on a VGA boot (templates 16 KB + palettes ~10 KB, against
-  ~6.6 KB), all lazily allocated behind `getLargestAllocatable()` as before; +1 KB
-  of `.bss` for the PWM table. Video DMA 20 -> ~100 MB/s, the same figure the HDMI
+- Cost: ~24.6 KB of heap on a VGA boot (templates 4 x 3.5 KB + palettes ~10 KB,
+  against ~6.6 KB), all lazily allocated behind `getLargestAllocatable()` as before;
+  +1 KB of `.bss` for the PWM table. Video DMA 20 -> ~100 MB/s, the same figure the HDMI
   TMDS path is hw-proven at.
 - **Two host tests, and they are the only thing standing behind this:**
   `tools/vga_timing_test.c` reads the SHIPPED `video_mode_table.h` and pins every

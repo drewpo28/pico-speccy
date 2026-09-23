@@ -21,34 +21,120 @@
 // so the render loop, the pointer arithmetic and the palette tables are the same
 // code either way and only the type and three DMA numbers move.
 // ---------------------------------------------------------------------------
-#if VGA_HSTX
 #include "vga_pwm.h"
-typedef struct { uint32_t px[2]; } vga_pair_t;
-#define VGA_PX_BYTES 4
-// The PWM level table for the running mode's cycle count.  Rebuilt by vga_reinit()
-// whenever the pixel clock changes, because the phase weights follow from it.
-static vga_pwm_tab_t vga_pwm_tab;
-// Build the palette with all four phases equal, i.e. exactly the byte the PIO would
-// have driven — Bayer dither, 64 colours and all.  The transport is then the only
-// thing that differs from the hw-proven path, which is what tells a wrong colour
-// table from a wrong serializer without a logic analyser.
-#ifndef VGA_HSTX_PWM
-#define VGA_HSTX_PWM 1
-#endif
-#else
-typedef uint16_t vga_pair_t;
-#define VGA_PX_BYTES 1
-#endif
+
+// A pair is TWO output pixels — what one source byte becomes — in one of two
+// widths, chosen at boot:
+//
+//   NARROW (2 B): one VGA pin byte per pixel, the 2-bit-per-channel DAC code the
+//     Bayer 2x2 block quantised the colour to.  What the PIO has always driven.
+//   WIDE   (8 B): four bytes per pixel = four PWM sub-samples, integrated by the
+//     ladder into one level per pixel — no spatial pattern, and no solid /
+//     grid-snap fork (vga_pwm.h).  On the PIO that means the SM runs at FOUR
+//     times the pixel clock and every number below that counts pixels in bytes
+//     moves with it; on HSTX one pixel IS one 32-bit FIFO word, so wide is the
+//     only shape the transport has.
+//
+// The two flags are separate because HSTX pins the WIDTH but not the CONTENT:
+// with PWM off it still sends 32-bit words, they just carry the same byte four
+// times — which is the bisect that tells a wrong colour table from a wrong
+// transport, and on HSTX it is the only way to get the PIO's picture.
+typedef struct { uint32_t px[2]; } vga_wide_pair_t;   // 8 B
+typedef uint16_t                   vga_flat_pair_t;   // 2 B
+
+static bool vga_wide     = (VGA_HSTX != 0);   // 4 bytes per output pixel
+static bool vga_pwm_live = (VGA_HSTX != 0);   // ...and they carry PWM phases
+
+// Bytes one output pixel occupies, and the 32-bit DMA transfers one line needs.
+static inline int vga_px_bytes(void) { return vga_wide ? 4 : 1; }
+// ...published, because the SM runs that many times faster than the pixel clock and
+// Video > Mode prints the divider the PIO is actually given.
+int vga_sm_px_bytes(void) { return vga_px_bytes(); }
+// ...and whether the pixels really carry PWM.  Not the same as Config::vga_pwm:
+// the level table is heap and a failed allocation falls back to the dither.
+int vga_pwm_active(void) { return vga_pwm_live ? 1 : 0; }
+
+// The PWM level table.  On the PIO a pixel is exactly four equal phase slots,
+// which is vga_pwm_weights()'s k=2 (2k = 4 half-cycles, weights 1,1,1,1, 13
+// levels); on HSTX k is the mode's clk_hstx cycles per pixel and the weights can
+// be unequal.  Rebuilt whenever that changes.
+#define VGA_PWM_PIO_K 2
+// Heap, and only while PWM is live: 1 KB of .bss on every VGA board for a table a
+// narrow build never reads is not worth it, and a failed allocation has an honest
+// answer — fall back to the narrow path, which is what the board did before.
+static vga_pwm_tab_t *vga_pwm_tab = 0;
 
 // A run of `n` identical output pixels, given the VGA pin byte.
 static inline void vga_fill_px(void *dst, uint8_t pixel_byte, int n) {
+    if (vga_wide) {
+        uint32_t *d = (uint32_t *)dst;
+        const uint32_t w = vga_pwm_flat_word(pixel_byte);
+        while (n--) *d++ = w;
+    } else {
+        memset(dst, pixel_byte, (size_t)n);
+    }
+}
+
+// Config::vga_pwm, published the way Config::video_driver is — this file is C and
+// cannot see Config.h.  Read ONCE, into the two flags above: the widths decide how
+// the palette tables and the line templates are sized, so the setting is
+// reboot-class and must not move under a running allocation.
+extern uint8_t vga_pwm_cfg;
+
+static bool vga_flags_done = false;
+
+int get_video_mode(void);   // declared again below with the other TODO: .h externs
+
+// clk_hstx cycles per pixel for the PWM phase weights.  On the PIO a pixel is
+// always four equal phase slots; on HSTX it is the mode's own k.
+static int vga_pwm_k(void) {
 #if VGA_HSTX
-    uint32_t *d = (uint32_t *)dst;
-    const uint32_t w = vga_pwm_flat_word(pixel_byte);
-    while (n--) *d++ = w;
+    struct video_mode_t vm = graphics_get_video_mode(get_video_mode());
+    const uint32_t px = vm.vga_pixel_clk ? (uint32_t)vm.vga_pixel_clk : (uint32_t)vm.pixel_clk;
+    const int k = vga_hstx_cycles(px);
+    return k ? k : 5;
 #else
-    memset(dst, pixel_byte, (size_t)n);
+    return VGA_PWM_PIO_K;
 #endif
+}
+
+static void vga_flags_init(void) {
+    if (vga_flags_done) return;
+    vga_flags_done = true;
+    vga_pwm_live = (vga_pwm_cfg != 0);
+    // HSTX has no narrow shape: one pixel IS one 32-bit FIFO word, so the width is
+    // pinned and the setting only chooses what those four bytes carry.
+    vga_wide = VGA_HSTX ? true : vga_pwm_live;
+    if (!vga_wide) vga_pwm_live = false;   // a 2-byte pair has nowhere to put phases
+    if (vga_pwm_live) {
+        extern size_t getLargestAllocatable(void);
+        if (getLargestAllocatable() >= sizeof(vga_pwm_tab_t))
+            vga_pwm_tab = (vga_pwm_tab_t *)calloc(1, sizeof(vga_pwm_tab_t));
+        if (!vga_pwm_tab) {
+            printf("vga: no room for the PWM level table (%u B) - falling back to the dither\n",
+                   (unsigned)sizeof(vga_pwm_tab_t));
+            vga_pwm_live = false;
+#if !VGA_HSTX
+            vga_wide = false;
+#endif
+        } else {
+            vga_pwm_build(vga_pwm_tab, vga_pwm_k());
+        }
+    }
+}
+
+// One built pair, in both representations: the palette builders make it once and
+// vga_pal_put() stores whichever the boot chose.  Cheap — this runs per palette
+// entry, never per pixel.
+typedef struct { uint32_t w[2]; uint16_t flat; } vga_pairv_t;
+
+static inline void vga_pal_put(void *arr, unsigned i, vga_pairv_t v) {
+    if (vga_wide) {
+        uint32_t *d = (uint32_t *)arr + 2u * i;
+        d[0] = v.w[0]; d[1] = v.w[1];
+    } else {
+        ((uint16_t *)arr)[i] = v.flat;
+    }
 }
 
 /// TODO: .h
@@ -86,15 +172,21 @@ static int line_size = 800;
 static int HS_SIZE = 96;
 static int HS_SHIFT = 656;
 
-// Maximum DMA buffer size for any supported VGA mode (e.g. 720x576 needs ~880).
-// lines_pattern_data is allocated to this size, smaller modes use only part of it.
-#define VGA_MAX_LINE_SIZE 1024
-// 32-bit DMA transfers per line: the PIO packs four pixel BYTES into a word, the
-// HSTX takes one word per pixel.  (line_size is always a multiple of 4 — see
-// tools/vga_timing_test.c — so the PIO form never truncates.)
-#define VGA_DMA_WORDS(line)  ((line) * VGA_PX_BYTES / 4)
-// uint32 words one line template occupies.
-#define VGA_TMPL_WORDS       (VGA_MAX_LINE_SIZE * VGA_PX_BYTES / 4)
+// VGA_MAX_LINE_SIZE (video_modes.h) is the longest line any mode asks for; the
+// templates are rendered in place on a mode switch, so they are sized to it and a
+// smaller mode uses only part of each.
+// 32-bit DMA transfers per line, and the words one line template occupies.  A
+// NARROW line packs four pixel bytes into a word; a WIDE one is a word per pixel.
+// (line_size is always a multiple of 4 — see tools/vga_timing_test.c — so the
+// narrow form never truncates.)
+static inline int VGA_DMA_WORDS(int line) { return line * vga_px_bytes() / 4; }
+static inline int VGA_TMPL_WORDS(void)    { return VGA_MAX_LINE_SIZE * vga_px_bytes() / 4; }
+// Bytes one palette entry (a pair) occupies, and the row of 256 for one parity.
+static inline size_t vga_pair_bytes(void) { return vga_wide ? sizeof(vga_wide_pair_t)
+                                                            : sizeof(vga_flat_pair_t); }
+static inline void *pal_row(void *arr, unsigned parity) {
+    return (uint8_t *)arr + (size_t)parity * 256u * vga_pair_bytes();
+}
 
 // Sync byte templates set during init. Stored to allow re-rendering line patterns
 // when the mode (and thus HS_SIZE / line_size) changes at runtime.
@@ -123,7 +215,7 @@ static uint8_t vga_scanline_level = 2;
 
 // Background: the two output-pixel pairs of one 2x2 group (phase A then phase B),
 // per line parity.  bg_pair[parity][phase].
-static vga_pair_t bg_pair[2][2];
+static vga_pairv_t bg_pair[2][2];
 static uint16_t palette16_mask = 0;
 
 // VGA8 dithered palette LUT: /42 checkerboard dithering (7 levels per channel, 343 colors)
@@ -131,7 +223,7 @@ static uint16_t palette16_mask = 0;
 // pico-speccy: these VGA-only tables (~4 KB total) are lazily heap-allocated and only
 // exist when VGA is the active output (SELECT_VGA). On HDMI boots they stay NULL —
 // the setters below no-op — so the SRAM isn't reserved. See vga_alloc_buffers().
-static vga_pair_t (*palette_vga16)[256] = (vga_pair_t (*)[256]) 0;
+static void *palette_vga16 = 0;            // 2 x 256 pairs (even/odd line)
 
 // CRT mask phase-B tables: ODD source pixels index these instead, so the mask
 // profile spans 4 output pixels (2 source pixels x 2 doubled pixels) with four
@@ -139,14 +231,14 @@ static vga_pair_t (*palette_vga16)[256] = (vga_pair_t (*)[256]) 0;
 // Allocated only when the filter is switched on (~2.5 KB); while it is off, and if
 // the allocation fails, these alias the A tables, which degrades to a plain
 // period-2 grille rather than to nothing.
-static vga_pair_t (*palette_vga16_b)[256] = (vga_pair_t (*)[256]) 0;
-static vga_pair_t *palette_vga16_scanline_b = (vga_pair_t *) 0;
-static vga_pair_t (*palette_vga_ds80_b)[256] = (vga_pair_t (*)[256]) 0;
+static void *palette_vga16_b = 0;
+static void *palette_vga16_scanline_b = 0;
+static void *palette_vga_ds80_b = 0;
 static bool vga_crt_phaseb = false;    // true once the B tables are real, not aliases
 
 // Scanline dimmed palette: dithered at reduced brightness for scanline effect.
 // Rebuilt from vga_color888[] whenever the scanline level changes.
-static vga_pair_t *palette_vga16_scanline = (vga_pair_t *) 0;
+static void *palette_vga16_scanline = 0;   // 256 pairs (odd lines only)
 // Original RGB888 per palette index + whether it was set via the solid path.
 // Cached so the dimmed palette can be rebuilt on a brightness-level change
 // without re-walking the whole palette from the emulator side.
@@ -159,7 +251,7 @@ static bool     *vga_color_solid = (bool *) 0;
 // [0] = even scan lines, [1] = odd scan lines (Bayer 2×2 checkerboard dithering).
 // The 1 KB DS80 palette is heap-allocated on demand to save RAM
 // (heap is ~5 KB after the framebuffer there).
-static vga_pair_t (*palette_vga_ds80)[256] = (vga_pair_t (*)[256]) 0;  // pico-speccy: lazy (see above)
+static void *palette_vga_ds80 = 0;         // pico-speccy: lazy (see above)
 
 // Allocate the VGA-only palette tables on first use (VGA active only). Idempotent.
 // Keeps ~4 KB out of .bss on HDMI boots, where these are never touched.
@@ -168,32 +260,24 @@ static vga_pair_t (*palette_vga_ds80)[256] = (vga_pair_t (*)[256]) 0;  // pico-s
 // — this runs on core1 right after setup, when free heap can be only a few KB.
 static void vga_alloc_buffers(void) {
     if (vga_color888) return;                                   // already allocated
-#if VGA_HSTX
-    // The PWM table has to exist before the first palette entry is packed, and
-    // core0 can get here (VIDEO::Init -> applyPalette) before core1 has reached
-    // graphics_init.  Built for the current mode; vga_hstx_apply_mode() rebuilds
-    // and repacks if the cycles per pixel turn out different.
-    if (!vga_pwm_tab.k) {
-        struct video_mode_t vm = graphics_get_video_mode(get_video_mode());
-        const uint32_t px = vm.vga_pixel_clk ? (uint32_t)vm.vga_pixel_clk
-                                             : (uint32_t)vm.pixel_clk;
-        const int k = vga_hstx_cycles(px);
-        vga_pwm_build(&vga_pwm_tab, k ? k : 5);
-    }
-#endif
+    // The widths and the PWM table have to be settled before the first palette
+    // entry is packed, and core0 can get here (VIDEO::Init -> applyPalette) before
+    // core1 has reached graphics_init.
+    vga_flags_init();
     extern size_t getLargestAllocatable(void);
-    size_t need = 2 * 256 * sizeof(vga_pair_t) + 256 * sizeof(vga_pair_t)
+    const size_t pb = vga_pair_bytes();
+    size_t need = 2 * 256 * pb + 256 * pb
                 + 256 * sizeof(uint32_t) + 256 * sizeof(bool);
-    need += 2 * 256 * sizeof(vga_pair_t);
+    need += 2 * 256 * pb;
     if (getLargestAllocatable() < need) {
         printf("vga_alloc_buffers: OOM allocating VGA palette tables (%u B needed)\n", (unsigned)need);
         return;
     }
-    palette_vga16          = (vga_pair_t (*)[256]) calloc(2 * 256, sizeof(vga_pair_t));
-    palette_vga16_scanline = (vga_pair_t *)        calloc(256,     sizeof(vga_pair_t));
+    palette_vga16          = calloc(2 * 256, pb);
+    palette_vga16_scanline = calloc(    256, pb);
     vga_color888           = (uint32_t *)        calloc(256,     sizeof(uint32_t));
     vga_color_solid        = (bool *)            calloc(256,     sizeof(bool));
-    palette_vga_ds80       = (vga_pair_t (*)[256]) calloc(2 * 256, sizeof(vga_pair_t));
+    palette_vga_ds80       = calloc(2 * 256, pb);
     // Mask off by default: phase B aliases phase A, so the render loop's second
     // lookup is identical to the first and the output matches the old single-table
     // code exactly. vga_set_crt() promotes these to real tables when needed.
@@ -269,8 +353,23 @@ static void vga_hstx_apply_mode(uint32_t pixel_hz) {
     if (!vga_hstx_set_pixel_clk(pixel_hz)) return;
     const int k = vga_hstx_cycles_live();
     if (k == k_before) return;
-    vga_pwm_build(&vga_pwm_tab, k);
+    if (vga_pwm_tab) vga_pwm_build(vga_pwm_tab, k);
     vga_repack_palette();
+}
+#endif
+
+#if !VGA_HSTX
+// The SM emits one BYTE per cycle (`out pins, 8`), so a narrow line wants the SM at
+// the pixel clock and a wide one at FOUR times it — four phase bytes per pixel.
+// Both are exact 16.16 dividers for every clock in the shipped table at 252, 378
+// and 504 MHz (21 MHz -> 3 / 4.5 / 6 narrow, 12 / 18 / 24 wide; 25.2 -> 2.5 / 3.75
+// / 5 and 10 / 15 / 20), which is a second payoff of putting the VGA modes on
+// 126 MHz / k — the old 19.894737 could not even do it at 1x.
+static void vga_pio_set_pixel_clk(uint32_t pixel_hz) {
+    if (_SM_VGA < 0 || !pixel_hz) return;
+    const double fdiv = (double)clock_get_hz(clk_sys) / ((double)pixel_hz * vga_px_bytes());
+    const uint32_t div32 = (uint32_t)(fdiv * (1 << 16) + 0.0);
+    PIO_VGA->sm[_SM_VGA].clkdiv = div32 & 0xfffff000;  // quantised to 1/16, as ever
 }
 #endif
 
@@ -325,13 +424,16 @@ void __time_critical_func() dma_handler_VGA() {
     if (screen_line >= v_active) {
         //заполнение цветом фона
         if (screen_line == v_active | screen_line == v_active + 3) {
-            vga_pair_t* out_pair = (vga_pair_t *)lines_pattern[2 + (screen_line & 1)];
-            out_pair += shift_picture / 2;
             uint32_t p_i = (screen_line & is_flash_line) + (frame_number & is_flash_frame) & 1;
-            const vga_pair_t a = bg_pair[p_i][0], b = bg_pair[p_i][1];
-            for (int i = visible_line_size / 2; i--;) {
-                *out_pair++ = a;
-                *out_pair++ = b;
+            const vga_pairv_t a = bg_pair[p_i][0], b = bg_pair[p_i][1];
+            if (vga_wide) {
+                vga_wide_pair_t *o = (vga_wide_pair_t *)lines_pattern[2 + (screen_line & 1)] + shift_picture / 2;
+                const vga_wide_pair_t aw = { { a.w[0], a.w[1] } };
+                const vga_wide_pair_t bw = { { b.w[0], b.w[1] } };
+                for (int i = visible_line_size / 2; i--;) { *o++ = aw; *o++ = bw; }
+            } else {
+                vga_flat_pair_t *o = (vga_flat_pair_t *)lines_pattern[2 + (screen_line & 1)] + shift_picture / 2;
+                for (int i = visible_line_size / 2; i--;) { *o++ = a.flat; *o++ = b.flat; }
             }
         }
 
@@ -422,14 +524,16 @@ if (!text_buffer) return;
         // заполнение линии цветом фона
         if (y == graphics_buffer_height | y == graphics_buffer_height + 1 |
             y == graphics_buffer_height + 2) {
-            vga_pair_t* out_pair = (vga_pair_t *)*output_buffer;
             uint32_t p_i = ((screen_line & is_flash_line) + (frame_number & is_flash_frame)) & 1;
-            const vga_pair_t a = bg_pair[p_i][0], b = bg_pair[p_i][1];
-
-            out_pair += shift_picture / 2;
-            for (int i = visible_line_size / 2; i--;) {
-                *out_pair++ = a;
-                *out_pair++ = b;
+            const vga_pairv_t a = bg_pair[p_i][0], b = bg_pair[p_i][1];
+            if (vga_wide) {
+                vga_wide_pair_t *o = (vga_wide_pair_t *)*output_buffer + shift_picture / 2;
+                const vga_wide_pair_t aw = { { a.w[0], a.w[1] } };
+                const vga_wide_pair_t bw = { { b.w[0], b.w[1] } };
+                for (int i = visible_line_size / 2; i--;) { *o++ = aw; *o++ = bw; }
+            } else {
+                vga_flat_pair_t *o = (vga_flat_pair_t *)*output_buffer + shift_picture / 2;
+                for (int i = visible_line_size / 2; i--;) { *o++ = a.flat; *o++ = b.flat; }
             }
         }
         dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
@@ -441,8 +545,9 @@ if (!text_buffer) return;
     uint8_t* input_buffer_8bit ///= input_buffer + y / 2 * 80 + (y & 1) * 8192;
              = getLineBuffer(y);
 
-    vga_pair_t* output_pair = (vga_pair_t *)(*output_buffer);
-    output_pair += shift_picture / 2; //смещение началы вывода на размер синхросигнала
+    // Offset of the first picture pair, in PAIRS — the width only decides how many
+    // bytes a pair is, never how many pairs a line holds.
+    int out_idx = shift_picture / 2; //смещение началы вывода на размер синхросигнала
 
     //    g_buf_shx&=0xfffffffe;//4bit buf
     //    graphics_buffer_shift_x &= 0xfffffff1; //1bit buf
@@ -458,7 +563,7 @@ if (!text_buffer) return;
     }
     else {
 #define div_factor (2)
-        output_pair += graphics_buffer_shift_x * 2 / div_factor;
+        out_idx += graphics_buffer_shift_x * 2 / div_factor;
     }
 
 
@@ -476,23 +581,32 @@ if (!text_buffer) return;
             // register — so this costs nothing when the mask is off (pal_b == pal).
             // width is 320 or 360, always even; the x^2 swizzle pairs up cleanly
             // (x=0..7 -> 2,3,0,1,6,7,4,5).
+            void *pal, *pal_b;
             if (profi_ds80_active) {
-                vga_pair_t* pal   = palette_vga_ds80[screen_line & 1];
-                vga_pair_t* pal_b = palette_vga_ds80_b[screen_line & 1];
-                for (int x = 0; x < width; x += 2) {
-                    *output_pair++ = pal  [input_buffer_8bit[ x      ^ 2]];
-                    *output_pair++ = pal_b[input_buffer_8bit[(x + 1) ^ 2]];
-                }
-            } else
-            {
+                pal   = pal_row(palette_vga_ds80,   screen_line & 1);
+                pal_b = pal_row(palette_vga_ds80_b, screen_line & 1);
+            } else {
                 const bool sl = vga_scanlines && (screen_line & 1);
-                vga_pair_t* pal   = sl ? palette_vga16_scanline
-                                       : palette_vga16[screen_line & 1];
-                vga_pair_t* pal_b = sl ? palette_vga16_scanline_b
-                                       : palette_vga16_b[screen_line & 1];
+                pal   = sl ? palette_vga16_scanline   : pal_row(palette_vga16,   screen_line & 1);
+                pal_b = sl ? palette_vga16_scanline_b : pal_row(palette_vga16_b, screen_line & 1);
+            }
+            // One branch per LINE, not per pixel: both loops are the same
+            // load-lookup-store, only the pair is 8 bytes instead of 2.
+            if (vga_wide) {
+                vga_wide_pair_t *o = (vga_wide_pair_t *)(*output_buffer) + out_idx;
+                const vga_wide_pair_t *p = (const vga_wide_pair_t *)pal;
+                const vga_wide_pair_t *pb = (const vga_wide_pair_t *)pal_b;
                 for (int x = 0; x < width; x += 2) {
-                    *output_pair++ = pal  [input_buffer_8bit[ x      ^ 2]];
-                    *output_pair++ = pal_b[input_buffer_8bit[(x + 1) ^ 2]];
+                    *o++ = p [input_buffer_8bit[ x      ^ 2]];
+                    *o++ = pb[input_buffer_8bit[(x + 1) ^ 2]];
+                }
+            } else {
+                vga_flat_pair_t *o = (vga_flat_pair_t *)(*output_buffer) + out_idx;
+                const vga_flat_pair_t *p = (const vga_flat_pair_t *)pal;
+                const vga_flat_pair_t *pb = (const vga_flat_pair_t *)pal_b;
+                for (int x = 0; x < width; x += 2) {
+                    *o++ = p [input_buffer_8bit[ x      ^ 2]];
+                    *o++ = pb[input_buffer_8bit[(x + 1) ^ 2]];
                 }
             }
             break;
@@ -501,6 +615,28 @@ if (!text_buffer) return;
             break;
     }
     dma_channel_set_read_addr(dma_chan_ctrl, output_buffer, false);
+}
+
+// The four line templates are INDEPENDENT buffers: the control channel is pointed
+// at one of them per line and the data channel never runs past its end, so nothing
+// requires them to be adjacent.  Allocating them separately turns one 14 KB
+// contiguous request into four of 3.5 KB — the difference between fitting and not
+// on the heap this runs against, where a fragmented 16 KB hole is exactly what is
+// missing.  pico_calloc PANICs on OOM instead of returning NULL, so every block is
+// pre-checked against the largest satisfiable one; a partial set is freed rather
+// than left for the ISR to read from.
+static bool vga_alloc_templates(void) {
+    extern size_t getLargestAllocatable(void);
+    const size_t words = (size_t)VGA_TMPL_WORDS();
+    for (int i = 0; i < 4; i++) {
+        if (getLargestAllocatable() < words * sizeof(uint32_t)) {
+            for (int j = 0; j < i; j++) { free(lines_pattern[j]); lines_pattern[j] = NULL; }
+            return false;
+        }
+        lines_pattern[i] = (uint32_t *)calloc(words, sizeof(uint32_t));
+    }
+    lines_pattern_data = lines_pattern[0];   // the "templates exist" flag
+    return true;
 }
 
 void graphics_set_mode(enum graphics_mode_t mode) {
@@ -525,7 +661,7 @@ void graphics_set_mode(enum graphics_mode_t mode) {
     uint8_t TMPL_HS8 = 0;
     uint8_t TMPL_LINE8 = 0;
 
-    double fdiv = 100;
+    uint32_t vga_px_hz = 0;
     // line_size, HS_SIZE, HS_SHIFT are now globals — assigned from video_mode below
 
     switch (graphics_mode) {
@@ -553,8 +689,7 @@ void graphics_set_mode(enum graphics_mode_t mode) {
             line_VS_begin = 490;
             line_VS_end = 491;
             struct video_mode_t vMode = graphics_get_video_mode(get_video_mode());
-            int vga_px = vMode.vga_pixel_clk ? vMode.vga_pixel_clk : vMode.pixel_clk;
-            fdiv = clock_get_hz(clk_sys) / vga_px; //частота пиксельклока
+            vga_px_hz = (uint32_t)(vMode.vga_pixel_clk ? vMode.vga_pixel_clk : vMode.pixel_clk);
             // Compute line layout from video_mode fields (×2 because VGA byte=pixel
             // and HDMI table values are in HDMI-bytes which encode 2 pixels each).
             int hs_b = vMode.vga_h_sync_bytes ? vMode.vga_h_sync_bytes : vMode.h_sync_bytes;
@@ -592,29 +727,35 @@ void graphics_set_mode(enum graphics_mode_t mode) {
     if (!lines_pattern_data) //выделение памяти, если не выделено
     {
 #if !VGA_HSTX
-        const uint32_t div32 = (uint32_t)(fdiv * (1 << 16) + 0.0);
-        PIO_VGA->sm[_SM_VGA].clkdiv = div32 & 0xfffff000; //делитель для конкретной sm
+        vga_pio_set_pixel_clk(vga_px_hz);
 #else
-        (void)fdiv;   // the HSTX pixel clock is CSR.N_SHIFTS, set by vga_hstx_start()
+        (void)vga_px_hz;   // the HSTX pixel clock is CSR.N_SHIFTS, set by vga_hstx_start()
 #endif
         dma_channel_set_trans_count(dma_chan, VGA_DMA_WORDS(line_size), false);
 
-        // Allocate to max possible line_size so re-renders during mode switches don't overrun.
-        // pico_calloc PANICs on OOM instead of returning NULL — pre-check the
-        // largest satisfiable block (this runs on core1 right after setup, when
-        // free heap can be only a few KB).
-        {
-            extern size_t getLargestAllocatable(void);
-            size_t need = 4 * VGA_TMPL_WORDS * sizeof(uint32_t);
-            if (getLargestAllocatable() < need) {
-                printf("graphics_set_mode: OOM allocating lines_pattern_data (%u B needed)\n", (unsigned)need);
-                return;
-            }
+        bool ok = vga_alloc_templates();
+#if !VGA_HSTX
+        // A WIDE template is four bytes per pixel against a narrow one's one, and
+        // this runs when the heap is at its thinnest (core1, right after setup).
+        // Losing PWM is a colour downgrade; losing the templates is NO PICTURE AT
+        // ALL, because the early return below leaves lines_pattern[] NULL and the
+        // DMA reads from zero.  So drop the width first and keep the display.  (On
+        // HSTX there is no narrow shape to drop to — one pixel IS one FIFO word.)
+        if (!ok && vga_wide) {
+            printf("vga: no room for the wide line templates (4 x %u B) - PWM off\n",
+                   (unsigned)((size_t)VGA_TMPL_WORDS() * sizeof(uint32_t)));
+            vga_wide = false;
+            vga_pwm_live = false;
+            vga_repack_palette();     // they were packed 8 bytes to a pair
+            vga_pio_set_pixel_clk(vga_px_hz);                    // 1x, not 4x
+            dma_channel_set_trans_count(dma_chan, VGA_DMA_WORDS(line_size), false);
+            ok = vga_alloc_templates();
         }
-        lines_pattern_data = (uint32_t *)calloc(4 * VGA_TMPL_WORDS, sizeof(uint32_t));
-
-        for (int i = 0; i < 4; i++) {
-            lines_pattern[i] = &lines_pattern_data[i * VGA_TMPL_WORDS];
+#endif
+        if (!ok) {
+            printf("graphics_set_mode: OOM allocating line templates (4 x %u B)\n",
+                   (unsigned)((size_t)VGA_TMPL_WORDS() * sizeof(uint32_t)));
+            return;
         }
     }
 
@@ -626,8 +767,8 @@ void graphics_set_mode(enum graphics_mode_t mode) {
     vga_fill_px(lines_pattern[1], TMPL_VHS8, HS_SIZE);      // with hsync pulse at start
 
     // image line templates start as a copy of the empty line
-    memcpy(lines_pattern[2], lines_pattern[0], (size_t)line_size * VGA_PX_BYTES);
-    memcpy(lines_pattern[3], lines_pattern[0], (size_t)line_size * VGA_PX_BYTES);
+    memcpy(lines_pattern[2], lines_pattern[0], (size_t)line_size * vga_px_bytes());
+    memcpy(lines_pattern[3], lines_pattern[0], (size_t)line_size * vga_px_bytes());
 }
 
 void vga_reinit() {
@@ -643,9 +784,7 @@ void vga_reinit() {
 #if VGA_HSTX
     vga_hstx_apply_mode((uint32_t)pixel_clk);
 #else
-    double fdiv = (double)clock_get_hz(clk_sys) / (double)pixel_clk;
-    const uint32_t div32 = (uint32_t)(fdiv * (1 << 16) + 0.0);
-    PIO_VGA->sm[_SM_VGA].clkdiv = div32 & 0xfffff000;  // integer div only — fractional causes jitter
+    vga_pio_set_pixel_clk((uint32_t)pixel_clk);
 #endif
 
     // Recompute horizontal layout from video_mode and re-render line templates.
@@ -680,8 +819,8 @@ void vga_reinit() {
         vga_fill_px(lines_pattern[1], TMPL_VS8_g,  line_size);
         vga_fill_px(lines_pattern[1], TMPL_VHS8_g, HS_SIZE);
 
-        memcpy(lines_pattern[2], lines_pattern[0], (size_t)line_size * VGA_PX_BYTES);
-        memcpy(lines_pattern[3], lines_pattern[0], (size_t)line_size * VGA_PX_BYTES);
+        memcpy(lines_pattern[2], lines_pattern[0], (size_t)line_size * vga_px_bytes());
+        memcpy(lines_pattern[3], lines_pattern[0], (size_t)line_size * vga_px_bytes());
 
         dma_channel_set_trans_count(dma_chan, VGA_DMA_WORDS(line_size), false);
     }
@@ -784,28 +923,33 @@ static uint32_t dim_rgb888(uint32_t color888) {
     return (r << 16) | (g << 8) | b;
 }
 
-// One output-pixel pair.  The two representations take DIFFERENT inputs and that is
-// the whole point of the HSTX back-end: the PIO gets `lo`/`hi`, the 6-bit values the
-// Bayer 2x2 block quantised the colour to, while HSTX gets the colours themselves
-// and spreads each one over four PWM sub-samples — no dither, no 4-level grid, and
-// no need for the solid / grid-snap fork the 16 flat ZX colours have always needed.
-static inline vga_pair_t vga_pack_pair_c(uint32_t c_lo, uint32_t c_hi,
-                                         uint8_t lo, uint8_t hi) {
-#if VGA_HSTX
+// One output-pixel pair, in BOTH representations — the caller stores whichever the
+// boot chose.  They take different inputs and that is the whole point: the flat one
+// gets `lo`/`hi`, the 6-bit values the Bayer 2x2 block quantised the colour to,
+// while the PWM one gets the COLOURS and spreads each over four sub-samples — no
+// dither, no 4-level grid, and no need for the solid / grid-snap fork the 16 flat
+// ZX colours have always needed.  Runs per palette entry, never per pixel.
+static inline vga_pairv_t vga_make_pair(uint32_t c_lo, uint32_t c_hi,
+                                        uint8_t lo, uint8_t hi) {
     const uint8_t sync = (uint8_t)(palette16_mask & 0xff);
-#if VGA_HSTX_PWM
-    const vga_pair_t p = { { vga_pwm_word(&vga_pwm_tab, c_lo, sync),
-                             vga_pwm_word(&vga_pwm_tab, c_hi, sync) } };
-#else
-    const vga_pair_t p = { { vga_pwm_flat_word((lo & 0x3f) | sync),
-                             vga_pwm_flat_word((hi & 0x3f) | sync) } };
-#endif
-    (void)c_lo; (void)c_hi; (void)lo; (void)hi;
-    return p;
-#else
-    (void)c_lo; (void)c_hi;
-    return (((uint16_t)hi << 8) | lo) & 0x3f3f | palette16_mask;
-#endif
+    vga_pairv_t v;
+    v.flat = (uint16_t)((((uint16_t)hi << 8) | lo) & 0x3f3f) | palette16_mask;
+    if (vga_pwm_live) {
+        // Both pixels of the pair carry their colour's own phase pattern, with NO
+        // offset between them: offsetting the right one by a phase was tried and
+        // hw-REFUTED (2026-09-23) — it fixed the level but put a 1-pixel vertical
+        // stripe on every colour whose adjacent phases differ, i.e. it traded the
+        // error for the very dither PWM exists to remove.  See vga_pwm.h.
+        v.w[0] = vga_pwm_word(vga_pwm_tab, c_lo, sync);
+        v.w[1] = vga_pwm_word(vga_pwm_tab, c_hi, sync);
+    } else {
+        // Wide but not PWM: the same byte in all four phases, i.e. byte for byte
+        // what the narrow path would have driven.  Only reachable on HSTX, where
+        // the transport has no narrow shape — it is the colour-vs-transport bisect.
+        v.w[0] = vga_pwm_flat_word((uint8_t)((lo & 0x3f) | sync));
+        v.w[1] = vga_pwm_flat_word((uint8_t)((hi & 0x3f) | sync));
+    }
+    return v;
 }
 
 static inline uint8_t vga6_of(uint32_t c) {
@@ -844,9 +988,9 @@ static void vga_build_scanline_entry(uint8_t i) {
     uint8_t sub[4][4]; uint32_t tap[4];
     vga_crt_subpixels(dim_rgb888(vga_color888[i]), vga_color_solid[i], sub, tap);
     // Odd-line table only: Bayer positions 2 (even x) and 3 (odd x).
-    palette_vga16_scanline[i] = vga_pack_pair_c(tap[0], tap[1], sub[0][2], sub[1][3]);
+    vga_pal_put(palette_vga16_scanline, i, vga_make_pair(tap[0], tap[1], sub[0][2], sub[1][3]));
     if (vga_crt_phaseb)
-        palette_vga16_scanline_b[i] = vga_pack_pair_c(tap[2], tap[3], sub[2][2], sub[3][3]);
+        vga_pal_put(palette_vga16_scanline_b, i, vga_make_pair(tap[2], tap[3], sub[2][2], sub[3][3]));
 }
 
 // Fill the phase-A (even source pixel, mask taps 0/1) and phase-B (odd source pixel,
@@ -854,11 +998,15 @@ static void vga_build_scanline_entry(uint8_t i) {
 static void vga_fill_pairs(uint8_t i, uint32_t color888, bool solid) {
     uint8_t sub[4][4]; uint32_t tap[4];
     vga_crt_subpixels(color888, solid, sub, tap);
-    palette_vga16[0][i] = vga_pack_pair_c(tap[0], tap[1], sub[0][0], sub[1][1]);   // even y, taps 0/1
-    palette_vga16[1][i] = vga_pack_pair_c(tap[0], tap[1], sub[0][2], sub[1][3]);   // odd  y
+    vga_pal_put(pal_row(palette_vga16, 0), i,                            // even y, taps 0/1
+                vga_make_pair(tap[0], tap[1], sub[0][0], sub[1][1]));
+    vga_pal_put(pal_row(palette_vga16, 1), i,                            // odd  y
+                vga_make_pair(tap[0], tap[1], sub[0][2], sub[1][3]));
     if (vga_crt_phaseb) {
-        palette_vga16_b[0][i] = vga_pack_pair_c(tap[2], tap[3], sub[2][0], sub[3][1]);   // taps 2/3
-        palette_vga16_b[1][i] = vga_pack_pair_c(tap[2], tap[3], sub[2][2], sub[3][3]);
+        vga_pal_put(pal_row(palette_vga16_b, 0), i,                      // taps 2/3
+                    vga_make_pair(tap[2], tap[3], sub[2][0], sub[3][1]));
+        vga_pal_put(pal_row(palette_vga16_b, 1), i,
+                    vga_make_pair(tap[2], tap[3], sub[2][2], sub[3][3]));
     }
 }
 
@@ -924,13 +1072,13 @@ void vga_set_profi_ds80_mode(bool active,
             cB_left[i] = tap[2]; cB_right[i] = tap[3];
         }
         // Initialise all slots to (black, black) so unused/border slots are safe.
-        const vga_pair_t black_pair = vga_pack_pair_c(0, 0, 0, 0);
+        const vga_pairv_t black_pair = vga_make_pair(0, 0, 0, 0);
         for (int s = 0; s < 256; s++) {
-            palette_vga_ds80[0][s] = black_pair;
-            palette_vga_ds80[1][s] = black_pair;
+            vga_pal_put(pal_row(palette_vga_ds80, 0), s, black_pair);
+            vga_pal_put(pal_row(palette_vga_ds80, 1), s, black_pair);
             if (vga_crt_phaseb) {
-                palette_vga_ds80_b[0][s] = black_pair;
-                palette_vga_ds80_b[1][s] = black_pair;
+                vga_pal_put(pal_row(palette_vga_ds80_b, 0), s, black_pair);
+                vga_pal_put(pal_row(palette_vga_ds80_b, 1), s, black_pair);
             }
         }
         // Fill every (p0, p1) combination that has a valid slot.
@@ -942,15 +1090,19 @@ void vga_set_profi_ds80_mode(bool active,
                 uint8_t slot = pair_lut[p0 * 16 + p1];
                 if (written[slot]) continue;
                 written[slot] = true;
-                palette_vga_ds80[0][slot] = vga_pack_pair_c(cA_left[p0], cA_right[p1],
-                                                            vga_even_left[p0], vga_even_right[p1]);
-                palette_vga_ds80[1][slot] = vga_pack_pair_c(cA_left[p0], cA_right[p1],
-                                                            vga_odd_left[p0],  vga_odd_right[p1]);
+                vga_pal_put(pal_row(palette_vga_ds80, 0), slot,
+                            vga_make_pair(cA_left[p0], cA_right[p1],
+                                          vga_even_left[p0], vga_even_right[p1]));
+                vga_pal_put(pal_row(palette_vga_ds80, 1), slot,
+                            vga_make_pair(cA_left[p0], cA_right[p1],
+                                          vga_odd_left[p0],  vga_odd_right[p1]));
                 if (vga_crt_phaseb) {
-                    palette_vga_ds80_b[0][slot] = vga_pack_pair_c(cB_left[p0], cB_right[p1],
-                                                                  vga_even_left_b[p0], vga_even_right_b[p1]);
-                    palette_vga_ds80_b[1][slot] = vga_pack_pair_c(cB_left[p0], cB_right[p1],
-                                                                  vga_odd_left_b[p0],  vga_odd_right_b[p1]);
+                    vga_pal_put(pal_row(palette_vga_ds80_b, 0), slot,
+                                vga_make_pair(cB_left[p0], cB_right[p1],
+                                              vga_even_left_b[p0], vga_even_right_b[p1]));
+                    vga_pal_put(pal_row(palette_vga_ds80_b, 1), slot,
+                                vga_make_pair(cB_left[p0], cB_right[p1],
+                                              vga_odd_left_b[p0],  vga_odd_right_b[p1]));
                 }
             }
         }
@@ -971,10 +1123,10 @@ void graphics_set_bgcolor(const uint32_t color888) {
     // One full 4-output-pixel mask group = two consecutive PAIRS: phase A then B.
     uint8_t sub[4][4]; uint32_t tap[4];
     vga_crt_subpixels(color888, false, sub, tap);
-    bg_pair[0][0] = vga_pack_pair_c(tap[0], tap[1], sub[0][0], sub[1][1]);   // even y, phase A
-    bg_pair[0][1] = vga_pack_pair_c(tap[2], tap[3], sub[2][0], sub[3][1]);   // even y, phase B
-    bg_pair[1][0] = vga_pack_pair_c(tap[0], tap[1], sub[0][2], sub[1][3]);   // odd  y, phase A
-    bg_pair[1][1] = vga_pack_pair_c(tap[2], tap[3], sub[2][2], sub[3][3]);   // odd  y, phase B
+    bg_pair[0][0] = vga_make_pair(tap[0], tap[1], sub[0][0], sub[1][1]);   // even y, phase A
+    bg_pair[0][1] = vga_make_pair(tap[2], tap[3], sub[2][0], sub[3][1]);   // even y, phase B
+    bg_pair[1][0] = vga_make_pair(tap[0], tap[1], sub[0][2], sub[1][3]);   // odd  y, phase A
+    bg_pair[1][1] = vga_make_pair(tap[2], tap[3], sub[2][2], sub[3][3]);   // odd  y, phase B
 }
 
 #ifndef VGA_HDMI
@@ -1012,13 +1164,14 @@ void vga_set_crt(uint8_t level) {
     // plain period-2 grille instead of the 4-tap profile — degraded, not broken.
     if (vga_crt_needs_phaseb(level) && !vga_crt_phaseb) {
         extern size_t getLargestAllocatable(void);
-        const size_t need = 2 * 256 * sizeof(vga_pair_t)   // palette_vga16_b
-                          +     256 * sizeof(vga_pair_t)   // palette_vga16_scanline_b
-                          + 2 * 256 * sizeof(vga_pair_t);  // palette_vga_ds80_b
+        const size_t pb = vga_pair_bytes();
+        const size_t need = 2 * 256 * pb   // palette_vga16_b
+                          +     256 * pb   // palette_vga16_scanline_b
+                          + 2 * 256 * pb;  // palette_vga_ds80_b
         if (getLargestAllocatable() >= need) {
-            palette_vga16_b          = (vga_pair_t (*)[256]) calloc(2 * 256, sizeof(vga_pair_t));
-            palette_vga16_scanline_b = (vga_pair_t *)        calloc(    256, sizeof(vga_pair_t));
-            palette_vga_ds80_b       = (vga_pair_t (*)[256]) calloc(2 * 256, sizeof(vga_pair_t));
+            palette_vga16_b          = calloc(2 * 256, pb);
+            palette_vga16_scanline_b = calloc(    256, pb);
+            palette_vga_ds80_b       = calloc(2 * 256, pb);
             vga_crt_phaseb = palette_vga16_b && palette_vga16_scanline_b && palette_vga_ds80_b;
         }
         if (!vga_crt_phaseb) {
@@ -1060,6 +1213,11 @@ void graphics_init() {
         graphics_init_hdmi();
         return;
     }
+    vga_flags_init();
+    printf("vga: %s pixels, %s (%d bytes/pixel, %d levels/channel)\n",
+           vga_wide ? "wide" : "narrow",
+           vga_pwm_live ? "per-pixel PWM" : "Bayer 2x2 dither / solid",
+           vga_px_bytes(), vga_pwm_live ? vga_pwm_maxsum(vga_pwm_tab->k) + 1 : 13);
     //инициализация палитры по умолчанию
     //текстовая палитра
     for (int i = 0; i < 16; i++) {
@@ -1079,7 +1237,6 @@ void graphics_init() {
         struct video_mode_t vm = graphics_get_video_mode(get_video_mode());
         const uint32_t px = vm.vga_pixel_clk ? (uint32_t)vm.vga_pixel_clk
                                              : (uint32_t)vm.pixel_clk;
-        vga_pwm_build(&vga_pwm_tab, vga_hstx_cycles(px) ? vga_hstx_cycles(px) : 5);
         if (!vga_hstx_start(px)) {
             printf("vga: HSTX refused %u Hz - no picture. Check video_mode_table.h "
                    "against tools/vga_timing_test.c\n", (unsigned)px);

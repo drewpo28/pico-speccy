@@ -550,6 +550,20 @@ public:
     // GUEST palettes (TS-Conf CRAM) take that path; false = they are snapped to the
     // 2:2:2 grid like the 16 flat ZX colours, which never dither. VGA only.
     static bool vga_dither;
+    // Video > VGA > Colour: four PWM sub-samples per output pixel instead of the
+    // 2-bit DAC code plus a Bayer 2x2 block. Reboot-class — it decides how wide a
+    // palette entry and a line-buffer pixel are (2 vs 8 bytes a pair), and those
+    // are sized once at boot.
+    //
+    // ON by default on every back-end (owner, 2026-09-23). On HSTX that is free —
+    // a pixel is a 32-bit FIFO word whatever it carries. On the PIO it is not: the
+    // SM runs at 4x the pixel clock, the line DMA goes 21 -> 84 MB/s and the heap
+    // pays ~21 KB. Two consequences that follow from it being a DEFAULT rather than
+    // a choice: a monitor that has not been AUTO ADJUSTED shows wrong colours until
+    // it is (see the VGA PWM section of CLAUDE.md), and the 16 KB line-template
+    // block can fail on a thin heap — graphics_set_mode() drops the width rather
+    // than the picture when it does.
+    static bool vga_pwm;
     // New-menu look preferences. ui_vga_solid: on VGA output the menu uses its on-grid
     // 2:2:2 palette twin (solid fills, no Bayer texture); off = the full-depth scheme,
     // dithered. ui_rounded: window/dialog corners rounded vs square.

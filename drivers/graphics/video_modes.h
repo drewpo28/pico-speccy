@@ -90,6 +90,15 @@ struct video_mode_t {
   int vga_screen_width;
 };
 
+// Longest line any mode in the table asks for, in output pixels.  vga.c sizes its
+// four line templates to this (they are re-rendered in place on a mode switch, so
+// they must hold the widest one) and vga_reinit() refuses a layout above it; the
+// widest shipped mode is 840 (640x480 50 Hz, 21 MHz pixel).  Kept here rather than
+// in the driver so tools/vga_timing_test.c pins the SHIPPED bound instead of a
+// copy of it — raise it here the moment a mode needs a longer line, because under
+// PWM every pixel costs four bytes and this is four buffers.
+#define VGA_MAX_LINE_SIZE 896
+
 // video_mode[] index offset of the 37.8 MHz ("fast") twin of a standard mode:
 // entries [0]..[7] have their x1.5-refresh counterpart at [9]..[16].
 #define VMODE_FAST_OFFSET 9

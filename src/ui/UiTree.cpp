@@ -31,6 +31,9 @@
 // rather than including graphics.h: that header drags in the whole driver set
 // (vga.h/hdmi.h/tv.h/st7789.h and three fonts) for two prototypes.
 extern "C" int   graphics_fast_mode(int mode);
+#ifdef VGA_HDMI
+extern "C" int   vga_sm_px_bytes(void);   // 1 narrow, 4 with VGA PWM live
+#endif
 extern "C" float graphics_clk_div_at(int mode, unsigned sys_mhz, int vga);
 #ifdef VGA_HDMI
 // vga.c. Must be declared at GLOBAL scope: inside namespace nm it would mangle to
@@ -273,7 +276,11 @@ static const Option* video_modeOpts(uint8_t& cnt) {
         if (!vmRowVisible(vm, fastOk, staged)) continue;
         const uint8_t o = n++;
         opts[o] = opt_video_mode[i];
-        const float d = graphics_clk_div_at(vmGraphicsIndex(vm), mhz, vga);
+        float d = graphics_clk_div_at(vmGraphicsIndex(vm), mhz, vga);
+        // With VGA PWM live the SM emits FOUR bytes per pixel, so it runs four
+        // times faster and the divider the PIO is actually given is four times
+        // smaller.  The row exists to say what the hardware gets, so it says that.
+        if (vga && d > 0.0f) d /= (float)vga_sm_px_bytes();
         char ds[16];
         // A mode the CPU clock cannot reach still says what its divider WOULD be,
         // and at which clock: "(div 1.0/378)". The 90/75 Hz set is refused by
@@ -930,18 +937,17 @@ static bool p_vgaOut() {
 #endif
 }
 
-// ...and whether the VGA submenu has anything in it.  Its one row is the Bayer
-// dither, and on the HSTX back-end there is no dither to choose: a palette entry
-// is four PWM sub-samples per pixel whichever setter wrote it, so
-// vga_set_palette_entry_solid() and vga_set_palette_entry() produce the same pair
-// and the row would be a switch that does nothing.  Hidden rather than left
-// lying — the same call the expander's Capture-safe colours row got.
+// Whether the Bayer dither is in force at all — which is what BOTH rows that
+// choose against it need: Video > VGA > Colour depth and Interface > Theme > VGA
+// menu colors (the on-grid UI palette exists only to stop the dither shimmering).  With PWM live a palette entry is
+// four sub-samples per pixel whichever setter wrote it, so the solid and dithered
+// setters produce the same pair and the row would be a switch that does nothing —
+// hidden rather than left lying, the same call the expander's Capture-safe colours
+// row got.  It reads the STAGED value, so the row appears and disappears as the
+// Colour row above it is edited, before any reboot.
 static bool p_vgaDither() {
-#if VGA_HSTX
-    return false;
-#else
-    return p_vgaOut();
-#endif
+    if (!p_vgaOut()) return false;
+    return Stage::get(SET_VGA_PWM) == 0;
 }
 
 // Video > VGA — the analogue of Video > HDMI. The DAC is 2 bits per channel, so
@@ -952,14 +958,25 @@ static const Option opt_vga_dither[] = {
     { "Dithered (2197 colours)",  1, "Dithered" },
     { "Solid 2:2:2 (64 colours)", 0, "Solid" },
 };
+// The DAC is two bits per channel either way; what changes is where the rest of the
+// colour goes. Dither spreads it over a 2x2 BLOCK — 13 levels, but a pattern that
+// beats against 1-pixel detail, which is why the 16 flat ZX colours are forced
+// solid. PWM spreads it over four sub-samples INSIDE the pixel, which the ladder
+// integrates: same 13 levels (29 in the 720-wide modes on HSTX), per pixel, no
+// pattern, and the solid / grid-snap fork disappears with it.
+static const Option opt_vga_pwm[] = {
+    { "PWM (per pixel)",    1, "PWM" },
+    { "Dither (2x2 block)", 0, "Dither" },
+};
 static const Node kVga[] = {
-    NM_RADIO(TXT_VID_VGA_DITHER, SET_VGA_DITHER, opt_vga_dither, p_vgaDither),
+    NM_RADIO(TXT_VID_VGA_PWM,    SET_VGA_PWM,    opt_vga_pwm,    p_vgaOut),
+    NM_RADIO(NM_IND TXT_VID_VGA_DITHER, SET_VGA_DITHER, opt_vga_dither, p_vgaDither),
 };
 
 static const Node kVideo[] = {
     NM_RADIO_D(TXT_VID_MODE,     SET_VIDEO_MODE, video_modeOpts, nullptr),
     NM_SUB  (TXT_VID_HDMI,       kHdmi,          p_hdmiOut),
-    NM_SUB  (TXT_VID_VGA,        kVga,           p_vgaDither),
+    NM_SUB  (TXT_VID_VGA,        kVga,           p_vgaOut),
     NM_RADIO(TXT_VID_PALETTE,    SET_PALETTE,    opt_palette,    nullptr),
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),
@@ -1300,7 +1317,7 @@ static const Node kInterface[] = {
     // spot, the theme and palette switches re-install the UI palette block, which
     // recolours the open menu instantly — the framebuffer stores palette indices).
     NM_RADIO   (TXT_OPT_THEME,        SET_UI_THEME,   opt_ui_theme,    nullptr),
-    NM_RADIO_EN(NM_IND TXT_OPT_VGA_MENU_PAL, SET_UI_VGA_PAL, opt_ui_vga_pal, p_vgaOut, p_themeSlate),
+    NM_RADIO_EN(NM_IND TXT_OPT_VGA_MENU_PAL, SET_UI_VGA_PAL, opt_ui_vga_pal, p_vgaDither, p_themeSlate),
     NM_RADIO (TXT_OPT_UI_CORNERS,   SET_UI_CORNERS, opt_ui_corners,  nullptr),
     NM_RADIO (TXT_OPT_UI_SOUND,     SET_UI_CLICK_VOL, opt_ui_click_vol, nullptr),
     NM_DYNH  (TXT_OTHER_HOTKEYS,    hotkeys_build, hotkeys_key, opt_hotkey_hints, nullptr),

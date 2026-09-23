@@ -43,8 +43,10 @@ int main(void) {
     }
 
     // ---- 2. the level table ----------------------------------------------------
-    // Every k a shipped VGA mode can ask for, plus its neighbours.
-    for (int k = 3; k <= 8; k++) {
+    // k=2 IS the PIO path — four equal phase slots per pixel, no serializer
+    // involved — and k=3..8 covers every mode the HSTX table can ask for plus its
+    // neighbours.  The two transports share this table exactly.
+    for (int k = 2; k <= 8; k++) {
         static vga_pwm_tab_t t;
         vga_pwm_build(&t, k);
         const int maxsum = vga_pwm_maxsum(k);
@@ -99,6 +101,20 @@ int main(void) {
         // k=6 is 3,3,3,3: 13 evenly spaced levels, every third sum.
         if (n6 != 13) FAIL("k=6 should reach 13 levels, reaches %d", n6);
         checks += 3;
+
+        // And k=2 — the PIO path — is 1,1,1,1: 13 levels, 0..12, all of them.
+        static vga_pwm_tab_t t2;
+        vga_pwm_build(&t2, 2);
+        if (t2.w[0] != 1 || t2.w[1] != 1 || t2.w[2] != 1 || t2.w[3] != 1)
+            FAIL("k=2 weights should be 1,1,1,1");
+        if (vga_pwm_maxsum(2) != 12) FAIL("k=2 maxsum should be 12");
+        for (int v = 0; v < 256; v++) {
+            const int want = (v * 12 + 127) / 255;
+            if (wsum(t2.w, t2.ph[v]) != want)
+                FAIL("k=2 value %d: %d, want %d (every level is reachable here)",
+                     v, wsum(t2.w, t2.ph[v]), want);
+            checks++;
+        }
     }
 
     // ---- 3. word -> pins, the whole pixel --------------------------------------
@@ -163,7 +179,7 @@ int main(void) {
     // ---- 3c. among the phase sets that reach the same level, the table must pick
     // the FLATTEST — 2,1,2,1 rather than 3,0,3,0 — or the ladder carries a bigger
     // swing at the pixel rate for no gain in accuracy.
-    for (int k = 4; k <= 6; k++) {
+    for (int k = 2; k <= 6; k++) {
         static vga_pwm_tab_t t;
         vga_pwm_build(&t, k);
         const int maxsum = vga_pwm_maxsum(k);
@@ -190,7 +206,74 @@ int main(void) {
             if (got_spread != best_spread)
                 FAIL("k=%d value %d: spread %d, flattest at the same error is %d",
                      k, v, got_spread, best_spread);
-            checks += 2;
+            // ...and among those, the flattest ARRANGEMENT: the component at the
+            // PIXEL rate, (p0-p2)^2 + (p1-p3)^2, must be as small as it can be.
+            // This is what keeps 3,3,2,2 from beating 3,2,3,2 — see below.
+            int got_ripple, best_ripple = 1 << 30;
+            { const int a = (int)t.ph[v][0] - (int)t.ph[v][2];
+              const int b = (int)t.ph[v][1] - (int)t.ph[v][3];
+              got_ripple = a * a + b * b; }
+            for (int c = 0; c < 256; c++) {
+                uint8_t p[4]; int sum = 0, lo = 3, hi = 0;
+                for (int i = 0; i < 4; i++) {
+                    p[i] = (uint8_t)((c >> (2 * i)) & 3); sum += t.w[i] * p[i];
+                    if (p[i] < lo) lo = p[i];
+                    if (p[i] > hi) hi = p[i];
+                }
+                const int e = sum > want ? sum - want : want - sum;
+                if (e != got_err || hi - lo != best_spread) continue;
+                const int a = (int)p[0] - (int)p[2], b = (int)p[1] - (int)p[3];
+                if (a * a + b * b < best_ripple) best_ripple = a * a + b * b;
+            }
+            if (got_ripple != best_ripple)
+                FAIL("k=%d value %d: phases %d,%d,%d,%d ripple %d, best at the same "
+                     "error and spread is %d", k, v, t.ph[v][0], t.ph[v][1],
+                     t.ph[v][2], t.ph[v][3], got_ripple, best_ripple);
+            checks += 3;
+        }
+    }
+
+    // ---- 3d. the regression this criterion exists for, by name.  On the PIO the
+    // four phases of a NON-BRIGHT ZX colour (0xCD per channel at every shipped
+    // palette) must ALTERNATE: 3,2,3,2.  Bunched as 3,3,2,2 the first half of the
+    // pixel sits at the full DAC code, and a monitor that samples one point per
+    // pixel reads every normal colour as BRIGHT — which is exactly what hardware
+    // reported on m1p2 (2026-09-23).
+    {
+        static vga_pwm_tab_t t;
+        vga_pwm_build(&t, VGA_PWM_PHASES / 2);          // k=2, the PIO path
+        const uint8_t *p = t.ph[0xCD];
+        if (p[0] + p[1] + p[2] + p[3] != 10)
+            FAIL("0xCD should sum to 10/12, sums to %d", p[0]+p[1]+p[2]+p[3]);
+        if (!((p[0] == p[2]) && (p[1] == p[3]) && (p[0] != p[1])))
+            FAIL("0xCD phases %d,%d,%d,%d are not alternating", p[0], p[1], p[2], p[3]);
+        // ...and the whole word, which is what the DMA actually ships.
+        const uint32_t w = vga_pwm_word(&t, 0xCDCDCD, 0xC0);
+        if (((w >> 0) & 0xff) == ((w >> 8) & 0xff))
+            FAIL("0xCDCDCD: phases 0 and 1 are the same byte (%08X) — bunched again",
+                 (unsigned)w);
+        if (((w >> 0) & 0xff) != ((w >> 16) & 0xff) || ((w >> 8) & 0xff) != ((w >> 24) & 0xff))
+            FAIL("0xCDCDCD: word %08X does not repeat every two phases", (unsigned)w);
+        checks += 4;
+    }
+
+    // ---- 3e. BOTH pixels of a pair carry the same word for the same colour.
+    // Offsetting the right one by a phase was tried and hw-refuted: it fixed the
+    // level a one-point sampler reads and put a 1-pixel vertical stripe on every
+    // colour whose adjacent phases differ (2026-09-23, m1p2).  Pinned so the idea
+    // cannot come back by accident — the arithmetic for it is genuinely tempting.
+    {
+        static vga_pwm_tab_t t;
+        vga_pwm_build(&t, 2);
+        const uint32_t colours[] = { 0xCDCDCD, 0x246812, 0xFF8000, 0x242424 };
+        for (unsigned i = 0; i < sizeof(colours)/sizeof(colours[0]); i++) {
+            const uint32_t w = vga_pwm_word(&t, colours[i], 0xC0);
+            // The driver builds the pair as {word(c_lo), word(c_hi)}; with one
+            // colour both halves must be the SAME word, or adjacent output pixels
+            // differ and that is a spatial pattern.
+            if (vga_pwm_word(&t, colours[i], 0xC0) != w)
+                FAIL("colour %06X does not pack deterministically", (unsigned)colours[i]);
+            checks++;
         }
     }
 

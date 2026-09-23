@@ -66,10 +66,21 @@ typedef struct {
     uint8_t ph[256][VGA_PWM_PHASES];
 } vga_pwm_tab_t;
 
-// Exhaustive over the 256 phase combinations, per 8-bit channel value: nearest
-// weighted sum first, then the flattest set of phases (a 3,0,3,0 and a 2,1,2,1 can
-// reach the same sum; the flat one puts less ripple on the ladder), then a fixed
-// order so the table is deterministic and the host test can pin it.
+// Exhaustive over the 256 phase combinations, per 8-bit channel value:
+//
+//   1. the nearest weighted sum — that IS the colour;
+//   2. the flattest set of VALUES (3,0,3,0 and 2,1,2,1 reach the same sum; the flat
+//      one puts less swing on the ladder);
+//   3. the flattest ARRANGEMENT of them, and this one is not cosmetic.  The four
+//      phases of a pixel are a 4-point sequence; its component at the PIXEL rate is
+//      (p0-p2)^2 + (p1-p3)^2 and its Nyquist component is p0-p1+p2-p3, so minimising
+//      the former pushes the ripple up an octave — 3,3,2,2 becomes 3,2,3,2.  A
+//      sampler that takes ONE point per pixel (which is what a monitor's ADC does,
+//      and what the ladder hands it when its RC is faster than a phase) then reads
+//      something close to the mean wherever it lands, instead of reading the first
+//      half of the pixel.  Getting this wrong is not subtle: with the bright phases
+//      bunched at the front, every non-BRIGHT ZX colour comes out BRIGHT.
+//   4. then a fixed order, so the table is deterministic and the host test can pin it.
 static inline void vga_pwm_build(vga_pwm_tab_t *t, const int k) {
     t->k = k;
     vga_pwm_weights(k, t->w);
@@ -77,7 +88,7 @@ static inline void vga_pwm_build(vga_pwm_tab_t *t, const int k) {
     for (int v = 0; v < 256; v++) {
         // Round to nearest, so 0 -> 0 and 255 -> maxsum exactly.
         const int target = (v * maxsum + 127) / 255;
-        int best_err = 1 << 30, best_spread = 1 << 30;
+        int best_err = 1 << 30, best_spread = 1 << 30, best_ripple = 1 << 30;
         uint8_t best[VGA_PWM_PHASES] = { 0, 0, 0, 0 };
         for (int c = 0; c < 256; c++) {
             uint8_t p[VGA_PWM_PHASES];
@@ -90,8 +101,12 @@ static inline void vga_pwm_build(vga_pwm_tab_t *t, const int k) {
             }
             const int err = sum > target ? sum - target : target - sum;
             const int spread = hi - lo;
-            if (err < best_err || (err == best_err && spread < best_spread)) {
-                best_err = err; best_spread = spread;
+            const int d02 = (int)p[0] - (int)p[2], d13 = (int)p[1] - (int)p[3];
+            const int ripple = d02 * d02 + d13 * d13;   // the pixel-rate component
+            if (err < best_err
+                || (err == best_err && spread < best_spread)
+                || (err == best_err && spread == best_spread && ripple < best_ripple)) {
+                best_err = err; best_spread = spread; best_ripple = ripple;
                 for (int i = 0; i < VGA_PWM_PHASES; i++) best[i] = p[i];
             }
         }
@@ -113,6 +128,22 @@ static inline uint32_t vga_pwm_word(const vga_pwm_tab_t *t,
     }
     return w;
 }
+
+// TRIED AND HW-REFUTED (2026-09-23, m1p2), kept as a warning because the arithmetic
+// is seductive: offsetting the RIGHT pixel of every pair by one phase (a rotate of
+// the word by 8) makes adjacent output pixels carry ADJACENT phases, so a monitor
+// that samples one point per pixel reads ph[p] and ph[p+1] and the eye averages
+// them. On paper it is a clear win — it made every EVEN level exact at every sample
+// point and halved the error on the odd ones. On the screen it put a **1-pixel
+// vertical stripe** on every colour whose adjacent phases differ, which is most of
+// them: it had traded the level error for the very dither PWM exists to remove, and
+// a dither at a 1-pixel period is not less visible than the Bayer block, it is more.
+//
+// The real answer turned out to be on the monitor, not in the table: **Auto
+// Adjustment**. It puts the sample point where the pixel is stable, and with that
+// done the un-offset pattern reads correctly on its own. So both pixels of a pair
+// carry the same word, and the only ordering that matters is the one INSIDE a pixel
+// (the ripple criterion above).
 
 // A pixel that is nothing but sync — the porch and sync runs, where the ladder must
 // sit at black however many phases go by.  Also the shape of a "PWM off" pixel: the

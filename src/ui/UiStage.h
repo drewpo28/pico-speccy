@@ -338,7 +338,11 @@ const char* romsetName(int32_t composite);
     /* Storage > Tape > Tape wear (Config::tape_wear, 0 off .. 3 heavy). AC_PURE:     */ \
     /* Tape.cpp reads the level live on every pulse and re-arms its own schedule when */ \
     /* it moves, so there is nothing to apply. Appended last per the APPEND ONLY rule.*/ \
-    X(SET_TAPE_WEAR,       AC_PURE,   0,                     get_tapeWear,   put_tapeWear,   nullptr,        -1)
+    X(SET_TAPE_WEAR,       AC_PURE,   0,                     get_tapeWear,   put_tapeWear,   nullptr,        -1) \
+    /* Video > VGA > Colour (Config::vga_pwm). AC_REBOOT, and it has to be: the     */ \
+    /* flag decides how many bytes a palette entry and a line-buffer pixel are, and */ \
+    /* both are allocated once at boot. Appended last per the APPEND ONLY rule.     */ \
+    X(SET_VGA_PWM,         AC_REBOOT, 0,                     get_vgaPwm,     put_vgaPwm,     nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

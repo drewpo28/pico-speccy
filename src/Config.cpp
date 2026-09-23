@@ -210,6 +210,14 @@ bool     Config::hdmi_dither = false;
 uint8_t  Config::hdmi_clock_drive = HDMI_SOFT_CLK ? 1 : 0;   // build default, see hdmi.c
 bool     Config::hdmi_snap = false;
 bool     Config::vga_dither = true;
+#if VGA_HSTX
+bool     Config::vga_pwm = true;
+#else
+bool     Config::vga_pwm = true;
+#endif
+// Published for vga.c, which is C and cannot see this header — the video_driver
+// pattern. Read once by vga_flags_init().
+extern "C" uint8_t vga_pwm_cfg = Config::vga_pwm ? 1 : 0;
 bool     Config::ui_vga_solid = true;
 bool     Config::ui_rounded = true;
 uint8_t  Config::ui_theme = 0;
@@ -1502,6 +1510,8 @@ void Config::load() {
         hdmi_snap = false;   // the hardware TMDS encoder makes it moot (Video.cpp snapTransform)
 #endif
         nvs_get_b("vga_dither", vga_dither, sts);
+        nvs_get_b("vga_pwm", vga_pwm, sts);
+        vga_pwm_cfg = vga_pwm ? 1 : 0;
         nvs_get_b("ui_vga_solid", ui_vga_solid, sts);
         nvs_get_b("ui_rounded", ui_rounded, sts);
         nvs_get_u8("ui_theme", ui_theme, sts);
@@ -1888,6 +1898,7 @@ void Config::save(const char* path, const char* profileName) {
     nvs_set_u8(buf,"hdmi_clkdrv", Config::hdmi_clock_drive);
     nvs_set_str(buf,"hdmi_snap", Config::hdmi_snap ? "true" : "false");
     nvs_set_str(buf,"vga_dither", Config::vga_dither ? "true" : "false");
+    nvs_set_str(buf,"vga_pwm", Config::vga_pwm ? "true" : "false");
     nvs_set_str(buf,"ui_vga_solid", Config::ui_vga_solid ? "true" : "false");
     nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
     nvs_set_u8(buf,"ui_theme", Config::ui_theme);

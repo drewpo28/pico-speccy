@@ -29,7 +29,6 @@
 #include <math.h>
 #include "video_mode_table.h"
 
-#define VGA_MAX_LINE_SIZE 1024
 
 static int fails = 0;
 static void chk(int ok, const char *mode, const char *what, const char *detail) {
