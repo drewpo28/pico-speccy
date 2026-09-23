@@ -7684,6 +7684,104 @@ unconditional, and the path that needs no UART at all is Hardware Info, which ga
 photograph it: **live=0 with unpr climbing IS this bug**, fix>0 with live=1 is a
 device whose releases are real.
 
+### ...and it kept coming back, through four separate holes (2026-09-23; hw: no regression, the bugs themselves unconfirmed)
+
+The user's report was precise and it is what located all four: the auto-repeat bug
+returns to EXACTLY its pre-fix behaviour, **after a long session without F12**, and
+**sooner when a second HID interface is in active use**. Both halves are real
+mechanisms, and there were two more beside them. Every one of them ends in the same
+place — the `!kbd_resync_live` guard being bypassed or the verdict being wrong — so
+any ONE of them restores the bug completely.
+
+- **`kbd_now_ms()` was `time_us_32() / 1000`, which wraps every 71.6 MINUTES.**
+  Dividing the 32-bit microsecond counter gives a value whose range is 0..4294967,
+  **not** 0..2^32-1, so the wrap-safe `(uint32_t)(now - past)` idiom that all 15 gates
+  in this file are written with **does not survive the wrap**: the difference reads as
+  ~4.29e9, i.e. "timed out", on every one of them at once. Decisively,
+  `(now - kbd_hold_since_ms) < KBD_RESYNC_UNPROVEN_MS` goes false, the unproven guard
+  is bypassed and an all-idle reply is applied as a release. That is the "long session
+  / fixed by F12" half literally: **F12 is a hardware reset, i.e. the timer restarts**.
+  Now `(uint32_t)(time_us_64() / 1000u)` — wraps at 49.7 days, where the idiom holds.
+  It was the only such idiom in the tree (`grep 'time_us_32() *[/] *1000'`); note the
+  150 ms tick in main.cpp compares MICROseconds and is correctly wrap-safe.
+- **`process_generic_report()` wrote the shared `prev_report` behind the resync's
+  back.** `prev_report` is ONE global, but the bookkeeping beside it was updated only
+  in the boot-keyboard branch of `tuh_hid_report_received_cb()` — so a keyboard report
+  arriving through the composite path (any interface whose descriptor declares
+  Desktop/Keyboard: a wireless receiver's second interface, a media-key interface, a
+  dongle) moved the key state while `kbd_hold_since_ms`, `kbd_report_seq` and
+  `kbd_last_report_ms` all stood still. Consequences, in order of damage: the hold
+  clock never advanced, so `(now - hold_since)` stayed large and **the unproven guard
+  was bypassed on EVERY hold — permanently, and from 5 s after boot when that
+  interface carries the keys from the start** (the timestamp is then still its zero
+  initialiser); the stale-reply guard could not see that a reply had been overtaken;
+  and the boot interface looked SILENT, so the 400 ms resync fired in the middle of
+  active typing — which is the "worse when the second HID is busy" half. Both paths go
+  through `kbd_report_apply()` now, and it is the ONE place allowed to write
+  `prev_report`. The generic path deliberately does NOT claim the resync identity
+  (`kbd_resync_claim`): a GET_REPORT there would need that interface's own report id,
+  not the boot layout's 0. Both also copy into a zero-padded 8-byte struct instead of
+  casting — the composite branch has already advanced the pointer past the report id,
+  so a short report was read past its end and its tail decoded as keycodes.
+- **`kbd_resync_live` was a one-way latch with nothing able to revoke it.** One
+  confirming reply granted trust for the whole session. A wireless receiver answers
+  GET_REPORT from its own cache: it confirms a hold once and can then miss a poll
+  window and answer "idle" mid-hold — and from that moment every hold is released
+  again, until a reboot. That is the other reading of "goes away after F12", and it
+  needs no timer wrap at all. Three changes, all cheap: the verdict EXPIRES after
+  `KBD_LIVE_TTL_MS` (60 s) without re-confirmation, falling back to the safe unproven
+  path, which costs at most `KBD_RESYNC_UNPROVEN_MS` on a genuinely stuck key; a
+  release needs the same answer `KBD_IDLE_STREAK_MIN` (2) times in a row, and ANY
+  interrupt report resets the streak — a cache glitch cannot reach it, a stuck key
+  always does; and a released key that comes back on the interrupt pipe within
+  `KBD_RELEASE_RECHECK_MS` is proof the release was premature, so the device is
+  demoted on the spot (`kbd_resync_demoted`, `dm=` in the Hardware Info row). **A
+  device that really answers live state never reaches the release path at all**, so
+  the re-check effectively only ever arms on a misbehaving one.
+- **`tuh_hid_umount_cb` released nothing and reset nothing.** A keyboard unplugged
+  with a key held left that key down for the emulated machine for ever, and left its
+  trust verdict for whatever took the slot next — and TinyUSB reuses the lowest free
+  address, so a re-plug very often lands on the SAME (daddr, instance) and the
+  "different device" reset in the report path never fires. `kbd_detach()` now releases
+  the held keys and clears the identity, the in-flight flag and the verdict.
+  Deliberate deviation: with two keyboards attached it releases the other one's keys
+  too — releasing too much costs one keypress, a stuck key does not recover.
+  `tuh_hid_get_report_complete_cb` also IGNORED its `dev_addr`/`idx`, so a reply from
+  an interface that was no longer the target was applied to the shared state; it is
+  checked now.
+- **Vendored TinyUSB (`PICO-SPEC PATCH`, hid_host.c `get_report_complete`): report
+  `xfer->actual_len`, not `xfer->setup->wLength`.** Upstream passes the length we
+  ASKED for, so a device answering a GET_REPORT with fewer bytes than requested was
+  indistinguishable from a full reply and we read our own memset-zeroed buffer tail as
+  report data — for a boot keyboard that reads as "all keys released", i.e. it is the
+  cheapest possible way to manufacture exactly this bug. The `len < 8` rejection in
+  the completion callback could never fire before this. `actual_len` is filled by the
+  host stack's control DATA stage (usbh.c `control_xfer_complete`).
+- Cost: **+32 B of RAM, 0 flash** (DVp2 MinSizeRel, the code delta fell inside the
+  4 KB alignment page). The Hardware Info row is now
+  `USB kbd rsync : i0 ver=1 live=1 off=0 fix=N unpr=N st=N dm=N` and **`live` reports
+  the LIVE verdict** (`kbd_live_ok()`), not the raw latch — an expired one behaves as
+  unproven and a row saying otherwise would send the next report the wrong way.
+  Reading it: `live=0` + `unpr` climbing = the guard is doing its job; `dm>0` = a
+  device whose GET_REPORT lies intermittently (the wireless-receiver class);
+  `fix>0` + `live=1` + `dm=0` = real stuck keys being healed, which is the feature.
+- **Hw 2026-09-23, owner: "хуже не стало" — a NO-REGRESSION verdict and nothing more.**
+  That is the honest reading and it is worth stating, because every failure these five
+  changes address is INTERMITTENT: the wrap needs >71.6 min of uptime with a key held
+  across the boundary, the demotion path needs a device whose GET_REPORT lies
+  episodically, and the composite-path hole needs a keyboard whose keys arrive there.
+  So the run establishes that ordinary typing, the menu, the 128-menu and browser
+  repeat, and a normal plug/unplug are unharmed — i.e. the two-strike rule and the
+  60 s TTL cost nothing visible on a well-behaved keyboard, which was the main risk of
+  this change. It does NOT establish that any of the four bugs is gone.
+- **Hw check still owed**: a session past 71.6 min with a key held
+  across the boundary; a keyboard whose extra keys come through the composite path
+  (HID devices page: TWO instances showing `handler = kbd`, or `usage=0006` in a
+  NONE-interface's parsed report list) — auto-repeat must survive in the 128 menu and
+  in the esxDOS browser; unplugging a keyboard with a key held (no stuck key, no
+  verdict carried over on re-plug); and a genuinely stuck key still healing, now
+  ~800 ms later than before because of the two-strike rule.
+
 ## LED indicators — touching one does nothing unless it is VISIBLE
 
 `LED::touchR/touchW` only set a decay counter; whether the glyph exists in the
