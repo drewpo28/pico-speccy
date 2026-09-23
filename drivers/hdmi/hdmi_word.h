@@ -42,6 +42,12 @@
 #ifndef HDMI_HSTX
 #define HDMI_HSTX 0
 #endif
+// HDMI_HSTX is 0 (PIO), 1 (HSTX raw: our symbols, the index stream, the PIO address
+// converter) or 2 (HSTX with the command expander and the hardware TMDS encoder:
+// the line is a command list, pixels are XRGB8888 colours, no converter). Both HSTX
+// forms share the 32-bit raw word for the control and Data-Island symbols; only the
+// second stops using it for PIXELS — see hdmi_tmds_line.h.
+#define HDMI_EXPANDER (HDMI_HSTX >= 2)
 
 // Flip D0-7 and D9 of all three symbols with a single XOR over the whole word —
 // hdmi_write_pair's HDMI_TMDS_BALANCED_PAIR==0 pairing, the A/B escape hatch.

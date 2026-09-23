@@ -7193,6 +7193,10 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
         const bool do_psram = (st_opt == 3 || st_opt == all_opt);
         const bool do_sd    = (st_opt == 4 || st_opt == all_opt);
         const bool do_usb   = (st_opt == 5 || st_opt == all_opt);
+        const bool do_video = (st_opt == 8 || st_opt == all_opt);   // Video path (VGA_HDMI builds)
+#ifndef VGA_HDMI
+        (void)do_video;
+#endif
 
         const char* title = "Speed Test";
 
@@ -7269,6 +7273,76 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
             progressDialog(title, "", 100, 1);
             progressDialog("", "", 0, 2);
         }
+
+        // --- Video path: what the display back-end costs the cores ---
+        // Its own row (Help > Speed Test > Video path): the back-end that drives the
+        // pins, the bytes its DMA moves per scanline, core0's SRAM copy throughput
+        // while that DMA streams (the contention the port exists to reduce — the
+        // same number on the PIO, raw-HSTX and TMDS-encoder images of one board IS
+        // the comparison), and the line ISR's worst duration / inter-IRQ gap over a
+        // one-second window (core1's share). VGA has no ISR counters.
+        const char *vid_backend = "";
+        unsigned vid_dma = 0;
+        float vid_cp = 0.0f;
+        uint32_t vid_dur = 0, vid_gap = 0;
+        bool vid_hdmi = false;
+        bool aud_on = false;
+        uint32_t aud_pps = 0, aud_und = 0, aud_skip = 0, aud_dup = 0, aud_qmin = 0, aud_qmax = 0;
+        uint32_t aud_credit = 0, aud_cap = 0;
+#ifdef VGA_HDMI
+        if (do_video) {
+            extern bool SELECT_VGA;
+            extern volatile uint32_t hdmi_irq_max_gap_us, hdmi_irq_max_dur_us;
+            vid_hdmi = !SELECT_VGA;
+            if (vid_hdmi) {
+                hdmi_video_stats(&vid_backend, &vid_dma);
+            } else {
+                vid_backend = "VGA PIO";
+                // One byte per output pixel in the VGA line buffer.
+                vid_dma = 2u * (unsigned)graphics_get_video_mode(VIDEO::video_mode).line_bytes;
+            }
+            typedef uint32_t __attribute__((may_alias)) u32a;
+            char* const scratch = info_buf;
+            progressDialog(title, "Video: SRAM copy...", 0, 0);
+            {
+                uint64_t t0 = time_us_64();
+                uint32_t total = 0;
+                const uint32_t half = OSD_INFO_BUF_SZ / 2;
+                do {
+                    const char *src = scratch;
+                    char *dst = scratch + half;
+                    for (uint32_t a = 0; a < half; a += 4)
+                        *(u32a *)(dst + a) = *(const u32a *)(src + a);
+                    total += half;
+                } while (time_us_64() - t0 < 300000ULL);
+                const uint64_t elapsed = time_us_64() - t0;
+                vid_cp = (float)total / (float)elapsed;   // bytes copied per us = MB/s
+            }
+            if (vid_hdmi) {
+                progressDialog(title, "Video: line ISR...", 50, 1);
+                hdmi_irq_max_gap_us = 0;      // the OSD owns core0: nothing else resets these meanwhile
+                hdmi_irq_max_dur_us = 0;
+                // HDMI audio over the same second: packets popped (the delivered rate),
+                // the health counters, the credit — all read from the consumer's own
+                // bookkeeping, so they say what WE sent, not what the sink heard.
+                uint32_t p0 = 0, cr = 0, cap = 0, d0, d1, d2, d3, d4;
+                aud_on = hdmi_audio_meter(&p0, &cr, &cap);
+                hdmi_audio_health_snapshot(&d0, &d1, &d2, &d3, &d4);   // reset the window
+                sleep_ms(1000);
+                vid_dur = hdmi_irq_max_dur_us;
+                vid_gap = hdmi_irq_max_gap_us;
+                if (aud_on) {
+                    uint32_t p1;
+                    hdmi_audio_meter(&p1, &cr, &cap);
+                    aud_pps = p1 - p0;
+                    hdmi_audio_health_snapshot(&aud_und, &aud_skip, &aud_dup, &aud_qmin, &aud_qmax);
+                    aud_credit = cr; aud_cap = cap;
+                }
+            }
+            progressDialog(title, "", 100, 1);
+            progressDialog("", "", 0, 2);
+        }
+#endif
 
         // --- PSRAM ---
         if (do_psram) {
@@ -7375,6 +7449,29 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 " SRAM rd : %.1f MB/s\n"
                 " SRAM wr : %.1f MB/s\n\n",
                 sram_rd, sram_wr);
+        }
+        if (do_video && vid_backend[0]) {
+            pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                " Video   : %s\n"
+                " DMA/line: %u B\n"
+                " SRAM cp : %.1f MB/s (core0, display live)\n",
+                vid_backend, vid_dma, vid_cp);
+            if (vid_hdmi) {
+                pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                    " ISR max : %lu us, gap %lu us\n",
+                    (unsigned long)vid_dur, (unsigned long)vid_gap);
+                if (aud_on)
+                    pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                        " Audio   : %lu pkt/s, q %lu..%lu\n"
+                        "   und %lu skip %lu dup %lu cr %lu/%lu\n",
+                        (unsigned long)aud_pps, (unsigned long)aud_qmin, (unsigned long)aud_qmax,
+                        (unsigned long)aud_und, (unsigned long)aud_skip, (unsigned long)aud_dup,
+                        (unsigned long)aud_credit, (unsigned long)aud_cap);
+            }
+            else
+                pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                    " ISR     : n/a (VGA has no counters)\n");
+            pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "\n");
         }
         if (do_psram) {
             if (!has_spi && !has_qspi) {

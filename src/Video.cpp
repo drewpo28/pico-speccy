@@ -408,7 +408,9 @@ static void init_profi_pair_lookup() {
     // below free exactly the difference (40 extra merges). VGA video or any
     // non-HDMI audio driver keeps the full 250-pair palette.
     bool reserve_di = false;
-#if defined(VGA_HDMI)
+#if defined(VGA_HDMI) && HDMI_HSTX < 2
+    // The HSTX command-expander build keeps its islands in the line buffer, so the
+    // pair table has all 250 slots whatever the audio driver.
     extern bool SELECT_VGA;
     reserve_di = !SELECT_VGA && Config::audio_driver == 4;
 #endif
@@ -1834,6 +1836,11 @@ static void snapLutBuild() {
     s_snap_lut_ready = true;
 }
 static inline uint32_t snapTransform(uint32_t rgb) {
+#if HDMI_HSTX >= 2
+    // Hardware TMDS: both pixels of a doubled pair decode to exactly the colour, so
+    // there is nothing for a capture card to split on and nothing to snap.
+    return rgb;
+#endif
     extern bool SELECT_VGA;
     if (!Config::hdmi_snap || SELECT_VGA) return rgb;
     if (!s_snap_lut_ready) snapLutBuild();
@@ -2333,7 +2340,14 @@ static void tsPairPaletteLoad() {
 // must fit them all with headroom); nb == 1 is the old single-table scheme with
 // the beam rule below (256c titles with a full 256-colour palette land there).
 #define TS256_MAX_BANKS 4
+#if HDMI_HSTX >= 2
+// With the HSTX command expander (hdmi_tmds_line.h) sync, porches, preambles, guard
+// bands and the Data Islands are command-list words, not palette indices, so only
+// the nm:: UI block (152..167) is out of the pool: 240 slots.
+#define TS256_POOL      240
+#else
 #define TS256_POOL      184                      // usable hardware slots (see ts256PoolInit)
+#endif
 #define TS256_DIRTY_W   ((TS256_POOL + 31) / 32)
 // The tables live in the TS-Conf code overlay window (TS_OVL_BSS: SRAM at a
 // fixed VMA, zeroed when the window is claimed, heap on every other machine) —
@@ -2506,8 +2520,10 @@ static void ts256PoolInit() {
     uint8_t n = 0;
     for (int i = 0; i < 256 && n < (int)sizeof(ts256_pool); i++) {
         if (i >= 152 && i < 168) continue;          // UI palette block
+#if HDMI_HSTX < 2
         if (i >= 184 && i < 200) continue;          // HDMI DI set 1
         if (i >= 216) continue;                     // DI set 0, sync, border
+#endif
         ts256_pool[n++] = (uint8_t)i;
     }
     ts256_pool_n = n;

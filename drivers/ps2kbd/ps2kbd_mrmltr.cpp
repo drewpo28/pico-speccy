@@ -496,8 +496,22 @@ void Ps2Kbd_Mrmltr::init_gpio(uint base_gpio) {
         // Only .length matters to the removal, and patching never changes it
         pio_remove_program(_pio, &ps2kbd_program, _offset);
         if (base_gpio != _base_gpio) {
-            gpio_deinit(_base_gpio);
-            gpio_deinit(_base_gpio + 1);
+            // Release the old pair, but ONLY the pins we still hold. Between the
+            // last init_gpio() and this one another owner may have taken one of
+            // them: on MURM1/PICO_PC the Debug > UART console's TX *is* the old
+            // clock pin (GP0), and board_dbg_uart_apply() claims it BEFORE moving
+            // the keyboard off it. gpio_deinit() sets GPIO_FUNC_NULL, which
+            // disconnects the UART from the pad — the console then ran with
+            // nothing on the wire (hw 2026-09-23, PCp2: a cold boot printed
+            // nothing at all; F12 "fixed" it because a warm reboot starts the
+            // console from the scratch tag at main() entry, so the first
+            // init_gpio() already picks GP10/11 and this move never happens).
+            // We leave our pins in GPIO_FUNC_SIO (gpio_init), so any other
+            // function on them means they are somebody else's now.
+            if (gpio_get_function(_base_gpio) == GPIO_FUNC_SIO)
+                gpio_deinit(_base_gpio);
+            if (gpio_get_function(_base_gpio + 1) == GPIO_FUNC_SIO)
+                gpio_deinit(_base_gpio + 1);
         }
     }
     _base_gpio = base_gpio;

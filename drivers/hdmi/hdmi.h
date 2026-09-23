@@ -103,6 +103,16 @@ void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, ui
 // would need the PIO/DMA reprogrammed (that is reboot-class).
 void hdmi_update_mode_timing(void);
 
+// For the Speed Test's SRAM row: which back-end drives the pins ("HDMI PIO", "HDMI
+// HSTX (raw words)", "HDMI HSTX (TMDS encoder)") and how many bytes the video DMA
+// moves per scanline, every channel together — the number that competes with the
+// cores for SRAM while that row measures them.
+void hdmi_video_stats(const char **backend, unsigned *dma_bytes_per_line);
+// Audio delivery meter for the same row: audio packets popped so far (a monotonic
+// count — 12000/s at 48 kHz is the whole question), plus the live credit and its cap
+// in samples (Q24 >> 24). Zero/false when HDMI audio is off.
+bool hdmi_audio_meter(uint32_t *pops, uint32_t *credit_spl, uint32_t *cap_spl);
+
 // TODO: Сделать настраиваемо
 static const uint8_t textmode_palette[16] = {
     200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215

@@ -27,8 +27,13 @@ option(SOFTTV "Enable TV soft composite output" OFF)
 # ON/OFF force it, and OFF is the A/B escape hatch back to the PIO TMDS program.
 # A tri-state rather than option(): with option() an explicit -DHDMI_HSTX=OFF is
 # indistinguishable from the default and the board arm below would override it.
-set(HDMI_HSTX AUTO CACHE STRING "HDMI back-end: AUTO / ON / OFF (HSTX serializer)")
-set_property(CACHE HDMI_HSTX PROPERTY STRINGS AUTO ON OFF)
+# Values: OFF = the PIO TMDS program; RAW = HSTX as a plain serializer fed our own
+# TMDS words through the PIO address converter (HDMI_HSTX=1); TMDS = HSTX with the
+# command expander and the hardware TMDS encoder, the line as a command list of
+# XRGB8888 pixels and no converter at all (HDMI_HSTX=2, see hdmi_tmds_line.h);
+# ON = RAW (the old spelling); AUTO = TMDS on PICO_PC, RAW on MURM2/MURM2_W.
+set(HDMI_HSTX AUTO CACHE STRING "HDMI back-end: AUTO / OFF / RAW / TMDS (ON = RAW)")
+set_property(CACHE HDMI_HSTX PROPERTY STRINGS AUTO OFF RAW TMDS ON)
 # Per-boot HSTX diagnostics: the engine settings, the eight bit[] entries, a 4 ms
 # line-rate measurement and the Data-Island slot dump. Off by default — that is
 # ~20 UART lines and a 4 ms stall on core1 at every boot, and the one line that
@@ -1652,17 +1657,24 @@ ELSE()
 
     # HSTX drives the same eight pins as the PIO TMDS program and only exists in
     # this branch — the TFT/TV/SOFTTV displays have no HDMI at all.
+    # HDMI_HSTX_ON: 0 PIO, 1 raw serializer, 2 command expander + TMDS encoder.
     IF(HDMI_HSTX STREQUAL "AUTO")
-        IF(PICO_PC OR MURM2)
-            # PCp2 is hw-confirmed (picture + HDMI audio, 2026-09-17). m2p2 and
-            # m2p2w run the SAME code with one row of the lane table changed
-            # ({2,4,6} against PCp2's {2,6,4}), and that table is proved pin by pin
-            # on the host — but nobody has put this image on a Murmulator 2 yet.
+        IF(PICO_PC)
+            # The raw form is hw-confirmed here (picture + HDMI audio, 2026-09-17);
+            # the expander form is the owner's pick for this board (2026-09-22) and
+            # has NOT been on hardware yet — see docs/hstx-m2p2-plan.md.
+            SET(HDMI_HSTX_ON 2)
+        ELSEIF(MURM2)
+            # Same raw code as PCp2 with one row of the lane table changed ({2,4,6}
+            # against PCp2's {2,6,4}), proved pin by pin on the host — but nobody has
+            # put an HSTX image on a Murmulator 2 yet. Stays raw until then.
             SET(HDMI_HSTX_ON 1)
         ELSE()
             SET(HDMI_HSTX_ON 0)
         ENDIF()
-    ELSEIF(HDMI_HSTX)
+    ELSEIF(HDMI_HSTX STREQUAL "TMDS")
+        SET(HDMI_HSTX_ON 2)
+    ELSEIF(HDMI_HSTX STREQUAL "RAW" OR HDMI_HSTX)
         SET(HDMI_HSTX_ON 1)
     ELSE()
         SET(HDMI_HSTX_ON 0)
@@ -1673,7 +1685,7 @@ ELSE()
                 "HDMI_HSTX needs the display on GPIO 12-19 (HDMI_BASE_PIN=12): "
                 "that is PICO_PC, MURM2 and MURM2_W only")
         ENDIF()
-        target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX=1)
+        target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX=${HDMI_HSTX_ON})
         IF(HDMI_HSTX_TRACE)
             target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX_TRACE=1)
         ENDIF()
@@ -1692,11 +1704,16 @@ IF(ZERO2 AND ZERO2_PIO_USB)
     SET(VARIANT_TAG "+PIOUSB")
     SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
 ENDIF()
-# Same shape for the HSTX back-end: PCp2-speccy-VGA-HDMI-HSTX-<version>, and
-# "PCp2 / HDMI+HSTX [v...]" in Hardware Info.
-IF(HDMI_HSTX_ON)
+# Same shape for the HSTX back-end: PCp2-speccy-VGA-HDMI-HSTX-<version> for the
+# expander form ("PCp2 / HDMI+HSTX [v...]" in Hardware Info), -HSTX-RAW / +HSTXRAW
+# for the raw serializer, so the two can be told apart on screen and on disk.
+IF(HDMI_HSTX_ON EQUAL 2)
     SET(BUILD_NAME "${BUILD_NAME}-HSTX")
     SET(VARIANT_TAG "+HSTX")
+    SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
+ELSEIF(HDMI_HSTX_ON)
+    SET(BUILD_NAME "${BUILD_NAME}-HSTX-RAW")
+    SET(VARIANT_TAG "+HSTXRAW")
     SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
 ENDIF()
 

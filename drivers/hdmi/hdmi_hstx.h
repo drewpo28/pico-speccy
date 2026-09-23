@@ -18,7 +18,11 @@ extern "C" {
 // per-pin lane map and the eight pads. Returns false when clk_sys cannot produce
 // the clock with an integer divider — it still runs, at the nearest divider, and
 // says so in the log, because a wrong video clock is a picture worth looking at.
-bool hdmi_hstx_start(unsigned tmds_mhz);
+// `expander` selects the command expander + hardware TMDS encoder (HDMI_HSTX == 2):
+// the FIFO then takes a command list with XRGB8888 pixels (hdmi_tmds_line.h) instead
+// of one raw 30-bit word per output pixel. The serial engine (SHIFT/N_SHIFTS/CLKDIV/
+// CLKPHASE), the lane map and the pads are identical either way.
+bool hdmi_hstx_start(unsigned tmds_mhz, bool expander);
 
 // Stops the engine (pads keep whatever they were last set to). Safe before a restart.
 void hdmi_hstx_stop(void);

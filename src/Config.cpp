@@ -1493,6 +1493,9 @@ void Config::load() {
         nvs_get_u8("hdmi_clkdrv", hdmi_clock_drive, sts);
         if (hdmi_clock_drive > 1) hdmi_clock_drive = 0;
         nvs_get_b("hdmi_snap", hdmi_snap, sts);
+#if HDMI_HSTX >= 2
+        hdmi_snap = false;   // the hardware TMDS encoder makes it moot (Video.cpp snapTransform)
+#endif
         nvs_get_b("vga_dither", vga_dither, sts);
         nvs_get_b("ui_vga_solid", ui_vga_solid, sts);
         nvs_get_b("ui_rounded", ui_rounded, sts);

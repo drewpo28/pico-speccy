@@ -5322,6 +5322,25 @@ lives in `Debug::uart*` (Debug.cpp), `BoardPins::dbgUart*` and
   `Config::load` (there is no Config yet) — the user's verdict: not a problem,
   "always press F12". Without an SD (no `Config::load`) `apply` is skipped, so a
   tag-started console survives for debugging exactly that.
+- **...and on a COLD boot the keyboard move was KILLING the console** (hw
+  2026-09-23, PCp2: "with the UART console on, nothing is printed after power-on;
+  it only starts printing after F12"; fix hw-confirmed the same day — not itemised,
+  so read it as the one thing a bare verdict can mean here: a COLD boot with the
+  console on now prints, starting at its own "console on GP0" line). On the two
+  boards whose TX *is* the PS/2 clock pin (MURM1/PICO_PC GP0)
+  `board_dbg_uart_apply()` starts the console — `gpio_set_function(0, UART)` — and
+  then calls `kbd_apply_pins()`, whose `Ps2Kbd_Mrmltr::init_gpio()` released the
+  old pair with `gpio_deinit()`: that is `GPIO_FUNC_NULL`, i.e. it disconnected the
+  UART from the pad one line after the console claimed it. The console was live and
+  draining its ring the whole time with nothing on the wire — so not one character,
+  not even its own "console on GP0" line. A warm reboot escaped it because the tag
+  starts the console at `main()` entry, so the FIRST `init_gpio()` already picks
+  GP10/11 and the move never happens — which is exactly what made F12 look like the
+  cure. Fix in the driver, not in the ordering: release an old pin only while
+  `gpio_get_function()` still reads `GPIO_FUNC_SIO`, i.e. only what we still hold
+  (`gpio_init` is what leaves it in SIO). **General rule: a driver that hands pins
+  back must check it still owns them** — the ZERO2 DAC remap goes through the same
+  line, and ZiFi could take a pin the same way.
 - **stdio is our own driver.** `pico_enable_stdio_uart 0` (it was linked by default
   and never initialised); `s_dbg_stdio` feeds printf into the same non-blocking
   4 KB ring as `Debug::log`, so the ~40 TUs that printf can no longer block on
@@ -5350,6 +5369,187 @@ lives in `Debug::uart*` (Debug.cpp), `BoardPins::dbgUart*` and
   only the pointers** — measured in the session, see the table in the commit /
   message; with it ON it is 4 KB of heap taken right after the framebuffer
   reservation (before the GS/MIDI pools, which have PSRAM tiers).
+
+## HDMI on HSTX (GPIO 12-19 boards): raw serializer (hw-confirmed PCp2 2026-09-17) and the command expander (2026-09-22, NOT hw-tested)
+
+The RP2350's HSTX exists only on GPIO 12-19, so only PICO_PC, MURM2 and MURM2_W can
+use it (`HDMI_BASE_PIN == 12`). `HDMI_HSTX` (CMake cache, `AUTO/OFF/RAW/TMDS`, `ON` =
+RAW) picks the back-end; AUTO = **TMDS on PICO_PC, RAW on MURM2** (owner's call: B on
+PCp2 only until it is on hardware). Names: `-HSTX` / `+HSTX` for TMDS, `-HSTX-RAW` /
+`+HSTXRAW` for raw. Everything is in `drivers/hdmi/`: `hdmi_word.h` (word packers +
+the board lane map, `HDMI_EXPANDER = HDMI_HSTX >= 2`), `hdmi_hstx.{h,c}` (clk_hstx,
+`bit[]` lane map, pads, CSR, the expander registers), `hdmi_tmds_line.h` (the line as
+a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
+
+- **RAW (HDMI_HSTX=1)**: the serializer replaces the 10-instruction TMDS PIO program
+  and nothing else — same ISR, same PIO address converter, same 4 DMA channels, our
+  own TMDS symbols in 32-bit words (`ch0 | ch1<<10 | ch2<<20`) instead of 64-bit
+  differential ones. Halves the video DMA (201 -> 100 MB/s), frees an SM + 10
+  instructions, gives an integer video clock at 252/378/504 (`clk_hstx` 126 MHz =
+  sys/2,3,4 — the divider field is TWO BITS, 1..4, no fraction, which is also why
+  VGA-PWM-over-HSTX is impossible: 19.96/27 MHz are unreachable). Palette pool
+  unchanged (184). `CLKPHASE = 5`, not 0, or the clock pair is inverted against the
+  PIO path. ACR pixel clock must be ARITHMETIC over clk_sys, never the live register:
+  `hdmi_audio_hw_init` runs on core0 before core1 programs the serializer (hw: audio
+  16% slow, "a wave").
+- **TMDS / the command expander (HDMI_HSTX=2)**: `EXPAND_EN` + `EXPAND_TMDS`
+  (XRGB8888, lane 0/1/2 = bits 7..0/15..8/23..16, NBITS 7 — quakegeneric's
+  XRGB8888 at pixel repetition 1). A line is `RAW_REPEAT|n` + word for control
+  periods, `RAW|36` + guards + 32 TERC4 chars for the island, `TMDS|active` + one
+  colour word per output pixel. **The ISR keeps its control flow** and renders
+  indices into a scratch line; `hdmi_tl_active()` builds the list and
+  `hdmi_idx_to_px()` converts (page A even positions, page B odd, one ldrd/strd per
+  index). The island is written INTO the buffer being rendered — no shared slot, no
+  guard spin, no skip — **one island per rendered pair** (the buffer plays twice),
+  selection walks blanking PAIRS (ACR, AVI, Vendor, Audio IF, then ACR every 2nd
+  pair; 48 kHz needs 0.76 packets/pair). Palette pages = the two halves of
+  `conv_color_b` (SCRATCH_Y, plain colours: no encoder, no LEVEL_CLAMP, no balanced
+  pair, CRT taps plain), line buffers = `conv_color` (2 x 784 words, so `.hdmi_lut`
+  needs no linker change). DMA = TWO channels: data streams a line into the FIFO and
+  chains to ctrl; ctrl copies `{count, addr}` into `al3_transfer_count` +
+  `al3_read_addr_trig` (8-byte write ring) and raises the line IRQ. **No PIO at all**
+  on this build — `BoardPins::auxPio()`'s "HDMI owns pio2" is untrue there (harmless
+  on PCp2, fix before a W board takes TMDS). Payoff wired through: **ts256 pool 184 ->
+  240** (only the UI block stays out), `init_profi_pair_lookup` keeps 250 pairs with
+  HDMI audio on, `hdmi_snap` hidden and forced off (hardware disparity makes the
+  capture-card split impossible by construction). Measured PICO_PC: -4 KB flash,
+  +1.9 KB SRAM vs raw. `pix_rep` is deliberately NOT used: our two output pixels must
+  be able to differ (CRT grille, DS80/GMX/Timex pairs).
+- **The IRQ cadence used to run ~one line EARLY through vertical blanking** (a
+  42-word blanking line's DMA completed ~50 px in; the FIFO is 8 deep) and re-sync
+  on the first active line — `hdmiGapMax` ~62 us once per frame was that. Since
+  2026-09-22 blanking lines are paced word per pixel (see the audio bullet below),
+  so a gap that size is a real late ISR again.
+- **Tests**: `tools/hdmi_hstx_test.c` (pin-level PIO vs HSTX equivalence, run with
+  `-DHDMI_HSTX=0/1/2`) and `tools/hdmi_tmds_line_test.c` (every line type pixel by
+  pixel through a playback model, 16101 checks). Re-run both after touching the
+  packers or the builders. ISR rule as ever: every `bl` in `dma_handler_HDMI` and
+  `hdmi_di_fill` must target 0x2xxxxxxx — checked in the ELF on 2026-09-22.
+- **The island plays TWICE, and an audio packet must not (hw 2026-09-22: "clicks, no
+  music").** Every rendered line buffer is transmitted on two consecutive lines (the
+  even-line ISR re-points the ctrl channel at the same descriptor), and in this build
+  the island is part of the buffer — so every Audio Sample packet went out twice: eight
+  samples per pop at a declared 48 kHz, i.e. a stream at double rate, which the sink
+  answers by overrunning and muting. The PIO/RAW path never had it: its two plays read
+  two palette SETS. Fix (`hdmi_isl_second_play`): after rendering the new buffer the
+  ISR replaces the audio island of the buffer PLAYING NOW with the Null packet, so its
+  second play is silent — guarded by the data channel's `read_addr` (must be past the
+  island inside that buffer; otherwise the words are left alone and `dup` is counted
+  with one packet of credit burned, the PIO path's late-ISR rule). InfoFrames and ACR
+  are left to repeat: harmless, and the ACR density stays the PIO path's one per four
+  lines. **Round 2 (same evening, "sound, but it cuts out" — ~250 ms mutes about once
+  a second with a fade-in after each, read off the recording's RMS): the nulling
+  cannot work on a BLANKING line.** Such a line is ~43 words, the data DMA finishes
+  it within microseconds and the ctrl channel loads the same buffer's second play
+  at once — by the time the ISR runs, the second play's island is already entering
+  the FIFO (that IS the early cadence noted above). The guard refused, so the ~8
+  blanking-pair audio packets per frame still went out twice = +8% samples = the
+  sink overrunning once a second. So `hdmi_di_fill` puts audio on ACTIVE pairs only
+  (240 slots against 200 packets/frame at 480p, 288 against 240 at 576p) and the cap
+  banks the WHOLE blanking accrual. **Round 3 (the recording after that): WORSE —
+  ~300 ms mute of every 550 ms.** A 45-line silence (1.4 ms) every frame is a gap the
+  sink's audio FIFO does not ride out; real sources spread packets through vblank.
+  So audio is back on every blanking pair and the fix moved to where the cause was:
+  `hdmi_tl_blank` emits the control words as ONE RAW block, a word per pixel, so a
+  blanking line's DMA trails the raster by 8 words exactly like an active line's,
+  the second play's island is read ~30 us after the ISR on every line type, and the
+  nulling works everywhere. Costs ~3 KB of DMA per blanking line, `HDMI_TL_MAX_WORDS`
+  784 -> 896 (+900 B of `conv_color`), and removes the "early cadence" — `gap` 62 us
+  once a frame should be gone (hw: `gap 33`, confirmed). **Round 4 — the METER named
+  it where three rounds of reasoning had not.** Speed Test > Video path gained an
+  `Audio` line (`hdmi_audio_meter`: packets popped per second, queue min..max, und/
+  skip/dup, credit/cap in samples) and read `10936 pkt/s` against 12000, `q 125..128`,
+  `cr 3/10`: the credit CAP was 10 samples. `hdmi_au_cap`/`hdmi_au_pos` were Q24 in a
+  uint32, i.e. 255 samples at most, and banking a whole 82-pair blanking (this is
+  the 644-line 48.83 Hz mode, not 60 Hz's 45 lines) asks for ~264 — the cast wrapped,
+  9% of the audio never left, the producer queue sat full and the sink muted ~250 ms
+  every ~600 ms. Both are uint64_t now (two extra ISR instructions); the
+  `hdmi_audio_hw_init` log prints `cap=` in SAMPLES since. tmds5's extra badness was
+  the same overflow on top of its 5 ms gap. Test ELF `debug/PCp2-hstx-tmds8-1.0.6.elf`
+  — expect 12000 pkt/s, q ~64, cr well under cap. **Lesson, again: put the meter on
+  the screen before the second fix, not after the fourth.**
+  **Round 5 (tmds9, ACR on every 4th blanking pair instead of every 2nd) changed
+  NOTHING** — the capture-card recording has the identical ~300 ms on / ~320 ms off
+  cadence (2.5 cycles/s), so delivery smoothness is not it. **Round 6 (tmds10, NOT
+  hw-tested): the LEVEL CLAMP was OFF on the expander path.** `hdmi_tmds_level888`
+  compiled to the identity under `HDMI_EXPANDER` and the DS80 pair writer stored
+  `palette16_rgb888` raw — the pages went into the hardware encoder as 0x00/0xFF,
+  i.e. the ±8-swing / run-8 symbol patterns the clamp exists to keep off this
+  board's marginal receivers, for every black or white run on a ZX screen. RAW
+  shares pads, clock, island words and ISR cadence with TMDS and differs ONLY in
+  its video symbols (clamped + pair-balanced), which is the bisect: bit errors in
+  the video stream also hit the islands, the BCH fails, the sink mutes and re-locks
+  (the card) or conceals (the TV's "distorted") while every source counter stays
+  clean. **hw-REFUTED the same day, and the measurement is the useful part**: the
+  capture was decoded frame by frame at FULL resolution and carries **zero isolated
+  wrong pixels in 531 frames** (impulse test: a pixel differing from both horizontal
+  neighbours by >50), with no dropped, black or disturbed frame anywhere. A link
+  making enough bit errors to fail an island's BCH would show them in the video
+  first, so the whole "link level" family is out — for this board, at this clock,
+  with this cable. The clamp is KEPT (it costs nothing and makes the expander's
+  levels match what RAW/PIO have always emitted) but it fixed nothing, and its
+  rationale above does not apply here.
+- **Round 7 (tmds11) — hw-confirmed 2026-09-23, owner: "звук отлично работает": one
+  island per LINE, as the PIO path has always had.** With rounds 1-6 exhausted, the remaining evidence is all structural, and it
+  is strong. The source is perfect (Speed Test: 12000 pkt/s = 48000 samples/s exactly,
+  q 64..71 of 128, und/skip/dup 0, cr 1/266), the link is perfect (above), the video
+  is perfect, the owner re-confirmed RAW plays cleanly on the SAME capture card, and
+  the mute is the sink's own soft mute: a 130 ms exponential fade-out, ~200 ms of
+  digital silence, an 80 ms fade-in, repeating every ~0.68 s. Every static comparison
+  against the PIO path came out identical — island geometry (8 px preamble, 2 guard,
+  32 chars, 2 trail at the head of the hsync pulse), the preamble/guard/sync words,
+  `di_ch0_data`'s per-character sync bake, `h_trail`, the video preamble (8) and guard
+  (2), the packet encoder, the ACR/InfoFrame content. **The ONE thing that differed
+  was how many audio slots a line pair has.** A rendered buffer plays on two lines, so
+  this build had ONE island per PAIR and substituted the Null packet for the second
+  play; the PIO path keeps TWO palette sets and calls `hdmi_di_load` TWICE per ISR,
+  i.e. one island per LINE. That put slot occupancy at 83% here against PIO's 41%, so
+  every ACR / InfoFrame island displaced a whole pair's worth of samples and took
+  several pairs to pay back — and this sink is *documented* to mute on gaps that
+  small (round 3 measured 1.4 ms as fatal, and `hdmi_di_load`'s own comment records
+  that strict sinks stay silent when the ACR stream is too sparse). So
+  `hdmi_isl_second_play` now REFILLS the island with the packet that line is due
+  instead of nulling it, and the scheduling switched to PIO's per-LINE `vbl`
+  (ACR every 4th blanking LINE, ~2000/s). Two rules the refill has to respect:
+  **order** — it runs BEFORE the newly rendered buffer's own island is filled, since
+  its line transmits sooner, and popping the queue the other way round would transmit
+  two 4-sample groups swapped (the PIO path loads `b ^ 1` before `b` for exactly this
+  reason) — and **the baked sync**: `hdmi_di_fill` takes `vs` from the caller now,
+  because the island's ch0 sync bits must match the control words of the buffer it
+  sits in, not the line number used to pick the packet. The late-ISR guard is
+  unchanged (DMA `read_addr` past the island, else the previous packet repeats and an
+  audio repeat burns its credit). Cost: a second `hdmi_pack_blob` per ISR, which the
+  PIO path has always paid — **ISR max 19 -> 22 us** against the 31.8 us line period,
+  i.e. ~10 us of margin left; that is the number to watch before adding anything else
+  to this ISR. After the fix the meter reads 12000 pkt/s, **q 64..66** (tighter than
+  the 64..71 of the one-slot build — with twice the slots the credit controller no
+  longer has to bank through the ACR/InfoFrame span), und/skip/dup 0, cr 5/266,
+  gap 33 us. **Still owed on this back-end**: 378/504 MHz, colours, scanlines (the
+  refill is deliberately SKIPPED when the second play is the static grey line, which
+  leaves the pre-existing scanlines+audio under-delivery exactly as the PIO path has
+  it), CRT grille, dither, DS80/GMX/Timex, menu/F8/FDD lamp, a TS-Conf 256c title
+  (pool 240) and the Speed Test row against RAW and PIO.
+
+  **The method is the lesson, not the fix.** Six rounds were spent proposing a cause
+  and building it (doubled packets, active-only audio, blank-line pacing, a uint32
+  overflow, ACR density, the level clamp); three of them were refuted by the very next
+  recording. What ended it was measuring instead: the packet meter said the source was
+  exact, a full-resolution impulse scan of the capture said the link was exact, the
+  envelope's 130 ms exponential fade said the SINK was muting, and the owner's re-test
+  said RAW was clean on the same card. With all four pinned, the remaining work was
+  not to guess a cause at all but to enumerate every way this back-end differs from the
+  proven one and remove the last difference. **When a bisect between two paths is
+  available, spend the round on narrowing it, not on a theory.**
+- **Help > Speed Test > Video path** is the back-end benchmark: back-end name,
+  `DMA/line` bytes, core0 SRAM copy throughput WHILE the display DMA streams, and the
+  line ISR's worst `dur/gap` over one second (VGA has no counters). Measured PCp2
+  480p, first run 2026-09-22: TMDS 2760 B/line, SRAM cp 710 MB/s, ISR 19/62 us;
+  RAW 5200 B/line, 709 MB/s, 16/33 us; PIO 8400 B/line, 694 MB/s, 17/33 us — i.e.
+  ~2% of core0 SRAM bandwidth back from either HSTX back-end (the video DMA's bus
+  share), a third of the DMA under TMDS, and the expected early-cadence gap there.
+- **Hw owed for TMDS (PCp2)**: picture at 252/378/504, colours, HDMI audio, scanlines,
+  CRT grille, dither, DS80/GMX/Timex, a capture card, menu/F8/FDD lamp, the Speed Test
+  row against RAW and PIO, a TS-Conf 256c title (pool 240).
 
 ## HDMI on MURM1: "no video at all" — PIO0 instruction memory (2026-08-12)
 

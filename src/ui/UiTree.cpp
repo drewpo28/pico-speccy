@@ -672,6 +672,9 @@ static const Node kSpeedTest[] = {
 #endif
     NM_ACTION_ARG("CPU MIPS",  act_speedTestOne, 1, nullptr),
     NM_ACTION_ARG("SRAM R/W",  act_speedTestOne, 2, nullptr),
+#ifdef VGA_HDMI
+    NM_ACTION_ARG("Video", act_speedTestOne, 8, nullptr),
+#endif
     NM_ACTION_ARG("PSRAM",     act_speedTestOne, 3, nullptr),
     NM_ACTION_ARG("SD card",   act_speedTestOne, 4, nullptr),
     NM_ACTION_ARG("USB drive", act_speedTestOne, 5, nullptr),
@@ -894,10 +897,19 @@ static const Option opt_hdmi_clkdrv[] = {
     { "Normal (12 mA, fast edge)",           0, "Normal" },
     { "Soft (8 mA, slow edge: less crosstalk)", 1, "Soft" },
 };
+// Capture-safe colours exist for the software TMDS pair; with the HSTX command
+// expander the hardware encodes each pixel and the row would change nothing.
+static bool p_hdmiSnapRow() {
+#if HDMI_HSTX >= 2
+    return false;
+#else
+    return true;
+#endif
+}
 static const Node kHdmi[] = {
     NM_BOOL (TXT_VID_DITHER,     SET_HDMI_DITHER, nullptr),
     NM_RADIO(TXT_VID_CLKDRV,     SET_HDMI_CLKDRV, opt_hdmi_clkdrv, nullptr),
-    NM_BOOL (TXT_VID_SNAP,       SET_HDMI_SNAP,   nullptr),
+    NM_BOOL (TXT_VID_SNAP,       SET_HDMI_SNAP,   p_hdmiSnapRow),
 };
 
 // True while the VGA output is the live one. Shared by Video > VGA and by the

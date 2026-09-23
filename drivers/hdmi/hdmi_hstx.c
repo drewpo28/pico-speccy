@@ -30,6 +30,9 @@ void hdmi_hstx_dump_config(void) {
            (unsigned)((csr & HSTX_CTRL_CSR_CLKDIV_BITS)   >> HSTX_CTRL_CSR_CLKDIV_LSB),
            (unsigned)((csr & HSTX_CTRL_CSR_CLKPHASE_BITS) >> HSTX_CTRL_CSR_CLKPHASE_LSB),
            (unsigned)((csr & HSTX_CTRL_CSR_EXPAND_EN_BITS) != 0));
+    if (csr & HSTX_CTRL_CSR_EXPAND_EN_BITS)
+        printf("hdmi_hstx: expand_tmds=%08x expand_shift=%08x\n",
+               (unsigned)hstx_ctrl_hw->expand_tmds, (unsigned)hstx_ctrl_hw->expand_shift);
     for (int i = 0; i < 8; i++) {
         const uint32_t b = hstx_ctrl_hw->bit[i];
         const uint pin = (uint)(HDMI_BASE_PIN + i);
@@ -90,7 +93,7 @@ void hdmi_hstx_stop(void) {
     hstx_ctrl_hw->csr = 0;
 }
 
-bool hdmi_hstx_start(unsigned tmds_mhz) {
+bool hdmi_hstx_start(unsigned tmds_mhz, bool expander) {
     if (!tmds_mhz) tmds_mhz = 252;
 
     // The datasheet's ceiling is 150 MHz / 300 Mbps per pin — the 37.8 MHz "fast"
@@ -133,15 +136,33 @@ bool hdmi_hstx_start(unsigned tmds_mhz) {
         hstx_ctrl_hw->bit[i] = v;
     }
 
-    // Raw mode: no command expander, one FIFO word per output pixel, ten bits per
-    // lane shifted two at a time. N_SHIFTS pops the next word after five cycles;
-    // CLKDIV/CLKPHASE put one clock period on the pair per pixel, starting high to
-    // match the PIO program's side-set (see HDMI_HSTX_CLKPHASE).
+    // The command expander, when asked for: TMDS-mode words are one XRGB8888 pixel
+    // each — lane 0 (blue) takes bits 7..0, lane 1 (green) 15..8, lane 2 (red)
+    // 23..16, eight bits per lane (NBITS is bits-minus-one; ROT is the right-rotate
+    // that brings the lane's byte down to 7..0). One shift per encoded word and one
+    // per raw word, i.e. one output pixel per FIFO word in either mode. Identical to
+    // quakegeneric's DVI_HSTX_MODE_XRGB8888 with pixel repetition 1.
+    if (expander) {
+        hstx_ctrl_hw->expand_tmds =
+              (7u  << HSTX_CTRL_EXPAND_TMDS_L2_NBITS_LSB) | (16u << HSTX_CTRL_EXPAND_TMDS_L2_ROT_LSB)
+            | (7u  << HSTX_CTRL_EXPAND_TMDS_L1_NBITS_LSB) | (8u  << HSTX_CTRL_EXPAND_TMDS_L1_ROT_LSB)
+            | (7u  << HSTX_CTRL_EXPAND_TMDS_L0_NBITS_LSB) | (0u  << HSTX_CTRL_EXPAND_TMDS_L0_ROT_LSB);
+        hstx_ctrl_hw->expand_shift =
+              (1u << HSTX_CTRL_EXPAND_SHIFT_ENC_N_SHIFTS_LSB) | (0u << HSTX_CTRL_EXPAND_SHIFT_ENC_SHIFT_LSB)
+            | (1u << HSTX_CTRL_EXPAND_SHIFT_RAW_N_SHIFTS_LSB) | (0u << HSTX_CTRL_EXPAND_SHIFT_RAW_SHIFT_LSB);
+    }
+
+    // Serial engine: ten bits per lane shifted two at a time, N_SHIFTS pops the next
+    // (expanded or raw) word after five cycles; CLKDIV/CLKPHASE put one clock period
+    // on the pair per pixel, starting high to match the PIO program's side-set (see
+    // HDMI_HSTX_CLKPHASE). Without the expander every FIFO word is one raw 30-bit
+    // pixel — our own TMDS symbols, the index stream and the PIO address converter.
     hstx_ctrl_hw->csr =
           ((uint32_t)HDMI_HSTX_CLKDIV   << HSTX_CTRL_CSR_CLKDIV_LSB)
         | ((uint32_t)HDMI_HSTX_CLKPHASE << HSTX_CTRL_CSR_CLKPHASE_LSB)
         | ((uint32_t)HDMI_HSTX_N_SHIFTS << HSTX_CTRL_CSR_N_SHIFTS_LSB)
         | ((uint32_t)HDMI_HSTX_SHIFT    << HSTX_CTRL_CSR_SHIFT_LSB)
+        | (expander ? HSTX_CTRL_CSR_EXPAND_EN_BITS : 0u)
         | HSTX_CTRL_CSR_EN_BITS;
 
     // Pads. The data pairs take the same 12 mA / fast slew the PIO path gives them;
@@ -159,7 +180,8 @@ bool hdmi_hstx_start(unsigned tmds_mhz) {
     // form (it runs before this does), so the two must agree or the ACR is wrong.
     const uint32_t live = (uint32_t)clock_get_hz(clk_hstx) / HDMI_HSTX_CLKDIV;
     const uint32_t want_px = hdmi_hstx_pixel_hz(tmds_mhz);
-    printf("hdmi_hstx: TMDS %u MHz, clk_hstx %u Hz (clk_sys/%u), pixel %u Hz, pins %d-%d%s\n",
+    printf("hdmi_hstx: %s, TMDS %u MHz, clk_hstx %u Hz (clk_sys/%u), pixel %u Hz, pins %d-%d%s\n",
+           expander ? "command expander + TMDS encoder" : "raw words",
            tmds_mhz, (unsigned)clock_get_hz(clk_hstx), (unsigned)div,
            (unsigned)live, HDMI_BASE_PIN, HDMI_BASE_PIN + 7,
            (live == want_px) ? "" : "  <-- DISAGREES with the audio path's arithmetic");
