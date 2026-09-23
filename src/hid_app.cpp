@@ -258,7 +258,15 @@ static bool mouse_layout_ready(uint8_t instance);
 // TinyUSB Callbacks
 //--------------------------------------------------------------------+
 
-static inline uint32_t kbd_now_ms(void) { return time_us_32() / 1000u; }
+// A 32-bit millisecond clock. time_us_32() is deliberately NOT used: it wraps every
+// 71.6 minutes, and dividing it by 1000 gives a counter whose range is 0..4294967 —
+// not 0..2^32-1 — so the wrap-safe `(uint32_t)(now - past)` idiom every gate below
+// relies on BREAKS at each wrap (the difference reads as ~4.29e9 = "timed out").
+// The visible effect was the resync firing mid-keystroke and, decisively, the
+// unproven-device guard being bypassed once per 71.6 min of uptime — i.e. the
+// auto-repeat bug coming back on a long session and going away after F12 (which
+// resets the timer). time_us_64() wraps at 49.7 days, where the idiom holds.
+static inline uint32_t kbd_now_ms(void) { return (uint32_t)(time_us_64() / 1000u); }
 // Rate-limited re-arm complaint: a blocking 115200 UART line is ~4 ms, and these sit
 // in the report path, so printing per event starves tuh_task() and drops the very
 // reports it is complaining about. hid_app_rearm_tick() retries anyway.
@@ -368,6 +376,12 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance, uint8_t const* desc_re
 
 // Defined below, next to prev_report (the keyboard state it resyncs).
 static void kbd_resync_tick(void);
+// Applies one keyboard report to the shared key state AND advances the resync
+// bookkeeping — every path that writes prev_report must go through it (see the
+// definition for why). kbd_detach() releases whatever that state still holds.
+static void kbd_report_apply(hid_keyboard_report_t const* rpt);
+static void kbd_resync_claim(uint8_t dev_addr, uint8_t instance);
+static void kbd_detach(uint8_t dev_addr, uint8_t instance);
 static bool    kbd_resync_off   = false;  // GET_REPORT unusable on this device
 static uint8_t kbd_resync_fails = 0;      // consecutive GET_REPORT failures
 static uint32_t hid_rearm_recoveries = 0;   // recoveries done by hid_app_rearm_tick()
@@ -475,6 +489,12 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance)
     no_rpt_info_logged[instance] = false;
     mouse_layout_clear(instance);   // the slot is reused by whatever plugs in next
   }
+  // A keyboard that goes away with a key held leaves that key down for the emulated
+  // machine for ever, and leaves its trust verdict behind for whatever takes the slot
+  // next — TinyUSB reuses the lowest free address, so a re-plug very often lands on
+  // the same (daddr, instance) and the "different device" reset in the report path
+  // never fires.
+  kbd_detach(dev_addr, instance);
 }
 
 static hid_keyboard_report_t prev_report = { 0 , 0 , {0}};
@@ -523,9 +543,26 @@ static hid_keyboard_report_t prev_report = { 0 , 0 , {0}};
 // below — which costs nothing, because any real report from the keyboard heals a
 // stuck key by itself (the interrupt path applies both directions); the resync
 // only matters while the device says NOTHING at all.
+//
+// TRUST IS NOT PERMANENT EITHER. `kbd_resync_live` used to be a one-way latch: one
+// confirming reply granted trust for the rest of the session, with nothing able to
+// take it back. A wireless receiver answers GET_REPORT from its own cache, so it
+// confirms a hold once and can then miss a poll window and answer "idle" in the
+// middle of a perfectly live hold — from that point every hold is released again,
+// until the machine is rebooted. So the verdict now EXPIRES if it has not been
+// re-confirmed for KBD_LIVE_TTL_MS (falling back to the safe unproven path, which
+// costs at most KBD_RESYNC_UNPROVEN_MS on a genuinely stuck key), a release needs
+// the same answer KBD_IDLE_STREAK_MIN times in a row (any interrupt report resets
+// the streak, so a cache glitch cannot reach the threshold while a stuck key
+// always does), and a key that comes back on the interrupt pipe within
+// KBD_RELEASE_RECHECK_MS of a resync release is proof the release was premature —
+// the device is demoted to unproven on the spot.
 #define KBD_RESYNC_SILENCE_MS 400   // silence with a key held before we ask the device
 #define KBD_PROBE_SILENCE_MS 1000   // idle silence before the one-time trust probe
 #define KBD_RESYNC_UNPROVEN_MS 5000 // held-with-no-traffic before an UNPROVEN device may release
+#define KBD_LIVE_TTL_MS      60000  // how long one confirming reply keeps the device trusted
+#define KBD_IDLE_STREAK_MIN      2  // consecutive "key is gone" replies before we believe it
+#define KBD_RELEASE_RECHECK_MS 1000 // a released key reappearing this soon = a bad release
 static uint8_t  kbd_resync_daddr    = 0;
 static uint8_t  kbd_resync_instance = 0xFF;
 static uint32_t kbd_last_report_ms  = 0;
@@ -538,13 +575,124 @@ static uint32_t kbd_report_seq      = 0;      // interrupt reports processed, ev
 static uint32_t kbd_resync_seq      = 0;      // kbd_report_seq when the GET_REPORT went out
 static uint32_t kbd_resync_stale    = 0;      // replies discarded as overtaken
 static bool     kbd_resync_live      = false; // a reply once confirmed a key we believe held
-static uint32_t kbd_resync_unproven  = 0;     // all-idle replies refused for lack of that proof
+static uint32_t kbd_live_ms          = 0;     // when it last did (the verdict expires)
+static uint32_t kbd_resync_unproven  = 0;     // replies refused for lack of that proof
+static uint32_t kbd_resync_demoted   = 0;     // times a bad release revoked the verdict
+static uint8_t  kbd_idle_streak      = 0;     // consecutive replies that would release a key
 static uint32_t kbd_hold_since_ms    = 0;     // when our state last went from "nothing" to "held"
+static bool     kbd_released_armed   = false; // a resync release is under review
+static uint32_t kbd_released_ms      = 0;     // when it was applied
+static uint8_t  kbd_released_mod     = 0;     // what it took away, for the re-check below
+static uint8_t  kbd_released_keys[6] = { 0 };
 
 static bool kbd_state_has_key(void) {
   if (prev_report.modifier) return true;
   for (uint8_t kc : prev_report.keycode) if (kc) return true;
   return false;
+}
+
+// Is the device's "I report live state" verdict still good? (see the TTL note above)
+static bool kbd_live_ok(void) {
+  return kbd_resync_live &&
+         (uint32_t)(kbd_now_ms() - kbd_live_ms) < KBD_LIVE_TTL_MS;
+}
+
+// Whom to ask for a state resync. A different device (re-plug, another keyboard)
+// starts untrusted again — and so does every verdict derived from the old one.
+static void kbd_resync_claim(uint8_t dev_addr, uint8_t instance) {
+  if (kbd_resync_daddr != dev_addr || kbd_resync_instance != instance) {
+    kbd_resync_verified = false;
+    kbd_resync_probing  = false;
+    kbd_resync_off      = false;
+    kbd_resync_fails    = 0;
+    kbd_resync_live     = false;
+    kbd_idle_streak     = 0;
+    kbd_released_armed  = false;
+  }
+  kbd_resync_daddr    = dev_addr;
+  kbd_resync_instance = instance;
+}
+
+// EVERY path that writes prev_report goes through here. prev_report is ONE global,
+// but the resync bookkeeping used to be updated only in the boot-keyboard branch of
+// tuh_hid_report_received_cb() — so a report that reaches the same state through
+// process_generic_report() (a composite interface whose descriptor declares
+// Desktop/Keyboard: a wireless receiver's second interface, a keyboard's media-key
+// interface, a dongle) moved the keys behind the resync's back. Three consequences,
+// each of which reopens the bug this whole block exists to fix:
+//   * kbd_hold_since_ms never advanced, so (now - hold_since) stayed large and the
+//     unproven-device guard below was bypassed on EVERY hold — i.e. the pre-fix
+//     behaviour, permanently, on any session where that second interface carries the
+//     keys (and from 5 s after boot if it carries them from the start, since the
+//     timestamp is then still its zero initialiser);
+//   * kbd_report_seq never advanced, so the stale-reply guard could not see that a
+//     GET_REPORT reply had been overtaken by a real report;
+//   * kbd_last_report_ms never advanced, so the boot interface looked SILENT and the
+//     400 ms resync fired in the middle of active typing — which is why the failure
+//     got more frequent the more the second interface was used.
+static void kbd_report_apply(hid_keyboard_report_t const* rpt) {
+  // A key we released on the strength of a GET_REPORT reply coming straight back from
+  // the device says the reply was wrong and the hold was real: revoke the verdict.
+  if (kbd_released_armed) {
+    if ((uint32_t)(kbd_now_ms() - kbd_released_ms) >= KBD_RELEASE_RECHECK_MS) {
+      kbd_released_armed = false;
+    } else {
+      bool back = (rpt->modifier & kbd_released_mod) != 0;
+      for (uint8_t kc : rpt->keycode) {
+        if (!kc) continue;
+        for (uint8_t rk : kbd_released_keys) if (rk && rk == kc) { back = true; break; }
+      }
+      if (back) {
+        kbd_released_armed = false;
+        if (kbd_resync_live) {
+          kbd_resync_live = false;
+          kbd_resync_demoted++;
+          Debug::log("HID kbd: released key came back, GET_REPORT no longer trusted "
+                     "(demoted %u)", (unsigned)kbd_resync_demoted);
+        }
+      }
+    }
+  }
+
+  kbd_last_report_ms = kbd_now_ms();
+  kbd_report_seq++;            // lets a resync reply see it was overtaken
+  kbd_idle_streak    = 0;      // the state moved; judge the next reply on its own
+
+  const bool was_held = kbd_state_has_key();
+  process_kbd_report(rpt, &prev_report);
+  prev_report = *rpt;
+  // Start of a believed hold: the clock the unproven-device fallback runs on.
+  if (!was_held && kbd_state_has_key()) kbd_hold_since_ms = kbd_now_ms();
+}
+
+// A keyboard interface going away must not leave its keys down for the emulated
+// machine, nor its trust verdict for the next device in the slot.
+static void kbd_detach(uint8_t dev_addr, uint8_t instance) {
+  const bool was_resync_itf = (kbd_resync_instance == instance && kbd_resync_daddr == dev_addr);
+  const bool was_kbd_itf    = (instance < CFG_TUH_HID &&
+                               hid_snap[instance].last_handler == HID_HANDLER_KBD);
+  if (!was_resync_itf && !was_kbd_itf) return;
+
+  if (kbd_state_has_key()) {
+    // Deliberate: with two keyboards attached this also releases the other one's
+    // keys. Releasing too much is recoverable (one keypress); a stuck key is not.
+    hid_keyboard_report_t empty = { 0, 0, { 0 } };
+    process_kbd_report(&empty, &prev_report);
+    prev_report = empty;
+  }
+  kbd_report_seq++;
+  kbd_idle_streak    = 0;
+  kbd_released_armed = false;
+  kbd_hold_since_ms  = kbd_now_ms();
+  if (was_resync_itf) {
+    kbd_resync_instance = 0xFF;   // nothing to ask until a keyboard reports again
+    kbd_resync_busy     = false;  // any reply still in flight is now meaningless
+    kbd_resync_probing  = false;
+    kbd_resync_verified = false;
+    kbd_resync_live     = false;
+    kbd_resync_off      = false;
+    kbd_resync_fails    = 0;
+  }
 }
 
 // Health line for the keyboard interface: at most every 2 s while we believe a key is
@@ -584,15 +732,16 @@ static void kbd_health_log(void) {
 #endif
   extern volatile uint32_t g_tusb_assert_count;   // dropped events land here
   Debug::log("HID kbd: rhport=%u daddr=%u inst=%u ep=%02X held=%u silent=%ums reports=%u "
-             "resync(fix=%u fail=%u off=%u ver=%u live=%u unproven=%u stale=%u) "
+             "resync(fix=%u fail=%u off=%u ver=%u live=%u unproven=%u stale=%u dm=%u streak=%u) "
              "rearm=%u desync=%u asserts=%u ready=%u epst=%08X",
              bus.rhport, kbd_resync_daddr, inst, ep_in, (unsigned)held,
              (unsigned)silent,
              (unsigned)(inst < CFG_TUH_HID ? hid_snap[inst].report_total : 0),
              (unsigned)kbd_resync_fixes, (unsigned)kbd_resync_fails,
              (unsigned)kbd_resync_off, (unsigned)kbd_resync_verified,
-             (unsigned)kbd_resync_live, (unsigned)kbd_resync_unproven,
-             (unsigned)kbd_resync_stale,
+             (unsigned)kbd_live_ok(), (unsigned)kbd_resync_unproven,
+             (unsigned)kbd_resync_stale, (unsigned)kbd_resync_demoted,
+             (unsigned)kbd_idle_streak,
              (unsigned)hid_rearm_recoveries,
              (unsigned)hid_desync_recoveries, (unsigned)g_tusb_assert_count,
              (unsigned)tuh_hid_receive_ready(kbd_resync_daddr, inst),
@@ -606,15 +755,19 @@ static void kbd_health_log(void) {
 // dead endpoint. Everything a remote user can photograph instead of capturing.
 extern "C" void usb_kbd_resync_stats(unsigned *inst, unsigned *flags,
                                      unsigned *fixes, unsigned *unproven,
-                                     unsigned *stale)
+                                     unsigned *stale, unsigned *demoted)
 {
   if (inst)     *inst  = kbd_resync_instance;
+  // live reports the LIVE verdict (kbd_live_ok), not the raw latch: an expired one
+  // behaves as unproven, and a row saying otherwise would send the next report the
+  // wrong way.
   if (flags)    *flags = (kbd_resync_verified ? 1u : 0u) |
-                         (kbd_resync_live     ? 2u : 0u) |
+                         (kbd_live_ok()       ? 2u : 0u) |
                          (kbd_resync_off      ? 4u : 0u);
   if (fixes)    *fixes    = kbd_resync_fixes;
   if (unproven) *unproven = kbd_resync_unproven;
   if (stale)    *stale    = kbd_resync_stale;
+  if (demoted)  *demoted  = kbd_resync_demoted;
 }
 
 static void kbd_resync_tick(void) {
@@ -662,10 +815,14 @@ static void kbd_resync_tick(void) {
 void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t report_id,
                                     uint8_t report_type, uint16_t len)
 {
-  (void) dev_addr; (void) idx; (void) report_id; (void) report_type;
+  (void) report_id; (void) report_type;
   kbd_resync_busy = false;
   const bool probing = kbd_resync_probing;
   kbd_resync_probing = false;
+  // Only a reply from the interface we are currently asking may be interpreted: after
+  // a re-plug, a second keyboard taking over or an umount mid-transfer, the reply
+  // describes a device that no longer owns the shared key state below.
+  if (dev_addr != kbd_resync_daddr || idx != kbd_resync_instance) return;
   if (len < sizeof(hid_keyboard_report_t)) {   // 0 = stalled/failed
     if (++kbd_resync_fails >= 5) {
       kbd_resync_off = true;
@@ -735,21 +892,46 @@ void tuh_hid_get_report_complete_cb(uint8_t dev_addr, uint8_t idx, uint8_t repor
     for (uint8_t pk : prev_report.keycode)
       if (pk == kc) { confirms = true; break; }
   }
-  if (confirms && !kbd_resync_live) {
+  if (confirms) {
+    if (!kbd_live_ok())
+      Debug::log("HID kbd: GET_REPORT reports live state, releases now trusted");
     kbd_resync_live = true;
-    Debug::log("HID kbd: GET_REPORT reports live state, releases now trusted");
+    kbd_live_ms     = kbd_now_ms();   // the verdict expires unless re-confirmed
+    kbd_idle_streak = 0;
   }
 
   if (memcmp(&merged, &prev_report, sizeof(prev_report)) != 0) {
-    // Unproven device: an all-idle reply is INCONCLUSIVE, not a release (see the
-    // block comment above). Only a hold that has produced no traffic at all for
-    // KBD_RESYNC_UNPROVEN_MS is treated as stuck.
-    if (!kbd_resync_live &&
-        (uint32_t)(kbd_now_ms() - kbd_hold_since_ms) < KBD_RESYNC_UNPROVEN_MS) {
+    if (kbd_idle_streak < 0xFF) kbd_idle_streak++;
+    // Two independent reasons to wait before believing "that key is gone":
+    //  * ONE such reply is not evidence, whatever the device has proven before — a
+    //    receiver answering from a cache can miss a poll window mid-hold. A stuck key
+    //    is still stuck at the next ask 400 ms later; a glitch is not, and any real
+    //    report in between resets the streak.
+    //  * an UNPROVEN device (or one whose verdict has expired) may only release a
+    //    hold that has produced no traffic at all for KBD_RESYNC_UNPROVEN_MS.
+    if (kbd_idle_streak < KBD_IDLE_STREAK_MIN ||
+        (!kbd_live_ok() &&
+         (uint32_t)(kbd_now_ms() - kbd_hold_since_ms) < KBD_RESYNC_UNPROVEN_MS)) {
       kbd_resync_unproven++;
       kbd_last_report_ms = kbd_now_ms();   // ask again after the normal interval
       return;
     }
+    // Remember what this release takes away: if any of it comes back on the interrupt
+    // pipe within KBD_RELEASE_RECHECK_MS the release was premature and the device
+    // loses its verdict (kbd_report_apply). A device that answers live state never
+    // gets here, so the re-check effectively only ever arms on a misbehaving one.
+    kbd_released_mod = (uint8_t)(prev_report.modifier & ~merged.modifier);
+    memset(kbd_released_keys, 0, sizeof(kbd_released_keys));
+    uint8_t nrel = 0;
+    for (uint8_t kc : prev_report.keycode) {
+      if (!kc) continue;
+      bool still = false;
+      for (uint8_t k2 : merged.keycode) if (k2 == kc) { still = true; break; }
+      if (!still && nrel < sizeof(kbd_released_keys)) kbd_released_keys[nrel++] = kc;
+    }
+    kbd_released_ms    = kbd_now_ms();
+    kbd_released_armed = (nrel != 0 || kbd_released_mod != 0);
+    kbd_idle_streak    = 0;
     kbd_resync_fixes++;
     Debug::log("HID kbd: state resynced via GET_REPORT (total %u, stale %u, "
                "reply %02X %02X %02X %02X %02X %02X %02X %02X)",
@@ -858,24 +1040,13 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance, uint8_t cons
       TU_LOG2("HID receive boot keyboard report\r\n");
       hid_snap_set_handler(instance, HID_HANDLER_KBD);
       // Remember who to ask for a state resync, and when we last heard from it.
-      // A different device (re-plug, another keyboard) starts untrusted again.
-      if (kbd_resync_daddr != dev_addr || kbd_resync_instance != instance) {
-        kbd_resync_verified = false;
-        kbd_resync_probing  = false;
-        kbd_resync_off      = false;
-        kbd_resync_fails    = 0;
-        kbd_resync_live     = false;
-      }
-      kbd_resync_daddr    = dev_addr;
-      kbd_resync_instance = instance;
-      kbd_last_report_ms  = kbd_now_ms();
-      kbd_report_seq++;               // lets a resync reply see it was overtaken
+      kbd_resync_claim(dev_addr, instance);
       {
-        const bool was_held = kbd_state_has_key();
-        process_kbd_report( (hid_keyboard_report_t const*) report, &prev_report );
-        prev_report = *(hid_keyboard_report_t const*)report;
-        // Start of a believed hold: the clock the unproven-device fallback runs on.
-        if (!was_held && kbd_state_has_key()) kbd_hold_since_ms = kbd_now_ms();
+        // Zero-padded copy rather than a cast: a report shorter than the boot layout
+        // would otherwise be read past its end (and the tail decoded as keycodes).
+        hid_keyboard_report_t kb = { 0, 0, { 0 } };
+        memcpy(&kb, report, len < sizeof(kb) ? len : sizeof(kb));
+        kbd_report_apply(&kb);
       }
     break;
 
@@ -1914,9 +2085,18 @@ static void process_generic_report(uint8_t dev_addr, uint8_t instance, uint8_t c
       case HID_USAGE_DESKTOP_KEYBOARD:
         TU_LOG1("HID receive keyboard report\r\n");
         hid_snap_set_handler(instance, HID_HANDLER_KBD);
-        // Assume keyboard follow boot report layout
-        process_kbd_report( (hid_keyboard_report_t const*) report, &prev_report );
-        prev_report = *(hid_keyboard_report_t const*)report;
+        // Assume keyboard follow boot report layout. Zero-padded copy: the report
+        // pointer was advanced past the id byte by the composite branch, so a short
+        // one would be read past its end and its tail decoded as keycodes.
+        // Same funnel as the boot interface — this writes the SAME prev_report, so it
+        // must advance the same clocks (see kbd_report_apply). NOTE it deliberately
+        // does not claim the resync identity: GET_REPORT here would need this
+        // interface's own report id, not the boot layout's 0.
+        {
+          hid_keyboard_report_t kb = { 0, 0, { 0 } };
+          memcpy(&kb, report, len < sizeof(kb) ? len : sizeof(kb));
+          kbd_report_apply(&kb);
+        }
       break;
 
       case HID_USAGE_DESKTOP_MOUSE:

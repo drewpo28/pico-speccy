@@ -271,8 +271,14 @@ static void get_report_complete(tuh_xfer_t* xfer) {
   uint8_t const report_type = tu_u16_high(xfer->setup->wValue);
     uint8_t const report_id = tu_u16_low(xfer->setup->wValue);
 
+  // PICO-SPEC PATCH: report the length the device ACTUALLY returned, not the one we
+  // asked for. Upstream passes setup->wLength, so a device answering a GET_REPORT with
+  // fewer bytes than requested is indistinguishable from a full reply and the caller
+  // reads its own (zeroed) buffer tail as report data — for a boot keyboard that is
+  // "all keys released", which is exactly the phantom-release class of bug. actual_len
+  // is filled by the host stack's control DATA stage (usbh.c control_xfer_complete).
   tuh_hid_get_report_complete_cb(xfer->daddr, idx, report_id, report_type,
-                                 (xfer->result == XFER_RESULT_SUCCESS) ? xfer->setup->wLength : 0);
+                                 (xfer->result == XFER_RESULT_SUCCESS) ? (uint16_t) xfer->actual_len : 0);
 }
 
 bool tuh_hid_get_report(uint8_t daddr, uint8_t idx, uint8_t report_id, uint8_t report_type, void* report, uint16_t len) {

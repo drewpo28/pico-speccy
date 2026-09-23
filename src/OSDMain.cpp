@@ -969,7 +969,7 @@ static char (*ftpd_log)[FTPD_LOG_COLS] = nullptr;
 // At file scope because a linkage specification is not permitted at block scope.
 extern "C" void usb_kbd_resync_stats(unsigned *inst, unsigned *flags,
                                      unsigned *fixes, unsigned *unproven,
-                                     unsigned *stale);
+                                     unsigned *stale, unsigned *demoted);
 #endif
 extern "C" size_t getLargestAllocatable(void);   // defined at the bottom of this file
 static int  ftpd_log_count = 0;  // total lines pushed (monotonic)
@@ -5881,13 +5881,13 @@ void OSD::BoardInfo() {
     // reported; live=0 with unpr climbing is a device whose GET_REPORT answers
     // all-idle even with a key held — the auto-repeat killer.
     {
-        unsigned uinst = 0xFF, uflags = 0, ufix = 0, uunpr = 0, ustale = 0;
-        usb_kbd_resync_stats(&uinst, &uflags, &ufix, &uunpr, &ustale);
+        unsigned uinst = 0xFF, uflags = 0, ufix = 0, uunpr = 0, ustale = 0, udm = 0;
+        usb_kbd_resync_stats(&uinst, &uflags, &ufix, &uunpr, &ustale, &udm);
         if (uinst != 0xFF)
             pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
-                "  USB kbd rsync : i%u ver=%u live=%u off=%u fix=%u unpr=%u st=%u\n",
+                "  USB kbd rsync : i%u ver=%u live=%u off=%u fix=%u unpr=%u st=%u dm=%u\n",
                 uinst, (uflags & 1) ? 1 : 0, (uflags & 2) ? 1 : 0,
-                (uflags & 4) ? 1 : 0, ufix, uunpr, ustale);
+                (uflags & 4) ? 1 : 0, ufix, uunpr, ustale, udm);
     }
 #endif
     // Debug > UART console: live TX pin, or why it is not up.
