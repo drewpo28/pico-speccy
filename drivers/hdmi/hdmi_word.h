@@ -197,6 +197,33 @@ static inline uint64_t hdmi_pack1_pio(const hdmi_pinmap_t *m, const uint16_t dat
 
 // Bit-times per pixel, and how many of them the generated clock is high for.
 #define HDMI_HSTX_BITS_PER_PIXEL (HDMI_HSTX_CLKDIV * HDMI_HSTX_SHIFT)
+
+// --- clk_hstx, as arithmetic ------------------------------------------------
+// Here rather than in hdmi_hstx.c so the menu row, the host table generator
+// (tools/hdmi_hstx_test.c) and the driver are ONE derivation: a second copy of
+// this is how a label starts claiming a divider the hardware never got.
+//
+// Two bits leave every pin per clk_hstx cycle (the register advances by
+// HDMI_HSTX_SHIFT and each cycle is DDR), so the serial clock is half the TMDS
+// bit rate: 126 MHz for the 25.2 MHz pixel every standard mode uses.
+static inline uint32_t hstx_want_hz(unsigned tmds_mhz) {
+    return (uint32_t)(tmds_mhz ? tmds_mhz : 252) * (1000000u / HDMI_HSTX_SHIFT);
+}
+
+// CLOCKS_CLK_HSTX_DIV_INT is TWO BITS (0x00030000) with no FRAC field at all, so
+// 1, 2, 3 and 4 are the only dividers that exist (the datasheet's "0 -> max+1" is
+// what makes 4 reachable).  Anything else is clamped by the hardware, silently,
+// which is why the caller checks the answer instead of trusting it.
+#define HSTX_DIV_MAX 4
+static inline uint32_t hstx_div_for(unsigned tmds_mhz, uint32_t sys) {
+    const uint32_t want = hstx_want_hz(tmds_mhz);
+    uint32_t div = (sys + want / 2) / want;
+    if (div == 0) div = 1;
+    return div;
+}
+
+
+
 #define HDMI_HSTX_CLK_HALF       (HDMI_HSTX_BITS_PER_PIXEL / 2)
 
 static inline int hdmi_hstx_clk_level(const int t) {

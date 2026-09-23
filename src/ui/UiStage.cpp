@@ -1188,16 +1188,21 @@ static void resolveConstraints(CommitReport& rep) {
                              Config::baseVideoMode((uint8_t)staged(SET_VIDEO_MODE)), rep,
                              "90/75 Hz needs an HDMI or VGA output");
 #else
-#if HDMI_HSTX && defined(VGA_HDMI)
-            // The serializer cannot make a 37.8 MHz pixel clock inside its rating
-            // (clk_hstx 189 MHz against 150), so on an HSTX build the set exists for
-            // the VGA output only — and this row edits the HDMI mode while HDMI is
-            // live. video_modeOpts() does not offer it there; this catches a value
-            // that arrived some other way.
-            if (!SELECT_VGA) {
+#if VGA_HSTX && defined(VGA_HDMI)
+            // The VGA half of an HSTX build cannot make a 37.8 MHz pixel:
+            // vga_hstx_clock() pins clk_hstx at 126 MHz and 126/37.8 is not a whole
+            // number of cycles.  This row edits the VGA mode while VGA is live;
+            // video_modeOpts() does not offer it there, so this catches a value that
+            // arrived some other way.  The HDMI half is NOT gated — 189 MHz is
+            // clk_sys 378 / 2 and the part runs far past that (see the HSTX section
+            // in CLAUDE.md).  **This was the third copy of that gate**: lifting only
+            // vmFastOffered() and Config::load() left the menu offering the row and
+            // this line forcing it straight back to the 50 Hz twin (hw 2026-09-23:
+            // "picking 720x576@75 turns on 720x576@50").
+            if (SELECT_VGA) {
                 changed |= force(SET_VIDEO_MODE,
                                  Config::baseVideoMode((uint8_t)staged(SET_VIDEO_MODE)), rep,
-                                 "90/75 Hz is past the HSTX rating");
+                                 "90/75 Hz: the VGA serializer has no 37.8 MHz");
             } else
 #endif
             if (staged(SET_CPU_MHZ) != Config::VM_FAST_CPU_MHZ) {

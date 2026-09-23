@@ -53,6 +53,18 @@ static bool vga_hstx_clock(void) {
                (unsigned)sys, (unsigned)VGA_HSTX_CLK_HZ);
         return false;
     }
+    // An ODD divider costs the PHASE WEIGHTS, not the picture.  The generator has
+    // no DC50 bit (only GPOUT0-3 do), so at /3 the clock is 1/3-2/3 and the DDR
+    // half-cycles alternate wide/narrow — and a phase takes every 4th half-cycle,
+    // i.e. always the SAME parity, so the weights become W,N,W,N instead of equal.
+    // A level whose four sub-samples are equal is still exact (that is most of
+    // them); only the mixed ones skew, by about one DAC step.  Harmless here where
+    // the HDMI half is not — the ladder integrates, a TMDS receiver does not.
+    if (div & 1u) {
+        printf("vga_hstx: clk_sys/%u is an ODD divider - clk_hstx duty is not 50%%, "
+               "so the four PWM phase weights are uneven (mixed levels off by ~1 "
+               "step). Prefer an even divider (clk_sys 252 or 504).\n", (unsigned)div);
+    }
     clock_configure_int_divider(clk_hstx, 0,
                                 CLOCKS_CLK_HSTX_CTRL_AUXSRC_VALUE_CLK_SYS,
                                 sys, div);

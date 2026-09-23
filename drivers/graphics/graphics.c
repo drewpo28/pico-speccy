@@ -83,6 +83,23 @@ float graphics_clk_div_at(int mode, unsigned sys_mhz, int vga)
     return (float)sys_mhz / (float)tmds;
 }
 
+// The two clock fields the menu needs to label an HSTX row, without handing it the
+// whole struct (UiTree.cpp deliberately does not include graphics.h).  Both answer
+// for the resolved table index, i.e. after vmGraphicsIndex()/graphics_fast_mode().
+unsigned graphics_mode_tmds_mhz(int mode)
+{
+    if (mode < 0 || mode >= (int)(sizeof(video_mode)/sizeof(video_mode[0]))) return TMDS_STD_MHZ;
+    return video_mode[mode].tmds_mhz ? (unsigned)video_mode[mode].tmds_mhz : TMDS_STD_MHZ;
+}
+
+uint32_t graphics_mode_vga_pixel_hz(int mode)
+{
+    if (mode < 0 || mode >= (int)(sizeof(video_mode)/sizeof(video_mode[0]))) return 0;
+    // A zero vga_* field INHERITS the HDMI one — the same rule vga_reinit() follows.
+    return video_mode[mode].vga_pixel_clk ? (uint32_t)video_mode[mode].vga_pixel_clk
+                                          : (uint32_t)video_mode[mode].pixel_clk;
+}
+
 void graphics_set_sys_clk_mhz(unsigned mhz)
 {
     if (!mhz) return;

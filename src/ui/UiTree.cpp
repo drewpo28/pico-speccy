@@ -35,6 +35,16 @@ extern "C" int   graphics_fast_mode(int mode);
 extern "C" int   vga_sm_px_bytes(void);   // 1 narrow, 4 with VGA PWM live
 #endif
 extern "C" float graphics_clk_div_at(int mode, unsigned sys_mhz, int vga);
+#if HDMI_HSTX || VGA_HSTX
+// ...and on an HSTX build the row quotes the SERIALIZER's divider instead, so it
+// needs the two clock fields behind it.
+extern "C" unsigned graphics_mode_tmds_mhz(int mode);
+extern "C" uint32_t graphics_mode_vga_pixel_hz(int mode);
+extern "C" uint32_t hdmi_hstx_div_at(unsigned tmds_mhz, uint32_t sys_hz);
+#endif
+#if VGA_HSTX
+#include "vga_pwm.h"          // vga_hstx_cycles() — header-only, <stdint.h> alone
+#endif
 #ifdef VGA_HDMI
 // vga.c. Must be declared at GLOBAL scope: inside namespace nm it would mangle to
 // nm::SELECT_VGA and fail to link, which is exactly what a local `extern` did.
@@ -235,20 +245,20 @@ static int optLabelGlyphs() {
 // the CPU clock with a fast mode staged only resolves at commit, where the g_seq
 // tie-break decides which of the two gives way.
 static bool vmFastOffered() {
-#if defined(VGA_HDMI) && (HDMI_HSTX || VGA_HSTX)
-    // On an HSTX build NEITHER output can make a 37.8 MHz pixel clock, for two
-    // different reasons, so the set is not on offer rather than listed and refused:
-    // HDMI would need clk_hstx at 189 MHz, past the 300 Mbps-per-pin rating, and
-    // VGA would need 126/3.333 cycles per pixel, which is not a whole number of
-    // cycles (see vga_hstx_cycles()). The row edits hdmi_video_mode or
-    // vga_video_mode depending on the live output — see put_videoMode.
-  #if HDMI_HSTX
-    if (!SELECT_VGA) return false;
-  #endif
-  #if VGA_HSTX
+#if defined(VGA_HDMI) && VGA_HSTX
+    // The VGA half of an HSTX build cannot make a 37.8 MHz pixel: vga_hstx_clock()
+    // pins clk_hstx at 126 MHz and 126/37.8 is not a whole number of cycles (see
+    // vga_hstx_cycles()).  189 MHz would give exactly 5, so this is a limit of that
+    // function rather than of the silicon — lift it there first if VGA ever wants
+    // these modes.  The row edits hdmi_video_mode or vga_video_mode depending on
+    // the live output — see put_videoMode.
     if (SELECT_VGA) return false;
-  #endif
 #endif
+    // NOTE the HDMI half used to be refused here too, for "clk_hstx 189 MHz is past
+    // the datasheet's 150".  That was wrong: debug/HSTX runs its 720p modes at a
+    // 74.25 MHz pixel, i.e. clk_hstx 371.25 MHz and 742 Mbps per pin — twice what
+    // we were refusing.  What these modes really need is clk_sys 378 (189 = 378/2),
+    // which resolveConstraints already forces.
     return (unsigned)Stage::get(SET_CPU_MHZ) == Config::VM_FAST_CPU_MHZ;
 }
 static bool vmRowVisible(int32_t vm, bool fastOk, int32_t staged) {
@@ -276,6 +286,39 @@ static const Option* video_modeOpts(uint8_t& cnt) {
         if (!vmRowVisible(vm, fastOk, staged)) continue;
         const uint8_t o = n++;
         opts[o] = opt_video_mode[i];
+#if HDMI_HSTX || VGA_HSTX
+        // On an HSTX build the PIO divider the label used to quote DOES NOT EXIST:
+        // the serializer is fed by clk_hstx = clk_sys / 1..4 and nothing here goes
+        // near a state machine.  Quote what the hardware is actually given.
+        //  - HDMI: the clk_sys -> clk_hstx divider, from the driver's own helper.
+        //    It is the quantity that decides whether the mode is reachable at all
+        //    (1..4, exact) and its PARITY is what the 378 MHz fault turns on.
+        //  - VGA: clk_hstx is pinned at 126 MHz, so that divider is the same for
+        //    every row and says nothing; what differs per mode is k, the clk_hstx
+        //    cycles per pixel, which sets the PWM phase weights and level count.
+        {
+            const unsigned lm = (Config::isFastVideoMode((uint8_t)vm) && mhz != Config::VM_FAST_CPU_MHZ) ? (unsigned)Config::VM_FAST_CPU_MHZ : mhz;
+            const int gi = vmGraphicsIndex(vm);
+            char tail[20];
+  #if VGA_HSTX
+            if (vga) {
+                const int k = vga_hstx_cycles(graphics_mode_vga_pixel_hz(gi));
+                if (k > 0) snprintf(tail, sizeof(tail), "hstx k=%d", k);
+                else       snprintf(tail, sizeof(tail), "hstx n/a");
+            } else
+  #endif
+            {
+                const uint32_t dv = hdmi_hstx_div_at(graphics_mode_tmds_mhz(gi),
+                                                     lm * 1000000u);
+                if (dv >= 1 && dv <= 4) snprintf(tail, sizeof(tail), "hstx /%u", (unsigned)dv);
+                else                    snprintf(tail, sizeof(tail), "hstx n/a");
+            }
+            if (lm != mhz) snprintf(lbl[o], sizeof(lbl[o]), "%s (%s@%u)",
+                                    opt_video_mode[i].label, tail, lm);
+            else           snprintf(lbl[o], sizeof(lbl[o]), "%s (%s)",
+                                    opt_video_mode[i].label, tail);
+        }
+#else
         float d = graphics_clk_div_at(vmGraphicsIndex(vm), mhz, vga);
         // With VGA PWM live the SM emits FOUR bytes per pixel, so it runs four
         // times faster and the divider the PIO is actually given is four times
@@ -298,6 +341,7 @@ static const Option* video_modeOpts(uint8_t& cnt) {
             divStr(ds, sizeof(ds), d);
             snprintf(lbl[o], sizeof(lbl[o]), "%s (div %s)", opt_video_mode[i].label, ds);
         }
+#endif  // HDMI_HSTX || VGA_HSTX
         // The space before the bracket is padding and is the first thing to give
         // up: VGA's "(div 10.0/378)" is one glyph over the 25 the pane allows,
         // and losing the space is cheaper than losing the divider to textClip's

@@ -27,6 +27,15 @@ bool hdmi_hstx_start(unsigned tmds_mhz, bool expander);
 // Stops the engine (pads keep whatever they were last set to). Safe before a restart.
 void hdmi_hstx_stop(void);
 
+// The clk_sys -> clk_hstx divider this mode would be given at `sys_hz`, WITHOUT
+// touching the hardware: the menu's Mode row labels itself with it, and on an HSTX
+// build that is the only divider there is (the PIO one the PIO path shows does not
+// exist here).  Shared with the driver rather than re-derived, so the row cannot
+// drift from what hdmi_hstx_start() programs.  1..4 are the only legal answers -
+// CLOCKS_CLK_HSTX_DIV_INT is two bits - and the parity matters: an odd divider has
+// no 50% duty correction on this generator.
+uint32_t hdmi_hstx_div_at(unsigned tmds_mhz, uint32_t sys_hz);
+
 // Diagnostics. `dump_config` prints what the hardware was actually given — the
 // engine settings, the per-pin lane map and the eight function selects — and
 // `fifo_stat` is the HSTX FIFO status register: level, empty/full, and the sticky
