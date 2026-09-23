@@ -414,9 +414,35 @@ void OSD::esp_hard_reset() {
     RTC::flushNVRAM(true);
     Nvram24::flush(true);
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
+    // PARK CORE1 BEFORE close_all(). close_all() zeroes the whole butter arena
+    // through the CACHED XIP alias and then takes the QSPI CS1 pin away from the
+    // QMI (gpio_init + drive high) — and core1 is otherwise still running the
+    // renderer and, with NeoGS on a butter board, the GS-Z80 whose code and RAM it
+    // fetches from that same PSRAM (backend=XIP). Flash and PSRAM share ONE QMI,
+    // so stealing CS1 from under an in-flight PSRAM read can wedge the XIP port,
+    // and core0's next instruction fetch from flash wedges with it: a total
+    // lockup that only the RUN/reset button clears. Reported as "sometimes F11 or
+    // a machine switch freezes the board" (2026-09-23, PCp2 + NeoGS, and the
+    // owner's own note that another RP2350 module did not show it — this is
+    // exactly the kind of margin-sensitive hazard that moves between chips).
+    // Timeout, never blocking: if core1 is ALREADY wedged, waiting forever here
+    // would turn a recoverable reboot into the very hang we are avoiding. The
+    // lockout leaves core1 spinning with IRQs off (no video, no GS) — fine, the
+    // watchdog fires a few ms later and we never come back.
+    // ...and skip the wait entirely on the boot-time reboot paths (video-mode
+    // self-heal, MIDI reflash), where core1 was never launched and the request
+    // could only ever time out.
+    const bool c1parked = multicore_lockout_victim_is_initialized(1) &&
+                          multicore_lockout_start_timeout_us(20000);
+    // Everything up to here on the wire BEFORE the dangerous part. The old flush
+    // sat after close_all(), which made that whole window — Config::save(),
+    // the 8 MB memset, the CS1 steal — a blind spot: a hang in it printed
+    // nothing at all, and the last log line ended mid-format (hw 2026-09-23).
+    Debug::log("ehr: core1 parked=%d, close_all", (int)c1parked);
+    Debug::uartFlushSync();   // drain ring + FIFO (no-op with the console off)
     close_all();
     Debug::log("ehr: close_all done, arming watchdog");
-    Debug::uartFlushSync();   // drain ring + FIFO (no-op with the console off)
+    Debug::uartFlushSync();
     // The SDK's watchdog_enable() reboot is a PSM-only reset (POWMAN CHIP_RESET
     // HAD_WATCHDOG_RESET_PSM: "powman no, swcore no, does not change the power
     // state"), so the chip comes back up with the core regulator still at our

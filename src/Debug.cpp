@@ -98,12 +98,41 @@ static uint8_t          s_dbg_tx_pin = 0xFF;
 #define DBG_UART_TAG_ON    0xDB614A70u
 #define DBG_UART_TAG_OFF   0xDB610FF0u
 
-static inline void dbg_uart_drain_fifo(void)
+// The READ index needs the same lock as the write index, and for the same
+// reason. `s_dbg_r` is a read-modify-write, and the drain is called from BOTH
+// cores outside any lock — core0's Debug::pumpUart() from the frame-pacing idle
+// and core1's own log/printf calls, which drain right after releasing the write
+// lock. Two cores draining at once read the same index, send the same byte
+// twice and can advance `s_dbg_r` PAST `s_dbg_w`, after which the "empty" test
+// holds for another 4095 bytes and the whole ring is re-sent as stale garbage.
+// Signature in a capture (hw 2026-09-23): pieces of ONE line coming out in the
+// wrong ORDER, e.g. "render:" + "s_init begin," + " freeHeap=67424" + "graphic"
+// for "render: graphics_init begin, freeHeap=67424", and "| sig 55AA" spliced
+// into the middle of an NgsSd dump. Same lesson this file's notes keep
+// repeating: a diagnostic that lies costs more than the bug it was hiding.
+//
+// Locked PER BYTE, not around the whole loop: dbg_lock disables interrupts, and
+// dbg_uart_flush_sync() can wait out a full 4 KB ring (~355 ms at 115200) —
+// holding IRQs off for that would be far worse than the race.
+// `lock` is false ONLY on the fault path: the context that crashed may be the
+// one holding dbg_lock, and spin_lock_blocking on the same core would then
+// deadlock instead of printing the crash.
+static inline bool dbg_uart_pop_to_fifo(bool lock)
 {
-    while (s_dbg_r != s_dbg_w && uart_is_writable(s_dbg_uart)) {
+    const uint32_t save = lock ? dbg_lock() : 0;
+    bool sent = false;
+    if (s_dbg_r != s_dbg_w && uart_is_writable(s_dbg_uart)) {
         uart_get_hw(s_dbg_uart)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
         s_dbg_r = (s_dbg_r + 1) & (DBG_TX_RING - 1);
+        sent = true;
     }
+    if (lock) dbg_unlock(save);
+    return sent;
+}
+
+static inline void dbg_uart_drain_fifo(void)
+{
+    while (dbg_uart_pop_to_fifo(true)) { }
 }
 
 static inline bool dbg_uart_put(char c)
@@ -125,16 +154,19 @@ static inline void dbg_uart_put_sync(char c)
     uart_get_hw(s_dbg_uart)->dr = (uint8_t)c;
 }
 
-static void dbg_uart_flush_sync(void)
+static void dbg_uart_flush_sync_ex(bool lock)
 {
     while (s_dbg_r != s_dbg_w) {
         uint32_t spin = 0;
         while (!uart_is_writable(s_dbg_uart))
             if (++spin >= 200000u) return;
-        uart_get_hw(s_dbg_uart)->dr = (uint8_t)s_dbg_ring[s_dbg_r];
-        s_dbg_r = (s_dbg_r + 1) & (DBG_TX_RING - 1);
+        // A losing race for the byte (the other core took it, or the FIFO
+        // filled in between) is not an exit condition — only an empty ring is.
+        if (!dbg_uart_pop_to_fifo(lock) && s_dbg_r == s_dbg_w) return;
     }
 }
+
+static void dbg_uart_flush_sync(void) { dbg_uart_flush_sync_ex(true); }
 
 // stdio driver: printf → ring. CRLF translation is left to the SDK (crlf_enabled),
 // which inserts the '\r' before handing us the '\n'.
@@ -312,8 +344,8 @@ void Debug::fault_log(const char* fmt, ...)
     if (n > (int)sizeof(bufs[0]) - 1) n = sizeof(bufs[0]) - 1;
 
     // Crashing: block as needed, and get the queued backlog out first so the
-    // fault lines land in order.
-    dbg_uart_flush_sync();
+    // fault lines land in order. Lock-free — see dbg_uart_pop_to_fifo.
+    dbg_uart_flush_sync_ex(false);
     for (int i = 0; i < n; i++) {
         if (buf[i] == '\n') dbg_uart_put_sync('\r');
         dbg_uart_put_sync(buf[i]);

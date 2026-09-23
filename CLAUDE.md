@@ -5808,6 +5808,77 @@ mismatch shows as ~1 judder/s instead).
   is on the far side of a boot-only init (here: core1's `hdmi_init`), not in the
   reset path — that is where to look first, not at `Config::arch`.
 
+## `close_all()` tears the PSRAM off the QMI while core1 is still running (2026-09-23; runs on hw, root cause NOT established)
+
+"Sometimes F11 or a machine switch freezes the board; only the RUN button
+helps" (PCp2, HSTX build, NeoGS on). The capture
+(`logs/devttyACM0_2026_09_23.10.20.42.572.txt`) ends **mid-format**:
+
+    runInternal: sp=2007f7a0 heap=78112 largest=76940
+    budgetCheck(TS-Conf): block=73684 total=74856
+
+i.e. ~46 bytes of that line reached the FIFO and nothing ever drained the rest.
+That is a Profi -> TS-Conf switch: `MachineSwitch::commit` ->
+`featureBudgetGate(FEAT_TSCONF)` (ALLOW) -> `wantedPages(TS-Conf)=250 !=
+MEM_PG_CNT=58` -> `esp_hard_reset()`.
+
+- **The whole window was a BLIND SPOT, and that is the first thing fixed.**
+  Nothing between the `budgetCheck` log and the watchdog calls `pumpUart()`, and
+  `Debug::uartFlushSync()` sat AFTER `close_all()` — so "hung in `Config::save()`",
+  "hung in `close_all()`" and "hung on the clock/VREG switch" all print exactly
+  the same nothing. The flush and a `ehr: core1 parked=N, close_all` line now run
+  BEFORE `close_all()`. **Rule: a synchronous flush belongs before the dangerous
+  step, not after it.**
+- **The hazard itself**: `close_all()` (ESPectrum.cpp) memsets the WHOLE butter
+  arena through the cached XIP alias and then `gpio_init`s the QSPI **CS1** pin,
+  i.e. takes it away from the QMI — while **core1 is still running** the renderer
+  and, with NeoGS on a butter board, the GS-Z80 whose code and RAM it fetches
+  from that same PSRAM (`backend=XIP`). Flash and PSRAM share ONE QMI: stealing
+  CS1 from under an in-flight PSRAM read can wedge the XIP port, and core0's next
+  instruction fetch from flash wedges with it — a lockup only RUN clears, and
+  "sometimes", because it depends on what core1 happened to be doing.
+  `esp_hard_reset` now parks core1 first (`multicore_lockout_start_timeout_us`,
+  20 ms, and skipped when `multicore_lockout_victim_is_initialized(1)` is false —
+  the boot-time reboot paths have no core1 to park). **Never block on the
+  lockout here**: if core1 is already wedged, waiting for ever would turn a
+  recoverable reboot into the hang it exists to avoid.
+- Owner's own note (same day): swapping in a different RP2350 module made it go
+  away. That is consistent — this is the same class as the m1p2 warm-reboot
+  entry above, a margin-sensitive path that moves between chips, not proof that
+  the software is innocent.
+- **The memset is NOT removed** (8 MB through XIP, hundreds of ms on every
+  reboot, and the exact operation that thrashes the shared cache) — it is the
+  next thing to question if this recurs, together with whether the CS1 steal is
+  needed at all.
+
+### ...and the console reordered its own lines (same session)
+
+`dbg_uart_drain_fifo()` did a read-modify-write of `s_dbg_r` and was called from
+**both cores outside `dbg_lock`** — core0's `Debug::pumpUart()` and core1's own
+log/printf, which drain right after RELEASING the write lock. Two cores draining
+at once send the same byte twice and can push `s_dbg_r` PAST `s_dbg_w`, after
+which the "empty" test holds for another 4095 bytes. Signature: pieces of ONE
+line out of ORDER — `render:` + `s_init begin,` + ` freeHeap=67424` + `graphic`
+for "render: graphics_init begin, freeHeap=67424", and `| sig 55AA` spliced into
+the middle of an `NgsSd` dump. Now `dbg_uart_pop_to_fifo(lock)` claims the index
+under the same spinlock, **per byte** — the lock disables interrupts and
+`dbg_uart_flush_sync` can wait out a full 4 KB ring (~355 ms at 115200), which
+must not be an IRQ-off window. `Debug::fault_log` keeps the lock-free path
+(`flush_sync_ex(false)`): the context that crashed may be the one holding it.
+
+Test ELF `debug/PCp2-ehr-core1park-1.0.6.elf`. **Hw 2026-09-23, owner: "works,
+no problems so far"** — so read it as the NO-REGRESSION half: F11, machine
+switches and the reboot path all still work with core1 parked and the flush
+moved. It does **not** establish that this was the cause of the freeze, and the
+reason is worth keeping: the freeze was intermittent, and the owner had already
+swapped the RP2350 module before this build ("another one, works for now"), so
+the run may well be on the module that never showed it. **Still owed**: repeated
+F11 and Profi <-> TS-Conf switches with NeoGS on, on the module that DID freeze.
+Whatever happens, the log must now carry `ehr: core1 parked=1, close_all` before
+every reboot — that line is what localises the next occurrence, and a reboot
+without it means the lockout timed out, i.e. core1 was already wedged before
+`esp_hard_reset` was reached.
+
 ## Gigascreen auto-yield + boot notices (2026-08-13, NOT hw-tested)
 
 The menu commit path never shows `featureBudgetGate`'s free-list (it reboots

@@ -1659,16 +1659,11 @@ ELSE()
     # this branch — the TFT/TV/SOFTTV displays have no HDMI at all.
     # HDMI_HSTX_ON: 0 PIO, 1 raw serializer, 2 command expander + TMDS encoder.
     IF(HDMI_HSTX STREQUAL "AUTO")
-        IF(PICO_PC)
+        IF(PICO_PC OR MURM2)
             # The raw form is hw-confirmed here (picture + HDMI audio, 2026-09-17);
             # the expander form is the owner's pick for this board (2026-09-22) and
             # has NOT been on hardware yet — see docs/hstx-m2p2-plan.md.
             SET(HDMI_HSTX_ON 2)
-        ELSEIF(MURM2)
-            # Same raw code as PCp2 with one row of the lane table changed ({2,4,6}
-            # against PCp2's {2,6,4}), proved pin by pin on the host — but nobody has
-            # put an HSTX image on a Murmulator 2 yet. Stays raw until then.
-            SET(HDMI_HSTX_ON 1)
         ELSE()
             SET(HDMI_HSTX_ON 0)
         ENDIF()
