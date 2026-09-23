@@ -5552,7 +5552,7 @@ a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
   CRT grille, dither, DS80/GMX/Timex, a capture card, menu/F8/FDD lamp, the Speed Test
   row against RAW and PIO, a TS-Conf 256c title (pool 240).
 
-## VGA per-pixel PWM: a runtime setting, on the PIO as well as HSTX (2026-09-23, the PIO half NOT hw-tested)
+## VGA per-pixel PWM: a runtime setting, on the PIO as well as HSTX (2026-09-23; the HSTX half hw-confirmed on m2p2, the PIO half NOT hw-tested)
 
 **Video > VGA > Colour** — `Config::vga_pwm` (NVS `vga_pwm`, `SET_VGA_PWM`,
 **AC_REBOOT**) — picks between four PWM sub-samples per output pixel and the Bayer
@@ -5663,6 +5663,11 @@ and the DMA sink differ.
 - `tools/vga_pwm_test.c` covers **k=2, which IS the PIO path** (four equal phase
   slots, weights 1,1,1,1, all 13 levels reachable with zero error) alongside the HSTX
   k=3..8. Same table, same test, 12519 checks.
+- **The HSTX half is hw-confirmed** (m2p2, 2026-09-23 — see the VGA-on-HSTX
+  section): a wide pixel there carries the four PWM sub-samples and the ladder
+  integrates them. What that does NOT cover is the PIO half, which is a different
+  question — there the four phases cost 4x the line DMA and the SM runs at 4x the
+  pixel clock, neither of which HSTX exercises.
 - **Hw check owed, and this half IS testable — m1p2 VGA**: turn Colour to PWM,
   reboot, and compare against Dither on a ULA+ title, a TS-Conf 256c screen and a
   plain ZX screen — the 2x2 pattern should be gone with the same 13 levels per
@@ -5670,7 +5675,7 @@ and the DMA sink differ.
   (84 MB/s of line DMA), scanlines, the CRT grille, DS80/GMX/Timex, and a machine
   switch between 640x480 and 720x576.
 
-## VGA on HSTX (2026-09-23; re-timing hw-confirmed on m1p2, TRANSPORT hw-confirmed on PCp2, the COLOUR still untested)
+## VGA on HSTX (2026-09-23; hw-confirmed on m2p2 — and separately: re-timing on m1p2, transport on PCp2)
 
 The VGA half of the GPIO 12-19 boards runs off the same serializer as HDMI, with
 **four PWM sub-samples per pixel** instead of one 2-bit-per-channel byte: the
@@ -5797,13 +5802,23 @@ more than the 640x480 geometry; it wants h_total 720 and a 1.33 us back porch.
   cycling 0x007/0x107/0x108 — level 7-8 of 8 with **WOF (0x400) never set**, the
   same signature the HDMI half gave on this board. Note the line ISR is DMA-driven,
   so a steady rate proves the VIDEO chain, not that core0 is alive.
-- **Still owed, and it is only the analogue half**: what the ladder does with a
-  3.97 ns phase (252 M transitions/s) and whether the integrated levels are linear.
-  That is the colour, and it needs a board with a VGA connector — m2p2/m2p2w. On it:
-  a picture at all, then colours against the `-NOPWM` image (a wrong colour there is
-  the transport, a wrong colour only with PWM on is the table), then scanlines, the
-  CRT grille, DS80/GMX/Timex pair modes, a machine switch between 640x480 and
-  720x576 (k 6 -> 5, the one path that reprograms the engine live), and `[PERF] 60f`.
+- **Hw 2026-09-23, owner: m2p2 VGA on HSTX works.** That is the half nothing here
+  could answer — the ANALOGUE one. A picture at all on that board settles the
+  question the whole design rested on: the resistor ladder DOES integrate a
+  **3.97 ns phase** (252 M transitions/s on eight GPIOs, four PWM sub-samples per
+  pixel), the pads drive it, and the re-timed clocks (21 MHz = 126/6 for the
+  640x480 50 Hz set, 25.2 = 126/5 elsewhere) come out of the serializer as a
+  signal a monitor locks to. With `Config::vga_pwm` defaulting ON for an HSTX
+  build, the run also exercised the PWM table rather than the flat-byte fallback.
+  The verdict is NOT itemised, so read it as "picture and colours", nothing more.
+  **Still owed on that board**, in order of risk: the colours against the
+  `-NOPWM` image (a wrong colour there is the transport, a wrong colour only with
+  PWM on is the level table — that is the one bisect worth keeping); a machine
+  switch between 640x480 and 720x576 (k 6 -> 5, the ONE path that reprograms the
+  engine live); scanlines, the CRT grille and the DS80/GMX/Timex pair modes;
+  378/504 MHz (clk_hstx is 126 at all three, but the PIO-side divider and the
+  audio ISR are not); and `[PERF] 60f` against the PIO path — the video DMA goes
+  20 -> ~100 MB/s, which is the figure the HDMI half is hw-proven at.
 - Hand-out images live in `debug/`: `m2p2-vgahstx-*.uf2` (plain / `-trace` /
   `-nopwm`) and `PCp2-vgahstx-*`. `VGA_HSTX_PWM=OFF` is a CMake option and tags the
   name `-NOPWM`, because two images that differ only in palette CONTENT and look
