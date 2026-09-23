@@ -2248,6 +2248,15 @@ static const uint8_t ts_pwm[32] = {
 // but "Alone" NN=0xA0 and the Mars/Ocean matrices all cross a level boundary).
 static inline uint32_t vgaGridSnapChan(uint32_t v) { return ((v * 3 + 127) / 255) * 85; }
 static inline uint32_t vgaGridSnap(uint32_t rgb) {
+#if VGA_HSTX
+    // Nothing to snap to: on the serializer a "solid" entry is four PWM
+    // sub-samples, not a 2-bit DAC code, so pre-quantising to {0,85,170,255}
+    // only throws away precision the ladder could have carried (162 -> 170 is
+    // 8/255, and at 25.2 MHz the level step is 255/29).  The snap exists because
+    // the PIO path's solid setter TRUNCATES (vga6_of, c/85); the HSTX one does
+    // not quantise at all.
+    return rgb;
+#endif
     return (vgaGridSnapChan((rgb >> 16) & 0xFF) << 16)
          | (vgaGridSnapChan((rgb >>  8) & 0xFF) <<  8)
          |  vgaGridSnapChan(rgb & 0xFF);
@@ -4774,8 +4783,14 @@ void VIDEO::Reset() {
     // PIO divider, so anything else falls back to the 25.2 MHz twin here as well
     // as in Config::load() — this is the path a live Overclock change reaches.
     const uint8_t vmSel   = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
-    const bool    useFast = Config::isFastVideoMode(vmSel) &&
+    bool          useFast = Config::isFastVideoMode(vmSel) &&
                             Config::cpu_mhz == Config::VM_FAST_CPU_MHZ;
+#if VGA_HSTX
+    // The serializer has no 37.8 MHz: 126 MHz / 3.333 is not a whole number of
+    // clk_hstx cycles per pixel. The menu hides the set (vmFastOffered), this is
+    // the backstop for a mode persisted by a PIO build or another board.
+    if (SELECT_VGA) useFast = false;
+#endif
     if (SELECT_VGA)
     {
         switch (Config::baseVideoMode(vmSel)) {

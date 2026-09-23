@@ -232,12 +232,19 @@ static int optLabelGlyphs() {
 // the CPU clock with a fast mode staged only resolves at commit, where the g_seq
 // tie-break decides which of the two gives way.
 static bool vmFastOffered() {
-#if HDMI_HSTX && defined(VGA_HDMI)
-    // On an HSTX build the row edits hdmi_video_mode whenever HDMI is the live
-    // output (see put_videoMode), and the serializer cannot make that pixel clock
-    // inside its rating — so the set is simply not on offer there. With the VGA
-    // jumper in, the same row edits vga_video_mode and the PIO path can.
+#if defined(VGA_HDMI) && (HDMI_HSTX || VGA_HSTX)
+    // On an HSTX build NEITHER output can make a 37.8 MHz pixel clock, for two
+    // different reasons, so the set is not on offer rather than listed and refused:
+    // HDMI would need clk_hstx at 189 MHz, past the 300 Mbps-per-pin rating, and
+    // VGA would need 126/3.333 cycles per pixel, which is not a whole number of
+    // cycles (see vga_hstx_cycles()). The row edits hdmi_video_mode or
+    // vga_video_mode depending on the live output — see put_videoMode.
+  #if HDMI_HSTX
     if (!SELECT_VGA) return false;
+  #endif
+  #if VGA_HSTX
+    if (SELECT_VGA) return false;
+  #endif
 #endif
     return (unsigned)Stage::get(SET_CPU_MHZ) == Config::VM_FAST_CPU_MHZ;
 }
@@ -923,6 +930,20 @@ static bool p_vgaOut() {
 #endif
 }
 
+// ...and whether the VGA submenu has anything in it.  Its one row is the Bayer
+// dither, and on the HSTX back-end there is no dither to choose: a palette entry
+// is four PWM sub-samples per pixel whichever setter wrote it, so
+// vga_set_palette_entry_solid() and vga_set_palette_entry() produce the same pair
+// and the row would be a switch that does nothing.  Hidden rather than left
+// lying — the same call the expander's Capture-safe colours row got.
+static bool p_vgaDither() {
+#if VGA_HSTX
+    return false;
+#else
+    return p_vgaOut();
+#endif
+}
+
 // Video > VGA — the analogue of Video > HDMI. The DAC is 2 bits per channel, so
 // anything off that 64-colour grid is either dithered or snapped; the 16 flat ZX
 // colours are always snapped (they would shimmer), this row is about the
@@ -932,13 +953,13 @@ static const Option opt_vga_dither[] = {
     { "Solid 2:2:2 (64 colours)", 0, "Solid" },
 };
 static const Node kVga[] = {
-    NM_RADIO(TXT_VID_VGA_DITHER, SET_VGA_DITHER, opt_vga_dither, nullptr),
+    NM_RADIO(TXT_VID_VGA_DITHER, SET_VGA_DITHER, opt_vga_dither, p_vgaDither),
 };
 
 static const Node kVideo[] = {
     NM_RADIO_D(TXT_VID_MODE,     SET_VIDEO_MODE, video_modeOpts, nullptr),
     NM_SUB  (TXT_VID_HDMI,       kHdmi,          p_hdmiOut),
-    NM_SUB  (TXT_VID_VGA,        kVga,           p_vgaOut),
+    NM_SUB  (TXT_VID_VGA,        kVga,           p_vgaDither),
     NM_RADIO(TXT_VID_PALETTE,    SET_PALETTE,    opt_palette,    nullptr),
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),

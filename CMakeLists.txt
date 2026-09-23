@@ -39,6 +39,12 @@ set_property(CACHE HDMI_HSTX PROPERTY STRINGS AUTO OFF RAW TMDS ON)
 # ~20 UART lines and a 4 ms stall on core1 at every boot, and the one line that
 # names the back-end and its clock prints unconditionally anyway.
 option(HDMI_HSTX_TRACE "HSTX: dump the pad map, the line rate and the Data Island at boot" OFF)
+# VGA on HSTX carries four PWM sub-samples per output pixel, which is the whole point
+# of it (per-pixel colour instead of a 2-bit DAC plus a Bayer block).  Turning it OFF
+# builds the palette with all four phases equal — byte for byte what the PIO would
+# have driven — so a colour fault on a board nobody here owns can be told from a
+# transport fault without a logic analyser.  The image is named ...-NOPWM.
+option(VGA_HSTX_PWM "VGA on HSTX: four PWM sub-samples per pixel (OFF = the PIO's flat byte, for bisecting)" ON)
 option(MURM "Murmulator 1.x + Pi Pico 2" OFF)
 option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
 option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
@@ -1681,6 +1687,16 @@ ELSE()
                 "that is PICO_PC, MURM2 and MURM2_W only")
         ENDIF()
         target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX=${HDMI_HSTX_ON})
+        # The VGA half of the same board moves with it.  It is not a second
+        # decision: HSTX drives GPIO 12-19 and both outputs live there, so a
+        # board that can serialize HDMI can serialize VGA, and the VGA pixel
+        # clocks in video_mode_table.h are chosen to be 126 MHz / k for exactly
+        # this.  What it buys is the COLOUR — four PWM sub-samples per pixel
+        # instead of one 2-bit-per-channel value plus a Bayer block.
+        target_compile_definitions(${PROJECT_NAME} PRIVATE VGA_HSTX=1)
+        IF(NOT VGA_HSTX_PWM)
+            target_compile_definitions(${PROJECT_NAME} PRIVATE VGA_HSTX_PWM=0)
+        ENDIF()
         IF(HDMI_HSTX_TRACE)
             target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX_TRACE=1)
         ENDIF()
@@ -1710,6 +1726,14 @@ ELSEIF(HDMI_HSTX_ON)
     SET(BUILD_NAME "${BUILD_NAME}-HSTX-RAW")
     SET(VARIANT_TAG "+HSTXRAW")
     SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
+ENDIF()
+# A bisect image differs from its sibling ONLY in the palette contents, so it has to
+# say so in its name and on the Hardware Info row — handing a tester two files that
+# look identical is how a verdict gets attached to the wrong one.
+IF(HDMI_HSTX_ON AND NOT VGA_HSTX_PWM)
+    SET(BUILD_NAME "${BUILD_NAME}-NOPWM")
+    SET(VARIANT_TAG "${VARIANT_TAG}+NOPWM")
+    SET(DISPLAY_TAG "${DISPLAY_TAG}+NOPWM")
 ENDIF()
 
 SET(BUILD_NAME "${BUILD_NAME}-${PORT_VERSION}")

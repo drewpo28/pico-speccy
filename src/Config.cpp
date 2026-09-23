@@ -1481,6 +1481,11 @@ void Config::load() {
         // one still drives the PIO path, which can do it.
         hdmi_video_mode = baseVideoMode(hdmi_video_mode);
 #endif
+#if VGA_HSTX
+        // ...and on the VGA half of an HSTX build for a different reason: 126 MHz
+        // is not a whole number of clk_hstx cycles per 37.8 MHz pixel.
+        vga_video_mode = baseVideoMode(vga_video_mode);
+#endif
         nvs_get_b("v_sync_enabled", v_sync_enabled, sts);
         // ...and they drive the display faster than the machine, so v_sync pacing
         // (one emulated frame per display frame) would run it 50% fast.

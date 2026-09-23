@@ -23,41 +23,7 @@ extern "C" {
 #include "font8x8.h"
 #include "font8x16.h"
 
-typedef struct video_mode_t{
-  int v_total;
-  int v_active;
-  int freq;
-  int pixel_clk;
-  int vsync_start;
-  int vsync_end;
-  int screen_width;
-  int h_sync_bytes;
-  int h_bp_bytes;
-  int h_fp_bytes;
-  int line_bytes;
-  int v_offset;
-  float pio_clk_div; // PIO divider = sys_clk / TMDS_clk, must be integer or half-integer (n/2)
-  // TMDS bit clock this mode is built for, MHz (0 = the 252 MHz default, i.e.
-  // 25.2 MHz pixel).  graphics_set_sys_clk_mhz() re-derives pio_clk_div from it
-  // whenever sys_clk moves, so a mode that wants a different pixel clock (the
-  // 90/75 Hz set: 378 MHz TMDS = 37.8 MHz pixel) keeps it at every CPU clock.
-  int tmds_mhz;
-  // VGA-only overrides for fields above. If 0/zero, VGA uses the main fields.
-  // HDMI never reads these — its timing is unaffected.
-  int vga_v_total;
-  int vga_v_active;
-  int vga_pixel_clk;
-  int vga_vsync_start;
-  int vga_vsync_end;
-  int vga_h_sync_bytes;
-  int vga_h_bp_bytes;
-  int vga_h_fp_bytes;
-  int vga_screen_width;
-};
-
-// video_mode[] index offset of the 37.8 MHz ("fast") twin of a standard mode:
-// entries [0]..[7] have their x1.5-refresh counterpart at [9]..[16].
-#define VMODE_FAST_OFFSET 9
+#include "video_modes.h"
 
 enum graphics_mode_t {
     TEXTMODE_DEFAULT,

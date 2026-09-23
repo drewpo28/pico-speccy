@@ -229,7 +229,25 @@ Still unexercised on hardware: the other CPU clocks (252/504), scanlines, the CR
 grille, dither, DS80/GMX/Timex pair modes, a capture card, and `[PERF] 60f` before
 and after — which is the reason the port exists.
 
-## The VGA half cannot use HSTX at all — a 2-bit register field (2026-09-17)
+## SUPERSEDED 2026-09-23 — the VGA half DOES use HSTX; the mode table moved instead
+
+The section below is kept as written because its arithmetic is right and its
+conclusion is wrong, which is the useful part.  It takes the shipped VGA pixel
+clocks (19.894737 and 27 MHz) as a requirement and finds them unreachable — they
+are unreachable, at every CPU clock.  But they are a CHOICE the PIO's fractional
+divider made possible, not a property of the modes: what a monitor and the emulator
+care about is the refresh and the active fraction of the line, and both survive a
+change of pixel clock if h_total moves with it.  Re-timed onto 126 MHz / k
+(640x480 -> 21 MHz with h_total 840, the 720-wide modes -> 25.2 MHz with h_total
+824) every VGA mode is reachable, the refresh error gets SMALLER, and the clocks
+become exact integer PIO dividers at 252/378/504 as well.  See the "VGA on HSTX"
+section of CLAUDE.md; `tools/vga_timing_test.c` pins the numbers.
+
+It also assumes k must be EVEN, "because the 4 phases need two DDR cycles".  They
+do not: an odd k gives the phases unequal weights (k=5 is 3,3,2,2) and MORE levels
+than the equal-weight case, and that is what puts 25.2 MHz in reach.
+
+## The VGA half cannot use HSTX at all — a 2-bit register field (2026-09-17, WRONG — see above)
 
 **`CLOCKS_CLK_HSTX_DIV_INT` is TWO BITS (`0x00030000`) and there is no FRAC field.**
 Every other clock in the block has a 16.16 int+frac divider; clk_hstx has integer

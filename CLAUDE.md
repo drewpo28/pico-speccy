@@ -5386,8 +5386,9 @@ a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
   own TMDS symbols in 32-bit words (`ch0 | ch1<<10 | ch2<<20`) instead of 64-bit
   differential ones. Halves the video DMA (201 -> 100 MB/s), frees an SM + 10
   instructions, gives an integer video clock at 252/378/504 (`clk_hstx` 126 MHz =
-  sys/2,3,4 — the divider field is TWO BITS, 1..4, no fraction, which is also why
-  VGA-PWM-over-HSTX is impossible: 19.96/27 MHz are unreachable). Palette pool
+  sys/2,3,4 — the divider field is TWO BITS, 1..4, no fraction; that constraint is
+  also what the VGA half had to be re-timed around, see the VGA-on-HSTX section
+  below — the old claim here that it made VGA impossible was wrong). Palette pool
   unchanged (184). `CLKPHASE = 5`, not 0, or the clock pair is inverted against the
   PIO path. ACR pixel clock must be ARITHMETIC over clk_sys, never the live register:
   `hdmi_audio_hw_init` runs on core0 before core1 programs the serializer (hw: audio
@@ -5550,6 +5551,143 @@ a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
 - **Hw owed for TMDS (PCp2)**: picture at 252/378/504, colours, HDMI audio, scanlines,
   CRT grille, dither, DS80/GMX/Timex, a capture card, menu/F8/FDD lamp, the Speed Test
   row against RAW and PIO, a TS-Conf 256c title (pool 240).
+
+## VGA on HSTX (2026-09-23; re-timing hw-confirmed on m1p2, TRANSPORT hw-confirmed on PCp2, the COLOUR still untested)
+
+The VGA half of the GPIO 12-19 boards runs off the same serializer as HDMI, with
+**four PWM sub-samples per pixel** instead of one 2-bit-per-channel byte: the
+resistor ladder and the monitor's input integrate them, so every pixel carries its
+own level, there is no Bayer block to beat against 1-pixel detail, and the 16 flat
+ZX colours stop needing the solid / `vgaGridSnap` fork. `VGA_HSTX=1` rides on
+`HDMI_HSTX` in CMakeLists (same eight pins, same board rule: PICO_PC, MURM2,
+MURM2_W).
+
+**The blocker that had to move first, and it was the MODE TABLE, not the code.**
+`CLOCKS_CLK_HSTX_DIV_INT` is a TWO-BIT field with no FRAC (verified in the SDK
+headers), and `clk_hstx` AUXSRC offers only clk_sys / pll_sys / pll_usb (48 MHz,
+USB's) / gpin — so clk_hstx is clk_sys/{1,2,3,4}, i.e. **126 MHz at 252, 378 and
+504 alike**, exactly as HDMI uses it. A pixel then lasts `k` clk_hstx cycles
+(`CSR.N_SHIFTS = k`, `SHIFT = 16`), so the reachable pixel clocks are **126 MHz / k,
+k an integer 1..32** — and the shipped 19.894737 and 27 MHz were in that set at no
+CPU clock. The docs/plan file's conclusion ("the VGA half cannot use HSTX at all")
+followed from treating those two clocks as fixed; they are not, they are a choice
+the PIO's fractional divider made possible.
+
+- **640x480 50 Hz** (`[1][2][3]`): 19.894737 -> **21 MHz** (126/6), h_total 800 ->
+  **840**, so the 25.0 kHz line rate and with it v_total and the whole vertical
+  geometry stay put; the extra 40 px go to the porches and the active area is 76.2%
+  of the line instead of 80%. v_total 511/499/498 -> **512/499/500**, and Pentagon
+  becomes EXACT: 25000/512 = 48.828125 Hz, which is 3500000/71680 to the digit.
+- **720-wide** (`[4][5][6][7]`): 27 -> **25.2 MHz** (126/5), h_total 880 -> **824**,
+  v_total 628/614/612/521 -> **626/611/611/510**. The active area GROWS, 81.8% ->
+  87.4% of the line, and the vertical fraction is unchanged.
+- **`[0]` and `[8]` do not move at all**: they were already at 25.2 MHz, because
+  vga.c's truncated CLKDIV turns the 25.175 nominal into exactly 25.2 at all three
+  CPU clocks. They now say so (`vga_pixel_clk = 25200000`) instead of relying on the
+  coincidence.
+- **The old comments were wrong twice and both mattered.** `vga_h_fp_bytes = 0`
+  means INHERIT, so the 720-wide h_total was 880, not the 864 the comment claimed —
+  which is why `[7] 720x480 60Hz` ran at **58.89 Hz**, 1.85% slow, and is now 59.97.
+  Every other mode's refresh error also shrank (worst 0.22% -> 0.06%).
+- **Free side effect on the PIO path**: 21 and 25.2 MHz are exact integer dividers
+  of 252, 378 AND 504 (12/18/24 and 10/15/20), where 19.894737 lost a whole 1/16
+  step to the truncation and came out 0.33% high at 252/378 and 0.25% low at 504.
+  So the VGA refresh no longer depends on the Overclock setting.
+
+**k need not be even, and assuming it did was the second wrong turn.** An odd k
+gives the four phases UNEQUAL weights — k=5 is 3,3,2,2 half-cycles of 10 — which is
+what puts 25.2 MHz in reach at all and buys MORE levels, not fewer: 3a+3b+2c+2d
+reaches 29 of the 31 sums 0..30 (1 and 29 are the two it cannot make) against 13
+evenly spaced for k=4 or 6. So the 720-wide and 60 Hz modes get **29 levels per
+channel** and the 640x480 set **13** — the same count the Bayer block reaches
+today, but PER PIXEL. 18 MHz (k=7, 37 levels) is the lever if depth ever matters
+more than the 640x480 geometry; it wants h_total 720 and a 1.33 us back porch.
+
+- **The pair is the unit.** `vga_pair_t` is a `uint16_t` on the PIO and two
+  `uint32_t` on HSTX, and every palette table, the background and the render loop
+  are written in pairs — one source byte is two output pixels either way — so the
+  ISR, the `x^2` swizzle and all the pointer arithmetic are the SAME code and only
+  the type, three DMA numbers and the engine bring-up differ. The PIO path is
+  byte-for-byte what it was (+32 B of RAM for the background-colour cache).
+- **`vga_pack_pair_c()` is the one place a pair is built**, and the two
+  representations take DIFFERENT inputs: the PIO gets the 6-bit values the Bayer
+  block quantised to, HSTX gets the tap COLOURS. That is why `vga_crt_subpixels()`
+  now also hands back `tap[4]`.
+- **`VGA_HSTX_PWM=0`** builds the palette with all four phases equal, i.e. exactly
+  the byte the PIO would have driven. It is the bisect for an untestable path: a
+  wrong colour there is the transport, a wrong colour only with PWM on is the table.
+- **Every arbitrary guest palette loses the Bayer block, not just the ZX 16** —
+  ULA+ (`applyUlaPlusPalette` -> `graphics_set_palette` -> `vga_set_palette_entry`),
+  TS-Conf CRAM, Gigascreen blends and the custom palettes all arrive through the
+  dithered setter and come out as per-pixel PWM. In the 640x480 set (k=6) the LEVEL
+  COUNT is the same 13 the 2x2 block reached, so only the spatial pattern goes; in
+  the 720-wide and 60 Hz modes (k=5) it is 29, which the PIO path cannot reach at all.
+- **Two things that were right for the PIO and wrong for HSTX, found by asking what
+  ULA+ does (2026-09-23):** `vgaGridSnap()` pre-quantises to {0,85,170,255} before
+  the solid setter — it exists because the PIO's solid path TRUNCATES (`vga6_of`,
+  c/85), and on HSTX, which does not quantise at all, it only throws precision away
+  (162 -> 170 is 8/255 against a level step of 255/29). It is the identity under
+  `VGA_HSTX`. And **Video > VGA > Colour depth has nothing left to govern**: the
+  solid and dithered setters produce the same pair, so the row (and its now-empty
+  submenu) is hidden by `p_vgaDither` rather than left as a switch that does
+  nothing — the same call the expander's Capture-safe colours row got.
+- **The 90/75 Hz set is hidden on a VGA-HSTX build** (`vmFastOffered`, plus
+  backstops in `VIDEO::Reset` and `Config::load`): 126/37.8 = 3.333 is not a whole
+  number of cycles. The HDMI half already hid them for the other reason (189 MHz
+  clk_hstx, past the rating).
+- Cost: ~26.6 KB of heap on a VGA boot (templates 16 KB + palettes ~10 KB, against
+  ~6.6 KB), all lazily allocated behind `getLargestAllocatable()` as before; +1 KB
+  of `.bss` for the PWM table. Video DMA 20 -> ~100 MB/s, the same figure the HDMI
+  TMDS path is hw-proven at.
+- **Two host tests, and they are the only thing standing behind this:**
+  `tools/vga_timing_test.c` reads the SHIPPED `video_mode_table.h` and pins every
+  VGA mode's clock (126/k), its exact PIO divider at 252/378/504, `line_size % 4`
+  and `shift_picture % 4`, the refresh against the machine it is for, and the sync /
+  porch widths — six hand-applied mutations each fail it. `tools/vga_pwm_test.c`
+  pins the weights against a brute-force count, the level table's monotonicity,
+  accuracy and flatness, the half-cycle ORDER against a sequence written from the
+  datasheet rather than from the model, and which pixel clocks are reachable —
+  seven mutations each fail it. **Re-run both after any change to
+  `video_mode_table.h` or `vga_pwm.h`.**
+- **The unknown nobody here can close**: a phase is one half of a clk_hstx cycle,
+  **3.97 ns**, so the ladder sees 252 M transitions/s. The pads do it already (the
+  TMDS path drives the same GPIOs at 252 Mbps) and a ladder's RC has to settle
+  inside a 40 ns pixel anyway, but whether the INTEGRATED level is linear at that
+  rate is a measurement. Pads are left at the PIO path's 4 mA — the ladder's
+  resistors were chosen around that impedance — with FAST slew, which is the one
+  thing that had to change.
+- **Hw 2026-09-23, m1p2 (PIO): the re-timed modes are accepted.** Every 50/60 Hz
+  mode locks and the monitor labels it as before, except `720x480@60`, which it now
+  calls 848x480@60 — its own nearest-entry guess from (30.58 kHz, 59.97 Hz) and NOT
+  a fault: a VGA monitor cannot see how many active pixels there are, and the
+  standard 720x480@60 (31.469 kHz / 59.94) is indistinguishable from 640x480@60
+  anyway, so no choice of numbers makes it say "720x480". Press AUTO if the picture
+  in that mode sits off-centre. The 75/90 Hz set behaves as it always did (that
+  board's monitor takes 720x576@75 = 47.25 kHz / 73.37 Hz and calls it 800x600@73,
+  and refuses the rest) — untouched by any of this.
+- **Hw 2026-09-23, PCp2 with `video_driver=vga` in storage.nvs: the TRANSPORT is
+  confirmed end to end.** That board has no VGA connector, so this is a log-only
+  run and it is what the line-rate counter was added for:
+  `clk_hstx` exactly 126 MHz (378/3, integer, no "using the nearest" warning);
+  `csr=10061001` = CLKDIV 1, N_SHIFTS 6, SHIFT 16, EN 1, EXPAND 0 — the designed
+  engine; `bit[i] = SEL_P i / SEL_N i+8` for all eight with `func=0`, i.e. the pads
+  really are the serializer's; **24999 line IRQs/s x 840 px = 20 999 160 Hz**, i.e.
+  21 MHz within 40 ppm (the shortfall is the +-1 count of a one-second window), and
+  the chain is paced by `DREQ_HSTX` so that figure IS the pixel clock; `fifo_stat`
+  cycling 0x007/0x107/0x108 — level 7-8 of 8 with **WOF (0x400) never set**, the
+  same signature the HDMI half gave on this board. Note the line ISR is DMA-driven,
+  so a steady rate proves the VIDEO chain, not that core0 is alive.
+- **Still owed, and it is only the analogue half**: what the ladder does with a
+  3.97 ns phase (252 M transitions/s) and whether the integrated levels are linear.
+  That is the colour, and it needs a board with a VGA connector — m2p2/m2p2w. On it:
+  a picture at all, then colours against the `-NOPWM` image (a wrong colour there is
+  the transport, a wrong colour only with PWM on is the table), then scanlines, the
+  CRT grille, DS80/GMX/Timex pair modes, a machine switch between 640x480 and
+  720x576 (k 6 -> 5, the one path that reprograms the engine live), and `[PERF] 60f`.
+- Hand-out images live in `debug/`: `m2p2-vgahstx-*.uf2` (plain / `-trace` /
+  `-nopwm`) and `PCp2-vgahstx-*`. `VGA_HSTX_PWM=OFF` is a CMake option and tags the
+  name `-NOPWM`, because two images that differ only in palette CONTENT and look
+  identical on screen are how a verdict gets attached to the wrong one.
 
 ## HDMI on MURM1: "no video at all" — PIO0 instruction memory (2026-08-12)
 
