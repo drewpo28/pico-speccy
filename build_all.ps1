@@ -77,6 +77,10 @@ $SofttvTargets = @("MURM", "MURM2")
 # Second image of the same board with -DZERO2_PIO_USB=ON (USB host on the second
 # Type-C). Not a display mode; it costs ~18 KB of SRAM, hence a separate firmware.
 $PiousbTargets = @("ZERO2")
+# Display on GPIO 12-19 (the RP2350 HSTX pins): also ship an HSTX image
+# (-DHDMI_HSTX=TMDS). Their plain VGA_HDMI image is pinned to PIO (-DHDMI_HSTX=OFF),
+# or CMake's AUTO would make it HSTX too and the two images would be the same.
+$HstxTargets   = @("PICO_PC", "MURM2", "MURM2_W")
 
 if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 
@@ -95,6 +99,9 @@ foreach ($Target in $Targets) {
     }
     if ($PiousbTargets -contains $Target) {
         $BuildPairs += ,@{ Target = $Target; Display = "PIOUSB" }
+    }
+    if ($HstxTargets -contains $Target) {
+        $BuildPairs += ,@{ Target = $Target; Display = "HSTX" }
     }
 }
 
@@ -196,6 +203,12 @@ $Worker = {
             $TargetFlags += @("-DZERO2_PIO_USB=ON")
         } else {
             $TargetFlags += @("-DZERO2_PIO_USB=OFF")
+        }
+        # HDMI back-end, explicit for the same reason: HSTX pair = TMDS, everything else PIO.
+        if ($Display -eq "HSTX") {
+            $TargetFlags += @("-DHDMI_HSTX=TMDS")
+        } else {
+            $TargetFlags += @("-DHDMI_HSTX=OFF")
         }
 
         $CMakeArgs = @(

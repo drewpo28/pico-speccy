@@ -83,6 +83,10 @@ set "SOFTTV_TARGETS=MURM MURM2"
 :: Second image of the same board with -DZERO2_PIO_USB=ON (USB host on the second
 :: Type-C). Not a display mode; it costs ~18 KB of SRAM, hence a separate firmware.
 set "PIOUSB_TARGETS=ZERO2"
+:: Display on GPIO 12-19 (the RP2350 HSTX pins): also ship an HSTX image
+:: (-DHDMI_HSTX=TMDS). Their plain VGA_HDMI image is pinned to PIO (-DHDMI_HSTX=OFF),
+:: or CMake's AUTO would make it HSTX too and the two images would be the same.
+set "HSTX_TARGETS=PICO_PC MURM2 MURM2_W"
 
 if "%POSARGS%"=="" (
     set "TARGETS=%ALL_TARGETS%"
@@ -98,6 +102,7 @@ for %%T in (%TARGETS%) do (
     for %%M in (%TFT_ST_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:TFT_ST7789" )
     for %%M in (%SOFTTV_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:SOFTTV" )
     for %%M in (%PIOUSB_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:PIOUSB" )
+    for %%M in (%HSTX_TARGETS%) do ( if "%%T"=="%%M" set "PAIRS=!PAIRS! %%T:HSTX" )
 )
 
 :: Count pairs
@@ -315,6 +320,12 @@ if "%W_DISPLAY%"=="PIOUSB" (
     set "W_FLAGS=!W_FLAGS! -DZERO2_PIO_USB=ON"
 ) else (
     set "W_FLAGS=!W_FLAGS! -DZERO2_PIO_USB=OFF"
+)
+:: HDMI back-end, explicit for the same reason: HSTX pair = TMDS, everything else PIO.
+if "%W_DISPLAY%"=="HSTX" (
+    set "W_FLAGS=!W_FLAGS! -DHDMI_HSTX=TMDS"
+) else (
+    set "W_FLAGS=!W_FLAGS! -DHDMI_HSTX=OFF"
 )
 
 set "W_ARGS=-B "%W_BUILD_DIR%" -S "%SCRIPT_DIR%" -G "%CMAKE_GENERATOR%" !W_FLAGS! %CCACHE_ARGS% -DCMAKE_BUILD_TYPE=%BUILD_TYPE%"

@@ -105,6 +105,12 @@ SOFTTV_TARGETS="MURM MURM2"
 # ~18 KB of SRAM, hence two separate images instead of a runtime toggle.
 PIOUSB_TARGETS="ZERO2"
 
+# Targets whose display sits on GPIO 12-19, where the RP2350's HSTX serializer
+# lives: they also ship an HSTX image (-DHDMI_HSTX=TMDS, named ...-VGA-HDMI-HSTX-*).
+# Their plain VGA_HDMI image is pinned to the PIO back-end (-DHDMI_HSTX=OFF), or
+# CMake's AUTO would make it HSTX too and the two images would be the same.
+HSTX_TARGETS="PICO_PC MURM2 MURM2_W"
+
 # Parse arguments: pass target names to build specific ones, or nothing for all
 if [ $# -gt 0 ]; then
     TARGETS="$*"
@@ -137,6 +143,12 @@ for TARGET in $TARGETS; do
     for PU_T in $PIOUSB_TARGETS; do
         if [ "$TARGET" = "$PU_T" ]; then
             BUILD_PAIRS+=("${TARGET}:PIOUSB")
+            break
+        fi
+    done
+    for HX_T in $HSTX_TARGETS; do
+        if [ "$TARGET" = "$HX_T" ]; then
+            BUILD_PAIRS+=("${TARGET}:HSTX")
             break
         fi
     done
@@ -241,6 +253,14 @@ build_one() {
             target_flags+=(-DZERO2_PIO_USB=ON)
         else
             target_flags+=(-DZERO2_PIO_USB=OFF)
+        fi
+        # HDMI back-end, passed explicitly for the same reason (the cache keeps it).
+        # Only the VGA_HDMI branch of CMakeLists reads it; for other displays OFF
+        # is a no-op. HSTX-capable boards: HSTX pair = TMDS, everything else = PIO.
+        if [ "$display" = "HSTX" ]; then
+            target_flags+=(-DHDMI_HSTX=TMDS)
+        else
+            target_flags+=(-DHDMI_HSTX=OFF)
         fi
         # Same rule for the framebuffer-chunking debug knob: a build dir configured
         # while it was set would keep forcing the split into every image built from

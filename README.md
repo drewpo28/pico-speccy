@@ -38,15 +38,17 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - ZX Spectrum +3 emulation: the +3 v4.0 ROM set (as a romset of the 128K machine), #1FFD paging with the four all-RAM configurations, +2A/+3 contention, and a sector-level **uPD765A** floppy controller with two drives and CPCEMU / Extended **.dsk** images (read, write, format; weak and copy-protected sectors, Speedlock/Alkatraz style) — drives, "Create blank disk" and the Fast disk / Speedlock protection toggles live in the Storage menu, and a .dsk opened from the file browser switches to the +3 and auto-starts it from the Loader. The **+3e (IDEDOS)** romset adds Garry Lancaster's replacement ROM with its 8-bit IDE interface: IDEDOS .hdf images (including 256-byte half-sector ones) mount from Storage → IDE/HDD, and `tools/idedos_audit.py` checks a game collection image for authoring errors (RP2350 only). The **+3 (divIDE)** romset is that same ROM built for a divIDE card instead (ports #A3..#BF, a 16-bit bus and therefore full-sector .hdf images — what Workbench and the other 16-bit IDEDOS disks want), packed into 18.5 KB of flash beside it.
 - Karabas-Pro emulation on Profi: selectable flash ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage) switchable from setup or the **Menu** (Win) key hotkeys — Menu+F1–F4 pick a ROM set, plus Menu combos for Turbo FDC, AY stereo, CPU speed, drive swap and more (see F1 Help) — and serial (COM) mouse emulation for CP/M software (RP2350 only).
 - TS-Conf (ZX-Evo) emulation (Machine → TS-Conf): TS-BIOS with either the Pentagon 128 or the Mr Gluk service ROM, 4 MB of RAM, the #nnAF register file with programmable FRAME/LINE/DMA interrupts, the DMA controller, a ZX-Evo DRAM timing model (CPU/video/DMA contention and the 14 MHz wait states), a 3.5/7/14 MHz CPU cap, all of the video modes (ZX, 16c, 256c, 80x30 text, NOGFX) with the TSU tile and sprite engine, Z-Controller SD and TR-DOS, and **.spg** program loading from the file browser. Needs a board with QSPI (butter) PSRAM and VGA/HDMI output (RP2350 only).
-- VGA/HDMI output with 8 selectable video modes: 640x480@60Hz, 640x480@50Hz, 720x480@60Hz, 720x576@50Hz, plus a 90/75 Hz set (640x480@90, 640x480@75, 720x480@90, 720x576@75) that is offered with the CPU at 378 MHz and runs with V-Sync off.
+- VGA/HDMI output with 8 selectable video modes: 640x480@60Hz, 640x480@50Hz, 720x480@60Hz, 720x576@50Hz, plus a 90/75 Hz set (640x480@90, 640x480@75, 720x480@90, 720x576@75) that is offered with the CPU at 378 MHz and runs with V-Sync off (HDMI only on HSTX builds — the HSTX VGA clock cannot make it).
 - Hot video mode switching without reboot (VGA/HDMI).
 - VGA/HDMI scanlines effect with 5 selectable brightness levels (Off, Darkest, Dark, Light, Lightest).
 - VGA/HDMI CRT filter with 7 selectable levels (Off, Soft, Medium, Strong, Grille soft/med/hard): gamma correction, phosphor tint, black lift and a vertical aperture-grille mask.
 - HDMI dither effect for ULA+ (RP2350 only): optional Bayer-look palette dithering applied via ISR.
-- VGA colour depth (Video → VGA → Colour depth): Dithered (ordered 2x2, ~2200 perceived colours out of the 2-bit DAC — better gradients for TS-Conf 16c/256c artwork) or Solid. The flat 16 ZX colours always stay solid.
+- VGA colour (Video → VGA → Colour): per-pixel PWM (four sub-samples per pixel, integrated by the resistor ladder — 13 or 29 levels per channel with no dither pattern; press Auto Adjust on the monitor after switching it on) or the ordered 2x2 dither. Reboot-class; default PWM on HSTX builds, dither elsewhere (PWM there costs 4x the VGA line DMA).
+- VGA colour depth (Video → VGA → Colour depth, shown while PWM is off): Dithered (ordered 2x2, ~2200 perceived colours out of the 2-bit DAC — better gradients for TS-Conf 16c/256c artwork) or Solid. The flat 16 ZX colours always stay solid.
 - HDMI clock drive setting (Video → HDMI → Clock drive): Normal (12 mA, fast edge) or Soft (8 mA, slow edge, less crosstalk on marginal receivers), switchable at runtime (RP2350 only).
 - Capture card compatibility (Video → Capture card compatibility): snaps every palette entry to a level whose doubled HDMI pixel is a single TMDS symbol, so runtime palettes (TS-Conf CRAM, ULA+, Gigascreen blends) come through a USB HDMI grabber without the alternating-column artefact — invisible on a monitor (RP2350 only).
 - HDMI audio output (RP2350 only).
+- HSTX video back-end on boards with the display on GPIO 12-19 (PICO_PC, MURM2, MURM2_W): HDMI through the RP2350's HSTX serializer and its hardware TMDS encoder instead of PIO (a third of the video DMA, no PIO used, 240 palette slots for TS-Conf 256c), and VGA through the same serializer with per-pixel PWM colour. Shipped as a separate `-HSTX` image for those boards (their plain image uses the PIO path).
 - TV-composite video out.
 - PCM5122 I2S audio DAC support (Waveshare PiZero boards - https://www.waveshare.com/wiki/PCM5122-Audio-Board-A).
 - Multicolor attribute effects emulated (Bifrost*2, Nirvana and Nirvana+ engines).
@@ -109,7 +111,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Debug → UART console: TX-only 115200 8N1 log (Debug::log and printf) on the board's console pin, switchable from the menu instead of a build option (see the build notes for the per-board pin).
 - Debug → Config folders: browse `/.config/pico-speccy` and `/pico-speccy` in the file browser (rename, new folder, delete) with a built-in text viewer for logs and config files — the config tree is hidden from the normal F5 browser.
 - Hardware info menu: Chip Info (model, cores, frequency, VREG voltage, on-chip temperature with per-chip offset calibration in Debug → Temp offset), Board Info (flash, PSRAM, SDK version), Memory Info (live SRAM/PSRAM/flash occupancy and Buffer tier pools) and Emulator Info (machine, video, sound, input and storage configuration).
-- Speed Test menu: benchmark CPU MIPS, SRAM read/write, PSRAM, SD card and USB drive throughput (individual or all at once).
+- Speed Test menu: benchmark CPU MIPS, SRAM read/write, PSRAM, SD card and USB drive throughput (individual or all at once), plus a Video path page (active video back-end, DMA per line, SRAM throughput under display DMA, line-ISR timing, HDMI audio packet rate).
 - ZX Keyboard overlay (main menu → ZX Keyboard): full-screen bitmap of the Spectrum keyboard for quick reference. Thanks to @const_bill and @tecnocat.
 - Pico-Scwong: a built-in native squash/pong game (tribute to andykarpov's Skvosh console) that runs on the RP2350 itself with no emulated machine and no SD card — last row of the Machine menu, or hold S at boot. Solo squash, Pong vs CPU with three difficulty levels, options for field/paddle/ball colours and sizes, and a CPU-vs-CPU attract mode after ten idle seconds.
 - Overclock menu: CPU frequency (252/378/504 MHz), Flash frequency (33–166 MHz), PSRAM frequency (66–166 MHz), VReg voltage (1.15–1.80 V).
@@ -310,6 +312,7 @@ Your filesystem tree must be look like:
 | `-DTFT=ON` | TFT display output |
 | `-DILI9341=ON` | ILI9341 TFT display output |
 | `-DHDMI_TMDS_LEVEL_CLAMP=OFF` | HDMI: disable the channel-level clamp to [0x08..0xF6] (on by default; costs ~3% black / ~4% white, improves link stability on marginal receivers). |
+| `-DHDMI_HSTX=AUTO` | HDMI/VGA back-end for boards with the display on GPIO 12-19 (PICO_PC, MURM2, MURM2_W): `TMDS` = HSTX serializer + hardware TMDS encoder, `RAW` (or `ON`) = HSTX serializer with PIO-built TMDS symbols, `OFF` = PIO. `AUTO` (default) picks TMDS on PICO_PC/MURM2 and PIO elsewhere. |
 | `-DHDMI_SOFT_CLK=ON` | HDMI: build DEFAULT for Video → HDMI → Clock drive — ON = Soft (8 mA + slow slew), OFF (default) = Normal (12 mA + fast slew). The user's menu setting overrides it. |
 | `-DTFT_ST7789=ON` | ST7789 TFT display variant |
 
@@ -333,6 +336,7 @@ To build firmware for all supported boards and display variants at once, use the
 
 - Targets: `MURM MURM2 PICO_PC PICO_DV ZERO2` (default: all)
 - ZERO2 builds twice: the plain image and a `PIOUSB` one (`-DZERO2_PIO_USB=ON`, USB host on the second Type-C)
+- PICO_PC, MURM2 and MURM2_W build twice: the plain image (PIO HDMI, `-DHDMI_HSTX=OFF`) and an `HSTX` one (`-DHDMI_HSTX=TMDS`, `...-VGA-HDMI-HSTX-*.uf2`)
 - `--clean` — wipe build dirs first (default: incremental rebuild)
 - `-j` — threads per target build (default: `nproc / MAX_PARALLEL`)
 - `-p` — max number of targets built concurrently (default: 3)

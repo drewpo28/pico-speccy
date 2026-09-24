@@ -149,7 +149,7 @@ endif()
 # ALF is always available (4MB flash) — small 256KB default cart + shared flash region.
 
 set(CPU_MHZ 378)
-set (PORT_VERSION "1.0.6")
+set (PORT_VERSION "1.0.7")
 string(LENGTH "${PORT_VERSION}" PORT_VERSION_LEN)
 
 # Framebuffer chunking exercise (Video.cpp ensureMainFB): force the main
