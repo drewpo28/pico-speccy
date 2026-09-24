@@ -292,7 +292,7 @@ volatile uint8_t  GS::reg_status    = 0;
 uint8_t  GS::reg_page      = 0;
 uint8_t  GS::reg_vol[8]    = {0,0,0,0,0,0,0,0};
 uint8_t  GS::reg_ch[8]     = {0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80};
-uint32_t GS::int_count     = 0;
+volatile uint32_t GS::int_count = 0;
 
 static Z80      s_cpu;
 static uint8_t* s_gs_ram      = nullptr;

@@ -20,6 +20,25 @@ option(TFT "Enable TFT display" OFF)
 option(ILI9341 "Enable TFT ILI9341 display" OFF)
 option(TV "Enable TV composite output" OFF)
 option(SOFTTV "Enable TV soft composite output" OFF)
+
+# HDMI back-end. AUTO = on for the boards whose display sits on GPIO 12-19, which is
+# where the RP2350's HSTX serializer lives — one firmware per board, exactly like
+# quakegeneric's `IF(MURM2) if (VGA_HDMI) set(DVI_HSTX ON)`, not a second image.
+# ON/OFF force it, and OFF is the A/B escape hatch back to the PIO TMDS program.
+# A tri-state rather than option(): with option() an explicit -DHDMI_HSTX=OFF is
+# indistinguishable from the default and the board arm below would override it.
+# Values: OFF = the PIO TMDS program; RAW = HSTX as a plain serializer fed our own
+# TMDS words through the PIO address converter (HDMI_HSTX=1); TMDS = HSTX with the
+# command expander and the hardware TMDS encoder, the line as a command list of
+# XRGB8888 pixels and no converter at all (HDMI_HSTX=2, see hdmi_tmds_line.h);
+# ON = RAW (the old spelling); AUTO = TMDS on PICO_PC and MURM2/MURM2_W.
+set(HDMI_HSTX AUTO CACHE STRING "HDMI back-end: AUTO / OFF / RAW / TMDS (ON = RAW)")
+set_property(CACHE HDMI_HSTX PROPERTY STRINGS AUTO OFF RAW TMDS ON)
+# Per-boot HSTX diagnostics: the engine settings, the eight bit[] entries, a 4 ms
+# line-rate measurement and the Data-Island slot dump. Off by default — that is
+# ~20 UART lines and a 4 ms stall on core1 at every boot, and the one line that
+# names the back-end and its clock prints unconditionally anyway.
+option(HDMI_HSTX_TRACE "HSTX: dump the pad map, the line rate and the Data Island at boot" OFF)
 option(MURM "Murmulator 1.x + Pi Pico 2" OFF)
 option(MURM2 "Murmulator 2.0 + Pi Pico 2" OFF)
 option(PICO_PC "Olimex RP2040-PICO-PC + Pi Pico 2" OFF)
@@ -82,6 +101,7 @@ option(TSCONF_DRAM_MODEL "TS-Conf: model DRAM contention (CPU/video vs DMA) and 
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
 option(HDMI_AUDIO_TRACE "Enable the 1 Hz HDMIAU: audio-health log line (hdmi_audio_health_dump)" OFF)
+option(HDMI_LIVE_AUDIO_DIAG "Save HDMI audio rates during gameplay for Speed Test" OFF)
 option(OPL_PERF_TRACE "Enable the ~6 s 'OPL: gen us/fr' YMF262 cost line (ESPectrum.cpp)" OFF)
 option(GS_DEBUG_TRACE "Enable General Sound port-IO trace ring + auto-dumps (~50 KB SRAM)" OFF)
 option(NGS_TRACE "Enable NeoGS 1 Hz health line (GS-Z80 PC / SD counters; ~2-4 ms UART stall per line)" OFF)
@@ -1018,6 +1038,11 @@ if (HDMI_AUDIO_TRACE)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_AUDIO_TRACE=0)
 endif ()
+if (HDMI_LIVE_AUDIO_DIAG)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_LIVE_AUDIO_DIAG=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_LIVE_AUDIO_DIAG=0)
+endif ()
 if (OPL_PERF_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE OPL_PERF_TRACE=1)
 else ()
@@ -1635,6 +1660,46 @@ ELSE()
     # substitutes the output that actually came up. Every other DISPLAY_TAG above is
     # a real build-time choice and needs no such treatment.
     SET(DISPLAY_TAG "VGAHDMI")
+
+    # HSTX drives the same eight pins as the PIO TMDS program and only exists in
+    # this branch — the TFT/TV/SOFTTV displays have no HDMI at all.
+    # HDMI_HSTX_ON: 0 PIO, 1 raw serializer, 2 command expander + TMDS encoder.
+    IF(HDMI_HSTX STREQUAL "AUTO")
+        IF(PICO_PC OR MURM2)
+            # TMDS is the intended back-end; RAW remains an explicit fallback.
+            SET(HDMI_HSTX_ON 2)
+        ELSE()
+            SET(HDMI_HSTX_ON 0)
+        ENDIF()
+    ELSEIF(HDMI_HSTX STREQUAL "TMDS")
+        SET(HDMI_HSTX_ON 2)
+    ELSEIF(HDMI_HSTX STREQUAL "RAW" OR HDMI_HSTX)
+        SET(HDMI_HSTX_ON 1)
+    ELSE()
+        SET(HDMI_HSTX_ON 0)
+    ENDIF()
+    IF(HDMI_HSTX_ON)
+        IF(NOT (PICO_PC OR MURM2))
+            message(FATAL_ERROR
+                "HDMI_HSTX needs the display on GPIO 12-19 (HDMI_BASE_PIN=12): "
+                "that is PICO_PC, MURM2 and MURM2_W only")
+        ENDIF()
+        target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX=${HDMI_HSTX_ON})
+        # The VGA half of the same board moves with it.  It is not a second
+        # decision: HSTX drives GPIO 12-19 and both outputs live there, so a
+        # board that can serialize HDMI can serialize VGA, and the VGA pixel
+        # clocks in video_mode_table.h are chosen to be 126 MHz / k for exactly
+        # this.  What it buys is the COLOUR — four PWM sub-samples per pixel
+        # instead of one 2-bit-per-channel value plus a Bayer block.
+        target_compile_definitions(${PROJECT_NAME} PRIVATE VGA_HSTX=1)
+        IF(HDMI_HSTX_TRACE)
+            target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_HSTX_TRACE=1)
+        ENDIF()
+        # The name is tagged below, beside PIOUSB's: a VGA_HDMI build's Hardware Info
+        # line is built from CONFIG_BOARD_TAG + the LIVE output + VARIANT_TAG, not
+        # from DISPLAY_TAG, so a variant that only touches DISPLAY_TAG is invisible
+        # on screen — and telling the two images apart there is the whole point.
+    ENDIF()
 ENDIF()
 
 # The PIO-USB host is a build-time variant of the same board, not a display mode, so
@@ -1643,6 +1708,18 @@ SET(VARIANT_TAG "")
 IF(ZERO2 AND ZERO2_PIO_USB)
     SET(BUILD_NAME "${BUILD_NAME}-PIOUSB")
     SET(VARIANT_TAG "+PIOUSB")
+    SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
+ENDIF()
+# Same shape for the HSTX back-end: PCp2-speccy-VGA-HDMI-HSTX-<version> for the
+# expander form ("PCp2 / HDMI+HSTX [v...]" in Hardware Info), -HSTX-RAW / +HSTXRAW
+# for the raw serializer, so the two can be told apart on screen and on disk.
+IF(HDMI_HSTX_ON EQUAL 2)
+    SET(BUILD_NAME "${BUILD_NAME}-HSTX")
+    SET(VARIANT_TAG "+HSTX")
+    SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
+ELSEIF(HDMI_HSTX_ON)
+    SET(BUILD_NAME "${BUILD_NAME}-HSTX-RAW")
+    SET(VARIANT_TAG "+HSTXRAW")
     SET(DISPLAY_TAG "${DISPLAY_TAG}${VARIANT_TAG}")
 ENDIF()
 

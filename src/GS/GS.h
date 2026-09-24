@@ -161,7 +161,7 @@ public:
     static uint8_t  reg_vol[8];
     static uint8_t  reg_ch[8];
 
-    static uint32_t int_count;
+    static volatile uint32_t int_count;  // pump owner writes; core0 live-rate diagnostic
 };
 
 

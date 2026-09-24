@@ -414,9 +414,35 @@ void OSD::esp_hard_reset() {
     RTC::flushNVRAM(true);
     Nvram24::flush(true);
     if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable));
+    // PARK CORE1 BEFORE close_all(). close_all() zeroes the whole butter arena
+    // through the CACHED XIP alias and then takes the QSPI CS1 pin away from the
+    // QMI (gpio_init + drive high) — and core1 is otherwise still running the
+    // renderer and, with NeoGS on a butter board, the GS-Z80 whose code and RAM it
+    // fetches from that same PSRAM (backend=XIP). Flash and PSRAM share ONE QMI,
+    // so stealing CS1 from under an in-flight PSRAM read can wedge the XIP port,
+    // and core0's next instruction fetch from flash wedges with it: a total
+    // lockup that only the RUN/reset button clears. Reported as "sometimes F11 or
+    // a machine switch freezes the board" (2026-09-23, PCp2 + NeoGS, and the
+    // owner's own note that another RP2350 module did not show it — this is
+    // exactly the kind of margin-sensitive hazard that moves between chips).
+    // Timeout, never blocking: if core1 is ALREADY wedged, waiting forever here
+    // would turn a recoverable reboot into the very hang we are avoiding. The
+    // lockout leaves core1 spinning with IRQs off (no video, no GS) — fine, the
+    // watchdog fires a few ms later and we never come back.
+    // ...and skip the wait entirely on the boot-time reboot paths (video-mode
+    // self-heal, MIDI reflash), where core1 was never launched and the request
+    // could only ever time out.
+    const bool c1parked = multicore_lockout_victim_is_initialized(1) &&
+                          multicore_lockout_start_timeout_us(20000);
+    // Everything up to here on the wire BEFORE the dangerous part. The old flush
+    // sat after close_all(), which made that whole window — Config::save(),
+    // the 8 MB memset, the CS1 steal — a blind spot: a hang in it printed
+    // nothing at all, and the last log line ended mid-format (hw 2026-09-23).
+    Debug::log("ehr: core1 parked=%d, close_all", (int)c1parked);
+    Debug::uartFlushSync();   // drain ring + FIFO (no-op with the console off)
     close_all();
     Debug::log("ehr: close_all done, arming watchdog");
-    Debug::uartFlushSync();   // drain ring + FIFO (no-op with the console off)
+    Debug::uartFlushSync();
     // The SDK's watchdog_enable() reboot is a PSM-only reset (POWMAN CHIP_RESET
     // HAD_WATCHDOG_RESET_PSM: "powman no, swcore no, does not change the power
     // state"), so the chip comes back up with the core regulator still at our
@@ -7193,6 +7219,10 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
         const bool do_psram = (st_opt == 3 || st_opt == all_opt);
         const bool do_sd    = (st_opt == 4 || st_opt == all_opt);
         const bool do_usb   = (st_opt == 5 || st_opt == all_opt);
+        const bool do_video = (st_opt == 8 || st_opt == all_opt);   // Video path (VGA_HDMI builds)
+#ifndef VGA_HDMI
+        (void)do_video;
+#endif
 
         const char* title = "Speed Test";
 
@@ -7269,6 +7299,89 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
             progressDialog(title, "", 100, 1);
             progressDialog("", "", 0, 2);
         }
+
+        // --- Video path: what the display back-end costs the cores ---
+        // Its own row (Help > Speed Test > Video path): the back-end that drives the
+        // pins, the bytes its DMA moves per scanline, core0's SRAM copy throughput
+        // while that DMA streams (the contention the port exists to reduce — the
+        // same number on the PIO, raw-HSTX and TMDS-encoder images of one board IS
+        // the comparison), and the line ISR's worst duration / inter-IRQ gap over a
+        // one-second window (core1's share). VGA has no ISR counters.
+        const char *vid_backend = "";
+        unsigned vid_dma = 0;
+        float vid_cp = 0.0f;
+        uint32_t vid_dur = 0, vid_gap = 0, vid_dur_b = 0, vid_dur_a = 0;
+        int32_t  aud_skoff = 0; uint32_t aud_skwhich = 0;
+        bool vid_hdmi = false;
+        bool aud_on = false;
+        uint32_t aud_pps = 0, aud_und = 0, aud_skip = 0, aud_dup = 0, aud_qmin = 0, aud_qmax = 0;
+        uint32_t aud_credit = 0, aud_cap = 0;
+        uint32_t aud_pcm_hz = 0, aud_pixel_hz = 0, aud_n = 0, aud_cts = 0;
+#ifdef VGA_HDMI
+        if (do_video) {
+            extern bool SELECT_VGA;
+            extern volatile uint32_t hdmi_irq_max_gap_us, hdmi_irq_max_dur_us;
+            vid_hdmi = !SELECT_VGA;
+            if (vid_hdmi) {
+                hdmi_video_stats(&vid_backend, &vid_dma);
+            } else {
+                vid_backend = "VGA PIO";
+                // One byte per output pixel in the VGA line buffer.
+                vid_dma = 2u * (unsigned)graphics_get_video_mode(VIDEO::video_mode).line_bytes;
+            }
+            typedef uint32_t __attribute__((may_alias)) u32a;
+            char* const scratch = info_buf;
+            progressDialog(title, "Video: SRAM copy...", 0, 0);
+            {
+                uint64_t t0 = time_us_64();
+                uint32_t total = 0;
+                const uint32_t half = OSD_INFO_BUF_SZ / 2;
+                do {
+                    const char *src = scratch;
+                    char *dst = scratch + half;
+                    for (uint32_t a = 0; a < half; a += 4)
+                        *(u32a *)(dst + a) = *(const u32a *)(src + a);
+                    total += half;
+                } while (time_us_64() - t0 < 300000ULL);
+                const uint64_t elapsed = time_us_64() - t0;
+                vid_cp = (float)total / (float)elapsed;   // bytes copied per us = MB/s
+            }
+            if (vid_hdmi) {
+                progressDialog(title, "Video: line ISR...", 50, 1);
+                hdmi_irq_max_gap_us = 0;      // the OSD owns core0: nothing else resets these meanwhile
+                hdmi_irq_max_dur_us = 0;
+                hdmi_irq_dur_blank_us = 0;
+                hdmi_irq_dur_active_us = 0;
+                // HDMI audio over the same second: packets popped (the delivered rate),
+                // the health counters, the credit — all read from the consumer's own
+                // bookkeeping, so they say what WE sent, not what the sink heard.
+                uint32_t p0 = 0, cr = 0, cap = 0, d0, d1, d2, d3, d4;
+                aud_on = hdmi_audio_meter(&p0, &cr, &cap);
+                hdmi_audio_health_snapshot(&d0, &d1, &d2, &d3, &d4);   // reset the window
+                extern volatile uint32_t g_pcm_tick_ct;
+                const uint32_t pcm0 = g_pcm_tick_ct;
+                const uint64_t aud_t0 = time_us_64();
+                sleep_ms(1000);
+                const uint64_t aud_dt = time_us_64() - aud_t0;
+                aud_pcm_hz = (uint32_t)((uint64_t)(g_pcm_tick_ct - pcm0) * 1000000u / aud_dt);
+                hdmi_audio_clock_stats(&aud_pixel_hz, &aud_n, &aud_cts);
+                vid_dur = hdmi_irq_max_dur_us;
+                vid_gap = hdmi_irq_max_gap_us;
+                vid_dur_b = hdmi_irq_dur_blank_us;
+                vid_dur_a = hdmi_irq_dur_active_us;
+                if (aud_on) {
+                    uint32_t p1;
+                    hdmi_audio_meter(&p1, &cr, &cap);
+                    aud_pps = (uint32_t)((uint64_t)(p1 - p0) * 1000000u / aud_dt);
+                    hdmi_audio_health_snapshot(&aud_und, &aud_skip, &aud_dup, &aud_qmin, &aud_qmax);
+                    aud_skoff = hdmi_au_skip_off_w; aud_skwhich = hdmi_au_skip_which;
+                    aud_credit = cr; aud_cap = cap;
+                }
+            }
+            progressDialog(title, "", 100, 1);
+            progressDialog("", "", 0, 2);
+        }
+#endif
 
         // --- PSRAM ---
         if (do_psram) {
@@ -7375,6 +7488,55 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 " SRAM rd : %.1f MB/s\n"
                 " SRAM wr : %.1f MB/s\n\n",
                 sram_rd, sram_wr);
+        }
+        if (do_video && vid_backend[0]) {
+            pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                " Video   : %s\n"
+                " DMA/line: %u B\n"
+                " SRAM cp : %.1f MB/s (core0, display live)\n",
+                vid_backend, vid_dma, vid_cp);
+            if (vid_hdmi) {
+                pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                    " ISR max : %lu us, gap %lu us\n"
+                    "   blank %lu us, active %lu us\n",
+                    (unsigned long)vid_dur, (unsigned long)vid_gap,
+                    (unsigned long)vid_dur_b, (unsigned long)vid_dur_a);
+                if (aud_on)
+                    pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                        " Audio   : %lu pkt/s, q %lu..%lu\n"
+                        "   und %lu skip %lu dup %lu cr %lu/%lu\n"
+                        "   skip@ buf%lu word %ld\n"
+                        " PCM timer: %lu Hz\n"
+                        " Pixel cfg: %lu Hz\n"
+                        " ACR N/CTS: %lu/%lu\n",
+                        (unsigned long)aud_pps, (unsigned long)aud_qmin, (unsigned long)aud_qmax,
+                        (unsigned long)aud_und, (unsigned long)aud_skip, (unsigned long)aud_dup,
+                        (unsigned long)aud_credit, (unsigned long)aud_cap,
+                        (unsigned long)aud_skwhich, (long)aud_skoff,
+                        (unsigned long)aud_pcm_hz, (unsigned long)aud_pixel_hz,
+                        (unsigned long)aud_n, (unsigned long)aud_cts);
+#if HDMI_LIVE_AUDIO_DIAG
+                extern uint32_t hdmi_live_pcm_hz, hdmi_live_pkt_hz;
+                extern uint32_t hdmi_live_hold, hdmi_live_und, hdmi_live_skip, hdmi_live_dup;
+                extern uint32_t hdmi_live_qmin, hdmi_live_qmax, hdmi_live_late;
+                extern uint32_t hdmi_live_gs_int_hz;
+                pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                    " Game PCM : %lu Hz, pkt %lu/s\n"
+                    "   hold %lu und %lu skip %lu dup %lu\n"
+                    "   q %lu..%lu late %lu (game)\n"
+                    " Game GS  : %lu int/s (target 37500)\n",
+                    (unsigned long)hdmi_live_pcm_hz, (unsigned long)hdmi_live_pkt_hz,
+                    (unsigned long)hdmi_live_hold, (unsigned long)hdmi_live_und,
+                    (unsigned long)hdmi_live_skip, (unsigned long)hdmi_live_dup,
+                    (unsigned long)hdmi_live_qmin, (unsigned long)hdmi_live_qmax,
+                    (unsigned long)hdmi_live_late,
+                    (unsigned long)hdmi_live_gs_int_hz);
+#endif
+            }
+            else
+                pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                    " ISR     : n/a (VGA has no counters)\n");
+            pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "\n");
         }
         if (do_psram) {
             if (!has_spi && !has_qspi) {

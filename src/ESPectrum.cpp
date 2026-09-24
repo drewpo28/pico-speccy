@@ -61,6 +61,10 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Snapshot.h"
 #include "Tape.h"
 #include "Video.h"
+#if HDMI_LIVE_AUDIO_DIAG && defined(VGA_HDMI)
+#include "hdmi.h"
+extern "C" volatile uint32_t hdmi_au_late_write_ct;
+#endif
 #include "Z80_JLS/z80.h"
 #include "messages.h"
 #include "pwm_audio.h"
@@ -3179,6 +3183,15 @@ void ESPectrum::netBackgroundTick() {
 //=======================================================================================
 // MAIN LOOP
 //=======================================================================================
+#if HDMI_LIVE_AUDIO_DIAG && defined(VGA_HDMI)
+// Last complete second while guest frames were running. The Speed Test menu
+// pauses the guest, so its own one-second meter cannot answer this question.
+uint32_t hdmi_live_pcm_hz = 0, hdmi_live_pkt_hz = 0;
+uint32_t hdmi_live_hold = 0, hdmi_live_und = 0, hdmi_live_skip = 0, hdmi_live_dup = 0;
+uint32_t hdmi_live_qmin = 0, hdmi_live_qmax = 0, hdmi_live_late = 0;
+uint32_t hdmi_live_gs_int_hz = 0;
+#endif
+
 void ESPectrum::loop() {
 
   // Check if we're booting into a pending (unconfirmed) video mode
@@ -4160,6 +4173,39 @@ void ESPectrum::loop() {
         }
       }
     }
+#if HDMI_LIVE_AUDIO_DIAG && defined(VGA_HDMI)
+    if (Config::audio_driver == 4 && !CPU::paused) {
+      static uint64_t last_us = 0;
+      static uint32_t last_pcm = 0, last_pkt = 0, last_hold = 0, last_late = 0;
+      static uint32_t last_gs_int = 0;
+      extern volatile uint32_t g_pcm_tick_ct, g_pcm_hold_ct;
+      const uint64_t now = time_us_64();
+      if (now - last_us >= 1000000u) {
+        uint32_t pkt = 0, cr = 0, cap = 0;
+        hdmi_audio_meter(&pkt, &cr, &cap);
+        const uint32_t pcm = g_pcm_tick_ct, hold = g_pcm_hold_ct;
+        const uint32_t late = hdmi_au_late_write_ct;
+        const uint32_t gs_int = GS::int_count;
+        const uint64_t dt = now - last_us;
+        if (last_us && dt < 2000000u) {
+          hdmi_live_pcm_hz = (uint32_t)((uint64_t)(pcm - last_pcm) * 1000000u / dt);
+          hdmi_live_pkt_hz = (uint32_t)((uint64_t)(pkt - last_pkt) * 1000000u / dt);
+          hdmi_live_hold = hold - last_hold;
+          hdmi_live_late = late - last_late;
+          hdmi_live_gs_int_hz = GS::enabled
+              ? (uint32_t)((uint64_t)(gs_int - last_gs_int) * 1000000u / dt) : 0;
+          hdmi_audio_health_snapshot(&hdmi_live_und, &hdmi_live_skip,
+                                     &hdmi_live_dup, &hdmi_live_qmin, &hdmi_live_qmax);
+        } else {
+          uint32_t discard[5];
+          hdmi_audio_health_snapshot(&discard[0], &discard[1], &discard[2],
+                                     &discard[3], &discard[4]);
+        }
+        last_us = now; last_pcm = pcm; last_pkt = pkt; last_hold = hold;
+        last_late = late; last_gs_int = gs_int;
+      }
+    }
+#endif
     totalseconds += time_us_64() - ts_start;
   }
 }

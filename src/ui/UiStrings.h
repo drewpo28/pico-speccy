@@ -76,6 +76,7 @@
 #define TXT_VID_SNAP        "Capture card compatibility"
 #define TXT_VID_VGA         "VGA"
 #define TXT_VID_VGA_DITHER  "Colour depth"
+#define TXT_VID_VGA_PWM     "Colour"
 
 // ── Audio ──────────────────────────────────────────────────────────────────────
 #define TXT_AUD_DRIVER      "Audio driver"
