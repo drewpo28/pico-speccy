@@ -46,8 +46,8 @@
 #define HDMI_TL_GUARDS_PX    (HDMI_TL_VP_PX + HDMI_TL_VG_PX)
 
 // Worst case is a BLANKING line, which is paced word per pixel (see hdmi_tl_blank):
-// island 39 words + 1 command + (h_total - 44) words = 854 for the 858-px 720-wide
-// modes; an active line is 770 there. Room to spare.
+// island 39 words + 1 command + (h_total - 44) words = 796 at h_total 800; an active
+// line is ~800 with its front porch paced word per pixel too. Room to spare.
 #define HDMI_TL_MAX_WORDS    896
 
 typedef struct {
@@ -83,6 +83,24 @@ static inline hdmi_tl_geom_t hdmi_tl_geom(int h_sync_bytes, int h_bp_bytes, int 
 static inline __attribute__((always_inline))
 uint32_t *hdmi_tl_rep(uint32_t *w, unsigned n, uint32_t word) {
     if (n) { *w++ = HSTX_CMD_RAW_REPEAT | (n & HSTX_CMD_COUNT_MAX); *w++ = word; }
+    return w;
+}
+
+// `n` pixels of one raw word as a RAW block, ONE WORD PER PIXEL. Used for the tail
+// of a line: the DMA can only run as far ahead of the raster as the words it has to
+// read, and a RAW_REPEAT tail (2 words for the whole front porch) let it finish the
+// line ~fp_px early — the line IRQ then fired that much before the next line, and
+// the second-play island refill (hdmi_isl_second_play), which waits for the DMA to
+// get past the island at the head of the playing buffer, ran out of its 3 us guard
+// inside the island: ~2200-2600 refused refills a second at 25.2 MHz (hw 2026-09-24,
+// MURM2 Speed Test `skip@ buf0 word 36..38`). The blank lines were paced this way
+// already, for the same reason (see hdmi_tl_blank).
+static inline __attribute__((always_inline))
+uint32_t *hdmi_tl_raw_run(uint32_t *w, unsigned n, uint32_t word) {
+    if (n) {
+        *w++ = HSTX_CMD_RAW | (n & HSTX_CMD_COUNT_MAX);
+        for (unsigned i = 0; i < n; i++) *w++ = word;
+    }
     return w;
 }
 
@@ -131,7 +149,7 @@ int hdmi_tl_active(uint32_t *buf, const hdmi_tl_geom_t *g, const hdmi_tl_words_t
     *w++ = HSTX_CMD_TMDS | g->active_px;
     *px = w;
     w += g->active_px;
-    w = hdmi_tl_rep(w, g->fp_px, wd->sync[v][1]);
+    w = hdmi_tl_raw_run(w, g->fp_px, wd->sync[v][1]);   // paced: see hdmi_tl_raw_run
     return (int)(w - buf);
 }
 
@@ -179,7 +197,7 @@ int hdmi_tl_scanline(uint32_t *buf, const hdmi_tl_geom_t *g, const hdmi_tl_words
     }
     *w++ = HSTX_CMD_TMDS_REPEAT | g->active_px;
     *w++ = gray;
-    w = hdmi_tl_rep(w, g->fp_px, wd->sync[1][1]);
+    w = hdmi_tl_raw_run(w, g->fp_px, wd->sync[1][1]);   // paced like an active line's
     return (int)(w - buf);
 }
 
