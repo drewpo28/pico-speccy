@@ -102,6 +102,7 @@ option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and evicti
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
 option(HDMI_AUDIO_TRACE "Enable the 1 Hz HDMIAU: audio-health log line (hdmi_audio_health_dump)" OFF)
 option(HDMI_LIVE_AUDIO_DIAG "Save HDMI audio rates during gameplay for Speed Test" OFF)
+set(HDMI_720_LAYOUT 0 CACHE STRING "EXPERIMENT: 720x576 horizontal blanking layout 0..4 (video_mode_table.h)")
 option(OPL_PERF_TRACE "Enable the ~6 s 'OPL: gen us/fr' YMF262 cost line (ESPectrum.cpp)" OFF)
 option(GS_DEBUG_TRACE "Enable General Sound port-IO trace ring + auto-dumps (~50 KB SRAM)" OFF)
 option(NGS_TRACE "Enable NeoGS 1 Hz health line (GS-Z80 PC / SD counters; ~2-4 ms UART stall per line)" OFF)
@@ -1044,6 +1045,10 @@ if (HDMI_LIVE_AUDIO_DIAG)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_LIVE_AUDIO_DIAG=0)
 endif ()
+# Only the mode table reads it — keep it off the global flags so switching the
+# experiment recompiles one file, not the whole firmware.
+set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/drivers/graphics/graphics.c
+    PROPERTIES COMPILE_DEFINITIONS HDMI_720_LAYOUT=${HDMI_720_LAYOUT})
 if (OPL_PERF_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE OPL_PERF_TRACE=1)
 else ()

@@ -11,6 +11,71 @@
 #define VGA_HSTX 0
 #endif
 
+// EXPERIMENT (2026-09-24): horizontal blanking layout of the 720x576 modes
+// ([4]-[6] @50, [13]-[15] @75), in framebuffer bytes = 2 output pixels. h_total
+// stays 400 bytes (800 px) so the line rate and refresh do not move; only where the
+// 40 blanking bytes go changes. A CRT behind an HDMI->VGA converter takes no audio
+// in any 720-wide mode on any back-end (PIO, HSTX RAW, HSTX TMDS) while 640x480
+// plays, and the island (22 bytes at the head of hsync) is the only thing laid out
+// differently there. Build with -DHDMI_720_LAYOUT=n:
+//   0  hs 16 / bp 16 / fp 8   the shipped layout: hsync ends inside the packet,
+//                             10 control px between island and video preamble
+//   1  hs 22 / bp 10 / fp 8   island wholly inside hsync, still 10 control px
+//   2  hs 16 / bp 18 / fp 6   hsync as shipped, 14 control px after the island,
+//                             12 before the island preamble
+//   3  hs 22 / bp 12 / fp 6   island inside hsync AND 14 control px after it
+//   4  hs 32 / bp 5  / fp 3   CEA-576p-like 64 px hsync (island + 20 control px
+//                             inside it), 6 control px before the island
+//   5..7 narrower active area (640 / 688 / 704 px) with 160 / 112 / 96 px blanking
+#ifndef HDMI_720_LAYOUT
+#define HDMI_720_LAYOUT 0
+#endif
+#if   HDMI_720_LAYOUT == 0
+#define HDMI720_HS 16
+#define HDMI720_BP 16
+#define HDMI720_FP 8
+#elif HDMI_720_LAYOUT == 1
+#define HDMI720_HS 22
+#define HDMI720_BP 10
+#define HDMI720_FP 8
+#elif HDMI_720_LAYOUT == 2
+#define HDMI720_HS 16
+#define HDMI720_BP 18
+#define HDMI720_FP 6
+#elif HDMI_720_LAYOUT == 3
+#define HDMI720_HS 22
+#define HDMI720_BP 12
+#define HDMI720_FP 6
+#elif HDMI_720_LAYOUT == 4
+#define HDMI720_HS 32
+#define HDMI720_BP 5
+#define HDMI720_FP 3
+#elif HDMI_720_LAYOUT == 5
+#define HDMI720_W  320        /* 640 active px: the 640x480 blanking (160 px) in a 576-line mode */
+#define HDMI720_HS 48
+#define HDMI720_BP 24
+#define HDMI720_FP 8
+#elif HDMI_720_LAYOUT == 6
+#define HDMI720_W  344        /* 688 active px, 112 px blanking */
+#define HDMI720_HS 32
+#define HDMI720_BP 16
+#define HDMI720_FP 8
+#elif HDMI_720_LAYOUT == 7
+#define HDMI720_W  352        /* 704 active px, 96 px blanking */
+#define HDMI720_HS 24
+#define HDMI720_BP 16
+#define HDMI720_FP 8
+#else
+#error "HDMI_720_LAYOUT must be 0..7"
+#endif
+// 5..7 NARROW the HDMI active area (the framebuffer stays 360 wide and its right
+// edge is simply not sent) to test whether the converter needs more horizontal
+// blanking than 80 px. VGA keeps its own vga_screen_width.
+#ifndef HDMI720_W
+#define HDMI720_W 360
+#endif
+_Static_assert(HDMI720_W + HDMI720_HS + HDMI720_BP + HDMI720_FP == 400, "720 line must stay 400 bytes");
+
 static struct video_mode_t video_mode[] = {
     { // [0] 640x480 60Hz
         .v_total = 524,
@@ -122,10 +187,10 @@ static struct video_mode_t video_mode[] = {
         .pixel_clk = 25175000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
+        .screen_width = HDMI720_W,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
@@ -141,7 +206,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 586,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 20,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #else
         // Preserve the v1.0.6 PIO geometry for analogue monitors.
@@ -151,7 +216,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 586,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 48,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #endif
     },
@@ -162,10 +227,10 @@ static struct video_mode_t video_mode[] = {
         .pixel_clk = 25175000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
+        .screen_width = HDMI720_W,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
@@ -181,7 +246,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 586,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 20,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #else
         // Preserve the v1.0.6 PIO geometry for analogue monitors.
@@ -191,7 +256,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 586,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 48,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #endif
     },
@@ -202,10 +267,10 @@ static struct video_mode_t video_mode[] = {
         .pixel_clk = 25175000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
+        .screen_width = HDMI720_W,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
@@ -221,7 +286,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 586,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 20,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #else
         // Preserve the v1.0.6 PIO geometry for analogue monitors.
@@ -231,7 +296,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 586,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 48,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #endif
     },
@@ -261,7 +326,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 502,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 20,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #else
         // Preserve the v1.0.6 PIO geometry for analogue monitors.
@@ -271,7 +336,7 @@ static struct video_mode_t video_mode[] = {
         .vga_vsync_end = 502,
         .vga_h_sync_bytes = 24,
         .vga_h_bp_bytes = 48,
-        .vga_h_fp_bytes = 0,
+        .vga_h_fp_bytes = 8,   // pinned: was inherited from h_fp_bytes (the HDMI 720 line moved it)
         .vga_screen_width = 360
 #endif
     },
@@ -383,10 +448,10 @@ static struct video_mode_t video_mode[] = {
         .pixel_clk = 37800000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
+        .screen_width = HDMI720_W,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
@@ -400,10 +465,10 @@ static struct video_mode_t video_mode[] = {
         .pixel_clk = 37800000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
+        .screen_width = HDMI720_W,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
@@ -417,10 +482,10 @@ static struct video_mode_t video_mode[] = {
         .pixel_clk = 37800000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
+        .screen_width = HDMI720_W,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
