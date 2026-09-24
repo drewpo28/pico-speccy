@@ -5541,6 +5541,260 @@ a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
   not to guess a cause at all but to enumerate every way this back-end differs from the
   proven one and remove the last difference. **When a bisect between two paths is
   available, spend the round on narrowing it, not on a theory.**
+- **The island refill has a ONE-LINE deadline where the rest of the ISR has two, and
+  that is what killed audio in the @75/@90 modes (2026-09-23, NOT hw-tested).** The
+  fast modes keep h_total 800 at a 37.8 MHz pixel clock, so their line is **21.16 us**
+  against 31.75; the ISR runs once per line PAIR and everything it renders is not read
+  until the line after next, so its own budget is 42.3 us and it fits. The exception is
+  `hdmi_isl_second_play`: the buffer it refills is being transmitted RIGHT NOW and its
+  second play starts at the next line boundary, so that call's window is ONE line —
+  and it sat at the very END of the ISR body, ~15-20 us in. Comfortable at 31.75 us,
+  past the edge at 21.16: refused every pair, which burns a packet of credit and drops
+  the build back to ONE island per pair — exactly the 83%-occupancy state round 7 was
+  written to leave, and exactly what mutes this sink. The picture is untouched because
+  a late line is still a valid line. Two changes: the call moved to the TOP of the ISR
+  (into the audio block, where the PIO path does its own `hdmi_di_load(b ^ 1, ...)`),
+  preceded by a bounded spin on the DMA read pointer until the island at the head of
+  the list has been consumed (~1.2 us; `HDMI_AU_DI_GUARD_US` bounds it, and a timeout
+  falls through to the refusal that was there before) — **hoisting it WITHOUT the spin
+  was tried earlier the same day and measured `skip@ buf0 word 7`, i.e. still inside
+  the island**; and the guard's threshold, which was `HDMI_TL_DI_PX + 8` = 52 **pixels
+  used as words** when the island is `HDMI_TL_DI_WORDS` = **39 words** (2 + 1 + 36 —
+  the preamble is a RAW_REPEAT command plus its word). On an ACTIVE line word 52 is
+  ten pixels into video, i.e. the old bound waited ~4 us longer than the rule it was
+  supposed to express. Both numbers are pinned as named constants now, and the `ra`
+  the refusal records (`skip@ word` on the Speed Test page) is what makes the units
+  bug visible at all. **Rule: in this ISR, ask what the DEADLINE of a piece of work
+  is before deciding where it goes — "after the render" is only safe for work the DMA
+  will not reach for two lines.** Test ELFs `debug/{m2p2,PCp2}-fastaudio-1.0.6.elf`;
+  the Speed Test page carries a `blank`/`active` ISR split and `skip@ buf/word` in
+  these builds. **Hw 2026-09-23, a fast mode at 378: 12000 pkt/s, q 65..66,
+  und/skip/dup ALL ZERO, cr 2/57** — i.e. the refill now hits its window on every
+  pair, where before the fix it was refused on every one. What that capture does
+  NOT establish is that the sink is happy: round 7 spent four rounds proving those
+  same counters can be perfect while the TV soft-mutes, so the ear is still owed,
+  and so are the standard 50/60 Hz modes beside it.
+- **Fast audio follow-up (2026-09-23): owner confirms NO audio at 640x480 @90
+  with 12000 pkt/s, q 65..66, und/skip/dup 0, ISR blank/active/gap all 26 us.**
+  The early-refill change therefore did not resolve the audible failure. A separate
+  definite metadata bug was found: AVI used VIC 1 for every 640-wide mode, including
+  75/90 Hz. `hdmi_build_avi_if_blob` now uses the actual pixel clock and geometry;
+  VIC 1 is retained only for 640x480, 800 pixels/line, 525 lines at 25.2 MHz.
+  Other modes use VIC 0 (including 640x480 @50). Both board builds pass; candidates
+  are `debug/{m2p2,PCp2}-fastaudio-vic-1.0.6.{uf2,elf}`. **Hardware result pending:
+  fixing the VIC is not yet evidence that it caused the missing audio.**
+- **VIC candidate hardware report (2026-09-23): sound now plays at 640x480;
+  @60 is good, @75/@90 are consistently slower and lower-pitched, on any sound
+  source according to the owner.** The remaining fault is not established as GS
+  starvation or an ACR error. Diagnostic builds
+  `debug/{m2p2,PCp2}-fastaudio-clock-1.0.6.{uf2,elf}` retain the VIC change and
+  add PCM callbacks/sec, configured serializer pixel Hz, and the N/CTS values
+  used to build ACR to Speed Test. Rates use measured elapsed time. Expected:
+  PCM ~31250, pixel 37800000, N/CTS 6144/37800 in fast modes; pixel 25200000,
+  N/CTS 6144/25200 at @60. Pixel cfg is SDK clock configuration, NOT a physical
+  measurement. The menu pauses guest emulation, so this does not measure guest
+  speed or diagnose in-game sample holds. Both board builds pass; hardware data
+  for these new rows is pending.
+- **Fast-audio narrowing (2026-09-24): owner reports normal FPS/IDL while only
+  music slows.** At @90 the clock diagnostic screenshot reads PCM 31249 Hz,
+  pixel cfg 37800000, N/CTS 6144/37800, 11999 packet pops/s, q 64..66,
+  und/skip/dup 0; ISR blank 30 us, active 27 us. These are menu measurements,
+  not a capture of HDMI packets or the receiver's recovered clock. They do not
+  justify changing N/CTS, nor prove that every popped packet is transmitted once.
+  Next controlled comparison uses HDMI_HSTX=RAW with the VIC fix and clock
+  diagnostics retained: same serializer clock and packet encoder, two palette
+  island sets instead of in-place TMDS second-play refill. Separate build dirs
+  `build-{MURM2,PICO_PC}-rawaudio`; project options, target and optimization flags
+  compared against the TMDS dirs, only HDMI_HSTX differs. Both builds passed;
+  RAW packing test: 143578 checks, 0 failures. Artifacts:
+  `debug/{m2p2,PCp2}-fastaudio-raw-1.0.6.{uf2,elf}`. Owner clarified the sink is a
+  capture card: USB capture and host monitoring are also in the audio path.
+  **Hardware RAW comparison confirmed 2026-09-24: owner reports music plays
+  without slowdown on the same MS2130 capture setup.** RAW is the verified
+  workaround. This narrows the fault to differences in the TMDS-expander path
+  (including its ISR load); it does NOT yet establish second-play corruption as
+  the cause. Shared N/CTS, AVI VIC fix, sample resampler and the capture card can
+  sustain the requested fast mode with RAW. Do not retune N/CTS to compensate.
+- **Zero-extra-RAM TMDS fast-audio candidate (2026-09-24; hardware pending):**
+  fast modes may pop audio only on the first play of each two-line pair. The
+  second play still gets ACR/InfoFrames at their original per-line positions,
+  otherwise Null, so no queued audio packet is duplicated. At 47.25 kHz there
+  are 23625 first-play slots/s for 12000 audio packets/s; even reserving six
+  first-play slots/frame for control, every fast mode has >1.9x capacity.
+  Standard modes keep the two audio opportunities per pair: they need them for
+  the proven MS2130 behavior. `hdmi_di_fill` now takes `allow_audio`; only the
+  fast second-play call passes false. No new buffers or SRAM; linked `SCRATCH_X`
+  fell 16 B to 3968 B. Both board builds and existing HDMI host tests pass.
+  `debug/{m2p2,PCp2}-fastaudio-firstplay-1.0.6.{uf2,elf}` needs MS2130 listening
+  at @75/@90 and check that @60 stays good. Expected pkt/s remains 12000 and
+  und/skip/dup 0 if the first-play slot schedule is sufficient. This is a
+  **HW verdict 2026-09-24: @75/@90 still sound bad, @50/@60 good.** The
+  first-play-only experiment is rejected and the code was reverted; the UF2s
+  remain in debug only as comparison artifacts.
+- **In-game TMDS diagnostic (2026-09-24; hardware pending):** The previous
+  Speed Test captured its second with the guest PAUSED in the menu, so its
+  31249 PCM ticks/s and 11999 packet pops/s did not establish those rates under
+  game load. `HDMI_LIVE_AUDIO_DIAG` (off in ordinary builds) snapshots one second
+  inside `ESPectrum::loop` and leaves the last full game window on Speed Test:
+  PCM/s, pkt/s, PCM sample holds, queue und/skip/dup and depth. A separate
+  `late` counter samples the DMA read pointer AFTER `hdmi_di_fill` writes the
+  in-flight island; the old `skip` guard checked only BEFORE the write, so it
+  could miss a write that crossed the next line boundary. The diagnostic uses
+  roughly 64 B RAM, and the linked `SCRATCH_X` is 4016/4096 B. It does not alter
+  the packet schedule. Run music for at least two seconds before opening Speed
+  Test, then read the `Game` lines; ordinary menu rows remain separate. A valid
+  result will distinguish core0 timer starvation, queue starvation and late
+  island writes from a capture/encoder problem. Compare TMDS @90 with RAW @90
+  on the same MS2130. All fast modes use clk_hstx 189 MHz, which exceeds the
+  RP2350 datasheet's 150 MHz limit; RAW working at 189 does not prove that the
+  HSTX TMDS encoder meets timing there. Test images:
+  `debug/{m2p2,PCp2}-fastaudio-live-1.0.6.{uf2,elf}`. Both board builds passed;
+  the new hot ISR and `hdmi_di_fill` have only RAM BL targets. Linked RAM grew
+  about 64 B for the diagnostic, with no new line or audio buffer. This is a
+  diagnostic build and does not claim to correct the fast-mode music slowdown.
+- **Fast-mode audio fallback (2026-09-24):** The initial report that AY also
+  slowed on TMDS @75/@90 was corrected: on PCp2 `-live`, AY is good at @90 but
+  classic GS remains slow. The 10:42 Speed
+  Test screenshot shows 12,000 pkt/s, q 65..66, no und/skip/dup and correct
+  37.8 MHz pixel/6144:37800 ACR, but was taken before the `-live` diagnostic
+  UF2 was built at 10:49 and contains no `Game PCM` rows. It cannot establish
+  in-game producer cadence or a clean receiver packet stream. The tested RAW
+  firmware plays at fast rates on the same MS2130 and its linked `.bss` is about
+  2.5 KB smaller than TMDS. AUTO briefly selected RAW as an audio fallback,
+  then was restored to TMDS after the owner clarified AY works and wants the
+  classic-GS slow tempo fixed in TMDS itself. RAW remains an explicit reference
+  build. The fallback trial added no SRAM.
+  AUTO/RAW builds with `HDMI_LIVE_AUDIO_DIAG=OFF` passed for both boards, and
+  the existing host tests passed (16,101 and 143,578 checks). Candidate UF2s:
+  `debug/{m2p2,PCp2}-fastaudio-auto-raw-1.0.6.uf2`. The prior hardware-tested
+  `*-fastaudio-raw-1.0.6.uf2` artifacts remain available for comparison.
+- **New TMDS hardware result (2026-09-24 11:06, PCp2 `-live`):** The owner
+  reports AY at 640x480 @90 now plays perfectly on the same MS2130, while
+  classic GS is still slow. The screenshot
+  identifies `HDMI HSTX (TMDS encoder)` (not RAW), Game PCM 31250 Hz, packet
+  pop 11999/s, hold 16/s, q 64..66 and und/skip/dup/late all zero; Pixel cfg
+  37800000 Hz and ACR 6144/37800. These show that the HDMI PCM path can
+  sustain AY; they do not measure GS-Z80 throughput. It does not yet establish
+  WHY this image plays AY well:
+  `-live` adds a post-fill DMA read-pointer diagnostic and changes code layout/
+  timing by 464 B text and 64 B bss compared with the prior `-clock` TMDS image.
+  Other modes and a controlled no-diagnostic TMDS rebuild still need listening
+  tests. The RAW AUTO fallback was later removed in favor of the TMDS GS
+  idle-assist experiment below.
+  Controlled PCp2 TMDS/no-diagnostic image:
+  `debug/PCp2-fastaudio-tmds-nodiag-1.0.6.uf2`. It built successfully with
+  `HDMI_HSTX=TMDS`, `HDMI_LIVE_AUDIO_DIAG=OFF`, SCRATCH_X 3984/4096 B.
+  `objcopy -O binary` comparison with the older `-clock` image shows only
+  13 differing bytes, all from `__DATE__`/`__TIME__` build stamps; executable
+  code and functional data are byte-identical. A listening A/B against `-live`
+  can therefore isolate the diagnostic build/timing effect from code changes.
+- **GS-specific fast-mode slowdown, corrected report (2026-09-24):** On PCp2
+  `-live` with HDMI TMDS encoder, classical GS at 14 MHz is slow with RP2350
+  at 378 MHz and 640x480 @90; AY plays normally. The same GS plays normally
+  when RP2350 is raised to 504 MHz, and 720x576 @50 is normal. HOWEVER,
+  Config::load() and VIDEO::Init map a fast-mode selection to its standard
+  25.2 MHz twin whenever cpu_mhz != 378, so the 504 MHz observation is at
+  640x480 @60 rather than @90; it is not a same-video-rate clock comparison.
+  The healthy
+  Game PCM 31250 Hz / 11999 pkt/s / no und/skip/dup/late measurements above
+  were taken during AY playback and do not measure GS-Z80 progress. A core1
+  capacity deficit is the leading inference: the GS-Z80 pump and the HDMI
+  render ISR share that core, with ~42.3 us per rendered line pair @90 and
+  an observed max ISR of 30 us. This aligns with the `GS::pump` source comment
+  about 378 MHz + HDMI audio limiting core1 throughput; max ISR alone is not
+  an average-duty measurement. Compare RAW at the SAME 14/378/@90 setup before
+  treating the AUTO RAW fallback as a verified GS fix. Do not ask for the old
+  TMDS `-clock` vs `-live` A/B to diagnose GS; its code comparison only speaks
+  to the HDMI transport/AY branch of the investigation.
+- **TMDS GS core0 idle-assist candidate (2026-09-24; hardware pending):** The
+  same classic GS 14 MHz / RP2350 378 MHz / 640x480 @90 setup plays at normal
+  tempo with `HDMI_HSTX=RAW` but slowly with TMDS, confirming the difference
+  is in backend CPU cost/scheduling, not the GS program or HDMI PCM clock.
+  `GS::pump()` already uses an atomic cross-core ownership lock and runs on
+  core0 in SOFTTV. With `HDMI_TMDS_GS_IDLE_ASSIST=ON` (off by default), the
+  no-VSync frame idle in ESPectrum::loop helps pump classic GS on core0 only
+  while HDMI TMDS fast mode is active. It stops calling pump 400 us before the
+  frame's existing wait deadline to bound frame overrun. Other branches, NeoGS,
+  normal video modes, RAW, and VGA retain their original pacing. `GS::int_count`
+  is now volatile (pump owner writes, core0 once/s reader); the live Speed Test shows
+  `Game GS int/s` with target 37500. A low number confirms GS time deficit; a
+  return to ~37500 alongside normal listening confirms the assist works.
+  Test image: `debug/PCp2-fastaudio-tmds-gsassist-1.0.6.uf2`, built with TMDS,
+  live audio diagnostic and assist ON. Linked bss +8 B vs previous `-live`,
+  SCRATCH_X 4016/4096 B. This is a TMDS experiment, not a RAW fallback and not
+  yet a validated fix. AUTO has been restored to TMDS; assist stays opt-in until
+  hardware confirms it. The prior `-auto-raw` UF2s remain comparison artifacts.
+- **TMDS GS follow-up, core0 handoff (2026-09-24; hardware pending):** The
+  first idle-assist build was tested on PCp2 at classic GS 14 MHz / RP2350
+  378 MHz / 640x480 @90. Music still slowed, although some passages improved.
+  Live Speed Test while the game ran: Game GS **34975 int/s** vs 37500 target,
+  Game PCM 31250 Hz, HDMI 12000 pkt/s, q 64..66, no und/skip/dup/late,
+  ISR max 30 us (active 27 us). Thus the remaining ~6.7% deficit is GS-Z80
+  execution, not the HDMI sample clock or packet transport. The first assist
+  let core0 call GS::pump() during frame idle, but core1's tight loop could
+  immediately reacquire the atomic pump lock. The new experimental handoff
+  asserts gs_core0_assist_requested for that idle window; render_core skips
+  GS::pump() until core0 releases it. The pump lock still drains any in-flight
+  core1 call before core0 changes the GS state. The live Speed Test now also
+  reports "GS core0" in T-states/s, counted after a successful core0 step,
+  so hardware can establish how much work the assist actually moved. Built
+  as PCp2 TMDS with the same diagnostic options; SCRATCH_X 4032/4096 B
+  (16 B above the prior candidate). Keep HDMI_TMDS_GS_IDLE_ASSIST opt-in
+  until the new hardware result reaches ~37500 int/s with normal listening
+  and FPS/IDL.
+- **Core0 handoff rejected; GS batching candidate (2026-09-24):** Hardware
+  retest of `PCp2-fastaudio-tmds-gshandoff` on the same 14/378/@90 setup:
+  Game GS **28817 int/s**, GS core0 **705846 T/s** (the counter is
+  GS-Z80 T-states actually stepped on core0). HDMI remained healthy:
+  Game PCM 31249 Hz, pkt 11999/s, q 64..66,
+  zero und/skip/dup/late. Exclusive ownership made GS much slower than the
+  34975 int/s of the nonexclusive assist: core1 lost more work than core0
+  added. The handoff flag/check has been removed; both cores may pump with the
+  existing atomic GS state lock. Next candidate changes only the minimum
+  GS::pump credit in the opt-in TMDS assist build from 128 to 256 T-states,
+  reducing short z80_run/step dispatches; the core0 T/s diagnostic remains.
+  Test image: `debug/PCp2-fastaudio-tmds-gs256-1.0.6.{elf,uf2}`. Hardware
+  validation pending, and assist remains OFF by default.
+- **GS-side experiments REVERTED; the fix is the TMDS ISR itself (2026-09-24, owner:
+  "чинить TMDS, а не GS"; hw-confirmed on PCp2 the same day — owner: "играет
+  отлично на всех частотах", classic GS in a fast mode included).** The last assist build (`gs256`) read 33047
+  int/s = 88% — worse than 34975 — and every GS lever only moved core1's deficit
+  around. Removed: `HDMI_TMDS_GS_IDLE_ASSIST` (core0 pumping GS in frame idle), the
+  256-T pump minimum, the `GS core0` counter. Kept: the VIC fix, the live Speed Test
+  diagnostic (`HDMI_LIVE_AUDIO_DIAG`, incl. `Game GS int/s`), the blank/active ISR
+  split. What TMDS pays that RAW does not is the per-pixel render: a bounds-checked
+  byte loop into `hdmi_idx_line` (~13 cycles/px) plus a SECOND pass
+  (`hdmi_idx_to_px`), where RAW's PIO converter does the palette lookup in hardware.
+  `hdmi_fb_to_px` does both in ONE pass for the normal case (shift 0, row >= active
+  width): 32-bit fb load rotated by 16 (= the x^2 order) and each byte straight
+  through its palette page into the command list, Bayer masks ORed in (~6 cycles/px,
+  23 instructions per 4 px). The shifted/narrow case is `hdmi_px_slow`, off-screen
+  rows `hdmi_px_blank`. **All three are noinline in MAIN RAM, not SCRATCH_X**: that
+  bank is 2 KB of ISR code + core1's 2 KB stack and every inlined copy of the loop
+  overflowed it; `hdmi_tl_active` must keep ONE call site for the same reason.
+  SCRATCH_X 4032 -> 3800 B. Host-checked bit-exact against the old two-pass path
+  (20000 random rows, 320/360, dither on/off). Test ELF
+  `debug/PCp2-tmds-fused-1.0.6.elf`. Owner re-checked the same day: DS80, GMX
+  640x200, Timex hi-res, HDMI dither and the CRT grille all work (no Speed Test
+  figures taken). A MURM2 TMDS build is out with a tester, verdict pending. Levers left if core1
+  ever runs short again: the one-line island deadline + spin (rotate the list so
+  hsync+island is its TAIL and refill the second play from the cheap ISR), then a
+  PIO-converter hybrid. The same one-pass trick would also speed the RAW/PIO
+  paths' byte loop — untouched, they are hw-proven as they are.
+- **`gap == dur` is SATURATION, not a late ISR, and in a fast mode it is the normal
+  reading.** Every fast mode has `line_bytes = 400`, i.e. h_total 800 px at
+  37.8 MHz = a **21.16 us line and a 42.3 us pair**, and the render ISR measures
+  **26 us** there (22 at 31.75 us — the same work, but the line DMA runs at 130 MB/s
+  instead of 87 and steals more from core0, plus up to ~1 us of the new island spin).
+  So the render ISR always overruns its own line: the following CHEAP ISR is already
+  pending when it returns and fires immediately, and its measured gap is the render
+  ISR's duration rather than the line period. Nothing is lost — the cheap half only
+  re-points the ctrl channel, whose deadline is the end of the line it is already
+  inside, and the render half's descriptor is not read until the end of the line
+  after next. **The budget to compare against is the PAIR (42.3 us), not the line**,
+  so what is left is 16 us; `blank` and `active` both reading the line period would
+  be the healthy standard-mode picture, and both reading the same number well under
+  it is the fast-mode one.
 - **Help > Speed Test > Video path** is the back-end benchmark: back-end name,
   `DMA/line` bytes, core0 SRAM copy throughput WHILE the display DMA streams, and the
   line ISR's worst `dur/gap` over one second (VGA has no counters). Measured PCp2

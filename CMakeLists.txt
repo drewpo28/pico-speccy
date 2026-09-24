@@ -31,7 +31,7 @@ option(SOFTTV "Enable TV soft composite output" OFF)
 # TMDS words through the PIO address converter (HDMI_HSTX=1); TMDS = HSTX with the
 # command expander and the hardware TMDS encoder, the line as a command list of
 # XRGB8888 pixels and no converter at all (HDMI_HSTX=2, see hdmi_tmds_line.h);
-# ON = RAW (the old spelling); AUTO = TMDS on PICO_PC, RAW on MURM2/MURM2_W.
+# ON = RAW (the old spelling); AUTO = TMDS on PICO_PC and MURM2/MURM2_W.
 set(HDMI_HSTX AUTO CACHE STRING "HDMI back-end: AUTO / OFF / RAW / TMDS (ON = RAW)")
 set_property(CACHE HDMI_HSTX PROPERTY STRINGS AUTO OFF RAW TMDS ON)
 # Per-boot HSTX diagnostics: the engine settings, the eight bit[] entries, a 4 ms
@@ -101,6 +101,7 @@ option(TSCONF_DRAM_MODEL "TS-Conf: model DRAM contention (CPU/video vs DMA) and 
 option(MEM_ACCESS_TRACE "Count Z80 accesses per RAM page between load and eviction (accessor-mode feasibility study; slows readbyte/writebyte)" OFF)
 option(GS_PERF_TRACE "Enable General Sound per-second perf counters (GS.cpp)" OFF)
 option(HDMI_AUDIO_TRACE "Enable the 1 Hz HDMIAU: audio-health log line (hdmi_audio_health_dump)" OFF)
+option(HDMI_LIVE_AUDIO_DIAG "Save HDMI audio rates during gameplay for Speed Test" OFF)
 option(OPL_PERF_TRACE "Enable the ~6 s 'OPL: gen us/fr' YMF262 cost line (ESPectrum.cpp)" OFF)
 option(GS_DEBUG_TRACE "Enable General Sound port-IO trace ring + auto-dumps (~50 KB SRAM)" OFF)
 option(NGS_TRACE "Enable NeoGS 1 Hz health line (GS-Z80 PC / SD counters; ~2-4 ms UART stall per line)" OFF)
@@ -1037,6 +1038,11 @@ if (HDMI_AUDIO_TRACE)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_AUDIO_TRACE=0)
 endif ()
+if (HDMI_LIVE_AUDIO_DIAG)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_LIVE_AUDIO_DIAG=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE HDMI_LIVE_AUDIO_DIAG=0)
+endif ()
 if (OPL_PERF_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE OPL_PERF_TRACE=1)
 else ()
@@ -1660,9 +1666,7 @@ ELSE()
     # HDMI_HSTX_ON: 0 PIO, 1 raw serializer, 2 command expander + TMDS encoder.
     IF(HDMI_HSTX STREQUAL "AUTO")
         IF(PICO_PC OR MURM2)
-            # The raw form is hw-confirmed here (picture + HDMI audio, 2026-09-17);
-            # the expander form is the owner's pick for this board (2026-09-22) and
-            # has NOT been on hardware yet — see docs/hstx-m2p2-plan.md.
+            # TMDS is the intended back-end; RAW remains an explicit fallback.
             SET(HDMI_HSTX_ON 2)
         ELSE()
             SET(HDMI_HSTX_ON 0)

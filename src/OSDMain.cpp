@@ -7310,11 +7310,13 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
         const char *vid_backend = "";
         unsigned vid_dma = 0;
         float vid_cp = 0.0f;
-        uint32_t vid_dur = 0, vid_gap = 0;
+        uint32_t vid_dur = 0, vid_gap = 0, vid_dur_b = 0, vid_dur_a = 0;
+        int32_t  aud_skoff = 0; uint32_t aud_skwhich = 0;
         bool vid_hdmi = false;
         bool aud_on = false;
         uint32_t aud_pps = 0, aud_und = 0, aud_skip = 0, aud_dup = 0, aud_qmin = 0, aud_qmax = 0;
         uint32_t aud_credit = 0, aud_cap = 0;
+        uint32_t aud_pcm_hz = 0, aud_pixel_hz = 0, aud_n = 0, aud_cts = 0;
 #ifdef VGA_HDMI
         if (do_video) {
             extern bool SELECT_VGA;
@@ -7348,20 +7350,31 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 progressDialog(title, "Video: line ISR...", 50, 1);
                 hdmi_irq_max_gap_us = 0;      // the OSD owns core0: nothing else resets these meanwhile
                 hdmi_irq_max_dur_us = 0;
+                hdmi_irq_dur_blank_us = 0;
+                hdmi_irq_dur_active_us = 0;
                 // HDMI audio over the same second: packets popped (the delivered rate),
                 // the health counters, the credit — all read from the consumer's own
                 // bookkeeping, so they say what WE sent, not what the sink heard.
                 uint32_t p0 = 0, cr = 0, cap = 0, d0, d1, d2, d3, d4;
                 aud_on = hdmi_audio_meter(&p0, &cr, &cap);
                 hdmi_audio_health_snapshot(&d0, &d1, &d2, &d3, &d4);   // reset the window
+                extern volatile uint32_t g_pcm_tick_ct;
+                const uint32_t pcm0 = g_pcm_tick_ct;
+                const uint64_t aud_t0 = time_us_64();
                 sleep_ms(1000);
+                const uint64_t aud_dt = time_us_64() - aud_t0;
+                aud_pcm_hz = (uint32_t)((uint64_t)(g_pcm_tick_ct - pcm0) * 1000000u / aud_dt);
+                hdmi_audio_clock_stats(&aud_pixel_hz, &aud_n, &aud_cts);
                 vid_dur = hdmi_irq_max_dur_us;
                 vid_gap = hdmi_irq_max_gap_us;
+                vid_dur_b = hdmi_irq_dur_blank_us;
+                vid_dur_a = hdmi_irq_dur_active_us;
                 if (aud_on) {
                     uint32_t p1;
                     hdmi_audio_meter(&p1, &cr, &cap);
-                    aud_pps = p1 - p0;
+                    aud_pps = (uint32_t)((uint64_t)(p1 - p0) * 1000000u / aud_dt);
                     hdmi_audio_health_snapshot(&aud_und, &aud_skip, &aud_dup, &aud_qmin, &aud_qmax);
+                    aud_skoff = hdmi_au_skip_off_w; aud_skwhich = hdmi_au_skip_which;
                     aud_credit = cr; aud_cap = cap;
                 }
             }
@@ -7484,15 +7497,41 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 vid_backend, vid_dma, vid_cp);
             if (vid_hdmi) {
                 pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
-                    " ISR max : %lu us, gap %lu us\n",
-                    (unsigned long)vid_dur, (unsigned long)vid_gap);
+                    " ISR max : %lu us, gap %lu us\n"
+                    "   blank %lu us, active %lu us\n",
+                    (unsigned long)vid_dur, (unsigned long)vid_gap,
+                    (unsigned long)vid_dur_b, (unsigned long)vid_dur_a);
                 if (aud_on)
                     pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
                         " Audio   : %lu pkt/s, q %lu..%lu\n"
-                        "   und %lu skip %lu dup %lu cr %lu/%lu\n",
+                        "   und %lu skip %lu dup %lu cr %lu/%lu\n"
+                        "   skip@ buf%lu word %ld\n"
+                        " PCM timer: %lu Hz\n"
+                        " Pixel cfg: %lu Hz\n"
+                        " ACR N/CTS: %lu/%lu\n",
                         (unsigned long)aud_pps, (unsigned long)aud_qmin, (unsigned long)aud_qmax,
                         (unsigned long)aud_und, (unsigned long)aud_skip, (unsigned long)aud_dup,
-                        (unsigned long)aud_credit, (unsigned long)aud_cap);
+                        (unsigned long)aud_credit, (unsigned long)aud_cap,
+                        (unsigned long)aud_skwhich, (long)aud_skoff,
+                        (unsigned long)aud_pcm_hz, (unsigned long)aud_pixel_hz,
+                        (unsigned long)aud_n, (unsigned long)aud_cts);
+#if HDMI_LIVE_AUDIO_DIAG
+                extern uint32_t hdmi_live_pcm_hz, hdmi_live_pkt_hz;
+                extern uint32_t hdmi_live_hold, hdmi_live_und, hdmi_live_skip, hdmi_live_dup;
+                extern uint32_t hdmi_live_qmin, hdmi_live_qmax, hdmi_live_late;
+                extern uint32_t hdmi_live_gs_int_hz;
+                pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                    " Game PCM : %lu Hz, pkt %lu/s\n"
+                    "   hold %lu und %lu skip %lu dup %lu\n"
+                    "   q %lu..%lu late %lu (game)\n"
+                    " Game GS  : %lu int/s (target 37500)\n",
+                    (unsigned long)hdmi_live_pcm_hz, (unsigned long)hdmi_live_pkt_hz,
+                    (unsigned long)hdmi_live_hold, (unsigned long)hdmi_live_und,
+                    (unsigned long)hdmi_live_skip, (unsigned long)hdmi_live_dup,
+                    (unsigned long)hdmi_live_qmin, (unsigned long)hdmi_live_qmax,
+                    (unsigned long)hdmi_live_late,
+                    (unsigned long)hdmi_live_gs_int_hz);
+#endif
             }
             else
                 pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,

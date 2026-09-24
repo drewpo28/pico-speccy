@@ -91,6 +91,10 @@ void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, 
 void hdmi_audio_health_dump(void);
 // Read-and-reset of the same counters for another log line (see hdmi.c).
 void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
+extern volatile uint32_t hdmi_irq_dur_blank_us;
+extern volatile uint32_t hdmi_irq_dur_active_us;
+extern volatile int32_t  hdmi_au_skip_off_w;
+extern volatile uint32_t hdmi_au_skip_which;
 
 // Re-publish the vertical timing of the CURRENT video mode (get_video_mode()) to
 // the line ISR. The 50 Hz modes differ ONLY in v_total — it is tuned per machine
@@ -111,6 +115,7 @@ void hdmi_video_stats(const char **backend, unsigned *dma_bytes_per_line);
 // Audio delivery meter for the same row: audio packets popped so far (a monotonic
 // count — 12000/s at 48 kHz is the whole question), plus the live credit and its cap
 // in samples (Q24 >> 24). Zero/false when HDMI audio is off.
+void hdmi_audio_clock_stats(uint32_t *pixel_hz, uint32_t *n, uint32_t *cts);
 bool hdmi_audio_meter(uint32_t *pops, uint32_t *credit_spl, uint32_t *cap_spl);
 
 // TODO: Сделать настраиваемо

@@ -35,6 +35,11 @@
 #define HDMI_TL_DI_CHARS     32
 #define HDMI_TL_DI_RAW       (2 * HDMI_TL_DI_GUARD_PX + HDMI_TL_DI_CHARS)   // 36 raw words
 #define HDMI_TL_DI_PX        (HDMI_TL_DI_PRE_PX + HDMI_TL_DI_RAW)           // 44
+// ...and in COMMAND WORDS, which is a different number: the preamble is one
+// RAW_REPEAT command plus its word, then one RAW command plus 36 words = 39.
+// Anything that reasons about where the DMA's read pointer is inside the island
+// wants this one, not the pixel count (hdmi_isl_second_play).
+#define HDMI_TL_DI_WORDS     (2 + 1 + HDMI_TL_DI_RAW)                       // 39
 // Video preamble + guard band, at the end of the back porch (HDMI mode only).
 #define HDMI_TL_VP_PX        8
 #define HDMI_TL_VG_PX        2
