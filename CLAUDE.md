@@ -5841,13 +5841,22 @@ blanking** (fp 16 / hsync 32 / bp 32; CEA 576p has 144).
   the test's one-second window). HDMI reads the ISR's own snapshot (`hdmi_live_mode`,
   v_total as published per machine); VGA reads the `vga_*` fields with vga.c's
   inherit-if-zero rule.
-- **Experiments still in the tree, all OFF by default** (CMake options): the IEC
-  channel-status fill is ON unconditionally (D); `HDMI_AUDIO_IF_EXPERIMENT` (F:
-  Audio InfoFrame CT/SF/SS = 0, "refer to stream header", as the test card sends),
-  `HDMI_VS_AUDIO_EXPERIMENT` (TMDS: audio packets on vsync lines, VSYNC=0 in ch0),
-  `HDMI_AVI_EXPERIMENT`, `HDMI_NO_VSIF_EXPERIMENT`, `HDMI_SPARSE_ISLANDS`,
-  `HDMI_TEST_TONE`. PCp2 TMDS with D+F+V plays. Remove what the m2p2 verdict does
-  not need.
+- **What actually fixed the m2p2 CRT converter: AUDIO ON THE VSYNC LINES** (hw
+  2026-09-25, m2p2 TMDS on 832: D silent, D+F silent, D+V plays, D+F+V plays). We used
+  to send the Null packet on every vsync line — a ~6-line hole per frame in the sample
+  stream, which that converter will not take; the test card sends audio there too.
+  Now unconditional in BOTH paths: the expander's `hdmi_di_fill` and the PIO/RAW
+  `hdmi_di_load` pop the queue on a vsync line and encode with `di_ch0_data_vs`
+  (VSYNC=0 baked into ch0); ACR and InfoFrames stay out of vsync. Also unconditional
+  now: the IEC 60958 channel status (LPCM, 48 kHz, 16-bit — it was all zeros, i.e.
+  copyright asserted and 44.1 kHz) and the Audio InfoFrame's CT/SF/SS = 0 ("refer to
+  stream header", the CEA-861 value for HDMI LPCM; not what fixed the converter, kept
+  because it is the spec value and harmless on every sink tried). The refuted
+  experiments were deleted with their CMake options: `HDMI_AVI_EXPERIMENT`,
+  `HDMI_NO_VSIF_EXPERIMENT`, `HDMI_SPARSE_ISLANDS`, `HDMI_TEST_TONE` (1 kHz sine).
+  Still OPEN on m2p2: sound on DV/DFV stutters after power-up until an HDMI replug,
+  then plays normally — compare Speed Test > Video path before and after the replug.
+  PIO/RAW with vsync audio has not been on that converter yet.
 - **The test card's PICO_PC builds**: its GPIO28 layout probe and its NESPAD on
   GPIO26 are Murmulator-2 only — on PCp2 that pin is the beeper/MIDI output, and
   the noise read as pad presses switched modes by itself on a TV. `-DFORCE_PICOPC`

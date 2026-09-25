@@ -2493,15 +2493,12 @@ static void hdmi_build_audio_if_blob(void) {
     uint8_t hdr[4] = { 0x84, 0x01, 0x0A, 0 };
     uint8_t sp[4][8];
     nf_memset(sp, 0, sizeof(sp));
-#if HDMI_AUDIO_IF_EXPERIMENT
-    // EXPERIMENT (2026-09-25): CEA-861 says CT/SF/SS "refer to stream header" (0) on
-    // HDMI LPCM — what the HSTX test card sends.
+    // CT/SF/SS = 0, "refer to stream header": what CEA-861 asks of HDMI LPCM and what
+    // the HSTX test card sends. The rate is carried by ACR and the IEC channel status.
+    // (Was CT=1, SF=48k, SS=16-bit; not what fixed the m2p2 CRT converter — that was
+    // audio on the vsync lines — but the spec value, hw-checked on PCp2 and m2p2.)
     sp[0][1] = 0x01;  // CT=0, CC=1 (2 channels)
     sp[0][2] = 0x00;  // SF=0, SS=0
-#else
-    sp[0][1] = 0x11;  // CT=1 (PCM), CC=1 (2 channels)
-    sp[0][2] = (HDMI_AUDIO_SF_CODE << 2) | 0x01;  // SF=HDMI_AUDIO_FS, SS=1 (16-bit). Matches ACR + actual output rate.
-#endif
     sp[0][4] = 0x00;  // CA = FL/FR
     sp[0][5] = 0x00;  // LSV=0, DM_INH=0
     hdmi_if_checksum(hdr, sp);
@@ -2519,17 +2516,9 @@ static void hdmi_build_avi_if_blob(const struct video_mode_t *mode, uint32_t pix
     const uint8_t vic = (mode->screen_width == 320 && mode->v_active == 480
                      && mode->line_bytes == 400 && mode->v_total == 524
                      && pix_hz == 25200000u) ? 1 : 0;
-#if HDMI_AVI_EXPERIMENT
-    // EXPERIMENT (2026-09-25): the bytes the author's HSTX test card sends, which an
-    // HDMI->VGA converter accepts with audio in 720x576 where ours is silent.
-    sp[0][1] = 0x12;  // Y=0 RGB, A0=1 active format present, S=2 underscan
-    sp[0][2] = 0x18;  // M=1 4:3, R=8 same-as-picture
-    sp[0][3] = 0x88;  // ITC=1 IT content, Q=2 full range
-#else
     sp[0][1] = 0x00;  // Y=0 RGB, no scan/active-format info
     sp[0][2] = 0x08;  // R=8 same-as-picture
     sp[0][3] = 0x00;  // Q=0 default range
-#endif
     sp[0][4] = vic;
     sp[0][5] = 0x00;  // no pixel repetition
     hdmi_if_checksum(hdr, sp);
@@ -2662,9 +2651,11 @@ static bool __not_in_flash_func(hdmi_di_fill)(uint32_t *chars, uint logical_line
     const uint vbl = (di_if_base != 0 && logical_line > di_if_base)
                    ? logical_line - di_if_base
                    : (di_if_base == 0 ? logical_line : 0);
-#if HDMI_VS_AUDIO_EXPERIMENT
-    // EXPERIMENT (2026-09-25): audio packets during vsync too (the test card does),
-    // encoded with VSYNC=0 in ch0; ACR/InfoFrames stay out of vsync.
+    // Audio packets go out on vsync lines too, encoded with VSYNC=0 in ch0 (ACR and
+    // InfoFrames stay out of vsync). The HDMI->VGA converter in front of m2p2's CRT
+    // takes no audio at all without them — a ~6-line hole per frame in the sample
+    // stream (hw 2026-09-25: D and DF silent, DV and DFV play). The HSTX test card
+    // does the same.
     if (vs) {
         if (hdmi_au_pos >= (4u << 24)) {
             const uint32_t qd = aq_wr - aq_rd;
@@ -2680,14 +2671,9 @@ static bool __not_in_flash_func(hdmi_di_fill)(uint32_t *chars, uint logical_line
         }
         src = blob_null_vs;
     }
-#else
-    if (vs) src = blob_null_vs;
-#endif
     else if (vbl == 1) src = blob_acr;
     else if (vbl == 2) qpkt = &if_avi;
-#if !HDMI_NO_VSIF_EXPERIMENT
     else if (vbl == 3) qpkt = &if_vendor;
-#endif
     else if (vbl == 4) qpkt = &if_audio;
     // Extra ACR every 4th blanking LINE — the PIO path's cadence exactly (~2000/s on
     // the 644-line modes). Strict sinks recover the audio clock from the ACR stream
@@ -2706,30 +2692,6 @@ static bool __not_in_flash_func(hdmi_di_fill)(uint32_t *chars, uint logical_line
         else { src = blob_null; hdmi_au_und_ct++; }
     }
     else src = blob_null;
-#if HDMI_SPARSE_ISLANDS
-    // EXPERIMENT (2026-09-25): no island at all where there is nothing to send, the
-    // way the author's HSTX test card does it (its islands appear only on lines that
-    // carry a packet). The island's 39 words stay in the list — the line's timing
-    // does not move — but a Null line gets the plain hsync control word in the
-    // preamble, both guards, the 32 characters and the trailing guard. Every other
-    // line rewrites preamble and guards, since the same words may have been
-    // blanked on this buffer's previous play. The whole island sits inside hsync
-    // in every mode (hs >= 48 px > 44), so the control word is H=0.
-    {
-        const int v = vs ? 0 : 1;
-        if (src == blob_null || src == blob_null_vs) {
-            const uint32_t c = hdmi_tl_w.sync[v][0];
-            chars[-4] = c; chars[-2] = c; chars[-1] = c;
-            for (int i = 0; i < HDMI_TL_DI_CHARS + 2; i++) chars[i] = c;
-            return false;
-        }
-        chars[-4] = hdmi_tl_w.di_pre[v];
-        chars[-2] = hdmi_tl_w.di_guard[v][0];
-        chars[-1] = hdmi_tl_w.di_guard[v][1];
-        chars[HDMI_TL_DI_CHARS + 0] = hdmi_tl_w.di_trail[v][0];
-        chars[HDMI_TL_DI_CHARS + 1] = hdmi_tl_w.di_trail[v][1];
-    }
-#endif
     if (qpkt) {
         // HDMI_BLOB_SW makes HDMI_CHAR_AT the identity: 32 contiguous words.
         hdmi_pack_blob(chars, NULL, qpkt->hdr, qpkt->sp, HDMI_BLOB_SW);
@@ -2809,18 +2771,31 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
     // once per line pair — this loader only SPENDS it, because with scanlines
     // enabled it runs once (not twice) per pair.
 
-    // Vsync pairs transmit the VSYNC=0 Null packet (no queue pop). Pair-level
-    // check: the pair's render line is the odd one.
+    // Pair-level vsync check: the pair's render line is the odd one.
     const uint pr = (logical_line & 1) ? logical_line : logical_line - 1;
     const uint vbl = (di_if_base != 0 && logical_line > di_if_base)
                          ? logical_line - di_if_base
                          : (di_if_base == 0 ? logical_line : 0);
-    if ((pr >= di_vs_start) && (pr < di_vs_end)) src = blob_null_vs;
+    // Vsync pairs carry AUDIO too, with VSYNC=0 baked into ch0 (see the twin comment
+    // in the expander's hdmi_di_fill: the m2p2 CRT converter needs it); ACR and the
+    // InfoFrames stay out of vsync.
+    const bool vsp = (pr >= di_vs_start) && (pr < di_vs_end);
+    if (vsp) {
+        src = blob_null_vs;
+        if (hdmi_au_pos >= (4u << 24)) {
+            const uint32_t qd = aq_wr - aq_rd;
+            if (qd != 0 && qd <= HDMI_AQ_LEN) {
+                hdmi_au_pos -= (4u << 24);
+                hdmi_aq_expand(&aq_blob[aq_rd & (HDMI_AQ_LEN - 1)], &apkt);
+                qpkt = &apkt;
+                from_q = true;
+                src = NULL;
+            } else hdmi_au_und_ct++;
+        }
+    }
     else if (vbl == 1) src = blob_acr;                          // ACR — first of many per frame (see below)
     else if (vbl == 2) qpkt = &if_avi;                          // AVI once per frame (raw, encoded below)
-#if !HDMI_NO_VSIF_EXPERIMENT
     else if (vbl == 3) qpkt = &if_vendor;                       // Vendor Specific (HDMI mode signal — keeps sink in HDMI, not DVI)
-#endif
     else if (vbl == 4) qpkt = &if_audio;                        // Audio InfoFrame once per frame
     else if (vbl != 0 && (vbl & 3) == 0) src = blob_acr;        // extra ACR every 4th vblank line (vbl 8,12,16,...). Strict sinks (Philips/Sony) recover the audio clock from the ACR stream and need it FAR more often than once/frame to lock the PLL — they stay silent at 1/frame even though lenient sinks (Xiaomi) accept it. frank-nes/SpeccyP send ACR this often. Displaced audio-packet lines are recovered by the credit metering (long-run delivery unchanged).
     else if (hdmi_au_pos >= (4u << 24)) {
@@ -2857,7 +2832,8 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
         // Encode the raw packet (an audio packet from the queue, or one of the
         // three InfoFrames) straight into both palette pages (see
         // hdmi_audio_pkt_t). hdmi_pack_blob writes all 32 characters of each.
-        hdmi_pack_blob(dst, dstb, qpkt->hdr, qpkt->sp, HDMI_SLOT_WORDS);
+        hdmi_pack_blob_ch0(dst, dstb, qpkt->hdr, qpkt->sp, vsp ? di_ch0_data_vs : di_ch0_data,
+                           HDMI_SLOT_WORDS);
         if (from_q) {
             __dmb();
             aq_rd = aq_rd + 1;
@@ -3345,40 +3321,8 @@ void hdmi_audio_levels(int16_t out[4]) {
 }
 #endif
 
-#if HDMI_TEST_TONE
-// TEST (2026-09-25): replace the emulator's audio with a 1 kHz sine, the way the
-// HSTX test card does, to rule the CONTENT out of "a converter plays the test card's
-// tone but not our sound". 256-point table, half scale. GCC places it in flash
-// (never written, so it folds to .rodata); a flash read from the core0 PCM tick is
-// fine for a test build.
-static int16_t hdmi_tone_tab[256] = {
-    0, 393, 785, 1177, 1568, 1959, 2348, 2735, 3121, 3506, 3888, 4267, 4645, 5019, 5390, 5758,
-    6123, 6484, 6841, 7194, 7542, 7886, 8226, 8560, 8889, 9213, 9531, 9844, 10150, 10451, 10745, 11033,
-    11314, 11588, 11855, 12115, 12368, 12614, 12851, 13081, 13304, 13518, 13724, 13921, 14111, 14292, 14464, 14627,
-    14782, 14928, 15065, 15192, 15311, 15420, 15521, 15611, 15693, 15764, 15827, 15880, 15923, 15957, 15981, 15995,
-    16000, 15995, 15981, 15957, 15923, 15880, 15827, 15764, 15693, 15611, 15521, 15420, 15311, 15192, 15065, 14928,
-    14782, 14627, 14464, 14292, 14111, 13921, 13724, 13518, 13304, 13081, 12851, 12614, 12368, 12115, 11855, 11588,
-    11314, 11033, 10745, 10451, 10150, 9844, 9531, 9213, 8889, 8560, 8226, 7886, 7542, 7194, 6841, 6484,
-    6123, 5758, 5390, 5019, 4645, 4267, 3888, 3506, 3121, 2735, 2348, 1959, 1568, 1177, 785, 393,
-    0, -393, -785, -1177, -1568, -1959, -2348, -2735, -3121, -3506, -3888, -4267, -4645, -5019, -5390, -5758,
-    -6123, -6484, -6841, -7194, -7542, -7886, -8226, -8560, -8889, -9213, -9531, -9844, -10150, -10451, -10745, -11033,
-    -11314, -11588, -11855, -12115, -12368, -12614, -12851, -13081, -13304, -13518, -13724, -13921, -14111, -14292, -14464, -14627,
-    -14782, -14928, -15065, -15192, -15311, -15420, -15521, -15611, -15693, -15764, -15827, -15880, -15923, -15957, -15981, -15995,
-    -16000, -15995, -15981, -15957, -15923, -15880, -15827, -15764, -15693, -15611, -15521, -15420, -15311, -15192, -15065, -14928,
-    -14782, -14627, -14464, -14292, -14111, -13921, -13724, -13518, -13304, -13081, -12851, -12614, -12368, -12115, -11855, -11588,
-    -11314, -11033, -10745, -10451, -10150, -9844, -9531, -9213, -8889, -8560, -8226, -7886, -7542, -7194, -6841, -6484,
-    -6123, -5758, -5390, -5019, -4645, -4267, -3888, -3506, -3121, -2735, -2348, -1959, -1568, -1177, -785, -393
-};
-static uint32_t hdmi_tone_phase = 0;
-#define HDMI_TONE_STEP ((uint32_t)((1000ULL << 32) / HDMI_AUDIO_FS_IN))
-#endif
-
 void __not_in_flash_func(hdmi_audio_write_sample)(int16_t left, int16_t right) {
     if (!hdmi_audio_enabled) return;
-#if HDMI_TEST_TONE
-    left = right = hdmi_tone_tab[hdmi_tone_phase >> 24];
-    hdmi_tone_phase += HDMI_TONE_STEP;
-#endif
 #if HDMI_LIVE_AUDIO_DIAG
     if (left  < hdmi_au_lvl[0]) hdmi_au_lvl[0] = left;
     if (left  > hdmi_au_lvl[1]) hdmi_au_lvl[1] = left;
