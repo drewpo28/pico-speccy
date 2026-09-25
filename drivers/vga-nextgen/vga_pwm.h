@@ -139,11 +139,10 @@ static inline uint32_t vga_pwm_word(const vga_pwm_tab_t *t,
 // them: it had traded the level error for the very dither PWM exists to remove, and
 // a dither at a 1-pixel period is not less visible than the Bayer block, it is more.
 //
-// The real answer turned out to be on the monitor, not in the table: **Auto
-// Adjustment**. It puts the sample point where the pixel is stable, and with that
-// done the un-offset pattern reads correctly on its own. So both pixels of a pair
-// carry the same word, and the only ordering that matters is the one INSIDE a pixel
-// (the ripple criterion above).
+// Auto Adjustment helped on the tested setup, but does not establish that every
+// monitor averages the PWM phases. Vertical bands were also reported on an
+// LG L1750B with m1p2. Keep both pixels of a uniform pair identical; monitors
+// that cannot display this waveform cleanly can use the non-PWM colour path.
 
 // A pixel that is nothing but sync — the porch and sync runs, where the ladder must
 // sit at black however many phases go by.  Also the shape of a "PWM off" pixel: the
@@ -198,9 +197,8 @@ static inline int vga_hstx_cycles(const uint32_t pixel_hz) {
 }
 
 // The PIO path programs sm->clkdiv with (sys/pixel) in 16.16 TRUNCATED to 1/16.
-// Every VGA pixel clock in the shipped table is an exact integer divide of 252, 378
-// and 504 MHz, so the truncation now loses nothing — it did before, which is why
-// the 19.894737 MHz modes ran 0.33% fast at 252/378 and 0.25% slow at 504.
+// The standard HSTX-compatible clocks divide 252, 378 and 504 MHz exactly.
+// Legacy PIO timings need not: their effective rate depends on quantisation.
 static inline uint32_t vga_pio_clkdiv_q16(const uint32_t sys_hz, const uint32_t pixel_hz) {
     const double fdiv = (double)sys_hz / (double)pixel_hz;
     return (uint32_t)(fdiv * (double)(1 << 16)) & 0xfffff000u;

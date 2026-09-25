@@ -1,8 +1,9 @@
 // VGA timing check for the SHIPPED mode table.
 //
-//   gcc -O2 -Wall -Wextra -I drivers/graphics tools/vga_timing_test.c -lm
+//   gcc -DVGA_HSTX=1 -O2 -Wall -Wextra -I drivers/graphics tools/vga_timing_test.c -lm
 //       -o /tmp/vga_timing_test  &&  /tmp/vga_timing_test
 //
+// Also build without -DVGA_HSTX=1 to check the legacy PIO geometry.
 // Re-run after ANY change to drivers/graphics/video_mode_table.h.  A VGA timing
 // typo does not misbehave by degrees: the monitor either loses sync or the
 // emulator, which paces one guest frame per display frame under V-Sync, runs at
@@ -14,14 +15,14 @@
 // vga_h_fp_bytes, which is how the 720-wide modes carry a 16 px front porch they
 // never spell out):
 //
-//   1. the pixel clock is 126 MHz / k, k an integer 1..32 — the set the RP2350
+//   1. on HSTX builds, the pixel clock is 126 MHz / k, k an integer 1..32 — the set the RP2350
 //      HSTX serializer can produce (CLOCKS_CLK_HSTX_DIV_INT is a two-bit field);
-//   2. the PIO gets that clock EXACTLY at 252, 378 and 504 MHz, through vga.c's
+//   2. for those HSTX clocks, the PIO gets that clock EXACTLY at 252, 378 and 504 MHz, through vga.c's
 //      truncate-and-mask-to-1/16 CLKDIV;
 //   3. line_size and shift_picture are multiples of 4 (the line DMA is 32-bit and
 //      the ISR's background fill writes through a uint32*) and line_size fits
 //      VGA_MAX_LINE_SIZE;
-//   4. the refresh is within 0.25% of the machine the mode is for — that IS the
+//   4. on HSTX builds, the refresh is within 0.25% of the machine the mode is for — that IS the
 //      emulated frame rate when V-Sync is on;
 //   5. sync and porch widths stay inside what an analogue monitor needs.
 #include <stdio.h>
@@ -89,11 +90,31 @@ int main(void) {
         const double line_hz = (double)px / h_total;
         const double hz = line_hz / v_total;
 
+#if !VGA_HSTX
+        // Regression: HSTX clock constraints must not change PIO monitor geometry.
+        static const int legacy[][4] = {
+            {25200000, 800, 144, 524},
+            {19894737, 800, 144, 511},
+            {19894737, 800, 144, 499},
+            {19894737, 800, 144, 498},
+            {27000000, 880, 144, 628},
+            {27000000, 880, 144, 614},
+            {27000000, 880, 144, 612},
+            {27000000, 880, 144, 521},
+            {25200000, 800,  64, 524},
+        };
+        snprintf(d, sizeof d, "pixel %d, line %d, active offset %d, vertical %d",
+                 px, h_total, shift, v_total);
+        chk(px == legacy[i][0] && h_total == legacy[i][1] &&
+            shift == legacy[i][2] && v_total == legacy[i][3],
+            t->name, "PIO compatibility", d);
+#endif
+
         // 1. HSTX-reachable: pixel = 126 MHz / k, k integer in 1..32.
         const double kf = 126000000.0 / px;
         const int k = (int)(kf + 0.5);
         snprintf(d, sizeof d, "126 MHz / %g is not an integer 1..32", kf);
-        chk(fabs(kf - k) < 1e-9 && k >= 1 && k <= 32, t->name, "HSTX clock", d);
+        if (VGA_HSTX) chk(fabs(kf - k) < 1e-9 && k >= 1 && k <= 32, t->name, "HSTX clock", d);
 
         // 2. the PIO reproduces it exactly at every CPU clock we offer.
         for (int c = 0; c < 3; c++) {
@@ -101,7 +122,7 @@ int main(void) {
             const double got = pio_pixel_hz(sys, px);
             snprintf(d, sizeof d, "at %.0f MHz the PIO gives %.4f MHz, not %.4f",
                      sys / 1e6, got / 1e6, px / 1e6);
-            chk(fabs(got - px) < 1.0, t->name, "PIO clock", d);
+            if (VGA_HSTX) chk(fabs(got - px) < 1.0, t->name, "PIO clock", d);
         }
 
         // 3. DMA / ISR alignment.
@@ -113,7 +134,7 @@ int main(void) {
         const double err = 100.0 * (hz / t->refresh - 1.0);
         if (t->vga_used) {
             snprintf(d, sizeof d, "%.3f Hz against %.3f (%+.3f%%)", hz, t->refresh, err);
-            chk(fabs(err) < 0.25, t->name, "refresh", d);
+            if (VGA_HSTX) chk(fabs(err) < 0.25, t->name, "refresh", d);
 
             // 5. vertical: the sync window must fit, and a monitor needs blanking.
             snprintf(d, sizeof d, "v_total %d, v_active %d, vsync_end %d", v_total, v_act, vs_end);

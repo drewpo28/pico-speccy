@@ -7,6 +7,10 @@
 // pixel clocks follow.
 #include "video_modes.h"
 
+#ifndef VGA_HSTX
+#define VGA_HSTX 0
+#endif
+
 static struct video_mode_t video_mode[] = {
     { // [0] 640x480 60Hz
         .v_total = 524,
@@ -40,6 +44,7 @@ static struct video_mode_t video_mode[] = {
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
+#if VGA_HSTX
         // VGA: 21 MHz = 126/6, exact at 252/378/504 (div 12/18/24).  h_total 840
         // keeps the 25.0 kHz line rate of the 19.96 MHz mode it replaces, so
         // v_total and the vertical geometry stay put; the extra 40 px go to the
@@ -48,6 +53,11 @@ static struct video_mode_t video_mode[] = {
         .vga_pixel_clk = 21000000,
         .vga_h_bp_bytes = 34,
         .vga_h_fp_bytes = 18
+#else
+        // Preserve the v1.0.6 PIO geometry for analogue monitors.
+        .vga_v_total = 511,
+        .vga_pixel_clk = 19894737
+#endif
     },
     { // [2] 640x480 50Hz 48K 50.08Hz
         .v_total = 628,
@@ -62,6 +72,7 @@ static struct video_mode_t video_mode[] = {
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
+#if VGA_HSTX
         // VGA: 21 MHz = 126/6, exact at 252/378/504 (div 12/18/24).  h_total 840
         // keeps the 25.0 kHz line rate of the 19.96 MHz mode it replaces, so
         // v_total and the vertical geometry stay put; the extra 40 px go to the
@@ -70,6 +81,11 @@ static struct video_mode_t video_mode[] = {
         .vga_pixel_clk = 21000000,
         .vga_h_bp_bytes = 34,
         .vga_h_fp_bytes = 18
+#else
+        // Preserve the v1.0.6 PIO geometry for analogue monitors.
+        .vga_v_total = 499,
+        .vga_pixel_clk = 19894737
+#endif
     },
     { // [3] 640x480 50Hz 128K 50.02Hz
         .v_total = 629,
@@ -84,6 +100,7 @@ static struct video_mode_t video_mode[] = {
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
+#if VGA_HSTX
         // VGA: 21 MHz = 126/6, exact at 252/378/504 (div 12/18/24).  h_total 840
         // keeps the 25.0 kHz line rate of the 19.96 MHz mode it replaces, so
         // v_total and the vertical geometry stay put; the extra 40 px go to the
@@ -92,6 +109,11 @@ static struct video_mode_t video_mode[] = {
         .vga_pixel_clk = 21000000,
         .vga_h_bp_bytes = 34,
         .vga_h_fp_bytes = 18
+#else
+        // Preserve the v1.0.6 PIO geometry for analogue monitors.
+        .vga_v_total = 498,
+        .vga_pixel_clk = 19894737
+#endif
     },
     { // [4] 720x576 50Hz Pentagon full border — 25.2MHz pixel (sys_clk=378MHz, div=1.5)
         .v_total = 644,   // 25.2MHz/800/644 = 48.91Hz (Pentagon 48.83Hz)
@@ -107,6 +129,7 @@ static struct video_mode_t video_mode[] = {
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
+#if VGA_HSTX
         // VGA: 25.2 MHz = 126/5, exact at 252/378/504 (div 10/15/20).  h_total 824
         // (hs 48 + bp 40 + active 720 + fp 16, the front porch inherited from
         // h_fp_bytes) holds the 30.6 kHz line rate of the 27 MHz mode it replaces
@@ -120,6 +143,17 @@ static struct video_mode_t video_mode[] = {
         .vga_h_bp_bytes = 20,
         .vga_h_fp_bytes = 0,
         .vga_screen_width = 360
+#else
+        // Preserve the v1.0.6 PIO geometry for analogue monitors.
+        .vga_v_total = 628,
+        .vga_pixel_clk = 27000000,
+        .vga_vsync_start = 580,
+        .vga_vsync_end = 586,
+        .vga_h_sync_bytes = 24,
+        .vga_h_bp_bytes = 48,
+        .vga_h_fp_bytes = 0,
+        .vga_screen_width = 360
+#endif
     },
     { // [5] 720x576 50Hz 48K full border — 25.2MHz pixel
         .v_total = 628,   // 25.2MHz/800/628 = 50.09Hz (48K 50.08Hz)
@@ -135,6 +169,7 @@ static struct video_mode_t video_mode[] = {
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
+#if VGA_HSTX
         // VGA: 25.2 MHz = 126/5, exact at 252/378/504 (div 10/15/20).  h_total 824
         // (hs 48 + bp 40 + active 720 + fp 16, the front porch inherited from
         // h_fp_bytes) holds the 30.6 kHz line rate of the 27 MHz mode it replaces
@@ -148,6 +183,17 @@ static struct video_mode_t video_mode[] = {
         .vga_h_bp_bytes = 20,
         .vga_h_fp_bytes = 0,
         .vga_screen_width = 360
+#else
+        // Preserve the v1.0.6 PIO geometry for analogue monitors.
+        .vga_v_total = 614,
+        .vga_pixel_clk = 27000000,
+        .vga_vsync_start = 580,
+        .vga_vsync_end = 586,
+        .vga_h_sync_bytes = 24,
+        .vga_h_bp_bytes = 48,
+        .vga_h_fp_bytes = 0,
+        .vga_screen_width = 360
+#endif
     },
     { // [6] 720x576 50Hz 128K full border — 25.2MHz pixel
         .v_total = 629,   // 25.2MHz/800/629 = 50.00Hz (128K 50.02Hz)
@@ -163,6 +209,7 @@ static struct video_mode_t video_mode[] = {
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
+#if VGA_HSTX
         // VGA: 25.2 MHz = 126/5, exact at 252/378/504 (div 10/15/20).  h_total 824
         // (hs 48 + bp 40 + active 720 + fp 16, the front porch inherited from
         // h_fp_bytes) holds the 30.6 kHz line rate of the 27 MHz mode it replaces
@@ -176,6 +223,17 @@ static struct video_mode_t video_mode[] = {
         .vga_h_bp_bytes = 20,
         .vga_h_fp_bytes = 0,
         .vga_screen_width = 360
+#else
+        // Preserve the v1.0.6 PIO geometry for analogue monitors.
+        .vga_v_total = 612,
+        .vga_pixel_clk = 27000000,
+        .vga_vsync_start = 580,
+        .vga_vsync_end = 586,
+        .vga_h_sync_bytes = 24,
+        .vga_h_bp_bytes = 48,
+        .vga_h_fp_bytes = 0,
+        .vga_screen_width = 360
+#endif
     },
     { // [7] 720x480 60Hz half border
         .v_total = 524,
@@ -191,6 +249,7 @@ static struct video_mode_t video_mode[] = {
         .line_bytes = 400,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
+#if VGA_HSTX
         // VGA: 25.2 MHz = 126/5, exact at 252/378/504 (div 10/15/20).  h_total 824
         // (hs 48 + bp 40 + active 720 + fp 16, the front porch inherited from
         // h_fp_bytes) holds the 30.6 kHz line rate of the 27 MHz mode it replaces
@@ -204,6 +263,17 @@ static struct video_mode_t video_mode[] = {
         .vga_h_bp_bytes = 20,
         .vga_h_fp_bytes = 0,
         .vga_screen_width = 360
+#else
+        // Preserve the v1.0.6 PIO geometry for analogue monitors.
+        .vga_v_total = 521,
+        .vga_pixel_clk = 27000000,
+        .vga_vsync_start = 500,
+        .vga_vsync_end = 502,
+        .vga_h_sync_bytes = 24,
+        .vga_h_bp_bytes = 48,
+        .vga_h_fp_bytes = 0,
+        .vga_screen_width = 360
+#endif
     },
     { // [8] 720x576 60Hz full border — 25.2MHz pixel (non-standard: v_active>v_total)
         .v_total = 524,   // 25.2MHz/800/524 ≈ 60.1Hz; v_active=576>524 so all lines are active

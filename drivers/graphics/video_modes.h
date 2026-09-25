@@ -43,8 +43,8 @@
 // and a field left at 0 INHERITS the HDMI one — including vga_h_fp_bytes, which
 // is why the 720-wide modes have a 16 px front porch they never spell out.
 //
-// Every VGA pixel clock here is 126 MHz / k with k an integer 1..32.  That is not
-// cosmetic: it is exactly the set the RP2350's HSTX serializer can produce
+// For VGA_HSTX builds, every standard VGA pixel clock is 126 MHz / k with k
+// an integer 1..32. That is not cosmetic: it is exactly the set the RP2350's HSTX serializer can produce
 // (clk_hstx = clk_sys/{1,2,3,4} — CLOCKS_CLK_HSTX_DIV_INT is a TWO-BIT field with
 // no fractional part — so 126 MHz at 252/378/504, then k clk_hstx cycles per
 // pixel).  The old 19.894737 / 27 MHz clocks are not in that set at any CPU clock,
@@ -53,8 +53,10 @@
 // 252/10, 378/15, 504/20 — where 19.894737 lost a whole 1/16 step to
 // vga.c's truncated CLKDIV and came out 0.33% high at 252/378 and 0.25% low at 504.
 //
-// h_total is chosen to keep the LINE RATE of the mode it replaces, so v_total and
-// the vertical geometry stay put and only the active fraction of the line moves.
+// PIO builds retain the v1.0.6 VGA timings: changing the back porch and active
+// fraction can shift/crop the picture on monitors with stored analogue geometry.
+// HSTX h_total is chosen to keep the LINE RATE of the mode it replaces, so
+// v_total barely changes and only the active fraction of the line moves.
 // tools/vga_timing_test.c pins all of it.
 // ---------------------------------------------------------------------------
 
@@ -93,7 +95,7 @@ struct video_mode_t {
 // Longest line any mode in the table asks for, in output pixels.  vga.c sizes its
 // four line templates to this (they are re-rendered in place on a mode switch, so
 // they must hold the widest one) and vga_reinit() refuses a layout above it; the
-// widest shipped mode is 840 (640x480 50 Hz, 21 MHz pixel).  Kept here rather than
+// widest shipped mode is 880 (PIO 720-wide modes).  Kept here rather than
 // in the driver so tools/vga_timing_test.c pins the SHIPPED bound instead of a
 // copy of it — raise it here the moment a mode needs a longer line, because under
 // PWM every pixel costs four bytes and this is four buffers.

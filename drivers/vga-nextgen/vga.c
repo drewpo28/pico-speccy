@@ -361,10 +361,8 @@ static void vga_hstx_apply_mode(uint32_t pixel_hz) {
 #if !VGA_HSTX
 // The SM emits one BYTE per cycle (`out pins, 8`), so a narrow line wants the SM at
 // the pixel clock and a wide one at FOUR times it — four phase bytes per pixel.
-// Both are exact 16.16 dividers for every clock in the shipped table at 252, 378
-// and 504 MHz (21 MHz -> 3 / 4.5 / 6 narrow, 12 / 18 / 24 wide; 25.2 -> 2.5 / 3.75
-// / 5 and 10 / 15 / 20), which is a second payoff of putting the VGA modes on
-// 126 MHz / k — the old 19.894737 could not even do it at 1x.
+// Keep the legacy 1/16 divider quantisation for the PIO timing table. PWM
+// changes the byte rate, but the requested output pixel rate stays the same.
 static void vga_pio_set_pixel_clk(uint32_t pixel_hz) {
     if (_SM_VGA < 0 || !pixel_hz) return;
     const double fdiv = (double)clock_get_hz(clk_sys) / ((double)pixel_hz * vga_px_bytes());

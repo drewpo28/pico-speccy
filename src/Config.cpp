@@ -213,7 +213,9 @@ bool     Config::vga_dither = true;
 #if VGA_HSTX
 bool     Config::vga_pwm = true;
 #else
-bool     Config::vga_pwm = true;
+// PIO defaults to the pre-1.0.7 colour path. Per-pixel PWM can produce
+// vertical bands on analogue LCD inputs; keep it available as an opt-in.
+bool     Config::vga_pwm = false;
 #endif
 // Published for vga.c, which is C and cannot see this header — the video_driver
 // pattern. Read once by vga_flags_init().
