@@ -145,6 +145,11 @@ bool zifiOwnsPin(uint8_t pin) {
 #if PICOSPECCY_WIFI
     if (Config::zifi_transport == 2) return false;   // on-chip radio: no UART pins at all
 #endif
+    // USB-CDC transport: the ESP hangs off a USB serial dongle, no GPIO UART is
+    // claimed (ZiFi::init returns before any pin setup) — so NESPAD / MIDI / WAV /
+    // audio must NOT yield to it. On MURM2/PICO_PC the default pair 20/21 is the
+    // NESPAD's CLK/LAT, which is how "USB ESP-01 still kills the gamepad" showed up.
+    if (Config::zifi_transport == 1) return false;
     if (!Config::zifi_enabled && !Config::wifi_enabled && !ZiFi::linkUp()) return false;
     uint8_t tx, rx;
     if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return false;
@@ -155,6 +160,7 @@ const char* zifiActiveNote() {
 #if PICOSPECCY_WIFI
     if (Config::zifi_transport == 2) return "";
 #endif
+    if (Config::zifi_transport == 1) return "";      // USB-CDC: no GPIO pins, nothing displaced
     uint8_t tx, rx;
     if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return "";
     for (int i = 0; i < ZIFI_PAIRS_N; i++)
