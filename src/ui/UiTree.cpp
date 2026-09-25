@@ -132,6 +132,8 @@ static const Option opt_kport[] = {              // port numbers, not indices
 static const Option opt_ay_stereo[] = {
     { "ABC",  0 },
     { "ACB",  1 },
+    { "BAC",  3 },
+    { "CBA",  4 },
     { "Mono", 2 },
 };
 // Not NM_BOOL: "on" is 3 here (both chip-select schemes at once), not 1.

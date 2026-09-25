@@ -46,9 +46,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define IRAM_ATTR __not_in_flash("audio")
 
 #if AY_STEREO_SLOT
-// The three stereo mixers are 1 732 B each and exactly one is ever selected
-// (Config::ayConfig), so keeping all three resident wasted 3 464 B of SRAM on
-// every board in every session. They now share one slot at a single VMA; this
+// The stereo mixers share one SRAM slot at a single VMA; this
 // copies the selected body in on the first call and on every change of the
 // setting (SET_AY_STEREO is AC_PURE, i.e. live). ~1.7 KB memcpy per change, and
 // gen_sound() runs once per frame, so the check costs one byte compare.
@@ -56,19 +54,20 @@ visit https://zxespectrum.speccy.org/contacto
 #include "hardware/sync.h"
 extern "C" {
 extern uint8_t __ay_slot[];
-extern uint8_t __ay_abc_lma[], __ay_acb_lma[], __ay_mono_lma[];
-extern uint8_t __ay_abc_len[], __ay_acb_len[], __ay_mono_len[];
+extern uint8_t __ay_abc_lma[], __ay_acb_lma[], __ay_bac_lma[], __ay_mono_lma[];
+extern uint8_t __ay_abc_len[], __ay_acb_len[], __ay_bac_len[], __ay_mono_len[];
 }
-// One section per body, so the OVERLAY block can give all three the same VMA.
+// One section per body, so the OVERLAY block can give all mixers the same VMA.
 #define AY_MIX_ABC  __attribute__((noinline, used, section(".ayovl_abc")))
 #define AY_MIX_ACB  __attribute__((noinline, used, section(".ayovl_acb")))
+#define AY_MIX_BAC  __attribute__((noinline, used, section(".ayovl_bac")))
 #define AY_MIX_MONO __attribute__((noinline, used, section(".ayovl_mono")))
 static uint8_t s_ay_slot_mode = 0xFF;
 static void aySlotLoad(uint8_t mode) {
-    if (mode > 2) mode = 2;
+    if (mode > 3) mode = 2;
     if (s_ay_slot_mode == mode) return;
-    const uint8_t* src = (mode == 0) ? __ay_abc_lma : (mode == 1) ? __ay_acb_lma : __ay_mono_lma;
-    const size_t   len = (size_t)((mode == 0) ? __ay_abc_len : (mode == 1) ? __ay_acb_len : __ay_mono_len);
+    const uint8_t* src = (mode == 0) ? __ay_abc_lma : (mode == 1) ? __ay_acb_lma : (mode == 3) ? __ay_bac_lma : __ay_mono_lma;
+    const size_t   len = (size_t)((mode == 0) ? __ay_abc_len : (mode == 1) ? __ay_acb_len : (mode == 3) ? __ay_bac_len : __ay_mono_len);
     memcpy(__ay_slot, src, len);
     // No instruction cache over SRAM on the M33; ordering the stores before the
     // first fetch is enough. Both AySound instances share the slot and the same
@@ -80,6 +79,7 @@ static void aySlotLoad(uint8_t mode) {
 #else
 #define AY_MIX_ABC  IRAM_ATTR
 #define AY_MIX_ACB  IRAM_ATTR
+#define AY_MIX_BAC  IRAM_ATTR
 #define AY_MIX_MONO IRAM_ATTR
 #endif
 
@@ -400,6 +400,31 @@ AY_MIX_ABC void AySound::gen_sound_ABC(int sound_bufsize, uint8_t *sound_buf_L, 
     AY_WRITEBACK()
 }
 
+// BAC stereo: B→L, A→L/2+R/2, C→R
+AY_MIX_BAC void AySound::gen_sound_BAC(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
+    AY_HOIST_LOCALS()
+    while (sound_bufsize-- > 0) {
+        int mix_l = 0, mix_r = 0;
+        for (int m = 0; m < l_tacts; m++) {
+            AY_TICK_COUNTERS()
+            if ((l_bit_a | !l_R7ta) & (l_bit_n | !l_R7na)) {
+                int v = AY_CHVOL(l_env_a, l_vol_a) >> 1;
+                mix_l += v;
+                mix_r += v;
+            }
+            if ((l_bit_b | !l_R7tb) & (l_bit_n | !l_R7nb)) {
+                mix_l += AY_CHVOL(l_env_b, l_vol_b);
+            }
+            if ((l_bit_c | !l_R7tc) & (l_bit_n | !l_R7nc)) {
+                mix_r += AY_CHVOL(l_env_c, l_vol_c);
+            }
+        }
+        *sound_buf_L++ = (mix_l * l_inv_amp) >> 16;
+        *sound_buf_R++ = (mix_r * l_inv_amp) >> 16;
+    }
+    AY_WRITEBACK()
+}
+
 // ACB stereo: A→L, B→R, C→L/2+R/2
 AY_MIX_ACB void AySound::gen_sound_ACB(int sound_bufsize, uint8_t *sound_buf_L, uint8_t *sound_buf_R) {
     AY_HOIST_LOCALS()
@@ -468,18 +493,27 @@ IRAM_ATTR void AySound::gen_sound(int sound_bufsize, int bufpos)
         memset(sound_buf_R, 0, (size_t)sound_bufsize);
         return;
     }
+    uint8_t mode = Config::ayConfig;
+    // CBA mirrors ABC; reuse its mixer with the output buffers exchanged.
+    if (mode == 4) {
+        uint8_t *tmp = sound_buf_L;
+        sound_buf_L = sound_buf_R;
+        sound_buf_R = tmp;
+        mode = 0;
+    }
 #if AY_STEREO_SLOT
-    // All three mixers share ONE SRAM slot (rp2350-memmap.ld, OVERLAY
+    // All four mixers share ONE SRAM slot (rp2350-memmap.ld, OVERLAY
     // NOCROSSREFS), so they also share one VMA: whichever body is resident, a
-    // call to ANY of the three names lands on it, and the ABI matches because the
+    // call to ANY of the four names lands on it, and the ABI matches because the
     // signatures are identical. Hence "load, then call one name" instead of a
-    // switch over three call sites — the switch is inside aySlotLoad().
-    aySlotLoad(Config::ayConfig);
+    // switch over four call sites — the switch is inside aySlotLoad().
+    aySlotLoad(mode);
     gen_sound_ABC(sound_bufsize, sound_buf_L, sound_buf_R);
 #else
-    switch (Config::ayConfig) {
+    switch (mode) {
     case 0:  gen_sound_ABC(sound_bufsize, sound_buf_L, sound_buf_R); break;
     case 1:  gen_sound_ACB(sound_bufsize, sound_buf_L, sound_buf_R); break;
+    case 3:  gen_sound_BAC(sound_bufsize, sound_buf_L, sound_buf_R); break;
     default: gen_sound_MONO(sound_bufsize, sound_buf_L, sound_buf_R); break;
     }
 #endif

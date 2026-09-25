@@ -178,6 +178,7 @@ public:
 private:
     void gen_sound_ABC(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
     void gen_sound_ACB(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
+    void gen_sound_BAC(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
     void gen_sound_MONO(int bufsize, uint8_t *buf_L, uint8_t *buf_R);
 
 public:

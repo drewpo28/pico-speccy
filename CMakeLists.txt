@@ -586,14 +586,12 @@ option(TSCONF_CODE_OVERLAY "TS-Conf: put the TS-only hot code in a fixed-VMA SRA
 option(GS_CODE_OVERLAY "General Sound/NeoGS: put src/GS/'s SRAM-resident code in a fixed-VMA overlay, handed to the heap when GS is Off (~25 KB)" ON)
 option(DMA_CODE_OVERLAY "Z80 DMA / zxnDMA: put Z80DMA.cpp's SRAM-resident code in a fixed-VMA overlay, handed to the heap when DMA is Off (~5 KB)" ON)
 # The AY stereo slot is a different shape from the three windows above: it is not
-# "reserved or released" but "one of three bodies loaded". AySound::gen_sound_ABC /
-# _ACB / _MONO are 1 732 B each, all three resident, and a single
-# `switch (Config::ayConfig)` picks one — so two are dead weight in every session
-# on every board. They share ONE slot (ld OVERLAY + NOCROSSREFS) sized max instead
-# of sum, saving 3 464 B unconditionally. It lives in .data, NOT in the window
+# "reserved or released" but "one of four bodies loaded". ABC, ACB, BAC and
+# Mono share ONE slot (ld OVERLAY + NOCROSSREFS) sized max instead of sum.
+# CBA reuses ABC with exchanged output buffers. It lives in .data, NOT in the window
 # chain: AY is always present, so a slot there would be permanently reserved and
 # would strand every releasable window above it.
-option(AY_STEREO_SLOT "AY: share one SRAM slot between the three stereo mixers instead of keeping all three resident (~3.4 KB)" ON)
+option(AY_STEREO_SLOT "AY: share one SRAM slot between the four stereo mixers instead of keeping all four resident" ON)
 
 # A window base is fixed, so its size cannot be derived from the collected
 # content (ld places the section before it knows the size) — hence a constant and
@@ -787,8 +785,8 @@ if (AY_STEREO_SLOT)
      * data OUTSIDE the block, which they do. Placed after __data_end__ so crt0\n\
      * does not copy it: the slot is filled by the first aySlotLoad() instead.\n\
      *\n\
-     * KEEP is load-bearing: with the dispatch calling only ONE of the three names\n\
-     * (they share the VMA, so any name reaches the resident body) the other two\n\
+     * KEEP is load-bearing: with the dispatch calling only ONE of the four names\n\
+     * (they share the VMA, so any name reaches the resident body) the other three\n\
      * have no references left and --gc-sections drops them from the image — the\n\
      * slot then only ever holds ABC and the stereo setting silently stops working.\n\
      * __attribute__((used)) does not help: that stops the COMPILER discarding\n\
@@ -796,6 +794,7 @@ if (AY_STEREO_SLOT)
     OVERLAY : NOCROSSREFS {\n\
         .ayovl_abc  { KEEP(*(.ayovl_abc))  }\n\
         .ayovl_acb  { KEEP(*(.ayovl_acb))  }\n\
+        .ayovl_bac  { KEEP(*(.ayovl_bac))  }\n\
         .ayovl_mono { KEEP(*(.ayovl_mono)) }\n\
     } > RAM AT > FLASH\n\
     __ay_slot      = ADDR(.ayovl_abc);\n\
@@ -803,6 +802,8 @@ if (AY_STEREO_SLOT)
     __ay_abc_len   = SIZEOF(.ayovl_abc);\n\
     __ay_acb_lma   = LOADADDR(.ayovl_acb);\n\
     __ay_acb_len   = SIZEOF(.ayovl_acb);\n\
+    __ay_bac_lma   = LOADADDR(.ayovl_bac);\n\
+    __ay_bac_len   = SIZEOF(.ayovl_bac);\n\
     __ay_mono_lma  = LOADADDR(.ayovl_mono);\n\
     __ay_mono_len  = SIZEOF(.ayovl_mono);\n")
 else()

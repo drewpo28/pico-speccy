@@ -2130,9 +2130,10 @@ IRAM_ATTR void ESPectrum::processKeyboard() {
           return;
         }
         if (KeytoESP == fabgl::VK_F7) { // SSG stereo mode
-          static const char* const ayModes[3] =
-              { " AY stereo: ABC  ", " AY stereo: ACB  ", " AY stereo: Mono " };
-          Config::ayConfig = (Config::ayConfig + 1) % 3;
+          static const char* const ayModes[5] =
+              { " AY stereo: ABC  ", " AY stereo: ACB  ", " AY stereo: Mono ",
+                " AY stereo: BAC  ", " AY stereo: CBA  " };
+          Config::ayConfig = (Config::ayConfig + 1) % 5;
           Config::save();
           menuToast(ayModes[Config::ayConfig]);
           return;

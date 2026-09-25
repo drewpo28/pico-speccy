@@ -6310,9 +6310,9 @@ static void buildEmulatorInfoText() {
 
         // AY chip
         if (Config::AY48) {
-            static const char* stereo[] = { "ABC", "ACB", "Mono" };
+            static const char* stereo[] = { "ABC", "ACB", "Mono", "BAC", "CBA" };
             int si = Config::ayConfig;
-            if (si > 2) si = 0;
+            if (si > 4) si = 0;
             pos += infoAppend(buf, pos, bufsz,
                 " AY-3-8912      : On (%s) #FFFD\n", stereo[si]);
         } else {
