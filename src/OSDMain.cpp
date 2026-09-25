@@ -7319,6 +7319,10 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
         uint32_t aud_pps = 0, aud_und = 0, aud_skip = 0, aud_dup = 0, aud_qmin = 0, aud_qmax = 0;
         uint32_t aud_credit = 0, aud_cap = 0;
         uint32_t aud_pcm_hz = 0, aud_pixel_hz = 0, aud_n = 0, aud_cts = 0;
+        // Live timing: what the scan-out really runs (HDMI: the ISR's own snapshot)
+        uint32_t tm_pix = 0, tm_frames_mhz = 0;   // pixel clock Hz, measured frames/s x1000
+        int tm_mode = -1, tm_ht = 0, tm_act = 0, tm_hs = 0, tm_bp = 0, tm_fp = 0;
+        int tm_vt = 0, tm_va = 0, tm_vs0 = 0, tm_vs1 = 0;
 #ifdef VGA_HDMI
         if (do_video) {
             extern bool SELECT_VGA;
@@ -7362,9 +7366,11 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 hdmi_audio_health_snapshot(&d0, &d1, &d2, &d3, &d4);   // reset the window
                 extern volatile uint32_t g_pcm_tick_ct;
                 const uint32_t pcm0 = g_pcm_tick_ct;
+                const uint32_t fr0 = hdmi_frames();
                 const uint64_t aud_t0 = time_us_64();
                 sleep_ms(1000);
                 const uint64_t aud_dt = time_us_64() - aud_t0;
+                tm_frames_mhz = (uint32_t)((uint64_t)(hdmi_frames() - fr0) * 1000000000ull / aud_dt);
                 aud_pcm_hz = (uint32_t)((uint64_t)(g_pcm_tick_ct - pcm0) * 1000000u / aud_dt);
                 hdmi_audio_clock_stats(&aud_pixel_hz, &aud_n, &aud_cts);
                 vid_dur = hdmi_irq_max_dur_us;
@@ -7379,6 +7385,29 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                     aud_skoff = hdmi_au_skip_off_w; aud_skwhich = hdmi_au_skip_which;
                     aud_credit = cr; aud_cap = cap;
                 }
+            }
+            tm_mode = (int)VIDEO::video_mode;
+            if (vid_hdmi) {
+                struct video_mode_t m;
+                hdmi_live_mode(&m);
+                uint32_t n_, c_;
+                hdmi_audio_clock_stats(&tm_pix, &n_, &c_);
+                tm_act = 2 * m.screen_width; tm_hs = 2 * m.h_sync_bytes; tm_bp = 2 * m.h_bp_bytes;
+                tm_fp = 2 * m.h_fp_bytes;    tm_ht = 2 * m.line_bytes;
+                tm_vt = m.v_total + 1; tm_va = m.v_active; tm_vs0 = m.vsync_start; tm_vs1 = m.vsync_end;
+            } else {
+                const struct video_mode_t m = graphics_get_video_mode(VIDEO::video_mode);
+                // vga.c's own rule: a zero vga_* field inherits the HDMI one
+                tm_pix = (uint32_t)(m.vga_pixel_clk ? m.vga_pixel_clk : m.pixel_clk);
+                tm_act = 2 * (m.vga_screen_width ? m.vga_screen_width : m.screen_width);
+                tm_hs  = 2 * (m.vga_h_sync_bytes ? m.vga_h_sync_bytes : m.h_sync_bytes);
+                tm_bp  = 2 * (m.vga_h_bp_bytes   ? m.vga_h_bp_bytes   : m.h_bp_bytes);
+                tm_fp  = 2 * (m.vga_h_fp_bytes   ? m.vga_h_fp_bytes   : m.h_fp_bytes);
+                tm_ht  = tm_act + tm_hs + tm_bp + tm_fp;
+                tm_vt  = m.vga_v_total ? m.vga_v_total : m.v_total + 1;
+                tm_va  = m.vga_v_active ? m.vga_v_active : m.v_active;
+                tm_vs0 = m.vga_vsync_start ? m.vga_vsync_start : m.vsync_start;
+                tm_vs1 = m.vga_vsync_end ? m.vga_vsync_end : m.vsync_end;
             }
             progressDialog(title, "", 100, 1);
             progressDialog("", "", 0, 2);
@@ -7497,6 +7526,21 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 " DMA/line: %u B\n"
                 " SRAM cp : %.1f MB/s (core0, display live)\n",
                 vid_backend, vid_dma, vid_cp);
+            if (tm_ht > 0) {
+                const float line_khz = (float)tm_pix / (float)tm_ht / 1000.0f;
+                pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                    " Mode    : #%d, pixel %.3f MHz\n"
+                    " H total : %d px (act %d hs %d bp %d fp %d)\n"
+                    " V total : %d (act %d, vs %d-%d)\n"
+                    " Rate    : %.2f kHz, %.3f Hz calc\n",
+                    tm_mode, (double)tm_pix / 1e6,
+                    tm_ht, tm_act, tm_hs, tm_bp, tm_fp,
+                    tm_vt, tm_va, tm_vs0, tm_vs1,
+                    (double)line_khz, tm_vt ? (double)line_khz * 1000.0 / tm_vt : 0.0);
+                if (tm_frames_mhz)
+                    pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
+                        "           %.3f Hz measured\n", (double)tm_frames_mhz / 1000.0);
+            }
             if (vid_hdmi) {
                 pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
                     " ISR max : %lu us, gap %lu us\n"
@@ -7522,17 +7566,21 @@ void OSD::SpeedTestRun(uint8_t st_opt) {
                 extern uint32_t hdmi_live_hold, hdmi_live_und, hdmi_live_skip, hdmi_live_dup;
                 extern uint32_t hdmi_live_qmin, hdmi_live_qmax, hdmi_live_late;
                 extern uint32_t hdmi_live_gs_int_hz;
+                extern int16_t hdmi_live_lvl[4];
                 pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
                     " Game PCM : %lu Hz, pkt %lu/s\n"
                     "   hold %lu und %lu skip %lu dup %lu\n"
                     "   q %lu..%lu late %lu (game)\n"
-                    " Game GS  : %lu int/s (target 37500)\n",
+                    " Game GS  : %lu int/s (target 37500)\n"
+                    " Game lvl : L %d..%d R %d..%d\n",
                     (unsigned long)hdmi_live_pcm_hz, (unsigned long)hdmi_live_pkt_hz,
                     (unsigned long)hdmi_live_hold, (unsigned long)hdmi_live_und,
                     (unsigned long)hdmi_live_skip, (unsigned long)hdmi_live_dup,
                     (unsigned long)hdmi_live_qmin, (unsigned long)hdmi_live_qmax,
                     (unsigned long)hdmi_live_late,
-                    (unsigned long)hdmi_live_gs_int_hz);
+                    (unsigned long)hdmi_live_gs_int_hz,
+                    (int)hdmi_live_lvl[0], (int)hdmi_live_lvl[1],
+                    (int)hdmi_live_lvl[2], (int)hdmi_live_lvl[3]);
 #endif
             }
             else

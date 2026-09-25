@@ -11,70 +11,28 @@
 #define VGA_HSTX 0
 #endif
 
-// EXPERIMENT (2026-09-24): horizontal blanking layout of the 720x576 modes
-// ([4]-[6] @50, [13]-[15] @75), in framebuffer bytes = 2 output pixels. h_total
-// stays 400 bytes (800 px) so the line rate and refresh do not move; only where the
-// 40 blanking bytes go changes. A CRT behind an HDMI->VGA converter takes no audio
-// in any 720-wide mode on any back-end (PIO, HSTX RAW, HSTX TMDS) while 640x480
-// plays, and the island (22 bytes at the head of hsync) is the only thing laid out
-// differently there. Build with -DHDMI_720_LAYOUT=n:
-//   0  hs 16 / bp 16 / fp 8   the shipped layout: hsync ends inside the packet,
-//                             10 control px between island and video preamble
-//   1  hs 22 / bp 10 / fp 8   island wholly inside hsync, still 10 control px
-//   2  hs 16 / bp 18 / fp 6   hsync as shipped, 14 control px after the island,
-//                             12 before the island preamble
-//   3  hs 22 / bp 12 / fp 6   island inside hsync AND 14 control px after it
-//   4  hs 32 / bp 5  / fp 3   CEA-576p-like 64 px hsync (island + 20 control px
-//                             inside it), 6 control px before the island
-//   5..7 narrower active area (640 / 688 / 704 px) with 160 / 112 / 96 px blanking
-#ifndef HDMI_720_LAYOUT
-#define HDMI_720_LAYOUT 0
-#endif
-#if   HDMI_720_LAYOUT == 0
-#define HDMI720_HS 16
-#define HDMI720_BP 16
-#define HDMI720_FP 8
-#elif HDMI_720_LAYOUT == 1
-#define HDMI720_HS 22
-#define HDMI720_BP 10
-#define HDMI720_FP 8
-#elif HDMI_720_LAYOUT == 2
-#define HDMI720_HS 16
-#define HDMI720_BP 18
-#define HDMI720_FP 6
-#elif HDMI_720_LAYOUT == 3
-#define HDMI720_HS 22
-#define HDMI720_BP 12
-#define HDMI720_FP 6
-#elif HDMI_720_LAYOUT == 4
-#define HDMI720_HS 32
-#define HDMI720_BP 5
-#define HDMI720_FP 3
-#elif HDMI_720_LAYOUT == 5
-#define HDMI720_W  320        /* 640 active px: the 640x480 blanking (160 px) in a 576-line mode */
-#define HDMI720_HS 48
-#define HDMI720_BP 24
-#define HDMI720_FP 8
-#elif HDMI_720_LAYOUT == 6
-#define HDMI720_W  344        /* 688 active px, 112 px blanking */
-#define HDMI720_HS 32
-#define HDMI720_BP 16
-#define HDMI720_FP 8
-#elif HDMI_720_LAYOUT == 7
-#define HDMI720_W  352        /* 704 active px, 96 px blanking */
-#define HDMI720_HS 24
-#define HDMI720_BP 16
-#define HDMI720_FP 8
-#else
-#error "HDMI_720_LAYOUT must be 0..7"
-#endif
-// 5..7 NARROW the HDMI active area (the framebuffer stays 360 wide and its right
-// edge is simply not sent) to test whether the converter needs more horizontal
-// blanking than 80 px. VGA keeps its own vga_screen_width.
-#ifndef HDMI720_W
-#define HDMI720_W 360
-#endif
-_Static_assert(HDMI720_W + HDMI720_HS + HDMI720_BP + HDMI720_FP == 400, "720 line must stay 400 bytes");
+// The 720-wide HDMI modes ([4]-[7] and their 75/90 Hz twins [13]-[16]): 720 active
+// px in an 832-px line, i.e. 112 px of horizontal blanking — fp 12 / hsync 64 /
+// bp 36 px (the HSTX test card's SP7) — at the same 25.2 MHz (37.8 MHz fast) pixel
+// clock. Framebuffer bytes (2 px each) below.
+//
+// They used to be 800-px lines (80 px blanking: fp 16 / hsync 32 / bp 32), and an
+// HDMI->VGA converter in front of a CRT took the picture but NO AUDIO in any 720
+// mode on any back-end (PIO, HSTX RAW, HSTX TMDS) while 640x480 played. Moving the
+// island and hsync around inside those 80 px (five layouts) changed nothing; a
+// test card on the same converter bisected it (hw 2026-09-24/25): our 576-line
+// vertical at 27 MHz plays, our 25.2 MHz with an 864 line plays, and 816 / 832 /
+// 848 lines at 25.2 MHz all play — only the 800 line is silent.
+// 816 came first and broke the PIO back-end on PCp2 + Xiaomi TV (sound only after
+// an HDMI replug) at the line counts that give 48.8 Hz (632/633), while other
+// counts played in no monotonic pattern (636 yes, 639 no, 642 yes). 832 x 620 and
+// 824 x 626, both 48.85 Hz, play there (hw 2026-09-25); 832 is the test card's own
+// geometry. The island (44 px) sits wholly inside the 64 px hsync.
+#define HDMI720_HS   32
+#define HDMI720_BP   18
+#define HDMI720_FP   6
+#define HDMI720_LINE 416
+_Static_assert(360 + HDMI720_HS + HDMI720_BP + HDMI720_FP == HDMI720_LINE, "720 line layout");
 
 static struct video_mode_t video_mode[] = {
     { // [0] 640x480 60Hz
@@ -181,17 +139,17 @@ static struct video_mode_t video_mode[] = {
 #endif
     },
     { // [4] 720x576 50Hz Pentagon full border — 25.2MHz pixel (sys_clk=378MHz, div=1.5)
-        .v_total = 644,   // 25.2MHz/800/644 = 48.91Hz (Pentagon 48.83Hz)
+        .v_total = 619,   // 25.2MHz/832/620 = 48.85Hz (Pentagon 48.83Hz)
         .v_active = 576,
         .freq = 50,
         .pixel_clk = 25175000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = HDMI720_W,
+        .screen_width = 360,
         .h_sync_bytes = HDMI720_HS,
         .h_bp_bytes = HDMI720_BP,
         .h_fp_bytes = HDMI720_FP,
-        .line_bytes = 400,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
 #if VGA_HSTX
@@ -221,17 +179,17 @@ static struct video_mode_t video_mode[] = {
 #endif
     },
     { // [5] 720x576 50Hz 48K full border — 25.2MHz pixel
-        .v_total = 628,   // 25.2MHz/800/628 = 50.09Hz (48K 50.08Hz)
+        .v_total = 604,   // 25.2MHz/832/605 = 50.06Hz (48K 50.08Hz)
         .v_active = 576,
         .freq = 50,
         .pixel_clk = 25175000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = HDMI720_W,
+        .screen_width = 360,
         .h_sync_bytes = HDMI720_HS,
         .h_bp_bytes = HDMI720_BP,
         .h_fp_bytes = HDMI720_FP,
-        .line_bytes = 400,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
 #if VGA_HSTX
@@ -261,17 +219,17 @@ static struct video_mode_t video_mode[] = {
 #endif
     },
     { // [6] 720x576 50Hz 128K full border — 25.2MHz pixel
-        .v_total = 629,   // 25.2MHz/800/629 = 50.00Hz (128K 50.02Hz)
+        .v_total = 604,   // 25.2MHz/832/605 = 50.06Hz (128K 50.02Hz)
         .v_active = 576,
         .freq = 50,
         .pixel_clk = 25175000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = HDMI720_W,
+        .screen_width = 360,
         .h_sync_bytes = HDMI720_HS,
         .h_bp_bytes = HDMI720_BP,
         .h_fp_bytes = HDMI720_FP,
-        .line_bytes = 400,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
 #if VGA_HSTX
@@ -301,17 +259,17 @@ static struct video_mode_t video_mode[] = {
 #endif
     },
     { // [7] 720x480 60Hz half border
-        .v_total = 524,
+        .v_total = 504,
         .v_active = 480,
         .freq = 60,
         .pixel_clk = 25175000,
         .vsync_start = 490,
         .vsync_end = 492,
         .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
-        .line_bytes = 400,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV,
 #if VGA_HSTX
@@ -441,69 +399,69 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = TMDS_FAST_MHZ
     },
     { // [13] 720x576 75Hz Pentagon — 37.8MHz pixel (sys_clk=378MHz, div=1.0)
-        // 37.8MHz/800/644 = 73.37Hz (x1.5 of mode [4])
-        .v_total = 644,
+        // 37.8MHz/832/620 = 73.28Hz (x1.5 of mode [4])
+        .v_total = 619,
         .v_active = 576,
         .freq = 75,
         .pixel_clk = 37800000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = HDMI720_W,
+        .screen_width = 360,
         .h_sync_bytes = HDMI720_HS,
         .h_bp_bytes = HDMI720_BP,
         .h_fp_bytes = HDMI720_FP,
-        .line_bytes = 400,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
         .tmds_mhz = TMDS_FAST_MHZ
     },
     { // [14] 720x576 75Hz 48K — 37.8MHz pixel (sys_clk=378MHz, div=1.0)
-        // 37.8MHz/800/628 = 75.24Hz (x1.5 of mode [5])
-        .v_total = 628,
+        // 37.8MHz/832/605 = 75.10Hz (x1.5 of mode [5])
+        .v_total = 604,
         .v_active = 576,
         .freq = 75,
         .pixel_clk = 37800000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = HDMI720_W,
+        .screen_width = 360,
         .h_sync_bytes = HDMI720_HS,
         .h_bp_bytes = HDMI720_BP,
         .h_fp_bytes = HDMI720_FP,
-        .line_bytes = 400,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
         .tmds_mhz = TMDS_FAST_MHZ
     },
     { // [15] 720x576 75Hz 128K — 37.8MHz pixel (sys_clk=378MHz, div=1.0)
-        // 37.8MHz/800/629 = 75.12Hz (x1.5 of mode [6])
-        .v_total = 629,
+        // 37.8MHz/832/605 = 75.10Hz (x1.5 of mode [6])
+        .v_total = 604,
         .v_active = 576,
         .freq = 75,
         .pixel_clk = 37800000,
         .vsync_start = 581,
         .vsync_end = 586,
-        .screen_width = HDMI720_W,
+        .screen_width = 360,
         .h_sync_bytes = HDMI720_HS,
         .h_bp_bytes = HDMI720_BP,
         .h_fp_bytes = HDMI720_FP,
-        .line_bytes = 400,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
         .tmds_mhz = TMDS_FAST_MHZ
     },
     { // [16] 720x480 90Hz — 37.8MHz pixel (sys_clk=378MHz, div=1.0)
-        // 37.8MHz/800/524 = 90.17Hz (x1.5 of mode [7]), half border
-        .v_total = 524,
+        // 37.8MHz/832/505 = 89.97Hz (x1.5 of mode [7]), half border
+        .v_total = 504,
         .v_active = 480,
         .freq = 90,
         .pixel_clk = 37800000,
         .vsync_start = 490,
         .vsync_end = 492,
         .screen_width = 360,
-        .h_sync_bytes = 16,
-        .h_bp_bytes = 16,
-        .h_fp_bytes = 8,
-        .line_bytes = 400,
+        .h_sync_bytes = HDMI720_HS,
+        .h_bp_bytes = HDMI720_BP,
+        .h_fp_bytes = HDMI720_FP,
+        .line_bytes = HDMI720_LINE,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
         .tmds_mhz = TMDS_FAST_MHZ

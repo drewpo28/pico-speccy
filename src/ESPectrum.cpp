@@ -3191,6 +3191,8 @@ uint32_t hdmi_live_pcm_hz = 0, hdmi_live_pkt_hz = 0;
 uint32_t hdmi_live_hold = 0, hdmi_live_und = 0, hdmi_live_skip = 0, hdmi_live_dup = 0;
 uint32_t hdmi_live_qmin = 0, hdmi_live_qmax = 0, hdmi_live_late = 0;
 uint32_t hdmi_live_gs_int_hz = 0;
+int16_t hdmi_live_lvl[4] = {0, 0, 0, 0};
+extern "C" void hdmi_audio_levels(int16_t out[4]);
 #endif
 
 void ESPectrum::loop() {
@@ -4197,6 +4199,7 @@ void ESPectrum::loop() {
               ? (uint32_t)((uint64_t)(gs_int - last_gs_int) * 1000000u / dt) : 0;
           hdmi_audio_health_snapshot(&hdmi_live_und, &hdmi_live_skip,
                                      &hdmi_live_dup, &hdmi_live_qmin, &hdmi_live_qmax);
+          hdmi_audio_levels(hdmi_live_lvl);
         } else {
           uint32_t discard[5];
           hdmi_audio_health_snapshot(&discard[0], &discard[1], &discard[2],

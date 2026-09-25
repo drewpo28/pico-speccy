@@ -14,7 +14,9 @@
 // TMDS_STD_MHZ 252 = 25.2 MHz pixel, and it is the same at EVERY CPU clock:
 // 252/1.0, 378/1.5, 504/2.0 all land on it, which is why the timing table does
 // not depend on the Overclock setting.  h_total is 800 px (line_bytes 400 x 2)
-// in every standard mode -> 31.5 kHz line rate, 31.75 us per line.
+// in the 640-wide modes -> 31.5 kHz line rate, 31.75 us per line; the 720-wide
+// ones use an 832-px line (416 bytes, 30.29 kHz) — see HDMI720_* in
+// video_mode_table.h for why.
 //
 // TMDS_FAST_MHZ 378 = 37.8 MHz pixel: the same tables at x1.5 the pixel rate,
 // i.e. 47.25 kHz / 21.16 us per line and x1.5 the refresh (90 / 75 Hz).  Only

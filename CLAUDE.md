@@ -5806,6 +5806,57 @@ a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
   CRT grille, dither, DS80/GMX/Timex, a capture card, menu/F8/FDD lamp, the Speed Test
   row against RAW and PIO, a TS-Conf 256c title (pool 240).
 
+## The 720-wide HDMI modes carry an 832-px line, not 800 (2026-09-25; PCp2 hw-confirmed, m2p2 CRT verdict pending)
+
+An HDMI->VGA converter in front of a CRT (m2p2) showed the picture but took **no
+audio in any 720-wide mode on ANY back-end** — PIO, HSTX RAW, HSTX TMDS — while
+640x480 played. The line was 800 px at 25.2 MHz, i.e. only **80 px of horizontal
+blanking** (fp 16 / hsync 32 / bp 32; CEA 576p has 144).
+- **Placement inside those 80 px does not matter**: five layouts were all silent.
+  Symbols, packet schedule, pads and DMA priority were checked identical PIO vs HSTX.
+- **The author's HSTX test card (`debug/HSTX`) was the bench**, because its driver
+  demonstrably works on that converter. Modes added to it (`debug/testcard-sp*.uf2`)
+  bisected: 816 / 832 / 848-px lines at 25.2 MHz all play, **only the 800 line is
+  silent**. 640x576 is not accepted by that converter at all. Its own driver refuses
+  audio unless the island fits wholly in hsync or in the front porch.
+- **816 came first (fp 12 / hsync 48 / bp 36, 632/617/515 lines) and broke PIO on
+  PCp2 + Xiaomi TV**: sound only after an HDMI replug, TMDS fine on the same 816. The
+  PIO bisect, Pentagon 720x576@50, 5x F12 each (hw 2026-09-25): 816x632 no, 816x633
+  no, 816x636 YES, 816x639 no, 816x642 YES, 816x645 YES, 800x632 no, 800x645 (the
+  release) YES. **Not monotonic in anything we could name** — not the line length,
+  not the line count, not its parity, not the refresh. Most likely the TV classifying
+  non-standard timings, or a start-up lottery (an 816 build once "sang after the
+  third F12"). The PIO code was checked and has nothing keyed to the line count
+  beyond the ACR/InfoFrame cadence and the credit cap, both equal in both cases.
+- **832 x 620 (48.85 Hz) and 824 x 626 (48.85 Hz) both play on PIO there**, and so
+  does TMDS at 832. Shipped: **832 = fp 12 / hsync 64 / bp 36** (`HDMI720_*`, 416
+  bytes, the test card's own SP7, which the owner also wanted for SP6's slight left
+  skew), lines Pentagon 620 (48.85 Hz) / 48K+128K 605 (50.06) / 720x480@60 505
+  (59.98); the 75/90 Hz twins keep the same v_total (x1.5). The island (44 px) sits
+  wholly inside the 64 px hsync. VGA is separate (`vga_*`, front porch pinned).
+  `HDMI_LINE_BYTES_MAX` 416 (`conv_color` fit asserted).
+- **Speed Test > Video path now prints the live timing**: mode index, pixel clock,
+  H total with act/hs/bp/fp, V total with active and the vsync lines, line rate, the
+  calculated refresh and the MEASURED one (a frame counter in the line ISR, read over
+  the test's one-second window). HDMI reads the ISR's own snapshot (`hdmi_live_mode`,
+  v_total as published per machine); VGA reads the `vga_*` fields with vga.c's
+  inherit-if-zero rule.
+- **Experiments still in the tree, all OFF by default** (CMake options): the IEC
+  channel-status fill is ON unconditionally (D); `HDMI_AUDIO_IF_EXPERIMENT` (F:
+  Audio InfoFrame CT/SF/SS = 0, "refer to stream header", as the test card sends),
+  `HDMI_VS_AUDIO_EXPERIMENT` (TMDS: audio packets on vsync lines, VSYNC=0 in ch0),
+  `HDMI_AVI_EXPERIMENT`, `HDMI_NO_VSIF_EXPERIMENT`, `HDMI_SPARSE_ISLANDS`,
+  `HDMI_TEST_TONE`. PCp2 TMDS with D+F+V plays. Remove what the m2p2 verdict does
+  not need.
+- **The test card's PICO_PC builds**: its GPIO28 layout probe and its NESPAD on
+  GPIO26 are Murmulator-2 only — on PCp2 that pin is the beeper/MIDI output, and
+  the noise read as pad presses switched modes by itself on a TV. `-DFORCE_PICOPC`
+  builds pin the PCp2 lane map and skip the pad.
+- **Hw 2026-09-25, owner, PCp2 (Xiaomi): h832 PIO and h832 TMDS both play.** Still
+  owed: the m2p2 CRT converter on `debug/m2p2-{pio,tmds}-h832-1.0.7.uf2` and
+  `m2p2-tmds-h832-DFV` — audio in 720x576@50/@75 and 720x480@60/@90 — plus the
+  capture card and the Dell on 832.
+
 ## VGA per-pixel PWM: a runtime setting, on the PIO as well as HSTX (2026-09-23; the HSTX half hw-confirmed on m2p2, the PIO half NOT hw-tested)
 
 **Video > VGA > Colour** — `Config::vga_pwm` (NVS `vga_pwm`, `SET_VGA_PWM`,

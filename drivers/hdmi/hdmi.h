@@ -115,6 +115,9 @@ void hdmi_video_stats(const char **backend, unsigned *dma_bytes_per_line);
 // Audio delivery meter for the same row: audio packets popped so far (a monotonic
 // count — 12000/s at 48 kHz is the whole question), plus the live credit and its cap
 // in samples (Q24 >> 24). Zero/false when HDMI audio is off.
+struct video_mode_t;
+void hdmi_live_mode(struct video_mode_t *out);
+uint32_t hdmi_frames(void);
 void hdmi_audio_clock_stats(uint32_t *pixel_hz, uint32_t *n, uint32_t *cts);
 bool hdmi_audio_meter(uint32_t *pops, uint32_t *credit_spl, uint32_t *cap_spl);
 

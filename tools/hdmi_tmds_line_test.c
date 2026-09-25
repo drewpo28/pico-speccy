@@ -90,7 +90,7 @@ static void run_geom(int hs_b, int bp_b, int fp_b, int scr_b) {
     const hdmi_tl_geom_t g = hdmi_tl_geom(hs_b, bp_b, fp_b, scr_b);
     const hdmi_tl_words_t wd = words();
     static uint32_t buf[HDMI_TL_MAX_WORDS + 64];
-    CHECK(g.total_px == 800, "total %u", g.total_px);
+    CHECK(g.total_px == 800 || g.total_px == 832, "total %u", g.total_px);
     for (int audio = 0; audio < 2; audio++) {
         for (int v = 0; v < 2; v++) {
             for (int type = 0; type < 3; type++) {
@@ -125,7 +125,7 @@ static void run_geom(int hs_b, int bp_b, int fp_b, int scr_b) {
 
 int main(void) {
     run_geom(48, 24, 8, 320);   // 640x480 family
-    run_geom(16, 16, 8, 360);   // 720-wide family (island tail crosses into the back porch)
+    run_geom(32, 18, 6, 360);   // 720-wide family: 832-px line, the island wholly inside hsync
 
     // A zero-length run must emit nothing at all.
     { uint32_t b[4] = {1, 1, 1, 1}; CHECK(hdmi_tl_rep(b, 0, 5) == b && b[0] == 1, "zero run wrote"); }
