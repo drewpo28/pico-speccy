@@ -45,7 +45,7 @@ public:
     static bool zc_enabled;       // true = Z-Controller raw SD on ports 0x77/0x57 (no ROM/banking)
     static uint8_t zc_config;     // Z-Controller port 0x77 latched config (bit0=power, bit1=CS)
 
-    static void init();           // Load ROM, open .mmc/.hdf image
+    static void init();           // Load ROM, open .mmc/.hdf/.vhd/.hdd/.img image
     static void reset();          // Reset state
     static void applyMapping();   // Update page0 pointers based on state
     static inline void markHiDirty() { if (hi_slot >= 0) slot_dirty[hi_slot] = true; }
@@ -171,7 +171,8 @@ public:
 private:
     static int ide_data_index;        // byte position in buffer (-1 = no transfer)
     static bool ide_data_write;       // true = PIO_OUT (write), false = PIO_IN (read)
-    static uint32_t ide_hdf_data_offset[2]; // byte offset to data area in HDF [master/slave]
+    static uint32_t ide_hdf_data_offset[2]; // byte offset to image data [master/slave]
+    static uint32_t ide_image_sectors[2]; // VHD/raw payload limit; zero for HDF
 public:
     // Heap-allocated by DivMmcSubsys; nullptr when Config::esxdos == 0.
     static uint8_t (*ide_identity)[106];   // 2 x 106 B ATA IDENTIFY data

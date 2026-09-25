@@ -2859,12 +2859,14 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     // ALF cartridge — lazy-mount from SD (no flash) and switch into ALF in place.
                     if (loadAlfCart(fname)) return;   // clean exit into the running machine
                 }
-                else if (ext == "mmc" || ext == "hdf") {
+                else if (ext == "mmc" || ext == "hdf" || ext == "vhd" || ext == "hdd" || ext == "img") {
+                    const bool ataImage = ext == "vhd" || ext == "hdd" || ext == "img";
                     // On a +3e the hard disk hangs off the machine's OWN IDE interface
                     // (DivMMC is forced off there), so an .hdf goes to hd0 of that —
                     // this is the IDEDOS disk the +3e ROM boots from. Same for the
                     // +3 (divIDE), whose ROM reaches its disk over the divIDE taskfile.
-                    if ((Config::isPlus3e() || Config::isPlus3Div()) && ext == "hdf") {
+                    if (((Config::isPlus3e() || Config::isPlus3Div()) && ext != "mmc")
+                        || (ataImage && Config::esxdos != 2 && Config::ide_scheme)) {
                         FileUtils::IMG_Path = FileUtils::ALL_Path;
                         if (forcePopup) {
                             nm::runDiskSlots(IFACE_IDE, fname.c_str());
@@ -2880,7 +2882,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     // DivMMC/DivIDE image — Enter loads into hd0 (slot 0); F5 opens
                     // the slot popup which mounts in-place and keeps the popup open.
                     // A full ESPectrum::reset() runs after everything is settled.
-                    else if (DivMMC::enabled) {
+                    else if (DivMMC::enabled && (!ataImage || DivMMC::divide_mode)) {
                         FileUtils::IMG_Path = FileUtils::ALL_Path;
                         if (forcePopup) {
                             // The slot chooser is a level of the menu.
@@ -2895,7 +2897,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         Config::save();
                         ESPectrum::reset();
                     } else {
-                        OSD::osdCenteredMsg(OSD_IMG_NEEDS_ESXDOS, LEVEL_WARN);
+                        OSD::osdCenteredMsg(ataImage ? "Enable DivIDE or IDE first" : OSD_IMG_NEEDS_ESXDOS, LEVEL_WARN);
                     }
                 }
                 else if (ext == "dls") {

@@ -83,7 +83,7 @@ DISK_FTYPE FileUtils::fileTypes[8] = {
     {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.zip,.ZIP",2,2,0,""},
     {".rom,.ROM,.bin,.BIN,.dck,.DCK,.zip,.ZIP",2,2,0,""},
     {".mmc,.MMC,.hdf,.HDF,.hdd,.HDD,.vhd,.VHD,.img,.IMG,.iso,.ISO,.zip,.ZIP",2,2,0,""},
-    {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.rom,.ROM,.bin,.BIN,.dck,.DCK,.dls,.DLS,.zip,.ZIP",2,2,0,""},
+    {".sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.vhd,.VHD,.hdd,.HDD,.img,.IMG,.rom,.ROM,.bin,.BIN,.dck,.DCK,.dls,.DLS,.zip,.ZIP",2,2,0,""},
     {".dls,.DLS",2,2,0,""},  // DISK_DLSFILE (GM.DLS soundbank conversion)
     // DISK_CFGFILE (Debug > Config folders). No extension list on purpose: nothing
     // here is "of interest" over anything else, so an empty list means every name
@@ -136,6 +136,7 @@ DiskIface FileUtils::ifaceForExt(const string& lcExt) {
      || lcExt == "td0" || lcExt == "pro") return IFACE_BETA;
     if (lcExt == "mbd") return IFACE_MB02;
     if (lcExt == "dsk") return IFACE_PLUS3;
+    if (lcExt == "vhd" || lcExt == "hdd" || lcExt == "img") return Config::esxdos == 2 ? IFACE_ESX : IFACE_IDE;
     if (lcExt == "mmc" || lcExt == "hdf") return IFACE_ESX;
     return IFACE_NONE;
 }

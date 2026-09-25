@@ -121,6 +121,7 @@ uint8_t* DivMMC::ide_buffer = nullptr;
 int DivMMC::ide_data_index = -1;
 bool DivMMC::ide_data_write = false;
 uint32_t DivMMC::ide_hdf_data_offset[2] = {128, 128};
+uint32_t DivMMC::ide_image_sectors[2] = {0, 0};
 uint8_t (*DivMMC::ide_identity)[106] = nullptr;
 uint16_t DivMMC::ide_cylinders[2] = {0, 0};
 uint16_t DivMMC::ide_heads[2] = {0, 0};
@@ -329,7 +330,7 @@ void DivMMC::init() {
         sdhc_mode = false;
         // Reset OCR to non-SDHC (DivIDE uses IDE not SPI, but keep clean state)
         mmc_ocr[0] = 5; mmc_ocr[1] = 0; mmc_ocr[2] = 0; mmc_ocr[3] = 0; mmc_ocr[4] = 0;
-        // DivIDE: open HDF images (hd0=master, hd1=slave)
+        // DivIDE: open HDF / fixed VHD / raw HDD/IMG images (hd0=master, hd1=slave)
         const char* defaults[2] = {"/esxdos.hdf", ""};
         for (int d = 0; d < 2; d++) {
             const char* image_path = Config::esxdos_hdf_image[d].empty() ? defaults[d] : Config::esxdos_hdf_image[d].c_str();
@@ -385,9 +386,10 @@ void DivMMC::init() {
         }
     }
 
-    // Parse HDF headers for DivIDE
+    // Parse HDF headers, fixed VHD footers or raw HDD/IMG images for DivIDE
     if (divide_mode) {
         for (int d = 0; d < 2; d++) {
+            ide_image_sectors[d] = 0;
             if (!mmc_file_open[d]) continue;
             uint8_t hdr[128];
             UINT br;
@@ -402,7 +404,57 @@ void DivMMC::init() {
                 Debug::log("%s hd%d: HDF C=%u H=%u S=%u data@%u",
                     mode_name, d, ide_cylinders[d], ide_heads[d], ide_sectors[d], ide_hdf_data_offset[d]);
             } else {
-                Debug::log("%s hd%d: invalid HDF header", mode_name, d);
+                // Reuse the idle transfer buffer: no extra 512-byte stack allocation.
+                uint8_t* ft = ide_buffer;
+                const FSIZE_t size = f_size(&mmc_file[d]);
+                const bool footer_read = size >= 512 && f_lseek(&mmc_file[d], size - 512) == FR_OK
+                    && f_read(&mmc_file[d], ft, 512, &br) == FR_OK && br == 512;
+                const bool is_vhd = footer_read && memcmp(ft, "conectix", 8) == 0;
+                const string ext = FileUtils::getLCaseExt(Config::esxdos_hdf_image[d]);
+                bool valid = false;
+                uint64_t bytes = 0;
+                if (is_vhd) {
+                    for (int i = 0; i < 8; ++i) bytes = (bytes << 8) | ft[0x30 + i];
+                    // Fixed disks only; never expose the footer or a truncated payload.
+                    valid = ft[0x3C] == 0 && ft[0x3D] == 0 && ft[0x3E] == 0
+                        && ft[0x3F] == 2 && bytes && !(bytes % 512)
+                        && bytes <= size - 512 && bytes / 512 <= 0x10000000;
+                } else if (footer_read && (ext == "hdd" || ext == "img")) {
+                    // Only explicit raw extensions may fall back to sector data;
+                    // malformed HDF/VHD files must not mount as raw disks.
+                    bytes = size;
+                    valid = !(bytes % 512) && bytes / 512 <= 0x10000000;
+                }
+                if (!valid) {
+                    Debug::log("%s hd%d: invalid or unsupported disk image", mode_name, d);
+                    f_close(&mmc_file[d]);
+                    mmc_file_open[d] = false;
+                    mmc_file_size[d] = 0;
+                    continue;
+                }
+                ide_hdf_data_offset[d] = 0;
+                ide_image_sectors[d] = bytes / 512;
+                if (is_vhd) {
+                    ide_cylinders[d] = (ft[0x38] << 8) | ft[0x39];
+                    ide_heads[d] = ft[0x3A] ? ft[0x3A] : 16;
+                    ide_sectors[d] = ft[0x3B] ? ft[0x3B] : 63;
+                    if (!ide_cylinders[d]) ide_cylinders[d] = 1;
+                } else {
+                    // Match IDE's default raw geometry; LBA exposes the full file.
+                    const uint32_t cylinders = ide_image_sectors[d] / (16u * 63u);
+                    ide_cylinders[d] = cylinders ? (cylinders > 65535 ? 65535 : cylinders) : 1;
+                    ide_heads[d] = 16;
+                    ide_sectors[d] = 63;
+                }
+                memset(ide_identity[d], 0, 106);
+                ide_identity[d][0] = 0x40; // fixed ATA disk
+                ide_identity[d][2] = ide_cylinders[d] & 0xFF;
+                ide_identity[d][3] = ide_cylinders[d] >> 8;
+                ide_identity[d][6] = ide_heads[d];
+                ide_identity[d][12] = ide_sectors[d];
+                ide_identity[d][99] = 0x02; // word 49: LBA supported
+                Debug::log("%s hd%d: %s C=%u H=%u S=%u lba=%u",
+                    mode_name, d, is_vhd ? "Fixed VHD" : "raw", ide_cylinders[d], ide_heads[d], ide_sectors[d], ide_image_sectors[d]);
             }
         }
     }
@@ -1271,7 +1323,8 @@ uint32_t DivMMC::ide_lba() {
 
 void DivMMC::ide_read_sector() {
     int d = ide_drive();
-    if (!mmc_file_open[d]) {
+    if (!mmc_file_open[d] || (ide_image_sectors[d] && ide_lba() >= ide_image_sectors[d])) {
+        ide_data_index = -1;
         ide_error = IDE_ERROR_IDNF;
         ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR;
         return;
@@ -1289,7 +1342,11 @@ void DivMMC::ide_read_sector() {
 
 void DivMMC::ide_write_sector_done() {
     int d = ide_drive();
-    if (!mmc_file_open[d]) return;
+    if (!mmc_file_open[d] || (ide_image_sectors[d] && ide_lba() >= ide_image_sectors[d])) {
+        ide_error = IDE_ERROR_IDNF;
+        ide_status = IDE_STATUS_DRDY | IDE_STATUS_ERR;
+        return;
+    }
     uint32_t lba = ide_lba();
     FSIZE_t pos = (FSIZE_t)ide_hdf_data_offset[d] + (FSIZE_t)lba * 512;
     UINT bw;
@@ -1346,7 +1403,9 @@ void DivMMC::ide_execute_command(uint8_t cmd) {
             ide_buffer[115] = (cap >> 8) & 0xFF;
             ide_buffer[116] = (cap >> 16) & 0xFF;
             ide_buffer[117] = (cap >> 24) & 0xFF;
-            // Word 60-61: total LBA sectors (same as capacity for now)
+            // VHD/raw LBA capacity can differ from the rounded CHS geometry.
+            if (ide_image_sectors[d]) cap = ide_image_sectors[d];
+            // Word 60-61: total LBA sectors
             ide_buffer[120] = cap & 0xFF;
             ide_buffer[121] = (cap >> 8) & 0xFF;
             ide_buffer[122] = (cap >> 16) & 0xFF;
@@ -1423,6 +1482,7 @@ void DivMMC::ide_write(uint8_t reg, uint8_t value) {
                 if (ide_data_index >= 512) {
                     ide_write_sector_done();
                     ide_data_index = -1;
+                    if (ide_status & IDE_STATUS_ERR) break;
                     if (ide_sector_count > 0) {
                         ide_sector_count--;
                         if (ide_sector_count > 0) {

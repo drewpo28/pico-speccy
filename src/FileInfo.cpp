@@ -926,7 +926,7 @@ void FileInfo::viewInfo(const string& path) {
     else if (ext == "pro") viewPRO(&f, fileSize, info, lines);
     else if (ext == "mbd") viewMBD(&f, fileSize, info, lines);
     else if (ext == "td0") viewTD0(&f, fileSize, info, lines);
-    else if (ext == "hdd") viewHDD(&f, fileSize, info, lines);
+    else if (ext == "hdd" || ext == "img") viewHDD(&f, fileSize, info, lines);
     else if (ext == "vhd") viewVHD(&f, fileSize, info, lines);
     else if (ext == "mmc") { /* just show filename + size (title) */ }
 

@@ -238,6 +238,8 @@ static const char* typeLabel(const string& lcext) {
                        || lcext == "udi")                   return "TR-DOS disk";
     if (lcext == "mbd")                                     return "MB-02 disk";
     if (lcext == "dsk")                                     return "+3 disk";
+    if (lcext == "hdd" || lcext == "img") return "Raw disk image";
+    if (lcext == "vhd") return "VHD disk image";
     if (lcext == "mmc" || lcext == "hdf")                   return "esxDOS image";
     if (lcext == "rom" || lcext == "bin")                   return "ROM image";
     if (lcext == "zip")                                     return "ZIP archive";
