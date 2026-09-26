@@ -305,6 +305,17 @@
 #define TXT_ROM_SCORP_PROF   "ZS-1024 + ProfROM"
 #define TXT_ROM_SCORP_PROF_S "ProfROM"
 #define TXT_ROM_ALF         "ALF cartridge"
+// Nemo KAY (St. Petersburg). Romsets of the Scorpion arch; the labels must read the
+// same as kRomsetUiName[R_KAY*] (ArchRom.h), which the info pages use.
+#define TXT_MACH_KAY         "Kay"
+#define TXT_ROM_KAY256       "KAY256 Turbo"
+#define TXT_ROM_KAY256_S     "256T"
+#define TXT_ROM_KAY1024      "KAY1024"
+#define TXT_ROM_KAY1024_S    "1024"
+#define TXT_ROM_KAY2010      "KAY1024 v2010/v2018"
+#define TXT_ROM_KAY2010_S    "1024 v2010"
+#define TXT_ROM_KAY2048      "KAY2048 (ZXM-Phoenix)"
+#define TXT_ROM_KAY2048_S    "2048"
 
 // ── Options ────────────────────────────────────────────────────────────────────
 #define TXT_OPT_PREF_MACHINE "Preferred machine"

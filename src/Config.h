@@ -194,6 +194,10 @@ public:
             n < 128 && butter_psram_size() > 0)
             n = 128;
 #endif
+        // KAY2048 (ZXM-Phoenix) pages 2 MB = 128 pages. Unlike GMX it reads them only
+        // through the ordinary page machinery, so SD-swap backing is enough.
+        if (a == A_SCORP && (rs == R_NONE ? romSetScorp : rs) == R_KAY2048 && n < 128)
+            n = 128;
         return n;
     }
     static bool     rtc_enabled;  // Pentagon/Profi Mr Gluk MC146818 RTC + CMOS NVRAM (RP2350)
@@ -333,6 +337,7 @@ public:
     static bool isTc2068() { return arch == A_48K && isTc2068Romset(romSet); }
     // ...either Timex, i.e. "the SCLD is this machine's ULA".
     static bool isTimex() { return arch == A_48K && isTimexRomset(romSet); }
+    static bool trdosBaseOwnedByMachine();
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
     // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
     // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).

@@ -49,6 +49,12 @@ visit https://zxespectrum.speccy.org/contacto
 // Yellow = 312 lines (the 48K frame), Green = 316 lines (MAME scorpiontb's +4).
 #define TSTATES_PER_FRAME_SCORPION 69888
 #define TSTATES_PER_FRAME_SCORPION_GR 70784
+// Nemo KAY family (incl. ZXM-Phoenix): UnrealSpeccy PRESET.KAY1024 =
+// 69887,16132,224,50,32,0,1,0,0,0 ("tuned for kay_demo") — frame 69887 T, paper at
+// 16132, 224 T/line, 32 T INT, no even-M1, 4T border, no floating bus, no port-FF
+// float. Its ini has no Phoenix preset, so the Phoenix takes this one too.
+#define TSTATES_PER_FRAME_KAY 69887
+#define INT_END_KAY 32
 
 #define MICROS_PER_FRAME_48 19968
 #define MICROS_PER_FRAME_128 19992
@@ -124,6 +130,11 @@ extern bool g_scorp_banked;
 // visible). Recomputed by Ports::scorpionRomUpdate/check_trdos — one almost-
 // always-false global test on the peek8/fetchOpcode hot paths.
 extern bool g_gmx_tap;
+// Nemo KAY romset live (isKayRomset): 0 = not a KAY, else which board — 2 = KAY256
+// (+1FFD D4), 3 = KAY1024 (+1FFD D7 and 7FFD D7), 4 = KAY2048 / ZXM-Phoenix (2 MB,
+// Unreal MM_PHOENIX page order, 1FFD D1 = service page, no turbo line). Gates the KAY #1FFD decode, its ROM select (1FFD D3 XORs
+// the DOS bit), the page bits and the 1FFD D2 turbo-off line (Ports.cpp).
+extern uint8_t g_scorp_kay;
 
 class CPU
 {

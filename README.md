@@ -23,7 +23,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 
 ## Features
 
-- ZX Spectrum 48K, 128K, +3 / +3e, Timex TC2048/TC2068, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, TS-Conf (ZX-Evo), ATM-Turbo 1 / 2+, Byte and ALF TV Game. 100% cycle accurate emulation.
+- ZX Spectrum 48K, 128K, +3 / +3e, Timex TC2048/TC2068, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, TS-Conf (ZX-Evo), ATM-Turbo 1 / 2+, Nemo KAY 256/1024/2048 (ZXM-Phoenix), Byte and ALF TV Game. 100% cycle accurate emulation.
 - State of the art Z80 emulation (Authored by [José Luis Sánchez](https://github.com/jsanchezv/z80cpp))
 - Selectable Sinclair 48K, Sinclair 128K and Amstrad +2 english and spanish ROMs. Byte and ALF TV Game - russian ROMs, + Pentagons with Gluck services ROMs & selectable TR-DOS ROM (5.03 / 5.04TM / 5.05D / custom). Profi 1024K with selectable Karabas-Pro ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage).
 - Possibility of using custom ROM with easy flashing procedure from SD card.
@@ -44,6 +44,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - VGA/HDMI CRT filter with 7 selectable levels (Off, Soft, Medium, Strong, Grille soft/med/hard): gamma correction, phosphor tint, black lift and a vertical aperture-grille mask.
 - HDMI dither effect for ULA+ (RP2350 only): optional Bayer-look palette dithering applied via ISR.
 - VGA colour (Video → VGA → Colour): per-pixel PWM (four sub-samples per pixel, integrated by the resistor ladder — 13 or 29 levels per channel with no dither pattern; press Auto Adjust on the monitor after switching it on) or the ordered 2x2 dither. Reboot-class; default PWM on HSTX builds, dither elsewhere (PWM there costs 4x the VGA line DMA).
+- Nemo KAY emulation (Machine → KAY, NOT yet tested on hardware): KAY256 Turbo (256K via #1FFD D4), KAY1024 (1 MB — #1FFD D4/D7 and #7FFD D7), KAY1024 v2010/v2018 and KAY2048 (ZXM-Phoenix, 2 MB — #1FFD D4/D6/D7 and #7FFD D7), with each board's own ROM set — the 1994 Nemo KAY-256 ROM, JV Kramis V0.3 2000 on the KAY1024, Reset Service V0.2d with the 2002 BASIC/TR-DOS on the v2010/v2018 and the ZXM BIOS 5.04T on the Phoenix. #1FFD D3 switches to the service ROM (Caps Shift held at reset, or Alt+F11 → Service), D0 maps RAM page 0 over the ROM, D2 turns the 7 MHz turbo off while turbo is enabled; on-board TR-DOS, optional Gluk clock (CMOS + NVRAM) and SMUC card (IDE/HDD → SMUC).
 - ATM-Turbo emulation (Machine → ATM-Turbo, NOT yet tested on hardware): ATM-Turbo 1 (BIOS 1.04rs, 512 KB, #FE address-latch paging) and ATM-Turbo 2+ (BIOS 1.07.13 or xBIOS 1.37, 1 MB, the #77/#F7 memory manager, 7 MHz turbo, on-board IDE as IDE/HDD → ATM), with the 16-entry palette and every video mode (ZX, EGA 320x200x16, hires 640x200, 80x25 text on the 2+). Needs a board with QSPI (butter) PSRAM and VGA/HDMI output.
 - ATM2 CP/M: in the default BIOS configuration, CP/M starts on RAM disk **A:**; the image mounted in physical floppy drive **A** is accessed as CP/M **B:**. Enter `B:` and then `DIR` to list its files. For the CP/M Prince of Persia image (`PRINCE.TRD`), run `PR2` on ATM2/2+ (`PR` on ATM1, as specified in the archive). The `.trd` extension describes the disk image layout; the files inside this image use CP/M, not TR-DOS.
 - VGA colour depth (Video → VGA → Colour depth, shown while PWM is off): Dithered (ordered 2x2, ~2200 perceived colours out of the 2-bit DAC — better gradients for TS-Conf 16c/256c artwork) or Solid. The flat 16 ZX colours always stay solid.
@@ -166,7 +167,7 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+F8 Toggle LED indicators
 - ALT+F9 Input poke
 - ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options; Scorpion: magic button into the service monitor)
-- ALT+F11 Reset to... (modal menu: Service/Gluk/Service ROM, TR-DOS, 128K, 48K — depends on machine; Profi has its own Service ROM / TR-DOS / 128K / 48K set, Scorpion offers Service monitor / TR-DOS / 128K / 48K)
+- ALT+F11 Reset to... (modal menu: Service/Gluk/Service ROM, TR-DOS, 128K, 48K — depends on machine; Profi has its own Service ROM / TR-DOS / 128K / 48K set, Scorpion offers Service monitor / TR-DOS / 128K / 48K, KAY Service / TR-DOS / 128K / 48K)
 - ALT+F12 USB Boot / Update Firmware
 - ALT+PageUp Switch Gigascreen mode (Off → On → Auto cycle)
 - ALT+F3 Quick load snapshot

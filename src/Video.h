@@ -67,6 +67,8 @@ static constexpr size_t GIGASCREEN_PREVFB_HEADROOM = 16 * 1024;
 #define TSTATES_PER_LINE_BYTE 224
 
 #define TS_SCREEN_48           14335  // START OF ULA DRAW PAPER 48K
+// Nemo KAY: UnrealSpeccy PRESET.KAY1024 paper 16132 vs PRESET.SCORPION 14344 (CPU.h).
+#define TS_KAY_PAPER_DELTA     (16132 - 14344)
 #define TS_SCREEN_128          14361  // START OF ULA DRAW PAPER 128K
 #define TS_SCREEN_PENTAGON     17983  // START OF ULA DRAW PAPER PENTAGON
 // TS-Conf's paper/border anchors are Pentagon's + 2, and the +2 is MEASURED,

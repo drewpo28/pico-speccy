@@ -4597,6 +4597,14 @@ void VIDEO::Reset() {
         tStatesScreen = TS_SCREEN_48;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
                       : TS_BORDER_320x240;
+        // Nemo KAY: Unreal puts the paper at 16132 T where its Scorpion preset says
+        // 14344 — the same raster 1788 T later relative to the INT. Our Scorpion
+        // anchors carry this renderer's own offset against Unreal's numbers, so the
+        // KAY ones are them plus that delta (paper and border move together).
+        if (Config::arch == A_SCORP && isKayRomset(Config::romSetScorp)) {
+            tStatesScreen += TS_KAY_PAPER_DELTA;
+            tStatesBorder += TS_KAY_PAPER_DELTA;
+        }
     } else if (Config::arch == A_TSCONF) {
         // TS-Conf raster is identical to Pentagon (320 lines x 448 px-periods
         // = 224 T/line, 71680 T/frame) — but our frame counter is anchored on

@@ -11836,3 +11836,92 @@ MM_ATM450 / MM_ATM710, io.cpp, atm.cpp, drawers.cpp) and **MAME sinclair/atm.cpp
   all windows, then #F7 paging), TR-DOS from the BIOS, the 7 MHz switch, EGA/hires/
   text screens (CP/M, ATM2 text), the palette, ATM1 boot (CPSYS/SYS ROM, #FDFD pages),
   IDE on the 2+, and xBIOS 1.37.
+
+## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 / KAY2048 = ZXM-Phoenix (2026-09-26, NOT hw-tested)
+
+Four romsets of the **Scorpion arch**, not an arch of their own: `R_KAY256` "Kay256",
+`R_KAY1024` "Kay1024", `R_KAY2010` "Kay2010", `R_KAY2048` "Kay2048" (ZXM-Phoenix);
+`isKayRomset()` (ArchRom.h), `g_scorp_kay` (CPU.h: 0 none / 2 = 256 / 3 = 1024 /
+4 = Phoenix). Machine → KAY (`opt_mach_kay`, UiTree.cpp, behind `p_extRam`). A KAY128
+row existed for a few hours and was REMOVED on the owner's call (2026-09-26) — no ROM of
+its own survives, it ran the KAY-256 set. Why the
+Scorpion arch: the KAY ROM has the SAME four roles in the SAME rom[] order (0 BASIC-128,
+1 BASIC-48, 2 service, 3 TR-DOS), the same "DOS with the 128 ROM shows the service
+page" quirk, on-board Beta, uncontended 48K frame — so the check_trdos entry, dosBank 3,
+Beta forcing, tape loader and timing all apply as they are. Model = **UnrealSpeccy
+`MM_KAY`** (`~/github/unrealspeccy` memory.cpp/io.cpp, `grep -a` — CP1251) + the
+z00m128/kay1024 README; ROMs from github.com/z00m128/kay1024 and
+speccy4ever.speccy.org/_KA.htm (`curl -sk -A Mozilla`).
+
+- **Decode**: `#1FFD` = `(addr & 0xC003) == 0x0001` (every KAY romset); `#7FFD` is
+  the loose `(addr & 0x8002) == 0` (the Scorpion A14 split is lifted for KAY). #1FFD is
+  not gated by the 7FFD lock.
+- **ROM select** (`scorpionRomUpdate`): `bank = ((1FFD.D3 ? 2 : 0) ^ (DOS ? 2 : 0)) |
+  7FFD.D4` — D3 swaps the pair (Unreal `rom1 = (1ffd>>2)&2; if TRDOS rom1 ^= 2`), where
+  the Scorpion's D1 OVERRIDES. The DOS exit in check_trdos has the same KAY branch.
+  The KAY BASIC-128 reset patch (0x048C) uses exactly this: Symbol Shift held →
+  `OUT #1FFD,#10` + TR-DOS via 3D2E; Caps Shift held → `OUT #1FFD,#08` + JP 0 = the
+  service page. Alt+F11 → Service does the same (reset(2) + 1FFD = 0x08).
+- **Pages** (`scorpionC000Page`): 7FFD 0-2 | 1FFD D4 (<<3, 256K) | 1FFD D7 (>>3, bit 4)
+  | 7FFD D7 (>>2, bit 5, 1 MB). 7FFD D7 is kept in `Ports::kay7FFDd7` (the only 7FFD bit
+  no other latch holds), cleared with port1FFD on reset.
+- **1FFD D2 = turbo off** ("if JP3 is closed"), modelled on the Pentagon-1024SL #EFF7 D4
+  policy (`Ports::kayTurboUpdate`): honoured only while the USER has turbo on, D2=1 pulls
+  it to 3.5 MHz. Every KAY ROM writes #1FFD at boot with D2 clear, which on real
+  hardware with JP1 on means turbo — the oldTRD note says "turbo is always on after
+  reset" on a KAY. A 3.5 MHz session stays 3.5.
+- **What KAY does NOT inherit from the Scorpion**: SYSEN (1FFD D1 opens the FDC ports /
+  the SMUC window on a Scorpion — on a KAY D1 is Centronics /Q8), the magic-button 1FFD
+  D1 assertion in `Z80::doNMI`, the Turbo+ port-READ speed toggle
+  (`g_scorp_turbo_plus` is false: `isScorpYellowTiming`), even-M1 (Yellow only).
+- **Timing = UnrealSpeccy `PRESET.KAY1024`** (`69887,16132,224,50,32,0,1,0,0,0`, the ini
+  comment says "tuned for kay_demo"; its ini has no Phoenix preset, so the Phoenix takes
+  it too): `TSTATES_PER_FRAME_KAY` 69887 T (311 lines + 223 T), `INT_END_KAY` 32 T,
+  paper 1788 T later than the Scorpion's (`TS_KAY_PAPER_DELTA` = Unreal 16132 - 14344,
+  applied to both our Scorpion paper and border anchors, which carry this renderer's own
+  offset against Unreal's numbers), no even-M1, 4T border (= our step-4 48K geometry),
+  **no floating bus and no port-#FF float** (`getFloatBusDataNone`). Audio: the 48K
+  624-sample set with `tstatesPerSampleFP` taken from the 69887 T frame.
+  `isScorpYellowTiming` still covers KAY for the audio set and the Turbo+ exclusion.
+- **CMOS + NVRAM on a KAY = a Gluk clock on #DFF7/#BFF7** (an add-on there; without it
+  #xxF7 is the joystick port — Reset Service 0.2b's changelog), so those ports are
+  claimed only while `rtc_enabled`. The SMUC card is fitted by IDE/HDD = SMUC alone (the
+  TS-Conf rule), gated on DOSEN only.
+- **ROMs** (`tools/rom_pack.py kay`, `src/roms/kay/`; `rom_verify.py` checks every
+  role): per romset four (file, page) roles, because the images come in different page
+  orders (JP5 "LAS" 128/48/service/TR-DOS, "Nemo" service/TR-DOS/128/48, and the 2000
+  image with TR-DOS and service swapped — Unreal's ini names roles, not pages).
+  KAY256 = `kay256.bin` (1994 NEMO KAY-256, TR-DOS 5.04T +1 byte); KAY1024 =
+  JV Kramis V0.3 2000; v2010/v2018 = Reset Service V0.2d (2015) + the 2002 LAS
+  BASIC-128/48/TR-DOS. The "Kramis" service page is shared by 256/1024. Packed: 2 raw 16K
+  service pages + 10 overlays over Pentagon ROM0 / Sinclair 128K half 1 / TR-DOS 5.04T /
+  the Kramis page = **47 468 B**, ordinary flash (not .psramroms — KAY needs no butter PSRAM). The four
+  roles overlay four DIFFERENT bases, so requestMachine registers them statically,
+  nullptr included.
+- **Shared-base ownership**: KAY's TR-DOS is an overlay on the SHARED 5.04T base, so
+  `Config::trdosBaseOwnedByMachine()` (GMX / ProfROM / KAY) keeps both the requestMachine
+  rom[4] tail and `hook_trdosRom` off it while that machine runs — the TR-DOS BIOS pick
+  used to re-register that pointer live, a latent bug for GMX and ProfROM too. Also
+  fixed on the way: the Pentagon bind never cleared an overlay a Scorpion/KAY left on
+  `gb_rom_1_sinclair_128k`.
+- **KAY2048 = ZXM-Phoenix** (UnrealSpeccy `MM_PHOENIX`, micklab.ru/file/
+  zxm_bios_5_04t.rar, CRC32 ABD2459C, Nemo page order): page = 7FFD 0-2 | 7FFD D7->bit 3
+  | 1FFD D4->bit 4 | 1FFD D7->bit 5 | 1FFD D6->bit 6 = **2 MB**, so `Config::wantedPages`
+  raises the strip to 128 pages (SD-swap backing is enough — no butter requirement,
+  unlike GMX; the generic reboot boundary re-lays the strip). ROM select = the KAY rule
+  with the Scorpion **1FFD D1 override to the service page** on top (also in the DOS
+  exit). No turbo line (Unreal models none). Its service page ships EMPTY (0xFF) — stored
+  as an 8 KB overlay over the Kramis page; its TR-DOS is byte-identical to KAY1024-2000's,
+  BASIC-48 to the Sinclair half, BASIC-128 is 524 B off Pentagon ROM0. Deliberately
+  skipped: Unreal's Phoenix #EFF7 (D7 opens the DOS ports). Frame = the KAY preset.
+- **Not done, owner decision pending: KAY1024 + ProfROM.** Ewgeny7's
+  `KAY_ProfROM.rom` (zx-pk.ru thread 13708 post #34, attachment 25042, 256 KB, CRC32
+  21058086, "2010 Nemo's KAY 1024+", runs on the ProfROM Uni board) exists and fits the
+  plane model, BUT it drives #1FFD Scorpion-style (D1 = service, 0x02/0x12), i.e. the
+  Uni CPLD re-implements Scorpion ROM select on a KAY — a hybrid no emulator documents
+  — and it is ~225 KB of unique flash (15-16 KB diff per bank against every ProfROM we
+  ship).
+- **Hw check owed (nothing has run)**: each board to its 128 menu; TR-DOS from the menu
+  and Symbol Shift at reset; Caps Shift at reset → service (Kramis / Reset Service
+  0.2d); a 1 MB memory test on KAY1024 and 2 MB on the Phoenix (UMT); turbo with Alt+F2 on and a program writing
+  1FFD D2; Reset Service's Gluk clock detect with CMOS + NVRAM on and off.

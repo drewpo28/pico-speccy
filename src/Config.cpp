@@ -9,6 +9,7 @@
 #include "roms.h"
 #include "Atm.h"
 #include "roms/atm/atm_banks.h"   // ATM page tables — this TU only (see requestMachine)
+#include "roms/kay/kay_banks.h"   // Nemo KAY bank tables — this TU only (same reason)
 #include "FileUtils.h"
 #include "ESPectrum.h"
 #include "MB02.h"
@@ -312,6 +313,16 @@ void profRegisterLiveOverlay(uint8_t bank) {
     MemESP::registerOverlay(bk.data, bk.overlay);
 }
 #endif
+
+// The running machine keeps its own TR-DOS as an overlay on the SHARED 5.04T base
+// (Scorpion GMX / ProfROM plane banks, every Nemo KAY's bank 3), so the user's TR-DOS
+// BIOS pick must not re-register that pointer while it runs — the registry keeps ONE
+// overlay per base and the pick would replace the machine's own DOS. Such machines
+// never read rom[4] anyway.
+bool Config::trdosBaseOwnedByMachine() {
+    return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
+                               isKayRomset(romSetScorp));
+}
 
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
 {
@@ -745,7 +756,23 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
                 MemESP::rom[i].assign_rom(tbl[i].data);
         } else
 #endif
-        {
+        if (isKayRomset(romSet)) {
+            // Nemo KAY: the same four roles as the Scorpion (rom[] 0 BASIC-128,
+            // 1 BASIC-48, 2 service, 3 TR-DOS), stored as overlays over ROMs the
+            // firmware ships raw (tools/rom_pack.py pack_kay). The four roles
+            // overlay four DIFFERENT bases, so a static registration per bank is
+            // exact — and it must register nullptr for a raw bank too, to clear
+            // whatever a previous romset left on that pointer. KAY2048 is the
+            // ZXM-Phoenix (its empty service page is an overlay over the KAY one).
+            const kay_rom_bank_t* tbl = (romSet == R_KAY1024) ? gb_rom_kay1024_banks
+                                      : (romSet == R_KAY2010) ? gb_rom_kay2010_banks
+                                      : (romSet == R_KAY2048) ? gb_rom_kay2048_banks
+                                                              : gb_rom_kay256_banks;
+            for (int i = 0; i < 4; ++i) {
+                MemESP::rom[i].assign_rom(tbl[i].data);
+                MemESP::registerOverlay(tbl[i].data, tbl[i].overlay);
+            }
+        } else {
             MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
             MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_scorpion_bank0);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
@@ -820,6 +847,9 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
             MemESP::registerOverlay(gb_rom_0_pentagon_128k, nullptr);
             MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            // ...and so is the second half — but a Scorpion or KAY may have left its
+            // BASIC-48 overlay on that pointer, and the registry outlives romsets.
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, nullptr);
             if (romSet == R_PENT_GLUK) {
                 MemESP::rom[3].assign_rom(gb_rom_gluk);
             }
@@ -835,7 +865,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     // the 5.05D base would evict the GMX plane-1 TR-DOS overlay keyed to the same
     // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
     // own bank 3).
-    if (!(arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF))) {
+    if (!trdosBaseOwnedByMachine()) {
         const uint8_t* base = gb_rom_4_trdos_504t;
         const uint8_t* ov = gb_overlay_trdos_505d;   // the base is 5.04T now
         switch (Config::trdosBios) {

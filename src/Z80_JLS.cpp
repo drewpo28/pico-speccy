@@ -873,8 +873,14 @@ IRAM_ATTR void Z80::check_trdos() {
                     // GMX keeps the bank inside the live ProfROM plane (and the
                     // 0x0100 tap re-arms via scorpionRomUpdate on the next port
                     // write — recomputed below through recoverPage0 either way)
-                    MemESP::romInUse = ((Ports::port1FFD & 0x02) ? 2 : MemESP::romLatch)
-                                     | (g_scorp_banked ? (Ports::gmxPlane << 2) : 0);
+                    MemESP::romInUse = g_scorp_kay
+                        // Nemo KAY: 1FFD D3 picks the ROM pair, DOS off (Ports.cpp
+                        // scorpionRomUpdate)
+                        // (KAY2048 / Phoenix: 1FFD D1 forces the service page)
+                        ? ((g_scorp_kay == 4 && (Ports::port1FFD & 0x02)) ? (uint8_t)2
+                           : (uint8_t)(((Ports::port1FFD & 0x08) ? 2 : 0) | MemESP::romLatch))
+                        : (uint8_t)(((Ports::port1FFD & 0x02) ? 2 : MemESP::romLatch)
+                                     | (g_scorp_banked ? (Ports::gmxPlane << 2) : 0));
                 else
                     MemESP::romInUse = MemESP::romLatch;
 #if PAGE_TRACE
@@ -1078,7 +1084,9 @@ Z80_COLD void Z80::doNMI(void) {
     // sometimes". Done at the ack point so not a single opcode is fetched from
     // the swapped page before the NMI vectors; the monitor exits by clearing
     // D1 itself.
-    if (Z80Ops::isScorpion) {
+    // (Nemo KAY has no such line: 1FFD D1 is a printer output there, and its
+    // service page is reached through D3 by the ROM itself.)
+    if (Z80Ops::isScorpion && !g_scorp_kay) {
         Ports::port1FFD |= 0x02;
         Ports::scorpionRomUpdate();
     }

@@ -774,8 +774,10 @@ inline static size_t extendedZxRamPages() {
     return 64;
   if (Z80Ops::is512)
     return 32;
-  if (Z80Ops::isScorpion)
+  if (Z80Ops::isScorpion) {
+    if (g_scorp_kay) return g_scorp_kay == 4 ? 128 : (g_scorp_kay == 3 ? 64 : 16);
     return g_scorp_gmx ? 128 : (g_scorp_1024 ? 64 : 16);
+  }
   if (Z80Ops::is128 || Z80Ops::isP3 || (Z80Ops::isPentagon || Z80Ops::isProfi))
     return 8;   // the +3 has the same eight 16K banks as a 128K
   return 4;
@@ -1335,7 +1337,11 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // MC146818 RTC data read (#BFF7) — Pentagon/Profi "Mr Gluk" TimeKeeper.
     // Register index was latched via OUT (#DFF7). Port is RTC-specific on these
     // machines, so no extra gating needed.
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) && address == 0xBFF7) {
+    // Nemo KAY: a Gluk clock is an add-on card there, and without one #xxF7 is the
+    // joystick port (Reset Service 0.2b's note) — so the pair answers only while
+    // "CMOS + NVRAM" fits it, and falls through to Kempston otherwise.
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf ||
+         (g_scorp_kay && Config::rtc_enabled)) && address == 0xBFF7) {
       // RTC off → static response (see RTC::readDisabled) instead of leaving the
       // port unclaimed; keeps the boot clock's UIP-wait from hanging.
       // TS-Conf: the clock is on the ZX-Evo board and TS-BIOS keeps its setup in
@@ -1711,7 +1717,8 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     // Kempston block below answers 0x00, and the monitor's head-load wait
     // `IN A,(#1F); AND #E0; JR Z` never exits (hw dump 2026-08-30: PC=0237 in
     // bank2, romInUse=2, romLatch=1).
-    bool scorp_sysen = Z80Ops::isScorpion && (port1FFD & 0x02);
+    // (Nemo KAY: 1FFD D1 is the Centronics /Q8 line, not SYSEN.)
+    bool scorp_sysen = Z80Ops::isScorpion && !g_scorp_kay && (port1FFD & 0x02);
     // skip_real_fdc: bypass real WD1793 during Profi SYS ROM boot ONLY when
     // no disk is mounted at all.  With any disk (TRD/SCL/FDI/...), let the
     // real FDC handle it so the SYS ROM disk probe can succeed.
@@ -2421,7 +2428,28 @@ static inline void gmxTapUpdate() {
 // The 0xC000 RAM page from all three latches: 7FFD bits 0-2 (low3), 1FFD D4 (+8),
 // and on GMX the #DFFD 3 extra bits (<<4) — 128 pages = 2 MB (MAME scorpiongmx).
 // Bounds W/A like the Profi combine: never walk off the page strip.
+// Nemo KAY's 7FFD D7 (the 1 MB page bit) — the only 7FFD bit that the Scorpion
+// latches do not already keep. Cleared with port1FFD on every machine reset.
+uint8_t Ports::kay7FFDd7 = 0;
+
 static inline uint32_t scorpionC000Page(uint32_t low3) {
+  if (g_scorp_kay) {
+    // Nemo KAY (UnrealSpeccy MM_KAY, z00m128/kay1024 README): 7FFD 0-2, then
+    // 1FFD D4 = +8 (256K), 1FFD D7 = +16 (512K), 7FFD D7 = +32 (1024K). KAY2048
+    // (ZXM-Phoenix, Unreal MM_PHOENIX) orders them differently and adds 1FFD D6:
+    // 7FFD D7 -> bit 3, 1FFD D4 -> bit 4, 1FFD D7 -> bit 5, 1FFD D6 -> bit 6 (2 MB).
+    uint32_t page = low3;
+    if (g_scorp_kay == 4)
+      page |= ((Ports::kay7FFDd7 & 0x80) >> 4) | (Ports::port1FFD & 0x50) |
+              ((Ports::port1FFD & 0x80) >> 2);
+    else {
+      page |= (Ports::port1FFD & 0x10) >> 1;
+      if (g_scorp_kay >= 3) page |= ((Ports::port1FFD & 0x80) >> 3) | ((Ports::kay7FFDd7 & 0x80) >> 2);
+    }
+    uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
+    if (page >= pages) page = low3;
+    return page;
+  }
   uint32_t page = low3 | ((Ports::port1FFD & 0x10) >> 1);
   if (g_scorp_gmx) page |= (uint32_t)(Ports::portDFFDgmx & 0x07) << 4;
   // ZS-1024: 1FFD D6,D7 are two more page bits above D4 — 64 pages = 1 MB
@@ -2463,7 +2491,16 @@ void Ports::scorpionRomUpdate() {
 #endif
     return;
   }
-  uint8_t bank = (port1FFD & 0x02) ? 2
+  // Nemo KAY: the ROM's A15 is 1FFD D3 XOR the DOS line, A14 is 7FFD D4 — same
+  // four roles, but D3 swaps the pair instead of D1 overriding it (UnrealSpeccy
+  // MM_KAY: rom1 = (1ffd >> 2) & 2; if (TRDOS) rom1 ^= 2). So D3 with DOS off shows
+  // service/TR-DOS, D3 with DOS on shows 128/48; the BASIC-128 reset patch uses
+  // exactly that for its Caps Shift "service" and Symbol Shift "TR-DOS" boots.
+  // KAY2048 (Phoenix) adds the Scorpion's D1 override on top (Unreal MM_PHOENIX).
+  uint8_t bank = (g_scorp_kay == 4 && (port1FFD & 0x02)) ? 2
+               : g_scorp_kay
+               ? (uint8_t)((((port1FFD & 0x08) ? 2 : 0) ^ (ESPectrum::trdos ? 2 : 0)) | MemESP::romLatch)
+               : (port1FFD & 0x02) ? 2
                : ((((uint8_t)ESPectrum::trdos) << 1) | MemESP::romLatch);
   // gmxPlane is the ProfROM plane on both banked romsets (GMX just widens it to
   // 8 planes and drives it from #7EFD instead of the 0x010x tap).
@@ -2476,6 +2513,22 @@ void Ports::scorpionRomUpdate() {
          gmxt_prev, (unsigned)MemESP::romInUse, port1FFD, (int)ESPectrum::trdos,
          (unsigned)MemESP::romLatch, gmxPlane, Z80::getRegPC());
 #endif
+}
+
+// Nemo KAY 1FFD D2: 0 = turbo, 1 = normal, "if JP3 is closed" (z00m128/kay1024
+// README) — the board's own turbo switch JP1 is ANDed with it. Modelled on the
+// Pentagon-1024SL #EFF7 D4 policy: honoured only while the USER has turbo on
+// (Alt+F2 / Menu+F11 stand in for JP1), where D2=1 pulls the clock down to 3.5 MHz.
+// A session at 3.5 MHz stays at 3.5 whatever the ROM writes — every KAY ROM
+// writes #1FFD at boot with D2 clear, which on a board with JP1 on means 7 MHz.
+void Ports::kayTurboUpdate() {
+  // (KAY2048 / Phoenix: Unreal models no turbo line on #1FFD.)
+  if ((g_scorp_kay != 2 && g_scorp_kay != 3) || !ESPectrum::multUser) return;
+  const uint8_t want = (port1FFD & 0x04) ? 0 : ESPectrum::multUser;
+  if (want != ESPectrum::multiplicator) {
+    ESPectrum::multiplicator = want;
+    CPU::updateStatesInFrame();
+  }
 }
 
 // MAME scorpiontb prof_plane_map — the ProfROM plane-switch table, driven from
@@ -2655,7 +2708,9 @@ static inline bool smucCardFitted() {
   // alone fits it — "CMOS + NVRAM" on a ZX-Evo means the machine's OWN Gluk
   // clock, which is the AVR keyboard controller and is always live. The card's
   // own MC146818 + 24LC16 come with it, as on a Scorpion.
-  if (Z80Ops::isTsconf) return IDE::scheme == IDE::SMUC;
+  // Nemo KAY: "CMOS + NVRAM" is its Gluk clock (above), so the SMUC card — an
+  // optional ZX-BUS card there — is fitted by the IDE row alone, the TS-Conf rule.
+  if (Z80Ops::isTsconf || g_scorp_kay) return IDE::scheme == IDE::SMUC;
   return Z80Ops::isScorpion &&
          (Config::rtc_enabled || IDE::scheme == IDE::SMUC);
 }
@@ -2667,6 +2722,7 @@ static inline bool smucActive() {
   // That is the "SMUC с открытыми портами" configuration WC's own changelog
   // names, and it is what its driver was written against.
   if (Z80Ops::isTsconf) return true;
+  if (g_scorp_kay) return ESPectrum::trdos;               // KAY: no SYSEN (1FFD D1 = printer)
   return ESPectrum::trdos || (Ports::port1FFD & 0x02);   // DOSEN or SYSEN
 }
 // Whether a DRIVE hangs on the card's ATA bus is the IDE/HDD row's business
@@ -2760,7 +2816,9 @@ void smucTraceGated(bool wr, uint16_t address, uint8_t v) {
 // change: Config::requestMachine and the tail of the menu commit. Both calls
 // are idempotent — init() no-ops while it is up, close() while it is down.
 static bool smucCardConfigured() {
-  if (Config::arch == A_TSCONF) return Config::ide_scheme == IDE::SMUC;
+  if (Config::arch == A_TSCONF ||
+      (Config::arch == A_SCORP && isKayRomset(Config::romSetScorp)))
+    return Config::ide_scheme == IDE::SMUC;
   return Config::arch == A_SCORP &&
          (Config::rtc_enabled || Config::ide_scheme == IDE::SMUC);
 }
@@ -3156,7 +3214,8 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
-  if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf)) {
+  if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf ||
+       (g_scorp_kay && Config::rtc_enabled))) {
 #if RTC_PORT_TRACE
     if (a8 == 0xF7) {
       static uint32_t out_n = 0;
@@ -4160,7 +4219,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // matching read-side comment (ZXMAK2: "Ports active when DOSEN=1 or
     // SYSEN=1").
     if (ESPectrum::trdos || out_has_raw_disk ||
-        (Z80Ops::isScorpion && (port1FFD & 0x02))) {
+        (Z80Ops::isScorpion && !g_scorp_kay && (port1FFD & 0x02))) {
 
       // Profi CP/M mode: FDC data registers shift to 0x83/0xA3/0xC3/0xE3
       // UnrealSpeccy decode: (addr & 0x9F) == 0x83 → reg index = (addr >> 5) & 3
@@ -4461,7 +4520,26 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // rest of the codebase (A14=1 separates them — see the extracker note there).
   // NEVER gated by pagingLock: the 7FFD D5 lock freezes only the 7FFD latch on
   // real hardware, #1FFD stays live until reset.
-  if (Z80Ops::isScorpion && ((address & 0xC002) == 0) && (address & 0x0020)) {
+  // Nemo KAY #1FFD = 00xxxxxx xxxxxx01 (A15=A14=0, A1=0, A0=1 — UnrealSpeccy's
+  // (port & 0xC003) == 0x0001 for MM_KAY; the board's README says the same). D0 RAM
+  // page 0 at 0x0000, D2 turbo OFF (JP3 closed), D3 ROM pair, D4/D7 page bits; D1,
+  // D5, D6 are Centronics lines (KAY2048: D1 service page, D6 a page bit). Not gated
+  // by the 7FFD lock (Unreal).
+  if (Z80Ops::isScorpion && g_scorp_kay && ((address & 0xC003) == 0x0001)) {
+    LED::touchW(LED::RAM);
+    port1FFD = data;
+    uint32_t page = scorpionC000Page(MemESP::bankLatch & 0x07);
+    if (page != MemESP::bankLatch) {
+      MemESP::bankLatch = page;
+      MemESP::ramContended[3] = false;
+      MemESP::ramCurrent[3] = MemESP::ram[page].sync(3);
+    }
+    MemESP::page0ram = data & 0x01;
+    kayTurboUpdate();
+    scorpionRomUpdate();
+    return;
+  }
+  if (Z80Ops::isScorpion && !g_scorp_kay && ((address & 0xC002) == 0) && (address & 0x0020)) {
     LED::touchW(LED::RAM);
 #if GMX_TRACE
     // D4-only changes are skipped: the GMX loader's RAM sizing toggles D4 (the +8
@@ -4558,7 +4636,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   }
 
   if ((!Z80Ops::is48) && ((address & 0x8002) == 0) &&
-      (!Z80Ops::isScorpion || (address & 0x4000)) && // Scorpion: A14=1 → 7FFD, A14=0 is the 1FFD family (handled above)
+      (!Z80Ops::isScorpion || g_scorp_kay || (address & 0x4000)) && // Scorpion: A14=1 → 7FFD, A14=0 is the 1FFD family (handled above); KAY: the loose 128K decode (Unreal)
       (!Z80Ops::isALF || (address & 0x0080))) { // 8002 !-> 7FFD
     ++Ports::port7ffd_cnt;
 #if MC7FFD_TRACE
@@ -4605,6 +4683,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       // 0-2) — the extended-RAM bits live in the OTHER ports' latches,
       // recombined on every write of any of them.
       if (Z80Ops::isScorpion) {
+        kay7FFDd7 = data & 0x80;           // (KAY 1 MB bit; unused elsewhere)
         page = scorpionC000Page(data & 0x07);
       }
       if ((Z80Ops::is512 || Z80Ops::is1024) && !MemESP::notMore128 &&

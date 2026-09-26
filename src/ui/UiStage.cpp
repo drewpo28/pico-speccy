@@ -524,6 +524,9 @@ static bool hook_trdosRom(int32_t nv, int32_t) {
     // 5.03 / 5.04TM / 5.05D / 6.11e are read-only overlays over the 5.04T base applied
     // on the fly by MemESP (RomOverlay.h), so this binds immediately on every board —
     // no reboot. Keep in step with the same switch in Config::requestMachine.
+    // Not while the machine keeps its OWN TR-DOS on that base (GMX / ProfROM / KAY):
+    // the pick is saved and binds at the next machine switch (Config::requestMachine).
+    if (Config::trdosBaseOwnedByMachine()) return true;
     const uint8_t* base = gb_rom_4_trdos_504t;
     const uint8_t* ov   = gb_overlay_trdos_505d;
     switch (nv) {

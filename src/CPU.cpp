@@ -105,6 +105,7 @@ bool g_scorp_banked = false;
 bool g_scorp_1024 = false;
 bool g_scorp_turbo_plus = false;
 bool g_gmx_tap = false;
+uint8_t g_scorp_kay = 0;
 bool Z80Ops::isP3 = false;
 bool Z80Ops::isTsconf = false;
 bool Z80Ops::isAtm = false;
@@ -160,11 +161,13 @@ void CPU::updateStatesInFrame() {
     } else if (Config::arch == A_SCORP) {
         // Green PCB / GMX = 316 lines/frame; Yellow = 312 (see CPU.h; MAME's
         // scorpiongmx builds on the Turbo+/Green machine config).
-        statesInFrame = (Config::romSetScorp != R_SCORP)
+        // (Nemo KAY: the Yellow frame too — isScorpYellowTiming.)
+        statesInFrame = isKayRomset(Config::romSetScorp) ? TSTATES_PER_FRAME_KAY
+                      : !isScorpYellowTiming(Config::romSetScorp)
                             ? TSTATES_PER_FRAME_SCORPION_GR
                             : TSTATES_PER_FRAME_SCORPION;
         IntStart = INT_START_SCORPION;
-        IntEnd = INT_END_SCORPION;
+        IntEnd = isKayRomset(Config::romSetScorp) ? INT_END_KAY : INT_END_SCORPION;
     } else { // if (Config::arch == A_PENT) - by default
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
@@ -205,7 +208,12 @@ void CPU::reset() {
                                           Config::romSetScorp == R_SCORP_PROF);
     // The "+" of Turbo+ IS the read-triggered speed toggle (Ports::input). Yellow
     // is MAME's plain scorpion_state and has no such handler.
-    g_scorp_turbo_plus = Z80Ops::isScorpion && (Config::romSetScorp != R_SCORP);
+    g_scorp_turbo_plus = Z80Ops::isScorpion && !isScorpYellowTiming(Config::romSetScorp);
+    // Nemo KAY: its own #1FFD (turbo is 1FFD D2 there, not a port read).
+    g_scorp_kay = !Z80Ops::isScorpion ? 0
+                : Config::romSetScorp == R_KAY256 ? 2
+                : Config::romSetScorp == R_KAY2048 ? 4
+                : (Config::romSetScorp == R_KAY1024 || Config::romSetScorp == R_KAY2010) ? 3 : 0;
     g_gmx_tap = false;   // re-armed by Ports::scorpionRomUpdate once paging settles
     // The +2A/+3 is the R_P3 romset of the 128K arch (the way +2 is). It shares the
     // arch's frame timing but NOT its paging, contention or floating bus, so the
@@ -291,7 +299,11 @@ void CPU::reset() {
         // was wrong for this hardware. Scorpion's float is ATTRIBUTE-dominant,
         // not the 48K per-T bitmap/attribute alternation — the port-FF test does
         // two reads 15 T apart (odd) and needs both equal; see getFloatBusDataScorp.
-        Ports::getFloatBusData = &Ports::getFloatBusDataScorp;
+        // Nemo KAY: Unreal's KAY1024 preset has floatbus=0 and portff=0 — the
+        // unattached ports read 0xFF.
+        Ports::getFloatBusData = isKayRomset(Config::romSetScorp)
+                                     ? &Ports::getFloatBusDataNone
+                                     : &Ports::getFloatBusDataScorp;
         Z80Ops::isByte = false;
         Z80Ops::is48 = false;
         Z80Ops::is128 = false;
@@ -300,7 +312,7 @@ void CPU::reset() {
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
         // Set emulation loop sync target (Green/GMX share the 316-line frame)
-        ESPectrum::target = (Config::romSetScorp != R_SCORP)
+        ESPectrum::target = !isScorpYellowTiming(Config::romSetScorp)
                                 ? MICROS_PER_FRAME_SCORPION_GR
                                 : MICROS_PER_FRAME_SCORPION;
     } else if (Config::arch == A_ATM) {

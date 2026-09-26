@@ -2301,6 +2301,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 string reset_menu;
                 if (Config::arch == A_PROFI) {
                     reset_menu = MENU_RESETTO_PROFI;
+                } else if (Config::arch == A_SCORP && g_scorp_kay) {
+                    reset_menu = MENU_RESETTO_KAY;
                 } else if (Config::arch == A_SCORP) {
                     reset_menu = MENU_RESETTO_SCORP;
                 } else if (Z80Ops::isP3) {
@@ -2387,6 +2389,28 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             // 48K/SOS ROM: trdos=false, romLatch=1 → bank3
                             ESPectrum::reset(3);
                             MemESP::romLatch = 1;
+                        }
+                    } else if (Config::arch == A_SCORP && g_scorp_kay) {
+                        // Nemo KAY: Service=1, TR-DOS=2, 128K=3, 48K=4. Service is a
+                        // cold boot with 1FFD D3 set (DOS off -> the service page at
+                        // 0x0000), which is what the BASIC-128 reset patch does itself
+                        // when Caps Shift is held (OUT #1FFD,#08 then JP 0). (On the
+                        // KAY2048 / Phoenix the service page is empty, as it ships.)
+                        if (opt == 1) {
+                            ESPectrum::reset(2);
+                            Ports::port1FFD = 0x08;
+                            MemESP::romLatch = 0;
+                            Ports::scorpionRomUpdate();
+                        } else if (opt == 2) {
+                            ESPectrum::reset(3);
+                            MemESP::romLatch = 1;
+                            ESPectrum::trdos = true;
+                        } else if (opt == 3) {
+                            ESPectrum::reset(0);
+                        } else if (opt == 4) {
+                            ESPectrum::reset(1);
+                            MemESP::romLatch = 1;
+                            MemESP::pagingLock = 1;
                         }
                     } else if (Config::arch == A_SCORP) {
                         // Service monitor=1, TR-DOS=2, 128K=3, 48K=4
@@ -6195,7 +6219,11 @@ static void buildEmulatorInfoText() {
     // rather than leaving "no HDD" and "no CMOS" indistinguishable. On TS-Conf
     // the card is fitted by the IDE row alone (the machine's own clock is the
     // AVR behind the Gluk ports), so there is no half to be missing.
-    if (Config::arch == A_SCORP) {
+    if (Config::arch == A_SCORP && isKayRomset(Config::romSetScorp)) {
+        if (Config::ide_scheme == IDE::SMUC)
+            pos += infoAppend(buf, pos, bufsz, " SMUC card      : %s\n",
+                (IDE::portScheme == IDE::SMUC) ? "HDD" : "fitted, no HDD");
+    } else if (Config::arch == A_SCORP) {
         const bool smucDisk = (IDE::portScheme == IDE::SMUC);  // live AND a mounted image
         pos += infoAppend(buf, pos, bufsz, " SMUC card      : %s\n",
             smucDisk                ? "CMOS + NVRAM + HDD"

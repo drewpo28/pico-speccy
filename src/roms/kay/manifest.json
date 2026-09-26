@@ -1,0 +1,86 @@
+{
+  "id": "kay",
+  "raw": [
+    {
+      "sym": "gb_rom_kay256_svc",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_kay2010_svc",
+      "len": 16384
+    }
+  ],
+  "overlays": [
+    {
+      "sym": "gb_overlay_kay256_128",
+      "base": "gb_rom_0_pentagon_128k",
+      "len": 345,
+      "runs": 21,
+      "diff_bytes": 207
+    },
+    {
+      "sym": "gb_overlay_kay256_48",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 21,
+      "runs": 1,
+      "diff_bytes": 3
+    },
+    {
+      "sym": "gb_overlay_kay256_dos",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 19,
+      "runs": 1,
+      "diff_bytes": 1
+    },
+    {
+      "sym": "gb_overlay_kay1024_128",
+      "base": "gb_rom_0_pentagon_128k",
+      "len": 515,
+      "runs": 24,
+      "diff_bytes": 359
+    },
+    {
+      "sym": "gb_overlay_kay1024_48",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 28,
+      "runs": 2,
+      "diff_bytes": 4
+    },
+    {
+      "sym": "gb_overlay_kay1024_dos",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 1261,
+      "runs": 21,
+      "diff_bytes": 1123
+    },
+    {
+      "sym": "gb_overlay_kay2010_128",
+      "base": "gb_rom_0_pentagon_128k",
+      "len": 501,
+      "runs": 24,
+      "diff_bytes": 345
+    },
+    {
+      "sym": "gb_overlay_kay2010_dos",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 3481,
+      "runs": 21,
+      "diff_bytes": 3343
+    },
+    {
+      "sym": "gb_overlay_kay2048_128",
+      "base": "gb_rom_0_pentagon_128k",
+      "len": 524,
+      "runs": 25,
+      "diff_bytes": 362
+    },
+    {
+      "sym": "gb_overlay_kay2048_svc",
+      "base": "gb_rom_kay256_svc",
+      "len": 8005,
+      "runs": 66,
+      "diff_bytes": 7597
+    }
+  ],
+  "flash_bytes": 47468
+}

@@ -774,6 +774,7 @@ void ESPectrum::setup() {
   Ports::portAFF7 = 0;
   Ports::portDFFD = 0;
   Ports::port1FFD = 0;
+  Ports::kay7FFDd7 = 0;
   Ports::gmxPort00 = 0;
   Ports::gmxPort78FD = 0;
   Ports::gmxPort7EFD = 0;
@@ -1302,7 +1303,7 @@ void ESPectrum::setup() {
   // branch is exact (the Pentagon branch would over-feed the DAC, see the reset()
   // twin). Scorpion Green (316-line frame) gets its own exact set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
-      (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP) ||
+      (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       Config::arch == A_ATM) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
@@ -1310,7 +1311,9 @@ void ESPectrum::setup() {
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_48;
 
     Audio_freq = ESP_AUDIO_FREQ_48;
-    tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
+    tstatesPerSampleFP = (((Config::arch == A_SCORP && isKayRomset(Config::romSetScorp))
+                               ? TSTATES_PER_FRAME_KAY : TSTATES_PER_FRAME_48) << 8)
+                         / ESP_AUDIO_SAMPLES_48;   // (KAY: Unreal's 69887 T frame)
   } else if (Config::arch == A_SCORP) {
     // Green PCB: 70784 T / 632 samples = exactly 31250 Hz at 49.4462 fps.
     samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
@@ -1668,6 +1671,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   Timex::reset();
   Ports::portDFFD = 0;
   Ports::port1FFD = 0;   // Scorpion: reset clears the 1FFD latch (RAM0/service off)
+  Ports::kay7FFDd7 = 0;  // (Nemo KAY 1 MB bit lives with it)
   // GMX: warm reset clears the whole register file (MAME machine_reset), the
   // ProfROM plane included; the 640x200 mode is torn down below with DS80's.
   Ports::gmxPort00 = 0;
@@ -1856,14 +1860,16 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Scorpion Yellow is the same 69888 T frame — same rule; Green (70784 T) gets
   // its own exact 632-sample set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
-      (Config::arch == A_SCORP && Config::romSetScorp == R_SCORP) ||
+      (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       Config::arch == A_ATM) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_48;
     Audio_freq = ESP_AUDIO_FREQ_48;
-    tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
+    tstatesPerSampleFP = (((Config::arch == A_SCORP && isKayRomset(Config::romSetScorp))
+                               ? TSTATES_PER_FRAME_KAY : TSTATES_PER_FRAME_48) << 8)
+                         / ESP_AUDIO_SAMPLES_48;   // (KAY: Unreal's 69887 T frame)
   } else if (Config::arch == A_SCORP) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;

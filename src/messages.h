@@ -143,6 +143,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 // Scorpion reset menu: Service monitor=1, TR-DOS=2, 128K=3, 48K=4
 #define MENU_RESETTO_SCORP "Reset to\n" "Service monitor\n" "TR-DOS\n" "128K\n" "48K\n"
+#define MENU_RESETTO_KAY "Reset to\n" "Service\n" "TR-DOS\n" "128K\n" "48K\n"
 // TS-Conf: TS-BIOS Setup=1 (the one entry that still goes through the BIOS —
 // it samples Symbol Shift at START), then one entry per ROM page of the
 // selected BIOS set, cold-booted directly like the Pentagon/Scorpion entries.

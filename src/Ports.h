@@ -91,6 +91,8 @@ public:
     // Recompute Scorpion's rom bank from (port1FFD D1/D2, trdos, romLatch) — and on
     // GMX the ProfROM plane — then recoverPage0.
     static void scorpionRomUpdate();
+    static void kayTurboUpdate();
+    static uint8_t kay7FFDd7;   // Nemo KAY: 7FFD D7 = the 1 MB page bit (see scorpionC000Page)
 
     // ── Scorpion GMX latches (either GMX romset; reset clears all) ────────────
     // port #00 global config: D5=BLKEXT (GMX ports off), D4=fixrom (block plane
