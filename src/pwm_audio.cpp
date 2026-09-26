@@ -366,9 +366,14 @@ void init_sound() {
                    PWM_PIN0, PWM_PIN1);
     } else {
 #if PICOSPECCY_WIFI
-        // The I2S block is decided by the live video output on W boards (see
-        // BoardPins::auxPio); the static I2S_PIO initialiser is only the HDMI case.
-        i2s_config.pio = BoardPins::auxPio();
+        // Only where the I2S pins sit above GPIO31 (MURM_W: 40/41/42) does I2S need
+        // the radio's base-16 block (BoardPins::auxPio, decided by the live video
+        // output). MURM2_W keeps I2S on GP9/10/11, which a base-16 block cannot
+        // reach: putting it there anyway loaded a base-0 program into the radio's
+        // block, and the NES pad (data on 40/41) could then never move that block
+        // to base 16 (hw report 2026-09-26). Low pins stay on I2S_PIO (pio1).
+        if (I2S_DATA_PIO >= 32 || I2S_BCK_PIO >= 32 || I2S_LCK_PIO >= 32)
+            i2s_config.pio = BoardPins::auxPio();
 #endif
         if (link_i2s_code == 0xFF) {
             if (I2S_BCK_PIO != I2S_LCK_PIO && I2S_LCK_PIO != I2S_DATA_PIO && I2S_BCK_PIO != I2S_DATA_PIO) {

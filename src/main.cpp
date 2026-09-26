@@ -1994,8 +1994,8 @@ int main() {
                                 BoardPins::dbgUartOwnsPin(NES_GPIO_LAT) ||
                                 BoardPins::dbgUartOwnsPin(NES_GPIO_DATA + 1);
         if (!zifi_yield && !dbg_yield) {
-            nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
-            nespad_active = true;
+            nespad_active = nespad_begin(clock_get_hz(clk_sys) / 1000, NES_GPIO_CLK, NES_GPIO_DATA, NES_GPIO_LAT);
+            if (!nespad_active) Debug::log("NESPAD: init failed, pad disabled for this session");
         } else {
             Debug::log("NESPAD: yielded to %s (pins claimed)", zifi_yield ? "ZiFi" : "the UART console");
         }

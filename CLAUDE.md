@@ -11753,6 +11753,25 @@ Nothing above the two network facades knows which radio it is on:
   17 for CS4334) + SPI PSRAM (18-20) > 32. But I2S is only loaded for a DAC board;
   with PWM audio, CYW43 + SPI PSRAM (25-27) fits. Candidate follow-up: keep the
   APS6404 on MURM_W and make I2S and SPI PSRAM mutually exclusive there instead.
+- **MURM2_W: NES pad dead + WiFi missing — one cause, PIO gpio_base order
+  (hw-confirmed 2026-09-26, owner: "работает оба").** The SDK REFUSES
+  `pio_set_gpio_base` once any program is loaded in the block, and
+  `nespad_begin()` re-based AFTER `pio_add_program`: refused silently, then
+  `pio_sm_init` failed BAD_ALIGNMENT (data on GPIO40/41) and the pad never ran —
+  while `main.cpp` set `nespad_active = true` regardless and the `sm < 0` guard on a
+  `uint8_t` could never fire. Second half: `init_sound()` put I2S into
+  `BoardPins::auxPio()` on EVERY W board, but MURM2_W's I2S is on GP9-11 (base 0),
+  so an I2S-detected board loaded a base-0 program into the radio's block. With
+  HDMI on PIO (pio2 taken) that left the radio no base-16 block at all ->
+  `cyw43_arch_init` failed -> no networks. Fixes: re-base BEFORE add_program (and
+  bail with a log line if the block is in use at the wrong base), `nespad_active`
+  from the return value, I2S goes to auxPio only when its pins are >= 32. **Rule:
+  anything that needs base 16 must set it before loading, and nothing that needs
+  base 0 may sit in the radio's block.** Boot log: `NESPAD: pioN smN base=..`.
+  Unfixable, hardware: with the pad plugged the chip temperature reads far too low
+  (negative) — GPIO40/41 are ADC0/1 and the driven lines leak into the temp-sensor
+  node (the ZERO2 GPIO44-46 effect); the ZERO2 grounding trick cannot be used on
+  lines the pad drives.
 - **`.vscode/` is gitignored** — the F7 board picker (`tasks.json` →
   `inputs.boardConfig`) is a LOCAL file and has to be edited by hand for every new
   board; a commit can never update it. `build_all.*` / `check-release.sh` are the

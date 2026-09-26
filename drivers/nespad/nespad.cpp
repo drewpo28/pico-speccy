@@ -37,7 +37,7 @@ static inline pio_sm_config nespad_program_get_default_config(uint offset) {
 #endif
 
 static PIO pio = NESPAD_PIO;
-static uint8_t sm = -1;
+static uint8_t sm = 0xFF;   // 0xFF = not running (uint8_t: "< 0" is never true)
 uint32_t nespad_state  = 0;  // Joystick 1
 uint32_t nespad_state2 = 0;  // Joystick 2
 
@@ -50,23 +50,37 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
     // on VGA); NESPAD_PIO is only the compile-time default for the HDMI case.
     pio = board_aux_pio();
 #endif
+  // An RP2350 PIO block reaches 32 CONSECUTIVE GPIOs starting at its gpio_base
+  // (0 or 16), so a pad wired above GPIO31 (MURM2_W: data on 40/41) needs the
+  // window moved up. The SDK REFUSES a re-base once any program is loaded in the
+  // block (pio_set_gpio_base -> PICO_ERROR_INVALID_STATE), so it has to happen
+  // BEFORE pio_add_program. It used to come after it: the re-base was silently
+  // refused, pio_sm_init then failed with BAD_ALIGNMENT and the pad was dead on
+  // MURM2_W (hw report 2026-09-26). A block already at the wrong base with
+  // someone else's program in it cannot host the pad at all — say so and stop.
+  uint8_t maxPin = clkPin;
+  if (latPin      > maxPin) maxPin = latPin;
+  if (dataPin + 1 > maxPin) maxPin = dataPin + 1;
+  const uint wantBase = (maxPin >= 32) ? 16u : 0u;
+  if (pio_get_gpio_base(pio) != wantBase) {
+    int brc = pio_set_gpio_base(pio, wantBase);
+    if (brc != PICO_OK) {
+      printf("NESPAD: pio%u gpio_base %u refused rc=%d (base=%u, block in use)\n",
+             (unsigned)PIO_NUM(pio), wantBase, brc, (unsigned)pio_get_gpio_base(pio));
+      return false;
+    }
+  }
+  int claimed = -1;
   if (pio_can_add_program(pio, &nespad_program) &&
-      ((sm = pio_claim_unused_sm(pio, true)) >= 0)) {
+      ((claimed = pio_claim_unused_sm(pio, false)) >= 0)) {
+    sm = (uint8_t)claimed;
     uint offset = pio_add_program(pio, &nespad_program);
     pio_sm_config c = nespad_program_get_default_config(offset);
 
-    // An RP2350 PIO block reaches 32 CONSECUTIVE GPIOs starting at its gpio_base
-    // (0 or 16), so a pad wired above GPIO31 (MURM2_W: data on 40/41) needs the
-    // window moved up. Pin numbers stay ABSOLUTE either way: with PICO_RP2350A 0
-    // the SDK defaults PICO_PIO_USE_GPIO_BASE to 1, and its own note on
-    // sm_config_ pin arguments says those helpers then "always take real pin
-    // numbers in the full range" 0-47. Same shape as the ZERO2 display path in
-    // hdmi_init() (drivers/hdmi/hdmi.c), which runs on hardware at GPIO32-39.
-    uint8_t maxPin = clkPin;
-    if (latPin      > maxPin) maxPin = latPin;
-    if (dataPin + 1 > maxPin) maxPin = dataPin + 1;
-    if (maxPin >= 32) pio_set_gpio_base(pio, 16);
-
+    // Pin numbers stay ABSOLUTE: with PICO_RP2350A 0 the SDK defaults
+    // PICO_PIO_USE_GPIO_BASE to 1, and its own note on sm_config_ pin arguments
+    // says those helpers then "always take real pin numbers in the full range"
+    // 0-47. Same shape as the ZERO2 display path in hdmi_init() (hdmi.c).
     sm_config_set_sideset_pins(&c, clkPin);
     sm_config_set_in_pins(&c, dataPin);
     sm_config_set_set_pins(&c, latPin, 1);
@@ -103,12 +117,17 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
                (unsigned)pio_get_gpio_base(pio));
         pio_remove_program(pio, &nespad_program, offset);
         pio_sm_unclaim(pio, sm);
+        sm = 0xFF;
         return false;
     }
     pio_sm_set_enabled(pio, sm, true);
     pio->txf[sm]=0;
+    printf("NESPAD: pio%u sm%u base=%u clk=%u lat=%u dat=%u/%u\n",
+           (unsigned)PIO_NUM(pio), (unsigned)sm, (unsigned)pio_get_gpio_base(pio),
+           (unsigned)clkPin, (unsigned)latPin, (unsigned)dataPin, (unsigned)(dataPin + 1));
     return true; // Success
   }
+  printf("NESPAD: pio%u has no room (sm/instructions)\n", (unsigned)PIO_NUM(pio));
   return false;
 }
 
@@ -124,7 +143,7 @@ bool nespad_begin(uint32_t cpu_khz, uint8_t clkPin, uint8_t dataPin,uint8_t latP
 
 void nespad_read()
 {
-  if (sm<0) return;
+  if (sm == 0xFF) return;
   if (pio_sm_is_rx_fifo_empty(pio, sm)) return;
 
   // Right-shift was used in sm config so bit order matches NES controller
