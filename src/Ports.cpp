@@ -2151,7 +2151,13 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         }
       }
 #endif
-      if ((!Z80Ops::is48) && (!Z80Ops::isP3) && !Z80Ops::isScorpion && ((address & 0x8002) == 0) &&
+      // ATM-Turbo: its paging is Atm::remap()'s alone (it owns ramCurrent[] and
+      // derives videoLatch/bankLatch from its own #7FFD copy). The BIOS 1.07.13 reads
+      // #7DFD at boot (0x809E), which this loose decode matched — 0xFF from the bus
+      // paged RAM 7 in, set the 48 lock and flipped the screen to page 7 behind the
+      // memory manager's back (hw 2026-09-26: menu drawn in pages 5/1, junk shown).
+      if ((!Z80Ops::is48) && (!Z80Ops::isP3) && !Z80Ops::isScorpion && !Z80Ops::isAtm &&
+          ((address & 0x8002) == 0) &&
           (!Z80Ops::isALF || (address & 0x0080))) { // ALF: #7FFD reflect, A7=1 only
         LED::touchR(LED::RAM);
         // //  Solo en el modelo 128K, pero no en los +2/+2A/+3, si se lee el
