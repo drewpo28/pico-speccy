@@ -12,6 +12,7 @@
 #include "LEDIndicators.h"
 #include "MemESP.h"
 #include "OSDMain.h"
+#include "Ports.h"
 #include "RomOverlay.h"
 #include "Video.h"
 #include "Z80_JLS/z80.h"
@@ -104,9 +105,12 @@ static void resolveRoms() {
     }
 }
 
-static inline bool cpmOn() {
-    return atm1 ? !(aFE & 0x80) : !(a77 & 0x200);
-}
+// The DOS signal is raised by /CPM on the 2+ only. On the ATM1 the CP/M mode
+// (#FE A7=0) does NOT open the TR-DOS ports — "в этом режиме недоступны порты
+// TR-DOS, так что для работы с дисководом нужно прыгать в обычный режим"
+// (atmdscr.htm, ATM-turbo 1): its BIOS drives the FDC from the SYSTEM ROM after a
+// CALL into #3Dxx (see trdosTrap).
+static inline bool cpmOn() { return !atm1 && !(a77 & 0x200); }
 
 static void dosRecalc() {
     ESPectrum::trdos = beta || cpmOn();
@@ -133,7 +137,9 @@ void remap() {
     s_ro = 0;
     const uint8_t n = romPageCount();
     if (atm1) {
-        const uint32_t pg3 = (p7ffd & 7) | ((pFDFD & 7) << 3);
+        // #FDFD D1..D0 extend the #C000 page to 512 KB; D2 is the ROM-disk select
+        // (upper 64 KB of a 27010 — this set is a 27512, so it has nothing to show).
+        const uint32_t pg3 = (p7ffd & 7) | ((pFDFD & 3) << 3);
         if (!(aFE & 0x80)) {
             // CP/M mode: RAM page 0 at #0000 and page 4 at #4000.
             mapRam(0, 0);
@@ -338,8 +344,9 @@ bool portWrite(uint16_t address, uint8_t data) {
     // ATM-Turbo 2+
     if (!(address & 0x8002)) { write7ffd(data); return true; }                    // #7FFD
     if (!ESPectrum::trdos) return false;
-    if (lo == 0x77) { write77(address, data); return true; }
-    if (lo == 0xF7) {
+    // %nXnnnnXX 0nn101n1 / 1nn101n1: A6, A5, A1 are not decoded.
+    if ((lo & 0x9D) == 0x15) { write77(address, data); return true; }
+    if ((lo & 0x9D) == 0x95) {
         pF7[((p7ffd & 0x10) >> 2) | (address >> 14)] = data;
         remap();
         LED::touchW(LED::RAM);
@@ -370,15 +377,18 @@ static inline uint8_t atm1FeBit7() {
 
 bool portRead(uint16_t address, uint8_t& v) {
     if (atm1) {
-        // Any read with A2 = 0 (#FB/#7B and friends) latches the low address byte;
-        // its A7 is CPSYS. Unreal answers these reads with 0xFF.
-        if (!(address & 0x04)) {
+        // IN #FB (%nnnnnnnn Xnnnn0n1): the Centronics status, and the low address
+        // byte is latched — A7 is CPSYS. D7 = BUSY (0 = free), D6 = ULINE, D5..D0 = 1;
+        // a printer that always reads busy would hang LPRINT.
+        if ((address & 0x05) == 0x01) {
             const uint8_t old = aFB;
             aFB = (uint8_t)address;
             if ((old ^ aFB) & 0x80) remap();
-            v = 0xFF;
+            v = 0x7F;
             return true;
         }
+        // #FA (%nnnnnnnn nnnnn0n0): the external system bus — nothing attached.
+        if ((address & 0x05) == 0x00) { v = 0xFF; return true; }
         return false;
     }
     if (ESPectrum::trdos && ideLive(address)) {
@@ -390,6 +400,13 @@ bool portRead(uint16_t address, uint8_t& v) {
         }
         return true;
     }
+    // Printer status #FB (%nnnnn011), as on the ATM1 but without the CPSYS latch.
+    // (#FA, the external bus, is left to the rest of the decode: the VGM cards
+    // answer on even ports there.)
+    if ((address & 0x07) == 0x03) { v = 0x7F; return true; }
+    // #FF outside DOS: the attribute port the ATM1 lacked ("порт атрибутов"), i.e.
+    // what the video controller is fetching — the 48K floating bus (same frame).
+    if ((address & 0xFF) == 0xFF && !ESPectrum::trdos) { v = Ports::getFloatBusData48(); return true; }
     // A15 = 0, A9 = 1, A1 = 0: the IDE INTRQ / DAC status port — D6 = INTRQ.
     // Below the DOS ports, as in Unreal (in(): the CF_DOSPORTS block returns first):
     // `IN A,(#FF)` puts A on A8-A15, so with DOS up a Beta register read can match
@@ -414,7 +431,13 @@ void trdosTrap(uint8_t pcH) {
         // Enter at #3Dxx with the 48 ROM selected (#7FFD D4) and ROM actually in
         // window 0 — "for Scorp, ATM-1/2 and KAY, TR-DOS not started on executing
         // RAM 3Dxx" (Unreal memory.cpp).
-        if (pcH == 0x3D && (p7ffd & 0x10) && (g_atm_ro & 1)) {
+        // ATM1 CPSYS (the system ROM paged by an IN from #FB with A7=1) opens the
+        // TR-DOS ports the same way, the ROM staying where it is: "сохраняется
+        // возможность доступа к портам TR-DOS (без включения ПЗУ TR-DOS). Для этого
+        // просто надо сделать CALL в промежуток от 15616 до 15871" (atmdscr.htm).
+        // The CP/M BIOS does exactly that (ROM 0: CALL #3DFD = RET, then OUT (#FF)).
+        const bool romOk = (p7ffd & 0x10) || (atm1 && (aFB & 0x80));
+        if (pcH == 0x3D && romOk && (g_atm_ro & 1)) {
             beta = true;
             dosRecalc();
             remap();

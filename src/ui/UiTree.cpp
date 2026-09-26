@@ -703,9 +703,9 @@ static const Node kMachine[] = {
     NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
+    NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
     NM_SUB  (NM_IND TXT_MACH_TSCONF_OPTS, kTsconf, p_tsconfActive),
-    NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by

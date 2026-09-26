@@ -3508,6 +3508,13 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
       VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi)); // I/O Contention (Late)
       return;
     }
+    // ATM-Turbo decodes #FE tighter than A0: ATM1 %XXXnX1n0 (A2=1), 2+ %nnnnX110
+    // (A2=A1=1) — so OUT (#FA), the external bus, must not repaint the border
+    // nor, on the ATM1, relatch the CP/M/video bits (atmdscr.htm).
+    if (Z80Ops::isAtm && (address & (Atm::atm1 ? 0x04 : 0x06)) != (Atm::atm1 ? 0x04 : 0x06)) {
+      VIDEO::Draw(3, false);
+      return;
+    }
     port254 = data;
     // BX0 (blue LSB of the 3:3:3 palette) is port #FE bit7 — latched here for
     // profiPaletteWrite() and for the PAL_DETECT read-back self-test (Ports::input).
