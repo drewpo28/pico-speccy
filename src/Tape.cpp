@@ -589,6 +589,7 @@ void Tape::Eject() {
 // the tape comes back STOPPED and the runtime heuristic starts it when the guest
 // polls (a tape rolling right after reset is wrong, and pins F8 stats to tape mode).
 void Tape::LoadRemembered() {
+    if (Config::real_player) return;
     if (!FileUtils::fsMount) return;
     string full = Config::tape_file;
     if (full.empty() || full == "none") return;
