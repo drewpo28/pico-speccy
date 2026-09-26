@@ -374,6 +374,8 @@ bool portRead(uint16_t address, uint8_t& v) {
         return true;
     }
     // A15 = 0, A9 = 1, A1 = 0: the IDE INTRQ / DAC status port — D6 = INTRQ.
+    // Beta ports (#1F/#3F/#5F/#7F/#FF) have A1 = 1, so they cannot match
+    // this decode, regardless of the high address byte from IN A,(n).
     if ((address & 0x8202) == 0x0200) {
         v = 0x3F | 0x40;
         return true;
