@@ -228,11 +228,11 @@
 // (tslabs/zx-evo pentevo/rom/bin) — the TS-BIOS itself and its TR-DOS are the same
 // bytes in both, so the label names the service ROM, not the BIOS.
 #define TXT_ROM_ATM1         "ATM-Turbo 1 (BIOS 1.04rs)"
-#define TXT_ROM_ATM1_S       "1"
+#define TXT_ROM_ATM1_S       "Turbo 1"
 #define TXT_ROM_ATM2         "ATM-Turbo 2+ (BIOS 1.07.13)"
-#define TXT_ROM_ATM2_S       "2+"
+#define TXT_ROM_ATM2_S       "Turbo 2+"
 #define TXT_ROM_ATM2X        "ATM-Turbo 2+ (xBIOS 1.37)"
-#define TXT_ROM_ATM2X_S      "2+ xBIOS"
+#define TXT_ROM_ATM2X_S      "Turbo 2+ xBIOS"
 #define TXT_ROM_TSBIOS       "TS-BIOS + 128"
 #define TXT_ROM_TSBIOS_S     "128"            // left-column short form (Option::slabel)
 #define TXT_ROM_TSBIOS_GLUK  "TS-BIOS + Mr Gluk"

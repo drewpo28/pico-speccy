@@ -137,9 +137,11 @@ void remap() {
     s_ro = 0;
     const uint8_t n = romPageCount();
     if (atm1) {
-        // #FDFD D1..D0 extend the #C000 page to 512 KB; D2 is the ROM-disk select
-        // (upper 64 KB of a 27010 — this set is a 27512, so it has nothing to show).
-        const uint32_t pg3 = (p7ffd & 7) | ((pFDFD & 3) << 3);
+        // #FDFD D2..D0 extend the #C000 page to 1 MB (Unreal MM_ATM450 with the
+        // 1024K option: `bank += (pFDFD & 7) << 3`). On a stock v4.50 board D2 is
+        // the ROM-disk select (upper 64 KB of a 27010); this set is a 27512 with
+        // nothing up there, so D2 is free to be the 1 MB upgrade UMT tests.
+        const uint32_t pg3 = (p7ffd & 7) | ((pFDFD & 7) << 3);
         if (!(aFE & 0x80)) {
             // CP/M mode: RAM page 0 at #0000 and page 4 at #4000.
             mapRam(0, 0);

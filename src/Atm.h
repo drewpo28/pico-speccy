@@ -14,11 +14,12 @@
 // attribute per byte / 80x25 text — the last one ATM-Turbo 2+ only) read the
 // screen page (5 or 7, #7FFD D3) plus the page four below it (1 or 3).
 //
-// ATM-Turbo 1 (Unreal MM_ATM450), 512 KB:
+// ATM-Turbo 1 (Unreal MM_ATM450), 1 MB (the 1024K upgrade):
 //   OUT (#FE): the LOW BYTE OF THE ADDRESS is latched (aFE): A7=0 = CP/M mode (RAM
 //     page 0 at #0000, page 4 at #4000), A6..A5 = video mode (0 EGA, 1 hires, 3 ZX).
 //   #7DFD (A15=0, A9=0, A1=0) palette write; #7FFD needs A9=1.
 //   #FDFD (A15=1, A9=0, A1=0): D2..D0 = #C000 page bits 5..3, D3 with DOS = CPSYS.
+//     (D2 is the ROM-disk select on a stock 512K board; used as RAM here.)
 //   IN from any port with A2=0 latches the low address byte (aFB); A7 = CPSYS,
 //     which pages the SYSTEM ROM at #0000. #7FFD D5 clears it.
 //   ROM page = CPSYS ? SYS : DOS ? TR-DOS : #7FFD D4 ? 48 : 128.

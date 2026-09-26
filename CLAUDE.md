@@ -11780,7 +11780,8 @@ Nothing above the two network facades knows which radio it is on:
 ## ATM-Turbo 1 / 2+ (A_ATM, 2026-09-26, NOT hw-tested)
 
 New arch `A_ATM` ("ATM") with three romsets: `R_ATM1` "ATM1" (ATM-Turbo 1, BIOS
-1.04rs, 512 KB), `R_ATM2` "ATM2" (ATM-Turbo 2+, BIOS 1.07.13, CRC 34A91D53, default)
+1.04rs, 1 MB — `#FDFD` D2..D0, Unreal's 1024K option, which UMT's "ATM4.5 (1024)"
+test expects and passes on hw 2026-09-26; on a stock v4.50 D2 selects the ROM disk, unused by this 27512 set), `R_ATM2` "ATM2" (ATM-Turbo 2+, BIOS 1.07.13, CRC 34A91D53, default)
 and `R_ATM2X` "ATM2x" (ATM-Turbo 2+ Dual eXtra BIOS 1.37XT, 128 KB, CRC E5EF44D9);
 `isAtmRomset`/`isAtm1Romset` (ArchRom.h), `Config::isAtm1()`. Machine → ATM-Turbo
 (`opt_mach_atm`, gated `p_showAtm` = VGA_HDMI + butter PSRAM ≥1 MB +
