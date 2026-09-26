@@ -198,7 +198,7 @@ echo \nMemory dump files written to /tmp/picospec_mem{0-3}.bin, /tmp/picospec_ra
 # TS-Conf: register file, the 16 ZX-bank CRAM cells and TS-BIOS's NVRAM config
 # cells (#B0..#E7, CRC16 at #E6/#E7 — see RTC::tsBiosSeed). Last on purpose:
 # these symbols exist only in builds that carry the machine.
-shell rm -f /tmp/picospec_tsconf.txt /tmp/picospec_intring.bin /tmp/picospec_dmaring.bin /tmp/picospec_symprobe.txt /tmp/picospec_symprobe.gdb
+shell rm -f /tmp/picospec_tsconf.txt /tmp/picospec_atm.txt /tmp/picospec_intring.bin /tmp/picospec_dmaring.bin /tmp/picospec_symprobe.txt /tmp/picospec_symprobe.gdb
 
 # The INT-accept ring exists only in PERF_TRACE builds, and GDB's command
 # language has no try/catch: an unknown symbol ABORTS the sourced file, and
@@ -327,3 +327,20 @@ info threads
 thread apply all bt 12
 set logging enabled off
 set logging redirect off
+
+# ATM-Turbo: CP/M and Beta-128 share the DOS/FDC signal, but the generic dump
+# does not record the ATM latches that produce it. Keep this after every other
+# block so a missing machine-specific symbol cannot lose the main dump.
+if Z80Ops::isAtm
+  set logging file /tmp/picospec_atm.txt
+  set logging overwrite on
+  set logging redirect on
+  set logging enabled on
+  printf "== ATM-Turbo ==\n"
+  printf "atm1=%d aFE=%02X aFB=%02X pFDFD=%02X p7ffd=%02X beta=%d cpm=%d trdos=%d ro=%02X\n", (int)Atm::atm1, (unsigned char)Atm::aFE, (unsigned char)Atm::aFB, (unsigned char)Atm::pFDFD, (unsigned char)Atm::p7ffd, (int)Atm::beta, (int)(Atm::atm1 ? !(Atm::aFE & 0x80) : !(Atm::a77 & 0x200)), (int)ESPectrum::trdos, (unsigned char)g_atm_ro
+  printf "slots=%08X %08X %08X %08X\n", (unsigned)MemESP::ramCurrent[0], (unsigned)MemESP::ramCurrent[1], (unsigned)MemESP::ramCurrent[2], (unsigned)MemESP::ramCurrent[3]
+  printf "FDC: disk=%d state=%u step=%u cmd=%02X trk=%u sec=%u data=%02X status=%04X ctrl=%05X\n", (int)ESPectrum::fdd.diskS, (unsigned)ESPectrum::fdd.state, (unsigned)ESPectrum::fdd.stepState, (unsigned char)ESPectrum::fdd.command, (unsigned char)ESPectrum::fdd.track, (unsigned char)ESPectrum::fdd.sector, (unsigned char)ESPectrum::fdd.data, (unsigned short)ESPectrum::fdd.status, (unsigned)ESPectrum::fdd.control
+  printf "disk_present=%d\n", (int)(ESPectrum::fdd.disk[ESPectrum::fdd.diskS] != 0)
+  set logging enabled off
+  set logging redirect off
+end

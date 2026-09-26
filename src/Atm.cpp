@@ -104,7 +104,9 @@ static void resolveRoms() {
     }
 }
 
-static inline bool cpmOn() { return !atm1 && !(a77 & 0x200); }
+static inline bool cpmOn() {
+    return atm1 ? !(aFE & 0x80) : !(a77 & 0x200);
+}
 
 static void dosRecalc() {
     ESPectrum::trdos = beta || cpmOn();
@@ -185,6 +187,18 @@ void reset() {
     p7ffd = 0;
     beta = false;
     if (atm1) {
+        // BIOS 1.03/1.04 keeps the CP/M body XOR-ed at #22B9 with a key read off the
+        // #FE bit-7 "Z" signal (#2024: 16 samples after a delay). It first counts the
+        // frame (#2005 -> (#5F74)) and, when that says turbo, takes a second delay
+        // and adds #82 — a Z pattern for 7 MHz that the Unreal model (atm1FeBit7)
+        // does not reproduce, so the key came out #0081 instead of #FFF4 and CP/M
+        // decrypted into garbage (hw 2026-09-26: hang before the first disk read,
+        // gone without turbo). The ATM-Turbo 1 has no guest turbo register here,
+        // so every reset starts it at 3.5 MHz; Alt+F2 after the boot still works.
+        if (ESPectrum::multiplicator) {
+            ESPectrum::multiplicator = 0;
+            CPU::updateStatesInFrame();
+        }
         // Unreal reset(): aFE = 0x80 (no CP/M, EGA), aFB = 0x80 (CPSYS -> SYSTEM ROM).
         aFE = 0x80;
         aFB = 0x80;
@@ -294,7 +308,10 @@ void feWrite(uint16_t address) {
     const uint8_t a = (uint8_t)address;
     const uint8_t old = aFE;
     aFE = a;
-    if ((old ^ a) & 0x80) remap();
+    if ((old ^ a) & 0x80) {
+        dosRecalc();
+        remap();
+    }
     if ((old ^ a) & 0x60) VIDEO::atmVideoModeChanged();
 }
 
@@ -374,8 +391,11 @@ bool portRead(uint16_t address, uint8_t& v) {
         return true;
     }
     // A15 = 0, A9 = 1, A1 = 0: the IDE INTRQ / DAC status port — D6 = INTRQ.
-    // Beta ports (#1F/#3F/#5F/#7F/#FF) have A1 = 1, so they cannot match
-    // this decode, regardless of the high address byte from IN A,(n).
+    // Below the DOS ports, as in Unreal (in(): the CF_DOSPORTS block returns first):
+    // `IN A,(#FF)` puts A on A8-A15, so with DOS up a Beta register read can match
+    // this decode and must still reach the WD1793 (the CP/M BIOS polls INTRQ/DRQ
+    // that way).
+    if (ESPectrum::trdos && (address & 0x1F) == 0x1F) return false;
     if ((address & 0x8202) == 0x0200) {
         v = 0x3F | 0x40;
         return true;
