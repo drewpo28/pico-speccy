@@ -23,7 +23,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 
 ## Features
 
-- ZX Spectrum 48K, 128K, +3 / +3e, Timex TC2048/TC2068, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, TS-Conf (ZX-Evo), Byte and ALF TV Game. 100% cycle accurate emulation.
+- ZX Spectrum 48K, 128K, +3 / +3e, Timex TC2048/TC2068, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, TS-Conf (ZX-Evo), ATM-Turbo 1 / 2+, Byte and ALF TV Game. 100% cycle accurate emulation.
 - State of the art Z80 emulation (Authored by [José Luis Sánchez](https://github.com/jsanchezv/z80cpp))
 - Selectable Sinclair 48K, Sinclair 128K and Amstrad +2 english and spanish ROMs. Byte and ALF TV Game - russian ROMs, + Pentagons with Gluck services ROMs & selectable TR-DOS ROM (5.03 / 5.04TM / 5.05D / custom). Profi 1024K with selectable Karabas-Pro ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage).
 - Possibility of using custom ROM with easy flashing procedure from SD card.
@@ -44,6 +44,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - VGA/HDMI CRT filter with 7 selectable levels (Off, Soft, Medium, Strong, Grille soft/med/hard): gamma correction, phosphor tint, black lift and a vertical aperture-grille mask.
 - HDMI dither effect for ULA+ (RP2350 only): optional Bayer-look palette dithering applied via ISR.
 - VGA colour (Video → VGA → Colour): per-pixel PWM (four sub-samples per pixel, integrated by the resistor ladder — 13 or 29 levels per channel with no dither pattern; press Auto Adjust on the monitor after switching it on) or the ordered 2x2 dither. Reboot-class; default PWM on HSTX builds, dither elsewhere (PWM there costs 4x the VGA line DMA).
+- ATM-Turbo emulation (Machine → ATM-Turbo, NOT yet tested on hardware): ATM-Turbo 1 (BIOS 1.04rs, 512 KB, #FE address-latch paging) and ATM-Turbo 2+ (BIOS 1.07.13 or xBIOS 1.37, 1 MB, the #77/#F7 memory manager, 7 MHz turbo, on-board IDE as IDE/HDD → ATM), with the 16-entry palette and every video mode (ZX, EGA 320x200x16, hires 640x200, 80x25 text on the 2+). Needs a board with QSPI (butter) PSRAM and VGA/HDMI output.
 - VGA colour depth (Video → VGA → Colour depth, shown while PWM is off): Dithered (ordered 2x2, ~2200 perceived colours out of the 2-bit DAC — better gradients for TS-Conf 16c/256c artwork) or Solid. The flat 16 ZX colours always stay solid.
 - HDMI clock drive setting (Video → HDMI → Clock drive): Normal (12 mA, fast edge) or Soft (8 mA, slow edge, less crosstalk on marginal receivers), switchable at runtime (RP2350 only).
 - Capture card compatibility (Video → Capture card compatibility): snaps every palette entry to a level whose doubled HDMI pixel is a single TMDS symbol, so runtime palettes (TS-Conf CRAM, ULA+, Gigascreen blends) come through a USB HDMI grabber without the alternating-column artefact — invisible on a monitor (RP2350 only).

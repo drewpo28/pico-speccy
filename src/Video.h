@@ -342,6 +342,16 @@ public:
   static bool gmx_border_dirty;          // top/bottom band needs a repaint
   static uint8_t gmx_border_col;         // last painted border colour
   static void gmxForceOff();             // immediate teardown (ESPectrum::reset)
+  // ATM-Turbo: its EGA 320x200x16 / hires 640x200 / 80x25 text modes ride the GMX
+  // 640x200 machinery (same 48K raster, same pair-slot driver path, same parked
+  // border machine) with their own line renderer (atmRenderLine, flash). The ZX mode
+  // is the ordinary beam renderer with the 16 hardware slots reprogrammed from the
+  // ATM palette (atmPaletteFlush).
+  static void atmVideoModeChanged();     // a #77 / #FE-address write moved the mode
+  static void atmPaletteChanged();       // a palette port write (applied at EndFrame)
+  static void atmPaletteFlush();         // EndFrame: palette -> hardware slots / pair table
+  static void atmPaletteRestore();       // leaving the ATM: standard slots back
+  static void atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l);
 
   // ── TS-Conf video modes (VConfig VM[1:0] / NOGFX / RRES[1:0]) ─────────────
   // TEXT (80x30, 640 px wide) borrows the DS80/GMX packed-pair framebuffer and
@@ -438,7 +448,7 @@ public:
   static VGA8Bit vga;
 
   static uint8_t borderColor;
-  static uint32_t border32[8];
+  static uint32_t border32[16];          // 8..15 = BRIGHT (the ATM-Turbo 4-bit border)
   static uint32_t brd;
   static bool brdChange;
   static bool brdnextframe;

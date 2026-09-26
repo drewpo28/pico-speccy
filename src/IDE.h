@@ -29,8 +29,11 @@ public:
     // Like PLUS3E it is tied to the romset built for it ("+3 (divIDE)"), because the
     // same ports are also decoded by the full divIDE card behind esxDOS -> DivIDE
     // (DivMMC.cpp) and by the Profi CP/M shifted FDC.
+    // ATM is the ATM-Turbo 2+'s on-board interface (xx0F family in the DOS port
+    // space, A8 = the high-byte latch — src/Atm.cpp); tied to the ATM-Turbo 2+
+    // romsets the way PLUS3E / DIVIDE are tied to theirs.
     enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, SMUC = 3, PLUS3E = 4,
-                            DIVIDE = 5 };
+                            DIVIDE = 5, ATM = 6 };
 
     // Active scheme mirror of Config::ide_scheme (set in init()).
     static uint8_t scheme;

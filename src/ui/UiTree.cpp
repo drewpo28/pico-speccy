@@ -460,6 +460,15 @@ static bool p_showTsconf() {
     return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
+// ATM-Turbo: any ROM page may be paged into any CPU window, so the pages are
+// flattened into butter PSRAM (Atm::reset) and the images live in .psramroms.
+static bool p_showAtm() {
+#if !defined(VGA_HDMI)
+    return false;
+#else
+    return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
+#endif
+}
 static bool p_tsconfActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::arch == A_TSCONF;
@@ -616,6 +625,13 @@ static const Option opt_mach_tsconf[] = {
     { TXT_ROM_TSBIOS,      NM_MACH(A_TSCONF, R_TSCONF),      TXT_ROM_TSBIOS_S      },
     { TXT_ROM_TSBIOS_GLUK, NM_MACH(A_TSCONF, R_TSCONF_GLUK), TXT_ROM_TSBIOS_GLUK_S },
 };
+// Two boards, three BIOS images: ATM-Turbo 1 (512 KB, #FE address-latch paging)
+// and ATM-Turbo 2+ (1 MB, #xx77/#xxF7 memory manager) with either BIOS.
+static const Option opt_mach_atm[] = {
+    { TXT_ROM_ATM1,  NM_MACH(A_ATM, R_ATM1),  TXT_ROM_ATM1_S  },
+    { TXT_ROM_ATM2,  NM_MACH(A_ATM, R_ATM2),  TXT_ROM_ATM2_S  },
+    { TXT_ROM_ATM2X, NM_MACH(A_ATM, R_ATM2X), TXT_ROM_ATM2X_S },
+};
 // Ceiling for the guest's SysConfig ZCLK (a 14 MHz Z80 costs ~4x a 3.5 MHz frame
 // of core0 time — TS titles that ask for 14 MHz can be pinned to 7 here; the
 // guest keeps its own timing, it just gets fewer T-states per frame).
@@ -689,6 +705,7 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
     NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
     NM_SUB  (NM_IND TXT_MACH_TSCONF_OPTS, kTsconf, p_tsconfActive),
+    NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by
@@ -867,6 +884,7 @@ static const Option opt_ide_scheme[] = {
     { "SMUC",  3 },   // IDE::SMUC
     { "IDEDOS", 4 },  // IDE::PLUS3E — numbering follows IDE::Scheme, not this list
     { "DivIDE", 5 },  // IDE::DIVIDE — the +3 (divIDE) romset's card, same rule
+    { "ATM",    6 },  // IDE::ATM — the ATM-Turbo 2+ on-board controller, same rule
 };
 
 

@@ -29,6 +29,7 @@
 #include "graphics.h"
 #include "MemESP.h"
 #include "CPU.h"
+#include "Atm.h"
 #include "Tape.h"
 #include "Config.h"
 #include "FileUtils.h"
@@ -743,6 +744,8 @@ IRAM_ATTR void Z80::check_trdos() {
     // the DOS-signal semantics (enter at #3Dxx with ROM128+ROM, leave on
     // executing RAM) and remaps through TsConf::setBanks().
     if (Z80Ops::isTsconf) { TsConf::trdosTrap(REG_PCh); return; }
+    // ATM-Turbo: same shape — the memory manager owns every window (Atm::remap).
+    if (Z80Ops::isAtm) { Atm::trdosTrap(REG_PCh); return; }
 
     // Detect NMI-DOS handler return: exact PC and SP match after planted RET at 0x5C00
     if (nmiDosInProgress && REG_PC == nmiDos_savedPC && REG_SP == nmiDos_savedSP) {
@@ -1087,6 +1090,10 @@ Z80_COLD void Z80::doNMIDOS(void) {
 
     activeNMIDOS = false;
     lastFlagQ = false;
+
+    // ATM-Turbo: the magic-button DOS entry maps rom[] banks over window 0, which on
+    // this machine belongs to the memory manager — take a plain NMI instead.
+    if (Z80Ops::isAtm) { nmi(); return; }
 
     // Save current state
     nmiDos_savedRomInUse = MemESP::romInUse;

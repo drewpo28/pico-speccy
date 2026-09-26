@@ -99,6 +99,7 @@ public:
     static RomsetIdx romSetProfi;
     static RomsetIdx romSetScorp;
     static RomsetIdx romSetTsconf;
+    static RomsetIdx romSetAtm;
     static ArchIdx   pref_arch;
     static RomsetIdx pref_romSet_48;
     static RomsetIdx pref_romSet_128;
@@ -108,6 +109,7 @@ public:
     static RomsetIdx pref_romSetProfi;
     static RomsetIdx pref_romSetScorp;
     static RomsetIdx pref_romSetTsconf;
+    static RomsetIdx pref_romSetAtm;
     static string   ram_file;
     static string   last_ram_file;
     static string   tape_file;       // full path of remembered tape, re-mounted after F11/reboot like a disk
@@ -331,6 +333,7 @@ public:
     static bool isTc2068() { return arch == A_48K && isTc2068Romset(romSet); }
     // ...either Timex, i.e. "the SCLD is this machine's ULA".
     static bool isTimex() { return arch == A_48K && isTimexRomset(romSet); }
+    static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
     // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
     // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).
     static bool isPlus3Div() { return arch == A_128K && isPlus3DivRomset(romSet); }

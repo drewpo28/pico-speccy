@@ -181,5 +181,27 @@ for img, pages in sets.items():
     want[0x1183] = ord('1')
     check(img, b''.join(pages), bytes(want))
 
+# ATM-Turbo 1 / 2+: every page reassembled through the generated page tables in
+# atm_banks.h (base nullptr = the all-0xFF page), exactly as Atm::bindRoms()
+# flattens them, and compared with the three owner-supplied images.
+print("ATM-Turbo BIOS sets (flattened through atm_banks.h):")
+atm_h = open(os.path.join(R, 'atm/atm_banks.h')).read()
+def atm_sym(sym):
+    if sym == 'nullptr': return b'\xff' * 16384
+    for rel in ('atm/atm_roms.c',):
+        try: return arr(rel, sym)
+        except SystemExit: pass
+    return {'gb_rom_4_trdos_504t': base_trdos, 'gb_rom_0_pentagon_128k': base_pent,
+            'gb_rom_1_sinclair_128k': s128_1, 'gb_rom_0_sinclair_48k': s48}[sym]
+for tag, src, crc in (('atm1', 'atm1_104rs.bin', 'A9BBF1C1'),
+                      ('atm2', 'atm2_10713.bin', '34A91D53'),
+                      ('atm2x', 'atm2_xbios137.bin', 'E5EF44D9')):
+    body = atm_h.split('gb_rom_%s_pages[' % tag, 1)[1].split('};', 1)[0]
+    rows = re.findall(r'\{ (\w+), (\w+) \}', body)
+    img = b''.join(atm_sym(b) if o == 'nullptr' else apply_overlay(atm_sym(b), arr('atm/atm_roms.c', o))
+                   for b, o in rows)
+    check('ATM %s image' % tag, img, dump('atm/src/' + src))
+    check('ATM %s CRC32' % tag, '%08X' % (zlib.crc32(img) & 0xffffffff), crc)
+
 print("\n%s" % ("FAILED: " + ", ".join(fails) if fails else "all ROM images verified"))
 sys.exit(1 if fails else 0)

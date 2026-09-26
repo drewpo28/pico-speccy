@@ -87,7 +87,7 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
     // hand-edited .esp sidecar. Drop it; the SNA's own size-detected arch
     // applies, and loading it while TS-Conf runs goes through requestMachine's
     // page-strip reboot boundary like any other cross-layout load.
-    if (archCanon(force_arch) == A_TSCONF) { force_arch = A_NONE; force_romset = R_NONE; }
+    if (archCanon(force_arch) == A_TSCONF || archCanon(force_arch) == A_ATM) { force_arch = A_NONE; force_romset = R_NONE; }
     bool res = false;
     uint8_t OSDprev = VIDEO::OSD;
     g_snapshot_loading_path = filename;
@@ -136,6 +136,13 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         OSD::osdCenteredMsg("Bad SNA:\n" + sna_fn + "\nsize: " + to_string(sna_size) + "\n", LEVEL_INFO, 5000);
         fclose2(file);
         return false;
+    }
+
+    // ATM-Turbo's memory manager is outside the SNA format (its page registers
+    // own ramCurrent[]): a 128K SNA runs on Pentagon, the format's default.
+    if (Config::arch == A_ATM && snapshotArch == A_ATM && force_arch == A_NONE) {
+        snapshotArch = A_PENT;
+        Config::requestMachine(A_PENT, R_NONE);
     }
 
     // Manage arch change

@@ -1,0 +1,97 @@
+{
+  "id": "atm",
+  "raw": [
+    {
+      "sym": "gb_rom_atm1_p0",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_atm2_p3",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_atm_font",
+      "len": 2048
+    }
+  ],
+  "overlays": [
+    {
+      "sym": "gb_overlay_atm2x_p7",
+      "base": "gb_rom_atm2_p3",
+      "len": 184,
+      "runs": 15,
+      "diff_bytes": 82
+    },
+    {
+      "sym": "gb_overlay_atm1_p1",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 4129,
+      "runs": 38,
+      "diff_bytes": 3889
+    },
+    {
+      "sym": "gb_overlay_atm1_p3",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 165,
+      "runs": 5,
+      "diff_bytes": 123
+    },
+    {
+      "sym": "gb_overlay_atm2_p0",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 172,
+      "runs": 6,
+      "diff_bytes": 124
+    },
+    {
+      "sym": "gb_overlay_atm2_p1",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 5057,
+      "runs": 47,
+      "diff_bytes": 4763
+    },
+    {
+      "sym": "gb_overlay_atm2x_p0",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 299,
+      "runs": 13,
+      "diff_bytes": 209
+    },
+    {
+      "sym": "gb_overlay_atm2x_p1",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 5293,
+      "runs": 130,
+      "diff_bytes": 4501
+    },
+    {
+      "sym": "gb_overlay_atm2x_p2",
+      "base": "nullptr",
+      "len": 5079,
+      "runs": 13,
+      "diff_bytes": 4989
+    },
+    {
+      "sym": "gb_overlay_atm2x_p4",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 299,
+      "runs": 13,
+      "diff_bytes": 209
+    },
+    {
+      "sym": "gb_overlay_atm2x_p5",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 1308,
+      "runs": 20,
+      "diff_bytes": 1176
+    },
+    {
+      "sym": "gb_overlay_atm2x_p6",
+      "base": "gb_rom_0_pentagon_128k",
+      "len": 510,
+      "runs": 23,
+      "diff_bytes": 360
+    }
+  ],
+  "flash_bytes": 57311
+}

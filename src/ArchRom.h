@@ -28,7 +28,8 @@
     X(A_KARABAS,    "Karabas")  \
     X(A_SCORP,      "Scorpion") \
     X(A_ALF,        "ALF")      \
-    X(A_TSCONF,     "TSconf")
+    X(A_TSCONF,     "TSconf")   \
+    X(A_ATM,        "ATM")
 
 // Third column = the human label. The second column is an on-disk spelling that
 // must never change (NVS, .esp sidecars); the third is what a user reads, kept
@@ -67,7 +68,10 @@
     X(R_P3E,            "P3e",              "+3 (IDEDOS)")           \
     X(R_P3DIV,          "P3div",            "+3 (DivIDE)")      \
     X(R_TSCONF,         "TS-Conf",          "TS-BIOS + 128")              \
-    X(R_TSCONF_GLUK,    "TS-Gluk",          "TS-BIOS + Mr Gluk")
+    X(R_TSCONF_GLUK,    "TS-Gluk",          "TS-BIOS + Mr Gluk")          \
+    X(R_ATM1,           "ATM1",             "ATM-Turbo 1 (BIOS 1.04rs)")  \
+    X(R_ATM2,           "ATM2",             "ATM-Turbo 2+ (BIOS 1.07.13)") \
+    X(R_ATM2X,          "ATM2x",            "ATM-Turbo 2+ (xBIOS 1.37)")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -134,6 +138,7 @@ inline RomsetIdx defaultRomsetFor(ArchIdx a) {
         case A_SCORP:   return R_SCORP;
         case A_ALF:     return R_ALF1;
         case A_TSCONF:  return R_TSCONF;
+        case A_ATM:     return R_ATM2;
         default:        return R_PENT;   // Pentagon / P512 / P1024
     }
 }
@@ -220,3 +225,11 @@ inline bool isPlus3DivRomset(RomsetIdx r) {
 inline bool isTsconfRomset(RomsetIdx r) {
     return r == R_TSCONF || r == R_TSCONF_GLUK;
 }
+
+// MicroART ATM-Turbo. One arch, three romsets: the ATM-Turbo 1 (a different memory
+// manager — #FE address-line latch, #FDFD, #7DFD palette) and two BIOS images of the
+// ATM-Turbo 2+ (#xx77 system port, eight #xxF7 page registers, #FF palette). Both
+// boards share the 48K frame (224 T x 312 lines, uncontended) and the video modes;
+// see src/Atm.h. isAtm1Romset() is the one question that separates the two boards.
+inline bool isAtmRomset(RomsetIdx r)  { return r == R_ATM1 || r == R_ATM2 || r == R_ATM2X; }
+inline bool isAtm1Romset(RomsetIdx r) { return r == R_ATM1; }

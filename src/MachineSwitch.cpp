@@ -136,6 +136,11 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                     Config::romSet = romset;
                     Config::romSetTsconf = romset;
                 }
+            } else if (arch == A_ATM) {
+                if (Config::pref_romSetAtm == R_LAST) {
+                    Config::romSet = romset;
+                    Config::romSetAtm = romset;
+                }
             } else {
                 Config::romSet = romset;
             }
@@ -163,20 +168,21 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         else if (Config::arch == A_PROFI && Config::pref_romSetProfi == R_LAST) Config::romSetProfi = Config::romSet;
         else if (Config::arch == A_SCORP && Config::pref_romSetScorp == R_LAST) Config::romSetScorp = Config::romSet;
         else if (Config::arch == A_TSCONF && Config::pref_romSetTsconf == R_LAST) Config::romSetTsconf = Config::romSet;
+        else if (Config::arch == A_ATM && Config::pref_romSetAtm == R_LAST) Config::romSetAtm = Config::romSet;
         // Mutual exclusivity
         bool isByte = (romset == R_48K_BY || romset == R_128K_BY);
         // The +3 is a romset of the 128K arch (like +2), so its exclusions key on the
         // romset the same way Byte's do.
         const bool isP3 = isPlus3Romset(romset);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || isP3 || isByte)) {
+            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM || isP3 || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             OSD::osdCenteredMsg("MB-02+ disabled", LEVEL_WARN, 2000);
         }
         // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
         // register / native RTC AS latch / SAA select (see CPU::reset backstop).
-        if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_TSCONF || isP3)) {
+        if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_TSCONF || arch == A_ATM || isP3)) {
             Config::timex_video = false;
             VIDEO::timex_port_ff = 0;
             VIDEO::timex_mode = 0;
@@ -214,7 +220,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
             }
         }
         // TR-DOS is mandatory on Pentagon / Profi / Scorpion / TS-Conf (Beta-128 on board)
-        if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF) && !Config::betadisk) {
+        if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM) && !Config::betadisk) {
             Config::betadisk = true;
             OSD::osdCenteredMsg("Betadisk enabled", LEVEL_WARN, 1500);
         }
@@ -304,7 +310,9 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // Switching into Profi: turn DivMMC off and free its
         // sector/IDE buffers — same mutual exclusion as MB-02+
         // (Profi forces ~80 KB of SRAM pages and OOMs otherwise).
-        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF) && Config::esxdos) {
+        // ATM: its memory manager can put RAM or ROM in any window and its BIOS
+        // runs from all four at reset — DivMMC's automap would page over it.
+        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF || Config::arch == A_ATM) && Config::esxdos) {
             Config::esxdos = 0;
             DivMMC::init();   // teardown path frees buffers
             OSD::osdCenteredMsg("DivMMC disabled", LEVEL_WARN, 1500);

@@ -11776,3 +11776,63 @@ Nothing above the two network facades knows which radio it is on:
   `inputs.boardConfig`) is a LOCAL file and has to be edited by hand for every new
   board; a commit can never update it. `build_all.*` / `check-release.sh` are the
   tracked lists.
+
+## ATM-Turbo 1 / 2+ (A_ATM, 2026-09-26, NOT hw-tested)
+
+New arch `A_ATM` ("ATM") with three romsets: `R_ATM1` "ATM1" (ATM-Turbo 1, BIOS
+1.04rs, 512 KB), `R_ATM2` "ATM2" (ATM-Turbo 2+, BIOS 1.07.13, CRC 34A91D53, default)
+and `R_ATM2X` "ATM2x" (ATM-Turbo 2+ Dual eXtra BIOS 1.37XT, 128 KB, CRC E5EF44D9);
+`isAtmRomset`/`isAtm1Romset` (ArchRom.h), `Config::isAtm1()`. Machine → ATM-Turbo
+(`opt_mach_atm`, gated `p_showAtm` = VGA_HDMI + butter PSRAM ≥1 MB +
+`FlashRoms::romsUsable()`, the TS-Conf gate). The owner's link
+(atmturbo.nedopc.com/atmshem.htm) is unreachable from the build env, so the model
+is read out of **UnrealSpeccy** (tslabs/zx-evo pentevo/unreal: memory.cpp
+MM_ATM450 / MM_ATM710, io.cpp, atm.cpp, drawers.cpp) and **MAME sinclair/atm.cpp**
+(2+ only); they agree. The whole port/paging spec is in the header of `src/Atm.h`.
+
+- **Core = `src/Atm.{h,cpp}`**: `Atm::remap()` is the ONE writer of
+  `MemESP::ramCurrent[0..3]` on ATM (the TsConf::setBanks pattern); it also sets
+  `p3special = 2` so `recoverPage0()` keeps out, parks `bank_dirty` on the sink for
+  ROM windows, clears contention and re-points `grmem` (page 5/7). Port hooks run
+  early in Ports::input/output (right after the GMX ones); the ULA branch still runs
+  for #FE (`Atm::feWrite` latches the ATM1 address byte; the 4-bit border takes
+  BRIGHT from A3 inverted, `border32[]` grew to 16 entries). `check_trdos` is
+  replaced by `Atm::trdosTrap` (enter at #3Dxx with 7FFD D4 and ROM in window 0,
+  exit when PC's window is RAM); /CPM on the 2+ keeps the DOS signal up by itself.
+- **ROM pages may sit in ANY window**, so each bound page is flattened into butter
+  PSRAM at the first `Atm::reset()` after `Buffer::initPools` (palloc
+  NEED_POINTER|PREFER_PSRAM, heap placements refused); raw pages are read straight
+  from flash. Writes into a ROM window are dropped by the `g_atm_ro` gate in the CPU
+  write funnel (`gsDmaPoke8`) — zero on every other machine, one predicted-not-taken
+  test. MemESP's pointer-keyed overlay registry is NOT used for ATM.
+- **Packing** (`tools/rom_pack.py atm`, `pack_atm`): 4+4+8 pages against Pentagon
+  ROM0, Sinclair 128K half 1, Sinclair 48K, TR-DOS 5.04T and the all-FF page →
+  3 raw + 11 overlays + the 2 KB ATM2 text-mode font (`gb_rom_atm_font`, Unreal's
+  fontatm2 transposed to char*8+line) = **57 311 B**, in `.psramroms`
+  (`*atm_roms.c.o` in both EXCLUDE_FILE lists of rp2350-memmap.ld) — traded with
+  GMX/TS-Conf for a big GM.DLS bank on boards without QSPI PSRAM, where ATM is not
+  offered anyway. `atm_banks.h` may be included ONLY by Config.cpp (internal-linkage
+  Sinclair bases). `tools/rom_verify.py` reassembles all three images + CRC.
+- **Timing**: the 48K frame (224 × 312 = 69888 T, INT_START48/END48, 48K audio set),
+  uncontended, no floating bus. ATM2 #77 D3 = 7 MHz turbo, applied with the
+  `CPU::tstates` rescale (the TS-Conf ZCLK lesson) and `OSD::notifyClock`; D5 gates
+  the frame INT (`Z80Ops::isActiveINT`), reset = INT OFF until the BIOS enables it.
+- **Video** rides the GMX 640x200 pair-slot machinery (`gmx_ext_live`,
+  `gmxApplyPending`, `gmxBorderFrame`): `VIDEO::atmRenderLine` draws EGA 320x200x16,
+  hires 640x200 and 80x25 text whole-line from pages 1/3 + 5/7, ZX mode keeps the
+  beam renderer. The 16-entry palette is applied at EndFrame
+  (`atmPaletteFlush`/`atmPaletteRestore`); the ZX slots are only overridden after the
+  guest's first palette write.
+- **Exclusions** (resolveConstraints, MachineSwitch, CPU::reset/ESPectrum::setup
+  backstops): esxDOS, MB-02+, Timex, 16col, Murmuzavr off; Beta-128 on; IDE scheme
+  `IDE::ATM` (= 6, the NVS value, `opt_ide_scheme` "ATM") follows the 2+ and is
+  cleared on the ATM1 and on every other machine. SNA: a 128K SNA loaded on ATM runs
+  on Pentagon; `.z80` has no ATM machine id. Tape auto-run excluded.
+- Cost: the 57 KB of ROM data plus the code; z0p2-PIOUSB now leaves a 1 589 248 B plain bank
+  region (< the stock 1 668 026 B gm.dls), i.e. a no-butter z0p2 installing the stock
+  bank trades the .psramroms ROMs — the documented automatic trade, not a failure.
+  All of DVp2 VGA-HDMI, z0p2 PIOUSB, m2p2 SOFTTV and m1p2 TFT link.
+- **Hw check owed (nothing has run)**: ATM2 BIOS boot to its menu (PEN=0 → BIOS in
+  all windows, then #F7 paging), TR-DOS from the BIOS, the 7 MHz switch, EGA/hires/
+  text screens (CP/M, ATM2 text), the palette, ATM1 boot (CPSYS/SYS ROM, #FDFD pages),
+  IDE on the 2+, and xBIOS 1.37.

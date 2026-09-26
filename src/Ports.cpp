@@ -81,6 +81,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "Plus3Fdc.h"
 #include "hardware/gpio.h"
 #include "sdcard.h"
+#include "Atm.h"
 
 // Set to 1 to trace every 0x7FFD / 0xDFFD paging-port write (Profi debugging).
 // Off by default — these fire thousands of times during DS80/CP/M init.
@@ -1159,7 +1160,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
     if (smucPortRead(address, &v)) return v;
   }
 #if SMUC_TRACE
-  else if (Z80Ops::isScorpion || Z80Ops::isTsconf) smucTraceGated(false, address, 0);
+  else if (Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm) smucTraceGated(false, address, 0);
 #endif
   // OPL3 (YMF262) VGM-player card: the status register lives at the address
   // ports (#C4/#C6); data ports read 0x00, as verified on real YMF262 (MAME).
@@ -1181,6 +1182,12 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   if (g_scorp_gmx) {
     uint8_t gmxData;
     if (gmxPortRead(address, &gmxData)) return gmxData;
+  }
+  // ATM-Turbo: the ATM1's CPSYS read latch (any A2=0 read), the 2+'s IDE and its
+  // INTRQ status port — cold flash dispatch (src/Atm.cpp), ahead of the ULA branch.
+  if (Z80Ops::isAtm) {
+    uint8_t atmData;
+    if (Atm::portRead(address, atmData)) return atmData;
   }
   // Scorpion Turbo+ speed toggle. The clock is switched by READING a port, not by
   // writing one: MAME's scorpiontb_state::scorpion_io installs
@@ -1227,7 +1234,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   }
   // ULA PORT
   if ((address & 0x0001) == 0) {
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
     if (ia && p8 == 0xFE) {
       data = nes_pad2_for_alf(); // default port value is 0xFF.
     } else {
@@ -1255,6 +1262,8 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
         else
           data &= ~0x80;
       }
+      // ATM-Turbo 1: bit 7 is the PAL-detect line (Unreal atm450_z).
+      if (Z80Ops::isAtm) data = Atm::feRead(data);
     }
     if (Tape::tapeStatus == TAPE_LOADING) LED::touchR(LED::TAPE);
     if (Tape::TapePortRead()) return data;
@@ -1269,7 +1278,7 @@ IRAM_ATTR uint8_t Ports::input(uint16_t address) {
           (Config::Issue2)) { // Issue 2 behaviour only on Spectrum 48K
         if (port254 & 0x18)
           data |= 0x40;
-      } else if (Z80Ops::isPentagon || Z80Ops::isTsconf) {
+      } else if (Z80Ops::isPentagon || Z80Ops::isTsconf || Z80Ops::isAtm) {
         // Pentagon: the EAR input comes from the tape amplifier and idles
         // HIGH with nothing connected — real hardware reads bit 6 = 1 (no
         // port-254 feedback path on Pentagon). Software probes rely on it:
@@ -3134,6 +3143,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // #78FD/#7AFD/#7CFD/#7EFD have A15=0/A1=0 (the loose 7FFD gate would eat
   // them as paging writes).
   if (g_scorp_gmx && gmxPortWrite(address, data)) return;
+  // ATM-Turbo system ports (#7FFD / #7DFD / #FDFD on the ATM1; #7FFD and the DOS-space
+  // #xx77 / #xxF7 / IDE / #FF palette on the 2+) — cold flash dispatch (src/Atm.cpp),
+  // placed before the ULA and #7FFD blocks for the same reasons as GMX's.
+  if (Z80Ops::isAtm && Atm::portWrite(address, data)) return;
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
@@ -3400,7 +3413,7 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   // IDE/HDD — SMUC scheme (see the input twin).
   if (smucActive()) { if (smucPortWrite(address, data)) return; }
 #if SMUC_TRACE
-  else if (Z80Ops::isScorpion || Z80Ops::isTsconf) smucTraceGated(true, address, data);
+  else if (Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm) smucTraceGated(true, address, data);
 #endif
   // OPL3 (YMF262) — the AlexZor DivMMC VGM-player sound card: address/data
   // register pairs on #C4/#C5 (set #1) and #C6/#C7 (set #2), low-byte decode
@@ -3510,12 +3523,20 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     // TS-Conf: OUT (#FE) mirrors the low 3 bits into the Border register's
     // ZX bank — reference io.cpp:628 `ts.border = (val & 7) | 0xF0`.
     if (Z80Ops::isTsconf) TsConf::r.border = (data & 0x07) | 0xF0;
+    // ATM-Turbo: the border is 4 bits — BRIGHT is address line A3, inverted (Unreal
+    // io.cpp `new_border += (port & 8) ^ 8`) — and the ATM1 latches the whole low
+    // address byte (CP/M mode + video mode, Atm::feWrite).
+    uint8_t newBorder = data & 0x07;
+    if (Z80Ops::isAtm) {
+      newBorder |= (address & 0x08) ? 0 : 0x08;
+      Atm::feWrite(address);
+    }
     // Compare the 3-bit colour only: borderColor stores data & 0x07, so an
     // unmasked compare fires on every beeper/MIC bit change (bits 3-4) and on
     // OTIR/OTDR garbage bytes — each false hit runs a full DrawBorder catch-up
     // and re-arms brdChange (whole-border repaint) for no visual change.
     // Found via FPGA48_2026.tap: its OTDR section writes arbitrary bytes to #FE.
-    if (VIDEO::borderColor != (data & 0x07)) {
+    if (VIDEO::borderColor != newBorder) {
 #if PERF_TRACE
       // Anchor for comparing machines: the T-state of the FIRST border change
       // of each frame. A frame-synced border demo puts it at a fixed T, so the
@@ -3530,14 +3551,14 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
             g_brd_delta = CPU::tstates - g_int_last_t; } }
 #endif
       VIDEO::brdChange = true;
-      if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf))
+      if (!(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
 #if PERF_TRACE
       { extern void video_perf_border_mark(); video_perf_border_mark(); }
 #endif
-      VIDEO::borderColor = data & 0x07;
+      VIDEO::borderColor = newBorder;
       if (VIDEO::ulaplus_enabled)
         VIDEO::ulaPlusUpdateBorder();
       else
@@ -3559,10 +3580,10 @@ IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
       ayPortWrite(address, data, true);     // A8 decode: old-TS second chip
-      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf)); // I/O Contention (Late)
+      VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
       return;
     }
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
   } else {
     // ULA+ ports (odd addresses: 0xBF3B register select, 0xFF3B data)
     if (Config::ulaplus) {

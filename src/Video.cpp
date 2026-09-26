@@ -67,6 +67,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Ports.h"
 #include "Z80DMA.h"
 #include "hardware/xip_cache.h"
+#include "Atm.h"
+extern "C" const unsigned char gb_rom_atm_font[];   // roms/atm/atm_roms.c (SGEN.ROM order)
 #include "hardware/regs/addressmap.h"
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
 extern "C" void vga_set_palette_entry_solid(uint8_t i, uint32_t color888);
@@ -146,7 +148,7 @@ uint16_t VIDEO::spectrum_colors[NUM_SPECTRUM_COLORS] = {
 
 uint8_t VIDEO::borderColor = 0;
 uint32_t VIDEO::brd;
-uint32_t VIDEO::border32[8];
+uint32_t VIDEO::border32[16];
 uint8_t VIDEO::flashing = 0;
 uint8_t VIDEO::flash_ctr= 0;
 uint8_t VIDEO::OSD = 0;
@@ -1454,8 +1456,8 @@ void precalcULASWAP() {
 
 void precalcborder32()
 {
-    for (int i = 0; i < 8; i++) {
-        uint8_t border = zxColor(i,0);
+    for (int i = 0; i < 16; i++) {
+        uint8_t border = zxColor(i & 7, i >> 3);
         VIDEO::border32[i] = border | (border << 8) | (border << 16) | (border << 24);
     }
 }
@@ -4500,6 +4502,11 @@ void VIDEO::Reset() {
 
     // Leaving TS-Conf → give the ZX slots their standard colours back.
     if (Config::arch != A_TSCONF) tsPaletteRestore();
+    // ...and the ATM-Turbo's the same way; ON the ATM the palette survives a reset
+    // (it is RAM on the board) and is re-applied at the next EndFrame, after the
+    // palette rebuild below has put the standard colours in the slots.
+    if (Config::arch != A_ATM) atmPaletteRestore();
+    else Atm::palDirty = true;
     ulaplus_reg = 0;
     memcpy(ulaplus_palette, ulaplus_default_palette, 64);
 
@@ -4580,7 +4587,8 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_SCORP) {
+    } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {
+        // (ATM-Turbo: the same 224 T x 312-line raster, uncontended — Atm.h.)
         // Scorpion ZS-256 (libspectrum): 224 T/line, 69888 T/frame, paper at 14336 T
         // after INT — numerically the 48K timing set, so the 48K constants are reused
         // (incl. their border corrections, calibrated for the step=4 pair-write border
@@ -4688,6 +4696,12 @@ void VIDEO::Reset() {
             gmx_ext_live = false;
             gmx_ext_pending_on = true;
         }
+    } else if (Config::arch == A_ATM) {
+        // ATM-Turbo: the mode lives in the machine's latches (both boards come out of
+        // reset in EGA), so the request is simply "is the live mode an ext one".
+        gmx_ext_live = false;
+        gmx_ext_pending_off = false;
+        gmx_ext_pending_on = (Atm::videoMode() != Atm::VM_ZX);
     } else {
         gmx_ext_live = false;
         gmx_ext_pending_on = gmx_ext_pending_off = false;
@@ -4721,7 +4735,7 @@ void VIDEO::Reset() {
     // zeroed at the top of Reset, so there is nothing to re-request.
     timexHiresForceOff();
 
-    if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF) {
+    if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF || Config::arch == A_ATM) {
         // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
         // GMX shares it: its 640x200 mode uses the same 16-colour pair-slot scheme
         // (fixed ZX palette — profiPaletteReset defaults, no palette port on GMX).
@@ -4751,7 +4765,7 @@ void VIDEO::Reset() {
 
     // The +2A/+3 ULA has no snow bug either (its RAM is not shared with the CPU the
     // way the 48K/128K ULA's is), so it joins the machines that never render snow.
-    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_TSCONF && !Config::isPlus3()) ? Config::render : false;
+    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_TSCONF && Config::arch != A_ATM && !Config::isPlus3()) ? Config::render : false;
 
     // +2A/+3 contention pattern (see wait_st_tab). Selected here, after the per-arch
     // timing block above, so every machine reset re-picks it.
@@ -4795,7 +4809,7 @@ void VIDEO::Reset() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -4803,7 +4817,7 @@ void VIDEO::Reset() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -4820,7 +4834,7 @@ void VIDEO::Reset() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
                 else if (Config::arch == A_128K) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -4828,7 +4842,7 @@ void VIDEO::Reset() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -5366,10 +5380,13 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
                 // Side border pads, per line (frame-granular top/bottom bands are
                 // painted in EndFrame).
                 if (pad_l > 0) {
-                    uint8_t brdSlot = profi_pair_lookup[borderColor & 7][borderColor & 7];
+                    uint8_t brdSlot = profi_pair_lookup[borderColor & 15][borderColor & 15];
                     memset(fb_row, brdSlot, pad_l);
                     memset(fb_row + pad_l + 320, brdSlot, (size_t)vga.xres - pad_l - 320);
                 }
+                if (Z80Ops::isAtm) {
+                    atmRenderLine(line, fb_row, pad_l);   // ATM-Turbo EGA / hires / text
+                } else {
                 uint32_t srow = line + gmx_frame_srow;
                 if (srow >= 200) srow -= 200;
                 uint32_t off = srow * 80;
@@ -5401,6 +5418,7 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
                 } else {
                     // Attr/bitmap page not backed (butter-less board) — black line.
                     memset(fb_row + pad_l, profi_pair_lookup[0][0], 320);
+                }
                 }
             }
         }
@@ -6017,6 +6035,9 @@ void VIDEO::gmxApplyPending() {
         gmx_ext_pending_on = false;
         // Same driver path as DS80: pair tables from profi_pair_lookup with
         // the (default ZX) 16-colour palette; ISR expands 1 fb byte → 2 px.
+        // ATM-Turbo: the pair tables carry the machine's own 16-entry palette.
+        if (Z80Ops::isAtm)
+            for (int i = 0; i < 16; i++) profi_palette_live[i] = Atm::palRgb((uint8_t)i);
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         rebuildDS80ColorLut();
         Graphics8BitPalette::ds80_active = true;
@@ -6057,6 +6078,134 @@ void VIDEO::gmxApplyPending() {
         DrawBorder = &Border_Blank; // mid-frame border state is stale — skip this frame
         brdChange = true;
         Debug::log("[GMX] 640x200 off");
+    }
+}
+
+// ── ATM-Turbo video ──────────────────────────────────────────────────────────
+// Mode switches reuse the GMX deferred on/off (vblank only — the pair tables are
+// read by the scanout DMA in real time). A switch between two ext modes needs no
+// driver change at all: atmRenderLine reads the live mode every line.
+void VIDEO::atmVideoModeChanged() {
+    if (!Z80Ops::isAtm) return;
+    gmxExtRequest(Atm::videoMode() != Atm::VM_ZX);
+}
+
+// The ZX mode keeps the emulator's own palette in the 16 hardware slots until the
+// guest actually programs the ATM palette once (s_atm_pal_live) — the power-on
+// contents of the palette RAM are the BIOS's business, and until it writes them the
+// user's chosen ZX palette is the better picture.
+static bool s_atm_pal_live = false;
+
+void VIDEO::atmPaletteChanged() {
+    s_atm_pal_live = true;
+    Atm::palDirty = true;
+}
+
+void VIDEO::atmPaletteFlush() {
+    Atm::palDirty = false;
+    // Pair-slot mode (EGA / hires / text): the driver tables carry the palette.
+    for (int i = 0; i < 16; i++) profi_palette_live[i] = Atm::palRgb((uint8_t)i);
+    if (gmx_ext_live) {
+        profi_palette_dirty = true;
+        gmx_border_dirty = true;
+        return;
+    }
+    if (!s_atm_pal_live) return;
+    // ZX mode: the framebuffer holds the ZX colour index (BRIGHT = bit 3), which on
+    // the ATM IS the palette index — rewrite the 16 hardware slots. Every ATM colour
+    // is on the {00,55,AA,FF} grid, so VGA shows it solid without snapping.
+    for (int i = 0; i < 16; i++) {
+        const uint32_t c = paletteFinal(Atm::palRgb((uint8_t)i));
+        graphics_set_palette(i, c);
+        vga_set_palette_entry_solid(i, c);
+    }
+    brdChange = true;
+}
+
+void VIDEO::atmPaletteRestore() {
+    if (!s_atm_pal_live) return;
+    s_atm_pal_live = false;
+    for (int i = 0; i < 16; i++) {
+        const uint32_t color = paletteFinal(spectrum_rgb888[i]);
+        graphics_set_palette(i, color);
+        vga_set_palette_entry_solid(i, color);
+    }
+}
+
+// One content line (0..199) of an ATM ext mode into a packed-pair framebuffer row
+// (320 bytes = 640 px; one byte = two output pixels via the driver pair tables, stored
+// in the ISR's x^2 order: display pairs d0..d3 of every 4-byte group live at +2,+3,
+// +0,+1 — the GMX/DS80 convention). Memory layout (MAME atm_update_screen_*, Unreal
+// draw_atm16/draw_atmhr/draw_atm2tx): `scr` = the screen page (5/7), `alt` = the
+// page four below it (1/3); 40 bytes per line per half, the second half at +#2000.
+static inline uint32_t atmPack4(uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3) {
+    return (uint32_t)d2 | ((uint32_t)d3 << 8) | ((uint32_t)d0 << 16) | ((uint32_t)d1 << 24);
+}
+
+void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
+    const uint8_t pg = MemESP::videoLatch ? 7 : 5;
+    const uint8_t* scr = MemESP::ram[pg].direct();
+    const uint8_t* alt = MemESP::ram[pg - 4].direct();
+    uint8_t* dst = fb_row + pad_l;
+    if (!scr || !alt) { memset(dst, profi_pair_lookup[0][0], 320); return; }
+    const Atm::VMode vm = Atm::videoMode();
+    if (vm == Atm::VM_EGA) {
+        // 320x200x16: each byte = two pixels, even = bits 6,2,1,0 / odd = 7,5,4,3
+        // (bit 6 / bit 7 are the BRIGHT bit of the index). Column c's eight pixels
+        // come from alt[o], scr[o], alt[o+#2000], scr[o+#2000]. One lores pixel = one
+        // solid pair byte.
+        const uint32_t o = line * 40;
+        for (int c = 0; c < 40; c++) {
+            uint8_t px[8];
+            const uint8_t b[4] = { alt[o + c], scr[o + c], alt[0x2000 + o + c], scr[0x2000 + o + c] };
+            for (int k = 0; k < 4; k++) {
+                const uint8_t v = b[k];
+                const uint8_t e = (uint8_t)(((v & 0x40) >> 3) | (v & 0x07));
+                const uint8_t d = (uint8_t)(((v & 0x80) >> 4) | ((v >> 3) & 0x07));
+                px[k * 2]     = profi_pair_lookup[e][e];
+                px[k * 2 + 1] = profi_pair_lookup[d][d];
+            }
+            uint32_t* w = (uint32_t*)(dst + c * 8);
+            w[0] = atmPack4(px[0], px[1], px[2], px[3]);
+            w[1] = atmPack4(px[4], px[5], px[6], px[7]);
+        }
+    } else if (vm == Atm::VM_HIRES) {
+        // 640x200: bitmap byte + attribute byte per 8 pixels; ink = attr 6,2..0, paper
+        // = attr 7,5..3 (no FLASH). Byte j of the line: even j from +0, odd from +#2000.
+        const uint32_t o = line * 40;
+        for (int j = 0; j < 80; j++) {
+            const uint32_t a = o + (uint32_t)(j >> 1) + ((j & 1) ? 0x2000u : 0u);
+            const uint8_t b  = scr[a];
+            const uint8_t at = alt[a];
+            const uint8_t fg = (uint8_t)(((at & 0x40) >> 3) | (at & 0x07));
+            const uint8_t bg = (uint8_t)(((at & 0x80) >> 4) | ((at >> 3) & 0x07));
+            *(uint32_t*)(dst + j * 4) = atmPack4(
+                profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg],
+                profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg],
+                profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg],
+                profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]);
+        }
+    } else {
+        // 80x25 text (ATM-Turbo 2+): 64-byte rows from #01C0; even columns take the
+        // symbol from scr+0 and the attribute from alt+#2000, odd columns the symbol
+        // from scr+#2000 and the attribute from alt+1. Glyphs from the character
+        // generator ROM (SGEN.ROM, gb_rom_atm_font).
+        const uint32_t row = line >> 3, gl = line & 7;
+        const uint32_t base = 0x01C0 + row * 64;
+        for (int cx = 0; cx < 80; cx++) {
+            const uint32_t x = (uint32_t)cx >> 1;
+            uint8_t sym, at;
+            if (cx & 1) { sym = scr[0x2000 + base + x]; at = alt[base + x + 1]; }
+            else        { sym = scr[base + x];          at = alt[0x2000 + base + x]; }
+            const uint8_t b  = gb_rom_atm_font[sym * 8 + gl];
+            const uint8_t fg = (uint8_t)(((at & 0x40) >> 3) | (at & 0x07));
+            const uint8_t bg = (uint8_t)(((at & 0x80) >> 4) | ((at >> 3) & 0x07));
+            *(uint32_t*)(dst + cx * 4) = atmPack4(
+                profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg],
+                profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg],
+                profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg],
+                profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]);
+        }
     }
 }
 
@@ -7140,7 +7289,7 @@ void VIDEO::gmxBorderFrame(bool skipFrame) {
     // register through the live mode's palette (tsBorderSlot), GMX's from the
     // 3-bit #FE latch through the pair table. Repaint on any change of it.
     const uint8_t slot = ts_render_live ? tsBorderSlot()
-                       : profi_pair_lookup[borderColor & 7][borderColor & 7];
+                       : profi_pair_lookup[borderColor & 15][borderColor & 15];
     if (!(brdChange || brdnextframe || gmx_border_dirty || gmx_border_col != slot)) return;
     gmx_border_dirty = false;
     brdnextframe = false;
@@ -7279,6 +7428,8 @@ IRAM_ATTR void VIDEO::EndFrame() {
         // ── Scorpion GMX 640x200 deferred mode switch — same vblank-only rule ──
         // (cold flash body; the checks stay cheap in this RAM function)
         if (gmx_ext_pending_on || gmx_ext_pending_off) gmxApplyPending();
+        // ATM-Turbo palette (cold flash body): hardware slots / pair table, vblank only.
+        if (Atm::palDirty && Z80Ops::isAtm) atmPaletteFlush();
         // ── Timex hi-res 512x192 packed-pair switch — same vblank-only rule ──
         if (timex_hires_pending_on || timex_hires_pending_off) timexHiresApplyPending();
         // ── TS-Conf VConfig mode/geometry switch — same vblank-only rule ──

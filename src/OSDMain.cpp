@@ -6479,7 +6479,7 @@ static void buildEmulatorInfoText() {
 
         // IDE/HDD (NEMO/PROFI/SMUC/IDEDOS/DivIDE) — indexed by IDE::Scheme
         if (Config::ide_scheme != 0) {
-            static const char* idesc[] = { "Off", "NEMO", "PROFI", "SMUC", "IDEDOS", "DivIDE" };
+            static const char* idesc[] = { "Off", "NEMO", "PROFI", "SMUC", "IDEDOS", "DivIDE", "ATM" };
             int si = Config::ide_scheme;
             if (si >= (int)(sizeof(idesc) / sizeof(idesc[0]))) si = 0;
             pos += infoAppend(buf, pos, bufsz, " IDE/HDD        : %s\n", idesc[si]);

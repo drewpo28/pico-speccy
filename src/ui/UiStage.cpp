@@ -917,6 +917,7 @@ static bool stagedIsPlus3Div() {
     return Config::isPlus3Div();
 }
 static bool stagedIsTsconf() { return stagedArchIs(A_TSCONF); }
+static bool stagedIsAtm()    { return stagedArchIs(A_ATM); }
 static bool stagedIsTimex() {
     const int32_t m = staged(SET_MACHINE);
     if (m >= 0) return isTimexRomset((RomsetIdx)(m & 0xFF));
@@ -1005,6 +1006,33 @@ static void resolveConstraints(CommitReport& rep) {
             // (GS::configuredRamBytes enforces it live; this keeps the menu honest).
             if (staged(SET_GS_MODE) == 2 && staged(SET_GS_RAM) >= 3)
                 changed |= force(SET_GS_RAM, 2, rep, "NeoGS RAM: 2 MB max on TS-Conf");
+        }
+
+        // ATM-Turbo: the memory manager rewires page 0 (MB-02+/esxDOS automap
+        // would fight it), #FF is the Beta SYS register / ATM2 palette port
+        // (Timex), and the frame is the plain 48K one (Murmuzavr is Pentagon-only).
+        // The IDE scheme follows the board: ATM2+ owns IDE::ATM, the ATM1 has none.
+        if (stagedIsAtm()) {
+            const bool atm1 = isAtm1Romset((RomsetIdx)(staged(SET_MACHINE) & 0xFF));
+            if (staged(SET_TIMEX) != 0)
+                changed |= force(SET_TIMEX, 0, rep, "Timex is not available on ATM-Turbo");
+            if (staged(SET_MB02))
+                changed |= force(SET_MB02, 0, rep, "MB-02+ is not available on ATM-Turbo");
+            if (staged(SET_ESXDOS))
+                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on ATM-Turbo");
+            if (staged(SET_16COL))
+                changed |= force(SET_16COL, 0, rep, "16col needs Pentagon or Profi");
+            if (staged(SET_MEM_PG_CNT) > 64)
+                changed |= force(SET_MEM_PG_CNT, 64, rep, "Murmuzavr mode off: Pentagon only");
+            if (!staged(SET_BETADISK))
+                changed |= force(SET_BETADISK, 1, rep, "Betadisk is part of ATM-Turbo");
+            const int32_t sch = staged(SET_IDE_SCHEME);
+            if (atm1 && sch == IDE::ATM)
+                changed |= force(SET_IDE_SCHEME, 0, rep, "ATM-Turbo 1 has no IDE");
+            else if (!atm1 && sch != 0 && sch != IDE::ATM)
+                changed |= force(SET_IDE_SCHEME, IDE::ATM, rep, "IDE: ATM-Turbo 2+ controller");
+        } else if (staged(SET_IDE_SCHEME) == IDE::ATM) {
+            changed |= force(SET_IDE_SCHEME, 0, rep, "ATM IDE needs an ATM-Turbo 2+");
         }
 
         // Port #FF on Profi/Karabas is the FDC SYS register (Beta scheme), the
@@ -1279,6 +1307,9 @@ static void resolveConstraints(CommitReport& rep) {
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_TSCONF)
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
                                  rep, "TS-Conf ROM traded for the GM.DLS bank");
+            if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_ATM)
+                changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
+                                 rep, "ATM ROM traded for the GM.DLS bank");
         }
 
         if (!changed) return;

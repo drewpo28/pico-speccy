@@ -50,6 +50,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "GS/GS.h"      // g_ngs_zxdma + GS::zxDmaRead/zxDmaWrite (ZX-DMA window)
 #include "TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
 #include "Timex.h"      // g_timex_mmu + Timex::rd/wr (TC2068 SCLD horizontal MMU)
+#include "Atm.h"        // g_atm_ro (ATM-Turbo ROM windows) + Atm::reset/intEnabled
 #include "TsFastMem.h"
 #if PERF_TRACE && PERF_HIST
 // TS-Conf guest-memory access histogram by PHYSICAL page (the page each CPU
@@ -106,6 +107,7 @@ bool g_scorp_turbo_plus = false;
 bool g_gmx_tap = false;
 bool Z80Ops::isP3 = false;
 bool Z80Ops::isTsconf = false;
+bool Z80Ops::isAtm = false;
 bool Z80Ops::isTc2068 = false;
 // "The SCLD is this machine's own ULA" (either Timex romset), as opposed to the
 // Timex video option ticked as a CARD on an ordinary 48K/128K. It decides the #FF
@@ -149,6 +151,12 @@ void CPU::updateStatesInFrame() {
         statesInFrame = TSTATES_PER_FRAME_PROFI;
         IntStart = INT_START_PROFI;
         IntEnd = INT_END_PROFI;
+    } else if (Config::arch == A_ATM) {
+        // ATM-Turbo: 312 lines x 224 T (Unreal atm.cpp: "the screen has 312 scan
+        // lines of 224 T each"; MAME builds on spectrum_128's 312-line raster).
+        statesInFrame = TSTATES_PER_FRAME_48;
+        IntStart = INT_START48;
+        IntEnd = INT_END48;
     } else if (Config::arch == A_SCORP) {
         // Green PCB / GMX = 316 lines/frame; Yellow = 312 (see CPU.h; MAME's
         // scorpiongmx builds on the Turbo+/Green machine config).
@@ -203,6 +211,8 @@ void CPU::reset() {
     // arch's frame timing but NOT its paging, contention or floating bus, so the
     // 128K branch below hands it a separate flag set.
     Z80Ops::isTsconf = (Config::arch == A_TSCONF);
+    Z80Ops::isAtm = (Config::arch == A_ATM);
+    if (!Z80Ops::isAtm) g_atm_ro = 0;
     Z80Ops::isTc2068 = Config::isTc2068();
     g_timex_machine  = Config::isTimex();
     Z80Ops::isP3 = Config::isPlus3();
@@ -293,6 +303,18 @@ void CPU::reset() {
         ESPectrum::target = (Config::romSetScorp != R_SCORP)
                                 ? MICROS_PER_FRAME_SCORPION_GR
                                 : MICROS_PER_FRAME_SCORPION;
+    } else if (Config::arch == A_ATM) {
+        // ATM-Turbo: the 48K frame, no contention, no floating bus worth modelling
+        // (the reads that matter here are the machine's own ports).
+        Ports::getFloatBusData = &Ports::getFloatBusDataNone;
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        ESPectrum::target = MICROS_PER_FRAME_48;
     } else if (Config::arch == A_TSCONF) {
         // TS-Conf: Pentagon raster (224 T/line, 71680 T/frame), uncontended.
         Z80Ops::isByte = false;
@@ -328,7 +350,7 @@ void CPU::reset() {
 
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
     // Scorpion too: its Beta-128 is on board (TR-DOS in the machine's own rom[3]).
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf) && !Config::betadisk) Config::betadisk = true;
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm) && !Config::betadisk) Config::betadisk = true;
 
     // ...and impossible on the +3, which has the uPD765 on #2FFD/#3FFD instead. Beta's
     // #1F/#FF decode and its 0x3D00 ROM trap would both fire inside the +3's own ROMs.
@@ -368,7 +390,20 @@ void CPU::reset() {
     // (RTC::readDisabled answers UIP-clear only for the LATCHED status regs).
     // ...and on Scorpion GMX: the Timex MainScreen branch would render over the
     // GMX 640x200 pair-slot framebuffer.
-    if ((Z80Ops::isByte || Z80Ops::isProfi || g_scorp_gmx || Z80Ops::isTsconf) && Config::timex_video) Config::timex_video = false;
+    if ((Z80Ops::isByte || Z80Ops::isProfi || g_scorp_gmx || Z80Ops::isTsconf || Z80Ops::isAtm) && Config::timex_video) Config::timex_video = false;
+    // ATM-Turbo: the memory manager puts ROM or RAM in any window and the BIOS runs
+    // from all four at reset — DivMMC's automap and MB-02+ would page over it. Its
+    // IDE is the on-board ATM interface on the 2+ (IDE::ATM), none on the ATM1.
+    if (Z80Ops::isAtm) {
+        if (Config::esxdos) Config::esxdos = 0;
+        if (Config::mb02) Config::mb02 = false;
+        const bool atm2 = !isAtm1Romset(Config::romSetAtm);
+        if (!atm2 && Config::ide_scheme == IDE::ATM) Config::ide_scheme = IDE::OFF;
+        else if (atm2 && Config::ide_scheme != IDE::OFF && Config::ide_scheme != IDE::ATM)
+            Config::ide_scheme = IDE::ATM;
+    } else if (Config::ide_scheme == IDE::ATM) {
+        Config::ide_scheme = IDE::OFF;
+    }
 
     // ...and the converse for both Timex machines, whose ULA IS the SCLD: Timex
     // video is the machine, and the SAA1099 cannot share the #FF family with it.
@@ -404,6 +439,9 @@ void CPU::reset() {
     static bool s_tsconf_live = false;
     if (Z80Ops::isTsconf) { TsConf::reset(!s_tsconf_live); s_tsconf_live = true; }
     else s_tsconf_live = false;   // g_ts_memcyc was zeroed by updateStatesInFrame above
+    // ATM-Turbo: register file + memory map (overrides ESPectrum::reset's standard
+    // ramCurrent assignment, like TsConf::setBanks does).
+    if (Z80Ops::isAtm) Atm::reset();
 
     tstates = 0;
     global_tstates = 0;
@@ -794,6 +832,9 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     }
     if (__builtin_expect(g_ngs_zxdma != 0, 0) && address < 0x4000)
         GS::zxDmaWrite(value);
+    // ATM-Turbo: a window showing ROM drops the write (its pages may be flattened
+    // copies in butter PSRAM, which writebyte's flash-pointer filter does not see).
+    if (__builtin_expect(g_atm_ro != 0, 0) && ((g_atm_ro >> (address >> 14)) & 1)) return;
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
     // does NOT replace the normal store, the hardware writes RAM and the FPGA
     // array in parallel, reference z80_main.inl:108) and the W0_WE protect
@@ -1286,6 +1327,8 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // TS-Conf: three latched sources behind INTMask (FRAME window, LINE, DMA
     // end) — the controller owns the level; see TsConf::intLine.
     if (Z80Ops::isTsconf) return TsConf::intLine();
+    // ATM-Turbo 2+: the frame INT is gated by #xx77 D5 (Unreal cpu.int_gate).
+    if (__builtin_expect(Z80Ops::isAtm, 0) && !Atm::intEnabled()) return false;
     // Timex DEC (#FF) bit 6 — "17ms Interrupt Inhibit" (MAME port_ff_w). The SCLD
     // gates the line itself, so the window still opens and closes on time; the CPU
     // simply never sees it. Cleared on reset with the rest of the DEC register.

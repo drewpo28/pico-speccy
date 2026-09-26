@@ -375,7 +375,11 @@ bool Tape::autoRunAvailable() {
     // auto-run down with it — the same bug, by a different route. The cost is that
     // with wear on the auto-run cannot be declined; a launch always types LOAD "",
     // which is what launching a game means.
-    return (Config::flashload || Config::tape_wear != 0) && tapeFastMachineOk();
+    // ATM-Turbo: the loader snapshots map MemESP::rom[] banks, which this machine's
+    // memory manager does not use — the in-ROM trap still works (its 48 BASIC keeps
+    // the Sinclair LD-BYTES addresses), only the auto-typed LOAD "" is off.
+    return (Config::flashload || Config::tape_wear != 0) && tapeFastMachineOk() &&
+           Config::arch != A_ATM;
 }
 
 void Tape::LoadTape(const string& mFile_) {
