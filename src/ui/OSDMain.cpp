@@ -49,6 +49,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
 #include "speccy/devices/Z80DMA.h"
+#include "speccy/core/Rzx.h"
 #include "app/ESPectrum.h"
 #include "app/messages.h"
 #include "app/Config.h"
@@ -1475,7 +1476,7 @@ static int notifyMaxChars() { return ((int)OSD::scrW - 48) / OSD_FONT_W; }
 
 // carve = the banner does not fit in a border band and sits on the first content
 // rows instead, which only the TS-Conf renderer can hand back.
-static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr) {
+static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr, bool left = false) {
     if (notifyMaxChars() < 8) return false;      // no mode this narrow, but don't index off the row
     bool cv = false;
     int top;
@@ -1503,7 +1504,7 @@ static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr) {
     }
     if (top < NOTIFY_BAND_H) return false;
     y = (top - NOTIFY_BAND_H) / 2;
-    x = ((int)OSD::scrW - textw) / 2;
+    x = left ? 8 : ((int)OSD::scrW - textw) / 2;
     if (x < 4) x = 4;
     if (carve) *carve = cv;
     return true;
@@ -1598,14 +1599,61 @@ void OSD::cancelNotify() {
     VIDEO::brdnextframe = true;
 }
 
-void OSD::drawNotify() {
-    if (!notify_on) return;
-    if ((int64_t)((uint64_t)esp_timer_get_time() - notify_until_us) >= 0) { cancelNotify(); return; }
+// RZX playback progress ("RZX 01:23 / 04:56") — a standing banner in the same
+// band, parked in the top-LEFT corner. It shares the one band reservation with
+// notify(): a timed banner takes precedence while it lives, and the progress
+// comes back on the frame it expires. One RZX frame is one interrupt of the
+// RECORDING machine, i.e. 1/50 s, which is the recorded time whatever our own
+// frame rate is.
+static bool prog_on = false;
+static bool prog_nm = false;   // nm::available() latch, taken when progress starts
 
-    const int textw = (int)strlen(notify_text) * OSD_FONT_W;
+static void progEnd() {
+    if (!prog_on) return;
+    prog_on = false;
+    VIDEO::clearNoticeBand();
+    VIDEO::clearNoticeCarve();
+    VIDEO::brdChange    = true;
+    VIDEO::brdnextframe = true;
+}
+
+static void fmtRzxTime(char* out, size_t n, uint32_t secs, bool hours) {
+    if (hours) snprintf(out, n, "%u:%02u:%02u", (unsigned)(secs / 3600), (unsigned)(secs / 60 % 60), (unsigned)(secs % 60));
+    else       snprintf(out, n, "%02u:%02u", (unsigned)(secs / 60), (unsigned)(secs % 60));
+}
+
+static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left);
+
+static void drawRzxProgress() {
+    if (Rzx::mode == Rzx::OFF) { progEnd(); return; }
+    if (!prog_on) { prog_on = true; prog_nm = nm::available() && !profi_ds80_active; }
+    const uint32_t total  = Rzx::framesTotal() / 50;
+    uint32_t       played = Rzx::framesPlayed() / 50;
+    if (total && played > total) played = total;
+    const bool hours = (total ? total : played) >= 3600;
+    char a[12], b[12], line[32];
+    fmtRzxTime(a, sizeof(a), played, hours);
+    if (total) { fmtRzxTime(b, sizeof(b), total, hours); snprintf(line, sizeof(line), "RZX %s / %s", a, b); }
+    else       snprintf(line, sizeof(line), "RZX %s", a);
+    if (!notifyPaint(line, LEVEL_INFO, prog_nm, true)) progEnd();
+}
+
+void OSD::drawNotify() {
+    if (notify_on && (int64_t)((uint64_t)esp_timer_get_time() - notify_until_us) >= 0) cancelNotify();
+    if (!notify_on) { drawRzxProgress(); return; }
+    if (prog_on) {                 // a timed banner displaces the progress: erase it
+        prog_on = false;
+        VIDEO::brdChange    = true;
+        VIDEO::brdnextframe = true;
+    }
+    if (!notifyPaint(notify_text, notify_level, notify_nm, false)) cancelNotify();   // mode changed under us
+}
+
+static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left) {
+    const int textw = (int)strlen(text) * OSD_FONT_W;
     int x, y;
     bool carve = false;
-    if (!notifyGeom(textw, x, y, &carve)) { cancelNotify(); return; }   // mode changed under us
+    if (!notifyGeom(textw, x, y, &carve, left)) return false;
 
     // Reserve the band so the border state machine stops painting it: without
     // this the banner is erased on every brdChange and only comes back at the
@@ -1630,7 +1678,7 @@ void OSD::drawNotify() {
         px1 = (px1 + 3) & ~3;
         if (px0 < 0) px0 = 0;
         if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
-        if (px1 - px0 < textw) { cancelNotify(); return; }
+        if (px1 - px0 < textw) return false;
         // Reserve the rows in EITHER case on TS-Conf: the band is repainted ROW
         // BY ROW now (tsBandRow, so a per-line Border register shows as bands),
         // which would erase a banner sitting in it. Both band rows and content
@@ -1652,12 +1700,12 @@ void OSD::drawNotify() {
         VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
     } else {
         VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
-        if (px1 - px0 < textw) { cancelNotify(); return; }
+        if (px1 - px0 < textw) return false;
     }
     const int bandw = px1 - px0;
     x = px0 + (bandw - textw) / 2;
 
-    // notify_nm is a LATCH taken when the banner was raised, and the video mode
+    // The ink latch (notify_nm / prog_nm) is taken when the banner was raised, and the video mode
     // can move under it: on TS-Conf the " CPU: 14 MHz " toast is raised by
     // applyZclk while the guest is still in a graphics mode, and the guest then
     // switches to TEXT a few frames later. In a pair mode gfxInstallPalette()
@@ -1667,14 +1715,14 @@ void OSD::drawNotify() {
     // and the last one stayed for ever (hw 2026-09-19: 19 installs, one per
     // frame, zero hand-backs; one F3 in and out put it right because THAT
     // session's gfxEnd is what finally restored). Re-check live, every frame.
-    if (notify_nm && !profi_ds80_active) {
+    if (nmUi && !profi_ds80_active) {
         // Same trick as drawStats/uiPausedBadge: the UI colours live in their own
         // palette block, so the running game keeps all 16 of its own entries.
         nm::gfxComputeSurface();
         nm::gfxInstallPalette();      // applyPalette() may have rewritten our block
         const int base = nm::uiPaletteBase();
         nm::UiColor ink;
-        switch (notify_level) {
+        switch (level) {
             case LEVEL_OK:    ink = nm::C_ACCENT; break;
             case LEVEL_WARN:  ink = nm::C_ICON_Y; break;
             case LEVEL_ERROR: ink = nm::C_ICON_R; break;
@@ -1685,12 +1733,12 @@ void OSD::drawNotify() {
         VIDEO::vga.setTextColor((uint8_t)(base + ink), (uint8_t)(base + nm::C_PANEL));
         VIDEO::vga.setFont(Font6x8);
         VIDEO::vga.setCursor(x, y + 2);
-        VIDEO::vga.print(notify_text);
-        return;
+        VIDEO::vga.print(text);
+        return true;
     }
 
     uint8_t ink, paper = zxColor(1, 0);
-    switch (notify_level) {
+    switch (level) {
         case LEVEL_OK:    ink = zxColor(4, 1); break;
         case LEVEL_WARN:  ink = zxColor(6, 1); break;
         case LEVEL_ERROR: ink = zxColor(2, 1); break;
@@ -1700,7 +1748,8 @@ void OSD::drawNotify() {
     VIDEO::vga.setTextColor(ink, paper);
     VIDEO::vga.setFont(Font6x8);
     VIDEO::vga.setCursor(x, y + 2);
-    VIDEO::vga.print(notify_text);
+    VIDEO::vga.print(text);
+    return true;
 }
 
 
@@ -2138,8 +2187,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
 
     // A live top-border banner belongs to the running machine: EndFrame() stops
     // while the OSD owns the screen, so it could neither age out nor be erased.
-    // Hotkey handlers below raise their own after this.
+    // Hotkey handlers below raise their own after this. The RZX progress comes
+    // back by itself at the next EndFrame.
     cancelNotify();
+    progEnd();
 
     struct AYGuard {
         AYGuard()  { if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable)); }

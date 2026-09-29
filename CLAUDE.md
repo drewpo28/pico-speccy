@@ -12059,6 +12059,13 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
   layout boundary reboots and resumes the inner `/tmp/_rzx.*` snapshot, not the
   playback; security blocks are ignored; one INT per frame only (so TS-Conf-style
   LINE interrupts cannot exist in a file anyway).
+- **Progress banner** (`drawRzxProgress`, OSDMain.cpp): `RZX mm:ss / mm:ss`
+  (h:mm:ss past an hour) in the TOP-LEFT of the top border band while playing —
+  the `notify()` band and paint path (`notifyPaint(..., left)`), sharing its one
+  reservation: a timed banner wins while it lives, progress returns when it
+  expires, `progEnd()` erases it (brdChange+brdnextframe) on stop and at do_OSD.
+  Time = RZX frames / 50 (one frame = one INT of the recording machine).
+  Absent in DS80 (no top border). Hw-confirmed 2026-09-29 (owner: "работает").
 - **Web catalog source `rzx`** (drewpo28/pico-spec-catalog `app/adapters/rzx.py`):
   The RZX Archive, ≈4050 recordings as `<0-9|A..Z>/<TITLE .RZX  SUBMITTER  NOTE>`,
   direct links (≈860 are `.zip` bundles, one recording per level → the zip picker).
