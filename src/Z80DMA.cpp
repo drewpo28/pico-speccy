@@ -17,6 +17,7 @@
 #include "Ports.h"
 #include "Video.h"
 #include "Z80_JLS/z80.h"
+#include "Rzx.h"
 
 #undef IRAM_ATTR
 #define IRAM_ATTR __not_in_flash("z80dma")
@@ -657,6 +658,7 @@ IRAM_ATTR void Z80DMA::transferOneByte() {
         // A -> B (bit 2 = 1): read A (portA timing), write B (portB timing)
         if (port_a_is_io) {
             val = Ports::input(cur_port_a);
+            if (__builtin_expect(Rzx::mode != 0, 0)) val = Rzx::onIn(val);
         } else {
             val = MemESP::readbyte(cur_port_a);
         }
@@ -669,6 +671,7 @@ IRAM_ATTR void Z80DMA::transferOneByte() {
         // B -> A (bit 2 = 0): read B (portB timing), write A (portA timing)
         if (port_b_is_io) {
             val = Ports::input(cur_port_b);
+            if (__builtin_expect(Rzx::mode != 0, 0)) val = Rzx::onIn(val);
         } else {
             val = MemESP::readbyte(cur_port_b);
         }

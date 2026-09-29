@@ -17,6 +17,7 @@
 #include "UiRender.h"   // SYM_* glyphs for the persist verb lists
 #include "Config.h"
 #include "FileUtils.h"
+#include "Rzx.h"               // p_rzxPlaying (Snapshots > Stop RZX playback)
 #include "MemESP.h"         // butter_psram_size() for the Profi / ext-RAM predicates
 #include "FlashRoms.h"      // romsUsable()/extendable() for the GMX, TS-Conf and bank rows
 #include "psram_spi.h"       // psram_size()
@@ -1580,8 +1581,10 @@ static const Node kNetwork[] = {
 // 40 fast slots as a K_PICK list in the right pane. The slots used to be two root
 // rows, Save and Load, over the same 40 slots — see the profile section for why
 // that shape went.
+static bool p_rzxPlaying() { return Rzx::mode != 0; }
 static const Node kSnapshots[] = {
     NM_ACTION(TXT_SNAP_FROMFILE, loadSnapshotFile, p_hasSD),
+    NM_ACTIONV(TXT_RZX_STOP, act_rzxStop, vl_rzx, p_rzxPlaying),
     NM_PICK  (TXT_SNAP_SLOTS, SET_PERSIST_SLOT, persist_rows, persist_key,
               persist_vlabel, persist_foot, p_hasSD),
 };

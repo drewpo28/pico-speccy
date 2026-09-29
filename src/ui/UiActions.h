@@ -73,6 +73,8 @@ void persistEnterVerb(bool save);
 void snapSessionBegin();
 void snapSessionEnd();
 void loadSnapshotFile();
+void act_rzxStop();
+const char* vl_rzx();
 void act_updateFirmware();
 #if TFT
 // Video > TFT panel > Restore defaults: stages the driver's own default MADCTL /

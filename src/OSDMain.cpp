@@ -2909,7 +2909,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
                     }
                 }
-                else if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg") {
+                else if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx") {
                     // Snapshot (.spg = TS-Conf program, switches the machine)
                     if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
                     Config::save();
@@ -2917,7 +2917,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         if (!snapshotLoadReported())   // ... already named the reason
                             OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
                     } else if (!fromZip) {
-                        Config::ram_file = fname;
+                        // An RZX is a replay, not a machine to resume at the next
+                        // boot: it stays the Alt+Backspace reload, nothing more.
+                        Config::ram_file = (ext == "rzx") ? NO_RAM_FILE : fname;
                         Config::last_ram_file = fname;
                     }
                 }

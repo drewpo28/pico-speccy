@@ -99,6 +99,7 @@ extern "C" volatile uint32_t hdmi_au_late_write_ct;
 #include "CodeOverlay.h"
 #include "GS/NgsSd.h"
 #include "GS/NgsMp3.h"
+#include "Rzx.h"
 
 // +3 disk auto-start (plus3AutoBoot*, below ESPectrum::reset). Guest frames.
 #define P3BOOT_DELAY_FRAMES  150
@@ -1609,6 +1610,7 @@ void ESPectrum::reset() {
 }
 
 void ESPectrum::reset(uint8_t romInUse) {
+  Rzx::onReset();   // a reset ends an RZX playback (not the one its own snapshot load does)
   // Ports. Keyboard rows 0-7 are deliberately NOT wiped: the matrix is
   // physical on real hardware, so keys held THROUGH a reset stay pressed —
   // the Byte's built-in ROM test is entered exactly that way (Ы+В+А = S+D+F

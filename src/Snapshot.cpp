@@ -52,6 +52,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Tape.h"
 #include "AySound.h"
 #include "loaders.h"
+#include "Rzx.h"
 #include "Config.h"
 
 #include <sys/unistd.h>
@@ -99,6 +100,11 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
         res = FileP::load(filename);
     } else if (FileUtils::hasSPGextension(filename)) {
         res = FileSPG::load(filename);
+    } else if (FileUtils::hasRZXextension(filename)) {
+        // Rzx shows its own message on every failure path (or the embedded
+        // snapshot's loader does) — callers must not paint a second one.
+        res = Rzx::startPlayback(filename);
+        if (!res) s_load_reported = true;
     }
     g_snapshot_loading_path.clear();
     if (res && OSDprev) {
