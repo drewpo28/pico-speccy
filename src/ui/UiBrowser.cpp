@@ -235,6 +235,7 @@ static const char* typeLabel(const string& lcext) {
     if (lcext == "wav" || lcext == "mp3")                   return "Audio tape";
     if (lcext == "sna" || lcext == "z80" || lcext == "p")   return "Snapshot";
     if (lcext == "spg")                                     return "TS-Conf program";
+    if (lcext == "rzx")                                     return "Input recording";
     if (lcext == "trd" || lcext == "scl" || lcext == "fdi"
                        || lcext == "udi")                   return "TR-DOS disk";
     if (lcext == "mbd")                                     return "MB-02 disk";

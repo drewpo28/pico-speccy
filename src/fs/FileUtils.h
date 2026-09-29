@@ -169,7 +169,8 @@ public:
     static bool hasSNAextension(const string& filename);
     static bool hasZ80extension(const string& filename);
     static bool hasPextension(const string& filename);
-    static bool hasSPGextension(const string& filename);   // TS-Conf .spg program
+    static bool hasSPGextension(const string& filename);
+    static bool hasRZXextension(const string& filename);   // RZX input recording   // TS-Conf .spg program
     static bool hasTAPextension(const string& filename);
     static bool hasTZXextension(const string& filename);
     static bool hasWAVextension(const string& filename);

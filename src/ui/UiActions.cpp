@@ -37,6 +37,7 @@
 #include "LEDIndicators.h"
 #include <pico/bootrom.h>
 #include "app/ScanLite.h"
+#include "speccy/core/Rzx.h"
 
 // DS80 state + the standard Profi/ZX 16-colour palette (Video.cpp / vga.c): the ZX
 // keyboard page swaps to it so the bitmap keeps its own colours.
@@ -637,9 +638,23 @@ void loadSnapshotFile() {
             OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
         return;
     }
-    Config::ram_file = fname;
+    // An RZX is a replay, not a machine to resume at the next boot.
+    Config::ram_file = FileUtils::hasRZXextension(fname) ? NO_RAM_FILE : fname;
     Config::last_ram_file = fname;
     requestClose();               // no-op outside a menu session
+}
+
+// ── RZX playback ───────────────────────────────────────────────────────────────
+// The row exists only while a recording plays (p_rzxPlaying). Stopping keeps
+// the machine exactly where the replay left it — "continue from here".
+void act_rzxStop() {
+    Rzx::stop(" RZX: stopped ");
+    requestClose();
+}
+const char* vl_rzx() {
+    static char buf[24];
+    snprintf(buf, sizeof buf, "%u/%u", (unsigned)Rzx::framesPlayed(), (unsigned)Rzx::framesTotal());
+    return buf;
 }
 
 // ── firmware / ROM replacement ─────────────────────────────────────────────────
