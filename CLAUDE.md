@@ -12059,6 +12059,14 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
   layout boundary reboots and resumes the inner `/tmp/_rzx.*` snapshot, not the
   playback; security blocks are ignored; one INT per frame only (so TS-Conf-style
   LINE interrupts cannot exist in a file anyway).
+- **Web catalog source `rzx`** (drewpo28/pico-spec-catalog `app/adapters/rzx.py`):
+  The RZX Archive, ≈4050 recordings as `<0-9|A..Z>/<TITLE .RZX  SUBMITTER  NOTE>`,
+  direct links (≈860 are `.zip` bundles, one recording per level → the zip picker).
+  rzxarchive.co.uk is behind this environment's egress policy: its markup was read
+  from a GitHub Actions run on a throwaway branch of the catalog repo (a push-
+  triggered probe workflow that dumps the pages to the log) — the way in for any
+  site the container cannot reach. The firmware needed only `rzx` in the launch
+  extension lists.
 - **Hw check owed**: any Spectaculator/Fuse .rzx with a Z80 snapshot playing to
   the end without " desync ", on 48K and 128K; a zipped one from WoS; F11 and Stop
   mid-replay; a long file (compressed, several blocks).
