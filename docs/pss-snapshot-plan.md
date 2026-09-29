@@ -83,7 +83,31 @@ is exactly the extensible stream this needs, and Fuse / Spectaculator open it.
 | `COVX` | DAC byte + 3 reserved | Covox |
 | `PLTT` | flags, current reg, 64 ULA+ entries, FF reg | ULA+ |
 | `DMMC`/`DMRP`, `DIDE`/`DIRP` | DivMMC / DivIDE control + RAM pages | esxDOS |
-| `GS\0\0`/`GSRP` | in the Spectaculator spec (classic GS: model, upper page, channel volumes/outputs, GS-Z80 regs + RAM pages); libspectrum only skips them — layout must be confirmed from the spec page before use | classic GS |
+| `GS\0\0` + `GSRP` | classic GS, full layout below (from the spec page, supplied by the owner) | classic GS |
+
+- **Classic GS — `ZXSTGS` (since 1.2) + `ZXSTGSRAMPAGE`**, layout from the spec page:
+  - `GS\0\0`: `chModel` (0 = GS128, 1 = GS512), `chUpperPage` (32 KB page at
+    #8000-#FFFF, 0 = ROM), `chGsChanVol[4]` (6-bit volumes), `chGsChanOut[4]`
+    (channel DAC outputs), `chFlags` (1 EI last, 2 HALTED, 64 custom ROM follows,
+    128 that ROM is zlib), then GS-Z80 `AF BC DE HL AF' BC' DE' HL' IX IY SP PC`
+    (words), `I R IFF1 IFF2 IM` (bytes), `dwCyclesStart` (T-state in the GS 50 Hz
+    frame), `chHoldIntReqCycles` (T left in which the INT can still be taken),
+    `chBitReg` (MEMPTR high byte for BIT n,(HL)), `chRomData[]` only with flag 64
+    (32768 B raw). Default ROM = 1.04.
+  - `GSRP`: `wFlags` (1 = zlib), `chPageNo` (32 KB page: 0-3 GS128, 0-14 GS512),
+    32 KB of data. Follows the `GS` block.
+  - **Mapping to ours**: `GS::reg_page` → `chUpperPage`; our `s_gs_ram` offset of
+    page p (p ≥ 1) is `(p-1)*0x8000`, so `chPageNo = p-1` lands at offset
+    `chPageNo*0x8000` — the fixed #4000-#7FFF work RAM is the upper half of page 1
+    and therefore inside `GSRP 0`. **Verify that numbering against a
+    Spectaculator-written file before trusting it.** We never embed the ROM (flag 64
+    stays 0; ours is in flash).
+  - **What the standard block lacks, in our own `PSGX`**: the host interface
+    (`reg_command`, `reg_data` both directions, `reg_status` D0/D7, the h2c/g2h
+    queues and `s_card_reply_bit`), INT timer phase, `s_gs_main_loop`/booted flags,
+    the real RAM size (our classic GS goes to 1/2 MB: `chModel` = 1 and `GSRP`
+    pages beyond 14 are written anyway — up to page 62 fits the byte), `WZ` in full.
+  - NeoGS has no SZX model at all → `PSNG`/`PSNP` only, no `GS` block.
 
 - **Our own blocks** (ids outside SZX's set; Fuse and Spectaculator skip them):
 
@@ -162,7 +186,7 @@ existing stage/commit path, which already knows AC_LIVE / AC_SUBSYS / AC_REBOOT.
    Pentagons, Byte, Timex.
 2. Scorpion 256/1024/GMX/ProfROM, Profi (`PSPR`), Murmuzavr (`PSRP`), `DOCK`, DivMMC.
 3. TS-Conf (`PSTS` + its 256 `RAMP` pages).
-4. GS / NeoGS (`PSNG`/`PSNP`; classic GS possibly via the standard `GS`/`GSRP`).
+4. GS: classic via standard `GS`/`GSRP` + `PSGX`; NeoGS via `PSNG`/`PSNP`.
 5. Optional: tape position, WD1793 / uPD765 registers. FM chip state stays out of
    snapshots (existing policy); register-shadow replay is possible later.
 6. Third-party `.szx` compatibility pass (zlib pages, 16K/+2A/SE ids, blocks we skip).
