@@ -1141,8 +1141,10 @@ static void archSessionRun(void* p) {
         if (OSD::net_launch_close || OSD::net_close_all) return; // launched or Esc → unwind
     }
     OSD::progressDialog(MSG_NET_CONNECTING, "", 0, 0); // no URL (built-in catalog)
-    std::vector<string> site_ids(12), site_names(12);   // heap for the session, not .bss
-    int n = HttpCatalogFs::fetchSites(site_ids.data(), site_names.data(), 12);
+    // sites.tsv past MAX_SITES is silently cut (RZX, the 13th, vanished at 12).
+    const int MAX_SITES = 32;
+    std::vector<string> site_ids(MAX_SITES), site_names(MAX_SITES);   // heap for the session, not .bss
+    int n = HttpCatalogFs::fetchSites(site_ids.data(), site_names.data(), MAX_SITES);
     OSD::progressDialog("", "", 0, 2);
     if (n <= 0) { OSD::osdCenteredMsg(MSG_ARCH_SITES_ERR, LEVEL_WARN, 2200); return; }
 
