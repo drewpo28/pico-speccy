@@ -1,6 +1,6 @@
-# Snapshots that carry their machine: `.sna` + `.pss` — plan
+# Snapshots that carry their machine: `.szx` + `.pss` — plan
 
-**Status (2026-09-29): plan agreed with the owner; binary section switched to SZX blocks the same day. Nothing implemented yet.**
+**Status (2026-09-29): plan agreed with the owner. Same day: the snapshot itself moved from `.sna` to `.szx` (owner's call), `.pss` became text only. Nothing implemented yet.**
 
 A snapshot today is `.sna` + a four-line `.esp` sidecar (arch, romset, slot name,
 and `1FFD=` for the +3 only — `persistSaveNamed`, OSDMain.cpp). Everything else the
@@ -8,17 +8,20 @@ guest ran on (GS/NeoGS and its RAM, TSFM, AY, Timex, disks, Murmuzavr, ...) is n
 recorded, so a slot loaded on a differently configured emulator starts on the wrong
 hardware. And SNA cannot hold large parts of the machine state at all.
 
-Goal: **`.pss` (pico-speccy-settings) holds everything needed to restart the `.sna`,
-on every machine.**
+Goal: **a snapshot is `.szx` (the whole machine state) + `.pss`
+(pico-speccy-settings: everything the emulator must be set to for that `.szx` to
+start), on every machine.**
 
 ## Owner decisions (2026-09-29)
 
 1. **Mounted media ARE part of a snapshot**: TR-DOS/+3/MB-02 disks, tape, IDE/HDD
    images, DCK / ALF cartridges — as in config profiles. A game loading from disk
    continues after a restore.
-2. **Exactly two files per snapshot**: `.sna` (kept standard) + `.pss`. All machine
-   state beyond SNA — including extra RAM pages, TS-Conf and the GS card — goes INTO
-   the `.pss`. No third file.
+2. **Exactly two files per snapshot: `.szx` + `.pss`** (first decided as `.sna` +
+   `.pss` with the state inside the `.pss`; revised the same day). The `.szx` holds
+   ALL machine state — CPU, ports, RAM, TS-Conf, the GS card; the `.pss` is text,
+   settings only. SNA stays a format we LOAD (and can still export), not what slots
+   write.
 3. **A NeoGS image the target cannot hold** (e.g. a 4 MB card saved on Pentagon,
    loaded where only 2 MB is allowed): the card state is dropped and the card is
    **reset** (the F11 path, `GS::ngsReset()`); the rest of the snapshot loads.
@@ -38,40 +41,41 @@ on every machine.**
 - `powerOnDramFill(p, page)` (ESPectrum.cpp) is deterministic PER PAGE — the basis
   of the sparse page encoding below.
 
-## The `.pss` file
+## The `.pss` file — text only
 
 ```
 pss_ver=1
 slot_name=<name>
+szx=<file name of the .szx beside it>
 <full Config::save() NvsWriter dump, key=value per line>
-#PSSB
-<a complete SZX (ZX-State) stream: "ZXST" header + blocks>
 ```
 
-**The binary section IS an SZX file** (Spectaculator's ZX-State format,
-https://www.spectaculator.com/docs/zx-state/intro.html — the site is behind this
-environment's egress policy; the byte layouts below were taken from its reference
-implementation, libspectrum `szx.c`, v1.5, fetched from the speccytools/libspectrum
-GitHub mirror). Reasons: it already has blocks for most of what SNA loses, its
+## The `.szx` file — the machine state
+
+Spectaculator's ZX-State format, https://www.spectaculator.com/docs/zx-state/intro.html
+(behind this environment's egress policy; the layouts below come from its reference
+implementation, libspectrum `szx.c` v1.5, via the speccytools/libspectrum GitHub
+mirror). Why SZX rather than SNA: it has blocks for most of what SNA loses, its
 container rule (every block = `id[4]` + `size u32 LE` + data, unknown ids SKIPPED)
-is exactly the forward-compatible chunk stream this needs, and the section can be
-cut out as a `.szx` for Fuse/Spectaculator/debugging with a one-line tool. A
-settings-only `.pss` (no `#PSSB`) is valid.
+is exactly the extensible stream this needs, and Fuse / Spectaculator open it.
 
 - **Header** (8 B): `"ZXST"`, major 1, minor 5, machine id, flags (bit 0
-  ZXSTMF_ALTERNATETIMINGS). Machine ids: 0 16K, 1 48K, 2 128K, 3 +2, 4 +2A, 5 +3,
+  ZXSTMF_ALTERNATETIMINGS). Standard ids: 0 16K, 1 48K, 2 128K, 3 +2, 4 +2A, 5 +3,
   6 +3e, 7 Pentagon 128, 8 TC2048, 9 TC2068, 10 Scorpion, 11 SE, 12 TS2068,
-  13 Pentagon 512, 14 Pentagon 1024, 15 48K NTSC, 16 128Ke. **Machines with no SZX
-  id** (TS-Conf, Profi/Karabas, Byte, Scorpion GMX/1024/ProfROM, +3div, ALF):
-  write the nearest id (Pentagon 1024 / Scorpion / 48K / +3e) — our own loader
-  takes the machine from the text section anyway, which is authoritative.
+  13 Pentagon 512, 14 Pentagon 1024, 15 48K NTSC, 16 128Ke.
+- **Machines with no SZX id** (TS-Conf, Profi/Karabas, Byte, Scorpion
+  GMX/1024/ProfROM, +3div, ALF, Murmuzavr) get ids from **0x80 up** (our range,
+  table in the code). Another emulator then refuses the file ("unknown machine")
+  instead of running it on the wrong hardware. For those, the machine is also in the
+  `.pss`, which our loader treats as authoritative.
 - **Standard blocks used as-is** (layouts per libspectrum):
 
 | id | contents | covers |
 |---|---|---|
-| `Z80R` | AF BC DE HL, AF' BC' DE' HL', IX IY SP PC, I R IFF1 IFF2 IM, `tstates u32`, remaining-INT byte, flags (1 EI last, 2 HALTED, 4 F set), MEMPTR | full CPU — replaces the SNA registers on load |
+| `CRTR` | creator string + version | "pico-speccy x.y.z" |
+| `Z80R` | AF BC DE HL, AF' BC' DE' HL', IX IY SP PC, I R IFF1 IFF2 IM, `tstates u32`, remaining-INT byte, flags (1 EI last, 2 HALTED, 4 F set), MEMPTR | full CPU |
 | `SPCR` | border, 7FFD, 1FFD (+3 / Scorpion / P1024 EFF7 per libspectrum), last FE, 4 reserved | paging |
-| `RAMP` | `flags u16` (1 = zlib), `page u8`, 16 KB | RAM pages 0..255 — incl. TS-Conf's 256, P512/P1024, Scorpion 8+ |
+| `RAMP` | `flags u16` (1 = zlib), `page u8`, 16 KB | RAM pages 0..255 |
 | `AY\0\0` | flags (1 Fuller, 2 128-AY on 48K), selected reg, 16 regs | AY chip 0 |
 | `SCLD` | HSR, DEC | Timex TC2048/TC2068 |
 | `DOCK` | 8 KB DOCK/EX-ROM pages (flags RAM / EXROMDOCK) | TC2068 cartridge |
@@ -79,30 +83,31 @@ settings-only `.pss` (no `#PSSB`) is valid.
 | `COVX` | DAC byte + 3 reserved | Covox |
 | `PLTT` | flags, current reg, 64 ULA+ entries, FF reg | ULA+ |
 | `DMMC`/`DMRP`, `DIDE`/`DIRP` | DivMMC / DivIDE control + RAM pages | esxDOS |
-| `GS\0\0`/`GSRP` | defined in the Spectaculator spec (classic GS: model, upper page, channel volumes/outputs, GS-Z80 regs + GS RAM pages); libspectrum only skips them — layout must be confirmed from the spec page before use | classic GS |
+| `GS\0\0`/`GSRP` | in the Spectaculator spec (classic GS: model, upper page, channel volumes/outputs, GS-Z80 regs + RAM pages); libspectrum only skips them — layout must be confirmed from the spec page before use | classic GS |
 
-- **RAMP compression**: WRITE uncompressed (flag 0) — a zlib deflater does not fit
-  (miniz's compressor is ~300 KB); READ both, via the vendored miniz inflate, which
-  also lets F2/the browser load real `.szx` files from other emulators later.
 - **Our own blocks** (ids outside SZX's set; Fuse and Spectaculator skip them):
 
 | id | contents |
 |---|---|
-| `PSPF` | page fill for pages the SNA/RAMP set omits: `{page u16, kind u8 (P = powerOnDramFill, F = byte), byte}` — the sparse encoding; also the only way to name pages >255 (Murmuzavr up to 2048) |
 | `PSRP` | RAM page with a 16-bit index (Murmuzavr pages >255) |
+| `PSPF` | uniform page: `{page u16, byte}` |
 | `PSAY` | second AY + TurboSound latch + `ts_fm_enabled`, TSFM select |
-| `PSPT` | our port latches SZX has no field for: DFFD (Profi), EFF7/AFF7, GMX (#00, 7AFD/7CFD/7EFD, DFFDgmx, magic shift), romInUse / romLatch / trdos / page0ram / pagingLock, Scorpion 1FFD high bits |
+| `PSPT` | port latches SZX has no field for: DFFD (Profi), EFF7/AFF7, GMX (#00, 7AFD/7CFD/7EFD, DFFDgmx, magic shift), romInUse / romLatch / trdos / page0ram / pagingLock, Scorpion 1FFD high bits |
 | `PSPR` | Profi DS80 palette + colour SRAM |
 | `PSTS` | TS-Conf: register file incl. `*_d` shadows, CRAM, SFILE, INT latches + timestamps, DMA_ACT end, FMAddr, VDOS, ZX-Evo AVR cfg |
 | `PSNG` | NeoGS card (below); card pages as `PSNP {page u16, flags, data}` |
 
-- **Untouched pages are not written at all** (not even a `PSPF` entry is needed if
-  the rule is "a page with no RAMP/PSRP block is `powerOnDramFill(page)`"); `PSPF`
-  only for uniform-byte pages. RAMP's page byte is 8-bit, so it covers every
-  machine except Murmuzavr past 256 pages — `PSRP` exists for exactly that.
-- The `.sna` stays standard and is still written: it is the portable half. On our
-  own load the SZX `Z80R`/`SPCR`/`RAMP` blocks override it.
-- Legacy `.esp` sidecars stay readable; new saves write `.pss` only.
+- **Which pages are written.** Standard-id machines (≤ Pentagon 1024 / Scorpion
+  256, i.e. ≤ 1 MB): EVERY page, so the file is complete for another emulator.
+  Our-id machines and the GS card (TS-Conf 4 MB, GMX 2 MB, Murmuzavr, NeoGS):
+  **sparse** — a page equal to `powerOnDramFill(page)` is omitted and our loader
+  refills it with that pattern; a uniform page is one `PSPF`. RAMP's page byte is
+  8-bit: enough for everything but Murmuzavr past 256 pages (`PSRP`).
+- **RAMP compression**: WRITE uncompressed (flag 0) — a zlib deflater does not fit
+  (miniz's compressor is ~300 KB); READ both, through the vendored miniz inflate.
+  That also makes third-party `.szx` loadable from F2 / the browser.
+- **SNA stays**: loading any `.sna` keeps working; old slots (`.sna` + `.esp`) stay
+  loadable; an explicit "export as .sna" can remain for the 48K/128K/Pentagon subset.
 
 ## Settings: saved in full, applied by class
 
@@ -119,9 +124,9 @@ existing stage/commit path, which already knows AC_LIVE / AC_SUBSYS / AC_REBOOT.
 1. Parse the text section, select the machine keys.
 2. Anything reboot-class differs (`wantedPages`, TS-Conf overlay window, GS RAM,
    the Profi boundary) → write them into `storage.nvs` with `ram=<path>.pss`, reboot.
-   `LoadSnapshot` learns the `.pss` extension so the baton resumes the WHOLE thing.
+   `LoadSnapshot` learns `.pss` (and `.szx`) so the baton resumes the WHOLE thing.
 3. Otherwise apply live/subsys keys through the commit path.
-4. Load the `.sna`, then the SZX blocks: `SPCR`/`PSPT` → `RAMP`/`PSRP`/`PSPF` → `PSTS`/`PSNG` → `AY`/`PSAY`/`COVX`/`PLTT`/`B128` → `Z80R` last.
+4. Load the `.szx` blocks: `SPCR`/`PSPT` → `RAMP`/`PSRP`/`PSPF` → `PSTS`/`PSNG` → `AY`/`PSAY`/`COVX`/`PLTT`/`B128` → `Z80R` last.
 
 ## Save consistency
 
@@ -150,21 +155,23 @@ existing stage/commit path, which already knows AC_LIVE / AC_SUBSYS / AC_REBOOT.
 
 ## Phases
 
-1. Fix `writeMemPage`; `.pss` text section + SZX `Z80R`/`SPCR`/`RAMP`/`AY`/`SCLD`/
-   `PLTT`/`COVX`/`B128` + `PSPT`/`PSAY`; load with the reboot baton; slots and F2
-   "load from file" pick up a sibling `.pss`. Covers 48K/128K/+2/+3/+3e/+3div, all
+1. Fix `writeMemPage` (SNA export/other callers); `.pss` + SZX writer/reader with
+   `CRTR`/`Z80R`/`SPCR`/`RAMP`/`AY`/`SCLD`/`PLTT`/`COVX`/`B128` + `PSPT`/`PSAY`;
+   load with the reboot baton; slots write `.szx` + `.pss`, F2 / the browser load
+   `.szx` (with a sibling `.pss` when present), old `.sna` + `.esp` slots still load. Covers 48K/128K/+2/+3/+3e/+3div, all
    Pentagons, Byte, Timex.
 2. Scorpion 256/1024/GMX/ProfROM, Profi (`PSPR`), Murmuzavr (`PSRP`), `DOCK`, DivMMC.
 3. TS-Conf (`PSTS` + its 256 `RAMP` pages).
 4. GS / NeoGS (`PSNG`/`PSNP`; classic GS possibly via the standard `GS`/`GSRP`).
 5. Optional: tape position, WD1793 / uPD765 registers. FM chip state stays out of
    snapshots (existing policy); register-shadow replay is possible later.
-6. Optional: load plain `.szx` files from other emulators (the reader exists by then).
+6. Third-party `.szx` compatibility pass (zlib pages, 16K/+2A/SE ids, blocks we skip).
 
 ## Test plan (host where possible)
 
-- Chunk writer/reader round-trip and the sparse page encoder: host test against a
-  plain reference (every page type, unknown-tag skip, truncated file).
+- SZX writer/reader round-trip and the sparse page encoder: host test against a
+  plain reference (every page type, unknown-block skip, truncated file); plus a
+  cross-check that libspectrum reads our standard-id files (build its szx.c on host).
 - Hardware: slot save/load per machine family, including a cross-config load that
   must reboot; TS-Conf title mid-game; NPL/ZP4 playing on NeoGS; a 4 MB-card slot
   loaded on TS-Conf (card reset path); save time at 6 MB worst case.
