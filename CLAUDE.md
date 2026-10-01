@@ -12992,9 +12992,13 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
   both ROM tape traps are off while `Rzx::mode` (the trap fills memory with no IN).
   `Config::ram_file` is NOT pinned to an .rzx (a replay is not a boot resume);
   `last_ram_file` is (Alt+Backspace replays).
-- Known gaps: SZX snapshots (message), a snapshot load that crosses a machine
+- Known gaps: SZX snapshots (message), a MID-FILE snapshot that crosses a machine
   layout boundary reboots and resumes the inner `/tmp/_rzx.*` snapshot, not the
-  playback; security blocks are ignored; one INT per frame only (so TS-Conf-style
+  playback (the FIRST one resumes the .rzx itself since 2026-10-01: a nested
+  `LoadSnapshot` keeps the outer `g_snapshot_loading_path`. Before that the reboot
+  came back with the snapshot running and no playback — reported as "sometimes the
+  time is not shown, a second launch works", the second launch finding the machine
+  already switched. hw-confirmed 2026-10-01, owner: "fixed"); security blocks are ignored; one INT per frame only (so TS-Conf-style
   LINE interrupts cannot exist in a file anyway).
 - **Progress banner** (`drawRzxProgress`, OSDMain.cpp): `RZX mm:ss / mm:ss`
   (h:mm:ss past an hour) in the TOP-LEFT of the top border band while playing —

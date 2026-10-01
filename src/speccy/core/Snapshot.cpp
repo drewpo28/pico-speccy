@@ -91,7 +91,13 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
     if (archCanon(force_arch) == A_TSCONF || archCanon(force_arch) == A_ATM) { force_arch = A_NONE; force_romset = R_NONE; }
     bool res = false;
     uint8_t OSDprev = VIDEO::OSD;
-    g_snapshot_loading_path = filename;
+    // What requestMachine pins to Config::ram_file when the load has to reboot.
+    // A nested load (the snapshot embedded in an .rzx) keeps the OUTER file:
+    // resuming the inner /tmp/_rzx.* after the reboot ran the snapshot with no
+    // playback at all — no progress banner, and a second launch "fixed" it
+    // because the machine then already matched.
+    const bool nested = !g_snapshot_loading_path.empty();
+    if (!nested) g_snapshot_loading_path = filename;
     if (FileUtils::hasSNAextension(filename)) {
         res = FileSNA::load(filename, force_arch, force_romset);
     } else if (FileUtils::hasZ80extension(filename)) {
@@ -106,7 +112,7 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
         res = Rzx::startPlayback(filename);
         if (!res) s_load_reported = true;
     }
-    g_snapshot_loading_path.clear();
+    if (!nested) g_snapshot_loading_path.clear();
     if (res && OSDprev) {
         VIDEO::OSD = OSDprev;
         VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
