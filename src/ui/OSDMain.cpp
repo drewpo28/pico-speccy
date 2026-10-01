@@ -1481,10 +1481,10 @@ static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr, bool le
     if (notifyMaxChars() < 8) return false;      // no mode this narrow, but don't index off the row
     bool cv = false;
     int top;
-    if (VIDEO::bandBorderMode()) {               // GMX 640x200 / TS-Conf non-ZX
+    if (VIDEO::bandBorderMode()) {               // GMX 640x200 / TS-Conf non-ZX / VDAC2 (FT812)
         top = VIDEO::gmxTopBandRows();           // = lin_end, authoritative, may be 0
         if (top < NOTIFY_BAND_H) {
-            if (!VIDEO::ts_render_live && !VIDEO::bl_live) return false;
+            if (!VIDEO::ts_render_live && !VIDEO::bl_live && !VIDEO::ft_live) return false;
             // Carved out of the content instead. Keep the 24-row band's own
             // offset so the banner sits where it does on every other machine
             // (6 fb rows down) rather than flush against the screen edge — the
@@ -1686,7 +1686,7 @@ static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left) {
         // rows read this rect at render time, which is also what erases the
         // banner authoritatively when the rect is cleared. GMX ignores it — it
         // has no whole-line renderer and gmxBorderFrame still owns its bands.
-        if (carve || VIDEO::ts_render_live || VIDEO::bl_live) VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
+        if (carve || VIDEO::ts_render_live || VIDEO::bl_live || VIDEO::ft_live) VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
         else                               VIDEO::clearNoticeCarve();
     } else if (VIDEO::ds80BandMode()) {
         // The border machine is live here (per-T-state, 4 px per column) and the
@@ -1697,7 +1697,7 @@ static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left) {
         px1 = (px1 + 7) & ~7;
         if (px0 < 0) px0 = 0;
         if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
-        if (px1 - px0 < textw) { cancelNotify(); return; }
+        if (px1 - px0 < textw) return false;
         VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
     } else {
         VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
