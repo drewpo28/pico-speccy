@@ -13,6 +13,7 @@
 #include "UiModel.h"
 #include "UiStage.h"
 #include "UiActions.h"
+#include "UiJoy.h"
 #include "UiStrings.h"
 #include "UiRender.h"   // SYM_* glyphs for the persist verb lists
 #include "app/Config.h"
@@ -1259,17 +1260,17 @@ static const Node kJoyPrefs[] = {
     NM_RADIO(TXT_JOY_SECOND,      SET_SECOND_JOY,   opt_secondjoy, nullptr),
     NM_RADIO(TXT_JOY_KPORT,       SET_KEMPSTON_PORT, opt_kport,    nullptr),
 };
-// Values are the JOY_* defines from Config.h, so the display order is free.
-static const Option opt_joy_type[] = {
-    { "Cursor",     JOY_CURSOR    },
-    { "Kempston",   JOY_KEMPSTON  },
-    { "Sinclair 1", JOY_SINCLAIR1 },
-    { "Sinclair 2", JOY_SINCLAIR2 },
-    { "Fuller",     JOY_FULLER    },
+
+// The footer verb line of the profile list (K_PICK keeps it in opts[0]).
+static const Option opt_joyprof_foot[] = {
+    { SYM_ENTER " Use  F4 Edit  F6 Name  F8 Del", 0 },
 };
 
 static const Node kJoystick[] = {
-    NM_RADIO (TXT_JOY_TYPE,    SET_JOY_TYPE,  opt_joy_type, nullptr),
+    // A profile = the joystick TYPE + the pad map, so the type is edited on the
+    // Mapping page with the rest of it (there is no separate Type row any more).
+    NM_PICK  (TXT_JOY_PROFILE, SET_JOY_PROFILE, joyprof_rows, joyprof_key,
+              joyprof_vlabel, opt_joyprof_foot, p_hasSD),
     NM_ACTION(TXT_JOY_MAPPING, act_joyDialog, nullptr),
     NM_SUB   (TXT_JOY_PREFS,   kJoyPrefs,     nullptr),
 };

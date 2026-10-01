@@ -42,6 +42,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/ArchRom.h"
 #include "Debug.h"
 
+namespace JoyProf { struct Profile; }
+
 uint32_t butter_psram_size();   // MemESP.h / main.cpp — used by wantedPages()
 
 using namespace std;
@@ -86,6 +88,16 @@ public:
 
     // The default pad map of a joystick type. No UI, nothing saved.
     static void joyDefaults(uint8_t joy_type, uint16_t out[14]);
+
+    // ── joystick profiles (Joystick > Profile) ───────────────────────────────
+    // Named (type + pad map) sets in ONE file, CONFIG_DIR "/joystick.cfg" — beside
+    // wifi.cfg, shared by every board and firmware version (format: JoyProfiles.h).
+    // The LIVE pad is still Config::joystick + joydef (persisted in storage.nvs as
+    // before); joy_profile names the profile they were last loaded from or saved to,
+    // "" = an unsaved map. The file is only the library: nothing reads it at boot.
+    static std::string joy_profile;
+    static int  joyProfilesLoad(JoyProf::Profile* out, int cap);  // count, 0 = none
+    static bool joyProfilesSave(const JoyProf::Profile* list, int n);
 
     // arch/romSet* always hold a real table index after load(); only the pref_*
     // members may additionally hold A_LAST/R_LAST ("Last used") — and pref_arch may

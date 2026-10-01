@@ -12854,6 +12854,39 @@ settings.
 - Saving with staged edits pending warns first (`Stage::anyDirty()`): a profile
   records the APPLIED config, and uncommitted edits would silently not be in it.
 
+## Joystick profiles: type + pad map in ONE file beside wifi.cfg (2026-10-01, NOT hw-tested)
+
+`Joystick > Profile` is a `K_PICK` list of named profiles in `CONFIG_DIR "/joystick.cfg"`
+(not per board, not per firmware version). A profile = **joystick TYPE + the 14-slot
+pad map** (owner's pick: the same map means other things on other types), so the old
+top-level `Joystick type` row is GONE and the type is a cell under the button row of
+`Mapping` (Enter picks it, then the usual "Load joy type default map?" question).
+`SET_JOY_TYPE` / `hook_joyType` stay in the X-macro (APPEND ONLY), unused by the tree.
+
+- **The live pad is still `Config::joystick` + `joydef[]` in storage.nvs**, which the
+  game path reads; `Config::joy_profile` (NVS `joy_profile`, "" = unsaved) only names
+  the profile they came from. The file is a LIBRARY: nothing reads it at boot, so a
+  missing card, a broken file or a Config profile load never changes the pad.
+- **Format** (`src/app/JoyProfiles.{h,cpp}`, pure, host-tested by
+  `tools/joyprofiles_test.cpp`): `name<TAB>type<TAB>t0,...,t13`, type as a WORD,
+  targets as key NAMES (`SPACE`, `DPAD_FIRE`, `NONE`; anything unnamed as `#<n>`) —
+  never VirtualKey numbers, which would silently remap on an enum reorder. Unknown
+  names read as NONE, bad lines are skipped, duplicates keep the first. 16 profiles,
+  23-char names. Five hand mutations each fail the test.
+- **Verbs**: Enter = use (applies type + map live, saves storage.nvs), F4 = edit,
+  F6 = rename, F8 = delete (the live map stays, now unsaved); the last row
+  `+ New profile` opens Mapping on a copy of the live pad.
+- **Mapping page Save**: an existing profile is overwritten without a question; a map
+  with no profile (opened from `+ New`, or `Mapping` while unsaved) asks the name, and
+  a clash asks to replace. The saved profile becomes the live one. With no SD card
+  Save just applies live, as before. The header shows the profile name or `(unsaved)`.
+- **JoyTest no longer commits**: it puts the working map on the live pad for the test
+  and restores the previous one on leaving, so testing an unsaved edit changes nothing.
+- The collapsed row shows `name*` while the live pad differs from the stored profile
+  (the Menu+J type hot key, or an edit not saved). Hardware Info: `Joy profile`.
+- Cost: the list is a per-menu-session heap block (~1.6 KB, `joyProfilesSessionBegin/
+  End` beside the config-profile ones); static ~150 B.
+
 ## The card's two folders, and Debug > Config folders (hw-confirmed 2026-09-11)
 
 The user-visible data root is **`/pico-speccy`** (`SPEC_DIR_ROOT`, holding

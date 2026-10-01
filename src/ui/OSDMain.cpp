@@ -6581,6 +6581,9 @@ static void buildEmulatorInfoText() {
         else
             pos += infoAppend(buf, pos, bufsz,
                 " Joystick       : %s\n", jnames[ji]);
+        pos += infoAppend(buf, pos, bufsz,
+            " Joy profile    : %.20s\n",
+            Config::joy_profile.empty() ? "(unsaved)" : Config::joy_profile.c_str());
 
         {
             static const char* sjnames[] = { "Off", "DPAD #1", "DPAD #2", "NUMPAD" };

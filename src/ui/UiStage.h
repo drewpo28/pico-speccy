@@ -359,7 +359,10 @@ const char* romsetName(int32_t composite);
     /* VDAC2 renderer filter (Fast = nearest, Smooth = 2x2 box at 2:1 cells): live, re-renders. */ \
     X(SET_TSCONF_VDAC2_SMOOTH, AC_LIVE, F_PREVIEW,           get_tsconfVdac2Smooth, put_tsconfVdac2Smooth, hook_tsconfVdac2Smooth, -1) \
     /* VDAC2 palette: fixed RGB cube or per-frame adaptive (median cut). Live: re-programs the slots. */ \
-    X(SET_TSCONF_VDAC2_ADAPT, AC_LIVE, F_PREVIEW | F_PALETTE, get_tsconfVdac2Adapt, put_tsconfVdac2Adapt, hook_tsconfVdac2Adapt, -1)
+    X(SET_TSCONF_VDAC2_ADAPT, AC_LIVE, F_PREVIEW | F_PALETTE, get_tsconfVdac2Adapt, put_tsconfVdac2Adapt, hook_tsconfVdac2Adapt, -1)    \
+    /* Joystick > Profile: the row of the live joystick profile. Same contract as     */ \
+    /* SET_PROFILE_SLOT (read only from the menu, moved by the list's own verbs).     */ \
+    X(SET_JOY_PROFILE,     AC_PURE,   0,                     get_joyProfile, put_joyProfile, nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {
