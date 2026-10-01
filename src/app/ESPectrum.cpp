@@ -1244,6 +1244,7 @@ void ESPectrum::setup() {
   if (Config::arch == A_TSCONF && Config::tsconf_vdac2) {
     Ft812::clockUs = []() -> uint64_t { return time_us_64(); };
     Ft812::intHook = TsConf::ftIntRaise;
+    Ft812::swapPollHook = TsConf::ftSwapPoll;
     const bool ok = butter_psram_size() != 0 &&
       Ft812::init(gb_rom_0_sinclair_48k + 0x3D00,
                   [](size_t n, bool psram) -> void* { return Buffer::palloc(n, Buffer::NEED_POINTER | (psram ? Buffer::PREFER_PSRAM : 0)); },

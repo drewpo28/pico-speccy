@@ -15,6 +15,14 @@
 #else
 #define FT_HOT
 #endif
+// The output quantizer alone (every pixel of every frame goes through it) also
+// follows the MJPEG player's switch: it is ~100 bytes.
+#if (FT812_RENDER_IN_RAM || FT812_JPEG_IN_RAM) && !defined(FT812_HOST_TEST)
+#include "pico.h"
+#define FT_HOT_Q __not_in_flash("ft812q")
+#else
+#define FT_HOT_Q
+#endif
 // The per-pixel helpers MUST inline: at -Os GCC left texel<>/bilerp out of line,
 // called through veneers from the blit loop — one call into flash per pixel,
 // which the texel stream's XIP misses turned into an instruction fetch each
@@ -171,6 +179,15 @@ static inline bool fmtIsL(int fmt) { return fmt == F_L1 || fmt == F_L2 || fmt ==
 // The texel as ARGB8888. L formats return the luminance in the alpha byte with
 // rgb = 0xFFFFFF (the colour comes from COLOR_RGB, the alpha from the texel —
 // that is how the ROM fonts are drawn). `pal` = PALETTE_SOURCE bytes (may be null).
+// The host test renders every scene of its differential check twice, with the
+// fast cell loop of blitBitmap on and off; on the device it is always on.
+#ifdef FT812_HOST_TEST
+bool g_ft812FastBlit = true;
+#define FT_FAST_BLIT_ON g_ft812FastBlit
+#else
+#define FT_FAST_BLIT_ON true
+#endif
+
 template <int FMT>
 FT_INLINE uint32_t texel(const uint8_t* row, uint32_t tu, const uint8_t* pal, uint32_t palAvail) {
     switch (FMT) {
@@ -218,6 +235,7 @@ struct BlitArgs {
     Walk* w;
     const uint8_t* data; uint32_t avail;     // bitmap bytes from the cell's first line
     const uint8_t* pal;  uint32_t palAvail;
+    const uint32_t* pal32;                   // the palette expanded to 256 x ARGB8888 in cfg.palScratch (else nullptr)
     uint32_t stride, lw, lh;                 // bytes per line, pixels per line, lines
     bool wrapx, wrapy, bilinear;
     bool blendDefault;                       // ALPHA_FUNC ALWAYS + SRC_ALPHA/ONE_MINUS_SRC_ALPHA + full COLOR_MASK
@@ -250,6 +268,49 @@ static FT_HOT void blitBitmap(const BlitArgs& a) {
     g_renderStats.pxFmt[FMT] += npx;
     const uint64_t bt0 = cfg.clockUs ? cfg.clockUs() : 0;
 #endif
+    // The common cell — nearest, axis-aligned, default blend, COLOR white/opaque —
+    // has nothing per pixel but the fetch: the row pointer and the valid x range
+    // are settled once per row, so the loop is a Q16 step, one texel, and a store
+    // (or a blend for a translucent texel). The generic loop below spends ~70
+    // instructions a pixel on tests this cell can never fail (hw 2026-10-01,
+    // R-Type: 162k px a frame at 0.5 us each, 80 ms of blit per frame).
+    const bool fmtFast = a.pal32 || FMT == F_ARGB4 || FMT == F_RGB565 || FMT == F_ARGB1555 || FMT == F_RGB332 || FMT == F_ARGB2;
+    if (FT_FAST_BLIT_ON && fmtFast && !a.bilinear && !a.box && Bq == 0 && Dq == 0 && du > 0 && a.blendDefault && c.color == 0xFFFFFFFFu) {
+        const int32_t lwq = (int32_t)(lw << 16);
+        const bool pow2 = (lw & (lw - 1)) == 0;
+        for (int oy = a.oy0; oy < a.oy1; oy++) {
+            const int32_t fyRel = (int32_t)((((int64_t)oy << 16) + 0x8000) * cfg.invYQ16 >> 16) - a.vy;
+            int32_t tv = ((int32_t)(((int64_t)Eq * fyRel) >> 16) + Fq) >> 16;
+            if (a.wrapy) tv = (int32_t)((uint32_t)tv % lh); else if ((uint32_t)tv >= lh) continue;
+            const uint32_t off = (uint32_t)tv * a.stride;
+            if (off + a.stride > a.avail) continue;
+            const uint8_t* const row = a.data + off;
+            int32_t u = (int32_t)(((int64_t)Aq * fxRel0) >> 16) + Cq;
+            int xs = a.ox0, xe = a.ox1;
+            if (!a.wrapx) {                                    // the pixels whose texel is inside the line
+                if (u < 0) { const int n = (int)((-u + du - 1) / du); xs += n; u += n * du; }
+                if (xs >= xe || u >= lwq) continue;
+                const int maxn = (int)((lwq - 1 - u) / du) + 1;
+                if (xe - xs > maxn) xe = xs + maxn;
+            }
+            uint32_t* dp = w.band + (size_t)(oy - w.row0) * cfg.outW + xs;
+            const uint32_t* const pal32 = a.pal32;
+#define FT_FAST_PIXEL(TU) do { \
+                const uint32_t px = pal32 ? pal32[row[TU]] : texel<FMT>(row, (TU), nullptr, 0); \
+                const uint32_t sa = px >> 24; \
+                if (sa == 255) *dp = px; \
+                else if (sa) blendPixel(dp, (px >> 16) & 255, (px >> 8) & 255, px & 255, sa, c); \
+            } while (0)
+            if (!a.wrapx)   for (int n = xe - xs; n > 0; n--, dp++, u += du) FT_FAST_PIXEL((uint32_t)(u >> 16));
+            else if (pow2)  for (int n = xe - xs; n > 0; n--, dp++, u += du) FT_FAST_PIXEL((uint32_t)(u >> 16) & (lw - 1));
+            else            for (int n = xe - xs; n > 0; n--, dp++, u += du) FT_FAST_PIXEL((uint32_t)(u >> 16) % lw);
+#undef FT_FAST_PIXEL
+        }
+#if FT812_TRACE
+        if (cfg.clockUs) g_renderStats.usFmt[FMT] += (uint32_t)(cfg.clockUs() - bt0);
+#endif
+        return;
+    }
     for (int oy = a.oy0; oy < a.oy1; oy++) {
         const int32_t fyRel = (int32_t)((((int64_t)oy << 16) + 0x8000) * cfg.invYQ16 >> 16) - a.vy;
         int32_t u = (int32_t)(((int64_t)Aq * fxRel0 + (int64_t)Bq * fyRel) >> 16) + Cq;
@@ -269,7 +330,7 @@ static FT_HOT void blitBitmap(const BlitArgs& a) {
                     if (a.wrapy) sv = (int32_t)((uint32_t)sv % lh); else if ((uint32_t)sv >= lh) continue;
                     const uint32_t off = (uint32_t)sv * a.stride;
                     if (off + a.stride > a.avail) continue;
-                    cc[k] = texel<FMT>(a.data + off, (uint32_t)su, a.pal, a.palAvail);
+                    cc[k] = a.pal32 ? a.pal32[a.data[off + (uint32_t)su]] : texel<FMT>(a.data + off, (uint32_t)su, a.pal, a.palAvail);
                 }
                 px = bilerp(cc[0], cc[1], cc[2], cc[3], 128u, 128u);
             } else if (!a.bilinear) {
@@ -277,7 +338,7 @@ static FT_HOT void blitBitmap(const BlitArgs& a) {
                 if (a.wrapy) tv = (int32_t)((uint32_t)tv % lh); else if ((uint32_t)tv >= lh) continue;
                 const uint32_t off = (uint32_t)tv * a.stride;
                 if (off + a.stride > a.avail) continue;
-                px = texel<FMT>(a.data + off, (uint32_t)tu, a.pal, a.palAvail);
+                px = a.pal32 ? a.pal32[a.data[off + (uint32_t)tu]] : texel<FMT>(a.data + off, (uint32_t)tu, a.pal, a.palAvail);
             } else {
                 const uint32_t wx = (uu >> 8) & 255, wy = (vv >> 8) & 255;
                 uint32_t cc[4] = { 0, 0, 0, 0 };
@@ -287,7 +348,7 @@ static FT_HOT void blitBitmap(const BlitArgs& a) {
                     if (a.wrapy) sv = (int32_t)((uint32_t)sv % lh); else if ((uint32_t)sv >= lh) continue;
                     const uint32_t off = (uint32_t)sv * a.stride;
                     if (off + a.stride > a.avail) continue;
-                    cc[k] = texel<FMT>(a.data + off, (uint32_t)su, a.pal, a.palAvail);
+                    cc[k] = a.pal32 ? a.pal32[a.data[off + (uint32_t)su]] : texel<FMT>(a.data + off, (uint32_t)su, a.pal, a.palAvail);
                 }
                 px = bilerp(cc[0], cc[1], cc[2], cc[3], wx, wy);
             }
@@ -340,26 +401,42 @@ static FT_HOT void drawBitmap(Walk& w, int32_t vx, int32_t vy, int handle, int c
     a.data = cfg.mem->view(src, &avail);
     if (!a.data || !avail) return;
     a.avail = avail;
-    a.pal = nullptr; a.palAvail = 0;
+    a.pal = nullptr; a.palAvail = 0; a.pal32 = nullptr;
     if (fmt == F_PALETTED || fmt == F_PALETTED565 || fmt == F_PALETTED4444 || fmt == F_PALETTED8) {
         uint32_t pa = 0;
         const uint32_t palAddr = w.ctx.palSrc & 0x3FFFFF;
         a.pal = cfg.mem->view(palAddr, &pa);
         a.palAvail = pa;
         if (!a.pal) return;
-        if (cfg.palScratch && cfg.mem->gen) {
-            const uint32_t need = (fmt == F_PALETTED || fmt == F_PALETTED8) ? 1024u : 512u;
-            uint32_t len = need < pa ? need : pa;
-            if (len > cfg.palScratchSize) len = cfg.palScratchSize;
+        // The table is kept in SRAM EXPANDED to 256 ARGB8888 words: a texel is then
+        // one PSRAM byte and one word load, where the raw table cost two byte loads
+        // and four multiplies per pixel (and two PSRAM line fills without the copy —
+        // hw 2026-09-28: ZUMA is PALETTED4444 almost throughout; R-Type too).
+        if (cfg.palScratch && cfg.mem->gen && cfg.palScratchSize >= 1024 && !((uintptr_t)cfg.palScratch & 3)) {
             const uint32_t gen = cfg.mem->gen();
             RenderState& st = *w.st;
-            if (!st.palCacheValid || st.palCacheAddr != palAddr || st.palCacheGen != gen || st.palCacheLen < len) {
-                memcpy(cfg.palScratch, a.pal, len);
-                st.palCacheValid = true; st.palCacheAddr = palAddr; st.palCacheGen = gen; st.palCacheLen = len;
+            uint32_t* p32 = (uint32_t*)cfg.palScratch;
+            if (!st.palCacheValid || st.palCacheAddr != palAddr || st.palCacheGen != gen || st.palCacheFmt != (uint8_t)fmt) {
+                const uint8_t* src8 = a.pal;
+                if (fmt == F_PALETTED || fmt == F_PALETTED8) {
+                    const uint32_t n = pa / 4 < 256 ? pa / 4 : 256;
+                    memcpy(p32, src8, n * 4);
+                    for (uint32_t k = n; k < 256; k++) p32[k] = 0;
+                } else {
+                    const uint32_t n = pa / 2 < 256 ? pa / 2 : 256;
+                    for (uint32_t k = 0; k < n; k++) {
+                        const uint32_t p = (uint32_t)src8[k * 2] | ((uint32_t)src8[k * 2 + 1] << 8);
+                        if (fmt == F_PALETTED565) {
+                            const uint32_t r = p >> 11, g = (p >> 5) & 63, b = p & 31;
+                            p32[k] = 0xFF000000u | ((r << 3 | r >> 2) << 16) | ((g << 2 | g >> 4) << 8) | (b << 3 | b >> 2);
+                        } else p32[k] = ((p >> 12) * 17) << 24 | (((p >> 8) & 15) * 17) << 16 | (((p >> 4) & 15) * 17) << 8 | ((p & 15) * 17);
+                    }
+                    for (uint32_t k = n; k < 256; k++) p32[k] = 0;
+                }
+                st.palCacheValid = true; st.palCacheAddr = palAddr; st.palCacheGen = gen; st.palCacheLen = 1024; st.palCacheFmt = (uint8_t)fmt;
                 FTR(g_renderStats.palCopies++);
             }
-            a.pal = cfg.palScratch;
-            a.palAvail = len;
+            a.pal32 = p32;
         }
     }
     a.stride = stride; a.lw = lw; a.lh = lh;
@@ -661,7 +738,7 @@ static FT_HOT bool execWord(Walk& w, uint32_t word, uint32_t& pc, int depth) {
 }
 
 void ft812RenderStateReset(RenderState& st, void (*romFontHandle)(int handle, BitmapHandle* out)) {
-    st.palCacheValid = false; st.palCacheAddr = st.palCacheGen = st.palCacheLen = 0;
+    st.palCacheValid = false; st.palCacheAddr = st.palCacheGen = st.palCacheLen = 0; st.palCacheFmt = 0;
     memset(&st, 0, sizeof(st));
     for (int h = 16; h < 32; h++) if (romFontHandle) romFontHandle(h, &st.handle[h]);
 }
@@ -703,6 +780,8 @@ void ft812PalLutInit(PalLut& p, int poolSlots, const uint8_t* poolSlot) {
             int q = x * (L[c] - 1) / 255;
             if (q > L[c] - 1) q = L[c] - 1;
             p.lut[c][x] = (uint8_t)q;
+            if (c == 0) p.lutm[0][x] = (uint8_t)(q * p.gl * p.bl);
+            if (c == 1) p.lutm[1][x] = (uint8_t)(q * p.bl);
         }
     const int n = p.rl * p.gl * p.bl;
     for (int i = 0; i < 240; i++) p.slot[i] = (i < n && i < poolSlots) ? poolSlot[i] : 0;
@@ -714,18 +793,23 @@ uint32_t ft812PalLutColor(const PalLut& p, int i) {
     return (R << 16) | (G << 8) | B;
 }
 
-FT_HOT void ft812QuantizeRow(const PalLut& p, const uint32_t* src, int w, int y, uint8_t* dst, int x0) {
+// ~100k pixels a frame: everything the loop reads is a local, the dither is an
+// add from a per-row table, and the cube index is three loads and two adds (the
+// R and G levels come pre-multiplied by their weight, PalLut::lutm). It used to
+// reload p.bl and recompute three dither products per pixel — R-Type spent about
+// as long here and in ftPutRow as in its sprites (hw 2026-10-01).
+__attribute__((optimize("O2")))
+FT_HOT_Q void ft812QuantizeRow(const PalLut& p, const uint32_t* src, int w, int y, uint8_t* dst, int x0) {
     const uint8_t* br = kBayer4[y & 3];
     // Dither amplitude = one quantization step, spread over the 16 Bayer levels.
     const int sr = 255 / (p.rl - 1), sg = 255 / (p.gl - 1), sb = 255 / (p.bl - 1);
-    const int gb = p.gl * p.bl;
-    for (int x = 0; x < w; x++) {
+    int dr[4], dg[4], db[4];
+    for (int i = 0; i < 4; i++) { const int t = br[i]; dr[i] = (t * sr) >> 4; dg[i] = (t * sg) >> 4; db[i] = (t * sb) >> 4; }
+    const uint8_t* const lr = p.lutm[0], * const lg = p.lutm[1], * const lb = p.lut[2], * const slot = p.slot;
+    uint32_t ph = (uint32_t)x0;
+    for (int x = 0; x < w; x++, ph++) {
         const uint32_t px = src[x];
-        const int t = br[(x + x0) & 3];
-        const int r = p.lut[0][((px >> 16) & 255) + ((t * sr) >> 4)];
-        const int g = p.lut[1][((px >> 8) & 255) + ((t * sg) >> 4)];
-        const int b = p.lut[2][(px & 255) + ((t * sb) >> 4)];
-        dst[x] = p.slot[r * gb + g * p.bl + b];
+        dst[x] = slot[lr[((px >> 16) & 255) + dr[ph & 3]] + lg[((px >> 8) & 255) + dg[ph & 3]] + lb[(px & 255) + db[ph & 3]]];
     }
 }
 

@@ -103,6 +103,7 @@ struct RenderState {
     uint32_t     warned;          // bit per unsupported feature already reported
     uint32_t     palCacheAddr, palCacheGen, palCacheLen;   // what cfg.palScratch holds
     bool         palCacheValid;
+    uint8_t      palCacheFmt;      // the bitmap format it was expanded for
 };
 
 // Reset the engine state: every handle to the ROM font defaults (handles 16..31)
@@ -123,6 +124,7 @@ void ft812RenderBand(const RenderCfg& cfg, RenderState& st, int row0, int row1, 
 struct PalLut {
     uint8_t rl, gl, bl;           // levels per channel
     uint8_t lut[3][256 + 64];     // channel value + dither → level
+    uint8_t lutm[2][256 + 64];    // the R and G levels times their weight in the cube index (the quantizer's hot loop)
     uint8_t slot[240];            // cube index → hardware palette slot
 };
 void ft812PalLutInit(PalLut& p, int poolSlots, const uint8_t* poolSlot);

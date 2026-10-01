@@ -139,6 +139,11 @@ uint32_t intEdges();                      // count of 0->1 transitions of intLin
 // Called on every 0->1 transition (core0). TsConf routes it onto the LINE
 // interrupt source while FT_EN is set.
 extern void (*intHook)();
+// Called when the host reads REG_DLSWAP and it is still non-zero, i.e. it is
+// waiting for the chip to take the swap. The machine may use it to skip the
+// guest's busy-wait (TsConf::ftSwapPoll): the swap is taken at the next frame
+// tick and nothing the loop does in between can change that.
+extern void (*swapPollHook)();
 // Wall clock for REG_CLOCK (60 MHz cycles) — microseconds since boot.
 extern uint64_t (*clockUs)();
 

@@ -208,6 +208,10 @@ public:
     // `int_start_lin = vdac2_msel ? int_start_ft : line_start_s`). Ft812::intHook
     // calls this on every 0->1 edge of the chip's INT line (core0).
     static void ftIntRaise();
+    // Ft812::swapPollHook: the guest read REG_DLSWAP while a swap is pending. A
+    // tight loop doing that is fast-forwarded to the next interrupt event or the
+    // frame end (the swap is taken at the frame tick) — like the DMAStatus poll.
+    static void ftSwapPoll();
     // FT_EN set and the board fitted. Inline: intLine() asks on every checked
     // instruction, and a flash call there would be an XIP fetch per instruction.
     static inline bool ftVideo() { return Ft812::enabled && (r.vconf & 0x04); }

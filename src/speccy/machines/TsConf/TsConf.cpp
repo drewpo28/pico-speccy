@@ -960,6 +960,39 @@ void TsConf::frameIntRecalc() {
     if (CPU::IntEnd > CPU::statesInFrame) CPU::IntEnd = CPU::statesInFrame;
 }
 
+// The VDAC2 swap wait. A game ends its frame with CMD_SWAP / REG_DLSWAP = 2 and
+// then reads REG_DLSWAP over SPI until it is 0. The chip takes the swap at its
+// frame boundary — here, at our frame tick — so that loop is pure waiting, and
+// R-Type spends about a third of every emulated frame in it at 14 MHz, ~230 SPI
+// transactions of port I/O a frame (hw 2026-10-01: 26 ms a frame on core0, IDL
+// negative). Two reads from the SAME instruction a short time apart are the
+// loop; from the second on, guest time jumps to the next interrupt event or to
+// the frame end. Same construction as the DMAStatus fast-forward below.
+static uint16_t s_ftsw_pc = 0xFFFF;
+static uint32_t s_ftsw_t  = 0;
+#if FT812_TRACE
+volatile uint32_t ts_ftsw_ff = 0, ts_ftsw_ff_t = 0;   // fast-forwards, T skipped (the [FT812] host line)
+#endif
+TS_HOT static void tsIntPoll();
+void TsConf::ftSwapPoll() {
+    const uint16_t pc = Z80::getRegPC();
+    const uint32_t t  = CPU::tstates;
+    // one iteration = an SPI transaction of ~8 port accesses: a few hundred T
+    // (CPU::tstates are in ZCLK units, so the bound scales with the clock)
+    if (pc == s_ftsw_pc && (uint32_t)(t - s_ftsw_t) < (1500u << ESPectrum::multiplicator)) {
+        uint32_t end = CPU::statesInFrame;
+        if (Z80::isIFF1()) { tsIntPoll(); const uint32_t e = nextIntEvent(); if (e < end) end = e; }
+        if (end > t) {
+#if FT812_TRACE
+            ts_ftsw_ff++; ts_ftsw_ff_t += end - t;
+#endif
+            CPU::haltAdvanceTo(end);
+        }
+    }
+    s_ftsw_pc = pc;
+    s_ftsw_t  = CPU::tstates;
+}
+
 // Poll the lazily-evaluated sources against the current T-state.
 void TsConf::ftIntRaise() {
     // The chip's INT edge lands on the LINE latch only while FT_EN routes it there

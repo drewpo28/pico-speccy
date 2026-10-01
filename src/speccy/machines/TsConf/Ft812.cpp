@@ -17,6 +17,7 @@ namespace Ft812 {
 
 bool enabled = false;
 void (*intHook)() = nullptr;
+void (*swapPollHook)() = nullptr;
 uint64_t (*clockUs)() = nullptr;
 
 namespace {
@@ -347,6 +348,7 @@ uint32_t rd32(uint32_t addr) {
 
 static void cpProcess();
 static void fifoPush(uint8_t v);
+static void fifoFlush();
 
 static void regWrite8(uint32_t off, uint8_t v) {
     if (off >= REG_CMDB_WRITE && off < REG_CMDB_WRITE + 4) { fifoPush(v); return; }
@@ -441,6 +443,7 @@ void chipSelect(bool on) {
         // ACTIVE is 00 00 00: a read header at address 0 that ends before the data phase.
         if (C->mode == 0 && C->addr == 0 && C->phase == 3) hostCommand(0x00, 0);
         applyTouched();
+        fifoFlush();                // REG_CMDB_WRITE bytes of this transaction
         if (C->mf.size) {   // REG_MEDIAFIFO_WRITE: a 32-bit value the host writes byte by byte — publish at CS release
             uint32_t w; memcpy(&w, C->regsHi + 0x18, 4);
             fence();
@@ -498,6 +501,7 @@ uint8_t transfer(uint8_t d) {
             } else C->st.rdOther++;
         }
         const uint8_t v = rd8(C->addr);
+        if (v && C->addr == RAM_REG + REG_DLSWAP && swapPollHook) swapPollHook();   // the host is waiting for the swap
         C->addr = (C->addr + 1) & 0x3FFFFF;
         return v;
     }
@@ -906,11 +910,21 @@ static void cpProcess() {
     if (C->cpR == C->cpW && !C->cpFault) intRaise(INT_CMDEMPTY);
 }
 
+// The coprocessor runs once per SPI TRANSACTION (chipSelect release), not once per
+// FIFO word: a host cannot read anything back inside the write transaction, so the
+// result is the same, and running it every 4 bytes cost four passes per 16-byte
+// command and re-entered tinfl for every 4 bytes of an INFLATE stream (R-Type
+// streams 100-190 KB a second through here — 1.5-2.3 ms of every emulated frame,
+// hw 2026-10-01). A long transaction (a DMA upload holds CS for kilobytes) is
+// drained whenever the FIFO is half full.
+static uint8_t s_cpDirty = 0;
 static void fifoPush(uint8_t v) {
     C->cmd[C->cpW & CMD_MASK] = v;
     C->cpW = (C->cpW + 1) & CMD_MASK;
-    if ((C->cpW & 3) == 0) cpProcess();
+    s_cpDirty = 1;
+    if ((C->cpW & 3) == 0 && ((C->cpW - C->cpR) & CMD_MASK) >= RAM_CMD_SIZE / 2) { s_cpDirty = 0; cpProcess(); }
 }
+static void fifoFlush() { if (s_cpDirty) { s_cpDirty = 0; cpProcess(); } }
 
 // ── display side ─────────────────────────────────────────────────────────────
 bool     powered()   { return C && C->powered; }

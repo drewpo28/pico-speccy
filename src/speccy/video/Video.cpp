@@ -6256,13 +6256,18 @@ void VIDEO::tsFastMemRecalc() {
     // No overlay test: TS-Conf's bank pointers are TsConf::romPtr() flash pages or
     // plain RAM pages, neither of which is a registered overlay base — and the
     // registry itself is rarely empty (other romsets' overlays persist in it).
-    const uint8_t v = (Z80Ops::isTsconf && ts_fast_armed && ts_render_live
+    // VDAC2 output (ft_live): the beam renderer is parked for the whole frame
+    // (Draw == Blank, ts_line_t == MAX from EndFrame), so the fast path is exactly
+    // Blank there too. It used to drop to the generic accessors the moment the
+    // FT812 took the screen — on a title that never HALTs (R-Type: 14 MHz, busy
+    // the whole frame) that alone put the emulated frame over its budget.
+    const uint8_t v = (Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))
                        && Config::numMemReadBP == 0 && Config::numMemWriteBP == 0
                        && !g_ngs_zxdma && !MemESP::divmmc_mapped) ? 1 : 0;
     if (v != g_ts_fastmem) {
         g_ts_fastmem = v;
-        Debug::log("[TSF] fast memory path %s (render=%u armed=%u bp=%d/%d zxdma=%u divmmc=%u)", v ? "ON" : "off",
-                   ts_render_live, (unsigned)ts_fast_armed, Config::numMemReadBP, Config::numMemWriteBP,
+        Debug::log("[TSF] fast memory path %s (render=%u armed=%u ft=%u bp=%d/%d zxdma=%u divmmc=%u)", v ? "ON" : "off",
+                   ts_render_live, (unsigned)ts_fast_armed, (unsigned)ft_live, Config::numMemReadBP, Config::numMemWriteBP,
                    (unsigned)g_ngs_zxdma, (unsigned)MemESP::divmmc_mapped);
     }
 }
@@ -9721,8 +9726,8 @@ struct FtGlue {
     Ft812::PalLut lut;
     uint32_t* band;
     int       bandRows;
-    uint8_t   rowTmp[384];        // one output row of palette indices (natural x)
-    uint8_t   palScratch[1024];   // SRAM copy of the PALETTE_SOURCE table (RenderCfg::palScratch)
+    alignas(4) uint8_t rowTmp[384];   // one output row of palette indices (natural x); word-aligned for ftPutRow
+    alignas(4) uint8_t palScratch[1024];   // SRAM copy of the PALETTE_SOURCE table, expanded to 256 ARGB8888 words (RenderCfg::palScratch)
     // the frame in flight (core1)
     bool      active;
     bool      blank;              // display off / no usable timing: black frame
@@ -9926,6 +9931,7 @@ static void ftModeSwitch(bool on) {
         }
         Ft812::renderDone();          // whatever frame was in flight is abandoned
         VIDEO::ft_live = false;
+        VIDEO::tsFastMemRecalc();     // the fast guest-memory path was held up by ft_live
         VIDEO::applyPalette();        // hand the slots back (standard ramp + ZX 16)
         if (VIDEO::vga.frameBuffer)
             for (int y = 0; y < (int)VIDEO::vga.yres; y++)
@@ -10066,7 +10072,11 @@ static FT_VID_HOT void ftPutSpan(int row, int x, const uint8_t* idx, int cnt) {
     }
 }
 
-static FT_GLUE_HOT void ftPutRow(int row, const uint8_t* idx) {
+// A row with no overlay on it and a 4-aligned picture goes a 32-bit word at a
+// time (the x^2 byte order is a 16-bit rotate of the word); the per-pixel loop
+// with its carve test remains for the two or three rows an overlay crosses.
+__attribute__((optimize("O2", "no-unroll-loops", "no-tree-loop-distribute-patterns")))
+static FT_VID_HOT void ftPutRow(int row, const uint8_t* idx) {
     uint8_t* dst = VIDEO::vga.frameBuffer[row];
     if (!dst) return;
     const FtGlue& g = *ftg;
@@ -10074,6 +10084,16 @@ static FT_GLUE_HOT void ftPutRow(int row, const uint8_t* idx) {
     const uint8_t black = g.lut.slot[0];
     int cx[2][2]; const int n = ftCarve(row, cx);
     const int x0 = g.ox0, x1 = g.ox0 + g.outW;
+    if (!n && !(xres & 3) && !((uintptr_t)dst & 3) && (!idx || (!(x0 & 3) && !(x1 & 3) && !((uintptr_t)idx & 3)))) {
+        uint32_t* d32 = (uint32_t*)dst;
+        const uint32_t bw = black * 0x01010101u;
+        if (!idx) { for (int k = xres >> 2; k > 0; k--) *d32++ = bw; return; }
+        for (int k = x0 >> 2; k > 0; k--) *d32++ = bw;
+        const uint32_t* s32 = (const uint32_t*)idx;
+        for (int k = (x1 - x0) >> 2; k > 0; k--) { const uint32_t w = *s32++; *d32++ = (w >> 16) | (w << 16); }
+        for (int k = (xres - x1) >> 2; k > 0; k--) *d32++ = bw;
+        return;
+    }
     for (int x = 0; x < xres; x++) {
         if (n) { bool skip = false; for (int i = 0; i < n; i++) if (x >= cx[i][0] && x < cx[i][1]) { skip = true; break; } if (skip) continue; }
         dst[x ^ 2] = (idx && x >= x0 && x < x1) ? idx[x - x0] : black;
@@ -10556,9 +10576,15 @@ static __attribute__((noinline)) void ftTraceTick() {
             break;
         }
     }
-    Debug::log("[FT812] %ums host: spi %uKB cs %u | rd dlswap %u int %u space %u cmdrd %u ramg %u oth %u | wr ramg %uKB fifo %uKB",
+    {   // the swap-wait fast-forward (TsConf::ftSwapPoll): jumps, and the guest time they skipped as a share of the window
+        extern volatile uint32_t ts_ftsw_ff, ts_ftsw_ff_t;
+        static uint32_t pff = 0, pft = 0;
+        const uint32_t ff = ts_ftsw_ff - pff, ft = ts_ftsw_ff_t - pft; pff += ff; pft += ft;
+        const uint32_t frameT = CPU::statesInFrame ? CPU::statesInFrame : 1;
+        Debug::log("[FT812] %ums host: spi %uKB cs %u | rd dlswap %u int %u space %u cmdrd %u ramg %u oth %u | wr ramg %uKB fifo %uKB | swapFF %u (%u%% of guest time)",
                dtMs, FTD(spiBytes) >> 10, FTD(csXact), FTD(rdDlswap), FTD(rdIntFlags), FTD(rdCmdbSpace), FTD(rdCmdRead),
-               FTD(rdRamG), FTD(rdOther), FTD(wrRamG) >> 10, FTD(fifoBytes) >> 10);
+               FTD(rdRamG), FTD(rdOther), FTD(wrRamG) >> 10, FTD(fifoBytes) >> 10, (unsigned)ff, (unsigned)((uint64_t)ft * 100 / ((uint64_t)frameT * 60)));
+    }
     Debug::log("[FT812] cp: cmds %u dl %u memwr %uKB infl %uKB/%ums cpu %ums waitSwap %u faults %u | swap take %u blocked %u latMax %u | top %02X:%u %02X:%u %02X:%u",
                FTD(cpCmds), FTD(cpDlWords), FTD(memwrBytes) >> 10, FTD(inflated) >> 10, FTD(inflUs) / 1000, FTD(cpUs) / 1000,
                FTD(waitSwap), FTD(cpFaults), FTD(swaps), FTD(swapBlocked), s.swapLatMax,

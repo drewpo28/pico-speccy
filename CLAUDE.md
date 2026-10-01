@@ -12105,6 +12105,98 @@ repo: chapters 12, 15.6, 23.4, 26, 35, 38 are the ones that pin chip semantics).
   to one display frame, on rebuild frames only. If the 185 slot writes ever outgrow
   the blanking (1.4 ms at 576p plus the letterbox rows), the top rows show one frame
   of old pixels under the new palette — program only the changed slots then.
+- **R-Type VDAC2 (`rtype_vdac2.spg`, hw 2026-10-01, `logs/devttyACM0_2026_10_01.16.28.11.951.txt`):
+  low FPS and negative IDL in the game.** The numbers: 60 emulated frames took
+  1520-1620 ms (26 ms each on core0), the guest issued ~14k SPI transactions a
+  window of which `rd dlswap` 27-29k bytes — **it ends each frame by spinning on
+  REG_DLSWAP until the swap is taken**, and we take it at the frame tick, so about
+  a third of every 14 MHz frame was emulated busy-wait through the port path; and
+  core1 rendered 41-43 of the 60 swapped frames at 37-42 ms each, 94% busy, of
+  which the sprites (ARGB4, ~25k px a frame, 0.57 us/px — PSRAM texel fetches) were
+  only ~14 ms: the rest was the per-pixel output, `ft812QuantizeRow` + `ftPutRow`
+  over all 97k pixels from flash. Changes (NOT hw-tested,
+  `debug/DVp2-vdac2-rtype1-trace-1.0.8.elf`):
+  - **`TsConf::ftSwapPoll` (via `Ft812::swapPollHook`)**: two reads of a pending
+    REG_DLSWAP from the same instruction within `1500 << multiplicator` T fast-
+    forward guest time to the next interrupt event or the frame end
+    (`CPU::haltAdvanceTo`) — the DMAStatus construction. The `[FT812] ... host:`
+    line gained `swapFF N (P% of guest time)`.
+  - `ft812QuantizeRow`: locals only, dither from a per-row table, R and G levels
+    pre-multiplied (`PalLut::lutm`); `ftPutRow`: a row with no overlay goes a word
+    at a time. Both follow `FT812_JPEG_IN_RAM` into SRAM (`FT_HOT_Q`, `FT_VID_HOT`).
+  Not touched: the swap is taken once per EMULATED frame (48.8 Hz), where the real
+  chip takes it at its own refresh (1024x768 ~60 Hz) — the game's logic runs ~19%
+  slow by that alone; and the sprite blit itself.
+  **Round 2, rtype1 log (`logs/devttyACM0_2026_10_01.16.34.11.895.txt`)**: the
+  fast-forward works where the guest spins (menu: `swapFF 30`, 27% of guest time,
+  60 frames in 1226-1230 ms) and does NOT fire in the game (`swapFF 0`, 1430-1580
+  ms) — there the guest is busy the whole frame. And the first log had been the
+  menu's numbers: in game core1 renders 15-19 frames a window at **80-96 ms each**,
+  ~124 cells per band, ~162k px a frame, almost all `fmt 15` (PALETTED4444, 1.2 s
+  of blit per window = 0.5 us/px), `palCopies` ~100 a frame. So the blit's generic
+  per-pixel loop is the cost, and its PSRAM traffic is what slows core0 (XIP port
+  shared). rtype2 (NOT hw-tested, `debug/DVp2-vdac2-rtype2-trace-1.0.8.elf`):
+  - **The PALETTE_SOURCE scratch is kept EXPANDED: 256 ARGB8888 words**
+    (`BlitArgs::pal32`, in `cfg.palScratch`, which must be 4-aligned and 1024 B;
+    cache key = address + RAM_G generation + FORMAT, `RenderState::palCacheFmt`).
+    A paletted texel is one PSRAM byte and one SRAM word; every loop of
+    `blitBitmap` uses it, the raw `texel<>` palette decode only remains for a
+    config with no scratch.
+  - **A fast cell loop in `blitBitmap`** for nearest + axis-aligned (B = D = 0,
+    A > 0) + default blend + COLOR white/opaque + a format with a direct texel
+    (paletted via pal32, ARGB4, RGB565, ARGB1555, RGB332, ARGB2): row pointer and
+    the valid x range settled once per row, three loops by wrap mode (none /
+    power-of-two mask / modulo), per pixel = step, texel, store (alpha 255) / skip
+    (0) / `blendPixel`. L formats, bilinear, smooth-box, rotated and tinted cells
+    keep the generic loop.
+  - Host test (4b): 400 random scenes rendered with the fast loop on and off
+    (`g_ft812FastBlit`, host builds only) must be bit-identical — every fast
+    format, wrap on/off, cells off every edge, minified/magnified, 320x240 and
+    360x288 outputs; mutation-checked (clip count, wrap mask, opaque threshold;
+    a wrong left clip crashes it). 2222 checks (each scene adds runDl's five).
+  **Round 3, rtype2 log (`logs/devttyACM0_2026_10_01.16.43.37.401.txt`)**: the
+  blit is 0.5 -> **0.145 us/px** (`fmt 15: 2851 kpx / 413 ms`), `render: us avg`
+  80-96 -> **41-43 ms**, and `render: frames` now EQUALS `swap take` (19-30 per
+  window) — core1 shows every frame the game produces. What is left is core0: 60
+  emulated frames still take 1537-1672 ms (25.6-27.9 ms each), `swapFF 0`. The same
+  log names one cause: `[TSF] fast memory path off (render=0 ...)` at the VDAC2
+  switch — `tsFastMemRecalc` required `ts_render_live`, which FT mode forces off,
+  so a never-HALTing 14 MHz title ran every guest byte through the generic
+  accessors (~45 ARM instructions against ~12). In FT mode Draw is Blank and
+  `ts_line_t` is MAX for the whole frame, i.e. the fast path IS Blank there:
+  the gate is now `(ts_fast_armed && ts_render_live) || (ft_live && ts_line_t ==
+  MAX)`, re-derived at the mode-off too. rtype3 (NOT hw-tested,
+  `debug/DVp2-vdac2-rtype3-trace-1.0.8.elf`); expect `[TSF] fast memory path ON
+  (... ft=1 ...)` after `VDAC2 output ON` and shorter windows. Known from the .spg
+  header: code starts in page 5 (SRAM) but 28 of its 31 pages are 8..36 and 90-92,
+  i.e. butter PSRAM, so its opcode fetches share the XIP port with core1's texel
+  stream (~45k line fills a frame, which is what the remaining 19 ms of blit is).
+  The remaining 4 KB/frame of SPI goes through flash port handlers; `cp cpu` is
+  1.3 ms/frame, the SD 0.35 ms. If the windows are still over 1230 ms, take a
+  PERF build for `[PERF] 60f: cpu= xip=` before the next change.
+  **rtype3 on hardware (`logs/devttyACM0_2026_10_01.16.50.30.395.txt`): the fast
+  path stays ON through the VDAC2 switch (no `off` line) and the 60-frame windows
+  are 1221-1276 ms in play (1310-1363 only while the game streams 100-190 KB into
+  the FIFO with INFLATE) against 1537-1672 — core0 is back at full speed.** The
+  game itself swaps 18-27 times per 61 emulated frames with `swapFF 0`: it is
+  CPU-bound in GUEST time (2-3 frames of 14 MHz work per game frame), which no
+  host-side change moves; `render: us avg` 43-52 ms is below that period, so core1
+  shows every frame. Whether a real ZX-Evo runs it faster is not known here — the
+  two guest-time deviations left are the swap taken at our 48.8 Hz tick instead of
+  the chip's ~60 Hz, and the 14 MHz DRAM wait model.
+  Owner on rtype3: "clearly better", but IDL still dips to -5000 and FPS to 40 in
+  places. Those are the windows where the game streams into the command FIFO:
+  the excess over 1230 ms equals `cp: cpu` (139 ms at 186 KB/window, 79 at 98) —
+  **`fifoPush` ran `cpProcess` on every 4th byte**, i.e. four passes per 16-byte
+  MEMCPY (which is also why `cmds`/`top 1D` read ~4x the real count) and one
+  `tinfl_decompress` entry per 4 bytes of INFLATE input, all from flash. rtype4
+  (NOT hw-tested, `debug/DVp2-vdac2-rtype4-trace-1.0.8.elf`): the coprocessor runs
+  once per SPI transaction (`fifoFlush` at CS release — a host cannot read back
+  inside its own write transaction) and whenever the FIFO is half full (a DMA
+  upload holds CS for kilobytes). Host test unchanged at 2222 checks.
+  If `render: us avg` is still far above a frame after this, the next levers are
+  the cell COUNT (124 per band = the display list is walked whole for each band —
+  a per-band Y pre-sort) and RAM residency of the fast loop (it is flash code).
 - **"Smooth 2:1" showed no difference (owner, 2026-10-01) because it was a 2:1
   special**: the box average engaged only on an axis-aligned cell at exactly 2:1
   (+-1/16 texel), i.e. ZUMA's 1.6x-upscaled assets on a 320x240 framebuffer and

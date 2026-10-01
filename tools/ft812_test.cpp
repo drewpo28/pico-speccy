@@ -33,6 +33,7 @@ static void  hostFree(void* p) { free(p); }
 
 // ── SPI helpers (the TSLib idiom: 3-byte header, dummy, data) ────────────────
 using namespace Ft812;
+namespace Ft812 { extern bool g_ft812FastBlit; }
 static void spiWrite(uint32_t addr, const uint8_t* d, size_t n) {
     chipSelect(true);
     transfer((uint8_t)(0x80 | ((addr >> 16) & 0x3F))); transfer((uint8_t)(addr >> 8)); transfer((uint8_t)addr);
@@ -71,7 +72,7 @@ struct Screen {
     int hs, vs, w, h;
     std::vector<uint32_t> px;
     RenderCfg cfg; MemView mv; RenderState rs;
-    uint8_t palScratch[1024];     // the device's SRAM palette copy — exercised here too
+    alignas(4) uint8_t palScratch[1024];     // the device's SRAM palette copy — exercised here too
     bool smooth = false;
     void setup(int hsize, int vsize, int outW, int outH) {
         hs = hsize; vs = vsize; w = outW; h = outH;
@@ -340,6 +341,43 @@ int main() {
     scr.setup(640, 480, 640, 480); scr.render();
     CHECK(scr.at(10, 10) == 0xFF00FFFFu && scr.at(11, 10) == 0xFF0000FFu, "PALETTED4444 columns cyan/blue (%08X %08X)", scr.at(10, 10), scr.at(11, 10));
     renderDone();
+
+    // (4b) the fast cell loop of blitBitmap against the generic one: the same random
+    // scenes (every fast format, wrap on/off, cells hanging off every screen edge,
+    // magnified and minified, translucent texels, a scaled output) must come out
+    // bit-identical with the fast path on and off.
+    { uint32_t rs = 0x1234567u;
+      auto rnd = [&rs]() { rs ^= rs << 13; rs ^= rs >> 17; rs ^= rs << 5; return rs; };
+      std::vector<uint8_t> blob(0x3000);
+      for (auto& b : blob) b = (uint8_t)rnd();
+      spiWrite(0x4000, blob.data(), (uint32_t)blob.size());         // texels + palettes, random
+      static const struct { int fmt, bpp; } kF[] = { {6, 2}, {7, 2}, {0, 2}, {4, 1}, {5, 1}, {14, 1}, {15, 1}, {16, 1} };
+      int bad = 0, fastPx = 0;
+      for (int it = 0; it < 400 && !bad; it++) {
+          std::vector<uint32_t> dl = { CLEAR_RGB(40, 80, 120), CLEAR_A(255), CLEAR_ALL(), PALSRC(0x6000 + (rnd() & 0x3FC)) };
+          for (int k = 0; k < 6; k++) {
+              const auto& f = kF[rnd() % 8];
+              const int lw = (rnd() & 1) ? (8 << (rnd() % 3)) : 5 + (int)(rnd() % 20), lh = 4 + (int)(rnd() % 20);
+              const int sw = 4 + (int)(rnd() % 60), sh = 4 + (int)(rnd() % 40);
+              static const int kS[] = { 256, 256, 256, 128, 512, 300, 77 };
+              dl.push_back(HANDLE(k)); dl.push_back(SOURCE(0x4000 + (rnd() & 0x7FE)));
+              dl.push_back(LAYOUT(f.fmt, lw * f.bpp, lh)); dl.push_back(SIZE(0, rnd() & 1, rnd() & 1, sw, sh));
+              dl.push_back(TA(kS[rnd() % 7])); dl.push_back(TE(kS[rnd() % 7]));
+              dl.push_back(BEGIN(1)); dl.push_back(VFMT(4));
+              dl.push_back(V2F(((int)(rnd() % 400) - 40) * 16 + (int)(rnd() & 15), ((int)(rnd() % 300) - 40) * 16 + (int)(rnd() & 15)));
+              dl.push_back(END());
+          }
+          runDl(dl);
+          const bool scaled = it & 1;
+          Screen sa, sb;
+          g_ft812FastBlit = true;  sa.setup(320, 240, scaled ? 360 : 320, scaled ? 288 : 240); sa.render(); renderDone();
+          renderState()->palCacheValid = false;
+          g_ft812FastBlit = false; sb.setup(320, 240, scaled ? 360 : 320, scaled ? 288 : 240); sb.render();
+          g_ft812FastBlit = true;
+          for (size_t i = 0; i < sa.px.size(); i++) { if (sa.px[i] != sb.px[i]) { bad++; if (bad == 1) printf("    scene %d px %zu: fast %08X generic %08X\n", it, i, sa.px[i], sb.px[i]); } if (sa.px[i] != 0xFF285078u) fastPx++; }
+      }
+      CHECK(bad == 0, "fast cell loop == generic loop over 400 random scenes (%d pixels differ)", bad);
+      CHECK(fastPx > 200000, "...and the scenes really drew something (%d px)", fastPx); }
 
     // (5) blend + colour mask: 50% alpha red over white; then ONE/ZERO with mask RGB only
     runDl({ CLEAR_RGB(255, 255, 255), CLEAR_A(255), CLEAR_ALL(), HANDLE(0), SOURCE(0x1000), LAYOUT(6, 16, 8), SIZE(0, 0, 0, 8, 8),
