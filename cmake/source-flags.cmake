@@ -66,3 +66,9 @@ set_source_files_properties(src/speccy/devices/gs/GS.cpp PROPERTIES
 # minimp3 decode (NeoGS MP3 path): -O3 buys ~2x over the default -Os — one MP3
 # frame must fit comfortably inside a frame-pacing idle slot on core0.
 set_source_files_properties(src/speccy/devices/gs/NgsMp3.cpp PROPERTIES COMPILE_FLAGS "-O3")
+
+# TJpgDec (FT812 CMD_PLAYVIDEO): a whole 512x384 MJPEG frame every 41 ms on core1.
+# The project default is -Os; the IDCT and the huffman loop want -O2.
+# -fno-tree-loop-distribute-patterns: or GCC turns the per-block clear loops back
+# into libc memset calls, i.e. a flash call per 8x8 block from RAM-resident code.
+set_source_files_properties(external/tjpgd/tjpgd.c PROPERTIES COMPILE_OPTIONS "-O2;-fno-tree-loop-distribute-patterns")

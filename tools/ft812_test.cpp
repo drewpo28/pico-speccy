@@ -12,6 +12,9 @@
 // it covers (see the list at the end of the file).
 #include "speccy/machines/TsConf/Ft812.h"
 #include "speccy/machines/TsConf/Ft812Render.h"
+extern "C" {
+#include "tjpgd/tjpgd.h"
+}
 #include <cstdio>
 #include <cstdarg>
 #include <cstdlib>
@@ -485,6 +488,33 @@ int main() {
       ft812QuantizeRowAdapt(ap, slotOf, row.data(), 64, 1, out);
       CHECK(out[0] != out[63], "ramp ends land on different entries"); }
 
+    // (9c) the MJPEG bin layout (ADAPT_YCC633): neutral must be a bin CENTRE — a grey frame gets a
+    // grey entry (with chroma bins cut at 128 it came out as a green/purple pair), the map of
+    // bins the frame did not use is resolved on demand, and a rebuild in the other layout is
+    // "changed" whatever the content
+    { static AdaptPal ap; memset(&ap, 0, sizeof(ap));
+      const AdaptSpace& sp = ft812AdaptSpace(ADAPT_YCC633);
+      auto binOf = [&](int y, int cb, int cr) { int a = (y + sp.ua / 2 - sp.oa) / sp.ua, b = (cb + sp.ub / 2 - sp.ob) / sp.ub, c = (cr + sp.uc / 2 - sp.oc) / sp.uc;
+          a = a > sp.na - 1 ? sp.na - 1 : a; b = b > sp.nb - 1 ? sp.nb - 1 : b; c = c > sp.nc - 1 ? sp.nc - 1 : c;
+          return (a << sp.sa) | (b << sp.sb) | c; };
+      ft812AdaptClear(ap, ADAPT_YCC633);
+      ap.hist[binOf(100, 128, 128)] = 3000; ap.hist[binOf(20, 128, 128)] = 2000; ap.hist[binOf(180, 96, 160)] = 1000; ap.total = 6000;
+      CHECK(ft812AdaptChanged(ap, 60), "YCC: no palette yet");
+      ft812AdaptBuild(ap, 184);
+      CHECK(ap.n == 4 && ap.space == ADAPT_YCC633 && ap.col[0] == 0, "YCC: black + three entries (%d)", ap.n);
+      const uint32_t g1 = ap.col[ap.lut[binOf(100, 128, 128)]], g2 = ap.col[ap.lut[binOf(20, 128, 128)]];
+      auto grey = [](uint32_t c) { const int r = (c >> 16) & 255, g = (c >> 8) & 255, b = c & 255; return abs(r - g) <= 2 && abs(g - b) <= 2; };
+      CHECK(grey(g1) && grey(g2) && ((g1 >> 8) & 255) > 90 && ((g1 >> 8) & 255) < 110, "YCC: neutral bins give grey entries (%06X %06X)", g1, g2);
+      const uint32_t c3 = ap.col[ap.lut[binOf(180, 96, 160)]];
+      CHECK(((c3 >> 16) & 255) > 200 && (c3 & 255) < 150, "YCC: a warm bin gives a warm entry (%06X)", c3);
+      const int far = binOf(240, 128, 128);
+      CHECK(ap.lut[far] == 0xFF, "YCC: a bin the frame did not use is unresolved");
+      const uint8_t e = ft812AdaptResolve(ap, (uint32_t)far);
+      CHECK(ap.lut[far] == e && e != 0xFF && e == ap.lut[binOf(180, 96, 160)], "YCC: ...and resolves to the nearest entry (%u)", e);
+      CHECK(!ft812AdaptChanged(ap, 60), "YCC: same histogram, unchanged");
+      ft812AdaptClear(ap, ADAPT_RGB444); ap.hist[0x888] = 1000; ap.total = 1000;
+      CHECK(ft812AdaptChanged(ap, 60), "a histogram in the other layout is a change"); }
+
     // (11) CMD_MEDIAFIFO + CMD_PLAYVIDEO: a 2-frame MJPEG AVI streamed through the ring
     {
 #include "ft812_test_avi.inc"
@@ -508,8 +538,7 @@ int main() {
       { const uint32_t p = scr.at(320, 240); CHECK(((p >> 16) & 255) > 200 && (p & 255) < 60, "video frame drawn full-screen red (%08X)", p); }
       videoPump();
       CHECK(!videoFrameReady(), "frame 2 not due yet");
-      tnow = 50000;                                                    // 40 ms/frame in the header
-      videoPump();
+      videoPump();                                                     // 40 ms/frame in the header, 20.48 ms of GUEST time per pump
       CHECK(videoFrameReady(), "frame 2 decoded when due");
       { uint32_t av = 0; const uint8_t* fb = memView(VFB_BASE, &av); const uint16_t px = (uint16_t)(fb[0] | fb[1] << 8);
         CHECK((px & 0x1F) >= 29 && (px >> 11) < 4, "frame 2 is blue (%04X)", px); }
@@ -527,7 +556,91 @@ int main() {
       wr8s(0x30914E, 0);
       videoPump(); frameTick();
       CHECK(!videoActive() && rd16s(RAM_REG + REG_CMD_READ) == rd16s(RAM_REG + REG_CMD_WRITE), "REG_PLAY_CONTROL = 0 ends it");
+      // (11b) the direct path: videoStep only posts the frame, videoDecodeJob (the other core) decodes
+      // it into the sink; the chunk stays pinned behind REG_MEDIAFIFO_READ until the job is reaped,
+      // and a frame that comes due while the decoder is busy is skipped
+      { static int nBegin, nBlocks, nEnd, redBlocks, blueBlocks, scaleAsked; static uint32_t bw, bh;
+        nBegin = nBlocks = nEnd = redBlocks = blueBlocks = 0;
+        static const VideoSink sink = {
+          [](uint32_t w, uint32_t h, bool full, int hs, int vs, uint32_t us) -> int { nBegin++; bw = w; bh = h; (void)hs; (void)vs; (void)us; return full ? scaleAsked : -1; },
+          [](int l, int t, int r, int b, const uint16_t* px) { nBlocks++; (void)l; (void)t; (void)r; (void)b; if ((px[0] >> 11) >= 29 && (px[0] & 0x1F) < 4) redBlocks++; if ((px[0] & 0x1F) >= 29 && (px[0] >> 11) < 4) blueBlocks++; },
+          [](bool ok) { if (ok) nEnd++; }, nullptr };
+        scaleAsked = 0;
+        videoSetSink(&sink);
+        wr32s(0x309018, 0); cmdb({ 0xFFFFFF39u, 0x80000u, 0x10000u });
+        spiWrite(0x80000, kTestAvi, sizeof(kTestAvi)); wr32s(0x309018, (uint32_t)sizeof(kTestAvi));
+        cmdb({ 0xFFFFFF3Au, OPT_MEDIAFIFO | OPT_FULLSCREEN });
+        videoPump();
+        CHECK(nBegin == 0 && !videoFrameReady(), "direct: videoStep decodes nothing itself");
+        const uint32_t pinned = rd32s(0x309014);
+        videoPump(); videoPump(); videoPump();                          // frame 2 comes due with the decoder still "busy"
+        CHECK(rd32s(0x309014) > pinned, "direct: a posted frame nobody started gives way to the next due one - the read pointer moves (%u -> %u)", (unsigned)pinned, (unsigned)rd32s(0x309014));
+        CHECK(videoStats().skipped == 1, "direct: ...and counts as skipped (%u)", (unsigned)videoStats().skipped);
+        { const uint32_t p2 = rd32s(0x309014); videoPump();
+          CHECK(rd32s(0x309014) == p2, "direct: the posted chunk pins the read pointer (%u -> %u)", (unsigned)p2, (unsigned)rd32s(0x309014)); }
+        CHECK(videoDecodeJob(), "direct: the job is there for the decoding core");
+        CHECK(nBegin == 1 && nEnd == 1 && bw == 32 && bh == 16 && nBlocks == 2 && redBlocks == 0 && blueBlocks == 2, "direct: the frame that replaced it (2, blue) went to the sink as 2 MCU blocks (%d %d %ux%u %d %d)", nBegin, nEnd, (unsigned)bw, (unsigned)bh, nBlocks, blueBlocks);
+        CHECK(!videoDecodeJob(), "direct: one job per frame");
+        videoPump();
+        CHECK(videoStats().frames == 1, "direct: reaped (%u)", (unsigned)videoStats().frames);
+        CHECK(videoDl() == nullptr, "direct: no frame buffer, no display list");
+        for (int i = 0; i < 4 && videoActive(); i++) { videoPump(); frameTick(); }
+        CHECK(!videoActive() && rd16s(RAM_REG + REG_CMD_READ) == rd16s(RAM_REG + REG_CMD_WRITE), "direct: stream end");
+        // nobody takes jobs (output off): the stream still ends, the frames are dropped
+        wr32s(0x309018, 0); cmdb({ 0xFFFFFF39u, 0x80000u, 0x10000u });
+        spiWrite(0x80000, kTestAvi, sizeof(kTestAvi)); wr32s(0x309018, (uint32_t)sizeof(kTestAvi));
+        cmdb({ 0xFFFFFF3Au, OPT_MEDIAFIFO | OPT_FULLSCREEN });
+        for (int i = 0; i < 40 && videoActive(); i++) { videoPump(); frameTick(); }
+        CHECK(!videoActive() && nBegin == 1, "direct: with no decoder the stream still ends");
+        // the Y/Cb/Cr fast path: begin's answer 0 / 1 picks full / half-size MCUs
+        { static int nMcu, bsSeen, wSum; nMcu = bsSeen = wSum = 0;
+          static const VideoSink ysink = {
+            [](uint32_t, uint32_t, bool, int, int, uint32_t) -> int { return scaleAsked; },
+            [](int, int, int, int, const uint16_t*) { nBlocks += 1000; },
+            [](bool) {},
+            [](const VideoMcu& m) { nMcu++; bsSeen = m.bs; if (m.y == 0) wSum += m.w; } };
+          for (scaleAsked = 0; scaleAsked < 2; scaleAsked++) {
+            nMcu = wSum = 0; nBlocks = 0;
+            videoSetSink(&ysink);
+            wr32s(0x309018, 0); cmdb({ 0xFFFFFF39u, 0x80000u, 0x10000u });
+            spiWrite(0x80000, kTestAvi, sizeof(kTestAvi)); wr32s(0x309018, (uint32_t)sizeof(kTestAvi));
+            cmdb({ 0xFFFFFF3Au, OPT_MEDIAFIFO | OPT_FULLSCREEN });
+            videoPump();
+            CHECK(videoDecodeJob() && nMcu > 0 && nBlocks == 0 && bsSeen == (scaleAsked ? 4 : 8) && wSum == (32 >> scaleAsked),
+                  "direct: scale %d goes through the MCU sink (%d MCUs, bs %d, row width %d)", scaleAsked, nMcu, bsSeen, wSum);
+            wr8s(0x30914E, 0); videoPump(); frameTick();
+            CHECK(!videoActive(), "direct: stopped"); }
+          scaleAsked = 0; }
+        videoSetSink(nullptr); }
       clockUs = nullptr;
+    }
+
+    // (11c) TJpgDec's half-size IDCT (the PICO-SPEC PATCH in tjpgd.c): the 4x4 block must be the
+    // 2x2 average of the full 8x8 reconstruction, up to the high frequencies it drops
+    {
+#include "ft812_test_jpg.inc"
+      struct In { const unsigned char* p; size_t n, pos; };
+      static In in; static std::vector<int16_t> yf, yh; static int jw;
+      auto rd = [](JDEC* jd, uint8_t* b, size_t n) -> size_t { (void)jd; if (n > in.n - in.pos) n = in.n - in.pos; if (b) memcpy(b, in.p + in.pos, n); in.pos += n; return n; };
+      auto mc = [](JDEC* jd, unsigned x, unsigned y) -> int {
+          const int bs = jd->half ? 4 : 8, w = jw >> (jd->half ? 1 : 0);
+          std::vector<int16_t>& Y = jd->half ? yh : yf;
+          for (int ly = 0; ly < jd->msy * bs; ly++) for (int lx = 0; lx < jd->msx * bs; lx++)
+              Y[((y >> (jd->half ? 1 : 0)) + ly) * w + (x >> (jd->half ? 1 : 0)) + lx] = jd->mcubuf[((ly / bs) * jd->msx + lx / bs) * 64 + (ly % bs) * bs + lx % bs];
+          return 1; };
+      static uint8_t work[TJPGD_WORKSPACE_SIZE + 1024]; JDEC jd; bool ok = true;
+      for (int half = 0; half < 2; half++) {
+          in = { kTestJpg, sizeof(kTestJpg), 0 };
+          ok = ok && jd_prepare(&jd, rd, work, sizeof(work), nullptr) == JDR_OK;
+          jw = jd.width; yf.resize(64 * 48); yh.resize(32 * 24);
+          jd.mcufunc = mc; jd.half = (uint8_t)half;
+          ok = ok && jd_decomp(&jd, nullptr, 0) == JDR_OK; }
+      CHECK(ok && jd.width == 64 && jd.height == 48 && jd.msx == 2 && jd.msy == 2, "test JPEG decodes both ways (4:2:0 64x48)");
+      long sum = 0; int worst = 0;
+      for (int y = 0; y < 24; y++) for (int x = 0; x < 32; x++) {
+          const int a = (yf[2 * y * 64 + 2 * x] + yf[2 * y * 64 + 2 * x + 1] + yf[(2 * y + 1) * 64 + 2 * x] + yf[(2 * y + 1) * 64 + 2 * x + 1] + 2) >> 2;
+          const int d = abs(a - yh[y * 32 + x]); sum += d; if (d > worst) worst = d; }
+      CHECK(sum < 32 * 24 * 2 && worst < 40, "half-size IDCT = 2x2 average of the full one (mean x1000 %ld, worst %d)", sum * 1000 / (32 * 24), worst);
     }
 
     // (10) quantizer: cube levels and round trip

@@ -11873,6 +11873,238 @@ repo: chapters 12, 15.6, 23.4, 26, 35, 38 are the ones that pin chip semantics).
   carries `adapt on/off n <entries> rebuilds`. Host test 166 checks (two-colour
   frame -> two exact entries, unchanged/changed verdicts, a ramp fills a 16-slot
   cap). NOT hw-tested.
+- **AVI under WC's FTVIEW: slow, and frozen after 10-15 s with the machine alive
+  (owner's log `logs/devttyACM0_2026_10_01.14.37.42.966.txt`, 512x384 24 fps MJPEG,
+  fb 360x288).** The numbers: `decode avg 90 ms` per frame on CORE0 (TJpgDec at -Os
+  writing a 393 KB RGB565 frame into PSRAM) — the 60-frame windows took 2.4-2.5 s,
+  i.e. the emulator ran at half speed — plus `render: us avg 88 ms` on core1 to push
+  that frame through the display-list renderer; 116 frames shown, 340 skipped. And
+  the freeze is the same slowness: the engine paced the stream on the WALL clock, the
+  half-speed guest fed the FIFO slower than it drained (232 vs 336 KB/s), the 508 KB
+  prefill ran out, and **FTVIEW computes free space as `rd - wr` with an absolute
+  `wr`, so "ring empty" (`rd == wr`) reads as "no room" and it never writes again**
+  (disassembly 0x8DEA-0x8EC9, `debug/WC/WC/FTVIEW_disasm.txt`; FIFO = 0x80000 bytes
+  at RAM_G 0x80000, fed 4 KB per poll). A real chip would hang the same way if it
+  ever drained — it does not, because a real ZX-Evo feeds faster than 24 fps eats.
+  Fixes (NOT hw-tested, test ELF `debug/DVp2-vdac2-avi-trace-1.0.8.elf`):
+  1. **The media clock is GUEST time** (`mediaClock()` in Ft812.cpp: one 20.48 ms
+     tick per `videoPump`, i.e. per emulated frame). A slow emulator now slows the
+     video with it instead of starving the FIFO; `clockUs` (wall) only times the
+     decoder for the trace.
+  2. **Direct path** (`Ft812::VideoSink`, glue `ftVidBegin/ftVidBlock/ftVidEnd` in
+     Video.cpp): `videoStep` on core0 only PARSES and posts the due frame
+     (`s_job` 0 idle / 1 posted / 2 decoding / 3-4 done, CAS-guarded, deliberately
+     NOT inside `Engine` — the decoding core tests it before it may touch `E`, and
+     `videoStop` waits on it before freeing); `videoDecodeJob` on core1 decodes and
+     hands every MCU block to the sink, which nearest-scales it to the video's fb
+     rectangle and quantizes in place (cube + Bayer with the span's x phase, or the
+     adaptive map). No PSRAM frame, no synthesized display list, no render pass;
+     display-list frames are not taken while a video plays. A frame that comes due
+     while the decoder is busy is skipped whole. The posted chunk stays pinned:
+     `mf->rd` (what the host reads) trails the parser's own cursor `cur` until the
+     job is reaped. The sink also picks the JPEG scale (largest reduction that still
+     covers the rectangle — 1:1 for 512 -> 360, 1/2 for a 720x576 file).
+  3. **TJpgDec runs on a 4 KB heap stack on core1** (`ftCallOnStack`, the
+     zipCallOnStack MSP/MSPLIM switch; allocated by core0 at the first playback,
+     freed when the output is switched off) — core1's own is 2 KB, which is what
+     killed the first attempt on 2026-09-28.
+  4. **`external/tjpgd/tjpgd.c` compiles at -O2** (source-flags.cmake): 1.5x on the
+     host on real frames of this file (2.49 -> 1.57 ms). `JD_FASTDECODE 2` (huffman
+     LUT) was measured and NOT taken: 0-12% for 6 KB of heap.
+  Expected: emulator at full speed, `decode avg` well under 90 ms, about every
+  second frame shown until the decode fits 41.7 ms. Known costs: GS::pump is starved
+  while core1 decodes (FTVIEW does not use the GS); the inline path (no sink) is
+  kept for the host test and decodes on core0 as before. Host test 205 checks.
+  Next lever if 24 fps is wanted: decode at 1/2 and upscale (softer), or a reduced
+  IDCT — measure `decode avg` first.
+- **Second AVI log (`logs/devttyACM0_2026_10_01.15.07.35.079.txt`, the direct path
+  above): no freeze, the emulator at full speed (1227-1257 ms windows) — but the
+  decode on core1 took 105-150 ms a frame (`render: us avg`), i.e. SLOWER than the
+  90 ms it took on core0 at -Os with the PSRAM frame write, and the owner could see
+  each frame being painted top to bottom.** Reading: core1 gives the decoder ~65% of
+  its time (the 576p line ISR takes the rest), and its code is fetched from flash
+  through the XIP cache that core0 — now emulating at full speed on PSRAM-backed
+  guest RAM — keeps thrashing. Next build (NOT hw-tested,
+  `debug/DVp2-vdac2-avi2-trace-1.0.8.elf`):
+  - **A back buffer**: the sink writes palette indices into `FtGlue::vback`
+    (xres*yres bytes of PSRAM, taken by core0 at the first playback) and
+    `ftVidEnd` puts the whole frame on screen in one pass, **starting 6 rows ahead
+    of the beam and wrapping** (`displayBeamRow`): the copy is several times faster
+    than the scanout, so it never meets it and no blanking wait is needed. No
+    PSRAM for it = the old direct paint.
+  - **`-DFT812_JPEG_IN_RAM=ON`** (CMake, default OFF; ON in that test ELF):
+    TJpgDec's per-MCU path (`JD_HOT`, a PICO-SPEC PATCH in `tjpgdcnf.h`/`tjpgd.c`:
+    huffext, bitext, restart, block_idct, mcu_load, mcu_output, jd_decomp + the Zig
+    and Ipsf tables) and the sink (`ftVidBlock`, `ftPutSpan`, `ftCarve`) in SRAM:
+    **+4.0 KB of static RAM on every board**, which is why it is an experiment
+    switch and not the default. If `render: us avg` drops clearly with it, the
+    right home is a fifth code-overlay window loaded only on a boot with VDAC2
+    enabled (the `.ngsovl` pattern — `SET_TSCONF_VDAC2` is reboot-class already).
+  - `ftVidBlock` quantizes straight from the RGB565 fields (cube + Bayer, or the
+    4-4-4 bin for the adaptive map) — no ARGB temporaries, no calls per pixel. It
+    is pinned to `-O2 no-unroll-loops no-tree-loop-distribute-patterns`: at
+    Video.cpp's -O3 it was 3.4 KB, and GCC turned its copy loop into a flash memcpy.
+  If the decode is still far above 41.7 ms after this, the remaining lever is a
+  reduced (4x4) IDCT decoding at half size — softer picture, ~2.5x less work.
+- **Third AVI log (`logs/devttyACM0_2026_10_01.15.20.08.708.txt`, decoder in RAM +
+  back buffer): `render: us avg` 88-130 ms against 105-150 — RAM residency bought
+  ~20%, so the decoder is CPU-bound, not XIP-bound, and the "flash misses" reading
+  above was mostly wrong.** A host profile of a median frame of that file says where
+  the work is: huffman 24%, IDCT ~25%, and **TJpgDec's RGB stage ~50%** — it
+  converts all 196k pixels of a 512x384 frame to RGB888 (with `/ CVACC` and a
+  branchy clip), packs RGB565, squeezes, and hands over a copy of which the sink
+  uses half. Next build (NOT hw-tested, `debug/DVp2-vdac2-avi3-trace-1.0.8.elf`,
+  `FT812_JPEG_IN_RAM` still ON in it):
+  - **`JDEC::mcufunc` (PICO-SPEC PATCH in tjpgd.h/.c)**: called per MCU INSTEAD of
+    `mcu_output`; `Ft812::VideoSink::mcu` -> `ftVidMcu` (Video.cpp) reads Y/Cb/Cr
+    out of `mcubuf` and converts only the pixels the fb rectangle needs, once,
+    straight into the palette index (cube + Bayer, or the adaptive bin). Checked on
+    the host by transcribing `ftVidMcu` and diffing a real frame against a PIL
+    decode (mean 1.3 per channel, no holes) — the transcription is scratch-only.
+  - **`JDEC::half` + `block_idct_half`**: a 4x4 block from the low 4x4 coefficients
+    (the same Arai butterflies with the dropped terms folded out, neighbouring
+    outputs averaged — a low-pass half-size picture), stored in the first 16
+    samples of the block's slot. A quarter of the IDCT and a quarter of the pixels.
+    `tools/ft812_test.cpp` (11c) pins it against the 2x2 average of the full
+    decode on `tools/ft812_test_jpg.inc`; two mutations fail it.
+  - **Frame rate before sharpness, automatically** (`FtGlue::vHalf`): three
+    full-size frames in a row slower than the stream's frame period switch the
+    playback to the half-size decode (logged once), upscaled to the rectangle.
+    Reset when no video plays. No menu row.
+  - **Early posting** (`videoStep`): with a sink a frame may be handed to an idle
+    decoder up to one period before it is due and is shown when decoded; it waits
+    for a busy decoder until its due time and only then is skipped. Before, a
+    decode of 90 ms meant every THIRD frame (the next post waited for the next due
+    time); now the rate is the decoder's capacity.
+  - `tjpgd.c` builds with `-fno-tree-loop-distribute-patterns` and its per-block
+    `memset` is a loop: GCC and the original both called libc (flash) per block.
+  The 2:1 "Smooth"-style switch for video is deliberately NOT a setting yet; if the
+  owner wants sharpness over rate on a fast board, `vHalf` is the one flag.
+- **Fourth AVI log (`logs/devttyACM0_2026_10_01.15.33.50.752.txt`): full size 54.5 ms
+  a frame, the automatic half-size switch fired at once — and half size was STILL
+  54-63 ms (16 fps shown; owner: "no big visible difference").** So the IDCT and
+  TJpgDec's colour stage were never the bulk on the device: what both modes share is
+  the ~97k OUTPUT pixels of the sink, and `ftVidMcu` spent ~45 cycles on each — every
+  field it read through `*ftg` was reloaded per pixel (its `uint8_t` stores into
+  `idx[]` may alias anything), plus a multiply for the source x, three for the
+  dither, two for the cube index and three clip branches. The host profile could not
+  show this: there the sink was a test stub. Also in that log: `no heap for the
+  adaptive palette (17200 B)` — the `FT812_JPEG_IN_RAM` experiment's 5 KB of static
+  RAM took it at 576p + NeoGS. Next build (NOT hw-tested,
+  `debug/DVp2-vdac2-avi4-trace-1.0.8.elf`):
+  - `ftVidMcu` reads LOCALS only, steps the source x as a Q16 sum, adds the dither
+    (pre-biased per row), and gets clip + cube level + cube weight from one table
+    load per channel: `FtGlue::vq`, 4 x 1024 B on the heap (index = value + 256;
+    [3] = the clipped value >> 4 for the adaptive bin), built by `ftVidTables` from
+    the cube whenever the palette is programmed.
+  - the flip copies a row a 32-bit word at a time when no overlay crosses it (the
+    x^2 byte order is a 16-bit rotate of the word).
+  - the `[FT812] video:` line now carries `per frame: sink N flip N us full|half` —
+    **read those two before guessing again**; decode avg minus them is TJpgDec.
+  Checked on the host by compiling the shipped `ftVidMcu`/`ftVidTables` text against
+  mock glue in all four modes (cube/adaptive x full/half) and diffing a real frame
+  with a PIL decode (scratch-only; Video.cpp cannot be host-built).
+- **Fifth AVI log (`logs/devttyACM0_2026_10_01.15.38.50.487.txt`): no picture at
+  all, and the stream stalled after 100 frames.** Two defects of the previous build:
+  (1) `no heap for the video decoder's stack` — the 4 KB stack + the new 4 KB of
+  tables were separate allocations, and at 576p + NeoGS with the adaptive palette up
+  there was no room for the second. **Both are now carved out of the band buffer**
+  (`FtGlue::band`, 11.5 KB: no display-list frame is rendered while a video plays, so
+  it is idle exactly then); the tables are rebuilt on core1 at the first frame
+  (`vqStale`), since a display-list frame in between overwrites them. Only the PSRAM
+  back buffer is still allocated. (2) **A posted frame that no decoder ever starts
+  pinned `REG_MEDIAFIFO_READ` for ever** — the host saw a full FIFO, stopped
+  feeding, and the engine ran dry: the FTVIEW deadlock again from the other side.
+  `videoStep` now drops a posted-but-unstarted frame as soon as the next one is due
+  and posts that instead. Test ELF `debug/DVp2-vdac2-avi5-trace-1.0.8.elf`, NOT
+  hw-tested. Rule for anything that holds a FIFO pointer on behalf of another core:
+  it needs a bound that does not depend on that core being alive.
+- **Sixth AVI log (`logs/devttyACM0_2026_10_01.15.42.23.826.txt`, adaptive palette
+  on) — the first one with the split: `sink 28-32 ms, flip 4 ms` of a 44-60 ms
+  frame; full size was 43 ms, so the automatic half-size switch fired for a 1 ms
+  miss and then gained nothing (still ~17 fps).** The sink is the bottleneck, in two
+  ways it could not show on a host: it converted every one of the ~97k TARGET pixels
+  (so decoding at half size saved IDCT only), and it wrote them into the PSRAM back
+  buffer in 11-byte spans — a line fill plus a write-back each through the XIP
+  cache. Pipeline as rebuilt (NOT hw-tested, `debug/DVp2-vdac2-avi6-trace-1.0.8.elf`):
+  - **the picture between decoder and framebuffer is at the INTERMEDIATE size**
+    `vIW x vIH` = min(decoded, target) per axis: the sink converts each of ITS
+    pixels once (downscaling a larger source, 1:1 for a half-size decode — 49k
+    conversions instead of 97k), `ftVidFlip` upscales (four pixels per stored word)
+    when the source was smaller;
+  - **one MCU row is collected in SRAM** (`FtGlue::vrow`, the tail of the band
+    buffer: band = 4 KB stack | 3 KB tables | 4.3 KB rows — exactly 12 rows of 360)
+    and copied to `vback` as whole rows a word at a time;
+  - the tables are one SET at a time (3 x 1024 cube, or 1024 adaptive) to make that
+    room; `ftVidBlock` (RGB565 path, JPEG reductions below 1/2) now paints the
+    framebuffer directly and is not on any path a normal video takes;
+  - `ftVidFlip` is RAM-resident with the rest; the trace gained a second
+    `[FT812] video: rows->back N us/frame, picture WxH -> WxH` line.
+  Verified on the host by compiling the shipped text of `ftVidBegin`, `ftVidMcu`,
+  `ftVidFlip`/`ftVidEnd` and `ftVidTables` against mock glue under ASan/UBSan: six
+  modes (cube/adaptive x full/half, plus a beam-wrapped start and a carved row),
+  each within the quantizer's error of a PIL decode of the same frame.
+- **Seventh AVI run (the tail of `logs/devttyACM0_2026_10_01.15.42.23.826.txt`, the
+  rebuilt pipeline): 24 fps on ordinary scenes.** `render: us avg` 30-38 ms (frames
+  29-30 per 1.23 s window, a few percent skipped), 46-52 ms on heavy scenes (~17
+  fps). The split, half-size decode + adaptive palette: sink 11.4 ms, rows->back
+  2.9 ms, flip 4.3 ms, TJpgDec the remaining 12-20 ms. Full size: sink 10.2, rows
+  3.4, flip 2.1, TJpgDec ~27 = 43 ms — 1.5 ms over the period, so the playback still
+  drops to half size after three frames. That the half-size sink was no faster than
+  the full one for half the pixels pointed at per-MCU overhead, not per-pixel:
+  `ftVidFirst`'s four 64-bit divides (through a flash veneer) per MCU. Replaced by
+  `ftVidFirstQ` (multiply by a reciprocal from `ftVidBegin`, the same two fix-up
+  loops; checked exhaustively against the divide over 17 geometries, at most 2
+  fix-up steps). Test ELF `debug/DVp2-vdac2-avi7-trace-1.0.8.elf`, NOT hw-tested.
+  Still open: `FT812_JPEG_IN_RAM` is ON in the test builds and costs ~5.7 KB of
+  static RAM on every board — its home should be a code-overlay window claimed
+  only on a boot with VDAC2 enabled; and the CPU clock of the owner's board during
+  these runs was never recorded.
+- **Owner's verdict on the avi6/avi7 picture (504 MHz board): smooth enough, but
+  (a) colour transitions step "in waves with a hard border" with the adaptive
+  palette, dithering with it off, and (b) dynamic scenes still hitch.** Both were
+  ours (NOT hw-tested, `debug/DVp2-vdac2-avi8-trace-1.0.8.elf`):
+  - **(a) the adaptive map was 4-4-4 RGB, undithered** — 16 levels per channel, and
+    the entries are means of bin CENTRES, so no palette can do better than that.
+    The MJPEG path now has its own bin layout, **`ADAPT_YCC633`: Y 6 bits, Cb/Cr 3
+    bits each, chroma bins CENTRED on 128** (`AdaptSpace`, `FT812_ADAPT_YCC_LAYOUT`
+    — one table row shared by the builder and the sink's level tables), and the
+    sink dithers each axis by one bin (4x4 ordered, centred): no contours in luma,
+    chroma as grain at constant brightness. It also drops the RGB conversion from
+    the per-pixel path entirely. Chosen on three real frames (host): luma error
+    after a 3x3 blur 2.4 against 3.3 (Y5/Cb3/Cr4) and 5.2 (4-4-4). **The centring is
+    load-bearing**: with plain `v >> 5` chroma bins, 128 is a bin edge, grey and
+    black have no entry and came out as a dither of a green and a purple one (the
+    film's black bars went purple in the simulation). The display-list path keeps
+    RGB444 without dither; `AdaptPal::space/histSpace` say which layout the map and
+    the histogram are in, and a frame in the other layout is a "first" frame
+    (histogram only, black) — one frame at each switch between a video and a list.
+  - **(b) every palette rebuild cost 25-55 ms on core1** (`render: max` 56-89 ms in
+    windows whose `avg` was 30): `ft812AdaptBuild` searched all 4096 bins against
+    185 entries. Now a bin inside a box takes that box's entry (one pass), every
+    other bin is left 0xFF and resolved on first use (`ft812AdaptResolve`, from the
+    sink and `ft812QuantizeRowAdapt`): 0.7-0.8 ms on the host for a real frame.
+    And a pending palette no longer holds the DECODE (it used to wait for core0's
+    next tick, up to 20 ms, every rebuild) — only `ftVidFlip` waits for it.
+  Host test 220 checks (9c: neutral bins give grey entries, lazy resolve, layout
+  change = "changed"; the uncentred layout and a dropped box fill each fail it).
+  Not addressed: frames of 25-30 KB still take 46-52 ms (TJpgDec's bit-serial
+  huffman); `JD_FASTDECODE 2` wants 6 KB of heap this configuration does not have.
+- **avi8 on hardware (`logs/devttyACM0_2026_10_01.16.20.07.923.txt`): owner —
+  "definitely better", contours gone; `render: max` 35-52 ms where it was 56-89, 24-30
+  frames a window, sink 14 ms. New complaint: a "negative" frame now and then — the
+  Kolbass/TGV effect.** Mechanism: a rebuild at the end of frame N raised
+  `palPending`, core0 programmed the new palette at its next frame tick, and frame N
+  — written through the OLD map — sat under the NEW colours for the 10-30 ms until
+  frame N+1 flipped. The index matching in `ft812AdaptBuild` only softens that, and
+  at a scene cut there is nothing to match. Fix (`debug/DVp2-vdac2-avi9-trace-1.0.8.elf`,
+  NOT hw-tested): **while a video plays core1 programs the palette itself, in
+  `ftVidFlip`, at the start of vertical blanking, immediately before copying the
+  first frame made for it from the top row down** (core0's `ftFrameTick` leaves
+  `palPending` alone while `videoActive()`). Cost: that flip waits for blanking, up
+  to one display frame, on rebuild frames only. If the 185 slot writes ever outgrow
+  the blanking (1.4 ms at 576p plus the letterbox rows), the top rows show one frame
+  of old pixels under the new palette — program only the changed slots then.
 - **"Smooth 2:1" showed no difference (owner, 2026-10-01) because it was a 2:1
   special**: the box average engaged only on an axis-aligned cell at exactly 2:1
   (+-1/16 texel), i.e. ZUMA's 1.6x-upscaled assets on a 320x240 framebuffer and

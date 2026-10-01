@@ -87,6 +87,15 @@ struct JDEC {
 	size_t (*infunc)(JDEC*, uint8_t*, size_t);	/* Pointer to jpeg stream input function */
 	void* device;				/* Pointer to I/O device identifiler for the session */
 	uint8_t swap;       /* Added by Bodmer to control byte swapping */
+	/* PICO-SPEC PATCH (set both AFTER jd_prepare, which clears the whole object):
+	/  mcufunc - when not NULL, called for every MCU INSTEAD of the RGB conversion and
+	/    the output function: the caller reads the Y/Cb/Cr blocks out of mcubuf itself
+	/    (block k at mcubuf + 64*k: msx*msy Y blocks, then Cb, then Cr; jd_yuv_t samples,
+	/    NOT clipped). x, y = the MCU's origin in the source image. Return 0 to abort.
+	/  half - with mcufunc: every block is reconstructed at 4x4 (a low-pass half-size
+	/    picture) and stored in the first 16 samples of its 64-sample slot, row stride 4. */
+	int (*mcufunc)(JDEC*, unsigned int x, unsigned int y);
+	uint8_t half;
 };
 
 

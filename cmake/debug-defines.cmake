@@ -26,6 +26,11 @@ if (FT812_RENDER_IN_RAM)
 else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE FT812_RENDER_IN_RAM=0)
 endif ()
+if (FT812_JPEG_IN_RAM)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FT812_JPEG_IN_RAM=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FT812_JPEG_IN_RAM=0)
+endif ()
 
 # SMUC virtual-FDD bridge tracing (see `#if VDISK_TRACE` in Ports/IDE/wd1793):
 # correlates the #7FBA virtual-drive select, the WD1793 RDSEC/WRSEC track/sector,

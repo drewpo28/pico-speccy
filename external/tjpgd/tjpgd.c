@@ -38,7 +38,7 @@
 /* Zigzag-order to raster-order conversion table */
 /*-----------------------------------------------*/
 
-static const uint8_t Zig[64] = {	/* Zigzag-order to raster-order conversion table */
+JD_HOT_TAB static const uint8_t Zig[64] = {	/* Zigzag-order to raster-order conversion table */
 	 0,  1,  8, 16,  9,  2,  3, 10, 17, 24, 32, 25, 18, 11,  4,  5,
 	12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13,  6,  7, 14, 21, 28,
 	35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
@@ -52,7 +52,7 @@ static const uint8_t Zig[64] = {	/* Zigzag-order to raster-order conversion tabl
 /* (scaled up 16 bits for fixed point operations)  */
 /*-------------------------------------------------*/
 
-static const uint16_t Ipsf[64] = {	/* See also aa_idct.png */
+JD_HOT_TAB static const uint16_t Ipsf[64] = {	/* See also aa_idct.png */
 	(uint16_t)(1.00000*8192), (uint16_t)(1.38704*8192), (uint16_t)(1.30656*8192), (uint16_t)(1.17588*8192), (uint16_t)(1.00000*8192), (uint16_t)(0.78570*8192), (uint16_t)(0.54120*8192), (uint16_t)(0.27590*8192),
 	(uint16_t)(1.38704*8192), (uint16_t)(1.92388*8192), (uint16_t)(1.81226*8192), (uint16_t)(1.63099*8192), (uint16_t)(1.38704*8192), (uint16_t)(1.08979*8192), (uint16_t)(0.75066*8192), (uint16_t)(0.38268*8192),
 	(uint16_t)(1.30656*8192), (uint16_t)(1.81226*8192), (uint16_t)(1.70711*8192), (uint16_t)(1.53636*8192), (uint16_t)(1.30656*8192), (uint16_t)(1.02656*8192), (uint16_t)(0.70711*8192), (uint16_t)(0.36048*8192),
@@ -279,7 +279,7 @@ static JRESULT create_huffman_tbl (	/* 0:OK, !0:Failed */
 /* Extract a huffman decoded data from input stream                      */
 /*-----------------------------------------------------------------------*/
 
-static int huffext (	/* >=0: decoded data, <0: error code */
+JD_HOT static int huffext (	/* >=0: decoded data, <0: error code */
 	JDEC* jd,			/* Pointer to the decompressor object */
 	unsigned int id,	/* Table ID (0:Y, 1:C) */
 	unsigned int cls	/* Table class (0:DC, 1:AC) */
@@ -420,7 +420,7 @@ static int huffext (	/* >=0: decoded data, <0: error code */
 /* Extract N bits from input stream                                      */
 /*-----------------------------------------------------------------------*/
 
-static int bitext (	/* >=0: extracted data, <0: error code */
+JD_HOT static int bitext (	/* >=0: extracted data, <0: error code */
 	JDEC* jd,			/* Pointer to the decompressor object */
 	unsigned int nbit	/* Number of bits to extract (1 to 16) */
 )
@@ -505,7 +505,7 @@ static int bitext (	/* >=0: extracted data, <0: error code */
 /* Process restart interval                                              */
 /*-----------------------------------------------------------------------*/
 
-static JRESULT restart (
+JD_HOT static JRESULT restart (
 	JDEC* jd,		/* Pointer to the decompressor object */
 	uint16_t rstn	/* Expected restert sequense number */
 )
@@ -576,7 +576,7 @@ static JRESULT restart (
 /* Apply Inverse-DCT in Arai Algorithm (see also aa_idct.png)            */
 /*-----------------------------------------------------------------------*/
 
-static void block_idct (
+JD_HOT static void block_idct (
 	int32_t* src,	/* Input block data (de-quantized and pre-scaled for Arai Algorithm) */
 	jd_yuv_t* dst	/* Pointer to the destination to store the block as byte array */
 )
@@ -696,10 +696,55 @@ static void block_idct (
 
 
 /*-----------------------------------------------------------------------*/
+/* PICO-SPEC PATCH: half-size block (4x4) from the low 4x4 coefficients    */
+/*-----------------------------------------------------------------------*/
+/* The same Arai butterflies as block_idct with the upper coefficients taken as
+/  zero, and each pair of neighbouring outputs averaged - i.e. the 8x8 block of
+/  the low-pass picture, box-filtered 2:1. A quarter of the arithmetic: 4 columns
+/  and 4 rows instead of 8 and 8, and no multiplies by the dropped terms. */
+
+#define JD_HALF_1D(s0, s1, s2, s3, o0, o1, o2, o3) do { \
+	int32_t e_t11 = ((s2) * M13 >> 12) - (s2); \
+	int32_t A = 2 * (s0) + e_t11;			/* (e0 + e1): e0 = s0 + s2, e1 = e_t11 + s0 */ \
+	int32_t B = 2 * (s0) - e_t11;			/* (e2 + e3): e2 = s0 - e_t11, e3 = s0 - s2 */ \
+	int32_t q7 = (s3) + (s1); \
+	int32_t q5 = ((s1) - (s3)) * M13 >> 12; \
+	int32_t t13 = ((s1) - (s3)) * M5 >> 12; \
+	int32_t q4 = t13 - ((s1) * M2 >> 12); \
+	int32_t q6 = t13 + ((s3) * M4 >> 12) - q7; \
+	A += (s2); B -= (s2); \
+	q5 -= q6; q4 -= q5; \
+	(o0) = A + (q7 + q6); (o3) = A - (q7 + q6); \
+	(o1) = B + (q5 + q4); (o2) = B - (q5 + q4); \
+} while (0)
+
+JD_HOT static void block_idct_half (
+	int32_t* src,	/* Input block data (de-quantized and pre-scaled for Arai Algorithm) */
+	jd_yuv_t* dst	/* 4x4 samples, row stride 4 */
+)
+{
+	const int32_t M13 = (int32_t)(1.41421*4096), M2 = (int32_t)(1.08239*4096), M4 = (int32_t)(2.61313*4096), M5 = (int32_t)(1.84776*4096);
+	int32_t c[4][4];	/* [row pair][column], twice the averaged value */
+	int i;
+
+	for (i = 0; i < 4; i++) {	/* columns 0..3 (the others are dropped) */
+		JD_HALF_1D(src[8 * 0 + i], src[8 * 1 + i], src[8 * 2 + i], src[8 * 3 + i], c[0][i], c[1][i], c[2][i], c[3][i]);
+	}
+	for (i = 0; i < 4; i++) {	/* rows; the inputs are 2x, so the DC offset is too, and the two halvings fold into the shift */
+		int32_t o0, o1, o2, o3;
+		int32_t s0 = c[i][0] + (128L << 9);
+		JD_HALF_1D(s0, c[i][1], c[i][2], c[i][3], o0, o1, o2, o3);
+		dst[0] = (jd_yuv_t)(o0 >> 10); dst[1] = (jd_yuv_t)(o1 >> 10); dst[2] = (jd_yuv_t)(o2 >> 10); dst[3] = (jd_yuv_t)(o3 >> 10);
+		dst += 4;
+	}
+}
+
+
+/*-----------------------------------------------------------------------*/
 /* Load all blocks in an MCU into working buffer                         */
 /*-----------------------------------------------------------------------*/
 
-static JRESULT mcu_load (
+JD_HOT static JRESULT mcu_load (
 	JDEC* jd		/* Pointer to the decompressor object */
 )
 {
@@ -739,7 +784,7 @@ static JRESULT mcu_load (
 			tmp[0] = d * dqf[0] >> 8;				/* De-quantize, apply scale factor of Arai algorithm and descale 8 bits */
 
 			/* Extract following 63 AC elements from input stream */
-			memset(&tmp[1], 0, 63 * sizeof (int32_t));	/* Initialize all AC elements */
+			for (i = 1; i < 64; i++) tmp[i] = 0;		/* Initialize all AC elements (PICO-SPEC PATCH: was a libc memset - a flash call per block) */
 			z = 1;		/* Top of the AC elements (in zigzag-order) */
 			do {
 				d = huffext(jd, id, 1);				/* Extract a huffman coded value (zero runs and bit length) */
@@ -758,6 +803,14 @@ static JRESULT mcu_load (
 				}
 			} while (++z < 64);		/* Next AC element */
 
+			if (jd->half) {					/* PICO-SPEC PATCH: half-size blocks for mcufunc */
+				if (z == 1) {
+					d = (jd_yuv_t)((*tmp / 256) + 128);
+					for (i = 0; i < 16; bp[i++] = d) ;
+				} else {
+					block_idct_half(tmp, bp);
+				}
+			} else
 			if (JD_FORMAT != 2 || !cmp) {	/* C components may not be processed if in grayscale output */
 				if (z == 1 || (JD_USE_SCALE && jd->scale == 3)) {	/* If no AC element or scale ratio is 1/8, IDCT can be ommited and the block is filled with DC value */
 					d = (jd_yuv_t)((*tmp / 256) + 128);
@@ -785,7 +838,7 @@ static JRESULT mcu_load (
 /* Output an MCU: Convert YCrCb to RGB and output it in RGB form         */
 /*-----------------------------------------------------------------------*/
 
-static JRESULT mcu_output (
+JD_HOT static JRESULT mcu_output (
 	JDEC* jd,			/* Pointer to the decompressor object */
 	int (*outfunc)(JDEC*, void*, JRECT*),	/* RGB output function */
 	unsigned int x,		/* MCU location in the image */
@@ -1132,7 +1185,7 @@ JRESULT jd_prepare (
 /* Start to decompress the JPEG picture                                  */
 /*-----------------------------------------------------------------------*/
 
-JRESULT jd_decomp (
+JD_HOT JRESULT jd_decomp (
 	JDEC* jd,								/* Initialized decompression object */
 	int (*outfunc)(JDEC*, void*, JRECT*),	/* RGB output function */
 	uint8_t scale							/* Output de-scaling factor (0 to 3) */
@@ -1161,6 +1214,9 @@ JRESULT jd_decomp (
 			}
 			rc = mcu_load(jd);					/* Load an MCU (decompress huffman coded stream, dequantize and apply IDCT) */
 			if (rc != JDR_OK) return rc;
+			if (jd->mcufunc) {					/* PICO-SPEC PATCH: the caller converts the MCU itself */
+				rc = jd->mcufunc(jd, x, y) ? JDR_OK : JDR_INTR;
+			} else
 			rc = mcu_output(jd, outfunc, x, y);	/* Output the MCU (YCbCr to RGB, scaling and output) */
 			if (rc != JDR_OK) return rc;
 		}

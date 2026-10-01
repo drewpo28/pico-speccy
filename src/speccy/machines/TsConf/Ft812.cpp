@@ -87,6 +87,7 @@ struct Chip {
     // REG_MEDIAFIFO_READ/WRITE (0x14/0x18) and REG_PLAY_CONTROL (0x14E)
     MediaFifo mf;
     uint8_t   regsHi[0x200];
+    uint32_t mediaTicks;       // guest frames since power-up: the media engine's clock (see mediaClock)
     volatile bool videoBusy;   // PLAYVIDEO at the head of the command FIFO, engine running on core1
     volatile bool videoDone;   // core1 -> core0: the stream ended, finish the command
     // interrupts
@@ -100,6 +101,13 @@ void* (*s_alloc)(size_t, bool) = nullptr;
 void  (*s_free)(void*) = nullptr;
 
 inline void fence() { __atomic_thread_fence(__ATOMIC_SEQ_CST); }
+
+// The media engine runs on GUEST time — one tick per emulated frame (20.48 ms on
+// a ZX-Evo), counted in videoPump. On the wall clock an emulator that is running
+// slow feeds the media FIFO slower than the player drains it; the ring runs
+// empty, and FTVIEW reads "rd == wr" as "no room" and never writes again
+// (hw 2026-10-01: an AVI froze after ~450 frames with the machine alive).
+static uint64_t mediaClock() { return C ? (uint64_t)C->mediaTicks * 20480u : 0; }
 
 // Registers whose write has a side effect, applied when the SPI transaction
 // ends (a 16/32-bit register arrives one byte per exchange, and REG_CMD_WRITE
@@ -784,7 +792,7 @@ uint32_t execCmd(uint32_t r, uint32_t avail) {
             const uint32_t opts = param(r, 0);
             if (!(opts & OPT_MEDIAFIFO)) { fault("CMD_PLAYVIDEO without OPT_MEDIAFIFO (data in the command FIFO) is not emulated", cmd); return 0; }
             if (!C->mf.size) { fault("CMD_PLAYVIDEO before CMD_MEDIAFIFO", cmd); return 0; }
-            if (!videoStart(&C->mf, opts, (int)hsize(), (int)vsize(), s_alloc, s_free, clockUs)) { warnOnce(256, "CMD_PLAYVIDEO (no memory)"); return 8; }
+            if (!videoStart(&C->mf, opts, (int)hsize(), (int)vsize(), s_alloc, s_free, mediaClock, clockUs)) { warnOnce(256, "CMD_PLAYVIDEO (no memory)"); return 8; }
             C->videoDone = false;
             fence();
             C->videoBusy = true;
@@ -973,7 +981,9 @@ const uint32_t* dlShadow() { return C ? C->dlShadow[C->shadowRender] : nullptr; 
 uint32_t macroReg(int i) { return C ? reg32(i ? REG_MACRO_1 : REG_MACRO_0) : 0; }
 uint32_t ramgGen() { return C ? C->ramgGen : 0; }
 void videoPump() {
-    if (!C || !C->videoBusy || C->videoDone) return;
+    if (!C) return;
+    C->mediaTicks++;
+    if (!C->videoBusy || C->videoDone) return;
     if (videoStep()) { fence(); C->videoDone = true; }
 }
 RenderState* renderState() { return C ? &C->rs : nullptr; }

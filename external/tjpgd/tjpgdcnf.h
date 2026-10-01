@@ -42,3 +42,14 @@
 #elif JD_FASTDECODE == 2
  #define TJPGD_WORKSPACE_SIZE (3500 + 6144)
 #endif
+/* PICO-SPEC PATCH: the per-MCU path (huffman, IDCT, colour conversion) and its two
+/  small tables can be placed in SRAM. On the device the decoder runs on core1
+/  while core0 emulates a machine whose RAM is PSRAM behind the same XIP cache the
+/  flash code is fetched through - code in flash then misses on nearly every line. */
+#if defined(FT812_JPEG_IN_RAM) && FT812_JPEG_IN_RAM
+#define JD_HOT      __attribute__((section(".time_critical.tjpgd")))
+#define JD_HOT_TAB  __attribute__((section(".time_critical.tjpgd_tab")))
+#else
+#define JD_HOT
+#define JD_HOT_TAB
+#endif

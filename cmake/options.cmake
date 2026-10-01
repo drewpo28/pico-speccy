@@ -40,6 +40,7 @@ option(MURM2_W "Murmulator 2.0 + Waveshare RP2350B-Plus-W (on-chip CYW43439 WiFi
 # not use the second Type-C as a host should not pay it, so the default build does not.
 option(ZERO2_PIO_USB "ZERO2: add a USB host on the second Type-C (J2, PIO-USB GP28/GP29) — costs ~18 KB SRAM" OFF)
 option(FT812_RENDER_IN_RAM "TS-Conf VDAC2: put the FT812 rasterizer's per-pixel path in SRAM (~14 KB) instead of flash" OFF)
+option(FT812_JPEG_IN_RAM "TS-Conf VDAC2: put the MJPEG decoder's per-MCU path (TJpgDec + the framebuffer sink) in SRAM (~4 KB) instead of flash" OFF)
 option(ZIFI_NET_CLIENT "Enable FTP/SFTP/SSH client over ZiFi (uses mbedTLS)" ON)
 
 # HDMI signal-integrity knobs (src/drivers/hdmi/hdmi.c). Both ON is the combination

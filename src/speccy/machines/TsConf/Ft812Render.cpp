@@ -714,14 +714,14 @@ uint32_t ft812PalLutColor(const PalLut& p, int i) {
     return (R << 16) | (G << 8) | B;
 }
 
-FT_HOT void ft812QuantizeRow(const PalLut& p, const uint32_t* src, int w, int y, uint8_t* dst) {
+FT_HOT void ft812QuantizeRow(const PalLut& p, const uint32_t* src, int w, int y, uint8_t* dst, int x0) {
     const uint8_t* br = kBayer4[y & 3];
     // Dither amplitude = one quantization step, spread over the 16 Bayer levels.
     const int sr = 255 / (p.rl - 1), sg = 255 / (p.gl - 1), sb = 255 / (p.bl - 1);
     const int gb = p.gl * p.bl;
     for (int x = 0; x < w; x++) {
         const uint32_t px = src[x];
-        const int t = br[x & 3];
+        const int t = br[(x + x0) & 3];
         const int r = p.lut[0][((px >> 16) & 255) + ((t * sr) >> 4)];
         const int g = p.lut[1][((px >> 8) & 255) + ((t * sg) >> 4)];
         const int b = p.lut[2][(px & 255) + ((t * sb) >> 4)];
@@ -730,7 +730,36 @@ FT_HOT void ft812QuantizeRow(const PalLut& p, const uint32_t* src, int w, int y,
 }
 
 // ── adaptive palette ─────────────────────────────────────────────────────────
-void ft812AdaptClear(AdaptPal& ap) { memset(ap.hist, 0, sizeof(ap.hist)); ap.total = 0; }
+// Two bin layouts over the same 4096-entry histogram / map (AdaptPal::space):
+//   ADAPT_RGB444  a = R, b = G, c = B, 4 bits each — the display-list path;
+//   ADAPT_YCC633  a = Y >> 2 (6 bits), b = Cb, c = Cr as (v + 16) >> 5 (3 bits each) — the MJPEG path.
+// The second exists because a film frame is mostly smooth luma: with 16 levels
+// per channel every gradient stepped in visible contours (owner, 2026-10-01),
+// and no palette can fix that, since the entries are means of BIN CENTRES. 64
+// luma levels do; the 8 chroma levels are dithered by the sink.
+namespace {
+// (AdaptSpace, Ft812Render.h: index shifts, axis sizes, value units per bin, the
+// value of bin 0's centre, luma weight.) The chroma bins of the YCC layout are
+// CENTRED on multiples of their width (level = (v + half) >> shift, capped), so
+// that neutral — Cb = Cr = 128 — is a bin centre. With plain v >> n bins 128 is a
+// bin EDGE: grey and black had no entry of their own and came out as a dither of
+// a green-tinted and a purple-tinted one (host simulation of a real frame,
+// 2026-10-01: the film's black bars went purple).
+typedef AdaptSpace Space;
+static const Space kSpace[2] = { { 8, 4, 16, 16, 16, 16, 16, 16, 8, 8, 8, 1 }, FT812_ADAPT_YCC_LAYOUT };
+static inline uint32_t nativeToRgb(const Space& sp, uint32_t n, bool ycc) {
+    (void)sp;
+    if (!ycc) return n;
+    const int y = (int)((n >> 16) & 255), cb = (int)((n >> 8) & 255) - 128, cr = (int)(n & 255) - 128;
+    int r = y + ((1436 * cr) >> 10), g = y - ((352 * cb + 731 * cr) >> 10), b = y + ((1815 * cb) >> 10);
+    r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+    return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b;
+}
+} // namespace
+
+const AdaptSpace& ft812AdaptSpace(int space) { return kSpace[space == ADAPT_YCC633 ? 1 : 0]; }
+
+void ft812AdaptClear(AdaptPal& ap, int space) { memset(ap.hist, 0, sizeof(ap.hist)); ap.total = 0; ap.histSpace = (uint8_t)space; }
 
 FT_HOT void ft812AdaptAccumulate(AdaptPal& ap, const uint32_t* src, int w) {
     uint16_t* h = ap.hist;
@@ -742,26 +771,26 @@ FT_HOT void ft812AdaptAccumulate(AdaptPal& ap, const uint32_t* src, int w) {
     ap.total += (uint32_t)w;
 }
 
-// One cell of the 3-3-3 fold: the eight 4-4-4 bins that share the top three bits
-// of each channel. (Computed on the fly — core1's stack is 2 KB, no room for a
-// 512-entry temporary.)
-static inline uint32_t coarseAt(const uint16_t* h, int ci) {
-    const int r = ((ci >> 6) & 7) << 1, g = ((ci >> 3) & 7) << 1, b = (ci & 7) << 1;
-    uint32_t c = 0;
-    for (int dr = 0; dr < 2; dr++) for (int dg = 0; dg < 2; dg++) for (int db = 0; db < 2; db++)
-        c += h[((r + dr) << 8) | ((g + dg) << 4) | (b + db)];
-    return c > 0xFFFF ? 0xFFFF : c;
-}
-
-static void adaptFold(const uint16_t* hist, uint16_t* coarse) {
-    for (int ci = 0; ci < 512; ci++) coarse[ci] = (uint16_t)coarseAt(hist, ci);
+// One cell of the 512-cell fold used to tell "the frame's colours moved": the
+// top three bits of each axis. (Computed on the fly — core1's stack is 2 KB, no
+// room for a 512-entry temporary.)
+static inline uint32_t coarseAt(const uint16_t* h, int ci, int space) {
+    const Space& sp = kSpace[space == ADAPT_YCC633 ? 1 : 0];
+    // the fine bins sharing the top three bits of each axis (an axis of 8 or fewer levels keeps them all)
+    const int fa = sp.na > 8 ? sp.na / 8 : 1, fb = sp.nb > 8 ? sp.nb / 8 : 1, fc = sp.nc > 8 ? sp.nc / 8 : 1;
+    const int a = ((ci >> 6) & 7) * fa, b = ((ci >> 3) & 7) * fb, c = (ci & 7) * fc;
+    if (a >= sp.na || b >= sp.nb || c >= sp.nc) return 0;
+    uint32_t n = 0;
+    for (int da = 0; da < fa; da++) for (int db = 0; db < fb; db++) for (int dc = 0; dc < fc; dc++)
+        n += h[((a + da) << sp.sa) | ((b + db) << sp.sb) | (c + dc)];
+    return n > 0xFFFF ? 0xFFFF : n;
 }
 
 bool ft812AdaptChanged(const AdaptPal& ap, int permille) {
-    if (!ap.built) return true;
+    if (!ap.built || ap.space != ap.histSpace) return true;
     uint32_t diff = 0, tot = 0;
     for (int i = 0; i < 512; i++) {
-        const uint32_t now = coarseAt(ap.hist, i);
+        const uint32_t now = coarseAt(ap.hist, i, ap.histSpace);
         const int d = (int)now - (int)ap.coarse[i];
         diff += (uint32_t)(d < 0 ? -d : d);
         tot += now;
@@ -770,19 +799,16 @@ bool ft812AdaptChanged(const AdaptPal& ap, int permille) {
 }
 
 namespace {
-typedef AdaptPal::Box CutBox;
-static inline int binR(int b) { return b >> 8; }
-static inline int binG(int b) { return (b >> 4) & 15; }
-static inline int binB(int b) { return b & 15; }
-static uint32_t boxCount(const uint16_t* h, const CutBox& x) {
+typedef AdaptPal::Box CutBox;     // r/g/b = the a/b/c axis of the space in use
+static uint32_t boxCount(const uint16_t* h, const Space& sp, const CutBox& x) {
     uint32_t c = 0;
-    for (int r = x.r0; r <= x.r1; r++) for (int g = x.g0; g <= x.g1; g++) for (int b = x.b0; b <= x.b1; b++) c += h[(r << 8) | (g << 4) | b];
+    for (int r = x.r0; r <= x.r1; r++) for (int g = x.g0; g <= x.g1; g++) for (int b = x.b0; b <= x.b1; b++) c += h[(r << sp.sa) | (g << sp.sb) | b];
     return c;
 }
-static void boxShrink(const uint16_t* h, CutBox& x) {   // to the bounding box of its populated bins
-    int r0 = 16, r1 = -1, g0 = 16, g1 = -1, b0 = 16, b1 = -1;
+static void boxShrink(const uint16_t* h, const Space& sp, CutBox& x) {   // to the bounding box of its populated bins
+    int r0 = 64, r1 = -1, g0 = 64, g1 = -1, b0 = 64, b1 = -1;
     for (int r = x.r0; r <= x.r1; r++) for (int g = x.g0; g <= x.g1; g++) for (int b = x.b0; b <= x.b1; b++)
-        if (h[(r << 8) | (g << 4) | b]) { if (r < r0) r0 = r; if (r > r1) r1 = r; if (g < g0) g0 = g; if (g > g1) g1 = g; if (b < b0) b0 = b; if (b > b1) b1 = b; }
+        if (h[(r << sp.sa) | (g << sp.sb) | b]) { if (r < r0) r0 = r; if (r > r1) r1 = r; if (g < g0) g0 = g; if (g > g1) g1 = g; if (b < b0) b0 = b; if (b > b1) b1 = b; }
     if (r1 >= 0) { x.r0 = (uint8_t)r0; x.r1 = (uint8_t)r1; x.g0 = (uint8_t)g0; x.g1 = (uint8_t)g1; x.b0 = (uint8_t)b0; x.b1 = (uint8_t)b1; }
 }
 } // namespace
@@ -790,25 +816,28 @@ static void boxShrink(const uint16_t* h, CutBox& x) {   // to the bounding box o
 void ft812AdaptBuild(AdaptPal& ap, int slots) {
     if (slots > AdaptPal::MAX) slots = AdaptPal::MAX;
     const int maxBox = slots - 1;           // entry 0 is black, the rest are boxes
+    const bool ycc = ap.histSpace == ADAPT_YCC633;
+    const Space& sp = kSpace[ycc ? 1 : 0];
     const uint16_t* h = ap.hist;
     CutBox* box = ap.box;
     int n = 0;
-    box[0] = { 0, 15, 0, 15, 0, 15, 0 };
-    boxShrink(h, box[0]); box[0].count = boxCount(h, box[0]);
+    box[0] = { 0, (uint8_t)(sp.na - 1), 0, (uint8_t)(sp.nb - 1), 0, (uint8_t)(sp.nc - 1), 0 };
+    boxShrink(h, sp, box[0]); box[0].count = boxCount(h, sp, box[0]);
     n = box[0].count ? 1 : 0;
     // median cut: split the box with the most pixels (weighted by its extent so a
-    // populous single-bin box does not hog the choice) along its longest axis
+    // populous single-bin box does not hog the choice) along its longest axis —
+    // extents in value units, luma counted double in the YCC layout
     while (n > 0 && n < maxBox) {
         int pick = -1; uint64_t best = 0;
         for (int i = 0; i < n; i++) {
-            const int ext = (box[i].r1 - box[i].r0) + (box[i].g1 - box[i].g0) + (box[i].b1 - box[i].b0);
+            const int ext = (box[i].r1 - box[i].r0) * sp.ua * sp.wa + (box[i].g1 - box[i].g0) * sp.ub + (box[i].b1 - box[i].b0) * sp.uc;
             if (!ext) continue;
-            const uint64_t w = (uint64_t)box[i].count * (uint64_t)(ext + 1);
+            const uint64_t w = (uint64_t)box[i].count * (uint64_t)(ext + 16);
             if (w > best) { best = w; pick = i; }
         }
         if (pick < 0) break;
         CutBox& x = box[pick];
-        const int er = x.r1 - x.r0, eg = x.g1 - x.g0, eb = x.b1 - x.b0;
+        const int er = (x.r1 - x.r0) * sp.ua * sp.wa, eg = (x.g1 - x.g0) * sp.ub, eb = (x.b1 - x.b0) * sp.uc;
         const int axis = (er >= eg && er >= eb) ? 0 : (eg >= eb ? 1 : 2);
         // walk the axis until half the count is behind us
         const uint32_t half = x.count / 2;
@@ -816,9 +845,9 @@ void ft812AdaptBuild(AdaptPal& ap, int slots) {
         const int lo = axis == 0 ? x.r0 : axis == 1 ? x.g0 : x.b0, hi = axis == 0 ? x.r1 : axis == 1 ? x.g1 : x.b1;
         for (int p = lo; p < hi; p++) {
             uint32_t plane = 0;
-            if (axis == 0)      for (int g = x.g0; g <= x.g1; g++) for (int b = x.b0; b <= x.b1; b++) plane += h[(p << 8) | (g << 4) | b];
-            else if (axis == 1) for (int r = x.r0; r <= x.r1; r++) for (int b = x.b0; b <= x.b1; b++) plane += h[(r << 8) | (p << 4) | b];
-            else                for (int r = x.r0; r <= x.r1; r++) for (int g = x.g0; g <= x.g1; g++) plane += h[(r << 8) | (g << 4) | p];
+            if (axis == 0)      for (int g = x.g0; g <= x.g1; g++) for (int b = x.b0; b <= x.b1; b++) plane += h[(p << sp.sa) | (g << sp.sb) | b];
+            else if (axis == 1) for (int r = x.r0; r <= x.r1; r++) for (int b = x.b0; b <= x.b1; b++) plane += h[(r << sp.sa) | (p << sp.sb) | b];
+            else                for (int r = x.r0; r <= x.r1; r++) for (int g = x.g0; g <= x.g1; g++) plane += h[(r << sp.sa) | (g << sp.sb) | p];
             acc += plane;
             if (acc >= half) { cut = p; break; }
         }
@@ -827,23 +856,23 @@ void ft812AdaptBuild(AdaptPal& ap, int slots) {
         if (axis == 0)      { x.r1 = (uint8_t)cut; y.r0 = (uint8_t)(cut + 1); }
         else if (axis == 1) { x.g1 = (uint8_t)cut; y.g0 = (uint8_t)(cut + 1); }
         else                { x.b1 = (uint8_t)cut; y.b0 = (uint8_t)(cut + 1); }
-        boxShrink(h, x); x.count = boxCount(h, x);
-        boxShrink(h, y); y.count = boxCount(h, y);
+        boxShrink(h, sp, x); x.count = boxCount(h, sp, x);
+        boxShrink(h, sp, y); y.count = boxCount(h, sp, y);
         if (!y.count) { continue; }             // the split landed on an empty tail; x keeps its shrunk extent
         if (!x.count) { x = y; continue; }
         box[n++] = y;
     }
-    // colours = count-weighted mean of the bin centres
+    // colours = count-weighted mean of the bin centres (in the layout's own axes), as RGB
     for (int i = 0; i < n; i++) {
         uint64_t sr = 0, sg = 0, sb = 0; uint32_t c = 0;
         const CutBox& x = box[i];
         for (int r = x.r0; r <= x.r1; r++) for (int g = x.g0; g <= x.g1; g++) for (int b = x.b0; b <= x.b1; b++) {
-            const uint32_t k = h[(r << 8) | (g << 4) | b];
-            sr += (uint64_t)k * (uint32_t)(r * 16 + 8); sg += (uint64_t)k * (uint32_t)(g * 16 + 8); sb += (uint64_t)k * (uint32_t)(b * 16 + 8); c += k;
+            const uint32_t k = h[(r << sp.sa) | (g << sp.sb) | b];
+            sr += (uint64_t)k * (uint32_t)(r * sp.ua + sp.oa); sg += (uint64_t)k * (uint32_t)(g * sp.ub + sp.ob); sb += (uint64_t)k * (uint32_t)(b * sp.uc + sp.oc); c += k;
         }
         if (!c) c = 1;
         const uint32_t R = (uint32_t)(sr / c), G = (uint32_t)(sg / c), B = (uint32_t)(sb / c);
-        ap.ncol[i] = ((R > 255 ? 255 : R) << 16) | ((G > 255 ? 255 : G) << 8) | (B > 255 ? 255 : B);
+        ap.ncol[i] = nativeToRgb(sp, ((R > 255 ? 255 : R) << 16) | ((G > 255 ? 255 : G) << 8) | (B > 255 ? 255 : B), ycc);
     }
     // Entries: 0 = black, 1..n = the boxes, each on the index whose PREVIOUS colour
     // it continues. The rows on screen were written through the old map — this is
@@ -881,22 +910,42 @@ void ft812AdaptBuild(AdaptPal& ap, int slots) {
     ap.col[0] = 0;
     for (int j = 0; j < n; j++) ap.col[box[j].count] = ap.ncol[j];
     n = n ? n + 1 : 0;
-    // every bin -> the nearest entry (populated or not: the next frame may use it)
-    for (int bin = 0; bin < 4096; bin++) {
-        const int r = binR(bin) * 16 + 8, g = binG(bin) * 16 + 8, b = binB(bin) * 16 + 8;   // bin k = [16k, 16k+15]
-        uint32_t bestD = 0xFFFFFFFFu; int bi = 0;
-        for (int i = 0; i < n; i++) {
-            const uint32_t c = ap.col[i];
-            const int dr = r - (int)((c >> 16) & 255), dg = g - (int)((c >> 8) & 255), db = b - (int)(c & 255);
-            const uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
-            if (d < bestD) { bestD = d; bi = i; }
-        }
-        ap.lut[bin] = (uint8_t)bi;
+    // The map. A bin inside a box IS that box's entry — that is all of the frame
+    // just measured, and it costs one pass over the boxes. Every other bin is left
+    // UNRESOLVED (0xFF) and takes its nearest entry the first time a pixel lands in
+    // it (ft812AdaptResolve). Searching all 4096 bins against 185 entries here cost
+    // 25-55 ms on core1 — a visible hitch at every rebuild, i.e. every 8th frame of
+    // a moving scene (hw 2026-10-01, `render: max` against `avg`).
+    memset(ap.lut, 0xFF, sizeof(ap.lut));
+    for (int jb = 0; jb < n - 1; jb++) {
+        const CutBox& x = box[jb];
+        const uint8_t e = (uint8_t)x.count;                      // the entry the matching gave this box
+        for (int r = x.r0; r <= x.r1; r++) for (int g = x.g0; g <= x.g1; g++) for (int b = x.b0; b <= x.b1; b++) ap.lut[(r << sp.sa) | (g << sp.sb) | b] = e;
     }
-    ap.lut[0] = 0;                           // the darkest bin is the black entry
+    if (!ycc) ap.lut[0] = 0;                 // RGB: the darkest bin is the black entry (YCC: bin 0 is not black)
     ap.n = n;
-    adaptFold(ap.hist, ap.coarse);
+    for (int ci = 0; ci < 512; ci++) ap.coarse[ci] = (uint16_t)coarseAt(ap.hist, ci, ap.histSpace);
+    ap.space = ap.histSpace;
     ap.built = n > 0;
+}
+
+// An unresolved bin of the map: the nearest entry to its centre, compared in RGB.
+uint8_t ft812AdaptResolve(AdaptPal& ap, uint32_t bin) {
+    const bool ycc = ap.space == ADAPT_YCC633;
+    const Space& sp = kSpace[ycc ? 1 : 0];
+    bin &= 4095;
+    const int ka = (int)(bin >> sp.sa), kb = (int)((bin >> sp.sb) & (uint32_t)(sp.nb - 1)), kc = (int)(bin & (uint32_t)(sp.nc - 1));
+    const uint32_t cen = nativeToRgb(sp, ((uint32_t)(ka * sp.ua + sp.oa) << 16) | ((uint32_t)(kb * sp.ub + sp.ob) << 8) | (uint32_t)(kc * sp.uc + sp.oc), ycc);
+    const int r = (int)((cen >> 16) & 255), g = (int)((cen >> 8) & 255), b = (int)(cen & 255);
+    uint32_t bestD = 0xFFFFFFFFu; int bi = 0;
+    for (int i = 0; i < ap.n; i++) {
+        const uint32_t c = ap.col[i];
+        const int dr = r - (int)((c >> 16) & 255), dg = g - (int)((c >> 8) & 255), db = b - (int)(c & 255);
+        const uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (d < bestD) { bestD = d; bi = i; }
+    }
+    ap.lut[bin] = (uint8_t)bi;
+    return (uint8_t)bi;
 }
 
 // No dither here, on purpose. The cube can dither because its neighbouring
@@ -906,12 +955,15 @@ void ft812AdaptBuild(AdaptPal& ap, int slots) {
 // lie on the line through the pixel's own colour — flat areas came out speckled
 // with a foreign colour (hw 2026-10-01). The palette is cut from the frame
 // itself, so the plain nearest entry is already close.
-FT_HOT void ft812QuantizeRowAdapt(const AdaptPal& ap, const uint8_t* slotOf, const uint32_t* src, int w, int y, uint8_t* dst) {
+FT_HOT void ft812QuantizeRowAdapt(AdaptPal& ap, const uint8_t* slotOf, const uint32_t* src, int w, int y, uint8_t* dst) {
     (void)y;
     const uint8_t* lut = ap.lut;
     for (int x = 0; x < w; x++) {
         const uint32_t px = src[x];
-        dst[x] = slotOf[lut[((px >> 12) & 0xF00) | ((px >> 8) & 0x0F0) | ((px >> 4) & 0x00F)]];
+        const uint32_t bin = ((px >> 12) & 0xF00) | ((px >> 8) & 0x0F0) | ((px >> 4) & 0x00F);
+        uint32_t e = lut[bin];
+        if (e == 0xFF) e = ft812AdaptResolve(ap, bin);
+        dst[x] = slotOf[e];
     }
 }
 
