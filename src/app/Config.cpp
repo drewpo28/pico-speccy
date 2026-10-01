@@ -25,6 +25,7 @@
 #include "drivers/graphics/graphics.h"
 #include <hardware/vreg.h>
 #include "ScanLite.h"
+#include "JoyProfiles.h"
 
 ArchIdx   Config::arch = A_48K;
 RomsetIdx Config::romSet = R_48K;
@@ -200,6 +201,7 @@ bool Config::render_paper = true;
 bool Config::render_border = true;
 uint8_t Config::persist_slot = 1;
 uint8_t Config::profile_slot = 0;
+string  Config::joy_profile;
 
 bool     Config::TABasfire1 = false;
 signed char Config::aud_volume = 0;
@@ -1558,6 +1560,7 @@ void Config::load() {
         // open its list on it. 0 = none (never loaded one, or a factory start).
         nvs_get_u8("profile_slot", profile_slot, sts);
         if (profile_slot > CONFIG_PROFILE_SLOTS) profile_slot = 0;
+        nvs_get_str("joy_profile", joy_profile, sts);
         nvs_get_u8("ui_click_vol", ui_click_vol, sts);
         if (ui_click_vol > 3) ui_click_vol = 2;
         nvs_get_b("timex_video", timex_video, sts);
@@ -1947,6 +1950,7 @@ void Config::save(const char* path, const char* profileName) {
     nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
     nvs_set_u8(buf,"ui_theme", Config::ui_theme);
     nvs_set_u8(buf,"profile_slot", Config::profile_slot);
+    nvs_set_str(buf,"joy_profile", Config::joy_profile.c_str());
     nvs_set_u8(buf,"ui_click_vol", Config::ui_click_vol);
     nvs_set_str(buf,"timex_video", Config::timex_video ? "true" : "false");
     nvs_set_u8(buf,"dma_mode",Config::dma_mode);
@@ -2270,4 +2274,49 @@ void Config::byteTestRomToggle() {
 void Config::byteTestRomReset() {
     if (MemESP::overlayFor(gb_rom_0_sinclair_48k) == gb_overlay_48k_byte_test)
         MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
+}
+
+// ============================================================================
+// Joystick profiles: CONFIG_DIR "/joystick.cfg" (format in JoyProfiles.h).
+// ============================================================================
+#define JOYPROF_PATH CONFIG_DIR "/joystick.cfg"
+
+// The file writes types as words indexed by the JOY_* value.
+static_assert(JOY_CURSOR == 0 && JOY_KEMPSTON == 1 && JOY_SINCLAIR1 == 2 &&
+              JOY_SINCLAIR2 == 3 && JOY_FULLER == 4, "JoyProfiles.cpp kType[] order");
+
+int Config::joyProfilesLoad(JoyProf::Profile* out, int cap) {
+    if (!FileUtils::fsMount) return 0;
+    FIL* f = fopen2(JOYPROF_PATH, FA_READ);
+    if (!f) return 0;
+    LineReader rd(f);
+    string l;
+    int n = 0;
+    while (n < cap && rd.line(l)) {
+        if (!JoyProf::parseLine(l.data(), l.size(), out[n])) continue;
+        if (JoyProf::find(out, n, out[n].name) >= 0) continue;   // first one wins
+        n++;
+    }
+    fclose2(f);
+    return n;
+}
+
+bool Config::joyProfilesSave(const JoyProf::Profile* list, int n) {
+    if (!FileUtils::fsMount) return false;
+    FileUtils::mkdirParents(CONFIG_DIR);
+    FIL* f = fopen2(JOYPROF_PATH, FA_WRITE | FA_CREATE_ALWAYS);
+    if (!f) return false;
+    static const char hdr[] =
+        "# pico-speccy joystick profiles: name<TAB>type<TAB>Left,Right,Up,Down,"
+        "Start,Select,A,B,C,X,Y,Z,L2,R2\n";
+    UINT bw;
+    bool ok = f_write(f, hdr, sizeof(hdr) - 1, &bw) == FR_OK && bw == sizeof(hdr) - 1;
+    char line[320];
+    for (int i = 0; ok && i < n; i++) {
+        const size_t len = JoyProf::formatLine(list[i], line, sizeof(line));
+        if (!len) continue;
+        ok = f_write(f, line, len, &bw) == FR_OK && bw == len;
+    }
+    fclose2(f);
+    return ok;
 }

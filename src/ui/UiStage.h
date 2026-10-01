@@ -353,7 +353,10 @@ const char* romsetName(int32_t composite);
     X(SET_VGA_PWM_PHASE,   AC_LIVE,   F_PREVIEW,             get_vgaPwmPhase, put_vgaPwmPhase, hook_vgaPwmPhase, -1) \
     /* LED indicators on a solid panel beside the F8 box: read live by LED::draw,  \
        which moves the carve (VIDEO::setLedBar) and asks for the repaint itself. */ \
-    X(SET_LED_PANEL,       AC_PURE,   0,                     get_ledPanel,   put_ledPanel,   nullptr,        -1)
+    X(SET_LED_PANEL,       AC_PURE,   0,                     get_ledPanel,   put_ledPanel,   nullptr,        -1) \
+    /* Joystick > Profile: the row of the live joystick profile. Same contract as     */ \
+    /* SET_PROFILE_SLOT (read only from the menu, moved by the list's own verbs).     */ \
+    X(SET_JOY_PROFILE,     AC_PURE,   0,                     get_joyProfile, put_joyProfile, nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

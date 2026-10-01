@@ -198,6 +198,16 @@
 #define TXT_JOY_TYPE        "Joystick type"
 #define TXT_JOY_MAPPING     "Keyboard mapping"
 #define TXT_JOY_PREFS       "Preferences"
+#define TXT_JOY_PROFILE     "Profile"
+#define TXT_JOYPROF_NEW     "+ New profile"
+#define TXT_JOYPROF_UNSAVED "(unsaved)"
+#define TXT_JOYPROF_NAME    "Joystick profile name"
+#define TXT_JOYPROF_REPLACE "A profile with this name exists. Replace it?"
+#define TXT_JOYPROF_DUP     " Name already in use "
+#define TXT_JOYPROF_FULL    " No room: 16 profiles at most "
+#define TXT_JOYPROF_SAVED   " Profile saved "
+#define TXT_JOYPROF_NOMEM   " Not enough memory "
+#define TXT_JOYPROF_SAVE_ERR " Cannot write joystick.cfg "
 
 // ── Machine ────────────────────────────────────────────────────────────────────
 // Machine rows carry their ROM set in the right pane, so a machine and its ROM are

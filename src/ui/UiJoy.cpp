@@ -23,9 +23,13 @@
 #include "UiRender.h"       // SYM_* glyphs
 #include "UiDialog.h"
 #include "UiStrings.h"
+#include "app/messages.h"      // OSD_DLG_SETJOYMAPDEFAULTS
 #include "OSDMain.h"
 #include "app/Config.h"
 #include "app/ESPectrum.h"
+#include "app/JoyProfiles.h"
+#include "app/TryAlloc.h"
+#include "fs/FileUtils.h"
 #include "drivers/input/fabutils.h"
 #include <pico/stdlib.h>
 
@@ -60,7 +64,8 @@ struct Cell {
 #define J_OK 14
 #define J_TEST 15
 #define J_DEF 16
-#define J_CELLS 17
+#define J_TYPE 17
+#define J_CELLS 18
 
 static const Cell kCells[J_CELLS] = {
     // The caption sits ABOVE its pill (the classic put it to the right, which
@@ -85,10 +90,17 @@ static const Cell kCells[J_CELLS] = {
     { 250, 116, J_L2,    -1,      J_Z,     J_TEST,  "R2",     54 },
     // The button row, left to right: Save, Load defaults, Test joystick (the
     // table order is by index: J_OK, J_TEST, J_DEF).
-    {  16, 146, -1,      J_DEF,   J_START, -1,      nullptr,  0  },  // Save
-    { 214, 146, J_DEF,   -1,      J_R2,    -1,      nullptr,  0  },  // Test joystick
-    {  88, 146, J_OK,    J_TEST,  J_MODE,  -1,      nullptr,  0  },  // Load defaults
+    {  16, 146, -1,      J_DEF,   J_START, J_TYPE,  nullptr,  0  },  // Save
+    { 214, 146, J_DEF,   -1,      J_R2,    J_TYPE,  nullptr,  0  },  // Test joystick
+    {  88, 146, J_OK,    J_TEST,  J_MODE,  J_TYPE,  nullptr,  0  },  // Load defaults
+    // The joystick type is part of the profile (the same map means other things on
+    // other types), so it is edited here, under the button row.
+    {  16, 172, -1,      -1,      J_OK,    -1,      "Type",   90 },
 };
+
+// Display names of the JOY_* types (index = value).
+static const char* const kTypeShow[] = { "Cursor", "Kempston", "Sinclair 1", "Sinclair 2", "Fuller" };
+static const char* typeShow(uint8_t t) { return t < 5 ? kTypeShow[t] : "?"; }
 
 // Pill width of a cell, in live pixels.
 static inline int cellW(int i) { return (kCells[i].w ? kCells[i].w : 56) * Sf.glyphScale; }
@@ -137,12 +149,12 @@ static void computeJoyLayout() {
     JL.sx = sc;                             // design grid is 320 px wide
     JL.pill_w = 56 * sc;
     JL.pill_h = 11;
-    // Centre the 312x168 design area in the body.
+    // Centre the 312x190 design area in the body.
     const int body_y = JL.iy + JL.hdr_h;
     const int body_h = JL.iy + JL.ih - JL.foot_h - body_y;
     JL.ox = (Sf.w - 310 * sc) / 2;
     if (JL.ox < JL.ix) JL.ox = JL.ix;
-    JL.oy = body_y + (body_h - 168) / 2 - 8;
+    JL.oy = body_y + (body_h - 190) / 2 - 4;
     if (JL.oy < body_y) JL.oy = body_y;
 }
 
@@ -151,16 +163,22 @@ static inline int cy(int i) { return JL.oy + kCells[i].y; }
 
 // ── drawing ────────────────────────────────────────────────────────────────────
 
+
+// The page edits a WORKING COPY of one profile: its type and its 14 targets. What
+// it is a copy of is s_target: an index into the profile file, or -1 for a map that
+// has no profile yet (a new one, or the live map before it was ever named).
 static int  s_sel;                  // focused cell
 static bool s_test;                 // JoyTest mode
-static int  s_vk[14];               // working copy of Config::joydef
+static JoyProf::Profile s_work;     // working copy (name, type, map)
+static JoyProf::Profile s_orig;     // what Esc compares against
+static int  s_target;               // profile index in the file, -1 = not saved yet
 static bool s_lit[14];              // JoyTest: control is pressed right now
 
 static void drawCell(int i) {
     const int x = cx(i), y = cy(i);
     const bool sel = (i == s_sel);
 
-    if (i >= J_OK) {                                  // the three buttons
+    if (i >= J_OK && i != J_TYPE) {                   // the three buttons
         const char* txt = (i == J_OK) ? "Save" : (i == J_TEST) ? "Test joystick" : "Load defaults";
         const int w = ((int)strlen(txt) + 2) * glyphW();
         fill(x, y - 1, w, JL.pill_h, sel ? C_SEL_BG : C_PANEL_ALT);
@@ -171,18 +189,25 @@ static void drawCell(int i) {
     // The pad control's name goes ABOVE its pill (lit in JoyTest), the assigned
     // ZX key inside it. Both are clipped to the cell's own 56-px column, so
     // neighbours can never overlap.
-    const UiColor capInk = s_test ? (s_lit[i] ? C_ACCENT : C_TEXT_DIM)
+    const UiColor capInk = s_test ? ((i < 14 && s_lit[i]) ? C_ACCENT : C_TEXT_DIM)
                                   : (sel ? C_WHITE : C_TEXT_DIM);
     if (kCells[i].cap) {
         fill(x, y - UI_FONT_H - 2, cellW(i), UI_FONT_H + 1, C_PANEL);
         textClip(x, y - UI_FONT_H - 1, cellW(i), kCells[i].cap, capInk);
     }
 
-    string kn = OSD::vkToText(s_vk[i]);
-    while (!kn.empty() && kn.back() == ' ') kn.pop_back();
+    string kn;
+    if (i == J_TYPE) {
+        kn = typeShow(s_work.type);
+    } else {
+        kn = OSD::vkToText(s_work.map[i]);
+        while (!kn.empty() && kn.back() == ' ') kn.pop_back();
+        while (!kn.empty() && kn.front() == ' ') kn.erase(0, 1);
+    }
 
+    const bool lit = s_test && i < 14 && s_lit[i];
     fill(x, y - 1, cellW(i), JL.pill_h, sel && !s_test ? C_SEL_BG : C_PANEL_ALT);
-    frame(x, y - 1, cellW(i), JL.pill_h, s_test && s_lit[i] ? C_ACCENT : C_SEP);
+    frame(x, y - 1, cellW(i), JL.pill_h, lit ? C_ACCENT : C_SEP);
     textClip(x + 2 * Sf.glyphScale, y, cellW(i) - 4 * Sf.glyphScale, kn.c_str(),
              sel && !s_test ? C_WHITE : C_TEXT);
 }
@@ -207,22 +232,111 @@ static void drawChromeJoy() {
     roundRect(JL.margin, JL.iy - 1, Sf.w - 2 * JL.margin, JL.ih + 2, 4, C_SEP, C_PANEL);
     fill(JL.ix, JL.iy, JL.iw, JL.hdr_h, C_PANEL);
     rainbow(JL.ix + JL.pad, JL.iy + 3);
-    text(JL.ix + JL.pad + rainbowW() + 2 * JL.pad, JL.iy + 4, TXT_JOY_MAPPING, C_WHITE);
-    const char* jt = s_test ? "Test joystick" : Config::joystick == JOY_FULLER ? "Fuller" : "Kempston";
-    text(JL.ix + JL.iw - textWidth(jt) - JL.pad, JL.iy + 4, jt,
-         s_test ? C_ACCENT : C_TEXT_DIM);
+    const int tx = JL.ix + JL.pad + rainbowW() + 2 * JL.pad;
+    text(tx, JL.iy + 4, TXT_JOY_MAPPING, C_WHITE);
+    // Right of the title: which profile this is (or that it has none yet).
+    const char* jt = s_test ? "Test joystick"
+                   : s_target >= 0 ? s_work.name : TXT_JOYPROF_UNSAVED;
+    const int tw = textWidth(TXT_JOY_MAPPING);
+    const int room = JL.ix + JL.iw - JL.pad - (tx + tw + 2 * glyphW());
+    const int jw = textWidth(jt) < room ? textWidth(jt) : room;
+    if (room > 0)
+        textClip(JL.ix + JL.iw - jw - JL.pad, JL.iy + 4, jw, jt,
+                 s_test ? C_ACCENT : C_TEXT_DIM);
     hline(JL.ix, JL.iy + JL.hdr_h - 1, JL.iw, C_SEP);
     drawAllCells();
     drawFooterJoy();
 }
 
+// ── profile storage ────────────────────────────────────────────────────────────
+// The file is small (<= 16 lines), so every change reads it, edits it and writes it
+// back whole. The list lives on the heap only for the length of the operation.
+
+struct JoyList {
+    JoyProf::Profile p[JoyProf::MAX];
+    int n;
+};
+
+static JoyList* listLoad() {
+    JoyList* l = (JoyList*)tryMalloc(sizeof(JoyList));
+    if (!l) return nullptr;
+    l->n = Config::joyProfilesLoad(l->p, JoyProf::MAX);
+    return l;
+}
+
+static bool sameMap(const JoyProf::Profile& a, const JoyProf::Profile& b) {
+    return a.type == b.type && !memcmp(a.map, b.map, sizeof(a.map));
+}
+
+// Make `p` the live pad and remember its name; persisted in storage.nvs.
+static void applyLive(const JoyProf::Profile& p, bool named) {
+    Config::joystick = p.type;
+    for (int i = 0; i < 14; i++) Config::joydef[i] = p.map[i];
+    Config::joy_profile = named ? p.name : "";
+    Config::save();
+}
+
+static void liveToProfile(JoyProf::Profile& p) {
+    memset(&p, 0, sizeof(p));
+    p.type = Config::joystick < 5 ? Config::joystick : JOY_KEMPSTON;
+    for (int i = 0; i < 14; i++) p.map[i] = Config::joydef[i];
+}
+
+static void invalidateRows();     // the pick list's session cache (below)
+
+// Save the working copy. A profile that already exists is overwritten in place and
+// nothing is asked; a new one asks for its name first. The saved profile becomes the
+// live one — editing a map is what you do to the pad you are about to use.
+static bool saveWork() {
+    if (!FileUtils::fsMount) {            // no card: no library, the live pad only
+        applyLive(s_work, false);
+        s_orig = s_work;
+        return true;
+    }
+    JoyList* l = listLoad();
+    if (!l) { uiToast(TXT_JOYPROF_NOMEM, true, 1500); return false; }
+
+    int idx = s_target;
+    if (idx >= 0 && (idx >= l->n || strcmp(l->p[idx].name, s_work.name))) {
+        // The file moved under us (edited on a PC): find it again by name.
+        idx = JoyProf::find(l->p, l->n, s_work.name);
+    }
+    if (idx < 0) {
+        string nm_;
+        for (;;) {
+            if (!uiPrompt(TXT_JOYPROF_NAME, nm_, JoyProf::NAME_LEN - 1)) { free(l); return false; }
+            JoyProf::Profile t = s_work;
+            if (!JoyProf::setName(t, nm_.c_str())) continue;
+            const int dup = JoyProf::find(l->p, l->n, t.name);
+            if (dup >= 0) {
+                if (!uiConfirm(TXT_JOYPROF_REPLACE)) continue;
+                idx = dup;
+            } else {
+                if (l->n >= JoyProf::MAX) { uiToast(TXT_JOYPROF_FULL, true, 2000); free(l); return false; }
+                idx = l->n++;
+            }
+            memcpy(s_work.name, t.name, sizeof(s_work.name));
+            break;
+        }
+    }
+    l->p[idx] = s_work;
+    uiBusy(TXT_MSG_SAVING_SNAP);
+    const bool ok = Config::joyProfilesSave(l->p, l->n);
+    free(l);
+    if (!ok) { uiToast(TXT_JOYPROF_SAVE_ERR, true, 2000); return false; }
+    s_target = idx;
+    s_orig = s_work;
+    applyLive(s_work, true);
+    invalidateRows();
+    return true;
+}
+
 // ── the page ───────────────────────────────────────────────────────────────────
 
-void joyMappingPage() {
+static void mappingPage() {
     gfxBegin();
     computeJoyLayout();
 
-    for (int i = 0; i < 14; i++) s_vk[i] = Config::joydef[i];
     memset(s_lit, 0, sizeof(s_lit));
     s_sel = J_UP;
     s_test = false;
@@ -230,11 +344,24 @@ void joyMappingPage() {
     // The pad's own VKs must not steer the cursor while we are mapping it.
     const bool savedCursorAsJoy = Config::CursorAsJoy;
     Config::CursorAsJoy = false;
+    // JoyTest drives the LIVE pad; what it was is put back afterwards, so testing a
+    // map that is never saved leaves the running one alone.
+    uint8_t  liveType = Config::joystick;
+    uint16_t liveMap[14];
+    memcpy(liveMap, Config::joydef, sizeof(liveMap));
 
     drawChromeJoy();
 
     auto kbd = ESPectrum::PS2Controller.keyboard();
     { fabgl::VirtualKeyItem d; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d); }
+
+    auto leaveTest = [&]() {
+        s_test = false;
+        memset(s_lit, 0, sizeof(s_lit));
+        Config::joystick = liveType;
+        memcpy(Config::joydef, liveMap, sizeof(liveMap));
+        drawChromeJoy();
+    };
 
     int testExit = 0;
     fabgl::VirtualKeyItem k;
@@ -250,12 +377,7 @@ void joyMappingPage() {
             }
             if (dirty) drawAllCells();
             if (kbd->isVKDown(fabgl::VK_JOY_B)) {
-                if (++testExit == 5) {
-                    s_test = false;
-                    memset(s_lit, 0, sizeof(s_lit));
-                    drawChromeJoy();
-                    testExit = 0;
-                }
+                if (++testExit == 5) { leaveTest(); testExit = 0; }
             } else testExit = 0;
         }
 
@@ -264,18 +386,12 @@ void joyMappingPage() {
 
         if (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1) {
             if (s_test) {                       // leave the test, stay on the page
-                s_test = false;
-                memset(s_lit, 0, sizeof(s_lit));
-                drawChromeJoy();
+                leaveTest();
                 OSD::clickNoPause();
                 continue;
             }
-            bool changed = false;
-            for (int i = 0; i < 14; i++)
-                if (Config::joydef[i] != s_vk[i]) { changed = true; break; }
-            if (changed && uiConfirm("Save the joystick mapping?")) {
-                for (int i = 0; i < 14; i++) Config::joydef[i] = s_vk[i];
-                Config::save();
+            if (!sameMap(s_work, s_orig) && uiConfirm("Save the joystick mapping?")) {
+                if (!saveWork()) { drawChromeJoy(); continue; }   // name prompt backed out
             }
             break;
         }
@@ -290,7 +406,7 @@ void joyMappingPage() {
 
             case fabgl::VK_DELETE:
                 if (s_sel < 14) {
-                    s_vk[s_sel] = fabgl::VK_NONE;
+                    s_work.map[s_sel] = fabgl::VK_NONE;
                     drawCell(s_sel);
                     OSD::clickNoPause();
                 }
@@ -298,35 +414,43 @@ void joyMappingPage() {
 
             case fabgl::VK_MENU_ENTER:
                 if (s_sel == J_OK) {            // Save
-                    for (int i = 0; i < 14; i++) Config::joydef[i] = s_vk[i];
-                    Config::save();
-                    uiToast("Mapping saved", false, 1000);
+                    if (saveWork()) uiToast(TXT_JOYPROF_SAVED, false, 1000);
+                    liveType = Config::joystick;
+                    memcpy(liveMap, Config::joydef, sizeof(liveMap));
                     drawChromeJoy();
                     continue;
                 }
-                if (s_sel == J_TEST) {          // enter JoyTest
-                    // The test drives the live mapping, so commit first — same as
-                    // the classic dialog did.
-                    for (int i = 0; i < 14; i++) Config::joydef[i] = s_vk[i];
-                    Config::save();
+                if (s_sel == J_TEST) {          // enter JoyTest with the working map
+                    Config::joystick = s_work.type;
+                    memcpy(Config::joydef, s_work.map, sizeof(liveMap));
                     s_test = true;
                     testExit = 0;
                     drawChromeJoy();
                     continue;
                 }
-                if (s_sel == J_DEF) {           // default map of the current type
+                if (s_sel == J_DEF) {           // default map of the chosen type
                     // Into the working copy only: Save (or the question on Esc)
                     // is what makes it stick, so this can still be backed out.
-                    uint16_t d[14];
-                    Config::joyDefaults(Config::joystick, d);
-                    for (int i = 0; i < 14; i++) s_vk[i] = d[i];
+                    Config::joyDefaults(s_work.type, s_work.map);
                     drawAllCells();
                     OSD::clickNoPause();
                     continue;
                 }
+                if (s_sel == J_TYPE) {          // pick the joystick type
+                    const int t = uiPickList(TXT_JOY_TYPE, kTypeShow, 5, s_work.type);
+                    if (t >= 0 && t != s_work.type) {
+                        s_work.type = (uint8_t)t;
+                        // Each type has its own default map. Declining keeps the map:
+                        // the pad controls mean the same thing on every type.
+                        if (uiConfirm(OSD_DLG_SETJOYMAPDEFAULTS, TXT_JOY_TYPE, /*default_yes=*/true))
+                            Config::joyDefaults(s_work.type, s_work.map);
+                    }
+                    drawChromeJoy();
+                    continue;
+                }
                 {                               // assign a key to this control
-                    const int nv = OSD::joyPickKey(s_vk[s_sel]);
-                    if (nv >= 0) s_vk[s_sel] = nv;
+                    const int nv = OSD::joyPickKey(s_work.map[s_sel]);
+                    if (nv >= 0) s_work.map[s_sel] = (uint16_t)nv;
                     drawChromeJoy();            // the picker drew over us
                 }
                 continue;
@@ -346,5 +470,163 @@ void joyMappingPage() {
     gfxEnd();
 }
 
-} // namespace nm
+// Joystick > Mapping: the live pad, as the profile it was loaded from or saved to —
+// or as a new, still unnamed one (Save then asks for the name).
+void joyMappingPage() {
+    liveToProfile(s_work);
+    s_target = -1;
+    if (!Config::joy_profile.empty() && FileUtils::fsMount) {
+        JoyList* l = listLoad();
+        if (l) {
+            const int i = JoyProf::find(l->p, l->n, Config::joy_profile.c_str());
+            if (i >= 0) {
+                s_target = i;
+                memcpy(s_work.name, l->p[i].name, sizeof(s_work.name));
+            }
+            free(l);
+        }
+    }
+    s_orig = s_work;
+    mappingPage();
+}
 
+// ── Joystick > Profile: the pick list ─────────────────────────────────────────
+// Rows = the profiles in the file, then "+ New profile". Value = the profile's
+// index; the New row is JoyProf::MAX. The table is cached for the menu session (the
+// renderer asks for it per drawn row) and allocated only while the menu is up.
+
+#define JP_NEW  JoyProf::MAX
+#define JP_LBL  (JoyProf::NAME_LEN + 4)
+struct JoyRows {
+    JoyList list;
+    Option  opts[JoyProf::MAX + 1];
+    char    lbl[JoyProf::MAX][JP_LBL];
+    bool    valid;
+};
+static JoyRows* s_rows = nullptr;
+
+static void invalidateRows() { if (s_rows) s_rows->valid = false; }
+
+void joyProfilesSessionBegin() { invalidateRows(); }
+void joyProfilesSessionEnd()   { free(s_rows); s_rows = nullptr; }
+
+static JoyRows* jpRows() {
+    if (!s_rows) {
+        s_rows = (JoyRows*)tryMalloc(sizeof(JoyRows));
+        if (!s_rows) return nullptr;
+        s_rows->valid = false;
+    }
+    if (!s_rows->valid) {
+        JoyList& l = s_rows->list;
+        l.n = Config::joyProfilesLoad(l.p, JoyProf::MAX);
+        for (int i = 0; i < l.n; i++) {
+            snprintf(s_rows->lbl[i], JP_LBL, "%s", l.p[i].name);
+            s_rows->opts[i] = { s_rows->lbl[i], (int32_t)i, nullptr };
+        }
+        s_rows->opts[l.n] = { TXT_JOYPROF_NEW, (int32_t)JP_NEW, nullptr };
+        s_rows->valid = true;
+    }
+    return s_rows;
+}
+
+const Option* joyprof_rows(uint8_t& cnt) {
+    JoyRows* r = jpRows();
+    if (!r) { cnt = 0; return nullptr; }
+    cnt = (uint8_t)(r->list.n + 1);
+    return r->opts;
+}
+
+// Which row is the live pad: its profile's index, -1 when it has none.
+int32_t joyprof_current() {
+    if (Config::joy_profile.empty()) return -1;
+    JoyRows* r = jpRows();
+    if (!r) return -1;
+    return JoyProf::find(r->list.p, r->list.n, Config::joy_profile.c_str());
+}
+
+// The collapsed row's value: the live profile's name, with a '*' while the live pad
+// no longer matches it (a type cycled with the hot key, a test left mid-edit).
+static char s_vlabel[24];
+const char* joyprof_vlabel() {
+    const int32_t i = joyprof_current();
+    if (i < 0) return TXT_JOYPROF_UNSAVED;
+    JoyProf::Profile live;
+    liveToProfile(live);
+    const JoyProf::Profile& p = s_rows->list.p[i];
+    snprintf(s_vlabel, sizeof(s_vlabel), "%.13s%s", p.name, sameMap(live, p) ? "" : "*");
+    return s_vlabel;
+}
+
+// Enter = use it (or start a new one), F4 = edit, F6 = rename, F8 = remove.
+void joyprof_key(int32_t tag, uint8_t key) {
+    JoyRows* r = jpRows();
+    if (!r) { uiToast(TXT_JOYPROF_NOMEM, true, 1500); return; }
+
+    if (tag == JP_NEW) {
+        if (key != 0 && key != 4) return;
+        if (r->list.n >= JoyProf::MAX) { uiToast(TXT_JOYPROF_FULL, true, 2000); return; }
+        // A new profile starts from the live pad: the usual reason to make one is
+        // "this, but with fire on another button".
+        liveToProfile(s_work);
+        s_target = -1;
+        s_orig = s_work;
+        mappingPage();
+        invalidateRows();
+        return;
+    }
+    if (tag < 0 || tag >= r->list.n) return;
+    JoyProf::Profile p = r->list.p[tag];
+
+    if (key == 0 || key == 3) {                       // use
+        applyLive(p, true);
+        char msg[48];
+        snprintf(msg, sizeof(msg), " Joystick: %s ", p.name);
+        uiToast(msg, false, 900);
+        return;
+    }
+    if (key == 4) {                                   // edit
+        s_work = p;
+        s_target = tag;
+        s_orig = p;
+        mappingPage();
+        invalidateRows();
+        return;
+    }
+    if (key == 6) {                                   // rename
+        string nn = p.name;
+        for (;;) {
+            if (!uiPrompt(TXT_JOYPROF_NAME, nn, JoyProf::NAME_LEN - 1)) return;
+            JoyProf::Profile t = p;
+            if (!JoyProf::setName(t, nn.c_str())) continue;
+            if (!strcmp(t.name, p.name)) return;
+            if (JoyProf::find(r->list.p, r->list.n, t.name) >= 0) {
+                uiToast(TXT_JOYPROF_DUP, true, 1500);
+                continue;
+            }
+            const bool wasLive = (Config::joy_profile == p.name);
+            r->list.p[tag] = t;
+            if (!Config::joyProfilesSave(r->list.p, r->list.n)) {
+                uiToast(TXT_JOYPROF_SAVE_ERR, true, 2000);
+            } else if (wasLive) {
+                Config::joy_profile = t.name;
+                Config::save();
+            }
+            invalidateRows();
+            return;
+        }
+    }
+    if (key == 8) {                                   // remove
+        char q[64];
+        snprintf(q, sizeof(q), "Remove profile \"%.20s\" ?", p.name);
+        if (!uiConfirm(q)) return;
+        for (int i = tag; i + 1 < r->list.n; i++) r->list.p[i] = r->list.p[i + 1];
+        r->list.n--;
+        if (!Config::joyProfilesSave(r->list.p, r->list.n)) uiToast(TXT_JOYPROF_SAVE_ERR, true, 2000);
+        // The live pad keeps its map; it just has no profile behind it any more.
+        if (Config::joy_profile == p.name) { Config::joy_profile.clear(); Config::save(); }
+        invalidateRows();
+        return;
+    }
+}
+
+} // namespace nm

@@ -20,6 +20,7 @@
 #include "UiStage.h"
 #include "UiStrings.h"
 #include "UiActions.h"
+#include "UiJoy.h"
 #include "UiDialog.h"
 #include "UiBrowser.h"
 #include "app/Subsystem.h"
@@ -683,6 +684,7 @@ static void runInternal(const Node* openAt, bool enterSaves = false) {
     Stage::begin();
     netStatusInvalidate();      // WiFi state may have changed since the last session
     profilesSessionBegin();     // ...and so may the profiles on the card
+    joyProfilesSessionBegin();  // ...and the joystick profiles
     snapSessionBegin();         // ...and the snapshot slots
     persistEnterVerb(enterSaves);
     S.depth = 0;
@@ -820,6 +822,7 @@ resume:
     OSD::textPageOverride = nullptr;
     OSD::progressOverride = nullptr;
     profilesSessionEnd();       // hand the row tables back
+    joyProfilesSessionEnd();
     snapSessionEnd();
     OSD::osdInfoRelease();      // ...and the info pages' text buffer
     if (ownDyn) { free(S.dyn); S.dyn = nullptr; }
