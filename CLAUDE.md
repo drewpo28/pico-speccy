@@ -12011,7 +12011,7 @@ snapshots are not done. Format reference: libspectrum `rzx.c` (speccytools
 mirror on raw.githubusercontent.com — worldofspectrum.net is a 403 here) and
 Fuse's `rzx.c` / `z80.c` for the playback semantics.
 
-- **`src/RzxReader.{h,cpp}` is the format and depends on nothing** (miniz + an
+- **`src/speccy/core/RzxReader.{h,cpp}` is the format and depends on nothing** (miniz + an
   I/O/alloc struct), streamed: one 32 KB inflate window + inflate state (only for
   a compressed block) + one frame's IN list, whatever the file size.
   `tools/rzx_test.cpp` builds files byte by byte (host zlib, not miniz) and covers
