@@ -491,8 +491,6 @@ bool FileZ80::load(const string& z80_fn) {
             // if (mch == 2) z80_arch = "SAMRAM";
             if (mch == 3) z80_arch = A_128K;
             if (mch == 4) z80_arch = A_128K; // + if1
-            if (mch == 14) { z80_arch = A_48K; z80_timex = true; }   // Timex TC2048
-            if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
         }
         else if (z80version == 3) {
             if (mch == 0) z80_arch = A_48K;
@@ -502,16 +500,19 @@ bool FileZ80::load(const string& z80_fn) {
             if (mch == 4) z80_arch = A_128K;
             if (mch == 5) z80_arch = A_128K; // + if1
             if (mch == 6) z80_arch = A_128K; // + mgt
-            if (mch == 7) { z80_arch = A_128K; z80_plus3 = true; }  // Spectrum +3
-            if (mch == 9) z80_arch = A_PENT;
-            if (mch == 10) z80_arch = A_SCORP; // Scorpion ZS-256
-            if (mch == 12) z80_arch = A_128K; // Spectrum +2
-            // A +2A is a +3 without the disk drive, so it runs on the same machine
-            // here; the snapshot carries no disk state either way.
-            if (mch == 13) { z80_arch = A_128K; z80_plus3 = true; } // Spectrum +2A
-            if (mch == 14) { z80_arch = A_48K; z80_timex = true; }  // Timex TC2048
-            if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
         }
+
+        // Codes 7 and up mean the same machine in a v2 and a v3 header (only 3 and 4
+        // differ), and emulators do write them into v2 files.
+        if (mch == 7 || mch == 8) { z80_arch = A_128K; z80_plus3 = true; }  // Spectrum +3 (8 = the same, "mistakenly")
+        if (mch == 9) z80_arch = A_PENT;
+        if (mch == 10) z80_arch = A_SCORP; // Scorpion ZS-256
+        if (mch == 12) z80_arch = A_128K; // Spectrum +2
+        // A +2A is a +3 without the disk drive, so it runs on the same machine
+        // here; the snapshot carries no disk state either way.
+        if (mch == 13) { z80_arch = A_128K; z80_plus3 = true; } // Spectrum +2A
+        if (mch == 14) { z80_arch = A_48K; z80_timex = true; }  // Timex TC2048
+        if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
 
     }
 

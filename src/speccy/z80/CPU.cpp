@@ -144,7 +144,7 @@ void CPU::updateStatesInFrame() {
         // contended.
         statesInFrame = TSTATES_PER_FRAME_128;
         IntStart = INT_START128;
-        IntEnd = INT_END128 + CPU::latetiming;
+        IntEnd = (Config::isPlus3() ? INT_END_P3 : INT_END128) + CPU::latetiming;
     } else if (Config::arch == A_P512) {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;

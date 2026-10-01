@@ -134,6 +134,7 @@ public:
     static uint8_t  esp32rev;
     static bool     slog_on;
     static bool     ledIndicators;
+    static bool     rzx_loop;       // Snapshots > RZX loop: restart a recording when it ends
     static bool     led_panel;      // indicators on a solid panel beside the F8 box (carved out of every renderer)
     static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
     // Chip temperature calibration, whole °C added to the ADC sensor reading.

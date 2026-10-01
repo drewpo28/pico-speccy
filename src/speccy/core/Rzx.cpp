@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "app/Buffer.h"
+#include "app/Config.h"
 #include "speccy/z80/CPU.h"
 #include "app/Debug.h"
 #include "fs/FileUtils.h"
@@ -45,6 +46,8 @@ uint32_t s_shortFrames = 0; // frames that consumed fewer INs than recorded
 bool     s_desync = false;
 bool     s_snapPending = false;
 bool     s_innerLoad = false;   // our own snapshot load is resetting the machine
+bool     s_hasSnap = false;     // the file carries its own starting state (a loop needs one)
+bool     s_rewind = false;      // RZX loop: restart from the first block at the next loop entry
 
 const char* const kTmpBase = "/tmp/_rzx.";
 
@@ -147,6 +150,7 @@ bool loadSnap() {
     s_innerLoad = true;
     const bool ok = LoadSnapshot(file, A_NONE, R_NONE);
     s_innerLoad = false;
+    if (ok) s_hasSnap = true;
     if (!ok && !snapshotLoadReported())
         OSD::osdCenteredMsg("RZX: cannot load the snapshot", LEVEL_WARN, 3000);
     return ok;
@@ -187,6 +191,18 @@ bool seekFrame() {
     }
 }
 
+// (Re)open the reader on the file already open in `s` — the start of playback,
+// and the rewind of a looped one.
+bool openReader() {
+    RzxIo io;
+    io.ctx = s;
+    io.read = ioRead;
+    io.size = (uint32_t)f_size(&s->fil);
+    io.alloc = ioAlloc;
+    io.free = ioFree;
+    return s->rd.open(io);
+}
+
 } // namespace
 
 bool startPlayback(const std::string& path) {
@@ -205,20 +221,14 @@ bool startPlayback(const std::string& path) {
     const size_t slash = path.find_last_of('/');
     s_name = slash == std::string::npos ? path : path.substr(slash + 1);
 
-    RzxIo io;
-    io.ctx = s;
-    io.read = ioRead;
-    io.size = (uint32_t)f_size(&s->fil);
-    io.alloc = ioAlloc;
-    io.free = ioFree;
-    if (!s->rd.open(io)) {
+    if (!openReader()) {
         OSD::osdCenteredMsg(std::string("RZX: ") + errText(s->rd.error()), LEVEL_WARN, 3000);
         release();
         return false;
     }
     s_total = s->rd.totalFrames();
     s_played = s_shortFrames = 0;
-    s_desync = s_snapPending = false;
+    s_desync = s_snapPending = s_rewind = s_hasSnap = false;
     Debug::log("[RZX] %s: v%u.%u creator '%s', %u frames", s_name.c_str(),
                (unsigned)s->rd.major(), (unsigned)s->rd.minor(), s->rd.creator(), (unsigned)s_total);
 
@@ -240,7 +250,7 @@ void stop(const char* why) {
         Debug::log("[RZX] stop after %u/%u frames (%s)%s", (unsigned)s_played, (unsigned)s_total,
                    why ? why : "-", s_shortFrames ? ", some frames read fewer INs" : "");
     release();
-    s_snapPending = false;
+    s_snapPending = s_rewind = false;
     if (was && why) OSD::notify(why, LEVEL_INFO, 2000);
 }
 
@@ -278,7 +288,20 @@ bool nextFrame() {
         s_snapPending = true;
         return true;
     }
-    if (ev == RzxReader::EV_END) { stop(" RZX: playback finished "); return false; }
+    if (ev == RzxReader::EV_END) {
+        // RZX loop: start over at the next loop entry, the way a mid-file snapshot
+        // is taken. Only a file with its own snapshot can — without one the first
+        // frame would run from whatever state the recording ended in.
+        if (Config::rzx_loop && s_hasSnap) {
+            s_ins = nullptr;
+            s_inCount = s_inPos = 0;
+            s_target = 0;
+            s_snapPending = s_rewind = true;
+            return true;
+        }
+        stop(" RZX: playback finished ");
+        return false;
+    }
     char m[48];
     snprintf(m, sizeof m, " RZX: %s ", errText(s->rd.error()));
     stop(m);
@@ -299,7 +322,14 @@ bool snapshotPending() { return s_snapPending; }
 void loadPendingSnapshot() {
     s_snapPending = false;
     if (!s) return;
-    if (!loadSnap() || !seekFrame()) { stop(nullptr); return; }
+    if (s_rewind) {
+        s_rewind = false;
+        Debug::log("[RZX] loop after %u/%u frames", (unsigned)s_played, (unsigned)s_total);
+        s->rd.close();
+        if (!openReader()) { stop(" RZX: cannot restart "); return; }
+        s_played = s_shortFrames = 0;
+        if (!seekFrame()) { stop(nullptr); return; }
+    } else if (!loadSnap() || !seekFrame()) { stop(nullptr); return; }
     intUntil = 0;
 }
 

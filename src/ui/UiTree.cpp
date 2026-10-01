@@ -1582,6 +1582,7 @@ static bool p_rzxPlaying() { return Rzx::mode != 0; }
 static const Node kSnapshots[] = {
     NM_ACTION(TXT_SNAP_FROMFILE, loadSnapshotFile, p_hasSD),
     NM_ACTIONV(TXT_RZX_STOP, act_rzxStop, vl_rzx, p_rzxPlaying),
+    NM_BOOL  (TXT_RZX_LOOP, SET_RZX_LOOP, nullptr),
     NM_PICK  (TXT_SNAP_SLOTS, SET_PERSIST_SLOT, persist_rows, persist_key,
               persist_vlabel, persist_foot, p_hasSD),
 };

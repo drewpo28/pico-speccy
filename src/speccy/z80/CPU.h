@@ -69,6 +69,12 @@ visit https://zxespectrum.speccy.org/contacto
 #define INT_END_BYTE48 33
 #define INT_START128 0
 #define INT_END128 36 // 35 in real +2 and Weiv's Spectramine. I'll have to check those numbers
+// +2A/+3 (Amstrad gate array): 32 T, not the 128K's 36 (libspectrum
+// timings_frame_amstrad_asic). The four extra T-states let a handler that
+// re-enables interrupts 33..36 T after the frame start take a second one: an RZX
+// of DNA Warrior (+2A, Spectaculator) plays all 82561 frames at 32..35 and
+// desyncs at frame 7273 at 36 (host replay on redcode, 2026-10-01).
+#define INT_END_P3 32
 #define INT_START_PENTAGON 0
 // Pentagon INT pulse = 32 T, NOT the 36 T of a real 128K (which is where this
 // value came from before). Settled from RTL: Karabas-Pro's pentagon_video.vhd

@@ -13015,6 +13015,26 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
   triggered probe workflow that dumps the pages to the log) — the way in for any
   site the container cannot reach. The firmware needed only `rzx` in the launch
   extension lists.
+- **The +2A/+3 INT pulse is 32 T, not the 128K's 36** (`INT_END_P3`, CPU.h; libspectrum
+  `timings_frame_amstrad_asic`; 2026-10-01, NOT hw-tested, `debug/DVp2-rzx-p3int-1.0.8.elf`).
+  Found by `dnawarrior.rzx` (rzxarchive, Spectaculator, Z80 v3 hw 7 = +2A, 82561 frames
+  = 27.5 min), which "stopped a few minutes in": `tools/rzx_replay_sim.c` (redcode core,
+  +3 paging, recipe in its header) plays the whole file with zero fetch/IN mismatches at
+  an INT length of 1..35 T and desyncs at frame 7273 (2:25) at 36 — a DI section whose
+  EI takes effect 33..36 T after the frame start took an interrupt the recording never
+  had. Live +3 software gets the same correction. **Reach for that simulator first on any
+  "RZX desyncs" report**: it separates a bad file from our timing in one run, and the
+  window sweep names the parameter. Still open: `Rzx::raiseInt` gives a full window from
+  the fetch-count boundary once our raster has drifted from the recording's (the recorder
+  had only `len - overshoot`), and the length is OURS, not the recording emulator's
+  (libspectrum Pentagon/Scorpion 36 vs our Pentagon 32).
+- **Snapshots > RZX loop** (`Config::rzx_loop`, NVS `rzx_loop`, `SET_RZX_LOOP` AC_PURE,
+  2026-10-01, NOT hw-tested, `debug/DVp2-rzx-loop-1.0.8.elf`): at EV_END `nextFrame`
+  raises `s_snapPending + s_rewind` instead of stopping, and `loadPendingSnapshot`
+  (next loop entry, between frames — the mid-file snapshot path) closes and reopens
+  the reader and runs `seekFrame`, which reloads the first snapshot. Only for a file
+  that carried a snapshot (`s_hasSnap`); one without stops as before. Read live, so
+  toggling it reaches the recording already playing.
 - **Hw check owed**: any Spectaculator/Fuse .rzx with a Z80 snapshot playing to
   the end without " desync ", on 48K and 128K; a zipped one from WoS; F11 and Stop
   mid-replay; a long file (compressed, several blocks).
