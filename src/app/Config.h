@@ -175,6 +175,13 @@ public:
     // for boards that cannot keep up with 14 MHz.
     static constexpr uint16_t TSCONF_PAGES = 256;
     static uint8_t  tsconf_clk_cap;
+    // VDAC2 (FT812) video board on the Z-Controller SPI (Ft812.h). Reboot-class:
+    // its 1 MB RAM_G is carved out of the butter PSRAM at boot (Buffer::pageBudget).
+    static bool     tsconf_vdac2;
+    // VDAC2 renderer: true = 2x2 box filter for 2:1 cells (Ft812Render RenderCfg::smooth)
+    static bool     tsconf_vdac2_smooth;
+    // VDAC2 renderer: true = per-frame adaptive palette (median cut) instead of the fixed RGB cube
+    static bool     tsconf_vdac2_adapt;
     // The page-strip length the NEXT boot of `a` needs. The single source for
     // the live MEM_PG_CNT (ESPectrum::setup) and for the boot-layout reboot
     // boundary in requestMachine()/MachineSwitch::commit() — the two must

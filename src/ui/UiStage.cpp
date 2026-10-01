@@ -11,6 +11,7 @@
 #include "UiGfx.h"
 #include "app/Config.h"
 #include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/machines/TsConf/Ft812.h"      // hook_tsconfVdac2Smooth: renderRequest
 #include "speccy/devices/sound/SnSound.h"
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
@@ -365,6 +366,14 @@ static int32_t get_memPgCnt()          { return (int32_t)Config::mem_pg_cnt; }
 static void    put_memPgCnt(int32_t v) { Config::mem_pg_cnt = (uint16_t)v; }
 static int32_t get_tsconfClk()          { return (int32_t)Config::tsconf_clk_cap; }
 static void    put_tsconfClk(int32_t v) { Config::tsconf_clk_cap = (uint8_t)v; }
+static int32_t get_tsconfVdac2()          { return Config::tsconf_vdac2 ? 1 : 0; }
+static void    put_tsconfVdac2(int32_t v) { Config::tsconf_vdac2 = v != 0; }
+static int32_t get_tsconfVdac2Smooth()          { return Config::tsconf_vdac2_smooth ? 1 : 0; }
+static void    put_tsconfVdac2Smooth(int32_t v) { Config::tsconf_vdac2_smooth = v != 0; }
+static bool    hook_tsconfVdac2Smooth(int32_t, int32_t) { Ft812::renderRequest(); return true; }   // the renderer reads Config per frame
+static int32_t get_tsconfVdac2Adapt()          { return Config::tsconf_vdac2_adapt ? 1 : 0; }
+static void    put_tsconfVdac2Adapt(int32_t v) { Config::tsconf_vdac2_adapt = v != 0; }
+static bool    hook_tsconfVdac2Adapt(int32_t, int32_t) { VIDEO::ftPaletteProgram(); return true; }   // cube back in, or the adaptive one rebuilt
 static bool    hook_tsconfClk(int32_t, int32_t) {
     if (Config::arch == A_TSCONF) TsConf::applyZclk(true);   // re-derive the live clock under the new cap
     return true;

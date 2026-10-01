@@ -162,6 +162,9 @@ public:
     static uint8_t  reg_ch[8];
 
     static volatile uint32_t int_count;  // pump owner writes; core0 live-rate diagnostic
+    // #B3 host->card bytes and the core0 time hostWriteB3 spent waiting for the
+    // card (NeoGS pacing / FIFO full) — the FT812_TRACE meter's "gs" field.
+    static volatile uint32_t hostB3Bytes, hostB3WaitUs;
 };
 
 

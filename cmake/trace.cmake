@@ -46,4 +46,5 @@ option(ATM_PAGE_TRACE "ATM-Turbo paging trace only: page-register ring + page-ta
 option(NEO8_TRAP "Wild-jump hunter: log PC history + frame snapshot when execution enters screen memory (per-instruction hook; debug builds only)" OFF)
 option(ZIFI_TRACE "Enable ZiFi (ESP-01S WiFi NIC) port/UART tracing" OFF)
 option(HID_TRACE "Enable the periodic 'HID kbd:' USB-keyboard health line (stuck-key / dead-endpoint diagnosis)" OFF)
+option(FT812_TRACE "TS-Conf VDAC2: [FT812] host/coprocessor/render/SD/GS counter lines every 60 frames (ZUMA loading-speed diagnosis)" OFF)
 option(ZIFI_NET_VERBOSE "Per-packet trace of the ZiFi net client (+IPD/chanSend); floods logs" OFF)

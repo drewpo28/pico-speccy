@@ -95,6 +95,8 @@ extern "C" volatile uint32_t hdmi_au_late_write_ct;
 #include "speccy/devices/storage/Nvram24.h"
 #include "speccy/devices/Z80DMA.h"
 #include "speccy/devices/gs/GS.h"
+#include "speccy/machines/TsConf/Ft812.h"
+#include "speccy/roms/48k/romSinclair48K.h"   // the ZX character set: the FT812 ROM fonts are scaled from it
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/machines/Timex.h"
 #include "CodeOverlay.h"
@@ -1233,6 +1235,21 @@ void ESPectrum::setup() {
     Debug::log2SD("setup: GS::init ram=%u", (unsigned)gs_ram);
     GS::init(gs_ram);
     Debug::log2SD("setup: GS::init done, freeHeap=%u", (unsigned)getFreeHeap());
+  }
+
+  // TS-Conf VDAC2 (FT812): 1 MB RAM_G + the synthesized ROM fonts + the chip state
+  // out of the butter arena (Buffer::pageBudget reserved them). A board without
+  // QSPI PSRAM cannot hold it — the option is under the TS-Conf page, which is
+  // only offered on such boards, but a persisted pick can arrive from elsewhere.
+  if (Config::arch == A_TSCONF && Config::tsconf_vdac2) {
+    Ft812::clockUs = []() -> uint64_t { return time_us_64(); };
+    Ft812::intHook = TsConf::ftIntRaise;
+    const bool ok = butter_psram_size() != 0 &&
+      Ft812::init(gb_rom_0_sinclair_48k + 0x3D00,
+                  [](size_t n, bool psram) -> void* { return Buffer::palloc(n, Buffer::NEED_POINTER | (psram ? Buffer::PREFER_PSRAM : 0)); },
+                  [](void* p) { Buffer::pfree(p); });
+    if (!ok) OSD::bootNotice("VDAC2 (FT812) off: no PSRAM for its 1 MB RAM_G");
+    Debug::log2SD("setup: Ft812::init %s, freeHeap=%u", ok ? "ok" : "FAILED", (unsigned)getFreeHeap());
   }
 
   // GM.DLS MIDI bank: load into butter PSRAM (preferred) or provision the flash
@@ -3728,6 +3745,9 @@ void ESPectrum::loop() {
         bool mix_saa = SaaSubsys::enabled && saaChip;
         bool mix_midi = MidiSubsys::enabled && Midi::enabled == 4 && audioBufferMIDI_L && audioBufferMIDI_R;
         bool mix_pit = PitSubsys::enabled && audioBufferPIT;
+        // VDAC2 (FT812) MJPEG player: the AVI's 8-bit PCM track, resampled to our rate,
+        // mixed unipolar like the beeper/Covox (it is unsigned 8-bit already).
+        const uint8_t* ftv = Ft812::enabled ? Ft812::videoAudioFrame(samplesPerFrame, ESP_AUDIO_FREQ_PENTAGON) : nullptr;
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;
         bool mix_fdd = fddSndEnabledMix && (fddSound.click_count > 0 || fddSound.motor_noise);
@@ -3737,6 +3757,7 @@ void ESPectrum::loop() {
           int beeper_L = overSamplebuf[i];
           if (mix_pit) beeper_L += audioBufferPIT[i];
           if (mix_fdd) beeper_L += getFDDSample(i);
+          if (ftv) beeper_L += ftv[i] >> 1;
           int beeper_R = beeper_L;
           if (mix_covox) {
             beeper_L += audioBufferCovoxL[i];

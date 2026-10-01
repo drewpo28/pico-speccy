@@ -689,6 +689,16 @@ static const Node kMurmuzavr[] = {
 // has — so the level holds the CPU cap alone.
 static const Node kTsconf[] = {
     NM_RADIO(TXT_MACH_TSCONF_CLK, SET_TSCONF_CLK, opt_tsconf_clk, nullptr),
+    // VDAC2: the FT812 (EVE) video board on the Z-Controller SPI. Reboot-class
+    // because its 1 MB RAM_G is carved out of the butter PSRAM in setup().
+    NM_BOOL (TXT_MACH_TSCONF_VDAC2, SET_TSCONF_VDAC2, nullptr),
+    // Its renderer's filter: Fast = one texel per output pixel; Smooth = four taps
+    // over the pixel's footprint on every minified bitmap (the 1024x768 screen is
+    // shown at 5/16, so that is nearly all of them) — at ~4x the texel fetches.
+    NM_BOOL (TXT_MACH_TSCONF_VDAC2_SMOOTH, SET_TSCONF_VDAC2_SMOOTH, nullptr),
+    // Palette: the fixed 6x6x5 cube dithers every gradient into a checkerboard;
+    // adaptive = a median cut of each frame's colours into the same slots.
+    NM_BOOL (TXT_MACH_TSCONF_VDAC2_ADAPT, SET_TSCONF_VDAC2_ADAPT, nullptr),
 };
 
 // Timex TC2068 cartridge port. A cartridge is not a setting: it is mounted and

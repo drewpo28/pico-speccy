@@ -176,6 +176,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/machines/Timex.h"
 #include "speccy/devices/gs/GS.h"
 #include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/machines/TsConf/Ft812.h"
 #include "speccy/devices/storage/RTC.h"
 #include "speccy/devices/storage/Nvram24.h"
 
@@ -6300,6 +6301,17 @@ static void buildEmulatorInfoText() {
         pos += infoAppend(buf, pos, bufsz, " SMUC card      : %s\n",
             (IDE::portScheme == IDE::SMUC) ? "open ports, CMOS + NVRAM + HDD"
                                            : "open ports, CMOS + NVRAM, no HDD");
+    }
+    // TS-Conf VDAC2: the FT812 on the Z-Controller SPI. "fitted" = STATUS reads 7 and
+    // the chip answers; the rest is what the guest has done with it so far.
+    if (Config::arch == A_TSCONF && Config::tsconf_vdac2) {
+        if (!Ft812::enabled)
+            pos += infoAppend(buf, pos, bufsz, " VDAC2 (FT812)  : off (no PSRAM for RAM_G)\n");
+        else
+            pos += infoAppend(buf, pos, bufsz, " VDAC2 (FT812)  : fitted, %ux%u %s, FT_EN %s, %lu swaps\n",
+                (unsigned)Ft812::hsize(), (unsigned)Ft812::vsize(),
+                Ft812::displayOn() ? "on" : "off", TsConf::ftVideo() ? "1" : "0",
+                (unsigned long)Ft812::stats().swaps);
     }
 
     // --- Video ---

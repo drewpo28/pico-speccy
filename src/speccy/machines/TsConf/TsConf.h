@@ -42,6 +42,7 @@ the Free Software Foundation, either version 3 of the License, or
 // tools/tsdram_cache_test.cpp can prove it against a plain tag model.
 extern uint8_t  g_ts_memcyc;
 #include "TsDramCache.h"
+#include "Ft812.h"   // Ft812::enabled (ftVideo)
 
 class TsConf {
 public:
@@ -202,6 +203,14 @@ public:
     // Earliest T-state (>= CPU::tstates, <= statesInFrame) at which intLine()
     // can become true — where a HALTed CPU may sleep to (CPU::loop Stage D).
     static uint32_t nextIntEvent();
+    // VDAC2: with FT_EN (VConfig b2) set the FPGA drives the LINE interrupt source
+    // from the FT812's INT pin instead of the line counter (top.v
+    // `int_start_lin = vdac2_msel ? int_start_ft : line_start_s`). Ft812::intHook
+    // calls this on every 0->1 edge of the chip's INT line (core0).
+    static void ftIntRaise();
+    // FT_EN set and the board fitted. Inline: intLine() asks on every checked
+    // instruction, and a flash call there would be an XIP fetch per instruction.
+    static inline bool ftVideo() { return Ft812::enabled && (r.vconf & 0x04); }
     static void intEnableHook();   // EI/RETN/RETI: wake the unchecked slice if INT is up
     static void endFrame();      // frame-relative INT/DMA timestamps wrap here
 

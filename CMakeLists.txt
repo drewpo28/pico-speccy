@@ -124,6 +124,7 @@ file(GLOB_RECURSE SRC CONFIGURE_DEPENDS
     "external/miniz/*.c"
     "external/redcode/*.c"
     "external/libxmp/*.c"
+    "external/tjpgd/*.c"
 )
 # The driver libraries under src/drivers/ are separate CMake targets.
 string(REPLACE ";" "|" _drv_re "${PICO_DRIVER_LIBS}")

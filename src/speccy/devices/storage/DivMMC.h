@@ -44,6 +44,10 @@ public:
     static bool sdhc_mode;        // true = SDHC (sector-addressed), false = standard (byte-addressed)
     static bool zc_enabled;       // true = Z-Controller raw SD on ports 0x77/0x57 (no ROM/banking)
     static uint8_t zc_config;     // Z-Controller port 0x77 latched config (bit0=power, bit1=CS)
+    static bool    zc_ft_cs;      // port 0x77 bit2: the VDAC2's FT812 is selected (Ft812.h)
+    // Raw-SD (Z-Controller / DivSD) sector reads served by the host card and the
+    // core0 time they took — the FT812_TRACE meter's "sd" field (VIDEO::ftTraceTick).
+    static uint32_t zc_rd_sectors, zc_rd_us;
 
     static void init();           // Load ROM, open .mmc/.hdf/.vhd/.hdd/.img image
     static void reset();          // Reset state

@@ -29,6 +29,7 @@ the Free Software Foundation, either version 3 of the License, or
 #include "speccy/devices/storage/RTC.h"
 #include "ZxEvoAvr.h"
 #include "speccy/devices/storage/DivMMC.h"
+#include "speccy/machines/TsConf/Ft812.h"
 #include "speccy/devices/storage/IDE.h"
 #include "ui/LEDIndicators.h"
 #include "ui/OSDMain.h"
@@ -686,9 +687,11 @@ void TsConf::write7ffd(uint8_t val) {
 TS_HOT uint8_t TsConf::portRead(uint8_t reg) {
     switch (reg) {
         case TSR_STATUS: {
-            // b6 pwr_up (self-clearing cold-boot flag), b2:0 VDAC id (0 = PWM).
+            // b6 pwr_up (self-clearing cold-boot flag), b2:0 VDAC id (0 = PWM,
+            // 7 = VDAC2/FT812 — zports.v VDAC_VER, what Init_Video-style probes test).
             uint8_t v = r.pwr_up;
             r.pwr_up = 0;
+            if (Ft812::enabled) v |= 0x07;
             return v;
         }
         case TSR_PAGE2:     return r.page[2];
@@ -958,9 +961,20 @@ void TsConf::frameIntRecalc() {
 }
 
 // Poll the lazily-evaluated sources against the current T-state.
+void TsConf::ftIntRaise() {
+    // The chip's INT edge lands on the LINE latch only while FT_EN routes it there
+    // and the source is unmasked (zint.v holds a masked source's latch at 0).
+    if ((r.intmask & 0x02) && ftVideo()) {
+        s_lin_pending = true;
+        tsWakeLoop();
+    }
+}
+
 TS_HOT static void tsIntPoll() {
     const uint32_t t = CPU::tstates;
-    if ((TsConf::r.intmask & 0x02) && t >= s_lin_next) {
+    // With FT_EN the line counter no longer feeds LINE (the FT812's INT does, via
+    // ftIntRaise); the latch itself is shared, so a pending one is acknowledged as usual.
+    if ((TsConf::r.intmask & 0x02) && t >= s_lin_next && !TsConf::ftVideo()) {
         s_lin_pending = true;                 // latched until acknowledged
         s_lin_next = tsNextLineStart(t);
     }
@@ -1085,7 +1099,7 @@ TS_HOT uint32_t TsConf::nextIntEvent() {
     const uint32_t now = CPU::tstates;
     if (tsFrmActive() || s_lin_pending || s_dma_pending) return now;
     uint32_t t = CPU::statesInFrame;
-    if ((r.intmask & 0x02) && s_lin_next < t) t = s_lin_next;
+    if ((r.intmask & 0x02) && s_lin_next < t && !ftVideo()) t = s_lin_next;
     if (s_dma_busy && (r.intmask & 0x04) && s_dma_end < t) t = s_dma_end;
     if (frameIntEnabled() && !s_frm_acked) {
         // First T-state whose latetiming-shifted value enters [IntStart, IntEnd).
@@ -1120,7 +1134,9 @@ TS_HOT void TsConf::intEnableHook() {
 }
 
 TS_HOT bool TsConf::needsCheckedFrame() {
-    return (r.intmask & 0x02) || s_lin_pending ||
+    // Under FT_EN a LINE interrupt is an FT812 event, raised from a port write or
+    // EndFrame through ftIntRaise (which wakes the slice) — nothing per line to check.
+    return ((r.intmask & 0x02) && !ftVideo()) || s_lin_pending ||
            ((r.intmask & 0x04) && (s_dma_busy || s_dma_pending));
 }
 

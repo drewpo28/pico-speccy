@@ -7,7 +7,9 @@
 #include <cstdio>
 #include "speccy/core/MemESP.h"
 #include "app/Config.h"
+#include "speccy/machines/TsConf/Ft812.h"
 #include "app/Debug.h"
+#include "pico/time.h"    // time_us_32 for the raw-SD sector timer (FT812_TRACE meter)
 #include "hardware/timer.h"
 #include "fs/FileUtils.h"
 #include "speccy/core/roms.h"
@@ -934,7 +936,9 @@ void DivMMC::zc_read_consume(uint32_t words) { mmc_read_index += (int)(2 * words
 
 void DivMMC::loadSector(uint32_t sector) {
     if (divsd_mode) {
+        const uint32_t sdT0 = time_us_32();
         DRESULT r = disk_read(raw_pdrv(), mmc_sector_buf, sector, 1);
+        zc_rd_sectors++; zc_rd_us += time_us_32() - sdT0;
 #if ZC_PORT_TRACE
         {   // folded: a FAT walk re-reads the same handful of sectors forever
             char line[64];
@@ -1733,6 +1737,10 @@ void DivMMC::ide_write(uint8_t reg, uint8_t value) {
 // Reuses the DivSD SPI state machine; mutually exclusive with esxDOS.
 // ============================================================
 
+bool DivMMC::zc_ft_cs = false;
+uint32_t DivMMC::zc_rd_sectors = 0, DivMMC::zc_rd_us = 0;
+static uint8_t zc_ft_rd = 0xFF;   // the byte the FT812 shifted out during the last exchange
+
 void DivMMC::zc_init() {
     if (zc_enabled) return;
     // Real card (SD, or USB stick in usbRoot mode) in SDHC sector-addressed mode.
@@ -1766,6 +1774,7 @@ void DivMMC::zc_init() {
     mmc_sector_dirty = false;
     raDrop();
     zc_config = 0;
+    zc_ft_cs = false; zc_ft_rd = 0xFF;
     zc_enabled = true;
     Debug::log("Z-Controller: raw %s, %lu sectors, SDHC mode",
                FileUtils::usbRoot ? "USB" : "SD", (unsigned long)sector_count);
@@ -1788,6 +1797,13 @@ void DivMMC::zc_write_config(uint8_t value) {
     // NedoOS is developed) ignores ZC CS altogether; so do we on ATM — the card
     // stays selected (zc_write_data/zc_read_data) and command framing comes from the bytes.
     if (Z80Ops::isAtm) return;
+    // bit2 = the VDAC2's FT812 chip select (zports.v: spi_cs_n = {~din[4:2], din[1]},
+    // ftcs_n = spi_cs_n[1]) — active HIGH in the register, unlike the SD's bit1.
+    const bool ft = (value & 0x04) != 0;
+    if (ft != zc_ft_cs) {
+        zc_ft_cs = ft;
+        if (Ft812::enabled) Ft812::chipSelect(ft);
+    }
     // Port 0x77 bit1 drives the SD CS pin directly; CS is active-low, so
     // bit1=0 means card selected. bit0 is SD power and is ignored here.
     bool new_cs = (value & 0x02) == 0;
@@ -1808,17 +1824,32 @@ uint8_t DivMMC::zc_read_status() {
     return 0x00;
 }
 
+// One SPI bus, two slaves: the SD card wins when both are selected (Unreal's
+// TZc::Wr/Rd order), and the FT812 answers only with its own CS bit set. Reads
+// follow the Z-Controller's buffered model — an IN returns the byte received
+// during the PREVIOUS exchange and starts a new one with 0xFF on MOSI — which is
+// what makes TSLib's "OUT dummy / IN dummy / IN data" read sequence come out right.
 void DivMMC::zc_write_data(uint8_t value) {
     // ATM: CS is not modelled (see zc_write_config) — select once; mmc_cs resets
     // the protocol state, so only on the edge.
     if (Z80Ops::isAtm && !mmc_cs_active) mmc_cs(0x00);
-    if (!mmc_cs_active) return;
+    if (!mmc_cs_active) {
+        if (zc_ft_cs && Ft812::enabled) zc_ft_rd = Ft812::transfer(value);
+        return;
+    }
     mmc_write(value);
 }
 
 uint8_t DivMMC::zc_read_data() {
     if (Z80Ops::isAtm && !mmc_cs_active) mmc_cs(0x00);
-    if (!mmc_cs_active) return 0xFF;
+    if (!mmc_cs_active) {
+        if (zc_ft_cs && Ft812::enabled) {
+            const uint8_t v = zc_ft_rd;
+            zc_ft_rd = Ft812::transfer(0xFF);
+            return v;
+        }
+        return 0xFF;
+    }
     return mmc_read();
 }
 

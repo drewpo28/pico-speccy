@@ -353,7 +353,13 @@ const char* romsetName(int32_t composite);
     X(SET_VGA_PWM_PHASE,   AC_LIVE,   F_PREVIEW,             get_vgaPwmPhase, put_vgaPwmPhase, hook_vgaPwmPhase, -1) \
     /* LED indicators on a solid panel beside the F8 box: read live by LED::draw,  \
        which moves the carve (VIDEO::setLedBar) and asks for the repaint itself. */ \
-    X(SET_LED_PANEL,       AC_PURE,   0,                     get_ledPanel,   put_ledPanel,   nullptr,        -1)
+    X(SET_LED_PANEL,       AC_PURE,   0,                     get_ledPanel,   put_ledPanel,   nullptr,        -1)    \
+    /* TS-Conf VDAC2 (FT812) board: its 1 MB RAM_G is placed at boot.               */ \
+    X(SET_TSCONF_VDAC2,    AC_REBOOT, 0,                     get_tsconfVdac2, put_tsconfVdac2, nullptr,      -1)          \
+    /* VDAC2 renderer filter (Fast = nearest, Smooth = 2x2 box at 2:1 cells): live, re-renders. */ \
+    X(SET_TSCONF_VDAC2_SMOOTH, AC_LIVE, F_PREVIEW,           get_tsconfVdac2Smooth, put_tsconfVdac2Smooth, hook_tsconfVdac2Smooth, -1) \
+    /* VDAC2 palette: fixed RGB cube or per-frame adaptive (median cut). Live: re-programs the slots. */ \
+    X(SET_TSCONF_VDAC2_ADAPT, AC_LIVE, F_PREVIEW | F_PALETTE, get_tsconfVdac2Adapt, put_tsconfVdac2Adapt, hook_tsconfVdac2Adapt, -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

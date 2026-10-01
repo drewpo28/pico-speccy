@@ -79,6 +79,9 @@ uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_50;
 bool     Config::Issue2 = true;
 uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
 uint8_t  Config::tsconf_clk_cap = 2;   // ZCLK cap: 14 MHz allowed
+bool     Config::tsconf_vdac2 = false;
+bool     Config::tsconf_vdac2_smooth = false;
+bool     Config::tsconf_vdac2_adapt = true;
 bool     Config::rtc_enabled = false;
 uint16_t Config::mouse_sens = 64;        // Q8: 64 = x1/4, the historical divisor
 bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
@@ -1596,6 +1599,9 @@ void Config::load() {
         int tsc = -1;
         nvs_get_i("tsconf_clk_cap", tsc, sts);
         tsconf_clk_cap = (tsc >= 0 && tsc <= 2) ? (uint8_t)tsc : 2;
+        nvs_get_b("tsconf_vdac2", tsconf_vdac2, sts);
+        nvs_get_b("tsconf_vdac2_smooth", tsconf_vdac2_smooth, sts);
+        nvs_get_b("tsconf_vdac2_adapt", tsconf_vdac2_adapt, sts);
     }
     loaded = true;
     if (FileUtils::fsMount)
@@ -1971,6 +1977,9 @@ void Config::save(const char* path, const char* profileName) {
     // The PICK, not the live count — see Config::mem_pg_cnt in Config.h.
     nvs_set_i(buf,"MEM_PG_CNT", mem_pg_cnt);
     nvs_set_i(buf,"tsconf_clk_cap", tsconf_clk_cap);
+    nvs_set_str(buf,"tsconf_vdac2", tsconf_vdac2 ? "true" : "false");
+    nvs_set_str(buf,"tsconf_vdac2_smooth", tsconf_vdac2_smooth ? "true" : "false");
+    nvs_set_str(buf,"tsconf_vdac2_adapt", tsconf_vdac2_adapt ? "true" : "false");
 
     if (handle) {
         // f_sync flushes FAT before close so we don't commit the

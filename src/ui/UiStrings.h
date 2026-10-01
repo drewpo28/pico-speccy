@@ -231,6 +231,9 @@
 #define TXT_MACH_ATM         "ATM-Turbo"
 #define TXT_MACH_TSCONF_OPTS "Options"
 #define TXT_MACH_TSCONF_CLK  "CPU cap"
+#define TXT_MACH_TSCONF_VDAC2 "VDAC2 (FT812)"
+#define TXT_MACH_TSCONF_VDAC2_SMOOTH "  VDAC2 smooth"
+#define TXT_MACH_TSCONF_VDAC2_ADAPT "  VDAC2 adaptive palette"
 // The ZX-Evo BIOS images differ ONLY in the 128 service ROM at ROM page 2
 // (tslabs/zx-evo pentevo/rom/bin) — the TS-BIOS itself and its TR-DOS are the same
 // bytes in both, so the label names the service ROM, not the BIOS.

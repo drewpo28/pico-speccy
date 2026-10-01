@@ -10,6 +10,23 @@ else ()
     target_compile_definitions(${PROJECT_NAME} PRIVATE SCORP_FF_TRACE=0)
 endif ()
 
+# TS-Conf VDAC2 (FT812) trace (see `#if FT812_TRACE` in Video.cpp / Ft812*.cpp):
+# three `[FT812]` lines every 60 frames — SPI host traffic + register-read mix,
+# coprocessor commands / MEMWRITE / INFLATE time / DLSTART stalls, the swap
+# request→take latency, the core1 render cost per frame, ZC SD sectors per
+# second and NeoGS #B3 upload bytes + pacing wait. Default OFF (=0 keeps the
+# per-pixel counters out of the renderer).
+if (FT812_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FT812_TRACE=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FT812_TRACE=0)
+endif ()
+if (FT812_RENDER_IN_RAM)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FT812_RENDER_IN_RAM=1)
+else ()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE FT812_RENDER_IN_RAM=0)
+endif ()
+
 # SMUC virtual-FDD bridge tracing (see `#if VDISK_TRACE` in Ports/IDE/wd1793):
 # correlates the #7FBA virtual-drive select, the WD1793 RDSEC/WRSEC track/sector,
 # and the HDD LBA in ONE low-noise log — the three facts needed to derive the

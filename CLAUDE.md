@@ -11586,6 +11586,399 @@ byte-identical to before), and Demorama's TEXT band inside its 256c screen (the
 mixed frame, where the TSU must NOT appear on the lores lines any differently
 than it did).
 
+## TS-Conf VDAC2 (FT812) — a from-scratch EVE subset (2026-09-28; hw: ZUMA draws, but loads far too slowly — FT812_TRACE build out)
+
+Asked for by the owner for ZUMA Deluxe VDAC2 (github.com/andrewinsidelazarev/
+Zuna-Deluxe-VDAC2-FT812, MIT — cloned into the session scratch, read in full). The
+VDAC2 is the ZX-Evo video board with the FT812 (Bridgetek EVE) graphics chip; the
+game drives it at 1024x768 through the Z-Controller SPI. **Unreal emulates this
+board with Bridgetek's closed BT8XXEMU DLL** (`unreal/ft812.cpp` is a 200-line
+wrapper), so there was no reference to port — `src/speccy/machines/TsConf/Ft812.{h,cpp}` (chip model) and
+`Ft812Render.{h,cpp}` beside it (rasterizer) are built from the FT81x Programmer's Guide
+plus the ZUMA project's hardware findings (`Docs/uchebnik_tsconf_vdac2.md` in that
+repo: chapters 12, 15.6, 23.4, 26, 35, 38 are the ones that pin chip semantics).
+
+- **The TS-Conf side, from the RTL** (tslabs/zx-evo `fpga/current/top.v` +
+  `z80/zports.v`, `IDE_VDAC2` build): port `#77` bit 2 = FT chip select (`spi_cs_n =
+  {~din[4:2], din[1]}`, `ftcs_n = spi_cs_n[1]` — active HIGH in the register, unlike
+  the SD's bit 1), `#57` = the shared SPI data port, `STATUS` b2:0 = **7**
+  (`VDAC_VER`), VConfig b2 (`vdac2_msel`, FT_EN) switches the VIDEO PINS to the board,
+  and **the FT812's INT pin replaces the LINE interrupt source** while FT_EN is set:
+  `int_start_lin = vdac2_msel ? int_start_ft : line_start_s`, `int_start_ft` = the
+  falling edge of INT_n. Unreal's `zc.cpp` gives the SD priority when both CS bits
+  are set and buffers reads (an IN returns the byte of the PREVIOUS exchange and
+  starts a new one with 0xFF) — `DivMMC::zc_write_config/zc_write_data/zc_read_data`
+  route to `Ft812::chipSelect/transfer` with exactly that model, so TSLib's
+  `OUT dummy / IN dummy / IN data` read sequence and the DMA `M_RAMSPI` upload
+  (ZUMA's `ZL_FT_CMD_Write_DMA`) both work unchanged. TS-BIOS itself only sends
+  RST_PULSE (host command 0x68) from its Setup option "FT8xx Reset".
+- **SPI protocol** (`Ft812::transfer`): 3-byte header, bits 7:6 of byte 0 = 00 read /
+  10 write / 01 host command; a read has ONE dummy byte after the header (the 4th
+  exchange returns junk, data starts at the 5th); writes auto-increment except into
+  `REG_CMDB_WRITE` (a bulk write there stays on the FIFO port). ACTIVE is `00 00 00`,
+  i.e. a read header at address 0 with no data phase — detected at CS release.
+  Register side effects (DLSWAP, CMD_READ/WRITE, CPURESET, INT_EN/MASK) are applied at
+  CS release too: a 16-bit register arrives one byte per exchange and CMD_WRITE
+  evaluated on a half-written value would walk the FIFO into garbage.
+- **Memory**: RAM_G 1 MB + the chip state (25 KB: RAM_DL 8 KB, its shadow, RAM_CMD
+  4 KB, 1.5 KB of registers) + 113 KB of synthesized ROM fonts, all `Buffer::palloc`
+  PREFER_PSRAM in `ESPectrum::setup` right after `GS::init`; `Buffer::pageBudget`
+  reserves `Ft812::configuredBytes()` (1.16 MB) on a TS-Conf boot with the board on.
+  8 MB chip: 4 MB strip + 2 MB NeoGS + 128 KB DivMMC + 512 KB arena min + this still
+  fits. CHIPID (`08 12 01 00`) sits INSIDE RAM_G at 0xC0000 as on the chip (written
+  at reset, a program may overwrite it).
+- **Display**: `Ft812::frameTick()` from `VIDEO::EndFrame` every frame while the
+  board is fitted — REG_FRAMES, and a pending DLSWAP is taken only when the renderer
+  is idle (RAM_DL → shadow, DLSWAP reads 0, INT_SWAP raised, a render requested). A
+  guest therefore runs at the render rate, never ahead of it. INT_FLAGS is
+  clear-on-read (ZUMA ch. 38.1: the emulator model that cleared on WRITE hung every
+  scene transition on hardware — ours reads real). CMD_DLSTART stalls behind a pending
+  swap (PG: "waits until the display list is swapped"), resumed from frameTick.
+- **Renderer** (`Ft812Render.cpp`, core1 from `render_core` via `g_ft_c1_live` /
+  `ft812_render_core1_pump`): walks the shadow list once per BAND of fb rows (8 rows
+  of ARGB8888 in SRAM, halved until it allocates) so a frame never exists in memory
+  and GS::pump keeps its slices; the FT screen is scaled uniformly into the fb and
+  centred — 1024x768 → 320x240 is exactly 5/16, 640x480 → 1/2, a 360x288 fb shows
+  360x270 — with every primitive sampled at output-pixel centres. Output goes through
+  a fixed RGB cube on the ts256 slot pool (6x6x5 = 180 on the 184-slot pool, 6x8x5 =
+  240 on the HSTX expander) with a 4x4 ordered dither, written in the ISR's x^2 order
+  with the blPutRow carve rule (F8 stats / volume rect, the notify banner).
+  `VIDEO::ft_live` is the mode: `tsVideoApplyPending` enters it when FT_EN is set
+  (and the whole-line renderer is forced off first), `Draw = Blank`, the border
+  machine parked, `applyPalette()` re-programs the cube, `brdnextframe` becomes a
+  re-render request, `RedrawPausedFrame` re-renders and waits. The glue block is kept
+  for the session once claimed (freeing it would race core1's band in flight).
+- **Semantics settled while writing it** (all from the PG unless noted): bitmap
+  handle parameters are ENGINE state (persist across lists; ROM handles 16..31 are
+  pre-set at reset), the transform matrix and PALETTE_SOURCE are CONTEXT state;
+  `cmd_scale/rotate/translate` compose a FORWARD 16.16 matrix and **SETMATRIX emits
+  its INVERSE in 8.8** (ZUMA 15.6/35.3: `cmd_scale(1.6)` reads back as A=E=160/256;
+  the chip truncates to 159, we round); rotation is clockwise on screen; L1/L2/L4/L8
+  texels are ALPHA with the colour from COLOR_RGB (how fonts draw); BORDER wrap
+  discards the fragment, BILINEAR at a BORDER edge blends in transparent black (the
+  "black seam" ZUMA 35.6 saw on hardware); VERTEX2II is 9-bit (wraps at 512),
+  VERTEX2F 15-bit signed in 1/16 px by VERTEX_FORMAT; BITMAP_SIZE 0 = 512;
+  PALETTED4444/565/8 index 2/2/4-byte entries at PALETTE_SOURCE; CALL/JUMP take a
+  DL WORD index (unverified); CMD_NUMBER is 4 words with the digit count in the low
+  4 bits of options; CMDB_SPACE = (READ − WRITE − 4) & 0xFFF, 4092 when empty;
+  unknown commands and LOADIMAGE/PLAYVIDEO fault (CMD_READ = 0xFFF, CPURESET clears).
+- **Deliberate deviations**: no stencil, no tag buffer, no touch/audio; widgets
+  (BUTTON/KEYS/TOGGLE/PROGRESS/SLIDER/SCROLLBAR/GAUGE/CLOCK/DIAL/SPINNER/GRADIENT/
+  SKETCH/LOGO/SCREENSAVER) are parsed for their lengths and ignored with a warn-once;
+  TEXT8X8/TEXTVGA/BARGRAPH formats draw nothing; POINTS/LINES/RECTS get a 1-px
+  coverage ramp instead of the chip's AA; **the ROM fonts are the ZX character set
+  scaled to the chip's font heights** (16-31: 8/8/16/16/13/17/20/22/29/38/16/20/25/28/
+  36/49 px, cell width 5/8 of the height, L1) — the metrics table is where the PG
+  says (`ROM_FONT_ADDR` → 0x201EE0, 148 B per font) and CMD_TEXT/NUMBER use it, so
+  text lands at the right size and advance but looks like a Spectrum; the render
+  is one point sample per output pixel (a 640x480 asset upscaled 1.6x by the game
+  and decimated 5/16 by us is ~½ of its pixels).
+- **Wiring**: `Config::tsconf_vdac2` (NVS `tsconf_vdac2`, default off) → Machine >
+  TS-Conf > Options > **VDAC2 (FT812)**, `SET_TSCONF_VDAC2` AC_REBOOT; Hardware Info
+  row `VDAC2 (FT812)  : fitted, WxH on/off, FT_EN n, N swaps`; `[FT812]` log lines
+  on init and every mode switch; `TsConf::ftIntRaise` (Ft812::intHook) puts the
+  chip's INT edge on `s_lin_pending` and wakes the slice, `needsCheckedFrame` /
+  `nextIntEvent` / `tsIntPoll` drop the line-counter source while `ftVideo()`
+  (inline — `intLine()` asks per checked instruction).
+- **Cost**: Ft812.cpp 8.7 KB + Ft812Render.cpp 13.9 KB of FLASH (the renderer is
+  templated per bitmap format), +57 B static RAM, ~12 KB of heap while FT mode is
+  live (glue + band), PSRAM as above. DVp2 links at 2 876 360 B.
+- **Tests**: `tools/ft812_test.cpp` (recipe in its header: links Ft812.cpp,
+  Ft812Render.cpp, `external/miniz/miniz.c`, `-lz`) — 136 checks over the SPI protocol,
+  registers, DLSWAP/INT hand-off, memory commands, a 40 KB zlib INFLATE fed in
+  CMDB_SPACE-sized chunks, the matrix commands, TEXT/NUMBER emission, every
+  rasterizer feature and the quantizer; each assertion was checked to fail under a
+  mutation (list at the end of the file). **Re-run after ANY change there.** It
+  writes `/tmp/ft812_test.ppm` for eyeballing. `tools/spgbld.py` is a Linux stand-in
+  for tslabs' spgbld.exe (same .ini); `debug/ft812-helloworld.spg` is TSLib's
+  HelloWorld example (DeadlyKom/TSLib, 1024x768, "Hello world!" in ROM font 31 +
+  200 random POINTS a frame) packed with it — the first thing to run on hardware.
+- **ZUMA itself** assembles here (`sjasmplus Source/ASM/main.asm`, sjasmplus 1.23.1)
+  but its .spg needs `Build/level_chain_table.bin` from `make_level_runtime_table.py`
+  (openpyxl) and the game streams `ZUMAMAIN/ZUMALVL/ZUMAAUD/ZUMASND.PAK` off the SD
+  through its own FAT reader (`make_*_pack.py`: numpy, PIL, ffmpeg.exe) — the owner
+  has the author's release set; not built here.
+- **Hw check owed, in order**: `ft812-helloworld.spg` on a DVp2 with VDAC2 on (log:
+  `FT812: VDAC2 up`, `[FT812] VDAC2 output ON: 1024x768 -> fb 320x240`; expect the
+  text and coloured dots, slow — 200 points with radii up to 512 px through the
+  float coverage path); then ZUMA: boot screen (`Init_Video` needs STATUS = 7), the
+  menu, a level (bilinear/paletted balls, the frog's baked matrices, DMA CMD upload,
+  INFLATE of the atlases), the pause fade (`ColorA`), and the clock (`CMD_TEXT` font
+  26); FPS/IDL with the game running (core1 is the bottleneck: ~100k pixel ops a
+  frame, PSRAM texel fetches); a 360x288 mode; the menu over a live FT frame and F8.
+  Rotation direction (clockwise assumed) and the CALL/JUMP unit are the two guesses
+  a real chip would settle.
+- **Hw 2026-09-28 (owner, `DVp2-vdac2-1.0.7.elf`): "картинка есть" — ZUMA's boot
+  screen RENDERS through the whole chain (ZC SPI → chip model → core1 rasterizer →
+  ts256 palette), but "грузится очень медленно, не дождался": the owner gave up on
+  the loading.** Nothing is measured yet; the boot flow (main.asm ~2975) has four
+  candidates and the trace below is built to separate them: (a) every
+  `BootProgressSetA` waits `DLSWAP == 0`, i.e. for core1 to finish rendering the
+  full 1024x768 boot screen (a bilinear full-screen bitmap, walked once per 8-row
+  band); (b) `RawPak_FindPakRecursive` DFSes the whole FAT32 tree for ZUMALVL.PAK
+  (7.1 MB, name + size match) and every PAK read is CMD17 single-sector through
+  `DivMMC::loadSector` → `disk_read` (~1 ms of core0 per sector); (c) 1.2 MB of
+  ZUMASND.PAK goes into the NeoGS byte by byte over #B3 with `hostWriteB3`'s
+  adaptive pacing wait; (d) `fifoPush` runs `cpProcess` (and tinfl for INFLATE) every
+  4 FIFO bytes inside the guest's OUT. The TS-Conf INT path is NOT a candidate: the
+  game runs with interrupts off and polls the chip over SPI.
+- **`-DFT812_TRACE=ON` (CMake, default OFF; test ELF `debug/DVp2-vdac2-ft812trace-1.0.7.elf`
+  + `.uf2`, build dir `build-ft812trace/`)** prints three `[FT812]` lines every 60
+  frames from `VIDEO::ftTraceTick` (EndFrame, right after `ftFrameTick`), all deltas
+  over the window except the two maxima it resets:
+  `host:` spi KB / CS transactions / the REGISTER-READ MIX in bytes (`dlswap` = the
+  guest waiting for our render, `int` = INT_FLAGS polls, `space` = CMDB_SPACE
+  backpressure, `cmdrd` = REG_CMD_READ, `ramg`, `oth`) / SPI write KB into RAM_G and
+  into the CMD FIFO; `cp:` commands, DL words, MEMWRITE KB, INFLATE KB + ms in tinfl,
+  ms inside `cpProcess` (core0, inside the OUT), DLSTART stalls behind a pending swap,
+  faults, swap take/blocked/latMax (frames from request to take), the three most
+  frequent commands `XX:count`; `render:` core1 frames, wall us per frame avg/max
+  (= what `DLSWAP == 0` waits for), core1 ms in the band pump, bands / DL words /
+  bitmap cells / blit AREA by filter / coverage pixels / clears, then `sd N sec Xus`
+  (raw-SD sectors + core0 us each, `DivMMC::zc_rd_sectors/us`) and `gs b3 KB wait ms`
+  (`GS::hostB3Bytes/WaitUs`). The counters are cheap and always on
+  (`Ft812::Stats` grew by ~330 B inside the heap `Chip`; the render-side `FTR()`
+  increments and the two `clockUs` stamps compile out); the plain build is +0.4 KB
+  flash, RAM unchanged. `Ft812::statsMut()` is nullptr before init. Read a first
+  capture in this order: `render: us avg` against 20 ms says whether every progress
+  step pays a whole frame render; `sd N sec` against the PAK sizes (ZUMALVL 13 945
+  sectors, ZUMASND 2374) says how long the file walk is; `gs b3 ... wait` says
+  whether the sound upload is core0-bound; `cp: cpu ms` + `infl ms` is the
+  coprocessor's own share.
+- **First capture (`logs/devttyACM0_2026_09_28.11.59.44.738.txt`), read in that order —
+  the render was the answer, the SD phase is mostly the game's own Z80 work:**
+  1. `render: frames 6 us avg 261000 max 263000 c1 1550ms` per 1.67 s window =
+     **260 ms per frame, core1 93% inside the band pump**, `swap take 6 blocked 54
+     latMax 10` and `rd dlswap 126000` bytes/window: the guest spun on DLSWAP for ten
+     frames per swap. Per frame: 30 bands, 420 bitmap cells, blit area 157k nearest +
+     75k bilinear px = 3x the 76.8k output → **~1.1 us per output pixel** (a PSRAM
+     texel fetch is an XIP miss ~250 ns, bilinear = four of them + the blend path).
+     The boot screen measured the same (272 ms), so every `BootProgressSetA` paid a
+     frame render, and the menu ran at 3.6 FPS — what the owner saw as "still loading".
+  2. The load itself: ~12 windows (17.5 s) with NO FT traffic at all and `sd 340-420
+     sec` each at 400-600 us = ~5100 sectors (2.6 MB, ZUMAMAIN.PAK through
+     `RawPak_ReadOneLogicalIX`), 290 sectors/s. The guest's read loop is `INIR` x2
+     (16 T/byte), so of the ~42k T per sector the emulated Z80 spends, ~30k are the
+     loader's own per-sector work — authentic, a real ZX-Evo pays them too; OUR share
+     is `disk_read` at ~12% of wall (frames overran to 23-25 ms). A sequential
+     read-ahead in `DivMMC::loadSector` (the NgsSd 8-sector cache shape) is the one
+     lever there, worth ~10% of that phase; not taken yet.
+  3. `gs b3 0KB` for the whole session and `GS: idle throttle ON — card unobserved`
+     right after boot: ZUMA's `GS_Detect` is `#F3` (a GS reset) + a timed reply
+     wait, and a NeoGS reboots for ~2 s on `#F3` (turbo-boot) — its detect times out,
+     `GS_Present = 0`, no ZUMASND upload, AY SFX only. Not chased; separate report.
+- **Two fixes from it (2026-09-28, NOT hw-tested; same trace ELF rebuilt):**
+  - **DLSWAP is decoupled from the render.** `frameTick` accepts a swap at EVERY
+    frame tick (the chip's vsync) into the shadow the renderer is not reading
+    (`dlShadow[2]`, `shadowRender` flipped by `renderTake` on a new list,
+    `renderSame` for a re-render request), so a slow render DROPS frames instead of
+    pacing the guest; the only hold-back is a request core1 has not taken yet
+    (transient, `swapBlocked` counts it). INT_SWAP fires per accepted swap. The
+    guest is therefore paced at 50 Hz like the real 60 Hz chip, whatever core1 does.
+  - **Renderer: 1.1 → target ~0.4 us/px.** (a) BILINEAR is demoted to nearest when
+    the cell is minified >= 1.5x on BOTH axes (`|A|*invX`, `|E|*invY`) — at our 5/16
+    scale every 1:1 bitmap is 3.2x minified, and four taps there alias exactly like
+    one; (b) with the default ALPHA_FUNC/BLEND_FUNC/COLOR_MASK an opaque texel is a
+    plain store and a transparent one is skipped before `blendPixel`, white COLOR_RGB
+    skips the three `mul255`; (c) 16-bit texel formats load one halfword. Host test
+    grew to 150 checks (the swap hand-off rewritten for the new semantics, a seam +
+    demotion probe added). **Hw check owed**: the same `[FT812]` lines — expect
+    `render: us avg` well under 260 000, `swap take` ~50/window with `latMax` 1,
+    `rd dlswap` collapsing, and the menu visibly responsive; then a level (the frog's
+    rotated/magnified sprites must stay BILINEAR — the demotion needs both axes).
+- **Second capture (`logs/devttyACM0_2026_09_28.12.13.23.557.txt`, that build): the
+  decoupling works, the blit fast paths barely moved the needle.** `swap take 60`
+  per window with `latMax 1 blocked 0` (the guest runs at 50 Hz, the display shows
+  every 6th frame), `bil 0k` (every cell demoted) — but `render: us avg 196000`,
+  i.e. 260 → 196 ms, still **0.9 us per output pixel** with core1 at 100%. So the
+  per-pixel cost is not the blend arithmetic: it is PSRAM line fills, and
+  `MenuMain.asm` / `main.asm` say why there are two per pixel — ZUMA draws almost
+  everything as **PALETTED4444** (8-bit indices + a 512 B palette). The texel
+  stream evicts the palette from the XIP cache, so each pixel paid a texel fill
+  AND a palette fill. Fix (NOT hw-tested, same ELF name): the renderer copies the
+  PALETTE_SOURCE table into an SRAM scratch (`RenderCfg::palScratch`, 1 KB in
+  `FtGlue`) keyed on (address, `Ft812::ramgGen()` — a counter bumped by every
+  RAM_G writer: wr8, MEMSET/MEMZERO/MEMCPY, INFLATE, the CHIPID reset) so it is
+  re-copied only when the palette really changed. The trace gained a
+  `[FT812] fmt: <F_*>:<cells> ... | palCopies N` line — `palCopies` must stay near
+  the number of palette uploads, not near the cell count. Same log: the NeoGS WAS
+  detected this time (`gs b3 32KB` per window = the menu music), so the #F3 detect
+  is a race, not a fixed failure. **Next lever if 0.9 → ~0.5 us/px is still not
+  enough**: a downscaled copy of identity-matrix cells (backgrounds) in PSRAM,
+  read sequentially — 8 px per line fill instead of 2.5.
+- **Third capture (`logs/devttyACM0_2026_09_28.12.21.02.733.txt`): the palette cache
+  is a no-op HERE — `palCopies 0`, and the format line reads `1:1925 2:275 6:1100
+  7:552`, i.e. L1 (ROM-font text), L4, ARGB4 and RGB565 — the release build of ZUMA
+  does not draw PALETTED4444 at all despite its source's BitmapLayout macros.**
+  `render: us avg 220000` for 237k blit px = still 0.93 us/px with every cell
+  nearest and 16-bit texels: the arithmetic model (~0.8 line fill + ~0.2 us
+  compute ≈ 0.45 us) is off by 2x, so the trace now MEASURES instead: the `fmt`
+  line carries `cells/kpx/ms` per format (`RenderStats::pxFmt/usFmt`, timed with
+  `RenderCfg::clockUs` in a trace build), and the ON switch runs an XIP
+  microbenchmark once — `[FT812] xip: random line N ns, sequential line N ns,
+  sequential byte N ns` — so the per-pixel cost can be split into fills and
+  compute before the next lever is chosen. (Same ELF name; NOT hw-tested.)
+- **Fourth capture (`logs/devttyACM0_2026_09_28.13.25.24.867.txt`) settled the split:
+  it is the CODE, not the texels.** `xip: random line 378 ns, sequential line 177 ns,
+  sequential byte 29 ns`, and per format: RGB565 0.71 us/px, L4 **0.69 us/px** — L4 is
+  4 bits per texel at a 2-texel step, i.e. one line fill per 8 output pixels, and it
+  costs the same as RGB565 with a fill every other pixel. So ~250 of the ~265 cycles
+  per pixel are not data fills. The whole per-pixel path (`drawBitmap` = 10 KB with
+  every `blitBitmap<>` inlined, `ft812RenderBand`, `blendPixel`, `ftPutRow`,
+  `ftRenderPump`, the quantizer) ran from FLASH through the same XIP cache the texel
+  stream and core0's guest pages thrash. In-game the format is PALETTED4444 after
+  all (15: 7517 cells, 3.2M px, 0.45 us/px, `palCopies 550`/window = the palette
+  cache re-copying per sprite palette — cheap) at 12.7 FPS. Two changes, NOT
+  hw-tested, in the same trace ELF: **`FT812_RENDER_IN_RAM`** (CMake, default OFF;
+  ON in `build-ft812trace/`) puts that path in SRAM via `FT_HOT` =
+  `__not_in_flash("ft812")` — **+16 KB of static SRAM on every board**, which is why
+  it is an experiment and not the default; if it proves out, the permanent home is
+  the TS-Conf code overlay window (`TS_OVL_CODE`, claimed on TS-Conf sessions only,
+  +16 KB on its AUTO term) or a VDAC2-only window. And **Machine > TS-Conf > Options
+  > "VDAC2 smooth 2:1"** (`Config::tsconf_vdac2_smooth`, NVS, AC_LIVE, re-renders):
+  ZUMA is "640x480 upscaled 1.6x to 1024x768" by its own BITMAP_TRANSFORM, and our
+  5/16 output makes that a net 2:1 — Fast takes one texel in four (the owner's
+  "картинка нечёткая": every other texel dropped, then line-doubled by the display),
+  Smooth box-averages the 2x2 block (`RenderCfg::smooth` -> `BlitArgs::box2`: the
+  bilinear taps at (u-0.5, v-0.5) with 128/128 weights, only for an axis-aligned
+  cell whose step is 2.0 +-1/16 on both axes) at four texel fetches per pixel. The
+  game's upscale itself cannot be made optional — it is in the display list — but
+  this is the picture its 640x480 frame gives at 320x240. Host test 157 checks
+  (Fast vs Smooth at 2:1 both pinned).
+- **Fifth capture (`logs/devttyACM0_2026_09_28.13.40.26.914.txt`) + the screenshot:
+  the SRAM move changed NOTHING (RGB565 0.77 us/px), and the disassembly said why —
+  `texel<>` and `bilerp` were NOT inlined at -Os: `drawBitmap` called them through
+  VENEERS into flash, one call per pixel, i.e. an instruction-fetch miss per pixel
+  under the texel stream. `FT_INLINE` (`always_inline`) on texel/bilerp/mul255/
+  clamp255/blendFactor; nm must show no `texel` symbol. And **the "нечёткая"
+  picture is the PALETTE, not the sampling**: decoded with the real HDMI palette
+  (`fb2png.py --raw-pal`; the extension's PNG was decoded with the wrong one) the
+  menu is fine except that the 6x6x5 cube turns every gradient into a Bayer
+  checkerboard — which is what the owner saw, and why "smooth 2:1" changed nothing
+  for him. The top-right "ΞΞ 2 ˅Ξ" is the game's ROM-font text: 16 px on the
+  1024x768 canvas is 5 px at our 320x240, unreadable by arithmetic, on any filter.
+  **Fix: Machine > TS-Conf > Options > "VDAC2 adaptive palette"**
+  (`Config::tsconf_vdac2_adapt`, NVS, default ON, AC_LIVE `hook` -> `ftPaletteProgram`):
+  `Ft812::AdaptPal` (~18 KB heap, SRAM — the per-pixel map) — core1 accumulates a
+  4-4-4 histogram per frame (`ft812AdaptAccumulate`), and at the frame end, when the
+  3-3-3 fold moved by > 6% and at least 8 frames passed (a fade re-triggers every 8,
+  a static scene never), runs a median cut into the pool's slots
+  (`ft812AdaptBuild`: split the box with the most pixels x extent along its longest
+  axis, colour = weighted mean of the bin centres 16k+8, every bin mapped to its
+  nearest entry — ~10 ms once) into `lut/col[cur^1]` and raises `palPending`; core0's
+  `ftFrameTick` programs the slots and flips `cur`, so rows rendered afterwards use
+  the new map (rows of that one frame show new colours through the old map — the
+  threshold keeps that to scene changes). The quantizer then adds half a bin (+-8)
+  of ordered dither. No heap -> the cube stays, logged. The `fmt` trace line
+  carries `adapt on/off n <entries> rebuilds`. Host test 166 checks (two-colour
+  frame -> two exact entries, unchanged/changed verdicts, a ramp fills a 16-slot
+  cap). NOT hw-tested.
+- **"Smooth 2:1" showed no difference (owner, 2026-10-01) because it was a 2:1
+  special**: the box average engaged only on an axis-aligned cell at exactly 2:1
+  (+-1/16 texel), i.e. ZUMA's 1.6x-upscaled assets on a 320x240 framebuffer and
+  nothing else — and nothing at all at 360x288, where the net scale is 1.78. The
+  row is **"VDAC2 smooth"** now and `BlitArgs::box` engages on ANY cell minified
+  >= 1.5x on an axis: four equal taps at the centres of the quarters of the output
+  pixel's footprint (`u +- du/4 +- duy/4`, rotation included), which at exactly 2:1
+  is the same 2x2 block as before. ~4x the texel fetches on nearly every bitmap,
+  so watch `render: us avg` with it on. Host test 195 checks (2.5:1 mixes, 1:1
+  untouched; fails under the old 2:1-only rule). NOT hw-tested, test ELF
+  `debug/DVp2-vdac2-smooth-trace-1.0.8.elf`.
+- **The adaptive palette came out speckled and in wrong colours (owner, 2026-10-01)
+  — three defects, all ours, fixed the same day (NOT hw-tested; test ELF
+  `debug/DVp2-vdac2-adapt2-trace-1.0.8.elf`):**
+  1. **Entries were programmed through `g.lut.slot[]`, the CUBE's slot table.** The
+     cube is 6x6x5 = 180 entries on a 184-slot pool and that table answers 0 past
+     it, so adaptive entries 180..183 all landed in hardware slot 0 — on top of
+     entry 0. Entry i now lives in `ts256_pool[i]`.
+  2. **Map and hardware palette were never brought back together.** core1 began the
+     next frame while `palPending` was still up and quantized it with the CUBE onto
+     adaptive colours; and after core0 programmed a new palette nothing re-rendered,
+     so a static screen kept its old-map rows for ever. Now core1 takes no frame
+     while `palPending` is up, and `ftFrameTick` re-requests the frame after
+     programming.
+  3. **The ordered dither speckled flat areas with a foreign colour**: a 4-4-4
+     bin -> entry map only knows the nearest entry per bin, so a pixel pushed into
+     the next bin gets whatever is nearest THERE. Removed — the entries are the
+     frame's own colours.
+  And two rules that make a rebuild survivable on a single-buffered index
+  framebuffer: **entry 0 is always black** (same index as the cube's black, so the
+  letterbox and the black first frame mean the same in both palettes — the first
+  adaptive frame only feeds the histogram and stays black), and **a rebuilt palette
+  is matched onto the previous one** (`ft812AdaptBuild`: mutual nearest neighbours
+  keep their index, the rest take the nearest free one), so rows written through
+  the old map are approximately right until the re-render lands. `AdaptPal::MAX`
+  185 = black + 184 boxes; `ft812AdaptChanged` no longer puts 1 KB on core1's 2 KB
+  stack. Host test 187 checks; the three new assertions (index stability, no
+  speckle, black pinned) each fail under a hand mutation. The description above
+  (`lut/col[cur^1]`, "half a bin of ordered dither") is the first cut.
+- **Sixth capture (`logs/devttyACM0_2026_09_28.14.03.48.976.txt`): the adaptive
+  palette never ran — `no heap for the adaptive palette (22220 B)` — because the
+  FT812_RENDER_IN_RAM experiment's 16 KB of static SRAM had eaten the heap it
+  needed, and the inlining alone bought only RGB565 0.77 → 0.66 us/px (that run
+  also had "smooth 2:1" ON, so the L4 text cells were 4-tap: 1.6 us/px).** Two
+  consequences: the trace build is back to the rasterizer in FLASH (the option
+  stays for A/B), and `AdaptPal` is single-buffered (16.5 KB: the cut runs on
+  core1 between frames and core0 programs `col` from `ftFrameTick`, so nothing
+  needs two copies). The remaining ~250 cycles per NEAREST pixel are still
+  unexplained, so the trace build now runs **`ftBench`** once on core1 at output
+  ON: the shipped blit loop over an RGB565 source in SRAM and in PSRAM, nearest
+  and bilinear — `[FT812] bench RGB565 <mode> from <SRAM|PSRAM>: N ns/px` — the
+  arithmetic/fill split measured in the loop itself, with the guest running.
+
+### FT812 media: CMD_MEDIAFIFO + CMD_PLAYVIDEO (MJPEG AVI) — Wild Commander's FTVIEW (2026-09-28, NOT hw-tested)
+
+"Video does not start under WC": the `.avi` beside the TGV files is played by
+**FTVIEW.WMF** ("FT812 Viewer v1.2 (c)2024 TSL": JPG PNG DLS DXP AVI XM XMZ), not by
+VIDEO_PL.WMF — that one is TS-Conf-only (TGA-Video frames via FMAddr + MP3 to the
+NeoGS, `OUT (#33),#80 / #F3 / #23 / #6A / #6B` = the GS Player detect). FTVIEW drives
+the chip's OWN MJPEG player: `CMD_MEDIAFIFO(ptr, 0x10000)` x3, data into the RAM_G ring
++ `REG_MEDIAFIFO_WRITE` (0x309018, `LD HL,0x9018` in its code), `CMD_PLAYVIDEO(opts)`,
+then it polls `REG_MEDIAFIFO_READ` (0x309014) — for ever against our fault (owner's
+log `14.03.48`: `cmd 3A at 020`, `oth 47870` reads/window). The AVI it ships is
+exactly the FT81x input format: MJPEG 512x384 24 fps + PCM u8 44.1 kHz mono.
+
+- **`src/speccy/machines/TsConf/Ft812Video.{h,cpp}`**: the engine. `MediaFifo` is the ring in RAM_G (offsets
+  in [0,size), `wr` from the host at CS release, `rd` advanced by the engine); the
+  RIFF/AVI parser walks it in place (`avih` us/frame, `strh` vids scale/rate, `strf`
+  auds format; LISTs hdrl/strl/movi/rec descended, others skipped; `idx1` or the RIFF
+  end = stream end); a `00dc/00db` chunk is decoded ONLY once it is whole in the ring
+  AND its frame is due on the chip's clock (`clockUs`), behind by > 2 frames it is
+  skipped by its header size; `01wb` goes into a 16 KB 8-bit mono ring (16-bit and
+  stereo folded). Decoder: **TJpgDec R0.03 (ChaN, `external/tjpgd/`, from Bodmer's mirror;
+  JD_FASTDECODE 1, JD_FORMAT RGB565, 4.5 KB workspace)** fed straight from the ring
+  (input callback bounded by the chunk), output into a PSRAM frame buffer the renderer
+  sees at **`VFB_BASE` 0x380000** through `Ft812::memView` (max 512x512x2; larger
+  sources take TJpgDec's 1/2..1/8 descale). A synthesized 14-word display list (one
+  RGB565 bitmap, TRANSFORM_A/E for OPT_FULLSCREEN, else centred) replaces the
+  guest's list while the video plays (`ftFrameBegin` points `mv.dl` at `videoDl()`).
+- **Chip side** (Ft812.cpp): the 0x309000 register block (`regsHi`) — `REG_MEDIAFIFO_
+  READ` live from `mf.rd`, `REG_MEDIAFIFO_WRITE` published at CS release,
+  `REG_PLAY_CONTROL` (0x30914E) = 0 -> `videoRequestStop()`; `CMD_PLAYVIDEO` needs
+  `OPT_MEDIAFIFO` (data in the command FIFO is a fault) and stays at the FIFO head with
+  `videoBusy` gating `cpProcess`; **core1 runs `Ft812::videoPump()` from
+  `ftRenderPump`** (one decode per pump, then `renderRequest`), and **core0's
+  `frameTick` finishes the command** when core1 flags `videoDone` (consumes the 8
+  bytes, `cpProcess`, `renderRequest` — the guest's list comes back). `powerReset`
+  stops a video. Audio: `ESPectrum`'s mixer pulls `Ft812::videoAudioFrame(samples,
+  31250)` per frame and adds it unipolar (`>> 1`) like Covox.
+- Costs: TJpgDec 3 KB + engine 1.6 KB of flash, static RAM +4 B; while playing ~4.6 KB
+  heap (engine + workspace) + the frame buffer in PSRAM (384 KB for 512x384) + 16 KB
+  audio ring (PSRAM). The decode runs on core1 next to the renderer — expect a few
+  frames per second at 512x384 on the first hardware run, and the `[FT812] video:`
+  trace line (`frames skipped decode avg/max waits audio drop`) says how many.
+- Host test: a 2-frame 32x16 MJPEG AVI (`tools/ft812_test_avi.inc`, generated with
+  PIL) streamed through the ring — frame 1 red, frame 2 blue when due, the list draws
+  it full-screen, the PCM pulls 1:1, the stream end and REG_PLAY_CONTROL = 0 both
+  drain the FIFO. 181 checks. The recipe now needs `tjpgd.c` and `miniz.c` compiled
+  as C objects (the test header has it).
+- **Found and fixed in the test**: a clock reading of 0 was taken as "not started",
+  re-basing the schedule on the second frame — `started` is its own flag now.
+- Not done, same decoder would serve it: **CMD_LOADIMAGE** (FTVIEW's JPG viewer;
+  PNG would need inflate + filters) — still a fault. **Hw check owed**: the .avi
+  through FTVIEW (picture, frame rate from the trace, sound), then FTVIEW's Esc /
+  REG_PLAY_CONTROL exit returning to WC, and VIDEO_PL with a TGV (the NeoGS path).
+
 ## FDI copy protection — physical damage emulation (`src/speccy/devices/disk/wd1793.cpp`)
 
 An FDI sector flagged with a **bad data CRC** was unreadable on the source

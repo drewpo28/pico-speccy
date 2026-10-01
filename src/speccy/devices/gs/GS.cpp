@@ -294,6 +294,7 @@ uint8_t  GS::reg_page      = 0;
 uint8_t  GS::reg_vol[8]    = {0,0,0,0,0,0,0,0};
 uint8_t  GS::reg_ch[8]     = {0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80};
 volatile uint32_t GS::int_count = 0;
+volatile uint32_t GS::hostB3Bytes = 0, GS::hostB3WaitUs = 0;
 
 static GS_OVL_BSS Z80 s_cpu;
 static uint8_t* s_gs_ram      = nullptr;
@@ -3373,6 +3374,7 @@ void GS::hostWriteB3(uint8_t data) {
                 else if (now - s_b3_drain_us > 15000) break;  // consumer died mid-wait
                 if (now - t0 > 30000) break;                  // hard cap, never wedge core0
             }
+            hostB3WaitUs += time_us_32() - t0;
             GS_PERF(s_perf_h_spin_us += time_us_32() - t0);
         }
     }
@@ -3384,6 +3386,7 @@ void GS::hostWriteB3(uint8_t data) {
                && (time_us_32() - spin_t0) < 500) {
             __dmb();
         }
+        hostB3WaitUs += time_us_32() - spin_t0;
         GS_PERF(s_perf_h_spin_us += time_us_32() - spin_t0);
         (void)spin_t0;
         if ((s_host_fifo_w - s_host_fifo_r) >= GS_HOST_FIFO_SIZE) {
@@ -3418,6 +3421,7 @@ void GS::hostWriteB3(uint8_t data) {
     __dmb();
     s_host_fifo_w = w + 1;
     __dmb();
+    hostB3Bytes++;
     gs_status_or(&reg_status, 0x80u);  // D7=1: data byte pending for the card
     gs_hs('P', data, reg_status);
 #if NGS_TRACE

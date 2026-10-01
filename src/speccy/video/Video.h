@@ -475,6 +475,16 @@ public:
   // hi-res / TS-Conf whole-line modes keep their own geometry. Decided per frame
   // in EndFrame (blRecalc), so the menu hook only has to write Config.
   static bool bl_live;
+  // TS-Conf VDAC2 (FT812): VConfig b2 hands the whole framebuffer to the chip's
+  // display list. ft_live = that mode is on: the beam renderer and the border
+  // machine are parked, core1 renders the swapped list band by band into the fb
+  // through a fixed dithered RGB cube on the ts256 slot pool (Video.cpp, "VDAC2").
+  static bool ft_live;
+  static void ftFrameTick();          // EndFrame (core0): REG_FRAMES, DLSWAP, INT_SWAP, redraw requests
+  static void ftRenderPump();         // core1: one band of the pending frame
+  static void ftPaletteProgram();     // the RGB cube onto the hardware slots (+ redraw)
+  static void ftRedrawSync();         // core0: re-render the current list and wait (paused repaint)
+  static void ftForceOff();           // ESPectrum::reset / mode teardown
   static void blRecalc();
   static void blExpandLine(uint32_t line);
   // Overlays that live in the border elsewhere sit on content here; the scaler
