@@ -43,6 +43,7 @@
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/Timex.h"   // g_timex_mmu + Timex::rd/read8 (TC2068 SCLD window, exec_nocheck fetch)
 #include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/core/Rzx.h"     // Rzx::mode / onIn: RZX playback substitutes every IN
 
 
 // #include "Snapshot.h"
@@ -76,7 +77,8 @@ RegisterPair Z80::regIX;
 RegisterPair Z80::regIY;
 RegisterPair Z80::regSP;
 uint8_t Z80::regI;
-uint8_t Z80::regR;
+uint32_t Z80::regR;
+uint8_t Z80::regRbase;
 bool Z80::regRbit7;
 bool Z80::ffIFF1 = false;
 bool Z80::ffIFF2 = false;
@@ -160,7 +162,7 @@ Z80_COLD void Z80::destroy(void)
 RegisterPair Z80::getPairIR(void) {
     RegisterPair IR;
     IR.byte8.hi = regI;
-    IR.byte8.lo = regR & 0x7f;
+    IR.byte8.lo = (uint8_t)(regR + regRbase) & 0x7f;
     if (regRbit7) {
         IR.byte8.lo |= SIGN_MASK;
     }
@@ -259,7 +261,9 @@ Z80_COLD void Z80::reset(void) {
     }
 
     REG_PC = 0;
-    regI = regR = 0;
+    regI = 0;
+    regR = 0;
+    regRbase = 0;
     regRbit7 = false;
     ffIFF1 = false;
     ffIFF2 = false;
@@ -1052,7 +1056,7 @@ void Z80::interrupt(void) {
     // Z80Ops::interruptHandlingTime(7);
     VIDEO::Draw(7, false);
 
-    regR++;
+    regRbase++;   // R advances, but the acknowledge is not an opcode fetch (RZX)
 
     ffIFF1 = ffIFF2 = false;
 #if PAGE_TRACE
@@ -1220,7 +1224,7 @@ IRAM_ATTR void Z80::checkINT(void) {
 
 }
 
-IRAM_ATTR void Z80::incRegR(uint8_t inc) {
+IRAM_ATTR void Z80::incRegR(uint32_t inc) {
 
     regR += inc;
 
@@ -2000,7 +2004,7 @@ void Z80::decodeOpcode76()
               // Tape wear (Config::tape_wear) ignores fast load: the trap fills the
               // block straight out of the file without generating a single pulse, so
               // a chewed tape would always load perfectly. See Tape.cpp fastLoadOn().
-              if (Config::flashload && !Config::tape_wear && !Tape::jjScreenAnimating) {
+              if (Config::flashload && !Config::tape_wear && !Rzx::mode && !Tape::jjScreenAnimating) {
                 // Save return PC before FlashLoad (it doesn't modify REG_PC)
                 uint16_t trapPC = REG_PC;
                 const bool flOk = Tape::FlashLoad();
@@ -2169,6 +2173,7 @@ void Z80::decodeOpcodedb()
     REG_PC++;
     // if (REG_PC == 0x60BC) printf("IN A,(n). Adress -> %04x\n", REG_WZ);
     regA = Ports::input(REG_WZ);
+    if (__builtin_expect(Rzx::mode != 0, 0)) regA = Rzx::onIn(regA);
     REG_WZ++;
 }
 
@@ -2302,7 +2307,7 @@ void Z80::decodeOpcodeee() /* XOR n */
 // Byte ROM LOAD trap, cold half (flash): see decodeOpcodef1. Returns true when
 // FlashLoad took the block and the POP AF / RET has been emulated.
 Z80_COLD bool Z80::byte_tape_trap() {
-    if (!(Config::flashload && !Config::tape_wear &&
+    if (!(Config::flashload && !Config::tape_wear && !Rzx::mode &&
         !Tape::jjScreenAnimating &&
         (Tape::tapeFileType == TAPE_FTYPE_TAP || Tape::tapeFileType == TAPE_FTYPE_TZX || Tape::tapeFileType == TAPE_FTYPE_PZX) &&
         Tape::tapeFileName != "none")) return false;
@@ -3119,7 +3124,8 @@ void Z80::decodeED(void) {
         case 0x40: case 0x48: case 0x50: case 0x58: case 0x60: case 0x68: case 0x70: case 0x78:
         { /* IN r,(C) */
             REG_WZ = REG_BC;
-            const uint8_t v = Ports::input(REG_WZ++);
+            uint8_t v = Ports::input(REG_WZ++);
+            if (__builtin_expect(Rzx::mode != 0, 0)) v = Rzx::onIn(v);
             uint8_t* r = reg8[(opCode >> 3) & 7];
             if (r) *r = v;
             sz5h3pnFlags = sz53pn_addTable[v];
@@ -3558,6 +3564,7 @@ IRAM_ATTR void Z80::inx(int d) {
     REG_WZ = REG_BC;
     Z80Ops::addressOnBus(getPairIR().word, 1);
     uint8_t work8 = Ports::input(REG_WZ);
+    if (__builtin_expect(Rzx::mode != 0, 0)) work8 = Rzx::onIn(work8);
     REG_WZ += d;
     Z80Ops::poke8(REG_HL, work8);
     REG_B--; REG_HL += d;

@@ -143,6 +143,7 @@ public:
 
     // call this for executing a frame's worth of instructions
     static void loop();
+    static void loopRzx(uint64_t loopT0);   // RZX playback frame (Rzx.h)
 
     static void updateStatesInFrame();
 

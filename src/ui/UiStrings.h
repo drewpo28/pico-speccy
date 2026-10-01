@@ -20,6 +20,7 @@
 #define TXT_SNAPSHOTS       "Snapshots"
 #define TXT_SNAP_FROMFILE   "Load from file"
 #define TXT_SNAP_SLOTS      "Quick slots"
+#define TXT_RZX_STOP        "Stop RZX playback"
 #define TXT_HW              "Devices"
 #define TXT_VIDEO           "Video"
 #define TXT_AUDIO           "Audio"

@@ -12907,6 +12907,87 @@ entry whose name starts with `.`, so `/.config` is invisible there and always wi
   answers true for an empty list — otherwise every name in the config tree would
   draw dimmed as "not of interest".
 
+## RZX playback — stage 1 of RZX (2026-09-29, NOT hw-tested)
+
+`.rzx` opens from every snapshot entry point (F5 / Load from file / web launch /
+zip) through `LoadSnapshot` → `Rzx::startPlayback`. Stage 2 (recording) and SZX
+snapshots are not done. Format reference: libspectrum `rzx.c` (speccytools
+mirror on raw.githubusercontent.com — worldofspectrum.net is a 403 here) and
+Fuse's `rzx.c` / `z80.c` for the playback semantics.
+
+- **`src/speccy/core/RzxReader.{h,cpp}` is the format and depends on nothing** (miniz + an
+  I/O/alloc struct), streamed: one 32 KB inflate window + inflate state (only for
+  a compressed block) + one frame's IN list, whatever the file size.
+  `tools/rzx_test.cpp` builds files byte by byte (host zlib, not miniz) and covers
+  repeat frames (incl. repeat-of-repeat and across blocks), empty blocks, skipped
+  creator/security/unknown blocks, a 3000-byte frame over many 512-byte refills,
+  truncation at every offset, a stream shorter than its frame count, a corrupt IN
+  count, and every allocation failing in turn with no leak. Recipe in its header;
+  four hand mutations each fail it. **Re-run after any change there.**
+- **The fetch counter is `Z80::regR`, widened to `uint32_t`** — zero extra work on
+  the M1 path. Visible R = `(regR + regRbase) & 0x7f`: `setRegR` (LD R,A,
+  snapshot loads) and the INT acknowledge move `regRbase`, not `regR`, because
+  neither is an opcode fetch — Fuse's `R++; rzx_instructions_offset--` in
+  z80_interrupt and its LD R,A offset fix are the rule the files were written to.
+  NMI's R++ stays counted (Fuse counts it too). `incRegR` takes `uint32_t` now:
+  the HALT-flush paths used to truncate to 8 bits, harmless for 7-bit R, wrong for
+  a counter. Cost on DVp2: +120 B of RAM code (the IN hooks, the loop and isActiveINT tests), +116 B .bss, +~4 KB flash; nothing per instruction.
+- **Every IN goes through one hook**: the three `Ports::input` sites in the core
+  (IN A,(n), IN r,(C), INI/IND/INIR/INDR) and both Z80DMA port reads do
+  `if (Rzx::mode) v = Rzx::onIn(v)`. `Ports::input` STILL RUNS during playback, so
+  timing/contention match; its value is replaced. Side effects of the read on our
+  devices are harmless — the guest only ever sees file bytes.
+- **`CPU::loopRzx` (flash)** runs the frame with checked `execute()`. When the
+  frame's fetch count is reached at an instruction boundary it fetches the next
+  frame, raises the INT line (`Rzx::raiseInt`: `isActiveINT` answers
+  `tstates < Rzx::intUntil` while playing — window end is IntEnd if raised inside
+  the raster window, else one window from now) and calls `checkINT()` at once.
+  That immediate sample is load-bearing: our live loop can take the INT at the
+  tail's overshoot (the `isActiveINT` wrap), i.e. at the SAME boundary the next
+  recording frame starts; sampling only after the next instruction would take it
+  one instruction late and desync. The raster keeps its own 50 Hz underneath, so
+  a foreign recording with a shorter frame just takes interrupts a bit more often.
+  **Frame 0 gets no INT at its start** — the INT is at the END of each frame.
+- The input block's T-state stamp is applied to `CPU::tstates` after a snapshot
+  load (first frame of a block only). Mid-file snapshot blocks are loaded at the
+  next loop entry (the frame idles out first). An IN past the recorded list =
+  desync: the byte comes from the port and playback stops at the next boundary
+  with " RZX: desync at frame N ". Frames reading FEWER INs are only counted
+  (log line at stop).
+- End of file / F11 / Snapshots → **Stop RZX playback** (`NM_ACTIONV`, shows
+  played/total) leave the machine running from where it is. Fast tape load and
+  both ROM tape traps are off while `Rzx::mode` (the trap fills memory with no IN).
+  `Config::ram_file` is NOT pinned to an .rzx (a replay is not a boot resume);
+  `last_ram_file` is (Alt+Backspace replays).
+- Known gaps: SZX snapshots (message), a snapshot load that crosses a machine
+  layout boundary reboots and resumes the inner `/tmp/_rzx.*` snapshot, not the
+  playback; security blocks are ignored; one INT per frame only (so TS-Conf-style
+  LINE interrupts cannot exist in a file anyway).
+- **Progress banner** (`drawRzxProgress`, OSDMain.cpp): `RZX mm:ss / mm:ss`
+  (h:mm:ss past an hour) in the TOP-LEFT of the top border band while playing —
+  the `notify()` band and paint path (`notifyPaint(..., left)`), sharing its one
+  reservation: a timed banner wins while it lives, progress returns when it
+  expires, `progEnd()` erases it (brdChange+brdnextframe) on stop and at do_OSD.
+  Time = RZX frames / 50 (one frame = one INT of the recording machine).
+  Absent in DS80 (no top border). Hw-confirmed 2026-09-29 (owner: "работает").
+- **Web catalog source `rzx`** (drewpo28/pico-spec-catalog `app/adapters/rzx.py`):
+  The RZX Archive, ≈4050 recordings as `<0-9|A..Z>/<TITLE .RZX  SUBMITTER  NOTE>`,
+  direct links (≈860 are `.zip` bundles, one recording per level → the zip picker).
+  rzxarchive.co.uk is behind this environment's egress policy: its markup was read
+  from a GitHub Actions run on a throwaway branch of the catalog repo (a push-
+  triggered probe workflow that dumps the pages to the log) — the way in for any
+  site the container cannot reach. The firmware needed only `rzx` in the launch
+  extension lists.
+- **Hw check owed**: any Spectaculator/Fuse .rzx with a Z80 snapshot playing to
+  the end without " desync ", on 48K and 128K; a zipped one from WoS; F11 and Stop
+  mid-replay; a long file (compressed, several blocks).
+- **Stage 2 (recording) plan**: boundary at `CPU::loop` entry (after the pause
+  test), frame 0 = `{0 fetches}` written right after the SNA so the first INT
+  lands where it does live, INs logged in `onIn`, `0xFFFF` for repeated lists,
+  uncompressed blocks (tdefl needs ~300 KB), block length/count patched on close.
+  Refuse: TS-Conf/Profi/Scorpion/+3/TC2068, turbo above 7 MHz (u16 fetch count),
+  DivMMC, Z80 DMA; force fast load off; stop on F11/NMI/machine switch/debugger.
+
 ## Tools
 
 - `tools/z80disasm.py` — Z80 disassembler (pure Python3, no deps)

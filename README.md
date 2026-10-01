@@ -108,6 +108,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Rodolfo Guerra's ROMs fast load routines support with on the fly standard speed blocks translation.
 - TAP file saving to SD card.
 - SNA and Z80 snapshot loading.
+- **RZX** input-recording playback (from the file browser, `.rzx` or zipped): the embedded SNA/Z80 snapshot is loaded and the recording replays by its own fetch counts, with every IN taken from the file; **Snapshots → Stop RZX playback** leaves you in control of the machine where the replay stopped. Recordings whose embedded snapshot is SZX are not supported yet, and recording is not implemented yet.
 - Snapshot saving and loading: one **Snapshots** menu with **Load from file** and 40 named **Quick slots** (F6 rename, F8 delete); the F3/F4 hot keys open the slot list directly, with Enter bound to the verb they were pressed for.
 - ZIP archive support: browse, extract, load and delete files inside ZIP archives.
 - Configurable keyboard hotkeys with hint display in menus.

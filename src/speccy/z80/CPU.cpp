@@ -54,6 +54,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/Atm.h"        // g_atm_ro (ATM-Turbo ROM windows) + Atm::reset/intEnabled
 #include "speccy/machines/TsConf/TsFastMem.h"
 #include "app/CodeOverlay.h" // TS_OVL_CODE (CPU::tsFrameLoop)
+#include "speccy/core/Rzx.h"
 #if PERF_TRACE && PERF_HIST
 // TS-Conf guest-memory access histogram by PHYSICAL page (the page each CPU
 // bank is mapped to), fetch + peek8 + poke8. Tells which pages a title hammers,
@@ -637,6 +638,7 @@ IRAM_ATTR void CPU::loop() {
         cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
         return;
     }
+    if (__builtin_expect(Rzx::mode != 0, 0)) { loopRzx(_loop_t0); return; }
     int nbp = Config::numPcBP;
 
     BREAKPOINTS
@@ -758,7 +760,7 @@ IRAM_ATTR void CPU::haltAdvanceTo(uint32_t stEnd) {
         if (n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
         VIDEO::Draw(n, false);
     }
-    Z80::incRegR((uint8_t)((tstates - pre) >> 2));
+    Z80::incRegR((tstates - pre) >> 2);
 }
 
 IRAM_ATTR void CPU::FlushOnHaltTo(uint32_t stEnd) {
@@ -805,12 +807,84 @@ IRAM_ATTR void CPU::FlushOnHaltTo(uint32_t stEnd) {
                 tstates = (pre_tstates & ~3u) + (incr << 2);
             } else
                 tstates += (incr << 2);
-            Z80::incRegR(incr & 0x000000FF);
+            Z80::incRegR(incr);
 
         }
 
     }
 
+}
+
+// RZX playback frame (Rzx.h). FLASH on purpose — it runs only while a
+// recording plays, and the per-instruction work is Z80::execute(), which is RAM.
+//
+// A recorded frame is "N opcode fetches, then an interrupt", and it is NOT tied
+// to our raster: the loop runs the CPU through the ordinary checked execute()
+// (every IN reaches Rzx::onIn through the core's hook, HALT steps 4 T per call
+// exactly as the recording emulator counted it) and, the moment the count is
+// reached at an instruction boundary, raises the INT line and samples it at once
+// — the same point at which the recording emulator took it (Fuse: the frame
+// event fires between instructions and z80_interrupt runs straight away). The
+// T-state frame keeps running underneath, so video, audio and pacing stay at
+// 50 Hz: a recording from a machine with a slightly shorter frame simply takes
+// its interrupts a little more often, which is what the fetch counts say.
+void CPU::loopRzx(uint64_t _loop_t0) {
+    if (Rzx::snapshotPending()) Rzx::loadPendingSnapshot();
+
+    uint32_t zifi_pump_due = tstates + 3500;
+    while (tstates < statesInFrame && Rzx::mode != 0) {
+        if (Rzx::frameReached() && Z80::atInstrBoundary()) {
+            if (!Rzx::nextFrame()) break;   // playback over: `mode` is OFF now
+            Rzx::raiseInt();
+            if (Rzx::snapshotPending()) break;
+            Z80::checkINT();
+            continue;
+        }
+        Z80::execute();
+        if (Config::dma_mode) Z80DMA::handleDMA();
+        if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
+            zifi_pump_due = tstates + 3500;
+            ZiFi::cdcPump();
+        }
+    }
+    if (Rzx::mode != 0) {
+        // A mid-file snapshot is due: the machine idles to the frame end and
+        // the snapshot is loaded at the next loop entry, i.e. between frames,
+        // where every other loader runs too.
+        while (tstates < statesInFrame) {
+            uint32_t n = statesInFrame - tstates;
+            if (n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
+            VIDEO::Draw(n, false);
+        }
+    } else {
+        // Playback ended inside this frame: the machine carries on under its
+        // own raster from here ("continue from here").
+        while (tstates < statesInFrame) {
+            Z80::execute();
+            if (Config::dma_mode) Z80DMA::handleDMA();
+        }
+    }
+
+    {
+        uint64_t _ef_t0 = time_us_64();
+        VIDEO::EndFrame();
+        endframe_us = (uint32_t)(time_us_64() - _ef_t0);
+    }
+    CPU::tstates_diff += CPU::tstates - CPU::prev_tstates;
+    if ((ESPectrum::fdd.control & (kRVMWD177XHLD | kRVMWD177XHLT)) != 0) {
+        uint64_t _fdd_t0 = time_us_64();
+        rvmWD1793Step(&ESPectrum::fdd, CPU::tstates_diff / WD177XSTEPSTATES);
+        fdd_step_us += (uint32_t)(time_us_64() - _fdd_t0);
+    }
+    CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
+    cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+
+    global_tstates += statesInFrame;
+    tstates_frame = tstates;
+    tstates_active = tstates_frame;
+    tstates -= statesInFrame;
+    Rzx::endTFrame(statesInFrame);
+    CPU::prev_tstates = tstates;
 }
 
 // Z80Ops
@@ -1414,6 +1488,9 @@ IRAM_ATTR void Z80Ops::addressOnBus(uint16_t address, int32_t wstates) {
 
 /* Callback to know when the INT signal is active */
 IRAM_ATTR bool Z80Ops::isActiveINT(void) {
+    // RZX playback: the line is raised by the FETCH COUNT (Rzx::raiseInt at the
+    // end of each recorded frame), not by the raster — see CPU::loopRzx.
+    if (__builtin_expect(Rzx::mode != 0, 0)) return (int32_t)CPU::tstates < Rzx::intUntil;
     // Karabas serial-mouse hardware INT (RST20H): level-asserted while an RX
     // byte waits with INT_EN set in CP/M mode. Sampled only in the checked
     // execute() loops (like the frame INT), so worst-case latency is one
