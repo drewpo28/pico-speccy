@@ -12341,6 +12341,28 @@ repo: chapters 12, 15.6, 23.4, 26, 35, 38 are the ones that pin chip semantics).
   Same build: unresolved YCC bins take the nearest BOX in the layout's own axes (luma
   weighted) instead of the nearest entry in RGB — logically right for a dither-pushed
   bin, but measured to change nothing on these frames; kept, not the fix.
+- **Rare frames in wrong colours (only black and red, or a colour missing) on adaptps4
+  (owner, 2026-10-01, Equilibrium min 2-3): every video frame was shown through the
+  palette built from the PREVIOUS frame's histogram** (the sink mapped pixels through the
+  current map, `ftAdaptFrameEnd` rebuilt only after the flip, and rebuilds were limited
+  to one per 8 frames). At a scene cut the first frame(s) of the new scene got the old
+  scene's colours. **palown** (NOT hw-tested, `debug/DVp2-vdac2-palown-trace-1.0.8.elf`):
+  with the adaptive palette the sink writes the 16-bit YCC BIN into the back buffer
+  (`FtGlue::vBins`; `vback` is now 2 x xres x yres of PSRAM), `ftVidEnd` builds the
+  palette from THIS frame's histogram BEFORE the flip (immediately when the coarse fold
+  moved by >= 25%, else the old 8-frame/6% rule), and `ftVidFlip` maps each source row
+  of bins through it (`lut`, lazy resolve) while it copies. The first frame of a video is
+  shown too (it used to stay black). Cost: the SRAM row buffer fits a half-size decode
+  (256 px x 8 rows x 2 B) but not a full-size 360-wide MCU row, which then goes straight
+  to PSRAM (the pre-avi6 speed) — the player normally runs at half size here anyway.
+  **Hw 2026-10-01, owner on palown: "на мой взгляд, пофикшено"** (log
+  `logs/devttyACM0_2026_10_01.22.40.11.203.txt`; no wrong-palette frame reported). Cost
+  against the feed1 build on the same file, half size: flip 5 -> 8-10 ms (a PSRAM `lut`
+  lookup per pixel), rows->back 3 -> 6.5 ms (2 B per pixel), decode avg ~+5 ms, more
+  frames skipped — 18.6 -> 16.4 shown fps on the first 100 s of the file. **palown2**
+  (copy the bin -> slot map into SRAM once per flip) was measured and REVERTED: flip
+  9.1 -> 8.7 ms, fps unchanged — the cost is the doubled back-buffer traffic, not the
+  PSRAM lut. Kept as is on the owner's call: correct colours on scene cuts are worth it.
 - **"Smooth 2:1" showed no difference (owner, 2026-10-01) because it was a 2:1
   special**: the box average engaged only on an axis-aligned cell at exactly 2:1
   (+-1/16 texel), i.e. ZUMA's 1.6x-upscaled assets on a 320x240 framebuffer and
@@ -12446,6 +12468,27 @@ exactly the FT81x input format: MJPEG 512x384 24 fps + PCM u8 44.1 kHz mono.
   PNG would need inflate + filters) — still a fault. **Hw check owed**: the .avi
   through FTVIEW (picture, frame rate from the trace, sound), then FTVIEW's Esc /
   REG_PLAY_CONTROL exit returning to WC, and VIDEO_PL with a TGV (the NeoGS path).
+- **Underruns at 1:00 and ~4:40 in `Equilibrium_360p_5M.avi` (2026-10-01, NOT hw-tested).**
+  The full run in `logs/devttyACM0_2026_10_01.17.58.16.482.txt` stalls at 61 s, 140-146 s,
+  282-291 s and 299-340 s. Those are the stretches where the file needs 486-646 KB/s
+  (`avirate.py`), and in each one the host line is pinned at `spi 578-582KB` per 1.228 s
+  window, i.e. ~470 KB/s of FTVIEW feed. That is 8.5 ms of guest time per 4 KB chunk, of
+  which the two SPI DMAs are 4.7 ms. **Whether a real ZX-Evo feeds faster is NOT known**
+  (the user says the file plays cleanly on a PC, which feeds from local storage).
+  - **Two fixes:**
+    - The media clock now STOPS when the stream is starved and the queued sound has
+      played out (`starved()`/`unstarve()` in Ft812Video.cpp). Before, it ran on through
+      the gap, and every frame that fell due was then skipped in one burst. Their audio
+      was pushed into the 16 KB ring at once: `drop` jumped 45 -> 281, which is the
+      "music distorts" half; a frozen frame followed by a jump is the "frame hangs" half.
+      Host test (11a), mutation-checked.
+    - An SPI/IDE DMA is no longer stretched by CPU DRAM steals (`s_dma_flat`). It is paced
+      by SCK and uses one DRAM cycle of the eight a word spans.
+  - **Trace:** `[FT812] video:` gained `stalls N/ms`. The new `[FT812] feed:` line shows
+    SPI DMA KB per direction plus their modelled ms, ZC `IN` KB (an INIR reader would
+    show here) and poll fast-forward ms. That is the split of the 8.5 ms to read before
+    touching the feed rate itself.
+  - Test ELF `debug/DVp2-vdac2-feed1-trace-1.0.8.elf`.
 
 ## FDI copy protection — physical damage emulation (`src/speccy/devices/disk/wd1793.cpp`)
 

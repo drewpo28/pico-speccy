@@ -1738,7 +1738,7 @@ void DivMMC::ide_write(uint8_t reg, uint8_t value) {
 // ============================================================
 
 bool DivMMC::zc_ft_cs = false;
-uint32_t DivMMC::zc_rd_sectors = 0, DivMMC::zc_rd_us = 0;
+uint32_t DivMMC::zc_rd_sectors = 0, DivMMC::zc_rd_us = 0, DivMMC::zc_in_bytes = 0;
 static uint8_t zc_ft_rd = 0xFF;   // the byte the FT812 shifted out during the last exchange
 
 void DivMMC::zc_init() {
@@ -1841,6 +1841,7 @@ void DivMMC::zc_write_data(uint8_t value) {
 }
 
 uint8_t DivMMC::zc_read_data() {
+    zc_in_bytes++;
     if (Z80Ops::isAtm && !mmc_cs_active) mmc_cs(0x00);
     if (!mmc_cs_active) {
         if (zc_ft_cs && Ft812::enabled) {

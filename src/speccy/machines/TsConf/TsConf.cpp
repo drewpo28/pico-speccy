@@ -142,6 +142,15 @@ static uint16_t s_frm_vsint = 0xFFFF, s_frm_hsint = 0xFFFF;   // window position
 static bool     s_lin_pending;  // int_lin latch
 static uint32_t s_lin_next;     // T of the next line start that raises LINE
 static bool     s_dma_busy;     // DMA_ACT: transaction "in flight"
+// The running transaction is paced by a device bus (SPI SCK, the IDE state
+// machine), not by DRAM: it needs one DRAM cycle per word out of the eight a
+// 4-base-T SPI word spans, so a CPU access takes an idle slot and delays nothing.
+// Such a DMA is NOT stretched by CPU steals (it was, and every poll loop running
+// from DRAM beside an SPI transfer charged it up to a third more guest time).
+static bool     s_dma_flat;
+// Guest-time attribution of the media feed (the [FT812] feed line): SPI->RAM
+// words, RAM->SPI words, the T they were modelled at, poll fast-forward T.
+volatile uint32_t ts_feed_sr_words = 0, ts_feed_rs_words = 0, ts_feed_spi_t = 0, ts_feed_pollff_t = 0;
 static uint32_t s_dma_end;      // T at which it completes
 static bool     s_dma_pending;  // int_dma latch
 
@@ -224,7 +233,7 @@ void TsConf::memcycRecalc() {
         // only" variant was tried for the host cost and it HANGS fishbone — the demo
         // needs the real machine's slower 14 MHz, and with the waits in it runs.
         if (ESPectrum::multiplicator >= 2) g |= 1;
-        if (s_dma_busy) g |= 2;                       // DMA_ACT: CPU accesses steal cycles
+        if (s_dma_busy && !s_dma_flat) g |= 2;        // DMA_ACT: CPU accesses steal cycles
     }
 #endif
     g_ts_memcyc = g;
@@ -1463,6 +1472,11 @@ TS_HOT void TsConf::dmaStart(uint8_t ctrl) {
     // "busy" simply supersedes it — the data is long written either way.
     s_dma_busy = true;
     s_steal_half = 0;
+    s_dma_flat = spi || ide;
+    if (spi) {
+        if (mode == M_SPIRAM) ts_feed_sr_words += words; else ts_feed_rs_words += words;
+        ts_feed_spi_t += (words * kDmaCostSpi) << ESPectrum::multiplicator;
+    }
     if (spi)      s_dma_end = CPU::tstates + ((words * kDmaCostSpi) << ESPectrum::multiplicator);
     else if (ide) s_dma_end = CPU::tstates + (((words * kDmaCostIdeQ2) >> 2) << ESPectrum::multiplicator);
     else          s_dma_end = tsDmaEndWithVideo(CPU::tstates, words * cyc);   // + CPU steals, live (tsDmaSteal)
@@ -1720,6 +1734,7 @@ TS_HOT uint8_t TsConf::dmaStatus() {
             // VRAM already holding this DMA's result — a TMNT-menu tear at 576p
             // was traced to exactly that window (2026-09-22).
             if (end - t >= tsLineT()) TSVT("POLL-FF +%u lines (to L%03u)", (unsigned)((end - t) / tsLineT()), (unsigned)(end / tsLineT()));
+            ts_feed_pollff_t += end - t;
             CPU::haltAdvanceTo(end);
         }
         tsIntPoll();

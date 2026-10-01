@@ -594,6 +594,22 @@ int main() {
       wr8s(0x30914E, 0);
       videoPump(); frameTick();
       CHECK(!videoActive() && rd16s(RAM_REG + REG_CMD_READ) == rd16s(RAM_REG + REG_CMD_WRITE), "REG_PLAY_CONTROL = 0 ends it");
+      // (11a) the host feeds too slowly: frame 2 arrives 20 pumps (~400 ms) late. Once the queued
+      // sound has played out the media clock stops, so the frame is shown when it comes, not
+      // skipped as hundreds of ms late (Equilibrium.avi under FTVIEW, hw 2026-10-01)
+      { wr32s(0x309018, 0); cmdb({ 0xFFFFFF39u, 0x80000u, 0x10000u });
+        const uint32_t cut = 1298 + 100;                                 // into frame 2's JPEG
+        spiWrite(0x80000, kTestAvi, cut); wr32s(0x309018, cut);
+        cmdb({ 0xFFFFFF3Au, OPT_MEDIAFIFO | OPT_SOUND });
+        videoPump(); CHECK(videoFrameReady(), "slow feed: frame 1");
+        for (int i = 0; i < 20; i++) { videoPump(); videoAudioFrame(320, 8000); }
+        CHECK(!videoFrameReady() && videoStats().stalls == 1, "slow feed: starved, the clock stopped once (%u)", (unsigned)videoStats().stalls);
+        spiWrite(0x80000 + cut, kTestAvi + cut, sizeof(kTestAvi) - cut); wr32s(0x309018, (uint32_t)sizeof(kTestAvi));
+        videoPump(); videoPump();
+        CHECK(videoFrameReady() && videoStats().frames == 2 && videoStats().skipped == 0,
+              "slow feed: frame 2 shown when it arrives, nothing skipped (frames %u skipped %u)", (unsigned)videoStats().frames, (unsigned)videoStats().skipped);
+        wr8s(0x30914E, 0); videoPump(); frameTick();
+        CHECK(!videoActive(), "slow feed: stopped"); }
       // (11b) the direct path: videoStep only posts the frame, videoDecodeJob (the other core) decodes
       // it into the sink; the chunk stays pinned behind REG_MEDIAFIFO_READ until the job is reaped,
       // and a frame that comes due while the decoder is busy is skipped

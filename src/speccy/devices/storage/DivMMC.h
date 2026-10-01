@@ -48,6 +48,7 @@ public:
     // Raw-SD (Z-Controller / DivSD) sector reads served by the host card and the
     // core0 time they took — the FT812_TRACE meter's "sd" field (VIDEO::ftTraceTick).
     static uint32_t zc_rd_sectors, zc_rd_us;
+    static uint32_t zc_in_bytes;          // guest IN (#57) data reads (the [FT812] feed line)
 
     static void init();           // Load ROM, open .mmc/.hdf/.vhd/.hdd/.img image
     static void reset();          // Reset state

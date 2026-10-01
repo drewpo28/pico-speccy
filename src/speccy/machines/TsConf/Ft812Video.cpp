@@ -42,6 +42,9 @@ struct Engine {
     uint8_t    strType;          // current 'strl': 0 none, 1 vids, 2 auds
     uint32_t   frameIdx;
     uint64_t   startUs; bool started;   // the clock at the first frame (a clock reading may legitimately be 0)
+    // The stream ran dry (the host is not feeding fast enough): the media clock
+    // stops once the queued sound has played out, and restarts when data comes.
+    uint64_t   clkOff, pauseAt; bool paused;
     // frame buffer + list
     uint8_t*   vfb; uint32_t vfbW, vfbH, vfbBytes; uint8_t scale;
     uint32_t   dl[24];
@@ -74,6 +77,29 @@ inline uint8_t  rbyte(uint32_t off) { return E->mf->ramg[E->mf->base + (off % E-
 inline uint32_t r32(uint32_t off) { return (uint32_t)rbyte(off) | (uint32_t)rbyte(off + 1) << 8 | (uint32_t)rbyte(off + 2) << 16 | (uint32_t)rbyte(off + 3) << 24; }
 inline uint16_t r16(uint32_t off) { return (uint16_t)(rbyte(off) | rbyte(off + 1) << 8); }
 inline void consume(uint32_t n) { E->cur = (E->cur + n) % E->mf->size; E->pos += n; publish(); }
+uint64_t rawClock() { return E->clock ? E->clock() : 0; }
+// The media clock: the chip's clock minus the time the stream spent starved.
+uint64_t mediaNow() { return (E->paused ? E->pauseAt : rawClock()) - E->clkOff; }
+inline uint32_t audioHave() { return E->aring ? (E->aw - E->ar + AUDIO_RING) % AUDIO_RING : 0; }
+// Out of stream data. Without this the clock ran on through the whole underrun and
+// every frame that fell due meanwhile was then skipped in one burst, its sound
+// pushed at once into a ring that cannot hold it: a frozen picture, then a jump,
+// and seconds of chopped audio (Equilibrium.avi under FTVIEW at 1:00 / 4:40,
+// hw 2026-10-01). The clock keeps running while queued sound still plays — the
+// picture stays in step with it — and stops when the sound runs out.
+inline bool starved() {
+    E->st.waits++;
+    if (E->started && !E->paused && (!E->aring || !E->audValid || audioHave() == 0)) {
+        E->paused = true; E->pauseAt = rawClock(); E->st.stalls++;
+    }
+    return false;
+}
+inline void unstarve() {
+    if (!E->paused) return;
+    const uint64_t now = rawClock();
+    E->st.stallMs += (uint32_t)((now - E->pauseAt) / 1000u);
+    E->clkOff += now - E->pauseAt; E->paused = false;
+}
 inline uint32_t fcc(char a, char b, char c, char d) { return (uint32_t)(uint8_t)a | (uint32_t)(uint8_t)b << 8 | (uint32_t)(uint8_t)c << 16 | (uint32_t)(uint8_t)d << 24; }
 
 // ── TJpgDec callbacks: input from the ring, output into the frame buffer ──
@@ -316,16 +342,16 @@ bool videoStep() {
         }
         // P_CHUNKS
         if (E->pos + 8 > E->riffEnd) { E->phase = P_DONE; continue; }
-        if (av < 8) { E->st.waits++; return false; }
+        if (av < 8) return starved();
         const uint32_t id = r32(E->cur), size = r32(E->cur + 4), padded = size + (size & 1);
         if (id == fcc('L', 'I', 'S', 'T')) {
-            if (av < 12) { E->st.waits++; return false; }
+            if (av < 12) return starved();
             const uint32_t type = r32(E->cur + 8);
             if (type == fcc('h', 'd', 'r', 'l') || type == fcc('s', 't', 'r', 'l') || type == fcc('m', 'o', 'v', 'i') || type == fcc('r', 'e', 'c', ' ')) {
                 consume(12);                                 // descend: the members follow as plain chunks
                 continue;
             }
-            if (av < 8 + padded) { E->st.waits++; return false; }
+            if (av < 8 + padded) return starved();
             consume(8 + padded);                             // INFO etc.
             continue;
         }
@@ -334,8 +360,9 @@ bool videoStep() {
         const bool audio = (id == fcc('0', '1', 'w', 'b'));
         if (video && size) {
             if (size > E->mf->size - 8) { Debug::log("FT812: video frame of %u B does not fit the %u B media FIFO", (unsigned)size, (unsigned)E->mf->size); E->phase = P_DONE; continue; }
-            if (av < 8 + padded) { E->st.waits++; return false; }
-            const uint64_t now = E->clock ? E->clock() : 0;
+            if (av < 8 + padded) return starved();
+            unstarve();
+            const uint64_t now = mediaNow();
             if (!E->started) { E->startUs = now; E->started = true; }
             const uint64_t due = E->startUs + (uint64_t)E->frameIdx * E->usPerFrame;
             // not yet: the picture paces the stream. With a sink the frame may be
@@ -371,7 +398,7 @@ bool videoStep() {
             consume(8 + padded);
             return false;                                    // one frame per step
         }
-        if (av < 8 + padded) { E->st.waits++; return false; }
+        if (av < 8 + padded) return starved();
         if (video) { E->frameIdx++; }                        // an empty chunk repeats the previous frame
         else if (audio) pushAudio(E->cur + 8, size);
         else if (id == fcc('a', 'v', 'i', 'h') && size >= 40) {

@@ -57,7 +57,7 @@ constexpr uint32_t VFB_MAX   = 512u * 512u * 2u;  // largest frame we decode (51
 
 constexpr uint32_t OPT_FULLSCREEN = 8, OPT_NOTEAR = 4, OPT_MEDIAFIFO = 16, OPT_SOUND = 32;
 
-struct VideoStats { uint32_t frames, skipped, decodeUs, decodeMax, waits, audioBytes, audioDrop; };
+struct VideoStats { uint32_t frames, skipped, decodeUs, decodeMax, waits, audioBytes, audioDrop, stalls, stallMs; };
 
 // Start playing from `mf` (CMD_PLAYVIDEO). Screen size for OPT_FULLSCREEN.
 // `clock` paces the stream (guest time), `statClock` only times the decoder for
