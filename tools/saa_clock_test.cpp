@@ -8,10 +8,11 @@
  * this builds against COPIES next to stub headers:
  *
  *   D=$(mktemp -d)
- *   cp src/SAASound.h src/SAASound.cpp tools/saa_clock_test.cpp "$D"
- *   printf '#pragma once\n' > "$D"/hardconfig.h
- *   printf '#pragma once\n' > "$D"/Config.h
- *   printf '#pragma once\n#define ESP_AUDIO_SAMPLES_PENTAGON 640\n' > "$D"/ESPectrum.h
+ *   cp src/speccy/devices/sound/SAASound.h src/speccy/devices/sound/SAASound.cpp tools/saa_clock_test.cpp "$D"
+ *   mkdir -p "$D"/app
+ *   printf '#pragma once\n' > "$D"/app/hardconfig.h
+ *   printf '#pragma once\n' > "$D"/app/Config.h
+ *   printf '#pragma once\n#define ESP_AUDIO_SAMPLES_PENTAGON 640\n' > "$D"/app/ESPectrum.h
  *   g++ -O2 -DIRAM_ATTR= -I"$D" -o /tmp/saa_clock_test "$D"/saa_clock_test.cpp "$D"/SAASound.cpp
  *   /tmp/saa_clock_test
  *
@@ -22,7 +23,7 @@
 #include <string.h>
 #include <math.h>
 
-#include "SAASound.h"
+#include "SAASound.h"          // the copy next to this file (see the recipe)
 
 #define RATE 31250
 

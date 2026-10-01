@@ -7,7 +7,7 @@ with the magic-shift read inlined at 0x00F0 and no RST 0x18 stream unpacker at
 0x0178 — the offsets below are v5.00's (MAME gmx13500.rom, CRC32 47C9DF88), which
 is no longer in the tree. Kept because the boot chain documented in CLAUDE.md was
 read with it, and because the file is the record of that format; point it at a
-v5.00 dump, not at src/roms/scorpion/src/profrom_gmx_v5s.bin.
+v5.00 dump, not at src/speccy/roms/scorpion/src/profrom_gmx_v5s.bin.
 
 The v5.00 GMX loader ("MLoader") is a bit-stream LZ77 packer whose unpacker lives at
 ROM 0x0178 (reached via RST 0x18 with HL = stream, DE = destination). Streams are

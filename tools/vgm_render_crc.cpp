@@ -6,7 +6,7 @@
  *
  * Build:
  *   g++ -O2 -Wall -Isrc -o /tmp/vgm_render_crc tools/vgm_render_crc.cpp \
- *       src/OplFm.cpp src/OpllFm.cpp src/FmTables.cpp -lz
+ *       src/speccy/devices/sound/OplFm.cpp src/speccy/devices/sound/OpllFm.cpp src/speccy/devices/sound/FmTables.cpp -lz
  * Run:
  *   /tmp/vgm_render_crc file.vgm [file2.vgz ...]
  *
@@ -27,8 +27,8 @@
 #include <vector>
 #include <string>
 
-#include "OplFm.h"
-#include "OpllFm.h"
+#include "speccy/devices/sound/OplFm.h"
+#include "speccy/devices/sound/OpllFm.h"
 
 #define RATE 31250
 

@@ -1,7 +1,7 @@
 /*
- * snsound_test.cpp — host-side validation for src/SnSound.cpp (2 x SN76489).
+ * snsound_test.cpp — host-side validation for src/speccy/devices/sound/SnSound.cpp (2 x SN76489).
  *
- *   g++ -O2 -Isrc -o /tmp/snsound_test tools/snsound_test.cpp src/SnSound.cpp && /tmp/snsound_test
+ *   g++ -O2 -Isrc -o /tmp/snsound_test tools/snsound_test.cpp src/speccy/devices/sound/SnSound.cpp && /tmp/snsound_test
  *
  * Checks: tone frequency, attenuation off = silence, PCM mode (period 0 ->
  * constant DC following the volume register), white vs periodic noise, the
@@ -13,7 +13,7 @@
 #include <string.h>
 #include <math.h>
 
-#include "SnSound.h"
+#include "speccy/devices/sound/SnSound.h"
 
 #define RATE 31250
 

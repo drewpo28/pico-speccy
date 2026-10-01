@@ -17,7 +17,7 @@ file goes away.
   `ON`, HDMI_HSTX=1), `TMDS` (HDMI_HSTX=2), `AUTO` = TMDS on PICO_PC, RAW on MURM2.
   Image names: `PCp2-speccy-VGA-HDMI-HSTX-<v>` for TMDS, `...-HSTX-RAW-<v>` for raw.
   What it is, file by file:
-  - `drivers/hdmi/hdmi_tmds_line.h` — the line as a command list (`RAW_REPEAT | n` +
+  - `src/drivers/hdmi/hdmi_tmds_line.h` — the line as a command list (`RAW_REPEAT | n` +
     word for sync/porches/preambles/guards, `RAW | 36` + guards + 32 TERC4 characters
     for the island, `TMDS | active` + one XRGB8888 word per output pixel), builders
     for active / blanking / static-scanline lines, and a playback model.
@@ -86,7 +86,7 @@ file goes away.
     now (`[TSV] ts256 remap: N palette banks x M slots`).
 
 - **Steps 0 and 1 are DONE (2026-09-17; committed in ef4ec4d).**
-  - `drivers/hdmi/hdmi_word.h` — the board pin/lane map, both back-ends' packers,
+  - `src/drivers/hdmi/hdmi_word.h` — the board pin/lane map, both back-ends' packers,
     `hdmi_word_t` and the slot-index macros. `HDMI_HSTX` selects a 32-bit raw word
     over the 64-bit differential one; **the 16-byte palette slot does not move**
     (the PIO converter's `(byte << 4)` fixes it), so a slot is indexed through
@@ -106,8 +106,8 @@ file goes away.
     stream on all 8 pins over all 10 bit-times. **18 hand-applied mutations each
     make it fail.**
 
-        gcc -O2 -Wall -Wextra                -Idrivers/hdmi -o /tmp/t0 tools/hdmi_hstx_test.c && /tmp/t0
-        gcc -O2 -Wall -Wextra -DHDMI_HSTX=1  -Idrivers/hdmi -o /tmp/t1 tools/hdmi_hstx_test.c && /tmp/t1
+        gcc -O2 -Wall -Wextra                -Isrc/drivers/hdmi -o /tmp/t0 tools/hdmi_hstx_test.c && /tmp/t0
+        gcc -O2 -Wall -Wextra -DHDMI_HSTX=1  -Isrc/drivers/hdmi -o /tmp/t1 tools/hdmi_hstx_test.c && /tmp/t1
 
   - PIO builds are unchanged: `hdmi.c`'s object is 10 B smaller, `.bss`/`.data`
     identical, and the PCp2 firmware links at the same 2459268 B as before. It also
@@ -115,7 +115,7 @@ file goes away.
   - The `bit[]` table the test prints is what step 2 programs, verbatim.
 - **Step 2 (the HDMI back-end) and step 4 (the build wiring) are DONE (2026-09-17;
   committed in ef4ec4d / 305f090).**
-  - `drivers/hdmi/hdmi_hstx.{h,c}` — `clk_hstx` at an integer divider, the CSR
+  - `src/drivers/hdmi/hdmi_hstx.{h,c}` — `clk_hstx` at an integer divider, the CSR
     (raw mode: no command expander, one word per pixel, ten bits per lane two at a
     time), the eight `bit[]` entries **built by the same `hdmi_hstx_bits()` the host
     test checks**, and the pads. Every HSTX register name stays in that file;
@@ -148,7 +148,7 @@ file goes away.
     byte-for-byte the numbers it had before any of this, and the HSTX image carries
     no reference to the TMDS PIO program at all.
 - **Step 3, first half (the PWM layer) is DONE (2026-09-17); the vga.c wiring is
-  not.** `drivers/vga-nextgen/vga_pwm.h` + `tools/vga_pwm_test.c`: 8-bit channel ->
+  not.** `src/drivers/vga-nextgen/vga_pwm.h` + `tools/vga_pwm_test.c`: 8-bit channel ->
   nearest of 13 levels -> four 2-bit sub-samples spread 0,2,1,3 -> the 32-bit word
   (`p0 | p1<<8 | p2<<16 | p3<<24`), the pad map, and the clock helpers. **792 checks,
   0 failures; 12 mutations each make it fail.** Worst quantisation 11/255, which is
@@ -275,7 +275,7 @@ reaches 19.96 MHz today (badly: see the truncation section below).
 times the pixel clock, four bytes per output pixel in the line buffer, and the same
 13 levels per channel: no clock constraint at all, works on every board including the
 ones whose display is on GPIO 6 or 32, and entirely independent of HSTX.
-`drivers/vga-nextgen/vga_pwm.h` and its 792-check test stay valid as they are — the
+`src/drivers/vga-nextgen/vga_pwm.h` and its 792-check test stay valid as they are — the
 level and phase construction is transport-independent; only the packing changes from
 one 32-bit HSTX word to four consecutive bytes. Cost is the same +12 KB of line
 buffers and 4x the VGA DMA (20 -> 80 MB/s), and it wants its own hardware run.
@@ -364,7 +364,7 @@ NVS string (`auto`/`vga`/`hdmi`); the jumper decides in practice.
 
 ## What the two drivers cost today
 
-**HDMI** (`drivers/hdmi/hdmi.c`): 2 PIO SMs + 18 instructions on pio2.
+**HDMI** (`src/drivers/hdmi/hdmi.c`): 2 PIO SMs + 18 instructions on pio2.
 
 ```
 ISR (core1) writes a line of 400 palette-index BYTES (= 800 output pixels),
@@ -380,7 +380,7 @@ already turned into 6-bit-per-cycle **differential** words by `get_ser_diff_data
 Cost: 16 B per index, 4 DMA words per index = **50.4 M transfers/s ~ 201 MB/s**.
 PIO clock = the TMDS bit rate, 252 MHz, `pio_clk_div = sys/252` (1.0 / 1.5 / 2.0).
 
-**VGA** (`drivers/vga-nextgen/vga.c`): 1 PIO SM, **1 instruction** (`out pins, 8`),
+**VGA** (`src/drivers/vga-nextgen/vga.c`): 1 PIO SM, **1 instruction** (`out pins, 8`),
 2 DMA channels. The ISR applies the palette **on the CPU**, one lookup per source
 pixel, into `lines_pattern` line buffers of `uint16` pairs (2 output pixels per index,
 `vga_pack_pair`). 1 byte per output pixel, ~800 B per line, **~20 MB/s**.

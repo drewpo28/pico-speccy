@@ -1,5 +1,9 @@
 #pragma GCC optimize("Ofast")
 
+#include "sdcard.h"   // sdcard_reclock()
+#include "drivers/sound/PinSerialData_595.h"   // ay595_reclock()
+#include "speccy/devices/sound/OplFm.h"
+#include "speccy/devices/sound/OpllFm.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -25,37 +29,37 @@
 #include <hardware/regs/pads_qspi.h>   // SD2/SD3 pull-ups (flash QE fix window)
 #include <hardware/structs/pads_qspi.h>
 
-#include "ESPectrum.h"
-#include "MidiSynth.h"
-#include "Config.h"
-#include "BoardPins.h"
-#include "WifiNet.h"
-#include "FileUtils.h"
-#include "GS/GS.h"
-#include "MemESP.h"
-#include "ZxEvoAvr.h"
-#include "ChipPackage.h"
-#include "pwm_audio.h"
-#include "messages.h"
+#include "app/ESPectrum.h"
+#include "speccy/devices/sound/MidiSynth.h"
+#include "app/Config.h"
+#include "drivers/board/BoardPins.h"
+#include "net/WifiNet.h"
+#include "fs/FileUtils.h"
+#include "speccy/devices/gs/GS.h"
+#include "speccy/core/MemESP.h"
+#include "speccy/machines/TsConf/ZxEvoAvr.h"
+#include "drivers/board/ChipPackage.h"
+#include "drivers/sound/pwm_audio.h"
+#include "app/messages.h"
 
-#include "graphics.h"
+#include "drivers/graphics/graphics.h"
 
-#include "audio.h"
-#include "ff.h"
-#include "psram_spi.h"
-#include "Debug.h"
-#include "Buffer.h"
-#include "TryAlloc.h"
+#include "drivers/audio/audio.h"
+#include "fatfs/ff.h"
+#include "drivers/psram/psram_spi.h"
+#include "app/Debug.h"
+#include "app/Buffer.h"
+#include "app/TryAlloc.h"
 #if defined(KBD_ALT_CLOCK_PIN) && defined(PCM5122_I2C_SDA)
-    #include "pcm5122_init.h"
+    #include "drivers/audio/pcm5122_init.h"
 #endif
 #ifdef KBDUSB
-    #include "ps2kbd_mrmltr.h"
+    #include "drivers/ps2kbd/ps2kbd_mrmltr.h"
     #if defined(ZERO2_PIO_USB_HOST)
         // PICOSPECCY_ZERO2_PIO_USB_HOST_V1: host on the second Type-C (J2), D+=GP28 / D-=GP29.
         #include "hardware/dma.h"
         #include "pio_usb.h"
-        #include "usb_hcd_router.h"   // rhport constants + the two drivers' entry points
+        #include "drivers/usbhost/usb_hcd_router.h"   // rhport constants + the two drivers' entry points
         // Both PICO-SPEC PATCH additions in external/Pico-PIO-USB (pio_usb_host.c /
         // pio_usb.c). Declared here rather than via pio_usb_ll.h, which is not C++-clean.
         extern "C" void pio_usb_host_reclock(void);
@@ -65,11 +69,11 @@
         extern "C" uint32_t pio_usb_bulk_extra_xacts;
     #endif
 #else
-    #include "ps2.h"
+    #include "drivers/ps2/ps2.h"
 #endif
 
 #if USE_NESPAD
-#include "nespad.h"
+#include "drivers/nespad/nespad.h"
 #endif
 
 #define HOME_DIR (char*)"\\SPEC"
@@ -82,7 +86,7 @@ struct semaphore vga_start_semaphore;
 #if SOFTTV || PICOSPECCY_WIFI
 struct semaphore graphics_init_done_semaphore;
 #endif
-#include "Video.h"
+#include "speccy/video/Video.h"
 
 struct input_bits_t {
     bool a: true;
@@ -114,7 +118,7 @@ uint8_t nes_pad2_for_alf(void) {
 #define DISP_WIDTH 320
 #define DISP_HEIGHT 240
 
-#include "fabutils.h"
+#include "drivers/input/fabutils.h"
 void repeat_handler(void);
 #ifdef KBDUSB
 // hid_app.cpp: re-arms HID IN endpoints that lost their arm (a refused
@@ -397,7 +401,7 @@ extern "C" bool handleScancode(const uint32_t ps2scancode) {
 static uint32_t nespad_prev_state = 0;
 static bool nespad_active = false; // false until nespad_begin(); stays false if yielded to ZiFi
 #if PICOSPECCY_WIFI
-// C-callable shim for drivers/nespad (see BoardPins::auxPio): the pad's PIO block
+// C-callable shim for src/drivers/nespad (see BoardPins::auxPio): the pad's PIO block
 // follows the live video output on the W boards.
 extern "C" PIO board_aux_pio(void) { return BoardPins::auxPio(); }
 #endif
@@ -1097,10 +1101,10 @@ void __scratch_x("render") render_core() {
         // per frame, GS at 9.6 of 20 MHz — music at half tempo — while core0
         // idled 7.5 ms (hw 2026-09-07).
         // GS::enabled leads, and not only as an optimisation: GS::pump() and
-        // GS::hostActive() both live in the GS code overlay (src/CodeOverlay.h),
+        // GS::hostActive() both live in the GS code overlay (src/app/CodeOverlay.h),
         // whose SRAM belongs to the heap on a session that came up with General
         // Sound = Off, so calling either there would be a jump into heap data.
-        // This is the ONLY GS entry point outside src/GS/ that was not already
+        // This is the ONLY GS entry point outside src/speccy/devices/gs/ that was not already
         // behind GS::enabled / GS::neogs / g_ngs_zxdma.
         if (GS::enabled && (!g_ts_c1_live || !ts_render_core1_prio() || GS::hostActive())) GS::pump();
 #endif
@@ -1884,7 +1888,7 @@ int main() {
 #ifdef KBDUSB
     #if defined(ZERO2_PIO_USB_HOST)
     // Both ports: the native controller (rhport 0, first Type-C) AND the PIO one
-    // (rhport 1, J2). src/usb_hcd_router.c dispatches hcd_* between the two drivers.
+    // (rhport 1, J2). src/drivers/usbhost/usb_hcd_router.c dispatches hcd_* between the two drivers.
     tuh_init(PICOSPEC_RHPORT_NATIVE);
     // PICOSPECCY_ZERO2_PIO_USB_HOST_V1: same point in the boot as the native tuh_init(), deliberately — the
     // USB-stick-as-root fallback (FileUtils::initFileSystem) and the CDC/ZiFi
@@ -2108,6 +2112,23 @@ int main() {
 #endif
             // Reinit audio: I2S PIO divider was calculated for old sys_clk
             pcm_setup(ESPectrum::Audio_freq);
+            // Everything else whose divider was derived from the BOOT clock (CPU_MHZ)
+            // in setup(): without these the SD card's PIO SCK, the AY clock pin, the
+            // PS/2 and NESPAD state machines all run scaled by new/old clk_sys.
+            sdcard_reclock();
+            ay595_reclock();
+#ifdef KBDUSB
+            ps2kbd.reclock();
+#endif
+#if USE_NESPAD
+            if (nespad_active) nespad_reclock(clock_get_hz(clk_sys) / 1000);
+#endif
+            // OPL3/OPLL pick half-rate synthesis below 450 MHz, decided in setup().
+            {
+                const bool half = clock_get_hz(clk_sys) < 450000000u;
+                if (oplfm)  { oplfm->setRates(OPL3_YMF262_CLOCK, ESPectrum::Audio_freq, half);  oplfm->reset(); }
+                if (opllfm) { opllfm->setRates(OPLL_YM2413_CLOCK, ESPectrum::Audio_freq, half); opllfm->reset(); }
+            }
 #if defined(KBDUSB) && defined(ZERO2_PIO_USB_HOST)
             // PICOSPECCY_ZERO2_PIO_USB_HOST_V1: same story for the PIO-USB bus dividers — pio_usb_host_init()
             // derived them from the boot clock at tuh_init() time.

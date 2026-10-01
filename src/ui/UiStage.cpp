@@ -9,44 +9,44 @@
 #include "UiStage.h"
 #include "UiModel.h"
 #include "UiGfx.h"
-#include "Config.h"
-#include "TsConf.h"
-#include "SnSound.h"
-#include "CPU.h"
-#include "Video.h"
-#include "ESPectrum.h"
+#include "app/Config.h"
+#include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/devices/sound/SnSound.h"
+#include "speccy/z80/CPU.h"
+#include "speccy/video/Video.h"
+#include "app/ESPectrum.h"
 #include "LEDIndicators.h"
-#include "sdcard.h"
-#include "MemESP.h"
-#include "wd1793.h"
-#include "roms.h"
-#include "pwm_audio.h"
-#include "Tape.h"       // Tape::Stop for the Real sound input hook
-#include "MachineSwitch.h"
-#include "DivMMC.h"
-#include "MB02.h"
-#include "Plus3Fdc.h"
-#include "IDE.h"
-#include "Ports.h"
-#include "Debug.h"
-#include "GS/GS.h"
-#include "ZiFi.h"
-#include "ZiFiAT.h"
-#include "BoardPins.h"
-#include "Midi.h"
-#include "MidiSynth.h"
-#include "FlashRoms.h"  // romsUsable() for the GMX / TS-Conf constraints
-#include "messages.h"   // _PIN_XSTR for the MIDI/WAV shared-pin note
+#include "drivers/sdcard/sdcard.h"
+#include "speccy/core/MemESP.h"
+#include "speccy/devices/disk/wd1793.h"
+#include "speccy/core/roms.h"
+#include "drivers/sound/pwm_audio.h"
+#include "speccy/devices/tape/Tape.h"       // Tape::Stop for the Real sound input hook
+#include "app/MachineSwitch.h"
+#include "speccy/devices/storage/DivMMC.h"
+#include "speccy/devices/disk/MB02.h"
+#include "speccy/machines/Plus3/Plus3Fdc.h"
+#include "speccy/devices/storage/IDE.h"
+#include "speccy/core/Ports.h"
+#include "app/Debug.h"
+#include "speccy/devices/gs/GS.h"
+#include "speccy/devices/zifi/ZiFi.h"
+#include "net/ZiFiAT.h"
+#include "drivers/board/BoardPins.h"
+#include "speccy/devices/sound/Midi.h"
+#include "speccy/devices/sound/MidiSynth.h"
+#include "app/FlashRoms.h"  // romsUsable() for the GMX / TS-Conf constraints
+#include "app/messages.h"   // _PIN_XSTR for the MIDI/WAV shared-pin note
 #include "UiDialog.h"   // the transport hook asks its reboot question itself
 #include "UiStrings.h"
 #include "UiActions.h"  // netStatusInvalidate
 #include "OSDMain.h"    // OSD::esp_hard_reset for the transport reboot
 
-#include "graphics.h"   // graphics_set_scanlines / graphics_set_dither
-#include "Z80_JLS/z80.h"              // must precede z80operations.h (RegisterPair)
-#include "Z80_JLS/z80operations.h"   // Z80Ops::isProfi / isPentagon for the constraints
+#include "drivers/graphics/graphics.h"   // graphics_set_scanlines / graphics_set_dither
+#include "speccy/z80/z80.h"              // must precede z80operations.h (RegisterPair)
+#include "speccy/z80/z80operations.h"   // Z80Ops::isProfi / isPentagon for the constraints
 
-// Defined in drivers/vga-nextgen/vga.c and already declared (C++ linkage) inside
+// Defined in src/drivers/vga-nextgen/vga.c and already declared (C++ linkage) inside
 // VIDEO::activeVideoMode(); re-stated here at FILE scope because inside namespace nm it
 // would resolve to nm::SELECT_VGA and fail to link.
 extern bool SELECT_VGA;
@@ -70,6 +70,7 @@ NM_INT_ACCESS (aluTiming, AluTiming)
 NM_BOOL_ACCESS(issue2,    Issue2)
 NM_INT_ACCESS (throtling, throtling)
 NM_BOOL_ACCESS(ledInd,    ledIndicators)
+NM_BOOL_ACCESS(ledPanel,  led_panel)
 NM_BOOL_ACCESS(sdLed,     sdLedBlink)
 NM_BOOL_ACCESS(rtc,       rtc_enabled)
 NM_INT_ACCESS (mouseSens, mouse_sens)
@@ -174,6 +175,7 @@ static int32_t get_gsRam()          { return Config::gs_ram_size >= 3 ? 3 : (Con
 static void    put_gsRam(int32_t v) { Config::gs_ram_size = (uint8_t)v; }
 NM_BOOL_ACCESS(cobmect,   byte_cobmect_mode)
 NM_BOOL_ACCESS(paper,     render_paper)
+NM_BOOL_ACCESS(border, render_border)
 
 // ── TFT panel (ST7789 / ILI9341 builds) ────────────────────────────────────────
 // Not Config fields: the driver owns TFT_INVERSION and the MADCTL byte TFT_FLAGS, and
@@ -186,7 +188,7 @@ NM_BOOL_ACCESS(paper,     render_paper)
 // and part of the driver's own default), which is what makes "Defaults" restore a
 // usable orientation without exposing a row nobody should turn off.
 #if TFT
-#include "st7789.h"     // TFT_FLAGS / TFT_INVERSION + the MADCTL_* bit names
+#include "drivers/st7789/st7789.h"     // TFT_FLAGS / TFT_INVERSION + the MADCTL_* bit names
 
 static inline void tftFlagBit(uint8_t bit, bool on) {
     TFT_FLAGS = (uint8_t)((on ? (TFT_FLAGS | bit) : (TFT_FLAGS & ~bit))
@@ -275,21 +277,15 @@ static const RomsetIdx kPref128[]  = {
     R_128K_ES, R_PLUS2, R_PLUS2_ES, R_ZX81P,
 #endif
     R_P3, R_P3E,
-#if PLUS3DIV_IN_FLASH
     R_P3DIV,
-#endif
     R_128K_CS, R_LAST };
 // Pentagon-class preferences offer Original / Custom / Last only — the classic menu has
 // no way to pin 128Kpg either (MENU_ROM_PREF_PENT). Kept as is.
 static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
-// 1024 and ProfROM sit BEFORE the conditional GMX entry so opt_pref_scorp's
-// indices (UiTree.cpp) are identical on both build variants.
-#if GMX_IN_FLASH
+// 1024 and ProfROM sit BEFORE GMX so opt_pref_scorp's indices (UiTree.cpp) do not
+// move when GMX is hidden at runtime (no QSPI PSRAM, or its ROM traded away).
 static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_PROF,
                                         R_SCORP_GMX, R_LAST };
-#else
-static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_PROF, R_LAST };
-#endif
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
 NM_STR_ACCESS(pref48,   pref_romSet_48,   kPref48)
@@ -449,6 +445,21 @@ static bool hook_vgaDither(int32_t, int32_t) {
     VIDEO::tsCramDirty = true;
     return true;
 }
+// Video > VGA > PWM phase: rotate every pixel's four sub-samples so the point a
+// non-integrating monitor samples lands on a different phase (see Config.h).
+#if defined(VGA_HDMI)
+extern "C" void vga_set_pwm_phase(int n);
+#endif
+static int32_t get_vgaPwmPhase()          { return Config::vga_pwm_phase; }
+static void    put_vgaPwmPhase(int32_t v) { Config::vga_pwm_phase = (uint8_t)(v & 3); }
+static bool hook_vgaPwmPhase(int32_t nv, int32_t) {
+#if defined(VGA_HDMI)
+    vga_set_pwm_phase((int)nv);
+#else
+    (void)nv;
+#endif
+    return true;
+}
 static bool hook_dither(int32_t nv, int32_t) {
     // Only has an effect while ULA+ is active; the HDMI ISR OR-masks indices 0..63
     // with 0x40 to sample palette[64..127].
@@ -524,6 +535,9 @@ static bool hook_trdosRom(int32_t nv, int32_t) {
     // 5.03 / 5.04TM / 5.05D / 6.11e are read-only overlays over the 5.04T base applied
     // on the fly by MemESP (RomOverlay.h), so this binds immediately on every board —
     // no reboot. Keep in step with the same switch in Config::requestMachine.
+    // Not while the machine keeps its OWN TR-DOS on that base (GMX / ProfROM / KAY):
+    // the pick is saved and binds at the next machine switch (Config::requestMachine).
+    if (Config::trdosBaseOwnedByMachine()) return true;
     const uint8_t* base = gb_rom_4_trdos_504t;
     const uint8_t* ov   = gb_overlay_trdos_505d;
     switch (nv) {
@@ -667,7 +681,12 @@ static bool hook_ideScheme(int32_t, int32_t) {
     return true;
 }
 static bool hook_joyType(int32_t nv, int32_t) {
-    Config::setJoyMap((uint8_t)nv);     // each type carries its own key map
+    // Each type has its own default map. Declining keeps the map as it is — the
+    // pad controls mean the same thing on every type, so an edited map carries over.
+    if (uiConfirm(OSD_DLG_SETJOYMAPDEFAULTS, TXT_JOY_TYPE, /*default_yes=*/true)) {
+        Config::joyDefaults((uint8_t)nv, Config::joydef);
+        Config::save();
+    }
     return true;
 }
 static bool hook_tabFire(int32_t nv, int32_t) {
@@ -917,6 +936,7 @@ static bool stagedIsPlus3Div() {
     return Config::isPlus3Div();
 }
 static bool stagedIsTsconf() { return stagedArchIs(A_TSCONF); }
+static bool stagedIsAtm()    { return stagedArchIs(A_ATM); }
 static bool stagedIsTimex() {
     const int32_t m = staged(SET_MACHINE);
     if (m >= 0) return isTimexRomset((RomsetIdx)(m & 0xFF));
@@ -1005,6 +1025,35 @@ static void resolveConstraints(CommitReport& rep) {
             // (GS::configuredRamBytes enforces it live; this keeps the menu honest).
             if (staged(SET_GS_MODE) == 2 && staged(SET_GS_RAM) >= 3)
                 changed |= force(SET_GS_RAM, 2, rep, "NeoGS RAM: 2 MB max on TS-Conf");
+        }
+
+        // ATM-Turbo: the memory manager rewires page 0 (MB-02+/esxDOS automap
+        // would fight it), #FF is the Beta SYS register / ATM2 palette port
+        // (Timex), and the frame is the plain 48K one (Murmuzavr is Pentagon-only).
+        // The IDE scheme follows the board: ATM2+ owns IDE::ATM, the ATM1 and ATM2 have none;
+        // the ATM3 takes ATM or a NEMO card (NedoOS for ATM3 is built with NEMOIDE=1).
+        if (stagedIsAtm()) {
+            const bool noIde = !atmHasIde((RomsetIdx)(staged(SET_MACHINE) & 0xFF));
+            if (staged(SET_TIMEX) != 0)
+                changed |= force(SET_TIMEX, 0, rep, "Timex is not available on ATM-Turbo");
+            if (staged(SET_MB02))
+                changed |= force(SET_MB02, 0, rep, "MB-02+ is not available on ATM-Turbo");
+            if (staged(SET_ESXDOS))
+                changed |= force(SET_ESXDOS, 0, rep, "esxDOS is not available on ATM-Turbo");
+            if (staged(SET_16COL))
+                changed |= force(SET_16COL, 0, rep, "16col needs Pentagon or Profi");
+            if (staged(SET_MEM_PG_CNT) > 64)
+                changed |= force(SET_MEM_PG_CNT, 64, rep, "Murmuzavr mode off: Pentagon only");
+            if (!staged(SET_BETADISK))
+                changed |= force(SET_BETADISK, 1, rep, "Betadisk is part of ATM-Turbo");
+            const int32_t sch = staged(SET_IDE_SCHEME);
+            if (noIde && sch == IDE::ATM)
+                changed |= force(SET_IDE_SCHEME, 0, rep, "This ATM-Turbo has no IDE");
+            else if (!noIde && sch != 0 && sch != IDE::ATM &&
+                     !(isAtm3Romset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)) && sch == IDE::NEMO))
+                changed |= force(SET_IDE_SCHEME, IDE::ATM, rep, "IDE: ATM-Turbo controller");
+        } else if (staged(SET_IDE_SCHEME) == IDE::ATM) {
+            changed |= force(SET_IDE_SCHEME, 0, rep, "ATM IDE needs an ATM-Turbo 2+");
         }
 
         // Port #FF on Profi/Karabas is the FDC SYS register (Beta scheme), the
@@ -1279,6 +1328,9 @@ static void resolveConstraints(CommitReport& rep) {
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_TSCONF)
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
                                  rep, "TS-Conf ROM traded for the GM.DLS bank");
+            if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_ATM)
+                changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
+                                 rep, "ATM ROM traded for the GM.DLS bank");
         }
 
         if (!changed) return;

@@ -1,4 +1,4 @@
-// Host test for src/TsDram.h — the TS-Conf DMA duration arithmetic (DRAM cycles,
+// Host test for src/speccy/machines/TsConf/TsDram.h — the TS-Conf DMA duration arithmetic (DRAM cycles,
 // video fetcher share, frame wrap, clock scaling). Builds against the shipped header:
 //   g++ -O2 -Wall -Wextra -Isrc -o /tmp/tsdram_test tools/tsdram_test.cpp && /tmp/tsdram_test
 // Re-run after any change to TsDram.h. The Bomberman Evolution numbers are the
@@ -6,7 +6,7 @@
 // (see the DRAM model section in CLAUDE.md).
 #include <cstdio>
 #include <cstdint>
-#include "TsDram.h"
+#include "speccy/machines/TsConf/TsDram.h"
 
 static int fails = 0;
 static void check(const char* what, double got, double lo, double hi) {

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # rom_verify.py — prove that what the firmware ships still resolves to the ROMs it
-# claims to be. Self-contained: it reads the GENERATED C arrays out of src/roms/ and
+# claims to be. Self-contained: it reads the GENERATED C arrays out of src/speccy/roms/ and
 # compares them against the .bin dumps in the matching src/ directories.
 #
 # Why this exists: rom_pack.py stores most ROM variants as run-list overlays over ONE
@@ -17,7 +17,7 @@ import os, re, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from rom_pack import load_rom, apply_overlay
 
-R = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'roms')
+R = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'src', 'speccy', 'roms')
 def arr(rel, sym): return bytes(load_rom(os.path.join(R, rel), sym))
 def dump(rel):     return open(os.path.join(R, rel), 'rb').read()
 
@@ -180,6 +180,49 @@ for img, pages in sets.items():
         want += dump(rel)
     want[0x1183] = ord('1')
     check(img, b''.join(pages), bytes(want))
+
+# ATM-Turbo 1 / 2+: every page reassembled through the generated page tables in
+# atm_banks.h (base nullptr = the all-0xFF page), exactly as Atm::bindRoms()
+# flattens them, and compared with the three owner-supplied images.
+print("ATM-Turbo BIOS sets (flattened through atm_banks.h):")
+atm_h = open(os.path.join(R, 'atm/atm_banks.h')).read()
+def atm_sym(sym):
+    if sym == 'nullptr': return b'\xff' * 16384
+    for rel in ('atm/atm_roms.c',):
+        try: return arr(rel, sym)
+        except SystemExit: pass
+    return {'gb_rom_4_trdos_504t': base_trdos, 'gb_rom_0_pentagon_128k': base_pent,
+            'gb_rom_1_sinclair_128k': s128_1, 'gb_rom_0_sinclair_48k': s48}[sym]
+for tag, src, crc in (('atm1', 'atm1_104rs.bin', 'A9BBF1C1'),
+                      ('atm2v106', 'atm2_10602.bin', 'D797436A'),
+                      ('atm2', 'atm2_10713.bin', '34A91D53'),
+                      ('atm2x', 'atm2_xbios137.bin', 'E5EF44D9'),
+                      ('atm3', 'atm3_test_xbios137.bin', '024411F9'),
+                      ('atm3v107', 'atm3_10713ec.bin', 'FB547227')):
+    body = atm_h.split('gb_rom_%s_pages[' % tag, 1)[1].split('};', 1)[0]
+    rows = re.findall(r'\{ (\w+), (\w+) \}', body)
+    img = b''.join(atm_sym(b) if o == 'nullptr' else apply_overlay(atm_sym(b), arr('atm/atm_roms.c', o))
+                   for b, o in rows)
+    check('ATM %s image' % tag, img, dump('atm/src/' + src))
+    check('ATM %s CRC32' % tag, '%08X' % (zlib.crc32(img) & 0xffffffff), crc)
+
+# Nemo KAY: every romset's four roles reassembled through kay_banks.h (base +
+# overlay, exactly what MemESP::romPeek resolves) against the source images, in
+# the role order each romset names in rom_pack.py KAY_ROMSETS.
+print("Nemo KAY romsets (through kay_banks.h):")
+kay_h = open(os.path.join(R, 'kay/kay_banks.h')).read()
+def kay_sym(sym):
+    try: return arr('kay/kay_roms.c', sym)
+    except SystemExit: pass
+    return {'gb_rom_4_trdos_504t': base_trdos, 'gb_rom_0_pentagon_128k': base_pent,
+            'gb_rom_1_sinclair_128k': s128_1}[sym]
+from rom_pack import KAY_ROMSETS
+for tag, roles in KAY_ROMSETS:
+    body = kay_h.split('gb_rom_%s_banks[' % tag, 1)[1].split('};', 1)[0]
+    rows = re.findall(r'\{ (\w+), (\w+) \}', body)
+    for ri, ((b, o), (f, i)) in enumerate(zip(rows, roles)):
+        got = kay_sym(b) if o == 'nullptr' else apply_overlay(kay_sym(b), arr('kay/kay_roms.c', o))
+        check('KAY %s role %d' % (tag, ri), got, dump('kay/src/' + f)[i * 16384:(i + 1) * 16384])
 
 print("\n%s" % ("FAILED: " + ", ".join(fails) if fails else "all ROM images verified"))
 sys.exit(1 if fails else 0)

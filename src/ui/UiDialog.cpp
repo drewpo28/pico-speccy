@@ -11,10 +11,10 @@
 #include "UiRender.h"   // SYM_* glyph names
 #include "UiFont.h"
 #include "OSDMain.h"
-#include "ESPectrum.h"
-#include "Video.h"
-#include "Debug.h"
-#include "fabutils.h"
+#include "app/ESPectrum.h"
+#include "speccy/video/Video.h"
+#include "app/Debug.h"
+#include "drivers/input/fabutils.h"
 #include <pico/stdlib.h>
 
 using std::string;

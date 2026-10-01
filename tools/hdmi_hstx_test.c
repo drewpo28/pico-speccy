@@ -3,9 +3,9 @@
 // two ORACLES (the current get_ser_diff_data / hdmi_ser_one_arg bodies), which
 // exist precisely so a refactor of them can be caught.
 //
-//   gcc -O2 -Wall -Wextra -Idrivers/hdmi -o /tmp/hdmi_hstx_test tools/hdmi_hstx_test.c
+//   gcc -O2 -Wall -Wextra -Isrc/drivers/hdmi -o /tmp/hdmi_hstx_test tools/hdmi_hstx_test.c
 //   /tmp/hdmi_hstx_test
-//   gcc -O2 -Wall -Wextra -DHDMI_HSTX=1 -Idrivers/hdmi -o /tmp/hdmi_hstx_test1 tools/hdmi_hstx_test.c
+//   gcc -O2 -Wall -Wextra -DHDMI_HSTX=1 -Isrc/drivers/hdmi -o /tmp/hdmi_hstx_test1 tools/hdmi_hstx_test.c
 //   /tmp/hdmi_hstx_test1
 //
 // BOTH invocations matter: the second is the only thing that checks the palette
@@ -52,7 +52,7 @@ static long checks  = 0;
     failures++; } while (0)
 
 // ---------------------------------------------------------------------------
-// Oracles: the bodies that are in drivers/hdmi/hdmi.c today, with the three
+// Oracles: the bodies that are in src/drivers/hdmi/hdmi.c today, with the three
 // compile-time board choices (#ifdef PICO_PC, HDMI_PIN_invert_diffpairs,
 // HDMI_PIN_RGB_notBGR) turned into arguments so one copy covers every board.
 // ---------------------------------------------------------------------------

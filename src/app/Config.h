@@ -1,0 +1,667 @@
+/*
+
+ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
+
+Copyright (c) 2023, 2024 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
+https://github.com/EremusOne/ZX-ESPectrum-IDF
+
+Based on ZX-ESPectrum-Wiimote
+Copyright (c) 2020, 2022 David Crespo [dcrespo3d]
+https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote
+
+Based on previous work by Ramón Martinez and Jorge Fuertes
+https://github.com/rampa069/ZX-ESPectrum
+
+Original project by Pete Todd
+https://github.com/retrogubbins/paseVGA
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+To Contact the dev team you can write to zxespectrum@gmail.com or 
+visit https://zxespectrum.speccy.org/contacto
+
+*/
+
+#ifndef Config_h
+#define Config_h
+
+#include <stdio.h>
+#include <inttypes.h>
+#include <string>
+#include "speccy/core/ArchRom.h"
+#include "Debug.h"
+
+uint32_t butter_psram_size();   // MemESP.h / main.cpp — used by wantedPages()
+
+using namespace std;
+
+#define JOY_CURSOR 0
+#define JOY_KEMPSTON 1
+#define JOY_SINCLAIR1 2
+#define JOY_SINCLAIR2 3
+#define JOY_FULLER 4
+#define JOY_CUSTOM 5
+#define JOY_NONE 6
+
+class Config
+{
+public:
+
+    static void load();           // load main settings before emulator init
+    static void loadDiskMounts(); // mount disks from storage.nvs after FDD/MB02 init
+    static void loadMb02DiskMounts(); // (re)mount only MB-02+ disks (on enable at runtime)
+    static void save(const char* path = nullptr, const char* profileName = nullptr);
+                                  // nullptr path = STORAGE_NVS (normal path)
+
+    // ── named config profiles (Options > Save/Load my settings) ────────────────
+    // A profile is a full copy of storage.nvs under CONFIG_DIR_PROFILES, named by
+    // slot number; its display name is the file's first line. Loading one is a
+    // reboot by definition (most of the config is reboot-class), so profileLoad
+    // only stages the file — the caller reboots.
+    static std::string profileName(uint8_t slot);   // "" = empty slot
+    static bool profileSave(uint8_t slot, const std::string& name);
+    static bool profileRename(uint8_t slot, const std::string& name);
+    static bool profileLoad(uint8_t slot);          // copies over storage.nvs
+    static void profileDelete(uint8_t slot);
+    static bool loaded;  // true after successful load() from file/RAM
+    // Set when save() refused to write because this session never loaded the
+    // card's config (see the guard in save()). ESPectrum::loop turns it into a
+    // toast: the refusal is right, but it used to happen in silence and read as
+    // "the menu forgot my setting".
+    static bool save_blocked;
+
+    // newRomSet == R_NONE resets the arch to its default romset (the old "" argument).
+    static void requestMachine(ArchIdx newArch, RomsetIdx newRomSet);
+
+    // The default pad map of a joystick type. No UI, nothing saved.
+    static void joyDefaults(uint8_t joy_type, uint16_t out[14]);
+
+    // arch/romSet* always hold a real table index after load(); only the pref_*
+    // members may additionally hold A_LAST/R_LAST ("Last used") — and pref_arch may
+    // hold A_ALF/A_PROFI as a boot pin (ALF cart / Profi reboot continuity).
+    static ArchIdx   arch;
+    static RomsetIdx romSet;
+    static RomsetIdx romSet48;
+    static RomsetIdx romSet128;
+    static RomsetIdx romSetPent;
+    static RomsetIdx romSetP512;
+    static RomsetIdx romSetP1M;
+    static RomsetIdx romSetProfi;
+    static RomsetIdx romSetScorp;
+    static RomsetIdx romSetTsconf;
+    static RomsetIdx romSetAtm;
+    static ArchIdx   pref_arch;
+    static RomsetIdx pref_romSet_48;
+    static RomsetIdx pref_romSet_128;
+    static RomsetIdx pref_romSetPent;
+    static RomsetIdx pref_romSetP512;
+    static RomsetIdx pref_romSetP1M;
+    static RomsetIdx pref_romSetProfi;
+    static RomsetIdx pref_romSetScorp;
+    static RomsetIdx pref_romSetTsconf;
+    static RomsetIdx pref_romSetAtm;
+    static string   ram_file;
+    static string   last_ram_file;
+    static string   tape_file;       // full path of remembered tape, re-mounted after F11/reboot like a disk
+    // Provenance of a loaded/mounted file. Transient sources (TMP/REMOTE/WEB) are
+    // never pinned as a reload reference (the file is gone after reboot); LOCAL is a
+    // real SD path that persists. Old configs lack the tag → default LOCAL.
+    enum FileOrigin { ORIGIN_LOCAL = 0, ORIGIN_TMP = 1, ORIGIN_REMOTE = 2, ORIGIN_WEB = 3 };
+    static uint8_t  ram_file_origin;
+    static uint8_t  esp32rev;
+    static bool     slog_on;
+    static bool     ledIndicators;
+    static bool     led_panel;      // indicators on a solid panel beside the F8 box (carved out of every renderer)
+    static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
+    // Chip temperature calibration, whole °C added to the ADC sensor reading.
+    // The RP2350 sensor is uncalibrated and per-chip offsets are real: one z0p2
+    // unit reads ~55-60 C low (Vbe 0.78 V vs the typical 0.706 @27 C) with a
+    // verified-good 3.28 V ADC_AVDD, while other RP2350B units read fine.
+    static int8_t   temp_offset;
+    // Pico-Scwong (the built-in game, src/ui/UiGame.cpp): indices into its own
+    // option tables — field colour, paddle colour, paddle width (0..2), paddle
+    // size/length (0..2), ball colour, ball size (0..2), player paddle speed
+    // (0..2). The game clamps by modulo, so a stale value can never index out
+    // of a table.
+    static uint8_t  gm_field;
+    static uint8_t  gm_pad;
+    static uint8_t  gm_padw;
+    static uint8_t  gm_padh;
+    static uint8_t  gm_ballc;
+    static uint8_t  gm_ball;
+    static uint8_t  gm_pspd;
+    static bool     AY48;
+    static bool     SAA1099;
+    // 0=Off, 1=AY bitbang, 2=ShamaZX, 4=GM.DLS wavetable. 3 was "Software MIDI" (the
+    // procedural SoftSynth) — removed; the value is retired and demoted to 0 on load.
+    static uint8_t  midi;
+    static string   midi_bank;    // GM.DLS wavetable: chosen bank .bin path on SD ("" = default gm_bank.bin)
+    static bool     timex_video;  // Timex SCLD video modes (port 0xFF)
+    static uint8_t  dma_mode;     // 0=Off, 1=Port #0B (Z80 DMA), 2=Port #6B (zxnDMA)
+    static bool     mode16col_onoff; // Pentagon 16col video mode (port #EFF7 D0)
+    static uint16_t cpu_mhz;   // 252, 378, 504
+    static uint16_t max_flash_freq; // MHz, default 66
+    static uint16_t max_psram_freq; // MHz, default 166
+    static uint16_t max_tft_freq;   // MHz, default 126
+    static uint8_t  vreq_voltage;  // vreg_voltage_t enum value, default VREG_VOLTAGE_1_60
+    static bool     Issue2;
+    // Murmuzavr extended page count as CHOSEN/PERSISTED (64..2048; 64 = mode off). The
+    // live count the emulator runs on is the global MEM_PG_CNT, read once from this in
+    // ESPectrum::setup() — and deliberately NOT kept in step afterwards: MemESP indexes
+    // ROM as ram[MEM_PG_CNT + romLatch], so bumping the live count while a machine runs
+    // sends every ROM read past the end of the page strip. save() serialises THIS field,
+    // never the live one; that is what makes the pick survive a machine switch, whose
+    // MachineSwitch::commit() runs its own Config::save() after the menu's (hw
+    // 2026-07-29: "MZ does not turn on the first time" — that second save re-wrote the
+    // stale live value over the fresh pick).
+    static uint16_t mem_pg_cnt;
+    // TS-Conf RAM is FIXED at 4 MB = 256 pages: every ZX-Evo ever built has 4 MB,
+    // so there is no pick (the 1/2 MB configurations were removed 2026-09-21). A
+    // board whose butter budget cannot hold the whole strip runs degraded — the
+    // tail pages are SD-swap and TsConf::pagePtr() answers nullptr for them
+    // (see the boot check in ESPectrum::setup).
+    // tsconf_clk_cap bounds the guest's SysConfig ZCLK (0/1/2 = 3.5/7/14 MHz)
+    // for boards that cannot keep up with 14 MHz.
+    static constexpr uint16_t TSCONF_PAGES = 256;
+    static uint8_t  tsconf_clk_cap;
+    // The page-strip length the NEXT boot of `a` needs. The single source for
+    // the live MEM_PG_CNT (ESPectrum::setup) and for the boot-layout reboot
+    // boundary in requestMachine()/MachineSwitch::commit() — the two must
+    // never disagree, or a snapshot load across the boundary walks off the
+    // page strip.
+    // `rs` is the romset being requested (R_NONE = the arch's persisted slot):
+    // Scorpion GMX is a 2 MB machine and needs the 128-page strip, so its rule
+    // lives here too — setup() and both reboot guards must see the same number,
+    // or a GMX boot reboots itself for ever (setup raises the strip to 128 and
+    // then calls requestMachine, which compares against this).
+    static uint32_t wantedPages(ArchIdx a, RomsetIdx rs = R_NONE) {
+        if (a == A_TSCONF) return TSCONF_PAGES;
+        uint32_t n = mem_pg_cnt;
+        if (n > 64 && !(a == A_PENT || a == A_P512 || a == A_P1024)) n = 64;
+        // GMX requires live QSPI (butter) PSRAM — without it requestMachine falls
+        // the pick back to Yellow, so the strip must not grow either.
+        if (a == A_SCORP && isScorpGmxRomset(rs == R_NONE ? romSetScorp : rs) &&
+            n < 128 && butter_psram_size() > 0)
+            n = 128;
+        // ZXM-Phoenix pages 2 MB = 128 pages. Unlike GMX it reads them only
+        // through the ordinary page machinery, so SD-swap backing is enough.
+        if (a == A_SCORP && (rs == R_NONE ? romSetScorp : rs) == R_PHOENIX && n < 128)
+            n = 128;
+        // ATM-Turbo 3: 4 MB = 256 pages (#x7F7 takes a full 8-bit page number).
+        if (a == A_ATM && isAtm3Romset(rs == R_NONE ? romSetAtm : rs) && n < 256)
+            n = 256;
+        return n;
+    }
+    static bool     rtc_enabled;  // Pentagon/Profi Mr Gluk MC146818 RTC + CMOS NVRAM (RP2350)
+    // Devices > Mouse sensitivity: a Q8 multiplier on the raw HID counts before they
+    // reach the Kempston X/Y counters (256 = 1 count per count). 64 — a quarter — is
+    // what the divisor in mouse_apply() always was, so it is the default. The serial
+    // (COM) mouse has its own scaling at packet-build time and is not affected.
+    static uint16_t mouse_sens;
+    // Debug > PSRAM. Read once at boot (ESPectrum::setup, right after load()): false
+    // makes the firmware behave as if the board had no PSRAM — the runtime twin of the
+    // CMake set(PSRAM OFF) kill-switch. See board_psram_disable() in main.cpp.
+    static bool     psram_enabled;
+    // Debug > UART console: TX-only 115200 log on DBG_UART_TX_PIN (Debug::uart*).
+    // Reboot-class — the peripherals it displaces yield only at boot. Mirrored into
+    // a watchdog scratch tag so a warm reboot logs from main() entry.
+    static bool     dbg_uart;
+    static bool     flashload;
+    static bool     tape_player;
+    static volatile bool real_player;
+    static bool     profi_ext_keys;  // Profi extended keyboard mode (default false)
+    static bool     tape_timing_rg;
+    static bool     tape_autostart;  // auto-play tape on load + after F11/boot re-mount (default true)
+    // Storage > Tape > Tape wear: 0 off, 1 light, 2 medium, 3 heavy. Emulates a
+    // stretched/chewed cassette — wow, speed lurches and head dropouts, which end
+    // in the ROM's own "R Tape loading error". Non-zero IGNORES flashload (a fast
+    // load never generates a pulse, so it could never go wrong). See Tape.cpp.
+    static uint8_t  tape_wear;
+    static bool     rightSpace;
+    static bool     wasd;
+    enum BPType : uint8_t { BP_PC=0, BP_PORT_READ=1, BP_PORT_WRITE=2, BP_MEM_WRITE=3, BP_MEM_READ=4, BP_NONE=0xFF };
+    struct BreakPoint { uint16_t addr = 0xFFFF; BPType type = BP_NONE; };
+    static constexpr int MAX_BREAKPOINTS = 20;
+    static BreakPoint breakPoints[MAX_BREAKPOINTS];
+    static int numBreakPoints;
+    // Per-type cached counts for fast-path skip
+    static int numPcBP;
+    static int numPortReadBP;
+    static int numPortWriteBP;
+    static int numMemWriteBP;
+    static int numMemReadBP;
+    static void recountBP() {
+        numBreakPoints = numPcBP = numPortReadBP = numPortWriteBP = numMemWriteBP = numMemReadBP = 0;
+        for (int i = 0; i < MAX_BREAKPOINTS; i++) {
+            if (breakPoints[i].type == BP_NONE) continue;
+            numBreakPoints++;
+            switch (breakPoints[i].type) {
+                case BP_PC: numPcBP++; break;
+                case BP_PORT_READ: numPortReadBP++; break;
+                case BP_PORT_WRITE: numPortWriteBP++; break;
+                case BP_MEM_WRITE: numMemWriteBP++; break;
+                case BP_MEM_READ: numMemReadBP++; break;
+                default: break;
+            }
+        }
+    }
+    static bool hasBreakPoint(uint16_t addr, BPType type) {
+        for (int i = 0; i < MAX_BREAKPOINTS; i++)
+            if (breakPoints[i].addr == addr && breakPoints[i].type == type) return true;
+        return false;
+    }
+    // Legacy: check any BP_PC at addr
+    static bool hasBreakPoint(uint16_t addr) { return hasBreakPoint(addr, BP_PC); }
+    static bool addBreakPoint(uint16_t addr, BPType type) {
+        if (hasBreakPoint(addr, type)) return false;
+        for (int i = 0; i < MAX_BREAKPOINTS; i++) {
+            if (breakPoints[i].type == BP_NONE) {
+                breakPoints[i] = {addr, type};
+                recountBP();
+                return true;
+            }
+        }
+        return false;
+    }
+    static bool addBreakPoint(uint16_t addr) { return addBreakPoint(addr, BP_PC); }
+    static bool removeBreakPoint(uint16_t addr, BPType type) {
+        for (int i = 0; i < MAX_BREAKPOINTS; i++) {
+            if (breakPoints[i].addr == addr && breakPoints[i].type == type) {
+                breakPoints[i] = {0xFFFF, BP_NONE};
+                recountBP();
+                return true;
+            }
+        }
+        return false;
+    }
+    static bool removeBreakPoint(uint16_t addr) { return removeBreakPoint(addr, BP_PC); }
+    static void removeBreakPointAt(int idx) {
+        if (idx >= 0 && idx < MAX_BREAKPOINTS) {
+            breakPoints[idx] = {0xFFFF, BP_NONE};
+            recountBP();
+        }
+    }
+    static const char* bpTypeName(BPType t) {
+        switch(t) {
+            case BP_PC: return "PC";
+            case BP_PORT_READ: return "PR";
+            case BP_PORT_WRITE: return "PW";
+            case BP_MEM_WRITE: return "MW";
+            case BP_MEM_READ: return "MR";
+            default: return "??";
+        }
+    }
+    static uint8_t  joystick;
+    static uint16_t joydef[14];
+    // True when pad control `slot` is assigned a KEYBOARD key (not None, not a
+    // joystick action): the control then presses that key and nothing else.
+    static bool     joyKeyTarget(int slot);
+    static uint8_t  AluTiming;
+    static uint8_t  ayConfig;
+    static uint8_t  turbosound;
+    // TurboSound FM (2 x YM2203). Gates the #F8..#FF pseudo-register family on
+    // #FFFD, the OPN status read and the FM synthesis (OpnFm / TsfmSubsys).
+    static uint8_t  tsfm;
+    // YMF262/OPL3 sound card (AlexZor DivMMC VGM player: address/data pairs on
+    // ports #C4/#C5 and #C6/#C7). Gates the port decode and OplFm/OplSubsys.
+    static uint8_t  opl3;
+    // Creative Music System (2x SAA1099 @7.159 MHz, #FF family / A9 select)
+    // and 2x SN76489 (#C9/#CD) — the same VGM-player card family.
+    static uint8_t  cms;
+    static uint8_t  sn76489;
+    // SN76489 master clock pick: 0 = 3.579545 MHz (SMS/VGM default),
+    // 1 = 2 MHz, 2 = 4 MHz. Every dual-SN arcade rip in the wild is 2 or
+    // 4 MHz (Sega System 1/2), and a plugin streaming raw register writes
+    // cannot rescale 2 MHz periods up (10-bit overflow) — so the clock has
+    // to be an emulator setting.
+    static uint8_t  sn_clock;
+    // YM2413 (OPLL) — the same VGM-player card family, addr #C0 / data #C1.
+    static uint8_t  ym2413;
+    // Is there a SECOND PSG? A TurboSound FM board is a TurboSound board — it is
+    // literally two YM2203s, each an AY plus an FM half — so enabling TSFM has to
+    // bring AySound chip1 up too. Without this, ayChipFor()'s "chip1 missing ->
+    // use chip0" fallback lands every chip-1 PSG write of a TFM tune on chip 0.
+    static bool twoAyChips() { return turbosound != 0 || tsfm != 0; }
+    // The running machine is a +2A/+3: the +3 romset over the 128K arch (like +2).
+    static bool isPlus3() { return arch == A_128K && isPlus3Romset(romSet); }
+    // ...and it is the +3e: the +3 with IDEDOS, which brings the 8-bit IDE interface.
+    static bool isPlus3e() { return arch == A_128K && isPlus3eRomset(romSet); }
+    // The running machine is a Timex TC2068: the 2068 romset over the 48K arch. It
+    // brings the SCLD horizontal MMU (#F4), the EX-ROM, a DOCK cartridge port and an
+    // AY-3-8912 on #F5/#F6 — see src/speccy/machines/Timex.cpp and Z80Ops::isTc2068.
+    static bool isTc2068() { return arch == A_48K && isTc2068Romset(romSet); }
+    // ...either Timex, i.e. "the SCLD is this machine's ULA".
+    static bool isTimex() { return arch == A_48K && isTimexRomset(romSet); }
+    static bool trdosBaseOwnedByMachine();
+    static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
+    // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
+    // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).
+    static bool isPlus3Div() { return arch == A_128K && isPlus3DivRomset(romSet); }
+    static uint8_t  covox;
+    // CPU turbo picked by the user (0..3 = 3.5/7/14/28 MHz), NVS-persisted.
+    // Feeds ESPectrum::multUser at setup; the live speed may differ (EFF7 D4).
+    static uint8_t  turbo;
+    static uint8_t  soundrive;          // 0=Off, 1=On, 2=Auto (Profi only)
+    static bool soundriveEnabled();     // resolves Auto against current arch
+    static uint8_t  gs_enabled;
+    static uint8_t  gs_ram_size;
+    static uint8_t  gs_clock;   // 0=12MHz 1=13MHz 2=14MHz 3=20MHz 4=24MHz
+    // NeoGS clock override. The card's own firmware selects one of 24/12/20/10 MHz
+    // through GSCFG0 CKSEL and normally that is what we emulate (0 = Auto). The
+    // emulated GS-Z80 costs ~21 RP2350 cycles per T-state, so 24 MHz needs the
+    // whole of core1 at 504 MHz and is out of reach at 378 — forcing a lower clock
+    // trades the firmware's per-sample T-state budget (exactly what a real card
+    // clocked down has) for an output rate the emulator can actually sustain.
+    // The 37.5 kHz DAC tick is a divider of the clock, so pitch/tempo are unaffected.
+    static uint8_t  ngs_clock;  // 0=Auto(fw) 1=24MHz 2=20MHz 3=12MHz 4=10MHz
+    static uint8_t  joy2cursor;
+    static uint8_t  secondJoy;
+    static uint8_t  kempstonPort;
+    static uint8_t  throtling;
+    static bool CursorAsJoy;
+    static uint8_t scanlines;
+    // CRT filter. 0=Off; 1..3 = Soft/Medium/Strong with a soft 4-pixel-pitch mask
+    // profile; 4..6 = the same three strengths with a hard 2-pixel-pitch grille.
+    // Purely palette-level (gamma + phosphor tint + black lift, plus a mask built
+    // from the output pixels each palette index already owns), so it costs zero
+    // scanout cycles. Composes with scanlines, which own the vertical axis — the two
+    // together give a full dot mask.
+    static uint8_t crt_filter;
+    static uint8_t render;
+    // Debug > Paper: false = the paper area is not rendered; the border state
+    // machine paints straight through it (per-T-state, like top/bottom border),
+    // showing the border colour "under" the paper — for border-timing debugging.
+    static bool render_paper;
+    // Video > Hide border: the 256x192 paper is scaled up to fill the framebuffer
+    // (5/4 at 640x480, 11/8 x 5/4 or 3/2 with an 8-px frame at 720-wide) and the
+    // border machine is parked. Applied at the next EndFrame (VIDEO::blRecalc).
+    static bool render_border;
+    static uint8_t persist_slot;
+    // Options > Save/Load my settings: the profile slot this config was last
+    // saved to or loaded from (1..CONFIG_PROFILE_SLOTS; 0 = none). Shown on both
+    // menu rows and used to focus their lists.
+    static uint8_t profile_slot;
+
+    static bool TABasfire1; 
+
+    static bool betadisk;       // TR-DOS interface enabled
+    static bool trdosFastMode;
+    static bool trdosAutoBoot;  // inject a "boot" file into TRD/SCL images that lack one
+    static uint8_t trdosSoundLed; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+    static uint8_t trdosBios; // 0=5.03, 1=5.04TM, 2=5.05D, 3=Custom (flashable), 4=6.11e
+    // ALF cartridge: 0 = built-in default "Elf-1" (256KB, in flash); >0 = a cartridge
+    // loaded into the shared flash region (gm_bank region), value = size in 16K banks.
+    static uint8_t alfCartBanks;
+    // Pending ALF cartridge to flash into the shared region at next boot (set by the
+    // menu, reboot, then early-boot provisioner flashes it and clears this). Empty =
+    // nothing pending. Deferred to boot because a large synchronous flash with
+    // multicore_lockout deadlocks the HDMI ISR (same reason gm_bank is boot-flashed).
+    static string alfCartPath;
+    // Timex DOCK cartridge (.dck) mounted in the TC2068's cartridge port. Persisted
+    // like a mounted disk, so the cartridge is still in the slot after a reboot —
+    // which is what makes it start again (the HOME ROM probes the DOCK at reset).
+    static string dckCartPath;
+    static bool driveWP[4];   // TR-DOS per-slot write protect (Drive A..D)
+    static uint8_t esxdos;   // 0=OFF 1=DivMMC 2=DivIDE 3=DivSD
+    // Unified hd0/hd1 image slots — [0]=hd0, [1]=hd1.
+    // DivMMC uses hd0 only; DivIDE uses both.
+    static string esxdos_hdf_image[2];
+    static uint8_t mb02;     // 0=OFF 1=ON (MB-02+ disk interface, mutually exclusive with TR-DOS/DivMMC)
+    static bool mb02WP[4];   // MB-02+ per-slot write protect
+    static string mb02DiskFile[4]; // remembered MB-02+ disk paths; survive the interface being disabled
+    static uint8_t mb02SoundLed;// MB-02+ disk sound & LED: 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+    // ZX Spectrum +3 disk interface (uPD765 + .dsk). Drive A: and B: only — the +3
+    // decodes US0 alone, so there is no third unit to remember.
+    static bool p3WP[2];         // per-drive write protect
+    static string p3DiskFile[2]; // remembered paths; survive the machine being switched away
+    // Speedlock's protection reads one sector twice and expects the reads to differ;
+    // the dumps carry a single copy, so the difference is manufactured. On by default,
+    // matching Fuse, and self-suppressing on a dump that records the variation for real.
+    static bool p3_speedlock;
+    // Transfers normally take the real 32 us per byte, which is what lights the drive
+    // lamp and keeps timed loaders honest. This collapses that for the impatient.
+    static bool p3_fastdisk;
+    static bool zcontroller; // Z-Controller SD on ports 0x77/0x57 (mutually exclusive with esxDOS/MB-02+)
+    static uint8_t ide_scheme;   // IDE/HDD: 0=OFF 1=NEMO 2=PROFI (mutually exclusive with esxDOS DivMMC/DivIDE)
+    static string ide_image[2];  // IDE hd0/hd1 image paths ([0]=master, [1]=slave)
+    static uint16_t ide_chs[2][3]; // per-slot geometry override [C,H,S]; 0,0,0 = auto-detect
+    // Guest-visible serial port: the ZiFi FIFO window (#xxEF), the 16550 window and
+    // the ZX UNO pair (#FC3B/#FD3B), all bridged to the ESP link. Independent of
+    // wifi_enabled — with WiFi off this is a PLAIN UART the guest owns end to end
+    // (nothing in the firmware then writes AT commands into it), which is how an
+    // Arduino or any other serial device is talked to from the emulated machine.
+    static uint8_t zifi_enabled; // 0=Off, 1=ZiFi NIC
+    // ZiFi UART pins: 0xFE = board default, 0xFF = OFF, else explicit TX/RX
+    // (resolved via BoardPins). See BoardPins.h / Network → GPIO picker.
+    static uint8_t zifi_tx_pin;
+    static uint8_t zifi_rx_pin;
+    // ESP-01 transport: 0=GPIO UART (zifi_tx_pin/rx_pin), 1=USB-CDC (CH340/CP210x/
+    // FTDI dongle on the USB host port). RP2350 + KBDUSB only. See Network→ESP01.
+    static uint8_t zifi_transport;
+    static uint32_t zifi_baud;  // ESP-01S UART rate (115200 default; raised via AT+UART_CUR)
+    static string wifi_ssid;
+    static string wifi_pass;
+    // WiFi master switch: owns host networking (FTP/SSH/WEB) and, with a saved SSID,
+    // triggers the boot auto-connect. Fully independent of the NIC in BOTH
+    // directions — the NIC never brings WiFi up, and WiFi is not a prerequisite for
+    // the NIC. Persisted in wifi.cfg under the legacy key "autoconnect" so
+    // pre-existing configs migrate for free.
+    static bool wifi_enabled;
+    static signed char wifi_tz; // SNTP timezone offset in hours (wifi.cfg key "tz")
+    // Boot-time SNTP: the only thing in the firmware that talks to the link on its
+    // own after the join. Off leaves the ESP joined but never asks it the time —
+    // the setting exists because that poll is AT traffic on a UART the user may be
+    // sharing with something else. wifi.cfg key "sntp"; absent = on (legacy).
+    static bool sntp_auto;
+    // Network file-transfer client (Network → File transfer). Stored in wifi.cfg.
+    // Passwords are NOT persisted (re-prompted each session).
+    static string   net_host;   // last remote host
+    static string   net_user;   // last username
+    static uint16_t net_port;   // last port (0 = protocol default: 21 FTP / 22 SFTP)
+    static uint8_t  net_proto;  // 0 = FTP, 1 = SFTP
+    static string   net_dl_dir; // last SD folder a file was downloaded into
+    static string   net_ul_dir; // last SD folder a file was uploaded from
+    // Archive download catalog (Network → Download archive). Either a bare
+    // "host"/"host:port" → dynamic /v1 server over plain HTTP, or a base URL with
+    // a path (e.g. "drewpo28.github.io/pico-spec-catalog", https assumed) → static
+    // GitHub-Pages tree fetched over TLS. See HttpCatalogFs. Empty = unset.
+    static string   catalog_host;
+    static uint16_t catalog_port; // dynamic mode only (0 = 80)
+    // Last F5 browse location across ALL sources (so F5 reopens where you left off,
+    // like the SD ALL_Path does). One global value, tab-separated:
+    //   "L"                                   → Local (SD); path is ALL_Path
+    //   "W\t<siteId>\t<path>"                  → Web catalog source + cur_path
+    //   "R\t<host>\t<port>\t<proto>\t<user>\t<path>" → remote (match a saved remote)
+    // Empty → none (F5 opens Local SD). Stored in wifi.cfg.
+    static string   last_loc;
+    static void loadWifiConfig();
+    static void saveWifiConfig();
+
+    // Saved FTP/SFTP connections (Network → F5 → Remote). Stored in
+    // CONFIG_DIR/remotes.tsv, one tab-separated line per connection:
+    //   proto \t host \t port \t user \t savepass \t pass \t alias \t path
+    // The password is only written when savepass=1 (else re-prompted at connect). `alias`
+    // is an optional display name (shown instead of user@host:port). `path` is an optional
+    // start directory — on connect the browser cd's straight into it. (path is the last
+    // field so older 7-field lines stay readable.)
+    struct Remote {
+        string   host, user, pass, alias, path;
+        uint16_t port;
+        uint8_t  proto;     // 0 = FTP, 1 = SFTP
+        bool     savepass;
+    };
+    static const int MAX_REMOTES = 16;
+    // Load saved remotes into `out` (array of `cap` entries). Returns count loaded.
+    static int  loadRemotes(Remote* out, int cap);
+    // Persist `count` remotes from `list` to remotes.tsv (overwrites).
+    static void saveRemotes(const Remote* list, int count);
+    
+    static signed char aud_volume;
+    static uint8_t audio_boost;
+
+    // Video mode enum.  The value IS the NVS byte, so entries are APPEND ONLY and
+    // nothing may be inferred from the ordering (isFullBorder*() used to compare
+    // with >= and had to be rewritten as explicit tests when 4..7 arrived).
+    enum {
+        VM_640x480_60  = 0,  // 640x480@60Hz (default)
+        VM_640x480_50  = 1,  // 640x480@50Hz (arch-dependent timing)
+        VM_720x480_60  = 2,  // 720x480@60Hz half border
+        VM_720x576_50  = 3,  // 720x576@50Hz full border
+        // "Fast" set: the four above at a 37.8 MHz pixel clock instead of
+        // 25.2 MHz — same geometry, x1.5 the refresh.  Needs sys_clk 378 MHz
+        // (the only clock where the PIO divider comes out a clean 1.0), and
+        // forces V-Sync off, since the emulated frame rate would follow the
+        // display's.  See the table in src/drivers/graphics/graphics.c.
+        VM_640x480_90  = 4,  // 640x480@90Hz   (90.17)
+        VM_640x480_75  = 5,  // 640x480@75Hz   (73.37 Pentagon / 75.24 48K / 75.12 128K)
+        VM_720x480_90  = 6,  // 720x480@90Hz   half border (90.17)
+        VM_720x576_75  = 7,  // 720x576@75Hz   full border, arch-dependent as above
+        VM_LAST        = VM_720x576_75,
+    };
+
+    // sys_clk the "fast" modes need; anything else cannot give the PIO a clean
+    // divider for a 378 MHz TMDS clock.
+    static const uint16_t VM_FAST_CPU_MHZ = 378;
+
+    static constexpr bool isFastVideoMode(uint8_t vm) { return vm >= VM_640x480_90 && vm <= VM_LAST; }
+    // The 25.2 MHz twin of a fast mode (identity for the standard ones): what a
+    // fast pick degrades to when the CPU clock is not 378 MHz.
+    static uint8_t baseVideoMode(uint8_t vm) {
+        switch (vm) {
+            case VM_640x480_90: return VM_640x480_60;
+            case VM_640x480_75: return VM_640x480_50;
+            case VM_720x480_90: return VM_720x480_60;
+            case VM_720x576_75: return VM_720x576_50;
+            default:            return vm;
+        }
+    }
+
+    static uint8_t hdmi_video_mode;
+    static uint8_t vga_video_mode;
+
+    static bool v_sync_enabled;
+    static bool gigascreen_enabled;
+    static uint8_t gigascreen_onoff; // 0=Off, 1=On, 2=Auto
+    static bool ulaplus;
+    static bool hdmi_dither;
+    static uint8_t hdmi_clock_drive;  // HDMI clock pair: 0 = Normal (12 mA fast), 1 = Soft (8 mA slow)
+    // Video > Capture-safe colours: snap every runtime palette colour (TS-Conf CRAM,
+    // ULA+, Gigascreen blends) to the nearest per-channel level whose doubled TMDS
+    // pair is one repeated symbol — what a USB capture card needs (monitors do not
+    // care). <= 5 code units of error per channel (112 of 256 levels qualify after the clamp). HDMI only.
+    static bool hdmi_snap;
+    // Video > VGA > Guest palette. The VGA DAC is 2 bits per channel (0/85/170/255 =
+    // 64 colours); vga_bayer4() dithers an off-grid colour inside its own 2x2 output
+    // block, which at 320x240 -> 640x480 is exactly one source pixel, for 13 levels
+    // per channel (~2197 perceived colours) at no cost in sharpness. true = arbitrary
+    // GUEST palettes (TS-Conf CRAM) take that path; false = they are snapped to the
+    // 2:2:2 grid like the 16 flat ZX colours, which never dither. VGA only.
+    static bool vga_dither;
+    // Video > VGA > Colour: four PWM sub-samples per output pixel instead of the
+    // 2-bit DAC code plus a Bayer 2x2 block. Reboot-class — it decides how wide a
+    // palette entry and a line-buffer pixel are (2 vs 8 bytes a pair), and those
+    // are sized once at boot.
+    //
+    // ON by default on every back-end (owner, 2026-09-23). On HSTX that is free —
+    // a pixel is a 32-bit FIFO word whatever it carries. On the PIO it is not: the
+    // SM runs at 4x the pixel clock, the line DMA goes 21 -> 84 MB/s and the heap
+    // pays ~21 KB. Two consequences that follow from it being a DEFAULT rather than
+    // a choice: a monitor that has not been AUTO ADJUSTED shows wrong colours until
+    // it is (see the VGA PWM section of CLAUDE.md), and the 16 KB line-template
+    // block can fail on a thin heap — graphics_set_mode() drops the width rather
+    // than the picture when it does.
+    static bool vga_pwm;
+    // Video > VGA > PWM phase (0..3): rotate the four sub-samples of every pixel by
+    // that many phases. For a ladder + monitor that do NOT integrate the phases (the
+    // monitor's ADC takes one point per pixel and reads whichever sub-sample it
+    // lands on — m1p2, 2026-09-23/28) this moves the sample point onto a different
+    // phase of the same pattern: it is what turns "every colour BRIGHT" (the sample
+    // sits on a 3 of a 3,2,3,2 pixel) into the intended level. Where the sample
+    // point lands depends on the mode's pixel clock and the monitor's Auto Adjust,
+    // so it is a user knob, not a derivation. Live (a palette repack), VGA only.
+    static uint8_t vga_pwm_phase;
+    // New-menu look preferences. ui_vga_solid: on VGA output the menu uses its on-grid
+    // 2:2:2 palette twin (solid fills, no Bayer texture); off = the full-depth scheme,
+    // dithered. ui_rounded: window/dialog corners rounded vs square.
+    // ui_theme: 0 = Slate (the cool neutral scheme), 1 = ZX Spectrum (the classic
+    // pico-spec menu colours: black ink on bright-white paper, cyan selection).
+    static bool ui_vga_solid;
+    static bool ui_rounded;
+    static uint8_t ui_theme;
+    // ui_click_vol: the menu's own click/key sound, 0 = Off, 1 = Low, 2 = Normal,
+    // 3 = Loud. The click is written at full scale on top of whatever the machine's
+    // volume is (OSD::click), so it needs an attenuation of its own; Loud is what
+    // the firmware always did.
+    static uint8_t ui_click_vol;
+    // Palette: 0=Default, 1=Grayscale
+    static uint8_t palette;
+    static uint8_t audio_driver;
+    static bool byte_cobmect_mode;
+
+    // «Байт» доп. ПЗУ (DD71) flip-flop: any access to the Kempston-decoded port
+    // (#1F/#9F) toggles the DD66 substitution map between native and test state
+    // (2 blocks at #3A00-#3AFF). Used by the built-in ROM memory test's switch
+    // stub at #387A (IN A,(#9F); RET). Reset returns the machine to native.
+    static void byteTestRomToggle();
+    static void byteTestRomReset();
+
+    static void savePendingVideoMode();
+    static bool loadPendingVideoMode(uint8_t &hdmi_vm, uint8_t &vga_vm);
+    static void clearPendingVideoMode();
+
+    // Hotkey indices
+    enum HotkeyId {
+        HK_MAIN_MENU    =  0,
+        HK_LOAD_SNA     =  1,
+        HK_PERSIST_LOAD =  2,
+        HK_PERSIST_SAVE =  3,
+        HK_LOAD_ANY     =  4,
+        HK_TAPE_PLAY    =  5,
+        HK_TAPE_BROWSER =  6,
+        HK_STATS        =  7,
+        HK_VOL_DOWN     =  8,
+        HK_VOL_UP       =  9,
+        HK_HARD_RESET   = 10,
+        HK_REBOOT       = 11,
+        HK_MAX_SPEED    = 12,
+        HK_PAUSE        = 13,
+        HK_HW_INFO      = 14,
+        HK_TURBO        = 15,
+        HK_DEBUG        = 16,
+        HK_DISK         = 17,
+        HK_NMI          = 18,
+        HK_RESET_TO     = 19,
+        HK_USB_BOOT     = 20,
+        HK_GIGASCREEN   = 21,
+        HK_LED_TOGGLE   = 22,
+        HK_POKE         = 23,
+        HK_VIDMODE_60   = 24,
+        HK_VIDMODE_50   = 25,
+        HK_QUICK_LOAD   = 26,
+        HK_QUICK_SAVE   = 27,
+        HK_COUNT        = 28
+    };
+
+    struct HotkeyBinding {
+        uint16_t vk;       // fabgl::VirtualKey cast to uint16_t; 0 = unassigned (VK_NONE)
+        bool     alt;
+        bool     ctrl;
+        bool     readonly; // true = shown in dialog but not editable
+    };
+    static HotkeyBinding hotkeys[HK_COUNT];
+
+    static void initHotkeys();  // fill hotkeys[] with compiled-in defaults
+};
+
+#endif // Config.h

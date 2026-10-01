@@ -1,7 +1,7 @@
-// dsk_test.cpp — host-side tests for src/DskImage.cpp (CPCEMU / Extended .dsk).
+// dsk_test.cpp — host-side tests for src/speccy/devices/disk/DskImage.cpp (CPCEMU / Extended .dsk).
 //
 //   g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/dsk_test
-//       tools/dsk_test.cpp src/DskImage.cpp
+//       tools/dsk_test.cpp src/speccy/devices/disk/DskImage.cpp
 //   /tmp/dsk_test
 //
 // The reference images below are built BYTE BY BYTE here, never through DskImage's own
@@ -14,7 +14,7 @@
 // stops rotating) do not announce themselves — they show up as one game in twenty that
 // will not load.
 
-#include "DskImage.h"
+#include "speccy/devices/disk/DskImage.h"
 
 #include <cstdio>
 #include <cstring>

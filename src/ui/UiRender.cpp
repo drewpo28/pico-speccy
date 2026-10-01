@@ -28,9 +28,9 @@
 #include "UiFont.h"
 #include "UiStage.h"
 #include "OSDMain.h"
-#include "Config.h"
-#include "RTC.h"
-#include "ESPectrum.h"
+#include "app/Config.h"
+#include "speccy/devices/storage/RTC.h"
+#include "app/ESPectrum.h"
 #include <pico/stdlib.h>
 
 namespace nm {
@@ -193,8 +193,11 @@ bool uiClockDirty() {
 }
 
 // See UiRender.h: the shared idle wait of the UI's key loops.
+void (*uiIdleHook)() = nullptr;
+
 void uiIdle(int ms) {
     ESPectrum::netBackgroundTick();
+    if (uiIdleHook) uiIdleHook();
     if (ms > 0) sleep_ms(ms);
 }
 

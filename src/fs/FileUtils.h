@@ -1,0 +1,387 @@
+/*
+
+ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
+
+Copyright (c) 2023, 2024 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
+https://github.com/EremusOne/ZX-ESPectrum-IDF
+
+Based on ZX-ESPectrum-Wiimote
+Copyright (c) 2020, 2022 David Crespo [dcrespo3d]
+https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote
+
+Based on previous work by Ramón Martinez and Jorge Fuertes
+https://github.com/rampa069/ZX-ESPectrum
+
+Original project by Pete Todd
+https://github.com/retrogubbins/paseVGA
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+To Contact the dev team you can write to zxespectrum@gmail.com or 
+visit https://zxespectrum.speccy.org/contacto
+
+*/
+
+#ifndef FileUtils_h
+#define FileUtils_h
+
+#include <stdio.h>
+#include <inttypes.h>
+#include <string>
+///#include "sdmmc_cmd.h"
+
+using namespace std;
+
+#include "speccy/core/MemESP.h"
+#include "fatfs/ff.h"
+
+// Defines
+#define ASCII_NL 10
+
+#define DISK_SNAFILE 0
+#define DISK_TAPFILE 1
+#define DISK_DSKFILE 2
+#define DISK_ROMFILE 3
+#define DISK_IMGFILE 4
+#define DISK_ALLFILE 5
+#define DISK_DLSFILE 6   // GM.DLS soundbank picker (on-device .dls -> gm_bank.bin conversion)
+// Debug > Config folders: the firmware's own directories, browsed for housekeeping
+// (rename / delete / new folder) rather than to pick a file. Its own slot so the F5
+// browser's remembered position is not clobbered by a trip through the config tree.
+#define DISK_CFGFILE 7
+#define DISK_MUSFILE 8   // Pico-Zx-Player: music files (session-only cursor, not persisted)
+
+struct DISK_FTYPE {
+    string fileExts;
+    int begin_row;
+    int focus;
+    uint8_t fdMode;
+    string fileSearch;
+};
+
+// Disk/image interface family inferred from file extension.
+enum DiskIface {
+    IFACE_NONE = 0,
+    IFACE_BETA = 1,  // TR-DOS: .trd .scl .fdi .udi — Drive A..D
+    IFACE_MB02 = 2,  // MB-02+: .mbd — Drive 1..4
+    IFACE_ESX  = 3,  // esxDOS: .mmc .hdf .vhd .hdd .img (DivIDE) — hd0..hd1
+    // IDE/HDD (NEMO/PROFI): .hdd .img .vhd .iso — hd0 (master) / hd1 (slave). Not
+    // produced by ifaceForExt except for .vhd/.hdd/.img when DivIDE is not selected;
+    // the remaining formats are selected inside the IDE slot rows.
+    IFACE_IDE  = 4,
+    // ZX Spectrum +3 (uPD765 + .dsk) — Drive A:/B:. Note the name collision with the
+    // long-standing DISK_DSKFILE / DSK_Path constants, which are the GENERIC disk
+    // dialog and have nothing to do with the CPC .dsk container.
+    IFACE_PLUS3 = 5,
+};
+
+class FileUtils
+{
+public:
+    static bool fsMount;
+    // No SD card at boot and a USB stick took over as the default FatFs volume
+    // (f_chdrive "USB:") — all unprefixed paths (configs, /tmp, /pico-speccy) resolve
+    // on the stick. SD always wins when a card is present.
+    static bool usbRoot;
+
+    static string getLCaseExt(const string& filename);
+
+    // Map a lowercase extension (no leading dot) to its disk-interface family.
+    // Returns IFACE_NONE for tape/snapshot/unknown extensions.
+    static DiskIface ifaceForExt(const string& lcExt);
+
+    static void initFileSystem();
+    static void ensureBootDirs();
+    static bool mountSDCard();
+    // Swapped = storage is back, but it is a DIFFERENT card than the one that
+    // went away (volume serial changed), so nothing mounted on the old one
+    // was reopened.
+    enum class StorageEvent : uint8_t { None, Online, Swapped, Lost };
+    // Runtime storage watch, THROTTLED INTERNALLY (~2 s). Offline: probe for an
+    // SD card and, failing that, for a USB stick to adopt as the root volume;
+    // on the tick it comes online the volume is mounted, the dir tree created,
+    // and either the open files are reopened (a card that came back) or the
+    // remembered disk images and tape are restored (a card-less boot) — Online.
+    // Online: notice a card that left (no board wires card-detect, so this is
+    // the verdict of real I/O plus a CMD13 probe for idle callers) and drop the
+    // volume before its stale FatFs cache can be written onto whatever card
+    // goes in next — Lost. The caller owns only the UI part (a toast, a redraw).
+    // Call it from every loop that can be on screen while a card is swapped:
+    // the nm:: menu and the file browser both block ESPectrum::loop while up.
+    static StorageEvent storageTick();
+    // What the automount found out about the card's config, latched at the mount
+    // and consumed once by ESPectrum::loop (which owns the UI part, and is the
+    // only context where a dialog may block — never inside a menu that owns the
+    // screen). CFG_NONE also covers the ordinary case of a session that loaded
+    // its config normally.
+    //   CFG_FOUND   the card carries settings this session never loaded
+    //               (Config::load() bailed out at boot with no file to read, so
+    //               Config::save() is now refusing to write — the guard that
+    //               stops a card-less session from overwriting a real
+    //               configuration with compiled-in defaults). Only a boot can
+    //               apply them.
+    //   CFG_ABSENT  this session is on compiled-in defaults AND the card has no
+    //               config for this firmware version either, so there is nothing
+    //               a reboot would pick up and the first save will simply create
+    //               the file.
+    enum CardConfig : uint8_t { CFG_NONE = 0, CFG_FOUND, CFG_ABSENT };
+    static CardConfig cardConfigState();
+    static void unmountSDCard();
+    // Boot-time guard for remembered "USB:/..." paths (disk mounts, tape):
+    // they are reopened before the main loop ever pumps tuh_task, so the stick
+    // has not enumerated yet and the open would fail — and the failed mount
+    // would then be persisted as empty. Waits for the stick when the path
+    // needs it; true = volume is (now) available, false = skip the reopen.
+    static bool waitVolumeReady(const string& path);
+    static bool mkdirParents(const char* path);
+    // Karabas-Pro: make sure the card root holds karabas_boot.$c (the FATALL
+    // 0.26 file manager ROMain's "Loading boot from SD" runs). Writes the
+    // bundled copy from flash when the file is missing; no-op otherwise.
+    // Returns true when the file is present after the call.
+    static bool ensureKarabasBoot();
+    static bool checkSDCard();
+    static bool remountSD();
+    // The reopen tail of remountSD(): disk images, tape, CSW, swap, DivMMC,
+    // IDE — everything that holds a FIL across a remount. Split out because
+    // the automatic recovery must decide whether to run it (same card) or
+    // deliberately skip it (a different card went in).
+    static void reopenMedia();
+    // static String         getAllFilesFrom(const String path);
+    // static void           listAllFiles();
+    // static void           sanitizeFilename(String filename); // in-place
+    // static File           safeOpenFileRead(String filename);
+    // static string getFileEntriesFromDir(string path);
+    static void DirToFile(const string& Dir, uint8_t ftype /*string fileExts*/);
+    static void Mergefiles(const string& fpath, uint8_t ftype, int chunk_cnt);
+    // static uint16_t       countFileEntriesFromDir(String path);
+    // static string getSortedFileList(string fileDir);
+    static bool hasSNAextension(const string& filename);
+    static bool hasZ80extension(const string& filename);
+    static bool hasPextension(const string& filename);
+    static bool hasSPGextension(const string& filename);   // TS-Conf .spg program
+    static bool hasTAPextension(const string& filename);
+    static bool hasTZXextension(const string& filename);
+    static bool hasWAVextension(const string& filename);
+    static bool hasPZXextension(const string& filename);
+    static bool hasMP3extension(const string& filename);
+    static bool hasZIPextension(const string& filename);
+
+    static void deleteFilesWithExtension(const char *folder_path, const char *extension);
+    static bool deleteDirRecursive(const char *path);
+
+    // UTF-8 → CP1251 (Cyrillic) for OSD display with the Font6x8Cyr face. ASCII
+    // passes through; Russian letters map to their CP1251 byte; other codepoints
+    // become '?'; invalid sequences pass through unchanged.
+    static string utf8ToCp1251(const string& s);
+    // CP866 (DOS Cyrillic) → CP1251 — ZIP entry names from DOS/Windows packers.
+    // Pseudographics, which a file name cannot display anyway, become '_'.
+    static string cp866ToCp1251(const string& s);
+    // CP1251 (FatFs's code page) → UTF-8, for protocols that speak UTF-8 (FTP).
+    static string cp1251ToUtf8(const string& s);
+
+    static string MountPoint;
+    static bool SDReady;
+
+    static string SNA_Path; // Current SNA path on the SD
+    static string TAP_Path; // Current TAP path on the SD
+    static string DSK_Path; // Current DSK path on the SD
+    static string ROM_Path; // Current DSK path on the SD
+    static string IMG_Path; // Current MMC/HDF image path on the SD
+    static string ALL_Path; // Current path for unified file dialog
+    static string DLS_Path; // Current .dls path (GM.DLS soundbank conversion)
+
+    static DISK_FTYPE fileTypes[9];
+
+private:
+    friend class Config;
+///    static sdmmc_card_t *card;    
+};
+
+// Config files live under /.config/pico-speccy/<port-version>/<board-tag>/
+// (per-version + per-board), with palette.nvs and logs shared in CONFIG_DIR.
+//
+// (The 2026-08-05 flattening experiment is reverted: it was testing whether the
+// 4-level tree overflowed NPL's fw-side directory stack during its SD scan, and
+// it did not — NPL's failures were SS_VER, the missing HDAT registers, MDDRQ
+// hysteresis and the card->host reply queue. See the NeoGS section of CLAUDE.md.)
+#define CONFIG_DIR_ROOT "/.config"
+#define CONFIG_DIR      CONFIG_DIR_ROOT "/pico-speccy"
+#define CONFIG_DIR_VER  CONFIG_DIR "/" PORT_VERSION
+#define CONFIG_DIR_BOARD CONFIG_DIR_VER "/" CONFIG_BOARD_TAG
+#define STORAGE_NVS     CONFIG_DIR_BOARD "/storage.nvs"
+// Named config profiles: unversioned but still per-board (deliberately NOT a
+// single cross-board folder — a profile can carry a forced video_driver, or a
+// feature combination that fits this board's RAM/PSRAM budget but not a
+// different board's, so it must never cross board families). Unversioned
+// because a profile that vanished on every firmware update would be pointless.
+// A profile is a FULL snapshot of storage.nvs, mounted media included; loading
+// one copies it over storage.nvs and reboots. Slot numbers, not names, are the
+// filenames (the display name is the file's own first line, profile_name=) —
+// the snapshot slots' model, and it has no charset or collision edge cases.
+// There is deliberately no boot-time fallback to a profile: a firmware update
+// that finds no storage.nvs for its own version comes up on compiled-in
+// defaults and the user loads a profile from the menu. (The predecessor of all
+// this was a single default.nvs that WAS such a fallback, plus a Hold-M boot
+// rescue that reverted to it; both are gone. A stale default.nvs on an old
+// card is simply dead weight — nothing reads it and nothing deletes it.)
+#define CONFIG_DIR_BOARD_ANYVER CONFIG_DIR "/" CONFIG_BOARD_TAG
+#define CONFIG_DIR_PROFILES     CONFIG_DIR_BOARD_ANYVER "/profiles"
+#define CONFIG_PROFILE_SLOTS    40
+#define PALETTE_NVS     CONFIG_DIR "/palette.nvs"
+#define DEBUG_LOG_PATH  CONFIG_DIR "/debug.log"
+#define DUMP_LOG_PATH   CONFIG_DIR "/dump.log"
+
+// CONFIG_DIR (/.config/pico-speccy) holds configs + logs (per-version/per-board NVS).
+#define DISK_BOOT_FILENAME CONFIG_DIR "/boot.cfg"
+
+// User data lives in a separate visible root /pico-speccy on the SD card.
+// (It was /spec until 2026-09-11; the rename is deliberate and NOT migrated —
+// an existing card keeps its /spec folder, the user moves it by hand if they
+// want the old screenshots and snapshots back.)
+#define SPEC_DIR_ROOT "/pico-speccy"
+#define DISK_SCR_DIR  SPEC_DIR_ROOT "/screenshots"
+#define DISK_PSNA_DIR SPEC_DIR_ROOT "/snapshots"
+#define DISK_PSNA_FILE "persist"
+
+// Karabas-Pro ROMain reads the card itself through the Z-Controller and looks
+// for this hobeta file in the volume ROOT — the path is dictated by the guest
+// ROM, it cannot move into CONFIG_DIR.
+#define KARABAS_BOOT_FILE "/karabas_boot.$c"
+
+#define NO_RAM_FILE "none"
+
+#define SNA_48K_SIZE 49179
+#define SNA_128K_SIZE1 131103
+#define SNA_128K_SIZE2 147487
+
+#define MAX_FNAMES_PER_CHUNK 128
+
+// inline utility functions for uniform access to file/memory
+// and making it easy to to implement SNA/Z80 functions
+
+static inline uint8_t readByteFile(FIL* f)
+{
+    uint8_t result;
+    UINT br;
+    if (f_read(f, &result, 1, &br) != FR_OK || br != 1) {
+        return -1;
+    }
+    return result;
+}
+
+static inline uint16_t readWordFileLE(FIL* f)
+{
+    uint8_t lo = readByteFile(f);
+    uint8_t hi = readByteFile(f);
+    return lo | (hi << 8);
+}
+
+static inline uint16_t readWordFileBE(FIL* f)
+{
+    uint8_t hi = readByteFile(f);
+    uint8_t lo = readByteFile(f);
+    return lo | (hi << 8);
+}
+
+static inline size_t readBlockFile(FIL* f, uint8_t* dstBuffer, size_t size)
+{
+    UINT br;
+    f_read(f, dstBuffer, 0x4000, &br);
+    return br;
+}
+
+static inline void writeByteFile(uint8_t value, FIL* f)
+{
+    UINT bw;
+    f_write(f, &value, 1, &bw);
+}
+
+static inline void writeWordFileLE(uint16_t value, FIL* f)
+{
+    UINT bw;
+    uint8_t lo =  value       & 0xFF;
+    uint8_t hi = (value >> 8) & 0xFF;
+    f_write(f, &lo, 1, &bw);
+    f_write(f, &hi, 1, &bw);
+}
+
+// static inline void writeWordFileBE(uint16_t value, File f)
+// {
+//     uint8_t hi = (value >> 8) & 0xFF;
+//     uint8_t lo =  value       & 0xFF;
+//     f.write(hi);
+//     f.write(lo);
+// }
+
+// static inline size_t writeBlockFile(uint8_t* srcBuffer, File f, size_t size)
+// {
+//     return f.write(srcBuffer, size);
+// }
+
+// static inline uint8_t readByteMem(uint8_t*& ptr)
+// {
+//     uint8_t value = *ptr++;
+//     return value;
+// }
+
+// static inline uint16_t readWordMemLE(uint8_t*& ptr)
+// {
+//     uint8_t lo = *ptr++;
+//     uint8_t hi = *ptr++;
+//     return lo | (hi << 8);
+// }
+
+// static inline uint16_t readWordMemBE(uint8_t*& ptr)
+// {
+//     uint8_t hi = *ptr++;
+//     uint8_t lo = *ptr++;
+//     return lo | (hi << 8);
+// }
+
+// static inline size_t readBlockMem(uint8_t*& srcBuffer, uint8_t* dstBuffer, size_t size)
+// {
+//     memcpy(dstBuffer, srcBuffer, size);
+//     srcBuffer += size;
+//     return size;
+// }
+
+// static inline void writeByteMem(uint8_t value, uint8_t*& ptr)
+// {
+//     *ptr++ = value;
+// }
+
+// static inline void writeWordMemLE(uint16_t value, uint8_t*& ptr)
+// {
+//     uint8_t lo =  value       & 0xFF;
+//     uint8_t hi = (value >> 8) & 0xFF;
+//     *ptr++ = lo;
+//     *ptr++ = hi;
+// }
+
+// static inline void writeWordMemBE(uint16_t value, uint8_t*& ptr)
+// {
+//     uint8_t hi = (value >> 8) & 0xFF;
+//     uint8_t lo =  value       & 0xFF;
+//     *ptr++ = hi;
+//     *ptr++ = lo;
+// }
+
+// static inline size_t writeBlockMem(uint8_t* srcBuffer, uint8_t*& dstBuffer, size_t size)
+// {
+//     memcpy(dstBuffer, srcBuffer, size);
+//     dstBuffer += size;
+//     return size;
+// }
+
+#endif // FileUtils_h

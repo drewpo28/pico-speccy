@@ -1,0 +1,240 @@
+#include "BoardPins.h"
+
+
+#include "app/Config.h"
+#include "speccy/devices/zifi/ZiFi.h"          // ZiFi::linkUp() — UART link owns its pins even with the NIC off
+#include "app/Debug.h"         // Debug::uartActive/uartBootWanted — the console's live state
+#include "ChipPackage.h"   // IS_RP2350B — RUNTIME package detect (NOT usable in #if)
+
+#if defined(VGA_HDMI)
+extern bool SELECT_VGA;
+#endif
+
+namespace BoardPins {
+
+PIO auxPio() {
+#if defined(VGA_HDMI) && NUM_PIOS > 2
+    return SELECT_VGA ? pio2 : pio0;
+#else
+    return pio0;
+#endif
+}
+
+// ── Authoritative RP2350 UART pinmux (from rp2350[ab]_interface_pins.json) ────
+// TX pins are even; RX is the odd partner on the same instance. The simplified
+// (pin/4)%2 heuristic used previously is WRONG for GPIO 8/10/24/26 — use this.
+int uartInstanceForTx(uint8_t tx) {
+    static const uint8_t u0[] = {0, 2, 12, 14, 16, 18, 28, 30, 32, 34, 44, 46};
+    static const uint8_t u1[] = {4, 6, 8, 10, 20, 22, 24, 26, 36, 38, 40, 42};
+    for (unsigned i = 0; i < sizeof(u0); i++) if (u0[i] == tx) return 0;
+    for (unsigned i = 0; i < sizeof(u1); i++) if (u1[i] == tx) return 1;
+    return -1;
+}
+
+// ── Per-board ZiFi UART TX/RX candidate pairs (index 0 = default) ─────────────
+// Hard conflicts (display, SD, QSPI/SPI-PSRAM, LED, KBD, core audio) are excluded;
+// reassignable peripherals are offered with a note describing what they displace.
+#if defined(MURM2_W)
+// Murmulator 2.0 + RP2350B-Plus-W. Same carrier as MURM2, but two of its pairs
+// are gone: {20,21} is NESPAD CLK/LAT as before, and {26,27} / {38,39} must NOT
+// be offered — the header positions of GP26/27 carry GPIO40/41 (the pad's data
+// pair on this module) and GPIO38/39 ARE the radio's WL_CS/WL_CLK (Waveshare
+// schematic), so offering them from the Network menu would take WiFi down. GP0/GP1 are free
+// on this carrier and are a UART0 pair, so they lead.
+static const UartPair ZIFI_PAIRS[] = {
+    {0, 1, ""},                 // UART0 (free)
+    {20, 21, "off: NESPAD"},    // UART1
+    {22, 23, "off: MIDI/WAV"},  // UART1
+};
+#elif defined(MURM_W)
+// Murmulator 1.x + RP2350B-Plus-W. MURM1's {26,27} "off: audio" pair becomes
+// {40,41} here (same header positions, and still the audio pins). GP18-21 are
+// free on this board — the carrier's PIO SPI PSRAM is not built on MURM_W — but
+// they stay off the list: the APS6404 is still soldered to them and would drive
+// MISO whenever its CS floats low.
+static const UartPair ZIFI_PAIRS[] = {
+    {16, 17, "off: NESPAD"},    // UART0
+    {14, 15, "off: NESPAD"},    // UART0
+    {40, 41, "off: audio"},     // UART1 — the only non-UART0 pair here, as on MURM1
+};
+#elif defined(PICO_DV)
+static const UartPair ZIFI_PAIRS[] = {
+    {0, 1, ""},                 // UART0, dedicated ZiFi header
+    {20, 21, "off: WAV+MIDI"},  // UART1
+};
+#elif defined(MURM2)
+static const UartPair ZIFI_PAIRS[] = {
+    {20, 21, "off: NESPAD"},    // UART1
+    {0, 1, ""},                 // UART0
+    {22, 23, "off: MIDI/WAV"},  // UART1
+    {26, 27, "off: NESPAD"},    // UART1
+    {38, 39, ""},               // UART1 (free, RP2350B-only — filtered out at runtime
+                                // on QFN-60/A silicon by pinOnPackage(); see below)
+};
+#elif defined(PICO_PC)
+static const UartPair ZIFI_PAIRS[] = {
+    {20, 21, "off: NESPAD"},    // UART1
+    {2, 3, "QWST1"},            // UART0 (free)
+    {10, 11, ""},               // UART1 (free)
+};
+#elif defined(ZERO2)
+static const UartPair ZIFI_PAIRS[] = {
+    {24, 25, ""},               // UART1 (free)
+    {28, 29, ""},               // UART0 (free)
+    {8, 9, ""},                 // UART1 (free)
+    {0, 1, ""},                 // UART0 (free)
+    {20, 21, "off: PCM DAC"},   // UART1
+    {22, 23, "off: MIDI"},      // UART1
+};
+#else // MURM1_P2 (RP2350 Murmulator-1) and any other RP2350 fallback
+static const UartPair ZIFI_PAIRS[] = {
+    {16, 17, "off: NESPAD"},    // UART0
+    {14, 15, "off: NESPAD"},    // UART0
+    {26, 27, "off: audio"},     // UART1 — the ONLY non-UART0 pair on this board, so
+                                // the only one that can coexist with the GP0/1 debug
+                                // console (Debug > UART console). Every other UART1 pin pair is
+                                // taken by SD/display/PSRAM and GP23 isn't broken out.
+                                // Displaces the I2S/PWM audio output on GP26/27 — see
+                                // init_sound() which yields these pins to ZiFi.
+};
+#endif
+
+static const int ZIFI_PAIRS_N = sizeof(ZIFI_PAIRS) / sizeof(ZIFI_PAIRS[0]);
+
+// Is this GPIO present on the silicon we're actually running on? QFN-60 (RP2350A)
+// exposes GPIO 0..29; QFN-80 (RP2350B) exposes 0..47. Must be runtime, not #if —
+// the same B build runs on both packages (see ChipPackage.h).
+static inline bool pinOnPackage(uint8_t pin) { return pin <= (IS_RP2350B ? 47 : 29); }
+static inline bool pairOnPackage(const UartPair& p) { return pinOnPackage(p.tx) && pinOnPackage(p.rx); }
+
+// zifiPairCount()/zifiPair() expose a CONTIGUOUS, package-filtered view of
+// ZIFI_PAIRS so the picker's index math (menu_curopt = i+2) stays dense even when
+// a board lists pairs that only exist on the larger package (e.g. MURM2 38/39).
+int zifiPairCount() {
+    int n = 0;
+    for (int i = 0; i < ZIFI_PAIRS_N; i++) if (pairOnPackage(ZIFI_PAIRS[i])) n++;
+    return n;
+}
+const UartPair* zifiPair(int index) {
+    if (index < 0) return nullptr;
+    for (int i = 0; i < ZIFI_PAIRS_N; i++) {
+        if (!pairOnPackage(ZIFI_PAIRS[i])) continue;
+        if (index-- == 0) return &ZIFI_PAIRS[i];
+    }
+    return nullptr;
+}
+uint8_t         zifiDefaultTx()      { return ZIFI_PAIRS[0].tx; }
+uint8_t         zifiDefaultRx()      { return ZIFI_PAIRS[0].rx; }
+
+bool resolveZifiPins(uint8_t cfg_tx, uint8_t cfg_rx, uint8_t& out_tx, uint8_t& out_rx) {
+    if (cfg_tx == PIN_OFF) { out_tx = out_rx = PIN_OFF; return false; }
+    if (cfg_tx == PIN_DEFAULT) { out_tx = zifiDefaultTx(); out_rx = zifiDefaultRx(); return true; }
+    out_tx = cfg_tx; out_rx = cfg_rx;
+    return true;
+}
+
+bool zifiOwnsPin(uint8_t pin) {
+    // The pins belong to ZiFi whenever it's — or WiFi is — using (or about to use)
+    // them: the NIC is enabled, WiFi is enabled (the boot auto-connect runs ~4 s in
+    // and will grab the UART, so conflicting peripherals must yield at boot BEFORE
+    // that), OR the ESP UART link is already up. Gating only on zifi_enabled meant a
+    // soft reset's init_sound() re-claimed the shared audio pins (GP26/27 on
+    // MURM1_P2) and silently killed a live WiFi link until a full reboot; gating
+    // without wifi_enabled meant a WiFi-only setup (NIC off) lost the boot pin race
+    // to NESPAD on boards whose default UART pair overlaps it (MURM2/PICO_PC 20/21).
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return false;   // on-chip radio: no UART pins at all
+#endif
+    // USB-CDC transport: the ESP hangs off a USB serial dongle, no GPIO UART is
+    // claimed (ZiFi::init returns before any pin setup) — so NESPAD / MIDI / WAV /
+    // audio must NOT yield to it. On MURM2/PICO_PC the default pair 20/21 is the
+    // NESPAD's CLK/LAT, which is how "USB ESP-01 still kills the gamepad" showed up.
+    if (Config::zifi_transport == 1) return false;
+    if (!Config::zifi_enabled && !Config::wifi_enabled && !ZiFi::linkUp()) return false;
+    uint8_t tx, rx;
+    if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return false;
+    return pin == tx || pin == rx;
+}
+
+const char* zifiActiveNote() {
+#if PICOSPECCY_WIFI
+    if (Config::zifi_transport == 2) return "";
+#endif
+    if (Config::zifi_transport == 1) return "";      // USB-CDC: no GPIO pins, nothing displaced
+    uint8_t tx, rx;
+    if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return "";
+    for (int i = 0; i < ZIFI_PAIRS_N; i++)
+        if (ZIFI_PAIRS[i].tx == tx) return ZIFI_PAIRS[i].note;
+    return "";
+}
+
+// ── Debug > UART console ──────────────────────────────────────────────────────
+#ifndef DBG_UART_TX_PIN
+#define DBG_UART_TX_PIN 0xFF
+#endif
+#ifndef DBG_UART_KBD_CLOCK_PIN
+#define DBG_UART_KBD_CLOCK_PIN 0xFF
+#endif
+
+uint8_t dbgUartTxPin()       { return DBG_UART_TX_PIN; }
+int     dbgUartInstance()    { return DBG_UART_TX_PIN == 0xFF ? -1 : uartInstanceForTx(DBG_UART_TX_PIN); }
+uint8_t dbgUartKbdClockPin() { return DBG_UART_KBD_CLOCK_PIN; }
+
+// "Live or about to be": before Config::load only the scratch tag knows (the
+// console may already be running from main() entry); board_dbg_uart_apply()
+// then reconciles it with Config AND rewrites the tag, and it runs before any
+// of the yielding peripherals initialise — so after it both tests agree with
+// the console's real state. Deliberately NOT Config::dbg_uart: a console the
+// user asked for but ZiFi blocked must not make NESPAD/WAV/KBD yield to nothing.
+static bool dbgUartWanted() {
+    if (DBG_UART_TX_PIN == 0xFF) return false;
+    return Debug::uartActive() || Debug::uartBootWanted();
+}
+
+bool dbgUartOwnsPin(uint8_t pin) {
+    if (!dbgUartWanted()) return false;
+    if (pin == DBG_UART_TX_PIN) return true;
+    if (DBG_UART_KBD_CLOCK_PIN != 0xFF &&
+        (pin == DBG_UART_KBD_CLOCK_PIN || pin == DBG_UART_KBD_CLOCK_PIN + 1)) return true;
+    return false;
+}
+
+bool dbgUartBlockedByZifi() {
+    if (DBG_UART_TX_PIN == 0xFF) return true;
+    // Same "who may use the ESP UART" rule as zifiOwnsPin; a USB-CDC transport
+    // uses no GPIO UART at all.
+    if (!Config::zifi_enabled && !Config::wifi_enabled && !ZiFi::linkUp()) return false;
+    if (Config::zifi_transport == 1) return false;
+    uint8_t tx, rx;
+    if (!resolveZifiPins(Config::zifi_tx_pin, Config::zifi_rx_pin, tx, rx)) return false;
+    if (uartInstanceForTx(tx) == dbgUartInstance()) return true;        // one peripheral, two owners
+    if (tx == DBG_UART_TX_PIN || rx == DBG_UART_TX_PIN) return true;
+    if (DBG_UART_KBD_CLOCK_PIN != 0xFF) {
+        const uint8_t k0 = DBG_UART_KBD_CLOCK_PIN, k1 = DBG_UART_KBD_CLOCK_PIN + 1;
+        if (tx == k0 || tx == k1 || rx == k0 || rx == k1) return true;
+    }
+    return false;
+}
+
+const char* dbgUartNote() {
+#if defined(PICO_DV)
+    return "off: WAV input";
+#elif defined(PICO_PC)
+    return "KBD -> GP10/11";
+#elif defined(MURM2) || defined(ZERO2)
+    return "";
+#else
+    return "KBD -> GP16/17, NESPAD off";
+#endif
+}
+
+} // namespace BoardPins
+
+// C-callable shim (PinSerialData_595.c is plain C and can't use the namespace).
+extern "C" int board_zifi_owns_pin(unsigned pin) {
+    return BoardPins::zifiOwnsPin((uint8_t)pin) ? 1 : 0;
+}
+
+extern "C" int board_dbg_uart_owns_pin(unsigned pin) {
+    return BoardPins::dbgUartOwnsPin((uint8_t)pin) ? 1 : 0;
+}

@@ -87,6 +87,9 @@ void uiHeaderClock(int ix, int iw, int ty, int loEnd, int hiBeg,
 // completed while the Network page — the one place you actually watch for it —
 // was on screen.
 void uiIdle(int ms = 5);
+// Called from every uiIdle() — Pico-Zx-Player keeps its audio ring fed through it
+// while a nested page (the file browser) owns the key loop. nullptr otherwise.
+extern void (*uiIdleHook)();
 
 } // namespace nm
 

@@ -1,4 +1,4 @@
-// Host test for the ZX Spectrum +3e IDE port decode (src/Plus3eIde.h).
+// Host test for the ZX Spectrum +3e IDE port decode (src/speccy/machines/Plus3/Plus3eIde.h).
 //
 // The decode was derived by disassembling the shipped +3e ROM, so the test checks it
 // against that same ROM rather than against a table typed out twice: it scans bank 2
@@ -9,7 +9,7 @@
 //
 //   g++ -O2 -Wall -Wextra -Isrc -o /tmp/p3e tools/plus3e_ide_test.cpp && /tmp/p3e
 
-#include "Plus3eIde.h"
+#include "speccy/machines/Plus3/Plus3eIde.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -92,7 +92,7 @@ int main(int argc, char** argv) {
     // Bank 2 holds IDEDOS. Every `LD BC,nnEF` in it is a port the driver actually
     // drives, so each must decode, and between them they must cover all eight
     // registers. Path is overridable so the test can run from anywhere.
-    const char* rom = (argc > 1) ? argv[1] : "src/roms/plus3e/src/rom2.bin";
+    const char* rom = (argc > 1) ? argv[1] : "src/speccy/roms/plus3e/src/rom2.bin";
     FILE* f = fopen(rom, "rb");
     if (!f) {
         printf("  SKIP: %s not found (pass the path as argv[1] to include this check)\n", rom);

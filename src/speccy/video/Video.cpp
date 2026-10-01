@@ -1,0 +1,9642 @@
+/*
+
+ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
+
+Copyright (c) 2023, 2024 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
+https://github.com/EremusOne/ZX-ESPectrum-IDF
+
+Based on ZX-ESPectrum-Wiimote
+Copyright (c) 2020, 2022 David Crespo [dcrespo3d]
+https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote
+
+Based on previous work by Ramón Martinez and Jorge Fuertes
+https://github.com/rampa069/ZX-ESPectrum
+
+Original project by Pete Todd
+https://github.com/retrogubbins/paseVGA
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+To Contact the dev team you can write to zxespectrum@gmail.com or 
+visit https://zxespectrum.speccy.org/contacto
+
+*/
+
+#if PERF_TRACE
+#include "hardware/regs/xip.h"
+#include "hardware/regs/addressmap.h"
+#endif
+#include "Video.h"
+#include "app/PerfScope.h"
+#include "speccy/devices/storage/DivMMC.h"
+#include <math.h>       // powf() — CRT filter gamma curve (cold path, init only)
+#include "ui/UiGfx.h"   // uiPalette() for BMP capture of the new menu
+#include "app/Debug.h"
+#include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/machines/TsConf/TsuBlit.h"
+#include "app/CodeOverlay.h"
+#include "speccy/machines/TsConf/TsFastMem.h"
+#include "app/Subsystem.h"
+#include "app/Buffer.h"
+#include "app/TryAlloc.h"
+#include "speccy/devices/gs/GS.h"   // GS::enabled / hostActive — renderer placement policy (tsC1PlacementPoll)
+#include <hardware/sync.h>   // __dmb (core1 render queue)
+#include "speccy/devices/tape/Tape.h"
+#include "fs/FileUtils.h"
+#include "VidPrecalc.h"
+#include "speccy/z80/CPU.h"
+#include "app/ESPectrum.h"
+#include "speccy/core/MemESP.h"
+#include "app/Config.h"
+#include "ui/OSDMain.h"
+#include "ui/LEDIndicators.h"
+#include "app/hardconfig.h"
+#include "app/hardpins.h"
+#include "speccy/z80/z80.h"
+#include "speccy/z80/z80operations.h"
+#include "drivers/psram/psram_spi.h"
+#include "speccy/core/Ports.h"
+#include "speccy/devices/Z80DMA.h"
+#include "hardware/xip_cache.h"
+#include "speccy/machines/Atm.h"
+extern "C" const unsigned char gb_rom_atm_font[];   // roms/atm/atm_roms.c (SGEN.ROM order)
+#include "hardware/regs/addressmap.h"
+extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
+extern "C" void vga_set_palette_entry_solid(uint8_t i, uint32_t color888);
+extern "C" void graphics_set_scanlines(uint8_t level);
+extern "C" void graphics_set_crt(uint8_t level);
+extern "C" void graphics_set_dither(bool enabled);
+extern "C" void graphics_update_mode_timing(void);
+extern "C" bool graphics_vmap_supported(void);
+extern "C" void graphics_set_vmap(const uint16_t *map, int n);
+extern "C" const uint16_t *graphics_vmap_latched(void);
+extern "C" uint32_t graphics_frame_count(void);
+// graphics.h is a C header this TU does not include; see the note there. Returns
+// the 37.8 MHz twin of a standard video_mode[] index (the 90/75 Hz set).
+extern "C" int  graphics_fast_mode(int mode);
+extern "C" void graphics_set_hdmi_clock_drive(bool soft);
+extern "C" void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
+extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
+extern "C" void vga_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
+extern "C" volatile bool profi_ds80_active;
+extern "C" volatile uint hdmi_current_line;
+#ifdef VGA_HDMI
+extern "C" int hdmi_beam_row(void);
+extern "C" int hdmi_blank_lines_left(void);
+extern "C" int hdmi_blank_lines_total(void);
+extern "C" int vga_beam_row(void);
+extern "C" void hdmi_set_vsync_line(unsigned line);
+extern "C" void vga_set_vsync_line(uint32_t line);
+#endif
+
+#ifndef VGA_HDMI
+// Profi DS80 packed-pair display mode is implemented entirely inside the VGA/HDMI
+// drivers (which SOFTTV/TFT/TV builds do not link).  These symbols are still
+// referenced from shared code on the (never-taken) DS80 code paths, so provide
+// fallbacks here: profi_ds80_active stays false → every DS80 branch is dead, and
+// the mode-switch entry points become no-ops.
+extern "C" volatile bool profi_ds80_active = false;
+extern "C" void hdmi_set_profi_ds80_mode(bool, const uint32_t *, const uint8_t *) {}
+extern "C" void vga_set_profi_ds80_mode(bool, const uint32_t *, const uint8_t *) {}
+#endif
+// Place hot video functions in SRAM instead of XIP flash
+#undef IRAM_ATTR
+#define IRAM_ATTR __not_in_flash("video")
+
+#pragma GCC optimize("O3")
+
+VGA8Bit VIDEO::vga;
+
+extern "C" uint8_t* __not_in_flash_func(getLineBuffer)(int line) {
+    if (!VIDEO::vga.frameBuffer) return 0;
+    return (uint8_t*)VIDEO::vga.frameBuffer[line];
+}
+
+extern "C" void __not_in_flash_func(ESPectrum_vsync)() {
+    ESPectrum::v_sync = true;
+}
+
+extern "C" int __not_in_flash_func(get_video_mode)() {
+    return VIDEO::video_mode;
+}
+
+extern "C" int get_framebuffer_width() {
+    return VIDEO::vga.xres;
+}
+
+extern "C" int get_framebuffer_height() {
+    return VIDEO::vga.yres;
+}
+
+// extern "C" video_mode_t ESPectrum_VideoMode() {
+//     return VIDEO::video_mode[0];
+// }
+
+#ifdef VGA_HDMI
+extern bool SELECT_VGA;
+int VIDEO::video_mode = 0;
+#endif
+
+uint16_t VIDEO::spectrum_colors[NUM_SPECTRUM_COLORS] = {
+    BLACK,     BLUE,     RED,     MAGENTA,     GREEN,     CYAN,     YELLOW,     WHITE,
+    BRI_BLACK, BRI_BLUE, BRI_RED, BRI_MAGENTA, BRI_GREEN, BRI_CYAN, BRI_YELLOW, BRI_WHITE,
+    ORANGE
+};
+
+uint8_t VIDEO::borderColor = 0;
+uint32_t VIDEO::brd;
+uint32_t VIDEO::border32[16];
+uint8_t VIDEO::flashing = 0;
+uint8_t VIDEO::flash_ctr= 0;
+uint8_t VIDEO::OSD = 0;
+uint8_t VIDEO::tStatesPerLine;
+int VIDEO::tStatesScreen;
+int VIDEO::tStatesBorder;
+uint8_t* VIDEO::grmem;
+uint8_t* VIDEO::profi_clrmem = nullptr;
+
+// DS80 write-to-display-page interceptor (PROFI_PORT_TRACE only).
+// writebyte() in MemESP.h compares ramCurrent[slot] against these to detect
+// when the Z80 writes into the currently-displayed pixel or colour page.
+#if PROFI_PORT_TRACE
+extern uint8_t* ds80_dbg_clrmem;
+extern uint8_t* ds80_dbg_grmem;
+extern int      ds80_dbg_wr_cnt;
+#endif
+
+extern "C" uint8_t  read8psram(uint32_t addr32);
+
+// Graphics-layer DS80 colour remap state (see Graphics8BitPalette).  Declared
+// unconditionally in the header and referenced by inline dot()/drawChar()/etc.
+// accessors in every build, so the definitions must exist for all targets — on
+bool    Graphics8BitPalette::ds80_active = false;
+uint8_t Graphics8BitPalette::ds80_color_lut[17] = {0};
+
+// Profi DS80 packed-pair framebuffer in butter PSRAM.
+// Layout: PROFI_FB_W bytes/row = 32 black-pad + 256 content + 32 black-pad.
+// 1 byte = pair of 4-bit palette indices via profi_pair_lookup[ink][paper].
+// HDMI driver expands each fb byte to 2 different HDMI pixels → 512 native pixels.
+#define PROFI_FB_W 320   // 32 left-pad + 256 content + 32 right-pad
+#define PROFI_FB_H 240
+// DS80 vertical border for the 720×576 (yres=288) full-border mode: the 240 content
+// lines are centred, leaving 48 fb rows split symmetrically (24 top + 24 bottom).
+// In 640×480 (yres=240) there is no vertical border (content fills the height).
+#define DS80_BORDER_TOP 24
+uint8_t  VIDEO::profi_pair_lookup[16][16];
+
+// Profi DS80 default palette — GGGRRRBb format (3-3-2 bits).
+// Raw startup bytes: {0x00,0x02,0x10,0x12,0x80,0x82,0x90,0x92,
+//                     0x00,0x03,0x18,0x1B,0xC0,0xC3,0xD8,0xDB}
+// Standard bytes have bit5=bit2=0 → G/R use only their 2 MSBs → dim=170(0xAA), bright=255.
+extern "C" const uint32_t profi_default_palette16[16] = {
+    0x000000, // 0  0x00 black
+    0x0000AA, // 1  0x02 dark blue
+    0xAA0000, // 2  0x10 dark red
+    0xAA00AA, // 3  0x12 dark magenta
+    0x00AA00, // 4  0x80 dark green
+    0x00AAAA, // 5  0x82 dark cyan
+    0xAAAA00, // 6  0x90 dark yellow
+    0xAAAAAA, // 7  0x92 light gray
+    0x000000, // 8  0x00 bright-black = same as index 0
+    0x0000FF, // 9  0x03 bright blue
+    0xFF0000, // 10 0x18 bright red
+    0xFF00FF, // 11 0x1B bright magenta
+    0x00FF00, // 12 0xC0 bright green
+    0x00FFFF, // 13 0xC3 bright cyan
+    0xFFFF00, // 14 0xD8 bright yellow
+    0xFFFFFF, // 15 0xDB white
+};
+
+// Live Profi palette: modifiable at runtime via OUT (port_low=0x7E).
+// Initialized to defaults at boot; refresh-applied to HDMI on each write.
+uint32_t VIDEO::profi_palette_live[16] = {
+    0x000000, 0x0000AA, 0xAA0000, 0xAA00AA, 0x00AA00, 0x00AAAA, 0xAAAA00, 0xAAAAAA,
+    0x000000, 0x0000FF, 0xFF0000, 0xFF00FF, 0x00FF00, 0x00FFFF, 0xFFFF00, 0xFFFFFF
+};
+
+// Convert a Profi DS80 palette write to RGB888.
+// Byte written via the #7E-style port trick: bits[7:5]=GX2:0, bits[4:2]=RX2:0,
+// bits[1:0]=BX2:1. bx0 is the separate BX0 latch (port #FE bit7) — real DS80
+// hardware combines it with BX2:1 to form a full 3-bit blue component, giving a
+// genuine 3:3:3 (512-color) palette instead of the 3:3:2 (256-color) subset that
+// bx0=0 software (which never touches #FE bit7) reduces to.
+// G/R/B: 3-bit scale — levels 0..6 map to 0,43,85,128,170,213,255; level 7 clamps
+// to 255. Standard palette bytes (bit5=bit2=0, bx0=0) decode identically to the
+// old 3:3:2-only table: dim=170 (0xAA), bright=255.
+static inline uint32_t profi_color_to_rgb888(uint8_t c, uint8_t bx0) {
+    static const uint8_t gr[8] = {0, 43, 85, 128, 170, 213, 255, 255};
+    uint8_t R = gr[(c >> 2) & 0x07];                 // bits[4:2] = RX2:0
+    uint8_t G = gr[(c >> 5) & 0x07];                 // bits[7:5] = GX2:0
+    uint8_t B = gr[((c & 0x03) << 1) | (bx0 & 1)];   // BX2:1 (bits[1:0]) + BX0
+    return ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
+}
+
+// Per-frame swap/accessor snapshot for [NEG] attribution (see EndFrame).
+volatile uint32_t g_frame_swap_us = 0, g_frame_swap_idle_us = 0, g_frame_accb = 0;
+
+uint8_t VIDEO::profi_bx0_latch = 0;
+uint8_t VIDEO::profi_gx0_latch = 0;
+volatile bool VIDEO::profi_palette_dirty = false;
+volatile bool VIDEO::profi_ds80_activate_pending   = false;
+volatile bool VIDEO::profi_ds80_deactivate_pending = false;
+bool VIDEO::profi_ds80_osd_active = false;
+
+// Graphics-layer DS80 colour remap (see Graphics8BitPalette).  When DS80 is active,
+// dotFast()/dot()/fillRect() pass standard ZX colour indices (0..16) through
+// Graphics8BitPalette::ds80_color_lut[] so OSD/LED/menu drawing renders in the
+// intended colour while the framebuffer byte still indexes the DS80 packed-pair
+// conv_color table.  The lut maps ZX index → profi_pair_lookup[c][c] (a SOLID pair
+// slot: both half-pixels = palette[c]).  ORANGE (16) has no DS80 slot → BRI_YELLOW.
+// (ds80_active / ds80_color_lut defined unconditionally above.)
+
+void VIDEO::rebuildDS80ColorLut() {
+    for (int c = 0; c < 16; c++)
+        Graphics8BitPalette::ds80_color_lut[c] = profi_pair_lookup[c][c];
+    // ORANGE (16): no DS80 palette entry — fall back to BRI_YELLOW (14).
+    Graphics8BitPalette::ds80_color_lut[16] = profi_pair_lookup[14][14];
+}
+
+// Apply/clear the Profi DS80 packed-pair display mode on whichever video driver is
+// compiled in.  DS80 relies on the VGA/HDMI driver's conv_color pair-slot machinery
+// (and SELECT_VGA to pick between the two) — neither exists under SOFTTV/TFT, where
+// there is no DS80 output path, so this is a no-op for those builds.
+static inline uint32_t crtTransform(uint32_t rgb);   // CRT filter colour stage, defined below
+
+// noinline = FLASH: it is called on a mode switch, never per line, but it is reached
+// from the RAM-resident EndFrame; inlined there it dragged crtTransform's powf chain
+// into SRAM (~1 KB of EndFrame growth on the HSTX build in 1.0.8).
+static __attribute__((noinline)) void profi_ds80_driver_set(bool active, const uint32_t *palette16, const uint8_t *pair_lut) {
+#ifdef VGA_HDMI
+    extern bool SELECT_VGA;
+    // Run the DS80 palette through the CRT colour stage here rather than at the
+    // call sites: profi_palette_live[] is guest-visible state that round-trips
+    // through profi_palette_ui_saved[], so baking a transform into it would
+    // compound on every re-apply. Only crtTransform() — the ZX palette presets
+    // deliberately do not apply to Profi's own 512-colour palette.
+    uint32_t crt16[16];
+    if (active && palette16 && Config::crt_filter) {
+        for (int i = 0; i < 16; i++) crt16[i] = crtTransform(palette16[i]) & 0x00FFFFFF;
+        palette16 = crt16;
+    }
+    if (SELECT_VGA)
+        vga_set_profi_ds80_mode(active, palette16, pair_lut);
+    else
+        hdmi_set_profi_ds80_mode(active, palette16, pair_lut);
+#else
+    (void)active; (void)palette16; (void)pair_lut;
+#endif
+}
+
+// Whole-palette override for a full-screen OSD over DS80: the new menu renders natively
+// in DS80 with its own 16 colours (512x240, packed pairs), and the ZX-keyboard page
+// borrows the standard ZX 16 the same way. The Graphics-layer ZX→DS80 remap
+// (Graphics8BitPalette::ds80_active + ds80_color_lut) stays on for the whole DS80
+// session and only decides WHICH palette a solid pair slot resolves to; these two
+// swap that palette and put it back.
+//
+// (There used to be a per-OSD "STD vs DS80 palette" toggle here — the classic OSD's
+// answer to drawing standard ZX colour bytes over a DS80 framebuffer. The new UI
+// installs its own palette instead, which makes the choice meaningless, so the option
+// and Config::profi_ds80_std_palette_osd were removed; the classic OSD keeps the
+// running app's palette, which was that toggle's default.)
+static uint32_t profi_palette_ui_saved[16];
+static bool     profi_palette_ui_saved_valid = false;
+
+// Idempotent on purpose: the guest's palette is saved only on the FIRST install,
+// but the UI colours and the driver push happen every time. The menu re-installs
+// after anything that rewrites the hardware palette under it (F_PALETTE settings
+// -> VIDEO::applyPalette), and in a packed-pair mode that rewrite lands in the
+// very tables this pushes — an early return there made every one of those
+// re-installs a no-op and left the open menu wearing the standard ramp.
+void VIDEO::applyUiDS80Palette(const uint32_t rgb888[16]) {
+    if (!profi_palette_ui_saved_valid) {
+        for (int i = 0; i < 16; i++) profi_palette_ui_saved[i] = profi_palette_live[i];
+        profi_palette_ui_saved_valid = true;
+    }
+    for (int i = 0; i < 16; i++) profi_palette_live[i] = rgb888[i] & 0x00FFFFFF;
+    profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+    rebuildDS80ColorLut();                          // keep legacy dotFast users sane
+    Debug::log("[PAL] UI palette installed over the pair mode (guest live0=%06lX saved)",
+               (unsigned long)profi_palette_ui_saved[0]);
+}
+
+bool VIDEO::uiOwnsPairPalette() { return profi_palette_ui_saved_valid; }
+
+void VIDEO::restoreUiDS80Palette() {
+    if (!profi_palette_ui_saved_valid) return;
+    for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_palette_ui_saved[i];
+    profi_palette_ui_saved_valid = false;
+    Debug::log("[PAL] UI palette handed back (guest live0=%06lX, pair %s)",
+               (unsigned long)profi_palette_live[0],
+               profi_ds80_active ? "re-pushed" : "not armed - array only");
+    // Only touch the driver while DS80 is still armed: a machine switch from inside the
+    // menu may already have left DS80, and re-arming it over a standard framebuffer
+    // gives a shifted/garbled screen (same hazard DS80Guard documents).
+    if (profi_ds80_active) {
+        // Timex hi-res drives the same pair tables from the machine's own ZX
+        // palette, not from profi_palette_live (which exists because DS80 has a
+        // guest palette port) — hand the guest ITS colours back, not Profi's.
+        if (timex_hires_live) timexHiresRefresh();
+        else if (bl_pair_live) blPairRefresh();
+        else profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        rebuildDS80ColorLut();
+    }
+}
+
+// Re-blacken the DS80 side-padding columns (left 0..pad_l-1 and right pad_l+256..xres-1)
+// across all framebuffer rows.  The DS80 renderer only ever rewrites the 256 content
+// bytes per row, so padding that an OSD dialog drew over is otherwise left dirty after
+// the menu closes (visible artefacts in the side border).  Call after OSD close.
+void VIDEO::clearDS80Padding() {
+    if (!vga.frameBuffer) return;
+    const int pad_l = ((int)vga.xres - 256) / 2;
+    if (pad_l <= 0) return;
+    const int right_off = pad_l + 256;
+    const int pad_r = (int)vga.xres - right_off;
+    for (int y = 0; y < (int)vga.yres; y++) {
+        uint8_t* row = (uint8_t*)vga.frameBuffer[y];
+        if (!row) continue;
+        memset(row, 0, pad_l);
+        if (pad_r > 0) memset(row + right_off, 0, pad_r);
+    }
+}
+
+void VIDEO::profiPaletteReset() {
+    for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_default_palette16[i];
+    profi_palette_dirty = true; // refresh on next EndFrame if DS80 active
+}
+
+void VIDEO::profiPaletteApplyPending() {
+    // Timex hi-res raises profi_ds80_active but is NOT driven by the Profi
+    // palette port — refreshing from profi_palette_live here would replace the
+    // machine's own ZX palette with Profi's.
+    if (timex_hires_live || bl_pair_live) { profi_palette_dirty = false; return; }
+    if (profi_palette_dirty && profi_ds80_active
+        && !profi_ds80_activate_pending && !profi_ds80_deactivate_pending) {
+        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        profi_palette_dirty = false;
+    }
+}
+
+void VIDEO::profiPaletteWrite(uint8_t index, uint8_t profi_color) {
+    // Only honor palette writes when DS80 mode is active — avoids corrupting
+    // defaults from incidental port-0x7E writes during BIOS startup setup.
+    if (!profi_ds80_active) return;
+    uint8_t idx = index & 0x0F;
+    uint32_t newRgb = profi_color_to_rgb888(profi_color, profi_bx0_latch);
+    profi_palette_live[idx] = newRgb;
+    // Defer HDMI refresh to HDMI ISR vblank (set dirty flag, applied in EndFrame).
+    profi_palette_dirty = true;
+}
+
+// Build profi_pair_lookup[ink][paper] → HDMI conv_color slot index.
+//
+// Slot budget (250 available):
+//   0..239:   free pair data slots (220..237 = audio range, suppressed in DS80 by DMA handler)
+//   240..244: BASE_HDMI_CTRL_INX + IDX_SCANLINE — NEVER pair data (sync/porch)
+//   245..254: free pair data slots
+//   255:      border fill — NEVER pair data
+//
+// We need 250 unique pairs (256 total − 6 merges).
+// Merges: ink=0..5, paper=8 → paper=0  (bright-black bg = black bg for these inks).
+//   ink=6..15 (INCLUDING ink=8): NO normalization.
+//   → (8,8) gets its OWN slot → both pixels render as palette[8] → solid color, no stripes.
+//   → ink=8 is fully independent from ink=0 → changing palette[8] can't corrupt black pixels.
+// written[] guard in hdmi_set_profi_ds80_mode() ensures paper=0 TMDS wins for merged slots.
+static void init_profi_pair_lookup() {
+    // safe[]: all slots except 240..244 (sync/scanline) and 255 (border) → 250 slots.
+    // With HDMI audio the Data Island machinery owns 40 more indices (184..199 =
+    // DI data set 2, 216..239 = preambles/guards/data set 0 — see hdmi.c), so
+    // pair_lut must avoid them → 210 slots; the bright-ink × bright-paper merges
+    // below free exactly the difference (40 extra merges). VGA video or any
+    // non-HDMI audio driver keeps the full 250-pair palette.
+    bool reserve_di = false;
+#if defined(VGA_HDMI) && HDMI_HSTX < 2
+    // The HSTX command-expander build keeps its islands in the line buffer, so the
+    // pair table has all 250 slots whatever the audio driver.
+    extern bool SELECT_VGA;
+    reserve_di = !SELECT_VGA && Config::audio_driver == 4;
+#endif
+    int safe[256], ns = 0;
+    for (int i = 0; i < 256; i++) {
+        if (i >= 240 && i <= 244) continue;
+        if (i == 255) continue;
+        if (reserve_di && ((i >= 184 && i <= 199) || (i >= 216 && i <= 239))) continue;
+        safe[ns++] = i;  // ns == 250 (210 with reserve_di)
+    }
+    bool assigned[16][16] = {};
+    int slot_idx = 0;
+    for (int ink = 0; ink < 16; ink++) {
+        for (int paper = 0; paper < 16; paper++) {
+            // For inks 0..5 only: paper=8 → paper=0 (6 merges to fit in 250 slots).
+            // For inks 6..15 (including ink=8): full independence — paper=8 is own slot.
+            int cp = (paper == 8 && ink <= 5) ? 0 : paper;
+            // HDMI-audio slot diet: bright ink (9..15) on a DIFFERENT bright paper
+            // renders on the base paper (p-8) instead — 42 candidates minus the two
+            // preserved classic text schemes (white-on-bright-blue and
+            // bright-blue-on-white) = exactly the 40 reserved DI slots. Diagonals
+            // (ink==paper) keep their own slots, so solid fills are unaffected.
+            if (reserve_di && ink >= 9 && paper >= 9 && ink != paper
+                && !(ink == 15 && paper == 9) && !(ink == 9 && paper == 15))
+                cp = paper - 8;
+            if (!assigned[ink][cp]) {
+                assigned[ink][cp] = true;
+                VIDEO::profi_pair_lookup[ink][paper] = (uint8_t)safe[slot_idx++];
+            } else {
+                VIDEO::profi_pair_lookup[ink][paper] = VIDEO::profi_pair_lookup[ink][cp];
+            }
+        }
+    }
+    // slot_idx == 250 here (210 with reserve_di)
+}
+
+bool VIDEO::isProfiDS80() {
+    return Config::arch == A_PROFI && (Ports::portDFFD & 0x80);
+}
+
+volatile bool VIDEO::gmx_ext_pending_on = false;
+volatile bool VIDEO::gmx_ext_pending_off = false;
+bool VIDEO::gmx_ext_live = false;
+
+uint8_t* VIDEO::gmx_frame_bmp = nullptr;
+uint8_t* VIDEO::gmx_frame_att = nullptr;
+uint32_t VIDEO::gmx_frame_srow = 0;
+bool VIDEO::gmx_border_dirty = false;
+
+// ── Timex hi-res 512x192 — see Video.h ────────────────────────────────────────
+volatile bool VIDEO::timex_hires_pending_on  = false;
+volatile bool VIDEO::timex_hires_pending_off = false;
+bool VIDEO::timex_hires_live = false;
+// One source byte = 8 pixels = 4 packed-pair bytes = one aligned uint32 store.
+// Indexed by NIBBLE: entry = pair(bit3,bit2) | pair(bit1,bit0) << 8, so a byte
+// becomes  lut[b & 15] | (lut[b >> 4] << 16)  — which lands the four pair bytes
+// in the framebuffer's (k^2) order (physical +0..+3 = display k 2,3,0,1), the
+// same permutation AluByte bakes in (b2,b3,b0,b1) and the DS80 branch spells out.
+static uint16_t timex_hr_lut[16];
+
+// "In this mode all colours, including the BORDER, are BRIGHT, and the BORDER
+// colour is the same as the PAPER colour" (WoS Timex reference); paper is the
+// ink's complement — 000 = black on white ... 111 = white on black.  MAME
+// (tc2048_state::_64col_scanline: paper = 7 - inkcolor) and Fuse
+// (hires_convert_dec) agree on the pairing; Fuse and the reference also agree
+// on BRIGHT, MAME alone renders the non-bright half of the palette.
+uint8_t VIDEO::timexHiresInk()   { return (uint8_t)((timex_hires_ink & 7) | 8); }
+uint8_t VIDEO::timexHiresPaper() { return (uint8_t)((~timex_hires_ink & 7) | 8); }
+uint8_t VIDEO::gmx_border_col = 0xFF;
+
+// Per-frame cost meters for the TS-Conf whole-line renderer (PERF_TRACE line).
+volatile uint32_t ts_render_us = 0;   // tsRenderLine, incl. tsuComposeLine
+volatile uint32_t ts_tsu_us = 0;      // tsuComposeLine alone
+volatile uint32_t ts_base_us = 0;     // generic path: base layer fill (either core)
+volatile uint32_t ts_out_us = 0;      // generic path: composite/output loop (either core)
+
+uint8_t  VIDEO::ts_vmode_live = 0;
+uint8_t  VIDEO::ts_render_live = 0;
+// TsDraw / TsFastMem.h state (see the TS-Conf fast video path further down)
+uint32_t VIDEO::ts_line_t   = 0xFFFFFFFFu;   // T-state at which the next content line renders
+static uint32_t ts_line_idx = 0;             // that line, 0..(lin_end2 - lin_end - 1)
+// ...and the fb ROW the per-line clock is on, 0..yres. The top/bottom border
+// bands are raster lines like any other and a guest may drive the Border
+// register on every one of them (Demorama runs a LINE INT per line and writes
+// #0FAF from its sound sample — an oscilloscope that covers the bands too), so
+// the tick starts at the first VISIBLE line rather than the first content one
+// and paints those rows as it passes them. gmxBorderFrame's whole-band fill is
+// still the painter for GMX and for every non-per-line case.
+static uint32_t ts_row_idx = 0;
+static bool     ts_fast_armed = false;       // TsDraw armed for this frame (EndFrame)
+// Beam-scheduled palette apply (tsPalettePoll): the fb row the pending CRAM
+// change lands on (-1 = none / "from the top"), and how many applies this
+// frame already cost (a per-line CRAM writer must not buy 240 flushes).
+static int32_t ts_pal_row = -1;
+static uint8_t ts_pal_flushes = 0;
+static constexpr uint8_t TS_PAL_MAX_FLUSHES = 8;
+// Frame bookkeeping for the beam rule: which TS frame core0 is posting
+// (bumped at the EndFrame arming), which frame the pending change belongs to,
+// and where the RENDERER is — published by tsRenderExec as
+// (frame seq << 16) | content line about to be drawn, i.e. lines below it are
+// done. The job's `kind` byte: bit 0 line/DMA, bit 1 tile-map prefetch parity,
+// bits 3..2 the palette BANK the line is rendered with (ts256_cur_bank), bits
+// 7..4 the frame seq (4 bits — core1 never lags 8 frames).
+static uint8_t  ts_frame_seq = 0;
+static uint8_t  ts_pal_seq = 0;
+static volatile uint32_t ts_render_pos = 0;
+static bool     ts_pal_assigned = false;   // ts256Assign already ran for the pending change
+// [TSPAL] diagnostic (1 Hz while CRAM changes happen, -DTS_VIDEO_TRACE=ON):
+// which path applied the palette and where the beam was — the numbers a report
+// of "wrong palette / split picture" on a TS-Conf title needs before any theory.
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+#define TSPAL_DBG 1
+#else
+#define TSPAL_DBG 0
+#endif
+#if TSPAL_DBG
+static struct {
+    uint32_t changes, applies, p_force, p_nobeam, p_norow, p_blank, p_vis, p_later, blocked_seq, waited, p_bank, map_deferred;
+    int      beam_min, beam_max;
+    uint32_t lat_max_us, chg_gt_max_us;
+    uint64_t change_us;
+    uint32_t c1_prev;
+} ts_pal_dbg = {0,0,0,0,0,0,0,0,0,0,0,0, 999,-999, 0,0, 0, 0};
+static uint64_t ts_frame_start_us = 0;
+#define TSPAL_APPLIED(field, beam) tsPalDbgApplied(ts_pal_dbg.field, (beam))
+#define TSPAL_COUNT(field)         (ts_pal_dbg.field++)
+#define TSPAL_MAPGEN()             (ts_map_gen++)
+#define TSPAL_PALGEN()             (ts_pal_gen_live = ts_map_gen)
+#else
+#define TSPAL_APPLIED(field, beam) ((void)0)
+#define TSPAL_COUNT(field)         ((void)0)
+#define TSPAL_MAPGEN()             ((void)0)
+#define TSPAL_PALGEN()             ((void)0)
+#endif
+uint8_t g_ts_fastmem = 0;
+bool     VIDEO::ts_tsu_live = false;
+bool     VIDEO::ts_pal256_live = false;
+bool     VIDEO::tsPalScanWanted = false;
+bool     VIDEO::tsReindexReady  = false;
+static void tsReindexClear();   // defined with the re-index hold state below
+uint8_t  VIDEO::ts_rres_live = 0;
+uint8_t  VIDEO::ts_crop_top = 0;
+uint32_t VIDEO::ts_ygctr = 0;
+
+// TSCONF_RENDER_IN_RAM (CMake, default ON): the generic render path in SRAM.
+// tsFast256/tsFast16 have always been RAM inner loops, but they only serve
+// TSU-FREE 256c/16c rows — on a TSU title every line goes through
+// tsRenderExec + tsuComposeLine instead, which were flash-resident: core1
+// fetching its hottest code through the same XIP cache and the same QMI port
+// its own tile reads are saturating. Verify with nm that BOTH land at
+// 0x2xxxxxxx after any change here, the outlined `tiles` lambda included — a
+// lambda inside a __not_in_flash_func is exactly what GCC likes to leave
+// behind in .text (see the tsFast256 note further down).
+// TSCONF_RENDER_IN_RAM decides whether this code is SRAM-resident at all;
+// TSCONF_CODE_OVERLAY (CodeOverlay.h) decides WHERE — the fixed-VMA window the
+// heap owns on every other machine. TS_OVL_CODE / TS_OVL_RO keep the code/rodata
+// split for the same reason the two names existed before: one named section
+// cannot hold both (GCC: "causes a section type conflict").
+#if TSCONF_RENDER_IN_RAM
+#define TS_RENDER_HOT TS_OVL_CODE
+#define TS_RENDER_RO  TS_OVL_RO
+#else
+#define TS_RENDER_HOT
+#define TS_RENDER_RO
+#endif
+
+// The per-phase PERF timers run FOUR times per line on the generic path and are
+// not gated on PERF_TRACE, and the SDK's time_us_64() is a flash function
+// reached through a veneer — four XIP fetches per line out of code that was
+// just moved to RAM to avoid exactly that. timer_hw->timerawl is the register
+// time_us_32() reads, inlined here so the render path makes no call at all;
+// every use is a microsecond delta inside one line, so 32 bits is ample.
+static inline uint32_t tsRenderUs() { return timer_hw->timerawl; }
+
+// ── TS-Conf line rendering on core1 ─────────────────────────────────────────
+// A content line is a pure function of {line, y counter, GXOffs, VPage, PalSel,
+// VConfig(GFXOVR), Border} plus frame-stable state (mode, geometry, ts256_map_b,
+// pair tables, OSD flags, flashing). core0 snapshots those seven at the line
+// boundary (tsDrawTick) into a job and core1's render loop executes it, so the
+// ~11 us of PSRAM line reads per row leave core0's frame. The queue keeps the
+// order relative to the guest's DMA/CPU writes only loosely (core1 lags a few
+// lines) — the same race the hardware beam has against a program writing the
+// visible page. Frame-stable inputs may change only after tsRenderDrain():
+// EndFrame (before the palette flush), mode switches, Reset, RedrawPausedFrame.
+// TSU lines (tsuComposeLine reads SFILE + the tile registers live) stay on
+// core0. Ring: 320 jobs x 10 B from the heap, allocated when a whole-line mode
+// first goes live (TS-Conf only, so other boards pay nothing).
+union TsRenderJob {
+    // `kind` sits at offset 0 in both members: 0 = line, 1 = DMA transaction.
+    // line (0..319), ygctr (0..511) and GXOffs (0..511) are 9 bits each and share
+    // two uint16s (lyx0 = line | ygctr<<9, lyx1 = ygctr>>7 | gxoffs<<2): 10 B per
+    // job instead of 12 (2026-09-22, -640 B of the SRAM ring). Use the accessors.
+    struct { uint8_t kind, vpage, palsel, vconf, border, tsu; uint16_t lyx0, lyx1; } l;
+    struct { uint8_t kind, ctrl, len, num, s[3], d[3]; } d;   // 22-bit addresses, little-endian
+};
+static_assert(sizeof(TsRenderJob) == 10, "TsRenderJob packing");
+// always_inline, not merely inline: at -O3 GCC turned these into `.isra.0`
+// clones in FLASH and the RAM renderer reached them through veneers — one XIP
+// fetch per line out of code that was moved to RAM to avoid exactly that (the
+// same shape as the lambda trap in the CLAUDE.md render notes). Check nm for
+// `jobLine` after touching them: it must not exist as a symbol at all.
+#define TS_JOB_INLINE static inline __attribute__((always_inline))
+TS_JOB_INLINE uint32_t jobLine(const TsRenderJob& j)   { return j.l.lyx0 & 0x1FF; }
+TS_JOB_INLINE uint32_t jobYgctr(const TsRenderJob& j)  { return (j.l.lyx0 >> 9) | ((uint32_t)(j.l.lyx1 & 3) << 7); }
+TS_JOB_INLINE uint32_t jobGxoffs(const TsRenderJob& j) { return j.l.lyx1 >> 2; }
+TS_JOB_INLINE void jobSetLyx(TsRenderJob& j, uint32_t line, uint32_t ygctr, uint32_t gxoffs) {
+    j.l.lyx0 = (uint16_t)((line & 0x1FF) | ((ygctr & 0x7F) << 9));
+    j.l.lyx1 = (uint16_t)(((ygctr >> 7) & 3) | ((gxoffs & 0x1FF) << 2));
+}
+// TSU inputs of a line, snapshotted on core0 when they differ from the last
+// posted set (a per-line raster effect posts one per line): the tile/sprite
+// registers plus which SFILE snapshot to use. Lines reference them by index
+// (`l.tsu`); an entry or an SFILE slot is reusable once core1 has consumed the
+// last job that referenced it.
+struct TsuState {
+    uint16_t t0x, t0y, t1x, t1y;
+    uint8_t  tsconf, tmpage, t0gpage, t1gpage, sgpage, sfidx;
+    uint16_t pad;
+};
+static_assert(sizeof(TsuState) == 16, "TsuState packing");
+#define TS_C1_TSU   128
+#define TS_C1_SFILE 4
+static TsuState*  ts_c1_tsu = nullptr;          // [TS_C1_TSU]
+static uint16_t*  ts_c1_sf  = nullptr;          // [TS_C1_SFILE][256]
+// Bookkeeping for the two snapshot rings: ts_c1_w of the last job referencing
+// entry i (+1; 0 = never). Read and written ONLY under `queued` (which requires
+// ts_c1_ring) and at the allocation below, so they live in the same lazy block
+// as the ring instead of costing 528 B of .bss on every board — the arrays the
+// RENDERER reads per pixel (s_gline, s_tsline, ts256_map_b) deliberately stay
+// static: moving those to a palloc block was tried on 2026-09-07 and reverted
+// the same day after FPS dropped (cause never established — see CLAUDE.md).
+static uint32_t*  ts_c1_tsu_job = nullptr;      // [TS_C1_TSU]
+static uint32_t*  ts_c1_sf_job = nullptr;       // [TS_C1_SFILE]
+static uint32_t   ts_c1_tsu_cur = 0;            // entry of the last posted line
+static uint32_t   ts_c1_sf_cur = 0, ts_c1_sf_gen = 0xFFFFFFFFu;
+// TSU tile-map PREFETCH (video_ts.v `tm_line = line + 16`): during raster line
+// l the hardware fetches, for tile-map row ((l+16)>>3 + TyOffs>>3), the 8 tiles
+// of burst (l & 7) for each layer into a 4-row buffer; the line is rendered 9-16
+// lines later from that buffer. A game that rewrites the map while the frame
+// is displayed ("behind the fetch") relies on the write showing up next frame
+// — reading the map at render time showed it a frame early: Ninja Gaiden's
+// background, scrolled by rewriting the map, drew the old and the new position
+// mixed (hw 2026-09-07). So core0 captures one 32-byte burst per posted line
+// into a ring indexed like the job ring (queue path: ts_c1_w; sync path:
+// ts_line_seq), plus a 16-burst "preroll" at content line 0 for the rows the
+// hardware fetched during the top border (captured with line-0 registers — the
+// only approximation). tsuComposeLine reads tiles from these captures only.
+#define TS_TMB_WORDS 16                     // 8 tiles x 2 layers per burst
+static uint16_t* ts_tmb = nullptr;          // [TS_C1_RING][TS_TMB_WORDS]
+static uint16_t* ts_tmb_pre = nullptr;      // [2][16][TS_TMB_WORDS]
+static uint8_t   ts_tmb_par = 0;            // preroll buffer of the frame being posted
+static uint32_t  ts_line_seq = 0;           // sync-path line counter (ring index)
+static void tsTmbCapture(uint16_t* dst, uint32_t tm_line) {
+    for (int layer = 0; layer < 2; layer++) {
+        const uint16_t yoffs = layer ? TsConf::r.t1_yoffs : TsConf::r.t0_yoffs;
+        const uint32_t row = ((tm_line >> 3) + (yoffs >> 3)) & 63;
+        const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+        uint16_t* d = dst + layer * 8;
+        if (!tm) { memset(d, 0, 16); continue; }
+        memcpy(d, tm + (row << 8) + (layer ? 128 : 0) + ((tm_line & 7) << 4), 16);
+    }
+}
+// 320 jobs: one whole 288-line frame (haltAdvanceTo posts a frame at once and
+// the poster waits on a full ring) plus 32 of slack. Was 512 only because the
+// index was a power-of-two mask; 320 x 10 B = 3200 B against 512 x 12 = 6144.
+// The index is a modulo now (UDIV, a few cycles, once per line). Producer and
+// consumer counters are free-running uint32s, so the only cost of a non-power-
+// of-two size is that slots repeat differently across the 2^32 wrap — one
+// possibly garbled frame every ~85 hours of continuous TS-Conf rendering.
+#define TS_C1_RING 320
+#define TS_C1_SLOT(x) ((x) % TS_C1_RING)
+static TsRenderJob*      ts_c1_ring = nullptr;
+static bool tsGlineEnsure();   // GFXOVR line buffer, claimed on the first GFXOVR line posted (defined by the renderer)
+static volatile uint32_t ts_c1_w = 0, ts_c1_r = 0;     // producer / consumer indices (free-running)
+static bool              ts_c1_enabled = true;   // tsC1PlacementPoll() owns it from here on
+static bool              ts_c1_stuck = false;    // the 100 ms drain timeout fired once: queue off for the session
+volatile uint32_t ts_c1_us = 0;        // core1 time inside tsRenderExec (PERF)
+volatile uint32_t ts_c1_wait_us = 0;   // core0 time spent in tsRenderDrain (PERF)
+volatile uint32_t ts_c1_waits = 0;     // drains that actually waited (PERF)
+// DMA jobs posted (core0) / executed (core1): two monotonic counters, one writer
+// each — a shared "pending" count with RMW from both cores loses updates.
+static volatile uint32_t ts_c1_dma_posted = 0, ts_c1_dma_done = 0;
+static inline bool tsC1DmaPending() { return ts_c1_dma_posted != ts_c1_dma_done; }
+volatile uint32_t ts_dma_c1_us = 0;        // core1 time inside DMA jobs (PERF)
+volatile uint32_t ts_c1_wait_dma_us = 0;   // core0 time waiting for a queued DMA (PERF)
+// "TS-Conf lines are being rendered on core1 right now", as ONE byte in .data
+// rather than three loads behind a call. It is what core1's render_core loop and
+// GS::pump test before calling anything in the overlay — those two run on every
+// machine, and on a non-TS boot the overlay window belongs to the heap, so a
+// call into it would be a jump into heap data. Deliberately NOT in the overlay.
+extern "C" volatile bool g_ts_c1_live = false;
+static inline void tsC1LiveRecalc() {
+    g_ts_c1_live = (ts_c1_ring != nullptr) && ts_c1_enabled && (VIDEO::ts_render_live != 0);
+}
+bool VIDEO::tsRenderQueueOn() { return g_ts_c1_live; }
+volatile uint32_t ts_c1_jobs = 0;      // lines rendered on core1 (PERF)
+static inline bool tsC1Pending() { return ts_c1_r != ts_c1_w; }
+// core0 is inside one of the drain loops below. core1 reads it (ts_render_core1_prio,
+// main.cpp render_core) to run queued lines ahead of GS::pump: while core0 is
+// blocked on the renderer, every GS slice on core1 lands directly on the frame
+// time — hw 2026-09-07, demo 0x7e1 with a NeoGS booting: wait 7.1 → 13.3 ms,
+// realFPS 48.8 → 43.5, GS-Z80 at 8 MHz of the 190 its turbo-boot asked for.
+static volatile bool ts_c1_core0_waiting = false;
+// Spin body of every core0 wait. Deliberately does NOT pump the NeoGS SD
+// mailbox (tried 2026-09-07): a booting card's SD walk is bound by the GS-Z80's
+// own speed (~350M T of boot either way — 45 s at 8.2 MHz, 50 s at 6.5), while
+// a 512-byte SPI read inside this wait made core0 leave it up to ~250 µs late
+// per sector, +1.3 ms of `wait` a frame for the whole boot. The mailbox keeps
+// its ESPectrum::loop / frame-wait service points.
+static inline void tsC1Spin() {
+    ts_c1_core0_waiting = true;
+    tight_loop_contents();
+}
+static inline void tsC1SpinEnd() { ts_c1_core0_waiting = false; }
+
+// core0: wait until core1 has consumed job index `w1 - 1` (w1 = the ts_c1_w
+// value right after that job was posted). Bounded like tsRenderDrain.
+static void tsC1WaitJob(uint32_t w1) {
+    if (!w1 || (int32_t)(ts_c1_r - w1) >= 0) return;
+    const uint64_t t0 = time_us_64();
+    while ((int32_t)(ts_c1_r - w1) < 0) {
+        if (time_us_64() - t0 > 100000) { VIDEO::tsRenderDrain(); break; }
+        tsC1Spin();
+    }
+    tsC1SpinEnd();
+    ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// core0: wait until core1 has finished every posted line. Bounded — a wedged
+// core1 (lockout, fault) must not take core0 with it; the ring is then dropped
+// for the session and lines render on core0 again.
+// core1's job ring + the TSU/SFILE snapshots, in ONE block. Hoisted out of
+// tsVideoApplyPending so ESPectrum::setup() can claim it on a TS-Conf boot while
+// the heap is still pristine — the lazy claim is 10 768 B needing HOT_SRAM's
+// bytes+8 KB, and by the time a whole-line mode first goes live the heap is
+// fragmented well below that: hw 2026-09-10, `largest` 28 492 right after the
+// framebuffer against 15 420 by VIDEO::Init, so the block landed in BUTTER
+// (@11414D00) — the documented slow path, where core1 reads every job, TSU state
+// and 512-byte SFILE snapshot through XIP, per line, while it is already the
+// frame's critical path (fishbone: c1 16.7 ms of a 20.48 ms frame, core0 waiting
+// 4.1 ms). Same lesson as "the framebuffer is claimed FIRST".
+// Idempotent; a failure leaves ts_c1_ring null and the renderer on core0.
+void VIDEO::tsC1RingAlloc() {
+    if (ts_c1_ring) return;
+    const size_t bytes = sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU + 512 * TS_C1_SFILE
+                       + sizeof(uint32_t) * (TS_C1_TSU + TS_C1_SFILE);
+    uint8_t* blk = (uint8_t*)Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+    if (blk) {
+        ts_c1_ring = (TsRenderJob*)blk;
+        ts_c1_tsu  = (TsuState*)(blk + sizeof(TsRenderJob) * TS_C1_RING);
+        ts_c1_sf   = (uint16_t*)(blk + sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU);
+        ts_c1_tsu_job = (uint32_t*)(blk + sizeof(TsRenderJob) * TS_C1_RING + sizeof(TsuState) * TS_C1_TSU
+                                        + 512 * TS_C1_SFILE);
+        ts_c1_sf_job  = ts_c1_tsu_job + TS_C1_TSU;
+        memset(ts_c1_tsu_job, 0, sizeof(uint32_t) * TS_C1_TSU);
+        memset(ts_c1_sf_job, 0, sizeof(uint32_t) * TS_C1_SFILE);
+        ts_c1_tsu_cur = ts_c1_sf_cur = 0; ts_c1_sf_gen = 0xFFFFFFFFu;
+    }
+    // The address names the tier: 0x2000xxxx = SRAM heap, 0x11xxxxxx = butter PSRAM.
+    Debug::log("[TSC1] core1 line renderer %s (%u-job ring + %u TSU states + %u SFILE slots, %u B @%08lX)",
+               ts_c1_ring ? "ON" : "unavailable (no RAM)", (unsigned)TS_C1_RING, (unsigned)TS_C1_TSU,
+               (unsigned)TS_C1_SFILE, (unsigned)bytes, (unsigned long)(uintptr_t)blk);
+}
+
+uint32_t VIDEO::tsTraceState() {
+    const uint32_t pend = ts_c1_ring ? (ts_c1_w - ts_c1_r) : 0;
+    return (pend << 16) | (ts_line_idx & 0xFFFF);
+}
+
+void VIDEO::tsRenderDrain() {
+    if (!tsC1Pending()) return;
+    const uint64_t t0 = time_us_64();
+    while (tsC1Pending()) {
+        if (time_us_64() - t0 > 100000) {
+            Debug::log("[TSC1] core1 render queue stuck (r=%u w=%u) - falling back to core0", (unsigned)ts_c1_r, (unsigned)ts_c1_w);
+            ts_c1_enabled = false;
+            ts_c1_stuck = true;        // sticky: the placement policy must not re-enable it
+            ts_c1_r = ts_c1_w;
+            ts_c1_dma_done = ts_c1_dma_posted;
+            TsConf::wrGateRecalc(); tsC1LiveRecalc();
+            break;
+        }
+        tsC1Spin();
+    }
+    tsC1SpinEnd();
+    ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// core0: wait until every queued DMA transaction has executed — the guest has
+// reached DMA_ACT's drop (tsIntPoll / the line tick / a DMAStatus read), or a
+// synchronous DMA mode is about to read RAM a queued one writes. Lines posted
+// after the last DMA job may still be pending afterwards; that is fine.
+void VIDEO::tsRenderDrainDma() {
+    if (!tsC1DmaPending()) return;
+    const uint64_t t0 = time_us_64();
+    while (tsC1DmaPending()) {
+        if (time_us_64() - t0 > 100000) { tsRenderDrain(); break; }   // stuck → the full drain's fallback
+        tsC1Spin();
+    }
+    tsC1SpinEnd();
+    ts_c1_wait_dma_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// core0 (TsConf::dmaStart): queue a bulk DMA transaction behind the lines
+// already posted, so a line renders from the memory the beam would have seen.
+void VIDEO::tsPostDma(uint8_t ctrl, uint8_t len, uint8_t num, uint32_t saddr, uint32_t daddr) {
+    TsRenderJob j;
+    j.d.kind = 1;
+    j.d.ctrl = ctrl; j.d.len = len; j.d.num = num;
+    j.d.s[0] = (uint8_t)saddr; j.d.s[1] = (uint8_t)(saddr >> 8); j.d.s[2] = (uint8_t)(saddr >> 16);
+    j.d.d[0] = (uint8_t)daddr; j.d.d[1] = (uint8_t)(daddr >> 8); j.d.d[2] = (uint8_t)(daddr >> 16);
+    { while (ts_c1_w - ts_c1_r >= TS_C1_RING) tsC1Spin(); tsC1SpinEnd(); }
+    ts_c1_dma_posted = ts_c1_dma_posted + 1;        // before the publish; core1 bumps done after executing
+    ts_c1_ring[TS_C1_SLOT(ts_c1_w)] = j;
+    __dmb();
+    ts_c1_w = ts_c1_w + 1;
+}
+
+// core0: does a guest-RAM write of [addr, addr+len) (4 MB physical space) touch
+// memory a queued line still has to read? The queue is consumed in order, so
+// the pending set is ring[r..w) and its bitmap rows are the ygctr range between
+// the oldest and the newest job (wrapping at 512). 256c: row = 512 B at
+// (vpage&0xF0)<<14 + ygctr<<9; 16c: 256 B at (vpage&0xF8)<<14 + ygctr<<8; TEXT:
+// the char page and its font page (vpage^1) whole; NOGFX reads nothing. r may
+// advance underneath us — that only widens the range (conservative). Called by
+// TsConf::dmaStart: TMNT issues ~15 DMAs a frame, most of them into work pages,
+// and draining on every one cost 4.7 ms/frame (hw 2026-09-07).
+bool VIDEO::tsRenderOverlaps(uint32_t addr, uint32_t len) {
+    const uint32_t r = ts_c1_r, w = ts_c1_w;
+    if (r == w) return false;
+    const TsRenderJob a = ts_c1_ring[TS_C1_SLOT(r)];
+    const TsRenderJob b = ts_c1_ring[TS_C1_SLOT(w - 1)];
+    if ((a.l.kind | b.l.kind) & 1) return true;        // a DMA job at either end: be safe
+    if (a.l.vpage != b.l.vpage) return true;          // page flip inside the backlog: be safe
+    const uint32_t end = addr + len;
+    auto hit = [&](uint32_t lo, uint32_t hi) { return addr < hi && end > lo; };
+    // Graphics layer: the bitmap rows between the oldest and newest pending line.
+    if (ts_vmode_live == TSV_TEXT) {
+        const uint32_t p0 = (uint32_t)a.l.vpage << 14, p1 = (uint32_t)(a.l.vpage ^ 1) << 14;
+        if (hit(p0, p0 + 0x4000) || hit(p1, p1 + 0x4000)) return true;
+    } else if (ts_vmode_live == TSV_ZX) {
+        const uint32_t p0 = (uint32_t)a.l.vpage << 14;   // ZX base under the TSU: 6912 B, row math not worth it
+        if (hit(p0, p0 + 0x1B00)) return true;
+    } else if (ts_vmode_live != TSV_NOGFX) {
+        const bool c256 = (ts_vmode_live == TSV_256C);
+        const uint32_t base = c256 ? ((uint32_t)(a.l.vpage & 0xF0) << 14) : ((uint32_t)(a.l.vpage & 0xF8) << 14);
+        const uint32_t sh = c256 ? 9 : 8;
+        const uint32_t y0 = jobYgctr(a), y1 = jobYgctr(b);
+        if (y0 <= y1) { if (hit(base + (y0 << sh), base + ((y1 + 1) << sh))) return true; }
+        else if (hit(base + (y0 << sh), base + (512u << sh)) || hit(base, base + ((y1 + 1) << sh))) return true;
+    }
+    // TSU: the tile-map rows those lines read (256 B per 8 screen lines, per
+    // layer, from each pending state at the two ends of the backlog) and the
+    // whole tile/sprite bitmap ranges (any element can be referenced — a write
+    // there waits for every pending line; tilesets are rarely rewritten
+    // mid-frame). Found by Ninja Gaiden (hw 2026-09-07): a NOGFX + TSU title
+    // whose background — the tile map in a page nothing else looked at — was
+    // rewritten while core1 still read it: flicker, sprites (SFILE snapshot) fine.
+    if (ts_tsu_live && ts_c1_tsu) {
+        const TsuState* sts[2] = { &ts_c1_tsu[a.l.tsu & (TS_C1_TSU - 1)], &ts_c1_tsu[b.l.tsu & (TS_C1_TSU - 1)] };
+        for (int k = 0; k < 2; k++) {
+            const TsuState& st = *sts[k];
+            for (int layer = 0; layer < 2; layer++) {
+                if (!(st.tsconf & (layer ? 0x40 : 0x20))) continue;
+                // The tile MAP is not read here any more (prefetch captures);
+                // the tile bitmaps are.
+                const uint32_t g = (uint32_t)((layer ? st.t1gpage : st.t0gpage) & 0xF8) << 14;
+                if (hit(g, g + (8u << 14))) return true;
+            }
+            if (st.tsconf & 0x80) {
+                const uint32_t g = (uint32_t)(st.sgpage & 0xF8) << 14;
+                if (hit(g, g + (8u << 14))) return true;
+            }
+        }
+    }
+    return false;
+}
+
+// Is physical page `page` something a queued line may read right now? Drives
+// the CPU write watch (TsConf::tsUpdateWrGate → g_tsconf_wr bit 0x40 +
+// g_ts_bank_watch): a guest write into such a page goes through
+// tsRenderDrainOverlap. Live registers, not the queue — the mask is recomputed
+// on bank/register changes, the precise test happens at the write.
+bool VIDEO::tsWatchedPage(uint32_t page) {
+    if (!tsRenderQueueOn()) return false;
+    const uint8_t vp = TsConf::r.vpage;
+    switch (ts_vmode_live) {
+        case TSV_TEXT: if (page == vp || page == (uint32_t)(vp ^ 1)) return true; break;
+        case TSV_ZX:   if (page == vp) return true; break;
+        case TSV_16C:  if ((page & 0xF8) == (vp & 0xF8)) return true; break;
+        case TSV_256C: if ((page & 0xF0) == (vp & 0xF0)) return true; break;
+        default: break;
+    }
+    if (ts_tsu_live) {
+        const uint8_t tsc = TsConf::r.tsconf;
+        if ((tsc & 0x20) && (page & 0xF8) == (TsConf::r.t0gpage & 0xF8)) return true;
+        if ((tsc & 0x40) && (page & 0xF8) == (TsConf::r.t1gpage & 0xF8)) return true;
+        if ((tsc & 0x80) && (page & 0xF8) == (TsConf::r.sgpage & 0xF8)) return true;
+    }
+    return false;
+}
+
+// core0: wait only until no queued line still reads [addr, addr+len) — core1
+// consumes in ygctr order, so the pending range shrinks from its oldest end and
+// a write into rows near the front of the backlog waits a few lines, not the
+// whole queue (the full drain here cost 5 ms on 1 frame in 3 in TMNT's ship
+// scene = the frame-time peaks, hw 2026-09-07).
+void VIDEO::tsRenderDrainOverlap(uint32_t addr, uint32_t len) {
+    if (!tsRenderOverlaps(addr, len)) return;
+    const uint64_t t0 = time_us_64();
+    while (tsRenderOverlaps(addr, len)) {
+        if (time_us_64() - t0 > 100000) { tsRenderDrain(); break; }
+        tsC1Spin();
+    }
+    tsC1SpinEnd();
+    ts_c1_wait_us += (uint32_t)(time_us_64() - t0);
+    ts_c1_waits = ts_c1_waits + 1;
+}
+
+// Adaptive placement of the whole-line renderer (hw 2026-09-07, Lode Runner, TS-Conf
+// .spg with NeoGS module music): a GS whose firmware is mixing a module takes
+// ~ALL of core1 at 20 MHz — `p04` ≈ one status poll per INT, i.e. the fw never
+// leaves its mixer, ~25 core1 cycles per GS T-state — and this title's TSU compose
+// wants ~46% of core1 as well. Shared 50/50 through the render_core loop the GS
+// ran at 10.3 of 20 MHz and the music at half tempo (int=19.5k/37.5k, one dt
+// clamp per frame) while core0 idled 7.5 ms a frame; in the menu (no lines
+// posted) it played at tempo. Lowering the GS clock is no way out either: the fw
+// needs the whole INT period for that module. So while the card is ACTIVE
+// (GS::hostActive) the lines render synchronously on core0 — the TS_RENDER_CORE1=0
+// code path — and the queue takes them back once the card has been quiet for
+// TS_C1_GS_QUIET_FRAMES. Evaluated at EndFrame: a switch drains the queue first,
+// so it must not flap on a title with intermittent GS effects (instant leave,
+// slow return). Cost of the core0 placement: ~7 ms of core0 a frame here.
+#define TS_C1_GS_QUIET_FRAMES 250            // ~5 s at 48.8 fps
+static uint32_t ts_c1_gs_quiet = TS_C1_GS_QUIET_FRAMES;   // frames GS::hostActive() has been false (starts "quiet")
+static void tsC1PlacementPoll() {
+    if (!ts_c1_ring || ts_c1_stuck) return;
+    const bool gs = GS::enabled && GS::hostActive();
+    if (gs) ts_c1_gs_quiet = 0;
+    else if (ts_c1_gs_quiet < TS_C1_GS_QUIET_FRAMES) ts_c1_gs_quiet++;
+    const bool want = ts_c1_gs_quiet >= TS_C1_GS_QUIET_FRAMES;
+    if (want == ts_c1_enabled) return;
+    VIDEO::tsRenderDrain();               // nothing may be pending when the producer changes lanes
+    ts_c1_enabled = want;
+    TsConf::wrGateRecalc(); tsC1LiveRecalc();
+    Debug::log("[TSC1] whole-line renderer -> %s (GS %s)", want ? "core1 queue" : "core0 sync",
+               want ? "quiet" : "active: the card needs core1");
+}
+
+// core1 (render_core loop): execute queued lines, a few per call so pcm_call /
+// GS::pump keep their cadence.
+// In the TS-Conf overlay, and therefore NOT callable on another machine: core1's
+// render_core loop would otherwise reach it on EVERY iteration — hundreds of
+// thousands of times a second — while the window belongs to the heap. That is
+// what g_ts_c1_live guards; the flag lives in .data and is the ONLY thing those
+// per-iteration callers touch when TS-Conf is not running. (It also keeps the
+// old property that mattered here: no flash body, so no XIP fetch per iteration
+// out of the loop that also runs the renderer and the GS. Same reason pcm_call()
+// was taken out of that loop.)
+void TS_RENDER_HOT VIDEO::tsRenderCore1Pump() {
+    if (ts_c1_r == ts_c1_w) return;
+    const uint64_t t0 = time_us_64();
+    for (int n = 0; n < 8 && ts_c1_r != ts_c1_w; n++) {
+        const TsRenderJob j = ts_c1_ring[TS_C1_SLOT(ts_c1_r)];
+        if (j.l.kind & 1) {
+            const uint64_t d0 = time_us_64();
+            TsConf::dmaExecBulk(j.d.ctrl, (uint32_t)j.d.s[0] | ((uint32_t)j.d.s[1] << 8) | ((uint32_t)j.d.s[2] << 16),
+                                (uint32_t)j.d.d[0] | ((uint32_t)j.d.d[1] << 8) | ((uint32_t)j.d.d[2] << 16),
+                                j.d.len, j.d.num);
+            ts_dma_c1_us += (uint32_t)(time_us_64() - d0);
+            __dmb();
+            ts_c1_r = ts_c1_r + 1;
+            ts_c1_dma_done = ts_c1_dma_done + 1;
+            break;                                    // a DMA is long; let pcm_call/GS::pump run
+        }
+        const TsuState& st = ts_c1_tsu[j.l.tsu & (TS_C1_TSU - 1)];
+        tsRenderExec(j, &st, ts_c1_sf + (uint32_t)(st.sfidx & (TS_C1_SFILE - 1)) * 256, ts_c1_r);
+        __dmb();
+        ts_c1_r = ts_c1_r + 1;
+        ts_c1_jobs = ts_c1_jobs + 1;
+    }
+    ts_c1_us += (uint32_t)(time_us_64() - t0);
+}
+extern "C" void TS_RENDER_HOT ts_render_core1_pump() { VIDEO::tsRenderCore1Pump(); }
+// core1 (render_core): queued lines pre-empt GS::pump while core0 is blocked on
+// them or the backlog is deep (a HALT fast-forward posts a frame in microseconds).
+// The GS then runs on core1's slack only — for a TS title that is BOTH saturating
+// the renderer and playing GS music the music will run slow; video wins.
+extern "C" bool TS_RENDER_HOT ts_render_core1_prio() {
+    return ts_c1_ring && (ts_c1_core0_waiting || (ts_c1_w - ts_c1_r) > 32);
+}
+// (ts_render_queue_on_c() is gone: GS::pump reads g_ts_c1_live directly. It
+// gates the NeoGS turbo-boot — 8x GS time per wall second on core1 while the
+// renderer needs ~75% of it is what made every demo open at 42 FPS for the ~6 s
+// of a card boot, hw 2026-09-09 — and it must not be a CALL any more, because
+// its body would live in the overlay while GS::pump runs on every machine.)
+
+// ESPectrum::reset teardown for TS-Conf's pair-slot TEXT mode — same reason as
+// gmxForceOff right below: TsConf::reset clears VConfig, so the deferred
+// EndFrame switch would run against already-rebuilt driver tables.
+void VIDEO::tsVideoForceOff() {
+    if (!ts_render_live) return;
+    tsRenderDrain();
+    const bool pair = (ts_vmode_live == TSV_TEXT);
+    const bool c256 = ts_pal256_live;
+    ts_vmode_live = 0;
+    ts_render_live = 0;
+    ts_tsu_live = false;
+    ts_pal256_live = false;
+    tsReindexClear();
+    ts_pal_row = -1;
+    setVsyncLead(false);
+    if (c256) applyPalette();     // the ts256 remap had taken over the hardware palette
+    TsConf::wrGateRecalc(); tsC1LiveRecalc();
+    ts_rres_live = 0;
+    ts_crop_top = 0;
+    if (pair) {
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+    }
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++)
+            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+    }
+    Debug::log("[RESET] TS-Conf video mode off + FB cleared");
+}
+
+// Immediate 640x200 teardown for ESPectrum::reset — the port latches are about
+// to be cleared, so the deferred path would never see the "off" edge. Mirrors
+// the DS80 reset teardown right above it in ESPectrum.cpp: driver back to
+// standard tables, framebuffer cleared (pair-slot bytes are garbage under the
+// standard palette), geometry restored by the VIDEO::Reset that follows.
+void VIDEO::gmxForceOff() {
+    gmx_ext_pending_on = gmx_ext_pending_off = false;
+    if (!gmx_ext_live) return;
+    gmx_ext_live = false;
+    profi_ds80_driver_set(false, nullptr, nullptr);
+    Graphics8BitPalette::ds80_active = false;
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++)
+            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+    }
+    Debug::log("[RESET] GMX 640x200 off + FB cleared");
+}
+
+// #7EFD D3 request — deferred to EndFrame like the DS80 DFFD.7 switch (driver
+// pair tables must never be rewritten mid-scanout). An on/off pair inside one
+// frame cancels out, same as the DS80 handler.
+void VIDEO::gmxExtRequest(bool on) {
+    if (on) {
+        if (gmx_ext_live) { gmx_ext_pending_off = false; return; }
+        gmx_ext_pending_on = true;
+        gmx_ext_pending_off = false;
+    } else {
+        if (!gmx_ext_live) { gmx_ext_pending_on = false; return; }
+        gmx_ext_pending_off = true;
+        gmx_ext_pending_on = false;
+    }
+}
+uint16_t VIDEO::offBmp[288];   // see Video.h — GMX curline reaches 199, TS-Conf 287
+uint16_t VIDEO::offAtt[288];
+SaveRectT VIDEO::SaveRect;
+int VIDEO::VsyncFinetune[2];
+uint32_t VIDEO::framecnt = 0;
+uint8_t VIDEO::dispUpdCycle;
+uint8_t VIDEO::att1;
+uint8_t VIDEO::bmp1;
+uint8_t VIDEO::att2;
+uint8_t VIDEO::bmp2;
+bool VIDEO::snow_att = false;
+bool VIDEO::dbl_att = false;
+// bool VIDEO::opCodeFetch;
+uint8_t VIDEO::lastbmp;
+uint8_t VIDEO::lastatt;    
+uint8_t VIDEO::snowpage;
+uint8_t VIDEO::snowR;
+bool VIDEO::snow_toggle = false;
+
+// Border column variables (runtime-switchable per machine)
+// 48K/128K: step=4, brdPairWrite=true (uint32_t pair writes via brdptr16 cast)
+// Pentagon:  step=1, brdPairWrite=false (uint16_t XOR writes)
+// brdcol_cnt always counts in T-states (1T = 2px = 1 uint16_t)
+static int brdcol_start = 0;       // first visible column (T-states from line start)
+static int brdcol_end = 0;         // end of visible line (T-states)
+static int brdcol_end1 = 0;        // end of left border / paper skip point (T-states)
+static int brdcol_retrace = 0;     // where H-retrace begins (= brdcol_end when no retrace visible)
+static int brdcol_step = 4;        // T-states per column (4 for 48K/128K, 1 for Pentagon)
+static bool brdPairWrite = true;   // true: uint32_t pair writes, false: uint16_t XOR
+// Profi DS80 border: per-T-state writes into the packed-pair framebuffer
+// (1T = 4px = 1 uint16_t of two pair bytes).  Geometry applied by
+// applyDS80BorderGeometry(); ds80_brd_col_off shifts the 160 visible
+// T-columns inside wider rows (720×576: 180 uint16 cols → off=10).
+static bool ds80_border_geom = false;
+// OSD::notify banner rect (fb bytes / fb rows), honoured by every renderer that
+// owns the rows it sits on: the TS-Conf whole-line renderer and its band rows,
+// the borderless scaler, and the Profi DS80 content renderer + border machine.
+static int ts_notice_x0 = 0, ts_notice_x1 = 0, ts_notice_y0 = 0, ts_notice_y1 = -1;
+
+// LED indicator panel (Interface > LED indicators > Solid background): width in
+// fb bytes (a multiple of 8), 0 = none. It starts at the left edge of the F8
+// stats box's own 16 rows; while that box is up the panel runs all the way to it
+// (LED::draw fills the stretch between), so the two always form ONE contiguous
+// range on a row and every carve site below keeps a single (x0, x1) pair.
+static int osd_led_w = 0;
+
+// The bottom OSD carve on rows [220|268, +16): stats/volume box and/or LED panel.
+// `stats` is the caller's own "box is up" predicate (they differ per renderer).
+// Everything is 4-byte aligned, the panel's own end 8-aligned (the border
+// machine's columns are 8 px on 48K/128K).
+static inline __attribute__((always_inline)) bool osdBarRange(bool stats, int xres, int& x0, int& x1) {
+    if (!stats && !osd_led_w) return false;
+    const int sx = (xres >= 360) ? 188 : 168;
+    x0 = osd_led_w ? 0 : sx;
+    x1 = stats ? sx + 24 * 6 : osd_led_w;
+    return true;
+}
+static int  ds80_brd_col_off = 0;
+static bool ds80_osd_carve = false; // stats box / LED panel up → carve the rect
+static int  ds80_cv_c0 = 0, ds80_cv_c1 = 0, ds80_cv_y0 = 0;   // ... in machine cols / fb rows
+static void Select_Update_Border(); // forward declaration
+
+// Timex SCLD video modes
+uint8_t VIDEO::timex_port_ff = 0;
+uint8_t VIDEO::timex_mode = 0;
+uint8_t VIDEO::timex_hires_ink = 0;
+bool    VIDEO::timex_int_inhibit = false;
+
+
+// ULA+
+bool VIDEO::ulaplus_enabled = false;
+uint8_t VIDEO::ulaplus_reg = 0;
+// Default palette: standard Spectrum colors in G3R3B2 format
+// G/R=5 for normal (truncates to 2-bit level 2), G/R=7 for bright (level 3)
+// B=2 for normal, B=3 for bright
+// Color order: Black, Blue, Red, Magenta, Green, Cyan, Yellow, White
+static const uint8_t ulaplus_default_palette[64] = {
+    // CLUT 0 (FLASH=0, BRIGHT=0): INK 0-7, PAPER 0-7
+    0x00, 0x02, 0x14, 0x16, 0xA0, 0xA2, 0xB4, 0xB6,
+    0x00, 0x02, 0x14, 0x16, 0xA0, 0xA2, 0xB4, 0xB6,
+    // CLUT 1 (FLASH=0, BRIGHT=1): INK 0-7, PAPER 0-7
+    0x00, 0x03, 0x1C, 0x1F, 0xE0, 0xE3, 0xFC, 0xFF,
+    0x00, 0x03, 0x1C, 0x1F, 0xE0, 0xE3, 0xFC, 0xFF,
+    // CLUT 2 (FLASH=1, BRIGHT=0): same as CLUT 0
+    0x00, 0x02, 0x14, 0x16, 0xA0, 0xA2, 0xB4, 0xB6,
+    0x00, 0x02, 0x14, 0x16, 0xA0, 0xA2, 0xB4, 0xB6,
+    // CLUT 3 (FLASH=1, BRIGHT=1): same as CLUT 1
+    0x00, 0x03, 0x1C, 0x1F, 0xE0, 0xE3, 0xFC, 0xFF,
+    0x00, 0x03, 0x1C, 0x1F, 0xE0, 0xE3, 0xFC, 0xFF,
+};
+uint8_t VIDEO::ulaplus_palette[64];
+bool VIDEO::ulaplus_palette_dirty = false;
+bool VIDEO::ulaplus_alubytes_dirty = false;
+static bool gigascreen_lut_rebuild_deferred = false;
+// AluBytesUlaPlus moved to flash — see roms/AluBytesUlaPlus.c
+
+// 16col mode (Pentagon, Alone Coder)
+bool VIDEO::mode16col_enabled = false;
+const uint8_t* VIDEO::mode16col_planes[4] = { nullptr, nullptr, nullptr, nullptr };
+
+#ifdef DIRTY_LINES
+uint8_t VIDEO::dirty_lines[SPEC_H];
+// uint8_t VIDEO::linecalc[SPEC_H];
+#endif //  DIRTY_LINES
+static unsigned int isFullBorder;
+static unsigned int lineptr_offset; // uint32_t offset for screen start in line buffer
+
+static uint32_t* lineptr32;
+static uint16_t* prevLineptr16; // 4-bit packed: 1 uint16 = 4 pixels
+
+static unsigned int tstateDraw; // Drawing start point (in Tstates)
+static unsigned int linedraw_cnt;
+static int brdcol_cnt = 0;
+static int brdlin_cnt = 0;
+
+static unsigned int lin_end, lin_end2 /*, lin_end3*/;
+
+#if PERF_TRACE
+// The fb COLUMN the border machine is about to paint with a new colour, for
+// changes landing in the visible TOP BAND — i.e. the position of the split a
+// border demo draws, in the same units a screenshot measures (fb byte = 2*col).
+//
+// brdT (the first border change of the frame) cannot answer this: "Across the
+// Edge" makes that one at T=1638, which is line 7 of the frame, deep in the
+// invisible overscan, while the split we care about is painted inside the band
+// thousands of T later. Two machines running the same demo must report the same
+// column here, and comparing it against where the PAPER edge falls is what says
+// whether the border machine and the paper renderer agree with each other.
+// Distinct columns, not min..max: a wipe demo resets the border colour at the
+// START of every line as well as at the split, so a min/max pair is always
+// pinned to 0 by the line-start write and says nothing about the split. Six
+// slots with hit counts separate them — the line-start write shows up as
+// column 0 with ~24 hits per frame, the split as its own column with the same
+// count. All zero-initialised (a non-zero initialiser puts the variable in
+// .data, which for this TU lands in a section nm reports as text).
+#define BRD_COL_SLOTS 6
+uint16_t g_brd_col_v[BRD_COL_SLOTS], g_brd_col_n[BRD_COL_SLOTS];
+uint8_t  g_brd_col_used;
+void video_perf_border_mark() {
+    if (brdlin_cnt >= lin_end) return;   // top band only
+    // DrawBorder() has just caught up with the OLD colour, so brdcol_cnt is the
+    // first column NOT yet painted — the one the new colour lands in, i.e. the
+    // fb byte a screenshot sees change at 2*col.
+    uint16_t c = (uint16_t)brdcol_cnt;
+    for (uint8_t i = 0; i < g_brd_col_used; i++)
+        if (g_brd_col_v[i] == c) { if (g_brd_col_n[i] != 0xFFFF) g_brd_col_n[i]++; return; }
+    if (g_brd_col_used < BRD_COL_SLOTS) {
+        g_brd_col_v[g_brd_col_used] = c; g_brd_col_n[g_brd_col_used] = 1; g_brd_col_used++;
+    }
+}
+#endif
+
+static unsigned int coldraw_cnt;
+static unsigned int video_rest;
+static unsigned int video_opcode_rest;
+static unsigned int curline;
+
+// DS80 per-frame display-page latch (UnrealSpeccy rend_profi model).
+// The Kings Valley CP/M game flips videoLatch (0x7FFD bit3) hundreds of times per
+// display frame, so reading the live grmem/profi_clrmem per scanline (ZXMAK2 beam
+// model) interleaves pages 4/6 across the screen → horizontal stripes.
+// UnrealSpeccy instead picks the page ONCE per frame (base = p7FFD bit3 ? page6:page4)
+// and renders all 240 lines from it.  We mirror that: latch these at the first content
+// line (curline==0) and use them for the entire frame; mid-frame Z80 flips only change
+// the live grmem/profi_clrmem, which we pick up at the next frame's line 0.
+static uint8_t* ds80_frame_grmem  = nullptr;
+static uint8_t* ds80_frame_clrmem = nullptr;
+// SRAM snapshot of the 16 KB clrmem page (pages 56/58).  Lives at file scope so
+// EndFrame (vblank) can populate it before the rasterizer runs.  Allocated from
+// heap only when arch==Profi on butter/QSPI boards (see VIDEO::Reset), where
+// pages 56/58 are plain XIP butter pointers; on SPI-PSRAM/SWAP boards those
+// pages are force_sram_locked heap SRAM and no snapshot is needed.
+#define DS80_CLR_SRAM_SIZE 16384
+static uint8_t* ds80_clr_sram = nullptr;
+
+static unsigned int bmpOffset;  // offset for bitmap in graphic memory
+static unsigned int attOffset;  // offset for attrib in graphic memory
+
+// Per-scanline DMA attr shadow: non-null when DMA wrote attrs for current scanline
+static const uint8_t* dma_attr_override = nullptr;
+
+// Sequences of wait states, indexed by (CPU::tstates - tstateDraw).
+//   [0] 48K/128K/Pentagon: 6,5,4,3,2,1,0,0
+//   [1] +2A/+3:            1,0,7,6,5,4,3,2
+// Fuse expresses both as one pattern rotated by the contention-window offset
+// (spectrum.c contention_pattern_65432100 / _76543210 with offsets 1 and 4); in this
+// repo's phase — index 0 == TS_SCREEN_128 == 14361 — they come out as the two rows
+// below. DELIBERATE SIMPLIFICATION: the +3 window also opens 3 T-states earlier than
+// the 128K one, which we do not model; the repeating table is applied from
+// tStatesScreen exactly as for 128K.
+static const uint8_t wait_st_tab[2][128] = {
+  {
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+    6, 5, 4, 3, 2, 1, 0, 0, 6, 5, 4, 3, 2, 1, 0, 0,
+  },
+  {
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+    1, 0, 7, 6, 5, 4, 3, 2, 1, 0, 7, 6, 5, 4, 3, 2,
+  },
+};
+// Selected once per machine reset; the readers pay one load from a hot static.
+static const uint8_t* wait_st = wait_st_tab[0];
+
+IRAM_ATTR void VGA8Bit::interrupt(void *arg) {
+    static int64_t prevmicros = 0;
+    static int64_t elapsedmicros = 0;
+    static int cntvsync = 0;
+
+    if (Config::tape_player /* || Config::real_player */ ) {
+        ESPectrum::v_sync = true;
+        return;
+    }
+
+    int64_t currentmicros = time_us_64(); /// esp_timer_get_time();
+
+    if (prevmicros) {
+
+        elapsedmicros += currentmicros - prevmicros;
+
+        if (elapsedmicros >= ESPectrum::target) {
+
+            ESPectrum::v_sync = true;
+
+            // This code is needed to "finetune" the sync. Without it, vsync and emu video gets slowly desynced.
+            if (VIDEO::VsyncFinetune[0]) {
+                if (cntvsync++ == VIDEO::VsyncFinetune[1]) {
+                    elapsedmicros += VIDEO::VsyncFinetune[0];
+                    cntvsync = 0;
+                }
+            }
+
+            elapsedmicros -= ESPectrum::target;
+
+        } else ESPectrum::v_sync = false;
+    
+    } else {
+
+        elapsedmicros = 0;
+        ESPectrum::v_sync = false;
+
+    }
+
+    prevmicros = currentmicros;
+
+}
+
+void (*VIDEO::Draw)(unsigned int, bool) = &VIDEO::Blank;
+void (*VIDEO::Draw_Opcode)(bool) = &VIDEO::Blank_Opcode;
+void (*VIDEO::Draw_OSD169)(unsigned int, bool) = &VIDEO::MainScreen;
+void (*VIDEO::Draw_OSD43)() = &VIDEO::BottomBorder;
+
+void (*VIDEO::DrawBorder)() = &VIDEO::TopBorder_Blank;
+
+
+static uint16_t* brdptr16;
+static uint8_t* prevBrdptr8; // 4-bit packed: 1 byte = 2 pixels
+
+// Apply / restore the Profi DS80 screen+border timing geometry (ZXMAK2
+// ProfiRenderer model: 192 T/line, paper at line 48 tact 24 minus 19T INT
+// offset (see Video.h), 16T side borders, 1T = 4 px = 1 uint16_t of packed pair bytes).
+// on=true:  called from Reset() DS80 branch and EndFrame() activation.
+// on=false: called from EndFrame() deactivation — restores the standard
+// Profi geometry that Reset() computes for non-DS80 (224 T/line).
+static void applyDS80BorderGeometry(bool on) {
+    if (on) {
+        VIDEO::tStatesPerLine = TSTATES_PER_LINE_PROFI_DS80;
+        VIDEO::tStatesScreen  = TS_SCREEN_PROFI_DS80;
+        const bool tall = (int)VIDEO::vga.yres >= 288;  // 720×576: 24-row top/bottom bands
+        VIDEO::tStatesBorder = tall ? TS_BORDER_PROFI_DS80_288 : TS_BORDER_PROFI_DS80_240;
+        lin_end  = tall ? DS80_BORDER_TOP : 0;
+        lin_end2 = lin_end + 240;
+        // Defensive: never let the border/content machines run past the fb
+        // (e.g. DS80 forced while a <240-row video mode is active).
+        if (lin_end2 > VIDEO::vga.yres) lin_end2 = VIDEO::vga.yres;
+        brdcol_step    = 1;
+        brdPairWrite   = false;
+        brdcol_start   = 0;
+        brdcol_end     = 160;          // 16T left + 128T paper + 16T right
+        brdcol_end1    = 16;
+        brdcol_retrace = brdcol_end;
+        // Row width in uint16 cols minus the 160 visible T-cols, split evenly:
+        // 640×480 (320 B/row → 160 cols) → 0; 720×576 (360 B → 180 cols) → 10.
+        ds80_brd_col_off = ((int)VIDEO::vga.xres / 2 - 160) / 2;
+        ds80_border_geom = true;
+    } else {
+        ds80_border_geom = false;
+        ds80_brd_col_off = 0;
+        VIDEO::tStatesPerLine = TSTATES_PER_LINE_PROFI;
+        VIDEO::tStatesScreen  = TS_SCREEN_PROFI;
+        const bool isFB    = VIDEO::isFullBorderMode();
+        const bool isFB240 = VIDEO::isFullBorder240();
+        VIDEO::tStatesBorder = isFB ? (isFB240 ? TS_BORDER_360x240_PROFI : TS_BORDER_360x288_PROFI)
+                             : TS_BORDER_320x240_PROFI;
+        if      (isFB && !isFB240) { lin_end = 48; lin_end2 = 240; }
+        else if (isFB)             { lin_end = 24; lin_end2 = 216; }
+        else                       { lin_end = 24; lin_end2 = 216; }
+        brdcol_end     = isFB ? 180 : 160;
+        brdcol_step    = 1;
+        brdPairWrite   = false;
+        brdcol_start   = 0;
+        brdcol_end1    = isFB ? 26 : brdcol_start + (brdcol_end - brdcol_start - 128) / 2;
+        brdcol_retrace = brdcol_end;
+    }
+    Select_Update_Border();
+}
+
+uint32_t VIDEO::lastBrdTstate;
+bool VIDEO::brdChange = false;
+bool VIDEO::paper_off = false;
+bool VIDEO::brdnextframe = true;
+bool VIDEO::brdGigascreenChange = true;
+bool VIDEO::gigascreen_enabled = false;
+bool VIDEO::gigascreen_mode_block = false;
+uint8_t VIDEO::gigascreen_auto_countdown = 0;
+uint32_t VIDEO::gigascreen_auto_flips = 0;
+
+// void precalcColors() {
+    
+//     for (int i = 0; i < NUM_SPECTRUM_COLORS; i++) {
+//         // printf("RGBAXMask: %d, SBits: %d\n",(int)VIDEO::vga.RGBAXMask,(int)VIDEO::vga.SBits);
+//         // printf("Before: %d -> %d, ",i,(int)spectrum_colors[i]);
+//         spectrum_colors[i] = (spectrum_colors[i] & VIDEO::vga.RGBAXMask) | VIDEO::vga.SBits;
+//         // printf("After : %d -> %d\n",i,(int)spectrum_colors[i]);
+//     }
+
+// }
+
+// void precalcAluBytes() {
+
+
+//     uint16_t specfast_colors[128]; // Array for faster color calc in Draw
+
+//     unsigned int pal[2],b0,b1,b2,b3;
+
+//     // Calc array for faster color calcs in Draw
+//     for (int i = 0; i < (NUM_SPECTRUM_COLORS >> 1); i++) {
+//         // Normal
+//         specfast_colors[i] = spectrum_colors[i];
+//         specfast_colors[i << 3] = spectrum_colors[i];
+//         // Bright
+//         specfast_colors[i | 0x40] = spectrum_colors[i + (NUM_SPECTRUM_COLORS >> 1)];
+//         specfast_colors[(i << 3) | 0x40] = spectrum_colors[i + (NUM_SPECTRUM_COLORS >> 1)];
+//     }
+
+//     // // Alloc ALUbytes
+//     // for (int i = 0; i < 16; i++) {
+//     //     AluBytes[i] = (uint32_t *) heap_caps_malloc(0x400, MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT);
+//     // }
+
+//     FILE *f;
+
+//     f = fopen("/sd/alubytes", "w");
+//     fprintf(f,"{\n");
+    
+//     for (int i = 0; i < 16; i++) {
+//         fprintf(f,"{");
+//         for (int n = 0; n < 256; n++) {
+//             pal[0] = specfast_colors[n & 0x78];
+//             pal[1] = specfast_colors[n & 0x47];
+//             b0 = pal[(i >> 3) & 0x01];
+//             b1 = pal[(i >> 2) & 0x01];
+//             b2 = pal[(i >> 1) & 0x01];
+//             b3 = pal[i & 0x01];
+
+//             // AluBytes[i][n]=b2 | (b3<<8) | (b0<<16) | (b1<<24);
+
+//             int dato = b2 | (b3<<8) | (b0<<16) | (b1<<24);
+
+//             fprintf(f,"0x%08x,",dato);
+
+//         }
+//         fprintf(f,"},\n");
+//     }    
+
+//     fprintf(f,"},\n");
+
+//     fclose(f);
+
+// }
+
+// Precalc ULA_SWAP
+#define ULA_SWAP(y) ((y & 0xC0) | ((y & 0x38) >> 3) | ((y & 0x07) << 3))
+void precalcULASWAP() {
+    for (int i = 0; i < SPEC_H; i++) {
+        VIDEO::offBmp[i] = ULA_SWAP(i) << 5;
+        VIDEO::offAtt[i] = ((i >> 3) << 5) + 0x1800;
+        // VIDEO::linecalc[i] = ULA_SWAP(i);
+    }
+}
+
+void precalcborder32()
+{
+    for (int i = 0; i < 16; i++) {
+        uint8_t border = zxColor(i & 7, i >> 3);
+        VIDEO::border32[i] = border | (border << 8) | (border << 16) | (border << 24);
+    }
+}
+
+// noinline: a flash function, but EndFrame (RAM) calls it on mode edges and GCC
+// would otherwise inline copies of it into SRAM.
+__attribute__((noinline)) void VIDEO::updateBorderBrd() {
+    if (timex_hires_live) {
+        // Hi-res border = the PAPER colour, bright, as a solid pair slot.  The
+        // 48K/128K (Update_Border_Pair) and Pentagon (Update_Border_XOR) border
+        // machines need nothing else: a T-state covers the same number of fb
+        // BYTES in either mode, only their meaning changes.
+        uint8_t pi = timexHiresPaper();
+        uint8_t b = profi_pair_lookup[pi][pi];
+        brd = (uint32_t)b * 0x01010101u;
+        return;
+    }
+    if (isProfiDS80()) {
+        // DS80 border colour = Palette[(~borderIndex) & 7] (inverse index, per
+        // ZXMAK2 ProfiRenderer m_borderColorPaper), mapped to its solid pair slot.
+        uint8_t bidx = (uint8_t)(~borderColor) & 0x07;
+        uint8_t b = profi_pair_lookup[bidx][bidx];
+        brd = (uint32_t)b * 0x01010101u;
+        return;
+    }
+    brd = border32[borderColor];
+}
+
+// Palette definitions (Unreal Speccy format)
+// Brightness levels: ZZ (black), NN (normal), BB (bright)
+// Color matrix 3x3: values 0..0x100 (0x100 = 1.0)
+struct PaletteDef {
+    uint8_t ZZ, NN, BB;         // brightness levels
+    uint16_t matrix[9];         // color transform matrix
+};
+
+static const PaletteDef builtin_palette_defs[] = {
+    // 0: Pulsar (ZZ=00, NN=CD, BB=FF, identity matrix)
+    { 0x00, 0xCD, 0xFF, { 0x100,0x000,0x000, 0x000,0x100,0x000, 0x000,0x000,0x100 } },
+    // 1: Alone (dimmer normal colors: NN=A0)
+    { 0x00, 0xA0, 0xFF, { 0x100,0x000,0x000, 0x000,0x100,0x000, 0x000,0x000,0x100 } },
+    // 2: Grayscale (Grey from Unreal: BT.601 luminance matrix)
+    { 0x00, 0xCD, 0xFF, { 0x049,0x092,0x024, 0x049,0x092,0x024, 0x049,0x092,0x024 } },
+    // 3: Mars (warm tones)
+    { 0x00, 0xCD, 0xFF, { 0x100,0x000,0x000, 0x040,0x0C0,0x000, 0x000,0x040,0x0C0 } },
+    // 4: Ocean (cool tones)
+    { 0x00, 0xCD, 0xFF, { 0x0D0,0x000,0x030, 0x000,0x0D0,0x030, 0x000,0x000,0x100 } },
+};
+#define BUILTIN_PALETTE_COUNT (sizeof(builtin_palette_defs) / sizeof(builtin_palette_defs[0]))
+
+static const char* builtin_palette_names[] = {
+    "Pulsar", "Alone", "Grayscale", "Mars", "Ocean"
+};
+
+// Custom palettes from /palette.nvs
+#define MAX_CUSTOM_PALETTES 11
+static PaletteDef custom_palette_defs[MAX_CUSTOM_PALETTES];
+static char custom_palette_names[MAX_CUSTOM_PALETTES][13]; // 12 chars + null
+static uint8_t custom_palette_count = 0;
+
+static uint8_t total_palette_count() {
+    return BUILTIN_PALETTE_COUNT + custom_palette_count;
+}
+
+static const PaletteDef& getPaletteDef(uint8_t idx) {
+    if (idx < BUILTIN_PALETTE_COUNT)
+        return builtin_palette_defs[idx];
+    uint8_t ci = idx - BUILTIN_PALETTE_COUNT;
+    if (ci < custom_palette_count)
+        return custom_palette_defs[ci];
+    return builtin_palette_defs[0];
+}
+
+uint8_t VIDEO::paletteCount() { return total_palette_count(); }
+
+const char* VIDEO::paletteName(uint8_t idx) {
+    if (idx < BUILTIN_PALETTE_COUNT)
+        return builtin_palette_names[idx];
+    uint8_t ci = idx - BUILTIN_PALETTE_COUNT;
+    if (ci < custom_palette_count)
+        return custom_palette_names[ci];
+    return "?";
+}
+
+// Parse hex value from string (up to 3 hex digits)
+static uint16_t parseHex(const char* s, int len) {
+    uint16_t v = 0;
+    for (int i = 0; i < len && s[i]; i++) {
+        char c = s[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= c - '0';
+        else if (c >= 'A' && c <= 'F') v |= c - 'A' + 10;
+        else if (c >= 'a' && c <= 'f') v |= c - 'a' + 10;
+    }
+    return v;
+}
+
+// Load custom palettes from /palette.nvs
+// Format per line (JSON-like, one object per line):
+// { "name": "MyPal", "ZZ": 0x00, "NN": 0xCD, "BB": 0xFF, "matrix": [0x100,0x000,...] }
+// Lines starting with // are comments and ignored.
+// Simplified parser: extract name, ZZ, NN, BB, and 9 matrix values from hex
+void VIDEO::loadCustomPalettes() {
+    custom_palette_count = 0;
+    if (!FileUtils::fsMount) return;
+
+    // Create default palette.nvs if it doesn't exist
+    {
+        FILINFO fi;
+        if (f_stat(PALETTE_NVS, &fi) != FR_OK) {
+            FileUtils::mkdirParents(CONFIG_DIR);
+            FIL cf;
+            if (f_open(&cf, PALETTE_NVS, FA_WRITE | FA_CREATE_NEW) == FR_OK) {
+                static const char tmpl[] =
+                    "// Custom palettes for ZX Spectrum emulator\n"
+                    "//\n"
+                    "// One palette per line. Lines starting with // are comments.\n"
+                    "// To enable a palette, remove the // prefix.\n"
+                    "//\n"
+                    "// Fields:\n"
+                    "//   name   - palette name shown in menu (max 12 chars)\n"
+                    "//   ZZ     - black level (hex byte, usually 0x00)\n"
+                    "//   NN     - normal brightness (hex byte, e.g. 0xCD)\n"
+                    "//   BB     - bright brightness (hex byte, e.g. 0xFF)\n"
+                    "//   matrix - 3x3 RGB color transform (9 hex values, 0x000..0x100)\n"
+                    "//            rows: R-out, G-out, B-out; cols: R-in, G-in, B-in\n"
+                    "//            0x100 = 1.0 (identity), 0x080 = 0.5, 0x000 = 0.0\n"
+                    "//\n"
+                    "//   Matrix formula:        [m0 m1 m2]\n"
+                    "//     oR = (R*m0 + G*m1 + B*m2) >> 8\n"
+                    "//     oG = (R*m3 + G*m4 + B*m5) >> 8\n"
+                    "//     oB = (R*m6 + G*m7 + B*m8) >> 8\n"
+                    "//\n"
+                    "// Example (identity palette, same as Pulsar):\n"
+                    "// { \"name\": \"MyPal\", \"ZZ\": 0x00, \"NN\": 0xCD, \"BB\": 0xFF, \"matrix\": [0x100,0x000,0x000, 0x000,0x100,0x000, 0x000,0x000,0x100] }\n";
+                UINT bw;
+                f_write(&cf, tmpl, sizeof(tmpl) - 1, &bw);
+                f_close(&cf);
+            }
+        }
+    }
+
+    FIL fil;
+    if (f_open(&fil, PALETTE_NVS, FA_READ) != FR_OK)
+        return;
+
+    char line[256];
+    UINT br;
+    int linepos = 0;
+
+    auto processLine = [&](const char* line) {
+        if (custom_palette_count >= MAX_CUSTOM_PALETTES) return;
+        // Skip empty lines and comments (// or #)
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\0' || *p == '\n') return;
+        if (p[0] == '/' && p[1] == '/') return;
+
+        // Find "name": "..."
+        const char* nq = strstr(p, "\"name\"");
+        if (!nq) return;
+        nq = strchr(nq + 6, '\"');
+        if (!nq) return;
+        nq++; // start of name
+        const char* nqe = strchr(nq, '\"');
+        if (!nqe) return;
+        int nlen = nqe - nq;
+        if (nlen > 12) nlen = 12;
+
+        PaletteDef& pal = custom_palette_defs[custom_palette_count];
+        char* name = custom_palette_names[custom_palette_count];
+        memcpy(name, nq, nlen);
+        name[nlen] = '\0';
+
+        // Parse "ZZ": 0xHH
+        auto findHexVal = [](const char* s, const char* key) -> uint16_t {
+            const char* k = strstr(s, key);
+            if (!k) return 0;
+            k += strlen(key);
+            while (*k == ' ' || *k == ':' || *k == '\t') k++;
+            if (k[0] == '0' && (k[1] == 'x' || k[1] == 'X')) k += 2;
+            // Read up to 3 hex digits
+            int len = 0;
+            while (len < 3 && ((k[len] >= '0' && k[len] <= '9') ||
+                   (k[len] >= 'A' && k[len] <= 'F') ||
+                   (k[len] >= 'a' && k[len] <= 'f'))) len++;
+            return parseHex(k, len);
+        };
+
+        pal.ZZ = (uint8_t)findHexVal(p, "\"ZZ\"");
+        pal.NN = (uint8_t)findHexVal(p, "\"NN\"");
+        pal.BB = (uint8_t)findHexVal(p, "\"BB\"");
+
+        // Parse "matrix": [0x100, 0x000, ...]
+        const char* mq = strstr(p, "\"matrix\"");
+        if (!mq) return;
+        mq = strchr(mq, '[');
+        if (!mq) return;
+        mq++;
+        for (int i = 0; i < 9; i++) {
+            while (*mq == ' ' || *mq == ',') mq++;
+            if (*mq == '0' && (mq[1] == 'x' || mq[1] == 'X')) mq += 2;
+            int len = 0;
+            while (len < 3 && ((mq[len] >= '0' && mq[len] <= '9') ||
+                   (mq[len] >= 'A' && mq[len] <= 'F') ||
+                   (mq[len] >= 'a' && mq[len] <= 'f'))) len++;
+            if (len == 0) return;
+            pal.matrix[i] = parseHex(mq, len);
+            mq += len;
+        }
+
+        custom_palette_count++;
+    };
+
+    // Read char by char, process lines
+    linepos = 0;
+    char c;
+    while (f_read(&fil, &c, 1, &br) == FR_OK && br == 1) {
+        if (c == '\n' || c == '\r') {
+            if (linepos > 0) {
+                line[linepos] = '\0';
+                processLine(line);
+                linepos = 0;
+            }
+        } else if (linepos < 255) {
+            line[linepos++] = c;
+        }
+    }
+    if (linepos > 0) {
+        line[linepos] = '\0';
+        processLine(line);
+    }
+    f_close(&fil);
+}
+
+// Build 16 Spectrum RGB888 colors from brightness levels
+// Color bit pattern: index 0-7 normal (B=NN), 8-15 bright (B=BB)
+// Bit 0=Blue, Bit 1=Red, Bit 2=Green; Bit 3=Bright
+static void buildSpectrumRGB(const PaletteDef &pal, uint32_t out[16]) {
+    for (int i = 0; i < 16; i++) {
+        uint8_t lvl = (i & 8) ? pal.BB : pal.NN;
+        uint8_t R = (i & 2) ? lvl : pal.ZZ;
+        uint8_t G = (i & 4) ? lvl : pal.ZZ;
+        uint8_t B = (i & 1) ? lvl : pal.ZZ;
+        out[i] = (R << 16) | (G << 8) | B;
+    }
+}
+
+// Standard Spectrum RGB888 palette (default, rebuilt on palette change)
+static uint32_t spectrum_rgb888[16];
+
+void initGigascreenBlendLUT();
+
+// Apply color matrix transform to an RGB888 color
+static inline uint32_t matrixTransform(uint32_t rgb, const uint16_t *m) {
+    uint32_t R = (rgb >> 16) & 0xFF;
+    uint32_t G = (rgb >> 8) & 0xFF;
+    uint32_t B = rgb & 0xFF;
+    uint32_t oR = (R * m[0] + G * m[1] + B * m[2]) >> 8;
+    uint32_t oG = (R * m[3] + G * m[4] + B * m[5]) >> 8;
+    uint32_t oB = (R * m[6] + G * m[7] + B * m[8]) >> 8;
+    if (oR > 255) oR = 255;
+    if (oG > 255) oG = 255;
+    if (oB > 255) oB = 255;
+    return (oR << 16) | (oG << 8) | oB;
+}
+
+// Apply current palette transform to an RGB888 color
+static inline uint32_t paletteTransform(uint32_t rgb) {
+    uint8_t p = Config::palette < total_palette_count() ? Config::palette : 0;
+    const uint16_t *m = getPaletteDef(p).matrix;
+    // Check if identity matrix (fast path)
+    if (m[0] == 0x100 && m[4] == 0x100 && m[8] == 0x100 &&
+        m[1] == 0 && m[2] == 0 && m[3] == 0 && m[5] == 0 && m[6] == 0 && m[7] == 0)
+        return rgb;
+    return matrixTransform(rgb, m);
+}
+
+// ─── CRT filter: gamma + phosphor tint + black lift ───────────────────────────
+// Purely palette-level, applied on top of the palette preset's own matrix. The
+// third component of the filter (the aperture grille) lives in the drivers,
+// because it uses the second output pixel of each palette index — see
+// graphics_set_crt(). Nothing here touches the scanout ISR.
+//
+// Levels: 0=Off 1=Soft 2=Medium 3=Strong.
+//   gamma  — CRT EOTF is nearer 2.4 than sRGB's 2.2, so midtones sit lower.
+//   lift   — phosphor glow floor: a CRT's black is never the panel's black.
+//   matrix — P22-ish primaries: green pulled towards yellow-green, blue towards
+//            cyan, full primaries mildly desaturated. Rows sum to ~1.0 so white
+//            stays white.
+// Levels: 0=Off, 1..3 = Soft/Medium/Strong at mask pitch 4, 4..6 = the same three
+// strengths at mask pitch 2 (see hdmi_crt_mask). The pitch only affects the mask,
+// which lives in the drivers; the colour stage below is indexed by STRENGTH, so
+// levels 4..6 share the curve of 1..3.
+#define CRT_LEVELS 7
+static inline uint8_t crtStrength(uint8_t level) {
+    if (level >= CRT_LEVELS) return 0;
+    return level <= 3 ? level : (uint8_t)(level - 3);   // 4..6 = 1..3 at pitch 2
+}
+static const float crt_gamma_val[4]  = { 1.00f, 1.15f, 1.30f, 1.45f };
+static const uint8_t crt_black_lift[4] = { 0, 4, 8, 12 };
+static const uint16_t crt_phosphor[4][9] = {
+    { 0x100, 0, 0,  0, 0x100, 0,  0, 0, 0x100 },            // Off: identity
+    {  246,  8, 3,   5,  248, 3,   3, 15, 238 },            // Soft
+    {  238, 15, 3,  10,  241, 5,   5, 26, 225 },            // Medium
+    {  230, 23, 3,  15,  233, 8,   8, 36, 212 },            // Strong
+};
+
+// Per-channel gamma+lift curve for the active level. Rebuilt by crtBuildLut()
+// on a level change only; 256 B, no per-palette-write float maths.
+static uint8_t crt_curve[256];
+static uint8_t crt_curve_level = 0xFF;   // forces a build on first use
+
+static void crtBuildLut(uint8_t level) {
+    const uint8_t st = crtStrength(level);
+    if (crt_curve_level == st) return;
+    crt_curve_level = st;
+    const float g = crt_gamma_val[st];
+    const int lift = crt_black_lift[st];
+    for (int i = 0; i < 256; i++) {
+        int v = (st == 0) ? i : (int)(255.0f * powf(i / 255.0f, g) + 0.5f);
+        v += lift;
+        crt_curve[i] = (uint8_t)(v > 255 ? 255 : v);
+    }
+}
+
+// Apply the CRT colour stage to an RGB888 value already carrying the palette
+// preset's transform.
+static inline uint32_t crtTransform(uint32_t rgb) {
+    const uint8_t level = crtStrength(Config::crt_filter);
+    if (level == 0) return rgb;
+    crtBuildLut(level);
+    uint32_t c = matrixTransform(rgb, crt_phosphor[level]);
+    return ((uint32_t)crt_curve[(c >> 16) & 0xFF] << 16)
+         | ((uint32_t)crt_curve[(c >>  8) & 0xFF] <<  8)
+         |  (uint32_t)crt_curve[ c        & 0xFF];
+}
+
+// ── Capture-safe palette snap (Config::hdmi_snap) ───────────────────────────
+// Every framebuffer byte leaves the HDMI link as TWO TMDS characters per channel
+// (pixel doubling), DC-balanced as v and v±1 (tmds_pair.h). A monitor decodes both
+// faithfully; a USB capture card has a pixel-phase-dependent stage that turns any
+// pair whose two characters differ into two unrelated colours on alternate
+// output pixels — measured on the UI palette (0x4ADE80 → (209,252,255)/(0,8,30))
+// and, hw 2026-09-06, on TS-Conf's PWM-gamma palette: the Digger intro came out as
+// 1-px purple/black stripes on the card and perfect on the monitor. Only levels
+// whose pair is ONE repeated symbol survive (112 of 256 after the clamp; the {00,55,AA,FF}
+// grid is among them). This LUT maps each channel level, AFTER the driver's
+// level clamp, to the nearest such level (≤ 5 code units, ~2%; host-checked) — the UI palette was
+// snapped the same way by hand. Off by default; HDMI only (VGA has no pairs).
+#ifdef VGA_HDMI
+#include "drivers/hdmi/tmds_pair.h"
+static uint8_t s_snap_lut[256];
+static bool    s_snap_lut_ready = false;
+static void snapLutBuild() {
+    // Mirrors hdmi.c's HDMI_TMDS_LEVEL_LO/HI clamp (with HDMI_TMDS_LEVEL_CLAMP):
+    // the pair is built from the CLAMPED level, so "single-symbol" must be judged
+    // there — a raw 0xFF and a clamped 0xF6 are the same wire pattern.
+    bool single[256];
+    for (int v = 0; v < 256; v++) {
+#if HDMI_TMDS_LEVEL_CLAMP
+        const uint8_t cv = (v < 0x08) ? 0x08 : (v > 0xF6 ? 0xF6 : (uint8_t)v);
+#else
+        const uint8_t cv = (uint8_t)v;
+#endif
+        uint16_t a, b;
+        tmds_balanced_pair(cv, &a, &b);
+        single[v] = (a == b);
+    }
+    for (int v = 0; v < 256; v++) {
+        int best = v;
+        if (!single[v]) {
+            for (int d = 1; d < 256; d++) {
+                if (v - d >= 0 && single[v - d]) { best = v - d; break; }
+                if (v + d < 256 && single[v + d]) { best = v + d; break; }
+            }
+        }
+        s_snap_lut[v] = (uint8_t)best;
+    }
+    s_snap_lut_ready = true;
+}
+static inline uint32_t snapTransform(uint32_t rgb) {
+#if HDMI_HSTX >= 2
+    // Hardware TMDS: both pixels of a doubled pair decode to exactly the colour, so
+    // there is nothing for a capture card to split on and nothing to snap.
+    return rgb;
+#endif
+    extern bool SELECT_VGA;
+    if (!Config::hdmi_snap || SELECT_VGA) return rgb;
+    if (!s_snap_lut_ready) snapLutBuild();
+    return ((uint32_t)s_snap_lut[(rgb >> 16) & 0xFF] << 16)
+         | ((uint32_t)s_snap_lut[(rgb >>  8) & 0xFF] <<  8)
+         |  (uint32_t)s_snap_lut[ rgb        & 0xFF];
+}
+#else
+static inline uint32_t snapTransform(uint32_t rgb) { return rgb; }
+#endif
+
+// The single colour entry point for every palette write: palette preset first,
+// CRT filter second, capture-safe snap last (it must see the final levels).
+// Every former paletteTransform() call site uses this.
+static inline uint32_t paletteFinal(uint32_t rgb) {
+    return snapTransform(crtTransform(paletteTransform(rgb)));
+}
+
+// ULA+ G3R3B2 to full RGB888 conversion
+static inline uint32_t grb_to_rgb888(uint8_t grb) {
+    // G3R3B2 format: bits 7:5=green, bits 4:2=red, bits 1:0=blue
+    uint8_t g3 = (grb >> 5) & 0x07;
+    uint8_t r3 = (grb >> 2) & 0x07;
+    uint8_t b2 = grb & 0x03;
+    // Scale: 3-bit (0-7) → 8-bit, 2-bit (0-3) → 8-bit
+    uint8_t R = (r3 << 5) | (r3 << 2) | (r3 >> 1);
+    uint8_t G = (g3 << 5) | (g3 << 2) | (g3 >> 1);
+    uint8_t B = (b2 << 6) | (b2 << 4) | (b2 << 2) | b2;
+    return (R << 16) | (G << 8) | B;
+}
+
+// VGA Bayer lo/hi for a single channel: snaps to the /21->2bit grid (0,85,170,255).
+// lo = VGA level * 85, hi = (VGA level + 1) * 85, sub = fraction within a VGA level group.
+static inline int vga_lo_chan(int c) { return ((c / 21) >> 2) * 85; }
+static inline int vga_hi_chan(int c) { int hi = ((c / 21) >> 2) + 1; return (hi > 3 ? 3 : hi) * 85; }
+static inline int vga_sub_chan(int c) { return (c / 21) & 3; }
+
+// Apply ULA+ palette entry i (and Bayer-dither neighbour at i|0x40 for HDMI).
+// Mirrors VGA Bayer: only dither when sub > 0 for at least one channel.
+// When sub=0 for all channels the colour lands exactly on the VGA grid → solid,
+// no checkerboard (same as vga_rgb888_dither which sets all 4 positions to lo).
+static inline void applyUlaPlusPalette(int i) {
+    uint32_t orig = paletteFinal(grb_to_rgb888(VIDEO::ulaplus_palette[i]));
+    int R = (orig >> 16) & 0xFF, G = (orig >> 8) & 0xFF, B = orig & 0xFF;
+    bool needs = vga_sub_chan(R) || vga_sub_chan(G) || vga_sub_chan(B);
+    uint32_t neigh = needs
+        ? (((uint32_t)vga_hi_chan(R) << 16) | ((uint32_t)vga_hi_chan(G) << 8) | vga_hi_chan(B))
+        : orig;
+    graphics_set_palette(i, orig);
+    // Always populate the dither slot so toggling Config::hdmi_dither at runtime
+    // does not require a palette rebuild. When dither is off, hdmi.c does not
+    // read palette[i|0x40], so the cost is just an extra LUT write per entry.
+    graphics_set_palette(i | 0x40, neigh);
+}
+
+void VIDEO::regenerateUlaPlusAluBytes() {
+    for (int i = 0; i < 64; i++) applyUlaPlusPalette(i);
+
+    // Point AluByte to flash-resident ULA+ table (palette indices 0-63,
+    // fixed mapping that depends only on attribute format, not palette contents)
+    for (int n = 0; n < 16; n++)
+        AluByte[n] = (unsigned int*)AluBytesUlaPlus_flash[n];
+
+    graphics_set_dither(Config::hdmi_dither);
+}
+
+// Fast path: update single palette entry without rebuilding AluBytes
+// Deferred: only marks dirty, actual conv_color update happens in ulaPlusFlushPalette()
+// to avoid palette tearing when HDMI DMA scans top lines before Z80 ISR finishes
+void VIDEO::ulaPlusUpdatePaletteEntry(uint8_t entry) {
+    ulaplus_palette_dirty = true;
+}
+
+// Apply all pending ULA+ palette changes to hardware (conv_color / VGA LUT).
+// Called from EndFrame() so palette is stable before HDMI active area begins.
+void VIDEO::ulaPlusFlushPalette() {
+    if (!ulaplus_palette_dirty) return;
+    ulaplus_palette_dirty = false;
+    for (int i = 0; i < 64; i++) applyUlaPlusPalette(i);
+}
+
+void VIDEO::ulaPlusUpdateBorder() {
+    // Timex hi-res owns the framebuffer as packed pairs — a raw ULA+ CLUT index
+    // there is not a colour at all.  (A nonsense combination, but reachable: the
+    // two features have separate switches.)
+    if (timex_hires_live) { updateBorderBrd(); brdChange = true; return; }
+    // ULA+ border = paper color from CLUT 0 for current borderColor
+    // CLUT 0 paper entries are at indices 8-15, so index = 8 + borderColor
+    uint8_t brd_color = 8 + borderColor;
+    brd = brd_color | (brd_color << 8) | (brd_color << 16) | (brd_color << 24);
+    brdChange = true;
+}
+
+void VIDEO::ulaPlusDisable() {
+    ulaplus_enabled = false;
+    ulaplus_palette_dirty = false;
+    ulaplus_alubytes_dirty = false;
+    flashing = 0;
+    // Dither is meaningful only with ULA+; force it off so palette[64..127]
+    // (which now hold default G3R3B2 values, not Bayer neighbours) won't be
+    // sampled by the HDMI ISR.
+    graphics_set_dither(false);
+    // Restore palette: indices 0-63 back to G3R3B2 defaults, then 0-15 to Spectrum (solid).
+    // When GigaScreen is enabled we must NOT touch slots 17..63 — those hold blend
+    // values built at boot, and rewriting them here would force a heavy 120-entry
+    // re-emit and race with HDMI DMA reading conv_color from port-write context.
+    int g3r3b2_upper = gigascreenArmed() ? 17 : 64;
+    for (int i = 0; i < g3r3b2_upper; i++)
+        graphics_set_palette(i, paletteFinal(grb_to_rgb888(i)));
+    for (int i = 0; i < 16; i++) {
+        uint32_t color = paletteFinal(spectrum_rgb888[i]);
+        graphics_set_palette(i, color);
+        vga_set_palette_entry_solid(i, color);
+    }
+    if (gigascreenArmed()) {
+        // ULA+ active phase clobbered Gigascreen blend slots 17..127 via applyUlaPlusPalette.
+        // Signal EndFrame to rebuild them from the safe blanking context.
+        gigascreen_lut_rebuild_deferred = true;
+        // Reseed prevFrameBuffer so the first Gigascreen frame after ULA+ doesn't blend
+        // against stale ULA+ pixel indices (which were never stored as valid 4-bit Gigs data).
+        InitPrevBuffer();
+    }
+
+    for (int n = 0; n < 16; n++)
+        AluByte[n] = (unsigned int*)AluBytesStd_flash[n];
+    updateBorderBrd();
+    brdChange = true;
+}
+
+// 16col (Alone Coder, Pentagon): 4bpp packed pixels, no attributes. Each byte
+// = 2 horizontally-adjacent pixels (hi nibble = left/even, lo = right/odd).
+// Per speccy.info: 4 6144-byte planes living in pages 5 (#4000/#6000) and 4
+// (#C000/#E000 when bank=4). Pixel order in the 8-pixel byte-column: planes
+// are sourced for pixel pairs in the order described by UnrealSpeccy
+// dxr_4bpp.cpp p4bpp_ofs[] — column-pair i mod 4 selects the plane.
+// Precomputed LUT: IiGRBgrb byte -> uint16_t with two 4-bit palette indices.
+// Low byte = LEFT pixel  = (bit6 << 3) | (bits 2..0)  = (i, grb)
+// High byte = RIGHT pixel = (bit7 << 3) | (bits 5..3) = (I, GRB)
+// 512 bytes in SRAM, hot in cache. Reading one byte from a Pentagon plane
+// becomes a single LDRH from this table — no shift/mask in the inner loop.
+// 512 B heap LUT, allocated only while 16col is enabled (Config::mode16col_onoff)
+// and freed when off — so the feature costs ZERO SRAM when disabled.
+static uint16_t* mode16col_decode_lut = nullptr;
+
+void VIDEO::ensure16colLut() {
+    if (!mode16col_decode_lut) {
+        mode16col_decode_lut = (uint16_t*)malloc(256 * sizeof(uint16_t));
+        if (!mode16col_decode_lut) return;
+    }
+    for (int x = 0; x < 256; x++) {
+        uint8_t L = (uint8_t)((((x) >> 3) & 0x08) | ((x) & 0x07));
+        uint8_t R = (uint8_t)((((x) >> 4) & 0x08) | (((x) >> 3) & 0x07));
+        mode16col_decode_lut[x] = (uint16_t)L | ((uint16_t)R << 8);
+    }
+}
+
+void VIDEO::free16colLut() {
+    free(mode16col_decode_lut);
+    mode16col_decode_lut = nullptr;
+}
+
+void VIDEO::mode16colUpdatePlanes() {
+    uint8_t pLow = MemESP::videoLatch ? 6 : 4;   // #C000/#E000 area (when bank=4)
+    uint8_t pHi  = MemESP::videoLatch ? 7 : 5;   // #4000/#6000 area
+    uint8_t* baseLow = MemESP::ram[pLow].direct();
+    uint8_t* baseHi  = MemESP::ram[pHi].direct();
+    mode16col_planes[0] = baseLow;            // page 4/6, +0x0000  (#C000)
+    mode16col_planes[1] = baseHi;             // page 5/7, +0x0000  (#4000)
+    mode16col_planes[2] = baseLow + 0x2000;   // page 4/6, +0x2000  (#E000)
+    mode16col_planes[3] = baseHi  + 0x2000;   // page 5/7, +0x2000  (#6000)
+}
+
+// Apply palette: rebuild spectrum_rgb888 from current palette's brightness levels,
+// then apply color matrix to all palette entries.
+static void tsPalette256Flush(bool invalidate);   // TS-Conf 256-slot remap (defined below)
+
+void VIDEO::applyPalette() {
+    tsRenderDrain();   // rewrites slots the core1 line queue maps into
+    uint8_t p = Config::palette < total_palette_count() ? Config::palette : 0;
+    Debug::log2SD("applyPalette: palette=%d", p);
+    // Rebuild base 16 colors from brightness levels
+    buildSpectrumRGB(getPaletteDef(p), spectrum_rgb888);
+
+    Debug::log2SD("applyPalette: spectrum_rgb888[0]=0x%06X [1]=0x%06X [7]=0x%06X [15]=0x%06X",
+        spectrum_rgb888[0], spectrum_rgb888[1], spectrum_rgb888[7], spectrum_rgb888[15]);
+
+    // G3R3B2 entries (0-239) — apply matrix transform
+    for (int i = 0; i < 240; i++)
+        graphics_set_palette(i, paletteFinal(grb_to_rgb888(i)));
+    // Override indices 0-15 with Spectrum colors (already rebuilt with correct brightness)
+    for (int i = 0; i < 16; i++) {
+        uint32_t color = paletteFinal(spectrum_rgb888[i]);
+        graphics_set_palette(i, color);
+        vga_set_palette_entry_solid(i, color);
+    }
+    // Orange (index 16)
+    graphics_set_palette(16, paletteFinal(0xFF7F00));
+
+    Debug::log2SD("applyPalette: done, 240+16+1 entries written");
+
+    // Re-apply GigaScreen blend palette if active
+    if (gigascreenArmed())
+        initGigascreenBlendLUT();
+    // The TS-Conf 256-slot remap owns most of the hardware palette; everything
+    // above just rewrote it, so its slot shadow is stale — write every assigned
+    // slot again (hw 2026-09-06: "picture right, colours wrong" after a palette
+    // rewrite from a hotkey).
+    if (ts_pal256_live) tsPalette256Flush(true);
+    // A packed-pair mode owns the driver's colour tables as PAIR slots, and the
+    // loops above just wrote the standard 8-bit entries over every one of them:
+    // graphics_set_palette() writes conv_color, which is exactly where
+    // profi_ds80_driver_set() put the pairs. Re-push, or the mode runs on a
+    // shredded palette until something else happens to set profi_palette_dirty.
+    // Timex hi-res is the same case with its own source of 16 colours (the
+    // machine's ZX palette, not the Profi palette port) — unless a full-screen
+    // menu has swapped the UI block into profi_palette_live, which is then what
+    // the driver is running and what has to come back.
+    if (timex_hires_live && !profi_palette_ui_saved_valid) timexHiresRefresh();
+    else if (bl_pair_live && !profi_palette_ui_saved_valid) blPairRefresh();
+    else if (profi_ds80_active) {
+        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        profi_palette_dirty = false;
+        Debug::log("[PAL] applyPalette over a pair mode: pairs re-pushed"
+                   " (pal256=%d uiOwned=%d live0=%06lX)",
+                   (int)ts_pal256_live, (int)profi_palette_ui_saved_valid,
+                   (unsigned long)profi_palette_live[0]);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Timex SCLD hi-res 512x192 (port #FF, screen mode %110)
+//
+// The SCLD builds a 512-pixel line by taking byte-columns ALTERNATELY from the
+// two 6912-byte data areas: screen 0 (0x4000, grmem + 0) supplies the first 8
+// pixels of each pair, screen 1 (0x6000, grmem + 0x2000) the next 8.  The
+// attribute areas are unused; the two colours come from port #FF bits 3-5.
+// (Fuse display.c builds `hires_data = (data << 8) + data2`, MAME plots scr1
+// then scr2 — both put screen 0 on the left.)
+//
+// We render that natively through the packed-pair framebuffer the Profi DS80
+// and Scorpion GMX modes already use: the ISR expands one fb byte into two
+// DIFFERENT output pixels instead of doubling one, so 256 content bytes become
+// 512 pixels in exactly the screen area the 256-pixel picture occupied.  Hence
+// no geometry change at all — same lin_end/lin_end2, same lineptr_offset pad,
+// same border machine, same 24/48-row bands for the F8 box and the FDD lamp.
+//
+// What it costs, and why it is deferred to vblank like every other pair mode:
+// the driver's colour tables are rewritten on the switch, which must not happen
+// mid-scanout.  A guest that flips mode mid-FRAME (the reference's "top half
+// hi-colour, bottom half hi-res" trick, which it also says no commercial title
+// ever shipped) therefore gets the whole frame in one mode.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void timexHiresBuildLut() {
+    const uint8_t ink = VIDEO::timexHiresInk(), pap = VIDEO::timexHiresPaper();
+    for (int n = 0; n < 16; n++) {
+        uint8_t c3 = (n & 8) ? ink : pap, c2 = (n & 4) ? ink : pap;
+        uint8_t c1 = (n & 2) ? ink : pap, c0 = (n & 1) ? ink : pap;
+        timex_hr_lut[n] = (uint16_t)(VIDEO::profi_pair_lookup[c3][c2]
+                        | ((uint16_t)VIDEO::profi_pair_lookup[c1][c0] << 8));
+    }
+}
+
+// The 16 pair-slot colours are the machine's OWN ZX palette (the user's preset),
+// not Profi's fixed one: profi_palette_live exists because DS80 has a guest
+// palette port, a Timex does not.  crtTransform is applied by
+// profi_ds80_driver_set, so stop at paletteTransform here — same two stages the
+// standard path gets, minus snapTransform, which no pair mode has ever had.
+static void timexHiresDriverPalette() {
+    uint32_t pal[16];
+    for (int i = 0; i < 16; i++) pal[i] = paletteTransform(spectrum_rgb888[i]) & 0x00FFFFFF;
+    profi_ds80_driver_set(true, pal, &VIDEO::profi_pair_lookup[0][0]);
+}
+
+void VIDEO::timexHiresRequest(bool on) {
+    if (on) {
+        if (timex_hires_live) { timex_hires_pending_off = false; return; }
+        timex_hires_pending_on = true;
+        timex_hires_pending_off = false;
+    } else {
+        if (!timex_hires_live) { timex_hires_pending_on = false; return; }
+        timex_hires_pending_off = true;
+        timex_hires_pending_on = false;
+    }
+}
+
+// Port #FF bits 3-5 changed.  This does NOT touch the driver's colour tables:
+// the 16 pair colours are the fixed ZX palette and the ink field only picks two
+// of them, so all that moves is our 16-entry pixel LUT and the border byte.
+// Which is what makes a hi-res colour change beam-exact and legal mid-frame —
+// the reference's "more than two colours on a hi-res screen" trick — where a
+// conv_color rewrite would have to wait for vblank and tear if it did not.
+void VIDEO::timexHiresColour() {
+    if (!timex_hires_live) return;
+    timexHiresBuildLut();
+    updateBorderBrd();
+    brdChange = true;
+}
+
+// The ZX palette itself was rebuilt (preset change, CRT filter, a menu handing
+// the pair tables back): everything above plus the driver's 250 pair slots.
+// Callers are all vblank-or-full-rebuild contexts — never the port handler.
+void VIDEO::timexHiresRefresh() {
+    if (!timex_hires_live) return;
+    timexHiresBuildLut();
+    timexHiresDriverPalette();
+    updateBorderBrd();
+    brdChange = brdnextframe = true;
+}
+
+void VIDEO::timexHiresApplyPending() {
+    if (timex_hires_pending_on) {
+        timex_hires_pending_on = false;
+        if (timex_hires_live) return;
+        // pair_lookup is built in Reset only for the machines that always need
+        // it (Profi/GMX/TS-Conf); build it here for everyone else.  It also
+        // depends on whether HDMI audio owns its Data Island slots, so a rebuild
+        // on every activation is the cheap way to stay in step.
+        init_profi_pair_lookup();
+        timexHiresBuildLut();
+        timexHiresDriverPalette();
+        // SOFTTV/TFT builds have no pair driver at all (profi_ds80_driver_set is
+        // a stub) and hdmi_set_profi_ds80_mode itself refuses when its ~5 KB
+        // snapshot will not allocate.  Either way: stay in the 256-pixel
+        // OR-merge fallback rather than render pair slots nothing decodes.
+        if (!profi_ds80_active) {
+            Debug::log("[TIMEX] hi-res: no packed-pair mode here, using 256px fallback");
+            return;
+        }
+        rebuildDS80ColorLut();
+        Graphics8BitPalette::ds80_active = true;
+        timex_hires_live = true;
+        // Every byte on screen now decodes as a pair slot — clear and let the
+        // border machine repaint authoritatively.
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        updateBorderBrd();
+        brdChange = brdnextframe = true;
+        Debug::log("[TIMEX] hi-res 512x192 on (ink=%u paper=%u)",
+                   (unsigned)timexHiresInk(), (unsigned)timexHiresPaper());
+    } else if (timex_hires_pending_off) {
+        timex_hires_pending_off = false;
+        if (!timex_hires_live) return;
+        timex_hires_live = false;
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        updateBorderBrd();
+        brdChange = brdnextframe = true;
+        Debug::log("[TIMEX] hi-res 512x192 off");
+    }
+}
+
+// Machine reset / the mode is gone while the deferred path cannot see the edge
+// (VIDEO::Reset rebuilds the standard driver tables under us — same reason
+// gmxForceOff and tsVideoForceOff exist).
+void VIDEO::timexHiresForceOff() {
+    timex_hires_pending_on = timex_hires_pending_off = false;
+    if (!timex_hires_live) return;
+    timex_hires_live = false;
+    profi_ds80_driver_set(false, nullptr, nullptr);
+    Graphics8BitPalette::ds80_active = false;
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++)
+            if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+    }
+    Debug::log("[RESET] Timex hi-res off + FB cleared");
+}
+
+// ── TS-Conf CRAM → hardware palette ────────────────────────────────────────────
+// ZX mode uses CRAM cells gpal<<4 .. +15 (reset: #F0-#FF). Those 16 cells land
+// on hardware slots 0..15 — always writable (HDMI's reserved indices start at
+// 184) — so the renderer keeps writing raw 0..15 and AluByte is reused
+// unmodified. Deferred to EndFrame like the ULA+ flush (16 entries ≈ 65 µs).
+bool VIDEO::tsCramDirty = false;
+static bool s_ts_pal_active = false;
+
+// The reference's real-PWM gamma (tsconf.cpp pwm[], base colours
+// #00-#5D-#A2-#FF measured by DDp) — 5-bit channel → 8-bit.
+static const uint8_t ts_pwm[32] = {
+      0,  36,  50,  60,  68,  75,  82,  88,  93, 105, 115, 124, 133, 141, 148, 155,
+    162, 177, 190, 203, 215, 226, 236, 246, 255, 255, 255, 255, 255, 255, 255, 255,
+};
+
+// Snap each channel to the NEAREST of the VGA DAC's four levels (0/85/170/255).
+// The driver's own vga6_of() TRUNCATES (/85), which is biased dark by up to 84
+// units. In the ZX palette TS-BIOS loads into CRAM (zx555[] in TsSpg.cpp) EVERY
+// non-BRIGHT channel is 5-bit 16 = ts_pwm[16] = 162, which truncates to level 1 =
+// 85 — half brightness — while Pentagon's own 0xCD = 205 makes level 2 = 170. So
+// all seven normal colours were halved, not just white; white is simply the only
+// one with a large flat area on the 128 menu. Every BRIGHT channel is 5-bit 24 =
+// 255 and was always exact, which is why the fault looked BRIGHT-specific.
+// Rounding here fixes that WITHOUT dithering, which these 16 flat
+// colours must not do: a full screen of ZX paper (the 128 menu) is the worst case
+// for an ordered dither, and every other machine keeps its ZX 16 solid.
+//
+// vga6_of() itself is deliberately NOT changed: it is shared with the scanline-dim
+// and CRT-mask walk (vga_crt_subpixels on dim_rgb888), where rounding up would make
+// a dimmed line as bright as an undimmed one at scanline level 4, and it would move
+// the hw-proven look of every other machine's 16 ZX colours (Pulsar is unaffected,
+// but "Alone" NN=0xA0 and the Mars/Ocean matrices all cross a level boundary).
+static inline uint32_t vgaGridSnapChan(uint32_t v) { return ((v * 3 + 127) / 255) * 85; }
+static inline uint32_t vgaGridSnap(uint32_t rgb) {
+#if VGA_HSTX
+    // Nothing to snap to: on the serializer a "solid" entry is four PWM
+    // sub-samples, not a 2-bit DAC code, so pre-quantising to {0,85,170,255}
+    // only throws away precision the ladder could have carried (162 -> 170 is
+    // 8/255, and at 25.2 MHz the level step is 255/29).  The snap exists because
+    // the PIO path's solid setter TRUNCATES (vga6_of, c/85); the HSTX one does
+    // not quantise at all.
+    return rgb;
+#endif
+    return (vgaGridSnapChan((rgb >> 16) & 0xFF) << 16)
+         | (vgaGridSnapChan((rgb >>  8) & 0xFF) <<  8)
+         |  vgaGridSnapChan(rgb & 0xFF);
+}
+
+uint32_t VIDEO::tsCramToRgb(uint16_t t) {
+    return ((uint32_t)ts_pwm[(t >> 10) & 0x1F] << 16) |
+           ((uint32_t)ts_pwm[(t >> 5) & 0x1F] << 8) |
+           ts_pwm[t & 0x1F];
+}
+
+// ── Graphics lines inside a TEXT (pair-slot) frame ──────────────────────────
+// A per-line VConfig table may put a 256c / 16c / ZX band and a TEXT band on
+// one screen (Demorama). Both CAN share the framebuffer: a pair slot and a
+// palette index are the same 8-bit index into the SAME driver LUT — hdmi.c's
+// conv_color / vga.c's palette_vga16 hold two output pixels per entry either
+// way, and the pair tables simply put two DIFFERENT colours in them (the
+// "DS80 fast path" in both ISRs is a 32-bit copy of the same byte loop, not a
+// second pipeline). What a pair frame cannot offer is more than 16 base
+// colours, because a pair slot is addressed as (4-bit, 4-bit). So a graphics
+// line renders through this map: CRAM index -> the nearest of the frame's 16
+// gpal colours, as that colour's pair DIAGONAL (both halves the same, i.e. one
+// lores pixel doubled — exactly what the standard path does). ZX, 16c and
+// NOGFX lines are EXACT (their pixels are {gpal, n} by construction); a 256c
+// band is exact while it stays inside its own gpal bank and approximated to
+// 16 colours otherwise, which is the honest limit of a 4-bit slot address.
+static uint8_t TS_OVL_BSS s_pairmap[256];
+
+// Fill profi_palette_live[] (the pair-slot driver palette) from the gpal CRAM
+// bank — TEXT mode's 16 colours. Applied by profiPaletteApplyPending (vblank).
+static void tsPairPaletteLoad() {
+    const uint8_t gpal = (TsConf::r.palsel & 0x0F) << 4;
+    for (int i = 0; i < 16; i++)
+        VIDEO::profi_palette_live[i] = VIDEO::tsCramToRgb(TsConf::cram[gpal | i]) & 0x00FFFFFF;
+    // ...and the CRAM -> pair-diagonal map for graphics lines in this frame.
+    // Nearest neighbour in 5-bit RGB, the same rule tsBorderSlotFor uses for
+    // the border. 256 x 16 distances per palette apply, on the cold path.
+    uint16_t bank[16];
+    for (int i = 0; i < 16; i++) bank[i] = TsConf::cram[gpal | i];
+    for (int c = 0; c < 256; c++) {
+        const uint16_t want = TsConf::cram[c];
+        uint8_t best = 0;
+        uint32_t bestd = 0xFFFFFFFFu;
+        for (int i = 0; i < 16; i++) {
+            if (bank[i] == want) { best = (uint8_t)i; break; }
+            const int dr = (int)((bank[i] >> 10) & 31) - (int)((want >> 10) & 31);
+            const int dg = (int)((bank[i] >> 5) & 31) - (int)((want >> 5) & 31);
+            const int db = (int)(bank[i] & 31) - (int)(want & 31);
+            const uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+            if (d < bestd) { bestd = d; best = (uint8_t)i; }
+        }
+        s_pairmap[c] = VIDEO::profi_pair_lookup[best][best];
+    }
+}
+
+// ── 256c: CRAM → hardware palette slots ─────────────────────────────────────
+// The 8bpp framebuffer has 256 slots but not all are ours: 184..199 and
+// 216..239 are HDMI Data-Island words (audio), 240..244 sync/scanline, 255 the
+// border fill, and 152..167 the nm:: UI block (UI_PAL_BASE — the menu must keep
+// working over a 256c screen). That leaves 184 slots for 256 CRAM cells.
+//
+// The assignment is STICKY (2026-09-13): a cell keeps its slot for as long as
+// it lives, and a colour change of a cell that owns its slot alone is written
+// INTO that slot — so the framebuffer effectively holds CRAM cell numbers, the
+// way the hardware's does, and a line rendered at any time shows the palette
+// current when the beam reaches it. The first cut assigned slots in order of
+// first appearance of each distinct colour: two cells with the same colour
+// shared a slot, and any change of which cells coincide renumbered every cell
+// behind them. RobFgift permutes its 16 greys every second frame while its
+// text and sprite cells (0x11, 0x20.., 0xE0..) hold the same greys — 78 of 79
+// palette steps moved the slots of cells the demo never touched, and the lines
+// core1 had rendered with the old numbering came out in other cells' colours
+// ("blue flashes on the letters"). Sharing happens only when the 184 slots run
+// out (then a cell joins the slot of its colour, else the nearest colour);
+// cells never assigned share nothing.
+// ── Palette VERSIONS in the framebuffer bytes (2026-09-14) ──────────────────
+// A single hardware palette and a single-buffered framebuffer cannot both be
+// right when the guest frame and the display frame drift (V-Sync pacing off, or
+// a display mode not matched to the machine's ~50 Hz): rows of two guest frames
+// are on screen at once and one global table can only fit one of them. So the
+// slot POOL is split into `ts256_nb` equal banks and every palette version goes
+// to the next bank: a cell keeps ONE offset shared by all banks
+// (`ts256_off`), the per-bank map `ts256_map_b[b][cell]` = pool[b*bs + off], and
+// a line job carries the bank of the version it was rendered with (kind bits
+// 3..2). A row therefore always displays the colours it was rendered with,
+// whatever the beam and the renderer are doing, and the palette needs no beam
+// scheduling at all. nb-1 changes per frame are exact (nb versions can be on
+// screen at once); more fold into the current bank. The bank count is chosen at
+// the (in)validating flush from how many distinct colours CRAM holds (each bank
+// must fit them all with headroom); nb == 1 is the old single-table scheme with
+// the beam rule below (256c titles with a full 256-colour palette land there).
+#define TS256_MAX_BANKS 4
+#if HDMI_HSTX >= 2
+// With the HSTX command expander (hdmi_tmds_line.h) sync, porches, preambles, guard
+// bands and the Data Islands are command-list words, not palette indices, so only
+// the nm:: UI block (152..167) is out of the pool: 240 slots.
+#define TS256_POOL      240
+#else
+#define TS256_POOL      184                      // usable hardware slots (see ts256PoolInit)
+#endif
+#define TS256_DIRTY_W   ((TS256_POOL + 31) / 32)
+// The tables live in the TS-Conf code overlay window (TS_OVL_BSS: SRAM at a
+// fixed VMA, zeroed when the window is claimed, heap on every other machine) —
+// every reader and writer is behind ts_pal256_live / the TS mode switch.
+static uint8_t  TS_OVL_BSS ts256_off[256];        // CRAM index → offset inside a bank
+static uint8_t  TS_OVL_BSS ts256_map_b[TS256_MAX_BANKS][256];   // bank → CRAM index → hardware slot
+static uint16_t TS_OVL_BSS ts256_slot_col[TS256_POOL];   // offset → CRAM555 it currently shows, 0xFFFF = none
+static uint16_t TS_OVL_BSS ts256_slot_ref[TS256_POOL];   // cells mapped to the offset (256 cells can share one)
+static uint32_t TS_OVL_BSS ts256_dirty_b[TS256_MAX_BANKS][TS256_DIRTY_W];   // per bank: offsets whose colour must reach the hardware
+static bool     ts256_valid = false;   // map assigned (else full rebuild)
+static bool     ts256_exhausted = false;   // a bank ran out of offsets (nearest-colour fallback used)
+static uint8_t  TS_OVL_BSS ts256_pool[TS256_POOL];
+static uint8_t  ts256_pool_n = 0;
+static uint8_t  ts256_nb = 1;          // palette banks in use
+static uint8_t  ts256_bs = 0;          // offsets per bank
+static uint8_t  ts256_cur_bank = 0;    // bank lines are rendered with from now on
+static uint32_t ts256_ver = 0;         // versions created since the last invalidate
+// A bulk DMA rewrote the pixels the renderer reads since the last palette
+// version: the next CRAM change is a RE-INDEX (new pixels drawn for the new
+// palette — RobFgift: 30 KB of tile graphics + 16 colours every second frame)
+// and takes a bank of its own. Without it the change is a palette ANIMATION
+// over unchanged pixels (Ninja Gaiden: sprite/border cells every 4th frame),
+// and the old rows must follow it too — see tsPalettePoll.
+static bool     ts_reindex_hint = false;
+static constexpr uint32_t TS_REINDEX_MIN_BYTES = 2048;
+// ...and, with no palette banks to version with (nb == 1), the picture may not
+// be replaced PIECEMEAL either. A single global palette has exactly two
+// consistent states — old pixels + old palette, new pixels + new palette — so
+// the framebuffer has to flip between two sweeps, not during one. The guest's
+// 64000-byte blit takes ~10 ms of core0 (hw 2026-09-16), which is long past the
+// start of the display frame, so the lines it feeds land under a beam that is
+// already inside the picture. `ts_reindex_hold` keeps them out of the
+// framebuffer for the rest of the guest frame; the next frame re-renders
+// everything from the (now complete) VRAM at its own start, in one go, and
+// tsPalettePoll flushes in the blanking after that. Costs one display frame of
+// latency — the demo that needs this updates 12 times a second.
+static uint16_t ts_pal_ncells = 0;             // CRAM cells written in THIS frame's pending window
+static uint8_t  ts_pal_cnt_seq = 0;            // the guest frame ts_pal_ncells counts for (NOT ts_pal_seq: that one
+                                               // is frame+1 for a change made after the tick parked, see tsCramChanged)
+static uint32_t ts_cram_gen = 0;               // +1 per CRAM change (tsCramChanged) — ts256Reduce's cache key
+static uint64_t ts_cram_last_t = 0;            // guest T at the last CRAM change (global_tstates + tstates): the burst detector
+static inline uint64_t tsGuestT() { return CPU::global_tstates + (uint64_t)CPU::tstates; }
+// A CRAM burst is in progress while the last cell landed less than two raster
+// lines ago: a 512-LDI palette upload writes a cell every ~20 T, so any gap of a
+// whole line is the burst's end. Sampled against the CURRENT clock scale.
+static inline bool tsCramBurstLive() {
+    const uint64_t now = tsGuestT();
+    const uint64_t quiet = (uint64_t)(2u * (unsigned)VIDEO::tStatesPerLine) << ESPectrum::multiplicator;
+    return now >= ts_cram_last_t && (now - ts_cram_last_t) < quiet;
+}
+static uint32_t ts256_reduce_gen = 0xFFFFFFFFu; // CRAM generation the current map was REDUCED for
+static uint8_t  ts256_reduce_bs = 0;
+static constexpr uint16_t TS_REINDEX_MIN_CELLS = 32;
+static constexpr uint16_t TS_REINDEX_EXH_CELLS = 4;    // ...or this many on a pool that has already run out of slots (nb == 1)
+// ...but only when those cells arrived as a BURST. A whole-palette change is
+// written at one raster position — a CRAM DMA is instantaneous, and even a
+// 256-cell FMAddr upload is ~7 T-state lines at ZCLK 14 — while a PER-LINE
+// palette effect writes a cell or two per line for the whole picture and is
+// just as wide. Holding that is catastrophic: the hold throws away every
+// per-line register the rest of the frame would have carried (VPage, GYOffs,
+// PalSel, Border — tsReindexRelease renders all 240 lines from ONE register
+// set), and it halves the update rate. Found on Demorama (TS-Conf, hw
+// 2026-09-17): a LINE INT per line writing one CRAM cell, `chg≈100/frame`,
+// `wide=50 rel=48` per 60 frames — the 3 raster splits and the border
+// oscilloscope were gone and the picture updated every other frame.
+// Density, not span: a palette upload is at least this many cells per row it
+// touches (a CRAM DMA writes all of them on ONE row), a per-line effect one or
+// two. Demorama: 32 cells over 32 rows = 1/row; Kolbass: 256 (DMA) or 72 on one.
+static constexpr uint32_t TS_PAL_BURST_PER_ROW = 4;
+static int32_t  ts_pal_row0 = 0;               // fb row of this frame's first CRAM change
+static bool     ts_reindex_hold = false;       // skip posting lines while set
+static bool     ts_reindex_held_prev = false;  // a release happened this frame: no new hold until EndFrame
+static uint32_t ts_last_curline = 0xFFFFFFFFu; // tsRenderLine's repeat filter (reset by the release)
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+// Y-counter consistency detector (TMNT menu tear at 576p, 2026-09-22): with
+// GYOffs == 0 every rendered line must satisfy ygctr == curline; anything else
+// is a displaced picture. Counted per line, logged once per frame with the
+// poster's origin (bit 0..2 of ts_ygc_src: 1 = tsDrawTick, 2 = MainScreen,
+// 4 = tsReindexRelease) and the state of the queue.
+volatile uint32_t ts_ygc_bad = 0;
+static uint8_t  ts_ygc_src = 0;
+static uint32_t ts_ygc_logged_frame = 0xFFFFFFFFu;
+#define TS_YGC_SRC(bit) (ts_ygc_src = (uint8_t)(bit))
+#else
+#define TS_YGC_SRC(bit) do {} while (0)
+#endif
+static bool     ts_reindex_ready_seen = false;  // tsReindexReady was already up at the previous EndFrame
+static uint8_t  ts_reindex_ready_frames = 0;    // EndFrames the pending release has outlived (forced at 2)
+#if TSPAL_DBG
+static uint32_t ts_dbg_rel = 0, ts_dbg_rel_dirty = 0, ts_dbg_rel_forced = 0, ts_dbg_hold_blit = 0, ts_dbg_hold_wide = 0, ts_dbg_hold_spread = 0;
+#endif
+// Forget any held re-index. On every path that leaves or rebuilds the mode
+// (tsVideoApplyPending's real change, tsVideoForceOff, Reset): a hold that
+// outlives its mode is a picture that never renders again — nygift's mode
+// switches (7 VConfig writes a run) left `hold=1` for 15 s with `chg=1 app=0`,
+// a white screen, and the menu's applyPalette() as the only thing that ever
+// repainted it (hw 2026-09-17).
+static void tsReindexClear() {
+    ts_reindex_hold = false;
+    ts_reindex_held_prev = false;
+    ts_reindex_ready_seen = false;
+    ts_reindex_ready_frames = 0;
+    VIDEO::tsReindexReady = false;
+}
+
+// ── Direct measurement of the artifact itself (TS_VIDEO_TRACE) ──────────────
+// Every counter so far reports when the palette was APPLIED, which is one step
+// removed from the thing being complained about: rows the beam actually scanned
+// while the framebuffer and the hardware palette came from different pictures.
+// Kolbass is the case that made this necessary — three rounds of "the timing is
+// perfect" against "still broken". Each fb row carries the MAP generation it was
+// rendered with (the cell -> slot numbering is what ts256Assign changes; the slot
+// colours follow at the flush), the flush records the generation the hardware now
+// holds, and the beam is walked row by row as it advances: every row whose
+// generation differs from the programmed one is a row displayed wrong. `bad` in
+// the [TSPAL] line is that count — it is the number to drive to zero, and it is
+// independent of any theory about when things ought to happen.
+#if TSPAL_DBG
+static uint8_t  ts_row_gen[288];        // fb row -> map generation it was RENDERED with (core1 copies it at render time)
+static uint8_t  ts_row_gen_posted[288]; // fb row -> map generation at POST time (core0). The scan used to read this
+                                        // one: a row posted but not yet rendered counted as new while the beam
+                                        // still showed its old pixels — the hole every counter fell through.
+static volatile uint32_t ts_late_rows = 0, ts_late_max = 0;   // rows core1 rendered AFTER the beam had passed them
+static uint8_t  ts_map_gen = 0;         // bumped by every ts256Assign from the poll
+static uint8_t  ts_pal_gen_live = 0;    // generation the hardware slots currently hold
+static int32_t  ts_scan_last = -1;      // last beam row counted this sweep
+static uint32_t ts_scan_bad = 0, ts_scan_bad_sweep = 0, ts_scan_bad_max = 0, ts_scan_sweeps = 0;
+// Map invariant, checked after every flush: every CRAM cell's offset must hold
+// exactly the cell's colour (viol), no live offset may still be dirty (dirty),
+// plus how many cells changed offset in this assign (moved) and how many were
+// parked on the NEAREST colour because the pool ran out (near). A per-CELL
+// wrongness — "negative in places", a few colours flipping for one frame —
+// cannot show in the row-generation count above; it shows here.
+static uint32_t ts_inv_viol = 0, ts_inv_dirty = 0, ts_inv_moved = 0, ts_inv_near = 0, ts_inv_live = 0, ts_inv_checks = 0;
+static uint32_t ts_inv_mergemax = 0, ts_inv_merges = 0;   // worst / count of colour merges (ts256Reduce), 5-bit RGB distance squared
+// Release timing: how long core1 took to drain the release's rows, and where the
+// beam was when it had — a beam already back inside the picture means the sweep
+// showed old pixels under the palette flushed at the release (2026-09-30).
+static uint32_t ts_rel_drain_max_us = 0, ts_rel_beam_in = 0; static int ts_rel_beam_after_max = -1;
+static uint32_t ts_rel_assign_max_us = 0, ts_rel_post_max_us = 0, ts_rel_flush_max_us = 0, ts_rel_total_max_us = 0; static int ts_rel_beam_start_max = -1;
+static uint32_t ts_dbg_rel_inburst = 0;  // releases that fired while the guest was still writing CRAM (diagnostic only)
+static uint32_t ts_dbg_rel_blank = 0;    // releases taken on the blanking path (flush first, no drain)
+static uint32_t ts_dbg_sticky_pre = 0;   // sticky (non-held) Assign runs with a partial (<32 cells) CRAM window, nb == 1
+#endif
+
+// TsConf::dmaStart, every bulk DMA: destination inside the base bitmap or a
+// tile-graphics page (not the sprite page — sprite frames are streamed by
+// many games and are no re-index of the picture), big enough to be a redraw.
+void VIDEO::tsVramDmaNote(uint32_t addr, uint32_t len) {
+    // NOT gated on ts_reindex_hint: the hint stays up until a flush, and a blit
+    // arriving while the previous change is still pending must STILL hold the
+    // picture. With the gate, one late flush turned every following blit into
+    // an unheld, mid-sweep replacement — Kolbass, hw 2026-09-16: `bad=143..171`
+    // rows once a second, each paired with a `later 1` apply at beam=192.
+    if (!ts_pal256_live || len < TS_REINDEX_MIN_BYTES) return;
+    const uint32_t page = addr >> 14;
+    const uint8_t vp = TsConf::r.vpage;
+    bool hit = false;
+    switch (ts_vmode_live) {
+        case TSV_ZX:   hit = (page == vp); break;
+        case TSV_16C:  hit = ((page & 0xF8) == (vp & 0xF8)); break;
+        case TSV_256C: hit = ((page & 0xF0) == (vp & 0xF0)); break;
+        default: break;
+    }
+    if (!hit && ts_tsu_live) {
+        const uint8_t tsc = TsConf::r.tsconf;
+        if ((tsc & 0x20) && (page & 0xF8) == (TsConf::r.t0gpage & 0xF8)) hit = true;
+        if ((tsc & 0x40) && (page & 0xF8) == (TsConf::r.t1gpage & 0xF8)) hit = true;
+    }
+    if (!hit) return;
+    ts_reindex_hint = true;
+    // The blit alone holds nothing: a title that redraws its screen by DMA every
+    // frame without touching CRAM (TMNT) must keep rendering at full rate. The
+    // hold is for the PAIR pixels + palette; here the palette came first
+    // (Kolbass: CRAM DMA, then the blit), the other order is handled in
+    // tsCramChanged through the hint just set. A change already scheduled for
+    // release (tsReindexReady) will render the newest VRAM anyway.
+    // The hold is for the PAIR pixels + palette: a blit with a palette change
+    // already registered this frame holds (Kolbass: CRAM DMA, then the blit —
+    // and between two similar video pictures FEWER than 32 cells change, so the
+    // width test alone let the blit render progressively under a palette that
+    // flipped in blanking: `bad=1600 rows/50 frames, worst sweep 200`, hw
+    // 2026-09-17). The other order — blit first, CRAM later in the frame — is
+    // caught in tsCramChanged through the hint just set. A blit with no palette
+    // change at all holds nothing (TMNT redraws its screen by DMA every frame).
+    if (ts256_nb == 1 && VIDEO::tsCramDirty && !VIDEO::tsReindexReady) {
+#if TSPAL_DBG
+        if (!ts_reindex_hold) ts_dbg_hold_blit++;
+#endif
+        ts_reindex_hold = true;
+    }
+}
+
+static void ts256PoolInit() {
+    if (ts256_pool_n) return;
+    uint8_t n = 0;
+    for (int i = 0; i < 256 && n < (int)sizeof(ts256_pool); i++) {
+        if (i >= 152 && i < 168) continue;          // UI palette block
+#if HDMI_HSTX < 2
+        if (i >= 184 && i < 200) continue;          // HDMI DI set 1
+        if (i >= 216) continue;                     // DI set 0, sync, border
+#endif
+        ts256_pool[n++] = (uint8_t)i;
+    }
+    ts256_pool_n = n;
+}
+
+static inline uint32_t ts555Dist(uint16_t a, uint16_t b) {
+    int dr = (int)((a >> 10) & 31) - (int)((b >> 10) & 31);
+    int dg = (int)((a >> 5) & 31) - (int)((b >> 5) & 31);
+    int db = (int)(a & 31) - (int)(b & 31);
+    return (uint32_t)(dr * dr + dg * dg + db * db);
+}
+
+// The offset's colour changed: every bank has to be rewritten there (each one
+// when it next becomes the current bank).
+static inline void ts256MarkDirty(uint8_t off) {
+    for (int b = 0; b < ts256_nb; b++) ts256_dirty_b[b][off >> 5] |= 1u << (off & 31);
+}
+#if TSPAL_DBG
+static bool ts_map_changed = false;   // an assign changed at least one cell's offset (-> map generation bump)
+#endif
+static inline void ts256SetMap(int cell, uint8_t off) {
+#if TSPAL_DBG
+    if (ts256_off[cell] != off) ts_map_changed = true;
+#endif
+    ts256_off[cell] = off;
+    for (int b = 0; b < ts256_nb; b++) ts256_map_b[b][cell] = ts256_pool[b * ts256_bs + off];
+}
+
+// How many banks the pool can hold for the palette CRAM carries right now:
+// the largest of 4/3/2 whose bank fits every distinct colour plus a quarter
+// of headroom (a fade or a shared cell's move needs fresh offsets), else 1.
+static uint8_t ts256PickBanks() {
+    uint16_t seen[256]; int n = 0;
+    for (int i = 0; i < 256; i++) {
+        const uint16_t c = TsConf::cram[i] & 0x7FFF;
+        int k = 0;
+        while (k < n && seen[k] != c) k++;
+        if (k == n) seen[n++] = c;
+    }
+    for (int nb = TS256_MAX_BANKS; nb >= 2; nb--) {
+        const int bs = ts256_pool_n / nb;
+        if (bs >= n + n / 4 + 4) return (uint8_t)nb;
+    }
+    return 1;
+}
+
+// ── Palette REDUCTION for a held re-index (nb == 1) ─────────────────────────
+// The hold re-renders the whole picture in one go, so the numbering is free to
+// change — and it has to: the sticky rule below keeps one offset per CELL for
+// ever, two cells with the same colour never share, and the moment a picture
+// needs more cells than the pool has, whichever cells come LAST BY INDEX are
+// parked on the nearest live colour, whatever that is. Kolbass, hw 2026-09-17:
+// `live=184/184 exh=1 near≈40-55 per flush` — ~4 % of the pixels of every
+// other picture in the wrong colour, scattered, "a negative in places".
+// Here: distinct colours first (equal colours share, as on hardware there is
+// simply one slot per colour value), and if they still exceed the pool the two
+// CLOSEST colours are merged, repeatedly, the larger group surviving — a
+// 184-colour quantisation of the 256-colour palette, so the error lands on
+// near-identical colours instead of on arbitrary cells. Offsets that already
+// show a colour are reused (no palette write), the rest take free ones.
+// Tables live in the TS-Conf overlay window (every access is behind the mode).
+static uint16_t TS_OVL_BSS rc_col[256];    // group -> colour
+static uint16_t TS_OVL_BSS rc_nd[256];     // group -> distance to its nearest live group
+static uint8_t  TS_OVL_BSS rc_cnt[256];    // group -> cells (saturating)
+static uint8_t  TS_OVL_BSS rc_of[256];     // cell -> group
+static uint8_t  TS_OVL_BSS rc_nn[256];     // group -> nearest live group
+static uint8_t  TS_OVL_BSS rc_alive[256];
+static uint8_t  TS_OVL_BSS rc_off[256];    // group -> offset
+// CRAM value each cell had when it was last assigned. The sticky path used to
+// judge "changed" by comparing CRAM with the SLOT's colour — right for an exact
+// cell, wrong for one parked on the nearest colour by an exhausted pool: it
+// looked changed on every assign, left its offset, found no free one and was
+// re-parked, often elsewhere — and the rows already rendered with its old slot
+// number showed another cell's colour (Kolbass, static picture, hw 2026-09-17).
+static uint16_t TS_OVL_BSS ts256_cell_col[256];
+static void ts256Reduce() {
+    ts256PoolInit();
+    const int bs = ts256_bs;
+    // Deterministic in CRAM, so a second call for the same CRAM (the release's
+    // flush after its own assign, or a release after the EndFrame pre-assign)
+    // would only recompute the identical map.
+    if (ts256_valid && ts256_reduce_gen == ts_cram_gen && ts256_reduce_bs == (uint8_t)bs) return;
+    ts256_reduce_gen = ts_cram_gen; ts256_reduce_bs = (uint8_t)bs;
+    // Cost matters here: this runs INSIDE the beam-out window of a held
+    // release, and a continuous CRAM writer (ppal.spg) defeats the EndFrame
+    // pre-assign, so the release pays it every frame. The first version was
+    // O(n^2) three times over — a 256 x n linear dedup, an all-pairs
+    // nearest-neighbour pass and a FULL recompute of every group whose
+    // neighbour was the kept OR the merged one after each of ~50 merges —
+    // 2.4 ms of a 5.2 ms window (hw 2026-09-30). Now: the cells are SORTED by
+    // colour (groups come out adjacent, no dedup search), a nearest neighbour
+    // is found by scanning outward in that order and stopping once the red
+    // difference alone exceeds the best distance (sorted by red first), and a
+    // merge only marks the groups whose neighbour DIED as stale — the kept
+    // group's colour does not change, so a neighbour pointing at it is still
+    // right. A stale group is recomputed lazily, when it comes up as the
+    // minimum: its recorded distance is a lower bound (the minimum over a set
+    // can only grow when a member is removed), so re-evaluating just that one
+    // and picking again is exact. Merged groups redirect through rc_nn and are
+    // resolved once at the end instead of relabelling 256 cells per merge.
+    uint16_t *const key = ts256_cell_col;      // cell -> colour, scratch until the final pass rewrites it
+    uint8_t  *const ord = rc_nn;               // sorted cell order, scratch until the groups exist
+    for (int i = 0; i < 256; i++) { key[i] = TsConf::cram[i] & 0x7FFF; ord[i] = (uint8_t)i; }
+    for (int i = 1; i < 256; i++) {            // insertion sort: 256 keys, mostly runs
+        const uint8_t v = ord[i]; const uint16_t c = key[v];
+        int j = i;
+        while (j > 0 && key[ord[j - 1]] > c) { ord[j] = ord[j - 1]; j--; }
+        ord[j] = v;
+    }
+    int n = 0;
+    for (int i = 0; i < 256; i++) {
+        const uint8_t cell = ord[i]; const uint16_t c = key[cell];
+        if (n == 0 || rc_col[n - 1] != c) { rc_col[n] = c; rc_cnt[n] = 0; rc_alive[n] = 1; n++; }
+        rc_of[cell] = (uint8_t)(n - 1);
+        if (rc_cnt[n - 1] < 255) rc_cnt[n - 1]++;
+    }
+    int alive = n;
+    if (alive > bs) {
+        auto nnOf = [&](int k) {
+            const uint16_t ck = rc_col[k]; const int rk = ck >> 10;
+            uint32_t bd = 0xFFFFFFFFu; int bj = k;
+            for (int j = k + 1; j < n; j++) {
+                if (!rc_alive[j]) continue;
+                const int dr = (rc_col[j] >> 10) - rk;
+                if ((uint32_t)(dr * dr) >= bd) break;   // sorted by red: nothing further can be closer
+                const uint32_t d = ts555Dist(ck, rc_col[j]);
+                if (d < bd) { bd = d; bj = j; }
+            }
+            for (int j = k - 1; j >= 0; j--) {
+                if (!rc_alive[j]) continue;
+                const int dr = rk - (rc_col[j] >> 10);
+                if ((uint32_t)(dr * dr) >= bd) break;
+                const uint32_t d = ts555Dist(ck, rc_col[j]);
+                if (d < bd) { bd = d; bj = j; }
+            }
+            rc_nn[k] = (uint8_t)bj; rc_nd[k] = (uint16_t)(bd > 0xFFFF ? 0xFFFF : bd);
+            rc_alive[k] = 1;                       // fresh
+        };
+        for (int k = 0; k < n; k++) nnOf(k);
+        while (alive > bs) {
+            int a = -1; uint32_t bd = 0xFFFFFFFFu;
+            for (int k = 0; k < n; k++) if (rc_alive[k] && rc_nd[k] < bd) { bd = rc_nd[k]; a = k; }
+            if (a < 0) break;
+            if (rc_alive[a] == 2 || !rc_alive[rc_nn[a]] || rc_nn[a] == a) {   // stale: re-evaluate, pick again
+                nnOf(a);
+                if (rc_nn[a] == a) break;                                        // no other live group (cannot happen while alive > bs)
+                continue;
+            }
+            const int b = rc_nn[a];
+#if TSPAL_DBG
+            if (bd > ts_inv_mergemax) ts_inv_mergemax = bd;
+            ts_inv_merges++;
+#endif
+            const int keep = (rc_cnt[a] >= rc_cnt[b]) ? a : b, gone = (keep == a) ? b : a;
+            const unsigned sum = (unsigned)rc_cnt[keep] + rc_cnt[gone];
+            rc_cnt[keep] = (uint8_t)(sum > 255 ? 255 : sum);
+            rc_alive[gone] = 0; rc_nn[gone] = (uint8_t)keep; alive--;   // dead: rc_nn is the redirect
+            for (int k = 0; k < n; k++) if (rc_alive[k] && rc_nn[k] == gone) rc_alive[k] = 2;   // stale
+        }
+        ts256_exhausted = true;             // colours were approximated (reported by the trace)
+        for (int i = 0; i < 256; i++) {     // resolve the merge chains
+            int k = rc_of[i];
+            while (!rc_alive[k]) k = rc_nn[k];
+            rc_of[i] = (uint8_t)k;
+        }
+    }
+    // Offsets. Pass 1: a live or free offset that already shows the colour is
+    // kept — no palette write. Pass 2: the rest take free offsets and go dirty.
+    for (int o = 0; o < bs; o++) ts256_slot_ref[o] = 0;
+    for (int k = 0; k < n; k++) {
+        rc_off[k] = 0xFF;
+        if (!rc_alive[k]) continue;
+        for (int o = 0; o < bs; o++)
+            if (!ts256_slot_ref[o] && ts256_slot_col[o] == rc_col[k]) { rc_off[k] = (uint8_t)o; ts256_slot_ref[o] = 1; break; }
+    }
+    int next = 0;
+    for (int k = 0; k < n; k++) {
+        if (!rc_alive[k] || rc_off[k] != 0xFF) continue;
+        while (next < bs && ts256_slot_ref[next]) next++;
+        rc_off[k] = (uint8_t)next;                     // alive <= bs, so this always lands
+        ts256_slot_ref[next] = 1;
+        ts256_slot_col[next] = rc_col[k];
+        ts256MarkDirty((uint8_t)next);
+    }
+    for (int o = 0; o < bs; o++) ts256_slot_ref[o] = 0;
+    for (int i = 0; i < 256; i++) {
+        const int k = rc_of[i];
+#if TSPAL_DBG
+        if (ts256_valid && ts256_off[i] != rc_off[k]) ts_inv_moved++;
+        if ((rc_col[k] & 0x7FFF) != (TsConf::cram[i] & 0x7FFF)) ts_inv_near++;
+#endif
+        ts256SetMap(i, rc_off[k]);
+        ts256_slot_ref[rc_off[k]]++;
+        ts256_cell_col[i] = TsConf::cram[i] & 0x7FFF;
+    }
+    for (int b = ts256_nb; b < TS256_MAX_BANKS; b++) memcpy(ts256_map_b[b], ts256_map_b[0], 256);
+    ts256_valid = true;
+}
+
+// Bring the cell→offset map up to date with CRAM. Cheap when nothing changed
+// (one pass of 256 compares); called at the first poll after a CRAM change so
+// lines rendered from then on use the new numbering. `full` forgets
+// everything (mode entry: the slots hold the standard palette).
+static void ts256Assign(bool full) {
+    ts256PoolInit();
+    // A held re-index with a single bank: the whole picture is re-rendered next
+    // frame, so rebuild the numbering from the colours instead of patching the
+    // sticky map (see ts256Reduce). Deterministic, so the flush's second call
+    // in the next frame reproduces the same map and writes nothing.
+    if (!full && ts256_valid && ts256_nb == 1 && (ts_reindex_hold || ts_reindex_held_prev)) {
+        ts256Reduce();
+#if TSPAL_DBG
+        if (ts_map_changed) { ts_map_gen++; ts_map_changed = false; }
+#endif
+        return;
+    }
+    if (full || !ts256_valid) {
+        ts256_reduce_gen = 0xFFFFFFFFu;
+        for (int i = 0; i < TS256_POOL; i++) { ts256_slot_col[i] = 0xFFFF; ts256_slot_ref[i] = 0; }
+        for (int i = 0; i < 256; i++) ts256_cell_col[i] = 0xFFFF;
+        memset(ts256_dirty_b, 0, sizeof ts256_dirty_b);
+        ts256_valid = false;
+        ts256_exhausted = false;
+        if (ts256_nb < 1) ts256_nb = 1;
+        ts256_bs = (uint8_t)(ts256_pool_n / ts256_nb);
+    }
+    const int bs = ts256_bs;
+    uint8_t pending[256]; int npend = 0;
+    for (int i = 0; i < 256; i++) {
+        const uint16_t c = TsConf::cram[i] & 0x7FFF;
+        if (ts256_valid) {
+            const uint8_t s = ts256_off[i];
+            if (ts256_cell_col[i] == c) continue;                     // the CELL did not change (approximated or not)
+            ts256_cell_col[i] = c;
+            if (ts256_slot_col[s] == c) continue;                     // unchanged
+            if (ts256_slot_ref[s] == 1) {                             // sole owner: recolour in place
+                ts256_slot_col[s] = c;
+                ts256MarkDirty(s);
+                continue;
+            }
+            ts256_slot_ref[s]--;                                      // shared: leave it
+        }
+        pending[npend++] = (uint8_t)i;
+    }
+    for (int k = 0; k < npend; k++) {
+        const int i = pending[k];
+        const uint16_t c = TsConf::cram[i] & 0x7FFF;
+        int hit = -1, freeSame = -1, freeAny = -1;
+        for (int s = 0; s < bs; s++) {
+            if (ts256_slot_ref[s]) { if (hit < 0 && ts256_slot_col[s] == c) hit = s; }
+            else {
+                if (ts256_slot_col[s] == c) { if (freeSame < 0) freeSame = s; }
+                else if (freeAny < 0) freeAny = s;
+            }
+        }
+        // Join a live offset of the same colour first (256 cells, 184 slots: the
+        // unused cells alone would exhaust the pool), else a free one. Sharing
+        // is safe here: only the cell that CHANGES ever moves, the others keep
+        // their offset and its colour.
+        // A free offset that still shows the colour may not hold it in EVERY
+        // bank (freed before the others were written): dirty it like a new one.
+        if (hit < 0 && freeSame >= 0) { hit = freeSame; ts256MarkDirty((uint8_t)hit); }
+        else if (hit < 0 && freeAny >= 0) { hit = freeAny; ts256_slot_col[hit] = c; ts256MarkDirty((uint8_t)hit); }
+        else if (hit < 0) {                                           // full: nearest live colour
+            uint32_t bestd = 0xFFFFFFFFu;
+            for (int s = 0; s < bs; s++) {
+                if (!ts256_slot_ref[s]) continue;
+                const uint32_t d = ts555Dist(ts256_slot_col[s], c);
+                if (d < bestd) { bestd = d; hit = s; }
+            }
+            ts256_exhausted = true;
+        }
+#if TSPAL_DBG
+        if (ts256_valid && ts256_off[i] != (uint8_t)hit) ts_inv_moved++;
+        if ((ts256_slot_col[hit] & 0x7FFF) != c) ts_inv_near++;
+#endif
+        ts256SetMap(i, (uint8_t)hit);
+        ts256_slot_ref[hit]++;
+        ts256_cell_col[i] = c;
+    }
+    ts256_reduce_gen = 0xFFFFFFFFu;   // the sticky path moved cells: the Reduce cache no longer describes the map
+    // Banks beyond nb mirror bank 0: a line still queued with a higher bank tag
+    // from before the count shrank then renders with live slots, not a stale map.
+    if (!ts256_valid)
+        for (int b = ts256_nb; b < TS256_MAX_BANKS; b++) memcpy(ts256_map_b[b], ts256_map_b[0], 256);
+    ts256_valid = true;
+#if TSPAL_DBG
+    // Every assign that renumbers a cell is a new map generation — the release's
+    // and the flush's included. Bumping only from the poll left `bad` blind to
+    // exactly the rows this section is about (2026-09-30).
+    if (ts_map_changed) { ts_map_gen++; ts_map_changed = false; }
+#endif
+}
+
+// Write bank `b`'s slots whose colour changed since that bank was last written.
+// A freed offset keeps its dirty bit: the bank never got the colour, and the
+// offset's next owner must not inherit a slot only some banks hold.
+static void ts256ProgramBank(int b) {
+    for (int w = 0; w < TS256_DIRTY_W; w++) {
+        uint32_t bits = ts256_dirty_b[b][w], keep = 0;
+        while (bits) {
+            const int bit = __builtin_ctz(bits); bits &= bits - 1;
+            const int off = w * 32 + bit;
+            if (off >= ts256_bs) continue;
+            if (!ts256_slot_ref[off]) { keep |= 1u << bit; continue; }
+            const uint32_t col = paletteFinal(VIDEO::tsCramToRgb(ts256_slot_col[off]));
+            const uint8_t slot = ts256_pool[b * ts256_bs + off];
+            graphics_set_palette(slot, col);
+            // graphics_set_palette() has already written the DITHERED VGA entry.
+            // These are arbitrary CRAM colours, not the 16 flat ZX ones, so the
+            // 2x2 Bayer path is what they want: it fits inside one source pixel
+            // (320x240 -> 640x480) and buys 13 levels/channel instead of 4.
+            if (!Config::vga_dither) vga_set_palette_entry_solid(slot, col);
+        }
+        ts256_dirty_b[b][w] = keep;
+    }
+}
+
+// invalidate = forget what the hardware slots hold (mode entry / after an
+// applyPalette rewrote them): the bank count is re-decided and every assigned
+// slot of every bank is written. Without it this is the GLOBAL apply: the
+// changed slots go into every bank, so every row on screen — whatever version
+// it was rendered with — shows the new colours at once (the beam-scheduled
+// path for a palette ANIMATION, see tsPalettePoll).
+#if TSPAL_DBG
+static void ts256InvariantCheck() {
+    uint32_t viol = 0, dirty = 0, live = 0;
+    for (int i = 0; i < 256; i++) {
+        const uint16_t c = TsConf::cram[i] & 0x7FFF;
+        if ((ts256_slot_col[ts256_off[i]] & 0x7FFF) != c) viol++;
+    }
+    for (int o = 0; o < ts256_bs; o++) {
+        if (!ts256_slot_ref[o]) continue;
+        live++;
+        if (ts256_dirty_b[0][o >> 5] & (1u << (o & 31))) dirty++;
+    }
+    ts_inv_viol += viol; ts_inv_dirty += dirty; ts_inv_live = live; ts_inv_checks++;
+}
+#endif
+
+static void tsPalette256Flush(bool invalidate) {
+    if (invalidate) {
+        ts256PoolInit();
+        ts256_nb = ts256PickBanks();
+        ts256_bs = (uint8_t)(ts256_pool_n / ts256_nb);
+        ts256_cur_bank = 0;
+        ts256_ver = 0;
+        ts256_valid = false;
+        Debug::log("[TSV] ts256 remap: %u palette bank%s x %u slots", ts256_nb, ts256_nb > 1 ? "s" : "", ts256_bs);
+    }
+    ts256Assign(invalidate);
+    if (invalidate) {
+        ts_reindex_hint = false;
+        for (int o = 0; o < ts256_bs; o++)
+            if (ts256_slot_ref[o]) ts256MarkDirty((uint8_t)o);
+    }
+    for (int b = 0; b < ts256_nb; b++) ts256ProgramBank(b);
+#if TSPAL_DBG
+    ts256InvariantCheck();
+#endif
+    // The border bands are painted with the border cell's SLOT NUMBER and only
+    // repainted at EndFrame when that number changes (gmxBorderFrame). A flush
+    // that renumbered the slots (ts256Reduce does, on every held palette) leaves
+    // 20 + 20 rows holding the OLD number under the NEW colours — another cell's
+    // colour framing the picture until the next EndFrame, which with V-Sync
+    // pacing off may be most of a sweep away. Every row instrument here scans
+    // the PICTURE rows only, which is why this was the residue no counter saw
+    // (Kolbass, hw 2026-09-17: "very hard to notice, but still there"). Cheap:
+    // two memsets of 20 rows, once per palette flush.
+    if (VIDEO::ts_render_live) { VIDEO::gmx_border_dirty = true; VIDEO::gmxBorderFrame(false); }
+}
+
+// Versioned apply (nb > 1): a new palette version = the next bank, written at
+// once. A bank is reused every nb versions; the rows still displayed with it
+// are either long re-rendered or — a raster palette split that alternates the
+// same two palettes every frame (Ninja Gaiden: CRAM at lines 94 and 272) —
+// hold exactly the colours being written again, so nothing visible changes
+// under the beam. The per-frame cap is a COST bound only (each version writes
+// its bank's dirty slots): a first cut capped at nb-1 "so that nb versions fit
+// on screen" and folded the second change of a frame into the current bank in
+// place, which recoloured that frame's rendered rows every frame (hw
+// 2026-09-14, "Ninja Gaiden flickers in wrong colours"). Beyond the cap the
+// change folds in place (the legacy behaviour for a per-line CRAM writer). A
+// bank that ran out of offsets degrades the whole remap to one bank (the beam
+// rule) — one frame of mismatched rows, then the pre-2026-09-14 behaviour.
+// A bank that ran out of offsets: back to ONE bank of the whole pool, rebuilt
+// and written at once (one frame of mismatched rows, then the beam rule).
+// Reached from the versioned apply AND from the beam-scheduled sticky assign:
+// the bank count is picked from the CRAM at mode entry, and a title whose
+// palette GROWS afterwards (the TGV video player: RRES 256x192 opens on a
+// near-empty palette -> nb=3 x 61 slots, then 100+ colours per video frame)
+// exhausted its 61-slot bank on the sticky path, where nothing ever degraded
+// it - `live=61/61 exh=1 near=2000/s` for the whole run, ~160 cells a frame
+// parked on the nearest of 61 colours (hw 2026-09-30, "negative" RUNNINGM).
+static void ts256DegradeOneBank() {
+    Debug::log("[TSV] ts256 remap: bank of %u slots exhausted - back to one bank", ts256_bs);
+    ts256_nb = 1;
+    ts256_bs = ts256_pool_n;
+    ts256_cur_bank = 0;
+    ts256_valid = false;
+    ts256Assign(true);
+    for (int o = 0; o < ts256_bs; o++)
+        if (ts256_slot_ref[o]) ts256MarkDirty((uint8_t)o);
+    ts256ProgramBank(0);
+}
+static constexpr uint8_t TS_PAL_MAX_VERSIONS = 16;
+static void ts256Version() {
+    ts_reindex_hint = false;
+    const bool bump = ts_pal_flushes < TS_PAL_MAX_VERSIONS;
+    if (bump) {
+        ts256_ver++;
+        ts256_cur_bank = (uint8_t)(ts256_ver % ts256_nb);
+        ts_pal_flushes++;
+    }
+    ts256Assign(false);
+    if (ts256_exhausted) { ts256DegradeOneBank(); return; }
+    ts256ProgramBank(ts256_cur_bank);
+}
+
+void VIDEO::tsPaletteFlush() {
+    tsCramDirty = false;
+    ts_pal_row = -1;
+    ts_pal_ncells = 0;
+    ts_pal_assigned = false;
+    TSPAL_PALGEN();
+    ts_reindex_hint = false;   // accounted for by this flush (no-op on the nb > 1 path: tsPalettePoll takes ts256Version there)
+    if (ts_pal256_live) {
+        tsPalette256Flush(false);
+        return;
+    }
+    if (ts_vmode_live == TSV_TEXT) {
+        // Pair mode: the driver tables carry the palette — rebuild through the
+        // DS80 deferred path instead of the 16 hardware slots.
+        tsPairPaletteLoad();
+        profi_palette_dirty = true;
+        return;
+    }
+    s_ts_pal_active = true;
+    uint8_t gpal = (TsConf::r.palsel & 0x0F) << 4;
+    for (int i = 0; i < 16; i++) {
+        uint32_t c = paletteFinal(tsCramToRgb(TsConf::cram[gpal | i]));
+        graphics_set_palette(i, c);
+        // ZX mode: these ARE the standard flat Spectrum 16 (TS-BIOS loads them into
+        // CRAM), so they stay SOLID on VGA like every other machine's — Video > VGA
+        // > Colour depth governs the 16c/256c artwork palettes, not this. What was
+        // wrong here is the ROUNDING, not the lack of a dither: see vgaGridSnap().
+        vga_set_palette_entry_solid(i, vgaGridSnap(c));
+    }
+}
+
+// Border register (an 8-bit CRAM index) → the byte the bands/pads are painted
+// with in the live mode: the nearest of the 16 gpal colours, as a pair slot in
+// TEXT mode and as the palette index itself in 16c/NOGFX (where the framebuffer
+// byte IS the hardware slot 0..15).
+uint8_t VIDEO::tsBorderSlot() { return tsBorderSlotFor(TsConf::r.border, TsConf::r.palsel, ts256_cur_bank); }
+uint8_t TS_RENDER_HOT VIDEO::tsBorderSlotFor(uint8_t border, uint8_t palsel, uint8_t bank) {
+    if (ts_pal256_live) return ts256_map_b[bank & (TS256_MAX_BANKS - 1)][border];
+    const uint8_t gpal = (palsel & 0x0F) << 4;
+    const uint16_t want = TsConf::cram[border];
+    uint8_t best = 0;
+    uint32_t bestd = 0xFFFFFFFFu;
+    for (int i = 0; i < 16; i++) {
+        const uint16_t c = TsConf::cram[gpal | i];
+        if (c == want) { best = (uint8_t)i; break; }
+        int dr = (int)((c >> 10) & 31) - (int)((want >> 10) & 31);
+        int dg = (int)((c >> 5) & 31) - (int)((want >> 5) & 31);
+        int db = (int)(c & 31) - (int)(want & 31);
+        uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (d < bestd) { bestd = d; best = (uint8_t)i; }
+    }
+    return (ts_vmode_live == TSV_TEXT) ? profi_pair_lookup[best][best] : best;
+}
+
+// Leaving TS-Conf: hand slots 0..15 back to the standard Spectrum colours
+// (the ulaPlusDisable pattern). Called from Reset() on any other machine.
+void VIDEO::tsPaletteRestore() {
+    if (!s_ts_pal_active) return;
+    s_ts_pal_active = false;
+    tsCramDirty = false;
+    for (int i = 0; i < 16; i++) {
+        uint32_t color = paletteFinal(spectrum_rgb888[i]);
+        graphics_set_palette(i, color);
+        vga_set_palette_entry_solid(i, color);
+    }
+}
+
+// ── When a CRAM change reaches the hardware palette ─────────────────────────
+// The framebuffer holds palette INDICES and the palette is one global table, so
+// a CRAM change is visible on every row the beam has not scanned yet — the
+// display shows old colours above the beam and new ones below it from the
+// moment the slots are rewritten. Flushing at EndFrame put that moment ~75% down
+// the display (the guest frame finishes early, the beam is mid-picture): the
+// RobFgift demo (16c + TSU) re-indexes its whole picture every second frame and
+// DMAs the matching 16-colour palette right after the frame INT, so every second
+// display frame showed the new pixels with the OLD palette below a wandering
+// split line — "half white, half yellow, flickering" (2026-09-13).
+//
+// Hardware semantics are the target: a change made while the raster is on guest
+// line L takes effect from line L. Our line renderer runs AHEAD of the display
+// beam (guest visible line 56 is reached ~3 ms after v_sync, the beam's first
+// visible row comes ~4.7 ms after it), so the rows above L are already in the
+// framebuffer but not yet displayed. Hence: remember the fb row the change lands
+// on (tsCramChanged) and apply the slots when the beam reaches it — at once if
+// the beam is already below it or in blanking with the change meant "from the
+// top" (this demo: written during the guest's top blanking, beam in blanking →
+// immediate → the whole display frame is consistent). Polled at every rendered
+// guest line (tsDrawTick), at EndFrame and from the frame-pacing waits.
+void VIDEO::tsCramChanged() {
+    tsCramDirty = true;
+    ts_cram_gen++;
+    ts_cram_last_t = tsGuestT();
+    // The fb row this change first shows on (the next line to render), computed
+    // up front: the width test below needs the SPREAD of the cells, and the
+    // second and later changes of a frame return early before reaching the
+    // ts_pal_row bookkeeping at the bottom.
+    // ...and a change made in the BOTTOM border band counts as "next frame's
+    // top" exactly as one made after the tick finished: the band rows below it
+    // are the only thing left in this sweep. Before tsBandRow extended the tick
+    // past the content, ts_line_t was already UINT32_MAX there.
+    const bool palTopOfFrame = (!ts_fast_armed || ts_line_t == 0xFFFFFFFFu || ts_row_idx >= lin_end2);
+    const int32_t palRow = palTopOfFrame ? (int32_t)lin_end : (int32_t)(lin_end + ts_line_idx);
+    // Count per FRAME, not per unflushed window: a window that never flushed
+    // must not make every later single-cell write "wide" (its own comment said
+    // so; the `ts_pal_row < 0` test alone did not, because ts_pal_row stays >= 0
+    // across frames until a flush).
+    // The frame tag is ITS OWN (ts_pal_cnt_seq), not ts_pal_seq: a change made
+    // after the tick parked (a release inside the frame, ppal.spg's spread
+    // rewrite continuing behind it) is "the next frame's top" and sets
+    // ts_pal_seq = frame + 1, so testing THAT reset the count on every one of
+    // those writes — it never reached TS_REINDEX_EXH_CELLS, no hold started,
+    // and the v_sync poll then flushed the sticky map with the beam at row 190
+    // (`wide=25 rel=25 force=25` per 50 frames, `bad≈138 rows` a sweep, only
+    // with V-Sync — without it those cells wait for the next frame's count,
+    // `bad=0`; hw 2026-09-30, pal8).
+    if (ts_pal_row < 0 || ts_pal_cnt_seq != ts_frame_seq) { ts_pal_ncells = 0; ts_pal_row0 = palRow; ts_pal_cnt_seq = ts_frame_seq; }
+    if (ts_pal_ncells < 0xFFFF) ts_pal_ncells++;
+    const int32_t palSpan = palRow > ts_pal_row0 ? palRow - ts_pal_row0 : 0;
+    const bool palBurst = (uint32_t)palSpan * TS_PAL_BURST_PER_ROW < (uint32_t)ts_pal_ncells;
+    // A change this wide is a whole-palette change wherever it lands in the
+    // frame; with a single bank it is held and flipped with the picture. The
+    // earlier `want == top` test missed Kolbass' static picture, whose palette
+    // is written by a different routine at another raster position: that
+    // change took the sticky path on a full pool — `viol=144 near=72 moved=0
+    // merges=0` in one window, hw 2026-09-17 — 72 cells left on their old
+    // colours for a frame, the "full negative" at the scene cut.
+    // ...and on an EXHAUSTED single-bank pool every dense change is a re-index,
+    // however narrow: with more colours than slots the sticky path can only
+    // park a changed cell on the nearest live colour (or move it to a slot
+    // another cell shares), and it does so under rows already rendered with the
+    // old numbering. ppal.spg's free-running 256-cell rewrite held on the
+    // frames where >= 32 cells moved and took the sticky path on the others
+    // (`force 20 blank 27` applies/s, `moved=19000/s`, `bad=8000 rows/63
+    // sweeps`); Keftale's fade changes 6-12 cells a frame on a full pool
+    // (`near=300-600/s`, `stickyPre=30-90`). Both looked "negative" on the
+    // rows the beam had already passed (hw 2026-09-30, pal6). A hold renders
+    // the whole picture from a REDUCED map in blanking, which is the only
+    // consistent answer once the pool is short.
+    // NO density test on an exhausted pool (pal8, hw 2026-09-30 on pal7): ppal
+    // rewrites its 256 cells SPREAD over the frame (~1 cell per row), so the
+    // burst test only passed on the frames where a release inside the frame
+    // had parked the tick (palRow pinned at the top, span 0) and failed on the
+    // others — half the frames held, the other half took the sticky path and
+    // were flushed by the v_sync poll with the beam at row 190 (`wide=25
+    // rel=25 force=25` per 50 frames, `bad≈138 rows` every sweep, worse WITH
+    // V-Sync since that poll only exists there). A per-line palette effect on
+    // a pool that is already short of slots cannot be rendered right either
+    // way, so holding it costs nothing that was available. Demorama, the title
+    // the density test protects, is not exhausted (123-125 colours).
+    const bool exhWide = ts256_exhausted && ts_pal_ncells >= TS_REINDEX_EXH_CELLS;
+    if (ts_pal256_live && ts256_nb == 1 && !tsReindexReady &&
+        (ts_reindex_hint || exhWide || (ts_pal_ncells >= TS_REINDEX_MIN_CELLS && palBurst))) {
+#if TSPAL_DBG
+        if (!ts_reindex_hold) ts_dbg_hold_wide++;
+#endif
+        ts_reindex_hint = true;
+        ts_reindex_hold = true;
+    }
+#if TSPAL_DBG
+    // A wide change REFUSED as a per-line effect: `spread` climbing with hold=0
+    // is this rule working (Demorama); spread=0 with wide>0 is a burst upload.
+    else if (ts_pal256_live && ts256_nb == 1 && ts_pal_ncells == TS_REINDEX_MIN_CELLS && !palBurst)
+        ts_dbg_hold_spread++;
+#endif
+    if (ts_pal_row >= 0) {
+        // Already pending. A change from an EARLIER frame is superseded: the
+        // pixels the renderer will show are the latest ones, so the apply must
+        // be judged against this frame — and `dseq` is 4-bit signed, a change
+        // left pending 8 frames wraps negative and blocks itself for ever.
+        if (ts_pal_seq == ts_frame_seq) return;
+        ts_pal_row = -1;
+    }
+    ts_pal_row = palRow;
+    if (palTopOfFrame) {
+        // Before the first / after the last content line: it is the NEXT frame's
+        // top that first shows the new colours.
+        ts_pal_seq = (uint8_t)(ts_frame_seq + (ts_fast_armed ? 1 : 0));
+    } else {
+        ts_pal_seq = ts_frame_seq;
+    }
+    // A WHOLE-FRAME palette change (landed before the first content line) with
+    // no palette banks to version with is treated exactly like a re-index —
+    // held, reduced and flipped with the picture in blanking — whether or not a
+    // blit comes with it. Without this the change takes the sticky path, and
+    // on an exhausted pool every cell that really changed is re-parked on the
+    // nearest colour, often a different slot: Kolbass' static picture re-DMAs a
+    // palette that DOES differ every 4th frame (chg≈12 with no blits, moved
+    // 460-655 per window, hw 2026-09-17) — ~50 cells hopping per change, the
+    // rows already rendered showing other cells' colours. A per-LINE palette
+    // effect (want > top) keeps the beam rule: it is not a frame-wide change.
+#if TSPAL_DBG
+    ts_pal_dbg.changes++;
+    ts_pal_dbg.change_us = time_us_64();
+    const uint32_t gt = (uint32_t)(ts_pal_dbg.change_us - ts_frame_start_us);
+    if (gt > ts_pal_dbg.chg_gt_max_us) ts_pal_dbg.chg_gt_max_us = gt;
+#endif
+}
+
+#if TSPAL_DBG
+static void tsPalDbgApplied(uint32_t& path, int beam) {
+    path++;
+    ts_pal_dbg.applies++;
+    if (beam < ts_pal_dbg.beam_min) ts_pal_dbg.beam_min = beam;
+    if (beam > ts_pal_dbg.beam_max) ts_pal_dbg.beam_max = beam;
+    const uint32_t lat = (uint32_t)(time_us_64() - ts_pal_dbg.change_us);
+    if (lat > ts_pal_dbg.lat_max_us) ts_pal_dbg.lat_max_us = lat;
+}
+
+static void tsPalDbgPrint() {
+    static uint32_t frames = 0;
+    if (++frames < 50) return;
+    frames = 0;
+    if (!ts_pal_dbg.changes && !ts_pal_dbg.applies) return;
+    extern volatile uint32_t ts_c1_us;
+    const uint32_t c1 = ts_c1_us - ts_pal_dbg.c1_prev; ts_pal_dbg.c1_prev = ts_c1_us;
+    Debug::log("[TSPAL] vsync=%d chg=%u app=%u (bank %u force %u nobeam %u norow %u blank %u vis %u later %u) beam=%d..%d latMax=%uus chgAt<=%uus blockedSeq=%u waited=%u mapDeferred=%u pal256=%d nb=%u ver=%lu c1=%uus/f pos=%08lX",
+               (int)Config::v_sync_enabled, ts_pal_dbg.changes, ts_pal_dbg.applies, ts_pal_dbg.p_bank, ts_pal_dbg.p_force, ts_pal_dbg.p_nobeam,
+               ts_pal_dbg.p_norow, ts_pal_dbg.p_blank, ts_pal_dbg.p_vis, ts_pal_dbg.p_later,
+               ts_pal_dbg.beam_min, ts_pal_dbg.beam_max, ts_pal_dbg.lat_max_us, ts_pal_dbg.chg_gt_max_us,
+               ts_pal_dbg.blocked_seq, ts_pal_dbg.waited, ts_pal_dbg.map_deferred, (int)VIDEO::ts_pal256_live, ts256_nb, (unsigned long)ts256_ver,
+               c1 / 50, (unsigned long)ts_render_pos);
+    Debug::log("[TSPAL] bad=%lu rows/%lu sweeps (worst sweep %lu of %u visible) hold=%d | map: viol=%lu dirty=%lu near=%lu moved=%lu live=%lu/%u checks=%lu exh=%d merges=%lu mergeMaxD2=%lu",
+               (unsigned long)ts_scan_bad, (unsigned long)ts_scan_sweeps, (unsigned long)ts_scan_bad_max,
+               (unsigned)(lin_end2 - lin_end), (int)ts_reindex_hold,
+               (unsigned long)ts_inv_viol, (unsigned long)ts_inv_dirty, (unsigned long)ts_inv_near, (unsigned long)ts_inv_moved,
+               (unsigned long)ts_inv_live, (unsigned)ts256_bs, (unsigned long)ts_inv_checks, (int)ts256_exhausted,
+               (unsigned long)ts_inv_merges, (unsigned long)ts_inv_mergemax);
+    Debug::log("[TSPAL] late=%lu rows rendered behind the beam (max %lu rows behind) | hold: blit=%lu wide=%lu spread=%lu rel=%lu relDirty=%lu relForced=%lu ready=%d hold=%d stickyPre=%lu",
+               (unsigned long)ts_late_rows, (unsigned long)ts_late_max, (unsigned long)ts_dbg_hold_blit, (unsigned long)ts_dbg_hold_wide, (unsigned long)ts_dbg_hold_spread,
+               (unsigned long)ts_dbg_rel, (unsigned long)ts_dbg_rel_dirty, (unsigned long)ts_dbg_rel_forced, (int)VIDEO::tsReindexReady, (int)ts_reindex_hold,
+               (unsigned long)ts_dbg_sticky_pre);
+    Debug::log("[TSPAL] rel: beamStartMax=%d beamIn=%lu beamAfterMax=%d assign=%luus post=%luus drain=%luus flush=%luus total=%luus | blank=%lu forced=%lu inBurst=%lu",
+               ts_rel_beam_start_max, (unsigned long)ts_rel_beam_in, ts_rel_beam_after_max,
+               (unsigned long)ts_rel_assign_max_us, (unsigned long)ts_rel_post_max_us, (unsigned long)ts_rel_drain_max_us,
+               (unsigned long)ts_rel_flush_max_us, (unsigned long)ts_rel_total_max_us,
+               (unsigned long)ts_dbg_rel_blank, (unsigned long)ts_dbg_rel_forced, (unsigned long)ts_dbg_rel_inburst);
+    ts_dbg_rel_inburst = ts_dbg_rel_blank = 0;
+    ts_late_rows = 0; ts_late_max = 0; ts_dbg_sticky_pre = 0; ts_rel_drain_max_us = 0; ts_rel_beam_in = 0; ts_rel_beam_after_max = -1;
+    ts_rel_beam_start_max = -1; ts_rel_assign_max_us = ts_rel_post_max_us = ts_rel_flush_max_us = ts_rel_total_max_us = 0;
+    ts_dbg_hold_blit = ts_dbg_hold_wide = ts_dbg_hold_spread = ts_dbg_rel = ts_dbg_rel_dirty = ts_dbg_rel_forced = 0;
+    ts_scan_bad = ts_scan_bad_max = ts_scan_sweeps = 0;
+    ts_inv_viol = ts_inv_dirty = ts_inv_near = ts_inv_moved = ts_inv_checks = ts_inv_merges = ts_inv_mergemax = 0;
+    ts_pal_dbg.changes = ts_pal_dbg.applies = ts_pal_dbg.p_force = ts_pal_dbg.p_nobeam = ts_pal_dbg.p_norow = ts_pal_dbg.p_bank = 0;
+    ts_pal_dbg.p_blank = ts_pal_dbg.p_vis = ts_pal_dbg.p_later = ts_pal_dbg.blocked_seq = ts_pal_dbg.waited = ts_pal_dbg.map_deferred = 0;
+    ts_pal_dbg.beam_min = 999; ts_pal_dbg.beam_max = -999; ts_pal_dbg.lat_max_us = 0; ts_pal_dbg.chg_gt_max_us = 0;
+}
+#else
+static inline void tsPalDbgPrint() {}
+#endif
+
+void VIDEO::tsPalSelWritten() {
+    // Under the ts256 remap (every whole-line mode but TEXT) each line carries
+    // its own palsel and every CRAM cell has a slot — nothing to flush; a
+    // per-line PalSel raster effect (nygift's splash wipe) is free. TEXT (pair
+    // tables) and ZX mode (the gpal bank on slots 0..15) re-derive their 16.
+    if (!ts_pal256_live) tsCramChanged();
+}
+
+// TS-Conf whole-line modes: fire the frame-pacing v_sync TS_VSYNC_LEAD_LINES
+// before blanking start (see hdmi_vsync_line). 0 restores the default.
+static constexpr unsigned TS_VSYNC_LEAD_LINES = 100;   // ~3.2 ms at 31.5 kHz
+void VIDEO::setVsyncLead(bool on) {
+#ifdef VGA_HDMI
+    const unsigned v_active = (unsigned)vga.yres * 2;
+    const unsigned line = on && v_active > TS_VSYNC_LEAD_LINES ? v_active - TS_VSYNC_LEAD_LINES : 0;
+    hdmi_set_vsync_line(line);
+    vga_set_vsync_line(line);
+#else
+    (void)on;
+#endif
+}
+
+// True when the beam is in vertical blanking with at least TS_REL_MIN_BLANK_LINES
+// display lines still ahead (or when the driver cannot say — VGA).
+// The blanking-path release (ts256 map + palette flush + posting the rows,
+// core1 renders behind) costs core0 ~1.5-2 ms; the beam must not reach fb row
+// 0 before the flush, so the release may only START with that much blanking
+// left. 640x480 48.83 Hz has 164 blanking lines (5.2 ms), 720x576 only 44
+// (1.4 ms) — there the window is whatever the mode has, minus a margin: a
+// release that starts at the very top of blanking beats one forced from
+// EndFrame wherever the beam happens to be.
+static constexpr int TS_REL_MIN_BLANK_LINES = 70;    // ~2.2 ms at 31.75 us/line
+static bool displayBlankLeftOk() {
+#ifdef VGA_HDMI
+    extern bool SELECT_VGA;
+    if (SELECT_VGA) return true;
+    const int left = hdmi_blank_lines_left();
+    if (left < 0) return true;
+    int need = TS_REL_MIN_BLANK_LINES;
+    const int total = hdmi_blank_lines_total() - 6;
+    if (need > total) need = total > 0 ? total : 1;
+    return left >= need;
+#else
+    return true;
+#endif
+}
+int VIDEO::displayBeamRow() {
+#ifdef VGA_HDMI
+    extern bool SELECT_VGA;
+    return SELECT_VGA ? vga_beam_row() : hdmi_beam_row();
+#else
+    return -2;
+#endif
+}
+
+#if TSPAL_DBG
+// Walk the beam row by row across the visible rows and count the ones whose
+// framebuffer generation differs from the generation the hardware palette
+// holds. Called from every poll, so it must be incremental: each row is looked
+// at once per sweep. This is the artifact, counted.
+static void tsPalScanBeam(int beam) {
+    VIDEO::tsPalScanWanted = VIDEO::ts_pal256_live;
+    if (beam < 0) {
+        if (ts_scan_last >= 0) {          // sweep over: fold it into the window
+            ts_scan_bad += ts_scan_bad_sweep;
+            if (ts_scan_bad_sweep > ts_scan_bad_max) ts_scan_bad_max = ts_scan_bad_sweep;
+            ts_scan_bad_sweep = 0; ts_scan_sweeps++; ts_scan_last = -1;
+        }
+        return;
+    }
+    if (beam < ts_scan_last) {            // wrapped without a blanking poll
+        ts_scan_bad += ts_scan_bad_sweep;
+        if (ts_scan_bad_sweep > ts_scan_bad_max) ts_scan_bad_max = ts_scan_bad_sweep;
+        ts_scan_bad_sweep = 0; ts_scan_sweeps++; ts_scan_last = -1;
+    }
+    int r = (ts_scan_last < (int)lin_end) ? (int)lin_end : ts_scan_last + 1;
+    const int end = (beam < (int)lin_end2) ? beam : (int)lin_end2 - 1;
+    for (; r <= end; r++)
+        if (r < (int)sizeof ts_row_gen && ts_row_gen[r] != ts_pal_gen_live) ts_scan_bad_sweep++;
+    if (beam > ts_scan_last) ts_scan_last = beam;
+}
+#endif
+
+// Beam-driven release of a held re-index: the beam has just left the picture,
+// so the whole frame is rendered NOW (every content line, from the current
+// registers — a re-index has no per-line raster effects by construction, the
+// hold already cost them) and the pending palette is flushed in the same
+// blanking. core1 needs ~4.4 ms for 200 lines against 5.2 ms of blanking and
+// stays ahead of the beam from row one, so the sweep that follows carries new
+// pixels under the new palette on every row. The guest's own line ticks for the
+// rest of this frame are switched off (the picture is already posted).
+// `beamOut`: the beam is out of the picture (blanking, or the bottom border)
+// with room to spare — the palette is flushed BEFORE the rows are posted and
+// core1 renders them behind the flush, ahead of the beam (it starts at row 0
+// while the beam is still in blanking and runs ~4x faster than the beam does).
+// Nothing waits for core1, so the release costs core0 only the map, the
+// flush and the posting (~1.5 ms) and fits the 5.2 ms of blanking with room
+// — the earlier post -> DRAIN -> flush order spent 3.6 ms waiting for core1
+// inside that window and ran past its end (ppal / keft, hw 2026-09-30:
+// `total=6.9 ms`, `beamAfterMax=232`, the top rows shown old under the new
+// palette). Without `beamOut` (forced from EndFrame, beam anywhere) the old
+// order stays: one torn frame either way, and flipping the palette only once
+// all rows are new keeps the torn region to the rows the beam passes during
+// the drain.
+static void tsReindexRelease(bool beamOut) {
+    ts_reindex_ready_seen = false;
+    ts_reindex_ready_frames = 0;
+#if TSPAL_DBG
+    const uint64_t tr0 = time_us_64();
+    { const int b0 = VIDEO::displayBeamRow(); if (b0 > ts_rel_beam_start_max) ts_rel_beam_start_max = b0; }
+    if (beamOut) ts_dbg_rel_blank++;
+    if (tsCramBurstLive()) ts_dbg_rel_inburst++;
+#endif
+    // Rows still queued from before the hold would render under the map
+    // rebuilt below (they are the previous frame's, so nothing is lost by
+    // letting core1 finish them first — the ring is empty in practice).
+    if (beamOut && tsC1Pending()) VIDEO::tsRenderDrain();
+    // The map must match the CRAM of THIS moment: a change that landed after
+    // the poll which reduced it (a palette animation writing at every frame's
+    // top) would otherwise render with a map for the previous palette.
+    if (VIDEO::ts_pal256_live) { ts256Assign(false); ts_pal_assigned = true; }
+#if TSPAL_DBG
+    const uint64_t tr1 = time_us_64();
+    if ((uint32_t)(tr1 - tr0) > ts_rel_assign_max_us) ts_rel_assign_max_us = (uint32_t)(tr1 - tr0);
+#endif
+    ts_reindex_hold = false;
+    VIDEO::tsReindexReady = false;
+    ts_reindex_held_prev = true;
+#if TSPAL_DBG
+    ts_dbg_rel++;
+    if (VIDEO::tsCramDirty) ts_dbg_rel_dirty++;
+#endif
+    auto flush = [&]() {
+        if (!VIDEO::tsCramDirty) return;
+        TSPAL_APPLIED(p_blank, -1);
+#if TSPAL_DBG
+        const uint64_t tf0 = time_us_64();
+#endif
+        VIDEO::tsPaletteFlush();
+        ts_pal_flushes++;
+#if TSPAL_DBG
+        const uint32_t df = (uint32_t)(time_us_64() - tf0);
+        if (df > ts_rel_flush_max_us) ts_rel_flush_max_us = df;
+#endif
+    };
+    if (beamOut) flush();
+    const uint32_t lines = lin_end2 - lin_end;
+    ts_last_curline = 0xFFFFFFFFu;
+#if TSPAL_DBG
+    const uint64_t tp0 = time_us_64();
+#endif
+    for (uint32_t i = 0; i < lines; i++) {
+        linedraw_cnt = lin_end + i;
+        curline = i;
+        TS_YGC_SRC(4);
+        VIDEO::tsRenderLine(i);
+    }
+#if TSPAL_DBG
+    { const uint32_t dp = (uint32_t)(time_us_64() - tp0); if (dp > ts_rel_post_max_us) ts_rel_post_max_us = dp; }
+#endif
+    // Stop the guest's ticks re-posting THIS frame — but only if the frame is
+    // still being posted (ts_line_idx > 0). With V-Sync pacing a HALT-only frame
+    // is over 0.1 ms after v_sync and the release lands in its pacing wait,
+    // where EndFrame has already re-armed the next frame at line 0: zeroing that
+    // one cost a second un-rendered frame per hold (c1 100 of 200 lines, sprites
+    // frozen 2 frames in 4, hw 2026-09-17). Rendering it again a few ms later
+    // is 200 lines of core1 — cheaper than a lost frame of animation.
+    if (ts_fast_armed && ts_line_idx > 0) {
+        ts_line_idx = lines;
+        linedraw_cnt = lin_end2;
+        VIDEO::ts_line_t = 0xFFFFFFFFu;
+        VIDEO::Draw = &VIDEO::Blank;
+        VIDEO::Draw_Opcode = &VIDEO::Blank_Opcode;
+    }
+    if (!beamOut) {
+        // Forced release with the beam inside the picture: the palette follows
+        // the PIXELS into the framebuffer. Waiting here costs core0 the drain
+        // (~3.5 ms of 240 rows) once per forced release; a stuck queue falls
+        // back inside tsRenderDrain itself.
+#if TSPAL_DBG
+        const uint64_t t0 = time_us_64();
+#endif
+        VIDEO::tsRenderDrain();
+#if TSPAL_DBG
+        const uint32_t dt = (uint32_t)(time_us_64() - t0);
+        if (dt > ts_rel_drain_max_us) ts_rel_drain_max_us = dt;
+#endif
+        flush();
+    }
+#if TSPAL_DBG
+    { const uint32_t dt = (uint32_t)(time_us_64() - tr0); if (dt > ts_rel_total_max_us) ts_rel_total_max_us = dt;
+      // The beam AFTER the whole release, flush included — the pre-flush sample
+      // alone read "still in blanking" while a 10 ms flush ran on (2026-09-30).
+      const int b = VIDEO::displayBeamRow();
+      if (b >= (int)lin_end && b < (int)lin_end2) ts_rel_beam_in++;
+      if (b > ts_rel_beam_after_max) ts_rel_beam_after_max = b; }
+#endif
+}
+
+void VIDEO::tsPalettePoll(bool force) {
+    PERF_BUCKET_SCOPE(PB_PALPOLL);
+    const int beam0 = displayBeamRow();
+#if TSPAL_DBG
+    if (ts_pal256_live) tsPalScanBeam(beam0);
+#endif
+    // Release the moment the beam has left the PICTURE — the bottom border is as
+    // good as blanking: the palette is flushed at once and core1 re-renders the
+    // rows behind it, ahead of the beam (tsReindexRelease, beamOut). The start
+    // needs enough blanking LEFT for the map + flush (displayBlankLeftOk): one
+    // that started on the last blanking lines used to end with the beam 80-130
+    // rows into the picture (hw 2026-09-30, `relBeamIn=2..9/s`).
+    // NOT gated on the guest being quiet: a "wait for a gap in the CRAM writes"
+    // gate was tried (pal4) and hw-refuted twice — the TGV player never tripped
+    // it, and ppal.spg (all 256 cells rewritten in a free-running loop) never
+    // LEAVES a gap, so every release timed out 40 ms later and was then forced
+    // from EndFrame with the beam wherever it was (`burstForced=9 relForced=18`
+    // per second, hw 2026-09-30). A mid-burst snapshot is one frame with a
+    // palette the guest was still writing, which is what the hardware shows too.
+    if (tsReindexReady && (beam0 >= (int)lin_end2 || (beam0 < 0 && displayBlankLeftOk()))) {
+        tsReindexRelease(true);
+        return;
+    }
+    if (!tsCramDirty) return;
+    if (ts_pal256_live && ts256_nb > 1 && ts_reindex_hint) {
+        // RE-INDEX (pixels were redrawn for this palette — ts_reindex_hint):
+        // the change becomes a new palette version in the next bank, written
+        // at once; lines posted from here on carry that bank, rows already
+        // rendered keep theirs. No beam involved. A change WITHOUT redrawn
+        // pixels is a palette animation and takes the beam-scheduled path
+        // below, applied to every bank: the rows still on screen from earlier
+        // frames hold the same pixels and must follow the animation too —
+        // versioning them made Ninja Gaiden's sprite/border cycling show the
+        // V-Sync-off tear line as a colour boundary (hw 2026-09-14).
+        ts256Version();
+        tsCramDirty = false;
+        ts_pal_row = -1;
+        ts_pal_assigned = false;
+        TSPAL_APPLIED(p_bank, displayBeamRow());
+        return;
+    }
+    // The cell→slot map follows CRAM at once (lines rendered from here on use
+    // the new numbering); only the slot COLOURS wait for the beam below.
+    // ...EXCEPT a single-bank RE-INDEX (ts256Reduce renumbers every cell) while
+    // core1 still holds rows posted with the current numbering: the rows it
+    // renders after the rewrite carry the NEW offsets under the OLD colours
+    // until the next release. A held release posts 192 rows and returns to the
+    // guest at once, and a title that rewrites CRAM continuously (ppal.spg: all
+    // 256 cells in a free-running loop, ~20 times a frame; the TGV video
+    // player: 256 cells per flip) reaches the next poll's Assign while core1 is
+    // 10-30 rows into that render — top rows right, the rest in another map's
+    // colours, "a negative in places" (hw 2026-09-30). Defer the renumbering
+    // until the ring is empty; nothing is posted while the hold is up, and the
+    // release runs its own Assign, so nothing waits on this one.
+    if (ts_pal256_live && !ts_pal_assigned) {
+        if (ts256_valid && ts256_nb == 1 && (ts_reindex_hold || ts_reindex_held_prev) && tsC1Pending()) {
+            TSPAL_COUNT(map_deferred);
+            return;
+        }
+#if TSPAL_DBG
+        if (ts256_valid && ts256_nb == 1 && !ts_reindex_hold && !ts_reindex_held_prev && ts_pal_ncells < TS_REINDEX_MIN_CELLS) ts_dbg_sticky_pre++;
+#endif
+        ts256Assign(false); ts_pal_assigned = true;
+        if (ts256_nb > 1 && ts256_exhausted) {
+            // The sticky path parked a cell on a nearest colour: this bank is
+            // too small for the palette the title has grown into. Same answer
+            // as the versioned path (ts256Version) - one bank of the whole pool.
+            ts256DegradeOneBank();
+            tsCramDirty = false; ts_pal_row = -1; ts_pal_ncells = 0;
+            return;
+        }
+    }
+    // The unconditional flush at v_sync (ESPectrum::loop) would otherwise defeat
+    // the re-index rule below by landing the new palette on the picture that is
+    // still being held back — which IS the failure the hold exists to remove.
+    // It stays as the safety valve: the hold lasts one frame, so a change the
+    // beam rule never resolves is forced at the v_sync after that.
+    const bool reindexPending = (ts_pal256_live && ts256_nb == 1 && ts_reindex_hint);
+    if ((force && !reindexPending) || !ts_render_live || ESPectrum::maxSpeed || ts_pal_flushes >= TS_PAL_MAX_FLUSHES) {
+        TSPAL_APPLIED(p_force, displayBeamRow());
+        tsPaletteFlush();
+        ts_pal_flushes++;
+        return;
+    }
+    const int beam = displayBeamRow();
+    const int32_t want = ts_pal_row;
+    if (beam == -2 || want < 0) {          // no beam position / a change with no row (mode switch): at once
+        if (beam == -2) TSPAL_APPLIED(p_nobeam, beam); else TSPAL_APPLIED(p_norow, beam);
+        tsPaletteFlush();
+        ts_pal_flushes++;
+        return;
+    }
+    // Apply when the beam is on a row that holds pixels rendered AFTER the
+    // change — the rule that is right whether the renderer runs ahead of the
+    // beam (v-sync pacing, fast frame) or behind it (slow frame, or v-sync off
+    // with the two frames drifting): rows the beam scans before the renderer
+    // got there keep old pixels AND the old palette, rows after carry both new.
+    const uint32_t pos = ts_render_pos;
+    int dseq = (int)(((pos >> 16) - ts_pal_seq) & 0x0F);
+    if (dseq >= 8) dseq -= 16;
+    const int32_t top = (int32_t)lin_end;
+    const int32_t doneTo = top + (int32_t)(pos & 0xFFFF) - 1;   // last completed row of the renderer's frame
+    // A full RE-INDEX with no palette banks (nb == 1) has exactly two consistent
+    // states and the framebuffer is held back to make them the only two it ever
+    // shows (ts_reindex_hold): flush in the first blanking AFTER the renderer
+    // has replaced the picture — never before it. Getting this backwards is
+    // what the 2026-09-16 captures show: flushing in the blanking that PRECEDES
+    // the re-render put the previous picture under the new palette for a whole
+    // display frame (edge-matched per row against both neighbouring pictures on
+    // a scene cut: 9 bands of 10 still held the OLD picture), and flushing
+    // inside the sweep, which is what the plain rule below does, split the
+    // screen at the row where the renderer crossed the beam.
+    const bool reindexDone = (ts_pal256_live && ts256_nb == 1 && ts_reindex_hint &&
+                              (dseq > 0 || (dseq == 0 && doneTo >= (int32_t)lin_end2 - 1)));
+    if (beam < 0 && reindexDone) {
+        TSPAL_APPLIED(p_blank, beam);
+        tsPaletteFlush();
+        ts_pal_flushes++;
+        return;
+    }
+    if (dseq < 0) { TSPAL_COUNT(blocked_seq); return; }   // renderer still on an earlier frame: nothing new is on screen yet
+    if (ts_reindex_hold || ts_reindex_held_prev) { TSPAL_COUNT(waited); return; }   // the held picture must not be recoloured under the beam
+    // A re-index with a single palette bank has NO legal mid-sweep apply: the
+    // hold makes the picture flip between sweeps, so the palette may only flip
+    // in blanking too (reindexDone above). The beam rule below is for palette
+    // animations over unchanged pixels; reaching it here with the hint up is
+    // exactly the `later 1 beam=192` that painted 171 rows wrong.
+    if (ts_pal256_live && ts256_nb == 1 && ts_reindex_hint) { TSPAL_COUNT(waited); return; }
+    bool apply;
+    if (dseq == 0) {
+        // The change frame: new pixels on rows want..doneTo.
+        apply = (beam < 0) ? (want <= top && doneTo >= want)
+                           : (beam >= want && beam <= doneTo);
+    } else {
+        // A later frame: rows from `want` down were completed in the change
+        // frame, rows top..doneTo in this one.
+        apply = (beam < 0) ? (want <= top || doneTo >= top) : (beam >= want || beam <= doneTo);
+    }
+    if (apply) {
+        if (dseq) TSPAL_APPLIED(p_later, beam); else if (beam < 0) TSPAL_APPLIED(p_blank, beam); else TSPAL_APPLIED(p_vis, beam);
+        tsPaletteFlush();
+        ts_pal_flushes++;
+    } else {
+        TSPAL_COUNT(waited);
+    }
+}
+
+// Apply a CRT-filter level change end to end. Colour stage first (it feeds every
+// palette write), then the drivers' aperture grille.
+//
+// The heavy dependents are all handed to their existing deferred paths rather than
+// rebuilt inline: initGigascreenBlendLUT() is one-shot on purpose (re-entering it
+// from a non-blanking context tears conv_color), and the ULA+ CLUT has the same
+// hazard. EndFrame drains both from blanking.
+void VIDEO::applyCrtFilter() {
+    crtBuildLut(Config::crt_filter);
+    applyPalette();                              // 0..239 + the 16 ZX solids
+    if (gigascreenArmed())
+        gigascreen_lut_rebuild_deferred = true;  // blends 17..136 carry the old curve
+    if (ulaplus_enabled)
+        ulaplus_alubytes_dirty = true;           // CLUT 0..63 (+ dither twins) likewise
+    if (profi_ds80_active)
+        profi_palette_dirty = true;              // DS80 pair table, re-emitted in blanking
+    graphics_set_crt(Config::crt_filter);
+}
+
+// Fill 256-entry BMP palette (1024 bytes, BGRA format) matching current VGA palette.
+// Replicates the same logic as applyPalette() but writes BMP BGRA entries instead
+// of programming the VGA hardware.
+void VIDEO::getBmpPalette(uint8_t* out) {
+    // G3R3B2 entries (0-239) with palette transform
+    for (int i = 0; i < 240; i++) {
+        uint32_t c = paletteFinal(grb_to_rgb888(i));
+        out[i * 4 + 0] = c & 0xFF;         // B
+        out[i * 4 + 1] = (c >> 8) & 0xFF;  // G
+        out[i * 4 + 2] = (c >> 16) & 0xFF; // R
+        out[i * 4 + 3] = 0;                 // A
+    }
+    // Indices 240-255: same G3R3B2 fallback
+    for (int i = 240; i < 256; i++) {
+        uint32_t c = paletteFinal(grb_to_rgb888(i));
+        out[i * 4 + 0] = c & 0xFF;
+        out[i * 4 + 1] = (c >> 8) & 0xFF;
+        out[i * 4 + 2] = (c >> 16) & 0xFF;
+        out[i * 4 + 3] = 0;
+    }
+    // Override indices 0-15 with Spectrum colors (matching applyPalette)
+    for (int i = 0; i < 16; i++) {
+        uint32_t c = paletteFinal(spectrum_rgb888[i]);
+        out[i * 4 + 0] = c & 0xFF;
+        out[i * 4 + 1] = (c >> 8) & 0xFF;
+        out[i * 4 + 2] = (c >> 16) & 0xFF;
+        out[i * 4 + 3] = 0;
+    }
+    // The new fullscreen UI owns indices 152..167 — reflect its colours so a
+    // PrintScreen capture taken with the menu open comes out true-colour.
+    {
+        const uint32_t* up = nm::uiPalette();
+        const int base = nm::uiPaletteBase();
+        for (int i = 0; i < 16; i++) {
+            const uint32_t c = up[i];
+            out[(base + i) * 4 + 0] = c & 0xFF;
+            out[(base + i) * 4 + 1] = (c >> 8) & 0xFF;
+            out[(base + i) * 4 + 2] = (c >> 16) & 0xFF;
+            out[(base + i) * 4 + 3] = 0;
+        }
+    }
+    // Orange (index 16)
+    {
+        uint32_t c = paletteFinal(0xFF7F00);
+        out[16 * 4 + 0] = c & 0xFF;
+        out[16 * 4 + 1] = (c >> 8) & 0xFF;
+        out[16 * 4 + 2] = (c >> 16) & 0xFF;
+        out[16 * 4 + 3] = 0;
+    }
+    // ULA+ palette override (indices 0-63)
+    if (ulaplus_enabled) {
+        for (int i = 0; i < 64; i++) {
+            uint32_t c = paletteFinal(grb_to_rgb888(ulaplus_palette[i]));
+            out[i * 4 + 0] = c & 0xFF;
+            out[i * 4 + 1] = (c >> 8) & 0xFF;
+            out[i * 4 + 2] = (c >> 16) & 0xFF;
+            out[i * 4 + 3] = 0;
+        }
+    }
+    // Packed-pair modes (Profi DS80, Scorpion GMX) — LAST, so it wins: there a
+    // framebuffer byte is a pair slot, and CaptureToBmp expands it back into two
+    // 4-bit indices, so entries 0..15 must be the palette the DRIVER is running
+    // (profi_palette_live — the guest's Profi palette, the GMX default ZX 16, or
+    // the UI block while a full-screen menu owns it), not the ZX 16. Only
+    // crtTransform applies, exactly as profi_ds80_driver_set does — the ZX
+    // palette presets deliberately never touch a Profi palette.
+    if (profi_ds80_active) {
+        // ... except Timex hi-res, whose 16 are the machine's own ZX palette
+        // (preset included) — unless a full-screen menu has swapped the UI block
+        // into profi_palette_live, which is then what the driver is running.
+        const bool tmx = (timex_hires_live || bl_pair_live) && !profi_palette_ui_saved_valid;
+        for (int i = 0; i < 16; i++) {
+            uint32_t src = tmx ? paletteTransform(spectrum_rgb888[i]) : profi_palette_live[i];
+            uint32_t c = Config::crt_filter ? crtTransform(src) : src;
+            out[i * 4 + 0] = c & 0xFF;
+            out[i * 4 + 1] = (c >> 8) & 0xFF;
+            out[i * 4 + 2] = (c >> 16) & 0xFF;
+            out[i * 4 + 3] = 0;
+        }
+    }
+}
+
+// Reverse of profi_pair_lookup, for BMP capture in the packed-pair modes.
+// Scan order matters: a merged pair (see init_profi_pair_lookup — paper 8 folds
+// onto paper 0 for inks 0..5, and the HDMI-audio slot diet folds bright-on-bright
+// onto the base paper) shares its slot with the pair the driver actually encoded,
+// and that one always comes FIRST with paper ascending — so keep the first writer
+// of each slot and the table names the colours the screen really shows.
+void VIDEO::getPairSlotReverse(uint8_t* out) {
+    bool seen[256] = {};
+    memset(out, 0, 256);
+    for (int ink = 0; ink < 16; ink++)
+        for (int paper = 0; paper < 16; paper++) {
+            uint8_t slot = profi_pair_lookup[ink][paper];
+            if (seen[slot]) continue;
+            seen[slot] = true;
+            out[slot] = (uint8_t)((ink << 4) | paper);
+        }
+}
+
+const int redPins[] = {RED_PINS_6B};
+const int grePins[] = {GRE_PINS_6B};
+const int bluPins[] = {BLU_PINS_6B};
+
+void VIDEO::vgataskinit(void *unused) {
+    uint8_t Mode;
+    Mode = 16 + ((Config::arch == A_48K) ? 0 : (Config::arch == A_128K || Config::arch == A_ALF ? 2 : 4));
+    OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
+    OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
+    vga.useInterrupt_flag = true;
+    // Init mode
+    vga.init(Mode, redPins, grePins, bluPins, HSYNC_PIN, VSYNC_PIN);    
+    for (;;){}    
+}
+
+///TaskHandle_t VIDEO::videoTaskHandle;
+
+extern size_t getContiguousHeap(void);
+
+// Minimum heap headroom before calling FatFS f_open. ff_memalloc reserves
+// (FF_MAX_LFN+1)*2 + MAXDIRB(FF_MAX_LFN) ≈ 1-2 KB for LFN/VFAT scratch. SDK
+// malloc panics on OOM (no NULL return), so we must gate this with sbrk
+// headroom (the only allocator-friendly free-memory measure). Needed by
+// SaveRectT below.
+#define FF_OPEN_HEAP_FLOOR 4096u
+
+// Shared framebuffer pointer arrays sized for the build-time maximum line count
+// so they don't need realloc on mode changes. The actual data blocks
+// (sharedFB_main / sharedFB_prev) are sized to fit the current mode — see
+// ensureMainFB / ensurePrevFB.
+// prevFrameBuffer is 4-bit packed (2 px/byte): Gigascreen blendLUT only uses
+// prev & 0x0F, so the upper nibble is free for the next pixel.
+#define FB_MAX_LINES 289   // 288 rows (the largest mode, 360x288) + one spare
+                           // POINTER slot (4 B) that setupSharedFBPointers pads,
+                           // so an out-of-range row index cannot read past the array
+
+// Rows the framebuffer needs for a mode `count` scanlines high — exactly that
+// many. The +1 spare row this used to add for 240/288 (and the 480/400 entries,
+// dead code: fbModeLines() already divides by vDiv, so it never saw those) came
+// from the initial commit and nothing writes it: every full-screen writer is
+// bounded by `vga.yres` (= vRes / vDiv, independent of this function), the border
+// machine by `lin_end2`, which VIDEO::Reset clamps to vga.yres, and the beam
+// renderers by `linedraw_cnt == lin_end2` / `frow = line + lin_end`. The drivers
+// fetch row `(line >> 1) + v_offset`, bounded by graphics_buffer_height.
+// setupSharedFBPointers() now also pads the tail of the pointer array, so a row
+// index that does escape those bounds lands on the last real row instead of an
+// uninitialised pointer — which is what it would have hit before, since the array
+// was only ever filled to `lines`.
+static int fbCalcLines(int count) {
+    return count;
+}
+
+// Two separate blocks: main FB (always present) and prev FB (Gigascreen only).
+// Splitting them lets GsSubsys free up to 52 020 B of SRAM when Gigascreen is off.
+// Each block is sized to fit the current video mode, not the build-time maximum,
+// and grown/shrunk via realloc on mode changes (see ensureMainFB/ensurePrevFB).
+// The main FB is normally ONE block, but a heap with no hole that big is not a
+// dead end: the render path reaches its rows only through the sharedFB_arr1
+// pointer array (getLineBuffer / frameBuffer[y]), exactly like the prev-FB, so it
+// can be split into whole-row chunks. That is what stands between a fragmented
+// heap and "*** PANIC *** Out of memory" from vga.init()'s own allocator (hw
+// 2026-09-10, PCp2 with no SD: 132 KB free, largest hole 75 228, 76 800 wanted).
+// Unlike the prev-FB below, the chunks take NO slack: getLargestAllocatable()
+// binary-searches with the real allocator, so a probe that says `bytes` fit means
+// malloc(bytes) succeeds, and there is no lower tier to protect here — every later
+// consumer has a PSRAM/SD-swap fallback and the framebuffer has none, so the last
+// hole in the heap is exactly the one it is entitled to take.
+#define MAIN_CHUNKS_MIN 2
+#define MAIN_CHUNKS_MAX 8
+// Debug knob (CMake -DFB_FORCE_CHUNKS=2/4/8): split the framebuffer even when one
+// block would fit, so the chunked path runs on an ordinary boot. Without it the
+// path only executes on the fragmented heap that produced it, i.e. it ships
+// untested — the failure mode this project keeps rediscovering.
+#ifndef FB_FORCE_CHUNKS
+#define FB_FORCE_CHUNKS 0
+#endif
+#if FB_FORCE_CHUNKS && (FB_FORCE_CHUNKS < MAIN_CHUNKS_MIN || FB_FORCE_CHUNKS > MAIN_CHUNKS_MAX)
+#error "FB_FORCE_CHUNKS must be 0 or between MAIN_CHUNKS_MIN and MAIN_CHUNKS_MAX"
+#endif
+static uint8_t *sharedFB_mainChunk[MAIN_CHUNKS_MAX] = { nullptr };
+static int      sharedFB_main_nchunks = 0;   // 0 = single block
+static int      sharedFB_main_chunk_rows = 0;
+
+static uint8_t *sharedFB_main = nullptr;  // sized for current mode
+static uint8_t *sharedFB_prev = nullptr;  // sized for current mode (Gigascreen only)
+static size_t sharedFB_main_size = 0;     // actual byte capacity of sharedFB_main
+static size_t sharedFB_prev_size = 0;     // actual byte capacity of sharedFB_prev
+// Backing store for sharedFB_prev. Tiered: butter PSRAM (XIP-addressable) is
+// preferred so the ~52 KB prev-FB no longer eats SRAM on PSRAM boards; falls back
+// to the heap when no butter PSRAM is present. NEED_POINTER keeps it addressable
+// for the per-pixel blend hot path (SPI PSRAM/SD-swap are never selected).
+static Buffer sharedFB_prevBuf;
+// Chunked fallback for the prev-FB. It is only ever addressed row by row, through
+// vga.prevFrameBuffer[] — so it does not have to be one block, and cutting it into
+// whole-row pieces makes a mid-session Gigascreen enable work on a fragmented heap
+// (hw, PICO_DV without PSRAM: 66 KB free but the largest hole 36.5 KB vs a 37.7 KB
+// prev-FB — previously only a reboot could place it, because setup() allocates before
+// anything else fragments the heap). The single block is still tried first, so butter
+// boards keep the XIP placement and nothing below changes for them.
+// The three things that DO require one region opt out explicitly: the XIP scanline
+// window (butter-only, guarded in pwRefreshGate), whole-region cache maintenance
+// (only reachable with that window on) and gigascreenLendRegion (declines).
+#define PREV_CHUNKS_MIN 4
+#define PREV_CHUNKS_MAX 8
+// Never ask for the heap's very last block: Buffer's last-resort malloc PANICS on
+// failure (pico_malloc), so every chunk is pre-checked with this much to spare.
+#define PREV_CHUNK_SLACK 1024
+static Buffer sharedFB_prevChunk[PREV_CHUNKS_MAX];
+static int    sharedFB_prev_nchunks = 0;      // 0 = single block in sharedFB_prevBuf
+static int    sharedFB_prev_chunk_rows = 0;   // rows per chunk (last one may hold fewer)
+static void **sharedFB_arr1 = nullptr;    // pointer array for frameBuffer (FB_MAX_LINES slots)
+static void **sharedFB_arr2 = nullptr;    // pointer array for prevFrameBuffer
+
+// Cached current resolution so GsSubsys can re-call setupSharedFBPointers
+// without reaching back into vidmodes[].
+static int sharedFB_lines = 0;
+static int sharedFB_stride = 0;
+
+// prevFB DMA scanline window (defined below, butter-PSRAM boards only).
+static void pwShutdown();
+static void pwDrop();
+
+static inline size_t fbMainBytes(int lines, int stride) {
+    return (size_t)lines * (size_t)stride;
+}
+static inline size_t fbPrevBytes(int lines, int stride) {
+    return (size_t)lines * (size_t)(stride / 2);  // 4-bit packed: 2 px/byte
+}
+
+// FB allocation happens once at boot via these. Mode-change runtime resize
+// was removed because heap fragmentation made grow impossible — switching
+// video modes now triggers a hard reset (see Config::pending_vga/hdmi mode).
+extern "C" size_t getLargestAllocatable(void);  // OSDMain.cpp — malloc panics on OOM
+extern size_t getFreeHeap(void);                // OSDMain.cpp (also declared below)
+
+// Row `row` of the main FB, whichever way it is backed. Chunking is invisible
+// above the pointer arrays this fills.
+static inline uint8_t* mainRowPtr(int row, int stride) {
+    if (!sharedFB_main_nchunks) return sharedFB_main + (size_t)row * stride;
+    const int c = row / sharedFB_main_chunk_rows;
+    return sharedFB_mainChunk[c]
+         + (size_t)(row - c * sharedFB_main_chunk_rows) * stride;
+}
+
+// Prove the chunk map before anything renders through it: every row must be
+// 4-byte aligned (the renderers write rows as uint32/uint16 pairs — lineptr32,
+// brdptr16, the DS80/GMX pair path) and must own its bytes, i.e. a write to one
+// row may never land in another. Markers rather than pointer arithmetic on
+// purpose: re-deriving mainRowPtr() here would only restate it, while writing
+// every row and reading it back also catches an allocation/split disagreement and
+// proves the memory is there. ~200 KB touched once at boot, well under a
+// millisecond, and only on the chunked path.
+// -Os + noinline: Video.cpp compiles at -O3, which unrolls these boot-time row
+// loops into ~2 KB of flash for a function that runs once. (Same reason
+// tsFast256/tsFast16 pin their own optimisation level.)
+static bool __attribute__((optimize("Os"), noinline))
+mainFBSelfCheck(int lines, int stride) {
+    for (int r = 0; r < lines; r++) {
+        uint8_t *row = mainRowPtr(r, stride);
+        if ((uintptr_t)row & 3) {
+            Debug::log("VIDEO: main FB chunk map FAILED - row %d at %p not 4-aligned", r, row);
+            return false;
+        }
+        memset(row, (uint8_t)(r & 0xFF), stride);
+    }
+    for (int r = 0; r < lines; r++) {
+        const uint8_t *row = mainRowPtr(r, stride);
+        const uint8_t want = (uint8_t)(r & 0xFF);
+        if (row[0] != want || row[stride / 2] != want || row[stride - 1] != want) {
+            Debug::log("VIDEO: main FB chunk map FAILED - row %d overlaps (%02X/%02X/%02X want %02X)",
+                       r, row[0], row[stride / 2], row[stride - 1], want);
+            return false;
+        }
+    }
+    for (int r = 0; r < lines; r++) memset(mainRowPtr(r, stride), 0, stride);
+    return true;
+}
+
+static void mainFBFree() {
+    if (sharedFB_main_nchunks) {
+        for (int c = 0; c < sharedFB_main_nchunks; c++) {
+            free(sharedFB_mainChunk[c]);
+            sharedFB_mainChunk[c] = nullptr;
+        }
+    } else {
+        free(sharedFB_main);
+    }
+    sharedFB_main = nullptr;
+    sharedFB_main_size = 0;
+    sharedFB_main_nchunks = 0;
+    sharedFB_main_chunk_rows = 0;
+}
+
+static bool ensureMainFB(int lines, int stride) {
+    size_t want = fbMainBytes(lines, stride);
+    if (sharedFB_main && sharedFB_main_size == want) return true;
+    if (sharedFB_main) mainFBFree();
+    // Probe before asking: pico_malloc PANICS on OOM instead of returning NULL, so
+    // the `!p` branch below never fires on this SDK and a too-small heap took the
+    // whole firmware down with "*** PANIC *** Out of memory" (hw 2026-08-13: 720x576
+    // + NeoGS + MIDI, 149 KB free but no contiguous 104 040 B block). With the probe
+    // the caller gets false and can fall back / report.
+    if (!FB_FORCE_CHUNKS && getLargestAllocatable() >= want) {
+        uint8_t *p = (uint8_t*)malloc(want);
+        if (p) {
+            memset(p, 0, want);
+            sharedFB_main = p;
+            sharedFB_main_size = want;
+            return true;
+        }
+    }
+    // No hole that big: split across whole-row chunks, fewest first.
+    for (int n = FB_FORCE_CHUNKS ? FB_FORCE_CHUNKS : MAIN_CHUNKS_MIN;
+         n <= MAIN_CHUNKS_MAX; n *= 2) {
+        const int rows = (lines + n - 1) / n;
+        int got = 0;
+        bool ok = true;
+        for (int c = 0; c < n; c++) {
+            const int r0 = c * rows;
+            if (r0 >= lines) break;                      // fewer chunks than n suffice
+            const int rc = (r0 + rows <= lines) ? rows : (lines - r0);
+            const size_t bytes = (size_t)rc * stride;
+            if (getLargestAllocatable() < bytes) { ok = false; break; }
+            uint8_t *cp = (uint8_t*)malloc(bytes);
+            if (!cp) { ok = false; break; }
+            memset(cp, 0, bytes);
+            sharedFB_mainChunk[c] = cp;
+            got = c + 1;
+        }
+        if (ok) {
+            sharedFB_main_nchunks    = got;
+            sharedFB_main_chunk_rows = rows;
+            sharedFB_main            = sharedFB_mainChunk[0];  // also the "exists" marker
+            sharedFB_main_size       = want;
+            // A broken map must not reach the renderer: fail the allocation instead,
+            // which the callers already handle (mode downgrade / legacy path).
+            if (!mainFBSelfCheck(lines, stride)) { mainFBFree(); return false; }
+            Debug::log("VIDEO: main FB %uKB in %d chunks x %d rows%s",
+                       (unsigned)(want >> 10), got, rows,
+                       FB_FORCE_CHUNKS ? " (FB_FORCE_CHUNKS)" : " (fragmented heap)");
+            return true;
+        }
+        for (int c = 0; c < got; c++) { free(sharedFB_mainChunk[c]); sharedFB_mainChunk[c] = nullptr; }
+    }
+    return false;
+}
+
+// Row `row` of the prev-FB, whichever way it is backed. The ONLY way the render
+// path reaches prev-FB rows is the pointer array these fill, so chunking is
+// invisible above this line.
+static inline uint8_t* prevRowPtr(int row, int prev_stride) {
+    if (!sharedFB_prev_nchunks) return sharedFB_prev + (size_t)row * prev_stride;
+    const int c = row / sharedFB_prev_chunk_rows;
+    return (uint8_t*)sharedFB_prevChunk[c].data()
+         + (size_t)(row - c * sharedFB_prev_chunk_rows) * prev_stride;
+}
+
+static void prevFBFree() {
+    sharedFB_prevBuf.free();
+    for (int c = 0; c < sharedFB_prev_nchunks; c++) sharedFB_prevChunk[c].free();
+    sharedFB_prev_nchunks = 0;
+    sharedFB_prev_chunk_rows = 0;
+    sharedFB_prev = nullptr;
+    sharedFB_prev_size = 0;
+}
+
+// Rows per chunk / largest single allocation at the finest split we will attempt.
+static inline int prevChunkRows(int lines, int n) { return (lines + n - 1) / n; }
+size_t VIDEO::gigascreenPrevFBBlockBytes() {
+    if (!sharedFB_lines) return gigascreenPrevFBBytes();
+    return (size_t)prevChunkRows(sharedFB_lines, PREV_CHUNKS_MAX) * (sharedFB_stride / 2);
+}
+
+// Split the prev-FB across n..PREV_CHUNKS_MAX blocks of whole rows, fewest first.
+static bool prevFBAllocChunked(int lines, int prev_stride, size_t want) {
+    for (int n = PREV_CHUNKS_MIN; n <= PREV_CHUNKS_MAX; n *= 2) {
+        const int rows = prevChunkRows(lines, n);
+        int got = 0;
+        bool ok = true;
+        for (int c = 0; c < n; c++) {
+            const int r0 = c * rows;
+            if (r0 >= lines) break;                      // fewer chunks than n suffice
+            const int rc = (r0 + rows <= lines) ? rows : (lines - r0);
+            const size_t bytes = (size_t)rc * prev_stride;
+            if (getLargestAllocatable() < bytes + PREV_CHUNK_SLACK ||
+                !sharedFB_prevChunk[c].alloc(bytes, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) {
+                ok = false;
+                break;
+            }
+            memset(sharedFB_prevChunk[c].data(), 0, bytes);
+            got = c + 1;
+        }
+        if (ok) {
+            sharedFB_prev_nchunks    = got;
+            sharedFB_prev_chunk_rows = rows;
+            sharedFB_prev            = sharedFB_prevChunk[0].data();  // also the "exists" marker
+            sharedFB_prev_size       = want;
+            Debug::log("VIDEO: prevFB %uKB in %d chunks x %d rows on %s (fragmented heap)",
+                       (unsigned)(want >> 10), got, rows, sharedFB_prevChunk[0].tierName());
+            return true;
+        }
+        for (int c = 0; c < got; c++) sharedFB_prevChunk[c].free();
+        sharedFB_prev_nchunks = 0;
+    }
+    return false;
+}
+
+static bool ensurePrevFB(int lines, int stride) {
+    // (There used to be an `arch == A_PROFI -> return true` here, which reported
+    // success without allocating anything: GsSubsys::apply() then built the prev-FB
+    // row-pointer array over a NULL base and the render path SIGBUS-stormed. That
+    // is the whole reason Gigascreen looked "incompatible with Profi" — the mode
+    // gate now handles the modes that really are.)
+    const int prev_stride = stride / 2;
+    size_t want = fbPrevBytes(lines, stride);
+    if (sharedFB_prev && sharedFB_prev_size == want) return true;
+    if (sharedFB_prev) {
+        pwShutdown();  // stop window DMA / drop cached state before freeing
+        prevFBFree();
+    }
+    // Memory policy lives in Subsystem: can this prevFB be allocated without starving
+    // the heap on a butter-less board? (Butter-PSRAM boards always pass — it goes to
+    // XIP.) The block requirement is per-allocation, so it is asked about the chunk
+    // size, not the total. Decline → GsSubsys::apply() cleanly disables Gigascreen.
+    const size_t block_need = (size_t)prevChunkRows(lines, PREV_CHUNKS_MAX) * prev_stride;
+    if (!Subsystems::gigascreenPrevFBAffordable(want, block_need)) return false;
+    // Butter PSRAM first (frees SRAM), heap fallback. NEED_POINTER keeps it
+    // addressable for the per-pixel blend; SPI PSRAM / SD-swap are never picked.
+    // One block is preferred (butter/XIP placement, lendable, DMA window eligible);
+    // whole-row chunks only when the heap has no hole that big.
+    // The probe is a HEAP question, and PREFER_PSRAM answers it from butter first —
+    // so on a butter board it must not veto the single-block placement: a thin heap
+    // (TS-Conf: page descriptors + the core1 ring) sent a perfectly placeable 38 KB
+    // buffer down the chunked path, which is slower AND disables the prev-FB DMA
+    // window (pwRefreshGate declines a chunked buffer). palloc's own last-resort
+    // heap tier returns NULL rather than panicking, so nothing is lost by asking it.
+    if ((butter_psram_size() != 0 || getLargestAllocatable() >= want + PREV_CHUNK_SLACK) &&
+        sharedFB_prevBuf.alloc(want, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM)) {
+        uint8_t *p = sharedFB_prevBuf.data();
+        memset(p, 0, want);
+        sharedFB_prev = p;
+        sharedFB_prev_size = want;
+        Debug::log("VIDEO: prevFB %uKB on %s", (unsigned)(want >> 10), sharedFB_prevBuf.tierName());
+        return true;
+    }
+    sharedFB_prevBuf.free();
+    if (prevFBAllocChunked(lines, prev_stride, want)) return true;
+    Debug::log("VIDEO: prevFB alloc failed (want=%u) — Gigascreen off this session", (unsigned)want);
+    return false;
+}
+
+static void setupSharedFBPointers(Graphics<unsigned char> &vga, int lines, int stride) {
+    sharedFB_lines = lines;
+    sharedFB_stride = stride;
+    for (int i = 0; i < lines; i++) {
+        sharedFB_arr1[i] = mainRowPtr(i, stride);
+    }
+    // Pad the tail with the LAST row. Two reasons: a stray row index (one past the
+    // end) then writes a real row instead of dereferencing whatever the slot held,
+    // and a mode SHRINK (288 -> 240 rows) no longer leaves the slots above `lines`
+    // pointing into the freed block.
+    for (int i = lines; i < FB_MAX_LINES; i++) {
+        sharedFB_arr1[i] = mainRowPtr(lines - 1, stride);
+    }
+    vga.frameBuffer = (unsigned char **)sharedFB_arr1;
+    if (sharedFB_prev && sharedFB_arr2) {
+        int prev_stride = stride / 2; // 4-bit packed
+        for (int i = 0; i < lines; i++) {
+            sharedFB_arr2[i] = prevRowPtr(i, prev_stride);
+        }
+        for (int i = lines; i < FB_MAX_LINES; i++)
+            sharedFB_arr2[i] = prevRowPtr(lines - 1, prev_stride);
+        vga.prevFrameBuffer = (unsigned char **)sharedFB_arr2;
+    } else {
+        vga.prevFrameBuffer = nullptr;
+    }
+}
+
+// ── Gigascreen prevFB scanline window (butter/XIP PSRAM boards) ──────────────
+// On butter boards the prev-FB lives in XIP PSRAM. Direct CACHED access there
+// is memory-bound: the per-frame full sweep (52 KB > 16 KB XIP cache) stalls
+// the CPU on every read miss AND on every dirty-line writeback eviction.
+// This window keeps the render hot path in SRAM: the blend/border code
+// reads/writes small SRAM row buffers, and rows are staged to/from the PSRAM
+// prev-FB through the UNCACHED XIP alias (+PW_UNCACHED) by tight RAM-resident
+// CPU copy loops. Sequential accesses merge into linear QMI bursts (COOLDOWN),
+// and the XIP cache never holds prev-FB lines while the window is active.
+//
+// Transport history (important — do not "optimize" back):
+//  • CPU cached memcpy window: measured WORSE than direct access (cache thrash
+//    + writeback storms) — see m1p2 notes.
+//  • DMA chains through the uncached alias: passed all functional self-tests
+//    but KILLED the video output — all DMA channels share one read and one
+//    write bus manager, and a single in-flight beat to the slow QMI PSRAM
+//    blocks the manager for tens of cycles while the HDMI scanout DMA needs a
+//    beat every ~14 cycles. HIGH_PRIORITY cannot preempt an in-flight beat →
+//    PIO FIFO underrun → no sync. (16-bit DMA beats to QMI also stalled
+//    outright on non-word-aligned segment starts.)
+//  • CPU uncached copies (this code): the CPU uses its own bus port, so the
+//    DMA managers — and therefore HDMI — never see this traffic at all.
+//
+// Two independent raster-ordered streams, each with 2 row buffers:
+//   • content — MainScreen blend loop rows [lin_end, lin_end2)
+//   • border  — Update_Border rows [0, yres), possibly swept in bursts
+// Both may hold the SAME row concurrently; writebacks are restricted to the
+// byte segments each stream owns (content: [lineptr_offset*2, +128); border:
+// the complement), so they never clobber each other. Prefetches read the full
+// row — reads are harmless.
+//
+// Gate: prev-FB in butter PSRAM + geometry where border/content segments line
+// up on even offsets (all 4:3 and fullborder modes; 16:9 Pentagon falls back
+// to the direct cached-XIP path). Cache coherence across gate transitions is
+// handled with xip_cache_clean_range / invalidate_range.
+
+#define PW_ROW_MAX 184  // largest prev row: 360 px / 2 = 180 B, rounded up
+// Cached XIP (0x1x......) → uncached, non-allocating alias (0x1(x+4)......)
+#define PW_UNCACHED (XIP_NOCACHE_NOALLOC_BASE - XIP_BASE)
+
+struct PrevWin {
+    uint8_t buf[2][PW_ROW_MAX] __attribute__((aligned(4)));
+    int     row[2];             // prev-FB row each buffer holds (-1 = invalid)
+    int     cur;                // buffer the CPU currently owns
+    bool    isBorder;
+};
+static PrevWin pwCont = { {}, {-1, -1}, 0, false };
+static PrevWin pwBrd  = { {}, {-1, -1}, 0, true  };
+static bool     pw_gate = false;
+static bool     pw_failed = false;      // self-test failed — window disabled for good
+static uint32_t pw_geom_sig = 0;
+
+static inline bool pwPrevInButter() {
+    uintptr_t p = (uintptr_t)sharedFB_prev;
+    return p >= (XIP_BASE + 0x01000000u) && p < XIP_NOCACHE_NOALLOC_BASE;
+}
+
+static inline uint8_t* pwUncachedRow(int row) {
+    return sharedFB_prev + (size_t)row * (sharedFB_stride / 2) + PW_UNCACHED;
+}
+
+// Byte segments of a prev row owned by a stream (writeback scope). Boundaries
+// are even but not always word-aligned (Pentagon fullborder: 26/154): the
+// copy runs words over the aligned interior and halfwords at the ragged edges.
+static int __not_in_flash_func(pwSegs)(bool isBorder, int row, int* off, int* len) {
+    if (!isBorder) { off[0] = (int)lineptr_offset * 2; len[0] = 128; return 1; }
+    // Paper off (debug): the border machine paints middle rows full-width and the
+    // content stream never runs, so the border stream owns the whole row — the
+    // paper segment's prev bytes must round-trip with it or blending loses history.
+    if (row >= (int)lin_end && row < (int)lin_end2 && !VIDEO::paper_off) {
+        off[0] = 0;                len[0] = brdcol_end1;
+        off[1] = brdcol_end1 + 128; len[1] = brdcol_end - off[1];
+        return (len[1] > 0) ? 2 : 1;
+    }
+    off[0] = 0; len[0] = brdcol_end;  // top/bottom border rows: full width
+    return 1;
+}
+
+// Stage buffer b to/from PSRAM: writeback wbRow's owned segments (if >= 0),
+// then prefetch rdRow's owned segments (if >= 0). Synchronous CPU copies
+// through the uncached alias — see the transport note above.
+static void __not_in_flash_func(pwKick)(PrevWin& w, int b, int wbRow, int rdRow) {
+    if (wbRow >= 0) {
+        int off[2], len[2];
+        int nw = pwSegs(w.isBorder, wbRow, off, len);
+        uint8_t* rowU = pwUncachedRow(wbRow);
+        for (int s = 0; s < nw; s++) {
+            int a = off[s], e = off[s] + len[s];
+            if (e <= a) continue;
+            if (a & 2) { *(uint16_t*)(rowU + a) = *(uint16_t*)(w.buf[b] + a); a += 2; }
+            if ((e & 2) && e > a) { e -= 2; *(uint16_t*)(rowU + e) = *(uint16_t*)(w.buf[b] + e); }
+            uint32_t*       d   = (uint32_t*)(rowU + a);
+            const uint32_t* s32 = (const uint32_t*)(w.buf[b] + a);
+            for (int n = (e - a) >> 2; n > 0; n--) *d++ = *s32++;
+        }
+    }
+    if (rdRow >= 0) {
+        // Prefetch only the owned segments — uncached reads are the expensive
+        // half of the staging cost (writes are posted). Reads round outward to
+        // word boundaries: overreading a couple of foreign bytes is harmless
+        // (they are never consumed nor written back).
+        int off[2], len[2];
+        int nr = pwSegs(w.isBorder, rdRow, off, len);
+        const uint8_t* rowU = pwUncachedRow(rdRow);
+        for (int s = 0; s < nr; s++) {
+            if (len[s] <= 0) continue;
+            int a = off[s] & ~3;
+            int e = (off[s] + len[s] + 3) & ~3;
+            const uint32_t* s32 = (const uint32_t*)(rowU + a);
+            uint32_t*       d   = (uint32_t*)(w.buf[b] + a);
+            for (int n = (e - a) >> 2; n > 0; n--) *d++ = *s32++;
+        }
+    }
+}
+
+// Per-row entry point: returns the SRAM buffer holding prev row `row`
+// (full-row layout, so existing pointer math applies unchanged).
+static uint8_t* __not_in_flash_func(pwFetch)(PrevWin& w, int row) {
+    if (row == w.row[w.cur]) return w.buf[w.cur];
+    const int maxRow = w.isBorder ? (int)VIDEO::vga.yres : (int)lin_end2;
+    int other = w.cur ^ 1;
+    if (w.row[other] == row) {
+        // Advance: flush the old current row, prefetch row+1 behind it.
+        int old = w.cur, wbRow = w.row[old];
+        w.cur = other;
+        int nxt = (row + 1 < maxRow) ? row + 1 : -1;
+        w.row[old] = nxt;
+        pwKick(w, old, wbRow, nxt);
+        return w.buf[w.cur];
+    }
+    // Resync (frame start / skipped frames): flush + fetch.
+    pwKick(w, w.cur, w.row[w.cur], row);
+    w.row[w.cur] = row;
+    int nxt = row + 1;
+    if (nxt < maxRow) { pwKick(w, other, -1, nxt); w.row[other] = nxt; }
+    else w.row[other] = -1;
+    return w.buf[w.cur];
+}
+
+// Discard all buffered rows WITHOUT writeback — for callers about to rewrite
+// or free the whole prev-FB (InitPrevBuffer, geometry change, shutdown).
+static void pwDrop() {
+    pwCont.row[0] = pwCont.row[1] = -1;
+    pwBrd.row[0]  = pwBrd.row[1]  = -1;
+}
+
+// Disable the window and restore the cached-access regime (before freeing
+// prev-FB or when the gate closes). Must run while sharedFB_prev is valid.
+static void pwShutdown() {
+    pwDrop();
+    if (pw_gate && sharedFB_prev)
+        xip_cache_invalidate_range((uintptr_t)sharedFB_prev - XIP_BASE, sharedFB_prev_size);
+    pw_gate = false;
+}
+
+static bool pwSelfTest();  // one-shot data-integrity probe, defined below
+
+// Re-evaluate the gate. Called from Select_Update_Border() — i.e. on every
+// geometry/arch change and once per frame (cheap compare on the steady path).
+static void pwRefreshGate() {
+    const int W = sharedFB_stride / 2;
+    bool want = sharedFB_prev != nullptr
+        && !pw_failed
+        && !sharedFB_prev_nchunks          // chunked: not one region, no row arithmetic
+        && ((uintptr_t)sharedFB_prev & 3) == 0
+        && pwPrevInButter()
+        && !ds80_border_geom
+        && brdcol_start == 0
+        && (brdcol_end1 & 1) == 0
+        && (int)lineptr_offset * 2 == brdcol_end1
+        && brdcol_retrace == brdcol_end
+        && brdcol_end == W
+        && W > 0 && W <= PW_ROW_MAX && (W & 3) == 0;
+    uint32_t sig = (uint32_t)brdcol_end1 | ((uint32_t)brdcol_end << 8)
+                 | ((uint32_t)lin_end << 16) | ((uint32_t)lin_end2 << 24)
+                 // paper_off changes segment ownership (pwSegs) — treat a toggle
+                 // like a geometry change so stale buffered rows are dropped.
+                 ^ (VIDEO::paper_off ? 0x00000080u : 0u);
+    if (want == pw_gate) {
+        if (pw_gate && sig != pw_geom_sig) { pwDrop(); pw_geom_sig = sig; }
+        return;
+    }
+    if (want) {
+        pwDrop();
+        pw_geom_sig = sig;
+        // Push any dirty prev-FB lines (alloc-time memset, pre-gate CPU writes)
+        // out of the XIP cache so the uncached-alias copies see current data.
+        xip_cache_clean_range((uintptr_t)sharedFB_prev - XIP_BASE, sharedFB_prev_size);
+        pwCont.cur = 0; pwBrd.cur = 0;
+        bool st_ok = pwSelfTest();
+        pwDrop();
+        if (!st_ok) {
+            pw_failed = true;
+            Debug::log("VIDEO: prevFB window self-test FAILED — disabled");
+            return;
+        }
+        pw_gate = true;
+        Debug::log("VIDEO: prevFB window ON (W=%d content=[%d,%d))", W, brdcol_end1, brdcol_end1 + 128);
+    } else {
+        pwShutdown();
+        Debug::log("VIDEO: prevFB window OFF");
+    }
+}
+
+static inline bool pwOn() { return pw_gate && VIDEO::gigascreen_enabled; }
+
+// ── Self-test ────────────────────────────────────────────────────────────────
+// Runs once before the window is allowed into the render path; drives the
+// production pwKick machinery and verifies data integrity through the uncached
+// alias. Each stage logs BEFORE executing so a wedge is identifiable from UART.
+static bool pwSelfTest() {
+    const int W = sharedFB_stride / 2;
+    uint8_t* unc = pwUncachedRow(0);
+    const int coff = (int)lineptr_offset * 2;
+    const int mid = (int)lin_end;      // first middle row (2-segment border shape)
+    Debug::log("PW st: prev=%p unc=%p W=%d cont=[%d,%d) end1=%d mid=%d",
+               sharedFB_prev, unc, W, coff, coff + 128, brdcol_end1, mid);
+    Debug::log("PW st0: cpu uncached read");
+    volatile uint32_t* u32 = (volatile uint32_t*)unc;
+    uint32_t v = u32[0];
+    Debug::log("PW st0: ok val=%08x cached=%08x", (unsigned)v, (unsigned)*(uint32_t*)sharedFB_prev);
+    Debug::log("PW st1: cpu uncached write");
+    u32[0] = v;                       // same value — harmless wherever it lands
+    uint32_t v2 = u32[0];
+    Debug::log("PW st1: ok readback=%08x", (unsigned)v2);
+    // Prefetch row 0 and verify against the cached view (coherent post-clean).
+    Debug::log("PW st2: prefetch row0 + verify");
+    pwKick(pwCont, 0, -1, 0);
+    // Content-stream prefetch stages only the owned segment — compare that.
+    bool match = memcmp((void*)(pwCont.buf[0] + coff), sharedFB_prev + coff, 128) == 0;
+    Debug::log("PW st2: done match=%d", (int)match);
+    if (!match) {
+        Debug::log("PW st2: buf=%02x%02x%02x%02x prev=%02x%02x%02x%02x",
+                   pwCont.buf[0][coff], pwCont.buf[0][coff + 1], pwCont.buf[0][coff + 2], pwCont.buf[0][coff + 3],
+                   sharedFB_prev[coff], sharedFB_prev[coff + 1], sharedFB_prev[coff + 2], sharedFB_prev[coff + 3]);
+        return false;
+    }
+    // Advance shape: writeback row0 (its own data) + prefetch row1.
+    Debug::log("PW st3: advance (wb0+rd1)");
+    pwKick(pwCont, 0, 0, 1);
+    // Border shape on a middle row: prefetch, then 2-segment writeback + rd.
+    Debug::log("PW st4: border wb+rd (mid row)");
+    pwKick(pwBrd, 0, -1, mid);
+    pwKick(pwBrd, 0, mid, mid + 1);
+    // 64-row sweep of production advance kicks (runtime cadence), then verify
+    // a row survived the round-trip intact.
+    Debug::log("PW st5: 64-row sweep");
+    pwKick(pwCont, 0, -1, 0);
+    pwKick(pwCont, 1, -1, 1);
+    for (int r = 0; r + 2 < 64; r++)
+        pwKick(pwCont, r & 1, r, r + 2);   // buf holds row r → clean writeback
+    pwKick(pwCont, 0, -1, 5);              // re-read a swept row
+    match = memcmp((void*)(pwCont.buf[0] + coff), sharedFB_prev + (size_t)5 * W + coff, 128) == 0;
+    Debug::log("PW st5: done match=%d", (int)match);
+    if (!match) return false;
+    return true;
+}
+
+
+// GsSubsys storage and apply() — implemented here so it can touch the
+// sharedFB_* internals directly. Declared in Subsystem.h.
+volatile bool GsSubsys::enabled = false;
+bool GsSubsys::wanted = false;
+bool GsSubsys::dirty = false;
+
+void GsSubsys::request(bool on) {
+    wanted = on;
+    if (wanted != enabled) dirty = true;
+}
+
+bool GsSubsys::apply() {
+    dirty = false;
+    if (wanted == enabled) return true;
+
+    if (wanted) {
+        // Size prev FB to the *current* mode (sharedFB_lines × sharedFB_stride),
+        // not the build-time max. Saves SRAM at lower resolutions.
+        if (!ensurePrevFB(sharedFB_lines, sharedFB_stride)) {
+            wanted = false;
+            Config::gigascreen_enabled = false;
+            VIDEO::gigascreen_enabled = false;
+            // Only reaches the screen when this is the boot pre-allocation (VIDEO::Init):
+            // bootNotice is a no-op after the first frame, and the mid-session callers
+            // (menu commit, hotkey) report the failure themselves.
+            OSD::bootNotice("Gigascreen off: not enough memory");
+            return false;
+        }
+        if (!sharedFB_arr2) {
+            sharedFB_arr2 = (void**)malloc(FB_MAX_LINES * sizeof(void*));
+            if (!sharedFB_arr2) {
+                prevFBFree();
+                wanted = false;
+                Config::gigascreen_enabled = false;
+                VIDEO::gigascreen_enabled = false;
+                OSD::bootNotice("Gigascreen off: not enough memory");
+                return false;
+            }
+        }
+        // Re-derive prev pointer array from the current resolution.
+        int prev_stride = sharedFB_stride / 2;
+        for (int i = 0; i < sharedFB_lines; i++) {
+            sharedFB_arr2[i] = prevRowPtr(i, prev_stride);
+        }
+        VIDEO::vga.prevFrameBuffer = (unsigned char**)sharedFB_arr2;
+        enabled = true;
+    } else {
+        // Drop pointer first so render path stops accessing prevFrameBuffer.
+        // Producers (renderers) check vga.prevFrameBuffer != nullptr before use
+        // (see MainScreen_Snow*); border path already had a null-guard.
+        VIDEO::vga.prevFrameBuffer = nullptr;
+        enabled = false;
+        pwShutdown();  // wait out window DMA before the backing store goes away
+        free(sharedFB_arr2);  sharedFB_arr2  = nullptr;
+        prevFBFree();
+    }
+    return true;
+}
+
+// ── Lend the dormant Gigascreen prev-FB to the network buffer pool ────────────
+// During a network session the emulator is paused, so the renderer never reads
+// prevFrameBuffer — its ~52 KB of SRAM can back the TLS/socket working set that
+// would otherwise OOM the heap on a butter-less board. We borrow the region
+// in place (no free/realloc → no fragmentation, unlike past attempts) and detach
+// vga.prevFrameBuffer so even a stray render falls back to the no-blend path.
+static bool s_prev_lent = false;
+
+bool VIDEO::gigascreenLendRegion(void*& base, size_t& size) {
+    // Only worth it where prevFB exists AND there's no butter PSRAM to absorb the
+    // TLS working set instead. On butter boards palloc already routes it to XIP.
+    if (s_prev_lent) return false;
+    if (!Config::gigascreen_enabled || !sharedFB_prev || sharedFB_prev_size == 0) return false;
+    // Chunked prev-FB is not one region — the borrower gets base+size, so decline
+    // rather than hand out a span that ends inside somebody else's allocation.
+    if (sharedFB_prev_nchunks) return false;
+    if (butter_psram_size() != 0) return false;
+    base = sharedFB_prev;
+    size = sharedFB_prev_size;
+    VIDEO::vga.prevFrameBuffer = nullptr;   // renderer → no-blend branch while lent
+    s_prev_lent = true;
+    return true;
+}
+
+void VIDEO::gigascreenReclaimRegion() {
+    if (!s_prev_lent) return;
+    s_prev_lent = false;
+    // Clear stale network data so the next Gigascreen frame doesn't blend garbage,
+    // then re-attach the prev pointer array.
+    if (sharedFB_prev && sharedFB_prev_size) memset(sharedFB_prev, 0, sharedFB_prev_size);
+    if (sharedFB_arr2) VIDEO::vga.prevFrameBuffer = (unsigned char**)sharedFB_arr2;
+}
+
+// ── Chunked prev-FB: hand the whole buffer back for a network session ─────────
+// A chunked prev-FB is not one region, so gigascreenLendRegion declines it — and
+// with a small GIGASCREEN_PREVFB_HEADROOM that would leave a TLS session (16 KB
+// input buffer + 4 KB output + alt stack) with only the bare headroom, which is the
+// OOM the lease exists to prevent. So give the buffer up entirely instead: the
+// emulator is paused, nothing reads prev-FB, the heap gets all ~38 KB back, and the
+// chunks are normally consecutive so freeing them coalesces into large runs.
+// Rebuilt on restore; if the heap has fragmented past hope by then, Gigascreen goes
+// quiet until a reboot rather than taking the config down with it.
+static bool s_prev_released_for_net = false;
+
+bool VIDEO::gigascreenReleaseForNet() {
+    if (s_prev_released_for_net || s_prev_lent) return false;
+    if (!Config::gigascreen_enabled || !sharedFB_prev) return false;
+    if (!sharedFB_prev_nchunks) return false;    // single block: lending is cheaper
+    if (butter_psram_size() != 0) return false;  // lives in XIP, the heap doesn't care
+    GsSubsys::request(false);
+    GsSubsys::apply();                           // detaches, frees the chunks + arr2
+    // Renderers do guard on prevFrameBuffer, but RedrawPausedFrame() runs while the
+    // OSD is up — don't leave the live flag claiming Gigascreen with no buffer.
+    VIDEO::gigascreen_enabled = false;           // restore puts it back from _onoff
+    VIDEO::gigascreen_auto_countdown = 0;
+    s_prev_released_for_net = true;
+    Debug::log("VIDEO: prevFB (chunked) released for network session, freeHeap=%u",
+               (unsigned)getFreeHeap());
+    return true;
+}
+
+void VIDEO::gigascreenRestoreAfterNet() {
+    if (!s_prev_released_for_net) return;
+    s_prev_released_for_net = false;
+    // apply()'s own OOM path clears Config::gigascreen_enabled; the user's choice is
+    // not ours to drop over a transient heap state, so put it back and let the live
+    // flags carry the "off for now" state (every reader pairs them with a
+    // prevFrameBuffer null check).
+    const bool cfg_on = Config::gigascreen_enabled;
+    GsSubsys::request(true);
+    if (!GsSubsys::apply() || !VIDEO::vga.prevFrameBuffer) {
+        Config::gigascreen_enabled = cfg_on;
+        VIDEO::gigascreen_enabled  = false;
+        VIDEO::gigascreen_auto_countdown = 0;
+        Debug::log("VIDEO: prevFB not recoverable after network session (freeHeap=%u)"
+                   " — Gigascreen off until reboot", (unsigned)getFreeHeap());
+        return;
+    }
+    VIDEO::InitPrevBuffer();                     // reseed from the live frame
+    VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1);  // On=live, Auto=armed
+    VIDEO::gigascreen_auto_countdown = 0;
+}
+
+size_t VIDEO::gigascreenPrevFBBytes() {
+    // Cost of the prev-FB in the *current* video mode. sharedFB_lines/stride are
+    // set at Init() regardless of whether Gigascreen is on, so this is the size it
+    // would claim if enabled. ~38 KB @640x480, ~52 KB @720x576.
+    return fbPrevBytes(sharedFB_lines, sharedFB_stride);
+}
+
+// ── Gigascreen vs the whole-line video modes ──────────────────────────────────
+// A mode whose renderer owns the entire framebuffer row cannot coexist with
+// Gigascreen — hw 2026-09-06, Digger intro (TS-Conf 16c): the prev-FB window
+// (pwKick) writes back rows laid out for the standard content band, so with a
+// whole-line renderer in charge the writeback landed in the main framebuffer that
+// shares its block and painted 1-px stripes over the picture, while the blend-LUT
+// rebuild (slots 17..136) overwrote the ts256 palette pool. DS80/GMX/TEXT are the
+// same hazard one step further: their framebuffer bytes are packed PAIR slots, so
+// a 4-bit prev nibble is not even a colour there.
+//
+// But that is a property of the MODE, not of the machine: Profi, Karabas and
+// TS-Conf all render the standard ZX screen through the ordinary beam renderer,
+// where Gigascreen is exactly as valid as on a Pentagon. So it is suspended for
+// the duration of such a mode and restored on the way out, and Config keeps the
+// user's pick the whole time (an earlier version cleared it, which killed the
+// setting for good on the first switch into Profi).
+bool VIDEO::gigascreenModeIncompatible() {
+    return profi_ds80_active            // Profi/Karabas DS80 512x240 (pair slots)
+        || gmx_ext_live                 // Scorpion GMX 640x200x16 (pair slots)
+        || ts_render_live != 0          // TS-Conf TEXT/16c/256c/NOGFX, or the TSU
+        || bl_live;                     // Borderless: the prev-FB is laid out for the bordered row
+}
+
+// The one predicate every palette/blend decision uses: the user wants Gigascreen
+// AND no whole-line mode has taken the framebuffer away. Config::gigascreen_enabled
+// alone still means "armed and paid for" (it is what the boot pre-allocation and
+// the memory budget read).
+bool VIDEO::gigascreenArmed() {
+    return Config::gigascreen_enabled && !gigascreen_mode_block;
+}
+
+void VIDEO::gigascreenModeGate() {
+    const bool bad = gigascreenModeIncompatible();
+    if (bad == gigascreen_mode_block) return;      // edge-triggered: nothing to do
+    gigascreen_mode_block = bad;
+
+    if (bad) {
+        // Suspend. The prev-FB really is handed back (38-52 KB the whole-line mode
+        // itself may want — the TS core1 ring, DS80's clrmem SRAM), so the live
+        // flags have to go first: renderers pair them with a prevFrameBuffer null
+        // check, and pwShutdown inside apply() waits out the window DMA.
+        VIDEO::gigascreen_enabled = false;
+        VIDEO::gigascreen_auto_countdown = 0;
+        if (GsSubsys::enabled) {
+            GsSubsys::request(false);
+            GsSubsys::apply();
+            Debug::log("VIDEO: Gigascreen suspended for this video mode (prevFB freed)");
+        }
+        return;
+    }
+
+    // Resume. gigascreen_onoff is the user's pick and the only thing a menu edit
+    // taken during the suspension wrote — mirror it into gigascreen_enabled the way
+    // pre_gs()/post_gs() do, so a "turn it off while suspended" does not come back.
+    Config::gigascreen_enabled = (Config::gigascreen_onoff != 0);
+    if (!Config::gigascreen_enabled) return;
+    GsSubsys::request(true);
+    if (!GsSubsys::apply() || !vga.prevFrameBuffer) {
+        // apply()'s own OOM path clears Config::gigascreen_enabled; the user's choice
+        // is not ours to drop over a transient heap state (the same rule as
+        // gigascreenRestoreAfterNet). onoff survives, so the NEXT return to a standard
+        // mode tries again — this is edge-triggered, so it never becomes a per-frame
+        // retry storm.
+        Config::gigascreen_enabled = false;
+        VIDEO::gigascreen_enabled  = false;
+        VIDEO::gigascreen_auto_countdown = 0;
+        Debug::log("VIDEO: Gigascreen prevFB not recoverable after the mode switch"
+                   " (freeHeap=%u) — off until the next one", (unsigned)getFreeHeap());
+        return;
+    }
+    // Slots 17..136 belonged to the mode we just left (ts256 pool, DS80/GMX pair
+    // table): rebuild the blends. EndFrame drains this a few hundred lines below,
+    // still inside this frame's blanking — the same deferral the ULA+ exit uses.
+    gigascreen_lut_rebuild_deferred = true;
+    InitPrevBuffer();                                // no blending against stale rows
+    VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1);  // On=live, Auto=armed
+    VIDEO::gigascreen_auto_countdown = 0;
+    Debug::log("VIDEO: Gigascreen resumed (standard video mode)");
+}
+
+// Row accessors used by the render hot paths. Window active → SRAM buffer;
+// otherwise the direct prev-FB pointer (heap SRAM, or cached XIP fallback).
+// Callers already guard on vga.prevFrameBuffer != nullptr.
+static inline uint16_t* prevRowContent(int row) {
+    if (pwOn()) return (uint16_t*)pwFetch(pwCont, row);
+    return (uint16_t*)(VIDEO::vga.prevFrameBuffer[row]);
+}
+
+static inline uint8_t* prevRowBorder(int row) {
+    if (pwOn()) return pwFetch(pwBrd, row);
+    return (uint8_t*)(VIDEO::vga.prevFrameBuffer[row]);
+}
+
+// The vidmodes[] index the configured video mode asks for. Shared by Init() and
+// reserveFrameBuffer() so the block claimed early is the one Init() then adopts —
+// a disagreement would make ensureMainFB free and re-allocate, i.e. undo the whole
+// point of reserving early.
+static int fbModeIndex() {
+#ifdef VGA_HDMI
+    if (VIDEO::isFullBorder288()) return 22; // VgaMode_360x288 — full border 360x288
+    if (VIDEO::isFullBorder240()) return 23; // VgaMode_360x240 — half border 360x240
+#endif
+    return 0;
+}
+
+static inline int fbModeLines(int Mode) {
+    return fbCalcLines(vidmodes[Mode][vmodeproperties::vRes] /
+                       vidmodes[Mode][vmodeproperties::vDiv]);
+}
+static inline int fbModeStride(int Mode) {
+    return (vidmodes[Mode][vmodeproperties::hRes] + 3) & ~3;
+}
+
+// See Video.h. The vm → vidmodes[] mapping mirrors fbModeIndex() exactly, just for
+// an arbitrary mode instead of the active one.
+size_t VIDEO::fbBytesForVM(uint8_t vm, size_t* prevBytes) {
+    int Mode = 0;
+#ifdef VGA_HDMI
+    // Explicit, like VIDEO::isFullBorder*(): VM_* is append-only and the 90/75 Hz
+    // set took 4..7, so a >= test would call 640x480@90 a 360x288 mode.
+    if (vm == Config::VM_720x576_50 || vm == Config::VM_720x576_75)      Mode = 22;  // 360x288 full border
+    else if (vm == Config::VM_720x480_60 || vm == Config::VM_720x480_90) Mode = 23;  // 360x240 half border
+#else
+    (void)vm;
+#endif
+    const int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
+    if (prevBytes)
+        *prevBytes = butter_psram_size() ? 0 : fbPrevBytes(lines, stride);
+    return fbMainBytes(lines, stride);
+}
+
+// Claim the main framebuffer as early as setup() can — ideally straight after
+// Config::load(), where ~185 KB of heap is untouched. Its size depends on nothing
+// but the configured video mode, while everything that runs between there and
+// VIDEO::Init() (Buffer::initPools, GS/NeoGS, the GM.DLS bank) goes through the
+// heap first. 720x576 needs one contiguous 104 040 B block (289 rows x 360) and
+// hw 2026-08-13 OOM-panicked in Init with 149 KB free but no hole that big:
+// 576p + NeoGS + MIDI. Idempotent, and safe to skip — Init() allocates exactly the
+// same way if this was never called, or if it failed.
+void VIDEO::reserveFrameBuffer(bool configKnown) {
+    int Mode = fbModeIndex();
+    int lines = fbModeLines(Mode), stride = fbModeStride(Mode);
+    if (!sharedFB_arr1) sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
+    if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
+        Debug::log("VIDEO: FB reserved %ux%u (%u B) in %d block(s), freeHeap=%u largest=%u",
+                   (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
+                   sharedFB_main_nchunks ? sharedFB_main_nchunks : 1,
+                   (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+        return;
+    }
+    // Nothing else has claimed the heap yet, so this means the mode simply does not
+    // fit this board. Say so here rather than letting Init() report it later, when
+    // the pools and the GS have muddied the numbers.
+    // Not even MAIN_CHUNKS_MAX whole-row pieces fit — this is a heap that is simply
+    // too small, not one that is merely fragmented, so `largest` alone no longer
+    // tells the story and the free total is the number to read.
+    Debug::log("VIDEO: FB reserve FAILED %ux%u (%u B, up to %d chunks tried), freeHeap=%u largest=%u",
+               (unsigned)stride, (unsigned)lines, (unsigned)fbMainBytes(lines, stride),
+               MAIN_CHUNKS_MAX, (unsigned)getFreeHeap(), (unsigned)getLargestAllocatable());
+#ifdef VGA_HDMI
+    // Self-heal instead of hanging. Downstream there is no recovery: Init()'s
+    // legacy-allocator fallback goes through pico_malloc, which PANICS on OOM —
+    // the board wedges on every boot with no menu to undo the mode (the menu gate
+    // in UiStage normally refuses such a switch, but a config carried from another
+    // board, or features enabled after the mode was picked, land here). Downgrade
+    // to the 640x480 sibling (same refresh), persist it — otherwise every boot
+    // repeats this — and drop any pending-mode record so videoModeConfirm doesn't
+    // ask to keep a mode that never ran. The bootNotice explains the change once
+    // video is up.
+    // Only once Config is real. This runs TWICE per boot (see ESPectrum::setup):
+    // the first call is before Config::load(), where the mode is the compiled
+    // default — downgrading and announcing THAT would name a mode the user never
+    // picked, and Config::save() would be writing defaults over a file it has not
+    // read. The heap is pristine there, so the branch is unreachable in practice;
+    // the call after Config::load() is the one that is allowed to self-heal, and it
+    // must still do so on a card-less boot (no SD = no load, but a mode that cannot
+    // be placed is exactly as fatal).
+    if (configKnown && isFullBorderMode()) {
+        char note[64];
+        snprintf(note, sizeof(note), "%s: not enough RAM - using 640x480",
+                 isFullBorder240() ? "720x480" : "720x576");
+        OSD::bootNotice(note);
+        // Keep the refresh family: a 90/75 Hz pick degrades to the 640x480 mode
+        // of the SAME family, not to a 50/60 Hz one — the user asked for that
+        // pixel clock, and the smaller framebuffer is the only thing at issue.
+        const uint8_t cur = activeVideoMode();
+        uint8_t fallback;
+        if (Config::isFastVideoMode(cur))
+            fallback = isFullBorder240() ? Config::VM_640x480_90 : Config::VM_640x480_75;
+        else
+            fallback = isFullBorder240() ? Config::VM_640x480_60 : Config::VM_640x480_50;
+        if (SELECT_VGA) Config::vga_video_mode  = fallback;
+        else            Config::hdmi_video_mode = fallback;
+        Config::save();
+        Config::clearPendingVideoMode();
+        Mode = fbModeIndex();
+        lines = fbModeLines(Mode); stride = fbModeStride(Mode);
+        if (sharedFB_arr1 && ensureMainFB(lines, stride)) {
+            Debug::log("VIDEO: FB reserved %ux%u (%u B) after mode fallback, freeHeap=%u",
+                       (unsigned)stride, (unsigned)lines,
+                       (unsigned)fbMainBytes(lines, stride), (unsigned)getFreeHeap());
+            return;
+        }
+    }
+#endif
+    free(sharedFB_arr1); sharedFB_arr1 = nullptr;
+}
+
+void VIDEO::Init() {
+    // Before core1's graphics_init(): hdmi_init() programs the clock pads from
+    // this (Video > HDMI > Clock drive). Pad registers only, so it is also what
+    // the live menu hook calls.
+    graphics_set_hdmi_clock_drive(Config::hdmi_clock_drive == 1);
+    int Mode = fbModeIndex();
+    OSD::scrW = vidmodes[Mode][vmodeproperties::hRes];
+    OSD::scrH = vidmodes[Mode][vmodeproperties::vRes] / vidmodes[Mode][vmodeproperties::vDiv];
+    vga.useInterrupt_flag = false;
+
+    // Adopt the main framebuffer block sized for the *initial* mode BEFORE
+    // vga.init(). Normally reserveFrameBuffer() already claimed it back in setup()
+    // and both calls below are no-ops; this path still allocates when it did not
+    // (or could not). The prev block (Gigascreen) is allocated on demand by
+    // GsSubsys, also sized for the current mode.
+    int initLines = fbModeLines(Mode);
+    int initStride = fbModeStride(Mode);
+    if (!sharedFB_arr1) {
+        sharedFB_arr1 = (void **)malloc(FB_MAX_LINES * sizeof(void *));
+    }
+    if (sharedFB_arr1 && ensureMainFB(initLines, initStride)) {
+        setupSharedFBPointers(vga, initLines, initStride);
+        // frameBuffer is set — vga.init()'s allocateFrameBuffers() will skip allocation
+    } else {
+        // Out of memory for shared FB — fall back to legacy allocator path.
+        free(sharedFB_arr1); sharedFB_arr1 = nullptr;
+        mainFBFree();
+    }
+    // Pre-allocate prev framebuffer if Gigascreen is enabled at boot,
+    // BEFORE the heap fragments. A boot straight into a whole-line mode (Profi
+    // DS80, a TS-Conf romset that opens in TEXT) hands it back at the first
+    // EndFrame — gigascreenModeGate() — and takes it again on the way out.
+    if (sharedFB_main && Config::gigascreen_enabled) {
+        GsSubsys::request(true);
+        GsSubsys::apply();
+    }
+
+    vga.init( Mode, redPins, grePins, bluPins, HSYNC_PIN, VSYNC_PIN);
+
+    graphics_set_scanlines(Config::scanlines);
+    // Before applyPalette() below: graphics_set_palette() consults the grille
+    // level, so setting it first grilles every entry on the way in instead of
+    // needing a second walk of the whole palette.
+    graphics_set_crt(Config::crt_filter);
+
+    // Generate AluBytes table with palette indices (no sync bits)
+    initAluBytes();
+
+    // 16col byte->2-pixel LUT: build it only when the mode is enabled, release
+    // it otherwise so a disabled 16col reserves no SRAM.
+    if (Config::mode16col_onoff) VIDEO::ensure16colLut();
+    else VIDEO::free16colLut();
+
+    precalcULASWAP();   // precalculate ULA SWAP values
+
+    precalcborder32();  // Precalc border 32 bits values
+
+    // Build and apply palette (brightness levels + color matrix)
+    applyPalette();
+
+    if (Config::gigascreen_enabled && vga.prevFrameBuffer)
+    {
+        VIDEO::gigascreen_enabled = (Config::gigascreen_onoff == 1); // On=enabled, Auto=start disabled
+        VIDEO::gigascreen_auto_countdown = 0;
+        initGigascreenBlendLUT(); // Pre-compute blend palette entries
+    }
+}
+
+void VIDEO::Reset() {
+
+    borderColor = 7;
+    brd = border32[7];
+
+    // Reset Timex SCLD state
+    timex_port_ff = 0;
+    timex_mode = 0;
+    timex_hires_ink = 0;
+    timex_int_inhibit = false;
+
+    // Reset ULA+ state
+    if (ulaplus_enabled) ulaPlusDisable();
+
+    // Leaving TS-Conf → give the ZX slots their standard colours back.
+    if (Config::arch != A_TSCONF) tsPaletteRestore();
+    // ...and the ATM-Turbo's the same way; ON the ATM the palette survives a reset
+    // (it is RAM on the board) and is re-applied at the next EndFrame, after the
+    // palette rebuild below has put the standard colours in the slots.
+    if (Config::arch != A_ATM) atmPaletteRestore();
+    else Atm::palDirty = true;
+    ulaplus_reg = 0;
+    memcpy(ulaplus_palette, ulaplus_default_palette, 64);
+
+    // Reset 16col state
+    mode16col_enabled = false;
+    mode16colUpdatePlanes();
+
+#ifdef VGA_HDMI
+    isFullBorder = VIDEO::isFullBorderMode() ? 1 : 0;
+#else
+    isFullBorder = 0;
+#endif
+
+    uint8_t prevOSDstats = OSD & 0x03; // Preserve stats mode across reset
+    OSD = 0;
+
+    bool isFullBorder240 = VIDEO::isFullBorder240();
+
+    if (Config::arch == A_48K) {
+        if (Config::romSet48 == R_48K_BY) {
+            tStatesPerLine = TSTATES_PER_LINE_BYTE;
+            tStatesScreen = TS_SCREEN_BYTE;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_BYTE : TS_BORDER_360x288_BYTE)
+                          : TS_BORDER_320x240_BYTE;
+        }
+        else
+        {
+            tStatesPerLine = TSTATES_PER_LINE;
+            tStatesScreen = TS_SCREEN_48;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
+                          : TS_BORDER_320x240;
+        }
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+        if (Config::romSet128 == R_128K_BY || Config::romSet128 == R_128K_BY_GLUK) {
+            tStatesPerLine = TSTATES_PER_LINE_BYTE;
+            tStatesScreen = TS_SCREEN_BYTE;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_BYTE : TS_BORDER_360x288_BYTE)
+                          : TS_BORDER_320x240_BYTE;
+        }
+        else
+        {
+            tStatesPerLine = TSTATES_PER_LINE_128;
+            tStatesScreen = TS_SCREEN_128;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_128 : TS_BORDER_360x288_128)
+                          : TS_BORDER_320x240_128;
+        }
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024) {
+        tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
+        tStatesScreen = TS_SCREEN_PENTAGON;
+        tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
+                      : TS_BORDER_320x240_PENTAGON;
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    } else if (Config::arch == A_PROFI) {
+        tStatesPerLine = TSTATES_PER_LINE_PROFI;
+        tStatesScreen = TS_SCREEN_PROFI;
+        tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PROFI : TS_BORDER_360x288_PROFI)
+                      : TS_BORDER_320x240_PROFI;
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {
+        // (ATM-Turbo: the same 224 T x 312-line raster, uncontended — Atm.h.)
+        // Scorpion ZS-256 (libspectrum): 224 T/line, 69888 T/frame, paper at 14336 T
+        // after INT — numerically the 48K timing set, so the 48K constants are reused
+        // (incl. their border corrections, calibrated for the step=4 pair-write border
+        // geometry Scorpion takes below). No contention, no float bus, no snow.
+        tStatesPerLine = TSTATES_PER_LINE;
+        tStatesScreen = TS_SCREEN_48;
+        tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
+                      : TS_BORDER_320x240;
+        // Nemo KAY: Unreal puts the paper at 16132 T where its Scorpion preset says
+        // 14344 — the same raster 1788 T later relative to the INT. Our Scorpion
+        // anchors carry this renderer's own offset against Unreal's numbers, so the
+        // KAY ones are them plus that delta (paper and border move together).
+        if (Config::arch == A_SCORP && isKayRomset(Config::romSetScorp)) {
+            tStatesScreen += TS_KAY_PAPER_DELTA;
+            tStatesBorder += TS_KAY_PAPER_DELTA;
+        }
+    } else if (Config::arch == A_TSCONF) {
+        // TS-Conf raster is identical to Pentagon (320 lines x 448 px-periods
+        // = 224 T/line, 71680 T/frame) — but our frame counter is anchored on
+        // the RASTER ORIGIN here, not on the interrupt, because the FRAME INT
+        // is programmable (vsint*224 + hsint, = 2 at reset). The paper/border
+        // anchors are therefore Pentagon's + 2, which is what puts the same
+        // 17988 T between the accepted interrupt and the first paper pixel on
+        // both machines. See TS_SCREEN_TSCONF in Video.h.
+        tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
+        tStatesScreen = TS_SCREEN_TSCONF;
+        tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_TSCONF : TS_BORDER_360x288_TSCONF)
+                      : TS_BORDER_320x240_TSCONF;
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    }
+
+    // Border column layout (unified for all models):
+    // brdcol_cnt counts T-states (1T = 2px = 1 uint16_t in framebuffer)
+    // 48K/128K: step=4 (8px per column), brdPairWrite=true
+    // Pentagon:  step=1 (2px per column), brdPairWrite=false (XOR)
+    // Clear stale DS80 border geometry first (re-applied below if DS80 active) —
+    // Select_Update_Border() would otherwise keep the DS80 updater on arch switch.
+    ds80_border_geom = false;
+    ds80_brd_col_off = 0;
+    brdcol_end = isFullBorder ? 180 : 160;  // vga.xres / 2 (T-states = half pixel count)
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf)) {
+        brdcol_step = 1;
+        brdPairWrite = false;
+        brdcol_start = 0;
+        if (isFullBorder) {
+            brdcol_end1 = 26;
+        } else {
+            brdcol_end1 = brdcol_start + (brdcol_end - brdcol_start - 128) / 2;
+        }
+        brdcol_retrace = brdcol_end;    // no retrace visible for Pentagon
+    } else {
+        brdcol_step = 4;
+        brdPairWrite = true;
+        brdcol_start = 0;
+        brdcol_end1 = isFullBorder ? 24 : 16;  // left border T-states
+        brdcol_retrace = brdcol_end;            // no retrace visible with step=4
+    }
+    Select_Update_Border();
+
+    if (isFullBorder && !isFullBorder240) {
+        lin_end = 48;
+        lin_end2 = 240;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
+    } else if (isFullBorder && isFullBorder240) {
+        // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
+        // shifted the picture down 1 char row and squeezed the bottom border so
+        // the stats overlay (y=220) fell inside the paper area → flicker.
+        lin_end = 24;
+        lin_end2 = 216;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
+    } else {
+        // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
+        // shifted the picture down 1 char row and squeezed the bottom border so
+        // the stats overlay (y=220) fell inside the paper area → flicker.
+        lin_end = 24;
+        lin_end2 = 216;
+        lineptr_offset = 8;  // 32 bytes = (320-256)/2 pixels
+    }
+
+    if (Config::arch == A_TSCONF) {
+        // ZX mode renders from VPage. CPU::reset (→ TsConf::reset → setBanks →
+        // refreshGrmem) runs before this in every reset path, but re-derive
+        // here anyway so a bare VIDEO::Reset can never leave grmem on ram[5].
+        TsConf::refreshGrmem();
+        profi_clrmem = nullptr;
+    } else if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80)) {
+        grmem = MemESP::videoLatch ? MemESP::ram[6].direct() : MemESP::ram[4].direct();
+        uint32_t clrPage = MemESP::videoLatch ? 58 : 56;
+        extern int ram_pages, butter_pages, psram_pages, swap_pages;
+        int totPg = ram_pages + butter_pages + psram_pages + swap_pages;
+        profi_clrmem = ((int)clrPage < totPg) ? MemESP::ram[clrPage].direct() : nullptr;
+        Debug::log("[VID] DS80 Reset: clrPage=%u totPg=%d clrmem=%p grmem=%p", clrPage, totPg, profi_clrmem, grmem);
+        // DS80: 512×240 content + per-T-state side borders, ZXMAK2 timing
+        // (192 T/line).  The grmem layout (pixCoff formula) covers all 240
+        // lines; lines 192..239 live at offsets 6144..8191 (odd) and
+        // 14336..16383 (even) of the 16KB page.
+        applyDS80BorderGeometry(true);
+    } else {
+        grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
+        profi_clrmem = nullptr;
+    }
+
+    // GMX video-mode-switch / reset recovery: the standard driver tables were just
+    // rebuilt, so a live 640x200 session must redo its full activation in the next
+    // vblank; on any other machine kill stale requests outright.
+    if (g_scorp_gmx) {
+        if (gmx_ext_live) {
+            gmx_ext_live = false;
+            gmx_ext_pending_on = true;
+        }
+    } else if (Config::arch == A_ATM) {
+        // ATM-Turbo: the mode lives in the machine's latches (both boards come out of
+        // reset in EGA), so the request is simply "is the live mode an ext one".
+        gmx_ext_live = false;
+        gmx_ext_pending_off = false;
+        gmx_ext_pending_on = (Atm::videoMode() != Atm::VM_ZX);
+    } else {
+        gmx_ext_live = false;
+        gmx_ext_pending_on = gmx_ext_pending_off = false;
+    }
+
+    // TS-Conf: VIDEO::Reset rebuilt the standard driver tables and geometry;
+    // a live non-ZX mode must redo its activation from EndFrame (deferred
+    // path compares VConfig against ts_vmode_live, so zeroing the live state
+    // is the whole request). Drop the pair driver first if it was up.
+    tsRenderDrain();
+    if (ts_render_live) {
+        if (ts_vmode_live == TSV_TEXT) {
+            profi_ds80_driver_set(false, nullptr, nullptr);
+            Graphics8BitPalette::ds80_active = false;
+        }
+        // (ts256 palette: Reset's own applyPalette pass below restores the slots.)
+        ts_vmode_live = 0;
+        ts_render_live = 0;
+        ts_tsu_live = false;
+        ts_pal256_live = false;
+    tsReindexClear();
+        ts_pal_row = -1;
+        setVsyncLead(false);
+        ts_rres_live = 0;
+        ts_crop_top = 0;
+        TsConf::wrGateRecalc(); tsC1LiveRecalc();
+    }
+
+    // Timex hi-res: Reset rebuilds the standard driver tables and the ZX
+    // palette below, so a live packed-pair mode has to go first.  timex_mode was
+    // zeroed at the top of Reset, so there is nothing to re-request.
+    timexHiresForceOff();
+    blPairForceOff();   // borderless pair scaler: same rule, re-armed at EndFrame
+
+    if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF || Config::arch == A_ATM) {
+        // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
+        // GMX shares it: its 640x200 mode uses the same 16-colour pair-slot scheme
+        // (fixed ZX palette — profiPaletteReset defaults, no palette port on GMX).
+        init_profi_pair_lookup();
+        // Reset live palette to defaults on machine reset
+        profiPaletteReset();
+        // DS80 clrmem snapshot: needed only when pages 56/58 live in XIP butter
+        // PSRAM (butter boards keep the whole Profi RAM as direct XIP pointers —
+        // per A/B measurement the SRAM pool gave no cpu gain there).  A direct
+        // per-scanline read would hit the XIP cache from the render path; the
+        // snapshot converts that into one sequential burst per frame.
+        // On SPI-PSRAM/SWAP boards pages 56/58 are force_sram_locked heap SRAM,
+        // so ds80_frame_clrmem is already a plain SRAM pointer — no snapshot.
+        // GMX reads its bitmap/attr pages straight from butter XIP (sequential
+        // 80-byte rows are cache-friendly) — no snapshot buffer needed there.
+        if (Config::arch == A_PROFI && !ds80_clr_sram && butter_psram_size() > 0)
+            ds80_clr_sram = (uint8_t*)malloc(DS80_CLR_SRAM_SIZE);
+    } else if (ds80_clr_sram) {
+        free(ds80_clr_sram);
+        ds80_clr_sram = nullptr;
+    }
+
+    #ifdef DIRTY_LINES
+    // for (int i=0; i < SPEC_H; i++) VIDEO::dirty_lines[i] = 0x01;
+    memset((uint8_t *)VIDEO::dirty_lines,0x01,SPEC_H);
+    #endif // DIRTY_LINES
+
+    // The +2A/+3 ULA has no snow bug either (its RAM is not shared with the CPU the
+    // way the 48K/128K ULA's is), so it joins the machines that never render snow.
+    VIDEO::snow_toggle = (Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT && Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_TSCONF && Config::arch != A_ATM && !Config::isPlus3()) ? Config::render : false;
+
+    // +2A/+3 contention pattern (see wait_st_tab). Selected here, after the per-arch
+    // timing block above, so every machine reset re-picks it.
+    wait_st = wait_st_tab[Config::isPlus3() ? 1 : 0];
+
+    VIDEO::paper_off = !Config::render_paper;
+
+    if (VIDEO::snow_toggle) {
+        Draw = &Blank_Snow;
+        Draw_Opcode = &Blank_Snow_Opcode;
+    } else {
+        Draw = &Blank;
+        Draw_Opcode = &Blank_Opcode;
+    }
+    ts_fast_armed = false; ts_line_t = 0xFFFFFFFFu; g_ts_fastmem = 0;   // TsFastMem.h: re-armed by EndFrame
+
+    // Restart border drawing + main screen draw state
+    linedraw_cnt = lin_end;
+    tstateDraw = tStatesScreen;
+    lastBrdTstate = tStatesBorder;
+    brdChange = false;
+    brdnextframe = true;
+    brdcol_cnt = brdcol_start;
+    brdlin_cnt = 0;
+    // Borderless: the per-arch blocks above re-armed the border machine; it must
+    // stay parked (the scaler owns every row). blRecalc re-decides at EndFrame.
+    if (bl_live) DrawBorder = &Border_Blank;
+#ifdef VGA_HDMI
+    // A "fast" (90/75 Hz) pick selects the SAME index plus VMODE_FAST_OFFSET —
+    // graphics.c holds the 37.8 MHz twin of every standard mode there, with the
+    // same geometry and the same v_total. Only sys_clk 378 MHz gives those a clean
+    // PIO divider, so anything else falls back to the 25.2 MHz twin here as well
+    // as in Config::load() — this is the path a live Overclock change reaches.
+    const uint8_t vmSel   = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
+    bool          useFast = Config::isFastVideoMode(vmSel) &&
+                            Config::cpu_mhz == Config::VM_FAST_CPU_MHZ;
+#if VGA_HSTX
+    // The serializer has no 37.8 MHz: 126 MHz / 3.333 is not a whole number of
+    // clk_hstx cycles per pixel. The menu hides the set (vmFastOffered), this is
+    // the backstop for a mode persisted by a PIO build or another board.
+    if (SELECT_VGA) useFast = false;
+#endif
+    if (SELECT_VGA)
+    {
+        switch (Config::baseVideoMode(vmSel)) {
+            case Config::VM_640x480_50:
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
+                else video_mode = 1; // Pentagon
+                break;
+            case Config::VM_720x480_60:
+                video_mode = 7;
+                break;
+            case Config::VM_720x576_50:
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
+                else video_mode = 4; // Pentagon
+                break;
+            default: // VM_640x480_60
+                video_mode = 0;
+                break;
+        }
+    }
+    else
+    {
+        // HDMI: map Config enum to graphics.c video_mode index
+        switch (Config::baseVideoMode(vmSel)) {
+            case Config::VM_640x480_60:
+                video_mode = 0;
+                break;
+            case Config::VM_640x480_50:
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
+                else if (Config::arch == A_128K) video_mode = 3;
+                else video_mode = 1; // Pentagon
+                break;
+            case Config::VM_720x480_60:
+                video_mode = 7;
+                break;
+            case Config::VM_720x576_50:
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
+                else video_mode = 4; // Pentagon
+                break;
+            default:
+                video_mode = 0;
+                break;
+        }
+    }
+    if (useFast) video_mode = graphics_fast_mode(video_mode);
+    // The 50 Hz modes above are per MACHINE — one display frame is tuned to be
+    // exactly one emulated frame (v_total 644 Pentagon 48.83 Hz / 629 128K
+    // 50.02 Hz / 628 48K, Profi, Scorpion 50.08 Hz) — and with v_sync pacing the
+    // display's refresh IS the emulated frame rate. So the pick has to reach the
+    // driver here, on every machine reset, not just at boot: the HDMI line ISR
+    // reads a snapshot taken in hdmi_init(), and without this a Pentagon -> 128K
+    // switch kept running the new machine at the old machine's 48.83 fps until a
+    // full reboot (the VGA ISR reads the table live and never had the bug).
+    graphics_update_mode_timing();
+#endif
+
+    // Restore stats mode that was active before reset
+    if (prevOSDstats) {
+        OSD = prevOSDstats;
+        Draw_OSD43 = BottomBorder_OSD;
+    }
+
+    // DS80 transition on reset: ensure DS80 state is fully cleaned up whenever
+    // we're entering non-DS80 mode (e.g. after F11 reset from service menu).
+    //
+    // Two cases that must both be handled:
+    //   A) profi_ds80_active=true  → HDMI is in DS80 mode, must deactivate.
+    //   B) profi_ds80_active=false AND profi_ds80_activate_pending=true →
+    //      DS80 was requested (port write) but EndFrame hasn't processed it yet.
+    //      Without clearing activate_pending here, the very next EndFrame after
+    //      reset fires the activate handler → DS80 HDMI active on a machine now
+    //      running standard Profi code → standard palette bytes interpreted as
+    //      DS80 packed-pairs → fine vertical colour stripes on every pixel pair.
+    {
+        bool ds80_should_be_active = (Config::arch == A_PROFI) && (Ports::portDFFD & 0x80);
+        Debug::log("[VRESET] portDFFD=0x%02X ds80=%d act=%d deact=%d should=%d",
+            (int)Ports::portDFFD, (int)profi_ds80_active,
+            (int)profi_ds80_activate_pending, (int)profi_ds80_deactivate_pending,
+            (int)ds80_should_be_active);
+        if (!ds80_should_be_active) {
+            // Always kill any pending activation — prevents case B above.
+            profi_ds80_activate_pending = false;
+            if (profi_ds80_active) {
+                // Case A: schedule deactivation; pre-fill with 0xFF so DS80 HDMI
+                // shows clean black for the one frame until EndFrame processes it.
+                // (0xFF = slot 255 = black/black in DS80 mode per hdmi.c line 810-811)
+                profi_ds80_deactivate_pending = true;
+                if (vga.frameBuffer) {
+                    for (int _y = 0; _y < (int)vga.yres; _y++)
+                        if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0xFF, vga.xres);
+                }
+            }
+        }
+    }
+}
+
+extern size_t getFreeHeap(void);
+extern size_t getContiguousHeap(void);
+
+void VIDEO::InitPrevBuffer() {
+    if (!vga.prevFrameBuffer) {
+        // Use the GsSubsys-managed prev buffer rather than a one-off
+        // allocateFrameBuffer() — keeps a single owner for the 52 KB block.
+        GsSubsys::request(true);
+        GsSubsys::apply();
+    }
+    if (!vga.prevFrameBuffer) return;
+    // Whole prev-FB is being reseeded: discard any rows buffered by the DMA
+    // window (their pending writebacks would clobber the new seed).
+    pwDrop();
+    const int h = VIDEO::vga.yres;
+    const int w = VIDEO::vga.xres;
+    for (int y = 0; y < h; ++y) {
+        uint8_t *src = VIDEO::vga.frameBuffer[y];
+        uint8_t *dst = VIDEO::vga.prevFrameBuffer[y];
+        if (!src || !dst) continue;
+        // While the DMA window is active the prev-FB must never enter the XIP
+        // cache — write through the uncached alias instead.
+        if (pw_gate) dst += PW_UNCACHED;
+        // Pack 2 src pixels (8-bit palette idx) into 1 dst byte (low+high nibble).
+        if (((uintptr_t)dst & 3) == 0 && (w & 7) == 0) {
+            // Word-packed fast path — matters for uncached XIP (4 B per store).
+            uint32_t *dst32 = (uint32_t*)dst;
+            for (int x = 0; x < w; x += 8) {
+                uint32_t v =  (uint32_t)(src[x]     & 0x0F)
+                           | ((uint32_t)(src[x + 1] & 0x0F) << 4)
+                           | ((uint32_t)(src[x + 2] & 0x0F) << 8)
+                           | ((uint32_t)(src[x + 3] & 0x0F) << 12)
+                           | ((uint32_t)(src[x + 4] & 0x0F) << 16)
+                           | ((uint32_t)(src[x + 5] & 0x0F) << 20)
+                           | ((uint32_t)(src[x + 6] & 0x0F) << 24)
+                           | ((uint32_t)(src[x + 7] & 0x0F) << 28);
+                *dst32++ = v;
+            }
+        } else {
+            for (int x = 0; x < w; x += 2) {
+                dst[x >> 1] = (src[x] & 0x0F) | ((src[x + 1] & 0x0F) << 4);
+            }
+        }
+    }
+}
+
+// Borderless mode (VIDEO::bl_live): the paper renderer writes one line into this
+// staging buffer (same layout as a fb row's 256 content bytes, x^2 order) and
+// blExpandLine() scales it into the framebuffer when the line completes. Heap,
+// allocated only while the mode is live (blRecalc).
+bool VIDEO::bl_live = false;
+static uint32_t* bl_stage_ptr = nullptr;
+static bool bl_line_done = false;
+// A line just completed inside this Draw call — scale it once its last columns
+// are in the staging buffer (the completion block runs BEFORE the column loop).
+#define BL_FLUSH() do { if (__builtin_expect(bl_line_done, 0)) { bl_line_done = false; VIDEO::blExpandLine(curline); } } while (0)
+
+//  VIDEO DRAW FUNCTIONS
+// noinline: MainScreen_Blank_Opcode is a one-line forwarder; letting GCC inline this
+// body there doubles ~580 B of RAM-resident code for the cost of one tail branch.
+IRAM_ATTR __attribute__((noinline)) void VIDEO::MainScreen_Blank(unsigned int statestoadd, bool contended) {    
+    
+    CPU::tstates += statestoadd;
+
+    if (CPU::tstates >= tstateDraw) {
+
+        if (brdChange) DrawBorder(); // Needed to avoid tearing in demos like Gabba (Pentagon)
+
+        if (paper_off && !bl_live) {
+            // Debug "Paper off": keep the exact T-state/contention flow but write
+            // nothing — MiddleBorder paints through the paper columns instead.
+            coldraw_cnt = 0;
+            Draw = &MainScreen_NoPaper;
+            Draw_Opcode = &MainScreen_Opcode;
+            video_rest = CPU::tstates - tstateDraw;
+            Draw(0, false);
+            return;
+        }
+
+        lineptr32 = bl_live ? bl_stage_ptr
+                            : (uint32_t *)(vga.frameBuffer[linedraw_cnt]) + lineptr_offset;
+        prevLineptr16 = vga.prevFrameBuffer
+                          ? prevRowContent(linedraw_cnt) + lineptr_offset
+                          : (uint16_t *)lineptr32;
+
+        coldraw_cnt = 0;
+
+        curline = linedraw_cnt - lin_end;
+        if (Config::timex_video && VIDEO::timex_mode != 0) {
+            switch (VIDEO::timex_mode) {
+                case 1: // Second screen
+                    bmpOffset = 0x2000 + offBmp[curline];
+                    attOffset = 0x2000 + offAtt[curline];
+                    break;
+                case 2: // Hi-colour (8x1 attrs from screen 1, ULA-swapped)
+                    bmpOffset = offBmp[curline];
+                    attOffset = 0x2000 + offBmp[curline];
+                    break;
+                case 6: // Hi-res (both screens as bitmap)
+                    bmpOffset = offBmp[curline];
+                    attOffset = 0x2000 + offBmp[curline];
+                    break;
+                default: // Undefined modes -> standard
+                    bmpOffset = offBmp[curline];
+                    attOffset = offAtt[curline];
+                    break;
+            }
+        } else
+        {
+            bmpOffset = offBmp[curline];
+            attOffset = offAtt[curline];
+        }
+
+        #ifdef DIRTY_LINES
+        // Force line draw (for testing)
+        // dirty_lines[curline] = 1;
+        #endif // DIRTY_LINES
+
+        // DMA per-scanline attr shadow: use snapshot if DMA wrote attrs for this scanline
+        // (dma_attr_valid/shadow are null unless the DMA attr buffer is allocated)
+        // ...and only while the page the DMA wrote is the page on display: a
+        // demo showing its other screen while it DMAs this one (NaPICu's title)
+        // must see that screen's own attributes, not the shadow (Z80DMA.cpp).
+        if (Config::dma_mode && Z80DMA::dma_attr_valid && Z80DMA::dma_attr_valid[curline]
+            && Z80DMA::dma_attr_page[curline >> 3] == grmem)
+            dma_attr_override = &Z80DMA::dma_attr_shadow[curline * 32];
+        else
+            dma_attr_override = nullptr;
+
+        Draw = linedraw_cnt >= 176 && linedraw_cnt <= 191 ? Draw_OSD169 : MainScreen;
+        Draw_Opcode = MainScreen_Opcode;
+
+
+        video_rest = CPU::tstates - tstateDraw;
+        Draw(0,false);
+
+    }
+
+}
+
+IRAM_ATTR void VIDEO::MainScreen_Blank_Opcode(bool contended) { MainScreen_Blank(4, contended); }
+
+IRAM_ATTR void VIDEO::MainScreen_Blank_Snow(unsigned int statestoadd, bool contended) {
+
+    CPU::tstates += statestoadd;
+
+    if (CPU::tstates >= tstateDraw) {
+
+        if (brdChange) DrawBorder();
+
+        if (paper_off && !bl_live) {
+            coldraw_cnt = 0;
+            Draw = &MainScreen_NoPaper;
+            Draw_Opcode = &MainScreen_Opcode;
+            video_rest = CPU::tstates - tstateDraw;
+            Draw(0, false);
+            return;
+        }
+
+        lineptr32 = bl_live ? bl_stage_ptr
+                            : (uint32_t *)(vga.frameBuffer[linedraw_cnt]) + lineptr_offset;
+        prevLineptr16 = vga.prevFrameBuffer
+                          ? prevRowContent(linedraw_cnt) + lineptr_offset
+                          : (uint16_t *)lineptr32;
+
+        coldraw_cnt = 0;
+
+        curline = linedraw_cnt - lin_end;
+        if (Config::timex_video && VIDEO::timex_mode != 0) {
+            switch (VIDEO::timex_mode) {
+                case 1:
+                    bmpOffset = 0x2000 + offBmp[curline];
+                    attOffset = 0x2000 + offAtt[curline];
+                    break;
+                case 2:
+                    bmpOffset = offBmp[curline];
+                    attOffset = 0x2000 + offBmp[curline];
+                    break;
+                case 6:
+                    bmpOffset = offBmp[curline];
+                    attOffset = 0x2000 + offBmp[curline];
+                    break;
+                default:
+                    bmpOffset = offBmp[curline];
+                    attOffset = offAtt[curline];
+                    break;
+            }
+        } else
+        {
+            bmpOffset = offBmp[curline];
+            attOffset = offAtt[curline];
+        }
+
+        if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80))
+            snowpage = MemESP::videoLatch ? 6 : 4;
+        else
+            snowpage = MemESP::videoLatch ? 7 : 5;
+
+        dispUpdCycle = 0; // For ULA cycle perfect emulation
+
+        #ifdef DIRTY_LINES
+        // Force line draw (for testing)
+        // dirty_lines[curline] = 1;
+        #endif // DIRTY_LINES
+
+        Draw = &MainScreen_Snow;
+        Draw_Opcode = &MainScreen_Snow_Opcode;
+
+        // For ULA cycle perfect emulation
+        int vid_rest = CPU::tstates - tstateDraw;
+        if (vid_rest) {
+            CPU::tstates = tstateDraw;
+            Draw(vid_rest,false);
+        }
+
+    }
+
+}    
+
+IRAM_ATTR void VIDEO::MainScreen_Blank_Snow_Opcode(bool contended) {    
+    
+    CPU::tstates += 4;
+
+    if (CPU::tstates >= tstateDraw) {
+
+        if (brdChange) DrawBorder();
+
+        if (paper_off && !bl_live) {
+            coldraw_cnt = 0;
+            Draw = &MainScreen_NoPaper;
+            Draw_Opcode = &MainScreen_Opcode;
+            video_rest = CPU::tstates - tstateDraw;
+            Draw(0, false);
+            return;
+        }
+
+        lineptr32 = bl_live ? bl_stage_ptr
+                            : (uint32_t *)(vga.frameBuffer[linedraw_cnt]) + lineptr_offset;
+        prevLineptr16 = vga.prevFrameBuffer
+                          ? prevRowContent(linedraw_cnt) + lineptr_offset
+                          : (uint16_t *)lineptr32;
+
+        coldraw_cnt = 0;
+
+        curline = linedraw_cnt - lin_end;
+        bmpOffset = offBmp[curline];
+        attOffset = offAtt[curline];
+
+        snowpage = MemESP::videoLatch ? 7 : 5;
+        
+        dispUpdCycle = 0; // For ptime-128 compliant version
+
+        #ifdef DIRTY_LINES
+        // Force line draw (for testing)
+        // dirty_lines[curline] = 1;
+        #endif // DIRTY_LINES
+
+        Draw = &MainScreen_Snow;
+        Draw_Opcode = &MainScreen_Snow_Opcode;
+
+        // For ULA cycle perfect emulation
+        video_opcode_rest = CPU::tstates - tstateDraw;
+        if (video_opcode_rest) {
+            CPU::tstates = tstateDraw;
+            Draw_Opcode(false);
+            video_opcode_rest = 0;
+        }
+
+    }
+
+}    
+
+#ifndef DIRTY_LINES
+
+// GigaScreen blend LUT: maps (prev_palette_idx, cur_palette_idx) → blended palette_idx
+// Supports standard 16 Spectrum colors (indices 0-15)
+// Blended colors stored in palette slots 17-239
+static uint8_t gigsBlendLUT[256]; // indexed by (prev * 16 + cur)
+static bool gigsBlendLUTReady = false;
+
+void initGigascreenBlendLUT() {
+    // One-shot. Table + palette slots 17..136 only depend on spectrum_rgb888[],
+    // which never changes after boot. Re-entering this from an emulation context
+    // (e.g. ULA+ disable -> palette restore) races with HDMI DMA reading conv_color
+    // and produces palette tearing at the top of the screen.
+    if (gigsBlendLUTReady) return;
+    uint8_t nextSlot = 17; // start after ORANGE(16)
+
+    // For each pair (i, j), compute average RGB and assign palette slot
+    for (int i = 0; i < 16; i++) {
+        for (int j = 0; j < 16; j++) {
+            if (i == j) {
+                // Same color — no blend needed
+                gigsBlendLUT[i * 16 + j] = i;
+                continue;
+            }
+            // Check if reverse pair already computed
+            if (j < i) {
+                gigsBlendLUT[i * 16 + j] = gigsBlendLUT[j * 16 + i];
+                continue;
+            }
+            // Compute average RGB888
+            uint32_t c0 = spectrum_rgb888[i];
+            uint32_t c1 = spectrum_rgb888[j];
+            uint8_t R = (((c0 >> 16) & 0xFF) + ((c1 >> 16) & 0xFF)) / 2;
+            uint8_t G = (((c0 >> 8) & 0xFF) + ((c1 >> 8) & 0xFF)) / 2;
+            uint8_t B = ((c0 & 0xFF) + (c1 & 0xFF)) / 2;
+            uint32_t blended = (R << 16) | (G << 8) | B;
+
+            // Assign to next available palette slot
+            if (nextSlot < 240) {
+                gigsBlendLUT[i * 16 + j] = nextSlot;
+                graphics_set_palette(nextSlot, paletteFinal(blended));
+                nextSlot++;
+            } else {
+                gigsBlendLUT[i * 16 + j] = i; // fallback
+            }
+        }
+    }
+    gigsBlendLUTReady = true;
+}
+
+// Blend 4 packed palette-index pixels via LUT
+// Uses shift/mask instead of byte pointers to avoid aliasing overhead on ARM
+inline uint32_t blendPixels32(uint32_t cur, uint32_t prev) {
+    if (cur == prev) return cur;
+    return  gigsBlendLUT[(prev       & 0x0F) * 16 + (cur       & 0x0F)]
+        | (gigsBlendLUT[((prev >> 8) & 0x0F) * 16 + ((cur >> 8) & 0x0F)] << 8)
+        | (gigsBlendLUT[((prev >>16) & 0x0F) * 16 + ((cur >>16) & 0x0F)] << 16)
+        | (gigsBlendLUT[((prev >>24) & 0x0F) * 16 + ((cur >>24) & 0x0F)] << 24);
+}
+
+// Pack lower 4 bits of each of 4 cur pixels (uint32) into 2-pixel-per-byte
+// uint16 (low nibble = even pixel, high nibble = odd pixel)
+inline uint16_t packPixels32(uint32_t cur) {
+    uint32_t p0 = cur & 0x0F;
+    uint32_t p1 = (cur >> 8) & 0x0F;
+    uint32_t p2 = (cur >> 16) & 0x0F;
+    uint32_t p3 = (cur >> 24) & 0x0F;
+    return (uint16_t)(p0 | (p1 << 4) | (p2 << 8) | (p3 << 12));
+}
+
+// Blend 4 cur pixels with 4 prev pixels stored as packed uint16 (2 px per byte).
+// Per-pixel: if low nibble of cur matches prev nibble, return cur byte unchanged
+// (preserves ULA+ upper bits — palette indices 0..63 alias by low nibble in blendLUT).
+inline uint32_t blendPixels32_packed(uint32_t cur, uint16_t prev16) {
+    uint8_t c0 = cur & 0xFF, c1 = (cur >> 8) & 0xFF, c2 = (cur >> 16) & 0xFF, c3 = (cur >> 24) & 0xFF;
+    uint8_t p0 = prev16 & 0x0F, p1 = (prev16 >> 4) & 0x0F, p2 = (prev16 >> 8) & 0x0F, p3 = (prev16 >> 12) & 0x0F;
+    uint8_t r0 = ((c0 & 0x0F) == p0) ? c0 : gigsBlendLUT[p0 * 16 + (c0 & 0x0F)];
+    uint8_t r1 = ((c1 & 0x0F) == p1) ? c1 : gigsBlendLUT[p1 * 16 + (c1 & 0x0F)];
+    uint8_t r2 = ((c2 & 0x0F) == p2) ? c2 : gigsBlendLUT[p2 * 16 + (c2 & 0x0F)];
+    uint8_t r3 = ((c3 & 0x0F) == p3) ? c3 : gigsBlendLUT[p3 * 16 + (c3 & 0x0F)];
+    return r0 | (r1 << 8) | (r2 << 16) | (r3 << 24);
+}
+
+// ----------------------------------------------------------------------------------
+// Fast video emulation with no ULA cycle emulation and no snow effect support
+// ----------------------------------------------------------------------------------
+IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
+
+    if (contended) statestoadd += wait_st[CPU::tstates - tstateDraw];
+
+    CPU::tstates += statestoadd;
+    statestoadd += video_rest;
+    video_rest = statestoadd & 0x03;
+    unsigned int loopCount = statestoadd >> 2;
+    coldraw_cnt += loopCount;
+
+    if (coldraw_cnt >= 32) {
+        tstateDraw += tStatesPerLine;
+        if (++linedraw_cnt == lin_end2) {
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+        } else {
+            Draw = &MainScreen_Blank;
+            Draw_Opcode = &MainScreen_Blank_Opcode;
+        }
+        loopCount -= coldraw_cnt - 32;
+        bl_line_done = bl_live;
+    }
+
+    if (__builtin_expect(ts_render_live != 0, 0)) {
+        // TS-Conf TEXT/16c/NOGFX/256c, or the TSU over any mode — whole line on the first Draw call of
+        // each line (the GMX pattern: nothing here races the beam), source row
+        // from `curline` (see the GMX branch below for why never linedraw_cnt).
+        unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
+        unsigned int start_col = end_col - loopCount;
+        if (start_col == 0) { TS_YGC_SRC(2); tsRenderLine(curline); }
+        lineptr32 += loopCount * 2;
+    } else
+    if (timex_hires_live) {
+        // Timex SCLD hi-res 512x192, native — packed pair slots, 8 fb bytes per
+        // 4T column, exactly the DS80 shape.  Screen 0 supplies the LEFT byte of
+        // each column pair, screen 1 (+0x2000) the right one; attributes are
+        // unused and both colours are baked into timex_hr_lut.
+        //
+        // The source address is derived from the column counter, NOT from the
+        // running bmpOffset/attOffset MainScreen_Blank sets up: the guest can
+        // leave mode 6 mid-frame, which flips those two back to the standard
+        // bitmap/attribute pair a frame before timex_hires_live drops — and
+        // while it is up, the framebuffer IS packed pairs, so hi-res is the only
+        // self-consistent thing to render into it.
+        const unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
+        const uint16_t base = offBmp[curline];
+        for (unsigned int j = end_col - loopCount; j < end_col; j++) {
+            uint8_t e = grmem[base + j];            // screen 0 → pixels 0..7
+            uint8_t o = grmem[base + j + 0x2000];   // screen 1 → pixels 8..15
+            *lineptr32++ = (uint32_t)timex_hr_lut[e & 0x0F]
+                         | ((uint32_t)timex_hr_lut[e >> 4] << 16);
+            *lineptr32++ = (uint32_t)timex_hr_lut[o & 0x0F]
+                         | ((uint32_t)timex_hr_lut[o >> 4] << 16);
+        }
+    } else if (Config::timex_video && VIDEO::timex_mode == 6) {
+        // Hi-res fallback for builds/boards with no packed-pair driver (SOFTTV,
+        // TFT, or a refused DS80 snapshot allocation): 512->256 by OR-merging
+        // each screen0/screen1 byte pair — preserves every set bit at half the
+        // horizontal resolution.  Colours are the real ones (bright ink on its
+        // bright complement), which the old attribute-byte shortcut got wrong:
+        // it left paper black and nothing bright.
+        uint8_t hires_att = (uint8_t)(0x40 | ((~VIDEO::timex_hires_ink & 7) << 3)
+                                           | (VIDEO::timex_hires_ink & 7));
+        for (; loopCount--; ) {
+            uint8_t combined = grmem[bmpOffset++] | grmem[attOffset++];
+            *lineptr32++ = AluByte[combined >> 4][hires_att];
+            *lineptr32++ = AluByte[combined & 0xF][hires_att];
+        }
+    } else if (VIDEO::mode16col_enabled && mode16col_decode_lut) {
+        // 16col (Pentagon, Alone Coder, ZXPress Inferno #08).
+        // Byte layout: %IiGRBgrb. mode16col_decode_lut[] precomputes
+        // (left_pixel | right_pixel<<8) for every input byte.
+        // Plane order per pixel-pair: A,B,C,D = #C000, #4000, #E000, #6000.
+        // Frame buffer order is byte-swapped (^2) per AluByte convention so
+        // HDMI scanout ISR reads pixels in correct visual order.
+        const uint8_t* pA = VIDEO::mode16col_planes[0];
+        const uint8_t* pB = VIDEO::mode16col_planes[1];
+        const uint8_t* pC = VIDEO::mode16col_planes[2];
+        const uint8_t* pD = VIDEO::mode16col_planes[3];
+        const uint16_t* lut = mode16col_decode_lut;
+        for (; loopCount--; ) {
+            uint16_t off = bmpOffset++;
+            uint32_t la = lut[pA[off]];
+            uint32_t lb = lut[pB[off]];
+            uint32_t lc = lut[pC[off]];
+            uint32_t ld = lut[pD[off]];
+            // pixels 0..3 = L(a), R(a), L(b), R(b) — written as bytes [2,3,0,1]
+            *lineptr32++ = lb | (la << 16);
+            // pixels 4..7 = L(c), R(c), L(d), R(d) — same swap
+            *lineptr32++ = ld | (lc << 16);
+        }
+    } else if (gmx_ext_live) {
+        // Scorpion GMX 640x200x16 — same packed-pair framebuffer as DS80 (1 fb
+        // byte = 2 output pixels via the driver pair tables), rendered a WHOLE
+        // LINE at a time on the first Draw call of each line: nothing in the GMX
+        // world races the beam (it is the boot ROM's GUI mode), and whole-line
+        // rendering avoids the 80-bytes-per-line / 32-columns mismatch (2.5
+        // bytes per 4T column does not divide).
+        // Layout (MAME scorpiongmx spectrum_update_screen): bitmap = 80 bytes/
+        // line linear in page 57/59 (7FFD D3), attrs byte-per-8px at the same
+        // offset in page+64 (121/123); fg = ((attr>>3)&8)|(attr&7), bg =
+        // (attr>>3)&0xF; vertical scroll offsets the source row.
+        // Placed BEFORE the gigascreen branch: the pair-slot framebuffer is
+        // structurally incompatible with gigascreen blending.
+        unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
+        unsigned int start_col = end_col - loopCount;
+        uint32_t line = curline;   // 0..199
+        if (start_col == 0) {
+            if (line == 0 || gmx_frame_bmp == nullptr) {
+                // Per-frame latch (rend_profi model): pages + scroll captured at
+                // line 0 so mid-frame flips don't tear.
+                uint32_t bmpPg = MemESP::videoLatch ? 0x3Bu : 0x39u;
+                gmx_frame_bmp = (bmpPg < MEM_PG_CNT) ? MemESP::ram[bmpPg].direct() : nullptr;
+                gmx_frame_att = (bmpPg + 64 < MEM_PG_CNT) ? MemESP::ram[bmpPg + 64].direct() : nullptr;
+                gmx_frame_srow = ((((uint32_t)Ports::gmxScrollHi << 8) | Ports::gmxScrollLo) / 80u) % 200u;
+            }
+            // Framebuffer row for this content line — derived from curline (the
+            // line MainScreen_Blank set up for this call), NEVER from
+            // linedraw_cnt: the generic block above may ALREADY have advanced
+            // linedraw_cnt in this very call, which happens whenever one Draw
+            // call covers a whole line from column 0 — i.e. on every line of
+            // CPU::FlushOnHalt's `Draw(tStatesPerLine)` flush (and
+            // RedrawPausedFrame's). Reading the counter there put the whole
+            // flushed region one row DOWN (top content row left stale, source
+            // row 199 spilled into the bottom border band), and since the flush
+            // starts at the HALT's phase within the line, it shifted on some
+            // frames and not others — the "picture jitters / sits a couple of
+            // pixels low" report. Same pattern as the DS80 branch's ds80_voff.
+            const uint32_t frow = line + (uint32_t)lin_end;   // rows lin_end..lin_end2-1
+            uint8_t* fb_row = (vga.frameBuffer && frow < (uint32_t)vga.yres)
+                              ? (uint8_t*)vga.frameBuffer[frow] : nullptr;
+            if (fb_row && line < 200) {
+                const int pad_l = ((int)vga.xres - 320) / 2;   // 0 (320) or 20 (360)
+                // Side border pads, per line (frame-granular top/bottom bands are
+                // painted in EndFrame).
+                if (pad_l > 0) {
+                    uint8_t brdSlot = profi_pair_lookup[borderColor & 15][borderColor & 15];
+                    memset(fb_row, brdSlot, pad_l);
+                    memset(fb_row + pad_l + 320, brdSlot, (size_t)vga.xres - pad_l - 320);
+                }
+                if (Z80Ops::isAtm) {
+                    atmRenderLine(line, fb_row, pad_l);   // ATM-Turbo EGA / hires / text
+                } else {
+                uint32_t srow = line + gmx_frame_srow;
+                if (srow >= 200) srow -= 200;
+                uint32_t off = srow * 80;
+                const uint8_t* bmp = gmx_frame_bmp;
+                const uint8_t* att = gmx_frame_att;
+                // Attr bit 7 = FLASH: fg/bg swap on the flash phase (MAME
+                // `invert_attrs`). bg is bits 3-6 and fg bit 3 is attr bit 6, so
+                // bit 7 is the only free one. `flashing` is the ULA flash mask
+                // (0x80 / 0x00, toggled every 16 frames in ESPectrum::loop), so
+                // GMX blinks in step with the standard renderer.
+                const uint8_t gmx_flash = flashing;
+                if (bmp) {
+                    for (int j = 0; j < 80; j++) {
+                        uint8_t b = bmp[off + j];
+                        uint8_t a = att ? att[off + j] : 0x07;
+                        uint8_t fg = (uint8_t)(((a >> 3) & 0x08) | (a & 0x07));
+                        uint8_t bg = (uint8_t)((a >> 3) & 0x0F);
+                        if (a & gmx_flash) { uint8_t t = fg; fg = bg; bg = t; }
+                        // 8 source pixels → 4 pair bytes, (k^2) pre-swizzled for the
+                        // ISR's x^2 read pattern (same trick as the DS80 branch), one
+                        // aligned uint32_t store per source byte.
+                        uint8_t p0 = profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg]; // k=2 → +0
+                        uint8_t p1 = profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]; // k=3 → +1
+                        uint8_t p2 = profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg]; // k=0 → +2
+                        uint8_t p3 = profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg]; // k=1 → +3
+                        *(uint32_t*)(fb_row + pad_l + j * 4) =
+                            (uint32_t)p0 | ((uint32_t)p1 << 8) | ((uint32_t)p2 << 16) | ((uint32_t)p3 << 24);
+                    }
+                } else {
+                    // Attr/bitmap page not backed (butter-less board) — black line.
+                    memset(fb_row + pad_l, profi_pair_lookup[0][0], 320);
+                }
+                }
+            }
+        }
+        // Keep the shared fb cursor in sync with the standard renderer stride.
+        lineptr32 += loopCount * 2;
+    } else
+    if (VIDEO::gigascreen_enabled
+        && !VIDEO::ulaplus_enabled
+    ) {
+        for (; loopCount--; ) {
+            uint8_t att = dma_attr_override ? dma_attr_override[attOffset & 0x1F] : grmem[attOffset];
+            attOffset++;
+            uint8_t bmp = grmem[bmpOffset++] ^ (-((att & flashing) >> 7));
+            uint32_t newPixel1 = AluByte[bmp >> 4][att];
+            uint32_t newPixel2 = AluByte[bmp & 0xF][att];
+
+            uint32_t mix1 = blendPixels32_packed(newPixel1, prevLineptr16[0]);
+            uint32_t mix2 = blendPixels32_packed(newPixel2, prevLineptr16[1]);
+            prevLineptr16[0] = packPixels32(newPixel1);
+            prevLineptr16[1] = packPixels32(newPixel2);
+            prevLineptr16 += 2;
+            *lineptr32++ = mix1;
+            *lineptr32++ = mix2;
+        }
+    } else if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80)) {
+        // Profi DS80 native rendering — writes 256-byte-wide packed pairs directly into
+        // vga.frameBuffer (1 byte = pair of 4-bit palette indices: high nibble =
+        // left source pixel, low nibble = right). HDMI ISR is configured (via
+        // hdmi_set_profi_ds80_mode) so each fb byte expands to 2 *different*
+        // HDMI pixels — native 512 horizontal resolution.
+        //
+        // Per ZXMAK2 ProfiRenderer (byte-column interleaved): for col j (0..31)
+        //   even src byte-col 2j in second half (+0x2000), odd 2j+1 in first half (+0).
+        // Attr (4-bit): ink = bits 2..0 | (bit6 << 3); paper = bits 5..3 | (bit7 << 3).
+        uint32_t line = curline;
+        uint32_t pixCoff = 2048 * (line >> 6) + 256 * (line & 7) + ((line & 0x38) << 2);
+        unsigned int end_col = coldraw_cnt < 32u ? coldraw_cnt : 32u;
+        unsigned int start_col = end_col - loopCount;
+        // Latch the display pages ONCE at the start of the frame (UnrealSpeccy rend_profi
+        // model): all 240 lines render from the page selected at line 0, so mid-frame
+        // videoLatch flips don't tear the current frame.  Also (re)latch if null (first
+        // frame after activation).
+        // grmem (pages 4/6) is already in SRAM — left as-is.
+        if ((line == 0 && start_col == 0) || ds80_frame_grmem == nullptr) {
+            ds80_frame_grmem  = grmem;
+            ds80_frame_clrmem = profi_clrmem;
+            // Refresh snapshot at the START of each active scan so Z80 writes made
+            // since vblank (e.g. ROM service-menu attr init over multiple frames) are
+            // captured immediately.  One sequential burst here; renderer reads SRAM
+            // for all remaining lines without scattered XIP stalls.
+            if (profi_clrmem && ds80_clr_sram)
+                memcpy(ds80_clr_sram, profi_clrmem, DS80_CLR_SRAM_SIZE);
+        }
+        uint8_t* fgrmem  = ds80_frame_grmem;
+        // ds80_clr_sram is only allocated on butter-PSRAM boards (XIP cache stall risk);
+        // on SPI-PSRAM/SWAP boards it is null and ds80_frame_clrmem (force_sram_locked
+        // SRAM pointer) is used directly — no stall risk, saves 16 KB heap.
+        uint8_t* fclrmem = ds80_frame_clrmem ? (ds80_clr_sram ? ds80_clr_sram : ds80_frame_clrmem) : nullptr;
+        //
+        // Row layout: pad_l bytes of border, then 256 content bytes (with (k^2) pre-swap
+        // for the ISR's x^2 read pattern), then pad_r bytes of border.
+        // Vertical: 640×480 (yres=240) shows content full-height (voff=0, no top/bottom
+        // border). 720×576 (yres=288) centres the 240 content lines with a symmetric
+        // 24-row top/bottom border band (voff=DS80_BORDER_TOP) — top/bottom rows are
+        // filled in EndFrame; here we offset content + paint the per-line side borders.
+        const int pad_l = vga.frameBuffer ? ((int)vga.xres - 256) / 2 : 32;
+        const int ds80_voff = (vga.yres >= 288) ? DS80_BORDER_TOP : 0;
+        const uint32_t frow = line + (uint32_t)ds80_voff;   // framebuffer row for this content line
+        uint8_t* fb_row = (vga.frameBuffer && frow < (uint32_t)vga.yres)
+                          ? (uint8_t*)vga.frameBuffer[frow] : nullptr;
+        // F8 stats overlay (DS80 640×480 only): drawStats writes the cached lines into
+        // fb rows 220..235 every frame (in vblank).  The content renderer + side-border
+        // fill would overwrite them during the next active scan → 1-frame content /
+        // 1-frame stats → flicker.  The stats rectangle (fb bytes 168..311) straddles
+        // the content area AND the right border pad (288..319), so BOTH the content
+        // write and the right-pad fill must carve it out, leaving it for drawStats.
+        // (720×576 keeps stats in the bottom border band, carved out in Update_Border_DS80.)
+        // The LED panel, when it is on, extends the same rect to the left.
+        int ds80_cx0 = 0, ds80_cx1 = 0;
+        bool skip_stats_row = (ds80_voff == 0) && frow >= 220 && frow < 236
+                              && osdBarRange((VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04), 320, ds80_cx0, ds80_cx1);
+        // ... and the OSD::notify banner: 640x480 DS80 has no top border band, so
+        // the banner sits on the first content rows and owns them while it is up
+        // (the rect is 8-byte aligned, i.e. whole columns here: pad_l is 32). The
+        // two rects never share a row, so one (cx0, cx1) pair serves both.
+        if (!skip_stats_row && (int)frow < ts_notice_y1 && (int)frow >= ts_notice_y0) {
+            skip_stats_row = true; ds80_cx0 = ts_notice_x0; ds80_cx1 = ts_notice_x1;
+        }
+        // Side borders are rendered per-T-state by the border state machine
+        // (Update_Border_DS80, ZXMAK2 192T-line timing) — no per-line fill here.
+        for (unsigned int j = start_col; j < end_col; j++) {
+            uint8_t bmpEven = fgrmem[pixCoff + j + 8192];
+            uint8_t bmpOdd  = fgrmem[pixCoff + j];
+            uint8_t rawE = fclrmem ? fclrmem[pixCoff + j + 8192] : 0x07;
+            uint8_t rawO = fclrmem ? fclrmem[pixCoff + j]        : 0x07;
+            uint8_t inkE = (rawE & 0x07) | ((rawE & 0x40) >> 3);
+            uint8_t papE = ((rawE & 0x38) >> 3) | ((rawE & 0x80) >> 4);
+            uint8_t inkO = (rawO & 0x07) | ((rawO & 0x40) >> 3);
+            uint8_t papO = ((rawO & 0x38) >> 3) | ((rawO & 0x80) >> 4);
+            // Stats overlay carve-out: skip the 8-byte column block if it overlaps the
+            // stats rectangle (fb bytes 168..311) on a stats row — drawStats owns it.
+            size_t pbase = (size_t)pad_l + (size_t)j * 8;
+            bool in_stats = skip_stats_row && ((int)pbase + 8 > ds80_cx0) && ((int)pbase < ds80_cx1);
+            if (fb_row && !in_stats) {
+                // 16 source pixels per col → 8 packed bytes at content offset pad_l + j*8.
+                // Pre-apply (k^2) swap so ISR reads in correct order.
+                // Physical byte layout after k^2: [k=2,k=3,k=0,k=1] at pbase+[0,1,2,3].
+                // Pack into two aligned uint32_t writes (4× fewer SRAM transactions than
+                // 8 individual byte writes, reducing core0 bus contention with video DMA).
+                // pbase is always 4-byte aligned (pad_l divisible by 4, j*8 divisible by 8).
+                uint8_t e0 = profi_pair_lookup[((bmpEven>>3)&1)?inkE:papE][((bmpEven>>2)&1)?inkE:papE]; // k=2 → +0
+                uint8_t e1 = profi_pair_lookup[((bmpEven>>1)&1)?inkE:papE][((bmpEven>>0)&1)?inkE:papE]; // k=3 → +1
+                uint8_t e2 = profi_pair_lookup[((bmpEven>>7)&1)?inkE:papE][((bmpEven>>6)&1)?inkE:papE]; // k=0 → +2
+                uint8_t e3 = profi_pair_lookup[((bmpEven>>5)&1)?inkE:papE][((bmpEven>>4)&1)?inkE:papE]; // k=1 → +3
+                *(uint32_t*)(fb_row + pbase) = (uint32_t)e0 | ((uint32_t)e1<<8) | ((uint32_t)e2<<16) | ((uint32_t)e3<<24);
+                uint8_t o0 = profi_pair_lookup[((bmpOdd>>3)&1)?inkO:papO][((bmpOdd>>2)&1)?inkO:papO]; // k=2 → +4
+                uint8_t o1 = profi_pair_lookup[((bmpOdd>>1)&1)?inkO:papO][((bmpOdd>>0)&1)?inkO:papO]; // k=3 → +5
+                uint8_t o2 = profi_pair_lookup[((bmpOdd>>7)&1)?inkO:papO][((bmpOdd>>6)&1)?inkO:papO]; // k=0 → +6
+                uint8_t o3 = profi_pair_lookup[((bmpOdd>>5)&1)?inkO:papO][((bmpOdd>>4)&1)?inkO:papO]; // k=1 → +7
+                *(uint32_t*)(fb_row + pbase + 4) = (uint32_t)o0 | ((uint32_t)o1<<8) | ((uint32_t)o2<<16) | ((uint32_t)o3<<24);
+            }
+            // Advance lineptr32 to keep std fb cursor in sync with standard renderer stride.
+            lineptr32 += 2;
+        }
+    } else {
+        for (; loopCount--; ) {
+            uint8_t att = dma_attr_override ? dma_attr_override[attOffset & 0x1F] : grmem[attOffset];
+            attOffset++;
+            uint8_t bmp = grmem[bmpOffset++] ^ (-((att & flashing) >> 7));
+            *lineptr32++ = AluByte[bmp >> 4][att];
+            *lineptr32++ = AluByte[bmp & 0xF][att];
+        }
+    }
+    BL_FLUSH();
+}
+
+// Debug "Paper off": MainScreen's timing skeleton with the pixel writes removed.
+// Contention, T-state accounting and the per-line hand-back to MainScreen_Blank
+// are byte-for-byte MainScreen's, so guest-visible timing is unchanged; the
+// framebuffer bytes under the paper are owned by the border state machine
+// (MiddleBorder paints through them when paper_off is set).
+IRAM_ATTR void VIDEO::MainScreen_NoPaper(unsigned int statestoadd, bool contended) {
+
+    if (contended) statestoadd += wait_st[CPU::tstates - tstateDraw];
+
+    CPU::tstates += statestoadd;
+    statestoadd += video_rest;
+    video_rest = statestoadd & 0x03;
+    coldraw_cnt += statestoadd >> 2;
+
+    if (coldraw_cnt >= 32) {
+        tstateDraw += tStatesPerLine;
+        if (++linedraw_cnt == lin_end2) {
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+        } else {
+            Draw = &MainScreen_Blank;
+            Draw_Opcode = &MainScreen_Blank_Opcode;
+        }
+    }
+}
+
+IRAM_ATTR void VIDEO::MainScreen_OSD(unsigned int statestoadd, bool contended) {
+
+    if (contended) statestoadd += wait_st[CPU::tstates - tstateDraw];
+
+    CPU::tstates += statestoadd;
+    statestoadd += video_rest;
+    video_rest = statestoadd & 0x03;
+    unsigned int loopCount = statestoadd >> 2;
+
+    coldraw_cnt += loopCount;
+
+    if (coldraw_cnt >= 32) {
+        tstateDraw += tStatesPerLine;
+        if (++linedraw_cnt == lin_end2) {
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+        } else {
+            Draw = &MainScreen_Blank;
+            Draw_Opcode = &MainScreen_Blank_Opcode;
+        }
+        loopCount -= coldraw_cnt - 32;
+    }
+
+    for (;loopCount--;) {
+        lineptr32+=2;
+        attOffset++;
+        bmpOffset++;
+    }
+}
+
+IRAM_ATTR void VIDEO::MainScreen_Opcode(bool contended) { Draw(4,contended); }
+
+// ----------------------------------------------------------------------------------
+// ULA cycle perfect emulation with snow effect support
+// ----------------------------------------------------------------------------------
+IRAM_ATTR void VIDEO::MainScreen_Snow(unsigned int statestoadd, bool contended) {
+
+    bool do_stats = false;
+
+    if (contended) statestoadd += wait_st[coldraw_cnt]; // [CPU::tstates - tstateDraw];
+
+    CPU::tstates += statestoadd;
+    
+    unsigned int col_osd = coldraw_cnt >> 2;
+    if (linedraw_cnt >= 176 && linedraw_cnt <= 191) do_stats = (VIDEO::Draw_OSD169 == VIDEO::MainScreen_OSD);
+    
+    coldraw_cnt += statestoadd;
+
+    if (coldraw_cnt >= 128) {
+        tstateDraw += tStatesPerLine;
+        if (++linedraw_cnt == lin_end2) {
+            Draw = &Blank_Snow;
+            Draw_Opcode = &Blank_Snow_Opcode;
+        } else {
+            Draw = &MainScreen_Blank_Snow;
+            Draw_Opcode = &MainScreen_Blank_Snow_Opcode;
+        }
+        statestoadd -= coldraw_cnt - 128;
+        bl_line_done = bl_live;  
+    }
+
+    for (;statestoadd--;) {
+
+        switch(dispUpdCycle) {
+            
+            // In Weiv's Spectramine cycle starts in 2 and half black strip shows at 14349 in ptime-128.tap (early timings).
+            // In SpecEmu cycle starts in 3, black strip at 14350. Will use Weiv's data for now.
+            case 2:
+                bmp1 = grmem[bmpOffset++];
+                lastbmp = bmp1;
+                break;
+            case 3:
+                if (snow_att) {
+                    att1 = MemESP::ram[snowpage].direct()[(attOffset++ & 0xff80) | snowR];  // get attribute byte
+                    snow_att = false;
+                } else
+                    att1 = grmem[attOffset++];  // get attribute byte                
+
+                lastatt = att1;
+
+                if (do_stats && (col_osd >= 13 && col_osd <= 30)) {                    
+                    lineptr32 += 2;
+                } else {
+                    if (att1 & flashing) bmp1 = ~bmp1;
+                    *lineptr32++ = AluByte[bmp1 >> 4][att1];
+                    *lineptr32++ = AluByte[bmp1 & 0xF][att1];
+                }
+
+                col_osd++;
+
+                break;
+            case 4:
+                bmp2 = grmem[bmpOffset++];
+                break;
+            case 5:
+                if (dbl_att) {
+                    att2 = lastatt;
+                    attOffset++;
+                    dbl_att = false;
+                } else
+                    att2 = grmem[attOffset++];  // get attribute byte
+
+                if (do_stats && (col_osd >= 13 && col_osd <= 30)) {
+                    lineptr32 += 2;
+                } else {
+                    if (att2 & flashing) bmp2 = ~bmp2;
+                    *lineptr32++ = AluByte[bmp2 >> 4][att2];
+                    *lineptr32++ = AluByte[bmp2 & 0xF][att2];
+
+                }
+
+                col_osd++;
+
+        }
+
+        ++dispUpdCycle &= 0x07; // Update the cycle counter.
+
+    }
+
+    BL_FLUSH();
+}
+
+// ----------------------------------------------------------------------------------
+// ULA cycle perfect emulation with snow effect support
+// ----------------------------------------------------------------------------------
+IRAM_ATTR void VIDEO::MainScreen_Snow_Opcode(bool contended) {
+
+    int snow_effect = 0;
+    bool do_stats = false;
+
+    unsigned int statestoadd = video_opcode_rest ? video_opcode_rest : 4;
+
+    if (contended) statestoadd += wait_st[coldraw_cnt]; // [CPU::tstates - tstateDraw];
+
+    CPU::tstates += statestoadd;
+
+    unsigned int col_osd = coldraw_cnt >> 2;
+    if (linedraw_cnt >= 176 && linedraw_cnt <= 191) do_stats = (VIDEO::Draw_OSD169 == VIDEO::MainScreen_OSD);
+    
+    coldraw_cnt += statestoadd;
+
+    if (coldraw_cnt >= 128) {
+        tstateDraw += tStatesPerLine;
+        if (++linedraw_cnt == lin_end2) {
+            Draw =&Blank_Snow;
+            Draw_Opcode = &Blank_Snow_Opcode;
+        } else {
+            Draw = &MainScreen_Blank_Snow;
+            Draw_Opcode = &MainScreen_Blank_Snow_Opcode;
+        }
+
+        statestoadd -= coldraw_cnt - 128;
+        bl_line_done = bl_live;
+
+    }
+
+    if (dispUpdCycle == 6) {
+        dispUpdCycle = 2;
+        BL_FLUSH();
+        return;
+    }
+
+    // Determine if snow effect can be applied
+    uint8_t page = Z80::getRegI() & 0xc0;
+    if (page == 0x40) { // Snow 48K, 128K
+        snow_effect = 1;
+        if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80))
+            snowpage = MemESP::videoLatch ? 6 : 4;
+        else
+            snowpage = MemESP::videoLatch ? 7 : 5;
+    } else if (Z80Ops::is128 && (MemESP::bankLatch & 0x01) && page == 0xc0) {  // Snow 128K
+        snow_effect = 1;
+        if (MemESP::bankLatch == 1 || MemESP::bankLatch == 3)
+            snowpage = MemESP::videoLatch ? 3 : 1;
+        else if (Config::arch == A_PROFI && (Ports::portDFFD & 0x80))
+            snowpage = MemESP::videoLatch ? 6 : 4;
+        else
+            snowpage = MemESP::videoLatch ? 7 : 5;
+    }
+
+    for (;statestoadd--;) {
+
+        switch(dispUpdCycle) {
+            
+            // In Weiv's Spectramine cycle starts in 2 and half black strip shows at 14349 in ptime-128.tap (early timings).
+            // In SpecEmu cycle starts in 3, black strip at 14350. Will use Weiv's data for now.
+            
+            case 2:
+
+                if (snow_effect && statestoadd == 0) {
+                    snowR = Z80::getRegR() & 0x7f;
+                    bmp1 = MemESP::ram[snowpage].direct()[(bmpOffset++ & 0xff80) | snowR];
+                    snow_att = true;
+                } else
+                    bmp1 = grmem[bmpOffset++];
+
+                lastbmp = bmp1;
+
+                break;
+
+            case 3:
+
+                if (snow_att) {
+                    att1 = MemESP::ram[snowpage].direct()[(attOffset++ & 0xff80) | snowR];  // get attribute byte
+                    snow_att = false;
+                } else
+                    att1 = grmem[attOffset++];  // get attribute byte                
+
+                lastatt = att1;
+
+                if (do_stats && (col_osd >= 13 && col_osd <= 30)) {
+                    lineptr32 += 2;
+                } else {
+                    if (att1 & flashing) bmp1 = ~bmp1;
+                    *lineptr32++ = AluByte[bmp1 >> 4][att1];
+                    *lineptr32++ = AluByte[bmp1 & 0xF][att1];
+                }
+
+                col_osd++;
+
+                break;
+
+            case 4:
+
+                if (snow_effect && statestoadd == 0) {
+                    bmp2 = lastbmp;
+                    bmpOffset++;
+                    dbl_att = true;
+                } else
+                    bmp2 = grmem[bmpOffset++];
+
+                break;
+
+            case 5:
+
+                if (dbl_att) {
+                    att2 = lastatt;
+                    attOffset++;
+                    dbl_att = false;
+                } else
+                    att2 = grmem[attOffset++];  // get attribute byte
+
+                if (do_stats && (col_osd >= 13 && col_osd <= 30)) {
+                    lineptr32 += 2;
+                } else {
+                    if (att2 & flashing) bmp2 = ~bmp2;
+                    *lineptr32++ = AluByte[bmp2 >> 4][att2];
+                    *lineptr32++ = AluByte[bmp2 & 0xF][att2];
+                }
+
+                col_osd++;
+
+        }
+
+        ++dispUpdCycle &= 0x07; // Update the cycle counter.
+
+    }
+
+    BL_FLUSH();
+}
+
+#else
+
+// IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {    
+
+//     if (contended) statestoadd += wait_st[CPU::tstates - tstateDraw];
+
+//     CPU::tstates += statestoadd;
+//     statestoadd += video_rest;
+//     video_rest = statestoadd & 0x03;
+//     unsigned int loopCount = statestoadd >> 2;
+//     coldraw_cnt += loopCount;
+
+//     if (coldraw_cnt >= 32) {
+//         tstateDraw += tStatesPerLine;
+//         Draw = ++linedraw_cnt == lin_end2 ? &Blank : &MainScreen_Blank;
+//         if (dirty_lines[curline]) {
+//             loopCount -= coldraw_cnt - 32;
+//             for (;loopCount--;) {
+//                 uint8_t att = grmem[attOffset++];
+//                 uint8_t bmp = att & flashing ? ~grmem[bmpOffset++] : grmem[bmpOffset++];
+//                 *lineptr32++ = AluByte[bmp >> 4][att];
+//                 *lineptr32++ = AluByte[bmp & 0xF][att];
+//             }
+//             dirty_lines[curline] &= 0x80;
+//         }
+//         return;
+//     }
+
+//     if (dirty_lines[curline]) {
+//         for (;loopCount--;) {
+//             uint8_t att = grmem[attOffset++];
+//             uint8_t bmp = att & flashing ? ~grmem[bmpOffset++] : grmem[bmpOffset++];
+//             *lineptr32++ = AluByte[bmp >> 4][att];
+//             *lineptr32++ = AluByte[bmp & 0xF][att];
+//         }
+//     } else {
+//         attOffset += loopCount;
+//         bmpOffset += loopCount;
+//         lineptr32 += loopCount << 1;
+//     }
+
+// }
+
+#endif
+
+IRAM_ATTR void VIDEO::Blank(unsigned int statestoadd, bool contended) { CPU::tstates += statestoadd; }
+
+// ---------------------------------------------------------------------------
+// TS-Conf fast video path. In the whole-line modes (TEXT/16c/256c/NOGFX, or the
+// TSU over anything) nothing races the beam, yet every guest memory access still
+// ran MainScreen's column/contention bookkeeping through Draw(3)/Draw(4) — two to
+// three such calls per Z80 instruction, a good third of the core's cost (hw
+// 2026-09-06, TMNT). Here Draw only advances the T-state counter and renders a
+// line each time it crosses a line boundary; after the last content line it hands
+// over to Blank exactly like MainScreen does, so FlushOnHalt / RedrawPausedFrame's
+// "until Draw == &Blank" loops keep working. Armed per frame in EndFrame.
+
+// See TsFastMem.h. Called at the EndFrame arming and from the NeoGS ZX-DMA
+// window toggles (GS.cpp) — anything that must revoke the fast path mid-frame.
+void ts_fastmem_recalc() { VIDEO::tsFastMemRecalc(); }
+void VIDEO::tsFastMemRecalc() {
+    extern volatile uint8_t g_ngs_zxdma;
+    // No overlay test: TS-Conf's bank pointers are TsConf::romPtr() flash pages or
+    // plain RAM pages, neither of which is a registered overlay base — and the
+    // registry itself is rarely empty (other romsets' overlays persist in it).
+    const uint8_t v = (Z80Ops::isTsconf && ts_fast_armed && ts_render_live
+                       && Config::numMemReadBP == 0 && Config::numMemWriteBP == 0
+                       && !g_ngs_zxdma && !MemESP::divmmc_mapped) ? 1 : 0;
+    if (v != g_ts_fastmem) {
+        g_ts_fastmem = v;
+        Debug::log("[TSF] fast memory path %s (render=%u armed=%u bp=%d/%d zxdma=%u divmmc=%u)", v ? "ON" : "off",
+                   ts_render_live, (unsigned)ts_fast_armed, Config::numMemReadBP, Config::numMemWriteBP,
+                   (unsigned)g_ngs_zxdma, (unsigned)MemESP::divmmc_mapped);
+    }
+}
+
+// OSD::notify over a TS-Conf mode whose content starts at fb row 0 (RRES
+// 320x240 and 360x288 have NO top band at all): the banner is painted on the
+// first content rows and tsRenderLine skips them, the same carve-out the F8
+// stats rectangle already gets there. Without it the renderer overwrote the
+// banner on every frame and it flickered at frame rate (hw 2026-09-10).
+
+// One fb row of the top/bottom border band, painted at the raster line it
+// belongs to so a per-line Border register shows as bands of colour (hardware:
+// the border is just the beam outside the pixel area, one colour per line).
+// The two carve-outs are the same ones tsRenderExec honours: the F8 stats /
+// F9-F10 volume rectangle, which lands INSIDE the bottom band in the short
+// RRES modes, and the OSD::notify banner, which lives in the top band — both
+// are repainted only on their own events, so a band row must leave them alone
+// (before this the banner survived because gmxBorderFrame painted the bands
+// once per frame, BEFORE drawNotify).
+static uint8_t TS_OVL_BSS ts_band_slot[FB_MAX_LINES];   // the slot each band row was painted with
+// ...and whether that record covers the whole raster. Set when the tick walks
+// every row, cleared by the mode/geometry changes that move the bands. NOT
+// cleared by EndFrame's re-arming: the replay runs after it and asks about the
+// frame that just ENDED, and ts_row_idx is already 0 by then.
+static bool TS_OVL_BSS ts_band_valid = false;
+
+static IRAM_ATTR void tsBandPaint(uint32_t row, uint8_t slot) {
+    uint8_t* fb = (uint8_t*)VIDEO::vga.frameBuffer[row];
+    if (!fb) return;
+    const int xres = (int)VIDEO::vga.xres;
+    int cx0 = 0, cx1 = 0;
+    const int cy0 = ((int)VIDEO::vga.yres >= 288) ? 268 : 220;
+    if ((int)row >= cy0 && (int)row < cy0 + 16
+        && osdBarRange((VIDEO::OSD & 0x07) != 0, xres, cx0, cx1)) {
+        // stats / volume box and/or the LED panel
+    } else if ((int)row >= ts_notice_y0 && (int)row < ts_notice_y1) {
+        cx0 = ts_notice_x0; cx1 = ts_notice_x1;
+    }
+    if (cx1 > cx0 && cx1 <= xres) {
+        if (cx0 > 0) memset(fb, slot, (size_t)cx0);
+        memset(fb + cx1, slot, (size_t)(xres - cx1));
+    } else {
+        memset(fb, slot, (size_t)xres);
+    }
+}
+
+IRAM_ATTR void VIDEO::tsBandRow(uint32_t row) {
+    if (!vga.frameBuffer || row >= (uint32_t)vga.yres) return;
+    const uint8_t slot = tsBorderSlot();
+    ts_band_slot[row] = slot;
+    tsBandPaint(row, slot);
+}
+
+// Put the per-line band colours back after gmxBorderFrame flattened them.
+//
+// gmxBorderFrame HAS to keep painting: it owns brdnextframe / gmx_border_dirty
+// and the forced repaints (mode change, menu exit, paused redraw), and an
+// earlier attempt to gate it off for TS-Conf broke the picture (hw 2026-09-17).
+// But its fill is one colour for the whole band, and it runs at EndFrame —
+// TS_VSYNC_LEAD_LINES = 100 display lines = 50 fb rows before blanking, i.e.
+// while the beam is still ABOVE the BOTTOM band of the sweep now running. So
+// the flat fill was the last writer there on every frame, while the top band
+// got away with it because the next frame's tick repaints rows 0..lin_end-1 in
+// the first milliseconds, before the beam wraps to them. Hence the report
+// "top fixed, bottom not". This runs right after it, before drawNotify, and
+// touches nothing but the band pixels.
+//
+// Only when the tick actually walked the whole raster this frame: otherwise
+// ts_band_slot[] is stale (a mode change, a held re-index, a skipped frame) and
+// the flat fill is the right thing to leave standing.
+// ─── Borderless mode ────────────────────────────────────────────────────────
+// The 256x192 paper scaled to fill the screen. Two independent halves, each
+// with a fallback that is the pre-2026-09-27 scaler:
+//
+// HORIZONTAL. Where the output has a packed-pair driver (HDMI PIO/HSTX, VGA) and
+// the picture is the plain 16-colour ZX palette, a framebuffer byte is a PAIR
+// slot — two different output pixels — so the scale is taken in OUTPUT pixels:
+//   640 wide  x2.5  = 640 px, widths 3,2,3,2           (no frame)
+//   720 wide  x2.75 = 704 px, widths 3,3,3,2           + 8 px frame each side
+// Otherwise (ULA+, TS-Conf CRAM, ATM/Profi/GMX palettes, TFT/TV) one fb byte is
+// one doubled pixel and the scale is 5/4 or 11/8 of fb bytes — widths 2,2,2,4.
+//
+// VERTICAL. The content goes into the framebuffer rows exactly as before (5/4
+// into 240 rows, 3/2 into 288), which is what a plain doubling scanout shows —
+// 2,2,2,4 / 2,4 lines. On top, a scanout table (graphics_set_vmap) re-maps the
+// display lines to those rows so each paper line gets 3,2,3,2 (480) or exactly
+// 3 (576) lines. The table is organised in BLOCKS (10 lines = 5 rows at 480,
+// 6 lines = 3 rows at 576) whose first and last rows agree between the two
+// mappings, so any block can drop back to the plain doubling by itself: that is
+// done under every overlay (F8 box, notify banner, FDD lamp, LED strip), whose
+// rows must all be shown, and the whole table is dropped while a menu or dialog
+// owns the framebuffer (blVmapSuspend). Every run is >= 2 lines in both
+// mappings, which the HDMI ping-pong requires.
+//
+// Everything lives in ONE heap block that exists only while the mode is live.
+static constexpr int BL_MAX_X = 360;                       // widest fb row we scale into
+static constexpr int BL_MAX_LINES = 576;                   // display lines of the tallest mode
+static constexpr int BL_MAX_BLOCKS = 96;                   // 576 / 6
+static constexpr int BL_CARVE_MAX_RECTS = VIDEO::BL_CARVE_N + 2;   // + stats box + notify banner
+struct BlState {
+    uint32_t stage[64];          // one paper line, fb layout (logical px p at byte p^2)
+    uint32_t out[BL_MAX_X / 4];  // the scaled line, fb layout, pads included
+    uint8_t  hsrc[BL_MAX_X];     // byte mode: content byte q ← stage byte hsrc[q]
+    uint8_t  hsrcL[BL_MAX_X];    // pair mode: left / right pixel of content byte q
+    uint8_t  hsrcR[BL_MAX_X];
+    uint16_t vrow[192];          // first fb row of paper line c; bit 15 = also the next row
+    uint16_t vmap[2][BL_MAX_LINES];   // scanout tables, double-buffered
+    uint8_t  blkStd[BL_MAX_BLOCKS];   // block uses the plain doubling (last published)
+    uint16_t cw, pad;            // content bytes, pad bytes on EACH side (byte mode)
+    uint16_t pcw, ppad;          // the same for pair mode
+    uint16_t lines;              // display lines (2 * yres)
+    uint8_t  blkLines, blkRows;  // 10/5 at 480, 6/3 at 576
+    int8_t   vpub;               // table last handed to the driver, -1 = none
+    bool     vsus;               // a menu/dialog owns the fb: no table until EndFrame
+    bool     vever;              // a table was ever handed over (free must wait)
+    int16_t  carve[VIDEO::BL_CARVE_N][4];   // x0, y0, x1, y1 (y1 <= y0 = unused)
+};
+static BlState* bl = nullptr;
+bool VIDEO::bl_pair_live = false;
+
+static bool blGeometryOk() {
+    const int xr = (int)VIDEO::vga.xres, yr = (int)VIDEO::vga.yres;
+    return (xr == 320 || xr == 360) && (yr == 240 || yr == 288) && xr <= BL_MAX_X;
+}
+
+static void blBuildTables() {
+    const int xr = (int)VIDEO::vga.xres, yr = (int)VIDEO::vga.yres;
+    // Horizontal, byte mode: one period = one pattern group, the duplicated source
+    // pixels spread over it (5/4: the 3rd of every 4; 11/8: the 2nd, 5th and 7th).
+    static const uint8_t k54[5]  = { 0, 1, 2, 2, 3 };
+    static const uint8_t k118[11] = { 0, 1, 1, 2, 3, 4, 4, 5, 6, 6, 7 };
+    const bool wide = (xr == 360);
+    bl->cw  = wide ? 352 : 320;
+    bl->pad = (uint16_t)((xr - bl->cw) / 2);    // 0 or 4, keeps content 4-aligned
+    for (int q = 0; q < bl->cw; q++) {
+        const int x = q ^ 2;                     // logical output pixel stored at byte q
+        const int sx = wide ? (x / 11) * 8 + k118[x % 11] : (x / 5) * 4 + k54[x % 5];
+        bl->hsrc[q] = (uint8_t)(sx ^ 2);         // its source pixel, at stage byte sx^2
+    }
+    // Horizontal, pair mode: in OUTPUT pixels (two per fb byte). x2.5 = widths
+    // 3,2 per two paper pixels; x2.75 = 3,3,3,2 per four.
+    static const uint8_t k52[5]  = { 0, 0, 0, 1, 1 };
+    static const uint8_t k114[11] = { 0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3 };
+    bl->pcw  = wide ? 352 : 320;                 // 704 / 640 output pixels
+    bl->ppad = (uint16_t)((xr - bl->pcw) / 2);
+    for (int q = 0; q < bl->pcw; q++) {
+        const int i = q ^ 2;                     // logical content byte at physical q
+        for (int h = 0; h < 2; h++) {
+            const int x = 2 * i + h;             // output pixel
+            const int sx = wide ? (x / 11) * 4 + k114[x % 11] : (x / 5) * 2 + k52[x % 5];
+            (h ? bl->hsrcR : bl->hsrcL)[q] = (uint8_t)(sx ^ 2);
+        }
+    }
+    // Vertical, fb rows: 5/4 (192 → 240) or 3/2 (192 → 288), the doubled line
+    // spread the same way.
+    for (int c = 0; c < 192; c++) {
+        uint16_t row, dup;
+        if (yr == 288) { row = (uint16_t)((c >> 1) * 3 + (c & 1 ? 2 : 0)); dup = !(c & 1); }
+        else           { const int r = c & 3; row = (uint16_t)((c >> 2) * 5 + (r <= 2 ? r : r + 1)); dup = (r == 2); }
+        bl->vrow[c] = (uint16_t)(row | (dup ? 0x8000u : 0));
+    }
+    bl->lines    = (uint16_t)(yr * 2);
+    bl->blkLines = (yr == 288) ? 6 : 10;
+    bl->blkRows  = (yr == 288) ? 3 : 5;
+    bl->vpub = -1;
+    bl->vsus = false;
+    bl->vever = false;
+    memset(bl->blkStd, 0xFF, sizeof(bl->blkStd));   // force the first publish
+}
+
+// Display line r of a block → the fb row inside it (first row of the block = 0).
+// Scaled: 576 = 3,3 lines on rows 0,2 (row 1 = the dup, not shown); 480 =
+// 3,2,3,2 lines on rows 0,1,2,4 (row 3 = the dup). Plain doubling: r / 2.
+static inline uint16_t blBlockRow(int r, bool std, bool tall) {
+    if (std) return (uint16_t)(r >> 1);
+    if (tall) return (uint16_t)(r < 3 ? 0 : 2);
+    return (uint16_t)(r < 3 ? 0 : r < 5 ? 1 : r < 8 ? 2 : 4);
+}
+
+// Does fb row range [y0,y1) hold an overlay that must be shown row for row?
+static int blOverlayRows(int rects[][2]) {
+    int n = 0;
+    const int cy0 = ((int)VIDEO::vga.yres >= 288) ? 268 : 220;
+    if ((VIDEO::OSD & 0x07) || osd_led_w) { rects[n][0] = cy0; rects[n][1] = cy0 + 16; n++; }
+    if (ts_notice_y1 > ts_notice_y0) { rects[n][0] = ts_notice_y0; rects[n][1] = ts_notice_y1; n++; }
+    for (int i = 0; i < VIDEO::BL_CARVE_N; i++) {
+        const int16_t* r = bl->carve[i];
+        if (r[3] > r[1]) { rects[n][0] = r[1]; rects[n][1] = r[3]; n++; }
+    }
+    return n;
+}
+
+// Once per frame (EndFrame, through blRecalc): hand the driver a table that
+// matches the overlays that are up. A new table is built only when the block
+// pattern changed, into the half the scanout is not using.
+static void blVmapUpdate() {
+    if (!bl || !graphics_vmap_supported() || bl->vsus) return;
+    const int nblk = bl->lines / bl->blkLines;
+    int rects[BL_CARVE_MAX_RECTS][2];
+    const int nr = blOverlayRows(rects);
+    uint8_t want[BL_MAX_BLOCKS];
+    bool changed = (bl->vpub < 0);
+    for (int b = 0; b < nblk; b++) {
+        const int y0 = b * bl->blkRows, y1 = y0 + bl->blkRows;
+        uint8_t s = 0;
+        for (int i = 0; i < nr; i++) if (rects[i][0] < y1 && rects[i][1] > y0) { s = 1; break; }
+        want[b] = s;
+        if (s != bl->blkStd[b]) changed = true;
+    }
+    if (!changed) return;
+    const int t = (bl->vpub < 0) ? 0 : (bl->vpub ^ 1);
+    if (graphics_vmap_latched() == bl->vmap[t]) return;   // still on screen: next frame
+    const bool tall = (bl->blkLines == 6);
+    uint16_t* m = bl->vmap[t];
+    for (int b = 0; b < nblk; b++) {
+        const uint16_t base = (uint16_t)(b * bl->blkRows);
+        for (int r = 0; r < bl->blkLines; r++)
+            m[b * bl->blkLines + r] = (uint16_t)(base + blBlockRow(r, want[b], tall));
+        bl->blkStd[b] = want[b];
+    }
+    graphics_set_vmap(m, bl->lines);
+    bl->vpub = (int8_t)t;
+    bl->vever = true;
+}
+
+void VIDEO::blVmapSuspend() {
+    if (!bl || bl->vsus) return;
+    bl->vsus = true;
+    if (bl->vpub >= 0) { graphics_set_vmap(nullptr, 0); bl->vpub = -1; }
+}
+
+// Drop the table and wait until the scanout cannot be reading it (two frame
+// wraps: the ISR may have sampled the old pointer just before the NULL landed).
+static void blVmapRelease() {
+    if (!bl || !bl->vever) return;
+    graphics_set_vmap(nullptr, 0);
+    bl->vpub = -1;
+    const uint32_t f0 = graphics_frame_count();
+    const uint64_t t0 = time_us_64();
+    while (graphics_frame_count() - f0 < 2 && time_us_64() - t0 < 100000) tight_loop_contents();
+    bl->vever = false;
+}
+
+// ── Pair mode ─────────────────────────────────────────────────────────────────
+// Another packed-pair owner (DS80, GMX 640x200, Timex hi-res, TS-Conf TEXT) keeps
+// the driver; ours only ever releases what it armed.
+static bool blPairWanted() {
+    return !VIDEO::ulaplus_enabled && !Z80Ops::isTsconf && !Z80Ops::isAtm
+        && Config::arch != A_PROFI && !g_scorp_gmx;
+}
+
+static void blPairDriverPalette() {
+    // The machine's own ZX palette, as Timex hi-res uses it: paletteTransform here,
+    // crtTransform inside profi_ds80_driver_set.
+    uint32_t pal[16];
+    for (int i = 0; i < 16; i++) pal[i] = paletteTransform(spectrum_rgb888[i]) & 0x00FFFFFF;
+    profi_ds80_driver_set(true, pal, &VIDEO::profi_pair_lookup[0][0]);
+}
+
+static void blClearFb() {
+    if (!VIDEO::vga.frameBuffer) return;
+    for (int y = 0; y < (int)VIDEO::vga.yres; y++)
+        if (VIDEO::vga.frameBuffer[y]) memset(VIDEO::vga.frameBuffer[y], 0, VIDEO::vga.xres);
+}
+
+static void blPairOn() {
+    init_profi_pair_lookup();
+    blPairDriverPalette();
+    if (!profi_ds80_active) {        // no pair driver here, or its snapshot did not fit
+        static bool warned = false;
+        if (!warned) { warned = true; Debug::log("[VID] borderless: no packed-pair driver, byte scaler"); }
+        return;
+    }
+    VIDEO::rebuildDS80ColorLut();
+    Graphics8BitPalette::ds80_active = true;
+    VIDEO::bl_pair_live = true;
+    blClearFb();
+    VIDEO::brdChange = VIDEO::brdnextframe = true;
+    Debug::log("[VID] borderless: pair scaler on");
+}
+
+static void blPairOff() {
+    if (!VIDEO::bl_pair_live) return;
+    VIDEO::bl_pair_live = false;
+    profi_ds80_driver_set(false, nullptr, nullptr);
+    Graphics8BitPalette::ds80_active = false;
+    blClearFb();
+    VIDEO::brdChange = VIDEO::brdnextframe = true;
+    Debug::log("[VID] borderless: pair scaler off");
+}
+
+void VIDEO::blPairRefresh() {
+    if (bl_pair_live) blPairDriverPalette();
+}
+
+// A machine reset rebuilds the standard driver tables under us: leave pair mode
+// now, blRecalc re-arms it at the next EndFrame.
+void VIDEO::blPairForceOff() { blPairOff(); }
+
+void VIDEO::blSetCarve(int id, int x0, int y0, int x1, int y1) {
+    if (!bl || id < 0 || id >= BL_CARVE_N) return;
+    int16_t* r = bl->carve[id];
+    r[0] = (int16_t)(x0 & ~3); r[1] = (int16_t)y0;
+    r[2] = (int16_t)((x1 + 3) & ~3); r[3] = (int16_t)y1;
+}
+
+void VIDEO::blClearCarve(int id) {
+    if (!bl || id < 0 || id >= BL_CARVE_N) return;
+    bl->carve[id][3] = bl->carve[id][1];
+}
+
+void VIDEO::blRecalc() {
+    // The scaler only runs under the standard beam renderer: the pair-slot modes
+    // (profi_ds80_active also covers GMX 640x200 and Timex hi-res — but not our own
+    // pair scaler) and the TS-Conf whole-line renderer own their own geometry.
+    const bool foreignPair = profi_ds80_active && !bl_pair_live;
+    const bool want = !Config::render_border && vga.frameBuffer && blGeometryOk()
+                      && !foreignPair && !gmx_ext_live && !ts_render_live && !timex_hires_live;
+    if (want != bl_live) {
+        if (want) {
+            static bool warned = false;
+            BlState* st = (BlState*)tryMalloc(sizeof(BlState));
+            if (!st) {
+                if (!warned) { warned = true; Debug::log("[VID] borderless: no heap for %u B, staying bordered", (unsigned)sizeof(BlState)); }
+                return;
+            }
+            memset(st, 0, sizeof(BlState));
+            bl = st;
+            blBuildTables();
+            bl_stage_ptr = bl->stage;
+            bl_line_done = false;
+            bl_live = true;
+            DrawBorder = &Border_Blank;
+            brdChange = false;
+            Debug::log("[VID] borderless on: %dx%d, content %u + 2x%u pad, vmap %s", (int)vga.xres, (int)vga.yres,
+                       (unsigned)bl->cw, (unsigned)bl->pad, graphics_vmap_supported() ? "yes" : "no");
+        } else {
+            blPairOff();
+            blVmapRelease();
+            bl_live = false;
+            bl_line_done = false;
+            bl_stage_ptr = nullptr;
+            free(bl);
+            bl = nullptr;
+            // Hand the rows back: the border machine repaints them next frame, the
+            // paper renderer re-renders its window.
+            brdChange = true;
+            brdnextframe = true;
+            Debug::log("[VID] borderless off");
+            return;
+        }
+    }
+    if (!bl_live) return;
+    // Pair scaler follows the palette source live (ULA+ can come and go).
+    const bool wantPair = blPairWanted();
+    if (wantPair && !bl_pair_live && !profi_ds80_active) blPairOn();
+    else if (!wantPair && bl_pair_live) blPairOff();
+    // EndFrame runs: no menu/dialog owns the framebuffer — except PAUSE, where the
+    // loop still reaches EndFrame with the badge / pause box drawn over the paper.
+    if (CPU::paused) { blVmapSuspend(); return; }
+    bl->vsus = false;
+    blVmapUpdate();
+}
+
+// Copy the scaled line into one fb row, leaving the overlay rectangles alone.
+// blPutRow and blExpandLine are in FLASH, not RAM: they run only while Hide border
+// is live (BL_FLUSH is gated on bl_line_done, which only bl_live sets), so as RAM
+// code they cost every session ~0.9 KB of heap for a mode most never turn on. The
+// ~0.9 KB stays resident in the 16 KB XIP cache while the mode runs (~192 calls a
+// frame). The optimize() pair keeps them from growing flash memcpy/memset calls.
+static __attribute__((noinline, optimize("O2", "no-unroll-loops", "no-tree-loop-distribute-patterns"))) void blPutRow(int row) {
+    uint32_t* dst = (uint32_t*)VIDEO::vga.frameBuffer[row];
+    if (!dst) return;
+    const int words = (int)VIDEO::vga.xres >> 2;
+    int cx[BL_CARVE_MAX_RECTS][2]; int n = 0;
+    const int cy0 = ((int)VIDEO::vga.yres >= 288) ? 268 : 220;
+    if (row >= cy0 && row < cy0 + 16                              // F8 stats / F9-F10 volume box, LED panel
+        && osdBarRange((VIDEO::OSD & 0x07) != 0, (int)VIDEO::vga.xres, cx[n][0], cx[n][1])) n++;
+    if (row >= ts_notice_y0 && row < ts_notice_y1) {              // OSD::notify banner
+        cx[n][0] = ts_notice_x0; cx[n][1] = ts_notice_x1; n++;
+    }
+    for (int i = 0; i < VIDEO::BL_CARVE_N; i++) {
+        const int16_t* r = bl->carve[i];
+        if (row >= r[1] && row < r[3]) { cx[n][0] = r[0]; cx[n][1] = r[2]; n++; }
+    }
+    // Plain word loops, not memcpy (a libc call per row buys nothing here).
+    if (!n) { for (int w = 0; w < words; w++) dst[w] = bl->out[w]; return; }
+    for (int w = 0; w < words; w++) {
+        const int x = w << 2;
+        bool skip = false;
+        for (int i = 0; i < n; i++) if (x >= cx[i][0] && x < cx[i][1]) { skip = true; break; }
+        if (!skip) dst[w] = bl->out[w];
+    }
+}
+
+__attribute__((noinline, optimize("O2", "no-unroll-loops", "no-tree-loop-distribute-patterns"))) void VIDEO::blExpandLine(uint32_t line) {
+    if (!bl || line >= 192 || !vga.frameBuffer) return;
+    const uint8_t* src = (const uint8_t*)bl->stage;
+    uint32_t* o = bl->out;
+    if (bl_pair_live) {
+        const uint8_t (*pl)[16] = profi_pair_lookup;
+        const uint8_t pb = pl[brd & 15][brd & 15];
+        const uint32_t b32 = (uint32_t)pb * 0x01010101u;
+        const int padw = bl->ppad >> 2, cww = bl->pcw >> 2;
+        const uint8_t* tl = bl->hsrcL;
+        const uint8_t* tr = bl->hsrcR;
+        for (int i = 0; i < padw; i++) o[i] = b32;
+        uint32_t* c = o + padw;
+        for (int w = 0; w < cww; w++, tl += 4, tr += 4)
+            c[w] = (uint32_t)pl[src[tl[0]] & 15][src[tr[0]] & 15]
+                 | ((uint32_t)pl[src[tl[1]] & 15][src[tr[1]] & 15] << 8)
+                 | ((uint32_t)pl[src[tl[2]] & 15][src[tr[2]] & 15] << 16)
+                 | ((uint32_t)pl[src[tl[3]] & 15][src[tr[3]] & 15] << 24);
+        for (int i = 0; i < padw; i++) c[cww + i] = b32;
+    } else {
+        const uint8_t* t = bl->hsrc;
+        const int padw = bl->pad >> 2, cww = bl->cw >> 2;
+        const uint32_t b32 = (uint8_t)brd * 0x01010101u;
+        for (int i = 0; i < padw; i++) o[i] = b32;
+        uint32_t* c = o + padw;
+        for (int w = 0; w < cww; w++, t += 4)
+            c[w] = (uint32_t)src[t[0]] | ((uint32_t)src[t[1]] << 8)
+                 | ((uint32_t)src[t[2]] << 16) | ((uint32_t)src[t[3]] << 24);
+        for (int i = 0; i < padw; i++) c[cww + i] = b32;
+    }
+    const uint16_t v = bl->vrow[line];
+    const int row = v & 0x7FFF;
+    if (row < (int)vga.yres) blPutRow(row);
+    if ((v & 0x8000) && row + 1 < (int)vga.yres) blPutRow(row + 1);
+}
+
+void VIDEO::tsBandReplay() {
+    if (!vga.frameBuffer || !ts_band_valid) return;
+    for (uint32_t row = 0; row < (uint32_t)vga.yres; row++) {
+        if (row >= lin_end && row < lin_end2) continue;
+        tsBandPaint(row, ts_band_slot[row]);
+    }
+}
+
+IRAM_ATTR void VIDEO::tsDrawTick() {
+    PERF_BUCKET_SCOPE(PB_DRAWTICK);
+    const uint32_t rows = vga.yres;
+    TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
+    if (__builtin_expect(tsCramDirty, 0)) {
+        tsPalettePoll(false);   // beam-scheduled palette apply, once per line
+        // The poll may have RELEASED a held re-index: tsReindexRelease renders
+        // the rest of this frame itself and parks the tick (ts_line_t = MAX,
+        // Draw = Blank). Falling through into the loop below then re-posted the
+        // current row with the release's Y counter (239 + 1) and, because the
+        // sentinel + tStatesPerLine wraps, every row after it — the picture
+        // from that row down came from bitmap rows 240.. (TMNT's menu at 576p:
+        // clean background under the logo, one frame in 8; hw 2026-09-22,
+        // [TSYGC] "line 68 ygctr 240 src 1").
+        if (ts_line_t == 0xFFFFFFFFu) return;
+    }
+    do {
+        const uint32_t row = ts_row_idx;
+        if (row >= lin_end && row < lin_end2) {
+            ts_line_idx = row - lin_end;
+            linedraw_cnt = row;               // keep the shared counters coherent
+            curline = ts_line_idx;
+            TS_YGC_SRC(1);
+            tsRenderLine(ts_line_idx);
+            ts_line_idx = row - lin_end + 1;  // "the next line to render" (tsCramChanged reads it)
+        } else {
+            tsBandRow(row);                   // a border band row, at ITS raster line
+        }
+        ts_line_t += tStatesPerLine << ESPectrum::multiplicator;   // CPU::tstates are turbo-scaled, the raster constants are not
+        if (++ts_row_idx >= rows) {
+            linedraw_cnt = lin_end2;
+            ts_band_valid = true;             // every band row now carries this frame's colour
+            ts_line_t = 0xFFFFFFFFu;          // tsFastTick == Blank from here on
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+            return;
+        }
+    } while (CPU::tstates >= ts_line_t);
+}
+IRAM_ATTR void VIDEO::TsDraw(unsigned int statestoadd, bool) {
+    CPU::tstates += statestoadd;
+    if (__builtin_expect(CPU::tstates >= ts_line_t, 0)) tsDrawTick();
+}
+IRAM_ATTR void VIDEO::TsDraw_Opcode(bool) {
+    CPU::tstates += 4;
+    if (__builtin_expect(CPU::tstates >= ts_line_t, 0)) tsDrawTick();
+}
+IRAM_ATTR void VIDEO::Blank_Opcode(bool contended) { CPU::tstates += 4; }
+IRAM_ATTR void VIDEO::Blank_Snow(unsigned int statestoadd, bool contended) { CPU::tstates += statestoadd; }
+IRAM_ATTR void VIDEO::Blank_Snow_Opcode(bool contended) { CPU::tstates += 4; }
+
+// Cold half of EndFrame's GMX mode switch (flash on purpose — EndFrame is RAM
+// code and this runs once per switch). Vblank-only: the driver pair tables are
+// read by the scanout DMA in real time (DS80 rule).
+void VIDEO::gmxApplyPending() {
+    if (gmx_ext_pending_on) {
+        gmx_ext_pending_on = false;
+        // Same driver path as DS80: pair tables from profi_pair_lookup with
+        // the (default ZX) 16-colour palette; ISR expands 1 fb byte → 2 px.
+        // ATM-Turbo: the pair tables carry the machine's own 16-entry palette.
+        if (Z80Ops::isAtm)
+            for (int i = 0; i < 16; i++) profi_palette_live[i] = Atm::palRgb((uint8_t)i);
+        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        rebuildDS80ColorLut();
+        Graphics8BitPalette::ds80_active = true;
+        gmx_ext_live = true;
+        gmx_frame_bmp = nullptr;
+        gmx_frame_att = nullptr;
+        // 200 content lines centred vertically: 20+20 border rows at yres=240,
+        // 44+44 at yres=288. Content is rendered whole-line in MainScreen.
+        lin_end  = ((int)vga.yres >= 288) ? 44 : 20;
+        lin_end2 = lin_end + 200;
+        tstateDraw   = tStatesScreen;
+        linedraw_cnt = lin_end;
+        DrawBorder = &Border_Blank;   // bands are painted frame-granular instead
+        gmx_border_dirty = true;
+        ts_band_valid = false;        // the bands moved: gmxBorderFrame's fill stands for one frame
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        Debug::log("[GMX] 640x200 on: lin_end=%d bmpPg=%u", lin_end,
+                   (unsigned)(MemESP::videoLatch ? 0x3B : 0x39));
+    } else if (gmx_ext_pending_off) {
+        gmx_ext_pending_off = false;
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+        gmx_ext_live = false;
+        // Pair-slot bytes are garbage under the standard tables — clear.
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+        // Restore the standard Scorpion line window (mirror of Reset's generic
+        // block; Scorpion always takes the 24/216 arm unless full-border 288).
+        if (isFullBorder && !isFullBorder240()) { lin_end = 48; lin_end2 = 240; }
+        else                                    { lin_end = 24; lin_end2 = 216; }
+        tstateDraw   = tStatesScreen;
+        linedraw_cnt = lin_end;
+        DrawBorder = &Border_Blank; // mid-frame border state is stale — skip this frame
+        brdChange = true;
+        Debug::log("[GMX] 640x200 off");
+    }
+}
+
+// ── ATM-Turbo video ──────────────────────────────────────────────────────────
+// Mode switches reuse the GMX deferred on/off (vblank only — the pair tables are
+// read by the scanout DMA in real time). A switch between two ext modes needs no
+// driver change at all: atmRenderLine reads the live mode every line.
+void VIDEO::atmVideoModeChanged() {
+    if (!Z80Ops::isAtm) return;
+    gmxExtRequest(Atm::videoMode() != Atm::VM_ZX);
+}
+
+// The ZX mode keeps the emulator's own palette in the 16 hardware slots until the
+// guest actually programs the ATM palette once (s_atm_pal_live) — the power-on
+// contents of the palette RAM are the BIOS's business, and until it writes them the
+// user's chosen ZX palette is the better picture.
+static bool s_atm_pal_live = false;
+
+void VIDEO::atmPaletteChanged() {
+    s_atm_pal_live = true;
+    Atm::palDirty = true;
+}
+
+void VIDEO::atmPaletteFlush() {
+    Atm::palDirty = false;
+    // Pair-slot mode (EGA / hires / text): the driver tables carry the palette.
+    for (int i = 0; i < 16; i++) profi_palette_live[i] = Atm::palRgb((uint8_t)i);
+    if (gmx_ext_live) {
+        profi_palette_dirty = true;
+        gmx_border_dirty = true;
+        return;
+    }
+    if (!s_atm_pal_live) return;
+    // ZX mode: the framebuffer holds the ZX colour index (BRIGHT = bit 3), which on
+    // the ATM IS the palette index — rewrite the 16 hardware slots. Every ATM colour
+    // is on the {00,55,AA,FF} grid, so VGA shows it solid without snapping.
+    for (int i = 0; i < 16; i++) {
+        const uint32_t c = paletteFinal(Atm::palRgb((uint8_t)i));
+        graphics_set_palette(i, c);
+        vga_set_palette_entry_solid(i, c);
+    }
+    brdChange = true;
+}
+
+void VIDEO::atmPaletteRestore() {
+    if (!s_atm_pal_live) return;
+    s_atm_pal_live = false;
+    for (int i = 0; i < 16; i++) {
+        const uint32_t color = paletteFinal(spectrum_rgb888[i]);
+        graphics_set_palette(i, color);
+        vga_set_palette_entry_solid(i, color);
+    }
+}
+
+// One content line (0..199) of an ATM ext mode into a packed-pair framebuffer row
+// (320 bytes = 640 px; one byte = two output pixels via the driver pair tables, stored
+// in the ISR's x^2 order: display pairs d0..d3 of every 4-byte group live at +2,+3,
+// +0,+1 — the GMX/DS80 convention). Memory layout (MAME atm_update_screen_*, Unreal
+// draw_atm16/draw_atmhr/draw_atm2tx): `scr` = the screen page (5/7), `alt` = the
+// page four below it (1/3); 40 bytes per line per half, the second half at +#2000.
+static inline uint32_t atmPack4(uint8_t d0, uint8_t d1, uint8_t d2, uint8_t d3) {
+    return (uint32_t)d2 | ((uint32_t)d3 << 8) | ((uint32_t)d0 << 16) | ((uint32_t)d1 << 24);
+}
+
+void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
+    const uint8_t pg = MemESP::videoLatch ? 7 : 5;
+    const uint8_t* scr = MemESP::ram[pg].direct();
+    const uint8_t* alt = MemESP::ram[pg - 4].direct();
+    uint8_t* dst = fb_row + pad_l;
+    if (!scr || !alt) { memset(dst, profi_pair_lookup[0][0], 320); return; }
+    const Atm::VMode vm = Atm::videoMode();
+    if (vm == Atm::VM_EGA) {
+        // 320x200x16: each byte = two pixels, even = bits 6,2,1,0 / odd = 7,5,4,3
+        // (bit 6 / bit 7 are the BRIGHT bit of the index). Column c's eight pixels
+        // come from alt[o], scr[o], alt[o+#2000], scr[o+#2000]. One lores pixel = one
+        // solid pair byte.
+        const uint32_t o = line * 40;
+        for (int c = 0; c < 40; c++) {
+            uint8_t px[8];
+            const uint8_t b[4] = { alt[o + c], scr[o + c], alt[0x2000 + o + c], scr[0x2000 + o + c] };
+            for (int k = 0; k < 4; k++) {
+                const uint8_t v = b[k];
+                const uint8_t e = (uint8_t)(((v & 0x40) >> 3) | (v & 0x07));
+                const uint8_t d = (uint8_t)(((v & 0x80) >> 4) | ((v >> 3) & 0x07));
+                px[k * 2]     = profi_pair_lookup[e][e];
+                px[k * 2 + 1] = profi_pair_lookup[d][d];
+            }
+            uint32_t* w = (uint32_t*)(dst + c * 8);
+            w[0] = atmPack4(px[0], px[1], px[2], px[3]);
+            w[1] = atmPack4(px[4], px[5], px[6], px[7]);
+        }
+    } else if (vm == Atm::VM_HIRES) {
+        // 640x200: bitmap byte + attribute byte per 8 pixels; ink = attr 6,2..0, paper
+        // = attr 7,5..3 (no FLASH). Byte j of the line: even j from +0, odd from +#2000.
+        const uint32_t o = line * 40;
+        for (int j = 0; j < 80; j++) {
+            const uint32_t a = o + (uint32_t)(j >> 1) + ((j & 1) ? 0x2000u : 0u);
+            const uint8_t b  = scr[a];
+            const uint8_t at = alt[a];
+            const uint8_t fg = (uint8_t)(((at & 0x40) >> 3) | (at & 0x07));
+            const uint8_t bg = (uint8_t)(((at & 0x80) >> 4) | ((at >> 3) & 0x07));
+            *(uint32_t*)(dst + j * 4) = atmPack4(
+                profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg],
+                profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg],
+                profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg],
+                profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]);
+        }
+    } else {
+        // 80x25 text (ATM-Turbo 2+): 64-byte rows from #01C0; even columns take the
+        // symbol from scr+0 and the attribute from alt+#2000, odd columns the symbol
+        // from scr+#2000 and the attribute from alt+1. Glyphs from the character
+        // generator ROM (SGEN.ROM, gb_rom_atm_font).
+        const uint32_t row = line >> 3, gl = line & 7;
+        const uint32_t base = 0x01C0 + row * 64;
+        for (int cx = 0; cx < 80; cx++) {
+            const uint32_t x = (uint32_t)cx >> 1;
+            uint8_t sym, at;
+            if (cx & 1) { sym = scr[0x2000 + base + x]; at = alt[base + x + 1]; }
+            else        { sym = scr[base + x];          at = alt[0x2000 + base + x]; }
+            const uint8_t b  = gb_rom_atm_font[sym * 8 + gl];
+            const uint8_t fg = (uint8_t)(((at & 0x40) >> 3) | (at & 0x07));
+            const uint8_t bg = (uint8_t)(((at & 0x80) >> 4) | ((at >> 3) & 0x07));
+            *(uint32_t*)(dst + cx * 4) = atmPack4(
+                profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg],
+                profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg],
+                profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg],
+                profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]);
+        }
+    }
+}
+
+int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin_end : 0; }
+
+// True while a whole-line renderer owns the content rows and the per-T-state
+// border machine is parked (Scorpion GMX 640x200, every TS-Conf non-ZX mode):
+// the top/bottom bands are painted frame-granularly by gmxBorderFrame and their
+// height is lin_end — which can be ZERO, unlike the border machine's 24/48.
+bool VIDEO::bandBorderMode() { return gmx_ext_live || ts_render_live || bl_live; }
+
+// Profi/Karabas DS80 geometry is live: the border machine runs (unlike the
+// modes above) but its top band is lin_end = 24 rows at 720x576 and NONE at
+// 640x480, and both it and the content renderer honour the notice carve.
+bool VIDEO::ds80BandMode() { return ds80_border_geom; }
+int  VIDEO::ds80TopBandRows() { return ds80_border_geom ? (int)lin_end : 0; }
+
+
+void VIDEO::setNoticeCarve(int x0, int y0, int x1, int y1) {
+    ts_notice_x0 = x0; ts_notice_x1 = x1;
+    ts_notice_y0 = y0; ts_notice_y1 = y1;
+}
+
+void VIDEO::clearNoticeCarve() { ts_notice_y1 = -1; }
+
+// LED panel width in fb bytes (0 = no panel). Any change moves the carve, so the
+// rows it gives up have to be repainted by whoever owns them: the border machine
+// / gmxBorderFrame through the two flags, the content renderers by themselves.
+// Is the stats / volume box carved in the live mode? DS80 carves the stats box
+// only (its volume box is repainted every frame instead), everything else both.
+// LED::draw asks so it fills the stretch up to the box exactly when the
+// renderers leave that stretch alone.
+bool VIDEO::osdBoxCarved() {
+    return ds80_border_geom ? ((OSD & 0x03) && !(OSD & 0x04)) : ((OSD & 0x07) != 0);
+}
+
+void VIDEO::setLedBar(int w) {
+    if (w == osd_led_w) return;
+    osd_led_w = w;
+    brdChange = true;
+    brdnextframe = true;
+}
+
+// ── TS-Conf video modes ──────────────────────────────────────────────────────
+// Raster geometry per RRES (tsconf_en.md "Raster timings"): pixel area width in
+// lores pixels, content lines, upper border lines, left border pixels. The TS
+// frame is 320 lines x 448 px; the visible field is lines 32..319 and pixels
+// 88..447 (360 wide). Our 320x240 framebuffer shows the central 320x240 of
+// that field (TS lines 56..295, pixels 108..427), the 360x288 full-border
+// modes show all of it.
+struct TsRres { uint16_t w; uint16_t h; uint8_t ub; uint8_t lb; };
+static const TsRres TS_RENDER_RO kTsRres[4] = {
+    { 256, 192, 48, 52 },
+    { 320, 200, 44, 20 },
+    { 320, 240, 24, 20 },
+    { 360, 288,  0,  0 },
+};
+
+// Cold: runs once per mode change, from EndFrame (vblank).
+void VIDEO::tsVideoApplyPending() {
+    const uint8_t vc = TsConf::r.vconf;
+    const uint8_t rres = vc >> 6;
+    // ── The frame's mode, out of every mode the frame used ──────────────────
+    // VConfig is latched per LINE on the hardware, so one frame can carry
+    // several modes; tsRenderExec renders each line in its own (see `lvm`
+    // there). What is left frame-wide is what CANNOT be switched per line: the
+    // pair driver (TEXT is hires, 2 px per fb byte, and its conv_color tables
+    // are global), the ts256 remap, and the raster geometry. So pick the mode
+    // that lets the most lines render: any of ZX/16c/256c shares the 8bpp
+    // framebuffer with NOGFX, and TEXT only wins a frame it owns alone.
+    // Sampling the register at EndFrame instead picked whatever the LAST line
+    // wrote — Demorama (256c / NOGFX / TEXT bands, hw 2026-09-17) flipped the
+    // whole screen to NOGFX for a frame roughly once a second (`[TSV] mode 4`
+    // in the log, never `mode 3`), and its TEXT band could never be reached.
+    const uint8_t vmSeen = (uint8_t)(TsConf::vmSeen | (1u << ((vc & 0x20) ? 4 : (vc & 3))));
+    TsConf::vmSeen = 0;
+    // TEXT wins any frame that uses it, because the asymmetry runs that way: a
+    // pair frame can render a graphics line (through s_pairmap, approximated to
+    // the frame's 16 gpal colours), while a graphics frame cannot render a text
+    // line at all — 80 hires columns do not fit 320 lores bytes.
+    uint8_t want;
+    if      (vmSeen & (1u << TSV_TEXT)) want = TSV_TEXT;
+    else if (vmSeen & (1u << TSV_256C)) want = TSV_256C;
+    else if (vmSeen & (1u << TSV_16C))  want = TSV_16C;
+    else if (vmSeen & (1u << TSV_ZX))   want = TSV_ZX;
+    else                                want = TSV_NOGFX;
+    // A frame that is ZX everywhere keeps the beam-raced renderer; one that
+    // mixes ZX with anything else needs the whole-line one.
+    const bool vmMixed = (vmSeen & ~(uint8_t)(1u << TSV_ZX)) != 0;
+#if TS_VIDEO_TRACE
+    // The `[TSV] mode` line below prints `seen` too, but only on a real mode
+    // CHANGE — a frame mix that is stable prints once and a capture taken later
+    // cannot answer "was TEXT seen at all". This one fires on the mix itself.
+    { static uint8_t s_vm_last = 0xFF;
+      if (vmSeen != s_vm_last) { s_vm_last = vmSeen;
+          Debug::log("[TSV] VM seen %02X -> want %u (live %u, rres %u)", vmSeen, want, ts_vmode_live, rres); } }
+#endif
+    // TSU layers: any of S_EN/T1_EN/T0_EN (TSConfig b7..b5) and not NOTSU
+    // (VConfig b4). TEXT is included: video_render.v composites the TSU over
+    // every mode, hires ones too (Wild Commander's CLOCK.WMF draws its hands
+    // that way over an 80-column desktop) — see the TEXT branch of
+    // tsRenderExec for what a TSU pixel looks like in hires.
+    // Hysteresis: layers enabled at ANY point of the frame count (TsConf::tsuSeen,
+    // set by every TSConfig write) — a game that switches its layers off around
+    // the INT handler and back must not lose a whole frame of tiles because
+    // EndFrame sampled the off window. Cleared here, once per frame.
+    const uint8_t seen = (uint8_t)(TsConf::r.tsconf | TsConf::tsuSeen);
+    TsConf::tsuSeen = 0;
+    const bool wantTsu = (seen & 0xE0) != 0 && !(vc & 0x10);
+    const uint8_t wantRender = (want != TSV_ZX || wantTsu || vmMixed) ? 1 : 0;
+    if (want == ts_vmode_live && wantTsu == ts_tsu_live && wantRender == ts_render_live &&
+        (!wantRender || rres == ts_rres_live)) return;
+
+    // Only a REAL mode change needs the queue empty (the geometry, the driver
+    // tables and the palette below are rebuilt under core1's feet). This call
+    // used to sit at the top of the function, i.e. it drained on EVERY frame —
+    // exactly the "No drain at EndFrame" rule this design was built on: core0
+    // then waits out core1's whole render pass at the frame boundary. Measured
+    // on Kolbass (TS-Conf 256c + sprites, hw 2026-09-16): `wait` 3.1-3.4 ms on
+    // 60/60 frames against a c1 of 4.2 ms, i.e. two thirds of the frame's
+    // `cpu=5.0 ms` was core0 spinning.
+    tsRenderDrain();
+    tsReindexClear();                      // a hold must not outlive the mode it was taken in
+
+    const bool wasPair  = (ts_vmode_live == TSV_TEXT);
+    bool wantPair = (want == TSV_TEXT);
+    // The pair driver can REFUSE (its ~5 KB palette snapshot did not allocate —
+    // 576p + TS-Conf + NeoGS is at the heap edge, and TS-BIOS Setup is exactly a
+    // TEXT-mode entry from there). Render border-only then, like NOGFX: the machine
+    // stays alive and F11 leaves the Setup. Latched until the guest leaves TEXT so
+    // the allocation is not re-probed every frame. Before tryMalloc in hdmi.c this
+    // was a pico_malloc PANIC out of EndFrame (hw 2026-09-14).
+    static bool s_text_refused = false;
+    if (want != TSV_TEXT) s_text_refused = false;
+    if (wantPair && s_text_refused) { want = TSV_NOGFX; wantPair = false; }
+    if (wantPair && !wasPair) {
+        // Same driver path as DS80/GMX: pair tables from profi_pair_lookup with
+        // the gpal CRAM bank as the 16-colour palette; ISR expands 1 fb byte → 2 px.
+        tsPairPaletteLoad();
+        profi_palette_dirty = false;
+        profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+        if (!profi_ds80_active) {
+            Debug::log("[TSV] TEXT mode: pair driver refused (no RAM for its palette snapshot) - border only until the mode changes");
+            s_text_refused = true;
+            want = TSV_NOGFX; wantPair = false;
+        } else {
+            rebuildDS80ColorLut();
+            Graphics8BitPalette::ds80_active = true;
+            // What the TEXT screen is about to be painted with. A wrong palette
+            // here and a wrong palette from a later clobber are different bugs
+            // with the same look, and the log used to carry neither.
+            Debug::log("[TSV] pair palette: palsel=%02X uiOwned=%d live=%06lX,%06lX,%06lX,%06lX"
+                       " cram=%04X,%04X,%04X,%04X",
+                       TsConf::r.palsel, (int)profi_palette_ui_saved_valid,
+                       (unsigned long)profi_palette_live[0], (unsigned long)profi_palette_live[1],
+                       (unsigned long)profi_palette_live[2], (unsigned long)profi_palette_live[7],
+                       TsConf::cram[((TsConf::r.palsel & 0x0F) << 4) | 0],
+                       TsConf::cram[((TsConf::r.palsel & 0x0F) << 4) | 1],
+                       TsConf::cram[((TsConf::r.palsel & 0x0F) << 4) | 2],
+                       TsConf::cram[((TsConf::r.palsel & 0x0F) << 4) | 7]);
+        }
+    } else if (!wantPair && wasPair) {
+        profi_ds80_driver_set(false, nullptr, nullptr);
+        Graphics8BitPalette::ds80_active = false;
+    }
+    if (wasPair != wantPair) {
+        // Pair-slot bytes are garbage under the standard tables and vice versa.
+        if (vga.frameBuffer) {
+            for (int _y = 0; _y < (int)vga.yres; _y++)
+                if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+        }
+    }
+    // The ts256 remap owns (almost) the whole hardware palette in every
+    // whole-line mode but TEXT (pair tables): 256c and the TSU need it (any
+    // CRAM cell per pixel), and 16c/NOGFX take it too so the palette-VERSION
+    // banks (see ts256Version) cover a CRAM change in any of them, and a
+    // per-line PalSel effect costs nothing. Hand it back on the way out
+    // (applyPalette rewrites the standard ramp + the 16 ZX solids), take it
+    // over on the way in (full write — the slots hold the standard palette now).
+    const bool wantPal256 = wantRender && !wantPair;
+    if (ts_pal256_live && !wantPal256) applyPalette();
+    ts_vmode_live = want;
+    ts_tsu_live = wantTsu;
+    ts_render_live = wantRender;
+    ts_rres_live = rres;
+    setVsyncLead(wantRender != 0);
+    if (wantRender && !ts_tmb) {
+        const size_t bytes = (size_t)TS_C1_RING * TS_TMB_WORDS * 2 + 2 * 16 * TS_TMB_WORDS * 2;
+        uint8_t* blk = (uint8_t*)Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (blk) {
+            memset(blk, 0, bytes);
+            ts_tmb = (uint16_t*)blk;
+            ts_tmb_pre = (uint16_t*)(blk + (size_t)TS_C1_RING * TS_TMB_WORDS * 2);
+        }
+        Debug::log("[TSU] tile-map prefetch ring %s (%u B @%08lX)", blk ? "ON" : "unavailable (no RAM) - reading the map at render time", (unsigned)bytes, (unsigned long)(uintptr_t)blk);
+    }
+    if (wantRender && ts_c1_enabled && !ts_c1_ring) {
+        tsC1RingAlloc();
+        ts_c1_r = ts_c1_w = 0;
+        TsConf::wrGateRecalc(); tsC1LiveRecalc();
+    }
+    if (wantPal256) { tsPalette256Flush(!ts_pal256_live); tsCramDirty = false; }
+    ts_pal256_live = wantPal256;
+    TsConf::wrGateRecalc(); tsC1LiveRecalc();
+
+    if (!wantRender) {
+        // Back to the standard renderer: Pentagon line window (Reset's generic
+        // block) and the per-T-state border machine.
+        if (isFullBorder && !isFullBorder240()) { lin_end = 48; lin_end2 = 240; }
+        else                                    { lin_end = 24; lin_end2 = 216; }
+        ts_crop_top = 0;
+        tStatesScreen = TS_SCREEN_TSCONF;
+        DrawBorder = &Border_Blank;   // mid-frame border state is stale — skip this frame
+        brdChange = true;
+        brdnextframe = true;
+        tsCramDirty = true;           // slots 0..15 back to the gpal bank
+    } else {
+        const TsRres& g = kTsRres[rres & 3];
+        // Content start: TS line 32 + ub → fb row ub - 24 (240 rows) / ub (288).
+        int top = (int)g.ub - 24 + (((int)vga.yres >= 288) ? 24 : 0);
+        int crop = top < 0 ? -top : 0;
+        if (top < 0) top = 0;
+        int rows = (int)g.h - crop;
+        if (top + rows > (int)vga.yres) rows = (int)vga.yres - top;
+        lin_end  = top;
+        lin_end2 = top + rows;
+        ts_crop_top = (uint8_t)crop;
+        // The renderer is paced by tstateDraw, seeded from tStatesScreen each
+        // frame: move it to the first RENDERED content line (ZX's own start is
+        // TS line 80 = ub 48).
+        tStatesScreen = TS_SCREEN_TSCONF + ((int)g.ub - 48 + crop) * (int)tStatesPerLine;
+        DrawBorder = &Border_Blank;   // bands are painted frame-granular instead
+        gmx_border_dirty = true;
+        if (!wantPal256) tsCramDirty = true;   // 16c / TEXT re-derive their 16
+    }
+    tstateDraw   = tStatesScreen;
+    linedraw_cnt = lin_end;
+    Debug::log("[TSV] mode %u (seen %02X) rres %u tsu=%d: lin_end=%u..%u crop=%u tsScreen=%d pair=%d pal256=%d",
+               want, vmSeen, rres, (int)wantTsu, lin_end, lin_end2, ts_crop_top, tStatesScreen,
+               (int)wantPair, (int)wantPal256);
+}
+
+// Whole-line renderer for the non-ZX modes. `curline` = content line index
+// (linedraw_cnt - lin_end); the TS source line is curline + ts_crop_top and the
+// graphics Y counter follows Unreal's vid.ygctr: reloaded from GYOffs at the
+// first line and whenever GYOffs was written, +1 per line otherwise.
+// ── RAM inner loops for the TSU-free 256c / 16c lines (the TMNT case) ────────
+// hw 2026-09-06 (PERF_TRACE): the generic per-pixel path, compiled -O3/unrolled
+// into 5 KB of FLASH code, cost 9.5-10.3 ms per frame for a 320x240 256c screen
+// with NO TSU — ~130 ns a pixel, XIP code fetches queueing behind the butter
+// PSRAM source reads. These are the only two loops that run per pixel; they are
+// small, in RAM, and write four pixels per aligned uint32 store in the ISR's x^2
+// order (byte k of an aligned group holds pixel k^2 → word = p2|p3<<8|p0<<16|
+// p1<<24). fx0..fx1 = fb byte range already clipped to the row; sx = source pixel
+// index at fx0 (wraps at 512).
+__attribute__((optimize("O2", "no-unroll-loops")))
+static void TS_RENDER_HOT tsFast256(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
+                                            uint32_t sx, const uint8_t* map) {
+    int fx = fx0;
+    while (fx < fx1 && (fx & 3)) { fb[fx ^ 2] = map[ln[sx & 0x1FF]]; fx++; sx++; }
+    if ((sx & 3) == 0) {
+        // Source aligned with the destination groups: one 32-bit PSRAM read per
+        // four pixels (the XIP path is the expensive half of this loop).
+        while (fx + 4 <= fx1) {
+            const uint32_t s4 = *(const uint32_t*)(ln + (sx & 0x1FC));
+            const uint32_t p0 = map[s4 & 0xFF], p1 = map[(s4 >> 8) & 0xFF];
+            const uint32_t p2 = map[(s4 >> 16) & 0xFF], p3 = map[s4 >> 24];
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    } else {
+        while (fx + 4 <= fx1) {
+            const uint32_t p0 = map[ln[sx & 0x1FF]], p1 = map[ln[(sx + 1) & 0x1FF]];
+            const uint32_t p2 = map[ln[(sx + 2) & 0x1FF]], p3 = map[ln[(sx + 3) & 0x1FF]];
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    }
+    while (fx < fx1) { fb[fx ^ 2] = map[ln[sx & 0x1FF]]; fx++; sx++; }
+}
+// 16c: two pixels per byte, high nibble first; `map` = ts256_map_b[bank] (palette bank
+// applied through gpal) or nullptr for the plain 0..15 slot output.
+__attribute__((optimize("O2", "no-unroll-loops")))
+static void TS_RENDER_HOT tsFast16(uint8_t* fb, int fx0, int fx1, const uint8_t* ln,
+                                           uint32_t sx, const uint8_t* map, uint8_t gpal) {
+    // No lambda here on purpose: GCC split it into a .text (flash) clone called
+    // per pixel from this RAM loop (seen in the map as *.isra.0).
+#define TSPX(s_) ({ const uint32_t t_ = (s_) & 0x1FF; const uint8_t b_ = ln[t_ >> 1]; \
+                    const uint8_t n_ = (t_ & 1) ? (uint8_t)(b_ & 0x0F) : (uint8_t)(b_ >> 4); \
+                    (uint32_t)(map ? map[gpal | n_] : n_); })
+    int fx = fx0;
+    while (fx < fx1 && (fx & 3)) { fb[fx ^ 2] = (uint8_t)TSPX(sx); fx++; sx++; }
+    if ((sx & 3) == 0) {
+        // Four pixels = two source bytes = one aligned 16-bit read.
+        while (fx + 4 <= fx1) {
+            const uint32_t s2 = *(const uint16_t*)(ln + ((sx & 0x1FF) >> 1));
+            const uint32_t n0 = (s2 >> 4) & 15, n1 = s2 & 15, n2 = (s2 >> 12) & 15, n3 = (s2 >> 8) & 15;
+            const uint32_t p0 = map ? map[gpal | n0] : n0, p1 = map ? map[gpal | n1] : n1;
+            const uint32_t p2 = map ? map[gpal | n2] : n2, p3 = map ? map[gpal | n3] : n3;
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    } else {
+        while (fx + 4 <= fx1) {
+            const uint32_t p0 = TSPX(sx), p1 = TSPX(sx + 1), p2 = TSPX(sx + 2), p3 = TSPX(sx + 3);
+            *(uint32_t*)(fb + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            fx += 4; sx += 4;
+        }
+    }
+    while (fx < fx1) { fb[fx ^ 2] = (uint8_t)TSPX(sx); fx++; sx++; }
+#undef TSPX
+}
+
+void VIDEO::tsRenderLine(uint32_t curline) {
+    // MainScreen reaches this with start_col == 0 TWICE per line — the Draw(0)
+    // MainScreen_Blank issues to prime the line, then the first real slice —
+    // and the GMX renderer never noticed because it is idempotent. The Y
+    // counter below is not (hw 2026-09-06: SETUP came out half height), so a
+    // repeat of the line just rendered is dropped here.
+    if (curline == ts_last_curline) return;   // line 0 of the next frame follows the last line, never 0
+    ts_last_curline = curline;
+
+    if (curline == 0) {
+        // Hardware (video_sync.v cnt_row): reloaded from GYOffs at the start of
+        // the visible raster and at the line AFTER any GYOffs write, +1 on every
+        // picture line. With the top of the picture CROPPED (RRES 288 on a
+        // 240-row fb) the first rendered line is picture line ts_crop_top, and a
+        // write that landed INSIDE the cropped lines must count only the lines
+        // after it — borntro12 writes GYOffs from a raster split at vcount 43
+        // (picture line 11) and got g_yoffs + 24 here instead of g_yoffs + 12:
+        // a 12-row shift of that band and its tail reading past the artwork
+        // (hw 2026-09-17, "garbage under the letters at 640x480 only").
+        uint32_t add = ts_crop_top;
+        if (TsConf::r.g_yoffs_updated && ts_crop_top) {
+            const uint32_t v0 = (uint32_t)tStatesScreen / (uint32_t)tStatesPerLine;   // raster line of curline 0
+            const uint32_t wl = TsConf::r.g_yoffs_wline;
+            if (wl < v0 && wl + ts_crop_top >= v0) add = v0 - wl - 1;
+        }
+        ts_ygctr = ((uint32_t)TsConf::r.g_yoffs + add) & 0x1FF;
+        TsConf::r.g_yoffs_updated = false;
+    } else if (TsConf::r.g_yoffs_updated) {
+        ts_ygctr = TsConf::r.g_yoffs & 0x1FF;
+        TsConf::r.g_yoffs_updated = false;
+    } else {
+        ts_ygctr = (ts_ygctr + 1) & 0x1FF;
+    }
+
+    // Re-index in flight and no palette banks: hold the whole picture back to
+    // the next frame (see ts_reindex_hold). The Y counter above is kept up to
+    // date so the frame that does render starts from the right row.
+    if (ts_reindex_hold) return;
+#if TSPAL_DBG
+    if (lin_end + curline < sizeof ts_row_gen_posted) ts_row_gen_posted[lin_end + curline] = ts_map_gen;
+#endif
+
+    TsRenderJob j;
+    j.l.kind = 0; j.l.tsu = 0;
+    const bool queued = ts_c1_ring && ts_c1_enabled;
+    const uint32_t seq = queued ? ts_c1_w : ts_line_seq;
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+    if (ts_tsu_live && (curline == 0 || curline == 16 || curline == 100 || curline == 190)) {
+        // Map signature at several points of the frame: first non-zero tile
+        // column of layer 0 in rows 2..23 — shows writes landing mid-frame.
+        static uint32_t sig_frames = 0, sig_budget = 0;
+        if (curline == 0) sig_frames++;
+        if (sig_budget && (sig_frames % 200) < 8) {
+            const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+            if (tm) {
+                sig_budget--;
+                char buf[120]; int n = 0;
+                for (int row = 2; row < 24 && n < 100; row++) {
+                    const uint16_t* w = (const uint16_t*)(tm + (row << 8));
+                    int c = 0; while (c < 64 && (w[c] & 0xFFF) == 0) c++;
+                    n += snprintf(buf + n, sizeof(buf) - n, "%c", c >= 64 ? '.' : (char)(c < 10 ? '0' + c : (c < 36 ? 'a' + c - 10 : 'A' + c - 36)));
+                }
+                Debug::log("[TSVG] f%u L%u sig=%s", (unsigned)sig_frames, (unsigned)curline, buf);
+            }
+        }
+    }
+    if (ts_tsu_live && curline == 0) {
+        // Does the visible tile map change frame to frame? CRC of rows 0..23
+        // (both layers) at the first content line + the first words of row 0.
+        static uint32_t last_crc = 0, frames = 0, last_sfgen = 0;
+        static uint32_t budget = 300;
+        const uint8_t* tm = TsConf::pagePtr(TsConf::r.tmpage);
+        if (tm && budget) {
+            uint32_t crc = 2166136261u;
+            const uint32_t* w = (const uint32_t*)tm;
+            for (uint32_t i = 0; i < (24 * 256) / 4; i++) crc = (crc ^ w[i]) * 16777619u;
+            frames++;
+            if (crc != last_crc) {
+                budget--;
+                const uint16_t* r0 = (const uint16_t*)tm;
+                Debug::log("[TSVM] f%u map crc=%08X sfgen=%u(+%u) row0 L0: %04X %04X %04X %04X %04X %04X L1: %04X %04X %04X %04X",
+                           (unsigned)frames, (unsigned)crc, (unsigned)TsConf::sfileGen, (unsigned)(TsConf::sfileGen - last_sfgen),
+                           r0[0], r0[1], r0[2], r0[3], r0[4], r0[5], r0[64], r0[65], r0[66], r0[67]);
+                last_crc = crc;
+            }
+            last_sfgen = TsConf::sfileGen;
+        }
+        // Sprite set of the frame: active count, leaps, and the first few
+        // descriptors (y x tnum ysz xsz flags) — is the game alternating sets?
+        static uint32_t sbudget = 0;
+        if (sbudget && (frames % 50) < 4) {   // four consecutive frames every second
+            sbudget--;
+            unsigned act = 0, leaps = 0; char buf[160]; int n = 0;
+            for (unsigned i = 0; i < 85; i++) {
+                const uint16_t w0 = TsConf::sfile[i * 3], w1 = TsConf::sfile[i * 3 + 1], w2 = TsConf::sfile[i * 3 + 2];
+                if (w0 & 0x2000) act++;
+                if (w0 & 0x4000) leaps++;
+                if (i < 6 && n < 150) n += snprintf(buf + n, sizeof(buf) - n, " %u,%u,%u%s%s", w0 & 0x1FF, w1 & 0x1FF, w2 & 0xFFF,
+                                                    (w0 & 0x2000) ? "" : "-", (w0 & 0x4000) ? "L" : "");
+            }
+            Debug::log("[TSVS] f%u act=%u leaps=%u sf:%s", (unsigned)frames, act, leaps, buf);
+        }
+    }
+#endif
+    if (ts_tsu_live && ts_tmb) {
+        const uint32_t tsl = curline + ts_crop_top;             // the TSU's `line`
+        tsTmbCapture(ts_tmb + TS_C1_SLOT(seq) * TS_TMB_WORDS, tsl + 16);
+        if (curline == 0) {
+            ts_tmb_par ^= 1;
+            for (uint32_t k = 0; k < 16; k++)
+                tsTmbCapture(ts_tmb_pre + ((uint32_t)ts_tmb_par * 16 + k) * TS_TMB_WORDS, ts_crop_top + k);
+        }
+        j.l.kind = (uint8_t)(ts_tmb_par << 1);
+    }
+    jobSetLyx(j, curline, ts_ygctr, TsConf::r.g_xoffs);
+#if defined(TS_VIDEO_TRACE) && TS_VIDEO_TRACE
+    // With GYOffs 0 the Y counter is the raster line, i.e. curline plus the
+    // lines the crop skipped (RRES 360x288 on a 240-row fb: 24) — the first
+    // cut compared against curline alone and logged every frame of ppal.spg
+    // at 288 lines, shredding the UART (2026-09-30).
+    if (TsConf::r.g_yoffs == 0 && ts_ygctr != ((curline + ts_crop_top) & 0x1FF)) {
+        ts_ygc_bad++;
+        if (ts_ygc_logged_frame != ts_frame_seq) {
+            ts_ygc_logged_frame = ts_frame_seq;
+            Debug::log("[TSYGC] frame %u line %u ygctr %u src %u lin_end %u row_idx %u pend %u posted %u",
+                       (unsigned)ts_frame_seq, (unsigned)curline, (unsigned)ts_ygctr, (unsigned)ts_ygc_src, (unsigned)lin_end,
+                       (unsigned)ts_row_idx, (unsigned)(ts_c1_ring ? (ts_c1_w - ts_c1_r) : 0), (unsigned)ts_line_idx);
+        }
+    }
+#endif
+    j.l.vpage = TsConf::r.vpage; j.l.palsel = TsConf::r.palsel; j.l.vconf = TsConf::r.vconf;
+    j.l.border = TsConf::r.border;
+    if ((j.l.vconf & 0x08) && !tsGlineEnsure()) j.l.vconf &= (uint8_t)~0x08;   // GFXOVR needs s_gline
+
+    TsuState st;
+    if (ts_tsu_live) {
+        st.t0x = TsConf::r.t0_xoffs; st.t0y = TsConf::r.t0_yoffs;
+        st.t1x = TsConf::r.t1_xoffs; st.t1y = TsConf::r.t1_yoffs;
+        st.tsconf = TsConf::r.tsconf; st.tmpage = TsConf::r.tmpage;
+        st.t0gpage = TsConf::r.t0gpage; st.t1gpage = TsConf::r.t1gpage; st.sgpage = TsConf::r.sgpage;
+        st.sfidx = 0; st.pad = 0;
+    }
+
+    if (queued) {
+        if (ts_tsu_live) {
+            // SFILE changed since the last snapshot: copy it into the next slot
+            // (waiting for core1 if a queued line still reads that slot).
+            if (TsConf::sfileGen != ts_c1_sf_gen) {
+                const uint32_t slot = (ts_c1_sf_cur + 1) & (TS_C1_SFILE - 1);
+                tsC1WaitJob(ts_c1_sf_job[slot]);
+                memcpy(ts_c1_sf + slot * 256, TsConf::sfile, 512);
+                ts_c1_sf_cur = slot;
+                ts_c1_sf_gen = TsConf::sfileGen;
+            }
+            st.sfidx = (uint8_t)ts_c1_sf_cur;
+            // A new state entry only when the inputs moved.
+            TsuState& cur = ts_c1_tsu[ts_c1_tsu_cur & (TS_C1_TSU - 1)];
+            if (ts_c1_tsu_job[ts_c1_tsu_cur & (TS_C1_TSU - 1)] == 0 || memcmp(&cur, &st, sizeof(TsuState)) != 0) {
+                const uint32_t nxt = (ts_c1_tsu_cur + 1) & (TS_C1_TSU - 1);
+                tsC1WaitJob(ts_c1_tsu_job[nxt]);
+                ts_c1_tsu[nxt] = st;
+                ts_c1_tsu_cur = nxt;
+            }
+            j.l.tsu = (uint8_t)ts_c1_tsu_cur;
+        }
+        // Full ring (a HALT fast-forward posts a whole frame in microseconds):
+        // wait for a slot — core0 would be idle for exactly that render anyway.
+        { while (ts_c1_w - ts_c1_r >= TS_C1_RING) tsC1Spin(); tsC1SpinEnd(); }
+        j.l.kind = (uint8_t)((j.l.kind & 3) | (ts256_cur_bank << 2) | ((ts_frame_seq & 0x0F) << 4));   // palette bank + frame tag
+        ts_c1_ring[TS_C1_SLOT(ts_c1_w)] = j;
+        __dmb();
+        ts_c1_w = ts_c1_w + 1;
+        if (ts_tsu_live) {
+            ts_c1_tsu_job[ts_c1_tsu_cur & (TS_C1_TSU - 1)] = ts_c1_w;   // "consumed once r reaches this"
+            ts_c1_sf_job[ts_c1_sf_cur & (TS_C1_SFILE - 1)] = ts_c1_w;
+        }
+        return;
+    }
+    const uint64_t t0 = time_us_64();
+    j.l.kind = (uint8_t)((j.l.kind & 3) | (ts256_cur_bank << 2) | ((ts_frame_seq & 0x0F) << 4));
+    tsRenderExec(j, ts_tsu_live ? &st : nullptr, TsConf::sfile, seq);
+    ts_line_seq++;
+    ts_render_us += (uint32_t)(time_us_64() - t0);
+}
+
+// Renders one job. Runs on core1 (queued) or core0 (TSU lines, no ring). Reads
+// nothing from TsConf::r except through tsuComposeLine (core0 only).
+// Per-line buffers of the compose stage. Bytes path: the TSU blits over the
+// base pixels in s_tsline; GFXOVR path: base in s_gline (bit 8 = pixv), TSU in
+// s_tsline, merged per pixel. Static on purpose (the 2026-09-07 palloc attempt
+// lost FPS — see CLAUDE.md).
+// Read and written only by tsRenderExec / tsuComposeLine / tsRenderExecOvr, all
+// of which are TS-only entry points (the first two live in the same overlay
+// window), so they ride in it as well — see TS_OVL_BSS.
+// s_gline is the GFXOVR path's only buffer and that path is FLASH code no known
+// title takes, so it is a heap block claimed by the poster (core0) the first
+// time a GFXOVR line is posted (tsGlineEnsure) rather than 1 KB of the overlay
+// window on every TS-Conf session (2026-09-22). If the claim fails the line is
+// posted without the GFXOVR bit and renders on the ordinary compose path.
+static uint16_t* s_gline = nullptr;
+static uint8_t  TS_OVL_BSS s_tsline[512];
+static __attribute__((noinline)) bool tsGlineEnsure() {
+    if (s_gline) return true;
+    s_gline = (uint16_t*)Buffer::palloc(512 * sizeof(uint16_t), Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+    Debug::log("[TSV] GFXOVR line buffer %s (1024 B @%08lX)", s_gline ? "claimed" : "unavailable - GFXOVR rendered as plain",
+               (unsigned long)(uintptr_t)s_gline);
+    return s_gline != nullptr;
+}
+
+// What the GFXOVR path needs from tsRenderExec's prologue.
+struct TsLineCtx {
+    uint8_t* fb_row; int x0, w, xa, xb, cx0, cx1, xres; bool carveRow;
+    const uint8_t* map; uint8_t border_idx, gpal, lvm; bool nogfx; uint32_t curline, ygctr;
+};
+
+// ── GFXOVR path (VConfig b3: gfx pixels with pixv=1 win over the TSU) — the base
+// keeps its visibility bit (s_gline bit 8) and the two layers are merged per
+// pixel. Rare (fishbone, TMNT, Digger, Bruce Lee all run !GFXOVR), so it lives
+// in FLASH and keeps the overlay window for the bytes path (2026-09-13).
+void VIDEO::tsRenderExecOvr(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile, uint32_t seq, const TsLineCtx& c) {
+    uint8_t* fb_row = c.fb_row;
+    const int x0 = c.x0, w = c.w, xa = c.xa, xb = c.xb, cx0 = c.cx0, cx1 = c.cx1;
+    const bool carveRow = c.carveRow;
+    const uint8_t* map = c.map;
+    const uint8_t border_idx = c.border_idx, gpal = c.gpal, lvm = c.lvm;
+    const bool nogfx = c.nogfx, gfxovr = true;
+    const uint32_t curline = c.curline, ygctr = c.ygctr;
+    (void)c.xres;
+    const uint32_t t0b = tsRenderUs();
+    if (nogfx) {
+        for (int x = 0; x < w; x++) s_gline[x] = border_idx;
+    } else if (lvm == TSV_ZX) {
+        // addr_zx: gfx {row[7:6], row[2:0], row[5:3], col}, attr {110, row[7:3],
+        // col}, 32 columns wrapping (cnt_col[4:1]) across a wider area; colour
+        // {palsel, attr[6], dot ? attr[2:0] : attr[5:3]}, FLASH swaps.
+        const uint8_t* scr = TsConf::pagePtr(j.l.vpage);
+        const uint32_t row = ygctr & 0xFF;
+        const uint32_t goff = ((row & 0xC0) << 5) | ((row & 7) << 8) | ((row & 0x38) << 2);
+        const uint32_t aoff = 0x1800 | ((row & 0xF8) << 2);
+        if (!scr) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
+        else for (int x = 0; x < w; x++) {
+            const uint32_t col = (uint32_t)(x >> 3) & 31;
+            const uint8_t b = scr[goff | col];
+            const uint8_t a = scr[aoff | col];
+            uint8_t dot = (b >> (7 - (x & 7))) & 1;
+            if (a & flashing) dot ^= 1;
+            const uint8_t c = (uint8_t)(gpal | (a & 0x40) >> 3 | (dot ? (a & 7) : ((a >> 3) & 7)));
+            s_gline[x] = (uint16_t)c | (dot ? 0x100 : 0);
+        }
+    } else if (lvm == TSV_16C) {
+        // addr_16c {vpage[7:3], row[8:0], col[6:0]}: 512x512 4 bpp, 256 B/line
+        // over 8 pages (64 lines each), window at GXOffs wrapping at 512, high
+        // nibble = left pixel; colour {palsel, nibble}.
+        const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF8) + (ygctr >> 6));
+        if (!ln) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
+        else {
+            ln += (ygctr & 63) << 8;
+            uint16_t g16[16];
+            for (int n = 0; n < 16; n++) g16[n] = (uint16_t)(gpal | n) | (n ? 0x100 : 0);
+            uint32_t sx = jobGxoffs(j);
+            int x = 0;
+            if (sx & 1) { s_gline[0] = g16[ln[sx >> 1] & 0x0F]; x = 1; sx = (sx + 1) & 0x1FF; }
+            for (; x + 1 < w; x += 2, sx = (sx + 2) & 0x1FF) {
+                const uint8_t b = ln[sx >> 1];
+                s_gline[x] = g16[b >> 4]; s_gline[x + 1] = g16[b & 0x0F];
+            }
+            if (x < w) s_gline[x] = g16[ln[sx >> 1] >> 4];
+        }
+    } else { // TSV_256C
+        // addr_256c {vpage[7:4], row, col[7:0]}: 512 B/line, 32 lines per page,
+        // byte = CRAM index.
+        const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF0) + (ygctr >> 5));
+        if (!ln) { for (int x = 0; x < w; x++) s_gline[x] = border_idx; }
+        else {
+            ln += (ygctr & 31) << 9;
+            uint32_t sx = jobGxoffs(j);
+            for (int x = 0; x < w; x++, sx++) {
+                const uint8_t c = ln[sx & 0x1FF];
+                s_gline[x] = (uint16_t)c | (c ? 0x100 : 0);
+            }
+        }
+    }
+
+    uint32_t t1 = tsRenderUs();
+    ts_base_us += t1 - t0b;
+    if (ts_tsu_live) {
+        memset(s_tsline, 0, 512);   // 0 = transparent: the output loop picks the base pixel there
+        tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline, *st, sfile, j.l.palsel, seq, (uint8_t)((j.l.kind >> 1) & 1));
+        const uint32_t t2 = tsRenderUs();
+        ts_tsu_us += t2 - t1;
+        t1 = t2;
+    }
+
+    // Output. Without the ts256 remap the fb byte is the palette slot itself:
+    // 16c's gpal bank sits on slots 0..15 (low nibble of the index). The clip
+    // to the fb row is done once; the pixel rule is picked once; four pixels go
+    // out per aligned uint32 store in the ISR's x^2 order (the per-pixel
+    // clip/carve/mode test version cost ~120 ns a pixel on core1).
+    if (carveRow) {
+        for (int x = xa; x < xb; x++) {
+            const int fx = x0 + x;
+            if (fx >= cx0 && fx < cx1) continue;   // stats box / notify banner (the OSD owns it)
+            uint8_t out;
+            if (ts_tsu_live) {
+                const uint8_t t = s_tsline[x];
+                const bool tsu_vis = (t & 0x0F) != 0;
+                const bool gfx_vis = (s_gline[x] & 0x100) != 0;
+                if (gfxovr) out = gfx_vis ? (uint8_t)s_gline[x] : (tsu_vis ? t : border_idx);
+                else        out = tsu_vis ? t : (uint8_t)s_gline[x];
+            } else {
+                out = (uint8_t)s_gline[x];
+            }
+            fb_row[fx ^ 2] = map[out];
+        }
+    } else {
+#define TS_OUT_LOOP(EXPR) do { \
+        int x = xa; int fx = x0 + x; \
+        while (x < xb && (fx & 3)) { fb_row[fx ^ 2] = map[EXPR(x)]; x++; fx++; } \
+        while (x + 4 <= xb) { \
+            const uint32_t p0 = map[EXPR(x)], p1 = map[EXPR(x + 1)], p2 = map[EXPR(x + 2)], p3 = map[EXPR(x + 3)]; \
+            *(uint32_t*)(fb_row + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24); \
+            x += 4; fx += 4; } \
+        while (x < xb) { fb_row[fx ^ 2] = map[EXPR(x)]; x++; fx++; } } while (0)
+#define TS_PX_G(x) ((uint8_t)s_gline[x])
+#define TS_PX_T(x) ((s_tsline[x] & 0x0F) ? s_tsline[x] : (uint8_t)s_gline[x])
+#define TS_PX_O(x) ((s_gline[x] & 0x100) ? (uint8_t)s_gline[x] : ((s_tsline[x] & 0x0F) ? s_tsline[x] : border_idx))
+        if (!ts_tsu_live)  TS_OUT_LOOP(TS_PX_G);
+        else if (!gfxovr)  TS_OUT_LOOP(TS_PX_T);
+        else               TS_OUT_LOOP(TS_PX_O);
+#undef TS_OUT_LOOP
+#undef TS_PX_G
+#undef TS_PX_T
+#undef TS_PX_O
+    }
+    ts_out_us += tsRenderUs() - t1;
+}
+
+// memset [a,b) of a content row with the border byte, minus the OSD carve rect.
+static inline __attribute__((always_inline)) void tsFillPad(uint8_t* fb_row, int xres, bool carveRow, int cx0, int cx1, uint8_t brd, int a, int b) {
+    if (a < 0) a = 0; if (b > xres) b = xres;
+    if (b <= a) return;
+    if (!carveRow || b <= cx0 || a >= cx1) { memset(fb_row + a, brd, (size_t)(b - a)); return; }
+    if (a < cx0) memset(fb_row + a, brd, (size_t)(cx0 - a));
+    if (b > cx1) memset(fb_row + cx1, brd, (size_t)(b - cx1));
+}
+__attribute__((optimize("O2", "no-unroll-loops")))
+void TS_RENDER_HOT VIDEO::tsRenderExec(const TsRenderJob& j, const TsuState* st, const uint16_t* sfile, uint32_t seq) {
+    const uint32_t curline = jobLine(j);
+    const uint32_t ygctr = jobYgctr(j);
+    const uint32_t frow = curline + lin_end;
+    ts_render_pos = ((uint32_t)(j.l.kind >> 4) << 16) | curline;   // lines below this one are done (tsPalettePoll)
+#if TSPAL_DBG
+    if (frow < sizeof ts_row_gen) ts_row_gen[frow] = ts_row_gen_posted[frow];
+    {   // the beam already scanned this row in the current sweep: it showed the OLD pixels
+        const int b = displayBeamRow();
+        if (b >= (int)frow && b >= (int)lin_end) {
+            ts_late_rows = ts_late_rows + 1;
+            const uint32_t d = (uint32_t)(b - (int)frow);
+            if (d > ts_late_max) ts_late_max = d;
+        }
+    }
+#endif
+    if (!vga.frameBuffer || frow >= (uint32_t)vga.yres) return;
+    uint8_t* fb_row = (uint8_t*)vga.frameBuffer[frow];
+    if (!fb_row) return;
+    const uint8_t bank = (uint8_t)((j.l.kind >> 2) & 3);   // palette version this line is rendered with
+
+    const TsRres& g = kTsRres[ts_rres_live & 3];
+    const int xres = (int)vga.xres;
+    // Left pad in fb bytes (lores px): border pixels visible left of the area.
+    const int pad_l = (int)g.lb - ((xres >= 360) ? 0 : 20);
+    const uint8_t brd = tsBorderSlotFor(j.l.border, j.l.palsel, bank);
+
+    // F8 stats / F9-F10 volume box: OSD::drawStats owns a 144x16 rect at fb bytes
+    // 168.. (320-wide) / 188.. (360-wide), rows 220.. (yres 240) / 268.. (288) and
+    // repaints it only after EndFrame — a content line that overwrites it makes it
+    // blink (hw 2026-09-06, TS modes whose content covers those rows). Same
+    // carve-out as Update_Border_DS80 / gmxBorderFrame: leave those bytes alone.
+    // One rectangle covers BOTH boxes — they share it and are never up at the
+    // same time (drawVolumeBox takes over while OSD bit 2 is set) — so the test
+    // is gmxBorderFrame's `any OSD box`, not "stats only": the volume box is
+    // drawn once per keypress and nothing repaints it per frame outside DS80,
+    // so excluding it left the content line erasing it a frame later.
+    // The LED panel, when on, extends the rect to the left (osdBarRange).
+    int cx0 = 0, cx1 = 0;
+    const bool osdCarve = osdBarRange((VIDEO::OSD & 0x07) != 0, xres, cx0, cx1);
+    const int cy0 = ((int)vga.yres >= 288) ? 268 : 220;
+    bool carveRow = osdCarve && (int)frow >= cy0 && (int)frow < cy0 + 16;
+    // ... and the OSD::notify banner, when this mode has no top border band to
+    // put it in. The two rects can never share a row (top vs bottom), so one
+    // (cx0, cx1) pair covers both.
+    if (!carveRow && (int)frow >= ts_notice_y0 && (int)frow < ts_notice_y1) {
+        carveRow = true; cx0 = ts_notice_x0; cx1 = ts_notice_x1;
+    }
+    // Side pads go through tsFillPad (a function, not a lambda: the lambda's
+    // clone landed in .text = flash, called twice per line from core1).
+#define fillPad(a_, b_) tsFillPad(fb_row, xres, carveRow, cx0, cx1, brd, (a_), (b_))
+
+    // Side pads (the area may also overhang the fb: RRES 360 on a 320 fb).
+    int x0 = pad_l, x1 = pad_l + (int)g.w;          // area in fb bytes
+    if (x0 > 0) fillPad(0, x0);
+    if (x1 < xres) fillPad(x1, xres);
+
+    // ── This LINE's video mode (video_mode.v latches VConfig per line) ──────
+    // ZX / 16c / 256c / NOGFX all paint the same 8bpp framebuffer, so a line
+    // may use any of them whatever the frame mode is — Demorama's per-line
+    // table walks 256c -> NOGFX -> 256c -> TEXT -> 256c down one screen (hw
+    // 2026-09-17). TEXT cannot join them: it is hires, two pixels per fb byte,
+    // and the driver's pair tables are global — so it renders only in a frame
+    // that is TEXT throughout (tsVideoApplyPending picks that), and the odd
+    // line out either way is painted with the border, which is at least a
+    // consistent picture rather than one mode's bytes read as another's.
+    uint8_t lvm = (j.l.vconf & 0x20) ? (uint8_t)TSV_NOGFX : (uint8_t)(j.l.vconf & 0x03);
+    const bool framePair = (ts_vmode_live == TSV_TEXT);
+    // TEXT needs the pair driver, which is a per-FRAME choice; the other way
+    // round a graphics line renders in a pair frame through s_pairmap.
+    if (lvm == TSV_TEXT && !framePair) lvm = TSV_NOGFX;
+    // A NOGFX line is border end to end, in either kind of frame — `brd` is
+    // already the right byte for both (tsBorderSlotFor). Not with the TSU up:
+    // video_render.v keeps tiles and sprites visible OVER the border there, so
+    // that case still needs the compose path below (nogfx) — and in a TEXT
+    // frame that compose is the hires one, so the branch right below takes it.
+    if (lvm == TSV_NOGFX && !ts_tsu_live) { fillPad(x0, x1); return; }
+
+    // A TEXT line is HIRES — two pixels per fb byte — so it renders here even
+    // with its character layer blanked by NOGFX (video_render.v only replaces
+    // the character pixels with the border there; the TSU stays visible).
+    const bool textNogfx = (lvm == TSV_NOGFX) && framePair && (j.l.vconf & 3) == TSV_TEXT;
+    if (lvm == TSV_TEXT || textNogfx) {
+        // draw_tstx / addr_tx: 256-byte text rows (chars at +0, attrs at +0x80,
+        // 128 columns max), font = page vpage^1 (8 bytes/char), row = ygctr>>3
+        // (64 rows per page), char line = ygctr&7; paper = gpal|atr>>4, ink =
+        // gpal|atr&15; 8 hires px per char = 4 pair bytes, (k^2) pre-swizzled
+        // for the ISR's x^2 read pattern (same trick as GMX/DS80).
+        const uint8_t* scr = nullptr; const uint8_t* fnt = nullptr;
+        uint32_t s = 0; uint8_t cl = 0;
+        if (!textNogfx) {
+            scr = TsConf::pagePtr(j.l.vpage);
+            fnt = TsConf::pagePtr(j.l.vpage ^ 0x01);
+            if (!scr || !fnt) { fillPad(x0, x1); return; }
+            s  = (ygctr & 0x1F8) << 5;
+            cl = ygctr & 7;
+        }
+        // ── TSU over TEXT (video_render.v + video_out.v) ────────────────────
+        // Two facts make this a per-fb-byte override rather than a second
+        // palette path. (1) The TSU line buffer is read at the LORES rate:
+        // video_sync.v's `ts_raddr = hcount - hpix_beg_ts` and hcount counts
+        // 7 MHz pixels whatever the mode, so ONE TSU pixel covers BOTH hires
+        // pixels of one fb byte. (2) In hires the palette high nibble is
+        // thrown away — video_render.v packs `{temp, video[3:0]}` and
+        // video_out.v reads it back as `{palsel, nibble}` — so a TSU pixel is
+        // just its own LOW NIBBLE in the frame's gpal bank, which is exactly
+        // what profi_pair_lookup is indexed by here. Visibility is the RTL's
+        // own `tsu_visible = |tsdata[3:0]`.
+        const uint8_t* bl = nullptr;
+        if (ts_tsu_live) {
+            const uint32_t t1 = tsRenderUs();
+            memset(s_tsline, 0, (size_t)g.w);     // 0 = transparent
+            tsuComposeLine((uint32_t)curline + ts_crop_top, s_tsline, *st, sfile, j.l.palsel, seq, (uint8_t)((j.l.kind >> 1) & 1));
+            ts_tsu_us += tsRenderUs() - t1;
+            bl = s_tsline;
+        }
+        // Text is hires: g.w lores pixels = 2*g.w hires pixels = g.w/4 chars
+        // of 8 (80 at RRES 320) — each char = 4 pair bytes.
+        const uint32_t tout = tsRenderUs();
+        const int cols = (int)g.w >> 2;
+        for (int c = 0; c < cols; c++) {
+            const int bx = x0 + c * 4;
+            if (bx < 0 || bx + 4 > xres) continue;            // cropped column
+            if (carveRow && bx + 4 > cx0 && bx < cx1) continue; // stats box
+            uint8_t px[4];                                     // by lores position k, stored at k^2
+            if (textNogfx) { px[0] = px[1] = px[2] = px[3] = brd; }
+            else {
+                const uint8_t sym = scr[s + c];
+                const uint8_t atr = scr[s + c + 0x80];
+                const uint8_t b   = fnt[cl + ((uint32_t)sym << 3)];
+                const uint8_t fg = atr & 0x0F, bg = atr >> 4;
+                px[0] = profi_pair_lookup[(b & 0x80) ? fg : bg][(b & 0x40) ? fg : bg];
+                px[1] = profi_pair_lookup[(b & 0x20) ? fg : bg][(b & 0x10) ? fg : bg];
+                px[2] = profi_pair_lookup[(b & 0x08) ? fg : bg][(b & 0x04) ? fg : bg];
+                px[3] = profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg];
+            }
+            if (bl) {
+                const uint8_t* t = bl + c * 4;                 // area pixel = c*4 + k
+                for (int k = 0; k < 4; k++) {
+                    const uint8_t n = (uint8_t)(t[k] & 0x0F);
+                    if (n) px[k] = profi_pair_lookup[n][n];
+                }
+            }
+            *(uint32_t*)(fb_row + bx) =
+                (uint32_t)px[2] | ((uint32_t)px[3] << 8) | ((uint32_t)px[0] << 16) | ((uint32_t)px[1] << 24);
+        }
+        ts_out_us += tsRenderUs() - tout;
+        return;
+    }
+
+    // Fast paths: 256c / 16c with no TSU layers and no stats carve on this row —
+    // the RAM loops above; everything else (ZX base, TSU compose, GFXOVR, carve
+    // rows) takes the generic path below.
+    // Output map: fb byte = palette slot. ts256 remap while it is live, the
+    // CRAM -> pair-diagonal map in a TEXT frame (both index the same driver
+    // LUT), else the raw low nibble.
+    const uint8_t* const outmap = ts_pal256_live ? ts256_map_b[bank]
+                                : framePair      ? s_pairmap : nullptr;
+    if (!ts_tsu_live && !carveRow && (lvm == TSV_256C || lvm == TSV_16C)) {
+        const int fx0 = x0 < 0 ? 0 : x0, fx1 = x1 > xres ? x1 : xres > x1 ? x1 : xres;
+        const uint32_t sx = jobGxoffs(j) + (uint32_t)(fx0 - x0);
+        if (lvm == TSV_256C) {
+            const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF0) + (ygctr >> 5));
+            // 256c needs a map: with none (a pair frame has s_pairmap, pal256 has
+            // its bank) the byte IS the slot, which only the standard path means.
+            if (ln && outmap) { tsFast256(fb_row, fx0, fx1, ln + ((ygctr & 31) << 9), sx, outmap); return; }
+        } else {
+            const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF8) + (ygctr >> 6));
+            if (ln) {
+                tsFast16(fb_row, fx0, fx1, ln + ((ygctr & 63) << 8), sx,
+                         outmap, (uint8_t)((j.l.palsel & 0x0F) << 4));
+                return;
+            }
+        }
+        // unbacked page → fall through to the generic path (border fill)
+    }
+
+    // ── Base graphics layer + TSU compose (video_render.v) ──────────────────
+    // Per area pixel: bits 7..0 = CRAM index, bit 8 = "gfx pixel visible"
+    // (pixv: ZX ink dot after flash, non-zero colour in 16c/256c) — the
+    // GFXOVR priority input. TSU pixels land in s_tsline as CRAM indices, 0 =
+    // transparent (video_render.v: tsu_visible = |tsdata[3:0]).
+    const uint32_t t0b = tsRenderUs();
+    const int w = (int)g.w;
+    const uint8_t gpal = (uint8_t)((j.l.palsel & 0x0F) << 4);
+    const uint8_t border_idx = j.l.border;
+    const bool nogfx = (lvm == TSV_NOGFX);
+    const bool gfxovr = j.l.vconf & 0x08;
+
+    // Output map (fb byte = palette slot; ts256 remap while it is live).
+    // Both in the window: a mid-session claim zeroes the map, so the flag has to
+    // be zeroed with it or the lazy init below would not re-run.
+    static uint8_t TS_OVL_BSS s_nibmap[256];
+    static bool    TS_OVL_BSS s_nibmap_ok = false;
+    if (!s_nibmap_ok) { for (int i = 0; i < 256; i++) s_nibmap[i] = (uint8_t)(i & 0x0F); s_nibmap_ok = true; }
+    const uint8_t* map = outmap ? outmap : s_nibmap;
+    const int xa = x0 < 0 ? -x0 : 0;
+    const int xb = (x0 + w > xres) ? xres - x0 : w;
+
+    if (!gfxovr) {
+        // ── Bytes path (the common case, fishbone included): TSU over gfx ──
+        // The base layer is rendered as CRAM indices straight into the TSU
+        // line buffer and the TSU blits OVER it — a written TSU pixel is one
+        // whose source nibble is non-zero, which is exactly video_render.v's
+        // tsu_visible, so the per-pixel "TSU or base" select of the GFXOVR
+        // path below is not needed and the output is one table lookup per
+        // pixel. 2026-09-13: fishbone c1 = 14.4 ms of which base 3.9 / tsu 8.3 /
+        // out 2.1 — this path plus the SWAR blit (TsuBlit.h) is the answer.
+        uint8_t* bl = s_tsline;
+        if (nogfx) {
+            memset(bl, border_idx, (size_t)w);
+        } else if (lvm == TSV_ZX) {
+            const uint8_t* scr = TsConf::pagePtr(j.l.vpage);
+            const uint32_t row = ygctr & 0xFF;
+            const uint32_t goff = ((row & 0xC0) << 5) | ((row & 7) << 8) | ((row & 0x38) << 2);
+            const uint32_t aoff = 0x1800 | ((row & 0xF8) << 2);
+            if (!scr) memset(bl, border_idx, (size_t)w);
+            else {
+                int x = 0;
+                for (; x + 8 <= w; x += 8) {                // one attribute cell = 8 pixels
+                    const uint32_t col = (uint32_t)(x >> 3) & 31;
+                    uint8_t b = scr[goff | col];
+                    const uint8_t a = scr[aoff | col];
+                    if (a & flashing) b ^= 0xFF;
+                    const uint8_t base = (uint8_t)(gpal | ((a & 0x40) >> 3));
+                    const uint8_t ink = (uint8_t)(base | (a & 7)), paper = (uint8_t)(base | ((a >> 3) & 7));
+                    uint8_t* o = bl + x;
+                    o[0] = (b & 0x80) ? ink : paper; o[1] = (b & 0x40) ? ink : paper;
+                    o[2] = (b & 0x20) ? ink : paper; o[3] = (b & 0x10) ? ink : paper;
+                    o[4] = (b & 0x08) ? ink : paper; o[5] = (b & 0x04) ? ink : paper;
+                    o[6] = (b & 0x02) ? ink : paper; o[7] = (b & 0x01) ? ink : paper;
+                }
+                for (; x < w; x++) {
+                    const uint32_t col = (uint32_t)(x >> 3) & 31;
+                    const uint8_t b = scr[goff | col];
+                    const uint8_t a = scr[aoff | col];
+                    uint8_t dot = (b >> (7 - (x & 7))) & 1;
+                    if (a & flashing) dot ^= 1;
+                    bl[x] = (uint8_t)(gpal | (a & 0x40) >> 3 | (dot ? (a & 7) : ((a >> 3) & 7)));
+                }
+            }
+        } else if (lvm == TSV_16C) {
+            const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF8) + (ygctr >> 6));
+            if (!ln) memset(bl, border_idx, (size_t)w);
+            else {
+                ln += (ygctr & 63) << 8;
+                uint32_t sx = jobGxoffs(j);
+                int x = 0;
+                // Up to the next 4-byte source boundary one pixel at a time, then
+                // 8 pixels per aligned 32-bit PSRAM read (the XIP fill is the
+                // expensive half; the nibble expansion is TsuBlit.h's SWAR).
+                for (; x < w && (sx & 7); x++, sx = (sx + 1) & 0x1FF) {
+                    const uint8_t b = ln[sx >> 1];
+                    bl[x] = (uint8_t)(gpal | ((sx & 1) ? (b & 0x0F) : (b >> 4)));
+                }
+                const uint32_t gpal4 = (uint32_t)gpal * 0x01010101u;
+                for (; x + 8 <= w; x += 8, sx = (sx + 8) & 0x1FF) {
+                    const uint32_t s4 = *(const uint32_t*)(ln + (sx >> 1));
+                    uint32_t w0, w1;
+                    tsuIl((s4 >> 4) & 0x0F0F0F0Fu, s4 & 0x0F0F0F0Fu, w0, w1);
+                    tsuSt32(bl + x, w0 | gpal4); tsuSt32(bl + x + 4, w1 | gpal4);
+                }
+                for (; x < w; x++, sx = (sx + 1) & 0x1FF) {
+                    const uint8_t b = ln[sx >> 1];
+                    bl[x] = (uint8_t)(gpal | ((sx & 1) ? (b & 0x0F) : (b >> 4)));
+                }
+            }
+        } else { // TSV_256C: the byte IS the CRAM index — a copy with the 512 wrap
+            const uint8_t* ln = TsConf::pagePtr((j.l.vpage & 0xF0) + (ygctr >> 5));
+            if (!ln) memset(bl, border_idx, (size_t)w);
+            else {
+                ln += (ygctr & 31) << 9;
+                const uint32_t sx = jobGxoffs(j);
+                const int n1 = (int)(512 - sx) < w ? (int)(512 - sx) : w;
+                memcpy(bl, ln + sx, (size_t)n1);
+                if (w > n1) memcpy(bl + n1, ln, (size_t)(w - n1));
+            }
+        }
+        uint32_t t1 = tsRenderUs();
+        ts_base_us += t1 - t0b;
+        if (ts_tsu_live) {
+            tsuComposeLine((uint32_t)curline + ts_crop_top, bl, *st, sfile, j.l.palsel, seq, (uint8_t)((j.l.kind >> 1) & 1));
+            const uint32_t t2 = tsRenderUs();
+            ts_tsu_us += t2 - t1;
+            t1 = t2;
+        }
+        int x = xa, fx = x0 + xa;
+        if (carveRow) {
+            for (; x < xb; x++, fx++) {
+                if (fx >= cx0 && fx < cx1) continue;   // stats box / notify banner (the OSD owns it)
+                fb_row[fx ^ 2] = map[bl[x]];
+            }
+        } else {
+            while (x < xb && (fx & 3)) { fb_row[fx ^ 2] = map[bl[x]]; x++; fx++; }
+            while (x + 4 <= xb) {
+                const uint32_t p0 = map[bl[x]], p1 = map[bl[x + 1]], p2 = map[bl[x + 2]], p3 = map[bl[x + 3]];
+                *(uint32_t*)(fb_row + fx) = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+                x += 4; fx += 4;
+            }
+            while (x < xb) { fb_row[fx ^ 2] = map[bl[x]]; x++; fx++; }
+        }
+        ts_out_us += tsRenderUs() - t1;
+        return;
+    }
+
+    tsRenderExecOvr(j, st, sfile, seq, TsLineCtx{ fb_row, x0, w, xa, xb, cx0, cx1, xres, carveRow, map, border_idx, gpal, lvm, nogfx, curline, ygctr });
+}
+#undef fillPad
+
+// ── TSU: the Tile-Sprite Unit's line buffer (video_ts.v / Unreal render_ts) ──
+// Layers bottom→top: sprites 0, tiles 0, sprites 1, tiles 1, sprites 2 — each
+// overwrites, transparent nibble 0 is skipped. Tiles: TMPage rows of 256 bytes
+// (layer 0 at +0, layer 1 at +128; 64 words per layer), tile word = tnum:12
+// pal:2 xflp yflp, num_tiles per RRES (x_tile 34/42/42/47), column (xoffs>>3)+i
+// wrapping at 64, screen x = i*8 - (xoffs&7); tile row/line from (line+yoffs).
+// Bitmaps: 512x512 4 bpp = 8 pages (page & 0xF8), element (tnum) = 8x8 at
+// bitmap line (tnum>>6)*8, byte column (tnum&63)*4. Sprites: 85 SFILE
+// descriptors {y:9 ys:3 - act leap yflp | x:9 xs:3 - - - xflp | tnum:12 pal:4},
+// walked in order; `leap` closes the current sprite layer after that sprite;
+// visible when (line - y) & 511 <= ys*8+7. Palette: {tXpal(2) tile.pal(2)}
+// or sprite pal(4), high nibble of the CRAM index.
+// Bitmap page pointers: one TsConf::pagePtr per 64-line page group of the
+// 512x512 bitmap instead of a call per tile / sprite element (~130 a line).
+// A plain function, not a lambda: GCC put the lambda's clone in .text (flash).
+static inline __attribute__((always_inline)) void tsuBmPages(uint8_t gpage, const uint8_t** bm) {
+    for (uint32_t p = 0; p < 8; p++) bm[p] = TsConf::pagePtr((gpage & 0xF8) + p);
+}
+
+__attribute__((optimize("O2", "no-unroll-loops")))
+void TS_RENDER_HOT VIDEO::tsuComposeLine(uint32_t line, uint8_t* ts, const TsuState& st, const uint16_t* sfile, uint8_t palsel, uint32_t seq, uint8_t par) {
+    // `ts` arrives PRE-FILLED by the caller: zeros (transparent) on the GFXOVR
+    // path, the base layer's pixels on the bytes path — the blits only ever
+    // write where the source nibble is non-zero, so both read as "TSU over it".
+    const uint8_t tsc = st.tsconf;
+    const bool s_en = tsc & 0x80, t1_en = tsc & 0x40, t0_en = tsc & 0x20;
+    const bool t1z = tsc & 0x08, t0z = tsc & 0x04;
+    static const uint8_t TS_RENDER_RO kTiles[4] = { 34, 42, 42, 47 };
+    const int ntiles = kTiles[ts_rres_live & 3];
+
+    auto tiles = [&](int layer) TS_RENDER_HOT {
+        const bool en = layer ? t1_en : t0_en;
+        if (!en) return;
+        const uint8_t* tm = TsConf::pagePtr(st.tmpage);
+        if (!tm) return;
+        const uint16_t xoffs = layer ? st.t1x : st.t0x;
+        const uint16_t yoffs = layer ? st.t1y : st.t0y;
+        const uint8_t  gpage = layer ? st.t1gpage : st.t0gpage;
+        const uint8_t  tpal  = (uint8_t)(((palsel >> (layer ? 6 : 4)) & 3) << 6);
+        const bool     tz    = layer ? t1z : t0z;
+        const uint8_t* bm[8]; tsuBmPages(gpage, bm);
+        const uint32_t ty = (line + yoffs) & 0x1FF;
+        const uint8_t* row = tm + ((ty >> 3) << 8) + (layer ? 128 : 0);
+        const uint32_t tline = ty & 7;
+        // Prefetched bursts for this row (see tsTmbCapture): burst b of the row
+        // displayed at `line` was fetched at raster line
+        // ((line + (yoffs & 7)) & ~7) - 16 + b — a preroll slot when that is
+        // above the first content line, else the capture of the job posted
+        // (line - l_b) lines before this one.
+        const int32_t fbase = (int32_t)((line + (yoffs & 7)) & ~7u) - 16;
+        const uint16_t* bursts[8];
+        for (int b = 0; b < 8; b++) {
+            const int32_t lb = fbase + b;
+            if (!ts_tmb) bursts[b] = nullptr;
+            else if (lb < (int32_t)ts_crop_top) bursts[b] = ts_tmb_pre + ((uint32_t)par * 16 + (uint32_t)(lb - ((int32_t)ts_crop_top - 16))) * TS_TMB_WORDS + layer * 8;
+            else bursts[b] = ts_tmb + TS_C1_SLOT(seq - (uint32_t)((int32_t)line - lb)) * TS_TMB_WORDS + layer * 8;
+        }
+        uint32_t col = xoffs >> 3;
+        uint32_t pos = (0u - (xoffs & 7)) & 0x1FF;
+        // One-element memo: a tile repeated along the row (the background tile,
+        // tile 0 with TxZ_EN) is read from PSRAM once — RobFgift's T1 layer is
+        // 42 copies of tile 0 a line, its T0 has 14 of tile 4; each read is an
+        // XIP line fill, and the compose is XIP-bound (hw 2026-09-13).
+        const uint8_t* m_src = nullptr;
+        uint32_t m_s4 = 0;
+        for (int i = 0; i < ntiles; i++, col++, pos = (pos + 8) & 0x1FF) {
+            const uint32_t c = col & 63;
+            uint16_t tw;
+            if (bursts[c >> 3]) tw = bursts[c >> 3][c & 7];
+            else { const uint8_t* e = row + (c << 1); tw = (uint16_t)(e[0] | (e[1] << 8)); }
+            const uint16_t tnum = tw & 0x0FFF;
+            if (!tnum && !tz) continue;
+            const uint32_t bl = ((tnum >> 6) << 3) + ((tw & 0x8000) ? (tline ^ 7) : tline);
+            const uint8_t* src = bm[(bl >> 6) & 7];
+            if (!src) continue;
+            src += ((bl & 63) << 8) + ((tnum & 63) << 2);
+            uint32_t s4;
+            if (src == m_src) s4 = m_s4;
+            else { s4 = tsuLd32(src); m_src = src; m_s4 = s4; }
+            if (!s4) continue;                              // transparent element: nothing to write
+            const uint8_t pal = (uint8_t)(tpal | ((tw >> 12) & 3) << 4);
+            if (tw & 0x4000) tsuBlit8w(ts, (pos + 7) & 0x1FF, -1, pal, s4);
+            else             tsuBlit8w(ts, pos, 1, pal, s4);
+        }
+    };
+
+    // Sprite descriptors are consumed in order across the three layers.
+    unsigned snum = 0;
+    const uint8_t* sbm[8];
+    if (s_en) tsuBmPages(st.sgpage, sbm);
+    auto sprites = [&](int layerIdx) TS_RENDER_HOT {
+        (void)layerIdx;
+        if (!s_en) { return; }
+        while (snum < 85) {
+            const uint16_t* d = &sfile[snum * 3];
+            snum++;
+            const uint16_t w0 = d[0], w1 = d[1], w2 = d[2];
+            const bool leap = w0 & 0x4000;
+            if (w0 & 0x2000) {                          // ACT
+                const uint32_t ysz = (((w0 >> 9) & 7) + 1) << 3;
+                const uint32_t sy = (line - (w0 & 0x1FF)) & 0x1FF;
+                if (sy < ysz) {
+                    const uint32_t xsz = (((w1 >> 9) & 7) + 1) << 3;
+                    const uint16_t tnum = w2 & 0x0FFF;
+                    const uint32_t bline = ((tnum >> 6) << 3) + ((w0 & 0x8000) ? (ysz - 1 - sy) : sy);
+                    const uint8_t* src = sbm[(bline >> 6) & 7];
+                    if (src) {
+                        src += ((bline & 63) << 8) + ((tnum & 63) << 2);
+                        const uint8_t pal = (uint8_t)((w2 >> 12) << 4);
+                        const bool xflp = w1 & 0x8000;
+                        uint32_t pos = xflp ? ((w1 & 0x1FF) + xsz - 1) & 0x1FF : (w1 & 0x1FF);
+                        const int dir = xflp ? -1 : 1;
+                        for (uint32_t k = 0; k < (xsz >> 3); k++, src += 4)
+                            pos = tsuBlit8(ts, pos, dir, pal, src);
+                    }
+                }
+            }
+            if (leap) return;                           // layer closed after this sprite
+        }
+    };
+
+    sprites(0);
+    tiles(0);
+    sprites(1);
+    tiles(1);
+    sprites(2);
+}
+
+// Frame-granular top/bottom border bands for the GMX mode — repainted only when
+// the border colour (or the mode itself) changed; side pads are per content line.
+// `brdnextframe` is part of the trip condition because it is the project-wide
+// "the chrome is gone, repaint the border on demand" signal (OSD::cancelNotify,
+// nm::chrome restore, videoModeConfirm, …) and in GMX these bands are the ONLY
+// thing that repaints it: the content renderer covers just the 200 middle rows,
+// so a menu's header/footer survived in the top/bottom bands after every menu
+// session. Cleared only here, i.e. only on a frame that actually paints (the
+// skipFrame early-out above), for the same reason cancelNotify sets both flags:
+// brdChange is cleared by EndFrame even on a skipped frame.
+void VIDEO::gmxBorderFrame(bool skipFrame) {
+    if (skipFrame) return;
+    // TS-Conf shares the band painter: its border byte comes from the Border
+    // register through the live mode's palette (tsBorderSlot), GMX's from the
+    // 3-bit #FE latch through the pair table. Repaint on any change of it.
+    const uint8_t slot = ts_render_live ? tsBorderSlot()
+                       : profi_pair_lookup[borderColor & 15][borderColor & 15];
+    if (!(brdChange || brdnextframe || gmx_border_dirty || gmx_border_col != slot)) return;
+    gmx_border_dirty = false;
+    brdnextframe = false;
+    gmx_border_col = slot;
+    // With only 200 content rows the F8 stats box and the F9/F10 volume box land
+    // in the BOTTOM band here (in DS80 they straddle the content, hence its
+    // carve-outs) — one rectangle covers both: drawStats/drawVolumeBox put 144x16
+    // px at x 168 (320-wide) / 188 (360-wide), y 220 (yres 240) / 268 (288).
+    // Leave it to them rather than blanking it: ESPectrum::loop redraws it after
+    // EndFrame, so a blank would read as a blink — and while PAUSED that redraw
+    // does not run at all, so the box would just disappear on any band repaint.
+    // The LED panel extends the same rect to the left (osdBarRange).
+    int cx0 = 0, cx1 = 0;
+    const bool carve = osdBarRange((OSD & 0x07) != 0, (int)vga.xres, cx0, cx1);
+    const int cy0 = ((int)vga.yres >= 288) ? 268 : 220;
+    if (vga.frameBuffer) {
+        for (int _y = 0; _y < (int)vga.yres; _y++) {
+            if (_y >= lin_end && _y < lin_end2) continue;
+            uint8_t* row = (uint8_t*)vga.frameBuffer[_y];
+            if (!row) continue;
+            if (carve && _y >= cy0 && _y < cy0 + 16 && cx1 <= (int)vga.xres) {
+                memset(row, slot, cx0);
+                memset(row + cx1, slot, (size_t)vga.xres - cx1);
+            } else
+                memset(row, slot, vga.xres);
+        }
+    }
+}
+
+
+IRAM_ATTR void VIDEO::EndFrame() {
+    PERF_BUCKET_SCOPE(PB_ENDFRAME);
+
+    // Console drain, once per frame. Debug::log lands in a 4 KB ring that
+    // pumpUart() empties into the 32-byte UART FIFO, and until 2026-09-09 the
+    // only two pump sites were inside the frame-pacing idle wait — so a frame
+    // that overran EVERY time (fishbone on the PERF_HIST build: cpu 20.7 against
+    // a 20.48 ms frame) never pumped, the ring filled within ~7 PERF windows and
+    // every line thereafter came out as the one FIFO's worth its own write could
+    // push: `[PERF] aud: ticks=41495 hold=3095[PERF] aud: ...`. That is the
+    // console going dark exactly when the emulator is in trouble. This call
+    // never waits (it stops the moment the FIFO is full), and 60 x 32 bytes per
+    // PERF window comfortably carries the ~600 bytes those lines write.
+    Debug::pumpUart();
+
+    linedraw_cnt = lin_end;
+
+    tstateDraw = tStatesScreen;
+
+    // ----------------------------------------------------------------
+    // Profi DS80 deferred HDMI mode switch — applied NOW (vblank context).
+    //
+    // Problem: hdmi_set_profi_ds80_mode() rewrites conv_color[] which the
+    // HDMI DMA reads in real time.  Calling it from Ports.cpp (Z80 loop,
+    // core0) races the DMA on core1 during active scan → TMDS corruption
+    // → picture disappears / flickers.
+    //
+    // Fix: Ports.cpp only sets flags; EndFrame() (always at vblank start)
+    // applies them safely.  Deactivation restores 1240 conv_color entries
+    // (incl. sync/audio); activation encodes 225+1 DS80 pair slots — both
+    // must run during blanking.
+    // ----------------------------------------------------------------
+    {
+        if (profi_ds80_activate_pending) {
+            profi_ds80_activate_pending   = false;
+            profi_palette_dirty           = false; // palette included in activate
+            profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
+            // Enable the Graphics-layer ZX→DS80 colour remap for the whole DS80 session
+            // (not just OSD): any vga.* draw with a standard ZX index (FDD indicator,
+            // LED legend, OSD, …) is then mapped to the correct solid DS80 pair slot.
+            // The DS80 scan-time renderer writes pair slots into the fb directly (not via
+            // dotFast), so it is unaffected by the remap.
+            rebuildDS80ColorLut();
+            Graphics8BitPalette::ds80_active = true;
+            // DS80 border colour = Palette[(~borderColor) & 7] (inverse index, per
+            // ZXMAK2).  Reset() sets borderColor=7 → (~7)&7 = 0 → Palette[0] = BLACK,
+            // which is the desired default until a guest OUT 0xFE changes it.  (Do NOT
+            // force borderColor=0 here: that would invert to Palette[7] = light grey.)
+            // Apply DS80 geometry: full 240-line screen, no border.
+            // (Mirrors Reset() DS80 branch; skips palette/pair-lookup re-init.)
+            ds80_frame_grmem = nullptr; // force re-latch of display page on next frame
+            grmem = MemESP::videoLatch ? MemESP::ram[6].direct() : MemESP::ram[4].direct();
+            {
+                uint32_t clrPg = MemESP::videoLatch ? 58u : 56u;
+                // Pages 56 and 58 are locked (assign_ram locked=true): permanently
+                // SRAM-resident, never in the evictable pool, direct() is always
+                // valid — no preload/pin/precheck needed.
+                profi_clrmem = MemESP::ram[clrPg].direct();
+                // Snapshot the 16 KB clrmem page into SRAM here (vblank) so the
+                // rasterizer never touches XIP PSRAM during active scan.
+                if (profi_clrmem && ds80_clr_sram)
+                    memcpy(ds80_clr_sram, profi_clrmem, DS80_CLR_SRAM_SIZE);
+#if PROFI_PORT_TRACE
+                ds80_dbg_grmem  = grmem;
+                ds80_dbg_clrmem = profi_clrmem;
+#endif
+            }
+            applyDS80BorderGeometry(true);
+            tstateDraw   = tStatesScreen;
+            linedraw_cnt = lin_end;
+            updateBorderBrd();        // seed DS80 border pair colour
+            DrawBorder = &Border_Blank; // mid-frame machine state is stale — skip this frame's flush
+            brdChange = true;           // schedule full border repaint next frame
+            // Zero all vga.frameBuffer rows: scan-time renderer writes only content bytes
+            // (pad_l..pad_l+255) into each DS80 row; padding bytes must start at 0 (black
+            // pair) and are never overwritten. Rows 240..yres-1 stay black throughout DS80.
+            if (vga.frameBuffer) {
+                for (int _y = 0; _y < (int)vga.yres; _y++)
+                    if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+            }
+            Debug::log("[DS80] activate: tStScreen=%d grmem=%p clrmem=%p (SRAM=%d) videoLatch=%d",
+                       tStatesScreen, grmem, profi_clrmem,
+                       (profi_clrmem && (uintptr_t)profi_clrmem < 0x11000000u),
+                       (int)MemESP::videoLatch);
+        } else if (profi_ds80_deactivate_pending) {
+            profi_ds80_deactivate_pending = false;
+            Debug::log("[EF] DS80 deactivate: grmem=%p clrmem=%p", grmem, profi_clrmem);
+            profi_ds80_driver_set(false, nullptr, nullptr);
+            Graphics8BitPalette::ds80_active = false; // leave DS80 → raw ZX indices again
+            // Clear framebuffer: DS80 packed-pair slot values look like garbage
+            // when re-interpreted through the standard HDMI conv_color table.
+            if (vga.frameBuffer) {
+                for (int _y = 0; _y < (int)vga.yres; _y++)
+                    if (vga.frameBuffer[_y]) memset(vga.frameBuffer[_y], 0, vga.xres);
+            }
+            // Restore standard Profi (non-DS80) geometry.
+            grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
+            profi_clrmem = nullptr;
+            applyDS80BorderGeometry(false);
+            tstateDraw    = tStatesScreen;
+            linedraw_cnt  = lin_end;
+            updateBorderBrd();        // back to std border palette
+            DrawBorder = &Border_Blank; // mid-frame machine state is stale — skip this frame's flush
+            brdChange = true;           // schedule full border repaint next frame
+        }
+
+        // ── Scorpion GMX 640x200 deferred mode switch — same vblank-only rule ──
+        // (cold flash body; the checks stay cheap in this RAM function)
+        if (gmx_ext_pending_on || gmx_ext_pending_off) gmxApplyPending();
+        // ATM-Turbo palette (cold flash body): hardware slots / pair table, vblank only.
+        if (Atm::palDirty && Z80Ops::isAtm) atmPaletteFlush();
+        // ── Timex hi-res 512x192 packed-pair switch — same vblank-only rule ──
+        if (timex_hires_pending_on || timex_hires_pending_off) timexHiresApplyPending();
+        // ── TS-Conf VConfig mode/geometry switch — same vblank-only rule ──
+        if (Z80Ops::isTsconf) tsVideoApplyPending();
+        // ── Borderless scaler on/off — after the three above, which decide whether
+        // the standard renderer owns the framebuffer at all this frame.
+        blRecalc();
+
+        // Every mode that can take the framebuffer away from the standard renderer
+        // has just settled (DS80 above, GMX and TS-Conf here) — suspend or resume
+        // Gigascreen on that edge. One place for all three, and it is vblank, which
+        // is what the prev-FB alloc/free and the palette rewrite need.
+        gigascreenModeGate();
+    }
+
+    // Profi palette refresh. EndFrame is NOT in the display blanking window:
+    // ESPectrum_vsync (fired at scanout line v_active) only STARTS the frame's
+    // emulation, and EndFrame runs when the Z80 frame finishes — typically
+    // mid-scanout of the next refresh. Rewriting conv_color here while the DMA
+    // is on-screen splits the picture into old/new palette halves (stable tear
+    // line during guest palette fades — Karabas-Pro palette test). With v-sync
+    // pacing ON the refresh is applied by ESPectrum::loop right after the
+    // v_sync wait (true blanking start) via profiPaletteApplyPending(); apply
+    // here only when that hook won't run (v-sync pacing off, or maxSpeed which
+    // skips the wait) — unsynced anyway, a tear is unavoidable then.
+    if (!Config::v_sync_enabled || ESPectrum::maxSpeed)
+        profiPaletteApplyPending();
+
+    // DS80 top/bottom border bands (720×576) are rendered per-T-state by the
+    // border state machine (TopBorder/BottomBorder with DS80 geometry) — no
+    // frame-granular fill here.  The stats rectangle is carved out inside
+    // Update_Border_DS80 and owned by OSD::drawStats.
+
+// DS80 framebuffer diagnostic: log framebuffer bytes and latched pointers every 60 frames.
+    // This tells us whether the renderer is filling the framebuffer correctly.
+    {
+// #if !PICO_RP2040
+//         static uint32_t ds80_diag_frame = 0;
+//         if (profi_ds80_active && ++ds80_diag_frame >= 60) {
+//             ds80_diag_frame = 0;
+//             const int ds80_voff = (vga.yres >= 288) ? 24 : 0;
+//             const int pad_l     = ((int)vga.xres - 256) / 2;
+//             // Log latched pointers and 8 framebuffer bytes from content row 0.
+//             uint8_t* row0 = vga.frameBuffer ? (uint8_t*)vga.frameBuffer[ds80_voff]     : nullptr;
+//             uint8_t* row1 = vga.frameBuffer ? (uint8_t*)vga.frameBuffer[ds80_voff+120] : nullptr;
+//             if (row0 && row1)
+//                 Debug::log("[DS80D] grmem=%p clrmem=%p vl=%d fb[%d][%d..%d]=%02X%02X%02X%02X fb[%d]=%02X%02X%02X%02X",
+//                     ds80_frame_grmem, ds80_frame_clrmem, (int)MemESP::videoLatch,
+//                     ds80_voff, pad_l, pad_l+3,
+//                     row0[pad_l], row0[pad_l+1], row0[pad_l+2], row0[pad_l+3],
+//                     ds80_voff+120,
+//                     row1[pad_l], row1[pad_l+1], row1[pad_l+2], row1[pad_l+3]);
+//         }
+// #endif
+    }
+
+    // Frame-timing diagnostic: average CPU::loop() time, logged every 60 frames.
+#if PERF_TRACE
+    {   // all archs: cpu_frame_us is accumulated unconditionally in CPU::loop()
+        extern volatile uint32_t cpu_frame_us;
+        extern volatile uint32_t fdd_step_us;   // time in end-of-frame rvmWD1793Step
+        extern volatile uint32_t hdmi_irq_max_gap_us;
+        extern volatile uint32_t hdmi_irq_max_dur_us;   // time SPENT in the line ISR
+        static uint32_t port_log_frame = 0;
+        static uint32_t cpu_accum = 0, cpu_max = 0, gap_max = 0, dur_max = 0;
+        static uint32_t fdd_step_accum = 0, fdd_step_max = 0;
+        static uint32_t fdd_ports_accum = 0, fdd_ports_max = 0;
+        static uint64_t wall_t0 = 0;
+        cpu_accum += cpu_frame_us;
+        if (cpu_frame_us > cpu_max) cpu_max = cpu_frame_us;
+        fdd_step_accum += fdd_step_us;
+        if (fdd_step_us > fdd_step_max) fdd_step_max = fdd_step_us;
+        fdd_ports_accum += Ports::fdd_ports_us;
+        if (Ports::fdd_ports_us > fdd_ports_max) fdd_ports_max = Ports::fdd_ports_us;
+        if (hdmi_irq_max_gap_us > gap_max) gap_max = hdmi_irq_max_gap_us;
+        hdmi_irq_max_gap_us = 0;
+        if (hdmi_irq_max_dur_us > dur_max) dur_max = hdmi_irq_max_dur_us;
+        hdmi_irq_max_dur_us = 0;
+        cpu_frame_us = 0;
+        fdd_step_us = 0;
+        Ports::fdd_ports_us = 0;
+        extern volatile uint32_t ts_render_us, ts_tsu_us, ts_dma_us, ts_dma_words, ts_dma_words_ram, ts_dma_words_blt, ts_dma_words_fill;
+        extern volatile uint32_t ts_base_us, ts_out_us;
+        static uint32_t base_accum = 0, out_accum = 0;
+        base_accum += ts_base_us; out_accum += ts_out_us; ts_base_us = ts_out_us = 0;
+        extern volatile uint32_t ts_poll_ff, ts_poll_ff_t, ts_poll_reads, ts_int_frm, ts_int_late, ts_int_miss;
+        static uint32_t late_accum = 0, miss_accum = 0;
+        static uint32_t pff_accum = 0, pfft_accum = 0, prd_accum = 0, frm_accum = 0;
+        pff_accum += ts_poll_ff; pfft_accum += ts_poll_ff_t; prd_accum += ts_poll_reads; ts_poll_ff = ts_poll_ff_t = ts_poll_reads = 0;
+        frm_accum += ts_int_frm; ts_int_frm = 0;
+        late_accum += ts_int_late; ts_int_late = 0; miss_accum += ts_int_miss; ts_int_miss = 0;
+        extern volatile uint32_t ts_c1_us, ts_c1_wait_us, ts_c1_jobs, ts_c1_waits, ts_dma_c1_us, ts_c1_wait_dma_us;
+        static uint32_t tsr_accum = 0, tsr_max = 0, tsu_accum = 0, dma_accum = 0, dmaw_accum = 0;
+        static uint32_t c1_accum = 0, c1w_accum = 0, c1w_max = 0, c1j_accum = 0, c1n_accum = 0, c1d_accum = 0, c1wd_accum = 0, c1wd_max = 0;
+        tsr_accum += ts_render_us; if (ts_render_us > tsr_max) tsr_max = ts_render_us;
+        tsu_accum += ts_tsu_us;
+        dma_accum += ts_dma_us; dmaw_accum += ts_dma_words;
+        static uint32_t dmar_accum = 0, dmab_accum = 0, dmaf_accum = 0;
+        dmar_accum += ts_dma_words_ram; dmab_accum += ts_dma_words_blt; dmaf_accum += ts_dma_words_fill;
+        ts_dma_words_ram = ts_dma_words_blt = ts_dma_words_fill = 0;
+        c1_accum += ts_c1_us; c1w_accum += ts_c1_wait_us; if (ts_c1_wait_us > c1w_max) c1w_max = ts_c1_wait_us;
+        c1j_accum += ts_c1_jobs; c1n_accum += ts_c1_waits;
+        c1d_accum += ts_dma_c1_us; c1wd_accum += ts_c1_wait_dma_us; if (ts_c1_wait_dma_us > c1wd_max) c1wd_max = ts_c1_wait_dma_us;
+        ts_render_us = ts_tsu_us = ts_dma_us = ts_dma_words = 0;
+        ts_c1_us = ts_c1_wait_us = ts_c1_jobs = ts_c1_waits = ts_dma_c1_us = ts_c1_wait_dma_us = 0;
+        if (++port_log_frame >= 60) {
+            uint64_t now = time_us_64();
+            float fps = wall_t0 ? (60.0f * 1000000.0f / (float)(now - wall_t0)) : 0.0f;
+            wall_t0 = now;
+            port_log_frame = 0;
+            // XIP cache hit ratio over the window (both cores, flash + butter
+            // PSRAM together — the RP2350 has ONE XIP cache and one counter pair).
+            // Saturating 32-bit counters, write-any-to-clear.
+            volatile uint32_t *xip_hit = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_HIT_OFFSET);
+            volatile uint32_t *xip_acc = (volatile uint32_t *)(XIP_CTRL_BASE + XIP_CTR_ACC_OFFSET);
+            uint32_t xh = *xip_hit, xa = *xip_acc;
+            *xip_hit = 0; *xip_acc = 0;
+            extern uint32_t g_frm_int_miss, g_brd_min, g_brd_max, g_brd_delta, g_int_last_t, g_halt_t;
+            Debug::log("[PERF] 60f: cpu=%.1fms (max %.1fms) fdd_step=%.1fms (max %.1fms) fdd_ports=%.1fms (max %.1fms) hdmiGapMax=%uus hdmiDurMax=%uus xip=%u/%u (%.1f%% hit, %.2fM miss/s) realFPS=%.2f intMiss=%u/60f brdT=%u..%u d=%u intT=%u haltT=%u",
+                cpu_accum / 60000.0f, cpu_max / 1000.0f,
+                fdd_step_accum / 60000.0f, fdd_step_max / 1000.0f,
+                fdd_ports_accum / 60000.0f, fdd_ports_max / 1000.0f,
+                (unsigned)gap_max, (unsigned)dur_max,
+                (unsigned)xh, (unsigned)xa, xa ? 100.0f * (float)xh / (float)xa : 0.0f,
+                (float)(xa - xh) * fps / 60.0f / 1e6f, fps, (unsigned)g_frm_int_miss,
+                (unsigned)(g_brd_max ? g_brd_min : 0), (unsigned)g_brd_max, (unsigned)g_brd_delta, (unsigned)(CPU::statesInFrame ? g_int_last_t % CPU::statesInFrame : 0),
+                (unsigned)(CPU::statesInFrame ? g_halt_t % CPU::statesInFrame : 0));
+            g_frm_int_miss = 0; g_brd_min = 0xFFFFFFFF; g_brd_max = 0;
+            // Border landing position, its own line for the same reason. Both
+            // numbers are fb columns (fb byte = 2*col) of border changes inside
+            // the top band, so they are directly comparable with a screenshot
+            // and, machine to machine, with each other.
+            {
+extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
+                char bcb[160]; int bp = 0;
+                for (uint8_t i = 0; i < g_brd_col_used && bp < 130; i++)
+                    bp += snprintf(bcb + bp, sizeof(bcb) - bp, " col%u/fb%u x%u",
+                                   g_brd_col_v[i], g_brd_col_v[i] * 2u, g_brd_col_n[i]);
+                bcb[bp] = 0;
+                Debug::log("[PERF] brd:%s", bp ? bcb : " none");
+                g_brd_col_used = 0;
+            }
+            // Audio path on its own line (every machine): timer ticks per 60 frames
+            // (expect ~38400 = 60 x 20.48 ms x 31250 Hz; fewer = the core0 alarm IRQ
+            // starved), ticks that found the frame buffer exhausted (hold = ZX sample
+            // frozen — a late/missing frame), frames whose mix was one constant (the
+            // guest itself was silent), and the HDMI packet-queue health (und = queue
+            // empty at a pop = producer starved; skip/dup = late line ISR; q = depth
+            // watermarks against the 64 target / 128 cap). Which of hold / flat / und
+            // moves during a dropout names the stage where the sample died.
+            {
+                extern volatile uint32_t g_pcm_tick_ct, g_pcm_hold_ct, g_aud_flat_frames;
+                uint32_t ticks = g_pcm_tick_ct, hold = g_pcm_hold_ct, flat = g_aud_flat_frames;
+                g_pcm_tick_ct = 0; g_pcm_hold_ct = 0; g_aud_flat_frames = 0;
+                uint32_t und = 0, skip = 0, dup = 0, qmin = 0, qmax = 0;
+#if defined(VGA_HDMI)
+                if (Config::audio_driver == 4) hdmi_audio_health_snapshot(&und, &skip, &dup, &qmin, &qmax);
+#endif
+                Debug::log("[PERF] aud: ticks=%u hold=%u flat=%u/60 hdmi: und=%u skip=%u dup=%u q=%u..%u",
+                    (unsigned)ticks, (unsigned)hold, (unsigned)flat,
+                    (unsigned)und, (unsigned)skip, (unsigned)dup, (unsigned)qmin, (unsigned)qmax);
+            }
+            // TS-Conf half on its own line: Debug::log truncates at 256 bytes.
+            if (Z80Ops::isTsconf)
+                Debug::log("[PERF] ts: tsRender=%.1fms (max %.1fms, base %.1f tsu %.1f out %.1f) c1=%.1fms/%ul wait=%.1fms (max %.1fms, %u/60) dmaC1=%.1fms waitDma=%.1fms (max %.1fms) dma=%.1fms/%uw (ram %u blt %u fill %u) poll=%u ff=%u/%ukT frmInt=%u/60f frmLate=%u frmMiss=%u",
+                    tsr_accum / 60000.0f, tsr_max / 1000.0f, base_accum / 60000.0f, tsu_accum / 60000.0f, out_accum / 60000.0f,
+                    c1_accum / 60000.0f, (unsigned)(c1j_accum / 60), c1w_accum / 60000.0f, c1w_max / 1000.0f, (unsigned)c1n_accum,
+                    c1d_accum / 60000.0f, c1wd_accum / 60000.0f, c1wd_max / 1000.0f,
+                    dma_accum / 60000.0f, (unsigned)(dmaw_accum / 60), (unsigned)(dmar_accum / 60), (unsigned)(dmab_accum / 60), (unsigned)(dmaf_accum / 60),
+                    (unsigned)(prd_accum / 60), (unsigned)(pff_accum / 60), (unsigned)(pfft_accum / 60000), (unsigned)frm_accum, (unsigned)late_accum, (unsigned)miss_accum);
+            // DRAM model (TsConf.cpp): CPU wait states inserted at 14 MHz, DRAM cycles
+            // the CPU and the video fetcher took from running DMAs, against the
+            // DMAs' own cycle count — the numbers that decide Bomberman's copy phase.
+            if (Z80Ops::isTsconf) {
+                extern volatile uint32_t ts_cpu_wait_t, ts_dma_steal_cyc, ts_dma_vid_cyc, ts_dma_cyc, ts_row_rebuilds;
+                static uint32_t wait_accum = 0, steal_accum = 0, vid_accum = 0, dcyc_accum = 0, rb_accum = 0;
+                wait_accum += ts_cpu_wait_t; steal_accum += ts_dma_steal_cyc; vid_accum += ts_dma_vid_cyc; dcyc_accum += ts_dma_cyc; rb_accum += ts_row_rebuilds;
+                ts_cpu_wait_t = ts_dma_steal_cyc = ts_dma_vid_cyc = ts_dma_cyc = ts_row_rebuilds = 0;
+                // rowRebuild = cache rows rebuilt because a CPU window changed page (TsDramCache.h,
+                // ~1500 cycles each) — the one cost of the row representation that scales with the guest.
+                Debug::log("[PERF] dram: cpuWait=%ukT/60f dma=%ukcyc stolen: cpu=%ukcyc vid=%ukcyc rowRebuild=%u/60f",
+                    (unsigned)(wait_accum / 1000), (unsigned)(dcyc_accum / 1000), (unsigned)(steal_accum / 1000), (unsigned)(vid_accum / 1000), (unsigned)rb_accum);
+                wait_accum = steal_accum = vid_accum = dcyc_accum = rb_accum = 0;
+            }
+            // Frame-work budget against fishbone's 32-line interrupt-free window.
+            // Its own line: the ts line above is already near Debug::log's 256-byte cut.
+            if (Z80Ops::isTsconf) {
+                extern uint32_t ts_work_max, ts_work_min, ts_work_sum, ts_work_cnt, ts_plyr_hit;
+                extern uint32_t ts_isr_min, ts_isr_max, ts_isr_sum, ts_isr_cnt;
+                extern uint32_t ts_miss_ei, ts_miss_di, ts_miss_halt;
+                if (ts_work_cnt) {
+                    const float perLine = (float)(TSTATES_PER_LINE_PENTAGON << ESPectrum::multiplicator);
+                    Debug::log("[PERF] tsw: work=%.2f/%.2f/%.2f lines (avg/min/max of %u frames, window=32.00) plyrHit=%u/60f isr=%u/%u/%u T x%u miss ei=%u di=%u halted=%u",
+                        (ts_work_sum / (float)ts_work_cnt) / perLine, ts_work_min / perLine, ts_work_max / perLine,
+                        (unsigned)ts_work_cnt, (unsigned)ts_plyr_hit,
+                        (unsigned)(ts_isr_cnt ? ts_isr_sum / ts_isr_cnt : 0), (unsigned)(ts_isr_cnt ? ts_isr_min : 0),
+                        (unsigned)ts_isr_max, (unsigned)(ts_isr_cnt / 60),
+                        (unsigned)ts_miss_ei, (unsigned)ts_miss_di, (unsigned)ts_miss_halt);
+                }
+                ts_work_max = 0; ts_work_min = 0xFFFFFFFF; ts_work_sum = 0; ts_work_cnt = 0; ts_plyr_hit = 0;
+                ts_isr_min = 0xFFFFFFFF; ts_isr_max = 0; ts_isr_sum = 0; ts_isr_cnt = 0;
+                ts_miss_ei = ts_miss_di = ts_miss_halt = 0;
+            }
+            pff_accum = pfft_accum = prd_accum = frm_accum = 0; base_accum = out_accum = 0; late_accum = miss_accum = 0;
+#if PERF_HIST
+            // Z80 opcode mix, every 600 frames: instructions/frame, ns per
+            // instruction (against cpu= of the same window) and the top 20
+            // base opcodes — the data the XIP-pinning choice needs.
+            {
+                extern uint32_t z80_op_hist[256];
+                extern uint32_t z80_chk_cnt;
+                static uint32_t hist_cpu_us = 0, hist_windows = 0;
+                hist_cpu_us += cpu_accum;
+                if (++hist_windows >= 10) {
+                    uint64_t total = 0;
+                    for (int i = 0; i < 256; i++) total += z80_op_hist[i];
+                    char line[256]; int pos = 0;
+                    uint8_t used[256] = {0};
+                    for (int k = 0; k < 20 && pos < (int)sizeof(line) - 12; k++) {
+                        int best = -1; uint32_t bv = 0;
+                        for (int i = 0; i < 256; i++)
+                            if (!used[i] && z80_op_hist[i] > bv) { bv = z80_op_hist[i]; best = i; }
+                        if (best < 0 || bv == 0) break;
+                        used[best] = 1;
+                        pos += snprintf(line + pos, sizeof(line) - pos, " %02X:%.1f", best,
+                                        total ? 100.0 * (double)bv / (double)total : 0.0);
+                    }
+                    Debug::log("[PERF] z80: %u instr/frame (%.0f%% checked), %.0f ns/instr, top%%:%s",
+                        (unsigned)(total / (hist_windows * 60)),
+                        total ? 100.0 * (double)z80_chk_cnt / (double)total : 0.0,
+                        total ? 1000.0 * (double)hist_cpu_us / (double)total : 0.0, line);
+                    for (int i = 0; i < 256; i++) z80_op_hist[i] = 0;
+                    z80_chk_cnt = 0;
+                    if (Config::arch == A_TSCONF) {
+                        extern uint32_t ts_page_hist[257];
+                        extern uint32_t ts_dma_src_hist[256], ts_dma_dst_hist[256];
+                        // Top pages of one histogram as " page[*]:share" (* = SRAM-backed).
+                        auto top = [&](uint32_t* h, int cnt, int k, char* out, int outsz) {
+                            uint64_t tot = 0; for (int i = 0; i < cnt; i++) tot += h[i];
+                            int p = 0; uint8_t used[257] = {0};
+                            for (int j = 0; j < k && p < outsz - 14; j++) {
+                                int best = -1; uint32_t bv = 0;
+                                for (int i = 0; i < cnt; i++) if (!used[i] && h[i] > bv) { bv = h[i]; best = i; }
+                                if (best < 0 || bv == 0) break;
+                                used[best] = 1;
+                                const char* tag = "";
+                                if (best == 256) tag = "ROM";
+                                else if (((uintptr_t)TsConf::pagePtr((uint32_t)best) >> 28) == 2) tag = "*";
+                                p += snprintf(out + p, outsz - p, " %d%s:%.1f", best == 256 ? 0 : best, tag,
+                                              tot ? 100.0 * (double)bv / (double)tot : 0.0);
+                            }
+                            return tot;
+                        };
+                        uint64_t ptot = top(ts_page_hist, 257, 14, line, sizeof(line));
+                        Debug::log("[PERF] pages: cpu %u acc/frame (* = SRAM), vpage=%u:%s",
+                            (unsigned)(ptot / (10 * 60)), TsConf::r.vpage, line);
+                        uint64_t stot = top(ts_dma_src_hist, 256, 8, line, sizeof(line));
+                        Debug::log("[PERF] dma src %u w/frame:%s", (unsigned)(stot / (10 * 60)), line);
+                        uint64_t dtot = top(ts_dma_dst_hist, 256, 8, line, sizeof(line));
+                        Debug::log("[PERF] dma dst %u w/frame:%s", (unsigned)(dtot / (10 * 60)), line);
+                        for (int i = 0; i < 257; i++) ts_page_hist[i] = 0;
+                        for (int i = 0; i < 256; i++) ts_dma_src_hist[i] = ts_dma_dst_hist[i] = 0;
+                    }
+                    {   // host time inside CPU::loop: ports by low byte, then the big buckets
+                        const double fr = 10.0 * 60.0;
+                        int p = 0; uint8_t used[512] = {0};
+                        uint64_t ptot = 0; for (int i = 0; i < 512; i++) ptot += perf_port_us[i];
+                        for (int j = 0; j < 8 && p < (int)sizeof(line) - 28; j++) {
+                            int best = -1; uint32_t bv = 0;
+                            for (int i = 0; i < 512; i++) if (!used[i] && perf_port_us[i] > bv) { bv = perf_port_us[i]; best = i; }
+                            if (best < 0) break;
+                            used[best] = 1;
+                            p += snprintf(line + p, sizeof(line) - p, " %s%02X:%.2fms/%u",
+                                          best >= 256 ? "o" : "i", best & 0xFF, bv / fr / 1000.0,
+                                          (unsigned)(perf_port_n[best] / fr));
+                        }
+                        Debug::log("[PERF] ports: %.2fms/f total:%s", ptot / fr / 1000.0, line);
+                        Debug::log("[PERF] host: halt=%.2fms/%u drawtick=%.2fms/%u palpoll=%.2fms/%u endframe=%.2fms (per frame)",
+                            perf_bucket_us[PB_HALT] / fr / 1000.0, (unsigned)(perf_bucket_n[PB_HALT] / fr),
+                            perf_bucket_us[PB_DRAWTICK] / fr / 1000.0, (unsigned)(perf_bucket_n[PB_DRAWTICK] / fr),
+                            perf_bucket_us[PB_PALPOLL] / fr / 1000.0, (unsigned)(perf_bucket_n[PB_PALPOLL] / fr),
+                            perf_bucket_us[PB_ENDFRAME] / fr / 1000.0);
+                        DivMMC::perfDump((float)fr);
+                        for (int i = 0; i < 512; i++) perf_port_us[i] = perf_port_n[i] = 0;
+                        for (int i = 0; i < PB_N; i++) perf_bucket_us[i] = perf_bucket_n[i] = 0;
+                    }
+                    hist_cpu_us = 0; hist_windows = 0;
+                }
+            }
+#endif // PERF_HIST
+            tsr_accum = tsr_max = tsu_accum = dma_accum = dmaw_accum = 0; dmar_accum = dmab_accum = dmaf_accum = 0; c1_accum = c1w_accum = c1w_max = c1j_accum = c1n_accum = c1d_accum = c1wd_accum = c1wd_max = 0;
+            cpu_accum = cpu_max = gap_max = dur_max = 0;
+            fdd_step_accum = fdd_step_max = 0;
+            fdd_ports_accum = fdd_ports_max = 0;
+        }
+    }
+#endif // PERF_TRACE
+
+    // Per-frame swap/accessor snapshot for the [NEG] worst-frame attribution
+    // in ESPectrum::loop (this block resets the live counters every frame, so
+    // the loop tail could not read them otherwise).  swap_us includes the
+    // idle-window part accrued after the previous frame's pacing; the in-frame
+    // share is swap_us - swap_idle_us.
+    {
+        extern volatile uint32_t g_frame_swap_us, g_frame_swap_idle_us, g_frame_accb;
+        g_frame_swap_us      = mem_spi_swap_us;
+        g_frame_swap_idle_us = mem_spi_swap_idle_us;
+        g_frame_accb         = mem_spi_accb;
+    }
+
+    // SPI PSRAM swap diagnostics: log eviction count once every 60 frames.
+    {
+        static uint32_t evict_log_frame = 0;
+        static uint32_t evict_accum = 0;
+        static uint32_t evict_last_page = 0;
+        static uint32_t skip_accum = 0;
+        static uint32_t wbskip_accum = 0;
+        static uint32_t swap_us_accum = 0;
+        static uint32_t accb_accum = 0;
+        static uint32_t promo_accum = 0;
+        static uint32_t promo_idle_accum = 0;
+        static uint32_t swap_idle_us_accum = 0;
+        evict_accum  += mem_spi_evict_count;
+        skip_accum   += mem_spi_read_skip;
+        wbskip_accum += mem_spi_wb_skip;
+        swap_us_accum += mem_spi_swap_us;
+        accb_accum   += mem_spi_accb;
+        promo_accum  += mem_spi_promo;
+        promo_idle_accum   += mem_spi_promo_idle;
+        swap_idle_us_accum += mem_spi_swap_idle_us;
+        evict_last_page = mem_spi_evict_page;
+        mem_spi_evict_count = 0;
+        mem_spi_read_skip = 0;
+        mem_spi_wb_skip = 0;
+        mem_spi_swap_us = 0;
+        mem_spi_accb = 0;
+        mem_spi_promo = 0;
+        mem_spi_promo_idle = 0;
+        mem_spi_swap_idle_us = 0;
+        // Every 300 frames (5 s): the Debug::log line itself costs ~6 ms over
+        // USB-CDC and was reliably the worst frame of every 60-frame window
+        // during disk/page activity — keep the diagnostic, shed 80% of its
+        // frame-time pollution.
+        if (++evict_log_frame >= 300) {
+            evict_log_frame = 0;
+            // swap=TOTALms(idle Xms): X of the total ran in the frame's idle
+            // window (MemESP::idleService) — only TOTAL−X ate emulation time.
+            if (evict_accum || skip_accum || accb_accum)
+                Debug::log("[SPI] evict/60f=%u skip=%u wbskip=%u accb=%u promo=%u(idle %u) swap=%ums(idle %u) last_pg=%u (%.1f/frame)",
+                           evict_accum, skip_accum, wbskip_accum, accb_accum, promo_accum,
+                           promo_idle_accum, swap_us_accum / 1000u,
+                           swap_idle_us_accum / 1000u, evict_last_page, evict_accum / 60.0f);
+            skip_accum = 0;
+            wbskip_accum = 0;
+            swap_us_accum = 0;
+            accb_accum = 0;
+            promo_accum = 0;
+            promo_idle_accum = 0;
+            swap_idle_us_accum = 0;
+            evict_accum = 0;
+#if MEM_ACCESS_TRACE
+            // Accesses served per evicted-page load (accessor-mode feasibility):
+            // clean victims with <512 accesses would have been cheaper served
+            // per-byte over SPI than via the 16KB page load (~600 = breakeven).
+            if (mem_acc_clean_cnt || mem_acc_dirty_cnt) {
+                Debug::log("[ACC] clean n=%u avg=%u max=%u <128=%u <512=%u | dirty n=%u avg=%u",
+                           mem_acc_clean_cnt,
+                           mem_acc_clean_cnt ? mem_acc_clean_sum / mem_acc_clean_cnt : 0,
+                           mem_acc_clean_max, mem_acc_lo128, mem_acc_lo512,
+                           mem_acc_dirty_cnt,
+                           mem_acc_dirty_cnt ? mem_acc_dirty_sum / mem_acc_dirty_cnt : 0);
+                mem_acc_clean_cnt = mem_acc_clean_sum = mem_acc_clean_max = 0;
+                mem_acc_lo128 = mem_acc_lo512 = 0;
+                mem_acc_dirty_cnt = mem_acc_dirty_sum = 0;
+            }
+#endif
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // DS80 frame finalization: NO BLIT NEEDED.
+    // vga.frameBuffer written scan-line-synchronous by the Z80 renderer;
+    // rows 240..479 zeroed at DS80 activation and never touched again.
+    // ----------------------------------------------------------------
+    // Clear DMA attr shadow and charrow write counters for next frame
+    if (Config::dma_mode)
+        Z80DMA::resetAttrShadow();
+    dma_attr_override = nullptr;
+
+    // Rebuild Gigascreen blend palette if a ULA+ session clobbered its slots.
+    // Safe here: EndFrame runs during blanking, HDMI DMA is not reading conv_color.
+    if (gigascreen_lut_rebuild_deferred && gigascreenArmed()) {
+        gigascreen_lut_rebuild_deferred = false;
+        gigsBlendLUTReady = false;
+        initGigascreenBlendLUT();
+    }
+
+    // Flush deferred ULA+ palette updates so HDMI DMA sees consistent palette
+    // for the entire next frame (prevents top-of-screen palette tearing)
+    if (ulaplus_enabled) {
+        if (ulaplus_alubytes_dirty) {
+            ulaplus_alubytes_dirty = false;
+            ulaplus_palette_dirty = false; // full rebuild supersedes per-entry flush
+            regenerateUlaPlusAluBytes();
+        } else {
+            ulaPlusFlushPalette();
+        }
+    }
+
+    // TS-Conf CRAM → hardware slots. NOT "deferred to blanking" like the ULA+
+    // flush above: EndFrame is mid-scanout (the guest frame finishes early), and
+    // a palette rewritten there splits the display into old/new halves. The
+    // apply is scheduled on the BEAM instead (tsPalettePoll — see the comment
+    // there); here it only runs when the beam has reached the change's row, or
+    // unconditionally in the cases where the beam cannot be followed. Anything
+    // still pending is polled from the frame-pacing waits in ESPectrum::loop.
+    // NO tsRenderDrain() here: the core1 line queue is allowed to run across the
+    // frame boundary (the HALT fast-forward posts most of a frame in one burst
+    // and waiting for it here cost core0 ~3.3 ms/frame on TMNT, hw 2026-09-07).
+    // Whoever writes what a pending line READS drains first: TsConf::dmaStart
+    // (guest memory), do_OSD / osdCenteredMsg / progressDialog / gfxBegin (the
+    // framebuffer), mode switches and Reset. The palette flush runs with lines
+    // pending on purpose — a pending line carries its palette bank and the bank
+    // maps are read byte by byte, so only a cell that MOVED offset (a shared
+    // cell changing colour) can come out old-or-new per pixel, for one frame.
+    if (Z80Ops::isTsconf) {
+        tsPalettePoll(false);
+        ts_pal_flushes = 0;
+        tsPalDbgPrint();
+#if TSPAL_DBG
+        ts_frame_start_us = time_us_64();
+#endif
+    }
+
+    static uint8_t skipCnt = 0;
+    static bool wasMaxSpeed = false;
+    bool skipFrame = ESPectrum::maxSpeed && (++skipCnt & 63);
+    if (!ESPectrum::maxSpeed && wasMaxSpeed) {
+        // Exiting maxSpeed: fill entire framebuffer border with current color
+        uint8_t border = brd & 0xFF;
+        for (int y = 0; y < (int)vga.yres; y++)
+            memset(vga.frameBuffer[y], border, vga.xres);
+    }
+    wasMaxSpeed = ESPectrum::maxSpeed;
+    ts_fast_armed = false;
+    ts_line_t = 0xFFFFFFFFu;
+    if (ts_render_live) tsC1PlacementPoll();   // GS active → render on core0, see the function
+    if (skipFrame) {
+        // Skip rendering: 1/1024 frames during tape loading, 1/256 otherwise
+        Draw = VIDEO::snow_toggle ? &Blank_Snow : &Blank;
+        Draw_Opcode = VIDEO::snow_toggle ? &Blank_Snow_Opcode : &Blank_Opcode;
+        ts_fast_armed = ts_render_live != 0;   // fast path == Blank on a skipped frame
+    } else if (ts_render_live) {
+        // TS-Conf whole-line renderer: T-state counter instead of the beam machine.
+        // Scaled to the CPU clock: at ZCLK 14 MHz a line is 224<<2 T of CPU::tstates,
+        // and an unscaled clock rendered the whole picture in the first quarter of
+        // the frame — invisible while every frame was flushed at the HALT, torn
+        // pictures once lines rendered at their own time (Ninja Gaiden, hw 2026-09-07).
+        // Start at the first VISIBLE line, which is lin_end rows above the first
+        // content one: the border bands are rendered row by row too (tsBandRow).
+        int t0 = tStatesScreen - (int)lin_end * (int)tStatesPerLine;
+        if (t0 < 0) t0 = 0;
+        ts_line_t = (uint32_t)t0 << ESPectrum::multiplicator;
+        ts_line_idx = 0;
+        ts_row_idx = 0;
+        // A held re-index: VRAM is complete now (the blit ran inside this frame),
+        // but the picture is NOT released here — the guest frame boundary has no
+        // fixed relation to the display beam once V-Sync pacing is off (hw
+        // 2026-09-17, vsync=0: `bad≈1000 rows/61 sweeps`, every update torn). It
+        // is released by tsPalettePoll when the beam enters blanking, whole
+        // picture and palette together (tsReindexRelease).
+        if (ts_reindex_hold) {
+            if (ts_reindex_ready_seen && ++ts_reindex_ready_frames >= 2) {
+                // Ready for TWO whole frames and still not released: no poll
+                // saw the beam leave the picture (a full-height mode, a core0
+                // with no idle, ...). Release now, wherever the beam is — one
+                // torn frame beats a picture that never renders. Two frames,
+                // not one: with V-Sync pacing a frame that ENDS late in
+                // blanking has its release at the NEXT blanking start, which
+                // comes just before the second EndFrame — forcing at the first
+                // one released ~1 ms early, with the beam still in the picture.
+#if TSPAL_DBG
+                ts_dbg_rel_forced++;
+#endif
+                tsReindexRelease(false);
+            } else {
+                if (!ts_reindex_ready_seen) ts_reindex_ready_frames = 0;
+                tsReindexReady = true;
+                ts_reindex_ready_seen = true;
+                // Reduce the map NOW, off the release's critical path (its own
+                // Assign then hits the CRAM-generation cache — unless the guest
+                // writes CRAM again before the release, which a continuous
+                // writer does; ts256Reduce is cheap enough for that now).
+                // Nothing is posted while the hold is up, so a renumbered map
+                // can only reach rows the release re-renders anyway — but not
+                // while core1 still holds rows posted before the hold.
+                if (ts_pal256_live && !tsC1Pending()) { ts256Assign(false); ts_pal_assigned = true; }
+            }
+        } else {
+            ts_reindex_ready_seen = false;
+        }
+        ts_reindex_held_prev = false;
+        ts_frame_seq++;                    // the frame whose lines are posted from here (tsPalettePoll)
+        Draw = &TsDraw;
+        Draw_Opcode = &TsDraw_Opcode;
+        ts_fast_armed = true;
+    } else if (VIDEO::snow_toggle
+        && !(Config::timex_video && VIDEO::timex_mode != 0)
+    ) {
+        Draw = &MainScreen_Blank_Snow;
+        Draw_Opcode = &MainScreen_Blank_Snow_Opcode;
+    } else {
+        Draw = &MainScreen_Blank;
+        Draw_Opcode = &MainScreen_Blank_Opcode;
+    }
+    tsFastMemRecalc();
+
+    // DS80 borders are rendered by the state machine with DS80 geometry
+    // (applyDS80BorderGeometry).  TopBorder_Blank handles lin_end==0 and
+    // MiddleBorder guards lin_end2==yres, so no Border_Blank override needed.
+    // Refresh the per-frame stats carve-out flags for Update_Border_DS80.
+    {
+        int bx0 = 0, bx1 = 0;
+        ds80_osd_carve = ds80_border_geom
+            && osdBarRange((VIDEO::OSD & 0x03) && !(VIDEO::OSD & 0x04), (int)vga.xres, bx0, bx1);
+        ds80_cv_c0 = bx0 >> 1;                 // 640x480: 84..156, 720x576: 94..166
+        ds80_cv_c1 = (bx1 + 1) >> 1;           // (from col 0 with the LED panel)
+        ds80_cv_y0 = ((int)vga.yres >= 288) ? 268 : 220;
+    }
+
+    if (bl_live) {
+        // Borderless: no border to draw — the scaler writes every row (frame pads
+        // included) at line end, so the machine stays parked.
+        brdGigascreenChange = false;
+        DrawBorder = &Border_Blank;
+        lastBrdTstate = tStatesBorder;
+        brdChange = false;
+    } else if (gmx_ext_live || ts_render_live) {
+        // GMX 640x200 / TS-Conf non-ZX modes: the per-T-state border machine
+        // stays parked (its writers would put raw ZX indices into a pair-slot
+        // framebuffer) — cold flash body in gmxBorderFrame, cheap check here.
+        gmxBorderFrame(skipFrame);
+        if (ts_render_live) tsBandReplay();   // ...and put the per-line band colours back
+        brdGigascreenChange = false;
+        DrawBorder = &Border_Blank;
+        lastBrdTstate = tStatesBorder;
+        brdChange = false;
+    } else {
+    if (!skipFrame) {
+        if (brdChange || brdGigascreenChange) {
+            DrawBorder();
+            brdnextframe = true;
+            brdGigascreenChange = false;
+        } else {
+            if (brdnextframe) {
+                DrawBorder();
+                brdnextframe = false;
+            }
+        }
+    } else {
+        brdGigascreenChange = false;
+    }
+
+    // Restart border drawing (single TopBorder_Blank for all models)
+    if (skipFrame)
+        DrawBorder = &Border_Blank;
+    else
+        DrawBorder = &TopBorder_Blank;
+    lastBrdTstate = tStatesBorder;
+    brdChange = false;
+    }
+
+    // ── Gigascreen Auto, why it is (not) engaging ─────────────────────────────
+    // Auto engages on ONE thing: gigascreenAutoFlip() from the machine's paging
+    // port. So the question a report of "Auto does nothing" asks is always which
+    // of four states we are in, and this line answers it without a special build:
+    //   flips=0            the guest never changed the displayed page — nothing to
+    //                      detect, and no Gigascreen state is at fault
+    //   cfg=0              the user's pick never armed (prev-FB refused: see the
+    //                      "prevFB alloc failed" line above it)
+    //   blk=1              a whole-line video mode owns the framebuffer
+    //                      (VIDEO::gigascreenModeGate — DS80/GMX/TS non-ZX/TSU)
+    //   prevFB=0           armed but the buffer is gone (network lease, OOM)
+    // Quiet by construction: it prints on a state CHANGE, and once a second only
+    // while flips are arriving without Gigascreen going live — i.e. exactly the
+    // failure. A healthy machine emits one line when Auto engages and one when it
+    // stops, whatever the console is doing.
+    if (Config::gigascreen_onoff == 2) {
+        static uint8_t  gs_dbg_fr = 0, gs_dbg_left = 30;
+        static uint32_t gs_dbg_sig = 0xFFFFFFFFu;
+        const uint32_t sig = (uint32_t)gigascreen_enabled
+                           | ((uint32_t)Config::gigascreen_enabled << 1)
+                           | ((uint32_t)gigascreen_mode_block << 2)
+                           | ((uint32_t)(vga.prevFrameBuffer != nullptr) << 3)
+                           | ((uint32_t)(ts_render_live != 0) << 4);
+        // Periodic follow-up ONLY on the true failure signature — page flips are
+        // arriving and Gigascreen still does not go live — bounded to ~30 s per
+        // episode and re-armed by any state change. Quiet everywhere else: a screen
+        // that never flips prints the one state line and nothing more, which is
+        // itself the answer (`flips=0` = nothing to detect).
+        const bool stuck = !gigascreen_enabled && gigascreen_auto_flips != 0
+                        && gs_dbg_left != 0;
+        if (sig != gs_dbg_sig || (stuck && ++gs_dbg_fr >= 50)) {
+            if (sig != gs_dbg_sig) gs_dbg_left = 30; else gs_dbg_left--;
+            gs_dbg_sig = sig; gs_dbg_fr = 0;
+            if (Z80Ops::isTsconf)
+                Debug::log("[GS] auto: flips=%u live=%d cfg=%d blk=%d prevFB=%d cd=%u"
+                           " tsRender=%u  TS: 7ffd=%u lock=%u vpage=%u",
+                           (unsigned)gigascreen_auto_flips, (int)gigascreen_enabled,
+                           (int)Config::gigascreen_enabled, (int)gigascreen_mode_block,
+                           (int)(vga.prevFrameBuffer != nullptr),
+                           (unsigned)gigascreen_auto_countdown, (unsigned)ts_render_live,
+                           (unsigned)TsConf::dbg_p7ffd, (unsigned)TsConf::dbg_p7ffd_locked,
+                           (unsigned)TsConf::r.vpage);
+            else
+                Debug::log("[GS] auto: flips=%u live=%d cfg=%d blk=%d prevFB=%d cd=%u",
+                           (unsigned)gigascreen_auto_flips, (int)gigascreen_enabled,
+                           (int)Config::gigascreen_enabled, (int)gigascreen_mode_block,
+                           (int)(vga.prevFrameBuffer != nullptr),
+                           (unsigned)gigascreen_auto_countdown);
+            gigascreen_auto_flips = 0;
+            TsConf::dbg_p7ffd = TsConf::dbg_p7ffd_locked = 0;
+        }
+    }
+
+    if (Config::gigascreen_onoff == 2 && gigascreenArmed()) { // Auto mode
+        if (gigascreen_auto_countdown > 0) {
+            gigascreen_auto_countdown--;
+            if (!gigascreen_enabled) {
+                if (!gigsBlendLUTReady) initGigascreenBlendLUT();
+                // Seed prev from current FB so first blended frame matches current
+                // (otherwise stale prev from previous session causes a flash)
+                InitPrevBuffer();
+                gigascreen_enabled = true;
+            }
+        } else {
+            if (gigascreen_enabled) gigascreen_enabled = false;
+        }
+    }
+
+    // Decay activity counters every frame regardless of the border-glyph setting —
+    // the corner FDD lamp + motor-hum sound (Config::trdosSoundLed) consume them too.
+    LED::decay();
+    if (Config::ledIndicators) {
+        if (gigascreen_enabled) LED::touchR(LED::GIGASCREEN);
+        LED::draw();
+    } else {
+        setLedBar(0);                 // panel gone: its rect goes back to the renderers
+        if (bl_live) blClearCarve(BL_CARVE_LED);   // strip gone: the scaler takes its rows back
+    }
+
+    // Top-border status banner (OSD::notify). Repainted here, after the border
+    // flush above, so a mid-frame border repaint can never leave it half-erased;
+    // it erases itself by asking for one more border repaint when it expires.
+    OSD::drawNotify();
+
+    framecnt++;
+
+    // Debug::log("[HB] f=%u pc=0x%04X bc=0x%04X hl=0x%04X iff=%u rom=%u dffd=0x%02X eff7=0x%02X bl=%u vidlatch=%u",
+    //     framecnt, Z80::getRegPC(), Z80::getRegBC(), Z80::getRegHL(),
+    //     (unsigned)(Z80::isIFF1()?1:0), MemESP::romInUse, Ports::portDFFD, Ports::portEFF7,
+    //     MemESP::bankLatch, MemESP::videoLatch);
+}
+
+// Repaint one full frame from the frozen machine state. The scanline renderer
+// only paints as a side effect of Z80 execution advancing CPU::tstates, so a
+// paused machine never repaints — an OSD window closed while paused would stay
+// on screen until unpause. Walks the paper renderer and the border state
+// machine across a whole frame without executing a single instruction (same
+// video-only technique as CPU::FlushOnHalt / EndFrame's brdChange repaint).
+void VIDEO::RedrawPausedFrame() {
+
+    if (!vga.frameBuffer) return;
+
+    // A TS-Conf palette change still waiting for the beam has to be applied
+    // NOW: the beam rule is meaningless once the machine is stopped — nothing
+    // advances, `tsPalettePoll` is only pumped from ESPectrum::loop, and the
+    // walk below re-renders the whole picture from the CURRENT VRAM. Without
+    // this the paused screen shows the new picture under the previous palette
+    // and keeps showing it for as long as the debugger is open: every colour
+    // of the 256c artwork wrong, the source dither turned into a violent
+    // 1-px checkerboard (hw 2026-09-16, a debugger capture of Kolbass —
+    // `dbgFrameNu`'s footer is in the shot, which is what named the cause).
+    if (Z80Ops::isTsconf && (tsReindexReady || ts_reindex_hold)) { ts_reindex_hold = false; tsReindexReady = false; }
+    if (Z80Ops::isTsconf && tsCramDirty) tsPalettePoll(true);
+
+    uint32_t saved_tstates = CPU::tstates;
+
+    // Arm the paper renderer at start-of-frame state (mirror of EndFrame's
+    // re-arm — while paused it may be left at Blank by a maxSpeed skip-frame).
+    linedraw_cnt = lin_end;
+    tstateDraw = tStatesScreen;
+    void (*blank)(unsigned int, bool);
+    if (snow_toggle && !(Config::timex_video && VIDEO::timex_mode != 0)) {
+        Draw = &MainScreen_Blank_Snow;
+        Draw_Opcode = &MainScreen_Blank_Snow_Opcode;
+        blank = &Blank_Snow;
+    } else {
+        Draw = &MainScreen_Blank;
+        Draw_Opcode = &MainScreen_Blank_Opcode;
+        blank = &Blank;
+    }
+
+    // Walk the whole paper area; the chain parks itself at Blank after lin_end2.
+    // Guard: ~1 line per call, so a frame is ~lines calls — cap well above that.
+    // (paper_off parks at plain Blank even from the snow chain — accept both.)
+    CPU::tstates = 0;
+    for (int guard = 2048; Draw != blank && Draw != &Blank && guard; guard--)
+        Draw(tStatesPerLine, false);
+
+    // Full border repaint: with tstates at end-of-frame the border state machine
+    // walks Top→Middle→Bottom→Blank in one call, preserving the stats carve-outs.
+    // GMX 640x200 is the exception: its border machine is parked (a per-T-state
+    // writer would put raw ZX indices into the pair-slot framebuffer), the bands
+    // are frame-granular, and the side pads come with the content lines just
+    // walked above — so repaint the bands directly instead.
+    if (bl_live) {
+        // Borderless: the walk above rewrote every row, frame pads included.
+    } else if (gmx_ext_live || ts_render_live) {
+        gmx_border_dirty = true;
+        gmxBorderFrame(false);
+    } else {
+    CPU::tstates = CPU::statesInFrame;
+    lastBrdTstate = tStatesBorder;
+    DrawBorder = &TopBorder_Blank;
+    DrawBorder();
+    }
+
+    if (ts_render_live) tsRenderDrain();   // the menu/border repaint that follows writes the same rows
+    CPU::tstates = saved_tstates;
+    // Draw/DrawBorder are left "done" (Blank/Border_Blank); the per-frame
+    // EndFrame call in CPU::loop's paused branch re-arms them as usual.
+}
+
+//----------------------------------------------------------------------------------------------------------------
+// Border Drawing
+//----------------------------------------------------------------------------------------------------------------
+
+// IRAM_ATTR void VIDEO::DrawBorderFast() {
+
+//     uint8_t border = zxColor(borderColor,0);
+
+//     int i = 0;
+
+//     // Top border
+//     for (; i < lin_end; i++) memset((uint32_t *)(vga.frameBuffer[i]),border, vga.xres);
+
+//     // Paper border
+//     int brdsize = (vga.xres - SPEC_W) >> 1;
+//     for (; i < lin_end2; i++) {
+//         memset((uint32_t *)(vga.frameBuffer[i]), border, brdsize);
+//         memset((uint32_t *)(vga.frameBuffer[i] + vga.xres - brdsize), border, brdsize);
+//     }
+
+//     // Bottom border
+//     for (; i < OSD::scrH; i++) memset((uint32_t *)(vga.frameBuffer[i]),border, vga.xres);
+
+// }
+
+IRAM_ATTR void VIDEO::Border_Blank() {
+
+}
+
+//----------------------------------------------------------------------------------------------------------------
+// Specialized Update_Border variants — function pointer avoids per-call branching
+// 48K/128K (brdPairWrite=true, step=4): writes 2 uint32_t (8px) per step via brdptr16 cast
+// Pentagon (brdPairWrite=false, step=1): writes 1 uint16_t (2px) per step via XOR indexing
+//----------------------------------------------------------------------------------------------------------------
+
+static void (*Update_Border)();
+
+// 48K/128K: write 2 uint32_t (8px) at brdptr16[brdcol_cnt] (step=4, brdcol_cnt aligned to 4)
+IRAM_ATTR static void Update_Border_Pair() {
+    uint32_t color32 = VIDEO::brd | (VIDEO::brd << 16);
+    ((uint32_t *)&brdptr16[brdcol_cnt])[0] = color32;
+    ((uint32_t *)&brdptr16[brdcol_cnt])[1] = color32;
+}
+
+IRAM_ATTR static void Update_Border_Pair_Gig() {
+    uint32_t color32 = VIDEO::brd | (VIDEO::brd << 16);
+    // Packed border prev: brdcol_cnt is in uint16-units; in packed (1 byte = 2 px)
+    // 8 px occupy 4 bytes → uint32 covers 8 px. Same nibble repeated → 0x11*nib.
+    uint8_t nib = VIDEO::brd & 0x0F;
+    uint32_t packed32 = nib * 0x11111111u;
+    uint32_t* prevWord = (uint32_t*)&prevBrdptr8[brdcol_cnt];
+    uint32_t old_packed = prevWord[0];
+    if (old_packed != packed32) {
+        prevWord[0] = packed32;
+        // Decompose old packed back to full uint32 per pair (low+high nibble identical
+        // for border since prev was filled with uniform color)
+        uint32_t old_lo_nib = old_packed & 0x0F; // single nibble suffices
+        uint32_t old32 = old_lo_nib * 0x01010101u;
+        uint32_t mixed = blendPixels32(color32, old32);
+        ((uint32_t *)&brdptr16[brdcol_cnt])[0] = mixed;
+        ((uint32_t *)&brdptr16[brdcol_cnt])[1] = mixed;
+        VIDEO::brdGigascreenChange = true;
+    } else {
+        ((uint32_t *)&brdptr16[brdcol_cnt])[0] = color32;
+        ((uint32_t *)&brdptr16[brdcol_cnt])[1] = color32;
+    }
+}
+
+// Pentagon: write 1 uint16_t (2px) at brdptr16[brdcol_cnt ^ 1] (step=1)
+IRAM_ATTR static void Update_Border_XOR() {
+    brdptr16[brdcol_cnt ^ 1] = VIDEO::brd;
+}
+
+// Profi DS80: write 1 uint16_t (2 packed pair bytes = 4px) per T-state.
+// The HDMI/VGA ISR reads pair bytes in (x^2) order, so within an aligned
+// uint16 pair display order is swapped — same ^1 trick as Pentagon.
+// VIDEO::brd already holds the solid border pair byte replicated.
+// ds80_brd_col_off centres the 160 visible T-cols in wider rows (720×576);
+// the off-screen edge cols (h-blanking) are extended from the nearest tact.
+IRAM_ATTR static void Update_Border_DS80() {
+    if (ds80_osd_carve && brdlin_cnt >= ds80_cv_y0 && brdlin_cnt < ds80_cv_y0 + 16) {
+        // Stats box / LED panel: owned by OSD::drawStats / LED::draw — skip it.
+        // 640x480: only the right-pad part is ever reached here (the content
+        // columns are the content renderer's, unless Paper is off); 720x576: the
+        // rect is in the bottom band.
+        const int c = brdcol_cnt + ds80_brd_col_off;
+        if (c >= ds80_cv_c0 && c < ds80_cv_c1) return;
+    }
+    const uint16_t v = (uint16_t)VIDEO::brd;
+    const int col = brdcol_cnt + ds80_brd_col_off;
+    // OSD::notify banner (top band at 720x576, the side pads of the first rows
+    // at 640x480, the whole row under Paper off). The rect is 4-byte aligned and
+    // col ^ 1 stays inside one 4-byte group, so testing col is enough.
+    if (brdlin_cnt < ts_notice_y1 && brdlin_cnt >= ts_notice_y0
+        && col * 2 >= ts_notice_x0 && col * 2 < ts_notice_x1) return;
+    brdptr16[col ^ 1] = v;
+    if (ds80_brd_col_off) {
+        if (brdcol_cnt == 0) {
+            for (int c = 0; c < ds80_brd_col_off; c++) brdptr16[c ^ 1] = v;
+        } else if (brdcol_cnt == brdcol_end - 1) {
+            for (int c = col + 1; c <= col + ds80_brd_col_off; c++) brdptr16[c ^ 1] = v;
+        }
+    }
+}
+
+IRAM_ATTR static void Update_Border_XOR_Gig() {
+    uint32_t newColor = VIDEO::brd; // 0xCCCCCCCC: 4 copies of palette index byte
+    int idx = brdcol_cnt ^ 1;
+    uint8_t newNib = newColor & 0x0F;
+    uint8_t newPacked = newNib | (newNib << 4);
+    uint8_t oldPacked = prevBrdptr8[idx];
+    if (oldPacked != newPacked) {
+        prevBrdptr8[idx] = newPacked;
+        uint8_t oldNib = oldPacked & 0x0F;
+        uint32_t oldColor = oldNib * 0x01010101u;
+        brdptr16[idx] = blendPixels32(newColor, oldColor);
+        VIDEO::brdGigascreenChange = true;
+    } else {
+        brdptr16[idx] = newColor;
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------
+// Span variants: paint n consecutive border columns starting at brdcol_cnt in
+// one call — semantically identical to n per-column Update_Border() calls (the
+// catch-up colour VIDEO::brd is constant across the whole span), but filled
+// with word stores instead of ~50 cycles of call+loop overhead per column.
+// This is what makes animated-border Gigascreen demos fit at 378 MHz: the
+// per-column machine alone cost ~7 of the ~9 ms/frame worst case.
+// Globals (brdcol_cnt/lastBrdTstate) are advanced by the caller.
+//----------------------------------------------------------------------------------------------------------------
+
+static void (*Update_Border_Span)(int n);
+
+IRAM_ATTR static void Update_Border_Span_Pair(int n) {
+    uint32_t color32 = VIDEO::brd | (VIDEO::brd << 16);
+    uint32_t* p = (uint32_t*)&brdptr16[brdcol_cnt];   // cnt aligned to 4 (step=4)
+    for (int k = 2 * n; k > 0; k--) *p++ = color32;   // n cols × 8 px = 2n words
+}
+
+IRAM_ATTR static void Update_Border_Span_Pair_Gig(int n) {
+    uint32_t color32 = VIDEO::brd | (VIDEO::brd << 16);
+    uint8_t  nib = VIDEO::brd & 0x0F;
+    uint32_t packed32 = nib * 0x11111111u;
+    uint32_t* prevW = (uint32_t*)&prevBrdptr8[brdcol_cnt];
+    uint32_t* fb    = (uint32_t*)&brdptr16[brdcol_cnt];
+    for (int k = 0; k < n; k++, prevW++, fb += 2) {
+        uint32_t old = *prevW;
+        if (old != packed32) {
+            *prevW = packed32;
+            uint32_t mixed = blendPixels32(color32, (old & 0x0F) * 0x01010101u);
+            fb[0] = mixed; fb[1] = mixed;
+            VIDEO::brdGigascreenChange = true;
+        } else {
+            fb[0] = color32; fb[1] = color32;
+        }
+    }
+}
+
+IRAM_ATTR static void Update_Border_Span_XOR(int n) {
+    // Display order is swapped within uint16 pairs (^1); a uniform fill over an
+    // even-aligned range is permutation-invariant, so only odd edges need care.
+    int c0 = brdcol_cnt, c1 = brdcol_cnt + n;
+    const uint16_t v = (uint16_t)VIDEO::brd;
+    if (c0 & 1) { brdptr16[c0 ^ 1] = v; c0++; }
+    if ((c1 & 1) && c1 > c0) { c1--; brdptr16[c1 ^ 1] = v; }
+    uint32_t vv = (uint32_t)v | ((uint32_t)v << 16);
+    uint32_t* p = (uint32_t*)&brdptr16[c0];
+    for (int k = (c1 - c0) >> 1; k > 0; k--) *p++ = vv;
+}
+
+// One column of the XOR_Gig shape at source column idx (target idx^1).
+static inline void xorGigOne(int idx, uint32_t newColor, uint8_t newPacked) {
+    int t = idx ^ 1;
+    uint8_t oldPacked = prevBrdptr8[t];
+    if (oldPacked != newPacked) {
+        prevBrdptr8[t] = newPacked;
+        brdptr16[t] = blendPixels32(newColor, (uint32_t)(oldPacked & 0x0F) * 0x01010101u);
+        VIDEO::brdGigascreenChange = true;
+    } else {
+        brdptr16[t] = (uint16_t)newColor;
+    }
+}
+
+IRAM_ATTR static void Update_Border_Span_XOR_Gig(int n) {
+    int c0 = brdcol_cnt, c1 = brdcol_cnt + n;
+    uint32_t newColor = VIDEO::brd;
+    uint8_t  nib = (uint8_t)(newColor & 0x0F);
+    uint8_t  newPacked = (uint8_t)(nib | (nib << 4));
+    if (c0 & 1) { xorGigOne(c0, newColor, newPacked); c0++; }
+    if ((c1 & 1) && c1 > c0) { c1--; xorGigOne(c1, newColor, newPacked); }
+    // Even-aligned middle: 2 cols per step (prev uint16, fb uint32). Uniform
+    // old pairs (the norm — prev was filled with runs of one colour) blend once.
+    const uint16_t new2 = (uint16_t)(newPacked | (newPacked << 8));
+    for (int c = c0; c < c1; c += 2) {
+        uint16_t old2 = *(uint16_t*)&prevBrdptr8[c];
+        if (old2 == new2) {
+            *(uint32_t*)&brdptr16[c] = newColor;
+        } else if ((uint8_t)(old2 & 0xFF) == (uint8_t)(old2 >> 8)) {
+            *(uint16_t*)&prevBrdptr8[c] = new2;
+            *(uint32_t*)&brdptr16[c] =
+                blendPixels32(newColor, (uint32_t)(old2 & 0x0F) * 0x01010101u);
+            VIDEO::brdGigascreenChange = true;
+        } else {
+            xorGigOne(c, newColor, newPacked);
+            xorGigOne(c + 1, newColor, newPacked);
+        }
+    }
+}
+
+// Fallback for shapes without a fast span (DS80): n per-column calls.
+IRAM_ATTR static void Update_Border_Span_Generic(int n) {
+    int save = brdcol_cnt;
+    for (int k = 0; k < n; k++) { Update_Border(); brdcol_cnt += brdcol_step; }
+    brdcol_cnt = save;
+}
+
+static void Select_Update_Border() {
+    pwRefreshGate();  // geometry may have changed — re-evaluate the DMA window
+    if (ds80_border_geom) {
+        Update_Border = &Update_Border_DS80;  // Gigascreen is suspended in DS80
+        Update_Border_Span = &Update_Border_Span_Generic;
+        return;
+    }
+    if (brdPairWrite) {
+        Update_Border = VIDEO::gigascreen_enabled ? &Update_Border_Pair_Gig : &Update_Border_Pair;
+        Update_Border_Span = VIDEO::gigascreen_enabled ? &Update_Border_Span_Pair_Gig : &Update_Border_Span_Pair;
+    } else {
+        Update_Border = VIDEO::gigascreen_enabled ? &Update_Border_XOR_Gig : &Update_Border_XOR;
+        Update_Border_Span = VIDEO::gigascreen_enabled ? &Update_Border_Span_XOR_Gig : &Update_Border_Span_XOR;
+    }
+}
+
+//----------------------------------------------------------------------------------------------------------------
+// Unified border functions (all models: 48K, 128K, Pentagon; all resolutions)
+// Uses brdcol_step/brdcol_end/brdcol_end1/brdcol_start/brdcol_retrace variables
+//----------------------------------------------------------------------------------------------------------------
+
+// ── OSD::notify band in the top border ─────────────────────────────────────────
+// Same contract as the F8 stats rectangle in BottomBorder_OSD: while the band is
+// reserved the border state machine leaves those framebuffer columns alone, so a
+// guest hammering the border colour cannot erase the banner between EndFrame
+// repaints. Columns are brdcol units (1 col = 2 px).
+static bool osd_notice_carve = false;
+static int  osd_notice_y0 = 0, osd_notice_y1 = -1;
+static int  osd_notice_c0 = 0, osd_notice_c1 = 0;
+
+void VIDEO::setNoticeBand(int y0, int y1, int& px0, int& px1) {
+    const int mask = ~(brdcol_step - 1);
+    int c0 = (px0 >> 1) & mask;
+    int c1 = ((px1 + 1) >> 1);
+    c1 = (c1 + brdcol_step - 1) & mask;
+    if (c0 < brdcol_start) c0 = brdcol_start;
+    if (c1 > brdcol_retrace) c1 = brdcol_retrace;
+    if (c1 <= c0) { clearNoticeBand(); px1 = px0; return; }
+    osd_notice_c0 = c0;
+    osd_notice_c1 = c1;
+    osd_notice_y0 = y0;
+    osd_notice_y1 = y1;
+    osd_notice_carve = true;
+    px0 = c0 * 2;
+    px1 = c1 * 2;
+}
+
+void VIDEO::clearNoticeBand() {
+    osd_notice_carve = false;
+    osd_notice_y1    = -1;
+}
+
+IRAM_ATTR void VIDEO::TopBorder_Blank() {
+    if (CPU::tstates >= tStatesBorder) {
+        static bool brd_logged = false;
+        if (!brd_logged) {
+            brd_logged = true;
+            Debug::log("BRD: yres=%d step=%d end=%d end1=%d ret=%d lin_end=%d/%d start=%d isFB=%d tsBrd=%d tsLine=%d fb=%p",
+                (int)vga.yres, brdcol_step, brdcol_end, brdcol_end1, brdcol_retrace,
+                lin_end, lin_end2, brdcol_start, isFullBorder,
+                tStatesBorder, tStatesPerLine, vga.frameBuffer);
+        }
+        Select_Update_Border();
+        brdcol_cnt = brdcol_start;
+        brdlin_cnt = 0;
+        brdptr16 = (uint16_t *)(vga.frameBuffer[0]);
+        prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(0) : (uint8_t *)brdptr16;
+        // lin_end==0 (DS80 640×480): no top border rows — straight to side borders.
+        // (TopBorder would otherwise paint row 0 full-width over the content.)
+        // ds80_border_geom is excluded: there OSD::notify reserves its rect through
+        // setNoticeCarve, which Update_Border_DS80 tests itself.
+        DrawBorder = lin_end ? ((osd_notice_carve && !ds80_border_geom)
+                                    ? &TopBorder_OSD : &TopBorder)
+                             : &MiddleBorder;
+        DrawBorder();
+    }
+}
+
+IRAM_ATTR void VIDEO::TopBorder() {
+    while (lastBrdTstate <= CPU::tstates) {
+        if (brdcol_cnt < brdcol_retrace) {
+            // Paint every column this catch-up covers in the current row at
+            // once (the colour is constant across the span — see span fns).
+            int lim = (brdcol_retrace - brdcol_cnt) / brdcol_step;
+            unsigned int avail = (CPU::tstates - lastBrdTstate) / (unsigned)brdcol_step + 1;
+            int n = (avail < (unsigned)lim) ? (int)avail : lim;
+            Update_Border_Span(n);
+            lastBrdTstate += (n - 1) * brdcol_step;
+            brdcol_cnt += (n - 1) * brdcol_step;
+        } else if (brdcol_retrace < brdcol_end) {
+            int lastPair = (brdcol_retrace - 1) & ~1;
+            int curPair = brdcol_cnt & ~1;
+            ((uint32_t *)&brdptr16[curPair])[0] = ((uint32_t *)&brdptr16[lastPair])[0];
+            if (gigascreen_enabled) ((uint16_t *)&prevBrdptr8[curPair])[0] = ((uint16_t *)&prevBrdptr8[lastPair])[0];
+        }
+
+        lastBrdTstate += brdcol_step;
+        brdcol_cnt += brdcol_step;
+
+        if (brdcol_cnt >= brdcol_end) {
+            brdlin_cnt++;
+            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
+            brdcol_cnt = brdcol_start;
+            lastBrdTstate += tStatesPerLine - brdcol_end;
+
+            if (brdlin_cnt >= lin_end) {
+                DrawBorder = &MiddleBorder;
+                MiddleBorder();
+                return;
+            }
+        }
+    }
+}
+
+// TopBorder with the notification band skipped. Per-column Update_Border() rather
+// than the span optimisation, exactly like BottomBorder_OSD — the span would have
+// to be split around the band anyway, and this only runs while a banner is up.
+IRAM_ATTR void VIDEO::TopBorder_OSD() {
+    const int y0 = osd_notice_y0, y1 = osd_notice_y1;
+    const int c0 = osd_notice_c0, c1 = osd_notice_c1;
+    while (lastBrdTstate <= CPU::tstates) {
+        if (brdcol_cnt < brdcol_retrace) {
+            if (brdlin_cnt < y0 || brdlin_cnt > y1 ||
+                brdcol_cnt < c0 || brdcol_cnt >= c1)
+                Update_Border();
+        } else if (brdcol_retrace < brdcol_end) {
+            int lastPair = (brdcol_retrace - 1) & ~1;
+            int curPair = brdcol_cnt & ~1;
+            ((uint32_t *)&brdptr16[curPair])[0] = ((uint32_t *)&brdptr16[lastPair])[0];
+            if (gigascreen_enabled) ((uint16_t *)&prevBrdptr8[curPair])[0] = ((uint16_t *)&prevBrdptr8[lastPair])[0];
+        }
+
+        lastBrdTstate += brdcol_step;
+        brdcol_cnt += brdcol_step;
+
+        if (brdcol_cnt >= brdcol_end) {
+            brdlin_cnt++;
+            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
+            brdcol_cnt = brdcol_start;
+            lastBrdTstate += tStatesPerLine - brdcol_end;
+
+            if (brdlin_cnt >= lin_end) {
+                DrawBorder = &MiddleBorder;
+                MiddleBorder();
+                return;
+            }
+        }
+    }
+}
+
+IRAM_ATTR void VIDEO::MiddleBorder() {
+    // Debug "Paper off": paint straight through the paper columns — same
+    // per-T-state machine as the side borders, so multicolour border effects
+    // show what the raster would have carried "under" the paper. The paper
+    // skip below advances brdcol_cnt/lastBrdTstate by exactly 128 T (1 col per
+    // brdcol_step T), so walking through paints the same time span instead.
+    const bool skip_paper = !paper_off;
+    while (lastBrdTstate <= CPU::tstates) {
+        if (brdcol_cnt < brdcol_retrace) {
+            // Span must stop exactly at brdcol_end1 — the paper-skip check
+            // below fires on equality.
+            int stop = (skip_paper && brdcol_cnt < brdcol_end1) ? brdcol_end1 : brdcol_retrace;
+            int lim = (stop - brdcol_cnt) / brdcol_step;
+            unsigned int avail = (CPU::tstates - lastBrdTstate) / (unsigned)brdcol_step + 1;
+            int n = (avail < (unsigned)lim) ? (int)avail : lim;
+            Update_Border_Span(n);
+            lastBrdTstate += (n - 1) * brdcol_step;
+            brdcol_cnt += (n - 1) * brdcol_step;
+        } else if (brdcol_retrace < brdcol_end) {
+            int lastPair = (brdcol_retrace - 1) & ~1;
+            int curPair = brdcol_cnt & ~1;
+            ((uint32_t *)&brdptr16[curPair])[0] = ((uint32_t *)&brdptr16[lastPair])[0];
+            if (gigascreen_enabled) ((uint16_t *)&prevBrdptr8[curPair])[0] = ((uint16_t *)&prevBrdptr8[lastPair])[0];
+        }
+
+        lastBrdTstate += brdcol_step;
+        brdcol_cnt += brdcol_step;
+
+        if (skip_paper && brdcol_cnt == brdcol_end1) {
+            lastBrdTstate += 128;
+            brdcol_cnt = brdcol_end1 + 128;
+        } else if (brdcol_cnt >= brdcol_end) {
+            brdlin_cnt++;
+            brdcol_cnt = brdcol_start;
+            lastBrdTstate += tStatesPerLine - brdcol_end;
+            if (brdlin_cnt == (int)lin_end2) {
+                // DS80 640×480: lin_end2 == yres — no bottom border rows at all.
+                if (brdlin_cnt >= (int)vga.yres) {
+                    DrawBorder = &Border_Blank;
+                    return;
+                }
+                brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+                prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
+                // DS80: BottomBorder_OSD carve coords are for std-fb layouts —
+                // Update_Border_DS80 carves the stats rect itself; use plain bottom.
+                DrawBorder = ds80_border_geom ? &BottomBorder
+                           : (osd_led_w ? &BottomBorder_OSD : Draw_OSD43);
+                DrawBorder();
+                return;
+            }
+            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
+        }
+    }
+}
+
+IRAM_ATTR void VIDEO::BottomBorder() {
+    while (lastBrdTstate <= CPU::tstates) {
+        if (brdcol_cnt < brdcol_retrace) {
+            int lim = (brdcol_retrace - brdcol_cnt) / brdcol_step;
+            unsigned int avail = (CPU::tstates - lastBrdTstate) / (unsigned)brdcol_step + 1;
+            int n = (avail < (unsigned)lim) ? (int)avail : lim;
+            Update_Border_Span(n);
+            lastBrdTstate += (n - 1) * brdcol_step;
+            brdcol_cnt += (n - 1) * brdcol_step;
+        } else if (brdcol_retrace < brdcol_end) {
+            int lastPair = (brdcol_retrace - 1) & ~1;
+            int curPair = brdcol_cnt & ~1;
+            ((uint32_t *)&brdptr16[curPair])[0] = ((uint32_t *)&brdptr16[lastPair])[0];
+            if (gigascreen_enabled) ((uint16_t *)&prevBrdptr8[curPair])[0] = ((uint16_t *)&prevBrdptr8[lastPair])[0];
+        }
+
+        lastBrdTstate += brdcol_step;
+        brdcol_cnt += brdcol_step;
+
+        if (brdcol_cnt >= brdcol_end) {
+            brdlin_cnt++;
+            brdcol_cnt = brdcol_start;
+            lastBrdTstate += tStatesPerLine - brdcol_end;
+            if (brdlin_cnt == (int)vga.yres) {
+                DrawBorder = &Border_Blank;
+                return;
+            }
+            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
+        }
+    }
+}
+
+IRAM_ATTR void VIDEO::BottomBorder_OSD() {
+    const int osd_y_start = VIDEO::isFullBorder288() ? 268 : 220;
+    const int osd_y_end = osd_y_start + 15;
+    // Stats box (fb x 168 / 188, 144 px) and/or the LED panel to its left. This
+    // function also runs for the panel alone, with no box up.
+    int bx0 = 0, bx1 = 0;
+    osdBarRange((VIDEO::OSD & 0x07) != 0, (int)vga.xres, bx0, bx1);
+    // OSD x coords in uint16_t units, aligned down/up to brdcol_step for step=4
+    const int osd_x_start = (bx0 >> 1) & ~(brdcol_step - 1);
+    const int osd_x_end = (((bx1 + 1) >> 1) + brdcol_step - 1) & ~(brdcol_step - 1);
+    while (lastBrdTstate <= CPU::tstates) {
+        if (brdcol_cnt < brdcol_retrace) {
+            if (brdlin_cnt < osd_y_start || brdlin_cnt > osd_y_end) {
+                Update_Border();
+            } else {
+                const bool inStats = (brdcol_cnt >= osd_x_start && brdcol_cnt < osd_x_end);
+                if (!inStats) Update_Border();
+            }
+        } else if (brdcol_retrace < brdcol_end) {
+            int lastPair = (brdcol_retrace - 1) & ~1;
+            int curPair = brdcol_cnt & ~1;
+            ((uint32_t *)&brdptr16[curPair])[0] = ((uint32_t *)&brdptr16[lastPair])[0];
+            if (gigascreen_enabled) ((uint16_t *)&prevBrdptr8[curPair])[0] = ((uint16_t *)&prevBrdptr8[lastPair])[0];
+        }
+
+        lastBrdTstate += brdcol_step;
+        brdcol_cnt += brdcol_step;
+
+        if (brdcol_cnt >= brdcol_end) {
+            brdlin_cnt++;
+            brdcol_cnt = brdcol_start;
+            lastBrdTstate += tStatesPerLine - brdcol_end;
+            if (brdlin_cnt == (int)vga.yres) {
+                DrawBorder = &Border_Blank;
+                return;
+            }
+            brdptr16 = (uint16_t *)(vga.frameBuffer[brdlin_cnt]);
+            prevBrdptr8 = vga.prevFrameBuffer ? prevRowBorder(brdlin_cnt) : (uint8_t *)brdptr16;
+        }
+    }
+}
+
+// SaveRect starts in PSRAM past the region reserved for MemESP pages. Dynamic so
+// it moves up if MEM_PG_CNT is raised. +64 KB gap as a safety margin.
+static inline size_t saveRectShift() {
+    size_t memesp_end = ((size_t)MEM_PG_CNT + 2) * MEM_PG_SZ + (64ul << 10);
+    return memesp_end < (2ul << 20) ? (2ul << 20) : memesp_end;
+}
+// Reserve up to this much SaveRect space; abort save if offset exceeds it.
+#define SAVE_RECT_PSRAM_MAX (256ul << 10)
+
+// save()/restore_last()/store_ram()/restore_ram() each open, use and close the
+// rect file within one synchronous call. The FIL (~600 B) is a ScopedHeap per
+// call: it must not sit on the core0 stack (deep menu chains — see the notes in
+// each method) and it used to be a permanent static that every session paid.
+
+void SaveRectT::save(int16_t x, int16_t y, int16_t w, int16_t h) {
+    if (offsets.empty()) {
+        offsets.push_back(0);
+    }
+    x -= 2; if (x < 0) x = 0; // W/A
+    w += 4; // W/A
+    size_t off = offsets.back();
+    size_t shift = saveRectShift();
+    // Without SD, prefer SPI PSRAM over heap/RAM — std::vector on tight heap panics
+    // (check_alloc → panic) when fragmentation beats mallinfo()'s fordblks view.
+    if (!FileUtils::fsMount && psram_size() >= shift + SAVE_RECT_PSRAM_MAX) {
+        size_t need = 8 + (size_t)w * h;
+        if (off + need > SAVE_RECT_PSRAM_MAX) {
+            offsets.push_back(off); // out of room — dummy, restore will redraw
+            return;
+        }
+        size_t pos = off + shift;
+        write16psram(pos, (uint16_t)x); pos += 2;
+        write16psram(pos, (uint16_t)y); pos += 2;
+        write16psram(pos, (uint16_t)w); pos += 2;
+        write16psram(pos, (uint16_t)h); pos += 2;
+        for (size_t line = y; line < (size_t)y + h; ++line) {
+            writepsram(pos, VIDEO::vga.frameBuffer[line] + x, w);
+            pos += w;
+        }
+        offsets.push_back(off + need);
+        return;
+    }
+    if (FileUtils::fsMount) {
+        // FatFS f_open calls ff_memalloc() for LFN/VFAT buffers. SDK malloc
+        // panics on OOM (no NULL return), so reject before opening when the
+        // heap can't satisfy it. Bail to a dummy push — restore will redraw
+        // the underlying screen instead of crashing.
+        if (getContiguousHeap() < FF_OPEN_HEAP_FLOOR) {
+            offsets.push_back(off);
+            return;
+        }
+        // sizeof(FIL) ~= 580 B (FF_MAX_SS=512 sector buf). The OSD runs on a tight
+        // ~2 KB core stack and SaveRect::save is reached from deep call chains
+        // (e.g. the browser -> viewInfo -> showInfoBox -> save) — a FIL on the stack
+        // overflows it and corrupts neighbouring memory (timer callbacks etc),
+        // crashing later in alarm_pool_irq_handler. save() is synchronous
+        // (open/write/close within one call) so a static FIL is safe even nested.
+        ScopedHeap fsh(sizeof(FIL)); FIL* fp = fsh.as<FIL>();
+        if (!fp || f_open(fp, "/tmp/save_rect.tmp", FA_WRITE | FA_OPEN_ALWAYS) != FR_OK) {
+            offsets.push_back(off); // open failed — dummy
+            return;
+        }
+        f_lseek(fp, off);
+        UINT bw;
+        f_write(fp, &x, 2, &bw);
+        f_write(fp, &y, 2, &bw);
+        f_write(fp, &w, 2, &bw);
+        f_write(fp, &h, 2, &bw);
+        off += 8;
+        for (size_t line = y; line < y + h; ++line) {
+            uint8_t *backbuffer = VIDEO::vga.frameBuffer[line];
+            f_write(fp, backbuffer + x, w, &bw);
+            off += w;
+        }
+        f_close(fp);
+        offsets.push_back(off);
+    } else {
+        // RAM fallback when no SD card — skip if not enough contiguous heap.
+        // SDK's malloc wraps with check_alloc → panic on OOM, so we must reject
+        // before the allocation. getContiguousHeap() (sbrk headroom) is the only
+        // size we can trust to succeed; fordblks may be fragmented.
+        size_t need = 8 + (size_t)w * h;
+        size_t new_size = off + need;
+        size_t cur_cap = ram_buf.capacity();
+        if (new_size > cur_cap) {
+            // Need to allocate a new buffer of at least new_size, while the old
+            // cur_cap buffer is still held. Peak contiguous need = new_size.
+            if (getContiguousHeap() < new_size + 1024) {
+                offsets.push_back(off); // dummy — restore will redraw
+                return;
+            }
+            std::vector<uint8_t> tmp;
+            tmp.reserve(new_size);
+            tmp.resize(off);
+            if (off) memcpy(tmp.data(), ram_buf.data(), off);
+            ram_buf.swap(tmp);
+        }
+        ram_buf.resize(new_size);
+        uint8_t *p = ram_buf.data() + off;
+        memcpy(p, &x, 2); p += 2;
+        memcpy(p, &y, 2); p += 2;
+        memcpy(p, &w, 2); p += 2;
+        memcpy(p, &h, 2); p += 2;
+        for (size_t line = y; line < y + h; ++line) {
+            memcpy(p, VIDEO::vga.frameBuffer[line] + x, w);
+            p += w;
+        }
+        offsets.push_back(new_size);
+    }
+}
+void SaveRectT::restore_last() {
+    if (offsets.size() <= 1) return; // nothing saved to restore
+    size_t saved_end = offsets.back();
+    offsets.pop_back();
+    size_t off = offsets.back();
+    uint16_t x;
+    uint16_t y;
+    uint16_t w;
+    uint16_t h;
+    size_t shift = saveRectShift();
+    if (!FileUtils::fsMount && psram_size() >= shift + SAVE_RECT_PSRAM_MAX) {
+        if (saved_end == off) {
+            if (offsets.empty()) offsets.push_back(0);
+            return; // dummy save — nothing to restore
+        }
+        size_t pos = off + shift;
+        x = read16psram(pos); pos += 2;
+        y = read16psram(pos); pos += 2;
+        w = read16psram(pos); pos += 2;
+        h = read16psram(pos); pos += 2;
+        if (!w || !h || y >= (uint16_t)VIDEO::vga.yres) return;
+        size_t line_end_p = (size_t)y + h;
+        if (line_end_p > (size_t)VIDEO::vga.yres) line_end_p = VIDEO::vga.yres;
+        for (size_t line = y; line < line_end_p; ++line) {
+            readpsram(VIDEO::vga.frameBuffer[line] + x, pos, w);
+            pos += w;
+        }
+        if (offsets.empty()) offsets.push_back(0);
+        return;
+    }
+    if (FileUtils::fsMount) {
+        // f_open allocates LFN scratch — gate with heap floor; on shortage the
+        // dialog underneath just redraws on close (no restore happens).
+        if (getContiguousHeap() < FF_OPEN_HEAP_FLOOR) {
+            if (offsets.empty()) offsets.push_back(0);
+            return;
+        }
+        // Static FIL: sizeof(FIL) ~= 580 B would overflow the tight ~2 KB OSD
+        // stack from deep call chains (same fix as save()). restore is
+        // synchronous (open/read/close in one call) so a static FIL is safe.
+        ScopedHeap fsh(sizeof(FIL)); FIL* fp = fsh.as<FIL>();
+        if (!fp || f_open(fp, "/tmp/save_rect.tmp", FA_READ) != FR_OK) {
+            if (offsets.empty()) offsets.push_back(0);
+            return;
+        }
+        f_lseek(fp, off);
+        UINT br;
+        f_read(fp, &x, 2, &br);
+        f_read(fp, &y, 2, &br);
+        f_read(fp, &w, 2, &br);
+        f_read(fp, &h, 2, &br);
+        if (!w || !h || y >= (uint16_t)VIDEO::vga.yres) {
+            f_close(fp);
+            return;
+        }
+        size_t line_end = (size_t)y + h;
+        if (line_end > (size_t)VIDEO::vga.yres) line_end = VIDEO::vga.yres;
+        for (size_t line = y; line < line_end; ++line) {
+            f_read(fp, VIDEO::vga.frameBuffer[line] + x, w, &br);
+        }
+        f_close(fp);
+    } else if (off < ram_buf.size()) {
+        // RAM fallback when no SD card
+        uint8_t *p = ram_buf.data() + off;
+        memcpy(&x, p, 2); p += 2;
+        memcpy(&y, p, 2); p += 2;
+        memcpy(&w, p, 2); p += 2;
+        memcpy(&h, p, 2); p += 2;
+        if (!w || !h || y >= (uint16_t)VIDEO::vga.yres) return;
+        size_t line_end_r = (size_t)y + h;
+        if (line_end_r > (size_t)VIDEO::vga.yres) line_end_r = VIDEO::vga.yres;
+        for (size_t line = y; line < line_end_r; ++line) {
+            memcpy(VIDEO::vga.frameBuffer[line] + x, p, w);
+            p += w;
+        }
+        ram_buf.resize(off); // shrink
+    }
+    if (offsets.empty()) {
+        offsets.push_back(0);
+    }
+}
+
+void SaveRectT::store_ram(const void* p, size_t sz) {
+    if (offsets.empty()) offsets.push_back(0);
+    size_t off = offsets.back();
+    // Always push so restore_ram can pop correctly without UB.
+    // Use sentinel (size_t)-1 when the write is skipped.
+    if (getContiguousHeap() < FF_OPEN_HEAP_FLOOR) {
+        offsets.push_back((size_t)-1);
+        return;
+    }
+    // Static FIL: same 580-byte stack-overflow guard as save() / restore_last().
+    ScopedHeap fsh(sizeof(FIL)); FIL* fp = fsh.as<FIL>();
+    if (!fp || f_open(fp, "/tmp/save_rect.tmp", FA_WRITE | FA_OPEN_ALWAYS) != FR_OK) {
+        offsets.push_back((size_t)-1);
+        return;
+    }
+    UINT bw;
+    f_lseek(fp, off);
+    f_write(fp, p, sz, &bw);
+    f_close(fp);
+    offsets.push_back(off + sz);
+}
+
+void SaveRectT::restore_ram(void* p, size_t sz) {
+    if (offsets.size() < 2) {
+        if (offsets.empty()) offsets.push_back(0);
+        return;
+    }
+    size_t top = offsets.back();
+    offsets.pop_back();
+    if (top == (size_t)-1) return; // store_ram skipped the write — nothing to restore
+    size_t off = offsets.back();   // position where store_ram wrote the data
+    if (getContiguousHeap() < FF_OPEN_HEAP_FLOOR) return;
+    ScopedHeap fsh(sizeof(FIL)); FIL* fp = fsh.as<FIL>();
+    if (!fp || f_open(fp, "/tmp/save_rect.tmp", FA_READ) != FR_OK) return;
+    f_lseek(fp, off);
+    UINT br;
+    f_read(fp, p, sz, &br);
+    f_close(fp);
+}

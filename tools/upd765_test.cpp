@@ -1,7 +1,7 @@
-// upd765_test.cpp — host-side tests for src/Upd765.cpp, the ZX Spectrum +3 controller.
+// upd765_test.cpp — host-side tests for src/speccy/devices/disk/Upd765.cpp, the ZX Spectrum +3 controller.
 //
 //   g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/upd765_test
-//       tools/upd765_test.cpp src/Upd765.cpp src/DskImage.cpp
+//       tools/upd765_test.cpp src/speccy/devices/disk/Upd765.cpp src/speccy/devices/disk/DskImage.cpp
 //   /tmp/upd765_test
 //
 // The controller is driven through the SAME three entry points the guest uses — read the
@@ -15,8 +15,8 @@
 //   * A multi-sector read that runs to EOT ends ST0=0x40 ST1=0x80 — that is SUCCESS.
 //   * Two reads of the same ID on a track with duplicate IDs return different data.
 
-#include "Upd765.h"
-#include "DskImage.h"
+#include "speccy/devices/disk/Upd765.h"
+#include "speccy/devices/disk/DskImage.h"
 
 #include <cstdio>
 #include <cstring>

@@ -20,6 +20,7 @@ NGS_LOW_FILE  = "/tmp/picospec_ngs_low.bin"
 NGS_REGS_FILE = "/tmp/picospec_ngs.txt"
 NGS_BANK_FILES = [f"/tmp/picospec_ngs_b{i}.bin" for i in (4, 5, 6, 7)]
 TSCONF_FILE = "/tmp/picospec_tsconf.txt"
+ATM_FILE = "/tmp/picospec_atm.txt"
 
 MEM_TYPE_NAME = {0: "SRAM", 1: "PSRAM_SPI", 2: "SWAP"}
 
@@ -265,6 +266,16 @@ def main():
                 out.write("cram[%02X]: %s\n" % (i, " ".join(cram[i:i + 16])))
             for i in range(0, len(nv), 16):
                 out.write("nv[%02X]: %s\n" % (0xB0 + i, " ".join(nv[i:i + 16])))
+            out.write("\n")
+
+        # ATM memory-mapping latches and WD1793 state. These are needed to tell
+        # ATM1 CP/M mode from a failure to page the BIOS/FDC paths.
+        atm = load_kv(ATM_FILE)
+        if atm:
+            out.write("=" * 40 + "\n")
+            out.write("ATM-Turbo\n")
+            for key, value in atm.items():
+                out.write(f"{key}={value}\n")
             out.write("\n")
 
     print(f"Dump written to {OUT_FILE}")

@@ -1,4 +1,4 @@
-// dck_test.cpp — host test for the Timex .dck container parser (src/Timex.h).
+// dck_test.cpp — host test for the Timex .dck container parser (src/speccy/machines/Timex.h).
 //
 // Build + run:
 //   g++ -O2 -Wall -Wextra -Isrc -o /tmp/dck_test tools/dck_test.cpp && /tmp/dck_test
@@ -25,7 +25,7 @@
 #include <vector>
 #include <dirent.h>
 
-#include "Timex.h"
+#include "speccy/machines/Timex.h"
 
 // The firmware defines this; the test only needs the symbol to link.
 extern "C" { uint8_t g_timex_mmu = 0; }

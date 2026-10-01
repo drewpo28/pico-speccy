@@ -35,17 +35,18 @@
 #include "UiDialog.h"
 #include "OSDMain.h"
 #include "UiRender.h"        // SYM_* glyph names
-#include "FileUtils.h"
-#include "FileInfo.h"
-#include "ZipExtract.h"
-#include "Config.h"
-#include "ESPectrum.h"
-#include "Video.h"
-#include "wd1793.h"
-#include "PinSerialData_595.h"
-#include "Debug.h"
-#include "SortedFiles.h"
-#include "Buffer.h"
+#include "fs/FileUtils.h"
+#include "fs/FileInfo.h"
+#include "fs/ZipExtract.h"
+#include "app/Config.h"
+#include "app/ESPectrum.h"
+#include "speccy/video/Video.h"
+#include "speccy/devices/disk/wd1793.h"
+#include "drivers/sound/PinSerialData_595.h"
+#include "app/Debug.h"
+#include "fs/SortedFiles.h"
+#include "app/Buffer.h"
+#include "player/PicoPlayer.h"   // F2 = play in Pico-Zx-Player
 #include <pico/stdlib.h>
 
 using std::string;
@@ -418,15 +419,19 @@ static void drawInfo() {
     const bool zip = !dir && FileUtils::hasZIPextension(nm_);
     const bool dsk = !dir && FileUtils::ifaceForExt(FileUtils::getLCaseExt(nm_)) != IFACE_NONE;
     const bool view = !dir && !pickMode() && viewableExt(FileUtils::getLCaseExt(nm_));
+    // Enter on music plays it in Pico-Zx-Player; an .mp3 can also be a tape (F5).
+    const bool music = all && !dir && pp::available() && pp::playableExt(FileUtils::getLCaseExt(nm_));
+    const bool mp3 = all && !dir && FileUtils::getLCaseExt(nm_) == "mp3";
     const Verb verbs[] = {
         // Nothing in the config tree is runnable: Enter there reads a text file and
         // does nothing at all for anything else, so it is advertised accordingly.
-        { SYM_ENTER, dir ? "Open" : (view ? "View" : "Run"),
+        { SYM_ENTER, dir ? "Open" : (view ? "View" : music ? "Play" : "Run"),
                      dir || pickMode() || view },
         { "F1", "Info",     all && !dir },
         { "F3", "Find",     true },
         { "F4", "Unzip",    all && zip },
         { "F5", "To slot",  all && dsk },
+        { "F5", "Load tape", mp3 },
         { "F6", "Rename",   mng && !up },
         { "F7", "New dir",  mng },
         { "F8", "Delete",   mng && !up },
@@ -454,7 +459,9 @@ static void drawFooter() {
         textClip(qx, y + 3, L.ix + L.iw - qx - L.pad, q.c_str(), C_WHITE);
     } else {
         text(L.ix + L.pad, y + 3,
-             SYM_UP SYM_DOWN " Move  " SYM_ENTER " Open  " SYM_LEFT " Up  F3 Find  Esc Close",
+             (s_ftype == DISK_ALLFILE || s_ftype == DISK_MUSFILE) && pp::available()
+                 ? SYM_UP SYM_DOWN " Move  " SYM_ENTER " Open  F2 Play  F3 Find  Esc Close"
+                 : SYM_UP SYM_DOWN " Move  " SYM_ENTER " Open  " SYM_LEFT " Up  F3 Find  Esc Close",
              C_TEXT_DIM);
     }
 }
@@ -1020,8 +1027,28 @@ static string runLoop() {
                 OSD::clickNoPause();
                 return leave("X" + name);
             }
+            // F2 = play in Pico-Zx-Player. Needed for .mp3, where Enter means "tape";
+            // Enter on the music-only formats (.vgm/.vgz) goes to the player too
+            // (dispatched by the caller).
+            // On a folder F2 plays the whole folder (and its subfolders): the
+            // result carries a trailing '/', which is how callers tell it apart.
+            // Also on in the player's own browser (DISK_MUSFILE).
+            if ((all || s_ftype == DISK_MUSFILE) && k.vk == fabgl::VK_F2 && s_visTotal
+                    && pp::available()) {
+                if (onDir && !onUp) {
+                    OSD::clickNoPause();
+                    return leave("M" + name + "/");
+                }
+                if (!onDir && pp::playableExt(FileUtils::getLCaseExt(name))) {
+                    OSD::clickNoPause();
+                    return leave("M" + name);
+                }
+            }
+            // F5 = the slot picker for a disk image, and "load as a tape" for an
+            // .mp3 (Enter plays it as music).
             if (all && k.vk == fabgl::VK_F5 && !onDir && s_visTotal
-                    && FileUtils::ifaceForExt(FileUtils::getLCaseExt(name)) != IFACE_NONE) {
+                    && (FileUtils::ifaceForExt(FileUtils::getLCaseExt(name)) != IFACE_NONE
+                        || FileUtils::getLCaseExt(name) == "mp3")) {
                 OSD::clickNoPause();
                 return leave("P" + name);
             }
@@ -1274,12 +1301,14 @@ static const NavVerb kNvLoc[]    = { { SYM_ENTER, "Open" } };
 static const NavVerb kNvHosts[]  = { { SYM_ENTER, "Connect" },
                                      { "F8", "Forget" } };
 static const NavVerb kNvRemote[] = { { SYM_ENTER, "Run / Open" },
-                                     { "F2", "Reload" },
+                                     { "F2", "Play" },
+                                     { "F3", "Reload" },
                                      { "F5", "Save to SD" },
                                      { "F7", "Upload" },
                                      { "F8", "Delete" } };
 static const NavVerb kNvWeb[]    = { { SYM_ENTER, "Run / Open" },
-                                     { "F2", "Reload" },
+                                     { "F2", "Play" },
+                                     { "F3", "Reload" },
                                      { "F5", "Save to SD" } };
 
 int browseIndexNav(const string& title, const string& subtitle, int side,
@@ -1291,8 +1320,8 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
     const NavVerb* verbs; int nverbs;
     switch (side) {
         case OSD::FD_SIDE_HOSTS:  verbs = kNvHosts;  nverbs = 2; break;
-        case OSD::FD_SIDE_REMOTE: verbs = kNvRemote; nverbs = 5; break;
-        case OSD::FD_SIDE_WEB:    verbs = kNvWeb;    nverbs = 3; break;
+        case OSD::FD_SIDE_REMOTE: verbs = kNvRemote; nverbs = 6; break;
+        case OSD::FD_SIDE_WEB:    verbs = kNvWeb;    nverbs = 4; break;
         default:                  verbs = kNvLoc;    nverbs = 1; break;
     }
     const bool allowF2 = (side == OSD::FD_SIDE_REMOTE || side == OSD::FD_SIDE_WEB);
@@ -1379,6 +1408,17 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
         y += 3;
         for (int i = 0; i < nverbs; i++) {
             if (y + lh > L.body_y + L.body_h) break;
+            // No player on this board: F2 stays "Reload" (OSDFile maps it so),
+            // and the separate F3 row would only repeat it.
+            if (!pp::available() && verbs[i].k[0] == 'F') {
+                if (verbs[i].k[1] == '3') continue;
+                if (verbs[i].k[1] == '2') {
+                    text(tx, y, "F2", C_TEXT_DIM);
+                    text(tx + textWidth("F2") + glyphW(), y, "Reload", C_TEXT);
+                    y += lh;
+                    continue;
+                }
+            }
             text(tx, y, verbs[i].k, C_TEXT_DIM);
             text(tx + textWidth(verbs[i].k) + glyphW(), y, verbs[i].what, C_TEXT);
             y += lh;
@@ -1449,6 +1489,9 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
                 ret = -1; rkey = OSD::FDK_ESC; goto out;
             case fabgl::VK_F2:
                 if (allowF2) { ret = sel; rkey = OSD::FDK_F2; goto out; }
+                continue;
+            case fabgl::VK_F3:
+                if (allowF2) { ret = sel; rkey = OSD::FDK_F3; goto out; }
                 continue;
             case fabgl::VK_F5:
                 if (allowF5 && total > 0) { ret = sel; rkey = OSD::FDK_F5; goto out; }

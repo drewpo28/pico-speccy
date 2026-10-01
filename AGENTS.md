@@ -33,25 +33,25 @@ Emulates ZX Spectrum 48K, 128K, Pentagon 128/512/1024K, Byte computer, and ALF T
 | File                | Role                                                      |
 |---------------------|-----------------------------------------------------------|
 | `src/main.cpp`      | Entry point, hardware init, multicore dispatch            |
-| `src/ESPectrum.cpp`  | Main emulation loop (`loop()`), `setup()`, `reset()`, audio mixing |
-| `src/ESPectrum.h`   | Central header: audio buffers, timing constants, globals  |
-| `src/CPU.cpp`       | Z80 CPU execution loop (per-frame cycle counting)         |
-| `src/Z80_JLS/`      | Z80 core by J.L. Sánchez — instruction decode/execute     |
-| `src/Z80_JLS.cpp`   | Z80 opcode implementation (large, ~138 KB)                |
-| `src/Ports.cpp`     | I/O port handling: ULA, AY-3-8912, KR580VI53 (8253 PIT), FDD, Kempston |
-| `src/Ports.h`       | Port structures (PIT8253Channel, etc.)                    |
-| `src/Video.cpp`     | VGA/HDMI/TFT/TV rendering, border, multicolor effects    |
-| `src/MemESP.cpp`    | Memory management: RAM banking, ROM paging, contention    |
-| `src/AySound.cpp`   | AY-3-8912 PSG emulation (ayemu-based)                     |
-| `src/Tape.cpp`      | TAP/TZX tape loading/saving                               |
-| `src/Snapshot.cpp`  | SNA/Z80 snapshot load/save                                |
-| `src/Config.cpp`    | Persistent configuration (SD card)                        |
-| `src/OSDMain.cpp`   | On-screen display menus & dialogs                         |
-| `src/FileUtils.cpp` | FatFS-based SD card file system                           |
-| `src/pwm_audio.cpp` | PWM audio output driver                                   |
-| `src/wd1793.cpp`    | WD1793 floppy disk controller (Beta Disk)                 |
+| `src/app/ESPectrum.cpp`  | Main emulation loop (`loop()`), `setup()`, `reset()`, audio mixing |
+| `src/app/ESPectrum.h`   | Central header: audio buffers, timing constants, globals  |
+| `src/speccy/z80/CPU.cpp`       | Z80 CPU execution loop (per-frame cycle counting)         |
+| `src/speccy/z80/`      | Z80 core by J.L. Sánchez — instruction decode/execute     |
+| `src/speccy/z80/Z80_JLS.cpp`   | Z80 opcode implementation (large, ~138 KB)                |
+| `src/speccy/core/Ports.cpp`     | I/O port handling: ULA, AY-3-8912, KR580VI53 (8253 PIT), FDD, Kempston |
+| `src/speccy/core/Ports.h`       | Port structures (PIT8253Channel, etc.)                    |
+| `src/speccy/video/Video.cpp`     | VGA/HDMI/TFT/TV rendering, border, multicolor effects    |
+| `src/speccy/core/MemESP.cpp`    | Memory management: RAM banking, ROM paging, contention    |
+| `src/speccy/devices/sound/AySound.cpp`   | AY-3-8912 PSG emulation (ayemu-based)                     |
+| `src/speccy/devices/tape/Tape.cpp`      | TAP/TZX tape loading/saving                               |
+| `src/speccy/core/Snapshot.cpp`  | SNA/Z80 snapshot load/save                                |
+| `src/app/Config.cpp`    | Persistent configuration (SD card)                        |
+| `src/ui/OSDMain.cpp`   | On-screen display menus & dialogs                         |
+| `src/fs/FileUtils.cpp` | FatFS-based SD card file system                           |
+| `src/drivers/sound/pwm_audio.cpp` | PWM audio output driver                                   |
+| `src/speccy/devices/disk/wd1793.cpp`    | WD1793 floppy disk controller (Beta Disk)                 |
 
-### Driver Subsystems (`drivers/`)
+### Driver Subsystems (`src/drivers/`; fatfs lives in `external/`)
 
 - `vga-nextgen` — VGA output via PIO
 - `hdmi` — DVI/HDMI output

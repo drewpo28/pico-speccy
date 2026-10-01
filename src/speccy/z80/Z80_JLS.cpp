@@ -1,0 +1,3620 @@
+///////////////////////////////////////////////////////////////////////////////
+//
+// z80cpp - Z80 emulator core
+//
+// Copyright (c) 2017, 2018, 2019, 2020 jsanchezv - https://github.com/jsanchezv
+//
+// Heretic optimizations and minor adaptations
+// Copyright (c) 2021 dcrespo3d - https://github.com/dcrespo3d
+//
+// ESPectrum specific optimizations and code
+// Copyright (c) 2023-24 Víctor Iborra [Eremus] - https://github.com/EremusOne
+//
+
+// Converted to C++ from Java at
+//... https://github.com/jsanchezv/Z80Core
+//... commit c4f267e3564fa89bd88fd2d1d322f4d6b0069dbd
+//... GPL 3
+//... v1.0.0 (13/02/2017)
+//    quick & dirty conversion by dddddd (AKA deesix)
+
+#include <stdio.h>
+#include <algorithm>
+
+#include "z80.h"
+#include "speccy/core/Ports.h"
+#include "speccy/video/Video.h"
+#include "speccy/machines/TsConf/TsFastMem.h"
+#include <string.h>
+#include "drivers/graphics/graphics.h"
+#include "speccy/core/MemESP.h"
+#include "CPU.h"
+#include "speccy/machines/Atm.h"
+#include "speccy/devices/tape/Tape.h"
+#include "app/Config.h"
+#include "fs/FileUtils.h"
+#include "ui/OSDMain.h"
+#include "app/messages.h"
+#include "app/Debug.h"
+#include "app/ESPectrum.h"
+#include "speccy/devices/disk/wd1793.h"
+
+#include "speccy/devices/storage/DivMMC.h"
+#include "speccy/devices/disk/MB02.h"
+#include "speccy/machines/Timex.h"   // g_timex_mmu + Timex::rd/read8 (TC2068 SCLD window, exec_nocheck fetch)
+#include "speccy/machines/TsConf/TsConf.h"
+
+
+// #include "Snapshot.h"
+
+// #pragma GCC optimize("O3")
+
+uint8_t page;
+
+#define PEEK8(result,address) \
+ page = address >> 14; \
+ VIDEO::Draw(3,MemESP::ramContended[page]); \
+ if (page == 0 && MemESP::divmmc_mapped) \
+     result = ((address) < 0x2000) ? MemESP::page0_lo[address] : MemESP::page0_hi[(address) & 0x1FFF]; \
+ else \
+     result = MemESP::romPeek(page, MemESP::ramCurrent[page], (address) & 0x3fff);
+
+// miembros estáticos
+
+uint8_t Z80::opCode;
+uint8_t Z80::prefixOpcode = 0;
+bool Z80::execDone;
+uint8_t Z80::regA;
+uint8_t Z80::sz5h3pnFlags;
+bool Z80::carryFlag;
+RegisterPair Z80::regBC, Z80::regBCx, Z80::regDE, Z80::regDEx, Z80::regHL, Z80::regHLx;
+bool Z80::flagQ;
+bool Z80::lastFlagQ;
+RegisterPair Z80::regAFx;
+RegisterPair Z80::regPC;
+RegisterPair Z80::regIX;
+RegisterPair Z80::regIY;
+RegisterPair Z80::regSP;
+uint8_t Z80::regI;
+uint8_t Z80::regR;
+bool Z80::regRbit7;
+bool Z80::ffIFF1 = false;
+bool Z80::ffIFF2 = false;
+bool Z80::pendingEI = false;
+#if PERF_TRACE
+uint32_t g_frm_int_taken = 0, g_frm_int_miss = 0, g_int_last_t = 0;   // see the [PERF] 60f intMiss= field
+#endif
+bool Z80::activeNMI = false;
+bool Z80::activeNMIDOS = false;
+bool Z80::nmiDosInProgress = false;
+uint8_t Z80::nmiDos_savedRomInUse = 0;
+bool Z80::nmiDos_savedTrdos = false;
+uint16_t Z80::nmiDos_savedSP = 0;
+uint16_t Z80::nmiDos_savedPC = 0;
+Z80::IntMode Z80::modeINT = Z80::IntMode::IM0;
+bool Z80::halted = false;
+bool Z80::pinReset = false;
+RegisterPair Z80::memptr;
+uint8_t Z80::sz53n_addTable[256];
+uint8_t Z80::sz53pn_addTable[256];
+uint8_t Z80::sz53n_subTable[256];
+uint8_t Z80::sz53pn_subTable[256];
+
+///////////////////////////////////////////////////////////////////////////////
+
+// Constructor de la clase
+// Cold half of the core: runs at boot, on a machine reset or when an NMI is
+// taken — never per instruction — so it lives in FLASH even with the core in
+// SRAM (Z80_CORE_IN_RAM). The linker script sends `.z80cold` to the flash .text
+// ahead of the object-wide RAM rule (rp2350-memmap.ld). Z80::interrupt() is NOT
+// cold: TS-Conf's LINE INT takes it up to 320 times a frame. (2026-09-22, -824 B)
+#define Z80_COLD __attribute__((section(".z80cold"), noinline))
+Z80_COLD void Z80::create() {
+
+    bool evenBits;
+
+    for (uint32_t idx = 0; idx < 256; idx++) {
+		sz53n_addTable[idx] = 0;
+		sz53pn_addTable[idx] = 0;
+		sz53n_subTable[idx] = 0;
+		sz53pn_subTable[idx] = 0;
+
+		if (idx > 0x7f) {
+            sz53n_addTable[idx] |= SIGN_MASK;
+        }
+
+        evenBits = true;
+        for (uint8_t mask = 0x01; mask != 0; mask <<= 1) {
+            if ((idx & mask) != 0) {
+                evenBits = !evenBits;
+            }
+        }
+
+        sz53n_addTable[idx] |= (idx & FLAG_53_MASK);
+        sz53n_subTable[idx] = sz53n_addTable[idx] | ADDSUB_MASK;
+
+        if (evenBits) {
+            sz53pn_addTable[idx] = sz53n_addTable[idx] | PARITY_MASK;
+            sz53pn_subTable[idx] = sz53n_subTable[idx] | PARITY_MASK;
+        } else {
+            sz53pn_addTable[idx] = sz53n_addTable[idx];
+            sz53pn_subTable[idx] = sz53n_subTable[idx];
+        }
+    }
+
+    sz53n_addTable[0] |= ZERO_MASK;
+    sz53pn_addTable[0] |= ZERO_MASK;
+    sz53n_subTable[0] |= ZERO_MASK;
+    sz53pn_subTable[0] |= ZERO_MASK;
+
+    execDone = false;
+
+    // reset();
+
+}
+
+Z80_COLD void Z80::destroy(void)
+{
+}
+
+RegisterPair Z80::getPairIR(void) {
+    RegisterPair IR;
+    IR.byte8.hi = regI;
+    IR.byte8.lo = regR & 0x7f;
+    if (regRbit7) {
+        IR.byte8.lo |= SIGN_MASK;
+    }
+    return IR;
+}
+
+void Z80::setAddSubFlag(bool state) {
+    if (state) {
+        sz5h3pnFlags |= ADDSUB_MASK;
+    } else {
+        sz5h3pnFlags &= ~ADDSUB_MASK;
+    }
+}
+
+void Z80::setParOverFlag(bool state) {
+    if (state) {
+        sz5h3pnFlags |= PARITY_MASK;
+    } else {
+        sz5h3pnFlags &= ~PARITY_MASK;
+    }
+}
+
+void Z80::setBit3Fag(bool state) {
+    if (state) {
+        sz5h3pnFlags |= BIT3_MASK;
+    } else {
+        sz5h3pnFlags &= ~BIT3_MASK;
+    }
+}
+
+void Z80::setHalfCarryFlag(bool state) {
+    if (state) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    } else {
+        sz5h3pnFlags &= ~HALFCARRY_MASK;
+    }
+}
+
+void Z80::setBit5Flag(bool state) {
+    if (state) {
+        sz5h3pnFlags |= BIT5_MASK;
+    } else {
+        sz5h3pnFlags &= ~BIT5_MASK;
+    }
+}
+
+void Z80::setZeroFlag(bool state) {
+    if (state) {
+        sz5h3pnFlags |= ZERO_MASK;
+    } else {
+        sz5h3pnFlags &= ~ZERO_MASK;
+    }
+}
+
+void Z80::setSignFlag(bool state) {
+    if (state) {
+        sz5h3pnFlags |= SIGN_MASK;
+    } else {
+        sz5h3pnFlags &= ~SIGN_MASK;
+    }
+}
+
+// Reset
+/* Según el documento de Sean Young, que se encuentra en
+ * [http://www.myquest.com/z80undocumented], la mejor manera de emular el
+ * reset es poniendo PC, IFF1, IFF2, R e IM0 a 0 y todos los demás registros
+ * a 0xFFFF.
+ *
+ * 29/05/2011: cuando la CPU recibe alimentación por primera vez, los
+ *             registros PC e IR se inicializan a cero y el resto a 0xFF.
+ *             Si se produce un reset a través de la patilla correspondiente,
+ *             los registros PC e IR se inicializan a 0 y el resto se preservan.
+ *             En cualquier caso, todo parece depender bastante del modelo
+ *             concreto de Z80, así que se escoge el comportamiento del
+ *             modelo Zilog Z8400APS. Z80A CPU.
+ *             http://www.worldofspectrum.org/forums/showthread.php?t=34574
+ */
+Z80_COLD void Z80::reset(void) {
+    if (pinReset) {
+        pinReset = false;
+    } else {
+        regA = 0xff;
+
+        setFlags(0xfd); // The only one flag reset at cold start is the add/sub flag
+
+        REG_AFx = 0xffff;
+        REG_BC = REG_BCx = 0xffff;
+        REG_DE = REG_DEx = 0xffff;
+        REG_HL = REG_HLx = 0xffff;
+
+        REG_IX = REG_IY = 0xffff;
+
+        REG_SP = 0xffff;
+
+        REG_WZ = 0xffff;
+    }
+
+    REG_PC = 0;
+    regI = regR = 0;
+    regRbit7 = false;
+    ffIFF1 = false;
+    ffIFF2 = false;
+    pendingEI = false;
+    activeNMI = false;
+    activeNMIDOS = false;
+    nmiDosInProgress = false;
+    halted = false;
+    setIM(IntMode::IM0);
+    lastFlagQ = false;
+    prefixOpcode = 0x00;
+}
+
+// Rota a la izquierda el valor del argumento
+// El bit 0 y el flag C toman el valor del bit 7 antes de la operación
+void Z80::rlc(uint8_t &oper8) {
+    carryFlag = (oper8 > 0x7f);
+    oper8 <<= 1;
+    if (carryFlag) {
+        oper8 |= CARRY_MASK;
+    }
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+// Rota a la izquierda el valor del argumento
+// El bit 7 va al carry flag
+// El bit 0 toma el valor del flag C antes de la operación
+void Z80::rl(uint8_t &oper8) {
+    bool carry = carryFlag;
+    carryFlag = (oper8 > 0x7f);
+    oper8 <<= 1;
+    if (carry) {
+        oper8 |= CARRY_MASK;
+    }
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+
+// Rota a la izquierda el valor del argumento
+// El bit 7 va al carry flag
+// El bit 0 toma el valor 0
+void Z80::sla(uint8_t &oper8) {
+    carryFlag = (oper8 > 0x7f);
+    oper8 <<= 1;
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+
+// Rota a la izquierda el valor del argumento (como sla salvo por el bit 0)
+// El bit 7 va al carry flag
+// El bit 0 toma el valor 1
+// Instrucción indocumentada
+void Z80::sll(uint8_t &oper8) {
+    carryFlag = (oper8 > 0x7f);
+    oper8 <<= 1;
+    oper8 |= CARRY_MASK;
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+
+// Rota a la derecha el valor del argumento
+// El bit 7 y el flag C toman el valor del bit 0 antes de la operación
+void Z80::rrc(uint8_t &oper8) {
+    carryFlag = (oper8 & CARRY_MASK) != 0;
+    oper8 >>= 1;
+    if (carryFlag) {
+        oper8 |= SIGN_MASK;
+    }
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+
+// Rota a la derecha el valor del argumento
+// El bit 0 va al carry flag
+// El bit 7 toma el valor del flag C antes de la operación
+void Z80::rr(uint8_t &oper8) {
+    bool carry = carryFlag;
+    carryFlag = (oper8 & CARRY_MASK) != 0;
+    oper8 >>= 1;
+    if (carry) {
+        oper8 |= SIGN_MASK;
+    }
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+
+// Rota a la derecha 1 bit el valor del argumento
+// El bit 0 pasa al carry.
+// El bit 7 conserva el valor que tenga
+void Z80::sra(uint8_t &oper8) {
+    uint8_t sign = oper8 & SIGN_MASK;
+    carryFlag = (oper8 & CARRY_MASK) != 0;
+    oper8 = (oper8 >> 1) | sign;
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+
+// Rota a la derecha 1 bit el valor del argumento
+// El bit 0 pasa al carry.
+// El bit 7 toma el valor 0
+void Z80::srl(uint8_t &oper8) {
+    carryFlag = (oper8 & CARRY_MASK) != 0;
+    oper8 >>= 1;
+    sz5h3pnFlags = sz53pn_addTable[oper8];
+    flagQ = true;
+}
+
+/*
+ * Half-carry flag:
+ *
+ * FLAG = (A ^ B ^ RESULT) & 0x10  for any operation
+ *
+ * Overflow flag:
+ *
+ * FLAG = ~(A ^ B) & (B ^ RESULT) & 0x80 for addition [ADD/ADC]
+ * FLAG = (A ^ B) & (A ^ RESULT) &0x80 for subtraction [SUB/SBC]
+ *
+ * For INC/DEC, you can use following simplifications:
+ *
+ * INC:
+ * H_FLAG = (RESULT & 0x0F) == 0x00
+ * V_FLAG = RESULT == 0x80
+ *
+ * DEC:
+ * H_FLAG = (RESULT & 0x0F) == 0x0F
+ * V_FLAG = RESULT == 0x7F
+ */
+// Incrementa un valor de 8 bits modificando los flags oportunos
+void Z80::inc8(uint8_t &oper8) {
+    oper8++;
+
+    sz5h3pnFlags = sz53n_addTable[oper8];
+
+    if ((oper8 & 0x0f) == 0) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (oper8 == 0x80) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    flagQ = true;
+    return;
+}
+
+// Decrementa un valor de 8 bits modificando los flags oportunos
+void Z80::dec8(uint8_t &oper8) {
+    oper8--;
+
+    sz5h3pnFlags = sz53n_subTable[oper8];
+
+    if ((oper8 & 0x0f) == 0x0f) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (oper8 == 0x7f) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    flagQ = true;
+    return;
+}
+
+// Suma de 8 bits afectando a los flags
+void Z80::add(uint8_t oper8) {
+    uint16_t res = regA + oper8;
+
+    carryFlag = res > 0xff;
+    res &= 0xff;
+    sz5h3pnFlags = sz53n_addTable[res];
+
+    /* El módulo 16 del resultado será menor que el módulo 16 del registro A
+     * si ha habido HalfCarry. Sucede lo mismo para todos los métodos suma
+     * SIN carry */
+    if ((res & 0x0f) < (regA & 0x0f)) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (((regA ^ ~oper8) & (regA ^ res)) > 0x7f) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    regA = res;
+    flagQ = true;
+}
+
+// Suma con acarreo de 8 bits
+void Z80::adc(uint8_t oper8) {
+    uint16_t res = regA + oper8;
+
+    if (carryFlag) {
+        res++;
+    }
+
+    carryFlag = res > 0xff;
+    res &= 0xff;
+    sz5h3pnFlags = sz53n_addTable[res];
+
+    if (((regA ^ oper8 ^ res) & 0x10) != 0) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (((regA ^ ~oper8) & (regA ^ res)) > 0x7f) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    regA = res;
+    flagQ = true;
+}
+
+// Suma dos operandos de 16 bits sin carry afectando a los flags
+void Z80::add16(RegisterPair &reg16, uint16_t oper16) {
+    uint32_t tmp = oper16 + reg16.word;
+
+    REG_WZ = reg16.word + 1;
+    carryFlag = tmp > 0xffff;
+    reg16.word = tmp;
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | ((reg16.word >> 8) & FLAG_53_MASK);
+
+    if ((reg16.word & 0x0fff) < (oper16 & 0x0fff)) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    flagQ = true;
+    return;
+}
+
+// Suma con acarreo de 16 bits
+void Z80::adc16(uint16_t reg16) {
+    uint16_t tmpHL = REG_HL;
+    REG_WZ = REG_HL + 1;
+
+    uint32_t res = REG_HL + reg16;
+    if (carryFlag) {
+        res++;
+    }
+
+    carryFlag = res > 0xffff;
+    res &= 0xffff;
+    REG_HL = (uint16_t) res;
+
+    sz5h3pnFlags = sz53n_addTable[REG_H];
+    if (res != 0) {
+        sz5h3pnFlags &= ~ZERO_MASK;
+    }
+
+    if (((res ^ tmpHL ^ reg16) & 0x1000) != 0) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (((tmpHL ^ ~reg16) & (tmpHL ^ res)) > 0x7fff) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    flagQ = true;
+}
+
+// Resta de 8 bits
+void Z80::sub(uint8_t oper8) {
+    int16_t res = regA - oper8;
+
+    carryFlag = res < 0;
+    res &= 0xff;
+    sz5h3pnFlags = sz53n_subTable[res];
+
+    /* El módulo 16 del resultado será mayor que el módulo 16 del registro A
+     * si ha habido HalfCarry. Sucede lo mismo para todos los métodos resta
+     * SIN carry, incluido cp */
+    if ((res & 0x0f) > (regA & 0x0f)) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (((regA ^ oper8) & (regA ^ res)) > 0x7f) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    regA = res;
+    flagQ = true;
+}
+
+// Resta con acarreo de 8 bits
+void Z80::sbc(uint8_t oper8) {
+    int16_t res = regA - oper8;
+
+    if (carryFlag) {
+        res--;
+    }
+
+    carryFlag = res < 0;
+    res &= 0xff;
+    sz5h3pnFlags = sz53n_subTable[res];
+
+    if (((regA ^ oper8 ^ res) & 0x10) != 0) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (((regA ^ oper8) & (regA ^ res)) > 0x7f) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    regA = res;
+    flagQ = true;
+}
+
+// Resta con acarreo de 16 bits
+void Z80::sbc16(uint16_t reg16) {
+    uint16_t tmpHL = REG_HL;
+    REG_WZ = REG_HL + 1;
+
+    int32_t res = REG_HL - reg16;
+    if (carryFlag) {
+        res--;
+    }
+
+    carryFlag = res < 0;
+    res &= 0xffff;
+    REG_HL = (uint16_t) res;
+
+    sz5h3pnFlags = sz53n_subTable[REG_H];
+    if (res != 0) {
+        sz5h3pnFlags &= ~ZERO_MASK;
+    }
+
+    if (((res ^ tmpHL ^ reg16) & 0x1000) != 0) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (((tmpHL ^ reg16) & (tmpHL ^ res)) > 0x7fff) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+    flagQ = true;
+}
+
+// Operación AND lógica
+void Z80::and_(uint8_t oper8) {
+    regA &= oper8;
+    carryFlag = false;
+    sz5h3pnFlags = sz53pn_addTable[regA] | HALFCARRY_MASK;
+    flagQ = true;
+}
+
+// Operación XOR lógica
+void Z80::xor_(uint8_t oper8) {
+    regA ^= oper8;
+    carryFlag = false;
+    sz5h3pnFlags = sz53pn_addTable[regA];
+    flagQ = true;
+}
+
+void Z80::Xor(uint8_t oper8) {
+    xor_(oper8);
+}
+
+// Operación OR lógica
+void Z80::or_(uint8_t oper8) {
+    regA |= oper8;
+    carryFlag = false;
+    sz5h3pnFlags = sz53pn_addTable[regA];
+    flagQ = true;
+}
+
+// Operación de comparación con el registro A
+// es como SUB, pero solo afecta a los flags
+// Los flags SIGN y ZERO se calculan a partir del resultado
+// Los flags 3 y 5 se copian desde el operando (sigh!)
+void Z80::cp(uint8_t oper8) {
+    int16_t res = regA - oper8;
+
+    carryFlag = res < 0;
+    res &= 0xff;
+
+    sz5h3pnFlags = (sz53n_addTable[oper8] & FLAG_53_MASK)
+            | // No necesito preservar H, pero está a 0 en la tabla de todas formas
+            (sz53n_subTable[res] & FLAG_SZHN_MASK);
+
+    if ((res & 0x0f) > (regA & 0x0f)) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+
+    if (((regA ^ oper8) & (regA ^ res)) > 0x7f) {
+        sz5h3pnFlags |= OVERFLOW_MASK;
+    }
+
+    flagQ = true;
+}
+
+void Z80::Cp(uint8_t oper8) {
+    cp(oper8);
+}
+
+// DAA
+void Z80::daa(void) {
+    uint8_t suma = 0;
+    bool carry = carryFlag;
+
+    if ((sz5h3pnFlags & HALFCARRY_MASK) != 0 || (regA & 0x0f) > 0x09) {
+        suma = 6;
+    }
+
+    if (carry || (regA > 0x99)) {
+        suma |= 0x60;
+    }
+
+    if (regA > 0x99) {
+        carry = true;
+    }
+
+    if ((sz5h3pnFlags & ADDSUB_MASK) != 0) {
+        sub(suma);
+        sz5h3pnFlags = (sz5h3pnFlags & HALFCARRY_MASK) | sz53pn_subTable[regA];
+    } else {
+        add(suma);
+        sz5h3pnFlags = (sz5h3pnFlags & HALFCARRY_MASK) | sz53pn_addTable[regA];
+    }
+
+    carryFlag = carry;
+    // Los add/sub ya ponen el resto de los flags
+    flagQ = true;
+}
+
+// POP
+uint16_t Z80::pop(void) {
+    uint16_t word = Z80Ops::peek16(REG_SP);
+    REG_SP = REG_SP + 2;
+    return word;
+}
+
+// PUSH
+void Z80::push(uint16_t word) {
+    Z80Ops::poke8(--REG_SP, word >> 8);
+    Z80Ops::poke8(--REG_SP, word);
+}
+
+// LDI
+
+// LDD
+
+// CPI
+
+// CPD
+
+// INI
+
+// IND
+
+// OUTI
+
+// OUTD
+
+// Pone a 1 el Flag Z si el bit b del registro
+// r es igual a 0
+/*
+ * En contra de lo que afirma el Z80-Undocumented, los bits 3 y 5 toman
+ * SIEMPRE el valor de los bits correspondientes del valor a comparar para
+ * las instrucciones BIT n,r. Para BIT n,(HL) toman el valor del registro
+ * escondido (REG_WZ), y para las BIT n, (IX/IY+n) toman el valor de los
+ * bits superiores de la dirección indicada por IX/IY+n.
+ *
+ * 04/12/08 Confirmado el comentario anterior:
+ *          http://scratchpad.wikia.com/wiki/Z80
+ */
+void Z80::bitTest(uint8_t mask, uint8_t reg) {
+    bool zeroFlag = (mask & reg) == 0;
+
+    sz5h3pnFlags = (sz53n_addTable[reg] & ~FLAG_SZP_MASK) | HALFCARRY_MASK;
+
+    if (zeroFlag) {
+        sz5h3pnFlags |= (PARITY_MASK | ZERO_MASK);
+    }
+
+    if (mask == SIGN_MASK && !zeroFlag) {
+        sz5h3pnFlags |= SIGN_MASK;
+    }
+    flagQ = true;
+}
+
+// ATM-Turbo's check_trdos: the BIOS boot-menu / 128-menu / TR-DOS-prompt hooks and
+// the DOS trap (Atm::remap owns every window). FLASH (Z80_COLD), not RAM: it runs only
+// while Z80Ops::isAtm, so the RAM-resident check_trdos keeps one test for the rest.
+Z80_COLD void Z80::check_trdos_atm() {
+    const uint16_t menuCall = Atm::atm1 ? Atm::kBios1MenuCall : Atm::kBiosMenuCall;
+    const uint16_t menuRet  = Atm::atm1 ? Atm::kBios1MenuRet
+                            : (Config::romSetAtm == R_ATM2_106 ? Atm::kBios106MenuRet : Atm::kBiosMenuRet);
+    if (Atm::cpmBootArmed && REG_PC == menuCall && (g_atm_ro & 1)) {
+        Atm::cpmBootArmed = false;
+        const uint16_t ret = (uint16_t)(MemESP::readbyte(REG_SP) |
+                                        (MemESP::readbyte((uint16_t)(REG_SP + 1)) << 8));
+        Debug::log("[ATM] BIOS boot menu call, ret=%04X: %s", ret,
+                   ret == menuRet ? "answering CP/M" : "not the BIOS's, left alone");
+        if (ret == menuRet) {             // the BIOS's own call: skip the menu, answer CP/M
+            REG_SP += 2;
+            REG_PC = ret;
+            regA = 0;
+            // BIOS 1.06 also takes the menu's other outputs (menu #80E7-#80FD):
+            // D = TURBO (the menu starts ON), L = keyboard kind, 0 = ZX matrix /
+            // 1 = XT (#00D3 DEC L picks the driver at #145C or #1174). Left to
+            // chance, L = 1 installed the XT driver and the keyboard went dead.
+            // E (boot options) is returned unchanged by the menu, as here.
+            if (Config::romSetAtm == R_ATM2_106) { REG_D = 1; REG_L = 0; }
+        }
+    }
+    if (Atm::trdosMenuArmed && REG_PC == Atm::k128MenuLoop && (g_atm_ro & 1)
+        && !(Atm::p7ffd & 0x10) && !ESPectrum::trdos) {
+        Atm::trdosMenuArmed = false;       // the 128 menu is up: pick its TR-DOS entry
+        REG_SP = Atm::k128MenuSp;
+        REG_PC = Atm::k128MenuTrdos;
+        Atm::trdosBootState = 1;             // ...and let it run "boot"
+        Debug::log("[ATM] 128 menu reached: taking its TR-DOS entry");
+    }
+    Atm::trdosTrap(REG_PCh);
+    if (Atm::trdosBootState && ESPectrum::trdos && REG_PC == Atm::kTrdosEditor) {
+        const uint16_t ret = (uint16_t)(MemESP::readbyte(REG_SP) |
+                                        (MemESP::readbyte((uint16_t)(REG_SP + 1)) << 8));
+        Atm::trdosBootState = 0;
+        if (ret == Atm::kTrdosEditorRet) {
+            // The first TR-DOS prompt: "type" RUN and press Enter.
+            const uint16_t e = (uint16_t)(MemESP::readbyte(0x5C59) | (MemESP::readbyte(0x5C5A) << 8));
+            MemESP::writebyte(e, 0xF7);                    // RUN
+            MemESP::writebyte((uint16_t)(e + 1), 0x0D);
+            MemESP::writebyte((uint16_t)(e + 2), 0x80);
+            const uint16_t kcur = (uint16_t)(e + 1), end = (uint16_t)(e + 3);
+            MemESP::writebyte(0x5C5B, kcur & 0xFF); MemESP::writebyte(0x5C5C, kcur >> 8);   // K_CUR
+            for (uint16_t v : { (uint16_t)0x5C61, (uint16_t)0x5C63, (uint16_t)0x5C65 }) {   // WORKSP, STKBOT, STKEND
+                MemESP::writebyte(v, end & 0xFF); MemESP::writebyte((uint16_t)(v + 1), end >> 8);
+            }
+            REG_SP += 2;
+            REG_PC = ret;
+            Debug::log("[ATM] TR-DOS prompt: typed RUN (E_LINE=%04X)", e);
+        } else {
+            Debug::log("[ATM] TR-DOS editor entered from %04X, not the prompt: autorun skipped", ret);
+        }
+    }
+}
+
+// Scorpion-family ROM bank on the TR-DOS exit (trdos=false). FLASH (Z80_COLD), not
+// RAM: Scorpion/GMX/ProfROM/KAY/Phoenix only, and a DOS exit is not a hot path.
+// Scorpion: 1FFD D1 service override outranks 7FFD D4; GMX/ProfROM keep the bank
+// inside the live ProfROM plane (the 0x0100 tap re-arms via scorpionRomUpdate on the
+// next port write). Nemo KAY: 1FFD D3 picks the ROM pair, DOS off (Ports.cpp
+// scorpionRomUpdate); ZXM-Phoenix: 1FFD D1 forces the service page.
+Z80_COLD uint8_t Z80::scorp_dos_exit_rom() {
+    if (g_scorp_kay)
+        return (g_scorp_kay == 4 && (Ports::port1FFD & 0x02)) ? (uint8_t)2
+             : (uint8_t)(((Ports::port1FFD & 0x08) ? 2 : 0) | MemESP::romLatch);
+    return (uint8_t)(((Ports::port1FFD & 0x02) ? 2 : MemESP::romLatch)
+                     | (g_scorp_banked ? (Ports::gmxPlane << 2) : 0));
+}
+
+IRAM_ATTR void Z80::check_trdos() {
+
+    // TS-Conf owns its window-0 mapping (Page0/MemConfig) — the generic code
+    // below writes ramCurrent[0]/romInUse directly and calls recoverPage0(),
+    // both of which would walk over the TS-Conf banking. Its own trap keeps
+    // the DOS-signal semantics (enter at #3Dxx with ROM128+ROM, leave on
+    // executing RAM) and remaps through TsConf::setBanks().
+    if (Z80Ops::isTsconf) { TsConf::trdosTrap(REG_PCh); return; }
+    // ATM-Turbo: same shape — the memory manager owns every window (Atm::remap).
+    if (Z80Ops::isAtm) { check_trdos_atm(); return; }
+
+    // Detect NMI-DOS handler return: exact PC and SP match after planted RET at 0x5C00
+    if (nmiDosInProgress && REG_PC == nmiDos_savedPC && REG_SP == nmiDos_savedSP) {
+        nmiDosInProgress = false;
+        MemESP::romInUse = nmiDos_savedRomInUse;
+        ESPectrum::trdos = nmiDos_savedTrdos;
+        if (ESPectrum::trdos) {
+            MemESP::ramCurrent[0] = MemESP::rom[Config::arch == A_SCORP
+                ? ((g_scorp_banked ? (Ports::gmxPlane << 2) : 0) | 3) : 4].direct();
+        } else {
+            MemESP::recoverPage0();
+        }
+        if (g_scorp_banked) Ports::gmxTapRecheck(); // re-arm tap + re-register the bank overlay
+        return;
+    }
+
+    if (DivMMC::enabled) return; // DivMMC automap handled in fetchOpcode/exec_nocheck
+    if (MB02::enabled) return;   // MB-02 uses tape-compatible hooks, not 0x3Dxx trap
+
+    if (!Config::betadisk) return;
+
+    if (!Z80Ops::isALF) {
+
+        if (!ESPectrum::trdos) {
+
+            if (REG_PCh == 0x3D) {
+
+                // TR-DOS Rom can be accessed from 48K machines and from Spectrum 128/+2 and Pentagon if the currently mapped ROM is bank 1.
+                // For Profi: TR-DOS is accessed from bank 0 (SYS ROM), bank 2 (128K compat ROM), or bank 3 (SOS ROM) via 0x3Dxx.
+                // newSRAM=true means slot 0 is a RAM page (Pentagon Hidden RAM), not the stock 48K ROM — skip TR-DOS automap.
+                // For Profi: ZXMAK2 MemoryProfi1024.BusReadMem3D00_M1 triggers DOSEN only when IsRom48 — i.e. SOS bank3 (Sinclair OS). Not from SYS (0), TR-DOS (1), or 128K (2).
+                // ...and only when ROM is actually mapped at slot 0: with NOROM
+                // (DFFD bit4, page0ram) the CPU sees RAM at 0x0000-0x3FFF, so a
+                // program legitimately running code at 0x3Dxx (Kings Valley CP/M
+                // keeps a routine + stack there) must NOT trigger the automap —
+                // it used to swap page0 for TR-DOS ROM mid-game and crash it.
+                // Karabas UNLOCK_128 (#008B bit7): the FPGA trap fires on
+                // "rom14=1 OR unlock_128" — with the bit set, TR-DOS is also
+                // enterable from the 128K ROM (our bank 2, rom14=0).
+                // Scorpion enters TR-DOS only from its 48 BASIC bank (romInUse==1 ⇒
+                // romLatch=1 and no 1FFD D1 service override, which forces bank 2) and
+                // only with ROM actually mapped at page 0 — 1FFD D0 (RAM0/page0ram)
+                // makes 0x3Dxx ordinary RAM, no trap (same reasoning as Profi's
+                // page0ram guard). Its TR-DOS is the machine's OWN bank 3, like Profi
+                // uses its own bank 1 — not the shared external rom[4].
+                if ((Z80Ops::is48 && MemESP::romInUse == 0) ||
+                    (Config::arch == A_PROFI && MemESP::romInUse == 3 && !MemESP::newSRAM && !MemESP::page0ram) ||
+                    (Config::arch == A_PROFI && MemESP::romInUse == 2 && (Ports::port008B & 0x80) && !MemESP::newSRAM && !MemESP::page0ram) ||
+                    (Config::arch == A_SCORP && (MemESP::romInUse & (g_scorp_banked ? 3 : 0xFF)) == 1 && !MemESP::newSRAM && !MemESP::page0ram) ||
+                    (!Z80Ops::is48 && Config::arch != A_PROFI && Config::arch != A_SCORP && MemESP::romInUse == 1 && !MemESP::newSRAM)) {
+                    // Profi uses its own TR-DOS in ROM bank 1; Scorpion its own bank 3
+                    // (on GMX inside the live ProfROM plane); others use the external
+                    // TR-DOS ROM (bank 4)
+                    uint8_t dosBank = (Config::arch == A_PROFI) ? 1
+                                    : (Config::arch == A_SCORP) ? (uint8_t)((Ports::gmxPlane << 2) | 3) : 4;
+#if FDD_PORT_TRACE
+                    // trdos-transition trace (PQDOS RST8 chain: FE00 stub →
+                    // CALL 3D38 automap → bank1 → JP 5C92 exit — chasing where
+                    // the BIOS-path boot diverges, 2026-07-09).
+                    if (Z80Ops::isProfi) {
+                        static int dosMapCnt = 0;
+                        if (dosMapCnt < 120)
+                            Debug::log("[DOS MAP] pc=%04X romU %d->%d p0ram=%u rom14=%u #%d",
+                                       REG_PC, (int)MemESP::romInUse, dosBank,
+                                       (unsigned)MemESP::page0ram, (unsigned)MemESP::romLatch,
+                                       ++dosMapCnt);
+                    }
+#endif
+#if PAGE_TRACE
+                    { static uint16_t n = 0;
+                      if (n < 200) { n++;
+                        Debug::log("[DOS IN ] pc=%04X romU->%u rom14=%u bank=%u",
+                                   REG_PC, (unsigned)dosBank, (unsigned)MemESP::romLatch,
+                                   (unsigned)MemESP::bankLatch); } }
+#endif
+#if GMX_TRACE
+                    if (Config::arch == A_SCORP)
+                        GMXT("[GMX trap+] pc=%04X romU %u->%u", REG_PC,
+                             (unsigned)MemESP::romInUse, (unsigned)dosBank);
+#endif
+                    MemESP::romInUse = dosBank;
+                    MemESP::ramCurrent[0] = MemESP::rom[dosBank].direct();
+                    ESPectrum::trdos = true;
+                    if (g_scorp_banked) Ports::gmxTapRecheck();
+                } else if (Config::arch == A_PROFI) {
+                }
+
+            }
+
+        } else {
+
+            // Exit trdos/SYSEN when PC leaves ROM space (0x0000-0x3FFF).
+            // Profi special: only exit when in TR-DOS bank (bank1) or SYS ROM (bank0).
+            // SYS ROM (bank0) SYSEN clears when execution reaches RAM — selects 128K/SOS ROM.
+            bool doExit = REG_PCh >= 0x40;
+            if (Config::arch == A_PROFI && MemESP::romInUse != 1 && MemESP::romInUse != 0) doExit = false;
+            // Karabas ONROM (#008B bit6): the FPGA's forced-DOS level outranks
+            // the PC>=0x4000 exit — hold trdos until the guest clears the bit.
+            if (Config::arch == A_PROFI && (Ports::port008B & 0x40)) doExit = false;
+            // GMX 1FFD D2: the DOS page is hard-wired at 0x0000 (Beta forced on) —
+            // hold trdos until the guest clears the bit (same shape as ONROM).
+            if (g_scorp_gmx && (Ports::port1FFD & 0x04)) doExit = false;
+
+            if (doExit) {
+
+#if FDD_PORT_TRACE
+                // See matching [DOS MAP] trace above.
+                if (Z80Ops::isProfi) {
+                    static int dosExitCnt = 0;
+                    if (dosExitCnt < 120)
+                        Debug::log("[DOS EXIT] pc=%04X romU %d->%d p0ram=%u rom14=%u #%d",
+                                   REG_PC, (int)MemESP::romInUse,
+                                   (int)(MemESP::romLatch ? 3 : 2),
+                                   (unsigned)MemESP::page0ram, (unsigned)MemESP::romLatch,
+                                   ++dosExitCnt);
+                }
+#endif
+                if (Z80Ops::is48)
+                    MemESP::romInUse = 0;
+                else if (Config::arch == A_PROFI)
+                    // trdos=false: bit4=0→bank2(128K), bit4=1→bank3(SOS/48K)
+                    MemESP::romInUse = MemESP::romLatch ? 3 : 2;
+                else if (Config::arch == A_SCORP)
+                    MemESP::romInUse = scorp_dos_exit_rom();   // flash, see above
+                else
+                    MemESP::romInUse = MemESP::romLatch;
+#if PAGE_TRACE
+                // The exit re-derives the ROM from the LATCH, so whatever the
+                // TR-DOS ROM last wrote to 7FFD decides what the guest gets
+                // back. Its own 128K helpers write 0xC6/0xC7 (bit4 = 0) and are
+                // supposed to restore 0x10 — if one of them doesn't, the guest
+                // resumes on the 128K ROM instead of 48 BASIC.
+                { static uint16_t n = 0;
+                  if (n < 200) { n++;
+                    Debug::log("[DOS OUT] pc=%04X romU->%u rom14=%u bank=%u",
+                               REG_PC, (unsigned)MemESP::romInUse,
+                               (unsigned)MemESP::romLatch, (unsigned)MemESP::bankLatch); } }
+#endif
+
+                MemESP::recoverPage0();
+                ESPectrum::trdos = false;
+                if (g_scorp_banked) Ports::gmxTapRecheck();
+#if GMX_TRACE
+                if (Config::arch == A_SCORP)
+                    GMXT("[GMX trap-] pc=%04X romU=%u", REG_PC, (unsigned)MemESP::romInUse);
+#endif
+
+            }
+
+        }
+
+    }
+
+}
+
+// IRAM_ATTR void Z80::check_trdos_unpage() {
+
+//     if (ESPectrum::trdos) {
+
+//         if (REG_PCh >= 0x40) {
+
+//             if (Z80Ops::is48)
+//                 MemESP::romInUse = 0;
+//             else
+//                 MemESP::romInUse = MemESP::romLatch;
+
+//             MemESP::ramCurrent[0] = MemESP::rom[MemESP::romInUse];
+//             ESPectrum::trdos = false;
+
+//         }
+
+//     } else if (REG_PCh == 0x3D) {
+
+//             // TR-DOS Rom can be accessed from 48K machines and from Spectrum 128/+2 and Pentagon if the currently mapped ROM is bank 1.
+//             if ((Z80Ops::is48) && (MemESP::romInUse == 0) || ((!Z80Ops::is48) && MemESP::romInUse == 1)) {
+//                 MemESP::romInUse = 4;
+//                 MemESP::ramCurrent[0] = MemESP::rom[MemESP::romInUse];
+//                 ESPectrum::trdos = true;
+//             }
+
+//     }
+
+// }
+
+//Interrupción
+/* Desglose de la interrupción, según el modo:
+ * IM0:
+ *      M1: 7 T-Estados -> reconocer INT y decSP
+ *      M2: 3 T-Estados -> escribir byte alto y decSP
+ *      M3: 3 T-Estados -> escribir byte bajo y salto a N
+ * IM1:
+ *      M1: 7 T-Estados -> reconocer INT y decSP
+ *      M2: 3 T-Estados -> escribir byte alto PC y decSP
+ *      M3: 3 T-Estados -> escribir byte bajo PC y PC=0x0038
+ * IM2:
+ *      M1: 7 T-Estados -> reconocer INT y decSP
+ *      M2: 3 T-Estados -> escribir byte alto y decSP
+ *      M3: 3 T-Estados -> escribir byte bajo
+ *      M4: 3 T-Estados -> leer byte bajo del vector de INT
+ *      M5: 3 T-Estados -> leer byte alto y saltar a la rutina de INT
+ */
+#if ZC_PORT_TRACE || ATM_PAGE_TRACE
+// ATM EI trace (ZC_PORT_TRACE builds): the last 8 EIs with the pages in windows 0/1,
+// dumped when an IM1 interrupt is taken INSIDE the NedoOS sys_sysint handler
+// (#0909-#0950) — i.e. something re-enabled interrupts under the handler.
+static uint16_t s_ei_pc[8];
+static const void* s_ei_w0[8];
+static const void* s_ei_w1[8];
+static uint8_t s_ei_i = 0;
+static uint16_t s_nest_logged = 0;
+#endif
+void Z80::interrupt(void) {
+#if PERF_TRACE
+    g_frm_int_taken++;   // machine-independent: was an interrupt taken this frame at all
+    g_int_last_t = CPU::tstates;   // anchor for brdT's delta (see the [PERF] 60f d= field)
+#endif
+
+    const bool wasHalted = halted;   // for TsConf::intTrace
+    halted = false;
+
+    // TS-Conf: the INT acknowledge cycle clears the source being taken and
+    // selects its vector — in EVERY interrupt mode (zint.v latches on intack).
+    // It must be evaluated HERE, at the T-state where the line was sampled:
+    // the FRAME source is a 32-clock auto-expiring window (32 T at 3.5 MHz),
+    // and taking it after the 7 T response + the 6 T push below put the ack
+    // 13 T past the sample — on ~40% of frames the window had expired, the ack
+    // came back "spurious" (0xFF, source not marked acknowledged) and the
+    // frame counted as INT-not-taken (hw 2026-09-07, TS-BIOS/BASIC idle).
+    const uint8_t tsVect = Z80Ops::isTsconf ? TsConf::intAck() : 0xFF;
+    if (Z80Ops::isTsconf) TsConf::intTrace(REG_PC, REG_SP, tsVect, wasHalted);   // PERF_TRACE ring, before the push
+
+    // Z80Ops::interruptHandlingTime(7);
+    VIDEO::Draw(7, false);
+
+    regR++;
+
+    ffIFF1 = ffIFF2 = false;
+#if PAGE_TRACE
+    const uint16_t pgIntPC = REG_PC;   // interrupted address, for the alarm below
+#endif
+#if ZC_PORT_TRACE || ATM_PAGE_TRACE
+    if (Z80Ops::isAtm && REG_PC >= 0x0909 && REG_PC < 0x0951 && s_nest_logged < 20) {
+        s_nest_logged++;
+        Debug::log("[ATMEI] INT taken at pc=%04X sp=%04X w0=%p w1=%p", REG_PC, REG_SP,
+                   (const void*)MemESP::ramCurrent[0], (const void*)MemESP::ramCurrent[1]);
+        for (int j = 0; j < 8; j++) {
+            const uint8_t k = (uint8_t)(s_ei_i - 8 + j) & 7;
+            Debug::log("[ATMEI]   EI#%d pc=%04X w0=%p w1=%p", j, s_ei_pc[k], s_ei_w0[k], s_ei_w1[k]);
+        }
+    }
+#endif
+    push(REG_PC); // el push añadirá 6 t-estados (+contended si toca)
+    if (modeINT == IntMode::IM2) {
+
+        // INT-ack bus byte: the Karabas serial-mouse hw_int drives 0xE7
+        // (RST20H) while its request is asserted; the ULA default is 0xFF.
+        // TS-Conf drives a per-source vector (#FF FRAME / #FD LINE / #FB DMA).
+        uint8_t busByte = Z80Ops::isTsconf ? tsVect
+                        : (Ports::serialMouseIntAsserted() ? 0xE7 : 0xFF);
+        REG_PC = Z80Ops::peek16((regI << 8) | busByte); // +6 t-estados
+
+        check_trdos();
+        // check_trdos_unpage();
+
+    } else {
+        // IM0 executes the bus byte: RST20H → 0x0020 for the serial mouse.
+        REG_PC = (modeINT == IntMode::IM0 && Ports::serialMouseIntAsserted())
+                     ? 0x0020 : 0x0038;
+#if PAGE_TRACE
+        // Alarm: an IM1 interrupt entering the 128K BASIC ROM at 0x0038. That
+        // handler is NOT self-contained — it pushes 0x0048/0x5B00/0x0038 and
+        // jumps to a stub the ROM copies into RAM at 0x5B00 during its own
+        // boot. TR-DOS software runs with ROM 1 (48 BASIC, self-contained
+        // handler) and is entitled to use 0x5B00 as ordinary memory, so if we
+        // hand it ROM 0 here the guest dies: NOP sled through 0x5B00 → RST 38
+        // off the 0xFF at 0x5C00 → the stack marches down until something wild
+        // happens. Exactly the ExTracker 3.07 hang (it EI/HALTs while waiting
+        // for the General Sound to answer its detect command 0x23).
+        if (REG_PC == 0x0038 && !Z80Ops::is48 && MemESP::romInUse == 0 &&
+            !MemESP::page0ram && !MemESP::newSRAM) {
+            const uint8_t* p5 = MemESP::ramCurrent[1];
+            if (p5 && p5[0x1B00] == 0x00) {
+                static bool warned = false;
+                if (!warned) {
+                    warned = true;
+                    Debug::log("[PAGE] IM1 -> ROM0 with DEAD 5B00 stub: intPC=%04X "
+                               "rom14=%u lock=%u dos=%u bank=%u",
+                               (unsigned)pgIntPC, (unsigned)MemESP::romLatch,
+                               (unsigned)MemESP::pagingLock, (unsigned)ESPectrum::trdos,
+                               (unsigned)MemESP::bankLatch);
+                }
+            }
+        }
+#endif
+    }
+    REG_WZ = REG_PC;
+
+}
+
+//Interrupción NMI, no utilizado por ahora
+/* Desglose de ciclos de máquina y T-Estados
+ * M1: 5 T-Estados -> extraer opcode (pá ná, es tontería) y decSP
+ * M2: 3 T-Estados -> escribe byte alto de PC y decSP
+ * M3: 3 T-Estados -> escribe byte bajo de PC y PC=0x0066
+ */
+Z80_COLD void Z80::nmi(void) {
+
+    halted = false;
+
+    // Esta lectura consigue dos cosas:
+    //      1.- La lectura del opcode del M1 que se descarta
+    //      2.- Si estaba en un HALT esperando una INT, lo saca de la espera
+    Z80Ops::fetchOpcode();
+
+    VIDEO::Draw(1, false);
+
+    regR++;
+    ffIFF1 = false;
+    push(REG_PC); // 3+3 t-estados + contended si procede
+    REG_PC = REG_WZ = 0x0066;
+
+}
+
+Z80_COLD void Z80::doNMI(void) {
+
+    activeNMI = false;
+    lastFlagQ = false;
+    // ZEsarUX approach: reset DivMMC state before NMI so automap trap at 0x0066
+    // fires correctly. Without this, if automap is already ON, preOpcFetch
+    // won't set trap_after (it checks !automap) and 0x0066 reads C9=RET from
+    // ESXDOS ROM instead of F5=PUSH AF from Spectrum ROM.
+    if (DivMMC::enabled) {
+        DivMMC::conmem = false;
+        DivMMC::automap = false;
+        DivMMC::applyMapping();
+    }
+    // MB-02+: ensure SRAM page 0 is mapped for NMI handler (BS-ROM 118 NMI menu)
+    if (MB02::enabled) {
+        MB02::writePort17(0x60); // SRAM page 0, write enable
+    }
+    // Scorpion magic button: the hardware asserts 1FFD D1 (service page) with
+    // the NMI pulse, so the 0x0066 handler always executes from the service
+    // monitor (MAME scorpion nmi_check_callback: port_1ffd |= 0x02 + pulse).
+    // A bare NMI landed at 0x0066 of whatever ROM happened to be paged — the
+    // Sinclair banks have no handler there, hence "enters the monitor only
+    // sometimes". Done at the ack point so not a single opcode is fetched from
+    // the swapped page before the NMI vectors; the monitor exits by clearing
+    // D1 itself.
+    // (Nemo KAY has no such line: 1FFD D1 is a printer output there, and its
+    // service page is reached through D3 by the ROM itself.)
+    if (Z80Ops::isScorpion && !g_scorp_kay) {
+        Ports::port1FFD |= 0x02;
+        Ports::scorpionRomUpdate();
+    }
+    nmi();
+
+}
+
+Z80_COLD void Z80::doNMIDOS(void) {
+
+    activeNMIDOS = false;
+    lastFlagQ = false;
+
+    // ATM-Turbo: the magic-button DOS entry maps rom[] banks over window 0, which on
+    // this machine belongs to the memory manager — take a plain NMI instead.
+    if (Z80Ops::isAtm) { nmi(); return; }
+
+    // Save current state
+    nmiDos_savedRomInUse = MemESP::romInUse;
+    nmiDos_savedTrdos = ESPectrum::trdos;
+    nmiDos_savedSP = REG_SP;
+    nmiDos_savedPC = REG_PC; // Save PC — the interrupted address
+
+    // Switch to TR-DOS ROM (slot 4) for Magic Button NMI
+    // Note: Gluk ROM has no NMI handler (0x0066 = 0xFF filler) — it's RESET-only
+    // Scorpion: TR-DOS is the machine's own bank 3 (rom[4] is unused there);
+    // on GMX inside the live ProfROM plane.
+    uint8_t nmiDosBank = (Config::arch == A_SCORP)
+                             ? (uint8_t)((g_scorp_banked ? (Ports::gmxPlane << 2) : 0) | 3) : 4;
+    MemESP::romInUse = nmiDosBank;
+    MemESP::ramCurrent[0] = MemESP::rom[nmiDosBank].direct();
+    ESPectrum::trdos = true; // Protect ROM from 7FFD changes
+    if (g_scorp_banked) Ports::gmxTapRecheck(); // re-arm tap + re-register the bank overlay
+
+    // Mark NMI-DOS in progress
+    nmiDosInProgress = true;
+
+    // Standard NMI sequence (pushes PC, SP becomes savedSP-2)
+    nmi();
+
+}
+
+IRAM_ATTR void Z80::checkINT(void) {
+
+    // Comprueba si está activada la señal INT
+    if (ffIFF1 && !pendingEI && Z80Ops::isActiveINT()) {
+        lastFlagQ = false;
+        interrupt();
+    }
+
+}
+
+IRAM_ATTR void Z80::incRegR(uint8_t inc) {
+
+    regR += inc;
+
+}
+
+#if PERF_TRACE && PERF_HIST
+// PERF_HIST: base-opcode histogram from exec_nocheck (prefix bytes CB/DD/ED/FD
+// count as themselves — the prefixed instruction is dispatched by decodeXX, not
+// by dcOpcode). Read + cleared by the [PERF] dump in Video.cpp every 600 frames.
+uint32_t z80_op_hist[256];
+uint32_t z80_chk_cnt;   // instructions that went through the checked execute() path
+#endif
+
+IRAM_ATTR void Z80::execute() {
+
+    // CPU::tstates_diff += (CPU::tstates - CPU::prev_tstates);
+    // if (CPU::tstates_diff >= 14) {
+    //     while (1) {
+    //         // printf("CPU::tstates_diff: %d\n",CPU::tstates_diff);
+    //         rvmWD1793Step(&ESPectrum::fdd); // FDD
+    //         CPU::tstates_diff -= 14;
+    //         if (CPU::tstates_diff < 14) break;
+    //     }
+    // }
+    // CPU::prev_tstates = CPU::tstates;
+
+    // // if (!(CPU::tstates & 0xf)) {
+    //     if (Tape::tapeStatus == TAPE_LOADING) {
+    //     // if (Tape::tapePhase == TAPE_PHASE_DATA) {
+    //         Tape::Read();
+    //     }
+    // // }
+
+    // uint8_t pg = REG_PC >> 14;
+    // VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+
+    // uint8_t pg = REG_PC >> 14;
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+    // if (MemESP::ramContended[pg]) {
+    //     MemESP::lastContendedMemReadWrite = opCode;
+    //     VIDEO::Draw_Opcode(true);
+    // } else {
+    //     VIDEO::Draw_Opcode(false);
+    // };
+
+    // Ports::FDDStep();
+
+#if NEO8_TRAP
+    Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
+#endif
+    opCode = Z80Ops::fetchOpcode();
+
+    regR++;
+
+    if (!halted) {
+
+        REG_PC++;
+#if PERF_TRACE && PERF_HIST
+        z80_op_hist[opCode]++;
+        z80_chk_cnt++;
+#endif
+
+        if (prefixOpcode == 0) {
+            flagQ = pendingEI = false;
+            dcOpcode[opCode]();
+        } else if (prefixOpcode == 0xDD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIX);
+        } else if (prefixOpcode == 0xED) {
+            prefixOpcode = 0;
+            decodeED();
+        } else if (prefixOpcode == 0xFD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIY);
+        } else return;
+
+        if (prefixOpcode != 0) return;
+
+        lastFlagQ = flagQ;
+
+    }
+
+    // Ahora se comprueba si está activada la señal INT
+    checkINT();
+
+}
+
+// True only while exec_nocheck() runs: the INT line is sampled at the slice
+// boundary (CPU::stFrame) and nowhere inside it. Kept after the LDIR/LDDR
+// batching that needed it was removed (see the note further down) — a future
+// batcher would need exactly this distinction again.
+static bool z80_in_nocheck = false;
+
+IRAM_ATTR void Z80::exec_nocheck() {
+
+    int nbp = Config::numPcBP;
+    z80_in_nocheck = true;
+
+    while (CPU::tstates < CPU::stFrame) {
+
+        if (nbp > 0 && Config::hasBreakPoint(REG_PC, Config::BP_PC)) { z80_in_nocheck = false; return; }
+#if NEO8_TRAP
+        Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
+#endif
+        uint8_t pg = REG_PCh >> 6;
+        if (g_ts_fastmem) {                   // TsFastMem.h: TS-Conf, plain POINTER banks, counter video
+            tsFastTick(4);
+            if (__builtin_expect(g_ts_memcyc != 0, 0) && !tsMemNoDram(REG_PC)) tsFastTick(TsConf::cpuMemMiss(REG_PC, true));   // DRAM model: a cache miss
+            opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+        } else {
+        VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
+        if (__builtin_expect(g_ts_memcyc != 0, 0) && !tsMemNoDram(REG_PC)) {   // TS-Conf DRAM model (TsConf.cpp)
+            const uint32_t w = TsConf::cpuMemMiss(REG_PC, true);
+            if (w) VIDEO::Draw(w, false);
+        }
+        if (DivMMC::enabled) {
+            DivMMC::preOpcFetch(REG_PC);
+            // Fetch opcode from currently mapped memory
+            pg = REG_PCh >> 6; // re-read in case 0x3Dxx instant map changed it
+            if (pg == 0 && MemESP::divmmc_mapped) {
+                opCode = (REG_PC < 0x2000) ? MemESP::page0_lo[REG_PC] : MemESP::page0_hi[REG_PC & 0x1FFF];
+            } else {
+                opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC & 0x3fff);
+            }
+            DivMMC::postOpcFetch();
+        } else if (pg == 0 && MemESP::divmmc_mapped) {
+            opCode = (REG_PC < 0x2000) ? MemESP::page0_lo[REG_PC] : MemESP::page0_hi[REG_PC & 0x1FFF];
+        } else if (__builtin_expect(g_timex_mmu != 0, 0) && Timex::rd[REG_PC >> 13]) {
+            // Timex TC2068 SCLD window (Timex.h). This fetch is a SECOND copy of
+            // Z80Ops::fetchOpcode() and it is the one that matters: exec_nocheck
+            // runs every instruction outside the INT window, so hooking only
+            // fetchOpcode() left the machine executing the HOME ROM the moment it
+            // jumped into the EX-ROM — which its own boot does (HOME 0x0E05:
+            // LD HL,0x08E7 / CALL 0x6815 -> pages the EX-ROM in and JP (HL)).
+            // hw 2026-09-12: that is why the TC2068 reached its copyright screen
+            // and then fell apart on its own with no input.
+            opCode = Timex::read8(REG_PC);
+        } else
+        opCode = MemESP::romPeek(pg, MemESP::ramCurrent[pg], REG_PC & 0x3fff);
+        }
+
+        regR++;
+        REG_PC++;
+#if PERF_TRACE && PERF_HIST
+        z80_op_hist[opCode]++;
+        if (Z80Ops::isTsconf) {
+            extern uint32_t ts_page_hist[257];
+            const uintptr_t bp = (uintptr_t)MemESP::ramCurrent[pg];
+            ts_page_hist[(bp >= 0x10000000u && bp < 0x11000000u) ? 256 : TsConf::r.page[pg]]++;
+        }
+#endif
+
+        if (prefixOpcode == 0) {
+            flagQ = pendingEI = false;
+            dcOpcode[opCode]();
+            lastFlagQ = flagQ;
+            continue;
+        }
+
+        if (prefixOpcode == 0xDD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIX);
+        } else if (prefixOpcode == 0xED) {
+            prefixOpcode = 0;
+            decodeED();
+        } else if (prefixOpcode == 0xFD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIY);
+        } else continue;
+
+        if (prefixOpcode == 0) lastFlagQ = flagQ;
+
+    }
+    z80_in_nocheck = false;
+
+}
+
+// LDIR/LDDR block fast path: run every iteration but the LAST as one block copy,
+// then let the normal ldx(1)/ldx(-1) do the final one so flags, WZ and the exit
+// timing are exactly the core's. Each batched iteration accounts 21 T (16 + the
+// 5-T repeat) and two opcode fetches (R += 2); WZ = the repeat opcode's address,
+// as the repeat path sets it. Only inside exec_nocheck (z80_in_nocheck) and
+// never across CPU::stFrame, where the INT is sampled. What may NOT be batched,
+// because the per-byte path has a side effect the batch would skip:
+//  - page 0 (ROM/overlays/DivMMC/NeoGS ZX-DMA window) as source or destination,
+//  - contended pages (the contention is per access) and the ULA snow machine,
+//  - a destination in the page the beam renderer reads (grmem, the DS80 pair,
+//    GMX 640x200, the 16col planes): those bytes must land per beam position,
+//  - memory breakpoints, a ROM destination, an accessor (SPI-PSRAM) bank,
+//  - TS-Conf: the FMAddr/W0_WE write gate (g_tsconf_wr).
+// Beam-raced machines take at most one video line per batch (Draw() handles a
+// single line crossing per call); the TS fast path (TsFastMem.h) has no such
+// limit. TMNT: 21% of its instructions are LDIR iterations (hw 2026-09-07).
+// LDIR/LDDR batching (Z80::blockRepeat) was REMOVED on 2026-09-09 after being
+// measured a net LOSS on the machine it was written for. It ran the repeated
+// iterations as one memcpy bounded by CPU::stFrame, and on TS-Conf that meant
+// one VIDEO::tsRenderDrainOverlap over the WHOLE batch range instead of one
+// byte at a time: a wide range overlaps far more lines the core1 renderer has
+// not drawn yet, so core0 stalled waiting for it. Measured on fishbone at
+// 14 MHz, same scene (identical c1/base/tsu): cpu 21.6 -> 19.9 ms, core1 wait
+// 4.4 -> 3.7 ms, realFPS 43.5 -> 47.1 WITH THE BATCHING OFF. It also had no
+// effect whatsoever on the hang it was suspected of (see the fishbone section).
+// If it is ever reinstated, the drain is the thing to fix first, and it must be
+// re-measured per machine — the win it was introduced for was never isolated
+// from the other changes in its commit.
+
+void Z80::decodeOpcode00()
+{ /* NOP */
+}
+
+void Z80::decodeOpcode01()
+{ /* LD BC,nn */
+    REG_BC = Z80Ops::peek16(REG_PC);
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode02()
+{ /* LD (BC),A */
+    Z80Ops::poke8(REG_BC, regA);
+    REG_W = regA;
+    REG_Z = REG_C + 1;
+    //REG_WZ = (regA << 8) | (REG_C + 1);
+}
+
+void Z80::decodeOpcode03()
+{ /* INC BC */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_BC++;
+}
+
+
+
+void Z80::decodeOpcode06()
+{ /* LD B,n */
+    REG_B = Z80Ops::peek8(REG_PC);
+    // PEEK8(REG_B,REG_PC);
+    REG_PC++;
+}
+
+void Z80::decodeOpcode07()
+{ /* RLCA */
+    carryFlag = (regA > 0x7f);
+    regA <<= 1;
+    if (carryFlag) {
+        regA |= CARRY_MASK;
+    }
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | (regA & FLAG_53_MASK);
+    flagQ = true;
+}
+
+void Z80::decodeOpcode08()
+{ /* EX AF,AF' */
+    uint8_t work8 = regA;
+    regA = REG_Ax;
+    REG_Ax = work8;
+
+    work8 = getFlags();
+    setFlags(REG_Fx);
+    REG_Fx = work8;
+}
+
+void Z80::decodeOpcode09()
+{ /* ADD HL,BC */
+    Z80Ops::addressOnBus(getPairIR().word, 7);
+    add16(regHL, REG_BC);
+}
+
+void Z80::decodeOpcode0a()
+{ /* LD A,(BC) */
+    regA = Z80Ops::peek8(REG_BC);
+    // PEEK8(regA,REG_BC);
+    REG_WZ = REG_BC + 1;
+}
+
+void Z80::decodeOpcode0b()
+{ /* DEC BC */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_BC--;
+
+}
+
+
+
+void Z80::decodeOpcode0e()
+{ /* LD C,n */
+    REG_C = Z80Ops::peek8(REG_PC);
+    // PEEK8(REG_C,REG_PC);
+    REG_PC++;
+}
+
+void Z80::decodeOpcode0f()
+{ /* RRCA */
+    carryFlag = (regA & CARRY_MASK) != 0;
+    regA >>= 1;
+    if (carryFlag) {
+        regA |= SIGN_MASK;
+    }
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | (regA & FLAG_53_MASK);
+    flagQ = true;
+}
+
+void Z80::decodeOpcode10()
+//         case 0x10:
+{ /* DJNZ e */
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    int8_t offset = Z80Ops::peek8(REG_PC);
+    // PEEK8(int8_t offset,REG_PC);
+    if (--REG_B != 0) {
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC = REG_WZ = REG_PC + offset + 1;
+    } else {
+        REG_PC++;
+    }
+}
+
+void Z80::decodeOpcode11()
+//         case 0x11:
+{ /* LD DE,nn */
+    REG_DE = Z80Ops::peek16(REG_PC);
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode12()
+//         case 0x12:
+{ /* LD (DE),A */
+    Z80Ops::poke8(REG_DE, regA);
+    REG_W = regA;
+    REG_Z = REG_E + 1;
+    //REG_WZ = (regA << 8) | (REG_E + 1);
+}
+
+void Z80::decodeOpcode13()
+//         case 0x13:
+{ /* INC DE */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_DE++;
+}
+
+
+
+void Z80::decodeOpcode16()
+//         case 0x16:
+{ /* LD D,n */
+    REG_D = Z80Ops::peek8(REG_PC);
+    // PEEK8(REG_D,REG_PC);
+    REG_PC++;
+}
+
+void Z80::decodeOpcode17()
+//         case 0x17:
+{ /* RLA */
+    bool oldCarry = carryFlag;
+    carryFlag = regA > 0x7f;
+    regA <<= 1;
+    if (oldCarry) {
+        regA |= CARRY_MASK;
+    }
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | (regA & FLAG_53_MASK);
+    flagQ = true;
+}
+
+void Z80::decodeOpcode18()
+//         case 0x18:
+{ /* JR e */
+    int8_t offset = Z80Ops::peek8(REG_PC);
+    // PEEK8(int8_t offset,REG_PC);
+    Z80Ops::addressOnBus(REG_PC, 5);
+    REG_PC = REG_WZ = REG_PC + offset + 1;
+
+}
+
+void Z80::decodeOpcode19()
+//         case 0x19:
+{ /* ADD HL,DE */
+    Z80Ops::addressOnBus(getPairIR().word, 7);
+    add16(regHL, REG_DE);
+}
+
+void Z80::decodeOpcode1a()
+//         case 0x1A:
+{ /* LD A,(DE) */
+    regA = Z80Ops::peek8(REG_DE);
+    // PEEK8(regA,REG_DE);
+    REG_WZ = REG_DE + 1;
+}
+
+void Z80::decodeOpcode1b()
+//         case 0x1B:
+{ /* DEC DE */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_DE--;
+}
+
+
+
+void Z80::decodeOpcode1e()
+//         case 0x1E:
+{ /* LD E,n */
+    REG_E = Z80Ops::peek8(REG_PC);
+    // PEEK8(REG_E,REG_PC);
+    REG_PC++;
+}
+
+void Z80::decodeOpcode1f()
+//         case 0x1F:
+{ /* RRA */
+    bool oldCarry = carryFlag;
+    carryFlag = (regA & CARRY_MASK) != 0;
+    regA >>= 1;
+    if (oldCarry) {
+        regA |= SIGN_MASK;
+    }
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | (regA & FLAG_53_MASK);
+    flagQ = true;
+}
+
+void Z80::decodeOpcode20()
+{ /* JR NZ,e */
+    int8_t offset = Z80Ops::peek8(REG_PC);
+    // PEEK8(int8_t offset,REG_PC);
+    if ((sz5h3pnFlags & ZERO_MASK) == 0) {
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC += offset;
+        REG_WZ = REG_PC + 1;
+    }
+    REG_PC++;
+}
+
+void Z80::decodeOpcode21()
+{ /* LD HL,nn */
+    REG_HL = Z80Ops::peek16(REG_PC);
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode22()
+{ /* LD (nn),HL */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    Z80Ops::poke16(REG_WZ, regHL);
+    REG_WZ++;
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode23()
+{ /* INC HL */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_HL++;
+}
+
+
+
+void Z80::decodeOpcode26()
+{ /* LD H,n */
+    REG_H = Z80Ops::peek8(REG_PC);
+    // PEEK8(REG_H, REG_PC);
+    REG_PC++;
+}
+
+void Z80::decodeOpcode27()
+{ /* DAA */
+    daa();
+}
+
+void Z80::decodeOpcode28()
+{ /* JR Z,e */
+    int8_t offset = Z80Ops::peek8(REG_PC);
+    // PEEK8(int8_t offset, REG_PC);
+    if ((sz5h3pnFlags & ZERO_MASK) != 0) {
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC += offset;
+        REG_WZ = REG_PC + 1;
+    }
+    REG_PC++;
+}
+
+void Z80::decodeOpcode29()
+{ /* ADD HL,HL */
+    Z80Ops::addressOnBus(getPairIR().word, 7);
+    add16(regHL, REG_HL);
+}
+
+void Z80::decodeOpcode2a()
+{ /* LD HL,(nn) */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    REG_HL = Z80Ops::peek16(REG_WZ);
+    REG_WZ++;
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode2b()
+{ /* DEC HL */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_HL--;
+}
+
+
+
+void Z80::decodeOpcode2e()
+{ /* LD L,n */
+    REG_L = Z80Ops::peek8(REG_PC);
+    // PEEK8(REG_L, REG_PC);
+    REG_PC++;
+}
+
+void Z80::decodeOpcode2f()
+{ /* CPL */
+    regA ^= 0xff;
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | HALFCARRY_MASK
+            | (regA & FLAG_53_MASK) | ADDSUB_MASK;
+    flagQ = true;
+}
+
+void Z80::decodeOpcode30()
+{ /* JR NC,e */
+    int8_t offset = Z80Ops::peek8(REG_PC);
+    // PEEK8(int8_t offset, REG_PC);
+    if (!carryFlag) {
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC += offset;
+        REG_WZ = REG_PC + 1;
+    }
+    REG_PC++;
+}
+
+void Z80::decodeOpcode31()
+{ /* LD SP,nn */
+    REG_SP = Z80Ops::peek16(REG_PC);
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode32()
+{ /* LD (nn),A */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    Z80Ops::poke8(REG_WZ, regA);
+    REG_WZ = (regA << 8) | ((REG_WZ + 1) & 0xff);
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode33()
+{ /* INC SP */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_SP++;
+}
+
+
+
+void Z80::decodeOpcode36()
+{ /* LD (HL),n */
+    // PEEK8(uint8_t value, REG_PC);
+    // Z80Ops::poke8(REG_HL, value);
+    Z80Ops::poke8(REG_HL, Z80Ops::peek8(REG_PC));
+    REG_PC++;
+}
+
+void Z80::decodeOpcode37()
+{ /* SCF */
+    uint8_t regQ = lastFlagQ ? sz5h3pnFlags : 0;
+    carryFlag = true;
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | (((regQ ^ sz5h3pnFlags) | regA) & FLAG_53_MASK);
+    flagQ = true;
+}
+
+void Z80::decodeOpcode38()
+{ /* JR C,e */
+    int8_t offset = Z80Ops::peek8(REG_PC);
+    // PEEK8(int8_t offset, REG_PC);
+    if (carryFlag) {
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC += offset;
+        REG_WZ = REG_PC + 1;
+    }
+    REG_PC++;
+}
+
+void Z80::decodeOpcode39()
+{ /* ADD HL,SP */
+    Z80Ops::addressOnBus(getPairIR().word, 7);
+    add16(regHL, REG_SP);
+}
+
+void Z80::decodeOpcode3a()
+{ /* LD A,(nn) */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    regA = Z80Ops::peek8(REG_WZ);
+    // PEEK8( regA, REG_WZ);
+    REG_WZ++;
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeOpcode3b()
+{ /* DEC SP */
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_SP--;
+}
+
+
+
+void Z80::decodeOpcode3e()
+{ /* LD A,n */
+    regA = Z80Ops::peek8(REG_PC);
+    // PEEK8(regA, REG_PC);
+    REG_PC++;
+}
+
+void Z80::decodeOpcode3f()
+{ /* CCF */
+    uint8_t regQ = lastFlagQ ? sz5h3pnFlags : 0;
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZP_MASK) | (((regQ ^ sz5h3pnFlags) | regA) & FLAG_53_MASK);
+    if (carryFlag) {
+        sz5h3pnFlags |= HALFCARRY_MASK;
+    }
+    carryFlag = !carryFlag;
+    flagQ = true;
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+void Z80::decodeOpcode76()
+{ /* HALT */
+
+    halted = true;
+
+    // Signal HALT to CPU Loop
+    CPU::stFrame = 0;
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/*IRAM_ATTR*/ void Z80::decodeOpcodebf()
+{ /* CP A */
+
+    cp(regA);
+
+    // LOAD trap: CP A in ROM LD-BYTES routine
+    // PC after fetch depends on ROM variant:
+    //   0x056B = Spanish 48K ROM (CP A at 0x056A) -> RET at 0x05E2
+    //   0x056D = Byte 48K ROM    (CP A at 0x056C) -> RET at 0x05E4
+    //   0x057D = Sinclair 48K ROM(CP A at 0x057C) -> RET at 0x0606
+    // ROM FlashLoad traps. These are bare PC values, so they are only meaningful
+    // while a ROM whose LD-BYTES lives there is paged in — which on a TC2068 the
+    // HOME ROM is not (0x056B there is the middle of an unrelated routine).
+    //
+    // The TC2068 gets its OWN trap instead, because its loader is the same routine
+    // relocated into the EX-ROM by 0x045A: CP A at 0x0110 (so PC after fetch
+    // 0x0111, against the Sinclair 0x056B) and the RET after `LD A,H / CP 0x01` at
+    // 0x0188 (against 0x05E2). 157 of the 202 bytes of LD-BYTES + LD-EDGE are
+    // byte-identical to the Sinclair ROM's and the two only diverge past that exit.
+    // Gated on the SCLD actually having the EX-ROM in slot 0, so HOME ROM code at
+    // 0x0111 can never trigger it — and that gate is what makes a bare PC value
+    // safe on a machine whose page 0 is not one fixed ROM.
+    const bool tcTrap = __builtin_expect(g_timex_mmu != 0, 0) &&
+                        Timex::exromSel && Timex::rd[0] && REG_PC == 0x0111;
+#if TIMEX_PORT_TRACE
+    // The trap is a bare PC value, so the FIRST question is whether the ROM reaches
+    // it at all and with what paged — not whether the trap body is right. Log every
+    // CP A executed in ROM space on this machine (there are few, and they collapse),
+    // so a trap that never fires says WHY: wrong address, EX-ROM not mapped, or the
+    // routine never entered.
+    if (Z80Ops::isTc2068 && REG_PC < 0x4000) {
+        static uint32_t budget = 40; static uint16_t last = 0xFFFF; static uint32_t runs = 0;
+        if (REG_PC == last) runs++;
+        else if (budget) {
+            if (runs) { Debug::log("[TMXLD]   ... x%u", (unsigned)runs); runs = 0; }
+            last = REG_PC; budget--;
+            Debug::log("[TMXLD] CP A pc=%04X mmu=%u ex=%d rd0=%p hsr=%02X trap=%d "
+                       "ftype=%d name=%s fl=%d st=%d blk=%d",
+                       (unsigned)REG_PC, (unsigned)g_timex_mmu, (int)Timex::exromSel,
+                       (void*)Timex::rd[0], (unsigned)Timex::hsr, (int)tcTrap,
+                       (int)Tape::tapeFileType, Tape::tapeFileName.c_str(),
+                       (int)Config::flashload, (int)Tape::tapeStatus,
+                       (int)Tape::tapeCurBlock);
+        }
+    }
+#endif
+    if ((((REG_PC == 0x56b || REG_PC == 0x56d || REG_PC == 0x57d)) && !Z80Ops::isTc2068)
+        || tcTrap) {
+
+        if ((Tape::tapeFileType == TAPE_FTYPE_TAP || Tape::tapeFileType == TAPE_FTYPE_TZX || Tape::tapeFileType == TAPE_FTYPE_PZX) && (Tape::tapeFileName != "none")) {
+              // Skip ROM FlashLoad while JJ screen animation is in progress —
+              // the loader's edge detection timeout can briefly return to ROM,
+              // and we must not let ROM FlashLoad consume tape blocks.
+              // Tape wear (Config::tape_wear) ignores fast load: the trap fills the
+              // block straight out of the file without generating a single pulse, so
+              // a chewed tape would always load perfectly. See Tape.cpp fastLoadOn().
+              if (Config::flashload && !Config::tape_wear && !Tape::jjScreenAnimating) {
+                // Save return PC before FlashLoad (it doesn't modify REG_PC)
+                uint16_t trapPC = REG_PC;
+                const bool flOk = Tape::FlashLoad();
+#if TIMEX_PORT_TRACE
+                if (tcTrap)
+                    Debug::log("[TMXLD] FlashLoad -> %d  blk=%d/%d  IX=%04X DE=%04X A'=%02X",
+                               (int)flOk, (int)Tape::tapeCurBlock, (int)Tape::tapeNumBlocks,
+                               (unsigned)REG_IX, (unsigned)REG_DE, (unsigned)REG_Ax);
+#endif
+                if (flOk) {
+                    // Stop tape if it was auto-started.
+                    // Preserve tapePhase if pzxFlashCont is set (partial PZX load
+                    // set up DATA1 phase for real-mode continuation by auto-start).
+                    if (Tape::tapeStatus == TAPE_LOADING) {
+                        Tape::tapeStatus = TAPE_STOPPED;
+                        if (!Tape::pzxFlashCont)
+                            Tape::tapePhase = TAPE_PHASE_STOPPED;
+                    }
+                    // Jump to RET after CP 0x01 in the active ROM's LD-BYTES
+                    if (tcTrap)               REG_PC = 0x0188; // TC2068 EX-ROM
+                    else if (trapPC == 0x56d) REG_PC = 0x5e4; // Byte ROM
+                    else if (trapPC == 0x57d) REG_PC = 0x606; // Sinclair ROM
+                    else                      REG_PC = 0x5e2; // Spanish ROM
+                }
+            }
+        }
+    }
+}
+
+
+void Z80::decodeOpcodec1()
+{ /* POP BC */
+    REG_BC = pop();
+
+}
+
+
+void Z80::decodeOpcodec3()
+{ /* JP nn */
+    REG_WZ = REG_PC = Z80Ops::peek16(REG_PC);
+
+    check_trdos();
+
+}
+
+
+void Z80::decodeOpcodec5()
+{ /* PUSH BC */
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    push(REG_BC);
+}
+
+void Z80::decodeOpcodec6()
+{ /* ADD A,n */
+
+    // PEEK8(uint8_t value,REG_PC);
+    // add(value);
+
+    add(Z80Ops::peek8(REG_PC));
+
+    REG_PC++;
+
+}
+
+
+
+void Z80::decodeOpcodec9()
+{ /* RET */
+    REG_PC = REG_WZ = pop();
+
+    check_trdos();
+    // check_trdos_unpage();
+
+}
+
+
+void Z80::decodeOpcodecb()
+{ /* 0xCB prefix */
+    opCode = Z80Ops::fetchOpcode();
+    REG_PC++;
+    regR++;
+    decodeCB();
+}
+
+
+void Z80::decodeOpcodecd()
+{ /* CALL nn */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    Z80Ops::addressOnBus(REG_PC + 1, 1);
+    push(REG_PC + 2);
+    REG_PC = REG_WZ;
+
+    check_trdos();
+
+}
+
+void Z80::decodeOpcodece()
+{ /* ADC A,n */
+
+    // PEEK8(uint8_t value,REG_PC);
+    // adc(value);
+
+    adc(Z80Ops::peek8(REG_PC));
+    REG_PC++;
+}
+
+
+
+void Z80::decodeOpcoded1()
+{ /* POP DE */
+    REG_DE = pop();
+}
+
+
+void Z80::decodeOpcoded3()
+{ /* OUT (n),A */
+    uint8_t work8 = Z80Ops::peek8(REG_PC);
+    // PEEK8(uint8_t work8,REG_PC);
+    REG_PC++;
+    REG_WZ = regA << 8;
+    Ports::output(REG_WZ | work8, regA);
+    REG_WZ |= (work8 + 1);
+}
+
+
+void Z80::decodeOpcoded5()
+{ /* PUSH DE */
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    push(REG_DE);
+}
+
+void Z80::decodeOpcoded6()
+{ /* SUB n */
+    // PEEK8(uint8_t value,REG_PC);
+    // sub(value);
+
+    sub(Z80Ops::peek8(REG_PC));
+    REG_PC++;
+}
+
+
+
+void Z80::decodeOpcoded9()
+{ /* EXX */
+    uint16_t tmp;
+    tmp = REG_BC;
+    REG_BC = REG_BCx;
+    REG_BCx = tmp;
+
+    tmp = REG_DE;
+    REG_DE = REG_DEx;
+    REG_DEx = tmp;
+
+    tmp = REG_HL;
+    REG_HL = REG_HLx;
+    REG_HLx = tmp;
+}
+
+
+void Z80::decodeOpcodedb()
+{ /* IN A,(n) */
+    REG_W = regA;
+    REG_Z = Z80Ops::peek8(REG_PC);
+    // PEEK8(REG_Z,REG_PC);
+    //REG_WZ = (regA << 8) | Z80Ops::peek8(REG_PC);
+    REG_PC++;
+    // if (REG_PC == 0x60BC) printf("IN A,(n). Adress -> %04x\n", REG_WZ);
+    regA = Ports::input(REG_WZ);
+    REG_WZ++;
+}
+
+
+void Z80::decodeOpcodedd()
+{ /* Subconjunto de instrucciones */
+    // // opCode = Z80Ops::fetchOpcode(REG_PC++);
+    // uint8_t pg = REG_PC >> 14;
+    // VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+    // // FETCH_OPCODE(opCode,REG_PC);
+
+    // uint8_t pg = REG_PC >> 14;
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+    // if (MemESP::ramContended[pg]) {
+    //     MemESP::lastContendedMemReadWrite = opCode;
+    //     VIDEO::Draw_Opcode(true);
+    // } else {
+    //     VIDEO::Draw_Opcode(false);
+    // };
+
+    opCode = Z80Ops::fetchOpcode();
+
+    REG_PC++;
+    regR++;
+    decodeDDFD(regIX);
+}
+
+void Z80::decodeOpcodede()
+{ /* SBC A,n */
+
+    // PEEK8(uint8_t value,REG_PC);
+    // sbc(value);
+
+    sbc(Z80Ops::peek8(REG_PC));
+    REG_PC++;
+}
+
+
+
+void Z80::decodeOpcodee1() /* POP HL */
+{
+    REG_HL = pop();
+}
+
+
+void Z80::decodeOpcodee3()
+{ /* EX (SP),HL */
+    // Instrucción de ejecución sutil.
+    RegisterPair work = regHL;
+    REG_HL = Z80Ops::peek16(REG_SP);
+    Z80Ops::addressOnBus(REG_SP + 1, 1);
+    // No se usa poke16 porque el Z80 escribe los bytes AL REVES
+    Z80Ops::poke8(REG_SP + 1, work.byte8.hi);
+    Z80Ops::poke8(REG_SP, work.byte8.lo);
+    Z80Ops::addressOnBus(REG_SP, 2);
+    REG_WZ = REG_HL;
+}
+
+
+void Z80::decodeOpcodee5() /* PUSH HL */
+{
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    push(REG_HL);
+}
+
+void Z80::decodeOpcodee6() /* AND n */
+{
+    // PEEK8(uint8_t value,REG_PC);
+    // and_(value);
+
+    and_(Z80Ops::peek8(REG_PC));
+    REG_PC++;
+}
+
+
+
+void Z80::decodeOpcodee9() /* JP (HL) */
+{
+    REG_PC = REG_HL;
+
+    check_trdos();
+
+}
+
+
+void Z80::decodeOpcodeeb()
+{ /* EX DE,HL */
+    uint16_t tmp = REG_HL;
+    REG_HL = REG_DE;
+    REG_DE = tmp;
+}
+
+
+void Z80::decodeOpcodeed() /*Subconjunto de instrucciones*/
+{
+    // // opCode = Z80Ops::fetchOpcode(REG_PC++);
+    // uint8_t pg = REG_PC >> 14;
+    // VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+    // // FETCH_OPCODE(opCode,REG_PC);
+
+    // uint8_t pg = REG_PC >> 14;
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+    // if (MemESP::ramContended[pg]) {
+    //     MemESP::lastContendedMemReadWrite = opCode;
+    //     VIDEO::Draw_Opcode(true);
+    // } else {
+    //     VIDEO::Draw_Opcode(false);
+    // };
+
+    opCode = Z80Ops::fetchOpcode();
+
+    REG_PC++;
+    regR++;
+    decodeED();
+}
+
+void Z80::decodeOpcodeee() /* XOR n */
+{
+
+    // PEEK8(uint8_t value,REG_PC);
+    // xor_(value);
+
+    xor_(Z80Ops::peek8(REG_PC));
+    REG_PC++;
+}
+
+
+
+// Byte ROM LOAD trap, cold half (flash): see decodeOpcodef1. Returns true when
+// FlashLoad took the block and the POP AF / RET has been emulated.
+Z80_COLD bool Z80::byte_tape_trap() {
+    if (!(Config::flashload && !Config::tape_wear &&
+        !Tape::jjScreenAnimating &&
+        (Tape::tapeFileType == TAPE_FTYPE_TAP || Tape::tapeFileType == TAPE_FTYPE_TZX || Tape::tapeFileType == TAPE_FTYPE_PZX) &&
+        Tape::tapeFileName != "none")) return false;
+    // Simulate EX AF,AF': swap A/F with A'/F' so FlashLoad sees flag in A'
+    uint8_t tmpA = regA;       uint8_t tmpAx = REG_Ax;
+    uint8_t tmpF = getFlags(); uint8_t tmpFx = REG_Fx;
+    regA = tmpAx;   REG_Ax = tmpA;
+    setFlags(tmpFx); REG_Fx = tmpF;
+
+    // For JP 0x0556 (e.g. from JJ hidden code), DE may be stale/zero.
+    // FlashLoad uses DE as expected byte count. Set DE to 0xFFFF so
+    // FlashLoad loads the full block (it uses min(DE, blockLen)).
+    uint16_t origDE = getRegDE();
+    if (Tape::FlashLoad()) {
+        if (Tape::tapeStatus == TAPE_LOADING) {
+            Tape::tapeStatus = TAPE_STOPPED;
+            if (!Tape::pzxFlashCont)
+                Tape::tapePhase = TAPE_PHASE_STOPPED;
+        }
+        // Skip POP AF;RET — pop return address from stack.
+        // CALL 0x0556: pops CALL return addr → back to caller
+        // JP 0x0556: pops game entry addr → starts game
+        REG_PC = pop();
+        // Set carry flag = success (standard LD-BYTES convention)
+        carryFlag = true;
+        return true;
+    }
+    // FlashLoad failed — restore original A/F and A'/F' and DE
+    REG_Ax = regA;   regA = tmpA;
+    REG_Fx = getFlags(); setFlags(tmpF);
+    setRegDE(origDE);
+    return false;
+}
+
+void Z80::decodeOpcodef1() /* POP AF */
+{
+    // Byte ROM LOAD trap: POP AF at 0x0556 (PC=0x0557 after fetch).
+    // Byte ROM has POP AF;RET at 0x0556-0x0557 instead of LD-BYTES entry
+    // (LD-BYTES is at 0x0558 on Byte ROM, shifted 16 bytes earlier).
+    // Two call patterns reach here:
+    //   CALL 0x0556 from ROM: stack has CALL return addr (< 0x4000)
+    //   JP 0x0556 from user code: stack has game entry addr (>= 0x4000)
+    // Both need FlashLoad. After FlashLoad, pop() gives the correct return:
+    //   CALL case: pops CALL return addr → back to ROM caller
+    //   JP case: pops game entry addr → starts game
+    if (REG_PC == 0x557 && Z80Ops::isByte && byte_tape_trap()) return;
+    setRegAF(pop());
+}
+
+
+void Z80::decodeOpcodef3() /* DI */
+{
+    ffIFF1 = ffIFF2 = false;
+}
+
+
+void Z80::decodeOpcodef5() /* PUSH AF */
+{
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    push(getRegAF());
+}
+
+void Z80::decodeOpcodef6() /* OR n */
+{
+
+    // PEEK8(uint8_t value,REG_PC);
+    // or_(value);
+
+    or_(Z80Ops::peek8(REG_PC));
+    REG_PC++;
+}
+
+
+
+void Z80::decodeOpcodef9() /* LD SP,HL */
+{
+    Z80Ops::addressOnBus(getPairIR().word, 2);
+    REG_SP = REG_HL;
+}
+
+
+void Z80::decodeOpcodefb() /* EI */
+{
+#if ZC_PORT_TRACE || ATM_PAGE_TRACE
+    if (Z80Ops::isAtm) {
+        const uint8_t k = s_ei_i++ & 7;
+        s_ei_pc[k] = (uint16_t)(REG_PC - 1);
+        s_ei_w0[k] = MemESP::ramCurrent[0];
+        s_ei_w1[k] = MemESP::ramCurrent[1];
+    }
+#endif
+    ffIFF1 = ffIFF2 = true;
+    pendingEI = true;
+    if (Z80Ops::isTsconf) TsConf::intEnableHook();
+}
+
+
+void Z80::decodeOpcodefd() /* Subconjunto de instrucciones */
+{
+    // // opCode = Z80Ops::fetchOpcode(REG_PC++);
+    // uint8_t pg = REG_PC >> 14;
+    // VIDEO::Draw_Opcode(MemESP::ramContended[pg]);
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+    // // FETCH_OPCODE(opCode,REG_PC);
+
+    // uint8_t pg = REG_PC >> 14;
+    // opCode = MemESP::ramCurrent[pg][REG_PC & 0x3fff];
+    // if (MemESP::ramContended[pg]) {
+    //     MemESP::lastContendedMemReadWrite = opCode;
+    //     VIDEO::Draw_Opcode(true);
+    // } else {
+    //     VIDEO::Draw_Opcode(false);
+    // };
+
+    opCode = Z80Ops::fetchOpcode();
+
+    REG_PC++;
+    regR++;
+    decodeDDFD(regIY);
+}
+
+void Z80::decodeOpcodefe() /* CP n */
+{
+
+    // PEEK8(uint8_t value,REG_PC);
+    // cp(value);
+
+    cp(Z80Ops::peek8(REG_PC));
+
+    REG_PC++;
+}
+
+
+void (*Z80::dcOpcode[256])() = {
+    &decodeOpcode00, &decodeOpcode01, &decodeOpcode02, &decodeOpcode03,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode06, &decodeOpcode07,
+    &decodeOpcode08, &decodeOpcode09, &decodeOpcode0a, &decodeOpcode0b,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode0e, &decodeOpcode0f,
+
+    &decodeOpcode10, &decodeOpcode11, &decodeOpcode12, &decodeOpcode13,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode16, &decodeOpcode17,
+    &decodeOpcode18, &decodeOpcode19, &decodeOpcode1a, &decodeOpcode1b,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode1e, &decodeOpcode1f,
+
+    &decodeOpcode20, &decodeOpcode21, &decodeOpcode22, &decodeOpcode23,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode26, &decodeOpcode27,
+    &decodeOpcode28, &decodeOpcode29, &decodeOpcode2a, &decodeOpcode2b,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode2e, &decodeOpcode2f,
+
+    &decodeOpcode30, &decodeOpcode31, &decodeOpcode32, &decodeOpcode33,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode36, &decodeOpcode37,
+    &decodeOpcode38, &decodeOpcode39, &decodeOpcode3a, &decodeOpcode3b,
+    &decodeINCDEC8, &decodeINCDEC8, &decodeOpcode3e, &decodeOpcode3f,
+
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeOpcode76, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+    &decodeLD8, &decodeLD8, &decodeLD8, &decodeLD8,
+
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeALU8,
+    &decodeALU8, &decodeALU8, &decodeALU8, &decodeOpcodebf,
+
+    &decodeRETcc, &decodeOpcodec1, &decodeJPcc, &decodeOpcodec3,
+    &decodeCALLcc, &decodeOpcodec5, &decodeOpcodec6, &decodeRST,
+    &decodeRETcc, &decodeOpcodec9, &decodeJPcc, &decodeOpcodecb,
+    &decodeCALLcc, &decodeOpcodecd, &decodeOpcodece, &decodeRST,
+
+    &decodeRETcc, &decodeOpcoded1, &decodeJPcc, &decodeOpcoded3,
+    &decodeCALLcc, &decodeOpcoded5, &decodeOpcoded6, &decodeRST,
+    &decodeRETcc, &decodeOpcoded9, &decodeJPcc, &decodeOpcodedb,
+    &decodeCALLcc, &decodeOpcodedd, &decodeOpcodede, &decodeRST,
+
+    &decodeRETcc, &decodeOpcodee1, &decodeJPcc, &decodeOpcodee3,
+    &decodeCALLcc, &decodeOpcodee5, &decodeOpcodee6, &decodeRST,
+    &decodeRETcc, &decodeOpcodee9, &decodeJPcc, &decodeOpcodeeb,
+    &decodeCALLcc, &decodeOpcodeed, &decodeOpcodeee, &decodeRST,
+
+    &decodeRETcc, &decodeOpcodef1, &decodeJPcc, &decodeOpcodef3,
+    &decodeCALLcc, &decodeOpcodef5, &decodeOpcodef6, &decodeRST,
+    &decodeRETcc, &decodeOpcodef9, &decodeJPcc, &decodeOpcodefb,
+    &decodeCALLcc, &decodeOpcodefd, &decodeOpcodefe, &decodeRST
+
+};
+
+//Subconjunto de instrucciones 0xCB
+
+
+// 8-bit register pointer table shared by the regular opcode groups (index r of the
+// opcode: B C D E H L (HL) A; nullptr = (HL), the caller does the memory access).
+// Read on every LD r,r' / ALU r / INC r / CB op: it MUST live in SRAM with the core —
+// a plain `static const` goes to .rodata, which the linker script sends to FLASH
+// (the Z80_CORE_IN_RAM rule covers .text only), i.e. one XIP fetch per instruction.
+uint8_t* const Z80::reg8[8] __attribute__((section(".time_critical.z80"))) = {
+    &regBC.byte8.hi, &regBC.byte8.lo, &regDE.byte8.hi, &regDE.byte8.lo,
+    &regHL.byte8.hi, &regHL.byte8.lo, nullptr, &regA };
+
+void Z80::decodeLD8() {   /* LD r,r' 0x40-0x7F (0x76 = HALT keeps its own handler) */
+    const uint8_t op = opCode;
+    uint8_t* src = reg8[op & 7];
+    const uint8_t v = src ? *src : Z80Ops::peek8(REG_HL);
+    uint8_t* dst = reg8[(op >> 3) & 7];
+    if (dst) *dst = v; else Z80Ops::poke8(REG_HL, v);
+}
+
+void Z80::decodeALU8() {  /* ADD/ADC/SUB/SBC/AND/XOR/OR/CP A,r 0x80-0xBE (0xBF = CP A keeps the tape LOAD trap) */
+    const uint8_t op = opCode;
+    uint8_t* src = reg8[op & 7];
+    const uint8_t v = src ? *src : Z80Ops::peek8(REG_HL);
+    switch ((op >> 3) & 7) {
+        case 0: add(v); break;
+        case 1: adc(v); break;
+        case 2: sub(v); break;
+        case 3: sbc(v); break;
+        case 4: and_(v); break;
+        case 5: xor_(v); break;
+        case 6: or_(v); break;
+        default: cp(v); break;
+    }
+}
+
+// Condition cc = (opcode >> 3) & 7: NZ Z NC C PO PE P M
+bool Z80::condMet(uint8_t cc) {
+    bool f;
+    switch (cc >> 1) {
+        case 0:  f = (sz5h3pnFlags & ZERO_MASK) != 0; break;
+        case 1:  f = carryFlag; break;
+        case 2:  f = (sz5h3pnFlags & PARITY_MASK) != 0; break;
+        default: f = (sz5h3pnFlags & SIGN_MASK) != 0; break;
+    }
+    return f == (bool)(cc & 1);
+}
+
+void Z80::decodeRETcc() {  /* RET cc */
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    if (condMet((opCode >> 3) & 7)) {
+        REG_PC = REG_WZ = pop();
+        check_trdos();
+    }
+}
+
+void Z80::decodeJPcc() {   /* JP cc,nn */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    if (condMet((opCode >> 3) & 7)) {
+        REG_PC = REG_WZ;
+        check_trdos();
+        return;
+    }
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeCALLcc() { /* CALL cc,nn */
+    REG_WZ = Z80Ops::peek16(REG_PC);
+    if (condMet((opCode >> 3) & 7)) {
+        Z80Ops::addressOnBus(REG_PC + 1, 1);
+        push(REG_PC + 2);
+        REG_PC = REG_WZ;
+        check_trdos();
+        return;
+    }
+    REG_PC = REG_PC + 2;
+}
+
+void Z80::decodeRST() {    /* RST p */
+#if ZC_PORT_TRACE || ATM_PAGE_TRACE
+    // ATM: an RST #38 executed with interrupts ENABLED enters the IM1 handler without
+    // the IFF1 clear an accepted INT does — the NedoOS sys_sysint nesting (2026-09-28).
+    {
+        static uint16_t n = 0;
+        if (Z80Ops::isAtm && opCode == 0xFF && ffIFF1 && n < 30) {
+            n++;
+            const uint16_t at = (uint16_t)(REG_PC - 1);
+            Debug::log("[ATMRST] RST38 at %04X sp=%04X [sp]=%04X w=%p %p %p %p", at, REG_SP,
+                       Z80Ops::peek16(REG_SP),
+                       (const void*)MemESP::ramCurrent[0], (const void*)MemESP::ramCurrent[1],
+                       (const void*)MemESP::ramCurrent[2], (const void*)MemESP::ramCurrent[3]);
+            if (n <= 2) {
+                const uint8_t* w0 = MemESP::ramCurrent[0];
+                Debug::log("[ATMRST]   w0[40..57]=%02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X %02X%02X%02X%02X",
+                           w0[0x40],w0[0x41],w0[0x42],w0[0x43],w0[0x44],w0[0x45],w0[0x46],w0[0x47],
+                           w0[0x48],w0[0x49],w0[0x4A],w0[0x4B],w0[0x4C],w0[0x4D],w0[0x4E],w0[0x4F],
+                           w0[0x50],w0[0x51],w0[0x52],w0[0x53],w0[0x54],w0[0x55],w0[0x56],w0[0x57]);
+                Debug::log("[ATMRST]   pF7=%03X %03X %03X %03X | %03X %03X %03X %03X p7ffd=%02X",
+                           Atm::pF7[0], Atm::pF7[1], Atm::pF7[2], Atm::pF7[3],
+                           Atm::pF7[4], Atm::pF7[5], Atm::pF7[6], Atm::pF7[7], Atm::p7ffd);
+                extern uint16_t g_atm_pg_port[16], g_atm_pg_pc[16];
+                extern uint8_t g_atm_pg_val[16], g_atm_pg_i;
+                for (int j = 0; j < 16; j++) {
+                    const uint8_t k = (uint8_t)(g_atm_pg_i - 16 + j) & 15;
+                    Debug::log("[ATMRST]   pg#%02d %04X=%02X pc=%04X", j, g_atm_pg_port[k],
+                               g_atm_pg_val[k], g_atm_pg_pc[k]);
+                }
+            }
+        }
+    }
+#endif
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    push(REG_PC);
+    REG_PC = REG_WZ = opCode & 0x38;
+}
+
+void Z80::decodeINCDEC8() { /* INC r (bit 0 clear) / DEC r (bit 0 set), incl. (HL) */
+    const uint8_t op = opCode;
+    uint8_t* p = reg8[(op >> 3) & 7];
+    if (p) {
+        if (op & 1) dec8(*p); else inc8(*p);
+        return;
+    }
+    uint8_t work8 = Z80Ops::peek8(REG_HL);
+    if (op & 1) dec8(work8); else inc8(work8);
+    Z80Ops::addressOnBus(REG_HL, 1);
+    Z80Ops::poke8(REG_HL, work8);
+}
+
+// Generic CB decoder. Opcode bits: [7:6] group, [5:3] n, [2:0] r.
+// group 0 = rotate/shift #n (RLC RRC RL RR SLA SRA SLL SRL), 1 = BIT n,r,
+// 2 = RES n,r, 3 = SET n,r; r = B C D E H L (HL) A. One routine replaces the
+// 256 per-opcode handlers + their 1 KB dispatch table (-6.2 KB of SRAM, 2026-09-07)
+// with the same semantics and the same bus timing (addressOnBus before the (HL) write-back).
+void Z80::decodeCB() {
+    const uint8_t op = opCode;
+    const uint8_t r = op & 7;
+    const uint8_t n = (op >> 3) & 7;
+    const uint8_t mask = 1u << n;
+    uint8_t* reg = reg8[r];
+    uint8_t work8 = reg ? *reg : Z80Ops::peek8(REG_HL);
+    switch (op >> 6) {
+        case 0:
+            switch (n) {
+                case 0: rlc(work8); break;
+                case 1: rrc(work8); break;
+                case 2: rl(work8);  break;
+                case 3: rr(work8);  break;
+                case 4: sla(work8); break;
+                case 5: sra(work8); break;
+                case 6: sll(work8); break;
+                default: srl(work8); break;
+            }
+            break;
+        case 1:
+            bitTest(mask, work8);
+            if (!reg) {
+                sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | (REG_W & FLAG_53_MASK);
+                Z80Ops::addressOnBus(REG_HL, 1);
+            }
+            return;
+        case 2: work8 &= (uint8_t)~mask; break;
+        default: work8 |= mask; break;
+    }
+    if (reg) {
+        *reg = work8;
+    } else {
+        Z80Ops::addressOnBus(REG_HL, 1);
+        Z80Ops::poke8(REG_HL, work8);
+    }
+}
+
+
+
+// // Trim from end (in place) (for SAVE trap, clean this up later)
+// static inline void rtrim(std::string &s) {
+//     s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+//         return !std::isspace(ch);
+//     }).base(), s.end());
+// }
+
+//Subconjunto de instrucciones 0xDD / 0xFD
+/*
+ * Hay que tener en cuenta el manejo de secuencias códigos DD/FD que no
+ * hacen nada. Según el apartado 3.7 del documento
+ * [http://www.myquest.nl/z80undocumented/z80-documented-v0.91.pdf]
+ * secuencias de códigos como FD DD 00 21 00 10 NOP NOP NOP LD HL,1000h
+ * activan IY con el primer FD, IX con el segundo DD y vuelven al
+ * registro HL con el código NOP. Es decir, si detrás del código DD/FD no
+ * viene una instrucción que maneje el registro HL, el código DD/FD
+ * "se olvida" y hay que procesar la instrucción como si nunca se
+ * hubiera visto el prefijo (salvo por los 4 t-estados que ha costado).
+ * Naturalmente, en una serie repetida de DDFD no hay que comprobar las
+ * interrupciones entre cada prefijo.
+ */
+// DD/FD register operand: H and L stand for IXh/IXl. Never called with r == 6.
+inline __attribute__((always_inline)) uint8_t* Z80::ixyReg8(int r, RegisterPair& ixy) {
+    return r == 4 ? &ixy.byte8.hi : r == 5 ? &ixy.byte8.lo : reg8[r];
+}
+
+void Z80::decodeDDFDLD8(RegisterPair& regIXY) {   /* LD r,r' block under DD/FD, 0x76 excluded */
+    const uint8_t op = opCode;
+    const int s = op & 7, d = (op >> 3) & 7;
+    if (s == 6) {                 // LD r,(IX+d): r is the REAL register, H/L included
+        REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC++;
+        *reg8[d] = Z80Ops::peek8(REG_WZ);
+    } else if (d == 6) {          // LD (IX+d),r: likewise
+        REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC++;
+        Z80Ops::poke8(REG_WZ, *reg8[s]);
+    } else {
+        *ixyReg8(d, regIXY) = *ixyReg8(s, regIXY);
+    }
+}
+
+void Z80::decodeDDFDALU8(RegisterPair& regIXY) {  /* ADD..CP A,r / A,(IX+d) under DD/FD, 0x80-0xBE */
+    const uint8_t op = opCode;
+    const int s = op & 7;
+    uint8_t v;
+    if (s == 6) {
+        REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+        Z80Ops::addressOnBus(REG_PC, 5);
+        REG_PC++;
+        v = Z80Ops::peek8(REG_WZ);
+    } else {
+        v = *ixyReg8(s, regIXY);
+    }
+    switch ((op >> 3) & 7) {
+        case 0: add(v); break;
+        case 1: adc(v); break;
+        case 2: sub(v); break;
+        case 3: sbc(v); break;
+        case 4: and_(v); break;
+        case 5: xor_(v); break;
+        case 6: or_(v); break;
+        default: cp(v); break;
+    }
+}
+
+void Z80::decodeDDFD(RegisterPair& regIXY) {
+    switch (opCode) {
+        case 0x09:
+        { /* ADD IX,BC */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            add16(regIXY, REG_BC);
+            break;
+        }
+        case 0x19:
+        { /* ADD IX,DE */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            add16(regIXY, REG_DE);
+            break;
+        }
+        case 0x21:
+        { /* LD IX,nn */
+            regIXY.word = Z80Ops::peek16(REG_PC);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x22:
+        { /* LD (nn),IX */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            Z80Ops::poke16(REG_WZ++, regIXY);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x23:
+        { /* INC IX */
+            Z80Ops::addressOnBus(getPairIR().word, 2);
+            regIXY.word++;
+            break;
+        }
+        case 0x24:
+        { /* INC IXh */
+            inc8(regIXY.byte8.hi);
+            break;
+        }
+        case 0x25:
+        { /* DEC IXh */
+            dec8(regIXY.byte8.hi);
+            break;
+        }
+        case 0x26:
+        { /* LD IXh,n */
+            regIXY.byte8.hi = Z80Ops::peek8(REG_PC);
+            REG_PC++;
+            break;
+        }
+        case 0x29:
+        { /* ADD IX,IX */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            add16(regIXY, regIXY.word);
+            break;
+        }
+        case 0x2A:
+        { /* LD IX,(nn) */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            regIXY.word = Z80Ops::peek16(REG_WZ++);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x2B:
+        { /* DEC IX */
+            Z80Ops::addressOnBus(getPairIR().word, 2);
+            regIXY.word--;
+
+            if (REG_PC == 0x04d4) { // Save trap
+
+                static bool SaveFileExists;
+
+                if (REG_HL == 0x1F80) {
+                    SaveFileExists = (Tape::tapeFileType == TAPE_FTYPE_TAP);
+                    if (!SaveFileExists)
+                        OSD::notify(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
+                }
+
+                if (SaveFileExists) {
+                    regA = REG_HL == 0x1F80 ? 0x00 : 0xFF;
+                    regIXY.word++;
+                    REG_DE--;
+                    Tape::Save();
+                    REG_PC = 0x555;
+                }
+
+                // static uint8_t SaveRes;
+
+                // if (REG_HL == 0x1F80) {
+
+                //     // printf("Saving header!\n");
+
+                //     regIXY.word++;
+
+                //     // remove .tap output file if exists
+
+                //     // Get save name
+                //     string name;
+                //     uint16_t header_data = REG_IX;
+                //     for (int i=0; i < 10; i++)
+                //         name += MemESP::ramCurrent[header_data++ >> 14][header_data & 0x3fff];
+                //     rtrim(name);
+
+                //     SaveRes = DLG_YES;
+
+                //     struct stat stat_buf;
+
+                //     printf("Tapesavename: %s\n",Tape::tapeSaveName.c_str());
+                //     if ( Tape::tapeSaveName == "" || Tape::tapeSaveName == "none" || !FileUtils::hasTAPextension(Tape::tapeSaveName) || stat(Tape::tapeSaveName.c_str(), &stat_buf) ) {
+                //         OSD::osdCenteredMsg(OSD_TAPE_SELECT_ERR, LEVEL_WARN);
+                //         SaveRes = DLG_NO;
+                //     } else {
+                //         REG_DE--;
+                //         regA = 0x00;
+
+                //         Tape::Save();
+
+                //         REG_PC = 0x555;
+                //     }
+
+                // } else {
+
+                //     // printf("Saving data!\n");
+
+                //     // Call Save function
+
+                //     // printf("Saving %s block.\n",Tape::tapeSaveName.c_str());
+
+                //     if (SaveRes == DLG_YES) {
+
+                //         REG_DE--;
+                //         regIXY.word++;
+                //         regA = 0xFF;
+
+                //         Tape::Save();
+
+                //         REG_PC = 0x555;
+
+                //     }
+
+                // }
+
+            }
+
+            break;
+        }
+        case 0x2C:
+        { /* INC IXl */
+            inc8(regIXY.byte8.lo);
+            break;
+        }
+        case 0x2D:
+        { /* DEC IXl */
+            dec8(regIXY.byte8.lo);
+            break;
+        }
+        case 0x2E:
+        { /* LD IXl,n */
+            regIXY.byte8.lo = Z80Ops::peek8(REG_PC);
+            REG_PC++;
+            break;
+        }
+        case 0x34:
+        { /* INC (IX+d) */
+            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+            Z80Ops::addressOnBus(REG_PC, 5);
+            REG_PC++;
+            uint8_t work8 = Z80Ops::peek8(REG_WZ);
+            Z80Ops::addressOnBus(REG_WZ, 1);
+            inc8(work8);
+            Z80Ops::poke8(REG_WZ, work8);
+            break;
+        }
+        case 0x35:
+        { /* DEC (IX+d) */
+            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+            Z80Ops::addressOnBus(REG_PC, 5);
+            REG_PC++;
+            uint8_t work8 = Z80Ops::peek8(REG_WZ);
+            Z80Ops::addressOnBus(REG_WZ, 1);
+            dec8(work8);
+            Z80Ops::poke8(REG_WZ, work8);
+            break;
+        }
+        case 0x36:
+        { /* LD (IX+d),n */
+            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+            REG_PC++;
+            uint8_t work8 = Z80Ops::peek8(REG_PC);
+            Z80Ops::addressOnBus(REG_PC, 2);
+            REG_PC++;
+            Z80Ops::poke8(REG_WZ, work8);
+            break;
+        }
+        case 0x39:
+        { /* ADD IX,SP */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            add16(regIXY, REG_SP);
+            break;
+        }
+        // LD r,r' / LD r,(IX+d) / LD (IX+d),r — one handler for the whole 0x40-0x7F
+        // block (0x76 = HALT keeps the default path) and ALU A,r / A,(IX+d) for
+        // 0x80-0xBE (0xBF = CP A keeps its tape-trap handler via the default path).
+        // Under DD/FD, H and L mean IXh/IXl EXCEPT in the (IX+d) forms, where the
+        // other operand is the real H/L — decodeDDFDLD8 / decodeDDFDALU8 encode
+        // exactly that rule (2026-09-22: 60 hand-written cases, ~1.3 KB of SRAM).
+        case 0x40: case 0x41: case 0x42: case 0x43: case 0x44: case 0x45: case 0x46: case 0x47:
+        case 0x48: case 0x49: case 0x4A: case 0x4B: case 0x4C: case 0x4D: case 0x4E: case 0x4F:
+        case 0x50: case 0x51: case 0x52: case 0x53: case 0x54: case 0x55: case 0x56: case 0x57:
+        case 0x58: case 0x59: case 0x5A: case 0x5B: case 0x5C: case 0x5D: case 0x5E: case 0x5F:
+        case 0x60: case 0x61: case 0x62: case 0x63: case 0x64: case 0x65: case 0x66: case 0x67:
+        case 0x68: case 0x69: case 0x6A: case 0x6B: case 0x6C: case 0x6D: case 0x6E: case 0x6F:
+        case 0x70: case 0x71: case 0x72: case 0x73: case 0x74: case 0x75:            case 0x77:
+        case 0x78: case 0x79: case 0x7A: case 0x7B: case 0x7C: case 0x7D: case 0x7E: case 0x7F:
+        {
+            decodeDDFDLD8(regIXY);
+            break;
+        }
+        case 0x80: case 0x81: case 0x82: case 0x83: case 0x84: case 0x85: case 0x86: case 0x87:
+        case 0x88: case 0x89: case 0x8A: case 0x8B: case 0x8C: case 0x8D: case 0x8E: case 0x8F:
+        case 0x90: case 0x91: case 0x92: case 0x93: case 0x94: case 0x95: case 0x96: case 0x97:
+        case 0x98: case 0x99: case 0x9A: case 0x9B: case 0x9C: case 0x9D: case 0x9E: case 0x9F:
+        case 0xA0: case 0xA1: case 0xA2: case 0xA3: case 0xA4: case 0xA5: case 0xA6: case 0xA7:
+        case 0xA8: case 0xA9: case 0xAA: case 0xAB: case 0xAC: case 0xAD: case 0xAE: case 0xAF:
+        case 0xB0: case 0xB1: case 0xB2: case 0xB3: case 0xB4: case 0xB5: case 0xB6: case 0xB7:
+        case 0xB8: case 0xB9: case 0xBA: case 0xBB: case 0xBC: case 0xBD: case 0xBE:
+        {
+            decodeDDFDALU8(regIXY);
+            break;
+        }
+        case 0xCB:
+        { /* Subconjunto de instrucciones */
+            REG_WZ = regIXY.word + (int8_t) Z80Ops::peek8(REG_PC);
+            REG_PC++;
+            opCode = Z80Ops::peek8(REG_PC);
+            Z80Ops::addressOnBus(REG_PC, 2);
+            REG_PC++;
+            decodeDDFDCB(REG_WZ);
+            break;
+        }
+        case 0xDD:
+            prefixOpcode = 0xDD;
+            break;
+        case 0xE1:
+        { /* POP IX */
+            regIXY.word = pop();
+            break;
+        }
+        case 0xE3:
+        { /* EX (SP),IX */
+            // Instrucción de ejecución sutil como pocas... atento al dato.
+            RegisterPair work16 = regIXY;
+            regIXY.word = Z80Ops::peek16(REG_SP);
+            Z80Ops::addressOnBus(REG_SP + 1, 1);
+            // I can't call to poke16 from here because the Z80 do the writes in inverted order
+            // Same for EX (SP), HL
+            Z80Ops::poke8(REG_SP + 1, work16.byte8.hi);
+            Z80Ops::poke8(REG_SP, work16.byte8.lo);
+            Z80Ops::addressOnBus(REG_SP, 2);
+            REG_WZ = regIXY.word;
+            break;
+        }
+        case 0xE5:
+        { /* PUSH IX */
+            Z80Ops::addressOnBus(getPairIR().word, 1);
+            push(regIXY.word);
+            break;
+        }
+        case 0xE9:
+        { /* JP (IX) */
+            REG_PC = regIXY.word;
+
+            check_trdos();
+
+            break;
+        }
+        case 0xED:
+        {
+            prefixOpcode = 0xED;
+            break;
+        }
+        case 0xF9:
+        { /* LD SP,IX */
+            Z80Ops::addressOnBus(getPairIR().word, 2);
+            REG_SP = regIXY.word;
+            break;
+        }
+        case 0xFD:
+        {
+            prefixOpcode = 0xFD;
+            break;
+        }
+        default:
+        {
+            // Detrás de un DD/FD o varios en secuencia venía un código
+            // que no correspondía con una instrucción que involucra a
+            // IX o IY. Se trata como si fuera un código normal.
+            // Sin esto, además de emular mal, falla el test
+            // ld <bcdexya>,<bcdexya> de ZEXALL.
+#ifdef WITH_BREAKPOINT_SUPPORT
+            if (breakpointEnabled && prefixOpcode == 0) {
+                opCode = Z80Ops::breakpoint(REG_PC, opCode);
+            }
+#endif
+            dcOpcode[opCode]();
+            // decodeOpcode();
+            break;
+        }
+    }
+}
+
+// Subconjunto de instrucciones 0xDDCB
+void Z80::decodeDDFDCB(uint16_t address) {
+    // One body for all 256 DD/FD CB opcodes (2026-09-22; was a 32-block switch,
+    // ~700 B): bits [7:6] pick rotate / BIT / RES / SET, [5:3] the rotate kind or
+    // the bit, [2:0] the register the undocumented forms copy the result to
+    // (6 = none). Same sequence as every block had: read, operate, one bus
+    // cycle, write back, copy — BIT reads, tests, takes its 5/3 flags from the
+    // address high byte and takes the bus cycle without writing.
+    const uint8_t op = opCode;
+    const uint8_t n = (op >> 3) & 7;
+    const uint8_t mask = 1u << n;
+    uint8_t work8 = Z80Ops::peek8(address);
+    switch (op >> 6) {
+        case 0:
+            switch (n) {
+                case 0: rlc(work8); break;
+                case 1: rrc(work8); break;
+                case 2: rl(work8);  break;
+                case 3: rr(work8);  break;
+                case 4: sla(work8); break;
+                case 5: sra(work8); break;
+                case 6: sll(work8); break;
+                default: srl(work8); break;
+            }
+            break;
+        case 1:
+            bitTest(mask, work8);
+            sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHP_MASK) | ((address >> 8) & FLAG_53_MASK);
+            Z80Ops::addressOnBus(address, 1);
+            return;
+        case 2: work8 &= (uint8_t)~mask; break;
+        default: work8 |= mask; break;
+    }
+    Z80Ops::addressOnBus(address, 1);
+    Z80Ops::poke8(address, work8);
+    copyToRegister(work8);
+}
+
+//Subconjunto de instrucciones 0xED
+
+void Z80::decodeED(void) {
+    switch (opCode) {
+        // IN r,(C) / OUT (C),r — one body per direction for the eight registers
+        // (2026-09-22; was 16 cases). r = 6 is the undocumented IN (C) (flags only,
+        // nothing stored) and OUT (C),0 (an NMOS Z80 puts 0x00 on the bus).
+        case 0x40: case 0x48: case 0x50: case 0x58: case 0x60: case 0x68: case 0x70: case 0x78:
+        { /* IN r,(C) */
+            REG_WZ = REG_BC;
+            const uint8_t v = Ports::input(REG_WZ++);
+            uint8_t* r = reg8[(opCode >> 3) & 7];
+            if (r) *r = v;
+            sz5h3pnFlags = sz53pn_addTable[v];
+            flagQ = true;
+            break;
+        }
+        case 0x41: case 0x49: case 0x51: case 0x59: case 0x61: case 0x69: case 0x71: case 0x79:
+        { /* OUT (C),r */
+            uint8_t* r = reg8[(opCode >> 3) & 7];
+            Ports::output(REG_BC, r ? *r : 0x00);
+            REG_WZ = REG_BC + 1;
+            return;
+        }
+        case 0x42:
+        { /* SBC HL,BC */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            sbc16(REG_BC);
+            break;
+        }
+        case 0x43:
+        { /* LD (nn),BC */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            Z80Ops::poke16(REG_WZ, regBC);
+            REG_WZ++;
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x44:
+        case 0x4C:
+        case 0x54:
+        case 0x5C:
+        case 0x64:
+        case 0x6C:
+        case 0x74:
+        case 0x7C:
+        { /* NEG */
+            uint8_t aux = regA;
+            regA = 0;
+            carryFlag = false;
+            sbc(aux);
+            break;
+        }
+        case 0x4D:
+        { /* RETI */
+            ffIFF1 = ffIFF2;
+            REG_PC = REG_WZ = pop();
+            check_trdos();
+            if (Z80Ops::isTsconf && ffIFF1) TsConf::intEnableHook();
+            break;
+        }
+        case 0x45:
+        case 0x55:
+        case 0x5D:
+        case 0x65:
+        case 0x6D:
+        case 0x75:
+        case 0x7D:
+        { /* RETN */
+            ffIFF1 = ffIFF2;
+            REG_PC = REG_WZ = pop();
+            check_trdos();
+            if (Z80Ops::isTsconf && ffIFF1) TsConf::intEnableHook();
+            break;
+        }
+        case 0x46:
+        case 0x4E:
+        case 0x66:
+        case 0x6E:
+        { /* IM 0 */
+            modeINT = IntMode::IM0;
+            break;
+        }
+        case 0x47:
+        { /* LD I,A */
+            /*
+             * El par IR se pone en el bus de direcciones *antes*
+             * de poner A en el registro I. Detalle importante.
+             */
+            Z80Ops::addressOnBus(getPairIR().word, 1);
+            regI = regA;
+            break;
+        }
+        case 0x4A:
+        { /* ADC HL,BC */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            adc16(REG_BC);
+            break;
+        }
+        case 0x4B:
+        { /* LD BC,(nn) */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            REG_BC = Z80Ops::peek16(REG_WZ);
+            REG_WZ++;
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x4F:
+        { /* LD R,A */
+            /*
+             * El par IR se pone en el bus de direcciones *antes*
+             * de poner A en el registro R. Detalle importante.
+             */
+            Z80Ops::addressOnBus(getPairIR().word, 1);
+            setRegR(regA);
+            break;
+        }
+        case 0x52:
+        { /* SBC HL,DE */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            sbc16(REG_DE);
+            break;
+        }
+        case 0x53:
+        { /* LD (nn),DE */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            Z80Ops::poke16(REG_WZ++, regDE);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x56:
+        case 0x76:
+        { /* IM 1 */
+            modeINT = IntMode::IM1;
+            break;
+        }
+        case 0x57:
+        { /* LD A,I */
+            Z80Ops::addressOnBus(getPairIR().word, 1);
+            regA = regI;
+            sz5h3pnFlags = sz53n_addTable[regA];
+            if (ffIFF2 && !Z80Ops::isActiveINT()) {
+                sz5h3pnFlags |= PARITY_MASK;
+            }
+            flagQ = true;
+            break;
+        }
+        case 0x5A:
+        { /* ADC HL,DE */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            adc16(REG_DE);
+            break;
+        }
+        case 0x5B:
+        { /* LD DE,(nn) */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            REG_DE = Z80Ops::peek16(REG_WZ++);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x5E:
+        case 0x7E:
+        { /* IM 2 */
+            modeINT = IntMode::IM2;
+            break;
+        }
+        case 0x5F:
+        { /* LD A,R */
+            Z80Ops::addressOnBus(getPairIR().word, 1);
+            regA = getRegR();
+            sz5h3pnFlags = sz53n_addTable[regA];
+            if (ffIFF2 && !Z80Ops::isActiveINT()) {
+                sz5h3pnFlags |= PARITY_MASK;
+            }
+            flagQ = true;
+            break;
+        }
+        case 0x62:
+        { /* SBC HL,HL */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            sbc16(REG_HL);
+            break;
+        }
+        case 0x63:
+        { /* LD (nn),HL */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            Z80Ops::poke16(REG_WZ++, regHL);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x67:
+        { /* RRD */
+            // A = A7 A6 A5 A4 (HL)3 (HL)2 (HL)1 (HL)0
+            // (HL) = A3 A2 A1 A0 (HL)7 (HL)6 (HL)5 (HL)4
+            // Los bits 3,2,1 y 0 de (HL) se copian a los bits 3,2,1 y 0 de A.
+            // Los 4 bits bajos que había en A se copian a los bits 7,6,5 y 4 de (HL).
+            // Los 4 bits altos que había en (HL) se copian a los 4 bits bajos de (HL)
+            // Los 4 bits superiores de A no se tocan. ¡p'habernos matao!
+            uint8_t aux = regA << 4;
+            REG_WZ = REG_HL;
+            uint16_t memHL = Z80Ops::peek8(REG_WZ);
+            regA = (regA & 0xf0) | (memHL & 0x0f);
+            Z80Ops::addressOnBus(REG_WZ, 4);
+            Z80Ops::poke8(REG_WZ++, (memHL >> 4) | aux);
+            sz5h3pnFlags = sz53pn_addTable[regA];
+            flagQ = true;
+            break;
+        }
+        case 0x6A:
+        { /* ADC HL,HL */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            adc16(REG_HL);
+            break;
+        }
+        case 0x6B:
+        { /* LD HL,(nn) */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            REG_HL = Z80Ops::peek16(REG_WZ++);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x6F:
+        { /* RLD */
+            // A = A7 A6 A5 A4 (HL)7 (HL)6 (HL)5 (HL)4
+            // (HL) = (HL)3 (HL)2 (HL)1 (HL)0 A3 A2 A1 A0
+            // Los 4 bits bajos que había en (HL) se copian a los bits altos de (HL).
+            // Los 4 bits altos que había en (HL) se copian a los 4 bits bajos de A
+            // Los bits 3,2,1 y 0 de A se copian a los bits 3,2,1 y 0 de (HL).
+            // Los 4 bits superiores de A no se tocan. ¡p'habernos matao!
+            uint8_t aux = regA & 0x0f;
+            REG_WZ = REG_HL;
+            uint16_t memHL = Z80Ops::peek8(REG_WZ);
+            regA = (regA & 0xf0) | (memHL >> 4);
+            Z80Ops::addressOnBus(REG_WZ, 4);
+            Z80Ops::poke8(REG_WZ++, (memHL << 4) | aux);
+            sz5h3pnFlags = sz53pn_addTable[regA];
+            flagQ = true;
+            break;
+        }
+        case 0x72:
+        { /* SBC HL,SP */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            sbc16(REG_SP);
+            break;
+        }
+        case 0x73:
+        { /* LD (nn),SP */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            Z80Ops::poke16(REG_WZ++, regSP);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0x7A:
+        { /* ADC HL,SP */
+            Z80Ops::addressOnBus(getPairIR().word, 7);
+            adc16(REG_SP);
+            break;
+        }
+        case 0x7B:
+        { /* LD SP,(nn) */
+            REG_WZ = Z80Ops::peek16(REG_PC);
+            REG_SP = Z80Ops::peek16(REG_WZ++);
+            REG_PC = REG_PC + 2;
+            break;
+        }
+        case 0xA0:
+        { /* LDI */
+            ldx(1);
+            break;
+        }
+        case 0xA1:
+        { /* CPI */
+            cpx(1);
+            break;
+        }
+        case 0xA2:
+        { /* INI */
+            inx(1);
+            break;
+        }
+        case 0xA3:
+        { /* OUTI */
+            otx(1);
+            break;
+        }
+        case 0xA8:
+        { /* LDD */
+            ldx(-1);
+            break;
+        }
+        case 0xA9:
+        { /* CPD */
+            cpx(-1);
+            break;
+        }
+        case 0xAA:
+        { /* IND */
+            inx(-1);
+            break;
+        }
+        case 0xAB:
+        { /* OUTD */
+            otx(-1);
+            break;
+        }
+        case 0xB0:
+        { /* LDIR */
+            ldx(1);
+            if (REG_BC != 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_DE - 1, 5);
+                sz5h3pnFlags &= ~FLAG_53_MASK;
+                sz5h3pnFlags |= (REG_PCh & FLAG_53_MASK);
+            }
+            break;
+        }
+        case 0xB1:
+        { /* CPIR */
+            cpx(1);
+            if ((sz5h3pnFlags & PARITY_MASK) == PARITY_MASK
+                    && (sz5h3pnFlags & ZERO_MASK) == 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_HL - 1, 5);
+                sz5h3pnFlags &= ~FLAG_53_MASK;
+                sz5h3pnFlags |= (REG_PCh & FLAG_53_MASK);
+            }
+            break;
+        }
+        case 0xB2:
+        { /* INIR */
+            inx(1);
+            if (REG_B != 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_HL - 1, 5);
+                SetAbortedINxR_OTxRFlags();
+            }
+            break;
+        }
+        case 0xB3:
+        { /* OTIR */
+            otx(1);
+            if (REG_B != 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_BC, 5);
+                SetAbortedINxR_OTxRFlags();
+            }
+            break;
+        }
+        case 0xB8:
+        { /* LDDR */
+            ldx(-1);
+            if (REG_BC != 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_DE + 1, 5);
+                sz5h3pnFlags &= ~FLAG_53_MASK;
+                sz5h3pnFlags |= (REG_PCh & FLAG_53_MASK);
+            }
+            break;
+        }
+        case 0xB9:
+        { /* CPDR */
+            cpx(-1);
+            if ((sz5h3pnFlags & PARITY_MASK) == PARITY_MASK
+                    && (sz5h3pnFlags & ZERO_MASK) == 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_HL + 1, 5);
+                sz5h3pnFlags &= ~FLAG_53_MASK;
+                sz5h3pnFlags |= (REG_PCh & FLAG_53_MASK);
+            }
+            break;
+        }
+        case 0xBA:
+        { /* INDR */
+            inx(-1);
+            if (REG_B != 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_HL + 1, 5);
+                SetAbortedINxR_OTxRFlags();
+            }
+            break;
+        }
+        case 0xBB:
+        { /* OTDR */
+            otx(-1);
+            if (REG_B != 0) {
+                REG_PC = REG_PC - 2;
+                REG_WZ = REG_PC + 1;
+                Z80Ops::addressOnBus(REG_BC, 5);
+                SetAbortedINxR_OTxRFlags();
+            }
+            break;
+        }
+        // case 0xDD:
+            // prefixOpcode = 0xDD;
+            // break;
+        // case 0xED:
+            // prefixOpcode = 0xED;
+            // break;
+        // case 0xFD:
+            // prefixOpcode = 0xFD;
+            // break;
+        // default:
+        //     break;
+    }
+}
+
+IRAM_ATTR void Z80::copyToRegister(uint8_t value)
+{
+    uint8_t* r = reg8[opCode & 0x07];   // 6 = (HL): the documented form copies nowhere
+    if (r) *r = value;
+}
+
+// LDI/LDD, CPI/CPD, INI/IND, OUTI/OUTD share one body each; d = +1 / -1.
+IRAM_ATTR void Z80::ldx(int d) {
+    uint8_t work8 = Z80Ops::peek8(REG_HL);
+    Z80Ops::poke8(REG_DE, work8);
+    Z80Ops::addressOnBus(REG_DE, 2);
+    REG_HL += d; REG_DE += d; REG_BC--;
+    work8 += regA;
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZ_MASK) | (work8 & BIT3_MASK);
+    if ((work8 & ADDSUB_MASK) != 0) sz5h3pnFlags |= BIT5_MASK;
+    if (REG_BC != 0) sz5h3pnFlags |= PARITY_MASK;
+    flagQ = true;
+}
+IRAM_ATTR void Z80::cpx(int d) {
+    uint8_t memHL = Z80Ops::peek8(REG_HL);
+    bool carry = carryFlag;
+    cp(memHL);
+    carryFlag = carry;
+    Z80Ops::addressOnBus(REG_HL, 5);
+    REG_HL += d; REG_BC--;
+    memHL = regA - memHL - ((sz5h3pnFlags & HALFCARRY_MASK) != 0 ? 1 : 0);
+    sz5h3pnFlags = (sz5h3pnFlags & FLAG_SZHN_MASK) | (memHL & BIT3_MASK);
+    if ((memHL & ADDSUB_MASK) != 0) sz5h3pnFlags |= BIT5_MASK;
+    if (REG_BC != 0) sz5h3pnFlags |= PARITY_MASK;
+    REG_WZ += d;
+    flagQ = true;
+}
+IRAM_ATTR void Z80::inx(int d) {
+    REG_WZ = REG_BC;
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    uint8_t work8 = Ports::input(REG_WZ);
+    REG_WZ += d;
+    Z80Ops::poke8(REG_HL, work8);
+    REG_B--; REG_HL += d;
+    sz5h3pnFlags = sz53pn_addTable[REG_B];
+    if (work8 > 0x7f) sz5h3pnFlags |= ADDSUB_MASK;
+    carryFlag = false;
+    uint16_t tmp = work8 + ((REG_C + d) & 255);
+    if (tmp > 0xff) { sz5h3pnFlags |= HALFCARRY_MASK; carryFlag = true; }
+    if ((sz53pn_addTable[((tmp & 0x07) ^ REG_B)] & PARITY_MASK) == PARITY_MASK) sz5h3pnFlags |= PARITY_MASK;
+    else sz5h3pnFlags &= ~PARITY_MASK;
+    flagQ = true;
+}
+IRAM_ATTR void Z80::otx(int d) {
+    Z80Ops::addressOnBus(getPairIR().word, 1);
+    REG_B--;
+    REG_WZ = REG_BC;
+    uint8_t work8 = Z80Ops::peek8(REG_HL);
+    Ports::output(REG_WZ, work8);
+    REG_WZ += d; REG_HL += d;
+    carryFlag = false;
+    sz5h3pnFlags = (work8 > 0x7f) ? sz53n_subTable[REG_B] : sz53n_addTable[REG_B];
+    if ((REG_L + work8) > 0xff) { sz5h3pnFlags |= HALFCARRY_MASK; carryFlag = true; }
+    if ((sz53pn_addTable[(((REG_L + work8) & 0x07) ^ REG_B)] & PARITY_MASK) == PARITY_MASK) sz5h3pnFlags |= PARITY_MASK;
+    flagQ = true;
+}
+
+void Z80::SetAbortedINxR_OTxRFlags() {
+
+    sz5h3pnFlags &= ~FLAG_53_MASK;
+    sz5h3pnFlags |= (REG_PCh & FLAG_53_MASK);
+
+    // // 1st implementation
+    // uint8_t pf = sz5h3pnFlags & PARITY_MASK;
+    // if (carryFlag) {
+    //     int addsub = 1 - (sz5h3pnFlags & ADDSUB_MASK);
+    //     pf = pf ^ sz53pn_addTable[(REG_B + addsub) & 0x07] ^ PARITY_MASK;
+    //     if ((REG_B & 0x0F) == (addsub != 1 ? 0x00 : 0x0F )) sz5h3pnFlags |= HALFCARRY_MASK; else sz5h3pnFlags &= ~HALFCARRY_MASK;
+    // } else {
+    //     pf = pf ^ sz53pn_addTable[REG_B & 0x07] ^ PARITY_MASK;
+    // }
+    // if (pf & PARITY_MASK) sz5h3pnFlags |= PARITY_MASK; else sz5h3pnFlags &= ~PARITY_MASK;
+
+    // // 2nd implementation
+    // uint8_t pf = sz5h3pnFlags & PARITY_MASK;
+    // int addsub = carryFlag ? 1 - (sz5h3pnFlags & ADDSUB_MASK): 0;
+    // if (addsub)
+    //     if ((REG_B & 0x0F) == (addsub > 0 ? 0xF : 0x0 )) sz5h3pnFlags |= HALFCARRY_MASK; else sz5h3pnFlags &= ~HALFCARRY_MASK;
+    // pf ^= sz53pn_addTable[(REG_B + addsub) & 0x07] ^ PARITY_MASK;
+    // if (pf & PARITY_MASK) sz5h3pnFlags |= PARITY_MASK; else sz5h3pnFlags &= ~PARITY_MASK;
+
+    // 3rd implementation
+    uint8_t cpyB = REG_B;
+    if (carryFlag) {
+        cpyB += sz5h3pnFlags & ADDSUB_MASK ? -1 : 1;
+        sz5h3pnFlags = (cpyB ^ REG_B) & HALFCARRY_MASK ? sz5h3pnFlags | HALFCARRY_MASK : sz5h3pnFlags & ~HALFCARRY_MASK;
+    }
+    uint8_t pf = (sz5h3pnFlags & PARITY_MASK) ^ sz53pn_addTable[cpyB & 0x07] ^ PARITY_MASK;
+    sz5h3pnFlags = pf & PARITY_MASK ? sz5h3pnFlags | PARITY_MASK : sz5h3pnFlags & ~PARITY_MASK;
+
+}

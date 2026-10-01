@@ -1,4 +1,4 @@
-// Host test for the DivIDE port decode (src/DivideIde.h).
+// Host test for the DivIDE port decode (src/speccy/devices/storage/DivideIde.h).
 //
 // Unlike the +3e's interface, this one was not derived from a ROM — it is Fuse's, and
 // Fuse is where the reference lives (peripherals/ide/divide.c). So the test carries
@@ -18,8 +18,8 @@
 // bank 2 for port setups and reports which registers the driver reaches — that part
 // only ever reports, so it cannot fail on a ROM revision nobody here has seen.
 
-#include "DivideIde.h"
-#include "Plus3eIde.h"
+#include "speccy/devices/storage/DivideIde.h"
+#include "speccy/machines/Plus3/Plus3eIde.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
 
     // ── optional: what the shipped ROM actually addresses ──────────────────────
     {
-        const char* path = argc > 1 ? argv[1] : "src/roms/plus3div/src/rom2.bin";
+        const char* path = argc > 1 ? argv[1] : "src/speccy/roms/plus3div/src/rom2.bin";
         FILE* f = fopen(path, "rb");
         if (!f) {
             printf("  (no %s - skipping the ROM scan)\n", path);

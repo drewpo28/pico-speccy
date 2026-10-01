@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack the NeoGS firmware ROM (full_ngs.rom, 512 KB) into src/GS/NGS_ROM.c.
+"""Pack the NeoGS firmware ROM (full_ngs.rom, 512 KB) into src/speccy/devices/gs/NGS_ROM.c.
 
 The flash image is sparse: of the sixteen 32 KB pages only page 0 (boot
 loader "@LoaderG"), page 2 (GS-compatible firmware "General Sound ROM
@@ -11,7 +11,7 @@ The emulator maps ROM in 8 KB slots, so the image is stored as a table of
 64 8-KB chunks; blank chunks are NULL and served from one shared 0xFF
 page. Only non-blank chunks are embedded (~72 KB flash instead of 512 KB).
 
-Usage: python3 tools/ngs_rom_pack.py full_ngs.rom > src/GS/NGS_ROM.c
+Usage: python3 tools/ngs_rom_pack.py full_ngs.rom > src/speccy/devices/gs/NGS_ROM.c
 
 full_ngs.rom source:
   http://svn.nedopc.com/dl.php?repname=ngs&path=%2Fz80%2Fcreate_update%2Ffull_ngs.rom
@@ -39,7 +39,7 @@ def main():
 
     out = sys.stdout
     out.write("/* NGS_ROM.c — NeoGS firmware flash image (sparse), GENERATED FILE.\n")
-    out.write("   Regenerate with: python3 tools/ngs_rom_pack.py full_ngs.rom > src/GS/NGS_ROM.c\n")
+    out.write("   Regenerate with: python3 tools/ngs_rom_pack.py full_ngs.rom > src/speccy/devices/gs/NGS_ROM.c\n")
     out.write("   Source: full_ngs.rom from svn.nedopc.com (NedoPC NeoGS project,\n")
     out.write("   http://nedopc.com/gs/ngs.php). 8 KB chunks present: "
               + ", ".join(str(c) for c in sorted(chunks)) + ".\n")

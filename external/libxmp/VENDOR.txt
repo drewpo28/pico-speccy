@@ -1,0 +1,1 @@
+libxmp-lite 4.7.3 (https://github.com/libxmp/libxmp, release libxmp-4.7.3), MIT — see LICENSE. Vendored unmodified for Pico-Zx-Player's S3M/XM/IT/MOD decoder (../PlayerXmp.cpp); allocations are redirected to butter PSRAM by the -include of ../pp_xmp_alloc.h (CMakeLists).

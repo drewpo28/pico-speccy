@@ -42,10 +42,10 @@
 #include "UiGfx.h"
 #include "UiFont.h"
 #include "UiRender.h"           // SYM_* glyphs for the footer hints
-#include "ESPectrum.h"
-#include "Config.h"
-#include "Video.h"              // brdnextframe for the standalone exit repaint
-#include "pwm_audio.h"
+#include "app/ESPectrum.h"
+#include "app/Config.h"
+#include "speccy/video/Video.h"              // brdnextframe for the standalone exit repaint
+#include "drivers/sound/pwm_audio.h"
 
 #include "pico/time.h"
 #include "pico/rand.h"

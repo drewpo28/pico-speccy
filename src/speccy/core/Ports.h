@@ -1,0 +1,224 @@
+/*
+
+ESPectrum, a Sinclair ZX Spectrum emulator for Espressif ESP32 SoC
+
+Copyright (c) 2023, 2024 Víctor Iborra [Eremus] and 2023 David Crespo [dcrespo3d]
+https://github.com/EremusOne/ZX-ESPectrum-IDF
+
+Based on ZX-ESPectrum-Wiimote
+Copyright (c) 2020, 2022 David Crespo [dcrespo3d]
+https://github.com/dcrespo3d/ZX-ESPectrum-Wiimote
+
+Based on previous work by Ramón Martinez and Jorge Fuertes
+https://github.com/rampa069/ZX-ESPectrum
+
+Original project by Pete Todd
+https://github.com/retrogubbins/paseVGA
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+To Contact the dev team you can write to zxespectrum@gmail.com or
+visit https://zxespectrum.speccy.org/contacto
+
+*/
+
+#ifndef Ports_h
+#define Ports_h
+
+#include <inttypes.h>
+#include "app/ESPectrum.h"
+
+class Ports {
+
+public:
+
+    static uint8_t input(uint16_t address);
+    static void output(uint16_t address, uint8_t data);
+    // The decode itself, compiled twice (Ports.cpp): <false> inlined into the RAM
+    // entry points above, <true> behind the flash inputProfi/outputProfi.
+    template<bool PROFI> static uint8_t inputImpl(uint16_t address);
+    template<bool PROFI> static void outputImpl(uint16_t address, uint8_t data);
+    static uint8_t inputProfi(uint16_t address);
+    static void outputProfi(uint16_t address, uint8_t data);
+    static uint8_t port[128];
+    // Profi extended keyboard: bit 5 of each standard row (row 0-7).
+    // 0xFF = key not pressed; bit 5 cleared = key pressed.
+    // Used only when Config::arch == A_PROFI && Config::profi_ext_keys.
+    static uint8_t extPort[8];
+
+    static uint8_t (*getFloatBusData)();
+    static uint8_t getFloatBusData48();
+    static uint8_t getFloatBusData128();
+    static uint8_t getFloatBusDataScorp();
+    // +2A/+3: the ULA does not put the screen byte on an unattached port — reads
+    // return idle bus. Fuse models this as spectrum_unattached_port_none.
+    static uint8_t getFloatBusDataNone();
+
+    static void FDDStep(bool force);
+    static void dmaOutput(uint16_t address, uint8_t data);
+    static uint8_t dmaInput(uint16_t address);
+
+    // SounDrive (Config::covox==3) DAC latches: #0F,#1F,#3F (left), #4F,#5F
+    // (right), #FB (both). Mixed in stereo into the covox L/R buffers.
+    // Cleared on reset.
+    static uint8_t sndriveLatch[6];
+    // Bitmask of latches ever written since reset (slot -> bit). Used as the
+    // analog summing-amp divisor: each rail is averaged over the DACs actually
+    // driven, so one DAC/side stays full-scale (Single Warrior) while two
+    // DACs/side average instead of summing-and-clipping (4-ch SounDrive music).
+    static uint8_t sndriveUsed;
+
+    static uint8_t portAFF7;
+    static uint8_t portDFFD;
+    static uint8_t portEFF7; // Extended feature register (Profi CP/M uses bit 1=EFF7_512)
+    // The #1FFD latch, shared by the two machines that have one (only one runs):
+    //  Scorpion (write-only on real hardware — no read-back handler): D0=RAM0 at
+    //  0x0000, D1=service-monitor ROM override, D4=+8 on the 0xC000 page. GMX adds
+    //  D2 = hard-wire the DOS page at 0x0000 + Beta on (MAME scorpiongmx).
+    //  +2A/+3: D0 special (all-RAM) paging enable, D1-2 which configuration when
+    //  D0=1, D2 ROM select high bit when D0=0, D3 disk motor (both drives), D4
+    //  printer strobe.
+    static uint8_t port1FFD;
+    // Flush the +3e IDE trace's pending run once per frame, so the last line of a
+    // conversation reaches the log instead of waiting for traffic that never comes.
+    // Compiled to nothing unless IDE_PORT_TRACE is on.
+    static void ideTraceFlush();
+    // Recompute Scorpion's rom bank from (port1FFD D1/D2, trdos, romLatch) — and on
+    // GMX the ProfROM plane — then recoverPage0.
+    static void scorpionRomUpdate();
+    static void kayTurboUpdate();
+    static uint8_t kay7FFDd7;   // Nemo KAY: 7FFD D7 = the 1 MB page bit (see scorpionC000Page)
+
+    // ── Scorpion GMX latches (either GMX romset; reset clears all) ────────────
+    // port #00 global config: D5=BLKEXT (GMX ports off), D4=fixrom (block plane
+    // writes via #7EFD), D3+D0-2 arm the magic_shift readout + reset.
+    static uint8_t gmxPort00;
+    static uint8_t gmxPort78FD;   // RAM page at 0x8000: page = value ^ 2
+    static uint8_t gmxPort7EFD;   // D7 turbo, D4-6 ProfROM plane, D3 gfx_ext 640x200, D2 magic off
+    static uint8_t gmxScrollLo;   // #7AFD write, high nibble kept
+    static uint8_t gmxScrollHi;   // #7CFD write, 6 bits
+    static uint8_t gmxPlane;      // live ProfROM plane 0-7 (from #7EFD or the 0x0100 tap)
+    static uint8_t gmxMagicShift; // port #00 D3 arms 0x88|(D0-2); #78FD reads shift it out
+    static uint8_t portDFFDgmx;   // GMX #DFFD: 3 extra RAM-page bits (<<4)
+    // ProfROM legacy plane switch (reads of 0x0100-0x010F inside the service bank).
+    static void gmxProfRomTap(uint16_t address);
+    // Recompute g_gmx_tap after a direct romInUse write (check_trdos entry/exit).
+    static void gmxTapRecheck();
+    // Cold GMX port dispatch (flash-resident on purpose — Ports::input/output are
+    // RAM code and the GMX register file is not hot). Return true when handled.
+    static bool gmxPortWrite(uint16_t address, uint8_t data);
+    static bool gmxPortRead(uint16_t address, uint8_t* out);
+
+    // ── SMUC (Scorpion IDE + NVRAM + RTC + ISA card) ───────────────────────────
+    // Selected by IDE::scheme == IDE::SMUC. All of its ports live in the TR-DOS
+    // (DOSEN) address space and are decoded as A12=A11=A7=A5=A1=1, A0=0 — i.e.
+    // low byte #BA or #BE. Cold flash dispatch like the GMX family: return true
+    // when the access was ours (the handlers must NOT fall through — every SMUC
+    // port has A0=0 and would otherwise be swallowed by the ULA branch).
+    static bool smucPortWrite(uint16_t address, uint8_t data);
+    static bool smucPortRead(uint16_t address, uint8_t* out);
+    static void smucReset();      // machine reset: SYS/FDD latches + NVRAM bus
+    static void smucCardUpdate(); // (re)decide whether the card's 24LC16 exists
+    static uint8_t smucSys;       // #FFBA: D7 mode, D6 SCL, D5 WP, D4 SDA, D0 HDD reset
+    static uint8_t smucFdd;       // #7FBA: virtual-FDD control latch
+
+    // PQ-DOS serial keyboard emulation (ports #F3 status / #D3 data). PQDOS uses
+    // ONLY this controller for input (no IN A,(#FE) matrix reads anywhere in the
+    // firmware), so keys must be fed here. pushKey() enqueues a driver scancode
+    // (index into the QDOS key-table, see ESPectrum.cpp vk→scan map); the #F3/#D3
+    // handlers in Ports::input drain it. RP2350 Profi only.
+    static void pushKey(uint8_t scan);
+    static volatile uint8_t pqkBuf[16];
+    static volatile uint8_t pqkHead;  // write index (producer: keyboard task)
+    static volatile uint8_t pqkTail;  // read index  (consumer: Z80 #D3 read)
+
+    // PQ-DOS extended config ports (Karabas-Pro dev manual v1.01). Register
+    // contents only — no side effects wired yet, see Ports::input/output.
+    static uint8_t port008B; // ROM64Kb PAGE (bits0-5) + ONROM (bit6) + UNLOCK_128 (bit7)
+    static uint8_t port018B; // RAM PAGE (bits0-7)
+    static uint8_t port028B; // HDD_OFF/HDD_TYPE/TURBOFDC_OFF/FDC_SWAP/SOUND_OFF/TURBO_MODE/LOCK_DFFD
+
+    // Karabas-Pro serial (COM) mouse — К580ВВ51 emulation on #F3 (command/
+    // status) and #D3 (data) with the hardware-INT enable on #B3/#93 bit0.
+    // Port truth from the FPGA (rtl/mouse/serial_mouse.vhd + hw_int.vhd): the
+    // draft dev manual's "#B3/#93 RS232" chapter actually describes only the
+    // INT_EN register — the VV51 itself decodes #F3/#D3 (A7=1, A4:0=10011,
+    // A6=1; A5 picks cmd/data), same gate as the other extended periphery.
+    static uint8_t serialMouseCtl;   // VV51 command reg; bit2 (RxE) = mouse mode
+    static uint8_t serialMouseIntEn; // #B3/#93 bit0 → RST20H on RX-ready (CPM only)
+    static bool serialMouseIntAsserted();
+    static void serialMouseReset();
+    // Clear the #FE latch on a machine reset (border + the GMX BRD read-backs).
+    static void resetBorderLatch();
+    // Per-frame packet pump: INT-driven drivers (pcmsmous) never poll the
+    // status port, so packet building can't be left to port reads alone —
+    // without this tick the first RST20H would never assert.
+    static void serialMouseTick();
+
+    // Per-frame port-call counters; read+reset in VIDEO::EndFrame diagnostic.
+    static uint32_t port7ffd_cnt;
+    static uint32_t portdffd_cnt;
+    // Time spent in Ports::FDDStep (rvmWD1793Step calls from port handlers).
+    static volatile uint32_t fdd_ports_us;
+    static volatile uint32_t fdd_ports_calls;
+    static volatile uint32_t fdd_ports_max;
+
+#if SND_PORT_TRACE
+    // Per-port I/O histograms (index = low address byte) for hunting unknown
+    // sound-DAC ports. Filled in input()/output(), dumped + cleared every
+    // ~5 s from the main loop via sndTraceDump().
+    static uint32_t sndTraceWr[256];
+    static uint32_t sndTraceRd[256];
+    static uint8_t  sndTraceLastVal[256];
+    static void sndTraceDump();
+#endif
+
+    // KR580VI53 (Intel 8253 PIT) — Byte computer sound synthesizer
+    struct PIT8253Channel {
+        uint16_t count_value;  // Programmed divisor (binary, BCD pre-converted)
+        int counter;           // Current counter position
+        uint8_t output;        // Current output state (0 or 1)
+        uint8_t lsb;           // Latched LSB for 2-byte load
+        uint8_t rw;            // Control word RW mode (1=LSB, 2=MSB, 3=LSB+MSB)
+        bool bcd;              // Control word BCD bit — count is decimal
+        bool lsb_loaded;       // Whether LSB is waiting for MSB
+        bool active;           // Whether channel has been programmed
+    };
+    static PIT8253Channel pitChannels[3];
+    static void pitWrite(uint8_t a8, uint8_t data);
+    static void pitGenSound(uint8_t* buf, int bufsize);
+
+private :
+
+    static void ioContentionLate(bool contend);
+    static uint8_t port254;
+    static uint8_t speaker_values[8];
+
+};
+
+#if GMX_TRACE
+// Scorpion GMX paging trace (-DGMX_TRACE=ON, CMake): capped line budget so the
+// boot sequence fits the UART without stalling emulation. Counter lives in
+// Ports.cpp; used from Ports.cpp and Z80_JLS.cpp.
+#include "app/Debug.h"
+extern uint32_t g_gmxTraceN;
+// Body in Ports.cpp: collapses the firmware's repeating paging cycles so the
+// 600-line budget is spent on distinct events (see the comment there).
+void gmxTrace(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void gmxTraceHb(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void gmxTraceReset();          // re-arm the budget (ESPectrum::reset)
+#define GMXT(...) gmxTrace(__VA_ARGS__)
+#endif
+
+#endif // Ports_h

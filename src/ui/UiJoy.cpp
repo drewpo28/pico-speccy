@@ -24,9 +24,9 @@
 #include "UiDialog.h"
 #include "UiStrings.h"
 #include "OSDMain.h"
-#include "Config.h"
-#include "ESPectrum.h"
-#include "fabutils.h"
+#include "app/Config.h"
+#include "app/ESPectrum.h"
+#include "drivers/input/fabutils.h"
 #include <pico/stdlib.h>
 
 namespace nm {
@@ -59,7 +59,8 @@ struct Cell {
 #define J_R2 13
 #define J_OK 14
 #define J_TEST 15
-#define J_CELLS 16
+#define J_DEF 16
+#define J_CELLS 17
 
 static const Cell kCells[J_CELLS] = {
     // The caption sits ABOVE its pill (the classic put it to the right, which
@@ -72,18 +73,21 @@ static const Cell kCells[J_CELLS] = {
     {  76,  56, J_LEFT,  J_X,     J_UP,    J_DOWN,  "Right",  66 },
     {  40,  26, -1,      J_A,     -1,      J_LEFT,  "Up",     66 },
     {  40,  86, -1,      J_C,     J_LEFT,  J_START, "Down",   66 },
-    {   4, 116, -1,      J_MODE,  J_DOWN,  -1,      "Start",  66 },
-    {  76, 116, J_START, J_OK,    J_RIGHT, -1,      "Select", 66 },
+    {   4, 116, -1,      J_MODE,  J_DOWN,  J_OK,    "Start",  66 },
+    {  76, 116, J_START, J_L2,    J_RIGHT, J_DEF,   "Select", 66 },
     { 168,  26, J_UP,    J_B,     -1,      J_X,     "A",      54 },
     { 250,  26, J_A,     -1,      -1,      J_Y,     "B",      54 },
     { 168,  86, J_DOWN,  J_Z,     J_X,     J_L2,    "C",      54 },
     { 168,  56, J_RIGHT, J_Y,     J_A,     J_C,     "X",      54 },
     { 250,  56, J_X,     -1,      J_B,     J_Z,     "Y",      54 },
     { 250,  86, J_C,     -1,      J_Y,     J_R2,    "Z",      54 },
-    { 168, 116, J_DOWN,  J_R2,    J_C,     J_OK,    "L2",     54 },
+    { 168, 116, J_DOWN,  J_R2,    J_C,     J_TEST,  "L2",     54 },
     { 250, 116, J_L2,    -1,      J_Z,     J_TEST,  "R2",     54 },
-    {  16, 146, -1,      J_TEST,  J_START, -1,      nullptr,  0  },  // Save
-    { 168, 146, J_OK,    -1,      J_L2,    -1,      nullptr,  0  },  // JoyTest
+    // The button row, left to right: Save, Load defaults, Test joystick (the
+    // table order is by index: J_OK, J_TEST, J_DEF).
+    {  16, 146, -1,      J_DEF,   J_START, -1,      nullptr,  0  },  // Save
+    { 214, 146, J_DEF,   -1,      J_R2,    -1,      nullptr,  0  },  // Test joystick
+    {  88, 146, J_OK,    J_TEST,  J_MODE,  -1,      nullptr,  0  },  // Load defaults
 };
 
 // Pill width of a cell, in live pixels.
@@ -156,8 +160,8 @@ static void drawCell(int i) {
     const int x = cx(i), y = cy(i);
     const bool sel = (i == s_sel);
 
-    if (i >= J_OK) {                                  // the two buttons
-        const char* txt = (i == J_OK) ? "Save" : "JoyTest";
+    if (i >= J_OK) {                                  // the three buttons
+        const char* txt = (i == J_OK) ? "Save" : (i == J_TEST) ? "Test joystick" : "Load defaults";
         const int w = ((int)strlen(txt) + 2) * glyphW();
         fill(x, y - 1, w, JL.pill_h, sel ? C_SEL_BG : C_PANEL_ALT);
         text(x + glyphW(), y, txt, sel ? C_WHITE : C_TEXT);
@@ -204,7 +208,7 @@ static void drawChromeJoy() {
     fill(JL.ix, JL.iy, JL.iw, JL.hdr_h, C_PANEL);
     rainbow(JL.ix + JL.pad, JL.iy + 3);
     text(JL.ix + JL.pad + rainbowW() + 2 * JL.pad, JL.iy + 4, TXT_JOY_MAPPING, C_WHITE);
-    const char* jt = s_test ? "JoyTest" : Config::joystick == JOY_FULLER ? "Fuller" : "Kempston";
+    const char* jt = s_test ? "Test joystick" : Config::joystick == JOY_FULLER ? "Fuller" : "Kempston";
     text(JL.ix + JL.iw - textWidth(jt) - JL.pad, JL.iy + 4, jt,
          s_test ? C_ACCENT : C_TEXT_DIM);
     hline(JL.ix, JL.iy + JL.hdr_h - 1, JL.iw, C_SEP);
@@ -308,6 +312,16 @@ void joyMappingPage() {
                     s_test = true;
                     testExit = 0;
                     drawChromeJoy();
+                    continue;
+                }
+                if (s_sel == J_DEF) {           // default map of the current type
+                    // Into the working copy only: Save (or the question on Esc)
+                    // is what makes it stick, so this can still be backed out.
+                    uint16_t d[14];
+                    Config::joyDefaults(Config::joystick, d);
+                    for (int i = 0; i < 14; i++) s_vk[i] = d[i];
+                    drawAllCells();
+                    OSD::clickNoPause();
                     continue;
                 }
                 {                               // assign a key to this control

@@ -1,20 +1,20 @@
 // Host simulator for Z80 DMA (MB-02+/DATA-GEAR) raster software: runs a guest
 // straight from a Ctrl+Alt+D memory dump (see dump2bins.py) on the redcode Z80
-// core with a Z80 DMA model mirroring src/Z80DMA.cpp (register decode, LOAD,
+// core with a Z80 DMA model mirroring src/speccy/devices/Z80DMA.cpp (register decode, LOAD,
 // ENABLE = immediate transfer, port_a/b cycles per byte) and 128K paging, and
 // logs every DMA transfer with its frame-relative T-state plus every write to
 // the screen page, so analyse.py can replay the renderer's rules against it.
 // Timing is Pentagon (71680 T, INT 32 T, no contention); change FRAME/TL0 for a
 // 128K. Built for the NaPICu stripes (2026-09-14):
 //
-//   gcc -O2 -w -Isrc/GS -DZ80_STATIC '-DZ80_EXTERNAL_HEADER="Z80_compat.h"' //       -o /tmp/z80dma_sim tools/z80dma_sim/z80dma_sim.c src/GS/Z80_redcode.c
+//   gcc -O2 -w -Iexternal/redcode -DZ80_STATIC '-DZ80_EXTERNAL_HEADER="Z80_compat.h"' //       -o /tmp/z80dma_sim tools/z80dma_sim/z80dma_sim.c external/redcode/Z80_redcode.c
 //   python3 tools/z80dma_sim/dump2bins.py /tmp/picospec_dump.log /tmp/snap
 //   /tmp/z80dma_sim /tmp/snap <frames> <logFrom> <logTo> [logWrites 0/1] [replayDmaInit 0/1]
 //   (a snapshot taken at the TAP entry point needs replayDmaInit=0: the guest
 //   programs the DMA itself; regs.txt can be hand-written for that)
 //   python3 tools/z80dma_sim/analyse.py /tmp/snap <frame>   -> ours/fixed/intended .png
 //
-// Note src/GS/Z80_redcode.c includes Z80_compat.h via -DZ80_EXTERNAL_HEADER, so
+// Note external/redcode/Z80_redcode.c includes Z80_compat.h via -DZ80_EXTERNAL_HEADER, so
 // no Zeta library is needed; Z80_redcode.h needs an empty hardware/ stub only
 // if you include the ROM .c, which this does not (the ROM comes from mem64.bin).
 #define Z80_STATIC

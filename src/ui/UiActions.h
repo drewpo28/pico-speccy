@@ -110,6 +110,8 @@ void act_debugPoke();
 // The standalone twin is the boot-time entrance (held S in the R/M probe).
 void act_gameScwong();
 void gameScwongStandalone();
+void act_player();                              // Menu > Pico-Zx-Player (UiPlayer.cpp)
+void playerStandalone(const std::string& path); // F5: play a file, own gfx session
 
 // Reset (all immediate by definition; three of them reboot)
 void act_resetSoft();

@@ -6,7 +6,7 @@ arrays; neither can catch a linker- or binding-level mistake (a base that resolv
 private copy, a symbol dropped by --gc-sections, an overlay bound to the wrong bank).
 This does: it takes the 32 {data, overlay} rows of EACH image's table out of
 scorpion_gmx_banks.h, resolves every symbol against the firmware's own bytes, applies
-the overlays and compares the 512 KB with src/roms/scorpion/src/<image>.bin.
+the overlays and compares the 512 KB with src/speccy/roms/scorpion/src/<image>.bin.
 
 Every image in GMX_IMAGES is checked (one is shipped today). A second image of this
 family would share most of its arrays and could take a RAW bank of the first as the
@@ -65,7 +65,7 @@ def main():
         off = syms[sym] - FLASH_BASE
         return blob[off:off + n] if n else blob[off:]
 
-    tbl = open(os.path.join(ROOT, 'src/roms/scorpion/scorpion_gmx_banks.h')).read()
+    tbl = open(os.path.join(ROOT, 'src/speccy/roms/scorpion/scorpion_gmx_banks.h')).read()
     rc = 0
     for fname, _crc, infix, _note in GMX_IMAGES:
         tsym = 'gb_rom_scorpion_gmx%s_banks' % infix
@@ -83,7 +83,7 @@ def main():
             data = fetch(data_sym, 16384)
             got += data if ovl_sym == 'nullptr' else apply_overlay(data, fetch(ovl_sym))
 
-        want = open(os.path.join(ROOT, 'src/roms/scorpion/src', fname), 'rb').read()
+        want = open(os.path.join(ROOT, 'src/speccy/roms/scorpion/src', fname), 'rb').read()
         if got == want:
             print("ELF reconstruction OK: %d B byte-identical to %s" % (len(got), fname))
             continue

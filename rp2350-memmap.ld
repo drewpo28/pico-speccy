@@ -91,7 +91,7 @@ SECTIONS
          * because ld assigns an input section to the FIRST output section that
          * matches it in script order, and both of those come earlier. */
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:
-                       *scorpion_gmx_rom.c.o *tsconf_roms.c.o) .rodata*)
+                       *scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o) .rodata*)
         *(.srodata*)
         . = ALIGN(4);
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
@@ -129,7 +129,7 @@ SECTIONS
         . = ALIGN(4);
     } > RAM_128K
 
-    /* HDMI palette/TMDS LUT + DMA line buffers (drivers/hdmi/hdmi.c conv_color,
+    /* HDMI palette/TMDS LUT + DMA line buffers (src/drivers/hdmi/hdmi.c conv_color,
      * 4 960 B). It needs 4096-byte alignment — the PIO address converter rebuilds
      * the read address as (reg << 12) | offset, the same rule conv_color_b follows
      * in SCRATCH_Y — and inside .bss that alignment forced the WHOLE section's
@@ -179,7 +179,7 @@ SECTIONS
 
         *(.text*)
         . = ALIGN(4);
-        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o *tsconf_roms.c.o) .rodata*)
+        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o) .rodata*)
         . = ALIGN(4);
 
         *(.data*)
@@ -275,7 +275,7 @@ SECTIONS
     /* ── Code overlay windows ────────────────────────────────────────────────
      * Fixed-VMA windows just under the core0 stack, holding code that only an
      * OPTIONAL subsystem executes: .gsovl = the whole General Sound / NeoGS
-     * family (collected BY OBJECT FILE — src/GS/ is GS-only, so no per-function
+     * family (collected BY OBJECT FILE — src/speccy/devices/gs/ is GS-only, so no per-function
      * mark can be forgotten), .tsovl = the TS-Conf renderer and #nnAF path.
      * Their LOAD images live in flash like any .data section, but crt0 does NOT
      * copy them (it copies only __data_start__..__data_end__ and the scratch
@@ -284,7 +284,7 @@ SECTIONS
      *
      * No relocation and no PIC: the VMAs are fixed, so every branch and literal
      * was resolved by the linker for exactly the address we copy to. See
-     * src/CodeOverlay.h for the rule on what may live here — and for why .gsovl
+     * src/app/CodeOverlay.h for the rule on what may live here — and for why .gsovl
      * is the HIGHER window (one sbrk ceiling, heap grows up, so only the lower
      * window can be handed back while the upper one is reserved).
      *
@@ -299,19 +299,27 @@ SECTIONS
      * content symbols are PROVIDEd equal to its base so CodeOverlay's arithmetic
      * comes out zero. */
     __gsovl_win_size   = @GSOVL_WIN_SIZE_EFFECTIVE@;
+    __ngsovl_win_size  = @NGSOVL_WIN_SIZE_EFFECTIVE@;
     __dmaovl_win_size  = @DMAOVL_WIN_SIZE_EFFECTIVE@;
     __tsovl_win_size   = @TSOVL_WIN_SIZE_EFFECTIVE@;
     __gsovl_win_start  = ORIGIN(RAM) + LENGTH(RAM) - __mos_mailbox - SIZEOF(.stack_dummy) - __gsovl_win_size;
     __gsovl_win_end    = __gsovl_win_start + __gsovl_win_size;
-    __dmaovl_win_start = __gsovl_win_start - __dmaovl_win_size;
+    /* NeoGS-only window directly under .gsovl: a classic-GS or GS-off boot
+       releases it together with whatever is released below it (.dmaovl). */
+    __ngsovl_win_start = __gsovl_win_start - __ngsovl_win_size;
+    __ngsovl_win_end   = __ngsovl_win_start + __ngsovl_win_size;
+    __dmaovl_win_start = __ngsovl_win_start - __dmaovl_win_size;
     __dmaovl_win_end   = __dmaovl_win_start + __dmaovl_win_size;
     __tsovl_win_start  = __dmaovl_win_start - __tsovl_win_size;
     __tsovl_win_end    = __tsovl_win_start + __tsovl_win_size;
 
 @GSOVL_SECTION@
+@NGSOVL_SECTION@
 @DMAOVL_SECTION@
 @TSOVL_SECTION@
-    ASSERT(__gsovl_end <= __gsovl_win_end,
+    ASSERT(__ngsovl_bss_end <= __ngsovl_win_end,
+        "ERROR: .ngsovl overflowed the NeoGS overlay window. Re-link with -DNGSOVL_WIN_SIZE=16384, read the real size from `arm-none-eabi-size -A <elf> | grep ngsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
+    ASSERT(__gsovl_bss_end <= __gsovl_win_end,
         "ERROR: .gsovl overflowed the GS code overlay window. Re-link with -DGSOVL_WIN_SIZE=40960, read the real size from `arm-none-eabi-size -A <elf> | grep .gsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
     ASSERT(__dmaovl_end <= __dmaovl_win_end,
         "ERROR: .dmaovl overflowed the Z80 DMA overlay window. Re-link with -DDMAOVL_WIN_SIZE=12288, read the real size from `arm-none-eabi-size -A <elf> | grep .dmaovl`, then fix the AUTO arithmetic in CMakeLists.txt")
@@ -341,7 +349,7 @@ SECTIONS
      *
      * .psramrom_magic must come FIRST: it is the 16 bytes a bank write overwrites
      * before anything else, so FlashRoms::intact() reading it is the whole "are the
-     * ROMs still there" test (see src/FlashRoms.h).
+     * ROMs still there" test (see src/app/FlashRoms.h).
      *
      * 4 KB-aligned because that is the flash erase granularity, and last in the
      * image so the eaten range is contiguous with the bank partition. .flash_end's
@@ -351,6 +359,7 @@ SECTIONS
         KEEP(*(.psramrom_magic))
         KEEP(*scorpion_gmx_rom.c.o(.rodata*))
         KEEP(*tsconf_roms.c.o(.rodata*))
+        KEEP(*atm_roms.c.o(.rodata*))
         . = ALIGN(4);
     } > FLASH =0xaa
     __psramrom_start = ADDR(.psramroms);
@@ -373,9 +382,8 @@ SECTIONS
      *     AFTER a variant had already overflowed — and each time the slack between the
      *     firmware end and the base (4-12 KB) was simply lost.
      *   - on a 16 MB board (MURM_W) a fixed 1.59 MB was absurd. The bank now takes the
-     *     whole tail with no board branch, and the GMX_IN_FLASH=0 escape hatch gets its
-     *     bigger region for free — its ternary (and the __gmx_rom_in_flash defsym that
-     *     selected it) are gone.
+     *     whole tail with no board branch (the old GMX_IN_FLASH ternary and its
+     *     __gmx_rom_in_flash defsym are gone).
      * The cost: the base moves with code size, so a bank already programmed into flash
      * does not survive a firmware update — gm_bank_view() fails the header check at the
      * new base and the bank re-provisions from SD. That was already true every time the
@@ -424,7 +432,7 @@ SECTIONS
     ASSERT(__gm_bank_start <= __gm_bank_end,
         "ERROR: firmware filled the whole flash - nothing left for the GM.DLS bank")
     ASSERT(__gm_bank_end - __psramrom_start >= __gm_bank_hard_min,
-        "ERROR: even after trading the GMX + TS-Conf ROM overlay the GM.DLS bank could not hold a stock gm.dls - the firmware must give back flash (GMX_IN_FLASH / PROFROM_IN_FLASH are the two biggest switches)")
+        "ERROR: even after trading the GMX + TS-Conf ROM overlay the GM.DLS bank could not hold a stock gm.dls - the firmware must give back flash (the GMX and ProfROM images are the two biggest ROMs)")
     ASSERT(__gm_bank_size >= __gm_bank_min,
         "ERROR: the GM.DLS bank region fell below GM_BANK_MIN_KB - shrink the firmware, or lower GM_BANK_MIN_KB (read the comment beside it in rp2350-memmap.ld first), or use a bigger flash")
 

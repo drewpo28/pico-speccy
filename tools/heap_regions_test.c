@@ -1,4 +1,4 @@
-// Host test for src/HeapRegions.h — the region-jumping _sbrk behind the code
+// Host test for src/app/HeapRegions.h — the region-jumping _sbrk behind the code
 // overlay windows — driving NEWLIB'S OWN dlmalloc (the allocator the firmware
 // links), not a model of it.
 //
@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include "HeapRegions.h"
+#include "app/HeapRegions.h"
 #include <unistd.h>
 #include <sys/wait.h>
 

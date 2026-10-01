@@ -1,4 +1,4 @@
-// Host test for src/TsDramCache.h — the TS-Conf CPU cache in its per-window ROW
+// Host test for src/speccy/machines/TsConf/TsDramCache.h — the TS-Conf CPU cache in its per-window ROW
 // representation, checked against a plain tag model (the shape the firmware
 // used until 2026-09-13: hit iff the window is RAM with its cache enabled and
 // g_ts_cache_tag[a[8:1]] == {page, a[13:9]}). Random reads, writes, page
@@ -7,7 +7,7 @@
 // must agree.
 //
 //   g++ -O2 -Wall -Wextra -Isrc -o /tmp/tsdram_cache_test tools/tsdram_cache_test.cpp && /tmp/tsdram_cache_test
-#include "TsDramCache.h"
+#include "speccy/machines/TsConf/TsDramCache.h"
 #include <stdio.h>
 #include <stdlib.h>
 

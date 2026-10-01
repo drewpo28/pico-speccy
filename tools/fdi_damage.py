@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check where a copy-protected FDI image's damaged sectors stop being readable.
 
-This is the host-side twin of `fdiScanDamage` in src/wd1793.cpp — the firmware
+This is the host-side twin of `fdiScanDamage` in src/speccy/devices/disk/wd1793.cpp — the firmware
 runs the same derivation at disk insert and needs no input from here. Use this
 tool to validate that derivation on a new protected image, or to see why it
 fails.

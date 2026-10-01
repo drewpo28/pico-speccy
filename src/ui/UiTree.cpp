@@ -15,14 +15,15 @@
 #include "UiActions.h"
 #include "UiStrings.h"
 #include "UiRender.h"   // SYM_* glyphs for the persist verb lists
-#include "Config.h"
-#include "FileUtils.h"
-#include "MemESP.h"         // butter_psram_size() for the Profi / ext-RAM predicates
-#include "FlashRoms.h"      // romsUsable()/extendable() for the GMX, TS-Conf and bank rows
-#include "psram_spi.h"       // psram_size()
-#include "Buffer.h"          // Buffer::gsPsramAvailable() for the General Sound gate
-#include "BoardPins.h"       // the ESP-link predicate of the Network rows
-#include "messages.h"        // _PIN_XSTR for the Real sound input row label
+#include "app/Config.h"
+#include "fs/FileUtils.h"
+#include "speccy/core/MemESP.h"         // butter_psram_size() for the Profi / ext-RAM predicates
+#include "app/FlashRoms.h"      // romsUsable()/extendable() for the GMX, TS-Conf and bank rows
+#include "drivers/psram/psram_spi.h"       // psram_size()
+#include "app/Buffer.h"          // Buffer::gsPsramAvailable() for the General Sound gate
+#include "player/PicoPlayer.h" // pp::available() for the Pico-Zx-Player row
+#include "drivers/board/BoardPins.h"       // the ESP-link predicate of the Network rows
+#include "app/messages.h"        // _PIN_XSTR for the Real sound input row label
 #include <hardware/vreg.h>   // VREG_VOLTAGE_* values used by the option table
 #include <stdio.h>           // snprintf (murmuzavrTag)
 #include <string.h>          // strlen/strstr/memmove (label fitting)
@@ -43,7 +44,7 @@ extern "C" uint32_t graphics_mode_vga_pixel_hz(int mode);
 extern "C" uint32_t hdmi_hstx_div_at(unsigned tmds_mhz, uint32_t sys_hz);
 #endif
 #if VGA_HSTX
-#include "vga_pwm.h"          // vga_hstx_cycles() — header-only, <stdint.h> alone
+#include "drivers/vga-nextgen/vga_pwm.h"          // vga_hstx_cycles() — header-only, <stdint.h> alone
 #endif
 #ifdef VGA_HDMI
 // vga.c. Must be declared at GLOBAL scope: inside namespace nm it would mangle to
@@ -52,7 +53,7 @@ extern bool SELECT_VGA;
 #endif
 
 #if defined(VGA_HDMI)
-// Defined in drivers/vga-nextgen/vga.c; file scope, or inside namespace nm it would
+// Defined in src/drivers/vga-nextgen/vga.c; file scope, or inside namespace nm it would
 // resolve to nm::SELECT_VGA and fail to link (same note as UiStage.cpp).
 extern bool SELECT_VGA;
 #endif
@@ -66,6 +67,8 @@ namespace nm {
 // ── shared predicates ──────────────────────────────────────────────────────────
 
 static bool p_hasSD() { return FileUtils::fsMount; }
+// Pico-Zx-Player: QSPI PSRAM only (file images + decoder state live in the arena).
+static bool p_player() { return FileUtils::fsMount && pp::available(); }
 // Tape > Real sound input exists only where the board defines the pin; a build that
 // hands it a placeholder (PICO_DV with the debug UART sets 255) has no input at all.
 #if defined(LOAD_WAV_PIO) && (LOAD_WAV_PIO < 48)
@@ -378,8 +381,10 @@ static const Option opt_gigascreen[] = {
 };
 static const Option opt_dma[] = {
     { "Off",           0 },
-    { "#0B MB-02+",    1 },
-    { "#6B DATA-GEAR", 2 },
+    // The value picks the counting behaviour, not the port: both answer on
+    // #0B and #6B (Ports.cpp). DATA-GEAR is a real Zilog chip -> value 1.
+    { "Z80 DMA (MB-02+/DATA-GEAR)", 1 },
+    { "zxnDMA (Next)",              2 },
 };
 
 // ── Overclock: every value here is read once at boot ───────────────────────────
@@ -460,6 +465,15 @@ static bool p_showTsconf() {
     return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
+// ATM-Turbo: any ROM page may be paged into any CPU window, so the pages are
+// flattened into butter PSRAM (Atm::reset) and the images live in .psramroms.
+static bool p_showAtm() {
+#if !defined(VGA_HDMI)
+    return false;
+#else
+    return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
+#endif
+}
 static bool p_tsconfActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::arch == A_TSCONF;
@@ -505,12 +519,9 @@ static const Option opt_mach_spectrum[] = {
     // replacement ROM, which carries IDEDOS and an 8-bit IDE interface on #xxEF.
     { TXT_ROM_P3E,        NM_MACH(A_128K, R_P3E),       TXT_ROM_P3E_S },
 #if !NO_SPAIN_ROM_128k
-#if PLUS3DIV_IN_FLASH
     // ...and the same IDEDOS ROM built for a divIDE card instead (16-bit bus, ports
-    // #A3..#BF). Conditional because that image is not redistributable and has to be
-    // packed locally — see tools/rom_pack.py plus3div.
+    // #A3..#BF).
     { TXT_ROM_P3DIV,      NM_MACH(A_128K, R_P3DIV), TXT_ROM_P3DIV_S },
-#endif
     { TXT_ROM_ZX81P,      NM_MACH(A_128K, R_ZX81P)    },
 #endif
     // Two rows because they are two different flash images — see UiStrings.h.
@@ -521,7 +532,7 @@ static const Option opt_mach_spectrum[] = {
 // is forced on while either runs; see resolveConstraints). Their own family row because
 // they are a different manufacturer's machines, not ZX romsets. The TC2048 is a 48K plus
 // 37 bytes of ROM overlay; the TC2068 brings its own 16 KB HOME ROM, an 8 KB EX-ROM, the
-// eight-slot #F4 memory map and a DOCK cartridge port (ArchRom.h, src/Timex.cpp).
+// eight-slot #F4 memory map and a DOCK cartridge port (ArchRom.h, src/speccy/machines/Timex.cpp).
 static const Option opt_mach_timex[] = {
     { TXT_ROM_TC2048,     NM_MACH(A_48K, R_TC2048) },
     { TXT_ROM_TC2068,     NM_MACH(A_48K, R_TC2068) },
@@ -583,27 +594,35 @@ static const Option opt_mach_karabas[] = {
 // menu that refuses its own row (owner, 2026-09-08). Same shape as gs_modeOpts and
 // NeoGS below. The runtime fallbacks stay as the backstop for a pick that arrives
 // from NVS written on a board that HAS the chip (requestMachine + bootNotice).
-// `#if GMX_IN_FLASH` is still the build escape hatch that drops the ROM entirely.
 static const Option* mach_scorpOpts(uint8_t& cnt) {
     static Option opts[5];
     static uint8_t n = 0;
     if (!n) {
         opts[n++] = { TXT_ROM_SCORP,      NM_MACH(A_SCORP, R_SCORP),      TXT_ROM_SCORP_S      };
         opts[n++] = { TXT_ROM_SCORP_GR,   NM_MACH(A_SCORP, R_SCORP_GR),   TXT_ROM_SCORP_GR_S   };
-#if GMX_IN_FLASH
         // butter PSRAM is what GMX needs; romsUsable() is whether its ROM is still
         // in flash at all (FlashRoms.h — the GM.DLS bank may have been given it).
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, NM_MACH(A_SCORP, R_SCORP_GMX), TXT_ROM_SCORP_GMX_S };
-#endif
         opts[n++] = { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S };
-#if PROFROM_IN_FLASH
         opts[n++] = { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S };
-#endif
     }
     cnt = n;
     return opts;
 }
+// Nemo KAY. Static: every board pages RAM above 128K, so the whole row
+// sits behind p_extRam(), the Scorpion row's own gate.
+static const Option opt_mach_kay[] = {
+    { TXT_ROM_KAY256,  NM_MACH(A_SCORP, R_KAY256),  TXT_ROM_KAY256_S  },
+    { TXT_ROM_KAY1024, NM_MACH(A_SCORP, R_KAY1024), TXT_ROM_KAY1024_S },
+    { TXT_ROM_KAY2010, NM_MACH(A_SCORP, R_KAY2010), TXT_ROM_KAY2010_S },
+};
+// Machine > Other: boards that fit no family row. The ZXM-Phoenix is modelled on the
+// Scorpion arch (the KAY paging family, ArchRom.h isKayRomset) but is not a KAY. Its
+// 2 MB comes from SD swap at worst, so it needs only the extended-RAM gate.
+static const Option opt_mach_other[] = {
+    { TXT_ROM_PHOENIX, NM_MACH(A_SCORP, R_PHOENIX), TXT_ROM_PHOENIX_S },
+};
 static const Option opt_mach_alf[] = {
     { TXT_ROM_ALF,        NM_MACH(A_ALF, R_ALF1) },
 };
@@ -615,6 +634,16 @@ static const Option opt_mach_alf[] = {
 static const Option opt_mach_tsconf[] = {
     { TXT_ROM_TSBIOS,      NM_MACH(A_TSCONF, R_TSCONF),      TXT_ROM_TSBIOS_S      },
     { TXT_ROM_TSBIOS_GLUK, NM_MACH(A_TSCONF, R_TSCONF_GLUK), TXT_ROM_TSBIOS_GLUK_S },
+};
+// ATM-Turbo 1 (#FE address-latch paging), ATM-Turbo 2 (BIOS 1.06.02, the 2+'s memory
+// manager without the IDE) and ATM-Turbo 2+ (1 MB, #xx77/#xxF7) with either BIOS.
+static const Option opt_mach_atm[] = {
+    { TXT_ROM_ATM1,  NM_MACH(A_ATM, R_ATM1),  TXT_ROM_ATM1_S  },
+    { TXT_ROM_ATM2V106, NM_MACH(A_ATM, R_ATM2_106), TXT_ROM_ATM2V106_S },
+    { TXT_ROM_ATM2,  NM_MACH(A_ATM, R_ATM2),  TXT_ROM_ATM2_S  },
+    { TXT_ROM_ATM2X, NM_MACH(A_ATM, R_ATM2X), TXT_ROM_ATM2X_S },
+    { TXT_ROM_ATM3V107, NM_MACH(A_ATM, R_ATM3_107), TXT_ROM_ATM3V107_S },
+    { TXT_ROM_ATM3,  NM_MACH(A_ATM, R_ATM3),  TXT_ROM_ATM3_S  },
 };
 // Ceiling for the guest's SysConfig ZCLK (a 14 MHz Z80 costs ~4x a 3.5 MHz frame
 // of core0 time — TS titles that ask for 14 MHz can be pinned to 7 here; the
@@ -672,6 +701,8 @@ static const Node kTimexCart[] = {
 
 static const Node kMachine[] = {
     NM_RADIO  (TXT_MACH_SPECTRUM, SET_MACHINE, opt_mach_spectrum, nullptr),
+    NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
+    NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
     NM_RADIO  (TXT_MACH_TIMEX,    SET_MACHINE, opt_mach_timex,    nullptr),
     NM_SUB    (NM_IND TXT_MACH_TIMEX_CART, kTimexCart, p_tc2068Active),
     NM_RADIO  (TXT_MACH_DIDAKTIK, SET_MACHINE, opt_mach_didaktik, nullptr),
@@ -683,13 +714,15 @@ static const Node kMachine[] = {
     // Scorpion sits with the Soviet-clone block, right after the Pentagons.
     // Its pages above the base 128K need extended-RAM backing, same gate as P512.
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
-    NM_RADIO(TXT_MACH_BYTE,  SET_MACHINE, opt_mach_byte,  p_extRam),
-    NM_BOOL (NM_IND TXT_MACH_COBMECT, SET_BYTE_COBMECT, p_byteActive),
+    // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
+    NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),
     NM_RADIO(TXT_MACH_PROFI,   SET_MACHINE, opt_mach_profi,   p_showProfi),
     NM_RADIO(TXT_MACH_KARABAS, SET_MACHINE, opt_mach_karabas, p_showProfi),
+    NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
     NM_SUB  (NM_IND TXT_MACH_TSCONF_OPTS, kTsconf, p_tsconfActive),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
+    NM_RADIO(TXT_MACH_OTHER, SET_MACHINE, opt_mach_other, p_extRam),
     // Not a machine, but it lives with them by request: the built-in game — the
     // one "machine" that needs neither ROM nor SD card. Also reachable by
     // holding S during the boot R/M probe window.
@@ -867,6 +900,7 @@ static const Option opt_ide_scheme[] = {
     { "SMUC",  3 },   // IDE::SMUC
     { "IDEDOS", 4 },  // IDE::PLUS3E — numbering follows IDE::Scheme, not this list
     { "DivIDE", 5 },  // IDE::DIVIDE — the +3 (divIDE) romset's card, same rule
+    { "ATM",    6 },  // IDE::ATM — the ATM-Turbo 2+ on-board controller, same rule
 };
 
 
@@ -1014,8 +1048,22 @@ static const Option opt_vga_pwm[] = {
     { "PWM (per pixel)",    1, "PWM" },
     { "Dither (2x2 block)", 0, "Dither" },
 };
+// Which of the four sub-samples of a pixel comes first. Only matters on a ladder +
+// monitor pair that does NOT integrate the phases (the monitor's ADC samples one
+// point per pixel and reads whichever phase it lands on, which its Auto Adjust
+// decides per video mode): a 3,2,3,2 pixel then reads BRIGHT or normal depending
+// on that point, and one step here moves it. Live — cycle it while looking at
+// the picture. Shown with PWM staged on (its twin p_vgaDither hides with it).
+static const Option opt_vga_pwm_phase[] = {
+    { "0", 0, nullptr }, { "1", 1, nullptr }, { "2", 2, nullptr }, { "3", 3, nullptr },
+};
+static bool p_vgaPwmPhase() {
+    if (!p_vgaOut()) return false;
+    return Stage::get(SET_VGA_PWM) != 0;
+}
 static const Node kVga[] = {
     NM_RADIO(TXT_VID_VGA_PWM,    SET_VGA_PWM,    opt_vga_pwm,    p_vgaOut),
+    NM_RADIO(NM_IND TXT_VID_VGA_PHASE,  SET_VGA_PWM_PHASE, opt_vga_pwm_phase, p_vgaPwmPhase),
     NM_RADIO(NM_IND TXT_VID_VGA_DITHER, SET_VGA_DITHER, opt_vga_dither, p_vgaDither),
 };
 
@@ -1023,6 +1071,11 @@ static const Node kVideo[] = {
     NM_RADIO_D(TXT_VID_MODE,     SET_VIDEO_MODE, video_modeOpts, nullptr),
     NM_SUB  (TXT_VID_HDMI,       kHdmi,          p_hdmiOut),
     NM_SUB  (TXT_VID_VGA,        kVga,           p_vgaOut),
+    NM_BOOL (TXT_VID_BORDER,     SET_BORDER,     nullptr),
+    // Border-timing aid: No = the paper area is not rendered; the border state
+    // machine paints through it, showing the border colour "under" the paper as
+    // it would run on the raster (per-T-state — multicolour effects included).
+    NM_BOOL  (TXT_DBG_PAPER,     SET_PAPER,      nullptr),
     NM_RADIO(TXT_VID_PALETTE,    SET_PALETTE,    opt_palette,    nullptr),
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),
@@ -1250,11 +1303,7 @@ static const Option opt_pref48[] = {
 #else
 #  define P128_P3 1
 #endif
-#if PLUS3DIV_IN_FLASH
-#  define P128_CS (P128_P3 + 3)
-#else
-#  define P128_CS (P128_P3 + 2)
-#endif
+#define P128_CS (P128_P3 + 3)
 static const Option opt_pref128[] = {
     { TXT_ROM_128K,     0 },
 #if !NO_SPAIN_ROM_128k
@@ -1265,9 +1314,7 @@ static const Option opt_pref128[] = {
 #endif
     { TXT_ROM_P3,       P128_P3     },
     { TXT_ROM_P3E,      P128_P3 + 1 },
-#if PLUS3DIV_IN_FLASH
     { TXT_ROM_P3DIV,    P128_P3 + 2 },
-#endif
     { TXT_ROM_CUSTOM,   P128_CS     },
     { TXT_ROM_LAST,     P128_CS + 1 },
 };
@@ -1290,13 +1337,9 @@ static const Option* pref_scorpOpts(uint8_t& cnt) {
         opts[n++] = { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   };
         opts[n++] = { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S };
         opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
-#if GMX_IN_FLASH
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, 4, TXT_ROM_SCORP_GMX_S };
         opts[n++] = { TXT_ROM_LAST,       5, nullptr };
-#else
-        opts[n++] = { TXT_ROM_LAST,       4, nullptr };
-#endif
     }
     cnt = n;
     return opts;
@@ -1335,6 +1378,7 @@ static const Option opt_ui_theme[] = {
 // sit on the VGA grid already, so it is solid on VGA whatever this says. Staged-first
 // so the row greys out the moment the theme is switched.
 static bool p_themeSlate() { return Stage::get(SET_UI_THEME) == 0; }
+static bool p_ledOn()      { return Stage::get(SET_LED_IND) != 0; }
 static const Option opt_ui_vga_pal[] = {
     { "Solid 2:2:2", 1 },     // on-grid twin: solid fills, coarser colours
     { "Dithered",    0 },     // full-depth scheme through the Bayer dither
@@ -1372,6 +1416,7 @@ static const Node kInterface[] = {
     // which came over from Devices — it is indication, not an interface setting
     // of the machine.
     NM_BOOL     (TXT_HW_LED,           SET_LED_IND,   nullptr),
+    NM_BOOL_EN  (NM_IND TXT_HW_LEDPANEL, SET_LED_PANEL, nullptr, p_ledOn),
     // Always available: the legend is reference material, useful before you turn
     // the indicators on (to see what they will mean) as much as after.
     NM_ACTION   (NM_IND TXT_HW_LEGEND, act_ledLegend, nullptr),
@@ -1431,10 +1476,6 @@ static const Node kDebug[] = {
     NM_ACTION(TXT_DBG_FOLDERS, act_configFolders, p_hasSD),
     // Testing aid: run the firmware as if the board had no PSRAM (see SET_PSRAM_ON).
     NM_BOOL  (TXT_DBG_PSRAM,  SET_PSRAM_ON,    p_psramChip),
-    // Border-timing aid: No = the paper area is not rendered; the border state
-    // machine paints through it, showing the border colour "under" the paper as
-    // it would run on the raster (per-T-state — multicolour effects included).
-    NM_BOOL  (TXT_DBG_PAPER,  SET_PAPER,       nullptr),
     NM_RADIO (TXT_DBG_TEMPOFF, SET_TEMP_OFFSET, opt_tempOffset, nullptr)
 };
 
@@ -1546,6 +1587,7 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_RESET,     kReset,    nullptr),
     NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),
     NM_INT   (TXT_VOLUME,    SET_VOLUME, -16, 0, 1, nullptr),
+    NM_PAGE  (TXT_PLAYER,    act_player, p_player),
 };
 
 // The disk hot key opens the menu straight on one of these, so the node has to be

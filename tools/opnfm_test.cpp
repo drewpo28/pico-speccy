@@ -1,7 +1,7 @@
-// Host-side test harness for src/OpnFm.cpp (the TurboSound FM / YM2203 OPN core).
+// Host-side test harness for src/speccy/devices/sound/OpnFm.cpp (the TurboSound FM / YM2203 OPN core).
 // An FM core fails quietly and by degrees, so run this after ANY change to it.
 //
-//   g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/OpnFm.cpp && /tmp/opnfm_test
+//   g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/speccy/devices/sound/OpnFm.cpp && /tmp/opnfm_test
 //
 // It links against a local Debug::log stub (OpnFm.cpp's only project dependency),
 // so nothing else of the firmware has to build. Expected output:
@@ -16,7 +16,7 @@
 #include <vector>
 #include <algorithm>
 #include <ctime>
-#include "OpnFm.h"
+#include "speccy/devices/sound/OpnFm.h"
 
 // stub for Debug::log
 struct Debug { static void log(const char* fmt, ...); };

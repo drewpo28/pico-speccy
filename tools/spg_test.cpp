@@ -1,4 +1,4 @@
-// Host test for the TS-Conf .spg loader's depackers (src/TsSpgDepack.h):
+// Host test for the TS-Conf .spg loader's depackers (src/speccy/machines/TsConf/TsSpgDepack.h):
 // every block of every .spg given on the command line is unpacked twice — by
 // our bounded port and by UnrealSpeccy's original depack.cpp (fetched from
 // tslabs/zx-evo into the build dir by the recipe below) — and the outputs must
@@ -15,7 +15,7 @@
 #include <cstdint>
 #include <vector>
 #include <string>
-#include "TsSpgDepack.h"
+#include "speccy/machines/TsConf/TsSpgDepack.h"
 
 // Unreal's original, textually included with its typedefs supplied.
 typedef uint8_t u8; typedef uint16_t u16; typedef uint32_t u32;

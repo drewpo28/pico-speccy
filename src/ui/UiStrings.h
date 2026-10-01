@@ -30,6 +30,7 @@
 #define TXT_DEBUG           "Debug"
 #define TXT_RESET           "Reset"
 #define TXT_GAME            "Pico-Scwong"
+#define TXT_PLAYER          "Pico-Zx-Player"
 #define TXT_VOLUME          "Volume"
 
 // ── Help ───────────────────────────────────────────────────────────────────────
@@ -77,6 +78,7 @@
 #define TXT_VID_VGA         "VGA"
 #define TXT_VID_VGA_DITHER  "Colour depth"
 #define TXT_VID_VGA_PWM     "Colour"
+#define TXT_VID_VGA_PHASE   "PWM phase"
 
 // ── Audio ──────────────────────────────────────────────────────────────────────
 #define TXT_AUD_DRIVER      "Audio driver"
@@ -97,6 +99,7 @@
 #define TXT_AUD_BOOST       "Volume boost"
 #define TXT_VID_DMA         "DMA"
 #define TXT_VID_MODE        "Mode"
+#define TXT_VID_BORDER      "Render border"
 #define TXT_VID_RENDER      "Render type"
 #define TXT_VID_GIGASCREEN  "Gigascreen"
 #define TXT_VID_ULAPLUS     "ULA+"
@@ -180,6 +183,10 @@
 #define TXT_IDE_CREATE      "Create image"
 #define TXT_HW_LED          "LED indicators"
 #define TXT_HW_LEGEND       "LED legend"
+// Indicators on their own panel beside the F8 stats box instead of bare glyphs
+// over the border — readable in modes whose border is thin or absent (DS80,
+// GMX 640x200, TS-Conf).
+#define TXT_HW_LEDPANEL     "Solid background"
 // The board's own LED (GPIO 25), blinking on real SD traffic — internal /tmp
 // files (swap, .idx) are deliberately not indicated. Not an on-screen indicator.
 #define TXT_HW_SDLED        "Board LED on SD access"
@@ -221,11 +228,24 @@
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
 #define TXT_MACH_TSCONF      "TS-Conf"
+#define TXT_MACH_ATM         "ATM-Turbo"
 #define TXT_MACH_TSCONF_OPTS "Options"
 #define TXT_MACH_TSCONF_CLK  "CPU cap"
 // The ZX-Evo BIOS images differ ONLY in the 128 service ROM at ROM page 2
 // (tslabs/zx-evo pentevo/rom/bin) — the TS-BIOS itself and its TR-DOS are the same
 // bytes in both, so the label names the service ROM, not the BIOS.
+#define TXT_ROM_ATM1         "ATM-Turbo 1 (BIOS 1.04rs)"
+#define TXT_ROM_ATM1_S       "Turbo 1"
+#define TXT_ROM_ATM2V106     "ATM-Turbo 2 (BIOS 1.06.02)"
+#define TXT_ROM_ATM2V106_S   "Turbo 2"
+#define TXT_ROM_ATM2         "ATM-Turbo 2+ (BIOS 1.07.13)"
+#define TXT_ROM_ATM2_S       "Turbo 2+"
+#define TXT_ROM_ATM2X        "ATM-Turbo 2+ (xBIOS 1.37)"
+#define TXT_ROM_ATM2X_S      "Turbo 2+ xBIOS"
+#define TXT_ROM_ATM3V107     "ATM-Turbo 3 (BIOS 1.07.13EC)"
+#define TXT_ROM_ATM3V107_S   "Turbo 3"
+#define TXT_ROM_ATM3         "ATM-Turbo 3 (xBIOS 1.37)"
+#define TXT_ROM_ATM3_S       "Turbo 3 xBIOS"
 #define TXT_ROM_TSBIOS       "TS-BIOS + 128"
 #define TXT_ROM_TSBIOS_S     "128"            // left-column short form (Option::slabel)
 #define TXT_ROM_TSBIOS_GLUK  "TS-BIOS + Mr Gluk"
@@ -298,6 +318,18 @@
 #define TXT_ROM_SCORP_PROF   "ZS-1024 + ProfROM"
 #define TXT_ROM_SCORP_PROF_S "ProfROM"
 #define TXT_ROM_ALF         "ALF cartridge"
+// Nemo KAY (St. Petersburg). Romsets of the Scorpion arch; the labels must read the
+// same as kRomsetUiName[R_KAY*] (ArchRom.h), which the info pages use.
+#define TXT_MACH_KAY         "Kay"
+#define TXT_MACH_OTHER       "Other"
+#define TXT_ROM_KAY256       "KAY256 Turbo"
+#define TXT_ROM_KAY256_S     "256T"
+#define TXT_ROM_KAY1024      "KAY1024"
+#define TXT_ROM_KAY1024_S    "1024"
+#define TXT_ROM_KAY2010      "KAY1024 v2010/v2018"
+#define TXT_ROM_KAY2010_S    "1024 v2010"
+#define TXT_ROM_PHOENIX      "ZXM-Phoenix 2 MB"
+#define TXT_ROM_PHOENIX_S    "Phoenix"
 
 // ── Options ────────────────────────────────────────────────────────────────────
 #define TXT_OPT_PREF_MACHINE "Preferred machine"

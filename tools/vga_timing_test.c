@@ -1,10 +1,10 @@
 // VGA timing check for the SHIPPED mode table.
 //
-//   gcc -DVGA_HSTX=1 -O2 -Wall -Wextra -I drivers/graphics tools/vga_timing_test.c -lm
+//   gcc -DVGA_HSTX=1 -O2 -Wall -Wextra -I src/drivers/graphics tools/vga_timing_test.c -lm
 //       -o /tmp/vga_timing_test  &&  /tmp/vga_timing_test
 //
 // Also build without -DVGA_HSTX=1 to check the legacy PIO geometry.
-// Re-run after ANY change to drivers/graphics/video_mode_table.h.  A VGA timing
+// Re-run after ANY change to src/drivers/graphics/video_mode_table.h.  A VGA timing
 // typo does not misbehave by degrees: the monitor either loses sync or the
 // emulator, which paces one guest frame per display frame under V-Sync, runs at
 // the wrong speed with pitched-up sound.  Neither is visible in a code review and

@@ -1,7 +1,7 @@
-// Host test for drivers/hdmi/hdmi_tmds_line.h — the HSTX command-list line model
+// Host test for src/drivers/hdmi/hdmi_tmds_line.h — the HSTX command-list line model
 // behind HDMI_HSTX == 2.
 //
-//   gcc -O2 -Wall -Wextra -Idrivers/hdmi -o /tmp/hdmi_tmds_line_test tools/hdmi_tmds_line_test.c
+//   gcc -O2 -Wall -Wextra -Isrc/drivers/hdmi -o /tmp/hdmi_tmds_line_test tools/hdmi_tmds_line_test.c
 //   /tmp/hdmi_tmds_line_test
 //
 // For both line geometries the mode table has (640-wide: 48/24/8 bytes + 320,

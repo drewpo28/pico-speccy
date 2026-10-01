@@ -158,8 +158,7 @@ def main():
     # backend that is actually compiled in emits visual pixel x by reading
     # `input_buffer[x ^ 2]`: hdmi.c:645, vga.c:350, tv.c:477, tv-software.c:927,
     # st7789.c:329. So recovering the image from a raw dump is always
-    # px[x] = fb[x ^ 2]. (external/PicoDVI, the one shim that reads linearly, is
-    # not linked into the firmware — nothing in CMakeLists references it.)
+    # px[x] = fb[x ^ 2].
     #
     # This used to be auto-detected by scoring both layouts for row smoothness,
     # which silently picked the wrong one: with the UI palette in place the two

@@ -1,4 +1,4 @@
-// Host test for src/TapeWear.h — the worn-tape model behind
+// Host test for src/speccy/devices/tape/TapeWear.h — the worn-tape model behind
 // Storage > Tape > Tape wear (Config::tape_wear).
 //
 //   g++ -O2 -Wall -Wextra -Isrc -o /tmp/tapewear_test tools/tapewear_test.cpp && /tmp/tapewear_test
@@ -21,7 +21,7 @@
 // what decide whether a worn tape can be LOCKED ON TO at all, which no threshold
 // approximation can tell you.
 
-#include "TapeWear.h"
+#include "speccy/devices/tape/TapeWear.h"
 
 #include <cstdio>
 #include <cstdlib>

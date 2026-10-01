@@ -22,8 +22,8 @@
 
 #include <stdint.h>
 
-#include "ArchRom.h"     // ArchIdx/RomsetIdx + NM_ARCH_TABLE/NM_ROMSET_TABLE
-#include "Subsystem.h"   // Subsystems::FeatureId used in the table below
+#include "speccy/core/ArchRom.h"     // ArchIdx/RomsetIdx + NM_ARCH_TABLE/NM_ROMSET_TABLE
+#include "app/Subsystem.h"   // Subsystems::FeatureId used in the table below
 using namespace Subsystems;
 
 namespace nm {
@@ -342,7 +342,18 @@ const char* romsetName(int32_t composite);
     /* Video > VGA > Colour (Config::vga_pwm). AC_REBOOT, and it has to be: the     */ \
     /* flag decides how many bytes a palette entry and a line-buffer pixel are, and */ \
     /* both are allocated once at boot. Appended last per the APPEND ONLY rule.     */ \
-    X(SET_VGA_PWM,         AC_REBOOT, 0,                     get_vgaPwm,     put_vgaPwm,     nullptr,        -1)
+    X(SET_VGA_PWM,         AC_REBOOT, 0,                     get_vgaPwm,     put_vgaPwm,     nullptr,        -1) \
+    /* Video > Hide border (Config::render_border). AC_PURE: VIDEO::blRecalc re-decides */ \
+    /* at every EndFrame from Config, so writing it IS the apply — after the menu     */ \
+    /* closes, which is also the only time the effect can be seen. Appended last.     */ \
+    X(SET_BORDER,          AC_PURE,   0,                     get_border, put_border, nullptr,        -1) \
+    /* Video > VGA > PWM phase (Config::vga_pwm_phase, 0..3). AC_LIVE + F_PREVIEW:   */ \
+    /* the hook rotates the phase bytes of every packed palette entry — a repack of */ \
+    /* the recorded colours, no allocation, reversible per keypress. Appended last.  */ \
+    X(SET_VGA_PWM_PHASE,   AC_LIVE,   F_PREVIEW,             get_vgaPwmPhase, put_vgaPwmPhase, hook_vgaPwmPhase, -1) \
+    /* LED indicators on a solid panel beside the F8 box: read live by LED::draw,  \
+       which moves the carve (VIDEO::setLedBar) and asks for the repaint itself. */ \
+    X(SET_LED_PANEL,       AC_PURE,   0,                     get_ledPanel,   put_ledPanel,   nullptr,        -1)
 
 #define NM_X_ENUM(id, cls, flags, g, p, h, f) id,
 enum SettingId : uint16_t {

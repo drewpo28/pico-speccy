@@ -1,0 +1,2273 @@
+#include "Config.h"
+#include "FlashRoms.h"
+#include "CodeOverlay.h"
+#include "speccy/core/MemESP.h"
+#include "speccy/devices/storage/RTC.h"
+#include "speccy/devices/storage/Nvram24.h"
+#include "speccy/core/Ports.h"
+#include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/core/roms.h"
+#include "speccy/machines/Atm.h"
+#include "speccy/roms/atm/atm_banks.h"   // ATM page tables — this TU only (see requestMachine)
+#include "speccy/roms/kay/kay_banks.h"   // Nemo KAY bank tables — this TU only (same reason)
+#include "fs/FileUtils.h"
+#include "ESPectrum.h"
+#include "speccy/devices/disk/MB02.h"
+#include "speccy/machines/Plus3/Plus3Fdc.h"
+#include "drivers/input/fabutils.h"
+#include "messages.h"
+#include "ui/OSDMain.h"
+#include "drivers/psram/psram_spi.h"
+#include "drivers/sound/pwm_audio.h"
+#include "Buffer.h"
+#include "TryAlloc.h"
+#include "Debug.h"
+#include "drivers/graphics/graphics.h"
+#include <hardware/vreg.h>
+#include "ScanLite.h"
+
+ArchIdx   Config::arch = A_48K;
+RomsetIdx Config::romSet = R_48K;
+RomsetIdx Config::romSet48 = R_48K;
+RomsetIdx Config::romSet128 = R_128K;
+RomsetIdx Config::romSetPent = R_PENT;
+RomsetIdx Config::romSetP512 = R_PENT;
+RomsetIdx Config::romSetP1M = R_PENT;
+RomsetIdx Config::romSetProfi = R_PROFI;
+RomsetIdx Config::romSetScorp = R_SCORP;
+RomsetIdx Config::romSetTsconf = R_TSCONF;
+RomsetIdx Config::romSetAtm = R_ATM2;
+ArchIdx   Config::pref_arch = A_LAST;
+RomsetIdx Config::pref_romSet_48 = R_LAST;
+RomsetIdx Config::pref_romSet_128 = R_LAST;
+RomsetIdx Config::pref_romSetPent = R_LAST;
+RomsetIdx Config::pref_romSetP512 = R_LAST;
+RomsetIdx Config::pref_romSetP1M = R_LAST;
+RomsetIdx Config::pref_romSetProfi = R_LAST;
+RomsetIdx Config::pref_romSetScorp = R_LAST;
+RomsetIdx Config::pref_romSetTsconf = R_LAST;
+RomsetIdx Config::pref_romSetAtm = R_LAST;
+string   Config::ram_file = NO_RAM_FILE;
+string   Config::last_ram_file = NO_RAM_FILE;
+string   Config::tape_file = "";
+uint8_t  Config::ram_file_origin = Config::ORIGIN_LOCAL;
+
+bool     Config::loaded = false;
+bool     Config::save_blocked = false;
+bool     Config::slog_on = false;
+bool     Config::ledIndicators = false;
+bool     Config::led_panel = false;
+bool     Config::sdLedBlink = false;
+int8_t   Config::temp_offset = 0;
+uint8_t  Config::gm_field = 0;      // Pico-Scwong options (see Config.h)
+uint8_t  Config::gm_pad   = 0;
+uint8_t  Config::gm_padw  = 0;
+uint8_t  Config::gm_padh  = 1;      // Normal paddle length
+uint8_t  Config::gm_ballc = 0;      // White
+uint8_t  Config::gm_ball  = 0;
+uint8_t  Config::gm_pspd  = 1;      // Normal
+///uint8_t  Config::esp32rev = 0;
+bool     Config::AY48 = true;
+bool     Config::SAA1099 = false;
+uint8_t  Config::midi = 0;
+string   Config::midi_bank = "";
+uint16_t Config::cpu_mhz = CPU_MHZ;
+uint16_t Config::max_flash_freq = 66;
+uint16_t Config::max_psram_freq = 166;
+uint16_t Config::max_tft_freq = 126;
+uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_50;
+bool     Config::Issue2 = true;
+uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
+uint8_t  Config::tsconf_clk_cap = 2;   // ZCLK cap: 14 MHz allowed
+bool     Config::rtc_enabled = false;
+uint16_t Config::mouse_sens = 64;        // Q8: 64 = x1/4, the historical divisor
+bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
+bool     Config::dbg_uart = false;       // Debug > UART console
+bool     Config::flashload = true;
+bool     Config::tape_player = false; // Tape player mode
+volatile bool Config::real_player = false;
+bool     Config::profi_ext_keys = false; // Profi extended keyboard mode
+bool     Config::tape_timing_rg = false; // Rodolfo Guerra ROMs tape timings
+bool     Config::tape_autostart = true;  // auto-play tape on load + re-mount remembered tape after reset/boot
+uint8_t  Config::tape_wear = 0;         // Storage > Tape > Tape wear (0 off .. 3 heavy)
+bool     Config::rightSpace = true;
+bool     Config::wasd = true;
+Config::BreakPoint Config::breakPoints[Config::MAX_BREAKPOINTS];
+int Config::numBreakPoints = 0;
+int Config::numPcBP = 0;
+int Config::numPortReadBP = 0;
+int Config::numPortWriteBP = 0;
+int Config::numMemWriteBP = 0;
+int Config::numMemReadBP = 0;
+
+uint8_t  Config::joystick = JOY_KEMPSTON;
+uint16_t Config::joydef[14] = {
+    fabgl::VK_DPAD_LEFT,  // 0
+    fabgl::VK_DPAD_RIGHT, // 1
+    fabgl::VK_DPAD_UP,    // 2
+    fabgl::VK_DPAD_DOWN,  // 3
+    fabgl::VK_DPAD_START, // 4
+    fabgl::VK_DPAD_SELECT,// 5
+    fabgl::VK_DPAD_FIRE,  // 6 A
+    fabgl::VK_DPAD_ALTFIRE,//7 B
+    fabgl::VK_NONE,       // 8 C
+    fabgl::VK_JOY_X,      // 9  X → Kempston bit 6
+    fabgl::VK_NONE,       // 10 Y
+    fabgl::VK_NONE,       // 11 Z
+    fabgl::VK_NONE,       // 12 L2
+    fabgl::VK_NONE        // 13 R2
+};
+
+uint8_t  Config::AluTiming = 0;
+uint8_t  Config::ayConfig = 0;
+uint8_t  Config::turbosound = 3; // BOTH
+uint8_t  Config::tsfm = 0;       // TurboSound FM off by default
+uint8_t  Config::opl3 = 0;       // OPL3 (YMF262) card off by default
+uint8_t  Config::cms = 0;        // CMS (2x SAA1099) off by default
+uint8_t  Config::sn76489 = 0;    // 2x SN76489 off by default
+uint8_t  Config::sn_clock = 0;   // 3.579545 MHz
+uint8_t  Config::ym2413 = 0;     // YM2413 (OPLL) off by default
+uint8_t  Config::covox = 1; // #FB
+uint8_t  Config::turbo = 0; // 3.5 MHz
+uint8_t  Config::soundrive = 2; // AUTO: on for Profi, off elsewhere
+
+bool Config::soundriveEnabled() {
+    return Config::soundrive == 1 ||
+           (Config::soundrive == 2 && Config::arch == A_PROFI);
+}
+uint8_t  Config::gs_enabled = 0;  // 0=OFF, 1=GS, 2=NeoGS
+uint8_t  Config::gs_ram_size = 2; // 0=512K, 1=1M, 2=2M, 3=4M (NeoGS only)
+uint8_t  Config::gs_clock = 1;    // 0=12MHz 1=13MHz 2=14MHz 3=20MHz 4=24MHz
+uint8_t  Config::ngs_clock = 0;   // 0=Auto(fw CKSEL) 1=24MHz 2=20MHz 3=12MHz 4=10MHz
+uint8_t  Config::joy2cursor = false;
+uint8_t  Config::secondJoy = 2; // NPAD#2
+uint8_t  Config::kempstonPort = 0x1F;
+uint8_t  Config::throtling = DEFAULT_THROTTLING;
+bool     Config::CursorAsJoy = true;
+bool     Config::betadisk = true;
+bool     Config::trdosFastMode = true;
+bool     Config::trdosAutoBoot = true;
+uint8_t  Config::trdosSoundLed = 1; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+uint8_t  Config::trdosBios = 1; // Default: 5.04T
+uint8_t  Config::alfCartBanks = 0; // 0 = built-in Elf-1; >0 = loaded cart size in 16K banks
+string   Config::alfCartPath = ""; // pending cart to flash into the shared region at boot
+string   Config::dckCartPath = ""; // Timex DOCK cartridge in the TC2068 slot
+bool     Config::driveWP[4] = { true, true, true, true };
+uint8_t  Config::esxdos = 0;
+string   Config::esxdos_hdf_image[2] = {"", ""};
+uint8_t  Config::mb02 = 0;
+bool     Config::mb02WP[4] = { true, true, true, true };
+string   Config::mb02DiskFile[4] = { "", "", "", "" };
+uint8_t  Config::mb02SoundLed = 0; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
+// +3 drives default to write-protected, like every other floppy slot here: a mounted
+// image is not written to until the user says so.
+bool     Config::p3WP[2] = { true, true };
+string   Config::p3DiskFile[2] = { "", "" };
+bool     Config::p3_speedlock = true;
+bool     Config::p3_fastdisk = false;
+bool     Config::zcontroller = true;
+uint8_t  Config::ide_scheme = 0;
+string   Config::ide_image[2] = {"", ""};
+uint16_t Config::ide_chs[2][3] = {{0,0,0},{0,0,0}};
+uint8_t  Config::zifi_enabled = 0;
+uint8_t  Config::zifi_tx_pin = 0xFE; // 0xFE = board default (BoardPins)
+uint8_t  Config::zifi_rx_pin = 0xFE;
+#if PICOSPECCY_WIFI
+uint8_t  Config::zifi_transport = 2; // 0=GPIO UART, 1=USB-CDC, 2=on-chip CYW43 (W boards default)
+#else
+uint8_t  Config::zifi_transport = 0; // 0=GPIO UART, 1=USB-CDC (2 = on-chip CYW43 exists only on W boards)
+#endif
+uint32_t Config::zifi_baud = 115200;
+string   Config::wifi_ssid;
+string   Config::wifi_pass;
+bool     Config::wifi_enabled = false;
+signed char Config::wifi_tz = 0;
+bool     Config::sntp_auto = true;
+string   Config::net_host;
+string   Config::net_user;
+uint16_t Config::net_port = 0;
+uint8_t  Config::net_proto = 0;
+string   Config::net_dl_dir = SPEC_DIR_ROOT;
+string   Config::net_ul_dir = SPEC_DIR_ROOT;
+string   Config::catalog_host;
+uint16_t Config::catalog_port = 0;
+string   Config::last_loc;   // last F5 browse location (all sources); see Config.h
+
+uint8_t Config::scanlines = 0;
+uint8_t Config::crt_filter = 0;
+uint8_t Config::render = 0;
+bool Config::render_paper = true;
+bool Config::render_border = true;
+uint8_t Config::persist_slot = 1;
+uint8_t Config::profile_slot = 0;
+
+bool     Config::TABasfire1 = false;
+signed char Config::aud_volume = 0;
+uint8_t  Config::audio_boost = 0;
+uint8_t  Config::hdmi_video_mode = Config::VM_640x480_60;
+uint8_t  Config::vga_video_mode = Config::VM_640x480_60;
+bool     Config::v_sync_enabled = false;
+bool     Config::gigascreen_enabled = true;
+uint8_t  Config::gigascreen_onoff = 2;
+bool     Config::ulaplus = true;
+bool     Config::hdmi_dither = false;
+#ifndef HDMI_SOFT_CLK
+#define HDMI_SOFT_CLK 0
+#endif
+uint8_t  Config::hdmi_clock_drive = HDMI_SOFT_CLK ? 1 : 0;   // build default, see hdmi.c
+bool     Config::hdmi_snap = false;
+bool     Config::vga_dither = true;
+#if VGA_HSTX
+bool     Config::vga_pwm = true;
+#else
+// PIO defaults to the pre-1.0.7 colour path. Per-pixel PWM can produce
+// vertical bands on analogue LCD inputs; keep it available as an opt-in.
+bool     Config::vga_pwm = false;
+#endif
+// Published for vga.c, which is C and cannot see this header — the video_driver
+// pattern. Read once by vga_flags_init().
+extern "C" uint8_t vga_pwm_cfg = Config::vga_pwm ? 1 : 0;
+uint8_t  Config::vga_pwm_phase = 0;
+extern "C" uint8_t vga_pwm_phase_cfg = 0;      // same route, read by vga_flags_init()
+bool     Config::ui_vga_solid = true;
+bool     Config::ui_rounded = true;
+uint8_t  Config::ui_theme = 0;
+uint8_t  Config::ui_click_vol = 2;   // Normal
+bool     Config::timex_video = true;
+uint8_t  Config::dma_mode = 0;
+bool     Config::mode16col_onoff = false;
+uint8_t  Config::palette = 0;
+uint8_t  Config::audio_driver = 0;
+extern "C" uint8_t  video_driver = 0;
+bool     Config::byte_cobmect_mode = false;
+
+Config::HotkeyBinding Config::hotkeys[Config::HK_COUNT];
+
+void Config::initHotkeys() {
+    // Default bindings — must match HK_* enum order
+    static const HotkeyBinding defaults[HK_COUNT] = {
+        { fabgl::VK_F1,     false, false, true  }, // HK_MAIN_MENU  — readonly
+        { fabgl::VK_F2,     false, false, false }, // HK_LOAD_SNA
+        { fabgl::VK_F3,     false, false, false }, // HK_PERSIST_LOAD
+        { fabgl::VK_F4,     false, false, false }, // HK_PERSIST_SAVE
+        { fabgl::VK_F5,     false, false, false }, // HK_LOAD_ANY
+        { fabgl::VK_F6,     false, false, false }, // HK_TAPE_PLAY
+        { fabgl::VK_F7,     false, false, false }, // HK_TAPE_BROWSER
+        { fabgl::VK_F8,     false, false, false }, // HK_STATS
+        { fabgl::VK_F9,     false, false, false }, // HK_VOL_DOWN
+        { fabgl::VK_F10,    false, false, false }, // HK_VOL_UP
+        { fabgl::VK_F11,    false, false, false }, // HK_HARD_RESET
+        { fabgl::VK_F12,    false, false, false }, // HK_REBOOT
+        { fabgl::VK_TILDE,  false, false, false }, // HK_MAX_SPEED
+        { fabgl::VK_PAUSE,  false, false, false }, // HK_PAUSE
+        { fabgl::VK_F1,     true,  false, true  }, // HK_HW_INFO    — readonly
+        { fabgl::VK_F2,     true,  false, false }, // HK_TURBO
+        { fabgl::VK_F5,     true,  false, false }, // HK_DEBUG
+        { fabgl::VK_F6,     true,  false, false }, // HK_DISK
+        { fabgl::VK_F10,    true,  false, false }, // HK_NMI
+        { fabgl::VK_F11,    true,  false, false }, // HK_RESET_TO
+        { fabgl::VK_F12,    true,  false, false }, // HK_USB_BOOT
+        { fabgl::VK_PAGEUP, true,  false, false }, // HK_GIGASCREEN
+        { fabgl::VK_F8,     true,  false, false }, // HK_LED_TOGGLE
+        { fabgl::VK_F9,     true,  false, false }, // HK_POKE
+        { fabgl::VK_HOME,   true,  true,  false }, // HK_VIDMODE_60
+        { fabgl::VK_END,    true,  true,  false }, // HK_VIDMODE_50
+        { fabgl::VK_F3,     true,  false, false }, // HK_QUICK_LOAD
+        { fabgl::VK_F4,     true,  false, false }, // HK_QUICK_SAVE
+    };
+    for (int i = 0; i < HK_COUNT; i++)
+        hotkeys[i] = defaults[i];
+}
+
+extern std::string g_snapshot_loading_path;  // Snapshot.cpp — snapshot mid-load
+
+// Register the overlay of the GMX bank now live at 0x0000. Called from
+// gmxTapUpdate (Ports.cpp) on every romInUse change while GMX is active —
+// several GMX banks patch the SAME base pointer, so a one-time registration at
+// bind time cannot express the table (MemESP keys ONE overlay per base). Lives
+// HERE and not in Ports.cpp because the Sinclair 128K bases are header-defined
+// internal-linkage arrays: a second TU taking their address embeds a private
+// 16 KB copy each — 32 KB wasted, and worse, gmxTapUpdate would then register
+// addresses that never match the ones rom[] was bound to in this TU, so the
+// overlays would silently never apply.
+
+// WHICH GMX image is bound. One ships today (v5.44); this is the single place that
+// decides, so a second image of the family — packed over the same base list, where a
+// RAW bank of one may be the BASE of the other's overlay and one base pointer can
+// therefore carry a different overlay per romset — is a romset and this function, and
+// nothing else. Only one image is ever bound at a time, which is also why the overlay
+// registration is per-live-bank and not static.
+const scorpion_gmx_bank_t* gmxLiveBankTable() {
+    return gb_rom_scorpion_gmx_banks;
+}
+
+void gmxRegisterLiveOverlay(uint8_t bank) {
+    const scorpion_gmx_bank_t& bk = gmxLiveBankTable()[bank & 31];
+    MemESP::registerOverlay(bk.data, bk.overlay);
+}
+
+// Same job for the ProfROM bank table (16 banks), and here for the same
+// reason: plane 3's banks all overlay plane 3 bank 0, and plane 0's two halves
+// overlay the Sinclair 128K arrays this TU owns. See gmxRegisterLiveOverlay.
+void profRegisterLiveOverlay(uint8_t bank) {
+    const scorpion_prof_bank_t& bk = gb_rom_scorpion_prof_banks[bank & 15];
+    MemESP::registerOverlay(bk.data, bk.overlay);
+}
+
+// The running machine keeps its own TR-DOS as an overlay on the SHARED 5.04T base
+// (Scorpion GMX / ProfROM plane banks, every Nemo KAY's bank 3), so the user's TR-DOS
+// BIOS pick must not re-register that pointer while it runs — the registry keeps ONE
+// overlay per base and the pick would replace the machine's own DOS. Such machines
+// never read rom[4] anyway.
+bool Config::trdosBaseOwnedByMachine() {
+    return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
+                               isKayRomset(romSetScorp));
+}
+
+void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
+{
+    // Karabas is a UI-level alias of Profi (see ArchRom.h) — the core never sees it.
+    newArch = archCanon(newArch);
+    // The two machines whose ROMs live in the tradeable flash overlay (FlashRoms.h).
+    // This must come FIRST, before every boundary test below: those persist newArch
+    // and reboot, and the switch further down binds ROM pointers and populates the
+    // pointer-keyed overlay registry — all of which would be reading a region that is
+    // either already erased or about to be, on this very boot, by provisionAtBoot().
+    if (!FlashRoms::romsUsable()) {
+        if (newArch == A_ATM) {
+            OSD::bootNotice("ATM-Turbo ROM traded for the GM.DLS bank - using Pentagon");
+            newArch = A_PENT; newRomSet = R_NONE;
+        } else if (newArch == A_TSCONF) {
+            OSD::bootNotice("TS-Conf ROM traded for the GM.DLS bank - using Pentagon");
+            Debug::log("[FlashRoms] TS-Conf unavailable (overlay traded) - Pentagon");
+            newArch = A_PENT; newRomSet = R_NONE;
+        } else if (newArch == A_SCORP && isScorpGmxRomset(newRomSet)) {
+            newRomSet = R_SCORP;
+        }
+    }
+    // ATM-Turbo: its ROM pages are flattened into butter PSRAM (Atm::bindRoms) — a
+    // board without a QSPI chip cannot run it (same rule as TS-Conf and GMX).
+    if (newArch == A_ATM && butter_psram_size() == 0) {
+        OSD::bootNotice("ATM-Turbo needs QSPI PSRAM - using Pentagon");
+        newArch = A_PENT; newRomSet = R_NONE;
+    }
+    // Profi boundary: setup() lays out the Profi memory once at boot —
+    // forced-SRAM pages (DS80 colour 56/58 + CP/M pool 60/61) on ALL RP2350
+    // boards, plus the pool/accessor-backed butter vram strip on butter/QSPI
+    // boards — and nothing frees or creates them at runtime, so ANY arch
+    // change crossing the Profi boundary must reboot so setup() re-lays out
+    // memory.  The OSD Machine menu checks this itself, but snapshot loaders
+    // call requestMachine directly: a Pentagon snapshot loaded on Profi left
+    // the layout allocated; a Profi snapshot loaded elsewhere got no DS80
+    // colour pages.  Persist the target arch and the in-flight snapshot —
+    // setup() resumes the load via Config::ram_file after the reboot (same
+    // pattern as savePendingVideoMode).  If the config write fails, nothing is
+    // persisted (NvsWriter is atomic) and the next boot comes up unchanged —
+    // no loop.
+    // butter/QSPI boards are exempt: there the Profi and non-Profi layouts are
+    // identical (all pages are direct XIP pointers, no forced-SRAM set), so no
+    // reboot is needed — and page 56 is a POINTER for every arch there, which
+    // would otherwise read as a false "Profi layout" marker.
+    bool profiSramLayout = (MemESP::ram[56].memType() == mem_type_t::POINTER);
+    if (butter_psram_size() == 0 && (newArch == A_PROFI) != profiSramLayout) {
+        arch = newArch;
+        if (newRomSet != R_NONE) romSet = newRomSet;
+        if (!g_snapshot_loading_path.empty())
+            ram_file = g_snapshot_loading_path;
+        save();
+        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+    }
+    // GMX boundary: Scorpion GMX needs the 128-page (2 MB) strip, which — like
+    // the Profi layout — is sized once in setup() and never grows at runtime.
+    // Entering GMX on a 64-page session must reboot so setup() re-lays it out
+    // (setup raises MEM_PG_CNT to 128 for a persisted GMX pick). Leaving GMX
+    // needs nothing by itself (the extra pages just sit unused), but the
+    // generic wantedPages() boundary below reboots on any strip change.
+    // (butter-less modules skip the reboot: the GMX pick falls back to Yellow
+    // PCB below anyway, so a power cycle would be wasted.)
+    if (newArch == A_SCORP && isScorpGmxRomset(newRomSet) && MEM_PG_CNT < 128 &&
+        butter_psram_size() > 0) {
+        arch = newArch;
+        romSet = newRomSet;
+        romSetScorp = newRomSet;
+        if (!g_snapshot_loading_path.empty())
+            ram_file = g_snapshot_loading_path;
+        save();
+        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+    }
+    // TS-Conf boundary, same shape: the page-strip length itself changes
+    // (256 pages vs 64, or a Murmuzavr pick), MemESP indexes ROM as
+    // ram[MEM_PG_CNT + romLatch], and the strip is sized once in setup() —
+    // any change of wantedPages() must reboot. Unlike the Profi guard this
+    // is NOT butter-exempt.
+    // TS-Conf code-overlay boundary (src/app/CodeOverlay.h): the TS-only hot code lives
+    // in a fixed-VMA SRAM window that the heap owns on every other machine. Claim
+    // it back if the heap has not grown into it — the heap grows upward and the
+    // window is the top ~16 KB, so this normally just works and costs no reboot.
+    // If it HAS grown in, the overlay cannot be loaded at all and the machine must
+    // come up with the window reserved from the start, i.e. reboot — same shape
+    // and same failure policy as the three boundaries above (an atomic config
+    // write, so a failed save leaves the next boot unchanged and cannot loop).
+    if (newArch == A_TSCONF && !CodeOverlay::claimForTsconf()) {
+        arch = newArch;
+        if (newRomSet != R_NONE) romSet = newRomSet;
+        if (!g_snapshot_loading_path.empty())
+            ram_file = g_snapshot_loading_path;
+        save();
+        OSD::esp_hard_reset();   // never returns; setup() reserves the window
+    }
+    if (wantedPages(newArch, newRomSet) != MEM_PG_CNT) {
+        arch = newArch;
+        if (newRomSet != R_NONE) romSet = newRomSet;
+        if (!g_snapshot_loading_path.empty())
+            ram_file = g_snapshot_loading_path;
+        save();
+        OSD::esp_hard_reset();   // never returns; setup() re-lays out memory
+    }
+    arch = newArch;
+    // Re-bind ROM overlays from scratch for this machine (RomOverlay.h). Each romset
+    // below registers the overlays it needs; clearing first avoids stale entries.
+    MemESP::clearOverlays();
+    switch (arch) {
+    case A_48K: {
+        romSet = (newRomSet == R_NONE) ? R_48K : newRomSet;
+        romSet48 = romSet;
+        switch (romSet48) {
+        case R_48K_CS:
+#if !CARTRIDGE_AS_CUSTOM
+#if NO_SEPARATE_48K_CUSTOM
+            MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
+#else
+            MemESP::rom[0].assign_rom(gb_rom_0_48k_custom);
+#endif
+#else
+            MemESP::rom[0].assign_rom(gb_rom_Alf_cart);
+#endif
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);
+            break;
+#if !NO_SPAIN_ROM_48k
+        case R_48K_ES:
+            // 48K Spanish: read-only overlay over the Sinclair 48K base (RomOverlay.h)
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_es);
+            break;
+#endif
+        case R_48K_BY:
+            // Both BYTE and BYTE-compat are overlays over the Sinclair 48K base.
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k,
+                Config::byte_cobmect_mode ? gb_overlay_48k_byte_sovmest : gb_overlay_48k_byte);
+            break;
+        case R_48K_DG89:
+            // Didaktik Gama 89 — the Sinclair 48K ROM with a Czech character set and
+            // a Centronics printer driver in its 0xFF-filled tail (rom_pack.py 48k,
+            // 1692 B of overlay). The machine itself is an ordinary 48K, so nothing
+            // else in this branch changes; the in-ROM tape trap and the LOAD ""
+            // snapshot both still apply, their addresses (0x0038, 0x053F, 0x056B)
+            // being among the bytes this ROM does NOT touch.
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_dgama89);
+            break;
+        case R_TC2048:
+            // Timex TC2048 — the Sinclair 48K ROM plus seven bytes (rom_pack.py 48k):
+            // the boot path is redirected through OUT (#FF),A so the SCLD mode
+            // register is initialised. Everything else about the machine is a 48K.
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_tc2048);
+            break;
+        case R_TC2068:
+            // Timex TC2068 — its own 16 KB HOME ROM, nothing to do with the Sinclair
+            // one (measured: the cheapest overlay against anything in the tree is
+            // 16455 B, i.e. bigger than the raw array). The 8 KB EX-ROM beside it is
+            // not a rom[] slot: the SCLD maps it into 8 KB windows, so Timex.cpp
+            // takes gb_rom_tc2068_exrom directly.
+            MemESP::rom[0].assign_rom(gb_rom_tc2068_home);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);
+            break;
+        default:
+            MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, nullptr);
+            break;
+        }
+        break;
+    }
+    case A_ALF: {
+        const uint8_t* base = gb_rom_Alf;
+        // gb_rom_Alf is 32KB = 2 real banks; banks 2..63 → gb_rom_Alf_ep (zero page).
+        for (int i = 0; i < 64; ++i) {
+            MemESP::rom[i].assign_rom(i >= 2 ? gb_rom_Alf_ep : base + ((16 * i) << 10));
+        }
+        Config::kempstonPort = 0x1F; // TODO: ensure, save?
+        break;
+    }
+    case A_128K: {
+        romSet = (newRomSet == R_NONE) ? R_128K : newRomSet;
+        romSet128 = romSet;
+        switch (romSet128) {
+        case R_128K_CS:
+#if !CARTRIDGE_AS_CUSTOM
+            MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
+            MemESP::rom[1].assign_rom(gb_rom_0_128k_custom + (16 << 10)); /// 16392;
+#else
+            MemESP::rom[0].assign_rom(gb_rom_Alf_cart);
+            MemESP::rom[1].assign_rom(gb_rom_Alf_cart + (16 << 10)); /// 16392;
+#endif
+            break;
+#if !NO_SPAIN_ROM_128k
+        case R_128K_ES:
+            // rom[0] (128K editor) differs too much positionally -> stays raw.
+            // rom[1] (BASIC) is an overlay over the Sinclair 128K second ROM half.
+            MemESP::rom[0].assign_rom(gb_rom_0_128k_es);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_128k_es);
+            break;
+        case R_PLUS2_ES:
+            MemESP::rom[0].assign_rom(gb_rom_0_plus2_es);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_128k_plus2es);
+            break;
+        case R_PLUS2:
+            MemESP::rom[0].assign_rom(gb_rom_0_plus2);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_128k_plus2);
+            break;
+        case R_ZX81P:
+            MemESP::rom[0].assign_rom(gb_rom_0_s128_zx81);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            break;
+#endif
+        case R_128K_BY:
+        case R_128K_BY_GLUK:
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_pentagon_sinclair_128k_0);
+            // rom[1] = BYTE 48K, now a read-only overlay over the Sinclair 48K base
+            // (applied on the fly by MemESP when this bank is paged to page 0).
+            MemESP::rom[1].assign_rom(gb_rom_0_sinclair_48k);
+            MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
+            if (romSet128 == R_128K_BY_GLUK) {
+                MemESP::rom[3].assign_rom(gb_rom_gluk);
+            }
+            break;
+        case R_P3:
+        case R_P3E:
+        case R_P3DIV:
+        {
+            // +2A/+3: FOUR ROMs, selected by (1FFD.D2 << 1) | 7FFD.D4 —
+            //   0 editor/menu   1 syntax checker   2 +3DOS   3 48 BASIC
+            // ROM 3 is the only one close enough to anything already in flash to
+            // overlay (~1.2 KB over the Sinclair 128K second half); 0/1/2 are Amstrad
+            // rewrites and stay raw. rom[4] (TR-DOS) is still bound below but is
+            // unreachable: Beta disk is forced off for this romset (MachineSwitch /
+            // CPU::reset).
+            //
+            // The +3e is the same four banks with IDEDOS patched in: banks 0 and 1 are
+            // overlays over the STOCK +3 banks, bank 2 is its own raw array, and bank 3
+            // is byte-identical to the +3's, so it binds the very same overlay. Both
+            // branches set the overlay for EVERY base they assign — the registry is
+            // keyed by base pointer and persists across romset switches, so a missing
+            // nullptr would leave the +3e patch live on a plain +3.
+            //
+            // The +3 (divIDE) romset is that same IDEDOS ROM built for a divIDE card
+            // (`div` in p3eroms). Which of its four banks are its own and which ride
+            // the +3/+3e ones is NOT hardcoded here: the packer measures it and emits
+            // the PLUS3DIV_* macros (plus3div_roms.h), so a rebuild against another
+            // p3eroms revision cannot leave a stale assumption behind.
+            const uint8_t* rom2 = gb_rom_2_plus3;
+            const uint8_t* ovl0 = nullptr;
+            const uint8_t* ovl1 = nullptr;
+            const uint8_t* ovl2 = nullptr;
+            const uint8_t* ovl3 = gb_overlay_plus3_rom3;
+            if (romSet128 == R_P3E) {
+                rom2 = gb_rom_2_plus3e;
+                ovl0 = gb_overlay_plus3e_rom0;
+                ovl1 = gb_overlay_plus3e_rom1;
+            }
+            else if (romSet128 == R_P3DIV) {
+                rom2 = PLUS3DIV_ROM2_BASE;
+                ovl0 = PLUS3DIV_ROM0_OVL;
+                ovl1 = PLUS3DIV_ROM1_OVL;
+                ovl2 = PLUS3DIV_ROM2_OVL;
+                ovl3 = PLUS3DIV_ROM3_OVL;
+            }
+            MemESP::rom[0].assign_rom(gb_rom_0_plus3);
+            MemESP::rom[1].assign_rom(gb_rom_1_plus3);
+            MemESP::rom[2].assign_rom(rom2);
+            MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_0_plus3, ovl0);
+            MemESP::registerOverlay(gb_rom_1_plus3, ovl1);
+            // Bank 2 is the only base that is not shared by all three romsets, so it
+            // is registered through the variable: whichever array this romset put at
+            // rom[2] is the one whose overlay must be (re)set — including to nullptr,
+            // or the divIDE patch would stay live on the plain +3e bank.
+            MemESP::registerOverlay(rom2, ovl2);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, ovl3);
+            break;
+        }
+        default:
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_pentagon_sinclair_128k_0);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            break;
+        }
+        break;
+    }
+    case A_PROFI: {
+        romSet = (newRomSet == R_NONE) ? R_PROFI : newRomSet;
+        romSetProfi = romSet;
+        // Five romsets mirroring the real Karabas-Pro ROMSET slots. Every branch
+        // sets the overlay for EVERY base it assigns — including nullptr for
+        // "no overlay" — because registerOverlay() state persists per-base
+        // across romset switches (switching PQDOS→Original used to leave the
+        // PQ bank1 overlay live on the stock bank1).
+        switch (romSetProfi) {
+        case R_PROFI_PQ:
+            // ROMSET 1: PQDOS BIOS 0.41h1 (bank0 raw, ~94% different from stock);
+            // bank1/2/3 overlay over the same bases as stock (tools/rom_pack.py).
+            MemESP::rom[0].assign_rom(gb_rom_profi_pq_bank0);
+            MemESP::rom[1].assign_rom(gb_rom_profi_bank1);
+            MemESP::registerOverlay(gb_rom_profi_bank1, gb_overlay_profi_bank1_pq);
+            MemESP::rom[2].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_profi_bank2_pq);
+            MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3_pq);
+            break;
+        case R_PROFI_KAR:
+            // ROMSET 0 (ROMain_ramdisk_A.rom, byte-faithful): ROMain bank0
+            // (graphical boot menu) + bank1 with the ROMain ramdisk-TR-DOS
+            // overlay; the image's bank2 == stock Profi bank2, bank3 == plain
+            // Sinclair 128K second half (no overlay).
+            MemESP::rom[0].assign_rom(gb_rom_profi_bank0_karabas);
+            MemESP::rom[1].assign_rom(gb_rom_profi_bank1);
+            MemESP::registerOverlay(gb_rom_profi_bank1, gb_overlay_profi_bank1_romain);
+            MemESP::rom[2].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_profi_bank2);
+            MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, nullptr);
+            break;
+        case R_PROFI_FT:
+            // ROMSET 2: Flash Tool v2.7 by Doctor Max. bank1 is empty (0xFF) in
+            // the real image; bank0/2/3 are unique raw dumps (profi_banks_dmax.c).
+            MemESP::rom[0].assign_rom(gb_rom_profi_bank0_flashtool);
+            MemESP::rom[1].assign_rom(gb_rom_profi_bank_ff);
+            MemESP::rom[2].assign_rom(gb_rom_profi_bank2_flashtool);
+            MemESP::rom[3].assign_rom(gb_rom_profi_bank3_flashtool);
+            break;
+        case R_PROFI_FDI:
+            // ROMSET 3: FDImage v0.87 by Doctor Max. Same layout as Flash Tool.
+            MemESP::rom[0].assign_rom(gb_rom_profi_bank0_fdimage);
+            MemESP::rom[1].assign_rom(gb_rom_profi_bank_ff);
+            MemESP::rom[2].assign_rom(gb_rom_profi_bank2_fdimage);
+            MemESP::rom[3].assign_rom(gb_rom_profi_bank3_fdimage);
+            break;
+        default:
+            // "Original": bank0 (service) + bank1 (Profi TR-DOS) raw; bank2/bank3
+            // overlay the Sinclair 128K halves (rom[0]/rom[1]). See RomOverlay.h.
+            MemESP::rom[0].assign_rom(gb_rom_profi_bank0);
+            MemESP::rom[1].assign_rom(gb_rom_profi_bank1);
+            MemESP::registerOverlay(gb_rom_profi_bank1, nullptr);
+            MemESP::rom[2].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_profi_bank2);
+            MemESP::rom[3].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_profi_bank3);
+            break;
+        }
+        break;
+    }
+    case A_SCORP: {
+        // Scorpion ZS-256 v2.95: bank0 (BASIC-128) and bank1 (BASIC-48) are tiny
+        // overlays over the Sinclair 128K halves; bank2 (service monitor) and bank3
+        // (the on-board TR-DOS 5.03 variant) are raw. TR-DOS runs from rom[3] — the
+        // machine's own bank, like Profi's rom[1] — so the shared rom[4] (bound in
+        // the unconditional tail below) is unused on Scorpion.
+        // R_SCORP (Yellow PCB) and R_SCORP_GR (Green PCB) share this binding — the
+        // romsets differ only in frame timing (CPU::updateStatesInFrame + audio).
+        // The GMX romsets instead map a flash-embedded GMX boot ROM (stored
+        // deduplicated + overlaid, scorpion_gmx_banks.h): 8 ProfROM planes x 4
+        // banks into rom[0..31], romInUse = (plane << 2) | slot (Ports::gmx*).
+        // The ROM is in flash on EVERY board; what gates GMX is the RUNTIME butter probe: QSPI
+        // PSRAM is a property of the plugged-in Pico module (a Murmulator 1
+        // takes a CS1-PSRAM module fine), and the 2 MB page strip + the
+        // 640x200 attr pages need it live — a disabled/absent chip falls the
+        // pick back to Yellow (mid-session the menu retargets it earlier, in
+        // resolveConstraints, where the note is actually visible).
+        romSet = (newRomSet == R_NONE) ? R_SCORP : newRomSet;
+        if (isScorpGmxRomset(romSet) && butter_psram_size() == 0) {
+            OSD::bootNotice("GMX needs QSPI PSRAM - using Yellow PCB");
+            Debug::log("[GMX] butter PSRAM off/absent - falling back to Yellow");
+            romSet = R_SCORP;
+        }
+        // ...and the same pick with the ROM traded away (FlashRoms.h). Distinct
+        // message: nothing is wrong with the board, the bytes were spent.
+        if (isScorpGmxRomset(romSet) && !FlashRoms::romsUsable()) {
+            OSD::bootNotice("GMX ROM traded for the GM.DLS bank - using Yellow PCB");
+            Debug::log("[FlashRoms] GMX unavailable (overlay traded) - Yellow");
+            romSet = R_SCORP;
+        }
+        romSetScorp = romSet;
+        if (romSet == R_SCORP_PROF) {
+            // ProfROM: 4 planes x 4 banks into rom[0..15], romInUse =
+            // (plane << 2) | bank, plane switched by the 0x0100-0x010F read tap
+            // (Ports::gmxProfRomTap). Overlays are registered dynamically per
+            // live bank, exactly like GMX — see profRegisterLiveOverlay.
+            for (int i = 0; i < 16; ++i)
+                MemESP::rom[i].assign_rom(gb_rom_scorpion_prof_banks[i].data);
+            // Unlike GMX (whose plane 0 bank 0 is a raw array), ProfROM's first
+            // bank IS an overlay over the Sinclair 128K half — and the registry
+            // may still hold the plain-Scorpion overlay for that same base from
+            // a previous romset. Register the boot bank now; every later change
+            // goes through gmxTapUpdate.
+            profRegisterLiveOverlay(0);
+        } else
+        if (isScorpGmxRomset(romSet)) {
+            // Deduplicated bank table (rom_pack.py pack_gmx): .data is either a raw
+            // GMX bank or a base ROM already in flash; a non-NULL .overlay supplies
+            // the differing bytes on the fly (RomOverlay.h). NOT registered here:
+            // several banks patch the SAME base pointer, so gmxTapUpdate (Ports.cpp)
+            // re-registers the live bank's overlay on every romInUse change. The
+            // post-bind reset lands on plane 0 bank 0 (raw), so nothing is missed
+            // before the first page switch.
+            const scorpion_gmx_bank_t* tbl = gmxLiveBankTable();
+            for (int i = 0; i < 32; ++i)
+                MemESP::rom[i].assign_rom(tbl[i].data);
+        } else
+        if (isKayRomset(romSet)) {
+            // Nemo KAY: the same four roles as the Scorpion (rom[] 0 BASIC-128,
+            // 1 BASIC-48, 2 service, 3 TR-DOS), stored as overlays over ROMs the
+            // firmware ships raw (tools/rom_pack.py pack_kay). The four roles
+            // overlay four DIFFERENT bases, so a static registration per bank is
+            // exact — and it must register nullptr for a raw bank too, to clear
+            // whatever a previous romset left on that pointer. The ZXM-Phoenix
+            // shares the table shape (its empty service page overlays the KAY one).
+            const kay_rom_bank_t* tbl = (romSet == R_KAY1024) ? gb_rom_kay1024_banks
+                                      : (romSet == R_KAY2010) ? gb_rom_kay2010_banks
+                                      : (romSet == R_PHOENIX) ? gb_rom_phoenix_banks
+                                                              : gb_rom_kay256_banks;
+            for (int i = 0; i < 4; ++i) {
+                MemESP::rom[i].assign_rom(tbl[i].data);
+                MemESP::registerOverlay(tbl[i].data, tbl[i].overlay);
+            }
+        } else {
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, gb_overlay_scorpion_bank0);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, gb_overlay_scorpion_bank1);
+            MemESP::rom[2].assign_rom(gb_rom_scorpion_bank2);
+            MemESP::rom[3].assign_rom(gb_rom_scorpion_bank3);
+        }
+        break;
+    }
+    case A_TSCONF: {
+        // R_NONE keeps the remembered BIOS pick (a .spg launch or a plain machine
+        // switch must not silently drop the user back to the stock set).
+        romSet = (newRomSet == R_NONE) ? (isTsconfRomset(romSetTsconf) ? romSetTsconf
+                                                                      : R_TSCONF)
+                                       : newRomSet;
+        romSetTsconf = romSet;
+        // TS-Conf window 0 reads flash through TsConf::romPtr(), not MemESP::rom[],
+        // so these are RAW pointers and never overlays. The ZX-Evo BIOS images
+        // (tslabs/zx-evo pentevo/rom/bin) share pages 0 and 1 byte for byte and
+        // differ only in the 128 service ROM at page 2 — with page 3 following it
+        // from the 128K second half to the plain 48K ROM. Pages 1-3 are bases other
+        // machines overlay; only page 0 and the Mr Gluk service ROM are TS-Conf's own
+        // bytes (roms/tsconf/, tools/rom_pack.py). rom[4] (TR-DOS) is still bound by
+        // the tail below for the Beta-128 path; TS-BIOS carries its own TR-DOS in
+        // page 1 and never uses rom[4].
+        const uint8_t* pages[4] = {
+            gb_rom_tsbios_p0,
+            gb_rom_4_trdos_504t,
+            gb_rom_0_pentagon_128k,      // 128.rom half 0 == the Pentagon 128 ROM
+            gb_rom_1_sinclair_128k,      // 128.rom half 1
+        };
+        if (romSetTsconf == R_TSCONF_GLUK) {     // ts-bios-gluk.rom
+            pages[2] = gb_rom_tsbios_gluk;
+            pages[3] = gb_rom_0_sinclair_48k;
+        }
+        TsConf::bindRoms(pages);
+        break;
+    }
+    case A_ATM: {
+        romSet = (newRomSet == R_NONE) ? (isAtmRomset(romSetAtm) ? romSetAtm : R_ATM2)
+                                       : newRomSet;
+        romSetAtm = romSet;
+        // Page tables generated by tools/rom_pack.py pack_atm. They name the Sinclair
+        // 128K half (internal linkage), which is why they are included HERE and only
+        // here — see gmxRegisterLiveOverlay for the same rule.
+        if (romSet == R_ATM1)       Atm::bindRoms(romSet, gb_rom_atm1_pages, 4);
+        else if (romSet == R_ATM2X) Atm::bindRoms(romSet, gb_rom_atm2x_pages, 8);
+        else if (romSet == R_ATM2_106) Atm::bindRoms(romSet, gb_rom_atm2v106_pages, 4);
+        else if (romSet == R_ATM3)  Atm::bindRoms(romSet, gb_rom_atm3_pages, 16);
+        else if (romSet == R_ATM3_107) Atm::bindRoms(romSet, gb_rom_atm3v107_pages, 4);
+        else                        Atm::bindRoms(romSet, gb_rom_atm2_pages, 4);
+        break;
+    }
+    default: { // Pentagon / P512 / P1024
+        romSet = (newRomSet == R_NONE) ? R_PENT : newRomSet;
+        // Keep the slot of the ACTUAL arch (P512/P1024 used to spill into romSetPent,
+        // and an R_NONE request used to blank the slot instead of resetting it).
+        RomsetIdx& slot = (arch == A_P512)  ? romSetP512
+                        : (arch == A_P1024) ? romSetP1M
+                                            : romSetPent;
+        slot = romSet;
+        if (romSet == R_128K_CS) {
+#if !CARTRIDGE_AS_CUSTOM
+            MemESP::rom[0].assign_rom(gb_rom_0_128k_custom);
+            MemESP::rom[1].assign_rom(gb_rom_0_128k_custom + (16 << 10)); /// 16392;
+#else
+            MemESP::rom[0].assign_rom(gb_rom_Alf_cart);
+            MemESP::rom[1].assign_rom(gb_rom_Alf_cart + (16 << 10)); /// 16392;
+#endif
+        } else {
+            // Pentagon ROM0 IS the raw base of this family (the stock Sinclair first
+            // half is the 101-byte overlay, the other way round since 2026-09-09 —
+            // TS-Conf needs these bytes as a base). rom[1] is byte-identical to the
+            // Sinclair 128K second half, so it needs no overlay either way.
+            MemESP::rom[0].assign_rom(gb_rom_0_pentagon_128k);
+            MemESP::registerOverlay(gb_rom_0_pentagon_128k, nullptr);
+            MemESP::rom[1].assign_rom(gb_rom_1_sinclair_128k);
+            // ...and so is the second half — but a Scorpion or KAY may have left its
+            // BASIC-48 overlay on that pointer, and the registry outlives romsets.
+            MemESP::registerOverlay(gb_rom_1_sinclair_128k, nullptr);
+            if (romSet == R_PENT_GLUK) {
+                MemESP::rom[3].assign_rom(gb_rom_gluk);
+            }
+        }
+        break;
+    }
+    }
+    // 5.03 / 5.04TM are small read-only overlays over the 5.05D base, applied on the
+    // fly by MemESP (RomOverlay.h): rom[4] points at the 5.05D base in flash, and the
+    // active overlay supplies the differing bytes. No slot, no flash write, no reboot.
+    // NOT on Scorpion GMX: there rom[4] IS a GMX bank (plane 1 slot 0 — romInUse is
+    // (plane<<2)|slot), so this binding would clobber it, and its registerOverlay on
+    // the 5.05D base would evict the GMX plane-1 TR-DOS overlay keyed to the same
+    // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
+    // own bank 3).
+    if (!trdosBaseOwnedByMachine()) {
+        const uint8_t* base = gb_rom_4_trdos_504t;
+        const uint8_t* ov = gb_overlay_trdos_505d;   // the base is 5.04T now
+        switch (Config::trdosBios) {
+            case 0: ov = gb_overlay_trdos_503;   break;  // 5.03
+            case 1: ov = gb_overlay_trdos_504tm; break;  // 5.04TM
+            case 4: ov = gb_overlay_trdos_611e;  break;  // BetaDisk 128 v.6.11e
+            case 3: base = gb_rom_4_trdos_custom; break; // user-uploaded custom (raw)
+            default: break;                              // 5.05D = overlay over 5.04T
+        }
+        MemESP::rom[4].assign_rom(base);
+        MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);
+    }
+
+    // Battery-backed state follows the machine (see the note in RTC.cpp): push
+    // what the outgoing one wrote to its own file and adopt the incoming one's.
+    // Both are no-ops before their owners have initialised, so the boot-time
+    // call from setup() costs nothing.
+    RTC::machineChanged();
+    Nvram24::machineChanged();
+    // ...and the SMUC card only exists on a Scorpion, so its NVRAM is created
+    // or dropped here too (a live machine switch must not leave the guest with
+    // a card whose chip was never allocated).
+    Ports::smucCardUpdate();
+}
+
+// RAM fallback for Config when no SD card
+static string nvs_ram_buf;
+
+static bool nvs_get_str(const char* key, string& v, const vector<string>& sts) {
+    string k = key; k += '=';
+    for(const string& s: sts) {
+        if ( strncmp(k.c_str(), s.c_str(), k.size()) == 0 ) {
+            if ( s.size() <= k.size() ) {
+                return false;
+            }
+            v = s.c_str() + k.size();
+            return true;
+        }
+    }
+    return false;
+}
+// Enum twins of nvs_get_str: unknown/garbage on-disk text keeps the current value
+// (the compiled-in default), so Config never holds a non-table index.
+static void nvs_get_arch(const char* key, ArchIdx& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) v = archFromStr(t, v);
+}
+static void nvs_get_romset(const char* key, RomsetIdx& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) v = romsetFromStr(t, v);
+}
+static void nvs_get_b(const char* key, bool& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) {
+        v = (t == "true");
+    }
+}
+static void nvs_get_i(const char* key, int& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) {
+        v = atoi(t.c_str());
+    }
+}
+static void nvs_get_i8(const char* key, int8_t& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) {
+        v = atoi(t.c_str());
+    }
+}
+static bool nvs_get_u8(const char* key, uint8_t& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) {
+        v = atoi(t.c_str());
+        return true;
+    }
+    return false;
+}
+static void nvs_get_u16(const char* key, uint16_t& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) {
+        v = atoi(t.c_str());
+    }
+}
+static void nvs_get_sc(const char* key, signed char& v, const vector<string>& sts) {
+    string t;
+    if (nvs_get_str(key, t, sts)) {
+        v = atoi(t.c_str());
+    }
+}
+
+void Config::loadDiskMounts() {
+    string nvs = STORAGE_NVS;
+    FIL* handle = fopen2(nvs.c_str(), FA_READ);
+    if (!handle) {
+        return;
+    }
+    // Parse line-by-line without loading entire file into vector
+    // Only need drive0..drive3 .file entries
+    UINT br;
+    char c;
+    string s;
+    while(!f_eof(handle)) {
+        if (f_read(handle, &c, 1, &br) != FR_OK) {
+            fclose2(handle);
+            return;
+        }
+        if (c == '\n') {
+            // Check if this line is a driveN.file= entry
+            for (size_t i = 0; i < 4; ++i) {
+                char prefix[16];
+                snprintf(prefix, sizeof(prefix), "drive%u.file=", (unsigned)i);
+                size_t plen = strlen(prefix);
+                if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
+                    std::string fn = s.substr(plen);
+                    // A "USB:/..." disk must wait for the stick to enumerate
+                    // (we run before the first tuh_task pump) — inserting too
+                    // early fails and the next save() would erase the path.
+                    if (!fn.empty() && FileUtils::waitVolumeReady(fn)) {
+                        rvmWD1793InsertDisk(&ESPectrum::fdd, i, fn);
+                        if (ESPectrum::fdd.disk[i])
+                            ESPectrum::fdd.disk[i]->writeprotect = driveWP[i];
+                    }
+                }
+                snprintf(prefix, sizeof(prefix), "mb02d%u.file=", (unsigned)i);
+                plen = strlen(prefix);
+                if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
+                    std::string fn = s.substr(plen);
+                    // Keep the remembered path in sync (authoritative for save()).
+                    mb02DiskFile[i] = fn;
+                    // Only re-insert MB-02 disks when the interface is enabled.
+                    // The path is persisted regardless of Config::mb02, so a disk
+                    // remembered while MB-02+ was on lingers in the mounts file
+                    // even after a guard auto-disables MB-02+ (e.g. on a switch to
+                    // Profi at OSDMain.cpp). loadDiskMounts() runs AFTER VIDEO::Init
+                    // at the tight-heap point, and InsertDisk heap-allocs the disk
+                    // struct (~2 KB) + a FIL — on Profi, which forces ~96 KB of SRAM
+                    // pages, that wasted alloc for a disabled interface can OOM the
+                    // boot (Profi never starts). Skipping the insert when !mb02 is
+                    // safe: the path stays remembered and the disk reappears once
+                    // MB-02+ is re-enabled (loadMb02DiskMounts) or on next boot.
+                    if (!fn.empty() && Config::mb02 && FileUtils::waitVolumeReady(fn)) {
+                        rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, i, fn);
+                        if (ESPectrum::mb02_fdd.disk[i])
+                            ESPectrum::mb02_fdd.disk[i]->writeprotect = mb02WP[i];
+                    }
+                }
+            }
+            // +3 disks: two drives, and only re-inserted when a +3 is the running
+            // machine. Same reasoning as the MB-02 guard above — mounting opens a FIL
+            // and claims the sector window at the tight-heap point, which is pure waste
+            // on a machine that has no uPD765. The path stays remembered either way.
+            for (size_t i = 0; i < 2; ++i) {
+                char prefix[16];
+                snprintf(prefix, sizeof(prefix), "p3d%u.file=", (unsigned)i);
+                const size_t plen = strlen(prefix);
+                if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
+                    std::string fn = s.substr(plen);
+                    p3DiskFile[i] = fn;
+                    if (!fn.empty() && Config::isPlus3() && FileUtils::waitVolumeReady(fn))
+                        Plus3Fdc::mount(i, fn);
+                }
+            }
+            s.clear();
+        } else {
+            s += c;
+        }
+    }
+    fclose2(handle);
+}
+
+// (Re)mount the MB-02+ disks remembered in mb02DiskFile[]. loadDiskMounts()
+// skips MB-02 disks while the interface is disabled (to keep the heap free on
+// Profi etc.), so the remembered paths persist but aren't loaded. Call this the
+// moment MB-02+ is enabled at runtime (OSD toggle) to restore the last-used
+// disks — otherwise they'd only reappear after a full reboot.
+void Config::loadMb02DiskMounts() {
+    for (int i = 0; i < 4; ++i) {
+        const string& fn = mb02DiskFile[i];
+        // Skip slots already holding the same disk so we don't eject / re-open a
+        // disk that's already mounted (re-insert resets state).
+        if (!fn.empty() &&
+            !(ESPectrum::mb02_fdd.disk[i] &&
+              ESPectrum::mb02_fdd.disk[i]->fname == fn)) {
+            rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, i, fn);
+            if (ESPectrum::mb02_fdd.disk[i])
+                ESPectrum::mb02_fdd.disk[i]->writeprotect = mb02WP[i];
+        }
+    }
+}
+
+// Stored in CONFIG_DIR; legacy "/wifi.cfg" at the SD root is still read as a
+// fallback (migration) but new saves go to the config dir.
+#define WIFI_CFG_PATH      CONFIG_DIR "/wifi.cfg"
+#define WIFI_CFG_PATH_OLD  "/wifi.cfg"
+
+void Config::loadWifiConfig() {
+    wifi_ssid.clear();
+    wifi_pass.clear();
+    wifi_enabled = false;
+    wifi_tz = 0;
+    sntp_auto = true;   // absent key = on, so existing cards keep today's behaviour
+    FIL* f = fopen2(WIFI_CFG_PATH, FA_READ);
+    if (!f) f = fopen2(WIFI_CFG_PATH_OLD, FA_READ); // legacy location
+    if (!f) return;
+    UINT br;
+    char c;
+    string line;
+    while (!f_eof(f)) {
+        if (f_read(f, &c, 1, &br) != FR_OK) break;
+        if (c == '\n') {
+            auto eq = line.find('=');
+            if (eq != string::npos) {
+                string key = line.substr(0, eq);
+                string val = line.substr(eq + 1);
+                if (key == "ssid")        wifi_ssid = val;
+                else if (key == "pass")   wifi_pass = val;
+                else if (key == "autoconnect") wifi_enabled = (val == "1" || val == "true");
+                else if (key == "tz")     wifi_tz = (signed char)atoi(val.c_str());
+                else if (key == "sntp")   sntp_auto = (val == "1" || val == "true");
+                else if (key == "net_host")  net_host = val;
+                else if (key == "net_user")  net_user = val;
+                else if (key == "net_port")  net_port = (uint16_t)atoi(val.c_str());
+                else if (key == "net_proto") net_proto = (uint8_t)atoi(val.c_str());
+                else if (key == "net_dl")    { if (!val.empty()) net_dl_dir = val; }
+                else if (key == "net_ul")    { if (!val.empty()) net_ul_dir = val; }
+                else if (key == "catalog_host") catalog_host = val;
+                else if (key == "catalog_port") catalog_port = (uint16_t)atoi(val.c_str());
+                else if (key == "last_loc")  last_loc = val;   // tab-separated; no '=' inside
+                else if (key == "baud")      { zifi_baud = (uint32_t)strtoul(val.c_str(), nullptr, 10); if (!zifi_baud) zifi_baud = 115200; }
+            }
+            line.clear();
+        } else if (c != '\r') {
+            line += c;
+        }
+    }
+    fclose2(f);
+}
+
+void Config::saveWifiConfig() {
+    FileUtils::mkdirParents(CONFIG_DIR);
+    FIL* f = fopen2(WIFI_CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS);
+    if (!f) return;
+    // Not on the stack: this runs deep under do_OSD (F5 → Add Remote) where the
+    // core stack is tight — a 1 KB local here overflowed it (stackOvf). It used to be
+    // `static`, i.e. 1 KB of .bss for the whole session to serve one write; it is now
+    // borrowed for the length of the call.
+    const size_t bufSz = 1024;
+    char* buf = (char*)Buffer::palloc(bufSz, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!buf) { fclose2(f); return; }
+    // bufSz, NOT sizeof(buf): buf is a pointer now, and sizeof() on it would
+    // silently cap every write at 4 bytes.
+    int n = snprintf(buf, bufSz,
+                     "ssid=%s\npass=%s\ntz=%d\nautoconnect=%d\nsntp=%d\n"
+                     "net_host=%s\nnet_user=%s\nnet_port=%u\nnet_proto=%u\nbaud=%u\n"
+                     "net_dl=%s\nnet_ul=%s\ncatalog_host=%s\ncatalog_port=%u\nlast_loc=%s\n",
+                     wifi_ssid.c_str(), wifi_pass.c_str(),
+                     (int)wifi_tz, wifi_enabled ? 1 : 0, sntp_auto ? 1 : 0,
+                     net_host.c_str(), net_user.c_str(),
+                     (unsigned)net_port, (unsigned)net_proto, (unsigned)zifi_baud,
+                     net_dl_dir.c_str(), net_ul_dir.c_str(),
+                     catalog_host.c_str(), (unsigned)catalog_port, last_loc.c_str());
+    UINT bw;
+    if (n > 0) f_write(f, buf, n, &bw);
+    Buffer::pfree(buf);
+    fclose2(f);
+}
+
+#define REMOTES_PATH CONFIG_DIR "/remotes.tsv"
+
+int Config::loadRemotes(Remote* out, int cap) {
+    FIL* f = fopen2(REMOTES_PATH, FA_READ);
+    if (!f) return 0;
+    int n = 0;
+    UINT br; char c; string line;
+    auto flush = [&]() {
+        if (line.empty()) return;
+        // Up to 8 tab fields: proto host port user savepass pass alias path. Older 6/7-field
+        // lines (no alias/path) parse fine — the missing trailing fields stay empty.
+        string fld[8]; int fi = 0;
+        for (char ch : line) { if (ch == '\t') { if (fi < 7) ++fi; } else fld[fi] += ch; }
+        if (fi >= 4 && n < cap) {            // need proto..savepass present
+            Remote& r = out[n];
+            r.proto    = (fld[0] == "sftp") ? 1 : 0;
+            r.host     = fld[1];
+            r.port     = (uint16_t)atoi(fld[2].c_str());
+            r.user     = fld[3];
+            r.savepass = (fld[4] == "1");
+            r.pass     = r.savepass ? fld[5] : "";
+            r.alias    = fld[6];             // optional display name ("" for old lines)
+            r.path     = fld[7];             // optional start directory
+            ++n;
+        }
+        line.clear();
+    };
+    while (!f_eof(f)) {
+        if (f_read(f, &c, 1, &br) != FR_OK || br == 0) break;
+        if (c == '\n') flush();
+        else if (c != '\r') line += c;
+    }
+    flush();                                  // last line may lack a trailing newline
+    fclose2(f);
+    return n;
+}
+
+void Config::saveRemotes(const Remote* list, int count) {
+    FileUtils::mkdirParents(CONFIG_DIR);
+    ScopedHeap bh(512);        // off the stack (saveRemotes runs deep under do_OSD) and off .bss
+    if (!bh) return;
+    char* buf = bh.as<char>();
+    FIL* f = fopen2(REMOTES_PATH, FA_WRITE | FA_CREATE_ALWAYS);
+    if (!f) return;
+    for (int i = 0; i < count; ++i) {
+        const Remote& r = list[i];
+        int n = snprintf(buf, 512, "%s\t%s\t%u\t%s\t%d\t%s\t%s\t%s\n",
+                         r.proto ? "sftp" : "ftp", r.host.c_str(), (unsigned)r.port,
+                         r.user.c_str(), r.savepass ? 1 : 0,
+                         r.savepass ? r.pass.c_str() : "", r.alias.c_str(), r.path.c_str());
+        UINT bw; if (n > 0) f_write(f, buf, (UINT)n, &bw);
+    }
+    fclose2(f);
+}
+
+#if TFT
+extern "C" uint8_t TFT_FLAGS;
+extern "C" uint8_t TFT_INVERSION;
+#endif
+
+// Parse NVS data from a raw string into vector of lines
+static void nvs_parse_lines(const string& data, vector<string>& sts) {
+    string s;
+    for (char c : data) {
+        if (c == '\n') {
+            sts.push_back(s);
+            s.clear();
+        } else {
+            s += c;
+        }
+    }
+    if (!s.empty()) sts.push_back(s);
+}
+
+// Read config from FS
+void Config::load() {
+    initHotkeys(); // fill defaults before overriding from NVS
+    vector<string> sts;
+    if (FileUtils::fsMount) {
+        // storage.nvs or nothing: there is no fallback to a saved profile. A
+        // firmware update lands in a new per-version directory and therefore
+        // starts from compiled-in defaults, by design — the user loads a
+        // profile from Options once. (A factory reset is the same state, which
+        // is why it needs no marker file any more.)
+        string nvs = STORAGE_NVS;
+        FIL* handle = fopen2(nvs.c_str(), FA_READ);
+        if (!handle) {
+            return;
+        }
+        UINT br;
+        char c;
+        string s;
+        while(!f_eof(handle)) {
+            if (f_read(handle, &c, 1, &br) != FR_OK) {
+                fclose2(handle);
+                return;
+            }
+            if (c == '\n') {
+                sts.push_back(s);
+                s.clear();
+            } else {
+                s += c;
+            }
+        }
+        fclose2(handle);
+    } else if (!nvs_ram_buf.empty()) {
+        nvs_parse_lines(nvs_ram_buf, sts);
+    } else {
+        return;
+    }
+    {
+
+        #if TFT
+        nvs_get_u8("TFT_FLAGS", TFT_FLAGS, sts);
+        nvs_get_u8("TFT_INVERSION", TFT_INVERSION, sts);
+        #endif
+        nvs_get_arch("arch", arch, sts);
+        arch = archCanon(arch);   // "Karabas" in NVS is an alias of Profi
+        nvs_get_romset("romSet", romSet, sts);
+        nvs_get_romset("romSet48", romSet48, sts);
+        nvs_get_romset("romSet128", romSet128, sts);
+        nvs_get_romset("romSetPent", romSetPent, sts);
+        nvs_get_romset("romSetP512", romSetP512, sts);
+        nvs_get_romset("romSetP1M", romSetP1M, sts);
+        nvs_get_romset("romSetProfi", romSetProfi, sts);
+        nvs_get_romset("romSetScorp", romSetScorp, sts);
+        nvs_get_romset("romSetTsconf", romSetTsconf, sts);
+        nvs_get_romset("romSetAtm", romSetAtm, sts);
+        nvs_get_arch("pref_arch", pref_arch, sts);
+        pref_arch = archCanon(pref_arch);
+        nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
+        nvs_get_romset("pref_romSet_128", pref_romSet_128, sts);
+        nvs_get_romset("pref_romSetPent", pref_romSetPent, sts);
+        nvs_get_romset("pref_romSetP512", pref_romSetP512, sts);
+        nvs_get_romset("pref_romSetP1M", pref_romSetP1M, sts);
+        nvs_get_romset("pref_romSetProfi", pref_romSetProfi, sts);
+        nvs_get_romset("pref_romSetScorp", pref_romSetScorp, sts);
+        nvs_get_romset("pref_romSetTsconf", pref_romSetTsconf, sts);
+        nvs_get_romset("pref_romSetAtm", pref_romSetAtm, sts);
+        nvs_get_str("ram", ram_file, sts);
+        nvs_get_u8("ram_origin", ram_file_origin, sts); // provenance (default LOCAL)
+        nvs_get_b("AY48", AY48, sts);
+        nvs_get_b("SAA1099", SAA1099, sts);
+        nvs_get_u8("midi", midi, sts);
+        nvs_get_str("midibank", midi_bank, sts);
+        // Mode 3 was "Software MIDI" (the procedural SoftSynth), removed along with its
+        // preset. A stale NVS value must not select a synth that no longer exists.
+        if (midi == 3) midi = 0;
+        nvs_get_u16("cpu_mhz", cpu_mhz, sts);
+        if (cpu_mhz == 0) cpu_mhz = CPU_MHZ;
+        nvs_get_u16("max_flash_freq", max_flash_freq, sts);
+        if (max_flash_freq == 0) max_flash_freq = 66;
+        nvs_get_u16("max_psram_freq", max_psram_freq, sts);
+        if (max_psram_freq == 0 || max_psram_freq > 166) max_psram_freq = 166;   // 180 (168 MHz SCK) was offered briefly 2026-09-07; the chip does not hold it
+        nvs_get_u16("max_tft_freq", max_tft_freq, sts);
+        if (max_tft_freq == 0) max_tft_freq = 126;
+        graphics_max_tft_freq_mhz = max_tft_freq;
+        {
+            std::string vv;
+            nvs_get_str("vreq_voltage", vv, sts);
+            if      (vv == "1_15") vreq_voltage = VREG_VOLTAGE_1_15;
+            else if (vv == "1_20") vreq_voltage = VREG_VOLTAGE_1_20;
+            else if (vv == "1_25") vreq_voltage = VREG_VOLTAGE_1_25;
+            else if (vv == "1_30") vreq_voltage = VREG_VOLTAGE_1_30;
+            else if (vv == "1_35") vreq_voltage = VREG_VOLTAGE_1_35;
+            else if (vv == "1_40") vreq_voltage = VREG_VOLTAGE_1_40;
+            else if (vv == "1_50") vreq_voltage = VREG_VOLTAGE_1_50;
+            else if (vv == "1_60") vreq_voltage = VREG_VOLTAGE_1_60;
+            else if (vv == "1_65") vreq_voltage = VREG_VOLTAGE_1_65;
+            else if (vv == "1_70") vreq_voltage = VREG_VOLTAGE_1_70;
+            else if (vv == "1_80") vreq_voltage = VREG_VOLTAGE_1_80;
+        }
+        nvs_get_b("Issue2", Issue2, sts);
+        nvs_get_b("rtc_enabled", rtc_enabled, sts);
+        nvs_get_u16("mouse_sens", mouse_sens, sts);
+        if (mouse_sens < 8 || mouse_sens > 1024) mouse_sens = 64;   // a stale/foreign NVS value
+        nvs_get_b("psram_enabled", psram_enabled, sts);
+        nvs_get_b("dbg_uart", dbg_uart, sts);
+        nvs_get_b("debug_log", Debug::log_enabled, sts);
+        nvs_get_b("flashload", flashload, sts);
+        nvs_get_b("rightSpace", rightSpace, sts);
+        nvs_get_b("wasd", wasd, sts);
+        nvs_get_b("ledIndicators", ledIndicators, sts);
+        nvs_get_b("ledPanel", led_panel, sts);
+        nvs_get_b("sdLedBlink", sdLedBlink, sts);
+        nvs_get_i8("temp_offset", temp_offset, sts);
+        nvs_get_u8("gm_field", gm_field, sts);
+        nvs_get_u8("gm_pad",   gm_pad,   sts);
+        nvs_get_u8("gm_padw",  gm_padw,  sts);
+        nvs_get_u8("gm_padh",  gm_padh,  sts);
+        nvs_get_u8("gm_ballc", gm_ballc, sts);
+        nvs_get_u8("gm_ball",  gm_ball,  sts);
+        nvs_get_u8("gm_pspd",  gm_pspd,  sts);
+        // Load typed breakpoints array
+        for (int i = 0; i < MAX_BREAKPOINTS; i++) {
+            breakPoints[i] = {0xFFFF, BP_NONE};
+            char key[16];
+            snprintf(key, sizeof(key), "bp%d", i);
+            nvs_get_u16(key, breakPoints[i].addr, sts);
+            uint8_t t = BP_NONE;
+            snprintf(key, sizeof(key), "bpt%d", i);
+            nvs_get_u8(key, t, sts);
+            breakPoints[i].type = (BPType)t;
+            if (breakPoints[i].type == BP_NONE) breakPoints[i].addr = 0xFFFF;
+        }
+        // Migrate old single breakPoint
+        {
+            bool anyLoaded = false;
+            for (int i = 0; i < MAX_BREAKPOINTS; i++)
+                if (breakPoints[i].type != BP_NONE) { anyLoaded = true; break; }
+            if (!anyLoaded) {
+                uint16_t oldBP = 0xFFFF; bool oldEnable = false;
+                nvs_get_u16("breakPoint", oldBP, sts);
+                nvs_get_b("enableBreakPoint", oldEnable, sts);
+                if (oldEnable && oldBP != 0xFFFF)
+                    breakPoints[0] = {oldBP, BP_PC};
+                // Migrate old port BPs
+                uint16_t oldPR = 0xFFFF, oldPW = 0xFFFF;
+                bool oldPRe = false, oldPWe = false;
+                nvs_get_u16("portReadBP", oldPR, sts);
+                nvs_get_b("enablePortReadBP", oldPRe, sts);
+                if (oldPRe && oldPR != 0xFFFF)
+                    breakPoints[1] = {oldPR, BP_PORT_READ};
+                nvs_get_u16("portWriteBP", oldPW, sts);
+                nvs_get_b("enablePortWriteBP", oldPWe, sts);
+                if (oldPWe && oldPW != 0xFFFF)
+                    breakPoints[2] = {oldPW, BP_PORT_WRITE};
+            }
+        }
+        recountBP();
+        nvs_get_b("tape_player", tape_player, sts);
+        nvs_get_b("profi_ext_keys", profi_ext_keys, sts);
+        bool b; nvs_get_b("real_player", b, sts);
+#if LOAD_WAV_PIO
+        if (real_player && !b) {
+            pcm_audio_in_stop();
+        }
+#endif
+        real_player = b;
+        nvs_get_b("tape_timing_rg", tape_timing_rg, sts);
+        nvs_get_b("tape_autostart", tape_autostart, sts);
+        nvs_get_u8("tape_wear", tape_wear, sts);
+        if (tape_wear > 3) tape_wear = 0;   // a stale/foreign NVS value
+        // Fast load and tape wear are mutually exclusive (Tape.cpp fastLoadOn), and
+        // since 2026-09-20 the menu enforces it by turning flashload OFF. Settle the
+        // pair here too: a card written by an older build carries both, and the row
+        // would then read Yes while every block arrives as real pulses.
+        if (tape_wear != 0) flashload = false;
+        nvs_get_str("tape_file", tape_file, sts);
+        nvs_get_u8("joystick", Config::joystick, sts);
+
+        // Read joystick definition
+        for (int n = 0; n < 14; ++n) {
+            char joykey[16];
+            snprintf(joykey, 16, "joydef%02u", n);
+            // printf("%s\n",joykey);
+            nvs_get_u16(joykey, Config::joydef[n], sts);
+        }
+
+        nvs_get_u8("AluTiming", Config::AluTiming, sts);
+        nvs_get_u8("joy2cursor", Config::joy2cursor, sts);
+        nvs_get_u8("secondJoy", Config::secondJoy, sts);
+        nvs_get_u8("kempstonPort", Config::kempstonPort, sts);
+        nvs_get_u8("ayConfig", Config::ayConfig, sts);
+        nvs_get_u8("turbosound", Config::turbosound, sts);
+        nvs_get_u8("tsfm", Config::tsfm, sts);
+        nvs_get_u8("opl3", Config::opl3, sts);
+        nvs_get_u8("cms", Config::cms, sts);
+        nvs_get_u8("sn76489", Config::sn76489, sts);
+        nvs_get_u8("sn_clock", Config::sn_clock, sts);
+        nvs_get_u8("ym2413", Config::ym2413, sts);
+        if (Config::sn_clock > 2) Config::sn_clock = 0;
+        // Setting is Yes/No now (3 = both chip-select schemes, 0 = off): fold the
+        // old NedoPC-only (1) / old-TS-only (2) values in, or the menu row would
+        // match no option at all.
+        if (Config::turbosound) Config::turbosound = 3;
+        nvs_get_u8("turbo", Config::turbo, sts);
+        if (Config::turbo > 3) Config::turbo = 0;
+        nvs_get_u8("covox", Config::covox, sts);
+        if (Config::covox > 2) Config::covox = 0; // migrate short-lived covox==3 SounDrive mode
+        nvs_get_u8("soundrive", Config::soundrive, sts);
+        if (Config::soundrive > 2) Config::soundrive = 2;
+        nvs_get_u8("gs_enabled", Config::gs_enabled, sts);
+        nvs_get_u8("gs_ram_size", Config::gs_ram_size, sts);
+        nvs_get_u8("gs_clock", Config::gs_clock, sts);
+        nvs_get_u8("ngs_clock", Config::ngs_clock, sts);
+        if (Config::ngs_clock > 4) Config::ngs_clock = 0;
+        nvs_get_u8("throtling2", Config::throtling, sts);
+        nvs_get_b("CursorAsJoy", CursorAsJoy, sts);
+        nvs_get_b("betadisk", betadisk, sts);
+        nvs_get_b("trdosFastMode", trdosFastMode, sts);
+        nvs_get_b("trdosAutoBoot", trdosAutoBoot, sts);
+        if (!nvs_get_u8("trdosSoundLedMode", trdosSoundLed, sts)) {
+            // Migrate legacy bool key: true -> Sound+Led (3), false -> Off (0)
+            bool old = false;
+            nvs_get_b("trdosSoundLed", old, sts);
+            trdosSoundLed = old ? 3 : 0;
+        }
+        nvs_get_u8("trdosBios", trdosBios, sts);
+        nvs_get_u8("alfCartBanks", alfCartBanks, sts);
+        nvs_get_str("alfcart", alfCartPath, sts);
+        nvs_get_str("dckcart", dckCartPath, sts);
+        for (int i = 0; i < 4; i++) {
+            char k[12]; snprintf(k, sizeof(k), "drive%d.wp", i);
+            nvs_get_b(k, driveWP[i], sts);
+        }
+        nvs_get_u8("esxdos", esxdos, sts);
+        // Migrate old bool key
+        { bool old_divmmc = false; nvs_get_b("divmmc", old_divmmc, sts); if (old_divmmc && esxdos == 0) esxdos = 1; }
+        nvs_get_str("esxdos_hdf", esxdos_hdf_image[0], sts);
+        nvs_get_str("esxdos_hd1", esxdos_hdf_image[1], sts);
+        nvs_get_u8("ide_scheme", ide_scheme, sts);
+        nvs_get_str("ide_img0", ide_image[0], sts);
+        nvs_get_str("ide_img1", ide_image[1], sts);
+        for (int s = 0; s < 2; s++) {
+            char k[10]; snprintf(k, sizeof(k), "ide_chs%d", s);
+            string chs; nvs_get_str(k, chs, sts);
+            unsigned v[3];   // C/H/S
+            if (scanUints(chs.c_str(), '/', v, 3) == 3) {
+                ide_chs[s][0]=v[0]; ide_chs[s][1]=v[1]; ide_chs[s][2]=v[2];
+            }
+        }
+        nvs_get_u8("mb02", mb02, sts);
+        for (int i = 0; i < 4; i++) {
+            char k[16]; snprintf(k, sizeof(k), "mb02d%d.wp", i);
+            nvs_get_b(k, mb02WP[i], sts);
+            // Remembered MB-02+ disk path — authoritative source for save()/restore,
+            // independent of whether the interface is currently loaded.
+            snprintf(k, sizeof(k), "mb02d%d.file", i);
+            nvs_get_str(k, mb02DiskFile[i], sts);
+        }
+        if (!nvs_get_u8("mb02SoundLedMode", mb02SoundLed, sts)) {
+            // Migrate legacy bool key: true -> Sound+Led (3), false -> Off (0)
+            bool old = false;
+            nvs_get_b("mb02SoundLed", old, sts);
+            mb02SoundLed = old ? 3 : 0;
+        }
+        for (int i = 0; i < 2; i++) {
+            char k[16]; snprintf(k, sizeof(k), "p3d%d.wp", i);
+            nvs_get_b(k, p3WP[i], sts);
+            snprintf(k, sizeof(k), "p3d%d.file", i);
+            nvs_get_str(k, p3DiskFile[i], sts);
+        }
+        nvs_get_b("p3_speedlock", p3_speedlock, sts);
+        nvs_get_b("p3_fastdisk", p3_fastdisk, sts);
+        nvs_get_b("zcontroller", zcontroller, sts);
+        nvs_get_u8("zifi_enabled", zifi_enabled, sts);
+        nvs_get_u8("zifi_tx_pin", zifi_tx_pin, sts);
+        nvs_get_u8("zifi_rx_pin", zifi_rx_pin, sts);
+        nvs_get_u8("zifi_transport", zifi_transport, sts);
+#if !PICOSPECCY_WIFI
+        if (zifi_transport == 2) zifi_transport = 0;   // on-chip radio exists only on W boards
+#endif
+        nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
+        nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
+        nvs_get_str("DSK_Path", FileUtils::DSK_Path, sts);
+        nvs_get_str("ROM_Path", FileUtils::ROM_Path, sts);
+        nvs_get_str("IMG_Path", FileUtils::IMG_Path, sts);
+        nvs_get_str("ALL_Path", FileUtils::ALL_Path, sts);
+        for (size_t i = 0; i < 6; ++i) {
+            DISK_FTYPE& ft = FileUtils::fileTypes[i];
+            const string s = "fileTypes" + to_string(i);
+            nvs_get_i((s + ".begin_row").c_str(), ft.begin_row, sts);
+            nvs_get_i((s + ".focus").c_str(), ft.focus, sts);
+            nvs_get_u8((s + ".fdMode").c_str(), ft.fdMode, sts);
+            nvs_get_str((s + ".fileSearch").c_str(), ft.fileSearch, sts);
+        }
+        nvs_get_u8("scanlines", Config::scanlines, sts);
+        nvs_get_u8("crt_filter", Config::crt_filter, sts);
+        if (Config::crt_filter > 6) Config::crt_filter = 0;
+        nvs_get_u8("render", Config::render, sts);
+        nvs_get_b("render_paper", Config::render_paper, sts);
+        nvs_get_b("render_border", Config::render_border, sts);
+        nvs_get_b("TABasfire1", Config::TABasfire1, sts);
+        nvs_get_sc("AudVolume", Config::aud_volume, sts);
+        nvs_get_u8("AudBoost", Config::audio_boost, sts);
+        // Try new format first, fallback to old bool-based format for migration
+        if (!nvs_get_u8("hdmi_vmode", Config::hdmi_video_mode, sts)) {
+            // Migration from old format
+            bool fb = false, hb = false, fb60 = false;
+            int old_mode = 0;
+            nvs_get_b("full_border", fb, sts);
+            nvs_get_b("half_border", hb, sts);
+            nvs_get_b("full_border_60", fb60, sts);
+            nvs_get_i("hdmi_video_mode", old_mode, sts);
+            // 720x576@60 was removed (non-working) — old fb60 maps to 720x576@50
+            Config::hdmi_video_mode = hb ? VM_720x480_60 : (fb60 || fb) ? VM_720x576_50 : (old_mode > 0 ? VM_640x480_50 : VM_640x480_60);
+        } else if (Config::hdmi_video_mode > VM_LAST) {
+            // Remap configs saved before 720x576@60 removal: old enum 4 (@50) -> 3, old 3 (@60) handled below
+            Config::hdmi_video_mode = VM_720x576_50;
+        }
+        if (!nvs_get_u8("vga_vmode", Config::vga_video_mode, sts)) {
+            int old_mode = 0;
+            nvs_get_i("vga_video_mode", old_mode, sts);
+            Config::vga_video_mode = old_mode > 0 ? VM_640x480_50 : VM_640x480_60;
+        } else if (Config::vga_video_mode > VM_LAST) {
+            // Remap configs saved before 720x576@60 removal
+            Config::vga_video_mode = VM_720x576_50;
+        }
+        // The 90/75 Hz modes only exist at sys_clk 378 MHz (the one clock that
+        // gives the HDMI PIO a clean 1.0 divider for their 378 MHz TMDS rate), so
+        // a config that arrives from another board — or one whose CPU clock was
+        // lowered afterwards — degrades to the 25.2 MHz twin rather than handing
+        // the PIO a fractional divider.  The menu refuses the combination up front
+        // (resolveConstraints); this is the backstop for everything that does not
+        // go through it.
+        if (cpu_mhz != VM_FAST_CPU_MHZ) {
+            hdmi_video_mode = baseVideoMode(hdmi_video_mode);
+            vga_video_mode  = baseVideoMode(vga_video_mode);
+        }
+        // The HDMI half is NOT degraded on an HSTX build any more.  It used to be,
+        // for "clk_hstx 189 MHz is past the datasheet's 150" — and debug/HSTX runs
+        // 720p at a 74.25 MHz pixel, i.e. clk_hstx 371.25 MHz, so that ceiling is
+        // not where the silicon stops.  189 MHz is clk_sys 378 / 2, an integer (and
+        // even) divider, which is the clock these modes already require.
+#if VGA_HSTX
+        // ...and on the VGA half of an HSTX build for a different reason: 126 MHz
+        // is not a whole number of clk_hstx cycles per 37.8 MHz pixel.
+        vga_video_mode = baseVideoMode(vga_video_mode);
+#endif
+        nvs_get_b("v_sync_enabled", v_sync_enabled, sts);
+        // ...and they drive the display faster than the machine, so v_sync pacing
+        // (one emulated frame per display frame) would run it 50% fast.
+        if (isFastVideoMode(hdmi_video_mode) || isFastVideoMode(vga_video_mode))
+            v_sync_enabled = false;
+        nvs_get_b("gigascreen_enabled", gigascreen_enabled, sts);
+        nvs_get_u8("gigascreen_onoff", gigascreen_onoff, sts);
+        nvs_get_b("ulaplus", ulaplus, sts);
+        nvs_get_b("hdmi_dither", hdmi_dither, sts);
+        nvs_get_u8("hdmi_clkdrv", hdmi_clock_drive, sts);
+        if (hdmi_clock_drive > 1) hdmi_clock_drive = 0;
+        nvs_get_b("hdmi_snap", hdmi_snap, sts);
+#if HDMI_HSTX >= 2
+        hdmi_snap = false;   // the hardware TMDS encoder makes it moot (Video.cpp snapTransform)
+#endif
+        nvs_get_b("vga_dither", vga_dither, sts);
+        nvs_get_b("vga_pwm", vga_pwm, sts);
+        vga_pwm_cfg = vga_pwm ? 1 : 0;
+        nvs_get_u8("vga_pwm_phase", vga_pwm_phase, sts);
+        vga_pwm_phase &= 3;
+        vga_pwm_phase_cfg = vga_pwm_phase;
+        nvs_get_b("ui_vga_solid", ui_vga_solid, sts);
+        nvs_get_b("ui_rounded", ui_rounded, sts);
+        nvs_get_u8("ui_theme", ui_theme, sts);
+        // Which named profile this config came from, so the menu can show it and
+        // open its list on it. 0 = none (never loaded one, or a factory start).
+        nvs_get_u8("profile_slot", profile_slot, sts);
+        if (profile_slot > CONFIG_PROFILE_SLOTS) profile_slot = 0;
+        nvs_get_u8("ui_click_vol", ui_click_vol, sts);
+        if (ui_click_vol > 3) ui_click_vol = 2;
+        nvs_get_b("timex_video", timex_video, sts);
+        nvs_get_u8("dma_mode", dma_mode, sts);
+        nvs_get_b("mode16col_onoff", mode16col_onoff, sts);
+        nvs_get_u8("palette", palette, sts);
+        std::string v;
+        nvs_get_str("audio_driver", v, sts);
+        if (v == "pwm") Config::audio_driver = 1;
+        else if (v == "i2s") Config::audio_driver = 2;
+        else if (v == "ay") Config::audio_driver = 3;
+        else if (v == "hdmi") Config::audio_driver = 4;
+        else if (v == "pcm5122") Config::audio_driver = 5;
+        nvs_get_str("video_driver", v, sts);
+        if (v == "VGA" || v == "vga") video_driver = 1;
+        else if (v == "HDMI" || v == "hdmi" || v == "DVI" || v == "dvi") video_driver = 2;
+        nvs_get_b("byte_cobmect_mode", byte_cobmect_mode, sts);
+        // Load hotkey bindings (defaults already set by initHotkeys() before load)
+        for (int i = 0; i < HK_COUNT; i++) {
+            char key[12];
+            snprintf(key, sizeof(key), "hkVK%02d", i);
+            nvs_get_u16(key, hotkeys[i].vk, sts);
+            uint8_t mod = (hotkeys[i].alt ? 2 : 0) | (hotkeys[i].ctrl ? 1 : 0);
+            snprintf(key, sizeof(key), "hkMod%02d", i);
+            nvs_get_u8(key, mod, sts);
+            hotkeys[i].alt  = (mod >> 1) & 1;
+            hotkeys[i].ctrl = (mod     ) & 1;
+        }
+        // Murmuzavr page count. Lands in Config::mem_pg_cnt (the persisted pick); the
+        // live MEM_PG_CNT is derived from it once in ESPectrum::setup(), which also
+        // applies the Pentagon-only clamp.
+        int pg = 0;
+        nvs_get_i("MEM_PG_CNT", pg, sts);
+        mem_pg_cnt = (pg < 8 || pg > 2048) ? 64 : (uint16_t)pg;
+        MEM_PG_CNT = mem_pg_cnt;
+        int tsc = -1;
+        nvs_get_i("tsconf_clk_cap", tsc, sts);
+        tsconf_clk_cap = (tsc >= 0 && tsc <= 2) ? (uint8_t)tsc : 2;
+    }
+    loaded = true;
+    if (FileUtils::fsMount)
+        loadWifiConfig();
+}
+
+// Streams key=value lines straight to the SD file when one is open;
+// the whole config (~5KB) must never be built in a heap string — on
+// When only ~15KB heap is free at save time the realloc growth
+// of a single big buffer OOMs.
+struct NvsWriter {
+    FIL* f = nullptr;       // file target
+    string* ram = nullptr;  // RAM fallback target (no SD)
+    bool ok = true;
+    void write(const char* s, size_t n) {
+        if (f) {
+            UINT bw;
+            if (f_write(f, s, n, &bw) != FR_OK || bw != n) ok = false;
+        } else if (ram) {
+            ram->append(s, n);
+        }
+    }
+};
+
+static void nvs_set_str(NvsWriter& buf, const char* name, const char* val) {
+    buf.write(name, strlen(name));
+    buf.write("=", 1);
+    buf.write(val, strlen(val));
+    buf.write("\n", 1);
+}
+static void nvs_set_i(NvsWriter& buf, const char* name, int val) {
+    char t[16]; snprintf(t, sizeof(t), "%d", val);
+    nvs_set_str(buf, name, t);
+}
+static void nvs_set_i8(NvsWriter& buf, const char* name, int8_t val) {
+    nvs_set_i(buf, name, val);
+}
+static void nvs_set_u8(NvsWriter& buf, const char* name, uint8_t val) {
+    nvs_set_i(buf, name, val);
+}
+static void nvs_set_u16(NvsWriter& buf, const char* name, uint16_t val) {
+    nvs_set_i(buf, name, val);
+}
+static void nvs_set_sc(NvsWriter& buf, const char* name, signed char val) {
+    nvs_set_i(buf, name, val);
+}
+
+// Dump actual config to FS. path==nullptr writes the normal per-version/
+// per-board storage.nvs; a caller passes a profile path to snapshot the current
+// live settings under a name (see profileSave). `profileName` is written as the
+// FIRST line of the file so the menu can read a profile's name off the head of
+// it instead of parsing a whole config — every other reader is a pull model
+// (nvs_get_*), so an unknown key costs nothing and the order never matters.
+void Config::save(const char* path, const char* profileName) {
+    const bool toFile = (path != nullptr);
+    if (toFile && !FileUtils::fsMount) return; // no SD: nothing to persist a profile to
+    string nvs_path_s = toFile ? path : STORAGE_NVS;
+    string nvs_tmp_s = nvs_path_s + ".tmp";
+    const char* nvs_tmp = nvs_tmp_s.c_str();
+    const char* nvs_path = nvs_path_s.c_str();
+    FIL* handle = nullptr;
+    if (FileUtils::fsMount) {
+        if (!toFile && !loaded) {
+            // Config was never loaded from file — refuse to overwrite
+            // existing storage.nvs with defaults. The guard is for a file we
+            // could not READ (SD hiccup at boot); a file THIS session created
+            // is ours, which is why the successful write below sets `loaded`.
+            // Without that, only the first save of a session landed: a boot
+            // with no storage.nvs yet (new firmware version = new config dir)
+            // left loaded=false, the first save created the file, and every
+            // later save in the same session was blocked by it — the new
+            // menu's commit persisted the video mode but MachineSwitch's own
+            // save (which carries arch/romSet, and runs second) was refused,
+            // so the machine reverted on the next boot (hw 2026-07-29:
+            // "720x576 + V-Sync applied, Machine stayed 48K").
+            FILINFO fi;
+            if (f_stat(STORAGE_NVS, &fi) == FR_OK) {
+                Debug::log("Config::save BLOCKED — not loaded, file exists (%lu bytes)",
+                           (unsigned long)fi.fsize);
+                save_blocked = true;    // the loop says so out loud
+                return;
+            }
+        }
+        // Make sure the target directory exists before writing. If mkdir
+        // fails (broken/full SD), refuse to write — otherwise the following
+        // f_open would silently fail and we'd lose original state. The
+        // directory comes from the path itself: a profile lives in a folder
+        // of its own and a hardcoded pair of names cannot cover both.
+        string dir_s = CONFIG_DIR_BOARD;
+        if (toFile) {
+            const size_t sl = nvs_path_s.rfind('/');
+            dir_s = (sl == string::npos) ? string(CONFIG_DIR) : nvs_path_s.substr(0, sl);
+        }
+        const char* dir = dir_s.c_str();
+        if (!FileUtils::mkdirParents(dir)) {
+            Debug::log("Config::save FAILED — cannot create %s", dir);
+        } else {
+            // Atomic write: stream to .tmp, then rename over the original
+            handle = fopen2(nvs_tmp, FA_WRITE | FA_CREATE_ALWAYS);
+            if (!handle) Debug::log("Config::save FAILED — cannot open %s", nvs_tmp);
+        }
+    }
+    // The RAM fallback below is the session copy of storage.nvs. A profile has no
+    // such thing: it exists to outlive the session, and dumping it into that
+    // buffer would both pretend the save worked and leave the session's config
+    // carrying someone else's profile_name.
+    if (!handle && toFile) return;
+    NvsWriter buf;
+    if (handle) {
+        buf.f = handle;
+    } else {
+        // No SD target — keep config in RAM for session persistence
+        nvs_ram_buf.clear();
+        buf.ram = &nvs_ram_buf;
+    }
+    if (profileName) nvs_set_str(buf, "profile_name", profileName);
+    nvs_set_u16(buf,"cpu_mhz", cpu_mhz);
+    nvs_set_u16(buf,"max_flash_freq", max_flash_freq);
+    nvs_set_u16(buf,"max_psram_freq", max_psram_freq);
+    nvs_set_u16(buf,"max_tft_freq", max_tft_freq);
+    {
+        const char* vv = "1_60";
+        switch (vreq_voltage) {
+            case VREG_VOLTAGE_1_15: vv = "1_15"; break;
+            case VREG_VOLTAGE_1_20: vv = "1_20"; break;
+            case VREG_VOLTAGE_1_25: vv = "1_25"; break;
+            case VREG_VOLTAGE_1_30: vv = "1_30"; break;
+            case VREG_VOLTAGE_1_35: vv = "1_35"; break;
+            case VREG_VOLTAGE_1_40: vv = "1_40"; break;
+            case VREG_VOLTAGE_1_50: vv = "1_50"; break;
+            case VREG_VOLTAGE_1_60: vv = "1_60"; break;
+            case VREG_VOLTAGE_1_65: vv = "1_65"; break;
+            case VREG_VOLTAGE_1_70: vv = "1_70"; break;
+            case VREG_VOLTAGE_1_80: vv = "1_80"; break;
+        }
+        nvs_set_str(buf, "vreq_voltage", vv);
+    }
+
+    #if TFT
+    nvs_set_u8(buf,"TFT_FLAGS", TFT_FLAGS);
+    nvs_set_u8(buf,"TFT_INVERSION", TFT_INVERSION);
+    #endif
+    nvs_set_str(buf,"arch",archToStr(arch));
+    nvs_set_str(buf,"romSet",romsetToStr(romSet));
+    nvs_set_str(buf,"romSet48",romsetToStr(romSet48));
+    nvs_set_str(buf,"romSet128",romsetToStr(romSet128));
+    nvs_set_str(buf,"romSetPent",romsetToStr(romSetPent));
+    nvs_set_str(buf,"romSetP512",romsetToStr(romSetP512));
+    nvs_set_str(buf,"romSetP1M",romsetToStr(romSetP1M));
+    nvs_set_str(buf,"romSetProfi",romsetToStr(romSetProfi));
+    nvs_set_str(buf,"romSetScorp",romsetToStr(romSetScorp));
+    nvs_set_str(buf,"romSetTsconf",romsetToStr(romSetTsconf));
+    nvs_set_str(buf,"romSetAtm",romsetToStr(romSetAtm));
+    nvs_set_str(buf,"pref_arch",archToStr(pref_arch));
+    nvs_set_str(buf,"pref_romSet_48",romsetToStr(pref_romSet_48));
+    nvs_set_str(buf,"pref_romSet_128",romsetToStr(pref_romSet_128));
+    nvs_set_str(buf,"pref_romSetPent",romsetToStr(pref_romSetPent));
+    nvs_set_str(buf,"pref_romSetP512",romsetToStr(pref_romSetP512));
+    nvs_set_str(buf,"pref_romSetP1M",romsetToStr(pref_romSetP1M));
+    nvs_set_str(buf,"pref_romSetProfi",romsetToStr(pref_romSetProfi));
+    nvs_set_str(buf,"pref_romSetScorp",romsetToStr(pref_romSetScorp));
+    nvs_set_str(buf,"pref_romSetTsconf",romsetToStr(pref_romSetTsconf));
+    nvs_set_str(buf,"pref_romSetAtm",romsetToStr(pref_romSetAtm));
+    nvs_set_str(buf,"ram",ram_file.c_str());
+    // Derive provenance from the file's actual location so the stored tag is never
+    // stale: a /tmp path is a transient quick-start download, anything else is a
+    // real SD file. (Transient mounts are also dropped from the drive list below.)
+    ram_file_origin = (ram_file.compare(0, 5, "/tmp/") == 0) ? ORIGIN_TMP : ORIGIN_LOCAL;
+    nvs_set_u8(buf,"ram_origin", ram_file_origin);
+    nvs_set_str(buf,"slog",slog_on ? "true" : "false");
+///        nvs_set_str(buf,"sdstorage", FileUtils::MountPoint);
+    nvs_set_str(buf,"AY48", AY48 ? "true" : "false");
+    nvs_set_str(buf,"SAA1099", SAA1099 ? "true" : "false");
+    nvs_set_u8(buf,"midi", midi);
+    nvs_set_str(buf,"midibank", midi_bank.c_str());
+    nvs_set_u8(buf,"zifi_enabled", zifi_enabled);
+    nvs_set_u8(buf,"zifi_tx_pin", zifi_tx_pin);
+    nvs_set_u8(buf,"zifi_rx_pin", zifi_rx_pin);
+    nvs_set_u8(buf,"zifi_transport", zifi_transport);
+    nvs_set_u8(buf,"ayConfig", Config::ayConfig);
+    nvs_set_u8(buf,"turbosound", Config::turbosound);
+    nvs_set_u8(buf,"tsfm", Config::tsfm);
+    nvs_set_u8(buf,"opl3", Config::opl3);
+    nvs_set_u8(buf,"cms", Config::cms);
+    nvs_set_u8(buf,"sn76489", Config::sn76489);
+    nvs_set_u8(buf,"sn_clock", Config::sn_clock);
+    nvs_set_u8(buf,"ym2413", Config::ym2413);
+    nvs_set_u8(buf,"turbo", Config::turbo);
+    nvs_set_u8(buf,"covox", Config::covox);
+    nvs_set_u8(buf,"soundrive", Config::soundrive);
+    nvs_set_u8(buf,"gs_enabled", Config::gs_enabled);
+    nvs_set_u8(buf,"gs_ram_size", Config::gs_ram_size);
+    nvs_set_u8(buf,"gs_clock", Config::gs_clock);
+    nvs_set_u8(buf,"ngs_clock", Config::ngs_clock);
+    nvs_set_str(buf,"Issue2", Issue2 ? "true" : "false");
+    nvs_set_str(buf,"rtc_enabled", rtc_enabled ? "true" : "false");
+    nvs_set_i(buf,"mouse_sens", mouse_sens);
+    nvs_set_str(buf,"psram_enabled", psram_enabled ? "true" : "false");
+    nvs_set_str(buf,"dbg_uart", dbg_uart ? "true" : "false");
+    nvs_set_str(buf,"debug_log", Debug::log_enabled ? "true" : "false");
+    nvs_set_str(buf,"flashload", flashload ? "true" : "false");
+    nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");
+    nvs_set_str(buf,"ledPanel", led_panel ? "true" : "false");
+    nvs_set_str(buf,"sdLedBlink", sdLedBlink ? "true" : "false");
+    nvs_set_i8(buf,"temp_offset", temp_offset);
+    nvs_set_u8(buf,"gm_field", gm_field);
+    nvs_set_u8(buf,"gm_pad",   gm_pad);
+    nvs_set_u8(buf,"gm_padw",  gm_padw);
+    nvs_set_u8(buf,"gm_padh",  gm_padh);
+    nvs_set_u8(buf,"gm_ballc", gm_ballc);
+    nvs_set_u8(buf,"gm_ball",  gm_ball);
+    nvs_set_u8(buf,"gm_pspd",  gm_pspd);
+    nvs_set_str(buf,"tape_player", tape_player ? "true" : "false");
+    nvs_set_str(buf,"profi_ext_keys", profi_ext_keys ? "true" : "false");
+    nvs_set_str(buf,"real_player", real_player ? "true" : "false");
+    nvs_set_str(buf,"rightSpace", rightSpace ? "true" : "false");
+    nvs_set_str(buf,"wasd", wasd ? "true" : "false");
+    nvs_set_str(buf,"tape_timing_rg",tape_timing_rg ? "true" : "false");
+    nvs_set_str(buf,"tape_autostart", tape_autostart ? "true" : "false");
+    nvs_set_u8(buf,"tape_wear", tape_wear);
+    {
+        // A quick-started download lives in /tmp and is gone after reboot — never
+        // persist it (it would just fail to reopen). The in-RAM value still survives
+        // an F11 reset (no reboot). Mirrors drive*.file handling above.
+        bool transient = tape_file.compare(0, 5, "/tmp/") == 0;
+        nvs_set_str(buf,"tape_file", transient ? "" : tape_file.c_str());
+    }
+    // Save typed breakpoints array
+    for (int i = 0; i < MAX_BREAKPOINTS; i++) {
+        char key[16];
+        snprintf(key, sizeof(key), "bp%d", i);
+        nvs_set_u16(buf, key, breakPoints[i].addr);
+        snprintf(key, sizeof(key), "bpt%d", i);
+        nvs_set_u8(buf, key, (uint8_t)breakPoints[i].type);
+    }
+    nvs_set_u8(buf,"joystick", Config::joystick);
+    // Write joystick definition
+    for (int n = 0; n < 14; ++n) {
+        char joykey[16];
+        snprintf(joykey, 16, "joydef%02u", n);
+        nvs_set_u16(buf, joykey, Config::joydef[n]);
+    }
+    nvs_set_u8(buf,"AluTiming",Config::AluTiming);
+    nvs_set_u8(buf,"joy2cursor",Config::joy2cursor);
+    nvs_set_u8(buf,"secondJoy",Config::secondJoy);
+    nvs_set_u8(buf,"kempstonPort",Config::kempstonPort);
+    nvs_set_u8(buf,"throtling2",Config::throtling);
+    nvs_set_str(buf,"CursorAsJoy", CursorAsJoy ? "true" : "false");
+    nvs_set_str(buf,"betadisk", betadisk ? "true" : "false");
+    nvs_set_str(buf,"trdosFastMode", trdosFastMode ? "true" : "false");
+    nvs_set_str(buf,"trdosAutoBoot", trdosAutoBoot ? "true" : "false");
+    nvs_set_u8(buf,"trdosSoundLedMode", trdosSoundLed);
+    nvs_set_u8(buf,"trdosBios", trdosBios);
+    nvs_set_u8(buf,"alfCartBanks", alfCartBanks);
+    nvs_set_str(buf,"alfcart", alfCartPath.c_str());
+    nvs_set_str(buf,"dckcart", dckCartPath.c_str());
+    for (int i = 0; i < 4; i++) {
+        char k[12]; snprintf(k, sizeof(k), "drive%d.wp", i);
+        nvs_set_str(buf, k, driveWP[i] ? "true" : "false");
+    }
+    nvs_set_u8(buf,"esxdos", esxdos);
+    nvs_set_str(buf,"esxdos_hdf", esxdos_hdf_image[0].c_str());
+    nvs_set_str(buf,"esxdos_hd1", esxdos_hdf_image[1].c_str());
+    nvs_set_u8(buf,"ide_scheme", ide_scheme);
+    nvs_set_str(buf,"ide_img0", ide_image[0].c_str());
+    nvs_set_str(buf,"ide_img1", ide_image[1].c_str());
+    for (int s = 0; s < 2; s++) {
+        char k[10]; snprintf(k, sizeof(k), "ide_chs%d", s);
+        char v[20]; snprintf(v, sizeof(v), "%u/%u/%u", ide_chs[s][0], ide_chs[s][1], ide_chs[s][2]);
+        nvs_set_str(buf, k, v);
+    }
+    nvs_set_u8(buf,"mb02", mb02);
+    for (int i = 0; i < 4; i++) {
+        char k[12]; snprintf(k, sizeof(k), "mb02d%d.wp", i);
+        nvs_set_str(buf, k, mb02WP[i] ? "true" : "false");
+    }
+    nvs_set_u8(buf,"mb02SoundLedMode", mb02SoundLed);
+    for (int i = 0; i < 2; i++) {
+        char k[12]; snprintf(k, sizeof(k), "p3d%d.wp", i);
+        nvs_set_str(buf, k, p3WP[i] ? "true" : "false");
+    }
+    nvs_set_str(buf,"p3_speedlock", p3_speedlock ? "true" : "false");
+    nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
+    nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
+    nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
+    nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());
+    nvs_set_str(buf,"DSK_Path",FileUtils::DSK_Path.c_str());
+    nvs_set_str(buf,"ROM_Path",FileUtils::ROM_Path.c_str());
+    nvs_set_str(buf,"IMG_Path",FileUtils::IMG_Path.c_str());
+    nvs_set_str(buf,"ALL_Path",FileUtils::ALL_Path.c_str());
+    for (size_t i = 0; i < 6; ++i) {
+        const DISK_FTYPE& ft = FileUtils::fileTypes[i];
+        string s = "fileTypes" + to_string(i);
+        nvs_set_i(buf, (s + ".begin_row").c_str(), ft.begin_row);
+        nvs_set_i(buf, (s + ".focus").c_str(), ft.focus);
+        nvs_set_u8(buf, (s + ".fdMode").c_str(), ft.fdMode);
+        nvs_set_str(buf, (s + ".fileSearch").c_str(), ft.fileSearch.c_str());
+        if (i < 4) {
+            // A quick-started download lives in /tmp and is gone after reboot — never
+            // persist it as a mount (it would just fail to reopen). Transient origin
+            // is encoded by the /tmp path itself; real SD mounts persist as before.
+            auto persistFile = [&](const string& key, const string& fn) {
+                bool transient = fn.compare(0, 5, "/tmp/") == 0;
+                nvs_set_str(buf, key.c_str(), transient ? "" : fn.c_str());
+            };
+            s = "drive" + to_string(i);
+            persistFile(s + ".file", ESPectrum::fdd.disk[i] ? ESPectrum::fdd.disk[i]->fname : "");
+            s = "mb02d" + to_string(i);
+            // MB-02+ disk paths must survive the interface being disabled. Persist
+            // the remembered path, NOT the live FDD state: when MB-02+ is off
+            // mb02_fdd is empty (and, on Profi, never loaded), so writing the live
+            // "" would erase the remembered disk. While the interface is enabled,
+            // keep the remembered path synced to the live mount (insert/eject both
+            // call save() with MB-02+ on), so it always reflects the latest action.
+            if (Config::mb02)
+                mb02DiskFile[i] = ESPectrum::mb02_fdd.disk[i] ? ESPectrum::mb02_fdd.disk[i]->fname : "";
+            persistFile(s + ".file", mb02DiskFile[i]);
+            // +3 disks, same rule as MB-02+: the remembered path is authoritative, and
+            // is only refreshed from the live mount while a +3 is the running machine —
+            // otherwise nothing is mounted and writing the live "" would erase it.
+            if (i < 2) {
+                if (Config::isPlus3())
+                    p3DiskFile[i] = Plus3Fdc::fname(i);
+                persistFile("p3d" + to_string(i) + ".file", p3DiskFile[i]);
+            }
+        }
+    }
+    nvs_set_u8(buf,"scanlines",Config::scanlines);
+    nvs_set_u8(buf,"crt_filter",Config::crt_filter);
+    nvs_set_u8(buf,"render",Config::render);
+    nvs_set_str(buf,"render_paper", Config::render_paper ? "true" : "false");
+    nvs_set_str(buf,"render_border", Config::render_border ? "true" : "false");
+    nvs_set_str(buf,"TABasfire1", TABasfire1 ? "true" : "false");
+    nvs_set_sc(buf,"AudVolume", ESPectrum::aud_volume);
+    nvs_set_u8(buf,"AudBoost", Config::audio_boost);
+    nvs_set_u8(buf,"hdmi_vmode",Config::hdmi_video_mode);
+    nvs_set_u8(buf,"vga_vmode",Config::vga_video_mode);
+    nvs_set_str(buf,"v_sync_enabled", Config::v_sync_enabled ? "true" : "false");
+    nvs_set_str(buf,"gigascreen_enabled", Config::gigascreen_enabled ? "true" : "false");
+    nvs_set_u8(buf,"gigascreen_onoff", Config::gigascreen_onoff);
+    nvs_set_str(buf,"ulaplus", Config::ulaplus ? "true" : "false");
+    nvs_set_str(buf,"hdmi_dither", Config::hdmi_dither ? "true" : "false");
+    nvs_set_u8(buf,"hdmi_clkdrv", Config::hdmi_clock_drive);
+    nvs_set_str(buf,"hdmi_snap", Config::hdmi_snap ? "true" : "false");
+    nvs_set_str(buf,"vga_dither", Config::vga_dither ? "true" : "false");
+    nvs_set_str(buf,"vga_pwm", Config::vga_pwm ? "true" : "false");
+    nvs_set_u8(buf,"vga_pwm_phase", Config::vga_pwm_phase);
+    nvs_set_str(buf,"ui_vga_solid", Config::ui_vga_solid ? "true" : "false");
+    nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
+    nvs_set_u8(buf,"ui_theme", Config::ui_theme);
+    nvs_set_u8(buf,"profile_slot", Config::profile_slot);
+    nvs_set_u8(buf,"ui_click_vol", Config::ui_click_vol);
+    nvs_set_str(buf,"timex_video", Config::timex_video ? "true" : "false");
+    nvs_set_u8(buf,"dma_mode",Config::dma_mode);
+    nvs_set_str(buf,"mode16col_onoff", Config::mode16col_onoff ? "true" : "false");
+    nvs_set_u8(buf,"palette", Config::palette);
+    nvs_set_str(buf,"audio_driver", Config::audio_driver == 0 ? "auto" :
+        (Config::audio_driver == 1) ? "pwm" : (Config::audio_driver == 2) ? "i2s" :
+        (Config::audio_driver == 3) ? "ay" : (Config::audio_driver == 4) ? "hdmi" :
+        (Config::audio_driver == 5) ? "pcm5122" : "auto"
+    );
+    nvs_set_str(buf,"video_driver", video_driver == 0 ? "auto" : (video_driver == 1) ? "vga" : "hdmi");
+    nvs_set_str(buf,"byte_cobmect_mode", Config::byte_cobmect_mode ? "true" : "false");
+    // Save hotkey bindings
+    for (int i = 0; i < HK_COUNT; i++) {
+        char key[12];
+        snprintf(key, sizeof(key), "hkVK%02d", i);
+        nvs_set_u16(buf, key, hotkeys[i].vk);
+        snprintf(key, sizeof(key), "hkMod%02d", i);
+        uint8_t mod = (hotkeys[i].alt ? 2 : 0) | (hotkeys[i].ctrl ? 1 : 0);
+        nvs_set_u8(buf, key, mod);
+    }
+    // The PICK, not the live count — see Config::mem_pg_cnt in Config.h.
+    nvs_set_i(buf,"MEM_PG_CNT", mem_pg_cnt);
+    nvs_set_i(buf,"tsconf_clk_cap", tsconf_clk_cap);
+
+    if (handle) {
+        // f_sync flushes FAT before close so we don't commit the
+        // rename on top of a half-written file when the card stalls.
+        FRESULT sy = buf.ok ? f_sync(handle) : FR_DISK_ERR;
+        fclose2(handle);
+        if (buf.ok && sy == FR_OK) {
+            // Try rename first; on FR_EXIST drop the original then
+            // retry, narrowing the window where neither file exists.
+            FRESULT rn = f_rename(nvs_tmp, nvs_path);
+            if (rn == FR_EXIST) {
+                f_unlink(nvs_path);
+                rn = f_rename(nvs_tmp, nvs_path);
+            }
+            if (rn != FR_OK) {
+                Debug::log("Config::save FAILED — rename error (rn=%d)", rn);
+                // Leave .tmp behind for manual recovery if needed.
+            } else if (!toFile) {
+                // File is authoritative — drop any stale RAM copy
+                nvs_ram_buf.clear();
+                nvs_ram_buf.shrink_to_fit();
+                // storage.nvs now holds exactly this state, so a later save in
+                // the same session is no longer "defaults over an unread file"
+                // and must not be blocked by the guard above.
+                loaded = true;
+            }
+        } else {
+            // Write failed — remove incomplete temp, keep original intact
+            f_unlink(nvs_tmp);
+            Debug::log("Config::save FAILED — write error (ok=%d, sy=%d)", (int)buf.ok, sy);
+        }
+    }
+}
+
+// ── named config profiles ──────────────────────────────────────────────────────
+// A profile is a byte-for-byte storage.nvs written to CONFIG_DIR_PROFILES and
+// named by SLOT NUMBER, with the display name carried inside the file as its
+// first line (profile_name=). That is the fast-snapshot slots' model, and it is
+// why a profile name has no charset rules, no length limit that matters and no
+// collisions: nothing about it ever reaches the filesystem.
+//
+// The contents are a FULL snapshot — mounted media, browser paths and all — so
+// loading one is "put me back exactly where I was", not "apply these preferences".
+// The single exception is `ram`, which is not a setting at all: it is the one-shot
+// baton the file browser leaves for the next boot ("come up running this
+// snapshot"), consumed and cleared by ESPectrum::setup. Carried into a profile it
+// would launch some long-forgotten game every time that profile is loaded.
+
+static string profilePath(uint8_t slot) {
+    char name[32];
+    snprintf(name, sizeof(name), "/profile%02u.nvs", slot);
+    return string(CONFIG_DIR_PROFILES) + name;
+}
+
+// FF_USE_STRFUNC is 0 in this build, so there is no f_gets: one small buffered
+// line reader serves the three functions below.
+namespace {
+struct LineReader {
+    FIL*  f;
+    char  buf[128];
+    UINT  n = 0, i = 0;
+    explicit LineReader(FIL* fp) : f(fp) {}
+    // Returns false at EOF. The terminator is stripped; a trailing CR with it.
+    bool line(string& out) {
+        out.clear();
+        bool any = false;
+        for (;;) {
+            if (i >= n) {
+                if (f_read(f, buf, sizeof(buf), &n) != FR_OK || n == 0) return any;
+                i = 0;
+            }
+            any = true;
+            const char c = buf[i++];
+            if (c == '\n') {
+                if (!out.empty() && out.back() == '\r') out.pop_back();
+                return true;
+            }
+            out += c;
+        }
+    }
+};
+} // namespace
+
+static bool lineIsKey(const string& l, const char* key) {
+    const size_t k = strlen(key);
+    return l.size() >= k + 1 && l.compare(0, k, key) == 0 && l[k] == '=';
+}
+
+// "" = the slot is empty; "\x01" = it holds a profile that was never named.
+string Config::profileName(uint8_t slot) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return "";
+    FIL* f = fopen2(profilePath(slot).c_str(), FA_READ);
+    if (!f) return "";
+    LineReader rd(f);
+    string first;
+    const bool got = rd.line(first);
+    fclose2(f);
+    if (!got || !lineIsKey(first, "profile_name")) return "\x01";
+    string name = first.substr(strlen("profile_name="));
+    return name.empty() ? "\x01" : name;
+}
+
+bool Config::profileSave(uint8_t slot, const string& name) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return false;
+    const string path = profilePath(slot);
+    const uint8_t prev = profile_slot;
+    profile_slot = slot;            // both files record which profile this is
+    save(path.c_str(), name.c_str());
+    FILINFO fi;
+    if (f_stat(path.c_str(), &fi) != FR_OK) { profile_slot = prev; return false; }
+    save();                         // storage.nvs, now carrying profile_slot
+    return true;
+}
+
+// Rewrite the name line in place, keeping every setting. Streamed, because the
+// menu's heap is whatever the running machine left over.
+bool Config::profileRename(uint8_t slot, const string& name) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return false;
+    const string path = profilePath(slot);
+    const string tmp  = path + ".tmp";
+    FIL* in = fopen2(path.c_str(), FA_READ);
+    if (!in) return false;
+    FIL* out = fopen2(tmp.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (!out) { fclose2(in); return false; }
+    bool ok = true;
+    {
+        const string hdr = "profile_name=" + name + "\n";
+        UINT bw;
+        ok = (f_write(out, hdr.c_str(), hdr.size(), &bw) == FR_OK && bw == hdr.size());
+    }
+    LineReader rd(in);
+    string l;
+    while (ok && rd.line(l)) {
+        if (lineIsKey(l, "profile_name")) continue;
+        l += '\n';
+        UINT bw;
+        ok = (f_write(out, l.c_str(), l.size(), &bw) == FR_OK && bw == l.size());
+    }
+    if (ok) ok = (f_sync(out) == FR_OK);
+    fclose2(out);
+    fclose2(in);
+    if (!ok) { f_unlink(tmp.c_str()); return false; }
+    FRESULT rn = f_rename(tmp.c_str(), path.c_str());
+    if (rn == FR_EXIST) {
+        f_unlink(path.c_str());
+        rn = f_rename(tmp.c_str(), path.c_str());
+    }
+    return rn == FR_OK;
+}
+
+// Copy the profile over storage.nvs; the caller reboots, and Config::load() then
+// reads it like any other config — keys this firmware no longer knows are
+// ignored, keys it has gained keep their compiled-in defaults.
+bool Config::profileLoad(uint8_t slot) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return false;
+    FIL* in = fopen2(profilePath(slot).c_str(), FA_READ);
+    if (!in) return false;
+    if (!FileUtils::mkdirParents(CONFIG_DIR_BOARD)) { fclose2(in); return false; }
+    const string tmp = string(STORAGE_NVS) + ".tmp";
+    FIL* out = fopen2(tmp.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (!out) { fclose2(in); return false; }
+    bool ok = true;
+    LineReader rd(in);
+    string l;
+    while (ok && rd.line(l)) {
+        // Both are rewritten below: `ram` is the next-boot baton (see the note at
+        // the top of this section) and profile_slot has to name THIS slot however
+        // the file was produced.
+        if (lineIsKey(l, "ram") || lineIsKey(l, "profile_slot")) continue;
+        l += '\n';
+        UINT bw;
+        ok = (f_write(out, l.c_str(), l.size(), &bw) == FR_OK && bw == l.size());
+    }
+    if (ok) {
+        char tail[48];
+        const int len = snprintf(tail, sizeof(tail), "ram=%s\nprofile_slot=%u\n",
+                                 NO_RAM_FILE, slot);
+        UINT bw;
+        ok = (f_write(out, tail, len, &bw) == FR_OK && bw == (UINT)len);
+    }
+    if (ok) ok = (f_sync(out) == FR_OK);
+    fclose2(out);
+    fclose2(in);
+    if (!ok) { f_unlink(tmp.c_str()); return false; }
+    FRESULT rn = f_rename(tmp.c_str(), STORAGE_NVS);
+    if (rn == FR_EXIST) {
+        f_unlink(STORAGE_NVS);
+        rn = f_rename(tmp.c_str(), STORAGE_NVS);
+    }
+    if (rn != FR_OK) { f_unlink(tmp.c_str()); return false; }
+    return true;
+}
+
+void Config::profileDelete(uint8_t slot) {
+    if (!FileUtils::fsMount || slot < 1 || slot > CONFIG_PROFILE_SLOTS) return;
+    f_unlink(profilePath(slot).c_str());
+    if (profile_slot == slot) {     // the row it pointed at is gone
+        profile_slot = 0;
+        save();
+    }
+}
+
+#define VMODE_PENDING_FILE CONFIG_DIR "/vmode_pending.nvs"
+
+void Config::savePendingVideoMode() {
+    if (!FileUtils::fsMount) return;
+    FIL* handle = fopen2(VMODE_PENDING_FILE, FA_WRITE | FA_CREATE_ALWAYS);
+    if (handle) {
+        NvsWriter buf;
+        buf.f = handle;
+        nvs_set_u8(buf, "hdmi_vmode", Config::hdmi_video_mode);
+        nvs_set_u8(buf, "vga_vmode", Config::vga_video_mode);
+        fclose2(handle);
+    }
+}
+
+bool Config::loadPendingVideoMode(uint8_t &hdmi_vm, uint8_t &vga_vm) {
+    if (!FileUtils::fsMount) return false;
+    FIL* handle = fopen2(VMODE_PENDING_FILE, FA_READ);
+    if (!handle) return false;
+
+    vector<string> sts;
+    UINT br;
+    char c;
+    string s;
+    while (!f_eof(handle)) {
+        if (f_read(handle, &c, 1, &br) != FR_OK) {
+            fclose2(handle);
+            return false;
+        }
+        if (c == '\n') {
+            sts.push_back(s);
+            s.clear();
+        } else {
+            s += c;
+        }
+    }
+    fclose2(handle);
+
+    nvs_get_u8("hdmi_vmode", hdmi_vm, sts);
+    nvs_get_u8("vga_vmode", vga_vm, sts);
+    return true;
+}
+
+void Config::clearPendingVideoMode() {
+    f_unlink(VMODE_PENDING_FILE);
+}
+
+bool Config::joyKeyTarget(int slot) {
+    const uint16_t t = joydef[slot];
+    // Every key the picker offers sits below VK_JOY_RIGHT. Codes past the
+    // DPAD block (VK_MENU_*) are NOT keys: a config saved in Fuller mode by an
+    // older build can hold them, and injecting those would steer the menu.
+    return t != fabgl::VK_NONE && t < fabgl::VK_JOY_RIGHT;
+}
+
+void Config::joyDefaults(uint8_t joytype, uint16_t out[14]) {
+    for (int n = 0; n < 14; n++) out[n] = fabgl::VK_NONE;
+    out[0] = fabgl::VK_DPAD_LEFT;
+    out[1] = fabgl::VK_DPAD_RIGHT;
+    out[2] = fabgl::VK_DPAD_UP;
+    out[3] = fabgl::VK_DPAD_DOWN;
+    out[6] = fabgl::VK_DPAD_FIRE;
+    if (joytype == JOY_KEMPSTON) {
+        out[4] = fabgl::VK_DPAD_START;
+        out[5] = fabgl::VK_DPAD_SELECT;
+        out[7] = fabgl::VK_DPAD_ALTFIRE;
+        out[9] = fabgl::VK_JOY_X;
+    }
+}
+
+// ============================================================================
+// «Байт» доп. ПЗУ (DD71) switch — the built-in ROM memory test.
+//
+// The real machine substitutes 128-byte ROM blocks from DD71 per the DD66 map
+// PROM, which has two software-visible states (besides COBMECT): native, and a
+// "test" state where blocks #74/#75 (#3A00-#3AFF) come from DD71 blocks 14/15.
+// Native #3A00 holds the base test (border cycle, ROM checksum, RAM test, LDIR
+// of the ROM to #6000); the substituted blocks hold its continuation (keyboard
+// grid, the DD68 timer melody, and the 128-square ROM compare, which expects
+// EXACTLY the 2 swapped blocks to differ from the #6000 copy). The switch stub
+// at #387A is IN A,(#9F); RET — any access to the Kempston-decoded port flips
+// the flip-flop. Toggling is harmless to running software: neither state's
+// #3A00-#3AFF is executed outside the test, so a game polling the Kempston
+// joystick only flips unused ROM bytes. COBMECT mode (sovmest overlay) is left
+// untouched, matching the test's requirement that the button be released.
+// ============================================================================
+
+void Config::byteTestRomToggle() {
+    const uint8_t* cur = MemESP::overlayFor(gb_rom_0_sinclair_48k);
+    if (cur == gb_overlay_48k_byte)
+        MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte_test);
+    else if (cur == gb_overlay_48k_byte_test)
+        MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
+}
+
+void Config::byteTestRomReset() {
+    if (MemESP::overlayFor(gb_rom_0_sinclair_48k) == gb_overlay_48k_byte_test)
+        MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
+}

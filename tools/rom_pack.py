@@ -7,19 +7,19 @@
 # and store each variant as a tiny read-only OVERLAY: a sorted list of "runs"
 # (offset,len,bytes) that differ from the base. The overlay lives in flash; at ROM
 # read time MemESP substitutes the patched byte when the address falls inside a run
-# (see src/RomOverlay.h). No RAM copy, no flash write, no reboot — on every board.
+# (see src/speccy/core/RomOverlay.h). No RAM copy, no flash write, no reboot — on every board.
 #
 # This only works when the diff is POSITIONAL (same addresses). For ROMs that differ
 # by insertions/relocations the run-list explodes — check the printed run count.
 #
-# Emits, per family, into src/roms/<fam>/ :
+# Emits, per family, into src/speccy/roms/<fam>/ :
 #   <fam>_overlays.c    — overlay blobs as C arrays (compiled into flash)
 #   <fam>_overlays.h    — extern decls (included by roms.h)
 #   <variant>.ovl       — raw overlay blob (artifact)
 #   <base>.bin          — base ROM dump (artifact)
 #   manifest.json       — human-readable family description
 #
-# Overlay blob layout (little-endian), matched by src/RomOverlay.h:
+# Overlay blob layout (little-endian), matched by src/speccy/core/RomOverlay.h:
 #   0  4  magic  "RPO1"
 #   4  4  rom_len
 #   8  4  nruns
@@ -179,7 +179,7 @@ def pack_family(fam, out_dir):
     return report
 
 # ---------------------------------------------------------------- families
-PLUS3_SRC = os.path.join('src', 'roms', 'plus3', 'src')
+PLUS3_SRC = os.path.join('src', 'speccy', 'roms', 'plus3', 'src')
 
 FAMILIES = {
     # BASE = TR-DOS 5.04T, the build zx-evo puts in TS-BIOS ROM page 1 — and the
@@ -312,7 +312,7 @@ FAMILIES = {
     # overlay cheaply against the SAME bases already used above (stock bank1,
     # and the shared Sinclair 128K halves) -- 5061B + 101B + 2218B vs 48KB raw,
     # ~40KB saved. Re-run `python3 tools/rom_pack.py profi` after updating any
-    # of src/roms/profi/src/bank{1,2,3}_pq.bin from a newer PQDOS build.
+    # of src/speccy/roms/profi/src/bank{1,2,3}_pq.bin from a newer PQDOS build.
     'profi': {
         'id': 'profi',
         'base': {'name': 'sinclair_128k_0', 'sym': 'gb_rom_0_sinclair_128k'},
@@ -376,9 +376,9 @@ FAMILIES = {
 }
 
 # ------------------------------------------------------- +3e / +3 (divIDE) raw banks
-PLUS3E_DIR = os.path.join('src', 'roms', 'plus3e')
+PLUS3E_DIR = os.path.join('src', 'speccy', 'roms', 'plus3e')
 PLUS3E_SRC = os.path.join(PLUS3E_DIR, 'src')
-PLUS3DIV_DIR = os.path.join('src', 'roms', 'plus3div')
+PLUS3DIV_DIR = os.path.join('src', 'speccy', 'roms', 'plus3div')
 
 def pack_plus3e_raw():
     # The +3e's bank 2 (+3DOS + IDEDOS) shares almost nothing positionally with anything
@@ -413,8 +413,8 @@ def pack_plus3e_raw():
 #               else its own overlay over that same half
 #
 # The ROM image is NOT in this repository (it is not redistributable): drop the four
-# 16 KB banks into src/roms/plus3div/src/rom{0,1,2,3}.bin and run this. Without them the
-# romset is simply not built (PLUS3DIV_IN_FLASH, CMakeLists.txt).
+# 16 KB banks into src/speccy/roms/plus3div/src/rom{0,1,2,3}.bin and run this. The firmware
+# includes the generated plus3div_roms.h unconditionally.
 PLUS3DIV_OVL_DIFF_MAX = 12288   # past this an overlay is not worth it against 16 KB raw
 
 def pack_plus3div():
@@ -583,17 +583,17 @@ GMX_OVL_DIFF_MAX = 8192   # 1024 until 2026-09-19, when the ROM moved to ProfROM
                           # more than half the bank it replaces.
 
 def pack_gmx():
-    out_dir = os.path.join('src', 'roms', 'scorpion')
+    out_dir = os.path.join('src', 'speccy', 'roms', 'scorpion')
     src_dir = os.path.join(out_dir, 'src')
 
     # Bases follow FAMILIES: rom[0] of the 128K family is the PENTAGON ROM0 since
     # 2026-09-09 (TS-Conf needs it as a base), so a GMX bank equal to it binds the
     # base with no overlay at all, and one equal to the stock Sinclair ROM0 reuses
     # the shipped 101-byte overlay.
-    pent   = open(os.path.join('src', 'roms', 'pentagon', 'src', 'rom0.bin'), 'rb').read()
+    pent   = open(os.path.join('src', 'speccy', 'roms', 'pentagon', 'src', 'rom0.bin'), 'rb').read()
     s128_1 = open(os.path.join(src_dir, 'sinclair_128k_1.bin'), 'rb').read()
-    t504t  = open(os.path.join('src', 'roms', 'trdos', 'src', '504t.bin'), 'rb').read()
-    sinc_blob = open(os.path.join('src', 'roms', 'pentagon',
+    t504t  = open(os.path.join('src', 'speccy', 'roms', 'trdos', 'src', '504t.bin'), 'rb').read()
+    sinc_blob = open(os.path.join('src', 'speccy', 'roms', 'pentagon',
                                   'pentagon_sinclair_128k_0.ovl'), 'rb').read()
 
     # (base symbol, base bytes, optional already-shipped overlay reusable verbatim).
@@ -694,14 +694,11 @@ def pack_gmx():
                '// tools/rom_pack.py.',
                '// %d B in flash instead of %d.' % (total, len(images) * GMX_BANKS * GMX_BANK_SZ),
                '// Regenerate: python3 tools/rom_pack.py gmx']
-    c = banner + ['#include <stdint.h>',
-                  '#if GMX_IN_FLASH',
-                  '']
+    c = banner + ['#include <stdint.h>', '']
     for sym, data in raws:
         c.append(_c_array(sym, data)); c.append('')
     for sym, blob, _, _, _ in novls:
         c.append(_c_array(sym, blob)); c.append('')
-    c.append('#endif // GMX_IN_FLASH')
     open(os.path.join(out_dir, 'scorpion_gmx_rom.c'), 'w').write("\n".join(c) + "\n")
 
     # The binding tables live in a C++ header (included via romScorpion.h AFTER the
@@ -773,7 +770,7 @@ TSCONF_SRC_MD5 = {
 
 def pack_tsconf():
     import hashlib
-    out_dir = os.path.join('src', 'roms', 'tsconf')
+    out_dir = os.path.join('src', 'speccy', 'roms', 'tsconf')
     src_dir = os.path.join(out_dir, 'src')
 
     def rd(name):
@@ -871,9 +868,9 @@ def pack_tsconf():
 # byte identical and a swap there was free; across generations it is not.
 #
 # Deliberately NOT packed against the GMX banks, even though that would save
-# flash: the GMX raw arrays only exist under GMX_IN_FLASH, so keying ProfROM to
-# them would give the generator two output variants and make one romset's flash
-# layout depend on another's build switch. Bases are the ROMs every build ships
+# flash: keying ProfROM to the GMX raw arrays would make one romset's flash layout
+# depend on another romset's image (a GMX swap would re-pack ProfROM). Bases are the
+# ROMs that are not tied to any one romset
 # (Pentagon ROM0, the Sinclair 128K halves, TR-DOS 5.04T, the v2.95 raw banks)
 # plus ProfROM's OWN raw banks. Only planes 0 banks 0/1 (the 128 and 48 BASIC
 # ROMs) are close enough to anything to become overlays; the other 14 banks are
@@ -889,18 +886,18 @@ PROF_OVL_DIFF_MAX = 1024   # same rule as pack_gmx: a wide run list on an
                            # opcode-fetch path is not worth ~4 KB of flash
 
 def pack_prof():
-    out_dir = os.path.join('src', 'roms', 'scorpion')
+    out_dir = os.path.join('src', 'speccy', 'roms', 'scorpion')
     src_dir = os.path.join(out_dir, 'src')
     img = open(os.path.join(src_dir, 'profrom.bin'), 'rb').read()
     if len(img) != PROF_BANKS * PROF_BANK_SZ:
         raise SystemExit("profrom.bin: expected 256 KB, got %d" % len(img))
     banks = [img[i*PROF_BANK_SZ:(i+1)*PROF_BANK_SZ] for i in range(PROF_BANKS)]
 
-    pent   = open(os.path.join('src', 'roms', 'pentagon', 'src', 'rom0.bin'), 'rb').read()
+    pent   = open(os.path.join('src', 'speccy', 'roms', 'pentagon', 'src', 'rom0.bin'), 'rb').read()
     s128_1 = open(os.path.join(src_dir, 'sinclair_128k_1.bin'), 'rb').read()
     b2     = open(os.path.join(src_dir, 'bank2.bin'), 'rb').read()
     b3     = open(os.path.join(src_dir, 'bank3.bin'), 'rb').read()
-    t504t  = open(os.path.join('src', 'roms', 'trdos', 'src', '504t.bin'), 'rb').read()
+    t504t  = open(os.path.join('src', 'speccy', 'roms', 'trdos', 'src', '504t.bin'), 'rb').read()
 
     # (base symbol, base bytes) — everything here is a raw array present in every
     # build. Grows as ProfROM's own banks are emitted raw (self-referential
@@ -955,14 +952,11 @@ def pack_prof():
               '// the firmware already ships — see the pack_prof comment in',
               '// tools/rom_pack.py. %d B in flash instead of 262144.' % total,
               '// Regenerate: python3 tools/rom_pack.py prof']
-    c = banner + ['#include <stdint.h>',
-                  '#if PROFROM_IN_FLASH',
-                  '']
+    c = banner + ['#include <stdint.h>', '']
     for sym, data in raws:
         c.append(_c_array(sym, data)); c.append('')
     for sym, blob, _, _, _ in novls:
         c.append(_c_array(sym, blob)); c.append('')
-    c.append('#endif // PROFROM_IN_FLASH')
     open(os.path.join(out_dir, 'scorpion_prof_rom.c'), 'w').write("\n".join(c) + "\n")
 
     h = banner + ['// Include via romScorpion.h only (needs the base ROM symbols in scope).',
@@ -1011,7 +1005,7 @@ TC2068_SRC_MD5 = {
 
 def pack_timex():
     import hashlib
-    out_dir = os.path.join('src', 'roms', 'timex')
+    out_dir = os.path.join('src', 'speccy', 'roms', 'timex')
     src_dir = os.path.join(out_dir, 'src')
 
     def rd(name, want):
@@ -1047,12 +1041,268 @@ def pack_timex():
     total = sum(len(b) for _, b in arrays)
     print("[timex] HOME 16384 B + EX-ROM 8192 B = %d B raw in flash" % total)
 
+# ---------------------------------------------------------------- ATM Turbo
+# MicroART ATM-Turbo 1 and ATM-Turbo 2+ BIOS images (supplied by the owner,
+# 2026-09-26). Each is a 64 KB set of four 16 KB pages; the xBIOS "Dual" image is
+# two such sets (128 KB, a 2+ board with the larger ROM chip — the BIOS selects the
+# set through the #xxF7 ROM page registers, whose top bit is the ROM A17 line).
+#   atm1_104rs.bin   ATM-Turbo 1, BIOS 1.04rs — page order SYS, TR-DOS, 128, 48
+#                    (Unreal MM_ATM450: A15 = !DOS, A14 = #7FFD D4)
+#   atm2_10713.bin   ATM-Turbo 2+, BIOS 1.07.13 (MAME atmtb213, CRC 34A91D53) —
+#                    page order 48, TR-DOS, 128, SYS (Unreal MM_ATM710)
+#   atm2_xbios137.bin ATM-Turbo 2+, eXtra BIOS 1.37XT (MAME atmtb2x37xt, E5EF44D9)
+#   atm2_10602.bin   ATM-Turbo 2, BIOS 1.06.02 (speccy4ever ATM10602.ROM, D797436A) —
+#                    same page order as 1.07.13; page 2 = Pentagon ROM0 exactly
+#
+# Unlike every other family these pages can sit in ANY of the four CPU windows
+# (the 2+'s memory manager maps ROM anywhere, and at reset ALL four windows show
+# the last ROM page), so MemESP's page-0-only overlay resolution cannot serve
+# them. Instead Atm::bindRoms() FLATTENS every page into a butter-PSRAM block at
+# machine bind time (the machine is offered on butter boards only), and the
+# flash only has to hold the raw SYS pages plus run-list overlays over ROMs the
+# firmware ships anyway. A base of None means "all 0xFF" — xBIOS page 3 is empty
+# and page 2 is ~70% 0xFF.
+ATM_IMAGES = [
+    # file, crc32, tag, pages
+    ('atm1_104rs.bin',    0xA9BBF1C1, 'atm1',  4),
+    ('atm2_10602.bin',    0xD797436A, 'atm2v106', 4),
+    ('atm2_10713.bin',    0x34A91D53, 'atm2',  4),
+    ('atm2_xbios137.bin', 0xE5EF44D9, 'atm2x', 8),
+    # ATM-Turbo 3 v8.0 (NedoPC, 4 MB), 27C020 image ATM3TEST_XBIOS137XT.020: pages
+    # 0-7 = MSD888's "Test v1.4 for ATM-Turbo 3.0" (page 7; pages 0-6 are the ROM
+    # page-switch test targets — 0xFF plus a page number and a key-wait stub),
+    # pages 8-15 = xBIOS 1.37 byte for byte (its self-references are pages 56-63).
+    ('atm3_test_xbios137.bin', 0x024411F9, 'atm3', 16),
+    # ATM-Turbo 3, MicroART BIOS 1.07.13EC (atmturbo.nedopc.com bios10713ec.zip,
+    # Maksagor 2015): 1.07.13 with its #xFF7 manager writes made A11-safe, 71 bytes
+    # off (pages 1 and 3) — same page order as 1.07.13.
+    ('atm3_10713ec.bin',  0xFB547227, 'atm3v107', 4),
+]
+ATM_RAW_MAX = 12288   # an overlay bigger than this ships the page raw instead
+
+def pack_atm():
+    out_dir = os.path.join('src', 'speccy', 'roms', 'atm')
+    src_dir = os.path.join(out_dir, 'src')
+    rd = lambda *p: open(os.path.join(*p), 'rb').read()
+    bases = [
+        ('gb_rom_0_pentagon_128k', rd('src', 'speccy', 'roms', 'pentagon', 'src', 'rom0.bin')),
+        ('gb_rom_1_sinclair_128k', rd('src', 'speccy', 'roms', '128k', 'src', 'sinclair_128k_1.bin')),
+        ('gb_rom_0_sinclair_48k',  rd('src', 'speccy', 'roms', '48k', 'src', 'sinclair_48k.bin')),
+        ('gb_rom_4_trdos_504t',    rd('src', 'speccy', 'roms', 'trdos', 'src', '504t.bin')),
+        ('nullptr',                b'\xff' * 16384),
+    ]
+    pages = {}
+    order = []
+    for fname, crc, tag, n in ATM_IMAGES:
+        img = rd(src_dir, fname)
+        if len(img) != n * 16384:
+            raise SystemExit("atm: %s must be %d B" % (fname, n * 16384))
+        c = zlib.crc32(img) & 0xFFFFFFFF
+        if c != crc:
+            raise SystemExit("atm: %s CRC32 %08X, expected %08X" % (fname, c, crc))
+        for p in range(n):
+            pages[(tag, p)] = img[p * 16384:(p + 1) * 16384]
+            order.append((tag, p))
+    # The SYS pages first: they are raw by necessity, and later SYS revisions
+    # overlay the earlier ones (xBIOS page 7 is BIOS 1.07.15, 184 B from 1.07.13).
+    sys_first = [('atm1', 0), ('atm2', 3), ('atm2x', 7), ('atm2v106', 3)]
+    order = sys_first + [k for k in order if k not in sys_first]
+
+    raws, ovls, desc, seen = [], [], {}, {}
+    for key in order:
+        pg = pages[key]
+        if pg in seen:
+            desc[key] = desc[seen[pg]]
+            continue
+        seen[pg] = key
+        exact = [b for b in bases if b[1] == pg]
+        if exact:
+            desc[key] = (exact[0][0], 'nullptr')
+            continue
+        best = None
+        for bsym, bbytes in bases:
+            blob, nr, nd = make_overlay(bbytes, pg)
+            if best is None or len(blob) < len(best[1]):
+                best = (bsym, blob, nr, nd)
+        sym = 'gb_rom_%s_p%d' % key
+        if len(best[1]) > ATM_RAW_MAX:
+            raws.append((sym, pg))
+            bases.append((sym, pg))
+            desc[key] = (sym, 'nullptr')
+        else:
+            osym = 'gb_overlay_%s_p%d' % key
+            ovls.append((osym, best[1], best[0], best[2], best[3]))
+            desc[key] = (best[0], osym)
+
+    banner = ['// Generated by tools/rom_pack.py (pack_atm) — do not edit by hand.',
+              '// ATM-Turbo 1 / 2+ BIOS pages: raw SYS pages + run-list overlays over ROMs',
+              '// the firmware already ships. Atm::bindRoms() flattens them into PSRAM.',
+              '// Linked into .psramroms (rp2350-memmap.ld) — butter-PSRAM boards only.',
+              '// Regenerate: python3 tools/rom_pack.py atm', '']
+    # The ATM-Turbo 2+ text mode (80x25) draws from its own character generator ROM,
+    # not from guest memory: sgen.bin, 256 x 8 lines, char*8+line — UnrealSpeccy's
+    # built-in fontatm2[] transposed back into SGEN.ROM order (config.cpp
+    # load_atm_font() is the transpose this undoes).
+    font = rd(src_dir, 'sgen.bin')
+    if len(font) != 2048:
+        raise SystemExit("atm: sgen.bin must be 2048 B")
+    raws.append(('gb_rom_atm_font', font))
+    c = list(banner) + ['#include <stdint.h>', '']
+    for sym, data in raws + [(o[0], o[1]) for o in ovls]:
+        c.append(_c_array(sym, data)); c.append('')
+    open(os.path.join(out_dir, 'atm_roms.c'), 'w').write("\n".join(c) + "\n")
+    h = list(banner) + ['// Include from Config.cpp ONLY: the table names gb_rom_1_sinclair_128k,',
+                        '// an internal-linkage array a second TU would duplicate (see romScorpion.h).',
+                        '#pragma once', '#include "speccy/machines/Atm.h"   // atm_rom_page_t', 'extern "C" {']
+    for sym, _ in raws + [(o[0], o[1]) for o in ovls]:
+        h.append('extern const unsigned char %s[];' % sym)
+    h.append('}')
+    for fname, crc, tag, n in ATM_IMAGES:
+        h.append('static const atm_rom_page_t gb_rom_%s_pages[%d] = {' % (tag, n))
+        for p in range(n):
+            b, o = desc[(tag, p)]
+            h.append('    { %s, %s },   // page %d' % (b, o, p))
+        h.append('};')
+    open(os.path.join(out_dir, 'atm_banks.h'), 'w').write("\n".join(h) + "\n")
+    total = sum(len(d) for _, d in raws) + sum(len(o[1]) for o in ovls)
+    report = {'id': 'atm', 'raw': [{'sym': s, 'len': len(d)} for s, d in raws],
+              'overlays': [{'sym': o[0], 'base': o[2], 'len': len(o[1]), 'runs': o[3],
+                            'diff_bytes': o[4]} for o in ovls],
+              'flash_bytes': total}
+    open(os.path.join(out_dir, 'manifest.json'), 'w').write(json.dumps(report, indent=2) + "\n")
+    print("[atm] %d raw arrays + %d overlays = %d B in flash (instead of %d)"
+          % (len(raws), len(ovls), total, 16 * 16384))
+    for o in ovls:
+        print("    %-24s over %-24s %6d B" % (o[0], o[2], len(o[1])))
+
+# ---------------------------------------------------------------- Nemo KAY
+# KAY256 Turbo / KAY1024 / KAY1024 v2010-v2018 + ZXM-Phoenix (not a KAY; same paging family) — romsets of the Scorpion
+# arch (Ports.cpp g_scorp_kay). Every KAY image is the same four ROLES the Scorpion
+# has, in rom[] order 0 = BASIC-128, 1 = BASIC-48, 2 = service, 3 = TR-DOS: the
+# board's ROM A15 is (1FFD D3 ^ DOS) and A14 is 7FFD D4 (UnrealSpeccy MM_KAY). The
+# files order the pages differently (the "Nemo" and "LAS" layouts of JP5, plus the
+# 2000 image that swaps service/TR-DOS), so each romset names its four pages by
+# (file, page). Sources: github.com/z00m128/kay1024 firmware/rom and
+# speccy4ever.speccy.org/_KA.htm; the Phoenix BIOS from micklab.ru/file/
+# zxm_bios_5_04t.rar (Nemo layout, its service page is empty 0xFF as shipped).
+# KAY-256 (1994 Nemo) shipped THREE ROMs and no service page at all
+# (speccy4ever KAY256_0_128 / _1_48 / _2_DOS.ROM; its 128 ROM never writes #1FFD),
+# so kay256.bin is those three + an empty 0xFF page. An earlier image carried the
+# Kramis V0.3 2000 service page in slot 3, which belongs to the KAY-1024.
+KAY_IMAGES = [
+    # file, crc32
+    ('kay256.bin',          0x44BE3B9E),  # 1994 NEMO KAY-256: 128 / 48 / TR-DOS / (empty)
+    ('kay1024_2000.bin',    0x67351CAA),  # JV Kramis V0.3 2000: 128 / 48 / TR-DOS / Kramis
+    ('kay1024_2002las.bin', 0x878B4D9C),  # JV Kramis V0.3 2002 LAS: 128 / 48 / Kramis / TR-DOS
+    ('kay_service02d.bin',  0x430DC4EF),  # Reset Service V0.2d (2015), one 16K page
+    ('zxm_phoenix_504t.bin', 0xABD2459C), # ZXM-Phoenix BIOS 5.04T: (empty) / TR-DOS / 128 / 48
+]
+KAY_ROMSETS = [
+    # tag, [(file, page) for roles 128, 48, service, TR-DOS]
+    # kay1024 first: its Kramis service page is the raw base the empty pages overlay
+    ('kay1024', [('kay1024_2000.bin', 0), ('kay1024_2000.bin', 1),
+                 ('kay1024_2000.bin', 3), ('kay1024_2000.bin', 2)]),
+    ('kay256',  [('kay256.bin', 0), ('kay256.bin', 1), ('kay256.bin', 3), ('kay256.bin', 2)]),
+    ('kay2010', [('kay1024_2002las.bin', 0), ('kay1024_2002las.bin', 1),
+                 ('kay_service02d.bin', 0), ('kay1024_2002las.bin', 3)]),
+    ('phoenix', [('zxm_phoenix_504t.bin', 2), ('zxm_phoenix_504t.bin', 3),
+                 ('zxm_phoenix_504t.bin', 0), ('zxm_phoenix_504t.bin', 1)]),
+]
+KAY_RAW_MAX = 12288
+
+def pack_kay():
+    out_dir = os.path.join('src', 'speccy', 'roms', 'kay')
+    src_dir = os.path.join(out_dir, 'src')
+    rd = lambda *p: open(os.path.join(*p), 'rb').read()
+    imgs = {}
+    for fname, crc in KAY_IMAGES:
+        img = rd(src_dir, fname)
+        c = zlib.crc32(img) & 0xFFFFFFFF
+        if c != crc:
+            raise SystemExit("kay: %s CRC32 %08X, expected %08X" % (fname, c, crc))
+        imgs[fname] = img
+    pg = lambda f, i: imgs[f][i * 16384:(i + 1) * 16384]
+    # Bases are ROMs the firmware ships as RAW arrays anyway. MemESP's overlay
+    # registry keys ONE overlay per base pointer, and within one romset the four
+    # roles overlay four DIFFERENT bases, so Config::requestMachine registers them
+    # statically (the plain-Scorpion shape). A raw KAY page may itself be a base.
+    bases = [
+        ('gb_rom_0_pentagon_128k', rd('src', 'speccy', 'roms', 'pentagon', 'src', 'rom0.bin')),
+        ('gb_rom_1_sinclair_128k', rd('src', 'speccy', 'roms', '128k', 'src', 'sinclair_128k_1.bin')),
+        ('gb_rom_4_trdos_504t',    rd('src', 'speccy', 'roms', 'trdos', 'src', '504t.bin')),
+    ]
+    names = ['128', '48', 'svc', 'dos']
+    raws, ovls, desc, seen = [], [], {}, {}
+    for tag, roles in KAY_ROMSETS:
+        row = []
+        for ri, (f, i) in enumerate(roles):
+            page = pg(f, i)
+            if page in seen:
+                row.append(seen[page]); continue
+            exact = [b for b in bases if b[1] == page]
+            if exact:
+                d = (exact[0][0], 'nullptr')
+            else:
+                best = None
+                for bsym, bbytes in bases:
+                    blob, nr, nd = make_overlay(bbytes, page)
+                    if best is None or len(blob) < len(best[1]):
+                        best = (bsym, blob, nr, nd)
+                if len(best[1]) > KAY_RAW_MAX:
+                    sym = 'gb_rom_%s_%s' % (tag, names[ri])
+                    raws.append((sym, page)); bases.append((sym, page))
+                    d = (sym, 'nullptr')
+                else:
+                    osym = 'gb_overlay_%s_%s' % (tag, names[ri])
+                    ovls.append((osym, best[1], best[0], best[2], best[3]))
+                    d = (best[0], osym)
+            seen[page] = d
+            row.append(d)
+        # Two roles of one romset must not overlay the same base: the registry would
+        # keep only the last one.
+        used = [b for b, o in row if o != 'nullptr']
+        if len(used) != len(set(used)):
+            raise SystemExit("kay: %s overlays one base twice (%s)" % (tag, used))
+        desc[tag] = row
+    banner = ['// Generated by tools/rom_pack.py (pack_kay) — do not edit by hand.',
+              '// Nemo KAY ROM pages: raw pages + run-list overlays over ROMs the',
+              '// firmware already ships. Regenerate: python3 tools/rom_pack.py kay', '']
+    c = list(banner) + ['#include <stdint.h>', '']
+    for sym, data in raws + [(o[0], o[1]) for o in ovls]:
+        c.append(_c_array(sym, data)); c.append('')
+    open(os.path.join(out_dir, 'kay_roms.c'), 'w').write("\n".join(c) + "\n")
+    h = list(banner) + ['// Include from Config.cpp ONLY: the tables name gb_rom_1_sinclair_128k,',
+                        '// an internal-linkage array a second TU would duplicate (see romScorpion.h).',
+                        '#pragma once', '#include <stdint.h>',
+                        'struct kay_rom_bank_t { const uint8_t* data; const uint8_t* overlay; };',
+                        'extern "C" {']
+    for sym, _ in raws + [(o[0], o[1]) for o in ovls]:
+        h.append('extern const unsigned char %s[];' % sym)
+    h.append('}')
+    for tag, _ in KAY_ROMSETS:
+        h.append('// rom[] order: 0 BASIC-128, 1 BASIC-48, 2 service, 3 TR-DOS')
+        h.append('static const kay_rom_bank_t gb_rom_%s_banks[4] = {' % tag)
+        for ri, (b, o) in enumerate(desc[tag]):
+            h.append('    { %s, %s },   // %s' % (b, o, names[ri]))
+        h.append('};')
+    open(os.path.join(out_dir, 'kay_banks.h'), 'w').write("\n".join(h) + "\n")
+    total = sum(len(d) for _, d in raws) + sum(len(o[1]) for o in ovls)
+    report = {'id': 'kay', 'raw': [{'sym': s, 'len': len(d)} for s, d in raws],
+              'overlays': [{'sym': o[0], 'base': o[2], 'len': len(o[1]), 'runs': o[3],
+                            'diff_bytes': o[4]} for o in ovls],
+              'flash_bytes': total}
+    open(os.path.join(out_dir, 'manifest.json'), 'w').write(json.dumps(report, indent=2) + "\n")
+    print("[kay] %d raw arrays + %d overlays = %d B in flash (instead of %d)"
+          % (len(raws), len(ovls), total, 4 * len(KAY_ROMSETS) * 16384))
+    for o in ovls:
+        print("    %-24s over %-24s %6d B" % (o[0], o[2], len(o[1])))
+
 def main():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     os.chdir(root)
     # plus3div is only packed on request: its ROM is not in the repository, so a
     # bare `rom_pack.py` must not fail on a tree that simply does not have it.
-    fams = sys.argv[1:] or (list(FAMILIES) + ['tsconf', 'timex', 'gmx', 'prof'])
+    fams = sys.argv[1:] or (list(FAMILIES) + ['tsconf', 'timex', 'atm', 'kay', 'gmx', 'prof'])
     for fid in fams:
         if fid == 'gmx':
             pack_gmx()
@@ -1069,9 +1319,15 @@ def main():
         if fid == 'timex':
             pack_timex()
             continue
+        if fid == 'atm':
+            pack_atm()
+            continue
+        if fid == 'kay':
+            pack_kay()
+            continue
         if fid not in FAMILIES:
             raise SystemExit("unknown family: %s (known: %s)" % (fid, ", ".join(FAMILIES)))
-        rep = pack_family(FAMILIES[fid], os.path.join('src', 'roms', fid))
+        rep = pack_family(FAMILIES[fid], os.path.join('src', 'speccy', 'roms', fid))
         if fid == 'plus3e':
             pack_plus3e_raw()
         tot = sum(v['len'] for v in rep['variants'])

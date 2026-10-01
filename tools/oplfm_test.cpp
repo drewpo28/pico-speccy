@@ -1,8 +1,8 @@
 /*
- * oplfm_test.cpp — host-side validation for src/OplFm.cpp (YMF262/OPL3 core).
+ * oplfm_test.cpp — host-side validation for src/speccy/devices/sound/OplFm.cpp (YMF262/OPL3 core).
  *
  * Build & run (OplFm.cpp has no project dependencies):
- *   g++ -O2 -Isrc -o /tmp/oplfm_test tools/oplfm_test.cpp src/OplFm.cpp src/FmTables.cpp && /tmp/oplfm_test
+ *   g++ -O2 -Isrc -o /tmp/oplfm_test tools/oplfm_test.cpp src/speccy/devices/sound/OplFm.cpp src/speccy/devices/sound/FmTables.cpp && /tmp/oplfm_test
  *
  * Re-run after ANY change to OplFm.cpp — an FM core fails quietly and by
  * degrees. Checks:
@@ -20,7 +20,7 @@
 #include <string.h>
 #include <math.h>
 
-#include "OplFm.h"
+#include "speccy/devices/sound/OplFm.h"
 
 // OplFm/OpllFm allocate their shared tables through the firmware's
 // non-panicking tryMalloc; on the host that is plain malloc.

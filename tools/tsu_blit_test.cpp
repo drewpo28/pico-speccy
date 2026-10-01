@@ -1,10 +1,10 @@
-// Host test for src/TsuBlit.h: the SWAR element blit against the per-nibble
+// Host test for src/speccy/machines/TsConf/TsuBlit.h: the SWAR element blit against the per-nibble
 // reference over random elements (both directions, every position incl. the
 // 512-pixel wrap, random palettes, random buffer contents, elements with
 // forced fully-opaque / fully-transparent / single-nibble patterns).
 //
 //   g++ -O2 -Wall -Wextra -Isrc -o /tmp/tsu_blit_test tools/tsu_blit_test.cpp && /tmp/tsu_blit_test
-#include "TsuBlit.h"
+#include "speccy/machines/TsConf/TsuBlit.h"
 #include <stdio.h>
 #include <stdlib.h>
 

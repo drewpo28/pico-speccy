@@ -6,7 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
-#include "RomOverlay.h"
+#include "speccy/core/RomOverlay.h"
 
 static uint32_t rng = 0x12345678u;
 static uint32_t rnd() { rng ^= rng << 13; rng ^= rng >> 17; rng ^= rng << 5; return rng; }

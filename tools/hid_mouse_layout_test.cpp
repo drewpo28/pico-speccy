@@ -1,4 +1,4 @@
-// Host test for src/HidMouseLayout.h — the HID report-descriptor parser that gives
+// Host test for src/drivers/usbhost/HidMouseLayout.h — the HID report-descriptor parser that gives
 // the Kempston wheel mouse its wheel. Builds against the shipped header, never a copy:
 //
 //   g++ -O2 -Wall -Wextra -Isrc -o /tmp/hml tools/hid_mouse_layout_test.cpp && /tmp/hml
@@ -7,7 +7,7 @@
 // silences the mouse this firmware's users move the pointer with, or decodes garbage
 // deltas, and neither is visible without hardware.
 
-#include "HidMouseLayout.h"
+#include "drivers/usbhost/HidMouseLayout.h"
 #include <cstdio>
 #include <cstring>
 #include <vector>

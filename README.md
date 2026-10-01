@@ -23,7 +23,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 
 ## Features
 
-- ZX Spectrum 48K, 128K, +3 / +3e, Timex TC2048/TC2068, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, TS-Conf (ZX-Evo), Byte and ALF TV Game. 100% cycle accurate emulation.
+- ZX Spectrum 48K, 128K, +3 / +3e, Timex TC2048/TC2068, Pentagon 128k/512k/1024k, Profi 1024K, Scorpion ZS-256/ZS-1024/GMX/ProfROM, TS-Conf (ZX-Evo), ATM-Turbo 1 / 2 / 2+ / 3, Nemo KAY 256/1024, ZXM-Phoenix, Byte and ALF TV Game. 100% cycle accurate emulation.
 - State of the art Z80 emulation (Authored by [José Luis Sánchez](https://github.com/jsanchezv/z80cpp))
 - Selectable Sinclair 48K, Sinclair 128K and Amstrad +2 english and spanish ROMs. Byte and ALF TV Game - russian ROMs, + Pentagons with Gluck services ROMs & selectable TR-DOS ROM (5.03 / 5.04TM / 5.05D / custom). Profi 1024K with selectable Karabas-Pro ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage).
 - Possibility of using custom ROM with easy flashing procedure from SD card.
@@ -44,6 +44,10 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - VGA/HDMI CRT filter with 7 selectable levels (Off, Soft, Medium, Strong, Grille soft/med/hard): gamma correction, phosphor tint, black lift and a vertical aperture-grille mask.
 - HDMI dither effect for ULA+ (RP2350 only): optional Bayer-look palette dithering applied via ISR.
 - VGA colour (Video → VGA → Colour): per-pixel PWM (four sub-samples per pixel, integrated by the resistor ladder — 13 or 29 levels per channel with no dither pattern; press Auto Adjust on the monitor after switching it on) or the ordered 2x2 dither. Reboot-class; default PWM on HSTX builds, dither elsewhere (PWM there costs 4x the VGA line DMA).
+- Nemo KAY emulation (Machine → KAY): KAY256 Turbo (256K via #1FFD D4), KAY1024 (1 MB — #1FFD D4/D7 and #7FFD D7), KAY1024 v2010/v2018 and the ZXM-Phoenix (Machine → Other, 2 MB — #1FFD D4/D6/D7 and #7FFD D7), with each board's own ROM set — the 1994 Nemo KAY-256 ROM, JV Kramis V0.3 2000 on the KAY1024, Reset Service V0.2d with the 2002 BASIC/TR-DOS on the v2010/v2018 and the ZXM BIOS 5.04T on the Phoenix. #1FFD D3 switches to the service ROM (Caps Shift held at reset, or Alt+F11 → Service), D0 maps RAM page 0 over the ROM, D2 turns the 7 MHz turbo off while turbo is enabled; on-board TR-DOS, optional Gluk clock (CMOS + NVRAM) and SMUC card (IDE/HDD → SMUC).
+- ATM-Turbo emulation (Machine → ATM-Turbo): ATM-Turbo 1 (BIOS 1.04rs, 1 MB, #FE address-latch paging), ATM-Turbo 2 (BIOS 1.06.02) and ATM-Turbo 2+ (BIOS 1.07.13 or xBIOS 1.37, 1 MB, the #77/#F7 memory manager, 7 MHz turbo, on-board IDE as IDE/HDD → ATM), and ATM-Turbo 3 v8.0 (4 MB, the #BF / #x7F7 / #xxE7 ports and the extended palette; BIOS 1.07.13EC or xBIOS 1.37 with MSD888's ATM3 test ROM, started from Alt+F11 → ATM3 test), with the 16-entry palette and every video mode (ZX, EGA 320x200x16, hires 640x200, 80x25 text on the 2+). Alt+F11 → Reset to offers BIOS / CP/M / TR-DOS / 128K / 48K, skipping the BIOS boot menu; Z-Controller SD and General Sound work alongside the ATM ports. Needs a board with QSPI (butter) PSRAM and VGA/HDMI output.
+- ATM2 CP/M: in the default BIOS configuration, CP/M starts on RAM disk **A:**; the image mounted in physical floppy drive **A** is accessed as CP/M **B:**. Enter `B:` and then `DIR` to list its files. For the CP/M Prince of Persia image (`PRINCE.TRD`), run `PR2` on ATM2/2+ (`PR` on ATM1, as specified in the archive). The `.trd` extension describes the disk image layout; the files inside this image use CP/M, not TR-DOS.
+- VGA PWM phase (Video → VGA → PWM phase, shown while PWM is on): rotates the four sub-samples of every pixel by 0..3 phases, live. For a monitor that samples one point per pixel (every non-BRIGHT colour reads BRIGHT, or the dark end crushes to black, after its Auto Adjust — it can differ between 640x480 and 720x576) one step moves its sample point onto the intended level.
 - VGA colour depth (Video → VGA → Colour depth, shown while PWM is off): Dithered (ordered 2x2, ~2200 perceived colours out of the 2-bit DAC — better gradients for TS-Conf 16c/256c artwork) or Solid. The flat 16 ZX colours always stay solid.
 - HDMI clock drive setting (Video → HDMI → Clock drive): Normal (12 mA, fast edge) or Soft (8 mA, slow edge, less crosstalk on marginal receivers), switchable at runtime (RP2350 only).
 - Capture card compatibility (Video → Capture card compatibility): snaps every palette entry to a level whose doubled HDMI pixel is a single TMDS symbol, so runtime palettes (TS-Conf CRAM, ULA+, Gigascreen blends) come through a USB HDMI grabber without the alternating-column artefact — invisible on a monitor (RP2350 only).
@@ -63,7 +67,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Murmuzavr (up to 32 MB) support.
 - Z80 DMA / zxnDMA emulation: Port #0B (MB02+) and Port #6B (DATA-GEAR) modes (RP2350 only).
 - Contended memory and contended I/O emulation.
-- AY-3-8912 / TurboSound emulation.
+- AY-3-8912 / TurboSound emulation, with ABC / ACB / BAC / CBA / Mono stereo modes (Audio → AY stereo mode).
 - TurboSound FM (2 x YM2203) emulation: NedoPC #FFFD pseudo-registers, OPN FM synthesis.
 - OPL3 (YMF262) sound-card emulation on ports #C4-#C7 (Audio → VGM chips → "YMF262 (OPL3)") — together with AY and TSFM this covers the [VGM player plugin for the ESXDOS NMI browser](https://github.com/Alex-Zor/VGM-Plugin-for-DivMMC): copy the plugin to `/BIN/BPLUGINS` on the SD card and .vgm files (AY / YM2203 / OPL2 / OPL3) play from the NMI browser.
 - YM2413 (OPLL) emulation — the SMS-FM/MSX-MUSIC chip, 15 ROM patches + user patch + 5 drums — on the same card family (address #C0 / data #C1, VGM command 0x51), Audio → VGM chips → "YM2413 (OPLL)".
@@ -107,12 +111,14 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - ZIP archive support: browse, extract, load and delete files inside ZIP archives.
 - Configurable keyboard hotkeys with hint display in menus.
 - Enhanced debugger: multi-breakpoint (up to 20), memory editor, port read/write breakpoints.
-- Debug → Paper: switch off paper rendering so the border effects paint straight through the screen area — a border-timing debugging aid.
+- Render border (Video → Render border): turn the border off and the paper is scaled to fill the screen — even 3:2 / 5:2 pixel steps through the pair-slot driver and a scan-out line map where available, with the F8 box, notifications and LEDs kept readable (RP2350 only).
+- Render paper (Video → Render paper): switch off paper rendering so the border effects paint straight through the screen area — a border-timing debugging aid.
 - Debug → UART console: TX-only 115200 8N1 log (Debug::log and printf) on the board's console pin, switchable from the menu instead of a build option (see the build notes for the per-board pin).
 - Debug → Config folders: browse `/.config/pico-speccy` and `/pico-speccy` in the file browser (rename, new folder, delete) with a built-in text viewer for logs and config files — the config tree is hidden from the normal F5 browser.
 - Hardware info menu: Chip Info (model, cores, frequency, VREG voltage, on-chip temperature with per-chip offset calibration in Debug → Temp offset), Board Info (flash, PSRAM, SDK version), Memory Info (live SRAM/PSRAM/flash occupancy and Buffer tier pools) and Emulator Info (machine, video, sound, input and storage configuration).
 - Speed Test menu: benchmark CPU MIPS, SRAM read/write, PSRAM, SD card and USB drive throughput (individual or all at once), plus a Video path page (active video back-end, DMA per line, SRAM throughput under display DMA, line-ISR timing, HDMI audio packet rate).
 - ZX Keyboard overlay (main menu → ZX Keyboard): full-screen bitmap of the Spectrum keyboard for quick reference. Thanks to @const_bill and @tecnocat.
+- Pico-Zx-Player (Menu → Pico-Zx-Player, or Enter/F2 on a music file in the F5 browser): a native music player with the emulation paused — MP3, VGM/VGZ, MIDI, .ay, PT3/PT2/STC/STP/SQT, PSC/PT1/ASC/FTC/FLS/GTR/FXM/PSM/VTX, E-Tracker/SAM, TFC/TFD/TFE/TFM, MOD/S3M/XM/IT; playlists from a folder and its subfolders, shuffle/autoplay/repeat, seek, volume/mute, a hot-key legend (hidden by default — F1 shows/hides it, an "F1 Help" hint sits in the bottom-right corner while it is hidden; Esc closes the player), a playlist that loads in the background while the picked track already plays, per-channel meters, and playback straight from FTP and Web Archives. Needs a board with QSPI (butter) PSRAM.
 - Pico-Scwong: a built-in native squash/pong game (tribute to andykarpov's Skvosh console) that runs on the RP2350 itself with no emulated machine and no SD card — last row of the Machine menu, or hold S at boot. Solo squash, Pong vs CPU with three difficulty levels, options for field/paddle/ball colours and sizes, and a CPU-vs-CPU attract mode after ten idle seconds.
 - Overclock menu: CPU frequency (252/378/504 MHz), Flash frequency (33–166 MHz), PSRAM frequency (66–166 MHz), VReg voltage (1.15–1.80 V).
 - Z80 turbo: emulated CPU speed selectable at 3.5/7/14/28 MHz (ALT+F2, remembered across reboots); machines with their own turbo control (Pentagon 1024SL #EFF7 and Scorpion GMX #7EFD while turbo is enabled, TS-Conf ZCLK outright) can switch it from software, and the hotkey then continues from whatever clock the machine is really running.
@@ -164,7 +170,7 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+F8 Toggle LED indicators
 - ALT+F9 Input poke
 - ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options; Scorpion: magic button into the service monitor)
-- ALT+F11 Reset to... (modal menu: Service/Gluk/Service ROM, TR-DOS, 128K, 48K — depends on machine; Profi has its own Service ROM / TR-DOS / 128K / 48K set, Scorpion offers Service monitor / TR-DOS / 128K / 48K)
+- ALT+F11 Reset to... (modal menu: Service/Gluk/Service ROM, TR-DOS, 128K, 48K — depends on machine; Profi has its own Service ROM / TR-DOS / 128K / 48K set, Scorpion offers Service monitor / TR-DOS / 128K / 48K, KAY Service / TR-DOS / 128K / 48K, ATM-Turbo BIOS / CP/M / TR-DOS / 128K / 48K)
 - ALT+F12 USB Boot / Update Firmware
 - ALT+PageUp Switch Gigascreen mode (Off → On → Auto cycle)
 - ALT+F3 Quick load snapshot

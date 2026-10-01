@@ -2,7 +2,7 @@
 //
 // The firmware cannot be built without the Pico SDK, and MemESP::plus3Remap() drags in
 // the whole memory subsystem (PSRAM pools, SD swap) — so the arithmetic that is actually
-// specific to the +3 lives in src/Plus3Paging.h, which this harness INCLUDES. It tests
+// specific to the +3 lives in src/speccy/machines/Plus3/Plus3Paging.h, which this harness INCLUDES. It tests
 // the shipped table, not a copy of it.
 //
 // The reference is Fuse: machines/specplus3.c (special_memory_map / select_special_map /
@@ -17,7 +17,7 @@
 #include <cstdint>
 #include <cstdlib>
 
-#include "Plus3Paging.h"
+#include "speccy/machines/Plus3/Plus3Paging.h"
 
 // ── slot resolution, the one part of MemESP::plus3Remap that is not in the header ──
 struct Map {

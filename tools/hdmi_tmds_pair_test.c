@@ -1,9 +1,9 @@
 // Host validation of the TMDS character pairs the HDMI driver emits for the
-// identical-colour case (drivers/hdmi/tmds_pair.h, used by hdmi_write_pair).
+// identical-colour case (src/drivers/hdmi/tmds_pair.h, used by hdmi_write_pair).
 // It includes the shipped header directly — there is no copy of the code here to
 // drift out of step with it.
 //
-//   gcc -O2 -Wall -Idrivers/hdmi -o /tmp/tmds_pair_test tools/hdmi_tmds_pair_test.c
+//   gcc -O2 -Wall -Isrc/drivers/hdmi -o /tmp/tmds_pair_test tools/hdmi_tmds_pair_test.c
 //   /tmp/tmds_pair_test
 //
 // Checks, over all 256 channel values: the pair's one-counts sum to exactly 10

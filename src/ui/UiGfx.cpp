@@ -8,8 +8,8 @@
 #include "UiGfx.h"
 #include "UiFont.h"
 #include "OSDMain.h"
-#include "Video.h"
-#include "Config.h"     // ui_vga_solid / ui_rounded — the menu-look preferences
+#include "speccy/video/Video.h"
+#include "app/Config.h"     // ui_vga_solid / ui_rounded — the menu-look preferences
 
 extern "C" volatile bool profi_ds80_active;
 // File scope, OUTSIDE namespace nm: an extern declared inside the namespace
@@ -221,6 +221,7 @@ void gfxInstallPalette() {
 
 void gfxBegin() {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
+    VIDEO::blVmapSuspend();   // borderless: show what is drawn over the fb row for row
     gfxComputeSurface();
     gfxInstallPalette();
 }

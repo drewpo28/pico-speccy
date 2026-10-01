@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # Generate a standalone Cyrillic 6x8 OSD font (Font6x8Cyr) and insert it into
-# src/Font.cpp. This is a SEPARATE font object — the global UI keeps the active
+# src/drivers/framebuffer/Font.cpp. This is a SEPARATE font object — the global UI keeps the active
 # iso8859_1 face (FONTFACE==1, whose high range carries Spanish accented letters
 # that would collide with CP1251). The OSD switches to Font6x8Cyr only for the
 # online-catalog browser, where names arrive as UTF-8 and are transcoded to
@@ -18,7 +18,7 @@
 
 import re, sys
 
-FONT = "src/Font.cpp"
+FONT = "src/drivers/framebuffer/Font.cpp"
 W, H, ON = 6, 8, 255
 
 def load_active_ascii():

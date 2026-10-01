@@ -22,15 +22,15 @@
 #include "UiActions.h"
 #include "UiDialog.h"
 #include "UiBrowser.h"
-#include "Subsystem.h"
+#include "app/Subsystem.h"
 #include "OSDMain.h"
-#include "TryAlloc.h"
-#include "ESPectrum.h"
-#include "Video.h"
-#include "Config.h"
-#include "FileUtils.h"
-#include "fabutils.h"
-#include "Debug.h"
+#include "app/TryAlloc.h"
+#include "app/ESPectrum.h"
+#include "speccy/video/Video.h"
+#include "app/Config.h"
+#include "fs/FileUtils.h"
+#include "drivers/input/fabutils.h"
+#include "app/Debug.h"
 #include <pico/stdlib.h>
 
 // Heap probes (OSDMain.cpp) — declared OUTSIDE namespace nm, or the names resolve

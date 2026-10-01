@@ -1,9 +1,9 @@
 // 4-phase PWM for the VGA ladder over HSTX — checks the SHIPPED header.
 //
-//   gcc -O2 -Wall -Wextra -Idrivers/vga-nextgen tools/vga_pwm_test.c
+//   gcc -O2 -Wall -Wextra -Isrc/drivers/vga-nextgen tools/vga_pwm_test.c
 //       -o /tmp/vga_pwm_test  &&  /tmp/vga_pwm_test
 //
-// Re-run after ANY change to drivers/vga-nextgen/vga_pwm.h.  A wrong phase order,
+// Re-run after ANY change to src/drivers/vga-nextgen/vga_pwm.h.  A wrong phase order,
 // a wrong weight or a wrong level map is a colour cast, and there is no way to see
 // one without the hardware: the picture is there, the geometry is right, and every
 // counter is clean.

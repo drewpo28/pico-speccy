@@ -1,5 +1,15 @@
 # pico-speccy Project Memory
 
+**Build files (split 2026-09-30):** `CMakeLists.txt` is the skeleton (SDK, target,
+link libs, PORT_VERSION — release scripts grep it there); the rest is `cmake/*.cmake`,
+each `include()`d at its old position: `options` (boards, displays, features), `trace` (every XXX_TRACE / debug option), `board`
+(board pick, PICO_BOARD, BOARD_TAG), `source-flags` (per-file -O), `wifi`,
+`memory-layout` (linker script, overlay windows + their AUTO sizes, GM.DLS floor),
+`debug-defines`, `board-pins` (per-board GPIO defines), `display` (incl.
+HDMI_HSTX), `build-name`. "CMakeLists" below usually means one of these.
+`GMX_IN_FLASH` / `PROFROM_IN_FLASH` / `PLUS3DIV_IN_FLASH` are GONE (2026-09-30):
+every ROM set is always in flash; notes below that call them an escape hatch are history.
+
 **Scope (rebrand, 2026-07-25):** RP2350 only — RP2040 support, the ZERO and
 MURM*_P1 board targets, and the Spanish UI (all `*_ES` strings, `Config::lang`,
 the Language menu) were removed. Firmware names are `<board>-speccy-...`
@@ -25,9 +35,54 @@ panel** (`kTft` in UiTree.cpp, `#if TFT` only): Inversion / RGB-BGR / Flip X / F
 as ordinary staged `AC_REBOOT` booleans (`SET_TFT_*`) plus a "Restore defaults" action.
 They write the driver's globals (`TFT_INVERSION`, the MADCTL byte `TFT_FLAGS`), which
 `st7789_init()` reads once while building its command list — hence reboot-class; the
-MADCTL bit names now live in `drivers/st7789/st7789.h` (whose declarations got an
+MADCTL bit names now live in `src/drivers/st7789/st7789.h` (whose declarations got an
 `extern "C"` wrapper) and every setter re-asserts `MADCTL_ROW_COLUMN_EXCHANGE`
 (landscape), so Defaults always lands on a usable orientation.
+
+## Source tree layout
+
+```
+src/
+  main.cpp
+  app/        firmware core, not emulation: ESPectrum (main loop), Config, MachineSwitch,
+              Subsystem, CodeOverlay, Buffer, FlashRoms, Debug, messages.h
+  drivers/    everything that talks to RP2350 hardware
+    <lib>/    CMake libraries (audio, hdmi, vga-nextgen, tv, tv-software, st7789, graphics,
+              psram, sdcard, ps2, ps2kbd, nespad) — linked,
+              not globbed: PICO_DRIVER_LIBS in CMakeLists.txt excludes them from the glob
+    board/    BoardPins, ChipPackage, boards/*.h, and the config headers the SDK looks up
+              by bare name (tusb_config.h, lwipopts.h, FreeRTOSConfig.h, mbedTLS config)
+    usbhost/  TinyUSB host glue: hid_app, xinput_host, HCD router/wrappers, UsbMsc
+    sound/    pwm_audio (PWM/I2S/HDMI output mixing), PinSerialData_595
+    input/    keyboard (fabgl VK layer), codepages, mouse.h
+    framebuffer/ the bitluni framebuffer classes (VGA/Graphics/I2S) behind VIDEO::vga, OSD font
+  speccy/     the emulator
+    z80/      Z80_JLS core, CPU (Z80Ops bus accessors + frame loop)
+    core/     MemESP, Ports, Snapshot, RomOverlay, ArchRom.h, roms.h, loaders.h
+    video/    Video (ULA/whole-line renderers), VidPrecalc
+    machines/ one module per machine (see the "src/speccy/machines" section) — Plus3/, Profi/, TsConf/,
+              Atm, Scorpion, Pentagon, Byte, Alf, Timex
+    devices/  disk/ (wd1793, Upd765, DskImage, td0, MB02), storage/ (IDE, DivMMC, RTC,
+              Nvram24), sound/ (AY, SAA, SN, OPN/OPL/OPLL, MIDI), gs/ (GS/NeoGS), tape/,
+              zifi/ (guest NIC), Z80DMA
+    roms/     ROM images + rom_pack.py output
+  net/        host-side networking: ZiFiAT/ZiFiSock facades, WifiNet/WifiSock (lwIP),
+              TLS, FTP/FTPD, SSH/SFTP, HTTP, catalog
+  fs/         FileUtils, FileInfo, ZipExtract, SortedFiles
+  ui/         nm:: menu + OSDMain/OSDFile, LEDIndicators, CaptureBMP
+  player/     Pico-Zx-Player
+external/     vendored third-party code: tinyusb, fatfs, picomp3lib, miniz, minimp3,
+              libxmp, redcode (GS / player Z80, with its Z80_compat.h), embeded-midi-synth
+```
+
+**Includes are spelled from `src/`** (`#include "speccy/core/Ports.h"`) or from
+`external/` (`"miniz/miniz.h"`); a header in the SAME directory as its includer is
+spelled bare. Both roots are on the include path; there is no `-Isrc/roms` any more.
+Driver libraries keep their own bare includes (they build without `-Isrc`). Linker
+and overlay rules match objects by BASENAME (`*Z80_JLS.cpp.o`, `*GS.cpp.o`,
+`*tsconf_roms.c.o`), so .c/.cpp names must stay unique across the whole tree.
+Reorganised 2026-09-30; all 17 variants were diffed against the pre-move build:
+RAM identical, no function changed RAM/flash placement.
 
 ## NeoGS (ported from pico-spec drew-sound-neogs, 2026-08-04)
 
@@ -39,8 +94,8 @@ picks its own via GSCFG0 CKSEL) + `RAM` (NeoGS only, `SET_GS_RAM`, AC_REBOOT).
 The pico-spec classic-menu changes (OSDMain/messages) were NOT ported — nm:: UI
 only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
 
-- **New files**: `src/GS/NGS_ROM.{c,h}` (sparse 512 KB fw 1.11 flash image,
-  regen via `tools/ngs_rom_pack.py full_ngs.rom`), `src/GS/NgsSd.{cpp,h}`
+- **New files**: `src/speccy/devices/gs/NGS_ROM.{c,h}` (sparse 512 KB fw 1.11 flash image,
+  regen via `tools/ngs_rom_pack.py full_ngs.rom`), `src/speccy/devices/gs/NgsSd.{cpp,h}`
   (SD ports #11-#14 → host SD via core1→core0 one-slot mailbox; card is
   always SDHC; core0 pumps `NgsSd::service()` from ESPectrum::loop + frame
   waits + GS host-port handlers).
@@ -59,8 +114,8 @@ only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
   `page = (port<<1) | D7` (GS_info "xxxx xxxa", MAME agrees). The donor code
   masked `mpag/mpagex & 0x3F` (dropped bit 6 → only 2 MB reachable in EXPAG
   mode on a 4 MB card); now `& 0x7F` in ngs_rebuild_map.
-- **MP3 really decodes** (2026-08-04, NOT yet hw-tested): `src/GS/NgsMp3.*`
-  + vendored `src/minimp3/minimp3.h` (lieff/minimp3, CC0, `-O3`). MD_SEND
+- **MP3 really decodes** (2026-08-04, NOT yet hw-tested): `src/speccy/devices/gs/NgsMp3.*`
+  + vendored `external/minimp3/minimp3.h` (lieff/minimp3, CC0, `-O3`). MD_SEND
   (#14, core1) → 8 KB input ring → core0 `NgsMp3::service()` (pumped beside
   `NgsSd::service()`; ≤1 frame ≈ 2 ms per call) → minimp3 → linear resample
   to 37500 Hz (SCI_VOL attenuation applied, half scale to keep the int16 sum
@@ -206,7 +261,7 @@ only. `USE_GS` guards were stripped (pico-speccy compiles GS unconditionally).
   firmware's T-state budget per sample, exactly like a card clocked down.
 
 **MP3 decoding — now Helix, not minimp3:**
-- `drivers/picomp3lib` (Helix, fixed point) was already vendored, built and
+- `external/picomp3lib` (Helix, fixed point) was already vendored, built and
   linked but never called. `NgsMp3.cpp` now uses it: `MP3FindSyncWord` +
   `MP3Decode` + `MP3GetLastFrameInfo`. Its eight state structures (23.9 KB) come
   from ONE SRAM arena via `ngs_helix_alloc` — a bump allocator, valid because
@@ -549,7 +604,7 @@ re-applied at the fetch. Only ~2.5 KB of shared tables remain, on the heap.
 
 Validated on the host, not on hardware, by `tools/opnfm_test.cpp` (OpnFm.cpp's
 only project dependency is `Debug::log`, which the harness stubs, so it builds
-with `g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/OpnFm.cpp`):
+with `g++ -O2 -Isrc -o /tmp/opnfm_test tools/opnfm_test.cpp src/speccy/devices/sound/OpnFm.cpp`):
 440.0 Hz demanded / 440.1 Hz measured (algorithm 7 and via autocorrelation on a
 real 4-op patch), key-off decays to exact silence, channel 3 3-slot mode plays,
 SSG-EG cycles and stays bounded, timer A 48 overflows/s against 48.1 wanted,
@@ -1176,7 +1231,7 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   suspect list while hunting the Doom clicks. Doom II at 378 MHz measured 6343 us/fr with half-rate +
   RAM code alone (advance() dominated), which is what motivated the EG-skip.
 - **Host test `tools/oplfm_test.cpp`** (`g++ -O2 -Isrc -o /tmp/oplfm_test
-  tools/oplfm_test.cpp src/OplFm.cpp && /tmp/oplfm_test`): plugin detect
+  tools/oplfm_test.cpp src/speccy/devices/sound/OplFm.cpp && /tmp/oplfm_test`): plugin detect
   sequence → status 0xC0, 440.0 Hz tone, key-off to exact silence, timer1
   48/s + timer2 12/s, OPL3-mode bank-2 + pan routing, rhythm BD, waveform 2
   non-negative. **Re-run after ANY change there.**
@@ -1200,7 +1255,7 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   missed them). The host tests therefore stub `tryMalloc`/`tryCalloc` now.
   **`tools/vgm_render_crc.cpp` is the gate that proved the rewrite**
   (`g++ -O2 -Wall -Isrc -o /tmp/vgm_render_crc tools/vgm_render_crc.cpp
-  src/OplFm.cpp src/OpllFm.cpp src/FmTables.cpp -lz`, then any .vgm/.vgz): renders the file through
+  src/speccy/devices/sound/OplFm.cpp src/speccy/devices/sound/OpllFm.cpp src/speccy/devices/sound/FmTables.cpp -lz`, then any .vgm/.vgz): renders the file through
   both cores at full and half rate and prints a CRC32 of the output. Baseline vs
   after on Doom II 01/02, Doom 02 and the OPLL Disc Station title were identical
   on all ten lines. **Take the CRC BEFORE any bit-exactness-sensitive change to
@@ -1222,7 +1277,7 @@ new. Findings from disassembling the plugin (source in the repo is 0.51a; the
   `FmTab::acquire()/release()` is refcounted across both chips' constructors and
   destructors, allocates through `tryMalloc`, and `tablesReady()` on either class
   is `FmTab::ready()`. Saves 2.5 KB whenever both chips are on. Every host recipe
-  that links OplFm.cpp or OpllFm.cpp now needs `src/FmTables.cpp` beside it.
+  that links OplFm.cpp or OpllFm.cpp now needs `src/speccy/devices/sound/FmTables.cpp` beside it.
 - **OPLL and SN76489 are NOT AVAILABLE on TS-Conf (same day, hw-confirmed with the
   bullet above)** —
   owner's call, and the reason is the only VGM player that machine has: Wild
@@ -1432,7 +1487,7 @@ ports, the two Ports.cpp decode blocks are the only thing to move:
   period 0/1 = constant +1 (the chip's PCM mode). Internal tick clock/16 with
   a Q16 accumulator, ~7 ticks per output sample box-averaged (PCM and high
   tones fold down instead of aliasing). Host test `tools/snsound_test.cpp`
-  (g++ -O2 -Isrc ... src/SnSound.cpp): tone 440.4 Hz, PCM DC, white/periodic
+  (g++ -O2 -Isrc ... src/speccy/devices/sound/SnSound.cpp): tone 440.4 Hz, PCM DC, white/periodic
   noise (periodic = 1-in-16 pulse train at clock/(32·N·16)), chip
   independence. **Re-run after any change.** Volume: sn_vol[0]=48 per channel,
   mixed unipolar like the beeper (no re-centre) — the knob if hw disagrees.
@@ -1476,7 +1531,7 @@ so raw.githubusercontent.com is the way to any of this.
   configurations `{0,1,2,3} {4,5,6,7} {4,5,6,3} {4,7,6,3}`. **`recoverPage0()` bows out
   while one is mapped** (`MemESP::p3special`): its generic `page0ram` path always maps
   `ram[0]`, which is wrong for configurations 1-3 — they hold page 4 there.
-  The arithmetic lives in `src/Plus3Paging.h` so `tools/plus3_paging_test.cpp` builds
+  The arithmetic lives in `src/speccy/machines/Plus3/Plus3Paging.h` so `tools/plus3_paging_test.cpp` builds
   against the shipped table rather than a copy.
 - **Contended pages are 4,5,6,7, not the odd ones**, and the delay pattern differs. In
   this repo's phase (index 0 = `TS_SCREEN_128` = 14361) the +3 sequence is
@@ -1491,7 +1546,7 @@ so raw.githubusercontent.com is the way to any of this.
   `resolveConstraints` (note), `MachineSwitch` (toast), and `ESPectrum::setup` /
   `CPU::reset` as the backstop for boots that never pass through the menu. All three
   test the ROMSET (`isPlus3Romset` / `Config::isPlus3`), the way Byte's exclusions do.
-- **ROMs**: the standard v4.0 English set. Banks 0-2 are raw (`src/roms/plus3/`); bank 3
+- **ROMs**: the standard v4.0 English set. Banks 0-2 are raw (`src/speccy/roms/plus3/`); bank 3
   is 48 BASIC and overlays `gb_rom_1_sinclair_128k` in **1266 bytes**. The base has to be
   a RAW array — MemESP's overlay registry is keyed by base pointer and does NOT chain, so
   the +2's own (overlaid) 48 BASIC cannot be the base even though it is ~80 bytes closer.
@@ -1535,7 +1590,7 @@ the wiki page is sinclair.wiki.zxnet.co.uk/wiki/IDEDOS.
   three bits of the HIGH byte, **A13 A12 A8**: `#CEEF` data, `#CFEF` error/features,
   `#DEEF` count, `#DFEF` sector, `#EEEF` cyl lo, `#EFEF` cyl hi, `#FEEF` device/head,
   `#FFEF` command/status. A9-A11 are NOT decoded (0x278B drives the same registers as
-  `#F0EF`/`#E0EF`); A14/A15 are 1 everywhere. The decode lives in `src/Plus3eIde.h` and
+  `#F0EF`/`#E0EF`); A14/A15 are 1 everywhere. The decode lives in `src/speccy/machines/Plus3/Plus3eIde.h` and
   `tools/plus3e_ide_test.cpp` re-derives it FROM the shipped `rom2.bin` — it scans every
   `LD BC,nnEF` and asserts all eight registers are reachable, which is what catches a
   wrong bit (a mutated A13 shift collapses the ROM's 34 sites onto 4 registers).
@@ -1769,7 +1824,7 @@ the host never asked for). `process_mouse_report`'s `if (len >= 4)` guard, which
 there to stop a 3-byte report's non-existent wheel byte being read past the buffer,
 was silently doing all the work.
 
-- **`src/HidMouseLayout.h`** is a minimal HID report-descriptor walker: report id,
+- **`src/drivers/usbhost/HidMouseLayout.h`** is a minimal HID report-descriptor walker: report id,
   bit offset and size of buttons / X / Y / Wheel, taken ONLY from the application
   collection whose usage is Desktop/Mouse (a combo device's joystick or consumer
   collection cannot donate an "X"). `hid_app.cpp` parses it at mount and asks for
@@ -1840,7 +1895,7 @@ partition geometry says the same thing twice: a 16 MB +3DOS partition spans
 128 cyl x 2 x 128 x **512 B** on a 16-bit disk and 65 cyl x 16 x 63 x **256 B** on
 an 8-bit one.
 
-- **Our `src/roms/plus3e/src/rom{0,1,2}.bin` are byte-identical to v1.43
+- **Our `src/speccy/roms/plus3e/src/rom{0,1,2}.bin` are byte-identical to v1.43
   `sm8en3e{0,1,2}` AND to FUSE's stock `plus3e-{0,1,2}.rom`** (md5 `bc123f62…`,
   `61736426…`, `c363e95d…`). So "works in FUSE" proves nothing by itself — stock
   FUSE +3e is our machine exactly. The Workbench author's FUSE guide does NOT use
@@ -1887,7 +1942,7 @@ and `isPlus3DivRomset()` / `Config::isPlus3Div()` add the card on top.
   `{0x00ff, 0x00e3}` write-only for the control register. So the HIGH BYTE IS NOT
   DECODED and the register is A2..A4 of the low byte — `#A3` data, `#A7` error/features,
   `#AB` count, `#AF` sector, `#B3` cyl lo, `#B7` cyl hi, `#BB` device/head, `#BF`
-  command/status. `src/DivideIde.h` is that arithmetic and `tools/divide_ide_test.cpp`
+  command/status. `src/speccy/devices/storage/DivideIde.h` is that arithmetic and `tools/divide_ide_test.cpp`
   checks it against Fuse's own switch over all 65536 addresses (mutation-checked: a
   wrong mask, a wrong shift and a wrong control port each fail it).
 - **The bus is 16 bits** (libspectrum `LIBSPECTRUM_IDE_DATA16`): the card holds the
@@ -1918,7 +1973,7 @@ and `isPlus3DivRomset()` / `Config::isPlus3Div()` add the card on top.
   && !DivMMC::divide_mode`), and the host test asserts the collision so the comment cannot
   rot. The Profi CP/M shifted FDC (#83/#A3/#C3/#E3) is the other reason.
 - No ZiFi clause, unlike the +3e: divIDE is nowhere near the NIC's `#xxEF`.
-- **The ROM is IN the tree** — `src/roms/plus3div/src/rom{0,1,2,3}.bin`, the `div`
+- **The ROM is IN the tree** — `src/speccy/roms/plus3div/src/rom{0,1,2,3}.bin`, the `div`
   build of p3eroms v1.43, **English** (`diven3e0..3`), from the `ROMS_original.rar` the
   owner supplied (neither octocom nor worldofspectrum is reachable from this
   environment, and **fuse ships only the `sm8` banks**: its `plus3e-{0,1,2,3}.rom` are
@@ -2018,9 +2073,9 @@ writer bug.
 ```
 g++ -O2 -Wall -Wextra -Isrc -o /tmp/p3e tools/plus3e_ide_test.cpp && /tmp/p3e
 g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/dsk_test \
-    tools/dsk_test.cpp src/DskImage.cpp && /tmp/dsk_test
+    tools/dsk_test.cpp src/speccy/devices/disk/DskImage.cpp && /tmp/dsk_test
 g++ -O2 -Wall -Wextra -Isrc -fsanitize=address,undefined -o /tmp/upd765_test \
-    tools/upd765_test.cpp src/Upd765.cpp src/DskImage.cpp && /tmp/upd765_test
+    tools/upd765_test.cpp src/speccy/devices/disk/Upd765.cpp src/speccy/devices/disk/DskImage.cpp && /tmp/upd765_test
 g++ -O2 -Wall -Wextra -Isrc -o /tmp/p3 tools/plus3_paging_test.cpp && /tmp/p3
 ```
 
@@ -2041,7 +2096,7 @@ modes 16c/256c/text, TSU tiles/sprites, DMA, VDOS) lived in the 2026-08-17 plan
 file; Phase 1 = TS-BIOS boots, 4 MB paging, #nnAF registers, FRAME INT,
 ZCLK turbo, ZX video with CRAM colours, TR-DOS/Beta-128, Z-Controller SD.
 
-- **Core**: `src/TsConf.{h,cpp}` owns the register file (`TsConf::r`, with the
+- **Core**: `src/speccy/machines/TsConf/TsConf.{h,cpp}` owns the register file (`TsConf::r`, with the
   hardware's `*_d` line-delay shadows stored for phase 3), CRAM/SFILE, paging
   (`setBanks()` — sole writer of `ramCurrent[0..3]` while TS runs), `write7ffd`
   (LCK128 modes; **Auto=10 treated as 512K** — needs opcode knowledge Ports
@@ -2345,7 +2400,7 @@ of `aligned(4096)` padding. Free heads: DVp2 82.7 KB, z0p2 79.1, z0p2-PIOUSB 64.
   per page, byte = CRAM index → `ts256_map`. OSD overlays drawn with ZX indices 0..16
   (F8 stats, FDD lamp, notify) take whatever CRAM put there — same as under ULA+.
   Cost: ~950 B .bss.
-- **Phase 3b (2026-09-06, NOT hw-tested): .spg loader** (`src/TsSpg.cpp`, `FileSPG::load`
+- **Phase 3b (2026-09-06, NOT hw-tested): .spg loader** (`src/speccy/machines/TsConf/TsSpg.cpp`, `FileSPG::load`
   behind `LoadSnapshot`; `.spg` registered in the snapshot filters, F5/Web launch
   paths and the browser type label). SPG = "SpectrumProg" (`pentevo/docs/Formats/
   SPGv1_0.txt`), THE distribution format of TS-Conf software: 1 KB header (magic at
@@ -2360,7 +2415,7 @@ of `aligned(4096)` padding. Free heads: DVp2 82.7 KB, z0p2 79.1, z0p2-PIOUSB 64.
   CRAM #F0-#FF (`load_spec_colors`), I=#3F, IM1, IY=#5C3A, HL'=#2758, SP, PC, IFF from
   the EI bit. The header's "pager"/"resident" stubs are ignored (Unreal too); SPG
   v0.x is refused. **Depackers** (MegaLZ, Hrust1) are ports of `unreal/depack.cpp`
-  with input AND output bounds, header-only in `src/TsSpgDepack.h` so
+  with input AND output bounds, header-only in `src/speccy/machines/TsConf/TsSpgDepack.h` so
   `tools/spg_test.cpp` can diff them against the original on the host: all blocks
   of `debug/TSCONF/*.spg` (Bruce Lee: 6 MLZ + 3 Hrust; Digger, Lode Runner: raw
   only) are byte-identical. Facts from those headers: all three ask for **ZCLK 2 =
@@ -2517,7 +2572,7 @@ of `aligned(4096)` padding. Free heads: DVp2 82.7 KB, z0p2 79.1, z0p2-PIOUSB 64.
      (owner's decision, all boards). Existing build dirs keep their cached values —
      set both explicitly (`cmake -DZ80_CORE_IN_RAM=ON -DZ80_CORE_OPT=-Os .`) or
      delete the cache; `build_all.sh` and fresh configures pick the defaults up.
-  7. **TS-Conf fast guest-memory path (`src/TsFastMem.h`, `g_ts_fastmem`)**: while
+  7. **TS-Conf fast guest-memory path (`src/speccy/machines/TsConf/TsFastMem.h`, `g_ts_fastmem`)**: while
      a whole-line mode is live, exec_nocheck's fetch and `Z80Ops::peek8/poke8/
      peek16/poke16` skip the indirect Draw call and every overlay/DivMMC/accessor
      test — `tsFastTick(n)` (T-state add + line-boundary compare) and a direct
@@ -3445,7 +3500,7 @@ moved the copy to [L154, L240]. Dropped; this model replaced it.
   accesses (`memcyc_lcmd` from rm/wm, cache-miss only) but has no 14 MHz waits. ZEsarUX
   completes a DMA instantly and answers DMAStatus with 0 (never busy).
 
-**The model** (`src/TsConf.cpp` "DRAM model", pure arithmetic in `src/TsDram.h`):
+**The model** (`src/speccy/machines/TsConf/TsConf.cpp` "DRAM model", pure arithmetic in `src/speccy/machines/TsConf/TsDram.h`):
 - `g_ts_memcyc` — one gate byte, zero on every other machine: bit 0 = ZCLK 14 MHz (wait
   states), bit 1 = DMA_ACT (steal). Tested predicted-not-taken in `Z80Ops::peek8/poke8/
   peek16/poke16` (fast and generic paths — the fast ones tail-call `peek8_dram` /
@@ -3519,7 +3574,7 @@ and fishbone runs** — owner's verdict on `debug/DVp2-dram-1.0.5.elf`.
 
 Baseline the owner measured on 720x576: fishbone **45-46 FPS without NeoGS, 42-43
 with** (640x480: 44-45 against 47-48 before the model). Two findings from the
-disassembly of that build, both fixed in `src/TsDramCache.h` (new; TsConf.h includes
+disassembly of that build, both fixed in `src/speccy/machines/TsConf/TsDramCache.h` (new; TsConf.h includes
 it) + CPU.cpp + TsConf.cpp; test builds `debug/DVp2-dram-rows-1.0.5.elf` (plain) and
 `debug/DVp2-dram-rows-trace-1.0.5.elf` (PERF_TRACE, its cache carries
 `FB_FORCE_CHUNKS=8`):
@@ -3605,7 +3660,7 @@ fishbone at 480p is paced by core1 (`c1=14.4 ms` = base 3.9 / tsu 8.3 / out 2.1 
 240 lines: 16 / 35 / 9 us a line), so this is where its 576p FPS lives. Four changes,
 all in the per-line path of `tsRenderExec` / `tsuComposeLine` (Video.cpp):
 
-- **`src/TsuBlit.h` — the 8-pixel element blit is SWAR**: the 4 source bytes expand
+- **`src/speccy/machines/TsConf/TsuBlit.h` — the 8-pixel element blit is SWAR**: the 4 source bytes expand
   into two 32-bit words (pal folded in), the transparency mask comes from the
   nibble-nonzero flags, and they go out as two unaligned 32-bit stores (Cortex-M33
   allows them; the buffer is SRAM). A fully opaque element (most tiles) is two plain
@@ -4048,7 +4103,7 @@ protect / command 0xF7 reboot), 0x10 SPI flash; with reg C bit 7 the same
 window is a 4 KB EEPROM at `(regA<<4)|idx`. Reg C write bit 0 clears the log;
 reg D READ is the modifier status byte (lctrl rctrl lalt ralt lshift rshift
 f12), reg E lwin/rwin/menu; reg C read adds SD detect (b3). Modelled in
-`src/ZxEvoAvr.{h,cpp}`, dispatched from `RTC::readData/writeData` under
+`src/speccy/machines/TsConf/ZxEvoAvr.{h,cpp}`, dispatched from `RTC::readData/writeData` under
 `Z80Ops::isTsconf` only (on Pentagon/Karabas those cells are plain NVRAM). The
 **Reg B on the AVR is not a control register, and 24-hour is HARD-WIRED
 (hw-confirmed 2026-09-19).** Wild Commander printed its clock as `90:25.21` at
@@ -4698,7 +4753,7 @@ SCLD video, the #F4 map, the #FF DEC register, DOCK/EX-ROM, contention
 is why the TC2068 is the cheap one: **its timing IS the 48K arch's**, so it
 needed no new frame constants at all.
 
-- **ROMs ship RAW, 24 576 B** (`src/roms/timex/`, `python3 tools/rom_pack.py
+- **ROMs ship RAW, 24 576 B** (`src/speccy/roms/timex/`, `python3 tools/rom_pack.py
   timex`): `gb_rom_tc2068_home` 16 KB → rom[0], `gb_rom_tc2068_exrom` 8 KB read
   by Timex.cpp directly (it is not a rom[] slot — the SCLD maps it in 8 KB
   windows). Re-measured against every 16 KB ROM in the tree: the best HOME
@@ -4866,7 +4921,7 @@ and "with fastload off they do", which is what located it):
   so fixing only the Tape menu left "TAP files do not work" exactly as it was.
 ### The TC2068 tape auto-run: a snapshot captured off real hardware
 
-`FileZ80::loaderTc2068()` + `load_tc2068` (2826 B, src/loaders.h) is the TC2068's
+`FileZ80::loaderTc2068()` + `load_tc2068` (2826 B, src/speccy/core/loaders.h) is the TC2068's
 equivalent of `load48`, and it had to be MADE rather than derived: the 48K one
 resumes by RETurning through three Sinclair ROM addresses (0x0773, 0x1B76, 0x1303)
 and this ROM shares 6.7% of its bytes with that one, with unrelated code at all
@@ -5009,7 +5064,7 @@ the same program flagged for the two machines.
 `R_48K_DG89` ("48Kdg89", UI "48K (Gama 89)") is a **ROMSET of the 48K arch** with its
 own **Machine → Didaktik** row — the Timex shape exactly, and for the same reason: a
 different manufacturer's machine reads as a machine, not as a ZX romset. The image is
-`ProfRom`-free and simple: `src/roms/48k/src/dgama89.bin`, 16384 B, md5
+`ProfRom`-free and simple: `src/speccy/roms/48k/src/dgama89.bin`, 16384 B, md5
 `28287c397defff765b39bd0660da6d01`, CRC32 `45C29401`, banner `1989 DIDAKTIK SKALICA`
 at 0x153E where Sinclair's says `1982 Sinclair Research Ltd`.
 
@@ -5376,7 +5431,7 @@ The RP2350's HSTX exists only on GPIO 12-19, so only PICO_PC, MURM2 and MURM2_W 
 use it (`HDMI_BASE_PIN == 12`). `HDMI_HSTX` (CMake cache, `AUTO/OFF/RAW/TMDS`, `ON` =
 RAW) picks the back-end; AUTO = **TMDS on PICO_PC, RAW on MURM2** (owner's call: B on
 PCp2 only until it is on hardware). Names: `-HSTX` / `+HSTX` for TMDS, `-HSTX-RAW` /
-`+HSTXRAW` for raw. Everything is in `drivers/hdmi/`: `hdmi_word.h` (word packers +
+`+HSTXRAW` for raw. Everything is in `src/drivers/hdmi/`: `hdmi_word.h` (word packers +
 the board lane map, `HDMI_EXPANDER = HDMI_HSTX >= 2`), `hdmi_hstx.{h,c}` (clk_hstx,
 `bit[]` lane map, pads, CSR, the expander registers), `hdmi_tmds_line.h` (the line as
 a command list). Full analysis and progress log: `docs/hstx-m2p2-plan.md`.
@@ -5989,6 +6044,59 @@ and the DMA sink differ.
   (84 MB/s of line DMA), scanlines, the CRT grille, DS80/GMX/Timex, and a machine
   switch between 640x480 and 720x576.
 
+### ...and 576p on m1p2 landed the sample point on the BRIGHT phase: Video > VGA > PWM phase (2026-09-28, NOT hw-tested)
+
+Owner, m1p2 (PIO VGA) with PWM on at **720x576**: vertical stripes, the monitor's
+Auto Adjust removes them, and then **every colour reads BRIGHT** — while 640x480 on
+the same board and monitor is right. This is the single-sample mechanism above
+playing out per MODE, not a table or divider bug: on that ladder + monitor the ADC
+takes one point per pixel, a non-BRIGHT ZX colour (0xCD -> 3,2,3,2 on the PIO's k=2
+table; 0xA2 -> 2,2,2,2 and BRIGHT -> 3,3,3,3 are invariant) reads 3 or 2 depending
+on which phase the point lands in, and Auto Adjust picks that point afresh for
+every video mode. At 480p it landed on a 2; at 576p on a 3. Nothing in the pattern
+can help a single sample read the mean, and the stripes before Auto Adjust are the
+same thing with the point drifting across the pixel.
+
+- **What differs between the two modes on the PIO, for the record**: the SM runs at
+  4x the pixel clock, so 480p is 84 MHz (clkdiv 3.0 at 252, 4.5 at 378) and 576p is
+  100.8 MHz (2.5 / 3.75). A FRACTIONAL divider makes the four phases UNEQUAL in
+  length — 2,3,2,3 sys cycles per pixel at 252 (7.9 / 11.9 ns), 4,4,4,3 at 378 — the
+  pattern repeats per pixel (4 SM cycles is a whole number of sys cycles in every
+  case), so it is stable, but a monitor's Auto Adjust plausibly settles on the
+  longest flat stretch, which is a different phase than at 480p. The k=2 table
+  assumes equal weights; the bias that costs is small (the sum moves by at most one
+  short phase) and is not what the owner saw.
+- **The knob: `Config::vga_pwm_phase` (NVS `vga_pwm_phase`, 0..3), `SET_VGA_PWM_PHASE`
+  AC_LIVE + F_PREVIEW, Video > VGA > PWM phase**, shown while PWM is staged on. It
+  rotates the WHOLE 32-bit word of every palette entry by that many phases
+  (`vga_pwm_rotr(w, 8 * phase)` in `vga_make_pair`); the sync/flat words are
+  rotation-invariant, so hsync/vsync and the templates are untouched, and every
+  pixel moves the same way — no stripe, unlike the hw-refuted per-pair offset. Live
+  via `vga_set_pwm_phase()` = one `vga_repack_palette()` (256 entries from the
+  recorded colours, no allocation); the DS80/GMX/Timex pair tables pick it up at
+  their next driver set, not at the keypress. The boot line prints `phase N`.
+- **What it does and does not buy**: on a non-integrating monitor one step turns
+  the 3 under the sample point into the 2 (or the reverse), i.e. the 16 ZX colours
+  come out at their intended levels again — but that monitor still only ever sees 4
+  levels per channel, so an arbitrary palette (TS-Conf 256c, ULA+) is quantised to
+  the 2:2:2 grid however the phase is set; Dither is the better pick there. On a
+  ladder that integrates (m2p2 HSTX) the rotation changes nothing visible.
+- The setting is ONE value: Auto Adjust's landing differs per mode, so a user who
+  switches 480p <-> 576p (a reboot anyway) may have to re-pick it. A per-mode value
+  was judged not worth a second row until someone actually switches modes often.
+- **Found while building it: the m2p2 HSTX (TMDS) image had overflowed the `.tsovl`
+  window by 48 B** — nothing to do with this change (vga.c, Config and the menu are
+  outside the window). Its `.tsovl_bss` is 9348 B against the PIO variant's 9036: the
+  expander's 240-slot ts256 pool grows the per-slot `TS_OVL_BSS` tables by ~312 B, and
+  the window had 264 B of slack. The AUTO block in CMakeLists now adds 512 B when
+  `HDMI_HSTX` is TMDS, or AUTO on PICO_PC/MURM2 (the same predicate `HDMI_HSTX_ON`
+  uses later — that variable is computed after the AUTO block). 23 088 of 23 552 B
+  there now; PIO variants unchanged (22 776 of 23 040 on m1p2).
+- **Hw check owed**: m1p2 at 576p, PWM on, Auto Adjust, then cycle PWM phase 0..3
+  with the 128 menu on screen — one value must give the normal white/paper, the
+  next the BRIGHT one; then 480p to confirm phase 0 is still right there (or which
+  one is); and that the row is absent with PWM off / on HDMI.
+
 ## VGA on HSTX (2026-09-23; hw-confirmed on m2p2 — and separately: re-timing on m1p2, transport on PCp2)
 
 The VGA half of the GPIO 12-19 boards runs off the same serializer as HDMI, with
@@ -6200,9 +6308,9 @@ LSB on every other pixel of a doubled pair is invisible).
 - `HDMI_TMDS_LEVEL_SNAP` is still NOT ported — it broke the nm:: UI on hardware
   (see the LEVEL_CLAMP comment in hdmi.c). This is a different mechanism and CLAMP
   still runs upstream in `hdmi_emit_slot`.
-- The construction lives in **`drivers/hdmi/tmds_pair.h`** so the host validator
+- The construction lives in **`src/drivers/hdmi/tmds_pair.h`** so the host validator
   builds against the shipped code, not a copy:
-  `gcc -O2 -Wall -Idrivers/hdmi -o /tmp/t tools/hdmi_tmds_pair_test.c && /tmp/t`.
+  `gcc -O2 -Wall -Isrc/drivers/hdmi -o /tmp/t tools/hdmi_tmds_pair_test.c && /tmp/t`.
   **Re-run it after any change there** — these properties are invisible in a
   picture until a marginal receiver breaks on them. Measured over all 256 values:
   old pair 256/256 unbalanced, mean run 5.55 / worst 11; new pair all balanced,
@@ -6240,7 +6348,7 @@ screenshots before any of it was derived.
 - **NOT covered: guest screens.** `spectrum_rgb888` through `paletteFinal` (gamma,
   CRT filter, ULA+, custom palettes) produces arbitrary values, so games can still
   split on the card. The same snap would apply to `builtin_palette_defs`.
-- Host-side check: build any small program against `drivers/hdmi/tmds_pair.h` and
+- Host-side check: build any small program against `src/drivers/hdmi/tmds_pair.h` and
   compare `A == B` per channel after applying the LO/HI clamp. The property is
   invisible on a monitor — only a capture reveals it — so re-check after retuning
   any UI colour.
@@ -6690,12 +6798,12 @@ Merging the +3/+3e ROMs (~86 KB) overflowed it by 23 KB. Fixed by dropping ~89 K
 of library dead weight rather than shrinking the partition again (which
 re-provisions every user's wavetable bank from SD):
 
-- **`sscanf` is banned** (`src/ScanLite.h` has the integer parsers; `parse_sntp_time`
+- **`sscanf` is banned** (`src/app/ScanLite.h` has the integer parsers; `parse_sntp_time`
   in ZiFiAT.cpp). One call costs ~49 KB: newlib's float-capable `__ssvfscanf_r` +
   `strtod` + `mprec`, and its `iswspace` drags the Unicode category tables
   `jp2uc.o` + `categories.o` (28 KB). newlib's `tzset_r.o` pulls the same chain
   through `siscanf` and is reached from `mktime`/`localtime_r` (pico_util
-  datetime.c) — `src/cxx_shims.cpp` defines a no-op `_tzset_unlocked_r` (the
+  datetime.c) — `src/app/cxx_shims.cpp` defines a no-op `_tzset_unlocked_r` (the
   firmware never sets TZ; the defaults it would compute are already in tzvars.o).
 - **`__gnu_cxx::__verbose_terminate_handler` is ours** (cxx_shims.cpp): libstdc++'s
   pulls `cp-demangle.o`, 33 KB, to print an exception type under -fno-exceptions.
@@ -7054,7 +7162,7 @@ the descriptors. Everything else — VIDEO::Init, audio, the 17.5 KB tail from `
 done` to `COMPLETE` (HDMI audio queue+rings 6 656 (was 8 704 with the 1024-deep rings), the inserted TRD's `rvmwdDisk` ~2.8 KB,
 tape/Z80/CPU reset, the rest) — costs both machines the same.
 
-**Fix: `_sbrk` JUMPS over a resident window** (`src/HeapRegions.h`, used by
+**Fix: `_sbrk` JUMPS over a resident window** (`src/app/HeapRegions.h`, used by
 `CodeOverlay.cpp`). The heap is a list of regions — the base `[__end__, first resident
 window)` plus every run of released windows above — and when a request does not fit the
 current region the cursor moves to the first higher region that takes it whole. This
@@ -7113,7 +7221,7 @@ fixes from it (build 11:5x, `debug/DVp2-heapregions2-1.0.5.elf`). **hw 2026-09-1
 configuration that panicked before — and the owner called it enough for now.** The
 further levers below are recorded, not scheduled:
 
-- **`src/TryAlloc.h` — `tryMalloc`/`tryCalloc` (OSDMain.cpp) and `operator new(std::nothrow)`
+- **`src/app/TryAlloc.h` — `tryMalloc`/`tryCalloc` (OSDMain.cpp) and `operator new(std::nothrow)`
   routed to them (cxx_shims.cpp).** pico_malloc panics on NULL, so every `if (!p)` after a
   `new (std::nothrow)` or `calloc` in `Subsystem.cpp` was dead code — a subsystem coming
   up on a thin heap took the firmware down instead of switching itself off. The helper
@@ -7248,6 +7356,194 @@ in FLASH (no `.time_critical` from OpnFm.cpp in the map). Heap ONLY while Audio 
 TurboSound FM is on: 2 x `sizeof(OpnFm)` = **2 016 B** + shared tables 2 560 B (sine 2 048
 + tl base 512) + `audioBufferFM` 1 280 B = **5 856 B**, plus the second AY (`AySound`
 chip1, 1 612 B) if TurboSound was not already on → **~7.5 KB**, freed on Off. Not a lever.
+
+## Machine code must not live in the SHARED RAM hot paths (2026-09-30; owner: "работает" on the sram2 test build, not itemised)
+
+Trigger: 720x576 + TS-Conf + NeoGS 2 MB + MIDI + VGA PWM fitted in 1.0.7 and not in
+1.0.8 (HSTX: no VGA picture; PIO: the menu would not open — `DynRows` 3 KB refused).
+1.0.8 had grown static SRAM by ~5.0 KB (PIO) / ~5.9 KB (HSTX), and most of it was
+code for ONE machine sitting inside functions EVERY machine runs from RAM:
+`Ports::input/output` (22 KB together), `Z80::check_trdos`, `CPU::loop`, `EndFrame`.
+Fixed, m2p2 MinSizeRel against 1.0.8: **−9.4 KB RAM (PIO), −10.8 KB (HSTX)**; heap in
+a TS-Conf session ends up +4.0 / +4.6 KB ABOVE 1.0.7.
+
+**The rule for every new machine / feature**: before its branches go into a RAM-
+resident shared function, pick one of these — never "just another `if (isXxx)`":
+1. **Cold flash dispatch** (GMX, ATM, KAY): one `if (flag) { if (xxxPortRead(...)) return; }`
+   in the RAM function, the body in a `static __attribute__((noinline))` function
+   (default `.text` = flash; `Z80_COLD` in Z80_JLS.cpp). Check with `nm` that it is at
+   0x10xxxxxx — a `static inline` helper called from RAM code is inlined INTO SRAM.
+2. **Compile twice** when the branches are woven through a decode whose ORDER is
+   load-bearing (Profi: ~75 sites): the body is `template<bool PROFI> inputImpl()`,
+   `<false>` always_inline'd into the RAM entry (constant-folded away), `<true>` behind
+   a flash `noinline` wrapper the entry calls under `Z80Ops::isProfi`. One source, no
+   drift; costs a flash copy (Profi: +18 KB flash). Static locals get duplicated —
+   fine only while they are all trace counters (checked for Ports).
+3. **An overlay window** when the machine's code is hot enough that XIP is wrong
+   (TS-Conf): `TS_OVL_CODE`, and raise the AUTO term for the object whose code grew.
+   `CPU::tsFrameLoop` (Stage D, 736 B) moved there this way.
+Measure with `meas.py`-style flag knockout (session scratch, 2026-09-30): replace the
+machine's flags with `false` in copies of Ports/Z80_JLS/CPU/Video, recompile each TU
+from `compile_commands.json`, sum `.time_critical*`/`.data` (+ `.text` for Z80_JLS,
+which is RAM by object file). Remaining per-machine RAM after this round, ±200 B
+inlining noise: TS-Conf ~0.5 KB in Ports (dispersed conditions), Timex ~1.1 KB (half
+in the CPU accessors), Scorpion ~1.0 KB, ALF ~0.8 KB, Pentagon ~0.5 KB.
+
+**Watch GCC's inlining after any move.** Taking code out of a RAM function changes
+the size heuristics and GCC then inlines OTHER things into it: after the first move
+`MainScreen_Blank` was inlined into `MainScreen_Blank_Opcode` (+580 B, it already was
+on HSTX) and `updateBorderBrd` into `EndFrame`; `profi_ds80_driver_set` had been
+dragging `crtTransform`'s `powf` chain into `EndFrame` (the +964 B of 1.0.8 HSTX).
+All three are `noinline` now. Diff per-symbol `.data` between two ELFs (`nm -S`, all
+symbols at 0x2002xxxx-0x2006xxxx) after every change, not just the section total.
+
+Also moved in this round: the ATM/KAY glue (`atmPortReadEarly/WriteEarly`,
+`kay1FFDWrite`, `scorpionC000Page`, `Z80::check_trdos_atm`, `Z80::scorp_dos_exit_rom`),
+Hide border's `blExpandLine`/`blPutRow`. What that costs and must be checked on hw:
+Profi/Karabas port I/O now runs from XIP (FPS in DS80 and CP/M, FDC traffic), ATM/KAY
+ports and TR-DOS traps from XIP, the borderless scaler from XIP (FPS on a busy title),
+TS-Conf unchanged in speed (window = SRAM). Test ELFs `debug/{m2p2,m2p2-hstx,DVp2}-sram2-1.0.8`.
+**Pico-Zx-Player state, same day (NOT hw-tested): −1268 B more.** Everything the
+player page uses (`Engine E`, `Playlist P`, `PlScan SC`, `Lay L`, the meter arrays,
+`s_msg`) is ONE `Session` on the heap, allocated by `run()` through
+`SessionScope` and freed by the OUTERMOST `run()` only — the player's F5 can start a
+network flow that runs a NESTED `run()` (`playerRemote`) on top of the suspended
+one, and it must reuse the block. Every `run()` exit stops the engine (and so
+`uiIdleHook`) before the scope frees it. `s_dir/s_cur/s_curPath` stay static on
+purpose ("where I was" survives the page). libxmp's bump pages (PlayerXmp.cpp) are
+chained through their own first 8 bytes instead of a 96-entry pointer table
+(`s_xpage`, 384 B), which also drops the 96-page cap. Test ELFs
+`debug/{m2p2,m2p2-hstx}-sram3-1.0.8`.
+
+**Hw 2026-09-30, owner: "работает"** — read it as the triggering config (720x576 +
+TS-Conf + NeoGS, VGA) coming up again; the per-machine XIP costs listed above
+(Profi DS80/CP/M FPS, ATM/KAY, borderless) were not itemised and are still owed.
+
+## GS/NeoGS split into two windows + GS data in the window tail (2026-09-30; hw-confirmed the same day, owner: "все работает" — not itemised)
+
+Step 1 of the "machine and device code out of shared SRAM" plan (the full per-file
+measurement is in the section above; wd1793 — 6.8 KB of RAM code, Beta off only on
++3 / Timex / ALF — is on the list for a later step). Heap per session, m2p2
+MinSizeRel, against the build before it:
+
+| session | before | after |
+|---|---|---|
+| GS off (any machine) | 234 568 | 237 424 (+2 856) |
+| classic GS | 206 920 | 214 384 (+7 464) |
+| NeoGS | 206 920 | 207 216 (+296) |
+| TS-Conf + NeoGS | 182 856 | 183 152 (+296) |
+
+- **`.ngsovl`** (new window, between `.dmaovl` and `.gsovl`), loaded only when the
+  boot comes up with `Config::gs_enabled == 2` (`CodeOverlay::apply`'s new `ngs`
+  argument; `SET_GS_MODE` is AC_REBOOT, so there is no mid-session claim). Holds
+  NgsSd/NgsMp3 `.time_critical` (by object file) plus `NGS_OVL_CODE` functions of
+  GS.cpp: `ngs_cb_in/out`, `ngs_rebuild_map`, `ngs_map_half16`, `ngs_warm_reset`,
+  `GS::zxDmaRead/Write` — all `noinline`, reached only through `s_ngs` /
+  `g_ngs_zxdma`. `ngs_cb_in` used to be inlined into `gs_cb_in`; it is a call now
+  (one extra `bl` per NeoGS port access — watch the GS-Z80 MHz on a heavy module).
+- **`.gsovl_bss` / `.ngsovl_bss`** (NOLOAD window tails, zeroed by `loadWindow`):
+  `GS_OVL_BSS` on the host/g2h/cmd FIFOs, `s_cpu` and the bank tables; `NGS_OVL_BSS`
+  on NgsSd's cache/secbuf/cmd history/CSD/resp and GS.cpp's `s_mp3_reg`. **Only
+  arrays whose every accessor runs behind GS::enabled / GS::neogs / s_ngs** — the
+  audit found every external entry gated (Ports, pwm_audio, main.cpp, the reset in
+  ESPectrum, Hardware Info, memdump.gdb). NOT moved, on purpose: `GS::enabled`,
+  `GS::neogs`, the `reg_*`, `g_ngs_zxdma` (read on every machine) and the scalars
+  that `GS::pollPerf()` (called every frame, ungated) and `hook_gsClock` →
+  `GS::setClock()` touch. Adding a variable to either tail needs the same audit.
+- Window sizes are TIGHT (260 B / 112 B slack): on a NeoGS boot both are resident
+  and slack is heap that session loses. Measured content `.gsovl` 21 280 + 1 500,
+  `.ngsovl` 5 704 + 1 352; `NGS_TRACE` build 21 808 / 6 368 (the trace terms cover it).
+- Left for later, the risky half: NeoGS is still WOVEN through the shared GS-Z80
+  callbacks (`gs_cb_read/fetch/write/in`): a classic-only compile of GS.cpp's hot
+  code is 8 360 B against 15 320, a NeoGS-only one 10 152 — compiling them twice
+  (the Profi template trick) would give each mode another ~5 KB. That is the most
+  hw-debugged code in the tree; not without a reason.
+- Test ELFs `debug/{m2p2,m2p2-hstx}-sram4-1.0.8`. **Hw check owed**: NeoGS (NPL MOD +
+  MP3, ZP4, TheLink with ZX-DMA, NEO8), classic GS (a MOD player), GS off, and the
+  boot log's `[OVL] NeoGS ... code resident` / `window to the heap` lines.
+
+## src/speccy/machines: per-machine code lives in its machine module (2026-09-30; hw: owner "работает", not itemised)
+
+**Owner's standing rule: EVERY change that differs from other machines is made in
+`src/speccy/machines/`, in that machine's/architecture's module** (`<Name>.{h,cpp}`, or a
+`<Name>/` folder when it has several files) — even with no memory gain, for
+readability. Shared files keep only the test and one call.
+
+Owner's rule: machine-specific port handling lives in its own module under
+`src/speccy/machines/` (flash, plain `.text`), and the RAM-resident `Ports::input/output`
+keep only the decode test and one call. CMake's `GLOB_RECURSE src/*.cpp` picks the
+folder up by itself. Modules so far:
+- `Scorpion.{h,cpp}`: `c000Page` (was `scorpionC000Page`), `kay1FFDWrite`,
+  `write1FFD` (the whole #1FFD block incl. the GMX D2 falling edge),
+  `turboPlusRead` (the Turbo+ IN speed toggle).
+- `Pentagon.{h,cpp}`: `eff7Video`, `eff7Paging` (page0/cache/notMore128, 1024SL D4
+  turbo), `hiddenRam` (#FB/#7B).
+- `Alf.{h,cpp}`: `portWrite` (#FE newBit latch + cart bank select), `portRead`
+  (#1D/#1F), `Alf::newBit` (was Ports.cpp's static `newAlfBit`).
+- `Plus3.{h,cpp}`: `portWrite` (#7FFD/#1FFD/#2FFD/#3FFD).
+- `Byte.{h,cpp}`: `ioContention` (DD10/DD11 table above #C000), `portWrite`
+  (non-#FE outputs: PIT or swallowed), and `Ports::pitWrite` (no longer IRAM;
+  `pitGenSound` stays where it was). The Byte ROM LOAD trap at 0x0557 is
+  `Z80::byte_tape_trap()` (`Z80_COLD`).
+- `Atm.{h,cpp}`: moved here as-is (includes now `machines/Atm.h`; `atm_banks.h` and
+  `rom_pack.py` emit that path).
+- `Alf.{h,cpp}` also holds the lazy SD cartridge loader that was `src/AlfCart.*`
+  (now `Alf::Cart::mount/unmount/active/bankCount/residentBank/path`) and
+  `Alf::bindCart()` (was Ports.cpp's `alfBindCart`); `g_alfWindow` stays global
+  for MemESP's ROM-write guard. Pure reorganisation, sizes identical.
+- `TsConf/`: every TS-Conf file — `TsConf.{h,cpp}`, `TsSpg.cpp`, `TsDram.h`,
+  `TsDramCache.h`, `TsFastMem.h`, `TsSpgDepack.h`, `TsuBlit.h`, `ZxEvoAvr.{h,cpp}`.
+  Includers use `machines/TsConf/X.h`; inside the folder siblings include each
+  other plainly and project headers resolve through `-Isrc`. The host tests
+  (`tools/tsdram_test.cpp`, `tsdram_cache_test.cpp`, `tsu_blit_test.cpp`,
+  `spg_test.cpp`) include the new paths and still build with `-Isrc`. The `.tsovl`
+  window is marked per function, not per object path, so nothing in the linker
+  script moved. Sizes identical.
+- `Profi/Profi.{h,cpp}`: the big Profi-only blocks of the shared decode —
+  `writeDFFD`, `ideRead/ideWrite` (PROFI IDE scheme), `extRead/extWrite`
+  (#008B/#018B/#028B + the #F3/#D3/#B3/#93 serial channel), `fdcNoDiskBreak`
+  (CP/M no-disk re-issue loop), the FDD_PORT_TRACE probes — plus the VV51 serial
+  mouse pipeline and the PQ-DOS keyboard queue (`Ports::serialMouse*`, `pushKey`,
+  `pqkBuf`, defined there). Each call sits exactly where its block was, so the
+  decode ORDER is still Ports.cpp's; the smaller woven Profi conditions stay in
+  the template. **Placement unchanged by the owner's call**: these run from the
+  `<true>` instance, which was already flash, and the DS80 renderer stays in
+  Video.cpp / SRAM. Two traps met on the way: an `extern` written inside a
+  `Profi::` function resolves to `Profi::name` (declare driver globals at file
+  scope), and the #DFFD anchor exists on the READ side too — search from
+  `outputImpl`.
+- **`MemESP::romPeek` placement is a COMDAT lottery** (`static inline` in the
+  header, out-of-line copies in several objects, the linker keeps the first).
+  After the Profi move the kept copy is Z80_JLS.o's, i.e. RAM (+144 B), where it
+  used to be Ports.cpp's flash copy reached from `Z80::exec_nocheck`'s opcode
+  fetch through a veneer. The new state is the faster one; if a later move flips
+  it back, pin it with a section attribute rather than chasing link order.
+Saving, m2p2 MinSizeRel: Ports::input 5148 -> 4204, Ports::output 8956 -> 6904 B,
+~3.4 KB of RAM in total; only 8-byte veneers remain in RAM. Test ELF
+`debug/m2p2-machines-1.0.8.elf`. **Hw check owed**: Pentagon 512/1024 hidden RAM +
+#EFF7 + 1024SL turbo, ALF carts, Scorpion/KAY/GMX #1FFD paging and the Turbo+
+Shadow-monitor speed item, +3 paging/FDC, Byte PIT melody test + tape LOAD trap,
+ATM boot. Still in shared RAM: TS/ATM/KAY/P512 dispersed conditions (~0.3-0.4 KB
+each), Timex CPU accessor hooks (deliberate), Profi DS80 in Video.cpp (~1.5 KB),
+check_trdos branches.
+
+## WD1793 in flash by default (`WD1793_IN_RAM=OFF`, 2026-09-30; hw: owner "все работает", not measured)
+
+Step 2 of the shared-SRAM plan. `_do`, `_end`, `rvmWD1793Step/Read/Write` and
+`rvmwdDiskStep` were `__not_in_flash("wd1793")` since the initial commit (pico-spec
+heritage), on the strength of a MURM2 measurement: ~10.5 us per cold call, ~6.5 ms per
+frame during CP/M disk-to-disk copies (one step call per byte, ~624/frame). That was
+taken while the 43 KB Z80 core itself lived in flash and churned the XIP cache between
+calls; the core is in SRAM now. CMake `WD1793_IN_RAM` (default **OFF**) puts them in
+flash: **-6848 B of static SRAM on every board and every machine** (DVp2 PERF build
+170240 -> 163392 B), only 8-byte veneers stay in RAM. Test ELFs
+`debug/DVp2-wd-{ram,flash}-perf-1.0.8.elf`. The owner ran the flash build ("работает")
+and chose OFF without taking the `[PERF] 60f: fdd_step= / fdd_ports=` numbers — so
+**if disk loading (Profi CP/M copies especially, or TS-Conf + NeoGS where butter PSRAM
+also churns XIP) ever gets slow or the audio stutters during disk I/O, compare those two
+fields with `-DWD1793_IN_RAM=ON` first.** An overlay window was considered and rejected:
+Beta is forced on Pentagon/Profi/Scorpion/ATM/TS-Conf, so it would only have freed the
+6.8 KB on 48K/128K-without-Beta, +3, Timex and ALF.
 
 ## SRAM optimisation pass, branch drew-sram-opt (2026-09-21/22; every step hw-confirmed on DVp2)
 
@@ -7858,6 +8154,92 @@ for anything raised while the MENU owns the screen.
 - Expiry is wall time (`esp_timer_get_time`), not frames, so max speed does not
   flash it past.
 
+## Video > Hide border — the paper scaled to fill the screen (2026-09-27, NOT hw-tested)
+
+`Config::render_border` (NVS `render_border`, `SET_BORDERLESS`, AC_PURE) → `VIDEO::bl_live`,
+re-decided at EVERY EndFrame by `VIDEO::blRecalc()` (right after the DS80/GMX/Timex/
+TS-Conf mode applies, before `gigascreenModeGate`), so the menu only writes Config.
+
+- **The renderer is untouched; only its destination moves.** While live,
+  `MainScreen_Blank*` point `lineptr32` at a 256-byte staging line (`BlState::stage`,
+  same x^2 layout as a fb row's content), and the line-completion block of
+  `MainScreen` / `MainScreen_Snow` / `_Snow_Opcode` sets `bl_line_done`; `BL_FLUSH()`
+  at every exit of those functions (the completion block runs BEFORE the column
+  loop, and `_Snow_Opcode` has an early return) scales it with `blExpandLine(curline)`.
+  So multicolour, ULA+, Timex hi-colour/screen 1, 16col, snow and the Timex hi-res
+  OR-merge fallback all work for free, and guest timing/contention does not move.
+  `paper_off` is ignored while live.
+- **Ratios, integer-patterned so every character cell is distorted identically**
+  (host-checked: each fb row covered exactly once, one pattern per cell): 320x240 =
+  5/4 x 5/4, no frame; 360x240 = 11/8 x 5/4 and 360x288 = 11/8 x 3/2, with a 4-byte
+  (8 output px) frame each side painted per line with `brd` at line end — a coarse
+  border effect survives there. Tables `hsrc[q] = map(q^2)^2`, `vrow[c]` (bit 15 = dup).
+- **Not live under** DS80 / GMX 640x200 / Timex hi-res (all `profi_ds80_active`) and
+  TS-Conf whole-line modes; TS-Conf ZX mode IS scaled. Gigascreen is SUSPENDED via
+  `gigascreenModeIncompatible()` (owner's call — the prev-FB is laid out for the
+  bordered row). Border machine parked (`Border_Blank` in EndFrame and Reset).
+- **Overlays sit on content, so the scaler carves them** (`blPutRow`): the F8/volume
+  rect (same test as TS-Conf), the `OSD::notify` rect (`ts_notice_*`, notify takes
+  the carve path via `bandBorderMode()`), and `BL_CARVE_LAMP` / `BL_CARVE_LED` set by
+  the corner lamp and `LED::draw`, which also back their cell with `brd` so no frozen
+  scrap of picture shows through. Clearing a carve hands the rows back next frame.
+- State is ONE heap block (~1.4 KB, `tryMalloc`, only while live). `blExpandLine`
+  (540 B) + `blPutRow` (376 B) are in FLASH since 2026-09-30 (they were RAM code paid
+  by every session); `-O2 no-unroll no-loop-distribute` keeps libc calls out of them.
+  Test ELF `debug/DVp2-borderless-1.0.7.elf`.
+- **Hw check owed**: picture at 640x480 / 720x480 / 720x576 on HDMI and VGA; a
+  multicolour title; ULA+; snow (48K/128K); F8 stats, F9/F10 volume, FDD lamp, LED
+  strip, notify banner over the picture (no blinking); toggling on/off; Gigascreen
+  suspend/resume; Profi DS80 / GMX / TS-Conf mode switches in and out; FPS cost.
+
+### Hide border, stage 1: pair scaler + scanout line map (2026-09-27, NOT hw-tested)
+
+The 5/4 / 11/8 / 3/2 fb-level scaler above gives pixel widths 2,2,2,4 and line heights
+2,2,2,4 (480) / 2,4 (576) — uneven, visible in text. Two independent improvements, each
+falling back to the old path:
+
+- **Horizontal = packed-pair driver** (`VIDEO::bl_pair_live`, the Timex hi-res recipe:
+  the machine's own ZX palette through `profi_ds80_driver_set`). One fb byte = two
+  different output pixels, so the scale is in OUTPUT pixels: 640 wide x2.5 (3,2,3,2),
+  720 wide x2.75 = 704 px (3,3,3,2) + 8 px frame. `hsrcL/hsrcR` per content byte,
+  `profi_pair_lookup[left][right]`. Off (byte scaler) under ULA+, TS-Conf, ATM, Profi,
+  GMX machines and where there is no pair driver (TFT/TV/SOFTTV, refused snapshot).
+  Every pair-palette site that knew `timex_hires_live` now knows `bl_pair_live` too
+  (restoreUiDS80Palette, profiPaletteApplyPending, applyPalette, getBmpPalette).
+  `blPairForceOff()` in VIDEO::Reset and ESPectrum::reset (Reset rebuilds the driver
+  tables); blRecalc re-arms it at EndFrame. Turning it off never touches the driver when
+  another pair owner took over (foreignPair test in blRecalc).
+- **Vertical = scanout line map** `graphics_set_vmap(map, v_active)` (HDMI PIO/RAW,
+  HSTX TMDS expander, VGA; stub elsewhere). The content still goes into the fb rows as
+  before (so plain doubling shows the old picture), and the map re-points display lines:
+  576 = exact x3 (rows 3k,3k+2; 3k+1 is the dup), 480 = 3,2,3,2 (rows 5j,+1,+2,+4). The
+  map is in BLOCKS (6 lines / 3 rows at 576, 10 / 5 at 480) whose first and last rows
+  agree with plain doubling, so a block under an overlay (F8/volume box, notify, FDD
+  lamp, LED strip — `blOverlayRows`) falls back to doubling by itself. The whole map is
+  dropped by `VIDEO::blVmapSuspend()` in do_OSD / gfxBegin / osdCenteredMsg /
+  progressDialog and while CPU::paused; EndFrame re-publishes. Double-buffered; the
+  ISR latches it at the frame wrap; a table is freed only after 2 frame wraps
+  (`graphics_frame_count`). HDMI ignores it with scanlines on.
+- **HDMI ISR generalisation** (the risky part): ISR `line` sets the buffer of line
+  `line`, and with a map decides for q = line-1: RENDER when line+1 starts a new fb row
+  (into the other buffer), RELOAD when line `line` replays the playing buffer (its island
+  set / TMDS island refilled for this line — the old "second play", now also a third).
+  Every line still gets exactly one island load; the audio credit accrues one line per
+  ISR in map mode (`hdmi_vmap_step`, main RAM — SCRATCH_X had no room: the TMDS build
+  overflowed it by 8 bytes inline). Requires every run of equal rows >= 2 lines. Without
+  a map `do_render = do_reload = true` and `playing = b^1`: byte-for-byte the old path.
+  `hdmi_isl_second_play(o, sl)` takes the scheduling line explicitly now.
+  Host models (session scratch): table invariants + a timeline sim of the ISR (correct
+  row per line, never renders into the playing/next buffer, one island per line, legacy
+  equivalence) — two hand mutations of the formulas each fail it with 60k+ errors.
+- Cost: BlState heap 1.4 -> ~4.5 KB (two 576-entry maps). Test builds
+  `debug/{DVp2,PCp2-tmds,m1p2}-blscale-1.0.7.{elf,uf2}`.
+- **Hw check owed**: 640x480 and 720x576, HDMI PIO + HDMI audio (the island reloads —
+  listen for dropouts, Speed Test und/skip/dup), PCp2 TMDS, VGA; picture: even widths
+  and heights, no torn lines; F8 box / notify / FDD lamp / LED strip readable; menu over
+  the scaled picture; pause; ULA+ title (must drop to the byte scaler); Gigascreen;
+  HDMI scanlines on (map ignored, old heights).
+
 ## Debug > Paper (toggleable paper rendering, 2026-08-24, NOT hw-tested)
 
 `Config::render_paper` (NVS `render_paper`, default on) → live mirror
@@ -8191,7 +8573,7 @@ the first HID report long after the ROM has sampled the half-rows.
 dd71_rt7 + dd66_rt5) and the genuine dumps, not the site's source listing —
 the listing's `IN A,(#1F)` at "#387F" is actually **`IN A,(#9F)` at #387A**.
 
-- **ROM layout**: `byte.bin` (src/roms/48k/src/) is now the GENUINE dd72+dd73 —
+- **ROM layout**: `byte.bin` (src/speccy/roms/48k/src/) is now the GENUINE dd72+dd73 —
   both 8K halves checksum to #FF by the test's own algorithm (ADD (HL)/ADC 0,
   end-around carry). The previous byte.bin was a hacked merge with DD71's test
   blocks baked in at #3A00 (which broke the DD73 checksum → the test hung with
@@ -8394,7 +8776,7 @@ Flattened from CSAAFreq, CSAANoise, CSAAEnv, CSAAAmp, CSAADevice into a single c
 - `cmake --build build` from project root
 - SAASound.cpp compiled with `-O3 -ffast-math -funroll-loops`
 
-## SPI PSRAM driver (drivers/psram/psram_spi.*)
+## SPI PSRAM driver (src/drivers/psram/psram_spi.*)
 
 - **Two PSRAM back-ends, not abstracted**: PIO SPI PSRAM (accessor API, active
   **only on MURM1**) vs "butter" QSPI on RP2350 XIP CS1 (memory-mapped
@@ -8468,7 +8850,7 @@ is a typo, the table's `0C6C1EF6` is the image; md5
 `fe4e3c88972065ce5e2bc48618eb02a8`): 0=BASIC-128, 1=BASIC-48, 2=service monitor,
 3=TR-DOS 5.03 variant. bank0/1 are overlays over the Sinclair 128K halves (290/116
 diff bytes, `tools/rom_pack.py scorpion`); bank2/3 raw in
-`src/roms/scorpion/scorpion_banks.c` — bank3 CANNOT be an overlay: rom[4] already
+`src/speccy/roms/scorpion/scorpion_banks.c` — bank3 CANNOT be an overlay: rom[4] already
 overlays the shared TR-DOS base pointer (5.05D until 2026-09-09, 5.04T since) and
 `MemESP::registerOverlay` is keyed by base. Cost: +36.6 KB flash, +32 B RAM.
 
@@ -8811,7 +9193,7 @@ entry" rule buys.
   owner's verdict that day was "работает"** — not itemised beyond that, so read
   it as "the machine boots and runs on the new firmware"; a second run the same
   day confirmed **F11** specifically (see the REVERTED section below).
-  (`src/roms/scorpion/src/profrom_gmx_v5s.bin` = `ProfRomGMX_v5s.rom`,
+  (`src/speccy/roms/scorpion/src/profrom_gmx_v5s.bin` = `ProfRomGMX_v5s.rom`,
   CRC32 6E9FD318, pinned in `pack_gmx` and in `rom_verify.py`). It was MAME's
   `gmx13500.rom` ("GMX Boot Rom 1.3 V5.00", CRC32 47C9DF88) until then, and
   EVERY hardware finding in the GMX sections below was made on that one. What
@@ -9323,7 +9705,7 @@ firmware, snapshots — was untested even on 4.01.
 
 "ZS-1024 + ProfROM" — Scorpion PROF-ROM **v4.44s, image 9812C53C** (CRC32
 9812C53C, md5 1d0cfcf57739e9c265713f8960018be0, shipped as
-`src/roms/scorpion/src/profrom.bin`; `python3 tools/rom_verify.py` checks the
+`src/speccy/roms/scorpion/src/profrom.bin`; `python3 tools/rom_verify.py` checks the
 reassembled image AND pins that CRC).
 It is what makes the SMUC controller below useful — the stock ZS-256 v2.94/2.95
 ROMs contain **zero** SMUC code (scanned for `LD BC,#xxBA/#xxBE`), ProfROM 3.2a
@@ -9758,7 +10140,7 @@ which F11 keeps and F12 throws away. Now:
   driver: device address `0xA0 | page<<1` (`0x0EA5`), MSB-first bytes (`0x0EF7`
   write / `0x0EB8` read with SDA on D6), ACK read at `0x0EDE`, START = SDA low
   while SCL high (`0x0F2C`), WP cleared before every access and set again after
-  (`0x0F42` / `0x0F3E`) — all as `src/Nvram24.cpp` implements them, and the WP
+  (`0x0F42` / `0x0F3E`) — all as `src/speccy/devices/storage/Nvram24.cpp` implements them, and the WP
   bit being ignored on writes is why its bracketing does not matter here.
 
 ### How a SMUC disk is actually organised (smuc.pdf §3.2-3.3, the scanned manual)
@@ -10091,7 +10473,7 @@ instructions — that used to mean one .pio per board pin (`ps2kbd_mrmltr{2,10,1
 are **deleted**; `ps2kbd_program_for()` patches the 5-bit index field (WAIT is
 `001|delay(5)|pol(1)|src(2)|index(5)`, src 00 = GPIO) into a static copy and
 recomputes `used_gpio_ranges` for CLK and CLK+1, or `pio_add_program` checks the
-program against the wrong 16-pin range. `drivers/ps2/ps2.c` (the non-KBDUSB
+program against the wrong 16-pin range. `src/drivers/ps2/ps2.c` (the non-KBDUSB
 bit-bang path) still uses the macros — KBDUSB is ON for every board.
 
 Why: **ZERO2 shares GP2/3 between the PS/2 port and the PCM5122 DAC's control
@@ -10124,8 +10506,8 @@ and `tick()` used to accept the garbage unchecked (no stop/parity test). The
 keyboard is then dead until a reboot that happens to start on a quiet line —
 which is why the physical reset button "fixed" it: the F12-release scancode
 (watchdog reboot) and the BAT 0xAA (power-on) race the boot, a RUN reset with
-hands off the keyboard does not. Three fixes in `drivers/ps2kbd/` +
-`drivers/audio/pcm5122_init.c`:
+hands off the keyboard does not. Three fixes in `src/drivers/ps2kbd/` +
+`src/drivers/audio/pcm5122_init.c`:
 
 - `init_gpio` waits for 150 µs of continuous clock-high (15 ms bound) before
   enabling the SM — it can only ever attach between frames.
@@ -10286,7 +10668,43 @@ The general rule this leaves behind: **a menu key loop is a second main loop.**
 Anything the firmware advances one step at a time — a radio join, a transfer, a
 state machine — needs a call from `uiIdle()`, or it stops the moment F1 is pressed.
 
-### Baud ceilings (transport-dependent, `src/ZiFi.cpp`)
+### The RX ring is sized by what the link is doing (2026-10-01; hw: owner "все работает", z0p2, not itemised)
+
+The IRQ landing ring was a flat 8 KB (+256 B TX) on the heap for as long as the
+link was up — i.e. for the whole session of anyone with WiFi on through an ESP —
+plus 512 B of spill staging in `.bss` on every board; `FEAT_ZIFI` budgeted 12 KB.
+The 8 KB depth is only ever used by a paused host transfer (SD-write / TLS stalls
+between drains at the boosted rate). Now `rxWantSize()` (ZiFi.cpp):
+
+| state | ring |
+|---|---|
+| link up, NIC off | 2 KB |
+| guest NIC on | 4 KB |
+| ZiFiSock session (FTP/HTTPS/SSH) | 8 KB |
+
+- **Grow is explicit, shrink is lazy.** `ZiFi::rxSession(on)` from
+  `ZiFiSock::ensureRxBuf/freeRxBuf`, and `ZiFi::init()` (idempotent, so the NIC
+  toggle reaches it) call `rxRingFit(true)`; the per-frame `rxSpillTick` only ever
+  SHRINKS, and only a quiet ring (no spill mode, fill <= want/4). A failed grow
+  keeps the current size (logged) and is never retried per frame — the probe is
+  `getLargestAllocatable()`. A failed shrink backs off 2 s.
+- `rxRingResize` swaps the block with the UART IRQ masked (the only other writer;
+  CDC feeds the ring from `tuh_task`, same context) and renormalises the indices.
+  Plain `NEED_POINTER`, deliberately NOT the net arena: the IRQ writes into it,
+  and a lazy shrink would leave it in the lent prevFB after the session.
+- `ZIFI_SWAP_HI` is a quarter of the ring (2048 for the session ring, as before).
+  The staging block is the tail of the TX ring's allocation (`g_out_buf` is a
+  pointer). `FEAT_ZIFI` = 5 KB.
+- **CDC backpressure**: `usbCdcRx` used to pull the whole TinyUSB FIFO and DROP
+  what the ring could not take; it now reads only `room` bytes and `rxSpillTick`
+  re-pulls (top and bottom) — a full FIFO stops the IN endpoint being re-armed,
+  so no callback would ever come for the leftovers.
+- **The cost**: with the NIC live the headroom between per-frame drains is 3 KB
+  instead of 6 (~130 ms of a late frame at 230400 instead of ~260) before
+  `rxDrop` counts. If a title ever shows it, the NIC figure in `rxWantSize()` is
+  the one constant to raise.
+
+### Baud ceilings (transport-dependent, `src/speccy/devices/zifi/ZiFi.cpp`)
 
 - Menu (Network → Baud) offers 115200/230400/460800/921600; the link idles at
   `nicSafeBaud()` and paused host sessions (FTP/HTTPS/SSH) `boostBaud()` to the
@@ -10434,8 +10852,8 @@ NOT hw-confirmed yet, except the hotplug toasts (below, 2026-09-11).
   was tuned on the old driver); revisiting `ZIFI_CDC_MAX_BAUD=460800` — the
   host-side ~64 KB/s drain limit is gone, but the CH340's own sustained-RX
   ceiling is a separate constraint, so re-test before raising.
-- **diskio dispatch**: `drivers/sdcard/sdcard.c` routes `pdrv==1` to `usb_disk_*`
-  in `src/UsbMsc.cpp` (TinyUSB `tuh_msc_read10/write10` made synchronous by pumping
+- **diskio dispatch**: `src/drivers/sdcard/sdcard.c` routes `pdrv==1` to `usb_disk_*`
+  in `src/drivers/usbhost/UsbMsc.cpp` (TinyUSB `tuh_msc_read10/write10` made synchronous by pumping
   a guarded `tuh_task()` — same re-entrancy rules as ZiFi's `usbService()`; NEVER
   pump from a tuh callback). Odd-aligned FatFs buffers bounce per-sector.
 - **Mount flow**: `tuh_msc_mount_cb` does NO bus traffic — capacity is cached by
@@ -10483,7 +10901,7 @@ over the ESP-01 and save to SD, with minimal SRAM. RP2350-only, behind
 - CA verification: `loadCaFile()` parses PEM from `cacert.pem` on SD →
   `VERIFY_REQUIRED`; no CA → `VERIFY_NONE` (bring-up spike only, logs a warning).
   SNI always set via `mbedtls_ssl_set_hostname`.
-- **mbedTLS config** (`src/mbedtls_config_picospeccy.h`): TLS stack added on top of the
+- **mbedTLS config** (`src/drivers/board/mbedtls_config_picospeccy.h`): TLS stack added on top of the
   SSH crypto primitives — `MBEDTLS_SSL_TLS_C/SSL_CLI_C/SSL_PROTO_TLS1_2/SNI`,
   ECDHE-RSA/ECDSA key exch, `GCM_C`, X.509 (`PK_C/PK_PARSE_C/X509_USE_C/X509_CRT_PARSE_C/PEM_PARSE_C`).
   TLS 1.2 only (no 1.3 → no version pinning needed). Buffers trimmed:
@@ -10815,6 +11233,215 @@ holds MISO low (0x00) while it programs, then 0xFF.
   before touching this area again; the file itself cannot be host-compiled (it
   pulls FatFs and the SDK).
 
+### ...and the CMD18 gap byte: WC's DMA sector reader hung on a 0x00 (2026-09-30; hw-confirmed the same day — owner: "да, запустился")
+
+"TGV video does not play under WC" (VIDEO_PL.WMF v0.71, `debug/TGV/`, `debug/WC/`).
+VDAC2 is not involved: the player is TS-Conf-only. What it does, from its
+disassembly (`debug/WC/WC/VIDEO_PL_disasm.txt`, real address = listed - 0x200):
+a TGV is a 512-byte header (`TGA Video v0.1/v0.2`, +0x10 = MP3 sectors, +0x20 =
+2 x sectors per frame), then in v0.2 the MP3 whole (3931 sectors in
+`RUNNINGM.TGV`), then frames of 73 sectors = 1 CRAM palette sector + 72 data
+sectors. Video = 256c at RRES 256x192 (`VConfig 02` via WC API #42), 256x144
+picture, four 16-page frame buffers at pages 0x20/0x30/0x40/0x50 flipped every
+3rd INT from WC's INT hook (API #56), palette through the FMAddr window
+(`OUT (#15AF),#10` + 512 LDI). The 256-byte rows land on the 512-byte row
+stride by the DMA itself: the driver reads a sector as TWO 128-word bursts with
+`D_ALGN` + ASZ 512 (`ctrl 5A`, `len 7F`, `num 1`), so each half sector starts
+its own 512-byte window. Sound = the GS Player detect, then a 1 KB card-side
+program uploaded with `#14`/`#13` and THE WHOLE MP3 pushed through `#B3` byte by
+byte before playback ("Please Wait..." with a progress bar); the card program
+feeds MD_SEND from a 32 KB-page ring on MDDRQ. `binary.tgv` (v0.1, MP3 field 0)
+never touches the NeoGS at all, which is what made it the bisect.
+
+- **The hang**: `binary.tgv` sat in "Please Wait...". Dump: `PC=3A14 BC=0057
+  A=00 HL=C400`, TS-Conf `dma: daddr=080400 ctrl=5A` — one sector into page
+  0x20, hung on the second. WC unpacks its SD driver into RAM at 0x3800 (it is
+  packed inside boot.$C, so read it OUT OF THE DUMP: `picospec_mem0.bin` +
+  `tools/z80disasm.py --org 0x3800`). Its DMA reader (`0x3815`, WC API #3C —
+  used by VIDEO_PL, TAPM, BMPV, TXTEDIT; GSPLAYER/MOUNTER/the panels read
+  through `0x380F` and never hit it) sends CMD18, then per sector: wait for the
+  first non-0xFF byte on `#57` and `CP 0xFE / JR NZ,$` — **a deliberate hang on
+  anything but the data token** — DMA the 512 bytes, read 2 CRC bytes, loop.
+  Our `DivMMC::mmc_read` CMD18 case restarted at the R1 slot for every block,
+  i.e. put a `0x00` between a block's CRC and the next token where a real card
+  (and Unreal's `sdcard.cpp`, which streams `FE data CRC CRC FE ...`) sends only
+  0xFF. Fixed: `mmc_read_cont` — R1 once per command, two explicit CRC bytes,
+  0xFF gap slots on every continuation. The UFO2 author's note ("CMD18 +
+  DMA SPI->RAM with a DMAStatus poll, the volume silently fails to mount") is
+  the same reader shape and should be re-tried on this fix.
+- **Not the DMA**: DMACtrl here is b7 R/W, b5 SALGN, b4 DALGN, b3 ASZ, b2..0
+  DDEV (`dmaStart`), so `5A` = SPI->RAM, DALGN, 512-byte windows — exactly the
+  row spreading above; the `DivMMC::zc_read_data` path behind it is the one WC
+  boots through.
+- Test ELF `debug/DVp2-tgv-cmd18-1.0.8.elf` (+ .uf2, plain main). **Hw 2026-09-30,
+  owner: `binary.tgv` starts and plays** (the read path — one verdict, not
+  itemised). **Still owed**: `RUNNINGM.TGV` with NeoGS on (the 2 MB byte-by-byte
+  upload, then MP3 + video), TAPM / BMPV loads (same reader), and the ZC card
+  still mounting under TS-BIOS / WC / esxDOS (the R1 slot moved).
+  Diagnostic build that exists for this: `debug/DVp2-tgv-zctrace-1.0.8.elf`
+  (`TS_VIDEO_TRACE` + `ZC_PORT_TRACE`, built with `-DTSOVL_WIN_SIZE=28672`
+  because that pair alone overflows the AUTO TS overlay window).
+
+### ...and the "negative" frames: nine rounds, seven mechanisms (2026-09-30; hw-confirmed on pal9 — owner: "теперь везде работает")
+
+Once the video played, every few frames a band from some row down came out in
+wrong colours (owner's screenshot: top ~15 rows right, the rest "negative"), and
+the same artifact was reported in **Ppal** (`debug/TSCONF/ppal.spg`) and
+**Keftale** (`debug/TSCONF/keft.trd`), V-Sync on or off. All three are `nb == 1`
+titles (TGV: a 256-cell CRAM sector per frame through the FMAddr window, 512 LDI
+from the INT hook at 0x8283; ppal's main loop at 0x6457 rewrites all 256 cells in
+a free-running loop over a static 256c picture; keft a per-frame fade over a
+palette that already needs more than the 184 slots), i.e. the Kolbass
+hold/release path with the CPU as the palette writer — the hold trigger is
+`wide`, never `blit`. **What actually went wrong, in the order it was found:**
+
+1. **`ts256ProgramBank` was spending its time in `tmds_balanced_pair`** (pal5, the
+   TGV fix, hw-confirmed on `binary.tgv`). Every `graphics_set_palette` runs the
+   balanced-pair SEARCH (tmds_pair.h, ~1000 ops per channel) and `tmds_encoder`
+   six times; 184 slots came to **7-14 ms** — a whole blanking and more — so the
+   palette landed with the beam far into the next sweep, over rows core1 had
+   already re-rendered under the OLD colours. Now memoised per 8-bit level in
+   hdmi.c (`hdmi_balanced_pair_lut`, `tmds_encoder_lut`, lazily filled, +1.5 KB
+   .bss): the flush is 0.4-1.5 ms. Any other palette-heavy path (ULA+, the
+   Gigascreen blend LUT, `applyPalette`) gets the same speed-up for free.
+2. **The blanking-path release waited for core1 inside the window** (pal6): the
+   pal3 fix ordered it Assign -> post -> DRAIN -> flush so the palette would
+   follow the pixels, and the drain is 3.6 ms of 240 rows. With Reduce (2.4 ms,
+   below) that made `total=6.9 ms` against 5.2 ms of blanking at 640x480 — and
+   RRES 360x288 has NO bottom border rows (`lin_end=0..240`), so blanking is the
+   whole window: `beamAfterMax=232`, `beamIn=23-34/s`, the top rows old under
+   the new palette every release. Now `tsReindexRelease(beamOut)`: from the poll
+   (beam in blanking or below the picture) it is Assign -> FLUSH -> post, no
+   drain — core1 starts at row 0 while the beam is still out and renders ~4x
+   faster than the beam scans, so the old rows are never displayed; the release
+   costs core0 ~1.5-2 ms. The forced path (EndFrame, beam anywhere) keeps
+   post -> drain -> flush, which confines the tear to the rows the beam passes
+   during the drain. `TS_REL_MIN_BLANK_LINES` dropped 110 -> 70 (the release is
+   shorter), and `displayBlankLeftOk()` now caps the requirement at the mode's
+   blanking minus 6 (`hdmi_blank_lines_total()`): 720x576 has only **44** blanking
+   lines, where a fixed 110 could never be met and EVERY release would have been
+   the forced one.
+3. **The "wait for a gap in the CRAM writes" gate (pal4) was the WORST of the
+   three for ppal** — a writer that never pauses always timed out (40 ms = two
+   frames), and by then two EndFrames had passed, so the release was FORCED with
+   the beam wherever it was: `burstForced=9 relForced=18` per second of
+   `rel=27`. Removed. A mid-burst snapshot is one frame with a palette the guest
+   was still writing, which the hardware shows too. The forced release itself
+   now needs the hold to outlive TWO EndFrames, not one: with V-Sync pacing a
+   frame that ends late in blanking gets its release at the next blanking
+   start, which comes ~1 ms before the second EndFrame — forcing at the first
+   one released early, into the picture.
+4. **`ts256Reduce` is ~2.5x cheaper** (host: 125 -> 50 us on a random 256-colour
+   palette, 10 -> 4 us on a gradient; identical merge count, error within 0.3 %):
+   cells sorted by colour (groups come out adjacent, no 256 x n dedup search),
+   nearest neighbour by scanning outward in that order and stopping once the red
+   difference alone exceeds the best distance, and after a merge only the groups
+   whose neighbour DIED are marked stale and re-evaluated lazily when they come
+   up as the minimum (their recorded distance is a lower bound, so that is
+   exact) — the old code recomputed every group pointing at the kept one too,
+   and relabelled 256 cells per merge. It still runs once per frame for a
+   continuous writer: the EndFrame pre-assign is defeated whenever the guest
+   writes CRAM again before the release, which ppal always does (`assign=2.4 ms`
+   on every release in the pal5 log). Scratch check in the session scratchpad
+   (`reduce_test.cpp`, old vs new over 400 palettes).
+5. **The demos never had the release problem at all — the pal6 log said so (hw
+   2026-09-30, owner: "better, but something still interferes")**: `beamIn=1-5`,
+   `beamAfterMax` under 25 on the blanking path, `forced=0` — and still
+   `bad=8000 rows/63 sweeps` on ppal and 170-390 on keft. Two mechanisms, both in
+   the STICKY path (a change that does not hold), neither of them timing:
+   - **RUNNINGM: `nb=3` with `live=61/61 exh=1 near=2000/s`.** `ts256PickBanks`
+     runs at mode entry on whatever CRAM holds THEN — the player opens at RRES
+     256x192 on a near-empty palette, so it got three banks of 61 slots, and its
+     100+ colours per video frame exhausted a bank ~160 cells a frame with nothing
+     degrading it: the "back to one bank" rule lived only in `ts256Version` (the
+     hint path), and the video's DMA lands in the NON-visible frame buffer, so the
+     hint never rises and every change is beam-scheduled. `ts256DegradeOneBank()`
+     is one helper now and the poll's sticky assign calls it too.
+   - **ppal / keft: a full single-bank pool with changes too narrow to hold.**
+     ppal's free-running rewrite held on the frames where >= 32 cells moved and
+     took the sticky path on the others (`force 20 blank 27` applies/s,
+     `moved=19000/s`); keft's fade changes 6-12 cells a frame on `live=184/184`
+     (`near=300-600/s`, `stickyPre=30-90`). On an exhausted pool the sticky path
+     can only park a changed cell on the nearest colour or move it to a shared
+     slot — under rows already rendered with the old numbering. So with
+     `ts256_exhausted` a DENSE change of `TS_REINDEX_EXH_CELLS` (4) cells holds
+     like a wide one (the density test keeps Demorama's 1-2 cells a row on the
+     beam rule); the picture is then re-rendered from a Reduced map in blanking,
+     the one consistent answer once colours outnumber slots.
+   Test ELFs `debug/DVp2-tgv-pal7-1.0.8.elf` / `-pal7-trace-`. **Hw 2026-09-30,
+   owner: binary.tgv, RUNNINGM.TGV, keft.trd and Kolbass all work on pal7**
+   (the RUNNINGM log has the `exhausted - back to one bank` line once, as
+   predicted); ppal "no longer a negative, a WRONG PALETTE flashes through,
+   and worse WITH V-Sync". See 6.
+6. **ppal on pal7: the hold fired on every SECOND frame only, and the other half
+   went out through the v_sync poll INSIDE the picture** (`wide=25 rel=25
+   force=25` per 50 frames, `bad≈138 rows` on every sweep, `live` alternating
+   126/184 and 184/184). Two facts behind it, both worth keeping:
+   - **ppal's rewrite is SPREAD, not a burst**: ~274 cells over the whole frame,
+     about one per row, so the `palBurst` density test (4 cells per row) fails
+     whenever the render tick is running — and passes only in a frame where a
+     release has already PARKED the tick (`ts_line_t` = MAX pins `palRow` at the
+     top, span 0). So a hold only ever followed a release inside the frame, and
+     the frame after that took the sticky path (near parks + merged-cell moves
+     under rows rendered with the old numbering). The density test protected
+     Demorama, which is NOT exhausted (123-125 colours) — on an exhausted pool a
+     per-line palette effect cannot be rendered either way, so `exhWide` drops
+     the test: `ts256_exhausted && ncells >= 4` holds, spread or burst.
+   - **The "blanking just started" forced poll in the V-Sync pacing wait runs
+     with the beam at row 190**: `v_sync` fires `TS_VSYNC_LEAD_LINES` before
+     blanking on TS-Conf (the Kolbass round-5 lead), so its comment is wrong for
+     these modes and a sticky flush there lands mid-picture — which is why the
+     owner saw MORE glitches with V-Sync on (`force=0` with it off). Left as is:
+     with the hold now taken on every dense frame, `reindexPending` keeps that
+     poll off, and for a non-exhausted animation the map does not move.
+   Also: `[TSYGC]` fired on EVERY frame of ppal (RRES 360x288, `crop=24`) and
+   shredded the UART — the invariant is `ygctr == curline + crop` at GYOffs 0,
+   it compared against `curline` alone. Fixed.
+   Test ELFs `debug/DVp2-tgv-pal8-1.0.8.elf` / `-pal8-trace-`. **Hw 2026-09-30
+   on pal8: ppal PERFECT with V-Sync off (`bad=0`, `force=0`, hold every
+   change) and UNCHANGED with V-Sync on** (`wide=25 rel=25 force=25`) — see 7.
+7. **The per-frame cell count reset itself on every write made after a release
+   (pal9, NOT hw-tested).** `tsCramChanged` counted cells per frame by testing
+   `ts_pal_seq != ts_frame_seq`, but a change made after the tick has parked
+   (a release inside the frame, then ppal's rewrite going on behind it) is
+   "the next frame's top" and sets `ts_pal_seq = frame + 1` — so every such
+   write reset the count to 0, it never reached `TS_REINDEX_EXH_CELLS`, no hold
+   started, and the v_sync poll flushed the sticky map at row 190. That is why
+   the V-Sync-off run was clean: with no forced poll those cells simply waited
+   for the next frame, where the count works and the hold covers them. The
+   counter has its own frame tag now (`ts_pal_cnt_seq`). Expected on ppal's
+   trace WITH V-Sync: `wide` = `rel` = ~50 per 50 frames, `force=0`, `bad`
+   near 0. Test ELFs `debug/DVp2-tgv-pal9-1.0.8.elf` / `-pal9-trace-`.
+   **Hw 2026-09-30, owner on pal9: "да, теперь везде работает"** — binary.tgv,
+   RUNNINGM.TGV, keft, Kolbass and ppal, V-Sync on and off — and the same
+   evening the regression set: **Demorama, RobFgift and Ninja Gaiden all
+   work** (owner). So the exhausted-pool rule did not catch Demorama's
+   per-line effect (its 123-125 colours keep it off that rule, as designed)
+   and the `nb=4` version-bank path is unharmed. Only a 720x576 run of the
+   `nb=1` titles (the 44-blanking-line cap in `displayBlankLeftOk`) is still
+   owed.
+- **Hypotheses hw-refuted on the way, recorded because the log looked clean under
+  each**: "Reduce renumbered the map under core1" (pal1 — the `mapDeferred`
+  guard stays, it read 0 here); "the beam gate at entry only" (pal3 — the margin
+  gate stays, `relBeamIn` still counted with it); "a CRAM snapshot mid-burst"
+  (pal4 — `inBurst=0` on TGV, and see 3). **The lesson that cost most: the
+  `hold:` log line had grown past `Debug::log`'s 256-byte buffer**, so the
+  `relFlush`/`relTotal` fields were silently cut and the pre-flush beam sample
+  read "still in blanking" while a 10 ms flush ran on. Two rounds went to that.
+  The release fields live on their own `[TSPAL] rel:` line now, and the beam is
+  sampled AFTER the whole release.
+- **Instruments** (`TS_VIDEO_TRACE`): `[TSPAL] rel: beamStartMax beamIn
+  beamAfterMax assign post drain flush total | blank forced inBurst` — `beamIn`
+  must read 0 and `beamAfterMax` < lin_end (or -1) on a blanking-path release,
+  `drain` is 0 there (only the forced path drains), `forced` should be 0 on any
+  title with V-Sync; `blank` = releases taken on the fast path.
+- pal6 was hw-run 2026-09-30 (the release counters came out clean, the demos still
+  wrong — see 5); **hw owed on pal7**: ppal, keft, `RUNNINGM.TGV`, then Kolbass /
+  nygift (same hold path, now also holding on narrow changes) and RobFgift /
+  Ninja Gaiden (`nb=4`; a degrade to one bank there would show in the log as the
+  `exhausted` line and must not happen), Demorama (its per-line effect must NOT
+  hold: `hold=0`, `spread` climbing), and a 720x576 run (the 44-line rule).
+
 ### What Wild Commander still needs from us — CLOSED (analysed and finished 2026-09-18)
 
 The gap list is done. **VDOS / FDDVirt**, **TSU over TEXT** and **SMUC** were
@@ -10959,7 +11586,7 @@ byte-identical to before), and Demorama's TEXT band inside its 256c screen (the
 mixed frame, where the TSU must NOT appear on the lores lines any differently
 than it did).
 
-## FDI copy protection — physical damage emulation (`src/wd1793.cpp`)
+## FDI copy protection — physical damage emulation (`src/speccy/devices/disk/wd1793.cpp`)
 
 An FDI sector flagged with a **bad data CRC** was unreadable on the source
 floppy: its data field is valid up to the damaged spot and garbage from there to
@@ -11047,7 +11674,7 @@ user remembers, and two of them are the only ones that can actually break a load
   pulses walk the bit stream out of step. Always fatal to the DATA — but NOT to a
   pilot tone, see the ROM note below.
 
-- **The model is `src/TapeWear.h` and depends on nothing from the firmware** —
+- **The model is `src/speccy/devices/tape/TapeWear.h` and depends on nothing from the firmware** —
   that is the only reason `tools/tapewear_test.cpp` can drive it on a host
   (`g++ -O2 -Wall -Wextra -Isrc -o /tmp/tapewear_test tools/tapewear_test.cpp`).
   **Re-run it after ANY change there.** It is not a threshold approximation any
@@ -11458,7 +12085,7 @@ SOFTTV/TV/TFT for the W boards (unpaired, not impossible).
   the radio's own WL_GPIO0, GPIO46 = VSYS_SENSE, GPIO47 = PSRAM_CS, VBUS_DET goes
   to RM2 GPIO2. The first cut had CS/CLK swapped (a derivation, 38=CLK 39=CS).
   They live as **static** `CYW43_DEFAULT_PIN_WL_*` in
-  `src/boards/picospeccy_rp2350b_w.h` with `CYW43_PIN_WL_DYNAMIC 0`, exactly like
+  `src/drivers/board/boards/picospeccy_rp2350b_w.h` with `CYW43_PIN_WL_DYNAMIC 0`, exactly like
   `pico2_w.h` — the runtime `cyw43_set_pins_wl()` table was dropped.
   **`CYW43_PIN_WL_DYNAMIC 1` WITHOUT the `CYW43_DEFAULT_PIN_WL_*` defines does not
   compile** (SDK 2.3.0 `cyw43_bus_pio_spi.c` seeds its RAM table from them), which
@@ -11717,7 +12344,7 @@ Nothing above the two network facades knows which radio it is on:
   — newlib's localtime drags in the tzset chain this firmware keeps out of flash)
   in both a blocking (`sntpSync`) and a background (`autoBegin/autoPoll`, join +
   SNTP) shape, feeding `RTC::setDateTime` exactly like the AT path.
-- **lwIP is `pico_cyw43_arch_lwip_poll`** (NO_SYS, `src/lwipopts.h`), NOT the
+- **lwIP is `pico_cyw43_arch_lwip_poll`** (NO_SYS, `src/drivers/board/lwipopts.h`), NOT the
   threadsafe_background arch: every stack callback runs inside `cyw43_arch_poll()`
   on core0 — `WifiNet::poll()` once per frame from `ESPectrum::loop` (beside
   `ZiFi::tick`) plus the waits above — so the emulator decides when the network
@@ -11776,3 +12403,307 @@ Nothing above the two network facades knows which radio it is on:
   `inputs.boardConfig`) is a LOCAL file and has to be edited by hand for every new
   board; a commit can never update it. `build_all.*` / `check-release.sh` are the
   tracked lists.
+
+## ATM-Turbo 1 / 2+ (A_ATM, 2026-09-26, NOT hw-tested)
+
+New arch `A_ATM` ("ATM") with three romsets: `R_ATM1` "ATM1" (ATM-Turbo 1, BIOS
+1.04rs, 1 MB — `#FDFD` D2..D0, Unreal's 1024K option, which UMT's "ATM4.5 (1024)"
+test expects and passes on hw 2026-09-26; on a stock v4.50 D2 selects the ROM disk, unused by this 27512 set), `R_ATM2` "ATM2" (ATM-Turbo 2+, BIOS 1.07.13, CRC 34A91D53, default)
+and `R_ATM2X` "ATM2x" (ATM-Turbo 2+ Dual eXtra BIOS 1.37XT, 128 KB, CRC E5EF44D9);
+**`R_ATM2_106` "ATM2v106" = ATM-Turbo 2 (no plus), BIOS 1.06.02** (speccy4ever
+`ATM10602.ROM`, CRC D797436A, 2026-09-27; hw-confirmed the same day: BIOS menu boots
+its entries with the D5 + 316-line fixes below — owner "работает", not itemised) — same MM_ATM710 model as
+the 2+ (Unreal loads any 64 KB ATM2 BIOS that way), listed between Turbo 1 and 2+ but
+APPENDED last in the romset X-macro (persisted by name). Differences: no IDE
+(`atmHasIde()` = R_ATM2/R_ATM2X only — 1.06 has no HDD code), and the Alt+F11 CP/M
+hook's return address is #00C4 (`kBios106MenuRet`; same CALL #8003, at #00C1). The hook must also
+return D = 1 (TURBO, the menu's default) and L = 0 (ZX keyboard; L = 1 = XT, and the
+BIOS installs the XT driver at #1174 — dead keyboard under CP/M, hw 2026-09-27).
+**No #77 D5 INT gate on the plain ATM2** (`Atm::intGated` = 2+ romsets only): BIOS
+1.06 never sets D5 and measures the CPU clock with EI/HALT at #3DBC — with the 2+'s
+gate modelled it hung there on a black screen (hw 2026-09-27, first boot).
+**...and it runs a 316-line frame** (`atmFrame316()`, 224 x 316 = 70784 T, the Scorpion
+Green frame + its audio set): that #3DBC HALT is a CPU-clock measurement (INC HL /
+JR NC = 18 T between two frame INTs, result at #5F8E, read by the menu as #1F8E), and
+the boot menu's ISR (#813D) NOPs out its own exit `JR NZ` at #80D9 unless the count is
+#0F4B..#0F4F. At 69888 T it read #0F1C, so every Enter toggled TURBO instead of booting
+(hw dump 2026-09-27). The window pins the frame to ~70740..70800 T; 316 x 224 is the only
+224-T raster in it. Derived, not documented — the 2+ romsets keep the 312-line frame.
+The 2+ BIOSes (1.07.13, xBIOS 1.37) carry neither the measurement nor the menu check
+(byte-scanned), which is why they never cared about the frame length.
+Pages: 0 = 48 BASIC (179 B overlay), 1 = TR-DOS (5064 B overlay), 2 = Pentagon ROM0
+exactly, 3 = BIOS raw — +21.6 KB in .psramroms (ATM ROMs now 78 938 B).
+`isAtmRomset`/`isAtm1Romset` (ArchRom.h), `Config::isAtm1()`. Machine → ATM-Turbo
+(`opt_mach_atm`, gated `p_showAtm` = VGA_HDMI + butter PSRAM ≥1 MB +
+`FlashRoms::romsUsable()`, the TS-Conf gate). The owner's link
+(atmturbo.nedopc.com/atmshem.htm) is unreachable from the build env, so the model
+is read out of **UnrealSpeccy** (tslabs/zx-evo pentevo/unreal: memory.cpp
+MM_ATM450 / MM_ATM710, io.cpp, atm.cpp, drawers.cpp) and **MAME sinclair/atm.cpp**
+(2+ only); they agree. The whole port/paging spec is in the header of `src/speccy/machines/Atm.h`.
+
+- **Core = `src/speccy/machines/Atm.{h,cpp}`**: `Atm::remap()` is the ONE writer of
+  `MemESP::ramCurrent[0..3]` on ATM (the TsConf::setBanks pattern); it also sets
+  `p3special = 2` so `recoverPage0()` keeps out, parks `bank_dirty` on the sink for
+  ROM windows, clears contention and re-points `grmem` (page 5/7). Port hooks run
+  early in Ports::input/output (right after the GMX ones); the ULA branch still runs
+  for #FE (`Atm::feWrite` latches the ATM1 address byte; the 4-bit border takes
+  BRIGHT from A3 inverted, `border32[]` grew to 16 entries). `check_trdos` is
+  replaced by `Atm::trdosTrap` (enter at #3Dxx with 7FFD D4 and ROM in window 0,
+  exit when PC's window is RAM); /CPM on the 2+ keeps the DOS signal up by itself.
+- **ROM pages may sit in ANY window**, so each bound page is flattened into butter
+  PSRAM at the first `Atm::reset()` after `Buffer::initPools` (palloc
+  NEED_POINTER|PREFER_PSRAM, heap placements refused); raw pages are read straight
+  from flash. Writes into a ROM window are dropped by the `g_atm_ro` gate in the CPU
+  write funnel (`gsDmaPoke8`) — zero on every other machine, one predicted-not-taken
+  test. MemESP's pointer-keyed overlay registry is NOT used for ATM.
+- **Packing** (`tools/rom_pack.py atm`, `pack_atm`): 4+4+8 pages against Pentagon
+  ROM0, Sinclair 128K half 1, Sinclair 48K, TR-DOS 5.04T and the all-FF page →
+  3 raw + 11 overlays + the 2 KB ATM2 text-mode font (`gb_rom_atm_font`, Unreal's
+  fontatm2 transposed to char*8+line) = **57 311 B**, in `.psramroms`
+  (`*atm_roms.c.o` in both EXCLUDE_FILE lists of rp2350-memmap.ld) — traded with
+  GMX/TS-Conf for a big GM.DLS bank on boards without QSPI PSRAM, where ATM is not
+  offered anyway. `atm_banks.h` may be included ONLY by Config.cpp (internal-linkage
+  Sinclair bases). `tools/rom_verify.py` reassembles all three images + CRC.
+- **Timing**: the 48K frame (224 × 312 = 69888 T, INT_START48/END48, 48K audio set),
+  uncontended, no floating bus. ATM2 #77 D3 = 7 MHz turbo, applied with the
+  `CPU::tstates` rescale (the TS-Conf ZCLK lesson) and `OSD::notifyClock`; D5 gates
+  the frame INT (`Z80Ops::isActiveINT`), reset = INT OFF until the BIOS enables it.
+- **Video** rides the GMX 640x200 pair-slot machinery (`gmx_ext_live`,
+  `gmxApplyPending`, `gmxBorderFrame`): `VIDEO::atmRenderLine` draws EGA 320x200x16,
+  hires 640x200 and 80x25 text whole-line from pages 1/3 + 5/7, ZX mode keeps the
+  beam renderer. The 16-entry palette is applied at EndFrame
+  (`atmPaletteFlush`/`atmPaletteRestore`); the ZX slots are only overridden after the
+  guest's first palette write.
+- **Exclusions** (resolveConstraints, MachineSwitch, CPU::reset/ESPectrum::setup
+  backstops): esxDOS, MB-02+, Timex, 16col, Murmuzavr off; Beta-128 on; IDE scheme
+  `IDE::ATM` (= 6, the NVS value, `opt_ide_scheme` "ATM") follows the 2+ and is
+  cleared on the ATM1 and on every other machine. SNA: a 128K SNA loaded on ATM runs
+  on Pentagon; `.z80` has no ATM machine id. Tape auto-run excluded.
+- Cost: the 57 KB of ROM data plus the code; z0p2-PIOUSB now leaves a 1 589 248 B plain bank
+  region (< the stock 1 668 026 B gm.dls), i.e. a no-butter z0p2 installing the stock
+  bank trades the .psramroms ROMs — the documented automatic trade, not a failure.
+  All of DVp2 VGA-HDMI, z0p2 PIOUSB, m2p2 SOFTTV and m1p2 TFT link.
+- **Alt+F11 "Reset to" on ATM = BIOS / CP/M / TR-DOS / 128K / 48K** (2026-09-27,
+  `MENU_RESETTO_ATM`). TR-DOS/128/48 skip the BIOS through `Atm::bootRom()` (Unreal
+  `reset(RM_DOS)`: 2+ PEN on, /CPM off, ZX mode, INT on, page table = ROM-by-#7FFD in
+  window 0 — set 0 the 128 ROM, set 1 the 48 ROM with bit 0 = DOS — then RAM 5/2/by-#7FFD;
+  ATM1 aFE=#E0 aFB=0). It also loads the standard ZX colours into the ATM palette RAM
+  and hands the hardware slots back (`atmPaletteRestore`) — the BIOS had programmed its
+  own palette and nothing on the direct path rewrote it.
+  - **TR-DOS must start from under 128 BASIC, not cold** (hw-confirmed, Trashe): a cold
+    TR-DOS leaves 48 BASIC in charge and 128K titles see a 48K. bootRom(BOOT_TRDOS) boots
+    the 128 ROM and a one-shot hook in `Z80::check_trdos` takes the first `JP #2653`
+    (the 128 menu loop, SP=#5BFF) to the menu's TR-DOS handler `#2816`
+    (`RANDOMIZE USR 15616`). Same two addresses in Pentagon ROM0 and xBIOS page 6.
+  - **...and "boot" is then typed, not forced** (hw-confirmed, Trashe from Web Archive):
+    TR-DOS's first-entry autorun needs (#5B00)=#AA, which only its cold start sets (under
+    128 BASIC #5B00 is the SWAP routine). Forcing #AA made it take the autorun branch,
+    which skips the prompt init at #02CB-#02EC and silently did nothing. The hook instead
+    catches `JP #1D90` (the 48 ROM editor, from #2135, with #02EC on the stack), writes
+    `F7 0D 80` (RUN) into E_LINE + K_CUR/WORKSP/STKBOT/STKEND, and returns to #02EC —
+    exactly RUN+Enter at the first prompt. `bootTrdos()` (Web-catalog TRD launch) uses it.
+  - **CP/M skips the BIOS boot menu**: `Atm::cpmBootArmed`, the hook answers the BIOS's
+    own menu CALL with A=0 (= CP/M): 2+ / xBIOS page 7 `CALL #8003` at #00E1 (ret #00E4),
+    ATM1 1.04rs `CALL #F864` at #1727 (ret #172A, after CP/M is decrypted to #C000).
+    Guarded by ROM in window 0 + the exact return address. 2+ NOT hw-confirmed, ATM1 fix
+    NOT hw-tested. A Web-catalog launch of a CP/M floppy (`rvmWD1793IsCpmDisk`: FDI with
+    512/1024-byte track-0 sectors, or .pro; UDI/TD0 not detected) takes the CP/M path.
+  - Log lines: `[ATM] boot TR-DOS via the 128 menu`, `128 menu reached...`, `TR-DOS
+    prompt: typed RUN`, `BIOS boot menu call, ret=...`.
+- **Hw check owed (nothing has run)**: ATM2 BIOS boot to its menu (PEN=0 → BIOS in
+  all windows, then #F7 paging), TR-DOS from the BIOS, the 7 MHz switch, EGA/hires/
+  text screens (CP/M, ATM2 text), the palette, ATM1 boot (CPSYS/SYS ROM, #FDFD pages),
+  IDE on the 2+, and xBIOS 1.37.
+
+### ATM-Turbo 3 v8.0 (R_ATM3, 2026-09-29, NOT hw-tested)
+
+Fifth ATM romset, "ATM-Turbo 3 (4 MB)". **The model is the REAL NedoPC board, not
+UnrealSpeccy's `MM_ATM3`** — Unreal's is the ATM-compatible mode of the ZX-Evo (its ini
+loads `zxevo.rom` there): Evo #BF bits, NMI into RAM page #FF, #BE read-back, Gluk CMOS,
+and #x7F7 decoded in every DOS entry, which is exactly why xBIOS cannot run on an Evo.
+A first cut (2026-09-28) followed Unreal and was replaced the next day. Sources: Maksagor,
+"Обзор нового компьютера ATM-turbo 3 версии 8.0" (Info Guide #12, zxpress.ru, Dec 2017)
+and a disassembly of MSD888's test ROM, which agree.
+- The whole ATM-Turbo 2+ stays (#xx77, #xxF7, ATM IDE on xx0F — `atmHasIde`
+  includes R_ATM3, printer #FB, #FF palette), 7 MHz max, 256 pages
+  (`wantedPages`). Page registers in Unreal's pFFF7 form for every 2+ board (`f7enc`).
+- `#BF` (open port, any mode, read = written value, unused bits 0, reset 0): D0 DOSEN2 =
+  shadow ports without the TR-DOS ROM (`Atm::shaden`, joined to the Scorpion SYSEN gate
+  in Ports.cpp for the FDC), D1 PGSN = #xxE7 in #x7F7 format, D5 EXT_PAL. The test
+  writes #23 and expects to read `00100011`.
+- `#x7F7` = the F7 family with A11 = 0 (8-bit RAM page, inverted); #xFF7 needs A11 =
+  1 — whenever the shadow ports are open, TR-DOS included. **Deliberate deviation from
+  the article**, which has #x7F7 only behind #BF D0: NedoOS (`debug/NedoOS/osatm3sd.trd`)
+  enters DOS through `JP #3D2F`, writes `#BF = #20` (D0 clear) and pages 4 MB through
+  `#37F7`/`#B7F7`/`#F7F7`; with the article's rule it hung at start (hw 2026-09-29,
+  windows 0/2/3 all on one page in the dump). xBIOS 1.37 and the test ROM always
+  address #xFF7 with A11 = 1, so they are unaffected.
+- `#xxE7` (#FFE7/#FEE7, A8 ignored, window = A15..A14, shadow ports): #xFF7 format
+  with D1 = 0, #x7F7 format with D1 = 1. The test's 1 MB scan writes `page XOR #7F`
+  to #FEE7 at #BF = 0/1 and `CPL page` at #BF = 3.
+- EXT_PAL: the article gives no bit layout; the test ROM's own ramps (page 7 #0120/
+  #0140/#0160, data/A15..A8 pairs) settle it: each channel 4 bits = data's 2 bits
+  (grbG--RB inverted, as on the 2+, the #AA-weight bit high) then A15..A8's 2 bits in
+  the same layout. `Atm::palHi[]`, `palRgb`.
+- ROM = `ATM3TEST_XBIOS137XT.020` (27C020, CRC32 024411F9): pages 8-15 = xBIOS 1.37
+  byte for byte (its page self-references are 56-63, i.e. mod 16 = 8-15, so PEN = 0
+  and `bootRom`'s `n - 4` land right), page 7 = "Test v1.4 for ATM-Turbo 3.0" by
+  MSD888, pages 0-6 = 0xFF + page number at #0007 + a key-wait stub at #3FE6 (the ROM
+  page-switch test's targets). Packed: one 16 KB raw page + 7 x 51 B overlays, the
+  xBIOS pages shared with R_ATM2X. The 256 KB flattened block is butter PSRAM.
+- **Alt+F11 -> "ATM3 test"** (`Atm::bootTest`, `MENU_RESETTO_ATM3`): the test runs
+  from address 0 with PEN = 0 and expects to be the LAST page (it maps itself as
+  page 7), so `testBoot` makes PEN = 0 show the last page of the LOWER 128 KB — a
+  board with ROM A17 held low. The next machine reset clears it (xBIOS again).
+- **Second ATM3 romset `R_ATM3_107` "ATM3v107" = MicroART BIOS 1.07.13EC** (2026-09-29,
+  hw-confirmed on `debug/DVp2-atm3bios4-1.0.7.elf`: BIOS menu, CP/M / TR-DOS / 128 / 48,
+  NedoOS and Golden Axe all run; atmturbo.nedopc.com `bios10713ec.zip`, CRC32 FB547227, Maksagor 2015).
+  "Evo Compatible": stock 1.07.13 initialises the #xFF7 manager with OUTI through short
+  addresses (A11 floating), which our always-on #x7F7 decode would take as the 4 MB
+  port; EC fixes exactly that — 71 bytes off stock 1.07.13, all in pages 1/3 (paging
+  code + banner). Same page order as 1.07.13, 4 pages (`page % n`), CP/M hook = the 2+'s
+  (#00E1, untouched by the patch). Costs +5.2 KB (page 1 over TR-DOS 5.04T, page 3 110 B
+  over the 2+ SYS page, pages 0/2 shared). The Alt+F11 "ATM3 test" row is R_ATM3 only.
+  Menu labels now mirror the 2+: "ATM-Turbo 3 (BIOS 1.07.13EC)" / "(xBIOS 1.37)".
+  **First runs: no BIOS menu.** The EC patch fixed only the OUTI loops. The SYS page's
+  reset page-table set-up (#02B6: `LD BC,#00F7 / OUT (C),A`, B = #00/#40/#80/#C0) still
+  writes #xxF7 with A11 = 0, and the boot menu — COPIED TO RAM at #8000 — floods #xxE7
+  with #FF (#80AD, `LD BC,#00E7 / OUT (C),A / DJNZ`); as 4 MB ports both remapped every
+  window to RAM (dump: `ro=00`, #0000 zeroed, PC in the #8000 menu). For R_ATM3_107 only
+  (Atm.cpp): #xxE7 needs #BF D0; #x7F7 needs #BF D0 or a writer running from RAM (NedoOS's
+  kernel, #37F7 with #BF = #20 — owner: NedoOS from this BIOS works). A "from RAM" test
+  alone was hw-refuted: the BIOS menu itself runs from RAM.
+  R_ATM3 (xBIOS + test) is unchanged — the test ROM writes #FEE7 from ROM at #BF = 0.
+- Deliberately NOT modelled: the NMI changes the article only mentions in passing, the
+  on-board Kempston mouse/joystick beyond what the machine already has, the RTC/COM
+  behind the keyboard controller (no Gluk ports on this board), SD, flash rewrite.
+  Dropped from the Unreal cut: font RAM, NMI page #FF, #BE, #2F-#8F shadows, Gluk CMOS.
+- **Kept from it, for NedoOS: strict #7FFD (low byte #FD, A15 = 0) and the NEMO IDE
+  decode.** NedoOS for ATM3 is the ZX-Evo kernel (`src.r2698/kernel/main.asm`: `atm != 2`
+  -> `memport0000=0x37f7`, `pagexor=0xff`; every `_sdk/config/atm3*` has `NEMOIDE=1`), and
+  its NEMO driver's `LD BC,#00D0 : OUT (C),A` is a #7FFD write to the ATM2+'s loose decode
+  (p7ffd=E0: paging locked, register set flipped — "Drive A-D mounted", then nothing;
+  hit twice, 2026-09-28 and again 2026-09-29 when the port rework restored the loose
+  decode). Without a NEMO image the NEMO ports are swallowed (not the ULA); with one,
+  Ports.cpp's NEMO block answers them in DOS mode too on ATM3, and the IDE-scheme rule
+  (menu, CPU::reset, setup) accepts NEMO beside ATM there.
+- **NedoOS's own ATM3 kernels (r2698 osatm3sd/atm3/atm3hd/pe26sd) are BROKEN — not us.**
+  The user-kernel template `wasuserkernel` (copied into every new app's page 0) lands at
+  #3A00 in those builds, exactly on FatFs's hard-wired `pathbuf` (`fatfs4os/ff.c`:
+  `#define pathbuf ((unsigned char *) 0x3a00)`). The first path op (`BDOS_setsysdrv ->
+  setpath -> strcpy_usp2lib`, pc #2CC2) writes "bin" then "term.com" over it, so `term`
+  is created with "term.com" over its #0005 system-call entry: every BDOS call falls
+  through to getchar (`pc=#000D`), GETMAINPAGES never runs, term pages 0 into #4000 and
+  runs into the DRAM pattern at #206D. ATM2 (#3000) and Evo (#3700) builds are clear,
+  which is why NedoOS runs on the 2+. Proof: stock atm3sd built from `debug/NedoOS/
+  src.r2698` is byte-identical to the release (unpacked syscode), wasuserkernel #3A00;
+  upstream (alfishe/NedoOS, r2698, 2026-09-27) is unchanged. Workaround shipped in
+  `debug/NedoOS/osatm3sd_nonet.trd` (+ .txt): same kernel with `INETDRV=0` (no Wiznet),
+  template at #3100. **Hw 2026-09-29, owner: NedoOS starts with it** (on
+  `debug/DVp2-atm3v8-1.0.7.elf`) — which also confirms the diagnosis: same emulator,
+  only the kernel's layout changed. Found over eight `-DATM_PAGE_TRACE=ON` rounds (build-atmtrace/):
+  `[ATMPT]/[ATMRD]` page-table writes/reads, `[ATMARM]` window-0 + #7FFD after the second
+  app's creation, `[ATMINIT]` init_resident's RET target + first 16 bytes, `[ATMTPL]`
+  every write into the template. Kernel listing: `sjasmplus --lst` on a copy of the tree
+  with `_sdk/config/atm3sd/syssets.asm` + `atm2clock=0` in `_sdk/syssets.asm`. A
+  32-T-INT-in-turbo change tried on the way was a wrong theory and was reverted.
+- Hw check owed: xBIOS boot, TR-DOS / 128 / CP/M via Alt+F11, the ATM3 test end to end
+  (#BF read-back, "Всего найдено рабочих страниц" = 256, #x7F7 deep RAM test, ROM page
+  switch 0-7, extended palette ramps, DOSEN via #3Dxx), ATM IDE.
+
+## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 + ZXM-Phoenix 2 MB (2026-09-26, NOT hw-tested)
+
+Four romsets of the **Scorpion arch**, not an arch of their own: `R_KAY256` "Kay256",
+`R_KAY1024` "Kay1024", `R_KAY2010` "Kay2010", `R_PHOENIX` "Phoenix" (ZXM-Phoenix 2 MB —
+**there was never a "KAY2048"**: it was mis-filed under that name until 2026-09-29 (no alias kept —
+a saved "Kay2048" falls back to the default romset), and it is listed under
+**Machine → Other**, not the Kay row; it stays in `isKayRomset` because it IS that
+paging family);
+`isKayRomset()` (ArchRom.h), `g_scorp_kay` (CPU.h: 0 none / 2 = 256 / 3 = 1024 /
+4 = Phoenix). Machine → KAY (`opt_mach_kay`, UiTree.cpp, behind `p_extRam`). A KAY128
+row existed for a few hours and was REMOVED on the owner's call (2026-09-26) — no ROM of
+its own survives, it ran the KAY-256 set. Why the
+Scorpion arch: the KAY ROM has the SAME four roles in the SAME rom[] order (0 BASIC-128,
+1 BASIC-48, 2 service, 3 TR-DOS), the same "DOS with the 128 ROM shows the service
+page" quirk, on-board Beta, uncontended 48K frame — so the check_trdos entry, dosBank 3,
+Beta forcing, tape loader and timing all apply as they are. Model = **UnrealSpeccy
+`MM_KAY`** (`~/github/unrealspeccy` memory.cpp/io.cpp, `grep -a` — CP1251) + the
+z00m128/kay1024 README; ROMs from github.com/z00m128/kay1024 and
+speccy4ever.speccy.org/_KA.htm (`curl -sk -A Mozilla`).
+
+- **Decode**: `#1FFD` = `(addr & 0xC003) == 0x0001` (every KAY romset); `#7FFD` is
+  the loose `(addr & 0x8002) == 0` (the Scorpion A14 split is lifted for KAY). #1FFD is
+  not gated by the 7FFD lock.
+- **ROM select** (`scorpionRomUpdate`): `bank = ((1FFD.D3 ? 2 : 0) ^ (DOS ? 2 : 0)) |
+  7FFD.D4` — D3 swaps the pair (Unreal `rom1 = (1ffd>>2)&2; if TRDOS rom1 ^= 2`), where
+  the Scorpion's D1 OVERRIDES. The DOS exit in check_trdos has the same KAY branch.
+  The KAY BASIC-128 reset patch (0x048C) uses exactly this: Symbol Shift held →
+  `OUT #1FFD,#10` + TR-DOS via 3D2E; Caps Shift held → `OUT #1FFD,#08` + JP 0 = the
+  service page. Alt+F11 → Service does the same (reset(2) + 1FFD = 0x08).
+- **Pages** (`scorpionC000Page`): 7FFD 0-2 | 1FFD D4 (<<3, 256K) | 1FFD D7 (>>3, bit 4)
+  | 7FFD D7 (>>2, bit 5, 1 MB). 7FFD D7 is kept in `Ports::kay7FFDd7` (the only 7FFD bit
+  no other latch holds), cleared with port1FFD on reset.
+- **1FFD D2 = turbo off** ("if JP3 is closed"), modelled on the Pentagon-1024SL #EFF7 D4
+  policy (`Ports::kayTurboUpdate`): honoured only while the USER has turbo on, D2=1 pulls
+  it to 3.5 MHz. Every KAY ROM writes #1FFD at boot with D2 clear, which on real
+  hardware with JP1 on means turbo — the oldTRD note says "turbo is always on after
+  reset" on a KAY. A 3.5 MHz session stays 3.5.
+- **What KAY does NOT inherit from the Scorpion**: SYSEN (1FFD D1 opens the FDC ports /
+  the SMUC window on a Scorpion — on a KAY D1 is Centronics /Q8), the magic-button 1FFD
+  D1 assertion in `Z80::doNMI`, the Turbo+ port-READ speed toggle
+  (`g_scorp_turbo_plus` is false: `isScorpYellowTiming`), even-M1 (Yellow only).
+- **Timing = UnrealSpeccy `PRESET.KAY1024`** (`69887,16132,224,50,32,0,1,0,0,0`, the ini
+  comment says "tuned for kay_demo"; its ini has no Phoenix preset, so the Phoenix takes
+  it too): `TSTATES_PER_FRAME_KAY` 69887 T (311 lines + 223 T), `INT_END_KAY` 32 T,
+  paper 1788 T later than the Scorpion's (`TS_KAY_PAPER_DELTA` = Unreal 16132 - 14344,
+  applied to both our Scorpion paper and border anchors, which carry this renderer's own
+  offset against Unreal's numbers), no even-M1, 4T border (= our step-4 48K geometry),
+  **no floating bus and no port-#FF float** (`getFloatBusDataNone`). Audio: the 48K
+  624-sample set with `tstatesPerSampleFP` taken from the 69887 T frame.
+  `isScorpYellowTiming` still covers KAY for the audio set and the Turbo+ exclusion.
+- **CMOS + NVRAM on a KAY = a Gluk clock on #DFF7/#BFF7** (an add-on there; without it
+  #xxF7 is the joystick port — Reset Service 0.2b's changelog), so those ports are
+  claimed only while `rtc_enabled`. The SMUC card is fitted by IDE/HDD = SMUC alone (the
+  TS-Conf rule), gated on DOSEN only.
+- **ROMs** (`tools/rom_pack.py kay`, `src/speccy/roms/kay/`; `rom_verify.py` checks every
+  role): per romset four (file, page) roles, because the images come in different page
+  orders (JP5 "LAS" 128/48/service/TR-DOS, "Nemo" service/TR-DOS/128/48, and the 2000
+  image with TR-DOS and service swapped — Unreal's ini names roles, not pages).
+  KAY256 = `kay256.bin` = the three genuine 1994 NEMO KAY-256 ROMs
+  (speccy4ever `KAY256_0_128` / `_1_48` / `_2_DOS.ROM`) + an EMPTY 0xFF page: the
+  board has no service ROM and its 128 ROM never writes #1FFD. (Until 2026-09-29 the
+  image carried the KAY-1024's Kramis V0.3 page there — wrong, owner caught it.)
+  Alt+F11 therefore offers no Service row on KAY-256 and Phoenix
+  (`MENU_RESETTO_KAY_NOSVC`). KAY1024 = JV Kramis V0.3 2000; v2010/v2018 = Reset
+  Service V0.2d (2015) + the 2002 LAS BASIC-128/48/TR-DOS. Packed: 2 raw 16K
+  service pages + 10 overlays over Pentagon ROM0 / Sinclair 128K half 1 / TR-DOS 5.04T /
+  the Kramis page = **47 468 B**, ordinary flash (not .psramroms — KAY needs no butter PSRAM). The four
+  roles overlay four DIFFERENT bases, so requestMachine registers them statically,
+  nullptr included.
+- **Shared-base ownership**: KAY's TR-DOS is an overlay on the SHARED 5.04T base, so
+  `Config::trdosBaseOwnedByMachine()` (GMX / ProfROM / KAY) keeps both the requestMachine
+  rom[4] tail and `hook_trdosRom` off it while that machine runs — the TR-DOS BIOS pick
+  used to re-register that pointer live, a latent bug for GMX and ProfROM too. Also
+  fixed on the way: the Pentagon bind never cleared an overlay a Scorpion/KAY left on
+  `gb_rom_1_sinclair_128k`.
+- **ZXM-Phoenix** (R_PHOENIX, UnrealSpeccy `MM_PHOENIX`, micklab.ru/file/
+  zxm_bios_5_04t.rar, CRC32 ABD2459C, Nemo page order): page = 7FFD 0-2 | 7FFD D7->bit 3
+  | 1FFD D4->bit 4 | 1FFD D7->bit 5 | 1FFD D6->bit 6 = **2 MB**, so `Config::wantedPages`
+  raises the strip to 128 pages (SD-swap backing is enough — no butter requirement,
+  unlike GMX; the generic reboot boundary re-lays the strip). ROM select = the KAY rule
+  with the Scorpion **1FFD D1 override to the service page** on top (also in the DOS
+  exit). No turbo line (Unreal models none). Its service page ships EMPTY (0xFF) — stored
+  as an 8 KB overlay over the Kramis page; its TR-DOS is byte-identical to KAY1024-2000's,
+  BASIC-48 to the Sinclair half, BASIC-128 is 524 B off Pentagon ROM0. Deliberately
+  skipped: Unreal's Phoenix #EFF7 (D7 opens the DOS ports). Frame = the KAY preset.
+- **Not done, owner decision pending: KAY1024 + ProfROM.** Ewgeny7's
+  `KAY_ProfROM.rom` (zx-pk.ru thread 13708 post #34, attachment 25042, 256 KB, CRC32
+  21058086, "2010 Nemo's KAY 1024+", runs on the ProfROM Uni board) exists and fits the
+  plane model, BUT it drives #1FFD Scorpion-style (D1 = service, 0x02/0x12), i.e. the
+  Uni CPLD re-implements Scorpion ROM select on a KAY — a hybrid no emulator documents
+  — and it is ~225 KB of unique flash (15-16 KB diff per bank against every ProfROM we
+  ship).
+- **Hw check owed (nothing has run)**: each board to its 128 menu; TR-DOS from the menu
+  and Symbol Shift at reset; Caps Shift at reset → service (Kramis / Reset Service
+  0.2d); a 1 MB memory test on KAY1024 and 2 MB on the Phoenix (UMT); turbo with Alt+F2 on and a program writing
+  1FFD D2; Reset Service's Gluk clock detect with CMOS + NVRAM on and off.
