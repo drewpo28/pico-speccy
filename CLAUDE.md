@@ -12197,6 +12197,150 @@ repo: chapters 12, 15.6, 23.4, 26, 35, 38 are the ones that pin chip semantics).
   If `render: us avg` is still far above a frame after this, the next levers are
   the cell COUNT (124 per band = the display list is walked whole for each band —
   a per-band Y pre-sort) and RAM residency of the fast loop (it is flash code).
+  **rtype4 on hardware (`logs/devttyACM0_2026_10_01.16.57.19.392.txt`; owner:
+  "visually not bad, FPS/IDL dips still there")**: the 60-frame windows are at
+  nominal (1226-1229 ms) whenever `cp cpu` is under ~35 ms and run 10-60 ms long
+  when it is 50-100 ms — so the dips ARE the coprocessor, concentrated in the
+  14-18 frames per window that carry a game update (~5 ms each = the owner's IDL
+  -5000). The load is ~10 000 `CMD_MEMCPY` a window (`top 1D`, ~700 per update) at
+  **~7 us each**, plus INFLATE at 0.3-1 ms per KB. Both figures are far above the
+  arithmetic, and the reason is placement: **the whole `Chip` (35 KB: SPI
+  transaction state, the 4 KB command ring, the registers, the coprocessor state,
+  the stats, core1's RenderState) was ONE PSRAM block**, so every SPI byte and
+  every command field queued on the XIP port behind core1's texel stream (270k
+  texel fetches a frame in this scene). rtype5 (NOT hw-tested,
+  `debug/DVp2-vdac2-rtype5-trace-1.0.8.elf`): `Chip` is 7.5 KB of SRAM
+  (`alloc(.., false)`, which the glue now maps to `Buffer::HOT_SRAM`) and only
+  `ChipCold` (font metrics, RAM_DL, the two swap shadows, 27 KB) stays in PSRAM;
+  the 11 KB tinfl state is taken from SRAM when a stream opens and FREED at its
+  end (PSRAM by the allocator's own fallback when the heap is thin). Cost: 7.5 KB
+  of heap in every VDAC2 session — at 576p + NeoGS that leaves ~31 KB at
+  `COMPLETE` before the 12 KB render glue, so the adaptive palette (16.5 KB) may
+  no longer fit there. Trace: `cp:` gained `memcpy NKB` and **`frMax Nus`** = the
+  most coprocessor time inside one emulated frame (the number the 60-frame
+  average hid). Also read from that log: loading phases are SD-bound (800-2000
+  raw sectors a window at ~0.45 ms) and one window had 64 000 register-read
+  transactions (`oth 192653`) — both guest behaviour, not chased. The render in
+  the heavy scene is 83-93 ms a frame (blit 0.19 us/px for 270k px + ~30 ms of
+  quantize/output), which matches the game's own 14-18 updates a window there,
+  so it is not what the IDL shows.
+  **rtype5 on hardware (`logs/devttyACM0_2026_10_01.17.08.05.599.txt`): REFUTED,
+  and reverted on the owner's call ("не стоит 7.5к SRAM, визуально то же самое").**
+  The state really was in SRAM (`state 7680 B @20056118`) and nothing moved: heavy
+  windows still `cp cpu` 50-103 ms for 5-11k commands, i.e. ~5-8 us per MEMCPY of
+  ~40 B (417 KB / 10841), `frMax` 3-12 ms. So the coprocessor's own state was never
+  the cost. `Chip` and the tinfl state are back in PSRAM as before; what stays is
+  the diagnostics: `cp: memcpy NKB/Nms calls N` (time inside the memmoves alone,
+  and the number of `cpProcess` invocations) and `frMax`. rtype6 =
+  `debug/DVp2-vdac2-rtype6-trace-1.0.8.elf`, diagnostics only: `memcpy ms` against
+  `cpu ms` says whether the time is in the PSRAM->PSRAM copies themselves or in the
+  per-command / per-call path around them.
+  **rtype6 on hardware split it** (heavy window): `cpu` 109 ms = memcpy 39 ms
+  (427 KB, ~11 MB/s, ~3.5 us per command) + INFLATE 40 ms (81 KB) + ~30 ms of
+  per-command path (~2.7 us over 11k commands); `calls` ~460/window, `frMax` 7-12 ms.
+  rtype7 (NOT hw-tested, `debug/DVp2-vdac2-rtype7-trace-1.0.8.elf`): the
+  coprocessor's hot path goes into the TS-Conf code overlay (`FT_CP_HOT` =
+  `TS_OVL_CODE` — VDAC2 exists only on TS-Conf, so the window is the right home and
+  costs 0 on other machines): `cpProcess` with a MEMCPY fast path decoded inline
+  (no `execCmd` call), and `ramgMove` — its own word/byte copy (`noinline`,
+  `no-tree-loop-distribute-patterns`, or GCC turns it back into a flash memmove);
+  `fifo32/param/emit` are `always_inline` (else an out-of-line flash copy is called
+  through a veneer). Window AUTO term +1280 (Ft812.cpp's `.tsovl` is 1032 B), i.e.
+  ~1.3 KB of heap in a TS-Conf session; static SRAM unchanged. Still in flash and
+  called from the overlay: `execCmd` (everything but MEMCPY), `tinfl_decompress`,
+  `wr8`, `fault`. INFLATE into the window (~3-4 KB) is the next step, as its own
+  build, once `memcpy ms` / `cpu ms` / `frMax` of this one are in.
+  **rtype7 on hardware (`logs/devttyACM0_2026_10_01.17.30.20.500.txt`)**: per-command
+  overhead ~30 -> ~16 ms per heavy window, but memcpy stayed ~11 MB/s (PSRAM->PSRAM
+  through the XIP cache core1's texel stream shares — bandwidth, not code) and INFLATE
+  0.2-1.6 ms per KB of OUTPUT, so `frMax` still 9-12 ms; owner: "faster, not ideal, on
+  another scene the spikes are not rare". rtype8 (NOT hw-tested,
+  `debug/DVp2-vdac2-rtype8-trace-1.0.8.elf`) attacks the SPIKE rather than the cost:
+  **a per-emulated-frame coprocessor budget**, `CP_FRAME_BUDGET_US` 3000 (Ft812.cpp).
+  Past it `cpProcess` stops (`s_cpDeferred`), CMD_READ / CMDB_SPACE report less
+  progress, the guest keeps polling, and `frameTick` resets the budget and resumes —
+  the guest waits for the chip as on hardware, where the FT812 runs in parallel at a
+  finite speed. Same work, spread over frames: a level upload takes longer in guest
+  time, a frame no longer overruns. INFLATE calls are bounded (1 KB in, 8 KB out) so
+  the budget can bite inside a stream; a FIFO within 256 B of full is drained
+  regardless (`force`), so a host that ignores CMDB_SPACE cannot overflow it. The
+  trace `cp:` line gained `def N` (calls cut short). Host test (12): 64 MEMCPYs under
+  a 400 us/read clock do not finish in one transaction and drain over several
+  frameTicks with every byte landed — fails with the budget disabled. Tinfl in the
+  overlay (a renamed second copy — the shared one serves ZipExtract on every machine,
+  where the window is heap) is the remaining COST lever, not taken.
+  **rtype8 on hardware (`logs/devttyACM0_2026_10_01.17.39.13.252.txt`)**: the budget
+  works on the average (`frMax` mostly 3-5 ms, `def` 1-18 a window, most 60-frame
+  windows at the nominal 1227 ms) but single 6-11 ms frames remained (1285-1309 ms
+  windows) — one 8 KB-output INFLATE call or a forced near-full drain cannot be cut,
+  and owner: "no visible change from the previous build".
+  **rtype9 (NOT hw-tested, `debug/DVp2-vdac2-rtype9-trace-1.0.8.elf`) = a VDAC2-only
+  code overlay window `.ftovl`** (owner's call: "an overlay just for VDAC2, released
+  when it is off"; `VDAC2_CODE_OVERLAY`, cmake/memory-layout.cmake + rp2350-memmap.ld
+  + CodeOverlay, the fifth window, BELOW `.tsovl`, loaded by `CodeOverlay::apply(...,
+  vdac2)` only when the boot is TS-Conf with `Config::tsconf_vdac2` — the one
+  condition under which Ft812::init runs; heap on every other boot, and a TS-Conf
+  boot without VDAC2 gets it as a longer base heap region). Content, 13 944 B
+  (AUTO 14 336): **`ft_tinfl_decompress`**, a private copy of miniz's inflater —
+  `src/speccy/machines/TsConf/FtInflate.c` compiles miniz.c a second time with the
+  ZLIB/DEFLATE/ARCHIVE/STDIO/TIME APIs off and its 13 remaining public names
+  prefixed `ft_` (5.5 KB at -O2), collected BY OBJECT FILE into the window and
+  excluded from all four general `.text`/`.rodata` rules of the linker script (so
+  with the option off the file compiles to nothing); cpProcess + ramgMove (moved out
+  of `.tsovl`, whose AUTO term went back down by 1280); TJpgDec's `JD_HOT` path; the
+  MJPEG sink `FT_VID_HOT`; the quantizer `FT_HOT_Q`. **`FT812_JPEG_IN_RAM` is
+  REMOVED** — the overlay is its "right home" from the AVI notes above, at zero
+  static SRAM. The INFLATE output chunk went 8 KB -> 2 KB so the budget can cut a
+  stream sooner. Cost: the window is heap a VDAC2 session no longer has (~13 KB),
+  i.e. 576p + NeoGS + VDAC2 is tighter by that much — watch `COMPLETE freeHeap` and
+  the adaptive-palette allocation line. Expect `infl` ms per KB and `frMax` down.
+  **rtype9 on hardware (`logs/devttyACM0_2026_10_01.17.58.16.482.txt`; owner: "better")**:
+  INFLATE 0.48 -> 0.34 ms/KB, worst coprocessor frame 11.8 -> 7.4 ms, frames over 5 ms
+  20% -> 11%, 60-frame windows over 1280 ms 14% -> 9%. Cost, as predicted: `no heap for
+  the adaptive palette (17204 B)` — 12.7 KB free, largest block 4 KB, i.e. a real
+  deficit, not fragmentation alone, and putting the palette in the window would only
+  move the shortfall to boot. **adaptps (NOT hw-tested,
+  `debug/DVp2-vdac2-adaptps-trace-1.0.8.elf`)**: `AdaptPal` is `Buffer::palloc(NEED_POINTER
+  | PREFER_PSRAM)`, and the histogram is SAMPLED so its per-pixel PSRAM writes drop:
+  every 2nd row on the display-list path, every 2nd row x 2nd column in the MJPEG sink
+  (`total` counts the sampled pixels only, so the 6% change test and the cut weights are
+  unchanged). The per-pixel `lut` read (4 KB) stays and is meant to live in the XIP
+  cache. Measure `render: us avg` with the adaptive palette on vs off; the log line is
+  now `adaptive palette: N B @<addr>` (0x11... = PSRAM).
+  **adaptps on hw: AVI "almost black and white"** — my sampling bug, not PSRAM: the
+  sampled cells (even row x even column) all sit on Bayer values 0..3 of 16, so the
+  DITHERED bin the histogram took was biased ~half a bin low on Y/Cb/Cr and the cut
+  lost the chroma. **adaptps2** (`debug/DVp2-vdac2-adaptps2-trace-1.0.8.elf`, NOT
+  hw-tested): the sampled pixels add their UNDITHERED bin (`q[v + 256]`); the lut lookup
+  per pixel stays dithered. **hw: still near-B/W ("palettes strange at the start of an
+  AVI, more colourful later")** — the undithered bin was the WRONG fix: a film's chroma
+  falls almost wholly into the neutral 3-bit Cb/Cr bin, so the histogram held 56-83
+  bins (host model on three real frames, vs ~200 with the full dithered histogram), the
+  cut had nothing but greys, and the dithered pixels landing in the neighbouring chroma
+  bins resolved to those greys. The dither is what PUTS the chroma into the histogram.
+  **adaptps3** (`debug/DVp2-vdac2-adaptps3-trace-1.0.8.elf`, NOT hw-tested): the
+  DITHERED bin of every row's even columns — Bayer cells {0,1,2,3,12,13,14,15}, mean 7.5
+  like all 16, on all three axes — half the pixels. Host model: luma 3.61 / chroma 5.45
+  mean error vs 3.60 / 5.45 for the full histogram, 190-301 bins. Rule: a sample of a
+  dithered signal must cover the dither matrix's values evenly, and must take the
+  dithered value. Video render is 40 ms per frame against 30-38 with the palette in
+  SRAM (PSRAM `lut` reads per pixel + hist writes); the owner accepts that ("можно
+  адаптивную палитру оставлять в PSRAM"), so no SRAM copy of `lut`.
+  **adaptps3 on hw: colour back, but "много синих точек, как будто неправильная
+  палитра".** It was not the sampling, and it was there since avi8: the YCC layout's
+  chroma STEP was 32 and the sink dithers chroma by one step, i.e. +-32 Cb = +-57 of
+  blue in RGB per pixel. The Equilibrium trailer is dark and bluish (Cb ~140), so half
+  its pixels landed one Cb bin up on a saturated-blue entry. **adaptps4** (hw-confirmed below,
+  `debug/DVp2-vdac2-adaptps4-trace-1.0.8.elf`): chroma step 16 with centres
+  64..176 (`FT812_ADAPT_YCC_LAYOUT {6,3,64,8,8,4,16,16,2,64,64,2}`; `ftVidTables` clamps
+  the level at 0 now that the offset is non-zero; chroma beyond +-56 clips). Host
+  harness, a palette built from frame N rendering frame N+8 on four scenes: pixels >24
+  too blue 1.6-3.5% -> 0%, mean chroma error 13.2 -> 6.2 on the most saturated one.
+  **Hw 2026-10-01, owner on adaptps4: "да, так намного лучше"** (Equilibrium AVI under
+  FTVIEW, adaptive palette on; not itemised — the blue dots are the case it covers).
+  Same build: unresolved YCC bins take the nearest BOX in the layout's own axes (luma
+  weighted) instead of the nearest entry in RGB — logically right for a dither-pushed
+  bin, but measured to change nothing on these frames; kept, not the fix.
 - **"Smooth 2:1" showed no difference (owner, 2026-10-01) because it was a 2:1
   special**: the box average engaged only on an axis-aligned cell at exactly 2:1
   (+-1/16 texel), i.e. ZUMA's 1.6x-upscaled assets on a 320x240 framebuffer and

@@ -46,9 +46,12 @@
 /  small tables can be placed in SRAM. On the device the decoder runs on core1
 /  while core0 emulates a machine whose RAM is PSRAM behind the same XIP cache the
 /  flash code is fetched through - code in flash then misses on nearly every line. */
-#if defined(FT812_JPEG_IN_RAM) && FT812_JPEG_IN_RAM
-#define JD_HOT      __attribute__((section(".time_critical.tjpgd")))
-#define JD_HOT_TAB  __attribute__((section(".time_critical.tjpgd_tab")))
+/* Since 2026-10-01 they go into the VDAC2 code overlay window (.ftovl): TJpgDec
+/  has no caller but the FT812 video player, which runs only on a boot that loaded
+/  that window. */
+#if defined(VDAC2_CODE_OVERLAY) && VDAC2_CODE_OVERLAY && !defined(FT812_HOST_TEST)
+#define JD_HOT      __attribute__((section(".ftovl")))
+#define JD_HOT_TAB  __attribute__((section(".ftovl_ro")))
 #else
 #define JD_HOT
 #define JD_HOT_TAB

@@ -15,9 +15,12 @@
 #else
 #define FT_HOT
 #endif
-// The output quantizer alone (every pixel of every frame goes through it) also
-// follows the MJPEG player's switch: it is ~100 bytes.
-#if (FT812_RENDER_IN_RAM || FT812_JPEG_IN_RAM) && !defined(FT812_HOST_TEST)
+// The output quantizer alone (every pixel of every frame goes through it) rides in
+// the VDAC2 code overlay window (.ftovl): it is ~100 bytes.
+#if VDAC2_CODE_OVERLAY && !defined(FT812_HOST_TEST)
+#include "app/CodeOverlay.h"
+#define FT_HOT_Q FT_OVL_CODE
+#elif FT812_RENDER_IN_RAM && !defined(FT812_HOST_TEST)
 #include "pico.h"
 #define FT_HOT_Q __not_in_flash("ft812q")
 #else
@@ -816,7 +819,7 @@ FT_HOT_Q void ft812QuantizeRow(const PalLut& p, const uint32_t* src, int w, int 
 // ── adaptive palette ─────────────────────────────────────────────────────────
 // Two bin layouts over the same 4096-entry histogram / map (AdaptPal::space):
 //   ADAPT_RGB444  a = R, b = G, c = B, 4 bits each — the display-list path;
-//   ADAPT_YCC633  a = Y >> 2 (6 bits), b = Cb, c = Cr as (v + 16) >> 5 (3 bits each) — the MJPEG path.
+//   ADAPT_YCC633  a = Y >> 2 (6 bits), b = Cb, c = Cr as (v - 56) >> 4 clamped 0..7 (3 bits each) — the MJPEG path.
 // The second exists because a film frame is mostly smooth luma: with 16 levels
 // per channel every gradient stepped in visible contours (owner, 2026-10-01),
 // and no palette can fix that, since the entries are means of BIN CENTRES. 64
@@ -1013,12 +1016,33 @@ void ft812AdaptBuild(AdaptPal& ap, int slots) {
     ap.built = n > 0;
 }
 
-// An unresolved bin of the map: the nearest entry to its centre, compared in RGB.
+// An unresolved bin of the map.
+//   YCC (MJPEG): the NEAREST BOX in the layout's own axes, luma weighted. Those
+//     bins are mostly the sink's dither pushing a pixel one chroma bin over (the
+//     histogram samples half the columns, so a bin hit only on the other half is
+//     in no box), and the right answer is the box of the populated bin it was
+//     pushed out of. Taking the nearest ENTRY to the bin's centre in RGB instead
+//     turned a dark near-grey pushed one Cb bin up (+57 of blue in RGB) into a
+//     saturated blue entry: "много синих точек" (hw 2026-10-01, adaptps3).
+//   RGB (display list): no dither there, so the nearest entry to the centre.
 uint8_t ft812AdaptResolve(AdaptPal& ap, uint32_t bin) {
     const bool ycc = ap.space == ADAPT_YCC633;
     const Space& sp = kSpace[ycc ? 1 : 0];
     bin &= 4095;
     const int ka = (int)(bin >> sp.sa), kb = (int)((bin >> sp.sb) & (uint32_t)(sp.nb - 1)), kc = (int)(bin & (uint32_t)(sp.nc - 1));
+    if (ycc && ap.n > 1) {
+        uint32_t bestD = 0xFFFFFFFFu; int bi = 0;
+        for (int j = 0; j < ap.n - 1; j++) {
+            const CutBox& x = ap.box[j];
+            const int da = (ka < x.r0 ? x.r0 - ka : ka > x.r1 ? ka - x.r1 : 0) * sp.ua * sp.wa;
+            const int db = (kb < x.g0 ? x.g0 - kb : kb > x.g1 ? kb - x.g1 : 0) * sp.ub;
+            const int dc = (kc < x.b0 ? x.b0 - kc : kc > x.b1 ? kc - x.b1 : 0) * sp.uc;
+            const uint32_t d = (uint32_t)(da * da + db * db + dc * dc);
+            if (d < bestD) { bestD = d; bi = (int)x.count; }       // count = the entry the build gave this box
+        }
+        ap.lut[bin] = (uint8_t)bi;
+        return (uint8_t)bi;
+    }
     const uint32_t cen = nativeToRgb(sp, ((uint32_t)(ka * sp.ua + sp.oa) << 16) | ((uint32_t)(kb * sp.ub + sp.ob) << 8) | (uint32_t)(kc * sp.uc + sp.oc), ycc);
     const int r = (int)((cen >> 16) & 255), g = (int)((cen >> 8) & 255), b = (int)(cen & 255);
     uint32_t bestD = 0xFFFFFFFFu; int bi = 0;

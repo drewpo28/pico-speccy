@@ -9828,15 +9828,20 @@ static void ftProgramSlot(uint8_t slot, uint32_t rgb) {
     if (!Config::vga_dither) vga_set_palette_entry_solid(slot, col);
 }
 
-// Adaptive mode needs ~18 KB of SRAM (the per-pixel map must not be in PSRAM);
+// Adaptive mode: ~17 KB, PSRAM first since 2026-10-01 (it never fit the heap beside .ftovl);
 // without it the cube stays. Allocated on first use, kept for the session.
 static bool ftAdaptEnsure() {
     FtGlue& g = *ftg;
     if (g.ap) return true;
-    g.ap = (Ft812::AdaptPal*)tryMalloc(sizeof(Ft812::AdaptPal));
-    if (!g.ap) { Debug::log("[FT812] no heap for the adaptive palette (%u B) - fixed cube", (unsigned)sizeof(Ft812::AdaptPal)); return false; }
+    // PSRAM first (test build, 2026-10-01): with the .ftovl window resident a
+    // VDAC2 session at 576p + NeoGS has ~12 KB of heap left, largest block 4 KB,
+    // and the 17 KB this wants never fitted. The histogram is sampled (1/2 of the
+    // rows on the display-list path, 1/4 of the pixels in the MJPEG sink) so the
+    // per-pixel PSRAM traffic is mostly the 4 KB lut, which the XIP cache keeps.
+    g.ap = (Ft812::AdaptPal*)Buffer::palloc(sizeof(Ft812::AdaptPal), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!g.ap) { Debug::log("[FT812] no memory for the adaptive palette (%u B) - fixed cube", (unsigned)sizeof(Ft812::AdaptPal)); return false; }
     memset(g.ap, 0, sizeof(Ft812::AdaptPal));
-    Debug::log("[FT812] adaptive palette: %u B", (unsigned)sizeof(Ft812::AdaptPal));
+    Debug::log("[FT812] adaptive palette: %u B @%08X", (unsigned)sizeof(Ft812::AdaptPal), (unsigned)(uintptr_t)g.ap);
     return true;
 }
 
@@ -9855,6 +9860,7 @@ static void ftVidTables(FtGlue& g, bool adapt) {
             for (int ch = 0; ch < 3; ch++) {
                 int lv = (c8 + un[ch] / 2 - of[ch]) / un[ch];     // the bin whose centre (k*unit + offset) is nearest
                 if (lv > nn[ch] - 1) lv = nn[ch] - 1;
+                if (lv < 0) lv = 0;                           // below bin 0's centre (offset 64 on chroma)
                 g.vq[ch * 1024 + i] = (uint8_t)lv;
             }
             continue;
@@ -10038,8 +10044,8 @@ static void ftFrameBegin() {
 #define FT_GLUE_HOT
 #endif
 // The overlay rectangles crossing fb row `row` (x ranges), which no VDAC2 writer may touch.
-#if FT812_JPEG_IN_RAM
-#define FT_VID_HOT __not_in_flash("ft812vid")   // the MJPEG player's per-pixel path, with TJpgDec's (tjpgdcnf.h)
+#if VDAC2_CODE_OVERLAY
+#define FT_VID_HOT FT_OVL_CODE   // the MJPEG player's per-pixel path, with TJpgDec's (tjpgdcnf.h), in .ftovl
 #else
 #define FT_VID_HOT FT_GLUE_HOT
 #endif
@@ -10280,6 +10286,7 @@ static FT_VID_HOT void ftVidMcu(const Ft812::VideoMcu& m) {
         const bool rowOK = g.vrowOK;
         uint8_t* const rowBase = rowOK ? g.vrow - (size_t)g.vrowFy0 * iW : vback;   // row fy of the picture is at rowBase + fy*iW
         const uint32_t k = fx1 - fx0;
+        uint32_t sampled = 0;
         const uint32_t lxq0 = fx0 * stepX - ((uint32_t)mx0 << 16);   // Q16 source x inside the MCU, >= 0 by ftVidFirst
         for (uint32_t fy = fy0; fy < fy1; fy++) {
             const int ly = (int)((fy * stepY) >> 16) - my0;
@@ -10320,20 +10327,30 @@ static FT_VID_HOT void ftVidMcu(const Ft812::VideoMcu& m) {
                     dcr[p] = 256 + ((brg[p] * crU) >> 4) - (crU >> 1);
                 }
                 uint32_t ph = fx0;
+                sampled += (fx0 + k) / 2 - (fx0 + 1) / 2;           // histogram: every row, even columns
                 for (uint32_t i = 0; i < k; i++, lxq += stepX, ph++) {
                     const int lx = (int)(lxq >> 16);
                     const int cx = lx >> csx;
                     const uint32_t bin = (uint32_t)q0[(yb[(lx >> sh) * 64 + (lx & bm)] + dy[ph & 3]) & 1023] << aSa
                                        | (uint32_t)q1[(cbr[cx] + dcb[ph & 3]) & 1023] << aSb
                                        | (uint32_t)q2[(crr[cx] + dcr[ph & 3]) & 1023];
-                    if (hist[bin] != 0xFFFF) hist[bin]++;
+                    // The histogram takes the DITHERED bin of half the pixels: every row,
+                    // even columns. Those cells cover Bayer values {0,1,2,3,12,13,14,15}
+                    // of 16 on every axis — mean 7.5, as for all 16 — so the sample is
+                    // unbiased. Two samplings that were not, both "almost black and white"
+                    // on hw 2026-10-01: even row + even column (Bayer 0..3 only, every
+                    // bin half a bin low) and the UNDITHERED bin, where a film's chroma
+                    // falls almost wholly into the neutral Cb/Cr bin: the cut then has
+                    // nothing but greys to choose from, and the dithered pixels in the
+                    // neighbouring chroma bins resolve to those greys.
+                    if (!(ph & 1) && hist[bin] != 0xFFFF) hist[bin]++;
                     uint32_t e = alut[bin];
                     if (e == 0xFF) e = adaptFirst ? 0 : Ft812::ft812AdaptResolve(*g.ap, bin);   // a bin the measured frame did not have
                     out[i] = pool[e];
                 }
             }
         }
-        if (adapt) g.ap->total += k * (fy1 - fy0);
+        if (adapt) g.ap->total += sampled;
     }
 #if FT812_TRACE
     const uint64_t t1 = time_us_64();
@@ -10504,7 +10521,7 @@ FT_GLUE_HOT void VIDEO::ftRenderPump() {
             if (row < r0 || row >= r1) { ftPutRow(row, nullptr); continue; }
             const uint32_t* src = g.band + (size_t)(row - r0) * g.outW;
             if (g.adaptFrame) {
-                ft812AdaptAccumulate(*g.ap, src, g.outW);
+                if (!(row & 1)) ft812AdaptAccumulate(*g.ap, src, g.outW);   // every 2nd row: the histogram is in PSRAM
                 // The first frame only feeds the histogram and stays black: cube
                 // indices would turn into noise the moment the adaptive colours
                 // are programmed. Slot pool[0] is black in both palettes.
@@ -10585,8 +10602,8 @@ static __attribute__((noinline)) void ftTraceTick() {
                dtMs, FTD(spiBytes) >> 10, FTD(csXact), FTD(rdDlswap), FTD(rdIntFlags), FTD(rdCmdbSpace), FTD(rdCmdRead),
                FTD(rdRamG), FTD(rdOther), FTD(wrRamG) >> 10, FTD(fifoBytes) >> 10, (unsigned)ff, (unsigned)((uint64_t)ft * 100 / ((uint64_t)frameT * 60)));
     }
-    Debug::log("[FT812] cp: cmds %u dl %u memwr %uKB infl %uKB/%ums cpu %ums waitSwap %u faults %u | swap take %u blocked %u latMax %u | top %02X:%u %02X:%u %02X:%u",
-               FTD(cpCmds), FTD(cpDlWords), FTD(memwrBytes) >> 10, FTD(inflated) >> 10, FTD(inflUs) / 1000, FTD(cpUs) / 1000,
+    Debug::log("[FT812] cp: cmds %u dl %u memwr %uKB memcpy %uKB/%ums calls %u infl %uKB/%ums cpu %ums frMax %uus def %u wSw %u flt %u | swap take %u blocked %u latMax %u | top %02X:%u %02X:%u %02X:%u",
+               FTD(cpCmds), FTD(cpDlWords), FTD(memwrBytes) >> 10, FTD(memcpyBytes) >> 10, FTD(memcpyUs) / 1000, FTD(cpCalls), FTD(inflated) >> 10, FTD(inflUs) / 1000, FTD(cpUs) / 1000, s.cpFrameMaxUs, FTD(cpDeferred),
                FTD(waitSwap), FTD(cpFaults), FTD(swaps), FTD(swapBlocked), s.swapLatMax,
                top[0], topN[0], top[1], topN[1], top[2], topN[2]);
     const uint32_t sdSec = DivMMC::zc_rd_sectors - pSdSec, sdUs = DivMMC::zc_rd_us - pSdUs;
@@ -10627,6 +10644,6 @@ static __attribute__((noinline)) void ftTraceTick() {
 #undef FTD
 #undef FTR_
     ps = s; pr = r;
-    s.swapLatMax = 0;
+    s.swapLatMax = 0; s.cpFrameMaxUs = 0;
 }
 #endif

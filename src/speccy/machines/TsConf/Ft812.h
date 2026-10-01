@@ -158,6 +158,12 @@ struct Stats {
     uint32_t wrRamG, fifoBytes;               // SPI write bytes into RAM_G / into the CMD FIFO
     uint32_t memwrBytes;                      // bytes moved by CMD_MEMWRITE
     uint32_t cpUs, inflUs;                    // time inside cpProcess / inside tinfl (trace build)
+    uint32_t cpFrameMaxUs;                    // most cpProcess time inside ONE emulated frame (max, reset by the dump)
+    uint32_t cpDeferred;                      // cpProcess calls cut short by the per-frame budget
+    uint32_t cpUsAtTick;                      // cpUs at the last frameTick
+    uint32_t memcpyBytes;                     // bytes moved by CMD_MEMCPY
+    uint32_t memcpyUs;                        // time inside those memmoves (trace build)
+    uint32_t cpCalls;                         // cpProcess invocations (trace build)
     uint32_t waitSwap;                        // CMD_DLSTART stalled behind a pending swap
     uint32_t swapBlocked;                     // frameTick found a swap request while the renderer was still busy
     uint32_t swapLatMax;                      // frames from a swap request to its take (max, reset by the dump)

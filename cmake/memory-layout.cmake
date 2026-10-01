@@ -47,6 +47,14 @@ endif()
 # .tsovl window is simply empty and the heap gets all of it on every machine.
 option(TSCONF_CODE_OVERLAY "TS-Conf: put the TS-only hot code in a fixed-VMA SRAM overlay, handed to the heap on other machines (~14.7 KB)" ON)
 option(GS_CODE_OVERLAY "General Sound/NeoGS: put src/speccy/devices/gs/'s SRAM-resident code in a fixed-VMA overlay, handed to the heap when GS is Off (~25 KB)" ON)
+# .ftovl: TS-Conf VDAC2 (FT812) only — the coprocessor loop, a private copy of
+# miniz's tinfl_decompress (FtInflate.c, renamed ft_tinfl_*), TJpgDec's per-MCU
+# path, the MJPEG framebuffer sink and the output quantizer. Loaded only on a boot
+# that comes up as TS-Conf with Machine > TS-Conf > Options > VDAC2 on (both are
+# boot-time facts: Ft812::init has one call site, in setup, under that condition),
+# heap on every other boot. It sits BELOW .tsovl, so a TS-Conf boot without VDAC2
+# simply has a longer base heap region.
+option(VDAC2_CODE_OVERLAY "TS-Conf VDAC2: put the FT812 hot code (coprocessor, inflate, MJPEG) in a fixed-VMA SRAM overlay loaded only when VDAC2 is on" ON)
 option(DMA_CODE_OVERLAY "Z80 DMA / zxnDMA: put Z80DMA.cpp's SRAM-resident code in a fixed-VMA overlay, handed to the heap when DMA is Off (~5 KB)" ON)
 # The AY stereo slot is a different shape from the three windows above: it is not
 # "reserved or released" but "one of four bodies loaded". ABC, ACB, BAC and
@@ -76,6 +84,7 @@ option(AY_STEREO_SLOT "AY: share one SRAM slot between the four stereo mixers in
 set(TSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the TS-Conf code overlay window, or AUTO (rp2350-memmap.ld)")
 set(GSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the GS/NeoGS code overlay window, or AUTO (rp2350-memmap.ld)")
 set(NGSOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the NeoGS-only code overlay window, or AUTO (rp2350-memmap.ld)")
+set(FTOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the VDAC2 (FT812) code overlay window, or AUTO (rp2350-memmap.ld)")
 set(DMAOVL_WIN_SIZE "AUTO" CACHE STRING "Size of the Z80 DMA code overlay window, or AUTO (rp2350-memmap.ld)")
 
 if (TSOVL_WIN_SIZE STREQUAL "AUTO")
@@ -176,6 +185,19 @@ else()
 endif()
 if (NOT GS_CODE_OVERLAY)
     set(NGSOVL_WIN_SIZE_EFFECTIVE 0)
+endif()
+
+if (FTOVL_WIN_SIZE STREQUAL "AUTO")
+    # 13 944 B measured 2026-10-01 (DVp2, FT812_TRACE build): ft_tinfl_decompress
+    # 5510 at -O2 + its tables, TJpgDec's per-MCU path ~3.9 KB, cpProcess/ramgMove
+    # 1.4 KB, the MJPEG sink (ftVidMcu/ftVidFlip/ftCarve) 2.6 KB, the quantizer.
+    # Tight: on a VDAC2 boot every spare byte is heap lost.
+    set(FTOVL_WIN_SIZE_EFFECTIVE 14336)
+else()
+    set(FTOVL_WIN_SIZE_EFFECTIVE ${FTOVL_WIN_SIZE})
+endif()
+if (NOT VDAC2_CODE_OVERLAY)
+    set(FTOVL_WIN_SIZE_EFFECTIVE 0)
 endif()
 
 if (DMAOVL_WIN_SIZE STREQUAL "AUTO")
@@ -280,6 +302,27 @@ else()
     PROVIDE(__ngsovl_bss_end   = __ngsovl_win_start);\n")
 endif()
 
+if (VDAC2_CODE_OVERLAY)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VDAC2_CODE_OVERLAY=1)
+    set(FTOVL_SECTION "\
+    .ftovl __ftovl_win_start : {\n\
+        __ftovl_start = .;\n\
+        *FtInflate.c.o(.text* .rodata*)\n\
+        *(.ftovl .ftovl.*)\n\
+        . = ALIGN(4);\n\
+        *(.ftovl_ro .ftovl_ro.*)\n\
+        . = ALIGN(4);\n\
+        __ftovl_end = .;\n\
+    } AT > FLASH\n\
+    __ftovl_source = LOADADDR(.ftovl);\n")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE VDAC2_CODE_OVERLAY=0)
+    set(FTOVL_SECTION "\
+    PROVIDE(__ftovl_start  = __ftovl_win_start);\n\
+    PROVIDE(__ftovl_end    = __ftovl_win_start);\n\
+    PROVIDE(__ftovl_source = __ftovl_win_start);\n")
+endif()
+
 if (DMA_CODE_OVERLAY)
     target_compile_definitions(${PROJECT_NAME} PRIVATE DMA_CODE_OVERLAY=1)
     set(DMAOVL_SECTION "\
@@ -337,7 +380,7 @@ else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE AY_STEREO_SLOT=0)
     set(AYOVL_SECTION "")
 endif()
-message(STATUS "Code overlays: .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .dmaovl ${DMAOVL_WIN_SIZE_EFFECTIVE} B, .ngsovl ${NGSOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
+message(STATUS "Code overlays: .ftovl ${FTOVL_WIN_SIZE_EFFECTIVE} B, .tsovl ${TSOVL_WIN_SIZE_EFFECTIVE} B, .dmaovl ${DMAOVL_WIN_SIZE_EFFECTIVE} B, .ngsovl ${NGSOVL_WIN_SIZE_EFFECTIVE} B, .gsovl ${GSOVL_WIN_SIZE_EFFECTIVE} B")
 
 
 # The GM.DLS bank is everything above the firmware, to the top of flash — a dynamic

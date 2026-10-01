@@ -1,6 +1,6 @@
 #include "CodeOverlay.h"
 
-#if TSCONF_CODE_OVERLAY || GS_CODE_OVERLAY || DMA_CODE_OVERLAY
+#if TSCONF_CODE_OVERLAY || GS_CODE_OVERLAY || DMA_CODE_OVERLAY || VDAC2_CODE_OVERLAY
 
 #include <cstring>
 #include <cstdint>
@@ -11,6 +11,8 @@
 extern "C" {
 // rp2350-memmap.ld. A window that is not built still exports its symbols, with
 // start == end, so the code below needs no per-window #if.
+extern char __ftovl_win_start[], __ftovl_win_end[];
+extern char __ftovl_start[], __ftovl_end[], __ftovl_source[];
 extern char __tsovl_win_start[], __tsovl_win_end[];
 extern char __tsovl_start[], __tsovl_end[], __tsovl_source[];
 extern char __tsovl_bss_start[], __tsovl_bss_end[];
@@ -53,20 +55,22 @@ extern char __end__[];          // heap start (the linker also aliases it as `en
 //    can only be entered by a request whose rounded size fits it, and its last
 //    <4 KB are never handed out. That is the same loss the single ceiling always
 //    had at its own top; it is why the heap probes round a stranded region down.
-static HeapRegions s_hr = { { { __end__, __tsovl_win_start, __end__ } }, 1, 0, nullptr, __tsovl_win_start };
+static HeapRegions s_hr = { { { __end__, __ftovl_win_start, __end__ } }, 1, 0, nullptr, __ftovl_win_start };
+static bool  s_ft_loaded = false;
 static bool  s_ts_loaded = false;
 static bool  s_dma_loaded = false;
 static bool  s_gs_loaded = false;
 static bool  s_ngs_loaded = false;
 
 static void regionsRebuild() {
-    const HrWindow w[4] = {
+    const HrWindow w[5] = {
+        { __ftovl_win_start,  __ftovl_win_end,  s_ft_loaded  },
         { __tsovl_win_start,  __tsovl_win_end,  s_ts_loaded  },
         { __dmaovl_win_start, __dmaovl_win_end, s_dma_loaded },
         { __ngsovl_win_start, __ngsovl_win_end, s_ngs_loaded },
         { __gsovl_win_start,  __gsovl_win_end,  s_gs_loaded  },
     };
-    hr_rebuild(&s_hr, __end__, w, 4, __StackLimit);
+    hr_rebuild(&s_hr, __end__, w, 5, __StackLimit);
 }
 
 // Replaces the SDK's __weak _sbrk (pico_clib_interface/newlib_interface.c),
@@ -112,9 +116,10 @@ static void loadWindow(char* dst, const char* src, size_t n) {
     __isb();
 }
 
-void CodeOverlay::apply(bool tsconf, bool gs, bool dma, bool ngs) {
+void CodeOverlay::apply(bool tsconf, bool gs, bool dma, bool ngs, bool vdac2) {
     struct W { const char* name; char* ws; char* we; char* cs; char* ce; char* src; bool want; bool* got; };
-    W w[4] = {
+    W w[5] = {
+        { "VDAC2",   __ftovl_win_start,  __ftovl_win_end,  __ftovl_start,  __ftovl_end,  __ftovl_source,  tsconf && vdac2, &s_ft_loaded },
         { "TS-Conf", __tsovl_win_start,  __tsovl_win_end,  __tsovl_start,  __tsovl_end,  __tsovl_source,  tsconf,     &s_ts_loaded  },
         { "Z80 DMA", __dmaovl_win_start, __dmaovl_win_end, __dmaovl_start, __dmaovl_end, __dmaovl_source, dma,        &s_dma_loaded },
         { "NeoGS",   __ngsovl_win_start, __ngsovl_win_end, __ngsovl_start, __ngsovl_end, __ngsovl_source, gs && ngs,  &s_ngs_loaded },
@@ -134,7 +139,7 @@ void CodeOverlay::apply(bool tsconf, bool gs, bool dma, bool ngs) {
     regionsRebuild();
     Debug::log("[OVL] heap ceiling %08lX (+%u B over all windows reserved, +%u B stranded above a resident window)",
                (unsigned long)(uintptr_t)s_hr.ceiling,
-               (unsigned)(s_hr.ceiling - __tsovl_win_start), (unsigned)heap_stranded_bytes());
+               (unsigned)(s_hr.ceiling - __ftovl_win_start), (unsigned)heap_stranded_bytes());
     logRegions();
 }
 
@@ -179,17 +184,20 @@ unsigned CodeOverlay::windowBytes(Which x) {
     switch (x) { case WIN_GS:  return (unsigned)(__gsovl_win_end - __gsovl_win_start);
                  case WIN_NGS: return (unsigned)(__ngsovl_win_end - __ngsovl_win_start);
                  case WIN_DMA: return (unsigned)(__dmaovl_win_end - __dmaovl_win_start);
+                 case WIN_FT:  return (unsigned)(__ftovl_win_end - __ftovl_win_start);
                  default:      return (unsigned)(__tsovl_win_end - __tsovl_win_start); }
 }
 unsigned CodeOverlay::contentBytes(Which x) {
     switch (x) { case WIN_GS:  return (unsigned)(__gsovl_end - __gsovl_start);
                  case WIN_NGS: return (unsigned)(__ngsovl_end - __ngsovl_start);
                  case WIN_DMA: return (unsigned)(__dmaovl_end - __dmaovl_start);
+                 case WIN_FT:  return (unsigned)(__ftovl_end - __ftovl_start);
                  default:      return (unsigned)(__tsovl_end - __tsovl_start); }
 }
 bool CodeOverlay::loaded(Which x) {
     switch (x) { case WIN_GS: return s_gs_loaded; case WIN_NGS: return s_ngs_loaded;
-                 case WIN_DMA: return s_dma_loaded; default: return s_ts_loaded; }
+                 case WIN_DMA: return s_dma_loaded; case WIN_FT: return s_ft_loaded;
+                 default: return s_ts_loaded; }
 }
 
 #else  // no overlay at all
@@ -199,7 +207,7 @@ extern "C" char* heap_ceiling_now() { return __HeapLimit; }
 extern "C" size_t heap_stranded_bytes()   { return 0; }
 extern "C" size_t heap_stranded_largest() { return 0; }
 
-void CodeOverlay::apply(bool, bool, bool, bool)   {}
+void CodeOverlay::apply(bool, bool, bool, bool, bool) {}
 bool CodeOverlay::claimForTsconf()                { return true; }
 bool CodeOverlay::claimForDma()                   { return true; }
 unsigned CodeOverlay::windowBytes(Which)          { return 0; }

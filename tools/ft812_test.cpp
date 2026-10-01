@@ -703,6 +703,28 @@ int main() {
     wr8s(RAM_REG + REG_CPURESET, 1); wr32s(RAM_REG + REG_CMD_READ, 0); wr32s(RAM_REG + REG_CMD_WRITE, 0); wr8s(RAM_REG + REG_CPURESET, 0);
     CHECK(rd16s(RAM_REG + REG_CMD_READ) == 0 && rd16s(RAM_REG + REG_CMDB_SPACE) == 4092, "recovered");
 
+    // (12) the per-frame coprocessor budget: 64 MEMCPYs with a clock that advances 400 us per
+    // read must NOT all run inside the one transaction that delivered them; frameTick resumes
+    // the rest, frame by frame, and the copied bytes are the same as with no budget at all.
+    {
+      static uint64_t tclk = 0;
+      clockUs = []() -> uint64_t { tclk += 400; return tclk; };
+      frameTick();                                                     // a fresh frame budget
+      for (int i = 0; i < 64; i++) wr8s(0x40000 + i * 16, (uint8_t)(0xA0 + i));
+      std::vector<uint32_t> w;
+      for (int i = 0; i < 64; i++) { w.push_back(0xFFFFFF1Du); w.push_back(0x50000 + i * 16); w.push_back(0x40000 + i * 16); w.push_back(16); }
+      cmdb(w);
+      CHECK(rd16s(RAM_REG + REG_CMD_READ) != rd16s(RAM_REG + REG_CMD_WRITE), "budget: the burst is not finished in one transaction");
+      int frames = 0;
+      while (rd16s(RAM_REG + REG_CMD_READ) != rd16s(RAM_REG + REG_CMD_WRITE) && frames < 200) { frameTick(); frames++; }
+      CHECK(frames > 1 && frames < 200, "budget: the rest drains over several frames (%d)", frames);
+      bool ok = true;
+      for (int i = 0; i < 64; i++) if (ramG()[0x50000 + i * 16] != (uint8_t)(0xA0 + i)) ok = false;
+      CHECK(ok, "budget: every deferred MEMCPY landed");
+      clockUs = nullptr;
+      frameTick();
+    }
+
     deinit();
     CHECK(!enabled, "deinit");
     printf("ft812_test: %d checks, %d failures\n", checks, fails);

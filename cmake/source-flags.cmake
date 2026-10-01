@@ -72,3 +72,7 @@ set_source_files_properties(src/speccy/devices/gs/NgsMp3.cpp PROPERTIES COMPILE_
 # -fno-tree-loop-distribute-patterns: or GCC turns the per-block clear loops back
 # into libc memset calls, i.e. a flash call per 8x8 block from RAM-resident code.
 set_source_files_properties(external/tjpgd/tjpgd.c PROPERTIES COMPILE_OPTIONS "-O2;-fno-tree-loop-distribute-patterns")
+
+# The VDAC2 copy of tinfl (CMD_INFLATE, runs from the .ftovl SRAM window): -O2 is the
+# point of the copy; no loop-distribute so its copy loops do not become flash memcpy.
+set_source_files_properties(src/speccy/machines/TsConf/FtInflate.c PROPERTIES COMPILE_OPTIONS "-O2;-fno-tree-loop-distribute-patterns")

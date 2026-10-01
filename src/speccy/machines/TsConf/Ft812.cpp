@@ -13,6 +13,34 @@ struct Debug { static void log(const char* fmt, ...); };
 #endif
 #include "miniz/miniz.h"
 
+// The coprocessor's per-command loop runs from the VDAC2 code overlay window
+// (.ftovl, src/app/CodeOverlay.h): loaded only on a TS-Conf boot with VDAC2 on —
+// the one condition under which Ft812::init runs — and never released, so nothing
+// here is reachable on any other boot. From flash it fetched its code through the
+// XIP cache that core1's texel stream thrashes (R-Type, hw 2026-10-01: ~2.7 us of
+// overhead per command). CMD_INFLATE goes through a private copy of miniz's tinfl
+// in the same window (FtInflate.c): miniz's own stays in flash for the zip loader
+// and the player.
+#if defined(FT812_HOST_TEST)
+#define FT_CP_HOT
+#define FT_CP_LEAF
+#define FT_INFLATE tinfl_decompress
+#else
+#include "app/CodeOverlay.h"
+#define FT_CP_HOT  FT_OVL_CODE
+// a leaf copy loop: GCC would otherwise turn it back into a libc (flash) memcpy
+#define FT_CP_LEAF FT_OVL_CODE __attribute__((noinline, optimize("no-tree-loop-distribute-patterns")))
+#if VDAC2_CODE_OVERLAY
+extern "C" tinfl_status ft_tinfl_decompress(tinfl_decompressor* r, const mz_uint8* pIn_buf_next,
+                                            size_t* pIn_buf_size, mz_uint8* pOut_buf_start,
+                                            mz_uint8* pOut_buf_next, size_t* pOut_buf_size,
+                                            const mz_uint32 decomp_flags);
+#define FT_INFLATE ft_tinfl_decompress
+#else
+#define FT_INFLATE tinfl_decompress
+#endif
+#endif
+
 namespace Ft812 {
 
 bool enabled = false;
@@ -346,7 +374,8 @@ uint32_t rd32(uint32_t addr) {
     return (uint32_t)rd8(addr) | ((uint32_t)rd8(addr + 1) << 8) | ((uint32_t)rd8(addr + 2) << 16) | ((uint32_t)rd8(addr + 3) << 24);
 }
 
-static void cpProcess();
+static void cpProcess(bool force = false);
+static void ramgMove(uint8_t* d, const uint8_t* s, uint32_t n);
 static void fifoPush(uint8_t v);
 static void fifoFlush();
 
@@ -511,17 +540,17 @@ uint8_t transfer(uint8_t d) {
 // ── coprocessor ──────────────────────────────────────────────────────────────
 namespace {
 
-inline uint32_t fifo32(uint32_t r) {
+__attribute__((always_inline)) inline uint32_t fifo32(uint32_t r) {
     r &= CMD_MASK;
     return (uint32_t)C->cmd[r] | ((uint32_t)C->cmd[(r + 1) & CMD_MASK] << 8)
          | ((uint32_t)C->cmd[(r + 2) & CMD_MASK] << 16) | ((uint32_t)C->cmd[(r + 3) & CMD_MASK] << 24);
 }
-inline uint32_t param(uint32_t base, int n) { return fifo32(base + 4u + 4u * (uint32_t)n); }
+__attribute__((always_inline)) inline uint32_t param(uint32_t base, int n) { return fifo32(base + 4u + 4u * (uint32_t)n); }
 inline void setParam(uint32_t base, int n, uint32_t v) {
     uint32_t r = (base + 4u + 4u * (uint32_t)n) & CMD_MASK;
     for (int i = 0; i < 4; i++) { C->cmd[(r + i) & CMD_MASK] = (uint8_t)(v >> (8 * i)); }
 }
-inline void emit(uint32_t w) {
+__attribute__((always_inline)) inline void emit(uint32_t w) {
     C->dl[C->cpDl >> 2] = w;
     C->cpDl = (C->cpDl + 4) & (RAM_DL_SIZE - 1);
     C->st.cpDlWords++;
@@ -696,7 +725,15 @@ uint32_t execCmd(uint32_t r, uint32_t avail) {
         case 0x1D: {                                                // MEMCPY(dest,src,num)
             if (avail < 16) return 0;
             const uint32_t d = param(r, 0) & 0x3FFFFF, s = param(r, 1) & 0x3FFFFF, n = param(r, 2);
-            if (d < RAM_G_SIZE && s < RAM_G_SIZE && n <= RAM_G_SIZE - d && n <= RAM_G_SIZE - s) { memmove(C->ramg + d, C->ramg + s, n); C->ramgGen++; }
+            if (d < RAM_G_SIZE && s < RAM_G_SIZE && n <= RAM_G_SIZE - d && n <= RAM_G_SIZE - s) {
+#if FT812_TRACE
+                const uint64_t t0 = clockUs ? clockUs() : 0;
+#endif
+                ramgMove(C->ramg + d, C->ramg + s, n); C->ramgGen++; C->st.memcpyBytes += n;
+#if FT812_TRACE
+                if (clockUs) C->st.memcpyUs += (uint32_t)(clockUs() - t0);
+#endif
+            }
             return 16;
         }
         case 0x1E: {                                                // APPEND(ptr,num)
@@ -840,13 +877,50 @@ uint32_t execCmd(uint32_t r, uint32_t avail) {
 
 } // namespace
 
-static void cpProcess() {
+// RAM_G -> RAM_G copy for CMD_MEMCPY: words when both ends are aligned (a word is
+// read whole before it is written, so an overlap of 4+ bytes is safe either way),
+// bytes otherwise. libc memmove lives in flash and was ~3.5 us per 40-byte copy.
+static FT_CP_LEAF void ramgMove(uint8_t* d, const uint8_t* s, uint32_t n) {
+    if (d == s || !n) return;
+    const bool words = !(((uintptr_t)d | (uintptr_t)s | n) & 3);
+    if (d < s || d >= s + n) {
+        if (words) { uint32_t* dw = (uint32_t*)d; const uint32_t* sw = (const uint32_t*)s;
+                     for (uint32_t i = 0; i < (n >> 2); i++) dw[i] = sw[i]; }
+        else for (uint32_t i = 0; i < n; i++) d[i] = s[i];
+    } else {
+        if (words) { uint32_t* dw = (uint32_t*)d; const uint32_t* sw = (const uint32_t*)s;
+                     for (uint32_t i = n >> 2; i-- > 0;) dw[i] = sw[i]; }
+        else for (uint32_t i = n; i-- > 0;) d[i] = s[i];
+    }
+}
+
+// A per-emulated-frame budget for the coprocessor. A real FT812 executes commands at a
+// finite speed IN PARALLEL with the Z80; here they run inside the guest's OUT on core0,
+// so a level upload (hundreds of MEMCPY + INFLATE) used to cost one frame 10-12 ms and
+// show as a negative IDL (R-Type, hw 2026-10-01). Past the budget the rest waits for
+// the next frameTick: CMD_READ / CMDB_SPACE simply report less progress and the guest
+// keeps polling, i.e. it waits for the chip the way it would on hardware. The work is
+// the same, only spread over frames. A FIFO close to full is always drained (force),
+// so a host that does not check CMDB_SPACE cannot overflow it.
+static constexpr uint32_t CP_FRAME_BUDGET_US = 3000;
+static constexpr uint32_t CP_INFL_CHUNK_IN   = 1024;   // bounds one tinfl call's input...
+static constexpr uint32_t CP_INFL_CHUNK_OUT  = 2048;   // ...and output, so the budget can bite
+static uint32_t s_cpFrameUs  = 0;                       // coprocessor time spent this frame
+static bool     s_cpDeferred = false;                   // budget hit with work left
+
+static FT_CP_HOT void cpProcess(bool force) {
     if (!C) return;
+    if (!force && s_cpFrameUs >= CP_FRAME_BUDGET_US) { s_cpDeferred = true; return; }
+    const uint64_t budT0 = clockUs ? clockUs() : 0;
 #if FT812_TRACE
-    const uint64_t cpT0 = clockUs ? clockUs() : 0;
+    const uint64_t cpT0 = budT0;
 #endif
     for (int guard = 0; guard < 100000; guard++) {
         if (C->cpHalt || C->cpFault || C->cpWaitSwap || C->videoBusy) break;
+        if (!force && clockUs && s_cpFrameUs + (uint32_t)(clockUs() - budT0) >= CP_FRAME_BUDGET_US) {
+            if (C->cpR != C->cpW) { s_cpDeferred = true; C->st.cpDeferred++; }
+            break;
+        }
         const uint32_t avail = (C->cpW - C->cpR) & CMD_MASK;
         if (C->vstate == V_MEMWRITE) {
             if (!avail) break;
@@ -866,13 +940,15 @@ static void cpProcess() {
         }
         if (C->vstate == V_INFLATE) {
             if (!avail) break;
-            const uint32_t chunk = (C->cpR + avail <= RAM_CMD_SIZE) ? avail : RAM_CMD_SIZE - C->cpR;
+            uint32_t chunk = (C->cpR + avail <= RAM_CMD_SIZE) ? avail : RAM_CMD_SIZE - C->cpR;
+            if (chunk > CP_INFL_CHUNK_IN) chunk = CP_INFL_CHUNK_IN;
             size_t inSize = chunk;
             size_t outSize = (C->vAddr < RAM_G_SIZE) ? RAM_G_SIZE - C->vAddr : 0;
+            if (outSize > CP_INFL_CHUNK_OUT) outSize = CP_INFL_CHUNK_OUT;
 #if FT812_TRACE
             const uint64_t infT0 = clockUs ? clockUs() : 0;
 #endif
-            const tinfl_status s = tinfl_decompress(C->inf, C->cmd + C->cpR, &inSize,
+            const tinfl_status s = FT_INFLATE(C->inf, C->cmd + C->cpR, &inSize,
                                                     C->ramg + C->vStart, C->ramg + C->vAddr, &outSize,
                                                     TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF | TINFL_FLAG_HAS_MORE_INPUT);
 #if FT812_TRACE
@@ -895,6 +971,21 @@ static void cpProcess() {
         }
         if (avail < 4) break;
         const uint32_t word = fifo32(C->cpR);
+        if (word == 0xFFFFFF1Du && avail >= 16) {          // MEMCPY, the bulk of R-Type's traffic
+            const uint32_t d = param(C->cpR, 0) & 0x3FFFFF, sa = param(C->cpR, 1) & 0x3FFFFF, n = param(C->cpR, 2);
+            C->st.cpCmds++; C->st.cmdHist[0x1D]++;
+            if (d < RAM_G_SIZE && sa < RAM_G_SIZE && n <= RAM_G_SIZE - d && n <= RAM_G_SIZE - sa) {
+#if FT812_TRACE
+                const uint64_t t0 = clockUs ? clockUs() : 0;
+#endif
+                ramgMove(C->ramg + d, C->ramg + sa, n); C->ramgGen++; C->st.memcpyBytes += n;
+#if FT812_TRACE
+                if (clockUs) C->st.memcpyUs += (uint32_t)(clockUs() - t0);
+#endif
+            }
+            C->cpR = (C->cpR + 16) & CMD_MASK;
+            continue;
+        }
         if ((word >> 8) == 0xFFFFFF) {
             const uint32_t used = execCmd(C->cpR, avail);
             if (!used) break;
@@ -906,7 +997,9 @@ static void cpProcess() {
     }
 #if FT812_TRACE
     if (clockUs) C->st.cpUs += (uint32_t)(clockUs() - cpT0);
+    C->st.cpCalls++;
 #endif
+    if (clockUs) s_cpFrameUs += (uint32_t)(clockUs() - budT0);
     if (C->cpR == C->cpW && !C->cpFault) intRaise(INT_CMDEMPTY);
 }
 
@@ -922,7 +1015,10 @@ static void fifoPush(uint8_t v) {
     C->cmd[C->cpW & CMD_MASK] = v;
     C->cpW = (C->cpW + 1) & CMD_MASK;
     s_cpDirty = 1;
-    if ((C->cpW & 3) == 0 && ((C->cpW - C->cpR) & CMD_MASK) >= RAM_CMD_SIZE / 2) { s_cpDirty = 0; cpProcess(); }
+    if ((C->cpW & 3) == 0) {
+        const uint32_t used = (C->cpW - C->cpR) & CMD_MASK;
+        if (used >= RAM_CMD_SIZE / 2) { s_cpDirty = 0; cpProcess(used >= RAM_CMD_SIZE - 256); }
+    }
 }
 static void fifoFlush() { if (s_cpDirty) { s_cpDirty = 0; cpProcess(); } }
 
@@ -933,7 +1029,14 @@ uint16_t hsize()     { return C ? (uint16_t)(reg32(REG_HSIZE) & 0xFFF) : 0; }
 uint16_t vsize()     { return C ? (uint16_t)(reg32(REG_VSIZE) & 0xFFF) : 0; }
 
 bool frameTick() {
+    if (C) {   // the trace's per-frame coprocessor peak: the 60-frame average hides a 5 ms burst
+        const uint32_t d = C->st.cpUs - C->st.cpUsAtTick;
+        C->st.cpUsAtTick = C->st.cpUs;
+        if (d > C->st.cpFrameMaxUs) C->st.cpFrameMaxUs = d;
+    }
     if (!C || !C->powered) return false;
+    s_cpFrameUs = 0;                                      // a new frame's coprocessor budget
+    if (s_cpDeferred) { s_cpDeferred = false; cpProcess(); }
     C->st.frames++;
     if (displayOn()) C->frames++;
     if (C->videoBusy && C->videoDone) {   // core1 reached the end of the stream (or REG_PLAY_CONTROL = 0)

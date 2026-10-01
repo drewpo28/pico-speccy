@@ -154,13 +154,19 @@ enum { ADAPT_RGB444 = 0, ADAPT_YCC633 = 1 };   // bin layouts, see Ft812Render.c
 // A bin layout: bin = a << sa | b << sb | c; axis sizes; value units per bin; the
 // value of bin 0's centre on each axis; the weight of axis a when a box is split.
 struct AdaptSpace { uint8_t sa, sb, na, nb, nc, ua, ub, uc, oa, ob, oc, wa; };
-// The MJPEG layout: Y 6 bits (step 4), Cb and Cr 3 bits each (step 32, centred on
-// 128). The eye resolves brightness far better than colour, so that is where the
-// 12 bits go. Picked on real frames of a film (host, 2026-10-01): mean luma error
-// after a 3x3 blur 2.4, against 3.3 for Y5/Cb3/Cr4 and 5.2 for a 4-4-4 split; the
-// chroma error is ~1.5 for all of them once the dither is averaged.
+// The MJPEG layout: Y 6 bits (step 4), Cb and Cr 3 bits each (step 16, centres
+// 64..176 — 128 is bin 4's centre). The eye resolves brightness far better than
+// colour, so that is where the 12 bits go (host, 2026-10-01: luma error after a
+// 3x3 blur 2.4, against 3.3 for Y5/Cb3/Cr4 and 5.2 for a 4-4-4 split).
+// The chroma STEP was 32 first, and the sink dithers chroma by one step: +-32 of
+// Cb is +-57 of blue in RGB, so a dark bluish film (Cb ~140) came out as a field
+// of blue dots (hw 2026-10-01, adaptps3: "много синих точек"). Step 16 halves the
+// per-pixel error; film chroma beyond +-56 of neutral is rare and clips to the
+// last bin. Host, four frame pairs of the Equilibrium trailer rendered through a
+// palette built from a frame 8 earlier: pixels >24 too blue 1.6-3.5% -> 0%, mean
+// chroma error 13.2 -> 6.2 on the most saturated scene.
 #ifndef FT812_ADAPT_YCC_LAYOUT
-#define FT812_ADAPT_YCC_LAYOUT { 6, 3, 64, 8, 8, 4, 32, 32, 2, 0, 0, 2 }
+#define FT812_ADAPT_YCC_LAYOUT { 6, 3, 64, 8, 8, 4, 16, 16, 2, 64, 64, 2 }
 #endif
 const AdaptSpace& ft812AdaptSpace(int space);
 struct AdaptPal {
