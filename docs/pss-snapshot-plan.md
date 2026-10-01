@@ -11,7 +11,7 @@ is not recorded, and SNA cannot hold large parts of the machine state at all.
 
 Goal: **a snapshot is ONE `.pss` file (pico-speccy snapshot) holding the whole
 machine state plus every setting needed to restart it, on every machine; it can be
-exported to `.sna` / `.z80` wherever those formats can express the machine.**
+exported to `.sna` / `.z80` / `.szx` wherever those formats can express the machine.**
 
 ## Owner decisions
 
@@ -19,7 +19,7 @@ exported to `.sna` / `.z80` wherever those formats can express the machine.**
    tape, IDE/HDD images, DCK / ALF cartridges — as in config profiles.
 2. (2026-10-01, supersedes `.sna`+`.pss` and `.szx`+`.pss`) **One file, our own
    format `.pss`.** Settings and state are inside it.
-3. (2026-10-01) **Export `.pss` → `.sna` / `.z80` where possible** (table below).
+3. (2026-10-01) **Export `.pss` → `.sna` / `.z80` / `.szx` where possible** (table below).
 4. (2026-09-29) **A NeoGS image the target cannot hold** (4 MB card where only 2 MB
    is allowed): the card state is dropped and the card is **reset**
    (`GS::ngsReset()`, the F11 path); the rest loads.
@@ -162,28 +162,35 @@ per game. So:
 - Worst case TS-Conf 4 MB + NeoGS 2 MB ≈ 6 MB raw, Murmuzavr up to 32 MB — the
   sparse encoding keeps a real title to hundreds of KB; SD throughput to be measured.
 
-## Export: `.pss` → `.sna` / `.z80`
+## Export: `.pss` → `.sna` / `.z80` / `.szx`
 
-One reader, two writers. **The export is best-effort and says what it dropped**
+One reader, three writers. **The export is best-effort and says what it dropped**
 (GS/NeoGS, TSFM, mounted media, settings never go into these formats) — a list in
 the result dialog, not silence.
 
-| machine | `.sna` | `.z80` (v3) | notes |
-|---|---|---|---|
-| 48K, 48K variants, Byte, Didaktik | 48K SNA | mch 0 | SNA: PC pushed onto the stack (format rule) |
-| 128K, +2, Pentagon 128 | 128K SNA | mch 4 / 12 (+2) / 9 (Pentagon) | |
-| +3, +3e, +3div | no (no 1FFD field) | mch 7 + header[86] 1FFD | `.z80` only |
-| Pentagon 512 / 1024 | our extended SNA (32/64 pages, after the `writeMemPage` fix) | no | other emulators read the 128K part only |
-| Scorpion 256 (Yellow/Green), KAY256 | no (pages 8-15) | mch 10 + 1FFD | |
-| Scorpion 1024 / GMX / ProfROM, KAY 1024 | no | no (more than 256 KB) | |
-| TC2048 / TC2068 | 48K SNA (SCLD lost) | mch 14 / 15, bytes 35/36 SCLD | |
-| Profi, Karabas, ATM-Turbo, TS-Conf, ALF, Murmuzavr | **no** | **no** | no format expresses them |
+| machine | `.sna` | `.z80` (v3) | `.szx` (1.5) | notes |
+|---|---|---|---|---|
+| 48K, 48K variants, Byte, Didaktik | 48K SNA | mch 0 | id 1 | SNA: PC pushed onto the stack (format rule) |
+| 128K, +2, Pentagon 128 | 128K SNA | mch 4 / 12 (+2) / 9 (Pentagon) | id 2 / 3 / 7 | |
+| +3 | no (no 1FFD field) | mch 7 + header[86] 1FFD | id 5 | |
+| +3e, +3div | no | mch 7 (IDE lost) | id 6 (+3e; +3div's divIDE as `DIDE`) | |
+| Pentagon 512 / 1024 | our extended SNA (32/64 pages, after the `writeMemPage` fix) | no | id 13 / 14, all pages | best target for these |
+| Scorpion 256 (Yellow/Green), KAY256 | no (pages 8-15) | mch 10 + 1FFD | id 10 | |
+| Scorpion 1024 / GMX / ProfROM, KAY 1024 | no | no (more than 256 KB) | no (SZX Scorpion = 256 KB) | |
+| TC2048 / TC2068 | 48K SNA (SCLD lost) | mch 14 / 15, bytes 35/36 SCLD | id 8 / 9 + `SCLD` (+ `DOCK`) | |
+| Profi, Karabas, ATM-Turbo, TS-Conf, ALF, Murmuzavr | **no** | **no** | **no** | no format expresses them |
+
+- **`.szx` keeps the most**: the SZX-identical blocks are copied byte for byte
+  (`Z80R` with HALT / EI-last / MEMPTR / T-state, `SPCR`, `RAMP`, `AY`, `SCLD`, `DOCK`,
+  `B128`, `COVX`, `PLTT`, `DMMC`/`DIDE`, and classic GS as `GS`+`GSRP`), plus a
+  `CRTR` block; our own blocks are dropped (NeoGS, TSFM's 2nd AY, settings). Pages
+  are written uncompressed (flag 0), which every SZX reader accepts.
 
 - Reachable from the F5 browser on a `.pss` (F-key "Export") and as a host tool
   `tools/pss_export.py` (same tables), which doubles as the format's test oracle.
 - A `.z80` writer does not exist yet (only the loader) — it is new code, v3 header,
-  uncompressed or `ED ED` RLE pages.
-- Later, for free: `.pss` → `.szx` (the SZX-identical blocks are copied, ours dropped).
+  uncompressed or `ED ED` RLE pages. The `.szx` writer is mostly a filter over the
+  `.pss` block stream (new header + `CRTR`, then copy the SZX ids).
 
 ## Compatibility
 
@@ -196,22 +203,22 @@ the result dialog, not silence.
    `SCLD`/`PLTT`/`COVX`/`B128` + `PSPT`/`PSAY`; reboot baton; slots switched to
    `.pss`; F2/browser load `.pss`. Covers 48K/128K/+2/+3/+3e/+3div, Pentagons, Byte,
    Timex, Didaktik.
-2. Export to `.sna` / `.z80` (device + `tools/pss_export.py`).
+2. Export to `.sna` / `.z80` / `.szx` (device + `tools/pss_export.py`).
 3. Scorpion family (256/1024/GMX/ProfROM/KAY), Profi (`PSPR`), ATM (`PSAT`),
    Murmuzavr (`PSRP`), `DOCK`, DivMMC.
 4. TS-Conf (`PSTS`).
 5. GS: classic (`GS`/`GSRP`/`PSGX`), NeoGS (`PSNG`/`PSNP`).
 6. `JOY ` against the real profile store once it exists (phase 1 already writes the
    block from today's keys and keeps them out of the `CFG ` apply).
-7. Optional: tape position, WD1793 / uPD765 registers; `.pss` → `.szx`; `.szx` import.
+7. Optional: tape position, WD1793 / uPD765 registers; `.szx` IMPORT (zlib pages via miniz).
    FM chip state stays out of snapshots (existing policy).
 
 ## Test plan
 
 - Host: container round-trip, sparse page encoder vs a plain reference, unknown-block
-  skip, truncated file; `pss_export.py` output re-read by libspectrum (`snapshot.c`
-  built on host) for the standard machines.
+  skip, truncated file; `pss_export.py` output (`.sna`/`.z80`/`.szx`) re-read by
+  libspectrum (`snapshot.c` built on host) for the standard machines.
 - Hardware: slot save/load per machine family incl. a cross-config load that must
   reboot; TS-Conf mid-game; NPL/ZP4 playing on NeoGS; a 4 MB-card slot loaded on
-  TS-Conf (reset path); export of a 128K and a +3 slot opened in another emulator;
+  TS-Conf (reset path); export of a 128K, a +3 and a Pentagon 1024 slot (`.szx`) opened in Fuse;
   save time at the 6 MB worst case.
