@@ -74,28 +74,28 @@ static const Cell kCells[J_CELLS] = {
     // "Joy.Select"), and they must not be clipped. The two button columns are
     // narrower ("Joy.A", "None") and pushed right to make room.
     //  x    y   nl      nr       nu       nd       caption   w
-    {   4,  56, -1,      J_RIGHT, J_UP,    J_DOWN,  "Left",   66 },
-    {  76,  56, J_LEFT,  J_X,     J_UP,    J_DOWN,  "Right",  66 },
-    {  40,  26, -1,      J_A,     -1,      J_LEFT,  "Up",     66 },
-    {  40,  86, -1,      J_C,     J_LEFT,  J_START, "Down",   66 },
-    {   4, 116, -1,      J_MODE,  J_DOWN,  J_OK,    "Start",  66 },
-    {  76, 116, J_START, J_L2,    J_RIGHT, J_DEF,   "Select", 66 },
-    { 168,  26, J_UP,    J_B,     -1,      J_X,     "A",      54 },
-    { 250,  26, J_A,     -1,      -1,      J_Y,     "B",      54 },
-    { 168,  86, J_DOWN,  J_Z,     J_X,     J_L2,    "C",      54 },
-    { 168,  56, J_RIGHT, J_Y,     J_A,     J_C,     "X",      54 },
-    { 250,  56, J_X,     -1,      J_B,     J_Z,     "Y",      54 },
-    { 250,  86, J_C,     -1,      J_Y,     J_R2,    "Z",      54 },
-    { 168, 116, J_DOWN,  J_R2,    J_C,     J_TEST,  "L2",     54 },
-    { 250, 116, J_L2,    -1,      J_Z,     J_TEST,  "R2",     54 },
+    {   4,  82, -1,      J_RIGHT, J_UP,    J_DOWN,  "Left",   66 },
+    {  76,  82, J_LEFT,  J_X,     J_UP,    J_DOWN,  "Right",  66 },
+    {  40,  52, -1,      J_A,     J_TYPE,  J_LEFT,  "Up",     66 },
+    {  40, 112, -1,      J_C,     J_LEFT,  J_START, "Down",   66 },
+    {   4, 142, -1,      J_MODE,  J_DOWN,  J_OK,    "Start",  66 },
+    {  76, 142, J_START, J_L2,    J_RIGHT, J_DEF,   "Select", 66 },
+    { 168,  52, J_UP,    J_B,     J_TYPE,  J_X,     "A",      54 },
+    { 250,  52, J_A,     -1,      J_TYPE,  J_Y,     "B",      54 },
+    { 168, 112, J_DOWN,  J_Z,     J_X,     J_L2,    "C",      54 },
+    { 168,  82, J_RIGHT, J_Y,     J_A,     J_C,     "X",      54 },
+    { 250,  82, J_X,     -1,      J_B,     J_Z,     "Y",      54 },
+    { 250, 112, J_C,     -1,      J_Y,     J_R2,    "Z",      54 },
+    { 168, 142, J_DOWN,  J_R2,    J_C,     J_TEST,  "L2",     54 },
+    { 250, 142, J_L2,    -1,      J_Z,     J_TEST,  "R2",     54 },
     // The button row, left to right: Save, Load defaults, Test joystick (the
     // table order is by index: J_OK, J_TEST, J_DEF).
-    {  16, 146, -1,      J_DEF,   J_START, J_TYPE,  nullptr,  0  },  // Save
-    { 214, 146, J_DEF,   -1,      J_R2,    J_TYPE,  nullptr,  0  },  // Test joystick
-    {  88, 146, J_OK,    J_TEST,  J_MODE,  J_TYPE,  nullptr,  0  },  // Load defaults
+    {  16, 172, -1,      J_DEF,   J_START, -1,      nullptr,  0  },  // Save
+    { 214, 172, J_DEF,   -1,      J_R2,    -1,      nullptr,  0  },  // Test joystick
+    {  88, 172, J_OK,    J_TEST,  J_MODE,  -1,      nullptr,  0  },  // Load defaults
     // The joystick type is part of the profile (the same map means other things on
-    // other types), so it is edited here, under the button row.
-    {  16, 172, -1,      -1,      J_OK,    -1,      "Type",   90 },
+    // other types), so it is the FIRST field of the page, above the pad.
+    {   4,  26, -1,      -1,      -1,      J_UP,    "Type",   90 },
 };
 
 // Display names of the JOY_* types (index = value).
@@ -338,7 +338,7 @@ static void mappingPage() {
     computeJoyLayout();
 
     memset(s_lit, 0, sizeof(s_lit));
-    s_sel = J_UP;
+    s_sel = J_TYPE;
     s_test = false;
 
     // The pad's own VKs must not steer the cursor while we are mapping it.
