@@ -1057,6 +1057,11 @@ void Z80::interrupt(void) {
     VIDEO::Draw(7, false);
 
     regRbase++;   // R advances, but the acknowledge is not an opcode fetch (RZX)
+    // RZX playback: one acknowledge per recorded frame. A handler shorter than the
+    // INT pulse (TR-DOS's `EI / RET` at #0038 is 27 T) is re-entered on real
+    // hardware — and the recording has that as a frame of its own (2 fetches), so
+    // the line must not stay up here and fire a second time by itself.
+    Rzx::intUntil = 0;
 
     ffIFF1 = ffIFF2 = false;
 #if PAGE_TRACE

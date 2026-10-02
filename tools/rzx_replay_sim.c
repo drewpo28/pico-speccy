@@ -9,6 +9,11 @@
 //       -o /tmp/rzxsim tools/rzx_replay_sim.c external/redcode/Z80_redcode.c
 //   /tmp/rzxsim src/speccy/roms/plus3/src snap.z80 frames.bin <intLen> [maxReports] [traceFrom traceTo]
 //
+// RZX_LOG=1 prints the firmware's own [RZX] log lines (Rzx.cpp logFrame) for a diff
+// against a capture from the board.
+// RZX_TRDOS=<16K TR-DOS ROM> in the environment adds the Beta-128 automap (Pentagon
+// recordings that load from disk); romdir then holds the Pentagon ROM0 + 48 BASIC.
+//
 // snap.z80 = the (inflated) snapshot block, frames.bin = the (inflated) input
 // block's frame stream (after its 18-byte header); a dozen lines of Python with
 // zlib split an .rzx into the two. Z80 v2/v3 128K/+3 snapshots only.
@@ -19,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 static uint8_t rom[4][16384], ram[8][16384];
+static uint8_t dosrom[16384]; static int hasDos, trdos;   // Beta-128: RZX_TRDOS=<rom file>
 static uint8_t p7ffd, p1ffd;
 static Z80 cpu;
 static unsigned long fetches;
@@ -27,10 +33,17 @@ static int intWin = 32; static int trace = 0; static long curFrame;
 static uint8_t* mapr(uint16_t a) {
     int w = a >> 14, o = a & 0x3fff;
     if (p1ffd & 1) { static const int cfg[4][4] = {{0,1,2,3},{4,5,6,7},{4,5,6,3},{4,7,6,3}}; return &ram[cfg[(p1ffd>>1)&3][w]][o]; }
-    switch (w) { case 0: return &rom[((p1ffd>>1)&2) | ((p7ffd>>4)&1)][o]; case 1: return &ram[5][o]; case 2: return &ram[2][o]; default: return &ram[p7ffd&7][o]; }
+    switch (w) { case 0: if (trdos) return &dosrom[o]; return &rom[((p1ffd>>1)&2) | ((p7ffd>>4)&1)][o]; case 1: return &ram[5][o]; case 2: return &ram[2][o]; default: return &ram[p7ffd&7][o]; }
 }
 static uint8_t rd(void* c, uint16_t a) { return *mapr(a); }
-static uint8_t rdop(void* c, uint16_t a) { fetches++; return *mapr(a); }
+static uint8_t rdop(void* c, uint16_t a) {
+    fetches++;
+    if (hasDos) {   // the Beta-128 automap: in at #3Dxx with the 48 ROM paged, out on a fetch from RAM
+        if (!trdos && (a & 0xFF00) == 0x3D00 && (p7ffd & 0x10) && !(p1ffd & 1)) trdos = 1;
+        else if (trdos && a >= 0x4000) trdos = 0;
+    }
+    return *mapr(a);
+}
 static uint8_t nopcb(void* c, uint16_t a) { fetches++; return 0; }
 static void wr(void* c, uint16_t a, uint8_t v) { if (!(p1ffd & 1) && a < 0x4000) return; *mapr(a) = v; }
 static uint8_t io_in(void* c, uint16_t port) {
@@ -41,7 +54,7 @@ static void io_out(void* c, uint16_t port, uint8_t v) {
     if ((port & 0xC002) == 0x4000) { if (!(p7ffd & 0x20)) p7ffd = v; if (trace) printf("  f%ld OUT 7FFD=%02X pc=%04X\n", curFrame, v, cpu.pc.uint16_value); }
     else if ((port & 0xF002) == 0x1000) { if (!(p7ffd & 0x20)) p1ffd = v; if (trace) printf("  f%ld OUT 1FFD=%02X pc=%04X\n", curFrame, v, cpu.pc.uint16_value); }
 }
-static int intaSeen;
+static int intaSeen, rzxlog, startP7;
 static uint8_t inta(void* c, uint16_t a) { intaSeen = 1; return 0xff; }
 static void loadz80(const char* fn) {
     static uint8_t b[200000]; FILE* f = fopen(fn, "rb"); size_t n = fread(b, 1, sizeof b, f); fclose(f);
@@ -69,10 +82,14 @@ static void loadz80(const char* fn) {
 int main(int argc, char** argv) {
     const char* romdir = argv[1]; intWin = atoi(argv[4]); long maxReport = argc > 5 ? atol(argv[5]) : 20; long tr0 = argc > 6 ? atol(argv[6]) : -1, tr1 = argc > 7 ? atol(argv[7]) : -1;
     for (int i = 0; i < 4; i++) { char p[300]; sprintf(p, "%s/rom%d.bin", romdir, i); FILE* f = fopen(p, "rb"); if (!f) { perror(p); return 1; } fread(rom[i], 1, 16384, f); fclose(f); }
+    if (getenv("RZX_TRDOS")) { FILE* f = fopen(getenv("RZX_TRDOS"), "rb"); if (!f) { perror("RZX_TRDOS"); return 1; } fread(dosrom, 1, 16384, f); fclose(f); hasDos = 1; }
     memset(&cpu, 0, sizeof cpu);
     cpu.fetch_opcode = rdop; cpu.fetch = rd; cpu.read = rd; cpu.write = wr; cpu.in = io_in; cpu.out = io_out; cpu.nop = nopcb; cpu.inta = inta;
     z80_power(&cpu, 1);
     loadz80(argv[2]);
+    rzxlog = getenv("RZX_LOG") != NULL; startP7 = p7ffd;
+    if (rzxlog) { unsigned s0 = 0, s1 = 0, sd = 0; for (int i = 0; i < 16384; i++) { s0 += rom[0][i]; s1 += rom[1][i]; sd += dosrom[i]; }
+        printf("[RZX] roms sum0=%06X sum1=%06X dos=%06X\n", s0, s1, sd); }
     static uint8_t fr[2000000]; FILE* f = fopen(argv[3], "rb"); size_t fn = fread(fr, 1, sizeof fr, f); fclose(f);
     size_t p = 0; long frame = 0, reports = 0, shortF = 0, lost = 0; const uint8_t* lastIns = NULL; unsigned lastCnt = 0;
     while (p + 4 <= fn) {
@@ -89,6 +106,15 @@ int main(int argc, char** argv) {
         }
         if (line) { z80_int(&cpu, 0); }
         if (frame > 0 && !intaSeen) lost++;
+        if (rzxlog) {   // the firmware's own [RZX] lines (Rzx.cpp logFrame) — diff a board capture against this
+            static int l7 = -1, ld = -1; if (l7 < 0) { l7 = startP7; ld = 0; }
+            static int nBad, nPage;   // the firmware's caps: 40 short frames, 300 paging changes
+            const char* tag = overrun ? "OVER" : (inPos != inCount && nBad < 40) ? (nBad++, "SHORT")
+                            : ((p7ffd != l7 || trdos != ld) && nPage < 300) ? (nPage++, "page") : frame % 50 == 0 ? "cp" : NULL;
+            if (tag) printf("[RZX] %s f=%ld pc=%04X sp=%04X af=%04X bc=%04X de=%04X hl=%04X 7ffd=%02X dos=%u in=%u/%u\n", tag, frame,
+                cpu.pc.uint16_value, cpu.sp.uint16_value, cpu.af.uint16_value, cpu.bc.uint16_value, cpu.de.uint16_value, cpu.hl.uint16_value, p7ffd, trdos, inPos, inCount);
+            l7 = p7ffd; ld = trdos;
+        }
         int bad = (fetches != fc) || overrun || inPos != inCount;
         if (inPos != inCount) shortF++;
         if (trace || (bad && reports < maxReport)) { reports += bad;

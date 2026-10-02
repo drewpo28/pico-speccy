@@ -199,6 +199,15 @@ else ()
 endif ()
 
 # Z-Controller/DivSD SPI-SD command tracing (DivMMC.cpp mmc engine).
+# RZX playback log (Rzx.cpp `#if RZX_TRACE`): diff a board capture against the host
+# simulator's RZX_LOG=1 output — the first differing line is where the replay left
+# the recording.
+if (RZX_TRACE)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE RZX_TRACE=1)
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE RZX_TRACE=0)
+endif()
+
 if (ATM_PAGE_TRACE)
     target_compile_definitions(${PROJECT_NAME} PRIVATE ATM_PAGE_TRACE=1)
 endif()

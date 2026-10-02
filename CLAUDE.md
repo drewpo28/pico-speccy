@@ -13028,6 +13028,36 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
   the fetch-count boundary once our raster has drifted from the recording's (the recorder
   had only `len - overshoot`), and the length is OURS, not the recording emulator's
   (libspectrum Pentagon/Scorpion 36 vs our Pentagon 32).
+- **RZX playback takes ONE interrupt per recorded frame, and never touches the user's ROMs**
+  (2026-10-02; the INT fix hw-confirmed by the owner on `dizzymysticalletter.rzx` — rzxarchive,
+  Spectaculator, Z80 **v2** header hw 9 = Pentagon, 60212 frames; the v2 switch takes codes 7+ like v3).
+  The file "hung" 44 s in, where the game calls TR-DOS from RAM (7FFD=#18, frames 2218-2306).
+  - **Cause**: TR-DOS runs IM1 with `EI / RET` at #0038 = 27 T, shorter than the INT pulse. The
+    recorder re-took the INT on some frames (they are in the file as 2-fetch frames); we re-took
+    it BY OURSELVES whenever our boundary overshoot was < 5 T — two fetches the recording does
+    not have. `Z80::interrupt()` now drops `Rzx::intUntil` at the acknowledge.
+  - **How it was found**: `-DRZX_TRACE=ON` (CMake, default OFF) logs `[RZX]` lines in the format
+    `tools/rzx_replay_sim.c` prints with `RZX_LOG=1` — `machine ...`, `roms sum0= sum1= dos=`
+    (byte sums of ROM page 0/1 and TR-DOS as the CPU reads them), `start ...`, then per frame
+    END `cp` (every 50th), `page` (#7FFD or DOS changed, first 300), `SHORT` (INs left unread,
+    first 40), `OVER`. Diff the board capture against the simulator's output; the first
+    differing line is where the replay left the recording (here `cp f=2250`: C of TR-DOS's
+    `DEC C / JR NZ` delay at #3E01 off by 18). Keeping the line up after the ack in the
+    simulator reproduces the board's log. **Three rounds of guessing (ROM version, Gluk set,
+    esxDOS) came before the log and none was the cause — ask for the trace first.**
+  - **Owner's rule: playback runs on the CURRENT settings; nothing is switched or disabled.**
+    A first cut pinned TR-DOS 5.04T, forced `R_PENT` and took esxDOS off the bus
+    (`Config::rzxRoms`, `cardsOff`) — all REMOVED: another recording may need another ROM.
+    Instead a desync (an IN with no recorded byte, or 16 frames leaving recorded INs unread —
+    `SHORT_FRAMES_MAX`; a clean replay has none) stops with a box naming the likeliest
+    mismatch at the FIRST bad frame (`desyncStop`): esxDOS on / inside TR-DOS <version> →
+    "try another TR-DOS ROM (Devices > Beta 128)" / machine or ROM set. Simulator facts behind
+    the hint: this file is clean on 5.04T and 5.04TM only, and derails at its first disk load
+    on 5.03, 5.05D (first bad frame 2303) and 6.11e (2218). **Hw 2026-10-02, owner, TR-DOS
+    5.05D**: the box came up at frame 5237 (1:44) reading "inside TR-DOS 5.05D - try another
+    TR-DOS ROM" — the stop is the 16th short frame, not the first, hence later than 2303.
+    The box is `osdCenteredMsg(.., 60000)`: it stays until a key (the timed form ends on any
+    key down); the `0` form draws and returns and the running machine repaints over it.
 - **Snapshots > RZX loop** (`Config::rzx_loop`, NVS `rzx_loop`, `SET_RZX_LOOP` AC_PURE,
   2026-10-01, NOT hw-tested, `debug/DVp2-rzx-loop-1.0.8.elf`): at EV_END `nextFrame`
   raises `s_snapPending + s_rewind` instead of stopping, and `loadPendingSnapshot`
