@@ -13,6 +13,15 @@ extern const unsigned char gb_rom_atm1_p0[];
 extern const unsigned char gb_rom_atm2_p3[];
 extern const unsigned char gb_rom_atm2v106_p3[];
 extern const unsigned char gb_rom_atm3_p7[];
+extern const unsigned char gb_rom_evo_p4[];
+extern const unsigned char gb_rom_evo_p15[];
+extern const unsigned char gb_rom_evo_p16[];
+extern const unsigned char gb_rom_evo_p17[];
+extern const unsigned char gb_rom_evo_p22[];
+extern const unsigned char gb_rom_evo_p23[];
+extern const unsigned char gb_rom_evo_p24[];
+extern const unsigned char gb_rom_evo_p25[];
+extern const unsigned char gb_rom_evo_p26[];
 extern const unsigned char gb_rom_atm_font[];
 extern const unsigned char gb_overlay_atm2x_p7[];
 extern const unsigned char gb_overlay_atm1_p1[];
@@ -36,6 +45,18 @@ extern const unsigned char gb_overlay_atm3_p5[];
 extern const unsigned char gb_overlay_atm3_p6[];
 extern const unsigned char gb_overlay_atm3v107_p1[];
 extern const unsigned char gb_overlay_atm3v107_p3[];
+extern const unsigned char gb_overlay_evo_p5[];
+extern const unsigned char gb_overlay_evo_p6[];
+extern const unsigned char gb_overlay_evo_p8[];
+extern const unsigned char gb_overlay_evo_p9[];
+extern const unsigned char gb_overlay_evo_p12[];
+extern const unsigned char gb_overlay_evo_p13[];
+extern const unsigned char gb_overlay_evo_p14[];
+extern const unsigned char gb_overlay_evo_p18[];
+extern const unsigned char gb_overlay_evo_p19[];
+extern const unsigned char gb_overlay_evo_p28[];
+extern const unsigned char gb_overlay_evo_p29[];
+extern const unsigned char gb_overlay_evo_p31[];
 }
 static const atm_rom_page_t gb_rom_atm1_pages[4] = {
     { gb_rom_atm1_p0, nullptr },   // page 0
@@ -88,4 +109,38 @@ static const atm_rom_page_t gb_rom_atm3v107_pages[4] = {
     { gb_rom_4_trdos_504t, gb_overlay_atm3v107_p1 },   // page 1
     { gb_rom_0_pentagon_128k, nullptr },   // page 2
     { gb_rom_atm2_p3, gb_overlay_atm3v107_p3 },   // page 3
+};
+static const atm_rom_page_t gb_rom_evo_pages[32] = {
+    { nullptr, nullptr },   // page 0
+    { nullptr, nullptr },   // page 1
+    { nullptr, nullptr },   // page 2
+    { nullptr, nullptr },   // page 3
+    { gb_rom_evo_p4, nullptr },   // page 4
+    { gb_rom_1_sinclair_128k, gb_overlay_evo_p5 },   // page 5
+    { gb_rom_0_pentagon_128k, gb_overlay_evo_p6 },   // page 6
+    { gb_rom_0_sinclair_48k, nullptr },   // page 7
+    { gb_rom_0_sinclair_48k, gb_overlay_evo_p8 },   // page 8
+    { gb_rom_4_trdos_504t, gb_overlay_evo_p9 },   // page 9
+    { gb_rom_0_pentagon_128k, nullptr },   // page 10
+    { gb_rom_tsbios_gluk, nullptr },   // page 11
+    { gb_rom_1_sinclair_128k, gb_overlay_evo_p12 },   // page 12
+    { gb_rom_4_trdos_504t, gb_overlay_evo_p13 },   // page 13
+    { gb_rom_0_pentagon_128k, gb_overlay_evo_p14 },   // page 14
+    { gb_rom_evo_p15, nullptr },   // page 15
+    { gb_rom_evo_p16, nullptr },   // page 16
+    { gb_rom_evo_p17, nullptr },   // page 17
+    { gb_rom_evo_p17, gb_overlay_evo_p18 },   // page 18
+    { gb_rom_evo_p17, gb_overlay_evo_p19 },   // page 19
+    { nullptr, nullptr },   // page 20
+    { nullptr, nullptr },   // page 21
+    { gb_rom_evo_p22, nullptr },   // page 22
+    { gb_rom_evo_p23, nullptr },   // page 23
+    { gb_rom_evo_p24, nullptr },   // page 24
+    { gb_rom_evo_p25, nullptr },   // page 25
+    { gb_rom_evo_p26, nullptr },   // page 26
+    { nullptr, nullptr },   // page 27
+    { gb_rom_1_sinclair_128k, gb_overlay_evo_p28 },   // page 28
+    { gb_rom_4_trdos_504t, gb_overlay_evo_p29 },   // page 29
+    { gb_rom_0_pentagon_128k, nullptr },   // page 30
+    { nullptr, gb_overlay_evo_p31 },   // page 31
 };

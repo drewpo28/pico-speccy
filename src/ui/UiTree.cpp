@@ -633,7 +633,10 @@ static const Option opt_mach_alf[] = {
 // changes (with page 3 following it from the 128K second half to the plain 48K
 // ROM). Costs 16 KB of flash for the Mr Gluk service ROM — paid for several times
 // over by the 48 KB of near-duplicates the old single 64 KB TS-BIOS blob carried.
+// ZX Evolution: one board, two FPGA configurations. BaseConf is the ATM arch
+// (Atm.cpp `evo`), TS-Conf its own arch; NM_MACH carries the arch per entry.
 static const Option opt_mach_tsconf[] = {
+    { TXT_ROM_EVO_BASE,    NM_MACH(A_ATM, R_EVO_BASE),       TXT_ROM_EVO_BASE_S    },
     { TXT_ROM_TSBIOS,      NM_MACH(A_TSCONF, R_TSCONF),      TXT_ROM_TSBIOS_S      },
     { TXT_ROM_TSBIOS_GLUK, NM_MACH(A_TSCONF, R_TSCONF_GLUK), TXT_ROM_TSBIOS_GLUK_S },
 };

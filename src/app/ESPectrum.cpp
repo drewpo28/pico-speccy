@@ -1325,7 +1325,7 @@ void ESPectrum::setup() {
   // twin). Scorpion Green (316-line frame) gets its own exact set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
-      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm))) {
+      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase())) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1335,7 +1335,7 @@ void ESPectrum::setup() {
     tstatesPerSampleFP = (((Config::arch == A_SCORP && isKayRomset(Config::romSetScorp))
                                ? TSTATES_PER_FRAME_KAY : TSTATES_PER_FRAME_48) << 8)
                          / ESP_AUDIO_SAMPLES_48;   // (KAY: Unreal's 69887 T frame)
-  } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {   // (ATM: the 316-line ATM2)
+  } else if (Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) {   // (ATM: the 316-line ATM2)
     // Green PCB: 70784 T / 632 samples = exactly 31250 Hz at 49.4462 fps.
     samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
@@ -1884,7 +1884,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   // its own exact 632-sample set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
-      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm))) {
+      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase())) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1893,7 +1893,7 @@ void ESPectrum::reset(uint8_t romInUse) {
     tstatesPerSampleFP = (((Config::arch == A_SCORP && isKayRomset(Config::romSetScorp))
                                ? TSTATES_PER_FRAME_KAY : TSTATES_PER_FRAME_48) << 8)
                          / ESP_AUDIO_SAMPLES_48;   // (KAY: Unreal's 69887 T frame)
-  } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {   // (ATM: the 316-line ATM2)
+  } else if (Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) {   // (ATM: the 316-line ATM2)
     samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
     audioAYDivider = ESP_AUDIO_AY_DIV_SCORP_GR;

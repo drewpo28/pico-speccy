@@ -165,6 +165,11 @@ void CPU::updateStatesInFrame() {
                                                        : TSTATES_PER_FRAME_48;
         IntStart = INT_START48;
         IntEnd = INT_END48;
+        if (Config::isEvoBase()) {          // ZX Evolution: the Pentagon raster
+            statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+            IntStart = INT_START_PENTAGON;
+            IntEnd = INT_END_PENTAGON;
+        }
     } else if (Config::arch == A_SCORP) {
         // Green PCB / GMX = 316 lines/frame; Yellow = 312 (see CPU.h; MAME's
         // scorpiongmx builds on the Turbo+/Green machine config).
@@ -333,7 +338,8 @@ void CPU::reset() {
         Z80Ops::is512 = false;
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
-        ESPectrum::target = atmFrame316(Config::romSetAtm) ? MICROS_PER_FRAME_SCORPION_GR
+        ESPectrum::target = Config::isEvoBase() ? MICROS_PER_FRAME_PENTAGON
+                          : atmFrame316(Config::romSetAtm) ? MICROS_PER_FRAME_SCORPION_GR
                                                            : MICROS_PER_FRAME_48;
     } else if (Config::arch == A_TSCONF) {
         // TS-Conf: Pentagon raster (224 T/line, 71680 T/frame), uncontended.
@@ -1003,7 +1009,10 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
         GS::zxDmaWrite(value);
     // ATM-Turbo: a window showing ROM drops the write (its pages may be flattened
     // copies in butter PSRAM, which writebyte's flash-pointer filter does not see).
-    if (__builtin_expect(g_atm_ro != 0, 0) && ((g_atm_ro >> (address >> 14)) & 1)) return;
+    if (__builtin_expect(g_atm_ro != 0, 0)) {
+        if (g_atm_ro & 0x80) Atm::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
+        if ((g_atm_ro >> (address >> 14)) & 1) return;
+    }
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
     // does NOT replace the normal store, the hardware writes RAM and the FPGA
     // array in parallel, reference z80_main.inl:108) and the W0_WE protect
@@ -1206,6 +1215,12 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
     if (CPU::tstates >= VIDEO::ts_line_t) VIDEO::tsDrawTick();
     if (g_ts_memcyc) TsConf::cpuMemWrite(address);
     if (g_tsconf_wr && TsConf::cpuWriteGate(address, value)) return;
+    // ATM-Turbo / ZX-Evo on the fast path: the ZX-Evo font RAM takes the byte too,
+    // a window showing ROM drops it (gsDmaPoke8's twin).
+    if (g_atm_ro) {
+        if (g_atm_ro & 0x80) Atm::font[address & 0x7FF] = value;
+        if ((g_atm_ro >> (address >> 14)) & 1) return;
+    }
     tsPoke8Store(address, value);
 }
 IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
@@ -1218,7 +1233,7 @@ IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
             // cache (invalidate) — both are poke8_cold's, through TsConf::cpuMemWrite
             if ((g_ts_memcyc & 2) || tsMemWriteHit(address)) return poke8_cold(address, value);
         }
-        if (__builtin_expect(g_tsconf_wr != 0, 0)) return poke8_cold(address, value);
+        if (__builtin_expect((g_tsconf_wr | g_atm_ro) != 0, 0)) return poke8_cold(address, value);   // TS write gate / ATM ROM windows
         CPU::tstates += 3;
         if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return poke8_tick(address, value);
         tsPoke8Store(address, value);
@@ -1334,7 +1349,7 @@ IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
             // a running DMA or a cache hit on either half -> poke16_cold (even: one cache word)
             if ((g_ts_memcyc & 2) || tsMemWriteHit(address) || ((address & 1) && tsMemWriteHit((uint16_t)(address + 1)))) return poke16_cold(address, word);
         }
-        if (__builtin_expect(g_tsconf_wr != 0, 0)) return poke16_generic(address, word);   // the write gate too
+        if (__builtin_expect((g_tsconf_wr | g_atm_ro) != 0, 0)) return poke16_generic(address, word);   // the write gates too
         CPU::tstates += 6;
         if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return poke16_tick(address, word);
         tsPoke16Store(address, word);
@@ -1500,7 +1515,9 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // end) — the controller owns the level; see TsConf::intLine.
     if (Z80Ops::isTsconf) return TsConf::intLine();
     // ATM-Turbo 2+: the frame INT is gated by #xx77 D5 (Unreal cpu.int_gate).
-    if (__builtin_expect(Z80Ops::isAtm, 0) && !Atm::intEnabled()) return false;
+    // ZX-Evo BaseConf: no gate, but the acknowledge ends this frame's pulse.
+    if (__builtin_expect(Z80Ops::isAtm, 0) &&
+        (!Atm::intEnabled() || (Atm::evo && Atm::intAckFrame == CPU::global_tstates))) return false;
     // Timex DEC (#FF) bit 6 — "17ms Interrupt Inhibit" (MAME port_ff_w). The SCLD
     // gates the line itself, so the window still opens and closes on time; the CPU
     // simply never sees it. Cleared on reset with the rest of the DEC register.

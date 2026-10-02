@@ -192,13 +192,15 @@ def atm_sym(sym):
         try: return arr(rel, sym)
         except SystemExit: pass
     return {'gb_rom_4_trdos_504t': base_trdos, 'gb_rom_0_pentagon_128k': base_pent,
-            'gb_rom_1_sinclair_128k': s128_1, 'gb_rom_0_sinclair_48k': s48}[sym]
+            'gb_rom_1_sinclair_128k': s128_1, 'gb_rom_0_sinclair_48k': s48,
+            'gb_rom_tsbios_gluk': dump('tsconf/src/glukpen.bin')}[sym]
 for tag, src, crc in (('atm1', 'atm1_104rs.bin', 'A9BBF1C1'),
                       ('atm2v106', 'atm2_10602.bin', 'D797436A'),
                       ('atm2', 'atm2_10713.bin', '34A91D53'),
                       ('atm2x', 'atm2_xbios137.bin', 'E5EF44D9'),
                       ('atm3', 'atm3_test_xbios137.bin', '024411F9'),
-                      ('atm3v107', 'atm3_10713ec.bin', 'FB547227')):
+                      ('atm3v107', 'atm3_10713ec.bin', 'FB547227'),
+                      ('evo', 'zxevo_fe.bin', '8D41FC4E')):   # ZX-Evo BaseConf ROM
     body = atm_h.split('gb_rom_%s_pages[' % tag, 1)[1].split('};', 1)[0]
     rows = re.findall(r'\{ (\w+), (\w+) \}', body)
     img = b''.join(atm_sym(b) if o == 'nullptr' else apply_overlay(atm_sym(b), arr('atm/atm_roms.c', o))

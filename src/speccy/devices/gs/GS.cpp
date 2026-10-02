@@ -1057,6 +1057,31 @@ static void gs_d7_clear_recheck() {
 // this bit; D0 and every pop path stay RAW — gating them broke ZP4/NPL/NEO8.
 static volatile uint8_t s_card_reply_bit = 0;
 
+// NeoGS, HOST view of D7 only (zxbus.v: "ZX reads #B3 -> clear", whatever the card
+// still holds). Our host->card FIFO keeps reg_status D7 up while a host byte is
+// unread — the card's pop path and ngs_card_status() need that — so a host that
+// reads #B3 while only its OWN unread byte is pending used to see D7 stay 1. Dune II
+// for the ZX-Evo (gs_probe, v1.1.0) checks exactly this: 8 rounds of IN #B3 -> D7
+// must be 0, OUT #B3 -> D7 must be 1, else "no card". Set by that read, cleared by
+// the next host #B3 write or card reply (both raise the flag on hardware); read
+// only by hostReadBB. The card side is untouched.
+static volatile uint8_t s_host_d7_off = 0;
+
+// NeoGS get-and-set commands (fw 1.11 COM45/46/47 and kin): `OUT (ZXDATWR),old`
+// then `IN A,(ZXDATRD)` for the new value, which the host sent BEFORE the
+// command. On hardware that read clears data_bit and the next card write
+// overwrites the latch, so the old value is gone unless read at once. Our
+// 512-byte g2h queue kept it — D7 stayed up and Dune II's gs_wdat waited out
+// its 12 s timeout at every one (hw 2026-10-02, `cmd=45 st=80 b3=0`), and a
+// later answer ($38's handle) would have been read from behind it. Narrow
+// rule: when the card's read takes the host's LAST queued byte and a reply was
+// produced AFTER that byte was written (s_h2c_tag = s_g2h_w at the write), the
+// replies queued so far are dead; core0 drops them (ngs_g2h_purge_dead) and
+// keeps the newest as the latch. A ping-pong host (NPL GET_LNG, ZP4) writes
+// only after reading the replies, so its tag covers them and nothing dies.
+static volatile uint32_t s_h2c_tag  = 0;   // core0: s_g2h_w at the last #B3 write
+static volatile uint32_t s_g2h_dead = 0;   // core1: g2h bytes below this are dead
+
 // Card-side status polls (ZXSTAT / #0A / #0B). The ONLY honest way to tell a
 // ROTTING host byte from one the card will legitimately come back for is
 // whether the card is sitting in a poll loop or off doing real work: a card
@@ -1065,6 +1090,12 @@ static volatile uint8_t s_card_reply_bit = 0;
 // zero times and WILL read the byte the moment it returns. See the rot-flush
 // in hostReadBB, which is gated on this (NPL track-switch regression).
 static volatile uint32_t s_zxstat_polls = 0;
+// s_zxstat_polls at the card's last OUT (03). A card read of port 02 with NO
+// status poll since then is the fw's self-clean (get-and-set commands COM32/33,
+// COM45-47, COM38_): on hardware that read clears data_bit and the reply is
+// never meant to be waited for, only read from the latch (see s_g2h_dead).
+// A reply the host must collect is always followed by a poll loop (WDN/OPROS).
+static volatile uint32_t s_polls_at_reply = 0;
 
 static inline uint8_t __not_in_flash_func(ngs_card_status)() {
     s_zxstat_polls++;
@@ -1126,6 +1157,9 @@ static inline uint8_t __not_in_flash_func(gsio_in_data)() {
             // queue to invalidate. Enforcing it broke ZP4's module load
             // (hw 2026-08-07: detect fine, mods never arrive). The queue wins;
             // NPL needs it. Keep the flag tied to "anything still pending".
+            if (s_ngs && (r + 1) == w && s_g2h_w != s_h2c_tag && !gs_g2h_empty() &&
+                s_zxstat_polls == s_polls_at_reply)
+                s_g2h_dead = s_g2h_w;   // get-and-set: see s_g2h_dead
             if ((r + 1) == w && (!s_ngs || gs_g2h_empty())) {
                 gs_d7_clear_recheck();
             }
@@ -1139,6 +1173,12 @@ static inline uint8_t __not_in_flash_func(gsio_in_data)() {
             // executing a frame, ever gets to read it (hw 2026-08-07: doing
             // that took the demo back to a black screen at startup).
             v = s_p02_latch;
+            // ...unless the read follows the card's own reply with no status
+            // poll in between: COM32/COM33 (`OUT (ZXDATWR),MODUL / IN (ZXDATRD)`,
+            // no host argument) self-clean exactly like this, and Dune II's next
+            // gs_wdat waited for a D7 that never fell (hw 2026-10-02, cmd=32 st=80).
+            if (s_ngs && !gs_g2h_empty() && s_zxstat_polls == s_polls_at_reply)
+                s_g2h_dead = s_g2h_w;
             if (s_ngs) { if (gs_g2h_empty()) gs_d7_clear_recheck(); }
             else       gs_status_and(&GS::reg_status, ~0x80u);
         }
@@ -1174,9 +1214,11 @@ static inline void __not_in_flash_func(gsio_out_data)(zuint8 value) {
         s_g2h_buf[w & GS_G2H_MASK] = value;
         __dmb();
         s_g2h_w = w + 1;
+        s_polls_at_reply = s_zxstat_polls;
     }
     gs_hs('W', value, GS::reg_status);
     __dmb();  // data must be visible to core0 before setting D7
+    s_host_d7_off = 0;   // a reply raises the flag for the host again
     gs_status_or(&GS::reg_status, 0x80u);
 }
 
@@ -3051,13 +3093,33 @@ static uint32_t s_bb_pace_prev_ts = 0;   // CPU::tstates at the previous poll
 extern "C" void gs_host_clock(uint32_t* tstates, uint32_t* states_in_frame,
                               uint8_t* mult, uint8_t* max_speed);
 
+// core0 (the g2h consumer): drop the replies a get-and-set read declared dead
+// (s_g2h_dead), keeping the newest as the latch the host reads next.
+static void ngs_g2h_purge_dead() {
+    uint32_t d = s_g2h_dead;
+    uint32_t r = s_g2h_r;
+    if ((int32_t)(d - r) <= 0) return;
+    GS::reg_data_gs = s_g2h_buf[(d - 1) & GS_G2H_MASK];
+    s_g2h_r = d;
+    gs_hs('X', GS::reg_data_gs, GS::reg_status);
+    if (gs_hs_idle()) gs_d7_clear_recheck();
+}
+
 uint8_t GS::hostReadB3() {
     GS_PERF(s_perf_h_b3r++);
     gs_host_touch();
     s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_host_sd_service();
     uint8_t v;
+    // The host's view of D7 drops on this read (s_host_d7_off). Raised BEFORE the
+    // data is taken, never after: core1 clears it with every reply it produces, and
+    // setting it last let a reply that landed between the read and the store be
+    // masked for good — the card sat in its send loop with st=80 while the host
+    // polled #BB for a D7 it never saw (ZP4 hung mid-module, hw 2026-10-02).
+    s_host_d7_off = 1;
+    __dmb();
     if (s_ngs) {
+        ngs_g2h_purge_dead();
         // One exchange takes the byte AND its flag (see s_g2h). Empty means the
         // card has not answered yet: return the latch unchanged, as hardware
         // would, and leave the flags alone.
@@ -3075,6 +3137,9 @@ uint8_t GS::hostReadB3() {
         // just has to account for both directions now — a queued reply byte or
         // an unread host byte keeps it up.
         if (gs_hs_idle()) gs_d7_clear_recheck();
+        // ...the HOST's view of the flag stays down only while no reply is left,
+        // even with its own byte still queued for the card (s_host_d7_off).
+        if (!gs_g2h_empty()) s_host_d7_off = 0;
     } else {
         v = reg_data_gs;
         __dmb();  // consume data before clearing the flag
@@ -3086,6 +3151,10 @@ uint8_t GS::hostReadB3() {
         if (fifo_used == 0) {
             gs_status_and(&reg_status, ~0x80u);
         }
+        // ...but the HOST's read clears the flag it sees regardless (zxbus.v; the
+        // classic card's latch logic is the same): Dune II's gs_probe (v1.1.0)
+        // reads #B3 right after its own write and wants D7 = 0 (s_host_d7_off,
+        // raised at the top of this function).
     }
     gs_hs('R', v, reg_status);
     gs_trace_host(TR_B3r, v, reg_status);
@@ -3238,7 +3307,11 @@ uint8_t GS::hostReadBB() {
             }
         }
     }
+    if (s_ngs) ngs_g2h_purge_dead();
     uint8_t v = reg_status | 0x7E;
+    // Never mask a reply that is actually queued (belt and braces for the
+    // cross-core ordering above: a stuck flag must not hide a byte for ever).
+    if (s_host_d7_off && (!s_ngs || gs_g2h_empty())) v &= 0x7F;
     // Real-time pacing for an UNPRODUCTIVE status poll (TheLink tunnel, hw
     // 2026-08-14). core0 emulates a frame in a wall-clock BURST, so a tight
     // `IN A,(#BB) / RLCA / JR NC` wait burns its guest T-state budget in a
@@ -3336,6 +3409,18 @@ static uint32_t s_b3_drain_us = 0;
 
 void GS::hostWriteB3(uint8_t data) {
     GS_PERF(s_perf_h_b3w++);
+    // Classic GS: the host READ #B3 since its last write while its own bytes were
+    // still unread (s_host_d7_off). On hardware that read dropped data_bit, so the
+    // card never saw them announced, and this write overwrites the single
+    // data_reg_out — they are gone. Our FIFO kept them: Dune II's gs_probe
+    // (8 x OUT #B3 / IN #B3) left eight 0s queued in front of every later
+    // argument, the idle classic dispatcher never drains them, and D7 stayed up,
+    // so each gs_wdat waited out its 12 s timeout ("GS memory" hang, hw
+    // 2026-10-02). Classic only: NeoGS has its own command-boundary collapse and
+    // its deep FIFO is load-bearing (FH1/ZP4, see the comment below).
+    if (!s_ngs && s_host_d7_off && s_host_fifo_w != s_host_fifo_r)
+        s_host_fifo_r = s_host_fifo_w;   // core1 pop racing this ends "empty" too
+    s_host_d7_off = 0;   // ZX writes #B3 -> the flag is set (zxbus.v)
     gs_host_touch();
     s_bb_pace_streak = 0;  // host made progress — new poll episode
     gs_trace_host(TR_B3w, data, reg_status);
@@ -3418,6 +3503,7 @@ void GS::hostWriteB3(uint8_t data) {
         // is one of them.
     }
     s_host_fifo[w & GS_HOST_FIFO_MASK] = data;
+    s_h2c_tag = s_g2h_w;   // replies already queued predate this byte
     __dmb();
     s_host_fifo_w = w + 1;
     __dmb();
@@ -3588,6 +3674,7 @@ bool GS::ngsCpuPeek(uint16_t addr, uint8_t* dst, uint32_t len) {
 
 void GS::hostIfaceFlush() {
     if (!enabled) return;
+    s_host_d7_off = 0;
     // Same producer-side flush pattern as hostWriteBB's >16-backlog drain
     // (advancing the read index from core0 races a concurrent core1 pop only
     // benignly — both end at "empty"). A fw parked in WTDTL waiting for a

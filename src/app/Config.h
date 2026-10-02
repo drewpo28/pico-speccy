@@ -219,7 +219,8 @@ public:
         if (a == A_SCORP && (rs == R_NONE ? romSetScorp : rs) == R_PHOENIX && n < 128)
             n = 128;
         // ATM-Turbo 3: 4 MB = 256 pages (#x7F7 takes a full 8-bit page number).
-        if (a == A_ATM && isAtm3Romset(rs == R_NONE ? romSetAtm : rs) && n < 256)
+        if (a == A_ATM && (isAtm3Romset(rs == R_NONE ? romSetAtm : rs) ||
+                           isEvoBaseRomset(rs == R_NONE ? romSetAtm : rs)) && n < 256)
             n = 256;
         return n;
     }
@@ -365,6 +366,8 @@ public:
     static bool isTimex() { return arch == A_48K && isTimexRomset(romSet); }
     static bool trdosBaseOwnedByMachine();
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
+    // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
+    static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
     // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
     // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).
     static bool isPlus3Div() { return arch == A_128K && isPlus3DivRomset(romSet); }

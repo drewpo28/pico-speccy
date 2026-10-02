@@ -532,6 +532,69 @@ host writes command 0 first and never acks it). Everything the classic GS lacks 
   running on TS-Conf and on Pentagon, ZP4 / NPL / NEO8 / TheLink; and FPS under WC
   while the card boots (turbo now shares core1 with the TEXT renderer).
 
+### Host #B3 read clears the HOST's D7 even with its own byte queued (2026-10-02, NOT hw-tested)
+
+Dune II for the ZX-Evo (v1.1.0 `gs_probe`, "NeoGS detection fixed"): 8 rounds of
+`IN #B3` -> #BB D7 must be 0, `OUT #B3` -> D7 must be 1. RTL zxbus.v clears data_bit on
+the ZX read whatever is pending; ours kept D7 up while the host->card FIFO held the
+probe's own unread byte (the idle dispatcher never reads it), so the round failed and
+the game found no card. `s_host_d7_off` (GS.cpp): set by a host #B3 read that leaves no
+reply queued, cleared by the next host #B3 write or card reply / interface flush, read
+ONLY by hostReadBB — the card side (ngs_card_status, the pop path) is untouched.
+**Classic GS got the same host-view rule the same day** (the probe failed there too —
+"GS not found" with classic GS selected): its hostReadB3 sets `s_host_d7_off`
+unconditionally (single latch, no reply queue).
+
+**Second half — get-and-set commands leave a dead reply in g2h** (same day, NOT
+hw-tested; found from the NGS_TRACE capture: `cmd=45 st=80 b3=0` for ~45 s, host in
+Dune's `gs_wdat`). fw 1.11 COM45/46/47 (FX priority / seek) do `OUT (ZXDATWR),old` then
+`IN A,(ZXDATRD)` for the new value the host sent BEFORE the command; on hardware that
+read clears data_bit and the next card write overwrites the latch. Our queue kept every
+such old value: D7 stuck up (the host waits for 0 before its next argument → 12 s
+timeout per command → Dune gives the card up), and a later answer ($38's FX handle)
+would have been read from behind them. Narrow rule (`s_h2c_tag` / `s_g2h_dead`): when
+the card's read takes the host's LAST queued byte and a reply was produced AFTER that
+byte was written, everything queued is dead; core0 (`ngs_g2h_purge_dead`, from
+hostReadB3/hostReadBB) drops it and keeps the newest as the latch. The blanket "card
+IN(02) drops the queue" rule of 2026-08-07 broke ZP4 — this one only fires when the
+host wrote the byte before the reply existed, which a ping-pong host (NPL GET_LNG, ZP4)
+never does. Handshake ring tag `X` = a purge. Test ELFs `debug/DVp2-evo-gsfix-1.0.8`
+(+ `-trace-`).
+**gsfix on hw: the module loaded, then `cmd=32 st=80 b3=0` for ever (no sound), and ZP4
+hung too.** COM32/COM33 (stop/continue module) are the same self-clean with NO host
+argument — `OUT (ZXDATWR),MODUL / IN (ZXDATRD) / OUT (CLRCBIT)` — so the read hits the
+empty-FIFO branch, which deliberately keeps replies (the fw idle drain at 0x02C2), and
+Dune's next `gs_wdat` waits for D7=0 for ever. The discriminator, now required by BOTH
+paths: **no card status poll (`s_zxstat_polls`) since the card's last OUT (03)**
+(`s_polls_at_reply`). A self-clean reads 02 immediately; a reply the host must collect is
+always followed by a poll loop (WDN/OPROS/the dispatcher), and so is the idle drain. The
+first cut had no such gate on the pop path, which is the ZP4 suspect (a reply produced
+after a host write and a card that read the next byte after a WDY poll). Test ELFs
+`debug/DVp2-evo-gsfix2-1.0.8` (+ `-trace-`), NOT hw-tested. Regression set owed: ZP4,
+NPL, FH1/COMTR4GS, TheLink, NEO8.
+**gsfix2 on hw: ZP4 starts playing and then hangs — on Pentagon as well as on ZX-Evo, so
+it is OUR change, not the machine.** Dump: card in ZP4's uploaded sender (`5C2C LD A,(HL)
+/ OUT (03),A / ... / 5C32 IN A,(04) / RLCA / JR C` = wait for the host to take it), `st=80`,
+ZX in its unrolled receiver (`INI / IN A,(#BB) / RLCA / JR NC`) — D7 up with a reply
+queued and the host seeing 0. Cause: `hostReadB3` raised `s_host_d7_off` AFTER popping
+(`if empty -> 1`), and core1's next reply clears it in `gsio_out_data` — a reply landing
+between the pop and the store left the flag up over a queued byte for good. Fix: raise
+it at the TOP of `hostReadB3` (before the data is taken), drop it again there if a reply
+is still queued, and `hostReadBB` masks only when g2h is empty. Same reordering for the
+classic branch (latch read after the flag). Rule: **a flag written by both cores must be
+SET before the observation it summarises, never after.** Test ELFs
+`debug/DVp2-evo-gsfix3-1.0.8` (+ `-trace-`). **Hw 2026-10-02 on gsfix3: NeoGS — ZP4, Dune,
+TheLink, COMTR4GS, FH1 play; classic GS — ZP4, COMTR4GS, FH1 play.** Owed/open: **NEO8's
+player does not start on ZX-Evo** (works on Pentagon 1024; recorded, not investigated), and
+classic GS + Dune said `GS MEMORY 32KB ERROR`: gs_probe's eight `OUT #B3 / IN #B3` left eight
+0s in the classic host->card FIFO (the idle classic dispatcher never reads #02), so every
+later argument was read eight bytes late — `$22` peeks returned page 0 and gs_pages_check cut
+the card to one page. On hardware the host's #B3 read drops data_bit and the next write
+overwrites the single data_reg_out. Fix (`hostWriteB3`, classic only): a host write that
+follows a host #B3 read (`s_host_d7_off`) with its own bytes still unread drops them first.
+NeoGS untouched (its deep FIFO is load-bearing). Test ELFs `debug/DVp2-evo-gsfix4-1.0.8`
+(+ `-trace-`), NOT hw-tested; re-check classic ZP4/COMTR4GS/FH1 with it.
+
 ### The handshake ring: four separate defects cost more than the bugs did
 
 Every NeoGS hang in the 2026-08-07 session was diagnosed from `NGS hs:`, and
@@ -13689,6 +13752,95 @@ and a disassembly of MSD888's test ROM, which agree.
 - Hw check owed: xBIOS boot, TR-DOS / 128 / CP/M via Alt+F11, the ATM3 test end to end
   (#BF read-back, "Всего найдено рабочих страниц" = 256, #x7F7 deep RAM test, ROM page
   switch 0-7, extended palette ramps, DOSEN via #3Dxx), ATM IDE.
+
+## ZX Evolution BaseConf (R_EVO_BASE on the ATM arch, 2026-10-02; Dune runs on hw, ERS menu on the host sim)
+
+**Round 2 (same day): the ROM is built for `fpga/base_trdemu`, NOT `baseconf/trunk`**
+(cfgs/standalone_base_trdemu; the first cut followed trunk and ERS hung): config
+read-back is on **#BD** (A12..A8 index; #BE is write-only = leave NMI/trdemu), #BD
+write #13BD = FDD mask (#10/#11 breakpoint), no savelij ports, #FF read in shadow =
+{INTRQ, DRQ, 1, sys[4:0]}, #BF D5 = 4096-colour palette (the ATM3 EXT_PAL format),
+and **page read-back is INVERTED** (top.v `.pages(~{rd_pages})` — ERS's far-call
+trampoline at page 24 #0EEF ANDs it with #3F and writes it back to #3FF7; evonmi.txt
+says "not inverted" and is wrong). trdemu: an FDC port access in shadow with the
+selected drive masked, DOS up, ROM in window 0 and /PEN2 = 1 maps RAM page #FE into
+window 0 (`Atm::inTrdemu`) and deselects the WD1793; OUT (#BE) leaves when not in NMI.
+DOS turn-off on RAM exec goes by the window REGISTER, not the #FE/#FF/RAM0 override.
+**`tools/evo_sim.c`** (redcode, recipe in its header) is an independent transliteration
+of the trdemu RTL: with it ERS v0.61.01 FE reaches its main menu on the host (no SD:
+"Baseconf: NONE / Incorrect FPGA zxevo_fw.bin" — ERS looks for the file on the card).
+Use it first on any ERS report. Test ELF `debug/DVp2-evo-baseconf3-1.0.8.elf`. #13BD reads back the mask with D7..D4 = 0: ERS _VERSION writes #0A and requires it back (else "Incorrect FPGA zxevo_fw.bin"). hw 2026-10-02: ERS menu up on DVp2.
+
+
+Machine → **ZX Evolution** is one radio for the board's two FPGA configurations: `BaseConf
+(EVO Reset Service)` = `(A_ATM, R_EVO_BASE)` and the two TS-Conf sets `(A_TSCONF, ...)`;
+the row is the old TS-Conf row renamed (same `p_showTsconf` gate), "TS-Conf options"
+below it. Found by Dune II for the Evo (github.com/lordamot/retro-game-zxevo-dune), which
+is a BaseConf program: on TS-Conf its SD loader fails with error 01 (`$8377` is the ZC
+config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung in
+`vid_palette`'s frame wait — `#77` D5 = 0 gates INT on the ATM 2+/3, not on the Evo.
+
+- **Sources are the RTL and the manual, both from svn.zxevo.ru pentevo** (JS bot-check:
+  djb2 proof-of-work + two cookies — the session's `svnget.py` solves it; `curl` alone
+  gets the challenge page): `fpga/baseconf/trunk` (`zports.v`, `atm_pager.v`, `zint.v`,
+  `zclock.v`, `zdos.v`, `znmi.v`, `top.v`), `docs/zxevo_base_configuration_eng.pdf`,
+  `docs/evonmi.txt` (#BE). ROM = `/rom/zxevo_fe.rom` (CRC32 8D41FC4E, 32 pages:
+  `build_full.sh` lays out FF x4, ATM CP/M + std BASICs, Pentagon Gluk, Evo ProfROM,
+  then ERS in the top 128 KB, ERS's start page = 31). dukeyusupov.ru's BaseConf article
+  names the same ROM and the matching FPGA `cfgs/standalone_base_trdemu` (see below).
+- **Model = `Atm.cpp` with `evo`** (ATM 2+ register file + Evo decode, `evoPortWrite/Read`):
+  INT never gated, cleared at INTA (`Atm::intAckFrame`; ERS's handler is `EI / RET`);
+  CPU clock `{#77 D3, ~#EFF7 D4}` = 14 / 7 / 3.5 MHz, **7 MHz after reset**
+  (`evoClockApply`, rescales tstates); reset = manager off (ROM page 31 everywhere),
+  DOS latched up, ZX mode, palette writes off, ZX palette; DOS is a LATCH (zdos.v: set
+  while /CPM = 0, kept after /CPM = 1 until code runs from RAM); `#xxF7` full low-byte
+  decode, A8 = 1 + shadow = manager with `{A11,A10}` 11 = #xFF7, 01 = #x7F7, 10 =
+  write-protect (unmodelled); A8 = 1 noshad = #EFF7 / Gluk, A8 = 0 shadow = #DEF7/#BEF7
+  Gluk (always on); #EFF7 D2 = 128K mode (else Pentagon-1024: 6 page bits from #7FFD and
+  D5 is a page bit, not the lock), D3 = RAM 0 at #0000; `#7FFD` A15 = 0 low byte FD/FC;
+  `#BF` (always) D0 shadow, D1 ROM write (ignored), D2 font RAM write, D3 1->0 = NMI
+  request (taken at once), D4 break (ignored), reads back; `#BE` read = config mux (pages
+  not inverted, RAM/ROM bits, dos/7ffd bits, 7FFD, EFF7, #77 state, palette, border),
+  write = leave NMI; NMI puts RAM page #FF in window 0 (`nmiEnter`, from Z80::doNMI);
+  `#2F/#4F/#6F/#8F` savelij ports; border only on FE/F6/FC; NEMO IDE (any mode, swallowed
+  when no NEMO image); SD: noshad `#77` CS / `#57` data, shadow `#57` A15 = 1 CS —
+  `DivMMC::zc_write_config` honours CS on Evo (`!Atm::evo` exemption); Gluk + AVR
+  extensions through `ZxEvoAvr` (RTC.cpp `rtcAvrMachine()`), CMOS file per romset.
+- **Font RAM** (video_fontrom.v): 2 KB `Atm::font`, a PSRAM palloc on the first Evo reset
+  seeded from the ATM font (once per power-up), written by every CPU memory write at
+  A10..A0 while #BF D2 — folded into the CPU funnel as `g_atm_ro` bit 7 (one test kept).
+- **Pentagon raster**: `Config::isEvoBase()` takes the Pentagon branch in CPU/VIDEO/audio
+  and the step-1 border geometry; INT 32 T (zint.v: 256 fclk).
+- **ROM packing**: `pack_atm` (`zxevo_fe.bin`, tag `evo`, base list + `gb_rom_tsbios_gluk`):
+  9 raw pages + 14 overlays ≈ 203 KB in `.psramroms`; `rom_verify.py` checks the image.
+  Atm `s_rom[]` grew to 32. Plain GM.DLS region on DVp2 is now ~1036 KB (stock gm.dls
+  needs the trade on boards without QSPI PSRAM — where neither machine is offered).
+- Alt+F11: `MENU_RESETTO_EVO` (ERS / TR-DOS / 128K / 48K; no CP/M row); `bootRom` uses the
+  top four pages (28 48, 29 TR-DOS, 30 128) and sets #EFF7 = #14 (128K mode, 3.5 MHz).
+- **Not modelled yet**: the `base_trdemu` FDD emulation (ERS's own image mount into the
+  "virtual drive" — our WD1793 + our mounts serve TR-DOS meanwhile), #EFF7 D0 16c and D5
+  hardware multicolour video modes, ROM writes (flash), #xBF7 write protect, the
+  breakpoint port, ULA+ (#xx3B), the AVR's own version check ("Incorrect FPGA
+  zxevo_fw.bin" if ERS dislikes ZxEvoAvr's version string), RS232 #F8EF..#FFEF.
+- Test ELF `debug/DVp2-evo-baseconf-1.0.8.elf`. Hw check owed: ERS boots to its menu,
+  14 MHz, the menu's TR-DOS / 128 / 48 rows, SD browse, Dune II (`dune.trd` + DUNE.DAT).
+- **Speed: ATM/Evo whole-line modes ride the TS-Conf fast memory path (2026-10-02, hw: owner
+  "сейчас отлично", Dune II on the Evo at 504 MHz).** Before: Dune in game = 32k instructions
+  a frame at 14 MHz, **860 ns each** (PERF_HIST), `cpu=26.5-27.7 ms`, 35-36 FPS, no HALT in
+  the window (the game is CPU-bound, not idle-polling), ports 0.28 ms, XIP 99.5%. Two causes,
+  both fixed: (1) in EGA / 640x200 / text (`gmx_ext_live && Z80Ops::isAtm`) EndFrame now arms
+  the TS-Conf counter (`ts_line_t` from `tStatesScreen << multiplicator`, `Draw = TsDraw`,
+  `ts_fast_armed`) and `tsDrawTick` hands ATM to `VIDEO::atmDrawTick` (flash, one call a
+  line: side pads + `atmRenderLine`, Blank after line 200), so `tsFastMemRecalc` turns
+  `g_ts_fastmem` on — plain pointer reads, no `MainScreen` on every access. Writes: the fast
+  poke8/poke16 gate is `(g_tsconf_wr | g_atm_ro)`; `poke8_cold` does the Evo font write and
+  drops ROM-window writes (gsDmaPoke8's twin). (2) `check_trdos` calls the flash
+  `check_trdos_atm` only when `Atm::beta`, PC = #3Dxx or a boot hook is armed — it ran on
+  every jump. ZX mode on ATM keeps the beam renderer. Side effect: at 14 MHz the whole-line
+  picture is now drawn at its raster time across the frame (the MainScreen path drew it in the
+  first quarter — the unscaled-raster deviation). Cost +192 B RAM. Owed: a PERF figure after
+  the change, ATM2+/ATM3 (CP/M text, NedoOS, Golden Axe) and ERS for tearing.
+  Test ELFs `debug/DVp2-evo-fast1-1.0.8` (+ `-perf-`).
 
 ## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 + ZXM-Phoenix 2 MB (2026-09-26, NOT hw-tested)
 

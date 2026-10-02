@@ -4883,7 +4883,8 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024) {
+    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024 ||
+               Config::isEvoBase()) {          // (ZX Evolution BaseConf: the Pentagon raster)
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
         tStatesScreen = TS_SCREEN_PENTAGON;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
@@ -4905,7 +4906,7 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {
+    } else if (Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) {
         // (ATM-Turbo: the same 224 T x 312-line raster, uncontended — Atm.h.)
         // Scorpion ZS-256 (libspectrum): 224 T/line, 69888 T/frame, paper at 14336 T
         // after INT — numerically the 48K timing set, so the 48K constants are reused
@@ -4952,7 +4953,7 @@ void VIDEO::Reset() {
     ds80_border_geom = false;
     ds80_brd_col_off = 0;
     brdcol_end = isFullBorder ? 180 : 160;  // vga.xres / 2 (T-states = half pixel count)
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf)) {
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoBase())) {
         brdcol_step = 1;
         brdPairWrite = false;
         brdcol_start = 0;
@@ -5139,7 +5140,7 @@ void VIDEO::Reset() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5147,7 +5148,7 @@ void VIDEO::Reset() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -5164,7 +5165,7 @@ void VIDEO::Reset() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
                 else if (Config::arch == A_128K) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5172,7 +5173,7 @@ void VIDEO::Reset() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -6261,7 +6262,12 @@ void VIDEO::tsFastMemRecalc() {
     // Blank there too. It used to drop to the generic accessors the moment the
     // FT812 took the screen — on a title that never HALTs (R-Type: 14 MHz, busy
     // the whole frame) that alone put the emulated frame over its budget.
-    const uint8_t v = (Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))
+    // ATM-Turbo / ZX-Evo in a whole-line mode (EGA / 640x200 / text, gmx_ext_live):
+    // the same shape — Atm::remap makes every window a plain pointer page, the
+    // machine is uncontended, no overlays or DivMMC; ROM windows and the Evo font
+    // RAM are the write gate g_atm_ro, which sends a write to the cold path.
+    const uint8_t v = (((Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))) ||
+                        (Z80Ops::isAtm && ts_fast_armed && gmx_ext_live))
                        && Config::numMemReadBP == 0 && Config::numMemWriteBP == 0
                        && !g_ngs_zxdma && !MemESP::divmmc_mapped) ? 1 : 0;
     if (v != g_ts_fastmem) {
@@ -6708,6 +6714,9 @@ void VIDEO::tsBandReplay() {
 }
 
 IRAM_ATTR void VIDEO::tsDrawTick() {
+    // ATM-Turbo / ZX-Evo whole-line modes share this clock (atmDrawTick, flash):
+    // one test per rendered line, not per access.
+    if (__builtin_expect(Z80Ops::isAtm, 0)) { atmDrawTick(); return; }
     PERF_BUCKET_SCOPE(PB_DRAWTICK);
     const uint32_t rows = vga.yres;
     TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
@@ -6923,12 +6932,14 @@ void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
         // generator ROM (SGEN.ROM, gb_rom_atm_font).
         const uint32_t row = line >> 3, gl = line & 7;
         const uint32_t base = 0x01C0 + row * 64;
+        // ZX-Evo: the character generator is a RAM (#BF D2), initialised from the ATM font.
+        const uint8_t* fnt = (Atm::evo && Atm::font) ? Atm::font : gb_rom_atm_font;
         for (int cx = 0; cx < 80; cx++) {
             const uint32_t x = (uint32_t)cx >> 1;
             uint8_t sym, at;
             if (cx & 1) { sym = scr[0x2000 + base + x]; at = alt[base + x + 1]; }
             else        { sym = scr[base + x];          at = alt[0x2000 + base + x]; }
-            const uint8_t b  = gb_rom_atm_font[sym * 8 + gl];
+            const uint8_t b  = fnt[sym * 8 + gl];
             const uint8_t fg = (uint8_t)(((at & 0x40) >> 3) | (at & 0x07));
             const uint8_t bg = (uint8_t)(((at & 0x80) >> 4) | ((at >> 3) & 0x07));
             *(uint32_t*)(dst + cx * 4) = atmPack4(
@@ -6938,6 +6949,37 @@ void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
                 profi_pair_lookup[(b & 0x02) ? fg : bg][(b & 0x01) ? fg : bg]);
         }
     }
+}
+
+// The ATM/Evo whole-line tick (EndFrame arms it, tsDrawTick dispatches here). One
+// content line per raster line from tStatesScreen; the top/bottom bands stay with
+// gmxBorderFrame at EndFrame, the side pads are painted per line as in MainScreen.
+void VIDEO::atmDrawTick() {
+    do {
+        const uint32_t line = ts_row_idx;
+        const uint32_t frow = line + (uint32_t)lin_end;
+        uint8_t* fb_row = (vga.frameBuffer && frow < (uint32_t)vga.yres)
+                          ? (uint8_t*)vga.frameBuffer[frow] : nullptr;
+        if (fb_row) {
+            const int pad_l = ((int)vga.xres - 320) / 2;
+            if (pad_l > 0) {
+                uint8_t brdSlot = profi_pair_lookup[borderColor & 15][borderColor & 15];
+                memset(fb_row, brdSlot, pad_l);
+                memset(fb_row + pad_l + 320, brdSlot, (size_t)vga.xres - pad_l - 320);
+            }
+            curline = line;
+            linedraw_cnt = frow;
+            atmRenderLine(line, fb_row, pad_l);
+        }
+        ts_line_t += tStatesPerLine << ESPectrum::multiplicator;
+        if (++ts_row_idx >= 200) {
+            linedraw_cnt = lin_end2;
+            ts_line_t = 0xFFFFFFFFu;
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+            return;
+        }
+    } while (CPU::tstates >= ts_line_t);
 }
 
 int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin_end : 0; }
@@ -8716,6 +8758,16 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         }
         ts_reindex_held_prev = false;
         ts_frame_seq++;                    // the frame whose lines are posted from here (tsPalettePoll)
+        Draw = &TsDraw;
+        Draw_Opcode = &TsDraw_Opcode;
+        ts_fast_armed = true;
+    } else if (gmx_ext_live && Z80Ops::isAtm) {
+        // ATM-Turbo / ZX-Evo whole-line mode: a T-state counter renders each content
+        // line at its raster time (atmDrawTick) instead of MainScreen's column
+        // machinery on every guest access, and lets the fast memory path run.
+        // Scaled to the CPU clock like TS-Conf's (14 MHz Evo: 224<<2 T a line).
+        ts_line_t = (uint32_t)tStatesScreen << ESPectrum::multiplicator;
+        ts_row_idx = 0;
         Draw = &TsDraw;
         Draw_Opcode = &TsDraw_Opcode;
         ts_fast_armed = true;

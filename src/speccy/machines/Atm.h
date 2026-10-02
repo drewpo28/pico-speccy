@@ -64,12 +64,27 @@ struct atm_rom_page_t { const unsigned char* base; const unsigned char* overlay;
 // not cover). Tested predicted-not-taken in the CPU write funnel (CPU.cpp
 // gsDmaPoke8) — zero on every other machine.
 extern uint8_t g_atm_ro;
+// ZX-Evo BaseConf: #BF D2, the font RAM write enable (mirrored as g_atm_ro bit 7).
+extern uint8_t g_atm_fnt;
 
 namespace Atm {
     enum VMode : uint8_t { VM_ZX = 0, VM_EGA = 1, VM_HIRES = 2, VM_TEXT = 3 };
 
     extern bool     atm1;       // ATM-Turbo 1 board (else 2+), set by bindRoms
     extern bool     atm3;       // ATM-Turbo 3 (4 MB + #BF / #x7F7 / #xxE7), set by bindRoms
+    // ZX Evolution BaseConf (svn.zxevo.ru pentevo/fpga/baseconf, zports.v / atm_pager.v):
+    // the 2+ manager with #xFF7 (A11:A10 = 11) and #x7F7 (= 01) at full low-byte decode,
+    // #EFF7 noshad (D2 128K mode, D3 RAM0 at #0000, D4 turbo off, D7 Gluk), #BF/#BE,
+    // the AVR Gluk clock, NMI into RAM page #FF, a 2 KB font RAM, no INT gate, 14 MHz.
+    extern bool     evo;
+    extern uint8_t  pEFF7;
+    extern bool     inNmi;      // NMI state: RAM page #FF in window 0 until OUT (#BE)
+    extern uint8_t  fddMask;    // #13BD: drives served by EVO Reset Service's FDD emulator
+    extern uint8_t  vgSys;      // last #FF (FDC system register) write
+    extern bool     inTrdemu;   // RAM page #FE in window 0 (base_trdemu in_trdemu)
+    extern uint8_t* font;       // text-mode character generator (char*8+line), 2 KB; null = use the ATM ROM font
+    void nmiEnter();            // Z80::doNMI on a ZX-Evo
+    extern uint64_t intAckFrame; // CPU::global_tstates of the frame whose INT was acknowledged
     extern uint8_t  p7ffd;
     // ATM-Turbo 1
     extern uint8_t  aFE, aFB, pFDFD;

@@ -1073,7 +1073,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // via A0 latch. Authentic NEMO is mapped outside TR-DOS; on Profi the SYSEN
   // line keeps ESPectrum::trdos permanently asserted (not real TR-DOS paging),
   // so the !trdos rule is bypassed there.
-  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && Atm::atm3) || !ESPectrum::trdos)) {
+  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && (Atm::atm3 || Atm::evo)) || !ESPectrum::trdos)) {
     if (address & 1) { LED::touchR(LED::IDE); return IDE::read_latch(); } // A0=1: high-byte latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {          // control / alt-status
       LED::touchR(LED::IDE); return IDE::read8(8);
@@ -2777,7 +2777,12 @@ static __attribute__((noinline)) bool atmPortWriteEarly(uint16_t address, uint8_
   atmPageTrace(address, data);
 #endif
   if (DivMMC::zc_enabled && (uint8_t)address == 0x57) {
-    LED::touchW(LED::ZCTRL); DivMMC::zc_write_data(data); return true;
+    LED::touchW(LED::ZCTRL);
+    // ZX-Evo in shadow mode: #57 with A15 = 1 is the card's CS line (what #77 is
+    // outside shadow mode) — zports.v sdcfg_wr.
+    if (Atm::evo && (ESPectrum::trdos || Atm::shaden) && (address & 0x8000)) DivMMC::zc_write_config(data);
+    else DivMMC::zc_write_data(data);
+    return true;
   }
   // The VGM-card ports with A1=0 (#C0/#C1 OPLL, #C4/#C5 OPL3, #C9 SN) match the 2+'s
   // loose #7FFD decode whenever the high byte (= the data byte of OUT (n),A) has
@@ -3029,7 +3034,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // (NEMO register ports have A0=0). 16-bit data via A0 latch. On Profi the
   // SYSEN line keeps ESPectrum::trdos permanently asserted, so the !trdos rule
   // (authentic NEMO is outside TR-DOS) is bypassed there.
-  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && Atm::atm3) || !ESPectrum::trdos)) {
+  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && (Atm::atm3 || Atm::evo)) || !ESPectrum::trdos)) {
     if (address & 1) { LED::touchW(LED::IDE); IDE::write_latch(data); return; } // A0=1: high latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {                // control
       LED::touchW(LED::IDE); IDE::write8(8, data); return;
@@ -3130,7 +3135,9 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     // ATM-Turbo decodes #FE tighter than A0: ATM1 %XXXnX1n0 (A2=1), 2+ %nnnnX110
     // (A2=A1=1) — so OUT (#FA), the external bus, must not repaint the border
     // nor, on the ATM1, relatch the CP/M/video bits (atmdscr.htm).
-    if (Z80Ops::isAtm && (address & (Atm::atm1 ? 0x04 : 0x06)) != (Atm::atm1 ? 0x04 : 0x06)) {
+    // ZX-Evo (zports.v portfe_wr): exactly #FE, #F6 and #FC.
+    if (Z80Ops::isAtm && (Atm::evo ? (a8 != 0xFE && a8 != 0xF6 && a8 != 0xFC)
+                                   : (address & (Atm::atm1 ? 0x04 : 0x06)) != (Atm::atm1 ? 0x04 : 0x06))) {
       VIDEO::Draw(3, false);
       return;
     }

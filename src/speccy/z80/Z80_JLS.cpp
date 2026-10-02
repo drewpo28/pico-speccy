@@ -821,7 +821,14 @@ IRAM_ATTR void Z80::check_trdos() {
     // executing RAM) and remaps through TsConf::setBanks().
     if (Z80Ops::isTsconf) { TsConf::trdosTrap(REG_PCh); return; }
     // ATM-Turbo: same shape — the memory manager owns every window (Atm::remap).
-    if (Z80Ops::isAtm) { check_trdos_atm(); return; }
+    // The flash half runs only when it can act: a boot hook armed, DOS up (the
+    // leave-on-RAM test), or PC at #3Dxx (the enter test) — not on every jump of a
+    // busy game (Dune II on the ZX-Evo: ~15% of all instructions are jumps).
+    if (Z80Ops::isAtm) {
+        if (Atm::beta || REG_PCh == 0x3D || Atm::cpmBootArmed || Atm::trdosMenuArmed || Atm::trdosBootState)
+            check_trdos_atm();
+        return;
+    }
 
     // Detect NMI-DOS handler return: exact PC and SP match after planted RET at 0x5C00
     if (nmiDosInProgress && REG_PC == nmiDos_savedPC && REG_SP == nmiDos_savedSP) {
@@ -1052,6 +1059,9 @@ void Z80::interrupt(void) {
     // frame counted as INT-not-taken (hw 2026-09-07, TS-BIOS/BASIC idle).
     const uint8_t tsVect = Z80Ops::isTsconf ? TsConf::intAck() : 0xFF;
     if (Z80Ops::isTsconf) TsConf::intTrace(REG_PC, REG_SP, tsVect, wasHalted);   // PERF_TRACE ring, before the push
+    // ZX-Evo BaseConf (zint.v intend = INTA): the acknowledge ends the pulse, so a
+    // handler shorter than the window (ERS's EI / RET) is not interrupted twice.
+    if (Z80Ops::isAtm && Atm::evo) Atm::intAckFrame = CPU::global_tstates;
 
     // Z80Ops::interruptHandlingTime(7);
     VIDEO::Draw(7, false);
@@ -1181,6 +1191,8 @@ Z80_COLD void Z80::doNMI(void) {
         Ports::port1FFD |= 0x02;
         Ports::scorpionRomUpdate();
     }
+    // ZX-Evo BaseConf: RAM page #FF replaces window 0 until OUT (#BE) (znmi.v).
+    if (Z80Ops::isAtm && Atm::evo) Atm::nmiEnter();
     nmi();
 
 }

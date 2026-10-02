@@ -1077,6 +1077,11 @@ ATM_IMAGES = [
     # Maksagor 2015): 1.07.13 with its #xFF7 manager writes made A11-safe, 71 bytes
     # off (pages 1 and 3) — same page order as 1.07.13.
     ('atm3_10713ec.bin',  0xFB547227, 'atm3v107', 4),
+    # ZX Evolution BaseConf: the firmware ROM the base configuration ships with,
+    # svn.zxevo.ru pentevo /rom/zxevo_fe.rom (build_full.sh: FF x4, ATM CP/M +
+    # std BASICs, Pentagon Gluk, the Evo ProfROM, then EVO Reset Service in the top
+    # 128 KB, its start page being the last). 32 pages, a 5-bit ROM page number.
+    ('zxevo_fe.bin',      0x8D41FC4E, 'evo',   32),
 ]
 ATM_RAW_MAX = 12288   # an overlay bigger than this ships the page raw instead
 
@@ -1089,6 +1094,7 @@ def pack_atm():
         ('gb_rom_1_sinclair_128k', rd('src', 'speccy', 'roms', '128k', 'src', 'sinclair_128k_1.bin')),
         ('gb_rom_0_sinclair_48k',  rd('src', 'speccy', 'roms', '48k', 'src', 'sinclair_48k.bin')),
         ('gb_rom_4_trdos_504t',    rd('src', 'speccy', 'roms', 'trdos', 'src', '504t.bin')),
+        ('gb_rom_tsbios_gluk',     rd('src', 'speccy', 'roms', 'tsconf', 'src', 'glukpen.bin')),
         ('nullptr',                b'\xff' * 16384),
     ]
     pages = {}

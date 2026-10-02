@@ -8,6 +8,7 @@
 #include "speccy/core/MemESP.h"
 #include "app/Config.h"
 #include "speccy/machines/TsConf/Ft812.h"
+#include "speccy/machines/Atm.h"   // Atm::evo: the ZX-Evo drives the card CS
 #include "app/Debug.h"
 #include "pico/time.h"    // time_us_32 for the raw-SD sector timer (FT812_TRACE meter)
 #include "hardware/timer.h"
@@ -1796,7 +1797,7 @@ void DivMMC::zc_write_config(uint8_t value) {
     // driver cannot rely on reaching the card's CS through it. UnrealSpeccy (where
     // NedoOS is developed) ignores ZC CS altogether; so do we on ATM — the card
     // stays selected (zc_write_data/zc_read_data) and command framing comes from the bytes.
-    if (Z80Ops::isAtm) return;
+    if (Z80Ops::isAtm && !Atm::evo) return;   // (the ZX-Evo drives a real CS)
     // bit2 = the VDAC2's FT812 chip select (zports.v: spi_cs_n = {~din[4:2], din[1]},
     // ftcs_n = spi_cs_n[1]) — active HIGH in the register, unlike the SD's bit1.
     const bool ft = (value & 0x04) != 0;

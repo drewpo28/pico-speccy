@@ -354,6 +354,7 @@ public:
   static void atmPaletteFlush();         // EndFrame: palette -> hardware slots / pair table
   static void atmPaletteRestore();       // leaving the ATM: standard slots back
   static void atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l);
+  static void atmDrawTick();      // ATM/Evo whole-line modes on the fast memory path (flash)
 
   // ── TS-Conf video modes (VConfig VM[1:0] / NOGFX / RRES[1:0]) ─────────────
   // TEXT (80x30, 640 px wide) borrows the DS80/GMX packed-pair framebuffer and

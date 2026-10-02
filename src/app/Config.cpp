@@ -803,6 +803,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         else if (romSet == R_ATM2_106) Atm::bindRoms(romSet, gb_rom_atm2v106_pages, 4);
         else if (romSet == R_ATM3)  Atm::bindRoms(romSet, gb_rom_atm3_pages, 16);
         else if (romSet == R_ATM3_107) Atm::bindRoms(romSet, gb_rom_atm3v107_pages, 4);
+        else if (romSet == R_EVO_BASE) Atm::bindRoms(romSet, gb_rom_evo_pages, 32);
         else                        Atm::bindRoms(romSet, gb_rom_atm2_pages, 4);
         break;
     }

@@ -2386,7 +2386,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 if (Config::arch == A_PROFI) {
                     reset_menu = MENU_RESETTO_PROFI;
                 } else if (Z80Ops::isAtm) {
-                    reset_menu = (Config::romSetAtm == R_ATM3) ? MENU_RESETTO_ATM3 : MENU_RESETTO_ATM;
+                    reset_menu = (Config::romSetAtm == R_ATM3) ? MENU_RESETTO_ATM3
+                               : Config::isEvoBase() ? MENU_RESETTO_EVO : MENU_RESETTO_ATM;
                 } else if (Config::arch == A_SCORP && g_scorp_kay) {
                     // KAY-256 and the Phoenix have no service ROM (the page is empty).
                     reset_menu = (g_scorp_kay == 3) ? MENU_RESETTO_KAY : MENU_RESETTO_KAY_NOSVC;
@@ -2414,6 +2415,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
 
                     if (Z80Ops::isAtm) {
                         // BIOS=1, CP/M=2, TR-DOS=3, 128K=4, 48K=5, ATM3 test=6
+                        // (ZX-Evo BaseConf has no CP/M row: its rows 2-4 are TR-DOS/128K/48K.)
+                        if (Config::isEvoBase() && opt >= 2) opt++;
                         ESPectrum::reset();
                         if (opt == 2)      Atm::cpmBootArmed = true;
                         else if (opt == 6) Atm::bootTest();

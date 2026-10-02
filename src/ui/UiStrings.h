@@ -237,9 +237,9 @@
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
-#define TXT_MACH_TSCONF      "TS-Conf"
+#define TXT_MACH_TSCONF      "ZX Evolution"
 #define TXT_MACH_ATM         "ATM-Turbo"
-#define TXT_MACH_TSCONF_OPTS "Options"
+#define TXT_MACH_TSCONF_OPTS "TS-Conf options"
 #define TXT_MACH_TSCONF_CLK  "CPU cap"
 #define TXT_MACH_TSCONF_VDAC2 "VDAC2 (FT812)"
 #define TXT_MACH_TSCONF_VDAC2_SMOOTH "  VDAC2 smooth"
@@ -259,10 +259,12 @@
 #define TXT_ROM_ATM3V107_S   "Turbo 3"
 #define TXT_ROM_ATM3         "ATM-Turbo 3 (xBIOS 1.37)"
 #define TXT_ROM_ATM3_S       "Turbo 3 xBIOS"
-#define TXT_ROM_TSBIOS       "TS-BIOS + 128"
-#define TXT_ROM_TSBIOS_S     "128"            // left-column short form (Option::slabel)
-#define TXT_ROM_TSBIOS_GLUK  "TS-BIOS + Mr Gluk"
-#define TXT_ROM_TSBIOS_GLUK_S "Mr Gluk"
+#define TXT_ROM_EVO_BASE     "BaseConf (EVO Reset Service)"
+#define TXT_ROM_EVO_BASE_S   "BaseConf"
+#define TXT_ROM_TSBIOS       "TS-Conf: TS-BIOS + 128"
+#define TXT_ROM_TSBIOS_S     "TS-Conf"            // left-column short form (Option::slabel)
+#define TXT_ROM_TSBIOS_GLUK  "TS-Conf: TS-BIOS + Mr Gluk"
+#define TXT_ROM_TSBIOS_GLUK_S "TS-Conf Gluk"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
 
 // ROM set labels, shared by the machine rows and the Preferred rom rows.
