@@ -140,8 +140,16 @@ size_t formatLine(const Profile& p, char* out, size_t cap) {
 }
 
 int find(const Profile* list, int n, const char* name) {
+    if (!name || !*name) return -1;
     for (int i = 0; i < n; i++) if (!strcmp(list[i].name, name)) return i;
     return -1;
+}
+
+const char kEmptySlotLine[] = "-\n";
+
+bool isEmptySlotLine(const char* line, size_t len) {
+    if (len && line[len - 1] == '\r') len--;
+    return len == 1 && line[0] == '-';
 }
 
 } // namespace JoyProf

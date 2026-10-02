@@ -1263,7 +1263,7 @@ static const Node kJoyPrefs[] = {
 
 // The footer verb line of the profile list (K_PICK keeps it in opts[0]).
 static const Option opt_joyprof_foot[] = {
-    { SYM_ENTER " Use  F4 Edit  F6 Name  F8 Del", 0 },
+    { SYM_ENTER " Use/Add  F4 Edit  F6 Name  F8 Del", 0 },
 };
 
 static const Node kJoystick[] = {
@@ -1271,7 +1271,6 @@ static const Node kJoystick[] = {
     // Mapping page with the rest of it (there is no separate Type row any more).
     NM_PICK  (TXT_JOY_PROFILE, SET_JOY_PROFILE, joyprof_rows, joyprof_key,
               joyprof_vlabel, opt_joyprof_foot, p_hasSD),
-    NM_ACTION(TXT_JOY_MAPPING, act_joyDialog, nullptr),
     NM_SUB   (TXT_JOY_PREFS,   kJoyPrefs,     nullptr),
 };
 

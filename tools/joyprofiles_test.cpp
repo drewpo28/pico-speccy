@@ -94,6 +94,19 @@ int main() {
     JoyProf::setName(list[1], "Two");
     CHECK(JoyProf::find(list, 2, "Two") == 1);
     CHECK(JoyProf::find(list, 2, "two") == -1);
+    // An empty slot (name "") is never found, whatever is asked for.
+    list[0].name[0] = 0;
+    CHECK(JoyProf::find(list, 2, "") == -1);
+    CHECK(JoyProf::find(list, 2, "Two") == 1);
+
+    // 7. The empty-slot line.
+    CHECK(JoyProf::isEmptySlotLine("-", 1));
+    CHECK(JoyProf::isEmptySlotLine("-\r", 2));
+    CHECK(!JoyProf::isEmptySlotLine("", 0));
+    CHECK(!JoyProf::isEmptySlotLine("--", 2));
+    CHECK(!JoyProf::isEmptySlotLine("# -", 3));
+    CHECK(!parse("-", q));                          // ...and it is not a profile
+    CHECK(!strcmp(JoyProf::kEmptySlotLine, "-\n"));
 
     printf(fails ? "FAILED: %d\n" : "OK\n", fails);
     return fails ? 1 : 0;

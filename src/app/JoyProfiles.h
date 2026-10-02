@@ -6,9 +6,10 @@
 // The two belong together — the same map means different things on different
 // types — so they are saved and loaded as one.
 //
-// File format, one profile per line, '#' starts a comment:
+// File format, one SLOT per line, '#' starts a comment:
 //
-//     name <TAB> type <TAB> t0,t1,...,t13
+//     name <TAB> type <TAB> t0,t1,...,t13          a profile
+//     -                                             an empty slot
 //
 // The type is a WORD ("Kempston"), the targets are key NAMES ("SPACE", "DPAD_FIRE",
 // "NONE"), never enum numbers: fabgl::VirtualKey is an enum, and a file of raw
@@ -27,7 +28,7 @@
 
 namespace JoyProf {
 
-constexpr int MAX      = 16;    // profiles in the file
+constexpr int MAX      = 16;    // numbered slots (#01..#16); a slot may be empty
 constexpr int NAME_LEN = 24;    // display name incl. NUL
 constexpr int SLOTS    = 14;    // pad controls, = Config::joydef
 
@@ -55,7 +56,15 @@ size_t formatLine(const Profile& p, char* out, size_t cap);
 // (TAB, CR, LF) and trimming spaces. Returns false when nothing is left.
 bool setName(Profile& p, const char* name);
 
-// Index of the profile named `name` (exact match), or -1.
+// Index of the profile named `name` (exact match), or -1. An empty name matches
+// nothing: an empty slot is a Profile whose name is "".
 int find(const Profile* list, int n, const char* name);
+
+// The profiles are numbered SLOTS, and the slot is the line's position among the
+// profile lines. An empty slot below a used one is kept as a line holding just "-".
+// (A file with no such lines — written by hand, or by an older build — fills slots
+// 1..n in order.)
+bool isEmptySlotLine(const char* line, size_t len);
+extern const char kEmptySlotLine[];     // "-\n"
 
 } // namespace JoyProf

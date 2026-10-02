@@ -12873,9 +12873,16 @@ top-level `Joystick type` row is GONE and the type is a cell under the button ro
   never VirtualKey numbers, which would silently remap on an enum reorder. Unknown
   names read as NONE, bad lines are skipped, duplicates keep the first. 16 profiles,
   23-char names. Five hand mutations each fail the test.
+- **The list is 16 numbered SLOTS, always all shown** (`#NN name` / bare `#NN`), the
+  Config-profiles shape (owner, 2026-10-02, NOT hw-tested) — there is no `+ New profile`
+  row. The slot is the line's position among the profile lines of the file; an empty
+  slot below a used one is a line holding just `-` (`JoyProf::isEmptySlotLine`), so a file
+  from before this (no `-` lines) fills slots 1..n. `Config::joyProfilesLoad` fills all
+  16 (empty = name ""), F8 empties a slot without renumbering the rest.
 - **Verbs**: Enter = use (applies type + map live, saves storage.nvs), F4 = edit,
-  F6 = rename, F8 = delete (the live map stays, now unsaved); the last row
-  `+ New profile` opens Mapping on a copy of the live pad.
+  F6 = rename, F8 = delete (the live map stays, now unsaved). **Enter (or F4) on an EMPTY
+  slot = Add**: Mapping opens on the DEFAULTS (Kempston + its default map, never the live pad), Save asks the name (a name already
+  used by another slot is refused, not replaced) and writes it into that slot.
 - **Mapping page Save**: an existing profile is overwritten without a question; a map
   with no profile (opened from `+ New`, or `Mapping` while unsaved) asks the name, and
   a clash asks to replace. The saved profile becomes the live one. With no SD card

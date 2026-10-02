@@ -165,13 +165,14 @@ static inline int cy(int i) { return JL.oy + kCells[i].y; }
 
 
 // The page edits a WORKING COPY of one profile: its type and its 14 targets. What
-// it is a copy of is s_target: an index into the profile file, or -1 for a map that
-// has no profile yet (a new one, or the live map before it was ever named).
+// it is a copy of is s_target: a SLOT of the profile file (the working copy's name is
+// empty while that slot is still empty — a new profile), or -1 for the live map
+// before it was ever given a slot.
 static int  s_sel;                  // focused cell
 static bool s_test;                 // JoyTest mode
 static JoyProf::Profile s_work;     // working copy (name, type, map)
 static JoyProf::Profile s_orig;     // what Esc compares against
-static int  s_target;               // profile index in the file, -1 = not saved yet
+static int  s_target;               // slot in the file, -1 = none chosen yet
 static bool s_lit[14];              // JoyTest: control is pressed right now
 
 static void drawCell(int i) {
@@ -236,7 +237,7 @@ static void drawChromeJoy() {
     text(tx, JL.iy + 4, TXT_JOY_MAPPING, C_WHITE);
     // Right of the title: which profile this is (or that it has none yet).
     const char* jt = s_test ? "Test joystick"
-                   : s_target >= 0 ? s_work.name : TXT_JOYPROF_UNSAVED;
+                   : s_work.name[0] ? s_work.name : TXT_JOYPROF_UNSAVED;
     const int tw = textWidth(TXT_JOY_MAPPING);
     const int room = JL.ix + JL.iw - JL.pad - (tx + tw + 2 * glyphW());
     const int jw = textWidth(jt) < room ? textWidth(jt) : room;
@@ -249,18 +250,20 @@ static void drawChromeJoy() {
 }
 
 // ── profile storage ────────────────────────────────────────────────────────────
-// The file is small (<= 16 lines), so every change reads it, edits it and writes it
+// The file is small (16 slots), so every change reads it, edits it and writes it
 // back whole. The list lives on the heap only for the length of the operation.
+// It always holds all JoyProf::MAX slots; an empty one has name "".
 
 struct JoyList {
     JoyProf::Profile p[JoyProf::MAX];
-    int n;
+    int n;                              // always JoyProf::MAX
 };
 
 static JoyList* listLoad() {
     JoyList* l = (JoyList*)tryMalloc(sizeof(JoyList));
     if (!l) return nullptr;
-    l->n = Config::joyProfilesLoad(l->p, JoyProf::MAX);
+    Config::joyProfilesLoad(l->p, JoyProf::MAX);
+    l->n = JoyProf::MAX;
     return l;
 }
 
@@ -284,9 +287,10 @@ static void liveToProfile(JoyProf::Profile& p) {
 
 static void invalidateRows();     // the pick list's session cache (below)
 
-// Save the working copy. A profile that already exists is overwritten in place and
-// nothing is asked; a new one asks for its name first. The saved profile becomes the
-// live one — editing a map is what you do to the pad you are about to use.
+// Save the working copy into its slot. A profile that already exists is overwritten
+// in place and nothing is asked; a new one (an empty slot) asks for its name first.
+// The saved profile becomes the live one — editing a map is what you do to the pad
+// you are about to use.
 static bool saveWork() {
     if (!FileUtils::fsMount) {            // no card: no library, the live pad only
         applyLive(s_work, false);
@@ -297,24 +301,27 @@ static bool saveWork() {
     if (!l) { uiToast(TXT_JOYPROF_NOMEM, true, 1500); return false; }
 
     int idx = s_target;
-    if (idx >= 0 && (idx >= l->n || strcmp(l->p[idx].name, s_work.name))) {
-        // The file moved under us (edited on a PC): find it again by name.
-        idx = JoyProf::find(l->p, l->n, s_work.name);
+    if (s_work.name[0]) {
+        // An existing profile. If the file moved under us (edited on a PC), find it
+        // again by name; gone altogether = it goes back into the slot it came from.
+        if (idx < 0 || strcmp(l->p[idx].name, s_work.name)) {
+            const int f = JoyProf::find(l->p, l->n, s_work.name);
+            if (f >= 0) idx = f;
+            else if (idx >= 0 && l->p[idx].name[0]) idx = -1;   // its slot went to another profile
+        }
     }
-    if (idx < 0) {
+    if (idx < 0) {                        // no slot chosen (Mapping on an unsaved pad): the first free one
+        for (int i = 0; i < l->n && idx < 0; i++) if (!l->p[i].name[0]) idx = i;
+        if (idx < 0) { uiToast(TXT_JOYPROF_FULL, true, 2000); free(l); return false; }
+    }
+    if (!s_work.name[0]) {
         string nm_;
         for (;;) {
             if (!uiPrompt(TXT_JOYPROF_NAME, nm_, JoyProf::NAME_LEN - 1)) { free(l); return false; }
             JoyProf::Profile t = s_work;
             if (!JoyProf::setName(t, nm_.c_str())) continue;
             const int dup = JoyProf::find(l->p, l->n, t.name);
-            if (dup >= 0) {
-                if (!uiConfirm(TXT_JOYPROF_REPLACE)) continue;
-                idx = dup;
-            } else {
-                if (l->n >= JoyProf::MAX) { uiToast(TXT_JOYPROF_FULL, true, 2000); free(l); return false; }
-                idx = l->n++;
-            }
+            if (dup >= 0 && dup != idx) { uiToast(TXT_JOYPROF_DUP, true, 1500); continue; }
             memcpy(s_work.name, t.name, sizeof(s_work.name));
             break;
         }
@@ -491,15 +498,15 @@ void joyMappingPage() {
 }
 
 // ── Joystick > Profile: the pick list ─────────────────────────────────────────
-// Rows = the profiles in the file, then "+ New profile". Value = the profile's
-// index; the New row is JoyProf::MAX. The table is cached for the menu session (the
-// renderer asks for it per drawn row) and allocated only while the menu is up.
+// The Config-profiles shape: all JoyProf::MAX numbered slots are always listed,
+// "#NN name" or a bare "#NN" for an empty one, value = the slot index. The table is
+// cached for the menu session (the renderer asks for it per drawn row) and allocated
+// only while the menu is up.
 
-#define JP_NEW  JoyProf::MAX
 #define JP_LBL  (JoyProf::NAME_LEN + 4)
 struct JoyRows {
     JoyList list;
-    Option  opts[JoyProf::MAX + 1];
+    Option  opts[JoyProf::MAX];
     char    lbl[JoyProf::MAX][JP_LBL];
     bool    valid;
 };
@@ -518,12 +525,13 @@ static JoyRows* jpRows() {
     }
     if (!s_rows->valid) {
         JoyList& l = s_rows->list;
-        l.n = Config::joyProfilesLoad(l.p, JoyProf::MAX);
+        Config::joyProfilesLoad(l.p, JoyProf::MAX);
+        l.n = JoyProf::MAX;
         for (int i = 0; i < l.n; i++) {
-            snprintf(s_rows->lbl[i], JP_LBL, "%s", l.p[i].name);
+            if (l.p[i].name[0]) snprintf(s_rows->lbl[i], JP_LBL, "#%02d %s", i + 1, l.p[i].name);
+            else                snprintf(s_rows->lbl[i], JP_LBL, "#%02d", i + 1);
             s_rows->opts[i] = { s_rows->lbl[i], (int32_t)i, nullptr };
         }
-        s_rows->opts[l.n] = { TXT_JOYPROF_NEW, (int32_t)JP_NEW, nullptr };
         s_rows->valid = true;
     }
     return s_rows;
@@ -532,11 +540,11 @@ static JoyRows* jpRows() {
 const Option* joyprof_rows(uint8_t& cnt) {
     JoyRows* r = jpRows();
     if (!r) { cnt = 0; return nullptr; }
-    cnt = (uint8_t)(r->list.n + 1);
+    cnt = (uint8_t)r->list.n;
     return r->opts;
 }
 
-// Which row is the live pad: its profile's index, -1 when it has none.
+// Which row is the live pad: its profile's slot, -1 when it has none.
 int32_t joyprof_current() {
     if (Config::joy_profile.empty()) return -1;
     JoyRows* r = jpRows();
@@ -557,24 +565,26 @@ const char* joyprof_vlabel() {
     return s_vlabel;
 }
 
-// Enter = use it (or start a new one), F4 = edit, F6 = rename, F8 = remove.
+// Enter = use it, F4 = edit, F6 = rename, F8 = remove. On an EMPTY slot Enter (and
+// F4) add a profile there.
 void joyprof_key(int32_t tag, uint8_t key) {
     JoyRows* r = jpRows();
     if (!r) { uiToast(TXT_JOYPROF_NOMEM, true, 1500); return; }
+    if (tag < 0 || tag >= r->list.n) return;
 
-    if (tag == JP_NEW) {
-        if (key != 0 && key != 4) return;
-        if (r->list.n >= JoyProf::MAX) { uiToast(TXT_JOYPROF_FULL, true, 2000); return; }
-        // A new profile starts from the live pad: the usual reason to make one is
-        // "this, but with fire on another button".
-        liveToProfile(s_work);
-        s_target = -1;
+    if (!r->list.p[tag].name[0]) {
+        if (key != 0 && key != 3 && key != 4) return;
+        // A new profile always starts from the defaults (Kempston + its default
+        // map), never from the live pad. Save asks for its name.
+        memset(&s_work, 0, sizeof(s_work));
+        s_work.type = JOY_KEMPSTON;
+        Config::joyDefaults(s_work.type, s_work.map);
+        s_target = tag;
         s_orig = s_work;
         mappingPage();
         invalidateRows();
         return;
     }
-    if (tag < 0 || tag >= r->list.n) return;
     JoyProf::Profile p = r->list.p[tag];
 
     if (key == 0 || key == 3) {                       // use
@@ -619,8 +629,7 @@ void joyprof_key(int32_t tag, uint8_t key) {
         char q[64];
         snprintf(q, sizeof(q), "Remove profile \"%.20s\" ?", p.name);
         if (!uiConfirm(q)) return;
-        for (int i = tag; i + 1 < r->list.n; i++) r->list.p[i] = r->list.p[i + 1];
-        r->list.n--;
+        memset(&r->list.p[tag], 0, sizeof(r->list.p[tag]));     // the slot empties, the others keep their numbers
         if (!Config::joyProfilesSave(r->list.p, r->list.n)) uiToast(TXT_JOYPROF_SAVE_ERR, true, 2000);
         // The live pad keeps its map; it just has no profile behind it any more.
         if (Config::joy_profile == p.name) { Config::joy_profile.clear(); Config::save(); }

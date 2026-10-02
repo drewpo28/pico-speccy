@@ -2297,16 +2297,21 @@ void Config::byteTestRomReset() {
 static_assert(JOY_CURSOR == 0 && JOY_KEMPSTON == 1 && JOY_SINCLAIR1 == 2 &&
               JOY_SINCLAIR2 == 3 && JOY_FULLER == 4, "JoyProfiles.cpp kType[] order");
 
+// Fills ALL `cap` slots (an empty one has name ""), returns how many are used.
 int Config::joyProfilesLoad(JoyProf::Profile* out, int cap) {
+    memset(out, 0, sizeof(JoyProf::Profile) * cap);
     if (!FileUtils::fsMount) return 0;
     FIL* f = fopen2(JOYPROF_PATH, FA_READ);
     if (!f) return 0;
     LineReader rd(f);
     string l;
-    int n = 0;
-    while (n < cap && rd.line(l)) {
-        if (!JoyProf::parseLine(l.data(), l.size(), out[n])) continue;
-        if (JoyProf::find(out, n, out[n].name) >= 0) continue;   // first one wins
+    int slot = 0, n = 0;
+    while (slot < cap && rd.line(l)) {
+        if (JoyProf::isEmptySlotLine(l.data(), l.size())) { slot++; continue; }
+        JoyProf::Profile p;
+        if (!JoyProf::parseLine(l.data(), l.size(), p)) continue;
+        if (JoyProf::find(out, slot, p.name) >= 0) continue;     // first one wins
+        out[slot++] = p;
         n++;
     }
     fclose2(f);
@@ -2319,15 +2324,17 @@ bool Config::joyProfilesSave(const JoyProf::Profile* list, int n) {
     FIL* f = fopen2(JOYPROF_PATH, FA_WRITE | FA_CREATE_ALWAYS);
     if (!f) return false;
     static const char hdr[] =
-        "# pico-speccy joystick profiles: name<TAB>type<TAB>Left,Right,Up,Down,"
-        "Start,Select,A,B,C,X,Y,Z,L2,R2\n";
+        "# pico-speccy joystick profiles, one slot per line ('-' = empty slot):\n"
+        "# name<TAB>type<TAB>Left,Right,Up,Down,Start,Select,A,B,C,X,Y,Z,L2,R2\n";
     UINT bw;
     bool ok = f_write(f, hdr, sizeof(hdr) - 1, &bw) == FR_OK && bw == sizeof(hdr) - 1;
     char line[320];
+    while (n > 0 && !list[n - 1].name[0]) n--;      // nothing after the last used slot
     for (int i = 0; ok && i < n; i++) {
-        const size_t len = JoyProf::formatLine(list[i], line, sizeof(line));
-        if (!len) continue;
-        ok = f_write(f, line, len, &bw) == FR_OK && bw == len;
+        size_t len = list[i].name[0] ? JoyProf::formatLine(list[i], line, sizeof(line)) : 0;
+        const char* out = line;
+        if (!len) { out = JoyProf::kEmptySlotLine; len = 2; }   // keeps the numbering below it
+        ok = f_write(f, out, len, &bw) == FR_OK && bw == len;
     }
     fclose2(f);
     return ok;

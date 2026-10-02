@@ -96,7 +96,7 @@ public:
     // before); joy_profile names the profile they were last loaded from or saved to,
     // "" = an unsaved map. The file is only the library: nothing reads it at boot.
     static std::string joy_profile;
-    static int  joyProfilesLoad(JoyProf::Profile* out, int cap);  // count, 0 = none
+    static int  joyProfilesLoad(JoyProf::Profile* out, int cap);  // fills cap slots; returns used
     static bool joyProfilesSave(const JoyProf::Profile* list, int n);
 
     // arch/romSet* always hold a real table index after load(); only the pref_*
