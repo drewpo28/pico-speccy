@@ -79,8 +79,10 @@ external/     vendored third-party code: tinyusb, fatfs, picomp3lib, miniz, mini
 `external/` (`"miniz/miniz.h"`); a header in the SAME directory as its includer is
 spelled bare. Both roots are on the include path; there is no `-Isrc/roms` any more.
 Driver libraries keep their own bare includes (they build without `-Isrc`). Linker
-and overlay rules match objects by BASENAME (`*Z80_JLS.cpp.o`, `*GS.cpp.o`,
-`*tsconf_roms.c.o`), so .c/.cpp names must stay unique across the whole tree.
+and overlay rules match objects by BASENAME (`*Z80_JLS.cpp.o*`, `*GS.cpp.o*`,
+`*tsconf_roms.c.o*`), so .c/.cpp names must stay unique across the whole tree.
+The trailing `*` is load-bearing: on a Windows host CMake names objects `X.c.obj`,
+and a rule ending in `.o` silently matches nothing there (the link then fails).
 Reorganised 2026-09-30; all 17 variants were diffed against the pre-move build:
 RAM identical, no function changed RAM/flash placement.
 
