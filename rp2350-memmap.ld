@@ -91,7 +91,7 @@ SECTIONS
          * because ld assigns an input section to the FIRST output section that
          * matches it in script order, and both of those come earlier. */
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:
-                       *scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o) .rodata*)
+                       *scorpion_gmx_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o*) .rodata*)
         *(.srodata*)
         . = ALIGN(4);
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
@@ -147,7 +147,7 @@ SECTIONS
      * back, so a byte nobody initialised would survive as a live palette entry. */
     .hdmi_lut (NOLOAD): {
         . = ALIGN(4096);
-        *hdmi.c.o(.bss.conv_color)
+        *hdmi.c.o*(.bss.conv_color)
         . = ALIGN(4);
     } > RAM
 
@@ -179,7 +179,7 @@ SECTIONS
 
         *(.text*)
         . = ALIGN(4);
-        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o) .rodata*)
+        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o*) .rodata*)
         . = ALIGN(4);
 
         *(.data*)
@@ -357,9 +357,9 @@ SECTIONS
      * __flash_binary_end covers the ROMs so the UF2 and the overflow ASSERT do. */
     .psramroms : ALIGN(4096) {
         KEEP(*(.psramrom_magic))
-        KEEP(*scorpion_gmx_rom.c.o(.rodata*))
-        KEEP(*tsconf_roms.c.o(.rodata*))
-        KEEP(*atm_roms.c.o(.rodata*))
+        KEEP(*scorpion_gmx_rom.c.o*(.rodata*))
+        KEEP(*tsconf_roms.c.o*(.rodata*))
+        KEEP(*atm_roms.c.o*(.rodata*))
         . = ALIGN(4);
     } > FLASH =0xaa
     __psramrom_start = ADDR(.psramroms);

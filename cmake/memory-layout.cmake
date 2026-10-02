@@ -13,8 +13,8 @@
 # cannot spare the SRAM — see the TS-Conf performance notes in CLAUDE.md.
 option(Z80_CORE_IN_RAM "Place the Z80 core (src/speccy/z80/Z80_JLS.cpp) in SRAM instead of flash" ON)
 if (Z80_CORE_IN_RAM)
-    set(Z80_CORE_TEXT_EXCLUDE "*Z80_JLS.cpp.o")
-    set(Z80_CORE_RAM_RULE "*Z80_JLS.cpp.o(.text .text.*)")
+    set(Z80_CORE_TEXT_EXCLUDE "*Z80_JLS.cpp.o*")
+    set(Z80_CORE_RAM_RULE "*Z80_JLS.cpp.o*(.text .text.*)")
 else()
     set(Z80_CORE_TEXT_EXCLUDE "")
     set(Z80_CORE_RAM_RULE "")
@@ -191,10 +191,10 @@ endif()
 # therefore stop collecting. Built from the options that are actually on.
 set(OVL_EXCLUDE_OBJECTS "")
 if (GS_CODE_OVERLAY)
-    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *GS.cpp.o *Z80_redcode.c.o *NgsSd.cpp.o *NgsMp3.cpp.o")
+    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *GS.cpp.o* *Z80_redcode.c.o* *NgsSd.cpp.o* *NgsMp3.cpp.o*")
 endif()
 if (DMA_CODE_OVERLAY)
-    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *Z80DMA.cpp.o")
+    set(OVL_EXCLUDE_OBJECTS "${OVL_EXCLUDE_OBJECTS} *Z80DMA.cpp.o*")
 endif()
 string(STRIP "${OVL_EXCLUDE_OBJECTS}" OVL_EXCLUDE_OBJECTS)
 
@@ -236,8 +236,8 @@ if (GS_CODE_OVERLAY)
     set(GSOVL_SECTION "\
     .gsovl __gsovl_win_start : {\n\
         __gsovl_start = .;\n\
-        *GS.cpp.o(.time_critical*)\n\
-        *Z80_redcode.c.o(.time_critical*)\n\
+        *GS.cpp.o*(.time_critical*)\n\
+        *Z80_redcode.c.o*(.time_critical*)\n\
         . = ALIGN(4);\n\
         __gsovl_end = .;\n\
     } AT > FLASH\n\
@@ -251,8 +251,8 @@ if (GS_CODE_OVERLAY)
     set(NGSOVL_SECTION "\
     .ngsovl __ngsovl_win_start : {\n\
         __ngsovl_start = .;\n\
-        *NgsSd.cpp.o(.time_critical*)\n\
-        *NgsMp3.cpp.o(.time_critical*)\n\
+        *NgsSd.cpp.o*(.time_critical*)\n\
+        *NgsMp3.cpp.o*(.time_critical*)\n\
         *(.ngsovl .ngsovl.*)\n\
         . = ALIGN(4);\n\
         __ngsovl_end = .;\n\
@@ -285,7 +285,7 @@ if (DMA_CODE_OVERLAY)
     set(DMAOVL_SECTION "\
     .dmaovl __dmaovl_win_start : {\n\
         __dmaovl_start = .;\n\
-        *Z80DMA.cpp.o(.time_critical*)\n\
+        *Z80DMA.cpp.o*(.time_critical*)\n\
         . = ALIGN(4);\n\
         __dmaovl_end = .;\n\
     } AT > FLASH\n\
