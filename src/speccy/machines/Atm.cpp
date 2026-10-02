@@ -18,6 +18,9 @@
 #include "speccy/core/RomOverlay.h"
 #include "speccy/video/Video.h"
 #include "speccy/z80/z80.h"
+#if EVO_CFG_TRACE
+static uint16_t s_evo_tr_n = 0;   // evoTrace budget, re-armed by reset()
+#endif
 
 
 uint8_t g_atm_ro = 0;
@@ -33,6 +36,7 @@ bool     atm3 = false;
 bool     evo = false;
 uint8_t  pEFF7 = 0;
 bool     inNmi = false;
+bool     nmiClrPending = false;
 uint64_t intAckFrame = ~0ull;
 uint8_t  fddMask = 0;
 uint8_t  vgSys = 0;
@@ -314,6 +318,10 @@ void reset() {
         a77 = 0x0200;
         p77 = 0x20;
     } else if (evo) {
+#if EVO_CFG_TRACE
+        s_evo_tr_n = 0;
+        Debug::log("[EVOP] reset");
+#endif
         // zports.v reset: scr_mode 3 (ZX), turbo off, atm_pen = 1 (no manager: the last
         // ROM page in every window), atm_cpm_n = 0 (DOS signal held up), atm_pen2 = 0
         // (no palette through #FF) — i.e. #77 as if written with A14 = 1, A9 = A8 = 0.
@@ -324,6 +332,7 @@ void reset() {
         pFDFD = 0;
         pEFF7 = 0;
         inNmi = false;
+        nmiClrPending = false;
         inTrdemu = false;
         fddMask = 0;
         vgSys = 0;
@@ -410,8 +419,20 @@ void bootRom(BootTarget t) {
 // ZX-Evo NMI (Print Screen / #BF D3 / a breakpoint): znmi.v holds in_nmi from the
 // NMI until OUT (#BE), and atm_pager.v maps RAM page #FF into #0000-#3FFF meanwhile —
 // so the #0066 the CPU jumps to is ERS's resident handler, not the running ROM.
+void nmiClrApply() {
+    nmiClrPending = false;
+    if (inNmi) { inNmi = false; remap(); }
+}
+
+#if EVO_CFG_TRACE
+static int s_nmi_tr = 0;   // port accesses still to log after an NMI
+#endif
 void nmiEnter() {
     if (!evo) return;
+#if EVO_CFG_TRACE
+    Debug::log("[NMI] RAM #FF in window 0, pc=%04X", Z80::getRegPC());
+    s_nmi_tr = 300;
+#endif
     inNmi = true;
     remap();
 }
@@ -480,6 +501,10 @@ VMode videoMode() {
         case 0:  return VM_EGA;
         case 2:  return VM_HIRES;
         case 6:  return VM_TEXT;
+        // ZX-Evo BaseConf (video_modedecode.v mode_a_txt_1page): the 80x25 text mode
+        // with symbols, attributes and both halves in ONE page, #08 (EVO Reset
+        // Service's Magic menu). Elsewhere code 7 is undefined and renders as ZX.
+        case 7:  return evo ? VM_TEXT1 : VM_ZX;
         default: return VM_ZX;       // 3 = ZX; the undefined codes render as ZX (MAME)
     }
 }
@@ -527,6 +552,16 @@ static void write77(uint16_t address, uint8_t data) {
     const uint8_t oldTurbo = p77 & 0x08;
     a77 = address;
     p77 = data;
+    // ZX-Evo (zdos.v): DOS drops on ANY M1 from a RAM window while /CPM = 1, not only
+    // on a jump into one. An OUT that raises /CPM from RAM therefore drops DOS at the
+    // very next fetch, before control leaves RAM — check_trdos only sees jump TARGETS,
+    // so it would miss it. EVO Reset Service enters ProfROM exactly so: JP #BF5A (in
+    // RAM, /CPM still 0) / OUT (#FF77),#A3 / RET to #0000 — with DOS left up the ROM's
+    // DOS bit picked the service page 15 instead of page 14 (hw 2026-10-02).
+    if (evo && beta && !cpmOn() && (a77 & 0x100)) {
+        const uint8_t w = (uint8_t)(Z80::getRegPC() >> 14);
+        if (!(pF7[((p7ffd & 0x10) >> 2) + w] & 0x100)) beta = false;
+    }
     dosRecalc();
     remap();
     if (evo) {
@@ -608,9 +643,31 @@ static bool trdemuTrap(uint8_t lo) {
     return true;
 }
 
+#if EVO_CFG_TRACE
+// ZX-Evo configuration writes with the guest PC: #7FFD (A15 = 0, FD/FC), #xx77 and
+// #EFF7 — the same filter and line shape as tools/evo_sim.c ONLYCFG=1, so a capture
+// diffs against the RTL model. Runs of one (port, value, pc) collapse; the budget is
+// re-armed by every reset so a post-F11 capture is not empty.
+static void evoTrace(uint16_t address, uint8_t data) {
+    static uint16_t la = 0, lpc = 0; static uint8_t lv = 0; static uint32_t rep = 0;
+    const uint16_t pc = Z80::getRegPC();
+    if (s_evo_tr_n >= 1500) return;
+    if (address == la && data == lv && pc == lpc) { rep++; return; }
+    if (rep) { Debug::log("[EVOP] ... x%lu", (unsigned long)rep); rep = 0; }
+    la = address; lv = data; lpc = pc; s_evo_tr_n++;
+    Debug::log("[EVOP] pc=%04X %04X=%02X", pc, address, data);
+}
+#endif
+
 static bool evoPortWrite(uint16_t address, uint8_t data) {
     const uint8_t lo = (uint8_t)address;
     const bool sh = dosPorts();
+#if EVO_CFG_TRACE
+    if (((lo == 0xFD || lo == 0xFC) && !(address & 0x8000)) || lo == 0x77 ||
+        lo == 0xBF || lo == 0xBE || lo == 0xBD ||
+        (lo == 0xF7 && (address & 0x100) && (sh || !(address & 0x1000))))
+        evoTrace(address, data);
+#endif
     switch (lo) {
     case 0xBF: {                                              // always
         const uint8_t old = pBF;
@@ -628,7 +685,14 @@ static bool evoPortWrite(uint16_t address, uint8_t data) {
     }
     case 0xBE:                                               // OUT = leave NMI / the FDD emulator
         // zdos.v: in_trdemu clears on clr_nmi only when NOT in NMI.
-        if (inNmi || inTrdemu) { if (!inNmi) inTrdemu = false; inNmi = false; remap(); }
+        // znmi.v: in_nmi does NOT drop at the OUT — clr_nmi loads clr_count = 3 and
+        // in_nmi clears after two more M1 refreshes, so the RETN that follows is still
+        // fetched from RAM page #FF (EVO Reset Service's OUT_NMI: OUT (#BE),A / RETN at
+        // #001B). Dropping it here fetched RETN from the ROM page under it and the
+        // Magic menu ran into the 48K cold start. Deferred to the next control transfer
+        // (check_trdos -> nmiClrApply). in_trdemu has no such delay (zdos.v).
+        if (inNmi) nmiClrPending = true;
+        else if (inTrdemu) { inTrdemu = false; remap(); }
         return true;
     case 0xBD:                                               // A12..A8 = #13: the FDD mask
         if (((address >> 8) & 0x1F) == 0x13) fddMask = data & 0x0F;
@@ -728,7 +792,12 @@ static bool evoPortRead(uint16_t address, uint8_t& v) {
 
 bool portWrite(uint16_t address, uint8_t data) {
     const uint8_t lo = (uint8_t)address;
-    if (evo) return evoPortWrite(address, data);
+    if (evo) {
+#if EVO_CFG_TRACE
+        if (s_nmi_tr > 0) { s_nmi_tr--; Debug::log("[NMIP] OUT pc=%04X %04X=%02X sh=%d", Z80::getRegPC(), address, data, (int)dosPorts()); }
+#endif
+        return evoPortWrite(address, data);
+    }
     if (atm1) {
         if (address & 2) return false;
         if ((address & 0x8202) == 0x0000) { palWrite(data); return true; }        // #7DFD
@@ -864,7 +933,13 @@ static inline uint8_t atm1FeBit7() {
 }
 
 bool portRead(uint16_t address, uint8_t& v) {
-    if (evo) return evoPortRead(address, v);
+    if (evo) {
+        const bool r = evoPortRead(address, v);
+#if EVO_CFG_TRACE
+        if (s_nmi_tr > 0) { s_nmi_tr--; Debug::log("[NMIP] IN  pc=%04X %04X=%s%02X sh=%d", Z80::getRegPC(), address, r ? "" : "gen:", r ? v : 0, (int)dosPorts()); }
+#endif
+        return r;
+    }
     if (atm1) {
         // IN #FB (%nnnnnnnn Xnnnn0n1): the Centronics status, and the low address
         // byte is latched — A7 is CPSYS. D7 = BUSY (0 = free), D6 = ULINE, D5..D0 = 1;

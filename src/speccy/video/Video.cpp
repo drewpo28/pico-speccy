@@ -6934,11 +6934,20 @@ void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
         const uint32_t base = 0x01C0 + row * 64;
         // ZX-Evo: the character generator is a RAM (#BF D2), initialised from the ATM font.
         const uint8_t* fnt = (Atm::evo && Atm::font) ? Atm::font : gb_rom_atm_font;
+        // TEXT1 (ZX-Evo mode 7, video_addrgen.v addr_at with mode_a_txt_1page): the
+        // page select of mode 6 (symbols 5 / attributes 1) becomes +#2000 inside RAM
+        // page 8, and mode 6's +#2000 half-line interleave becomes +#1000.
+        const bool one = (vm == Atm::VM_TEXT1);
+        const uint8_t* p8 = one ? MemESP::ram[8].direct() : nullptr;
+        if (one && !p8) { memset(dst, profi_pair_lookup[0][0], 320); return; }
+        const uint8_t* ts = one ? p8 : scr;              // symbols
+        const uint8_t* ta = one ? p8 + 0x2000 : alt;     // attributes
+        const uint32_t half = one ? 0x1000u : 0x2000u;   // second half of the line
         for (int cx = 0; cx < 80; cx++) {
             const uint32_t x = (uint32_t)cx >> 1;
             uint8_t sym, at;
-            if (cx & 1) { sym = scr[0x2000 + base + x]; at = alt[base + x + 1]; }
-            else        { sym = scr[base + x];          at = alt[0x2000 + base + x]; }
+            if (cx & 1) { sym = ts[half + base + x]; at = ta[base + x + 1]; }
+            else        { sym = ts[base + x];        at = ta[half + base + x]; }
             const uint8_t b  = fnt[sym * 8 + gl];
             const uint8_t fg = (uint8_t)(((at & 0x40) >> 3) | (at & 0x07));
             const uint8_t bg = (uint8_t)(((at & 0x80) >> 4) | ((at >> 3) & 0x07));

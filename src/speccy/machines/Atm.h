@@ -68,7 +68,7 @@ extern uint8_t g_atm_ro;
 extern uint8_t g_atm_fnt;
 
 namespace Atm {
-    enum VMode : uint8_t { VM_ZX = 0, VM_EGA = 1, VM_HIRES = 2, VM_TEXT = 3 };
+    enum VMode : uint8_t { VM_ZX = 0, VM_EGA = 1, VM_HIRES = 2, VM_TEXT = 3, VM_TEXT1 = 4 };  // TEXT1: ZX-Evo 80x25 in RAM page 8
 
     extern bool     atm1;       // ATM-Turbo 1 board (else 2+), set by bindRoms
     extern bool     atm3;       // ATM-Turbo 3 (4 MB + #BF / #x7F7 / #xxE7), set by bindRoms
@@ -79,6 +79,8 @@ namespace Atm {
     extern bool     evo;
     extern uint8_t  pEFF7;
     extern bool     inNmi;      // NMI state: RAM page #FF in window 0 until OUT (#BE)
+    extern bool     nmiClrPending; // OUT (#BE) seen; in_nmi drops at the next control transfer
+    void nmiClrApply();
     extern uint8_t  fddMask;    // #13BD: drives served by EVO Reset Service's FDD emulator
     extern uint8_t  vgSys;      // last #FF (FDC system register) write
     extern bool     inTrdemu;   // RAM page #FE in window 0 (base_trdemu in_trdemu)

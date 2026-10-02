@@ -398,7 +398,13 @@ uint8_t RTC::readData(bool avrExt) {
     // keyboard modifier statuses) — see ZxEvoAvr.h and writeData().
     if (avrExt && rtcAvrMachine()) {
         if (sel >= 0xF0)  return ZxEvoAvr::readExt(sel, regs[0x0A]);
-        if (sel == 0x0D)  return ZxEvoAvr::regD();
+        // Reg D: the AVR answers the keyboard modifiers in D6..D0 and (current
+        // firmware) 0 in D7. The 2011 Evo ProfROM in zxevo_fe.rom tests D7 as
+        // the MC146818 VRT bit after its 0x40..0x7E checksum (page 17 #1AC5) and
+        // reports "CMOS checksum error" on every boot without it — the AVR's own
+        // init value for the cell is 0x80 (GLUK_D_INIT_VALUE). BaseConf only:
+        // on TS-Conf the byte stays the AVR's (Wild Commander reads it).
+        if (sel == 0x0D)  return (uint8_t)(ZxEvoAvr::regD() | (Z80Ops::isAtm ? 0x80 : 0));
         if (sel == 0x0E)  return ZxEvoAvr::regE();
     }
     // While SET is up the update cycle is halted on the real chip — expose the

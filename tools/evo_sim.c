@@ -28,7 +28,7 @@ static int plog = 400;
 static uint8_t p7ffd, peff7;
 static uint8_t pages[4][2], ramnrom[4][2], dos7ffd[4][2];   // [window][map]
 static int atm_pen = 1, atm_cpm_n = 0, atm_pen2 = 0, atm_turbo = 0, scr_mode = 3;
-static int shadow_en = 0, dos = 1, in_nmi = 0, set_nmi_r = 0;
+static int shadow_en = 0, dos = 1, in_nmi = 0, set_nmi_r = 0, in_nmi_2 = 0, clr_count = 0;
 static uint8_t glu_addr, glu[256];
 static uint8_t bfreg, fdd_mask, vg_sys; static int in_trdemu;
 
@@ -55,7 +55,11 @@ static uint8_t* mp(uint16_t a, int* isrom, int* ramwin) {
 static uint8_t rd(void* c, uint16_t a) { int r, w; return *mp(a, &r, &w); }
 static long tr_from = -1, tr_to = -1;
 static uint8_t fetch(void* c, uint16_t a) {
+    // znmi.v: the M1 at #0066 after an NMI reads #00 (drive_00), and in_nmi (RAM #FF in
+    // window 0) rises only after that M1 — the handler starts at #0067.
+    if (in_nmi_2 && a == 0x0066) { in_nmi_2 = 0; in_nmi = 1; printf("NMI: #0066 NOP, RAM #FF in window 0\n"); return 0x00; }
     int r, w; uint8_t* p = mp(a, &r, &w);
+    if (clr_count && --clr_count == 1) { clr_count = 0; in_nmi = 0; }
     { long t = (long)frame * 1000000L + T + (long)cpu.cycles;
       if (t >= tr_from && t < tr_to) printf("X %04X %02X a=%02X bc=%04X de=%04X hl=%04X\n", a, *p,
           cpu.af.uint16_value >> 8, cpu.bc.uint16_value, cpu.de.uint16_value, cpu.hl.uint16_value); }
@@ -69,9 +73,17 @@ static uint8_t fetch(void* c, uint16_t a) {
     if (!atm_cpm_n) dos = 1;
     return *p;
 }
-static void wr(void* c, uint16_t a, uint8_t v) { int r, w; uint8_t* p = mp(a, &r, &w); if (!r) *p = v; }
+static void wr(void* c, uint16_t a, uint8_t v) { int r, w; uint8_t* p = mp(a, &r, &w);
+    // WATCHFF=off: log every write to RAM page #FF at that offset (who sets ERS's flags).
+    { static int wo = -2; if (wo == -2) wo = getenv("WATCHFF") ? (int)strtol(getenv("WATCHFF"), 0, 16) : -1;
+      if (wo >= 0 && !r && p == &ram[255][wo]) printf("WATCH f=%d T=%ld pc=%04X [%04X]=%02X\n", frame, T + (long)cpu.cycles, cpu.pc.uint16_value, a, v); }
+    if (!r) *p = v; }
 
+static int only_cfg = -1;   // ONLYCFG=1: log only #7FFD/#FC, #xx77, #EFF7 writes
 static void logp(const char* k, uint16_t port, uint8_t v) {
+    if (only_cfg < 0) only_cfg = getenv("ONLYCFG") != NULL;
+    if (only_cfg) { uint8_t lo = port & 0xFF;
+        if (k[0] != 'O' || !(lo == 0xFD || lo == 0xFC || lo == 0x77 || (lo == 0xF7 && !(port & 0x1000) && (port & 0x100)))) return; }
     if (plog-- > 0) printf("%s f=%d T=%ld pc=%04X %04X=%02X sh=%d dos=%d\n", k, frame, T + (long)cpu.cycles,
                            cpu.pc.uint16_value, port, v, shadow(), dos);
 }
@@ -111,7 +123,8 @@ static void io_out(void* c, uint16_t port, uint8_t v) {
     logp("OUT", port, v);
     if ((lo == 0xFD || lo == 0xFC) && !(port & 0x8000)) { if (!((p7ffd & 0x20) && block1m())) p7ffd = v; }
     if (lo == 0xBF) { if ((bfreg & 8) && !(v & 8)) set_nmi_r = 1; bfreg = v; shadow_en = v & 1; }
-    if (lo == 0xBE) { if (!in_nmi) in_trdemu = 0; in_nmi = 0; }
+    // znmi.v: clr_nmi loads clr_count = 3, in_nmi clears two M1 refreshes later.
+    if (lo == 0xBE) { if (!in_nmi) in_trdemu = 0; if (in_nmi) clr_count = 3; }
     if (lo == 0xBD && ((port >> 8) & 0x1F) == 0x13) fdd_mask = v & 15;
     if (lo == 0xFF && shadow()) vg_sys = v;
     if (lo == 0xF7) {
@@ -143,16 +156,32 @@ int main(int argc, char** argv) {
     cpu.context = NULL;
     z80_power(&cpu, 1); z80_instant_reset(&cpu);
     const long FRAME = 71680 * 4;   // 14 MHz worst case; the frame is wall time anyway
+    // WARM=f1[,f2,...]: a reset button press at those frames — the FPGA registers go to
+    // their reset values (zports.v / atm_pager.v rst_n), RAM and the CMOS are kept.
+    int warm[8] = {0}, nwarm = 0;
+    if (getenv("WARM")) { char* e = getenv("WARM"); while (*e && nwarm < 8) { warm[nwarm++] = strtol(e, &e, 10); if (*e == ',') e++; else break; } }
     for (; frame < nframes;) {
+        for (int k = 0; k < nwarm; k++) if (warm[k] >= 0 && frame >= warm[k]) {
+            warm[k] = -1;
+            printf("WARM RESET at frame %d (pc=%04X)\n", frame, cpu.pc.uint16_value);
+            p7ffd = peff7 = 0; memset(pages, 0, sizeof pages); memset(ramnrom, 0, sizeof ramnrom); memset(dos7ffd, 0, sizeof dos7ffd);
+            atm_pen = 1; atm_cpm_n = 0; atm_pen2 = 0; atm_turbo = 0; scr_mode = 3;
+            shadow_en = 0; dos = 1; in_nmi = 0; set_nmi_r = 0; bfreg = 0; fdd_mask = 0; vg_sys = 0; in_trdemu = 0;
+            z80_instant_reset(&cpu); plog = 20000;
+        }
         long ran = (long)z80_run(&cpu, (zusize)(FRAME - T)); T += ran; cpu.cycles = 0;
         if (T >= FRAME) {
             T -= FRAME; frame++;
             printf("F %d pc=%04X sp=%04X pen=%d dos=%d sh=%d 7ffd=%02X eff7=%02X mode=%d turbo=%d nmi=%d iff=%d\n", frame,
                    cpu.pc.uint16_value, cpu.sp.uint16_value, atm_pen, dos, shadow(), p7ffd, peff7, scr_mode, atm_turbo, in_nmi, cpu.iff1);
-            if (set_nmi_r) { set_nmi_r = 0; in_nmi = 1; z80_nmi(&cpu); }
+            { static int nmif = -2; if (nmif == -2) nmif = getenv("NMI") ? atoi(getenv("NMI")) : -1;
+              if (frame == nmif) { printf("NMI BUTTON at frame %d pc=%04X\n", frame, cpu.pc.uint16_value); set_nmi_r = 1; plog = 20000; } }
+            if (set_nmi_r && !in_nmi) { set_nmi_r = 0; in_nmi_2 = 1; z80_nmi(&cpu); }
             z80_int(&cpu, 1); T += (long)z80_run(&cpu, 32); cpu.cycles = 0; z80_int(&cpu, 0);
         }
     }
+    if (getenv("DUMPPG")) { int pg = atoi(getenv("DUMPPG")); char n[32]; snprintf(n, sizeof n, "evo_ram%d.bin", pg);
+        f = fopen(n, "wb"); fwrite(ram[pg & 255], 1, 16384, f); fclose(f); }
     int sp[] = { 1, 3, 5, 7 };
     for (int i = 0; i < 4; i++) { char n[32]; snprintf(n, sizeof n, "evo_ram%d.bin", sp[i]); f = fopen(n, "wb"); fwrite(ram[sp[i]], 1, 16384, f); fclose(f); }
     return 0;

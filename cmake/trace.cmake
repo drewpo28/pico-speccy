@@ -44,6 +44,7 @@ option(NGS_SD_TRACE "Also log every guest SD command (NGS_TRACE level 2; thousan
 option(ZC_PORT_TRACE "Enable Z-Controller/DivSD SPI-SD command tracing (CS edges + command frames)" OFF)
 option(RZX_TRACE "RZX playback log: machine/ROM sums at start, a checkpoint per second, paging changes, short/overrun frames — same lines as tools/rzx_replay_sim.c RZX_LOG=1" OFF)
 option(ATM_PAGE_TRACE "ATM-Turbo paging trace only: page-register ring + page-table writes + RST #38 alarm (no SD flood)" OFF)
+option(EVO_CFG_TRACE "ZX-Evo BaseConf: log every #7FFD/#xx77/#EFF7 write with the PC ([EVOP], same lines as tools/evo_sim.c ONLYCFG=1)" OFF)
 option(NEO8_TRAP "Wild-jump hunter: log PC history + frame snapshot when execution enters screen memory (per-instruction hook; debug builds only)" OFF)
 option(ZIFI_TRACE "Enable ZiFi (ESP-01S WiFi NIC) port/UART tracing" OFF)
 option(HID_TRACE "Enable the periodic 'HID kbd:' USB-keyboard health line (stuck-key / dead-endpoint diagnosis)" OFF)

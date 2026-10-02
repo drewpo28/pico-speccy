@@ -674,6 +674,7 @@ private:
     static void check_trdos_atm();       // ATM-Turbo part, in flash (Z80_JLS.cpp)
     static uint8_t scorp_dos_exit_rom(); // Scorpion-family DOS-exit ROM bank, in flash
     static bool byte_tape_trap();        // Byte ROM LOAD trap at 0x0557, in flash
+    static bool evo_tape_trap();         // ZX-Evo 48 BASIC RST 8 #45 LOAD hook, in flash
     static void check_trdos_unpage();                 
 };
 

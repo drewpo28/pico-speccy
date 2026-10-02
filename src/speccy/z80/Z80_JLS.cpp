@@ -744,6 +744,7 @@ void Z80::bitTest(uint8_t mask, uint8_t reg) {
 // the DOS trap (Atm::remap owns every window). FLASH (Z80_COLD), not RAM: it runs only
 // while Z80Ops::isAtm, so the RAM-resident check_trdos keeps one test for the rest.
 Z80_COLD void Z80::check_trdos_atm() {
+    if (Atm::nmiClrPending) Atm::nmiClrApply();
     const uint16_t menuCall = Atm::atm1 ? Atm::kBios1MenuCall : Atm::kBiosMenuCall;
     const uint16_t menuRet  = Atm::atm1 ? Atm::kBios1MenuRet
                             : (Config::romSetAtm == R_ATM2_106 ? Atm::kBios106MenuRet : Atm::kBiosMenuRet);
@@ -825,7 +826,8 @@ IRAM_ATTR void Z80::check_trdos() {
     // leave-on-RAM test), or PC at #3Dxx (the enter test) — not on every jump of a
     // busy game (Dune II on the ZX-Evo: ~15% of all instructions are jumps).
     if (Z80Ops::isAtm) {
-        if (Atm::beta || REG_PCh == 0x3D || Atm::cpmBootArmed || Atm::trdosMenuArmed || Atm::trdosBootState)
+        if (Atm::beta || REG_PCh == 0x3D || Atm::cpmBootArmed || Atm::trdosMenuArmed || Atm::trdosBootState ||
+            Atm::nmiClrPending)
             check_trdos_atm();
         return;
     }
@@ -1191,8 +1193,21 @@ Z80_COLD void Z80::doNMI(void) {
         Ports::port1FFD |= 0x02;
         Ports::scorpionRomUpdate();
     }
-    // ZX-Evo BaseConf: RAM page #FF replaces window 0 until OUT (#BE) (znmi.v).
-    if (Z80Ops::isAtm && Atm::evo) Atm::nmiEnter();
+    // ZX-Evo BaseConf (znmi.v): the M1 at #0066 reads #00 — the FPGA drives a NOP
+    // onto the bus (drive_00) — and RAM page #FF replaces window 0 only after that
+    // M1 (in_nmi rises at its refresh), until OUT (#BE). So the handler in page #FF
+    // starts at #0067. Switching before the #0066 fetch ran whatever byte page #FF
+    // holds there (EVO Reset Service's Magic button did nothing, hw 2026-10-02).
+    if (Z80Ops::isAtm && Atm::evo) {
+        // znmi.v: nmi_start && !in_nmi — a request while the handler runs is dropped.
+        if (Atm::inNmi) return;
+        nmi();
+        VIDEO::Draw(4, false);   // the NOP at #0066
+        regR++;
+        REG_PC = REG_WZ = 0x0067;
+        Atm::nmiEnter();
+        return;
+    }
     nmi();
 
 }
@@ -2323,6 +2338,31 @@ void Z80::decodeOpcodeee() /* XOR n */
 
 // Byte ROM LOAD trap, cold half (flash): see decodeOpcodef1. Returns true when
 // FlashLoad took the block and the POP AF / RET has been emulated.
+// ZX-Evo BaseConf, zxevo_fe.rom page 28 (the 48 BASIC ERS boots): LD-BYTES is the
+// Sinclair routine except that #0569 holds RST 8 / DEFB #45 — a hook into the ROM's
+// #3C97 extension — instead of LD C,A / CP A. Do what those two did and run the same
+// FlashLoad the CP A trap does; on success leave by the RET at #05E2 (identical to the
+// Sinclair ROM's). Anything else (no tape, fast load off, RAM there) takes the RST.
+Z80_COLD bool Z80::evo_tape_trap() {
+    if (!Atm::evo || !(g_atm_ro & 1) || MemESP::ramCurrent[0][0x056A] != 0x45) return false;
+    if (!(Config::flashload && !Config::tape_wear && !Rzx::mode && !Tape::jjScreenAnimating &&
+          (Tape::tapeFileType == TAPE_FTYPE_TAP || Tape::tapeFileType == TAPE_FTYPE_TZX ||
+           Tape::tapeFileType == TAPE_FTYPE_PZX) && Tape::tapeFileName != "none")) return false;
+    const uint8_t a = regA; const uint8_t f = getFlags(); const uint8_t c = REG_C;
+    REG_C = regA;            // LD C,A
+    cp(regA);                // CP A
+    if (Tape::FlashLoad()) {
+        if (Tape::tapeStatus == TAPE_LOADING) {
+            Tape::tapeStatus = TAPE_STOPPED;
+            if (!Tape::pzxFlashCont) Tape::tapePhase = TAPE_PHASE_STOPPED;
+        }
+        REG_PC = 0x05E2;
+        return true;
+    }
+    regA = a; setFlags(f); REG_C = c;
+    return false;
+}
+
 Z80_COLD bool Z80::byte_tape_trap() {
     if (!(Config::flashload && !Config::tape_wear && !Rzx::mode &&
         !Tape::jjScreenAnimating &&
@@ -2652,6 +2692,10 @@ void Z80::decodeRST() {    /* RST p */
         }
     }
 #endif
+    // ZX-Evo: the 48 BASIC of the EVO Reset Service set hooks LD-BYTES with RST 8 /
+    // DEFB #45 in place of LD C,A / CP A at #0569, so the CP A trap never fires there.
+    if (__builtin_expect(opCode == 0xCF && REG_PC == 0x056A, 0) && Z80Ops::isAtm &&
+        evo_tape_trap()) return;
     Z80Ops::addressOnBus(getPairIR().word, 1);
     push(REG_PC);
     REG_PC = REG_WZ = opCode & 0x38;

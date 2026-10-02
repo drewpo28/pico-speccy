@@ -13841,6 +13841,35 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
   first quarter — the unscaled-raster deviation). Cost +192 B RAM. Owed: a PERF figure after
   the change, ATM2+/ATM3 (CP/M text, NedoOS, Golden Axe) and ERS for tearing.
   Test ELFs `debug/DVp2-evo-fast1-1.0.8` (+ `-perf-`).
+- **ERS sources are in the svn: `/rom/` of pentevo** (`page5/source/nmi_service.a80`,
+  `rst8service.a80`, `global_vars.a80` — CP866). Read them before disassembling ERS again.
+  The session scratch's `svnget.py`/`ls2.py` solve svn.zxevo.ru's JS bot-check.
+- **Five ERS fixes, all hw-confirmed 2026-10-02** (owner: "работает" for each):
+  1. **DOS drops on ANY M1 from a RAM window while /CPM = 1**, not only on a jump into one.
+     ERS enters ProfROM as `JP #BF5A` (RAM, /CPM still 0) / `OUT (#FF77),#A3` / `RET` to
+     #0000. `write77` therefore drops DOS when the OUT raises /CPM with PC in a RAM window,
+     or the ROM's DOS bit picked ProfROM's service page 15 instead of 14. Symptom: G.RESET
+     => ProfROM worked once, then F11 gave a black PAPER and the next F11 hung.
+  2. **CMOS reg D bit 7 = 1 on BaseConf** (`RTC::readData`). The current AVR firmware
+     answers the keyboard modifiers there with D7 = 0, and the 2011 Evo ProfROM tests D7 as
+     the MC146818 VRT bit after its 0x40..0x7E checksum: "CMOS checksum error" on every
+     boot. TS-Conf keeps the AVR's byte, because Wild Commander reads the modifiers.
+  3. **Fast tape load: the ERS 48 BASIC (page 28) hooks LD-BYTES with `RST 8 / DEFB #45`**
+     (TAPE_EMUL_) instead of `LD C,A / CP A` at #0569. `Z80::evo_tape_trap()` (flash,
+     one test in `decodeRST`) does what those two did and runs FlashLoad.
+  4. **NMI (znmi.v):** the M1 at #0066 reads #00 (drive_00), RAM #FF enters window 0 only
+     after it, so the handler starts at #0067; and a request while in_nmi is dropped.
+     **`OUT (#BE)` drops in_nmi two M1 refreshes LATER** (`clr_count`), so the `RETN` after
+     it (OUT_NMI at #001B) is still fetched from RAM #FF — `nmiClrPending`, applied at the
+     next control transfer (`check_trdos` gate). Dropping it at the OUT fetched RETN from
+     the ROM page under it and the Magic menu fell into the 48K cold start. in_trdemu has
+     no delay (zdos.v). `tools/evo_sim.c` had the same bug and was fixed with it.
+  5. **Video mode 7 = 80x25 text in ONE page** (`mode_a_txt_1page`, video_addrgen.v):
+     symbols at RAM page 8, attributes at +#2000, the second half of a line at +#1000 (mode
+     6: pages 5/1 and +#2000). `Atm::VM_TEXT1`. The Magic menu draws in it.
+  The Magic menu entry is `DEBUG_ONOFF` (page #FF:#0013) = 0 -> CONTINUE_MAGIC (#0034 in
+  ROM_RST83). `-DEVO_CFG_TRACE=ON` also logs 300 port accesses after an NMI (`[NMIP]`).
+  `evo_sim` gained `NMI=frame`, `WATCHFF=offset`, `WARM=`, `ONLYCFG=1`, `DUMPPG=`.
 
 ## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 + ZXM-Phoenix 2 MB (2026-09-26, NOT hw-tested)
 
