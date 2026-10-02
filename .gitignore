@@ -10,6 +10,7 @@ __pycache__/
 !build_all.sh
 !build_all.bat
 !build_all.ps1
+!cmake/build-name.cmake
 firmware
 drew.todo
 debug
