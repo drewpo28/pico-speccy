@@ -13844,7 +13844,7 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
 - **ERS sources are in the svn: `/rom/` of pentevo** (`page5/source/nmi_service.a80`,
   `rst8service.a80`, `global_vars.a80` — CP866). Read them before disassembling ERS again.
   The session scratch's `svnget.py`/`ls2.py` solve svn.zxevo.ru's JS bot-check.
-- **Five ERS fixes, all hw-confirmed 2026-10-02** (owner: "работает" for each):
+- **Six ZX-Evo fixes, all hw-confirmed 2026-10-02** (owner: "работает" for each):
   1. **DOS drops on ANY M1 from a RAM window while /CPM = 1**, not only on a jump into one.
      ERS enters ProfROM as `JP #BF5A` (RAM, /CPM still 0) / `OUT (#FF77),#A3` / `RET` to
      #0000. `write77` therefore drops DOS when the OUT raises /CPM with PC in a RAM window,
@@ -13867,6 +13867,11 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
   5. **Video mode 7 = 80x25 text in ONE page** (`mode_a_txt_1page`, video_addrgen.v):
      symbols at RAM page 8, attributes at +#2000, the second half of a line at +#1000 (mode
      6: pages 5/1 and +#2000). `Atm::VM_TEXT1`. The Magic menu draws in it.
+  6. **The AVR PS/2 log runs on BaseConf too** (`avrLive()` in ZxEvoAvr.cpp = TS-Conf or
+     `Atm::evo`): NedoOS for the Evo (`PS2KBD=1`, kernel/ps2drv.asm) reads its whole
+     keyboard from the log (type 2 via #DEF7/#BEF7, register #F7), and `hidKey` fed it on
+     TS-Conf only — NedoOS booted and no key reached its terminal. The F-key hand-over
+     (`keysToGuest`, AUTO/ON/OFF hotkey) follows the same gate.
   The Magic menu entry is `DEBUG_ONOFF` (page #FF:#0013) = 0 -> CONTINUE_MAGIC (#0034 in
   ROM_RST83). `-DEVO_CFG_TRACE=ON` also logs 300 port accesses after an NMI (`[NMIP]`).
   `evo_sim` gained `NMI=frame`, `WATCHFF=offset`, `WARM=`, `ONLYCFG=1`, `DUMPPG=`.

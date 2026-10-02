@@ -2276,7 +2276,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             notify(Config::profi_ext_keys ? " XT keyboard ON " : " XT keyboard OFF ", LEVEL_INFO, 900);
             return;
         }
-        if (Z80Ops::isTsconf) {
+        if (Z80Ops::isTsconf || (Z80Ops::isAtm && Atm::evo)) {
             // ON -> OFF -> AUTO, for the session only: AUTO is the resting
             // state (the guest's own polling decides) and a machine reset
             // drops any override, because a reset starts a new program.
