@@ -730,8 +730,17 @@ static void powerOnDramFill(uint8_t *p, uint32_t page) {
 // boot went wrong in ways that only F12 cleared (hw 2026-09-20 — F12 works precisely
 // because setup() runs this). Flash-backed pointers are skipped; the pattern is
 // deterministic per page, which is what halt2int's floating-bus verdict needs.
-void ESPectrum::powerOnRamFill() {
-  const bool dramPattern = !isKarabasRomset(Config::romSet);
+void ESPectrum::powerOnRamFill(int arch, int romset) {
+  // ZX Evolution BaseConf: zeros, as UnrealSpeccy powers up. EvoProfROM's Shadow
+  // monitor saves the old #BF in #8001 of the CALLER's window-2 page (page 15
+  // #00B7, before it maps its work page #FB there) and restores it from #8001 of
+  // page #FB (#050C) — a cell nothing ever writes (its cold init clears from #8069
+  // up). With the DRAM pattern that byte was #FE: #BF got D3 = 1, and the next
+  // ordinary #BF write made the falling edge — an NMI into the monitor whenever
+  // TR-DOS was picked from the 128 menu (hw 2026-10-03). Zero = harmless #BF = 0.
+  const RomsetIdx rs = romset < 0 ? (RomsetIdx)Config::romSet : (RomsetIdx)romset;
+  const bool evo = arch < 0 ? Config::isEvoBase() : (arch == A_ATM && isEvoBaseRomset(rs));
+  const bool dramPattern = !isKarabasRomset(rs) && !evo;
   size_t n = 0;
   for (size_t i = 0; i < MEM_PG_CNT; ++i) {
     if (MemESP::ram[i].memType() == mem_type_t::POINTER) {
@@ -743,7 +752,7 @@ void ESPectrum::powerOnRamFill() {
     }
   }
   Debug::log("ZX RAM: %u pages %s, freeHeap=%u", (unsigned)n,
-             dramPattern ? "set to DRAM power-on pattern" : "cleared (Karabas own boot screen)",
+             dramPattern ? "set to DRAM power-on pattern" : "cleared (Karabas / ZX-Evo)",
              getFreeHeap());
 }
 

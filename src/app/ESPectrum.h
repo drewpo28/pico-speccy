@@ -98,7 +98,9 @@ public:
     static void setup();
     // The DRAM power-on pattern over every RAM page — cold setup and a menu
     // machine switch (MachineSwitch::commit). See the definition.
-    static void powerOnRamFill();
+    // arch/romset: the machine the RAM is filled FOR (-1 = the current Config one) —
+    // MachineSwitch fills before requestMachine, i.e. while Config still names the old machine.
+    static void powerOnRamFill(int arch = -1, int romset = -1);
     static void loop();
     static void reset();
     static void reset(uint8_t romInUse);

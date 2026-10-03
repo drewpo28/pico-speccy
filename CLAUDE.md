@@ -13875,6 +13875,28 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
   The Magic menu entry is `DEBUG_ONOFF` (page #FF:#0013) = 0 -> CONTINUE_MAGIC (#0034 in
   ROM_RST83). `-DEVO_CFG_TRACE=ON` also logs 300 port accesses after an NMI (`[NMIP]`).
   `evo_sim` gained `NMI=frame`, `WATCHFF=offset`, `WARM=`, `ONLYCFG=1`, `DUMPPG=`.
+- **EvoProfROM (pages 12-15 = 48/TR-DOS/128/service, 16-19 its extension, Shadow Monitor
+  on 18): two fixes, hw-confirmed 2026-10-03 (owner: "IDE виден", then "работает").**
+  1. **NEMO #10 is a word trigger on the Evo** (Unreal `IDE_NEMO_DIVIDE`): each access to
+     #10 flips it — the first read fetches the word and returns the low byte, the second
+     the high one (writes: hold, then send {held, this}); #11 or any other IDE register
+     resets it, so the #10/#11 pair still works. EvoProfROM and its Shadow Monitor read a
+     sector with `LD BC,#0010 / INIR / INIR` (page 17 #1758) — without the trigger they
+     saw half of every sector and no disk. `Atm::nemoRead/nemoWrite` (flash), called first
+     in Ports.cpp's NEMO block under `Atm::evo` only (TS-Conf/ScorpEvo not checked).
+     `IDE_PORT_TRACE` builds add a collapsed `[NEMO]` port trace (`R 10 x512`).
+  2. **"TR-DOS from the 128 menu always lands in the Shadow Monitor" was an EvoProfROM bug
+     exposed by our DRAM power-on pattern.** The monitor (page 15 #00A6) saves the old #BF
+     in #8001 of the CALLER's window-2 page (#00B7, before `#B7F7 = 04` maps its work page
+     #FB) and restores it from #8001 of page #FB (#050C `LD DE,(#8000)`, D = #BF) — a cell
+     nothing writes (ERS leaves page 251 alone, its cold init clears from #8069). Our
+     pattern left #FE there: #BF got D3 = 1 and the next ordinary `OUT (#BF),1` made the
+     falling edge = NMI. Fix: ZX-Evo BaseConf powers up with ZERO RAM, as Unreal does
+     (`powerOnRamFill`, which now takes the TARGET machine — MachineSwitch calls it before
+     requestMachine). Residual, same as hardware: after F11 a stale #FB:#8001 with D3 can
+     bring it back. `EVO_CFG_TRACE` gained `[BF]` (every #BF write touching D3/D4, with the
+     stack and window-2 registers, `=> NMI` on the edge), `[W2]`, `[DOS]`, `[TRDEMU]`, and
+     drops the ProfROM far-call flood (`#BF = x|1` + `#3FF7`) from `[EVOP]`.
 
 ## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 + ZXM-Phoenix 2 MB (2026-09-26, NOT hw-tested)
 

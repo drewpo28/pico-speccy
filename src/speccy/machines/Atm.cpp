@@ -641,6 +641,9 @@ static bool trdemuTrap(uint8_t lo) {
     if (!(fddMask & (1u << (vgSys & 3)))) return false;
     if (!ESPectrum::trdos || !(a77 & 0x4000) || !(s_ro & 1) || inTrdemu || inNmi) return false;
     inTrdemu = true;
+#if EVO_CFG_TRACE
+    Debug::log("[TRDEMU] on port %02X drv %d mask %X pc=%04X", lo, vgSys & 3, fddMask, Z80::getRegPC());
+#endif
     remap();
     return true;
 }
@@ -665,10 +668,24 @@ static bool evoPortWrite(uint16_t address, uint8_t data) {
     const uint8_t lo = (uint8_t)address;
     const bool sh = dosPorts();
 #if EVO_CFG_TRACE
-    if (((lo == 0xFD || lo == 0xFC) && !(address & 0x8000)) || lo == 0x77 ||
-        lo == 0xBF || lo == 0xBE || lo == 0xBD ||
-        (lo == 0xF7 && (address & 0x100) && (sh || !(address & 0x1000))))
+    // The ProfROM far-call thunks (#BF = 1 with SET 0, window-0 page via #3FF7) run
+    // hundreds of times a second in its 128 menu and drown everything else: skipped.
+    const bool farCall = (lo == 0xBF && (data & ~1u) == (pBF & ~1u)) || (lo == 0xF7 && address == 0x3FF7);
+    if (!farCall &&
+        (((lo == 0xFD || lo == 0xFC) && !(address & 0x8000)) || lo == 0x77 ||
+         lo == 0xBF || lo == 0xBE || lo == 0xBD ||
+         (lo == 0xF7 && (address & 0x100) && (sh || !(address & 0x1000)))))
         evoTrace(address, data);
+    if (lo == 0xBF && ((pBF | data) & 0x18)) {   // D3 NMI / D4 breakpoint: always, own budget
+        static uint16_t n = 0;
+        if (n < 300) { n++;
+            const uint16_t sp = Z80::getRegSP();
+            auto rd = [](uint16_t a) -> uint8_t { return MemESP::ramCurrent[a >> 14][a & 0x3FFF]; };
+            Debug::log("[BF] pc=%04X %02X->%02X sp=%04X ret=%02X%02X %02X%02X 7ffd=%02X eff7=%02X w2=%03X/%03X%s", Z80::getRegPC(), pBF, data, sp,
+                       rd((uint16_t)(sp + 1)), rd(sp), rd((uint16_t)(sp + 3)), rd((uint16_t)(sp + 2)),
+                       p7ffd, pEFF7, pF7[2], pF7[6],
+                       ((pBF & 0x08) && !(data & 0x08)) ? "  => NMI" : ""); }
+    }
 #endif
     switch (lo) {
     case 0xBF: {                                              // always
@@ -712,6 +729,15 @@ static bool evoPortWrite(uint16_t address, uint8_t data) {
             default: return true;                            // #xBF7 write-protect: unmodelled
             }
             remap();
+#if EVO_CFG_TRACE
+            if ((address >> 14) == 2) {   // window 2: the monitor's work page lives here
+                static uint16_t n = 0; static uint16_t la = 0, lpc = 0; static uint8_t lv = 0;
+                const uint16_t pc = Z80::getRegPC();
+                if (n < 400 && !(address == la && data == lv && pc == lpc)) { n++; la = address; lv = data; lpc = pc;
+                    Debug::log("[W2] pc=%04X %04X=%02X -> reg %03X 7ffd=%02X eff7=%02X",
+                               pc, address, data, pF7[sel], p7ffd, pEFF7); }
+            }
+#endif
             LED::touchW(LED::RAM);
             return true;
         }
@@ -1083,6 +1109,11 @@ void trdosTrap(uint8_t pcH) {
         // "#7FFD/DOS" mode — the BIOS's own 48/TR-DOS pair — for the trap to fire.
         const bool romOk = ((p7ffd & 0x10) && (!evo || (pF7[4] & 0x300) == 0x100)) ||
                            (atm1 && (aFB & 0x80));
+#if EVO_CFG_TRACE
+        if (evo && pcH == 0x3D)
+            Debug::log("[DOS] #3Dxx pc=%04X 7ffd=%02X set1w0=%03X ro=%X -> %s", Z80::getRegPC(), p7ffd,
+                       pF7[4], g_atm_ro & 0x0F, (romOk && (g_atm_ro & 1)) ? "ON" : "no");
+#endif
         if (pcH == 0x3D && romOk && (g_atm_ro & 1)) {
             beta = true;
             dosRecalc();
@@ -1096,6 +1127,9 @@ void trdosTrap(uint8_t pcH) {
         const bool ramExec = evo ? ((a77 & 0x100) && !(pF7[((p7ffd & 0x10) >> 2) + w] & 0x100))
                                  : !(g_atm_ro & (1u << w));
         if (ramExec) {
+#if EVO_CFG_TRACE
+            if (evo) { static uint16_t n = 0; if (n < 200) { n++; Debug::log("[DOS] off pc=%04X", Z80::getRegPC()); } }
+#endif
             beta = false;
             dosRecalc();
             remap();

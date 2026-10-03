@@ -379,7 +379,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // addresses, so a live v5<->v6 switch started wrong while F12 was always
         // fine (F12 reboots, and setup() fills RAM). Before requestMachine so the
         // ROM binding and the machine start see the same clean state.
-        ESPectrum::powerOnRamFill();
+        ESPectrum::powerOnRamFill(arch, romset);
         Config::requestMachine(arch, romset);
     }
 
