@@ -1264,7 +1264,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     // Nemo KAY: a Gluk clock is an add-on card there, and without one #xxF7 is the
     // joystick port (Reset Service 0.2b's note) — so the pair answers only while
     // "CMOS + NVRAM" fits it, and falls through to Kempston otherwise.
-    if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf ||
+    if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf || g_scorp_evo ||
          (g_scorp_kay && Config::rtc_enabled)) && address == 0xBFF7) {
       // RTC off → static response (see RTC::readDisabled) instead of leaving the
       // port unclaimed; keeps the boot clock's UIP-wait from hanging.
@@ -2956,7 +2956,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
-  if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf ||
+  if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf || g_scorp_evo ||
        (g_scorp_kay && Config::rtc_enabled))) {
 #if RTC_PORT_TRACE
     if (a8 == 0xF7) {

@@ -368,6 +368,9 @@ public:
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
     // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
     static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
+    static bool isScorpEvo() { return arch == A_SCORP && isScorpEvoRomset(romSetScorp); }
+    // Both ZX-Evo configurations that run the Pentagon raster (320 lines x 224 T).
+    static bool isEvoPentRaster() { return isEvoBase() || isScorpEvo(); }
     // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
     // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).
     static bool isPlus3Div() { return arch == A_128K && isPlus3DivRomset(romSet); }

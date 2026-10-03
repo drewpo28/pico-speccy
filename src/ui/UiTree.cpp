@@ -639,6 +639,7 @@ static const Option opt_mach_tsconf[] = {
     { TXT_ROM_EVO_BASE,    NM_MACH(A_ATM, R_EVO_BASE),       TXT_ROM_EVO_BASE_S    },
     { TXT_ROM_TSBIOS,      NM_MACH(A_TSCONF, R_TSCONF),      TXT_ROM_TSBIOS_S      },
     { TXT_ROM_TSBIOS_GLUK, NM_MACH(A_TSCONF, R_TSCONF_GLUK), TXT_ROM_TSBIOS_GLUK_S },
+    { TXT_ROM_SCORP_EVO,   NM_MACH(A_SCORP, R_SCORP_EVO),    TXT_ROM_SCORP_EVO_S   },
 };
 // ATM-Turbo 1 (#FE address-latch paging), ATM-Turbo 2 (BIOS 1.06.02, the 2+'s memory
 // manager without the IDE) and ATM-Turbo 2+ (1 MB, #xx77/#xxF7) with either BIOS.

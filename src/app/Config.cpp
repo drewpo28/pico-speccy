@@ -316,7 +316,10 @@ void gmxRegisterLiveOverlay(uint8_t bank) {
 // reason: plane 3's banks all overlay plane 3 bank 0, and plane 0's two halves
 // overlay the Sinclair 128K arrays this TU owns. See gmxRegisterLiveOverlay.
 void profRegisterLiveOverlay(uint8_t bank) {
-    const scorpion_prof_bank_t& bk = gb_rom_scorpion_prof_banks[bank & 15];
+    // ScorpEvo shares the plane mapper and the table shape (scorpion_evo_banks.h).
+    const scorpion_prof_bank_t* tbl = isScorpEvoRomset(Config::romSetScorp)
+                                          ? gb_rom_scorpion_evo_banks : gb_rom_scorpion_prof_banks;
+    const scorpion_prof_bank_t& bk = tbl[bank & 15];
     MemESP::registerOverlay(bk.data, bk.overlay);
 }
 
@@ -327,6 +330,7 @@ void profRegisterLiveOverlay(uint8_t bank) {
 // never read rom[4] anyway.
 bool Config::trdosBaseOwnedByMachine() {
     return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
+                               isScorpEvoRomset(romSetScorp) ||
                                isKayRomset(romSetScorp));
 }
 
@@ -349,6 +353,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_SCORP && isScorpGmxRomset(newRomSet)) {
             newRomSet = R_SCORP;
+        } else if (newArch == A_SCORP && isScorpEvoRomset(newRomSet)) {
+            newRomSet = R_SCORP_PROF;   // same machine, the ProfROM in plain flash
         }
     }
     // ATM-Turbo: its ROM pages are flattened into butter PSRAM (Atm::bindRoms) — a
@@ -709,14 +715,22 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             Debug::log("[FlashRoms] GMX unavailable (overlay traded) - Yellow");
             romSet = R_SCORP;
         }
+        // ScorpEvo's ROM lives in the tradeable .psramroms (FlashRoms.h).
+        if (isScorpEvoRomset(romSet) && !FlashRoms::romsUsable()) {
+            OSD::bootNotice("ScorpEvo ROM traded for the GM.DLS bank - using ProfROM");
+            Debug::log("[FlashRoms] ScorpEvo unavailable (overlay traded) - ZS-1024 + ProfROM");
+            romSet = R_SCORP_PROF;
+        }
         romSetScorp = romSet;
-        if (romSet == R_SCORP_PROF) {
+        if (romSet == R_SCORP_PROF || isScorpEvoRomset(romSet)) {
             // ProfROM: 4 planes x 4 banks into rom[0..15], romInUse =
             // (plane << 2) | bank, plane switched by the 0x0100-0x010F read tap
             // (Ports::gmxProfRomTap). Overlays are registered dynamically per
             // live bank, exactly like GMX — see profRegisterLiveOverlay.
+            const scorpion_prof_bank_t* tbl = isScorpEvoRomset(romSet) ? gb_rom_scorpion_evo_banks
+                                                                        : gb_rom_scorpion_prof_banks;
             for (int i = 0; i < 16; ++i)
-                MemESP::rom[i].assign_rom(gb_rom_scorpion_prof_banks[i].data);
+                MemESP::rom[i].assign_rom(tbl[i].data);
             // Unlike GMX (whose plane 0 bank 0 is a raw array), ProfROM's first
             // bank IS an overlay over the Sinclair 128K half — and the registry
             // may still hold the plain-Scorpion overlay for that same base from

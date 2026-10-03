@@ -79,7 +79,8 @@
     X(R_ATM2_106,       "ATM2v106",         "ATM-Turbo 2 (BIOS 1.06.02)") \
     X(R_ATM3,           "ATM3",             "ATM-Turbo 3 (xBIOS 1.37 + test)") \
     X(R_ATM3_107,       "ATM3v107",         "ATM-Turbo 3 (BIOS 1.07.13EC)") \
-    X(R_EVO_BASE,       "EvoBase",          "BaseConf (EVO Reset Service)")
+    X(R_EVO_BASE,       "EvoBase",          "BaseConf (EVO Reset Service)") \
+    X(R_SCORP_EVO,      "ScorpEvo",         "ScorpEvo (ZX-Evo, ProfROM 4.44)")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -265,6 +266,9 @@ inline bool isAtmRomset(RomsetIdx r)  { return r == R_ATM1 || r == R_ATM2_106 ||
 // Atm.cpp `evo`). Its other configuration, TS-Conf, is A_TSCONF; the Machine menu shows
 // both under one "ZX Evolution" row.
 inline bool isEvoBaseRomset(RomsetIdx r) { return r == R_EVO_BASE; }
+// ScorpEvo: the ZX-Evo FPGA configuration that is a Scorpion ZS-1024 Turbo+ with
+// ProfROM on the Pentagon raster (romset of the Scorpion arch).
+inline bool isScorpEvoRomset(RomsetIdx r) { return r == R_SCORP_EVO; }
 // ATM-Turbo 3 v8.0: the whole ATM-Turbo 2+ plus 4 MB through #x7F7 / #xxE7 and the
 // #BF configuration port (see src/Atm.h).
 // Two BIOS images, as on the 2+: xBIOS 1.37 (+ MSD888's test in the lower 128 KB) and

@@ -288,7 +288,7 @@ static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
 // 1024 and ProfROM sit BEFORE GMX so opt_pref_scorp's indices (UiTree.cpp) do not
 // move when GMX is hidden at runtime (no QSPI PSRAM, or its ROM traded away).
 static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_PROF,
-                                        R_SCORP_GMX, R_LAST };
+                                        R_SCORP_GMX, R_LAST, R_SCORP_EVO };   // APPEND ONLY: the index is persisted
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
 NM_STR_ACCESS(pref48,   pref_romSet_48,   kPref48)
@@ -1346,6 +1346,10 @@ static void resolveConstraints(CommitReport& rep) {
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_ATM)
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
                                  rep, "ATM ROM traded for the GM.DLS bank");
+            if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_SCORP &&
+                isScorpEvoRomset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)))
+                changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP_PROF),
+                                 rep, "ScorpEvo ROM traded for the GM.DLS bank");
         }
 
         if (!changed) return;

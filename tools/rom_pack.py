@@ -885,6 +885,38 @@ PROF_BANK_SZ      = 16384
 PROF_OVL_DIFF_MAX = 1024   # same rule as pack_gmx: a wide run list on an
                            # opcode-fetch path is not worth ~4 KB of flash
 
+def _prof_dedup(banks, bases, thr, rpre, opre):
+    """Bank dedup shared by pack_prof and pack_scorpevo: each bank becomes a copy of
+    an earlier one, an overlay over the closest base (<= thr differing bytes) or a
+    raw array — which then joins `bases` (a base must always be a RAW array)."""
+    descs = [None] * len(banks)   # (data_sym, ovl_sym, data_bytes, ovl_blob)
+    first = {}
+    raws  = []
+    novls = []
+    for i, bk in enumerate(banks):
+        if bk in first:
+            descs[i] = descs[first[bk]]
+            continue
+        first[bk] = i
+        tag = 'p%db%d' % (i // 4, i % 4)
+        best = None
+        for sym, bb in bases:
+            d = sum(1 for a, b in zip(bk, bb) if a != b)
+            if best is None or d < best[1]:
+                best = (sym, d, bb)
+        if best and best[1] <= thr:
+            sym, d, bb = best
+            blob, nruns, ndiff = make_overlay(bb, bk)
+            osym = opre + tag
+            descs[i] = (sym, osym, bb, blob)
+            novls.append((osym, blob, sym, nruns, ndiff))
+        else:
+            rsym = rpre + tag
+            descs[i] = (rsym, None, bk, None)
+            raws.append((rsym, bk))
+            bases.append((rsym, bk))   # later banks may overlay this one
+    return descs, first, raws, novls
+
 def pack_prof():
     out_dir = os.path.join('src', 'speccy', 'roms', 'scorpion')
     src_dir = os.path.join(out_dir, 'src')
@@ -911,34 +943,8 @@ def pack_prof():
         ('gb_rom_scorpion_bank3',  b3),
     ]
 
-    descs = [None] * PROF_BANKS   # (data_sym, ovl_sym, data_bytes, ovl_blob)
-    first = {}
-    raws  = []
-    novls = []
-
-    for i, bk in enumerate(banks):
-        if bk in first:
-            descs[i] = descs[first[bk]]
-            continue
-        first[bk] = i
-        tag = 'p%db%d' % (i // 4, i % 4)
-        best = None
-        for sym, bb in bases:
-            d = sum(1 for a, b in zip(bk, bb) if a != b)
-            if best is None or d < best[1]:
-                best = (sym, d, bb)
-        if best and best[1] <= PROF_OVL_DIFF_MAX:
-            sym, d, bb = best
-            blob, nruns, ndiff = make_overlay(bb, bk)
-            osym = 'gb_overlay_scorpion_prof_%s' % tag
-            descs[i] = (sym, osym, bb, blob)
-            novls.append((osym, blob, sym, nruns, ndiff))
-        else:
-            rsym = 'gb_rom_scorpion_prof_%s' % tag
-            descs[i] = (rsym, None, bk, None)
-            raws.append((rsym, bk))
-            bases.append((rsym, bk))   # later banks may overlay this one
-
+    descs, first, raws, novls = _prof_dedup(banks, bases, PROF_OVL_DIFF_MAX,
+                                             'gb_rom_scorpion_prof_', 'gb_overlay_scorpion_prof_')
     for i in range(PROF_BANKS):
         _, _, data, blob = descs[i]
         got = apply_overlay(data, blob) if blob else data
@@ -991,6 +997,82 @@ def pack_prof():
                ('%s + %s (%d B)' % (dsym, osym, len(blob) if blob else 0) if osym else
                 ('raw' if dsym in rawsyms else '%s (0 B, base as-is)' % dsym))
         print("    p%db%d: %s" % (i // 4, i % 4, note))
+
+# ── ScorpEvo (romset R_SCORP_EVO) ─────────────────────────────────
+# Scorpion Evolution: the ZX-Evo FPGA configuration of Ewgeny7 (svn pentevo
+# /scorpevo, 2011-2012) that turns the board into a Scorpion ZS-256 Turbo+ with
+# 1 MB (#1FFD D6/D7) — the same machine as R_SCORP_PROF on the Pentagon raster,
+# with Gluk clock, Z-Controller SD and Nemo-IDE on board. Image =
+# ProfRomEVO_v4s.rom (ProfRom_EVO_v4.44.9643.zip, PLM; CRC32 B9A3DB83, SMUC
+# build — the owner's pick over v4n/v4se/v4su and over svn's 2011 scorp1024.rom).
+# The release image is in ZX-Evo FLASH order, which swaps each pair of 16K
+# banks against the ProfROM plane order (flash bank i = plane bank i ^ 2);
+# src/scorpevo.bin is the plane-ordered copy (CRC32 E340238A).
+# Deduplicated against the ProfROM v4.44s banks (R_SCORP_PROF) it is close to:
+# their RAW arrays are bases here. It lives in .psramroms (*scorpion_evo_rom.c.o
+# in rp2350-memmap.ld) — traded with GMX/TS-Conf/ATM on a board without QSPI
+# PSRAM that installs a big GM.DLS bank; FlashRoms::romsUsable() gates it.
+
+EVO_OVL_DIFF_MAX = 8192   # as pack_gmx: in .psramroms, flattened into PSRAM on butter boards
+
+def pack_scorpevo():
+    out_dir = os.path.join('src', 'speccy', 'roms', 'scorpion')
+    src_dir = os.path.join(out_dir, 'src')
+    img = open(os.path.join(src_dir, 'scorpevo.bin'), 'rb').read()
+    if len(img) != PROF_BANKS * PROF_BANK_SZ:
+        raise SystemExit("scorpevo.bin: expected 256 KB, got %d" % len(img))
+    if zlib.crc32(img) & 0xFFFFFFFF != 0xE340238A:
+        raise SystemExit("scorpevo.bin: CRC32 %08X, expected E340238A" % (zlib.crc32(img) & 0xFFFFFFFF))
+    banks = [img[i*PROF_BANK_SZ:(i+1)*PROF_BANK_SZ] for i in range(PROF_BANKS)]
+    # Re-derive ProfROM's own raw banks exactly as pack_prof emits them.
+    pimg = open(os.path.join(src_dir, 'profrom.bin'), 'rb').read()
+    pbanks = [pimg[i*PROF_BANK_SZ:(i+1)*PROF_BANK_SZ] for i in range(PROF_BANKS)]
+    rd = lambda *pp: open(os.path.join(*pp), 'rb').read()
+    bases = [
+        ('gb_rom_0_pentagon_128k', rd('src', 'speccy', 'roms', 'pentagon', 'src', 'rom0.bin')),
+        ('gb_rom_1_sinclair_128k', rd(src_dir, 'sinclair_128k_1.bin')),
+        ('gb_rom_4_trdos_504t',    rd('src', 'speccy', 'roms', 'trdos', 'src', '504t.bin')),
+        ('gb_rom_scorpion_bank2',  rd(src_dir, 'bank2.bin')),
+        ('gb_rom_scorpion_bank3',  rd(src_dir, 'bank3.bin')),
+    ]
+    _prof_dedup(pbanks, bases, PROF_OVL_DIFF_MAX, 'gb_rom_scorpion_prof_', 'gb_overlay_scorpion_prof_')
+    descs, first, raws, novls = _prof_dedup(banks, bases, EVO_OVL_DIFF_MAX,
+                                            'gb_rom_scorpion_evo_', 'gb_overlay_scorpion_evo_')
+    for i in range(PROF_BANKS):
+        _, _, data, blob = descs[i]
+        got = apply_overlay(data, blob) if blob else data
+        if got != banks[i]:
+            raise SystemExit("scorpevo bank %d reconstruction mismatch" % i)
+    total = sum(len(b) for _, b in raws) + sum(len(b) for _, b, _, _, _ in novls)
+    banner = ['// Generated by tools/rom_pack.py (pack_scorpevo) — do not edit by hand.',
+              '// ScorpEvo ProfROM v4.44s for ZX-Evo (ProfRomEVO_v4s.rom, CRC32 B9A3DB83,',
+              '// plane-ordered src/scorpevo.bin CRC32 E340238A), 4 planes x 4 x 16K banks,',
+              '// deduplicated against the R_SCORP_PROF banks. %d B in flash instead of 262144.' % total,
+              '// Lives in .psramroms (rp2350-memmap.ld). Regenerate: python3 tools/rom_pack.py scorpevo']
+    c = banner + ['#include <stdint.h>', '']
+    for sym, data in raws:
+        c.append(_c_array(sym, data)); c.append('')
+    for sym, blob, _, _, _ in novls:
+        c.append(_c_array(sym, blob)); c.append('')
+    open(os.path.join(out_dir, 'scorpion_evo_rom.c'), 'w').write("\n".join(c) + "\n")
+    h = banner + ['// Include via romScorpion.h only, AFTER scorpion_prof_banks.h (it declares',
+                  '// the ProfROM raw banks used as bases and scorpion_prof_bank_t).',
+                  '#pragma once',
+                  'extern "C" {']
+    for sym, _ in raws:
+        h.append('extern const unsigned char %s[];' % sym)
+    for sym, _, _, _, _ in novls:
+        h.append('extern const unsigned char %s[];' % sym)
+    h += ['}', '', 'static const scorpion_prof_bank_t gb_rom_scorpion_evo_banks[16] = {']
+    for i in range(PROF_BANKS):
+        dsym, osym, _, _ = descs[i]
+        h.append('    { %s, %s },   // plane %d bank %d' % (dsym, osym if osym else 'nullptr', i // 4, i % 4))
+    h.append('};')
+    open(os.path.join(out_dir, 'scorpion_evo_banks.h'), 'w').write("\n".join(h) + "\n")
+    print("[scorpevo] 16 banks -> %d raw + %d overlays = %d B in flash" % (len(raws), len(novls), total))
+    for i in range(PROF_BANKS):
+        dsym, osym, _, blob = descs[i]
+        print("    p%db%d: %s%s" % (i // 4, i % 4, dsym, (' + %s (%d B)' % (osym, len(blob))) if osym else ''))
 
 # ---------------------------------------------------------------- Timex TC2068
 # TC2068_SRC_MD5: the Fuse distribution's roms/tc2068-{0,1}.rom.  Both are BYTE-
@@ -1308,13 +1390,16 @@ def main():
     os.chdir(root)
     # plus3div is only packed on request: its ROM is not in the repository, so a
     # bare `rom_pack.py` must not fail on a tree that simply does not have it.
-    fams = sys.argv[1:] or (list(FAMILIES) + ['tsconf', 'timex', 'atm', 'kay', 'gmx', 'prof'])
+    fams = sys.argv[1:] or (list(FAMILIES) + ['tsconf', 'timex', 'atm', 'kay', 'gmx', 'prof', 'scorpevo'])
     for fid in fams:
         if fid == 'gmx':
             pack_gmx()
             continue
         if fid == 'prof':
             pack_prof()
+            continue
+        if fid == 'scorpevo':
+            pack_scorpevo()
             continue
         if fid == 'plus3div':
             pack_plus3div()

@@ -111,6 +111,7 @@ bool g_scorp_1024 = false;
 bool g_scorp_turbo_plus = false;
 bool g_gmx_tap = false;
 uint8_t g_scorp_kay = 0;
+bool g_scorp_evo = false;
 bool Z80Ops::isP3 = false;
 bool Z80Ops::isTsconf = false;
 bool Z80Ops::isAtm = false;
@@ -180,6 +181,11 @@ void CPU::updateStatesInFrame() {
                             : TSTATES_PER_FRAME_SCORPION;
         IntStart = INT_START_SCORPION;
         IntEnd = isKayRomset(Config::romSetScorp) ? INT_END_KAY : INT_END_SCORPION;
+        if (isScorpEvoRomset(Config::romSetScorp)) {   // ScorpEvo: the ZX-Evo Pentagon raster
+            statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+            IntStart = INT_START_PENTAGON;
+            IntEnd = INT_END_PENTAGON;
+        }
     } else { // if (Config::arch == A_PENT) - by default
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
@@ -211,17 +217,22 @@ void CPU::reset() {
     // Even-M1 is a Yellow-PCB-only trait (see CPU.h); Green and GMX dropped it.
     g_scorp_even_m1 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP);
     g_scorp_gmx = Z80Ops::isScorpion && isScorpGmxRomset(Config::romSetScorp);
-    g_scorp_prof = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_PROF);
+    // ScorpEvo carries the same ProfROM plane mapper (scorpevo fpga ProfROM/pfpzu.v:
+    // the plane switches on a read of #0100-#010F of the service bank).
+    g_scorp_prof = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_PROF ||
+                                          isScorpEvoRomset(Config::romSetScorp));
     g_scorp_banked = g_scorp_gmx || g_scorp_prof;
     // ProfROM ships on the ZS-1024 Turbo+ (speccy4ever files it under "Prof ROM
     // & ZX-1024"; ZXMAK2 has no 256K-only ProfROM machine either), so it carries
     // the same 1FFD D7,D6 page extension.
     g_scorp_1024 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_1024 ||
-                                          Config::romSetScorp == R_SCORP_PROF);
+                                          Config::romSetScorp == R_SCORP_PROF ||
+                                          isScorpEvoRomset(Config::romSetScorp));
     // The "+" of Turbo+ IS the read-triggered speed toggle (Ports::input). Yellow
     // is MAME's plain scorpion_state and has no such handler.
     g_scorp_turbo_plus = Z80Ops::isScorpion && !isScorpYellowTiming(Config::romSetScorp);
     // Nemo KAY: its own #1FFD (turbo is 1FFD D2 there, not a port read).
+    g_scorp_evo = Z80Ops::isScorpion && isScorpEvoRomset(Config::romSetScorp);
     g_scorp_kay = !Z80Ops::isScorpion ? 0
                 : Config::romSetScorp == R_KAY256 ? 2
                 : Config::romSetScorp == R_PHOENIX ? 4
@@ -313,7 +324,9 @@ void CPU::reset() {
         // two reads 15 T apart (odd) and needs both equal; see getFloatBusDataScorp.
         // Nemo KAY: Unreal's KAY1024 preset has floatbus=0 and portff=0 — the
         // unattached ports read 0xFF.
-        Ports::getFloatBusData = isKayRomset(Config::romSetScorp)
+        // ScorpEvo: zports.v answers every unattached port with #FF (its default
+        // dout), and the FPGA has no ULA float.
+        Ports::getFloatBusData = (isKayRomset(Config::romSetScorp) || isScorpEvoRomset(Config::romSetScorp))
                                      ? &Ports::getFloatBusDataNone
                                      : &Ports::getFloatBusDataScorp;
         Z80Ops::isByte = false;
@@ -324,7 +337,8 @@ void CPU::reset() {
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
         // Set emulation loop sync target (Green/GMX share the 316-line frame)
-        ESPectrum::target = !isScorpYellowTiming(Config::romSetScorp)
+        ESPectrum::target = isScorpEvoRomset(Config::romSetScorp) ? MICROS_PER_FRAME_PENTAGON
+                          : !isScorpYellowTiming(Config::romSetScorp)
                                 ? MICROS_PER_FRAME_SCORPION_GR
                                 : MICROS_PER_FRAME_SCORPION;
     } else if (Config::arch == A_ATM) {

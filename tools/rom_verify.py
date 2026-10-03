@@ -159,6 +159,28 @@ for tsym, src, want_crc, label in (
     check('GMX %s image' % label, gmx, dump('scorpion/src/' + src))
     check('GMX %s CRC32' % label, '%08X' % (zlib.crc32(gmx) & 0xffffffff), want_crc)
 
+# ScorpEvo (romset R_SCORP_EVO): 16 rows of the generated table, overlaid on the
+# ProfROM raw banks (scorpion_prof_rom.c) and the shared bases, against the
+# plane-ordered image (the release ROM is in ZX-Evo flash order: bank i ^ 2).
+print("ScorpEvo ProfROM v4.44s (16 banks, from the generated table):")
+evo_tbl = open(os.path.join(R, 'scorpion', 'scorpion_evo_banks.h'), encoding='latin-1').read()
+evo_syms = {'gb_rom_0_pentagon_128k': base_pent, 'gb_rom_1_sinclair_128k': s128_1,
+            'gb_rom_4_trdos_504t': base_trdos}
+def evo_sym(sym):
+    if sym not in evo_syms:
+        for rel in ('scorpion/scorpion_evo_rom.c', 'scorpion/scorpion_prof_rom.c'):
+            try: evo_syms[sym] = arr(rel, sym); break
+            except SystemExit: pass
+    return evo_syms[sym]
+rows = re.findall(r'\{\s*(\w+)\s*,\s*(\w+)\s*\}\s*,\s*//\s*plane',
+                  evo_tbl.split('gb_rom_scorpion_evo_banks[16] = {', 1)[1].split('};', 1)[0])
+if len(rows) != 16:
+    fails.append('ScorpEvo table rows'); print("  FAIL ScorpEvo table: %d rows" % len(rows))
+else:
+    evo = b''.join(evo_sym(d) if o == 'nullptr' else apply_overlay(evo_sym(d), evo_sym(o)) for d, o in rows)
+    check('ScorpEvo image', evo, dump('scorpion/src/scorpevo.bin'))
+    check('ScorpEvo CRC32', '%08X' % (zlib.crc32(evo) & 0xffffffff), 'E340238A')
+
 # The ZX-Evo BIOS sets we ship, reassembled from what is actually in flash. Page 0 is
 # the only page with a patch (the Setup footer's exit key); pages 1-3 must be verbatim.
 print("TS-Conf BIOS sets (page 0 patched, pages 1-3 verbatim):")

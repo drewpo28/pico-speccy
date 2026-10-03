@@ -4884,7 +4884,7 @@ void VIDEO::Reset() {
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
     } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024 ||
-               Config::isEvoBase()) {          // (ZX Evolution BaseConf: the Pentagon raster)
+               Config::isEvoPentRaster()) {    // (ZX Evolution BaseConf / ScorpEvo: the Pentagon raster)
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
         tStatesScreen = TS_SCREEN_PENTAGON;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
@@ -4953,7 +4953,7 @@ void VIDEO::Reset() {
     ds80_border_geom = false;
     ds80_brd_col_off = 0;
     brdcol_end = isFullBorder ? 180 : 160;  // vga.xres / 2 (T-states = half pixel count)
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoBase())) {
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster())) {
         brdcol_step = 1;
         brdPairWrite = false;
         brdcol_start = 0;
@@ -5140,7 +5140,7 @@ void VIDEO::Reset() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5148,7 +5148,7 @@ void VIDEO::Reset() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -5165,7 +5165,7 @@ void VIDEO::Reset() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
                 else if (Config::arch == A_128K) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5173,7 +5173,7 @@ void VIDEO::Reset() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;

@@ -141,6 +141,9 @@ extern bool g_gmx_tap;
 // Unreal MM_PHOENIX page order, 1FFD D1 = service page, no turbo line). Gates the KAY #1FFD decode, its ROM select (1FFD D3 XORs
 // the DOS bit), the page bits and the 1FFD D2 turbo-off line (Ports.cpp).
 extern uint8_t g_scorp_kay;
+// ScorpEvo romset live (R_SCORP_EVO): the ZX-Evo Scorpion configuration — the
+// ProfROM machine on the Pentagon raster with the board's Gluk clock on #DFF7/#BFF7.
+extern bool g_scorp_evo;
 
 class CPU
 {

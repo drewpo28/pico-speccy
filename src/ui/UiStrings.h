@@ -259,12 +259,12 @@
 #define TXT_ROM_ATM3V107_S   "Turbo 3"
 #define TXT_ROM_ATM3         "ATM-Turbo 3 (xBIOS 1.37)"
 #define TXT_ROM_ATM3_S       "Turbo 3 xBIOS"
-#define TXT_ROM_EVO_BASE     "BaseConf (EVO Reset Service)"
+#define TXT_ROM_EVO_BASE     "BaseConf"
 #define TXT_ROM_EVO_BASE_S   "BaseConf"
-#define TXT_ROM_TSBIOS       "TS-Conf: TS-BIOS + 128"
-#define TXT_ROM_TSBIOS_S     "TS-Conf"            // left-column short form (Option::slabel)
-#define TXT_ROM_TSBIOS_GLUK  "TS-Conf: TS-BIOS + Mr Gluk"
-#define TXT_ROM_TSBIOS_GLUK_S "TS-Conf Gluk"
+#define TXT_ROM_TSBIOS       "TSConf: TS-BIOS"
+#define TXT_ROM_TSBIOS_S     "TSConf"
+#define TXT_ROM_TSBIOS_GLUK  "TSConf: TS-BIOS + Mr Gluk"
+#define TXT_ROM_TSBIOS_GLUK_S "TSConf Gluk"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
 
 // ROM set labels, shared by the machine rows and the Preferred rom rows.
@@ -332,6 +332,8 @@
 #define TXT_ROM_SCORP_1024_S "ZS-1024T+"
 #define TXT_ROM_SCORP_PROF   "ZS-1024 + ProfROM"
 #define TXT_ROM_SCORP_PROF_S "ProfROM"
+#define TXT_ROM_SCORP_EVO    "ScorpEvo"
+#define TXT_ROM_SCORP_EVO_S  "ScorpEvo"
 #define TXT_ROM_ALF         "ALF cartridge"
 // Nemo KAY (St. Petersburg). Romsets of the Scorpion arch; the labels must read the
 // same as kRomsetUiName[R_KAY*] (ArchRom.h), which the info pages use.

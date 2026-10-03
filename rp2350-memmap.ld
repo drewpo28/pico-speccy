@@ -91,7 +91,7 @@ SECTIONS
          * because ld assigns an input section to the FIRST output section that
          * matches it in script order, and both of those come earlier. */
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:
-                       *scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o *FtInflate.c.o) .rodata*)
+                       *scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o *scorpion_evo_rom.c.o *FtInflate.c.o) .rodata*)
         *(.srodata*)
         . = ALIGN(4);
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
@@ -181,7 +181,7 @@ SECTIONS
          * later in script order — keep it out of this catch-all too. */
         *(EXCLUDE_FILE(*FtInflate.c.o) .text*)
         . = ALIGN(4);
-        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o *FtInflate.c.o) .rodata*)
+        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o *tsconf_roms.c.o *atm_roms.c.o *scorpion_evo_rom.c.o *FtInflate.c.o) .rodata*)
         . = ALIGN(4);
 
         *(.data*)
@@ -370,6 +370,7 @@ SECTIONS
         KEEP(*scorpion_gmx_rom.c.o(.rodata*))
         KEEP(*tsconf_roms.c.o(.rodata*))
         KEEP(*atm_roms.c.o(.rodata*))
+        KEEP(*scorpion_evo_rom.c.o(.rodata*))
         . = ALIGN(4);
     } > FLASH =0xaa
     __psramrom_start = ADDR(.psramroms);

@@ -582,7 +582,7 @@ bool FileZ80::load(const string& z80_fn) {
         if (z80_arch == A_SCORP) {
             if (Config::pref_romSetScorp == R_SCORP || Config::pref_romSetScorp == R_SCORP_GR ||
                 isScorpGmxRomset(Config::pref_romSetScorp) || Config::pref_romSetScorp == R_SCORP_1024 ||
-                Config::pref_romSetScorp == R_SCORP_PROF)
+                Config::pref_romSetScorp == R_SCORP_PROF || isScorpEvoRomset(Config::pref_romSetScorp))
                 z80_romset = Config::pref_romSetScorp;
         }
 
