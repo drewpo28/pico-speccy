@@ -30,6 +30,7 @@
 #include "speccy/core/MemESP.h"
 #include "CPU.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/EvoBase.h"
 #include "speccy/devices/tape/Tape.h"
 #include "app/Config.h"
 #include "fs/FileUtils.h"
@@ -744,7 +745,7 @@ void Z80::bitTest(uint8_t mask, uint8_t reg) {
 // the DOS trap (Atm::remap owns every window). FLASH (Z80_COLD), not RAM: it runs only
 // while Z80Ops::isAtm, so the RAM-resident check_trdos keeps one test for the rest.
 Z80_COLD void Z80::check_trdos_atm() {
-    if (Atm::nmiClrPending) Atm::nmiClrApply();
+    if (EvoBase::nmiClrPending) EvoBase::nmiClrApply();
     const uint16_t menuCall = Atm::atm1 ? Atm::kBios1MenuCall : Atm::kBiosMenuCall;
     const uint16_t menuRet  = Atm::atm1 ? Atm::kBios1MenuRet
                             : (Config::romSetAtm == R_ATM2_106 ? Atm::kBios106MenuRet : Atm::kBiosMenuRet);
@@ -827,7 +828,7 @@ IRAM_ATTR void Z80::check_trdos() {
     // busy game (Dune II on the ZX-Evo: ~15% of all instructions are jumps).
     if (Z80Ops::isAtm) {
         if (Atm::beta || REG_PCh == 0x3D || Atm::cpmBootArmed || Atm::trdosMenuArmed || Atm::trdosBootState ||
-            Atm::nmiClrPending)
+            EvoBase::nmiClrPending)
             check_trdos_atm();
         return;
     }
@@ -1063,7 +1064,7 @@ void Z80::interrupt(void) {
     if (Z80Ops::isTsconf) TsConf::intTrace(REG_PC, REG_SP, tsVect, wasHalted);   // PERF_TRACE ring, before the push
     // ZX-Evo BaseConf (zint.v intend = INTA): the acknowledge ends the pulse, so a
     // handler shorter than the window (ERS's EI / RET) is not interrupted twice.
-    if (Z80Ops::isAtm && Atm::evo) Atm::intAckFrame = CPU::global_tstates;
+    if (Z80Ops::isAtm && Atm::evo) EvoBase::intAckFrame = CPU::global_tstates;
 
     // Z80Ops::interruptHandlingTime(7);
     VIDEO::Draw(7, false);
@@ -1200,12 +1201,12 @@ Z80_COLD void Z80::doNMI(void) {
     // holds there (EVO Reset Service's Magic button did nothing, hw 2026-10-02).
     if (Z80Ops::isAtm && Atm::evo) {
         // znmi.v: nmi_start && !in_nmi — a request while the handler runs is dropped.
-        if (Atm::inNmi) return;
+        if (EvoBase::inNmi) return;
         nmi();
         VIDEO::Draw(4, false);   // the NOP at #0066
         regR++;
         REG_PC = REG_WZ = 0x0067;
-        Atm::nmiEnter();
+        EvoBase::nmiEnter();
         return;
     }
     nmi();

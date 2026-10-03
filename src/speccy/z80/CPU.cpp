@@ -52,6 +52,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/TsConf/TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
 #include "speccy/machines/Timex.h"      // g_timex_mmu + Timex::rd/wr (TC2068 SCLD horizontal MMU)
 #include "speccy/machines/Atm.h"        // g_atm_ro (ATM-Turbo ROM windows) + Atm::reset/intEnabled
+#include "speccy/machines/EvoBase.h"    // ZX-Evo font RAM, INT ack
 #include "speccy/machines/TsConf/TsFastMem.h"
 #include "app/CodeOverlay.h" // TS_OVL_CODE (CPU::tsFrameLoop)
 #include "speccy/core/Rzx.h"
@@ -1024,7 +1025,7 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
     // ATM-Turbo: a window showing ROM drops the write (its pages may be flattened
     // copies in butter PSRAM, which writebyte's flash-pointer filter does not see).
     if (__builtin_expect(g_atm_ro != 0, 0)) {
-        if (g_atm_ro & 0x80) Atm::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
+        if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
         if ((g_atm_ro >> (address >> 14)) & 1) return;
     }
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
@@ -1232,7 +1233,7 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
     // ATM-Turbo / ZX-Evo on the fast path: the ZX-Evo font RAM takes the byte too,
     // a window showing ROM drops it (gsDmaPoke8's twin).
     if (g_atm_ro) {
-        if (g_atm_ro & 0x80) Atm::font[address & 0x7FF] = value;
+        if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;
         if ((g_atm_ro >> (address >> 14)) & 1) return;
     }
     tsPoke8Store(address, value);
@@ -1531,7 +1532,7 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // ATM-Turbo 2+: the frame INT is gated by #xx77 D5 (Unreal cpu.int_gate).
     // ZX-Evo BaseConf: no gate, but the acknowledge ends this frame's pulse.
     if (__builtin_expect(Z80Ops::isAtm, 0) &&
-        (!Atm::intEnabled() || (Atm::evo && Atm::intAckFrame == CPU::global_tstates))) return false;
+        (!Atm::intEnabled() || (Atm::evo && EvoBase::intAckFrame == CPU::global_tstates))) return false;
     // Timex DEC (#FF) bit 6 — "17ms Interrupt Inhibit" (MAME port_ff_w). The SCLD
     // gates the line itself, so the window still opens and closes on time; the CPU
     // simply never sees it. Cleared on reset with the rest of the DEC register.

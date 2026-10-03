@@ -83,6 +83,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "hardware/gpio.h"
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Scorpion.h"
 #include "speccy/machines/Pentagon.h"
 #include "speccy/machines/Plus3/Plus3.h"
@@ -1074,7 +1075,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // line keeps ESPectrum::trdos permanently asserted (not real TR-DOS paging),
   // so the !trdos rule is bypassed there.
   if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && (Atm::atm3 || Atm::evo)) || !ESPectrum::trdos)) {
-    if (Z80Ops::isAtm && Atm::evo) { uint8_t v; if (Atm::nemoRead(address, v)) return v; } // #10 word trigger (flash)
+    if (Z80Ops::isAtm && Atm::evo) { uint8_t v; if (EvoBase::nemoRead(address, v)) return v; } // #10 word trigger (flash)
     if (address & 1) { LED::touchR(LED::IDE); return IDE::read_latch(); } // A0=1: high-byte latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {          // control / alt-status
       LED::touchR(LED::IDE); return IDE::read8(8);
@@ -3044,7 +3045,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // SYSEN line keeps ESPectrum::trdos permanently asserted, so the !trdos rule
   // (authentic NEMO is outside TR-DOS) is bypassed there.
   if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && (Atm::atm3 || Atm::evo)) || !ESPectrum::trdos)) {
-    if (Z80Ops::isAtm && Atm::evo) { if (Atm::nemoWrite(address, data)) return; }          // #10 word trigger (flash)
+    if (Z80Ops::isAtm && Atm::evo) { if (EvoBase::nemoWrite(address, data)) return; }          // #10 word trigger (flash)
     if (address & 1) { LED::touchW(LED::IDE); IDE::write_latch(data); return; } // A0=1: high latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {                // control
       LED::touchW(LED::IDE); IDE::write8(8, data); return;

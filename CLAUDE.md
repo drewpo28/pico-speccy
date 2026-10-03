@@ -13788,7 +13788,15 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
   `build_full.sh` lays out FF x4, ATM CP/M + std BASICs, Pentagon Gluk, Evo ProfROM,
   then ERS in the top 128 KB, ERS's start page = 31). dukeyusupov.ru's BaseConf article
   names the same ROM and the matching FPGA `cfgs/standalone_base_trdemu` (see below).
-- **Model = `Atm.cpp` with `evo`** (ATM 2+ register file + Evo decode, `evoPortWrite/Read`):
+- **Code split (2026-10-03, NOT hw-tested; RAM byte-identical, flash +136 B):** the ATM
+  memory manager (pF7 / a77 / remap / trdosTrap) stays in `Atm.cpp` with the `Atm::evo`
+  flag; everything Evo-only is `src/speccy/machines/EvoBase.{h,cpp}` (namespace
+  `EvoBase`): ports (#BF/#BE/#BD/#EFF7/Gluk/#x7F7, the Evo #77 and #7FFD), NMI,
+  base_trdemu, clock, font RAM (`g_atm_fnt`, `EvoBase::font`), NEMO #10 trigger, and the
+  manager hooks `mode1M()` / `window0()` / `dosEnterOk()` / `ramExec()`. Atm internals
+  EvoBase needs are in `AtmInternal.h` (f7enc, cpmOn, dosPorts, dosRecalc, set7ffd,
+  palWrite, loadSpecPalette) — not for anything else. Arch stays `A_ATM`.
+- **Model = the ATM manager + `EvoBase`** (ATM 2+ register file + Evo decode):
   INT never gated, cleared at INTA (`Atm::intAckFrame`; ERS's handler is `EI / RET`);
   CPU clock `{#77 D3, ~#EFF7 D4}` = 14 / 7 / 3.5 MHz, **7 MHz after reset**
   (`evoClockApply`, rescales tstates); reset = manager off (ROM page 31 everywhere),

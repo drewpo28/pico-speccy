@@ -76,6 +76,7 @@ static void ftTraceTick();   // defined in the VDAC2 glue section below
 #include "speccy/devices/Z80DMA.h"
 #include "hardware/xip_cache.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/EvoBase.h"
 #include "app/PerfFdc.h"
 extern "C" const unsigned char gb_rom_atm_font[];   // roms/atm/atm_roms.c (SGEN.ROM order)
 #include "hardware/regs/addressmap.h"
@@ -6934,7 +6935,7 @@ void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
         const uint32_t row = line >> 3, gl = line & 7;
         const uint32_t base = 0x01C0 + row * 64;
         // ZX-Evo: the character generator is a RAM (#BF D2), initialised from the ATM font.
-        const uint8_t* fnt = (Atm::evo && Atm::font) ? Atm::font : gb_rom_atm_font;
+        const uint8_t* fnt = (Atm::evo && EvoBase::font) ? EvoBase::font : gb_rom_atm_font;
         // TEXT1 (ZX-Evo mode 7, video_addrgen.v addr_at with mode_a_txt_1page): the
         // page select of mode 6 (symbols 5 / attributes 1) becomes +#2000 inside RAM
         // page 8, and mode 6's +#2000 half-line interleave becomes +#1000.
