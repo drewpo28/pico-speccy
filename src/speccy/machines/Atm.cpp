@@ -18,6 +18,7 @@
 #include "speccy/core/RomOverlay.h"
 #include "speccy/video/Video.h"
 #include "speccy/z80/z80.h"
+static uint8_t s_nemoRt = 0, s_nemoWt = 0, s_nemoW1 = 0, s_nemoWlo = 0;   // Evo NEMO #10 triggers
 #if EVO_CFG_TRACE
 static uint16_t s_evo_tr_n = 0;   // evoTrace budget, re-armed by reset()
 #endif
@@ -318,6 +319,7 @@ void reset() {
         a77 = 0x0200;
         p77 = 0x20;
     } else if (evo) {
+        s_nemoRt = s_nemoWt = s_nemoW1 = 0;   // NEMO #10 word triggers
 #if EVO_CFG_TRACE
         s_evo_tr_n = 0;
         Debug::log("[EVOP] reset");
@@ -922,6 +924,82 @@ bool portWrite(uint16_t address, uint8_t data) {
     // to the Beta-128 system register ("don't return").
     if ((lo & 0x9F) == 0x9F && !(a77 & 0x4000)) palWrite(data, (uint8_t)(address >> 8));
     return false;
+}
+
+// ------------------------------------------------- ZX-Evo NEMO IDE (#10 toggle) --
+// The Evo's on-board IDE is NEMO-decoded (loa[2:0] = 0, loa[3] != loa[4]; #11 the
+// high byte), but #10 alone also moves whole words: each access to #10 flips a
+// trigger, the first read fetches the word and returns its low byte, the second
+// returns the high one (writes: the first is held, the second sends {it, this}).
+// An access to #11 or to any other IDE register resets the trigger, so the classic
+// #10 + #11 pair keeps working. Evo ProfROM / Shadow Monitor read a sector with
+// LD BC,#0010 : INIR : INIR (page 17 #1758) — without the trigger they got the
+// low halves only. Unreal IDE_NEMO_DIVIDE (io.cpp) is the same model.
+
+#if IDE_PORT_TRACE
+// Low-noise NEMO access trace: runs of one (dir, port) collapse into a count with the
+// first/last value, so a 512-byte INIR burst is one line and the drive probe before
+// the first ATA command (which IDE.cpp's own level-1 lines cannot show) is readable.
+static void nemoTrace(char dir, uint8_t lo, uint8_t v) {
+    static char lD = 0; static uint8_t lP = 0, lF = 0, lL = 0; static uint32_t n = 0;
+    static uint16_t lines = 0; static uint16_t lpc = 0;
+    if (dir == lD && lo == lP) { n++; lL = v; return; }
+    if (n && lines < 1500) {
+        lines++;
+        if (n == 1) Debug::log("[NEMO] %c %02X=%02X pc=%04X", lD, lP, lF, lpc);
+        else Debug::log("[NEMO] %c %02X x%lu %02X..%02X pc=%04X", lD, lP, (unsigned long)n, lF, lL, lpc);
+    }
+    lD = dir; lP = lo; lF = lL = v; n = 1; lpc = Z80::getRegPC();
+}
+#define NEMO_TR(d, lo, v) nemoTrace(d, lo, v)
+#else
+#define NEMO_TR(d, lo, v) ((void)0)
+#endif
+
+bool nemoRead(uint16_t address, uint8_t& v) {
+    const uint8_t lo = (uint8_t)address;
+    if (address & 1) {                                  // #11 (any odd: NEMO A0 = high latch)
+        s_nemoRt = 0;
+        v = IDE::read_latch();
+    } else if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {   // #C8
+        v = IDE::read8(8);
+    } else if ((address & 0x18) == 0x10) {
+        const uint8_t reg = (address >> 5) & 7;
+        if (reg == 0) {
+            s_nemoRt ^= 1;
+            v = s_nemoRt ? IDE::read_data_low() : IDE::read_latch();
+        } else {
+            s_nemoRt = 0;
+            v = IDE::read8(reg);
+        }
+    } else return false;
+    LED::touchR(LED::IDE);
+    NEMO_TR('R', lo, v);
+    return true;
+}
+
+bool nemoWrite(uint16_t address, uint8_t data) {
+    const uint8_t lo = (uint8_t)address;
+    if (address & 1) {                                  // #11: the high byte comes first
+        IDE::write_latch(data);
+        s_nemoWt = 0; s_nemoW1 = 1;
+    } else if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {
+        IDE::write8(8, data);
+    } else if ((address & 0x18) == 0x10) {
+        const uint8_t reg = (address >> 5) & 7;
+        if (reg == 0) {
+            s_nemoWt ^= 1;
+            if (s_nemoW1) { s_nemoW1 = 0; IDE::write_data_low(data); }      // #11 then #10
+            else if (s_nemoWt) { s_nemoWlo = data; }                         // hold the low byte
+            else { IDE::write_latch(data); IDE::write_data_low(s_nemoWlo); } // {held, this}
+        } else {
+            s_nemoWt = 0;
+            IDE::write8(reg, data);
+        }
+    } else return false;
+    LED::touchW(LED::IDE);
+    NEMO_TR('W', lo, data);
+    return true;
 }
 
 // PAL-detect quirk of the ATM-Turbo 1 (Unreal atm450_z): #FE bit 7 reads 0 in three

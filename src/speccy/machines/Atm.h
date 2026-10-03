@@ -159,6 +159,11 @@ namespace Atm {
     // Port hooks, called early from Ports::output/input. true = consumed.
     bool portWrite(uint16_t address, uint8_t data);
     bool portRead(uint16_t address, uint8_t& v);
+    // ZX-Evo BaseConf NEMO IDE (Unreal IDE_NEMO_DIVIDE): #10 is a toggle — two reads
+    // give low then high byte of a word, so INIR/INIR moves a whole sector. Called
+    // from Ports.cpp's NEMO block with a NEMO image mounted; false = not an IDE port.
+    bool nemoRead(uint16_t address, uint8_t& v);
+    bool nemoWrite(uint16_t address, uint8_t data);
     void feWrite(uint16_t address);   // ATM1 #FE address latch (the ULA branch still runs)
     uint8_t feRead(uint8_t v);        // ATM1 #FE bit 7 PAL-detect quirk
 
