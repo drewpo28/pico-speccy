@@ -324,7 +324,6 @@ SECTIONS
 @NGSOVL_SECTION@
 @DMAOVL_SECTION@
 @TSOVL_SECTION@
-@FTOVL_SECTION@
     ASSERT(__ngsovl_bss_end <= __ngsovl_win_end,
         "ERROR: .ngsovl overflowed the NeoGS overlay window. Re-link with -DNGSOVL_WIN_SIZE=16384, read the real size from `arm-none-eabi-size -A <elf> | grep ngsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
     ASSERT(__gsovl_bss_end <= __gsovl_win_end,
@@ -374,7 +373,13 @@ SECTIONS
         . = ALIGN(4);
     } > FLASH =0xaa
     __psramrom_start = ADDR(.psramroms);
-    __psramrom_end   = ADDR(.psramroms) + SIZEOF(.psramroms);
+    /* The VDAC2 window's LOAD image follows the ROMs, inside the traded range: it is
+     * copied to RAM only on a TS-Conf boot with VDAC2 on, and TS-Conf needs these
+     * ROMs (FlashRoms::romsUsable), so on a board that traded them it is never read
+     * — CodeOverlay::apply additionally refuses the window unless FlashRoms::intact().
+     * Its VMA is the fixed window under .tsovl; only the LMA lives here. The template
+     * (cmake/memory-layout.cmake) also sets __psramrom_end, which has to cover it. */
+@FTOVL_SECTION@
     PROVIDE(__flash_binary_end = __psramrom_end);
 
     /* ── GM.DLS wavetable bank flash region ──────────────────────────────────

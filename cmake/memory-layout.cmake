@@ -314,13 +314,15 @@ if (VDAC2_CODE_OVERLAY)
         . = ALIGN(4);\n\
         __ftovl_end = .;\n\
     } AT > FLASH\n\
-    __ftovl_source = LOADADDR(.ftovl);\n")
+    __ftovl_source = LOADADDR(.ftovl);\n\
+    __psramrom_end = LOADADDR(.ftovl) + SIZEOF(.ftovl);\n")
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE VDAC2_CODE_OVERLAY=0)
     set(FTOVL_SECTION "\
     PROVIDE(__ftovl_start  = __ftovl_win_start);\n\
     PROVIDE(__ftovl_end    = __ftovl_win_start);\n\
-    PROVIDE(__ftovl_source = __ftovl_win_start);\n")
+    PROVIDE(__ftovl_source = __ftovl_win_start);\n\
+    __psramrom_end = ADDR(.psramroms) + SIZEOF(.psramroms);\n")
 endif()
 
 if (DMA_CODE_OVERLAY)

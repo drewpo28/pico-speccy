@@ -43,6 +43,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/sound/SnSound.h"
 #include "hardware/clocks.h"
 #include "Subsystem.h"
+#include "FlashRoms.h"
 #include "speccy/z80/CPU.h"
 #include "Config.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
@@ -821,7 +822,8 @@ void ESPectrum::setup() {
   // can want the extra room.
   CodeOverlay::apply(Config::arch == A_TSCONF, Config::gs_enabled != 0, Config::dma_mode != 0,
                      Config::gs_enabled == 2,    // NeoGS-only code/data window
-                     Config::tsconf_vdac2);      // VDAC2 window (with TS-Conf only)
+                     Config::tsconf_vdac2        // VDAC2 window (with TS-Conf only); its load
+                       && FlashRoms::intact());  // image is in .psramroms, gone once traded
   // Framebuffer re-check: the block was already claimed at the top of setup(), from
   // a pristine heap and for the DEFAULT mode. This is where the mode the user
   // actually picked is honoured — a no-op when it matches, a resize when it does
