@@ -31,6 +31,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 
 */
+#include "speccy/core/Pss.h"
 #include <malloc.h>
 #include <hardware/watchdog.h>
 #include <hardware/uart.h>
@@ -1832,9 +1833,27 @@ string getDefaultSnapshotName() {
     return "";
 }
 
+// Slot files: persistN.pss (one file, src/speccy/core/Pss.cpp) on the machines it
+// covers, the old persistN.sna + persistN.esp sidecar everywhere else. A slot holds
+// one or the other — every writer deletes the kind it did not write.
+static string slotPath(uint8_t slotnumber, const char* ext) {
+    char fn[sizeof(DISK_PSNA_FILE) + 8];
+    snprintf(fn, sizeof(fn), DISK_PSNA_FILE "%u.%s", slotnumber, ext);
+    return string(DISK_PSNA_DIR) + "/" + fn;
+}
+
+static void slotDropLegacy(uint8_t slotnumber) {
+    f_unlink(slotPath(slotnumber, "sna").c_str());
+    f_unlink(slotPath(slotnumber, "esp").c_str());
+}
+
 // Read slot name (3rd line) from .esp info file.
 // Returns "" if slot file doesn't exist, "\x01" if file exists but has no name.
 string getSlotName(uint8_t slotnumber) {
+    {
+        string nm;
+        if (Pss::readName(slotPath(slotnumber, "pss"), nm)) return nm.empty() ? "\x01" : nm;
+    }
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfinfo, DISK_PSNA_FILE "%u.esp", slotnumber);
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
@@ -1863,12 +1882,14 @@ void persistDelete(uint8_t slotnumber) {
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
     f_unlink(fsna.c_str());
     f_unlink(finfo.c_str());
+    f_unlink(slotPath(slotnumber, "pss").c_str());
 }
 
 
 
 // UI-free rename core (shared with the new UI): rewrite the .esp keeping arch/romset.
 void persistSetName(uint8_t slotnumber, const string& newName) {
+    if (Pss::setName(slotPath(slotnumber, "pss"), newName)) return;
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfinfo, DISK_PSNA_FILE "%u.esp", slotnumber);
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
@@ -1895,6 +1916,12 @@ void persistSetName(uint8_t slotnumber, const string& newName) {
 // UI-free save core (shared with the new UI): the caller has already resolved
 // the name and any overwrite question.
 bool persistSaveNamed(uint8_t slotnumber, const string& slotName) {
+    if (Pss::supported()) {
+        if (!Pss::save(slotPath(slotnumber, "pss"), slotName)) return false;
+        slotDropLegacy(slotnumber);
+        return true;
+    }
+    f_unlink(slotPath(slotnumber, "pss").c_str());
     char persistfname[sizeof(DISK_PSNA_FILE) + 7];
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfname, DISK_PSNA_FILE "%u.sna", slotnumber);
@@ -1942,24 +1969,28 @@ static void ide_create_progress(uint32_t done, uint32_t total) {
 // the menu's slot level.
 static bool persistSave(uint8_t slotnumber)
 {
-    FILINFO stat_buf;
     char persistfname[sizeof(DISK_PSNA_FILE) + 7];
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfname, DISK_PSNA_FILE "%u.sna", slotnumber);
     sprintf(persistfinfo, DISK_PSNA_FILE "%u.esp", slotnumber);
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
 
-    string slotName;
-
-    // Slot isn't void
-    if (f_stat(finfo.c_str(), &stat_buf) == FR_OK) {
-        slotName = getSlotName(slotnumber);
-        if (slotName == "\x01") slotName = "";
-    } else {
-        slotName = getDefaultSnapshotName();
-    }
+    // An occupied slot (.pss or .sna + .esp) keeps its name.
+    string slotName = getSlotName(slotnumber);
+    if (slotName.empty()) slotName = getDefaultSnapshotName();
+    else if (slotName == "\x01") slotName = "";
 
     OSD::osdCenteredMsg(OSD_PSNA_SAVING, LEVEL_INFO, 500);
+
+    if (Pss::supported()) {
+        if (!Pss::save(slotPath(slotnumber, "pss"), slotName)) {
+            OSD::osdCenteredMsg(OSD_PSNA_SAVE_ERR, LEVEL_ERROR, 5000);
+            return false;
+        }
+        slotDropLegacy(slotnumber);
+        return true;
+    }
+    f_unlink(slotPath(slotnumber, "pss").c_str());
 
     // Save info file
     FIL* f = fopen2(finfo.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
@@ -2000,6 +2031,19 @@ static void f_gets(char* b, size_t sz, FIL& f) {
 
 bool persistLoad(uint8_t slotnumber)
 {
+    {
+        const string pss = slotPath(slotnumber, "pss");
+        string nm;
+        if (Pss::readName(pss, nm)) {
+            if (!LoadSnapshot(pss, A_NONE, R_NONE)) {
+                if (!snapshotLoadReported()) OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+                return false;
+            }
+            Config::ram_file = pss;
+            Config::last_ram_file = pss;
+            return true;
+        }
+    }
     char persistfname[sizeof(DISK_PSNA_FILE) + 7];
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
 
@@ -2985,7 +3029,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
                     }
                 }
-                else if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx") {
+                else if (ext == "pss" || ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx") {
                     // Snapshot (.spg = TS-Conf program, switches the machine)
                     if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
                     Config::save();

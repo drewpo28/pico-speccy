@@ -31,6 +31,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 */
 
+#include "speccy/core/Pss.h"
 #include "app/PerfFdc.h"
 #include <hardware/watchdog.h>
 #include <stdio.h>
@@ -1526,7 +1527,9 @@ void ESPectrum::setup() {
   if (Config::ram_file != NO_RAM_FILE) {
     if (FileUtils::fsMount) {
       Debug::log2SD("setup: LoadSnapshot begin");
+      Pss::bootResume = true;   // a .pss that rebooted to apply its settings must not loop
       LoadSnapshot(Config::ram_file, A_NONE, R_NONE);
+      Pss::bootResume = false;
       Debug::log2SD("setup: LoadSnapshot done");
     }
     Config::last_ram_file = Config::ram_file;

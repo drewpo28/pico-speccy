@@ -53,6 +53,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/sound/AySound.h"
 #include "loaders.h"
 #include "speccy/core/Rzx.h"
+#include "speccy/core/Pss.h"
 #include "app/Config.h"
 
 #include <sys/unistd.h>
@@ -98,7 +99,10 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
     // because the machine then already matched.
     const bool nested = !g_snapshot_loading_path.empty();
     if (!nested) g_snapshot_loading_path = filename;
-    if (FileUtils::hasSNAextension(filename)) {
+    if (FileUtils::hasPSSextension(filename)) {
+        res = Pss::load(filename);
+        if (!res) s_load_reported = true;   // Pss::load names its own failure
+    } else if (FileUtils::hasSNAextension(filename)) {
         res = FileSNA::load(filename, force_arch, force_romset);
     } else if (FileUtils::hasZ80extension(filename)) {
         res = FileZ80::load(filename);
@@ -298,7 +302,8 @@ size_t fread(uint8_t* v, size_t sz1, size_t sz2, FIL& f) {
 
 static bool writeMemPage(uint8_t page, FIL* file, bool blockMode)
 {
-    page = page & 0x07;
+    // No `& 7`: Pentagon 512/1024 SNAs carry pages 8..63, and the mask wrote pages
+    // 0..7 again in their place (the file had the right size and the wrong RAM).
     MemESP::ram[page].to_file(file, MEM_PG_SZ);
     return true;
 }

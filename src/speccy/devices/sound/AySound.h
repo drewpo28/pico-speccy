@@ -165,6 +165,9 @@ public:
     uint8_t getRegisterData();
     void selectRegister(uint8_t data);
     void setRegisterData(uint8_t data);
+    // Snapshot access (src/speccy/core/Pss.cpp): the raw register file and latch.
+    uint8_t reg(uint8_t i) const { return regs[i & 15]; }
+    uint8_t selReg() const { return selectedRegister; }
 
     void init();
     int set_chip_type(ayemu_chip_t chip, int *custom_table);

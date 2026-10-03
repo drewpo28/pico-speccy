@@ -39,10 +39,13 @@ visit https://zxespectrum.speccy.org/contacto
 #include <stdio.h>
 #include <inttypes.h>
 #include <string>
+#include <vector>
+#include "fatfs/ff.h"
 #include "speccy/core/ArchRom.h"
 #include "Debug.h"
 
 namespace JoyProf { struct Profile; }
+struct NvsWriter;   // Config.cpp
 
 uint32_t butter_psram_size();   // MemESP.h / main.cpp — used by wantedPages()
 
@@ -65,6 +68,20 @@ public:
     static void loadMb02DiskMounts(); // (re)mount only MB-02+ disks (on enable at runtime)
     static void save(const char* path = nullptr, const char* profileName = nullptr);
                                   // nullptr path = STORAGE_NVS (normal path)
+
+    // ── snapshot settings (.pss, src/speccy/core/Pss.cpp) ──────────────────────
+    // The full key dump save() writes, into an already open file (the CFG block).
+    static bool saveKeysTo(FIL* f);
+    // Which class a `key=value` line of a snapshot belongs to: 0 = not applied,
+    // 1 = the machine (arch/romsets), 2 = reboot-class hardware, 3 = media mounted
+    // live (Beta / +3 disks, tape).
+    static int  snapKeyClass(const char* line, size_t len);
+    // Compares the snapshot's applied lines with storage.nvs (save() first). When a
+    // reboot-class line differs, writes storage.nvs with every one of them merged in
+    // and ram=<ramFile>, and returns true: the caller reboots. Otherwise touches
+    // nothing and returns false.
+    static bool snapMergeForReboot(const std::vector<std::string>& lines, const std::string& ramFile);
+    static void writeKeys(NvsWriter& buf);   // save()'s body; Config.cpp only
 
     // ── named config profiles (Options > Save/Load my settings) ────────────────
     // A profile is a full copy of storage.nvs under CONFIG_DIR_PROFILES, named by

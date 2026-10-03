@@ -450,7 +450,7 @@ static bool rfd_launch_tmp(string path) {
         Tape::LoadTape((Config::tape_autostart ? "R" : "L") + base); // LoadTape prepends TAP_Path
         return true;
     }
-    if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx") {
+    if (ext == "pss" || ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx") {
         FileUtils::SNA_Path = dir;
         Config::save();
         if (!LoadSnapshot(path, A_NONE, R_NONE)) {

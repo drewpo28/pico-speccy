@@ -1669,75 +1669,9 @@ static void nvs_set_sc(NvsWriter& buf, const char* name, signed char val) {
     nvs_set_i(buf, name, val);
 }
 
-// Dump actual config to FS. path==nullptr writes the normal per-version/
-// per-board storage.nvs; a caller passes a profile path to snapshot the current
-// live settings under a name (see profileSave). `profileName` is written as the
-// FIRST line of the file so the menu can read a profile's name off the head of
-// it instead of parsing a whole config — every other reader is a pull model
-// (nvs_get_*), so an unknown key costs nothing and the order never matters.
-void Config::save(const char* path, const char* profileName) {
-    const bool toFile = (path != nullptr);
-    if (toFile && !FileUtils::fsMount) return; // no SD: nothing to persist a profile to
-    string nvs_path_s = toFile ? path : STORAGE_NVS;
-    string nvs_tmp_s = nvs_path_s + ".tmp";
-    const char* nvs_tmp = nvs_tmp_s.c_str();
-    const char* nvs_path = nvs_path_s.c_str();
-    FIL* handle = nullptr;
-    if (FileUtils::fsMount) {
-        if (!toFile && !loaded) {
-            // Config was never loaded from file — refuse to overwrite
-            // existing storage.nvs with defaults. The guard is for a file we
-            // could not READ (SD hiccup at boot); a file THIS session created
-            // is ours, which is why the successful write below sets `loaded`.
-            // Without that, only the first save of a session landed: a boot
-            // with no storage.nvs yet (new firmware version = new config dir)
-            // left loaded=false, the first save created the file, and every
-            // later save in the same session was blocked by it — the new
-            // menu's commit persisted the video mode but MachineSwitch's own
-            // save (which carries arch/romSet, and runs second) was refused,
-            // so the machine reverted on the next boot (hw 2026-07-29:
-            // "720x576 + V-Sync applied, Machine stayed 48K").
-            FILINFO fi;
-            if (f_stat(STORAGE_NVS, &fi) == FR_OK) {
-                Debug::log("Config::save BLOCKED — not loaded, file exists (%lu bytes)",
-                           (unsigned long)fi.fsize);
-                save_blocked = true;    // the loop says so out loud
-                return;
-            }
-        }
-        // Make sure the target directory exists before writing. If mkdir
-        // fails (broken/full SD), refuse to write — otherwise the following
-        // f_open would silently fail and we'd lose original state. The
-        // directory comes from the path itself: a profile lives in a folder
-        // of its own and a hardcoded pair of names cannot cover both.
-        string dir_s = CONFIG_DIR_BOARD;
-        if (toFile) {
-            const size_t sl = nvs_path_s.rfind('/');
-            dir_s = (sl == string::npos) ? string(CONFIG_DIR) : nvs_path_s.substr(0, sl);
-        }
-        const char* dir = dir_s.c_str();
-        if (!FileUtils::mkdirParents(dir)) {
-            Debug::log("Config::save FAILED — cannot create %s", dir);
-        } else {
-            // Atomic write: stream to .tmp, then rename over the original
-            handle = fopen2(nvs_tmp, FA_WRITE | FA_CREATE_ALWAYS);
-            if (!handle) Debug::log("Config::save FAILED — cannot open %s", nvs_tmp);
-        }
-    }
-    // The RAM fallback below is the session copy of storage.nvs. A profile has no
-    // such thing: it exists to outlive the session, and dumping it into that
-    // buffer would both pretend the save worked and leave the session's config
-    // carrying someone else's profile_name.
-    if (!handle && toFile) return;
-    NvsWriter buf;
-    if (handle) {
-        buf.f = handle;
-    } else {
-        // No SD target — keep config in RAM for session persistence
-        nvs_ram_buf.clear();
-        buf.ram = &nvs_ram_buf;
-    }
-    if (profileName) nvs_set_str(buf, "profile_name", profileName);
+// Every key, in save()'s order. Split out so a snapshot can carry the same dump
+// (Config::saveKeysTo) without going through save()'s storage.nvs plumbing.
+void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u16(buf,"cpu_mhz", cpu_mhz);
     nvs_set_u16(buf,"max_flash_freq", max_flash_freq);
     nvs_set_u16(buf,"max_psram_freq", max_psram_freq);
@@ -2003,6 +1937,85 @@ void Config::save(const char* path, const char* profileName) {
     nvs_set_str(buf,"tsconf_vdac2_smooth", tsconf_vdac2_smooth ? "true" : "false");
     nvs_set_str(buf,"tsconf_vdac2_adapt", tsconf_vdac2_adapt ? "true" : "false");
 
+}
+
+bool Config::saveKeysTo(FIL* f) {
+    NvsWriter buf;
+    buf.f = f;
+    writeKeys(buf);
+    return buf.ok;
+}
+
+// Dump actual config to FS. path==nullptr writes the normal per-version/
+// per-board storage.nvs; a caller passes a profile path to snapshot the current
+// live settings under a name (see profileSave). `profileName` is written as the
+// FIRST line of the file so the menu can read a profile's name off the head of
+// it instead of parsing a whole config — every other reader is a pull model
+// (nvs_get_*), so an unknown key costs nothing and the order never matters.
+void Config::save(const char* path, const char* profileName) {
+    const bool toFile = (path != nullptr);
+    if (toFile && !FileUtils::fsMount) return; // no SD: nothing to persist a profile to
+    string nvs_path_s = toFile ? path : STORAGE_NVS;
+    string nvs_tmp_s = nvs_path_s + ".tmp";
+    const char* nvs_tmp = nvs_tmp_s.c_str();
+    const char* nvs_path = nvs_path_s.c_str();
+    FIL* handle = nullptr;
+    if (FileUtils::fsMount) {
+        if (!toFile && !loaded) {
+            // Config was never loaded from file — refuse to overwrite
+            // existing storage.nvs with defaults. The guard is for a file we
+            // could not READ (SD hiccup at boot); a file THIS session created
+            // is ours, which is why the successful write below sets `loaded`.
+            // Without that, only the first save of a session landed: a boot
+            // with no storage.nvs yet (new firmware version = new config dir)
+            // left loaded=false, the first save created the file, and every
+            // later save in the same session was blocked by it — the new
+            // menu's commit persisted the video mode but MachineSwitch's own
+            // save (which carries arch/romSet, and runs second) was refused,
+            // so the machine reverted on the next boot (hw 2026-07-29:
+            // "720x576 + V-Sync applied, Machine stayed 48K").
+            FILINFO fi;
+            if (f_stat(STORAGE_NVS, &fi) == FR_OK) {
+                Debug::log("Config::save BLOCKED — not loaded, file exists (%lu bytes)",
+                           (unsigned long)fi.fsize);
+                save_blocked = true;    // the loop says so out loud
+                return;
+            }
+        }
+        // Make sure the target directory exists before writing. If mkdir
+        // fails (broken/full SD), refuse to write — otherwise the following
+        // f_open would silently fail and we'd lose original state. The
+        // directory comes from the path itself: a profile lives in a folder
+        // of its own and a hardcoded pair of names cannot cover both.
+        string dir_s = CONFIG_DIR_BOARD;
+        if (toFile) {
+            const size_t sl = nvs_path_s.rfind('/');
+            dir_s = (sl == string::npos) ? string(CONFIG_DIR) : nvs_path_s.substr(0, sl);
+        }
+        const char* dir = dir_s.c_str();
+        if (!FileUtils::mkdirParents(dir)) {
+            Debug::log("Config::save FAILED — cannot create %s", dir);
+        } else {
+            // Atomic write: stream to .tmp, then rename over the original
+            handle = fopen2(nvs_tmp, FA_WRITE | FA_CREATE_ALWAYS);
+            if (!handle) Debug::log("Config::save FAILED — cannot open %s", nvs_tmp);
+        }
+    }
+    // The RAM fallback below is the session copy of storage.nvs. A profile has no
+    // such thing: it exists to outlive the session, and dumping it into that
+    // buffer would both pretend the save worked and leave the session's config
+    // carrying someone else's profile_name.
+    if (!handle && toFile) return;
+    NvsWriter buf;
+    if (handle) {
+        buf.f = handle;
+    } else {
+        // No SD target — keep config in RAM for session persistence
+        nvs_ram_buf.clear();
+        buf.ram = &nvs_ram_buf;
+    }
+    if (profileName) nvs_set_str(buf, "profile_name", profileName);
+    writeKeys(buf);
     if (handle) {
         // f_sync flushes FAT before close so we don't commit the
         // rename on top of a half-written file when the card stalls.
@@ -2088,6 +2101,91 @@ struct LineReader {
 static bool lineIsKey(const string& l, const char* key) {
     const size_t k = strlen(key);
     return l.size() >= k + 1 && l.compare(0, k, key) == 0 && l[k] == '=';
+}
+
+// ── snapshot settings (.pss) ───────────────────────────────────────────────────
+// A .pss carries the whole key dump, but only the keys that describe the MACHINE
+// the guest ran on are applied when it is loaded — never video, CPU clock, UI,
+// network, audio driver, volume or the joystick (the JOY block carries that).
+// Class 1 is switched live by requestMachine, class 3 is (re)mounted live, class 2
+// is everything that is only read at boot: those go through storage.nvs + reboot.
+static const char* const kSnapArchKeys[] = {
+    "arch", "romSet", "romSet48", "romSet128", "romSetPent", "romSetP512", "romSetP1M",
+};
+static const char* const kSnapRebootKeys[] = {
+    "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",
+    "Issue2", "timex_video", "ulaplus", "betadisk", "trdosBios", "mode16col_onoff",
+    "esxdos", "esxdos_hdf", "esxdos_hd1", "mb02", "mb02d0.file", "mb02d1.file",
+    "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
+    "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
+    "dckcart", "alfcart", "alfCartBanks",
+};
+static const char* const kSnapLiveKeys[] = {
+    "drive0.file", "drive1.file", "drive2.file", "drive3.file",
+    "p3d0.file", "p3d1.file", "tape_file",
+};
+
+static bool keyIn(const char* line, size_t len, const char* const* tab, size_t n) {
+    const char* eq = (const char*)memchr(line, '=', len);
+    if (!eq) return false;
+    const size_t k = (size_t)(eq - line);
+    for (size_t i = 0; i < n; i++)
+        if (strlen(tab[i]) == k && memcmp(tab[i], line, k) == 0) return true;
+    return false;
+}
+
+int Config::snapKeyClass(const char* line, size_t len) {
+    if (keyIn(line, len, kSnapArchKeys,   sizeof(kSnapArchKeys)   / sizeof(*kSnapArchKeys)))   return 1;
+    if (keyIn(line, len, kSnapRebootKeys, sizeof(kSnapRebootKeys) / sizeof(*kSnapRebootKeys))) return 2;
+    if (keyIn(line, len, kSnapLiveKeys,   sizeof(kSnapLiveKeys)   / sizeof(*kSnapLiveKeys)))   return 3;
+    return 0;
+}
+
+static size_t keyLen(const string& l) {
+    const size_t e = l.find('=');
+    return e == string::npos ? l.size() : e;
+}
+
+bool Config::snapMergeForReboot(const vector<string>& lines, const string& ramFile) {
+    if (!FileUtils::fsMount) return false;
+    save();                                   // storage.nvs = the live state
+    FIL* in = fopen2(STORAGE_NVS, FA_READ);
+    if (!in) return false;
+    const string tmp = string(STORAGE_NVS) + ".pss";
+    FIL* out = fopen2(tmp.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (!out) { fclose2(in); return false; }
+    vector<bool> seen(lines.size(), false);
+    bool differs = false, ok = true;
+    auto put = [&](const string& l) {
+        UINT bw;
+        if (f_write(out, l.c_str(), l.size(), &bw) != FR_OK || bw != l.size()) ok = false;
+        if (f_write(out, "\n", 1, &bw) != FR_OK || bw != 1) ok = false;
+    };
+    LineReader rd(in);
+    string l;
+    while (ok && rd.line(l)) {
+        const size_t k = keyLen(l);
+        if (k == 3 && l.compare(0, 4, "ram=") == 0) { put("ram=" + ramFile); continue; }
+        size_t hit = lines.size();
+        for (size_t i = 0; i < lines.size(); i++)
+            if (keyLen(lines[i]) == k && lines[i].compare(0, k, l, 0, k) == 0) { hit = i; break; }
+        if (hit == lines.size()) { put(l); continue; }
+        seen[hit] = true;
+        if (lines[hit] != l && snapKeyClass(l.c_str(), l.size()) == 2) {
+            Debug::log("[PSS] reboot-class key differs: '%s' -> '%s'", l.c_str(), lines[hit].c_str());
+            differs = true;
+        }
+        put(lines[hit]);
+    }
+    for (size_t i = 0; ok && i < lines.size(); i++) if (!seen[i]) put(lines[i]);
+    if (ok) ok = (f_sync(out) == FR_OK);
+    fclose2(out);
+    fclose2(in);
+    if (!ok || !differs) { f_unlink(tmp.c_str()); return false; }
+    FRESULT rn = f_rename(tmp.c_str(), STORAGE_NVS);
+    if (rn == FR_EXIST) { f_unlink(STORAGE_NVS); rn = f_rename(tmp.c_str(), STORAGE_NVS); }
+    if (rn != FR_OK) { Debug::log("[PSS] storage.nvs merge: rename failed (%d)", rn); return false; }
+    return true;
 }
 
 // "" = the slot is empty; "\x01" = it holds a profile that was never named.
