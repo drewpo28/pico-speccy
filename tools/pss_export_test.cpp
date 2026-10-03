@@ -125,6 +125,8 @@ int main(int argc, char** argv) {
         { "plus3e","128K",     "P3e",     8,  1, 0,1,0, 0, 0, 0x04,0, 0x7000, 0x7100, false,false,false,false,false },
         { "pent",  "Pentagon", "128Kp",   8,  6, 0,1,0, 0, 0, 0, 0,  0x7000, 0x7100, false,false,false,false,false },
         { "p512",  "P512",     "128Kp",  32, 21, 1,0,0, 0, 0, 0, 0,  0x7000, 0x7100, false,false,false,false,false },
+        { "scorp", "Scorpion", "Scorp",  16, 13, 0,1,0, 0, 1, 0x12,0, 0x7000, 0x7100, false,false,false,false,false },
+        { "scorpg","Scorpion", "ScorpGr", 16, 9, 1,0,1, 0, 0, 0x10,0, 0x7000, 0x7100, false,false,false,false,false },
         { "p512b", "P512",     "128Kp",  32, 10, 0,1,0, 0, 0, 0, 0,  0x7000, 0x7100, false,false,false,false,false },
         { "p1024", "P1024",    "128Kp",  64, 37, 0,1,0, 0, 0, 0, 0x10, 0x7000, 0x7100, false,false,false,true, false },
     };
@@ -137,8 +139,8 @@ int main(int argc, char** argv) {
         a = archOf(c.arch); r = romOf(c.rom);
         const uint8_t fm = Pss::exportFormats(a, r);
         CHECK(fm & Pss::EX_SZX, "%s: no .szx", c.name);
-        const bool plus3 = !strncmp(c.rom, "P3", 2);
-        const bool bigPent = c.npages > 8;
+        const bool plus3 = !strncmp(c.rom, "P3", 2) || !strcmp(c.arch, "Scorpion");
+        const bool bigPent = c.npages > 8 && strcmp(c.arch, "Scorpion") != 0;
         CHECK(!!(fm & Pss::EX_Z80) == !bigPent, "%s: .z80 availability", c.name);
         CHECK(!!(fm & Pss::EX_SNA) == !plus3, "%s: .sna availability", c.name);
 
@@ -190,7 +192,8 @@ int main(int argc, char** argv) {
                 if (o.size() == want) {
                     CHECK(o[6] == 0 && o[7] == 0 && o[30] == 55, "%s.z80: not a v3 header", c.name);
                     CHECK((o[32] | (o[33] << 8)) == c.pc, "%s.z80: PC", c.name);
-                    if (plus3) CHECK(o[34] == 7 && o[86] == c.p1ffd, "%s.z80: +3 mode/1FFD", c.name);
+                    if (plus3) CHECK(o[34] == (strcmp(c.arch, "Scorpion") ? 7 : 10) && o[86] == c.p1ffd,
+                                     "%s.z80: +3/Scorpion mode, 1FFD", c.name);
                 }
             } else {
                 CHECK(o.size() > 8 && !memcmp(o.data(), "ZXST", 4), "%s.szx: magic", c.name);

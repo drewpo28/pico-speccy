@@ -711,16 +711,21 @@ static void resolveVideoOutput() {
 // (seeded per page), so the whole power-on state is bit-identical on every
 // boot and every build — the property the memset(0) this replaces existed for
 // (halt2int's floating-bus verdict must not flip from build to build).
-static void powerOnDramFill(uint8_t *p, uint32_t page) {
-  uint32_t rnd = 0x9E3779B9u * (page + 1); // fixed per-page seed, deliberately no RNG
-  for (uint32_t a = 0; a < MEM_PG_SZ; ++a) {
+// The seed is fixed per page, deliberately no RNG (see DramPattern in the header).
+void ESPectrum::DramPattern::next(uint8_t* out, uint32_t n) {
+  for (uint32_t i = 0; i < n; ++i, ++a) {
     uint8_t v = (((a >> 3) ^ (a >> 6)) & 1) ? 0x00 : 0xFF;
     rnd ^= rnd << 13; rnd ^= rnd >> 17; rnd ^= rnd << 5;
     // ~1/32 bytes carry defective cells; ANDing two draws keeps the flips
     // sparse (mostly 1-3 bits per affected byte), like the real thing.
     if ((rnd & 0x1F) == 0) v ^= (uint8_t)((rnd >> 8) & (rnd >> 16));
-    p[a] = v;
+    out[i] = v;
   }
+}
+
+static void powerOnDramFill(uint8_t *p, uint32_t page) {
+  ESPectrum::DramPattern g(page);
+  g.next(p, MEM_PG_SZ);
 }
 
 // Put every POINTER-backed ZX RAM page into the state a power-on leaves. Called at

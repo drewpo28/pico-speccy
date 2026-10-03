@@ -63,7 +63,8 @@ def machine(s):
     arch = s['cfg'].get('arch', '')
     rom = s['cfg'].get('romSet', '')
     m = dict(is48=False, plus3=False, plus3e=False, plus2=False, pent=False,
-             p512=False, p1024=False, tc2048=False, tc2068=False, npages=0)
+             p512=False, p1024=False, tc2048=False, tc2068=False, scorp=False,
+             green=False, npages=0)
     if arch == '48K':
         m.update(is48=True, npages=3, tc2048=rom == 'TC2048', tc2068=rom == 'TC2068')
     elif arch == '128K':
@@ -75,13 +76,15 @@ def machine(s):
         m.update(npages=32, pent=True, p512=True)
     elif arch == 'P1024':
         m.update(npages=64, pent=True, p1024=True)
+    elif arch == 'Scorpion' and rom in ('Scorp', 'ScorpGr'):
+        m.update(npages=16, scorp=True, green=rom == 'ScorpGr')
     return m
 
 
 def formats(m):
     if not m['npages']:
         return set()
-    if m['plus3']:
+    if m['plus3'] or m['scorp']:
         return {'szx', 'z80'}
     if m['p512'] or m['p1024']:
         return {'szx', 'sna'}
@@ -133,6 +136,8 @@ def blk(bid, body):
 def to_szx(s, m):
     if m['is48']:
         mid = 9 if m['tc2068'] else 8 if m['tc2048'] else 1
+    elif m['scorp']:
+        mid = 10
     elif m['p1024']:
         mid = 14
     elif m['p512']:
@@ -151,7 +156,7 @@ def to_szx(s, m):
     out += blk(b'CRTR', b'pico-speccy'.ljust(32, b'\0') + struct.pack('<HH', 1, 0))
     out += blk(b'Z80R', s['z'])
     pt = s['pt']
-    p1 = pt[13] if m['plus3'] else (pt[14] if m['p1024'] else 0)
+    p1 = pt[13] if (m['plus3'] or m['scorp']) else (pt[14] if m['p1024'] else 0)
     out += blk(b'SPCR', bytes([s['spcr'][0], 0 if m['is48'] else p7ffd(s, m), p1,
                                s['spcr'][3], 0, 0, 0, 0]))
     if ay_present(s, m):
@@ -188,6 +193,8 @@ def to_z80(s, m):
     struct.pack_into('<H', h, 32, w(22))
     if m['is48']:
         hw = 15 if m['tc2068'] else 14 if m['tc2048'] else 0
+    elif m['scorp']:
+        hw = 10
     elif m['pent']:
         hw = 9
     elif m['plus3']:
@@ -206,13 +213,18 @@ def to_z80(s, m):
     if ay:
         h[38] = s['ay'][1]
         h[39:55] = s['ay'][2:18]
-    tpf = 71680 if m['pent'] else 69888 if m['is48'] else 70908
+    if m['pent']:
+        tpf = 71680
+    elif m['scorp']:
+        tpf = 70784 if m['green'] else 69888
+    else:
+        tpf = 69888 if m['is48'] else 70908
     qs = tpf // 4
     ts = struct.unpack_from('<I', z, 29)[0] % tpf
     struct.pack_into('<H', h, 55, qs - (ts % qs) - 1)
     h[57] = (ts // qs + 3) % 4
     h[61] = h[62] = 0xFF
-    h[86] = s['pt'][13] if m['plus3'] else 0
+    h[86] = s['pt'][13] if (m['plus3'] or m['scorp']) else 0
     out = bytes(h)
     ids48 = (8, 4, 5)
     for i in range(m['npages']):

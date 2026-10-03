@@ -380,9 +380,24 @@ void VIDEO::clearDS80Padding() {
     }
 }
 
-void VIDEO::profiPaletteReset() {
-    for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_default_palette16[i];
+// The guest's 16 colours, set from outside the guest (a snapshot load, a reset). While
+// the menu owns the pair palette, profi_palette_live holds the MENU's colours and the
+// guest's live in profi_palette_ui_saved — restoreUiDS80Palette() copies that back on
+// the way out, so a write to the live array here would be undone by the menu's exit:
+// a slot loaded from the menu over a DS80 screen came back with the PREVIOUS palette.
+void VIDEO::setGuestPalette16(const uint32_t rgb888[16]) {
+    uint32_t* dst = profi_palette_ui_saved_valid ? profi_palette_ui_saved : profi_palette_live;
+    for (int i = 0; i < 16; i++) dst[i] = rgb888[i] & 0x00FFFFFF;
     profi_palette_dirty = true; // refresh on next EndFrame if DS80 active
+}
+
+void VIDEO::getGuestPalette16(uint32_t out[16]) {
+    const uint32_t* src = profi_palette_ui_saved_valid ? profi_palette_ui_saved : profi_palette_live;
+    for (int i = 0; i < 16; i++) out[i] = src[i];
+}
+
+void VIDEO::profiPaletteReset() {
+    setGuestPalette16(profi_default_palette16);
 }
 
 void VIDEO::profiPaletteApplyPending() {

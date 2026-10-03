@@ -23,7 +23,8 @@ namespace {
 // What the export needs to know about the source machine.
 struct Mach {
     bool is48 = false, plus3 = false, plus3e = false, plus2 = false, pent = false,
-         p512 = false, p1024 = false, tc2048 = false, tc2068 = false;
+         p512 = false, p1024 = false, tc2048 = false, tc2068 = false,
+         scorp = false, scorpGreen = false;
     int  npages = 0;
 };
 
@@ -37,6 +38,11 @@ Mach machOf(ArchIdx a, RomsetIdx r) {
         case A_PENT:  m.npages = 8;  m.pent = true; break;
         case A_P512:  m.npages = 32; m.pent = m.p512 = true; break;
         case A_P1024: m.npages = 64; m.pent = m.p1024 = true; break;
+        // Only the 256K Scorpion has an SZX / .z80 machine; KAY-256 reads #1FFD
+        // differently and would be misread as one.
+        case A_SCORP:
+            if (r == R_SCORP || r == R_SCORP_GR) { m.npages = 16; m.scorp = true; m.scorpGreen = r == R_SCORP_GR; }
+            break;
         default: break;
     }
     return m;
@@ -147,6 +153,7 @@ void addDrop(string& d, const char* what) {
 bool writeSzx(Src& s, const Mach& m, W& w, uint8_t* buf, uint32_t bsz) {
     uint8_t id = 1;
     if (m.is48)        id = m.tc2068 ? 9 : (m.tc2048 ? 8 : 1);
+    else if (m.scorp)  id = 10;
     else if (m.p1024)  id = 14;
     else if (m.p512)   id = 13;
     else if (m.pent)   id = 7;
@@ -166,7 +173,7 @@ bool writeSzx(Src& s, const Mach& m, W& w, uint8_t* buf, uint32_t bsz) {
     w.begin("SPCR");
     w.u8(s.spcr[0]);
     w.u8(m.is48 ? 0 : port7ffd(s, m));
-    w.u8(m.plus3 || m.plus3e ? s.pt[13] : (m.p1024 ? s.pt[14] : 0));
+    w.u8(m.plus3 || m.plus3e || m.scorp ? s.pt[13] : (m.p1024 ? s.pt[14] : 0));
     w.u8(s.spcr[3]); w.u32(0);
     w.end();
 
@@ -217,6 +224,7 @@ bool writeZ80(Src& s, const Mach& m, W& w, uint8_t* buf, uint32_t bsz) {
 
     uint8_t hw = 0;
     if (m.is48)       hw = m.tc2068 ? 15 : (m.tc2048 ? 14 : 0);
+    else if (m.scorp) hw = 10;
     else if (m.pent)  hw = 9;
     else if (m.plus3 || m.plus3e) hw = 7;
     else if (m.plus2) hw = 12;
@@ -227,14 +235,15 @@ bool writeZ80(Src& s, const Mach& m, W& w, uint8_t* buf, uint32_t bsz) {
     const bool ay = s.haveAy && (!m.is48 || m.tc2068 || cfgOn(s, "AY48"));
     h[37] = 0x03 | ((ay && m.is48 && !m.tc2068) ? 0x04 : 0);   // R + LDIR emulation, AY on 48K
     if (ay) { h[38] = s.ay[1]; memcpy(h + 39, s.ay + 2, 16); }
-    const uint32_t tpf = m.pent ? 71680 : (m.is48 ? 69888 : 70908);
+    const uint32_t tpf = m.pent ? 71680 : m.scorp ? (m.scorpGreen ? 70784 : 69888)
+                       : (m.is48 ? 69888 : 70908);
     const uint32_t qs  = tpf / 4;
     const uint32_t ts  = (z[29] | (z[30] << 8) | (z[31] << 16) | ((uint32_t)z[32] << 24)) % tpf;
     const uint16_t lo  = (uint16_t)(qs - (ts % qs) - 1);
     h[55] = lo & 0xFF; h[56] = lo >> 8;
     h[57] = (uint8_t)((ts / qs + 3) % 4);
     h[61] = 0xFF; h[62] = 0xFF;
-    h[86] = (m.plus3 || m.plus3e) ? s.pt[13] : 0;
+    h[86] = (m.plus3 || m.plus3e || m.scorp) ? s.pt[13] : 0;
     w.raw(h, sizeof(h));
 
     static const uint8_t p48[3] = { 5, 2, 0 }, id48[3] = { 8, 4, 5 };
@@ -294,7 +303,7 @@ bool writeSna(Src& s, const Mach& m, W& w, uint8_t* buf, uint32_t bsz) {
 uint8_t exportFormats(ArchIdx a, RomsetIdx r) {
     const Mach m = machOf(archCanon(a), r);
     if (!m.npages) return 0;
-    if (m.plus3 || m.plus3e)  return EX_SZX | EX_Z80;
+    if (m.plus3 || m.plus3e || m.scorp) return EX_SZX | EX_Z80;
     if (m.p512 || m.p1024)    return EX_SZX | EX_SNA;
     return EX_SZX | EX_Z80 | EX_SNA;
 }

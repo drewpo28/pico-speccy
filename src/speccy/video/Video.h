@@ -437,6 +437,10 @@ public:
   static bool uiOwnsPairPalette();
   static void clearDS80Padding();        // re-blacken DS80 side-padding columns after OSD close
   static void profiPaletteReset();
+  // The guest's 16 DS80 colours from outside the guest (snapshot load); lands in the
+  // saved copy while the menu owns the pair palette, so its exit does not undo it.
+  static void setGuestPalette16(const uint32_t rgb888[16]);
+  static void getGuestPalette16(uint32_t out[16]);   // ditto, reading
   // Update palette[index] from a Profi RRRGGGBB color byte; sets dirty flag.
   static void profiPaletteWrite(uint8_t index, uint8_t profi_color);
   // Apply a pending live-palette refresh to the scanout driver. Call ONLY while

@@ -356,3 +356,52 @@ row (save to a slot first, then convert it). Two entries, one code path:
   or without a menu session around it) whenever `nm::available()`; the classic chrome is
   only the fallback for a layout that does not fit. Every `msgDialog` caller changed look
   with it (factory reset, SD config offer, network host key / delete / forget, DLS install).
+
+## Phase 3, part 1: the Scorpion family (2026-10-04; hw 2026-10-04, owner: "работает", not itemised)
+
+- `Pss::supported()` covers `A_SCORP`: ZS-256 Yellow/Green, ZS-1024, ProfROM, GMX,
+  ScorpEvo, KAY-256/1024/2010, Phoenix. Slots on these machines now write `.pss`.
+- Pages: `Scorpion::ramPages()` = 16 (ZS-256, KAY-256), 64 (ZS-1024, ProfROM, ScorpEvo,
+  KAY-1024/2010), 128 (GMX, Phoenix), capped by `MEM_PG_CNT`.
+- **Sparse pages** (machines over 64 pages, i.e. GMX and Phoenix): a page that still holds
+  the DRAM power-on pattern (`ESPectrum::DramPattern`, the generator `powerOnRamFill` now
+  uses) is not written; the loader refills it. New block `PSPG` = {total u16, sparse u8};
+  a file without it (phase 1) must carry every page, as before. Only POINTER pages are
+  tested (others are always written).
+- New block `PSSC` (`Scorpion::snapSave/snapLoad`, in the machine module): KAY 7FFD D7,
+  the GMX register file (#00, #78FD, #7EFD, scroll, plane, magic shift, #DFFD), SMUC SYS/FDD.
+  `Scorpion::snapRemap()` rebuilds #C000 and, on GMX, the #8000 window, the 7 MHz clock
+  and the 640x200 mode, then `Ports::scorpionRomUpdate()` derives the ROM bank.
+- A machine `requestMachine` cannot provide on this board (GMX without QSPI PSRAM falls
+  back to another romset) refuses the load with a message instead of loading the state
+  into the wrong machine.
+- Export: ZS-256 Yellow/Green to `.szx` (machine 10, SPCR 1FFD) and `.z80` (mode 10,
+  byte 86 = #1FFD, Yellow 69888 / Green 70784 T-states per frame). Not KAY-256 (its #1FFD
+  means something else) and nothing over 256 KB. Host test + oracle cover both boards.
+- **Hw check owed**: slot save/load on ZS-256 (TR-DOS from the 128 menu, the service
+  monitor), ZS-1024 with a page above 15 at #C000, ProfROM (plane), GMX (640x200 screen,
+  7 MHz, #8000 window, a page above 63), KAY-1024, Phoenix; save time and file size on
+  GMX; `.szx`/`.z80` of a ZS-256 slot in another emulator.
+
+## Phase 3, part 2: Profi / Karabas (2026-10-04; hw 2026-10-04, owner: "работает" after the palette fix)
+
+- `A_PROFI` (Karabas folds into it) is covered: 64 pages (1 MB; the DS80 colour memory is
+  RAM pages 56/58, so it travels with them — no separate colour-SRAM block needed).
+- Block `PSPR` (`Profi::snapSave/snapLoad/snapRemap`): #DFFD, #008B/#018B/#028B, the DS80
+  palette (16 x RGB888) and its BX0/GX0 latches, the VV51 mouse control/INT enable.
+  Remap: ROM bank from (DOS, ROM14), `Profi::writeDFFD` (windows 1-3, NOROM, SCO/SCR,
+  DS80 requested for the next vblank exactly as a guest write does), clock from #028B.
+- The generic `grmem` line skips Profi (DS80 shows pages 4/6), and the border now goes
+  through `VIDEO::updateBorderBrd()` for every machine (DS80 / Timex hi-res encodings).
+- No export (no format expresses Profi). PQ-DOS keyboard queue and serial mouse
+  position are not saved.
+- **Hw check owed**: Profi ROMain / PQ-DOS / CP/M slot save/load, a DS80 screen with a
+  non-default palette (CP/M desktop, a DS80 game), the 7/14 MHz clock, Karabas romsets.
+- **Fix (owner: "палитра DS80 не всегда восстанавливается")**: with the menu open over
+  DS80, `profi_palette_live` holds the MENU's 16 colours and the guest's sit in
+  `profi_palette_ui_saved` until `restoreUiDS80Palette()` copies them back. So a slot
+  SAVED from the menu stored the menu's palette, and one LOADED from the menu had its
+  palette overwritten by the old guest copy on the way out. `VIDEO::getGuestPalette16` /
+  `setGuestPalette16` read and write whichever copy is the guest's; `profiPaletteReset`
+  (a reset taken from the menu over DS80) goes through the setter too. Not from the menu
+  (F2, Alt+F3/F4, boot resume) it worked, hence "не всегда".

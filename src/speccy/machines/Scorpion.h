@@ -24,4 +24,16 @@ void write1FFD(uint16_t address, uint8_t data);
 // 3.5 / 7 MHz (MAME scorpiontb_state::scorpion_io). Returns the bus value, 0xFF.
 uint8_t turboPlusRead(uint16_t address);
 
+// ── .pss snapshot (src/speccy/core/Pss.cpp) ─────────────────────────────────
+// RAM pages the running romset has: 16 (ZS-256, KAY-256), 64 (ZS-1024, ProfROM,
+// ScorpEvo, KAY-1024/2010), 128 (GMX, Phoenix).
+uint32_t ramPages();
+// The family's own latches (KAY 7FFD D7, the GMX register file, the ProfROM plane,
+// SMUC SYS/FDD) as the PSSC block; returns the byte count (<= SNAP_MAX).
+constexpr uint32_t SNAP_MAX = 16;
+uint32_t snapSave(uint8_t* out);
+void     snapLoad(const uint8_t* in, uint32_t n);
+// Rebuild the memory map from the restored latches (MemESP + #1FFD + PSSC).
+void     snapRemap();
+
 }

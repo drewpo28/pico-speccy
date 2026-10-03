@@ -2114,6 +2114,7 @@ static bool lineIsKey(const string& l, const char* key) {
 // is everything that is only read at boot: those go through storage.nvs + reboot.
 static const char* const kSnapArchKeys[] = {
     "arch", "romSet", "romSet48", "romSet128", "romSetPent", "romSetP512", "romSetP1M",
+    "romSetScorp", "romSetProfi",
 };
 static const char* const kSnapRebootKeys[] = {
     "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",

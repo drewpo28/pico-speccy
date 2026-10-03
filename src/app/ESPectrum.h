@@ -101,6 +101,13 @@ public:
     // arch/romset: the machine the RAM is filled FOR (-1 = the current Config one) —
     // MachineSwitch fills before requestMachine, i.e. while Config still names the old machine.
     static void powerOnRamFill(int arch = -1, int romset = -1);
+    // The DRAM power-on pattern of one page (powerOnRamFill), a chunk at a time:
+    // a .pss omits pages that still hold it (src/speccy/core/Pss.cpp).
+    struct DramPattern {
+        uint32_t rnd, a;
+        explicit DramPattern(uint32_t page) : rnd(0x9E3779B9u * (page + 1)), a(0) {}
+        void next(uint8_t* out, uint32_t n);
+    };
     static void loop();
     static void reset();
     static void reset(uint8_t romInUse);
