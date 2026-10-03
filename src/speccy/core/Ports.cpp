@@ -1692,6 +1692,14 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
             lo8spiEx == 0xC7 || lo8spiEx == 0xE7)
           goto skip_fdc_alias_switch;
       }
+      // ZX-Evo: the FPGA decodes the WD1793 by the WHOLE low byte (zports.v
+      // loa==VGCOM/VGTRK/VGSEC/VGDAT), so #2F, #4F, #6F, #8F... are no port
+      // at all and read #FF. EvoProfROM's TR-DOS reads #2F as its per-drive
+      // "real/virtual" flags (bit 7 drive A, bit 6 drive B): the Beta alias
+      // gave it the TRACK register, bit 7 clear, and every sector went through
+      // the ProfROM HDD-driver path with its ~110 ms motor spin-up each.
+      if (Z80Ops::isAtm && Atm::evo && (address & 0x1F) != 0x1F)
+        goto skip_fdc_alias_switch;
 
       switch (address & 0xe3) {
       case 0x03:
@@ -3747,6 +3755,10 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         // misrouted into the WD1793 (spurious drive/side/reset pulses) — hw
         // log 2026-07-09. Nothing to actually emulate here (no real SPI-flash
         // chip backing), just don't let it hit the FDC.
+      } else if (Z80Ops::isAtm && Atm::evo && (address & 0x1F) != 0x1F) {
+        // ZX-Evo: full low-byte decode of the WD1793 (see the read side) —
+        // EvoProfROM's OUT (#2F),#FF at driver init must not reach the track
+        // register.
       } else switch (address & 0xe3) {
 
       case 0x03:

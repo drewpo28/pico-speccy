@@ -13897,6 +13897,26 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
      bring it back. `EVO_CFG_TRACE` gained `[BF]` (every #BF write touching D3/D4, with the
      stack and window-2 registers, `=> NMI` on the edge), `[W2]`, `[DOS]`, `[TRDEMU]`, and
      drops the ProfROM far-call flood (`#BF = x|1` + `#3FF7`) from `[EVOP]`.
+  3. **TR-DOS disks loaded ~10x slower under EvoProfROM than anywhere else — the WD1793
+     must be decoded by the WHOLE low byte on the Evo** (hw-confirmed 2026-10-03, owner:
+     "теперь быстро"). `zports.v` compares `loa==VGCOM/VGTRK/VGSEC/VGDAT/VGSYS` (8'h1F/3F/
+     5F/7F/FF); our Beta decoder used `address & 0xE3`, so `#2F` read the TRACK register.
+     EvoProfROM's TR-DOS (page 13, a patched 5.04T) reads `#2F` before every seek /
+     sector / drive select as per-drive "real/virtual" flags (bit 7 = A, bit 6 = B; `#FF`
+     on hardware = no port) — a track number < 128 made drive A "virtual", so every sector
+     went through ProfROM's own FDD driver (page 17, called with `dos=0` over the open
+     shadow ports): seek + read address + read per sector, plus a ~103 ms motor spin-up
+     (`#0700`, delay loop `LD HL,#3AA2`) because its per-drive motor timers `#BFD8..#BFDB`
+     stay `#FF` from its init template (`#0BC7`) — ~190 ms a sector. Its init also does
+     `OUT (#2F),#FF`, which landed in the track register (`tr=255`). Fix in `Ports.cpp`
+     (read switch and write switch): on `Atm::evo` only `(address & 0x1F) == 0x1F` reaches
+     the WD1793; `#2F/#4F/#6F/#8F...` read `#FF` and swallow writes. Found with the
+     `PERF_TRACE` FDC instruments, kept: `src/app/PerfFdc.{h,cpp}` — `[FDC]` one line per
+     WD1793 command with the guest T since the previous one (3.5 MHz units), PC, `dos`,
+     and EvoProfROM's driver state (`mt=` motor timers, `fl=` #BFDC); `[PERF] fdc:` the
+     top (PC, port, dir) FDC accesses per 60 frames; `[FDCW]` changes of `#BFC8..#BFDF`
+     in RAM page #FB. **Diff a slow load's `[FDC]` gaps against a fast machine before
+     theorising** — the 111 ms step between seek and read address named the delay loop.
 
 ## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 + ZXM-Phoenix 2 MB (2026-09-26, NOT hw-tested)
 

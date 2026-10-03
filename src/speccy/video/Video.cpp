@@ -76,6 +76,7 @@ static void ftTraceTick();   // defined in the VDAC2 glue section below
 #include "speccy/devices/Z80DMA.h"
 #include "hardware/xip_cache.h"
 #include "speccy/machines/Atm.h"
+#include "app/PerfFdc.h"
 extern "C" const unsigned char gb_rom_atm_font[];   // roms/atm/atm_roms.c (SGEN.ROM order)
 #include "hardware/regs/addressmap.h"
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
@@ -8364,6 +8365,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
         c1d_accum += ts_dma_c1_us; c1wd_accum += ts_c1_wait_dma_us; if (ts_c1_wait_dma_us > c1wd_max) c1wd_max = ts_c1_wait_dma_us;
         ts_render_us = ts_tsu_us = ts_dma_us = ts_dma_words = 0;
         ts_c1_us = ts_c1_wait_us = ts_c1_jobs = ts_c1_waits = ts_dma_c1_us = ts_c1_wait_dma_us = 0;
+        PerfFdc::frame();
         if (++port_log_frame >= 60) {
             uint64_t now = time_us_64();
             float fps = wall_t0 ? (60.0f * 1000000.0f / (float)(now - wall_t0)) : 0.0f;
@@ -8387,6 +8389,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
                 (unsigned)(g_brd_max ? g_brd_min : 0), (unsigned)g_brd_max, (unsigned)g_brd_delta, (unsigned)(CPU::statesInFrame ? g_int_last_t % CPU::statesInFrame : 0),
                 (unsigned)(CPU::statesInFrame ? g_halt_t % CPU::statesInFrame : 0));
             g_frm_int_miss = 0; g_brd_min = 0xFFFFFFFF; g_brd_max = 0;
+            PerfFdc::dump();
             // Border landing position, its own line for the same reason. Both
             // numbers are fb columns (fb byte = 2*col) of border changes inside
             // the top band, so they are directly comparable with a screenshot

@@ -31,6 +31,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 */
 
+#include "app/PerfFdc.h"
 #include <hardware/watchdog.h>
 #include <stdio.h>
 #include <string>
@@ -1640,6 +1641,9 @@ void ESPectrum::reset() {
 }
 
 void ESPectrum::reset(uint8_t romInUse) {
+#if PERF_TRACE
+  PerfFdc::reset();
+#endif
   Rzx::onReset();   // a reset ends an RZX playback (not the one its own snapshot load does)
   // Ports. Keyboard rows 0-7 are deliberately NOT wiped: the matrix is
   // physical on real hardware, so keys held THROUGH a reset stay pressed —

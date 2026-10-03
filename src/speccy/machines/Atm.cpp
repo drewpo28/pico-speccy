@@ -9,6 +9,7 @@
 #include "speccy/z80/CPU.h"
 #include "app/Config.h"
 #include "app/Debug.h"
+#include "app/PerfFdc.h"
 #include "app/ESPectrum.h"
 #include "speccy/devices/storage/IDE.h"
 #include "ui/LEDIndicators.h"
@@ -755,6 +756,7 @@ static bool evoPortWrite(uint16_t address, uint8_t data) {
     // #FF: the FDC system register, and the palette while /PEN2 (#77 A14 = 0). The
     // drive number it carries decides the FDD-emulator trap below.
     if (lo == 0xFF) {
+        PERF_FDC_PORT(lo, true);
         vgSys = data;
         if (!(a77 & 0x4000)) palWrite(data, (uint8_t)(address >> 8));
     }
@@ -805,7 +807,9 @@ static bool evoPortRead(uint16_t address, uint8_t& v) {
         return true;
     default: break;
     }
+    if (lo == 0x2F) PERF_FDC_PORT(lo, false);
     if (!sh) return false;
+    if (lo == 0xFF) PERF_FDC_PORT(lo, false);
     if (trdemuTrap(lo)) { v = 0xFF; return true; }
     // #FF in shadow: { INTRQ, DRQ, 1, the system register's D4..D0 } (base_trdemu).
     if (lo == 0xFF) {
