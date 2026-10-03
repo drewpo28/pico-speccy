@@ -36,6 +36,18 @@ bool     inTrdemu = false;
 uint8_t* font = nullptr;   // 2 KB, allocated on the first Evo reset
 
 static uint8_t s_nemoRt = 0, s_nemoWt = 0, s_nemoW1 = 0, s_nemoWlo = 0;   // NEMO #10 triggers
+// #2F/#4F/#6F/#8F in shadow: four plain read/write registers (the "savelij" ports).
+// EvoProfROM keeps its per-drive real/virtual flags in #2F: its driver init writes
+// #FF (all real), "Mount on A/B" clears bit 7/6 (page 17 #15DC: OUT (#2F),D), and
+// its TR-DOS (page 13 #0856...) reads the bits back to route drive A/B through the
+// virtual-disk path. With #2F answering #FF a mounted virtual disk on A/B was sent
+// to the WD1793 and TR-DOS said "Disc error"; with it aliased to the WD1793 track
+// register every real disk went through the slow ProfROM driver. Power-up value #FF;
+// survives a machine reset (see reset()).
+static uint8_t s_sav[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+static inline int savIdx(uint8_t lo) {
+    return (lo == 0x2F || lo == 0x4F || lo == 0x6F || lo == 0x8F) ? (lo >> 5) - 1 : -1;
+}
 #if EVO_CFG_TRACE
 static uint16_t s_evo_tr_n = 0;   // evoTrace budget, re-armed by reset()
 static int s_nmi_tr = 0;          // port accesses still to log after an NMI
@@ -45,6 +57,9 @@ static int s_nmi_tr = 0;          // port accesses still to log after an NMI
 
 void reset() {
     s_nemoRt = s_nemoWt = s_nemoW1 = 0;
+    // s_sav is NOT reset: a warm reset (F11) keeps EvoProfROM's mount state in RAM and
+    // its warm path does not rewrite #2F, so clearing the latch here made a mounted A:/B:
+    // "real" again until a power cycle. #FF only at power-up (static init).
 #if EVO_CFG_TRACE
     s_evo_tr_n = 0;
     Debug::log("[EVOP] reset");
@@ -297,6 +312,7 @@ static bool portWriteImpl(uint16_t address, uint8_t data) {
         (((lo & 7) == 0 && (((lo >> 3) ^ (lo >> 4)) & 1)) || lo == 0x11))
         return true;
     if (!sh) return false;
+    if (const int i = savIdx(lo); i >= 0) { s_sav[i] = data; return true; }
     if (lo == 0x77) { write77(address, data); return true; }
     // #FF: the FDC system register, and the palette while /PEN2 (#77 A14 = 0). The
     // drive number it carries decides the FDD-emulator trap below.
@@ -354,6 +370,7 @@ static bool portReadImpl(uint16_t address, uint8_t& v) {
     }
     if (lo == 0x2F) PERF_FDC_PORT(lo, false);
     if (!sh) return false;
+    if (const int i = savIdx(lo); i >= 0) { v = s_sav[i]; return true; }
     if (lo == 0xFF) PERF_FDC_PORT(lo, false);
     if (trdemuTrap(lo)) { v = 0xFF; return true; }
     // #FF in shadow: { INTRQ, DRQ, 1, the system register's D4..D0 } (base_trdemu).

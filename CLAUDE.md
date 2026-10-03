@@ -13925,6 +13925,19 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
      top (PC, port, dir) FDC accesses per 60 frames; `[FDCW]` changes of `#BFC8..#BFDF`
      in RAM page #FB. **Diff a slow load's `[FDC]` gaps against a fast machine before
      theorising** — the 111 ms step between seek and read address named the delay loop.
+     **Correction (2026-10-04, hw-confirmed): `#2F/#4F/#6F/#8F` are NOT "no port" — in
+     shadow they are four read/write latches (the savelij ports), and answering `#FF` broke
+     virtual disks on A:/B: ("Disc error" in TR-DOS while the Shadow Monitor's Catalog read
+     the disk fine).** EvoProfROM's driver init writes `#2F = #FF` (all real), "Mount on A/B"
+     clears bit 7/6 (page 17 `#15DC`: `OUT (#2F),D`, shadow copy in `(IY-#26)`), and TR-DOS
+     page 13 (`#0856`, `#08AA`, `#0904`, `#0A05`, `#0A34`, `#0A7A`) routes drive A/B to the
+     ProfROM driver only while the bit is CLEAR — drives C/D always go there; inside it
+     `#BFDC` bit 7 picks HDD pseudo-disk vs real FDD (page 17 `#050F`). `EvoBase::s_sav[4]`
+     answers them in shadow only; Ports.cpp's whole-low-byte WD1793 decode stays. Hw
+     2026-10-04: the virtual disk works. **The latch must SURVIVE F11** (`#FF` at power-up
+     only): ProfROM's warm reset keeps its mount state in RAM and does not rewrite `#2F`,
+     so clearing it in `EvoBase::reset()` brought back Disc error until F12 (hw-confirmed fixed 2026-10-04, owner: "работает"). Test ELF
+     `debug/DVp2-evo-vdisk2-1.0.8.elf`.
 
 ## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 + ZXM-Phoenix 2 MB (2026-09-26, NOT hw-tested)
 
