@@ -9782,6 +9782,12 @@ void SaveRectT::restore_ram(void* p, size_t sz) {
 #define FT_VQ_BYTES     3072   // the MJPEG sink's per-pixel tables (FtGlue::vq)
 extern "C" volatile bool g_ft_c1_live = false;   // core1 pump gate (main.cpp render_core)
 static volatile bool ft_c1_busy = false;         // core1 inside ftRenderPump's band
+// core1 must not touch the framebuffer: the OSD owns it (VIDEO::ftHold). Set by the
+// menu/dialog entry points, cleared by the next emulated frame (ftFrameTick) or a
+// paused repaint (ftRedrawSync) — the OSD paths have no common exit to clear it.
+// Without it a video frame already posted to core1 was flipped over the menu
+// (hw 2026-10-03: the menu body came up under a frame of the playing video).
+static volatile bool ft_c1_hold = false;
 namespace {
 struct FtGlue {
     Ft812::PalLut lut;
@@ -10015,6 +10021,7 @@ static void ftModeSwitch(bool on) {
 void VIDEO::ftForceOff() { if (ft_live) ftModeSwitch(false); }
 
 void VIDEO::ftFrameTick() {
+    ft_c1_hold = false;          // emulation runs again: the OSD has given the screen back
     // CMD_PLAYVIDEO: parse the media FIFO / decode one frame, here on core0 once
     // per frame. It ran from the core1 render pump first and core1 died on the
     // first frame (hw 2026-09-28, black screen): core1 has a 2 KB stack, and
@@ -10054,8 +10061,20 @@ void VIDEO::ftFrameTick() {
     }
 }
 
+// core0: stop core1 drawing FT812 output (display list or video) and wait for the
+// band / decode it may be inside — the Dekker pair with ftRenderPump's busy flag.
+void VIDEO::ftHold() {
+    if (!ftg || !g_ft_c1_live) return;
+    ft_c1_hold = true;
+    __dmb();
+    const uint64_t t0 = time_us_64();
+    while (ft_c1_busy && time_us_64() - t0 < 200000) tight_loop_contents();
+}
+
 void VIDEO::ftRedrawSync() {
     if (!ft_live || !g_ft_c1_live) return;
+    ft_c1_hold = false;
+    __dmb();
     Ft812::renderRequest();
     const uint64_t t0 = time_us_64();
     while (Ft812::renderPending() && time_us_64() - t0 < 200000) tight_loop_contents();
@@ -10579,7 +10598,7 @@ FT_GLUE_HOT void VIDEO::ftRenderPump() {
     if (!ftg) return;
     ft_c1_busy = true;
     __dmb();
-    if (!g_ft_c1_live || !vga.frameBuffer) { ft_c1_busy = false; return; }
+    if (!g_ft_c1_live || !vga.frameBuffer || ft_c1_hold) { ft_c1_busy = false; return; }
     FtGlue& g = *ftg;
     if (!g.active && Ft812::videoActive()) {
         // CMD_PLAYVIDEO owns the screen: no display-list frames. A request still

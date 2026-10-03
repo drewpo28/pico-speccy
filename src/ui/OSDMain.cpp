@@ -2184,6 +2184,7 @@ void OSD::nmiAction() {
 
 void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
+    VIDEO::ftHold();          // ...or a VDAC2 frame / video (FT812, core1)
     VIDEO::blVmapSuspend();   // borderless: show what is drawn over the fb row for row
 
     // A live top-border banner belongs to the running machine: EndFrame() stops
@@ -3284,6 +3285,7 @@ void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level) {
 
 void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millispause) {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
+    VIDEO::ftHold();          // ...or a VDAC2 frame / video (FT812, core1)
     VIDEO::blVmapSuspend();   // borderless: show what is drawn over the fb row for row
     // New-skin toasts. The persistent (millispause == 0) form leaves the UI
     // palette installed, which recolours a DS80 guest screen — keep the classic
@@ -7835,6 +7837,7 @@ void (*OSD::progressOverride)(const char* title, const char* msg, int percent,
 
 void OSD::progressDialog(const string& title, const string& msg, int percent, int action, bool cyrillic) {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
+    VIDEO::ftHold();          // ...or a VDAC2 frame / video (FT812, core1)
     VIDEO::blVmapSuspend();   // borderless: show what is drawn over the fb row for row
     if (progressOverride) {
         progressOverride(title.c_str(), msg.c_str(), percent, action, cyrillic);

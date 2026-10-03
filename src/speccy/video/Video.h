@@ -484,6 +484,7 @@ public:
   static void ftFrameTick();          // EndFrame (core0): REG_FRAMES, DLSWAP, INT_SWAP, redraw requests
   static void ftRenderPump();         // core1: one band of the pending frame
   static void ftPaletteProgram();     // the RGB cube onto the hardware slots (+ redraw)
+  static void ftHold();               // core0: OSD takes the screen — stop core1's FT812 output until the next frame
   static void ftRedrawSync();         // core0: re-render the current list and wait (paused repaint)
   static void ftForceOff();           // ESPectrum::reset / mode teardown
   static void blRecalc();
