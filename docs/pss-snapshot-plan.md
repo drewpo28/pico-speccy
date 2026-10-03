@@ -186,19 +186,19 @@ the result dialog, not silence.
   `CRTR` block; our own blocks are dropped (NeoGS, TSFM's 2nd AY, settings). Pages
   are written uncompressed (flag 0), which every SZX reader accepts.
 
-### Where the export lives (owner, 2026-10-01)
+### Where conversion lives (owner, 2026-10-01, corrected 2026-10-03)
 
-- **Snapshots menu**: a third row, `Export snapshot`, beside `Load from file` and
-  `Quick slots`. It exports the **running machine** (the same EndFrame capture as a
-  slot save, into a `/tmp` `.pss`, then through the converter — one code path, so
-  "export now" and "export a slot" cannot disagree).
-- **Saved snapshots**: an `F5 Export` verb on the `Quick slots` K_PICK list, acting on
-  the slot under the cursor (dimmed / "empty slot" toast on an empty one, and on a
-  legacy `.sna`+`.esp` slot it offers `.sna` only, since that file already IS one).
-  The footer line that names Enter's verb gains `F5 Export`.
-- **F5 browser** on a `.pss` file: the same verb, for snapshots that live outside the
-  slot directory.
-- **Flow** (all three entries): format picker listing ONLY the formats the table
+Conversion works on SAVED snapshots only — there is no "export the running machine"
+row (save to a slot first, then convert it). Two entries, one code path:
+
+- **Quick slots** (Snapshots → Quick slots, the K_PICK list): an `F5 Convert` verb
+  on the slot under the cursor — "Convert to sna/z80/szx". Empty slot → toast, no
+  action. A legacy `.sna`+`.esp` slot: `.sna` is offered as a plain copy (the file
+  already is one); `.z80`/`.szx` need the slot re-saved as `.pss` first (toast says
+  so). The footer line that names Enter's verb gains `F5 Convert`.
+- **F5 browser** on any `.pss` file: the same verb, for snapshots outside the slot
+  directory.
+- **Flow** (both entries): format picker listing ONLY the formats the table
   allows for that snapshot's machine (`.szx` first — it keeps the most; a machine
   with none gets a toast " No export format for <machine> " and stops) → **folder
   picker = the Web Archives one** (`rfd_choose_folder`, OSDFile.cpp — today a
@@ -211,7 +211,7 @@ the result dialog, not silence.
   export — NOT `net_dl_dir`: downloads and exports are different habits, and sharing
   one key would make each move the other. A stale path (stick gone) falls back to
   `/`, exactly as `rfd_start_dir` already does.
-- Nothing here needs the emulator running: export reads a `.pss` from the card and
+- Nothing here needs the emulator running: conversion reads a `.pss` from the card and
   writes another file; the machine is untouched (the menu is open, so it is paused).
   Peak RAM = one 16 KB page buffer + the `.z80` RLE output buffer (Buffer::palloc,
   PSRAM-first), freed on exit.
@@ -231,10 +231,9 @@ the result dialog, not silence.
    `SCLD`/`PLTT`/`COVX`/`B128` + `PSPT`/`PSAY`; reboot baton; slots switched to
    `.pss`; F2/browser load `.pss`. Covers 48K/128K/+2/+3/+3e/+3div, Pentagons, Byte,
    Timex, Didaktik.
-2. Export to `.sna` / `.z80` / `.szx`: Snapshots → `Export snapshot` (running machine),
-   `F5 Export` on Quick slots and on a `.pss` in the F5 browser, format picker +
-   Web-Archives folder chooser (`OSD::chooseFolder`, `Config::snap_export_dir`);
-   `tools/pss_export.py`.
+2. Convert `.pss` → `.sna` / `.z80` / `.szx`: `F5 Convert` on Quick slots and on a
+   `.pss` in the F5 browser, format picker + Web-Archives folder chooser
+   (`OSD::chooseFolder`, `Config::snap_export_dir`); `tools/pss_export.py`.
 3. Scorpion family (256/1024/GMX/ProfROM/KAY), Profi (`PSPR`), ATM (`PSAT`),
    Murmuzavr (`PSRP`), `DOCK`, DivMMC.
 4. TS-Conf (`PSTS`).
