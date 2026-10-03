@@ -814,4 +814,12 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         }
     }
 }
+
+string OSD::chooseFolder(const string& start) { return rfd_choose_folder(start); }
+
+#else
+
+// No network client in this build, hence no folder picker: the start folder.
+string OSD::chooseFolder(const string& start) { return start.empty() ? string("/") : start; }
+
 #endif // ZIFI_NET_CLIENT

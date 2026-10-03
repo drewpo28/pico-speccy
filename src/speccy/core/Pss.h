@@ -16,7 +16,9 @@
 // slot code keeps writing the old .sna + .esp everywhere else.
 #pragma once
 
+#include <stdint.h>
 #include <string>
+#include "ArchRom.h"
 
 namespace Pss {
 
@@ -25,6 +27,19 @@ bool save(const std::string& path, const std::string& name);
 bool load(const std::string& path);                 // through LoadSnapshot only
 bool readName(const std::string& path, std::string& name);   // false = not a .pss
 bool setName(const std::string& path, const std::string& name);
+// The machine a .pss was taken on (its CFG). false = not a .pss, or damaged.
+bool readMachine(const std::string& path, ArchIdx& arch, RomsetIdx& romset);
+
+// ── conversion (PssExport.cpp) ─────────────────────────────────────────────────
+// .pss -> .sna / .z80 / .szx for the machines those formats can express. Works on
+// the file only; the running machine is untouched. `dropped` lists, comma separated,
+// what the target format cannot carry; `err` says why a conversion failed.
+enum ExportFmt : uint8_t { EX_SZX = 1, EX_Z80 = 2, EX_SNA = 4 };
+uint8_t exportFormats(ArchIdx arch, RomsetIdx romset);   // ExportFmt mask, 0 = none
+bool exportTo(const std::string& src, const std::string& dst, ExportFmt fmt,
+              std::string& dropped, std::string& err);
+// A legacy slot (.sna + .esp) converts to .sna only, as a plain copy.
+bool copyFile(const std::string& src, const std::string& dst);
 
 // Set by ESPectrum::setup around its ram_file load: the reboot that applied the
 // snapshot's settings has already happened, so a remaining difference must not

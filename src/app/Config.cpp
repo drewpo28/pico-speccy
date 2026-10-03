@@ -193,6 +193,7 @@ string   Config::net_user;
 uint16_t Config::net_port = 0;
 uint8_t  Config::net_proto = 0;
 string   Config::net_dl_dir = SPEC_DIR_ROOT;
+string   Config::snap_export_dir = SPEC_DIR_ROOT "/snapshots";
 string   Config::net_ul_dir = SPEC_DIR_ROOT;
 string   Config::catalog_host;
 uint16_t Config::catalog_port = 0;
@@ -1486,6 +1487,7 @@ void Config::load() {
         if (zifi_transport == 2) zifi_transport = 0;   // on-chip radio exists only on W boards
 #endif
         nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
+        nvs_get_str("snap_exp", snap_export_dir, sts);
         nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
         nvs_get_str("DSK_Path", FileUtils::DSK_Path, sts);
         nvs_get_str("ROM_Path", FileUtils::ROM_Path, sts);
@@ -1842,6 +1844,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
     nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
+    nvs_set_str(buf,"snap_exp",snap_export_dir.c_str());
     nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());
     nvs_set_str(buf,"DSK_Path",FileUtils::DSK_Path.c_str());
     nvs_set_str(buf,"ROM_Path",FileUtils::ROM_Path.c_str());
@@ -2120,10 +2123,54 @@ static const char* const kSnapRebootKeys[] = {
     "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
     "dckcart", "alfcart", "alfCartBanks",
 };
+// The BOARD the snapshot was saved on — overclock, video output, audio output,
+// PSRAM. Not the guest machine, but the user may want it to travel with the
+// snapshot (a title recorded at 378 MHz with HDMI audio): applied only when the
+// user says so, through the same storage.nvs + reboot as class 2 (some of these
+// are live settings, the reboot applies them all the same).
+static const char* const kSnapAskKeys[] = {
+    "cpu_mhz", "vreq_voltage", "max_flash_freq", "max_psram_freq", "max_tft_freq",
+    "video_driver", "hdmi_vmode", "vga_vmode", "v_sync_enabled", "hdmi_clkdrv",
+    "vga_pwm", "vga_pwm_phase", "audio_driver", "AudBoost", "AudVolume",
+    "psram_enabled", "TFT_FLAGS", "TFT_INVERSION",
+};
 static const char* const kSnapLiveKeys[] = {
     "drive0.file", "drive1.file", "drive2.file", "drive3.file",
     "p3d0.file", "p3d1.file", "tape_file",
 };
+
+// What the user calls each of them (the menu's names), for the load question.
+const char* Config::snapKeyLabel(const std::string& key) {
+    static const struct { const char* k; const char* l; } tab[] = {
+        { "AY48", "AY on 48K" },            { "SAA1099", "SAA1099" },
+        { "ayConfig", "AY stereo" },        { "turbosound", "TurboSound" },
+        { "tsfm", "TurboSound FM" },        { "covox", "Covox" },
+        { "soundrive", "Soundrive" },       { "Issue2", "Issue 2 keyboard" },
+        { "timex_video", "Timex video" },   { "ulaplus", "ULA+" },
+        { "betadisk", "Beta 128" },         { "trdosBios", "TR-DOS ROM" },
+        { "mode16col_onoff", "16 colours" },{ "esxdos", "esxDOS" },
+        { "esxdos_hdf", "esxDOS image" },   { "esxdos_hd1", "esxDOS image" },
+        { "mb02", "MB-02+" },               { "zcontroller", "Z-Controller" },
+        { "byte_cobmect_mode", "Byte COBMECT" }, { "AluTiming", "ULA timing" },
+        { "rtc_enabled", "CMOS + NVRAM" },  { "ide_scheme", "IDE interface" },
+        { "ide_img0", "IDE image" },        { "ide_img1", "IDE image" },
+        { "ide_chs0", "IDE geometry" },     { "ide_chs1", "IDE geometry" },
+        { "dckcart", "DOCK cartridge" },    { "alfcart", "ALF cartridge" },
+        { "alfCartBanks", "ALF cartridge" },{ "audio_driver", "Audio output" },
+        { "cpu_mhz", "CPU clock" },         { "vreq_voltage", "Core voltage" },
+        { "max_flash_freq", "Flash clock" },{ "max_psram_freq", "PSRAM clock" },
+        { "max_tft_freq", "TFT clock" },    { "video_driver", "Video output" },
+        { "hdmi_vmode", "Video mode" },     { "vga_vmode", "Video mode" },
+        { "v_sync_enabled", "V-Sync" },     { "hdmi_clkdrv", "HDMI clock drive" },
+        { "vga_pwm", "VGA colour" },        { "vga_pwm_phase", "VGA PWM phase" },
+        { "AudBoost", "Audio boost" },      { "AudVolume", "Volume" },
+        { "psram_enabled", "PSRAM" },       { "TFT_FLAGS", "TFT panel" },
+        { "TFT_INVERSION", "TFT panel" },
+    };
+    for (const auto& e : tab) if (key == e.k) return e.l;
+    if (key.compare(0, 4, "mb02") == 0) return "MB-02+ disk";
+    return key.c_str();
+}
 
 static bool keyIn(const char* line, size_t len, const char* const* tab, size_t n) {
     const char* eq = (const char*)memchr(line, '=', len);
@@ -2138,12 +2185,34 @@ int Config::snapKeyClass(const char* line, size_t len) {
     if (keyIn(line, len, kSnapArchKeys,   sizeof(kSnapArchKeys)   / sizeof(*kSnapArchKeys)))   return 1;
     if (keyIn(line, len, kSnapRebootKeys, sizeof(kSnapRebootKeys) / sizeof(*kSnapRebootKeys))) return 2;
     if (keyIn(line, len, kSnapLiveKeys,   sizeof(kSnapLiveKeys)   / sizeof(*kSnapLiveKeys)))   return 3;
+    if (keyIn(line, len, kSnapAskKeys,    sizeof(kSnapAskKeys)    / sizeof(*kSnapAskKeys)))    return 4;
     return 0;
 }
 
 static size_t keyLen(const string& l) {
     const size_t e = l.find('=');
     return e == string::npos ? l.size() : e;
+}
+
+void Config::snapDiffKeys(const vector<string>& lines, vector<string>& out) {
+    out.clear();
+    if (!FileUtils::fsMount) return;
+    save();                                   // storage.nvs = the live state
+    FIL* in = fopen2(STORAGE_NVS, FA_READ);
+    if (!in) return;
+    LineReader rd(in);
+    string l;
+    while (rd.line(l)) {
+        const int cls = snapKeyClass(l.c_str(), l.size());
+        if (cls != 2 && cls != 4) continue;
+        const size_t k = keyLen(l);
+        for (const string& s : lines)
+            if (keyLen(s) == k && s.compare(0, k, l, 0, k) == 0) {
+                if (s != l) out.push_back(l.substr(0, k));
+                break;
+            }
+    }
+    fclose2(in);
 }
 
 bool Config::snapMergeForReboot(const vector<string>& lines, const string& ramFile) {
@@ -2171,7 +2240,8 @@ bool Config::snapMergeForReboot(const vector<string>& lines, const string& ramFi
             if (keyLen(lines[i]) == k && lines[i].compare(0, k, l, 0, k) == 0) { hit = i; break; }
         if (hit == lines.size()) { put(l); continue; }
         seen[hit] = true;
-        if (lines[hit] != l && snapKeyClass(l.c_str(), l.size()) == 2) {
+        const int cls = snapKeyClass(l.c_str(), l.size());
+        if (lines[hit] != l && (cls == 2 || cls == 4)) {
             Debug::log("[PSS] reboot-class key differs: '%s' -> '%s'", l.c_str(), lines[hit].c_str());
             differs = true;
         }

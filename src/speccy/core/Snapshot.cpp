@@ -238,6 +238,9 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         // tmp_port contains page switching status, including current page number (latch)
         uint8_t tmp_port = readByteFile(file);
         uint8_t tmp_latch = tmp_port & 0x07;
+        // The page count comes from the FILE, not the machine: a 128K SNA loaded on a
+        // Pentagon 1024 has 8 pages, not 64.
+        const int filePages = (snapshotArch == A_P1024) ? 64 : (snapshotArch == A_P512) ? 32 : 8;
 
         // copy what was read into page 0 to correct page
         MemESP::ram[tmp_latch].from_mem(MemESP::ram[0], MEM_PG_SZ);
@@ -245,7 +248,7 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         uint8_t tr_dos = readByteFile(file);     // Check if TR-DOS is paged
         
         // read remaining pages
-        for (int page = 0; page < (Z80Ops::is1024 ? 64 : (Z80Ops::is512 ? 32 : 8)); page++) {
+        for (int page = 0; page < filePages; page++) {
             if (page != tmp_latch && page != 2 && page != 5) {
                 MemESP::ram[page].from_file(file, MEM_PG_SZ);
             }
@@ -257,6 +260,17 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         MemESP::romLatch = bitRead(tmp_port, 4);
         MemESP::pagingLock = bitRead(tmp_port, 5);
         MemESP::bankLatch = tmp_latch;
+        // Our extended Pentagon SNA (32/64 pages) keeps the page bits where the
+        // hardware has them: D6 = +8, D7 = +16, and on a 1024 D5 = +32 (the 128K lock
+        // is off there). The third 16 KB block is bank (#7FFD & 7), as in a 128K SNA.
+        if (filePages > 8) {
+            if (tmp_port & 0x40) MemESP::bankLatch += 8;
+            if (tmp_port & 0x80) MemESP::bankLatch += 16;
+            if (filePages == 64) {
+                if (tmp_port & 0x20) MemESP::bankLatch += 32;
+                MemESP::pagingLock = 0;
+            }
+        }
         
         if (tr_dos) {
             // Scorpion's TR-DOS is its own bank 3, not the shared external rom[4]
@@ -363,7 +377,10 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
     // With an extended page (8-15) mapped at 0xC000 the raw bankLatch would
     // corrupt the port byte (bit3 = videoLatch) and derail the page-skip loop
     // below into a malformed size — clamp to the 7FFD-visible bank throughout.
-    uint32_t curBank = Z80Ops::isScorpion ? (MemESP::bankLatch & 0x07) : MemESP::bankLatch;
+    // Pentagon 512/1024: the third block is bank (#7FFD & 7) too, and the page bits
+    // above 7 go into the port byte (see the loader) — the raw bankLatch here wrote
+    // a different page than the loader then expected.
+    uint32_t curBank = MemESP::bankLatch & 0x07;
     uint8_t pages[3] = {5, 2, 0};
     if (Config::arch != A_48K)
         pages[2] = curBank;
@@ -386,6 +403,11 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
         bitWrite(tmp_port, 3, MemESP::videoLatch);
         bitWrite(tmp_port, 4, MemESP::romLatch);
         bitWrite(tmp_port, 5, MemESP::pagingLock);
+        if (Z80Ops::is512 || Z80Ops::is1024) {
+            if (MemESP::bankLatch & 8)  tmp_port |= 0x40;
+            if (MemESP::bankLatch & 16) tmp_port |= 0x80;
+            if (Z80Ops::is1024 && !MemESP::notMore128) bitWrite(tmp_port, 5, (MemESP::bankLatch & 32) ? 1 : 0);
+        }
         writeByteFile(tmp_port, file);
         // printf("7FFD: %u\n",(unsigned int)tmp_port);
 

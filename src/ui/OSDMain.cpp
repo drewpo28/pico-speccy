@@ -7974,11 +7974,18 @@ void OSD::progressDialog(const string& title, const string& msg, int percent, in
     }
 }
 
-uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
+uint8_t OSD::msgDialog(const string& title_, const string& msg_, bool defYes) {
+
+    // The fullscreen UI's box wherever its layout fits; the classic one below only
+    // stands in where it does not.
+    if (nm::available()) {
+        const int r = nm::uiAskAnywhere(title_.c_str(), msg_.c_str(), defYes);
+        return r > 0 ? DLG_YES : (r == 0 ? DLG_NO : DLG_CANCEL);
+    }
 
     const unsigned short h = (OSD_FONT_H * 6) + 2;
     const unsigned short y = scrAlignCenterY(h);
-    uint8_t res = DLG_NO;
+    uint8_t res = defYes ? DLG_YES : DLG_NO;
 
     string msg = msg_, title = title_;
     if (msg.length() > (scrW / 6) - 4) msg = msg.substr(0,(scrW / 6) - 4);
@@ -8009,8 +8016,9 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
     VIDEO::vga.setCursor(scrAlignCenterX(msg.length() * OSD_FONT_W), y + 1 + (OSD_FONT_H * 2));
     VIDEO::vga.print(msg.c_str());
 
-    // Yes
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
+    // Yes (highlighted when it is the default)
+    if (defYes) VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
+    else        VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
     VIDEO::vga.print(" Yes  ");
 
@@ -8020,7 +8028,8 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
     // VIDEO::vga.print("123456789012345678901234567");
 
     // No
-    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
+    if (defYes) VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
+    else        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
     VIDEO::vga.print("  No  ");
 

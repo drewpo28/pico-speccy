@@ -53,6 +53,9 @@ void playerRemote(RemoteFs* fs, const std::string& startDisp);
 // own gfx session like the game page above. `body` may carry '\n'. True = the
 // first button; Esc answers the second.
 bool uiConfirmStandalone(const char* body, const char* yes_btn, const char* no_btn);
+// A Yes/No question in the fullscreen UI's look, from anywhere (inside a menu
+// session or not); restores what it covered. 1 = Yes, 0 = No, -1 = Esc.
+int uiAskAnywhere(const char* title, const char* body, bool default_yes);
 
 } // namespace nm
 

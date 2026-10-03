@@ -291,3 +291,68 @@ row (save to a slot first, then convert it). Two entries, one code path:
   (EFF7, hidden RAM, a page above 31), TC2068 (SCLD); a load that has to reboot
   (e.g. AY48 differs); Beta disk swap on load; F5 open of a `.pss`; an old `.sna` slot
   still loading; rename / delete of a `.pss` slot.
+
+## Phase 2 as built (2026-10-04, NOT hw-tested)
+
+- `src/speccy/core/PssExport.cpp` (`Pss::exportFormats`, `Pss::exportTo`, `Pss::copyFile`),
+  block I/O shared with Pss.cpp through `PssIo.h`. One pass over the source collects the
+  small blocks and the file offset of every page; pages are streamed through 1 KB.
+- **Formats per machine** as in the table above, phase-1 machines only: 48K family and
+  Timex `.szx/.z80/.sna`; 128K/+2/Pentagon 128 all three; +3/+3e/+3div `.szx/.z80`;
+  P512/P1024 `.szx/.sna`.
+- **.szx** 1.4: CRTR, Z80R and RAMP copied, SPCR rebuilt (7FFD with the Pentagon
+  page bits, 1FFD = +3 #1FFD or P1024 #EFF7), AY (flag 128AY for an AY on a 48K) only
+  when the machine has one, SCLD, PLTT, COVX.
+- **.z80** v3 with the 55-byte header, uncompressed pages; machine 0 / 14 / 15 / 4 / 12 /
+  7 / 9; byte 86 = #1FFD; the T-state counter in libspectrum's quarter-frame encoding.
+- **.sna**: 48K with PC pushed onto the stack inside the image; 128K; and the extended
+  Pentagon SNA. The extended form is now DEFINED (and `FileSNA` save/load follow it):
+  the third 16 KB block is bank (#7FFD & 7) like a 128K SNA, the page bits above 7 go
+  into the stored #7FFD — D6 = +8, D7 = +16, on a 1024 D5 = +32 (lock off). The old
+  writer stored the raw bankLatch (garbage port byte for pages > 7) and the loader read
+  as many pages as the RUNNING machine has, not as the file holds.
+- **UI**: `F5 Convert` on Quick slots (`persist_key` 5; the footer names it) and on a
+  `.pss` in the F5 browser. Flow `nm::convertSnapshot`: format list (`.szx` first) →
+  `OSD::chooseFolder` (the Web Archives picker, now public; a no-network build returns
+  the start folder) → name (ASCII, max 32) → overwrite question → result box listing
+  what was not carried. A legacy `.sna` slot offers `.sna (copy)` only.
+  `Config::snap_export_dir` (storage.nvs `snap_exp`, default `/pico-speccy/snapshots`).
+- **Host test**: `tools/pss_export_test.cpp` (recipe in its header; FatFs stand-in in
+  `tools/pss_host/`) converts 12 synthetic machines and checks sizes, headers, the pushed
+  PC and the extended-SNA page bits; `tools/pss_export.py --check` is the independent
+  second implementation and compares byte for byte (29 conversions). Mutations of the
+  page bits, the pushed-PC byte order, the 48K .z80 block ids and the SNA page skip each
+  fail it. Not checked against libspectrum/Fuse yet.
+- **Hw check owed**: F5 Convert on a 48K, a 128K, a +3 and a Pentagon 1024 slot, each
+  format; the result opened in Fuse/another emulator AND loaded back here (F5); the
+  folder picker incl. USB; overwrite; F5 on a `.pss` in the browser; an old `.sna` slot.
+
+## Asking before applying settings (owner, 2026-10-04, NOT hw-tested)
+
+- A load of a `.pss` whose class-2 keys (boot-only hardware) or class-4 keys (applied
+  only on request — today `audio_driver`, i.e. HDMI audio) differ from the live config
+  asks first: `OSD::msgDialog("Snapshot settings differ", "Apply <keys>?")`, Yes by
+  default (msgDialog gained a `defYes` parameter).
+  Yes = merge them into storage.nvs and reboot as before; No = drop those lines and
+  load the state on the current settings (the machine — arch/romset — and the media
+  still follow the snapshot); Esc = do not load.
+- Never asked on the boot resume (`Pss::bootResume`): the answer was given before the
+  reboot. `Config::snapDiffKeys` lists the differing keys (it runs `save()` first, like
+  the merge).
+- Extending the on-request group is one entry in `kSnapAskKeys` (Config.cpp). A live
+  key there (volume, say) would also need applying without a reboot — the merge only
+  reboots, it does not apply live values.
+
+- **Rev. same day (owner): class 4 is every BOARD setting, not just the audio driver**
+  — overclock (`cpu_mhz`, `vreq_voltage`, flash / PSRAM / TFT clocks), video output
+  (`video_driver`, `hdmi_vmode`, `vga_vmode`, V-Sync, HDMI clock drive, VGA PWM and its
+  phase), audio output (`audio_driver`, boost, volume), `psram_enabled`, the TFT panel.
+  This replaces the plan's "never applied: video mode, cpu_mhz, audio driver, volume"
+  rule: they are applied when the user answers Yes. Live ones among them are applied by
+  the same reboot. The question lists the menu's names (`Config::snapKeyLabel`), one per
+  line, up to six. UI, network, theme and the joystick keys are still never applied.
+- **The question is the fullscreen UI's box** (owner): `OSD::msgDialog` now draws
+  through `nm::uiAskAnywhere` (Yes/No/Esc, saves and restores what it covers, works with
+  or without a menu session around it) whenever `nm::available()`; the classic chrome is
+  only the fallback for a layout that does not fit. Every `msgDialog` caller changed look
+  with it (factory reset, SD config offer, network host key / delete / forget, DLS install).

@@ -1,6 +1,7 @@
 // pico-speccy snapshot (.pss) — see Pss.h and docs/pss-snapshot-plan.md.
 // Cold code (flash): runs from the menu / a hot key / the boot resume only.
 #include "Pss.h"
+#include "PssIo.h"
 
 #include <string.h>
 #include <vector>
@@ -34,10 +35,6 @@ namespace Pss {
 
 bool bootResume = false;
 
-static constexpr uint8_t VER_MAJOR = 1;
-static constexpr uint8_t VER_MINOR = 0;
-static constexpr size_t  NAME_LEN  = 64;
-static constexpr uint8_t PSPT_VER  = 1;
 
 static bool archSupported(ArchIdx a) {
     return a == A_48K || a == A_128K || a == A_PENT || a == A_P512 || a == A_P1024;
@@ -55,32 +52,7 @@ static int pageList(uint8_t* out) {
     return n;
 }
 
-// ── writer ─────────────────────────────────────────────────────────────────────
-namespace {
-struct W {
-    FIL* f;
-    bool ok = true;
-    FSIZE_t blk = 0;
-    explicit W(FIL* fp) : f(fp) {}
-    void raw(const void* p, UINT n) {
-        UINT bw;
-        if (ok && (f_write(f, p, n, &bw) != FR_OK || bw != n)) ok = false;
-    }
-    void u8(uint8_t v)   { raw(&v, 1); }
-    void u16(uint16_t v) { uint8_t b[2] = { (uint8_t)v, (uint8_t)(v >> 8) }; raw(b, 2); }
-    void u32(uint32_t v) { uint8_t b[4] = { (uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24) }; raw(b, 4); }
-    void begin(const char* id) { blk = f_tell(f); raw(id, 4); u32(0); }
-    void end() {
-        if (!ok) return;
-        const FSIZE_t here = f_tell(f);
-        const uint32_t sz = (uint32_t)(here - blk - 8);
-        if (f_lseek(f, blk + 4) != FR_OK) { ok = false; return; }
-        u32(sz);
-        if (f_lseek(f, here) != FR_OK) ok = false;
-    }
-};
-}
-
+// ── writer ──────────────────────────────────────────────────────────────────────
 static void writeAy(W& w, const AySound& c) {
     w.u8(c.selReg());
     for (uint8_t i = 0; i < 16; i++) w.u8(c.reg(i));
@@ -206,29 +178,8 @@ bool save(const string& path, const string& name) {
     return rn == FR_OK;
 }
 
-// ── reader ─────────────────────────────────────────────────────────────────────
+// ── reader ──────────────────────────────────────────────────────────────────────
 namespace {
-struct R {
-    FIL* f;
-    bool ok = true;
-    explicit R(FIL* fp) : f(fp) {}
-    void raw(void* p, UINT n) {
-        UINT br;
-        if (ok && (f_read(f, p, n, &br) != FR_OK || br != n)) ok = false;
-    }
-    uint8_t  u8()  { uint8_t v = 0; raw(&v, 1); return v; }
-    uint16_t u16() { uint8_t b[2] = {}; raw(b, 2); return (uint16_t)(b[0] | (b[1] << 8)); }
-    uint32_t u32() { uint8_t b[4] = {}; raw(b, 4); return b[0] | (b[1] << 8) | (b[2] << 16) | ((uint32_t)b[3] << 24); }
-    // Next block header. false at EOF or on a truncated header.
-    bool next(char id[4], uint32_t& size, FSIZE_t& data) {
-        if (f_tell(f) + 8 > f_size(f)) return false;
-        raw(id, 4); size = u32(); data = f_tell(f);
-        return ok && data + size <= f_size(f);
-    }
-};
-
-bool idIs(const char id[4], const char* want) { return memcmp(id, want, 4) == 0; }
-
 struct AyState { bool have = false; uint8_t sel = 0; uint8_t regs[16] = {}; };
 }
 
@@ -246,7 +197,7 @@ static void applyAy(AySound& c, int chipNo, const AyState& a) {
     AySound::selected_chip = prev;
 }
 
-static bool openPss(const string& path, FIL*& f, uint8_t hdr[8]) {
+bool openPss(const string& path, FIL*& f, uint8_t hdr[8]) {
     f = fopen2(path.c_str(), FA_READ);
     if (!f) return false;
     UINT br;
@@ -272,6 +223,23 @@ bool readName(const string& path, string& name) {
     return true;
 }
 
+bool readMachine(const string& path, ArchIdx& arch, RomsetIdx& romset) {
+    FIL* f; uint8_t hdr[8];
+    if (!openPss(path, f, hdr)) return false;
+    R r(f);
+    char id[4]; uint32_t sz; FSIZE_t at;
+    vector<string> lines;
+    while (r.next(id, sz, at)) {
+        if (idIs(id, "CFG ")) { readCfgLines(r, sz, lines); break; }
+        if (f_lseek(f, at + sz) != FR_OK) break;
+    }
+    fclose2(f);
+    string sa, sr;
+    arch   = cfgValue(lines, "arch", sa)   ? archCanon(archFromStr(sa, A_NONE)) : A_NONE;
+    romset = cfgValue(lines, "romSet", sr) ? romsetFromStr(sr, R_NONE)          : R_NONE;
+    return arch != A_NONE;
+}
+
 bool setName(const string& path, const string& name) {
     FIL* f; uint8_t hdr[8];
     if (!openPss(path, f, hdr)) return false;
@@ -292,7 +260,7 @@ bool setName(const string& path, const string& name) {
 
 // The CFG lines this load applies (Config::snapKeyClass > 0), read off the block
 // a chunk at a time — the dump is ~6 KB and the menu's heap is whatever is left.
-static void readCfgLines(R& r, uint32_t size, vector<string>& out) {
+void readCfgLines(R& r, uint32_t size, vector<string>& out) {
     char buf[128];
     string line;
     uint32_t left = size;
@@ -312,7 +280,7 @@ static void readCfgLines(R& r, uint32_t size, vector<string>& out) {
     }
 }
 
-static bool cfgValue(const vector<string>& lines, const char* key, string& v) {
+bool cfgValue(const vector<string>& lines, const char* key, string& v) {
     const size_t k = strlen(key);
     for (const string& l : lines)
         if (l.size() > k && l.compare(0, k, key) == 0 && l[k] == '=') { v = l.substr(k + 1); return true; }
@@ -399,6 +367,42 @@ bool load(const string& path) {
     RomsetIdx romset = cfgValue(lines, "romSet", sr) ? romsetFromStr(sr, R_NONE)          : R_NONE;
     if (!r.ok || arch == A_NONE) { fclose2(f); loadFail("PSS: damaged file (no settings)"); return false; }
     if (!archSupported(arch)) { fclose2(f); loadFail(string("PSS: ") + sa + " snapshots are not supported yet"); return false; }
+
+    // Settings that differ from the live ones: ask. Yes = take the snapshot's,
+    // No = run its state on the current settings (the machine itself always
+    // follows the snapshot), Esc = do not load at all. Never asked on the boot
+    // resume — the user has already answered.
+    if (!bootResume) {
+        vector<string> diff;
+        Config::snapDiffKeys(lines, diff);
+        if (!diff.empty()) {
+            // One line per setting, the menu's names, duplicates folded.
+            string body = "Saved with other settings:\n";
+            vector<string> shown;
+            int more = 0;
+            for (const string& k : diff) {
+                const string lbl = Config::snapKeyLabel(k);
+                bool dup = false;
+                for (const string& s : shown) dup |= (s == lbl);
+                if (dup) continue;
+                if (shown.size() >= 6) { more++; continue; }
+                shown.push_back(lbl);
+                body += "  " + lbl + "\n";
+            }
+            if (more) body += "  and " + std::to_string(more) + " more\n";
+            body += "Apply them?";
+            const uint8_t a = OSD::msgDialog("Snapshot settings", body, true);
+            if (a == DLG_CANCEL) { fclose2(f); return false; }
+            if (a != DLG_YES) {
+                vector<string> keep;
+                for (const string& l : lines) {
+                    const int cls = Config::snapKeyClass(l.c_str(), l.size());
+                    if (cls != 2 && cls != 4) keep.push_back(l);
+                }
+                lines.swap(keep);
+            }
+        }
+    }
 
     // Boot-only hardware differs: put it into storage.nvs and come back through
     // the ram= baton, which loads this file again on the right machine.

@@ -38,6 +38,7 @@
 #include <pico/bootrom.h>
 #include "app/ScanLite.h"
 #include "speccy/core/Rzx.h"
+#include "speccy/core/Pss.h"
 
 // DS80 state + the standard Profi/ZX 16-colour palette (Video.cpp / vga.c): the ZX
 // keyboard page swaps to it so the bitmap keeps its own colours.
@@ -503,7 +504,7 @@ extern "C" size_t getLargestAllocatable(void);
 
 // The footer line, and the only place the list's verbs are written down. Mutable
 // on purpose: the node points at it and the entry key decides what Enter does.
-Option persist_foot[1] = {{ SYM_ENTER " Load  F4 Save  F6 Name  F8 Del", 0, nullptr }};
+Option persist_foot[1] = {{ SYM_ENTER " Load  F4 Save  F5 Conv  F6 Name  F8 Del", 0, nullptr }};
 
 static void snapInvalidate() { s_snap_valid = false; }
 
@@ -511,8 +512,8 @@ static void snapInvalidate() { s_snap_valid = false; }
 // itself (which is the "load" default).
 void persistEnterVerb(bool save) {
     s_snap_enter_saves = save;
-    persist_foot[0].label = save ? SYM_ENTER " Save  F3 Load  F6 Name  F8 Del"
-                                 : SYM_ENTER " Load  F4 Save  F6 Name  F8 Del";
+    persist_foot[0].label = save ? SYM_ENTER " Save  F3 Load  F5 Conv  F6 Name  F8 Del"
+                                 : SYM_ENTER " Load  F4 Save  F5 Conv  F6 Name  F8 Del";
 }
 
 void snapSessionBegin() { s_snap_valid = false; }
@@ -571,6 +572,22 @@ void persist_key(int32_t tag, uint8_t key) {
     const string name = getSlotName(slot);
     const bool empty = name.empty();
 
+    if (key == 5) {                                  // F5 convert to sna/z80/szx
+        if (empty) { uiToast(TXT_MSG_SLOT_EMPTY, true, 1200); return; }
+        char fn[48];
+        snprintf(fn, sizeof(fn), DISK_PSNA_DIR "/" DISK_PSNA_FILE "%u.pss", slot);
+        string src = fn;
+        FILINFO fi;
+        const bool legacy = f_stat(src.c_str(), &fi) != FR_OK;
+        if (legacy) {
+            snprintf(fn, sizeof(fn), DISK_PSNA_DIR "/" DISK_PSNA_FILE "%u.sna", slot);
+            src = fn;
+        }
+        char base[16];
+        snprintf(base, sizeof(base), "slot%02u", slot);
+        convertSnapshot(src, name == "\x01" ? string(base) : name, legacy);
+        return;
+    }
     if (key == 6) {                                  // F6 rename
         if (empty) return;
         string nn = (name == "\x01") ? "" : name;
@@ -642,6 +659,70 @@ void loadSnapshotFile() {
     Config::ram_file = FileUtils::hasRZXextension(fname) ? NO_RAM_FILE : fname;
     Config::last_ram_file = fname;
     requestClose();               // no-op outside a menu session
+}
+
+// ── snapshot conversion (.pss -> .szx / .z80 / .sna) ──────────────────────────
+// ASCII letters, digits, '-' and '_' only (spaces become '_'): the file may well be
+// copied to a PC or another emulator, so nothing that needs an LFN code page.
+static string exportSafeName(const string& in) {
+    string out;
+    for (char c : in) {
+        if (isalnum((unsigned char)c) || c == '-' || c == '_') out += c;
+        else if (c == ' ' || c == '.') out += '_';
+        if (out.size() >= 32) break;
+    }
+    return out.empty() ? string("snapshot") : out;
+}
+
+void convertSnapshot(const string& src, const string& baseName, bool legacySna) {
+    uint8_t fm = Pss::EX_SNA;
+    if (!legacySna) {
+        ArchIdx a; RomsetIdx r;
+        if (!Pss::readMachine(src, a, r)) { uiToast("Damaged snapshot", true, 2000); return; }
+        fm = Pss::exportFormats(a, r);
+        if (!fm) {
+            const string m = string(" No export format for ") + archToStr(a) + " ";
+            uiToast(m.c_str(), true, 2000);
+            return;
+        }
+    }
+    // .szx first: it keeps the most.
+    const char* items[3]; Pss::ExportFmt fmts[3]; const char* exts[3];
+    int n = 0;
+    if (fm & Pss::EX_SZX) { items[n] = ".szx  (keeps the most)"; fmts[n] = Pss::EX_SZX; exts[n++] = ".szx"; }
+    if (fm & Pss::EX_Z80) { items[n] = ".z80";                   fmts[n] = Pss::EX_Z80; exts[n++] = ".z80"; }
+    if (fm & Pss::EX_SNA) { items[n] = legacySna ? ".sna  (copy)" : ".sna";
+                            fmts[n] = Pss::EX_SNA; exts[n++] = ".sna"; }
+    const int k = uiPickList("Convert to", items, n, 0);
+    if (k < 0) return;
+
+    string dir = OSD::chooseFolder(Config::snap_export_dir);
+    if (dir.empty()) return;
+    string nm_ = exportSafeName(baseName);
+    if (!uiPrompt("File name", nm_, 32)) return;
+    nm_ = exportSafeName(nm_);
+    const string file = nm_ + exts[k];
+    const string dst = dir + (dir.back() == '/' ? "" : "/") + file;
+    FILINFO fi;
+    if (f_stat(dst.c_str(), &fi) == FR_OK) {
+        const string q = "Overwrite\n" + file + " ?";
+        if (!uiConfirm(q.c_str())) return;
+    }
+
+    uiBusy("Converting...");
+    string dropped, err;
+    const bool ok = legacySna ? Pss::copyFile(src, dst)
+                              : Pss::exportTo(src, dst, fmts[k], dropped, err);
+    if (!ok) {
+        const string m = "Convert failed:\n" + (err.empty() ? string("write error") : err);
+        uiToast(m.c_str(), true, 0);
+        return;
+    }
+    Config::snap_export_dir = dir;
+    Config::save();
+    string m = "Saved " + file;
+    if (!dropped.empty()) m += "\nNot carried:\n" + dropped;
+    uiToast(m.c_str(), false, 0);
 }
 
 // ── RZX playback ───────────────────────────────────────────────────────────────

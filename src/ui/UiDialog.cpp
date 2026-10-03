@@ -125,6 +125,21 @@ static void drawButtons(const Box& b, bool yes) {
 
 bool uiConfirm(const char* text_body, const char* title, bool default_yes) {
     Debug::log("uiConfirm: sp=%08x\n", debug_sp());
+    return uiAsk(text_body, title, default_yes) == 1;
+}
+
+// The rows uiAsk's box covers, shadow included — drawBox()'s arithmetic.
+void uiAskRows(const char* text_body, const char* title, int& y, int& h) {
+    const int pad = 4 * Sf.glyphScale;
+    const int lh  = UI_FONT_H + 2;
+    const int tl  = title ? lh + 2 : 0;
+    h = tl + lineCount(text_body) * lh + (lh + 6) + 2 * pad;
+    if (h > Sf.h - 8) h = Sf.h - 8;
+    y = (Sf.h - h) / 2;
+    h += 2;
+}
+
+int uiAsk(const char* text_body, const char* title, bool default_yes) {
     gfxResumePalette();
     const int lh = UI_FONT_H + 2;
     Box b = drawBox(text_body, title, lh + 6, C_SEP);
@@ -143,13 +158,13 @@ bool uiConfirm(const char* text_body, const char* title, bool default_yes) {
                 case fabgl::VK_MENU_UP:   case fabgl::VK_MENU_DOWN:
                     yes = !yes; drawButtons(b, yes); OSD::clickNoPause(); break;
                 case fabgl::VK_MENU_ENTER:
-                    OSD::clickNoPause(); return yes;
+                    OSD::clickNoPause(); return yes ? 1 : 0;
                 case fabgl::VK_ESCAPE: case fabgl::VK_F1:
-                    OSD::clickNoPause(); return false;
+                    OSD::clickNoPause(); return -1;
                 case fabgl::VK_y: case fabgl::VK_Y:
-                    OSD::clickNoPause(); return true;
+                    OSD::clickNoPause(); return 1;
                 case fabgl::VK_n: case fabgl::VK_N:
-                    OSD::clickNoPause(); return false;
+                    OSD::clickNoPause(); return 0;
                 default: break;
             }
         }
@@ -746,6 +761,22 @@ bool uiPrompt(const char* title, string& io, size_t maxlen, bool mask, bool allo
 // way gameScwongStandalone() does for the game page. No SaveRect: the dialog
 // blocks the emulation loop while it is up and the paper repaints itself on the
 // first frame after it closes, so there is nothing to restore.
+// The fullscreen-UI question, callable with or without a menu session around it:
+// what it covers is saved and put back, and the UI palette is only handed back if
+// this call installed it (in a pair mode a running session owns it — the latch).
+int uiAskAnywhere(const char* title, const char* body, bool default_yes) {
+    const bool own = !VIDEO::uiOwnsPairPalette();
+    gfxBegin();
+    int y, h;
+    uiAskRows(body, title, y, h);
+    VIDEO::SaveRect.save(0, (int16_t)(Sf.oy + y), (int16_t)(OSD::scrW - 4), (int16_t)h);
+    const int r = uiAsk(body, title, default_yes);
+    VIDEO::SaveRect.restore_last();
+    if (own) gfxEnd();
+    VIDEO::brdnextframe = true;   // a box over the border band is not repainted otherwise
+    return r;
+}
+
 bool uiConfirmStandalone(const char* body, const char* yes_btn, const char* no_btn) {
     gfxBegin();
     const char* btns[2] = { yes_btn, no_btn };

@@ -23,6 +23,10 @@ namespace nm {
 // answer is safe to take on a bare Enter (the F12 reboot); destructive ones
 // keep the default on No.
 bool uiConfirm(const char* text, const char* title = nullptr, bool default_yes = false);
+// uiConfirm with Esc told apart: 1 = Yes, 0 = No, -1 = Esc / F1.
+int  uiAsk(const char* text, const char* title = nullptr, bool default_yes = false);
+// The rows (logical y, height incl. shadow) a uiAsk box occupies.
+void uiAskRows(const char* text, const char* title, int& y, int& h);
 
 // uiConfirm with a live countdown line — the post-reboot video-mode confirm.
 // Standalone-safe (gfxBegin/gfxEnd around itself: it runs at boot, before any

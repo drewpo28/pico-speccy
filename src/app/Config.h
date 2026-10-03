@@ -74,13 +74,18 @@ public:
     static bool saveKeysTo(FIL* f);
     // Which class a `key=value` line of a snapshot belongs to: 0 = not applied,
     // 1 = the machine (arch/romsets), 2 = reboot-class hardware, 3 = media mounted
-    // live (Beta / +3 disks, tape).
+    // live (Beta / +3 disks, tape), 4 = the board's own settings (overclock, video
+    // and audio output, PSRAM), applied only on request.
     static int  snapKeyClass(const char* line, size_t len);
     // Compares the snapshot's applied lines with storage.nvs (save() first). When a
     // reboot-class line differs, writes storage.nvs with every one of them merged in
     // and ram=<ramFile>, and returns true: the caller reboots. Otherwise touches
     // nothing and returns false.
     static bool snapMergeForReboot(const std::vector<std::string>& lines, const std::string& ramFile);
+    // The keys of class 2 and 4 whose value in `lines` differs from the live config
+    // (save() first) — what the load asks the user about.
+    static void snapDiffKeys(const std::vector<std::string>& lines, std::vector<std::string>& out);
+    static const char* snapKeyLabel(const std::string& key);   // the menu's name for it
     static void writeKeys(NvsWriter& buf);   // save()'s body; Config.cpp only
 
     // ── named config profiles (Options > Save/Load my settings) ────────────────
@@ -514,6 +519,7 @@ public:
     static uint16_t net_port;   // last port (0 = protocol default: 21 FTP / 22 SFTP)
     static uint8_t  net_proto;  // 0 = FTP, 1 = SFTP
     static string   net_dl_dir; // last SD folder a file was downloaded into
+    static string   snap_export_dir; // last folder a snapshot was converted into (storage.nvs "snap_exp")
     static string   net_ul_dir; // last SD folder a file was uploaded from
     // Archive download catalog (Network → Download archive). Either a bare
     // "host"/"host:port" → dynamic /v1 server over plain HTTP, or a base URL with

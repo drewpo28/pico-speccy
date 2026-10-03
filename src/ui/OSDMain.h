@@ -185,7 +185,7 @@ public:
     static void click();
     static void clickNoPause();   // click() without the paused-PAUSE-box repaint
 
-    static uint8_t msgDialog(const string& title, const string& msg);
+    static uint8_t msgDialog(const string& title, const string& msg, bool defYes = false);
     // mask=true → password field: shows '*' until revealed (TAB toggles).
     // viscols = visible width in chars; when < maxlen the field scrolls
     // horizontally so up to maxlen characters can be entered. 0 → viscols=maxlen.
@@ -204,6 +204,9 @@ public:
     static string convertDlsToBank(const string& dlsPath);
 
     static void esp_hard_reset();
+    // The Web Archives destination-folder picker (OSDFile.cpp), shared with the
+    // snapshot converter. Returns the chosen folder, "" if cancelled.
+    static string chooseFolder(const string& start);
 
     // SRAM budget gate for the 5 heavy features. Call BEFORE the enable path.
     // Returns true → caller may proceed to enable the feature (it fits, or the

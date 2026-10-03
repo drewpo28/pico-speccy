@@ -33,6 +33,7 @@
 #include "UiGfx.h"
 #include "UiFont.h"
 #include "UiDialog.h"
+#include "UiActions.h"   // convertSnapshot
 #include "OSDMain.h"
 #include "UiRender.h"        // SYM_* glyph names
 #include "fs/FileUtils.h"
@@ -424,6 +425,7 @@ static void drawInfo() {
     // Enter on music plays it in Pico-Zx-Player; an .mp3 can also be a tape (F5).
     const bool music = all && !dir && pp::available() && pp::playableExt(FileUtils::getLCaseExt(nm_));
     const bool mp3 = all && !dir && FileUtils::getLCaseExt(nm_) == "mp3";
+    const bool pss = all && !dir && FileUtils::hasPSSextension(nm_);
     const Verb verbs[] = {
         // Nothing in the config tree is runnable: Enter there reads a text file and
         // does nothing at all for anything else, so it is advertised accordingly.
@@ -434,6 +436,7 @@ static void drawInfo() {
         { "F4", "Unzip",    all && zip },
         { "F5", "To slot",  all && dsk },
         { "F5", "Load tape", mp3 },
+        { "F5", "Convert",  pss },
         { "F6", "Rename",   mng && !up },
         { "F7", "New dir",  mng },
         { "F8", "Delete",   mng && !up },
@@ -1045,6 +1048,16 @@ static string runLoop() {
                     OSD::clickNoPause();
                     return leave("M" + name);
                 }
+            }
+            // F5 on a .pss = convert it to .szx / .z80 / .sna (the Quick slots verb).
+            if (all && k.vk == fabgl::VK_F5 && !onDir && s_visTotal
+                    && FileUtils::hasPSSextension(name)) {
+                OSD::clickNoPause();
+                const size_t dot = name.rfind('.');
+                convertSnapshot(s_dir + name, dot == string::npos ? name : name.substr(0, dot), false);
+                drawAll();
+                s_goto = name;
+                break;                           // the result may be in this very folder
             }
             // F5 = the slot picker for a disk image, and "load as a tape" for an
             // .mp3 (Enter plays it as music).
