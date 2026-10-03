@@ -4975,14 +4975,14 @@ void VIDEO::Reset() {
     if (isFullBorder && !isFullBorder240) {
         lin_end = 48;
         lin_end2 = 240;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster()) ? 26 : 24) / 2;
     } else if (isFullBorder && isFullBorder240) {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
         // the stats overlay (y=220) fell inside the paper area → flicker.
         lin_end = 24;
         lin_end2 = 216;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster()) ? 26 : 24) / 2;
     } else {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so

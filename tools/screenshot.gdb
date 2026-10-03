@@ -55,3 +55,31 @@ else
   dump binary memory /tmp/picospec_pal.bin $fb0 ($fb0 + 1024)
   printf "screenshot: palette placeholder dumped (ZX fallback will be used)\n"
 end
+
+# Pair-slot mode (Profi DS80, GMX 640x200, Timex hi-res, ATM/ZX-Evo EGA/hires/text):
+# one fb byte is TWO pixels and fb2png cannot decode it. Dump what profi2png
+# needs and record the mode, so screenshot.sh picks the decoder by itself —
+# either keybinding then gives the right picture in either mode. Probed, last:
+# profi_ds80_active lives in the video drivers (absent on some builds).
+set logging file /tmp/picospec_symmode.txt
+set logging overwrite on
+set logging redirect on
+set logging enabled on
+info variables ^profi_ds80_active$
+set logging enabled off
+set logging redirect off
+shell grep -q "profi_ds80_active;" /tmp/picospec_symmode.txt && echo 'set $has_pairflag = 1' > /tmp/picospec_symmode.gdb || echo 'set $has_pairflag = 0' > /tmp/picospec_symmode.gdb
+source /tmp/picospec_symmode.gdb
+set logging file /tmp/picospec_mode.txt
+set logging overwrite on
+set logging redirect on
+set logging enabled on
+if $has_pairflag
+  printf "pair %d\n", profi_ds80_active
+else
+  printf "pair 0\n"
+end
+set logging enabled off
+set logging redirect off
+dump binary memory /tmp/picospec_profi_lut.bin &VIDEO::profi_pair_lookup ((char*)(&VIDEO::profi_pair_lookup) + 256)
+dump binary memory /tmp/picospec_profi_pal.bin &VIDEO::profi_palette_live ((char*)(&VIDEO::profi_palette_live) + 64)

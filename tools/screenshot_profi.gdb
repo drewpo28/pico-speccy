@@ -43,3 +43,28 @@ set logging enabled on
 printf "%d %d\n", $w, $h
 set logging enabled off
 printf "screenshot profi: dump done\n"
+
+# Record the mode and dump the real HDMI palette as screenshot.gdb does, so
+# screenshot.sh --profi can decode a STANDARD-mode frame too (ATM/ZX-Evo in ZX
+# mode, any plain machine) instead of misreading its bytes as pairs.
+set logging file /tmp/picospec_mode.txt
+set logging overwrite on
+set logging redirect on
+set logging enabled on
+printf "pair %d\n", profi_ds80_active
+set logging enabled off
+set logging redirect off
+set logging file /tmp/picospec_sympal.txt
+set logging overwrite on
+set logging redirect on
+set logging enabled on
+info variables ^palette$
+set logging enabled off
+set logging redirect off
+shell grep -v "regular expression" /tmp/picospec_sympal.txt | grep -q "uint32_t palette\[256\]" && echo 'set $has_hdmipal = 1' > /tmp/picospec_sympal.gdb || echo 'set $has_hdmipal = 0' > /tmp/picospec_sympal.gdb
+source /tmp/picospec_sympal.gdb
+if $has_hdmipal
+  dump binary memory /tmp/picospec_pal.bin &'hdmi.c'::palette[0] &'hdmi.c'::palette[256]
+else
+  dump binary memory /tmp/picospec_pal.bin VIDEO::vga.frameBuffer[0] (VIDEO::vga.frameBuffer[0] + 1024)
+end
