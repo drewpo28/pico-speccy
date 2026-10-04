@@ -265,9 +265,44 @@ static const char* typeLabel(const string& lcext) {
 // debug.log, cacert.pem), which is exactly what is worth reading on the device.
 static bool viewableExt(const string& lcext) {
     static const char* const kExt[] = { "nvs", "cfg", "tsv", "log", "txt", "pem",
-                                        "csv", "ini" };
+                                        "csv", "ini", "md", "diz", "nfo", "me", "1st",
+                                        "asm", "a80", "inc", "json", "xml", "htm", "html",
+                                        "doc", "bat", "sh", "c", "h", "cpp", "py", "lst" };
     for (const char* e : kExt) if (lcext == e) return true;
     return false;
+}
+
+// F1 in the full browser: an extension FileInfo has no viewer for is shown as
+// text when its head looks like text (no NUL, almost all printable / CP866 /
+// whitespace) — READ.ME, FILE_ID, a readme without an extension.
+static bool infoKnownExt(const string& e) {
+    static const char* const kExt[] = { "tap", "tzx", "pzx", "trd", "scl", "sna", "z80",
+        "szx", "spg", "pss", "rzx", "fdi", "dsk", "udi", "hdf", "pro", "mbd", "td0", "hdd",
+        "img", "vhd", "mmc", "zip" };
+    for (const char* k : kExt) if (e == k) return true;
+    return false;
+}
+static bool looksLikeText(const string& path) {
+    FIL* f = (FIL*)Buffer::palloc(sizeof(FIL) + 512, Buffer::NEED_POINTER);
+    if (!f) return false;
+    uint8_t* b = (uint8_t*)(f + 1);
+    UINT br = 0;
+    bool text = false;
+    if (f_open(f, path.c_str(), FA_READ) == FR_OK) {
+        if (f_read(f, b, 512, &br) == FR_OK && br > 0) {
+            UINT bad = 0;
+            text = true;
+            for (UINT i = 0; i < br; i++) {
+                const uint8_t c = b[i];
+                if (c == 0) { text = false; break; }
+                if (c < 32 && c != '\n' && c != '\r' && c != '\t' && c != 0x1A) bad++;
+            }
+            if (bad * 20 > br) text = false;   // more than 5% control bytes
+        }
+        f_close(f);
+    }
+    Buffer::pfree(f);
+    return text;
 }
 
 // ── drawing ────────────────────────────────────────────────────────────────────
@@ -648,6 +683,48 @@ static bool footerAsk(const char* label, string& io) {
 #define VIEW_MAX_SCAN  (2u << 20)   // never scan more than 2 MB looking for lines
 #define VIEW_HSTEP     8        // columns per Left/Right
 
+// Text encodings the viewer knows. The UI font draws CP1251 (the Web catalog's
+// Cyrillic), so CP866 — what nearly every ZX text is in — and UTF-8 are
+// converted to it per character.
+enum TextEnc : uint8_t { ENC_ASCII, ENC_CP866, ENC_CP1251, ENC_UTF8 };
+
+// CP866 -> CP1251, one character. Box drawing becomes ASCII lines so tables in
+// ZX docs keep their shape.
+static uint8_t cp866Char(uint8_t c) {
+    static const uint8_t kHi[16] = { 0xA8, 0xB8, 0xAA, 0xBA, 0xAF, 0xBF, 0xA1, 0xA2,
+                                     0xB0, 0x95, 0xB7, '.', 0xB9, 0xA4, '#', ' ' };
+    if (c < 0x80) return c;
+    if (c <= 0xAF) return (uint8_t)(c + 0x40);                 // А-Я а-п
+    if (c >= 0xE0 && c <= 0xEF) return (uint8_t)(c + 0x10);    // р-я
+    if (c >= 0xF0) return kHi[c - 0xF0];
+    if (c <= 0xB2 || c >= 0xDB) return '#';                    // shades, blocks
+    if (c == 0xB3 || c == 0xBA) return '|';
+    if (c == 0xC4 || c == 0xCD) return '-';
+    return '+';                                                // corners, tees, crosses
+}
+
+// Pick the encoding from the bytes over 0x7F: UTF-8 when they pair up as
+// Cyrillic lead/continuation bytes; else CP866 when а-п (0xA0-0xAF) outnumber
+// р-я in CP1251 (0xF0-0xFF) — each is the other's rarest range.
+struct EncCount {
+    uint32_t hi = 0, utf = 0, a0 = 0, f0 = 0;
+    uint8_t  prev = 0;
+    void add(uint8_t c) {
+        if (c >= 0x80) {
+            hi++;
+            if ((prev == 0xD0 || prev == 0xD1) && c >= 0x80 && c <= 0xBF) utf++;
+            if (c >= 0xA0 && c <= 0xAF) a0++;
+            if (c >= 0xF0) f0++;
+        }
+        prev = c;
+    }
+    TextEnc pick() const {
+        if (!hi) return ENC_ASCII;
+        if (utf * 4 >= hi) return ENC_UTF8;   // every Cyrillic letter is 2 bytes, half continuation
+        return a0 > f0 ? ENC_CP866 : ENC_CP1251;
+    }
+};
+
 static void viewTextFile(const string& path, const string& name) {
     // FIL is ~570 B (it carries a 512-byte sector window) and core0's stack is 8 KB
     // with the menu chain already on it, so the handle lives in the block too.
@@ -668,6 +745,7 @@ static void viewTextFile(const string& path, const string& name) {
     // expanded exactly as the renderer will expand them, or the pan limit lies).
     status("Reading...", -1);
     uint32_t nlines = 0, col = 0, maxw = 0, scanned = 0;
+    EncCount enc;
     bool cut = false;                       // file longer than we are willing to index
     bool lineOpen = false;                  // bytes seen since the last newline
     for (;;) {
@@ -676,6 +754,7 @@ static void viewTextFile(const string& path, const string& name) {
         scanned += br;
         for (UINT i = 0; i < br; i++) {
             const char c = raw[i];
+            enc.add((uint8_t)c);
             if (c == '\n') { if (col > maxw) maxw = col; col = 0; nlines++; lineOpen = false; continue; }
             lineOpen = true;
             if (c == '\r') continue;
@@ -686,6 +765,7 @@ static void viewTextFile(const string& path, const string& name) {
         if (abortKey()) { cut = true; break; }
     }
     if (lineOpen) { if (col > maxw) maxw = col; nlines++; }   // last line without \n
+    const TextEnc te = enc.pick();
     if (nlines > VIEW_MAX_LINES) nlines = VIEW_MAX_LINES;
 
     // Pass 2: the offset index. A tight heap gets a shorter file rather than no
@@ -728,9 +808,29 @@ static void viewTextFile(const string& path, const string& name) {
                 do { disp[dl++] = ' '; } while (dl < VIEW_LINE_MAX && (dl & 7));
                 continue;
             }
+            uint8_t u = (uint8_t)c;
+            if (u >= 0x80) {
+                if (te == ENC_CP866) u = cp866Char(u);
+                else if (te == ENC_UTF8) {
+                    // Two-byte sequences: Cyrillic to CP1251, the rest '?'; a
+                    // longer one is skipped whole.
+                    const uint8_t n1 = i + 1 < br ? (uint8_t)raw[i + 1] : 0;
+                    if ((u & 0xE0) == 0xC0 && (n1 & 0xC0) == 0x80) {
+                        const unsigned cp = ((u & 0x1F) << 6) | (n1 & 0x3F);
+                        u = cp >= 0x0410 && cp <= 0x044F ? (uint8_t)(0xC0 + (cp - 0x0410))
+                          : cp == 0x0401 ? 0xA8 : cp == 0x0451 ? 0xB8 : '?';
+                        i++;
+                    } else if ((u & 0xF0) == 0xE0) { i += 2; u = '?'; }
+                    else if ((u & 0xF8) == 0xF0)   { i += 3; u = '?'; }
+                    else u = '.';
+                }
+                else if (te != ENC_CP1251) u = '.';
+                // 0x80-0x86 are the UI's own symbols in this font.
+                if (u >= 0x80 && u <= 0x86) u = '.';
+            }
             // A file that turned out not to be text stays readable as a shape
             // instead of painting control codes through the font.
-            disp[dl++] = (c >= 32 && (uint8_t)c < 127) ? c : '.';
+            disp[dl++] = (u >= 32 && u != 127) ? (char)u : '.';
         }
         disp[dl] = 0;
         return dl;
@@ -758,6 +858,8 @@ static void viewTextFile(const string& path, const string& name) {
         fill(L.ix, py, L.iw, L.path_h, C_PANEL_ALT);
         string sub = displayPath(s_dir);
         if (cut) sub += "  (first " + std::to_string((unsigned)nlines) + " lines)";
+        static const char* const kEnc[] = { "", "  CP866", "  CP1251", "  UTF-8" };
+        sub += kEnc[te];
         textClip(L.ix + L.pad, py + 2, L.iw - 2 * L.pad, sub.c_str(), C_TEXT);
         hline(L.ix, py + L.path_h - 1, L.iw, C_SEP);
         const int fy = L.iy + L.ih - L.foot_h;
@@ -1013,10 +1115,17 @@ static string runLoop() {
             // browser only; `mng` = housekeeping, also on in Debug > Config folders.
             const bool all = (s_ftype == DISK_ALLFILE);
             const bool mng = manageMode();
-            // Info parses emulator formats only, so it stays with the full browser;
-            // everywhere else F1 keeps its usual "close" meaning.
+            // Info parses emulator formats (and shows a text file as text), so it
+            // stays with the full browser; everywhere else F1 keeps its usual
+            // "close" meaning.
             if (all && k.vk == fabgl::VK_F1 && !onDir && s_visTotal) {
                 OSD::clickNoPause();
+                const string lce = FileUtils::getLCaseExt(name);
+                if (viewableExt(lce) || (!infoKnownExt(lce) && looksLikeText(s_dir + name))) {
+                    viewTextFile(s_dir + name, name);   // draws in the nm:: UI, as on Enter in Config folders
+                    drawAll();
+                    continue;
+                }
                 gfxSuspendPalette();
                 if (FileUtils::hasZIPextension(name)) ZipExtract::viewInfo(s_dir + name);
                 else FileInfo::viewInfo(s_dir + name);

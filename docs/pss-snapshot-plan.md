@@ -549,6 +549,21 @@ ask about ("Differs from now:" + the menu's names), or "Settings: same as now".
 alternate-timings flag), creator (CRTR), PC / SP, RAM page count and whether compressed,
 and the peripheral blocks present by name (unknown ids shown raw), wrapped to the page.
 
+## F1 in the F5 browser, more formats (owner, 2026-10-04; hw 2026-10-04, owner: "работает", not itemised)
+
+- `.sna`: machine by size, PC (48K: off the stack), interrupts, page count, #7FFD in words,
+  TR-DOS paged. `.z80`: version + the full hardware-mode table (incl. the "modified
+  hardware" flag), pages / compression, #7FFD, #1FFD, Timex DEC, AY / Fuller, Issue 2,
+  joystick, R with bit 7. `.rzx` (`Rzx::describe`): version, creator, frames + time, the
+  embedded snapshot's format and machine (`FileInfo::snapshotMachine` on its first bytes;
+  a compressed one inflates them — ~43 KB working memory for the moment, PSRAM first).
+  `.spg`: version, author / creator strings, build date, start / SP / page3, clock, INT,
+  blocks / size / pages / max page, compression, pager / resident.
+- Text files open in the Config-folders viewer: by extension, or (for an extension no
+  info page knows) when the first 512 bytes look like text. The viewer detects UTF-8 /
+  CP866 / CP1251 from the high bytes and shows Cyrillic through the UI font's CP1251 range;
+  CP866 box drawing becomes ASCII lines. The encoding is shown on the path bar.
+
 ## Quick-slot name suggestion: the last thing STARTED (owner, 2026-10-04; hw 2026-10-04, owner: "работает", not itemised)
 
 The suggestion used to be fixed-order: the inserted tape, else the disk in A:. A tape left

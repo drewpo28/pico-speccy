@@ -1,5 +1,7 @@
 // Rzx.cpp — RZX playback glue: FatFs I/O, the embedded snapshot, the per-frame
 // fetch count and the IN substitution. The file format itself is RzxReader.
+#include "fs/FileInfo.h"
+#include <new>
 #include "speccy/core/Rzx.h"
 
 #include <new>
@@ -285,6 +287,69 @@ void desyncStop() {
 }
 
 } // namespace
+
+namespace {
+struct Head { uint8_t b[87]; uint32_t n; };
+bool headSink(void* ctx, const uint8_t* p, uint32_t n) {
+    Head* h = (Head*)ctx;
+    while (n-- && h->n < sizeof(h->b)) h->b[h->n++] = *p++;
+    return h->n < sizeof(h->b);   // enough: abort the inflate
+}
+}
+
+bool describe(const std::string& path, std::string& info, int& lines) {
+    if (mode != OFF) {   // the playback owns the reader state
+        info += "(playing now)\n"; lines++;
+        return true;
+    }
+    State* st = (State*)Buffer::palloc(sizeof(State), Buffer::NEED_POINTER);
+    if (!st) return false;
+    new (st) State();
+    st->filPos = 0;
+    if (f_open(&st->fil, path.c_str(), FA_READ) != FR_OK) { st->~State(); Buffer::pfree(st); return false; }
+    RzxIo io;
+    io.ctx = st; io.read = ioRead; io.size = (uint32_t)f_size(&st->fil);
+    io.alloc = ioAlloc; io.free = ioFree;
+    bool ok = st->rd.open(io);
+    char l[64];
+    if (ok) {
+        const size_t nl = info.find('\n');
+        snprintf(l, sizeof(l), " RZX %u.%u", st->rd.major(), st->rd.minor());
+        if (nl != std::string::npos) info.insert(nl, l);
+        // The first event is the snapshot when the file has one (it always comes
+        // first); reading on would decode the input blocks.
+        const RzxReader::Ev ev = st->rd.next();
+        if (st->rd.creator()[0]) { info += std::string("Creator: ") + st->rd.creator() + "\n"; lines++; }
+        const uint32_t fr = st->rd.totalFrames(), sec = fr / 50;
+        if (sec >= 3600) snprintf(l, sizeof(l), "Frames: %lu (%lu:%02lu:%02lu)", (unsigned long)fr,
+                                  (unsigned long)(sec / 3600), (unsigned long)(sec / 60 % 60), (unsigned long)(sec % 60));
+        else             snprintf(l, sizeof(l), "Frames: %lu (%lu:%02lu)", (unsigned long)fr,
+                                  (unsigned long)(sec / 60), (unsigned long)(sec % 60));
+        info += l; info += "\n"; lines++;
+        if (ev == RzxReader::EV_SNAPSHOT) {
+            const RzxReader::Snap& sn = st->rd.snap();
+            if (sn.external) {
+                snprintf(l, sizeof(l), "Snapshot: %s (external file)", sn.ext);
+            } else {
+                Head h; h.n = 0;
+                st->rd.extractSnapshot(headSink, &h);
+                const std::string m = FileInfo::snapshotMachine(sn.ext, h.b, h.n, sn.unLen);
+                snprintf(l, sizeof(l), "Snapshot: %s%s%s%s", sn.ext, m.empty() ? "" : ", ",
+                         m.c_str(), sn.compressed ? " (zlib)" : "");
+            }
+        } else {
+            snprintf(l, sizeof(l), "No snapshot (needs one loaded first)");
+        }
+        info += l; info += "\n"; lines++;
+    } else {
+        info += std::string("Bad RZX: ") + errText(st->rd.error()) + "\n"; lines++;
+    }
+    st->rd.close();
+    f_close(&st->fil);
+    st->~State();
+    Buffer::pfree(st);
+    return true;
+}
 
 bool startPlayback(const std::string& path) {
     stop(nullptr);

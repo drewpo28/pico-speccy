@@ -35,6 +35,10 @@ uint8_t onIn(uint8_t portValue);
 // message on failure; the machine is left as the snapshot load left it.
 bool startPlayback(const std::string& path);
 
+// F1 info page for an .rzx: appends lines to `info` (first line = the title).
+// Reads the header and the first snapshot's first bytes; no playback state.
+bool describe(const std::string& path, std::string& info, int& lines);
+
 // Stop whatever is running. `why` (may be null) is shown in the top border.
 void stop(const char* why);
 
