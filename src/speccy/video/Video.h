@@ -351,6 +351,7 @@ public:
   // ATM palette (atmPaletteFlush).
   static void atmVideoModeChanged();     // a #77 / #FE-address write moved the mode
   static void atmPaletteChanged();       // a palette port write (applied at EndFrame)
+  static bool atmPaletteIsLive();   // the guest has programmed the ATM palette (.pss)
   static void atmPaletteFlush();         // EndFrame: palette -> hardware slots / pair table
   static void atmPaletteRestore();       // leaving the ATM: standard slots back
   static void atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l);

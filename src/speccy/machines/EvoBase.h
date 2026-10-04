@@ -40,6 +40,10 @@ void nmiEnter();                // Z80::doNMI
 void nmiClrApply();             // the deferred OUT (#BE)
 
 // Port hooks behind Atm::portWrite/portRead. true = consumed.
+// .pss: EvoBase's part of the PSAT block (Atm::snapSave). Returns bytes written.
+uint32_t snapSave(uint8_t* out);
+void     snapLoad(const uint8_t* in, uint32_t n);
+
 bool portWrite(uint16_t address, uint8_t data);
 bool portRead(uint16_t address, uint8_t& v);
 

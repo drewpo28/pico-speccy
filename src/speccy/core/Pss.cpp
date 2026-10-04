@@ -13,6 +13,8 @@
 #include "app/Debug.h"
 #include "app/ESPectrum.h"
 #include "app/JoyProfiles.h"
+#include "app/DramPattern.h"
+#include "speccy/devices/storage/DivMMC.h"
 #include "app/TryAlloc.h"
 #include "fs/FileUtils.h"
 #include "ui/OSDMain.h"
@@ -25,6 +27,9 @@
 #include "speccy/machines/Pentagon.h"
 #include "speccy/machines/Scorpion.h"
 #include "speccy/machines/Profi/Profi.h"
+#include "speccy/machines/Atm.h"
+#include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Timex.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 
@@ -40,57 +45,73 @@ bool bootResume = false;
 
 static bool archSupported(ArchIdx a) {
     return a == A_48K || a == A_128K || a == A_PENT || a == A_P512 || a == A_P1024 ||
-           a == A_SCORP || a == A_PROFI;
+           a == A_SCORP || a == A_PROFI || a == A_ATM || a == A_TSCONF;
 }
 
 bool supported() {
-    // Murmuzavr (a Pentagon with more than 64 pages) is not covered yet.
-    return archSupported(Config::arch) &&
-           (Config::arch == A_SCORP || Config::arch == A_PROFI || MEM_PG_CNT <= 64);
+    return archSupported(Config::arch);
 }
 
-static constexpr int MAX_PAGES = 128;
+static constexpr int MAX_PAGES = 2048;   // Murmuzavr 32 MB
 
 // RAM pages a machine has, in the order they are written. `sparse`: a page still
-// holding the DRAM power-on pattern is left out (machines over 1 MB only — up to
-// 1 MB every page is written, so a conversion never meets a missing one).
-static int pageList(uint16_t* out, bool& sparse) {
+// holding the DRAM power-on pattern is left out and a page of one repeated byte
+// becomes a PSPF (machines over 1 MB only — up to 1 MB every page is written, so a
+// conversion never meets a missing one).
+static int pageCount(bool& sparse) {
     sparse = false;
-    if (Z80Ops::is48) { out[0] = 5; out[1] = 2; out[2] = 0; return 3; }
+    if (Z80Ops::is48) return 3;
     int n = Z80Ops::is1024 ? 64 : (Z80Ops::is512 ? 32 : 8);
+    if (Z80Ops::isPentagon && MEM_PG_CNT > 64) n = (int)MEM_PG_CNT;   // Murmuzavr
     if (Z80Ops::isScorpion) n = (int)Scorpion::ramPages();
     if (Z80Ops::isProfi) n = 64;   // 1 MB: #DFFD page group x 8, colour pages 56/58
+    if (Z80Ops::isAtm) n = (int)MEM_PG_CNT;   // 1 MB on the 1/2+, 4 MB on the 3 and the Evo
+    if (Z80Ops::isTsconf) n = (int)MEM_PG_CNT;   // 4 MB
     if (n > (int)MEM_PG_CNT) n = (int)MEM_PG_CNT;
     if (n > MAX_PAGES) n = MAX_PAGES;
-    for (int i = 0; i < n; i++) out[i] = (uint16_t)i;
     sparse = n > 64;
     return n;
 }
+// The i-th page in file order: 5, 2, 0 on a 48K, else simply i.
+static uint16_t pageAt(int i) {
+    static const uint8_t p48[3] = { 5, 2, 0 };
+    return Z80Ops::is48 ? p48[i] : (uint16_t)i;
+}
+static int pageIndex(uint16_t page, int np) {
+    if (Z80Ops::is48) { for (int i = 0; i < 3; i++) if (pageAt(i) == page) return i; return -1; }
+    return page < np ? page : -1;
+}
 
-static bool holdsPowerOnPattern(uint16_t page) {
-    if (MemESP::ram[page].memType() != mem_type_t::POINTER) return false;
-    const uint8_t* p = MemESP::ram[page].direct();
-    if (!p) return false;
-    ESPectrum::DramPattern g(page);
-    uint8_t buf[256];
-    for (uint32_t off = 0; off < MEM_PG_SZ; off += sizeof(buf)) {
-        g.next(buf, sizeof(buf));
-        if (memcmp(p + off, buf, sizeof(buf))) return false;
+// What a page holds, for the sparse encoding: 1 = the power-on pattern (omitted),
+// 2 = one repeated byte `fill` (PSPF), 0 = anything else (written). Read through
+// mem_desc_t::read_chunk, so SD-swap and SPI-PSRAM pages are judged too.
+static int pageKind(uint16_t page, uint8_t& fill) {
+    DramPattern g(page);
+    uint8_t buf[256], pat[256];
+    bool isPat = true, uniform = true;
+    for (uint32_t off = 0; off < MEM_PG_SZ && (isPat || uniform); off += sizeof(buf)) {
+        MemESP::ram[page].read_chunk(off, buf, sizeof(buf));
+        if (off == 0) fill = buf[0];
+        if (isPat) { g.next(pat, sizeof(pat)); isPat = !memcmp(buf, pat, sizeof(buf)); }
+        if (uniform) for (uint32_t k = 0; k < sizeof(buf); k++) if (buf[k] != fill) { uniform = false; break; }
     }
-    return true;
+    return isPat ? 1 : uniform ? 2 : 0;
 }
 
 static void fillPowerOnPattern(uint16_t page) {
-    ESPectrum::DramPattern g(page);
-    if (MemESP::ram[page].memType() == mem_type_t::POINTER && MemESP::ram[page].direct()) {
-        g.next(MemESP::ram[page].direct(), MEM_PG_SZ);
-        return;
-    }
+    DramPattern g(page);
     uint8_t buf[256];
     for (uint32_t off = 0; off < MEM_PG_SZ; off += sizeof(buf)) {
         g.next(buf, sizeof(buf));
-        for (uint32_t i = 0; i < sizeof(buf); i++) MemESP::ram[page].write((uint16_t)(off + i), buf[i]);
+        MemESP::ram[page].write_chunk(off, buf, sizeof(buf));
     }
+}
+
+static void fillUniform(uint16_t page, uint8_t v) {
+    uint8_t buf[256];
+    memset(buf, v, sizeof(buf));
+    for (uint32_t off = 0; off < MEM_PG_SZ; off += sizeof(buf))
+        MemESP::ram[page].write_chunk(off, buf, sizeof(buf));
 }
 
 // ── writer ──────────────────────────────────────────────────────────────────────
@@ -206,15 +227,47 @@ bool save(const string& path, const string& name) {
         const uint32_t n = Profi::snapSave(b);
         w.begin("PSPR"); w.raw(b, n); w.end();
     }
+    if (Z80Ops::isAtm) {
+        uint8_t b[Atm::SNAP_MAX];
+        const uint32_t n = Atm::snapSave(b);
+        w.begin("PSAT"); w.raw(b, n); w.end();
+        if (Atm::evo && EvoBase::font) { w.begin("PSEF"); w.raw(EvoBase::font, 2048); w.end(); }
+    }
+    if (Z80Ops::isTsconf) {
+        uint8_t b[TsConf::SNAP_MAX];
+        const uint32_t n = TsConf::snapSave(b);
+        w.begin("PSTS"); w.raw(b, n); w.end();
+        w.begin("PSTC"); w.raw(TsConf::cram, sizeof(TsConf::cram)); w.end();
+        w.begin("PSTF"); w.raw(TsConf::sfile, sizeof(TsConf::sfile)); w.end();
+    }
 
-    uint16_t pages[MAX_PAGES];
+    if (DivMMC::enabled) {
+        // SZX ZXSTDIVMMC: dwFlags (2 = paged in), chCurrentPage (#E3), chNumRamPages.
+        w.begin("DMMC");
+        w.u32(DivMMC::automap ? 2 : 0); w.u8(DivMMC::snapControl()); w.u8(DIVMMC_NUM_BANKS);
+        w.end();
+        for (uint8_t b = 0; b < DIVMMC_NUM_BANKS && w.ok; b++) {
+            const uint8_t* p = DivMMC::snapBank(b, false);
+            if (!p) break;
+            w.begin("DMRP"); w.u16(0); w.u8(b); w.raw(p, 8192); w.end();
+        }
+        DivMMC::applyMapping();   // the walk may have evicted the mapped banks (swap mode)
+    }
+
     bool sparse;
-    const int np = pageList(pages, sparse);
+    const int np = pageCount(sparse);
     w.begin("PSPG"); w.u16((uint16_t)np); w.u8(sparse ? 1 : 0); w.end();
     for (int i = 0; i < np && w.ok; i++) {
-        if (sparse && holdsPowerOnPattern(pages[i])) continue;
-        w.begin("RAMP"); w.u16(0); w.u8((uint8_t)pages[i]);
-        if (w.ok) MemESP::ram[pages[i]].to_file(f, MEM_PG_SZ);
+        const uint16_t pg = pageAt(i);
+        if (sparse) {
+            uint8_t fill;
+            const int k = pageKind(pg, fill);
+            if (k == 1) continue;
+            if (k == 2) { w.begin("PSPF"); w.u16(pg); w.u8(fill); w.end(); continue; }
+        }
+        if (pg < 256) { w.begin("RAMP"); w.u16(0); w.u8((uint8_t)pg); }
+        else          { w.begin("PSRP"); w.u16(0); w.u16(pg); }
+        if (w.ok) MemESP::ram[pg].to_file(f, MEM_PG_SZ);
         w.end();
     }
     if (Z80Ops::is512 || Z80Ops::is1024) {
@@ -422,6 +475,13 @@ bool load(const string& path) {
     RomsetIdx romset = cfgValue(lines, "romSet", sr) ? romsetFromStr(sr, R_NONE)          : R_NONE;
     if (!r.ok || arch == A_NONE) { fclose2(f); loadFail("PSS: damaged file (no settings)"); return false; }
     if (!archSupported(arch)) { fclose2(f); loadFail(string("PSS: ") + sa + " snapshots are not supported yet"); return false; }
+    // Murmuzavr (MEM_PG_CNT) means something only on a Pentagon; elsewhere the pick is
+    // clamped to 64 at boot and must not make a load ask or reboot.
+    if (arch != A_PENT && arch != A_P512 && arch != A_P1024) {
+        vector<string> keep;
+        for (const string& l : lines) if (l.compare(0, 11, "MEM_PG_CNT=") != 0) keep.push_back(l);
+        lines.swap(keep);
+    }
 
     // Settings that differ from the live ones: ask. Yes = take the snapshot's,
     // No = run its state on the current settings (the machine itself always
@@ -492,14 +552,16 @@ bool load(const string& path) {
     AyState ay0, ay1;
     uint8_t aySel = 0, tsStatus = 0, tsFm = 0;
     bool havePsay = false;
-    uint16_t pages[MAX_PAGES];
+    uint32_t loaded[MAX_PAGES / 32] = {};   // bit per page index
     bool sparse;
-    const int np = pageList(pages, sparse);
-    bool loaded[MAX_PAGES] = {};
+    const int np = pageCount(sparse);
     int loadedPages = 0;
     bool fileSparse = false;
     uint8_t sc[Scorpion::SNAP_MAX] = {}; uint32_t scSize = 0;
     uint8_t pr[Profi::SNAP_MAX] = {};    uint32_t prSize = 0;
+    uint8_t atm[Atm::SNAP_MAX] = {};     uint32_t atmSize = 0;
+    uint8_t tsr[TsConf::SNAP_MAX] = {};  uint32_t tsSize = 0;
+    bool haveDmmc = false; uint8_t dmmcCtl = 0; bool dmmcPaged = false;
 
     while (r.ok && r.next(id, sz, at)) {
         if (idIs(id, "Z80R") && sz >= sizeof(z)) { r.raw(z, sizeof(z)); haveZ80 = true; }
@@ -516,16 +578,37 @@ bool load(const string& path) {
         else if (idIs(id, "COVX") && sz >= 1)  { covx = r.u8(); haveCovx = true; }
         else if (idIs(id, "JOY "))             { applyJoy(r, sz); }
         else if (idIs(id, "PSPG") && sz >= 3)  { r.u16(); fileSparse = r.u8() != 0; }
+        else if (idIs(id, "PSPF") && sz >= 3) {
+            const uint16_t page = r.u16();
+            const uint8_t v = r.u8();
+            const int at_i = pageIndex(page, np);
+            if (at_i >= 0 && r.ok && !(loaded[at_i >> 5] & (1u << (at_i & 31)))) {
+                fillUniform(page, v);
+                loaded[at_i >> 5] |= 1u << (at_i & 31);
+                loadedPages++;
+            }
+        }
         else if (idIs(id, "PSSC") && sz >= 1)  { scSize = sz < sizeof(sc) ? sz : sizeof(sc); r.raw(sc, scSize); }
         else if (idIs(id, "PSPR") && sz >= 1)  { prSize = sz < sizeof(pr) ? sz : sizeof(pr); r.raw(pr, prSize); }
-        else if (idIs(id, "RAMP") && sz == 3 + MEM_PG_SZ) {
+        else if (idIs(id, "PSAT") && sz >= 1)  { atmSize = sz < sizeof(atm) ? sz : sizeof(atm); r.raw(atm, atmSize); }
+        else if (idIs(id, "PSTS") && sz >= 1)  { tsSize = sz < sizeof(tsr) ? sz : sizeof(tsr); r.raw(tsr, tsSize); }
+        else if (idIs(id, "PSTC") && sz == sizeof(TsConf::cram) && Z80Ops::isTsconf)  r.raw(TsConf::cram, sz);
+        else if (idIs(id, "PSTF") && sz == sizeof(TsConf::sfile) && Z80Ops::isTsconf) r.raw(TsConf::sfile, sz);
+        else if (idIs(id, "PSEF") && sz == 2048 && Atm::evo && EvoBase::font) r.raw(EvoBase::font, 2048);
+        else if (idIs(id, "DMMC") && sz >= 6) { dmmcPaged = (r.u32() & 2) != 0; dmmcCtl = r.u8(); haveDmmc = true; }
+        else if (idIs(id, "DMRP") && sz == 3 + 8192) {
             const uint16_t flags = r.u16();
-            const uint8_t page = r.u8();
-            int at_i = -1;
-            for (int i = 0; i < np; i++) if (pages[i] == page) { at_i = i; break; }
-            if (!(flags & 1) && at_i >= 0 && !loaded[at_i] && r.ok) {
+            const uint8_t b = r.u8();
+            uint8_t* p = (flags & 1) ? nullptr : DivMMC::snapBank(b, true);
+            if (p) r.raw(p, 8192);
+        }
+        else if ((idIs(id, "RAMP") && sz == 3 + MEM_PG_SZ) || (idIs(id, "PSRP") && sz == 4 + MEM_PG_SZ)) {
+            const uint16_t flags = r.u16();
+            const uint16_t page = idIs(id, "RAMP") ? r.u8() : r.u16();
+            const int at_i = pageIndex(page, np);
+            if (!(flags & 1) && at_i >= 0 && !(loaded[at_i >> 5] & (1u << (at_i & 31))) && r.ok) {
                 MemESP::ram[page].from_file(f, MEM_PG_SZ);
-                loaded[at_i] = true;
+                loaded[at_i >> 5] |= 1u << (at_i & 31);
                 loadedPages++;
             }
         }
@@ -542,21 +625,30 @@ bool load(const string& path) {
     }
     // Pages a sparse file left out held the power-on pattern when it was saved.
     if (fileSparse)
-        for (int i = 0; i < np; i++) if (!loaded[i]) fillPowerOnPattern(pages[i]);
+        for (int i = 0; i < np; i++) if (!(loaded[i >> 5] & (1u << (i & 31)))) fillPowerOnPattern(pageAt(i));
 
     // Memory map.
     MemESP::bankLatch  = pt[1] | (pt[2] << 8) | (pt[3] << 16) | ((uint32_t)pt[4] << 24);
+    // A page this session does not have (a Murmuzavr snapshot loaded with "No" to its
+    // RAM size): fall back to the 128K page rather than index past the strip.
+    if (MemESP::bankLatch >= MEM_PG_CNT) MemESP::bankLatch &= 7;
     MemESP::videoLatch = pt[5]; MemESP::romLatch = pt[6]; MemESP::pagingLock = pt[7];
     MemESP::romInUse   = pt[8]; MemESP::page0ram = pt[9];
     MemESP::newSRAM    = pt[10] != 0; MemESP::notMore128 = pt[11];
     ESPectrum::trdos   = pt[12] != 0;
-    Ports::port1FFD    = pt[13]; Ports::portEFF7 = pt[14]; Ports::portAFF7 = pt[15];
+    Ports::port1FFD    = pt[13]; Ports::portEFF7 = pt[14];
+    Ports::portAFF7    = MEM_PG_CNT > 64 ? pt[15] : 0;
     if (Z80Ops::isScorpion) {
         Scorpion::snapLoad(sc, scSize);
         Scorpion::snapRemap();
     } else if (Z80Ops::isProfi) {
         Profi::snapLoad(pr, prSize);
         Profi::snapRemap();
+    } else if (Z80Ops::isAtm) {
+        Atm::snapLoad(atm, atmSize);
+        Atm::snapRemap();
+    } else if (Z80Ops::isTsconf) {
+        TsConf::snapLoad(tsr, tsSize);   // parses and rebuilds
     } else if (Config::isPlus3()) {
         MemESP::plus3Remap(Ports::port1FFD);
     } else {
@@ -567,8 +659,11 @@ bool load(const string& path) {
             MemESP::ramContended[3] = Z80Ops::isPentagon ? false : (MemESP::bankLatch & 1) != 0;
         }
     }
-    if (!Z80Ops::is48 && !Z80Ops::isProfi)   // Profi: writeDFFD set it (DS80 shows 4/6)
+    if (!Z80Ops::is48 && !Z80Ops::isProfi && !Z80Ops::isAtm && !Z80Ops::isTsconf)   // they set their own (DS80 4/6, ATM remap, VPage)
         VIDEO::grmem = MemESP::videoLatch ? MemESP::ram[7].direct() : MemESP::ram[5].direct();
+
+    // DivMMC last of the memory map: it overrides page 0 while mapped.
+    if (haveDmmc) DivMMC::snapRestore(dmmcCtl, dmmcPaged);
 
     // Timex SCLD (DEC first: its bit 7 decides what the HSR window shows).
     if (haveScld && (Config::isTimex() || Config::timex_video)) {

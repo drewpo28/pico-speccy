@@ -10,6 +10,7 @@
 
 #include "app/TryAlloc.h"
 #include "app/Debug.h"
+#include "app/DramPattern.h"
 #include "fs/FileUtils.h"
 
 using std::string;
@@ -61,6 +62,12 @@ struct Src {
     uint8_t covx[4] = {}; bool haveCovx = false;
     bool    hidden = false, joy = false;
     FSIZE_t page[64] = {};                     // 0 = absent
+    int16_t fill[64];                          // PSPF byte, -1 = none
+    bool    sparse = false;                    // absent pages hold the power-on pattern
+    bool    extra = false;                     // pages beyond the target (Murmuzavr)
+    uint8_t dmmc[6] = {}; bool haveDmmc = false;   // SZX DivMMC control, copied as is
+    FSIZE_t dmrp[16] = {};                     // DivMMC RAM pages (block data offsets)
+    Src() { for (int i = 0; i < 64; i++) fill[i] = -1; }
     vector<string> cfg;
 };
 
@@ -88,6 +95,23 @@ bool readSrc(const string& path, Src& s, string& err) {
             const uint16_t flags = r.u16();
             const uint8_t  p     = r.u8();
             if (!(flags & 1) && p < 64) s.page[p] = at + 3;
+            else s.extra = true;
+        }
+        else if (idIs(id, "PSRP"))                  s.extra = true;
+        else if (idIs(id, "DMMC") && sz >= 6)     { r.raw(s.dmmc, 6); s.haveDmmc = true; }
+        else if (idIs(id, "DMRP") && sz == 3 + 8192) {
+            uint8_t h[3]; r.raw(h, 3);
+            if (h[2] < 16) s.dmrp[h[2]] = at;
+        }
+        else if (idIs(id, "PSPF") && sz >= 3) {
+            const uint16_t p = r.u16();
+            const uint8_t  v = r.u8();
+            if (p < 64) s.fill[p] = v; else s.extra = true;
+        }
+        else if (idIs(id, "PSPG") && sz >= 3) {
+            const uint16_t total = r.u16();
+            s.sparse = r.u8() != 0;
+            if (total > 64) s.extra = true;
         }
         if (f_lseek(s.f, at + sz) != FR_OK) r.ok = false;
     }
@@ -130,13 +154,23 @@ uint8_t port7ffd(const Src& s, const Mach& m) {
 
 // Copy one page from the source to the writer; `patch` may rewrite bytes on the way
 // (the 48K SNA pushes PC onto the stack inside the image).
+// The page comes from the file, from a PSPF fill, or — in a sparse file — from the
+// power-on pattern the saver left out.
 template <typename P>
 bool copyPage(Src& s, W& w, uint8_t* buf, uint32_t bsz, int page, P patch) {
-    if (!s.page[page]) return false;
-    if (f_lseek(s.f, s.page[page]) != FR_OK) return false;
+    const bool file = s.page[page] != 0;
+    if (!file && s.fill[page] < 0 && !s.sparse) return false;
+    if (file && f_lseek(s.f, s.page[page]) != FR_OK) return false;
+    DramPattern g((uint32_t)page);
     for (uint32_t off = 0; off < PG && w.ok; off += bsz) {
-        UINT br;
-        if (f_read(s.f, buf, bsz, &br) != FR_OK || br != bsz) return false;
+        if (file) {
+            UINT br;
+            if (f_read(s.f, buf, bsz, &br) != FR_OK || br != bsz) return false;
+        } else if (s.fill[page] >= 0) {
+            memset(buf, s.fill[page], bsz);
+        } else {
+            g.next(buf, bsz);
+        }
         patch(off, buf, bsz);
         w.raw(buf, bsz);
     }
@@ -186,6 +220,23 @@ bool writeSzx(Src& s, const Mach& m, W& w, uint8_t* buf, uint32_t bsz) {
     if ((m.tc2048 || m.tc2068) && s.haveScld) { w.begin("SCLD"); w.raw(s.scld, 2); w.end(); }
     if (s.plttSize)  { w.begin("PLTT"); w.raw(s.pltt, s.plttSize); w.end(); }
     if (s.haveCovx)  { w.begin("COVX"); w.raw(s.covx, 4); w.end(); }
+
+    if (s.haveDmmc) {
+        w.begin("DMMC"); w.raw(s.dmmc, 6); w.end();
+        for (int b = 0; b < 16 && w.ok; b++) {
+            if (!s.dmrp[b]) continue;
+            if (f_lseek(s.f, s.dmrp[b]) != FR_OK) return false;
+            w.begin("DMRP");
+            for (uint32_t left = 3 + 8192; left && w.ok; ) {
+                const uint32_t n = left < bsz ? left : bsz;
+                UINT br;
+                if (f_read(s.f, buf, n, &br) != FR_OK || br != n) return false;
+                w.raw(buf, n);
+                left -= n;
+            }
+            w.end();
+        }
+    }
 
     static const uint8_t p48[3] = { 5, 2, 0 };
     for (int i = 0; i < m.npages && w.ok; i++) {
@@ -344,11 +395,13 @@ bool exportTo(const string& src, const string& dst, ExportFmt fmt, string& dropp
     if (anyMedia(s)) addDrop(dropped, "mounted media");
     if (s.ay2) addDrop(dropped, "2nd AY");
     if (s.hidden) addDrop(dropped, "hidden RAM");
+    if (s.extra) addDrop(dropped, "Murmuzavr RAM");
     if (fmt != EX_SZX) {
         if (s.plttSize) addDrop(dropped, "ULA+ palette");
         if (s.haveCovx) addDrop(dropped, "Covox");
         if (s.z[34] & 3) addDrop(dropped, "HALT/EI state");
         if (m.plus3e) addDrop(dropped, "IDE");
+        if (s.haveDmmc) addDrop(dropped, "DivMMC");
     }
     if (fmt == EX_SNA) {
         if (s.haveAy) addDrop(dropped, "AY registers");

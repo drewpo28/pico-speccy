@@ -2114,7 +2114,7 @@ static bool lineIsKey(const string& l, const char* key) {
 // is everything that is only read at boot: those go through storage.nvs + reboot.
 static const char* const kSnapArchKeys[] = {
     "arch", "romSet", "romSet48", "romSet128", "romSetPent", "romSetP512", "romSetP1M",
-    "romSetScorp", "romSetProfi",
+    "romSetScorp", "romSetProfi", "romSetAtm", "romSetTsconf",
 };
 static const char* const kSnapRebootKeys[] = {
     "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",
@@ -2122,7 +2122,7 @@ static const char* const kSnapRebootKeys[] = {
     "esxdos", "esxdos_hdf", "esxdos_hd1", "mb02", "mb02d0.file", "mb02d1.file",
     "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
     "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
-    "dckcart", "alfcart", "alfCartBanks",
+    "dckcart", "alfcart", "alfCartBanks", "MEM_PG_CNT", "tsconf_vdac2",
 };
 // The BOARD the snapshot was saved on — overclock, video output, audio output,
 // PSRAM. Not the guest machine, but the user may want it to travel with the
@@ -2133,7 +2133,7 @@ static const char* const kSnapAskKeys[] = {
     "cpu_mhz", "vreq_voltage", "max_flash_freq", "max_psram_freq", "max_tft_freq",
     "video_driver", "hdmi_vmode", "vga_vmode", "v_sync_enabled", "hdmi_clkdrv",
     "vga_pwm", "vga_pwm_phase", "audio_driver", "AudBoost", "AudVolume",
-    "psram_enabled", "TFT_FLAGS", "TFT_INVERSION",
+    "psram_enabled", "TFT_FLAGS", "TFT_INVERSION", "tsconf_clk_cap",
 };
 static const char* const kSnapLiveKeys[] = {
     "drive0.file", "drive1.file", "drive2.file", "drive3.file",
@@ -2158,6 +2158,8 @@ const char* Config::snapKeyLabel(const std::string& key) {
         { "ide_chs0", "IDE geometry" },     { "ide_chs1", "IDE geometry" },
         { "dckcart", "DOCK cartridge" },    { "alfcart", "ALF cartridge" },
         { "alfCartBanks", "ALF cartridge" },{ "audio_driver", "Audio output" },
+        { "MEM_PG_CNT", "Murmuzavr RAM" },  { "tsconf_vdac2", "VDAC2 (FT812)" },
+        { "tsconf_clk_cap", "TS-Conf clock cap" },
         { "cpu_mhz", "CPU clock" },         { "vreq_voltage", "Core voltage" },
         { "max_flash_freq", "Flash clock" },{ "max_psram_freq", "PSRAM clock" },
         { "max_tft_freq", "TFT clock" },    { "video_driver", "Video output" },

@@ -6853,6 +6853,8 @@ void VIDEO::atmVideoModeChanged() {
 // user's chosen ZX palette is the better picture.
 static bool s_atm_pal_live = false;
 
+bool VIDEO::atmPaletteIsLive() { return s_atm_pal_live; }
+
 void VIDEO::atmPaletteChanged() {
     s_atm_pal_live = true;
     Atm::palDirty = true;

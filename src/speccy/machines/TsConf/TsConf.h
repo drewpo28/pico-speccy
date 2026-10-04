@@ -254,6 +254,13 @@ public:
 
     // ZX-mode screen page for the renderer (VPage with #7FFD-SCR folded in).
     static void refreshGrmem();
+
+    // .pss snapshot (src/speccy/core/Pss.cpp): the register file + the INT/DMA
+    // state as the PSTS block (CRAM/SFILE go as PSTC/PSTF). snapLoad() parses and
+    // rebuilds, so it runs after the pages and the generic latches are in.
+    static constexpr uint32_t SNAP_MAX = 80;
+    static uint32_t snapSave(uint8_t* out);
+    static void     snapLoad(const uint8_t* in, uint32_t n);
 };
 
 // Nonzero while a TS-Conf write-side hook is armed — the CPU write funnel's

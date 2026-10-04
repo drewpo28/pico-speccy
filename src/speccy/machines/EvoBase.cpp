@@ -103,6 +103,30 @@ void bootPlain() {
 // CPU clock (top.v: turbo = { #xx77 D3, ~#EFF7 D4 }; zclock.v: 1x = 14 MHz,
 // 01 = 7 MHz, 00 = 3.5 MHz) — so the machine comes out of reset at 7 MHz (#EFF7 = 0).
 // A change is a change of UNITS for CPU::tstates (the TS-Conf lesson).
+// ── .pss snapshot ────────────────────────────────────────────────────────────
+uint32_t snapSave(uint8_t* out) {
+    uint32_t n = 0;
+    out[n++] = pEFF7;
+    out[n++] = (uint8_t)((inNmi ? 1 : 0) | (nmiClrPending ? 2 : 0) | (inTrdemu ? 4 : 0));
+    out[n++] = fddMask;
+    out[n++] = vgSys;
+    for (int i = 0; i < 4; i++) out[n++] = s_sav[i];
+    out[n++] = s_nemoRt; out[n++] = s_nemoWt; out[n++] = s_nemoW1; out[n++] = s_nemoWlo;
+    out[n++] = g_atm_fnt;
+    return n;   // 13
+}
+
+void snapLoad(const uint8_t* in, uint32_t n) {
+    if (n < 13) return;
+    pEFF7 = in[0];
+    inNmi = in[1] & 1; nmiClrPending = (in[1] & 2) != 0; inTrdemu = (in[1] & 4) != 0;
+    fddMask = in[2];
+    vgSys = in[3];
+    for (int i = 0; i < 4; i++) s_sav[i] = in[4 + i];
+    s_nemoRt = in[8]; s_nemoWt = in[9]; s_nemoW1 = in[10]; s_nemoWlo = in[11];
+    g_atm_fnt = (in[12] && font) ? 1 : 0;
+}
+
 void clockApply() {
     const uint8_t want = (p77 & 0x08) ? 2 : ((pEFF7 & 0x10) ? 0 : 1);
     const uint8_t old = ESPectrum::multiplicator;

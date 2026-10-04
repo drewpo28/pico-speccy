@@ -53,6 +53,12 @@ public:
     static void init();           // Load ROM, open .mmc/.hdf/.vhd/.hdd/.img image
     static void reset();          // Reset state
     static void applyMapping();   // Update page0 pointers based on state
+    // .pss (src/speccy/core/Pss.cpp, SZX DMMC/DMRP layout): bank b's 8 KB brought in
+    // (swap mode) and, when `write`, marked dirty; the control register as #E3 holds it;
+    // and the restore of control + automap (applyMapping afterwards).
+    static uint8_t* snapBank(uint8_t b, bool write);
+    static uint8_t  snapControl() { return (uint8_t)((conmem ? 0x80 : 0) | (mapram ? 0x40 : 0) | (bank & 0x3F)); }
+    static void     snapRestore(uint8_t control, bool automapped);
     static inline void markHiDirty() { if (hi_slot >= 0) slot_dirty[hi_slot] = true; }
     static inline void markLoDirty() { if (lo_slot >= 0) slot_dirty[lo_slot] = true; }
 

@@ -696,6 +696,24 @@ void DivMMC::evict(int slot) {
     active_bank[slot] = -1;
 }
 
+uint8_t* DivMMC::snapBank(uint8_t b, bool write) {
+    if (!enabled || b >= DIVMMC_NUM_BANKS) return nullptr;
+    materialize(b);
+    if (write && !use_psram)
+        for (int i = 0; i < DIVMMC_CACHE_SLOTS; i++) if (active_bank[i] == b) slot_dirty[i] = true;
+    return bank_ptr[b];
+}
+
+void DivMMC::snapRestore(uint8_t control, bool automapped) {
+    if (!enabled) return;
+    conmem  = (control & 0x80) != 0;
+    mapram  = (control & 0x40) != 0;
+    bank    = control & 0x3F;
+    automap = automapped;
+    trap_after = unmap_after = false;
+    applyMapping();
+}
+
 void DivMMC::materialize(uint8_t bank_idx) {
     if (use_psram) return; // butter mode: always available
     if (bank_ptr[bank_idx]) {

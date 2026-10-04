@@ -164,4 +164,12 @@ namespace Atm {
     uint8_t borderBright();     // 8 when the border is BRIGHT (A3 = 0 at the #FE write)
     uint32_t palRgb(uint8_t i); // palette entry i as RGB888 (2 bits per channel)
     uint8_t romPageCount();
+
+    // ── .pss snapshot (src/speccy/core/Pss.cpp) ─────────────────────────────
+    // The manager's register file, the palette RAM, the clock and — on the ZX-Evo —
+    // EvoBase's latches: the PSAT block. The Evo font RAM is its own block (PSEF).
+    constexpr uint32_t SNAP_MAX = 112;
+    uint32_t snapSave(uint8_t* out);
+    void     snapLoad(const uint8_t* in, uint32_t n);
+    void     snapRemap();   // windows, DOS signal, video mode, palette, clock
 }

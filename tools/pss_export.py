@@ -15,12 +15,28 @@ import sys
 PG = 16384
 
 
+def dram_pattern(page):
+    """src/app/DramPattern.h: the power-on pattern of one page."""
+    rnd = (0x9E3779B9 * (page + 1)) & 0xFFFFFFFF
+    out = bytearray(PG)
+    for a in range(PG):
+        v = 0x00 if ((a >> 3) ^ (a >> 6)) & 1 else 0xFF
+        rnd ^= (rnd << 13) & 0xFFFFFFFF
+        rnd ^= rnd >> 17
+        rnd ^= (rnd << 5) & 0xFFFFFFFF
+        if (rnd & 0x1F) == 0:
+            v ^= ((rnd >> 8) & (rnd >> 16)) & 0xFF
+        out[a] = v
+    return bytes(out)
+
+
 def read_pss(path):
     data = open(path, 'rb').read()
     if data[:4] != b'PSS1' or data[4] != 1:
         raise ValueError('not a .pss')
     s = {'cfg': {}, 'pages': {}, 'ay': None, 'scld': None, 'pltt': None,
-         'covx': None, 'ay2': False, 'hidden': False, 'joy': False}
+         'covx': None, 'ay2': False, 'hidden': False, 'joy': False,
+         'sparse': False, 'extra': False, 'dmmc': None, 'dmrp': {}}
     off = 8
     while off + 8 <= len(data):
         bid = data[off:off + 4]
@@ -54,8 +70,32 @@ def read_pss(path):
             s['joy'] = True
         elif bid == b'RAMP' and size == 3 + PG:
             flags, page = struct.unpack_from('<HB', body)
-            if not flags & 1:
+            if not flags & 1 and page < 64:
                 s['pages'][page] = body[3:]
+            else:
+                s['extra'] = True
+        elif bid == b'PSRP':
+            s['extra'] = True
+        elif bid == b'DMMC' and size >= 6:
+            s['dmmc'] = body[:6]
+        elif bid == b'DMRP' and size == 3 + 8192:
+            if body[2] < 16:
+                s['dmrp'][body[2]] = body
+        elif bid == b'PSPF' and size >= 3:
+            page, v = struct.unpack_from('<HB', body)
+            if page < 64:
+                s['pages'][page] = bytes([v]) * PG
+            else:
+                s['extra'] = True
+        elif bid == b'PSPG' and size >= 3:
+            total, sp = struct.unpack_from('<HB', body)
+            s['sparse'] = sp != 0
+            if total > 64:
+                s['extra'] = True
+    if s['sparse']:
+        for p in range(64):
+            if p not in s['pages']:
+                s['pages'][p] = dram_pattern(p)
     return s
 
 
@@ -167,6 +207,11 @@ def to_szx(s, m):
         out += blk(b'PLTT', s['pltt'])
     if s['covx'] is not None:
         out += blk(b'COVX', s['covx'])
+    if s['dmmc'] is not None:
+        out += blk(b'DMMC', s['dmmc'])
+        for b in range(16):
+            if b in s['dmrp']:
+                out += blk(b'DMRP', s['dmrp'][b])
     for i in range(m['npages']):
         p = P48[i] if m['is48'] else i
         out += blk(b'RAMP', struct.pack('<HB', 0, p) + s['pages'][p])

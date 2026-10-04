@@ -5,15 +5,19 @@
 //   blocks: id[4] size u32 LE data[size]            unknown ids are skipped
 //
 // Where SZX (ZX-State 1.5) defines a block it is used byte for byte under the same
-// id (Z80R, SPCR, RAMP, AY, SCLD, PLTT, COVX), so a later .szx export is a filter.
-// Our own blocks: NAME (fixed 64 bytes, first — renamed in place), CFG (the full
-// Config key dump; only machine keys are applied on load), JOY (the joystick
-// profile), PSPT (port latches SZX has no field for), PSAY (TurboSound), PSCH
-// (Pentagon-512/1024 hidden cache pages).
+// id (Z80R, SPCR, RAMP, AY, SCLD, PLTT, COVX, DMMC/DMRP), so the .szx export is a
+// filter. Our own blocks: NAME (fixed 64 bytes, first — renamed in place), CFG (the
+// full Config key dump; only machine / board keys are applied on load), JOY (the
+// joystick profile), PSPT (port latches SZX has no field for), PSAY (TurboSound),
+// PSCH (Pentagon-512/1024 hidden cache pages), PSPG (page count + sparse flag),
+// PSRP (page >= 256), PSPF (uniform page), PSSC (Scorpion), PSPR (Profi), PSAT +
+// PSEF (ATM / ZX-Evo, Evo font RAM), PSTS + PSTC + PSTF (TS-Conf registers, CRAM,
+// SFILE).
 //
-// Phase 1 covers 48K-family (incl. Byte, Didaktik, Timex), 128K / +2 / +3 / +3e /
-// +3div and Pentagon 128/512/1024 without Murmuzavr; supported() says so, and the
-// slot code keeps writing the old .sna + .esp everywhere else.
+// Covers 48K-family (incl. Byte, Didaktik, Timex), 128K / +2 / +3 / +3e / +3div,
+// Pentagon 128/512/1024 incl. Murmuzavr, the Scorpion family, Profi / Karabas,
+// ATM-Turbo, ZX-Evo BaseConf and TS-Conf; supported() says so, and the slot code
+// keeps writing the old .sna + .esp everywhere else (ALF).
 #pragma once
 
 #include <stdint.h>

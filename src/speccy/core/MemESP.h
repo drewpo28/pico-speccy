@@ -304,6 +304,10 @@ public:
     }
     void from_file(FIL* f, size_t sz);
     void to_file(FIL* f, size_t sz);
+    // A piece of the page in whatever store backs it (SRAM, butter, SPI PSRAM, SD
+    // swap) — .pss sparse pages (src/speccy/core/Pss.cpp). Cold code.
+    void read_chunk(uint32_t off, uint8_t* buf, uint32_t n);
+    void write_chunk(uint32_t off, const uint8_t* buf, uint32_t n);
     void from_mem(mem_desc_t& ram, size_t sz);
     void cleanup();
 };

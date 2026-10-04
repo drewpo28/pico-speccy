@@ -405,3 +405,78 @@ row (save to a slot first, then convert it). Two entries, one code path:
   `setGuestPalette16` read and write whichever copy is the guest's; `profiPaletteReset`
   (a reset taken from the menu over DS80) goes through the setter too. Not from the menu
   (F2, Alt+F3/F4, boot resume) it worked, hence "не всегда".
+
+## Phase 3, part 3: ATM-Turbo 1 / 2 / 2+ / 3 and ZX-Evo BaseConf (2026-10-04; hw 2026-10-04, owner: "работает", not itemised)
+
+- `A_ATM` covered: pages = `MEM_PG_CNT` (1 MB on ATM 1/2/2+, 4 MB = 256 pages on ATM3 and
+  the Evo, sparse over 64). `MAX_PAGES` is 256; the page list is computed (`pageCount` /
+  `pageAt`) and the loaded set is a 32-byte bitmap — static arrays for it cost 1.3 KB of
+  RAM on every board and were dropped.
+- Block `PSAT` (`Atm::snapSave/snapLoad/snapRemap`): #7FFD, ATM1 #FE/#FB/#FDFD, the #77
+  address and data, the eight page registers, ATM3/Evo #BF, shadow-port / test-boot / Beta
+  flags, palette RAM (+ EXT_PAL high bytes) and whether the guest has programmed it, the
+  clock; on the Evo `EvoBase::snapSave` adds #EFF7, NMI / NMI-clear / trdemu state, the FDD
+  mask, the FDC SYS latch, the savelij #2F..#8F latches, the NEMO #10 triggers and the
+  font-write enable. Block `PSEF` = the Evo's 2 KB font RAM.
+- Remap: DOS signal = Beta | /CPM, `Atm::remap()` (the manager's single writer of the
+  windows), `VIDEO::atmVideoModeChanged()` (EGA / hires / text through the pair driver at
+  the next vblank), the palette re-flushed at the next EndFrame when the guest had set it.
+- No export (no format expresses the ATM manager).
+- **Hw check owed**: ATM2+ BIOS menu, TR-DOS and CP/M (text mode, palette), an EGA game
+  (Golden Axe), ATM1 CP/M, ATM3 with a page above 63 (NedoOS), Evo ERS / EvoProfROM /
+  Dune II (14 MHz, NMI-free state), save time and size at 4 MB.
+
+## Phase 3, part 4: Murmuzavr, DivMMC (2026-10-04; hw 2026-10-04, owner: "работает", not itemised)
+
+- **Murmuzavr**: `Pss::supported()` is now every phase-1/3 arch with no RAM-size
+  condition. A Pentagon with `MEM_PG_CNT > 64` writes all its pages sparse; pages >= 256
+  go into `PSRP` {flags u16, page u16, 16 KB}. `MAX_PAGES` = 2048 (32 MB), the loaded set
+  is a 256-byte bitmap on the stack.
+- **Sparse encoding generalised**: `pageKind()` reads each page through the new
+  `mem_desc_t::read_chunk()` (SRAM, butter, SPI PSRAM or SD swap alike) and classifies it:
+  power-on pattern -> omitted, one repeated byte -> `PSPF` {page u16, byte}, anything else
+  -> written. The loader writes back through `mem_desc_t::write_chunk()`. The pattern
+  generator moved to `src/app/DramPattern.h` (no dependencies; ESPectrum, Pss, the
+  converter and its host test share it).
+- `MEM_PG_CNT` is a class-2 key (asked + reboot), "Murmuzavr RAM", but only for a Pentagon
+  snapshot — dropped from the applied lines of every other machine. Answering No keeps the
+  current size: a #C000 page past the strip falls back to bank & 7, #AFF7 is cleared.
+- **DivMMC** (esxDOS DivMMC / DivIDE): SZX `DMMC` (dwFlags 2 = paged in, chCurrentPage =
+  #E3 control, 16 pages) + 16 `DMRP` {wFlags, page, 8 KB}. `DivMMC::snapBank` brings a bank
+  in (swap mode) and marks it dirty on load; `snapRestore` sets CONMEM / MAPRAM / bank /
+  automap and `applyMapping()` — last of the memory map, since it owns page 0 while mapped.
+- Converter: PSPF and omitted pages are rebuilt (fill / pattern); pages past the target and
+  PSRP report "Murmuzavr RAM"; `.szx` carries DMMC + DMRP verbatim, `.z80` / `.sna` report
+  "DivMMC". Host test 38 conversions incl. a sparse Murmuzavr Pentagon and a DivMMC 128K;
+  the oracle implements the pattern independently.
+- **Not done**: DOCK RAM chunks (none of the known cartridges has one; the cartridge itself
+  comes back through the `dckcart` key), Z-Controller / IDE register state.
+- **Hw check owed**: Pentagon with Murmuzavr 4/8/32 MB (save time on an SD-swap board),
+  a load answered No with a smaller MZ; esxDOS: a slot saved inside the esxDOS browser /
+  NMI menu (automapped) and in BASIC, on DivMMC and DivIDE.
+
+## Phase 4: TS-Conf (2026-10-04; hw 2026-10-04, owner: "работает", not itemised)
+
+- `A_TSCONF` joins `archSupported`; its 256 pages (4 MB) go sparse like every machine over
+  1 MB. `romSetTsconf` is an arch key, `tsconf_vdac2` a class-2 key (VDAC2 is reboot-class),
+  `tsconf_clk_cap` a board key (asked).
+- Blocks: `PSTS` = `TsConf::snapSave` (67 bytes, ver 1): the whole register file incl. the
+  `*_d` shadows, GYOffs write line, DMA registers, then the VDOS signal, drive_sel, the
+  FMAddr byte latch, the FRAME ack / LINE / DMA latches, DMA_ACT + flat, the next LINE
+  start and the DMA end T (in the saved session's scaled units) and the multiplicator.
+  `PSTC` = CRAM (512 B), `PSTF` = SFILE (512 B), both raw little-endian words.
+- `TsConf::snapLoad` parses and rebuilds in one call (no static stash — RAM stays at the
+  baseline): multiplicator set directly (no guest-clock banner, keeps a hotkey override),
+  `setBanks` (window 0 incl. VDOS page #FF), `frameIntRecalc` then the saved ack, the
+  latches and timestamps, a cold DRAM cache, `memcycRecalc`, the write gate, `refreshGrmem`,
+  `sfileGen++`, `tsCramChanged`. The video mode follows at the next EndFrame from VConfig
+  (`tsVideoApplyPending` always folds the live register into vmSeen).
+- No export: SZX / .z80 / .sna have no TS-Conf machine; the converter refuses it.
+- **Not saved**: the FT812 (VDAC2) chip state — a VDAC2 snapshot comes back with a blank
+  chip until the guest re-uploads; the ZX-Evo AVR's PS/2 log and config registers (the CMOS
+  itself is its own file); NeoGS (phase 5).
+- **Hw check owed**: a slot saved in TS-BIOS Setup (TEXT), in TR-DOS, in a 256c/16c title
+  with the TSU (Bruce Lee, TMNT), a raster-split title (Ninja Gaiden — FRAME latch), during
+  a DMA-heavy scene, at 14 MHz and with the Alt+F2 override; Wild Commander with a VDOS
+  mount; load from another machine (the machine switch reboots into the 4 MB strip and
+  resumes through `ram=`).

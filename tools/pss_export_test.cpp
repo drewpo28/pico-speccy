@@ -61,6 +61,8 @@ struct Case {
 
 static uint8_t pageByte(int p, int i) { return (uint8_t)(p * 7 + i * 13 + (i >> 8)); }
 
+#include "app/DramPattern.h"
+
 static void writePss(const string& path, const Case& c) {
     FIL* f = fopen2(path.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
     Pss::W w(f);
@@ -89,10 +91,28 @@ static void writePss(const string& path, const Case& c) {
     if (c.covox)   { w.begin("COVX"); w.u8(0x80); w.u8(0); w.u8(0); w.u8(0); w.end(); }
     static const uint8_t p48[3] = { 5, 2, 0 };
     vector<uint8_t> pg(16384);
+    // "pentmz": a Pentagon with Murmuzavr, written sparse the way Pss::save does —
+    // page 3 left out (the power-on pattern), page 4 a PSPF of zeros, page 300 a PSRP.
+    const bool mz = !strcmp(c.name, "pentmz");
+    if (mz) { w.begin("PSPG"); w.u16(512); w.u8(1); w.end(); }
     for (int i = 0; i < c.npages; i++) {
         const int p = c.npages == 3 ? p48[i] : i;
+        if (mz && p == 3) continue;
+        if (mz && p == 4) { w.begin("PSPF"); w.u16(4); w.u8(0); w.end(); continue; }
         for (int k = 0; k < 16384; k++) pg[k] = pageByte(p, k);
         w.begin("RAMP"); w.u16(0); w.u8((uint8_t)p); w.raw(pg.data(), 16384); w.end();
+    }
+    if (!strcmp(c.name, "k128")) {   // a DivMMC: control + two RAM banks
+        w.begin("DMMC"); w.u32(2); w.u8(0x83); w.u8(16); w.end();
+        for (uint8_t b : { (uint8_t)0, (uint8_t)3 }) {
+            w.begin("DMRP"); w.u16(0); w.u8(b);
+            for (int k = 0; k < 8192; k++) w.u8((uint8_t)(b * 31 + k));
+            w.end();
+        }
+    }
+    if (mz) {
+        for (int k = 0; k < 16384; k++) pg[k] = pageByte(300, k);
+        w.begin("PSRP"); w.u16(0); w.u16(300); w.raw(pg.data(), 16384); w.end();
     }
     fclose2(f);
 }
@@ -124,6 +144,7 @@ int main(int argc, char** argv) {
         { "plus3", "128K",     "P3",      8,  7, 0,0,0, 0, 0, 0x05,0, 0x7000, 0x7100, false,false,false,false,false },
         { "plus3e","128K",     "P3e",     8,  1, 0,1,0, 0, 0, 0x04,0, 0x7000, 0x7100, false,false,false,false,false },
         { "pent",  "Pentagon", "128Kp",   8,  6, 0,1,0, 0, 0, 0, 0,  0x7000, 0x7100, false,false,false,false,false },
+        { "pentmz","Pentagon", "128Kp",   8,  3, 0,1,0, 0, 0, 0, 0,  0x7000, 0x7100, false,false,false,false,false },
         { "p512",  "P512",     "128Kp",  32, 21, 1,0,0, 0, 0, 0, 0,  0x7000, 0x7100, false,false,false,false,false },
         { "scorp", "Scorpion", "Scorp",  16, 13, 0,1,0, 0, 1, 0x12,0, 0x7000, 0x7100, false,false,false,false,false },
         { "scorpg","Scorpion", "ScorpGr", 16, 9, 1,0,1, 0, 0, 0x10,0, 0x7000, 0x7100, false,false,false,false,false },
@@ -184,7 +205,7 @@ int main(int argc, char** argv) {
                         if (c.npages == 64 && (port & 0x20)) b += 32;
                     }
                     CHECK(b == c.bank, "%s.sna: 7FFD %02X decodes to bank %u, want %u", c.name, port, b, c.bank);
-                    CHECK(o[27 + 2 * 16384] == pageByte(c.bank & 7, 0), "%s.sna: 3rd block is not bank&7", c.name);
+                    if (strcmp(c.name, "pentmz")) CHECK(o[27 + 2 * 16384] == pageByte(c.bank & 7, 0), "%s.sna: 3rd block is not bank&7", c.name);
                 }
             } else if (fmt == Pss::EX_Z80) {
                 const size_t want = 87u + (size_t)c.npages * (3u + 16384u);
@@ -197,6 +218,23 @@ int main(int argc, char** argv) {
                 }
             } else {
                 CHECK(o.size() > 8 && !memcmp(o.data(), "ZXST", 4), "%s.szx: magic", c.name);
+            }
+            if (!strcmp(c.name, "k128")) {
+                if (fmt == Pss::EX_SZX) {
+                    bool found = false;
+                    for (size_t k = 8; k + 4 <= o.size(); k++) if (!memcmp(&o[k], "DMRP", 4)) { found = true; break; }
+                    CHECK(found, "k128.szx: no DMRP block");
+                } else {
+                    CHECK(dropped.find("DivMMC") != string::npos, "k128%s: DivMMC not reported", ext);
+                }
+            }
+            if (!strcmp(c.name, "pentmz")) {
+                CHECK(dropped.find("Murmuzavr RAM") != string::npos, "pentmz%s: Murmuzavr not reported", ext);
+                if (fmt == Pss::EX_SNA && o.size() > 27 + 3 * 16384u) {
+                    // Bank 3 is the current one: the third 16 KB block, the left-out page.
+                    uint8_t pat[16384]; DramPattern g(3); g.next(pat, sizeof(pat));
+                    CHECK(!memcmp(o.data() + 27 + 2 * 16384, pat, 16384), "pentmz.sna: page 3 is not the pattern");
+                }
             }
         }
         // A format the table refuses must fail cleanly.

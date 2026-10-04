@@ -392,6 +392,60 @@ uint32_t palRgb(uint8_t i) {
     return ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
 }
 
+// ── .pss snapshot ────────────────────────────────────────────────────────────
+
+static constexpr uint8_t SNAP_VER = 1;
+
+uint32_t snapSave(uint8_t* out) {
+    uint32_t n = 0;
+    out[n++] = SNAP_VER;
+    out[n++] = p7ffd;
+    out[n++] = aFE; out[n++] = aFB; out[n++] = pFDFD;
+    out[n++] = (uint8_t)a77; out[n++] = (uint8_t)(a77 >> 8);
+    out[n++] = p77;
+    for (int i = 0; i < 8; i++) { out[n++] = (uint8_t)pF7[i]; out[n++] = (uint8_t)(pF7[i] >> 8); }
+    out[n++] = pBF;
+    out[n++] = (uint8_t)((shaden ? 1 : 0) | (testBoot ? 2 : 0) | (beta ? 4 : 0) |
+                         (VIDEO::atmPaletteIsLive() ? 8 : 0));
+    for (int i = 0; i < 16; i++) out[n++] = pal[i];
+    for (int i = 0; i < 16; i++) out[n++] = palHi[i];
+    out[n++] = ESPectrum::multiplicator;
+    if (evo) n += EvoBase::snapSave(out + n);
+    return n;   // 59, +13 on the Evo
+}
+
+static uint8_t s_snapMult = 0;
+static bool    s_snapPalLive = false;
+
+void snapLoad(const uint8_t* in, uint32_t n) {
+    if (n < 59 || in[0] < 1) return;
+    uint32_t i = 1;
+    p7ffd = in[i++];
+    aFE = in[i++]; aFB = in[i++]; pFDFD = in[i++];
+    a77 = (uint16_t)(in[i] | (in[i + 1] << 8)); i += 2;
+    p77 = in[i++];
+    for (int k = 0; k < 8; k++) { pF7[k] = (uint16_t)(in[i] | (in[i + 1] << 8)); i += 2; }
+    pBF = in[i++];
+    const uint8_t f = in[i++];
+    shaden = f & 1; testBoot = (f & 2) != 0; beta = (f & 4) != 0; s_snapPalLive = (f & 8) != 0;
+    for (int k = 0; k < 16; k++) pal[k] = in[i++];
+    for (int k = 0; k < 16; k++) palHi[k] = in[i++];
+    s_snapMult = in[i++];
+    if (evo) EvoBase::snapLoad(in + i, n - i);
+}
+
+void snapRemap() {
+    // The DOS signal is beta | /CPM (dosRecalc) — beta itself came from the file.
+    ESPectrum::trdos = beta || cpmOn();
+    remap();
+    VIDEO::atmVideoModeChanged();
+    if (s_snapPalLive) VIDEO::atmPaletteChanged();   // flushed at the next EndFrame
+    if (s_snapMult != ESPectrum::multiplicator) {
+        ESPectrum::multiplicator = s_snapMult;
+        CPU::updateStatesInFrame();
+    }
+}
+
 void palWrite(uint8_t data, uint8_t hi) {
     const uint8_t idx = VIDEO::borderColor & 15;
     if (pal[idx] != data || palHi[idx] != hi) {

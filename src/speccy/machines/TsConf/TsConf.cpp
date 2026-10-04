@@ -1893,3 +1893,97 @@ void TsConf::reset(bool cold) {
     // the BIOS would accept the cells, its own defaults + CRC otherwise.
     RTC::tsBiosSeed();
 }
+
+// ------------------------------------------------------------ .pss snapshot ----
+// The register file and the interrupt/DMA state, as the PSTS block (Pss.cpp).
+// CRAM and SFILE travel as their own blocks (PSTC/PSTF) straight from cram[] /
+// sfile[]. The frame-relative timestamps are in the saved session's scaled
+// T-states, i.e. in the units of the multiplicator stored beside them.
+static constexpr uint8_t TS_SNAP_VER = 1;
+
+static inline void snapPut16(uint8_t* o, uint32_t& n, uint16_t v) { o[n++] = (uint8_t)v; o[n++] = (uint8_t)(v >> 8); }
+static inline void snapPut32(uint8_t* o, uint32_t& n, uint32_t v) { snapPut16(o, n, (uint16_t)v); snapPut16(o, n, (uint16_t)(v >> 16)); }
+static inline uint16_t snapGet16(const uint8_t* i, uint32_t& n) { uint16_t v = (uint16_t)(i[n] | (i[n + 1] << 8)); n += 2; return v; }
+static inline uint32_t snapGet32(const uint8_t* i, uint32_t& n) { uint32_t v = snapGet16(i, n); return v | ((uint32_t)snapGet16(i, n) << 16); }
+
+uint32_t TsConf::snapSave(uint8_t* o) {
+    uint32_t n = 0;
+    o[n++] = TS_SNAP_VER;
+    o[n++] = r.sysconf; o[n++] = r.cacheconf; o[n++] = r.memconf; o[n++] = r.fmaddr;
+    o[n++] = r.fddvirt; o[n++] = r.intmask; o[n++] = r.hsint;
+    snapPut16(o, n, r.vsint);
+    o[n++] = r.pwr_up; o[n++] = r.p7ffd;
+    for (int i = 0; i < 4; i++) o[n++] = r.page[i];
+    o[n++] = r.vconf; o[n++] = r.vconf_d; o[n++] = r.vpage; o[n++] = r.vpage_d;
+    o[n++] = r.tsconf; o[n++] = r.tsconf_d; o[n++] = r.palsel; o[n++] = r.palsel_d;
+    o[n++] = r.border;
+    snapPut16(o, n, r.g_xoffs); snapPut16(o, n, r.g_yoffs);
+    o[n++] = r.g_yoffs_updated ? 1 : 0;
+    snapPut16(o, n, r.g_yoffs_wline);
+    snapPut16(o, n, r.t0_xoffs); snapPut16(o, n, r.t0_yoffs);
+    snapPut16(o, n, r.t1_xoffs); snapPut16(o, n, r.t1_yoffs);
+    o[n++] = r.tmpage; o[n++] = r.t0gpage; o[n++] = r.t1gpage; o[n++] = r.sgpage;
+    o[n++] = r.dmalen; o[n++] = r.dmanum; o[n++] = r.dmactrl;
+    snapPut32(o, n, r.saddr); snapPut32(o, n, r.daddr);
+    o[n++] = (uint8_t)((vdosLive ? 1 : 0) | (s_frm_acked ? 2 : 0) | (s_lin_pending ? 4 : 0) |
+                       (s_dma_busy ? 8 : 0) | (s_dma_flat ? 16 : 0) | (s_dma_pending ? 32 : 0));
+    o[n++] = s_drive_sel; o[n++] = s_fm_tmp;
+    snapPut32(o, n, s_lin_next); snapPut32(o, n, s_dma_end);
+    o[n++] = ESPectrum::multiplicator;
+    return n;   // 67
+}
+
+// Parse the block and rebuild from it (after the pages and the generic latches):
+// the windows, the clock, the interrupt controller and the DRAM gate. The clock
+// is set directly (not applyZclk): the snapshot may have been running on a hotkey
+// override, and a guest-clock banner on load would be noise. A missing or short
+// block leaves the reset state and only re-derives the windows.
+void TsConf::snapLoad(const uint8_t* in, uint32_t len) {
+    if (len < 67 || in[0] < 1) { setBanks(); return; }
+    uint32_t n = 1;
+    r.sysconf = in[n++]; r.cacheconf = in[n++]; r.memconf = in[n++]; r.fmaddr = in[n++];
+    r.fddvirt = in[n++]; r.intmask = in[n++]; r.hsint = in[n++];
+    r.vsint = snapGet16(in, n);
+    r.pwr_up = in[n++]; r.p7ffd = in[n++];
+    for (int i = 0; i < 4; i++) r.page[i] = in[n++];
+    r.vconf = in[n++]; r.vconf_d = in[n++]; r.vpage = in[n++]; r.vpage_d = in[n++];
+    r.tsconf = in[n++]; r.tsconf_d = in[n++]; r.palsel = in[n++]; r.palsel_d = in[n++];
+    r.border = in[n++];
+    r.g_xoffs = snapGet16(in, n); r.g_yoffs = snapGet16(in, n);
+    r.g_yoffs_updated = in[n++] != 0;
+    r.g_yoffs_wline = snapGet16(in, n);
+    r.t0_xoffs = snapGet16(in, n); r.t0_yoffs = snapGet16(in, n);
+    r.t1_xoffs = snapGet16(in, n); r.t1_yoffs = snapGet16(in, n);
+    r.tmpage = in[n++]; r.t0gpage = in[n++]; r.t1gpage = in[n++]; r.sgpage = in[n++];
+    r.dmalen = in[n++]; r.dmanum = in[n++]; r.dmactrl = in[n++];
+    r.saddr = snapGet32(in, n); r.daddr = snapGet32(in, n);
+    const uint8_t fl = in[n++];
+    s_drive_sel = in[n++]; s_fm_tmp = in[n++];
+    const uint32_t linNext = snapGet32(in, n), dmaEnd = snapGet32(in, n);
+    uint8_t mult = in[n++];
+    if (mult > 2) mult = 2;
+
+    vdosLive = (fl & 1) != 0;
+    if (ESPectrum::multiplicator != mult) {
+        ESPectrum::multiplicator = mult;
+        CPU::updateStatesInFrame();   // frameIntRecalc + memcycRecalc for TS-Conf
+    }
+    setBanks();
+    frameIntRecalc();                 // re-arms the window latch; the saved one follows
+    s_frm_acked   = (fl & 2) != 0;
+    s_lin_pending = (fl & 4) != 0;
+    s_dma_busy    = (fl & 8) != 0;
+    s_dma_flat    = (fl & 16) != 0;
+    s_dma_pending = (fl & 32) != 0;
+    s_lin_next = linNext;
+    s_dma_end  = dmaEnd;
+    s_steal_half = s_dma_steal_t = s_poll_steal = 0;
+    s_poll_pc = 0xFFFF;
+    tsdcReset();                      // a cold cache: timing only
+    tsTagBaseRecalc();
+    memcycRecalc();
+    tsUpdateWrGate();
+    refreshGrmem();
+    sfileGen++;
+    VIDEO::tsCramChanged();
+}
