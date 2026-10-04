@@ -429,16 +429,19 @@ static void applyLiveMedia(const vector<string>& lines) {
     }
 }
 
-static void applyJoy(R& r, uint32_t size) {
-    if (size == 0 || size > 255) return;
+// Returns true when the snapshot carries a NAMED profile the store does not have —
+// `missing` then holds it, for the offer at the end of the load.
+static bool applyJoy(R& r, uint32_t size, JoyProf::Profile& missing) {
+    if (size == 0 || size > 255) return false;
     char line[256];
     r.raw(line, size);
-    if (!r.ok) return;
+    if (!r.ok) return false;
     size_t len = size;
     while (len && (line[len - 1] == '\n' || line[len - 1] == '\r')) len--;
     JoyProf::Profile p;
-    if (!JoyProf::parseLine(line, len, p)) return;
+    if (!JoyProf::parseLine(line, len, p)) return false;
     bool named = strcmp(p.name, "*") != 0;
+    bool absent = false;
     if (named && FileUtils::fsMount) {
         // The profile store wins: the user's later edits to "their" map for this
         // game are what they want, not the copy frozen into the snapshot.
@@ -446,7 +449,7 @@ static void applyJoy(R& r, uint32_t size) {
         if (lib) {
             Config::joyProfilesLoad(lib, JoyProf::MAX);
             const int k = JoyProf::find(lib, JoyProf::MAX, p.name);
-            if (k >= 0) p = lib[k]; else named = false;
+            if (k >= 0) p = lib[k]; else { named = false; absent = true; }
             free(lib);
         } else named = false;
     } else named = false;
@@ -454,6 +457,32 @@ static void applyJoy(R& r, uint32_t size) {
     for (int i = 0; i < JoyProf::SLOTS; i++) Config::joydef[i] = p.map[i];
     Config::joy_profile = named ? p.name : "";
     if (Config::joystick == JOY_KEMPSTON) Ports::port[Config::kempstonPort] = 0;
+    if (absent) missing = p;
+    return absent;
+}
+
+// The snapshot's profile is not in joystick.cfg: offer to keep it there, in the
+// first free slot. No answers the old way — the copy plays for this session only.
+static void offerJoySave(const JoyProf::Profile& p) {
+    string q = string("Save joystick profile\n\"") + p.name + "\"?";
+    if (OSD::msgDialog("Snapshot joystick", q, true) != DLG_YES) return;
+    JoyProf::Profile* lib = (JoyProf::Profile*)tryMalloc(sizeof(JoyProf::Profile) * JoyProf::MAX);
+    if (!lib) return;
+    Config::joyProfilesLoad(lib, JoyProf::MAX);
+    int slot = -1;
+    for (int i = 0; i < JoyProf::MAX && slot < 0; i++) if (!lib[i].name[0]) slot = i;
+    if (slot < 0) {
+        OSD::osdCenteredMsg(" No free joystick profile slot ", LEVEL_WARN, 1500);
+    } else {
+        lib[slot] = p;
+        if (Config::joyProfilesSave(lib, JoyProf::MAX)) {
+            Config::joy_profile = p.name;
+            Config::save();
+        } else {
+            OSD::osdCenteredMsg(" Joystick profile not saved ", LEVEL_WARN, 1500);
+        }
+    }
+    free(lib);
 }
 
 static void loadFail(const string& msg) {
@@ -566,6 +595,7 @@ bool load(const string& path) {
     uint8_t atm[Atm::SNAP_MAX] = {};     uint32_t atmSize = 0;
     uint8_t tsr[TsConf::SNAP_MAX] = {};  uint32_t tsSize = 0;
     bool haveDmmc = false; uint8_t dmmcCtl = 0; bool dmmcPaged = false;
+    JoyProf::Profile joyOffer; bool joyMissing = false;
 
     while (r.ok && r.next(id, sz, at)) {
         if (idIs(id, "Z80R") && sz >= sizeof(z)) { r.raw(z, sizeof(z)); haveZ80 = true; }
@@ -580,7 +610,7 @@ bool load(const string& path) {
         else if (idIs(id, "SCLD") && sz >= 2) { r.raw(scld, 2); haveScld = true; }
         else if (idIs(id, "PLTT") && sz >= 66) { r.raw(pltt, sz < sizeof(pltt) ? sz : sizeof(pltt)); havePltt = true; }
         else if (idIs(id, "COVX") && sz >= 1)  { covx = r.u8(); haveCovx = true; }
-        else if (idIs(id, "JOY "))             { applyJoy(r, sz); }
+        else if (idIs(id, "JOY "))             { joyMissing = applyJoy(r, sz, joyOffer); }
         else if (idIs(id, "PSPG") && sz >= 3)  { r.u16(); fileSparse = r.u8() != 0; }
         else if (idIs(id, "PSPF") && sz >= 3) {
             const uint16_t page = r.u16();
@@ -727,6 +757,7 @@ bool load(const string& path) {
     Z80::setMemPtr(w16(35));
 
     Debug::log("[PSS] loaded %s: %s/%s, %d pages", path.c_str(), sa.c_str(), sr.c_str(), loadedPages);
+    if (joyMissing && !bootResume) offerJoySave(joyOffer);
     return true;
 }
 

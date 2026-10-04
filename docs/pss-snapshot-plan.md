@@ -239,8 +239,8 @@ row (save to a slot first, then convert it). Two entries, one code path:
    Murmuzavr (`PSRP`), `DOCK`, DivMMC.
 4. TS-Conf (`PSTS`).
 5. GS / NeoGS (`PSGS` + `PSGP`/`PSGF` — our blocks, see "Phase 5 as built").
-6. `JOY ` against the real profile store once it exists (phase 1 already writes the
-   block from today's keys and keeps them out of the `CFG ` apply).
+6. `JOY ` against the profile store: store wins, a missing named profile is offered for
+   saving (see "Phase 6").
 7. Optional: tape position, WD1793 / uPD765 registers; `.szx` IMPORT (zlib pages via miniz).
    FM chip state stays out of snapshots (existing policy).
 
@@ -518,6 +518,20 @@ row (save to a slot first, then convert it). Two entries, one code path:
   ZP4, TheLink; load into a machine with GS off / classic vs NeoGS / smaller NeoGS RAM (card
   reset, rest loads); a save while a player uploads (FIFO bytes); ProfROM still in the
   Scorpion menu and booting.
+
+## Phase 6: joystick profile offer (2026-10-04, NOT hw-tested)
+
+- `JOY ` on load, as before: a profile of that name in `joystick.cfg` wins; otherwise the
+  embedded copy is applied for the session.
+- New: when the snapshot's profile is NAMED and `joystick.cfg` does not have it, the load
+  ends with "Save joystick profile "<name>"?" (default Yes). Yes writes it into the first
+  empty slot of the 16, makes it the live profile (`joy_profile`) and saves storage.nvs; no
+  free slot -> a "No free joystick profile slot" message. A snapshot saved with an unsaved
+  map ("*") never asks.
+- Not asked on the boot resume (a load that came back through `ram=` after a hardware
+  reboot) — the profile then plays for that session only.
+- **Hw check owed**: a snapshot whose profile was renamed or deleted in Joystick > Profile,
+  and one copied from another card; all 16 slots used.
 
 ## To do: snapshot info on F1 in the F5 browser (owner, 2026-10-04)
 
