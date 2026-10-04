@@ -18,6 +18,8 @@
 // access, so one test each is all this needs.
 extern volatile uint8_t g_ngs_zxdma;
 
+namespace Pss { struct W; struct R; }
+
 class GS {
 public:
     static bool enabled;
@@ -138,6 +140,16 @@ public:
     // canonical 16-bytes-per-line view. start/len are GS CPU addresses;
     // start must be >= 0x4000 and start+len <= 0x8000.
     static void    dumpWorkRam(uint16_t start, uint16_t len);
+
+    // .pss snapshot (src/speccy/core/Pss.cpp). snapSave writes PSGS + the RAM
+    // chunks (PSGP / PSGF); a load is snapLoadBegin (freezes and resets the card)
+    // -> snapLoadState / snapLoadPage per block -> snapLoadEnd (rebuilds and
+    // resumes, or resets the card when no matching state came in).
+    static bool snapSave(Pss::W& w);
+    static void snapLoadBegin();
+    static void snapLoadState(Pss::R& r, uint32_t size);
+    static void snapLoadPage(Pss::R& r, const char id[4], uint32_t size);
+    static void snapLoadEnd();
 
     static int16_t getSampleLeft();
     static int16_t getSampleRight();

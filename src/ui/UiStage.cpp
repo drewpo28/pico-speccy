@@ -1347,9 +1347,10 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
                                  rep, "ATM ROM traded for the GM.DLS bank");
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_SCORP &&
-                isScorpEvoRomset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)))
-                changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP_PROF),
-                                 rep, "ScorpEvo ROM traded for the GM.DLS bank");
+                (isScorpEvoRomset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)) ||
+                 (RomsetIdx)(staged(SET_MACHINE) & 0xFF) == R_SCORP_PROF))
+                changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP_1024),
+                                 rep, "ProfROM traded for the GM.DLS bank");
         }
 
         if (!changed) return;

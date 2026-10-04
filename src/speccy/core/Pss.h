@@ -12,7 +12,7 @@
 // PSCH (Pentagon-512/1024 hidden cache pages), PSPG (page count + sparse flag),
 // PSRP (page >= 256), PSPF (uniform page), PSSC (Scorpion), PSPR (Profi), PSAT +
 // PSEF (ATM / ZX-Evo, Evo font RAM), PSTS + PSTC + PSTF (TS-Conf registers, CRAM,
-// SFILE).
+// SFILE), PSGS + PSGP / PSGF (General Sound / NeoGS card and its RAM).
 //
 // Covers 48K-family (incl. Byte, Didaktik, Timex), 128K / +2 / +3 / +3e / +3div,
 // Pentagon 128/512/1024 incl. Murmuzavr, the Scorpion family, Profi / Karabas,

@@ -2327,6 +2327,8 @@ void GS::deinit() {
     gs_end_reset();
 }
 
+static void gs_reset_state();
+
 void GS::reset() {
 #ifdef GS_DEBUG_TRACE
     // If we have trace data from before this reset and never dumped it (the
@@ -2339,18 +2341,26 @@ void GS::reset() {
     }
 #endif
     gs_begin_reset();
+    gs_reset_state();
+    gs_end_reset();
+}
+
+// Everything GS::reset() does under the run lock — shared with the .pss load,
+// which holds the lock for the whole load.
+static void gs_reset_state() {
+    using GS_ = GS;
     g_ngs_zxdma = 0;    // close the host memory window before anything else moves
-    reg_command = 0;
-    reg_data_zx = 0;
-    reg_data_gs = 0;
-    reg_status  = 0;
-    reg_page    = 0;
-    for (int i = 0; i < 8; i++) { reg_vol[i] = 0; reg_ch[i] = 0x80; }
+    GS_::reg_command = 0;
+    GS_::reg_data_zx = 0;
+    GS_::reg_data_gs = 0;
+    GS_::reg_status  = 0;
+    GS_::reg_page    = 0;
+    for (int i = 0; i < 8; i++) { GS_::reg_vol[i] = 0; GS_::reg_ch[i] = 0x80; }
     if (s_ngs && s_ngs_low_ram) {
         ngs_reset_regs();
         NgsSd::reset();   // core0-only (disk probe) — reset() runs on core0
     }
-    int_count = 0;
+    GS_::int_count = 0;
     s_int_timer_ts = 0;
     s_int_pending = false;
     s_pump_last_us = 0;
@@ -2383,11 +2393,10 @@ void GS::reset() {
     s_trace_dumped_on_reset = false;
     for (int i = 0; i < 16; i++) s_trace_last_idx[i] = 0;
 #endif
-    if (enabled) {
+    if (GS_::enabled) {
         z80_instant_reset(&s_cpu);
-        gs_trace_gs(TR_RESET, 0, reg_status);
+        gs_trace_gs(TR_RESET, 0, GS_::reg_status);
     }
-    gs_end_reset();
 }
 
 void __not_in_flash_func(GS::topUpBudget)(int tstates) {
@@ -3985,3 +3994,274 @@ void GS::dumpWorkRam(uint16_t start, uint16_t len) {
 
 
 uint16_t gs_dbg_gs_pc(void) { return (uint16_t)Z80_PC(s_cpu); }
+
+// =================================================================
+// .pss snapshot (src/speccy/core/Pss.cpp)
+// =================================================================
+// PSGS = the card: GS-Z80 registers, host interface (latches + the three FIFOs'
+// unread bytes), INT phase, boot flags and, for NeoGS, the register file, ZX-DMA
+// window and the decoder's SCI registers. Card RAM follows as 16 KB chunks in
+// card-physical numbering — PSGP {off u32, 16 KB} or PSGF {off u32, byte} for a
+// uniform one. The card is frozen under the run lock for the whole save / load,
+// so core1 never runs on half a state. Not saved: the MP3 decoder's stream (the
+// player feeds it again), the SD-card SPI state machine (NgsSd), the output rings.
+#include "speccy/core/PssIo.h"
+
+static constexpr uint8_t  GS_SNAP_VER = 1;
+static constexpr uint32_t GS_SNAP_CHUNK = 0x4000;
+// In the GS window's tail (claimed only while GS is on): every reader tests
+// GS::enabled first.
+static GS_OVL_BSS bool     s_snap_ok;     // a PSGS matching this card was applied
+static GS_OVL_BSS uint32_t s_snap_size;   // its RAM size (card-physical bytes)
+
+// Card RAM in card-physical numbering: classic = s_gs_ram's offsets (the work
+// RAM on SPI PSRAM is a separate buffer standing in for offset 0x8000), NeoGS =
+// the 64 KB low part then s_gs_ram.
+static uint32_t gs_snap_ram_total() { return s_ngs ? s_ngs_ram_total : GS::gs_ram_size; }
+static uint8_t* gs_snap_ptr(uint32_t off) {
+    if (s_ngs) return off < NGS_LOW_RAM_SIZE ? s_ngs_low_ram + off : s_gs_ram + (off - NGS_LOW_RAM_SIZE);
+    if (off == GS_WORK_RAM_OFF && s_gs_use_spi) return s_gs_work_ram;
+    return s_gs_use_spi ? nullptr : s_gs_ram + off;
+}
+
+// A byte cursor: the fixed part of PSGS is built in a stack buffer and written in
+// one go — a W::u8 per field inlines an f_write each and cost ~9 KB of flash.
+namespace {
+struct SnapBuf {
+    uint8_t* p; uint32_t n = 0, cap;
+    SnapBuf(uint8_t* b, uint32_t c) : p(b), cap(c) {}
+    __attribute__((noinline)) void b8(uint8_t v)   { if (n < cap) p[n] = v; n++; }
+    __attribute__((noinline)) void b16(uint16_t v) { b8((uint8_t)v); b8((uint8_t)(v >> 8)); }
+    __attribute__((noinline)) void b32(uint32_t v) { b16((uint16_t)v); b16((uint16_t)(v >> 16)); }
+    __attribute__((noinline)) uint8_t g8()   { return n < cap ? p[n++] : (n++, 0); }
+    __attribute__((noinline)) uint16_t g16() { uint16_t v = g8(); return (uint16_t)(v | (g8() << 8)); }
+    __attribute__((noinline)) uint32_t g32() { uint32_t v = g16(); return v | ((uint32_t)g16() << 16); }
+};
+}
+static constexpr uint32_t GS_SNAP_FIXED = 75, GS_SNAP_NGS = 64;
+
+// The unread bytes of one FIFO: u16 count, then the bytes (at most two raw runs).
+static void snapPutFifo(Pss::W& w, const volatile uint8_t* buf, uint32_t mask, uint32_t r, uint32_t wp) {
+    uint32_t n = wp - r;
+    if (n > mask + 1) n = mask + 1;
+    w.u16((uint16_t)n);
+    const uint32_t at = r & mask, first = (mask + 1 - at) < n ? (mask + 1 - at) : n;
+    w.raw((const void*)(buf + at), first);
+    w.raw((const void*)buf, n - first);
+}
+
+bool GS::snapSave(Pss::W& w) {
+    if (!enabled) return true;
+    gs_begin_reset();
+    uint8_t fx[GS_SNAP_FIXED + GS_SNAP_NGS];
+    SnapBuf o(fx, sizeof(fx));
+    o.b8(GS_SNAP_VER);
+    o.b8(s_ngs ? 2 : 1);
+    o.b32(gs_snap_ram_total());
+    // GS-Z80
+    o.b16(Z80_PC(s_cpu)); o.b16(Z80_SP(s_cpu)); o.b16(Z80_IX(s_cpu)); o.b16(Z80_IY(s_cpu));
+    o.b16(Z80_MEMPTR(s_cpu));
+    o.b16(s_cpu.af.uint16_value); o.b16(s_cpu.af_.uint16_value);
+    o.b16(s_cpu.bc.uint16_value); o.b16(s_cpu.bc_.uint16_value);
+    o.b16(s_cpu.de.uint16_value); o.b16(s_cpu.de_.uint16_value);
+    o.b16(s_cpu.hl.uint16_value); o.b16(s_cpu.hl_.uint16_value);
+    o.b16(Z80_XY(s_cpu));
+    o.b8(s_cpu.r); o.b8(s_cpu.i); o.b8(s_cpu.r7); o.b8(s_cpu.im); o.b8(s_cpu.request);
+    o.b8(s_cpu.resume); o.b8(s_cpu.iff1); o.b8(s_cpu.iff2); o.b8(s_cpu.q);
+    o.b8(s_cpu.int_line); o.b8(s_cpu.halt_line);
+    o.b32(s_cpu.data.uint32_value);
+    // Host interface
+    o.b8(reg_command); o.b8(reg_data_zx); o.b8(reg_data_gs); o.b8(reg_status); o.b8(reg_page);
+    for (int i = 0; i < 8; i++) o.b8(reg_vol[i]);
+    for (int i = 0; i < 8; i++) o.b8(reg_ch[i]);
+    o.b8((uint8_t)((s_card_reply_bit ? 1 : 0) | (s_host_d7_off ? 2 : 0) | (s_int_pending ? 4 : 0) |
+                   (s_gs_booted ? 8 : 0) | (s_gs_main_loop ? 16 : 0) | (s_ngs_boot_hold ? 32 : 0)));
+    o.b32(s_int_timer_ts);
+    // NeoGS
+    if (s_ngs) {
+        o.b8(s_ngs_cfg0); o.b8(s_ngs_mpag); o.b8(s_ngs_pg2_b0); o.b8(s_ngs_mpagex);
+        o.b8(s_ngs_intena); o.b8(s_ngs_intreq); o.b8(s_ngs_tim_frq); o.b8(s_ngs_sctrl);
+        o.b8(s_ngs_led);
+        for (int i = 0; i < 4; i++) o.b8(s_ngs_win[i]);
+        o.b8(s_ngs_dma_mod); o.b8(s_ngs_dma_cst); o.b32(s_ngs_dma_pos); o.b8(s_ngs_dma_pre);
+        o.b32(s_ngs_int_cnt);
+        o.b8((uint8_t)((s_ngs_nmi_pending ? 1 : 0) | (s_ngs_grst_pending ? 2 : 0) | (s_grst_by_guest ? 4 : 0)));
+        for (int i = 0; i < 16; i++) o.b16(s_mp3_reg[i]);
+        o.b8(s_mp3_sci[0]); o.b8(s_mp3_sci[1]); o.b8((uint8_t)s_mp3_sci_idx);
+        o.b32(s_mp3_md_bytes);
+    }
+    w.begin("PSGS");
+    w.raw(fx, o.n);
+    snapPutFifo(w, s_host_fifo, GS_HOST_FIFO_MASK, s_host_fifo_r, s_host_fifo_w);
+    snapPutFifo(w, s_cmd_fifo,  GS_CMD_FIFO_MASK,  s_cmd_fifo_r,  s_cmd_fifo_w);
+    snapPutFifo(w, s_g2h_buf,   GS_G2H_MASK,       s_g2h_r,       s_g2h_w);
+    w.end();
+
+    // RAM, 16 KB at a time. SPI PSRAM is read twice through a small bounce (once
+    // for the uniform test, once to write), so no 16 KB buffer is needed.
+    const uint32_t total = gs_snap_ram_total();
+    for (uint32_t off = 0; off < total && w.ok; off += GS_SNAP_CHUNK) {
+        const uint8_t* p = gs_snap_ptr(off);
+        uint8_t b[512];
+        uint8_t v;
+        bool uniform = true;
+        if (p) {
+            v = p[0];
+            for (uint32_t k = 1; k < GS_SNAP_CHUNK && uniform; k++) uniform = p[k] == v;
+        } else {
+            psram_read_range(s_gs_ram_base + off, b, 1);
+            v = b[0];
+            for (uint32_t k = 0; k < GS_SNAP_CHUNK && uniform; k += sizeof(b)) {
+                psram_read_range(s_gs_ram_base + off + k, b, sizeof(b));
+                for (uint32_t j = 0; j < sizeof(b); j++) if (b[j] != v) { uniform = false; break; }
+            }
+        }
+        if (uniform) { w.begin("PSGF"); w.u32(off); w.u8(v); w.end(); continue; }
+        w.begin("PSGP"); w.u32(off);
+        if (p) w.raw(p, GS_SNAP_CHUNK);
+        else for (uint32_t k = 0; k < GS_SNAP_CHUNK && w.ok; k += sizeof(b)) {
+            psram_read_range(s_gs_ram_base + off + k, b, sizeof(b));
+            w.raw(b, sizeof(b));
+        }
+        w.end();
+    }
+    s_pump_last_us = 0;   // do not catch up the time the save took
+    gs_end_reset();
+    return w.ok;
+}
+
+void GS::snapLoadBegin() {
+    if (!enabled) return;
+    s_snap_ok = false;
+    gs_begin_reset();
+    gs_reset_state();
+}
+
+static bool snapGetFifo(Pss::R& r, uint32_t& left, volatile uint8_t* buf, uint32_t mask,
+                        volatile uint32_t& rp, volatile uint32_t& wp) {
+    if (left < 2) return false;
+    const uint32_t n = r.u16(); left -= 2;
+    if (n > mask + 1 || n > left) return false;
+    r.raw((void*)buf, n);
+    left -= n;
+    rp = 0; wp = n;
+    return true;
+}
+
+void GS::snapLoadState(Pss::R& r, uint32_t size) {
+    if (!enabled || size < GS_SNAP_FIXED) return;
+    uint8_t fx[GS_SNAP_FIXED + GS_SNAP_NGS];
+    const uint32_t fixed = GS_SNAP_FIXED + (s_ngs ? GS_SNAP_NGS : 0);
+    const uint32_t take = size < fixed ? size : fixed;
+    r.raw(fx, take);
+    SnapBuf in(fx, take);
+    if (in.g8() < 1) return;
+    const uint8_t mode = in.g8();
+    s_snap_size = in.g32();
+    // A card of another kind, or more RAM than this one has: the state does not
+    // fit, the card is reset at the end instead (owner's rule 4).
+    if (mode != (s_ngs ? 2 : 1) || s_snap_size > gs_snap_ram_total() ||
+        (s_snap_size & (GS_SNAP_CHUNK - 1)) || take < fixed) {
+        Debug::log("[PSS] GS: %s card, %u KB in the file vs %s %u KB here - resetting the card",
+                   mode == 2 ? "NeoGS" : "GS", (unsigned)(s_snap_size >> 10),
+                   s_ngs ? "NeoGS" : "GS", (unsigned)(gs_snap_ram_total() >> 10));
+        return;
+    }
+    Z80_PC(s_cpu) = in.g16(); Z80_SP(s_cpu) = in.g16(); Z80_IX(s_cpu) = in.g16(); Z80_IY(s_cpu) = in.g16();
+    Z80_MEMPTR(s_cpu) = in.g16();
+    s_cpu.af.uint16_value = in.g16(); s_cpu.af_.uint16_value = in.g16();
+    s_cpu.bc.uint16_value = in.g16(); s_cpu.bc_.uint16_value = in.g16();
+    s_cpu.de.uint16_value = in.g16(); s_cpu.de_.uint16_value = in.g16();
+    s_cpu.hl.uint16_value = in.g16(); s_cpu.hl_.uint16_value = in.g16();
+    Z80_XY(s_cpu) = in.g16();
+    s_cpu.r = in.g8(); s_cpu.i = in.g8(); s_cpu.r7 = in.g8(); s_cpu.im = in.g8(); s_cpu.request = in.g8();
+    s_cpu.resume = in.g8(); s_cpu.iff1 = in.g8(); s_cpu.iff2 = in.g8(); s_cpu.q = in.g8();
+    s_cpu.int_line = in.g8(); s_cpu.halt_line = in.g8();
+    s_cpu.data.uint32_value = in.g32();
+    reg_command = in.g8(); reg_data_zx = in.g8(); reg_data_gs = in.g8(); reg_status = in.g8(); reg_page = in.g8();
+    for (int i = 0; i < 8; i++) reg_vol[i] = in.g8();
+    for (int i = 0; i < 8; i++) reg_ch[i] = in.g8();
+    const uint8_t fl = in.g8();
+    s_card_reply_bit = (fl & 1) ? 1 : 0;
+    s_host_d7_off    = (fl & 2) ? 1 : 0;
+    s_int_pending    = (fl & 4) != 0;
+    s_gs_booted      = (fl & 8) != 0;
+    s_gs_main_loop   = (fl & 16) != 0;
+    s_ngs_boot_hold  = (fl & 32) != 0;
+    s_int_timer_ts = in.g32();
+    if (s_ngs) {
+        s_ngs_cfg0 = in.g8(); s_ngs_mpag = in.g8(); s_ngs_pg2_b0 = in.g8(); s_ngs_mpagex = in.g8();
+        s_ngs_intena = in.g8(); s_ngs_intreq = in.g8(); s_ngs_tim_frq = in.g8() & 7; s_ngs_sctrl = in.g8();
+        s_ngs_led = in.g8();
+        for (int i = 0; i < 4; i++) s_ngs_win[i] = in.g8();
+        s_ngs_dma_mod = in.g8(); s_ngs_dma_cst = in.g8(); s_ngs_dma_pos = in.g32(); s_ngs_dma_pre = in.g8();
+        s_ngs_int_cnt = in.g32();
+        const uint8_t nf = in.g8();
+        s_ngs_nmi_pending  = (nf & 1) != 0;
+        s_ngs_grst_pending = (nf & 2) != 0;
+        s_grst_by_guest    = (nf & 4) != 0;
+        for (int i = 0; i < 16; i++) s_mp3_reg[i] = in.g16();
+        s_mp3_sci[0] = in.g8(); s_mp3_sci[1] = in.g8(); s_mp3_sci_idx = in.g8();
+        s_mp3_md_bytes = in.g32();
+    }
+    uint32_t left = size - fixed;
+    if (!snapGetFifo(r, left, s_host_fifo, GS_HOST_FIFO_MASK, s_host_fifo_r, s_host_fifo_w) ||
+        !snapGetFifo(r, left, s_cmd_fifo,  GS_CMD_FIFO_MASK,  s_cmd_fifo_r,  s_cmd_fifo_w)  ||
+        !snapGetFifo(r, left, s_g2h_buf,   GS_G2H_MASK,       s_g2h_r,       s_g2h_w)) return;
+    s_h2c_tag = s_g2h_w; s_g2h_dead = 0;
+    s_snap_ok = r.ok && in.n == fixed;
+}
+
+void GS::snapLoadPage(Pss::R& r, const char id[4], uint32_t size) {
+    if (!enabled || !s_snap_ok) return;
+    const bool fill = Pss::idIs(id, "PSGF");
+    if (fill ? size < 5 : size != 4 + GS_SNAP_CHUNK) return;
+    const uint32_t off = r.u32();
+    if (off >= s_snap_size || (off & (GS_SNAP_CHUNK - 1))) return;
+    uint8_t* p = gs_snap_ptr(off);
+    if (fill) {
+        const uint8_t v = r.u8();
+        if (p) memset(p, v, GS_SNAP_CHUNK);
+        else {
+            uint8_t b[256];
+            memset(b, v, sizeof(b));
+            for (uint32_t k = 0; k < GS_SNAP_CHUNK; k += sizeof(b))
+                psram_write_range(s_gs_ram_base + off + k, b, sizeof(b));
+        }
+    } else if (p) {
+        r.raw(p, GS_SNAP_CHUNK);
+    } else {
+        uint8_t b[512];
+        for (uint32_t k = 0; k < GS_SNAP_CHUNK && r.ok; k += sizeof(b)) {
+            r.raw(b, sizeof(b));
+            psram_write_range(s_gs_ram_base + off + k, b, sizeof(b));
+        }
+    }
+}
+
+void GS::snapLoadEnd() {
+    if (!enabled) return;
+    if (s_snap_ok) {
+        // Everything the registers imply.
+        if (s_ngs) {
+            static const uint16_t div_tab[8] = {1, 2, 4, 8, 16, 64, 256, 1024};
+            s_ngs_int_div = div_tab[s_ngs_tim_frq];
+            s_dac_mask = (s_ngs_cfg0 & 0x04) ? 7 : 3;
+            ngs_apply_clock();
+            ngs_rebuild_map();
+            ngs_zxdma_gate();
+            NgsSd::reset();
+            NgsMp3::reset();
+        } else {
+            setClock();
+        }
+        s_pump_last_us = 0;
+        s_host_last_us = time_us_32();   // not "unobserved" the moment it resumes
+        gs_end_reset();
+        Debug::log("[PSS] GS: card state restored (%u KB)", (unsigned)(s_snap_size >> 10));
+        return;
+    }
+    gs_end_reset();
+    // No usable state: the card starts over, like after a .sna.
+    if (s_ngs) ngsReset(); else reset();
+}

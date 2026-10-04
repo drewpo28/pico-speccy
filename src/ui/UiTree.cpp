@@ -607,7 +607,8 @@ static const Option* mach_scorpOpts(uint8_t& cnt) {
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, NM_MACH(A_SCORP, R_SCORP_GMX), TXT_ROM_SCORP_GMX_S };
         opts[n++] = { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S };
-        opts[n++] = { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S };
+        if (FlashRoms::romsUsable())   // ProfROM is in the tradeable flash overlay too
+            opts[n++] = { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S };
     }
     cnt = n;
     return opts;
@@ -1351,7 +1352,8 @@ static const Option* pref_scorpOpts(uint8_t& cnt) {
         opts[n++] = { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      };
         opts[n++] = { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   };
         opts[n++] = { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S };
-        opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
+        if (FlashRoms::romsUsable())
+            opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, 4, TXT_ROM_SCORP_GMX_S };
         opts[n++] = { TXT_ROM_LAST,       5, nullptr };

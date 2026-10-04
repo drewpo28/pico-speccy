@@ -354,8 +354,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_SCORP && isScorpGmxRomset(newRomSet)) {
             newRomSet = R_SCORP;
-        } else if (newArch == A_SCORP && isScorpEvoRomset(newRomSet)) {
-            newRomSet = R_SCORP_PROF;   // same machine, the ProfROM in plain flash
+        } else if (newArch == A_SCORP && (isScorpEvoRomset(newRomSet) || newRomSet == R_SCORP_PROF)) {
+            newRomSet = R_SCORP_1024;   // the same board on its stock ROM
         }
     }
     // ATM-Turbo: its ROM pages are flattened into butter PSRAM (Atm::bindRoms) — a
@@ -716,11 +716,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             Debug::log("[FlashRoms] GMX unavailable (overlay traded) - Yellow");
             romSet = R_SCORP;
         }
-        // ScorpEvo's ROM lives in the tradeable .psramroms (FlashRoms.h).
-        if (isScorpEvoRomset(romSet) && !FlashRoms::romsUsable()) {
-            OSD::bootNotice("ScorpEvo ROM traded for the GM.DLS bank - using ProfROM");
-            Debug::log("[FlashRoms] ScorpEvo unavailable (overlay traded) - ZS-1024 + ProfROM");
-            romSet = R_SCORP_PROF;
+        // ScorpEvo's and ProfROM's images live in the tradeable .psramroms
+        // (FlashRoms.h; ProfROM since 2026-10-04, to give the firmware flash back).
+        if ((isScorpEvoRomset(romSet) || romSet == R_SCORP_PROF) && !FlashRoms::romsUsable()) {
+            OSD::bootNotice("ProfROM traded for the GM.DLS bank - using ZS-1024");
+            Debug::log("[FlashRoms] ProfROM/ScorpEvo unavailable (overlay traded) - ZS-1024");
+            romSet = R_SCORP_1024;
         }
         romSetScorp = romSet;
         if (romSet == R_SCORP_PROF || isScorpEvoRomset(romSet)) {
@@ -2123,6 +2124,7 @@ static const char* const kSnapRebootKeys[] = {
     "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
     "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
     "dckcart", "alfcart", "alfCartBanks", "MEM_PG_CNT", "tsconf_vdac2",
+    "gs_enabled", "gs_ram_size", "gs_clock", "ngs_clock",
 };
 // The BOARD the snapshot was saved on — overclock, video output, audio output,
 // PSRAM. Not the guest machine, but the user may want it to travel with the
@@ -2160,6 +2162,8 @@ const char* Config::snapKeyLabel(const std::string& key) {
         { "alfCartBanks", "ALF cartridge" },{ "audio_driver", "Audio output" },
         { "MEM_PG_CNT", "Murmuzavr RAM" },  { "tsconf_vdac2", "VDAC2 (FT812)" },
         { "tsconf_clk_cap", "TS-Conf clock cap" },
+        { "gs_enabled", "General Sound" },   { "gs_ram_size", "GS RAM" },
+        { "gs_clock", "GS clock" },         { "ngs_clock", "NeoGS clock" },
         { "cpu_mhz", "CPU clock" },         { "vreq_voltage", "Core voltage" },
         { "max_flash_freq", "Flash clock" },{ "max_psram_freq", "PSRAM clock" },
         { "max_tft_freq", "TFT clock" },    { "video_driver", "Video output" },

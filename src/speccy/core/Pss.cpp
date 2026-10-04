@@ -29,6 +29,7 @@
 #include "speccy/machines/Profi/Profi.h"
 #include "speccy/machines/Atm.h"
 #include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/devices/gs/GS.h"
 #include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Timex.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
@@ -277,6 +278,8 @@ bool save(const string& path, const string& name) {
             w.end();
         }
     }
+
+    if (GS::enabled && w.ok) GS::snapSave(w);   // freezes the card on core1 while it writes
 
     if (w.ok) w.ok = (f_sync(f) == FR_OK);
     fclose2(f);
@@ -544,6 +547,7 @@ bool load(const string& path) {
 
     // Pass 2: the state, small blocks kept until every page is in.
     f_lseek(f, 8);
+    GS::snapLoadBegin();   // the card stays frozen until snapLoadEnd
     bool haveZ80 = false, havePT = false, haveScld = false, havePltt = false, haveCovx = false;
     uint8_t z[37] = {};
     uint8_t pt[24] = {}; uint32_t ptSize = 0;
@@ -594,6 +598,8 @@ bool load(const string& path) {
         else if (idIs(id, "PSTS") && sz >= 1)  { tsSize = sz < sizeof(tsr) ? sz : sizeof(tsr); r.raw(tsr, tsSize); }
         else if (idIs(id, "PSTC") && sz == sizeof(TsConf::cram) && Z80Ops::isTsconf)  r.raw(TsConf::cram, sz);
         else if (idIs(id, "PSTF") && sz == sizeof(TsConf::sfile) && Z80Ops::isTsconf) r.raw(TsConf::sfile, sz);
+        else if (idIs(id, "PSGS"))             GS::snapLoadState(r, sz);
+        else if (idIs(id, "PSGP") || idIs(id, "PSGF")) GS::snapLoadPage(r, id, sz);
         else if (idIs(id, "PSEF") && sz == 2048 && Atm::evo && EvoBase::font) r.raw(EvoBase::font, 2048);
         else if (idIs(id, "DMMC") && sz >= 6) { dmmcPaged = (r.u32() & 2) != 0; dmmcCtl = r.u8(); haveDmmc = true; }
         else if (idIs(id, "DMRP") && sz == 3 + 8192) {
@@ -619,6 +625,7 @@ bool load(const string& path) {
         if (f_lseek(f, at + sz) != FR_OK) r.ok = false;
     }
     fclose2(f);
+    GS::snapLoadEnd();
     if (!haveZ80 || !havePT || ptSize < 16 || (!fileSparse && loadedPages != np)) {
         loadFail("PSS: damaged file (missing state)");
         return false;

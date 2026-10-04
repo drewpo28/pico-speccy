@@ -238,7 +238,7 @@ row (save to a slot first, then convert it). Two entries, one code path:
 3. Scorpion family (256/1024/GMX/ProfROM/KAY), Profi (`PSPR`), ATM (`PSAT`),
    Murmuzavr (`PSRP`), `DOCK`, DivMMC.
 4. TS-Conf (`PSTS`).
-5. GS: classic (`GS`/`GSRP`/`PSGX`), NeoGS (`PSNG`/`PSNP`).
+5. GS / NeoGS (`PSGS` + `PSGP`/`PSGF` — our blocks, see "Phase 5 as built").
 6. `JOY ` against the real profile store once it exists (phase 1 already writes the
    block from today's keys and keeps them out of the `CFG ` apply).
 7. Optional: tape position, WD1793 / uPD765 registers; `.szx` IMPORT (zlib pages via miniz).
@@ -480,3 +480,51 @@ row (save to a slot first, then convert it). Two entries, one code path:
   a DMA-heavy scene, at 14 MHz and with the Alt+F2 override; Wild Commander with a VDOS
   mount; load from another machine (the machine switch reboots into the 4 MB strip and
   resumes through `ram=`).
+
+## Phase 5: General Sound / NeoGS (2026-10-04; hw 2026-10-04, owner: "работают", not itemised)
+
+- **Not the SZX GS layout** (planned above): its page mapping was never checked against a
+  Spectaculator file and NeoGS has no SZX model anyway, so both cards use our blocks and the
+  `.szx` export keeps leaving GS out.
+- `PSGS` = `GS::snapSave`: ver, mode (1 GS / 2 NeoGS), card RAM size; the GS-Z80 (all
+  pairs, XY, MEMPTR, R/I/R7/IM, request/resume, IFF1/2, Q, INT/HALT lines, `data`); the host
+  interface (command/data/status latches, page, 8 volumes + 8 DAC latches, reply bit, host
+  D7 mask, INT pending + timer phase, boot flags incl. the NeoGS boot hold); NeoGS registers
+  (GSCFG0, MPAG/MPAGEX, PG2 latch, INTENA/INTREQ, TIM_FRQ, SCTRL, LED, WIN0-3, DMA module /
+  CST / address / prefetch, INT divider phase, pending NMI / C_GRST) and the decoder's SCI
+  registers; then the unread bytes of the three host FIFOs (host->card, command, card->host).
+  The fixed part is built in a stack buffer and written in one call — a W::u8 per field
+  inlined an f_write each and cost ~9 KB of flash.
+- Card RAM in card-physical numbering, 16 KB chunks: `PSGP` {off u32, 16 KB} or `PSGF`
+  {off u32, byte} for a uniform chunk. Classic: s_gs_ram offsets (on SPI PSRAM the work RAM
+  buffer stands in for 0x8000, everything else through `psram_read_range`); NeoGS: the
+  64 KB low part, then s_gs_ram. The card's RAM is not cleared at boot, so an untouched
+  NeoGS 4 MB may write whatever the PSRAM held.
+- The card is frozen under the run lock (`gs_begin_reset`) for the whole save and load —
+  core1 never runs on half a state. Load: `snapLoadBegin` (lock + the reset body, now
+  `gs_reset_state`, shared with `GS::reset`), PSGS / pages per block, `snapLoadEnd`
+  (INT divider, DAC mask, clock, memory map, ZX-DMA gate, SD + MP3 decoder reset, unlock).
+  A card of another kind, or one smaller than the file's, is reset instead (owner's rule
+  4); so is a card the file has no state for.
+- `gs_enabled`, `gs_ram_size`, `gs_clock`, `ngs_clock` are class-2 keys (asked + reboot).
+- **Not saved**: the MP3 stream inside the decoder, NgsSd's SPI state machine (a snapshot
+  taken in the middle of a card SD read resumes with the card SD reset), the output rings.
+- **Flash**: HEAD was 1.5 KB below the GM.DLS hard floor. Owner's call: the Scorpion ProfROM
+  image (`scorpion_prof_rom.c`, ~230 KB) moved into `.psramroms` beside GMX / TS-BIOS / ATM /
+  ScorpEvo. On a board that traded that overlay for a big GM.DLS bank, ProfROM and ScorpEvo
+  fall back to the stock ZS-1024 (requestMachine, resolveConstraints, the Scorpion and
+  preferred-ROM radios). Headroom now ~212 KB.
+- **Hw check owed**: classic GS mid-module (a MOD player), NeoGS in NPL (MOD and MP3),
+  ZP4, TheLink; load into a machine with GS off / classic vs NeoGS / smaller NeoGS RAM (card
+  reset, rest loads); a save while a player uploads (FIFO bytes); ProfROM still in the
+  Scorpion menu and booting.
+
+## To do: snapshot info on F1 in the F5 browser (owner, 2026-10-04)
+
+F1 on a `.pss` in the F5 browser shows what the snapshot holds: its name, the machine and
+romset, the settings it was saved with (the ones that differ from the current ones
+marked), mounted media, GS/NeoGS card, joystick profile, page count / file size.
+
+The same for `.szx` (owner, 2026-10-04): the machine (`ZXSTHEADER` chMachineId + flags),
+creator (`CRTR`), the blocks present (AY, Beta 128, DivMMC/DivIDE, ULA+, Covox, GS, ...),
+RAM page count, compressed or not, file size.
