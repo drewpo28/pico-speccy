@@ -51,6 +51,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "Config.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "ESPectrum.h"
+#include "LastRun.h"
 #include "fs/FileUtils.h"
 #include "drivers/usbhost/UsbMsc.h"
 #include "drivers/sdcard/sdcard.h"
@@ -754,6 +755,7 @@ void ESPectrum::powerOnRamFill(int arch, int romset) {
 }
 
 void ESPectrum::setup() {
+  LastRun::mute(true);   // remounts of remembered media are not "started"; unmuted below
   //=======================================================================================
   // INIT FILESYSTEM
   //=======================================================================================
@@ -1515,6 +1517,7 @@ void ESPectrum::setup() {
     ESPectrum::reset(0);
   }
 
+  LastRun::mute(false);  // a resumed snapshot names itself
   // Load snapshot if present in Config::
   Debug::log("setup: ram_file='%s'", Config::ram_file.c_str());
   Debug::log2SD("setup: ram_file='%s'", Config::ram_file.c_str());
@@ -1534,7 +1537,9 @@ void ESPectrum::setup() {
 
   // Re-mount the tape remembered from a previous session (NVS) so it is present
   // at cold boot, the same way disk mounts are restored by loadDiskMounts above.
+  LastRun::mute(true);
   Tape::LoadRemembered();
+  LastRun::mute(false);
 
   // From here on a stick turning up is a hotplug, not the state we booted in.
   // The anchor has to be HERE and not in FileUtils::initFileSystem(): with a
@@ -2022,7 +2027,9 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   // Re-mount the remembered tape (reset() wiped it above) so a tape survives an
   // F11 reset like a mounted disk does. No-op if no tape is remembered.
+  LastRun::mute(true);   // re-mounting is not starting it
   Tape::LoadRemembered();
+  LastRun::mute(false);
 }
 
 //=======================================================================================

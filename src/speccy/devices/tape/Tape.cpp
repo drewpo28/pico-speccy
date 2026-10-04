@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "app/LastRun.h"
 #include <stdio.h>
 #include <vector>
 #include <string>
@@ -544,6 +545,7 @@ void Tape::LoadTape(const string& mFile_) {
                (int)Tape::tapeNumBlocks, Tape::tapeFileName.c_str(), (int)playFallback);
 #endif
     if (playFallback) Tape::Play();
+    LastRun::note(Tape::tapeFileName);   // quick-slot name suggestion
 #if TIMEX_PORT_TRACE
     if (Config::isTc2068())
         Debug::log("[TMXLD] LoadTape exit: pc=%04X hsr=%02X dec=%02X ex=%d mmu=%u "

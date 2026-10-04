@@ -1,5 +1,6 @@
 // pico-speccy — ALF TV Game ports. See Alf.h. FLASH-resident on purpose.
 #include "Alf.h"
+#include "app/LastRun.h"
 
 #include "app/Config.h"
 #include "app/Debug.h"
@@ -111,6 +112,7 @@ bool Alf::Cart::mount(const std::string& p) {
     g_path = p;
     residentBank(0);   // prefault the catalog / front-end bank
     Debug::log("Alf::Cart: mounted %s (%d banks)", p.c_str(), g_banks);
+    LastRun::note(p);
     return true;
 }
 

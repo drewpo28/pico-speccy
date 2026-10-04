@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "app/LastRun.h"
 #include "Snapshot.h"
 #include "app/hardconfig.h"
 #include "fs/FileUtils.h"
@@ -117,6 +118,14 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
         if (!res) s_load_reported = true;
     }
     if (!nested) g_snapshot_loading_path.clear();
+    // Quick-slot name suggestion: a .pss names itself; a quick slot's own file
+    // (persistN.*) is not a name at all.
+    if (res && !nested && filename.compare(0, sizeof(DISK_PSNA_DIR) - 1, DISK_PSNA_DIR) != 0)
+        LastRun::note(filename);
+    if (res && !nested && FileUtils::hasPSSextension(filename)) {
+        string n;
+        if (Pss::readName(filename, n)) LastRun::name(n);
+    }
     if (res && OSDprev) {
         VIDEO::OSD = OSDprev;
         VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;

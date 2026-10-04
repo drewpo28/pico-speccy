@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "app/LastRun.h"
 #include <string>
 #include <algorithm>
 #include <sys/stat.h>
@@ -799,6 +800,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
             }
         }
         string tmpp = string("/tmp/_run") + ext;
+        LastRun::alias(tmpp, fs->downloadBasename(nm));   // quick-slot name: the remote file
         rfd_release_tmp(tmpp);   // free the fixed /tmp target if a prior launch still holds it
         bool got = fs->get(nm, tmpp, rfd_progress);
         OSD::progressDialog("", "", 0, 2);

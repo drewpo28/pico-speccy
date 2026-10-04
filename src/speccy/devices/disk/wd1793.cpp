@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include <stdlib.h>
 #include <stdio.h>
 #include "wd1793.h"
+#include "app/LastRun.h"
 #include "app/Debug.h"
 #include "app/Config.h"
 #include "speccy/z80/CPU.h"
@@ -2705,6 +2706,7 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
     printf("Disk %d inserted! Disktype: %d\n",UnitNum, (int) diskType);
 
     wd->disk[UnitNum]->fname = Filename;
+    LastRun::note(Filename);   // the quick-slot name suggestion (muted for boot remounts)
 
     return true;
 

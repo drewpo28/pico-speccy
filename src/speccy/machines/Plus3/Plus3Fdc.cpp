@@ -1,6 +1,7 @@
 // Plus3Fdc — FatFs, the Buffer pool and the clock, wired to Upd765/DskImage.
 
 #include "Plus3Fdc.h"
+#include "app/LastRun.h"
 #include <new>
 
 #include <string.h>
@@ -298,6 +299,7 @@ bool mount(uint8_t unit, const std::string& path) {
                (char)('A' + unit), path.c_str(), s.img.extended ? "extended" : "standard",
                (unsigned)s.img.cyls, (unsigned)s.img.sides, s.img.sides == 1 ? "" : "s",
                s.img.wrprot ? ", write protected" : "");
+    LastRun::note(path);
     return true;
 }
 

@@ -1,3 +1,4 @@
+#include "app/LastRun.h"
 #include "pico.h"
 
 
@@ -341,6 +342,7 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     releaseTempOwners(finalPath.c_str());
     f_unlink(finalPath.c_str());
     f_rename(TEMP_FILE, finalPath.c_str());
+    LastRun::alias(finalPath, e.name);   // the quick-slot name: the entry, not the temp file
     return finalPath;
 }
 

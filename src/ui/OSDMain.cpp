@@ -1810,7 +1810,11 @@ static void f_gets(char* b, size_t sz, FIL& f);
 
 // Get the base name (no extension) of the currently loaded tape or disk
 string getDefaultSnapshotName() {
-    // Try tape first
+    // The last thing the user STARTED (src/app/LastRun.h) — a snapshot, tape, disk,
+    // cartridge or HDD image, whichever came last. The inserted-media fallback below
+    // only answers when nothing was started this session.
+    if (!LastRun::get().empty()) return LastRun::get();
+    // Then the tape
     if (Tape::tapeFileName != "none" && !Tape::tapeFileName.empty()) {
         string name = Tape::tapeFileName;
         // Strip directory

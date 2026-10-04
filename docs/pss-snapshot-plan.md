@@ -548,3 +548,25 @@ ask about ("Differs from now:" + the menu's names), or "Settings: same as now".
 `.szx`: `viewSZX` (FileInfo.cpp) — format version, machine (chMachineId + the
 alternate-timings flag), creator (CRTR), PC / SP, RAM page count and whether compressed,
 and the peripheral blocks present by name (unknown ids shown raw), wrapped to the page.
+
+## Quick-slot name suggestion: the last thing STARTED (owner, 2026-10-04; hw 2026-10-04, owner: "работает", not itemised)
+
+The suggestion used to be fixed-order: the inserted tape, else the disk in A:. A tape left
+in the drive named every later snapshot. Now `src/app/LastRun.{h,cpp}` keeps the name of
+the last thing the user started, and `getDefaultSnapshotName()` (OSDMain.cpp) asks it
+first, the old tape/disk order only when nothing was started this session. The slot's own
+name still wins when the slot has one.
+
+- Recorded at: `LoadSnapshot` success (a `.pss` names itself with its NAME block; quick-slot
+  files under `DISK_PSNA_DIR` and the nested RZX snapshot are skipped), the end of
+  `Tape::LoadTape`, `rvmWD1793InsertDisk` (Beta and MB-02), `Plus3Fdc::mount`,
+  `DiskSlots::slotMount` for esxDOS / IDE images, `Alf::Cart::mount`, `Timex::mountDck`.
+- Launch helpers' temp files (`/tmp/...`, `.zip_extract.*`, `_run.*`, `_play.*`, `_rzx.*`)
+  name nothing by themselves: `ZipExtract::extract` registers the zip entry and the web
+  launcher the remote file name through `LastRun::alias()`, and the next temp path takes it.
+- Muted (a nesting counter) for the boot-time remounts of remembered media (setup until the
+  `ram=` resume) and for the tape re-mount inside `ESPectrum::reset()` (F11 is not a start).
+- Cost: +64 B static RAM (two strings + the counter), flash code only.
+- **Hw check owed**: tape inserted, then a TRD launched from F5 -> the disk's name; a zip
+  and a Web-catalog launch -> the inner / remote name; a `.pss` slot load then F4 -> the
+  slot's name; F11 with a remembered tape does not change the suggestion.
