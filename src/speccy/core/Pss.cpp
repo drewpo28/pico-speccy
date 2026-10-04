@@ -18,6 +18,7 @@
 #include "app/TryAlloc.h"
 #include "fs/FileUtils.h"
 #include "ui/OSDMain.h"
+#include "ui/UiModel.h"   // machineMenuNameFor (describe)
 #include "speccy/z80/z80.h"
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
@@ -349,6 +350,144 @@ bool readMachine(const string& path, ArchIdx& arch, RomsetIdx& romset) {
     arch   = cfgValue(lines, "arch", sa)   ? archCanon(archFromStr(sa, A_NONE)) : A_NONE;
     romset = cfgValue(lines, "romSet", sr) ? romsetFromStr(sr, R_NONE)          : R_NONE;
     return arch != A_NONE;
+}
+
+// F1 in the file browser: what the snapshot holds, as text lines for the info
+// page (FileInfo::viewInfo). Nothing is applied; the file is read once.
+bool describe(const string& path, string& info, int& lines) {
+    FIL* f; uint8_t hdr[8];
+    if (!openPss(path, f, hdr)) return false;
+    R r(f);
+    char id[4]; uint32_t sz; FSIZE_t at;
+    string name, joyLine;
+    vector<string> cfg;
+    uint8_t z[37] = {}; bool haveZ = false;
+    uint32_t pages = 0, stored = 0, fills = 0;
+    uint8_t gsMode = 0; uint32_t gsSize = 0;
+    bool ay2 = false, ulap = false, covx = false, scld = false, dmmc = false, cache = false;
+    while (r.ok && r.next(id, sz, at)) {
+        if (idIs(id, "NAME") && sz == NAME_LEN) {
+            char nb[NAME_LEN]; r.raw(nb, NAME_LEN); nb[NAME_LEN - 1] = 0; name = nb;
+        }
+        else if (idIs(id, "CFG "))                readCfgLines(r, sz, cfg);
+        else if (idIs(id, "JOY ") && sz && sz < 256) {
+            char b[256]; r.raw(b, sz); joyLine.assign(b, sz);
+        }
+        else if (idIs(id, "Z80R") && sz >= 37)  { r.raw(z, 37); haveZ = true; }
+        else if (idIs(id, "PSPG") && sz >= 3)     pages = r.u16();
+        else if (idIs(id, "RAMP") || idIs(id, "PSRP")) stored++;
+        else if (idIs(id, "PSPF"))                fills++;
+        else if (idIs(id, "PSAY") && sz >= 4)   { uint8_t b[4]; r.raw(b, 4); ay2 = b[3] != 0; }
+        else if (idIs(id, "PLTT"))                ulap = true;
+        else if (idIs(id, "COVX"))                covx = true;
+        else if (idIs(id, "SCLD"))                scld = true;
+        else if (idIs(id, "DMMC"))                dmmc = true;
+        else if (idIs(id, "PSCH"))                cache = true;
+        else if (idIs(id, "PSGS") && sz >= 6)   { r.u8(); gsMode = r.u8(); gsSize = r.u32(); }
+        if (f_lseek(f, at + sz) != FR_OK) break;
+    }
+    fclose2(f);
+    if (!r.ok) return false;
+    {   // Murmuzavr means something only on a Pentagon (the load drops it elsewhere).
+        string a;
+        const ArchIdx ar = cfgValue(cfg, "arch", a) ? archCanon(archFromStr(a, A_NONE)) : A_NONE;
+        if (ar != A_PENT && ar != A_P512 && ar != A_P1024) {
+            vector<string> keep;
+            for (const string& l : cfg) if (l.compare(0, 11, "MEM_PG_CNT=") != 0) keep.push_back(l);
+            cfg.swap(keep);
+        }
+    }
+
+    auto add = [&](const string& l) { info += l; info += '\n'; lines++; };
+    const size_t nl = info.find('\n');
+    if (nl != string::npos) info.insert(nl, " PSS");
+
+    if (!name.empty()) add("Name: " + name);
+    string sa, sr;
+    const ArchIdx   arch   = cfgValue(cfg, "arch", sa)   ? archCanon(archFromStr(sa, A_NONE)) : A_NONE;
+    const RomsetIdx romset = cfgValue(cfg, "romSet", sr) ? romsetFromStr(sr, R_NONE)          : R_NONE;
+    const char *fam = nullptr, *rom = nullptr;
+    if (arch != A_NONE && nm::machineMenuNameFor(arch, romset, fam, rom))
+        add(string("Machine: ") + fam + " (" + rom + ")");
+    else
+        add("Machine: " + sa + " " + sr);
+    if (!archSupported(arch)) add("  (not loadable on this firmware)");
+
+    if (haveZ) {
+        char b[48];
+        snprintf(b, sizeof(b), "PC:%04X SP:%04X IM:%d IFF:%d",
+                 z[22] | (z[23] << 8), z[20] | (z[21] << 8), z[28] & 3, z[26] ? 1 : 0);
+        add(b);
+    }
+    {
+        char b[48];
+        if (fills || stored != pages)
+            snprintf(b, sizeof(b), "RAM: %u pages (%u stored, %u uniform)",
+                     (unsigned)pages, (unsigned)stored, (unsigned)fills);
+        else
+            snprintf(b, sizeof(b), "RAM: %u pages", (unsigned)pages);
+        add(b);
+    }
+
+    string snd = "AY";
+    if (ay2)  snd += ", TurboSound";
+    if (covx) snd += ", Covox";
+    if (gsMode) {
+        char b[32];
+        snprintf(b, sizeof(b), ", %s %u%s", gsMode == 2 ? "NeoGS" : "GS",
+                 gsSize >= (1u << 20) ? (unsigned)(gsSize >> 20) : (unsigned)(gsSize >> 10),
+                 gsSize >= (1u << 20) ? "MB" : "K");
+        snd += b;
+    }
+    add("Sound: " + snd);
+    string ext;
+    if (ulap)  ext += "ULA+ ";
+    if (scld)  ext += "Timex ";
+    if (dmmc)  ext += "DivMMC ";
+    if (cache) ext += "Pentagon cache ";
+    if (!ext.empty()) { ext.pop_back(); add("Also: " + ext); }
+
+    if (!joyLine.empty()) {
+        while (!joyLine.empty() && (joyLine.back() == '\n' || joyLine.back() == '\r')) joyLine.pop_back();
+        JoyProf::Profile p;
+        if (JoyProf::parseLine(joyLine.data(), joyLine.size(), p)) {
+            const char* t = JoyProf::typeName(p.type);
+            const bool named = strcmp(p.name, "*") != 0;
+            add(string("Joystick: ") + (named ? p.name : "unsaved map") + " (" + (t ? t : "?") + ")");
+        }
+    }
+
+    // Mounted media, by file name.
+    static const struct { const char* key; const char* lbl; } kMedia[] = {
+        { "drive0.file", "A:" }, { "drive1.file", "B:" }, { "drive2.file", "C:" }, { "drive3.file", "D:" },
+        { "p3d0.file", "+3 A:" }, { "p3d1.file", "+3 B:" }, { "tape_file", "Tape:" },
+        { "ide_img0", "IDE 0:" }, { "ide_img1", "IDE 1:" }, { "esxdos_hdf", "esxDOS:" },
+        { "esxdos_hd1", "esxDOS 1:" }, { "dckcart", "DOCK:" }, { "alfcart", "ALF:" },
+    };
+    for (const auto& m : kMedia) {
+        string v;
+        if (!cfgValue(cfg, m.key, v) || v.empty() || v == "none") continue;
+        const size_t sl = v.find_last_of('/');
+        add(string(m.lbl) + " " + (sl == string::npos ? v : v.substr(sl + 1)));
+    }
+
+    // Settings a load would ask about.
+    vector<string> diff;
+    Config::snapDiffKeys(cfg, diff);
+    if (diff.empty()) add("Settings: same as now");
+    else {
+        add("Differs from now:");
+        vector<string> shown;
+        for (const string& k : diff) {
+            const string l = Config::snapKeyLabel(k);
+            bool dup = false;
+            for (const string& x : shown) dup |= x == l;
+            if (dup) continue;
+            shown.push_back(l);
+            add("  " + l);
+        }
+    }
+    return true;
 }
 
 bool setName(const string& path, const string& name) {

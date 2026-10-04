@@ -190,6 +190,12 @@ const char* murmuzavrTag();
 // False when the running (arch, romset) is in no table — then the caller falls
 // back to the arch spelling.
 bool machineMenuName(const char*& family, const char*& romShort);
+// The same for any (arch, romset) pair — the .pss info page names a saved machine.
+}   // namespace nm
+enum ArchIdx : uint8_t;     // ArchRom.h
+enum RomsetIdx : uint8_t;
+namespace nm {
+bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort);
 const Node* slotNodeFor(int iface);   // DiskIface -> its K_DYNAMIC slot level
 const Node* persistNodeFor();        // the fast-snapshot slot list (Snapshots > Quick slots)
 uint8_t     rootNodeCount();

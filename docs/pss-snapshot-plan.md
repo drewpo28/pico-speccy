@@ -242,7 +242,8 @@ row (save to a slot first, then convert it). Two entries, one code path:
 6. `JOY ` against the profile store: store wins, a missing named profile is offered for
    saving (see "Phase 6").
 7. Optional: tape position, WD1793 / uPD765 registers; `.szx` IMPORT (zlib pages via miniz).
-   FM chip state stays out of snapshots (existing policy).
+   FM chip state stays out of snapshots (existing policy). **Dropped (owner, 2026-10-04:
+   not worth it)** — the snapshot work ends with phase 6 + the F1 info.
 
 ## Test plan
 
@@ -533,12 +534,17 @@ row (save to a slot first, then convert it). Two entries, one code path:
 - **Hw check owed**: a snapshot whose profile was renamed or deleted in Joystick > Profile,
   and one copied from another card; all 16 slots used.
 
-## To do: snapshot info on F1 in the F5 browser (owner, 2026-10-04)
+## Snapshot info on F1 in the F5 browser (owner, 2026-10-04; hw 2026-10-04, owner: "работает")
 
-F1 on a `.pss` in the F5 browser shows what the snapshot holds: its name, the machine and
-romset, the settings it was saved with (the ones that differ from the current ones
-marked), mounted media, GS/NeoGS card, joystick profile, page count / file size.
+`FileInfo::viewInfo` -> `.pss`: `Pss::describe(path, info, lines)` (Pss.cpp, one read of
+the file, nothing applied). Lines: Name; Machine (the Machine menu's own family + romset
+names via `nm::machineMenuNameFor`, else the CFG spellings; "(not loadable on this
+firmware)" for an unsupported arch); PC / SP / IM / IFF; RAM pages (stored / uniform for a
+sparse file); Sound (AY, TurboSound, Covox, GS/NeoGS + RAM); Also (ULA+, Timex, DivMMC,
+Pentagon cache); Joystick (profile name or "unsaved map", type); mounted media by file
+name (A:-D:, +3 A:/B:, Tape, IDE 0/1, esxDOS, DOCK, ALF); then the settings a load would
+ask about ("Differs from now:" + the menu's names), or "Settings: same as now".
 
-The same for `.szx` (owner, 2026-10-04): the machine (`ZXSTHEADER` chMachineId + flags),
-creator (`CRTR`), the blocks present (AY, Beta 128, DivMMC/DivIDE, ULA+, Covox, GS, ...),
-RAM page count, compressed or not, file size.
+`.szx`: `viewSZX` (FileInfo.cpp) — format version, machine (chMachineId + the
+alternate-timings flag), creator (CRTR), PC / SP, RAM page count and whether compressed,
+and the peripheral blocks present by name (unknown ids shown raw), wrapped to the page.

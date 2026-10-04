@@ -33,6 +33,8 @@ bool readName(const std::string& path, std::string& name);   // false = not a .p
 bool setName(const std::string& path, const std::string& name);
 // The machine a .pss was taken on (its CFG). false = not a .pss, or damaged.
 bool readMachine(const std::string& path, ArchIdx& arch, RomsetIdx& romset);
+// F1 info page text: appends lines to `info` (its first line is the title).
+bool describe(const std::string& path, std::string& info, int& lines);
 
 // ── conversion (PssExport.cpp) ─────────────────────────────────────────────────
 // .pss -> .sna / .z80 / .szx for the machines those formats can express. Works on

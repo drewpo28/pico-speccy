@@ -6,6 +6,7 @@
 using namespace std;
 
 #include "FileInfo.h"
+#include "speccy/core/Pss.h"
 
 
 #include "FileUtils.h"
@@ -623,6 +624,98 @@ static void viewZ80(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     info += line; info += "\n"; lines++;
 }
 
+// ---- SZX (Spectaculator ZX-State) ----
+// Machine, creator, CPU, RAM pages and the peripheral blocks present.
+static void viewSZX(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
+    if (fileSize < 8) return;
+    uint8_t hdr[8];
+    UINT br;
+    f_lseek(f, 0);
+    if (f_read(f, hdr, 8, &br) != FR_OK || br != 8 || memcmp(hdr, "ZXST", 4) != 0) return;
+    static const char* const kMach[] = {
+        "16K", "48K", "128K", "+2", "+2A", "+3", "+3e", "Pentagon 128", "TC2048", "TC2068",
+        "Scorpion ZS-256", "SE", "TS2068", "Pentagon 512", "Pentagon 1024", "48K NTSC", "128Ke",
+    };
+    char line[64];
+    snprintf(line, sizeof(line), " SZX %u.%u", hdr[4], hdr[5]);
+    info.insert(info.find('\n'), line);
+    snprintf(line, sizeof(line), "Machine: %s%s",
+             hdr[6] < sizeof(kMach) / sizeof(*kMach) ? kMach[hdr[6]] : "unknown",
+             (hdr[7] & 1) ? " (alternate timings)" : "");
+    info += line; info += "\n"; lines++;
+
+    static const struct { const char id[5]; const char* name; } kBlk[] = {
+        { "AY\0\0", "AY" }, { "B128", "Beta 128" }, { "DIDE", "DivIDE" }, { "DMMC", "DivMMC" },
+        { "PLTT", "ULA+" }, { "COVX", "Covox" }, { "GS\0\0", "General Sound" }, { "SCLD", "Timex SCLD" },
+        { "DOCK", "DOCK" }, { "IF1\0", "Interface 1" }, { "IF2R", "Interface 2 ROM" },
+        { "KEYB", "keyboard" }, { "JOY\0", "joystick" }, { "AMXM", "AMX mouse" },
+        { "MFCE", "Multiface" }, { "OPUS", "Opus" }, { "PLSD", "+D" }, { "SIDE", "Simple IDE" },
+        { "ZXPR", "ZX Printer" }, { "TAPE", "tape" }, { "ZXAT", "ZXATASP" }, { "ZXCF", "ZXCF" },
+        { "ZMMC", "ZXMMC" }, { "USPE", "Spectranet" }, { "SPCR", nullptr }, { "Z80R", nullptr },
+        { "RAMP", nullptr }, { "CRTR", nullptr }, { "ATRP", nullptr }, { "CFRP", nullptr },
+        { "DIRP", nullptr }, { "DMRP", nullptr }, { "GSRP", nullptr }, { "DPRP", nullptr },
+        { "SNET", "Spectranet" }, { "SNEF", nullptr }, { "SNER", nullptr },
+    };
+    string extras;
+    int ramp = 0; bool packed = false, haveZ = false;
+    uint8_t z[24];
+    FSIZE_t pos = 8;
+    while (pos + 8 <= fileSize) {
+        uint8_t bh[8];
+        f_lseek(f, pos);
+        if (f_read(f, bh, 8, &br) != FR_OK || br != 8) break;
+        const uint32_t sz = bh[4] | (bh[5] << 8) | (bh[6] << 16) | ((uint32_t)bh[7] << 24);
+        if (pos + 8 + sz > fileSize) break;
+        if (!memcmp(bh, "CRTR", 4) && sz >= 36) {
+            char cr[33] = {};
+            uint8_t v[4];
+            f_read(f, cr, 32, &br);
+            f_read(f, v, 4, &br);
+            snprintf(line, sizeof(line), "Creator: %.32s %u.%u", cr, v[0] | (v[1] << 8), v[2] | (v[3] << 8));
+            info += line; info += "\n"; lines++;
+        } else if (!memcmp(bh, "Z80R", 4) && sz >= 24) {
+            haveZ = f_read(f, z, 24, &br) == FR_OK && br == 24;
+        } else if (!memcmp(bh, "RAMP", 4) && sz >= 3) {
+            uint8_t fl[2];
+            f_read(f, fl, 2, &br);
+            ramp++;
+            if (fl[0] & 1) packed = true;
+        } else {
+            const char* nm = nullptr; bool known = false;
+            for (const auto& k : kBlk) if (!memcmp(bh, k.id, 4)) { nm = k.name; known = true; break; }
+            char raw[5] = { (char)bh[0], (char)bh[1], (char)bh[2], (char)bh[3], 0 };
+            for (int i = 0; i < 4; i++) if (raw[i] < 32 || raw[i] > 126) raw[i] = ' ';
+            const string add = known ? (nm ? nm : "") : raw;
+            if (!add.empty() && extras.find(add) == string::npos)
+                extras += (extras.empty() ? "" : ", ") + add;
+        }
+        pos += 8 + sz;
+    }
+    if (haveZ) {
+        snprintf(line, sizeof(line), "PC:%04X SP:%04X", z[22] | (z[23] << 8), z[20] | (z[21] << 8));
+        info += line; info += "\n"; lines++;
+    }
+    snprintf(line, sizeof(line), "RAM: %d pages%s", ramp, packed ? ", compressed" : "");
+    info += line; info += "\n"; lines++;
+    if (!extras.empty()) {
+        // Wrap the device list to the info page's width.
+        string cur = "Devices: ";
+        size_t i = 0;
+        while (i < extras.size()) {
+            size_t e = extras.find(", ", i);
+            string item = extras.substr(i, e == string::npos ? string::npos : e - i);
+            if (cur.size() + item.size() + 2 > 40 && cur.size() > 9) {
+                info += cur; info += "\n"; lines++;
+                cur = "  ";
+            }
+            cur += item;
+            if (e != string::npos) cur += ", ";
+            i = e == string::npos ? extras.size() : e + 2;
+        }
+        info += cur; info += "\n"; lines++;
+    }
+}
+
 // ---- DSK (CPCEMU / Extended, the +3's format) ----
 // Deliberately parses the header here rather than going through DskImage: this runs on
 // a file the user has merely highlighted in the browser, so it must never allocate a
@@ -919,6 +1012,8 @@ void FileInfo::viewInfo(const string& path) {
     else if (ext == "scl") viewSCL(&f, fileSize, info, lines);
     else if (ext == "sna") viewSNA(&f, fileSize, info, lines);
     else if (ext == "z80") viewZ80(&f, fileSize, info, lines);
+    else if (ext == "szx") viewSZX(&f, fileSize, info, lines);
+    else if (ext == "pss") Pss::describe(path, info, lines);
     else if (ext == "fdi") viewFDI(&f, fileSize, info, lines);
     else if (ext == "dsk") viewDSK(&f, fileSize, info, lines);
     else if (ext == "udi") viewUDI(&f, fileSize, info, lines);

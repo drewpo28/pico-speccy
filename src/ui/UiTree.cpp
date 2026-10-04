@@ -750,7 +750,11 @@ static const Node kMachine[] = {
 // so a new machine row names itself. Byte/Profi/Karabas/Scorpion/TS-Conf/ALF all
 // resolve the same way; Scorpion's runtime table is reached through nodeOptions().
 bool machineMenuName(const char*& family, const char*& romShort) {
-    const int32_t want = NM_MACH(archDisplay(Config::arch, Config::romSet), Config::romSet);
+    return machineMenuNameFor(Config::arch, Config::romSet, family, romShort);
+}
+
+bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort) {
+    const int32_t want = NM_MACH(archDisplay(arch, romSet), romSet);
     for (uint8_t i = 0; i < NM_COUNT(kMachine); i++) {
         const Node& n = kMachine[i];
         if (n.kind != K_RADIO || n.setting != SET_MACHINE) continue;
