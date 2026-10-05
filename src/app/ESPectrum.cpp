@@ -2077,6 +2077,8 @@ IRAM_ATTR bool ESPectrum::readKbd(fabgl::VirtualKeyItem *Nextkey) {
       Config::CursorAsJoy = !Config::CursorAsJoy;
       PS2Controller.keyboard()->setLEDs(false, false, Config::CursorAsJoy);
       Config::save();
+      // The Scroll Lock LED was the only feedback — and USB keyboards often have none.
+      OSD::notify(Config::CursorAsJoy ? " Cursor as joystick: ON " : " Cursor as joystick: OFF ");
       r = false;
     }
   }
