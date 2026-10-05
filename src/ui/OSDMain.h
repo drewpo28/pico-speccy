@@ -139,6 +139,7 @@ public:
     // to rest on is announced once, if it differs from what the user last saw.
     // `immediate` is for a keypress, which must always answer.
     static void notifyClock(const char* text, bool immediate = false);
+    static void setTurbo(uint8_t m);   // 0..3 = 3.5/7/14/28 MHz: apply, persist, announce
     static void pollClockNotify();   // per frame, from ESPectrum::loop
 
     // Boot notices: setup() runs long before video is up, so a feature that gives up

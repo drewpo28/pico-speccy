@@ -278,10 +278,11 @@ void Config::initHotkeys() {
         { fabgl::VK_PAGEUP, true,  false, false }, // HK_GIGASCREEN
         { fabgl::VK_F8,     true,  false, false }, // HK_LED_TOGGLE
         { fabgl::VK_F9,     true,  false, false }, // HK_POKE
-        { fabgl::VK_HOME,   true,  true,  false }, // HK_VIDMODE_60
-        { fabgl::VK_END,    true,  true,  false }, // HK_VIDMODE_50
+        { fabgl::VK_NONE,   false, false, true  }, // HK_UNUSED_24
+        { fabgl::VK_NONE,   false, false, true  }, // HK_UNUSED_25
         { fabgl::VK_F3,     true,  false, false }, // HK_QUICK_LOAD
         { fabgl::VK_F4,     true,  false, false }, // HK_QUICK_SAVE
+        { fabgl::VK_F7,     true,  false, false }, // HK_FAST_MENU
     };
     for (int i = 0; i < HK_COUNT; i++)
         hotkeys[i] = defaults[i];
@@ -1616,6 +1617,9 @@ void Config::load() {
         // Retired slot: an old config may still carry Alt+F6 there, which would
         // swallow the key and block assigning it elsewhere.
         hotkeys[HK_UNUSED_17] = { (uint16_t)fabgl::VK_NONE, false, false, true };
+        // Same for the retired Ctrl+Alt+Home/End video-mode keys.
+        hotkeys[HK_UNUSED_24] = { (uint16_t)fabgl::VK_NONE, false, false, true };
+        hotkeys[HK_UNUSED_25] = { (uint16_t)fabgl::VK_NONE, false, false, true };
         // Murmuzavr page count. Lands in Config::mem_pg_cnt (the persisted pick); the
         // live MEM_PG_CNT is derived from it once in ESPectrum::setup(), which also
         // applies the Pentagon-only clamp.

@@ -1664,6 +1664,31 @@ const Node* persistNodeFor() {
     return nullptr;
 }
 
+// The fast menu's targets (Alt+F7). Found by what they ARE (the root row that holds
+// a given level, the pick list of a level), not by a hand-written path, so the rows
+// can move in the tree without breaking the hot key — the persistNodeFor() rule.
+static const Node* rootRowFor(const Node* kids) {
+    for (uint8_t i = 0; i < NM_COUNT(kRoot); i++)
+        if (kRoot[i].kind == K_SUB && kRoot[i].kids == kids) return &kRoot[i];
+    return nullptr;
+}
+static const Node* pickIn(const Node* level, uint8_t count, uint16_t setting) {
+    for (uint8_t i = 0; i < count; i++)
+        if (level[i].kind == K_PICK && level[i].setting == setting) return &level[i];
+    return nullptr;
+}
+const Node* fastMenuNode(int which) {
+    switch (which) {
+        case FAST_MACHINES:    return rootRowFor(kMachine);
+        case FAST_PROFILES:    return pickIn(kOptions, NM_COUNT(kOptions), SET_PROFILE_SLOT);
+        case FAST_JOYPROFILES: return pickIn(kJoystick, NM_COUNT(kJoystick), SET_JOY_PROFILE);
+        case FAST_DEVICES:     return rootRowFor(kHardware);
+        case FAST_VIDEO:       return rootRowFor(kVideo);
+        case FAST_AUDIO:       return rootRowFor(kAudio);
+        default:               return nullptr;
+    }
+}
+
 const Node* rootNodes()     { return kRoot; }
 uint8_t     rootNodeCount() { return NM_COUNT(kRoot); }
 

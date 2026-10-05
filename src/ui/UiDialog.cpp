@@ -549,6 +549,95 @@ int uiPickList(const char* title, const char* const* items, int n, int initial) 
     return uiPickListCb(title, n, plArrayCb, initial, wch);
 }
 
+// Fast menu popup (Alt+F7): rows picked by DIGIT, row i on key i (main row or
+// keypad), as well as by the cursor + Enter. The numbers are part of the row and
+// never move, so a row whose `enabled[i]` is false is drawn dim and refused
+// instead of being dropped. Returns the index, -1 on Esc.
+int uiFastPick(const char* title, const char* const* items, const bool* enabled,
+               int n, int initial, const char* footer) {
+    if (n <= 0 || n > 10) return -1;
+    gfxResumePalette();
+    const int pad = 4 * Sf.glyphScale;
+    const int lh  = UI_FONT_H + 2;
+    auto ok = [&](int i) { return !enabled || enabled[i]; };
+
+    int tw = textWidth(title);
+    char row[64];
+    for (int i = 0; i < n; i++) {
+        snprintf(row, sizeof(row), "%d  %s", i, items[i]);
+        const int w = textWidth(row);
+        if (w > tw) tw = w;
+    }
+    if (footer) { const int t3 = textWidth(footer); if (t3 > tw) tw = t3; }
+    { const int w8 = 16 * glyphW(); if (w8 > tw) tw = w8; }
+
+    Box b;
+    b.w = tw + 3 * pad;
+    const int wmax = Sf.w - 8 * Sf.glyphScale;
+    if (b.w > wmax) b.w = wmax;
+    b.h = (lh + 2) + n * lh + 2 * pad + (footer ? lh + 1 : 0);
+    b.x = (Sf.w - b.w) / 2;
+    b.y = (Sf.h - b.h) / 2;
+
+    int sel = (initial >= 0 && initial < n) ? initial : 0;
+    for (int k = 0; k < n && !ok(sel); k++) sel = (sel + 1) % n;
+    if (!ok(sel)) return -1;
+
+    auto drawIt = [&]() {
+        fill(b.x + 2 * Sf.glyphScale, b.y + 2, b.w, b.h, C_SHADOW);
+        roundRect(b.x, b.y, b.w, b.h, 3, C_SEP, C_PANEL_ALT);
+        text(b.x + pad, b.y + pad - 1, title, C_WHITE);
+        hline(b.x + pad, b.y + pad + lh - 2, b.w - 2 * pad, C_SEP);
+        const int ly0 = b.y + pad + lh + 1;
+        for (int i = 0; i < n; i++) {
+            const int y = ly0 + i * lh;
+            const bool s = (i == sel);
+            fill(b.x + 2, y - 1, b.w - 4, lh, s ? C_SEL_BG : C_PANEL_ALT);
+            snprintf(row, sizeof(row), "%d  %s", i, items[i]);
+            textClip(b.x + pad, y, b.w - 2 * pad, row,
+                     !ok(i) ? C_TEXT_DIM : s ? C_WHITE : C_TEXT);
+        }
+        if (footer) {
+            const int fy = ly0 + n * lh + 1;
+            hline(b.x + pad, fy, b.w - 2 * pad, C_SEP);
+            textClip(b.x + pad, fy + 2, b.w - 2 * pad, footer, C_TEXT_DIM);
+        }
+    };
+    drawIt();
+
+    fabgl::VirtualKeyItem k;
+    while (1) {
+        if (nextKeyDown(k)) {
+            int d = -1;
+            if (k.vk >= fabgl::VK_0 && k.vk <= fabgl::VK_9) d = k.vk - fabgl::VK_0;
+            else if (k.vk >= fabgl::VK_KP_0 && k.vk <= fabgl::VK_KP_9) d = k.vk - fabgl::VK_KP_0;
+            if (d >= 0) {
+                if (d < n && ok(d)) { OSD::clickNoPause(); return d; }
+                continue;
+            }
+            int step = 0;
+            switch (k.vk) {
+                case fabgl::VK_MENU_UP:    step = -1; break;
+                case fabgl::VK_MENU_DOWN:  step = +1; break;
+                case fabgl::VK_MENU_ENTER: OSD::clickNoPause(); return sel;
+                case fabgl::VK_ESCAPE: case fabgl::VK_F1:
+                case fabgl::VK_MENU_LEFT:  OSD::clickNoPause(); return -1;
+                default: break;
+            }
+            if (step) {
+                int ns = sel;
+                for (int t = 0; t < n; t++) {
+                    ns += step;
+                    if (ns < 0 || ns >= n) { ns = sel; break; }   // no wrap
+                    if (ok(ns)) break;
+                }
+                if (ns != sel && ok(ns)) { sel = ns; drawIt(); OSD::clickNoPause(); }
+            }
+        }
+        uiIdle();
+    }
+}
+
 // ── full-screen text page ──────────────────────────────────────────────────────
 // The new-style replacement for OSD::showTextDialog: a scrollable page in the
 // menu's chrome. Zero-copy line index into the caller's text, like the classic.

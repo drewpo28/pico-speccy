@@ -67,6 +67,11 @@ void uiBusy(const char* msg);
 // Modal scrollable list. Returns the chosen index or -1 on Esc.
 int uiPickList(const char* title, const char* const* items, int n, int initial = 0);
 
+// The fast menu's popup: row i is also picked by digit key i (n <= 10). Rows with
+// enabled[i] false are drawn dim and refused (numbers stay fixed). -1 on Esc.
+int uiFastPick(const char* title, const char* const* items, const bool* enabled,
+               int n, int initial = 0, const char* footer = nullptr);
+
 // As above, but rows are fetched on demand (huge lists — tape blocks): `cb`
 // formats row `idx` into `out`. `wchars` fixes the list width in characters.
 // `fkey` (optional) enables per-row verbs: F8/Delete return the selected index

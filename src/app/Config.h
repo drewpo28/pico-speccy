@@ -704,11 +704,12 @@ public:
         HK_GIGASCREEN   = 21,
         HK_LED_TOGGLE   = 22,
         HK_POKE         = 23,
-        HK_VIDMODE_60   = 24,
-        HK_VIDMODE_50   = 25,
+        HK_UNUSED_24    = 24,  // was HK_VIDMODE_60 (Ctrl+Alt+Home); slot kept so NVS hkVKnn keys stay aligned
+        HK_UNUSED_25    = 25,  // was HK_VIDMODE_50 (Ctrl+Alt+End)
         HK_QUICK_LOAD   = 26,
         HK_QUICK_SAVE   = 27,
-        HK_COUNT        = 28
+        HK_FAST_MENU    = 28,  // Alt+F7: the fast menu popup (0-9)
+        HK_COUNT        = 29
     };
 
     struct HotkeyBinding {

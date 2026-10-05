@@ -168,6 +168,7 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+F1 Hardware info
 - ALT+F2 Turbo mode (the selected clock — 3.5/7/14/28 MHz — is shown as a top-border notification)
 - ALT+F5 Debug
+- ALT+F7 Fast menu (0 Machines, 1 Config profiles, 2 Joystick profiles, 3 Devices, 4 Video, 5 Audio, 6 CPU speed)
 - ALT+F8 Toggle LED indicators
 - ALT+F9 Input poke
 - ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options; Scorpion: magic button into the service monitor)
@@ -176,8 +177,6 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+PageUp Switch Gigascreen mode (Off → On → Auto cycle)
 - ALT+F3 Quick load snapshot
 - ALT+F4 Quick save snapshot
-- ALT+CTRL+Home Switch HDMI video mode (60Hz cycle)
-- ALT+CTRL+End Switch HDMI video mode (50Hz cycle)
 - PrntScr BMP screen capture (Folder /pico-speccy/screenshots at SDCard)
 - WASD/KL - Kempston joystick parallel-emulation
 - Menu (Win) key (Profi / Karabas-Pro): ROM-set and quick-setting hotkeys — press F1 for the full list

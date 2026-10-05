@@ -2170,6 +2170,25 @@ void OSD::bootTrdos() {
     }
 }
 
+// Set the emulated CPU clock: 0..3 = 3.5 / 7 / 14 / 28 MHz. Shared by the Turbo
+// hot key (Alt+F2) and the fast menu's CPU speed popup (Alt+F7), so both apply,
+// persist and announce it the same way.
+void OSD::setTurbo(uint8_t m) {
+    m &= 3;
+    ESPectrum::multUser = m;
+    ESPectrum::multiplicator = m;
+    CPU::updateStatesInFrame();
+    // TS-Conf: this is an override of the guest's SysConfig ZCLK; the
+    // guest's next write to it takes the clock back (TsConf::applyZclk).
+    Config::turbo = ESPectrum::multUser;
+    Config::save();
+    static const char* const mhz[4] =
+        { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
+    // See the VK_F11 handler in ESPectrum.cpp: routed through
+    // notifyClock so the clock banner's memory stays honest.
+    notifyClock(mhz[m], true);
+}
+
 // OSD Main Loop
 // Chooser for the small hotkey menus (NMI, Reset-to): takes a "Title\nRow\nRow\n"
 // menu string and returns the 1-based row (0 = Esc), drawn as a pick list. One
@@ -2339,27 +2358,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         }
     }
 
-#ifdef VGA_HDMI
-    // Mode switches require a hard reset — heap fragmentation breaks runtime
-    // framebuffer grow. Save the *old* vm to pending (loaded after reboot for
-    // the rollback confirmation), write the new vm to main config, then reset.
-    if (hkIdx == Config::HK_VIDMODE_60) { // HDMI 60Hz
-        uint8_t &vm = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
-        if (vm == Config::VM_640x480_60) return;
-        Config::savePendingVideoMode(); // captures old vm
-        vm = Config::VM_640x480_60;
-        Config::save();
-        esp_hard_reset();
-    } else
-    if (hkIdx == Config::HK_VIDMODE_50) { // HDMI 50Hz
-        uint8_t &vm = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
-        if (vm == Config::VM_640x480_50) return;
-        Config::savePendingVideoMode(); // captures old vm
-        vm = Config::VM_640x480_50;
-        Config::save();
-        esp_hard_reset();
-    } else
-#endif
     if (hkIdx == Config::HK_HW_INFO) { // Show mem info (Alt+F1)
             OSD::HWInfo();
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
@@ -2371,20 +2369,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // multUser alone), Pentagon-1024 EFF7 D4 and Profi #028B pull it
             // down — so stepping the user's pick restarted the cycle at 3.5 MHz
             // instead of continuing from what the machine is actually running.
-            uint8_t next = ESPectrum::multiplicator + 1;
-            if (next > 3) next = 0;
-            ESPectrum::multUser = next;
-            ESPectrum::multiplicator = next;
-            CPU::updateStatesInFrame();
-            // TS-Conf: this is an override of the guest's SysConfig ZCLK; the
-            // guest's next write to it takes the clock back (TsConf::applyZclk).
-            Config::turbo = ESPectrum::multUser;
-            Config::save();
-            static const char* const mhz[4] =
-                { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
-            // See the VK_F11 handler in ESPectrum.cpp: routed through
-            // notifyClock so the clock banner's memory stays honest.
-            notifyClock(mhz[ESPectrum::multUser], true);
+            setTurbo((ESPectrum::multiplicator + 1) & 3);
         } else
         if (hkIdx == Config::HK_DEBUG) {
             osdDebug();
@@ -2710,6 +2695,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // implementation, so the row and the key can never drift apart.
             nm::loadSnapshotFile();
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
+        } else if (hkIdx == Config::HK_FAST_MENU) {
+            // Alt+F7: the fast menu popup (0 Machines .. 6 CPU speed).
+            nm::runFastMenu();
+            if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
+            return;
         } else if (FileUtils::fsMount && hkIdx == Config::HK_PERSIST_LOAD) {
             // The menu's native slot level (same rows F1 shows), like runDiskSlots.
             nm::runPersist(false);
@@ -8433,10 +8423,11 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Gigascreen toggle",    // HK_GIGASCREEN
     "LED indicators",       // HK_LED_TOGGLE
     "Input poke",           // HK_POKE
-    "HDMI 60Hz mode",       // HK_VIDMODE_60
-    "HDMI 50Hz mode",       // HK_VIDMODE_50
+    "",                     // HK_UNUSED_24 (was Ctrl+Alt+Home HDMI 60Hz)
+    "",                     // HK_UNUSED_25 (was Ctrl+Alt+End HDMI 50Hz)
     "Quick Load snapshot",  // HK_QUICK_LOAD
     "Quick Save snapshot",  // HK_QUICK_SAVE
+    "Fast menu",            // HK_FAST_MENU
 };
 
 // The Help > Hot keys page of the new UI: description + current binding.

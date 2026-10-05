@@ -850,5 +850,41 @@ void runPersist(bool save) {
     if (target) runInternal(target, save);
 }
 
+void runFastMenu() {
+    if (!available()) return;
+    static const char* const items[FAST_COUNT] = {
+        "Machines", "Config profiles", "Joystick profiles",
+        "Devices", "Video", "Audio", "CPU speed",
+    };
+    const Node* target[FAST_COUNT];
+    bool on[FAST_COUNT];
+    for (int i = 0; i < FAST_COUNT; i++) {
+        target[i] = fastMenuNode(i);
+        on[i] = (i == FAST_CPU) ||
+                (target[i] && (!target[i]->visible || target[i]->visible())
+                           && (!target[i]->enabled || target[i]->enabled()));
+    }
+    gfxBegin();
+    int sel, from = 0;
+    for (;;) {
+        sel = uiFastPick("Fast menu", items, on, FAST_COUNT, from);
+        if (sel != FAST_CPU) break;
+        static const char* const mhz[4] = { "3.5 MHz", "7 MHz", "14 MHz", "28 MHz" };
+        const int cur = ESPectrum::multiplicator & 3;
+        const char* rows[4];
+        char now[16];
+        for (int i = 0; i < 4; i++) rows[i] = mhz[i];
+        snprintf(now, sizeof(now), "%s  *", mhz[cur]);   // the clock it runs at now
+        rows[cur] = now;
+        const int m = uiFastPick("CPU speed", rows, nullptr, 4, cur);
+        if (m >= 0) { gfxEnd(); OSD::setTurbo((uint8_t)m); return; }
+        // Esc in CPU speed goes back to the fast menu, on its CPU row. Same width
+        // and taller, so the fast menu's box covers the CPU one completely.
+        from = FAST_CPU;
+    }
+    gfxEnd();
+    if (sel >= 0 && target[sel]) runInternal(target[sel]);
+}
+
 } // namespace nm
 

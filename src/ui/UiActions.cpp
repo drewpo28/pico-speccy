@@ -374,7 +374,8 @@ void act_joyDialog() { joyMappingPage(); }
 // OSD's hotkeyCapture().
 void hotkeys_build(DynRows& d) {
     for (int i = 0; i < Config::HK_COUNT && i < NM_DYN_MAX_ROWS; i++)
-        if (i != Config::HK_UNUSED_17) d.add(::hotkeyRowDesc(i), ::hotkeyRowBinding(i), i, ::hotkeyReadonly(i));
+        if (i != Config::HK_UNUSED_17 && i != Config::HK_UNUSED_24 && i != Config::HK_UNUSED_25)
+            d.add(::hotkeyRowDesc(i), ::hotkeyRowBinding(i), i, ::hotkeyReadonly(i));
 }
 
 void hotkeys_key(int32_t idx, uint8_t key) {
