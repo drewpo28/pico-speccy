@@ -2641,131 +2641,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 }
             }
         }
-        else if (FileUtils::fsMount && hkIdx == Config::HK_DISK) {
-            if (DivMMC::enabled) {
-                string mFile = nm::browseFile(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE);
-                if (mFile != "") {
-                    string fname = FileUtils::IMG_Path + mFile.substr(1);
-                    if (FileUtils::getLCaseExt(fname) == "zip") {
-                        string zipFname = ZipExtract::extract(fname, DISK_IMGFILE);
-                        if (zipFname.empty()) OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
-                        else if (zipFname != "\x1b") fname = zipFname;
-                        else fname.clear();
-                    }
-                    if (!fname.empty()) {
-                        // The slot chooser is a level of the menu.
-                        nm::runDiskSlots(IFACE_ESX, fname.c_str());
-                        Config::save();
-                        ESPectrum::reset();
-                        return;
-                    }
-                }
-                if (VIDEO::OSD) OSD::drawStats();
-            } else
-            while (1) {
-                string mFile = nm::browseFile(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE);
-                if (mFile != "") {
-                    string fname = FileUtils::DSK_Path + mFile.substr(1);
-                    string fprefix = mFile.substr(0,1);
-                    if ( fprefix == "1" || fprefix == "2" || fprefix == "3" || fprefix == "4") {
-
-                        // Create empty trd
-                        //Debug::log("Create empty trd. Prefix: %s\n",fprefix.c_str());
-                        // FIL *fd = fopen2(fname.c_str(), FA_WRITE);
-                        // if (!fd) {
-                        //     Debug::led_blink();
-                        //     break;
-                        // }
-
-                        // // TRD info for 40 tracks 2 sides -> Offset 2274, positions 1 - 4 contains disk type + number of files (0) + number of free sectors
-                        // unsigned char trdheader[] = { 0x01, 0x17, 0x00, 0xf0, 0x04, 0x10, 0x00, 0x00, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-                        // 0x20, 0x20, 0x20, 0x00, 0x00, 0x42, 0x4c, 0x41, 0x4e, 0x4b }; //, 0x20, 0x20, 0x20 };
-
-                        // char buffer[1024] = {0}; // Bloque de 1 KB lleno de ceros
-
-                        // size_t to_write = 655360; // 640 KB
-
-                        // if (fprefix == "1") {
-                        //     // 80/2
-                        //     trdheader[1] = 0x16;
-                        //     trdheader[4] = 0x09;
-                        // } else if (fprefix == "2") {
-                        //     // 40/2
-                        //     to_write >>= 1; // 320 KB
-                        // } else if (fprefix == "3") {
-                        //     // 80/1
-                        //     to_write >>= 1; // 320 KB
-                        //     trdheader[1] = 0x18;
-                        // } else if (fprefix == "4") {
-                        //     // 40/1
-                        //     to_write >>= 2; // 160 KB
-                        //     trdheader[1] = 0x19;
-                        //     trdheader[3] = 0x70;
-                        //     trdheader[4] = 0x02;
-                        // }
-
-                        // while (to_write > 0) {
-                        //     size_t chunk = (to_write < sizeof(buffer)) ? to_write : sizeof(buffer);
-                        //     fwrite(buffer, 1, chunk, fd);
-                        //     to_write -= chunk;
-                        // }
-
-                        // // Write TRD header
-                        // f_lseek(fd, 2274);
-                        // fwrite(trdheader, 1, sizeof(trdheader), fd);
-
-                        //  f_close(fd);
-
-                        // continue;
-
-                    }
-
-                    string ext = FileUtils::getLCaseExt(fname);
-                    if (ext == "zip") {
-                        string zipFname = ZipExtract::extract(fname, DISK_DSKFILE);
-                        if (zipFname.empty()) { OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN); continue; }
-                        if (zipFname == "\x1b") continue;
-                        fname = zipFname;
-                        ext = FileUtils::getLCaseExt(fname);
-                    }
-                    if (ext == "trd" || ext == "scl" || ext == "udi" || ext == "fdi" || ext == "td0" || ext == "pro") {
-                        printf("Insert disk %s\n",fname.c_str());
-                        rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
-                    }
-                    else if (ext == "dsk") {
-                        // A +3 disk. This branch predates ifaceForExt and still tests
-                        // the extension directly, so the new one has to be added here
-                        // as well as in the browser above.
-                        if (Config::isPlus3()) {
-                            DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
-                        } else {
-                            OSD::osdCenteredMsg("Switch to the +3 first", LEVEL_WARN);
-                        }
-                    }
-                    else if (ext == "mbd") {
-                        printf("Insert MB-02 disk %s\n",fname.c_str());
-                        if (MB02::enabled) {
-                            rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, 0, fname);
-                            ESPectrum::mb02_fdd.diskLoadedCyl = -1;
-                            ESPectrum::mb02_fdd.diskLoadedSide = -1;
-                            MB02::signalDiskChange();
-                        } else {
-                            OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
-                        }
-                    }
-                    else
-                    {
-                        Debug::led_blink();
-                    }
-
-                    // string fname = FileUtils::DSK_Path + "/" + mFile;
-                    // rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
-                    Config::save();
-                }
-                break;
-            }
-            if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
-        }
         else if (hkIdx == Config::HK_USB_BOOT) {
             if (confirmReboot(OSD_DLG_USBBOOT)) {
                 reset_usb_boot(0, 0);
@@ -8551,7 +8426,7 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Hardware info",        // HK_HW_INFO
     "Turbo mode",           // HK_TURBO
     "Debug",                // HK_DEBUG
-    "Insert disk",          // HK_DISK
+    "",                     // HK_UNUSED_17 (was Alt+F6 Insert disk)
     "NMI",                  // HK_NMI
     "Reset to...",          // HK_RESET_TO
     "USB Boot mode",        // HK_USB_BOOT

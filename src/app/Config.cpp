@@ -271,7 +271,7 @@ void Config::initHotkeys() {
         { fabgl::VK_F1,     true,  false, true  }, // HK_HW_INFO    — readonly
         { fabgl::VK_F2,     true,  false, false }, // HK_TURBO
         { fabgl::VK_F5,     true,  false, false }, // HK_DEBUG
-        { fabgl::VK_F6,     true,  false, false }, // HK_DISK
+        { fabgl::VK_NONE,   false, false, true  }, // HK_UNUSED_17
         { fabgl::VK_F10,    true,  false, false }, // HK_NMI
         { fabgl::VK_F11,    true,  false, false }, // HK_RESET_TO
         { fabgl::VK_F12,    true,  false, false }, // HK_USB_BOOT
@@ -1613,6 +1613,9 @@ void Config::load() {
             hotkeys[i].alt  = (mod >> 1) & 1;
             hotkeys[i].ctrl = (mod     ) & 1;
         }
+        // Retired slot: an old config may still carry Alt+F6 there, which would
+        // swallow the key and block assigning it elsewhere.
+        hotkeys[HK_UNUSED_17] = { (uint16_t)fabgl::VK_NONE, false, false, true };
         // Murmuzavr page count. Lands in Config::mem_pg_cnt (the persisted pick); the
         // live MEM_PG_CNT is derived from it once in ESPectrum::setup(), which also
         // applies the Pentagon-only clamp.

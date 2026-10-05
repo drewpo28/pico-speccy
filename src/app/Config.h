@@ -697,7 +697,7 @@ public:
         HK_HW_INFO      = 14,
         HK_TURBO        = 15,
         HK_DEBUG        = 16,
-        HK_DISK         = 17,
+        HK_UNUSED_17    = 17,  // was HK_DISK (Alt+F6); slot kept so NVS hkVKnn keys stay aligned
         HK_NMI          = 18,
         HK_RESET_TO     = 19,
         HK_USB_BOOT     = 20,

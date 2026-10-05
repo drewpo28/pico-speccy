@@ -168,7 +168,6 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+F1 Hardware info
 - ALT+F2 Turbo mode (the selected clock — 3.5/7/14/28 MHz — is shown as a top-border notification)
 - ALT+F5 Debug
-- ALT+F6 Disk menu
 - ALT+F8 Toggle LED indicators
 - ALT+F9 Input poke
 - ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options; Scorpion: magic button into the service monitor)
