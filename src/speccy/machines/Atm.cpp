@@ -83,23 +83,36 @@ void bindRoms(RomsetIdx rs, const atm_rom_page_t* pages, uint8_t n) {
 }
 
 // Resolve every page of the bound table. A page that is a raw flash array is used
-// in place; one that is an overlay (or the all-0xFF page) is flattened into one
-// butter-PSRAM block, because an ATM ROM page may sit in any CPU window and
-// MemESP resolves overlays for window 0 only. Runs on the first reset after the
-// Buffer pools exist (requestMachine binds before Buffer::initPools on a boot).
-static void resolveRoms() {
+// in place; one that is an overlay is flattened into a butter-PSRAM block, because
+// an ATM ROM page may sit in any CPU window and MemESP resolves overlays for window
+// 0 only. Only those pages get a slot, plus ONE shared slot for every all-0xFF page
+// (empty ROM socket): the ZX-Evo image is 32 pages, of which 12 are overlays and 7
+// are empty, so this is 13 x 16 KB instead of 32 — which is what lets it share the
+// arena with a GM.DLS bank and NeoGS (hw 2026-10-05: the 512 KB block failed there
+// and the overlay pages ran unpatched). Called from setup() right after
+// Buffer::initPools (before the bank is loaded) and again from every reset().
+void resolveRoms() {
     if (!s_tbl) return;
     const RomsetIdx rs = Config::romSetAtm;
-    bool need = false;
-    for (int i = 0; i < s_npages; i++)
-        if (s_tbl[i].overlay || !s_tbl[i].base) need = true;
-    if (need && (s_flat_rs != rs || !s_flat)) {
+    // Slot of each page in s_flat: -1 = used in place from flash.
+    int8_t slot[32];
+    uint8_t nslots = 0;
+    int8_t ffSlot = -1;
+    for (int i = 0; i < s_npages; i++) {
+        const atm_rom_page_t& pg = s_tbl[i];
+        if (pg.base && !pg.overlay)       slot[i] = -1;
+        else if (!pg.base && !pg.overlay) {
+            if (ffSlot < 0) ffSlot = (int8_t)nslots++;
+            slot[i] = ffSlot;
+        } else                            slot[i] = (int8_t)nslots++;
+    }
+    if (nslots && (s_flat_rs != rs || !s_flat)) {
         if (s_flat) { Buffer::pfree(s_flat); s_flat = nullptr; }
         s_flat_rs = R_NONE;
         if (Buffer::butterPoolReady()) {
-            void* p = Buffer::palloc((size_t)s_npages * MEM_PG_SZ,
+            void* p = Buffer::palloc((size_t)nslots * MEM_PG_SZ,
                                      Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
-            if (p && (uintptr_t)p < 0x11000000u) {   // landed on the heap: not for 128 KB
+            if (p && (uintptr_t)p < 0x11000000u) {   // landed on the heap: not for 128 KB+
                 Buffer::pfree(p);
                 p = nullptr;
             }
@@ -107,26 +120,31 @@ static void resolveRoms() {
         }
         if (s_flat) {
             for (int i = 0; i < s_npages; i++) {
-                uint8_t* dst = s_flat + (size_t)i * MEM_PG_SZ;
+                if (slot[i] < 0) continue;
+                uint8_t* dst = s_flat + (size_t)slot[i] * MEM_PG_SZ;
                 const atm_rom_page_t& pg = s_tbl[i];
                 if (!pg.base) {
                     memset(dst, 0xFF, MEM_PG_SZ);
                     if (pg.overlay) rom_overlay_flatten(pg.overlay, dst, dst);
-                } else if (pg.overlay) {
+                } else {
                     rom_overlay_flatten(pg.overlay, pg.base, dst);
                 }
             }
             s_flat_rs = rs;
-            Debug::log("[ATM] ROM pages flattened into PSRAM @%p (%u pages)", s_flat, (unsigned)s_npages);
+            s_flat_warned = false;
+            Debug::log("[ATM] ROM pages flattened into PSRAM @%p (%u of %u pages, %u KB)",
+                       s_flat, (unsigned)nslots, (unsigned)s_npages,
+                       (unsigned)(nslots * (MEM_PG_SZ >> 10)));
         } else if (!s_flat_warned) {
             s_flat_warned = true;
-            Debug::log("[ATM] no butter PSRAM for the ROM pages - overlays unapplied");
+            Debug::log("[ATM] no butter PSRAM for the ROM pages (%u KB) - overlays unapplied",
+                       (unsigned)(nslots * (MEM_PG_SZ >> 10)));
         }
     }
     for (int i = 0; i < s_npages; i++) {
         const atm_rom_page_t& pg = s_tbl[i];
-        if (pg.base && !pg.overlay)      s_rom[i] = pg.base;
-        else if (s_flat)                 s_rom[i] = s_flat + (size_t)i * MEM_PG_SZ;
+        if (slot[i] < 0)                 s_rom[i] = pg.base;
+        else if (s_flat)                 s_rom[i] = s_flat + (size_t)slot[i] * MEM_PG_SZ;
         else                             s_rom[i] = pg.base ? pg.base : kFF;
     }
 }

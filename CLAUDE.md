@@ -13594,8 +13594,13 @@ MM_ATM450 / MM_ATM710, io.cpp, atm.cpp, drawers.cpp) and **MAME sinclair/atm.cpp
   BRIGHT from A3 inverted, `border32[]` grew to 16 entries). `check_trdos` is
   replaced by `Atm::trdosTrap` (enter at #3Dxx with 7FFD D4 and ROM in window 0,
   exit when PC's window is RAM); /CPM on the 2+ keeps the DOS signal up by itself.
-- **ROM pages may sit in ANY window**, so each bound page is flattened into butter
-  PSRAM at the first `Atm::reset()` after `Buffer::initPools` (palloc
+- **ROM pages may sit in ANY window**, so each OVERLAY page is flattened into butter
+  PSRAM (raw pages are read from flash in place, all-0xFF pages share ONE slot — Evo
+  13 of 32 pages = 208 KB; it was all 32 = 512 KB until 2026-10-05, which on ZX-Evo +
+  NeoGS + GM.DLS did not fit the 2.2 MB arena after the 1.6 MB bank and the machine
+  ran its ROMs UNPATCHED — log `overlays unapplied`; hw-confirmed fixed). `Atm::resolveRoms()`
+  runs in setup() right after `GS::init`, BEFORE the GM.DLS bank, and again at every
+  `Atm::reset()` (originally: at the first `Atm::reset()` after `Buffer::initPools`) (palloc
   NEED_POINTER|PREFER_PSRAM, heap placements refused); raw pages are read straight
   from flash. Writes into a ROM window are dropped by the `g_atm_ro` gate in the CPU
   write funnel (`gsDmaPoke8`) — zero on every other machine, one predicted-not-taken

@@ -94,6 +94,9 @@ namespace Atm {
     // Record this romset's page table. The flattening into PSRAM happens on the first
     // reset() after Buffer::initPools (requestMachine runs before the pools exist).
     void bindRoms(RomsetIdx rs, const atm_rom_page_t* pages, uint8_t n);
+    // Flatten the overlay pages into butter PSRAM (idempotent). setup() calls it right
+    // after Buffer::initPools so the ROMs claim the arena before the GM.DLS bank does.
+    void resolveRoms();
     void reset();               // machine reset: register file + remap
     void remap();               // the one writer of MemESP::ramCurrent[0..3] on ATM
 

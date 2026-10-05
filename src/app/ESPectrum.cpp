@@ -63,6 +63,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ui/UiDialog.h"
 #include "ui/UiGfx.h"
 #include "speccy/machines/Alf.h"
+#include "speccy/machines/Atm.h"
 #include "speccy/core/Ports.h"
 #include "speccy/core/Snapshot.h"
 #include "speccy/devices/tape/Tape.h"
@@ -1248,6 +1249,12 @@ void ESPectrum::setup() {
     GS::init(gs_ram);
     Debug::log2SD("setup: GS::init done, freeHeap=%u", (unsigned)getFreeHeap());
   }
+
+  // ATM / ZX-Evo ROM pages: the overlay pages are flattened into the butter arena.
+  // Claimed HERE, before the GM.DLS bank: with NeoGS on a ZX-Evo (4 MB strip) the
+  // arena is ~2.2 MB and a 1.6 MB bank loaded first left no room for them, so the
+  // machine ran its ROMs unpatched (hw 2026-10-05). Atm::reset() re-runs it.
+  if (Config::arch == A_ATM) Atm::resolveRoms();
 
   // TS-Conf VDAC2 (FT812): 1 MB RAM_G + the synthesized ROM fonts + the chip state
   // out of the butter arena (Buffer::pageBudget reserved them). A board without
