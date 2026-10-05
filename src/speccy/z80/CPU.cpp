@@ -1532,7 +1532,10 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // ATM-Turbo 2+: the frame INT is gated by #xx77 D5 (Unreal cpu.int_gate).
     // ZX-Evo BaseConf: no gate, but the acknowledge ends this frame's pulse.
     if (__builtin_expect(Z80Ops::isAtm, 0) &&
-        (!Atm::intEnabled() || (Atm::evo && EvoBase::intAckFrame == CPU::global_tstates))) return false;
+        (!Atm::intEnabled() ||
+         (Atm::evo && EvoBase::intAckFrame ==
+              EvoBase::intWindowId((uint32_t)((int32_t)CPU::tstates + CPU::latetiming),
+                                   CPU::statesInFrame, CPU::global_tstates)))) return false;
     // Timex DEC (#FF) bit 6 — "17ms Interrupt Inhibit" (MAME port_ff_w). The SCLD
     // gates the line itself, so the window still opens and closes on time; the CPU
     // simply never sees it. Cleared on reset with the rest of the DEC register.

@@ -31,7 +31,18 @@ extern uint8_t  fddMask;        // #13BD: drives served by EVO Reset Service's F
 extern uint8_t  vgSys;          // last #FF (FDC system register) write
 extern bool     inTrdemu;       // RAM page #FE in window 0 (base_trdemu in_trdemu)
 extern uint8_t* font;           // text-mode character generator (char*8+line), 2 KB; null = the ATM ROM font
-extern uint64_t intAckFrame;    // CPU::global_tstates of the frame whose INT was acknowledged
+extern uint64_t intAckFrame;    // id of the INT window that was acknowledged (intWindowId)
+
+// The id of the frame INT window CPU::tstates is sampling: the frame's own
+// global_tstates, or the NEXT frame's when the sample sits in the frame-tail
+// overshoot (Z80Ops::isActiveINT wraps tstates there — that is where a HALTed CPU
+// takes the next frame's INT). Keying the ack on global_tstates alone made the
+// tail sample look "already acknowledged" (it still carried the frame whose own INT
+// had been taken at its start), so every INT came one NOP late, frame after frame:
+// intT 4..7 against Pentagon's 0..3 (Across the Edge, hw 2026-10-04).
+inline uint64_t intWindowId(uint32_t tstates, uint32_t statesInFrame, uint64_t globalT) {
+    return globalT + (tstates >= statesInFrame ? statesInFrame : 0);
+}
 
 void reset();                   // from Atm::reset: the BaseConf register file (not the pages)
 void bootPlain();               // Atm::bootRom: 128K mode, 3.5 MHz

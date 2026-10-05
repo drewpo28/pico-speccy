@@ -1587,7 +1587,9 @@ so raw.githubusercontent.com is the way to any of this.
   `#2FFD` = `0xF002/0x2000` (status, read only), `#3FFD` = `0xF002/0x3000`. The +3 block
   in `Ports::input`/`output` RETURNS, because the loose 128K decode below it
   (`0x8002/0x0000`) would otherwise swallow `#1FFD`. Like every other early-returning
-  handler in that file it skips `ioContentionLate` — so does the 128K `#7FFD` path.
+  handler in that file it skips `ioContentionLate`. (An older note here said the 128K /
+  Pentagon `#7FFD` path skips it too — WRONG: the PERF `d=` field on Across the Edge
+  proves Pentagon's `OUT (#7FFD)` takes its full 4 T, 2026-10-04.)
 - **`MemESP::plus3Remap()` is the one place** that turns `(port1FFD, bankLatch,
   romLatch)` into `ramCurrent[]`/`ramContended[]`/`romInUse`. ROM index is
   `(1FFD.D2 << 1) | 7FFD.D4`; `1FFD.D0` swaps the normal map for one of four all-RAM
@@ -13832,6 +13834,31 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
   zxevo_fw.bin" if ERS dislikes ZxEvoAvr's version string), RS232 #F8EF..#FFEF.
 - Test ELF `debug/DVp2-evo-baseconf-1.0.8.elf`. Hw check owed: ERS boots to its menu,
   14 MHz, the menu's TR-DOS / 128 / 48 rows, SD browse, Dune II (`dune.trd` + DUNE.DAT).
+- **Across the Edge on BaseConf: two timing bugs, both hw-confirmed fixed 2026-10-04** (owner:
+  `fix_0` correct on Pentagon AND BaseConf). Symptom: the border effect shifted and
+  DIAGONAL (the four rectangles slanted), Pentagon fine. Found with the PERF build
+  (`[PERF] 60f: brdT d intT haltT`, `[PERF] brd:`) diffed Pentagon vs BaseConf in the same
+  scene, plus a framebuffer row scan (transition x per row) — read those before theorising.
+  1. **The INTA rule (`intAckFrame`) was keyed on `global_tstates`**: a HALTed CPU takes the
+     NEXT frame's INT in the current frame's tail overshoot, where `global_tstates` is still
+     the frame whose INT was acked at its start — so the new window read "already acked" and
+     the INT came one HALT NOP late, every frame (`intT 4..7` vs Pentagon's `0..3`). Now
+     `EvoBase::intWindowId(tstates+latetiming, statesInFrame, global_tstates)` = the window
+     the sample belongs to (wraps like `isActiveINT`), used at the ack (Z80::interrupt) and
+     in `isActiveINT`.
+  2. **ATM/Evo early-returning port handlers skipped the I/O cycle's last 3 T**
+     (`atmPortWriteEarly` / `atmPortReadEarly` returned before the `Draw(3)` every generic
+     path adds). EvoBase owns `#7FFD`, so the demo's per-line and INT-handler `OUT (#7FFD)`
+     each ran 3 T short: `d` 6 T short (two OUTs in the handler) and every border change
+     6 px earlier per line = the diagonal. Ports.cpp adds `VIDEO::Draw(3, false)` after both
+     (uncontended on ATM/Evo); covers ATM1/2+/3 too.
+  The demo measures its own INT phase (`#BF2A`, an 8 T `DEC A / JP (HL)` loop, 4 T
+  resolution) — that is why `fix_0..3` exist ("fixed only for Pentagon128") and why a
+  residual 1 T HALT-phase difference between runs is history, not timing. An "INT offset"
+  menu setting (TS-BIOS HSINT analogue) was built and REMOVED by the owner — the real FPGA
+  has no such register (`HINT_BEG` fixed); do not re-add it.
+  Still the same hole, deliberately untouched: GMX early ports (Scorpion) and the NEMO paths
+  on other machines return without the late 3 T.
 - **Speed: ATM/Evo whole-line modes ride the TS-Conf fast memory path (2026-10-02, hw: owner
   "сейчас отлично", Dune II on the Evo at 504 MHz).** Before: Dune in game = 32k instructions
   a frame at 14 MHz, **860 ns each** (PERF_HIST), `cpu=26.5-27.7 ms`, 35-36 FPS, no HALT in

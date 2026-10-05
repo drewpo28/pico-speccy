@@ -1064,7 +1064,9 @@ void Z80::interrupt(void) {
     if (Z80Ops::isTsconf) TsConf::intTrace(REG_PC, REG_SP, tsVect, wasHalted);   // PERF_TRACE ring, before the push
     // ZX-Evo BaseConf (zint.v intend = INTA): the acknowledge ends the pulse, so a
     // handler shorter than the window (ERS's EI / RET) is not interrupted twice.
-    if (Z80Ops::isAtm && Atm::evo) EvoBase::intAckFrame = CPU::global_tstates;
+    if (Z80Ops::isAtm && Atm::evo)
+        EvoBase::intAckFrame = EvoBase::intWindowId((uint32_t)((int32_t)CPU::tstates + CPU::latetiming),
+                                                   CPU::statesInFrame, CPU::global_tstates);
 
     // Z80Ops::interruptHandlingTime(7);
     VIDEO::Draw(7, false);

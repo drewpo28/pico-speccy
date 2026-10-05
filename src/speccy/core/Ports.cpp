@@ -1122,7 +1122,10 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // INTRQ status port — cold flash dispatch (src/Atm.cpp), ahead of the ULA branch.
   if (Z80Ops::isAtm) {
     uint8_t atmData;
-    if (atmPortReadEarly(address, &atmData)) return atmData;
+    // The late half of the I/O cycle (3 T, uncontended on ATM/Evo) that every
+    // generic path below adds itself: without it each IN the machine claims was
+    // 3 T short against the raster (Across the Edge on BaseConf, 2026-10-04).
+    if (atmPortReadEarly(address, &atmData)) { VIDEO::Draw(3, false); return atmData; }
   }
   // Scorpion Turbo+ speed toggle. The clock is switched by READING a port, not by
   // writing one: MAME's scorpiontb_state::scorpion_io installs
@@ -2962,7 +2965,9 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // Z-Controller data #57 ahead of the ATM decode: the 2+'s DOS-space #xx77 family
   // leaves A5 undecoded (%0nn101n1), so #57 would otherwise land in write77 and
   // reprogram the memory map. UnrealSpeccy tests #57 first, before every DOS port.
-  if (Z80Ops::isAtm && atmPortWriteEarly(address, data)) return;
+  // + the late 3 T of the I/O cycle, as above: Across the Edge on BaseConf lost 3 T a
+  // line through one such OUT, and every border change slid 6 px per line (hw 2026-10-04).
+  if (Z80Ops::isAtm && atmPortWriteEarly(address, data)) { VIDEO::Draw(3, false); return; }
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
