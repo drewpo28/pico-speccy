@@ -267,14 +267,14 @@ void noteBad() {
     s_badDos = ESPectrum::trdos;
 }
 void desyncStop() {
-    static const char* const kDos[] = { "5.03", "5.04TM", "5.05D", "Custom", "6.11e" };
+    static const char* const kDos[] = { "5.03", "5.04TM", "5.05D", "Custom", "6.11e", "5.04T" };
     char m[160];
     int n = snprintf(m, sizeof m, "RZX: desync at frame %u\n", (unsigned)s_played);
     if (DivMMC::enabled)
         snprintf(m + n, sizeof m - n, "esxDOS is on: recordings are\nmade without it - turn it off");
     else if (s_badDos && !Config::trdosBaseOwnedByMachine())
         snprintf(m + n, sizeof m - n, "inside TR-DOS %s - try another\nTR-DOS ROM (Devices > Beta 128)",
-                 Config::trdosBios < 5 ? kDos[Config::trdosBios] : "?");
+                 Config::trdosBios < 6 ? kDos[Config::trdosBios] : "?");
     else
         snprintf(m + n, sizeof m - n, "The recording does not match\nthis machine / ROM set (%s)",
                  romsetDisplay(Config::romSet));

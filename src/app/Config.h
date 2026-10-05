@@ -456,7 +456,12 @@ public:
     static bool trdosFastMode;
     static bool trdosAutoBoot;  // inject a "boot" file into TRD/SCL images that lack one
     static uint8_t trdosSoundLed; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
-    static uint8_t trdosBios; // 0=5.03, 1=5.04TM, 2=5.05D, 3=Custom (flashable), 4=6.11e
+    static uint8_t trdosBios; // 0=5.03, 1=5.04TM, 2=5.05D, 3=Custom (flashable), 4=6.11e, 5=5.04T
+    // Point rom[4] at the TR-DOS picked by `v` (a trdosBios value) and register its
+    // overlay over the 5.04T base — none for 5.04T itself and Custom, which are whole
+    // images in flash and so are never materialised into PSRAM. One place for
+    // requestMachine and the menu hook.
+    static void bindTrdosRom(uint8_t v);
     // ALF cartridge: 0 = built-in default "Elf-1" (256KB, in flash); >0 = a cartridge
     // loaded into the shared flash region (gm_bank region), value = size in 16K banks.
     static uint8_t alfCartBanks;

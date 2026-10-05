@@ -167,6 +167,7 @@ namespace Atm {
     uint8_t borderBright();     // 8 when the border is BRIGHT (A3 = 0 at the #FE write)
     uint32_t palRgb(uint8_t i); // palette entry i as RGB888 (2 bits per channel)
     uint8_t romPageCount();
+    size_t  romPsramBytes();    // ROM pages flattened into butter PSRAM (Memory Info)
 
     // ── .pss snapshot (src/speccy/core/Pss.cpp) ─────────────────────────────
     // The manager's register file, the palette RAM, the clock and — on the ZX-Evo —

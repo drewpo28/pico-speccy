@@ -555,23 +555,12 @@ static bool hook_p3Slock(int32_t nv, int32_t) {
     return true;
 }
 static bool hook_trdosRom(int32_t nv, int32_t) {
-    // 5.03 / 5.04TM / 5.05D / 6.11e are read-only overlays over the 5.04T base applied
-    // on the fly by MemESP (RomOverlay.h), so this binds immediately on every board —
-    // no reboot. Keep in step with the same switch in Config::requestMachine.
-    // Not while the machine keeps its OWN TR-DOS on that base (GMX / ProfROM / KAY):
+    // Read-only overlays over the 5.04T base (or the base / Custom image itself), so
+    // this binds immediately on every board — no reboot (Config::bindTrdosRom).
+    // Not while the machine keeps its OWN TR-DOS (GMX / ProfROM / KAY / TS-Conf / ATM):
     // the pick is saved and binds at the next machine switch (Config::requestMachine).
     if (Config::trdosBaseOwnedByMachine()) return true;
-    const uint8_t* base = gb_rom_4_trdos_504t;
-    const uint8_t* ov   = gb_overlay_trdos_505d;
-    switch (nv) {
-        case 0: ov = gb_overlay_trdos_503;   break;
-        case 1: ov = gb_overlay_trdos_504tm; break;
-        case 4: ov = gb_overlay_trdos_611e;  break;
-        case 3: base = gb_rom_4_trdos_custom; break;
-        default: break;
-    }
-    MemESP::rom[4].assign_rom(base);
-    MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);
+    Config::bindTrdosRom((uint8_t)nv);
     return true;
 }
 static bool hook_tapePlayer(int32_t nv, int32_t) {

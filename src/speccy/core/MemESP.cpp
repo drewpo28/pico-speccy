@@ -802,6 +802,12 @@ void MemESP::registerOverlay(const uint8_t* base, const uint8_t* ov) {
 // Per frame from ESPectrum::loop: give one pending registry entry its flat page.
 // Butter PSRAM only — a 16 KB heap block here would be the framebuffer's margin;
 // boards without the butter pool keep the binary-search path for good.
+size_t MemESP::overlayFlatBytes() {
+    size_t n = 0;
+    for (const auto& f : s_flat) if (f.flat) n += MEM_PG_SZ;
+    return n;
+}
+
 void MemESP::materializeOverlays() {
     if (s_flat_off || overlayCount == 0) return;
     int pending = -1;

@@ -56,12 +56,15 @@ static const uint8_t* s_rom[32] = { nullptr }; // resolved pages (flash or PSRAM
 static uint8_t* s_flat = nullptr;              // PSRAM block holding the flattened pages
 static RomsetIdx s_flat_rs = R_NONE;           // romset s_flat currently holds
 static bool     s_flat_warned = false;
+static uint32_t s_flat_bytes = 0;             // size of s_flat (Memory Info)
 
 // Filler for a page that could not be resolved (no PSRAM): reads 0xFF like an
 // empty ROM socket. Aligned so the pointer is a valid flash address (writes are
 // dropped by g_atm_ro anyway).
 static const uint8_t kFF[16] __attribute__((aligned(4))) = {
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
+
+size_t romPsramBytes() { return s_flat_bytes; }
 
 uint8_t romPageCount() { return s_npages ? s_npages : 4; }
 
@@ -107,7 +110,7 @@ void resolveRoms() {
         } else                            slot[i] = (int8_t)nslots++;
     }
     if (nslots && (s_flat_rs != rs || !s_flat)) {
-        if (s_flat) { Buffer::pfree(s_flat); s_flat = nullptr; }
+        if (s_flat) { Buffer::pfree(s_flat); s_flat = nullptr; s_flat_bytes = 0; }
         s_flat_rs = R_NONE;
         if (Buffer::butterPoolReady()) {
             void* p = Buffer::palloc((size_t)nslots * MEM_PG_SZ,
@@ -131,6 +134,7 @@ void resolveRoms() {
                 }
             }
             s_flat_rs = rs;
+            s_flat_bytes = (uint32_t)nslots * MEM_PG_SZ;
             s_flat_warned = false;
             Debug::log("[ATM] ROM pages flattened into PSRAM @%p (%u of %u pages, %u KB)",
                        s_flat, (unsigned)nslots, (unsigned)s_npages,

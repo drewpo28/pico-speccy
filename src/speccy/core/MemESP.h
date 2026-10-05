@@ -356,6 +356,7 @@ public:
     // across re-registrations — GMX/ProfROM re-register on every bank switch.
     static const uint8_t* overlayFlat[8];
     static void materializeOverlays();
+    static size_t overlayFlatBytes();     // butter PSRAM held by materialised ROM overlays
     static uint8_t        overlayCount;
     // ov == nullptr unregisters `base`. Call at ROM-bank assignment.
     static void registerOverlay(const uint8_t* base, const uint8_t* ov);

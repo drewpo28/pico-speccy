@@ -2246,6 +2246,14 @@ of `aligned(4096)` padding. Free heads: DVp2 82.7 KB, z0p2 79.1, z0p2-PIOUSB 64.
   the `hook_trdosRom` switch, the identical switch in `Config::requestMachine`, and
   Hardware Info's `trbios[]` NAME TABLE, whose order is the value's and not the
   menu's (and whose clamp was `< 4`).
+- **5.04T is a menu pick too since 2026-10-05: value 5, and the DEFAULT** (it was 1 =
+  5.04TM, under a comment that said 5.04T). 5.04T IS the flash base, so it registers no
+  overlay and is never materialised into PSRAM — the old default cost a 16 KB butter
+  page for 114 differing bytes, and only Custom avoided it. The two switches are now ONE,
+  `Config::bindTrdosRom(v)` (requestMachine + `hook_trdosRom`); the name tables
+  (Hardware Info `trbios[]`, Rzx `kDos[]`) have 6 entries; `Config::load` clamps > 5.
+  Existing NVS keeps its pick. TS-Conf and ATM joined `trdosBaseOwnedByMachine()` the
+  same day — they carry their own TR-DOS and never read rom[4].
 - **`tools/rom_verify.py` is the safety net — run it after ANY change to a ROM
   source, to `rom_pack.py`, or to a base choice.** It reassembles both shipped
   ZX-Evo images and every re-based variant out of the GENERATED arrays and diffs

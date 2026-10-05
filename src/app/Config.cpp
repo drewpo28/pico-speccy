@@ -154,7 +154,7 @@ bool     Config::betadisk = true;
 bool     Config::trdosFastMode = true;
 bool     Config::trdosAutoBoot = true;
 uint8_t  Config::trdosSoundLed = 1; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
-uint8_t  Config::trdosBios = 1; // Default: 5.04T
+uint8_t  Config::trdosBios = 5; // Default: 5.04T — the flash base itself, no overlay
 uint8_t  Config::alfCartBanks = 0; // 0 = built-in Elf-1; >0 = loaded cart size in 16K banks
 string   Config::alfCartPath = ""; // pending cart to flash into the shared region at boot
 string   Config::dckCartPath = ""; // Timex DOCK cartridge in the TC2068 slot
@@ -330,11 +330,32 @@ void profRegisterLiveOverlay(uint8_t bank) {
 // (Scorpion GMX / ProfROM plane banks, every Nemo KAY's bank 3), so the user's TR-DOS
 // BIOS pick must not re-register that pointer while it runs — the registry keeps ONE
 // overlay per base and the pick would replace the machine's own DOS. Such machines
-// never read rom[4] anyway.
+// never read rom[4] anyway. TS-Conf (TS-BIOS page 1) and ATM / ZX-Evo (their own
+// page tables) carry TR-DOS in their ROM image and never read rom[4] either; leaving
+// them out made the pick's overlay materialise into 16 KB of butter PSRAM for nothing.
 bool Config::trdosBaseOwnedByMachine() {
+    if (arch == A_TSCONF || arch == A_ATM) return true;
     return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
                                isScorpEvoRomset(romSetScorp) ||
                                isKayRomset(romSetScorp));
+}
+
+// 5.03 / 5.04TM / 5.05D / 6.11e are small read-only overlays over the 5.04T base,
+// applied on the fly by MemESP (RomOverlay.h) and materialised into one 16 KB butter
+// page while picked. 5.04T IS the base and Custom a raw image: no overlay, no copy.
+void Config::bindTrdosRom(uint8_t v) {
+    const uint8_t* base = gb_rom_4_trdos_504t;
+    const uint8_t* ov   = nullptr;                   // 5.04T: the base itself
+    switch (v) {
+        case 0: ov = gb_overlay_trdos_503;   break;  // 5.03
+        case 1: ov = gb_overlay_trdos_504tm; break;  // 5.04TM
+        case 2: ov = gb_overlay_trdos_505d;  break;  // 5.05D
+        case 4: ov = gb_overlay_trdos_611e;  break;  // BetaDisk 128 v.6.11e
+        case 3: base = gb_rom_4_trdos_custom; break; // user-uploaded custom (raw)
+        default: break;                              // 5 = 5.04T
+    }
+    MemESP::rom[4].assign_rom(base);
+    MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);   // nullptr unregisters
 }
 
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
@@ -859,27 +880,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         break;
     }
     }
-    // 5.03 / 5.04TM are small read-only overlays over the 5.05D base, applied on the
-    // fly by MemESP (RomOverlay.h): rom[4] points at the 5.05D base in flash, and the
-    // active overlay supplies the differing bytes. No slot, no flash write, no reboot.
-    // NOT on Scorpion GMX: there rom[4] IS a GMX bank (plane 1 slot 0 — romInUse is
-    // (plane<<2)|slot), so this binding would clobber it, and its registerOverlay on
-    // the 5.05D base would evict the GMX plane-1 TR-DOS overlay keyed to the same
-    // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
-    // own bank 3).
-    if (!trdosBaseOwnedByMachine()) {
-        const uint8_t* base = gb_rom_4_trdos_504t;
-        const uint8_t* ov = gb_overlay_trdos_505d;   // the base is 5.04T now
-        switch (Config::trdosBios) {
-            case 0: ov = gb_overlay_trdos_503;   break;  // 5.03
-            case 1: ov = gb_overlay_trdos_504tm; break;  // 5.04TM
-            case 4: ov = gb_overlay_trdos_611e;  break;  // BetaDisk 128 v.6.11e
-            case 3: base = gb_rom_4_trdos_custom; break; // user-uploaded custom (raw)
-            default: break;                              // 5.05D = overlay over 5.04T
-        }
-        MemESP::rom[4].assign_rom(base);
-        MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);
-    }
+    // rom[4] = the picked TR-DOS (bindTrdosRom). NOT on machines that carry their
+    // own TR-DOS (trdosBaseOwnedByMachine): on Scorpion GMX rom[4] IS a GMX bank
+    // (plane 1 slot 0 — romInUse is (plane<<2)|slot), and the registry keeps ONE
+    // overlay per base, so registering the pick would evict the machine's own TR-DOS
+    // overlay on the shared 5.04T base.
+    if (!trdosBaseOwnedByMachine()) bindTrdosRom(Config::trdosBios);
 
     // Battery-backed state follows the machine (see the note in RTC.cpp): push
     // what the outgoing one wrote to its own file and adopt the incoming one's.
@@ -1435,6 +1441,7 @@ void Config::load() {
             trdosSoundLed = old ? 3 : 0;
         }
         nvs_get_u8("trdosBios", trdosBios, sts);
+        if (trdosBios > 5) trdosBios = 5;
         nvs_get_u8("alfCartBanks", alfCartBanks, sts);
         nvs_get_str("alfcart", alfCartPath, sts);
         nvs_get_str("dckcart", dckCartPath, sts);

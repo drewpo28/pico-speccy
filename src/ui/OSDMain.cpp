@@ -83,6 +83,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "drivers/board/BoardPins.h"
 #include "drivers/graphics/graphics.h"
 #include "OSDNewMenu.h"
+#include "UiModel.h"
 #include "player/PicoPlayer.h"  // pp::available / playableExt (F5 -> Pico-Zx-Player)
 #include "UiBrowser.h"
 #include "UiDialog.h"
@@ -6105,14 +6106,43 @@ void OSD::MemoryInfo() {
         pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
                         " PSRAM          : off (Debug menu)\n");
 #ifdef BUTTER_PSRAM_GPIO
+    // The whole butter chip, top to bottom: what the running machine holds (its RAM
+    // pages and any ROM pages flattened out of flash overlays), the fixed regions
+    // around the Buffer arena (DivMMC banks above the pages, GS sample RAM at the
+    // top) and what the arena itself carries. The rows add up to the chip size.
     if (butter_psram_size()) {
-        uint32_t bsz = butter_psram_size();
-        size_t emu = (size_t)butter_pages * MEM_PG_SZ;
+        const size_t bsz   = butter_psram_size();
+        const size_t emu   = (size_t)butter_pages * MEM_PG_SZ;
+        const size_t roms  = Atm::romPsramBytes() + MemESP::overlayFlatBytes();
+        const size_t divm  = DivMMC::use_psram ? (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE : 0;
+        const size_t gs    = Config::gs_enabled ? GS::configuredRamBytes() : 0;
+        const size_t midi  = MidiSynth::bankPsramBytes();   // butter here (SPI only without butter)
+        const size_t gig   = VIDEO::gigascreenArmed() ? VIDEO::gigascreenPrevFBBytes() : 0;
         Buffer::PoolStat bp = Buffer::poolStat(Buffer::TIER_BUTTER);
+        const size_t known = roms + midi + gig;           // arena users listed by name
+        const size_t other = bp.used > known ? bp.used - known : 0;
+        const size_t used  = emu + divm + gs + roms + midi + gig + other;
+        const size_t free_ = bsz > used ? bsz - used : 0;
+        const char* fam = nullptr; const char* rs = nullptr;
         pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, " Butter PSRAM (%d.%d MB):\n",
             (int)(bsz >> 20), (int)(((bsz & 0xFFFFF) * 10) >> 20));
-        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  Emu RAM pages  : %d KB\n", (int)(emu / KB));
-        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  Buffer arena   : %d/%d KB\n", (int)(bp.used / KB), (int)(bp.total / KB));
+        if (nm::machineMenuName(fam, rs))
+            pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %s %s\n", fam, rs ? rs : "");
+        auto row = [&](const char* name, size_t b) {
+            if (b) pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d KB\n",
+                                   name, (int)((b + KB - 1) / KB));
+        };
+        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d KB (%d pg)\n",
+                        "Machine RAM", (int)(emu / KB), butter_pages);
+        row("Machine ROMs", roms);
+        row("DivMMC banks", divm);
+        row("General Sound", gs);
+        row("MIDI (GM.DLS)", midi);
+        row("Gigascreen", gig);
+        row("Other buffers", other);
+        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d KB\n", "Free", (int)(free_ / KB));
+        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d/%d KB\n",
+                        "(Buffer arena)", (int)(bp.used / KB), (int)(bp.total / KB));
     }
 #endif
     if (psram_size()) {
@@ -6148,7 +6178,7 @@ void OSD::MemoryInfo() {
     // in PSRAM, not the heap — invisible in the SRAM list above. List the PSRAM users.
     size_t psram_feat_total = 0;
     int psram_feat_n = 0;
-    for (int i = 0; i < FEAT_COUNT; i++) {
+    for (int i = 0; i < FEAT_COUNT && !butter_psram_size(); i++) {
         FeatureId f = (FeatureId)i;
         if (!featureEnabled(f)) continue;
         size_t pc = featurePsramCost(f);
@@ -6603,11 +6633,11 @@ static void buildEmulatorInfoText() {
 
                 {
                     // Indexed BY THE VALUE, so the order here is Config::trdosBios's,
-                    // not the menu's display order (6.11e is 4, Custom stays 3).
-                    static const char* trbios[] = { "5.03", "5.04TM", "5.05D", "Custom", "6.11e" };
+                    // not the menu's display order (6.11e is 4, 5.04T 5, Custom stays 3).
+                    static const char* trbios[] = { "5.03", "5.04TM", "5.05D", "Custom", "6.11e", "5.04T" };
                     pos += infoAppend(buf, pos, bufsz,
                         "  ROM / autoboot: %s / %s\n",
-                        trbios[Config::trdosBios < 5 ? Config::trdosBios : 2],
+                        trbios[Config::trdosBios < 6 ? Config::trdosBios : 5],
                         Config::trdosAutoBoot ? "On" : "Off");
                 }
 
