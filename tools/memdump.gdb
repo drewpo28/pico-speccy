@@ -344,6 +344,9 @@ if Z80Ops::isAtm
   printf "pal=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X border=%02X\n", (unsigned char)Atm::pal[0], (unsigned char)Atm::pal[1], (unsigned char)Atm::pal[2], (unsigned char)Atm::pal[3], (unsigned char)Atm::pal[4], (unsigned char)Atm::pal[5], (unsigned char)Atm::pal[6], (unsigned char)Atm::pal[7], (unsigned char)Atm::pal[8], (unsigned char)Atm::pal[9], (unsigned char)Atm::pal[10], (unsigned char)Atm::pal[11], (unsigned char)Atm::pal[12], (unsigned char)Atm::pal[13], (unsigned char)Atm::pal[14], (unsigned char)Atm::pal[15], (unsigned char)VIDEO::borderColor
   printf "FDC: disk=%d state=%u step=%u cmd=%02X trk=%u sec=%u data=%02X status=%04X ctrl=%05X\n", (int)ESPectrum::fdd.diskS, (unsigned)ESPectrum::fdd.state, (unsigned)ESPectrum::fdd.stepState, (unsigned char)ESPectrum::fdd.command, (unsigned char)ESPectrum::fdd.track, (unsigned char)ESPectrum::fdd.sector, (unsigned char)ESPectrum::fdd.data, (unsigned short)ESPectrum::fdd.status, (unsigned)ESPectrum::fdd.control
   printf "disk_present=%d\n", (int)(ESPectrum::fdd.disk[ESPectrum::fdd.diskS] != 0)
+  if Atm::evo
+    printf "evo: eff7=%02X fddMask=%X vgSys=%02X inNmi=%d nmiClr=%d inTrdemu=%d fnt=%d\n", (unsigned char)EvoBase::pEFF7, (unsigned char)EvoBase::fddMask, (unsigned char)EvoBase::vgSys, (int)EvoBase::inNmi, (int)EvoBase::nmiClrPending, (int)EvoBase::inTrdemu, (int)g_atm_fnt
+  end
   set logging enabled off
   set logging redirect off
 end

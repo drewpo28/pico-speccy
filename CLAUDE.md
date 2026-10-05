@@ -13772,7 +13772,7 @@ and a disassembly of MSD888's test ROM, which agree.
 
 **Round 2 (same day): the ROM is built for `fpga/base_trdemu`, NOT `baseconf/trunk`**
 (cfgs/standalone_base_trdemu; the first cut followed trunk and ERS hung): config
-read-back is on **#BD** (A12..A8 index; #BE is write-only = leave NMI/trdemu), #BD
+read-back is on **#BD** (A12..A8 index; #BE write = leave NMI/trdemu; #BE READ answers the same read-back too — baseconf trunk's location, which the ROM's ATM CP/M BIOS 1.07.15pe still uses: `ED_LDIR` saves window 2 with `IN (#06BE)` and restores it via `#B7F7`; #FF there left set-1 window 2 on RAM 0 and GOB2 hung loading; hw-confirmed 2026-10-05, owner: GOB2 runs), #BD
 write #13BD = FDD mask (#10/#11 breakpoint), no savelij ports, #FF read in shadow =
 {INTRQ, DRQ, 1, sys[4:0]}, #BF D5 = 4096-colour palette (the ATM3 EXT_PAL format),
 and **page read-back is INVERTED** (top.v `.pages(~{rd_pages})` — ERS's far-call

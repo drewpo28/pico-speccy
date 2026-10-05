@@ -406,7 +406,15 @@ static bool portReadImpl(uint16_t address, uint8_t& v) {
     switch (lo) {
     case 0xBF: v = pBF; return true;
     case 0xBD: v = portBD((uint8_t)((address >> 8) & 0x1F)); return true;
-    case 0xBE: v = 0xFF; return true;
+    // #BE read = the same read-back. base_trdemu moved it to #BD (EVO Reset Service
+    // reads #BD), baseconf trunk had it on #BE — and the ROM's own ATM CP/M BIOS
+    // 1.07.15pe still reads #BE: ED_LDIR (atm_cpm/source/ed_drv.a80, page 4 #1837)
+    // saves window 2 with IN (#06BE) and restores it through #B7F7. Answering #FF
+    // left set-1 window 2 on RAM page 0, so every RAM-disk access moved the BIOS's
+    // copy window and a sector bound for #8000 landed on #0000 (GOB2: the CCP's
+    // JP BDOS at #0005 overwritten, hang while loading). Nothing in the ROM reads #BE
+    // expecting #FF.
+    case 0xBE: v = portBD((uint8_t)((address >> 8) & 0x1F)); return true;
     case 0xF7:
         // #BFF7 (noshad, A8 = 1) / #BEF7 (shadow, A8 = 0) with the Gluk ports on; any
         // other #xxF7 reads #FF.
