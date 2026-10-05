@@ -476,6 +476,12 @@ static bool p_showAtm() {
     return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
+// ZX Evolution BaseConf (ATM arch, R_EVO_BASE) running or staged.
+static bool p_evoBaseActive() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m < 0) return Config::isEvoBase();
+    return ((m >> 8) & 0xFF) == A_ATM && (m & 0xFF) == R_EVO_BASE;
+}
 static bool p_tsconfActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::arch == A_TSCONF;
@@ -661,6 +667,16 @@ static const Option opt_tsconf_clk[] = {
     { "14 MHz",  2 },
 };
 
+// ZX Evolution BaseConf raster — the AVR's MODES_RASTER (Scroll Lock on the real board,
+// kept in its NVRAM), video_sync_v.v / zclock.v: the frame, the INT position and, in
+// 48K/128K, the contention all follow it.
+static const Option opt_evo_raster[] = {
+    { "Pentagon", 0 },
+    { "60 Hz",    1 },
+    { "48K",      2 },
+    { "128K",     3 },
+};
+
 // Murmuzavr mode is the extended page count, not a machine — values are page counts, and
 // MEM_PG_CNT == 64 is the "no extra RAM" state. The pages live in PSRAM as far as the
 // budget reaches (Buffer::pageBudgetButter) and in the SD swap file beyond it.
@@ -708,6 +724,10 @@ static const Node kTsconf[] = {
     NM_BOOL (TXT_MACH_TSCONF_VDAC2_ADAPT, SET_TSCONF_VDAC2_ADAPT, nullptr),
 };
 
+static const Node kEvoBase[] = {
+    NM_RADIO(TXT_MACH_EVO_RASTER, SET_EVO_RASTER, opt_evo_raster, nullptr),
+};
+
 // Timex TC2068 cartridge port. A cartridge is not a setting: it is mounted and
 // ejected right here, like a tape or a disk, and the machine restarts on it (the
 // HOME ROM probes the DOCK at reset and starts what it finds there by itself).
@@ -738,6 +758,7 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
     NM_SUB  (NM_IND TXT_MACH_TSCONF_OPTS, kTsconf, p_tsconfActive),
+    NM_SUB  (NM_IND TXT_MACH_EVO_OPTS, kEvoBase, p_evoBaseActive),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     NM_RADIO(TXT_MACH_OTHER, SET_MACHINE, opt_mach_other, p_extRam),
     // Not a machine, but it lives with them by request: the built-in game — the

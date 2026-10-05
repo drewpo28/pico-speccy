@@ -380,6 +380,14 @@ static bool    hook_tsconfVdac2Smooth(int32_t, int32_t) { Ft812::renderRequest()
 static int32_t get_tsconfVdac2Adapt()          { return Config::tsconf_vdac2_adapt ? 1 : 0; }
 static void    put_tsconfVdac2Adapt(int32_t v) { Config::tsconf_vdac2_adapt = v != 0; }
 static bool    hook_tsconfVdac2Adapt(int32_t, int32_t) { VIDEO::ftPaletteProgram(); return true; }   // cube back in, or the adaptive one rebuilt
+static int32_t get_evoRaster()          { return (int32_t)Config::evo_raster; }
+static void    put_evoRaster(int32_t v) { Config::evo_raster = (uint8_t)(v & 3); }
+// The frame length, the audio set, the paper/border anchors and the display's v_total
+// are all derived at the machine reset — a raster change restarts the machine.
+static bool    hook_evoRaster(int32_t, int32_t) {
+    if (Config::isEvoBase()) ESPectrum::reset();
+    return true;
+}
 static bool    hook_tsconfClk(int32_t, int32_t) {
     if (Config::arch == A_TSCONF) TsConf::applyZclk(true);   // re-derive the live clock under the new cap
     return true;

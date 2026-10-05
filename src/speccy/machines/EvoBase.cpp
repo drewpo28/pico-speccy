@@ -20,6 +20,7 @@
 #include "ui/OSDMain.h"
 
 uint8_t g_atm_fnt = 0;
+bool    g_evo_contend = false;
 extern "C" const unsigned char gb_rom_atm_font[];
 
 namespace EvoBase {
@@ -125,6 +126,30 @@ void snapLoad(const uint8_t* in, uint32_t n) {
     for (int i = 0; i < 4; i++) s_sav[i] = in[4 + i];
     s_nemoRt = in[8]; s_nemoWt = in[9]; s_nemoW1 = in[10]; s_nemoWlo = in[11];
     g_atm_fnt = (in[12] && font) ? 1 : 0;
+}
+
+// 48K/128K raster contention (zclock.v): the 6,5,4,3,2,1,0,0 pattern on #4000-#7FFF,
+// and in the 128K raster also on #C000-#FFFF while #7FFD D0 is set — by ADDRESS and
+// #7FFD, whatever the memory manager has mapped there. Only at 3.5 MHz (!int_turbo).
+// mode_contend_type is tied to 0 in top.v, so the +2A/+3 pattern never occurs.
+void contendApply() {
+    g_evo_contend = evo && (Config::isEvo48Raster() || Config::isEvo128Raster()) &&
+                    ESPectrum::multiplicator == 0;
+    MemESP::ramContended[1] = g_evo_contend;
+    MemESP::ramContended[3] = g_evo_contend && Config::isEvo128Raster() && (p7ffd & 1);
+}
+
+// Scroll Lock = the AVR's raster switch (avr/baseconf zx.c: case 0x7E cycles the
+// MODES_RASTER|MODE_VGA bits, stored in the PCF8583 NVRAM). We cycle the raster alone —
+// there is no TV/VGA output choice here — and persist it like the menu row does. The
+// raster sets the frame, audio and display timing, which are derived at the reset.
+void scrollLockRaster() {
+    static const char* const kName[4] = { " Raster: Pentagon ", " Raster: 60 Hz ",
+                                          " Raster: 48K ", " Raster: 128K " };
+    Config::evo_raster = (uint8_t)((Config::evo_raster + 1) & 3);
+    Config::save();
+    ESPectrum::reset();
+    OSD::notify(kName[Config::evo_raster]);
 }
 
 void clockApply() {

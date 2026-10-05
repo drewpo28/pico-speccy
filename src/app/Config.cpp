@@ -81,6 +81,7 @@ uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_50;
 bool     Config::Issue2 = true;
 uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
 uint8_t  Config::tsconf_clk_cap = 2;   // ZCLK cap: 14 MHz allowed
+uint8_t  Config::evo_raster = 0;       // BaseConf raster: Pentagon
 bool     Config::tsconf_vdac2 = false;
 bool     Config::tsconf_vdac2_smooth = false;
 bool     Config::tsconf_vdac2_adapt = true;
@@ -1622,6 +1623,9 @@ void Config::load() {
         int tsc = -1;
         nvs_get_i("tsconf_clk_cap", tsc, sts);
         tsconf_clk_cap = (tsc >= 0 && tsc <= 2) ? (uint8_t)tsc : 2;
+        int evr = 0;
+        nvs_get_i("evo_raster", evr, sts);
+        evo_raster = (evr >= 0 && evr <= 3) ? (uint8_t)evr : 0;
         nvs_get_b("tsconf_vdac2", tsconf_vdac2, sts);
         nvs_get_b("tsconf_vdac2_smooth", tsconf_vdac2_smooth, sts);
         nvs_get_b("tsconf_vdac2_adapt", tsconf_vdac2_adapt, sts);
@@ -1937,6 +1941,7 @@ void Config::writeKeys(NvsWriter& buf) {
     // The PICK, not the live count — see Config::mem_pg_cnt in Config.h.
     nvs_set_i(buf,"MEM_PG_CNT", mem_pg_cnt);
     nvs_set_i(buf,"tsconf_clk_cap", tsconf_clk_cap);
+    nvs_set_i(buf,"evo_raster", evo_raster);
     nvs_set_str(buf,"tsconf_vdac2", tsconf_vdac2 ? "true" : "false");
     nvs_set_str(buf,"tsconf_vdac2_smooth", tsconf_vdac2_smooth ? "true" : "false");
     nvs_set_str(buf,"tsconf_vdac2_adapt", tsconf_vdac2_adapt ? "true" : "false");

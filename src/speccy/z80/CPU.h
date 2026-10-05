@@ -41,6 +41,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #define TSTATES_PER_FRAME_48 69888
 #define TSTATES_PER_FRAME_128 70908
+#define TSTATES_PER_FRAME_EVO60 58688   // ZX-Evo BaseConf 60 Hz raster: 262 lines x 224 T (video_sync_v.v)
 #define TSTATES_PER_FRAME_PENTAGON 71680
 #define TSTATES_PER_FRAME_PROFI 69888
 #define TSTATES_PER_FRAME_BYTE  69888
@@ -59,6 +60,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define MICROS_PER_FRAME_48 19968
 #define MICROS_PER_FRAME_128 19992
 #define MICROS_PER_FRAME_PENTAGON 20480
+#define MICROS_PER_FRAME_EVO60 16768       // 58688 T / 3.5 MHz
 #define MICROS_PER_FRAME_PROFI 19968
 #define MICROS_PER_FRAME_BYTE  19968
 #define MICROS_PER_FRAME_SCORPION 19968

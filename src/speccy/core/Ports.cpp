@@ -1165,7 +1165,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   }
   // ULA PORT
   if ((address & 0x0001) == 0) {
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend))); // I/O Contention (Late)
     if (ia && p8 == 0xFE) {
       data = nes_pad2_for_alf(); // default port value is 0xFF.
     } else {
@@ -3206,7 +3206,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
             g_brd_delta = CPU::tstates - g_int_last_t; } }
 #endif
       VIDEO::brdChange = true;
-      if (!(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm))
+      if (!(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend)))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
@@ -3235,10 +3235,10 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
       ayPortWrite(address, data, true);     // A8 decode: old-TS second chip
-      VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
+      VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend))); // I/O Contention (Late)
       return;
     }
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend))); // I/O Contention (Late)
   } else {
     // ULA+ ports (odd addresses: 0xBF3B register select, 0xFF3B data)
     if (Config::ulaplus) {

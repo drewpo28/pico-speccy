@@ -247,6 +247,7 @@ void remap() {
     // p7ffd[5] & block1m); in the Pentagon-1024 mode D5 is a page bit.
     MemESP::pagingLock = (evo && EvoBase::mode1M()) ? 0 : ((p7ffd >> 5) & 1);
     for (int w = 0; w < 4; w++) MemESP::ramContended[w] = false;
+    EvoBase::contendApply();   // BaseConf 48K/128K raster: #4000 (+#C000 odd page); clears the flag elsewhere
     VIDEO::grmem = MemESP::ram[MemESP::videoLatch ? 7 : 5].direct();
 }
 

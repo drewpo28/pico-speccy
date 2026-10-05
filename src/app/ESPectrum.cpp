@@ -104,6 +104,7 @@ extern "C" volatile uint32_t hdmi_au_late_write_ct;
 #include "speccy/roms/48k/romSinclair48K.h"   // the ZX character set: the FT812 ROM fonts are scaled from it
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/machines/Timex.h"
+#include "speccy/machines/EvoBase.h"
 #include "CodeOverlay.h"
 #include "speccy/devices/gs/NgsSd.h"
 #include "speccy/devices/gs/NgsMp3.h"
@@ -1334,7 +1335,8 @@ void ESPectrum::setup() {
   // twin). Scorpion Green (316-line frame) gets its own exact set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
-      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase())) {
+      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
+      Config::isEvo48Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1353,7 +1355,14 @@ void ESPectrum::setup() {
 
     Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+  } else if (Config::isEvo60Raster()) {
+    samplesPerFrame = ESP_AUDIO_SAMPLES_EVO60;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_EVO60;
+    audioAYDivider = ESP_AUDIO_AY_DIV_EVO60;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_EVO60;
+    Audio_freq = ESP_AUDIO_FREQ_EVO60;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_EVO60 << 8) / ESP_AUDIO_SAMPLES_EVO60;
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -1901,7 +1910,8 @@ void ESPectrum::reset(uint8_t romInUse) {
   // its own exact 632-sample set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
-      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase())) {
+      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
+      Config::isEvo48Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1917,7 +1927,14 @@ void ESPectrum::reset(uint8_t romInUse) {
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_SCORP_GR;
     Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+  } else if (Config::isEvo60Raster()) {
+    samplesPerFrame = ESP_AUDIO_SAMPLES_EVO60;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_EVO60;
+    audioAYDivider = ESP_AUDIO_AY_DIV_EVO60;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_EVO60;
+    Audio_freq = ESP_AUDIO_FREQ_EVO60;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_EVO60 << 8) / ESP_AUDIO_SAMPLES_EVO60;
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -2055,6 +2072,8 @@ IRAM_ATTR bool ESPectrum::readKbd(fabgl::VirtualKeyItem *Nextkey) {
       }
     } else if (Nextkey->vk ==
                fabgl::VK_SCROLLLOCK) { // Change CursorAsJoy setting
+      // ZX Evolution BaseConf: Scroll Lock is the AVR's raster switch (zx.c, MODES_RASTER).
+      if (Config::isEvoBase()) { EvoBase::scrollLockRaster(); return false; }
       Config::CursorAsJoy = !Config::CursorAsJoy;
       PS2Controller.keyboard()->setLEDs(false, false, Config::CursorAsJoy);
       Config::save();

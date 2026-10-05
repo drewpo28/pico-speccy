@@ -167,10 +167,15 @@ void CPU::updateStatesInFrame() {
                                                        : TSTATES_PER_FRAME_48;
         IntStart = INT_START48;
         IntEnd = INT_END48;
-        if (Config::isEvoBase()) {          // ZX Evolution: the Pentagon raster
-            statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+        if (Config::isEvoBase()) {          // ZX Evolution: the raster the AVR selected
+            // video_sync_v.v VPERIOD_*; the INT is 256 fclk = 32 T in every raster (zint.v).
+            statesInFrame = Config::isEvo48Raster()  ? TSTATES_PER_FRAME_48
+                          : Config::isEvo128Raster() ? TSTATES_PER_FRAME_128
+                          : Config::isEvo60Raster()  ? TSTATES_PER_FRAME_EVO60
+                                                     : TSTATES_PER_FRAME_PENTAGON;
             IntStart = INT_START_PENTAGON;
             IntEnd = INT_END_PENTAGON;
+            EvoBase::contendApply();        // 48K/128K contention: 3.5 MHz only
         }
     } else if (Config::arch == A_SCORP) {
         // Green PCB / GMX = 316 lines/frame; Yellow = 312 (see CPU.h; MAME's
@@ -353,7 +358,10 @@ void CPU::reset() {
         Z80Ops::is512 = false;
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
-        ESPectrum::target = Config::isEvoBase() ? MICROS_PER_FRAME_PENTAGON
+        ESPectrum::target = Config::isEvo48Raster()  ? MICROS_PER_FRAME_48
+                          : Config::isEvo128Raster() ? MICROS_PER_FRAME_128
+                          : Config::isEvo60Raster()  ? MICROS_PER_FRAME_EVO60
+                          : Config::isEvoBase() ? MICROS_PER_FRAME_PENTAGON
                           : atmFrame316(Config::romSetAtm) ? MICROS_PER_FRAME_SCORPION_GR
                                                            : MICROS_PER_FRAME_48;
     } else if (Config::arch == A_TSCONF) {

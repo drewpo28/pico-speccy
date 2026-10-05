@@ -210,6 +210,9 @@ public:
     // for boards that cannot keep up with 14 MHz.
     static constexpr uint16_t TSCONF_PAGES = 256;
     static uint8_t  tsconf_clk_cap;
+    // ZX Evolution BaseConf raster: 0 Pentagon / 1 60 Hz / 2 48K / 3 128K. On the real
+    // board the AVR keeps it in the PCF8583 NVRAM and Scroll Lock cycles it.
+    static uint8_t  evo_raster;
     // VDAC2 (FT812) video board on the Z-Controller SPI (Ft812.h). Reboot-class:
     // its 1 MB RAM_G is carved out of the butter PSRAM at boot (Buffer::pageBudget).
     static bool     tsconf_vdac2;
@@ -392,7 +395,13 @@ public:
     static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
     static bool isScorpEvo() { return arch == A_SCORP && isScorpEvoRomset(romSetScorp); }
     // Both ZX-Evo configurations that run the Pentagon raster (320 lines x 224 T).
-    static bool isEvoPentRaster() { return isEvoBase() || isScorpEvo(); }
+    // ZX Evolution BaseConf raster (Config::evo_raster = the AVR's MODES_RASTER, video_sync_v.v
+    // modes_raster): 0 Pentagon (320 x 224 = 71680 T), 1 60 Hz (262 lines = 58688 T),
+    // 2 48K (69888 T, contended), 3 128K (311 x 228 = 70908 T, contended).
+    static bool isEvoPentRaster() { return (isEvoBase() && evo_raster == 0) || isScorpEvo(); }
+    static bool isEvo60Raster()   { return isEvoBase() && evo_raster == 1; }
+    static bool isEvo48Raster()   { return isEvoBase() && evo_raster == 2; }
+    static bool isEvo128Raster()  { return isEvoBase() && evo_raster == 3; }
     // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
     // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).
     static bool isPlus3Div() { return arch == A_128K && isPlus3DivRomset(romSet); }

@@ -22,6 +22,11 @@
 // #BF D2, the font RAM write enable (mirrored as g_atm_ro bit 7).
 extern uint8_t g_atm_fnt;
 
+// BaseConf 48K/128K raster at 3.5 MHz: memory and I/O contention live (zclock.v
+// contend_wait = contend && ... && !int_turbo && modes_raster[1]). Read by Ports.cpp's
+// late I/O contention; 0 on every other machine.
+extern bool g_evo_contend;
+
 namespace EvoBase {
 
 extern uint8_t  pEFF7;
@@ -45,6 +50,8 @@ inline uint64_t intWindowId(uint32_t tstates, uint32_t statesInFrame, uint64_t g
 }
 
 void reset();                   // from Atm::reset: the BaseConf register file (not the pages)
+void contendApply();            // 48K/128K raster contention (Atm::remap, CPU::updateStatesInFrame)
+void scrollLockRaster();        // Scroll Lock: next raster, saved, machine restarted (flash)
 void bootPlain();               // Atm::bootRom: 128K mode, 3.5 MHz
 void clockApply();              // { #xx77 D3, ~#EFF7 D4 } -> 14 / 7 / 3.5 MHz
 void nmiEnter();                // Z80::doNMI

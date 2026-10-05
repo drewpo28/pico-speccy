@@ -13834,6 +13834,26 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
   zxevo_fw.bin" if ERS dislikes ZxEvoAvr's version string), RS232 #F8EF..#FFEF.
 - Test ELF `debug/DVp2-evo-baseconf-1.0.8.elf`. Hw check owed: ERS boots to its menu,
   14 MHz, the menu's TR-DOS / 128 / 48 rows, SD browse, Dune II (`dune.trd` + DUNE.DAT).
+- **Raster selection (2026-10-05, hw: owner "работает", not itemised per raster)**:
+  `Config::evo_raster` (NVS `evo_raster`) = the AVR's MODES_RASTER (`avr/baseconf zx.c`,
+  `config0[5:4]` -> `video_sync_v.v` modes_raster): 0 Pentagon 320 x 224 = 71680 T,
+  1 60 Hz 262 x 224 = 58688 T (paper 34 lines earlier than Pentagon: VPIX_BEG_60HZ 42 vs
+  76; anchors = Pentagon's - 7616 T, the 288-row border anchor clamped to 0), 2 48K
+  69888 T, 3 128K 311 x 228 = 70908 T. 48K/128K reuse our 48K/128K anchors and the step-4
+  border (video_top.v `border_sync_ena = modes_raster[1]`). INT 32 T in all four (zint.v).
+  Contention (`zclock.v` contend_wait): 48K/128K raster AND 3.5 MHz only (`!int_turbo`),
+  6,5,4,3,2,1,0,0 (mode_contend_type tied 0 in top.v), on `#4000-#7FFF` and in 128K also
+  `#C000` while `#7FFD` D0 — by address and 7FFD, whatever the manager maps
+  (`EvoBase::contendApply`, from Atm::remap and CPU::updateStatesInFrame; `g_evo_contend`
+  re-enables the late ULA I/O contention in Ports.cpp). Audio: 48K/128K sets, 60 Hz its own
+  (`ESP_AUDIO_*_EVO60`, 524 samples = exactly 31250 Hz). UI: Machine > ZX Evolution >
+  BaseConf options > Raster, AC_LIVE hook = machine reset; **Scroll Lock on BaseConf cycles
+  it** (`EvoBase::scrollLockRaster`, from ESPectrum::readKbd) — and there replaces the
+  "Cursor as joystick" toggle Scroll Lock does everywhere else. The real AVR cycles
+  {raster, VGA} together; we have no TV/VGA choice, so only the raster. Known limits: the
+  60 Hz raster wants a 60 Hz video mode (the 50 Hz modes have no 60 Hz v_total twin, so
+  with V-Sync it runs at the display's 48.8 Hz); in 720x576 its top border cannot line up
+  (only 46 lines above the paper).
 - **Across the Edge on BaseConf: two timing bugs, both hw-confirmed fixed 2026-10-04** (owner:
   `fix_0` correct on Pentagon AND BaseConf). Symptom: the border effect shifted and
   DIAGONAL (the four rectangles slanted), Pentagon fine. Found with the PERF build

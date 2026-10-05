@@ -4961,6 +4961,40 @@ void VIDEO::Reset() {
         DrawBorder = TopBorder_Blank;
     }
 
+    // ZX Evolution BaseConf in the 48K / 128K / 60 Hz raster (Config::evo_raster; the
+    // Pentagon raster took the Pentagon branch above). 48K and 128K are the original
+    // machines' rasters, so they reuse those anchors (calibrated for the step=4 border
+    // geometry, which BaseConf also switches on in these rasters — video_top.v
+    // border_sync_ena = modes_raster[1]). 60 Hz is the Pentagon raster 34 lines shorter at
+    // the top: VPIX_BEG_60HZ 42 vs VPIX_BEG_PENTAGON 76 (video_sync_v.v), INT on line 0 in
+    // both, so every anchor moves 34 * 224 = 7616 T earlier. The 288-row anchor would fall
+    // before the INT (the raster has only 46 lines above the paper); it is clamped.
+    if (Config::isEvoBase() && !Config::isEvoPentRaster()) {
+        if (Config::isEvo48Raster()) {
+            tStatesPerLine = TSTATES_PER_LINE;
+            tStatesScreen = TS_SCREEN_48;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
+                          : TS_BORDER_320x240;
+        } else if (Config::isEvo128Raster()) {
+            tStatesPerLine = TSTATES_PER_LINE_128;
+            tStatesScreen = TS_SCREEN_128;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_128 : TS_BORDER_360x288_128)
+                          : TS_BORDER_320x240_128;
+        } else {   // 60 Hz
+            constexpr int kEvo60Shift = 34 * TSTATES_PER_LINE_PENTAGON;
+            tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
+            tStatesScreen = TS_SCREEN_PENTAGON - kEvo60Shift;
+            const int brd = (isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
+                                          : TS_BORDER_320x240_PENTAGON) - kEvo60Shift;
+            tStatesBorder = brd > 0 ? brd : 0;
+        }
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    }
+
     // Border column layout (unified for all models):
     // brdcol_cnt counts T-states (1T = 2px = 1 uint16_t in framebuffer)
     // 48K/128K: step=4 (8px per column), brdPairWrite=true
@@ -4970,7 +5004,7 @@ void VIDEO::Reset() {
     ds80_border_geom = false;
     ds80_brd_col_off = 0;
     brdcol_end = isFullBorder ? 180 : 160;  // vga.xres / 2 (T-states = half pixel count)
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster())) {
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster() || Config::isEvo60Raster())) {
         brdcol_step = 1;
         brdPairWrite = false;
         brdcol_start = 0;
@@ -4992,14 +5026,14 @@ void VIDEO::Reset() {
     if (isFullBorder && !isFullBorder240) {
         lin_end = 48;
         lin_end2 = 240;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster()) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster() || Config::isEvo60Raster()) ? 26 : 24) / 2;
     } else if (isFullBorder && isFullBorder240) {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
         // the stats overlay (y=220) fell inside the paper area → flicker.
         lin_end = 24;
         lin_end2 = 216;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster()) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster() || Config::isEvo60Raster()) ? 26 : 24) / 2;
     } else {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
@@ -5157,16 +5191,16 @@ void VIDEO::Reset() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 2;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default: // VM_640x480_60
@@ -5182,16 +5216,16 @@ void VIDEO::Reset() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 2;
-                else if (Config::arch == A_128K) video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 2;
+                else if (Config::arch == A_128K || Config::isEvo128Raster()) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default:
