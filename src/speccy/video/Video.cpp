@@ -76,6 +76,7 @@ static void ftTraceTick();   // defined in the VDAC2 glue section below
 #include "speccy/devices/Z80DMA.h"
 #include "hardware/xip_cache.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/Pentagon.h"
 #include "speccy/machines/EvoBase.h"
 #include "app/PerfFdc.h"
 extern "C" const unsigned char gb_rom_atm_font[];   // roms/atm/atm_roms.c (SGEN.ROM order)
@@ -538,6 +539,10 @@ static uint32_t ts_line_idx = 0;             // that line, 0..(lin_end2 - lin_en
 // still the painter for GMX and for every non-per-line case.
 static uint32_t ts_row_idx = 0;
 static bool     ts_fast_armed = false;       // TsDraw armed for this frame (EndFrame)
+// Pentagon 16col rides TsDraw too (col16DrawTick): armed per frame in EndFrame,
+// `memok` = Pentagon::col16FastMemOk() at that arming (the fast memory path gate).
+static bool     col16_fast = false;
+static bool     col16_memok = false;
 // Beam-scheduled palette apply (tsPalettePoll): the fb row the pending CRAM
 // change lands on (-1 = none / "from the top"), and how many applies this
 // frame already cost (a per-line CRAM writer must not buy 240 flushes).
@@ -4565,7 +4570,12 @@ bool VIDEO::gigascreenModeIncompatible() {
         || gmx_ext_live                 // Scorpion GMX 640x200x16 (pair slots)
         || ts_render_live != 0          // TS-Conf TEXT/16c/256c/NOGFX, or the TSU
         || ft_live                      // TS-Conf VDAC2: the FT812 owns the whole framebuffer
-        || bl_live;                     // Borderless: the prev-FB is laid out for the bordered row
+        || bl_live                      // Borderless: the prev-FB is laid out for the bordered row
+        // Pentagon 16col (#EFF7 D0, turned on by the GUEST): its renderer branch sits
+        // ahead of the Gigascreen one, so the paper is never blended, while the border
+        // and the prev-FB window would still pay for Gigascreen — and 16col software
+        // double-buffers through #7FFD D3, which is exactly what arms Auto.
+        || mode16col_enabled;
 }
 
 // The one predicate every palette/blend decision uses: the user wants Gigascreen
@@ -5160,6 +5170,7 @@ void VIDEO::Reset() {
         Draw_Opcode = &Blank_Opcode;
     }
     ts_fast_armed = false; ts_line_t = 0xFFFFFFFFu; g_ts_fastmem = 0;   // TsFastMem.h: re-armed by EndFrame
+    col16_fast = false;
 
     // Restart border drawing + main screen draw state
     linedraw_cnt = lin_end;
@@ -6317,8 +6328,11 @@ void VIDEO::tsFastMemRecalc() {
     // the same shape — Atm::remap makes every window a plain pointer page, the
     // machine is uncontended, no overlays or DivMMC; ROM windows and the Evo font
     // RAM are the write gate g_atm_ro, which sends a write to the cold path.
+    // Pentagon 16col (col16DrawTick): the gate Pentagon::col16FastMemOk() settled
+    // at the arming — pointer pages only, no DivMMC/MB-02, no overlay on rom[0..4].
     const uint8_t v = (((Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))) ||
-                        (Z80Ops::isAtm && ts_fast_armed && gmx_ext_live))
+                        (Z80Ops::isAtm && ts_fast_armed && gmx_ext_live) ||
+                        (col16_fast && ts_fast_armed && col16_memok))
                        && Config::numMemReadBP == 0 && Config::numMemWriteBP == 0
                        && !g_ngs_zxdma && !MemESP::divmmc_mapped) ? 1 : 0;
     if (v != g_ts_fastmem) {
@@ -6766,7 +6780,8 @@ void VIDEO::tsBandReplay() {
 
 IRAM_ATTR void VIDEO::tsDrawTick() {
     // ATM-Turbo / ZX-Evo whole-line modes share this clock (atmDrawTick, flash):
-    // one test per rendered line, not per access.
+    // one test per rendered line, not per access. Pentagon 16col likewise.
+    if (__builtin_expect(col16_fast, 0)) { col16DrawTick(); return; }
     if (__builtin_expect(Z80Ops::isAtm, 0)) { atmDrawTick(); return; }
     PERF_BUCKET_SCOPE(PB_DRAWTICK);
     const uint32_t rows = vga.yres;
@@ -7035,6 +7050,71 @@ void VIDEO::atmDrawTick() {
         }
         ts_line_t += tStatesPerLine << ESPectrum::multiplicator;
         if (++ts_row_idx >= 200) {
+            linedraw_cnt = lin_end2;
+            ts_line_t = 0xFFFFFFFFu;
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+            return;
+        }
+    } while (CPU::tstates >= ts_line_t);
+}
+
+// The Pentagon 16col tick (EndFrame arms it, tsDrawTick dispatches here). One
+// content line per raster line, rendered at the END of its paper (tStatesScreen +
+// 128 T + line * tStatesPerLine, turbo-scaled): everything the guest wrote before
+// the beam passed is in, which is as close to the beam-raced MainScreen branch as
+// a whole-line renderer gets. The border machine is NOT parked — its state machine
+// has its own T-state clock, paints the side borders of the same rows, and gets
+// the per-line nudge MainScreen_Blank used to give it (Gabba tearing).
+// Deviation: a 16col-off written mid-frame hands the REST of the frame back to
+// MainScreen_Blank (the standard renderer) at the next line boundary, so a split
+// 16col/standard screen is right to the line; a 16col-ON mid-frame is rendered
+// by MainScreen's own 16col branch until the next EndFrame re-arms this one.
+// EndFrame's arming half (flash): true = TsDraw + col16DrawTick own this frame.
+// Everything refused here keeps MainScreen's 16col branch: the borderless scaler
+// and RedrawPausedFrame need MainScreen's line hooks, Timex hi-res and Profi take
+// precedence in that branch too.
+bool VIDEO::col16Arm() {
+    if (!mode16col_decode_lut || !Z80Ops::isPentagon || bl_live || paper_off
+        || timex_hires_live || (Config::timex_video && timex_mode == 6)
+        || profi_ds80_active || gmx_ext_live)
+        return false;
+    ts_line_t = (uint32_t)(tStatesScreen + 128) << ESPectrum::multiplicator;
+    ts_row_idx = 0;
+    col16_fast = true;
+    col16_memok = Pentagon::col16FastMemOk();
+    Draw = &TsDraw;
+    Draw_Opcode = &TsDraw_Opcode;
+    ts_fast_armed = true;
+    return true;
+}
+
+void VIDEO::col16DrawTick() {
+    do {
+        const uint32_t line = ts_row_idx;                 // content line 0..191
+        const uint32_t frow = line + (uint32_t)lin_end;
+        if (brdChange) DrawBorder();
+        if (__builtin_expect(!mode16col_enabled, 0)) {
+            // Guest left 16col: the beam renderer takes the rest of the frame from
+            // this line on. Its clock is the UNSCALED raster (the documented turbo
+            // deviation), its fast path must stop ticking through ts_line_t.
+            linedraw_cnt = frow;
+            tstateDraw   = tStatesScreen + line * tStatesPerLine;
+            Draw = &MainScreen_Blank;
+            Draw_Opcode = &MainScreen_Blank_Opcode;
+            ts_line_t = 0xFFFFFFFFu;
+            col16_fast = false;
+            tsFastMemRecalc();
+            return;
+        }
+        if (vga.frameBuffer && frow < (uint32_t)vga.yres && mode16col_decode_lut) {
+            curline = line;
+            linedraw_cnt = frow;
+            Pentagon::col16RenderLine((uint32_t*)vga.frameBuffer[frow] + lineptr_offset,
+                                      offBmp[line], mode16col_planes, mode16col_decode_lut);
+        }
+        ts_line_t += tStatesPerLine << ESPectrum::multiplicator;
+        if (++ts_row_idx >= 192) {
             linedraw_cnt = lin_end2;
             ts_line_t = 0xFFFFFFFFu;
             Draw = &Blank;
@@ -8760,6 +8840,7 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
     wasMaxSpeed = ESPectrum::maxSpeed;
     ts_fast_armed = false;
     ts_line_t = 0xFFFFFFFFu;
+    col16_fast = false;
     if (ts_render_live) tsC1PlacementPoll();   // GS active → render on core0, see the function
     if (skipFrame) {
         // Skip rendering: 1/1024 frames during tape loading, 1/256 otherwise
@@ -8835,6 +8916,10 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         Draw = &TsDraw;
         Draw_Opcode = &TsDraw_Opcode;
         ts_fast_armed = true;
+    } else if (mode16col_enabled && col16Arm()) {
+        // Pentagon 16col: whole line at the end of its paper (col16DrawTick) and the
+        // fast memory path — armed by the flash helper (one test + call here: the
+        // condition chain inlined cost this RAM function 300 B).
     } else if (VIDEO::snow_toggle
         && !(Config::timex_video && VIDEO::timex_mode != 0)
     ) {

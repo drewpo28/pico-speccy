@@ -5267,6 +5267,54 @@ frame's tail, while the pass keeps writing black rows into page 5. Two defects i
   machine). Still unexercised: another MB-02 title that DMAs attributes while showing
   its other screen, and the per-row screenshot on a 576p chunked framebuffer.
 
+## Pentagon 16col (#EFF7 D0): Gigascreen suspended, whole-line render + fast memory path (2026-10-06; hw: owner "стало быстрее", not itemised)
+
+"16c is slow." The 32-column loop in MainScreen's 16col branch was measured
+first and is nothing (~13 instructions a column, unrolled x4, planes + LUT + fb in
+SRAM — ~0.25 ms a frame); what a 16col title paid was (a) Gigascreen Auto, armed by
+the `#7FFD` D3 double-buffering every 16col program does, running its border variants
+and the prev-FB window writeback while the content was never blended (the 16col branch
+sits ahead of the Gigascreen one), and (b) the beam-raced `MainScreen` itself: an
+indirect Draw call on EVERY guest memory access, ~45 ARM instructions per byte. Two
+changes, test ELF `debug/DVp2-16col-fast-1.0.9.elf` (+ `.uf2`):
+
+- **`mode16col_enabled` joined `VIDEO::gigascreenModeIncompatible()`** — the ordinary
+  mode gate: suspended on the EndFrame edge, prev-FB freed, resumed when the guest
+  clears D0, Config untouched (`On (off in this mode)` in Hardware Info).
+- **16col rides `TsDraw` like the ATM/Evo whole-line modes** (`VIDEO::col16Arm` /
+  `col16DrawTick`, flash; `Pentagon::col16RenderLine` / `col16FastMemOk` in the
+  machine module). `tsDrawTick` dispatches on `col16_fast` before `isAtm`; the tick
+  renders content line L at the END of its paper (`tStatesScreen + 128 + L*224`,
+  turbo-scaled) — everything written before the beam passed is in — and the fast
+  guest-memory path (`g_ts_fastmem`, TsFastMem.h) runs when `col16FastMemOk()`:
+  no SPI/swap pages (accessor banks are `nullptr`), no DivMMC / MB-02 (their automap is
+  decided per opcode fetch, which the fast fetch skips), and **no overlay registered on
+  `rom[0..4]`** — the fast path reads page 0 as a raw pointer, so TR-DOS 5.03 / 5.04TM /
+  5.05D / 6.11e (overlays over 5.04T) keep the generic accessors with Draw = TsDraw,
+  which is still cheaper than MainScreen; 5.04T (the default) and the Pentagon bases
+  are raw and get the whole gain.
+- **The border machine is NOT parked**, unlike GMX/TS: it has its own T-state clock,
+  paints the side borders of the same rows, and gets the per-line `brdChange ->
+  DrawBorder()` nudge MainScreen_Blank used to give (Gabba). Per-T border effects
+  survive 16col; `brdChange` + EndFrame flush as before.
+- **Mid-frame 16col OFF hands the rest of the frame to `MainScreen_Blank`** at the next
+  line (tstateDraw on the unscaled raster, `col16_fast` dropped, fast path recalc'd);
+  16col ON mid-frame is rendered by MainScreen's own branch until the next EndFrame.
+  Refused (MainScreen keeps 16col): borderless (`bl_live`, needs MainScreen's line
+  hooks), paper_off, Timex hi-res, DS80/GMX, Profi (`Z80Ops::isPentagon` only).
+  RedrawPausedFrame re-arms MainScreen itself, so the pause redraw is the fallback
+  branch too.
+- Cost: +126 B RAM (EndFrame +88 for the one test + call — the condition chain inlined
+  cost 304, hence the flash `col16Arm` helper), everything else flash. The MainScreen
+  16col branch stays as the fallback.
+- **Hw 2026-10-06, owner: "да, стало быстрее"** on `DVp2-16col-fast` — the speed half is
+  confirmed; nothing below is itemised. **Still owed**: a 16col title (TheLink's dragon, Neo8Tracker's 16col screens,
+  the Inferno #08 pictures) — picture identical to the MainScreen path (a wrong plane
+  order or x^2 swap shows at once), `[TSF] fast memory path ON` in the log on 5.04T
+  and OFF with 5.05D, `[PERF] 60f: cpu=` against the pre-change build, border effects
+  in a 16col demo, a `#7FFD` page flip mid-frame (line-granular split), Gigascreen
+  Auto/On suspended and resumed around the mode, and F11 / the menu over it.
+
 ## Pentagon 1024SL #EFF7 D4 turbo + TheLink (2026-08-14, all hw-confirmed)
 
 TheLink (pouet 53778, Pentagon 1024SL + NeoGS + TSFM, REQUIRES 7 MHz turbo)

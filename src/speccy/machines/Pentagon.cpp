@@ -8,6 +8,8 @@
 #include "ui/LEDIndicators.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/core/Ports.h"
+#include "speccy/devices/disk/MB02.h"
+#include "speccy/devices/storage/DivMMC.h"
 #include "speccy/video/Video.h"
 #include "speccy/z80/z80.h"
 
@@ -117,4 +119,55 @@ uint8_t Pentagon::hiddenRam(uint8_t p8) {
     return 0xFF;
   }
   return 0xFF;
+}
+
+// ── 16col whole-line path ─────────────────────────────────────────────────────
+// The MainScreen branch for 16col costs an indirect Draw call on EVERY guest
+// memory access (~45 ARM instructions per byte against ~12 on the fast path);
+// the 32-column loop itself is nothing. So while #EFF7 D0 is set the content
+// is rendered one whole line at a time at the END of its paper (VIDEO::
+// col16DrawTick, the ATM/Evo shape) and the TS-Conf fast memory path runs.
+// Same bytes as MainScreen's branch: pixels 0..3 = L(a) R(a) L(b) R(b), stored
+// as bytes [2,3,0,1] (the AluByte x^2 convention the scanout ISR expects).
+void Pentagon::col16RenderLine(uint32_t* dst, uint16_t off, const uint8_t* const planes[4],
+                               const uint16_t* lut) {
+  const uint8_t* pA = planes[0] + off;
+  const uint8_t* pB = planes[1] + off;
+  const uint8_t* pC = planes[2] + off;
+  const uint8_t* pD = planes[3] + off;
+  for (int j = 0; j < 32; j += 2) {
+    uint32_t la = lut[pA[j]], lb = lut[pB[j]], lc = lut[pC[j]], ld = lut[pD[j]];
+    dst[0] = lb | (la << 16);
+    dst[1] = ld | (lc << 16);
+    la = lut[pA[j + 1]]; lb = lut[pB[j + 1]]; lc = lut[pC[j + 1]]; ld = lut[pD[j + 1]];
+    dst[2] = lb | (la << 16);
+    dst[3] = ld | (lc << 16);
+    dst += 4;
+  }
+}
+
+extern int ram_pages, butter_pages, psram_pages, swap_pages;
+
+bool Pentagon::col16FastMemOk() {
+  // Every page must be a plain POINTER: an SPI-PSRAM or SD-swap page is served
+  // per byte through the accessor window (ramCurrent[pg] == nullptr), which the
+  // fast path would dereference.
+  if (psram_pages != 0 || swap_pages != 0) return false;
+  // DivMMC / MB-02: the automap is decided on every opcode fetch (preOpcFetch),
+  // which the fast fetch skips — not merely "is it mapped right now".
+  if (DivMMC::enabled || MB02::enabled) return false;
+  // Page 0 is read as a raw pointer on the fast path, i.e. the overlay registry
+  // is bypassed: refuse while any ROM this machine can map there (rom[0..4] —
+  // ROM0/48K/Gluk/TR-DOS, romInUse selects among them mid-frame via the #3Dxx
+  // trap) carries a registered overlay. Pentagon's bases + TR-DOS 5.04T are raw;
+  // 5.03 / 5.04TM / 5.05D / 6.11e are overlays and keep the generic path.
+  if (MemESP::overlayCount != 0) {
+    for (int i = 0; i <= 4; i++) {
+      const uint8_t* p = MemESP::rom[i].direct();
+      if (p && MemESP::overlayFor(p)) return false;
+    }
+  }
+  for (int pg = 0; pg < 4; pg++)
+    if (MemESP::ramContended[pg]) return false;   // never on a Pentagon; cheap insurance
+  return true;
 }

@@ -18,4 +18,17 @@ void eff7Paging(uint8_t data);
 // IN (#FB) / IN (#7B): hidden RAM on / off (Pentagon 512/1024, Profi). Returns 0xFF.
 uint8_t hiddenRam(uint8_t p8);
 
+// 16col (#EFF7 D0) whole-line path — see VIDEO::col16DrawTick. One content line
+// (32 byte-columns) out of the four planes into `dst` (the fb row at the content
+// offset, x^2 order), `off` = offBmp[line]; byte for byte what MainScreen's 16col
+// branch writes, the per-column timing replaced by one call at the line's end.
+void col16RenderLine(uint32_t* dst, uint16_t off, const uint8_t* const planes[4],
+                     const uint16_t* lut);
+
+// Can the TS-Conf fast guest-memory path (TsFastMem.h: plain pointer banks, no
+// overlays, no DivMMC) run on this Pentagon session right now? Evaluated once per
+// frame at the EndFrame arming; the per-access gates (ZX-DMA, DivMMC mapped,
+// breakpoints) stay in VIDEO::tsFastMemRecalc.
+bool col16FastMemOk();
+
 }

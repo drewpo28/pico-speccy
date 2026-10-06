@@ -356,6 +356,11 @@ public:
   static void atmPaletteRestore();       // leaving the ATM: standard slots back
   static void atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l);
   static void atmDrawTick();      // ATM/Evo whole-line modes on the fast memory path (flash)
+  // Pentagon 16col (#EFF7 D0): the same shape — one content line per raster line
+  // (Pentagon::col16RenderLine) at the END of its paper, the per-T border machine
+  // left running, and the fast memory path on when Pentagon::col16FastMemOk().
+  static void col16DrawTick();    // flash; dispatched from tsDrawTick
+  static bool col16Arm();         // flash; EndFrame's arming half
 
   // ── TS-Conf video modes (VConfig VM[1:0] / NOGFX / RRES[1:0]) ─────────────
   // TEXT (80x30, 640 px wide) borrows the DS80/GMX packed-pair framebuffer and
@@ -591,6 +596,7 @@ public:
   // 640x200 and every TS-Conf non-ZX mode (TEXT/16c/256c/NOGFX, or the TSU over
   // ZX) — packed pair slots / palette-index rows the prev-FB window was never
   // laid out for, and (256c/TSU) a slot pool the blend LUT would overwrite.
+  // Pentagon 16col (#EFF7 D0) joins them: its paper is never blended anyway.
   // The MODE decides, not the machine: Gigascreen stays available in the standard
   // ZX mode of those machines and is SUSPENDED while such a mode is live, coming
   // back on the way out. Config keeps the user's pick throughout.
