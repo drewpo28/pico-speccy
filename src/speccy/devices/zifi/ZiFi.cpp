@@ -971,7 +971,11 @@ void __not_in_flash("zifi") ZiFi::uart16550Write(uint8_t reg_hi, uint8_t data) {
 // OUT (#FC3B) latches an internal register index, #FD3B reads/writes that
 // register. Only the UART registers are implemented (as on the real board):
 //   #C6 — UART data: read = received byte (accumulator), write = transmit
-//   #C7 — UART status: bit0 RX_RECV (byte waiting), bit1 TX_BUSY
+//   #C7 — UART status: bit7 = byte received, bit6 = transmitter busy, rest 0
+//         (Karabas-Pro firmware/src/fpga/profi/rtl/uart/zxunouart.v:
+//         `dout = {data_received, txbusy, 6'h00}`; every ZX-Uno client — BridgeZX,
+//         SpecTalkZX, moon-rabbit-zx, the karabas-pro net-tools — polls #80/#40.
+//         It was bit0/bit1 here until 2026-10-06, pico-spec issue #59.)
 //   #C8/#C9 — UART2, only present on EP4CE10 boards → absent here (0xFF)
 // Data bridges to the same ESP FIFOs as the ZIFI-API and 16550 windows, so
 // Karabas network software drives our ESP-01 / CDC link unchanged.
@@ -987,9 +991,9 @@ uint8_t __not_in_flash("zifi") ZiFi::unoUartRead(bool dataPort) {
             if (b >= 0) uno_last_rx = (uint8_t)b;
             return uno_last_rx;
         }
-        case 0xC7: { // UART status
-            uint8_t st = rxAvailable() ? 0x01 : 0x00;
-            if (fifo_full(zifi_out_head, zifi_out_tail)) st |= 0x02; // TX_BUSY
+        case 0xC7: { // UART status = {data_received, txbusy, 6'h00} (zxunouart.v)
+            uint8_t st = rxAvailable() ? 0x80 : 0x00;               // bit7 UART_BYTE_RECEIVED
+            if (fifo_full(zifi_out_head, zifi_out_tail)) st |= 0x40; // bit6 UART_BYTE_SENDING
             return st;
         }
         default: return 0xFF; // UART2 / unimplemented registers
