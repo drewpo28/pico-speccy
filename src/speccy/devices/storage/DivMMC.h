@@ -44,10 +44,21 @@ public:
     static bool sdhc_mode;        // true = SDHC (sector-addressed), false = standard (byte-addressed)
     static bool zc_enabled;       // true = Z-Controller raw SD on ports 0x77/0x57 (no ROM/banking)
     static uint8_t zc_config;     // Z-Controller port 0x77 latched config (bit0=power, bit1=CS)
+    static bool    zc_ft_cs;      // port 0x77 bit2: the VDAC2's FT812 is selected (Ft812.h)
+    // Raw-SD (Z-Controller / DivSD) sector reads served by the host card and the
+    // core0 time they took — the FT812_TRACE meter's "sd" field (VIDEO::ftTraceTick).
+    static uint32_t zc_rd_sectors, zc_rd_us;
+    static uint32_t zc_in_bytes;          // guest IN (#57) data reads (the [FT812] feed line)
 
     static void init();           // Load ROM, open .mmc/.hdf/.vhd/.hdd/.img image
     static void reset();          // Reset state
     static void applyMapping();   // Update page0 pointers based on state
+    // .pss (src/speccy/core/Pss.cpp, SZX DMMC/DMRP layout): bank b's 8 KB brought in
+    // (swap mode) and, when `write`, marked dirty; the control register as #E3 holds it;
+    // and the restore of control + automap (applyMapping afterwards).
+    static uint8_t* snapBank(uint8_t b, bool write);
+    static uint8_t  snapControl() { return (uint8_t)((conmem ? 0x80 : 0) | (mapram ? 0x40 : 0) | (bank & 0x3F)); }
+    static void     snapRestore(uint8_t control, bool automapped);
     static inline void markHiDirty() { if (hi_slot >= 0) slot_dirty[hi_slot] = true; }
     static inline void markLoDirty() { if (lo_slot >= 0) slot_dirty[lo_slot] = true; }
 

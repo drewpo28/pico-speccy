@@ -52,8 +52,10 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/TsConf/TsConf.h"     // g_tsconf_wr + TsConf::cpuWriteGate (FMAddr window, W0_WE)
 #include "speccy/machines/Timex.h"      // g_timex_mmu + Timex::rd/wr (TC2068 SCLD horizontal MMU)
 #include "speccy/machines/Atm.h"        // g_atm_ro (ATM-Turbo ROM windows) + Atm::reset/intEnabled
+#include "speccy/machines/EvoBase.h"    // ZX-Evo font RAM, INT ack
 #include "speccy/machines/TsConf/TsFastMem.h"
 #include "app/CodeOverlay.h" // TS_OVL_CODE (CPU::tsFrameLoop)
+#include "speccy/core/Rzx.h"
 #if PERF_TRACE && PERF_HIST
 // TS-Conf guest-memory access histogram by PHYSICAL page (the page each CPU
 // bank is mapped to), fetch + peek8 + poke8. Tells which pages a title hammers,
@@ -110,6 +112,7 @@ bool g_scorp_1024 = false;
 bool g_scorp_turbo_plus = false;
 bool g_gmx_tap = false;
 uint8_t g_scorp_kay = 0;
+bool g_scorp_evo = false;
 bool Z80Ops::isP3 = false;
 bool Z80Ops::isTsconf = false;
 bool Z80Ops::isAtm = false;
@@ -143,7 +146,7 @@ void CPU::updateStatesInFrame() {
         // contended.
         statesInFrame = TSTATES_PER_FRAME_128;
         IntStart = INT_START128;
-        IntEnd = INT_END128 + CPU::latetiming;
+        IntEnd = (Config::isPlus3() ? INT_END_P3 : INT_END128) + CPU::latetiming;
     } else if (Config::arch == A_P512) {
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
@@ -164,6 +167,16 @@ void CPU::updateStatesInFrame() {
                                                        : TSTATES_PER_FRAME_48;
         IntStart = INT_START48;
         IntEnd = INT_END48;
+        if (Config::isEvoBase()) {          // ZX Evolution: the raster the AVR selected
+            // video_sync_v.v VPERIOD_*; the INT is 256 fclk = 32 T in every raster (zint.v).
+            statesInFrame = Config::isEvo48Raster()  ? TSTATES_PER_FRAME_48
+                          : Config::isEvo128Raster() ? TSTATES_PER_FRAME_128
+                          : Config::isEvo60Raster()  ? TSTATES_PER_FRAME_EVO60
+                                                     : TSTATES_PER_FRAME_PENTAGON;
+            IntStart = INT_START_PENTAGON;
+            IntEnd = INT_END_PENTAGON;
+            EvoBase::contendApply();        // 48K/128K contention: 3.5 MHz only
+        }
     } else if (Config::arch == A_SCORP) {
         // Green PCB / GMX = 316 lines/frame; Yellow = 312 (see CPU.h; MAME's
         // scorpiongmx builds on the Turbo+/Green machine config).
@@ -174,6 +187,11 @@ void CPU::updateStatesInFrame() {
                             : TSTATES_PER_FRAME_SCORPION;
         IntStart = INT_START_SCORPION;
         IntEnd = isKayRomset(Config::romSetScorp) ? INT_END_KAY : INT_END_SCORPION;
+        if (isScorpEvoRomset(Config::romSetScorp)) {   // ScorpEvo: the ZX-Evo Pentagon raster
+            statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+            IntStart = INT_START_PENTAGON;
+            IntEnd = INT_END_PENTAGON;
+        }
     } else { // if (Config::arch == A_PENT) - by default
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
@@ -205,17 +223,22 @@ void CPU::reset() {
     // Even-M1 is a Yellow-PCB-only trait (see CPU.h); Green and GMX dropped it.
     g_scorp_even_m1 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP);
     g_scorp_gmx = Z80Ops::isScorpion && isScorpGmxRomset(Config::romSetScorp);
-    g_scorp_prof = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_PROF);
+    // ScorpEvo carries the same ProfROM plane mapper (scorpevo fpga ProfROM/pfpzu.v:
+    // the plane switches on a read of #0100-#010F of the service bank).
+    g_scorp_prof = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_PROF ||
+                                          isScorpEvoRomset(Config::romSetScorp));
     g_scorp_banked = g_scorp_gmx || g_scorp_prof;
     // ProfROM ships on the ZS-1024 Turbo+ (speccy4ever files it under "Prof ROM
     // & ZX-1024"; ZXMAK2 has no 256K-only ProfROM machine either), so it carries
     // the same 1FFD D7,D6 page extension.
     g_scorp_1024 = Z80Ops::isScorpion && (Config::romSetScorp == R_SCORP_1024 ||
-                                          Config::romSetScorp == R_SCORP_PROF);
+                                          Config::romSetScorp == R_SCORP_PROF ||
+                                          isScorpEvoRomset(Config::romSetScorp));
     // The "+" of Turbo+ IS the read-triggered speed toggle (Ports::input). Yellow
     // is MAME's plain scorpion_state and has no such handler.
     g_scorp_turbo_plus = Z80Ops::isScorpion && !isScorpYellowTiming(Config::romSetScorp);
     // Nemo KAY: its own #1FFD (turbo is 1FFD D2 there, not a port read).
+    g_scorp_evo = Z80Ops::isScorpion && isScorpEvoRomset(Config::romSetScorp);
     g_scorp_kay = !Z80Ops::isScorpion ? 0
                 : Config::romSetScorp == R_KAY256 ? 2
                 : Config::romSetScorp == R_PHOENIX ? 4
@@ -307,7 +330,9 @@ void CPU::reset() {
         // two reads 15 T apart (odd) and needs both equal; see getFloatBusDataScorp.
         // Nemo KAY: Unreal's KAY1024 preset has floatbus=0 and portff=0 — the
         // unattached ports read 0xFF.
-        Ports::getFloatBusData = isKayRomset(Config::romSetScorp)
+        // ScorpEvo: zports.v answers every unattached port with #FF (its default
+        // dout), and the FPGA has no ULA float.
+        Ports::getFloatBusData = (isKayRomset(Config::romSetScorp) || isScorpEvoRomset(Config::romSetScorp))
                                      ? &Ports::getFloatBusDataNone
                                      : &Ports::getFloatBusDataScorp;
         Z80Ops::isByte = false;
@@ -318,7 +343,8 @@ void CPU::reset() {
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
         // Set emulation loop sync target (Green/GMX share the 316-line frame)
-        ESPectrum::target = !isScorpYellowTiming(Config::romSetScorp)
+        ESPectrum::target = isScorpEvoRomset(Config::romSetScorp) ? MICROS_PER_FRAME_PENTAGON
+                          : !isScorpYellowTiming(Config::romSetScorp)
                                 ? MICROS_PER_FRAME_SCORPION_GR
                                 : MICROS_PER_FRAME_SCORPION;
     } else if (Config::arch == A_ATM) {
@@ -332,7 +358,11 @@ void CPU::reset() {
         Z80Ops::is512 = false;
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
-        ESPectrum::target = atmFrame316(Config::romSetAtm) ? MICROS_PER_FRAME_SCORPION_GR
+        ESPectrum::target = Config::isEvo48Raster()  ? MICROS_PER_FRAME_48
+                          : Config::isEvo128Raster() ? MICROS_PER_FRAME_128
+                          : Config::isEvo60Raster()  ? MICROS_PER_FRAME_EVO60
+                          : Config::isEvoBase() ? MICROS_PER_FRAME_PENTAGON
+                          : atmFrame316(Config::romSetAtm) ? MICROS_PER_FRAME_SCORPION_GR
                                                            : MICROS_PER_FRAME_48;
     } else if (Config::arch == A_TSCONF) {
         // TS-Conf: Pentagon raster (224 T/line, 71680 T/frame), uncontended.
@@ -637,6 +667,7 @@ IRAM_ATTR void CPU::loop() {
         cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
         return;
     }
+    if (__builtin_expect(Rzx::mode != 0, 0)) { loopRzx(_loop_t0); return; }
     int nbp = Config::numPcBP;
 
     BREAKPOINTS
@@ -758,7 +789,7 @@ IRAM_ATTR void CPU::haltAdvanceTo(uint32_t stEnd) {
         if (n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
         VIDEO::Draw(n, false);
     }
-    Z80::incRegR((uint8_t)((tstates - pre) >> 2));
+    Z80::incRegR((tstates - pre) >> 2);
 }
 
 IRAM_ATTR void CPU::FlushOnHaltTo(uint32_t stEnd) {
@@ -805,12 +836,84 @@ IRAM_ATTR void CPU::FlushOnHaltTo(uint32_t stEnd) {
                 tstates = (pre_tstates & ~3u) + (incr << 2);
             } else
                 tstates += (incr << 2);
-            Z80::incRegR(incr & 0x000000FF);
+            Z80::incRegR(incr);
 
         }
 
     }
 
+}
+
+// RZX playback frame (Rzx.h). FLASH on purpose — it runs only while a
+// recording plays, and the per-instruction work is Z80::execute(), which is RAM.
+//
+// A recorded frame is "N opcode fetches, then an interrupt", and it is NOT tied
+// to our raster: the loop runs the CPU through the ordinary checked execute()
+// (every IN reaches Rzx::onIn through the core's hook, HALT steps 4 T per call
+// exactly as the recording emulator counted it) and, the moment the count is
+// reached at an instruction boundary, raises the INT line and samples it at once
+// — the same point at which the recording emulator took it (Fuse: the frame
+// event fires between instructions and z80_interrupt runs straight away). The
+// T-state frame keeps running underneath, so video, audio and pacing stay at
+// 50 Hz: a recording from a machine with a slightly shorter frame simply takes
+// its interrupts a little more often, which is what the fetch counts say.
+void CPU::loopRzx(uint64_t _loop_t0) {
+    if (Rzx::snapshotPending()) Rzx::loadPendingSnapshot();
+
+    uint32_t zifi_pump_due = tstates + 3500;
+    while (tstates < statesInFrame && Rzx::mode != 0) {
+        if (Rzx::frameReached() && Z80::atInstrBoundary()) {
+            if (!Rzx::nextFrame()) break;   // playback over: `mode` is OFF now
+            Rzx::raiseInt();
+            if (Rzx::snapshotPending()) break;
+            Z80::checkINT();
+            continue;
+        }
+        Z80::execute();
+        if (Config::dma_mode) Z80DMA::handleDMA();
+        if (ZiFi::cdcNicActive && tstates >= zifi_pump_due) {
+            zifi_pump_due = tstates + 3500;
+            ZiFi::cdcPump();
+        }
+    }
+    if (Rzx::mode != 0) {
+        // A mid-file snapshot is due: the machine idles to the frame end and
+        // the snapshot is loaded at the next loop entry, i.e. between frames,
+        // where every other loader runs too.
+        while (tstates < statesInFrame) {
+            uint32_t n = statesInFrame - tstates;
+            if (n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
+            VIDEO::Draw(n, false);
+        }
+    } else {
+        // Playback ended inside this frame: the machine carries on under its
+        // own raster from here ("continue from here").
+        while (tstates < statesInFrame) {
+            Z80::execute();
+            if (Config::dma_mode) Z80DMA::handleDMA();
+        }
+    }
+
+    {
+        uint64_t _ef_t0 = time_us_64();
+        VIDEO::EndFrame();
+        endframe_us = (uint32_t)(time_us_64() - _ef_t0);
+    }
+    CPU::tstates_diff += CPU::tstates - CPU::prev_tstates;
+    if ((ESPectrum::fdd.control & (kRVMWD177XHLD | kRVMWD177XHLT)) != 0) {
+        uint64_t _fdd_t0 = time_us_64();
+        rvmWD1793Step(&ESPectrum::fdd, CPU::tstates_diff / WD177XSTEPSTATES);
+        fdd_step_us += (uint32_t)(time_us_64() - _fdd_t0);
+    }
+    CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
+    cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+
+    global_tstates += statesInFrame;
+    tstates_frame = tstates;
+    tstates_active = tstates_frame;
+    tstates -= statesInFrame;
+    Rzx::endTFrame(statesInFrame);
+    CPU::prev_tstates = tstates;
 }
 
 // Z80Ops
@@ -929,7 +1032,10 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
         GS::zxDmaWrite(value);
     // ATM-Turbo: a window showing ROM drops the write (its pages may be flattened
     // copies in butter PSRAM, which writebyte's flash-pointer filter does not see).
-    if (__builtin_expect(g_atm_ro != 0, 0) && ((g_atm_ro >> (address >> 14)) & 1)) return;
+    if (__builtin_expect(g_atm_ro != 0, 0)) {
+        if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;   // ZX-Evo font RAM (#BF D2)
+        if ((g_atm_ro >> (address >> 14)) & 1) return;
+    }
     // TS-Conf write-side hooks: the FMAddr window (CRAM/SFILE/register file —
     // does NOT replace the normal store, the hardware writes RAM and the FPGA
     // array in parallel, reference z80_main.inl:108) and the W0_WE protect
@@ -1132,6 +1238,12 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
     if (CPU::tstates >= VIDEO::ts_line_t) VIDEO::tsDrawTick();
     if (g_ts_memcyc) TsConf::cpuMemWrite(address);
     if (g_tsconf_wr && TsConf::cpuWriteGate(address, value)) return;
+    // ATM-Turbo / ZX-Evo on the fast path: the ZX-Evo font RAM takes the byte too,
+    // a window showing ROM drops it (gsDmaPoke8's twin).
+    if (g_atm_ro) {
+        if (g_atm_ro & 0x80) EvoBase::font[address & 0x7FF] = value;
+        if ((g_atm_ro >> (address >> 14)) & 1) return;
+    }
     tsPoke8Store(address, value);
 }
 IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
@@ -1144,7 +1256,7 @@ IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
             // cache (invalidate) — both are poke8_cold's, through TsConf::cpuMemWrite
             if ((g_ts_memcyc & 2) || tsMemWriteHit(address)) return poke8_cold(address, value);
         }
-        if (__builtin_expect(g_tsconf_wr != 0, 0)) return poke8_cold(address, value);
+        if (__builtin_expect((g_tsconf_wr | g_atm_ro) != 0, 0)) return poke8_cold(address, value);   // TS write gate / ATM ROM windows
         CPU::tstates += 3;
         if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return poke8_tick(address, value);
         tsPoke8Store(address, value);
@@ -1260,7 +1372,7 @@ IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
             // a running DMA or a cache hit on either half -> poke16_cold (even: one cache word)
             if ((g_ts_memcyc & 2) || tsMemWriteHit(address) || ((address & 1) && tsMemWriteHit((uint16_t)(address + 1)))) return poke16_cold(address, word);
         }
-        if (__builtin_expect(g_tsconf_wr != 0, 0)) return poke16_generic(address, word);   // the write gate too
+        if (__builtin_expect((g_tsconf_wr | g_atm_ro) != 0, 0)) return poke16_generic(address, word);   // the write gates too
         CPU::tstates += 6;
         if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return poke16_tick(address, word);
         tsPoke16Store(address, word);
@@ -1414,6 +1526,9 @@ IRAM_ATTR void Z80Ops::addressOnBus(uint16_t address, int32_t wstates) {
 
 /* Callback to know when the INT signal is active */
 IRAM_ATTR bool Z80Ops::isActiveINT(void) {
+    // RZX playback: the line is raised by the FETCH COUNT (Rzx::raiseInt at the
+    // end of each recorded frame), not by the raster — see CPU::loopRzx.
+    if (__builtin_expect(Rzx::mode != 0, 0)) return (int32_t)CPU::tstates < Rzx::intUntil;
     // Karabas serial-mouse hardware INT (RST20H): level-asserted while an RX
     // byte waits with INT_EN set in CP/M mode. Sampled only in the checked
     // execute() loops (like the frame INT), so worst-case latency is one
@@ -1423,7 +1538,12 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // end) — the controller owns the level; see TsConf::intLine.
     if (Z80Ops::isTsconf) return TsConf::intLine();
     // ATM-Turbo 2+: the frame INT is gated by #xx77 D5 (Unreal cpu.int_gate).
-    if (__builtin_expect(Z80Ops::isAtm, 0) && !Atm::intEnabled()) return false;
+    // ZX-Evo BaseConf: no gate, but the acknowledge ends this frame's pulse.
+    if (__builtin_expect(Z80Ops::isAtm, 0) &&
+        (!Atm::intEnabled() ||
+         (Atm::evo && EvoBase::intAckFrame ==
+              EvoBase::intWindowId((uint32_t)((int32_t)CPU::tstates + CPU::latetiming),
+                                   CPU::statesInFrame, CPU::global_tstates)))) return false;
     // Timex DEC (#FF) bit 6 — "17ms Interrupt Inhibit" (MAME port_ff_w). The SCLD
     // gates the line itself, so the window still opens and closes on time; the CPU
     // simply never sees it. Cleared on reset with the rest of the DEC register.

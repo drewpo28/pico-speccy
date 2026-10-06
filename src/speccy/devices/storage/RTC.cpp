@@ -7,6 +7,11 @@
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "speccy/z80/z80.h"
 #include <stdio.h>
+#include "speccy/machines/Atm.h"
+
+// The ZX-Evo's Gluk clock is its AVR keyboard controller in BOTH configurations:
+// TS-Conf and BaseConf (ATM arch, Atm::evo) share the same chip and firmware.
+static inline bool rtcAvrMachine() { return Z80Ops::isTsconf || (Z80Ops::isAtm && Atm::evo); }
 #if RTC_PORT_TRACE
 #include "app/Debug.h"
 #endif
@@ -196,7 +201,7 @@ bool RTC::loadNVRAM() {
     // ADOPTED from the shared legacy cmos.nvr, i.e. written by a machine whose
     // reg B means something else (the image that produced the WC "hour 90" had
     // sig0E=62 in it, i.e. ProfROM's signature — a Scorpion CMOS).
-    regs[0x0B] = Z80Ops::isTsconf ? avrRegB(buf[0x0B]) : buf[0x0B];
+    regs[0x0B] = rtcAvrMachine() ? avrRegB(buf[0x0B]) : buf[0x0B];
     for (unsigned i = 0x0E; i < br && i < sizeof(regs); i++) regs[i] = buf[i];
     regs[0x0D] = 0x80; // keep VRT asserted regardless of saved bytes
     return true;
@@ -311,7 +316,7 @@ void RTC::writeData(uint8_t v, bool avrExt) {
     // TS-Conf: the Gluk clock is the ZX-Evo AVR, which repurposes reg C's spare
     // bits, reg E and the 0xF0..0xFF window (see ZxEvoAvr.h). Reg A stays an
     // ordinary stored register below — it is the EEPROM page pointer there.
-    if (avrExt && Z80Ops::isTsconf) {
+    if (avrExt && rtcAvrMachine()) {
         if (sel >= 0xF0) { ZxEvoAvr::writeExt(sel, v, regs[0x0A]); return; }
         if (sel == 0x0C) { ZxEvoAvr::writeRegC(v); return; }
         if (sel == 0x0E) return;    // keyboard status register, read-only on the AVR
@@ -331,7 +336,7 @@ void RTC::writeData(uint8_t v, bool avrExt) {
         // exactly what Wild Commander printed as the hour 90 (hw 2026-09-19).
         // The SMUC card's own MC146818 at #DFBA is a real chip: avrExt is false
         // there and it keeps full datasheet semantics.
-        if (avrExt && Z80Ops::isTsconf) v = avrRegB(v);
+        if (avrExt && rtcAvrMachine()) v = avrRegB(v);
         uint8_t prev = regs[0x0B];
         if (prev != v) { regs[0x0B] = v; nv_dirty = true; }
 #if RTC_PORT_TRACE
@@ -391,9 +396,15 @@ uint32_t RTC::liveSecs() {
 uint8_t RTC::readData(bool avrExt) {
     // TS-Conf: ZX-Evo AVR registers (version extension / PS/2 scancode log /
     // keyboard modifier statuses) — see ZxEvoAvr.h and writeData().
-    if (avrExt && Z80Ops::isTsconf) {
+    if (avrExt && rtcAvrMachine()) {
         if (sel >= 0xF0)  return ZxEvoAvr::readExt(sel, regs[0x0A]);
-        if (sel == 0x0D)  return ZxEvoAvr::regD();
+        // Reg D: the AVR answers the keyboard modifiers in D6..D0 and (current
+        // firmware) 0 in D7. The 2011 Evo ProfROM in zxevo_fe.rom tests D7 as
+        // the MC146818 VRT bit after its 0x40..0x7E checksum (page 17 #1AC5) and
+        // reports "CMOS checksum error" on every boot without it — the AVR's own
+        // init value for the cell is 0x80 (GLUK_D_INIT_VALUE). BaseConf only:
+        // on TS-Conf the byte stays the AVR's (Wild Commander reads it).
+        if (sel == 0x0D)  return (uint8_t)(ZxEvoAvr::regD() | (Z80Ops::isAtm ? 0x80 : 0));
         if (sel == 0x0E)  return ZxEvoAvr::regE();
     }
     // While SET is up the update cycle is halted on the real chip — expose the
@@ -459,7 +470,7 @@ uint8_t RTC::readData(bool avrExt) {
                 if (cur != last_uf_sec) { last_uf_sec = cur; c |= 0x10; }
             }
             if (c & regs[0x0B] & 0x70) c |= 0x80;
-            if (avrExt && Z80Ops::isTsconf) c |= ZxEvoAvr::regCBits();   // AVR: SD detect / NUM LED
+            if (avrExt && rtcAvrMachine()) c |= ZxEvoAvr::regCBits();   // AVR: SD detect / NUM LED
             return c;
         }
         case 0x0D: return regs[0x0D] | 0x80; // reg D: VRT always set

@@ -68,6 +68,14 @@ using namespace std;
 #define ESP_AUDIO_AY_DIV_SCORP_GR  112
 #define ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR 16
 
+// ZX-Evo BaseConf 60 Hz raster: 58688 T / 112 = 524 samples = exactly 31250 Hz at 59.64 fps.
+#define ESP_AUDIO_OVERSAMPLES_EVO60 3668
+#define ESP_AUDIO_FREQ_EVO60 31250
+#define ESP_AUDIO_SAMPLES_EVO60  524
+#define ESP_AUDIO_SAMPLES_DIV_EVO60  7
+#define ESP_AUDIO_AY_DIV_EVO60  112
+#define ESP_AUDIO_OVERSAMPLES_DIV_EVO60 16
+
 #define ESP_AUDIO_OVERSAMPLES_PENTAGON 4480
 #define ESP_AUDIO_FREQ_PENTAGON 31250 // ESP_AUDIO_SAMPLES_PENTAGON * 48,828125 frames per second = 31250 Hz
 #define ESP_AUDIO_SAMPLES_PENTAGON  640
@@ -98,7 +106,9 @@ public:
     static void setup();
     // The DRAM power-on pattern over every RAM page — cold setup and a menu
     // machine switch (MachineSwitch::commit). See the definition.
-    static void powerOnRamFill();
+    // arch/romset: the machine the RAM is filled FOR (-1 = the current Config one) —
+    // MachineSwitch fills before requestMachine, i.e. while Config still names the old machine.
+    static void powerOnRamFill(int arch = -1, int romset = -1);
     static void loop();
     static void reset();
     static void reset(uint8_t romInUse);

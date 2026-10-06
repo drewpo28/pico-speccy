@@ -20,6 +20,8 @@
 #define TXT_SNAPSHOTS       "Snapshots"
 #define TXT_SNAP_FROMFILE   "Load from file"
 #define TXT_SNAP_SLOTS      "Quick slots"
+#define TXT_RZX_STOP        "Stop RZX playback"
+#define TXT_RZX_LOOP        "RZX loop"
 #define TXT_HW              "Devices"
 #define TXT_VIDEO           "Video"
 #define TXT_AUDIO           "Audio"
@@ -198,6 +200,14 @@
 #define TXT_JOY_TYPE        "Joystick type"
 #define TXT_JOY_MAPPING     "Keyboard mapping"
 #define TXT_JOY_PREFS       "Preferences"
+#define TXT_JOY_PROFILE     "Profile"
+#define TXT_JOYPROF_UNSAVED "(unsaved)"
+#define TXT_JOYPROF_NAME    "Joystick profile name"
+#define TXT_JOYPROF_DUP     " Name already in use "
+#define TXT_JOYPROF_FULL    " No free slot: 16 profiles at most "
+#define TXT_JOYPROF_SAVED   " Profile saved "
+#define TXT_JOYPROF_NOMEM   " Not enough memory "
+#define TXT_JOYPROF_SAVE_ERR " Cannot write joystick.cfg "
 
 // ── Machine ────────────────────────────────────────────────────────────────────
 // Machine rows carry their ROM set in the right pane, so a machine and its ROM are
@@ -227,10 +237,15 @@
 #define TXT_MACH_ALF        "ALF TV GAME"
 #define TXT_MACH_MURM       "Murmuzavr mode"
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
-#define TXT_MACH_TSCONF      "TS-Conf"
+#define TXT_MACH_TSCONF      "ZX Evolution"
 #define TXT_MACH_ATM         "ATM-Turbo"
-#define TXT_MACH_TSCONF_OPTS "Options"
+#define TXT_MACH_TSCONF_OPTS "TS-Conf options"
+#define TXT_MACH_EVO_OPTS    "BaseConf options"
+#define TXT_MACH_EVO_RASTER  "Raster"
 #define TXT_MACH_TSCONF_CLK  "CPU cap"
+#define TXT_MACH_TSCONF_VDAC2 "VDAC2 (FT812)"
+#define TXT_MACH_TSCONF_VDAC2_SMOOTH "  VDAC2 smooth"
+#define TXT_MACH_TSCONF_VDAC2_ADAPT "  VDAC2 adaptive palette"
 // The ZX-Evo BIOS images differ ONLY in the 128 service ROM at ROM page 2
 // (tslabs/zx-evo pentevo/rom/bin) — the TS-BIOS itself and its TR-DOS are the same
 // bytes in both, so the label names the service ROM, not the BIOS.
@@ -246,10 +261,12 @@
 #define TXT_ROM_ATM3V107_S   "Turbo 3"
 #define TXT_ROM_ATM3         "ATM-Turbo 3 (xBIOS 1.37)"
 #define TXT_ROM_ATM3_S       "Turbo 3 xBIOS"
-#define TXT_ROM_TSBIOS       "TS-BIOS + 128"
-#define TXT_ROM_TSBIOS_S     "128"            // left-column short form (Option::slabel)
-#define TXT_ROM_TSBIOS_GLUK  "TS-BIOS + Mr Gluk"
-#define TXT_ROM_TSBIOS_GLUK_S "Mr Gluk"
+#define TXT_ROM_EVO_BASE     "BaseConf"
+#define TXT_ROM_EVO_BASE_S   "BaseConf"
+#define TXT_ROM_TSBIOS       "TSConf: TS-BIOS"
+#define TXT_ROM_TSBIOS_S     "TSConf"
+#define TXT_ROM_TSBIOS_GLUK  "TSConf: TS-BIOS + Mr Gluk"
+#define TXT_ROM_TSBIOS_GLUK_S "TSConf Gluk"
 #define TXT_MACH_COBMECT    "COBMECT. mode"
 
 // ROM set labels, shared by the machine rows and the Preferred rom rows.
@@ -317,6 +334,8 @@
 #define TXT_ROM_SCORP_1024_S "ZS-1024T+"
 #define TXT_ROM_SCORP_PROF   "ZS-1024 + ProfROM"
 #define TXT_ROM_SCORP_PROF_S "ProfROM"
+#define TXT_ROM_SCORP_EVO    "ScorpEvo"
+#define TXT_ROM_SCORP_EVO_S  "ScorpEvo"
 #define TXT_ROM_ALF         "ALF cartridge"
 // Nemo KAY (St. Petersburg). Romsets of the Scorpion arch; the labels must read the
 // same as kRomsetUiName[R_KAY*] (ArchRom.h), which the info pages use.

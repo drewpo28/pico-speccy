@@ -83,6 +83,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "hardware/gpio.h"
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Scorpion.h"
 #include "speccy/machines/Pentagon.h"
 #include "speccy/machines/Plus3/Plus3.h"
@@ -1073,7 +1074,8 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // via A0 latch. Authentic NEMO is mapped outside TR-DOS; on Profi the SYSEN
   // line keeps ESPectrum::trdos permanently asserted (not real TR-DOS paging),
   // so the !trdos rule is bypassed there.
-  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && Atm::atm3) || !ESPectrum::trdos)) {
+  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && (Atm::atm3 || Atm::evo)) || !ESPectrum::trdos)) {
+    if (Z80Ops::isAtm && Atm::evo) { uint8_t v; if (EvoBase::nemoRead(address, v)) return v; } // #10 word trigger (flash)
     if (address & 1) { LED::touchR(LED::IDE); return IDE::read_latch(); } // A0=1: high-byte latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {          // control / alt-status
       LED::touchR(LED::IDE); return IDE::read8(8);
@@ -1120,7 +1122,10 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   // INTRQ status port — cold flash dispatch (src/Atm.cpp), ahead of the ULA branch.
   if (Z80Ops::isAtm) {
     uint8_t atmData;
-    if (atmPortReadEarly(address, &atmData)) return atmData;
+    // The late half of the I/O cycle (3 T, uncontended on ATM/Evo) that every
+    // generic path below adds itself: without it each IN the machine claims was
+    // 3 T short against the raster (Across the Edge on BaseConf, 2026-10-04).
+    if (atmPortReadEarly(address, &atmData)) { VIDEO::Draw(3, false); return atmData; }
   }
   // Scorpion Turbo+ speed toggle. The clock is switched by READING a port, not by
   // writing one: MAME's scorpiontb_state::scorpion_io installs
@@ -1160,7 +1165,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
   }
   // ULA PORT
   if ((address & 0x0001) == 0) {
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend))); // I/O Contention (Late)
     if (ia && p8 == 0xFE) {
       data = nes_pad2_for_alf(); // default port value is 0xFF.
     } else {
@@ -1264,7 +1269,7 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     // Nemo KAY: a Gluk clock is an add-on card there, and without one #xxF7 is the
     // joystick port (Reset Service 0.2b's note) — so the pair answers only while
     // "CMOS + NVRAM" fits it, and falls through to Kempston otherwise.
-    if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf ||
+    if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf || g_scorp_evo ||
          (g_scorp_kay && Config::rtc_enabled)) && address == 0xBFF7) {
       // RTC off → static response (see RTC::readDisabled) instead of leaving the
       // port unclaimed; keeps the boot clock's UIP-wait from hanging.
@@ -1691,6 +1696,14 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
             lo8spiEx == 0xC7 || lo8spiEx == 0xE7)
           goto skip_fdc_alias_switch;
       }
+      // ZX-Evo: the FPGA decodes the WD1793 by the WHOLE low byte (zports.v
+      // loa==VGCOM/VGTRK/VGSEC/VGDAT), so #2F, #4F, #6F, #8F... are no port
+      // at all and read #FF. EvoProfROM's TR-DOS reads #2F as its per-drive
+      // "real/virtual" flags (bit 7 drive A, bit 6 drive B): the Beta alias
+      // gave it the TRACK register, bit 7 clear, and every sector went through
+      // the ProfROM HDD-driver path with its ~110 ms motor spin-up each.
+      if (Z80Ops::isAtm && Atm::evo && (address & 0x1F) != 0x1F)
+        goto skip_fdc_alias_switch;
 
       switch (address & 0xe3) {
       case 0x03:
@@ -2777,7 +2790,12 @@ static __attribute__((noinline)) bool atmPortWriteEarly(uint16_t address, uint8_
   atmPageTrace(address, data);
 #endif
   if (DivMMC::zc_enabled && (uint8_t)address == 0x57) {
-    LED::touchW(LED::ZCTRL); DivMMC::zc_write_data(data); return true;
+    LED::touchW(LED::ZCTRL);
+    // ZX-Evo in shadow mode: #57 with A15 = 1 is the card's CS line (what #77 is
+    // outside shadow mode) — zports.v sdcfg_wr.
+    if (Atm::evo && (ESPectrum::trdos || Atm::shaden) && (address & 0x8000)) DivMMC::zc_write_config(data);
+    else DivMMC::zc_write_data(data);
+    return true;
   }
   // The VGM-card ports with A1=0 (#C0/#C1 OPLL, #C4/#C5 OPL3, #C9 SN) match the 2+'s
   // loose #7FFD decode whenever the high byte (= the data byte of OUT (n),A) has
@@ -2947,11 +2965,13 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // Z-Controller data #57 ahead of the ATM decode: the 2+'s DOS-space #xx77 family
   // leaves A5 undecoded (%0nn101n1), so #57 would otherwise land in write77 and
   // reprogram the memory map. UnrealSpeccy tests #57 first, before every DOS port.
-  if (Z80Ops::isAtm && atmPortWriteEarly(address, data)) return;
+  // + the late 3 T of the I/O cycle, as above: Across the Edge on BaseConf lost 3 T a
+  // line through one such OUT, and every border change slid 6 px per line (hw 2026-10-04).
+  if (Z80Ops::isAtm && atmPortWriteEarly(address, data)) { VIDEO::Draw(3, false); return; }
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
-  if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf ||
+  if ((Z80Ops::isPentagon || PROFI || Z80Ops::isTsconf || g_scorp_evo ||
        (g_scorp_kay && Config::rtc_enabled))) {
 #if RTC_PORT_TRACE
     if (a8 == 0xF7) {
@@ -3029,7 +3049,8 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // (NEMO register ports have A0=0). 16-bit data via A0 latch. On Profi the
   // SYSEN line keeps ESPectrum::trdos permanently asserted, so the !trdos rule
   // (authentic NEMO is outside TR-DOS) is bypassed there.
-  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && Atm::atm3) || !ESPectrum::trdos)) {
+  if (IDE::portScheme == IDE::NEMO && !(address & 6) && (PROFI || (Z80Ops::isAtm && (Atm::atm3 || Atm::evo)) || !ESPectrum::trdos)) {
+    if (Z80Ops::isAtm && Atm::evo) { if (EvoBase::nemoWrite(address, data)) return; }          // #10 word trigger (flash)
     if (address & 1) { LED::touchW(LED::IDE); IDE::write_latch(data); return; } // A0=1: high latch
     if ((address & 0x18) == 0x08 && (address & 0xE0) == 0xC0) {                // control
       LED::touchW(LED::IDE); IDE::write8(8, data); return;
@@ -3130,7 +3151,9 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     // ATM-Turbo decodes #FE tighter than A0: ATM1 %XXXnX1n0 (A2=1), 2+ %nnnnX110
     // (A2=A1=1) — so OUT (#FA), the external bus, must not repaint the border
     // nor, on the ATM1, relatch the CP/M/video bits (atmdscr.htm).
-    if (Z80Ops::isAtm && (address & (Atm::atm1 ? 0x04 : 0x06)) != (Atm::atm1 ? 0x04 : 0x06)) {
+    // ZX-Evo (zports.v portfe_wr): exactly #FE, #F6 and #FC.
+    if (Z80Ops::isAtm && (Atm::evo ? (a8 != 0xFE && a8 != 0xF6 && a8 != 0xFC)
+                                   : (address & (Atm::atm1 ? 0x04 : 0x06)) != (Atm::atm1 ? 0x04 : 0x06))) {
       VIDEO::Draw(3, false);
       return;
     }
@@ -3183,7 +3206,7 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
             g_brd_delta = CPU::tstates - g_int_last_t; } }
 #endif
       VIDEO::brdChange = true;
-      if (!(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm))
+      if (!(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend)))
         // VIDEO::Draw(0, false); // Flush video rendering without adding contention
         VIDEO::Draw(0, true); // Apply contention to align border change with ULA character cell
       VIDEO::DrawBorder();
@@ -3212,10 +3235,10 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     if ((ESPectrum::AY_emu) && ((address & 0x8002) == 0x8000)) {
       LED::touchW(LED::AY);
       ayPortWrite(address, data, true);     // A8 decode: old-TS second chip
-      VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
+      VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend))); // I/O Contention (Late)
       return;
     }
-    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm)); // I/O Contention (Late)
+    VIDEO::Draw(3, !(Z80Ops::isPentagon || PROFI || Z80Ops::isScorpion || Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend))); // I/O Contention (Late)
   } else {
     // ULA+ ports (odd addresses: 0xBF3B register select, 0xFF3B data)
     if (Config::ulaplus) {
@@ -3738,6 +3761,10 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
         // misrouted into the WD1793 (spurious drive/side/reset pulses) — hw
         // log 2026-07-09. Nothing to actually emulate here (no real SPI-flash
         // chip backing), just don't let it hit the FDC.
+      } else if (Z80Ops::isAtm && Atm::evo && (address & 0x1F) != 0x1F) {
+        // ZX-Evo: full low-byte decode of the WD1793 (see the read side) —
+        // EvoProfROM's OUT (#2F),#FF at driver init must not reach the track
+        // register.
       } else switch (address & 0xe3) {
 
       case 0x03:

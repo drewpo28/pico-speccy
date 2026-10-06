@@ -4,6 +4,7 @@
 // drive the same primitives.
 #pragma once
 
+#include "app/LastRun.h"
 #include <string>
 #include <cstdio>
 
@@ -137,9 +138,11 @@ namespace DiskSlots {
         else if (iface == IFACE_ESX) {
             Config::esxdos_hdf_image[idx] = fname;
             DivMMC::init();
+            LastRun::note(fname);
         }
         else if (iface == IFACE_IDE) {
             Config::ide_image[idx] = fname;
             IDE::init();
+            LastRun::note(fname);
         }
     }}

@@ -153,7 +153,14 @@ private:
     // *I -- Vector de interrupción -- 8 bits*
     static uint8_t regI;
     // *R -- Refresco de memoria -- 7 bits*
-    static uint8_t regR;
+    // Kept as a free-running 32-bit count of opcode fetches (M1 cycles, prefixes
+    // included) so an RZX recording/playback can read its fetch counter as a
+    // difference, at no cost on the M1 path. The visible 7-bit R is
+    // (regR + regRbase) & 0x7f: LD R,A and the interrupt acknowledge move
+    // regRbase, never regR — neither is an opcode fetch (Fuse keeps the same
+    // rule through rzx_instructions_offset). See Rzx.h.
+    static uint32_t regR;
+    static uint8_t regRbase;
     // *R7 -- Refresco de memoria -- 1 bit* (bit superior de R)
     static bool regRbit7;
     //Flip-flops de interrupción
@@ -322,8 +329,10 @@ public:
     static uint8_t getRegI(void) { return regI; }
     static void setRegI(uint8_t value) { regI = value; }
 
-    static uint8_t getRegR(void) { return regRbit7 ? regR | SIGN_MASK : regR & 0x7f; }
-    static void setRegR(uint8_t value) { regR = value & 0x7f; regRbit7 = (value > 0x7f); }
+    static uint8_t getRegR(void) { const uint8_t r = (uint8_t)(regR + regRbase) & 0x7f; return regRbit7 ? r | SIGN_MASK : r; }
+    static void setRegR(uint8_t value) { regRbase = (uint8_t)(value - (uint8_t)regR) & 0x7f; regRbit7 = (value > 0x7f); }
+    // Opcode fetches since power-up (wraps at 2^32; read it as a difference).
+    static uint32_t getFetchCounter(void) { return regR; }
 
     // Acceso al registro oculto MEMPTR
     // Hidden register MEMPTR (known as WZ at Zilog doc?)
@@ -418,7 +427,7 @@ public:
     // Do NMI
     static void doNMI(void);
 
-    static void incRegR(uint8_t inc);
+    static void incRegR(uint32_t inc);
 
     static void Xor(uint8_t oper8);
 
@@ -665,6 +674,7 @@ private:
     static void check_trdos_atm();       // ATM-Turbo part, in flash (Z80_JLS.cpp)
     static uint8_t scorp_dos_exit_rom(); // Scorpion-family DOS-exit ROM bank, in flash
     static bool byte_tape_trap();        // Byte ROM LOAD trap at 0x0557, in flash
+    static bool evo_tape_trap();         // ZX-Evo 48 BASIC RST 8 #45 LOAD hook, in flash
     static void check_trdos_unpage();                 
 };
 

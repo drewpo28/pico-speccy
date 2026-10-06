@@ -41,6 +41,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #define TSTATES_PER_FRAME_48 69888
 #define TSTATES_PER_FRAME_128 70908
+#define TSTATES_PER_FRAME_EVO60 58688   // ZX-Evo BaseConf 60 Hz raster: 262 lines x 224 T (video_sync_v.v)
 #define TSTATES_PER_FRAME_PENTAGON 71680
 #define TSTATES_PER_FRAME_PROFI 69888
 #define TSTATES_PER_FRAME_BYTE  69888
@@ -59,6 +60,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define MICROS_PER_FRAME_48 19968
 #define MICROS_PER_FRAME_128 19992
 #define MICROS_PER_FRAME_PENTAGON 20480
+#define MICROS_PER_FRAME_EVO60 16768       // 58688 T / 3.5 MHz
 #define MICROS_PER_FRAME_PROFI 19968
 #define MICROS_PER_FRAME_BYTE  19968
 #define MICROS_PER_FRAME_SCORPION 19968
@@ -69,6 +71,12 @@ visit https://zxespectrum.speccy.org/contacto
 #define INT_END_BYTE48 33
 #define INT_START128 0
 #define INT_END128 36 // 35 in real +2 and Weiv's Spectramine. I'll have to check those numbers
+// +2A/+3 (Amstrad gate array): 32 T, not the 128K's 36 (libspectrum
+// timings_frame_amstrad_asic). The four extra T-states let a handler that
+// re-enables interrupts 33..36 T after the frame start take a second one: an RZX
+// of DNA Warrior (+2A, Spectaculator) plays all 82561 frames at 32..35 and
+// desyncs at frame 7273 at 36 (host replay on redcode, 2026-10-01).
+#define INT_END_P3 32
 #define INT_START_PENTAGON 0
 // Pentagon INT pulse = 32 T, NOT the 36 T of a real 128K (which is where this
 // value came from before). Settled from RTL: Karabas-Pro's pentagon_video.vhd
@@ -135,6 +143,9 @@ extern bool g_gmx_tap;
 // Unreal MM_PHOENIX page order, 1FFD D1 = service page, no turbo line). Gates the KAY #1FFD decode, its ROM select (1FFD D3 XORs
 // the DOS bit), the page bits and the 1FFD D2 turbo-off line (Ports.cpp).
 extern uint8_t g_scorp_kay;
+// ScorpEvo romset live (R_SCORP_EVO): the ZX-Evo Scorpion configuration — the
+// ProfROM machine on the Pentagon raster with the board's Gluk clock on #DFF7/#BFF7.
+extern bool g_scorp_evo;
 
 class CPU
 {
@@ -143,6 +154,7 @@ public:
 
     // call this for executing a frame's worth of instructions
     static void loop();
+    static void loopRzx(uint64_t loopT0);   // RZX playback frame (Rzx.h)
 
     static void updateStatesInFrame();
 

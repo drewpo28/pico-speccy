@@ -25,6 +25,7 @@
 #include "drivers/graphics/graphics.h"
 #include <hardware/vreg.h>
 #include "ScanLite.h"
+#include "JoyProfiles.h"
 
 ArchIdx   Config::arch = A_48K;
 RomsetIdx Config::romSet = R_48K;
@@ -56,6 +57,7 @@ bool     Config::loaded = false;
 bool     Config::save_blocked = false;
 bool     Config::slog_on = false;
 bool     Config::ledIndicators = false;
+bool     Config::rzx_loop = false;
 bool     Config::led_panel = false;
 bool     Config::sdLedBlink = false;
 int8_t   Config::temp_offset = 0;
@@ -79,6 +81,10 @@ uint8_t  Config::vreq_voltage = VREG_VOLTAGE_1_50;
 bool     Config::Issue2 = true;
 uint16_t Config::mem_pg_cnt = 64;      // Murmuzavr off; the live count is MEM_PG_CNT
 uint8_t  Config::tsconf_clk_cap = 2;   // ZCLK cap: 14 MHz allowed
+uint8_t  Config::evo_raster = 0;       // BaseConf raster: Pentagon
+bool     Config::tsconf_vdac2 = false;
+bool     Config::tsconf_vdac2_smooth = false;
+bool     Config::tsconf_vdac2_adapt = true;
 bool     Config::rtc_enabled = false;
 uint16_t Config::mouse_sens = 64;        // Q8: 64 = x1/4, the historical divisor
 bool     Config::psram_enabled = true;   // Debug > PSRAM (runtime set(PSRAM OFF) twin)
@@ -148,7 +154,7 @@ bool     Config::betadisk = true;
 bool     Config::trdosFastMode = true;
 bool     Config::trdosAutoBoot = true;
 uint8_t  Config::trdosSoundLed = 1; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
-uint8_t  Config::trdosBios = 1; // Default: 5.04T
+uint8_t  Config::trdosBios = 5; // Default: 5.04T — the flash base itself, no overlay
 uint8_t  Config::alfCartBanks = 0; // 0 = built-in Elf-1; >0 = loaded cart size in 16K banks
 string   Config::alfCartPath = ""; // pending cart to flash into the shared region at boot
 string   Config::dckCartPath = ""; // Timex DOCK cartridge in the TC2068 slot
@@ -188,6 +194,7 @@ string   Config::net_user;
 uint16_t Config::net_port = 0;
 uint8_t  Config::net_proto = 0;
 string   Config::net_dl_dir = SPEC_DIR_ROOT;
+string   Config::snap_export_dir = SPEC_DIR_ROOT "/snapshots";
 string   Config::net_ul_dir = SPEC_DIR_ROOT;
 string   Config::catalog_host;
 uint16_t Config::catalog_port = 0;
@@ -200,6 +207,7 @@ bool Config::render_paper = true;
 bool Config::render_border = true;
 uint8_t Config::persist_slot = 1;
 uint8_t Config::profile_slot = 0;
+string  Config::joy_profile;
 
 bool     Config::TABasfire1 = false;
 signed char Config::aud_volume = 0;
@@ -263,17 +271,18 @@ void Config::initHotkeys() {
         { fabgl::VK_F1,     true,  false, true  }, // HK_HW_INFO    — readonly
         { fabgl::VK_F2,     true,  false, false }, // HK_TURBO
         { fabgl::VK_F5,     true,  false, false }, // HK_DEBUG
-        { fabgl::VK_F6,     true,  false, false }, // HK_DISK
+        { fabgl::VK_NONE,   false, false, true  }, // HK_UNUSED_17
         { fabgl::VK_F10,    true,  false, false }, // HK_NMI
         { fabgl::VK_F11,    true,  false, false }, // HK_RESET_TO
         { fabgl::VK_F12,    true,  false, false }, // HK_USB_BOOT
         { fabgl::VK_PAGEUP, true,  false, false }, // HK_GIGASCREEN
         { fabgl::VK_F8,     true,  false, false }, // HK_LED_TOGGLE
         { fabgl::VK_F9,     true,  false, false }, // HK_POKE
-        { fabgl::VK_HOME,   true,  true,  false }, // HK_VIDMODE_60
-        { fabgl::VK_END,    true,  true,  false }, // HK_VIDMODE_50
+        { fabgl::VK_NONE,   false, false, true  }, // HK_UNUSED_24
+        { fabgl::VK_NONE,   false, false, true  }, // HK_UNUSED_25
         { fabgl::VK_F3,     true,  false, false }, // HK_QUICK_LOAD
         { fabgl::VK_F4,     true,  false, false }, // HK_QUICK_SAVE
+        { fabgl::VK_F7,     true,  false, false }, // HK_FAST_MENU
     };
     for (int i = 0; i < HK_COUNT; i++)
         hotkeys[i] = defaults[i];
@@ -310,7 +319,10 @@ void gmxRegisterLiveOverlay(uint8_t bank) {
 // reason: plane 3's banks all overlay plane 3 bank 0, and plane 0's two halves
 // overlay the Sinclair 128K arrays this TU owns. See gmxRegisterLiveOverlay.
 void profRegisterLiveOverlay(uint8_t bank) {
-    const scorpion_prof_bank_t& bk = gb_rom_scorpion_prof_banks[bank & 15];
+    // ScorpEvo shares the plane mapper and the table shape (scorpion_evo_banks.h).
+    const scorpion_prof_bank_t* tbl = isScorpEvoRomset(Config::romSetScorp)
+                                          ? gb_rom_scorpion_evo_banks : gb_rom_scorpion_prof_banks;
+    const scorpion_prof_bank_t& bk = tbl[bank & 15];
     MemESP::registerOverlay(bk.data, bk.overlay);
 }
 
@@ -318,10 +330,32 @@ void profRegisterLiveOverlay(uint8_t bank) {
 // (Scorpion GMX / ProfROM plane banks, every Nemo KAY's bank 3), so the user's TR-DOS
 // BIOS pick must not re-register that pointer while it runs — the registry keeps ONE
 // overlay per base and the pick would replace the machine's own DOS. Such machines
-// never read rom[4] anyway.
+// never read rom[4] anyway. TS-Conf (TS-BIOS page 1) and ATM / ZX-Evo (their own
+// page tables) carry TR-DOS in their ROM image and never read rom[4] either; leaving
+// them out made the pick's overlay materialise into 16 KB of butter PSRAM for nothing.
 bool Config::trdosBaseOwnedByMachine() {
+    if (arch == A_TSCONF || arch == A_ATM) return true;
     return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
+                               isScorpEvoRomset(romSetScorp) ||
                                isKayRomset(romSetScorp));
+}
+
+// 5.03 / 5.04TM / 5.05D / 6.11e are small read-only overlays over the 5.04T base,
+// applied on the fly by MemESP (RomOverlay.h) and materialised into one 16 KB butter
+// page while picked. 5.04T IS the base and Custom a raw image: no overlay, no copy.
+void Config::bindTrdosRom(uint8_t v) {
+    const uint8_t* base = gb_rom_4_trdos_504t;
+    const uint8_t* ov   = nullptr;                   // 5.04T: the base itself
+    switch (v) {
+        case 0: ov = gb_overlay_trdos_503;   break;  // 5.03
+        case 1: ov = gb_overlay_trdos_504tm; break;  // 5.04TM
+        case 2: ov = gb_overlay_trdos_505d;  break;  // 5.05D
+        case 4: ov = gb_overlay_trdos_611e;  break;  // BetaDisk 128 v.6.11e
+        case 3: base = gb_rom_4_trdos_custom; break; // user-uploaded custom (raw)
+        default: break;                              // 5 = 5.04T
+    }
+    MemESP::rom[4].assign_rom(base);
+    MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);   // nullptr unregisters
 }
 
 void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
@@ -343,6 +377,8 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_SCORP && isScorpGmxRomset(newRomSet)) {
             newRomSet = R_SCORP;
+        } else if (newArch == A_SCORP && (isScorpEvoRomset(newRomSet) || newRomSet == R_SCORP_PROF)) {
+            newRomSet = R_SCORP_1024;   // the same board on its stock ROM
         }
     }
     // ATM-Turbo: its ROM pages are flattened into butter PSRAM (Atm::bindRoms) — a
@@ -703,14 +739,23 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             Debug::log("[FlashRoms] GMX unavailable (overlay traded) - Yellow");
             romSet = R_SCORP;
         }
+        // ScorpEvo's and ProfROM's images live in the tradeable .psramroms
+        // (FlashRoms.h; ProfROM since 2026-10-04, to give the firmware flash back).
+        if ((isScorpEvoRomset(romSet) || romSet == R_SCORP_PROF) && !FlashRoms::romsUsable()) {
+            OSD::bootNotice("ProfROM traded for the GM.DLS bank - using ZS-1024");
+            Debug::log("[FlashRoms] ProfROM/ScorpEvo unavailable (overlay traded) - ZS-1024");
+            romSet = R_SCORP_1024;
+        }
         romSetScorp = romSet;
-        if (romSet == R_SCORP_PROF) {
+        if (romSet == R_SCORP_PROF || isScorpEvoRomset(romSet)) {
             // ProfROM: 4 planes x 4 banks into rom[0..15], romInUse =
             // (plane << 2) | bank, plane switched by the 0x0100-0x010F read tap
             // (Ports::gmxProfRomTap). Overlays are registered dynamically per
             // live bank, exactly like GMX — see profRegisterLiveOverlay.
+            const scorpion_prof_bank_t* tbl = isScorpEvoRomset(romSet) ? gb_rom_scorpion_evo_banks
+                                                                        : gb_rom_scorpion_prof_banks;
             for (int i = 0; i < 16; ++i)
-                MemESP::rom[i].assign_rom(gb_rom_scorpion_prof_banks[i].data);
+                MemESP::rom[i].assign_rom(tbl[i].data);
             // Unlike GMX (whose plane 0 bank 0 is a raw array), ProfROM's first
             // bank IS an overlay over the Sinclair 128K half — and the registry
             // may still hold the plain-Scorpion overlay for that same base from
@@ -797,6 +842,7 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         else if (romSet == R_ATM2_106) Atm::bindRoms(romSet, gb_rom_atm2v106_pages, 4);
         else if (romSet == R_ATM3)  Atm::bindRoms(romSet, gb_rom_atm3_pages, 16);
         else if (romSet == R_ATM3_107) Atm::bindRoms(romSet, gb_rom_atm3v107_pages, 4);
+        else if (romSet == R_EVO_BASE) Atm::bindRoms(romSet, gb_rom_evo_pages, 32);
         else                        Atm::bindRoms(romSet, gb_rom_atm2_pages, 4);
         break;
     }
@@ -834,27 +880,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         break;
     }
     }
-    // 5.03 / 5.04TM are small read-only overlays over the 5.05D base, applied on the
-    // fly by MemESP (RomOverlay.h): rom[4] points at the 5.05D base in flash, and the
-    // active overlay supplies the differing bytes. No slot, no flash write, no reboot.
-    // NOT on Scorpion GMX: there rom[4] IS a GMX bank (plane 1 slot 0 — romInUse is
-    // (plane<<2)|slot), so this binding would clobber it, and its registerOverlay on
-    // the 5.05D base would evict the GMX plane-1 TR-DOS overlay keyed to the same
-    // pointer. Scorpion never uses the shared rom[4] anyway (TR-DOS is the machine's
-    // own bank 3).
-    if (!trdosBaseOwnedByMachine()) {
-        const uint8_t* base = gb_rom_4_trdos_504t;
-        const uint8_t* ov = gb_overlay_trdos_505d;   // the base is 5.04T now
-        switch (Config::trdosBios) {
-            case 0: ov = gb_overlay_trdos_503;   break;  // 5.03
-            case 1: ov = gb_overlay_trdos_504tm; break;  // 5.04TM
-            case 4: ov = gb_overlay_trdos_611e;  break;  // BetaDisk 128 v.6.11e
-            case 3: base = gb_rom_4_trdos_custom; break; // user-uploaded custom (raw)
-            default: break;                              // 5.05D = overlay over 5.04T
-        }
-        MemESP::rom[4].assign_rom(base);
-        MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);
-    }
+    // rom[4] = the picked TR-DOS (bindTrdosRom). NOT on machines that carry their
+    // own TR-DOS (trdosBaseOwnedByMachine): on Scorpion GMX rom[4] IS a GMX bank
+    // (plane 1 slot 0 — romInUse is (plane<<2)|slot), and the registry keeps ONE
+    // overlay per base, so registering the pick would evict the machine's own TR-DOS
+    // overlay on the shared 5.04T base.
+    if (!trdosBaseOwnedByMachine()) bindTrdosRom(Config::trdosBios);
 
     // Battery-backed state follows the machine (see the note in RTC.cpp): push
     // what the outgoing one wrote to its own file and adopt the incoming one's.
@@ -1294,6 +1325,7 @@ void Config::load() {
         nvs_get_b("wasd", wasd, sts);
         nvs_get_b("ledIndicators", ledIndicators, sts);
         nvs_get_b("ledPanel", led_panel, sts);
+        nvs_get_b("rzx_loop", rzx_loop, sts);
         nvs_get_b("sdLedBlink", sdLedBlink, sts);
         nvs_get_i8("temp_offset", temp_offset, sts);
         nvs_get_u8("gm_field", gm_field, sts);
@@ -1409,6 +1441,7 @@ void Config::load() {
             trdosSoundLed = old ? 3 : 0;
         }
         nvs_get_u8("trdosBios", trdosBios, sts);
+        if (trdosBios > 5) trdosBios = 5;
         nvs_get_u8("alfCartBanks", alfCartBanks, sts);
         nvs_get_str("alfcart", alfCartPath, sts);
         nvs_get_str("dckcart", dckCartPath, sts);
@@ -1464,6 +1497,7 @@ void Config::load() {
         if (zifi_transport == 2) zifi_transport = 0;   // on-chip radio exists only on W boards
 #endif
         nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
+        nvs_get_str("snap_exp", snap_export_dir, sts);
         nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
         nvs_get_str("DSK_Path", FileUtils::DSK_Path, sts);
         nvs_get_str("ROM_Path", FileUtils::ROM_Path, sts);
@@ -1558,6 +1592,7 @@ void Config::load() {
         // open its list on it. 0 = none (never loaded one, or a factory start).
         nvs_get_u8("profile_slot", profile_slot, sts);
         if (profile_slot > CONFIG_PROFILE_SLOTS) profile_slot = 0;
+        nvs_get_str("joy_profile", joy_profile, sts);
         nvs_get_u8("ui_click_vol", ui_click_vol, sts);
         if (ui_click_vol > 3) ui_click_vol = 2;
         nvs_get_b("timex_video", timex_video, sts);
@@ -1586,6 +1621,12 @@ void Config::load() {
             hotkeys[i].alt  = (mod >> 1) & 1;
             hotkeys[i].ctrl = (mod     ) & 1;
         }
+        // Retired slot: an old config may still carry Alt+F6 there, which would
+        // swallow the key and block assigning it elsewhere.
+        hotkeys[HK_UNUSED_17] = { (uint16_t)fabgl::VK_NONE, false, false, true };
+        // Same for the retired Ctrl+Alt+Home/End video-mode keys.
+        hotkeys[HK_UNUSED_24] = { (uint16_t)fabgl::VK_NONE, false, false, true };
+        hotkeys[HK_UNUSED_25] = { (uint16_t)fabgl::VK_NONE, false, false, true };
         // Murmuzavr page count. Lands in Config::mem_pg_cnt (the persisted pick); the
         // live MEM_PG_CNT is derived from it once in ESPectrum::setup(), which also
         // applies the Pentagon-only clamp.
@@ -1596,6 +1637,12 @@ void Config::load() {
         int tsc = -1;
         nvs_get_i("tsconf_clk_cap", tsc, sts);
         tsconf_clk_cap = (tsc >= 0 && tsc <= 2) ? (uint8_t)tsc : 2;
+        int evr = 0;
+        nvs_get_i("evo_raster", evr, sts);
+        evo_raster = (evr >= 0 && evr <= 3) ? (uint8_t)evr : 0;
+        nvs_get_b("tsconf_vdac2", tsconf_vdac2, sts);
+        nvs_get_b("tsconf_vdac2_smooth", tsconf_vdac2_smooth, sts);
+        nvs_get_b("tsconf_vdac2_adapt", tsconf_vdac2_adapt, sts);
     }
     loaded = true;
     if (FileUtils::fsMount)
@@ -1643,75 +1690,9 @@ static void nvs_set_sc(NvsWriter& buf, const char* name, signed char val) {
     nvs_set_i(buf, name, val);
 }
 
-// Dump actual config to FS. path==nullptr writes the normal per-version/
-// per-board storage.nvs; a caller passes a profile path to snapshot the current
-// live settings under a name (see profileSave). `profileName` is written as the
-// FIRST line of the file so the menu can read a profile's name off the head of
-// it instead of parsing a whole config — every other reader is a pull model
-// (nvs_get_*), so an unknown key costs nothing and the order never matters.
-void Config::save(const char* path, const char* profileName) {
-    const bool toFile = (path != nullptr);
-    if (toFile && !FileUtils::fsMount) return; // no SD: nothing to persist a profile to
-    string nvs_path_s = toFile ? path : STORAGE_NVS;
-    string nvs_tmp_s = nvs_path_s + ".tmp";
-    const char* nvs_tmp = nvs_tmp_s.c_str();
-    const char* nvs_path = nvs_path_s.c_str();
-    FIL* handle = nullptr;
-    if (FileUtils::fsMount) {
-        if (!toFile && !loaded) {
-            // Config was never loaded from file — refuse to overwrite
-            // existing storage.nvs with defaults. The guard is for a file we
-            // could not READ (SD hiccup at boot); a file THIS session created
-            // is ours, which is why the successful write below sets `loaded`.
-            // Without that, only the first save of a session landed: a boot
-            // with no storage.nvs yet (new firmware version = new config dir)
-            // left loaded=false, the first save created the file, and every
-            // later save in the same session was blocked by it — the new
-            // menu's commit persisted the video mode but MachineSwitch's own
-            // save (which carries arch/romSet, and runs second) was refused,
-            // so the machine reverted on the next boot (hw 2026-07-29:
-            // "720x576 + V-Sync applied, Machine stayed 48K").
-            FILINFO fi;
-            if (f_stat(STORAGE_NVS, &fi) == FR_OK) {
-                Debug::log("Config::save BLOCKED — not loaded, file exists (%lu bytes)",
-                           (unsigned long)fi.fsize);
-                save_blocked = true;    // the loop says so out loud
-                return;
-            }
-        }
-        // Make sure the target directory exists before writing. If mkdir
-        // fails (broken/full SD), refuse to write — otherwise the following
-        // f_open would silently fail and we'd lose original state. The
-        // directory comes from the path itself: a profile lives in a folder
-        // of its own and a hardcoded pair of names cannot cover both.
-        string dir_s = CONFIG_DIR_BOARD;
-        if (toFile) {
-            const size_t sl = nvs_path_s.rfind('/');
-            dir_s = (sl == string::npos) ? string(CONFIG_DIR) : nvs_path_s.substr(0, sl);
-        }
-        const char* dir = dir_s.c_str();
-        if (!FileUtils::mkdirParents(dir)) {
-            Debug::log("Config::save FAILED — cannot create %s", dir);
-        } else {
-            // Atomic write: stream to .tmp, then rename over the original
-            handle = fopen2(nvs_tmp, FA_WRITE | FA_CREATE_ALWAYS);
-            if (!handle) Debug::log("Config::save FAILED — cannot open %s", nvs_tmp);
-        }
-    }
-    // The RAM fallback below is the session copy of storage.nvs. A profile has no
-    // such thing: it exists to outlive the session, and dumping it into that
-    // buffer would both pretend the save worked and leave the session's config
-    // carrying someone else's profile_name.
-    if (!handle && toFile) return;
-    NvsWriter buf;
-    if (handle) {
-        buf.f = handle;
-    } else {
-        // No SD target — keep config in RAM for session persistence
-        nvs_ram_buf.clear();
-        buf.ram = &nvs_ram_buf;
-    }
-    if (profileName) nvs_set_str(buf, "profile_name", profileName);
+// Every key, in save()'s order. Split out so a snapshot can carry the same dump
+// (Config::saveKeysTo) without going through save()'s storage.nvs plumbing.
+void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u16(buf,"cpu_mhz", cpu_mhz);
     nvs_set_u16(buf,"max_flash_freq", max_flash_freq);
     nvs_set_u16(buf,"max_psram_freq", max_psram_freq);
@@ -1799,6 +1780,7 @@ void Config::save(const char* path, const char* profileName) {
     nvs_set_str(buf,"flashload", flashload ? "true" : "false");
     nvs_set_str(buf,"ledIndicators", ledIndicators ? "true" : "false");
     nvs_set_str(buf,"ledPanel", led_panel ? "true" : "false");
+    nvs_set_str(buf,"rzx_loop", rzx_loop ? "true" : "false");
     nvs_set_str(buf,"sdLedBlink", sdLedBlink ? "true" : "false");
     nvs_set_i8(buf,"temp_offset", temp_offset);
     nvs_set_u8(buf,"gm_field", gm_field);
@@ -1881,6 +1863,7 @@ void Config::save(const char* path, const char* profileName) {
     nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
     nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
     nvs_set_str(buf,"SNA_Path",FileUtils::SNA_Path.c_str());
+    nvs_set_str(buf,"snap_exp",snap_export_dir.c_str());
     nvs_set_str(buf,"TAP_Path",FileUtils::TAP_Path.c_str());
     nvs_set_str(buf,"DSK_Path",FileUtils::DSK_Path.c_str());
     nvs_set_str(buf,"ROM_Path",FileUtils::ROM_Path.c_str());
@@ -1947,6 +1930,7 @@ void Config::save(const char* path, const char* profileName) {
     nvs_set_str(buf,"ui_rounded", Config::ui_rounded ? "true" : "false");
     nvs_set_u8(buf,"ui_theme", Config::ui_theme);
     nvs_set_u8(buf,"profile_slot", Config::profile_slot);
+    nvs_set_str(buf,"joy_profile", Config::joy_profile.c_str());
     nvs_set_u8(buf,"ui_click_vol", Config::ui_click_vol);
     nvs_set_str(buf,"timex_video", Config::timex_video ? "true" : "false");
     nvs_set_u8(buf,"dma_mode",Config::dma_mode);
@@ -1971,7 +1955,90 @@ void Config::save(const char* path, const char* profileName) {
     // The PICK, not the live count — see Config::mem_pg_cnt in Config.h.
     nvs_set_i(buf,"MEM_PG_CNT", mem_pg_cnt);
     nvs_set_i(buf,"tsconf_clk_cap", tsconf_clk_cap);
+    nvs_set_i(buf,"evo_raster", evo_raster);
+    nvs_set_str(buf,"tsconf_vdac2", tsconf_vdac2 ? "true" : "false");
+    nvs_set_str(buf,"tsconf_vdac2_smooth", tsconf_vdac2_smooth ? "true" : "false");
+    nvs_set_str(buf,"tsconf_vdac2_adapt", tsconf_vdac2_adapt ? "true" : "false");
 
+}
+
+bool Config::saveKeysTo(FIL* f) {
+    NvsWriter buf;
+    buf.f = f;
+    writeKeys(buf);
+    return buf.ok;
+}
+
+// Dump actual config to FS. path==nullptr writes the normal per-version/
+// per-board storage.nvs; a caller passes a profile path to snapshot the current
+// live settings under a name (see profileSave). `profileName` is written as the
+// FIRST line of the file so the menu can read a profile's name off the head of
+// it instead of parsing a whole config — every other reader is a pull model
+// (nvs_get_*), so an unknown key costs nothing and the order never matters.
+void Config::save(const char* path, const char* profileName) {
+    const bool toFile = (path != nullptr);
+    if (toFile && !FileUtils::fsMount) return; // no SD: nothing to persist a profile to
+    string nvs_path_s = toFile ? path : STORAGE_NVS;
+    string nvs_tmp_s = nvs_path_s + ".tmp";
+    const char* nvs_tmp = nvs_tmp_s.c_str();
+    const char* nvs_path = nvs_path_s.c_str();
+    FIL* handle = nullptr;
+    if (FileUtils::fsMount) {
+        if (!toFile && !loaded) {
+            // Config was never loaded from file — refuse to overwrite
+            // existing storage.nvs with defaults. The guard is for a file we
+            // could not READ (SD hiccup at boot); a file THIS session created
+            // is ours, which is why the successful write below sets `loaded`.
+            // Without that, only the first save of a session landed: a boot
+            // with no storage.nvs yet (new firmware version = new config dir)
+            // left loaded=false, the first save created the file, and every
+            // later save in the same session was blocked by it — the new
+            // menu's commit persisted the video mode but MachineSwitch's own
+            // save (which carries arch/romSet, and runs second) was refused,
+            // so the machine reverted on the next boot (hw 2026-07-29:
+            // "720x576 + V-Sync applied, Machine stayed 48K").
+            FILINFO fi;
+            if (f_stat(STORAGE_NVS, &fi) == FR_OK) {
+                Debug::log("Config::save BLOCKED — not loaded, file exists (%lu bytes)",
+                           (unsigned long)fi.fsize);
+                save_blocked = true;    // the loop says so out loud
+                return;
+            }
+        }
+        // Make sure the target directory exists before writing. If mkdir
+        // fails (broken/full SD), refuse to write — otherwise the following
+        // f_open would silently fail and we'd lose original state. The
+        // directory comes from the path itself: a profile lives in a folder
+        // of its own and a hardcoded pair of names cannot cover both.
+        string dir_s = CONFIG_DIR_BOARD;
+        if (toFile) {
+            const size_t sl = nvs_path_s.rfind('/');
+            dir_s = (sl == string::npos) ? string(CONFIG_DIR) : nvs_path_s.substr(0, sl);
+        }
+        const char* dir = dir_s.c_str();
+        if (!FileUtils::mkdirParents(dir)) {
+            Debug::log("Config::save FAILED — cannot create %s", dir);
+        } else {
+            // Atomic write: stream to .tmp, then rename over the original
+            handle = fopen2(nvs_tmp, FA_WRITE | FA_CREATE_ALWAYS);
+            if (!handle) Debug::log("Config::save FAILED — cannot open %s", nvs_tmp);
+        }
+    }
+    // The RAM fallback below is the session copy of storage.nvs. A profile has no
+    // such thing: it exists to outlive the session, and dumping it into that
+    // buffer would both pretend the save worked and leave the session's config
+    // carrying someone else's profile_name.
+    if (!handle && toFile) return;
+    NvsWriter buf;
+    if (handle) {
+        buf.f = handle;
+    } else {
+        // No SD target — keep config in RAM for session persistence
+        nvs_ram_buf.clear();
+        buf.ram = &nvs_ram_buf;
+    }
+    if (profileName) nvs_set_str(buf, "profile_name", profileName);
+    writeKeys(buf);
     if (handle) {
         // f_sync flushes FAT before close so we don't commit the
         // rename on top of a half-written file when the card stalls.
@@ -2057,6 +2124,164 @@ struct LineReader {
 static bool lineIsKey(const string& l, const char* key) {
     const size_t k = strlen(key);
     return l.size() >= k + 1 && l.compare(0, k, key) == 0 && l[k] == '=';
+}
+
+// ── snapshot settings (.pss) ───────────────────────────────────────────────────
+// A .pss carries the whole key dump, but only the keys that describe the MACHINE
+// the guest ran on are applied when it is loaded — never video, CPU clock, UI,
+// network, audio driver, volume or the joystick (the JOY block carries that).
+// Class 1 is switched live by requestMachine, class 3 is (re)mounted live, class 2
+// is everything that is only read at boot: those go through storage.nvs + reboot.
+static const char* const kSnapArchKeys[] = {
+    "arch", "romSet", "romSet48", "romSet128", "romSetPent", "romSetP512", "romSetP1M",
+    "romSetScorp", "romSetProfi", "romSetAtm", "romSetTsconf",
+};
+static const char* const kSnapRebootKeys[] = {
+    "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",
+    "Issue2", "timex_video", "ulaplus", "betadisk", "trdosBios", "mode16col_onoff",
+    "esxdos", "esxdos_hdf", "esxdos_hd1", "mb02", "mb02d0.file", "mb02d1.file",
+    "mb02d2.file", "mb02d3.file", "zcontroller", "byte_cobmect_mode", "AluTiming",
+    "rtc_enabled", "ide_scheme", "ide_img0", "ide_img1", "ide_chs0", "ide_chs1",
+    "dckcart", "alfcart", "alfCartBanks", "MEM_PG_CNT", "tsconf_vdac2",
+    "gs_enabled", "gs_ram_size", "gs_clock", "ngs_clock",
+};
+// The BOARD the snapshot was saved on — overclock, video output, audio output,
+// PSRAM. Not the guest machine, but the user may want it to travel with the
+// snapshot (a title recorded at 378 MHz with HDMI audio): applied only when the
+// user says so, through the same storage.nvs + reboot as class 2 (some of these
+// are live settings, the reboot applies them all the same).
+static const char* const kSnapAskKeys[] = {
+    "cpu_mhz", "vreq_voltage", "max_flash_freq", "max_psram_freq", "max_tft_freq",
+    "video_driver", "hdmi_vmode", "vga_vmode", "v_sync_enabled", "hdmi_clkdrv",
+    "vga_pwm", "vga_pwm_phase", "audio_driver", "AudBoost", "AudVolume",
+    "psram_enabled", "TFT_FLAGS", "TFT_INVERSION", "tsconf_clk_cap",
+};
+static const char* const kSnapLiveKeys[] = {
+    "drive0.file", "drive1.file", "drive2.file", "drive3.file",
+    "p3d0.file", "p3d1.file", "tape_file",
+};
+
+// What the user calls each of them (the menu's names), for the load question.
+const char* Config::snapKeyLabel(const std::string& key) {
+    static const struct { const char* k; const char* l; } tab[] = {
+        { "AY48", "AY on 48K" },            { "SAA1099", "SAA1099" },
+        { "ayConfig", "AY stereo" },        { "turbosound", "TurboSound" },
+        { "tsfm", "TurboSound FM" },        { "covox", "Covox" },
+        { "soundrive", "Soundrive" },       { "Issue2", "Issue 2 keyboard" },
+        { "timex_video", "Timex video" },   { "ulaplus", "ULA+" },
+        { "betadisk", "Beta 128" },         { "trdosBios", "TR-DOS ROM" },
+        { "mode16col_onoff", "16 colours" },{ "esxdos", "esxDOS" },
+        { "esxdos_hdf", "esxDOS image" },   { "esxdos_hd1", "esxDOS image" },
+        { "mb02", "MB-02+" },               { "zcontroller", "Z-Controller" },
+        { "byte_cobmect_mode", "Byte COBMECT" }, { "AluTiming", "ULA timing" },
+        { "rtc_enabled", "CMOS + NVRAM" },  { "ide_scheme", "IDE interface" },
+        { "ide_img0", "IDE image" },        { "ide_img1", "IDE image" },
+        { "ide_chs0", "IDE geometry" },     { "ide_chs1", "IDE geometry" },
+        { "dckcart", "DOCK cartridge" },    { "alfcart", "ALF cartridge" },
+        { "alfCartBanks", "ALF cartridge" },{ "audio_driver", "Audio output" },
+        { "MEM_PG_CNT", "Murmuzavr RAM" },  { "tsconf_vdac2", "VDAC2 (FT812)" },
+        { "tsconf_clk_cap", "TS-Conf clock cap" },
+        { "gs_enabled", "General Sound" },   { "gs_ram_size", "GS RAM" },
+        { "gs_clock", "GS clock" },         { "ngs_clock", "NeoGS clock" },
+        { "cpu_mhz", "CPU clock" },         { "vreq_voltage", "Core voltage" },
+        { "max_flash_freq", "Flash clock" },{ "max_psram_freq", "PSRAM clock" },
+        { "max_tft_freq", "TFT clock" },    { "video_driver", "Video output" },
+        { "hdmi_vmode", "Video mode" },     { "vga_vmode", "Video mode" },
+        { "v_sync_enabled", "V-Sync" },     { "hdmi_clkdrv", "HDMI clock drive" },
+        { "vga_pwm", "VGA colour" },        { "vga_pwm_phase", "VGA PWM phase" },
+        { "AudBoost", "Audio boost" },      { "AudVolume", "Volume" },
+        { "psram_enabled", "PSRAM" },       { "TFT_FLAGS", "TFT panel" },
+        { "TFT_INVERSION", "TFT panel" },
+    };
+    for (const auto& e : tab) if (key == e.k) return e.l;
+    if (key.compare(0, 4, "mb02") == 0) return "MB-02+ disk";
+    return key.c_str();
+}
+
+static bool keyIn(const char* line, size_t len, const char* const* tab, size_t n) {
+    const char* eq = (const char*)memchr(line, '=', len);
+    if (!eq) return false;
+    const size_t k = (size_t)(eq - line);
+    for (size_t i = 0; i < n; i++)
+        if (strlen(tab[i]) == k && memcmp(tab[i], line, k) == 0) return true;
+    return false;
+}
+
+int Config::snapKeyClass(const char* line, size_t len) {
+    if (keyIn(line, len, kSnapArchKeys,   sizeof(kSnapArchKeys)   / sizeof(*kSnapArchKeys)))   return 1;
+    if (keyIn(line, len, kSnapRebootKeys, sizeof(kSnapRebootKeys) / sizeof(*kSnapRebootKeys))) return 2;
+    if (keyIn(line, len, kSnapLiveKeys,   sizeof(kSnapLiveKeys)   / sizeof(*kSnapLiveKeys)))   return 3;
+    if (keyIn(line, len, kSnapAskKeys,    sizeof(kSnapAskKeys)    / sizeof(*kSnapAskKeys)))    return 4;
+    return 0;
+}
+
+static size_t keyLen(const string& l) {
+    const size_t e = l.find('=');
+    return e == string::npos ? l.size() : e;
+}
+
+void Config::snapDiffKeys(const vector<string>& lines, vector<string>& out) {
+    out.clear();
+    if (!FileUtils::fsMount) return;
+    save();                                   // storage.nvs = the live state
+    FIL* in = fopen2(STORAGE_NVS, FA_READ);
+    if (!in) return;
+    LineReader rd(in);
+    string l;
+    while (rd.line(l)) {
+        const int cls = snapKeyClass(l.c_str(), l.size());
+        if (cls != 2 && cls != 4) continue;
+        const size_t k = keyLen(l);
+        for (const string& s : lines)
+            if (keyLen(s) == k && s.compare(0, k, l, 0, k) == 0) {
+                if (s != l) out.push_back(l.substr(0, k));
+                break;
+            }
+    }
+    fclose2(in);
+}
+
+bool Config::snapMergeForReboot(const vector<string>& lines, const string& ramFile) {
+    if (!FileUtils::fsMount) return false;
+    save();                                   // storage.nvs = the live state
+    FIL* in = fopen2(STORAGE_NVS, FA_READ);
+    if (!in) return false;
+    const string tmp = string(STORAGE_NVS) + ".pss";
+    FIL* out = fopen2(tmp.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
+    if (!out) { fclose2(in); return false; }
+    vector<bool> seen(lines.size(), false);
+    bool differs = false, ok = true;
+    auto put = [&](const string& l) {
+        UINT bw;
+        if (f_write(out, l.c_str(), l.size(), &bw) != FR_OK || bw != l.size()) ok = false;
+        if (f_write(out, "\n", 1, &bw) != FR_OK || bw != 1) ok = false;
+    };
+    LineReader rd(in);
+    string l;
+    while (ok && rd.line(l)) {
+        const size_t k = keyLen(l);
+        if (k == 3 && l.compare(0, 4, "ram=") == 0) { put("ram=" + ramFile); continue; }
+        size_t hit = lines.size();
+        for (size_t i = 0; i < lines.size(); i++)
+            if (keyLen(lines[i]) == k && lines[i].compare(0, k, l, 0, k) == 0) { hit = i; break; }
+        if (hit == lines.size()) { put(l); continue; }
+        seen[hit] = true;
+        const int cls = snapKeyClass(l.c_str(), l.size());
+        if (lines[hit] != l && (cls == 2 || cls == 4)) {
+            Debug::log("[PSS] reboot-class key differs: '%s' -> '%s'", l.c_str(), lines[hit].c_str());
+            differs = true;
+        }
+        put(lines[hit]);
+    }
+    for (size_t i = 0; ok && i < lines.size(); i++) if (!seen[i]) put(lines[i]);
+    if (ok) ok = (f_sync(out) == FR_OK);
+    fclose2(out);
+    fclose2(in);
+    if (!ok || !differs) { f_unlink(tmp.c_str()); return false; }
+    FRESULT rn = f_rename(tmp.c_str(), STORAGE_NVS);
+    if (rn == FR_EXIST) { f_unlink(STORAGE_NVS); rn = f_rename(tmp.c_str(), STORAGE_NVS); }
+    if (rn != FR_OK) { Debug::log("[PSS] storage.nvs merge: rename failed (%d)", rn); return false; }
+    return true;
 }
 
 // "" = the slot is empty; "\x01" = it holds a profile that was never named.
@@ -2270,4 +2495,56 @@ void Config::byteTestRomToggle() {
 void Config::byteTestRomReset() {
     if (MemESP::overlayFor(gb_rom_0_sinclair_48k) == gb_overlay_48k_byte_test)
         MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_byte);
+}
+
+// ============================================================================
+// Joystick profiles: CONFIG_DIR "/joystick.cfg" (format in JoyProfiles.h).
+// ============================================================================
+#define JOYPROF_PATH CONFIG_DIR "/joystick.cfg"
+
+// The file writes types as words indexed by the JOY_* value.
+static_assert(JOY_CURSOR == 0 && JOY_KEMPSTON == 1 && JOY_SINCLAIR1 == 2 &&
+              JOY_SINCLAIR2 == 3 && JOY_FULLER == 4, "JoyProfiles.cpp kType[] order");
+
+// Fills ALL `cap` slots (an empty one has name ""), returns how many are used.
+int Config::joyProfilesLoad(JoyProf::Profile* out, int cap) {
+    memset(out, 0, sizeof(JoyProf::Profile) * cap);
+    if (!FileUtils::fsMount) return 0;
+    FIL* f = fopen2(JOYPROF_PATH, FA_READ);
+    if (!f) return 0;
+    LineReader rd(f);
+    string l;
+    int slot = 0, n = 0;
+    while (slot < cap && rd.line(l)) {
+        if (JoyProf::isEmptySlotLine(l.data(), l.size())) { slot++; continue; }
+        JoyProf::Profile p;
+        if (!JoyProf::parseLine(l.data(), l.size(), p)) continue;
+        if (JoyProf::find(out, slot, p.name) >= 0) continue;     // first one wins
+        out[slot++] = p;
+        n++;
+    }
+    fclose2(f);
+    return n;
+}
+
+bool Config::joyProfilesSave(const JoyProf::Profile* list, int n) {
+    if (!FileUtils::fsMount) return false;
+    FileUtils::mkdirParents(CONFIG_DIR);
+    FIL* f = fopen2(JOYPROF_PATH, FA_WRITE | FA_CREATE_ALWAYS);
+    if (!f) return false;
+    static const char hdr[] =
+        "# pico-speccy joystick profiles, one slot per line ('-' = empty slot):\n"
+        "# name<TAB>type<TAB>Left,Right,Up,Down,Start,Select,A,B,C,X,Y,Z,L2,R2\n";
+    UINT bw;
+    bool ok = f_write(f, hdr, sizeof(hdr) - 1, &bw) == FR_OK && bw == sizeof(hdr) - 1;
+    char line[320];
+    while (n > 0 && !list[n - 1].name[0]) n--;      // nothing after the last used slot
+    for (int i = 0; ok && i < n; i++) {
+        size_t len = list[i].name[0] ? JoyProf::formatLine(list[i], line, sizeof(line)) : 0;
+        const char* out = line;
+        if (!len) { out = JoyProf::kEmptySlotLine; len = 2; }   // keeps the numbering below it
+        ok = f_write(f, out, len, &bw) == FR_OK && bw == len;
+    }
+    fclose2(f);
+    return ok;
 }

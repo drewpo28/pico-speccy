@@ -139,6 +139,7 @@ public:
     // to rest on is announced once, if it differs from what the user last saw.
     // `immediate` is for a keypress, which must always answer.
     static void notifyClock(const char* text, bool immediate = false);
+    static void setTurbo(uint8_t m);   // 0..3 = 3.5/7/14/28 MHz: apply, persist, announce
     static void pollClockNotify();   // per frame, from ESPectrum::loop
 
     // Boot notices: setup() runs long before video is up, so a feature that gives up
@@ -185,7 +186,7 @@ public:
     static void click();
     static void clickNoPause();   // click() without the paused-PAUSE-box repaint
 
-    static uint8_t msgDialog(const string& title, const string& msg);
+    static uint8_t msgDialog(const string& title, const string& msg, bool defYes = false);
     // mask=true → password field: shows '*' until revealed (TAB toggles).
     // viscols = visible width in chars; when < maxlen the field scrolls
     // horizontally so up to maxlen characters can be entered. 0 → viscols=maxlen.
@@ -204,6 +205,9 @@ public:
     static string convertDlsToBank(const string& dlsPath);
 
     static void esp_hard_reset();
+    // The Web Archives destination-folder picker (OSDFile.cpp), shared with the
+    // snapshot converter. Returns the chosen folder, "" if cancelled.
+    static string chooseFolder(const string& start);
 
     // SRAM budget gate for the 5 heavy features. Call BEFORE the enable path.
     // Returns true → caller may proceed to enable the feature (it fits, or the

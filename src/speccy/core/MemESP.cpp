@@ -562,6 +562,27 @@ void mem_desc_t::to_file(FIL* f_out, size_t sz) {
     gpio_put(PICO_DEFAULT_LED_PIN, false);
     #endif
 }
+void mem_desc_t::read_chunk(uint32_t off, uint8_t* buf, uint32_t n) {
+    if (_int->mem_type == POINTER) { memcpy(buf, _int->p + off, n); return; }
+    const uint32_t ba = _int->vram_off();
+    if (vram_butter(ba)) { memcpy(buf, butter_nc(ba + off), n); return; }
+    if (psram_size() >= ba + MEM_PG_SZ) { psram_read_range(ba + off, buf, n); return; }
+    UINT br;
+    f_lseek(swapF(), (FSIZE_t)ba + off);
+    if (f_read(swapF(), buf, n, &br) != FR_OK || br != n) memset(buf, 0, n);
+}
+
+void mem_desc_t::write_chunk(uint32_t off, const uint8_t* buf, uint32_t n) {
+    if (_int->mem_type == POINTER) { _int->dirty = true; memcpy(_int->p + off, buf, n); return; }
+    const uint32_t ba = _int->vram_off();
+    vram_pg_set_valid(ba);
+    if (vram_butter(ba)) { memcpy(butter_nc(ba + off), buf, n); return; }
+    if (psram_size() >= ba + MEM_PG_SZ) { psram_write_range(ba + off, buf, n); return; }
+    UINT bw;
+    f_lseek(swapF(), (FSIZE_t)ba + off);
+    f_write(swapF(), buf, n, &bw);
+}
+
 void mem_desc_t::from_mem(mem_desc_t& ram, size_t sz) {
     bool dstPtr = _int->mem_type == POINTER;
     bool srcPtr = ram._int->mem_type == POINTER;
@@ -781,6 +802,12 @@ void MemESP::registerOverlay(const uint8_t* base, const uint8_t* ov) {
 // Per frame from ESPectrum::loop: give one pending registry entry its flat page.
 // Butter PSRAM only — a 16 KB heap block here would be the framebuffer's margin;
 // boards without the butter pool keep the binary-search path for good.
+size_t MemESP::overlayFlatBytes() {
+    size_t n = 0;
+    for (const auto& f : s_flat) if (f.flat) n += MEM_PG_SZ;
+    return n;
+}
+
 void MemESP::materializeOverlays() {
     if (s_flat_off || overlayCount == 0) return;
     int pending = -1;

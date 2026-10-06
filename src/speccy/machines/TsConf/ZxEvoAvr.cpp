@@ -11,6 +11,12 @@
 #include "speccy/z80/z80.h"
 #include "fs/FileUtils.h"
 #include "app/Buffer.h"
+#include "speccy/machines/Atm.h"
+
+// The AVR (and with it the PS/2 log, the modifier status and the F-key hand-over)
+// exists on both ZX-Evo configurations: TS-Conf and BaseConf (ATM arch, Atm::evo).
+// NedoOS on BaseConf reads its whole keyboard through the log (kernel/ps2drv.asm).
+static inline bool avrLive() { return Z80Ops::isTsconf || (Z80Ops::isAtm && Atm::evo); }
 
 namespace {
 
@@ -201,7 +207,7 @@ bool ZxEvoAvr::guestPollsKeys() {
 }
 
 bool ZxEvoAvr::keysToGuest() {
-    if (!Z80Ops::isTsconf) return false;
+    if (!avrLive()) return false;
     return s_keys_ovr >= 0 ? (s_keys_ovr != 0) : guestPollsKeys();
 }
 
@@ -282,7 +288,7 @@ uint8_t ZxEvoAvr::regD() { return s_kb0; }
 uint8_t ZxEvoAvr::regE() { return s_kb1; }
 
 void ZxEvoAvr::hidKey(uint8_t hid, bool down) {
-    if (!Z80Ops::isTsconf) return;
+    if (!avrLive()) return;
     uint8_t v;
     if (hid >= 0xE0 && hid <= 0xE7) v = kModToSet2[hid - 0xE0];
     else if (hid < sizeof kHidToSet2) v = kHidToSet2[hid];
@@ -310,7 +316,7 @@ void ZxEvoAvr::hidKey(uint8_t hid, bool down) {
 
 void ZxEvoAvr::hidModifiers(uint8_t now, uint8_t prev) {
     uint8_t diff = now ^ prev;
-    if (!diff || !Z80Ops::isTsconf) return;
+    if (!diff || !avrLive()) return;
     for (int b = 0; b < 8; b++)
         if (diff & (1 << b)) hidKey(0xE0 + b, (now >> b) & 1);
 }

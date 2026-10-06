@@ -304,6 +304,10 @@ public:
     }
     void from_file(FIL* f, size_t sz);
     void to_file(FIL* f, size_t sz);
+    // A piece of the page in whatever store backs it (SRAM, butter, SPI PSRAM, SD
+    // swap) — .pss sparse pages (src/speccy/core/Pss.cpp). Cold code.
+    void read_chunk(uint32_t off, uint8_t* buf, uint32_t n);
+    void write_chunk(uint32_t off, const uint8_t* buf, uint32_t n);
     void from_mem(mem_desc_t& ram, size_t sz);
     void cleanup();
 };
@@ -352,6 +356,7 @@ public:
     // across re-registrations — GMX/ProfROM re-register on every bank switch.
     static const uint8_t* overlayFlat[8];
     static void materializeOverlays();
+    static size_t overlayFlatBytes();     // butter PSRAM held by materialised ROM overlays
     static uint8_t        overlayCount;
     // ov == nullptr unregisters `base`. Call at ROM-bank assignment.
     static void registerOverlay(const uint8_t* base, const uint8_t* ov);

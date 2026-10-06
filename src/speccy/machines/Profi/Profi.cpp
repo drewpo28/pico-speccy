@@ -643,3 +643,59 @@ void Profi::fdcOutProbe(uint16_t address, uint8_t data) {
 }
 #endif
 
+
+// ── .pss snapshot ─────────────────────────────────────────────────────────────
+
+static constexpr uint8_t SNAP_VER = 1;
+static uint8_t s_snapDffd = 0;   // applied by snapRemap, after the MemESP latches
+
+uint32_t Profi::snapSave(uint8_t* out) {
+  uint32_t n = 0;
+  out[n++] = SNAP_VER;
+  out[n++] = Ports::portDFFD;
+  out[n++] = Ports::port008B;
+  out[n++] = Ports::port018B;
+  out[n++] = Ports::port028B;
+  out[n++] = VIDEO::profi_bx0_latch;
+  out[n++] = VIDEO::profi_gx0_latch;
+  out[n++] = Ports::serialMouseCtl;
+  out[n++] = Ports::serialMouseIntEn;
+  uint32_t pal[16];
+  VIDEO::getGuestPalette16(pal);   // the guest's, even with the menu's over it
+  for (int i = 0; i < 16; i++) {
+    const uint32_t c = pal[i];
+    out[n++] = (uint8_t)c; out[n++] = (uint8_t)(c >> 8); out[n++] = (uint8_t)(c >> 16);
+  }
+  return n;   // 57
+}
+
+void Profi::snapLoad(const uint8_t* in, uint32_t n) {
+  if (n < 57 || in[0] < 1) { s_snapDffd = 0; return; }
+  s_snapDffd               = in[1];
+  Ports::port008B          = in[2];
+  Ports::port018B          = in[3];
+  Ports::port028B          = in[4];
+  VIDEO::profi_bx0_latch   = in[5];
+  VIDEO::profi_gx0_latch   = in[6];
+  Ports::serialMouseCtl    = in[7];
+  Ports::serialMouseIntEn  = in[8];
+  uint32_t pal[16];
+  for (int i = 0; i < 16; i++) {
+    const uint8_t* c = in + 9 + 3 * i;
+    pal[i] = c[0] | (c[1] << 8) | ((uint32_t)c[2] << 16);
+  }
+  VIDEO::setGuestPalette16(pal);   // NOT profi_palette_live: the menu may own it
+}
+
+void Profi::snapRemap() {
+  // The ROM bank is a live function of (DOS, ROM14): DOS=1 -> 0/1, DOS=0 -> 2/3.
+  MemESP::romInUse = ESPectrum::trdos ? (MemESP::romLatch ? 1 : 0)
+                                      : (MemESP::romLatch ? 3 : 2);
+  writeDFFD(s_snapDffd);          // windows 1-3, NOROM, SCR, DS80 (deferred)
+  MemESP::recoverPage0();
+  const uint8_t turbo = (Ports::port028B >> 5) & 3;
+  if (turbo != ESPectrum::multiplicator) {
+    ESPectrum::multiplicator = turbo;
+    CPU::updateStatesInFrame();
+  }
+}

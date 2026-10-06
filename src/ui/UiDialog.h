@@ -23,6 +23,10 @@ namespace nm {
 // answer is safe to take on a bare Enter (the F12 reboot); destructive ones
 // keep the default on No.
 bool uiConfirm(const char* text, const char* title = nullptr, bool default_yes = false);
+// uiConfirm with Esc told apart: 1 = Yes, 0 = No, -1 = Esc / F1.
+int  uiAsk(const char* text, const char* title = nullptr, bool default_yes = false);
+// The rows (logical y, height incl. shadow) a uiAsk box occupies.
+void uiAskRows(const char* text, const char* title, int& y, int& h);
 
 // uiConfirm with a live countdown line — the post-reboot video-mode confirm.
 // Standalone-safe (gfxBegin/gfxEnd around itself: it runs at boot, before any
@@ -62,6 +66,11 @@ void uiBusy(const char* msg);
 
 // Modal scrollable list. Returns the chosen index or -1 on Esc.
 int uiPickList(const char* title, const char* const* items, int n, int initial = 0);
+
+// The fast menu's popup: row i is also picked by digit key i (n <= 10). Rows with
+// enabled[i] false are drawn dim and refused (numbers stay fixed). -1 on Esc.
+int uiFastPick(const char* title, const char* const* items, const bool* enabled,
+               int n, int initial = 0, const char* footer = nullptr);
 
 // As above, but rows are fetched on demand (huge lists — tape blocks): `cb`
 // formats row `idx` into `out`. `wchars` fixes the list width in characters.

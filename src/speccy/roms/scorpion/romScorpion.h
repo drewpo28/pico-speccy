@@ -36,6 +36,10 @@ void gmxRegisterLiveOverlay(uint8_t bank);
 // GMX table, the {data, overlay} pairs are bound by Config::requestMachine and
 // the LIVE bank's overlay is re-registered on every romInUse change.
 #include "scorpion_prof_banks.h"
+// ScorpEvo ProfROM v4.44s for ZX-Evo (romset R_SCORP_EVO): the same table shape,
+// overlaid on the ProfROM banks above; the arrays live in .psramroms
+// (tools/rom_pack.py scorpevo). Same Config.cpp-only rule.
+#include "scorpion_evo_banks.h"
 // Defined in Config.cpp — the ONLY TU that may reference the bank table (same
 // internal-linkage trap as the GMX one above). Called from gmxTapUpdate.
 void profRegisterLiveOverlay(uint8_t bank);

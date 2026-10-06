@@ -125,6 +125,21 @@ static void drawButtons(const Box& b, bool yes) {
 
 bool uiConfirm(const char* text_body, const char* title, bool default_yes) {
     Debug::log("uiConfirm: sp=%08x\n", debug_sp());
+    return uiAsk(text_body, title, default_yes) == 1;
+}
+
+// The rows uiAsk's box covers, shadow included — drawBox()'s arithmetic.
+void uiAskRows(const char* text_body, const char* title, int& y, int& h) {
+    const int pad = 4 * Sf.glyphScale;
+    const int lh  = UI_FONT_H + 2;
+    const int tl  = title ? lh + 2 : 0;
+    h = tl + lineCount(text_body) * lh + (lh + 6) + 2 * pad;
+    if (h > Sf.h - 8) h = Sf.h - 8;
+    y = (Sf.h - h) / 2;
+    h += 2;
+}
+
+int uiAsk(const char* text_body, const char* title, bool default_yes) {
     gfxResumePalette();
     const int lh = UI_FONT_H + 2;
     Box b = drawBox(text_body, title, lh + 6, C_SEP);
@@ -143,13 +158,13 @@ bool uiConfirm(const char* text_body, const char* title, bool default_yes) {
                 case fabgl::VK_MENU_UP:   case fabgl::VK_MENU_DOWN:
                     yes = !yes; drawButtons(b, yes); OSD::clickNoPause(); break;
                 case fabgl::VK_MENU_ENTER:
-                    OSD::clickNoPause(); return yes;
+                    OSD::clickNoPause(); return yes ? 1 : 0;
                 case fabgl::VK_ESCAPE: case fabgl::VK_F1:
-                    OSD::clickNoPause(); return false;
+                    OSD::clickNoPause(); return -1;
                 case fabgl::VK_y: case fabgl::VK_Y:
-                    OSD::clickNoPause(); return true;
+                    OSD::clickNoPause(); return 1;
                 case fabgl::VK_n: case fabgl::VK_N:
-                    OSD::clickNoPause(); return false;
+                    OSD::clickNoPause(); return 0;
                 default: break;
             }
         }
@@ -534,6 +549,95 @@ int uiPickList(const char* title, const char* const* items, int n, int initial) 
     return uiPickListCb(title, n, plArrayCb, initial, wch);
 }
 
+// Fast menu popup (Alt+F7): rows picked by DIGIT, row i on key i (main row or
+// keypad), as well as by the cursor + Enter. The numbers are part of the row and
+// never move, so a row whose `enabled[i]` is false is drawn dim and refused
+// instead of being dropped. Returns the index, -1 on Esc.
+int uiFastPick(const char* title, const char* const* items, const bool* enabled,
+               int n, int initial, const char* footer) {
+    if (n <= 0 || n > 10) return -1;
+    gfxResumePalette();
+    const int pad = 4 * Sf.glyphScale;
+    const int lh  = UI_FONT_H + 2;
+    auto ok = [&](int i) { return !enabled || enabled[i]; };
+
+    int tw = textWidth(title);
+    char row[64];
+    for (int i = 0; i < n; i++) {
+        snprintf(row, sizeof(row), "%d  %s", i, items[i]);
+        const int w = textWidth(row);
+        if (w > tw) tw = w;
+    }
+    if (footer) { const int t3 = textWidth(footer); if (t3 > tw) tw = t3; }
+    { const int w8 = 16 * glyphW(); if (w8 > tw) tw = w8; }
+
+    Box b;
+    b.w = tw + 3 * pad;
+    const int wmax = Sf.w - 8 * Sf.glyphScale;
+    if (b.w > wmax) b.w = wmax;
+    b.h = (lh + 2) + n * lh + 2 * pad + (footer ? lh + 1 : 0);
+    b.x = (Sf.w - b.w) / 2;
+    b.y = (Sf.h - b.h) / 2;
+
+    int sel = (initial >= 0 && initial < n) ? initial : 0;
+    for (int k = 0; k < n && !ok(sel); k++) sel = (sel + 1) % n;
+    if (!ok(sel)) return -1;
+
+    auto drawIt = [&]() {
+        fill(b.x + 2 * Sf.glyphScale, b.y + 2, b.w, b.h, C_SHADOW);
+        roundRect(b.x, b.y, b.w, b.h, 3, C_SEP, C_PANEL_ALT);
+        text(b.x + pad, b.y + pad - 1, title, C_WHITE);
+        hline(b.x + pad, b.y + pad + lh - 2, b.w - 2 * pad, C_SEP);
+        const int ly0 = b.y + pad + lh + 1;
+        for (int i = 0; i < n; i++) {
+            const int y = ly0 + i * lh;
+            const bool s = (i == sel);
+            fill(b.x + 2, y - 1, b.w - 4, lh, s ? C_SEL_BG : C_PANEL_ALT);
+            snprintf(row, sizeof(row), "%d  %s", i, items[i]);
+            textClip(b.x + pad, y, b.w - 2 * pad, row,
+                     !ok(i) ? C_TEXT_DIM : s ? C_WHITE : C_TEXT);
+        }
+        if (footer) {
+            const int fy = ly0 + n * lh + 1;
+            hline(b.x + pad, fy, b.w - 2 * pad, C_SEP);
+            textClip(b.x + pad, fy + 2, b.w - 2 * pad, footer, C_TEXT_DIM);
+        }
+    };
+    drawIt();
+
+    fabgl::VirtualKeyItem k;
+    while (1) {
+        if (nextKeyDown(k)) {
+            int d = -1;
+            if (k.vk >= fabgl::VK_0 && k.vk <= fabgl::VK_9) d = k.vk - fabgl::VK_0;
+            else if (k.vk >= fabgl::VK_KP_0 && k.vk <= fabgl::VK_KP_9) d = k.vk - fabgl::VK_KP_0;
+            if (d >= 0) {
+                if (d < n && ok(d)) { OSD::clickNoPause(); return d; }
+                continue;
+            }
+            int step = 0;
+            switch (k.vk) {
+                case fabgl::VK_MENU_UP:    step = -1; break;
+                case fabgl::VK_MENU_DOWN:  step = +1; break;
+                case fabgl::VK_MENU_ENTER: OSD::clickNoPause(); return sel;
+                case fabgl::VK_ESCAPE: case fabgl::VK_F1:
+                case fabgl::VK_MENU_LEFT:  OSD::clickNoPause(); return -1;
+                default: break;
+            }
+            if (step) {
+                int ns = sel;
+                for (int t = 0; t < n; t++) {
+                    ns += step;
+                    if (ns < 0 || ns >= n) { ns = sel; break; }   // no wrap
+                    if (ok(ns)) break;
+                }
+                if (ns != sel && ok(ns)) { sel = ns; drawIt(); OSD::clickNoPause(); }
+            }
+        }
+        uiIdle();
+    }
+}
+
 // ── full-screen text page ──────────────────────────────────────────────────────
 // The new-style replacement for OSD::showTextDialog: a scrollable page in the
 // menu's chrome. Zero-copy line index into the caller's text, like the classic.
@@ -746,6 +850,22 @@ bool uiPrompt(const char* title, string& io, size_t maxlen, bool mask, bool allo
 // way gameScwongStandalone() does for the game page. No SaveRect: the dialog
 // blocks the emulation loop while it is up and the paper repaints itself on the
 // first frame after it closes, so there is nothing to restore.
+// The fullscreen-UI question, callable with or without a menu session around it:
+// what it covers is saved and put back, and the UI palette is only handed back if
+// this call installed it (in a pair mode a running session owns it — the latch).
+int uiAskAnywhere(const char* title, const char* body, bool default_yes) {
+    const bool own = !VIDEO::uiOwnsPairPalette();
+    gfxBegin();
+    int y, h;
+    uiAskRows(body, title, y, h);
+    VIDEO::SaveRect.save(0, (int16_t)(Sf.oy + y), (int16_t)(OSD::scrW - 4), (int16_t)h);
+    const int r = uiAsk(body, title, default_yes);
+    VIDEO::SaveRect.restore_last();
+    if (own) gfxEnd();
+    VIDEO::brdnextframe = true;   // a box over the border band is not repainted otherwise
+    return r;
+}
+
 bool uiConfirmStandalone(const char* body, const char* yes_btn, const char* no_btn) {
     gfxBegin();
     const char* btns[2] = { yes_btn, no_btn };

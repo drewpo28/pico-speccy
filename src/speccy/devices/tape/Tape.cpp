@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "app/LastRun.h"
 #include <stdio.h>
 #include <vector>
 #include <string>
@@ -54,6 +55,7 @@ using namespace std;
 #include "speccy/z80/z80.h"
 #include "app/Debug.h"
 #include "TapeWear.h"
+#include "speccy/core/Rzx.h"
 #include "drivers/sound/pwm_audio.h"
 
 #include "picomp3lib/music_file.h"
@@ -227,7 +229,9 @@ static void wearAudio() {
 // and Config::load() both keep the pair from ever being set, so the wear test is a
 // backstop: an NVS written by a build older than 2026-09-20 can still carry both.
 static inline bool fastLoadOn() {
-    return Config::flashload && Config::tape_wear == 0;
+    // RZX playback: every IN comes from the file, so the trap's direct memory
+    // fill would be the one thing in the frame the recording never saw.
+    return Config::flashload && Config::tape_wear == 0 && Rzx::mode == 0;
 }
 
 #define my_max(a,b) (((a) > (b)) ? (a) : (b))
@@ -541,6 +545,7 @@ void Tape::LoadTape(const string& mFile_) {
                (int)Tape::tapeNumBlocks, Tape::tapeFileName.c_str(), (int)playFallback);
 #endif
     if (playFallback) Tape::Play();
+    LastRun::note(Tape::tapeFileName);   // quick-slot name suggestion
 #if TIMEX_PORT_TRACE
     if (Config::isTc2068())
         Debug::log("[TMXLD] LoadTape exit: pc=%04X hsr=%02X dec=%02X ex=%d mmu=%u "

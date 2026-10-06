@@ -31,6 +31,17 @@ bool extWrite(uint16_t address, uint8_t data);
 // rvmWD1793Write.
 bool fdcNoDiskBreak(uint16_t address);
 
+// ── .pss snapshot (src/speccy/core/Pss.cpp) ─────────────────────────────────
+// #DFFD, the Karabas #008B/#018B/#028B, the DS80 palette and its BX0/GX0 latches,
+// the VV51 mouse control: the PSPR block. The DS80 colour memory is RAM pages
+// 56/58 and travels with the pages.
+constexpr uint32_t SNAP_MAX = 96;
+uint32_t snapSave(uint8_t* out);
+void     snapLoad(const uint8_t* in, uint32_t n);
+// After the MemESP latches: #DFFD rebuilds the windows (and requests DS80 at the
+// next vblank), #028B the clock, the DOS/ROM14 pair the ROM bank.
+void     snapRemap();
+
 #if FDD_PORT_TRACE
 // Unconditional FDC-port probes (trace builds only).
 void fdcInProbe(uint16_t address);

@@ -351,9 +351,11 @@ public:
   // ATM palette (atmPaletteFlush).
   static void atmVideoModeChanged();     // a #77 / #FE-address write moved the mode
   static void atmPaletteChanged();       // a palette port write (applied at EndFrame)
+  static bool atmPaletteIsLive();   // the guest has programmed the ATM palette (.pss)
   static void atmPaletteFlush();         // EndFrame: palette -> hardware slots / pair table
   static void atmPaletteRestore();       // leaving the ATM: standard slots back
   static void atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l);
+  static void atmDrawTick();      // ATM/Evo whole-line modes on the fast memory path (flash)
 
   // ── TS-Conf video modes (VConfig VM[1:0] / NOGFX / RRES[1:0]) ─────────────
   // TEXT (80x30, 640 px wide) borrows the DS80/GMX packed-pair framebuffer and
@@ -436,6 +438,10 @@ public:
   static bool uiOwnsPairPalette();
   static void clearDS80Padding();        // re-blacken DS80 side-padding columns after OSD close
   static void profiPaletteReset();
+  // The guest's 16 DS80 colours from outside the guest (snapshot load); lands in the
+  // saved copy while the menu owns the pair palette, so its exit does not undo it.
+  static void setGuestPalette16(const uint32_t rgb888[16]);
+  static void getGuestPalette16(uint32_t out[16]);   // ditto, reading
   // Update palette[index] from a Profi RRRGGGBB color byte; sets dirty flag.
   static void profiPaletteWrite(uint8_t index, uint8_t profi_color);
   // Apply a pending live-palette refresh to the scanout driver. Call ONLY while
@@ -475,6 +481,17 @@ public:
   // hi-res / TS-Conf whole-line modes keep their own geometry. Decided per frame
   // in EndFrame (blRecalc), so the menu hook only has to write Config.
   static bool bl_live;
+  // TS-Conf VDAC2 (FT812): VConfig b2 hands the whole framebuffer to the chip's
+  // display list. ft_live = that mode is on: the beam renderer and the border
+  // machine are parked, core1 renders the swapped list band by band into the fb
+  // through a fixed dithered RGB cube on the ts256 slot pool (Video.cpp, "VDAC2").
+  static bool ft_live;
+  static void ftFrameTick();          // EndFrame (core0): REG_FRAMES, DLSWAP, INT_SWAP, redraw requests
+  static void ftRenderPump();         // core1: one band of the pending frame
+  static void ftPaletteProgram();     // the RGB cube onto the hardware slots (+ redraw)
+  static void ftHold();               // core0: OSD takes the screen — stop core1's FT812 output until the next frame
+  static void ftRedrawSync();         // core0: re-render the current list and wait (paused repaint)
+  static void ftForceOff();           // ESPectrum::reset / mode teardown
   static void blRecalc();
   static void blExpandLine(uint32_t line);
   // Overlays that live in the border elsewhere sit on content here; the scaler

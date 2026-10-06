@@ -31,6 +31,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 
 */
+#include "speccy/core/Pss.h"
 #include <malloc.h>
 #include <hardware/watchdog.h>
 #include <hardware/uart.h>
@@ -49,6 +50,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
 #include "speccy/devices/Z80DMA.h"
+#include "speccy/core/Rzx.h"
 #include "app/ESPectrum.h"
 #include "app/messages.h"
 #include "app/Config.h"
@@ -81,6 +83,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "drivers/board/BoardPins.h"
 #include "drivers/graphics/graphics.h"
 #include "OSDNewMenu.h"
+#include "UiModel.h"
 #include "player/PicoPlayer.h"  // pp::available / playableExt (F5 -> Pico-Zx-Player)
 #include "UiBrowser.h"
 #include "UiDialog.h"
@@ -176,6 +179,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/machines/Timex.h"
 #include "speccy/devices/gs/GS.h"
 #include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/machines/TsConf/Ft812.h"
 #include "speccy/devices/storage/RTC.h"
 #include "speccy/devices/storage/Nvram24.h"
 
@@ -1141,8 +1145,10 @@ static void archSessionRun(void* p) {
         if (OSD::net_launch_close || OSD::net_close_all) return; // launched or Esc → unwind
     }
     OSD::progressDialog(MSG_NET_CONNECTING, "", 0, 0); // no URL (built-in catalog)
-    std::vector<string> site_ids(12), site_names(12);   // heap for the session, not .bss
-    int n = HttpCatalogFs::fetchSites(site_ids.data(), site_names.data(), 12);
+    // sites.tsv past MAX_SITES is silently cut (RZX, the 13th, vanished at 12).
+    const int MAX_SITES = 32;
+    std::vector<string> site_ids(MAX_SITES), site_names(MAX_SITES);   // heap for the session, not .bss
+    int n = HttpCatalogFs::fetchSites(site_ids.data(), site_names.data(), MAX_SITES);
     OSD::progressDialog("", "", 0, 2);
     if (n <= 0) { OSD::osdCenteredMsg(MSG_ARCH_SITES_ERR, LEVEL_WARN, 2200); return; }
 
@@ -1473,14 +1479,14 @@ static int notifyMaxChars() { return ((int)OSD::scrW - 48) / OSD_FONT_W; }
 
 // carve = the banner does not fit in a border band and sits on the first content
 // rows instead, which only the TS-Conf renderer can hand back.
-static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr) {
+static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr, bool left = false) {
     if (notifyMaxChars() < 8) return false;      // no mode this narrow, but don't index off the row
     bool cv = false;
     int top;
-    if (VIDEO::bandBorderMode()) {               // GMX 640x200 / TS-Conf non-ZX
+    if (VIDEO::bandBorderMode()) {               // GMX 640x200 / TS-Conf non-ZX / VDAC2 (FT812)
         top = VIDEO::gmxTopBandRows();           // = lin_end, authoritative, may be 0
         if (top < NOTIFY_BAND_H) {
-            if (!VIDEO::ts_render_live && !VIDEO::bl_live) return false;
+            if (!VIDEO::ts_render_live && !VIDEO::bl_live && !VIDEO::ft_live) return false;
             // Carved out of the content instead. Keep the 24-row band's own
             // offset so the banner sits where it does on every other machine
             // (6 fb rows down) rather than flush against the screen edge — the
@@ -1501,7 +1507,7 @@ static bool notifyGeom(int textw, int& x, int& y, bool* carve = nullptr) {
     }
     if (top < NOTIFY_BAND_H) return false;
     y = (top - NOTIFY_BAND_H) / 2;
-    x = ((int)OSD::scrW - textw) / 2;
+    x = left ? 8 : ((int)OSD::scrW - textw) / 2;
     if (x < 4) x = 4;
     if (carve) *carve = cv;
     return true;
@@ -1596,14 +1602,61 @@ void OSD::cancelNotify() {
     VIDEO::brdnextframe = true;
 }
 
-void OSD::drawNotify() {
-    if (!notify_on) return;
-    if ((int64_t)((uint64_t)esp_timer_get_time() - notify_until_us) >= 0) { cancelNotify(); return; }
+// RZX playback progress ("RZX 01:23 / 04:56") — a standing banner in the same
+// band, parked in the top-LEFT corner. It shares the one band reservation with
+// notify(): a timed banner takes precedence while it lives, and the progress
+// comes back on the frame it expires. One RZX frame is one interrupt of the
+// RECORDING machine, i.e. 1/50 s, which is the recorded time whatever our own
+// frame rate is.
+static bool prog_on = false;
+static bool prog_nm = false;   // nm::available() latch, taken when progress starts
 
-    const int textw = (int)strlen(notify_text) * OSD_FONT_W;
+static void progEnd() {
+    if (!prog_on) return;
+    prog_on = false;
+    VIDEO::clearNoticeBand();
+    VIDEO::clearNoticeCarve();
+    VIDEO::brdChange    = true;
+    VIDEO::brdnextframe = true;
+}
+
+static void fmtRzxTime(char* out, size_t n, uint32_t secs, bool hours) {
+    if (hours) snprintf(out, n, "%u:%02u:%02u", (unsigned)(secs / 3600), (unsigned)(secs / 60 % 60), (unsigned)(secs % 60));
+    else       snprintf(out, n, "%02u:%02u", (unsigned)(secs / 60), (unsigned)(secs % 60));
+}
+
+static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left);
+
+static void drawRzxProgress() {
+    if (Rzx::mode == Rzx::OFF) { progEnd(); return; }
+    if (!prog_on) { prog_on = true; prog_nm = nm::available() && !profi_ds80_active; }
+    const uint32_t total  = Rzx::framesTotal() / 50;
+    uint32_t       played = Rzx::framesPlayed() / 50;
+    if (total && played > total) played = total;
+    const bool hours = (total ? total : played) >= 3600;
+    char a[12], b[12], line[32];
+    fmtRzxTime(a, sizeof(a), played, hours);
+    if (total) { fmtRzxTime(b, sizeof(b), total, hours); snprintf(line, sizeof(line), "RZX %s / %s", a, b); }
+    else       snprintf(line, sizeof(line), "RZX %s", a);
+    if (!notifyPaint(line, LEVEL_INFO, prog_nm, true)) progEnd();
+}
+
+void OSD::drawNotify() {
+    if (notify_on && (int64_t)((uint64_t)esp_timer_get_time() - notify_until_us) >= 0) cancelNotify();
+    if (!notify_on) { drawRzxProgress(); return; }
+    if (prog_on) {                 // a timed banner displaces the progress: erase it
+        prog_on = false;
+        VIDEO::brdChange    = true;
+        VIDEO::brdnextframe = true;
+    }
+    if (!notifyPaint(notify_text, notify_level, notify_nm, false)) cancelNotify();   // mode changed under us
+}
+
+static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left) {
+    const int textw = (int)strlen(text) * OSD_FONT_W;
     int x, y;
     bool carve = false;
-    if (!notifyGeom(textw, x, y, &carve)) { cancelNotify(); return; }   // mode changed under us
+    if (!notifyGeom(textw, x, y, &carve, left)) return false;
 
     // Reserve the band so the border state machine stops painting it: without
     // this the banner is erased on every brdChange and only comes back at the
@@ -1628,14 +1681,14 @@ void OSD::drawNotify() {
         px1 = (px1 + 3) & ~3;
         if (px0 < 0) px0 = 0;
         if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
-        if (px1 - px0 < textw) { cancelNotify(); return; }
+        if (px1 - px0 < textw) return false;
         // Reserve the rows in EITHER case on TS-Conf: the band is repainted ROW
         // BY ROW now (tsBandRow, so a per-line Border register shows as bands),
         // which would erase a banner sitting in it. Both band rows and content
         // rows read this rect at render time, which is also what erases the
         // banner authoritatively when the rect is cleared. GMX ignores it — it
         // has no whole-line renderer and gmxBorderFrame still owns its bands.
-        if (carve || VIDEO::ts_render_live || VIDEO::bl_live) VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
+        if (carve || VIDEO::ts_render_live || VIDEO::bl_live || VIDEO::ft_live) VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
         else                               VIDEO::clearNoticeCarve();
     } else if (VIDEO::ds80BandMode()) {
         // The border machine is live here (per-T-state, 4 px per column) and the
@@ -1646,16 +1699,16 @@ void OSD::drawNotify() {
         px1 = (px1 + 7) & ~7;
         if (px0 < 0) px0 = 0;
         if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
-        if (px1 - px0 < textw) { cancelNotify(); return; }
+        if (px1 - px0 < textw) return false;
         VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
     } else {
         VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
-        if (px1 - px0 < textw) { cancelNotify(); return; }
+        if (px1 - px0 < textw) return false;
     }
     const int bandw = px1 - px0;
     x = px0 + (bandw - textw) / 2;
 
-    // notify_nm is a LATCH taken when the banner was raised, and the video mode
+    // The ink latch (notify_nm / prog_nm) is taken when the banner was raised, and the video mode
     // can move under it: on TS-Conf the " CPU: 14 MHz " toast is raised by
     // applyZclk while the guest is still in a graphics mode, and the guest then
     // switches to TEXT a few frames later. In a pair mode gfxInstallPalette()
@@ -1665,14 +1718,14 @@ void OSD::drawNotify() {
     // and the last one stayed for ever (hw 2026-09-19: 19 installs, one per
     // frame, zero hand-backs; one F3 in and out put it right because THAT
     // session's gfxEnd is what finally restored). Re-check live, every frame.
-    if (notify_nm && !profi_ds80_active) {
+    if (nmUi && !profi_ds80_active) {
         // Same trick as drawStats/uiPausedBadge: the UI colours live in their own
         // palette block, so the running game keeps all 16 of its own entries.
         nm::gfxComputeSurface();
         nm::gfxInstallPalette();      // applyPalette() may have rewritten our block
         const int base = nm::uiPaletteBase();
         nm::UiColor ink;
-        switch (notify_level) {
+        switch (level) {
             case LEVEL_OK:    ink = nm::C_ACCENT; break;
             case LEVEL_WARN:  ink = nm::C_ICON_Y; break;
             case LEVEL_ERROR: ink = nm::C_ICON_R; break;
@@ -1683,12 +1736,12 @@ void OSD::drawNotify() {
         VIDEO::vga.setTextColor((uint8_t)(base + ink), (uint8_t)(base + nm::C_PANEL));
         VIDEO::vga.setFont(Font6x8);
         VIDEO::vga.setCursor(x, y + 2);
-        VIDEO::vga.print(notify_text);
-        return;
+        VIDEO::vga.print(text);
+        return true;
     }
 
     uint8_t ink, paper = zxColor(1, 0);
-    switch (notify_level) {
+    switch (level) {
         case LEVEL_OK:    ink = zxColor(4, 1); break;
         case LEVEL_WARN:  ink = zxColor(6, 1); break;
         case LEVEL_ERROR: ink = zxColor(2, 1); break;
@@ -1698,7 +1751,8 @@ void OSD::drawNotify() {
     VIDEO::vga.setTextColor(ink, paper);
     VIDEO::vga.setFont(Font6x8);
     VIDEO::vga.setCursor(x, y + 2);
-    VIDEO::vga.print(notify_text);
+    VIDEO::vga.print(text);
+    return true;
 }
 
 
@@ -1757,7 +1811,11 @@ static void f_gets(char* b, size_t sz, FIL& f);
 
 // Get the base name (no extension) of the currently loaded tape or disk
 string getDefaultSnapshotName() {
-    // Try tape first
+    // The last thing the user STARTED (src/app/LastRun.h) — a snapshot, tape, disk,
+    // cartridge or HDD image, whichever came last. The inserted-media fallback below
+    // only answers when nothing was started this session.
+    if (!LastRun::get().empty()) return LastRun::get();
+    // Then the tape
     if (Tape::tapeFileName != "none" && !Tape::tapeFileName.empty()) {
         string name = Tape::tapeFileName;
         // Strip directory
@@ -1780,9 +1838,27 @@ string getDefaultSnapshotName() {
     return "";
 }
 
+// Slot files: persistN.pss (one file, src/speccy/core/Pss.cpp) on the machines it
+// covers, the old persistN.sna + persistN.esp sidecar everywhere else. A slot holds
+// one or the other — every writer deletes the kind it did not write.
+static string slotPath(uint8_t slotnumber, const char* ext) {
+    char fn[sizeof(DISK_PSNA_FILE) + 8];
+    snprintf(fn, sizeof(fn), DISK_PSNA_FILE "%u.%s", slotnumber, ext);
+    return string(DISK_PSNA_DIR) + "/" + fn;
+}
+
+static void slotDropLegacy(uint8_t slotnumber) {
+    f_unlink(slotPath(slotnumber, "sna").c_str());
+    f_unlink(slotPath(slotnumber, "esp").c_str());
+}
+
 // Read slot name (3rd line) from .esp info file.
 // Returns "" if slot file doesn't exist, "\x01" if file exists but has no name.
 string getSlotName(uint8_t slotnumber) {
+    {
+        string nm;
+        if (Pss::readName(slotPath(slotnumber, "pss"), nm)) return nm.empty() ? "\x01" : nm;
+    }
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfinfo, DISK_PSNA_FILE "%u.esp", slotnumber);
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
@@ -1811,12 +1887,14 @@ void persistDelete(uint8_t slotnumber) {
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
     f_unlink(fsna.c_str());
     f_unlink(finfo.c_str());
+    f_unlink(slotPath(slotnumber, "pss").c_str());
 }
 
 
 
 // UI-free rename core (shared with the new UI): rewrite the .esp keeping arch/romset.
 void persistSetName(uint8_t slotnumber, const string& newName) {
+    if (Pss::setName(slotPath(slotnumber, "pss"), newName)) return;
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfinfo, DISK_PSNA_FILE "%u.esp", slotnumber);
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
@@ -1843,6 +1921,12 @@ void persistSetName(uint8_t slotnumber, const string& newName) {
 // UI-free save core (shared with the new UI): the caller has already resolved
 // the name and any overwrite question.
 bool persistSaveNamed(uint8_t slotnumber, const string& slotName) {
+    if (Pss::supported()) {
+        if (!Pss::save(slotPath(slotnumber, "pss"), slotName)) return false;
+        slotDropLegacy(slotnumber);
+        return true;
+    }
+    f_unlink(slotPath(slotnumber, "pss").c_str());
     char persistfname[sizeof(DISK_PSNA_FILE) + 7];
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfname, DISK_PSNA_FILE "%u.sna", slotnumber);
@@ -1890,24 +1974,28 @@ static void ide_create_progress(uint32_t done, uint32_t total) {
 // the menu's slot level.
 static bool persistSave(uint8_t slotnumber)
 {
-    FILINFO stat_buf;
     char persistfname[sizeof(DISK_PSNA_FILE) + 7];
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
     sprintf(persistfname, DISK_PSNA_FILE "%u.sna", slotnumber);
     sprintf(persistfinfo, DISK_PSNA_FILE "%u.esp", slotnumber);
     string finfo = string(DISK_PSNA_DIR) + "/" + persistfinfo;
 
-    string slotName;
-
-    // Slot isn't void
-    if (f_stat(finfo.c_str(), &stat_buf) == FR_OK) {
-        slotName = getSlotName(slotnumber);
-        if (slotName == "\x01") slotName = "";
-    } else {
-        slotName = getDefaultSnapshotName();
-    }
+    // An occupied slot (.pss or .sna + .esp) keeps its name.
+    string slotName = getSlotName(slotnumber);
+    if (slotName.empty()) slotName = getDefaultSnapshotName();
+    else if (slotName == "\x01") slotName = "";
 
     OSD::osdCenteredMsg(OSD_PSNA_SAVING, LEVEL_INFO, 500);
+
+    if (Pss::supported()) {
+        if (!Pss::save(slotPath(slotnumber, "pss"), slotName)) {
+            OSD::osdCenteredMsg(OSD_PSNA_SAVE_ERR, LEVEL_ERROR, 5000);
+            return false;
+        }
+        slotDropLegacy(slotnumber);
+        return true;
+    }
+    f_unlink(slotPath(slotnumber, "pss").c_str());
 
     // Save info file
     FIL* f = fopen2(finfo.c_str(), FA_WRITE | FA_CREATE_ALWAYS);
@@ -1948,6 +2036,19 @@ static void f_gets(char* b, size_t sz, FIL& f) {
 
 bool persistLoad(uint8_t slotnumber)
 {
+    {
+        const string pss = slotPath(slotnumber, "pss");
+        string nm;
+        if (Pss::readName(pss, nm)) {
+            if (!LoadSnapshot(pss, A_NONE, R_NONE)) {
+                if (!snapshotLoadReported()) OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
+                return false;
+            }
+            Config::ram_file = pss;
+            Config::last_ram_file = pss;
+            return true;
+        }
+    }
     char persistfname[sizeof(DISK_PSNA_FILE) + 7];
     char persistfinfo[sizeof(DISK_PSNA_FILE) + 7];
 
@@ -2070,6 +2171,25 @@ void OSD::bootTrdos() {
     }
 }
 
+// Set the emulated CPU clock: 0..3 = 3.5 / 7 / 14 / 28 MHz. Shared by the Turbo
+// hot key (Alt+F2) and the fast menu's CPU speed popup (Alt+F7), so both apply,
+// persist and announce it the same way.
+void OSD::setTurbo(uint8_t m) {
+    m &= 3;
+    ESPectrum::multUser = m;
+    ESPectrum::multiplicator = m;
+    CPU::updateStatesInFrame();
+    // TS-Conf: this is an override of the guest's SysConfig ZCLK; the
+    // guest's next write to it takes the clock back (TsConf::applyZclk).
+    Config::turbo = ESPectrum::multUser;
+    Config::save();
+    static const char* const mhz[4] =
+        { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
+    // See the VK_F11 handler in ESPectrum.cpp: routed through
+    // notifyClock so the clock banner's memory stays honest.
+    notifyClock(mhz[m], true);
+}
+
 // OSD Main Loop
 // Chooser for the small hotkey menus (NMI, Reset-to): takes a "Title\nRow\nRow\n"
 // menu string and returns the 1-based row (0 = Esc), drawn as a pick list. One
@@ -2132,12 +2252,15 @@ void OSD::nmiAction() {
 
 void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
+    VIDEO::ftHold();          // ...or a VDAC2 frame / video (FT812, core1)
     VIDEO::blVmapSuspend();   // borderless: show what is drawn over the fb row for row
 
     // A live top-border banner belongs to the running machine: EndFrame() stops
     // while the OSD owns the screen, so it could neither age out nor be erased.
-    // Hotkey handlers below raise their own after this.
+    // Hotkey handlers below raise their own after this. The RZX progress comes
+    // back by itself at the next EndFrame.
     cancelNotify();
+    progEnd();
 
     struct AYGuard {
         AYGuard()  { if (Config::audio_driver == 3) send_to_595(LOW(AY_Enable)); }
@@ -2222,7 +2345,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             notify(Config::profi_ext_keys ? " XT keyboard ON " : " XT keyboard OFF ", LEVEL_INFO, 900);
             return;
         }
-        if (Z80Ops::isTsconf) {
+        if (Z80Ops::isTsconf || (Z80Ops::isAtm && Atm::evo)) {
             // ON -> OFF -> AUTO, for the session only: AUTO is the resting
             // state (the guest's own polling decides) and a machine reset
             // drops any override, because a reset starts a new program.
@@ -2236,27 +2359,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
         }
     }
 
-#ifdef VGA_HDMI
-    // Mode switches require a hard reset — heap fragmentation breaks runtime
-    // framebuffer grow. Save the *old* vm to pending (loaded after reboot for
-    // the rollback confirmation), write the new vm to main config, then reset.
-    if (hkIdx == Config::HK_VIDMODE_60) { // HDMI 60Hz
-        uint8_t &vm = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
-        if (vm == Config::VM_640x480_60) return;
-        Config::savePendingVideoMode(); // captures old vm
-        vm = Config::VM_640x480_60;
-        Config::save();
-        esp_hard_reset();
-    } else
-    if (hkIdx == Config::HK_VIDMODE_50) { // HDMI 50Hz
-        uint8_t &vm = SELECT_VGA ? Config::vga_video_mode : Config::hdmi_video_mode;
-        if (vm == Config::VM_640x480_50) return;
-        Config::savePendingVideoMode(); // captures old vm
-        vm = Config::VM_640x480_50;
-        Config::save();
-        esp_hard_reset();
-    } else
-#endif
     if (hkIdx == Config::HK_HW_INFO) { // Show mem info (Alt+F1)
             OSD::HWInfo();
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
@@ -2268,20 +2370,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // multUser alone), Pentagon-1024 EFF7 D4 and Profi #028B pull it
             // down — so stepping the user's pick restarted the cycle at 3.5 MHz
             // instead of continuing from what the machine is actually running.
-            uint8_t next = ESPectrum::multiplicator + 1;
-            if (next > 3) next = 0;
-            ESPectrum::multUser = next;
-            ESPectrum::multiplicator = next;
-            CPU::updateStatesInFrame();
-            // TS-Conf: this is an override of the guest's SysConfig ZCLK; the
-            // guest's next write to it takes the clock back (TsConf::applyZclk).
-            Config::turbo = ESPectrum::multUser;
-            Config::save();
-            static const char* const mhz[4] =
-                { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
-            // See the VK_F11 handler in ESPectrum.cpp: routed through
-            // notifyClock so the clock banner's memory stays honest.
-            notifyClock(mhz[ESPectrum::multUser], true);
+            setTurbo((ESPectrum::multiplicator + 1) & 3);
         } else
         if (hkIdx == Config::HK_DEBUG) {
             osdDebug();
@@ -2332,7 +2421,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 if (Config::arch == A_PROFI) {
                     reset_menu = MENU_RESETTO_PROFI;
                 } else if (Z80Ops::isAtm) {
-                    reset_menu = (Config::romSetAtm == R_ATM3) ? MENU_RESETTO_ATM3 : MENU_RESETTO_ATM;
+                    reset_menu = (Config::romSetAtm == R_ATM3) ? MENU_RESETTO_ATM3
+                               : Config::isEvoBase() ? MENU_RESETTO_EVO : MENU_RESETTO_ATM;
                 } else if (Config::arch == A_SCORP && g_scorp_kay) {
                     // KAY-256 and the Phoenix have no service ROM (the page is empty).
                     reset_menu = (g_scorp_kay == 3) ? MENU_RESETTO_KAY : MENU_RESETTO_KAY_NOSVC;
@@ -2360,6 +2450,8 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
 
                     if (Z80Ops::isAtm) {
                         // BIOS=1, CP/M=2, TR-DOS=3, 128K=4, 48K=5, ATM3 test=6
+                        // (ZX-Evo BaseConf has no CP/M row: its rows 2-4 are TR-DOS/128K/48K.)
+                        if (Config::isEvoBase() && opt >= 2) opt++;
                         ESPectrum::reset();
                         if (opt == 2)      Atm::cpmBootArmed = true;
                         else if (opt == 6) Atm::bootTest();
@@ -2535,131 +2627,6 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 }
             }
         }
-        else if (FileUtils::fsMount && hkIdx == Config::HK_DISK) {
-            if (DivMMC::enabled) {
-                string mFile = nm::browseFile(FileUtils::IMG_Path, MENU_IMG_TITLE, DISK_IMGFILE);
-                if (mFile != "") {
-                    string fname = FileUtils::IMG_Path + mFile.substr(1);
-                    if (FileUtils::getLCaseExt(fname) == "zip") {
-                        string zipFname = ZipExtract::extract(fname, DISK_IMGFILE);
-                        if (zipFname.empty()) OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN);
-                        else if (zipFname != "\x1b") fname = zipFname;
-                        else fname.clear();
-                    }
-                    if (!fname.empty()) {
-                        // The slot chooser is a level of the menu.
-                        nm::runDiskSlots(IFACE_ESX, fname.c_str());
-                        Config::save();
-                        ESPectrum::reset();
-                        return;
-                    }
-                }
-                if (VIDEO::OSD) OSD::drawStats();
-            } else
-            while (1) {
-                string mFile = nm::browseFile(FileUtils::DSK_Path, MENU_DSK_TITLE, DISK_DSKFILE);
-                if (mFile != "") {
-                    string fname = FileUtils::DSK_Path + mFile.substr(1);
-                    string fprefix = mFile.substr(0,1);
-                    if ( fprefix == "1" || fprefix == "2" || fprefix == "3" || fprefix == "4") {
-
-                        // Create empty trd
-                        //Debug::log("Create empty trd. Prefix: %s\n",fprefix.c_str());
-                        // FIL *fd = fopen2(fname.c_str(), FA_WRITE);
-                        // if (!fd) {
-                        //     Debug::led_blink();
-                        //     break;
-                        // }
-
-                        // // TRD info for 40 tracks 2 sides -> Offset 2274, positions 1 - 4 contains disk type + number of files (0) + number of free sectors
-                        // unsigned char trdheader[] = { 0x01, 0x17, 0x00, 0xf0, 0x04, 0x10, 0x00, 0x00, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
-                        // 0x20, 0x20, 0x20, 0x00, 0x00, 0x42, 0x4c, 0x41, 0x4e, 0x4b }; //, 0x20, 0x20, 0x20 };
-
-                        // char buffer[1024] = {0}; // Bloque de 1 KB lleno de ceros
-
-                        // size_t to_write = 655360; // 640 KB
-
-                        // if (fprefix == "1") {
-                        //     // 80/2
-                        //     trdheader[1] = 0x16;
-                        //     trdheader[4] = 0x09;
-                        // } else if (fprefix == "2") {
-                        //     // 40/2
-                        //     to_write >>= 1; // 320 KB
-                        // } else if (fprefix == "3") {
-                        //     // 80/1
-                        //     to_write >>= 1; // 320 KB
-                        //     trdheader[1] = 0x18;
-                        // } else if (fprefix == "4") {
-                        //     // 40/1
-                        //     to_write >>= 2; // 160 KB
-                        //     trdheader[1] = 0x19;
-                        //     trdheader[3] = 0x70;
-                        //     trdheader[4] = 0x02;
-                        // }
-
-                        // while (to_write > 0) {
-                        //     size_t chunk = (to_write < sizeof(buffer)) ? to_write : sizeof(buffer);
-                        //     fwrite(buffer, 1, chunk, fd);
-                        //     to_write -= chunk;
-                        // }
-
-                        // // Write TRD header
-                        // f_lseek(fd, 2274);
-                        // fwrite(trdheader, 1, sizeof(trdheader), fd);
-
-                        //  f_close(fd);
-
-                        // continue;
-
-                    }
-
-                    string ext = FileUtils::getLCaseExt(fname);
-                    if (ext == "zip") {
-                        string zipFname = ZipExtract::extract(fname, DISK_DSKFILE);
-                        if (zipFname.empty()) { OSD::osdCenteredMsg(ZipExtract::errMsg(), LEVEL_WARN); continue; }
-                        if (zipFname == "\x1b") continue;
-                        fname = zipFname;
-                        ext = FileUtils::getLCaseExt(fname);
-                    }
-                    if (ext == "trd" || ext == "scl" || ext == "udi" || ext == "fdi" || ext == "td0" || ext == "pro") {
-                        printf("Insert disk %s\n",fname.c_str());
-                        rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
-                    }
-                    else if (ext == "dsk") {
-                        // A +3 disk. This branch predates ifaceForExt and still tests
-                        // the extension directly, so the new one has to be added here
-                        // as well as in the browser above.
-                        if (Config::isPlus3()) {
-                            DiskSlots::slotMount(IFACE_PLUS3, 0, fname);
-                        } else {
-                            OSD::osdCenteredMsg("Switch to the +3 first", LEVEL_WARN);
-                        }
-                    }
-                    else if (ext == "mbd") {
-                        printf("Insert MB-02 disk %s\n",fname.c_str());
-                        if (MB02::enabled) {
-                            rvmWD1793InsertDisk(&ESPectrum::mb02_fdd, 0, fname);
-                            ESPectrum::mb02_fdd.diskLoadedCyl = -1;
-                            ESPectrum::mb02_fdd.diskLoadedSide = -1;
-                            MB02::signalDiskChange();
-                        } else {
-                            OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
-                        }
-                    }
-                    else
-                    {
-                        Debug::led_blink();
-                    }
-
-                    // string fname = FileUtils::DSK_Path + "/" + mFile;
-                    // rvmWD1793InsertDisk(&ESPectrum::fdd, 0, fname);
-                    Config::save();
-                }
-                break;
-            }
-            if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
-        }
         else if (hkIdx == Config::HK_USB_BOOT) {
             if (confirmReboot(OSD_DLG_USBBOOT)) {
                 reset_usb_boot(0, 0);
@@ -2729,6 +2696,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             // implementation, so the row and the key can never drift apart.
             nm::loadSnapshotFile();
             if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
+        } else if (hkIdx == Config::HK_FAST_MENU) {
+            // Alt+F7: the fast menu popup (0 Machines .. 6 CPU speed).
+            nm::runFastMenu();
+            if (VIDEO::OSD) OSD::drawStats(); // Redraw stats for 16:9 modes
+            return;
         } else if (FileUtils::fsMount && hkIdx == Config::HK_PERSIST_LOAD) {
             // The menu's native slot level (same rows F1 shows), like runDiskSlots.
             nm::runPersist(false);
@@ -2927,7 +2899,7 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         OSD::osdCenteredMsg("Enable MB-02+ first", LEVEL_WARN);
                     }
                 }
-                else if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg") {
+                else if (ext == "pss" || ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx") {
                     // Snapshot (.spg = TS-Conf program, switches the machine)
                     if (!fromZip) FileUtils::SNA_Path = FileUtils::ALL_Path;
                     Config::save();
@@ -2935,7 +2907,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                         if (!snapshotLoadReported())   // ... already named the reason
                             OSD::osdCenteredMsg(OSD_PSNA_LOAD_ERR, LEVEL_WARN);
                     } else if (!fromZip) {
-                        Config::ram_file = fname;
+                        // An RZX is a replay, not a machine to resume at the next
+                        // boot: it stays the Alt+Backspace reload, nothing more.
+                        Config::ram_file = (ext == "rzx") ? NO_RAM_FILE : fname;
                         Config::last_ram_file = fname;
                     }
                 }
@@ -3225,6 +3199,7 @@ void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level) {
 
 void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millispause) {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
+    VIDEO::ftHold();          // ...or a VDAC2 frame / video (FT812, core1)
     VIDEO::blVmapSuspend();   // borderless: show what is drawn over the fb row for row
     // New-skin toasts. The persistent (millispause == 0) form leaves the UI
     // palette installed, which recolours a DS80 guest screen — keep the classic
@@ -6131,14 +6106,43 @@ void OSD::MemoryInfo() {
         pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos,
                         " PSRAM          : off (Debug menu)\n");
 #ifdef BUTTER_PSRAM_GPIO
+    // The whole butter chip, top to bottom: what the running machine holds (its RAM
+    // pages and any ROM pages flattened out of flash overlays), the fixed regions
+    // around the Buffer arena (DivMMC banks above the pages, GS sample RAM at the
+    // top) and what the arena itself carries. The rows add up to the chip size.
     if (butter_psram_size()) {
-        uint32_t bsz = butter_psram_size();
-        size_t emu = (size_t)butter_pages * MEM_PG_SZ;
+        const size_t bsz   = butter_psram_size();
+        const size_t emu   = (size_t)butter_pages * MEM_PG_SZ;
+        const size_t roms  = Atm::romPsramBytes() + MemESP::overlayFlatBytes();
+        const size_t divm  = DivMMC::use_psram ? (size_t)DIVMMC_NUM_BANKS * DIVMMC_BANK_SIZE : 0;
+        const size_t gs    = Config::gs_enabled ? GS::configuredRamBytes() : 0;
+        const size_t midi  = MidiSynth::bankPsramBytes();   // butter here (SPI only without butter)
+        const size_t gig   = VIDEO::gigascreenArmed() ? VIDEO::gigascreenPrevFBBytes() : 0;
         Buffer::PoolStat bp = Buffer::poolStat(Buffer::TIER_BUTTER);
+        const size_t known = roms + midi + gig;           // arena users listed by name
+        const size_t other = bp.used > known ? bp.used - known : 0;
+        const size_t used  = emu + divm + gs + roms + midi + gig + other;
+        const size_t free_ = bsz > used ? bsz - used : 0;
+        const char* fam = nullptr; const char* rs = nullptr;
         pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, " Butter PSRAM (%d.%d MB):\n",
             (int)(bsz >> 20), (int)(((bsz & 0xFFFFF) * 10) >> 20));
-        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  Emu RAM pages  : %d KB\n", (int)(emu / KB));
-        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  Buffer arena   : %d/%d KB\n", (int)(bp.used / KB), (int)(bp.total / KB));
+        if (nm::machineMenuName(fam, rs))
+            pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %s %s\n", fam, rs ? rs : "");
+        auto row = [&](const char* name, size_t b) {
+            if (b) pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d KB\n",
+                                   name, (int)((b + KB - 1) / KB));
+        };
+        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d KB (%d pg)\n",
+                        "Machine RAM", (int)(emu / KB), butter_pages);
+        row("Machine ROMs", roms);
+        row("DivMMC banks", divm);
+        row("General Sound", gs);
+        row("MIDI (GM.DLS)", midi);
+        row("Gigascreen", gig);
+        row("Other buffers", other);
+        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d KB\n", "Free", (int)(free_ / KB));
+        pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d/%d KB\n",
+                        "(Buffer arena)", (int)(bp.used / KB), (int)(bp.total / KB));
     }
 #endif
     if (psram_size()) {
@@ -6174,7 +6178,7 @@ void OSD::MemoryInfo() {
     // in PSRAM, not the heap — invisible in the SRAM list above. List the PSRAM users.
     size_t psram_feat_total = 0;
     int psram_feat_n = 0;
-    for (int i = 0; i < FEAT_COUNT; i++) {
+    for (int i = 0; i < FEAT_COUNT && !butter_psram_size(); i++) {
         FeatureId f = (FeatureId)i;
         if (!featureEnabled(f)) continue;
         size_t pc = featurePsramCost(f);
@@ -6300,6 +6304,17 @@ static void buildEmulatorInfoText() {
         pos += infoAppend(buf, pos, bufsz, " SMUC card      : %s\n",
             (IDE::portScheme == IDE::SMUC) ? "open ports, CMOS + NVRAM + HDD"
                                            : "open ports, CMOS + NVRAM, no HDD");
+    }
+    // TS-Conf VDAC2: the FT812 on the Z-Controller SPI. "fitted" = STATUS reads 7 and
+    // the chip answers; the rest is what the guest has done with it so far.
+    if (Config::arch == A_TSCONF && Config::tsconf_vdac2) {
+        if (!Ft812::enabled)
+            pos += infoAppend(buf, pos, bufsz, " VDAC2 (FT812)  : off (no PSRAM for RAM_G)\n");
+        else
+            pos += infoAppend(buf, pos, bufsz, " VDAC2 (FT812)  : fitted, %ux%u %s, FT_EN %s, %lu swaps\n",
+                (unsigned)Ft812::hsize(), (unsigned)Ft812::vsize(),
+                Ft812::displayOn() ? "on" : "off", TsConf::ftVideo() ? "1" : "0",
+                (unsigned long)Ft812::stats().swaps);
     }
 
     // --- Video ---
@@ -6514,6 +6529,9 @@ static void buildEmulatorInfoText() {
         else
             pos += infoAppend(buf, pos, bufsz,
                 " Joystick       : %s\n", jnames[ji]);
+        pos += infoAppend(buf, pos, bufsz,
+            " Joy profile    : %.20s\n",
+            Config::joy_profile.empty() ? "(unsaved)" : Config::joy_profile.c_str());
 
         {
             static const char* sjnames[] = { "Off", "DPAD #1", "DPAD #2", "NUMPAD" };
@@ -6615,11 +6633,11 @@ static void buildEmulatorInfoText() {
 
                 {
                     // Indexed BY THE VALUE, so the order here is Config::trdosBios's,
-                    // not the menu's display order (6.11e is 4, Custom stays 3).
-                    static const char* trbios[] = { "5.03", "5.04TM", "5.05D", "Custom", "6.11e" };
+                    // not the menu's display order (6.11e is 4, 5.04T 5, Custom stays 3).
+                    static const char* trbios[] = { "5.03", "5.04TM", "5.05D", "Custom", "6.11e", "5.04T" };
                     pos += infoAppend(buf, pos, bufsz,
                         "  ROM / autoboot: %s / %s\n",
-                        trbios[Config::trdosBios < 5 ? Config::trdosBios : 2],
+                        trbios[Config::trdosBios < 6 ? Config::trdosBios : 5],
                         Config::trdosAutoBoot ? "On" : "Off");
                 }
 
@@ -7762,6 +7780,7 @@ void (*OSD::progressOverride)(const char* title, const char* msg, int percent,
 
 void OSD::progressDialog(const string& title, const string& msg, int percent, int action, bool cyrillic) {
     VIDEO::tsRenderDrain();   // core1 may still be painting TS-Conf content rows
+    VIDEO::ftHold();          // ...or a VDAC2 frame / video (FT812, core1)
     VIDEO::blVmapSuspend();   // borderless: show what is drawn over the fb row for row
     if (progressOverride) {
         progressOverride(title.c_str(), msg.c_str(), percent, action, cyrillic);
@@ -7854,11 +7873,18 @@ void OSD::progressDialog(const string& title, const string& msg, int percent, in
     }
 }
 
-uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
+uint8_t OSD::msgDialog(const string& title_, const string& msg_, bool defYes) {
+
+    // The fullscreen UI's box wherever its layout fits; the classic one below only
+    // stands in where it does not.
+    if (nm::available()) {
+        const int r = nm::uiAskAnywhere(title_.c_str(), msg_.c_str(), defYes);
+        return r > 0 ? DLG_YES : (r == 0 ? DLG_NO : DLG_CANCEL);
+    }
 
     const unsigned short h = (OSD_FONT_H * 6) + 2;
     const unsigned short y = scrAlignCenterY(h);
-    uint8_t res = DLG_NO;
+    uint8_t res = defYes ? DLG_YES : DLG_NO;
 
     string msg = msg_, title = title_;
     if (msg.length() > (scrW / 6) - 4) msg = msg.substr(0,(scrW / 6) - 4);
@@ -7889,8 +7915,9 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
     VIDEO::vga.setCursor(scrAlignCenterX(msg.length() * OSD_FONT_W), y + 1 + (OSD_FONT_H * 2));
     VIDEO::vga.print(msg.c_str());
 
-    // Yes
-    VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
+    // Yes (highlighted when it is the default)
+    if (defYes) VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
+    else        VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) - (w >> 2), y + 1 + (OSD_FONT_H * 4));
     VIDEO::vga.print(" Yes  ");
 
@@ -7900,7 +7927,8 @@ uint8_t OSD::msgDialog(const string& title_, const string& msg_) {
     // VIDEO::vga.print("123456789012345678901234567");
 
     // No
-    VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
+    if (defYes) VIDEO::vga.setTextColor(zxColor(0, 0), zxColor(7, 1));
+    else        VIDEO::vga.setTextColor(zxColor(0, 1), zxColor(5, 1));
     VIDEO::vga.setCursor(scrAlignCenterX(6 * OSD_FONT_W) + (w >> 2), y + 1 + (OSD_FONT_H * 4));
     VIDEO::vga.print("  No  ");
 
@@ -8418,17 +8446,18 @@ const char* const hkDescEN[Config::HK_COUNT] = {
     "Hardware info",        // HK_HW_INFO
     "Turbo mode",           // HK_TURBO
     "Debug",                // HK_DEBUG
-    "Insert disk",          // HK_DISK
+    "",                     // HK_UNUSED_17 (was Alt+F6 Insert disk)
     "NMI",                  // HK_NMI
     "Reset to...",          // HK_RESET_TO
     "USB Boot mode",        // HK_USB_BOOT
     "Gigascreen toggle",    // HK_GIGASCREEN
     "LED indicators",       // HK_LED_TOGGLE
     "Input poke",           // HK_POKE
-    "HDMI 60Hz mode",       // HK_VIDMODE_60
-    "HDMI 50Hz mode",       // HK_VIDMODE_50
+    "",                     // HK_UNUSED_24 (was Ctrl+Alt+Home HDMI 60Hz)
+    "",                     // HK_UNUSED_25 (was Ctrl+Alt+End HDMI 50Hz)
     "Quick Load snapshot",  // HK_QUICK_LOAD
     "Quick Save snapshot",  // HK_QUICK_SAVE
+    "Fast menu",            // HK_FAST_MENU
 };
 
 // The Help > Hot keys page of the new UI: description + current binding.

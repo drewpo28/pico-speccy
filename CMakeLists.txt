@@ -4,9 +4,9 @@ if(WIN32)
 else()
     set(USERHOME $ENV{HOME})
 endif()
-set(sdkVersion 2.3.0)
+set(sdkVersion 2.3.1)
 set(toolchainVersion 14_2_Rel1)
-set(picotoolVersion 2.3.0)
+set(picotoolVersion 2.3.1)
 set(picoVscode ${USERHOME}/.pico-sdk/cmake/pico-vscode.cmake)
 if (EXISTS ${picoVscode})
     include(${picoVscode})
@@ -124,6 +124,7 @@ file(GLOB_RECURSE SRC CONFIGURE_DEPENDS
     "external/miniz/*.c"
     "external/redcode/*.c"
     "external/libxmp/*.c"
+    "external/tjpgd/*.c"
 )
 # The driver libraries under src/drivers/ are separate CMake targets.
 string(REPLACE ";" "|" _drv_re "${PICO_DRIVER_LIBS}")

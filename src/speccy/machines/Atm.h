@@ -66,10 +66,13 @@ struct atm_rom_page_t { const unsigned char* base; const unsigned char* overlay;
 extern uint8_t g_atm_ro;
 
 namespace Atm {
-    enum VMode : uint8_t { VM_ZX = 0, VM_EGA = 1, VM_HIRES = 2, VM_TEXT = 3 };
+    enum VMode : uint8_t { VM_ZX = 0, VM_EGA = 1, VM_HIRES = 2, VM_TEXT = 3, VM_TEXT1 = 4 };  // TEXT1: ZX-Evo 80x25 in RAM page 8
 
     extern bool     atm1;       // ATM-Turbo 1 board (else 2+), set by bindRoms
     extern bool     atm3;       // ATM-Turbo 3 (4 MB + #BF / #x7F7 / #xxE7), set by bindRoms
+    // ZX Evolution BaseConf (R_EVO_BASE): this manager plus EvoBase.{h,cpp}, which owns
+    // the Evo ports, NMI, FDD emulator, clock and font RAM.
+    extern bool     evo;
     extern uint8_t  p7ffd;
     // ATM-Turbo 1
     extern uint8_t  aFE, aFB, pFDFD;
@@ -91,6 +94,9 @@ namespace Atm {
     // Record this romset's page table. The flattening into PSRAM happens on the first
     // reset() after Buffer::initPools (requestMachine runs before the pools exist).
     void bindRoms(RomsetIdx rs, const atm_rom_page_t* pages, uint8_t n);
+    // Flatten the overlay pages into butter PSRAM (idempotent). setup() calls it right
+    // after Buffer::initPools so the ROMs claim the arena before the GM.DLS bank does.
+    void resolveRoms();
     void reset();               // machine reset: register file + remap
     void remap();               // the one writer of MemESP::ramCurrent[0..3] on ATM
 
@@ -161,4 +167,13 @@ namespace Atm {
     uint8_t borderBright();     // 8 when the border is BRIGHT (A3 = 0 at the #FE write)
     uint32_t palRgb(uint8_t i); // palette entry i as RGB888 (2 bits per channel)
     uint8_t romPageCount();
+    size_t  romPsramBytes();    // ROM pages flattened into butter PSRAM (Memory Info)
+
+    // ── .pss snapshot (src/speccy/core/Pss.cpp) ─────────────────────────────
+    // The manager's register file, the palette RAM, the clock and — on the ZX-Evo —
+    // EvoBase's latches: the PSAT block. The Evo font RAM is its own block (PSEF).
+    constexpr uint32_t SNAP_MAX = 112;
+    uint32_t snapSave(uint8_t* out);
+    void     snapLoad(const uint8_t* in, uint32_t n);
+    void     snapRemap();   // windows, DOS signal, video mode, palette, clock
 }

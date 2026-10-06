@@ -151,6 +151,7 @@ visit https://zxespectrum.speccy.org/contacto
 #define MENU_RESETTO_ATM "Reset to\n" "BIOS\n" "CP/M\n" "TR-DOS\n" "128K\n" "48K\n"
 // ATM-Turbo 3: the same five, plus the board test in the lower 128 KB of its ROM
 // (Atm::bootTest).
+#define MENU_RESETTO_EVO "Reset to\n" "EVO Reset Service\n" "TR-DOS\n" "128K\n" "48K\n"
 #define MENU_RESETTO_ATM3 "Reset to\n" "BIOS\n" "CP/M\n" "TR-DOS\n" "128K\n" "48K\n" "ATM3 test\n"
 // TS-Conf: TS-BIOS Setup=1 (the one entry that still goes through the BIOS —
 // it samples Symbol Shift at START), then one entry per ROM page of the

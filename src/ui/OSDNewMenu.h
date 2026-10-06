@@ -30,6 +30,13 @@ void runDiskSlots(int iface, const char* fname);
 // "save", F3 and the menu row mean "load".
 void runPersist(bool save);
 
+// The fast menu (Alt+F7): a popup whose rows are picked by digit — 0 Machines,
+// 1 Config profiles, 2 Joystick profiles, 3 Devices, 4 Video, 5 Audio,
+// 6 CPU speed. The first
+// five open the menu on that node (Esc there returns to the machine); CPU speed
+// is a second popup, applied at once.
+void runFastMenu();
+
 // Snapshots > Load from file: browse the card for a .sna/.z80/.p (or a zip holding
 // one) and load it. The F2 hot key runs this same function, so the row and the key
 // can never drift apart.
@@ -53,6 +60,9 @@ void playerRemote(RemoteFs* fs, const std::string& startDisp);
 // own gfx session like the game page above. `body` may carry '\n'. True = the
 // first button; Esc answers the second.
 bool uiConfirmStandalone(const char* body, const char* yes_btn, const char* no_btn);
+// A Yes/No question in the fullscreen UI's look, from anywhere (inside a menu
+// session or not); restores what it covered. 1 = Yes, 0 = No, -1 = Esc.
+int uiAskAnywhere(const char* title, const char* body, bool default_yes);
 
 } // namespace nm
 

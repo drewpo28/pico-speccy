@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "app/LastRun.h"
 #include "Snapshot.h"
 #include "app/hardconfig.h"
 #include "fs/FileUtils.h"
@@ -52,6 +53,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/tape/Tape.h"
 #include "speccy/devices/sound/AySound.h"
 #include "loaders.h"
+#include "speccy/core/Rzx.h"
+#include "speccy/core/Pss.h"
 #include "app/Config.h"
 
 #include <sys/unistd.h>
@@ -90,8 +93,17 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
     if (archCanon(force_arch) == A_TSCONF || archCanon(force_arch) == A_ATM) { force_arch = A_NONE; force_romset = R_NONE; }
     bool res = false;
     uint8_t OSDprev = VIDEO::OSD;
-    g_snapshot_loading_path = filename;
-    if (FileUtils::hasSNAextension(filename)) {
+    // What requestMachine pins to Config::ram_file when the load has to reboot.
+    // A nested load (the snapshot embedded in an .rzx) keeps the OUTER file:
+    // resuming the inner /tmp/_rzx.* after the reboot ran the snapshot with no
+    // playback at all — no progress banner, and a second launch "fixed" it
+    // because the machine then already matched.
+    const bool nested = !g_snapshot_loading_path.empty();
+    if (!nested) g_snapshot_loading_path = filename;
+    if (FileUtils::hasPSSextension(filename)) {
+        res = Pss::load(filename);
+        if (!res) s_load_reported = true;   // Pss::load names its own failure
+    } else if (FileUtils::hasSNAextension(filename)) {
         res = FileSNA::load(filename, force_arch, force_romset);
     } else if (FileUtils::hasZ80extension(filename)) {
         res = FileZ80::load(filename);
@@ -99,8 +111,21 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
         res = FileP::load(filename);
     } else if (FileUtils::hasSPGextension(filename)) {
         res = FileSPG::load(filename);
+    } else if (FileUtils::hasRZXextension(filename)) {
+        // Rzx shows its own message on every failure path (or the embedded
+        // snapshot's loader does) — callers must not paint a second one.
+        res = Rzx::startPlayback(filename);
+        if (!res) s_load_reported = true;
     }
-    g_snapshot_loading_path.clear();
+    if (!nested) g_snapshot_loading_path.clear();
+    // Quick-slot name suggestion: a .pss names itself; a quick slot's own file
+    // (persistN.*) is not a name at all.
+    if (res && !nested && filename.compare(0, sizeof(DISK_PSNA_DIR) - 1, DISK_PSNA_DIR) != 0)
+        LastRun::note(filename);
+    if (res && !nested && FileUtils::hasPSSextension(filename)) {
+        string n;
+        if (Pss::readName(filename, n)) LastRun::name(n);
+    }
     if (res && OSDprev) {
         VIDEO::OSD = OSDprev;
         VIDEO::Draw_OSD43 = VIDEO::BottomBorder_OSD;
@@ -222,6 +247,9 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         // tmp_port contains page switching status, including current page number (latch)
         uint8_t tmp_port = readByteFile(file);
         uint8_t tmp_latch = tmp_port & 0x07;
+        // The page count comes from the FILE, not the machine: a 128K SNA loaded on a
+        // Pentagon 1024 has 8 pages, not 64.
+        const int filePages = (snapshotArch == A_P1024) ? 64 : (snapshotArch == A_P512) ? 32 : 8;
 
         // copy what was read into page 0 to correct page
         MemESP::ram[tmp_latch].from_mem(MemESP::ram[0], MEM_PG_SZ);
@@ -229,7 +257,7 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         uint8_t tr_dos = readByteFile(file);     // Check if TR-DOS is paged
         
         // read remaining pages
-        for (int page = 0; page < (Z80Ops::is1024 ? 64 : (Z80Ops::is512 ? 32 : 8)); page++) {
+        for (int page = 0; page < filePages; page++) {
             if (page != tmp_latch && page != 2 && page != 5) {
                 MemESP::ram[page].from_file(file, MEM_PG_SZ);
             }
@@ -241,6 +269,17 @@ bool FileSNA::load(const string& sna_fn, ArchIdx force_arch, RomsetIdx force_rom
         MemESP::romLatch = bitRead(tmp_port, 4);
         MemESP::pagingLock = bitRead(tmp_port, 5);
         MemESP::bankLatch = tmp_latch;
+        // Our extended Pentagon SNA (32/64 pages) keeps the page bits where the
+        // hardware has them: D6 = +8, D7 = +16, and on a 1024 D5 = +32 (the 128K lock
+        // is off there). The third 16 KB block is bank (#7FFD & 7), as in a 128K SNA.
+        if (filePages > 8) {
+            if (tmp_port & 0x40) MemESP::bankLatch += 8;
+            if (tmp_port & 0x80) MemESP::bankLatch += 16;
+            if (filePages == 64) {
+                if (tmp_port & 0x20) MemESP::bankLatch += 32;
+                MemESP::pagingLock = 0;
+            }
+        }
         
         if (tr_dos) {
             // Scorpion's TR-DOS is its own bank 3, not the shared external rom[4]
@@ -286,7 +325,8 @@ size_t fread(uint8_t* v, size_t sz1, size_t sz2, FIL& f) {
 
 static bool writeMemPage(uint8_t page, FIL* file, bool blockMode)
 {
-    page = page & 0x07;
+    // No `& 7`: Pentagon 512/1024 SNAs carry pages 8..63, and the mask wrote pages
+    // 0..7 again in their place (the file had the right size and the wrong RAM).
     MemESP::ram[page].to_file(file, MEM_PG_SZ);
     return true;
 }
@@ -346,7 +386,10 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
     // With an extended page (8-15) mapped at 0xC000 the raw bankLatch would
     // corrupt the port byte (bit3 = videoLatch) and derail the page-skip loop
     // below into a malformed size — clamp to the 7FFD-visible bank throughout.
-    uint32_t curBank = Z80Ops::isScorpion ? (MemESP::bankLatch & 0x07) : MemESP::bankLatch;
+    // Pentagon 512/1024: the third block is bank (#7FFD & 7) too, and the page bits
+    // above 7 go into the port byte (see the loader) — the raw bankLatch here wrote
+    // a different page than the loader then expected.
+    uint32_t curBank = MemESP::bankLatch & 0x07;
     uint8_t pages[3] = {5, 2, 0};
     if (Config::arch != A_48K)
         pages[2] = curBank;
@@ -369,6 +412,11 @@ bool FileSNA::save(const string& sna_file, bool blockMode) {
         bitWrite(tmp_port, 3, MemESP::videoLatch);
         bitWrite(tmp_port, 4, MemESP::romLatch);
         bitWrite(tmp_port, 5, MemESP::pagingLock);
+        if (Z80Ops::is512 || Z80Ops::is1024) {
+            if (MemESP::bankLatch & 8)  tmp_port |= 0x40;
+            if (MemESP::bankLatch & 16) tmp_port |= 0x80;
+            if (Z80Ops::is1024 && !MemESP::notMore128) bitWrite(tmp_port, 5, (MemESP::bankLatch & 32) ? 1 : 0);
+        }
         writeByteFile(tmp_port, file);
         // printf("7FFD: %u\n",(unsigned int)tmp_port);
 
@@ -479,8 +527,6 @@ bool FileZ80::load(const string& z80_fn) {
             // if (mch == 2) z80_arch = "SAMRAM";
             if (mch == 3) z80_arch = A_128K;
             if (mch == 4) z80_arch = A_128K; // + if1
-            if (mch == 14) { z80_arch = A_48K; z80_timex = true; }   // Timex TC2048
-            if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
         }
         else if (z80version == 3) {
             if (mch == 0) z80_arch = A_48K;
@@ -490,16 +536,19 @@ bool FileZ80::load(const string& z80_fn) {
             if (mch == 4) z80_arch = A_128K;
             if (mch == 5) z80_arch = A_128K; // + if1
             if (mch == 6) z80_arch = A_128K; // + mgt
-            if (mch == 7) { z80_arch = A_128K; z80_plus3 = true; }  // Spectrum +3
-            if (mch == 9) z80_arch = A_PENT;
-            if (mch == 10) z80_arch = A_SCORP; // Scorpion ZS-256
-            if (mch == 12) z80_arch = A_128K; // Spectrum +2
-            // A +2A is a +3 without the disk drive, so it runs on the same machine
-            // here; the snapshot carries no disk state either way.
-            if (mch == 13) { z80_arch = A_128K; z80_plus3 = true; } // Spectrum +2A
-            if (mch == 14) { z80_arch = A_48K; z80_timex = true; }  // Timex TC2048
-            if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
         }
+
+        // Codes 7 and up mean the same machine in a v2 and a v3 header (only 3 and 4
+        // differ), and emulators do write them into v2 files.
+        if (mch == 7 || mch == 8) { z80_arch = A_128K; z80_plus3 = true; }  // Spectrum +3 (8 = the same, "mistakenly")
+        if (mch == 9) z80_arch = A_PENT;
+        if (mch == 10) z80_arch = A_SCORP; // Scorpion ZS-256
+        if (mch == 12) z80_arch = A_128K; // Spectrum +2
+        // A +2A is a +3 without the disk drive, so it runs on the same machine
+        // here; the snapshot carries no disk state either way.
+        if (mch == 13) { z80_arch = A_128K; z80_plus3 = true; } // Spectrum +2A
+        if (mch == 14) { z80_arch = A_48K; z80_timex = true; }  // Timex TC2048
+        if (mch == 15) { z80_arch = A_48K; z80_timex = true; z80_tc2068 = true; } // TC2068
 
     }
 
@@ -569,7 +618,7 @@ bool FileZ80::load(const string& z80_fn) {
         if (z80_arch == A_SCORP) {
             if (Config::pref_romSetScorp == R_SCORP || Config::pref_romSetScorp == R_SCORP_GR ||
                 isScorpGmxRomset(Config::pref_romSetScorp) || Config::pref_romSetScorp == R_SCORP_1024 ||
-                Config::pref_romSetScorp == R_SCORP_PROF)
+                Config::pref_romSetScorp == R_SCORP_PROF || isScorpEvoRomset(Config::pref_romSetScorp))
                 z80_romset = Config::pref_romSetScorp;
         }
 

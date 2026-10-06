@@ -51,6 +51,12 @@ visit https://zxespectrum.speccy.org/contacto
 #include "app/Buffer.h"
 #include "app/TryAlloc.h"
 #include "speccy/devices/gs/GS.h"   // GS::enabled / hostActive — renderer placement policy (tsC1PlacementPoll)
+#include "speccy/machines/TsConf/Ft812.h"
+#include "speccy/machines/TsConf/Ft812Render.h"
+#if FT812_TRACE
+#include "speccy/devices/storage/DivMMC.h"          // zc_rd_sectors/us — the SD half of the [FT812] meter
+static void ftTraceTick();   // defined in the VDAC2 glue section below
+#endif
 #include <hardware/sync.h>   // __dmb (core1 render queue)
 #include "speccy/devices/tape/Tape.h"
 #include "fs/FileUtils.h"
@@ -70,6 +76,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/Z80DMA.h"
 #include "hardware/xip_cache.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/EvoBase.h"
+#include "app/PerfFdc.h"
 extern "C" const unsigned char gb_rom_atm_font[];   // roms/atm/atm_roms.c (SGEN.ROM order)
 #include "hardware/regs/addressmap.h"
 extern "C" void graphics_set_palette(uint8_t i, uint32_t color888);
@@ -372,9 +380,24 @@ void VIDEO::clearDS80Padding() {
     }
 }
 
-void VIDEO::profiPaletteReset() {
-    for (int i = 0; i < 16; i++) profi_palette_live[i] = profi_default_palette16[i];
+// The guest's 16 colours, set from outside the guest (a snapshot load, a reset). While
+// the menu owns the pair palette, profi_palette_live holds the MENU's colours and the
+// guest's live in profi_palette_ui_saved — restoreUiDS80Palette() copies that back on
+// the way out, so a write to the live array here would be undone by the menu's exit:
+// a slot loaded from the menu over a DS80 screen came back with the PREVIOUS palette.
+void VIDEO::setGuestPalette16(const uint32_t rgb888[16]) {
+    uint32_t* dst = profi_palette_ui_saved_valid ? profi_palette_ui_saved : profi_palette_live;
+    for (int i = 0; i < 16; i++) dst[i] = rgb888[i] & 0x00FFFFFF;
     profi_palette_dirty = true; // refresh on next EndFrame if DS80 active
+}
+
+void VIDEO::getGuestPalette16(uint32_t out[16]) {
+    const uint32_t* src = profi_palette_ui_saved_valid ? profi_palette_ui_saved : profi_palette_live;
+    for (int i = 0; i < 16; i++) out[i] = src[i];
+}
+
+void VIDEO::profiPaletteReset() {
+    setGuestPalette16(profi_default_palette16);
 }
 
 void VIDEO::profiPaletteApplyPending() {
@@ -1029,6 +1052,7 @@ extern "C" bool TS_RENDER_HOT ts_render_core1_prio() {
 // gmxForceOff right below: TsConf::reset clears VConfig, so the deferred
 // EndFrame switch would run against already-rebuilt driver tables.
 void VIDEO::tsVideoForceOff() {
+    ftForceOff();                 // VDAC2 output: TsConf::reset clears VConfig below
     if (!ts_render_live) return;
     tsRenderDrain();
     const bool pair = (ts_vmode_live == TSV_TEXT);
@@ -2088,6 +2112,7 @@ void VIDEO::applyPalette() {
     // slot again (hw 2026-09-06: "picture right, colours wrong" after a palette
     // rewrite from a hotkey).
     if (ts_pal256_live) tsPalette256Flush(true);
+    if (ft_live) ftPaletteProgram();      // the FT812 RGB cube lives on the same slots
     // A packed-pair mode owns the driver's colour tables as PAIR slots, and the
     // loops above just wrote the standard 8-bit entries over every one of them:
     // graphics_set_palette() writes conv_color, which is exactly where
@@ -4539,6 +4564,7 @@ bool VIDEO::gigascreenModeIncompatible() {
     return profi_ds80_active            // Profi/Karabas DS80 512x240 (pair slots)
         || gmx_ext_live                 // Scorpion GMX 640x200x16 (pair slots)
         || ts_render_live != 0          // TS-Conf TEXT/16c/256c/NOGFX, or the TSU
+        || ft_live                      // TS-Conf VDAC2: the FT812 owns the whole framebuffer
         || bl_live;                     // Borderless: the prev-FB is laid out for the bordered row
 }
 
@@ -4874,7 +4900,8 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024) {
+    } else if (Config::arch == A_PENT || Config::arch == A_P512 || Config::arch == A_P1024 ||
+               Config::isEvoPentRaster()) {    // (ZX Evolution BaseConf / ScorpEvo: the Pentagon raster)
         tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
         tStatesScreen = TS_SCREEN_PENTAGON;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
@@ -4896,7 +4923,7 @@ void VIDEO::Reset() {
         Draw_OSD169 = MainScreen;
         Draw_OSD43 = BottomBorder;
         DrawBorder = TopBorder_Blank;
-    } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {
+    } else if (Config::arch == A_SCORP || (Config::arch == A_ATM && !Config::isEvoBase())) {
         // (ATM-Turbo: the same 224 T x 312-line raster, uncontended — Atm.h.)
         // Scorpion ZS-256 (libspectrum): 224 T/line, 69888 T/frame, paper at 14336 T
         // after INT — numerically the 48K timing set, so the 48K constants are reused
@@ -4934,6 +4961,40 @@ void VIDEO::Reset() {
         DrawBorder = TopBorder_Blank;
     }
 
+    // ZX Evolution BaseConf in the 48K / 128K / 60 Hz raster (Config::evo_raster; the
+    // Pentagon raster took the Pentagon branch above). 48K and 128K are the original
+    // machines' rasters, so they reuse those anchors (calibrated for the step=4 border
+    // geometry, which BaseConf also switches on in these rasters — video_top.v
+    // border_sync_ena = modes_raster[1]). 60 Hz is the Pentagon raster 34 lines shorter at
+    // the top: VPIX_BEG_60HZ 42 vs VPIX_BEG_PENTAGON 76 (video_sync_v.v), INT on line 0 in
+    // both, so every anchor moves 34 * 224 = 7616 T earlier. The 288-row anchor would fall
+    // before the INT (the raster has only 46 lines above the paper); it is clamped.
+    if (Config::isEvoBase() && !Config::isEvoPentRaster()) {
+        if (Config::isEvo48Raster()) {
+            tStatesPerLine = TSTATES_PER_LINE;
+            tStatesScreen = TS_SCREEN_48;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240 : TS_BORDER_360x288)
+                          : TS_BORDER_320x240;
+        } else if (Config::isEvo128Raster()) {
+            tStatesPerLine = TSTATES_PER_LINE_128;
+            tStatesScreen = TS_SCREEN_128;
+            tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_128 : TS_BORDER_360x288_128)
+                          : TS_BORDER_320x240_128;
+        } else {   // 60 Hz
+            constexpr int kEvo60Shift = 34 * TSTATES_PER_LINE_PENTAGON;
+            tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
+            tStatesScreen = TS_SCREEN_PENTAGON - kEvo60Shift;
+            const int brd = (isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
+                                          : TS_BORDER_320x240_PENTAGON) - kEvo60Shift;
+            tStatesBorder = brd > 0 ? brd : 0;
+        }
+        VsyncFinetune[0] = 0;
+        VsyncFinetune[1] = 0;
+        Draw_OSD169 = MainScreen;
+        Draw_OSD43 = BottomBorder;
+        DrawBorder = TopBorder_Blank;
+    }
+
     // Border column layout (unified for all models):
     // brdcol_cnt counts T-states (1T = 2px = 1 uint16_t in framebuffer)
     // 48K/128K: step=4 (8px per column), brdPairWrite=true
@@ -4943,7 +5004,7 @@ void VIDEO::Reset() {
     ds80_border_geom = false;
     ds80_brd_col_off = 0;
     brdcol_end = isFullBorder ? 180 : 160;  // vga.xres / 2 (T-states = half pixel count)
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf)) {
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster() || Config::isEvo60Raster())) {
         brdcol_step = 1;
         brdPairWrite = false;
         brdcol_start = 0;
@@ -4965,14 +5026,14 @@ void VIDEO::Reset() {
     if (isFullBorder && !isFullBorder240) {
         lin_end = 48;
         lin_end2 = 240;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster() || Config::isEvo60Raster()) ? 26 : 24) / 2;
     } else if (isFullBorder && isFullBorder240) {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
         // the stats overlay (y=220) fell inside the paper area → flicker.
         lin_end = 24;
         lin_end2 = 216;
-        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf) ? 26 : 24) / 2;
+        lineptr_offset = ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isTsconf || Config::isEvoPentRaster() || Config::isEvo60Raster()) ? 26 : 24) / 2;
     } else {
         // Profi centred like Pentagon (24 top / 24 bottom border): using 32/224
         // shifted the picture down 1 char row and squeezed the bottom border so
@@ -5130,16 +5191,16 @@ void VIDEO::Reset() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 2;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default: // VM_640x480_60
@@ -5155,16 +5216,16 @@ void VIDEO::Reset() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 2;
-                else if (Config::arch == A_128K) video_mode = 3;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 2;
+                else if (Config::arch == A_128K || Config::isEvo128Raster()) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SCORP || Config::arch == A_ATM) video_mode = 5;
-                else if (Config::arch == A_128K || Config::arch == A_ALF) video_mode = 6;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 5;
+                else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
             default:
@@ -5275,6 +5336,8 @@ void VIDEO::InitPrevBuffer() {
 // blExpandLine() scales it into the framebuffer when the line completes. Heap,
 // allocated only while the mode is live (blRecalc).
 bool VIDEO::bl_live = false;
+bool VIDEO::ft_live = false;
+static void ftModeSwitch(bool on);      // VDAC2 glue, end of this file
 static uint32_t* bl_stage_ptr = nullptr;
 static bool bl_line_done = false;
 // A line just completed inside this Draw call — scale it once its last columns
@@ -6245,13 +6308,23 @@ void VIDEO::tsFastMemRecalc() {
     // No overlay test: TS-Conf's bank pointers are TsConf::romPtr() flash pages or
     // plain RAM pages, neither of which is a registered overlay base — and the
     // registry itself is rarely empty (other romsets' overlays persist in it).
-    const uint8_t v = (Z80Ops::isTsconf && ts_fast_armed && ts_render_live
+    // VDAC2 output (ft_live): the beam renderer is parked for the whole frame
+    // (Draw == Blank, ts_line_t == MAX from EndFrame), so the fast path is exactly
+    // Blank there too. It used to drop to the generic accessors the moment the
+    // FT812 took the screen — on a title that never HALTs (R-Type: 14 MHz, busy
+    // the whole frame) that alone put the emulated frame over its budget.
+    // ATM-Turbo / ZX-Evo in a whole-line mode (EGA / 640x200 / text, gmx_ext_live):
+    // the same shape — Atm::remap makes every window a plain pointer page, the
+    // machine is uncontended, no overlays or DivMMC; ROM windows and the Evo font
+    // RAM are the write gate g_atm_ro, which sends a write to the cold path.
+    const uint8_t v = (((Z80Ops::isTsconf && ((ts_fast_armed && ts_render_live) || (ft_live && ts_line_t == 0xFFFFFFFFu))) ||
+                        (Z80Ops::isAtm && ts_fast_armed && gmx_ext_live))
                        && Config::numMemReadBP == 0 && Config::numMemWriteBP == 0
                        && !g_ngs_zxdma && !MemESP::divmmc_mapped) ? 1 : 0;
     if (v != g_ts_fastmem) {
         g_ts_fastmem = v;
-        Debug::log("[TSF] fast memory path %s (render=%u armed=%u bp=%d/%d zxdma=%u divmmc=%u)", v ? "ON" : "off",
-                   ts_render_live, (unsigned)ts_fast_armed, Config::numMemReadBP, Config::numMemWriteBP,
+        Debug::log("[TSF] fast memory path %s (render=%u armed=%u ft=%u bp=%d/%d zxdma=%u divmmc=%u)", v ? "ON" : "off",
+                   ts_render_live, (unsigned)ts_fast_armed, (unsigned)ft_live, Config::numMemReadBP, Config::numMemWriteBP,
                    (unsigned)g_ngs_zxdma, (unsigned)MemESP::divmmc_mapped);
     }
 }
@@ -6569,7 +6642,7 @@ void VIDEO::blRecalc() {
     // pair scaler) and the TS-Conf whole-line renderer own their own geometry.
     const bool foreignPair = profi_ds80_active && !bl_pair_live;
     const bool want = !Config::render_border && vga.frameBuffer && blGeometryOk()
-                      && !foreignPair && !gmx_ext_live && !ts_render_live && !timex_hires_live;
+                      && !foreignPair && !gmx_ext_live && !ts_render_live && !timex_hires_live && !ft_live;
     if (want != bl_live) {
         if (want) {
             static bool warned = false;
@@ -6692,6 +6765,9 @@ void VIDEO::tsBandReplay() {
 }
 
 IRAM_ATTR void VIDEO::tsDrawTick() {
+    // ATM-Turbo / ZX-Evo whole-line modes share this clock (atmDrawTick, flash):
+    // one test per rendered line, not per access.
+    if (__builtin_expect(Z80Ops::isAtm, 0)) { atmDrawTick(); return; }
     PERF_BUCKET_SCOPE(PB_DRAWTICK);
     const uint32_t rows = vga.yres;
     TsConf::dmaLineTick();   // a queued DMA whose DMA_ACT has dropped must be complete before the guest goes on
@@ -6811,6 +6887,8 @@ void VIDEO::atmVideoModeChanged() {
 // user's chosen ZX palette is the better picture.
 static bool s_atm_pal_live = false;
 
+bool VIDEO::atmPaletteIsLive() { return s_atm_pal_live; }
+
 void VIDEO::atmPaletteChanged() {
     s_atm_pal_live = true;
     Atm::palDirty = true;
@@ -6907,12 +6985,23 @@ void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
         // generator ROM (SGEN.ROM, gb_rom_atm_font).
         const uint32_t row = line >> 3, gl = line & 7;
         const uint32_t base = 0x01C0 + row * 64;
+        // ZX-Evo: the character generator is a RAM (#BF D2), initialised from the ATM font.
+        const uint8_t* fnt = (Atm::evo && EvoBase::font) ? EvoBase::font : gb_rom_atm_font;
+        // TEXT1 (ZX-Evo mode 7, video_addrgen.v addr_at with mode_a_txt_1page): the
+        // page select of mode 6 (symbols 5 / attributes 1) becomes +#2000 inside RAM
+        // page 8, and mode 6's +#2000 half-line interleave becomes +#1000.
+        const bool one = (vm == Atm::VM_TEXT1);
+        const uint8_t* p8 = one ? MemESP::ram[8].direct() : nullptr;
+        if (one && !p8) { memset(dst, profi_pair_lookup[0][0], 320); return; }
+        const uint8_t* ts = one ? p8 : scr;              // symbols
+        const uint8_t* ta = one ? p8 + 0x2000 : alt;     // attributes
+        const uint32_t half = one ? 0x1000u : 0x2000u;   // second half of the line
         for (int cx = 0; cx < 80; cx++) {
             const uint32_t x = (uint32_t)cx >> 1;
             uint8_t sym, at;
-            if (cx & 1) { sym = scr[0x2000 + base + x]; at = alt[base + x + 1]; }
-            else        { sym = scr[base + x];          at = alt[0x2000 + base + x]; }
-            const uint8_t b  = gb_rom_atm_font[sym * 8 + gl];
+            if (cx & 1) { sym = ts[half + base + x]; at = ta[base + x + 1]; }
+            else        { sym = ts[base + x];        at = ta[half + base + x]; }
+            const uint8_t b  = fnt[sym * 8 + gl];
             const uint8_t fg = (uint8_t)(((at & 0x40) >> 3) | (at & 0x07));
             const uint8_t bg = (uint8_t)(((at & 0x80) >> 4) | ((at >> 3) & 0x07));
             *(uint32_t*)(dst + cx * 4) = atmPack4(
@@ -6924,13 +7013,44 @@ void VIDEO::atmRenderLine(uint32_t line, uint8_t* fb_row, int pad_l) {
     }
 }
 
+// The ATM/Evo whole-line tick (EndFrame arms it, tsDrawTick dispatches here). One
+// content line per raster line from tStatesScreen; the top/bottom bands stay with
+// gmxBorderFrame at EndFrame, the side pads are painted per line as in MainScreen.
+void VIDEO::atmDrawTick() {
+    do {
+        const uint32_t line = ts_row_idx;
+        const uint32_t frow = line + (uint32_t)lin_end;
+        uint8_t* fb_row = (vga.frameBuffer && frow < (uint32_t)vga.yres)
+                          ? (uint8_t*)vga.frameBuffer[frow] : nullptr;
+        if (fb_row) {
+            const int pad_l = ((int)vga.xres - 320) / 2;
+            if (pad_l > 0) {
+                uint8_t brdSlot = profi_pair_lookup[borderColor & 15][borderColor & 15];
+                memset(fb_row, brdSlot, pad_l);
+                memset(fb_row + pad_l + 320, brdSlot, (size_t)vga.xres - pad_l - 320);
+            }
+            curline = line;
+            linedraw_cnt = frow;
+            atmRenderLine(line, fb_row, pad_l);
+        }
+        ts_line_t += tStatesPerLine << ESPectrum::multiplicator;
+        if (++ts_row_idx >= 200) {
+            linedraw_cnt = lin_end2;
+            ts_line_t = 0xFFFFFFFFu;
+            Draw = &Blank;
+            Draw_Opcode = &Blank_Opcode;
+            return;
+        }
+    } while (CPU::tstates >= ts_line_t);
+}
+
 int VIDEO::gmxTopBandRows() { return (gmx_ext_live || ts_render_live) ? (int)lin_end : 0; }
 
 // True while a whole-line renderer owns the content rows and the per-T-state
 // border machine is parked (Scorpion GMX 640x200, every TS-Conf non-ZX mode):
 // the top/bottom bands are painted frame-granularly by gmxBorderFrame and their
 // height is lin_end — which can be ZERO, unlike the border machine's 24/48.
-bool VIDEO::bandBorderMode() { return gmx_ext_live || ts_render_live || bl_live; }
+bool VIDEO::bandBorderMode() { return gmx_ext_live || ts_render_live || bl_live || ft_live; }
 
 // Profi/Karabas DS80 geometry is live: the border machine runs (unlike the
 // modes above) but its top band is lin_end = 24 rows at 720x576 and NONE at
@@ -7031,6 +7151,18 @@ void VIDEO::tsVideoApplyPending() {
     TsConf::tsuSeen = 0;
     const bool wantTsu = (seen & 0xE0) != 0 && !(vc & 0x10);
     const uint8_t wantRender = (want != TSV_ZX || wantTsu || vmMixed) ? 1 : 0;
+    // ── VDAC2: FT_EN (VConfig b2) hands the output to the FT812 ──────────────
+    // On the hardware vdac2_msel switches the video PINS to the board, so what
+    // the TS video controller renders is irrelevant while it is set. The FT
+    // renderer owns every framebuffer row; the whole-line renderer stays off.
+    {
+        const bool wantFt = Ft812::enabled && (vc & 0x04);
+        if (wantFt != ft_live) {
+            if (wantFt) { if (ts_render_live) tsVideoForceOff(); ftModeSwitch(true); }
+            else ftModeSwitch(false);
+        }
+        if (ft_live) return;
+    }
     if (want == ts_vmode_live && wantTsu == ts_tsu_live && wantRender == ts_render_live &&
         (!wantRender || rres == ts_rres_live)) return;
 
@@ -8179,6 +8311,11 @@ IRAM_ATTR void VIDEO::EndFrame() {
         if (timex_hires_pending_on || timex_hires_pending_off) timexHiresApplyPending();
         // ── TS-Conf VConfig mode/geometry switch — same vblank-only rule ──
         if (Z80Ops::isTsconf) tsVideoApplyPending();
+        // ── TS-Conf VDAC2: the chip's display frame (swap, INT_SWAP, redraws) ──
+        if (Ft812::enabled) ftFrameTick();
+#if FT812_TRACE
+        if (Ft812::enabled) ftTraceTick();
+#endif
         // ── Borderless scaler on/off — after the three above, which decide whether
         // the standard renderer owns the framebuffer at all this frame.
         blRecalc();
@@ -8280,6 +8417,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
         c1d_accum += ts_dma_c1_us; c1wd_accum += ts_c1_wait_dma_us; if (ts_c1_wait_dma_us > c1wd_max) c1wd_max = ts_c1_wait_dma_us;
         ts_render_us = ts_tsu_us = ts_dma_us = ts_dma_words = 0;
         ts_c1_us = ts_c1_wait_us = ts_c1_jobs = ts_c1_waits = ts_dma_c1_us = ts_c1_wait_dma_us = 0;
+        PerfFdc::frame();
         if (++port_log_frame >= 60) {
             uint64_t now = time_us_64();
             float fps = wall_t0 ? (60.0f * 1000000.0f / (float)(now - wall_t0)) : 0.0f;
@@ -8303,6 +8441,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
                 (unsigned)(g_brd_max ? g_brd_min : 0), (unsigned)g_brd_max, (unsigned)g_brd_delta, (unsigned)(CPU::statesInFrame ? g_int_last_t % CPU::statesInFrame : 0),
                 (unsigned)(CPU::statesInFrame ? g_halt_t % CPU::statesInFrame : 0));
             g_frm_int_miss = 0; g_brd_min = 0xFFFFFFFF; g_brd_max = 0;
+            PerfFdc::dump();
             // Border landing position, its own line for the same reason. Both
             // numbers are fb columns (fb byte = 2*col) of border changes inside
             // the top band, so they are directly comparable with a screenshot
@@ -8627,6 +8766,11 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         Draw = VIDEO::snow_toggle ? &Blank_Snow : &Blank;
         Draw_Opcode = VIDEO::snow_toggle ? &Blank_Snow_Opcode : &Blank_Opcode;
         ts_fast_armed = ts_render_live != 0;   // fast path == Blank on a skipped frame
+    } else if (ft_live) {
+        // VDAC2: nothing of the TS-Conf picture reaches the screen — the FT812
+        // frame is painted by core1 (ftRenderPump), so the beam renderer is parked.
+        Draw = &Blank;
+        Draw_Opcode = &Blank_Opcode;
     } else if (ts_render_live) {
         // TS-Conf whole-line renderer: T-state counter instead of the beam machine.
         // Scaled to the CPU clock: at ZCLK 14 MHz a line is 224<<2 T of CPU::tstates,
@@ -8681,6 +8825,16 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         Draw = &TsDraw;
         Draw_Opcode = &TsDraw_Opcode;
         ts_fast_armed = true;
+    } else if (gmx_ext_live && Z80Ops::isAtm) {
+        // ATM-Turbo / ZX-Evo whole-line mode: a T-state counter renders each content
+        // line at its raster time (atmDrawTick) instead of MainScreen's column
+        // machinery on every guest access, and lets the fast memory path run.
+        // Scaled to the CPU clock like TS-Conf's (14 MHz Evo: 224<<2 T a line).
+        ts_line_t = (uint32_t)tStatesScreen << ESPectrum::multiplicator;
+        ts_row_idx = 0;
+        Draw = &TsDraw;
+        Draw_Opcode = &TsDraw_Opcode;
+        ts_fast_armed = true;
     } else if (VIDEO::snow_toggle
         && !(Config::timex_video && VIDEO::timex_mode != 0)
     ) {
@@ -8712,6 +8866,14 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
         DrawBorder = &Border_Blank;
         lastBrdTstate = tStatesBorder;
         brdChange = false;
+    } else if (ft_live) {
+        // VDAC2: the FT812 frame covers every row, border included; a border
+        // repaint request (menu exit, notify expiry) becomes a re-render.
+        brdGigascreenChange = false;
+        DrawBorder = &Border_Blank;
+        lastBrdTstate = tStatesBorder;
+        brdChange = false;
+        if (brdnextframe) { brdnextframe = false; Ft812::renderRequest(); }
     } else if (gmx_ext_live || ts_render_live) {
         // GMX 640x200 / TS-Conf non-ZX modes: the per-T-state border machine
         // stays parked (its writers would put raw ZX indices into a pair-slot
@@ -8848,6 +9010,9 @@ extern uint16_t g_brd_col_v[], g_brd_col_n[]; extern uint8_t g_brd_col_used;
 void VIDEO::RedrawPausedFrame() {
 
     if (!vga.frameBuffer) return;
+    // VDAC2: the picture is the FT812's last swapped list, not the ZX VRAM —
+    // re-render it (core1) and wait; there is no beam walk to do.
+    if (ft_live) { ftRedrawSync(); return; }
 
     // A TS-Conf palette change still waiting for the beam has to be applied
     // NOW: the beam rule is meaningless once the machine is stopped — nothing
@@ -9640,3 +9805,1132 @@ void SaveRectT::restore_ram(void* p, size_t sz) {
     f_read(fp, p, sz, &br);
     f_close(fp);
 }
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// TS-Conf VDAC2 (FT812) output — the display side of src/Ft812*.cpp.
+//
+// VConfig b2 (FT_EN) switches the ZX-Evo's video pins to the VDAC2 board, so the
+// FT812's own frame is the whole picture. Here: core0 paces the chip's frames
+// from EndFrame (ftFrameTick: REG_FRAMES, a pending DLSWAP taken when the
+// renderer is idle, INT_SWAP raised, a render requested); core1 renders the
+// swapped list from render_core (ftRenderPump) — a BAND of fb rows per call so
+// GS::pump keeps its slices — through Ft812Render's band rasterizer, quantizes
+// the ARGB band onto a fixed RGB cube programmed over the ts256 slot pool (the
+// slots the UI block and the HDMI data-island words leave free) with a 4x4
+// ordered dither, and writes the rows in the ISR's x^2 byte order, skipping the
+// F8 stats / volume rect and the notify banner (the blPutRow carve rule).
+//
+// Geometry: the FT screen (HSIZE x VSIZE, 1024x768 for ZUMA, 640x480 for the
+// TSLib examples) is scaled uniformly to fit the framebuffer and centred —
+// 1024x768 → 320x240 is exactly 5/16, 640x480 → 320x240 exactly 1/2; a 360x288
+// fb shows 360x270 with 9-row black bands. Every primitive is sampled at output
+// pixel centres (Ft812Render), so the picture is the chip's own frame decimated,
+// not the ZX-Evo's 4:3 pixels.
+//
+// The glue block (palette LUT, row scratch, the SRAM band buffer) is claimed on
+// the first entry into FT mode and kept for the session: freeing it would race
+// core1's band in flight, and a TS-Conf title that used the board once will use
+// it again.
+// ═════════════════════════════════════════════════════════════════════════════
+#define FT_VSTACK_BYTES 4096   // core1's stack for TJpgDec (see ftCallOnStack)
+#define FT_VQ_BYTES     3072   // the MJPEG sink's per-pixel tables (FtGlue::vq)
+extern "C" volatile bool g_ft_c1_live = false;   // core1 pump gate (main.cpp render_core)
+static volatile bool ft_c1_busy = false;         // core1 inside ftRenderPump's band
+// core1 must not touch the framebuffer: the OSD owns it (VIDEO::ftHold). Set by the
+// menu/dialog entry points, cleared by the next emulated frame (ftFrameTick) or a
+// paused repaint (ftRedrawSync) — the OSD paths have no common exit to clear it.
+// Without it a video frame already posted to core1 was flipped over the menu
+// (hw 2026-10-03: the menu body came up under a frame of the playing video).
+static volatile bool ft_c1_hold = false;
+namespace {
+struct FtGlue {
+    Ft812::PalLut lut;
+    uint32_t* band;
+    int       bandRows;
+    alignas(4) uint8_t rowTmp[384];   // one output row of palette indices (natural x); word-aligned for ftPutRow
+    alignas(4) uint8_t palScratch[4096];   // SRAM copies of PALETTE_SOURCE tables, expanded to 256 ARGB8888 words each — 4 slots (RenderCfg::palScratch)
+    // the frame in flight (core1)
+    bool      active;
+    bool      blank;              // display off / no usable timing: black frame
+    int       nextRow;            // next fb row to produce
+    int       ox0, oy0, outW, outH;
+    Ft812::RenderCfg cfg;
+    Ft812::MemView   mv;
+    // Adaptive palette (Config::tsconf_vdac2_adapt): core1 builds lut/col at a frame
+    // end and raises palPending; core0 (ftFrameTick) programs the slots, drops the
+    // flag and asks for the frame again, so what is on screen is re-rendered through
+    // the new map. core1 takes NO frame while palPending is up — a frame begun then
+    // would be quantized for a palette the hardware does not hold yet. adaptOn is
+    // core0's copy of the config, read by core1 at its frame start.
+    // Entry i of the adaptive palette lives in hardware slot ts256_pool[i] — NOT in
+    // lut.slot[i], which is sized for the cube (180 of 184) and answers 0 past it.
+    Ft812::AdaptPal* ap;
+    uint8_t*  alut;               // SRAM copy of ap->lut (4 KB, best effort): the map is read per pixel, and AdaptPal is in PSRAM
+    // The renderer's pre-scaled bitmap cache (Ft812Render.h): one PSRAM block,
+    // taken with the glue; nullptr = every cell is blitted from its source.
+    Ft812::MipCache* mip;
+    uint32_t  mipBytes;
+    void*     walk;               // the renderer's band-walk state (RenderCfg::scratch, ~1.3 KB SRAM): off core1's stack
+    volatile bool palPending;     // core1 -> core0: col[cur^1] wants programming
+    volatile bool adaptOn;        // the mode in force (core0 writes, core1 reads at frame start)
+    bool      adaptFrame;         // this frame is being rendered through the adaptive map
+    bool      adaptFirst;         // ...and no map exists yet: histogram only, black rows
+    bool      vBins;              // this video frame goes to vback as 16-bit YCC bins (adaptive palette)
+    uint32_t  rebuilds, sinceBuild;
+    // CMD_PLAYVIDEO direct path (core1, see ftVidBegin): TJpgDec's own stack, the
+    // decoded frame's size and the fb rectangle it lands in.
+    // vstack and vq are carved out of `band` (see ftGlueEnsure): no display-list
+    // frame is rendered while a video plays, so the band is idle exactly then.
+    uint8_t*  vstack;
+    bool      vbackTried, vqStale;
+    uint8_t*  vback;              // the frame being decoded (PSRAM, 2*xres*yres): palette indices, or with the adaptive
+                                  // palette the 16-bit YCC bins (vBins), mapped through the frame's OWN palette by ftVidFlip
+    bool      vidPrimed;          // the letterbox was blacked for this geometry
+    int       vW, vH, vx0, vy0, vdW, vdH;
+    // Per-pixel tables for the MCU sink (index = value + 256, so the clip is in the
+    // table). Cube mode: 3 x 1024 = the cube level of R/G/B pre-multiplied by its
+    // weight in the cube index. Adaptive mode: the first 1024 = the clipped value
+    // >> 4 (the 4-4-4 bin). One set at a time (vqAdapt), rebuilt by ftVidBegin.
+    uint8_t*  vq;
+    bool      vqAdapt;
+    uint8_t   vaSa, vaSb, vaUy, vaUb, vaUr;   // the YCC bin layout's shifts and bin widths (copied by ftVidTables)
+    // The picture between the decoder and the framebuffer is kept at the
+    // INTERMEDIATE size vIW x vIH = min(decoded, target) per axis: the sink
+    // converts each of ITS pixels once (downscaling when the source is larger),
+    // the flip upscales when the source is smaller. One MCU row is collected in
+    // vrow (SRAM, the tail of the band) and goes to vback as whole rows.
+    int       vIW, vIH;
+    uint32_t  vInvX, vInvY;       // Q16 intermediate pixels per decoded pixel (the reciprocal of vStepX/Y, for ftVidFirstQ)
+    uint32_t  vFStepX, vFStepY;   // Q16 intermediate pixels per fb pixel (<= 1.0)
+    uint32_t  vDStepX, vDStepY;   // Q16 decoded pixels per fb pixel (the RGB block path paints the fb directly)
+    uint8_t*  vrow; uint32_t vrowBytes;
+    bool      vrowOK;             // this MCU row fits vrow
+    uint32_t  vrowFy0, vrowFy1;   // intermediate rows it holds
+    bool      vDirect;            // this frame was painted straight into the fb (the RGB block path)
+    uint32_t  vSinkUs, vCopyUs, vFlipUs;   // trace: convert / rows to the back buffer / flip, since the last meter line
+    bool      vHalf;              // this playback decodes at half size (the full-size decode did not keep the frame rate)
+    uint8_t   vSlow;              // consecutive full-size frames that took longer than a frame period
+    uint32_t  vUsPerFrame;
+    uint32_t  vStepX, vStepY;     // Q16 decoded pixels per fb pixel
+    uint32_t  frames, bandsUs;    // frames finished by core1, core1 time inside the band pump
+    uint32_t  frameUs, frameUsMax;   // wall time from a frame's first band to its last (the guest's DLSWAP wait)
+    uint64_t  frameT0;
+    // trace: the band pump split — DL walk + blits (ft812RenderBand), the quantizer
+    // (incl. the adaptive histogram), the fb row writes. Wall us, ISR included.
+    uint32_t  walkUs, quantUs, putUs;
+    uint32_t  histUs;             // ...of which the adaptive histogram (accumulate + the per-frame clear)
+    bool      adaptHist;          // this display-list frame feeds the histogram (every 8th; the rebuild rule only looks then)
+};
+FtGlue* ftg = nullptr;
+}
+
+static void ftVideoSinkAttach();   // CMD_PLAYVIDEO direct path, below
+static bool ftGlueEnsure() {
+    if (ftg) return true;
+    FtGlue* g = (FtGlue*)tryMalloc(sizeof(FtGlue));
+    if (!g) { Debug::log("[FT812] no heap for the glue (%u B) - VDAC2 output stays off", (unsigned)sizeof(FtGlue)); return false; }
+    memset(g, 0, sizeof(FtGlue));
+    // The band: 8 rows of ARGB8888 (11.5 KB at 360 wide) in SRAM — halved until it fits.
+    const int w = (int)VIDEO::vga.xres;
+    for (int rows = 8; rows >= 2; rows >>= 1) {
+        g->band = (uint32_t*)tryMalloc((size_t)w * rows * 4);
+        if (g->band) { g->bandRows = rows; break; }
+    }
+    if (!g->band) { Debug::log("[FT812] no heap for the band buffer - VDAC2 output stays off"); free(g); return false; }
+    g->walk = tryMalloc(Ft812::ft812RenderScratchBytes());
+    if (!g->walk) { Debug::log("[FT812] no heap for the render scratch (%u B) - VDAC2 output stays off", (unsigned)Ft812::ft812RenderScratchBytes()); free(g->band); free(g); return false; }
+    // The MJPEG player's stack (TJpgDec on core1, FT_VSTACK_BYTES) and its per-pixel
+    // tables (4 KB) are the band buffer itself: a separate 8 KB did not fit beside
+    // the adaptive palette at 576p + NeoGS (hw 2026-10-01: "no heap for the video
+    // decoder's stack", no picture at all). A band too small for both = no video.
+    if ((size_t)w * g->bandRows * 4 >= FT_VSTACK_BYTES + FT_VQ_BYTES + 1024) {
+        g->vstack = (uint8_t*)g->band;
+        g->vq = (uint8_t*)g->band + FT_VSTACK_BYTES;
+        g->vrow = g->vq + FT_VQ_BYTES;
+        g->vrowBytes = (uint32_t)((size_t)w * g->bandRows * 4 - FT_VSTACK_BYTES - FT_VQ_BYTES);
+    } else Debug::log("[FT812] band of %d rows is too small for the MJPEG player (CMD_PLAYVIDEO shows nothing)", g->bandRows);
+    g->vqStale = true;
+    // The pre-scaled bitmap cache: PSRAM only (it is read per pixel by core1 and is
+    // large; a heap placement would be both slow to take and fatal to the heap).
+    // 256 KB covers R-Type's working set (its 614 KB tile layer scaled 2:1 is
+    // 154 KB) with room; smaller pools still serve the sprites.
+    for (size_t bytes = Ft812::MIP_POOL_BYTES; bytes >= (64u << 10) && !g->mip; bytes >>= 1) {
+        void* blk = Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!blk) continue;
+        if ((uintptr_t)blk < 0x11000000u) { Buffer::pfree(blk); break; }      // landed on the heap: no cache
+        g->mip = Ft812::ft812MipInit(blk, bytes);
+        if (!g->mip) { Buffer::pfree(blk); break; }
+        g->mipBytes = (uint32_t)bytes;
+    }
+    if (!g->mip) Debug::log("[FT812] no PSRAM for the bitmap cache - cells are blitted from their source");
+    ftg = g;
+    ftVideoSinkAttach();
+    Debug::log("[FT812] glue %u B + band %d rows x %d, bitmap cache %u KB", (unsigned)sizeof(FtGlue), g->bandRows, w, (unsigned)(g->mipBytes >> 10));
+    return true;
+}
+
+static void ftProgramSlot(uint8_t slot, uint32_t rgb) {
+    const uint32_t col = paletteFinal(rgb);
+    graphics_set_palette(slot, col);
+    // Arbitrary colours, not the flat ZX 16: the VGA Bayer path is what they
+    // want (the same call the ts256 remap makes).
+    if (!Config::vga_dither) vga_set_palette_entry_solid(slot, col);
+}
+
+// Adaptive mode: ~17 KB, PSRAM first since 2026-10-01 (it never fit the heap beside .ftovl);
+// without it the cube stays. Allocated on first use, kept for the session.
+static bool ftAdaptEnsure() {
+    FtGlue& g = *ftg;
+    if (g.ap) return true;
+    // PSRAM first (test build, 2026-10-01): with the .ftovl window resident a
+    // VDAC2 session at 576p + NeoGS has ~12 KB of heap left, largest block 4 KB,
+    // and the 17 KB this wants never fitted. The histogram is sampled (1/2 of the
+    // rows on the display-list path, 1/4 of the pixels in the MJPEG sink) so the
+    // per-pixel PSRAM traffic is mostly the 4 KB lut, which the XIP cache keeps.
+    g.ap = (Ft812::AdaptPal*)Buffer::palloc(sizeof(Ft812::AdaptPal), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!g.ap) { Debug::log("[FT812] no memory for the adaptive palette (%u B) - fixed cube", (unsigned)sizeof(Ft812::AdaptPal)); return false; }
+    memset(g.ap, 0, sizeof(Ft812::AdaptPal));
+    // The 4 KB bin -> entry map is read once per output pixel: an SRAM copy when
+    // the heap has it (it did not at 576p + NeoGS + .ftovl on 2026-10-01; then the
+    // PSRAM map is read in place, as before).
+    g.alut = (uint8_t*)tryMalloc(4096);
+    if (g.alut) memset(g.alut, 0xFF, 4096);
+    Debug::log("[FT812] adaptive palette: %u B @%08X, map copy %s", (unsigned)sizeof(Ft812::AdaptPal), (unsigned)(uintptr_t)g.ap, g.alut ? "in SRAM" : "none (PSRAM map)");
+    return true;
+}
+
+// The MJPEG sink's per-pixel tables (FtGlue::vq), from the cube in g.lut.
+static void ftVidTables(FtGlue& g, bool adapt) {
+    if (!g.vq) return;
+    g.vqAdapt = adapt;
+    const int mul[3] = { g.lut.gl * g.lut.bl, g.lut.bl, 1 };
+    for (int i = 0; i < 1024; i++) {
+        const int v = i - 256;
+        if (adapt) {                                          // the YCC layout: the level of Y / Cb / Cr on its axis
+            const Ft812::AdaptSpace& sp = Ft812::ft812AdaptSpace(Ft812::ADAPT_YCC633);
+            g.vaSa = sp.sa; g.vaSb = sp.sb; g.vaUy = sp.ua; g.vaUb = sp.ub; g.vaUr = sp.uc;
+            const int c8 = v < 0 ? 0 : v > 255 ? 255 : v;
+            const int un[3] = { sp.ua, sp.ub, sp.uc }, of[3] = { sp.oa, sp.ob, sp.oc }, nn[3] = { sp.na, sp.nb, sp.nc };
+            for (int ch = 0; ch < 3; ch++) {
+                int lv = (c8 + un[ch] / 2 - of[ch]) / un[ch];     // the bin whose centre (k*unit + offset) is nearest
+                if (lv > nn[ch] - 1) lv = nn[ch] - 1;
+                if (lv < 0) lv = 0;                           // below bin 0's centre (offset 64 on chroma)
+                g.vq[ch * 1024 + i] = (uint8_t)lv;
+            }
+            continue;
+        }
+        const int c = v < 0 ? 0 : v > 319 ? 319 : v;          // PalLut::lut covers value + dither, 0..319
+        for (int ch = 0; ch < 3; ch++) g.vq[ch * 1024 + i] = (uint8_t)(g.lut.lut[ch][c] * mul[ch]);
+    }
+}
+
+void VIDEO::ftPaletteProgram() {
+    if (!ftg) return;
+    FtGlue& g = *ftg;
+    ts256PoolInit();
+    ft812PalLutInit(g.lut, ts256_pool_n, ts256_pool);
+    g.vqStale = true;                     // the MJPEG sink rebuilds its tables on core1 (they live in the band)
+    const bool adapt = Config::tsconf_vdac2_adapt && ftAdaptEnsure();
+    g.adaptOn = adapt;
+    if (adapt && g.ap->built) {
+        // the palette core1 last built, on the slots the map addresses
+        for (int i = 0; i < g.ap->n; i++) ftProgramSlot(ts256_pool[i], g.ap->col[i]);
+    } else {
+        if (g.ap) g.ap->built = false;        // a fresh histogram decides the first adaptive frame
+        const int n = g.lut.rl * g.lut.gl * g.lut.bl;
+        for (int i = 0; i < n; i++) ftProgramSlot(g.lut.slot[i], ft812PalLutColor(g.lut, i));
+    }
+    g.palPending = false;
+    Ft812::renderRequest();
+}
+
+static void ftModeSwitch(bool on) {
+    if (on) {
+        if (!ftGlueEnsure()) return;
+        VIDEO::ft_live = true;
+        if (VIDEO::vga.frameBuffer)
+            for (int y = 0; y < (int)VIDEO::vga.yres; y++)
+                if (VIDEO::vga.frameBuffer[y]) memset(VIDEO::vga.frameBuffer[y], 0, VIDEO::vga.xres);
+        VIDEO::DrawBorder = &VIDEO::Border_Blank;
+        VIDEO::brdChange = false;
+        VIDEO::ftPaletteProgram();
+        __dmb();
+        g_ft_c1_live = true;
+#if FT812_TRACE
+        {   // what one PSRAM texel fetch costs core0 right now (core1 pays about the same on the shared XIP port)
+            const uint8_t* rg = Ft812::ramG();
+            if (rg) {
+                volatile uint32_t sink = 0;
+                const uint64_t t0 = time_us_64();
+                for (uint32_t i = 0; i < 4096; i++) sink += rg[(i * 4104u) & (Ft812::RAM_G_SIZE - 1)];   // a fresh 8 B line every time
+                const uint64_t t1 = time_us_64();
+                for (uint32_t i = 0; i < 4096; i++) sink += rg[0x80000 + i * 8];                          // sequential lines
+                const uint64_t t2 = time_us_64();
+                for (uint32_t i = 0; i < 4096; i++) sink += rg[0x80000 + i];                              // 8 hits per fill
+                const uint64_t t3 = time_us_64();
+                // ...and one display-list word as the band walk reads it (the swap
+                // shadow in PSRAM, sequential): is the walk's residue the FETCH?
+                const uint32_t* dl = Ft812::dlShadow();
+                if (dl) for (uint32_t i = 0; i < 2048; i++) sink += dl[i];
+                const uint64_t t4 = time_us_64();
+                Debug::log("[FT812] xip: random line %u ns, sequential line %u ns, sequential byte %u ns, dl word %u ns",
+                           (unsigned)((t1 - t0) * 1000 / 4096), (unsigned)((t2 - t1) * 1000 / 4096), (unsigned)((t3 - t2) * 1000 / 4096),
+                           (unsigned)((t4 - t3) * 1000 / 2048));
+            }
+        }
+#endif
+        Debug::log("[FT812] VDAC2 output ON: %ux%u -> fb %ux%u (pool %u slots, %ux%ux%u cube)",
+                   (unsigned)Ft812::hsize(), (unsigned)Ft812::vsize(), (unsigned)VIDEO::vga.xres, (unsigned)VIDEO::vga.yres,
+                   (unsigned)ts256_pool_n, ftg->lut.rl, ftg->lut.gl, ftg->lut.bl);
+    } else {
+        g_ft_c1_live = false;
+        __dmb();
+        // core1 checks the gate at the START of a band (after raising ft_c1_busy):
+        // either it saw the gate down and left, or it is inside one band — wait it out.
+        const uint64_t t0 = time_us_64();
+        // (a video frame being decoded is the long case: tens of ms, on g.vstack)
+        while (ft_c1_busy && time_us_64() - t0 < 500000) tight_loop_contents();
+        if (ftg) {
+            ftg->active = false;
+            if (ftg->vback) { Buffer::pfree(ftg->vback); ftg->vback = nullptr; }   // core1 is out of the pump
+            ftg->vbackTried = false;
+        }
+        Ft812::renderDone();          // whatever frame was in flight is abandoned
+        VIDEO::ft_live = false;
+        VIDEO::tsFastMemRecalc();     // the fast guest-memory path was held up by ft_live
+        VIDEO::applyPalette();        // hand the slots back (standard ramp + ZX 16)
+        if (VIDEO::vga.frameBuffer)
+            for (int y = 0; y < (int)VIDEO::vga.yres; y++)
+                if (VIDEO::vga.frameBuffer[y]) memset(VIDEO::vga.frameBuffer[y], 0, VIDEO::vga.xres);
+        VIDEO::brdChange = true;
+        VIDEO::brdnextframe = true;
+        VIDEO::tsCramDirty = true;
+        Debug::log("[FT812] VDAC2 output off (%lu frames rendered)", (unsigned long)(ftg ? ftg->frames : 0));
+    }
+}
+
+void VIDEO::ftForceOff() { if (ft_live) ftModeSwitch(false); }
+
+void VIDEO::ftFrameTick() {
+    ft_c1_hold = false;          // emulation runs again: the OSD has given the screen back
+    // CMD_PLAYVIDEO: parse the media FIFO / decode one frame, here on core0 once
+    // per frame. It ran from the core1 render pump first and core1 died on the
+    // first frame (hw 2026-09-28, black screen): core1 has a 2 KB stack, and
+    // TJpgDec's callbacks + the render path do not fit beside it.
+    Ft812::videoPump();
+    if (Ft812::videoFrameReady()) Ft812::renderRequest();
+    // The back buffer of the MJPEG player: a frame is decoded top to bottom over
+    // tens of ms, and painted straight into the framebuffer that is a visible wipe
+    // (hw 2026-10-01). PSRAM, taken here on core0 at the first playback.
+    if (ftg && !ftg->vback && !ftg->vbackTried && Ft812::videoActive()) {
+        ftg->vbackTried = true;
+        uint8_t* bb = (uint8_t*)Buffer::palloc((size_t)vga.xres * vga.yres * 2, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!bb) Debug::log("[FT812] no PSRAM for the video back buffer (%u B) - CMD_PLAYVIDEO shows nothing", (unsigned)(vga.xres * vga.yres * 2));
+        __dmb(); ftg->vback = bb;
+    }
+    Ft812::frameTick();
+    if (!ft_live) {
+        // The board is fitted but not selected for output: keep its frames moving
+        // (a swap must complete for DLSWAP to read 0 again) without drawing.
+        if (Ft812::renderTake()) Ft812::renderDone();
+        return;
+    }
+    if (brdnextframe) { brdnextframe = false; Ft812::renderRequest(); }
+    // (While a video plays core1 programs the palette itself, at the flip of the
+    // first frame made for it — see ftVidFlip.)
+    if (ftg && ftg->palPending && ftg->ap && !Ft812::videoActive()) {
+        // core1 built a new palette and is holding off (see FtGlue): program it,
+        // release the renderer and have the frame rendered AGAIN — the rows on
+        // screen were written through the previous map, and a static scene would
+        // otherwise keep them for ever. Until that render lands they show through
+        // the matched palette (ft812AdaptBuild), i.e. approximately right.
+        Ft812::AdaptPal& ap = *ftg->ap;
+        for (int i = 0; i < ap.n; i++) ftProgramSlot(ts256_pool[i], ap.col[i]);
+        __dmb();
+        ftg->palPending = false;
+        Ft812::renderRequest();
+    }
+}
+
+// core0: stop core1 drawing FT812 output (display list or video) and wait for the
+// band / decode it may be inside — the Dekker pair with ftRenderPump's busy flag.
+void VIDEO::ftHold() {
+    if (!ftg || !g_ft_c1_live) return;
+    ft_c1_hold = true;
+    __dmb();
+    const uint64_t t0 = time_us_64();
+    while (ft_c1_busy && time_us_64() - t0 < 200000) tight_loop_contents();
+}
+
+void VIDEO::ftRedrawSync() {
+    if (!ft_live || !g_ft_c1_live) return;
+    ft_c1_hold = false;
+    __dmb();
+    Ft812::renderRequest();
+    const uint64_t t0 = time_us_64();
+    while (Ft812::renderPending() && time_us_64() - t0 < 200000) tight_loop_contents();
+}
+
+// ── core1 ────────────────────────────────────────────────────────────────────
+static const uint8_t* ftMemView(uint32_t addr, uint32_t* avail) { return Ft812::memView(addr, avail); }
+
+static void ftFrameBegin() {
+    FtGlue& g = *ftg;
+    const int xres = (int)VIDEO::vga.xres, yres = (int)VIDEO::vga.yres;
+    const int hs = Ft812::hsize(), vs = Ft812::vsize();
+    g.active = true; g.nextRow = 0;
+    g.frameT0 = time_us_64();
+    g.adaptFrame = g.adaptOn && g.ap;
+    g.adaptFirst = g.adaptFrame && (!g.ap->built || g.ap->space != Ft812::ADAPT_RGB444);   // a map left by the MJPEG path is in other bins
+    // The histogram is fed on every 8th frame only: the rebuild rule (ftAdaptFrameEnd)
+    // does not look before `sinceBuild >= 8`, and feeding it costs a 16 KB PSRAM
+    // clear plus ~19k read-modify-writes of PSRAM bins per frame — inside `quant`
+    // on every frame of R-Type (hw 2026-10-06, mip8). The skipped frames still
+    // count towards sinceBuild; the first map (adaptFirst) is built at once.
+    if (g.adaptFrame) {
+        g.adaptHist = g.adaptFirst || (g.sinceBuild % 8) == 7;
+        if (g.adaptHist) ft812AdaptClear(*g.ap, Ft812::ADAPT_RGB444); else g.sinceBuild++;
+    } else g.adaptHist = false;
+    g.blank = !Ft812::displayOn() || hs < 16 || vs < 16;
+    if (g.blank) { g.outW = g.outH = 0; g.ox0 = g.oy0 = 0; return; }
+    uint32_t s = (uint32_t)(((uint64_t)xres << 16) / hs);
+    const uint32_t sy = (uint32_t)(((uint64_t)yres << 16) / vs);
+    if (sy < s) s = sy;
+    int outW = (int)(((uint64_t)hs * s) >> 16), outH = (int)(((uint64_t)vs * s) >> 16);
+    if (outW > xres) outW = xres;
+    if (outH > yres) outH = yres;
+    if (outW < 1 || outH < 1) { g.blank = true; g.outW = g.outH = 0; return; }
+    g.outW = outW; g.outH = outH;
+    g.ox0 = (xres - outW) / 2; g.oy0 = (yres - outH) / 2;
+    g.mv.view = ftMemView; g.mv.macro[0] = Ft812::macroReg(0); g.mv.macro[1] = Ft812::macroReg(1);
+    g.mv.pageGen = Ft812::ramgPageGen();
+    g.mv.ramg = Ft812::ramgPtr(); g.mv.ramgBytes = Ft812::RAM_G_SIZE;
+    g.cfg.mip = g.mip;
+    g.cfg.scratch = g.walk;
+    // A playing video replaces the guest's list with the engine's one-bitmap list
+    const uint32_t* vdl = Ft812::videoActive() ? Ft812::videoDl() : nullptr;
+    g.mv.dl = vdl ? vdl : Ft812::dlShadow();
+    g.mv.gen = Ft812::ramgGen;
+    g.cfg.mem = &g.mv; g.cfg.hsize = hs; g.cfg.vsize = vs; g.cfg.outW = outW; g.cfg.outH = outH;
+    g.cfg.palScratch = g.palScratch; g.cfg.palScratchSize = sizeof(g.palScratch);
+    g.cfg.clockUs = FT812_TRACE ? Ft812::clockUs : nullptr;
+    g.cfg.smooth = Config::tsconf_vdac2_smooth;
+    g.cfg.sxQ16 = (uint32_t)(((uint64_t)outW << 16) / hs);
+    g.cfg.syQ16 = (uint32_t)(((uint64_t)outH << 16) / vs);
+    g.cfg.invXQ16 = (uint32_t)(((uint64_t)hs << 16) / outW);
+    g.cfg.invYQ16 = (uint32_t)(((uint64_t)vs << 16) / outH);
+}
+
+// One fb row from a row of palette indices (natural x order, g.outW wide, or
+// nullptr = black), in the ISR's x^2 byte order, leaving the overlay rectangles alone.
+#if FT812_RENDER_IN_RAM
+#define FT_GLUE_HOT __not_in_flash("ft812")
+#else
+#define FT_GLUE_HOT
+#endif
+// The overlay rectangles crossing fb row `row` (x ranges), which no VDAC2 writer may touch.
+#if VDAC2_CODE_OVERLAY
+#define FT_VID_HOT FT_OVL_CODE   // the MJPEG player's per-pixel path, with TJpgDec's (tjpgdcnf.h), in .ftovl
+#else
+#define FT_VID_HOT FT_GLUE_HOT
+#endif
+static FT_VID_HOT int ftCarve(int row, int cx[2][2]) {
+    const int xres = (int)VIDEO::vga.xres;
+    int n = 0;
+    const int cy0 = ((int)VIDEO::vga.yres >= 288) ? 268 : 220;
+    if ((VIDEO::OSD & 0x07) && row >= cy0 && row < cy0 + 16) {   // F8 stats / F9-F10 volume box
+        cx[n][0] = (xres >= 360) ? 188 : 168; cx[n][1] = cx[n][0] + 24 * 6; n++;
+    }
+    if (row >= ts_notice_y0 && row < ts_notice_y1) {              // OSD::notify banner (carve path)
+        cx[n][0] = ts_notice_x0; cx[n][1] = ts_notice_x1; n++;
+    }
+    return n;
+}
+
+// n palette indices at fb (row, x..), same byte order and carve rules as ftPutRow.
+__attribute__((optimize("O2", "no-unroll-loops")))
+static FT_VID_HOT void ftPutSpan(int row, int x, const uint8_t* idx, int cnt) {
+    if ((unsigned)row >= (unsigned)VIDEO::vga.yres) return;
+    uint8_t* dst = VIDEO::vga.frameBuffer[row];
+    if (!dst) return;
+    const int xres = (int)VIDEO::vga.xres;
+    int cx[2][2]; const int n = ftCarve(row, cx);
+    for (int i = 0; i < cnt; i++) {
+        const int xx = x + i;
+        if ((unsigned)xx >= (unsigned)xres) continue;
+        if (n) { bool skip = false; for (int k = 0; k < n; k++) if (xx >= cx[k][0] && xx < cx[k][1]) { skip = true; break; } if (skip) continue; }
+        dst[xx ^ 2] = idx[i];
+    }
+}
+
+// A row with no overlay on it and a 4-aligned picture goes a 32-bit word at a
+// time (the x^2 byte order is a 16-bit rotate of the word); the per-pixel loop
+// with its carve test remains for the two or three rows an overlay crosses.
+__attribute__((optimize("O2", "no-unroll-loops", "no-tree-loop-distribute-patterns")))
+static FT_VID_HOT void ftPutRow(int row, const uint8_t* idx) {
+    uint8_t* dst = VIDEO::vga.frameBuffer[row];
+    if (!dst) return;
+    const FtGlue& g = *ftg;
+    const int xres = (int)VIDEO::vga.xres;
+    const uint8_t black = g.lut.slot[0];
+    int cx[2][2]; const int n = ftCarve(row, cx);
+    const int x0 = g.ox0, x1 = g.ox0 + g.outW;
+    if (!n && !(xres & 3) && !((uintptr_t)dst & 3) && (!idx || (!(x0 & 3) && !(x1 & 3) && !((uintptr_t)idx & 3)))) {
+        uint32_t* d32 = (uint32_t*)dst;
+        const uint32_t bw = black * 0x01010101u;
+        if (!idx) { for (int k = xres >> 2; k > 0; k--) *d32++ = bw; return; }
+        for (int k = x0 >> 2; k > 0; k--) *d32++ = bw;
+        const uint32_t* s32 = (const uint32_t*)idx;
+        for (int k = (x1 - x0) >> 2; k > 0; k--) { const uint32_t w = *s32++; *d32++ = (w >> 16) | (w << 16); }
+        for (int k = (xres - x1) >> 2; k > 0; k--) *d32++ = bw;
+        return;
+    }
+    for (int x = 0; x < xres; x++) {
+        if (n) { bool skip = false; for (int i = 0; i < n; i++) if (x >= cx[i][0] && x < cx[i][1]) { skip = true; break; } if (skip) continue; }
+        dst[x ^ 2] = (idx && x >= x0 && x < x1) ? idx[x - x0] : black;
+    }
+}
+
+
+// End of a frame rendered through the adaptive path: rebuild the palette when the
+// colour content moved by > 6% (3-3-3 fold), at most every 8 frames — a fade
+// re-triggers every 8, a static scene never.
+// For a video frame (`video`) a large change — a scene cut — rebuilds at once: the
+// frame is shown through its own palette, so there is nothing to wait for.
+static void ftAdaptFrameEnd(FtGlue& g, bool video = false) {
+    if (!g.adaptFrame || !g.ap->total) return;
+    if (!video && !g.adaptHist) return;      // a frame that did not feed the histogram (its total is the last fed frame's)
+    g.sinceBuild++;
+    if (((!g.ap->built || g.sinceBuild >= 8) && ft812AdaptChanged(*g.ap, 60)) ||
+        (video && ft812AdaptChanged(*g.ap, 250))) {
+        ft812AdaptBuild(*g.ap, ts256_pool_n);
+        if (g.alut) memcpy(g.alut, g.ap->lut, 4096);   // the per-pixel copy follows the map
+        g.sinceBuild = 0; g.rebuilds++;
+        __dmb();
+        g.palPending = true;             // core0 programs the slots (and re-requests a display-list frame)
+    }
+}
+
+// ── CMD_PLAYVIDEO, direct ────────────────────────────────────────────────────
+// The chip's MJPEG player draws straight into the framebuffer from TJpgDec's
+// output callback: every MCU block is scaled (nearest) to the rectangle the
+// video occupies and quantized there. It used to go JPEG -> a 512x384 RGB565
+// frame in PSRAM -> the display-list renderer -> the band -> the quantizer:
+// 90 ms of core0 + 88 ms of core1 per frame (hw 2026-10-01).
+static uint32_t ftVidFirst(uint32_t v, uint32_t step, uint32_t lim) {   // first fb coordinate whose source is >= v
+    if (!step) return lim;
+    uint32_t f = (uint32_t)(((uint64_t)v << 16) / step);
+    if (f > lim) f = lim;
+    while (f < lim && ((f * step) >> 16) < v) f++;
+    while (f > 0 && (((f - 1) * step) >> 16) >= v) f--;
+    return f;
+}
+// The same for the per-MCU path, with the division replaced by a multiply by the
+// reciprocal ftVidBegin computed (inv = 2^32 / step, i.e. target per source in
+// Q16): four 64-bit divides per MCU through a flash veneer were a good part of
+// the sink's time (hw 2026-10-01: 768 MCUs a frame, the half-size sink no faster
+// per MCU than the full one). The two loops make the estimate exact.
+__attribute__((always_inline)) static inline uint32_t ftVidFirstQ(uint32_t v, uint32_t step, uint32_t inv, uint32_t lim) {
+    uint32_t f = (v * inv) >> 16;
+    if (f > lim) f = lim;
+    while (f < lim && ((f * step) >> 16) < v) f++;
+    while (f > 0 && (((f - 1) * step) >> 16) >= v) f--;
+    return f;
+}
+
+static int ftVidBegin(uint32_t srcW, uint32_t srcH, bool fullscreen, int hs, int vs, uint32_t usPerFrame) {
+    FtGlue& g = *ftg;
+    const int xres = (int)VIDEO::vga.xres, yres = (int)VIDEO::vga.yres;
+    if (hs < 16 || vs < 16 || !srcW || !srcH) return -1;
+    uint32_t s = (uint32_t)(((uint64_t)xres << 16) / hs);
+    const uint32_t sy = (uint32_t)(((uint64_t)yres << 16) / vs);
+    if (sy < s) s = sy;
+    int outW = (int)(((uint64_t)hs * s) >> 16), outH = (int)(((uint64_t)vs * s) >> 16);
+    if (outW > xres) outW = xres;
+    if (outH > yres) outH = yres;
+    // the video's rectangle on the FT screen: all of it, or its own size centred
+    int fx = 0, fy = 0, fw = hs, fh = vs;
+    if (!fullscreen) {
+        fw = (int)srcW < hs ? (int)srcW : hs; fh = (int)srcH < vs ? (int)srcH : vs;
+        fx = (hs - fw) / 2; fy = (vs - fh) / 2;
+    }
+    const int x0 = (xres - outW) / 2 + (int)(((uint64_t)fx * s) >> 16), y0 = (yres - outH) / 2 + (int)(((uint64_t)fy * s) >> 16);
+    int dW = (int)(((uint64_t)fw * s) >> 16), dH = (int)(((uint64_t)fh * s) >> 16);
+    if (dW > xres - x0) dW = xres - x0;
+    if (dH > yres - y0) dH = yres - y0;
+    if (dW < 1 || dH < 1) return -1;
+    // decode at the largest JPEG reduction that still covers the rectangle
+    int sc = 0;
+    if (fullscreen) while (sc < 3 && (int)(srcW >> (sc + 1)) >= dW && (int)(srcH >> (sc + 1)) >= dH) sc++;
+    else            while (sc < 3 && (int)((uint32_t)fw >> (sc + 1)) >= dW && (int)((uint32_t)fh >> (sc + 1)) >= dH) sc++;
+    // Frame rate before sharpness: when the decode at that size cannot keep the
+    // stream's rate (ftVidEnd counts), go one step down — for the usual case
+    // (sc 0 -> 1) that is TJpgDec's half-size IDCT, about 2.5x less work, and the
+    // picture is upscaled.
+    g.vUsPerFrame = usPerFrame;
+    if (g.vHalf && sc < 3) sc++;
+    const int vW = (int)(srcW >> sc) ? (int)(srcW >> sc) : 1, vH = (int)(srcH >> sc) ? (int)(srcH >> sc) : 1;
+    // source pixels covered by the rectangle (a video larger than the screen is cropped, not squeezed)
+    const int cW = fullscreen ? vW : ((fw >> sc) ? (fw >> sc) : 1), cH = fullscreen ? vH : ((fh >> sc) ? (fh >> sc) : 1);
+    const bool moved = !g.vidPrimed || g.vx0 != x0 || g.vy0 != y0 || g.vdW != dW || g.vdH != dH;
+    g.vW = vW; g.vH = vH; g.vx0 = x0; g.vy0 = y0; g.vdW = dW; g.vdH = dH;
+    const int iW = cW < dW ? cW : dW, iH = cH < dH ? cH : dH;     // the intermediate picture (see FtGlue)
+    g.vIW = iW; g.vIH = iH;
+    g.vStepX = (uint32_t)(((uint64_t)cW << 16) / (uint32_t)iW);
+    g.vStepY = (uint32_t)(((uint64_t)cH << 16) / (uint32_t)iH);
+    g.vInvX = (uint32_t)(((uint64_t)iW << 16) / (uint32_t)cW);
+    g.vInvY = (uint32_t)(((uint64_t)iH << 16) / (uint32_t)cH);
+    g.vFStepX = (uint32_t)(((uint64_t)iW << 16) / (uint32_t)dW);
+    g.vFStepY = (uint32_t)(((uint64_t)iH << 16) / (uint32_t)dH);
+    g.vDStepX = (uint32_t)(((uint64_t)cW << 16) / (uint32_t)dW);
+    g.vDStepY = (uint32_t)(((uint64_t)cH << 16) / (uint32_t)dH);
+    g.vDirect = false; g.vrowOK = false; g.vrowFy0 = g.vrowFy1 = 0;
+    const bool wantAdapt = g.adaptOn && g.ap;
+    if (moved || g.vqStale || g.vqAdapt != wantAdapt) { g.vqStale = false; ftVidTables(g, wantAdapt); }   // the band was a band until now
+    if (moved) {                                  // the letterbox, once: slot pool[0] is black in every palette
+        for (int row = 0; row < yres; row++) ftPutRow(row, nullptr);
+        g.vidPrimed = true;
+    }
+    g.adaptFrame = g.adaptOn && g.ap;
+    g.adaptFirst = g.adaptFrame && (!g.ap->built || g.ap->space != Ft812::ADAPT_YCC633);
+    if (g.adaptFrame) ft812AdaptClear(*g.ap, Ft812::ADAPT_YCC633);
+    g.vBins = g.adaptFrame;
+    g.frameT0 = time_us_64();
+    return sc;
+}
+
+static const uint8_t kFtBayer4[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 }, { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+
+// The RGB565 block path (a sink without `mcu`, or a JPEG reduction below 1/2):
+// rare — a video several times the screen — so it simply paints the framebuffer
+// directly, with the visible wipe that implies.
+__attribute__((optimize("O2", "no-unroll-loops", "no-tree-loop-distribute-patterns")))
+static void ftVidBlock(int l, int t, int r, int b, const uint16_t* px) {
+    FtGlue& g = *ftg;
+    g.vDirect = true;
+    if (g.vqAdapt) return;                                    // the cube tables are not loaded (adaptive frame): nothing to draw with
+    const int bw = r - l + 1;
+    const uint32_t stepX = g.vDStepX, stepY = g.vDStepY;
+    const uint32_t fy0 = ftVidFirst((uint32_t)t, stepY, (uint32_t)g.vdH), fy1 = ftVidFirst((uint32_t)b + 1, stepY, (uint32_t)g.vdH);
+    const uint32_t fx0 = ftVidFirst((uint32_t)l, stepX, (uint32_t)g.vdW), fx1 = ftVidFirst((uint32_t)r + 1, stepX, (uint32_t)g.vdW);
+    if (fx0 >= fx1) return;
+    const uint8_t* const q0 = g.vq, * const q1 = g.vq + 1024, * const q2 = g.vq + 2048;
+    const uint8_t* const slot = g.lut.slot;
+    uint8_t idx[64];
+    for (uint32_t fy = fy0; fy < fy1; fy++) {
+        const uint16_t* srow = px + (size_t)(((fy * stepY) >> 16) - (uint32_t)t) * bw - l;
+        const int row = g.vy0 + (int)fy;
+        for (uint32_t fx = fx0; fx < fx1; ) {
+            uint32_t k = fx1 - fx; if (k > 64) k = 64;
+            for (uint32_t i = 0; i < k; i++) {
+                const uint32_t p = srow[((fx + i) * stepX) >> 16];
+                const uint32_t r5 = p >> 11, g6 = (p >> 5) & 63, b5 = p & 31;
+                idx[i] = slot[q0[256 + (r5 << 3 | r5 >> 2)] + q1[256 + (g6 << 2 | g6 >> 4)] + q2[256 + (b5 << 3 | b5 >> 2)]];
+            }
+            ftPutSpan(row, g.vx0 + (int)fx, idx, (int)k);
+            fx += k;
+        }
+    }
+}
+
+// The fast path, straight from TJpgDec's Y/Cb/Cr blocks (VideoSink::mcu): every
+// pixel of the INTERMEDIATE picture is converted once into its palette index.
+// This loop runs up to ~100k times a frame and was most of the frame time (hw
+// 2026-10-01: sink 28-32 ms of a 55 ms frame, the half-size IDCT changing
+// nothing) — hence: everything it reads is a LOCAL (a uint8_t store may alias
+// any field of *ftg, so the compiler reloads those per pixel), the source x is a
+// running Q16 sum, the dither is three adds, clip + cube level + cube weight are
+// one table load per channel, and the indices land in an SRAM row band that
+// goes to the PSRAM back buffer a whole MCU row at a time (11-byte spans written
+// through the XIP cache cost a line fill and a write-back each).
+__attribute__((optimize("O2", "no-unroll-loops", "no-tree-loop-distribute-patterns")))
+static FT_VID_HOT void ftVidMcu(const Ft812::VideoMcu& m) {
+    FtGlue& g = *ftg;
+#if FT812_TRACE
+    const uint64_t t0 = time_us_64();
+#endif
+    const uint32_t stepX = g.vStepX, stepY = g.vStepY;
+    const int iW = g.vIW;
+    const uint32_t invX = g.vInvX, invY = g.vInvY;
+    const uint32_t fy0 = ftVidFirstQ((uint32_t)m.y, stepY, invY, (uint32_t)g.vIH), fy1 = ftVidFirstQ((uint32_t)(m.y + m.h), stepY, invY, (uint32_t)g.vIH);
+    const uint32_t fx0 = ftVidFirstQ((uint32_t)m.x, stepX, invX, (uint32_t)iW), fx1 = ftVidFirstQ((uint32_t)(m.x + m.w), stepX, invX, (uint32_t)iW);
+    const bool rowEnd = m.x + m.w >= g.vW;                       // last MCU of this MCU row
+    if (m.x == 0) {                                              // first one: does the row fit the SRAM band?
+        g.vrowFy0 = fy0; g.vrowFy1 = fy1;
+        g.vrowOK = g.vrow && (fy1 - fy0) * (uint32_t)iW * (g.vBins ? 2u : 1u) <= g.vrowBytes;
+    }
+    uint8_t* const vback = g.vback;
+    if (fx0 < fx1 && fy0 < fy1 && vback) {
+        const int bs = m.bs, sh = bs == 8 ? 3 : 2, bm = bs - 1, msx = m.msx, mx0 = m.x, my0 = m.y;
+        const int csx = msx == 2 ? 1 : 0, csy = m.msy == 2 ? 1 : 0;
+        const int16_t* const ybuf = m.buf;
+        const int16_t* const cbB = m.buf + msx * m.msy * 64;
+        const int16_t* const crB = cbB + 64;
+        const uint8_t* const q0 = g.vq, * const q1 = g.vq + 1024, * const q2 = g.vq + 2048;
+        const uint8_t* const slot = g.lut.slot;
+        const int sr = 255 / (g.lut.rl - 1), sg = 255 / (g.lut.gl - 1), sb = 255 / (g.lut.bl - 1);
+        const bool adapt = g.adaptFrame;
+        const int aSa = g.vaSa, aSb = g.vaSb, ysU = g.vaUy, cbU = g.vaUb, crU = g.vaUr;
+        uint16_t* const hist = adapt ? g.ap->hist : nullptr;
+        const bool rowOK = g.vrowOK;
+        uint8_t* const rowBase = rowOK ? g.vrow - (size_t)g.vrowFy0 * iW : vback;   // row fy of the picture is at rowBase + fy*iW
+        uint16_t* const rowBase16 = rowOK ? (uint16_t*)g.vrow - (size_t)g.vrowFy0 * iW : (uint16_t*)vback;   // the same in bins
+        const uint32_t k = fx1 - fx0;
+        uint32_t sampled = 0;
+        const uint32_t lxq0 = fx0 * stepX - ((uint32_t)mx0 << 16);   // Q16 source x inside the MCU, >= 0 by ftVidFirst
+        for (uint32_t fy = fy0; fy < fy1; fy++) {
+            const int ly = (int)((fy * stepY) >> 16) - my0;
+            const int16_t* const yb = ybuf + (ly >> sh) * msx * 64 + (ly & bm) * bs;   // luma block 0 of this block row; block b is 64 further
+            const int16_t* const cbr = cbB + (ly >> csy) * bs;
+            const int16_t* const crr = crB + (ly >> csy) * bs;
+            uint8_t* const out = rowBase + (size_t)fy * iW + fx0;
+            uint16_t* const out16 = rowBase16 + (size_t)fy * iW + fx0;
+            uint32_t lxq = lxq0;
+            if (!adapt) {
+                const uint8_t* brf = kFtBayer4[fy & 3];           // flash: four loads per row, not per pixel
+                int dr[4], dg[4], db[4];
+                for (int p = 0; p < 4; p++) { const int tt = brf[p]; dr[p] = 256 + ((tt * sr) >> 4); dg[p] = 256 + ((tt * sg) >> 4); db[p] = 256 + ((tt * sb) >> 4); }
+                uint32_t ph = fx0;
+                for (uint32_t i = 0; i < k; i++, lxq += stepX, ph++) {
+                    const int lx = (int)(lxq >> 16);
+                    const int yy = yb[(lx >> sh) * 64 + (lx & bm)];
+                    const int cb = cbr[lx >> csx] - 128, cr = crr[lx >> csx] - 128;
+                    const int R = yy + ((1436 * cr) >> 10) + dr[ph & 3];
+                    const int G = yy - ((352 * cb + 731 * cr) >> 10) + dg[ph & 3];
+                    const int B = yy + ((1815 * cb) >> 10) + db[ph & 3];
+                    out[i] = slot[q0[R & 1023] + q1[G & 1023] + q2[B & 1023]];
+                }
+            } else {
+                // The adaptive map is binned in Y/Cb/Cr (Ft812Render.h, FT812_ADAPT_YCC_LAYOUT),
+                // so there is no RGB conversion here at all: q0/q1/q2 = the level of Y /
+                // Cb / Cr on its axis (ftVidTables' adaptive set). Each axis gets a 4x4
+                // ordered dither of ONE BIN, centred, before its level is taken: the
+                // luma levels then leave no contours in a gradient, and the few chroma
+                // levels average to the true colour as grain at constant brightness.
+                // With 4-4-4 RGB bins and no dither every gradient of a film frame
+                // stepped "in waves with a hard border" (owner, 2026-10-01).
+                const uint8_t* brf = kFtBayer4[fy & 3];
+                const uint8_t* brg = kFtBayer4[(fy + 2) & 3];
+                int dy[4], dcb[4], dcr[4];
+                for (int p = 0; p < 4; p++) {
+                    dy[p]  = 256 + ((brf[p] * ysU) >> 4) - (ysU >> 1);
+                    dcb[p] = 256 + ((brf[(p + 2) & 3] * cbU) >> 4) - (cbU >> 1);
+                    dcr[p] = 256 + ((brg[p] * crU) >> 4) - (crU >> 1);
+                }
+                uint32_t ph = fx0;
+                sampled += (fx0 + k) / 2 - (fx0 + 1) / 2;           // histogram: every row, even columns
+                for (uint32_t i = 0; i < k; i++, lxq += stepX, ph++) {
+                    const int lx = (int)(lxq >> 16);
+                    const int cx = lx >> csx;
+                    const uint32_t bin = (uint32_t)q0[(yb[(lx >> sh) * 64 + (lx & bm)] + dy[ph & 3]) & 1023] << aSa
+                                       | (uint32_t)q1[(cbr[cx] + dcb[ph & 3]) & 1023] << aSb
+                                       | (uint32_t)q2[(crr[cx] + dcr[ph & 3]) & 1023];
+                    // The histogram takes the DITHERED bin of half the pixels: every row,
+                    // even columns. Those cells cover Bayer values {0,1,2,3,12,13,14,15}
+                    // of 16 on every axis — mean 7.5, as for all 16 — so the sample is
+                    // unbiased. Two samplings that were not, both "almost black and white"
+                    // on hw 2026-10-01: even row + even column (Bayer 0..3 only, every
+                    // bin half a bin low) and the UNDITHERED bin, where a film's chroma
+                    // falls almost wholly into the neutral Cb/Cr bin: the cut then has
+                    // nothing but greys to choose from, and the dithered pixels in the
+                    // neighbouring chroma bins resolve to those greys.
+                    if (!(ph & 1) && hist[bin] != 0xFFFF) hist[bin]++;
+                    // The BIN goes to the back buffer, not a palette index: the palette
+                    // for this frame is built from this frame's histogram at its end
+                    // and ftVidFlip maps the bins through it. Mapping here, through the
+                    // palette of the frame BEFORE, put the first frame of every scene
+                    // cut on screen in the previous scene's colours (hw 2026-10-01:
+                    // "a rare frame only black and red, or a colour missing").
+                    out16[i] = (uint16_t)bin;
+                }
+            }
+        }
+        if (adapt) g.ap->total += sampled;
+    }
+#if FT812_TRACE
+    const uint64_t t1 = time_us_64();
+    g.vSinkUs += (uint32_t)(t1 - t0);
+#endif
+    if (rowEnd && g.vrowOK && vback && g.vrowFy1 > g.vrowFy0) {   // the band's rows, whole, into the back buffer
+        const uint32_t bpp = g.vBins ? 2u : 1u;
+        const uint32_t n = (g.vrowFy1 - g.vrowFy0) * (uint32_t)iW * bpp;
+        const uint8_t* src = g.vrow; uint8_t* dst = vback + (size_t)g.vrowFy0 * iW * bpp;
+        if (!(((uintptr_t)src | (uintptr_t)dst) & 3)) {
+            const uint32_t* s32 = (const uint32_t*)src; uint32_t* d32 = (uint32_t*)dst;
+            for (uint32_t w = n >> 2; w; w--) *d32++ = *s32++;
+            for (uint32_t i = n & ~3u; i < n; i++) dst[i] = src[i];
+        } else for (uint32_t i = 0; i < n; i++) dst[i] = src[i];
+        g.vrowOK = false;
+#if FT812_TRACE
+        g.vCopyUs += (uint32_t)(time_us_64() - t1);
+#endif
+    }
+}
+
+// The decoded frame goes on screen in one pass. To stay clear of the scanout
+// without waiting for blanking, the copy starts just AHEAD of the beam and wraps:
+// it is several times faster than the beam, so it runs away from it on the way
+// down and has finished the top rows long before the beam comes round again.
+__attribute__((optimize("O2", "no-unroll-loops", "no-tree-loop-distribute-patterns")))
+static FT_VID_HOT void ftVidFlip(FtGlue& g) {
+    const uint64_t tf = time_us_64();
+    // A rebuilt palette goes in HERE, with the first frame that was made for it,
+    // and inside vertical blanking: the picture on screen was written through the
+    // previous map, so any time it spends under the new colours is a "negative"
+    // frame (owner, 2026-10-01 — core0 used to program it at its next frame tick,
+    // 10-30 ms before this flip, the Kolbass/TGV mechanism again). The copy then
+    // starts at the top: it runs several times faster than the beam, which enters
+    // the first row only after the rest of the blanking.
+    bool fromTop = false;
+    if (g.palPending && g.ap) {
+        while (VIDEO::displayBeamRow() < 0 && time_us_64() - tf < 8000) tight_loop_contents();     // out of a blanking already under way
+        while (VIDEO::displayBeamRow() >= 0 && time_us_64() - tf < 45000) tight_loop_contents();   // ...to the start of the next one
+        const Ft812::AdaptPal& ap = *g.ap;
+        for (int i = 0; i < ap.n; i++) ftProgramSlot(ts256_pool[i], ap.col[i]);
+        __dmb();
+        g.palPending = false;
+        fromTop = true;
+    }
+    const int dW = g.vdW, dH = g.vdH, iW = g.vIW, vx0 = g.vx0;
+    const uint32_t fsx = g.vFStepX, fsy = g.vFStepY;
+    const uint8_t* const vback = g.vback;
+    int start = 0;
+    const int beam = fromTop ? -1 : VIDEO::displayBeamRow();
+    if (beam >= 0) { start = beam + 6 - g.vy0; if (start < 0 || start >= dH) start = 0; }
+    // A row with no overlay on it, at a 4-aligned position, goes a word at a
+    // time: the framebuffer's x^2 byte order is a 16-bit rotate of the word.
+    const bool aligned = !(vx0 & 3) && !(dW & 3);
+    const bool same = iW == dW;                               // no horizontal upscale
+    uint8_t line[384];
+    // Bins (adaptive palette): one intermediate row -> palette indices through the
+    // map just built from THIS frame, kept while consecutive output rows share it.
+    const bool bins = g.vBins && g.ap && iW <= 384;
+    if (g.vBins && (!bins || !g.ap->built)) { g.vFlipUs += (uint32_t)(time_us_64() - tf); return; }   // no map to show the bins through
+    alignas(4) uint8_t conv[384];
+    int convRow = -1;
+    for (int i = 0; i < dH; i++) {
+        int rr = start + i; if (rr >= dH) rr -= dH;
+        const int row = g.vy0 + rr;
+        const int sr = (int)(((uint32_t)rr * fsy) >> 16);
+        const uint8_t* src = vback + (size_t)sr * iW;
+        if (bins) {
+            if (sr != convRow) {
+                Ft812::AdaptPal& ap = *g.ap;
+                const uint16_t* s16 = (const uint16_t*)vback + (size_t)sr * iW;
+                for (int x = 0; x < iW; x++) {
+                    const uint32_t bin = s16[x];
+                    uint32_t e = ap.lut[bin];
+                    if (e == 0xFF) e = Ft812::ft812AdaptResolve(ap, bin);   // a bin the measured frame did not have
+                    conv[x] = ts256_pool[e];
+                }
+                convRow = sr;
+            }
+            src = conv;
+        }
+        int cx[2][2];
+        uint8_t* dst = ((unsigned)row < (unsigned)VIDEO::vga.yres) ? VIDEO::vga.frameBuffer[row] : nullptr;
+        if (!dst) continue;
+        const bool plain = aligned && !ftCarve(row, cx);
+        if (plain && same && !((uintptr_t)src & 3)) {
+            const uint32_t* s32 = (const uint32_t*)src; uint32_t* d32 = (uint32_t*)(dst + vx0);
+            for (int n = dW >> 2; n > 0; n--) { const uint32_t w = *s32++; *d32++ = (w >> 16) | (w << 16); }
+        } else if (plain && dW <= 384) {                      // upscale, four pixels per stored word
+            uint32_t* d32 = (uint32_t*)(dst + vx0); uint32_t xq = 0;
+            for (int n = dW >> 2; n > 0; n--) {
+                const uint32_t p0 = src[xq >> 16]; xq += fsx;
+                const uint32_t p1 = src[xq >> 16]; xq += fsx;
+                const uint32_t p2 = src[xq >> 16]; xq += fsx;
+                const uint32_t p3 = src[xq >> 16]; xq += fsx;
+                *d32++ = p2 | (p3 << 8) | (p0 << 16) | (p1 << 24);
+            }
+        } else if (dW <= 384) {
+            uint32_t xq = 0;
+            for (int x = 0; x < dW; x++, xq += fsx) line[x] = src[xq >> 16];
+            ftPutSpan(row, vx0, line, dW);
+        }
+    }
+    g.vFlipUs += (uint32_t)(time_us_64() - tf);
+}
+
+static void ftVidEnd(bool ok) {
+    FtGlue& g = *ftg;
+    if (!ok) return;
+    if (g.vBins) ftAdaptFrameEnd(g, true);           // this frame's own palette, before it goes on screen
+    if (g.vback && (g.vBins || !g.adaptFirst) && !g.vDirect) ftVidFlip(g);
+    if (!g.vBins) ftAdaptFrameEnd(g);
+    const uint32_t dt = (uint32_t)(time_us_64() - g.frameT0);
+    if (!g.vHalf) {
+        if (dt > g.vUsPerFrame) {
+            if (++g.vSlow >= 3) { g.vHalf = true; Debug::log("[FT812] video: %u us a frame at full size, %u us allowed - decoding at half size", (unsigned)dt, (unsigned)g.vUsPerFrame); }
+        } else g.vSlow = 0;
+    }
+    g.frameUs += dt; g.bandsUs += dt;
+    if (dt > g.frameUsMax) g.frameUsMax = dt;
+    g.frames++;
+}
+static const Ft812::VideoSink kFtVideoSink = { ftVidBegin, ftVidBlock, ftVidEnd, ftVidMcu };
+static void ftVideoSinkAttach() { Ft812::videoSetSink(&kFtVideoSink); }
+
+// TJpgDec + the callbacks above do not fit core1's 2 KB stack beside the line
+// ISR's frames (hw 2026-09-28: core1 died on the first frame), so the decode runs
+// on a 4 KB heap stack. Same MSP+MSPLIM switch as zipCallOnStack (ZipExtract.cpp):
+// the limit is off whenever SP crosses between the stacks.
+__attribute__((naked, noinline))
+static void ftCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
+    __asm volatile(
+        "mrs  r12, msplim       \n"
+        "push {r4}              \n"
+        "movs r4, #0            \n"
+        "msr  msplim, r4        \n"
+        "mov  r4, sp            \n"
+        "mov  sp, r0            \n"
+        "msr  msplim, r3        \n"
+        "push {r2, r4, r12, lr} \n"
+        "mov  r0, r2            \n"
+        "blx  r1                \n"
+        "pop  {r2, r4, r12, lr} \n"
+        "movs r1, #0            \n"
+        "msr  msplim, r1        \n"
+        "mov  sp, r4            \n"
+        "msr  msplim, r12       \n"
+        "pop  {r4}              \n"
+        "bx   lr                \n"
+    );
+}
+static void ftVidTramp(void*) { Ft812::videoDecodeJob(); }
+
+FT_GLUE_HOT void VIDEO::ftRenderPump() {
+    if (!ftg) return;
+    ft_c1_busy = true;
+    __dmb();
+    if (!g_ft_c1_live || !vga.frameBuffer || ft_c1_hold) { ft_c1_busy = false; return; }
+    FtGlue& g = *ftg;
+    if (!g.active && Ft812::videoActive()) {
+        // CMD_PLAYVIDEO owns the screen: no display-list frames. A request still
+        // completes (a swap must, for DLSWAP to read 0), and since it means the
+        // screen wants repainting (menu closed), the letterbox is redone too.
+        if (Ft812::renderTake()) { Ft812::renderDone(); g.vidPrimed = false; }
+        // (a pending palette does not hold the DECODE: the frame is not shown before
+        // ftVidFlip, which waits for core0 to have programmed it)
+        if (g.vstack)
+            ftCallOnStack((void*)(((uintptr_t)g.vstack + FT_VSTACK_BYTES) & ~(uintptr_t)7), ftVidTramp, nullptr, g.vstack);
+        ft_c1_busy = false;
+        return;
+    }
+    if (!g.active) {
+        g.vidPrimed = false; g.vHalf = false; g.vSlow = 0;    // no video playing
+        g.vqStale = true;                                     // ...and the band is a band again
+        if (g.palPending || !Ft812::renderTake()) { ft_c1_busy = false; return; }
+        ftFrameBegin();
+    }
+    const uint64_t t0 = time_us_64();
+    const int yres = (int)vga.yres;
+    int row = g.nextRow;
+    const int rowEnd = (row + g.bandRows < yres) ? row + g.bandRows : yres;
+    if (g.blank) {
+        for (; row < rowEnd; row++) ftPutRow(row, nullptr);
+#if FT812_TRACE
+        g.putUs += (uint32_t)(time_us_64() - t0);   // (the trace: a blank frame's rows count as output)
+#endif
+    } else {
+        // the part of this band inside the output rectangle, rendered in one walk
+        int r0 = row, r1 = rowEnd;
+        if (r0 < g.oy0) r0 = g.oy0;
+        if (r1 > g.oy0 + g.outH) r1 = g.oy0 + g.outH;
+        if (r0 < r1) ft812RenderBand(g.cfg, *Ft812::renderState(), r0 - g.oy0, r1 - g.oy0, g.band);
+#if FT812_TRACE
+        uint64_t tq = time_us_64();
+        g.walkUs += (uint32_t)(tq - t0);
+        uint32_t qUs = 0, pUs = 0, hUs = 0;
+#define FT_TQ(stmt) do { const uint64_t a_ = time_us_64(); stmt; qUs += (uint32_t)(time_us_64() - a_); } while (0)
+#define FT_TH(stmt) do { const uint64_t a_ = time_us_64(); stmt; hUs += (uint32_t)(time_us_64() - a_); } while (0)
+#define FT_TP(stmt) do { const uint64_t a_ = time_us_64(); stmt; pUs += (uint32_t)(time_us_64() - a_); } while (0)
+#else
+#define FT_TQ(stmt) stmt
+#define FT_TH(stmt) stmt
+#define FT_TP(stmt) stmt
+#endif
+        for (; row < rowEnd; row++) {
+            if (row < r0 || row >= r1) { FT_TP(ftPutRow(row, nullptr)); continue; }
+            const uint32_t* src = g.band + (size_t)(row - r0) * g.outW;
+            if (g.adaptFrame) {
+                // every 2nd row, every 2nd column, on the frames that feed the
+                // histogram (adaptHist): it is in PSRAM and its increments are
+                // read-modify-writes through XIP; no dither sits in front of this
+                // histogram (unlike the MJPEG sink's), so the sample is unbiased at
+                // any stride
+                if (g.adaptHist && !(row & 1)) FT_TH(ft812AdaptAccumulate(*g.ap, src, g.outW, 2));
+                // The first frame only feeds the histogram and stays black: cube
+                // indices would turn into noise the moment the adaptive colours
+                // are programmed. Slot pool[0] is black in both palettes.
+                if (g.adaptFirst) { FT_TP(ftPutRow(row, nullptr)); continue; }
+                FT_TQ(ft812QuantizeRowAdapt(*g.ap, ts256_pool, src, g.outW, row, g.rowTmp, g.alut));
+            } else {
+                FT_TQ(ft812QuantizeRow(g.lut, src, g.outW, row, g.rowTmp));
+            }
+            FT_TP(ftPutRow(row, g.rowTmp));
+        }
+#if FT812_TRACE
+        g.quantUs += qUs + hUs; g.putUs += pUs; g.histUs += hUs;
+#endif
+#undef FT_TQ
+#undef FT_TH
+#undef FT_TP
+    }
+    g.nextRow = row;
+    const uint64_t t1 = time_us_64();
+    g.bandsUs += (uint32_t)(t1 - t0);
+    if (row >= yres) {
+        if (!g.blank) ftAdaptFrameEnd(g);
+        const uint32_t dt = (uint32_t)(t1 - g.frameT0);
+        g.frameUs += dt;
+        if (dt > g.frameUsMax) g.frameUsMax = dt;
+        g.active = false; g.frames++; Ft812::renderDone();
+    }
+    ft_c1_busy = false;
+}
+extern "C" void ft812_render_core1_pump() { VIDEO::ftRenderPump(); }
+
+#if FT812_TRACE
+// ── the [FT812] meter: three lines every 60 frames (Debug::log clips at 256 B) ──
+// Everything is a DELTA over the window except swapLatMax / frameUsMax, which are
+// window maxima reset here. Reading it:
+//   host   — what the guest does over SPI: KB moved, CS transactions, and the
+//            REGISTER-READ MIX (bytes): dlswap = waiting for our render of the
+//            previous frame; int = polling INT_FLAGS; space = CMDB_SPACE backpressure;
+//            cmdrd = REG_CMD_READ (FIFO drain / fault poll); ramg / oth = data.
+//   cp     — coprocessor: commands, DL words emitted, MEMWRITE KB, INFLATE KB and
+//            the ms spent in tinfl, ms inside cpProcess overall (core0, inside the
+//            guest's OUT), DLSTART stalls behind a pending swap, faults; swap take /
+//            blocked (a request found the renderer busy) / latMax (frames from
+//            request to take); the three most frequent commands (low byte : count).
+//   render — frames core1 finished, wall us per frame avg/max (what DLSWAP==0
+//            waits for), core1 ms inside the band pump; bands, DL words walked,
+//            bitmap cells, blit AREA by filter (k px), coverage pixels, clears |
+//            sd: raw-SD sectors served + core0 us each | gs: #B3 KB pushed to the
+//            NeoGS and the ms hostWriteB3 spent waiting for the card.
+// noinline: EndFrame is RAM-resident and GCC inlined the first cut into it — +2 KB
+// of SRAM code for a once-per-frame counter dump that belongs in flash.
+static __attribute__((noinline)) void ftTraceTick() {
+    static uint32_t n = 0;
+    if (++n < 60) return;
+    n = 0;
+    static Ft812::Stats ps; static Ft812::RenderStats pr;
+    static uint32_t pFrames, pFrameUs, pBands, pSdSec, pSdUs, pB3, pB3Wait;
+    static uint64_t pT;
+    Ft812::Stats* sp = Ft812::statsMut();
+    if (!sp) return;
+    Ft812::Stats& s = *sp;
+    const Ft812::RenderStats& r = Ft812::g_renderStats;
+    const uint64_t now = time_us_64();
+    const uint32_t dtMs = pT ? (uint32_t)((now - pT) / 1000) : 0;
+    pT = now;
+#define FTD(f) ((uint32_t)(s.f - ps.f))
+#define FTR_(f) ((uint32_t)(r.f - pr.f))
+    uint8_t top[3] = { 0, 0, 0 }; uint32_t topN[3] = { 0, 0, 0 };
+    for (unsigned i = 0; i < sizeof(s.cmdHist) / sizeof(s.cmdHist[0]); i++) {
+        const uint32_t d = s.cmdHist[i] - ps.cmdHist[i];
+        for (int k = 0; k < 3; k++) {
+            if (d <= topN[k]) continue;
+            for (int j = 2; j > k; j--) { topN[j] = topN[j - 1]; top[j] = top[j - 1]; }
+            topN[k] = d; top[k] = (uint8_t)i;
+            break;
+        }
+    }
+    {   // the swap-wait fast-forward (TsConf::ftSwapPoll): jumps, and the guest time they skipped as a share of the window
+        extern volatile uint32_t ts_ftsw_ff, ts_ftsw_ff_t;
+        static uint32_t pff = 0, pft = 0;
+        const uint32_t ff = ts_ftsw_ff - pff, ft = ts_ftsw_ff_t - pft; pff += ff; pft += ft;
+        const uint32_t frameT = CPU::statesInFrame ? CPU::statesInFrame : 1;
+        Debug::log("[FT812] %ums host: spi %uKB cs %u | rd dlswap %u int %u space %u cmdrd %u ramg %u oth %u | wr ramg %uKB fifo %uKB | swapFF %u (%u%% of guest time)",
+               dtMs, FTD(spiBytes) >> 10, FTD(csXact), FTD(rdDlswap), FTD(rdIntFlags), FTD(rdCmdbSpace), FTD(rdCmdRead),
+               FTD(rdRamG), FTD(rdOther), FTD(wrRamG) >> 10, FTD(fifoBytes) >> 10, (unsigned)ff, (unsigned)((uint64_t)ft * 100 / ((uint64_t)frameT * 60)));
+    }
+    {   // where the guest's time goes feeding the chip: SPI DMA both ways (KB, and the
+        // guest ms they are modelled at), byte reads of the ZC data port, poll FF ms
+        extern volatile uint32_t ts_feed_sr_words, ts_feed_rs_words, ts_feed_spi_t, ts_feed_pollff_t;
+        static uint32_t psr, prs, pst, ppf, pin;
+        const uint32_t sr = ts_feed_sr_words - psr, rs = ts_feed_rs_words - prs, st = ts_feed_spi_t - pst,
+                       pf = ts_feed_pollff_t - ppf, in = DivMMC::zc_in_bytes - pin;
+        psr += sr; prs += rs; pst += st; ppf += pf; pin += in;
+        const uint32_t tPerMs = (3500u << ESPectrum::multiplicator) / 1000u;   // T per ms at the live clock
+        Debug::log("[FT812] feed: dma sd->ram %uKB ram->spi %uKB = %ums | zc IN %uKB | pollFF %ums | clock x%u",
+                   sr >> 9, rs >> 9, st / tPerMs, in >> 10, pf / tPerMs, 1u << ESPectrum::multiplicator);
+    }
+    Debug::log("[FT812] cp: cmds %u dl %u memwr %uKB memcpy %uKB/%ums calls %u infl %uKB/%ums cpu %ums frMax %uus def %u wSw %u flt %u | swap take %u blocked %u latMax %u | top %02X:%u %02X:%u %02X:%u",
+               FTD(cpCmds), FTD(cpDlWords), FTD(memwrBytes) >> 10, FTD(memcpyBytes) >> 10, FTD(memcpyUs) / 1000, FTD(cpCalls), FTD(inflated) >> 10, FTD(inflUs) / 1000, FTD(cpUs) / 1000, s.cpFrameMaxUs, FTD(cpDeferred),
+               FTD(waitSwap), FTD(cpFaults), FTD(swaps), FTD(swapBlocked), s.swapLatMax,
+               top[0], topN[0], top[1], topN[1], top[2], topN[2]);
+    const uint32_t sdSec = DivMMC::zc_rd_sectors - pSdSec, sdUs = DivMMC::zc_rd_us - pSdUs;
+    pSdSec = DivMMC::zc_rd_sectors; pSdUs = DivMMC::zc_rd_us;
+    uint32_t b3 = 0, b3w = 0;
+    if (GS::enabled) {   // the counters are plain .bss, but a card that is off has nothing to say
+        b3 = GS::hostB3Bytes - pB3; b3w = GS::hostB3WaitUs - pB3Wait;
+        pB3 = GS::hostB3Bytes; pB3Wait = GS::hostB3WaitUs;
+    }
+    uint32_t fr = 0, fus = 0, fmax = 0, bus = 0, wus = 0, qus = 0, pus = 0, hus = 0;
+    static uint32_t pWalk, pQuant, pPut, pHist, pIsr;
+    if (ftg) {
+        fr = ftg->frames - pFrames; fus = ftg->frameUs - pFrameUs; bus = ftg->bandsUs - pBands; fmax = ftg->frameUsMax;
+        wus = ftg->walkUs - pWalk; qus = ftg->quantUs - pQuant; pus = ftg->putUs - pPut; hus = ftg->histUs - pHist;
+        pFrames = ftg->frames; pFrameUs = ftg->frameUs; pBands = ftg->bandsUs; ftg->frameUsMax = 0;
+        pWalk = ftg->walkUs; pQuant = ftg->quantUs; pPut = ftg->putUs; pHist = ftg->histUs;
+    }
+    // core1's line ISR share of the window (every core1 figure above is wall time
+    // and includes it) — HDMI only; 0 on VGA, where there is no such counter
+    uint32_t isrPct = 0;
+#ifdef VGA_HDMI
+    {   extern volatile uint32_t hdmi_irq_dur_total_us;
+        const uint32_t isr = hdmi_irq_dur_total_us - pIsr; pIsr = hdmi_irq_dur_total_us;
+        if (dtMs) isrPct = isr / (dtMs * 10);
+    }
+#endif
+    // `req` = re-renders asked for WITHOUT a swap (menu exit, palette, brdnextframe):
+    // frames above the swap count in `cp:` are frames nobody asked for
+    Debug::log("[FT812] render: frames %u req %u us avg %u max %u c1 %ums (walk %u quant %u/hist %u put %u) isr %u%% | bands %u words %u bmp %u px near %uk bil %uk prim %uk clr %u | sd %u sec %uus | gs b3 %uKB wait %ums",
+               fr, FTD(rendersReq), fr ? fus / fr : 0, fmax, bus / 1000, wus / 1000, qus / 1000, hus / 1000, pus / 1000, isrPct, FTR_(bands), FTR_(words), FTR_(bitmaps),
+               FTR_(pxNearest) >> 10, FTR_(pxBilinear) >> 10, FTR_(pxPrim) >> 10, FTR_(clears),
+               sdSec, sdSec ? sdUs / sdSec : 0, b3 >> 10, b3w / 1000);
+    if (FTR_(bitmaps)) {   // per format (F_* index: 1 L1, 2 L4, 6 ARGB4, 7 RGB565, 8 PALETTED, 14/15/16 PALETTED565/4444/8): cells / k px / ms
+        char fl[200]; int n = snprintf(fl, sizeof(fl), "[FT812] fmt(cells/kpx/ms):");
+        // cells = drawBitmap entries that REACHED the band by their own format; px/ms
+        // by the BLIT's format — a cached cell blits as 6 (ARGB4444) whatever it was
+        for (int i = 0; i < 18 && n < (int)sizeof(fl) - 24; i++) {
+            const uint32_t d = r.bmpFmt[i] - pr.bmpFmt[i], px = r.pxFmt[i] - pr.pxFmt[i];
+            if (d || px) n += snprintf(fl + n, sizeof(fl) - n, " %d:%u/%u/%u", i, d, px >> 10, (r.usFmt[i] - pr.usFmt[i]) / 1000);
+        }
+        Debug::log("%s | palCopies %u | adapt %s n %d rebuilds %u", fl, FTR_(palCopies),
+                   (ftg && ftg->adaptOn) ? "on" : "off", (ftg && ftg->ap) ? ftg->ap->n : 0, ftg ? ftg->rebuilds : 0u);
+        // the pre-scaled cache: cells served / blit area from it (k px), tiles built
+        // and the ms they took, pool resets (a working set bigger than the pool shows
+        // as resets every window), cells it declined, pool fill
+        // ...plus the walk's own split: ms inside drawBitmap (blits + per-cell setup +
+        // the cache lookup), inside the cache lookup/validation/build alone, and
+        // entries = `nent` of the pool
+        // `loop` = the fetch/exec loop (everything but the band setup), `vtx` = inside
+        // vertex() (front + setup + blit), `draw` = inside drawBitmap; loop - vtx =
+        // the state words and the fetch, vtx - draw = vertex()'s own shell
+        Debug::log("[FT812] mip: cells %u px %uk blit %ums builds %u/%ums parked %u resets %u refused %u pool %u/%uKB ent %u | loop %ums vtx %ums draw %ums mipGet %ums ctx %u | gen %uk px (cached %uk): bil %u box %u wrap %u blend %u col %u rot %u flip %u nopal %uk",
+                   FTR_(mipCells), FTR_(pxMip) >> 10, FTR_(mipBlitUs) / 1000, FTR_(mipBuilds), FTR_(mipBuildUs) / 1000, FTR_(mipParked), FTR_(mipResets), FTR_(mipRefused),
+                   (ftg && ftg->mip) ? (unsigned)(Ft812::ft812MipUsed(*ftg->mip) >> 10) : 0u, ftg ? (unsigned)(ftg->mipBytes >> 10) : 0u,
+                   (ftg && ftg->mip) ? (unsigned)ftg->mip->nent : 0u, FTR_(loopUs) / 1000, FTR_(vtxUs) / 1000, FTR_(drawUs) / 1000, FTR_(mipGetUs) / 1000, FTR_(ctxCopies),
+                   FTR_(genPx) >> 10, FTR_(mipGenPx) >> 10, FTR_(mipGenReason[0]) >> 10, FTR_(mipGenReason[1]) >> 10, FTR_(mipGenReason[2]) >> 10,
+                   FTR_(mipGenReason[3]) >> 10, FTR_(mipGenReason[4]) >> 10, FTR_(mipGenReason[5]) >> 10, FTR_(mipGenReason[6]) >> 10, FTR_(mipGenReason[7]) >> 10);
+    }
+    if (Ft812::videoActive()) {
+        const Ft812::VideoStats& v = Ft812::videoStats();
+        static uint32_t pf = 0;
+        const uint32_t nf = (ftg && ftg->frames > pf) ? ftg->frames - pf : 0;
+        Debug::log("[FT812] video: frames %u skipped %u decode avg %u max %u us waits %u stalls %u/%ums | audio %u B drop %u | per frame: sink %u flip %u us %s",
+                   v.frames, v.skipped, v.frames ? v.decodeUs / v.frames : 0, v.decodeMax, v.waits, v.stalls, v.stallMs, v.audioBytes, v.audioDrop,
+                   nf ? ftg->vSinkUs / nf : 0, nf ? ftg->vFlipUs / nf : 0, (ftg && ftg->vHalf) ? "half" : "full");
+        if (ftg) Debug::log("[FT812] video: rows->back %u us/frame, picture %dx%d -> %dx%d", nf ? ftg->vCopyUs / nf : 0, ftg->vIW, ftg->vIH, ftg->vdW, ftg->vdH);
+        if (ftg) { pf = ftg->frames; ftg->vSinkUs = 0; ftg->vFlipUs = 0; ftg->vCopyUs = 0; }
+    }
+#undef FTD
+#undef FTR_
+    ps = s; pr = r;
+    s.swapLatMax = 0; s.cpFrameMaxUs = 0;
+}
+#endif

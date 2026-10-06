@@ -38,6 +38,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - ZX Spectrum +3 emulation: the +3 v4.0 ROM set (as a romset of the 128K machine), #1FFD paging with the four all-RAM configurations, +2A/+3 contention, and a sector-level **uPD765A** floppy controller with two drives and CPCEMU / Extended **.dsk** images (read, write, format; weak and copy-protected sectors, Speedlock/Alkatraz style) — drives, "Create blank disk" and the Fast disk / Speedlock protection toggles live in the Storage menu, and a .dsk opened from the file browser switches to the +3 and auto-starts it from the Loader. The **+3e (IDEDOS)** romset adds Garry Lancaster's replacement ROM with its 8-bit IDE interface: IDEDOS .hdf images (including 256-byte half-sector ones) mount from Storage → IDE/HDD, and `tools/idedos_audit.py` checks a game collection image for authoring errors (RP2350 only). The **+3 (divIDE)** romset is that same ROM built for a divIDE card instead (ports #A3..#BF, a 16-bit bus and therefore full-sector .hdf images — what Workbench and the other 16-bit IDEDOS disks want), packed into 18.5 KB of flash beside it.
 - Karabas-Pro emulation on Profi: selectable flash ROM sets (Original, ROMain boot menu, PQDOS, Flash Tool, FDImage) switchable from setup or the **Menu** (Win) key hotkeys — Menu+F1–F4 pick a ROM set, plus Menu combos for Turbo FDC, AY stereo, CPU speed, drive swap and more (see F1 Help) — and serial (COM) mouse emulation for CP/M software (RP2350 only).
 - TS-Conf (ZX-Evo) emulation (Machine → TS-Conf): TS-BIOS with either the Pentagon 128 or the Mr Gluk service ROM, 4 MB of RAM, the #nnAF register file with programmable FRAME/LINE/DMA interrupts, the DMA controller, a ZX-Evo DRAM timing model (CPU/video/DMA contention and the 14 MHz wait states), a 3.5/7/14 MHz CPU cap, all of the video modes (ZX, 16c, 256c, 80x30 text, NOGFX) with the TSU tile and sprite engine, Z-Controller SD and TR-DOS, and **.spg** program loading from the file browser. Needs a board with QSPI (butter) PSRAM and VGA/HDMI output (RP2350 only).
+- TS-Conf VDAC2 (Machine → TS-Conf → Options → VDAC2 (FT812)): the ZX-Evo video board with the FT812 (Bridgetek EVE) graphics chip, emulated on the Z-Controller SPI — STATUS reads 7, FT_EN switches the output to the chip's own display list, and its INT drives the LINE interrupt as on the FPGA. 1 MB RAM_G in PSRAM, the display-list engine (bitmaps in every FT81x format incl. the PALETTED family, transform matrices, blending, scissor), the coprocessor (DLSTART/SWAP, matrix commands, TEXT/NUMBER with synthesized ROM fonts, MEMWRITE/APPEND, zlib INFLATE) — enough for the ZUMA Deluxe VDAC2 port and the TSLib examples. The 1024x768 frame is scaled into the framebuffer through a dithered RGB cube; no stencil, tag or widget commands (RP2350, QSPI PSRAM).
 - VGA/HDMI output with 8 selectable video modes: 640x480@60Hz, 640x480@50Hz, 720x480@60Hz, 720x576@50Hz, plus a 90/75 Hz set (640x480@90, 640x480@75, 720x480@90, 720x576@75) that is offered with the CPU at 378 MHz and runs with V-Sync off (HDMI only on HSTX builds — the HSTX VGA clock cannot make it).
 - Hot video mode switching without reboot (VGA/HDMI).
 - VGA/HDMI scanlines effect with 5 selectable brightness levels (Off, Darkest, Dark, Light, Lightest).
@@ -107,6 +108,7 @@ Best performance for case Pimoroni "Pico Plus 2" is used.
 - Rodolfo Guerra's ROMs fast load routines support with on the fly standard speed blocks translation.
 - TAP file saving to SD card.
 - SNA and Z80 snapshot loading.
+- **RZX** input-recording playback (from the file browser, `.rzx` or zipped): the embedded SNA/Z80 snapshot is loaded and the recording replays by its own fetch counts, with every IN taken from the file; **Snapshots → Stop RZX playback** leaves you in control of the machine where the replay stopped. Recordings whose embedded snapshot is SZX are not supported yet, and recording is not implemented yet.
 - Snapshot saving and loading: one **Snapshots** menu with **Load from file** and 40 named **Quick slots** (F6 rename, F8 delete); the F3/F4 hot keys open the slot list directly, with Enter bound to the verb they were pressed for.
 - ZIP archive support: browse, extract, load and delete files inside ZIP archives.
 - Configurable keyboard hotkeys with hint display in menus.
@@ -166,7 +168,7 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+F1 Hardware info
 - ALT+F2 Turbo mode (the selected clock — 3.5/7/14/28 MHz — is shown as a top-border notification)
 - ALT+F5 Debug
-- ALT+F6 Disk menu
+- ALT+F7 Fast menu (0 Machines, 1 Config profiles, 2 Joystick profiles, 3 Devices, 4 Video, 5 Audio, 6 CPU speed)
 - ALT+F8 Toggle LED indicators
 - ALT+F9 Input poke
 - ALT+F10 NMI (Pentagon: modal menu with NMI / Magic Button options; Scorpion: magic button into the service monitor)
@@ -175,8 +177,6 @@ Default hotkey bindings (all hotkeys except F1 and ALT+F1 are reconfigurable via
 - ALT+PageUp Switch Gigascreen mode (Off → On → Auto cycle)
 - ALT+F3 Quick load snapshot
 - ALT+F4 Quick save snapshot
-- ALT+CTRL+Home Switch HDMI video mode (60Hz cycle)
-- ALT+CTRL+End Switch HDMI video mode (50Hz cycle)
 - PrntScr BMP screen capture (Folder /pico-speccy/screenshots at SDCard)
 - WASD/KL - Kempston joystick parallel-emulation
 - Menu (Win) key (Profi / Karabas-Pro): ROM-set and quick-setting hotkeys — press F1 for the full list

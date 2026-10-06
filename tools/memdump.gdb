@@ -339,8 +339,14 @@ if Z80Ops::isAtm
   printf "== ATM-Turbo ==\n"
   printf "atm1=%d aFE=%02X aFB=%02X pFDFD=%02X p7ffd=%02X beta=%d cpm=%d trdos=%d ro=%02X\n", (int)Atm::atm1, (unsigned char)Atm::aFE, (unsigned char)Atm::aFB, (unsigned char)Atm::pFDFD, (unsigned char)Atm::p7ffd, (int)Atm::beta, (int)(Atm::atm1 ? !(Atm::aFE & 0x80) : !(Atm::a77 & 0x200)), (int)ESPectrum::trdos, (unsigned char)g_atm_ro
   printf "slots=%08X %08X %08X %08X\n", (unsigned)MemESP::ramCurrent[0], (unsigned)MemESP::ramCurrent[1], (unsigned)MemESP::ramCurrent[2], (unsigned)MemESP::ramCurrent[3]
+  printf "p77=%02X a77=%04X pBF=%02X shaden=%d atm3=%d videoLatch=%d gmx_ext_live=%d pend_on=%d pend_off=%d ds80=%d mult=%d\n", (unsigned char)Atm::p77, (unsigned short)Atm::a77, (unsigned char)Atm::pBF, (int)Atm::shaden, (int)Atm::atm3, (int)MemESP::videoLatch, (int)VIDEO::gmx_ext_live, (int)VIDEO::gmx_ext_pending_on, (int)VIDEO::gmx_ext_pending_off, (int)profi_ds80_active, (int)ESPectrum::multiplicator
+  printf "pF7=%03X %03X %03X %03X | %03X %03X %03X %03X\n", (unsigned)Atm::pF7[0], (unsigned)Atm::pF7[1], (unsigned)Atm::pF7[2], (unsigned)Atm::pF7[3], (unsigned)Atm::pF7[4], (unsigned)Atm::pF7[5], (unsigned)Atm::pF7[6], (unsigned)Atm::pF7[7]
+  printf "pal=%02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X border=%02X\n", (unsigned char)Atm::pal[0], (unsigned char)Atm::pal[1], (unsigned char)Atm::pal[2], (unsigned char)Atm::pal[3], (unsigned char)Atm::pal[4], (unsigned char)Atm::pal[5], (unsigned char)Atm::pal[6], (unsigned char)Atm::pal[7], (unsigned char)Atm::pal[8], (unsigned char)Atm::pal[9], (unsigned char)Atm::pal[10], (unsigned char)Atm::pal[11], (unsigned char)Atm::pal[12], (unsigned char)Atm::pal[13], (unsigned char)Atm::pal[14], (unsigned char)Atm::pal[15], (unsigned char)VIDEO::borderColor
   printf "FDC: disk=%d state=%u step=%u cmd=%02X trk=%u sec=%u data=%02X status=%04X ctrl=%05X\n", (int)ESPectrum::fdd.diskS, (unsigned)ESPectrum::fdd.state, (unsigned)ESPectrum::fdd.stepState, (unsigned char)ESPectrum::fdd.command, (unsigned char)ESPectrum::fdd.track, (unsigned char)ESPectrum::fdd.sector, (unsigned char)ESPectrum::fdd.data, (unsigned short)ESPectrum::fdd.status, (unsigned)ESPectrum::fdd.control
   printf "disk_present=%d\n", (int)(ESPectrum::fdd.disk[ESPectrum::fdd.diskS] != 0)
+  if Atm::evo
+    printf "evo: eff7=%02X fddMask=%X vgSys=%02X inNmi=%d nmiClr=%d inTrdemu=%d fnt=%d\n", (unsigned char)EvoBase::pEFF7, (unsigned char)EvoBase::fddMask, (unsigned char)EvoBase::vgSys, (int)EvoBase::inNmi, (int)EvoBase::nmiClrPending, (int)EvoBase::inTrdemu, (int)g_atm_fnt
+  end
   set logging enabled off
   set logging redirect off
 end

@@ -40,7 +40,7 @@ SECTIONS
          * rest of the object in SRAM: it is a named section, so the object-wide
          * RAM rule below never sees it. */
         *(.z80cold .z80cold.*)
-        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a: @Z80_CORE_TEXT_EXCLUDE@) .text*)
+        *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a: *FtInflate.c.o* @Z80_CORE_TEXT_EXCLUDE@) .text*)
         *(.fini)
         *crtbegin.o(.ctors)
         *crtbegin?.o(.ctors)
@@ -91,7 +91,7 @@ SECTIONS
          * because ld assigns an input section to the FIRST output section that
          * matches it in script order, and both of those come earlier. */
         *(EXCLUDE_FILE(*libgcc.a: *libc.a:*lib_a-mem*.o *libm.a:
-                       *scorpion_gmx_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o*) .rodata*)
+                       *scorpion_gmx_rom.c.o* *scorpion_prof_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o* *scorpion_evo_rom.c.o* *FtInflate.c.o*) .rodata*)
         *(.srodata*)
         . = ALIGN(4);
         *(SORT_BY_ALIGNMENT(SORT_BY_NAME(.flashdata*)))
@@ -177,9 +177,11 @@ SECTIONS
         @Z80_CORE_RAM_RULE@
         @TIME_CRITICAL_RULE@
 
-        *(.text*)
+        /* FtInflate.c.o (the VDAC2 copy of tinfl) belongs to .ftovl, which comes
+         * later in script order — keep it out of this catch-all too. */
+        *(EXCLUDE_FILE(*FtInflate.c.o*) .text*)
         . = ALIGN(4);
-        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o*) .rodata*)
+        *(EXCLUDE_FILE(*scorpion_gmx_rom.c.o* *scorpion_prof_rom.c.o* *tsconf_roms.c.o* *atm_roms.c.o* *scorpion_evo_rom.c.o* *FtInflate.c.o*) .rodata*)
         . = ALIGN(4);
 
         *(.data*)
@@ -302,6 +304,7 @@ SECTIONS
     __ngsovl_win_size  = @NGSOVL_WIN_SIZE_EFFECTIVE@;
     __dmaovl_win_size  = @DMAOVL_WIN_SIZE_EFFECTIVE@;
     __tsovl_win_size   = @TSOVL_WIN_SIZE_EFFECTIVE@;
+    __ftovl_win_size   = @FTOVL_WIN_SIZE_EFFECTIVE@;
     __gsovl_win_start  = ORIGIN(RAM) + LENGTH(RAM) - __mos_mailbox - SIZEOF(.stack_dummy) - __gsovl_win_size;
     __gsovl_win_end    = __gsovl_win_start + __gsovl_win_size;
     /* NeoGS-only window directly under .gsovl: a classic-GS or GS-off boot
@@ -312,6 +315,10 @@ SECTIONS
     __dmaovl_win_end   = __dmaovl_win_start + __dmaovl_win_size;
     __tsovl_win_start  = __dmaovl_win_start - __tsovl_win_size;
     __tsovl_win_end    = __tsovl_win_start + __tsovl_win_size;
+    /* TS-Conf VDAC2 window, the LOWEST: only ever resident together with .tsovl,
+       and a TS-Conf boot without VDAC2 gets it as a longer base heap region. */
+    __ftovl_win_start  = __tsovl_win_start - __ftovl_win_size;
+    __ftovl_win_end    = __ftovl_win_start + __ftovl_win_size;
 
 @GSOVL_SECTION@
 @NGSOVL_SECTION@
@@ -325,7 +332,9 @@ SECTIONS
         "ERROR: .dmaovl overflowed the Z80 DMA overlay window. Re-link with -DDMAOVL_WIN_SIZE=12288, read the real size from `arm-none-eabi-size -A <elf> | grep .dmaovl`, then fix the AUTO arithmetic in CMakeLists.txt")
     ASSERT(__tsovl_bss_end <= __tsovl_win_end,
         "ERROR: .tsovl overflowed the TS-Conf code overlay window. Re-link with -DTSOVL_WIN_SIZE=24576, read the real size from `arm-none-eabi-size -A <elf> | grep .tsovl`, then fix the AUTO arithmetic in CMakeLists.txt")
-    ASSERT(__end__ <= __tsovl_win_start,
+    ASSERT(__ftovl_end <= __ftovl_win_end,
+        "ERROR: .ftovl overflowed the VDAC2 overlay window. Re-link with -DFTOVL_WIN_SIZE=32768, read the real size from `arm-none-eabi-size -A <elf> | grep ftovl`, then fix the AUTO arithmetic in cmake/memory-layout.cmake")
+    ASSERT(__end__ <= __ftovl_win_start,
         "ERROR: .bss/heap start reaches into the code overlay windows")
     .flash_end : {
         KEEP(*(.embedded_end_block*))
@@ -358,12 +367,20 @@ SECTIONS
     .psramroms : ALIGN(4096) {
         KEEP(*(.psramrom_magic))
         KEEP(*scorpion_gmx_rom.c.o*(.rodata*))
+        KEEP(*scorpion_prof_rom.c.o*(.rodata*))
         KEEP(*tsconf_roms.c.o*(.rodata*))
         KEEP(*atm_roms.c.o*(.rodata*))
+        KEEP(*scorpion_evo_rom.c.o*(.rodata*))
         . = ALIGN(4);
     } > FLASH =0xaa
     __psramrom_start = ADDR(.psramroms);
-    __psramrom_end   = ADDR(.psramroms) + SIZEOF(.psramroms);
+    /* The VDAC2 window's LOAD image follows the ROMs, inside the traded range: it is
+     * copied to RAM only on a TS-Conf boot with VDAC2 on, and TS-Conf needs these
+     * ROMs (FlashRoms::romsUsable), so on a board that traded them it is never read
+     * — CodeOverlay::apply additionally refuses the window unless FlashRoms::intact().
+     * Its VMA is the fixed window under .tsovl; only the LMA lives here. The template
+     * (cmake/memory-layout.cmake) also sets __psramrom_end, which has to cover it. */
+@FTOVL_SECTION@
     PROVIDE(__flash_binary_end = __psramrom_end);
 
     /* ── GM.DLS wavetable bank flash region ──────────────────────────────────

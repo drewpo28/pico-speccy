@@ -6,6 +6,7 @@ See Timex.h for the model and the references.
 */
 
 #include "Timex.h"
+#include "app/LastRun.h"
 
 #include <string.h>
 
@@ -159,6 +160,7 @@ bool mountDck(const std::string& path) {
     rebuild();
     Debug::log("[DCK] mounted %s: chunks=%02X (%u KB) at %p",
                path.c_str(), (unsigned)need, (unsigned)(span >> 10), (void*)s_blk);
+    LastRun::note(path);
     return true;
 }
 

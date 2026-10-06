@@ -31,6 +31,9 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 */
 
+#include "app/DramPattern.h"
+#include "speccy/core/Pss.h"
+#include "app/PerfFdc.h"
 #include <hardware/watchdog.h>
 #include <stdio.h>
 #include <string>
@@ -43,10 +46,12 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/sound/SnSound.h"
 #include "hardware/clocks.h"
 #include "Subsystem.h"
+#include "FlashRoms.h"
 #include "speccy/z80/CPU.h"
 #include "Config.h"
 #include "speccy/machines/TsConf/ZxEvoAvr.h"
 #include "ESPectrum.h"
+#include "LastRun.h"
 #include "fs/FileUtils.h"
 #include "drivers/usbhost/UsbMsc.h"
 #include "drivers/sdcard/sdcard.h"
@@ -58,6 +63,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "ui/UiDialog.h"
 #include "ui/UiGfx.h"
 #include "speccy/machines/Alf.h"
+#include "speccy/machines/Atm.h"
 #include "speccy/core/Ports.h"
 #include "speccy/core/Snapshot.h"
 #include "speccy/devices/tape/Tape.h"
@@ -95,11 +101,15 @@ extern "C" volatile uint32_t hdmi_au_late_write_ct;
 #include "speccy/devices/storage/Nvram24.h"
 #include "speccy/devices/Z80DMA.h"
 #include "speccy/devices/gs/GS.h"
+#include "speccy/machines/TsConf/Ft812.h"
+#include "speccy/roms/48k/romSinclair48K.h"   // the ZX character set: the FT812 ROM fonts are scaled from it
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/machines/Timex.h"
+#include "speccy/machines/EvoBase.h"
 #include "CodeOverlay.h"
 #include "speccy/devices/gs/NgsSd.h"
 #include "speccy/devices/gs/NgsMp3.h"
+#include "speccy/core/Rzx.h"
 
 // +3 disk auto-start (plus3AutoBoot*, below ESPectrum::reset). Guest frames.
 #define P3BOOT_DELAY_FRAMES  150
@@ -706,15 +716,8 @@ static void resolveVideoOutput() {
 // boot and every build — the property the memset(0) this replaces existed for
 // (halt2int's floating-bus verdict must not flip from build to build).
 static void powerOnDramFill(uint8_t *p, uint32_t page) {
-  uint32_t rnd = 0x9E3779B9u * (page + 1); // fixed per-page seed, deliberately no RNG
-  for (uint32_t a = 0; a < MEM_PG_SZ; ++a) {
-    uint8_t v = (((a >> 3) ^ (a >> 6)) & 1) ? 0x00 : 0xFF;
-    rnd ^= rnd << 13; rnd ^= rnd >> 17; rnd ^= rnd << 5;
-    // ~1/32 bytes carry defective cells; ANDing two draws keeps the flips
-    // sparse (mostly 1-3 bits per affected byte), like the real thing.
-    if ((rnd & 0x1F) == 0) v ^= (uint8_t)((rnd >> 8) & (rnd >> 16));
-    p[a] = v;
-  }
+  DramPattern g(page);   // src/app/DramPattern.h
+  g.next(p, MEM_PG_SZ);
 }
 
 // Put every POINTER-backed ZX RAM page into the state a power-on leaves. Called at
@@ -727,8 +730,17 @@ static void powerOnDramFill(uint8_t *p, uint32_t page) {
 // boot went wrong in ways that only F12 cleared (hw 2026-09-20 — F12 works precisely
 // because setup() runs this). Flash-backed pointers are skipped; the pattern is
 // deterministic per page, which is what halt2int's floating-bus verdict needs.
-void ESPectrum::powerOnRamFill() {
-  const bool dramPattern = !isKarabasRomset(Config::romSet);
+void ESPectrum::powerOnRamFill(int arch, int romset) {
+  // ZX Evolution BaseConf: zeros, as UnrealSpeccy powers up. EvoProfROM's Shadow
+  // monitor saves the old #BF in #8001 of the CALLER's window-2 page (page 15
+  // #00B7, before it maps its work page #FB there) and restores it from #8001 of
+  // page #FB (#050C) — a cell nothing ever writes (its cold init clears from #8069
+  // up). With the DRAM pattern that byte was #FE: #BF got D3 = 1, and the next
+  // ordinary #BF write made the falling edge — an NMI into the monitor whenever
+  // TR-DOS was picked from the 128 menu (hw 2026-10-03). Zero = harmless #BF = 0.
+  const RomsetIdx rs = romset < 0 ? (RomsetIdx)Config::romSet : (RomsetIdx)romset;
+  const bool evo = arch < 0 ? Config::isEvoBase() : (arch == A_ATM && isEvoBaseRomset(rs));
+  const bool dramPattern = !isKarabasRomset(rs) && !evo;
   size_t n = 0;
   for (size_t i = 0; i < MEM_PG_CNT; ++i) {
     if (MemESP::ram[i].memType() == mem_type_t::POINTER) {
@@ -740,11 +752,12 @@ void ESPectrum::powerOnRamFill() {
     }
   }
   Debug::log("ZX RAM: %u pages %s, freeHeap=%u", (unsigned)n,
-             dramPattern ? "set to DRAM power-on pattern" : "cleared (Karabas own boot screen)",
+             dramPattern ? "set to DRAM power-on pattern" : "cleared (Karabas / ZX-Evo)",
              getFreeHeap());
 }
 
 void ESPectrum::setup() {
+  LastRun::mute(true);   // remounts of remembered media are not "started"; unmuted below
   //=======================================================================================
   // INIT FILESYSTEM
   //=======================================================================================
@@ -808,7 +821,9 @@ void ESPectrum::setup() {
   // the reserveFrameBuffer() re-check below, which is the first allocation that
   // can want the extra room.
   CodeOverlay::apply(Config::arch == A_TSCONF, Config::gs_enabled != 0, Config::dma_mode != 0,
-                     Config::gs_enabled == 2);   // NeoGS-only code/data window
+                     Config::gs_enabled == 2,    // NeoGS-only code/data window
+                     Config::tsconf_vdac2        // VDAC2 window (with TS-Conf only); its load
+                       && FlashRoms::intact());  // image is in .psramroms, gone once traded
   // Framebuffer re-check: the block was already claimed at the top of setup(), from
   // a pristine heap and for the DEFAULT mode. This is where the mode the user
   // actually picked is honoured — a no-op when it matches, a resize when it does
@@ -1235,6 +1250,28 @@ void ESPectrum::setup() {
     Debug::log2SD("setup: GS::init done, freeHeap=%u", (unsigned)getFreeHeap());
   }
 
+  // ATM / ZX-Evo ROM pages: the overlay pages are flattened into the butter arena.
+  // Claimed HERE, before the GM.DLS bank: with NeoGS on a ZX-Evo (4 MB strip) the
+  // arena is ~2.2 MB and a 1.6 MB bank loaded first left no room for them, so the
+  // machine ran its ROMs unpatched (hw 2026-10-05). Atm::reset() re-runs it.
+  if (Config::arch == A_ATM) Atm::resolveRoms();
+
+  // TS-Conf VDAC2 (FT812): 1 MB RAM_G + the synthesized ROM fonts + the chip state
+  // out of the butter arena (Buffer::pageBudget reserved them). A board without
+  // QSPI PSRAM cannot hold it — the option is under the TS-Conf page, which is
+  // only offered on such boards, but a persisted pick can arrive from elsewhere.
+  if (Config::arch == A_TSCONF && Config::tsconf_vdac2) {
+    Ft812::clockUs = []() -> uint64_t { return time_us_64(); };
+    Ft812::intHook = TsConf::ftIntRaise;
+    Ft812::swapPollHook = TsConf::ftSwapPoll;
+    const bool ok = butter_psram_size() != 0 &&
+      Ft812::init(gb_rom_0_sinclair_48k + 0x3D00,
+                  [](size_t n, bool psram) -> void* { return Buffer::palloc(n, Buffer::NEED_POINTER | (psram ? Buffer::PREFER_PSRAM : 0)); },
+                  [](void* p) { Buffer::pfree(p); });
+    if (!ok) OSD::bootNotice("VDAC2 (FT812) off: no PSRAM for its 1 MB RAM_G");
+    Debug::log2SD("setup: Ft812::init %s, freeHeap=%u", ok ? "ok" : "FAILED", (unsigned)getFreeHeap());
+  }
+
   // GM.DLS MIDI bank: load into butter PSRAM (preferred) or provision the flash
   // partition from SD. MUST be here — AFTER initPools() (the PSRAM arena is now
   // final) and BEFORE VIDEO::Init(): a flash erase disables XIP for the whole QMI
@@ -1305,7 +1342,8 @@ void ESPectrum::setup() {
   // twin). Scorpion Green (316-line frame) gets its own exact set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
-      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm))) {
+      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
+      Config::isEvo48Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1315,7 +1353,7 @@ void ESPectrum::setup() {
     tstatesPerSampleFP = (((Config::arch == A_SCORP && isKayRomset(Config::romSetScorp))
                                ? TSTATES_PER_FRAME_KAY : TSTATES_PER_FRAME_48) << 8)
                          / ESP_AUDIO_SAMPLES_48;   // (KAY: Unreal's 69887 T frame)
-  } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {   // (ATM: the 316-line ATM2)
+  } else if ((Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) {   // (ATM: the 316-line ATM2; ScorpEvo falls to the Pentagon set)
     // Green PCB: 70784 T / 632 samples = exactly 31250 Hz at 49.4462 fps.
     samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
@@ -1324,7 +1362,14 @@ void ESPectrum::setup() {
 
     Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+  } else if (Config::isEvo60Raster()) {
+    samplesPerFrame = ESP_AUDIO_SAMPLES_EVO60;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_EVO60;
+    audioAYDivider = ESP_AUDIO_AY_DIV_EVO60;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_EVO60;
+    Audio_freq = ESP_AUDIO_FREQ_EVO60;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_EVO60 << 8) / ESP_AUDIO_SAMPLES_EVO60;
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -1488,13 +1533,16 @@ void ESPectrum::setup() {
     ESPectrum::reset(0);
   }
 
+  LastRun::mute(false);  // a resumed snapshot names itself
   // Load snapshot if present in Config::
   Debug::log("setup: ram_file='%s'", Config::ram_file.c_str());
   Debug::log2SD("setup: ram_file='%s'", Config::ram_file.c_str());
   if (Config::ram_file != NO_RAM_FILE) {
     if (FileUtils::fsMount) {
       Debug::log2SD("setup: LoadSnapshot begin");
+      Pss::bootResume = true;   // a .pss that rebooted to apply its settings must not loop
       LoadSnapshot(Config::ram_file, A_NONE, R_NONE);
+      Pss::bootResume = false;
       Debug::log2SD("setup: LoadSnapshot done");
     }
     Config::last_ram_file = Config::ram_file;
@@ -1505,7 +1553,9 @@ void ESPectrum::setup() {
 
   // Re-mount the tape remembered from a previous session (NVS) so it is present
   // at cold boot, the same way disk mounts are restored by loadDiskMounts above.
+  LastRun::mute(true);
   Tape::LoadRemembered();
+  LastRun::mute(false);
 
   // From here on a stick turning up is a hotplug, not the state we booted in.
   // The anchor has to be HERE and not in FileUtils::initFileSystem(): with a
@@ -1609,6 +1659,10 @@ void ESPectrum::reset() {
 }
 
 void ESPectrum::reset(uint8_t romInUse) {
+#if PERF_TRACE
+  PerfFdc::reset();
+#endif
+  Rzx::onReset();   // a reset ends an RZX playback (not the one its own snapshot load does)
   // Ports. Keyboard rows 0-7 are deliberately NOT wiped: the matrix is
   // physical on real hardware, so keys held THROUGH a reset stay pressed —
   // the Byte's built-in ROM test is entered exactly that way (Ы+В+А = S+D+F
@@ -1863,7 +1917,8 @@ void ESPectrum::reset(uint8_t romInUse) {
   // its own exact 632-sample set below.
   if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
-      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm))) {
+      (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
+      Config::isEvo48Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -1872,14 +1927,21 @@ void ESPectrum::reset(uint8_t romInUse) {
     tstatesPerSampleFP = (((Config::arch == A_SCORP && isKayRomset(Config::romSetScorp))
                                ? TSTATES_PER_FRAME_KAY : TSTATES_PER_FRAME_48) << 8)
                          / ESP_AUDIO_SAMPLES_48;   // (KAY: Unreal's 69887 T frame)
-  } else if (Config::arch == A_SCORP || Config::arch == A_ATM) {   // (ATM: the 316-line ATM2)
+  } else if ((Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase())) {   // (ATM: the 316-line ATM2; ScorpEvo falls to the Pentagon set)
     samplesPerFrame = ESP_AUDIO_SAMPLES_SCORP_GR;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_SCORP_GR;
     audioAYDivider = ESP_AUDIO_AY_DIV_SCORP_GR;
     audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_SCORP_GR;
     Audio_freq = ESP_AUDIO_FREQ_SCORP_GR;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SCORPION_GR << 8) / ESP_AUDIO_SAMPLES_SCORP_GR;
-  } else if (Config::arch == A_128K || Config::arch == A_ALF) {
+  } else if (Config::isEvo60Raster()) {
+    samplesPerFrame = ESP_AUDIO_SAMPLES_EVO60;
+    audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_EVO60;
+    audioAYDivider = ESP_AUDIO_AY_DIV_EVO60;
+    audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_EVO60;
+    Audio_freq = ESP_AUDIO_FREQ_EVO60;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_EVO60 << 8) / ESP_AUDIO_SAMPLES_EVO60;
+  } else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_128;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_128;
     audioAYDivider = ESP_AUDIO_AY_DIV_128;
@@ -1989,7 +2051,9 @@ void ESPectrum::reset(uint8_t romInUse) {
 
   // Re-mount the remembered tape (reset() wiped it above) so a tape survives an
   // F11 reset like a mounted disk does. No-op if no tape is remembered.
+  LastRun::mute(true);   // re-mounting is not starting it
   Tape::LoadRemembered();
+  LastRun::mute(false);
 }
 
 //=======================================================================================
@@ -2015,9 +2079,13 @@ IRAM_ATTR bool ESPectrum::readKbd(fabgl::VirtualKeyItem *Nextkey) {
       }
     } else if (Nextkey->vk ==
                fabgl::VK_SCROLLLOCK) { // Change CursorAsJoy setting
+      // ZX Evolution BaseConf: Scroll Lock is the AVR's raster switch (zx.c, MODES_RASTER).
+      if (Config::isEvoBase()) { EvoBase::scrollLockRaster(); return false; }
       Config::CursorAsJoy = !Config::CursorAsJoy;
       PS2Controller.keyboard()->setLEDs(false, false, Config::CursorAsJoy);
       Config::save();
+      // The Scroll Lock LED was the only feedback — and USB keyboards often have none.
+      OSD::notify(Config::CursorAsJoy ? " Cursor as joystick: ON " : " Cursor as joystick: OFF ");
       r = false;
     }
   }
@@ -3728,6 +3796,9 @@ void ESPectrum::loop() {
         bool mix_saa = SaaSubsys::enabled && saaChip;
         bool mix_midi = MidiSubsys::enabled && Midi::enabled == 4 && audioBufferMIDI_L && audioBufferMIDI_R;
         bool mix_pit = PitSubsys::enabled && audioBufferPIT;
+        // VDAC2 (FT812) MJPEG player: the AVI's 8-bit PCM track, resampled to our rate,
+        // mixed unipolar like the beeper/Covox (it is unsigned 8-bit already).
+        const uint8_t* ftv = Ft812::enabled ? Ft812::videoAudioFrame(samplesPerFrame, ESP_AUDIO_FREQ_PENTAGON) : nullptr;
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;
         bool mix_fdd = fddSndEnabledMix && (fddSound.click_count > 0 || fddSound.motor_noise);
@@ -3737,6 +3808,7 @@ void ESPectrum::loop() {
           int beeper_L = overSamplebuf[i];
           if (mix_pit) beeper_L += audioBufferPIT[i];
           if (mix_fdd) beeper_L += getFDDSample(i);
+          if (ftv) beeper_L += ftv[i] >> 1;
           int beeper_R = beeper_L;
           if (mix_covox) {
             beeper_L += audioBufferCovoxL[i];

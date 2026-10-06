@@ -73,6 +73,11 @@ void persistEnterVerb(bool save);
 void snapSessionBegin();
 void snapSessionEnd();
 void loadSnapshotFile();
+// Convert a saved snapshot to .szx / .z80 / .sna: format, folder (the Web Archives
+// picker), name, overwrite, result. `legacySna` = an old .sna slot (plain copy).
+void convertSnapshot(const std::string& src, const std::string& baseName, bool legacySna);
+void act_rzxStop();
+const char* vl_rzx();
 void act_updateFirmware();
 #if TFT
 // Video > TFT panel > Restore defaults: stages the driver's own default MADCTL /

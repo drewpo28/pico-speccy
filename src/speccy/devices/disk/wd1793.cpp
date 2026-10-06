@@ -29,6 +29,7 @@ THE SOFTWARE.
 #include <stdlib.h>
 #include <stdio.h>
 #include "wd1793.h"
+#include "app/LastRun.h"
 #include "app/Debug.h"
 #include "app/Config.h"
 #include "speccy/z80/CPU.h"
@@ -43,6 +44,7 @@ THE SOFTWARE.
 #include "trdos_boot.h"
 #include "app/Buffer.h"
 #include "app/TryAlloc.h"
+#include "app/PerfFdc.h"
 #include <string.h>
 
 static bool sclConvertToTRD(rvmWD1793 *wd);
@@ -1508,6 +1510,8 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
 }
 
 IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
+  PERF_FDC_PORT((uint8_t)(0x1F | ((a & 3) << 5)), true);
+  if ((a & 3) == 0) PERF_FDC_CMD(value, wd->track, wd->sector, wd->diskS);
   switch(a & 0x3) {
 
     case 0: //Command
@@ -1776,6 +1780,7 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
 IRAM_ATTR uint8_t rvmWD1793Read(rvmWD1793 *wd,uint8_t a) {
 
   uint8_t r;
+  PERF_FDC_PORT((uint8_t)(0x1F | ((a & 3) << 5)), false);
 
   switch(a & 0x3) {
     case 0: //Status
@@ -2701,6 +2706,7 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
     printf("Disk %d inserted! Disktype: %d\n",UnitNum, (int) diskType);
 
     wd->disk[UnitNum]->fname = Filename;
+    LastRun::note(Filename);   // the quick-slot name suggestion (muted for boot remounts)
 
     return true;
 

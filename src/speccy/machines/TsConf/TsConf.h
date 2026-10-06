@@ -42,6 +42,7 @@ the Free Software Foundation, either version 3 of the License, or
 // tools/tsdram_cache_test.cpp can prove it against a plain tag model.
 extern uint8_t  g_ts_memcyc;
 #include "TsDramCache.h"
+#include "Ft812.h"   // Ft812::enabled (ftVideo)
 
 class TsConf {
 public:
@@ -202,6 +203,18 @@ public:
     // Earliest T-state (>= CPU::tstates, <= statesInFrame) at which intLine()
     // can become true — where a HALTed CPU may sleep to (CPU::loop Stage D).
     static uint32_t nextIntEvent();
+    // VDAC2: with FT_EN (VConfig b2) set the FPGA drives the LINE interrupt source
+    // from the FT812's INT pin instead of the line counter (top.v
+    // `int_start_lin = vdac2_msel ? int_start_ft : line_start_s`). Ft812::intHook
+    // calls this on every 0->1 edge of the chip's INT line (core0).
+    static void ftIntRaise();
+    // Ft812::swapPollHook: the guest read REG_DLSWAP while a swap is pending. A
+    // tight loop doing that is fast-forwarded to the next interrupt event or the
+    // frame end (the swap is taken at the frame tick) — like the DMAStatus poll.
+    static void ftSwapPoll();
+    // FT_EN set and the board fitted. Inline: intLine() asks on every checked
+    // instruction, and a flash call there would be an XIP fetch per instruction.
+    static inline bool ftVideo() { return Ft812::enabled && (r.vconf & 0x04); }
     static void intEnableHook();   // EI/RETN/RETI: wake the unchecked slice if INT is up
     static void endFrame();      // frame-relative INT/DMA timestamps wrap here
 
@@ -241,6 +254,13 @@ public:
 
     // ZX-mode screen page for the renderer (VPage with #7FFD-SCR folded in).
     static void refreshGrmem();
+
+    // .pss snapshot (src/speccy/core/Pss.cpp): the register file + the INT/DMA
+    // state as the PSTS block (CRAM/SFILE go as PSTC/PSTF). snapLoad() parses and
+    // rebuilds, so it runs after the pages and the generic latches are in.
+    static constexpr uint32_t SNAP_MAX = 80;
+    static uint32_t snapSave(uint8_t* out);
+    static void     snapLoad(const uint8_t* in, uint32_t n);
 };
 
 // Nonzero while a TS-Conf write-side hook is armed — the CPU write funnel's

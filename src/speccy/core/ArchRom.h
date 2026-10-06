@@ -78,7 +78,9 @@
     X(R_PHOENIX,        "Phoenix",          "ZXM-Phoenix 2 MB")           \
     X(R_ATM2_106,       "ATM2v106",         "ATM-Turbo 2 (BIOS 1.06.02)") \
     X(R_ATM3,           "ATM3",             "ATM-Turbo 3 (xBIOS 1.37 + test)") \
-    X(R_ATM3_107,       "ATM3v107",         "ATM-Turbo 3 (BIOS 1.07.13EC)")
+    X(R_ATM3_107,       "ATM3v107",         "ATM-Turbo 3 (BIOS 1.07.13EC)") \
+    X(R_EVO_BASE,       "EvoBase",          "BaseConf (EVO Reset Service)") \
+    X(R_SCORP_EVO,      "ScorpEvo",         "ScorpEvo (ZX-Evo, ProfROM 4.44)")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -258,7 +260,15 @@ inline bool isTsconfRomset(RomsetIdx r) {
 // ATM-Turbo 2+ (#xx77 system port, eight #xxF7 page registers, #FF palette). Both
 // boards share the 48K frame (224 T x 312 lines, uncontended) and the video modes;
 // see src/Atm.h. isAtm1Romset() is the one question that separates the two boards.
-inline bool isAtmRomset(RomsetIdx r)  { return r == R_ATM1 || r == R_ATM2_106 || r == R_ATM2 || r == R_ATM2X || r == R_ATM3 || r == R_ATM3_107; }
+inline bool isAtmRomset(RomsetIdx r)  { return r == R_ATM1 || r == R_ATM2_106 || r == R_ATM2 || r == R_ATM2X || r == R_ATM3 || r == R_ATM3_107 || r == R_EVO_BASE; }
+// ZX Evolution with the BaseConf FPGA configuration (svn.zxevo.ru pentevo/fpga/baseconf):
+// an ATM-Turbo 2+ memory manager extended to 4 MB, on the ATM arch (src/speccy/machines/
+// Atm.cpp `evo`). Its other configuration, TS-Conf, is A_TSCONF; the Machine menu shows
+// both under one "ZX Evolution" row.
+inline bool isEvoBaseRomset(RomsetIdx r) { return r == R_EVO_BASE; }
+// ScorpEvo: the ZX-Evo FPGA configuration that is a Scorpion ZS-1024 Turbo+ with
+// ProfROM on the Pentagon raster (romset of the Scorpion arch).
+inline bool isScorpEvoRomset(RomsetIdx r) { return r == R_SCORP_EVO; }
 // ATM-Turbo 3 v8.0: the whole ATM-Turbo 2+ plus 4 MB through #x7F7 / #xxE7 and the
 // #BF configuration port (see src/Atm.h).
 // Two BIOS images, as on the 2+: xBIOS 1.37 (+ MSD888's test in the lower 128 KB) and
@@ -270,6 +280,7 @@ inline bool isAtm1Romset(RomsetIdx r) { return r == R_ATM1; }
 // The on-board IDE (IDE::ATM) is a 2+ feature: the ATM1 has none, and neither does the
 // plain ATM-Turbo 2 (BIOS 1.06.02 carries no HDD code) — same #xx77/#xxF7 manager otherwise.
 inline bool atmHasIde(RomsetIdx r)    { return r == R_ATM2 || r == R_ATM2X || isAtm3Romset(r); }
+// The ZX Evolution's own IDE is NEMO-style (zports.v IS_NIDE_REGS), not the ATM xx0F one.
 // The plain ATM-Turbo 2 runs a 316-line frame (224 x 316 = 70784 T, the Scorpion Green
 // one): BIOS 1.06.02 times an INC HL / JR NC loop (18 T) between two frame INTs at
 // #3DBC and its boot menu's ISR (#813D) NOPs out the menu's exit (#80D9) unless the

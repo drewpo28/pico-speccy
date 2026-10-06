@@ -1046,6 +1046,8 @@ void repeat_me_for_input() {
 extern "C" void ts_render_core1_pump(void);
 extern "C" bool ts_render_core1_prio(void);   // render queue pre-empts GS::pump (Video.cpp)
 extern "C" volatile bool g_ts_c1_live;       // TS-Conf lines on core1 right now (Video.cpp)
+extern "C" volatile bool g_ft_c1_live;       // TS-Conf VDAC2: the FT812 frame renderer is live (Video.cpp)
+extern "C" void ft812_render_core1_pump(void);
 #ifdef VGA_HDMI
 extern "C" void hdmi_lut_clear(void);       // zero the .hdmi_lut section (hdmi.c)
 extern "C" void vga_reinit(void);
@@ -1087,6 +1089,10 @@ void __scratch_x("render") render_core() {
         // heap on every other machine, so calling them there would be a jump into
         // heap data. The flag is only ever true while TS-Conf has the queue up.
         if (g_ts_c1_live) ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
+        // TS-Conf VDAC2: one band of the FT812 display list per call (Video.cpp).
+        // The body lives in flash, not the TS overlay, so the gate is only a
+        // fast exit — no jump-into-heap hazard here.
+        if (g_ft_c1_live) ft812_render_core1_pump();
 #ifndef SOFTTV
         // Wall-clock-locked: runs GS-Z80 at exactly 12 MHz off core0.
         // Under SOFTTV, GS::pump() runs in pcm_call_inner (core0) instead,

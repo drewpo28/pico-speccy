@@ -20,6 +20,7 @@
 #include "UiStage.h"
 #include "UiStrings.h"
 #include "UiActions.h"
+#include "UiJoy.h"
 #include "UiDialog.h"
 #include "UiBrowser.h"
 #include "app/Subsystem.h"
@@ -142,7 +143,7 @@ static bool isIntNode(const Node* n) {
 enum NmKey : uint8_t {
     NK_NONE, NK_UP, NK_DOWN, NK_LEFT, NK_RIGHT, NK_ENTER,
     NK_ESC, NK_CLOSE, NK_HOME, NK_END, NK_PGUP, NK_PGDN,
-    NK_F2, NK_F3, NK_F4, NK_F6, NK_F8   // per-row verbs, only meaningful on dynamic levels
+    NK_F2, NK_F3, NK_F4, NK_F5, NK_F6, NK_F8   // per-row verbs, only meaningful on dynamic levels
 };
 
 static NmKey decode(const fabgl::VirtualKeyItem& k) {
@@ -160,6 +161,7 @@ static NmKey decode(const fabgl::VirtualKeyItem& k) {
         case fabgl::VK_F2:         return NK_F2;
         case fabgl::VK_F3:         return NK_F3;
         case fabgl::VK_F4:         return NK_F4;
+        case fabgl::VK_F5:         return NK_F5;
         case fabgl::VK_F6:         return NK_F6;
         case fabgl::VK_F8:         return NK_F8;
         case fabgl::VK_ESCAPE:     return NK_ESC;
@@ -598,6 +600,7 @@ static bool handleKey(NmKey k) {
         case NK_F2: pickOrDyn(2); break;
         case NK_F3: pickOrDyn(3); break;
         case NK_F4: pickOrDyn(4); break;
+        case NK_F5: pickOrDyn(5); break;
         case NK_F6: pickOrDyn(6); break;
         case NK_F8: pickOrDyn(8); break;
         case NK_CLOSE: S.quit = true; break;
@@ -683,6 +686,7 @@ static void runInternal(const Node* openAt, bool enterSaves = false) {
     Stage::begin();
     netStatusInvalidate();      // WiFi state may have changed since the last session
     profilesSessionBegin();     // ...and so may the profiles on the card
+    joyProfilesSessionBegin();  // ...and the joystick profiles
     snapSessionBegin();         // ...and the snapshot slots
     persistEnterVerb(enterSaves);
     S.depth = 0;
@@ -820,6 +824,7 @@ resume:
     OSD::textPageOverride = nullptr;
     OSD::progressOverride = nullptr;
     profilesSessionEnd();       // hand the row tables back
+    joyProfilesSessionEnd();
     snapSessionEnd();
     OSD::osdInfoRelease();      // ...and the info pages' text buffer
     if (ownDyn) { free(S.dyn); S.dyn = nullptr; }
@@ -843,6 +848,42 @@ void runPersist(bool save) {
     if (!available()) return;   // call sites fall back to the classic dialogs
     const Node* target = persistNodeFor();
     if (target) runInternal(target, save);
+}
+
+void runFastMenu() {
+    if (!available()) return;
+    static const char* const items[FAST_COUNT] = {
+        "Machines", "Config profiles", "Joystick profiles",
+        "Devices", "Video", "Audio", "CPU speed",
+    };
+    const Node* target[FAST_COUNT];
+    bool on[FAST_COUNT];
+    for (int i = 0; i < FAST_COUNT; i++) {
+        target[i] = fastMenuNode(i);
+        on[i] = (i == FAST_CPU) ||
+                (target[i] && (!target[i]->visible || target[i]->visible())
+                           && (!target[i]->enabled || target[i]->enabled()));
+    }
+    gfxBegin();
+    int sel, from = 0;
+    for (;;) {
+        sel = uiFastPick("Fast menu", items, on, FAST_COUNT, from);
+        if (sel != FAST_CPU) break;
+        static const char* const mhz[4] = { "3.5 MHz", "7 MHz", "14 MHz", "28 MHz" };
+        const int cur = ESPectrum::multiplicator & 3;
+        const char* rows[4];
+        char now[16];
+        for (int i = 0; i < 4; i++) rows[i] = mhz[i];
+        snprintf(now, sizeof(now), "%s  *", mhz[cur]);   // the clock it runs at now
+        rows[cur] = now;
+        const int m = uiFastPick("CPU speed", rows, nullptr, 4, cur);
+        if (m >= 0) { gfxEnd(); OSD::setTurbo((uint8_t)m); return; }
+        // Esc in CPU speed goes back to the fast menu, on its CPU row. Same width
+        // and taller, so the fast menu's box covers the CPU one completely.
+        from = FAST_CPU;
+    }
+    gfxEnd();
+    if (sel >= 0 && target[sel]) runInternal(target[sel]);
 }
 
 } // namespace nm

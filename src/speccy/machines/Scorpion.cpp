@@ -9,6 +9,7 @@
 #include "ui/OSDMain.h"
 #include "speccy/core/Ports.h"
 #include "speccy/z80/z80.h"
+#include "speccy/video/Video.h"
 
 extern int ram_pages, butter_pages, psram_pages, swap_pages;
 
@@ -105,4 +106,70 @@ uint8_t Scorpion::turboPlusRead(uint16_t address) {
     OSD::notifyClock(want ? " CPU: 7 MHz " : " CPU: 3.5 MHz ");
   }
   return 0xFF;
+}
+
+// ── .pss snapshot ─────────────────────────────────────────────────────────────
+
+uint32_t Scorpion::ramPages() {
+  if (g_scorp_gmx || g_scorp_kay == 4) return 128;
+  if (g_scorp_1024 || g_scorp_kay == 3) return 64;
+  return 16;
+}
+
+static constexpr uint8_t SNAP_VER = 1;
+
+uint32_t Scorpion::snapSave(uint8_t* out) {
+  uint32_t n = 0;
+  out[n++] = SNAP_VER;
+  out[n++] = Ports::kay7FFDd7;
+  out[n++] = Ports::gmxPort00;
+  out[n++] = Ports::gmxPort78FD;
+  out[n++] = Ports::gmxPort7EFD;
+  out[n++] = Ports::gmxScrollLo;
+  out[n++] = Ports::gmxScrollHi;
+  out[n++] = Ports::gmxPlane;
+  out[n++] = Ports::gmxMagicShift;
+  out[n++] = Ports::portDFFDgmx;
+  out[n++] = Ports::smucSys;
+  out[n++] = Ports::smucFdd;
+  return n;
+}
+
+void Scorpion::snapLoad(const uint8_t* in, uint32_t n) {
+  if (n < 12 || in[0] < 1) return;
+  Ports::kay7FFDd7     = in[1];
+  Ports::gmxPort00     = in[2];
+  Ports::gmxPort78FD   = in[3];
+  Ports::gmxPort7EFD   = in[4];
+  Ports::gmxScrollLo   = in[5];
+  Ports::gmxScrollHi   = in[6];
+  Ports::gmxPlane      = in[7];
+  Ports::gmxMagicShift = in[8];
+  Ports::portDFFDgmx   = in[9];
+  Ports::smucSys       = in[10];
+  Ports::smucFdd       = in[11];
+}
+
+void Scorpion::snapRemap() {
+  const uint32_t pages = ram_pages + butter_pages + psram_pages + swap_pages;
+  uint32_t c000 = MemESP::bankLatch;
+  if (c000 >= pages) c000 = MemESP::bankLatch & 7;
+  MemESP::bankLatch = c000;
+  MemESP::ramCurrent[3] = MemESP::ram[c000].sync(3);
+  MemESP::ramContended[3] = false;
+  if (g_scorp_gmx) {
+    // #78FD pages the 0x8000 window (page = value ^ 2); 0 after a reset = page 2.
+    uint32_t pg = Ports::gmxPort78FD ^ 2;
+    if (pg >= pages) pg = 2;
+    MemESP::ramCurrent[2] = MemESP::ram[pg].sync(2);
+    MemESP::ramContended[2] = false;
+    const uint8_t mult = (Ports::gmxPort7EFD & 0x80) ? 1 : 0;   // #7EFD D7 = 7 MHz
+    if (mult != ESPectrum::multiplicator) {
+      ESPectrum::multiplicator = mult;
+      CPU::updateStatesInFrame();
+    }
+    VIDEO::gmxExtRequest((Ports::gmxPort7EFD & 0x08) != 0);
+  }
+  Ports::kayTurboUpdate();
+  Ports::scorpionRomUpdate();   // romInUse from #1FFD / DOS / ROM latch / plane, page 0
 }

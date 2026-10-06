@@ -18,6 +18,8 @@
 // access, so one test each is all this needs.
 extern volatile uint8_t g_ngs_zxdma;
 
+namespace Pss { struct W; struct R; }
+
 class GS {
 public:
     static bool enabled;
@@ -139,6 +141,16 @@ public:
     // start must be >= 0x4000 and start+len <= 0x8000.
     static void    dumpWorkRam(uint16_t start, uint16_t len);
 
+    // .pss snapshot (src/speccy/core/Pss.cpp). snapSave writes PSGS + the RAM
+    // chunks (PSGP / PSGF); a load is snapLoadBegin (freezes and resets the card)
+    // -> snapLoadState / snapLoadPage per block -> snapLoadEnd (rebuilds and
+    // resumes, or resets the card when no matching state came in).
+    static bool snapSave(Pss::W& w);
+    static void snapLoadBegin();
+    static void snapLoadState(Pss::R& r, uint32_t size);
+    static void snapLoadPage(Pss::R& r, const char id[4], uint32_t size);
+    static void snapLoadEnd();
+
     static int16_t getSampleLeft();
     static int16_t getSampleRight();
 
@@ -162,6 +174,9 @@ public:
     static uint8_t  reg_ch[8];
 
     static volatile uint32_t int_count;  // pump owner writes; core0 live-rate diagnostic
+    // #B3 host->card bytes and the core0 time hostWriteB3 spent waiting for the
+    // card (NeoGS pacing / FIFO full) — the FT812_TRACE meter's "gs" field.
+    static volatile uint32_t hostB3Bytes, hostB3WaitUs;
 };
 
 

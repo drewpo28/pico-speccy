@@ -13,10 +13,12 @@
 #include "UiModel.h"
 #include "UiStage.h"
 #include "UiActions.h"
+#include "UiJoy.h"
 #include "UiStrings.h"
 #include "UiRender.h"   // SYM_* glyphs for the persist verb lists
 #include "app/Config.h"
 #include "fs/FileUtils.h"
+#include "speccy/core/Rzx.h"               // p_rzxPlaying (Snapshots > Stop RZX playback)
 #include "speccy/core/MemESP.h"         // butter_psram_size() for the Profi / ext-RAM predicates
 #include "app/FlashRoms.h"      // romsUsable()/extendable() for the GMX, TS-Conf and bank rows
 #include "drivers/psram/psram_spi.h"       // psram_size()
@@ -474,6 +476,12 @@ static bool p_showAtm() {
     return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
+// ZX Evolution BaseConf (ATM arch, R_EVO_BASE) running or staged.
+static bool p_evoBaseActive() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m < 0) return Config::isEvoBase();
+    return ((m >> 8) & 0xFF) == A_ATM && (m & 0xFF) == R_EVO_BASE;
+}
 static bool p_tsconfActive() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m < 0) return Config::arch == A_TSCONF;
@@ -605,7 +613,8 @@ static const Option* mach_scorpOpts(uint8_t& cnt) {
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, NM_MACH(A_SCORP, R_SCORP_GMX), TXT_ROM_SCORP_GMX_S };
         opts[n++] = { TXT_ROM_SCORP_1024, NM_MACH(A_SCORP, R_SCORP_1024), TXT_ROM_SCORP_1024_S };
-        opts[n++] = { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S };
+        if (FlashRoms::romsUsable())   // ProfROM is in the tradeable flash overlay too
+            opts[n++] = { TXT_ROM_SCORP_PROF, NM_MACH(A_SCORP, R_SCORP_PROF), TXT_ROM_SCORP_PROF_S };
     }
     cnt = n;
     return opts;
@@ -631,9 +640,13 @@ static const Option opt_mach_alf[] = {
 // changes (with page 3 following it from the 128K second half to the plain 48K
 // ROM). Costs 16 KB of flash for the Mr Gluk service ROM — paid for several times
 // over by the 48 KB of near-duplicates the old single 64 KB TS-BIOS blob carried.
+// ZX Evolution: one board, two FPGA configurations. BaseConf is the ATM arch
+// (Atm.cpp `evo`), TS-Conf its own arch; NM_MACH carries the arch per entry.
 static const Option opt_mach_tsconf[] = {
+    { TXT_ROM_EVO_BASE,    NM_MACH(A_ATM, R_EVO_BASE),       TXT_ROM_EVO_BASE_S    },
     { TXT_ROM_TSBIOS,      NM_MACH(A_TSCONF, R_TSCONF),      TXT_ROM_TSBIOS_S      },
     { TXT_ROM_TSBIOS_GLUK, NM_MACH(A_TSCONF, R_TSCONF_GLUK), TXT_ROM_TSBIOS_GLUK_S },
+    { TXT_ROM_SCORP_EVO,   NM_MACH(A_SCORP, R_SCORP_EVO),    TXT_ROM_SCORP_EVO_S   },
 };
 // ATM-Turbo 1 (#FE address-latch paging), ATM-Turbo 2 (BIOS 1.06.02, the 2+'s memory
 // manager without the IDE) and ATM-Turbo 2+ (1 MB, #xx77/#xxF7) with either BIOS.
@@ -652,6 +665,16 @@ static const Option opt_tsconf_clk[] = {
     { "3.5 MHz", 0 },
     { "7 MHz",   1 },
     { "14 MHz",  2 },
+};
+
+// ZX Evolution BaseConf raster — the AVR's MODES_RASTER (Scroll Lock on the real board,
+// kept in its NVRAM), video_sync_v.v / zclock.v: the frame, the INT position and, in
+// 48K/128K, the contention all follow it.
+static const Option opt_evo_raster[] = {
+    { "Pentagon", 0 },
+    { "60 Hz",    1 },
+    { "48K",      2 },
+    { "128K",     3 },
 };
 
 // Murmuzavr mode is the extended page count, not a machine — values are page counts, and
@@ -689,6 +712,20 @@ static const Node kMurmuzavr[] = {
 // has — so the level holds the CPU cap alone.
 static const Node kTsconf[] = {
     NM_RADIO(TXT_MACH_TSCONF_CLK, SET_TSCONF_CLK, opt_tsconf_clk, nullptr),
+    // VDAC2: the FT812 (EVE) video board on the Z-Controller SPI. Reboot-class
+    // because its 1 MB RAM_G is carved out of the butter PSRAM in setup().
+    NM_BOOL (TXT_MACH_TSCONF_VDAC2, SET_TSCONF_VDAC2, nullptr),
+    // Its renderer's filter: Fast = one texel per output pixel; Smooth = four taps
+    // over the pixel's footprint on every minified bitmap (the 1024x768 screen is
+    // shown at 5/16, so that is nearly all of them) — at ~4x the texel fetches.
+    NM_BOOL (TXT_MACH_TSCONF_VDAC2_SMOOTH, SET_TSCONF_VDAC2_SMOOTH, nullptr),
+    // Palette: the fixed 6x6x5 cube dithers every gradient into a checkerboard;
+    // adaptive = a median cut of each frame's colours into the same slots.
+    NM_BOOL (TXT_MACH_TSCONF_VDAC2_ADAPT, SET_TSCONF_VDAC2_ADAPT, nullptr),
+};
+
+static const Node kEvoBase[] = {
+    NM_RADIO(TXT_MACH_EVO_RASTER, SET_EVO_RASTER, opt_evo_raster, nullptr),
 };
 
 // Timex TC2068 cartridge port. A cartridge is not a setting: it is mounted and
@@ -721,6 +758,7 @@ static const Node kMachine[] = {
     NM_RADIO(TXT_MACH_ATM,   SET_MACHINE, opt_mach_atm,   p_showAtm),
     NM_RADIO(TXT_MACH_TSCONF, SET_MACHINE, opt_mach_tsconf, p_showTsconf),
     NM_SUB  (NM_IND TXT_MACH_TSCONF_OPTS, kTsconf, p_tsconfActive),
+    NM_SUB  (NM_IND TXT_MACH_EVO_OPTS, kEvoBase, p_evoBaseActive),
     NM_RADIO(TXT_MACH_ALF,   SET_MACHINE, opt_mach_alf,   nullptr),
     NM_RADIO(TXT_MACH_OTHER, SET_MACHINE, opt_mach_other, p_extRam),
     // Not a machine, but it lives with them by request: the built-in game — the
@@ -733,7 +771,11 @@ static const Node kMachine[] = {
 // so a new machine row names itself. Byte/Profi/Karabas/Scorpion/TS-Conf/ALF all
 // resolve the same way; Scorpion's runtime table is reached through nodeOptions().
 bool machineMenuName(const char*& family, const char*& romShort) {
-    const int32_t want = NM_MACH(archDisplay(Config::arch, Config::romSet), Config::romSet);
+    return machineMenuNameFor(Config::arch, Config::romSet, family, romShort);
+}
+
+bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort) {
+    const int32_t want = NM_MACH(archDisplay(arch, romSet), romSet);
     for (uint8_t i = 0; i < NM_COUNT(kMachine); i++) {
         const Node& n = kMachine[i];
         if (n.kind != K_RADIO || n.setting != SET_MACHINE) continue;
@@ -806,10 +848,11 @@ static const Option opt_sndled[] = {             // shared by Betadisk and MB-02
     { "Sound",        2 },
     { "Sound + LED",  3 },
 };
-// Values ARE Config::trdosBios and are NVS-persisted, so 6.11e appends as 4 and
-// "Custom" keeps 3 — the display order is free and puts it where it belongs.
+// Values ARE Config::trdosBios and are NVS-persisted, so 6.11e appends as 4, 5.04T
+// (the flash base, the default) as 5 and "Custom" keeps 3 — the display order is free.
 static const Option opt_trdos_rom[] = {
     { "5.03",        0 },
+    { "5.04T",       5 },
     { "5.04TM",      1 },
     { "5.05D",       2 },
     { "6.11e",       4 },
@@ -1248,18 +1291,17 @@ static const Node kJoyPrefs[] = {
     NM_RADIO(TXT_JOY_SECOND,      SET_SECOND_JOY,   opt_secondjoy, nullptr),
     NM_RADIO(TXT_JOY_KPORT,       SET_KEMPSTON_PORT, opt_kport,    nullptr),
 };
-// Values are the JOY_* defines from Config.h, so the display order is free.
-static const Option opt_joy_type[] = {
-    { "Cursor",     JOY_CURSOR    },
-    { "Kempston",   JOY_KEMPSTON  },
-    { "Sinclair 1", JOY_SINCLAIR1 },
-    { "Sinclair 2", JOY_SINCLAIR2 },
-    { "Fuller",     JOY_FULLER    },
+
+// The footer verb line of the profile list (K_PICK keeps it in opts[0]).
+static const Option opt_joyprof_foot[] = {
+    { SYM_ENTER " Use/Add  F4 Edit  F6 Name  F8 Del", 0 },
 };
 
 static const Node kJoystick[] = {
-    NM_RADIO (TXT_JOY_TYPE,    SET_JOY_TYPE,  opt_joy_type, nullptr),
-    NM_ACTION(TXT_JOY_MAPPING, act_joyDialog, nullptr),
+    // A profile = the joystick TYPE + the pad map, so the type is edited on the
+    // Mapping page with the rest of it (there is no separate Type row any more).
+    NM_PICK  (TXT_JOY_PROFILE, SET_JOY_PROFILE, joyprof_rows, joyprof_key,
+              joyprof_vlabel, opt_joyprof_foot, p_hasSD),
     NM_SUB   (TXT_JOY_PREFS,   kJoyPrefs,     nullptr),
 };
 
@@ -1336,7 +1378,8 @@ static const Option* pref_scorpOpts(uint8_t& cnt) {
         opts[n++] = { TXT_ROM_SCORP,      0, TXT_ROM_SCORP_S      };
         opts[n++] = { TXT_ROM_SCORP_GR,   1, TXT_ROM_SCORP_GR_S   };
         opts[n++] = { TXT_ROM_SCORP_1024, 2, TXT_ROM_SCORP_1024_S };
-        opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
+        if (FlashRoms::romsUsable())
+            opts[n++] = { TXT_ROM_SCORP_PROF, 3, TXT_ROM_SCORP_PROF_S };
         if (butter_psram_size() && FlashRoms::romsUsable())
             opts[n++] = { TXT_ROM_SCORP_GMX, 4, TXT_ROM_SCORP_GMX_S };
         opts[n++] = { TXT_ROM_LAST,       5, nullptr };
@@ -1566,8 +1609,11 @@ static const Node kNetwork[] = {
 // 40 fast slots as a K_PICK list in the right pane. The slots used to be two root
 // rows, Save and Load, over the same 40 slots — see the profile section for why
 // that shape went.
+static bool p_rzxPlaying() { return Rzx::mode != 0; }
 static const Node kSnapshots[] = {
     NM_ACTION(TXT_SNAP_FROMFILE, loadSnapshotFile, p_hasSD),
+    NM_ACTIONV(TXT_RZX_STOP, act_rzxStop, vl_rzx, p_rzxPlaying),
+    NM_BOOL  (TXT_RZX_LOOP, SET_RZX_LOOP, nullptr),
     NM_PICK  (TXT_SNAP_SLOTS, SET_PERSIST_SLOT, persist_rows, persist_key,
               persist_vlabel, persist_foot, p_hasSD),
 };
@@ -1617,6 +1663,31 @@ const Node* persistNodeFor() {
     for (uint8_t i = 0; i < NM_COUNT(kSnapshots); i++)
         if (kSnapshots[i].kind == K_PICK) return &kSnapshots[i];
     return nullptr;
+}
+
+// The fast menu's targets (Alt+F7). Found by what they ARE (the root row that holds
+// a given level, the pick list of a level), not by a hand-written path, so the rows
+// can move in the tree without breaking the hot key — the persistNodeFor() rule.
+static const Node* rootRowFor(const Node* kids) {
+    for (uint8_t i = 0; i < NM_COUNT(kRoot); i++)
+        if (kRoot[i].kind == K_SUB && kRoot[i].kids == kids) return &kRoot[i];
+    return nullptr;
+}
+static const Node* pickIn(const Node* level, uint8_t count, uint16_t setting) {
+    for (uint8_t i = 0; i < count; i++)
+        if (level[i].kind == K_PICK && level[i].setting == setting) return &level[i];
+    return nullptr;
+}
+const Node* fastMenuNode(int which) {
+    switch (which) {
+        case FAST_MACHINES:    return rootRowFor(kMachine);
+        case FAST_PROFILES:    return pickIn(kOptions, NM_COUNT(kOptions), SET_PROFILE_SLOT);
+        case FAST_JOYPROFILES: return pickIn(kJoystick, NM_COUNT(kJoystick), SET_JOY_PROFILE);
+        case FAST_DEVICES:     return rootRowFor(kHardware);
+        case FAST_VIDEO:       return rootRowFor(kVideo);
+        case FAST_AUDIO:       return rootRowFor(kAudio);
+        default:               return nullptr;
+    }
 }
 
 const Node* rootNodes()     { return kRoot; }

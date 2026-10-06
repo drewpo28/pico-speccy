@@ -161,6 +161,9 @@ public:
     static void serialMouseReset();
     // Clear the #FE latch on a machine reset (border + the GMX BRD read-backs).
     static void resetBorderLatch();
+    // The #FE latch for a snapshot (src/speccy/core/Pss.cpp).
+    static uint8_t feLatch() { return port254; }
+    static void setFeLatch(uint8_t v) { port254 = v; }
     // Per-frame packet pump: INT-driven drivers (pcmsmous) never poll the
     // status port, so packet building can't be left to port reads alone —
     // without this tick the first RST20H would never assert.

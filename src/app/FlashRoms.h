@@ -20,6 +20,11 @@
 //
 // Profi/Karabas are deliberately NOT in the overlay: p_showProfi() accepts SPI PSRAM,
 // so they stay useful on MURM1 with no QSPI chip.
+//
+// The Scorpion ProfROM (R_SCORP_PROF, ~230 KB) IS in it since 2026-10-04 — the owner's
+// call to give the firmware flash back when it hit the GM.DLS floor. Unlike GMX it runs
+// without QSPI PSRAM, so on a board that has traded the overlay ProfROM (and ScorpEvo)
+// fall back to the stock ZS-1024 — a real loss there, accepted.
 #pragma once
 
 #include <stddef.h>

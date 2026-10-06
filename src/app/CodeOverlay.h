@@ -21,7 +21,8 @@
 // the released windows above it when a request no longer fits below — newlib's
 // dlmalloc was built for a non-contiguous MORECORE (it fences the old top and
 // frees it). So every released window reaches the heap whatever is resident:
-// Layout, heap at the bottom: [heap ...][.tsovl][.dmaovl][.ngsovl][.gsovl][stack]
+// Layout, heap at the bottom: [heap ...][.ftovl][.tsovl][.dmaovl][.ngsovl][.gsovl][stack]
+// (.ftovl = TS-Conf VDAC2, 2026-10-01: never resident without .tsovl.)
 // (.ngsovl = the NeoGS-only half of GS, 2026-09-30: never resident without .gsovl,
 // so it never splits a run of released windows).
 //   nothing on             -> one region, heap gains all three
@@ -79,6 +80,22 @@
 #define TS_OVL_DATA
 #endif
 
+#if !defined(VDAC2_CODE_OVERLAY)
+#define VDAC2_CODE_OVERLAY 0
+#endif
+#if VDAC2_CODE_OVERLAY
+// TS-Conf VDAC2 (FT812) hot code: the .ftovl window, loaded only on a boot that
+// comes up as TS-Conf with Config::tsconf_vdac2 on — the one condition under which
+// Ft812::init runs — heap on every other boot. Anything here must be reachable only
+// through the initialised chip (Ft812's own entry points, ft_live, the video sink).
+// Code and read-only tables need separate names (section type conflict).
+#define FT_OVL_CODE __attribute__((section(".ftovl")))
+#define FT_OVL_RO   __attribute__((section(".ftovl_ro")))
+#else
+#define FT_OVL_CODE
+#define FT_OVL_RO
+#endif
+
 #if GS_CODE_OVERLAY
 // Zero-initialised GS DATA in the tail of the GS window (.gsovl_bss, NOLOAD,
 // zeroed by CodeOverlay when the window is loaded): heap on every session with
@@ -111,7 +128,7 @@ namespace CodeOverlay {
 // condition that gates the single GS::init() call site, which is why the GS
 // window needs no runtime claim: Audio > General Sound is AC_REBOOT, so a guest
 // can never bring the card up on a session that released its window.
-void apply(bool tsconf, bool gs, bool dma, bool ngs);
+void apply(bool tsconf, bool gs, bool dma, bool ngs, bool vdac2);
 
 // Enabling a feature OUTSIDE that window: load its overlay if the window is
 // still untouched (the heap grows upward and rarely reaches the top tens of KB,
@@ -124,7 +141,7 @@ bool claimForDma();
 
 // Diagnostics for Hardware/Memory Info: window size, bytes used by the content,
 // and whether the window is currently code (true) or heap (false).
-enum Which { WIN_TS = 0, WIN_DMA, WIN_GS, WIN_NGS };
+enum Which { WIN_TS = 0, WIN_DMA, WIN_GS, WIN_NGS, WIN_FT };
 unsigned windowBytes(Which w);
 unsigned contentBytes(Which w);
 bool     loaded(Which w);

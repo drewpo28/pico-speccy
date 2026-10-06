@@ -6,6 +6,8 @@
 using namespace std;
 
 #include "FileInfo.h"
+#include "speccy/core/Pss.h"
+#include "speccy/core/Rzx.h"
 
 
 #include "FileUtils.h"
@@ -472,6 +474,27 @@ static void viewSCL(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
 }
 
 // ---- SNA ----
+static void addLine(string& info, int& lines, const char* l) { info += l; info += "\n"; lines++; }
+
+// #7FFD as words: the page at #C000, the screen, the ROM and the lock.
+static void add7ffd(string& info, int& lines, uint8_t v, uint32_t pageHi = 0) {
+    char l[48];
+    snprintf(l, sizeof(l), "7FFD:%02X page %u, screen %c, ROM %u%s", v,
+             (unsigned)((v & 7) | pageHi), (v & 8) ? '7' : '5', (v >> 4) & 1, (v & 0x20) ? ", locked" : "");
+    addLine(info, lines, l);
+}
+
+// The SZX-style register block every snapshot viewer prints.
+static void addRegs(string& info, int& lines, uint16_t AF, uint16_t BC, uint16_t DE, uint16_t HL,
+                    uint16_t AFx, uint16_t BCx, uint16_t DEx, uint16_t HLx,
+                    uint16_t IX, uint16_t IY, uint8_t I, uint8_t R) {
+    char l[48];
+    snprintf(l, sizeof(l), "AF:%04X BC:%04X DE:%04X HL:%04X", AF, BC, DE, HL);   addLine(info, lines, l);
+    snprintf(l, sizeof(l), "AF'%04X BC'%04X DE'%04X HL'%04X", AFx, BCx, DEx, HLx); addLine(info, lines, l);
+    snprintf(l, sizeof(l), "IX:%04X IY:%04X I:%02X R:%02X", IX, IY, I, R);         addLine(info, lines, l);
+}
+
+// ---- SNA ----
 static void viewSNA(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     if (fileSize < 27) return;
 
@@ -481,146 +504,348 @@ static void viewSNA(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
     f_read(f, hdr, 27, &br);
 
     const char* arch;
-    if (fileSize == 49179)
-        arch = "48K";
-    else if (fileSize == 131103 || fileSize == 147487)
-        arch = "128K";
+    int pages;
+    const bool is48 = fileSize == 49179;
+    if (is48)                                                              { arch = "48K";  pages = 3; }
+    else if (fileSize == 131103 || fileSize == 147487)                     { arch = "128K"; pages = 8; }
     else if (fileSize == 131103 + (8 + 16) * 16384 || fileSize == 147487 + (8 + 16) * 16384)
-        arch = "P512";
+                                                                           { arch = "Pentagon 512";  pages = 32; }
     else if (fileSize == 131103 + (8 + 16 + 32) * 16384 || fileSize == 147487 + (8 + 16 + 32) * 16384)
-        arch = "P1024";
-    else
-        arch = "?";
+                                                                           { arch = "Pentagon 1024"; pages = 64; }
+    else                                                                   { arch = "?";    pages = 0; }
 
-    // Insert arch into title
-    char titleExtra[8];
-    snprintf(titleExtra, sizeof(titleExtra), " %s", arch);
-    size_t nlPos = info.find('\n');
-    info.insert(nlPos, titleExtra);
+    info.insert(info.find('\n'), string(" SNA ") + arch);
 
-    // Parse registers: I, HL', DE', BC', AF', HL, DE, BC, IY, IX, IFF2, R, AF, SP, IM, Border
     uint8_t regI = hdr[0];
-    uint16_t HLx = hdr[1] | (hdr[2] << 8);
-    uint16_t DEx = hdr[3] | (hdr[4] << 8);
-    uint16_t BCx = hdr[5] | (hdr[6] << 8);
-    uint16_t AFx = hdr[7] | (hdr[8] << 8);
-    uint16_t HL = hdr[9] | (hdr[10] << 8);
-    uint16_t DE = hdr[11] | (hdr[12] << 8);
-    uint16_t BC = hdr[13] | (hdr[14] << 8);
-    uint16_t IY = hdr[15] | (hdr[16] << 8);
+    uint16_t HLx = hdr[1] | (hdr[2] << 8),  DEx = hdr[3] | (hdr[4] << 8);
+    uint16_t BCx = hdr[5] | (hdr[6] << 8),  AFx = hdr[7] | (hdr[8] << 8);
+    uint16_t HL = hdr[9] | (hdr[10] << 8),  DE = hdr[11] | (hdr[12] << 8);
+    uint16_t BC = hdr[13] | (hdr[14] << 8), IY = hdr[15] | (hdr[16] << 8);
     uint16_t IX = hdr[17] | (hdr[18] << 8);
-    // hdr[19] bit 2 = IFF2 — not listed
+    const bool iff2 = hdr[19] & 0x04;
     uint8_t R = hdr[20];
     uint16_t AF = hdr[21] | (hdr[22] << 8);
     uint16_t SP = hdr[23] | (hdr[24] << 8);
     uint8_t IM = hdr[25];
     uint8_t border = hdr[26];
 
-    // For 128K, PC is at offset 49179
+    // PC: 48K keeps it on the stack (popped by RETN on load), 128K after the RAM.
     uint16_t PC = 0;
-    if (fileSize == 49179) {
-        // 48K: PC is on stack
-        // We'd need to read RAM to get it, skip for now
-        PC = 0;
-    } else if (fileSize > 49179 + 2) {
+    bool havePC = false;
+    uint8_t p7ffd = 0, trdos = 0;
+    uint8_t b[4];
+    if (is48) {
+        if (SP >= 0x4000 && SP < 0xFFFF) {
+            f_lseek(f, 27 + (SP - 0x4000));
+            if (f_read(f, b, 2, &br) == FR_OK && br == 2) { PC = b[0] | (b[1] << 8); havePC = true; }
+        }
+    } else if (fileSize > 49179 + 4) {
         f_lseek(f, 49179);
-        uint8_t pcb[2];
-        f_read(f, pcb, 2, &br);
-        PC = pcb[0] | (pcb[1] << 8);
-    }
-
-    char line[48];
-    if (PC != 0) {
-        snprintf(line, sizeof(line), "PC:%04X SP:%04X IM:%d Brd:%d", PC, SP, IM, border);
-    } else {
-        snprintf(line, sizeof(line), "SP:%04X IM:%d Border:%d", SP, IM, border);
-    }
-    info += line; info += "\n"; lines++;
-
-    snprintf(line, sizeof(line), "AF:%04X BC:%04X DE:%04X HL:%04X", AF, BC, DE, HL);
-    info += line; info += "\n"; lines++;
-
-    snprintf(line, sizeof(line), "IX:%04X IY:%04X I:%02X R:%02X", IX, IY, regI, R);
-    info += line; info += "\n"; lines++;
-
-    snprintf(line, sizeof(line), "AF'%04X BC'%04X DE'%04X HL'%04X", AFx, BCx, DEx, HLx);
-    info += line; info += "\n"; lines++;
-}
-
-// ---- Z80 ----
-static void viewZ80(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
-    if (fileSize < 30) return;
-
-    uint8_t hdr[32];
-    UINT br;
-    f_lseek(f, 0);
-    f_read(f, hdr, 30, &br);
-
-    uint16_t PC = hdr[6] | (hdr[7] << 8);
-    uint8_t z80ver = 1;
-    const char* arch = "48K";
-
-    if (PC == 0) {
-        // v2 or v3
-        f_read(f, hdr + 30, 2, &br);
-        uint16_t ahbLen = hdr[30] | (hdr[31] << 8);
-        if (ahbLen == 23) z80ver = 2;
-        else if (ahbLen == 54 || ahbLen == 55) z80ver = 3;
-
-        uint8_t mch;
-        f_lseek(f, 34);
-        f_read(f, &mch, 1, &br);
-
-        // Read actual PC
-        f_lseek(f, 32);
-        uint8_t pcb[2];
-        f_read(f, pcb, 2, &br);
-        PC = pcb[0] | (pcb[1] << 8);
-
-        if (z80ver == 2) {
-            if (mch == 0 || mch == 1) arch = "48K";
-            else if (mch == 3 || mch == 4) arch = "128K";
-        } else if (z80ver == 3) {
-            if (mch == 0 || mch == 1 || mch == 3) arch = "48K";
-            else if (mch >= 4 && mch <= 7) arch = "128K";
-            else if (mch == 9) arch = "Pentagon";
-            else if (mch == 12 || mch == 13) arch = "128K";
+        if (f_read(f, b, 4, &br) == FR_OK && br == 4) {
+            PC = b[0] | (b[1] << 8); havePC = true; p7ffd = b[2]; trdos = b[3];
         }
     }
 
-    char titleExtra[16];
-    snprintf(titleExtra, sizeof(titleExtra), " %s v%d", arch, z80ver);
-    size_t nlPos = info.find('\n');
-    info.insert(nlPos, titleExtra);
+    char line[48];
+    if (havePC) snprintf(line, sizeof(line), "PC:%04X SP:%04X IM:%d Brd:%d", PC, SP, IM, border);
+    else        snprintf(line, sizeof(line), "SP:%04X IM:%d Border:%d", SP, IM, border);
+    addLine(info, lines, line);
+    snprintf(line, sizeof(line), "Interrupts %s, %d RAM pages", iff2 ? "enabled" : "disabled", pages);
+    addLine(info, lines, line);
+    if (!is48 && pages) {
+        add7ffd(info, lines, p7ffd);
+        if (trdos) addLine(info, lines, "TR-DOS ROM paged in");
+    }
+    addRegs(info, lines, AF, BC, DE, HL, AFx, BCx, DEx, HLx, IX, IY, regI, R);
+}
 
-    uint16_t AF = (hdr[0] << 8) | hdr[1]; // A, F (big-endian in Z80)
-    uint16_t BC = hdr[2] | (hdr[3] << 8);
-    uint16_t HL = hdr[4] | (hdr[5] << 8);
-    uint16_t SP = hdr[8] | (hdr[9] << 8);
-    uint8_t regI = hdr[10];
-    uint8_t R = hdr[11];
-    uint8_t border = (hdr[12] >> 1) & 0x07;
-    uint16_t DE = hdr[13] | (hdr[14] << 8);
-    uint16_t BCx = hdr[15] | (hdr[16] << 8);
-    uint16_t DEx = hdr[17] | (hdr[18] << 8);
+// ---- Z80 ----
+// Hardware mode (header byte 34) by version, with the "modified hardware" flag
+// (byte 37 bit 7) that turns 48K into 16K, 128K into +2 and +3 into +2A.
+static string z80Machine(int ver, uint8_t mch, bool modHw) {
+    if (ver == 1) return "48K";
+    switch (mch) {
+        case 0:  return modHw ? "16K" : "48K";
+        case 1:  return modHw ? "16K + IF1" : "48K + IF1";
+        case 2:  return "SamRam";
+        case 3:  return ver == 2 ? (modHw ? "+2" : "128K") : "48K + M.G.T.";
+        case 4:  return ver == 2 ? (modHw ? "+2 + IF1" : "128K + IF1") : (modHw ? "+2" : "128K");
+        case 5:  return modHw ? "+2 + IF1" : "128K + IF1";
+        case 6:  return modHw ? "+2 + M.G.T." : "128K + M.G.T.";
+        case 7: case 8: return modHw ? "+2A" : "+3";
+        case 9:  return "Pentagon 128";
+        case 10: return "Scorpion 256";
+        case 11: return "Didaktik Kompakt";
+        case 12: return "+2";
+        case 13: return "+2A";
+        case 14: return "TC2048";
+        case 15: return "TC2068";
+        case 128: return "TS2068";
+        default: { char b[16]; snprintf(b, sizeof(b), "unknown (%u)", mch); return b; }
+    }
+}
+
+// The machine a snapshot was made on, from its first bytes (the RZX info page
+// names an embedded snapshot this way). `total` = the snapshot's full size.
+string FileInfo::snapshotMachine(const char* ext, const unsigned char* h, unsigned n, unsigned total) {
+    if (!strcasecmp(ext, "z80") && n >= 35) {
+        if (h[6] | h[7]) return "48K";
+        const uint16_t ahb = h[30] | (h[31] << 8);
+        const int ver = ahb == 23 ? 2 : (ahb == 54 || ahb == 55) ? 3 : 0;
+        if (!ver) return "?";
+        return z80Machine(ver, h[34], n > 37 && (h[37] & 0x80));
+    }
+    if (!strcasecmp(ext, "sna")) {
+        if (total == 49179) return "48K";
+        if (total == 131103 || total == 147487) return "128K";
+        return "?";
+    }
+    if (!strcasecmp(ext, "szx") && n >= 8 && !memcmp(h, "ZXST", 4)) {
+        static const char* const kMach[] = {
+            "16K", "48K", "128K", "+2", "+2A", "+3", "+3e", "Pentagon 128", "TC2048", "TC2068",
+            "Scorpion ZS-256", "SE", "TS2068", "Pentagon 512", "Pentagon 1024", "48K NTSC", "128Ke",
+        };
+        return h[6] < sizeof(kMach) / sizeof(*kMach) ? kMach[h[6]] : "?";
+    }
+    return "";
+}
+
+static void viewZ80(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
+    if (fileSize < 30) return;
+
+    uint8_t hdr[87] = {};
+    UINT br;
+    f_lseek(f, 0);
+    f_read(f, hdr, fileSize < 87 ? (UINT)fileSize : 87, &br);
+
+    uint16_t PC = hdr[6] | (hdr[7] << 8);
+    int ver = 1;
+    uint16_t ahbLen = 0;
+    if (PC == 0) {
+        ahbLen = hdr[30] | (hdr[31] << 8);
+        ver = ahbLen == 23 ? 2 : (ahbLen == 54 || ahbLen == 55) ? 3 : 0;
+        PC = hdr[32] | (hdr[33] << 8);
+    }
+    const uint8_t mch = hdr[34];
+    const bool modHw = ver >= 2 && (hdr[37] & 0x80);
+    const string mach = ver ? z80Machine(ver, mch, modHw) : string("?");
+    const bool is128 = ver >= 2 &&
+        ((ver == 2 && (mch == 3 || mch == 4)) || (ver == 3 && mch >= 4 && mch <= 6) ||
+         (mch >= 7 && mch <= 10) || mch == 12 || mch == 13);
+    char titleExtra[48];
+    snprintf(titleExtra, sizeof(titleExtra), " Z80 v%d %s", ver, mach.c_str());
+    info.insert(info.find('\n'), titleExtra);
+
+    uint8_t b12 = hdr[12] == 0xFF ? 1 : hdr[12];
+    uint16_t AF  = (hdr[0] << 8) | hdr[1];
+    uint16_t BC  = hdr[2] | (hdr[3] << 8),  HL = hdr[4] | (hdr[5] << 8);
+    uint16_t SP  = hdr[8] | (hdr[9] << 8);
+    uint8_t  regI = hdr[10];
+    uint8_t  R   = (hdr[11] & 0x7F) | ((b12 & 1) << 7);
+    uint8_t  border = (b12 >> 1) & 0x07;
+    uint16_t DE  = hdr[13] | (hdr[14] << 8);
+    uint16_t BCx = hdr[15] | (hdr[16] << 8), DEx = hdr[17] | (hdr[18] << 8);
     uint16_t HLx = hdr[19] | (hdr[20] << 8);
-    uint16_t AFx = (hdr[21] << 8) | hdr[22]; // A', F' (big-endian)
-    uint16_t IY = hdr[23] | (hdr[24] << 8);
-    uint16_t IX = hdr[25] | (hdr[26] << 8);
-    uint8_t IM = hdr[29] & 0x03;
+    uint16_t AFx = (hdr[21] << 8) | hdr[22];
+    uint16_t IY  = hdr[23] | (hdr[24] << 8), IX = hdr[25] | (hdr[26] << 8);
+    const bool iff1 = hdr[27] != 0;
+    uint8_t IM  = hdr[29] & 0x03;
 
     char line[48];
     snprintf(line, sizeof(line), "PC:%04X SP:%04X IM:%d Brd:%d", PC, SP, IM, border);
+    addLine(info, lines, line);
+
+    // Memory: v1 is one 48K image (compressed when byte 12 bit 5); v2/v3 are pages.
+    if (ver == 1) {
+        snprintf(line, sizeof(line), "Interrupts %s, RAM %s", iff1 ? "enabled" : "disabled",
+                 (b12 & 0x20) ? "compressed" : "uncompressed");
+    } else if (ver) {
+        int blocks = 0, packed = 0;
+        FSIZE_t pos = 32 + ahbLen;
+        uint8_t bh[3];
+        while (pos + 3 <= fileSize) {
+            f_lseek(f, pos);
+            if (f_read(f, bh, 3, &br) != FR_OK || br != 3) break;
+            const uint16_t len = bh[0] | (bh[1] << 8);
+            blocks++;
+            if (len != 0xFFFF) packed++;
+            pos += 3 + (len == 0xFFFF ? 16384u : len);
+        }
+        snprintf(line, sizeof(line), "Interrupts %s, %d pages%s", iff1 ? "enabled" : "disabled",
+                 blocks, packed ? " (compressed)" : "");
+    }
+    addLine(info, lines, line);
+
+    if (is128) add7ffd(info, lines, hdr[35]);
+    if (ver == 3 && ahbLen == 55 && (mch == 7 || mch == 8 || mch == 10 || mch == 13)) {
+        snprintf(line, sizeof(line), "1FFD:%02X", hdr[86]);
+        addLine(info, lines, line);
+    }
+    if ((mch == 14 || mch == 15 || mch == 128) && ver >= 2) {
+        snprintf(line, sizeof(line), "Timex DEC:%02X", hdr[36]);
+        addLine(info, lines, line);
+    }
+    string hw;
+    if (ver >= 2 && ((hdr[37] & 0x04) || is128)) hw += hdr[37] & 0x40 ? "AY (Fuller box)" : "AY";
+    if (hdr[29] & 0x04) hw += hw.empty() ? "Issue 2 keyboard" : ", Issue 2 keyboard";
+    static const char* const kJoy[4] = { "Cursor", "Kempston", "Sinclair 2", "Sinclair 1" };
+    snprintf(line, sizeof(line), "%s%sJoystick: %s", hw.c_str(), hw.empty() ? "" : ", ", kJoy[hdr[29] >> 6]);
+    addLine(info, lines, line);
+
+    addRegs(info, lines, AF, BC, DE, HL, AFx, BCx, DEx, HLx, IX, IY, regI, R);
+}
+
+// ---- SPG (TS-Conf "SpectrumProg", pentevo/docs/Formats/SPGv1_0.txt) ----
+static void viewSPG(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
+    if (fileSize < 0x400) return;
+    ScopedHeap hh(0x400);
+    if (!hh) return;
+    uint8_t* h = hh.as<uint8_t>();
+    UINT br;
+    f_lseek(f, 0);
+    if (f_read(f, h, 0x400, &br) != FR_OK || br != 0x400 || memcmp(h + 0x20, "SpectrumProg", 12) != 0) return;
+    char line[64];
+    snprintf(line, sizeof(line), " SPG %u.%u", h[0x2C] >> 4, h[0x2C] & 15);
+    info.insert(info.find('\n'), line);
+
+    auto text = [&](const char* label, const uint8_t* p) {
+        char t[33];
+        int n = 0;
+        for (int i = 0; i < 32 && p[i]; i++) t[n++] = (p[i] >= 32 && p[i] < 127) ? (char)p[i] : '.';
+        while (n && t[n - 1] == ' ') n--;
+        t[n] = 0;
+        if (n) { snprintf(line, sizeof(line), "%s%s", label, t); addLine(info, lines, line); }
+    };
+    text("", h);                   // author's string
+    text("Creator: ", h + 0x50);
+    if (h[0x2E] >= 1 && h[0x2E] <= 12 && h[0x2D] >= 1 && h[0x2D] <= 31) {
+        snprintf(line, sizeof(line), "Built: %02u.%02u.%u %02u:%02u:%02u", h[0x2D], h[0x2E], 2000u + h[0x2F],
+                 h[0x3E], h[0x3D], h[0x3C]);
+        addLine(info, lines, line);
+    }
+    static const char* const kClk[4] = { "3.5", "7", "14", "14" };
+    snprintf(line, sizeof(line), "Start:%04X SP:%04X page3:%02X", h[0x30] | (h[0x31] << 8),
+             h[0x32] | (h[0x33] << 8), h[0x34]);
+    addLine(info, lines, line);
+    snprintf(line, sizeof(line), "CPU %s MHz, interrupts %s", kClk[h[0x35] & 3], (h[0x35] & 4) ? "on" : "off");
+    addLine(info, lines, line);
+
+    unsigned nblk = h[0x3A] | (h[0x3B] << 8);
+    if (nblk > 256) nblk = 256;
+    unsigned raw = 0, mlz = 0, hrust = 0, kb = 0, maxPage = 0;
+    uint32_t pagesSeen[8] = {};
+    unsigned pages = 0;
+    for (unsigned i = 0; i < nblk; i++) {
+        const uint8_t* d = h + 0x100 + i * 3;
+        const unsigned comp = d[1] >> 6, pg = d[2];
+        if (comp == 1) mlz++; else if (comp == 2) hrust++; else raw++;
+        kb += ((d[1] & 0x1F) + 1) * 512;
+        if (!(pagesSeen[pg >> 5] & (1u << (pg & 31)))) { pagesSeen[pg >> 5] |= 1u << (pg & 31); pages++; }
+        if (pg > maxPage) maxPage = pg;
+        if (d[0] & 0x80) { nblk = i + 1; break; }
+    }
+    snprintf(line, sizeof(line), "%u blocks, %u KB in %u pages (max %02X)", nblk, kb >> 10, pages, maxPage);
+    addLine(info, lines, line);
+    if (mlz || hrust) {
+        snprintf(line, sizeof(line), "Packed: %u MegaLZ, %u Hrust, %u raw", mlz, hrust, raw);
+        addLine(info, lines, line);
+    }
+    if (h[0x36] | h[0x37] | h[0x38] | h[0x39]) {
+        snprintf(line, sizeof(line), "Pager:%04X resident:%04X", h[0x36] | (h[0x37] << 8), h[0x38] | (h[0x39] << 8));
+        addLine(info, lines, line);
+    }
+}
+
+// ---- SZX (Spectaculator ZX-State) ----
+// Machine, creator, CPU, RAM pages and the peripheral blocks present.
+static void viewSZX(FIL* f, FSIZE_t fileSize, string& info, int& lines) {
+    if (fileSize < 8) return;
+    uint8_t hdr[8];
+    UINT br;
+    f_lseek(f, 0);
+    if (f_read(f, hdr, 8, &br) != FR_OK || br != 8 || memcmp(hdr, "ZXST", 4) != 0) return;
+    static const char* const kMach[] = {
+        "16K", "48K", "128K", "+2", "+2A", "+3", "+3e", "Pentagon 128", "TC2048", "TC2068",
+        "Scorpion ZS-256", "SE", "TS2068", "Pentagon 512", "Pentagon 1024", "48K NTSC", "128Ke",
+    };
+    char line[64];
+    snprintf(line, sizeof(line), " SZX %u.%u", hdr[4], hdr[5]);
+    info.insert(info.find('\n'), line);
+    snprintf(line, sizeof(line), "Machine: %s%s",
+             hdr[6] < sizeof(kMach) / sizeof(*kMach) ? kMach[hdr[6]] : "unknown",
+             (hdr[7] & 1) ? " (alternate timings)" : "");
     info += line; info += "\n"; lines++;
 
-    snprintf(line, sizeof(line), "AF:%04X BC:%04X DE:%04X HL:%04X", AF, BC, DE, HL);
+    static const struct { const char id[5]; const char* name; } kBlk[] = {
+        { "AY\0\0", "AY" }, { "B128", "Beta 128" }, { "DIDE", "DivIDE" }, { "DMMC", "DivMMC" },
+        { "PLTT", "ULA+" }, { "COVX", "Covox" }, { "GS\0\0", "General Sound" }, { "SCLD", "Timex SCLD" },
+        { "DOCK", "DOCK" }, { "IF1\0", "Interface 1" }, { "IF2R", "Interface 2 ROM" },
+        { "KEYB", "keyboard" }, { "JOY\0", "joystick" }, { "AMXM", "AMX mouse" },
+        { "MFCE", "Multiface" }, { "OPUS", "Opus" }, { "PLSD", "+D" }, { "SIDE", "Simple IDE" },
+        { "ZXPR", "ZX Printer" }, { "TAPE", "tape" }, { "ZXAT", "ZXATASP" }, { "ZXCF", "ZXCF" },
+        { "ZMMC", "ZXMMC" }, { "USPE", "Spectranet" }, { "SPCR", nullptr }, { "Z80R", nullptr },
+        { "RAMP", nullptr }, { "CRTR", nullptr }, { "ATRP", nullptr }, { "CFRP", nullptr },
+        { "DIRP", nullptr }, { "DMRP", nullptr }, { "GSRP", nullptr }, { "DPRP", nullptr },
+        { "SNET", "Spectranet" }, { "SNEF", nullptr }, { "SNER", nullptr },
+    };
+    string extras;
+    int ramp = 0; bool packed = false, haveZ = false;
+    uint8_t z[24];
+    FSIZE_t pos = 8;
+    while (pos + 8 <= fileSize) {
+        uint8_t bh[8];
+        f_lseek(f, pos);
+        if (f_read(f, bh, 8, &br) != FR_OK || br != 8) break;
+        const uint32_t sz = bh[4] | (bh[5] << 8) | (bh[6] << 16) | ((uint32_t)bh[7] << 24);
+        if (pos + 8 + sz > fileSize) break;
+        if (!memcmp(bh, "CRTR", 4) && sz >= 36) {
+            char cr[33] = {};
+            uint8_t v[4];
+            f_read(f, cr, 32, &br);
+            f_read(f, v, 4, &br);
+            snprintf(line, sizeof(line), "Creator: %.32s %u.%u", cr, v[0] | (v[1] << 8), v[2] | (v[3] << 8));
+            info += line; info += "\n"; lines++;
+        } else if (!memcmp(bh, "Z80R", 4) && sz >= 24) {
+            haveZ = f_read(f, z, 24, &br) == FR_OK && br == 24;
+        } else if (!memcmp(bh, "RAMP", 4) && sz >= 3) {
+            uint8_t fl[2];
+            f_read(f, fl, 2, &br);
+            ramp++;
+            if (fl[0] & 1) packed = true;
+        } else {
+            const char* nm = nullptr; bool known = false;
+            for (const auto& k : kBlk) if (!memcmp(bh, k.id, 4)) { nm = k.name; known = true; break; }
+            char raw[5] = { (char)bh[0], (char)bh[1], (char)bh[2], (char)bh[3], 0 };
+            for (int i = 0; i < 4; i++) if (raw[i] < 32 || raw[i] > 126) raw[i] = ' ';
+            const string add = known ? (nm ? nm : "") : raw;
+            if (!add.empty() && extras.find(add) == string::npos)
+                extras += (extras.empty() ? "" : ", ") + add;
+        }
+        pos += 8 + sz;
+    }
+    if (haveZ) {
+        snprintf(line, sizeof(line), "PC:%04X SP:%04X", z[22] | (z[23] << 8), z[20] | (z[21] << 8));
+        info += line; info += "\n"; lines++;
+    }
+    snprintf(line, sizeof(line), "RAM: %d pages%s", ramp, packed ? ", compressed" : "");
     info += line; info += "\n"; lines++;
-
-    snprintf(line, sizeof(line), "IX:%04X IY:%04X I:%02X R:%02X", IX, IY, regI, R);
-    info += line; info += "\n"; lines++;
-
-    snprintf(line, sizeof(line), "AF'%04X BC'%04X DE'%04X HL'%04X", AFx, BCx, DEx, HLx);
-    info += line; info += "\n"; lines++;
+    if (!extras.empty()) {
+        // Wrap the device list to the info page's width.
+        string cur = "Devices: ";
+        size_t i = 0;
+        while (i < extras.size()) {
+            size_t e = extras.find(", ", i);
+            string item = extras.substr(i, e == string::npos ? string::npos : e - i);
+            if (cur.size() + item.size() + 2 > 40 && cur.size() > 9) {
+                info += cur; info += "\n"; lines++;
+                cur = "  ";
+            }
+            cur += item;
+            if (e != string::npos) cur += ", ";
+            i = e == string::npos ? extras.size() : e + 2;
+        }
+        info += cur; info += "\n"; lines++;
+    }
 }
 
 // ---- DSK (CPCEMU / Extended, the +3's format) ----
@@ -919,6 +1144,10 @@ void FileInfo::viewInfo(const string& path) {
     else if (ext == "scl") viewSCL(&f, fileSize, info, lines);
     else if (ext == "sna") viewSNA(&f, fileSize, info, lines);
     else if (ext == "z80") viewZ80(&f, fileSize, info, lines);
+    else if (ext == "szx") viewSZX(&f, fileSize, info, lines);
+    else if (ext == "spg") viewSPG(&f, fileSize, info, lines);
+    else if (ext == "pss") Pss::describe(path, info, lines);
+    else if (ext == "rzx") Rzx::describe(path, info, lines);
     else if (ext == "fdi") viewFDI(&f, fileSize, info, lines);
     else if (ext == "dsk") viewDSK(&f, fileSize, info, lines);
     else if (ext == "udi") viewUDI(&f, fileSize, info, lines);

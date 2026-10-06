@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "app/LastRun.h"
 #include <string>
 #include <algorithm>
 #include <sys/stat.h>
@@ -450,7 +451,7 @@ static bool rfd_launch_tmp(string path) {
         Tape::LoadTape((Config::tape_autostart ? "R" : "L") + base); // LoadTape prepends TAP_Path
         return true;
     }
-    if (ext == "sna" || ext == "z80" || ext == "p" || ext == "spg") {
+    if (ext == "pss" || ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx") {
         FileUtils::SNA_Path = dir;
         Config::save();
         if (!LoadSnapshot(path, A_NONE, R_NONE)) {
@@ -774,7 +775,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         // name from the locator), which is the authoritative source of the extension.
         auto isLaunchExt = [](const string& lc) {
             return lc == "tap" || lc == "tzx" || lc == "pzx" || lc == "wav" || lc == "mp3"
-                || lc == "sna" || lc == "z80" || lc == "p"   || lc == "spg" || lc == "zip"
+                || lc == "sna" || lc == "z80" || lc == "p"   || lc == "spg" || lc == "rzx" || lc == "zip"
                 || lc == "rom" || lc == "bin"
                 || FileUtils::ifaceForExt(lc) != IFACE_NONE; // trd/scl/fdi/udi/td0/pro/mbd/mmc/hdf
         };
@@ -799,6 +800,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
             }
         }
         string tmpp = string("/tmp/_run") + ext;
+        LastRun::alias(tmpp, fs->downloadBasename(nm));   // quick-slot name: the remote file
         rfd_release_tmp(tmpp);   // free the fixed /tmp target if a prior launch still holds it
         bool got = fs->get(nm, tmpp, rfd_progress);
         OSD::progressDialog("", "", 0, 2);
@@ -814,4 +816,12 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         }
     }
 }
+
+string OSD::chooseFolder(const string& start) { return rfd_choose_folder(start); }
+
+#else
+
+// No network client in this build, hence no folder picker: the start folder.
+string OSD::chooseFolder(const string& start) { return start.empty() ? string("/") : start; }
+
 #endif // ZIFI_NET_CLIENT

@@ -39,8 +39,13 @@ visit https://zxespectrum.speccy.org/contacto
 #include <stdio.h>
 #include <inttypes.h>
 #include <string>
+#include <vector>
+#include "fatfs/ff.h"
 #include "speccy/core/ArchRom.h"
 #include "Debug.h"
+
+namespace JoyProf { struct Profile; }
+struct NvsWriter;   // Config.cpp
 
 uint32_t butter_psram_size();   // MemESP.h / main.cpp — used by wantedPages()
 
@@ -64,6 +69,25 @@ public:
     static void save(const char* path = nullptr, const char* profileName = nullptr);
                                   // nullptr path = STORAGE_NVS (normal path)
 
+    // ── snapshot settings (.pss, src/speccy/core/Pss.cpp) ──────────────────────
+    // The full key dump save() writes, into an already open file (the CFG block).
+    static bool saveKeysTo(FIL* f);
+    // Which class a `key=value` line of a snapshot belongs to: 0 = not applied,
+    // 1 = the machine (arch/romsets), 2 = reboot-class hardware, 3 = media mounted
+    // live (Beta / +3 disks, tape), 4 = the board's own settings (overclock, video
+    // and audio output, PSRAM), applied only on request.
+    static int  snapKeyClass(const char* line, size_t len);
+    // Compares the snapshot's applied lines with storage.nvs (save() first). When a
+    // reboot-class line differs, writes storage.nvs with every one of them merged in
+    // and ram=<ramFile>, and returns true: the caller reboots. Otherwise touches
+    // nothing and returns false.
+    static bool snapMergeForReboot(const std::vector<std::string>& lines, const std::string& ramFile);
+    // The keys of class 2 and 4 whose value in `lines` differs from the live config
+    // (save() first) — what the load asks the user about.
+    static void snapDiffKeys(const std::vector<std::string>& lines, std::vector<std::string>& out);
+    static const char* snapKeyLabel(const std::string& key);   // the menu's name for it
+    static void writeKeys(NvsWriter& buf);   // save()'s body; Config.cpp only
+
     // ── named config profiles (Options > Save/Load my settings) ────────────────
     // A profile is a full copy of storage.nvs under CONFIG_DIR_PROFILES, named by
     // slot number; its display name is the file's first line. Loading one is a
@@ -86,6 +110,16 @@ public:
 
     // The default pad map of a joystick type. No UI, nothing saved.
     static void joyDefaults(uint8_t joy_type, uint16_t out[14]);
+
+    // ── joystick profiles (Joystick > Profile) ───────────────────────────────
+    // Named (type + pad map) sets in ONE file, CONFIG_DIR "/joystick.cfg" — beside
+    // wifi.cfg, shared by every board and firmware version (format: JoyProfiles.h).
+    // The LIVE pad is still Config::joystick + joydef (persisted in storage.nvs as
+    // before); joy_profile names the profile they were last loaded from or saved to,
+    // "" = an unsaved map. The file is only the library: nothing reads it at boot.
+    static std::string joy_profile;
+    static int  joyProfilesLoad(JoyProf::Profile* out, int cap);  // fills cap slots; returns used
+    static bool joyProfilesSave(const JoyProf::Profile* list, int n);
 
     // arch/romSet* always hold a real table index after load(); only the pref_*
     // members may additionally hold A_LAST/R_LAST ("Last used") — and pref_arch may
@@ -122,6 +156,7 @@ public:
     static uint8_t  esp32rev;
     static bool     slog_on;
     static bool     ledIndicators;
+    static bool     rzx_loop;       // Snapshots > RZX loop: restart a recording when it ends
     static bool     led_panel;      // indicators on a solid panel beside the F8 box (carved out of every renderer)
     static bool     sdLedBlink;     // blink onboard LED (GPIO 25) on physical SD card access
     // Chip temperature calibration, whole °C added to the ADC sensor reading.
@@ -175,6 +210,16 @@ public:
     // for boards that cannot keep up with 14 MHz.
     static constexpr uint16_t TSCONF_PAGES = 256;
     static uint8_t  tsconf_clk_cap;
+    // ZX Evolution BaseConf raster: 0 Pentagon / 1 60 Hz / 2 48K / 3 128K. On the real
+    // board the AVR keeps it in the PCF8583 NVRAM and Scroll Lock cycles it.
+    static uint8_t  evo_raster;
+    // VDAC2 (FT812) video board on the Z-Controller SPI (Ft812.h). Reboot-class:
+    // its 1 MB RAM_G is carved out of the butter PSRAM at boot (Buffer::pageBudget).
+    static bool     tsconf_vdac2;
+    // VDAC2 renderer: true = 2x2 box filter for 2:1 cells (Ft812Render RenderCfg::smooth)
+    static bool     tsconf_vdac2_smooth;
+    // VDAC2 renderer: true = per-frame adaptive palette (median cut) instead of the fixed RGB cube
+    static bool     tsconf_vdac2_adapt;
     // The page-strip length the NEXT boot of `a` needs. The single source for
     // the live MEM_PG_CNT (ESPectrum::setup) and for the boot-layout reboot
     // boundary in requestMachine()/MachineSwitch::commit() — the two must
@@ -199,7 +244,8 @@ public:
         if (a == A_SCORP && (rs == R_NONE ? romSetScorp : rs) == R_PHOENIX && n < 128)
             n = 128;
         // ATM-Turbo 3: 4 MB = 256 pages (#x7F7 takes a full 8-bit page number).
-        if (a == A_ATM && isAtm3Romset(rs == R_NONE ? romSetAtm : rs) && n < 256)
+        if (a == A_ATM && (isAtm3Romset(rs == R_NONE ? romSetAtm : rs) ||
+                           isEvoBaseRomset(rs == R_NONE ? romSetAtm : rs)) && n < 256)
             n = 256;
         return n;
     }
@@ -345,6 +391,17 @@ public:
     static bool isTimex() { return arch == A_48K && isTimexRomset(romSet); }
     static bool trdosBaseOwnedByMachine();
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
+    // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
+    static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
+    static bool isScorpEvo() { return arch == A_SCORP && isScorpEvoRomset(romSetScorp); }
+    // Both ZX-Evo configurations that run the Pentagon raster (320 lines x 224 T).
+    // ZX Evolution BaseConf raster (Config::evo_raster = the AVR's MODES_RASTER, video_sync_v.v
+    // modes_raster): 0 Pentagon (320 x 224 = 71680 T), 1 60 Hz (262 lines = 58688 T),
+    // 2 48K (69888 T, contended), 3 128K (311 x 228 = 70908 T, contended).
+    static bool isEvoPentRaster() { return (isEvoBase() && evo_raster == 0) || isScorpEvo(); }
+    static bool isEvo60Raster()   { return isEvoBase() && evo_raster == 1; }
+    static bool isEvo48Raster()   { return isEvoBase() && evo_raster == 2; }
+    static bool isEvo128Raster()  { return isEvoBase() && evo_raster == 3; }
     // ...or the +3 (divIDE): the same IDEDOS ROM built for a divIDE card, so the disk
     // is on divIDE's #A3..#BF taskfile and the bus is 16 bits (DivideIde.h).
     static bool isPlus3Div() { return arch == A_128K && isPlus3DivRomset(romSet); }
@@ -399,7 +456,12 @@ public:
     static bool trdosFastMode;
     static bool trdosAutoBoot;  // inject a "boot" file into TRD/SCL images that lack one
     static uint8_t trdosSoundLed; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
-    static uint8_t trdosBios; // 0=5.03, 1=5.04TM, 2=5.05D, 3=Custom (flashable), 4=6.11e
+    static uint8_t trdosBios; // 0=5.03, 1=5.04TM, 2=5.05D, 3=Custom (flashable), 4=6.11e, 5=5.04T
+    // Point rom[4] at the TR-DOS picked by `v` (a trdosBios value) and register its
+    // overlay over the 5.04T base — none for 5.04T itself and Custom, which are whole
+    // images in flash and so are never materialised into PSRAM. One place for
+    // requestMachine and the menu hook.
+    static void bindTrdosRom(uint8_t v);
     // ALF cartridge: 0 = built-in default "Elf-1" (256KB, in flash); >0 = a cartridge
     // loaded into the shared flash region (gm_bank region), value = size in 16K banks.
     static uint8_t alfCartBanks;
@@ -471,6 +533,7 @@ public:
     static uint16_t net_port;   // last port (0 = protocol default: 21 FTP / 22 SFTP)
     static uint8_t  net_proto;  // 0 = FTP, 1 = SFTP
     static string   net_dl_dir; // last SD folder a file was downloaded into
+    static string   snap_export_dir; // last folder a snapshot was converted into (storage.nvs "snap_exp")
     static string   net_ul_dir; // last SD folder a file was uploaded from
     // Archive download catalog (Network → Download archive). Either a bare
     // "host"/"host:port" → dynamic /v1 server over plain HTTP, or a base URL with
@@ -639,18 +702,19 @@ public:
         HK_HW_INFO      = 14,
         HK_TURBO        = 15,
         HK_DEBUG        = 16,
-        HK_DISK         = 17,
+        HK_UNUSED_17    = 17,  // was HK_DISK (Alt+F6); slot kept so NVS hkVKnn keys stay aligned
         HK_NMI          = 18,
         HK_RESET_TO     = 19,
         HK_USB_BOOT     = 20,
         HK_GIGASCREEN   = 21,
         HK_LED_TOGGLE   = 22,
         HK_POKE         = 23,
-        HK_VIDMODE_60   = 24,
-        HK_VIDMODE_50   = 25,
+        HK_UNUSED_24    = 24,  // was HK_VIDMODE_60 (Ctrl+Alt+Home); slot kept so NVS hkVKnn keys stay aligned
+        HK_UNUSED_25    = 25,  // was HK_VIDMODE_50 (Ctrl+Alt+End)
         HK_QUICK_LOAD   = 26,
         HK_QUICK_SAVE   = 27,
-        HK_COUNT        = 28
+        HK_FAST_MENU    = 28,  // Alt+F7: the fast menu popup (0-9)
+        HK_COUNT        = 29
     };
 
     struct HotkeyBinding {

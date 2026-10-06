@@ -1,12 +1,17 @@
 // pico-speccy — MicroART ATM-Turbo 1 / 2+ memory manager and system ports.
 // See Atm.h for the hardware description and the references.
 #include "Atm.h"
+#include "AtmInternal.h"
+#include "EvoBase.h"
 
 #include <string.h>
 #include "app/Buffer.h"
+#include "speccy/devices/storage/RTC.h"
+#include "speccy/devices/disk/wd1793.h"
 #include "speccy/z80/CPU.h"
 #include "app/Config.h"
 #include "app/Debug.h"
+#include "app/PerfFdc.h"
 #include "app/ESPectrum.h"
 #include "speccy/devices/storage/IDE.h"
 #include "ui/LEDIndicators.h"
@@ -26,6 +31,7 @@ namespace Atm {
 
 bool     atm1 = false;
 bool     atm3 = false;
+bool     evo = false;
 bool     intGated = false;
 uint8_t  p7ffd = 0;
 uint8_t  aFE = 0x80, aFB = 0x80, pFDFD = 0;
@@ -46,10 +52,11 @@ bool     palDirty = false;
 
 static const atm_rom_page_t* s_tbl = nullptr;   // bound romset's page table
 static uint8_t  s_npages = 0;
-static const uint8_t* s_rom[16] = { nullptr }; // resolved pages (flash or PSRAM); 16 = ATM3
+static const uint8_t* s_rom[32] = { nullptr }; // resolved pages (flash or PSRAM); 32 = ZX-Evo
 static uint8_t* s_flat = nullptr;              // PSRAM block holding the flattened pages
 static RomsetIdx s_flat_rs = R_NONE;           // romset s_flat currently holds
 static bool     s_flat_warned = false;
+static uint32_t s_flat_bytes = 0;             // size of s_flat (Memory Info)
 
 // Filler for a page that could not be resolved (no PSRAM): reads 0xFF like an
 // empty ROM socket. Aligned so the pointer is a valid flash address (writes are
@@ -57,46 +64,58 @@ static bool     s_flat_warned = false;
 static const uint8_t kFF[16] __attribute__((aligned(4))) = {
     0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF };
 
-uint8_t romPageCount() { return s_npages ? s_npages : 4; }
+size_t romPsramBytes() { return s_flat_bytes; }
 
-// #xFF7 data byte -> the pFFF7 form (Unreal io.cpp): D7 = low bits from #7FFD,
-// D6 = RAM, D5..D0 = page inverted.
-static inline uint16_t f7enc(uint8_t v) {
-    return (uint16_t)((((v & 0xC0) << 2) | (v & 0x3F)) ^ 0x33F);
-}
+uint8_t romPageCount() { return s_npages ? s_npages : 4; }
 
 void bindRoms(RomsetIdx rs, const atm_rom_page_t* pages, uint8_t n) {
     if (n > sizeof s_rom / sizeof s_rom[0]) n = sizeof s_rom / sizeof s_rom[0];
     atm1 = isAtm1Romset(rs);
     atm3 = isAtm3Romset(rs);
+    evo  = isEvoBaseRomset(rs);
+    // ZX-Evo BaseConf: zint.v raises INT at every frame start with no gate at all —
+    // #xx77 D5 means nothing there (Dune II for the Evo writes #77 with D5 clear).
     intGated = (rs == R_ATM2 || rs == R_ATM2X || isAtm3Romset(rs));
     s_atm3Bios107 = (rs == R_ATM3_107);
     if (s_tbl != pages) {
         s_tbl = pages;
         s_npages = n;
-        for (int i = 0; i < 16; i++) s_rom[i] = nullptr;
+        for (int i = 0; i < 32; i++) s_rom[i] = nullptr;
     }
     (void)rs;
 }
 
 // Resolve every page of the bound table. A page that is a raw flash array is used
-// in place; one that is an overlay (or the all-0xFF page) is flattened into one
-// butter-PSRAM block, because an ATM ROM page may sit in any CPU window and
-// MemESP resolves overlays for window 0 only. Runs on the first reset after the
-// Buffer pools exist (requestMachine binds before Buffer::initPools on a boot).
-static void resolveRoms() {
+// in place; one that is an overlay is flattened into a butter-PSRAM block, because
+// an ATM ROM page may sit in any CPU window and MemESP resolves overlays for window
+// 0 only. Only those pages get a slot, plus ONE shared slot for every all-0xFF page
+// (empty ROM socket): the ZX-Evo image is 32 pages, of which 12 are overlays and 7
+// are empty, so this is 13 x 16 KB instead of 32 — which is what lets it share the
+// arena with a GM.DLS bank and NeoGS (hw 2026-10-05: the 512 KB block failed there
+// and the overlay pages ran unpatched). Called from setup() right after
+// Buffer::initPools (before the bank is loaded) and again from every reset().
+void resolveRoms() {
     if (!s_tbl) return;
     const RomsetIdx rs = Config::romSetAtm;
-    bool need = false;
-    for (int i = 0; i < s_npages; i++)
-        if (s_tbl[i].overlay || !s_tbl[i].base) need = true;
-    if (need && (s_flat_rs != rs || !s_flat)) {
-        if (s_flat) { Buffer::pfree(s_flat); s_flat = nullptr; }
+    // Slot of each page in s_flat: -1 = used in place from flash.
+    int8_t slot[32];
+    uint8_t nslots = 0;
+    int8_t ffSlot = -1;
+    for (int i = 0; i < s_npages; i++) {
+        const atm_rom_page_t& pg = s_tbl[i];
+        if (pg.base && !pg.overlay)       slot[i] = -1;
+        else if (!pg.base && !pg.overlay) {
+            if (ffSlot < 0) ffSlot = (int8_t)nslots++;
+            slot[i] = ffSlot;
+        } else                            slot[i] = (int8_t)nslots++;
+    }
+    if (nslots && (s_flat_rs != rs || !s_flat)) {
+        if (s_flat) { Buffer::pfree(s_flat); s_flat = nullptr; s_flat_bytes = 0; }
         s_flat_rs = R_NONE;
         if (Buffer::butterPoolReady()) {
-            void* p = Buffer::palloc((size_t)s_npages * MEM_PG_SZ,
+            void* p = Buffer::palloc((size_t)nslots * MEM_PG_SZ,
                                      Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
-            if (p && (uintptr_t)p < 0x11000000u) {   // landed on the heap: not for 128 KB
+            if (p && (uintptr_t)p < 0x11000000u) {   // landed on the heap: not for 128 KB+
                 Buffer::pfree(p);
                 p = nullptr;
             }
@@ -104,40 +123,41 @@ static void resolveRoms() {
         }
         if (s_flat) {
             for (int i = 0; i < s_npages; i++) {
-                uint8_t* dst = s_flat + (size_t)i * MEM_PG_SZ;
+                if (slot[i] < 0) continue;
+                uint8_t* dst = s_flat + (size_t)slot[i] * MEM_PG_SZ;
                 const atm_rom_page_t& pg = s_tbl[i];
                 if (!pg.base) {
                     memset(dst, 0xFF, MEM_PG_SZ);
                     if (pg.overlay) rom_overlay_flatten(pg.overlay, dst, dst);
-                } else if (pg.overlay) {
+                } else {
                     rom_overlay_flatten(pg.overlay, pg.base, dst);
                 }
             }
             s_flat_rs = rs;
-            Debug::log("[ATM] ROM pages flattened into PSRAM @%p (%u pages)", s_flat, (unsigned)s_npages);
+            s_flat_bytes = (uint32_t)nslots * MEM_PG_SZ;
+            s_flat_warned = false;
+            Debug::log("[ATM] ROM pages flattened into PSRAM @%p (%u of %u pages, %u KB)",
+                       s_flat, (unsigned)nslots, (unsigned)s_npages,
+                       (unsigned)(nslots * (MEM_PG_SZ >> 10)));
         } else if (!s_flat_warned) {
             s_flat_warned = true;
-            Debug::log("[ATM] no butter PSRAM for the ROM pages - overlays unapplied");
+            Debug::log("[ATM] no butter PSRAM for the ROM pages (%u KB) - overlays unapplied",
+                       (unsigned)(nslots * (MEM_PG_SZ >> 10)));
         }
     }
     for (int i = 0; i < s_npages; i++) {
         const atm_rom_page_t& pg = s_tbl[i];
-        if (pg.base && !pg.overlay)      s_rom[i] = pg.base;
-        else if (s_flat)                 s_rom[i] = s_flat + (size_t)i * MEM_PG_SZ;
+        if (slot[i] < 0)                 s_rom[i] = pg.base;
+        else if (s_flat)                 s_rom[i] = s_flat + (size_t)slot[i] * MEM_PG_SZ;
         else                             s_rom[i] = pg.base ? pg.base : kFF;
     }
 }
 
-// The DOS signal is raised by /CPM on the 2+ only. On the ATM1 the CP/M mode
-// (#FE A7=0) does NOT open the TR-DOS ports — "в этом режиме недоступны порты
-// TR-DOS, так что для работы с дисководом нужно прыгать в обычный режим"
-// (atmdscr.htm, ATM-turbo 1): its BIOS drives the FDC from the SYSTEM ROM after a
-// CALL into #3Dxx (see trdosTrap).
-static inline bool cpmOn() { return !atm1 && !(a77 & 0x200); }
-// The shadow (DOS) PORTS, not the DOS ROM: TR-DOS / CP/M, or the ATM3's #BF D0.
-static inline bool dosPorts() { return ESPectrum::trdos || shaden; }
-
-static void dosRecalc() {
+void dosRecalc() {
+    // ZX-Evo (zdos.v): DOS is a LATCH — set while /CPM = 0, and it stays set after
+    // /CPM goes back to 1 until code runs from RAM (trdosTrap). EVO Reset Service
+    // drops /CPM (#FF77) early in its ROM start and relies on the shadow ports.
+    if (evo && cpmOn()) beta = true;
     ESPectrum::trdos = beta || cpmOn();
 }
 
@@ -209,11 +229,25 @@ void remap() {
     } else {
         const int set = (p7ffd & 0x10) ? 4 : 0;
         const uint8_t dos = ESPectrum::trdos ? 1 : 0;
+        // ZX-Evo (atm_pager.v): #EFF7 D2 = 0 is the Pentagon-1024 mode, where a RAM
+        // window in "#7FFD mode" takes SIX page bits from #7FFD (D7..D5, D2..D0) under
+        // the register's top two; D2 = 1 is the 128K mode (three bits, as on the 2+).
+        const bool evo1m = evo && EvoBase::mode1M();
+        const uint8_t pent1m = (uint8_t)(((p7ffd >> 2) & 0x38) | (p7ffd & 7));
         for (int w = 0; w < 4; w++) {
+            // ZX-Evo window 0 overrides, ahead of the manager: the NMI state puts RAM
+            // page #FF there (znmi.v in_nmi), #EFF7 D3 RAM page 0 (pent1m_ram0_0).
+            // base_trdemu also maps RAM page #FE there while the FDD emulator runs
+            // (zdos.v in_trdemu; atm_pager.v page = { 7'h7F, in_nmi }).
+            uint32_t ovr;
+            if (evo && w == 0 && EvoBase::window0(ovr)) { mapRam(0, ovr); continue; }
             const uint16_t v = pF7[set + w];
             const uint8_t page = (uint8_t)v;
             switch (v & 0x300) {
-                case 0x000: mapRam(w, (page & 0xF8u) | (p7ffd & 7)); break;  // RAM, low bits from #7FFD
+                case 0x000:
+                    if (evo1m) mapRam(w, (page & 0xC0u) | pent1m);
+                    else       mapRam(w, (page & 0xF8u) | (p7ffd & 7));   // RAM, low bits from #7FFD
+                    break;
                 case 0x200: mapRam(w, page); break;                          // RAM from the register
                 case 0x100: mapRom(w, (uint8_t)((page & 0xFE) | dos)); break; // ROM, bit 0 = DOS
                 default:    mapRom(w, page); break;                          // ROM from the register
@@ -221,15 +255,21 @@ void remap() {
         }
         MemESP::bankLatch = p7ffd & 7;
     }
-    g_atm_ro = s_ro;
+    // Bit 7 = the ZX-Evo font RAM write (#BF D2): every CPU memory write also lands
+    // in the 2 KB character generator, at A10..A0 (zports.v fnt_wr). Folded into
+    // g_atm_ro so the write funnel keeps its single test.
+    g_atm_ro = (uint8_t)(s_ro | (g_atm_fnt ? 0x80 : 0));
     MemESP::videoLatch = (p7ffd >> 3) & 1;
     MemESP::romLatch = (p7ffd >> 4) & 1;
     MemESP::romInUse = 0;
     // recoverPage0() must not touch window 0 on ATM (it would map rom[romInUse]
     // over the memory manager's choice): the +3's "someone else owns page 0" flag.
     MemESP::p3special = 2;
-    MemESP::pagingLock = (p7ffd >> 5) & 1;
+    // ZX-Evo: #7FFD D5 locks the port in the 128K mode only (zports.v block7ffd =
+    // p7ffd[5] & block1m); in the Pentagon-1024 mode D5 is a page bit.
+    MemESP::pagingLock = (evo && EvoBase::mode1M()) ? 0 : ((p7ffd >> 5) & 1);
     for (int w = 0; w < 4; w++) MemESP::ramContended[w] = false;
+    EvoBase::contendApply();   // BaseConf 48K/128K raster: #4000 (+#C000 odd page); clears the flag elsewhere
     VIDEO::grmem = MemESP::ram[MemESP::videoLatch ? 7 : 5].direct();
 }
 
@@ -248,6 +288,7 @@ void reset() {
     // standard 64-colour palette).
     pBF = 0;
     shaden = false;
+    g_atm_fnt = 0;
     testBoot = false;
     if (atm1) {
         // BIOS 1.03/1.04 keeps the CP/M body XOR-ed at #22B9 with a key read off the
@@ -268,6 +309,8 @@ void reset() {
         pFDFD = 0;
         a77 = 0x0200;
         p77 = 0x20;
+    } else if (evo) {
+        EvoBase::reset();
     } else {
         // Unreal/MAME reset: #77 written with address 0 and data 0 — PEN = 0 (the BIOS
         // in all four windows), /CPM = 0 (DOS signal up), /PEN2 = 0, EGA, 3.5 MHz,
@@ -309,6 +352,8 @@ void bootRom(BootTarget t) {
             for (int w = 0; w < 4; w++)
                 pF7[s * 4 + w] = f7enc(w ? tbl[w] : (s ? w0set1 : w0set0));
     }
+    // ZX-Evo: 128K paging, 3.5 MHz.
+    if (evo) EvoBase::bootPlain();
     switch (t) {
         case BOOT_TRDOS: p7ffd = 0x00; beta = false; trdosMenuArmed = true;
                          Debug::log("[ATM] boot TR-DOS via the 128 menu"); break;
@@ -320,15 +365,7 @@ void bootRom(BootTarget t) {
     // path rewrites it: load the standard ZX colours into the palette RAM, as
     // Unreal's reset() does (load_spec_colors), and hand the 16 hardware slots back
     // to the emulator's own ZX palette until the guest programs one.
-    for (int i = 0; i < 16; i++) {
-        const bool b = i & 1, r = i & 2, g = i & 4, br = i & 8;
-        uint8_t v;
-        if (atm1) v = (uint8_t)((b ? 0x01 : 0) | (r ? 0x02 : 0) | (g ? 0x04 : 0) |
-                                (br ? ((b ? 0x08 : 0) | (r ? 0x10 : 0) | (g ? 0x20 : 0)) : 0));
-        else      v = (uint8_t)((b ? 0x01 : 0) | (r ? 0x02 : 0) | (g ? 0x10 : 0) |
-                                (br ? ((b ? 0x20 : 0) | (r ? 0x40 : 0) | (g ? 0x80 : 0)) : 0));
-        pal[i] = (uint8_t)~v;
-    }
+    loadSpecPalette();
     palDirty = false;
     VIDEO::atmPaletteRestore();
     dosRecalc();
@@ -358,7 +395,7 @@ void bootTest() {
 uint32_t palRgb(uint8_t i) {
     const uint8_t v = (uint8_t)~pal[i & 15];
     uint8_t R, G, B;
-    if (atm3 && (pBF & 0x20)) {
+    if ((atm3 || evo) && (pBF & 0x20)) {
         const uint8_t h = (uint8_t)~palHi[i & 15];
         auto ch = [v, h](int hi, int lo) -> uint8_t {
             const int c = (((v >> hi) & 1) << 3) | (((v >> lo) & 1) << 2) |
@@ -378,7 +415,61 @@ uint32_t palRgb(uint8_t i) {
     return ((uint32_t)R << 16) | ((uint32_t)G << 8) | B;
 }
 
-static void palWrite(uint8_t data, uint8_t hi = 0xFF) {
+// ── .pss snapshot ────────────────────────────────────────────────────────────
+
+static constexpr uint8_t SNAP_VER = 1;
+
+uint32_t snapSave(uint8_t* out) {
+    uint32_t n = 0;
+    out[n++] = SNAP_VER;
+    out[n++] = p7ffd;
+    out[n++] = aFE; out[n++] = aFB; out[n++] = pFDFD;
+    out[n++] = (uint8_t)a77; out[n++] = (uint8_t)(a77 >> 8);
+    out[n++] = p77;
+    for (int i = 0; i < 8; i++) { out[n++] = (uint8_t)pF7[i]; out[n++] = (uint8_t)(pF7[i] >> 8); }
+    out[n++] = pBF;
+    out[n++] = (uint8_t)((shaden ? 1 : 0) | (testBoot ? 2 : 0) | (beta ? 4 : 0) |
+                         (VIDEO::atmPaletteIsLive() ? 8 : 0));
+    for (int i = 0; i < 16; i++) out[n++] = pal[i];
+    for (int i = 0; i < 16; i++) out[n++] = palHi[i];
+    out[n++] = ESPectrum::multiplicator;
+    if (evo) n += EvoBase::snapSave(out + n);
+    return n;   // 59, +13 on the Evo
+}
+
+static uint8_t s_snapMult = 0;
+static bool    s_snapPalLive = false;
+
+void snapLoad(const uint8_t* in, uint32_t n) {
+    if (n < 59 || in[0] < 1) return;
+    uint32_t i = 1;
+    p7ffd = in[i++];
+    aFE = in[i++]; aFB = in[i++]; pFDFD = in[i++];
+    a77 = (uint16_t)(in[i] | (in[i + 1] << 8)); i += 2;
+    p77 = in[i++];
+    for (int k = 0; k < 8; k++) { pF7[k] = (uint16_t)(in[i] | (in[i + 1] << 8)); i += 2; }
+    pBF = in[i++];
+    const uint8_t f = in[i++];
+    shaden = f & 1; testBoot = (f & 2) != 0; beta = (f & 4) != 0; s_snapPalLive = (f & 8) != 0;
+    for (int k = 0; k < 16; k++) pal[k] = in[i++];
+    for (int k = 0; k < 16; k++) palHi[k] = in[i++];
+    s_snapMult = in[i++];
+    if (evo) EvoBase::snapLoad(in + i, n - i);
+}
+
+void snapRemap() {
+    // The DOS signal is beta | /CPM (dosRecalc) — beta itself came from the file.
+    ESPectrum::trdos = beta || cpmOn();
+    remap();
+    VIDEO::atmVideoModeChanged();
+    if (s_snapPalLive) VIDEO::atmPaletteChanged();   // flushed at the next EndFrame
+    if (s_snapMult != ESPectrum::multiplicator) {
+        ESPectrum::multiplicator = s_snapMult;
+        CPU::updateStatesInFrame();
+    }
+}
+
+void palWrite(uint8_t data, uint8_t hi) {
     const uint8_t idx = VIDEO::borderColor & 15;
     if (pal[idx] != data || palHi[idx] != hi) {
         pal[idx] = data;
@@ -404,19 +495,40 @@ VMode videoMode() {
         case 0:  return VM_EGA;
         case 2:  return VM_HIRES;
         case 6:  return VM_TEXT;
+        // ZX-Evo BaseConf (video_modedecode.v mode_a_txt_1page): the 80x25 text mode
+        // with symbols, attributes and both halves in ONE page, #08 (EVO Reset
+        // Service's Magic menu). Elsewhere code 7 is undefined and renders as ZX.
+        case 7:  return evo ? VM_TEXT1 : VM_ZX;
         default: return VM_ZX;       // 3 = ZX; the undefined codes render as ZX (MAME)
     }
 }
 
 // --------------------------------------------------------------------- ports --
 
-static void write7ffd(uint8_t data) {
-    if (p7ffd & 0x20) return;                  // 48 lock
+// The standard ZX colours in the palette RAM format (data byte, inverted).
+void loadSpecPalette() {
+    for (int i = 0; i < 16; i++) {
+        const bool b = i & 1, r = i & 2, g = i & 4, br = i & 8;
+        uint8_t v;
+        if (atm1) v = (uint8_t)((b ? 0x01 : 0) | (r ? 0x02 : 0) | (g ? 0x04 : 0) |
+                                (br ? ((b ? 0x08 : 0) | (r ? 0x10 : 0) | (g ? 0x20 : 0)) : 0));
+        else      v = (uint8_t)((b ? 0x01 : 0) | (r ? 0x02 : 0) | (g ? 0x10 : 0) |
+                                (br ? ((b ? 0x20 : 0) | (r ? 0x40 : 0) | (g ? 0x80 : 0)) : 0));
+        pal[i] = (uint8_t)~v;
+    }
+}
+
+void set7ffd(uint8_t data) {
     const uint8_t old = p7ffd;
     p7ffd = data;
     if ((old ^ data) & 0x08) VIDEO::gigascreenAutoFlip();
     remap();
     LED::touchW(LED::RAM);
+}
+
+static void write7ffd(uint8_t data) {
+    if (p7ffd & 0x20) return;   // 48 lock
+    set7ffd(data);
 }
 
 static void write77(uint16_t address, uint8_t data) {
@@ -463,6 +575,7 @@ static inline bool ideLive(uint16_t address) {
 
 bool portWrite(uint16_t address, uint8_t data) {
     const uint8_t lo = (uint8_t)address;
+    if (evo) return EvoBase::portWrite(address, data);
     if (atm1) {
         if (address & 2) return false;
         if ((address & 0x8202) == 0x0000) { palWrite(data); return true; }        // #7DFD
@@ -598,6 +711,7 @@ static inline uint8_t atm1FeBit7() {
 }
 
 bool portRead(uint16_t address, uint8_t& v) {
+    if (evo) return EvoBase::portRead(address, v);
     if (atm1) {
         // IN #FB (%nnnnnnnn Xnnnn0n1): the Centronics status, and the low address
         // byte is latched — A7 is CPSYS. D7 = BUSY (0 = free), D6 = ULINE, D5..D0 = 1;
@@ -659,16 +773,30 @@ void trdosTrap(uint8_t pcH) {
         // возможность доступа к портам TR-DOS (без включения ПЗУ TR-DOS). Для этого
         // просто надо сделать CALL в промежуток от 15616 до 15871" (atmdscr.htm).
         // The CP/M BIOS does exactly that (ROM 0: CALL #3DFD = RET, then OUT (#FF)).
-        const bool romOk = (p7ffd & 0x10) || (atm1 && (aFB & 0x80));
+        // ZX-Evo (atm_pager.v dos_exec_stb): window 0's set-1 register must be ROM in
+        // "#7FFD/DOS" mode — the BIOS's own 48/TR-DOS pair — for the trap to fire.
+        const bool romOk = ((p7ffd & 0x10) && (!evo || EvoBase::dosEnterOk())) ||
+                           (atm1 && (aFB & 0x80));
+#if EVO_CFG_TRACE
+        if (evo && pcH == 0x3D)
+            Debug::log("[DOS] #3Dxx pc=%04X 7ffd=%02X set1w0=%03X ro=%X -> %s", Z80::getRegPC(), p7ffd,
+                       pF7[4], g_atm_ro & 0x0F, (romOk && (g_atm_ro & 1)) ? "ON" : "no");
+#endif
         if (pcH == 0x3D && romOk && (g_atm_ro & 1)) {
             beta = true;
             dosRecalc();
             remap();
         }
     } else {
-        // Leave on executing RAM (CF_LEAVEDOSRAM).
+        // Leave on executing RAM (CF_LEAVEDOSRAM). ZX-Evo (atm_pager.v ram_exec_stb):
+        // by the window's REGISTER, not by what is mapped — RAM #FE/#FF of the FDD
+        // emulator / NMI and #EFF7 RAM 0 override window 0 without dropping DOS.
         const uint8_t w = pcH >> 6;
-        if (!(g_atm_ro & (1u << w))) {
+        const bool ramExec = evo ? EvoBase::ramExec(w) : !(g_atm_ro & (1u << w));
+        if (ramExec) {
+#if EVO_CFG_TRACE
+            if (evo) { static uint16_t n = 0; if (n < 200) { n++; Debug::log("[DOS] off pc=%04X", Z80::getRegPC()); } }
+#endif
             beta = false;
             dosRecalc();
             remap();

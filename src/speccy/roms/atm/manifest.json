@@ -18,6 +18,42 @@
       "len": 16384
     },
     {
+      "sym": "gb_rom_evo_p4",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p15",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p16",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p17",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p22",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p23",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p24",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p25",
+      "len": 16384
+    },
+    {
+      "sym": "gb_rom_evo_p26",
+      "len": 16384
+    },
+    {
       "sym": "gb_rom_atm_font",
       "len": 2048
     }
@@ -176,7 +212,91 @@
       "len": 110,
       "runs": 8,
       "diff_bytes": 50
+    },
+    {
+      "sym": "gb_overlay_evo_p5",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 19,
+      "runs": 1,
+      "diff_bytes": 1
+    },
+    {
+      "sym": "gb_overlay_evo_p6",
+      "base": "gb_rom_0_pentagon_128k",
+      "len": 101,
+      "runs": 4,
+      "diff_bytes": 65
+    },
+    {
+      "sym": "gb_overlay_evo_p8",
+      "base": "gb_rom_0_sinclair_48k",
+      "len": 698,
+      "runs": 39,
+      "diff_bytes": 452
+    },
+    {
+      "sym": "gb_overlay_evo_p9",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 2939,
+      "runs": 113,
+      "diff_bytes": 2249
+    },
+    {
+      "sym": "gb_overlay_evo_p12",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 205,
+      "runs": 10,
+      "diff_bytes": 133
+    },
+    {
+      "sym": "gb_overlay_evo_p13",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 5347,
+      "runs": 68,
+      "diff_bytes": 4927
+    },
+    {
+      "sym": "gb_overlay_evo_p14",
+      "base": "gb_rom_0_pentagon_128k",
+      "len": 473,
+      "runs": 28,
+      "diff_bytes": 293
+    },
+    {
+      "sym": "gb_overlay_evo_p18",
+      "base": "gb_rom_evo_p17",
+      "len": 8679,
+      "runs": 163,
+      "diff_bytes": 7689
+    },
+    {
+      "sym": "gb_overlay_evo_p19",
+      "base": "gb_rom_evo_p17",
+      "len": 8475,
+      "runs": 119,
+      "diff_bytes": 7749
+    },
+    {
+      "sym": "gb_overlay_evo_p28",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 219,
+      "runs": 13,
+      "diff_bytes": 129
+    },
+    {
+      "sym": "gb_overlay_evo_p29",
+      "base": "gb_rom_4_trdos_504t",
+      "len": 3278,
+      "runs": 100,
+      "diff_bytes": 2666
+    },
+    {
+      "sym": "gb_overlay_evo_p31",
+      "base": "nullptr",
+      "len": 3628,
+      "runs": 82,
+      "diff_bytes": 3124
     }
   ],
-  "flash_bytes": 100846
+  "flash_bytes": 282363
 }

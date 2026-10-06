@@ -11,6 +11,7 @@
 #include "UiGfx.h"
 #include "app/Config.h"
 #include "speccy/machines/TsConf/TsConf.h"
+#include "speccy/machines/TsConf/Ft812.h"      // hook_tsconfVdac2Smooth: renderRequest
 #include "speccy/devices/sound/SnSound.h"
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
@@ -40,6 +41,7 @@
 #include "UiDialog.h"   // the transport hook asks its reboot question itself
 #include "UiStrings.h"
 #include "UiActions.h"  // netStatusInvalidate
+#include "UiJoy.h"      // joyprof_current
 #include "OSDMain.h"    // OSD::esp_hard_reset for the transport reboot
 
 #include "drivers/graphics/graphics.h"   // graphics_set_scanlines / graphics_set_dither
@@ -71,6 +73,7 @@ NM_BOOL_ACCESS(issue2,    Issue2)
 NM_INT_ACCESS (throtling, throtling)
 NM_BOOL_ACCESS(ledInd,    ledIndicators)
 NM_BOOL_ACCESS(ledPanel,  led_panel)
+NM_BOOL_ACCESS(rzxLoop,   rzx_loop)
 NM_BOOL_ACCESS(sdLed,     sdLedBlink)
 NM_BOOL_ACCESS(rtc,       rtc_enabled)
 NM_INT_ACCESS (mouseSens, mouse_sens)
@@ -285,7 +288,7 @@ static const RomsetIdx kPrefPent[] = { R_PENT, R_128K_CS, R_LAST };
 // 1024 and ProfROM sit BEFORE GMX so opt_pref_scorp's indices (UiTree.cpp) do not
 // move when GMX is hidden at runtime (no QSPI PSRAM, or its ROM traded away).
 static const RomsetIdx kPrefScorp[] = { R_SCORP, R_SCORP_GR, R_SCORP_1024, R_SCORP_PROF,
-                                        R_SCORP_GMX, R_LAST };
+                                        R_SCORP_GMX, R_LAST, R_SCORP_EVO };   // APPEND ONLY: the index is persisted
 
 NM_STR_ACCESS(prefArch, pref_arch,        kPrefArch)
 NM_STR_ACCESS(pref48,   pref_romSet_48,   kPref48)
@@ -303,6 +306,10 @@ static int32_t get_tempOffset()          { return (int32_t)Config::temp_offset; 
 static void    put_tempOffset(int32_t v) { Config::temp_offset = (int8_t)v; }
 static int32_t get_profileSlot()          { return (int32_t)Config::profile_slot; }
 static void    put_profileSlot(int32_t v) { Config::profile_slot = (uint8_t)v; }
+// Joystick > Profile: read-only, like SET_PROFILE_SLOT — the row of the live
+// profile, which moves only inside the list's own verbs.
+static int32_t get_joyProfile()           { return nm::joyprof_current(); }
+static void    put_joyProfile(int32_t)    {}
 static int32_t get_persistSlot()          { return (int32_t)Config::persist_slot; }
 static void    put_persistSlot(int32_t v) { Config::persist_slot = (uint8_t)v; }
 
@@ -365,6 +372,22 @@ static int32_t get_memPgCnt()          { return (int32_t)Config::mem_pg_cnt; }
 static void    put_memPgCnt(int32_t v) { Config::mem_pg_cnt = (uint16_t)v; }
 static int32_t get_tsconfClk()          { return (int32_t)Config::tsconf_clk_cap; }
 static void    put_tsconfClk(int32_t v) { Config::tsconf_clk_cap = (uint8_t)v; }
+static int32_t get_tsconfVdac2()          { return Config::tsconf_vdac2 ? 1 : 0; }
+static void    put_tsconfVdac2(int32_t v) { Config::tsconf_vdac2 = v != 0; }
+static int32_t get_tsconfVdac2Smooth()          { return Config::tsconf_vdac2_smooth ? 1 : 0; }
+static void    put_tsconfVdac2Smooth(int32_t v) { Config::tsconf_vdac2_smooth = v != 0; }
+static bool    hook_tsconfVdac2Smooth(int32_t, int32_t) { Ft812::renderRequest(); return true; }   // the renderer reads Config per frame
+static int32_t get_tsconfVdac2Adapt()          { return Config::tsconf_vdac2_adapt ? 1 : 0; }
+static void    put_tsconfVdac2Adapt(int32_t v) { Config::tsconf_vdac2_adapt = v != 0; }
+static bool    hook_tsconfVdac2Adapt(int32_t, int32_t) { VIDEO::ftPaletteProgram(); return true; }   // cube back in, or the adaptive one rebuilt
+static int32_t get_evoRaster()          { return (int32_t)Config::evo_raster; }
+static void    put_evoRaster(int32_t v) { Config::evo_raster = (uint8_t)(v & 3); }
+// The frame length, the audio set, the paper/border anchors and the display's v_total
+// are all derived at the machine reset — a raster change restarts the machine.
+static bool    hook_evoRaster(int32_t, int32_t) {
+    if (Config::isEvoBase()) ESPectrum::reset();
+    return true;
+}
 static bool    hook_tsconfClk(int32_t, int32_t) {
     if (Config::arch == A_TSCONF) TsConf::applyZclk(true);   // re-derive the live clock under the new cap
     return true;
@@ -532,23 +555,12 @@ static bool hook_p3Slock(int32_t nv, int32_t) {
     return true;
 }
 static bool hook_trdosRom(int32_t nv, int32_t) {
-    // 5.03 / 5.04TM / 5.05D / 6.11e are read-only overlays over the 5.04T base applied
-    // on the fly by MemESP (RomOverlay.h), so this binds immediately on every board —
-    // no reboot. Keep in step with the same switch in Config::requestMachine.
-    // Not while the machine keeps its OWN TR-DOS on that base (GMX / ProfROM / KAY):
+    // Read-only overlays over the 5.04T base (or the base / Custom image itself), so
+    // this binds immediately on every board — no reboot (Config::bindTrdosRom).
+    // Not while the machine keeps its OWN TR-DOS (GMX / ProfROM / KAY / TS-Conf / ATM):
     // the pick is saved and binds at the next machine switch (Config::requestMachine).
     if (Config::trdosBaseOwnedByMachine()) return true;
-    const uint8_t* base = gb_rom_4_trdos_504t;
-    const uint8_t* ov   = gb_overlay_trdos_505d;
-    switch (nv) {
-        case 0: ov = gb_overlay_trdos_503;   break;
-        case 1: ov = gb_overlay_trdos_504tm; break;
-        case 4: ov = gb_overlay_trdos_611e;  break;
-        case 3: base = gb_rom_4_trdos_custom; break;
-        default: break;
-    }
-    MemESP::rom[4].assign_rom(base);
-    MemESP::registerOverlay(gb_rom_4_trdos_504t, ov);
+    Config::bindTrdosRom((uint8_t)nv);
     return true;
 }
 static bool hook_tapePlayer(int32_t nv, int32_t) {
@@ -1331,6 +1343,11 @@ static void resolveConstraints(CommitReport& rep) {
             if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_ATM)
                 changed |= force(SET_MACHINE, NM_MACH(A_PENT, R_PENT),
                                  rep, "ATM ROM traded for the GM.DLS bank");
+            if (((staged(SET_MACHINE) >> 8) & 0xFF) == A_SCORP &&
+                (isScorpEvoRomset((RomsetIdx)(staged(SET_MACHINE) & 0xFF)) ||
+                 (RomsetIdx)(staged(SET_MACHINE) & 0xFF) == R_SCORP_PROF))
+                changed |= force(SET_MACHINE, NM_MACH(A_SCORP, R_SCORP_1024),
+                                 rep, "ProfROM traded for the GM.DLS bank");
         }
 
         if (!changed) return;

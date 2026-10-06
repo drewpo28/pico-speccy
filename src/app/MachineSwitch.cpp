@@ -326,7 +326,8 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // via ZC) — auto-enable it on entry so SD boot works
         // out of the box. esxDOS/MB-02+ are already forced off
         // above; skipped silently if the budget gate declines.
-        if (((arch == A_PROFI && romset != R_PROFI) || arch == A_TSCONF) &&
+        if (((arch == A_PROFI && romset != R_PROFI) || arch == A_TSCONF ||
+             (arch == A_SCORP && isScorpEvoRomset(romset))) &&
             !Config::zcontroller && FileUtils::fsMount &&
             OSD::featureBudgetGate(Subsystems::FEAT_ZCONTROLLER)) {
             Config::zcontroller = true;
@@ -378,7 +379,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // addresses, so a live v5<->v6 switch started wrong while F12 was always
         // fine (F12 reboots, and setup() fills RAM). Before requestMachine so the
         // ROM binding and the machine start see the same clean state.
-        ESPectrum::powerOnRamFill();
+        ESPectrum::powerOnRamFill(arch, romset);
         Config::requestMachine(arch, romset);
     }
 
