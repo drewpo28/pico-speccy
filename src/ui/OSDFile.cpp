@@ -522,6 +522,43 @@ static bool rfd_launch_tmp(string path) {
     return false;
 }
 
+// ── Quick-start download cache ──────────────────────────────────────────────
+// Enter on an entry the session already pulled into /tmp/_run.<ext> launches the
+// file that is there instead of downloading it again (owner's request,
+// 2026-10-06). The key is the entry's identity on its source — cacheId (site /
+// host), folder, display name — and the hit also needs the temp file to still
+// exist at the size the download left it with; a guest that wrote to a mounted
+// .trd keeps its size, a half-finished later download does not. One slot per
+// extension, since each extension has its own fixed temp name. Session-only: a
+// reboot forgets the table and the next Enter downloads afresh.
+struct RfdCached { string key, tmpp; uint32_t size; };
+static RfdCached s_rfd_cache[4];
+static int s_rfd_cache_next = 0;
+
+static string rfd_cache_key(RemoteFs* fs, const string& nm) {
+    return fs->cacheId() + "|" + fs->cwdPath() + "|" + nm;
+}
+
+static bool rfd_cache_hit(const string& key, const string& tmpp) {
+    for (const RfdCached& c : s_rfd_cache) {
+        if (c.key.empty() || c.key != key || c.tmpp != tmpp) continue;
+        FILINFO fi;
+        return f_stat(tmpp.c_str(), &fi) == FR_OK && !(fi.fattrib & AM_DIR) && (uint32_t)fi.fsize == c.size;
+    }
+    return false;
+}
+
+static void rfd_cache_note(const string& key, const string& tmpp) {
+    FILINFO fi;
+    if (f_stat(tmpp.c_str(), &fi) != FR_OK) return;
+    // The temp name is per extension, so a new download into it invalidates
+    // whatever entry held that name.
+    for (RfdCached& c : s_rfd_cache) if (c.tmpp == tmpp) c.key.clear();
+    RfdCached& c = s_rfd_cache[s_rfd_cache_next];
+    s_rfd_cache_next = (s_rfd_cache_next + 1) & 3;
+    c.key = key; c.tmpp = tmpp; c.size = (uint32_t)fi.fsize;
+}
+
 // Quick-start always reuses a fixed /tmp/_run.<ext>. If a previous quick-start is
 // still holding that exact file open — a disk mounted in the WD1793, or a tape still
 // loaded — re-downloading into it (fopen2 FA_CREATE_ALWAYS over an open file) fails,
@@ -802,7 +839,15 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         string tmpp = string("/tmp/_run") + ext;
         LastRun::alias(tmpp, fs->downloadBasename(nm));   // quick-slot name: the remote file
         rfd_release_tmp(tmpp);   // free the fixed /tmp target if a prior launch still holds it
-        bool got = fs->get(nm, tmpp, rfd_progress);
+        const string ckey = rfd_cache_key(fs, nm);
+        bool got;
+        if (rfd_cache_hit(ckey, tmpp)) {
+            Debug::log("net: quick-start reuses %s (already downloaded this session)", tmpp.c_str());
+            got = true;
+        } else {
+            got = fs->get(nm, tmpp, rfd_progress);
+            if (got) rfd_cache_note(ckey, tmpp);
+        }
         OSD::progressDialog("", "", 0, 2);
         if (!got) {
             OSD::osdCenteredMsg(MSG_NET_XFER_ERR, LEVEL_WARN, 2000);

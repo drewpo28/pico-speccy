@@ -56,8 +56,10 @@ bool RzxReader::open(const RzxIo& io) {
         if (!readAt(pos, b, 5)) break;
         const uint32_t len = rd32(b + 1);
         if (len < 5 || len > m_io.size - pos) break;   // truncated tail: next() reports it
-        if (b[0] == 0x80 && len >= 18 && readAt(pos + 5, b, 4)) m_totalFrames += rd32(b);
-        if (b[0] == 0x10 && len >= 29) {
+        const uint8_t id = b[0];   // the frame-count read below reuses b
+        if (id == 0x80 && len >= 18 && readAt(pos + 5, b, 4)) m_totalFrames += rd32(b);
+        if (id == 0x30 && m_totalFrames == 0) m_hasSnap = true;
+        if (id == 0x10 && len >= 29) {
             if (readAt(pos + 5, m_creator, 20)) m_creator[20] = 0;
         }
         pos += len;
@@ -87,6 +89,7 @@ void RzxReader::close() {
     m_insCap = 0;
     m_open = m_inBlock = false;
     m_totalFrames = 0;
+    m_hasSnap = false;
     m_creator[0] = 0;
 }
 

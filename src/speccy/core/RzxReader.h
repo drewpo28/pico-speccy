@@ -79,6 +79,9 @@ public:
     const char* creator() const { return m_creator; }
     // Sum of the frame counts of every input block (a header-only walk).
     uint32_t totalFrames() const { return m_totalFrames; }
+    // A snapshot block precedes the first input block (from the header walk):
+    // false = the file plays from whatever the machine is doing.
+    bool     hasSnapshot() const { return m_hasSnap; }
 
 private:
     bool readAt(uint32_t off, void* buf, uint32_t n);
@@ -97,6 +100,7 @@ private:
     uint8_t  m_major = 0, m_minor = 0;
     char     m_creator[21] = {};
     uint32_t m_totalFrames = 0;
+    bool     m_hasSnap = false;
 
     uint32_t m_pos = 0;          // offset of the next block header
 

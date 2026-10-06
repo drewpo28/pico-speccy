@@ -25,6 +25,24 @@ public:
     // Extract all files from ZIP to destDir. Returns number of files extracted.
     static int extractAll(const string& zipPath, const string& destDir);
 
+    // Extract the member whose basename is `baseName` (case-insensitive) into
+    // `outPath`. For a file that refers to a SIBLING in the same archive — an
+    // RZX whose snapshot is an external .z80 shipped beside it. No picker, no
+    // temp-name juggling. False when the member is absent or not decodable.
+    static bool extractNamed(const string& zipPath, const char* baseName, const char* outPath);
+
+    // Call `cb(ctx, baseName)` for every file member (directories skipped) until
+    // it returns false. Returns the number of names offered, -1 on an I/O error.
+    static int forEachName(const string& zipPath, bool (*cb)(void*, const char*), void* ctx);
+
+    // The archive the last extract() took `extractedPath` from, "" if that path
+    // is not the last extract's output. Lets a loader reach the extracted file's
+    // siblings, which stayed in the zip.
+    static string sourceZipFor(const string& extractedPath);
+    // ...and the member's own name inside it (the extracted file is called
+    // /tmp/.zip_extract.<ext>, which says nothing about what it was).
+    static string sourceMemberFor(const string& extractedPath);
+
     // Unwrap a single-member gzip file (a .vgz is a gzip-wrapped .vgm — the
     // format vgmrips.net serves tracks in) into outPath. Returns outPath, or
     // "" on error (errMsg() then says why); the input file is left untouched.

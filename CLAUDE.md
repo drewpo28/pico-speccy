@@ -8147,6 +8147,20 @@ block or its metadata.
 
 ## Launching from the Web catalog: never unlink a temp file that is still open (2026-08-13)
 
+### Quick-start does not download a file it already has (2026-10-06; hw-confirmed the same day, owner: "работает")
+
+Owner's request: Enter on a Web Archive entry that this session already pulled into
+`/tmp/_run.<ext>` launches that file instead of downloading it again. `s_rfd_cache`
+(OSDFile.cpp, 4 slots): key = `cacheId() | cwdPath() | display name`, the temp path,
+and the size `get()` left. A hit also needs the temp file to still exist at that size —
+a guest writing to a mounted `.trd` keeps its size, a later half-finished download into
+the same `/tmp/_run.trd` does not (and a successful one replaces the slot: one temp
+name per extension). `rfd_release_tmp` still runs first either way, so a re-launch
+starts the mounted file afresh. Session-only by design: nothing persists the key, a
+reboot downloads again. Log line `net: quick-start reuses /tmp/_run.<ext>`. The
+"Downloading..." dialog still flashes for the catalog's locator lookup before the
+check. Test ELF `debug/DVp2-rzx-spin3-1.0.9.elf`.
+
 **hw-confirmed 2026-08-13 on z0p2**: two demos launched in a row from Web Archives
 each start the right one, and the catalog listing is clean. Symptoms were "the second
 demo starts the FIRST one" plus a Web-catalog listing drawn as binary garbage — ONE
@@ -13437,6 +13451,80 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
     TR-DOS ROM" — the stop is the 16th short frame, not the first, hence later than 2303.
     The box is `osdCenteredMsg(.., 60000)`: it stays until a key (the timed form ends on any
     key down); the `0` form draws and returns and the running machine repaints over it.
+- **The INT rule is the RECORDER's, keyed on the creator block: SPIN 0.5 has no pulse
+  (2026-10-06, NOT hw-tested, `debug/DVp2-rzx-spin-1.0.9.elf` + `.uf2`).** `rick1.rzx`
+  (rzxarchive, Rick Dangerous, 128K, 59869 frames) stopped at frame 2171 (0:43) with
+  "does not match this machine / ROM set" — and it is not a ROM question: the frame ends
+  `A6D2 JP NZ / LD SP,FFFC / EI / RET` 34 T after the boundary, our 36 T 128K window took
+  the interrupt there, its handler read 4 INs the file never recorded, OVER. The file has
+  NO interrupt on that frame, nor on 29813 (EI effective at 24 T) or 33340 (14 T), and it
+  HAS one on 32870 where IFF1 was already set at the boundary (EI delay honoured, INT 10 T
+  later). So SPIN's rule: **the interrupt is taken only if IFF1 is set when the fetch count
+  is reached; an EI inside the frame gets nothing that frame.** `tools/rzx_replay_sim.c`
+  sweep of the pulse length: 36..128 T → first bad frame 2171, 28-34 → 29813, 16-24 →
+  33340, 1-8 → 32870 (an INT missed), **12-14 → clean** — i.e. no pulse length fits, only
+  the gate. `RZX_SPIN=1` in the sim is that gate (the line is raised only with IFF1 set,
+  redcode honours the EI delay itself); with it rick1 (59869), chevychase (71386) and
+  continentalcircus (42821, all three `SPIN 0.5`) replay with ZERO short frames, and all
+  three break under the pulse (chevy: 5370 short frames). Spectaculator/Fuse files need
+  the pulse (dnawarrior is clean only at 32-35 T, see above) — so `Rzx::spinInt`
+  (creator starts with "SPIN", logged as `INT rule SPIN`/`pulse`): `raiseInt` raises no
+  line with IFF1 clear, a 1 T line with it set (the immediate `checkINT` takes it), and
+  with an EI pending returns true so `loopRzx` runs ONE whole instruction (prefix bytes
+  are not instructions — `atInstrBoundary` loop) and then drops the line. 5282 of rick1's
+  frames carry no interrupt at all under the rule (`INT not taken` in the sim), which is
+  the game's own DI-heavy sprite code and is what the recording says.
+  - **External snapshots are found by NAME** (same build): `intoeaglesnest.zip` (6
+    Spectaculator recordings, 48K) refers to its snapshot as
+    `C:\projects\my_projects\zx\zx-games\into-the-eagles-nest.z80` — the recorder's own
+    path, which we glued whole onto the .rzx directory. Now the basename (either slash)
+    is looked up beside the .rzx, and when the .rzx itself was extracted from a zip, in
+    that zip (`ZipExtract::sourceZipFor` + `extractNamed`, to `/tmp/_rzx.x.z80`) — the
+    archive ships the .z80 next to its recordings and the zip picker extracts ONE member.
+    The other five replay clean in the sim at the 48K 32 T pulse (the sim now takes a 48K
+    `.z80`: v2 hw 0/1, v3 hw 0..2, paging locked, rom1 = 48 BASIC).
+  - **A recording with NO snapshot block starts from the sibling named like it** (same
+    build, owner's rule: "в той же папке что и rzx"). `into-the-eagles-nest-1.rzx` has no
+    0x30 block at all (the format allows it; Fuse plays such a file from whatever is
+    running) and expects the `.z80` beside it. `RzxReader::hasSnapshot()` (header walk: a
+    0x30 before the first 0x80) → `sideSnapLoad()`: among the `.z80`/`.sna` files in the
+    .rzx's folder — or in the zip it came from (`ZipExtract::forEachName`) — the one whose
+    stem is the LONGEST prefix of the .rzx stem with a non-alphanumeric character after it
+    (`into-the-eagles-nest` fits `into-the-eagles-nest-1-hard`, `into` does not); loaded
+    through the inner `LoadSnapshot`, toast ` RZX: from <name> `, remembered in
+    `s_sideSnap` so a loop rewind reloads it. None found = plays from the current state as
+    before; found but unloadable = refused. The directory walk needs ~900 B of heap for the
+    DIR + FILINFO (LFN 255), taken for the walk only. **The stem must be the zip MEMBER's
+    name** (`ZipExtract::sourceMemberFor`), not the extracted file's: the picker writes every
+    member to `/tmp/.zip_extract.rzx`, and the first cut matched siblings against
+    `.zip_extract` — "desync at frame 4", the file playing from whatever was running (hw
+    2026-10-06, the other five of the zip fine because the external-snapshot path takes
+    its name from the descriptor). Same round: the header walk's frame-count read reused
+    `b[0]`, so the 0x30/0x10 tests after an input block saw a frame-count byte — latent,
+    fixed. **Hw 2026-10-06, owner: "заработал"** — `into-the-eagles-nest-1.rzx` from the zip:
+    `sibling walk in '...intoeaglesnest.zip' stem 'into-the-eagles-nest-1': members=8
+    best='into-the-eagles-nest.z80'` → `extractNamed` → `sibling ... loaded`, the game
+    plays. The directory variant (same files unpacked on the card) is covered by
+    inspection only.
+  - **The round cost four hardware runs to a STALE ELF, and the lesson is a rule:** the
+    `build/` dir had been reconfigured for ZERO2 by the VS Code task (22:41) between my
+    first build and the next, so every later `ninja -C build` linked `z0p2-...elf` while
+    I kept copying the 22:35 `DVp2-...elf` from `build/bin/MinSizeRel/` into `debug/` —
+    a firmware with none of the changes, under a fresh name each time. Every "no
+    effect" verdict of that hour was that. Now: **a test ELF is checked before it is
+    handed out** — `strings <elf> | grep '^build: '` must show the time of THIS build
+    and a grep for a string the change added must hit; the `build:` stamp is also
+    logged right after `dbg uart: console on ...` (it used to go out before the console
+    existed on a cold boot), so a capture names its firmware; and a board's test build
+    goes in that board's own dir (`build-PICO_DV/` here), never in the shared `build/`.
+    Also from the same hour: the UART ring is drained inside every modal now
+    (`Debug::pumpUart()` in `netBackgroundTick`, slices in the classic
+    `osdCenteredMsg` pause) — a log that stopped mid-line inside the zip picker / the
+    desync box was the ring waiting for `ESPectrum::loop`, not a hang.
+  - Hw check owed: rick1 / chevychase / continentalcircus end to end (the SPIN gate), then
+    dnawarrior or dizzy (the pulse path must be untouched), then the Eagle's Nest zip from
+    the browser (zip member → external .z80 from the same zip) and `into-the-eagles-nest-1`
+    after loading the .z80 by hand.
 - **Snapshots > RZX loop** (`Config::rzx_loop`, NVS `rzx_loop`, `SET_RZX_LOOP` AC_PURE,
   2026-10-01, NOT hw-tested, `debug/DVp2-rzx-loop-1.0.8.elf`): at EV_END `nextFrame`
   raises `s_snapPending + s_rewind` instead of stopping, and `loadPendingSnapshot`

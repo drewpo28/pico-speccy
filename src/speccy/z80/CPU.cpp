@@ -864,9 +864,18 @@ void CPU::loopRzx(uint64_t _loop_t0) {
     while (tstates < statesInFrame && Rzx::mode != 0) {
         if (Rzx::frameReached() && Z80::atInstrBoundary()) {
             if (!Rzx::nextFrame()) break;   // playback over: `mode` is OFF now
-            Rzx::raiseInt();
+            const bool afterOne = Rzx::raiseInt();
             if (Rzx::snapshotPending()) break;
-            Z80::checkINT();
+            if (afterOne) {
+                // SPIN rule with an EI pending at the boundary: the interrupt
+                // belongs after the next instruction, where execute() samples
+                // it itself (and interrupt() drops the line). A prefix byte is
+                // not an instruction — run on to the real boundary.
+                do { Z80::execute(); } while (!Z80::atInstrBoundary());
+                Rzx::intUntil = 0;
+            } else {
+                Z80::checkINT();
+            }
             continue;
         }
         Z80::execute();

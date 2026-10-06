@@ -3264,7 +3264,14 @@ void OSD::osdCenteredMsg(const string& msg, uint8_t warn_level, uint16_t millisp
     VIDEO::vga.print(msg.c_str());
 
     if (millispause > 0) {
-        sleep_ms(millispause); // Pause if needed
+        // The pause, in slices that keep the UART console draining (a log line
+        // written just before this box would otherwise wait for it to end).
+        for (uint32_t left = millispause; left; ) {
+            const uint32_t n = left < 10 ? left : 10;
+            sleep_ms(n);
+            left -= n;
+            Debug::pumpUart();
+        }
         VIDEO::SaveRect.restore_last();
     }
 }

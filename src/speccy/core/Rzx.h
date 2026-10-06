@@ -27,6 +27,20 @@ enum Mode : uint8_t { OFF = 0, PLAY = 1 };
 
 extern uint8_t mode;       // Mode; read by the Z80 core and CPU::loop
 extern int32_t intUntil;   // PLAY: INT line held while CPU::tstates < intUntil
+// The recording emulator's interrupt rule, decided from the creator block:
+//   false — a pulse: the line stays up for the machine's INT window (IntEnd),
+//           so an EI inside the window still takes the interrupt. Fuse and
+//           Spectaculator record this way (they emulate the ULA pulse).
+//   true  — SPIN 0.5: the interrupt is taken only if IFF1 is already set at the
+//           frame boundary (an EI there defers it by one instruction, as the Z80
+//           does); with IFF1 clear the frame simply has no interrupt. Found with
+//           rick1.rzx: its frame 2171 ends `JP NZ / LD SP / EI / RET` 34 T
+//           after the boundary and the file has no INT there, while the 128K
+//           window (36 T) took one — four extra INs and a desync. Every SPIN
+//           file tried (rick1, chevychase, continentalcircus) replays clean
+//           under this rule and breaks under the pulse (tools/rzx_replay_sim.c
+//           RZX_SPIN=1).
+extern bool    spinInt;
 
 // Cold path, called by the core after every Ports::input while mode != OFF.
 uint8_t onIn(uint8_t portValue);
@@ -53,7 +67,10 @@ bool frameReached();
 // ended (file end, error, desync) — `mode` is OFF afterwards.
 bool nextFrame();
 // Raise the INT line at the current T-state (the end of a recorded frame).
-void raiseInt();
+// Returns true when the caller must run ONE instruction before sampling the
+// line (spinInt with an EI pending: the Z80's one-instruction delay); false =
+// sample now (checkINT). Under spinInt with IFF1 clear no line is raised.
+bool raiseInt();
 // A mid-file snapshot block is waiting to be loaded at the next loop entry.
 bool snapshotPending();
 void loadPendingSnapshot();

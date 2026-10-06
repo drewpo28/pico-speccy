@@ -9,6 +9,9 @@
 //       -o /tmp/rzxsim tools/rzx_replay_sim.c external/redcode/Z80_redcode.c
 //   /tmp/rzxsim src/speccy/roms/plus3/src snap.z80 frames.bin <intLen> [maxReports] [traceFrom traceTo]
 //
+// RZX_SPIN=1 plays by the SPIN 0.5 rule: the INT is raised at the frame boundary only
+// if IFF1 is already set there (an EI inside the frame gets no interrupt that frame);
+// intLen then only has to cover the one instruction after a pending EI (24 is enough).
 // RZX_LOG=1 prints the firmware's own [RZX] log lines (Rzx.cpp logFrame) for a diff
 // against a capture from the board.
 // RZX_TRDOS=<16K TR-DOS ROM> in the environment adds the Beta-128 automap (Pentagon
@@ -29,7 +32,7 @@ static uint8_t p7ffd, p1ffd;
 static Z80 cpu;
 static unsigned long fetches;
 static const uint8_t *ins; static unsigned inCount, inPos; static int overrun;
-static int intWin = 32; static int trace = 0; static long curFrame;
+static int intWin = 32; static int spin = 0; static int trace = 0; static long curFrame;
 static uint8_t* mapr(uint16_t a) {
     int w = a >> 14, o = a & 0x3fff;
     if (p1ffd & 1) { static const int cfg[4][4] = {{0,1,2,3},{4,5,6,7},{4,5,6,3},{4,7,6,3}}; return &ram[cfg[(p1ffd>>1)&3][w]][o]; }
@@ -66,10 +69,14 @@ static void loadz80(const char* fn) {
     cpu.ix_iy[1].uint16_value = h[23] | h[24] << 8; cpu.ix_iy[0].uint16_value = h[25] | h[26] << 8;
     cpu.iff1 = h[27] ? 1 : 0; cpu.iff2 = h[28] ? 1 : 0; cpu.im = h[29] & 3;
     cpu.pc.uint16_value = h[32] | h[33] << 8; p7ffd = h[35]; p1ffd = ahl >= 55 ? h[86] : 0;
+    // A 48K snapshot (v2 hw 0/1, v3 hw 0/1/2): rom1 = the 48 BASIC (the 128K ROM1 is byte-identical),
+    // paging locked, and its three pages are 4 = #8000, 5 = #C000, 8 = #4000.
+    int is48 = ahl && (h[34] < (ahl == 23 ? 2 : 3)); if (is48) { p7ffd = 0x30; p1ffd = 0; }
     printf("z80: pc=%04X sp=%04X im=%d iff=%d 7ffd=%02X 1ffd=%02X hw=%d r=%02X\n", cpu.pc.uint16_value, cpu.sp.uint16_value, cpu.im, cpu.iff1, p7ffd, p1ffd, h[34], h[11]);
     size_t p = 32 + ahl;
     while (p + 3 <= n) {
         int len = b[p] | b[p+1] << 8, pg = b[p+2]; p += 3; uint8_t* dst = (pg >= 3 && pg <= 10) ? ram[pg-3] : NULL; int o = 0;
+        if (is48) dst = pg == 4 ? ram[2] : pg == 5 ? ram[0] : pg == 8 ? ram[5] : NULL;
         if (len == 0xffff) { if (dst) memcpy(dst, b + p, 16384); p += 16384; continue; }
         size_t e = p + len;
         while (p < e && o < 16384) {
@@ -87,7 +94,7 @@ int main(int argc, char** argv) {
     cpu.fetch_opcode = rdop; cpu.fetch = rd; cpu.read = rd; cpu.write = wr; cpu.in = io_in; cpu.out = io_out; cpu.nop = nopcb; cpu.inta = inta;
     z80_power(&cpu, 1);
     loadz80(argv[2]);
-    rzxlog = getenv("RZX_LOG") != NULL; startP7 = p7ffd;
+    rzxlog = getenv("RZX_LOG") != NULL; spin = getenv("RZX_SPIN") != NULL; startP7 = p7ffd;
     if (rzxlog) { unsigned s0 = 0, s1 = 0, sd = 0; for (int i = 0; i < 16384; i++) { s0 += rom[0][i]; s1 += rom[1][i]; sd += dosrom[i]; }
         printf("[RZX] roms sum0=%06X sum1=%06X dos=%06X\n", s0, s1, sd); }
     static uint8_t fr[2000000]; FILE* f = fopen(argv[3], "rb"); size_t fn = fread(fr, 1, sizeof fr, f); fclose(f);
@@ -98,7 +105,7 @@ int main(int argc, char** argv) {
         inPos = 0; overrun = 0; fetches = 0; curFrame = frame; trace = (frame >= tr0 && frame <= tr1);
         uint16_t pc0 = cpu.pc.uint16_value; int iff0 = cpu.iff1;
         // INT line was raised at the end of the previous frame (not for frame 0)
-        long t = 0; int line = frame > 0; intaSeen = 0;
+        long t = 0; int line = frame > 0 && (!spin || cpu.iff1); intaSeen = 0;
         if (line) z80_int(&cpu, 1);
         while (fetches < fc) {
             cpu.cycles = 0; z80_run(&cpu, 1); t += cpu.cycles;

@@ -46,6 +46,7 @@ const char* ZipExtract::TEMP_FILE = "/tmp/.zip_extract";
 // its own (both return "" / 0), so a tight heap doesn't masquerade as a bad
 // archive.
 static const char* s_zip_err = nullptr;
+static string s_lastZip, s_lastOut, s_lastMember;   // the last extract(): archive, the file it produced, the member's own name
 
 // ZIP entry names are CP866 (DOS / Windows packers) unless general-purpose flag
 // bit 11 says UTF-8; FatFs runs CP1251 (the UI font's encoding, ffconf.h). In
@@ -343,7 +344,99 @@ string ZipExtract::extract(const string& zipPath, uint8_t fileType) {
     f_unlink(finalPath.c_str());
     f_rename(TEMP_FILE, finalPath.c_str());
     LastRun::alias(finalPath, e.name);   // the quick-slot name: the entry, not the temp file
+    s_lastZip = zipPath;
+    s_lastOut = finalPath;
+    s_lastMember = e.name;
     return finalPath;
+}
+
+string ZipExtract::sourceZipFor(const string& extractedPath) {
+    return (!s_lastOut.empty() && extractedPath == s_lastOut) ? s_lastZip : string();
+}
+
+string ZipExtract::sourceMemberFor(const string& extractedPath) {
+    return (!s_lastOut.empty() && extractedPath == s_lastOut) ? s_lastMember : string();
+}
+
+int ZipExtract::forEachName(const string& zipPath, bool (*cb)(void*, const char*), void* ctx) {
+    ScopedHeap fnh(256);
+    if (!fnh) return -1;
+    char* const fn = fnh.as<char>();
+    FIL* zipFile = (FIL*)Buffer::palloc(sizeof(FIL), Buffer::NEED_POINTER);
+    if (!zipFile) return -1;
+    int n = -1;
+    if (f_open(zipFile, zipPath.c_str(), FA_READ) == FR_OK) {
+        const FSIZE_t zipSize = f_size(zipFile);
+        LocalFileHeader hdr;
+        UINT br;
+        n = 0;
+        for (;;) {
+            const FSIZE_t pos = f_tell(zipFile);
+            if (pos + sizeof(hdr) > zipSize) break;
+            if (f_read(zipFile, &hdr, sizeof(hdr), &br) != FR_OK || br != sizeof(hdr)) break;
+            if (hdr.signature != ZIP_LOCAL_SIGNATURE) break;
+            if (hdr.nameLen == 0 || hdr.nameLen > 250) break;
+            if (f_read(zipFile, fn, hdr.nameLen, &br) != FR_OK || br != hdr.nameLen) break;
+            fn[hdr.nameLen] = 0;
+            zipNameToFat(fn, hdr.flags);
+            if (hdr.extraLen > 0) f_lseek(zipFile, f_tell(zipFile) + hdr.extraLen);
+            const FSIZE_t dataStart = f_tell(zipFile);
+            if (fn[hdr.nameLen - 1] != '/') {
+                n++;
+                if (!cb(ctx, getBaseName(fn))) break;
+            }
+            const uint32_t dataSize = hdr.compressedSize;
+            if (dataSize == 0 && (hdr.flags & 0x08)) break;
+            const FSIZE_t nextPos = dataStart + dataSize;
+            if (nextPos > zipSize || nextPos <= pos) break;
+            f_lseek(zipFile, nextPos);
+        }
+        f_close(zipFile);
+    }
+    Buffer::pfree(zipFile);
+    return n;
+}
+
+bool ZipExtract::extractNamed(const string& zipPath, const char* baseName, const char* outPath) {
+    s_zip_err = nullptr;
+    ScopedHeap fnh(256);
+    if (!fnh) return false;
+    char* const fn = fnh.as<char>();
+    NetArenaLease arena;
+    ZipWorkGuard work;
+    if (!work.ok()) return false;
+    FIL& zipFile = s_work->zip;
+    if (f_open(&zipFile, zipPath.c_str(), FA_READ) != FR_OK) return false;
+    const FSIZE_t zipSize = f_size(&zipFile);
+    LocalFileHeader hdr;
+    UINT br;
+    bool ok = false;
+    for (;;) {
+        const FSIZE_t pos = f_tell(&zipFile);
+        if (pos + sizeof(hdr) > zipSize) break;
+        if (f_read(&zipFile, &hdr, sizeof(hdr), &br) != FR_OK || br != sizeof(hdr)) break;
+        if (hdr.signature != ZIP_LOCAL_SIGNATURE) break;
+        if (hdr.nameLen == 0 || hdr.nameLen > 250) break;
+        if (f_read(&zipFile, fn, hdr.nameLen, &br) != FR_OK || br != hdr.nameLen) break;
+        fn[hdr.nameLen] = 0;
+        zipNameToFat(fn, hdr.flags);
+        if (hdr.extraLen > 0) f_lseek(&zipFile, f_tell(&zipFile) + hdr.extraLen);
+        const FSIZE_t dataStart = f_tell(&zipFile);
+        if (fn[hdr.nameLen - 1] != '/' && strcasecmp(getBaseName(fn), baseName) == 0) {
+            Debug::log("ZIP: extractNamed '%s' method=%u csz=%u usz=%u -> %s",
+                       fn, hdr.compression, hdr.compressedSize, hdr.uncompressedSize, outPath);
+            if (hdr.compression == 0 || hdr.compression == 8)
+                ok = extractFile(&zipFile, hdr.compression, hdr.compressedSize, hdr.uncompressedSize, outPath);
+            break;
+        }
+        const uint32_t dataSize = hdr.compressedSize;
+        if (dataSize == 0 && (hdr.flags & 0x08)) break;
+        const FSIZE_t nextPos = dataStart + dataSize;
+        if (nextPos > zipSize || nextPos <= pos) break;
+        f_lseek(&zipFile, nextPos);
+    }
+    f_close(&zipFile);
+    return ok;
 }
 
 string ZipExtract::gunzip(const string& gzPath, const string& outPath) {

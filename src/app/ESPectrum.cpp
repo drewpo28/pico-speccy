@@ -858,6 +858,10 @@ void ESPectrum::setup() {
   // No SD → no Config → nothing to reconcile: a tag-started console stays up, which
   // is precisely the tool for debugging "the SD does not mount".
   if (FileUtils::fsMount) board_dbg_uart_apply();
+  // The stamp above went out before the console existed on a cold boot: repeat
+  // it here so a capture says which firmware it came from (test builds share a
+  // file name in debug/, and 2026-10-06 lost a round to that).
+  Debug::log("build: " __DATE__ " " __TIME__);
   // Mount the ALF cartridge from SD (served lazily on demand like a wd1793 disk),
   // per Config::alfCartPath. Empty drive if none is set or the SD file is missing —
   // there is no built-in cart. Must run before ALF banking can read it.
@@ -3241,6 +3245,12 @@ extern "C" void hdmi_audio_health_dump(void);
 // as long as the menu was open — "it connects in seconds unless you sit in
 // Network, where it never connects at all".
 void ESPectrum::netBackgroundTick() {
+    // The UART console's ring is otherwise drained only from loop(): inside a
+    // menu, a zip picker or a blocking box every line past the 32-byte FIFO sat
+    // in the ring until the modal ended, so a capture of a failure that happens
+    // INSIDE a modal stopped mid-line (hw 2026-10-06, the RZX sibling search).
+    // This is the one funnel every modal wait already calls.
+    Debug::pumpUart();
 #if PICOSPECCY_WIFI
     WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
 #endif

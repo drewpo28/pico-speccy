@@ -20,12 +20,18 @@
 #include "speccy/core/Snapshot.h"
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/disk/MB02.h"
+#include "fs/ZipExtract.h"
+#include <ctype.h>
 #include "speccy/z80/z80.h"
 
 namespace Rzx {
 
 uint8_t mode = OFF;
 int32_t intUntil = 0;
+bool    spinInt = false;
+// spinInt + EI pending: the line outlives the ONE instruction after the EI,
+// whatever its length (23 T is the longest, plus contention); loopRzx clears it.
+static const int32_t SPIN_EI_HOLD = 256;
 
 namespace {
 
@@ -132,10 +138,33 @@ bool loadSnap() {
             return false;
         }
         d[cap.n] = 0;
-        file = (const char*)d + 4;
-        if (file.empty() || file[0] != '/') {
-            const size_t slash = s_path.find_last_of('/');
-            file = (slash == std::string::npos ? std::string() : s_path.substr(0, slash + 1)) + file;
+        // The descriptor carries whatever path the recorder had — Spectaculator
+        // writes the full Windows path ("C:\...\into-the-eagles-nest.z80"). Only
+        // the file's NAME can mean anything here: it is looked up beside the .rzx,
+        // and when the .rzx itself came out of a zip, inside that zip (the archive
+        // ships the .z80 next to its recordings).
+        std::string name((const char*)d + 4);
+        const size_t cut = name.find_last_of("/\\");
+        if (cut != std::string::npos) name = name.substr(cut + 1);
+        if (name.empty()) {
+            OSD::osdCenteredMsg("RZX: bad external snapshot", LEVEL_WARN, 3000);
+            return false;
+        }
+        const size_t slash = s_path.find_last_of('/');
+        file = (slash == std::string::npos ? std::string() : s_path.substr(0, slash + 1)) + name;
+        FILINFO fi;
+        if (f_stat(file.c_str(), &fi) != FR_OK) {
+            const std::string zip = ZipExtract::sourceZipFor(s_path);
+            std::string lc = name;
+            for (char& c : lc) c = (char)tolower((unsigned char)c);
+            const size_t dot = lc.find_last_of('.');
+            const std::string out = std::string(kTmpBase) + "x." + (dot == std::string::npos ? "z80" : lc.substr(dot + 1));
+            if (zip.empty() || !ZipExtract::extractNamed(zip, name.c_str(), out.c_str())) {
+                Debug::log("[RZX] external snapshot '%s' not found (zip '%s')", name.c_str(), zip.c_str());
+                OSD::osdCenteredMsg("RZX: the snapshot file\n" + name + "\nmust be next to the .rzx", LEVEL_WARN, 4000);
+                return false;
+            }
+            file = out;
         }
     } else {
         if (strcmp(ext, "sna") != 0 && strcmp(ext, "z80") != 0) {
@@ -243,6 +272,97 @@ bool seekFrame() {
             OSD::osdCenteredMsg(std::string("RZX: ") + errText(s->rd.error()), LEVEL_WARN, 3000);
         return false;
     }
+}
+
+// ── A recording with no snapshot of its own ────────────────────────────────
+// The format allows an input block with no snapshot before it, and the RZX
+// Archive has such files: `into-the-eagles-nest-1.rzx` ships beside
+// `into-the-eagles-nest.z80` and expects it loaded first. Rule (owner's,
+// 2026-10-06): look in the SAME FOLDER as the .rzx — or in the zip it was
+// extracted from, which is that folder for an archive — for a .z80/.sna whose
+// name is the LONGEST prefix of the .rzx name (next character not a letter or
+// digit: `into-the-eagles-nest` fits `into-the-eagles-nest-1-hard`, `into` does
+// not), load it, then play. A loop rewind reloads the same file.
+std::string s_sideSnap;
+
+struct SideFind {
+    std::string stem;   // the .rzx name, lowercase, no extension
+    std::string best;   // the winning sibling's real name
+    size_t bestLen = 0;
+};
+
+bool sideOffer(void* ctx, const char* name) {
+    SideFind& f = *(SideFind*)ctx;
+    std::string lc(name);
+    for (char& c : lc) c = (char)tolower((unsigned char)c);
+    const size_t dot = lc.find_last_of('.');
+    if (dot == std::string::npos) return true;
+    const std::string ext = lc.substr(dot + 1);
+    if (ext != "z80" && ext != "sna") return true;
+    const std::string stem = lc.substr(0, dot);
+    if (stem.empty() || stem.size() > f.stem.size()) return true;
+    if (f.stem.compare(0, stem.size(), stem) != 0) return true;
+    if (stem.size() < f.stem.size() && isalnum((unsigned char)f.stem[stem.size()])) return true;
+    if (stem.size() > f.bestLen) { f.bestLen = stem.size(); f.best = name; }
+    return true;
+}
+
+// Load the sibling snapshot of a snapshot-less recording. True = loaded (or
+// nothing to look for — the recording then plays from the current state).
+bool sideSnapLoad() {
+    SideFind f;
+    const std::string zip = ZipExtract::sourceZipFor(s_path);
+    {
+        // The stem of the recording's OWN name: for a zip member that is the
+        // member's, not the /tmp/.zip_extract.rzx the picker wrote it to.
+        std::string stem = zip.empty() ? s_name : ZipExtract::sourceMemberFor(s_path);
+        const size_t dot = stem.find_last_of('.');
+        if (dot != std::string::npos) stem.resize(dot);
+        for (char& c : stem) f.stem += (char)tolower((unsigned char)c);
+    }
+    std::string file;
+    if (!zip.empty()) {
+        const int n = ZipExtract::forEachName(zip, sideOffer, &f);
+        Debug::log("[RZX] sibling walk in '%s' stem '%s': members=%d best='%s'", zip.c_str(), f.stem.c_str(), n, f.best.c_str());
+        if (n < 0 || f.best.empty()) return true;
+        const size_t dot = f.best.find_last_of('.');
+        std::string ext = f.best.substr(dot + 1);
+        for (char& c : ext) c = (char)tolower((unsigned char)c);
+        file = std::string(kTmpBase) + "x." + ext;
+        if (!ZipExtract::extractNamed(zip, f.best.c_str(), file.c_str())) {
+            Debug::log("[RZX] sibling snapshot '%s' in '%s': extract failed", f.best.c_str(), zip.c_str());
+            return true;
+        }
+    } else {
+        const size_t slash = s_path.find_last_of('/');
+        const std::string dir = (slash == std::string::npos) ? std::string("/") : s_path.substr(0, slash ? slash : 1);
+        DIR* d = (DIR*)Buffer::palloc(sizeof(DIR) + sizeof(FILINFO), Buffer::NEED_POINTER);
+        if (!d) { Debug::log("[RZX] sibling walk: no memory for DIR+FILINFO"); return true; }
+        FILINFO* fi = (FILINFO*)(d + 1);
+        const FRESULT rc = f_opendir(d, dir.c_str());
+        int seen = 0;
+        if (rc == FR_OK) {
+            while (f_readdir(d, fi) == FR_OK && fi->fname[0]) {
+                seen++;
+                if (!(fi->fattrib & AM_DIR)) sideOffer(&f, fi->fname);
+            }
+            f_closedir(d);
+        }
+        Buffer::pfree(d);
+        Debug::log("[RZX] sibling walk '%s' stem '%s': opendir=%d entries=%d best='%s'",
+                   dir.c_str(), f.stem.c_str(), (int)rc, seen, f.best.c_str());
+        if (f.best.empty()) return true;
+        file = (slash == std::string::npos ? std::string() : s_path.substr(0, slash + 1)) + f.best;
+    }
+    s_innerLoad = true;
+    const bool ok = LoadSnapshot(file, A_NONE, R_NONE);
+    s_innerLoad = false;
+    Debug::log("[RZX] no snapshot in the file: sibling '%s' %s", f.best.c_str(), ok ? "loaded" : "FAILED to load");
+    if (!ok) return false;
+    s_hasSnap = true;
+    s_sideSnap = file;
+    OSD::notify(" RZX: from " + f.best + " ", LEVEL_INFO, 2500);
+    return true;
 }
 
 // (Re)open the reader on the file already open in `s` — the start of playback,
@@ -375,11 +495,17 @@ bool startPlayback(const std::string& path) {
     s_total = s->rd.totalFrames();
     s_played = s_shortFrames = 0;
     s_desync = s_snapPending = s_rewind = s_hasSnap = s_badSeen = s_badDos = false;
-    Debug::log("[RZX] %s: v%u.%u creator '%s', %u frames", s_name.c_str(),
-               (unsigned)s->rd.major(), (unsigned)s->rd.minor(), s->rd.creator(), (unsigned)s_total);
+    spinInt = strncmp(s->rd.creator(), "SPIN", 4) == 0;
+    Debug::log("[RZX] %s: v%u.%u creator '%s', %u frames, INT rule %s", s_name.c_str(),
+               (unsigned)s->rd.major(), (unsigned)s->rd.minor(), s->rd.creator(), (unsigned)s_total,
+               spinInt ? "SPIN (IFF1 at the boundary)" : "pulse");
+    if (!s->rd.hasSnapshot()) Debug::log("[RZX] no snapshot block before the input: looking for a sibling");
 
-    // A file with no snapshot plays from the current machine state (the format
-    // allows it; the recording is then only meaningful on the same machine).
+    // A file with no snapshot plays from the sibling snapshot named like it, or
+    // else from the current machine state (the format allows it; the recording
+    // is then only meaningful on the same machine).
+    s_sideSnap.clear();
+    if (!s->rd.hasSnapshot() && !sideSnapLoad()) { release(); return false; }
     if (!seekFrame()) { release(); return false; }
 
 #if RZX_TRACE
@@ -391,7 +517,7 @@ bool startPlayback(const std::string& path) {
 
     intUntil = 0;       // the first interrupt comes at the end of frame 0
     mode = PLAY;
-    OSD::notify(" RZX: playing ", LEVEL_INFO, 1500);
+    if (s_sideSnap.empty()) OSD::notify(" RZX: playing ", LEVEL_INFO, 1500);   // else sideSnapLoad named the file
     return true;
 }
 
@@ -478,13 +604,24 @@ bool nextFrame() {
     return false;
 }
 
-void raiseInt() {
+bool raiseInt() {
+    const int32_t t = (int32_t)CPU::tstates;
+    if (spinInt) {
+        // SPIN: no pulse. IFF1 clear at the boundary = no interrupt this frame;
+        // set = taken now, or after the next instruction when that set came
+        // from an EI the core has not yet honoured (Z80::interrupt drops the
+        // line at the acknowledge, loopRzx drops it after the instruction).
+        if (!Z80::isIFF1()) { intUntil = 0; return false; }
+        const bool defer = Z80::isPendingEI();
+        intUntil = t + (defer ? SPIN_EI_HOLD : 1);
+        return defer;
+    }
     // Every machine RZX can play has its frame INT at IntStart = 0, so a line
     // raised inside the raster window keeps the window's own end (an interrupt
     // recorded just after the frame boundary behaves exactly as live); raised
     // anywhere else it lasts one window from here.
-    const int32_t t = (int32_t)CPU::tstates;
     intUntil = (t < CPU::IntEnd) ? CPU::IntEnd : t + (CPU::IntEnd - CPU::IntStart);
+    return false;
 }
 
 bool snapshotPending() { return s_snapPending; }
@@ -498,6 +635,12 @@ void loadPendingSnapshot() {
         s->rd.close();
         if (!openReader()) { stop(" RZX: cannot restart "); return; }
         s_played = s_shortFrames = 0; s_badSeen = s_badDos = false;
+        if (!s_sideSnap.empty()) {
+            s_innerLoad = true;
+            const bool ok = LoadSnapshot(s_sideSnap, A_NONE, R_NONE);
+            s_innerLoad = false;
+            if (!ok) { stop(" RZX: cannot restart "); return; }
+        }
         if (!seekFrame()) { stop(nullptr); return; }
     } else if (!loadSnap() || !seekFrame()) { stop(nullptr); return; }
     intUntil = 0;
