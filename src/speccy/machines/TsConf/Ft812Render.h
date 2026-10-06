@@ -44,6 +44,18 @@ struct RenderStats {
     uint32_t pxFmt[18];           // blit AREA by format
     uint32_t usFmt[18];           // time inside blitBitmap by format (cfg.clockUs)
     uint32_t palCopies;           // PALETTE_SOURCE tables copied into palScratch
+    uint32_t mipCells, mipBuilds, mipBuildUs, mipResets, mipRefused;   // pre-scaled cache: cells blitted from it, tiles built (+us), pool resets, cells it declined
+    uint32_t pxMip;               // blit AREA served from the cache
+    uint32_t drawUs;              // time inside drawBitmap (all cells, blits included)
+    uint32_t mipGetUs;            // time inside the cache lookup / validation / build
+    uint32_t mipBlitUs;           // time inside blits served from the cache
+    uint32_t mipParked;           // entries parked for rebuilding on three consecutive frames
+    uint32_t genPx;               // blit AREA that took the GENERIC loop (neither fast path), all cells
+    uint32_t mipGenPx;            // ...the cached-cell part of it
+    uint32_t mipGenReason[8];     // genPx by cause: bilinear, box, wrap, non-default blend, non-white colour, rotated, mirrored (A <= 0), paletted with no palette slot
+    uint32_t loopUs;              // time inside the band's fetch/exec loop (all words; drawUs and vtxUs are inside it)
+    uint32_t vtxUs;               // time inside vertex() (the front, the setup and the blit of every vertex)
+    uint32_t ctxCopies;           // SAVE_CONTEXT + RESTORE_CONTEXT words
 };
 extern RenderStats g_renderStats;
 #if FT812_TRACE
@@ -61,7 +73,71 @@ struct MemView {
     const uint32_t* dl;           // 2048 words
     uint32_t macro[2];            // REG_MACRO_0/1
     uint32_t (*gen)();            // RAM_G write generation (Ft812::ramgGen), or nullptr: the palette cache key
+    const uint16_t* pageGen;      // per-4 KB-page RAM_G write counters (Ft812::ramgPageGen), or nullptr: the bitmap cache's validity
+    // RAM_G itself, for the per-cell resolve: `view()` is a flash function — one
+    // call per cell was ~0.5 us of instruction misses under core0's PSRAM traffic
+    // (hw 2026-10-05). nullptr = resolve everything through view().
+    const uint8_t* ramg; uint32_t ramgBytes;
 };
+
+// ── pre-scaled bitmap cache ──────────────────────────────────────────────────
+// Every bitmap cell the games draw is MINIFIED here (1024x768 -> 320x240 is 3.2
+// texels per output pixel; the 1.6x matrix both ZUMA and R-Type use makes it 2.0),
+// so a nearest blit reads one PSRAM line per 2-3 output pixels at random, and a
+// filtered one four times that. The cache keeps, per (cell, scale, filter), the
+// cell ALREADY SCALED to the output grid — an area (box) average or the centre
+// texel — as ARGB4444 in PSRAM, read 1:1 and sequentially by the blit: one line
+// fill per four pixels, no palette lookup, no per-pixel filter, and the picture
+// is a proper downscale instead of every other texel. Rotated cells (ZUMA's
+// balls) keep their matrix, scaled onto the cache image.
+//
+// Layout: one block, carved by ft812MipInit — the MipCache header, a 256-way
+// hash of entry chains, `cap` entries, then the pool. An entry's image is cut into
+// TILES of MIP_TILE_ROWS cache rows, each with the sum of the RAM_G page
+// generations its source rows (and palette) spanned when it was built: a strip
+// copied into one corner of R-Type's 614 KB tile layer rebuilds the one or two
+// tiles it touched, not the layer. The pool is a bump allocator; when it runs
+// out the whole cache is dropped and refilled (counted — two drops in one frame
+// turn the cache off for the rest of that frame, so a working set larger than
+// the pool costs the uncached path and not a rebuild storm).
+constexpr int      MIP_TILE_SHIFT = 3;
+constexpr int      MIP_TILE_ROWS  = 1 << MIP_TILE_SHIFT;
+constexpr uint32_t MIP_RAMG_SIZE  = 0x100000;        // only RAM_G cells are cached
+constexpr uint32_t MIP_MAX_SCALE8 = 8 << 8;          // past 8 texels per pixel the box is too wide to build cheaply
+// RAM_G write-generation pages: 1 KB. 4 KB was too coarse for R-Type, whose sprite
+// slots (512 B) are refilled every frame and share pages with cells that do not
+// change (hw 2026-10-05: ~1300 tile rebuilds a second).
+constexpr uint32_t MIP_PAGE_SHIFT = 10;
+constexpr uint32_t MIP_PAGES      = MIP_RAMG_SIZE >> MIP_PAGE_SHIFT;
+constexpr uint16_t MIP_SKIP_FRAMES = 32;             // a cell rebuilt on 3 consecutive frames is left uncached this long
+struct MipTile { uint8_t* data; uint32_t gen; };
+struct MipEntry {
+    uint32_t src;                 // cell address (22-bit): BITMAP_SOURCE + cell * stride * lh
+    uint32_t k1;                  // stride:12 | lw:12 | fmt:5 | wrapx:1 | wrapy:1 | smooth:1
+    uint32_t pal;                 // PALETTE_SOURCE for the paletted formats, else 0
+    uint16_t su8, sv8;            // texels per cache pixel, Q8
+    uint16_t cw, ch;              // the cache image
+    uint16_t lh, ntiles;
+    uint16_t next;                // hash chain (entry index), 0xFFFF = end
+    uint16_t lastBuild;           // frame of the last REbuild of an existing tile
+    uint16_t skipFrom;            // frame the entry was parked (see MIP_SKIP_FRAMES)
+    uint8_t  streak;              // consecutive frames with a rebuild
+    uint8_t  skip;                // parked: served from the source until skipFrom + MIP_SKIP_FRAMES
+    MipTile* tiles;               // ntiles, in the pool
+};
+struct MipCache {
+    uint8_t*  pool; uint32_t poolBytes, poolUsed;
+    MipEntry* ent; uint16_t cap, nent;
+    uint8_t   resetsThisFrame;    // see above
+    uint8_t   off;                // cache declined for the rest of this frame
+    uint32_t  frame;              // frames rendered (the parking clock)
+    uint16_t  hash[256];
+};
+// Carve a cache out of `block` (`bytes`); nullptr when it cannot hold at least a
+// small pool. `cap` entries (R-Type's working set is ~100 cells).
+MipCache* ft812MipInit(void* block, size_t bytes, int cap = 192);
+void      ft812MipReset(MipCache& mc);   // drop every entry (a chip reset, a filter change)
+uint32_t  ft812MipUsed(const MipCache& mc);
 
 // Output geometry: FT screen (hsize x vsize) → output rectangle (outW x outH),
 // scale = out px per FT px (Q16), inv = FT px per out px (Q16).
@@ -77,12 +153,20 @@ struct RenderCfg {
     uint8_t* palScratch;
     uint32_t palScratchSize;
     uint64_t (*clockUs)();        // trace build only: per-format blit time (nullptr = none)
-    // "Smooth": every bitmap cell that is MINIFIED (>= 1.5 texels per output
-    // pixel on an axis — at our 5/16 scale that is nearly everything) is sampled
-    // with four taps spread over the pixel's footprint instead of one texel.
-    // Four texel fetches per pixel instead of one. Off = nearest (Fast).
+    // "Smooth": every bitmap cell that is MINIFIED (>= 1.25 texels per output
+    // pixel on an axis — at our 5/16 scale that is nearly everything) is AREA
+    // filtered (a box over the pixel's footprint) instead of taking one texel.
+    // With a MipCache the box is computed once per cell into the cache; without
+    // one it is approximated per pixel with four taps (four fetches per pixel).
+    // Off = nearest (Fast) — also served from the cache when one is there.
     bool smooth;
+    MipCache* mip;                // the pre-scaled bitmap cache, or nullptr
+    // The band walk's working state (ft812RenderScratchBytes(), 8-aligned, SRAM):
+    // it used to be a stack local and overflowed core1's 2 KB stack. Required —
+    // ft812RenderBand draws nothing without it.
+    void* scratch;
 };
+size_t ft812RenderScratchBytes();
 
 // Per-handle bitmap parameters. They are graphics-ENGINE state, not graphics-
 // CONTEXT state: SAVE/RESTORE_CONTEXT does not touch them and they persist
@@ -101,10 +185,13 @@ struct BitmapHandle {
 struct RenderState {
     BitmapHandle handle[32];
     uint32_t     warned;          // bit per unsupported feature already reported
-    uint32_t     palCacheAddr, palCacheGen, palCacheLen;   // what cfg.palScratch holds
-    bool         palCacheValid;
-    uint8_t      palCacheFmt;      // the bitmap format it was expanded for
+    // What cfg.palScratch holds: up to 4 expanded PALETTE_SOURCE tables of 1 KB
+    // each (R-Type changes palettes per sprite — ~150 expansions a frame with one
+    // slot), replaced least-recently-used.
+    struct PalSlot { uint32_t addr, gen; uint16_t age; uint8_t fmt, valid; } pal[4];
+    uint16_t     palAge;
 };
+void ft812PalCacheInvalidate(RenderState& st);
 
 // Reset the engine state: every handle to the ROM font defaults (handles 16..31)
 // or empty. `romFontHandle(h, out)` fills the default for a ROM font handle.
@@ -184,7 +271,7 @@ struct AdaptPal {
     struct Box { uint8_t r0, r1, g0, g1, b0, b1; uint32_t count; } box[MAX - 1];   // median-cut scratch (here, not .bss)
 };
 void ft812AdaptClear(AdaptPal& ap, int space = ADAPT_RGB444);                 // start of a frame
-void ft812AdaptAccumulate(AdaptPal& ap, const uint32_t* src, int w);          // one band row
+void ft812AdaptAccumulate(AdaptPal& ap, const uint32_t* src, int w, int step = 1);   // one band row (every step-th pixel)
 bool ft812AdaptChanged(const AdaptPal& ap, int permille);                     // hist vs the built one
 // Median cut of ap.hist into `slots` entries (black + slots-1 colours) -> lut/col.
 void ft812AdaptBuild(AdaptPal& ap, int slots);
@@ -192,7 +279,10 @@ void ft812AdaptBuild(AdaptPal& ap, int slots);
 // No dither: the entries are the frame's own colours, and a 4-4-4 map cannot
 // tell which neighbour a dithered pixel should mix with (see the .cpp).
 // (lut entries of bins the measured frame did not use are resolved on first use: 0xFF = not yet)
-void ft812QuantizeRowAdapt(AdaptPal& ap, const uint8_t* slotOf, const uint32_t* src, int w, int y, uint8_t* dst);
+// `lut`: an SRAM copy of ap.lut (the map is read per pixel and AdaptPal lives in
+// PSRAM on the device); nullptr = read ap.lut itself. A bin resolved on the way
+// is written into both.
+void ft812QuantizeRowAdapt(AdaptPal& ap, const uint8_t* slotOf, const uint32_t* src, int w, int y, uint8_t* dst, uint8_t* lut = nullptr);
 uint8_t ft812AdaptResolve(AdaptPal& ap, uint32_t bin);
 
 } // namespace Ft812

@@ -84,7 +84,10 @@ bool init(const uint8_t* glyphs8x8, void* (*alloc)(size_t bytes, bool prefer_psr
 void deinit();
 // Bytes the board costs in PSRAM (RAM_G + fonts + state) — Buffer::pageBudget
 // reserves this on a TS-Conf boot with the board enabled.
-constexpr size_t configuredBytes() { return RAM_G_SIZE + (160u << 10); }
+// (+ the renderer's pre-scaled bitmap cache, MIP_POOL_BYTES, which the display
+// glue allocates when the output is first switched to the board)
+constexpr size_t MIP_POOL_BYTES = 256u << 10;
+constexpr size_t configuredBytes() { return RAM_G_SIZE + (160u << 10) + MIP_POOL_BYTES; }
 // Chip reset (power-on / host command RST_PULSE): registers to their reset
 // values, coprocessor cold start. RAM_G is not cleared — the real chip's is
 // undefined at power-up and preserved by RST_PULSE.
@@ -128,6 +131,8 @@ const uint32_t* dlShadow();
 uint32_t macroReg(int i);                 // REG_MACRO_0/1 for the DL MACRO opcode
 RenderState* renderState();               // the engine state (bitmap handles) the renderer keeps
 uint32_t ramgGen();                       // RAM_G write generation — MemView::gen for the palette cache
+const uint16_t* ramgPageGen();            // per-4 KB-page write counters — MemView::pageGen for the bitmap cache
+const uint8_t*  ramgPtr();                // RAM_G bytes (RAM_G_SIZE of them), or nullptr before init — MemView::ramg
 // CMD_PLAYVIDEO in flight: core0 calls videoPump() once per frame (parses
 // the media FIFO, decodes at most one frame); frameTick() (core0) finishes the
 // command when the engine reports the end of the stream or REG_PLAY_CONTROL = 0.

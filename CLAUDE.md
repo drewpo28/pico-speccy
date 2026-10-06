@@ -12489,6 +12489,255 @@ repo: chapters 12, 15.6, 23.4, 26, 35, 38 are the ones that pin chip semantics).
   and bilinear — `[FT812] bench RGB565 <mode> from <SRAM|PSRAM>: N ns/px` — the
   arithmetic/fill split measured in the loop itself, with the guest running.
 
+### The pre-scaled bitmap cache (MipCache, 2026-10-05, NOT hw-tested) — the renderer's main lever
+
+Where the display-list frame went (R-Type logs of 2026-10-01, adaptive palette OFF,
+480p): core1 53 ms per frame at 155k blit px, 83-93 at 270k. Blit ≈ 0.18 us/px wall of
+which about half is PSRAM line fills — both games draw 640x480 assets through a 1.6x
+matrix on a 1024x768 screen, so at fb 320 every cell is minified exactly 2.0 texels
+per pixel: one fill per two output pixels even on a sequential row, scattered fills
+for rotated cells (ZUMA's balls). The rest is the per-pixel loop plus the HDMI line
+ISR, which is ~30% of core1 at 480p and INSIDE every core1 figure the trace prints
+(the `[FT812] render:` line now carries `(walk N quant N put N) isr N%` — the pump's
+split and the ISR share, so wall numbers can be read as CPU). The quantize/output
+half was ~13 ms wall for 97k px with the cube; with the adaptive palette its 4 KB
+map in PSRAM was read per pixel.
+
+- **`MipCache` (Ft812Render.h/.cpp)**: per (cell address, stride/lw/lh/fmt/wrap,
+  PALETTE_SOURCE, scale su/sv in Q8, Smooth) the cell ALREADY SCALED onto the output
+  grid as ARGB4444 in PSRAM — the centre texel (Fast) or the area average over the
+  pixel's footprint (Smooth), alpha-weighted so BORDER edges fade — blitted 1:1 and
+  sequentially (one fill per four pixels, no palette lookup, no per-pixel filter) via
+  the existing `blitBitmap<F_ARGB4>` with the matrix scaled (`u' = u/su`) and the
+  rows coming from TILES of 8 cache rows (`cellRow`). Rotated cells keep their matrix.
+  Taken for a cell in RAM_G minified >= 1.5 texels/px when the source would cost more
+  bytes per output pixel than the cache's two (16-bit formats always, 8-bit from 1.75),
+  when it is rotated, or whenever Smooth is on; declined past 8x, over 1024 px a side,
+  for a REPEAT period that is not a whole number of cache pixels, or when the cell is
+  not whole in the view.
+- **Invalidation is per TILE by RAM_G PAGE** (`Chip::pageGen[256]`, bumped by every
+  writer through `ramgTouched` — wr8, MEMSET/MEMZERO/MEMCPY, INFLATE, the reset's
+  CHIPID; `MemView::pageGen`): a tile stores the sum of the page generations its
+  source rows and palette spanned, re-summed per use. R-Type's TilesUpdate copies
+  strips into its 614 KB layer every frame; this rebuilds the one or two tiles it
+  touched (20 KB of source, ~1 ms), not the 154 KB cached layer.
+- **Pool = bump allocator, reset-all when full**; a second reset inside one frame turns
+  the cache off for the rest of that frame (a working set bigger than the pool costs
+  the direct path, not a rebuild storm; `mip: resets` in the trace every window = that).
+  256 KB PSRAM (`MIP_POOL_BYTES`, added to `configuredBytes()` so pageBudget reserves
+  it), taken with the glue at the first VDAC2 output, 128/64 KB fallbacks, refused if
+  it lands on the heap. Header + hash + entries are in the same PSRAM block: a lookup
+  is 1-3 PSRAM reads and only cells that reach the band pay it (~500/frame on R-Type).
+- **Smooth now MEANS the area filter**: with a cache it is exact (the box, computed once
+  per cell); without one the old per-pixel 4-tap approximation remains. Fast = the
+  centre texel, i.e. nearest — now also from the cache. On the shipped firmware the
+  owner reported the picture "a bit smeared": at 480p the games are an exact 2:1 of
+  their 640x480 art (nearest drops every other texel, crisp but aliased; the box is a
+  true half-resolution picture); at 576p it is 1.78:1 and nearest gives an uneven
+  2-2-1 pattern — the box is the one that looks right there. The default stays Fast
+  until the owner compares the two on hardware.
+- **Same round, cheaper adaptive palette**: `FtGlue::alut` = a 4 KB SRAM copy of
+  `AdaptPal::lut` (tryMalloc, best effort; the per-pixel reads were PSRAM), refreshed
+  after every build and written through on a lazy resolve; the display-list histogram
+  samples every 2nd row AND every 2nd column (no dither sits in front of it, unlike
+  the MJPEG sink's — see the adaptps3 note — so the stride is unbiased).
+- `pack4444` is round(v/17), the inverse of the texel expansion: `(v+8)>>4` moved a
+  4-bit blue one step up on every cached pixel (host test caught it). The test (4c)
+  pins Fast-cache == direct nearest bit for bit at 2:1 on a half-texel-phased vertex
+  (on an exact block boundary Q16 truncation picks the texel, so the two may differ by
+  one there — the phase ambiguity of any resampler, not a bug), Smooth == direct on a
+  2x2-uniform bitmap and == the 2x2 mean on a random one, a RAM_G write rebuilding the
+  tile, and a 16 KB pool resetting and stepping aside with the picture unchanged.
+- **Hw rounds 2026-10-05 (480p unless said):** perf1 = the baseline: ZUMA's loading
+  screen 192 ms/frame (RGB565 planes + an L4 mask through the non-default-blend
+  generic path, 0.73 us/px), R-Type in game 107-122 ms with PALETTED4444 at 0.66 us/px
+  — 4.5x the 0.145 of 2026-10-01, because the fast guest-memory path made core0's
+  PSRAM traffic denser (random XIP line 507 ns against 377) and the blit runs from
+  flash through the same XIP queue. mip1 (cache): ZUMA in game 77-88 ms (the game
+  itself runs 48 fps on core0 — `swap take 60`/window against 8-18 frames rendered),
+  ZUMA balls 0.44 us/px cached (rotated — no fill win, as predicted); the pool
+  overflowed every ~10 s because the 8.8 rotation matrices made 16 scale keys per
+  ball — the scale is quantized to 1/8 in the key now. **mip2 KILLED core1 (isr 25%
+  -> 6% -> 0%, guest spinning on DLSWAP): a STACK OVERFLOW of core1's 2 KB** — the
+  Walk (988 B) + drawBitmap's frame (340 B) + the blit (164) + a trace wrapper frame
+  + the HDMI ISR's frame, over the ISR's own data in SCRATCH_X. Fixed in mip3: the
+  Walk, BlitArgs and the cache descriptor live in `RenderCfg::scratch` (FtGlue, 1.3 KB
+  heap), and `ft812RenderBand` draws NOTHING without it. **Rule: nothing on core1's
+  render path may hold more than ~200 B of stack; check `objdump` for `sub sp` after
+  any change there.** mip3 then split the frame: ZUMA 66-72 ms = blits 25 (balls 16,
+  bg 9) + **~15 ms of drawBitmap overhead outside the blits + ~15 ms of DL walk** —
+  ~8 us per drawBitmap call that merely clipped out, i.e. instruction-cache misses of
+  FLASH code behind core0's PSRAM traffic (the `.tsovl` lesson). mip4: the walk
+  (`FT_WALK_HOT` = ft812RenderBand, execWord, vertex, clearBand, clipRecalc and
+  drawBitmap's clip FRONT; the cold per-cell setup stays in flash as
+  `drawBitmapCold`) and `ft812QuantizeRowAdapt`/`Accumulate` moved into `.ftovl`
+  (AUTO 14336 -> 18432, 17 512 used on the trace build), page gens are 1 KB
+  (`MIP_PAGE_SHIFT`; R-Type refills 512 B sprite slots every frame — 1300 tile
+  rebuilds a second at 4 KB pages), and an entry rebuilt on 3 consecutive frames is
+  PARKED for 32 frames (`MipEntry::skip`, trace `parked`). **mip4 on hw (480p)**:
+  ZUMA 88-91 ms a frame, R-Type 74-117 — the cache works (`resets 0`, parked 0-16,
+  cached blits 0.39-0.45 us/px against 0.125 for the direct fast loop) but ~16-20 ms a
+  frame of `drawBitmapCold` (~26 us per in-band cell, flash) and the cached blits in
+  the GENERIC loop (ARGB4 is not in the fast formats' list... it is, but the rotated
+  balls and non-white colours are not) were still there. **mip5 (NOT hw-tested)**:
+  `drawBitmapCold` and the `blitBitmap<F_ARGB4>` / `<F_PALETTED4444>` instantiations
+  are in `.ftovl` too (an `always_inline` `blitBitmapImpl<FMT>` + two explicit
+  specializations with the section attribute; the other 15 formats stay in flash),
+  the palette expansion is a flash `palExpand()` with **4 LRU slots** (`FtGlue::
+  palScratch` 1 -> 4 KB, `RenderState::pal[4]`; R-Type changes palettes per sprite),
+  and three flash calls per PIXEL or per CELL were removed from the SRAM code:
+  `uint32_t cc[4] = {0}` in the generic bilinear/box loop had become a libc `memset`
+  call per pixel (four scalars now), the six `(x << 8) / s` matrix divides per cached
+  cell were libgcc `__aeabi_ldivmod` (a Q32 reciprocal from one 32-bit `udiv`), and
+  `texelAny`/`pack4444` were flash calls per SOURCE texel of every tile rebuild
+  (`FT_INLINE`). **Check with `objdump --disassemble=<fn> | grep bl` after any change
+  in this file: a `bl` to 0x10xxxxxx or a `_veneer` from the SRAM functions is a
+  cache miss per call, and GCC manufactures them from innocent code.** The `mip:`
+  trace line gained `gen Nk px: bil box wrap blend col rot` = cached-cell area that
+  took the generic loop, by cause. Window AUTO 18432 -> 30720 (28 000 used, trace).
+- **mip5 hw (2026-10-05 evening, 480p): R-Type in game 40-61 ms a frame (was 74-117),
+  ZUMA in game 40-44 (every swap rendered, `refused 30/frame` = its 2:1 background not
+  fitting the pool, served direct at 0.155 us/px — fine). ZUMA's BOOT screen unchanged
+  at 183 ms (mip4 189, perf1 192), and that screen is what the owner watched for a
+  minute: `loader_resident.asm DrawBootDxtBackground` = a 640x480 L4 alpha mask
+  written to dst alpha (COLOR_MASK 0001 + BLEND ONE,ZERO) and two 160x120 RGB565 planes
+  MAGNIFIED 2x and blended through DST_ALPHA / ONE_MINUS_DST_ALPHA — 225k px a frame,
+  every one through the generic loop at 0.72 us/px, and the generic loop of L4 / RGB565
+  lived in the FLASH instantiations with a flash `blendPixel` call per pixel. The same
+  flash `blendPixel` is why R-Type's cached cells read 0.37 us/px: `gen ... col 267k`
+  = COLOR_RGB-tinted sprites fell out of the fast loops into the generic one. Also
+  measured there: an axis-aligned PALETTED4444 cell at 2:1 is FASTER direct (0.11 us/px)
+  than from the cache (0.18-0.25) — same PSRAM line count per output pixel, plus the
+  tile indirection — so the `fsu*bpp >= 14` criterion was costing R-Type ~15 ms a frame.
+  **mip6 (NOT hw-tested)**: `blendPixel` in SRAM (`FT_WALK_HOT`, noinline, 400 B);
+  the generic loop is ONE SRAM `blitGeneric(a, fmt)` for every format (its taps through
+  a noinline SRAM `blitTap` — the format switch would otherwise sit nine times in the
+  loop), so the 13 `blitBitmap<FMT>` instantiations are the fast loops only; the fast
+  loops take COLOR_RGB / COLOR_A modulation (`fastStore`, the generic loop's arithmetic
+  exactly — the host test's fast-on/off differential stays bit-exact); cache criterion
+  `fsu*bpp >= 28` (16-bit from 1.75x, 8-bit from 3.5x; rotated / Smooth as before);
+  `palLookup` (the hit) inline in SRAM with the RAM_G generation sampled once per band
+  (`Walk::genNow`), only a miss calls the flash `palExpand`; RAM_G cells resolve through
+  `MemView::ramg` inline instead of the flash `view()` per cell. Window: 28 480 of
+  30 720 (trace), 27 504 plain; RAM unchanged. Trace: `gen Nk px (cached Nk): ...` now
+  counts ALL generic pixels (the first cut counted cached cells only, which is why the
+  boot screen's 225k generic px a frame were invisible in it). Expected: boot screen
+  183 -> ~50 ms, R-Type 40-60 -> ~30-45, ZUMA level a little better; what remains on
+  R-Type is ~15 ms a frame of per-cell walk (4100 in-band cells, ~3.6 us each) + 7 ms
+  quantize.
+- **mip6 hw (2026-10-06, 480p, `logs/devttyACM0_2026_10_06.09.52.02.350.txt`): the SRAM
+  generic loop is SLOWER than the flash per-format one** — ZUMA boot screen 199-210 ms
+  a frame (mip5 183): L4 and RGB565 both 0.81 us/px against 0.69/0.72. So the generic
+  path's cost was never instruction misses: it is the per-pixel CALLS (blitTap with its
+  format switch, then blendPixel with its alpha-function switch, two blendFactor
+  switches, four divides and the mask logic). ZUMA level 33-47 ms (paletted 0.155 us/px
+  direct, ARGB4 balls 0.31 cached); R-Type in game 44-54 ms, and THREE things in its
+  numbers: (1) `gen 266k px` a window with EVERY reason column 0 — the one cause the
+  trace could not name, found by reading the fast loop's gate: `du > 0`, i.e. a
+  MIRRORED cell (A < 0, every left-facing sprite) took the generic loop at 0.8 us/px,
+  11% of the pixels for 44% of the blit time; (2) "draw minus blit" = 107 ms a window
+  over 101k vertex tests — ~1 us per CLIPPED-OUT vertex, which is the TRACE's own
+  `cfg.clockUs()` (a function pointer to `time_us_64()` in flash) twice per vertex and
+  four times per cell, ~100k flash calls a window; (3) the cache is unused there
+  (criterion 28 excludes 2:1 paletted), the paletted fast loop runs at 0.13 us/px.
+  **mip7 (NOT hw-tested)**, three fixes: the axis-aligned fast loop takes `du != 0`
+  (mirrored: xs/xe from the decreasing u, same `(uint32_t)% lw` as the generic loop
+  for wrap); `blitGeneric` classifies the blend ONCE per cell and, under ALPHA_FUNC
+  ALWAYS, does any factor pair + any COLOR_MASK inline (blendPixel's arithmetic to the
+  bit, no call) and inlines the nearest tap (one copy of the format switch; the
+  four-tap modes keep blitTap); trace timers read `timer_hw->timerawl` inline
+  (`ftTick`, 32-bit deltas; the host test keeps `cfg.clockUs`). Trace `gen` line gained
+  `flip` (A <= 0 axis-aligned) and `nopal` (paletted cell without a palette slot). The
+  host differential (4b) now mirrors a quarter of its cells (A < 0 with TC = lw), tints
+  a quarter and puts a quarter under a random BLEND_FUNC pair + COLOR_MASK — 2278
+  checks, bit-exact. Expected: boot screen ~0.3 us/px (one tap, one inline blend),
+  R-Type blit -25%, and the real per-vertex cost of the walk for the first time.
+- **mip7 hw (2026-10-06, `logs/devttyACM0_2026_10_06.10.19.37.584.txt`): the boot screen
+  156-169 ms (mip6 199-210, mip5 183) — L4 and RGB565 both 0.62 us/px (0.81 before):
+  the inline blend + inline tap bought 23%, not the 60% hoped. R-Type in game 44-50 ms
+  (mirrored sprites are in the fast loop now: `flip 0`, `gen 0k`), paletted at
+  0.15 us/px — and with the honest timers the frame reads: blit 19.8 + front/setup
+  4.6 + **~10 ms of the walk OUTSIDE drawBitmap** + quant 7 + put 0.7. That residue is
+  ~1 us per DL WORD (332 words a band, 30 bands) and is unexplained: R-Type has no
+  SAVE/RESTORE_CONTEXT (its DL is VERTEX2II + state words), and objdump shows only
+  three `memcpy` veneers (the two handle-table copies per band + the Ctx struct
+  assignment of SAVE/RESTORE, which ZUMA uses 15x) and one `memset` (the band clear)
+  as flash calls in `ft812RenderBand`. ZUMA level 37-62 ms (cached ARGB4 balls 0.29-0.35
+  us/px, paletted 0.14). **mip8 (NOT hw-tested)** is instrumentation plus two cheap
+  fixes: `loop` (the fetch/exec loop) / `vtx` (inside vertex()) / `ctx` (SAVE+RESTORE
+  words) on the `mip:` line, so `loop - vtx` = state words + DL fetch and `vtx - draw`
+  = vertex()'s shell; a `dl word N ns` figure in the `xip:` line (2048 sequential words
+  of the PSRAM swap shadow, as the walk reads them); `ctxCopy` = a word loop in SRAM
+  (`no-tree-loop-distribute-patterns`, or GCC emits memcpy again); the generic
+  loop's nearest tap reads SCALAR locals (through `const BlitArgs&` every `*dp` store
+  could alias `a.lw`/`a.stride`/`a.avail` — all uint32_t — so GCC reloaded them per
+  pixel).
+- **mip8 hw (2026-10-06, `logs/devttyACM0_2026_10_06.10.32.49.962.txt`) — the state
+  the round STOPPED at (owner: "пока можно остановиться").** R-Type in game **37.5-38.7
+  ms** a frame (perf1 baseline 107-122), ZUMA level **37 ms** steady (baseline 77-88),
+  ZUMA boot screen ~155 ms (baseline 192; L4/RGB565 0.62 us/px — the scalar locals
+  changed nothing there, so the generic loop's remaining cost is arithmetic). The
+  instruments named the walk residue: `dl word 99-107 ns` (the DL fetch is NOT it),
+  `loop - vtx` = 1.2 ms/frame on R-Type (state words + fetch), `vtx - draw` = 0.7 ms
+  (vertex()'s shell) — and **`walk - loop` = 96 ms a window = 139 us per BAND = 4.2 ms
+  a frame on R-Type (39 us/band on ZUMA): the band SETUP**, i.e. the 10 KB band `memset`
+  and the 512 B handle `memcpy`, both libc calls in FLASH whose tight loops get evicted
+  by core0's PSRAM traffic mid-loop (R-Type's 14 MHz code runs from PSRAM pages, ZUMA's
+  less so — hence the 4x). **That is the one cheap lever left, NOT taken**: word loops
+  in `.ftovl` (`no-tree-loop-distribute-patterns`, the ctxCopy shape) would be ~4 ms
+  a frame on R-Type (~10%). After it the levers are structural: the quantizer (7 ms,
+  ~70 ns/px, mostly `ftPutRow`'s x^2 stores + the 3-table cube lookup), the per-band
+  DL re-walk (a per-frame vertex Y index), and a core0 band split in core0's frame
+  idle (worth nothing in CPU-bound R-Type scenes). R-Type's frame at 38 ms: blit 19
+  (paletted 0.17 us/px, PSRAM-bound) + setup 4.2 + front/cold 1 + fetch 1.2 + quant 7
+  + put 0.7 + ISR share.
+- **mip9 (2026-10-06, the owner reopened the round, NOT hw-tested)**: the two cheap
+  levers above. (1) `wordFill` / `wordCopy` in `.ftovl` (the ctxCopy shape) replace the
+  band memset and the two handle-table memcpys — expect `walk - loop` to fall from
+  139 to ~5 us a band on R-Type. (2) **The adaptive histogram is fed on every 8th
+  display-list frame only** (`FtGlue::adaptHist`): `ftAdaptFrameEnd`'s rule never
+  looks before `sinceBuild >= 8`, yet every frame paid the 16 KB PSRAM
+  `ft812AdaptClear` plus ~19k PSRAM read-modify-writes in `ft812AdaptAccumulate` —
+  all inside `quant`. Skipped frames still count towards sinceBuild (bumped in
+  ftFrameBegin), FrameEnd returns on a non-fed frame (its `total` is stale), the
+  first map (`adaptFirst`) is still built at once, and the MJPEG path (`vBins`,
+  per-frame palettes) is untouched. The render line prints `quant N/hist M` so the
+  share is visible; expect `hist` ≈ quant/8 of what it was and `quant` on R-Type to
+  drop from 7 ms a frame by whatever the histogram cost.
+- **mip9 hw (2026-10-06, `logs/devttyACM0_2026_10_06.10.40.42.870.txt`, the log file
+  is `data` to `file` — grep it with `-a`): both fixes landed as predicted** — band
+  setup 139 -> 38 us (`walk - loop` 1.1 ms a frame on R-Type, was 4.2), `hist` 0.2 ms
+  (quant 6.5 -> 5.1 ms). The frame numbers moved the OTHER way because the owner played
+  further into the level: R-Type 44-53 ms where it draws **8k vertices and 160k px a
+  frame** (2x overdraw of the 77k screen; the early-level scenes read 13-18 ms), ZUMA
+  level 34-44, boot 154-160 (0.62 us/px, untouched by any of this). The paletted blit
+  is at **0.166 us/px = one PSRAM line fill (0.45-0.5 us) per 4 output pixels**, i.e.
+  the PSRAM floor for a 2:1 8-bit source — nothing in the loop is left to cut. The
+  late-level R-Type frame: blit 27-30 + quant 5.1 + front/cold 3 + fetch/exec 2.3 +
+  setup 1.1 + put 0.7 (+ the ISR's 23% of wall). Levers that remain, all structural
+  and none certain: an INDEX-format mip cache for paletted cells (8-bit pre-scaled
+  indices = one fill per 8 px, against the tile indirection's measured +0.07 us/px —
+  a wash on paper, measure before building), the quantizer (5 ms: three cube tables
+  + the x^2 stores), a per-frame vertex Y index to stop re-walking the whole DL per
+  band (~3 ms), 16-row bands (halves the per-band walk, +10 KB of heap the 576p +
+  NeoGS session does not have). Round closed here a second time.
+- Test ELFs: `debug/DVp2-vdac2-perf1-trace-1.0.8` = main + the stage timers (the
+  BASELINE), `debug/DVp2-vdac2-mip1-trace-1.0.8` = the same + the cache, mip3 = +
+  the stack fix, **mip4** = + the walk in SRAM / 1 KB pages / parking, **mip5** = +
+  drawBitmapCold and the two blits in SRAM, 4 palette slots, the flash-call purge,
+  **mip6** = + blendPixel + one generic loop in SRAM, tinted fast loops, criterion 28,
+  inline palette hit / RAM_G resolve, **mip7** = + mirrored cells in the fast loop,
+  the inline blend / nearest tap in the generic loop, raw-timer trace ticks, **mip8** =
+  + `loop`/`vtx`/`ctx` + `dl word` instruments, SRAM ctxCopy, scalar locals in the
+  generic tap, **mip9** = + band setup word loops in SRAM, adaptive histogram every
+  8th frame (`quant N/hist M`). Read
+  `render: us avg`, the `(walk quant put)` split, `isr %`, and `mip: cells px builds
+  resets pool` — `resets` climbing every window means the pool is too small for that
+  title; `refused` climbing means the criteria are declining what matters. Owed on hw:
+  R-Type game (heavy scene), ZUMA menu + level, both Fast and Smooth, 480p and 576p,
+  adaptive palette on/off, then the AVI player (its path is untouched but shares the
+  glue) and a TS-Conf title with VDAC2 off (RAM 0, only `hdmi_irq_dur_total_us`).
+
 ### FT812 media: CMD_MEDIAFIFO + CMD_PLAYVIDEO (MJPEG AVI) — Wild Commander's FTVIEW (2026-09-28, NOT hw-tested)
 
 "Video does not start under WC": the `.avi` beside the TGV files is played by

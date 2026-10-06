@@ -74,12 +74,19 @@ struct Screen {
     RenderCfg cfg; MemView mv; RenderState rs;
     alignas(4) uint8_t palScratch[1024];     // the device's SRAM palette copy — exercised here too
     bool smooth = false;
+    MipCache* mip = nullptr;                 // the pre-scaled bitmap cache (set by the tests that want it)
+    std::vector<uint8_t> scratch;            // RenderCfg::scratch (the band walk's state, off core1's stack on the device)
     void setup(int hsize, int vsize, int outW, int outH) {
         hs = hsize; vs = vsize; w = outW; h = outH;
         px.assign((size_t)w * h, 0);
         mv.view = memView; mv.dl = dlShadow(); mv.macro[0] = macroReg(0); mv.macro[1] = macroReg(1); mv.gen = ramgGen;
+        mv.ramg = ramgPtr(); mv.ramgBytes = RAM_G_SIZE;
+        mv.pageGen = ramgPageGen();
         cfg.mem = &mv; cfg.hsize = hs; cfg.vsize = vs; cfg.outW = w; cfg.outH = h;
         cfg.palScratch = palScratch; cfg.palScratchSize = sizeof(palScratch); cfg.clockUs = nullptr; cfg.smooth = smooth;
+        cfg.mip = mip;
+        scratch.assign(ft812RenderScratchBytes() + 8, 0);
+        cfg.scratch = (void*)(((uintptr_t)scratch.data() + 7) & ~(uintptr_t)7);
         cfg.sxQ16 = (uint32_t)(((uint64_t)w << 16) / hs); cfg.syQ16 = (uint32_t)(((uint64_t)h << 16) / vs);
         cfg.invXQ16 = (uint32_t)(((uint64_t)hs << 16) / w); cfg.invYQ16 = (uint32_t)(((uint64_t)vs << 16) / h);
         *renderState() = *renderState();   // keep the chip's handle state
@@ -133,6 +140,7 @@ static void runDl(const std::vector<uint32_t>& words) {
 #define SCSZ(w,h)      (0x1C000000u | ((w) << 12) | (h))
 #define TA(v)          (0x15000000u | ((uint32_t)(v) & 0x1FFFF))
 #define TE(v)          (0x19000000u | ((uint32_t)(v) & 0x1FFFF))
+#define TC(v)          (0x17000000u | ((uint32_t)(v) & 0xFFFFFF))    // 15.8 (translation, 1/256 texel)
 #define PALSRC(a)      (0x2A000000u | (a))
 #define VFMT(f)        (0x27000000u | (f))
 #define PSIZE(s)       (0x0D000000u | (s))
@@ -362,7 +370,18 @@ int main() {
               static const int kS[] = { 256, 256, 256, 128, 512, 300, 77 };
               dl.push_back(HANDLE(k)); dl.push_back(SOURCE(0x4000 + (rnd() & 0x7FE)));
               dl.push_back(LAYOUT(f.fmt, lw * f.bpp, lh)); dl.push_back(SIZE(0, rnd() & 1, rnd() & 1, sw, sh));
-              dl.push_back(TA(kS[rnd() % 7])); dl.push_back(TE(kS[rnd() % 7]));
+              // a quarter of the cells mirrored (A < 0, the source shifted back in by
+              // TC — R-Type's left-facing sprites), a quarter tinted / faded
+              // (COLOR_RGB / COLOR_A), a quarter under a random BLEND_FUNC pair and
+              // COLOR_MASK (the generic loop's inline blend against blendPixel)
+              { const int sA = kS[rnd() % 7]; const bool mirror = (rnd() & 3) == 0;
+                dl.push_back(TA(mirror ? -sA : sA)); dl.push_back(TC(mirror ? lw * 256 : 0)); dl.push_back(TE(kS[rnd() % 7])); }
+              if ((rnd() & 3) == 0) { const uint32_t r = rnd() & 255, g = rnd() & 255, b = rnd() & 255, al = rnd() & 255;
+                  dl.push_back(COLOR_RGB(r, g, b)); dl.push_back(COLOR_A(al)); }
+              else { dl.push_back(COLOR_RGB(255, 255, 255)); dl.push_back(COLOR_A(255)); }
+              if ((rnd() & 3) == 0) { const uint32_t s = rnd() % 6, d = rnd() % 6, m = rnd() & 15;
+                  dl.push_back(BLEND(s, d)); dl.push_back(CMASK((m >> 3) & 1, (m >> 2) & 1, (m >> 1) & 1, m & 1)); }
+              else { dl.push_back(BLEND(2, 4)); dl.push_back(CMASK(1, 1, 1, 1)); }
               dl.push_back(BEGIN(1)); dl.push_back(VFMT(4));
               dl.push_back(V2F(((int)(rnd() % 400) - 40) * 16 + (int)(rnd() & 15), ((int)(rnd() % 300) - 40) * 16 + (int)(rnd() & 15)));
               dl.push_back(END());
@@ -371,13 +390,83 @@ int main() {
           const bool scaled = it & 1;
           Screen sa, sb;
           g_ft812FastBlit = true;  sa.setup(320, 240, scaled ? 360 : 320, scaled ? 288 : 240); sa.render(); renderDone();
-          renderState()->palCacheValid = false;
+          ft812PalCacheInvalidate(*renderState());
           g_ft812FastBlit = false; sb.setup(320, 240, scaled ? 360 : 320, scaled ? 288 : 240); sb.render();
           g_ft812FastBlit = true;
           for (size_t i = 0; i < sa.px.size(); i++) { if (sa.px[i] != sb.px[i]) { bad++; if (bad == 1) printf("    scene %d px %zu: fast %08X generic %08X\n", it, i, sa.px[i], sb.px[i]); } if (sa.px[i] != 0xFF285078u) fastPx++; }
       }
       CHECK(bad == 0, "fast cell loop == generic loop over 400 random scenes (%d pixels differ)", bad);
       CHECK(fastPx > 200000, "...and the scenes really drew something (%d px)", fastPx); }
+
+    // (4c) the pre-scaled bitmap cache. At exactly 2:1 (the games' 1.6x matrix on
+    // the 5/16 output) a Fast cache samples the centre texel of each 2x2 block,
+    // and the direct nearest blit samples the same one when the vertex puts the
+    // pixel centres half a texel into the block (vx = 15.1875 FT px: u = 2k + 1.5
+    // — on an exact block boundary Q16 truncation decides, and the two may differ
+    // by one texel, which is the phase ambiguity of any resampler), so the two
+    // must agree bit for bit; a Smooth cache agrees on a bitmap whose 2x2 blocks
+    // are uniform (a box over a flat block is the block); a write into the source
+    // rebuilds the tile; a pool too small for the scene drops out and the direct
+    // path draws the same picture.
+    { std::vector<uint8_t> blk(256 << 10); MipCache* mc = ft812MipInit(blk.data(), blk.size());
+      CHECK(mc != nullptr, "mip cache carved from 256 KB");
+      uint32_t rs = 0x9E3779B9u;
+      auto rnd = [&rs]() { rs ^= rs << 13; rs ^= rs >> 17; rs ^= rs << 5; return rs; };
+      uint8_t rnd4[32 * 32 * 2], uni4[32 * 32 * 2];
+      for (int i = 0; i < 32 * 32; i++) { const uint16_t c = (uint16_t)(0xF000 | (rnd() & 0x0FFF)); rnd4[i * 2] = (uint8_t)c; rnd4[i * 2 + 1] = (uint8_t)(c >> 8); }
+      for (int y = 0; y < 32; y++) for (int x = 0; x < 32; x++) { const int s = ((y & ~1) * 32 + (x & ~1)) * 2; uni4[(y * 32 + x) * 2] = rnd4[s]; uni4[(y * 32 + x) * 2 + 1] = rnd4[s + 1]; }
+      spiWrite(0x7000, rnd4, sizeof rnd4); spiWrite(0x8000, uni4, sizeof uni4);
+      auto scene = [&](uint32_t src, int cells) {
+          std::vector<uint32_t> dl = { CLEAR_RGB(1, 2, 3), CLEAR_A(255), CLEAR_ALL(), HANDLE(0), SOURCE(src), LAYOUT(6, 64, 32), SIZE(0, 0, 0, 32, 32),
+                                       TA(160), TE(160), BEGIN(1), VFMT(4) };
+          for (int k = 0; k < cells; k++) dl.push_back(V2F(243 + 48 * 16 * (k % 12), 243 + 48 * 16 * (k / 12)));
+          dl.push_back(END()); runDl(dl); };
+      Screen d, c;
+      scene(0x7000, 1); d.setup(1024, 768, 320, 240); d.render(); renderDone();
+      scene(0x7000, 1); c.mip = mc; c.setup(1024, 768, 320, 240); c.render(); renderDone();
+      int diff = 0, drawn = 0;
+      for (size_t i = 0; i < d.px.size(); i++) { if (d.px[i] != c.px[i]) diff++; if (d.px[i] != 0xFF010203u) drawn++; }
+      // (BITMAP_SIZE 32x32 is SCREEN pixels: 10x10 output pixels of the cell's 32x32 texels)
+      CHECK(diff == 0 && drawn == 100, "Fast cache == direct nearest at 2:1 on a half-texel-phased vertex (%d differ, %d drawn)", diff, drawn);
+      CHECK(ft812MipUsed(*mc) >= 16 * 16 * 2, "...and the cache holds the cell (%u B)", (unsigned)ft812MipUsed(*mc));
+      Screen s, d2;
+      scene(0x8000, 1); s.mip = mc; s.smooth = true; s.setup(1024, 768, 320, 240); s.render(); renderDone();
+      scene(0x8000, 1); d2.setup(1024, 768, 320, 240); d2.render(); renderDone();
+      diff = 0; for (size_t i = 0; i < s.px.size(); i++) if (s.px[i] != d2.px[i]) diff++;
+      CHECK(diff == 0, "Smooth cache == direct on a 2x2-uniform bitmap at 2:1 (%d differ)", diff);
+      // Smooth on the RANDOM bitmap must be the 2x2 mean, which nearest is not
+      scene(0x7000, 1); s.mip = mc; s.smooth = true; s.setup(1024, 768, 320, 240); s.render(); renderDone();
+      { const uint32_t p = s.at(5, 5);
+        uint32_t sa = 0, sr = 0, sg = 0, sb = 0;
+        for (int k = 0; k < 4; k++) { const int x = k & 1, y = k >> 1; const uint16_t t = (uint16_t)(rnd4[(y * 32 + x) * 2] | (rnd4[(y * 32 + x) * 2 + 1] << 8));
+            sa += (t >> 12) * 17; sr += ((t >> 8) & 15) * 17; sg += ((t >> 4) & 15) * 17; sb += (t & 15) * 17; }
+        const int er = (int)((p >> 16) & 255) - (int)(sr / 4), eg = (int)((p >> 8) & 255) - (int)(sg / 4), eb = (int)(p & 255) - (int)(sb / 4);
+        CHECK((p >> 24) == 255 && er >= -17 && er <= 17 && eg >= -17 && eg <= 17 && eb >= -17 && eb <= 17,
+              "Smooth cache pixel = the 2x2 box mean within one 4-bit step (%08X vs %02X%02X%02X)", p, sr / 4, sg / 4, sb / 4); }
+      // a write into the source: the tile is rebuilt (the page generation moved)
+      uint8_t white[128]; memset(white, 0xFF, sizeof white); spiWrite(0x7000, white, sizeof white);   // rows 0-1 → opaque white
+      Screen c2; scene(0x7000, 1); c2.mip = mc; c2.setup(1024, 768, 320, 240); c2.render(); renderDone();
+      CHECK(c2.at(5, 5) == 0xFFFFFFFFu && c.at(5, 5) != 0xFFFFFFFFu, "a RAM_G write rebuilds the cached tile (%08X, was %08X)", c2.at(5, 5), c.at(5, 5));
+      // 60 cells from 60 sources into a pool that holds ~20: the cache resets once,
+      // then steps aside for the frame — and the picture is still the direct one
+      std::vector<uint8_t> tiny(sizeof(MipCache) + 192 * sizeof(MipEntry) + 16384 + 128);
+      MipCache* mt = ft812MipInit(tiny.data(), tiny.size(), 192);
+      CHECK(mt != nullptr, "a 16 KB pool is accepted");
+      for (int k = 0; k < 60; k++) for (int i = 0; i < 32 * 32; i++) { const uint16_t cc = (uint16_t)(0xF000 | (rnd() & 0x0FFF)); uint8_t b2[2] = { (uint8_t)cc, (uint8_t)(cc >> 8) }; spiWrite(0x20000 + k * 2048 + i * 2, b2, 2); }
+      { std::vector<uint32_t> dl = { CLEAR_RGB(1, 2, 3), CLEAR_A(255), CLEAR_ALL(), TA(160), TE(160), BEGIN(1), VFMT(4) };
+        for (int k = 0; k < 60; k++) { dl.push_back(HANDLE(k & 15)); dl.push_back(SOURCE(0x20000 + k * 2048)); dl.push_back(LAYOUT(6, 64, 32)); dl.push_back(SIZE(0, 0, 0, 32, 32));
+                                       dl.push_back(V2F(243 + 80 * 16 * (k % 12), 243 + 144 * 16 * (k / 12))); }
+        dl.push_back(END()); runDl(dl); }
+      Screen dd, cc;
+      dd.setup(1024, 768, 320, 240); dd.render(); renderDone();
+      { std::vector<uint32_t> dl = { CLEAR_RGB(1, 2, 3), CLEAR_A(255), CLEAR_ALL(), TA(160), TE(160), BEGIN(1), VFMT(4) };
+        for (int k = 0; k < 60; k++) { dl.push_back(HANDLE(k & 15)); dl.push_back(SOURCE(0x20000 + k * 2048)); dl.push_back(LAYOUT(6, 64, 32)); dl.push_back(SIZE(0, 0, 0, 32, 32));
+                                       dl.push_back(V2F(243 + 80 * 16 * (k % 12), 243 + 144 * 16 * (k / 12))); }
+        dl.push_back(END()); runDl(dl); }
+      cc.mip = mt; cc.setup(1024, 768, 320, 240); cc.render(); renderDone();
+      diff = 0; drawn = 0; for (size_t i = 0; i < dd.px.size(); i++) { if (dd.px[i] != cc.px[i]) diff++; if (dd.px[i] != 0xFF010203u) drawn++; }
+      CHECK(diff == 0 && drawn == 6000, "an overflowing pool resets and steps aside: picture == direct (%d differ, %d drawn)", diff, drawn);
+      CHECK(mt->off == 1 || ft812MipUsed(*mt) > 0, "...and the small pool was actually used (off %u, used %u)", mt->off, (unsigned)ft812MipUsed(*mt)); }
 
     // (5) blend + colour mask: 50% alpha red over white; then ONE/ZERO with mask RGB only
     runDl({ CLEAR_RGB(255, 255, 255), CLEAR_A(255), CLEAR_ALL(), HANDLE(0), SOURCE(0x1000), LAYOUT(6, 16, 8), SIZE(0, 0, 0, 8, 8),

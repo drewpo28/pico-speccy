@@ -93,6 +93,7 @@ void hdmi_audio_health_dump(void);
 void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
 extern volatile uint32_t hdmi_irq_dur_blank_us;
 extern volatile uint32_t hdmi_irq_dur_active_us;
+extern volatile uint32_t hdmi_irq_dur_total_us;   // cumulative ISR time (us), wraps
 extern volatile int32_t  hdmi_au_skip_off_w;
 extern volatile uint32_t hdmi_au_skip_which;
 

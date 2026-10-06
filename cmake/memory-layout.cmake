@@ -192,7 +192,15 @@ if (FTOVL_WIN_SIZE STREQUAL "AUTO")
     # 5510 at -O2 + its tables, TJpgDec's per-MCU path ~3.9 KB, cpProcess/ramgMove
     # 1.4 KB, the MJPEG sink (ftVidMcu/ftVidFlip/ftCarve) 2.6 KB, the quantizer.
     # Tight: on a VDAC2 boot every spare byte is heap lost.
-    set(FTOVL_WIN_SIZE_EFFECTIVE 14336)
+    # +4 KB on 2026-10-05: the display-list WALK (ft812RenderBand, execWord, vertex,
+    # drawBitmap's clip front, clearBand) and the adaptive quantizer moved in — they
+    # ran from flash through the XIP queue core0 keeps full, ~30 ms a frame of
+    # instruction misses on ZUMA. Measure with `arm-none-eabi-size -A <elf> | grep ftovl`.
+    # +8 KB more the same day (mip5): drawBitmapCold and the ARGB4444 / PALETTED4444
+    # blit instantiations joined them — ~30 us per in-band cell as flash code.
+    # Measured 28 000 B on the trace build (mip5: + the tile builder's texel/pack
+    # helpers inlined). The window is heap only on a VDAC2 boot.
+    set(FTOVL_WIN_SIZE_EFFECTIVE 30720)
 else()
     set(FTOVL_WIN_SIZE_EFFECTIVE ${FTOVL_WIN_SIZE})
 endif()

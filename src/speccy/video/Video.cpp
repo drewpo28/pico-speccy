@@ -9849,7 +9849,7 @@ struct FtGlue {
     uint32_t* band;
     int       bandRows;
     alignas(4) uint8_t rowTmp[384];   // one output row of palette indices (natural x); word-aligned for ftPutRow
-    alignas(4) uint8_t palScratch[1024];   // SRAM copy of the PALETTE_SOURCE table, expanded to 256 ARGB8888 words (RenderCfg::palScratch)
+    alignas(4) uint8_t palScratch[4096];   // SRAM copies of PALETTE_SOURCE tables, expanded to 256 ARGB8888 words each — 4 slots (RenderCfg::palScratch)
     // the frame in flight (core1)
     bool      active;
     bool      blank;              // display off / no usable timing: black frame
@@ -9866,6 +9866,12 @@ struct FtGlue {
     // Entry i of the adaptive palette lives in hardware slot ts256_pool[i] — NOT in
     // lut.slot[i], which is sized for the cube (180 of 184) and answers 0 past it.
     Ft812::AdaptPal* ap;
+    uint8_t*  alut;               // SRAM copy of ap->lut (4 KB, best effort): the map is read per pixel, and AdaptPal is in PSRAM
+    // The renderer's pre-scaled bitmap cache (Ft812Render.h): one PSRAM block,
+    // taken with the glue; nullptr = every cell is blitted from its source.
+    Ft812::MipCache* mip;
+    uint32_t  mipBytes;
+    void*     walk;               // the renderer's band-walk state (RenderCfg::scratch, ~1.3 KB SRAM): off core1's stack
     volatile bool palPending;     // core1 -> core0: col[cur^1] wants programming
     volatile bool adaptOn;        // the mode in force (core0 writes, core1 reads at frame start)
     bool      adaptFrame;         // this frame is being rendered through the adaptive map
@@ -9910,6 +9916,11 @@ struct FtGlue {
     uint32_t  frames, bandsUs;    // frames finished by core1, core1 time inside the band pump
     uint32_t  frameUs, frameUsMax;   // wall time from a frame's first band to its last (the guest's DLSWAP wait)
     uint64_t  frameT0;
+    // trace: the band pump split — DL walk + blits (ft812RenderBand), the quantizer
+    // (incl. the adaptive histogram), the fb row writes. Wall us, ISR included.
+    uint32_t  walkUs, quantUs, putUs;
+    uint32_t  histUs;             // ...of which the adaptive histogram (accumulate + the per-frame clear)
+    bool      adaptHist;          // this display-list frame feeds the histogram (every 8th; the rebuild rule only looks then)
 };
 FtGlue* ftg = nullptr;
 }
@@ -9927,6 +9938,8 @@ static bool ftGlueEnsure() {
         if (g->band) { g->bandRows = rows; break; }
     }
     if (!g->band) { Debug::log("[FT812] no heap for the band buffer - VDAC2 output stays off"); free(g); return false; }
+    g->walk = tryMalloc(Ft812::ft812RenderScratchBytes());
+    if (!g->walk) { Debug::log("[FT812] no heap for the render scratch (%u B) - VDAC2 output stays off", (unsigned)Ft812::ft812RenderScratchBytes()); free(g->band); free(g); return false; }
     // The MJPEG player's stack (TJpgDec on core1, FT_VSTACK_BYTES) and its per-pixel
     // tables (4 KB) are the band buffer itself: a separate 8 KB did not fit beside
     // the adaptive palette at 576p + NeoGS (hw 2026-10-01: "no heap for the video
@@ -9938,9 +9951,22 @@ static bool ftGlueEnsure() {
         g->vrowBytes = (uint32_t)((size_t)w * g->bandRows * 4 - FT_VSTACK_BYTES - FT_VQ_BYTES);
     } else Debug::log("[FT812] band of %d rows is too small for the MJPEG player (CMD_PLAYVIDEO shows nothing)", g->bandRows);
     g->vqStale = true;
+    // The pre-scaled bitmap cache: PSRAM only (it is read per pixel by core1 and is
+    // large; a heap placement would be both slow to take and fatal to the heap).
+    // 256 KB covers R-Type's working set (its 614 KB tile layer scaled 2:1 is
+    // 154 KB) with room; smaller pools still serve the sprites.
+    for (size_t bytes = Ft812::MIP_POOL_BYTES; bytes >= (64u << 10) && !g->mip; bytes >>= 1) {
+        void* blk = Buffer::palloc(bytes, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+        if (!blk) continue;
+        if ((uintptr_t)blk < 0x11000000u) { Buffer::pfree(blk); break; }      // landed on the heap: no cache
+        g->mip = Ft812::ft812MipInit(blk, bytes);
+        if (!g->mip) { Buffer::pfree(blk); break; }
+        g->mipBytes = (uint32_t)bytes;
+    }
+    if (!g->mip) Debug::log("[FT812] no PSRAM for the bitmap cache - cells are blitted from their source");
     ftg = g;
     ftVideoSinkAttach();
-    Debug::log("[FT812] glue %u B + band %d rows x %d", (unsigned)sizeof(FtGlue), g->bandRows, w);
+    Debug::log("[FT812] glue %u B + band %d rows x %d, bitmap cache %u KB", (unsigned)sizeof(FtGlue), g->bandRows, w, (unsigned)(g->mipBytes >> 10));
     return true;
 }
 
@@ -9965,7 +9991,12 @@ static bool ftAdaptEnsure() {
     g.ap = (Ft812::AdaptPal*)Buffer::palloc(sizeof(Ft812::AdaptPal), Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
     if (!g.ap) { Debug::log("[FT812] no memory for the adaptive palette (%u B) - fixed cube", (unsigned)sizeof(Ft812::AdaptPal)); return false; }
     memset(g.ap, 0, sizeof(Ft812::AdaptPal));
-    Debug::log("[FT812] adaptive palette: %u B @%08X", (unsigned)sizeof(Ft812::AdaptPal), (unsigned)(uintptr_t)g.ap);
+    // The 4 KB bin -> entry map is read once per output pixel: an SRAM copy when
+    // the heap has it (it did not at 576p + NeoGS + .ftovl on 2026-10-01; then the
+    // PSRAM map is read in place, as before).
+    g.alut = (uint8_t*)tryMalloc(4096);
+    if (g.alut) memset(g.alut, 0xFF, 4096);
+    Debug::log("[FT812] adaptive palette: %u B @%08X, map copy %s", (unsigned)sizeof(Ft812::AdaptPal), (unsigned)(uintptr_t)g.ap, g.alut ? "in SRAM" : "none (PSRAM map)");
     return true;
 }
 
@@ -10038,8 +10069,14 @@ static void ftModeSwitch(bool on) {
                 const uint64_t t2 = time_us_64();
                 for (uint32_t i = 0; i < 4096; i++) sink += rg[0x80000 + i];                              // 8 hits per fill
                 const uint64_t t3 = time_us_64();
-                Debug::log("[FT812] xip: random line %u ns, sequential line %u ns, sequential byte %u ns",
-                           (unsigned)((t1 - t0) * 1000 / 4096), (unsigned)((t2 - t1) * 1000 / 4096), (unsigned)((t3 - t2) * 1000 / 4096));
+                // ...and one display-list word as the band walk reads it (the swap
+                // shadow in PSRAM, sequential): is the walk's residue the FETCH?
+                const uint32_t* dl = Ft812::dlShadow();
+                if (dl) for (uint32_t i = 0; i < 2048; i++) sink += dl[i];
+                const uint64_t t4 = time_us_64();
+                Debug::log("[FT812] xip: random line %u ns, sequential line %u ns, sequential byte %u ns, dl word %u ns",
+                           (unsigned)((t1 - t0) * 1000 / 4096), (unsigned)((t2 - t1) * 1000 / 4096), (unsigned)((t3 - t2) * 1000 / 4096),
+                           (unsigned)((t4 - t3) * 1000 / 2048));
             }
         }
 #endif
@@ -10146,7 +10183,15 @@ static void ftFrameBegin() {
     g.frameT0 = time_us_64();
     g.adaptFrame = g.adaptOn && g.ap;
     g.adaptFirst = g.adaptFrame && (!g.ap->built || g.ap->space != Ft812::ADAPT_RGB444);   // a map left by the MJPEG path is in other bins
-    if (g.adaptFrame) ft812AdaptClear(*g.ap, Ft812::ADAPT_RGB444);
+    // The histogram is fed on every 8th frame only: the rebuild rule (ftAdaptFrameEnd)
+    // does not look before `sinceBuild >= 8`, and feeding it costs a 16 KB PSRAM
+    // clear plus ~19k read-modify-writes of PSRAM bins per frame — inside `quant`
+    // on every frame of R-Type (hw 2026-10-06, mip8). The skipped frames still
+    // count towards sinceBuild; the first map (adaptFirst) is built at once.
+    if (g.adaptFrame) {
+        g.adaptHist = g.adaptFirst || (g.sinceBuild % 8) == 7;
+        if (g.adaptHist) ft812AdaptClear(*g.ap, Ft812::ADAPT_RGB444); else g.sinceBuild++;
+    } else g.adaptHist = false;
     g.blank = !Ft812::displayOn() || hs < 16 || vs < 16;
     if (g.blank) { g.outW = g.outH = 0; g.ox0 = g.oy0 = 0; return; }
     uint32_t s = (uint32_t)(((uint64_t)xres << 16) / hs);
@@ -10159,6 +10204,10 @@ static void ftFrameBegin() {
     g.outW = outW; g.outH = outH;
     g.ox0 = (xres - outW) / 2; g.oy0 = (yres - outH) / 2;
     g.mv.view = ftMemView; g.mv.macro[0] = Ft812::macroReg(0); g.mv.macro[1] = Ft812::macroReg(1);
+    g.mv.pageGen = Ft812::ramgPageGen();
+    g.mv.ramg = Ft812::ramgPtr(); g.mv.ramgBytes = Ft812::RAM_G_SIZE;
+    g.cfg.mip = g.mip;
+    g.cfg.scratch = g.walk;
     // A playing video replaces the guest's list with the engine's one-bitmap list
     const uint32_t* vdl = Ft812::videoActive() ? Ft812::videoDl() : nullptr;
     g.mv.dl = vdl ? vdl : Ft812::dlShadow();
@@ -10251,10 +10300,12 @@ static FT_VID_HOT void ftPutRow(int row, const uint8_t* idx) {
 // frame is shown through its own palette, so there is nothing to wait for.
 static void ftAdaptFrameEnd(FtGlue& g, bool video = false) {
     if (!g.adaptFrame || !g.ap->total) return;
+    if (!video && !g.adaptHist) return;      // a frame that did not feed the histogram (its total is the last fed frame's)
     g.sinceBuild++;
     if (((!g.ap->built || g.sinceBuild >= 8) && ft812AdaptChanged(*g.ap, 60)) ||
         (video && ft812AdaptChanged(*g.ap, 250))) {
         ft812AdaptBuild(*g.ap, ts256_pool_n);
+        if (g.alut) memcpy(g.alut, g.ap->lut, 4096);   // the per-pixel copy follows the map
         g.sinceBuild = 0; g.rebuilds++;
         __dmb();
         g.palPending = true;             // core0 programs the slots (and re-requests a display-list frame)
@@ -10679,27 +10730,53 @@ FT_GLUE_HOT void VIDEO::ftRenderPump() {
     const int rowEnd = (row + g.bandRows < yres) ? row + g.bandRows : yres;
     if (g.blank) {
         for (; row < rowEnd; row++) ftPutRow(row, nullptr);
+#if FT812_TRACE
+        g.putUs += (uint32_t)(time_us_64() - t0);   // (the trace: a blank frame's rows count as output)
+#endif
     } else {
         // the part of this band inside the output rectangle, rendered in one walk
         int r0 = row, r1 = rowEnd;
         if (r0 < g.oy0) r0 = g.oy0;
         if (r1 > g.oy0 + g.outH) r1 = g.oy0 + g.outH;
         if (r0 < r1) ft812RenderBand(g.cfg, *Ft812::renderState(), r0 - g.oy0, r1 - g.oy0, g.band);
+#if FT812_TRACE
+        uint64_t tq = time_us_64();
+        g.walkUs += (uint32_t)(tq - t0);
+        uint32_t qUs = 0, pUs = 0, hUs = 0;
+#define FT_TQ(stmt) do { const uint64_t a_ = time_us_64(); stmt; qUs += (uint32_t)(time_us_64() - a_); } while (0)
+#define FT_TH(stmt) do { const uint64_t a_ = time_us_64(); stmt; hUs += (uint32_t)(time_us_64() - a_); } while (0)
+#define FT_TP(stmt) do { const uint64_t a_ = time_us_64(); stmt; pUs += (uint32_t)(time_us_64() - a_); } while (0)
+#else
+#define FT_TQ(stmt) stmt
+#define FT_TH(stmt) stmt
+#define FT_TP(stmt) stmt
+#endif
         for (; row < rowEnd; row++) {
-            if (row < r0 || row >= r1) { ftPutRow(row, nullptr); continue; }
+            if (row < r0 || row >= r1) { FT_TP(ftPutRow(row, nullptr)); continue; }
             const uint32_t* src = g.band + (size_t)(row - r0) * g.outW;
             if (g.adaptFrame) {
-                if (!(row & 1)) ft812AdaptAccumulate(*g.ap, src, g.outW);   // every 2nd row: the histogram is in PSRAM
+                // every 2nd row, every 2nd column, on the frames that feed the
+                // histogram (adaptHist): it is in PSRAM and its increments are
+                // read-modify-writes through XIP; no dither sits in front of this
+                // histogram (unlike the MJPEG sink's), so the sample is unbiased at
+                // any stride
+                if (g.adaptHist && !(row & 1)) FT_TH(ft812AdaptAccumulate(*g.ap, src, g.outW, 2));
                 // The first frame only feeds the histogram and stays black: cube
                 // indices would turn into noise the moment the adaptive colours
                 // are programmed. Slot pool[0] is black in both palettes.
-                if (g.adaptFirst) { ftPutRow(row, nullptr); continue; }
-                ft812QuantizeRowAdapt(*g.ap, ts256_pool, src, g.outW, row, g.rowTmp);
+                if (g.adaptFirst) { FT_TP(ftPutRow(row, nullptr)); continue; }
+                FT_TQ(ft812QuantizeRowAdapt(*g.ap, ts256_pool, src, g.outW, row, g.rowTmp, g.alut));
             } else {
-                ft812QuantizeRow(g.lut, src, g.outW, row, g.rowTmp);
+                FT_TQ(ft812QuantizeRow(g.lut, src, g.outW, row, g.rowTmp));
             }
-            ftPutRow(row, g.rowTmp);
+            FT_TP(ftPutRow(row, g.rowTmp));
         }
+#if FT812_TRACE
+        g.quantUs += qUs + hUs; g.putUs += pUs; g.histUs += hUs;
+#endif
+#undef FT_TQ
+#undef FT_TH
+#undef FT_TP
     }
     g.nextRow = row;
     const uint64_t t1 = time_us_64();
@@ -10792,23 +10869,54 @@ static __attribute__((noinline)) void ftTraceTick() {
         b3 = GS::hostB3Bytes - pB3; b3w = GS::hostB3WaitUs - pB3Wait;
         pB3 = GS::hostB3Bytes; pB3Wait = GS::hostB3WaitUs;
     }
-    uint32_t fr = 0, fus = 0, fmax = 0, bus = 0;
+    uint32_t fr = 0, fus = 0, fmax = 0, bus = 0, wus = 0, qus = 0, pus = 0, hus = 0;
+    static uint32_t pWalk, pQuant, pPut, pHist, pIsr;
     if (ftg) {
         fr = ftg->frames - pFrames; fus = ftg->frameUs - pFrameUs; bus = ftg->bandsUs - pBands; fmax = ftg->frameUsMax;
+        wus = ftg->walkUs - pWalk; qus = ftg->quantUs - pQuant; pus = ftg->putUs - pPut; hus = ftg->histUs - pHist;
         pFrames = ftg->frames; pFrameUs = ftg->frameUs; pBands = ftg->bandsUs; ftg->frameUsMax = 0;
+        pWalk = ftg->walkUs; pQuant = ftg->quantUs; pPut = ftg->putUs; pHist = ftg->histUs;
     }
-    Debug::log("[FT812] render: frames %u us avg %u max %u c1 %ums | bands %u words %u bmp %u px near %uk bil %uk prim %uk clr %u | sd %u sec %uus | gs b3 %uKB wait %ums",
-               fr, fr ? fus / fr : 0, fmax, bus / 1000, FTR_(bands), FTR_(words), FTR_(bitmaps),
+    // core1's line ISR share of the window (every core1 figure above is wall time
+    // and includes it) — HDMI only; 0 on VGA, where there is no such counter
+    uint32_t isrPct = 0;
+#ifdef VGA_HDMI
+    {   extern volatile uint32_t hdmi_irq_dur_total_us;
+        const uint32_t isr = hdmi_irq_dur_total_us - pIsr; pIsr = hdmi_irq_dur_total_us;
+        if (dtMs) isrPct = isr / (dtMs * 10);
+    }
+#endif
+    // `req` = re-renders asked for WITHOUT a swap (menu exit, palette, brdnextframe):
+    // frames above the swap count in `cp:` are frames nobody asked for
+    Debug::log("[FT812] render: frames %u req %u us avg %u max %u c1 %ums (walk %u quant %u/hist %u put %u) isr %u%% | bands %u words %u bmp %u px near %uk bil %uk prim %uk clr %u | sd %u sec %uus | gs b3 %uKB wait %ums",
+               fr, FTD(rendersReq), fr ? fus / fr : 0, fmax, bus / 1000, wus / 1000, qus / 1000, hus / 1000, pus / 1000, isrPct, FTR_(bands), FTR_(words), FTR_(bitmaps),
                FTR_(pxNearest) >> 10, FTR_(pxBilinear) >> 10, FTR_(pxPrim) >> 10, FTR_(clears),
                sdSec, sdSec ? sdUs / sdSec : 0, b3 >> 10, b3w / 1000);
     if (FTR_(bitmaps)) {   // per format (F_* index: 1 L1, 2 L4, 6 ARGB4, 7 RGB565, 8 PALETTED, 14/15/16 PALETTED565/4444/8): cells / k px / ms
         char fl[200]; int n = snprintf(fl, sizeof(fl), "[FT812] fmt(cells/kpx/ms):");
+        // cells = drawBitmap entries that REACHED the band by their own format; px/ms
+        // by the BLIT's format — a cached cell blits as 6 (ARGB4444) whatever it was
         for (int i = 0; i < 18 && n < (int)sizeof(fl) - 24; i++) {
-            const uint32_t d = r.bmpFmt[i] - pr.bmpFmt[i];
-            if (d) n += snprintf(fl + n, sizeof(fl) - n, " %d:%u/%u/%u", i, d, (r.pxFmt[i] - pr.pxFmt[i]) >> 10, (r.usFmt[i] - pr.usFmt[i]) / 1000);
+            const uint32_t d = r.bmpFmt[i] - pr.bmpFmt[i], px = r.pxFmt[i] - pr.pxFmt[i];
+            if (d || px) n += snprintf(fl + n, sizeof(fl) - n, " %d:%u/%u/%u", i, d, px >> 10, (r.usFmt[i] - pr.usFmt[i]) / 1000);
         }
         Debug::log("%s | palCopies %u | adapt %s n %d rebuilds %u", fl, FTR_(palCopies),
                    (ftg && ftg->adaptOn) ? "on" : "off", (ftg && ftg->ap) ? ftg->ap->n : 0, ftg ? ftg->rebuilds : 0u);
+        // the pre-scaled cache: cells served / blit area from it (k px), tiles built
+        // and the ms they took, pool resets (a working set bigger than the pool shows
+        // as resets every window), cells it declined, pool fill
+        // ...plus the walk's own split: ms inside drawBitmap (blits + per-cell setup +
+        // the cache lookup), inside the cache lookup/validation/build alone, and
+        // entries = `nent` of the pool
+        // `loop` = the fetch/exec loop (everything but the band setup), `vtx` = inside
+        // vertex() (front + setup + blit), `draw` = inside drawBitmap; loop - vtx =
+        // the state words and the fetch, vtx - draw = vertex()'s own shell
+        Debug::log("[FT812] mip: cells %u px %uk blit %ums builds %u/%ums parked %u resets %u refused %u pool %u/%uKB ent %u | loop %ums vtx %ums draw %ums mipGet %ums ctx %u | gen %uk px (cached %uk): bil %u box %u wrap %u blend %u col %u rot %u flip %u nopal %uk",
+                   FTR_(mipCells), FTR_(pxMip) >> 10, FTR_(mipBlitUs) / 1000, FTR_(mipBuilds), FTR_(mipBuildUs) / 1000, FTR_(mipParked), FTR_(mipResets), FTR_(mipRefused),
+                   (ftg && ftg->mip) ? (unsigned)(Ft812::ft812MipUsed(*ftg->mip) >> 10) : 0u, ftg ? (unsigned)(ftg->mipBytes >> 10) : 0u,
+                   (ftg && ftg->mip) ? (unsigned)ftg->mip->nent : 0u, FTR_(loopUs) / 1000, FTR_(vtxUs) / 1000, FTR_(drawUs) / 1000, FTR_(mipGetUs) / 1000, FTR_(ctxCopies),
+                   FTR_(genPx) >> 10, FTR_(mipGenPx) >> 10, FTR_(mipGenReason[0]) >> 10, FTR_(mipGenReason[1]) >> 10, FTR_(mipGenReason[2]) >> 10,
+                   FTR_(mipGenReason[3]) >> 10, FTR_(mipGenReason[4]) >> 10, FTR_(mipGenReason[5]) >> 10, FTR_(mipGenReason[6]) >> 10, FTR_(mipGenReason[7]) >> 10);
     }
     if (Ft812::videoActive()) {
         const Ft812::VideoStats& v = Ft812::videoStats();

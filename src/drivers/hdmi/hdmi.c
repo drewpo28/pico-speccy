@@ -768,6 +768,10 @@ volatile uint32_t hdmi_irq_max_dur_us = 0;
 // (2026-09-23); ~32 B of RAM and a compare per ISR.
 volatile uint32_t hdmi_irq_dur_blank_us = 0;
 volatile uint32_t hdmi_irq_dur_active_us = 0;
+// Cumulative time inside the line ISR (us, wraps). Differenced by consumers that
+// need core1's real availability — the [FT812] render meter: everything core1
+// measures on the wall clock includes the ISR's share, ~30% at 480p.
+volatile uint32_t hdmi_irq_dur_total_us = 0;
 #if HDMI_LIVE_AUDIO_DIAG
 // Refills that finished after DMA left the current first play: the ordinary
 // skip counter only tests the pointer BEFORE writing the 32 characters.
@@ -1187,6 +1191,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI() {
     const uint32_t t0 = time_us_32();
     dma_handler_HDMI_body();
     const uint32_t dur = time_us_32() - t0;
+    hdmi_irq_dur_total_us += dur;
     if (dur > hdmi_irq_max_dur_us) hdmi_irq_max_dur_us = dur;
     if (hdmi_isr_was_blank) { if (dur > hdmi_irq_dur_blank_us)  hdmi_irq_dur_blank_us = dur; }
     else                    { if (dur > hdmi_irq_dur_active_us) hdmi_irq_dur_active_us = dur; }

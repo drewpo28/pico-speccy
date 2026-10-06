@@ -112,6 +112,11 @@ struct Chip {
     volatile bool    renderBusy, renderReq, rsReset;
     uint32_t  frames;
     uint32_t  ramgGen;         // bumped by every RAM_G write (the renderer's palette-cache key)
+    // Per-4 KB-page write counters over RAM_G (256 pages): the renderer's pre-scaled
+    // bitmap cache (Ft812Render.h, MipCache) validates a cached tile against the
+    // pages its source rows span, so a strip copied into one corner of a 614 KB
+    // layer (R-Type's TilesUpdate) does not throw the whole layer away.
+    uint16_t  pageGen[MIP_PAGES];
     // media FIFO + CMD_PLAYVIDEO (Ft812Video.h): the 0x309000 register block holds
     // REG_MEDIAFIFO_READ/WRITE (0x14/0x18) and REG_PLAY_CONTROL (0x14E)
     MediaFifo mf;
@@ -248,6 +253,8 @@ static void regsReset() {
 } // namespace
 
 // ── lifecycle ────────────────────────────────────────────────────────────────
+static inline void ramgTouched(uint32_t addr, uint32_t n);   // defined with wr8 below
+
 void powerReset() {
     if (!C) return;
     regsReset();
@@ -264,7 +271,7 @@ void powerReset() {
     // ROM_CHIPID is INSIDE RAM_G: the boot ROM writes the id there at reset and a
     // program may overwrite it (the PG says to read it before using that RAM).
     if (C->ramg) { C->ramg[ROM_CHIPID] = 0x08; C->ramg[ROM_CHIPID + 1] = 0x12; C->ramg[ROM_CHIPID + 2] = 0x01; C->ramg[ROM_CHIPID + 3] = 0x00; }
-    C->ramgGen++;
+    ramgTouched(ROM_CHIPID, 4);
     fence();
 }
 
@@ -389,10 +396,21 @@ static void regWrite8(uint32_t off, uint8_t v) {
         if (kSide[i] == r) C->touched |= 1u << i;
 }
 
+// Every RAM_G write funnels through here (wr8, MEMSET/MEMZERO/MEMCPY, INFLATE, the
+// reset's CHIPID): the global generation for the palette cache, the page
+// generations for the pre-scaled bitmap cache. `n` bytes from `addr`, in RAM_G.
+static inline void ramgTouched(uint32_t addr, uint32_t n) {
+    C->ramgGen++;
+    if (!n) return;
+    uint32_t p0 = addr >> MIP_PAGE_SHIFT, p1 = (addr + n - 1) >> MIP_PAGE_SHIFT;
+    if (p1 >= MIP_PAGES) p1 = MIP_PAGES - 1;
+    for (uint32_t p = p0; p <= p1; p++) C->pageGen[p]++;
+}
+
 void wr8(uint32_t addr, uint8_t v) {
     if (!C) return;
     addr &= 0x3FFFFF;
-    if (addr < RAM_G_SIZE) { C->ramg[addr] = v; C->ramgGen++; return; }
+    if (addr < RAM_G_SIZE) { C->ramg[addr] = v; C->ramgGen++; C->pageGen[addr >> MIP_PAGE_SHIFT]++; return; }
     if (addr >= RAM_DL && addr < RAM_DL + RAM_DL_SIZE) { ((uint8_t*)C->dl)[addr - RAM_DL] = v; return; }
     if (addr >= RAM_REG && addr < RAM_REG + RAM_REG_SIZE) { regWrite8(addr - RAM_REG, v); return; }
     if (addr >= RAM_CMD && addr < RAM_CMD + RAM_CMD_SIZE) { C->cmd[addr - RAM_CMD] = v; return; }
@@ -713,13 +731,13 @@ uint32_t execCmd(uint32_t r, uint32_t avail) {
         case 0x1B: {                                                // MEMSET(ptr,value,num)
             if (avail < 16) return 0;
             const uint32_t p = param(r, 0) & 0x3FFFFF, v = param(r, 1), n = param(r, 2);
-            if (p < RAM_G_SIZE) { memset(C->ramg + p, (int)(v & 255), n <= RAM_G_SIZE - p ? n : RAM_G_SIZE - p); C->ramgGen++; }
+            if (p < RAM_G_SIZE) { const uint32_t k = n <= RAM_G_SIZE - p ? n : RAM_G_SIZE - p; memset(C->ramg + p, (int)(v & 255), k); ramgTouched(p, k); }
             return 16;
         }
         case 0x1C: {                                                // MEMZERO(ptr,num)
             if (avail < 12) return 0;
             const uint32_t p = param(r, 0) & 0x3FFFFF, n = param(r, 1);
-            if (p < RAM_G_SIZE) { memset(C->ramg + p, 0, n <= RAM_G_SIZE - p ? n : RAM_G_SIZE - p); C->ramgGen++; }
+            if (p < RAM_G_SIZE) { const uint32_t k = n <= RAM_G_SIZE - p ? n : RAM_G_SIZE - p; memset(C->ramg + p, 0, k); ramgTouched(p, k); }
             return 12;
         }
         case 0x1D: {                                                // MEMCPY(dest,src,num)
@@ -729,7 +747,7 @@ uint32_t execCmd(uint32_t r, uint32_t avail) {
 #if FT812_TRACE
                 const uint64_t t0 = clockUs ? clockUs() : 0;
 #endif
-                ramgMove(C->ramg + d, C->ramg + s, n); C->ramgGen++; C->st.memcpyBytes += n;
+                ramgMove(C->ramg + d, C->ramg + s, n); ramgTouched(d, n); C->st.memcpyBytes += n;
 #if FT812_TRACE
                 if (clockUs) C->st.memcpyUs += (uint32_t)(clockUs() - t0);
 #endif
@@ -958,7 +976,7 @@ static FT_CP_HOT void cpProcess(bool force) {
             C->vIn += (uint32_t)inSize;
             C->vAddr += (uint32_t)outSize;
             C->st.inflated += (uint32_t)outSize;
-            if (outSize) C->ramgGen++;
+            if (outSize) ramgTouched(C->vAddr - (uint32_t)outSize, (uint32_t)outSize);
             if (s == TINFL_STATUS_DONE) {
                 C->inflateEnd = C->vAddr;
                 C->vRemain = (4 - (C->vIn & 3)) & 3;
@@ -978,7 +996,7 @@ static FT_CP_HOT void cpProcess(bool force) {
 #if FT812_TRACE
                 const uint64_t t0 = clockUs ? clockUs() : 0;
 #endif
-                ramgMove(C->ramg + d, C->ramg + sa, n); C->ramgGen++; C->st.memcpyBytes += n;
+                ramgMove(C->ramg + d, C->ramg + sa, n); ramgTouched(d, n); C->st.memcpyBytes += n;
 #if FT812_TRACE
                 if (clockUs) C->st.memcpyUs += (uint32_t)(clockUs() - t0);
 #endif
@@ -1097,6 +1115,8 @@ void renderRequest() {
 const uint32_t* dlShadow() { return C ? C->dlShadow[C->shadowRender] : nullptr; }
 uint32_t macroReg(int i) { return C ? reg32(i ? REG_MACRO_1 : REG_MACRO_0) : 0; }
 uint32_t ramgGen() { return C ? C->ramgGen : 0; }
+const uint16_t* ramgPageGen() { return C ? C->pageGen : nullptr; }
+const uint8_t*  ramgPtr() { return C ? C->ramg : nullptr; }
 void videoPump() {
     if (!C) return;
     C->mediaTicks++;
