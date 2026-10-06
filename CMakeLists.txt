@@ -21,7 +21,7 @@ include(cmake/trace.cmake)
 # ALF is always available (4MB flash) — small 256KB default cart + shared flash region.
 
 set(CPU_MHZ 252)
-set (PORT_VERSION "1.0.8")
+set (PORT_VERSION "1.0.9")
 string(LENGTH "${PORT_VERSION}" PORT_VERSION_LEN)
 
 set(KBDUSB ON)
