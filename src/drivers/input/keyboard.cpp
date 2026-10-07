@@ -357,6 +357,15 @@ static int padSlot(VirtualKey vk) {
   }
 }
 
+// A pad control that stands for a ZX key changes the key's STATE only. The ZX
+// matrix is built from m_VKMap (processKeyboard copies it after the pad event
+// that got us here), so the game sees the key; nothing enters the event queue,
+// which the nm:: UI drains as typed characters.
+inline static void vkSetState(VirtualKey vk, bool down) {
+  if (down) m_VKMap[(int)vk >> 3] |=  (1 << ((int)vk & 7));
+  else      m_VKMap[(int)vk >> 3] &= ~(1 << ((int)vk & 7));
+}
+
 inline static void joyMap(const VirtualKeyItem& it) {
   const int slot = padSlot(it.vk);
   if (slot < 0) return;
@@ -368,8 +377,17 @@ inline static void joyMap(const VirtualKeyItem& it) {
   // "Keyboard mapping": a control assigned a keyboard key presses that key, on
   // every joystick type. The joystick action it would otherwise have is
   // suppressed by the port-update code in ESPectrum.cpp (Config::joyKeyTarget).
-  if (keyTarget)
-    joyPushData((VirtualKey)target, it.down);
+  // A character key (VK_SPACE..VK_NEGATION) is state only, like the Sinclair keys
+  // below: a queued event would reach the nm:: UI as a typed character (WASD +
+  // a key-mapped control typed digits into the joystick profile name, hw report
+  // z0p2 2026-10-07). Esc, Enter, F-keys and modifiers stay real events, so a pad
+  // button mapped to F1 or Esc still opens/closes the menu.
+  if (keyTarget) {
+    if (target >= fabgl::VK_SPACE && target <= fabgl::VK_NEGATION)
+      vkSetState((VirtualKey)target, it.down);
+    else
+      joyPushData((VirtualKey)target, it.down);
+  }
 
   if (Config::joystick == JOY_KEMPSTON || Config::joystick == JOY_FULLER || Config::joystick == JOY_CUSTOM) {
     // VK_DPAD_* always map to their VK_JOY_* counterparts, so isVKDown(VK_JOY_B)
@@ -393,9 +411,18 @@ inline static void joyMap(const VirtualKeyItem& it) {
   static const VirtualKey cur[5] = { fabgl::VK_5, fabgl::VK_8, fabgl::VK_7, fabgl::VK_6, fabgl::VK_0 };
   const int k = act <= 3 ? act : act == 6 ? 4 : -1;   // left, right, up, down, fire
   if (k < 0) return;
-  if (Config::joystick == JOY_SINCLAIR2)      joyPushData(s2[k], it.down);
-  else if (Config::joystick == JOY_SINCLAIR1) joyPushData(s1[k], it.down);
-  else if (Config::joystick == JOY_CURSOR)    joyPushData(cur[k], it.down);
+  VirtualKey zx;
+  if (Config::joystick == JOY_SINCLAIR2)      zx = s2[k];
+  else if (Config::joystick == JOY_SINCLAIR1) zx = s1[k];
+  else if (Config::joystick == JOY_CURSOR)    zx = cur[k];
+  else return;
+  // Key STATE only, never a queued event. The ZX matrix reads m_VKMap
+  // (processKeyboard copies it after the DPAD event that got us here), but a
+  // queued VK_9 carries ASCII '9' — and the nm:: UI drains the same queue: with
+  // Cursor-as-joystick on, one Up press in the file browser jumped to the first
+  // name starting with '9' (Sinclair 1), and typed digits into text fields
+  // (hw report z0p2, 2026-10-06, regression of the 1.0.9 joyMap rework).
+  vkSetState(zx, it.down);
 }
 
 bool Keyboard::getNextVirtualKey(VirtualKeyItem* item, int timeOutMS)
