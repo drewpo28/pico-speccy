@@ -19,6 +19,11 @@ bool portWrite(uint16_t address, uint8_t a8, uint8_t data);
 // IN with A7=0: #1D maps the cart's hidden RAM in, #1F maps it out.
 void portRead(uint8_t p8);
 
+// .pss: the last ROM-bank select (bank | 0x80 for the cart) and its restore.
+// snapRestore runs after MemESP::newSRAM / romLatch are set (it maps page 0).
+uint8_t snapSelector();
+void    snapRestore(uint8_t selector, uint8_t newBit);
+
 // Bind/refresh the cart from Config::alfCartPath (at boot after Config::load and
 // whenever a cartridge is loaded/unloaded). A missing SD file = empty drive
 // (open bus, the system ROM runs), never a hang.

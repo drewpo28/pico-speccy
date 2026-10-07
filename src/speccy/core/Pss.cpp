@@ -33,6 +33,7 @@
 #include "speccy/devices/gs/GS.h"
 #include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Timex.h"
+#include "speccy/machines/Alf.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 
 using std::string;
@@ -47,7 +48,7 @@ bool bootResume = false;
 
 static bool archSupported(ArchIdx a) {
     return a == A_48K || a == A_128K || a == A_PENT || a == A_P512 || a == A_P1024 ||
-           a == A_SCORP || a == A_PROFI || a == A_ATM || a == A_TSCONF;
+           a == A_SCORP || a == A_PROFI || a == A_ATM || a == A_TSCONF || a == A_ALF;
 }
 
 bool supported() {
@@ -243,6 +244,10 @@ bool save(const string& path, const string& name) {
         w.begin("PSTF"); w.raw(TsConf::sfile, sizeof(TsConf::sfile)); w.end();
     }
 
+    if (Z80Ops::isALF) {   // PSAL: the ROM-bank select (cart bit 7) + the #FE D3 read-back
+        w.begin("PSAL"); w.u8(1); w.u8(Alf::snapSelector()); w.u8(Alf::newBit); w.end();
+    }
+
     if (DivMMC::enabled) {
         // SZX ZXSTDIVMMC: dwFlags (2 = paged in), chCurrentPage (#E3), chNumRamPages.
         w.begin("DMMC");
@@ -272,7 +277,7 @@ bool save(const string& path, const string& name) {
         if (w.ok) MemESP::ram[pg].to_file(f, MEM_PG_SZ);
         w.end();
     }
-    if (Z80Ops::is512 || Z80Ops::is1024) {
+    if (Z80Ops::is512 || Z80Ops::is1024 || Z80Ops::isALF) {   // P512/1024 cache, ALF cart SRAM
         for (uint8_t i = 0; i < 2 && w.ok; i++) {
             w.begin("PSCH"); w.u8(i);
             if (w.ok) MemESP::ram[MEM_PG_CNT + i].to_file(f, MEM_PG_SZ);
@@ -734,6 +739,7 @@ bool load(const string& path) {
     uint8_t atm[Atm::SNAP_MAX] = {};     uint32_t atmSize = 0;
     uint8_t tsr[TsConf::SNAP_MAX] = {};  uint32_t tsSize = 0;
     bool haveDmmc = false; uint8_t dmmcCtl = 0; bool dmmcPaged = false;
+    bool haveAlf = false; uint8_t alfSel = 0, alfBit = 0;
     JoyProf::Profile joyOffer; bool joyMissing = false;
 
     while (r.ok && r.next(id, sz, at)) {
@@ -764,6 +770,7 @@ bool load(const string& path) {
         else if (idIs(id, "PSSC") && sz >= 1)  { scSize = sz < sizeof(sc) ? sz : sizeof(sc); r.raw(sc, scSize); }
         else if (idIs(id, "PSPR") && sz >= 1)  { prSize = sz < sizeof(pr) ? sz : sizeof(pr); r.raw(pr, prSize); }
         else if (idIs(id, "PSAT") && sz >= 1)  { atmSize = sz < sizeof(atm) ? sz : sizeof(atm); r.raw(atm, atmSize); }
+        else if (idIs(id, "PSAL") && sz >= 3)  { r.u8(); alfSel = r.u8(); alfBit = r.u8(); haveAlf = true; }
         else if (idIs(id, "PSTS") && sz >= 1)  { tsSize = sz < sizeof(tsr) ? sz : sizeof(tsr); r.raw(tsr, tsSize); }
         else if (idIs(id, "PSTC") && sz == sizeof(TsConf::cram) && Z80Ops::isTsconf)  r.raw(TsConf::cram, sz);
         else if (idIs(id, "PSTF") && sz == sizeof(TsConf::sfile) && Z80Ops::isTsconf) r.raw(TsConf::sfile, sz);
@@ -787,7 +794,7 @@ bool load(const string& path) {
                 loadedPages++;
             }
         }
-        else if (idIs(id, "PSCH") && sz == 1 + MEM_PG_SZ && (Z80Ops::is512 || Z80Ops::is1024)) {
+        else if (idIs(id, "PSCH") && sz == 1 + MEM_PG_SZ && (Z80Ops::is512 || Z80Ops::is1024 || Z80Ops::isALF)) {
             const uint8_t i = r.u8();
             if (i < 2 && r.ok) MemESP::ram[MEM_PG_CNT + i].from_file(f, MEM_PG_SZ);
         }
@@ -829,6 +836,9 @@ bool load(const string& path) {
         MemESP::plus3Remap(Ports::port1FFD);
     } else {
         MemESP::recoverPage0();
+        // ALF: rebind the selected bank (system ROM or the cart window, faulted
+        // from SD). A file without PSAL keeps the system ROM.
+        if (Z80Ops::isALF) Alf::snapRestore(haveAlf ? alfSel : (MemESP::romInUse & 0x3F), alfBit);
         if (!Z80Ops::is48) {
             if (Z80Ops::is1024) Pentagon::eff7Video(Ports::portEFF7);
             MemESP::ramCurrent[3] = MemESP::ram[MemESP::bankLatch].sync(3);

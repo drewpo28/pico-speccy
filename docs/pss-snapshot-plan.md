@@ -585,3 +585,20 @@ name still wins when the slot has one.
 - **Hw check owed**: tape inserted, then a TRD launched from F5 -> the disk's name; a zip
   and a Web-catalog launch -> the inner / remote name; a `.pss` slot load then F4 -> the
   slot's name; F11 with a remembered tape does not change the suggestion.
+
+## ALF (2026-10-07; hw 2026-10-07, owner: "работает", not itemised)
+
+ALF was simply never scheduled in a phase; the slots kept writing `.sna` + `.esp` for it.
+Now `archSupported` includes `A_ALF`, so every arch saves `.pss`.
+- `PSAL` (ver 1): the last ROM-bank select byte (bank 0-63 | 0x80 = cart) and
+  `Alf::newBit` (#FE D3 read back on the floating bus). The select byte is not latched
+  anywhere, so `Alf::snapSelector()` takes the cart bit from whether the live bank points
+  at the cart window. A cart bank past the image and a system bank 2+ both read the
+  open-bus page, so the ambiguity there is invisible.
+- The cart's hidden SRAM (#1D/#1F, `ram[MEM_PG_CNT + romLatch]`) is saved as the two
+  `PSCH` pages, the same blocks Pentagon 512/1024 use for the cache.
+- Load: PSPT sets romInUse / newSRAM / romLatch, then `Alf::snapRestore` rebinds the bank:
+  the system ROM, or the cart bank faulted from SD. The cart path is `alfcart`, a
+  reboot-class key, so a different cart reboots into the right one first. If the user
+  answers "No", the state runs with the current cart (no cart = open bus, as on hardware).
+- Export: none (`machOf` has no ALF), as the table says.
