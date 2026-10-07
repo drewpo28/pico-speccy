@@ -13525,6 +13525,15 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
     dnawarrior or dizzy (the pulse path must be untouched), then the Eagle's Nest zip from
     the browser (zip member → external .z80 from the same zip) and `into-the-eagles-nest-1`
     after loading the .z80 by hand.
+  - **Fuse recordings take the same IFF1 gate (2026-10-07, NOT hw-tested,
+    `debug/DVp2-rzx-fuse-1.0.9.elf`).** `rainbow.rzx` (rzxarchive `r/rainbow.zip`, Fuse,
+    RZX v0.12, 128K, 136288 frames) stopped at frame 1990 with "does not match this
+    machine": frame 1990 starts with IFF1 = 0, an EI lands 8..16 T in, the file has no
+    interrupt there. Sim sweep: pulse 1/8 T -> desync at 101947, 16..36 T -> 1990;
+    `RZX_SPIN=1` -> all 136288 frames, 0 short. Fuse calls `z80_interrupt()` once at the
+    frame boundary, so `spinInt` is now creator "SPIN" OR "Fuse"; the pulse stays for
+    Spectaculator (dnawarrior). The zip's second file (SpecEmu) is an SZX snapshot —
+    unsupported, as before.
 - **Snapshots > RZX loop** (`Config::rzx_loop`, NVS `rzx_loop`, `SET_RZX_LOOP` AC_PURE,
   2026-10-01, NOT hw-tested, `debug/DVp2-rzx-loop-1.0.8.elf`): at EV_END `nextFrame`
   raises `s_snapPending + s_rewind` instead of stopping, and `loadPendingSnapshot`

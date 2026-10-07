@@ -495,10 +495,10 @@ bool startPlayback(const std::string& path) {
     s_total = s->rd.totalFrames();
     s_played = s_shortFrames = 0;
     s_desync = s_snapPending = s_rewind = s_hasSnap = s_badSeen = s_badDos = false;
-    spinInt = strncmp(s->rd.creator(), "SPIN", 4) == 0;
+    spinInt = strncmp(s->rd.creator(), "SPIN", 4) == 0 || strncmp(s->rd.creator(), "Fuse", 4) == 0;
     Debug::log("[RZX] %s: v%u.%u creator '%s', %u frames, INT rule %s", s_name.c_str(),
                (unsigned)s->rd.major(), (unsigned)s->rd.minor(), s->rd.creator(), (unsigned)s_total,
-               spinInt ? "SPIN (IFF1 at the boundary)" : "pulse");
+               spinInt ? "IFF1 at the boundary" : "pulse");
     if (!s->rd.hasSnapshot()) Debug::log("[RZX] no snapshot block before the input: looking for a sibling");
 
     // A file with no snapshot plays from the sibling snapshot named like it, or

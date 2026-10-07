@@ -29,9 +29,9 @@ extern uint8_t mode;       // Mode; read by the Z80 core and CPU::loop
 extern int32_t intUntil;   // PLAY: INT line held while CPU::tstates < intUntil
 // The recording emulator's interrupt rule, decided from the creator block:
 //   false — a pulse: the line stays up for the machine's INT window (IntEnd),
-//           so an EI inside the window still takes the interrupt. Fuse and
-//           Spectaculator record this way (they emulate the ULA pulse).
-//   true  — SPIN 0.5: the interrupt is taken only if IFF1 is already set at the
+//           so an EI inside the window still takes the interrupt. Spectaculator
+//           records this way (dnawarrior.rzx: clean only at 32..35 T).
+//   true  — SPIN 0.5 and Fuse: the interrupt is taken only if IFF1 is already set at the
 //           frame boundary (an EI there defers it by one instruction, as the Z80
 //           does); with IFF1 clear the frame simply has no interrupt. Found with
 //           rick1.rzx: its frame 2171 ends `JP NZ / LD SP / EI / RET` 34 T
@@ -39,7 +39,11 @@ extern int32_t intUntil;   // PLAY: INT line held while CPU::tstates < intUntil
 //           window (36 T) took one — four extra INs and a desync. Every SPIN
 //           file tried (rick1, chevychase, continentalcircus) replays clean
 //           under this rule and breaks under the pulse (tools/rzx_replay_sim.c
-//           RZX_SPIN=1).
+//           RZX_SPIN=1). Fuse calls z80_interrupt() ONCE at the frame boundary
+//           (a retry only after an EI just executed), i.e. the same rule:
+//           rainbow.rzx (rzxarchive, Fuse, 128K, 136288 frames) took an EI
+//           8..16 T into frame 1990 with no interrupt — desync under any pulse
+//           >= 16 T, clean end to end under the gate.
 extern bool    spinInt;
 
 // Cold path, called by the core after every Ports::input while mode != OFF.
