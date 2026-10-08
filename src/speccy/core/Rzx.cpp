@@ -32,6 +32,14 @@ bool    spinInt = false;
 // spinInt + EI pending: the line outlives the ONE instruction after the EI,
 // whatever its length (23 T is the longest, plus contention); loopRzx clears it.
 static const int32_t SPIN_EI_HOLD = 256;
+// Pulse rule: the INT line's length in T-states. The machine's own window,
+// except that Spectaculator holds it for 32 T on every model:
+// abadiadelcrimen.rzx (rzxarchive abadia.zip, 128K) replays clean at 8..32 T,
+// desyncs at frame 31299 at 34 and at 4157 at 36 (our 128K window, libspectrum's
+// figure); dnawarrior (+2A) is clean at 32..35, the 48K/Pentagon windows are
+// 32 already. Live emulation is untouched.
+static const int32_t SPECTACULATOR_INT_LEN = 32;
+static int32_t s_intLen = 0;    // 0 = the machine's IntEnd - IntStart
 
 namespace {
 
@@ -111,11 +119,21 @@ void release() {
     s_inCount = s_inPos = 0;
 }
 
+#if RZX_TRACE
+uint32_t s_sinkSum = 0, s_sinkLen = 0, s_sinkPart = 0;   // checksum of the stream as extracted
+#endif
 bool sinkFile(void* ctx, const uint8_t* p, uint32_t n) {
+#if RZX_TRACE
+    for (uint32_t i = 0; i < n; i++) { s_sinkSum = s_sinkSum * 31u + p[i]; if (s_sinkLen + i == 26439) s_sinkPart = s_sinkSum; }
+    s_sinkLen += n;
+#endif
     UINT bw = 0;
     return f_write((FIL*)ctx, p, n, &bw) == FR_OK && bw == n;
 }
 
+#if RZX_TRACE
+void logRam(const char* tag);
+#endif
 // Load the snapshot the reader is sitting on. Returns false with a message.
 bool loadSnap() {
     const RzxReader::Snap& sn = s->rd.snap();
@@ -175,10 +193,28 @@ bool loadSnap() {
         FIL* out = (FIL*)Buffer::palloc(sizeof(FIL), Buffer::NEED_POINTER);
         if (!out) { OSD::osdCenteredMsg("RZX: not enough memory", LEVEL_WARN, 3000); return false; }
         bool ok = f_open(out, file.c_str(), FA_WRITE | FA_CREATE_ALWAYS) == FR_OK;
+#if RZX_TRACE
+        s_sinkSum = s_sinkLen = s_sinkPart = 0;
+#endif
         if (ok) {
             ok = s->rd.extractSnapshot(sinkFile, out);
             ok = (f_close(out) == FR_OK) && ok;
         }
+#if RZX_TRACE
+        {
+            uint32_t fsum = 0, flen = 0, fpart = 0;
+            if (f_open(out, file.c_str(), FA_READ) == FR_OK) {
+                uint8_t b[64]; UINT br = 0;
+                while (f_read(out, b, sizeof(b), &br) == FR_OK && br) {
+                    for (UINT i = 0; i < br; i++) { fsum = fsum * 31u + b[i]; if (flen + i == 26439) fpart = fsum; }
+                    flen += br;
+                }
+                f_close(out);
+            }
+            Debug::log("[RZX] snap extract: stream len=%u sum=%08X part=%08X | file len=%u sum=%08X part=%08X | out=%p",
+                       (unsigned)s_sinkLen, (unsigned)s_sinkSum, (unsigned)s_sinkPart, (unsigned)flen, (unsigned)fsum, (unsigned)fpart, out);
+        }
+#endif
         Buffer::pfree(out);
         if (!ok) {
             OSD::osdCenteredMsg(std::string("RZX: snapshot: ") + errText(s->rd.error()), LEVEL_WARN, 3000);
@@ -189,6 +225,9 @@ bool loadSnap() {
     const bool ok = LoadSnapshot(file, A_NONE, R_NONE);
     s_innerLoad = false;
     if (ok) s_hasSnap = true;
+#if RZX_TRACE
+    logRam("after load");
+#endif
     if (!ok && !snapshotLoadReported())
         OSD::osdCenteredMsg("RZX: cannot load the snapshot", LEVEL_WARN, 3000);
     return ok;
@@ -210,7 +249,21 @@ uint32_t romSum(uint8_t i) {
     for (uint32_t o = 0; o < 0x4000; o++) sum += MemESP::romPeek(0, p, (uint16_t)o);
     return sum;
 }
+void logRam(const char* tag) {
+    char l[200]; int n = snprintf(l, sizeof(l), "[RZX] ram %s:", tag);
+    for (int i = 0; i < 8; i++) {
+        uint8_t* p = MemESP::ram[i].direct();
+        uint32_t sum = 0;
+        if (p) for (uint32_t o = 0; o < 0x4000; o++) sum += p[o];
+        n += snprintf(l + n, sizeof(l) - n, " %d=%06X", i, (unsigned)sum);
+    }
+    const uint16_t sp = Z80::getRegSP();
+    snprintf(l + n, sizeof(l) - n, " cur1=%s (sp)=%02X%02X", MemESP::ramCurrent[1] == MemESP::ram[5].direct() ? "r5" : "OTHER",
+             MemESP::readbyte(sp + 1), MemESP::readbyte(sp));
+    Debug::log("%s", l);
+}
 void logStart() {
+    logRam("start");
     Debug::log("[RZX] machine arch=%s romset=%s trdosBios=%u beta=%u esxdos=%u mb02=%u mult=%u frame=%u intEnd=%d",
                archToStr(Config::arch), romsetToStr(Config::romSet), (unsigned)Config::trdosBios,
                (unsigned)Config::betadisk, (unsigned)DivMMC::enabled, (unsigned)MB02::enabled,
@@ -496,9 +549,10 @@ bool startPlayback(const std::string& path) {
     s_played = s_shortFrames = 0;
     s_desync = s_snapPending = s_rewind = s_hasSnap = s_badSeen = s_badDos = false;
     spinInt = strncmp(s->rd.creator(), "SPIN", 4) == 0 || strncmp(s->rd.creator(), "Fuse", 4) == 0;
-    Debug::log("[RZX] %s: v%u.%u creator '%s', %u frames, INT rule %s", s_name.c_str(),
+    s_intLen = strncmp(s->rd.creator(), "Spectaculator", 13) == 0 ? SPECTACULATOR_INT_LEN : 0;
+    Debug::log("[RZX] %s: v%u.%u creator '%s', %u frames, INT rule %s%s", s_name.c_str(),
                (unsigned)s->rd.major(), (unsigned)s->rd.minor(), s->rd.creator(), (unsigned)s_total,
-               spinInt ? "IFF1 at the boundary" : "pulse");
+               spinInt ? "IFF1 at the boundary" : "pulse", s_intLen ? " (32 T)" : "");
     if (!s->rd.hasSnapshot()) Debug::log("[RZX] no snapshot block before the input: looking for a sibling");
 
     // A file with no snapshot plays from the sibling snapshot named like it, or
@@ -620,7 +674,10 @@ bool raiseInt() {
     // raised inside the raster window keeps the window's own end (an interrupt
     // recorded just after the frame boundary behaves exactly as live); raised
     // anywhere else it lasts one window from here.
-    intUntil = (t < CPU::IntEnd) ? CPU::IntEnd : t + (CPU::IntEnd - CPU::IntStart);
+    int32_t len = CPU::IntEnd - CPU::IntStart;
+    if (s_intLen && s_intLen < len) len = s_intLen;
+    const int32_t end = CPU::IntStart + len;
+    intUntil = (t < end) ? end : t + len;
     return false;
 }
 

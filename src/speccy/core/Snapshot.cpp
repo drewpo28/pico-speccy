@@ -866,7 +866,7 @@ bool FileZ80::load(const string& z80_fn) {
                 uint8_t hdr2 = readByteFile(file); dataOffset ++;
                 uint16_t compDataLen = mkword(hdr0, hdr1);
                 
-                uint16_t memoff = pageStart[hdr2];
+                uint16_t memoff = hdr2 < 12 ? pageStart[hdr2] : 0;
 
                 if (compDataLen == 0xffff) {                 
 
@@ -969,80 +969,47 @@ bool FileZ80::load(const string& z80_fn) {
     return true;
 }
 
-void FileZ80::loadCompressedMemData(FIL* f, uint16_t dataLen, uint16_t memoff, uint16_t memlen) {
-
-    uint16_t dataOff = 0;
-    uint8_t ed_cnt = 0;
-    uint8_t repcnt = 0;
-    uint8_t repval = 0;
-    uint16_t memidx = 0;
-
-    while(dataOff < dataLen && memidx < memlen) {
-        uint8_t databyte = readByteFile(f);
+// .z80 block decoder (ED ED nn bb = nn copies of bb; everything else literal).
+// Bounded by the block's OWN length, and that is load-bearing: a block may end in
+// a single ED (snooker3d.rzx's page 6 does), whose meaning is only known from the
+// next byte — which belongs to the next block's header. The old decoders ran
+// until the page was full, read that byte as data and loaded every later block
+// shifted by one (pages 8/10 of a 128K snapshot never arrived). A pending lone
+// ED at the end is a literal; unread bytes of a block that filled its page early
+// are skipped, so the caller's file position always lands on the next header.
+template <typename Put>
+static void z80Decompress(FIL* f, uint16_t dataLen, uint16_t memlen, Put put) {
+    uint32_t dataOff = 0, memidx = 0;
+    uint8_t ed_cnt = 0, repcnt = 0;
+    while (dataOff < dataLen) {
+        const uint8_t databyte = readByteFile(f);
+        dataOff++;
         if (ed_cnt == 0) {
-            if (databyte != 0xED)
-                MemESP::writebyte(memoff + memidx++, databyte);
-            else
-                ed_cnt++;
-        }
-        else if (ed_cnt == 1) {
+            if (databyte != 0xED) { if (memidx < memlen) put(memidx++, databyte); }
+            else ed_cnt = 1;
+        } else if (ed_cnt == 1) {
             if (databyte != 0xED) {
-                MemESP::writebyte(memoff + memidx++, 0xED);
-                MemESP::writebyte(memoff + memidx++, databyte);
+                if (memidx < memlen) put(memidx++, 0xED);
+                if (memidx < memlen) put(memidx++, databyte);
                 ed_cnt = 0;
-            }
-            else
-                ed_cnt++;
-        }
-        else if (ed_cnt == 2) {
+            } else ed_cnt = 2;
+        } else if (ed_cnt == 2) {
             repcnt = databyte;
-            ed_cnt++;
-        }
-        else if (ed_cnt == 3) {
-            repval = databyte;
-            for (uint16_t i = 0; i < repcnt; i++)
-                MemESP::writebyte(memoff + memidx++, repval);
+            ed_cnt = 3;
+        } else {
+            for (uint16_t i = 0; i < repcnt && memidx < memlen; i++) put(memidx++, databyte);
             ed_cnt = 0;
         }
     }
+    if (ed_cnt == 1 && memidx < memlen) put(memidx++, 0xED);
 }
 
-void FileZ80::loadCompressedMemPage(FIL* f, uint16_t dataLen, uint8_t* memPage, uint16_t memlen)
-{
-    uint16_t dataOff = 0;
-    uint8_t ed_cnt = 0;
-    uint8_t repcnt = 0;
-    uint8_t repval = 0;
-    uint16_t memidx = 0;
+void FileZ80::loadCompressedMemData(FIL* f, uint16_t dataLen, uint16_t memoff, uint16_t memlen) {
+    z80Decompress(f, dataLen, memlen, [memoff](uint32_t i, uint8_t v) { MemESP::writebyte((uint16_t)(memoff + i), v); });
+}
 
-    while(dataOff < dataLen && memidx < memlen) {
-        uint8_t databyte = readByteFile(f);
-        if (ed_cnt == 0) {
-            if (databyte != 0xED)
-                memPage[memidx++] = databyte;
-            else
-                ed_cnt++;
-        }
-        else if (ed_cnt == 1) {
-            if (databyte != 0xED) {
-                memPage[memidx++] = 0xED;
-                memPage[memidx++] = databyte;
-                ed_cnt = 0;
-            }
-            else
-                ed_cnt++;
-        }
-        else if (ed_cnt == 2) {
-            repcnt = databyte;
-            ed_cnt++;
-        }
-        else if (ed_cnt == 3) {
-            repval = databyte;
-            for (uint16_t i = 0; i < repcnt; i++)
-                memPage[memidx++] = repval;
-            ed_cnt = 0;
-        }
-    }
+void FileZ80::loadCompressedMemPage(FIL* f, uint16_t dataLen, uint8_t* memPage, uint16_t memlen) {
+    z80Decompress(f, dataLen, memlen, [memPage](uint32_t i, uint8_t v) { memPage[i] = v; });
 }
 
 void FileZ80::loader48() {
