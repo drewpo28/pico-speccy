@@ -61,6 +61,16 @@ int graphics_fast_mode(int mode)
     return video_mode[fast].tmds_mhz == TMDS_FAST_MHZ ? fast : mode;
 }
 
+int graphics_540_mode(int mode)
+{
+    const int n = (int)(sizeof(video_mode)/sizeof(video_mode[0]));
+    const int t = mode + VMODE_540_OFFSET;
+    if (mode < 0 || mode >= VMODE_FAST_OFFSET || t >= n) return mode;
+    return video_mode[t].tmds_mhz == TMDS_540_MHZ ? t : mode;
+}
+
+int graphics_xga_mode(int x3) { return x3 ? VMODE_XGA3 : VMODE_XGA; }
+
 float graphics_clk_div_at(int mode, unsigned sys_mhz, int vga)
 {
     const int n = (int)(sizeof(video_mode)/sizeof(video_mode[0]));

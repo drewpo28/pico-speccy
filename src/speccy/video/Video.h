@@ -572,6 +572,9 @@ public:
   static bool isFullBorder288()  { const uint8_t vm = activeVideoMode();
                                    return vm == Config::VM_720x576_50 || vm == Config::VM_720x576_75; }
   static bool isFullBorderMode() { return isFullBorder240() || isFullBorder288(); }
+  // 1024x768 x4 (not x3) is on screen: HDMI shows only the centre 256x192 of the 320x240
+  // framebuffer (bytes 32.., rows 24..), so anything drawn outside it is invisible.
+  static bool xgaLive();
 
   static bool gigascreen_enabled;
   static uint8_t gigascreen_auto_countdown;

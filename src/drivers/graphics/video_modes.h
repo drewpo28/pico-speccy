@@ -24,6 +24,12 @@
 // Config::cpu_mhz == 378 — see Config::isFastVideoMode().
 #define TMDS_STD_MHZ   252
 #define TMDS_FAST_MHZ  378
+// TMDS_540_MHZ 270 = 27 MHz pixel: the standard set re-timed for sys_clk 540 MHz,
+// where 25.2 MHz would need a 2.143 divider. 540 / 270 = 2.0 exactly. Same active
+// areas, wider lines / more lines so every refresh stays where it was.
+// TMDS_XGA_MHZ 540 = 54 MHz pixel: 1024x768 x4 (divider 1.0 at 540 only).
+#define TMDS_540_MHZ   270
+#define TMDS_XGA_MHZ   540
 #ifndef CPU_MHZ
 // Host builds (tools/vga_timing_test.c) have no board define; the value only seeds
 // pio_clk_div, which graphics_set_sys_clk_mhz() re-derives at boot anyway.
@@ -81,6 +87,18 @@ struct video_mode_t {
   // whenever sys_clk moves, so a mode that wants a different pixel clock (the
   // 90/75 Hz set: 378 MHz TMDS = 37.8 MHz pixel) keeps it at every CPU clock.
   int tmds_mhz;
+  // Non-zero = the x4 scanout (1024x768): each framebuffer byte is put into the line
+  // buffer TWICE (= 4 output pixels, the PIO converter doubles each byte already),
+  // each framebuffer row is shown on 4 lines (a vertical map), and the source is
+  // the centre 256x192 of the 320x240 framebuffer: x from x4_offset bytes, rows
+  // from v_offset. screen_width is then the LINE-BUFFER width (512), not the fb's.
+  int x4_offset;
+  // Non-zero = the x3 scanout (1024x768): the HDMI converter runs one byte per
+  // output pixel (each fb pixel is put in the line buffer three times, every control
+  // byte twice), the whole 320x240 framebuffer is shown as 960x720 centred, each fb
+  // row on 3 lines. The h_* / line_bytes fields stay in the usual 2-px units (the
+  // DMA moves 2 * line_bytes bytes); screen_width is the 512 of the 1024-px area.
+  int x3;
   // VGA-only overrides for fields above. If 0/zero, VGA uses the main fields.
   // HDMI never reads these — its timing is unaffected.
   int vga_v_total;
@@ -106,3 +124,8 @@ struct video_mode_t {
 // video_mode[] index offset of the 37.8 MHz ("fast") twin of a standard mode:
 // entries [0]..[7] have their x1.5-refresh counterpart at [9]..[16].
 #define VMODE_FAST_OFFSET 9
+// ...and the 27 MHz (sys_clk 540) twin of [0]..[8] at index + VMODE_540_OFFSET,
+// then the 1024x768 x4 mode (540 only) at VMODE_XGA.
+#define VMODE_540_OFFSET 17
+#define VMODE_XGA        26
+#define VMODE_XGA3       27

@@ -590,14 +590,25 @@ public:
         VM_640x480_75  = 5,  // 640x480@75Hz   (73.37 Pentagon / 75.24 48K / 75.12 128K)
         VM_720x480_90  = 6,  // 720x480@90Hz   half border (90.17)
         VM_720x576_75  = 7,  // 720x576@75Hz   full border, arch-dependent as above
-        VM_LAST        = VM_720x576_75,
+        // 1024x768@59.04 (54 MHz pixel), HDMI only, sys_clk 540 only: the centre
+        // 256x192 of the 320x240 framebuffer at x4 (no border). Forces V-Sync off.
+        VM_1024x768_59 = 8,
+        // The same 1024x768@59 at x3: the whole 320x240 framebuffer (border too) as
+        // 960x720 centred. The HDMI converter runs one byte per output pixel.
+        VM_1024x768_59X3 = 9,
+        VM_LAST        = VM_1024x768_59X3,
     };
 
     // sys_clk the "fast" modes need; anything else cannot give the PIO a clean
     // divider for a 378 MHz TMDS clock.
     static const uint16_t VM_FAST_CPU_MHZ = 378;
 
-    static constexpr bool isFastVideoMode(uint8_t vm) { return vm >= VM_640x480_90 && vm <= VM_LAST; }
+    static constexpr bool isFastVideoMode(uint8_t vm) { return vm >= VM_640x480_90 && vm <= VM_720x576_75; }
+    // sys_clk 540 MHz: every standard mode switches to its 27 MHz twin, and the
+    // 1024x768 x4 mode exists only there. Needs ~1.80 V on the boards tried.
+    static const uint16_t CPU_540_MHZ = 540;
+    static constexpr bool isXgaVideoMode(uint8_t vm) { return vm == VM_1024x768_59 || vm == VM_1024x768_59X3; }
+    static constexpr bool isXga3VideoMode(uint8_t vm) { return vm == VM_1024x768_59X3; }
     // The 25.2 MHz twin of a fast mode (identity for the standard ones): what a
     // fast pick degrades to when the CPU clock is not 378 MHz.
     static uint8_t baseVideoMode(uint8_t vm) {

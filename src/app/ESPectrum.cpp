@@ -3236,6 +3236,7 @@ uint8_t debug_number = 0;
 extern "C" int hdmi_audio_dbg_stage(void);
 extern "C" void hdmi_audio_dbg_stats(uint32_t *q_prod, uint32_t *q_cons, uint32_t *s_prod, uint32_t *s_cons);
 extern "C" void hdmi_audio_health_dump(void);
+extern "C" void hdmi_tmds_stall_log(void);
 #endif
 // One step of the background network housekeeping, shared by the emulation loop
 // and the OSD's idle loops (nm::uiIdle). Everything here is asynchronous and
@@ -3251,6 +3252,9 @@ void ESPectrum::netBackgroundTick() {
     // INSIDE a modal stopped mid-line (hw 2026-10-06, the RZX sibling search).
     // This is the one funnel every modal wait already calls.
     Debug::pumpUart();
+#ifdef VGA_HDMI
+    hdmi_tmds_stall_log();
+#endif
 #if PICOSPECCY_WIFI
     WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
 #endif

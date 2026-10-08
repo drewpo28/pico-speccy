@@ -94,6 +94,8 @@ extern "C" uint32_t graphics_frame_count(void);
 // graphics.h is a C header this TU does not include; see the note there. Returns
 // the 37.8 MHz twin of a standard video_mode[] index (the 90/75 Hz set).
 extern "C" int  graphics_fast_mode(int mode);
+extern "C" int  graphics_540_mode(int mode);
+extern "C" int  graphics_xga_mode(int x3);
 extern "C" void graphics_set_hdmi_clock_drive(bool soft);
 extern "C" void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
@@ -5245,6 +5247,13 @@ void VIDEO::Reset() {
         }
     }
     if (useFast) video_mode = graphics_fast_mode(video_mode);
+    // sys_clk 540: HDMI runs every standard mode at its 27 MHz twin (540/270 = 2.0,
+    // where 25.2 MHz would need 2.143), and 1024x768 x4 (54 MHz) exists only there.
+    // Config::load() already took both away from a build or clock that cannot.
+    if (!SELECT_VGA && Config::cpu_mhz == Config::CPU_540_MHZ) {
+        video_mode = Config::isXgaVideoMode(vmSel) ? graphics_xga_mode(Config::isXga3VideoMode(vmSel) ? 1 : 0)
+                                                   : graphics_540_mode(video_mode);
+    }
     // The 50 Hz modes above are per MACHINE — one display frame is tuned to be
     // exactly one emulated frame (v_total 644 Pentagon 48.83 Hz / 629 128K
     // 50.02 Hz / 628 48K, Profi, Scorpion 50.08 Hz) — and with v_sync pacing the
@@ -6650,13 +6659,25 @@ void VIDEO::blClearCarve(int id) {
     bl->carve[id][3] = bl->carve[id][1];
 }
 
+bool VIDEO::xgaLive() {
+#ifdef VGA_HDMI
+    // x4 only: x3 shows the whole framebuffer, nothing needs to move.
+    return !SELECT_VGA && Config::cpu_mhz == Config::CPU_540_MHZ
+        && Config::hdmi_video_mode == Config::VM_1024x768_59;
+#else
+    return false;
+#endif
+}
+
 void VIDEO::blRecalc() {
     // The scaler only runs under the standard beam renderer: the pair-slot modes
     // (profi_ds80_active also covers GMX 640x200 and Timex hi-res — but not our own
     // pair scaler) and the TS-Conf whole-line renderer own their own geometry.
     const bool foreignPair = profi_ds80_active && !bl_pair_live;
     const bool want = !Config::render_border && vga.frameBuffer && blGeometryOk()
-                      && !foreignPair && !gmx_ext_live && !ts_render_live && !timex_hires_live && !ft_live;
+                      && !foreignPair && !gmx_ext_live && !ts_render_live && !timex_hires_live && !ft_live
+                      // 1024x768 x4 already shows the paper only, and it owns the line map
+                      && !Config::isXgaVideoMode(activeVideoMode());
     if (want != bl_live) {
         if (want) {
             static bool warned = false;

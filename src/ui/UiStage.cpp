@@ -1,5 +1,6 @@
 // pico-speccy — staged settings overlay and the ordered commit (see UiStage.h).
 
+#include <hardware/vreg.h>   // VREG_VOLTAGE_1_80 (540 MHz edge)
 #include "OSDNewMenu.h"
 
 
@@ -1281,6 +1282,34 @@ static void resolveConstraints(CommitReport& rep) {
             if (staged(SET_VSYNC))
                 changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display runs at x1.5");
 #endif
+        }
+
+        // sys_clk 540 MHz. EDGE: picking it raises the core voltage to 1.80 V — at
+        // 1.60-1.70 V the DVp2 corrupted SRAM under a heavy TS-Conf scene (hw
+        // 2026-10-08), at 1.80 V it ran. The user may lower it again afterwards.
+        if (bmGet(g_dirty, SET_CPU_MHZ) && staged(SET_CPU_MHZ) == Config::CPU_540_MHZ
+            && g_base[SET_CPU_MHZ] != Config::CPU_540_MHZ
+            && staged(SET_VREG) < VREG_VOLTAGE_1_80
+            && g_seq[SET_VREG] <= g_seq[SET_CPU_MHZ])
+            changed |= force(SET_VREG, VREG_VOLTAGE_1_80, rep, "Core voltage 1.80 V for 540 MHz");
+        // 1024x768 x4 is HDMI-only and needs sys_clk 540 (54 MHz pixel, divider 1.0);
+        // its display runs at 59 Hz, so V-Sync is off as for the 90/75 Hz set.
+        if (Config::isXgaVideoMode((uint8_t)staged(SET_VIDEO_MODE))) {
+#ifdef VGA_HDMI
+            if (SELECT_VGA)
+                changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep, "1024x768 is HDMI only");
+            else
+#endif
+            if (staged(SET_CPU_MHZ) != Config::CPU_540_MHZ) {
+                if (g_seq[SET_VIDEO_MODE] >= g_seq[SET_CPU_MHZ])
+                    changed |= force(SET_CPU_MHZ, Config::CPU_540_MHZ, rep,
+                                     "CPU clock set to 540 MHz: 1024x768 needs it");
+                else
+                    changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep,
+                                     "1024x768 needs CPU 540 MHz");
+            }
+            if (staged(SET_VSYNC))
+                changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display runs at 59 Hz");
         }
 
         // MB-02+ and Profi both claim the upper MemESP pages; enabling MB-02+ on Profi

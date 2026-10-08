@@ -7,6 +7,10 @@
 // pixel clocks follow.
 #include "video_modes.h"
 
+// The 27/54 MHz entries are only ever used at sys_clk 540; graphics_set_sys_clk_mhz()
+// re-derives the divider at boot anyway.
+#define PIO_DIV_540 ((float)CPU_MHZ / (float)TMDS_540_MHZ < 1.0f ? 1.0f : (float)CPU_MHZ / (float)TMDS_540_MHZ)
+
 #ifndef VGA_HSTX
 #define VGA_HSTX 0
 #endif
@@ -465,5 +469,192 @@ static struct video_mode_t video_mode[] = {
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_FAST,
         .tmds_mhz = TMDS_FAST_MHZ
+    },
+
+    // ---------------------------------------------------------------------
+    // sys_clk 540 MHz (needs 1.80 V on the boards tried). 25.2 MHz would be a 2.143
+    // divider there, so every standard mode has a 27 MHz twin (540 / 270 = 2.0):
+    // same active area, a wider line (856 / 864 px) and the line count chosen so
+    // the refresh matches its twin. Indices = twin + VMODE_540_OFFSET; VIDEO::Reset
+    // switches to them when the CPU runs at 540. The 90/75 Hz set has no twin
+    // (540 / 378 = 1.43) and is hidden at 540.
+    // ---------------------------------------------------------------------
+    { // [17] 640x480 60Hz @540 — 27MHz/856/525 = 60.08Hz
+        .v_total = 524,
+        .v_active = 480,
+        .freq = 60,
+        .pixel_clk = 27000000,
+        .vsync_start = 490,
+        .vsync_end = 492,
+        .screen_width = 320,
+        .h_sync_bytes = 48,
+        .h_bp_bytes = 48,
+        .h_fp_bytes = 12,
+        .line_bytes = 428,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [18] 640x480 50Hz Pentagon @540 — 27MHz/856/646 = 48.83Hz
+        .v_total = 645,
+        .v_active = 480,
+        .freq = 50,
+        .pixel_clk = 27000000,
+        .vsync_start = 490,
+        .vsync_end = 492,
+        .screen_width = 320,
+        .h_sync_bytes = 48,
+        .h_bp_bytes = 48,
+        .h_fp_bytes = 12,
+        .line_bytes = 428,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [19] 640x480 50Hz 48K @540 — 27MHz/856/630 = 50.07Hz
+        .v_total = 629,
+        .v_active = 480,
+        .freq = 50,
+        .pixel_clk = 27000000,
+        .vsync_start = 490,
+        .vsync_end = 492,
+        .screen_width = 320,
+        .h_sync_bytes = 48,
+        .h_bp_bytes = 48,
+        .h_fp_bytes = 12,
+        .line_bytes = 428,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [20] 640x480 50Hz 128K @540 — 27MHz/856/631 = 49.99Hz
+        .v_total = 630,
+        .v_active = 480,
+        .freq = 50,
+        .pixel_clk = 27000000,
+        .vsync_start = 490,
+        .vsync_end = 492,
+        .screen_width = 320,
+        .h_sync_bytes = 48,
+        .h_bp_bytes = 48,
+        .h_fp_bytes = 12,
+        .line_bytes = 428,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [21] 720x576 50Hz Pentagon @540 — 27MHz/864/640 = 48.83Hz
+        .v_total = 639,
+        .v_active = 576,
+        .freq = 50,
+        .pixel_clk = 27000000,
+        .vsync_start = 581,
+        .vsync_end = 586,
+        .screen_width = 360,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 34,
+        .h_fp_bytes = 6,
+        .line_bytes = 432,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [22] 720x576 50Hz 48K @540 — 27MHz/864/624 = 50.08Hz
+        .v_total = 623,
+        .v_active = 576,
+        .freq = 50,
+        .pixel_clk = 27000000,
+        .vsync_start = 581,
+        .vsync_end = 586,
+        .screen_width = 360,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 34,
+        .h_fp_bytes = 6,
+        .line_bytes = 432,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [23] 720x576 50Hz 128K @540 — CEA 576p50, VIC 17: 27MHz/864/625 = 50.00Hz
+        .v_total = 624,
+        .v_active = 576,
+        .freq = 50,
+        .pixel_clk = 27000000,
+        .vsync_start = 581,
+        .vsync_end = 586,
+        .screen_width = 360,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 34,
+        .h_fp_bytes = 6,
+        .line_bytes = 432,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [24] 720x480 60Hz @540 — 27MHz/864/521 = 59.98Hz
+        .v_total = 520,
+        .v_active = 480,
+        .freq = 60,
+        .pixel_clk = 27000000,
+        .vsync_start = 490,
+        .vsync_end = 492,
+        .screen_width = 360,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 34,
+        .h_fp_bytes = 6,
+        .line_bytes = 432,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [25] 720x576 60Hz (v_active > v_total, as [8]) @540 — 27MHz/864/525
+        .v_total = 524,
+        .v_active = 576,
+        .freq = 60,
+        .pixel_clk = 27000000,
+        .vsync_start = 581,
+        .vsync_end = 586,
+        .screen_width = 360,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 34,
+        .h_fp_bytes = 6,
+        .line_bytes = 432,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_540_MHZ
+    },
+    { // [26] 1024x768 59Hz x4 @540 only — 54MHz/1152/794 = 59.04Hz, centre 256x192 of the 320x240 fb
+        .v_total = 793,
+        .v_active = 768,
+        .freq = 59,
+        .pixel_clk = 54000000,
+        .vsync_start = 771,
+        .vsync_end = 777,
+        .screen_width = 512,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 24,
+        .h_fp_bytes = 8,
+        .line_bytes = 576,
+        .v_offset = 24,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_XGA_MHZ,
+        .x4_offset = 32
+    },
+    { // [27] 1024x768 59Hz x3 @540 only — same timing as [26]; the whole 320x240 fb as 960x720, centred
+        .v_total = 793,
+        .v_active = 768,
+        .freq = 59,
+        .pixel_clk = 54000000,
+        .vsync_start = 771,
+        .vsync_end = 777,
+        .screen_width = 512,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 24,
+        .h_fp_bytes = 8,
+        .line_bytes = 576,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = TMDS_XGA_MHZ,
+        .x3 = 1
     }
 };

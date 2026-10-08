@@ -38,6 +38,10 @@ static bool hdmi_scanlines = false;
 static const uint16_t * volatile hdmi_vmap_req = NULL;
 static volatile uint16_t hdmi_vmap_req_n = 0;
 static const uint16_t * volatile hdmi_vmap_cur = NULL;
+// The 1024x768 x4 mode's own map (display line -> fb row = line / 4), built in
+// hdmi_init() when that mode is live. A requested map (hdmi_set_vmap) wins.
+static uint16_t *hdmi_vmap_x4 = NULL;
+static uint8_t   hdmi_vmap_x4_kind = 0;   // 4 / 3: which map hdmi_vmap_x4 holds
 // Scanline brightness level: 0=off, 1=darkest .. 4=lightest. Level 2 is the
 // legacy 0x202020 look and the default. Drives the gray of IDX_SCANLINE.
 static uint8_t hdmi_scanline_level = 2;
@@ -85,11 +89,14 @@ static uint32_t* __scratch_x("hdmi_ptr_4") DMA_BUF_ADDR[3];
 static uint32_t hdmi_scanline_line[64];
 static int      hdmi_scanline_line_n = 0;
 #else
-// One whole line: 832 px = 416 bytes in the 720-wide modes (video_mode_table.h).
-#define HDMI_LINE_BYTES_MAX 416
+// One whole line: 832 px = 416 bytes in the 720-wide modes, 864 px = 432 in their
+// 540 MHz twins, 1152 px = 576 in the 1024x768 x4 mode (video_mode_table.h).
+#define HDMI_LINE_BYTES_MAX 576
 static uint8_t hdmi_scanline_buf[HDMI_LINE_BYTES_MAX];
+// (The x3 mode runs 3 px per byte: its DMA line is 384 bytes, see HDMI_X3_LINE.)
 // The two PIO-path line buffers sit behind the 1024-word palette in conv_color.
-_Static_assert(1024 + 2 * (HDMI_LINE_BYTES_MAX / 4) <= 1240, "conv_color too small for two lines");
+#define HDMI_CONV_WORDS (1024 + 2 * (HDMI_LINE_BYTES_MAX / 4))
+_Static_assert(HDMI_CONV_WORDS >= 1240, "conv_color must still hold the pair-mode snapshot");
 #endif
 
 //ДМА палитра для конвертации
@@ -101,7 +108,7 @@ _Static_assert(1024 + 2 * (HDMI_LINE_BYTES_MAX / 4) <= 1240, "conv_color too sma
 // then only a leftover. The palette LUT itself moved into conv_color_b (both pages).
 static alignas(4096) uint32_t conv_color[2 * HDMI_TL_MAX_WORDS];
 #else
-static alignas(4096) uint32_t conv_color[1240];
+static alignas(4096) uint32_t conv_color[HDMI_CONV_WORDS];
 #endif
 
 // conv_color lives in its own linker section (.hdmi_lut at ORIGIN(RAM), see
@@ -475,6 +482,32 @@ const struct pio_program pio_program_conv_addr_HDMI = {
     .length = 8,
     .origin = -1,
 };
+
+// THREE output pixels per byte (the 1024x768 x3 mode), from a separate 8 KB palette
+// page (hdmi_x3_page): a slot is 32 bytes = four 64-bit pixel words [w0 w1 w0 w1],
+// the address is (page << 13) | (byte << 5), and the data DMA moves THREE words.
+// Odd line-buffer bytes get +8 (Y = 8), so an even byte emits w0 w1 w0 and an odd
+// one w1 w0 w1: over every pair of bytes the six characters are three balanced
+// pairs, exactly as in the 2-px modes. Sync / island / preamble slots are written
+// per position parity instead (hdmi_x3_put).
+uint16_t pio_program_instructions_conv_HDMI_3px[] = {
+    0x80a0, //  0: pull   block
+    0x4065, //  1: in     null, 5      ; even byte: + 0
+    0x40e8, //  2: in     osr, 8
+    0x4033, //  3: in     x, 19
+    0x8020, //  4: push   block
+    0x80a0, //  5: pull   block
+    0x4045, //  6: in     y, 5         ; odd byte: + 8 (one pixel word later)
+    0x40e8, //  7: in     osr, 8
+    0x4033, //  8: in     x, 19
+    0x8020, //  9: push   block
+};
+const struct pio_program pio_program_conv_addr_HDMI_3px = {
+    .instructions = pio_program_instructions_conv_HDMI_3px,
+    .length = 10,
+    .origin = -1,
+};
+static const struct pio_program *hdmi_conv_prog = &pio_program_conv_addr_HDMI;
 #endif // !HDMI_EXPANDER
 
 //программа видеовывода
@@ -604,6 +637,7 @@ static inline void* __not_in_flash_func(nf_memset)(void* ptr, int value, size_t 
 // the ISR reads it through a pointer and never touches flash at all.
 static struct video_mode_t hdmi_isr_mode;
 static volatile uint32_t hdmi_frame_ct;   // +1 per frame wrap in the line ISR (Speed Test)
+static volatile uint32_t hdmi_tmds_stall_frames;   // frames with a TMDS FIFO underrun (line ISR)
 
 // RAM-resident word copy for the ISR path. A plain assignment loop here is
 // converted by GCC's loop-distribute-patterns into a call to libc memcpy —
@@ -798,6 +832,104 @@ static uint __not_in_flash_func(hdmi_vmap_step)(const uint16_t *vm, uint line) {
     return r | l;
 }
 
+#if !HDMI_EXPANDER
+// ── 1024x768 x3 (3 output pixels per line byte) ─────────────────────────────────
+// The line is 1152 px = 384 bytes of 3 px: hsync 66 px (22 B), back porch 48 px
+// (16 B), 1024 active px = 341 B + the first pixel of the "edge" byte, then 2 + 12
+// px of front porch. The 960x720 picture sits 30 px from the left edge of the 1024
+// (10 B of background before it, 11 after). Palette page: 8 KB, slot = 4 words.
+#define HDMI_X3_LINE   384
+#define HDMI_X3_HS     22
+#define HDMI_X3_BP     16
+#define HDMI_X3_ACT    341
+#define HDMI_X3_EDGE   (HDMI_X3_HS + HDMI_X3_BP + HDMI_X3_ACT)   // 379: bg px + 2 ctrl
+#define HDMI_X3_LEFT   10
+#define IDX_X3_EDGE    (245)   // 245..254 are never colour slots (hdmi_palette_slot_writable)
+#define IDX_X3_VPRE    (246)   // 246..249: control + video preamble + guard, 4 bytes
+static hdmi_word_t *hdmi_x3_page = NULL;
+static volatile bool hdmi_x3_on = false;
+
+static bool hdmi_x3_alloc(void) {
+    if (!hdmi_x3_page) {
+        extern void *memalign(size_t, size_t);
+        hdmi_x3_page = (hdmi_word_t *)memalign(8192, 8192);
+        if (!hdmi_x3_page) printf("hdmi: no heap for the 8 KB x3 palette page - x3 off\n");
+    }
+    return hdmi_x3_page != NULL;
+}
+static inline hdmi_word_t hdmi_pa(uint slot, uint px) {
+    return ((const hdmi_word_t *)conv_color)[HDMI_SLOT_IX(slot, px)];
+}
+// Three characters at a known line-byte parity: the converter reads words 0..2 of
+// a slot at an even byte and 1..3 at an odd one.
+static inline void __not_in_flash_func(hdmi_x3_put)(uint slot, uint odd, hdmi_word_t a,
+                                                     hdmi_word_t b, hdmi_word_t c) {
+    volatile hdmi_word_t *w = &hdmi_x3_page[slot * 4 + (odd & 1)];
+    w[0] = a; w[1] = b; w[2] = c;
+}
+// A colour slot: the 2-px pair (w0, w1) of page A as [w0 w1 w0 w1].
+static void __not_in_flash_func(hdmi_x3_mirror)(uint slot) {
+    if (!hdmi_x3_page) return;
+    const hdmi_word_t w0 = hdmi_pa(slot, 0), w1 = hdmi_pa(slot, 1);
+    volatile hdmi_word_t *w = &hdmi_x3_page[slot * 4];
+    w[0] = w0; w[1] = w1; w[2] = w0; w[3] = w1;
+}
+// The Data Island of set `set` (line bytes 0..14): hsync control, 8 preamble, 2
+// guard, 32 data, 2 trailing guard = 45 characters, read out of page A where
+// hdmi_di_load and hdmi_audio_hw_init keep them for the 2-px modes.
+static inline hdmi_word_t __not_in_flash_func(hdmi_x3_isl_char)(uint k, uint set, bool vs) {
+    if (k == 0)  return hdmi_pa(BASE_HDMI_CTRL_INX + (vs ? 3 : 1), 0);
+    if (k < 9)   return hdmi_pa(vs ? IDX_DI_PREAMBLE_VS : IDX_DI_PREAMBLE, k & 1);
+    if (k < 11)  return hdmi_pa(vs ? IDX_DI_GUARD_VS : IDX_DI_GUARD, (k - 9) & 1);
+    if (k < 43)  return hdmi_pa((set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE) + ((k - 11) >> 1), (k - 11) & 1);
+    return hdmi_pa(vs ? IDX_DI_GUARD_TRAIL_VS : IDX_DI_GUARD_TRAIL, (k - 43) & 1);
+}
+static void __not_in_flash_func(hdmi_x3_pack_island)(uint set, bool vs) {
+    const uint d = set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE;
+    for (uint k = 0; k < 15; k++)
+        hdmi_x3_put(d + k, k, hdmi_x3_isl_char(3 * k, set, vs),
+                    hdmi_x3_isl_char(3 * k + 1, set, vs), hdmi_x3_isl_char(3 * k + 2, set, vs));
+}
+// Edge byte (odd, 379): the 1024th pixel (background) + 2 control. Video preamble
+// block (bytes 34..37): 2 control, 8 preamble, 2 guard — the guard ends exactly
+// where the active area starts.
+static void hdmi_x3_build_static(void) {
+    const hdmi_word_t c  = hdmi_pa(BASE_HDMI_CTRL_INX, 0);
+    const hdmi_word_t p  = hdmi_pa(IDX_VIDEO_PREAMBLE, 0);
+    const hdmi_word_t g0 = hdmi_pa(IDX_VIDEO_GUARD, 0), g1 = hdmi_pa(IDX_VIDEO_GUARD, 1);
+    const hdmi_word_t q[12] = { c, c, p,  p, p, p,  p, p, p,  p, g0, g1 };
+    const uint pos = HDMI_X3_HS + HDMI_X3_BP - 4;
+    for (uint k = 0; k < 4; k++) hdmi_x3_put(IDX_X3_VPRE + k, pos + k, q[3 * k], q[3 * k + 1], q[3 * k + 2]);
+    hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, 1), c, c);
+}
+// One line. `row` = the 320-byte fb row (x^2 order) or NULL for background.
+static void __not_in_flash_func(hdmi_x3_line)(uint8_t *buf, bool active, const uint8_t *row,
+                                              bool vsl, bool island, bool vguard, uint set)
+                                              __attribute__((noinline));
+static void __not_in_flash_func(hdmi_x3_line)(uint8_t *buf, bool active, const uint8_t *row,
+                                              bool vsl, bool island, bool vguard, uint set) {
+    nf_memset(buf, BASE_HDMI_CTRL_INX + (vsl ? 3 : 1), HDMI_X3_HS);
+    nf_memset(buf + HDMI_X3_HS, BASE_HDMI_CTRL_INX + (vsl ? 2 : 0), HDMI_X3_LINE - HDMI_X3_HS);
+    if (island) {
+        const uint8_t d = set ? IDX_DI_DATA2_BASE : IDX_DI_DATA_BASE;
+        for (int k = 0; k < 15; k++) buf[k] = (uint8_t)(d + k);
+    }
+    if (!active) return;
+    if (vguard) {
+        uint8_t *v = buf + HDMI_X3_HS + HDMI_X3_BP - 4;
+        v[0] = IDX_X3_VPRE; v[1] = IDX_X3_VPRE + 1; v[2] = IDX_X3_VPRE + 2; v[3] = IDX_X3_VPRE + 3;
+    }
+    uint8_t *a = buf + HDMI_X3_HS + HDMI_X3_BP;
+    nf_memset(a, 255, HDMI_X3_ACT);
+    if (row) {
+        uint32_t *o = (uint32_t *)(a + HDMI_X3_LEFT);
+        const uint32_t *in = (const uint32_t *)row;
+        for (int k = 0; k < 80; k++) { const uint32_t v = in[k]; o[k] = (v >> 16) | (v << 16); }
+    }
+    buf[HDMI_X3_EDGE] = IDX_X3_EDGE;
+}
+#endif
+
 static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     static uint32_t inx_buf_dma;
     static uint line = 0;
@@ -831,9 +963,16 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     if (line >= modep->v_total ) {
         line = 0;
         hdmi_frame_ct++;
+#if !HDMI_HSTX
+        {   // TMDS state machine waited on an empty FIFO this frame = a pixel came late
+            const uint32_t bit = 1u << (PIO_FDEBUG_TXSTALL_LSB + (uint)SM_video);
+            if (PIO_VIDEO->fdebug & bit) { PIO_VIDEO->fdebug = bit; hdmi_tmds_stall_frames++; }
+        }
+#endif
         {
             const uint16_t *m = hdmi_vmap_req;
-            hdmi_vmap_cur = (m && hdmi_vmap_req_n == modep->v_active && !hdmi_scanlines) ? m : NULL;
+            hdmi_vmap_cur = (m && hdmi_vmap_req_n == modep->v_active && !hdmi_scanlines) ? m
+                          : ((modep->x4_offset || modep->x3) ? hdmi_vmap_x4 : NULL);
         }
     } else {
         ++line;
@@ -1000,6 +1139,21 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
 #endif // !HDMI_EXPANDER
     }
     if (!do_render) return;   // a replay: nothing to draw, the island is done
+#if !HDMI_EXPANDER
+    if (hdmi_x3_on) {
+        const bool act = line < modep->v_active;
+        const uint8_t *row = NULL;
+        if (act) {
+            const int y = (vmode ? (int)vm[line - 1] : (int)(line >> 1)) + modep->v_offset;
+            if (y >= 0 && y < graphics_buffer_height) row = getLineBuffer(y);
+        }
+        const bool vsl = !act && (line >= modep->vsync_start) && (line < modep->vsync_end);
+        hdmi_isr_was_blank = act ? 0 : 1;
+        hdmi_x3_line(activ_buf, act, row, vsl, hdmi_audio_enabled && au_ok_now,
+                     hdmi_audio_enabled && au_video_guards, inx_buf_dma & 1);
+        return;
+    }
+#endif
 
     if (line < modep->v_active ) {
 #if HDMI_EXPANDER
@@ -1046,6 +1200,23 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
 #else
 
         uint8_t* activ_buf_end = output_buffer + scr_w;
+
+        // 1024x768 x4: the centre 256 bytes of the fb row, each byte twice (the PIO
+        // converter turns one byte into two output pixels, so twice = four). The fb
+        // is stored in the ISR's x^2 order: one 32-bit word = bytes 2,3,0,1, which
+        // the half-swap below undoes, two output words per source word.
+        if (modep->x4_offset) {
+            const uint32_t* __restrict in32  = (const uint32_t*)(input_buffer + modep->x4_offset);
+            uint32_t* __restrict       out32 = (uint32_t*)output_buffer;
+            const int words = scr_w >> 3;            // 4 source bytes -> 8 line bytes
+            for (int i = 0; i < words; i++) {
+                const uint32_t v = in32[i];
+                const uint32_t a = (v >> 16) & 0xFFFFu, b = v & 0xFFFFu;   // bytes 0,1 / 2,3 in order
+                out32[2 * i]     = (a & 0xFFu) * 0x0101u | ((a >> 8) * 0x0101u) << 16;
+                out32[2 * i + 1] = (b & 0xFFu) * 0x0101u | ((b >> 8) * 0x0101u) << 16;
+            }
+            goto ex;
+        }
 
         // DS80 fast path: replace the byte-loop x^2 read with a 32-bit pair-swap.
         // The ^2 swap (x XOR 2) within each 4-byte group = rotate the 32-bit word
@@ -1257,7 +1428,7 @@ static inline bool hdmi_init() {
     // this used to free instruction slots 0..9 and 0..7 of a PIO we do not own
     // yet — silently, since pio_remove_program only asserts in debug builds.
     if (hdmi_progs_loaded) {
-        pio_remove_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI, offs_prg1);
+        pio_remove_program(PIO_VIDEO_ADDR, hdmi_conv_prog, offs_prg1);
 #if !HDMI_HSTX
         pio_remove_program(PIO_VIDEO, &program_PIO_HDMI, offs_prg0);
 #endif
@@ -1268,11 +1439,15 @@ static inline bool hdmi_init() {
     // firmware comes up with no video and no message (that was the m1 "нет видео"
     // bug — see PIO_VIDEO in hdmi.h). Say so first; the panic is still the right
     // outcome, there is nothing to fall back to.
-    if (!pio_can_add_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI)) {
-        printf("hdmi_init: PIO%d has no room for the %d-instruction address converter\n",
-               (int)PIO_NUM(PIO_VIDEO_ADDR), (int)pio_program_conv_addr_HDMI.length);
+    {
+        const struct video_mode_t m = graphics_get_video_mode(get_video_mode());
+        hdmi_conv_prog = (m.x3 && hdmi_x3_alloc()) ? &pio_program_conv_addr_HDMI_3px : &pio_program_conv_addr_HDMI;
     }
-    offs_prg1 = pio_add_program(PIO_VIDEO_ADDR, &pio_program_conv_addr_HDMI);
+    if (!pio_can_add_program(PIO_VIDEO_ADDR, hdmi_conv_prog)) {
+        printf("hdmi_init: PIO%d has no room for the %d-instruction address converter\n",
+               (int)PIO_NUM(PIO_VIDEO_ADDR), (int)hdmi_conv_prog->length);
+    }
+    offs_prg1 = pio_add_program(PIO_VIDEO_ADDR, hdmi_conv_prog);
 #if !HDMI_HSTX
     if (!pio_can_add_program(PIO_VIDEO, &program_PIO_HDMI)) {
         printf("hdmi_init: PIO%d has no room for the %d-instruction TMDS program\n",
@@ -1281,8 +1456,13 @@ static inline bool hdmi_init() {
     offs_prg0 = pio_add_program(PIO_VIDEO, &program_PIO_HDMI);
 #endif
     hdmi_progs_loaded = true;
-    pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color >> 12));
-    pio_set_y(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color_b >> 12));
+    if (hdmi_conv_prog == &pio_program_conv_addr_HDMI_3px) {
+        pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)hdmi_x3_page >> 13));
+        pio_set_y(PIO_VIDEO_ADDR, SM_conv, 8u);
+    } else {
+        pio_set_x(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color >> 12));
+        pio_set_y(PIO_VIDEO_ADDR, SM_conv, ((uint32_t)conv_color_b >> 12));
+    }
 #endif // !HDMI_EXPANDER
 
 #if HDMI_EXPANDER
@@ -1327,7 +1507,7 @@ static inline bool hdmi_init() {
     //настройка PIO SM для конвертации
 
     pio_sm_config c_c = pio_get_default_sm_config();
-    sm_config_set_wrap(&c_c, offs_prg1, offs_prg1 + (pio_program_conv_addr_HDMI.length - 1));
+    sm_config_set_wrap(&c_c, offs_prg1, offs_prg1 + (hdmi_conv_prog->length - 1));
     sm_config_set_in_shift(&c_c, true, false, 32);
 
     pio_sm_init(PIO_VIDEO_ADDR, SM_conv, offs_prg1, &c_c);
@@ -1339,6 +1519,42 @@ static inline bool hdmi_init() {
     // guaranteed not to be running yet — this runs once, before it is installed
     // below.
     hdmi_isr_mode = hdmi_mode;
+    if (hdmi_mode.x4_offset || hdmi_mode.x3) {
+        // 1024x768: every fb row on 4 (x4) or 3 (x3) lines. Scanlines would take
+        // every other line and the map is ignored with them on, so they are off here.
+        // x3 shows 240 rows as 720 lines centred: 24 lines above and below map to
+        // row 240, past the framebuffer, which the render paints as background.
+        hdmi_scanlines = false;
+        const uint8_t kind = hdmi_mode.x3 ? 3 : 4;
+        if (!hdmi_vmap_x4) {
+            extern void* tryMalloc(size_t n);
+            hdmi_vmap_x4 = (uint16_t *)tryMalloc((size_t)hdmi_mode.v_active * sizeof(uint16_t));
+            hdmi_vmap_x4_kind = 0;
+        }
+        if (hdmi_vmap_x4 && hdmi_vmap_x4_kind != kind) {
+            const int top = (hdmi_mode.v_active - 720) / 2;
+            for (int q = 0; q < hdmi_mode.v_active; q++) {
+                if (kind == 4) hdmi_vmap_x4[q] = (uint16_t)(q >> 2);
+                else hdmi_vmap_x4[q] = (q < top || q >= top + 720) ? 240 : (uint16_t)((q - top) / 3);
+            }
+            hdmi_vmap_x4_kind = kind;
+        }
+        if (!hdmi_vmap_x4) printf("hdmi: no heap for the 1024x768 line map - picture will be wrong\n");
+    }
+#if !HDMI_EXPANDER
+    hdmi_x3_on = false;
+    if (hdmi_conv_prog == &pio_program_conv_addr_HDMI_3px) {
+        // Page A is complete here (palette, sync, and the audio slots set up by
+        // hdmi_audio_hw_init on core0): derive every x3 slot from it, then the
+        // position-dependent ones. From now on palette writes mirror themselves.
+        for (uint sl = 0; sl < 256; sl++) hdmi_x3_mirror(sl);
+        hdmi_x3_build_static();
+        hdmi_x3_pack_island(0, false);
+        hdmi_x3_pack_island(1, false);
+        hdmi_x3_on = true;
+        printf("hdmi: 1024x768 x3, 3 px per byte, palette page %p\n", (void *)hdmi_x3_page);
+    }
+#endif
 
 #if HDMI_HSTX
     // The serializer replaces the whole TMDS state machine — no program, no SM, no
@@ -1467,7 +1683,9 @@ static inline bool hdmi_init() {
     );
 #else
     //настройки DMA
-    int line_u32 = hdmi_mode.line_bytes / 4; // uint32_t per line buffer
+    // x3: three output pixels per byte, the DMA line is 384 bytes.
+    const int line_dma = hdmi_x3_on ? HDMI_X3_LINE : hdmi_mode.line_bytes;
+    int line_u32 = line_dma / 4; // uint32_t per line buffer
     dma_lines[0] = &conv_color[1024];
     dma_lines[1] = &conv_color[1024 + line_u32];
 
@@ -1495,7 +1713,7 @@ static inline bool hdmi_init() {
         &cfg_dma,
         &PIO_VIDEO_ADDR->txf[SM_conv], // Write address
         &dma_lines[0][0], // read address
-        hdmi_mode.line_bytes, //
+        line_dma, //
         false // Don't start yet
     );
 
@@ -1569,7 +1787,7 @@ static inline bool hdmi_init() {
         &PIO_VIDEO->txf[SM_video], // Write address
 #endif
         &conv_color[0], // read address
-        HDMI_DMA_WORDS_PER_INDEX, //
+        hdmi_x3_on ? HDMI_DMA_WORDS_PER_INDEX * 3 / 2 : HDMI_DMA_WORDS_PER_INDEX, // x3: three pixels per index
         false // Don't start yet
     );
 
@@ -2102,6 +2320,9 @@ void graphics_set_palette(uint8_t i, uint32_t color888) {
     // palette entries at runtime from the emulation path (applyUlaPlusPalette) —
     // a walk-only design would silently un-grille every entry the guest touches.
     hdmi_emit_slot(i, color888 & 0x00ffffff);
+#if !HDMI_EXPANDER
+    if (hdmi_x3_on) hdmi_x3_mirror(i);
+#endif
 };
 
 static void hdmi_rebuild_page_b(void) {
@@ -2412,7 +2633,7 @@ void graphics_set_bgcolor_hdmi(uint32_t color888) //определяем зар�
 
 void hdmi_set_scanlines(uint8_t level) {
     if (level > 4) level = 4;
-    hdmi_scanlines = (level != 0);
+    hdmi_scanlines = (level != 0) && !hdmi_isr_mode.x4_offset && !hdmi_isr_mode.x3;
     // Off keeps the previous brightness so toggling back is cheap; a real level
     // change re-tints the scanline palette index live (no mode switch needed).
     if (level != 0 && level != hdmi_scanline_level) {
@@ -2640,9 +2861,13 @@ static void hdmi_build_avi_if_blob(const struct video_mode_t *mode, uint32_t pix
     // The 50/75/90 Hz modes and our non-CEA 720-wide timings must announce
     // VIC 0. In particular, 37.8 MHz at 640x480 is ~90 Hz, not VIC 1.
     // v_total is the inclusive last line index in the HDMI ISR (524 -> 525).
-    const uint8_t vic = (mode->screen_width == 320 && mode->v_active == 480
+    uint8_t vic = (mode->screen_width == 320 && mode->v_active == 480
                      && mode->line_bytes == 400 && mode->v_total == 524
                      && pix_hz == 25200000u) ? 1 : 0;
+    // ...and CEA 576p50 (the 128K 720x576 mode at sys_clk 540): 864 x 625 at 27 MHz.
+    if (mode->screen_width == 360 && mode->v_active == 576
+        && mode->line_bytes == 432 && mode->v_total == 624
+        && pix_hz == 27000000u) vic = 17;
     sp[0][1] = 0x00;  // Y=0 RGB, no scan/active-format info
     sp[0][2] = 0x08;  // R=8 same-as-picture
     sp[0][3] = 0x00;  // Q=0 default range
@@ -2976,6 +3201,7 @@ static void __not_in_flash_func(hdmi_di_load)(uint set, uint logical_line) {
         nf_copy_slots(dst, src, 16);
         nf_copy_slots(dstb, src, 16);
     }
+    if (hdmi_x3_on) hdmi_x3_pack_island(set, vsp);
 }
 #endif // !HDMI_EXPANDER
 
@@ -3190,7 +3416,11 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
 #if HDMI_HSTX
     uint32_t pix_hz = hdmi_hstx_pixel_hz((unsigned)mode.tmds_mhz);
 #else
-    uint32_t pix_hz = (uint32_t)((float)clock_get_hz(clk_sys) / (mode.pio_clk_div * 10.0f));
+    // The pixel clock is the mode's TMDS rate / 10 whatever clk_sys is. Deriving it
+    // from clk_sys / pio_clk_div gave the BOOT clock's answer: this runs in setup(),
+    // before the switch to Config::cpu_mhz, and the 27/54 MHz modes (sys_clk 540)
+    // then declared 25.2 MHz in ACR. Identical for every other mode.
+    uint32_t pix_hz = (uint32_t)(mode.tmds_mhz ? mode.tmds_mhz : TMDS_STD_MHZ) * 100000u;
 #endif
     uint32_t acr_n, acr_cts;
     hdmi_pick_acr(pix_hz, &acr_n, &acr_cts);
@@ -3360,6 +3590,30 @@ void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup,
     *qmin = (hdmi_au_qmin == 0xFFFFFFFFu) ? 0 : hdmi_au_qmin; *qmax = hdmi_au_qmax;
     hdmi_au_und_ct = 0; hdmi_au_skip_ct = 0; hdmi_au_dup_ct = 0;
     hdmi_au_qmin = 0xFFFFFFFFu; hdmi_au_qmax = 0;
+}
+
+// The TMDS state machine never waits on its FIFO while the DMA chain keeps up: the
+// stream is continuous through blanking. A TXSTALL means a pixel came late, i.e.
+// the line ran long and a strict sink (a capture card) loses lock. Logged once a
+// second, only when it happened (1024x768 x3 runs the chain at one index per pixel).
+// Counted per frame in the line ISR, printed here at most once a second. Called from
+// ESPectrum::netBackgroundTick(), i.e. from loop() AND from every modal wait — the
+// "keep this video mode?" box included, which is where a new mode is first seen.
+void hdmi_tmds_stall_log(void) {
+#if !HDMI_HSTX
+    static uint64_t next = 0;
+    static uint32_t last_st = 0, last_fr = 0, lines = 0;
+    const uint64_t now = time_us_64();
+    if (now < next) return;
+    next = now + 1000000ull;
+    const uint32_t st = hdmi_tmds_stall_frames, fr = hdmi_frame_ct;
+    if (st != last_st && lines < 60) {
+        lines++;
+        printf("hdmi: TMDS FIFO underrun in %u of %u frames (last second)\n",
+               (unsigned)(st - last_st), (unsigned)(fr - last_fr));
+    }
+    last_st = st; last_fr = fr;
+#endif
 }
 
 void hdmi_audio_health_dump(void) {
