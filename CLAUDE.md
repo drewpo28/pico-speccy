@@ -13534,6 +13534,23 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
     frame boundary, so `spinInt` is now creator "SPIN" OR "Fuse"; the pulse stays for
     Spectaculator (dnawarrior). The zip's second file (SpecEmu) is an SZX snapshot —
     unsupported, as before.
+- **Spectaculator +2A: the NMOS LD A,R bug and a 16 T window (2026-10-09; hw-confirmed the
+  same day on `debug/DVp2-rzx-ldair-1.0.9.elf`, owner: "работает" — not itemised; re-checking
+  dnawarrior / Dizzy against the 16 T window is still owed).** `runningman.rzx` stopped at frame 114 and `toyota.rzx`
+  at 7685 (board logs matched `tools/rzx_replay_sim.c` frame for frame). (1) Frame 114: the
+  boundary falls right after the +3 ROM2's `LD A,R` (#0219, the 7FFD pager), the recorder
+  took the INT there and the NMOS Z80 clears P/V, so `JP PO` skipped the EI and interrupts
+  stayed off for frames. Our core only clears P/V when the line is up DURING LD A,R; in a
+  replay it is raised after it. LD A,I/R now store `Z80::ldairAt = regR + 1`, and `loopRzx`
+  calls `Z80::rzxLdAirIntBug()` (flash) before `checkINT`. The simulator has the bug on by
+  default now (`-DZ80_WITH_ZILOG_NMOS_LD_A_IR_BUG`, `RZX_CMOS=1` to disable). (2) Frames
+  2485 / 7685: an EI just after the boundary took an INT the file does not have at windows
+  of 28+ T. Clean ranges measured from the boundary: runningman 4..24, toyota 8..24,
+  abadia 8..32, dnawarrior 1..35. So Spectaculator's window is 16 T from the boundary
+  (`SPECTACULATOR_INT_LEN`), no longer clipped to the raster's window end. The real figure is
+  32 T minus the crossing instruction's overshoot, which the file does not store. Frame
+  length is NOT the issue (the +2A/+3 311 x 228 = 70908 T matches the Next wiki's reference
+  table); RZX frames are fetch counts.
 - **Snapshots > RZX loop** (`Config::rzx_loop`, NVS `rzx_loop`, `SET_RZX_LOOP` AC_PURE,
   2026-10-01, NOT hw-tested, `debug/DVp2-rzx-loop-1.0.8.elf`): at EV_END `nextFrame`
   raises `s_snapPending + s_rewind` instead of stopping, and `loadPendingSnapshot`

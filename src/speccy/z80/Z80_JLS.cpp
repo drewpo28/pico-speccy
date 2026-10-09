@@ -80,6 +80,7 @@ RegisterPair Z80::regSP;
 uint8_t Z80::regI;
 uint32_t Z80::regR;
 uint8_t Z80::regRbase;
+uint32_t Z80::ldairAt;
 bool Z80::regRbit7;
 bool Z80::ffIFF1 = false;
 bool Z80::ffIFF2 = false;
@@ -112,6 +113,11 @@ uint8_t Z80::sz53pn_subTable[256];
 // ahead of the object-wide RAM rule (rp2350-memmap.ld). Z80::interrupt() is NOT
 // cold: TS-Conf's LINE INT takes it up to 320 times a frame. (2026-09-22, -824 B)
 #define Z80_COLD __attribute__((section(".z80cold"), noinline))
+// The INT is accepted at this boundary only with IFF1 set and no EI pending.
+Z80_COLD void Z80::rzxLdAirIntBug() {
+    if (ldairAt == regR + 1 && ffIFF1 && !pendingEI) sz5h3pnFlags &= ~PARITY_MASK;
+}
+
 Z80_COLD void Z80::create() {
 
     bool evenBits;
@@ -3324,6 +3330,7 @@ void Z80::decodeED(void) {
                 sz5h3pnFlags |= PARITY_MASK;
             }
             flagQ = true;
+            ldairAt = regR + 1;
             break;
         }
         case 0x5A:
@@ -3354,6 +3361,7 @@ void Z80::decodeED(void) {
                 sz5h3pnFlags |= PARITY_MASK;
             }
             flagQ = true;
+            ldairAt = regR + 1;
             break;
         }
         case 0x62:
