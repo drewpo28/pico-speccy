@@ -98,7 +98,11 @@ struct video_mode_t {
   // byte twice), the whole 320x240 framebuffer is shown as 960x720 centred, each fb
   // row on 3 lines. The h_* / line_bytes fields stay in the usual 2-px units (the
   // DMA moves 2 * line_bytes bytes); screen_width is the 512 of the 1024-px area.
-  int x3;
+  int x3;            // 0, or the x3 line layout (hdmi.c hdmi_x3_layouts[x3 - 1])
+  // Non-zero = the x2 "window" scanout (800x600 at 504): the fb row (screen_width
+  // minus 2 * x2_pad bytes wide) is put x2_pad bytes into the active line with
+  // background either side, and the rows are centred vertically by a line map.
+  int x2_pad;
   // VGA-only overrides for fields above. If 0/zero, VGA uses the main fields.
   // HDMI never reads these — its timing is unaffected.
   int vga_v_total;
@@ -129,3 +133,9 @@ struct video_mode_t {
 #define VMODE_540_OFFSET 17
 #define VMODE_XGA        26
 #define VMODE_XGA3       27
+// sys_clk 504: 1024x768 x4 / x3 per machine (Pentagon, 48K, 128K) at ~50 Hz, and
+// 800x600 x2; sys_clk 378: 800x600 x3. Three per-machine entries each.
+#define VMODE_XGA4_504   28
+#define VMODE_XGA3_504   31
+#define VMODE_SVGA3_378  34
+#define VMODE_SVGA2_504  37

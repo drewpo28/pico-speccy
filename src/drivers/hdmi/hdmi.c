@@ -41,7 +41,7 @@ static const uint16_t * volatile hdmi_vmap_cur = NULL;
 // The 1024x768 x4 mode's own map (display line -> fb row = line / 4), built in
 // hdmi_init() when that mode is live. A requested map (hdmi_set_vmap) wins.
 static uint16_t *hdmi_vmap_x4 = NULL;
-static uint8_t   hdmi_vmap_x4_kind = 0;   // 4 / 3: which map hdmi_vmap_x4 holds
+static uint32_t  hdmi_vmap_x4_kind = 0;   // which map hdmi_vmap_x4 holds (scale | rows | top)
 // Scanline brightness level: 0=off, 1=darkest .. 4=lightest. Level 2 is the
 // legacy 0x202020 look and the default. Drives the gray of IDX_SCANLINE.
 static uint8_t hdmi_scanline_level = 2;
@@ -91,7 +91,7 @@ static int      hdmi_scanline_line_n = 0;
 #else
 // One whole line: 832 px = 416 bytes in the 720-wide modes, 864 px = 432 in their
 // 540 MHz twins, 1152 px = 576 in the 1024x768 x4 mode (video_mode_table.h).
-#define HDMI_LINE_BYTES_MAX 576
+#define HDMI_LINE_BYTES_MAX 640   // 1024x768 x4 at 504: a 1280-px line
 static uint8_t hdmi_scanline_buf[HDMI_LINE_BYTES_MAX];
 // (The x3 mode runs 3 px per byte: its DMA line is 384 bytes, see HDMI_X3_LINE.)
 // The two PIO-path line buffers sit behind the 1024-word palette in conv_color.
@@ -838,12 +838,28 @@ static uint __not_in_flash_func(hdmi_vmap_step)(const uint16_t *vm, uint line) {
 // (16 B), 1024 active px = 341 B + the first pixel of the "edge" byte, then 2 + 12
 // px of front porch. The 960x720 picture sits 30 px from the left edge of the 1024
 // (10 B of background before it, 11 after). Palette page: 8 KB, slot = 4 words.
-#define HDMI_X3_LINE   384
-#define HDMI_X3_HS     22
-#define HDMI_X3_BP     16
-#define HDMI_X3_ACT    341
-#define HDMI_X3_EDGE   (HDMI_X3_HS + HDMI_X3_BP + HDMI_X3_ACT)   // 379: bg px + 2 ctrl
-#define HDMI_X3_LEFT   10
+// Line layouts in 3-px bytes. `rem` = output pixels of the active area that sit in
+// the "edge" byte after the act bytes (the active width is not a multiple of 3);
+// the rest of that byte is front-porch control. The content (cw fb bytes from fb
+// x = fbx) starts `left` bytes into the active area; hs + bp + left must be a
+// multiple of 4 (word stores), the line length even (byte parity picks the slot
+// half), and the island (15 bytes) fits in hs.
+typedef struct { uint16_t line, hs, bp, act, rem, left, cw, fbx; } hdmi_x3_layout_t;
+static const hdmi_x3_layout_t hdmi_x3_layouts[3] = {
+    // 1024x768 @540, 1152 px: hs 66 / bp 48 / 1024 (341 B + 1) / fp 14; 960 = 320 fb px from x 0
+    { 384, 22, 16, 341, 1, 10, 320, 0 },
+    // 1024x768 @504, 1278 px: hs 96 / bp 138 / 1024 / fp 20
+    { 426, 32, 46, 341, 1, 10, 320, 0 },
+    // 800x600 @378, 1008 px: hs 72 / bp 93 / 800 (266 B + 2) / fp 43; 792 = 264 fb px from x 28
+    { 336, 24, 31, 266, 2,  1, 264, 28 },
+};
+static hdmi_x3_layout_t hdmi_x3_L;   // the live one, in RAM (read by the line ISR)
+#define HDMI_X3_LINE   (hdmi_x3_L.line)
+#define HDMI_X3_HS     (hdmi_x3_L.hs)
+#define HDMI_X3_BP     (hdmi_x3_L.bp)
+#define HDMI_X3_ACT    (hdmi_x3_L.act)
+#define HDMI_X3_EDGE   (HDMI_X3_HS + HDMI_X3_BP + HDMI_X3_ACT)
+#define HDMI_X3_LEFT   (hdmi_x3_L.left)
 #define IDX_X3_EDGE    (245)   // 245..254 are never colour slots (hdmi_palette_slot_writable)
 #define IDX_X3_VPRE    (246)   // 246..249: control + video preamble + guard, 4 bytes
 static hdmi_word_t *hdmi_x3_page = NULL;
@@ -900,7 +916,11 @@ static void hdmi_x3_build_static(void) {
     const hdmi_word_t q[12] = { c, c, p,  p, p, p,  p, p, p,  p, g0, g1 };
     const uint pos = HDMI_X3_HS + HDMI_X3_BP - 4;
     for (uint k = 0; k < 4; k++) hdmi_x3_put(IDX_X3_VPRE + k, pos + k, q[3 * k], q[3 * k + 1], q[3 * k + 2]);
-    hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, 1), c, c);
+    // Background chars alternate by character parity like every colour byte does
+    // (char 3 * pos has the parity of pos).
+    const uint e = HDMI_X3_EDGE & 1;
+    if (hdmi_x3_L.rem == 2) hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, e), hdmi_pa(255, e ^ 1), c);
+    else                    hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, e), c, c);
 }
 // One line. `row` = the 320-byte fb row (x^2 order) or NULL for background.
 static void __not_in_flash_func(hdmi_x3_line)(uint8_t *buf, bool active, const uint8_t *row,
@@ -923,8 +943,9 @@ static void __not_in_flash_func(hdmi_x3_line)(uint8_t *buf, bool active, const u
     nf_memset(a, 255, HDMI_X3_ACT);
     if (row) {
         uint32_t *o = (uint32_t *)(a + HDMI_X3_LEFT);
-        const uint32_t *in = (const uint32_t *)row;
-        for (int k = 0; k < 80; k++) { const uint32_t v = in[k]; o[k] = (v >> 16) | (v << 16); }
+        const uint32_t *in = (const uint32_t *)(row + hdmi_x3_L.fbx);
+        const int words = hdmi_x3_L.cw >> 2;
+        for (int k = 0; k < words; k++) { const uint32_t v = in[k]; o[k] = (v >> 16) | (v << 16); }
     }
     buf[HDMI_X3_EDGE] = IDX_X3_EDGE;
 }
@@ -972,7 +993,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         {
             const uint16_t *m = hdmi_vmap_req;
             hdmi_vmap_cur = (m && hdmi_vmap_req_n == modep->v_active && !hdmi_scanlines) ? m
-                          : ((modep->x4_offset || modep->x3) ? hdmi_vmap_x4 : NULL);
+                          : ((modep->x4_offset || modep->x3 || modep->x2_pad) ? hdmi_vmap_x4 : NULL);
         }
     } else {
         ++line;
@@ -1166,6 +1187,14 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
 #endif
         int y = (vmode ? (int)vm[line - 1] : (int)(line >> 1)) + modep->v_offset;
         //область изображения
+#if !HDMI_EXPANDER
+        // The line-mapped modes put rows past the framebuffer (0x7FFF) above and
+        // below a centred picture: background, and never an index into the fb.
+        if ((modep->x4_offset || modep->x2_pad) && (y < 0 || y >= graphics_buffer_height)) {
+            nf_memset(output_buffer, 255, scr_w);
+            goto ex;
+        }
+#endif
         uint8_t* input_buffer = getLineBuffer(y);
         if (!input_buffer) return;
 #if HDMI_EXPANDER
@@ -1205,6 +1234,17 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         // converter turns one byte into two output pixels, so twice = four). The fb
         // is stored in the ISR's x^2 order: one 32-bit word = bytes 2,3,0,1, which
         // the half-swap below undoes, two output words per source word.
+        // 800x600 x2: the whole fb row (scr_w - 2 * x2_pad bytes) centred, background
+        // either side.
+        if (modep->x2_pad) {
+            const int pad = modep->x2_pad, w = scr_w - 2 * pad;
+            nf_memset(output_buffer, 255, pad);
+            nf_memset(output_buffer + pad + w, 255, pad);
+            const uint32_t* __restrict in32  = (const uint32_t*)input_buffer;
+            uint32_t* __restrict       out32 = (uint32_t*)(output_buffer + pad);
+            for (int i = 0; i < (w >> 2); i++) { const uint32_t v = in32[i]; out32[i] = (v >> 16) | (v << 16); }
+            goto ex;
+        }
         if (modep->x4_offset) {
             const uint32_t* __restrict in32  = (const uint32_t*)(input_buffer + modep->x4_offset);
             uint32_t* __restrict       out32 = (uint32_t*)output_buffer;
@@ -1519,31 +1559,37 @@ static inline bool hdmi_init() {
     // guaranteed not to be running yet — this runs once, before it is installed
     // below.
     hdmi_isr_mode = hdmi_mode;
-    if (hdmi_mode.x4_offset || hdmi_mode.x3) {
-        // 1024x768: every fb row on 4 (x4) or 3 (x3) lines. Scanlines would take
-        // every other line and the map is ignored with them on, so they are off here.
-        // x3 shows 240 rows as 720 lines centred: 24 lines above and below map to
-        // row 240, past the framebuffer, which the render paints as background.
+    if (hdmi_mode.x4_offset || hdmi_mode.x3 || hdmi_mode.x2_pad) {
+        // 1024x768 / 800x600: every fb row on `scale` lines through a line map.
+        // Scanlines would take every other line and the map is ignored with them
+        // on, so they are off here. Rows that do not fill the height are centred:
+        // the lines above and below map to a row past the framebuffer, which the
+        // render paints as background.
         hdmi_scanlines = false;
-        const uint8_t kind = hdmi_mode.x3 ? 3 : 4;
+        const int scale = hdmi_mode.x4_offset ? 4 : hdmi_mode.x3 ? 3 : 2;
+        const int fbrows = hdmi_mode.x2_pad ? 288 : 240;
+        int rows = hdmi_mode.v_active / scale;
+        if (rows > fbrows - hdmi_mode.v_offset) rows = fbrows - hdmi_mode.v_offset;
+        const int top = (hdmi_mode.v_active - rows * scale) / 2;
+        const uint32_t kind = (uint32_t)scale | ((uint32_t)rows << 4) | ((uint32_t)top << 16);
         if (!hdmi_vmap_x4) {
             extern void* tryMalloc(size_t n);
-            hdmi_vmap_x4 = (uint16_t *)tryMalloc((size_t)hdmi_mode.v_active * sizeof(uint16_t));
+            hdmi_vmap_x4 = (uint16_t *)tryMalloc(768 * sizeof(uint16_t));   // the tallest map
             hdmi_vmap_x4_kind = 0;
         }
         if (hdmi_vmap_x4 && hdmi_vmap_x4_kind != kind) {
-            const int top = (hdmi_mode.v_active - 720) / 2;
-            for (int q = 0; q < hdmi_mode.v_active; q++) {
-                if (kind == 4) hdmi_vmap_x4[q] = (uint16_t)(q >> 2);
-                else hdmi_vmap_x4[q] = (q < top || q >= top + 720) ? 240 : (uint16_t)((q - top) / 3);
-            }
+            for (int q = 0; q < hdmi_mode.v_active; q++)
+                hdmi_vmap_x4[q] = (q < top || q >= top + rows * scale) ? (uint16_t)0x7FFF
+                                                                        : (uint16_t)((q - top) / scale);
             hdmi_vmap_x4_kind = kind;
         }
-        if (!hdmi_vmap_x4) printf("hdmi: no heap for the 1024x768 line map - picture will be wrong\n");
+        if (!hdmi_vmap_x4) printf("hdmi: no heap for the line map - picture will be wrong\n");
     }
 #if !HDMI_EXPANDER
     hdmi_x3_on = false;
     if (hdmi_conv_prog == &pio_program_conv_addr_HDMI_3px) {
+        const int li = (hdmi_mode.x3 >= 1 && hdmi_mode.x3 <= 3) ? hdmi_mode.x3 - 1 : 0;
+        hdmi_x3_L = hdmi_x3_layouts[li];
         // Page A is complete here (palette, sync, and the audio slots set up by
         // hdmi_audio_hw_init on core0): derive every x3 slot from it, then the
         // position-dependent ones. From now on palette writes mirror themselves.
@@ -1685,7 +1731,7 @@ static inline bool hdmi_init() {
     //настройки DMA
     // x3: three output pixels per byte, the DMA line is 384 bytes.
     const int line_dma = hdmi_x3_on ? HDMI_X3_LINE : hdmi_mode.line_bytes;
-    int line_u32 = line_dma / 4; // uint32_t per line buffer
+    int line_u32 = (line_dma + 3) / 4; // uint32_t per line buffer (426 is not a multiple of 4)
     dma_lines[0] = &conv_color[1024];
     dma_lines[1] = &conv_color[1024 + line_u32];
 
@@ -2633,7 +2679,7 @@ void graphics_set_bgcolor_hdmi(uint32_t color888) //определяем зар�
 
 void hdmi_set_scanlines(uint8_t level) {
     if (level > 4) level = 4;
-    hdmi_scanlines = (level != 0) && !hdmi_isr_mode.x4_offset && !hdmi_isr_mode.x3;
+    hdmi_scanlines = (level != 0) && !hdmi_isr_mode.x4_offset && !hdmi_isr_mode.x3 && !hdmi_isr_mode.x2_pad;
     // Off keeps the previous brightness so toggling back is cheap; a real level
     // change re-tints the scanline palette index live (no mode switch needed).
     if (level != 0 && level != hdmi_scanline_level) {

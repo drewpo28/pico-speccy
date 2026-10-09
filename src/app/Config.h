@@ -596,7 +596,12 @@ public:
         // The same 1024x768@59 at x3: the whole 320x240 framebuffer (border too) as
         // 960x720 centred. The HDMI converter runs one byte per output pixel.
         VM_1024x768_59X3 = 9,
-        VM_LAST        = VM_1024x768_59X3,
+        // 800x600 @50 per machine, HDMI only: x3 at CPU 378 (the centre 264x200 of
+        // the 320x240 framebuffer, i.e. the paper and a thin border) and x2 at CPU
+        // 504 (the 360x288 full-border framebuffer, centred).
+        VM_800x600_X3  = 10,
+        VM_800x600_X2  = 11,
+        VM_LAST        = VM_800x600_X2,
     };
 
     // sys_clk the "fast" modes need; anything else cannot give the PIO a clean
@@ -609,6 +614,18 @@ public:
     static const uint16_t CPU_540_MHZ = 540;
     static constexpr bool isXgaVideoMode(uint8_t vm) { return vm == VM_1024x768_59 || vm == VM_1024x768_59X3; }
     static constexpr bool isXga3VideoMode(uint8_t vm) { return vm == VM_1024x768_59X3; }
+    // The HDMI-only "big" modes and the CPU clocks that run them (a clean PIO divider):
+    // 1024x768 at 540 (59 Hz) or 504 (50 Hz per machine), 800x600 x3 at 378, x2 at 504.
+    static constexpr bool isBigVideoMode(uint8_t vm) { return vm >= VM_1024x768_59 && vm <= VM_800x600_X2; }
+    static constexpr bool bigModeClockOk(uint8_t vm, uint16_t mhz) {
+        return isXgaVideoMode(vm) ? (mhz == 540 || mhz == 504)
+             : vm == VM_800x600_X3 ? mhz == 378
+             : vm == VM_800x600_X2 ? mhz == 504 : true;
+    }
+    // The clock the menu bumps to when a big mode is picked at a clock that cannot run it.
+    static constexpr uint16_t bigModePrefClock(uint8_t vm) { return vm == VM_800x600_X3 ? 378 : 504; }
+    // The display refresh is not the machine's (59 Hz): V-Sync pacing must be off.
+    static constexpr bool forcesVsyncOff(uint8_t vm, uint16_t mhz) { return isXgaVideoMode(vm) && mhz == 540; }
     // The 25.2 MHz twin of a fast mode (identity for the standard ones): what a
     // fast pick degrades to when the CPU clock is not 378 MHz.
     static uint8_t baseVideoMode(uint8_t vm) {

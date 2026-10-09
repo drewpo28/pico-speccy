@@ -71,6 +71,21 @@ int graphics_540_mode(int mode)
 
 int graphics_xga_mode(int x3) { return x3 ? VMODE_XGA3 : VMODE_XGA; }
 
+// The HDMI-only "big" modes (Config::VM_1024x768_59 = 8, ..._59X3 = 9,
+// VM_800x600_X3 = 10, VM_800x600_X2 = 11): the table index for this sys_clk and
+// machine class (0 Pentagon, 1 48K, 2 128K), or -1 when the clock cannot run it.
+int graphics_big_mode(int vm, unsigned mhz, int klass)
+{
+    if (klass < 0 || klass > 2) klass = 0;
+    switch (vm) {
+        case 8:  return mhz == 540 ? VMODE_XGA  : mhz == 504 ? VMODE_XGA4_504 + klass : -1;
+        case 9:  return mhz == 540 ? VMODE_XGA3 : mhz == 504 ? VMODE_XGA3_504 + klass : -1;
+        case 10: return mhz == 378 ? VMODE_SVGA3_378 + klass : -1;
+        case 11: return mhz == 504 ? VMODE_SVGA2_504 + klass : -1;
+        default: return -1;
+    }
+}
+
 float graphics_clk_div_at(int mode, unsigned sys_mhz, int vga)
 {
     const int n = (int)(sizeof(video_mode)/sizeof(video_mode[0]));

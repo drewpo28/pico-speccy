@@ -1292,24 +1292,39 @@ static void resolveConstraints(CommitReport& rep) {
             && staged(SET_VREG) < VREG_VOLTAGE_1_80
             && g_seq[SET_VREG] <= g_seq[SET_CPU_MHZ])
             changed |= force(SET_VREG, VREG_VOLTAGE_1_80, rep, "Core voltage 1.80 V for 540 MHz");
-        // 1024x768 x4 is HDMI-only and needs sys_clk 540 (54 MHz pixel, divider 1.0);
-        // its display runs at 59 Hz, so V-Sync is off as for the 90/75 Hz set.
-        if (Config::isXgaVideoMode((uint8_t)staged(SET_VIDEO_MODE))) {
-#ifdef VGA_HDMI
-            if (SELECT_VGA)
-                changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep, "1024x768 is HDMI only");
-            else
+        // The big modes are PIO-HDMI only and need their own CPU clock (a clean PIO
+        // divider): 1024x768 at 540 (59 Hz) or 504 (50 Hz), 800x600 x3 at 378, x2 at
+        // 504. At 540 the display runs at 59 Hz, so V-Sync is off as for the 90/75 set.
+        {
+            const uint8_t vm = (uint8_t)staged(SET_VIDEO_MODE);
+            if (Config::isBigVideoMode(vm)) {
+#if defined(HDMI_HSTX) && HDMI_HSTX
+                bool noHdmi = true;
+#else
+                bool noHdmi = false;
 #endif
-            if (staged(SET_CPU_MHZ) != Config::CPU_540_MHZ) {
-                if (g_seq[SET_VIDEO_MODE] >= g_seq[SET_CPU_MHZ])
-                    changed |= force(SET_CPU_MHZ, Config::CPU_540_MHZ, rep,
-                                     "CPU clock set to 540 MHz: 1024x768 needs it");
-                else
-                    changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep,
-                                     "1024x768 needs CPU 540 MHz");
+#ifdef VGA_HDMI
+                noHdmi = noHdmi || SELECT_VGA;
+#endif
+                if (noHdmi)
+                    changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep, "This mode needs PIO HDMI");
+                else {
+                    if (!Config::bigModeClockOk(vm, (uint16_t)staged(SET_CPU_MHZ))) {
+                        static char nb[48];
+                        const unsigned pc = Config::bigModePrefClock(vm);
+                        if (g_seq[SET_VIDEO_MODE] >= g_seq[SET_CPU_MHZ]) {
+                            snprintf(nb, sizeof(nb), "CPU clock set to %u MHz for this mode", pc);
+                            changed |= force(SET_CPU_MHZ, pc, rep, nb);
+                        } else {
+                            snprintf(nb, sizeof(nb), "This mode needs CPU %u MHz", pc);
+                            changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep, nb);
+                        }
+                    }
+                    if (Config::forcesVsyncOff((uint8_t)staged(SET_VIDEO_MODE), (uint16_t)staged(SET_CPU_MHZ))
+                        && staged(SET_VSYNC))
+                        changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display runs at 59 Hz");
+                }
             }
-            if (staged(SET_VSYNC))
-                changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display runs at 59 Hz");
         }
 
         // MB-02+ and Profi both claim the upper MemESP pages; enabling MB-02+ on Profi
