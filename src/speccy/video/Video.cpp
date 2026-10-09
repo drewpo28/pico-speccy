@@ -98,6 +98,9 @@ extern "C" int  graphics_540_mode(int mode);
 extern "C" int  graphics_xga_mode(int x3);
 extern "C" int  graphics_big_mode(int vm, unsigned mhz, int klass);
 extern "C" void graphics_big_mode_fit(int mode, int klass);
+#ifdef VGA_HDMI
+extern "C" void hdmi_set_wide169(bool on);
+#endif
 extern "C" void graphics_set_hdmi_clock_drive(bool soft);
 extern "C" void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
@@ -4680,8 +4683,10 @@ size_t VIDEO::fbBytesForVM(uint8_t vm, size_t* prevBytes) {
     // Explicit, like VIDEO::isFullBorder*(): VM_* is append-only and the 90/75 Hz
     // set took 4..7, so a >= test would call 640x480@90 a 360x288 mode.
     if (vm == Config::VM_720x576_50 || vm == Config::VM_720x576_75)      Mode = 22;  // 360x288 full border
-    else if (vm == Config::VM_720x480_60 || vm == Config::VM_720x480_90) Mode = 23;  // 360x240 half border
+    else if (vm == Config::VM_720x480_60 || vm == Config::VM_720x480_90
+             || vm == Config::VM_1440x480_60)                            Mode = 23;  // 360x240 half border
     else if (vm == Config::VM_800x600_X2)                                Mode = 22;  // 360x288, x2 in 800x600
+    else if (vm == Config::VM_720x576_169 || vm == Config::VM_1440x576_X3) Mode = 22; // 360x288, 16:9 frame
 #else
     (void)vm;
 #endif
@@ -5239,6 +5244,7 @@ void VIDEO::Reset() {
             case Config::VM_720x480_60:
                 video_mode = 7;
                 break;
+            case Config::VM_720x576_169:
             case Config::VM_720x576_50:
                 if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) video_mode = 6;
@@ -5274,6 +5280,9 @@ void VIDEO::Reset() {
     // reads a snapshot taken in hdmi_init(), and without this a Pentagon -> 128K
     // switch kept running the new machine at the old machine's 48.83 fps until a
     // full reboot (the VGA ISR reads the table live and never had the bug).
+#ifdef VGA_HDMI
+    hdmi_set_wide169(!SELECT_VGA && (vmSel == Config::VM_720x576_169 || Config::isHdmiOnlyVideoMode(vmSel)));
+#endif
     graphics_update_mode_timing();
 #endif
 

@@ -601,7 +601,24 @@ public:
         // 504 (the 360x288 full-border framebuffer, centred).
         VM_800x600_X3  = 10,
         VM_800x600_X2  = 11,
-        VM_LAST        = VM_800x600_X2,
+        // 720x576 @50 with a 16:9 AVI InfoFrame (VIC 18 where the timing is CEA 576p,
+        // i.e. at 540): the 360x288 fb x1.5 in the centre 540 px, bars either side —
+        // a 4:3 picture the sink shows with the right shape on a 16:9 screen. HDMI on
+        // HSTX (TMDS expander) only for now; same timing as VM_720x576_50.
+        VM_720x576_169 = 12,
+        // 1280x720 (16:9): the 320x240 fb x3 = 960x720 in the centre, 160-px bars.
+        // HDMI on HSTX (TMDS expander) only, CPU 378 (75.6 MHz, 1980-px CEA 720p50
+        // line) or 540 (54 MHz, 1440-px line). One of the "big" modes.
+        VM_1280x720_X3 = 13,
+        // 1440x576 (16:9, CEA VIC 30 timing at 540): the 360x288 fb x3 across (1080
+        // px in the centre, 180-px bars) and x2 down. PIO and HSTX, CPU 504 / 540.
+        VM_1440x576_X3 = 14,
+        // The 60 Hz twins, for sinks that refuse 50 Hz (V-Sync off: the machine is still
+        // 50 Hz). 1280x720 @60 x3: HSTX @378 only. 1440x480 @60 x3 (CEA VIC 15 at 540):
+        // the 360x240 fb x3 across, x2 down, PIO and HSTX @504/540.
+        VM_1280x720_60 = 15,
+        VM_1440x480_60 = 16,
+        VM_LAST        = VM_1440x480_60,
     };
 
     // sys_clk the "fast" modes need; anything else cannot give the PIO a clean
@@ -616,7 +633,9 @@ public:
     static constexpr bool isXga3VideoMode(uint8_t vm) { return vm == VM_1024x768_59X3; }
     // The HDMI-only "big" modes and the CPU clocks that run them (a clean PIO divider):
     // 1024x768 at 540 (59 Hz) or 504 (50 Hz per machine), 800x600 x3 at 378, x2 at 504.
-    static constexpr bool isBigVideoMode(uint8_t vm) { return vm >= VM_1024x768_59 && vm <= VM_800x600_X2; }
+    static constexpr bool isBigVideoMode(uint8_t vm) { return (vm >= VM_1024x768_59 && vm <= VM_800x600_X2) || vm == VM_1280x720_X3 || vm == VM_1440x576_X3
+                                                                     || vm == VM_1280x720_60
+                                                                     || vm == VM_1440x480_60; }
 #if defined(HDMI_HSTX) && HDMI_HSTX
     // HSTX (TMDS expander only): clk_hstx = pixel x 5 = clk_sys / 1..4, and an ODD
     // divider has no 50% duty here. 1024x768: 50.4 MHz pixel (clk_hstx 252) at 252 /1
@@ -624,6 +643,9 @@ public:
     // and 504 /2, 37.8 MHz at 378 /2, 54 MHz at 540 /2. The RAW back-end offers none.
     static constexpr bool bigModeClockOk(uint8_t vm, uint16_t mhz) {
         return HDMI_HSTX != 2 && isBigVideoMode(vm) ? false
+             : vm == VM_1440x576_X3 ? (mhz == 252 || mhz == 504 || mhz == 540)
+             : vm == VM_1280x720_60 ? mhz == 378
+             : vm == VM_1440x480_60 ? (mhz == 252 || mhz == 504 || mhz == 540)
              : isBigVideoMode(vm) ? (mhz == 252 || mhz == 378 || mhz == 504 || mhz == 540)
              : true;
     }
@@ -632,20 +654,27 @@ public:
     // 378 (37.8 MHz, 1.0), 504 (33.6 MHz, 1.5) and 540 (36 MHz, 1.5).
     static constexpr bool bigModeClockOk(uint8_t vm, uint16_t mhz) {
         return isXgaVideoMode(vm) ? (mhz == 540 || mhz == 504)
+             : (vm == VM_1280x720_X3 || vm == VM_1440x576_X3) ? (mhz == 504 || mhz == 540)
+             : vm == VM_1280x720_60 ? false
+             : vm == VM_1440x480_60 ? (mhz == 504 || mhz == 540)
              : isBigVideoMode(vm) ? (mhz == 378 || mhz == 504 || mhz == 540)
              : true;
     }
 #endif
     // The clock the menu bumps to when a big mode is picked at a clock that cannot run it.
 #if defined(HDMI_HSTX) && HDMI_HSTX == 2
-    static constexpr uint16_t bigModePrefClock(uint8_t vm) { return (vm == VM_800x600_X3 || vm == VM_800x600_X2) ? 378 : 504; }
+    static constexpr uint16_t bigModePrefClock(uint8_t vm) { return (vm == VM_800x600_X3 || vm == VM_800x600_X2 || vm == VM_1280x720_X3 || vm == VM_1280x720_60) ? 378 : 504; }
 #else
     static constexpr uint16_t bigModePrefClock(uint8_t vm) { return vm == VM_800x600_X3 ? 378 : 504; }
 #endif
     // The display refresh is not the machine's (59 Hz): V-Sync pacing must be off.
-    static constexpr bool forcesVsyncOff(uint8_t vm, uint16_t mhz) { return isXgaVideoMode(vm) && mhz == 540; }
+    static constexpr bool forcesVsyncOff(uint8_t vm, uint16_t mhz) {
+        return (isXgaVideoMode(vm) && mhz == 540) || vm == VM_1280x720_60 || vm == VM_1440x480_60;
+    }
     // ...and on VGA (PIO) every big mode is a VESA 60 Hz timing (see video_mode_table.h).
-    static constexpr bool forcesVsyncOffVga(uint8_t vm) { return isBigVideoMode(vm); }
+    // HDMI-only: the 16:9 modes (13..17).
+    static constexpr bool isHdmiOnlyVideoMode(uint8_t vm) { return vm >= VM_1280x720_X3 && vm <= VM_1440x480_60; }
+    static constexpr bool forcesVsyncOffVga(uint8_t vm) { return isBigVideoMode(vm) && !isHdmiOnlyVideoMode(vm); }
     // The 25.2 MHz twin of a fast mode (identity for the standard ones): what a
     // fast pick degrades to when the CPU clock is not 378 MHz.
     static uint8_t baseVideoMode(uint8_t vm) {

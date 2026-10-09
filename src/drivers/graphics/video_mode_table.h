@@ -767,8 +767,78 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 378,
         .x2_pad = 20
     },
+    { // [32] 1280x720 x3 (16:9) @504, PIO x3 layout 6 (HSTX also @252); tight 64-px blanking — 50.4MHz/1344 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 767,
+        .v_active = 720,
+        .freq = 50,
+        .pixel_clk = 50400000,
+        .vsync_start = 725,
+        .vsync_end = 730,
+        .screen_width = 640,
+        .h_sync_bytes = 24,
+        .h_bp_bytes = 7,
+        .h_fp_bytes = 1,
+        .line_bytes = 672,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 504,
+        .x3 = 6
+    },
+    { // [33] 1280x720 x3 (16:9) @540, PIO x3 layout 7 (HSTX: 540 /2) — 54.0MHz/1440 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 767,
+        .v_active = 720,
+        .freq = 50,
+        .pixel_clk = 54000000,
+        .vsync_start = 725,
+        .vsync_end = 730,
+        .screen_width = 640,
+        .h_sync_bytes = 33,
+        .h_bp_bytes = 15,
+        .h_fp_bytes = 32,
+        .line_bytes = 720,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 540,
+        .x3 = 7
+    },
+    { // [34] 1440x576 x3 (16:9; the 360x288 fb x3 across, x2 down) @504, x3 layout 8 — 50.4MHz/1614 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 639,
+        .v_active = 576,
+        .freq = 50,
+        .pixel_clk = 50400000,
+        .vsync_start = 581,
+        .vsync_end = 586,
+        .screen_width = 720,
+        .h_sync_bytes = 36,
+        .h_bp_bytes = 30,
+        .h_fp_bytes = 21,
+        .line_bytes = 807,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 504,
+        .x3 = 8,
+        .x2_pad = 1   // = rows x2 from the 360x288 fb
+    },
+    { // [35] 1440x576 x3 (16:9) @540 = CEA 1440x576p50 (VIC 30 on the 128K line count), x3 layout 9 — 54.0MHz/1728 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 639,
+        .v_active = 576,
+        .freq = 50,
+        .pixel_clk = 54000000,
+        .vsync_start = 581,
+        .vsync_end = 586,
+        .screen_width = 720,
+        .h_sync_bytes = 63,
+        .h_bp_bytes = 69,
+        .h_fp_bytes = 12,
+        .line_bytes = 864,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 540,
+        .x3 = 9,
+        .x2_pad = 1
+    },
 #if defined(HDMI_HSTX) && HDMI_HSTX == 2
-    { // [32] 1024x768 x4 @378 (clk_hstx 378 /1) — 75.6MHz/1920 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [36] 1024x768 x4 @378 (clk_hstx 378 /1) — 75.6MHz/1920 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 805,
         .v_active = 768,
         .freq = 50,
@@ -785,7 +855,7 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 756,
         .x4_offset = 32
     },
-    { // [33] 1024x768 x3 @378 (clk_hstx 378 /1) — 75.6MHz/1920 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [37] 1024x768 x3 @378 (clk_hstx 378 /1) — 75.6MHz/1920 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 805,
         .v_active = 768,
         .freq = 50,
@@ -802,7 +872,7 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 756,
         .x3 = 1
     },
-    { // [34] 800x600 x3 @252 /1, @504 /2 (clk_hstx 252) — 50.4MHz/1600 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [38] 800x600 x3 @252 /1, @504 /2 (clk_hstx 252) — 50.4MHz/1600 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 644,
         .v_active = 600,
         .freq = 50,
@@ -819,7 +889,7 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 504,
         .x3 = 3
     },
-    { // [35] 800x600 x2 @252 /1, @504 /2 (clk_hstx 252) — 50.4MHz/1600 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [39] 800x600 x2 @252 /1, @504 /2 (clk_hstx 252) — 50.4MHz/1600 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 644,
         .v_active = 600,
         .freq = 50,
@@ -836,7 +906,7 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 504,
         .x2_pad = 20
     },
-    { // [36] 800x600 x3 @540 /2 (clk_hstx 270) — 54.0MHz/1728 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [40] 800x600 x3 @540 /2 (clk_hstx 270) — 54.0MHz/1728 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 639,
         .v_active = 600,
         .freq = 50,
@@ -853,7 +923,7 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 540,
         .x3 = 3
     },
-    { // [37] 800x600 x2 @540 /2 (clk_hstx 270) — 54.0MHz/1728 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [41] 800x600 x2 @540 /2 (clk_hstx 270) — 54.0MHz/1728 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 639,
         .v_active = 600,
         .freq = 50,
@@ -869,9 +939,43 @@ static struct video_mode_t video_mode[] = {
         .pio_clk_div = PIO_DIV_540,
         .tmds_mhz = 540,
         .x2_pad = 20
+    },
+    { // [42] 1280x720 x3 @378 (clk_hstx 378 /1), 1980-px line as CEA 720p50, blanking moved into the back porch — 75.6MHz/1980 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 781,
+        .v_active = 720,
+        .freq = 50,
+        .pixel_clk = 75600000,
+        .vsync_start = 725,
+        .vsync_end = 730,
+        .screen_width = 640,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 302,
+        .h_fp_bytes = 16,
+        .line_bytes = 990,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 756,
+        .x3 = 1
+    },
+    { // [43] 1280x720 @60 x3, HSTX @378 (clk_hstx 378 /1) — 75.6MHz/1680 px x 750 lines = 60.00 Hz (60 Hz: no per-machine refit, V-Sync off)
+        .v_total = 749,
+        .v_active = 720,
+        .freq = 60,
+        .pixel_clk = 75600000,
+        .vsync_start = 725,
+        .vsync_end = 730,
+        .screen_width = 640,
+        .h_sync_bytes = 32,
+        .h_bp_bytes = 152,
+        .h_fp_bytes = 16,
+        .line_bytes = 840,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 756,
+        .x3 = 1
     }
 #else
-    { // [32] 800x600 x3 @504 (PIO 1.5), x3 layout 4 — 33.6MHz/1056 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [36] 800x600 x3 @504 (PIO 1.5), x3 layout 4 — 33.6MHz/1056 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 651,
         .v_active = 600,
         .freq = 50,
@@ -888,7 +992,7 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 336,
         .x3 = 4
     },
-    { // [33] 800x600 x2 @504 (PIO 1.5) — 33.6MHz/1056 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [37] 800x600 x2 @504 (PIO 1.5) — 33.6MHz/1056 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 651,
         .v_active = 600,
         .freq = 50,
@@ -916,7 +1020,7 @@ static struct video_mode_t video_mode[] = {
         .vga_h_fp_bytes = 24,
         .vga_screen_width = 400
     },
-    { // [34] 800x600 x3 @540 (PIO 1.5), x3 layout 5 — 36.0MHz/1152 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [38] 800x600 x3 @540 (PIO 1.5), x3 layout 5 — 36.0MHz/1152 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 639,
         .v_active = 600,
         .freq = 50,
@@ -933,7 +1037,7 @@ static struct video_mode_t video_mode[] = {
         .tmds_mhz = 360,
         .x3 = 5
     },
-    { // [35] 800x600 x2 @540 (PIO 1.5) — 36.0MHz/1152 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+    { // [39] 800x600 x2 @540 (PIO 1.5) — 36.0MHz/1152 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 639,
         .v_active = 600,
         .freq = 50,
@@ -951,4 +1055,43 @@ static struct video_mode_t video_mode[] = {
         .x2_pad = 20
     }
 #endif
+    ,
+    // 1440x480 @60 x3 (16:9) — the 60 Hz twin of 1440x576: the 360x240 fb x3 across, x2
+    // down. Shared by both back-ends: [44]/[45] on HSTX, [40]/[41] on PIO (VMODE_SD60_*).
+    { // 1440x480 @60 x3 @504, x3 layout 11 — 50.4MHz/1602 px x 525 lines = 59.93 Hz (60 Hz: no per-machine refit, V-Sync off)
+        .v_total = 524,
+        .v_active = 480,
+        .freq = 60,
+        .pixel_clk = 50400000,
+        .vsync_start = 489,
+        .vsync_end = 495,
+        .screen_width = 720,
+        .h_sync_bytes = 36,
+        .h_bp_bytes = 30,
+        .h_fp_bytes = 15,
+        .line_bytes = 801,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 504,
+        .x3 = 11,
+        .x2_pad = 1
+    },
+    { // 1440x480 @60 x3 @540 = CEA 1440x480p60 (VIC 15), x3 layout 10 — 54.0MHz/1716 px x 525 lines = 59.94 Hz (60 Hz: no per-machine refit, V-Sync off)
+        .v_total = 524,
+        .v_active = 480,
+        .freq = 60,
+        .pixel_clk = 54000000,
+        .vsync_start = 489,
+        .vsync_end = 495,
+        .screen_width = 720,
+        .h_sync_bytes = 63,
+        .h_bp_bytes = 57,
+        .h_fp_bytes = 18,
+        .line_bytes = 858,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 540,
+        .x3 = 10,
+        .x2_pad = 1
+    }
 };

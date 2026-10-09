@@ -791,7 +791,31 @@ static int __attribute__((noinline)) __not_in_flash_func(hdmi_big_line)(
     for (; i < act; i += 2) { out[i] = bga; out[i + 1] = bgb; }
     return n;
 }
+
+// 720x576 16:9: the 360-byte fb row x1.5 into the centre 540 of the 720 pixel words
+// (nearest: pixels a b -> a a b), 90 background words either side. Even words from
+// page A's left half, odd from page B's right one, as everywhere else.
+static void __attribute__((noinline)) __not_in_flash_func(hdmi_wide_px)(
+        uint32_t *__restrict out, const uint32_t *__restrict in) {
+    const uint32_t *__restrict la = conv_color_b;
+    const uint32_t *__restrict lb = conv_color_b + 512;
+    const uint32_t bga = la[255 * 2], bgb = lb[255 * 2 + 1];
+    for (int i = 0; i < 90; i += 2) { out[i] = bga; out[i + 1] = bgb; }
+    uint32_t *__restrict o = out + 90;
+    for (int k = 0; k < 360 / 4; k++) {
+        uint32_t v = in[k];
+        v = (v >> 16) | (v << 16);                 // the fb's x^2 order -> pixels a b c d
+        const uint a = v & 0xFFu, b = (v >> 8) & 0xFFu, c = (v >> 16) & 0xFFu, d = v >> 24;
+        o[0] = la[a * 2]; o[1] = lb[a * 2 + 1]; o[2] = la[b * 2];
+        o[3] = lb[c * 2 + 1]; o[4] = la[c * 2]; o[5] = lb[d * 2 + 1];
+        o += 6;
+    }
+    for (int i = 630; i < 720; i += 2) { out[i] = bga; out[i + 1] = bgb; }
+}
 #endif
+
+// 720x576 16:9 (Config::VM_720x576_169): AVI 16:9 + the x1.5 line (hdmi_wide_px).
+static volatile bool hdmi_wide169 = false;
 
 // Current HDMI scanline counter (exposed for Profi palette refresh sync).
 volatile uint hdmi_current_line = 0;
@@ -893,7 +917,7 @@ static uint __not_in_flash_func(hdmi_vmap_step)(const uint16_t *vm, uint line) {
 // multiple of 4 (word stores), the line length even (byte parity picks the slot
 // half), and the island (15 bytes) fits in hs.
 typedef struct { uint16_t line, hs, bp, act, rem, left, cw, fbx; } hdmi_x3_layout_t;
-static const hdmi_x3_layout_t hdmi_x3_layouts[5] = {
+static const hdmi_x3_layout_t hdmi_x3_layouts[11] = {
     // 1024x768 @540, 1152 px: hs 66 / bp 48 / 1024 (341 B + 1) / fp 14; 960 = 320 fb px from x 0
     { 384, 22, 16, 341, 1, 10, 320, 0 },
     // 1024x768 @504, 1278 px: hs 96 / bp 138 / 1024 / fp 20
@@ -904,6 +928,18 @@ static const hdmi_x3_layout_t hdmi_x3_layouts[5] = {
     { 352, 32, 31, 266, 2,  1, 264, 28 },
     // 800x600 @540 (36 MHz), 1152 px: hs 96 / bp 93 / 800 / fp 163
     { 384, 32, 31, 266, 2,  1, 264, 28 },
+    // 1280x720 @504 (50.4 MHz), 1344 px: hs 48 / bp 12 / 1280 (426 B + 2) / fp 4; 960 from px 156
+    { 448, 16,  4, 426, 2, 52, 320,  0 },
+    // 1280x720 @540 (54 MHz), 1440 px: hs 66 / bp 30 / 1280 / fp 64
+    { 480, 22, 10, 426, 2, 52, 320,  0 },
+    // 1440x576 @504 (50.4 MHz), 1614 px: hs 72 / bp 60 / 1440 (480 B, no edge) / fp 42; 1080 from px 180
+    { 538, 24, 20, 480, 0, 60, 360,  0 },
+    // 1440x576 @540 (54 MHz) = CEA 1440x576p50, 1728 px: hs 126 / bp 138 / 1440 / fp 24
+    { 576, 42, 46, 480, 0, 60, 360,  0 },
+    // 1440x480 @60 @540 = CEA 1440x480p60, 1716 px: hs 126 / bp 114 / 1440 / fp 36
+    { 572, 42, 38, 480, 0, 60, 360,  0 },
+    // 1440x480 @60 @504 (50.4 MHz), 1602 px: hs 72 / bp 60 / 1440 / fp 30
+    { 534, 24, 20, 480, 0, 60, 360,  0 },
 };
 static hdmi_x3_layout_t hdmi_x3_L;   // the live one, in RAM (read by the line ISR)
 #define HDMI_X3_LINE   (hdmi_x3_L.line)
@@ -971,8 +1007,9 @@ static void hdmi_x3_build_static(void) {
     // Background chars alternate by character parity like every colour byte does
     // (char 3 * pos has the parity of pos).
     const uint e = HDMI_X3_EDGE & 1;
-    if (hdmi_x3_L.rem == 2) hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, e), hdmi_pa(255, e ^ 1), c);
-    else                    hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, e), c, c);
+    if (hdmi_x3_L.rem == 2)      hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, e), hdmi_pa(255, e ^ 1), c);
+    else if (hdmi_x3_L.rem == 1) hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, hdmi_pa(255, e), c, c);
+    else                         hdmi_x3_put(IDX_X3_EDGE, HDMI_X3_EDGE, c, c, c);   // active ends on a byte
 }
 // One line. `row` = the 320-byte fb row (x^2 order) or NULL for background.
 static void __not_in_flash_func(hdmi_x3_line)(uint8_t *buf, bool active, const uint8_t *row,
@@ -1213,6 +1250,7 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
     }
     if (!do_render) return;   // a replay: nothing to draw, the island is done
 #if !HDMI_EXPANDER
+    if (modep->x3 && !hdmi_x3_on) return;   // no x3 palette page: its lines would overrun the buffers
     if (hdmi_x3_on) {
         const bool act = line < modep->v_active;
         const uint8_t *row = NULL;
@@ -1276,6 +1314,11 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
             goto ex;
         }
 #if HDMI_EXPANDER
+        if (hdmi_wide169 && scr_w == 360) {
+            hdmi_wide_px(tl_px, (const uint32_t *)input_buffer);
+            px_done = true;
+            goto ex;
+        }
         if (graphics_buffer_shift_x == 0 && graphics_buffer_width >= scr_w) {
             // One inlined copy for both cases (SCRATCH_X is tight): masks 0 = no dither.
             const uint32_t me = hdmi_dither ? ((y & 1) ? 0x40u : 0x00u) : 0u;
@@ -1626,15 +1669,19 @@ static inline bool hdmi_init() {
         // the lines above and below map to a row past the framebuffer, which the
         // render paints as background.
         hdmi_scanlines = false;
-        const int scale = hdmi_mode.x4_offset ? 4 : hdmi_mode.x3 ? 3 : 2;
-        const int fbrows = hdmi_mode.x2_pad ? 288 : 240;
+        // Vertical scale: x3 across with x2_pad set (1440x576) is x2 down, from the
+        // 360x288 fb; otherwise the same as the horizontal one.
+        const int scale = hdmi_mode.x4_offset ? 4 : (hdmi_mode.x3 && !hdmi_mode.x2_pad) ? 3 : 2;
+        // x2 down from the 360-wide fb: 360x288, or 360x240 for a 480-line mode
+        const int fbrows = (hdmi_mode.x2_pad && hdmi_mode.v_active >= 576) ? 288 : 240;
         int rows = hdmi_mode.v_active / scale;
         if (rows > fbrows - hdmi_mode.v_offset) rows = fbrows - hdmi_mode.v_offset;
         const int top = (hdmi_mode.v_active - rows * scale) / 2;
         const uint32_t kind = (uint32_t)scale | ((uint32_t)rows << 4) | ((uint32_t)top << 16);
         if (!hdmi_vmap_x4) {
             extern void* tryMalloc(size_t n);
-            hdmi_vmap_x4 = (uint16_t *)tryMalloc(768 * sizeof(uint16_t));   // the tallest map
+            hdmi_vmap_x4 = (uint16_t *)tryMalloc((hdmi_mode.v_active > 768 ? hdmi_mode.v_active : 768)
+                                                 * sizeof(uint16_t));   // the tallest map
             hdmi_vmap_x4_kind = 0;
         }
         if (hdmi_vmap_x4 && hdmi_vmap_x4_kind != kind) {
@@ -1648,7 +1695,7 @@ static inline bool hdmi_init() {
 #if !HDMI_EXPANDER
     hdmi_x3_on = false;
     if (hdmi_conv_prog == &pio_program_conv_addr_HDMI_3px) {
-        const int li = (hdmi_mode.x3 >= 1 && hdmi_mode.x3 <= 5) ? hdmi_mode.x3 - 1 : 0;
+        const int li = (hdmi_mode.x3 >= 1 && hdmi_mode.x3 <= 11) ? hdmi_mode.x3 - 1 : 0;
         hdmi_x3_L = hdmi_x3_layouts[li];
         // Page A is complete here (palette, sync, and the audio slots set up by
         // hdmi_audio_hw_init on core0): derive every x3 slot from it, then the
@@ -1760,7 +1807,7 @@ static inline bool hdmi_init() {
         if (!big_lines) big_lines = (uint32_t *)tryMalloc(2u * cap * sizeof(uint32_t));
         if (big_lines) {
             const int scale = hdmi_mode.x4_offset ? 4 : hdmi_mode.x3 ? 3 : 2;
-            const int act = hdmi_tl_g.active_px, fbw = scale == 2 ? 360 : 320;
+            const int act = hdmi_tl_g.active_px, fbw = hdmi_mode.x2_pad ? 360 : 320;
             int cols = act / scale; if (cols > fbw) cols = fbw; cols &= ~3;
             hdmi_big_cols  = (uint16_t)cols;
             hdmi_big_fbx   = (uint16_t)(((fbw - cols) / 2) & ~3);   // x4: 1024 -> 32
@@ -1817,7 +1864,8 @@ static inline bool hdmi_init() {
 #else
     //настройки DMA
     // x3: three output pixels per byte, the DMA line is 384 bytes.
-    const int line_dma = hdmi_x3_on ? HDMI_X3_LINE : hdmi_mode.line_bytes;
+    int line_dma = hdmi_x3_on ? HDMI_X3_LINE : hdmi_mode.line_bytes;
+    if (line_dma > HDMI_LINE_BYTES_MAX) line_dma = HDMI_LINE_BYTES_MAX;   // x3 without its page: no picture, no overrun
     int line_u32 = (line_dma + 3) / 4; // uint32_t per line buffer (426 is not a multiple of 4)
     dma_lines[0] = &conv_color[1024];
     dma_lines[1] = &conv_color[1024 + line_u32];
@@ -1865,7 +1913,7 @@ static inline bool hdmi_init() {
     // Pre-fill scanline buffer: dark gray content + valid HDMI sync.
     // DMA reads this directly on every scanline-affected line; no per-line
     // rendering in the IRQ.
-    {
+    if (hdmi_mode.line_bytes <= HDMI_LINE_BYTES_MAX) {   // the long x3 lines have scanlines off anyway
         const int ls = hdmi_mode.line_bytes;
         const int hs = hdmi_mode.h_sync_bytes;
         const int bp = hdmi_mode.h_bp_bytes;
@@ -2986,6 +3034,9 @@ static void hdmi_build_audio_if_blob(void) {
     memcpy(if_audio.hdr, hdr, 4); memcpy(if_audio.sp, sp, 32);   // raw, encoded per frame by hdmi_di_load
 }
 
+// 720x576 16:9 (Config::VM_720x576_169): the AVI says 16:9 and the line ISR scales
+// the 360-px fb row x1.5 into the centre 540 px (TMDS expander; see hdmi_wide_px).
+static uint32_t hdmi_avi_pix = 0;   // pix_hz of the last AVI build (0 = not built yet)
 static void hdmi_build_avi_if_blob(const struct video_mode_t *mode, uint32_t pix_hz) {
     uint8_t hdr[4] = { 0x82, 0x02, 0x0D, 0 };
     uint8_t sp[4][8];
@@ -3001,13 +3052,32 @@ static void hdmi_build_avi_if_blob(const struct video_mode_t *mode, uint32_t pix
     if (mode->screen_width == 360 && mode->v_active == 576
         && mode->line_bytes == 432 && mode->v_total == 624
         && pix_hz == 27000000u) vic = 17;
+    // ...and CEA 1440x576p50 16:9 (VIC 30): 1728 x 625 at 54 MHz, the 128K line count.
+    if (mode->screen_width == 720 && mode->v_active == 576
+        && mode->line_bytes == 864 && mode->v_total == 624
+        && pix_hz == 54000000u) vic = 30;
+    // ...and CEA 1440x480p60 16:9 (VIC 15): 1716 x 525 at 54 MHz.
+    if (mode->screen_width == 720 && mode->v_active == 480
+        && mode->line_bytes == 858 && mode->v_total == 524
+        && pix_hz == 54000000u) vic = 15;
+    hdmi_avi_pix = pix_hz;
+    if (hdmi_wide169 && vic == 17) vic = 18;   // the same timing, 16:9 picture
     sp[0][1] = 0x00;  // Y=0 RGB, no scan/active-format info
-    sp[0][2] = 0x08;  // R=8 same-as-picture
+    sp[0][2] = hdmi_wide169 ? 0x28 : 0x08;  // M=10 16:9 (else none); R=8 same-as-picture
     sp[0][3] = 0x00;  // Q=0 default range
     sp[0][4] = vic;
     sp[0][5] = 0x00;  // no pixel repetition
     hdmi_if_checksum(hdr, sp);
     memcpy(if_avi.hdr, hdr, 4); memcpy(if_avi.sp, sp, 32);   // raw, encoded per frame by hdmi_di_load
+}
+
+void hdmi_set_wide169(bool on) {
+    if (hdmi_wide169 == on) return;
+    hdmi_wide169 = on;
+    if (hdmi_avi_pix) {   // already built (audio up): rebuild the AVI with the new aspect
+        const struct video_mode_t m = graphics_get_video_mode(get_video_mode());
+        hdmi_build_avi_if_blob(&m, hdmi_avi_pix);
+    }
 }
 
 static void hdmi_build_vendor_if_blob(void) {
@@ -3404,6 +3474,15 @@ static void hdmi_tl_setup(void) {
 
 static void hdmi_scanline_line_rebuild(bool audio) {
     if (!hdmi_tl_ready) return;
+    // hdmi_tl_scanline paces the front porch a word per pixel: ~12 words + fp_px must
+    // fit the 64-word buffer. A mode with a longer front porch (none ship one; the big
+    // modes, which have scanlines off anyway, keep theirs at 32 px) gets no scanline
+    // line rather than a buffer overrun — a 416-px porch once wrote ~430 words here
+    // and took both cores down (hw 2026-10-09, 1280x720 @378 test build).
+    if (12u + hdmi_tl_g.fp_px > sizeof(hdmi_scanline_line) / sizeof(hdmi_scanline_line[0])) {
+        hdmi_scanline_line_n = 0;
+        return;
+    }
     hdmi_scanline_line_n = hdmi_tl_scanline(hdmi_scanline_line, &hdmi_tl_g, &hdmi_tl_w,
                                             audio ? 1 : 0, hdmi_tmds_level888(hdmi_scanline_gray() & 0x00ffffffu));
     hdmi_desc[2][0] = (uint32_t)hdmi_scanline_line_n;
@@ -3546,15 +3625,15 @@ static void __attribute__((noinline)) hdmi_audio_hw_init(void) {
 #endif // !HDMI_EXPANDER
 
     // ACR for the real pixel clock; 31250 Hz is declared via N/CTS only
-#if HDMI_HSTX
-    uint32_t pix_hz = hdmi_hstx_pixel_hz((unsigned)mode.tmds_mhz);
-#else
     // The pixel clock is the mode's TMDS rate / 10 whatever clk_sys is. Deriving it
     // from clk_sys / pio_clk_div gave the BOOT clock's answer: this runs in setup(),
     // before the switch to Config::cpu_mhz, and the 27/54 MHz modes (sys_clk 540)
-    // then declared 25.2 MHz in ACR. Identical for every other mode.
+    // then declared 25.2 MHz in ACR. Identical for every other mode. The HSTX path had
+    // the same bug through hdmi_hstx_pixel_hz(), which reads the live clk_sys: on PCp2
+    // (boot clock 252) every 540 MHz mode sent CTS 25200 for a 27 MHz pixel and paced
+    // the audio packets for it — an empty queue and no sound (hw 2026-10-09). The modes
+    // HSTX offers all have an exact clk_hstx divider, so TMDS / 10 is the real figure.
     uint32_t pix_hz = (uint32_t)(mode.tmds_mhz ? mode.tmds_mhz : TMDS_STD_MHZ) * 100000u;
-#endif
     uint32_t acr_n, acr_cts;
     hdmi_pick_acr(pix_hz, &acr_n, &acr_cts);
     hdmi_acr_n = acr_n; hdmi_acr_cts = acr_cts;

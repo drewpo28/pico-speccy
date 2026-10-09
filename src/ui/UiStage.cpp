@@ -1297,6 +1297,14 @@ static void resolveConstraints(CommitReport& rep) {
             && staged(SET_VREG) < VREG_VOLTAGE_1_80
             && g_seq[SET_VREG] <= g_seq[SET_CPU_MHZ])
             changed |= force(SET_VREG, VREG_VOLTAGE_1_80, rep, "Core voltage 1.80 V for 540 MHz");
+        // 720x576 16:9 is HDMI on HSTX (TMDS expander) only.
+        if (staged(SET_VIDEO_MODE) == Config::VM_720x576_169) {
+            bool ok = false;
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+            ok = !SELECT_VGA;
+#endif
+            if (!ok) changed |= force(SET_VIDEO_MODE, Config::VM_720x576_50, rep, "16:9 needs HDMI on HSTX");
+        }
         // The big modes are PIO-HDMI only and need their own CPU clock (a clean PIO
         // divider): 1024x768 at 540 (59 Hz) or 504 (50 Hz), 800x600 x3 at 378, x2 at
         // 504. At 540 the display runs at 59 Hz, so V-Sync is off as for the 90/75 set.
@@ -1316,6 +1324,7 @@ static void resolveConstraints(CommitReport& rep) {
 #if defined(VGA_HSTX) && VGA_HSTX
                 if (vga) refuse = true;
 #endif
+                if (vga && Config::isHdmiOnlyVideoMode(vm)) refuse = true;   // HDMI only
                 if (refuse)
                     changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep, "This mode needs the PIO output");
                 else if (vga) {
@@ -1336,7 +1345,7 @@ static void resolveConstraints(CommitReport& rep) {
                     }
                     if (Config::forcesVsyncOff((uint8_t)staged(SET_VIDEO_MODE), (uint16_t)staged(SET_CPU_MHZ))
                         && staged(SET_VSYNC))
-                        changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display runs at 59 Hz");
+                        changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display is not 50 Hz");
                 }
             }
         }
@@ -1748,7 +1757,7 @@ void commit(CommitReport& rep) {
         const uint8_t vmNew   = (uint8_t)g_val[SET_VIDEO_MODE];
         const char*  label    = (Config::baseVideoMode(vmNew) == Config::VM_720x480_60)
                               ? "720x480"
-                              : (Config::baseVideoMode(vmNew) == Config::VM_720x576_50)
+                              : (Config::baseVideoMode(vmNew) == Config::VM_720x576_50 || vmNew == Config::VM_720x576_169)
                               ? "720x576" : "640x480";
         bool fits = (grow == 0) || getFreeHeap() >= grow + Subsystems::SRAM_MARGIN;
         if (!fits && want_gs() &&

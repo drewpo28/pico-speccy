@@ -1312,6 +1312,11 @@ void OSD::drawOSD(bool bottom_info) {
             case Config::VM_1024x768_59X3: vmname = "1024x768@59Hz x3"; break;
             case Config::VM_800x600_X3: vmname = "800x600 x3"; break;
             case Config::VM_800x600_X2: vmname = "800x600 x2"; break;
+            case Config::VM_720x576_169: vmname = "720x576@50 16:9"; break;
+            case Config::VM_1280x720_X3: vmname = "1280x720@50 x3"; break;
+            case Config::VM_1440x576_X3: vmname = "1440x576@50 x3"; break;
+            case Config::VM_1280x720_60: vmname = "1280x720@60 x3"; break;
+            case Config::VM_1440x480_60: vmname = "1440x480@60 x3"; break;
             default:                    vmname = "unknown";      break;
         }
         char buf2[41];
@@ -6357,6 +6362,11 @@ static void buildEmulatorInfoText() {
             case Config::VM_1024x768_59X3: vmname = "1024x768@59 x3"; break;
             case Config::VM_800x600_X3: vmname = "800x600 x3"; break;
             case Config::VM_800x600_X2: vmname = "800x600 x2"; break;
+            case Config::VM_720x576_169: vmname = "720x576@50 16:9"; break;
+            case Config::VM_1280x720_X3: vmname = "1280x720@50 x3"; break;
+            case Config::VM_1440x576_X3: vmname = "1440x576@50 x3"; break;
+            case Config::VM_1280x720_60: vmname = "1280x720@60 x3"; break;
+            case Config::VM_1440x480_60: vmname = "1440x480@60 x3"; break;
             default:                    vmname = "unknown";    break;
         }
         pos += infoAppend(buf, pos, bufsz, "\n --- Video ---\n");

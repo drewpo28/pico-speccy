@@ -144,16 +144,26 @@ struct video_mode_t {
 #define VMODE_XGA3_504   29   // 1024x768 x3
 #define VMODE_SVGA3_378  30   // 800x600 x3, 37.8 MHz
 #define VMODE_SVGA2_378  31   // 800x600 x2, 37.8 MHz
+#define VMODE_HD3_504    32   // 1280x720 x3 16:9, 50.4 MHz (HSTX: also at 252)
+#define VMODE_HD3_540    33   // ...54 MHz
+#define VMODE_SD3_504    34   // 1440x576 x3 16:9 (360x288 fb), 50.4 MHz (HSTX: also at 252)
+#define VMODE_SD3_540    35   // ...54 MHz = CEA 1440x576p50
 #if defined(HDMI_HSTX) && HDMI_HSTX == 2
-#define VMODE_XGA4_378   32   // 1024x768 x4 / x3, 75.6 MHz (clk_hstx 378 /1)
-#define VMODE_XGA3_378   33
-#define VMODE_SVGA3_H504 34   // 800x600 x3 / x2, 50.4 MHz (clk_hstx 252: 252 /1, 504 /2)
-#define VMODE_SVGA2_H504 35
-#define VMODE_SVGA3_H540 36   // 800x600 x3 / x2, 54 MHz (clk_hstx 270 = 540 /2)
-#define VMODE_SVGA2_H540 37
+#define VMODE_XGA4_378   36   // 1024x768 x4 / x3, 75.6 MHz (clk_hstx 378 /1)
+#define VMODE_XGA3_378   37
+#define VMODE_SVGA3_H504 38   // 800x600 x3 / x2, 50.4 MHz (clk_hstx 252: 252 /1, 504 /2)
+#define VMODE_SVGA2_H504 39
+#define VMODE_SVGA3_H540 40   // 800x600 x3 / x2, 54 MHz (clk_hstx 270 = 540 /2)
+#define VMODE_SVGA2_H540 41
+#define VMODE_HD3_378    42   // 1280x720 x3, 75.6 MHz, 1980-px line
+#define VMODE_HD60_378   43   // 1280x720 @60 x3, 75.6 MHz, 1680-px line
+#define VMODE_SD60_504   44   // 1440x480 @60 x3 (360x240 fb), 50.4 MHz (also at 252)
+#define VMODE_SD60_540   45   // ...54 MHz = CEA 1440x480p60
 #else
-#define VMODE_SVGA3_504  32   // 800x600 x3 / x2, 33.6 MHz (PIO 1.5)
-#define VMODE_SVGA2_504  33
-#define VMODE_SVGA3_540  34   // 800x600 x3 / x2, 36 MHz (PIO 1.5)
-#define VMODE_SVGA2_540  35
+#define VMODE_SVGA3_504  36   // 800x600 x3 / x2, 33.6 MHz (PIO 1.5)
+#define VMODE_SVGA2_504  37
+#define VMODE_SVGA3_540  38   // 800x600 x3 / x2, 36 MHz (PIO 1.5)
+#define VMODE_SVGA2_540  39
+#define VMODE_SD60_504   40   // 1440x480 @60 x3 (360x240 fb), 50.4 MHz
+#define VMODE_SD60_540   41   // ...54 MHz = CEA 1440x480p60
 #endif

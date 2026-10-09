@@ -1564,6 +1564,12 @@ void Config::load() {
         }
         // 1024x768 x4 is HDMI-only and needs the 54 MHz pixel = sys_clk 540 / 1.0.
         if (isBigVideoMode(hdmi_video_mode) && !bigModeClockOk(hdmi_video_mode, cpu_mhz)) hdmi_video_mode = VM_640x480_60;
+#if !(defined(HDMI_HSTX) && HDMI_HSTX == 2)
+        if (hdmi_video_mode == VM_720x576_169) hdmi_video_mode = VM_720x576_50;   // HSTX TMDS only
+#endif
+        if (vga_video_mode == VM_720x576_169) vga_video_mode = VM_720x576_50;     // HDMI only
+        if (isHdmiOnlyVideoMode(vga_video_mode))
+            vga_video_mode = VM_640x480_60;                                    // HDMI only
 #if !defined(VGA_HDMI) || VGA_HSTX
         // The VGA twins of the big modes are PIO-only (63 / 42 MHz pixel).
         if (isBigVideoMode(vga_video_mode)) vga_video_mode = VM_640x480_60;

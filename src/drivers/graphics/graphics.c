@@ -103,6 +103,34 @@ int graphics_big_mode(int vm, unsigned mhz, int klass)
 #endif
             return -1;
         }
+        case 13:
+            if (mhz == 504) return VMODE_HD3_504;
+            if (mhz == 540) return VMODE_HD3_540;
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+            if (mhz == 252) return VMODE_HD3_504;   // clk_hstx 252 /1
+            if (mhz == 378) return VMODE_HD3_378;
+#endif
+            return -1;
+        case 14:
+            if (mhz == 504) return VMODE_SD3_504;
+            if (mhz == 540) return VMODE_SD3_540;
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+            if (mhz == 252) return VMODE_SD3_504;
+#endif
+            return -1;
+        case 15:
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+            return mhz == 378 ? VMODE_HD60_378 : -1;
+#else
+            return -1;
+#endif
+        case 16:
+            if (mhz == 504) return VMODE_SD60_504;
+            if (mhz == 540) return VMODE_SD60_540;
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+            if (mhz == 252) return VMODE_SD60_504;
+#endif
+            return -1;
         default: return -1;
     }
 }
@@ -115,6 +143,7 @@ void graphics_big_mode_fit(int mode, int klass)
 {
     const int n = (int)(sizeof(video_mode)/sizeof(video_mode[0]));
     if (mode < VMODE_XGA4_504 || mode >= n) return;
+    if (video_mode[mode].freq != 50) return;   // the 60 Hz entries keep their line count
     static const uint32_t frame_t[3] = { 71680, 69888, 70908 };      // T-states per frame
     static const uint32_t cpu_hz[3]  = { 3500000, 3500000, 3546900 };
     if (klass < 0 || klass > 2) klass = 0;
@@ -122,8 +151,11 @@ void graphics_big_mode_fit(int mode, int klass)
     // lines = pixel * frame_t / (ht * cpu_hz), rounded
     const uint64_t num = (uint64_t)video_mode[mode].pixel_clk * frame_t[klass];
     const uint64_t den = ht * cpu_hz[klass];
-    const int lines = (int)((num + den / 2) / den);
-    if (lines > video_mode[mode].vsync_end + 2) video_mode[mode].v_total = lines - 1;
+    int lines = (int)((num + den / 2) / den);
+    // A machine whose frame is shorter than the picture can hold
+    // gets the fewest lines that still carry vertical blanking: slightly slow, not broken.
+    if (lines < video_mode[mode].vsync_end + 6) lines = video_mode[mode].vsync_end + 6;
+    video_mode[mode].v_total = lines - 1;
 }
 
 float graphics_clk_div_at(int mode, unsigned sys_mhz, int vga)
