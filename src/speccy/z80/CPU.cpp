@@ -874,6 +874,7 @@ void CPU::loopRzx(uint64_t _loop_t0) {
                 do { Z80::execute(); } while (!Z80::atInstrBoundary());
                 Rzx::intUntil = 0;
             } else {
+                Z80::rzxLdAirIntBug();
                 Z80::checkINT();
             }
             continue;

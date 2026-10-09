@@ -5,13 +5,17 @@
 // whose IN list is not consumed exactly. Built for dnawarrior.rzx (2026-10-01):
 // clean at 32..35 T, desync at frame 7273 at 36 — which is what set INT_END_P3.
 //
-//   gcc -O2 -w -Iexternal/redcode -DZ80_STATIC '-DZ80_EXTERNAL_HEADER="Z80_compat.h"' \
+//   gcc -O2 -w -Iexternal/redcode -DZ80_STATIC -DZ80_WITH_ZILOG_NMOS_LD_A_IR_BUG \
+//       '-DZ80_EXTERNAL_HEADER="Z80_compat.h"' \
 //       -o /tmp/rzxsim tools/rzx_replay_sim.c external/redcode/Z80_redcode.c
 //   /tmp/rzxsim src/speccy/roms/plus3/src snap.z80 frames.bin <intLen> [maxReports] [traceFrom traceTo]
 //
 // RZX_SPIN=1 plays by the SPIN 0.5 rule: the INT is raised at the frame boundary only
 // if IFF1 is already set there (an EI inside the frame gets no interrupt that frame);
 // intLen then only has to cover the one instruction after a pending EI (24 is enough).
+// The NMOS "INT right after LD A,I/R clears P/V" bug is on (the firmware applies it
+// at every RZX boundary): runningman.rzx desyncs at frame 114 without it, where the
+// +3 ROM's LD A,R / JP PO then leaves interrupts off. RZX_CMOS=1 turns it off.
 // RZX_LOG=1 prints the firmware's own [RZX] log lines (Rzx.cpp logFrame) for a diff
 // against a capture from the board.
 // RZX_TRDOS=<16K TR-DOS ROM> in the environment adds the Beta-128 automap (Pentagon
@@ -93,11 +97,12 @@ int main(int argc, char** argv) {
     memset(&cpu, 0, sizeof cpu);
     cpu.fetch_opcode = rdop; cpu.fetch = rd; cpu.read = rd; cpu.write = wr; cpu.in = io_in; cpu.out = io_out; cpu.nop = nopcb; cpu.inta = inta;
     z80_power(&cpu, 1);
+    if (!getenv("RZX_CMOS")) cpu.options |= Z80_OPTION_LD_A_IR_BUG;
     loadz80(argv[2]);
     rzxlog = getenv("RZX_LOG") != NULL; spin = getenv("RZX_SPIN") != NULL; startP7 = p7ffd;
     if (rzxlog) { unsigned s0 = 0, s1 = 0, sd = 0; for (int i = 0; i < 16384; i++) { s0 += rom[0][i]; s1 += rom[1][i]; sd += dosrom[i]; }
         printf("[RZX] roms sum0=%06X sum1=%06X dos=%06X\n", s0, s1, sd); }
-    static uint8_t fr[2000000]; FILE* f = fopen(argv[3], "rb"); size_t fn = fread(fr, 1, sizeof fr, f); fclose(f);
+    static uint8_t fr[12000000]; FILE* f = fopen(argv[3], "rb"); size_t fn = fread(fr, 1, sizeof fr, f); fclose(f);
     size_t p = 0; long frame = 0, reports = 0, shortF = 0, lost = 0; const uint8_t* lastIns = NULL; unsigned lastCnt = 0;
     while (p + 4 <= fn) {
         unsigned fc = fr[p] | fr[p+1] << 8, ic = fr[p+2] | fr[p+3] << 8; p += 4;

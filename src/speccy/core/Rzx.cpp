@@ -36,9 +36,15 @@ static const int32_t SPIN_EI_HOLD = 256;
 // except that Spectaculator holds it for 32 T on every model:
 // abadiadelcrimen.rzx (rzxarchive abadia.zip, 128K) replays clean at 8..32 T,
 // desyncs at frame 31299 at 34 and at 4157 at 36 (our 128K window, libspectrum's
-// figure); dnawarrior (+2A) is clean at 32..35, the 48K/Pentagon windows are
-// 32 already. Live emulation is untouched.
-static const int32_t SPECTACULATOR_INT_LEN = 32;
+// figure); dnawarrior (+2A) is clean at 1..35. Measured from the fetch-count
+// boundary, though, the window Spectaculator leaves is 32 T MINUS the overshoot of
+// the instruction that crossed its frame end, which the file does not record:
+// runningman.rzx and toyota.rzx (+2A) desync at 28+ (frames 2485 / 7685: a JP PO /
+// EI just after the boundary takes an INT the recording does not have) and are
+// clean at 4..24 / 8..24. Every known file is clean at 8..24, so the line is held
+// 16 T from the boundary (not from the raster's window start). Live emulation is
+// untouched.
+static const int32_t SPECTACULATOR_INT_LEN = 16;
 static int32_t s_intLen = 0;    // 0 = the machine's IntEnd - IntStart
 
 namespace {
@@ -552,7 +558,7 @@ bool startPlayback(const std::string& path) {
     s_intLen = strncmp(s->rd.creator(), "Spectaculator", 13) == 0 ? SPECTACULATOR_INT_LEN : 0;
     Debug::log("[RZX] %s: v%u.%u creator '%s', %u frames, INT rule %s%s", s_name.c_str(),
                (unsigned)s->rd.major(), (unsigned)s->rd.minor(), s->rd.creator(), (unsigned)s_total,
-               spinInt ? "IFF1 at the boundary" : "pulse", s_intLen ? " (32 T)" : "");
+               spinInt ? "IFF1 at the boundary" : "pulse", s_intLen ? " (16 T from the boundary)" : "");
     if (!s->rd.hasSnapshot()) Debug::log("[RZX] no snapshot block before the input: looking for a sibling");
 
     // A file with no snapshot plays from the sibling snapshot named like it, or
@@ -674,8 +680,8 @@ bool raiseInt() {
     // raised inside the raster window keeps the window's own end (an interrupt
     // recorded just after the frame boundary behaves exactly as live); raised
     // anywhere else it lasts one window from here.
-    int32_t len = CPU::IntEnd - CPU::IntStart;
-    if (s_intLen && s_intLen < len) len = s_intLen;
+    if (s_intLen) { intUntil = t + s_intLen; return false; }
+    const int32_t len = CPU::IntEnd - CPU::IntStart;
     const int32_t end = CPU::IntStart + len;
     intUntil = (t < end) ? end : t + len;
     return false;

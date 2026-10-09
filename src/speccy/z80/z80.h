@@ -161,6 +161,9 @@ private:
     // rule through rzx_instructions_offset). See Rzx.h.
     static uint32_t regR;
     static uint8_t regRbase;
+    // regR + 1 as it stood when LD A,I / LD A,R last ran: equal to regR + 1 means
+    // nothing has been fetched since (see rzxLdAirIntBug).
+    static uint32_t ldairAt;
     // *R7 -- Refresco de memoria -- 1 bit* (bit superior de R)
     static bool regRbit7;
     //Flip-flops de interrupción
@@ -412,6 +415,11 @@ public:
     static void setPinReset(void) { pinReset = true; }
 
     static bool isPendingEI(void) { return pendingEI; }
+    // RZX playback, right before an INT is sampled at a fetch-count boundary: the
+    // NMOS Z80 clears P/V when an INT is accepted straight after LD A,I / LD A,R.
+    // Live emulation approximates this inside the instruction (isActiveINT); in a
+    // replay the line is only raised AFTER it, so it is applied here. In flash.
+    static void rzxLdAirIntBug();
     static void setPendingEI(bool state) { pendingEI = state; }
 
     // Reset
