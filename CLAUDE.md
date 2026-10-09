@@ -13535,8 +13535,8 @@ Fuse's `rzx.c` / `z80.c` for the playback semantics.
     Spectaculator (dnawarrior). The zip's second file (SpecEmu) is an SZX snapshot —
     unsupported, as before.
 - **Spectaculator +2A: the NMOS LD A,R bug and a 16 T window (2026-10-09; hw-confirmed the
-  same day on `debug/DVp2-rzx-ldair-1.0.9.elf`, owner: "работает" — not itemised; re-checking
-  dnawarrior / Dizzy against the 16 T window is still owed).** `runningman.rzx` stopped at frame 114 and `toyota.rzx`
+  same day on `debug/DVp2-rzx-ldair-1.0.9.elf`, owner: "работает" — not itemised; dnawarrior
+  replays clean in the simulator with both changes, all 82561 frames; Dizzy is Pentagon, not Spectaculator).** `runningman.rzx` stopped at frame 114 and `toyota.rzx`
   at 7685 (board logs matched `tools/rzx_replay_sim.c` frame for frame). (1) Frame 114: the
   boundary falls right after the +3 ROM2's `LD A,R` (#0219, the 7FFD pager), the recorder
   took the INT there and the NMOS Z80 clears P/V, so `JP PO` skipped the EI and interrupts
