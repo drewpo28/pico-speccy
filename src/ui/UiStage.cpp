@@ -1298,17 +1298,24 @@ static void resolveConstraints(CommitReport& rep) {
         {
             const uint8_t vm = (uint8_t)staged(SET_VIDEO_MODE);
             if (Config::isBigVideoMode(vm)) {
-#if defined(HDMI_HSTX) && HDMI_HSTX
-                bool noHdmi = true;
-#else
-                bool noHdmi = false;
-#endif
+                // VGA (PIO) runs them at its own pixel clocks, at any CPU clock.
+                bool vga = false, refuse = false;
 #ifdef VGA_HDMI
-                noHdmi = noHdmi || SELECT_VGA;
+                vga = SELECT_VGA;
 #endif
-                if (noHdmi)
-                    changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep, "This mode needs PIO HDMI");
-                else {
+#if defined(HDMI_HSTX) && HDMI_HSTX
+                if (!vga) refuse = true;
+#endif
+#if defined(VGA_HSTX) && VGA_HSTX
+                if (vga) refuse = true;
+#endif
+                if (refuse)
+                    changed |= force(SET_VIDEO_MODE, Config::VM_640x480_60, rep, "This mode needs the PIO output");
+                else if (vga) {
+                    // VGA runs them as VESA 60 Hz modes: no V-Sync pacing.
+                    if (Config::forcesVsyncOffVga(vm) && staged(SET_VSYNC))
+                        changed |= force(SET_VSYNC, 0, rep, "V-Sync off: the display runs at 60 Hz");
+                } else {
                     if (!Config::bigModeClockOk(vm, (uint16_t)staged(SET_CPU_MHZ))) {
                         static char nb[48];
                         const unsigned pc = Config::bigModePrefClock(vm);

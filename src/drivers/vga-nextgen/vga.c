@@ -107,6 +107,12 @@ static void vga_flags_init(void) {
     if (vga_flags_done) return;
     vga_flags_done = true;
     vga_pwm_live = (vga_pwm_cfg != 0);
+#if !VGA_HSTX
+    {   // the big modes run narrow (see graphics_set_mode)
+        struct video_mode_t vm = graphics_get_video_mode(get_video_mode());
+        if (vm.vga_pixel_clk && (vm.x4_offset || vm.x3 || vm.x2_pad)) vga_pwm_live = false;
+    }
+#endif
     vga_pwm_phase = (uint8_t)(vga_pwm_phase_cfg & 3);
     // HSTX has no narrow shape: one pixel IS one 32-bit FIFO word, so the width is
     // pinned and the setting only chooses what those four bytes carry.
@@ -186,11 +192,25 @@ static int HS_SHIFT = 656;
 // (line_size is always a multiple of 4 — see tools/vga_timing_test.c — so the
 // narrow form never truncates.)
 static inline int VGA_DMA_WORDS(int line) { return line * vga_px_bytes() / 4; }
-static inline int VGA_TMPL_WORDS(void)    { return VGA_MAX_LINE_SIZE * vga_px_bytes() / 4; }
+// Template length in pixels: VGA_MAX_LINE_SIZE, or the boot mode's longer line when
+// it is one of the big modes (graphics_set_mode raises it before the allocation).
+static int vga_tmpl_px = VGA_MAX_LINE_SIZE;
+static inline int VGA_TMPL_WORDS(void)    { return vga_tmpl_px * vga_px_bytes() / 4; }
+
+// The big modes ([28]..[39], the VGA twins of the HDMI 1024x768 / 800x600 set): the
+// framebuffer is scaled x4 / x3 / x2 in the ISR instead of x2 with a line map.
+// scale 0 = an ordinary mode. Derived from the table entry by vga_big_layout().
+static uint8_t  vga_big_scale = 0;
+static uint16_t vga_big_fbx   = 0;   // first fb byte shown (a multiple of 4: x^2 order)
+static uint16_t vga_big_cols  = 0;   // fb bytes shown per row (even)
+static uint16_t vga_big_fby   = 0;   // first fb row shown
+static uint16_t vga_big_rows  = 0;   // fb rows shown
+static uint16_t vga_big_top   = 0;   // output lines above the picture
+static uint16_t vga_big_left  = 0;   // output pixels left of the picture (even)
 // Bytes one palette entry (a pair) occupies, and the row of 256 for one parity.
-static inline size_t vga_pair_bytes(void) { return vga_wide ? sizeof(vga_wide_pair_t)
+static inline __attribute__((always_inline)) size_t vga_pair_bytes(void) { return vga_wide ? sizeof(vga_wide_pair_t)
                                                             : sizeof(vga_flat_pair_t); }
-static inline void *pal_row(void *arr, unsigned parity) {
+static inline __attribute__((always_inline)) void *pal_row(void *arr, unsigned parity) {
     return (uint8_t *)arr + (size_t)parity * 256u * vga_pair_bytes();
 }
 
@@ -488,6 +508,60 @@ void __time_critical_func() dma_handler_VGA() {
         return;
     } //если нет видеобуфера - рисуем пустую строку
 
+    if (vga_big_scale) {
+        // The big modes: fb row = (line - top) / scale, each fb byte -> scale pixels.
+        const int r = (int)screen_line - (int)vga_big_top;
+        const int sc = vga_big_scale;
+        if (r < 0 || r >= (int)vga_big_rows * sc) {
+            dma_channel_set_read_addr(dma_chan_ctrl, &lines_pattern[0], false);
+            return;
+        }
+        const int fy = (sc == 3 ? (int)(((uint32_t)r * 43691u) >> 17) : (r >> (sc == 4 ? 2 : 1)))
+                       + (int)vga_big_fby;
+        uint32_t **ob = &lines_pattern[2 + (screen_line & 1)];
+        const uint8_t *in = getLineBuffer(fy);
+        if (!in) { dma_channel_set_read_addr(dma_chan_ctrl, &lines_pattern[0], false); return; }
+        in += vga_big_fbx;
+        const vga_flat_pair_t *p, *pb;
+        if (profi_ds80_active) {
+            p  = (const vga_flat_pair_t *)pal_row(palette_vga_ds80,   screen_line & 1);
+            pb = (const vga_flat_pair_t *)pal_row(palette_vga_ds80_b, screen_line & 1);
+        } else {
+            const bool sl = vga_scanlines && (screen_line & 1);
+            p  = (const vga_flat_pair_t *)(sl ? palette_vga16_scanline   : pal_row(palette_vga16,   screen_line & 1));
+            pb = (const vga_flat_pair_t *)(sl ? palette_vga16_scanline_b : pal_row(palette_vga16_b, screen_line & 1));
+        }
+        uint8_t *dst = (uint8_t *)*ob + shift_picture + vga_big_left;
+        const int cols = vga_big_cols;
+        if (sc == 4) {
+            uint32_t *o = (uint32_t *)dst;
+            for (int x = 0; x < cols; x += 2) {
+                const uint32_t a = p [in[ x      ^ 2]];
+                const uint32_t b = pb[in[(x + 1) ^ 2]];
+                *o++ = a | a << 16;
+                *o++ = b | b << 16;
+            }
+        } else if (sc == 3) {
+            // two fb pixels a, b -> six output pixels a a a b b b, as three pairs
+            uint16_t *o = (uint16_t *)dst;
+            for (int x = 0; x < cols; x += 2) {
+                const uint16_t a = p [in[ x      ^ 2]];
+                const uint16_t b = pb[in[(x + 1) ^ 2]];
+                *o++ = a;
+                *o++ = (uint16_t)((a & 0x00FFu) | (b & 0xFF00u));
+                *o++ = b;
+            }
+        } else {
+            uint16_t *o = (uint16_t *)dst;
+            for (int x = 0; x < cols; x += 2) {
+                *o++ = p [in[ x      ^ 2]];
+                *o++ = pb[in[(x + 1) ^ 2]];
+            }
+        }
+        dma_channel_set_read_addr(dma_chan_ctrl, ob, false);
+        return;
+    }
+
     int y;
 
     uint32_t* * output_buffer = &lines_pattern[2 + (screen_line & 1)];
@@ -680,6 +754,25 @@ static bool vga_alloc_templates(void) {
     return true;
 }
 
+static void vga_big_layout(const struct video_mode_t *m, int active_px, int v_act) {
+    const int scale = m->x4_offset ? 4 : m->x3 ? 3 : m->x2_pad ? 2 : 0;
+    vga_big_scale = 0;
+    if (!scale || !m->vga_pixel_clk) return;          // an HDMI-only entry: ordinary path
+    const int fbw = scale == 2 ? 360 : 320, fbh = scale == 2 ? 288 : 240;
+    int cols = active_px / scale;  if (cols > fbw) cols = fbw;  cols &= ~3;
+    int rows = v_act / scale;      if (rows > fbh) rows = fbh;
+    vga_big_cols  = (uint16_t)cols;
+    vga_big_fbx   = (uint16_t)(((fbw - cols) / 2) & ~3);
+    vga_big_rows  = (uint16_t)rows;
+    vga_big_fby   = (uint16_t)((fbh - rows) / 2);
+    vga_big_left  = (uint16_t)(((active_px - cols * scale) / 2) & ~1);
+    vga_big_top   = (uint16_t)((v_act - rows * scale) / 2);
+    vga_big_scale = (uint8_t)scale;
+}
+static inline bool vga_mode_is_big(const struct video_mode_t *m) {
+    return m->vga_pixel_clk && (m->x4_offset || m->x3 || m->x2_pad);
+}
+
 void graphics_set_mode(enum graphics_mode_t mode) {
     if (!SELECT_VGA) {
         graphics_mode = mode;
@@ -745,6 +838,27 @@ void graphics_set_mode(enum graphics_mode_t mode) {
             line_size        = HS_SIZE + bp + active_bytes + fp;
             shift_picture    = HS_SIZE + bp;              // offset where active picture starts in line buffer
             HS_SHIFT         = line_size - shift_picture; // legacy unused
+            vga_big_layout(&vMode, active_bytes, vMode.vga_v_active ? vMode.vga_v_active : vMode.v_active);
+            // The big modes are VESA 60 Hz timings, and VESA 800x600@60 has POSITIVE
+            // H and V sync (1024x768@60 is -H -V like 640x480). The monitor matches
+            // the polarity with the rates to name the mode. Positive = the sync bit
+            // idles LOW; the pixel bytes carry the idle sync bits, so the palette
+            // mask follows it.
+            if (vga_mode_is_big(&vMode) && sw_b == 400) {
+                TMPL_LINE8 = 0b00000000;
+                palette16_mask = 0x0000;
+            }
+            if (line_size > vga_tmpl_px && line_size <= VGA_MAX_LINE_SIZE_BIG && !lines_pattern_data)
+                vga_tmpl_px = line_size;
+#if !VGA_HSTX
+            // A big mode is narrow only: four bytes a pixel at 1344 px is 21 KB of
+            // templates and a 252 MB/s line DMA, and its ISR paths are narrow.
+            if (vga_mode_is_big(&vMode) && vga_wide && !lines_pattern_data) {
+                printf("vga: big mode - PWM off (narrow pixels)\n");
+                vga_wide = false;
+                vga_pwm_live = false;
+            }
+#endif
             break;
         }
         default:
@@ -841,7 +955,10 @@ void vga_reinit() {
     int new_fp        = fp_b * 2;
     int new_line_size = new_HS_SIZE + new_bp + new_active + new_fp;
 
-    if (new_line_size > VGA_MAX_LINE_SIZE) return;  // safety: don't overflow buffer
+    if (new_line_size > vga_tmpl_px) return;  // safety: don't overflow buffer
+    // A big mode needs the narrow ISR paths: refuse one on a wide (PWM) boot.
+    if (vga_wide && vga_mode_is_big(&mode)) return;
+    vga_big_layout(&mode, new_active, mode.vga_v_active ? mode.vga_v_active : mode.v_active);
 
     bool layout_changed = (new_line_size != line_size) || (new_HS_SIZE != HS_SIZE)
                           || (new_visible != visible_line_size);

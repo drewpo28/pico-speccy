@@ -124,6 +124,11 @@ struct video_mode_t {
 // copy of it — raise it here the moment a mode needs a longer line, because under
 // PWM every pixel costs four bytes and this is four buffers.
 #define VGA_MAX_LINE_SIZE 896
+// ...except the VGA twins of the big HDMI modes ([28]..[39], VESA 60 Hz: 1024x768 at 63 MHz,
+// 1304 px; 800x600 at 42 MHz, 1108 px). vga.c sizes the templates to the BOOT mode's
+// line, so only a board that boots into one of those pays the longer buffers; the
+// standard set keeps the 896 bound above. A big mode always runs narrow (no PWM).
+#define VGA_MAX_LINE_SIZE_BIG 1344
 
 // video_mode[] index offset of the 37.8 MHz ("fast") twin of a standard mode:
 // entries [0]..[7] have their x1.5-refresh counterpart at [9]..[16].

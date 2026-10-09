@@ -1563,7 +1563,10 @@ void Config::load() {
         }
         // 1024x768 x4 is HDMI-only and needs the 54 MHz pixel = sys_clk 540 / 1.0.
         if (isBigVideoMode(hdmi_video_mode) && !bigModeClockOk(hdmi_video_mode, cpu_mhz)) hdmi_video_mode = VM_640x480_60;
+#if !defined(VGA_HDMI) || VGA_HSTX
+        // The VGA twins of the big modes are PIO-only (63 / 42 MHz pixel).
         if (isBigVideoMode(vga_video_mode)) vga_video_mode = VM_640x480_60;
+#endif
         // The HDMI half is NOT degraded on an HSTX build any more.  It used to be,
         // for "clk_hstx 189 MHz is past the datasheet's 150" — and debug/HSTX runs
         // 720p at a 74.25 MHz pixel, i.e. clk_hstx 371.25 MHz, so that ceiling is
@@ -1578,7 +1581,8 @@ void Config::load() {
         // ...and they drive the display faster than the machine, so v_sync pacing
         // (one emulated frame per display frame) would run it 50% fast.
         if (isFastVideoMode(hdmi_video_mode) || isFastVideoMode(vga_video_mode)
-            || forcesVsyncOff(hdmi_video_mode, cpu_mhz))   // 59 Hz display, 50 Hz machine
+            || forcesVsyncOff(hdmi_video_mode, cpu_mhz)    // 59 Hz display, 50 Hz machine
+            || forcesVsyncOffVga(vga_video_mode))          // VGA 60 Hz
             v_sync_enabled = false;
         nvs_get_b("gigascreen_enabled", gigascreen_enabled, sts);
         nvs_get_u8("gigascreen_onoff", gigascreen_onoff, sts);

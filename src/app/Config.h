@@ -626,6 +626,8 @@ public:
     static constexpr uint16_t bigModePrefClock(uint8_t vm) { return vm == VM_800x600_X3 ? 378 : 504; }
     // The display refresh is not the machine's (59 Hz): V-Sync pacing must be off.
     static constexpr bool forcesVsyncOff(uint8_t vm, uint16_t mhz) { return isXgaVideoMode(vm) && mhz == 540; }
+    // ...and on VGA (PIO) every big mode is a VESA 60 Hz timing (see video_mode_table.h).
+    static constexpr bool forcesVsyncOffVga(uint8_t vm) { return isBigVideoMode(vm); }
     // The 25.2 MHz twin of a fast mode (identity for the standard ones): what a
     // fast pick degrades to when the CPU clock is not 378 MHz.
     static uint8_t baseVideoMode(uint8_t vm) {

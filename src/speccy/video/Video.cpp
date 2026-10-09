@@ -5252,12 +5252,15 @@ void VIDEO::Reset() {
     // sys_clk 540: HDMI runs every standard mode at its 27 MHz twin (540/270 = 2.0,
     // where 25.2 MHz would need 2.143), and 1024x768 x4 (54 MHz) exists only there.
     // Config::load() already took both away from a build or clock that cannot.
-    if (!SELECT_VGA && Config::isBigVideoMode(vmSel)) {
+    if (Config::isBigVideoMode(vmSel)) {
         // The big modes are per machine too (except 1024x768 @540, one 59 Hz mode):
         // 0 = Pentagon, 1 = 48K/Profi/Scorpion, 2 = 128K — the 720x576 grouping.
         const int klass = (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster()) ? 1
                         : (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster()) ? 2 : 0;
-        const int big = graphics_big_mode(vmSel, Config::cpu_mhz, klass);
+        // VGA runs them at its own pixel clocks (63 / 42 MHz, integer at 252/378/504),
+        // so it takes the entry the HDMI mode would use at its own clock.
+        const int big = graphics_big_mode(vmSel, SELECT_VGA ? Config::bigModePrefClock(vmSel)
+                                                            : Config::cpu_mhz, klass);
         if (big >= 0) video_mode = big;
     } else if (!SELECT_VGA && Config::cpu_mhz == Config::CPU_540_MHZ) {
         video_mode = graphics_540_mode(video_mode);
@@ -6669,9 +6672,9 @@ void VIDEO::blClearCarve(int id) {
 
 bool VIDEO::bigWindow(int& fbx, int& w, int& oy, int& h) {
 #ifdef VGA_HDMI
-    if (SELECT_VGA) return false;
-    const uint8_t vm = Config::hdmi_video_mode;
-    if (!Config::isBigVideoMode(vm) || !Config::bigModeClockOk(vm, Config::cpu_mhz)) return false;
+    const uint8_t vm = activeVideoMode();
+    if (!Config::isBigVideoMode(vm)) return false;
+    if (!SELECT_VGA && !Config::bigModeClockOk(vm, Config::cpu_mhz)) return false;
     // 1024x768 x4: the centre 256x192 of the 320x240 framebuffer; 800x600 x3: the
     // centre 264x200. x3 at 1024 and x2 at 800 show the whole framebuffer.
     if (vm == Config::VM_1024x768_59) { fbx = 32; w = 256; oy = 24; h = 192; return true; }

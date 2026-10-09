@@ -226,7 +226,7 @@ static_assert(Config::isBigVideoMode((uint8_t)opt_video_mode[kVmFastEnd].value)
 static int vmGraphicsIndex(int32_t vm, unsigned mhz, int vga) {
     // The big modes are HDMI-only; at a clock that cannot run one, quote its own clock.
     if (Config::isBigVideoMode((uint8_t)vm)) {
-        if (!Config::bigModeClockOk((uint8_t)vm, (uint16_t)mhz)) mhz = Config::bigModePrefClock((uint8_t)vm);
+        if (vga || !Config::bigModeClockOk((uint8_t)vm, (uint16_t)mhz)) mhz = Config::bigModePrefClock((uint8_t)vm);
         const int big = graphics_big_mode(vm, mhz, 0);
         return big >= 0 ? big : 0;
     }
@@ -290,22 +290,34 @@ static bool vmFastOffered() {
     // which resolveConstraints already forces.
     return (unsigned)Stage::get(SET_CPU_MHZ) == Config::VM_FAST_CPU_MHZ;
 }
-// The big modes: PIO HDMI output (an HSTX build cannot make their clocks) and a
-// staged CPU clock that runs them (same "keep the staged row" exception as the fast set).
+// The big modes: PIO HDMI (an HSTX build cannot make their clocks) at a staged CPU
+// clock that runs them, or PIO VGA at any clock (its 63 / 42 MHz pixel is an integer
+// divider at 252/378/504). Same "keep the staged row" exception as the fast set.
+static bool vmBigVga() {
+#ifdef VGA_HDMI
+    return SELECT_VGA;
+#else
+    return false;
+#endif
+}
 static bool vmBigOffered() {
+    if (vmBigVga()) {
+#if defined(VGA_HDMI) && !VGA_HSTX
+        return true;
+#else
+        return false;
+#endif
+    }
 #if HDMI_HSTX
     return false;
 #else
-  #ifdef VGA_HDMI
-    if (SELECT_VGA) return false;
-  #endif
     return true;
 #endif
 }
 static bool vmRowVisible(int32_t vm, bool fastOk, bool bigOk, int32_t staged) {
     if (vm == staged) return true;
     if (Config::isBigVideoMode((uint8_t)vm))
-        return bigOk && Config::bigModeClockOk((uint8_t)vm, (uint16_t)Stage::get(SET_CPU_MHZ));
+        return bigOk && (vmBigVga() || Config::bigModeClockOk((uint8_t)vm, (uint16_t)Stage::get(SET_CPU_MHZ)));
     return !Config::isFastVideoMode((uint8_t)vm) || fastOk;
 }
 
@@ -377,7 +389,7 @@ static const Option* video_modeOpts(uint8_t& cnt) {
         // at VM_FAST_CPU_MHZ, not the one at `mhz`.
         const bool needsFast = Config::isFastVideoMode((uint8_t)vm) &&
                                mhz != Config::VM_FAST_CPU_MHZ;
-        const bool needsXga  = Config::isBigVideoMode((uint8_t)vm) &&
+        const bool needsXga  = Config::isBigVideoMode((uint8_t)vm) && !vga &&
                                !Config::bigModeClockOk((uint8_t)vm, (uint16_t)mhz);
         if (needsFast || needsXga || d <= 0.0f) {
             const unsigned at = needsXga ? (unsigned)Config::bigModePrefClock((uint8_t)vm)

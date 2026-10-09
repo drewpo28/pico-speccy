@@ -156,10 +156,51 @@ int main(void) {
     // The 37.8 MHz "fast" set has no VGA override and is NOT HSTX-reachable
     // (126/37.8 = 3.333); it stays a PIO-only mode.  Assert that it really has no
     // vga_pixel_clk, so nobody "fixes" it into a VGA-HSTX build by accident.
-    for (int i = VMODE_FAST_OFFSET; i < (int)(sizeof(video_mode)/sizeof(video_mode[0])); i++) {
+    for (int i = VMODE_FAST_OFFSET; i < VMODE_XGA4_504; i++) {
         char d[80];
         snprintf(d, sizeof d, "mode %d has a vga_pixel_clk", i);
         chk(video_mode[i].vga_pixel_clk == 0, "fast set", "no VGA override", d);
+    }
+
+    // The VGA (PIO) twins of the big HDMI modes, [28]..[39]: an integer PIO divider at
+    // 252/378/504, a 32-bit-aligned line inside VGA_MAX_LINE_SIZE_BIG, every vga_*
+    // field set (a zero would inherit the HDMI one), and the machine's refresh.
+    {
+        const int n = (int)(sizeof(video_mode)/sizeof(video_mode[0]));
+        for (int i = VMODE_XGA4_504; i < n; i++) {
+            const struct video_mode_t *m = &video_mode[i];
+            char name[24], d[160];
+            snprintf(name, sizeof name, "[%d] VGA big", i);
+            chk(m->vga_pixel_clk && m->vga_v_total && m->vga_v_active && m->vga_vsync_start &&
+                m->vga_vsync_end && m->vga_h_sync_bytes && m->vga_h_bp_bytes &&
+                m->vga_h_fp_bytes && m->vga_screen_width, name, "fields", "a vga_* field is 0");
+            const int h_total = (m->vga_h_sync_bytes + m->vga_h_bp_bytes + m->vga_screen_width
+                                 + m->vga_h_fp_bytes) * 2;
+            const int shift = (m->vga_h_sync_bytes + m->vga_h_bp_bytes) * 2;
+            snprintf(d, sizeof d, "line %d, shift %d, max %d", h_total, shift, VGA_MAX_LINE_SIZE_BIG);
+            chk(h_total % 4 == 0 && shift % 4 == 0 && h_total <= VGA_MAX_LINE_SIZE_BIG, name, "alignment", d);
+            for (int c = 0; c < 3; c++) {
+                const unsigned sys = (unsigned[]){252, 378, 504}[c];
+                const double div = sys * 1e6 / m->vga_pixel_clk;
+                snprintf(d, sizeof d, "divider %.4f at %u MHz", div, sys);
+                // integer at 252/504; 378 may be a half-integer (1024x768: 7.5)
+                const double d2 = div * (sys == 378 ? 2 : 1);
+                chk(fabs(d2 - floor(d2 + 0.5)) < 1e-9, name, "PIO divider", d);
+            }
+            const double hz = (double)m->vga_pixel_clk / h_total / m->vga_v_total;
+            const double err = 0.0;
+            // VESA 60 Hz: line count, vsync position/width and a refresh within 0.5%.
+            const int is1024 = m->vga_screen_width == 512;
+            snprintf(d, sizeof d, "%.3f Hz, v_total %d, vsync %d..%d", hz, m->vga_v_total,
+                     m->vga_vsync_start, m->vga_vsync_end);
+            chk(fabs(hz / (is1024 ? 60.004 : 60.317) - 1.0) < 0.005
+                && m->vga_v_total == (is1024 ? 806 : 628)
+                && m->vga_vsync_start == (is1024 ? 771 : 601)
+                && m->vga_vsync_end == (is1024 ? 776 : 604), name, "VESA 60 Hz", d);
+            printf("%-16s %8.4f       %5d %10.3f %5d %9.3f %+6.2f%%\n", name,
+                   m->vga_pixel_clk / 1e6, h_total, m->vga_pixel_clk / 1e3 / h_total,
+                   m->vga_v_total, hz, err);
+        }
     }
 
     printf("\n%s (%d failure%s)\n", fails ? "FAILED" : "PASS", fails, fails == 1 ? "" : "s");
