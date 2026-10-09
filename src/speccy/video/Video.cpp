@@ -97,6 +97,7 @@ extern "C" int  graphics_fast_mode(int mode);
 extern "C" int  graphics_540_mode(int mode);
 extern "C" int  graphics_xga_mode(int x3);
 extern "C" int  graphics_big_mode(int vm, unsigned mhz, int klass);
+extern "C" void graphics_big_mode_fit(int mode, int klass);
 extern "C" void graphics_set_hdmi_clock_drive(bool soft);
 extern "C" void hdmi_audio_health_snapshot(uint32_t *und, uint32_t *skip, uint32_t *dup, uint32_t *qmin, uint32_t *qmax);
 extern "C" void hdmi_set_profi_ds80_mode(bool active, const uint32_t *palette16, const uint8_t *pair_lut);
@@ -5261,7 +5262,7 @@ void VIDEO::Reset() {
         // so it takes the entry the HDMI mode would use at its own clock.
         const int big = graphics_big_mode(vmSel, SELECT_VGA ? Config::bigModePrefClock(vmSel)
                                                             : Config::cpu_mhz, klass);
-        if (big >= 0) video_mode = big;
+        if (big >= 0) { graphics_big_mode_fit(big, klass); video_mode = big; }
     } else if (!SELECT_VGA && Config::cpu_mhz == Config::CPU_540_MHZ) {
         video_mode = graphics_540_mode(video_mode);
     }

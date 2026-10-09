@@ -1550,11 +1550,12 @@ void Config::load() {
         // the PIO a fractional divider.  The menu refuses the combination up front
         // (resolveConstraints); this is the backstop for everything that does not
         // go through it.
-        // sys_clk 540 exists only where the HDMI PIO can take it: the standard modes
-        // switch to their 27 MHz twins there (graphics_540_mode). An HSTX build's
-        // clk_hstx is pinned to 126 MHz (252/378/504 only), and SOFTTV/TV/TFT have
-        // no use for it — a config from another board falls back to 504.
-#if !defined(VGA_HDMI) || HDMI_HSTX
+        // sys_clk 540 exists only where HDMI can take it: the standard modes switch
+        // to their 27 MHz twins there (graphics_540_mode) — PIO divider 2.0, or on
+        // HSTX clk_hstx 135 = 540/4. VGA on HSTX cannot (its clk_hstx is 126 MHz);
+        // main() folds that case once the output is known. SOFTTV/TV/TFT have no use
+        // for it — a config from another board falls back to 504.
+#if !defined(VGA_HDMI)
         if (cpu_mhz == CPU_540_MHZ) cpu_mhz = 504;
 #endif
         if (cpu_mhz != VM_FAST_CPU_MHZ) {

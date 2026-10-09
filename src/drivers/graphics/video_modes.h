@@ -138,9 +138,22 @@ struct video_mode_t {
 #define VMODE_540_OFFSET 17
 #define VMODE_XGA        26
 #define VMODE_XGA3       27
-// sys_clk 504: 1024x768 x4 / x3 per machine (Pentagon, 48K, 128K) at ~50 Hz, and
-// 800x600 x2; sys_clk 378: 800x600 x3. Three per-machine entries each.
-#define VMODE_XGA4_504   28
-#define VMODE_XGA3_504   31
-#define VMODE_SVGA3_378  34
-#define VMODE_SVGA2_504  37
+// The big modes at ~50 Hz per machine, one entry per (clock, scale) — see
+// graphics_big_mode() for which clock picks which. Shared:
+#define VMODE_XGA4_504   28   // 1024x768 x4, 50.4 MHz (HSTX: also at 252)
+#define VMODE_XGA3_504   29   // 1024x768 x3
+#define VMODE_SVGA3_378  30   // 800x600 x3, 37.8 MHz
+#define VMODE_SVGA2_378  31   // 800x600 x2, 37.8 MHz
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+#define VMODE_XGA4_378   32   // 1024x768 x4 / x3, 75.6 MHz (clk_hstx 378 /1)
+#define VMODE_XGA3_378   33
+#define VMODE_SVGA3_H504 34   // 800x600 x3 / x2, 50.4 MHz (clk_hstx 252: 252 /1, 504 /2)
+#define VMODE_SVGA2_H504 35
+#define VMODE_SVGA3_H540 36   // 800x600 x3 / x2, 54 MHz (clk_hstx 270 = 540 /2)
+#define VMODE_SVGA2_H540 37
+#else
+#define VMODE_SVGA3_504  32   // 800x600 x3 / x2, 33.6 MHz (PIO 1.5)
+#define VMODE_SVGA2_504  33
+#define VMODE_SVGA3_540  34   // 800x600 x3 / x2, 36 MHz (PIO 1.5)
+#define VMODE_SVGA2_540  35
+#endif

@@ -1284,6 +1284,11 @@ static void resolveConstraints(CommitReport& rep) {
 #endif
         }
 
+#if defined(VGA_HSTX) && VGA_HSTX
+        // VGA on HSTX: clk_hstx is 126 MHz, which 540 cannot make.
+        if (SELECT_VGA && staged(SET_CPU_MHZ) == Config::CPU_540_MHZ)
+            changed |= force(SET_CPU_MHZ, 504, rep, "540 MHz is HDMI only on this board");
+#endif
         // sys_clk 540 MHz. EDGE: picking it raises the core voltage to 1.80 V — at
         // 1.60-1.70 V the DVp2 corrupted SRAM under a heavy TS-Conf scene (hw
         // 2026-10-08), at 1.80 V it ran. The user may lower it again afterwards.
@@ -1304,7 +1309,9 @@ static void resolveConstraints(CommitReport& rep) {
                 vga = SELECT_VGA;
 #endif
 #if defined(HDMI_HSTX) && HDMI_HSTX
-                if (!vga) refuse = true;
+                // HSTX: the TMDS expander runs them (800x600 x2 at 378, see
+                // bigModeClockOk); the RAW back-end none.
+                if (!vga && HDMI_HSTX != 2) refuse = true;
 #endif
 #if defined(VGA_HSTX) && VGA_HSTX
                 if (vga) refuse = true;

@@ -126,6 +126,7 @@ int graphics_540_mode(int mode);
 int graphics_xga_mode(int x3);
 // HDMI-only big modes (VM 8..11): table index at this clock / machine class, or -1.
 int graphics_big_mode(int vm, unsigned mhz, int klass);
+void graphics_big_mode_fit(int mode, int klass);
 
 #ifdef __cplusplus
 }

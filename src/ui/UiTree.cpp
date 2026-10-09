@@ -309,7 +309,7 @@ static bool vmBigOffered() {
 #endif
     }
 #if HDMI_HSTX
-    return false;
+    return HDMI_HSTX == 2;   // the TMDS expander; bigModeClockOk() narrows it per mode
 #else
     return true;
 #endif
@@ -354,7 +354,9 @@ static const Option* video_modeOpts(uint8_t& cnt) {
         //    every row and says nothing; what differs per mode is k, the clk_hstx
         //    cycles per pixel, which sets the PWM phase weights and level count.
         {
-            const unsigned lm = (Config::isFastVideoMode((uint8_t)vm) && mhz != Config::VM_FAST_CPU_MHZ) ? (unsigned)Config::VM_FAST_CPU_MHZ : mhz;
+            unsigned lm = (Config::isFastVideoMode((uint8_t)vm) && mhz != Config::VM_FAST_CPU_MHZ) ? (unsigned)Config::VM_FAST_CPU_MHZ : mhz;
+            if (!vga && Config::isBigVideoMode((uint8_t)vm) && !Config::bigModeClockOk((uint8_t)vm, (uint16_t)mhz))
+                lm = Config::bigModePrefClock((uint8_t)vm);
             const int gi = vmGraphicsIndex(vm, lm, vga);
             char tail[20];
   #if VGA_HSTX
@@ -447,9 +449,9 @@ static const Option opt_cpu_mhz[] = {
     { "252 MHz", 252 },
     { "378 MHz", 378 },
     { "504 MHz", 504 },
-#if defined(VGA_HDMI) && !HDMI_HSTX
-    // HDMI on the PIO only (clk_hstx is pinned to 126 MHz = 252/378/504). Every
-    // video mode switches to a 27 MHz twin (divider 2.0); 1024x768 exists only here.
+#if defined(VGA_HDMI)
+    // HDMI only: every video mode switches to a 27 MHz twin (PIO divider 2.0, or on
+    // HSTX clk_hstx 135 = 540/4). VGA on HSTX cannot take it (resolveConstraints).
     // Needs ~1.80 V — resolveConstraints raises the voltage when 540 is picked.
     { "540 MHz", 540 },
 #endif

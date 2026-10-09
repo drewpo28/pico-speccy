@@ -743,6 +743,54 @@ static void __attribute__((noinline)) __not_in_flash_func(hdmi_px_blank)(uint64_
     const uint64_t b = ((const uint64_t *)(conv_color_b + 512))[255];
     for (int x = 0; x < scr_w; x += 2) { out[x] = a; out[x + 1] = b; }
 }
+
+// The big modes (1024x768 x4 / x3, 800x600 x3) on the expander: one XRGB8888 word
+// per OUTPUT pixel, each fb byte repeated `scale` times, even output positions from
+// page A's left word and odd ones from page B's right word — exactly the pattern a
+// standard line gives a doubled byte, so the CRT-grille phases carry over. Rows are
+// mapped by the shared line map (hdmi_vmap_x4); margins and rows past the fb are
+// palette index 255. Line buffers are heap (hdmi_tl_cap words each): the 1280-px line
+// does not fit the static conv_color. Main RAM, never SCRATCH_X (no room there).
+static uint8_t  hdmi_big_scale = 0;    // 0 = an ordinary mode
+static uint16_t hdmi_big_fbx, hdmi_big_cols, hdmi_big_left;
+static uint32_t hdmi_tl_cap = HDMI_TL_MAX_WORDS;   // words per line buffer
+static int __attribute__((noinline)) __not_in_flash_func(hdmi_big_line)(
+        uint32_t *buf, const uint8_t *row, int audio, uint32_t **chars) {
+    uint32_t *out;
+    const int n = hdmi_tl_active(buf, &hdmi_tl_g, &hdmi_tl_w, 1, audio, &out, chars);
+    const uint32_t *__restrict la = conv_color_b;          // page A, (left, right) per slot
+    const uint32_t *__restrict lb = conv_color_b + 512;    // page B
+    const uint32_t bga = la[255 * 2], bgb = lb[255 * 2 + 1];
+    const int act = hdmi_tl_g.active_px;
+    int i = 0;
+    if (row) {
+        for (; i < hdmi_big_left; i += 2) { out[i] = bga; out[i + 1] = bgb; }
+        const uint8_t *__restrict in = row + hdmi_big_fbx;   // fbx is a multiple of 4: x^2 holds
+        const int cols = hdmi_big_cols;
+        uint32_t *__restrict o = out + i;
+        if (hdmi_big_scale == 4) {
+            for (int x = 0; x < cols; x++) {
+                const uint idx = in[x ^ 2];
+                const uint32_t a = la[idx * 2], b = lb[idx * 2 + 1];
+                o[0] = a; o[1] = b; o[2] = a; o[3] = b; o += 4;
+            }
+        } else if (hdmi_big_scale == 3) {
+            for (int x = 0; x < cols; x += 2) {   // two bytes = six pixels, parity a b a | b a b
+                const uint p = in[x ^ 2], q = in[(x + 1) ^ 2];
+                o[0] = la[p * 2]; o[1] = lb[p * 2 + 1]; o[2] = la[p * 2];
+                o[3] = lb[q * 2 + 1]; o[4] = la[q * 2]; o[5] = lb[q * 2 + 1]; o += 6;
+            }
+        } else {
+            for (int x = 0; x < cols; x++) {
+                const uint idx = in[x ^ 2];
+                o[0] = la[idx * 2]; o[1] = lb[idx * 2 + 1]; o += 2;
+            }
+        }
+        i = (int)(o - out);
+    }
+    for (; i < act; i += 2) { out[i] = bga; out[i + 1] = bgb; }
+    return n;
+}
 #endif
 
 // Current HDMI scanline counter (exposed for Profi palette refresh sync).
@@ -845,13 +893,17 @@ static uint __not_in_flash_func(hdmi_vmap_step)(const uint16_t *vm, uint line) {
 // multiple of 4 (word stores), the line length even (byte parity picks the slot
 // half), and the island (15 bytes) fits in hs.
 typedef struct { uint16_t line, hs, bp, act, rem, left, cw, fbx; } hdmi_x3_layout_t;
-static const hdmi_x3_layout_t hdmi_x3_layouts[3] = {
+static const hdmi_x3_layout_t hdmi_x3_layouts[5] = {
     // 1024x768 @540, 1152 px: hs 66 / bp 48 / 1024 (341 B + 1) / fp 14; 960 = 320 fb px from x 0
     { 384, 22, 16, 341, 1, 10, 320, 0 },
     // 1024x768 @504, 1278 px: hs 96 / bp 138 / 1024 / fp 20
     { 426, 32, 46, 341, 1, 10, 320, 0 },
     // 800x600 @378, 1008 px: hs 72 / bp 93 / 800 (266 B + 2) / fp 43; 792 = 264 fb px from x 28
     { 336, 24, 31, 266, 2,  1, 264, 28 },
+    // 800x600 @504 (33.6 MHz), 1056 px: hs 96 / bp 93 / 800 / fp 67
+    { 352, 32, 31, 266, 2,  1, 264, 28 },
+    // 800x600 @540 (36 MHz), 1152 px: hs 96 / bp 93 / 800 / fp 163
+    { 384, 32, 31, 266, 2,  1, 264, 28 },
 };
 static hdmi_x3_layout_t hdmi_x3_L;   // the live one, in RAM (read by the line ISR)
 #define HDMI_X3_LINE   (hdmi_x3_L.line)
@@ -1192,6 +1244,14 @@ static void __scratch_x("hdmi_driver") dma_handler_HDMI_body() {
         // below a centred picture: background, and never an index into the fb.
         if ((modep->x4_offset || modep->x2_pad) && (y < 0 || y >= graphics_buffer_height)) {
             nf_memset(output_buffer, 255, scr_w);
+            goto ex;
+        }
+#endif
+#if HDMI_EXPANDER
+        if (hdmi_big_scale) {
+            tl_n = hdmi_big_line(wbuf, (y >= 0 && y < graphics_buffer_height) ? getLineBuffer(y) : NULL,
+                                 (au_ok_now && au_video_guards) ? 1 : 0, &tl_chars);
+            px_done = true;
             goto ex;
         }
 #endif
@@ -1588,7 +1648,7 @@ static inline bool hdmi_init() {
 #if !HDMI_EXPANDER
     hdmi_x3_on = false;
     if (hdmi_conv_prog == &pio_program_conv_addr_HDMI_3px) {
-        const int li = (hdmi_mode.x3 >= 1 && hdmi_mode.x3 <= 3) ? hdmi_mode.x3 - 1 : 0;
+        const int li = (hdmi_mode.x3 >= 1 && hdmi_mode.x3 <= 5) ? hdmi_mode.x3 - 1 : 0;
         hdmi_x3_L = hdmi_x3_layouts[li];
         // Page A is complete here (palette, sync, and the audio slots set up by
         // hdmi_audio_hw_init on core0): derive every x3 slot from it, then the
@@ -1689,6 +1749,33 @@ static inline bool hdmi_init() {
     // of the four the palette converter needed.
     dma_lines[0] = &conv_color[0];
     dma_lines[1] = &conv_color[HDMI_TL_MAX_WORDS];
+    hdmi_tl_cap = HDMI_TL_MAX_WORDS;
+    hdmi_big_scale = 0;
+    if (hdmi_mode.x4_offset || hdmi_mode.x3 || hdmi_mode.x2_pad) {
+        // The big modes: their lines (up to 1280 px, a word per pixel even on a
+        // blanking line) do not fit conv_color; two heap buffers, kept for the session.
+        extern void* tryMalloc(size_t n);
+        static uint32_t *big_lines = NULL;
+        const uint32_t cap = (uint32_t)hdmi_tl_g.total_px + 64u;
+        if (!big_lines) big_lines = (uint32_t *)tryMalloc(2u * cap * sizeof(uint32_t));
+        if (big_lines) {
+            const int scale = hdmi_mode.x4_offset ? 4 : hdmi_mode.x3 ? 3 : 2;
+            const int act = hdmi_tl_g.active_px, fbw = scale == 2 ? 360 : 320;
+            int cols = act / scale; if (cols > fbw) cols = fbw; cols &= ~3;
+            hdmi_big_cols  = (uint16_t)cols;
+            hdmi_big_fbx   = (uint16_t)(((fbw - cols) / 2) & ~3);   // x4: 1024 -> 32
+            hdmi_big_left  = (uint16_t)(((act - cols * scale) / 2) & ~1);
+            dma_lines[0] = big_lines;
+            dma_lines[1] = big_lines + cap;
+            hdmi_tl_cap = cap;
+            hdmi_big_scale = (uint8_t)scale;
+            printf("hdmi: big mode x%d, %d px line, fb %d bytes from %d, left %d px\n",
+                   scale, hdmi_tl_g.total_px, cols, hdmi_big_fbx, hdmi_big_left);
+        } else {
+            printf("hdmi: no heap for the big-mode line buffers (%u B) - no picture\n",
+                   (unsigned)(2u * cap * sizeof(uint32_t)));
+        }
+    }
     // Prime both buffers with a blanking line so the first plays are well-formed.
     for (int k = 0; k < 2; k++) {
         uint32_t *chars;
@@ -3140,12 +3227,12 @@ static void __not_in_flash_func(hdmi_isl_second_play)(uint o, uint sl) {
     if (!chars) return;
     const uint32_t buf = (uint32_t)dma_lines[o];
     const uint32_t ra = dma_hw->ch[dma_chan].read_addr;
-    if (ra >= buf + 4u * HDMI_TL_DI_WORDS && ra <= buf + 4u * HDMI_TL_MAX_WORDS) {
+    if (ra >= buf + 4u * HDMI_TL_DI_WORDS && ra <= buf + 4u * hdmi_tl_cap) {
         hdmi_isl_audio[o] = hdmi_di_fill(chars, sl, hdmi_isl_vs[o]);
 #if HDMI_LIVE_AUDIO_DIAG
         const uint32_t after = dma_hw->ch[dma_chan].read_addr;
         if (after < buf + 4u * HDMI_TL_DI_WORDS ||
-            after > buf + 4u * HDMI_TL_MAX_WORDS)
+            after > buf + 4u * hdmi_tl_cap)
             hdmi_au_late_write_ct++;
 #endif
     } else {

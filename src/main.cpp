@@ -2082,6 +2082,12 @@ int main() {
         // the timing fix-up as one interrupt-disabled critical section, then bring
         // IRQs back only once flash/PSRAM timing matches the new clock. All four
         // helpers below are __not_in_flash so they execute safely with IRQs off.
+#if defined(VGA_HSTX) && VGA_HSTX
+        {   // 540 is HDMI-only on an HSTX build: VGA's clk_hstx is 126 MHz, 540/126 is not whole
+            extern bool SELECT_VGA;
+            if (SELECT_VGA && Config::cpu_mhz == Config::CPU_540_MHZ) Config::cpu_mhz = 504;
+        }
+#endif
         bool clk_changed = (Config::cpu_mhz != running_mhz);
         bool clk_locked  = true;
         {

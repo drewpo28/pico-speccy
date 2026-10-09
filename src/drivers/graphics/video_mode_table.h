@@ -659,12 +659,14 @@ static struct video_mode_t video_mode[] = {
     },
 
     // ---------------------------------------------------------------------
-    // Bigger screens without the 540 MHz overclock (and 1024x768 at ~50 Hz per
-    // machine, V-Sync on): sys_clk 504 -> 1024x768 at 50.4 MHz (divider 1.0, x4 and
-    // x3) and 800x600 x2 at 33.6 MHz (1.5); sys_clk 378 -> 800x600 x3 at 37.8 MHz
-    // (1.0). Picked by graphics_big_mode(); the x3 line layouts are in hdmi.c.
+    // The big modes at ~50 Hz per machine: ONE entry per (pixel clock, scale). The
+    // per-machine line count is not in the table — graphics_big_mode_fit() writes
+    // v_total from the machine's frame rate when the mode is picked (the entries are
+    // RAM, and the HDMI ISR takes a v_total change live). [28]..[31] are shared;
+    // then the PIO set or the HSTX (TMDS expander) set. The x3 line layouts of the
+    // PIO path are in hdmi.c (hdmi_x3_layouts[x3 - 1]); HSTX only reads the scale.
     // ---------------------------------------------------------------------
-    { // [28] 1024x768 x4 @504 Pentagon — 50.4MHz/1280/806 = 48.85Hz
+    { // [28] 1024x768 x4 @504 (HSTX also @252) — 50.4MHz/1280 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 805,
         .v_active = 768,
         .freq = 50,
@@ -680,8 +682,8 @@ static struct video_mode_t video_mode[] = {
         .pio_clk_div = PIO_DIV_540,
         .tmds_mhz = 504,
         .x4_offset = 32,
-        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it exactly:
-        // 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync pacing off.
+        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it
+        // exactly: 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync off.
         .vga_v_total = 806,
         .vga_v_active = 768,
         .vga_pixel_clk = 63000000,
@@ -692,63 +694,7 @@ static struct video_mode_t video_mode[] = {
         .vga_h_fp_bytes = 10,
         .vga_screen_width = 512
     },
-    { // [29] 1024x768 x4 @504 48K — 50.4MHz/1280/786 = 50.10Hz
-        .v_total = 785,
-        .v_active = 768,
-        .freq = 50,
-        .pixel_clk = 50400000,
-        .vsync_start = 771,
-        .vsync_end = 777,
-        .screen_width = 512,
-        .h_sync_bytes = 48,
-        .h_bp_bytes = 72,
-        .h_fp_bytes = 8,
-        .line_bytes = 640,
-        .v_offset = 24,
-        .pio_clk_div = PIO_DIV_540,
-        .tmds_mhz = 504,
-        .x4_offset = 32,
-        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it exactly:
-        // 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync pacing off.
-        .vga_v_total = 806,
-        .vga_v_active = 768,
-        .vga_pixel_clk = 63000000,
-        .vga_vsync_start = 771,
-        .vga_vsync_end = 776,
-        .vga_h_sync_bytes = 56,
-        .vga_h_bp_bytes = 74,
-        .vga_h_fp_bytes = 10,
-        .vga_screen_width = 512
-    },
-    { // [30] 1024x768 x4 @504 128K — 50.4MHz/1280/787 = 50.03Hz
-        .v_total = 786,
-        .v_active = 768,
-        .freq = 50,
-        .pixel_clk = 50400000,
-        .vsync_start = 771,
-        .vsync_end = 777,
-        .screen_width = 512,
-        .h_sync_bytes = 48,
-        .h_bp_bytes = 72,
-        .h_fp_bytes = 8,
-        .line_bytes = 640,
-        .v_offset = 24,
-        .pio_clk_div = PIO_DIV_540,
-        .tmds_mhz = 504,
-        .x4_offset = 32,
-        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it exactly:
-        // 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync pacing off.
-        .vga_v_total = 806,
-        .vga_v_active = 768,
-        .vga_pixel_clk = 63000000,
-        .vga_vsync_start = 771,
-        .vga_vsync_end = 776,
-        .vga_h_sync_bytes = 56,
-        .vga_h_bp_bytes = 74,
-        .vga_h_fp_bytes = 10,
-        .vga_screen_width = 512
-    },
-    { // [31] 1024x768 x3 @504 Pentagon — 50.4MHz/1278/808 = 48.81Hz (x3 layout 2)
+    { // [29] 1024x768 x3 @504 (HSTX also @252), x3 layout 2 — 50.4MHz/1278 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 807,
         .v_active = 768,
         .freq = 50,
@@ -764,8 +710,8 @@ static struct video_mode_t video_mode[] = {
         .pio_clk_div = PIO_DIV_540,
         .tmds_mhz = 504,
         .x3 = 2,
-        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it exactly:
-        // 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync pacing off.
+        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it
+        // exactly: 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync off.
         .vga_v_total = 806,
         .vga_v_active = 768,
         .vga_pixel_clk = 63000000,
@@ -776,63 +722,7 @@ static struct video_mode_t video_mode[] = {
         .vga_h_fp_bytes = 10,
         .vga_screen_width = 512
     },
-    { // [32] 1024x768 x3 @504 48K — 50.4MHz/1278/788 = 50.05Hz (x3 layout 2)
-        .v_total = 787,
-        .v_active = 768,
-        .freq = 50,
-        .pixel_clk = 50400000,
-        .vsync_start = 771,
-        .vsync_end = 777,
-        .screen_width = 512,
-        .h_sync_bytes = 48,
-        .h_bp_bytes = 71,
-        .h_fp_bytes = 8,
-        .line_bytes = 639,
-        .v_offset = 0,
-        .pio_clk_div = PIO_DIV_540,
-        .tmds_mhz = 504,
-        .x3 = 2,
-        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it exactly:
-        // 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync pacing off.
-        .vga_v_total = 806,
-        .vga_v_active = 768,
-        .vga_pixel_clk = 63000000,
-        .vga_vsync_start = 771,
-        .vga_vsync_end = 776,
-        .vga_h_sync_bytes = 56,
-        .vga_h_bp_bytes = 74,
-        .vga_h_fp_bytes = 10,
-        .vga_screen_width = 512
-    },
-    { // [33] 1024x768 x3 @504 128K — 50.4MHz/1278/788 = 50.05Hz (x3 layout 2)
-        .v_total = 787,
-        .v_active = 768,
-        .freq = 50,
-        .pixel_clk = 50400000,
-        .vsync_start = 771,
-        .vsync_end = 777,
-        .screen_width = 512,
-        .h_sync_bytes = 48,
-        .h_bp_bytes = 71,
-        .h_fp_bytes = 8,
-        .line_bytes = 639,
-        .v_offset = 0,
-        .pio_clk_div = PIO_DIV_540,
-        .tmds_mhz = 504,
-        .x3 = 2,
-        // VGA (PIO): VESA 1024x768@60 (-H -V) line count and rates, the monitor knows it exactly:
-        // 63 MHz, 1304 px line (48.31 kHz), 806 lines, 59.94 Hz — V-Sync pacing off.
-        .vga_v_total = 806,
-        .vga_v_active = 768,
-        .vga_pixel_clk = 63000000,
-        .vga_vsync_start = 771,
-        .vga_vsync_end = 776,
-        .vga_h_sync_bytes = 56,
-        .vga_h_bp_bytes = 74,
-        .vga_h_fp_bytes = 10,
-        .vga_screen_width = 512
-    },
-    { // [34] 800x600 x3 @378 Pentagon — 37.8MHz/1008/768 = 48.83Hz (x3 layout 3), centre 264x200 of the fb
+    { // [30] 800x600 x3 @378, x3 layout 3 — 37.8MHz/1008 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 767,
         .v_active = 600,
         .freq = 50,
@@ -848,8 +738,8 @@ static struct video_mode_t video_mode[] = {
         .pio_clk_div = PIO_DIV_540,
         .tmds_mhz = 378,
         .x3 = 3,
-        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it exactly:
-        // 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync pacing off.
+        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it
+        // exactly: 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync off.
         .vga_v_total = 628,
         .vga_v_active = 600,
         .vga_pixel_clk = 42000000,
@@ -860,8 +750,8 @@ static struct video_mode_t video_mode[] = {
         .vga_h_fp_bytes = 24,
         .vga_screen_width = 400
     },
-    { // [35] 800x600 x3 @378 48K — 37.8MHz/1008/749 = 50.07Hz (x3 layout 3), centre 264x200 of the fb
-        .v_total = 748,
+    { // [31] 800x600 x2 @378 — 37.8MHz/1008 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 767,
         .v_active = 600,
         .freq = 50,
         .pixel_clk = 37800000,
@@ -872,51 +762,133 @@ static struct video_mode_t video_mode[] = {
         .h_bp_bytes = 46,
         .h_fp_bytes = 22,
         .line_bytes = 504,
-        .v_offset = 20,
+        .v_offset = 0,
         .pio_clk_div = PIO_DIV_540,
         .tmds_mhz = 378,
-        .x3 = 3,
-        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it exactly:
-        // 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync pacing off.
-        .vga_v_total = 628,
-        .vga_v_active = 600,
-        .vga_pixel_clk = 42000000,
-        .vga_vsync_start = 601,
-        .vga_vsync_end = 604,
-        .vga_h_sync_bytes = 77,
-        .vga_h_bp_bytes = 53,
-        .vga_h_fp_bytes = 24,
-        .vga_screen_width = 400
+        .x2_pad = 20
     },
-    { // [36] 800x600 x3 @378 128K — 37.8MHz/1008/750 = 50.00Hz (x3 layout 3), centre 264x200 of the fb
-        .v_total = 749,
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+    { // [32] 1024x768 x4 @378 (clk_hstx 378 /1) — 75.6MHz/1920 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 805,
+        .v_active = 768,
+        .freq = 50,
+        .pixel_clk = 75600000,
+        .vsync_start = 771,
+        .vsync_end = 777,
+        .screen_width = 512,
+        .h_sync_bytes = 64,
+        .h_bp_bytes = 368,
+        .h_fp_bytes = 16,
+        .line_bytes = 960,
+        .v_offset = 24,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 756,
+        .x4_offset = 32
+    },
+    { // [33] 1024x768 x3 @378 (clk_hstx 378 /1) — 75.6MHz/1920 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 805,
+        .v_active = 768,
+        .freq = 50,
+        .pixel_clk = 75600000,
+        .vsync_start = 771,
+        .vsync_end = 777,
+        .screen_width = 512,
+        .h_sync_bytes = 64,
+        .h_bp_bytes = 368,
+        .h_fp_bytes = 16,
+        .line_bytes = 960,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 756,
+        .x3 = 1
+    },
+    { // [34] 800x600 x3 @252 /1, @504 /2 (clk_hstx 252) — 50.4MHz/1600 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 644,
         .v_active = 600,
         .freq = 50,
-        .pixel_clk = 37800000,
+        .pixel_clk = 50400000,
         .vsync_start = 601,
         .vsync_end = 605,
         .screen_width = 400,
-        .h_sync_bytes = 36,
-        .h_bp_bytes = 46,
-        .h_fp_bytes = 22,
-        .line_bytes = 504,
+        .h_sync_bytes = 64,
+        .h_bp_bytes = 320,
+        .h_fp_bytes = 16,
+        .line_bytes = 800,
         .v_offset = 20,
         .pio_clk_div = PIO_DIV_540,
-        .tmds_mhz = 378,
-        .x3 = 3,
-        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it exactly:
-        // 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync pacing off.
-        .vga_v_total = 628,
-        .vga_v_active = 600,
-        .vga_pixel_clk = 42000000,
-        .vga_vsync_start = 601,
-        .vga_vsync_end = 604,
-        .vga_h_sync_bytes = 77,
-        .vga_h_bp_bytes = 53,
-        .vga_h_fp_bytes = 24,
-        .vga_screen_width = 400
+        .tmds_mhz = 504,
+        .x3 = 3
     },
-    { // [37] 800x600 x2 @504 Pentagon — 33.6MHz/1056/652 = 48.80Hz, the 360x288 fb centred
+    { // [35] 800x600 x2 @252 /1, @504 /2 (clk_hstx 252) — 50.4MHz/1600 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 644,
+        .v_active = 600,
+        .freq = 50,
+        .pixel_clk = 50400000,
+        .vsync_start = 601,
+        .vsync_end = 605,
+        .screen_width = 400,
+        .h_sync_bytes = 64,
+        .h_bp_bytes = 320,
+        .h_fp_bytes = 16,
+        .line_bytes = 800,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 504,
+        .x2_pad = 20
+    },
+    { // [36] 800x600 x3 @540 /2 (clk_hstx 270) — 54.0MHz/1728 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 639,
+        .v_active = 600,
+        .freq = 50,
+        .pixel_clk = 54000000,
+        .vsync_start = 601,
+        .vsync_end = 605,
+        .screen_width = 400,
+        .h_sync_bytes = 64,
+        .h_bp_bytes = 384,
+        .h_fp_bytes = 16,
+        .line_bytes = 864,
+        .v_offset = 20,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 540,
+        .x3 = 3
+    },
+    { // [37] 800x600 x2 @540 /2 (clk_hstx 270) — 54.0MHz/1728 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 639,
+        .v_active = 600,
+        .freq = 50,
+        .pixel_clk = 54000000,
+        .vsync_start = 601,
+        .vsync_end = 605,
+        .screen_width = 400,
+        .h_sync_bytes = 64,
+        .h_bp_bytes = 384,
+        .h_fp_bytes = 16,
+        .line_bytes = 864,
+        .v_offset = 0,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 540,
+        .x2_pad = 20
+    }
+#else
+    { // [32] 800x600 x3 @504 (PIO 1.5), x3 layout 4 — 33.6MHz/1056 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 651,
+        .v_active = 600,
+        .freq = 50,
+        .pixel_clk = 33600000,
+        .vsync_start = 601,
+        .vsync_end = 605,
+        .screen_width = 400,
+        .h_sync_bytes = 48,
+        .h_bp_bytes = 46,
+        .h_fp_bytes = 34,
+        .line_bytes = 528,
+        .v_offset = 20,
+        .pio_clk_div = PIO_DIV_540,
+        .tmds_mhz = 336,
+        .x3 = 4
+    },
+    { // [33] 800x600 x2 @504 (PIO 1.5) — 33.6MHz/1056 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
         .v_total = 651,
         .v_active = 600,
         .freq = 50,
@@ -932,8 +904,8 @@ static struct video_mode_t video_mode[] = {
         .pio_clk_div = PIO_DIV_540,
         .tmds_mhz = 336,
         .x2_pad = 20,
-        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it exactly:
-        // 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync pacing off.
+        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it
+        // exactly: 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync off.
         .vga_v_total = 628,
         .vga_v_active = 600,
         .vga_pixel_clk = 42000000,
@@ -944,60 +916,39 @@ static struct video_mode_t video_mode[] = {
         .vga_h_fp_bytes = 24,
         .vga_screen_width = 400
     },
-    { // [38] 800x600 x2 @504 48K — 33.6MHz/1056/635 = 50.11Hz, the 360x288 fb centred
-        .v_total = 634,
+    { // [34] 800x600 x3 @540 (PIO 1.5), x3 layout 5 — 36.0MHz/1152 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 639,
         .v_active = 600,
         .freq = 50,
-        .pixel_clk = 33600000,
+        .pixel_clk = 36000000,
         .vsync_start = 601,
         .vsync_end = 605,
         .screen_width = 400,
-        .h_sync_bytes = 64,
-        .h_bp_bytes = 44,
-        .h_fp_bytes = 20,
-        .line_bytes = 528,
-        .v_offset = 0,
+        .h_sync_bytes = 48,
+        .h_bp_bytes = 46,
+        .h_fp_bytes = 82,
+        .line_bytes = 576,
+        .v_offset = 20,
         .pio_clk_div = PIO_DIV_540,
-        .tmds_mhz = 336,
-        .x2_pad = 20,
-        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it exactly:
-        // 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync pacing off.
-        .vga_v_total = 628,
-        .vga_v_active = 600,
-        .vga_pixel_clk = 42000000,
-        .vga_vsync_start = 601,
-        .vga_vsync_end = 604,
-        .vga_h_sync_bytes = 77,
-        .vga_h_bp_bytes = 53,
-        .vga_h_fp_bytes = 24,
-        .vga_screen_width = 400
+        .tmds_mhz = 360,
+        .x3 = 5
     },
-    { // [39] 800x600 x2 @504 128K — 33.6MHz/1056/636 = 50.03Hz, the 360x288 fb centred
-        .v_total = 635,
+    { // [35] 800x600 x2 @540 (PIO 1.5) — 36.0MHz/1152 px; v_total = Pentagon, refitted per machine (graphics_big_mode_fit)
+        .v_total = 639,
         .v_active = 600,
         .freq = 50,
-        .pixel_clk = 33600000,
+        .pixel_clk = 36000000,
         .vsync_start = 601,
         .vsync_end = 605,
         .screen_width = 400,
         .h_sync_bytes = 64,
         .h_bp_bytes = 44,
-        .h_fp_bytes = 20,
-        .line_bytes = 528,
+        .h_fp_bytes = 68,
+        .line_bytes = 576,
         .v_offset = 0,
         .pio_clk_div = PIO_DIV_540,
-        .tmds_mhz = 336,
-        .x2_pad = 20,
-        // VGA (PIO): VESA 800x600@60 (+H +V) line count and rates, the monitor knows it exactly:
-        // 42 MHz, 1108 px line (37.91 kHz), 628 lines, 60.36 Hz — V-Sync pacing off.
-        .vga_v_total = 628,
-        .vga_v_active = 600,
-        .vga_pixel_clk = 42000000,
-        .vga_vsync_start = 601,
-        .vga_vsync_end = 604,
-        .vga_h_sync_bytes = 77,
-        .vga_h_bp_bytes = 53,
-        .vga_h_fp_bytes = 24,
-        .vga_screen_width = 400
+        .tmds_mhz = 360,
+        .x2_pad = 20
     }
+#endif
 };

@@ -171,6 +171,11 @@ int main(void) {
             const struct video_mode_t *m = &video_mode[i];
             char name[24], d[160];
             snprintf(name, sizeof name, "[%d] VGA big", i);
+            // VGA uses the entry the HDMI mode takes at its preferred clock: [28] [29]
+            // [30] [33]; the other clock / scale entries are HDMI-only.
+            const int vga_used = (i == 28 || i == 29 || i == 30 || i == 33);
+            chk(!!m->vga_pixel_clk == vga_used, name, "VGA fields", vga_used ? "missing" : "unexpected");
+            if (!m->vga_pixel_clk) continue;
             chk(m->vga_pixel_clk && m->vga_v_total && m->vga_v_active && m->vga_vsync_start &&
                 m->vga_vsync_end && m->vga_h_sync_bytes && m->vga_h_bp_bytes &&
                 m->vga_h_fp_bytes && m->vga_screen_width, name, "fields", "a vga_* field is 0");

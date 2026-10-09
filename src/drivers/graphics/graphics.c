@@ -71,19 +71,59 @@ int graphics_540_mode(int mode)
 
 int graphics_xga_mode(int x3) { return x3 ? VMODE_XGA3 : VMODE_XGA; }
 
-// The HDMI-only "big" modes (Config::VM_1024x768_59 = 8, ..._59X3 = 9,
-// VM_800x600_X3 = 10, VM_800x600_X2 = 11): the table index for this sys_clk and
-// machine class (0 Pentagon, 1 48K, 2 128K), or -1 when the clock cannot run it.
+// The "big" modes (Config::VM_1024x768_59 = 8, ..._59X3 = 9, VM_800x600_X3 = 10,
+// VM_800x600_X2 = 11): the table index for this sys_clk, or -1 when the clock cannot
+// run it. One entry per (clock, scale): the machine's line count is written into it
+// by graphics_big_mode_fit(). `klass` is kept for the callers and unused here.
 int graphics_big_mode(int vm, unsigned mhz, int klass)
 {
-    if (klass < 0 || klass > 2) klass = 0;
+    (void)klass;
     switch (vm) {
-        case 8:  return mhz == 540 ? VMODE_XGA  : mhz == 504 ? VMODE_XGA4_504 + klass : -1;
-        case 9:  return mhz == 540 ? VMODE_XGA3 : mhz == 504 ? VMODE_XGA3_504 + klass : -1;
-        case 10: return mhz == 378 ? VMODE_SVGA3_378 + klass : -1;
-        case 11: return mhz == 504 ? VMODE_SVGA2_504 + klass : -1;
+        case 8:
+        case 9: {
+            const int x3 = (vm == 9);
+            if (mhz == 540) return x3 ? VMODE_XGA3 : VMODE_XGA;
+            if (mhz == 504) return x3 ? VMODE_XGA3_504 : VMODE_XGA4_504;
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+            if (mhz == 252) return x3 ? VMODE_XGA3_504 : VMODE_XGA4_504;   // clk_hstx 252 /1
+            if (mhz == 378) return x3 ? VMODE_XGA3_378 : VMODE_XGA4_378;
+#endif
+            return -1;
+        }
+        case 10:
+        case 11: {
+            const int x2 = (vm == 11);
+            if (mhz == 378) return x2 ? VMODE_SVGA2_378 : VMODE_SVGA3_378;
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+            if (mhz == 252 || mhz == 504) return x2 ? VMODE_SVGA2_H504 : VMODE_SVGA3_H504;
+            if (mhz == 540) return x2 ? VMODE_SVGA2_H540 : VMODE_SVGA3_H540;
+#else
+            if (mhz == 504) return x2 ? VMODE_SVGA2_504 : VMODE_SVGA3_504;
+            if (mhz == 540) return x2 ? VMODE_SVGA2_540 : VMODE_SVGA3_540;
+#endif
+            return -1;
+        }
         default: return -1;
     }
+}
+
+// Write the machine's line count into big-mode entry `mode` (klass 0 Pentagon,
+// 1 48K-class, 2 128K): v_total + 1 = pixel / (line * frame rate), rounded. Only the
+// 50 Hz entries ([28] on); the 1024x768 @540 59 Hz ones keep theirs. Call it on the
+// entry about to be used, before graphics_update_mode_timing() publishes it.
+void graphics_big_mode_fit(int mode, int klass)
+{
+    const int n = (int)(sizeof(video_mode)/sizeof(video_mode[0]));
+    if (mode < VMODE_XGA4_504 || mode >= n) return;
+    static const uint32_t frame_t[3] = { 71680, 69888, 70908 };      // T-states per frame
+    static const uint32_t cpu_hz[3]  = { 3500000, 3500000, 3546900 };
+    if (klass < 0 || klass > 2) klass = 0;
+    const uint64_t ht = (uint64_t)video_mode[mode].line_bytes * 2u;
+    // lines = pixel * frame_t / (ht * cpu_hz), rounded
+    const uint64_t num = (uint64_t)video_mode[mode].pixel_clk * frame_t[klass];
+    const uint64_t den = ht * cpu_hz[klass];
+    const int lines = (int)((num + den / 2) / den);
+    if (lines > video_mode[mode].vsync_end + 2) video_mode[mode].v_total = lines - 1;
 }
 
 float graphics_clk_div_at(int mode, unsigned sys_mhz, int vga)

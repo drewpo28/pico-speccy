@@ -617,13 +617,31 @@ public:
     // The HDMI-only "big" modes and the CPU clocks that run them (a clean PIO divider):
     // 1024x768 at 540 (59 Hz) or 504 (50 Hz per machine), 800x600 x3 at 378, x2 at 504.
     static constexpr bool isBigVideoMode(uint8_t vm) { return vm >= VM_1024x768_59 && vm <= VM_800x600_X2; }
+#if defined(HDMI_HSTX) && HDMI_HSTX
+    // HSTX (TMDS expander only): clk_hstx = pixel x 5 = clk_sys / 1..4, and an ODD
+    // divider has no 50% duty here. 1024x768: 50.4 MHz pixel (clk_hstx 252) at 252 /1
+    // and 504 /2, 75.6 MHz at 378 /1, 54 MHz at 540 /2. 800x600: 50.4 MHz at 252 /1
+    // and 504 /2, 37.8 MHz at 378 /2, 54 MHz at 540 /2. The RAW back-end offers none.
+    static constexpr bool bigModeClockOk(uint8_t vm, uint16_t mhz) {
+        return HDMI_HSTX != 2 && isBigVideoMode(vm) ? false
+             : isBigVideoMode(vm) ? (mhz == 252 || mhz == 378 || mhz == 504 || mhz == 540)
+             : true;
+    }
+#else
+    // PIO: 1024x768 at 504 (50.4 MHz, 1.0) / 540 (54 MHz, 59 Hz); 800x600 x3 / x2 at
+    // 378 (37.8 MHz, 1.0), 504 (33.6 MHz, 1.5) and 540 (36 MHz, 1.5).
     static constexpr bool bigModeClockOk(uint8_t vm, uint16_t mhz) {
         return isXgaVideoMode(vm) ? (mhz == 540 || mhz == 504)
-             : vm == VM_800x600_X3 ? mhz == 378
-             : vm == VM_800x600_X2 ? mhz == 504 : true;
+             : isBigVideoMode(vm) ? (mhz == 378 || mhz == 504 || mhz == 540)
+             : true;
     }
+#endif
     // The clock the menu bumps to when a big mode is picked at a clock that cannot run it.
+#if defined(HDMI_HSTX) && HDMI_HSTX == 2
+    static constexpr uint16_t bigModePrefClock(uint8_t vm) { return (vm == VM_800x600_X3 || vm == VM_800x600_X2) ? 378 : 504; }
+#else
     static constexpr uint16_t bigModePrefClock(uint8_t vm) { return vm == VM_800x600_X3 ? 378 : 504; }
+#endif
     // The display refresh is not the machine's (59 Hz): V-Sync pacing must be off.
     static constexpr bool forcesVsyncOff(uint8_t vm, uint16_t mhz) { return isXgaVideoMode(vm) && mhz == 540; }
     // ...and on VGA (PIO) every big mode is a VESA 60 Hz timing (see video_mode_table.h).
