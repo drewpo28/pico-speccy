@@ -22,7 +22,6 @@
 #include "speccy/video/Video.h"
 #include "speccy/z80/z80.h"
 
-uint8_t g_atm_ro = 0;
 #if ATM_PAGE_TRACE
 extern bool g_atm_trace_armed;   // Ports.cpp
 #endif

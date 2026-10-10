@@ -665,6 +665,7 @@ static const Option opt_tsconf_clk[] = {
     { "3.5 MHz", 0 },
     { "7 MHz",   1 },
     { "14 MHz",  2 },
+    { "28 MHz (turbo)", 3 },    // ZCLK 14 runs at 28 (TsConf::applyZclk)
 };
 
 // ZX Evolution BaseConf raster — the AVR's MODES_RASTER (Scroll Lock on the real board,

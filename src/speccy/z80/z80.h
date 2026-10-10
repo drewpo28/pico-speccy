@@ -428,6 +428,7 @@ public:
     // Execute one instruction
     static void execute();
     static void exec_nocheck();
+    static void exec_nocheck_ts();   // TS-Conf fast memory path inner loop (Z80_JLS.cpp)
 
     // Check INT
     static void checkINT(void);

@@ -63,7 +63,7 @@ struct atm_rom_page_t { const unsigned char* base; const unsigned char* overlay;
 // flattened into butter PSRAM, which MemESP::writebyte's flash-pointer filter does
 // not cover). Tested predicted-not-taken in the CPU write funnel (CPU.cpp
 // gsDmaPoke8) — zero on every other machine.
-extern uint8_t g_atm_ro;
+#include "speccy/z80/MemGates.h"   // g_atm_ro
 
 namespace Atm {
     enum VMode : uint8_t { VM_ZX = 0, VM_EGA = 1, VM_HIRES = 2, VM_TEXT = 3, VM_TEXT1 = 4 };  // TEXT1: ZX-Evo 80x25 in RAM page 8

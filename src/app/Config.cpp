@@ -1636,7 +1636,7 @@ void Config::load() {
         MEM_PG_CNT = mem_pg_cnt;
         int tsc = -1;
         nvs_get_i("tsconf_clk_cap", tsc, sts);
-        tsconf_clk_cap = (tsc >= 0 && tsc <= 2) ? (uint8_t)tsc : 2;
+        tsconf_clk_cap = (tsc >= 0 && tsc <= 3) ? (uint8_t)tsc : 2;
         int evr = 0;
         nvs_get_i("evo_raster", evr, sts);
         evo_raster = (evr >= 0 && evr <= 3) ? (uint8_t)evr : 0;

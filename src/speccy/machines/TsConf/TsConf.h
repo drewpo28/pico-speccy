@@ -40,7 +40,7 @@ the Free Software Foundation, either version 3 of the License, or
 // (CPU accesses steal DRAM cycles). The cache hit test itself — tsMemNoDram /
 // tsMemWriteInv and the per-window rows behind them — lives in TsDramCache.h so
 // tools/tsdram_cache_test.cpp can prove it against a plain tag model.
-extern uint8_t  g_ts_memcyc;
+#include "speccy/z80/MemGates.h"   // g_ts_memcyc, g_tsconf_wr
 #include "TsDramCache.h"
 #include "Ft812.h"   // Ft812::enabled (ftVideo)
 
@@ -267,7 +267,6 @@ public:
 // predicted-not-taken gate (the g_ngs_zxdma pattern; see CPU.cpp). Bits:
 // 0x10 | window = FMAddr enabled (TsConf::fmWrite), 0x20 = window 0 is RAM
 // with W0_WE = 0 (writes below #4000 dropped). Zero for every other machine.
-extern uint8_t g_tsconf_wr;
 // Bit 0x40 of g_tsconf_wr: some CPU bank maps a page the core1 render queue
 // may still read; g_ts_bank_watch has one bit per bank. A guest write into such
 // a bank waits for the queued lines that read it (VIDEO::tsRenderDrainOverlap).

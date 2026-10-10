@@ -587,7 +587,6 @@ static uint64_t ts_frame_start_us = 0;
 #define TSPAL_MAPGEN()             ((void)0)
 #define TSPAL_PALGEN()             ((void)0)
 #endif
-uint8_t g_ts_fastmem = 0;
 bool     VIDEO::ts_tsu_live = false;
 bool     VIDEO::ts_pal256_live = false;
 bool     VIDEO::tsPalScanWanted = false;

@@ -97,7 +97,6 @@ uint32_t TsConf::sfileGen = 0;
 // while window 0 is write-protected RAM. Tested predicted-not-taken in the CPU
 // write funnel (gsDmaPoke8) — the g_ngs_zxdma pattern; zero for every other
 // machine, so the cost elsewhere is one byte-load-and-test per guest write.
-uint8_t g_tsconf_wr = 0;
 uint8_t g_ts_bank_watch = 0;
 static uint8_t s_bank_phys[4];   // physical page per CPU bank (setBanks)
 
@@ -180,7 +179,6 @@ static bool     s_dma_pending;  // int_dma latch
 #ifndef TS_DRAM_MODEL
 #define TS_DRAM_MODEL 1
 #endif
-uint8_t  g_ts_memcyc = 0;
 // The cache model's state (TsDramCache.h): tags = the truth, rows = the per-PAGE
 // view the hot path reads (pool of 8). ~2.8 KB of RAM, all of it read per guest access on
 // core0 — static on purpose (a palloc that landed in butter would be the
@@ -232,7 +230,11 @@ void TsConf::memcycRecalc() {
         // 14 MHz wait states, ALWAYS at ZCLK 14 (owner, hw 2026-09-13): a "during DMA
         // only" variant was tried for the host cost and it HANGS fishbone — the demo
         // needs the real machine's slower 14 MHz, and with the waits in it runs.
-        if (ESPectrum::multiplicator >= 2) g |= 1;
+        // Only at exactly 14: the waits model the ZX-Evo's DRAM stall at ITS top
+        // clock. 28 MHz is our overclock with no hardware behind it, and the
+        // per-access cache test is pure host cost there (the turbo exists for
+        // speed). The DMA steal (bit 1) stays at every clock.
+        if (ESPectrum::multiplicator == 2) g |= 1;
         if (s_dma_busy && !s_dma_flat) g |= 2;        // DMA_ACT: CPU accesses steal cycles
     }
 #endif
@@ -1791,7 +1793,12 @@ void TsConf::applyZclk(bool fromGuest) {
     // longer call this). Was "user pick is a floor" until 2026-09-06.
     uint8_t zclk = r.sysconf & 0x03;
     if (zclk == 3) zclk = 2;
-    if (zclk > Config::tsconf_clk_cap) zclk = Config::tsconf_clk_cap;
+    // Cap 3 = turbo: the guest's 14 MHz runs at 28 (multiplicator 3). A ZX-Evo
+    // has no 28 MHz ZCLK, so the guest can only ever ask for 14; the user's cap
+    // promotes it. 3.5/7 stay what the guest asked for (loaders and players
+    // that drop the clock around I/O keep their timing).
+    if (zclk == 2 && Config::tsconf_clk_cap == 3) zclk = 3;
+    else if (zclk > Config::tsconf_clk_cap) zclk = Config::tsconf_clk_cap;
     if (zclk != ESPectrum::multiplicator) {
         const uint8_t om = ESPectrum::multiplicator;
         tsClockRescale(om, zclk);    // BEFORE the frame constants move (see above)
@@ -1812,7 +1819,7 @@ void TsConf::applyZclk(bool fromGuest) {
             // player under Wild Commander modulates ZCLK around its sample
             // generation, and a banner per change covered the screen for as long
             // as it played (hw 2026-09-20).
-            static const char* const mhz[3] = { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz " };
+            static const char* const mhz[4] = { " CPU: 3.5 MHz ", " CPU: 7 MHz ", " CPU: 14 MHz ", " CPU: 28 MHz " };
             OSD::notifyClock(mhz[zclk]);
         }
     }

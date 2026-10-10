@@ -337,7 +337,7 @@ if Z80Ops::isAtm
   set logging redirect on
   set logging enabled on
   printf "== ATM-Turbo ==\n"
-  printf "atm1=%d aFE=%02X aFB=%02X pFDFD=%02X p7ffd=%02X beta=%d cpm=%d trdos=%d ro=%02X\n", (int)Atm::atm1, (unsigned char)Atm::aFE, (unsigned char)Atm::aFB, (unsigned char)Atm::pFDFD, (unsigned char)Atm::p7ffd, (int)Atm::beta, (int)(Atm::atm1 ? !(Atm::aFE & 0x80) : !(Atm::a77 & 0x200)), (int)ESPectrum::trdos, (unsigned char)g_atm_ro
+  printf "atm1=%d aFE=%02X aFB=%02X pFDFD=%02X p7ffd=%02X beta=%d cpm=%d trdos=%d ro=%02X\n", (int)Atm::atm1, (unsigned char)Atm::aFE, (unsigned char)Atm::aFB, (unsigned char)Atm::pFDFD, (unsigned char)Atm::p7ffd, (int)Atm::beta, (int)(Atm::atm1 ? !(Atm::aFE & 0x80) : !(Atm::a77 & 0x200)), (int)ESPectrum::trdos, (unsigned char)g_memgates.b.atm_ro
   printf "slots=%08X %08X %08X %08X\n", (unsigned)MemESP::ramCurrent[0], (unsigned)MemESP::ramCurrent[1], (unsigned)MemESP::ramCurrent[2], (unsigned)MemESP::ramCurrent[3]
   printf "p77=%02X a77=%04X pBF=%02X shaden=%d atm3=%d videoLatch=%d gmx_ext_live=%d pend_on=%d pend_off=%d ds80=%d mult=%d\n", (unsigned char)Atm::p77, (unsigned short)Atm::a77, (unsigned char)Atm::pBF, (int)Atm::shaden, (int)Atm::atm3, (int)MemESP::videoLatch, (int)VIDEO::gmx_ext_live, (int)VIDEO::gmx_ext_pending_on, (int)VIDEO::gmx_ext_pending_off, (int)profi_ds80_active, (int)ESPectrum::multiplicator
   printf "pF7=%03X %03X %03X %03X | %03X %03X %03X %03X\n", (unsigned)Atm::pF7[0], (unsigned)Atm::pF7[1], (unsigned)Atm::pF7[2], (unsigned)Atm::pF7[3], (unsigned)Atm::pF7[4], (unsigned)Atm::pF7[5], (unsigned)Atm::pF7[6], (unsigned)Atm::pF7[7]

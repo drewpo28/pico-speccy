@@ -32,6 +32,7 @@ public:
 
     /* Put an address on bus lasting 'tstates' cycles */
     static void addressOnBus(uint16_t address, int32_t wstates);
+    static void addressOnBusIR(int32_t wstates);   // IR on the bus: the pair is built only off the fast path
 
     /* Callback to know when the INT signal is active */
     static bool isActiveINT(void);

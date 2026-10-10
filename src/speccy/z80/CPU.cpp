@@ -56,6 +56,9 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/TsConf/TsFastMem.h"
 #include "app/CodeOverlay.h" // TS_OVL_CODE (CPU::tsFrameLoop)
 #include "speccy/core/Rzx.h"
+#include "MemGates.h"
+
+alignas(4) MemGates g_memgates = {};   // MemGates.h: the fast-path gates, one word
 #if PERF_TRACE && PERF_HIST
 // TS-Conf guest-memory access histogram by PHYSICAL page (the page each CPU
 // bank is mapped to), fetch + peek8 + poke8. Tells which pages a title hammers,
@@ -1074,7 +1077,16 @@ static IRAM_ATTR __attribute__((noinline)) uint8_t peek8_dram(uint16_t address) 
 }
 IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
     TS_PAGE_HIT(address);
-    if (g_ts_fastmem) {
+    const uint32_t gates = g_memgates.w;   // MemGates.h: one load for the whole gate set
+    if (__builtin_expect(MEMGATES_READ_FAST(gates), 1)) {
+        // No line test here: the whole-line renderer is ticked at the next M1
+        // (exec_nocheck_ts / fetchOpcode), i.e. at most one instruction late —
+        // a few T of an 896..1792-T line, the same as a write landing one
+        // instruction earlier. It was three instructions on every guest access.
+        CPU::tstates += 3;
+        return MemESP::ramCurrent[address >> 14][address & 0x3FFF];
+    }
+    if (gates & 0xFF) {
         // The DRAM hit test runs FIRST, while nothing but the address is live:
         // placed after the T-state add it needed two more registers and GCC
         // paid a push/pop pair on EVERY access (2026-09-13). The _dram helpers
@@ -1116,6 +1128,17 @@ uint16_t dbg_last_pc = 0;
 #endif
 IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     uint16_t pc = Z80::getRegPC();
+    // The fast guest-memory path (TsFastMem.h) — what Z80::exec_nocheck_ts does for
+    // the first byte, here for the second byte of every CB/DD/ED/FD instruction
+    // and for the checked loop: none of the tests below can apply while it is on
+    // (no DivMMC, no overlays, no Timex MMU, no ProfROM tap, no even-M1), and
+    // Draw_Opcode is TsDraw_Opcode, i.e. the same +4 T and line tick.
+    if (g_ts_fastmem) {
+        tsFastTick(4);
+        if (__builtin_expect(g_ts_memcyc != 0, 0) && !tsMemNoDram(pc)) tsFastTick(TsConf::cpuMemMiss(pc, true));
+        TS_PAGE_HIT(pc);
+        return MemESP::ramCurrent[pc >> 14][pc & 0x3fff];
+    }
 #if DEBUG
     dbg_last_pc = pc;
 #endif
@@ -1258,7 +1281,13 @@ static IRAM_ATTR __attribute__((noinline)) void poke8_cold(uint16_t address, uin
 }
 IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
     TS_PAGE_HIT(address);
-    if (g_ts_fastmem) {
+    const uint32_t gates = g_memgates.w;
+    if (__builtin_expect(MEMGATES_WRITE_FAST(gates), 1)) {
+        CPU::tstates += 3;   // line tick at the next M1 (see peek8)
+        tsPoke8Store(address, value);
+        return;
+    }
+    if (gates & 0xFF) {
         // Same register discipline as peek8: the cache invalidate and the two
         // cold gates go first, the T-state add and the line test last.
         if (__builtin_expect(g_ts_memcyc != 0, 0)) {
@@ -1300,7 +1329,12 @@ static IRAM_ATTR __attribute__((noinline)) uint16_t peek16_dram(uint16_t address
 }
 IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
     TS_PAGE_HIT(address);
-    if (g_ts_fastmem) {
+    const uint32_t gates = g_memgates.w;
+    if (__builtin_expect(MEMGATES_READ_FAST(gates), 1)) {
+        CPU::tstates += 6;   // line tick at the next M1 (see peek8)
+        return tsPeek16Load(address);
+    }
+    if (gates & 0xFF) {
         // An even address reads both halves out of ONE cache word (index a[8:1]),
         // so the second half can only miss when the first did; odd = two words.
         // Test first, add T-states after (the peek8 register note).
@@ -1377,7 +1411,13 @@ static IRAM_ATTR __attribute__((noinline)) void poke16_cold(uint16_t address, Re
 }
 IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
     TS_PAGE_HIT(address);
-    if (g_ts_fastmem) {
+    const uint32_t gates = g_memgates.w;
+    if (__builtin_expect(MEMGATES_WRITE_FAST(gates), 1)) {
+        CPU::tstates += 6;   // line tick at the next M1 (see peek8)
+        tsPoke16Store(address, word);
+        return;
+    }
+    if (gates & 0xFF) {
         if (__builtin_expect(g_ts_memcyc != 0, 0)) {
             // a running DMA or a cache hit on either half -> poke16_cold (even: one cache word)
             if ((g_ts_memcyc & 2) || tsMemWriteHit(address) || ((address & 1) && tsMemWriteHit((uint16_t)(address + 1)))) return poke16_cold(address, word);
@@ -1525,8 +1565,27 @@ static IRAM_ATTR __attribute__((noinline)) void poke16_generic(uint16_t address,
 
 
 /* Put an address on bus lasting 'tstates' cycles */
+static IRAM_ATTR __attribute__((noinline)) void addressOnBus_generic(uint16_t address, int32_t wstates);
+// The fast path is a leaf (the tick and the generic path are tail calls) — the
+// generic one's loop made the whole function push three registers per call.
 IRAM_ATTR void Z80Ops::addressOnBus(uint16_t address, int32_t wstates) {
-    if (g_ts_fastmem) { tsFastTick((uint32_t)wstates); return; }   // TsFastMem.h: no contention on TS-Conf
+    if (g_ts_fastmem) {   // TsFastMem.h: no contention on TS-Conf; line tick at the next M1
+        CPU::tstates += (uint32_t)wstates;
+        return;
+    }
+    return addressOnBus_generic(address, wstates);
+}
+// IR on the address bus (INC/DEC rr, LD SP,HL, the M1 extension of many
+// instructions): the fast path ignores the address, so the IR pair is only
+// built on the generic path — it was one out-of-line call per such instruction.
+IRAM_ATTR void Z80Ops::addressOnBusIR(int32_t wstates) {
+    if (g_ts_fastmem) {
+        CPU::tstates += (uint32_t)wstates;
+        return;
+    }
+    return addressOnBus_generic((uint16_t)((Z80::getRegI() << 8) | Z80::getRegR()), wstates);
+}
+static IRAM_ATTR __attribute__((noinline)) void addressOnBus_generic(uint16_t address, int32_t wstates) {
     if (MemESP::ramContended[address >> 14]) {
         for (int idx = 0; idx < wstates; idx++)
             VIDEO::Draw(1, true);

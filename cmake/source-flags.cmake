@@ -46,9 +46,9 @@ set_source_files_properties(src/speccy/video/Video.cpp PROPERTIES
 # XIP port. See the TS-Conf performance notes in CLAUDE.md before changing either.
 set(Z80_CORE_OPT "-Os" CACHE STRING "Compiler optimisation flags for src/speccy/z80/Z80_JLS.cpp (-Os: the core lives in SRAM, see Z80_CORE_IN_RAM)")
 set_source_files_properties(src/speccy/z80/Z80_JLS.cpp PROPERTIES
-    COMPILE_FLAGS "${Z80_CORE_OPT}")
+    COMPILE_FLAGS "${Z80_CORE_OPT} -fno-data-sections -fsection-anchors")
 set_source_files_properties(src/speccy/z80/CPU.cpp PROPERTIES
-    COMPILE_FLAGS "-O3")
+    COMPILE_FLAGS "-O3 -fno-data-sections -fsection-anchors")
 set_source_files_properties(src/speccy/core/Ports.cpp PROPERTIES
     COMPILE_FLAGS "-O3")
 set_source_files_properties(src/speccy/devices/disk/wd1793.cpp PROPERTIES

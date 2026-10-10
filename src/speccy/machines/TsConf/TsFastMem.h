@@ -15,9 +15,9 @@
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
 
-extern uint8_t g_ts_fastmem;
+#include "speccy/z80/MemGates.h"   // g_ts_fastmem
 
-static inline void tsFastTick(uint32_t n) {
+static inline __attribute__((always_inline)) void tsFastTick(uint32_t n) {
     CPU::tstates += n;
     if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) VIDEO::tsDrawTick();
 }

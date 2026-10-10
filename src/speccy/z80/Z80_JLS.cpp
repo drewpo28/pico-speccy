@@ -827,7 +827,13 @@ IRAM_ATTR void Z80::check_trdos() {
     // both of which would walk over the TS-Conf banking. Its own trap keeps
     // the DOS-signal semantics (enter at #3Dxx with ROM128+ROM, leave on
     // executing RAM) and remaps through TsConf::setBanks().
-    if (Z80Ops::isTsconf) { TsConf::trdosTrap(REG_PCh); return; }
+    // Only its two edges can act — enter at #3Dxx, leave from #4000+ — so test
+    // them here and call (flash) TsConf::trdosTrap only then: this runs on every
+    // jump, call and return of a TS-Conf program.
+    if (Z80Ops::isTsconf) {
+        if (ESPectrum::trdos ? REG_PCh >= 0x40 : REG_PCh == 0x3D) TsConf::trdosTrap(REG_PCh);
+        return;
+    }
     // ATM-Turbo: same shape — the memory manager owns every window (Atm::remap).
     // The flash half runs only when it can act: a boot hook armed, DOS up (the
     // leave-on-RAM test), or PC at #3Dxx (the enter test) — not on every jump of a
@@ -1360,10 +1366,66 @@ IRAM_ATTR void Z80::execute() {
 // batcher would need exactly this distinction again.
 static bool z80_in_nocheck = false;
 
+// TS-Conf fast memory path (g_ts_fastmem), the inner loop of exec_nocheck on its
+// own: every bank is a plain POINTER page, the video hook is a T-state counter
+// (TsFastMem.h), and none of DivMMC / ROM overlays / Timex can be live, so the
+// fetch is one table load. Split out of exec_nocheck so the compiler keeps the
+// loop's addresses in registers instead of re-loading a literal per variable per
+// instruction (the generic loop's register pressure cost ~25 ARM instructions per
+// Z80 instruction, measured with tools/z80bench). Semantics are the generic loop's
+// exactly, in the same order: slice test, 4 T for the M1 (+ a DRAM-cache miss),
+// fetch, R++, PC++, dispatch. Returns when the slice ends or the fast path is
+// switched off mid-slice (NeoGS ZX-DMA window, a memory breakpoint), so the
+// generic loop carries on from the very next instruction.
+IRAM_ATTR __attribute__((noinline, optimize("O2"))) void Z80::exec_nocheck_ts() {
+    while (CPU::tstates < CPU::stFrame) {
+        if (__builtin_expect(!g_ts_fastmem, 0)) return;
+#if NEO8_TRAP
+        Debug::neo8TrapStep(REG_PC, REG_SP, REG_IX, REG_IY);
+#endif
+        const uint16_t pc = REG_PC;
+        tsFastTick(4);
+        if (__builtin_expect(g_ts_memcyc != 0, 0) && !tsMemNoDram(pc)) tsFastTick(TsConf::cpuMemMiss(pc, true));   // DRAM model: a cache miss
+        opCode = MemESP::ramCurrent[pc >> 14][pc & 0x3fff];
+        regR++;
+        REG_PC = pc + 1;
+#if PERF_TRACE && PERF_HIST
+        z80_op_hist[opCode]++;
+        {
+            extern uint32_t ts_page_hist[257];
+            const uintptr_t bp = (uintptr_t)MemESP::ramCurrent[pc >> 14];
+            ts_page_hist[(bp >= 0x10000000u && bp < 0x11000000u) ? 256 : TsConf::r.page[pc >> 14]]++;
+        }
+#endif
+        if (prefixOpcode == 0) {
+            flagQ = pendingEI = false;
+            dcOpcode[opCode]();
+            lastFlagQ = flagQ;
+            continue;
+        }
+
+        if (prefixOpcode == 0xDD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIX);
+        } else if (prefixOpcode == 0xED) {
+            prefixOpcode = 0;
+            decodeED();
+        } else if (prefixOpcode == 0xFD) {
+            prefixOpcode = 0;
+            decodeDDFD(regIY);
+        } else continue;
+
+        if (prefixOpcode == 0) lastFlagQ = flagQ;
+    }
+}
+
 IRAM_ATTR void Z80::exec_nocheck() {
 
     int nbp = Config::numPcBP;
     z80_in_nocheck = true;
+
+    // A PC breakpoint needs the per-instruction test of the generic loop.
+    if (g_ts_fastmem && nbp <= 0) exec_nocheck_ts();
 
     while (CPU::tstates < CPU::stFrame) {
 
@@ -1493,7 +1555,7 @@ void Z80::decodeOpcode02()
 
 void Z80::decodeOpcode03()
 { /* INC BC */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_BC++;
 }
 
@@ -1530,7 +1592,7 @@ void Z80::decodeOpcode08()
 
 void Z80::decodeOpcode09()
 { /* ADD HL,BC */
-    Z80Ops::addressOnBus(getPairIR().word, 7);
+    Z80Ops::addressOnBusIR(7);
     add16(regHL, REG_BC);
 }
 
@@ -1543,7 +1605,7 @@ void Z80::decodeOpcode0a()
 
 void Z80::decodeOpcode0b()
 { /* DEC BC */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_BC--;
 
 }
@@ -1571,7 +1633,7 @@ void Z80::decodeOpcode0f()
 void Z80::decodeOpcode10()
 //         case 0x10:
 { /* DJNZ e */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     int8_t offset = Z80Ops::peek8(REG_PC);
     // PEEK8(int8_t offset,REG_PC);
     if (--REG_B != 0) {
@@ -1601,7 +1663,7 @@ void Z80::decodeOpcode12()
 void Z80::decodeOpcode13()
 //         case 0x13:
 { /* INC DE */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_DE++;
 }
 
@@ -1641,7 +1703,7 @@ void Z80::decodeOpcode18()
 void Z80::decodeOpcode19()
 //         case 0x19:
 { /* ADD HL,DE */
-    Z80Ops::addressOnBus(getPairIR().word, 7);
+    Z80Ops::addressOnBusIR(7);
     add16(regHL, REG_DE);
 }
 
@@ -1656,7 +1718,7 @@ void Z80::decodeOpcode1a()
 void Z80::decodeOpcode1b()
 //         case 0x1B:
 { /* DEC DE */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_DE--;
 }
 
@@ -1711,7 +1773,7 @@ void Z80::decodeOpcode22()
 
 void Z80::decodeOpcode23()
 { /* INC HL */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_HL++;
 }
 
@@ -1743,7 +1805,7 @@ void Z80::decodeOpcode28()
 
 void Z80::decodeOpcode29()
 { /* ADD HL,HL */
-    Z80Ops::addressOnBus(getPairIR().word, 7);
+    Z80Ops::addressOnBusIR(7);
     add16(regHL, REG_HL);
 }
 
@@ -1757,7 +1819,7 @@ void Z80::decodeOpcode2a()
 
 void Z80::decodeOpcode2b()
 { /* DEC HL */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_HL--;
 }
 
@@ -1806,7 +1868,7 @@ void Z80::decodeOpcode32()
 
 void Z80::decodeOpcode33()
 { /* INC SP */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_SP++;
 }
 
@@ -1842,7 +1904,7 @@ void Z80::decodeOpcode38()
 
 void Z80::decodeOpcode39()
 { /* ADD HL,SP */
-    Z80Ops::addressOnBus(getPairIR().word, 7);
+    Z80Ops::addressOnBusIR(7);
     add16(regHL, REG_SP);
 }
 
@@ -1857,7 +1919,7 @@ void Z80::decodeOpcode3a()
 
 void Z80::decodeOpcode3b()
 { /* DEC SP */
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_SP--;
 }
 
@@ -2094,7 +2156,7 @@ void Z80::decodeOpcodec3()
 
 void Z80::decodeOpcodec5()
 { /* PUSH BC */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     push(REG_BC);
 }
 
@@ -2173,7 +2235,7 @@ void Z80::decodeOpcoded3()
 
 void Z80::decodeOpcoded5()
 { /* PUSH DE */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     push(REG_DE);
 }
 
@@ -2277,7 +2339,7 @@ void Z80::decodeOpcodee3()
 
 void Z80::decodeOpcodee5() /* PUSH HL */
 {
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     push(REG_HL);
 }
 
@@ -2432,7 +2494,7 @@ void Z80::decodeOpcodef3() /* DI */
 
 void Z80::decodeOpcodef5() /* PUSH AF */
 {
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     push(getRegAF());
 }
 
@@ -2450,7 +2512,7 @@ void Z80::decodeOpcodef6() /* OR n */
 
 void Z80::decodeOpcodef9() /* LD SP,HL */
 {
-    Z80Ops::addressOnBus(getPairIR().word, 2);
+    Z80Ops::addressOnBusIR(2);
     REG_SP = REG_HL;
 }
 
@@ -2639,7 +2701,7 @@ bool Z80::condMet(uint8_t cc) {
 }
 
 void Z80::decodeRETcc() {  /* RET cc */
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     if (condMet((opCode >> 3) & 7)) {
         REG_PC = REG_WZ = pop();
         check_trdos();
@@ -2705,7 +2767,7 @@ void Z80::decodeRST() {    /* RST p */
     // DEFB #45 in place of LD C,A / CP A at #0569, so the CP A trap never fires there.
     if (__builtin_expect(opCode == 0xCF && REG_PC == 0x056A, 0) && Z80Ops::isAtm &&
         evo_tape_trap()) return;
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     push(REG_PC);
     REG_PC = REG_WZ = opCode & 0x38;
 }
@@ -2840,13 +2902,13 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
     switch (opCode) {
         case 0x09:
         { /* ADD IX,BC */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             add16(regIXY, REG_BC);
             break;
         }
         case 0x19:
         { /* ADD IX,DE */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             add16(regIXY, REG_DE);
             break;
         }
@@ -2865,7 +2927,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
         }
         case 0x23:
         { /* INC IX */
-            Z80Ops::addressOnBus(getPairIR().word, 2);
+            Z80Ops::addressOnBusIR(2);
             regIXY.word++;
             break;
         }
@@ -2887,7 +2949,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
         }
         case 0x29:
         { /* ADD IX,IX */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             add16(regIXY, regIXY.word);
             break;
         }
@@ -2900,7 +2962,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
         }
         case 0x2B:
         { /* DEC IX */
-            Z80Ops::addressOnBus(getPairIR().word, 2);
+            Z80Ops::addressOnBusIR(2);
             regIXY.word--;
 
             if (REG_PC == 0x04d4) { // Save trap
@@ -3031,7 +3093,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
         }
         case 0x39:
         { /* ADD IX,SP */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             add16(regIXY, REG_SP);
             break;
         }
@@ -3099,7 +3161,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
         }
         case 0xE5:
         { /* PUSH IX */
-            Z80Ops::addressOnBus(getPairIR().word, 1);
+            Z80Ops::addressOnBusIR(1);
             push(regIXY.word);
             break;
         }
@@ -3118,7 +3180,7 @@ void Z80::decodeDDFD(RegisterPair& regIXY) {
         }
         case 0xF9:
         { /* LD SP,IX */
-            Z80Ops::addressOnBus(getPairIR().word, 2);
+            Z80Ops::addressOnBusIR(2);
             REG_SP = regIXY.word;
             break;
         }
@@ -3211,7 +3273,7 @@ void Z80::decodeED(void) {
         }
         case 0x42:
         { /* SBC HL,BC */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             sbc16(REG_BC);
             break;
         }
@@ -3274,13 +3336,13 @@ void Z80::decodeED(void) {
              * El par IR se pone en el bus de direcciones *antes*
              * de poner A en el registro I. Detalle importante.
              */
-            Z80Ops::addressOnBus(getPairIR().word, 1);
+            Z80Ops::addressOnBusIR(1);
             regI = regA;
             break;
         }
         case 0x4A:
         { /* ADC HL,BC */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             adc16(REG_BC);
             break;
         }
@@ -3298,13 +3360,13 @@ void Z80::decodeED(void) {
              * El par IR se pone en el bus de direcciones *antes*
              * de poner A en el registro R. Detalle importante.
              */
-            Z80Ops::addressOnBus(getPairIR().word, 1);
+            Z80Ops::addressOnBusIR(1);
             setRegR(regA);
             break;
         }
         case 0x52:
         { /* SBC HL,DE */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             sbc16(REG_DE);
             break;
         }
@@ -3323,7 +3385,7 @@ void Z80::decodeED(void) {
         }
         case 0x57:
         { /* LD A,I */
-            Z80Ops::addressOnBus(getPairIR().word, 1);
+            Z80Ops::addressOnBusIR(1);
             regA = regI;
             sz5h3pnFlags = sz53n_addTable[regA];
             if (ffIFF2 && !Z80Ops::isActiveINT()) {
@@ -3335,7 +3397,7 @@ void Z80::decodeED(void) {
         }
         case 0x5A:
         { /* ADC HL,DE */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             adc16(REG_DE);
             break;
         }
@@ -3354,7 +3416,7 @@ void Z80::decodeED(void) {
         }
         case 0x5F:
         { /* LD A,R */
-            Z80Ops::addressOnBus(getPairIR().word, 1);
+            Z80Ops::addressOnBusIR(1);
             regA = getRegR();
             sz5h3pnFlags = sz53n_addTable[regA];
             if (ffIFF2 && !Z80Ops::isActiveINT()) {
@@ -3366,7 +3428,7 @@ void Z80::decodeED(void) {
         }
         case 0x62:
         { /* SBC HL,HL */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             sbc16(REG_HL);
             break;
         }
@@ -3397,7 +3459,7 @@ void Z80::decodeED(void) {
         }
         case 0x6A:
         { /* ADC HL,HL */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             adc16(REG_HL);
             break;
         }
@@ -3428,7 +3490,7 @@ void Z80::decodeED(void) {
         }
         case 0x72:
         { /* SBC HL,SP */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             sbc16(REG_SP);
             break;
         }
@@ -3441,7 +3503,7 @@ void Z80::decodeED(void) {
         }
         case 0x7A:
         { /* ADC HL,SP */
-            Z80Ops::addressOnBus(getPairIR().word, 7);
+            Z80Ops::addressOnBusIR(7);
             adc16(REG_SP);
             break;
         }
@@ -3634,7 +3696,7 @@ IRAM_ATTR void Z80::cpx(int d) {
 }
 IRAM_ATTR void Z80::inx(int d) {
     REG_WZ = REG_BC;
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     uint8_t work8 = Ports::input(REG_WZ);
     if (__builtin_expect(Rzx::mode != 0, 0)) work8 = Rzx::onIn(work8);
     REG_WZ += d;
@@ -3650,7 +3712,7 @@ IRAM_ATTR void Z80::inx(int d) {
     flagQ = true;
 }
 IRAM_ATTR void Z80::otx(int d) {
-    Z80Ops::addressOnBus(getPairIR().word, 1);
+    Z80Ops::addressOnBusIR(1);
     REG_B--;
     REG_WZ = REG_BC;
     uint8_t work8 = Z80Ops::peek8(REG_HL);

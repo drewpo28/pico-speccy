@@ -207,7 +207,8 @@ public:
     // tail pages are SD-swap and TsConf::pagePtr() answers nullptr for them
     // (see the boot check in ESPectrum::setup).
     // tsconf_clk_cap bounds the guest's SysConfig ZCLK (0/1/2 = 3.5/7/14 MHz)
-    // for boards that cannot keep up with 14 MHz.
+    // for boards that cannot keep up with 14 MHz. 3 = turbo: a guest asking for
+    // 14 MHz runs at 28 (a real ZX-Evo has no 28 MHz ZCLK; this is an overclock).
     static constexpr uint16_t TSCONF_PAGES = 256;
     static uint8_t  tsconf_clk_cap;
     // ZX Evolution BaseConf raster: 0 Pentagon / 1 60 Hz / 2 48K / 3 128K. On the real
