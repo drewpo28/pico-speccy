@@ -192,14 +192,24 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
             d0[2 * x + 1] = d1[2 * x + 1] = 0xFF000000u | r;
         }
     }
-    // PICOSPECCY_SHOT=file.bmp:N saves frame N (testing without a display).
+    // PICOSPECCY_SHOT=file.bmp:N saves the N-th presented frame; PICOSPECCY_SHOTS=
+    // prefix:N saves every N-th as prefix_<frame>.bmp (testing without a display).
     static const char* shot = getenv("PICOSPECCY_SHOT");
+    static const char* shots = getenv("PICOSPECCY_SHOTS");
     static uint32_t presented = 0;
-    if (shot && ++presented == (uint32_t)atoi(strchr(shot, ':') ? strchr(shot, ':') + 1 : "200")) {
-        std::string fn(shot, strchr(shot, ':') ? strchr(shot, ':') - shot : strlen(shot));
+    ++presented;
+    auto save = [&](const std::string& fn) {
         SDL_Surface* s = SDL_CreateRGBSurfaceWithFormatFrom(pix, w, h, 32, pitch, SDL_PIXELFORMAT_ARGB8888);
         if (s) { SDL_SaveBMP(s, fn.c_str()); SDL_FreeSurface(s); fprintf(stderr, "host: saved %s\n", fn.c_str()); }
-    }
+    };
+    auto parse = [](const char* spec, std::string& base) {
+        const char* c = strrchr(spec, ':');
+        base.assign(spec, c ? (size_t)(c - spec) : strlen(spec));
+        return c ? (uint32_t)atoi(c + 1) : 200u;
+    };
+    std::string base;
+    if (shot && presented == parse(shot, base)) save(base);
+    if (shots) { const uint32_t n = parse(shots, base); if (n && presented % n == 0) save(base + "_" + std::to_string(presented) + ".bmp"); }
     SDL_UnlockTexture(tex);
     SDL_RenderClear(ren);
     SDL_RenderCopy(ren, tex, nullptr, nullptr);

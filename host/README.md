@@ -28,4 +28,19 @@ the same keys as on the board. The firmware log goes to stderr.
   configure time, so the PC and the board share one key map.
 * SD card: FatFs over an image file. Audio: SDL at 31250 Hz. Video: the
   framebuffer rows of `VIDEO::vga`, palette and packed-pair (DS80/GMX) modes.
-* `PICOSPECCY_SHOT=file.bmp:N` saves the N-th presented frame (testing headless).
+* `PICOSPECCY_SHOT=file.bmp:N` saves the N-th presented frame,
+  `PICOSPECCY_SHOTS=prefix:N` every N-th one as `prefix_<frame>.bmp`.
+
+## Checked so far (Linux, Xvfb + `SDL_AUDIODRIVER=disk`)
+
+* 48K, 128K and Pentagon boot to their ROMs (the machine comes from the card's
+  `storage.nvs`, as on the board).
+* F5 browser: a `.tap` loads and runs on 48K and Pentagon; a `.trd` mounts into
+  drive A: and boots from the 128 menu's TR-DOS entry (WD1793 over the image).
+* Sound: the beeper reaches the SDL device (a `BEEP` loop peaks at ~±6k).
+
+Headless key injection: hold each key ~100 ms (`xdotool keydown`, sleep, `keyup`).
+An instantaneous tap can press and release inside one emulated frame, and the
+ZX keyboard matrix never sees it — the menus (VK events) do, so it looks like
+only the guest is deaf. Also make sure no older instance is still running on the
+same display: it keeps the keyboard focus.
