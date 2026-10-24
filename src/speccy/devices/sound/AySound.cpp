@@ -326,7 +326,10 @@ void AySound::prepare_generation()
 
     if (default_sound_format_flag) set_sound_format(44100, 2, 16);
 
-    ChipTacts_per_outcount = ChipFreq / sndfmt.freq / 8;
+    // sndfmt.freq is 0 when the Next's NextReg::reset() reaches here before the AY
+    // has a sample rate. The Cortex-M33 answers x/0 with 0; spell that out so the
+    // host build (x86 traps) does the same.
+    ChipTacts_per_outcount = sndfmt.freq ? ChipFreq / sndfmt.freq / 8 : 0;
 
     // for (int n = 0; n < 32; n++) {
     //     // vol = table[n];
