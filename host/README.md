@@ -23,18 +23,20 @@ the same keys as on the board. The firmware log goes to stderr.
 VS Code: F7 -> pick `HOST` builds it, F5 with "Host: pico-speccy (gdb)" builds and
 runs it under gdb (local `.vscode`, not in git).
 
-### Raw card image (optional)
+### The folder is also the raw card
 
-Devices that read the card sector by sector — the Next's DivSD (NextZXOS),
-Z-Controller (TS-Conf, ZX-Evo), NeoGS SD, esxDOS in raw-card mode — need a block
-device, not a folder. Give them one with `--sd`:
+Devices that read the card sector by sector — the Next's DivSD (TBBLUE.FW,
+NextZXOS), Z-Controller (TS-Conf, ZX-Evo), NeoGS SD, esxDOS in raw-card mode — see
+the same folder as a virtual FAT32 card (`host_vfat.cpp`: MBR + one FAT32 partition,
+built from the tree at the first access, LFN + 8.3 names). Put a Next SD
+distribution into the folder and the Next boots from it.
 
-    sudo apt install dosfstools mtools
-    tools/host/mksd.sh card.img 256 game.tap disk.trd   # FAT32 image
-    build-all/host/pico-speccy --sd card.img
+Limits of this stage: what the guest writes to the card stays in memory for the
+session (the guest sees it, the folder does not change), and files changed on the
+PC while the emulator runs are not seen until the next start.
 
-Without `--sd` those devices see a card that fails every read. The emulator's own
-files stay in the folder either way.
+A real image still works: `--sd card.img` (`tools/host/mksd.sh card.img 256 files...`
+makes a FAT32 one).
 
 ## How it maps onto the RP2350
 
@@ -48,7 +50,8 @@ files stay in the folder either way.
   `kbdExtraMapping`, `process_kbd_report`) is extracted from `src/main.cpp` at
   configure time, so the PC and the board share one key map.
 * SD card: `host_fatfs.cpp` implements the FatFs API over the folder (no `ff.c`);
-  the raw card (`disk_read`) is `host_disk.cpp` over the optional image. Audio: SDL at 31250 Hz. Video: the
+  the raw card (`disk_read`) is `host_disk.cpp`: the folder as a virtual FAT32
+  volume (`host_vfat.cpp`), or the `--sd` image. Audio: SDL at 31250 Hz. Video: the
   framebuffer rows of `VIDEO::vga`, palette and packed-pair (DS80/GMX) modes.
 * `PICOSPECCY_SHOT=file.bmp:N` saves the N-th presented frame,
   `PICOSPECCY_SHOTS=prefix:N` every N-th one as `prefix_<frame>.bmp`.

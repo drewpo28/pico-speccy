@@ -105,6 +105,8 @@ static bool cpEqualNoCase(const std::string& a, const std::string& b) {
 }
 
 // ---- paths ----------------------------------------------------------------------------
+static const std::string& rootDir();
+const std::string& host_root_dir() { return rootDir(); }   // host_disk.cpp
 static const std::string& rootDir() {
     if (host_root.empty()) {
         const char* h = getenv("HOME");

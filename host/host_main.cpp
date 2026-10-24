@@ -173,8 +173,8 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
     if (!tex || tw != w || th != h) {
         if (tex) SDL_DestroyTexture(tex);
         tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, w, h);
+        SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
         tw = w; th = h;
-        SDL_RenderSetLogicalSize(ren, w, h);
     }
     void* pix; int pitch;
     if (SDL_LockTexture(tex, nullptr, &pix, &pitch) != 0) return;
@@ -212,8 +212,38 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
     if (shot && presented == parse(shot, base)) save(base);
     if (shots) { const uint32_t n = parse(shots, base); if (n && presented % n == 0) save(base + "_" + std::to_string(presented) + ".bmp"); }
     SDL_UnlockTexture(tex);
-    SDL_RenderClear(ren);
-    SDL_RenderCopy(ren, tex, nullptr, nullptr);
+
+    // "Sharp bilinear": enlarge by an integer factor with nearest sampling (every source
+    // pixel becomes the same k x k block), then scale that to the window with linear
+    // filtering. A non-integer nearest scale makes some pixel rows/columns one screen
+    // pixel wider than others, which visibly deforms the 8x8 font.
+    int ow = 0, oh = 0;
+    SDL_GetRendererOutputSize(ren, &ow, &oh);
+    SDL_Rect dst = {0, 0, ow, oh};
+    if ((int64_t)ow * h > (int64_t)oh * w) { dst.w = (int)((int64_t)oh * w / h); dst.x = (ow - dst.w) / 2; }
+    else { dst.h = (int)((int64_t)ow * h / w); dst.y = (oh - dst.h) / 2; }
+    int k = (dst.h + h - 1) / h;
+    if (k < 1) k = 1;
+    if (k > 8) k = 8;
+    static SDL_Texture* up = nullptr;
+    static int uw = 0, uh = 0;
+    if (dst.w % w == 0 && dst.h % h == 0) k = 1;   // exact multiple: no second pass needed
+    if (k > 1 && (!up || uw != w * k || uh != h * k)) {
+        if (up) SDL_DestroyTexture(up);
+        up = SDL_CreateTexture(ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_TARGET, w * k, h * k);
+        if (up) SDL_SetTextureScaleMode(up, SDL_ScaleModeLinear);
+        uw = w * k; uh = h * k;
+    }
+    SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    if (k > 1 && up && SDL_SetRenderTarget(ren, up) == 0) {
+        SDL_RenderCopy(ren, tex, nullptr, nullptr);
+        SDL_SetRenderTarget(ren, nullptr);
+        SDL_RenderClear(ren);
+        SDL_RenderCopy(ren, up, nullptr, &dst);
+    } else {
+        SDL_RenderClear(ren);
+        SDL_RenderCopy(ren, tex, nullptr, &dst);
+    }
     SDL_RenderPresent(ren);
 }
 
