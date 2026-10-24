@@ -81,9 +81,14 @@ void hdmi_tmds_stall_log(void) {}
 void hdmi_update_mode_timing(void) {}
 void hdmi_set_wide169(bool) {}
 void hdmi_set_clock_drive(bool) {}
-void hdmi_set_crt(uint8_t) {}
+// Scanlines and the CRT mask, applied by present() in host_main.cpp the way the HDMI
+// driver applies them: graphics_set_scanlines()/graphics_set_crt() reach both of
+// these, so the host keeps the last value.
+volatile uint8_t host_scanlines = 0;   // 0 off, 1..4 = the HDMI grey levels
+volatile uint8_t host_crt = 0;         // 0 off, 1..6 = the HDMI mask profiles
+void hdmi_set_crt(uint8_t level) { host_crt = level <= 6 ? level : 0; }
 void hdmi_set_dither(bool) {}
-void hdmi_set_scanlines(uint8_t) {}
+void hdmi_set_scanlines(uint8_t level) { host_scanlines = level <= 4 ? level : 4; }
 void vga_set_crt(uint8_t) {}
 void vga_set_scanlines(uint8_t) {}
 int vga_pwm_active(void) { return 0; }

@@ -3822,6 +3822,11 @@ void ESPectrum::loop() {
   // Must be here (not in setup) because HDMI DMA starts on core1 after setup returns
   {
       uint8_t pend_hdmi = 0, pend_vga = 0;
+#if HOST_BUILD
+      // A PC window shows any framebuffer size: nothing to confirm.
+      if (Config::loadPendingVideoMode(pend_hdmi, pend_vga)) Config::clearPendingVideoMode();
+      else
+#endif
       if (Config::loadPendingVideoMode(pend_hdmi, pend_vga)) {
           sleep_ms(500); // Let HDMI stabilize
           if (!OSD::videoModeConfirm(15)) {
@@ -5011,6 +5016,9 @@ void ESPectrum::loop() {
             v_sync = false;
             break;
           }
+#if HOST_BUILD
+          sleep_us(100);   // a PC core: wait for the frame thread without spinning
+#endif
         }
         // Blanking just started (v_sync fires at scanout line v_active): apply
         // any pending Profi DS80 palette refresh now, while the scanout DMA is

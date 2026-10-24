@@ -104,6 +104,7 @@
 #define TXT_PL_FADE         "Fade time"
 #define TXT_VID_DMA         "DMA"
 #define TXT_VID_MODE        "Mode"
+#define TXT_VID_BORDER_SIZE "Border size"
 #define TXT_VID_BORDER      "Render border"
 #define TXT_VID_SCREEN_TOP  "Screen position"
 #define TXT_VID_RENDER      "Render type"

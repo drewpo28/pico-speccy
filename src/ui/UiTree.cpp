@@ -1197,7 +1197,9 @@ static const Node kTft[] = {
 // Video > HDMI — the HDMI link's own knobs, shown only while HDMI is the live
 // output (a VGA_HDMI image on VGA, and the SOFTTV/TFT builds, have no link).
 static bool p_hdmiOut() {
-#if defined(VGA_HDMI)
+#if HOST_BUILD
+    return false;   // a PC window: no HDMI link
+#elif defined(VGA_HDMI)
     return !SELECT_VGA;
 #elif defined(HDMI)
     return true;
@@ -1228,7 +1230,9 @@ static const Node kHdmi[] = {
 // Interface menu-palette row further down — on HDMI (and the non-VGA builds)
 // neither has anything to say.
 static bool p_vgaOut() {
-#if defined(VGA_HDMI)
+#if HOST_BUILD
+    return false;
+#elif defined(VGA_HDMI)
     return SELECT_VGA;
 #else
     return false;
@@ -1306,8 +1310,20 @@ static bool p_screenTop() {
     return (a == (int)Config::arch) && Config::isEvoPentRaster();   // BaseConf / ScorpEvo, live
 }
 
+#if HOST_BUILD
+// On a PC the window sets the output size; the video mode only picks the
+// framebuffer (Config::load folds every mode onto these two).
+static const Option opt_host_border[] = {
+    { "Standard (320x240)",   Config::VM_640x480_60, "Standard" },
+    { "Full (360x288)",       Config::VM_720x576_50, "Full" },
+};
+#endif
 static const Node kVideo[] = {
+#if HOST_BUILD
+    NM_RADIO(TXT_VID_BORDER_SIZE, SET_VIDEO_MODE, opt_host_border, nullptr),
+#else
     NM_RADIO_D(TXT_VID_MODE,     SET_VIDEO_MODE, video_modeOpts, nullptr),
+#endif
     NM_SUB  (TXT_VID_HDMI,       kHdmi,          p_hdmiOut),
     NM_SUB  (TXT_VID_VGA,        kVga,           p_vgaOut),
     NM_RADIO(TXT_VID_SCREEN_TOP, SET_SCREEN_TOP, opt_screen_top, p_screenTop),
@@ -1320,7 +1336,10 @@ static const Node kVideo[] = {
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),
     NM_RADIO(TXT_VID_CRT,        SET_CRT_FILTER, opt_crt,        nullptr),
+#if !HOST_BUILD
+    // Host: paced by the machine's own timer, the window already syncs to the monitor.
     NM_BOOL (TXT_VID_VSYNC,      SET_VSYNC,      nullptr),
+#endif
     NM_RADIO(TXT_VID_GIGASCREEN, SET_GIGASCREEN, opt_gigascreen, nullptr),
     NM_BOOL (TXT_VID_ULAPLUS,    SET_ULAPLUS,    nullptr),
     NM_BOOL (TXT_VID_TIMEX,      SET_TIMEX,      nullptr),
@@ -1450,7 +1469,10 @@ static const Node kPlayerOpts[] = {
 };
 
 static const Node kAudio[] = {
+#if !HOST_BUILD
+    // Host: the sound goes to the PC's audio device; there is no output to pick.
     NM_RADIO(TXT_AUD_DRIVER,     SET_AUDIO_DRIVER, opt_audio_driver, nullptr),
+#endif
     NM_BOOL (TXT_AUD_AY,         SET_AY48,         nullptr),
     NM_RADIO(TXT_AUD_AY_STEREO,  SET_AY_STEREO,    opt_ay_stereo,  nullptr),
     NM_RADIO(TXT_AUD_TURBOSOUND, SET_TURBOSOUND,   opt_turbosound, nullptr),

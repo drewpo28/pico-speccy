@@ -1650,6 +1650,22 @@ void Config::load() {
             || forcesVsyncOff(hdmi_video_mode, cpu_mhz)    // 59 Hz display, 50 Hz machine
             || forcesVsyncOffVga(vga_video_mode))          // VGA 60 Hz
             v_sync_enabled = false;
+#if HOST_BUILD
+        // PC window: the output resolution is the window's, so the video mode only
+        // picks the framebuffer - 320x240 or the full-border 360x288.
+        {
+            auto host_vm = [](uint8_t vm) -> uint8_t {
+                return (vm == VM_720x576_50 || vm == VM_720x576_75 || vm == VM_720x576_169)
+                       ? VM_720x576_50 : VM_640x480_60;
+            };
+            hdmi_video_mode = host_vm(hdmi_video_mode);
+            vga_video_mode = host_vm(vga_video_mode);
+            // Paced by host_main's frame thread, which ticks at the MACHINE's frame
+            // rate on an absolute schedule; the vsync-off path (sleep for the rest
+            // of the frame) loses the OS's wake-up latency every frame (~1.7% slow).
+            v_sync_enabled = true;
+        }
+#endif
         nvs_get_b("gigascreen_enabled", gigascreen_enabled, sts);
         nvs_get_u8("gigascreen_onoff", gigascreen_onoff, sts);
         nvs_get_b("ulaplus", ulaplus, sts);
