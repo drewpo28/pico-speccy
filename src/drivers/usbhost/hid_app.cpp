@@ -1192,10 +1192,39 @@ static void mouse_apply(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32
 struct PadPrev { bool u, d, l, r; uint32_t b; };
 static void pad_apply(PadPrev& p, bool up, bool down, bool left, bool right, uint32_t buttons);
 
+#if PICOSPECCY_BT
+//--------------------------------------------------------------------+
+// Bluetooth HID (src/net/BtHost.cpp): the same funnels the USB devices use.
+//--------------------------------------------------------------------+
+// The keyboard keeps its OWN previous-report state: a USB keyboard beside it has
+// prev_report, and mixing the two would release one's keys on the other's report.
+static hid_keyboard_report_t s_bt_kbd_prev = { 0, 0, { 0 } };
+void bt_hid_keyboard(uint8_t modifier, const uint8_t keys[6])
+{
+    hid_keyboard_report_t r;
+    r.modifier = modifier;
+    r.reserved = 0;
+    memcpy(r.keycode, keys, 6);
+    process_kbd_report(&r, &s_bt_kbd_prev);
+    s_bt_kbd_prev = r;
+}
+
+void bt_hid_mouse(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32_t wheel)
+{
+    mouse_apply(bl, br, bm, dx, dy, wheel);
+}
+
+void bt_hid_gamepad(bool up, bool down, bool left, bool right, uint32_t buttons)
+{
+    static PadPrev prev;
+    pad_apply(prev, up, down, left, right, buttons);
+}
+#endif
+
 // A generic pad: 4 directions + up to 32 buttons, numbered as the device's HID
 // Button page (0 = Button 1). Button 1 fire,
-// 2 alt-fire, 3/4 X/Y, 5/6 L/R, 7/8 L2/R2, 9 Select, 10 Start. Used by the USB
-// pads decoded by their descriptor (HidPadLayout.h); each caller keeps its own
+// 2 alt-fire, 3/4 X/Y, 5/6 L/R, 7/8 L2/R2, 9 Select, 10 Start. Shared by the Bluetooth
+// pads and the USB pads decoded by their descriptor (HidPadLayout.h); each caller keeps its own
 // previous state so two pads do not release each other.
 static void pad_apply(PadPrev& p, bool up, bool down, bool left, bool right, uint32_t buttons)
 {

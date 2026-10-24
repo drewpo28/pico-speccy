@@ -59,6 +59,11 @@ option(PICO_PC_WS "Olimex PICO-PC + Waveshare RP2350B-Plus-W (on-chip CYW43439 W
 # bank, and the GM.DLS bank region grows to ~14 MB by itself (rp2350-memmap.ld). The W/WS
 # boards are 16 MB only and turn this on themselves (cmake/board.cmake).
 option(FLASH_16MB "Build for a 16 MB flash module (built-in YRW801 + GM.DLS)" OFF)
+# On-chip Bluetooth (the CYW43439 of the W/WS boards) through BTstack: test images only
+# for now ("-BT" in the file name). Needs PICOSPECCY_WIFI (a W board); see
+# src/net/BtHost.cpp. Reserves the top 12 KB of flash for BTstack's pairing keys
+# (pico_flash_bank), taken off the GM.DLS bank region.
+option(PICOSPECCY_BT "On-chip Bluetooth via BTstack (W boards only, test)" OFF)
 # OFF by default and shipped as a SEPARATE z0p2 firmware ("-PIOUSB" in the file name):
 # Pico-PIO-USB costs 17.7 KB of SRAM that cannot be reclaimed at runtime — 11.0 KB of
 # .time_critical code (the bit-banged host has to run from RAM) plus 6.7 KB of .bss,

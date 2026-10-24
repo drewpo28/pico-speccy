@@ -93,6 +93,13 @@ void act_replaceRom(int32_t slot);
 // Network
 void act_wifi();
 void act_sntp();
+#if PICOSPECCY_BT
+void act_btScan();
+void act_btAudio();
+void act_btInput();
+const char* vl_btInput();
+const char* vl_btAudio();
+#endif
 #if ZIFI_NET_CLIENT
 void act_ftpServer();
 void act_httpTest();

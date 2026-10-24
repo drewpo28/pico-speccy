@@ -176,6 +176,9 @@ static const Option opt_audio_driver[] = {
 #ifdef PCM5122_I2S_DATA
     { "PCM5122",  5 },              // ZERO2's I2S DAC board (I2C-configured)
 #endif
+#if PICOSPECCY_BT
+    { "Bluetooth", Config::AUDIO_DRIVER_BT },   // runtime: a connected A2DP sink
+#endif
 };
 // The Video > Mode list, sorted by resolution, then refresh, then scale. The label
 // is built per call (video_modeOpts): "<W>x<H> @<Hz> D<div> Bx<n> <aspect>" on a PIO
@@ -1853,6 +1856,16 @@ static const Node kNetwork[] = {
     NM_BOOL_EN  (TXT_NET_NIC_SUB, SET_ZIFI_NIC, nullptr, p_nicAvail),
 };
 
+#if PICOSPECCY_BT
+// Bluetooth on the on-chip radio (W boards): audio out (A2DP source), input
+// devices (HID host), discovery.
+static const Node kBluetooth[] = {
+    NM_ACTIONV(TXT_BT_AUDIO, act_btAudio, vl_btAudio, nullptr),
+    NM_ACTIONV(TXT_BT_INPUT, act_btInput, vl_btInput, nullptr),
+    NM_ACTION (TXT_BT_SCAN,  act_btScan,  nullptr),
+};
+#endif
+
 // ── Snapshots ──────────────────────────────────────────────────────────────────
 // One level: the file loader (the F2 flow, which had no menu row at all) and the
 // 40 fast slots as a K_PICK list in the right pane. The slots used to be two root
@@ -1878,6 +1891,9 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_AUDIO,     kAudio,    nullptr),
     NM_SUB   (TXT_JOYSTICK,  kJoystick, nullptr),
     NM_SUB   (TXT_NETWORK,   kNetwork,  nullptr),
+#if PICOSPECCY_BT
+    NM_SUB   (TXT_BLUETOOTH, kBluetooth, nullptr),
+#endif
     NM_SUB   (TXT_OPTIONS,   kOptions,  nullptr),
     NM_SUB   (TXT_RESET,     kReset,    nullptr),
     NM_SUB   (TXT_DEBUG,     kDebug,    nullptr),

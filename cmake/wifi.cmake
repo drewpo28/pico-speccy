@@ -35,6 +35,35 @@ if (PICOSPECCY_WIFI)
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
 endif()
+# Bluetooth on the same radio (BTstack, HCI over the same gSPI bus — our vendored
+# bus driver serves it unchanged: the BT half talks to the chip through cyw43_ll's
+# backplane calls, not through cyw43_spi_*). Linking pico_btstack_cyw43 raises
+# CYW43_ENABLE_BLUETOOTH, which (a) swaps in the combined WiFi+BT firmware blob and
+# (b) makes cyw43_arch_init() call btstack_cyw43_init() itself (poll arch: the
+# BTstack run loop is an async_context worker serviced by cyw43_arch_poll, i.e. by
+# WifiNet::poll on core0 like lwIP). Config: src/net/bt/btstack_config.h.
+if (PICOSPECCY_BT)
+    if (NOT PICOSPECCY_WIFI)
+        message(FATAL_ERROR "PICOSPECCY_BT needs a W board (PICOSPECCY_WIFI)")
+    endif()
+    target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/src/net/bt)
+    # Our copy of cybt_shared_bus_driver.c (src/net/cybt_shared_bus_driver_speccy.c):
+    # it validates the BT ring indices read from the radio — see its header.
+    get_target_property(_cybt_srcs cybt_shared_bus INTERFACE_SOURCES)
+    list(FILTER _cybt_srcs EXCLUDE REGEX "cybt_shared_bus_driver\\.c$")
+    set_target_properties(cybt_shared_bus PROPERTIES INTERFACE_SOURCES "${_cybt_srcs}")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_BT=1)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        pico_btstack_cyw43 pico_btstack_classic pico_btstack_ble pico_btstack_sbc_encoder)
+    # The SBC encoder runs on core0 for every 128 samples of the A2DP stream: -O2
+    # (the project default is -Os) — it is a few KB of flash.
+    file(GLOB _sbc_enc_srcs "${PICO_BTSTACK_PATH}/3rd-party/bluedroid/encoder/srce/*.c")
+    set_source_files_properties(${_sbc_enc_srcs}
+        "${PICO_BTSTACK_PATH}/src/classic/btstack_sbc_encoder_bluedroid.c"
+        PROPERTIES COMPILE_OPTIONS "-O2")
+else()
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_BT=0)
+endif()
 # Board identity for the sources. MURM2 already defines MURM2=1 in its pin arm;
 # MURM1 defines nothing and is the `#else` fallback everywhere, so the Murmulator W
 # boards need their own macros for src/drivers/board/BoardPins.cpp to tell the

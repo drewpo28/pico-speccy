@@ -289,7 +289,9 @@ void inInit(uint gpio) {
 }
 #endif
 
+extern uint8_t audio_driver_running;
 void init_sound() {
+    audio_driver_running = Config::audio_driver;
 #ifdef LOAD_WAV_PIO
     // Audio (tape) input pin — independent of the audio OUTPUT path, so init it
     // first. Must run for every output mode, including HDMI: the HDMI branch
@@ -510,6 +512,17 @@ void pcm_card_detach() {
     __dmb();
 }
 
+// Bluetooth audio tap (PICOSPECCY_BT, src/net/BtHost.cpp): the final mix of
+// every tick, copied into a ring core0 encodes to SBC. Single producer (this
+// tick), single consumer (core0); a full ring drops the sample and counts it.
+volatile int16_t* pcm_bt_ring = nullptr;
+// The wired driver init_sound() actually set up (Config::audio_driver may be staged
+// to something else that only takes hold after a reboot): the menu's reboot rule.
+uint8_t audio_driver_running = 0;
+volatile uint32_t pcm_bt_w = 0, pcm_bt_r = 0;
+uint32_t pcm_bt_mask = 0;
+uint32_t pcm_bt_drops = 0;
+
 static void __not_in_flash_func(pcm_call_inner)() {
     g_pcm_tick_ct++;
     int32_t sL, sR;
@@ -617,6 +630,26 @@ mixed:
     if (sL < -32768) sL = -32768; else if (sL > 32767) sL = 32767;
     if (sR < -32768) sR = -32768; else if (sR > 32767) sR = 32767;
 
+#if PICOSPECCY_BT
+    {
+        volatile int16_t* bring = pcm_bt_ring;
+        if (bring) {
+            const uint32_t w = pcm_bt_w;
+            if (w - pcm_bt_r <= pcm_bt_mask) {
+                const uint32_t i = (w & pcm_bt_mask) << 1;
+                bring[i] = (int16_t)sL;
+                bring[i + 1] = (int16_t)sR;
+                __dmb();
+                pcm_bt_w = w + 1;
+            } else {
+                pcm_bt_drops++;
+            }
+            // The sound went to Bluetooth: the wired output goes quiet (a held 0,
+            // i.e. mid-scale on PWM, silence on HDMI/I2S).
+            sL = sR = 0;
+        }
+    }
+#endif
 #if defined(VGA_HDMI)
     if (Config::audio_driver == 4) {
         hdmi_audio_write_sample((int16_t)sL, (int16_t)sR);
