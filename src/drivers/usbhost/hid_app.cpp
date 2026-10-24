@@ -1176,6 +1176,59 @@ static void mouse_apply(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32
     ESPectrum::mouseDY += dy;
 }
 
+#if PICOSPECCY_BT
+//--------------------------------------------------------------------+
+// Bluetooth HID (src/net/BtHost.cpp): the same funnels the USB devices use.
+//--------------------------------------------------------------------+
+// The keyboard keeps its OWN previous-report state: a USB keyboard beside it has
+// prev_report, and mixing the two would release one's keys on the other's report.
+static hid_keyboard_report_t s_bt_kbd_prev = { 0, 0, { 0 } };
+void bt_hid_keyboard(uint8_t modifier, const uint8_t keys[6])
+{
+    hid_keyboard_report_t r;
+    r.modifier = modifier;
+    r.reserved = 0;
+    memcpy(r.keycode, keys, 6);
+    process_kbd_report(&r, &s_bt_kbd_prev);
+    s_bt_kbd_prev = r;
+}
+
+void bt_hid_mouse(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32_t wheel)
+{
+    mouse_apply(bl, br, bm, dx, dy, wheel);
+}
+
+// A generic pad: 4 directions + up to 32 buttons, numbered as the device's HID
+// Button page (0 = Button 1). Mapped like the cheap USB pads above: button 1 fire,
+// 2 alt-fire, 3/4 X/Y, 5/6 L/R, 7/8 L2/R2, 9 Select, 10 Start.
+void bt_hid_gamepad(bool up, bool down, bool left, bool right, uint32_t buttons)
+{
+    static bool pu, pd, pl, pr;
+    static uint32_t pb;
+    const bool sj = Config::secondJoy != 1;
+    if (up != pu)    { joyPushData(fabgl::VirtualKey::VK_MENU_UP, up);       if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_UP, up); }
+    if (down != pd)  { joyPushData(fabgl::VirtualKey::VK_MENU_DOWN, down);   if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_DOWN, down); }
+    if (left != pl)  { joyPushData(fabgl::VirtualKey::VK_MENU_LEFT, left);   if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_LEFT, left); }
+    if (right != pr) { joyPushData(fabgl::VirtualKey::VK_MENU_RIGHT, right); if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_RIGHT, right); }
+    pu = up; pd = down; pl = left; pr = right;
+    const uint32_t ch = buttons ^ pb;
+    pb = buttons;
+    if (!ch) return;
+    auto bit = [&](int n) { return (buttons >> n) & 1u; };
+    auto changed = [&](int n) { return (ch >> n) & 1u; };
+    if (changed(0)) { joyPushData(fabgl::VirtualKey::VK_MENU_ENTER, bit(0)); if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_FIRE, bit(0)); }
+    if (changed(1) && sj) joyPushData(fabgl::VirtualKey::VK_DPAD_ALTFIRE, bit(1));
+    if (changed(2)) kbdPushData(fabgl::VirtualKey::VK_JOY_X,  bit(2));
+    if (changed(3)) kbdPushData(fabgl::VirtualKey::VK_JOY_Y,  bit(3));
+    if (changed(4)) kbdPushData(fabgl::VirtualKey::VK_JOY_Z,  bit(4));
+    if (changed(5)) kbdPushData(fabgl::VirtualKey::VK_JOY_C,  bit(5));
+    if (changed(6)) kbdPushData(fabgl::VirtualKey::VK_JOY_L2, bit(6));
+    if (changed(7)) kbdPushData(fabgl::VirtualKey::VK_JOY_R2, bit(7));
+    if (changed(8)) { joyPushData(fabgl::VirtualKey::VK_MENU_BS, bit(8));   if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_SELECT, bit(8)); }
+    if (changed(9)) { joyPushData(fabgl::VirtualKey::VK_MENU_HOME, bit(9)); if (sj) joyPushData(fabgl::VirtualKey::VK_DPAD_START, bit(9)); }
+}
+#endif
+
 //--------------------------------------------------------------------+
 // Mouse wheel: report protocol, per instance
 //--------------------------------------------------------------------+

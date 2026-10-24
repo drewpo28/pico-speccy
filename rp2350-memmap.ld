@@ -478,7 +478,10 @@ SECTIONS
      * but its arena too small for the bank (Murmuzavr at 32 MB reserves all but the
      * 512 KB minimum). There the bank is refused with a logged "bank alloc failed" and
      * MIDI falls back to the built-in wavetable — a degradation, not a crash. */
-    __gm_bank_end   = ORIGIN(FLASH) + LENGTH(FLASH);
+    /* PICOSPECCY_BT: BTstack keeps its pairing keys in two flash sectors at
+     * PICO_FLASH_BANK_STORAGE_OFFSET = size - 4K - 8K (pico/btstack_flash_bank.h on
+     * RP2350), so the bank region stops 12 KB short of the end. 0 otherwise. */
+    __gm_bank_end   = ORIGIN(FLASH) + LENGTH(FLASH) - @BT_FLASH_RESERVE@;
     __gm_bank_start = ALIGN(__psramrom_end, 4096);
     __gm_bank_size  = __gm_bank_end - __gm_bank_start;
     __gm_bank_min   = @GM_BANK_MIN_KB@ * 1024;

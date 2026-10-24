@@ -32,6 +32,9 @@
 #include "fs/FileUtils.h"
 #include "drivers/input/fabutils.h"
 #include "app/Debug.h"
+#if PICOSPECCY_BT
+#include "net/BtHost.h"
+#endif
 #include <pico/stdlib.h>
 
 // Heap probes (OSDMain.cpp) — declared OUTSIDE namespace nm, or the names resolve
@@ -426,6 +429,20 @@ static void activate() {
             } else {                               // commit the highlighted option
                 uint8_t cnt; const Option* o = nodeOptions(*n, cnt);
                 if (S.rsel >= cnt) break;
+#if PICOSPECCY_BT
+                // Audio > Driver > Bluetooth is not a stored value: it is the
+                // Bluetooth > Audio flow (pick a sink, connect). Whatever it ends
+                // with, the row then reads the live state.
+                if (n->setting == SET_AUDIO_DRIVER && o[S.rsel].value == Config::AUDIO_DRIVER_BT) {
+                    // Already playing there: nothing to do (act_btAudio would offer to
+                    // disconnect, which is what picking a wired driver is for).
+                    const BtHost::AudioState bs = BtHost::audioState();
+                    if (bs != BtHost::A_STREAMING && bs != BtHost::A_CONNECTING) runModal(act_btAudio);
+                    Stage::invalidate(n->setting);
+                    markDirty(D_ALL);
+                    break;
+                }
+#endif
                 nodeSetValue(*n, o[S.rsel].value);
                 // A conflicting setting was switched off by this pick: say so now,
                 // then repaint everything the box covered.
