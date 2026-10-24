@@ -47,6 +47,7 @@ using namespace std;
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/machines/Timex.h"
 #include "speccy/machines/If2.h"
+#include "speccy/machines/Sam/Sam.h"
 #include "fs/FileUtils.h"
 #include "speccy/z80/CPU.h"
 #include "speccy/video/Video.h"
@@ -96,6 +97,17 @@ uint16_t Tape::tapeBit1PulseLen2; // 2nd pulse for bit 1 (PZX asymmetric)
 uint16_t Tape::tapeHdrLong;  // Header sync lenght in pulses
 uint16_t Tape::tapeHdrShort; // Data sync lenght in pulses
 uint32_t Tape::tapeBlkPauseLen; 
+// The tape clock, in 3.5 MHz T-states: every pulse length in TAP/TZX/PZX/CSW is in
+// those units. A SAM Coupe runs at 6 MHz, so its T-states are scaled by 7/12 —
+// one place, so Play / Read / the snapshot restore all agree.
+static inline uint64_t tapeClock() {
+    const uint64_t t = CPU::global_tstates + CPU::tstates;
+    return Z80Ops::isSam ? t * 7 / 12 : t;
+}
+static inline uint32_t tapeFrameT() {
+    return Z80Ops::isSam ? CPU::statesInFrame * 7 / 12 : CPU::statesInFrame;
+}
+
 uint32_t Tape::tapeNext;
 uint8_t Tape::tapeLastByteUsedBits = 8;
 uint8_t Tape::tapeEndBitMask;
@@ -186,8 +198,8 @@ static inline bool wearSignalPhase() {
 }
 
 static void wearReset() {
-    wear.reset(Config::tape_wear, (uint32_t)(CPU::global_tstates + CPU::tstates));
-    wearAudioLast = CPU::global_tstates + CPU::tstates;
+    wear.reset(Config::tape_wear, (uint32_t)(tapeClock()));
+    wearAudioLast = tapeClock();
     wearFrozenBit = Tape::tapeEarBit;
 }
 
@@ -219,7 +231,7 @@ static uint32_t wearPulse(uint32_t next) {
 static void wearAudio() {
     const uint8_t was = wear.evtKind;
     if (!wear.sync(Config::tape_wear)) return;
-    const uint64_t now = CPU::global_tstates + CPU::tstates;
+    const uint64_t now = tapeClock();
     const uint64_t d = now - wearAudioLast;
     wearAudioLast = now;
     if (wear.audio(d > tapewear::MAX_PULSE_T ? 0u : (uint32_t)d)) {
@@ -361,14 +373,28 @@ static inline bool tapeFastMachineOk() {
     // takes over only when the OS gives the load back to the deck (menu "Tape
     // Loader", no .tapein: Z80::next_os_tape_decline). So the deck must stay
     // STOPPED after a mount here too, or it spools past the header.
-    return Config::arch != A_ALF &&
+    return Config::arch != A_ALF && Config::arch != A_SAM &&
            Config::romSet != R_ZX81P && Config::romSet != R_48K_CS &&
            Config::romSet != R_128K_CS && !If2::live();   // a cartridge is not the 48K ROM
 }
 
 // Load tape file (.wav, .tap, .tzx)
 bool Tape::flashloadAvailable() {
-    return fastLoadOn() && tapeFastMachineOk();
+    // SAM Coupe: its own trap on the ROM 3.0 loader (Sam::tapeTrap) — not the
+    // Spectrum one, so it is not in tapeFastMachineOk (which also gates the
+    // Spectrum loader snapshots of autoRunAvailable).
+    return fastLoadOn() && (tapeFastMachineOk() || Config::arch == A_SAM);
+}
+
+bool Tape::fastLoadEnabled() { return fastLoadOn(); }
+
+uint32_t Tape::samEdgeWaitT() {
+    if (tapeStatus != TAPE_LOADING || tapeFileType == TAPE_FTYPE_WAV || tapeFileType == TAPE_FTYPE_MP3 ||
+        tapeFileType == TAPE_FTYPE_EMPTY) return 0;
+    const uint64_t cur = tapeClock() - tapeStart;
+    if (cur >= tapeNext) return 0;
+    const uint64_t left = ((uint64_t)tapeNext - cur) * 12 / 7;
+    return left > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)left;
 }
 
 bool Tape::autoRunAvailable() {
@@ -433,6 +459,8 @@ void Tape::LoadTape(const string& mFile_) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
         // Flashload .tap if needed — see Tape::flashloadAvailable().
+        // SAM Coupe: no loader snapshot — reset and type LOAD "" (Sam::launchTape).
+        if ((keySel == "R") && Config::arch == A_SAM) Sam::launchTape();
         if ((keySel == "R") && Tape::autoRunAvailable()) {
                 OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
@@ -467,6 +495,7 @@ void Tape::LoadTape(const string& mFile_) {
         string keySel = mFile.substr(0,1);
         mFile.erase(0, 1);
         // Flashload .tzx if needed
+        if ((keySel == "R") && Config::arch == A_SAM) Sam::launchTape();
         if ((keySel == "R") && Tape::autoRunAvailable()) {
                 OSD::notify(OSD_TAPE_FLASHLOAD, LEVEL_INFO, 700);
                 uint8_t OSDprev = VIDEO::OSD;
@@ -588,7 +617,8 @@ void Tape::LoadTape(const string& mFile_) {
     const bool playFallback = runKey && Config::tape_autostart &&
         !Tape::flashloadAvailable() && Tape::tapeStatus == TAPE_STOPPED &&
         Tape::tapeFileType != TAPE_FTYPE_EMPTY && Tape::tapeFileType != TAPE_FTYPE_CSW &&
-        Tape::tapeFileName != "none";   // CSW: started by its own branch / the auto-start
+        Tape::tapeFileName != "none" &&   // CSW: started by its own branch / the auto-start
+        Config::arch != A_SAM;            // SAM: Sam::portIn starts it when LOAD polls
 #if TIMEX_PORT_TRACE
     // "the tape does nothing" has four possible causes and they are indistinguishable
     // from the screen: the caller asked for L not R, auto-start is off, flashload's
@@ -1275,6 +1305,8 @@ string Tape::tapeBlockReadData(int Blocknum) {
     return buf;
 }
 
+static int s_tapContBlock = -1;   // block TAP_ContinueFrom is playing, -1 none
+
 void Tape::Play() {
 
     if (tapeFileType != TAPE_FTYPE_MP3 && !tape.obj.fs) {
@@ -1284,13 +1316,15 @@ void Tape::Play() {
 
     if (VIDEO::OSD) VIDEO::OSD = 1;
     pzxFlashCont = false;
+    tapFlashCont = false;
+    s_tapContBlock = -1;
 
     if (tapeFileType == TAPE_FTYPE_CSW) {
         // One pulse stream: resume where Stop() left it (rewinds after the end).
         if (!CSW_Play()) { Stop(); return; }
         GDBEnd = false;
         Tape::tapeStatus = TAPE_LOADING;
-        tapeStart = CPU::global_tstates + CPU::tstates;
+        tapeStart = tapeClock();
         wearReset();
         return;
     }
@@ -1320,7 +1354,13 @@ void Tape::Play() {
     }
 
     // Init tape vars
-    tapeEarBit = 1;
+    // TAP carries no polarity, so it takes Fuse's / PZX's: the level is LOW in a
+    // pause and during the first pilot pulse, i.e. the data of a standard block
+    // (odd pilot count) starts HIGH — what a PZX made from the same tape says.
+    // It used to start HIGH, which only worked because the Issue-2 MIC feedback
+    // inverted the tape on read; with that gone (Ports.cpp), polarity-sensitive
+    // loaders (Wizball) need the real thing. TZX keeps its own levels.
+    tapeEarBit = (tapeFileType == TAPE_FTYPE_TAP) ? 0 : 1;
     tapeBitMask = 0x80;
     tapeLastByteUsedBits = 8;
     tapeEndBitMask = 0x80;
@@ -1334,7 +1374,7 @@ void Tape::Play() {
 
     // Start loading
     Tape::tapeStatus = TAPE_LOADING;
-    tapeStart = CPU::global_tstates + CPU::tstates;
+    tapeStart = tapeClock();
 
     wearReset();
 }
@@ -1379,9 +1419,73 @@ void Tape::Stop() {
     tapePhase = TAPE_PHASE_STOPPED;
     tapeAutoPlay = false;
     pzxFlashCont = false;
+    tapFlashCont = false;
+    s_tapContBlock = -1;
+    // A JJ screen animation cut short (F11, a new tape) must not outlive the tape
+    // it belonged to: the flag disables the ROM trap and the auto-start, and only
+    // the animation's own end used to clear it — after an F11 mid-animation no
+    // tape fast-loaded or auto-started again until F12.
+    jjScreenAnimating = false;
     if (VIDEO::OSD) {
         VIDEO::OSD = 2;
     }
+}
+
+bool Tape::tapFlashCont = false;
+
+// The ROM has just taken its share of a TAP block that carries more (Wizball: a
+// 155-byte BASIC over a 35384-byte block, the rest read on by a loader through the
+// ROM's LD-EDGE). On a real deck the tape simply runs on, so play the block from
+// byte byteIdx (0 = flag), right where the ROM stopped reading.
+void Tape::TAP_ContinueFrom(int block, uint32_t byteIdx) {
+    tapeCurBlock = block;
+    tapePlayOffset = CalcTapBlockPos(block);
+    GetBlock = &TAP_GetBlock;
+    tapeEarBit = 0;                       // pilot starts LOW (see Play)
+    tapeBitMask = 0x80;
+    tapeLastByteUsedBits = 8;
+    tapeEndBitMask = 0x80;
+    tapeBlockLen = 0;
+    tapebufByteCount = 0;
+    GDBEnd = false;
+    pzxFlashCont = false;
+    tapeCurByte = readByteFile(&tape);
+    TAP_GetBlock();                       // tapeCurByte = flag, tapebufByteCount = 2
+    for (uint32_t i = 0; i < byteIdx; i++) {
+        tapeCurByte = readByteFile(&tape);
+        tapebufByteCount++;
+    }
+    tapeEarBit ^= 1;                      // as SYNC2 -> DATA1
+    tapePhase = TAPE_PHASE_DATA1;
+    tapeNext = tapeCurByte & tapeBitMask ? tapeBit1PulseLen : tapeBit0PulseLen;
+    tapeStatus = TAPE_LOADING;
+    tapeStart = tapeClock();
+    wearReset();
+    tapFlashCont = true;
+    s_tapContBlock = block;
+}
+
+// A flash loader that takes whole blocks (Cerikopik, JJ) while the tape PLAYS: if
+// the deck is past the pilot of the current block (its data, tail or pause — e.g.
+// the rest of a TAP block TAP_ContinueFrom left running), that block is not the
+// one the loader is waiting for.
+static bool flashSkipPlayingBlock() {
+    if (Tape::tapeStatus != TAPE_LOADING) return true;
+    bool past;
+    switch (Tape::tapePhase) {
+        case TAPE_PHASE_TAIL: case TAPE_PHASE_PAUSE:
+            past = true; break;
+        case TAPE_PHASE_SYNC1: case TAPE_PHASE_SYNC2: case TAPE_PHASE_DRB:
+        case TAPE_PHASE_DATA1: case TAPE_PHASE_DATA2:
+            past = (Tape::tapeCurBlock == s_tapContBlock); break;
+        default:
+            past = false; break;
+    }
+    if (!past) return true;
+    s_tapContBlock = -1;
+    if (Tape::tapeCurBlock >= Tape::tapeNumBlocks - 1) return false;
+    Tape::tapeCurBlock++;
+    return true;
 }
 
 // ── .pss (PSTP) ────────────────────────────────────────────────────────────────
@@ -1411,7 +1515,7 @@ uint32_t Tape::snapSave(uint8_t* out) {
     o.u8(playing ? 1 : 0);
     o.u8(resumable ? 1 : 0);
     if (!resumable) return o.n;
-    const uint64_t now = CPU::global_tstates + CPU::tstates;
+    const uint64_t now = tapeClock();
     o.u32((uint32_t)f_tell(&tape));
     o.u64(now - tapeStart);   // Read() works modulo 2^64 as well
     o.u8(tapePhase); o.u8(tapeEarBit); o.u8(tapeCurByte); o.u8(tapeBitMask);
@@ -1503,7 +1607,7 @@ bool Tape::snapLoad(const uint8_t* in, uint32_t n) {
              : tapeFileType == TAPE_FTYPE_PZX ? &PZX_GetBlock : &TAP_GetBlock;
     GDBEnd = false;
     tapeStatus = TAPE_LOADING;
-    const uint64_t now = CPU::global_tstates + CPU::tstates;
+    const uint64_t now = tapeClock();
     tapeStart = now - elapsed;   // may wrap: Read() takes now - tapeStart
     wearReset();
     if (VIDEO::OSD) VIDEO::OSD = 1;
@@ -1517,13 +1621,13 @@ IRAM_ATTR void Tape::Read() {
         return;
     }
 #endif
-    uint64_t tapeCurrent = CPU::global_tstates + CPU::tstates - tapeStart; // states since start
+    uint64_t tapeCurrent = tapeClock() - tapeStart; // states since start
     FIL* tape = &Tape::tape;
     if ( tapeFileType == TAPE_FTYPE_MP3 ) {
         if (!mf) return;
         uint32_t FPS = 50;
         uint32_t samplesPerFrame = musicFileGetSampleRate(mf) / FPS; // samples/second / frame/second; ~44100 / 50 = 882
-        uint32_t statesPerSample = CPU::statesInFrame / samplesPerFrame; // states/frame / samples/frame; ~70000 / 882 = 79
+        uint32_t statesPerSample = tapeFrameT() / samplesPerFrame; // states/frame / samples/frame; ~70000 / 882 = 79
         FSIZE_t sampleNumber = sampleNumber = tapeCurrent * (musicFileIsStereo(mf) ? 2 : 1) / statesPerSample;
         // + wav_offset; // states / states/sample
         size_t t = mp3_read;
@@ -1543,13 +1647,13 @@ IRAM_ATTR void Tape::Read() {
             }
         }
         wearAudio();
-        tapeStart = CPU::global_tstates + CPU::tstates - tapeCurrent; // recover?
+        tapeStart = tapeClock() - tapeCurrent; // recover?
         return;
     }
     else if ( tapeFileType == TAPE_FTYPE_WAV ) {
         uint32_t FPS = 50; /// VIDEO::framecnt / (ESPectrum::totalseconds / 1000000); // ~50 fps
         uint32_t samplesPerFrame = wav.freq / FPS; // samples/second / frame/second; ~44100 / 50 = 882
-        uint32_t statesPerSample = CPU::statesInFrame / samplesPerFrame; // states/frame / samples/frame; ~70000 / 882 = 79
+        uint32_t statesPerSample = tapeFrameT() / samplesPerFrame; // states/frame / samples/frame; ~70000 / 882 = 79
         FSIZE_t sampleNumber;
         if (wav.ch == 1) { // mono
             if (wav.byte_per_sample == 1) { // 8-bit
@@ -1574,7 +1678,7 @@ IRAM_ATTR void Tape::Read() {
             f_lseek(tape, 0);
         }
         wearAudio();
-        tapeStart = CPU::global_tstates + CPU::tstates - tapeCurrent; // recover?
+        tapeStart = tapeClock() - tapeCurrent; // recover?
         return;
     }
     if (tapeCurrent >= tapeNext) {
@@ -2105,7 +2209,8 @@ IRAM_ATTR void Tape::Read() {
                 tapeNext=tapeBlkPauseLen;
                 break;
             case TAPE_PHASE_PAUSE:
-                tapeEarBit = 1;
+                // TAP: the pause level runs on into the pilot (see Play).
+                tapeEarBit = (tapeFileType == TAPE_FTYPE_TAP) ? 0 : 1;
                 tapeCurBlock++;
                 GetBlock();
             } 
@@ -2114,9 +2219,9 @@ IRAM_ATTR void Tape::Read() {
 
         // More precision just for DRB and CSW. Makes some loaders work but bigger TAIL_LEN also does and seems better solution.
         // if (tapePhase == TAPE_PHASE_DRB || tapePhase == TAPE_PHASE_CSW)
-            tapeStart = CPU::global_tstates + CPU::tstates - tapeCurrent;
+            tapeStart = tapeClock() - tapeCurrent;
         // else
-        //     tapeStart = CPU::global_tstates + CPU::tstates;
+        //     tapeStart = tapeClock();
 
     }
 }
@@ -2170,9 +2275,90 @@ static void flashPlayFallback() {
     if (Tape::tapeStatus != TAPE_LOADING) Tape::Play();
 }
 
+// ── Block-level access for a machine's own trap (Sam::tapeTrap) ───────────────
+// The TAP / TZX locating of FlashLoad below, without its Spectrum register
+// conventions. PZX/CSW/WAV: nothing block-shaped to hand out — play for real.
+bool Tape::flashBlockOpen(FlashBlk& b) {
+    b.flag = 0; b.dataLen = 0;
+    if (tapeFileName == "none") return false;
+    if (tapeFileType != TAPE_FTYPE_TAP && tapeFileType != TAPE_FTYPE_TZX) {
+        flashPlayFallback();
+        return false;
+    }
+    // A trap while the tape PLAYS: the block's trailing pause has not ended, so
+    // tapeCurBlock still names the block the ROM just read (see FlashLoad).
+    if (tapeStatus == TAPE_LOADING &&
+        (tapePhase == TAPE_PHASE_TAIL || tapePhase == TAPE_PHASE_PAUSE)) {
+        if (tapeCurBlock < tapeNumBlocks - 1) tapeCurBlock++;
+        else return false;
+    }
+    FIL* t = &Tape::tape;
+    if (tapeFileType == TAPE_FTYPE_TZX) {
+        const int savedBlock = tapeCurBlock;
+        uint8_t id = 0;
+        while (tapeCurBlock < tapeNumBlocks) {
+            CalcTZXBlockPos(tapeCurBlock);
+            id = readByteFile(t);
+            if (id == 0x10 || id == 0x11 || id == 0x14) break;
+            tapeCurBlock++;
+        }
+        if (tapeCurBlock >= tapeNumBlocks) {
+            tapeCurBlock = savedBlock;
+            flashPlayFallback();
+            return false;
+        }
+        CalcTZXBlockPos(tapeCurBlock);
+        id = readByteFile(t);
+        uint32_t len;
+        if (id == 0x10) {                       // pause(2) len(2)
+            readByteFile(t); readByteFile(t);
+            len = readByteFile(t) | (readByteFile(t) << 8);
+        } else if (id == 0x11) {                // pilot sync1 sync2 bit0 bit1 pilotlen (12) lastbits pause(2) len(3)
+            for (int i = 0; i < 15; i++) readByteFile(t);
+            len = readByteFile(t) | (readByteFile(t) << 8) | ((uint32_t)readByteFile(t) << 16);
+        } else {                                // 0x14: bit0 bit1 (4) lastbits pause(2) len(3)
+            for (int i = 0; i < 7; i++) readByteFile(t);
+            len = readByteFile(t) | (readByteFile(t) << 8) | ((uint32_t)readByteFile(t) << 16);
+        }
+        if (len == 0) { flashBlockDone(); return tapeCurBlock ? flashBlockOpen(b) : false; }
+        b.flag = readByteFile(t);
+        b.dataLen = len - 1;
+        return true;
+    }
+    if (!tape.obj.fs) {
+        string fname = FileUtils::TAP_Path + tapeFileName;
+        if (f_open(&tape, fname.c_str(), FA_READ) != FR_OK) return false;
+    }
+    CalcTapBlockPos(tapeCurBlock);
+    const uint32_t len = readByteFile(t) | (readByteFile(t) << 8);
+    if (len == 0) { flashBlockDone(); return tapeCurBlock ? flashBlockOpen(b) : false; }
+    b.flag = readByteFile(t);
+    b.dataLen = len - 1;
+    return true;
+}
+
+uint8_t Tape::flashBlockRead() { return readByteFile(&Tape::tape); }
+
+void Tape::flashBlockDone() {
+    if (tapeCurBlock < tapeNumBlocks - 1) tapeCurBlock++;
+    else { tapeCurBlock = 0; f_lseek(&Tape::tape, 0); }
+}
+
 bool Tape::FlashLoad() {
     if (Z80Ops::isALF) { // unsupported now
         return false;
+    }
+    tapFlashCont = false;
+    // The rest of a block TAP_ContinueFrom left playing is not what the ROM is
+    // asking for now, wherever the deck is inside it.
+    if (tapeStatus == TAPE_LOADING &&
+        (tapeFileType == TAPE_FTYPE_TAP || tapeFileType == TAPE_FTYPE_PZX) &&
+        s_tapContBlock >= 0 && tapeCurBlock == s_tapContBlock) {
+        s_tapContBlock = -1;
+        if (tapeCurBlock < tapeNumBlocks - 1) tapeCurBlock++;
+        else return false;
+        tapeStatus = TAPE_STOPPED;
+        tapePhase = TAPE_PHASE_STOPPED;
     }
 
     // The trap may fire while the tape is PLAYING in real time: a .pss saved mid-load
@@ -2375,19 +2561,15 @@ bool Tape::FlashLoad() {
 
         int nBytes = Z80::getRegDE();
 
-        // If DATA block has more data than ROM requested, the extra data
-        // is for a custom loader. Don't flash-load — let the whole block
-        // play in real mode so ROM and custom loader read seamlessly.
-        if (blockLen - 1 > nBytes + 1) {
-            tapeCurBlock = savedBlock;
-            f_lseek(tape, savedPos);
-            // Start tape in real mode so ROM LD-BYTES can read edges.
-            // Can't return false (tape stays stopped, ROM at pc<0x4000
-            // won't trigger auto-start). Instead, start playing and
-            // let ROM trap fall through to normal LD-BYTES execution.
-            Play();
-            return false;
-        }
+        // The DATA block carries more than the ROM asked for (Wizball: a 155-byte
+        // BASIC over a 35384-byte block, the rest read on by a loader through the
+        // ROM's LD-EDGE right away). The ROM's share is flash-loaded and the rest
+        // PLAYS at once from where the ROM stopped — the continuation below,
+        // started immediately instead of waiting for 200 polls of a RAM loader
+        // (Wizball's polls run in ROM and give up long before that). The whole
+        // block used to be Play()ed from its pilot instead, same as TAP until
+        // 2026-10-24.
+        const bool contNow = blockLen - 1 > nBytes + 1;
 
         Z80::setRegA(tapeFlag);
 
@@ -2470,6 +2652,9 @@ bool Tape::FlashLoad() {
             pzxS1[0] = s1; pzxS1[1] = s1b;
             pzxP0 = 2; pzxP1 = 2;
             pzxTailLen = tailLen;
+            // Read() calls GetBlock at the end of this block; nothing has Play()ed
+            // this tape yet, so the pointer may still be another tape's.
+            GetBlock = &PZX_GetBlock;
             tapeBit0PulseLen = s0;
             tapeBit1PulseLen = s1;
             tapeBit0PulseLen2 = s0b;
@@ -2486,7 +2671,16 @@ bool Tape::FlashLoad() {
             tapeEarBit = (count_field >> 31) & 1;
             tapePhase = TAPE_PHASE_DATA1;
             tapeNext = tapeCurByte & tapeBitMask ? tapeBit1PulseLen : tapeBit0PulseLen;
-            pzxFlashCont = true; // auto-start will activate without calling Play()
+            if (contNow) {
+                pzxFlashCont = false;
+                tapFlashCont = true;          // the traps keep it playing
+                s_tapContBlock = tapeCurBlock;
+                tapeStatus = TAPE_LOADING;
+                tapeStart = tapeClock();
+                wearReset();
+            } else {
+                pzxFlashCont = true; // auto-start will activate without calling Play()
+            }
 
         } else {
             // Full block consumed
@@ -2530,15 +2724,14 @@ bool Tape::FlashLoad() {
 
     int nBytes = Z80::getRegDE();  // Lenght
 
-    // The block carries more than the ROM asked for: the rest is for a custom loader
-    // that goes on reading the SAME block in real time once the ROM has its share
-    // (Wizball: a 155-byte BASIC header over a 35384-byte block). Flash-loading would
-    // skip the tail and leave that loader polling a stopped tape. Play the block for
-    // real instead, like the PZX branch does — the ROM reads it from the pilot.
-    if (blockLen - 2 > nBytes) {
-        Play();
-        return false;
-    }
+    // The block carries more than the ROM asked for (blockLen - 2 > nBytes). The rest
+    // may be for a custom loader that goes on reading the SAME block in real time
+    // (Wizball: a 155-byte BASIC over a 35384-byte block), or plain junk nobody reads
+    // (Byte's "Buran": 1544 of a 2169-byte BASIC block). The ROM's share is
+    // flash-loaded either way and the rest PLAYS from where the ROM stopped, as on
+    // a real deck (TAP_ContinueFrom below). It used to Play() the whole block from
+    // its pilot, which made every such block load in real time (hw 2026-10-24).
+    const bool contRest = blockLen - 2 > nBytes;
 
     // La paridad incluye el byte de flag
     Z80::setRegA(tapeFlag);
@@ -2620,7 +2813,16 @@ bool Tape::FlashLoad() {
         Z80::Cp(0x01);
     }
 
-    if (tapeCurBlock < (tapeNumBlocks - 1)) {        
+    if (contRest) {
+        // Flag (0), nBytes of data and the byte LD-BYTES took as parity are gone;
+        // the deck runs on from the next one.
+        Z80::setRegIX(addr);
+        Z80::setRegDE(0);
+        TAP_ContinueFrom(tapeCurBlock, (uint32_t)nBytes + 2);
+        return true;
+    }
+
+    if (tapeCurBlock < (tapeNumBlocks - 1)) {
         tapeCurBlock++;
         if (nBytes != (blockLen -2)) CalcTapBlockPos(tapeCurBlock);
     } else {
@@ -2644,6 +2846,7 @@ bool Tape::FlashLoad() {
 bool Tape::CerikopikFlashLoad() {
 
     FIL* tp = &Tape::tape;
+    if (!flashSkipPlayingBlock()) return false;
     uint16_t blockLen;
     uint8_t tapeFlag;
 
@@ -2748,7 +2951,7 @@ int Tape::JJFlashLoad() {
     // If screen animation is in progress, continue loading groups
     if (jjScreenAnimating) {
         // Throttle: wait until enough T-states have elapsed for next group
-        uint64_t now = CPU::global_tstates + CPU::tstates;
+        uint64_t now = tapeClock();
         if (now - jjScreenLastTs < JJ_TSTATES_PER_GROUP) return 1; // not yet, still in progress
 
         // Load one group
@@ -2788,6 +2991,7 @@ int Tape::JJFlashLoad() {
 
     uint16_t jpTarget = MemESP::readbyte(0xFE66) | (MemESP::readbyte(0xFE67) << 8);
     if (jpTarget != 0xFE68 && jpTarget != 0xFEC5) return 0;
+    if (!flashSkipPlayingBlock()) return 0;
 
     // Find next Pure Data (0x14) or Standard (0x10) block, skip metadata
     uint8_t foundId = 0;
@@ -2820,7 +3024,7 @@ int Tape::JJFlashLoad() {
         jjScreenAnimating = true;
         jjScreenBlockLen = blockLen;
         jjScreenBytesRead = 0;
-        jjScreenLastTs = CPU::global_tstates + CPU::tstates;
+        jjScreenLastTs = tapeClock();
         return 1; // first call, no group loaded yet (next call will load first group)
 
     } else {
@@ -3041,7 +3245,7 @@ bool Tape::TapePortRead() {
                     loopCount = 0;
                     pzxFlashCont = false;
                     tapeStatus = TAPE_LOADING;
-                    tapeStart = CPU::global_tstates + CPU::tstates;
+                    tapeStart = tapeClock();
                     Read();
                 }
             } else { loopPC = pc; loopCount = 1; }

@@ -12,8 +12,16 @@ class ZiFiAT {
 public:
     enum Status { OK, ERROR, TIMEOUT };
 
+    // Join timeout for the ESP transport. ESP-AT gives the association itself up to
+    // ~15 s before it answers FAIL, and DHCP on a weak link can take several seconds
+    // more after "WIFI CONNECTED" — 10 s used to cut the join off while the AP was
+    // still handing out the lease (hw 2026-10-23: WIFI CONNECTED, then timeout).
+    static constexpr uint32_t JOIN_TIMEOUT_MS = 20000;
+    // Minimum time DHCP gets after "WIFI CONNECTED", however late that line came.
+    static constexpr uint32_t DHCP_GRACE_MS = 15000;
+
     // Connect to WiFi AP. Returns OK on success (may take up to timeout_ms).
-    static Status connect(const string& ssid, const string& pass, uint32_t timeout_ms = 10000);
+    static Status connect(const string& ssid, const string& pass, uint32_t timeout_ms = JOIN_TIMEOUT_MS);
 
     // Disconnect from WiFi.
     static Status disconnect(uint32_t timeout_ms = 3000);

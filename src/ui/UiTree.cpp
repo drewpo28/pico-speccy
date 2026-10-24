@@ -612,6 +612,15 @@ static bool p_showAtm() {
     return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
+// SAM Coupe: its ROM is in .psramroms and its 512K + external memory lives in
+// butter PSRAM (pages 32+ are the external megabytes).
+static bool p_showSam() {
+#if !defined(VGA_HDMI)
+    return false;
+#else
+    return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
+#endif
+}
 // ZX Evolution BaseConf (ATM arch, R_EVO_BASE) running or staged.
 static bool p_evoBaseActive() {
     const int32_t m = Stage::get(SET_MACHINE);
@@ -802,6 +811,14 @@ static const Option opt_mach_atm[] = {
     { TXT_ROM_ATM3V107, NM_MACH(A_ATM, R_ATM3_107), TXT_ROM_ATM3V107_S },
     { TXT_ROM_ATM3,  NM_MACH(A_ATM, R_ATM3),  TXT_ROM_ATM3_S  },
 };
+// SAM Coupe: internal 256K / 512K, plus the external megabytes (LEPR/HEPR).
+static const Option opt_mach_sam[] = {
+    { "256K",          NM_MACH(A_SAM, R_SAM256),    "256K"   },
+    { "512K",          NM_MACH(A_SAM, R_SAM512),    "512K"   },
+    { "512K + 1 MB",   NM_MACH(A_SAM, R_SAM512_1M), "512K+1M" },
+    { "512K + 2 MB",   NM_MACH(A_SAM, R_SAM512_2M), "512K+2M" },
+    { "512K + 4 MB",   NM_MACH(A_SAM, R_SAM512_4M), "512K+4M" },
+};
 // Ceiling for the guest's SysConfig ZCLK (a 14 MHz Z80 costs ~4x a 3.5 MHz frame
 // of core0 time — TS titles that ask for 14 MHz can be pinned to 7 here; the
 // guest keeps its own timing, it just gets fewer T-states per frame).
@@ -907,6 +924,7 @@ static const Node kMachine[] = {
     NM_SUB  (NM_IND TXT_MACH_MURM, kMurmuzavr, p_murmAvail),
     // Scorpion sits with the Soviet-clone block, right after the Pentagons.
     // Its pages above the base 128K need extended-RAM backing, same gate as P512.
+    NM_RADIO(TXT_MACH_SAM,   SET_MACHINE, opt_mach_sam,   p_showSam),
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),
@@ -1079,6 +1097,12 @@ static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
 // machine and cannot be turned off, so they appear whenever a +3 is staged or running.
 // The +3 is the R_P3 romset of the 128K arch, so this keys on the romset (as
 // p_byteActive does).
+// SAM Coupe drive rows: the drives belong to the machine, like the +3's.
+static bool p_samOn() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m >= 0) return (ArchIdx)((m >> 8) & 0xFF) == A_SAM;
+    return Config::arch == A_SAM;
+}
 static bool p_plus3On() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
@@ -1102,6 +1126,7 @@ static const Option opt_ide_scheme[] = {
     { "IDEDOS", 4 },  // IDE::PLUS3E — numbering follows IDE::Scheme, not this list
     { "DivIDE", 5 },  // IDE::DIVIDE — the +3 (divIDE) romset's card, same rule
     { "ATM",    6 },  // IDE::ATM — the ATM-Turbo 2+ on-board controller, same rule
+    { "Atom Lite", 7 },   // IDE::ATOMLITE — the SAM Coupe card on drive 2's ports
 };
 
 
@@ -1167,6 +1192,7 @@ static const Node kHardware[] = {
     NM_DYN_EN  (NM_IND TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
     NM_RADIO_EN(NM_IND TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
     NM_DYN_EN  (TXT_P3_DRIVES,     slots_buildP3, slots_keyP3, p_hasSD, p_plus3On),
+    NM_DYN_EN  (TXT_SAM_DRIVES,    slots_buildSam, slots_keySam, p_hasSD, p_samOn),
     NM_BOOL_EN (NM_IND TXT_P3_FASTDISK,   SET_P3_FASTDISK,  nullptr, p_plus3On),
     NM_BOOL_EN (NM_IND TXT_P3_SPEEDLOCK,  SET_P3_SPEEDLOCK, nullptr, p_plus3On),
     NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_hasSD),
@@ -1357,6 +1383,11 @@ static const Node kVideo[] = {
 // as a fallback, plain SPI PSRAM with room left over for the MemESP swap pool (slow path,
 // ~30x, best-effort). One shared test with the classic menu's gs_avail.
 static bool p_gsAvail() { return Buffer::gsPsramAvailable(); }
+// ZXM-MoonSound: its 1 MB SRAM (and on the 4 MB firmware its 2 MB ROM, read from
+// /pico-speccy/roms/yrw801.rom) live in QSPI (butter) PSRAM.
+static bool p_moonAvail() { return MOONSOUND && butter_psram_size() != 0; }
+// PI-CARD MUSICA: plays through the Pico-Zx-Player's decoders, so the same board rule.
+static bool p_pimusAvail() { return pp::available(); }
 // The children read the STAGED mode so they light up as soon as the mode is switched.
 // Clock is classic-GS only (NeoGS firmware picks its own clock via GSCFG0 CKSEL);
 // the RAM pick is NeoGS only (classic GS stays on its 2 MB default).
@@ -1431,6 +1462,8 @@ static const Option opt_midi_mode[] = {
     { "DLS Wavetable", 4 },
 };
 static bool p_midiDls()  { return Stage::get(SET_MIDI_MODE) == 4; }
+// The bank list needs a card, except on a 16 MB image, which carries its own bank.
+static bool p_midiBankVis() { return GM_BANK_BUILTIN || p_hasSD(); }
 static const Option opt_midi_bank_hints[] = {
     { SYM_ENTER " Select / install", 0 },
 };
@@ -1484,13 +1517,15 @@ static const Node kAudio[] = {
 
 
     NM_SUB  (TXT_AUD_VGM,        kVgmChips,        nullptr),
+    NM_BOOL (TXT_AUD_MOONSOUND,  SET_MOONSOUND,    p_moonAvail),
+    NM_BOOL (TXT_AUD_PIMUSICA,   SET_PIMUSICA,     p_pimusAvail),
     NM_RADIO(TXT_AUD_COVOX,      SET_COVOX,        opt_covox,      nullptr),
     NM_RADIO(TXT_AUD_SOUNDRIVE,  SET_SOUNDRIVE,    opt_soundrive,  nullptr),
     NM_RADIO   (TXT_AUD_MIDI,           SET_MIDI_MODE,   opt_midi_mode,   nullptr),
     // The bank list + on-device .dls conversion act immediately (like the disk slots):
     // a bank pick can applyBankLive() or defer a flash write to the next boot.
     NM_DYNH_EN (NM_IND TXT_MIDI_BANK,   midi_buildBanks, midi_keyBanks,
-                opt_midi_bank_hints, p_hasSD, p_midiDls),
+                opt_midi_bank_hints, p_midiBankVis, p_midiDls),
     NM_RADIO_D (TXT_AUD_GS,          SET_GS_MODE,  gs_modeOpts,  p_gsAvail),
     NM_RADIO_EN(NM_IND TXT_GS_CLOCK, SET_GS_CLOCK,  opt_gs_clock,  p_gsClockCls, p_gsClassic),
     NM_RADIO_DE(NM_IND TXT_GS_RAM,   SET_GS_RAM,    gs_ramOpts,    p_gsAvail, p_gsNeo),
@@ -1863,6 +1898,7 @@ const Node* slotNodeFor(int iface) {
         case IFACE_MB02: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildMb02);
         case IFACE_ESX:  return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEsx);
         case IFACE_PLUS3: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildP3);
+        case IFACE_SAM:   return findDyn(kHardware, NM_COUNT(kHardware), slots_buildSam);
         default:         return nullptr;
     }
 }

@@ -150,6 +150,9 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                     Config::romSet = romset;
                     Config::romSetAtm = romset;
                 }
+            } else if (arch == A_SAM) {
+                Config::romSet = romset;
+                Config::romSetSam = romset;
             } else {
                 Config::romSet = romset;
             }
@@ -178,13 +181,14 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         else if (Config::arch == A_SCORP && Config::pref_romSetScorp == R_LAST) Config::romSetScorp = Config::romSet;
         else if (Config::arch == A_TSCONF && Config::pref_romSetTsconf == R_LAST) Config::romSetTsconf = Config::romSet;
         else if (Config::arch == A_ATM && Config::pref_romSetAtm == R_LAST) Config::romSetAtm = Config::romSet;
+        else if (Config::arch == A_SAM) Config::romSetSam = Config::romSet;
         // Mutual exclusivity
         bool isByte = (romset == R_48K_BY || romset == R_128K_BY);
         // The +3 is a romset of the 128K arch (like +2), so its exclusions key on the
         // romset the same way Byte's do.
         const bool isP3 = isPlus3Romset(romset);
         if (Config::mb02 && (arch == A_PENT || arch == A_P512 || arch == A_P1024 ||
-            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM || isP3 || isByte)) {
+            arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || isP3 || isByte)) {
             Config::mb02 = 0;
             MB02::init();
             Debug::log("[MACH switch] MB-02+ disabled: not available on %s (its SRAM took the top %d pages of the strip)",
@@ -193,7 +197,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         }
         // Byte has no SCLD; on Profi/Karabas port #FF belongs to the FDC SYS
         // register / native RTC AS latch / SAA select (see CPU::reset backstop).
-        if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_TSCONF || arch == A_ATM || isP3)) {
+        if (Config::timex_video && (isByte || arch == A_PROFI || arch == A_TSCONF || arch == A_ATM || arch == A_SAM || isP3)) {
             Config::timex_video = false;
             VIDEO::timex_port_ff = 0;
             VIDEO::timex_mode = 0;
@@ -234,6 +238,12 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         if ((arch == A_PENT || arch == A_P512 || arch == A_P1024 || arch == A_PROFI || arch == A_SCORP || arch == A_TSCONF || arch == A_ATM) && !Config::betadisk) {
             Config::betadisk = true;
             OSD::osdCenteredMsg("Betadisk enabled", LEVEL_WARN, 1500);
+        }
+        // SAM Coupe: no Beta (its own disk controller comes in phase 2), and the SAA1099
+        // is on the board.
+        if (arch == A_SAM) {
+            if (Config::betadisk) { Config::betadisk = false; OSD::osdCenteredMsg("Betadisk disabled", LEVEL_WARN, 1500); }
+            Config::SAA1099 = true;
         }
         // The +3 has no Beta Disk interface — it has the uPD765 instead, and the two
         // collide on port #1F/#FF as well as on the 0x3D00 ROM trap (which would fire
@@ -282,6 +292,20 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
                 IDE::init();
                 OSD::osdCenteredMsg("IDE disabled", LEVEL_WARN, 1500);
             }
+            // SAM Coupe: a foreign scheme becomes the Atom Lite, and the Atom Lite
+            // does not leave the SAM. An explicit Off stays Off.
+            {
+                const bool isSam = (arch == A_SAM), wasSam = (Config::arch == A_SAM);
+                if (isSam && !wasSam && Config::ide_scheme != IDE::OFF && Config::ide_scheme != IDE::ATOMLITE) {
+                    Config::ide_scheme = IDE::ATOMLITE;
+                    IDE::init();
+                    OSD::osdCenteredMsg("IDE: Atom Lite", LEVEL_WARN, 1500);
+                } else if (!isSam && Config::ide_scheme == IDE::ATOMLITE) {
+                    Config::ide_scheme = IDE::OFF;
+                    IDE::init();
+                    OSD::osdCenteredMsg("IDE disabled", LEVEL_WARN, 1500);
+                }
+            }
             if (isP3e && Config::ide_scheme == IDE::PLUS3E && Config::zifi_enabled) {
                 Config::zifi_enabled = 0;
                 ZiFi::deinit();
@@ -328,7 +352,7 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         // (Profi forces ~80 KB of SRAM pages and OOMs otherwise).
         // ATM: its memory manager can put RAM or ROM in any window and its BIOS
         // runs from all four at reset — DivMMC's automap would page over it.
-        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF || Config::arch == A_ATM) && Config::esxdos) {
+        if ((Config::arch == A_PROFI || Config::arch == A_TSCONF || Config::arch == A_ATM || Config::arch == A_SAM) && Config::esxdos) {
             Config::esxdos = 0;
             DivMMC::init();   // teardown path frees buffers
             OSD::osdCenteredMsg("DivMMC disabled", LEVEL_WARN, 1500);

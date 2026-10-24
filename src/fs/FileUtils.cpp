@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "speccy/machines/Sam/SamFdc.h"
 #include <stdio.h>
 #include "app/TryAlloc.h"
 #include <stdlib.h>
@@ -80,10 +81,10 @@ string FileUtils::DLS_Path = "/";
 DISK_FTYPE FileUtils::fileTypes[9] = {
     {".pss,.PSS,.sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.rzx,.RZX,.nex,.NEX,.snx,.SNX,.bas,.BAS,.zip,.ZIP",2,2,0,""},
     {".tap,.TAP,.tzx,.TZX,.pzx,.PZX,.csw,.CSW,.wav,.WAV,.mp3,.MP3,.zip,.ZIP",2,2,0,""},
-    {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.zip,.ZIP",2,2,0,""},
+    {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mgt,.MGT,.sad,.SAD,.zip,.ZIP",2,2,0,""},
     {".rom,.ROM,.bin,.BIN,.dck,.DCK,.zip,.ZIP",2,2,0,""},
     {".mmc,.MMC,.hdf,.HDF,.hdd,.HDD,.vhd,.VHD,.img,.IMG,.iso,.ISO,.zip,.ZIP",2,2,0,""},
-    {".pss,.PSS,.sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.rzx,.RZX,.nex,.NEX,.snx,.SNX,.bas,.BAS,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.csw,.CSW,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mmc,.MMC,.hdf,.HDF,.vhd,.VHD,.hdd,.HDD,.img,.IMG,.rom,.ROM,.bin,.BIN,.dck,.DCK,.dls,.DLS,.vgm,.VGM,.vgz,.VGZ,.mid,.MID,.midi,.MIDI,.kar,.KAR,.rmi,.RMI,.etc,.ETC,.saa,.SAA,.cop,.COP,.sng,.SNG,.tfc,.TFC,.tfd,.TFD,.tfe,.TFE,.pt3,.PT3,.pt2,.PT2,.stc,.STC,.stp,.STP,.sqt,.SQT,.zxs,.ZXS,.stp2,.STP2,.psc,.PSC,.pt1,.PT1,.asc,.ASC,.ftc,.FTC,.fls,.FLS,.gtr,.GTR,.fxm,.FXM,.psm,.PSM,.vtx,.VTX,.mod,.MOD,.s3m,.S3M,.xm,.XM,.it,.IT,.ay,.AY,.zip,.ZIP",2,2,0,""},
+    {".pss,.PSS,.sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.rzx,.RZX,.nex,.NEX,.snx,.SNX,.bas,.BAS,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.csw,.CSW,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mgt,.MGT,.sad,.SAD,.mmc,.MMC,.hdf,.HDF,.vhd,.VHD,.hdd,.HDD,.img,.IMG,.rom,.ROM,.bin,.BIN,.dck,.DCK,.dls,.DLS,.vgm,.VGM,.vgz,.VGZ,.mid,.MID,.midi,.MIDI,.kar,.KAR,.rmi,.RMI,.etc,.ETC,.saa,.SAA,.cop,.COP,.sng,.SNG,.tfc,.TFC,.tfd,.TFD,.tfe,.TFE,.pt3,.PT3,.pt2,.PT2,.stc,.STC,.stp,.STP,.sqt,.SQT,.zxs,.ZXS,.stp2,.STP2,.psc,.PSC,.pt1,.PT1,.asc,.ASC,.ftc,.FTC,.fls,.FLS,.gtr,.GTR,.fxm,.FXM,.psm,.PSM,.vtx,.VTX,.mod,.MOD,.s3m,.S3M,.xm,.XM,.it,.IT,.ay,.AY,.zip,.ZIP",2,2,0,""},
     {".dls,.DLS",2,2,0,""},  // DISK_DLSFILE (GM.DLS soundbank conversion)
     // DISK_CFGFILE (Debug > Config folders). No extension list on purpose: nothing
     // here is "of interest" over anything else, so an empty list means every name
@@ -110,7 +111,7 @@ string FileUtils::getLCaseExt(const string& filename) {
     return toLower( extension );
 }
 
-string FileUtils::utf8ToCp1251(const string& s) {
+string FileUtils::utf8ToCp1251(const string& s, bool ui) {
     string out; out.reserve(s.size());
     size_t i = 0, n = s.size();
     while (i < n) {
@@ -123,6 +124,7 @@ string FileUtils::utf8ToCp1251(const string& s) {
             else if (cp >= 0x0430 && cp <= 0x044F) m = (char)(0xE0 + (cp - 0x0430)); // а-я
             else if (cp == 0x0401)                 m = (char)0xA8;                    // Ё
             else if (cp == 0x0451)                 m = (char)0xB8;                    // ё
+            else if (cp == 0x00E9 && ui)           m = (char)0x87;                    // é (UI font)
             out += m ? m : '?';
             i += 2; continue;
         }
@@ -169,9 +171,16 @@ DiskIface FileUtils::ifaceForExt(const string& lcExt) {
      || lcExt == "td0" || lcExt == "pro") return IFACE_BETA;
     if (lcExt == "mbd") return IFACE_MB02;
     if (lcExt == "dsk") return IFACE_PLUS3;
+    if (lcExt == "mgt" || lcExt == "sad") return IFACE_SAM;
     if (lcExt == "vhd" || lcExt == "hdd" || lcExt == "img") return Config::esxdos == 2 ? IFACE_ESX : IFACE_IDE;
     if (lcExt == "mmc" || lcExt == "hdf") return IFACE_ESX;
     return IFACE_NONE;
+}
+
+DiskIface FileUtils::ifaceForPath(const string& path) {
+    const string e = getLCaseExt(path);
+    if (e == "dsk" && SamFdc::looksSam(path)) return IFACE_SAM;
+    return ifaceForExt(e);
 }
 
 size_t fwrite(const void* v, size_t sz1, size_t sz2, FIL* f);
@@ -708,6 +717,15 @@ bool FileUtils::hasZIPextension(const string& filename)
     if (filename.substr(filename.size()-4,4) == ".zip") return true;
     if (filename.substr(filename.size()-4,4) == ".ZIP") return true;
     return false;
+}
+
+bool FileUtils::isZipByMagic(const string& path) {
+    FIL* fp = fopen2(path.c_str(), FA_READ);
+    if (!fp) return false;
+    uint8_t sig[4]; UINT br = 0;
+    const bool ok = f_read(fp, sig, 4, &br) == FR_OK && br == 4;
+    fclose2(fp);
+    return ok && sig[0] == 'P' && sig[1] == 'K' && sig[2] == 3 && sig[3] == 4;
 }
 
 void FileUtils::deleteFilesWithExtension(const char *folder_path, const char *extension) {

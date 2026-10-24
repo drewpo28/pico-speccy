@@ -57,6 +57,8 @@ using namespace std;
 #include "speccy/z80/z80.h"
 #include "speccy/devices/tape/Tape.h"
 #include "speccy/devices/disk/wd1793.h"
+#include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/disk/DiskSlots.h"
 #include "app/MachineSwitch.h"
@@ -476,6 +478,8 @@ static bool rfd_launch_tmp(string path) {
     }
 
     // Downloaded archive: unpack to /tmp and launch the first usable inner file.
+    // A ZIP named like an image (zxart's defenders_of_the_earth.dsk) counts too.
+    if (ext != "zip" && ext != "vgz" && FileUtils::isZipByMagic(path)) ext = "zip";
     if (ext == "zip") {
         string inner = ZipExtract::extract(path, DISK_ALLFILE); // → /tmp/...
         if (inner.empty() || inner == "\x1b") {
@@ -532,6 +536,17 @@ static bool rfd_launch_tmp(string path) {
             Atm::cpmBootArmed = true;
         } else {
             OSD::bootTrdos();          // cold-boot into TR-DOS so the disk auto-runs
+        }
+        return true;
+    }
+    if (FileUtils::ifaceForPath(path) == IFACE_SAM) {
+        // A SAM Coupe disk (.mgt / .sad, or a .dsk with SAM geometry — zxart ships
+        // SAM software as .dsk, which used to land on the +3): drive 1, switch to the
+        // SAM if needed, reset and type BOOT.
+        FileUtils::DSK_Path = dir;
+        if (!Sam::launchDisk(path)) {
+            OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
+            return false;
         }
         return true;
     }
@@ -626,6 +641,9 @@ static void rfd_release_tmp(const string& tmpp) {
     for (uint8_t u = 0; u < 2; u++)
         if (Plus3Fdc::mounted(u) && Plus3Fdc::fname(u) == tmpp)
             DiskSlots::slotEject(IFACE_PLUS3, u);
+    for (uint8_t u = 0; u < 2; u++)                 // ...and in a SAM drive
+        if (SamFdc::mounted(u) && SamFdc::fname(u) == tmpp)
+            DiskSlots::slotEject(IFACE_SAM, u);
     if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
         FileUtils::TAP_Path + Tape::tapeFileName == tmpp)
         Tape::Init();   // closes the open tape FIL

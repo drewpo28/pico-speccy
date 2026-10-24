@@ -25,7 +25,7 @@
 namespace pp {
 
 constexpr int RATE = 31250;          // output rate = the audio timer's
-constexpr int MAX_CH = 40;           // meter channels a decoder may report
+constexpr int MAX_CH = 48;           // meter channels a decoder may report (OPL4 VGM: 42)
 
 struct Meta {
     char format[40];                 // "MP3 128 kbps 44.1 kHz stereo", "VGM 1.51: AY8910 x2"
@@ -55,6 +55,10 @@ public:
     virtual bool hasLoop() const { (void)lenMs(); return lenLooped_ || loopsSeen_ != 0; }
     // Opens and prepares the file. On failure returns false with `err` set.
     virtual bool open(const char* path) = 0;
+    // The same from a file image already in memory (the PI-CARD MUSICA emulation
+    // receives the file over the Z80 bus). The decoder copies what it keeps;
+    // the caller owns `data`. Default: not supported.
+    virtual bool openMemory(const uint8_t* data, uint32_t size) { (void)data; (void)size; err = "Not supported"; return false; }
     // Renders up to `n` stereo frames (interleaved L,R) at RATE. Returns the
     // number produced; 0 means the track has ended.
     virtual int render(int16_t* lr, int n) = 0;

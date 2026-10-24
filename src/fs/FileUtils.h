@@ -84,6 +84,8 @@ enum DiskIface {
     // long-standing DISK_DSKFILE / DSK_Path constants, which are the GENERIC disk
     // dialog and have nothing to do with the CPC .dsk container.
     IFACE_PLUS3 = 5,
+    // SAM Coupe (VL1772): .mgt .sad, and a .dsk whose geometry is a SAM disk — Drive 1/2.
+    IFACE_SAM = 6,
 };
 
 class FileUtils
@@ -98,6 +100,8 @@ public:
     static string getLCaseExt(const string& filename);
 
     // Map a lowercase extension (no leading dot) to its disk-interface family.
+    // ifaceForPath() also reads the file: a .dsk is a SAM disk or a +3 one by content.
+    static DiskIface ifaceForPath(const string& path);
     // Returns IFACE_NONE for tape/snapshot/unknown extensions.
     static DiskIface ifaceForExt(const string& lcExt);
 
@@ -180,14 +184,19 @@ public:
     static bool hasCSWextension(const string& filename);
     static bool hasMP3extension(const string& filename);
     static bool hasZIPextension(const string& filename);
+    // A ZIP by its local-header signature, whatever the name: zxart/WoS ship
+    // archives named .dsk/.tap, which the extension dispatch would mount as is.
+    static bool isZipByMagic(const string& path);
 
     static void deleteFilesWithExtension(const char *folder_path, const char *extension);
     static bool deleteDirRecursive(const char *path);
 
     // UTF-8 → CP1251 (Cyrillic) for OSD display with the Font6x8Cyr face. ASCII
     // passes through; Russian letters map to their CP1251 byte; other codepoints
-    // become '?'; invalid sequences pass through unchanged.
-    static string utf8ToCp1251(const string& s);
+    // become '?'; invalid sequences pass through unchanged. `ui` = the string is
+    // only drawn with the nm:: UI font: U+00E9 then maps to its 0x87 glyph
+    // ("SAM Coupé"). Never for names written to FAT.
+    static string utf8ToCp1251(const string& s, bool ui = false);
     // CP866 (DOS Cyrillic) → CP1251 — ZIP entry names from DOS/Windows packers.
     // Pseudographics, which a file name cannot display anyway, become '_'.
     static string cp866ToCp1251(const string& s);

@@ -120,6 +120,7 @@ add_subdirectory(external/fatfs)
 file(GLOB_RECURSE SRC CONFIGURE_DEPENDS
     "src/*.cpp"
     "src/*.c"
+    "src/*.S"
     # Vendored code compiled straight into the firmware (flags: cmake/source-flags.cmake).
     "external/miniz/*.c"
     "external/redcode/*.c"

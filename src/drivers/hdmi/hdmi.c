@@ -3917,14 +3917,44 @@ void hdmi_tmds_stall_log(void) {
 #if !HDMI_HSTX
     static uint64_t next = 0;
     static uint32_t last_st = 0, last_fr = 0, lines = 0;
+    static bool perf_on = false;
     const uint64_t now = time_us_64();
     if (now < next) return;
     next = now + 1000000ull;
     const uint32_t st = hdmi_tmds_stall_frames, fr = hdmi_frame_ct;
+    // The line ISR's worst inter-IRQ gap and duration over the same second: they split
+    // an underrun into "the ISR came late" (gap well past the ~32 us line period: core1
+    // had IRQs off, or was parked) and "the ISR was on time, the feeder DMA was not"
+    // (gap and dur ordinary). Read and reset here once a second; the Speed Test
+    // measures its own window with sleep_ms and never comes through this tick meanwhile.
+    const uint32_t gap = hdmi_irq_max_gap_us, dur = hdmi_irq_max_dur_us;
+    hdmi_irq_max_gap_us = 0;
+    hdmi_irq_max_dur_us = 0;
+    // Bus-fabric performance counters (RP2350 BUSCTRL, 24-bit saturating, cleared by a
+    // write), per second: FASTPERI is the bridge the PIO FIFOs and the DMA registers
+    // sit behind — the HDMI feeder writes the TMDS FIFO through it; XIP_MAIN0 is core0's
+    // XIP port (saturated whenever a machine streams PSRAM — normal). These never named
+    // the 2026-10-22 underruns by themselves (they moved with core0's polling, the
+    // underruns did not); what did was tagging core0's code and probing TXSTALL from
+    // core1 — see cyw43_bus_pio_spi_speccy.c. Kept because they are cheap and they
+    // separate "the bridge is busy" from "nothing on the bus explains this".
+    if (!perf_on) {
+        perf_on = true;
+        busctrl_hw->counter[0].sel = BUSCTRL_PERFSEL0_VALUE_FASTPERI_ACCESS_CONTESTED;
+        busctrl_hw->counter[1].sel = BUSCTRL_PERFSEL0_VALUE_FASTPERI_STALL_DOWNSTREAM;
+        busctrl_hw->counter[2].sel = BUSCTRL_PERFSEL0_VALUE_FASTPERI_STALL_UPSTREAM;
+        busctrl_hw->counter[3].sel = BUSCTRL_PERFSEL0_VALUE_XIP_MAIN0_STALL_DOWNSTREAM;
+        for (int i = 0; i < 4; i++) busctrl_hw->counter[i].value = 0;
+        busctrl_hw->perfctr_en = 1;
+    }
+    uint32_t pc[4];
+    for (int i = 0; i < 4; i++) { pc[i] = busctrl_hw->counter[i].value; busctrl_hw->counter[i].value = 0; }
     if (st != last_st && lines < 60) {
         lines++;
-        printf("hdmi: TMDS FIFO underrun in %u of %u frames (last second)\n",
-               (unsigned)(st - last_st), (unsigned)(fr - last_fr));
+        printf("hdmi: TMDS FIFO underrun in %u of %u frames (last second), isr gap max %u us dur max %u us, bus fastperi cont=%u dn=%u up=%u xip stall %u prio=%x\n",
+               (unsigned)(st - last_st), (unsigned)(fr - last_fr), (unsigned)gap, (unsigned)dur,
+               (unsigned)pc[0], (unsigned)pc[1], (unsigned)pc[2], (unsigned)pc[3],
+               (unsigned)bus_ctrl_hw->priority);
     }
     last_st = st; last_fr = fr;
 #endif

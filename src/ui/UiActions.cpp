@@ -419,6 +419,12 @@ void hotkeys_key(int32_t idx, uint8_t key) {
 // TENTATIVE, exactly as in the classic wizard (OSDMain.cpp:12850): committed when it
 // applies live or the user confirms the install-on-reboot, reverted otherwise.
 void midi_buildBanks(DynRows& d) {
+#if GM_BANK_BUILTIN
+    // 16 MB image: the GM.DLS bank inside the firmware, played from flash. An empty
+    // Config::midi_bank means this one; an SD bank below loads into PSRAM as before.
+    d.add("Built-in GM.DLS", Config::midi_bank.empty() ? "current" : nullptr, -1, false);
+    if (!FileUtils::fsMount) return;
+#endif
     d.add(TXT_MIDI_CONVERT, nullptr, 0, false);
     std::vector<std::string> paths, names;
     const size_t n = MidiSynth::scanBanks(paths, names);
@@ -431,6 +437,20 @@ void midi_buildBanks(DynRows& d) {
 void midi_keyBanks(int32_t tag, uint8_t key) {
     if (key != 0) return;
     const string prevBank = Config::midi_bank;
+#if GM_BANK_BUILTIN
+    if (tag == -1) {
+        Config::midi_bank.clear();
+        if (MidiSynth::applyBankLive()) {
+            if (prevBank != Config::midi_bank) Config::save();
+            uiToast(MSG_MIDI_BANK_OK, false, 2000);
+        } else {
+            Config::midi_bank = prevBank;
+            MidiSynth::init();
+            uiToast("Built-in bank unavailable", true, 3000);
+        }
+        return;
+    }
+#endif
     if (tag == 0) {
         const string pick = browseFile(FileUtils::DLS_Path, TXT_MIDI_DLS_PICK, DISK_DLSFILE);
         if (pick.empty()) return;
@@ -1199,11 +1219,13 @@ static void keySlots(DiskIface iface, int32_t slot, uint8_t key) {
 void slots_buildBeta(DynRows& d) { buildSlots(d, IFACE_BETA); }
 void slots_buildMb02(DynRows& d) { buildSlots(d, IFACE_MB02); }
 void slots_buildP3  (DynRows& d) { buildSlots(d, IFACE_PLUS3); }
+void slots_buildSam (DynRows& d) { buildSlots(d, IFACE_SAM); }
 void slots_buildEsx (DynRows& d) { buildSlots(d, IFACE_ESX);  }
 void slots_buildIde (DynRows& d) { buildSlots(d, IFACE_IDE);  }
 void slots_keyBeta(int32_t s, uint8_t k) { keySlots(IFACE_BETA, s, k); }
 void slots_keyMb02(int32_t s, uint8_t k) { keySlots(IFACE_MB02, s, k); }
 void slots_keyP3  (int32_t s, uint8_t k) { keySlots(IFACE_PLUS3, s, k); }
+void slots_keySam (int32_t s, uint8_t k) { keySlots(IFACE_SAM, s, k); }
 void slots_keyEsx (int32_t s, uint8_t k) { keySlots(IFACE_ESX,  s, k); }
 void slots_keyIde (int32_t s, uint8_t k) { keySlots(IFACE_IDE,  s, k); }
 

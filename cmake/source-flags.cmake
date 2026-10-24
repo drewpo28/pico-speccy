@@ -24,6 +24,10 @@ set_source_files_properties(src/speccy/devices/sound/OpnFm.cpp PROPERTIES
 # YMF262 (OPL3, VGM-player card): 36 operators at the AY sample rate.
 set_source_files_properties(src/speccy/devices/sound/OplFm.cpp PROPERTIES
     COMPILE_FLAGS "-O2")
+# YMF278B wave half (ZXM-MoonSound): 24 sample channels per output sample. At
+# -Os the per-channel helpers were out-of-line calls into flash (2026-10-22).
+set_source_files_properties(src/speccy/devices/sound/MoonPcm.cpp PROPERTIES
+    COMPILE_FLAGS "-O2 -fno-unroll-loops")
 # 2x SN76489 (VGM-player card): ~7 chip ticks per output sample.
 set_source_files_properties(src/speccy/devices/sound/SnSound.cpp PROPERTIES
     COMPILE_FLAGS "-O3 -funroll-loops")
@@ -76,3 +80,21 @@ set_source_files_properties(external/tjpgd/tjpgd.c PROPERTIES COMPILE_OPTIONS "-
 # The VDAC2 copy of tinfl (CMD_INFLATE, runs from the .ftovl SRAM window): -O2 is the
 # point of the copy; no loop-distribute so its copy loops do not become flash memcpy.
 set_source_files_properties(src/speccy/machines/TsConf/FtInflate.c PROPERTIES COMPILE_OPTIONS "-O2;-fno-tree-loop-distribute-patterns")
+
+# ZXM-MoonSound's YRW801 ROM, .incbin'd by yrw801.S (16 MB images only): pass the
+# absolute path and make the object depend on the binary so a new ROM rebuilds it.
+set_source_files_properties(src/speccy/roms/moonsound/yrw801.S PROPERTIES
+    COMPILE_DEFINITIONS "YRW801_ROM_PATH=\"${CMAKE_SOURCE_DIR}/src/speccy/roms/moonsound/yrw801.rom\""
+    OBJECT_DEPENDS "${CMAKE_SOURCE_DIR}/src/speccy/roms/moonsound/yrw801.rom")
+# The built-in GM.DLS bank, .incbin'd by gm_bank.S (16 MB images only). gm_bank.bin is
+# not in git (gm.dls is not redistributable), so a 4 MB build must not depend on it.
+if(GM_BANK_BUILTIN)
+    set(GM_BANK_BIN "${CMAKE_SOURCE_DIR}/src/speccy/roms/gmbank/gm_bank.bin")
+    if(NOT EXISTS "${GM_BANK_BIN}")
+        message(FATAL_ERROR "16 MB build needs ${GM_BANK_BIN} (not in git): "
+            "python3 tools/dls_pack.py <gm.dls> ${GM_BANK_BIN}")
+    endif()
+    set_source_files_properties(src/speccy/roms/gmbank/gm_bank.S PROPERTIES
+        COMPILE_DEFINITIONS "GM_BANK_PATH=\"${GM_BANK_BIN}\""
+        OBJECT_DEPENDS "${GM_BANK_BIN}")
+endif()

@@ -302,6 +302,11 @@ private:
     static int paperTopRow;
     static int xPaperOff;
     static bool skipFrame;
+    // The line clock has two boundaries per line: the paper start (phase 0,
+    // the attribute-row capture at the beam) and the line end (phase 1, the
+    // row's post). NextVideo.cpp beside the capture statics.
+    static void nxLineArm();
+    static void nxPaperStart();
 };
 
 

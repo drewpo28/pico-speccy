@@ -115,8 +115,26 @@ static inline size_t         bankRegionSize() { return FlashRoms::bankSize(); }
 
 // The base the engine is bound to: the PSRAM copy when present, else the flash
 // partition (XIP). Both are directly addressable; the format is position-independent.
+// The bank bound when no SD bank is loaded: the built-in one on a 16 MB image, the
+// flash partition otherwise.
+#if GM_BANK_BUILTIN
+extern "C" const uint8_t gb_gm_bank_builtin[];
+static inline const uint8_t* bankFixedPtr()   { return gb_gm_bank_builtin; }
+#else
+static inline const uint8_t* bankFixedPtr()   { return bankFlashPtr(); }
+#endif
+// A 16 MB image treats an empty pick (and a pick that is gone from the card) as the
+// built-in bank; only an explicit SD path loads from the card.
+static inline bool builtinPicked() {
+#if GM_BANK_BUILTIN
+    return Config::midi_bank.empty();
+#else
+    return false;
+#endif
+}
+
 static inline const uint8_t* bankBase() {
-    return g_bankBuf.ok() ? (const uint8_t*)g_bankBuf.data() : bankFlashPtr();
+    return g_bankBuf.ok() ? (const uint8_t*)g_bankBuf.data() : bankFixedPtr();
 }
 
 size_t MidiSynth::bankPsramBytes() {
@@ -135,6 +153,9 @@ const char* MidiSynth::bankLocation() {
     // looking for why.
     const char* flash = FlashRoms::extendedLive() ? "flash+" : "flash";
     if (!bank_ready) return "no bank";
+#if GM_BANK_BUILTIN
+    if (!g_bankBuf.ok()) return "built-in";     // bound to the bank inside the firmware
+#endif
     if (!g_bankBuf.ok()) return flash;          // bound straight to the XIP partition
     switch (g_bankBuf.tier()) {
         case Buffer::TIER_BUTTER: return "PSRAM";
@@ -156,8 +177,8 @@ static FIL* openValidSdBank(size_t* outSize, gm_bank_header_t* outHdr);
 // write → safe anytime. Returns true if a valid v5 bank is present in flash.
 bool MidiSynth::bindFromFlash() {
     gm_bank_view_t v;
-    if (!gm_bank_view(bankFlashPtr(), &v)) return false;   // empty / invalid / old version
-    midi_wt_bind(bankFlashPtr());
+    if (!gm_bank_view(bankFixedPtr(), &v)) return false;   // empty / invalid / old version
+    midi_wt_bind(bankFixedPtr());
     bank_ready = true;
     return true;
 }
@@ -226,10 +247,14 @@ static FIL* tryOpenBank(const char* path, size_t* outSize, gm_bank_header_t* out
 // bank (Config::midi_bank, set by the OSD picker) and falls back to the default
 // gm_bank.bin locations. Returns the open FIL* (caller fcloses) + size/header.
 static FIL* openValidSdBank(size_t* outSize, gm_bank_header_t* outHdr) {
+    if (builtinPicked()) return nullptr;        // 16 MB: the built-in bank, not the card
     if (!Config::midi_bank.empty()) {
         FIL* f = tryOpenBank(Config::midi_bank.c_str(), outSize, outHdr);
         if (f) return f;                        // chosen bank still present & valid
     }
+#if GM_BANK_BUILTIN
+    return nullptr;                             // chosen bank gone -> the built-in one
+#endif
     for (size_t i = 0; i < sizeof(kBankPaths) / sizeof(kBankPaths[0]); i++) {
         FIL* f = tryOpenBank(kBankPaths[i], outSize, outHdr);
         if (f) return f;
@@ -255,10 +280,14 @@ static size_t bankFileBytes(const char* path) {
 }
 
 size_t MidiSynth::selectedBankBytes() {
+    if (builtinPicked()) return 0;
     if (!Config::midi_bank.empty()) {
         const size_t n = bankFileBytes(Config::midi_bank.c_str());
         if (n) return n;
     }
+#if GM_BANK_BUILTIN
+    return 0;                                   // a vanished pick plays the built-in bank
+#endif
     for (size_t i = 0; i < sizeof(kBankPaths) / sizeof(kBankPaths[0]); i++) {
         const size_t n = bankFileBytes(kBankPaths[i]);
         if (n) return n;
@@ -439,7 +468,16 @@ void MidiSynth::requestReflash() {
 bool MidiSynth::applyBankLive() {
     size_t size; gm_bank_header_t h;
     FIL* f = openValidSdBank(&size, &h);
+#if GM_BANK_BUILTIN
+    if (!f) {                             // built-in picked (or the SD pick is gone)
+        bank_ready = false;
+        midi_wt_unbind();
+        g_bankBuf.free();
+        return bindFromFlash();
+    }
+#else
     if (!f) return bank_ready;            // no SD bank → keep whatever is bound
+#endif
     fclose2(f);
     bank_ready = false;                   // tear down current; loadBank rebinds on success
     midi_wt_unbind();

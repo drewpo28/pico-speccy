@@ -161,7 +161,13 @@ ZiFiAT::Status ZiFiAT::connect(const string& ssid, const string& pass, uint32_t 
         if (remain == 0) break;
         if (recvLine(line, sizeof(line), remain < 300 ? remain : 300)) {
             atLog("ZiFiAT rx: %s", line);
-            if (strstr(line, "WIFI CONNECTED")) got_connected = true;
+            if (!got_connected && strstr(line, "WIFI CONNECTED")) {
+                got_connected = true;
+                // Association is done; what follows is DHCP. Give it its own grace
+                // from this point, whatever the join itself cost.
+                absolute_time_t dhcp = make_timeout_time_ms(DHCP_GRACE_MS);
+                if (absolute_time_diff_us(deadline, dhcp) > 0) deadline = dhcp;
+            }
             if (strstr(line, "WIFI GOT IP"))    got_ip = true;
             if (strstr(line, "OK") && got_connected && got_ip) {
                 connected = true;
@@ -173,6 +179,19 @@ ZiFiAT::Status ZiFiAT::connect(const string& ssid, const string& pass, uint32_t 
                 connected = false;
                 return ERROR;
             }
+        }
+    }
+    // Associated but the GOT IP line never showed: ask the ESP itself before
+    // calling it a failure — a lease that landed while a line was lost or wrapped
+    // in the RX ring is still a lease.
+    if (got_connected) {
+        string s, ip;
+        if (getStatus(s, ip) && !ip.empty() && ip != "0.0.0.0") {
+            atLog("ZiFiAT: no GOT IP line, but CIFSR says %s", ip.c_str());
+            connected = true;
+            current_ssid = ssid;
+            current_ip = ip;
+            return OK;
         }
     }
     return TIMEOUT;
@@ -301,7 +320,7 @@ void as_to_cwjap(uint32_t now) {
     snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"", as_ssid.c_str(), as_pass.c_str());
     as_got_ip = false;
     as_send(cmd);
-    as_state = AS_CWJAP; as_deadline = now + 12000;
+    as_state = AS_CWJAP; as_deadline = now + ZiFiAT::JOIN_TIMEOUT_MS;
 }
 void as_to_sntpcfg(uint32_t now) {
     // The join is finished; everything past this point is the clock. With SNTP off

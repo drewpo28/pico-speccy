@@ -14202,6 +14202,31 @@ damage offset** (Black Raven: ±10 in 2-byte compare units = ±20 bytes).
   must be 12..249 and within ±10 of the table value. The crack NOP'd those three
   branches.
 
+## Tape polarity, long blocks, the JJ flag (2026-10-24, hw-confirmed DVp2w: Wizball TAP+PZX, Buran, La Formica, assorted TAP/TZX/PZX on several machines)
+
+- **A playing tape drives EAR alone** (Ports.cpp): bit 6 = `tapeEarBit` while
+  `TAPE_LOADING`; the #FE feedback (Issue 2 MIC bit 3, bit 4, Pentagon idle-high)
+  only applies with no signal. The old XOR inverted the tape whenever the border
+  OUT had MIC set — the ROM's LD-EDGE always writes OR 8 — so Wizball (polarity-
+  sensitive) reset ~5200 bytes in. Was the rule for loaders at 0xFE00+ only.
+- **TAP pilot starts LOW** (Fuse / PZX convention: pause low, first pilot pulse low,
+  data of a standard block starts high). It started high and only worked through
+  the inversion above. TZX keeps its own levels (untouched; a polarity-sensitive
+  TZX would still read inverted).
+- **A block longer than the ROM asks for** (TAP and PZX): the ROM's share is
+  flash-loaded and the rest PLAYS at once from where the ROM stopped
+  (`TAP_ContinueFrom`, PZX via the pzxFlashCont setup started immediately;
+  `tapFlashCont` keeps the traps from stopping it). It used to Play() the whole
+  block from its pilot — Byte's Buran (2169-byte BASIC, 1544 requested) then
+  loaded in real time (regression of 687622ce, 2026-10-13). Cerikopik/JJ skip a
+  block still being played (`flashSkipPlayingBlock`).
+- **`jjScreenAnimating` is cleared by `Tape::Stop()` and `ESPectrum::reset()`**:
+  an F11 during a JJ animated screen load kept it up for good, disabling the ROM
+  trap and the auto-start until F12 (La Formica).
+- Diagnosis tool: a host sim (redcode, 48K ROM, real pulse list from TAP/PZX with
+  per-pulse levels, keys typed for LOAD "") settled the polarity in one run —
+  rebuild it in session scratch before guessing at a tape-loader report.
+
 ## Tape wear — "the recorder is chewing the tape" (2026-09-20; hw-confirmed, after three rounds)
 
 `Config::tape_wear` (Storage > Tape > Tape wear: Off / Light / Medium / Heavy)
@@ -15696,6 +15721,123 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
      so clearing it in `EvoBase::reset()` brought back Disc error until F12 (hw-confirmed fixed 2026-10-04, owner: "работает"). Test ELF
      `debug/DVp2-evo-vdisk2-1.0.8.elf`.
 
+## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
+
+Plan + status: `docs/sam-coupe-plan.md`. Model = SimCoupe (`Base/SAMIO.cpp`,
+`Memory.cpp`, `Frame.cpp`). Machine → SAM Coupe (`opt_mach_sam`, `p_showSam` = butter
+PSRAM ≥ 1 MB + `FlashRoms::romsUsable()`), romsets `R_SAM256/512/512_1M/2M/4M`
+(`samIntPages`/`samExtPages`, `Config::romSetSam`, NVS `romSetSam`; `wantedPages` =
+32 + external). ROM 3.0 raw in `.psramroms` (`tools/rom_pack.py sam`, `gb_rom_sam_30`).
+- `Sam::remap` is the one writer of the four windows (Atm pattern: `plugPtr16`, ROM and
+  absent pages park `bank_dirty` on the sink, `g_atm_ro` drops writes per window —
+  CPU::reset keeps it for SAM). Internal page n = `ram[n]`, external = `ram[32+n]`.
+- Ports: `Ports::input/output` hand every SAM access to `Sam::portIn/portOut` (flash)
+  first; they charge `Draw(4)`. Timing 119808 T (6 MHz), INT 0..128 T, audio = the 48K
+  set with divider 192. `check_trdos` and the tape traps are off for SAM.
+- Video: `Draw = Blank`, the whole frame is drawn at EndFrame by `Sam::renderFrame`
+  (no beam effects yet), CLUT → hardware slots 0..15 (`samPaletteFlush`, also from
+  applyPalette). Gigascreen suspended.
+- Keyboard: `samKeys` (ESPectrum.cpp) fills `Sam::keys[9]` from scratch.
+- Phase 1 (2026-10-22, hw-confirmed DVp2w the same day: boots, MODE 3 at 512 px and MODE 4): line INT (`CPU::samFrameLoop`, flash, slices to
+  the frame/line windows; `Sam::intLine` from isActiveINT; a LINE write ends the slice),
+  turbo pinned off on SAM, mode 3 at 512 px through the pair driver (`VIDEO::samPairSync`,
+  pair index = pixel value, 4 = border, 5..15 ZX palette for overlays; every pair-palette
+  site checks `sam_pair_live`), overlays carved out of the whole-frame repaint
+  (`VIDEO::rowCarves`). HPEN/LPEN (#1F8/#F8) are modelled: ROM 3.0 sets LINE = 0 every
+  frame and its line-INT handler polls HPEN until the beam leaves the line — a constant
+  there hung boot at D4EF (black screen, hw 2026-10-22). #FE bit 5 (SPEN) reads 0.
+- Disks (2026-10-22, hw-confirmed DVp2w: Rick Dangerous, NoColor, Arkanoid 2 Demo boot from F5;
+  VIDEO::tStatesPerLine = 384 for SAM — it was never set, haltAdvanceTo spun at 0): `Sam/SamFdc` = SimCoupe's VL1772 Drive model, drive 1
+  #E0-#E7 / drive 2 #F0-#F7, MGT/SAD flat + EDSK via DskImage. `.dsk` is a SAM disk by
+  content (`SamFdc::looksSam`, `FileUtils::ifaceForPath`, `IFACE_SAM`). Launch = mount +
+  reset + type Enter (leaves the copyright screen) + BOOT+Enter into the matrix after the ROM's first LINE write (`Sam::launchDisk`,
+  F9 does NOT boot). Host test: `tools/sam_sim.c -DSAM_DISK` links the real SamFdc.cpp +
+  DskImage.cpp over `tools/sam_stub/` (recipe in its header).
+- Contention (2026-10-22, hw-confirmed DVp2w: boots, BASIC, modes): SimCoupe's tables applied at the access start
+  through `VIDEO::Draw/Draw_Opcode = Sam::draw/drawOpcode` (internal RAM only; n < 3 =
+  addressOnBus, no wait); ASIC ports >= #F8 wait to an 8 T slot. Docs: sam-coupe-plan.md §9.
+- Host check: `tools/sam_sim.c` (recipe in its header) boots ROM 3.0 to the copyright
+  screen and BASIC; re-run after any change to the model.
+
+- **Phase 3a (2026-10-22, NOT hw-tested, `debug/DVp2w-sam-p3a-1.1.0.elf`)**: Web-catalog
+  `.dsk` survives the machine-switch reboot (`Config::samKeepTmp` lets `save()` write the
+  `/tmp` path); F0-F9 via keys-to-guest ON/OFF/AUTO (`Sam::keysToGuest`, AUTO = #F9 row read
+  from a non-ROM window within 2 s); tape at 7/12 (`tapeClock()`/`tapeFrameT()` in Tape.cpp),
+  auto-start = 200 #FE reads from one PC (no Play at F5 "R" on SAM); SAM mouse (9-nibble
+  buffer on #FFFE, SimCoupe Mouse.cpp); SAMVox #7C-#7F into the Covox buffers. Details in
+  `docs/sam-coupe-plan.md` §9.
+- **Clocks + MIDI OUT (2026-10-23, NOT hw-tested, `debug/DVp2w-sam-pss-1.1.0`)**: `SamClock`
+  (SAMBUS + Dallas DS12887 on `#EF`, SimCoupe Clock.cpp model, seeded from `RTC::now`, gated
+  on Devices > CMOS + NVRAM, session-only, `tools/samclock_test.cpp`); `#FD` writes go to
+  `Midi::send` with SimCoupe's TXFMST/STATUS-bit-4 timing (an INT source the frame loop
+  slices on: `Sam::intWindowUp/nextIntStart`); MIDI IN not connected. Details in the plan §9.
+- **.pss snapshots (2026-10-22, NOT hw-tested, `debug/DVp2w-sam-pss-1.1.0`)**: `A_SAM` in
+  `archSupported`, pages = `MEM_PG_CNT`; `PSSM` = `Sam::snapSave` (ASIC regs + CLUT + HPEN/LPEN),
+  `PSSF` per drive = `SamFdc::snapSave` (VL1772 regs + the in-flight buffer; no disk = Lost
+  Data); `samd0/1.file/.wp` in liveMedia/applyLiveMedia; `SamFdc::sync()` in flushMedia.
+  Details in the plan §9.
+- **Rows on the beam + CLUT per row (2026-10-22, hw-confirmed DVp2w: the ROM 3.0 boot screen's rainbow bars, drawn by the line INT + CLUT per line, were a black screen before; `debug/DVp2w-sam-raster-1.1.0`)**:
+  the fb byte is `Sam::PAL_SLOT0 (16) + SAM colour`, the 128 colours sit in hardware slots
+  16..143 for the session (`samPaletteFlush`), the CLUT is applied when a row is rendered —
+  `rowEndT = (ln+1)*384-4`, the tick in `Sam::draw/drawOpcode`, armed by `Sam::frameStart()`
+  (samFrameLoop, after the tstates wrap), flushed + disarmed by `Sam::frameEnd()` (EndFrame).
+  Line-INT splits of VMPR/border/SOFF/CLUT render per row; mid-row changes take the whole row;
+  mode 3's pair palette is decided once per frame. Details in the plan §9.
+- **Fast tape load (2026-10-22, hw-confirmed DVp2w the same day — owner: fast load works, and so does the ZIP-named .dsk launch below; `debug/DVp2w-sam-tape-1.1.0`)**: `Sam::tapeTrap()`
+  = SimCoupe's `LoadTrap` on the ROM 3.0 loader — `check_trdos` sees the RET into `#E678`
+  (LDSTRT), the block comes from `Tape::flashBlockOpen/Read/Done` (new block-level API: TAP,
+  TZX 0x10/0x11/0x14; else play for real), written by HL with HMPR+1 at `#C000`, exits via
+  `#E739` (LOADEXIT, L = parity) or `#E6F5` (LOADFAIL, A = A' H = type). Signatures checked in
+  `bindRoms`. F5 "R" on SAM = `Sam::launchTape()`: reset + typed `LOAD ""` (the BOOT key
+  sequence generalised, `s_seq`). `Tape::flashloadAvailable()` is true on SAM with Fast load on;
+  `autoRunAvailable()` stays false (Spectrum snapshots). Details in the plan §9. Same build:
+  a ZIP under an image name (zxart `defenders_of_the_earth.dsk` = a ZIP holding the EDSK)
+  is detected by signature (`FileUtils::isZipByMagic`) in the F5 dispatch and the web launch
+  and goes through `ZipExtract::extract` first — it used to be mounted as a +3 disk.
+- **Raster position + notify banner (2026-10-23, hw-confirmed DVp2w on `debug/DVp2w-sam-leftcol4-1.1.0`, owner: "теперь отлично" — boot stripes clean at 576p, and the F-keys toast shows in Rick Dangerous)**:
+  (1) "the left column jitters" on the boot screen = the leftmost fb column of every stripe
+  held the previous stripe's colour: `chgNote` added CONT_OFFSET (+4) to the VIDEO position
+  — SimCoupe applies it to the contention table only (`Memory.cpp`), its raster is
+  `frame_cycles - 64` (`GetRasterPos`, `CPU_CYCLES_ASIC_TO_FRAME_OFFSET`: raster line L =
+  frame T [L*384+64, L*384+448), 64 border / 256 paper / 64 border) — so the ROM's line-INT
+  CLUT write at ~9 px into the left border (invisible: SimCoupe's default view shows 16 of 64
+  border px) landed at fb x 1. `ASIC_OFFSET`, `x = lc - 64 + s_left`, rows rendered at
+  `(L+1)*384 + 64` (after their right border), a change past the visible right edge recorded
+  at `x = xres`. **The first cut made every stripe boundary jitter** (hw, `-leftcol-`): the row
+  tick runs on memory accesses only, and the ROM's CLUT OUT at +73 follows the previous row's
+  end (+64) with no access between them — `s_row` still named that row, the change was refused
+  and the row rendered from the new state. `chgNote` now runs `rowsTick` first (`-leftcol2-`).
+  **Rule: anything that attributes a port write to the beam's row must catch the row tick up
+  first; a port access is not a memory access.** With that in, 1-6 fb columns at the left of
+  the FIRST row of a stripe still flickered (hw video, `-leftcol2-`/`-leftcol3-`) — and the
+  "interrupt latency" reading was WRONG: the boot stripes are CLUT[0] rewrites by the line-INT
+  handler at `D4EF`, which **spins on HPEN until the beam has left line D** (`tools/sam_sim.c`
+  port log + a disassembly of D440-D510; the sim's own log cannot show the chain — see below),
+  and HPEN steps on the FRAME clock (SimCoupe `update_hpen`: `frame_cycles / 384`, ours the
+  same) = at the start of D's RIGHT border, 64 px before D+1's left border. The write lands
+  60..100 T later with the contention phase: D's last right-border px or a few px into D+1's
+  left border — the horizontal-blanking zone a TV never shows (PAL ~312 of 384 px visible,
+  SimCoupe's default view 16 of 64 border px) and exactly what our 52-px window exposes on
+  both sides. `HBLANK_LEFT_PX` 36 / `HBLANK_RIGHT_PX` 40 in `chgNote`: a change there is drawn
+  as made before the row (left) or after it (right, `x = xres`), `-leftcol4-`. **Trap: the
+  host sim's line-INT chain stops after one line** (one extra CLUT write a frame, no stripes
+  in its PPM) — its STATUS line-INT bit is up for the 128-T window only while the ROM polls
+  it much more slowly; do not read the ROM's per-line timing off that log. (2) `OSD::notify` was invisible in Rick Dangerous but fine in BASIC: SAM has
+  no border machine, `Sam::renderRow` keeps only `rowCarves` rects, and `notifyPaint` took the
+  standard `setNoticeBand` branch — the banner painted at EndFrame lived until the next row
+  tick reached rows 6-17 (a busy ROM: ~1.5 ms into the frame, after the display scanned
+  them; a HALT-synced game: at once via `haltAdvanceTo`). Now an `isSam` branch =
+  `setNoticeCarve` (4-snapped), `cancelNotify` already clears it.
+- **Last batch (2026-10-23, NOT hw-tested, `debug/DVp2w-sam-all-1.1.0`)**: mid-row port changes
+  (border/CLUT/VMPR/HMPR mode-3 set) recorded per tick row in `s_chg` (24) and replayed
+  backwards by `renderRow`/`renderSpan`; mode 3 = sticky 12-entry pair table (`pairEntry`,
+  `samPairSync(want, rgb12)`, 12..15 ZX); EDGLP skip in the `#FE` read at PC #2053 with
+  `Tape::samEdgeWaitT()` (48 T/pass, C/R/tstates advanced); Atom Lite = `IDE::ATOMLITE` (7) on
+  drive-2 ports (latch #1D = Dallas, bit4/!bit3 = ATA reg, #0E = control; SET FEATURES no-op;
+  forced on SAM / off elsewhere); Paula `#60/#61` → Covox; `SamClock::flush()` →
+  `CONFIG_DIR/nvram_sam.bin` (Dallas 114 B + bank-1 regs); F9 "New MGT" in the browser.
+  Details in `docs/sam-coupe-plan.md` §9.
+
 ## Nemo KAY 256 Turbo / 1024 / 1024 v2010-v2018 + ZXM-Phoenix 2 MB (2026-09-26, NOT hw-tested)
 
 Four romsets of the **Scorpion arch**, not an arch of their own: `R_KAY256` "Kay256",
@@ -16108,6 +16250,69 @@ log of what the renderer actually did rather than by reasoning about it:
   keyboard once per ISR with unchanged registers had this.
 Still owed: a game that flips #7FFD bit 3 once a frame (no attribute copy must engage);
 Timex hi-colour + a flip; a 28 MHz title flipping screens (the ring's T are turbo-scaled).
+
+## Next: the attribute row is captured at the BEAM, not at the row's post — Shock multicolour (2026-10-23, hw-confirmed DVp2w on `debug/DVp2w-next-mcattr3-1.1.0` — owner: Shock, Insult and other demos right in the 128K and Pentagon personalities; `mcattr2` had confirmed the attribute half, the scroller still twitched)
+
+Shock (ESI 1992; `Shock (1992-06)(ESI).tap` / `.trd` in the 128K personality, `SHOCKPEN.SCL`
+in the Pentagon one): the "multicolor" part's 8x1 attribute picture came out as stripes in
+the wrong colours — paper only, border right, both personalities, and right on the plain
+128K / Pentagon machines (owner's screenshot + report). A row is POSTED at the end of its
+raster line and core1 reads its 32 attribute bytes from RAM later still; an 8x1 writer
+rewrites the same 32 bytes every line, so every row showed a later line's colours. The
+Pentagon's MainScreen reads per column and never had this; the Insult fix of 10-20 (page at
+mid-paper, attribute copy gated on page flips) did not reach a writer that never flips.
+- **The Next line clock has MORE THAN ONE boundary per line** (`s_capPhase`,
+  `NEXTVID::nxLineArm`, flash): phase 0 = the paper start of line L (`s_pStartT` =
+  `s_bcol` + (xres-256)/4 T into the line, set beside `s_bcol`; 48K/128K: ~4 T — on those
+  rasters the paper is at the START of the INT-anchored line and the left border at its
+  end — Pentagon: 67), where the flash `nxPaperStart()` copies the row's 32 attribute
+  bytes (`s_capAttr`, the page in `s_capGrmem`); while a racing writer is on, phases
+  1..15 follow 8 T apart and each re-copies the two cells the beam is about to read
+  (`NX_CAP_GROUPS`); the last phase = the line end, the old `ScanlineWork` body.
+  `contendWait` takes the line start from `lineIdx * tpl` now (it was `nextLineTstate -
+  tpl`); `onClockChange`, `Reset`, `EndFrame`'s restart and `snapLineSync` go through
+  `nxLineArm`. The DMA batch and `idleAdvanceTo`/`haltAdvanceTo` just stop at more
+  boundaries. `.nxovl` 51 640 of 51 712 (AUTO term +128 for this).
+- **The BITMAP line travels the same way while the writer is on** (`mcattr3`): the owner
+  saw the multicolour right but the scroller TWITCHING on the Pentagon personality, smooth
+  on a Pentagon. The sim says why: the scroller's 14 bitmap lines (paper 167-180) are
+  rewritten at T≈63k, i.e. AFTER the beam passed them, for the next frame — a row core1
+  read after that rewrite showed the next frame's position, and when it read it varied.
+  So in racing mode phase 0 also copies the line's 32 bitmap bytes into a per-line
+  PSRAM shadow (`s_bmpSh`, 192 x 32 B, `Buffer::palloc` on first use, one attempt per
+  frame), the groups refine it 2 B at a time like the attributes, `st.bmpOvr` (a former
+  `_pad6A` byte) tells the renderer to read `s_bmpSh + y*32` (both `bmp` sites, `sy == y`
+  only — no NR 0x27 scroll). Single-buffered on purpose: row y is rewritten a frame
+  later and core1 never lags a frame (the 64 state slots cap it at 63 rows). And the
+  adaptive frame skip is off while `s_mcActive` (the `coherent` test, with Gigascreen and
+  the flips): a dropped frame of a per-frame effect reads as a twitch.
+- **`nxAttrBeam` (replaces `nxAttrSnap`) hands the row that copy** (`st.attr`, `attOvr`)
+  while a writer is RACING the beam: the capture differs from RAM at the row's post
+  (written inside this line's paper), or two paper-start captures of adjacent lines of the
+  same cell row differ (`s_mcSeen`, `s_mcActive` = the rest of the frame + two more), or the
+  screen flips inside the frame (Insult's case as before — the page on show at the paper
+  start is the one the old post-time snapshot resolved at mid-paper). Still gated, because
+  every copied row is a new queue state (64 in flight instead of 320); the 16 extra
+  boundaries a line are paid only while it is on.
+- **Why 16 points: Shock's writer was MEASURED, not guessed.** `shock_sim.c` (session
+  scratch; the `z80dma_sim` shape: 48K ROM + the TAP part at 0x639C, `CALL 0x639C` =
+  the depacker, then the master loader's table entry — FA00 F61C F744 FA00 E8A4 9F00 9C40
+  F618 for parts 1-8; part 2 is the multicolour one, ~2950 attribute writes + 1160 border
+  OUTs a frame) logs every attribute write with its T and PC. The writer is a PUSH racer
+  going RIGHT TO LEFT (cells 31→16 on one line, 15→0 on the next) that also writes the
+  NEXT cell row ahead of the beam, so within one line some cells land before the beam
+  and some after. Against exact beam sampling (cell k of line y = the last write before
+  paper + 224y + 4k) on the 48K raster: one point per line 2.6 % of cells wrong (147 a
+  frame, scattered), 4 points 0.6 %, 16 points 0.01 %; on the Pentagon raster even one
+  point is 0.0 % (the TAP's writes all fall behind the later paper there — the Pentagon
+  SCL version has its own timing and was not simulated). So a screenshot of the
+  Pentagon personality that is grossly wrong on this build is not this mechanism.
+- Hw 2026-10-23 (DVp2w): `mcattr2` — 128K personality works, Pentagon multicolour right,
+  scroller twitching; `mcattr3` — Shock (both personalities), Insult and the other demos
+  the owner has all right (not itemised). Still not separately exercised: a plain ULA
+  game's cost (`NEXT` trace: queue states must NOT climb), Timex hi-colour (excluded from
+  the copy — other bytes), the 48K personality (contention on, `contendWait`'s new line
+  start), a title scrolling the ULA with NR 0x27 (the copies are skipped there).
 
 ## Next: tilemap map rows are copied at POST time — International Karate+ menu (2026-10-20, hw-confirmed DVp2 on `debug/DVp2-next-mapsnap-1.0.10`, owner: "фиксед")
 
@@ -16617,6 +16822,26 @@ and `-sdcut2-perf-` (PERF_TRACE, PERF_HIST OFF: [SD] line). Can damage the card 
   -> Debug::log tail call the first time, DivMMC::applyMapping the second). Gone after the owner
   reset the settings to defaults; which setting armed it is unknown. If it returns: the plain
   build vs sdcut7-prof in the same scenario, and a GDB capture of the ARM stack ABOVE SP.
+  **It returned 2026-10-22 on a PLAIN build (DVp2w, CYW43 radio up, the Web catalog's
+  `nexload _RUN.NEX`)**: CFSR 00020000 (INVSTATE), PC = LR = 0x20037708 = `&VIDEO::ts_line_t`
+  this time (addr2line names a veneer there — a stale match, it is the variable), the
+  frame above SP = `&CPU::stFrame &CPU::tstates &MemESP::ramCurrent <ret into decodeED
+  right after bl Ports::output> &Z80::regA 0x56 0xDAF1 <ret into exec_nocheck_next>`, i.e.
+  the section-anchor registers `exec_nocheck_next` keeps in r4-r11. So an `OUT (C),r` from
+  the Next's ED dispatch, and `Ports::output` (or a callee) popped with SP 4 words low —
+  a callee-saved anchor landed in PC. Not a pointer table (none builds one), not the
+  `.dmaovl` classic loop (`executeTransfer`/`transferOneByte` are unreachable on the Next:
+  `doEnable` is under `isNext`, the other site is inside `executeTransfer`, the third is
+  MB-02). Since this run the fault dump prints r4-r11 (the trampoline pushes them) and 32
+  words of the caller frames.
+  **RESOLVED the same day — it is VOLTAGE MARGIN, not software** (owner: the fault went
+  away with Overclock > Core voltage = 1.65 V from the menu; it was 1.60 V at 504 MHz). A popped-register skew with no
+  code path that could produce it is what a core running past its margin looks like
+  (the m1p2 NeoGS core1 SIGBUS was the same class), and the Next at 504 MHz is the
+  heaviest load this firmware has. The "which setting armed it" question of 2026-10-21
+  is answered the same way: settings that changed the load. If this shape — PC = the
+  address of a RAM variable, SP a few words off, `Ports::output`/`exec_nocheck_next` on
+  the stack — comes back, ask for the VREG setting and the clock before reading code.
 - **Pogie: parallax bands at the wrong scroll for one frame every ~0.5 s = a long CMD18 had no
   prefetch (2026-10-21, hw-confirmed DVp2 on `debug/DVp2-next-sdstream-ldiag-1.1.0`, owner: "фиксед").**
   Pogie's LoRes background is a line-IRQ chain (ULA INT off, NR 22=06, 14 MHz): lines 46/78/96/131
@@ -16635,3 +16860,303 @@ and `-sdcut2-perf-` (PERF_TRACE, PERF_HIST OFF: [SD] line). Can damage the card 
   1500 pulses. `iff=0` = a handler still running (lost on the board too unless our timing is
   longer), `iff=1` + large `seen` = we ran past the pulse. Read it first on any "raster split /
   parallax glitches every N frames" report on the Next.
+
+## Two flash types per board: 4 MB and 16 MB (2026-10-21, NOT hw-tested)
+
+`-DFLASH_16MB=ON` (cmake/options.cmake; the W/WS boards force it, they are 16 MB only)
+= `FLASH_SIZE 16384` + `PICO_FLASH_SIZE_BYTES` set before the SDK reads the board header
+(the SDK passes it to C itself — do NOT add a second compile definition, the two spellings
+"redefine" each other), name `<board>-speccy-<display>[-variant]-16MB-<ver>` /
+`+16MB` on screen for non-W boards, same BOARD_TAG (same NVS dir). It sets
+`YRW801_BUILTIN=1` (the MoonSound ROM in flash; 4 MB reads it from SD). build_all.sh / .ps1 build
+every (target, display) pair in both types (`FLASH_TYPES="4 16"` / `-FlashTypes`), dirs
+`build-all/<dir>-16MB`, logs `<target>-<display>-16MB.log`; W targets only 16. check-release.sh
+lists the 16 MB VGA_HDMI images as `<BOARD>-16M`; tools/release_downloads.py strips a
+`-16MB` display suffix into the link label. DVp2: 4 MB 3.51 MB used, 16 MB 5.61 MB with a
+~10.7 MB GM.DLS region. Rule: anything that does not fit 4 MB goes behind `MOONSOUND`-style
+16 MB guards, never into the 4 MB image.
+**Built-in GM.DLS bank on 16 MB** (`GM_BANK_BUILTIN`, cmake/board.cmake = the 16 MB flag;
+NOT hw-tested, `debug/DVp2-gmbuiltin-1.1.0`): `src/speccy/roms/gmbank/gm_bank.bin` (owner's
+file, GMWB v5, 1 668 026 B = the stock converted gm.dls) is `.incbin`'d by gm_bank.S as
+`gb_gm_bank_builtin` and played straight from XIP. An EMPTY `Config::midi_bank` means it
+(the picker's first row "Built-in GM.DLS", tag -1, shown without an SD card); an explicit SD
+pick loads into PSRAM as before, and a pick that is gone from the card falls back to the
+built-in bank (the default gm_bank.bin paths on the card are not consulted there).
+`bankFixedPtr()` (MidiSynth.cpp) replaces the flash partition as the no-SD binding;
+Memory Info says `built-in`. 4 MB images byte-identical in size.
+**Pico-Zx-Player plays YMF278B (OPL4) VGMs on 16 MB** (2026-10-22, NOT hw-tested,
+`debug/DVp2-16M-opl4vgm3-1.1.0`): `VgmDecoder::openOpl4` (PlayerVgm.cpp, all behind
+`MOONSOUND` — MoonPcm.cpp is not in the 4 MB image, a reference there is a link error).
+FM half = the OPL3 core at clock * 8 / 19 (ymfm's OPL4 prescale 19: 33.8688 MHz ->
+49 516 Hz), wave half = a private MoonPcm at clock / 768 (`setRate` is given RATE x
+33868800 / clock). Wave memory: the FILE's ROM when it has 0x84 blocks — arcade rips
+(Psikyo, The Fallen Angels: 4 MB ROM, 28.6 MHz, no RAM) carry their sample ROM, and
+playing YRW801 for them was the "does not play" report — mapped at open as 4 KB
+pages (`loadRomBlocks`: a page one block covers whole points INTO the loaded file, only
+block-edge pages are copied, the rest read a zero page — a few KB a track; output
+byte-identical to a full copy; `MoonPcm::setRomPages`, the emulator keeps its flat ROM).
+The whole .vgm is inflated into PSRAM, so a big track needs the butter arena the emulator
+leaves: on ZX Evolution (TS-Conf, 4 MB of pages) only the smallest fit — "File too big
+for PSRAM (N KB, M KB free)" names both figures. No 0x84
+block = the built-in YRW801. A 1 MB PSRAM RAM after the ROM when the ROM is < 4 MB.
+`D0 pp aa dd`: port 0/1 = FM banks, 2 = wave regs; data block 0x87 = RAM image
+(size, RAM-relative start, bytes). Checked against libvgm's vgm2wav on two Fallen
+Angels tracks: waveform correlation 0.98, envelope 0.997, our level half of libvgm's
+(the emulator's own mix scale). NEW2 is forced
+on (a rip that starts after the chip init would drop every wave write). Meter 18 FM + 24
+wave = 42 bars, so `pp::MAX_CH` 40 -> 48. A YMF262 beside it is listed unsupported. Host
+test `tools/opl4vgm_test.cpp` (recipe in its header; with a file argument it renders a
+real VGM to WAV). Octave 0 plays at HALF rate (+1 =
+native), which a test expectation got wrong once.
+
+## ZXM-MoonSound (YMF278B / OPL4) — 2026-10-21, NOT hw-tested
+
+Audio > "ZXM-MoonSound (OPL4)" (`Config::moonsound`, NVS `moonsound`, `SET_MOONSOUND`
+AC_REBOOT, row only with butter PSRAM). Every image has the card (`MOONSOUND=1`); the
+YRW801 ROM is embedded only on 16 MB (`YRW801_BUILTIN`). The 4 MB image reads
+`/pico-speccy/roms/yrw801.rom` (exactly 2 MB) into butter PSRAM at boot
+(`src/speccy/devices/sound/MoonRom.{h,cpp}`, 4 KB SRAM bounce — no DMA into the cached
+alias; `Buffer::pageBudget` reserves the 2 MB only when the file is there); no file =
+bootNotice "MoonSound off: no /pico-speccy/roms/yrw801.rom", Hardware Info "No
+yrw801.rom". The Pico-Zx-Player takes `MoonRom::get()` (the card's copy) or reads its
+own copy for the track (freed at close; none = ROM tones silent). 2026-10-22, NOT hw-tested. Mick's card (micklab.ru; sources archived at
+github.com/alfishe/zxm-moonsound — CPLD, MoonService, MWM player). FM half = our OplFm
+on #C4-#C7 (MoonSound turns the OPL3 subsystem on by itself); wave half =
+`src/speccy/devices/sound/MoonPcm.{h,cpp}`, a port of ymfm's pcm_engine (BSD), 24 channels,
+wave registers on #7E (address) / #7F (data), DO2 output only, run at our output rate
+(Q16 chip-sample count, pitch/envelope exact). NEW2 (FM reg 0x105 bit 1) gates wave data
+writes; reg 2 reads back device id 0x20. Memory: the YRW801 ROM (2 MB, CRC32 2A9D8D43 = MAME
+yrw801.rom) is EMBEDDED in flash — `src/speccy/roms/moonsound/yrw801.{rom,S}`, `.incbin`
+(path + OBJECT_DEPENDS in cmake/source-flags.cmake), symbol `gb_rom_yrw801` — and read in
+place through XIP; only the 1 MB SRAM (0x200000, mirrored at 0x300000) is a butter palloc
+taken in setup() (`moonSoundInit`, reserved by `Buffer::pageBudget` as `RAM_SIZE`).
+`MoonPcm(rom, ram)`; the SD ROM file loader is gone. The ROM answers AM29F016 commands for
+AUTOSELECT only (`MoonPcm::flashCmd`, owner's call 2026-10-21: no reflashing): AA@555
+55@2AA 90@555 -> reads via reg 6 give 01h / ADh / 00h at A1:A0 = 0/1/2 until F0, so
+MoonService v0.3 prints AM29F016; program/erase are accepted and dropped (an update
+with the shipped moonsnd.rom verifies, any other file fails its verify). The embedded
+ROM matches MoonService v0.2's per-16 KB CRC8 table in all 128 segments. Timed wave writes ride the OPL write queue (bit 15 = wave flag, position mask 0x7FFF);
+regs 2-6 (memory access) apply at once after an OPLGetSample catch-up; wave reads catch
+up first. Mix: regs 0xF8/0xF9 normalised so FM at the power-on mix is the plain OPL3
+level; PCM `>> kPcmShift` (1) — the level knob if hw disagrees. Host test
+`tools/moonpcm_test.cpp` (recipe in its header; 7 mutations fail it). Code in flash.
+Hw owed: MoonService detect + RAM test, MWM player (Pentagon 512K, demo-disks/*.trd),
+levels against FM, core0 cost with many channels.
+
+### VGMPLAY.WMF 0.9.04-RC1 on the card: three reports, one ours (2026-10-22, NOT hw-tested)
+
+demyanenko-d/VGMPLAY.WMF (Wild Commander, TS-Conf) drives the MoonSound through the
+same ports we emulate; our Linux build of it is `debug/WC/VGMPLAY-0.9.04-RC1-new2b.WMF`
+(recipe `build_vgmplay.sh` + SDCC 4.6.0 + node in the 2026-10-22 session scratch —
+only SDCC 4.6 fits its code into 0x8000..0xB8D0), patch for the author
+`debug/WC/VGMPLAY-0.9.04-RC1-new2b.patch` (= the earlier NEW2-before-upload fix + this).
+- **"02 Advent ~Character Select" is silent on the card by construction, and the
+  Pico-Zx-Player playing it is why**: an arcade rip (28.6 MHz, its own 4 MB sample ROM
+  in `0x84` blocks). The player builds that ROM from the file (`setRomPages`); the
+  card has only YRW801 + 1 MB SRAM, and the plugin's scheme (upload each ROM block at
+  SRAM +0x200000, patch the 128 headers' bit 21, renumber waves 384..511) reaches
+  blocks below 1 MB only — this file's data sits at 2.8-3.9 MB, and reg 3 is 6 bits
+  (`memAutoInc` masks it, MAME's bus is 22 bits), so those bytes land in the ROM
+  window and are dropped as on the chip. A plugin could compact the blocks into SRAM
+  (425 KB fit) and rewrite the header start addresses — the author's call, not ours.
+- **"OPL3 stops playing until F11" = `#F8 = 3F`**: that arcade rip mutes the FM mix
+  (both sides level 7 = mute, `kMix[7] = 0`, MAME `m_mix_level[7] = 0`), the register
+  persists, and the plugin's OPL3/OPL2 init blocks never touch the wave part. The real
+  card behaves the same; F11 is our chip reset (0x1B). Fixed in the plugin build above:
+  every init block raises NEW2, writes `F8 = 1B / F9 = 00` (the power-on values), then
+  sets NEW as before. Nothing to change here.
+- **"05 encounter" (MSX MoonDriver, 655 KB `0x87` RAM block, 24 wave + 12 FM channels)
+  stutters = MoonPcm cost.** Host profile (gprof, -fno-inline): MoonPcm::gen + clockEnv
+  + fetch + memRead + attToVol = half the render, the OplFm half the rest; on the
+  device MoonPcm.cpp was -Os with every helper OUT OF LINE (nm: `memRead` 0x30 B weak,
+  `fetch`, `clockEnv` separate, all in flash) and the 1 KB tables in flash .rodata — the
+  OplFm lesson again, 24 channels x 31250 x ~6 flash calls. Now: `-O2 -fno-unroll-loops`
+  (source-flags.cmake), `clockEnv/fetch/chipStep` always_inline, `kPow/kInc` copied into
+  the object (`m_pow/m_inc`, heap SRAM, +768 B per card), and **half-rate synthesis
+  below 450 MHz** (`setRate(rate, half)`: a chip step of two output samples every
+  other sample, midpoint + hold, the OplFm form; same rule at the three setRate sites).
+  Host render of the track byte-identical at full rate; `tools/moonpcm_test.cpp` got a
+  half-rate pitch/level check. Test ELFs `debug/DVp2-16M-moonopt-1.1.0` (plain) and
+  `-moonopt-trace-` (`OPL_PERF_TRACE`: `OPL: gen N us/fr` every ~300 frames while
+  audible — that number against the ~20500 us frame is what says whether 24 channels
+  fit; it includes MoonPcm). **First hw figure on that build (TS-Conf + WC, the "05"
+  track, clock not in the log): `OPL: gen 9049 / 8756 us/fr`** — 44% of the frame for
+  the sound alone on top of a 14 MHz guest, which is the stutter. Round 2 (NOT
+  hw-tested): the trace line splits it (`OPL: gen N us/fr (moon M)`), `fetch` reads
+  through a per-channel direct pointer cached at `loadWave` (a sample lying whole in
+  the flat ROM or the RAM; nullptr = the memRead path, e.g. the player's paged ROM),
+  and the per-sample `step * ratio` 64-bit product is cached (`Ch::stepOut`, redone
+  at recache/setRate; vibrato keeps the live product). Host render still byte-identical.
+  **Round 2 on hw: `OPL: gen 8569-10507 us/fr (moon 3394-5326)`** — the FM half ~5.2 ms
+  (OplFm at full rate, 12 keyed channels, a 504 MHz part is above the <450 MHz rule)
+  and the wave half 3.4-5.3 ms, i.e. both. **Round 3 (`moonopt3`) put BOTH halves at
+  half rate while wave channels sound — hw: "sound is bad, to put it mildly", and both
+  halves were wrong in their own way:** (a) `OplFm::setRates` re-derived freqbase but
+  not the channels' cached `fc`/`Incr` (derived at the A0/B0 write), so a rate switch
+  under held notes played them an octave off until re-keyed — fixed, setRates now
+  re-derives all 18 (the 4-op pair's second channel from the first's fc); (b) the WAVE
+  half at half rate point-decimates 44.1 kHz samples to 15.6 kHz with no low-pass:
+  host, the "05" wave part alone, half vs full render aligned to its 1.4-sample lag =
+  **-9.6 dB of in-band (0.3-7 kHz) error** (`moonhalf.cpp` + `ana2.cpp`, session
+  scratch), where the FM synth at half rate only loses what it would generate above
+  7.8 kHz. So round 4 (NOT hw-tested, `debug/DVp2-16M-moonopt4-1.1.0` / `-trace-`):
+  **the wave half always runs at full rate** (`setRate(rate)` at all three sites;
+  `setHalfRate` stays in the API, unused by the card), and **the FM half follows the
+  MEASURED cost**: `g_opl_frame_us` (an always-on `time_us_32` pair round OPLGenSound,
+  only with a card) — ten frames over 6.5 ms switch OplFm to half rate, two seconds
+  under 2.5 ms switch back, `[MOON] OPL4 FM synthesis at half/full rate` in the log;
+  the <450 MHz rule stays underneath. Expected on "05": ~6-8 ms a frame (FM ~2.6 +
+  wave 3.4-5.3); if that still stutters the wave levers are one `attToVol` per channel
+  with the pans as linear factors, the 24 sample streams' XIP line fills (~235k/s at
+  44.1 kHz — the floor), the gen loop in an overlay window, or a REAL half-rate (two
+  fetches averaged per step — keeps the fetch cost, halves the rest).
+  **Round 4 on hw (log 2026-10-22 22:36): the FM policy FLAPPED** — `[MOON] half rate
+  (8594 us)` then `full rate (1488 us)` every ~2 s, because the "leave at < 2.5 ms"
+  test measured the cost WITH the FM at half rate; each flip re-derives held notes.
+  Not fixed as a policy — made moot by the split below.
+- **Round 5, the wave half on core1 (2026-10-23, NOT hw-tested; owner's rule: "no
+  optimisations, spread the load over the cores").** `src/speccy/devices/sound/
+  MoonSplit.{h,cpp}`: core0 PUBLISHES the guest's sample position (`MOON_LINE_PUB()`
+  in Video.cpp — the five MainScreen line ends + the top of `tsDrawTick`, so every
+  renderer, and every wave write), wave register writes go into a 512-entry ring with
+  their position (`waveWrite`, lock-free), and whoever holds ONE hardware spinlock
+  generates: core1's `core1Pump()` in `render_core` (32-sample chunks up to the
+  published position, never past it — a write queued later has a position >= it by
+  program order on core0), core0's `sync()` for read-backs / the immediate reg 2, and
+  the frame end `frameFinish()`, which JOINS (generates the tail itself instead of
+  waiting for a core1 busy with a card read or a render backlog), applies the entries
+  at/past the end, scales the FM buffer by the chip's FM mix level and adds the wave
+  buffer. `frameBoundary()` resets the cursors and applies the stragglers of an
+  unmixed frame. Deviations: the FM mix level (F8/F9) applies per FRAME (the value at
+  the frame end) instead of per sample; a sounding wave half resets `s_oplOutQuiet`
+  (the OPL mix gate only sees FM now). No heap for the block (6.7 KB, the ring + two
+  640-sample buffers) = the old inline path in OPLGenSound, unchanged. The FM
+  half-rate policy's timer now measures FM only (~5 ms on "05" at full rate, under
+  the 6.5 ms entry) — inert, the flap is gone with it. The frame-boundary straggler
+  loop also stopped sending OPLQ_WAVE entries to `oplfm->write` (a latent bug of the
+  inline path on a skipped-mix frame). Host: `tools/moonpcm_test.cpp` gained a
+  genPcm + end-sum == gen check (mutation: a wrong FM factor fails it by 4968).
+  Test ELFs `debug/DVp2w-16M-moonsplit-1.1.0` (+ `-trace-`: `OPL: gen N us/fr
+  (moon M; core1 C, join J)` — N = core0 FM, C = core1 wave us/frame, J = core0's
+  frame-end join + sum; `join` near 0 = core1 keeps up, a big `join` = core1 has no
+  slack, e.g. a 576p render + GS). Hw owed: "05 encounter" under WC (core0 `gen`
+  should read ~5 ms, join ~0.1), FPS/IDL, pitch/level unchanged, a key-on burst at
+  the frame start (publish ordering), F11 mid-track, the menu over a track.
+  **Hw 2026-10-23, owner: `~/Downloads/zx/ZXMMoonSound/moonsound_14.trd` (Mick's MWM
+  player 1.4, `moonsn14` + the 94 KB module `tall`, the beam-raced Pentagon path —
+  MainScreen's MOON_LINE_PUB) — "OPL4 plays excellently."** Then the trace log
+  (`logs/devttyACM0_2026_10_23.14.41.46.098.txt`, "05" under WC, TEXT 576p): core0
+  `gen` **4.3-5.4 ms** (was 8.5-10.5), core1 wave 4.3-7.0 ms, `join` 67-75 us — core1
+  keeps up, the FM policy never fired. Owner: "в целом неплохо, но можем ещё ускорить?"
+- **Round 6, the FM half on core1 too (2026-10-23, NOT hw-tested).** Same ring, same
+  lock, same join: `MoonSplit::fmWrite` takes the `#C4-#C7` writes (`OPLPortWrite`
+  publishes the position as the wave writes do), `genTo` runs `OplFm::gen` into the OPL
+  buffer (accumulating — `frameBoundary` zeroes it and ATTACHES the current `oplfm` +
+  buffers; `OplSubsys::apply` detaches before deleting them and `fmAttach`es a fresh
+  chip, since that runs at applyPending AFTER the boundary) and `MoonPcm::genPcm` into
+  the wave buffers; `OPLGetSample` (status reads: the timers advance in gen) and the
+  wave read-back are `sync(pos)` on core0; `OPLGenSound` returns at once while the
+  split is live; the frame end = `frameJoin` (core0 generates the tail core1 did not
+  reach) + the FM DC blocker over the whole frame + `frameSum`. The FM half-rate
+  policy is OFF with the split (the join IS the balancer; the <450 MHz rule in
+  setRates stays), and `ESPectrum::reset`'s OplFm reset runs under `hold()/release()`.
+  What to expect: core0's cost = `join` = whatever core1 could not finish before the
+  frame end (plus the 640-sample sum, ~0.1 ms). At 480p core1 should take both halves
+  whole (join ~0.1 ms); at 576p TEXT (render ~6 + ISR ~6 + wave 5-7 + FM 5 ms) part of
+  the FM comes back to core0 through the join — still less than the 5 ms it costs now.
+  Trace: `OPL: gen G us/fr (moon M; core1 fm F wave W, join J)` — G/M are the inline
+  path's (0 with the split), F/W core1's halves, J core0's. Test ELFs
+  `debug/DVp2w-16M-moonsplit2-1.1.0` (+ `-trace-`). **Hw 2026-10-23, owner: "стало
+  лучше"; what remains is the PLUGIN's own speed (VGMPLAY.WMF at 14 MHz with its
+  per-write clock dips), which is not ours to fix — committed here.** Not itemised:
+  `join` at 576p/480p, the plugin's OPL3 detect (status read → sync), OPL3 off/on in
+  the menu under a playing track (attach/detach), F11 mid-track.
+
+## CYW43 radio DMA starved the HDMI TMDS FIFO — vendored bus driver, CPU FIFO copy (2026-10-22, hw-confirmed DVp2w)
+
+"Web Archive over the on-chip radio blacks the monitor out" — Pimoroni Pico Plus 2 W in
+a Pico DV base, Next at 720x576, 504 MHz; ESP-01 on GP0/1 fine, 640x480 fine, Pentagon
+reported fine. `hdmi: TMDS FIFO underrun in N of M frames` 1-9 a second whenever the OSD
+was open with the radio up (the catalog's index reads from SD made it worst) — the 8-word
+TMDS FIFO (~160 ns) running dry; a strict sink loses lock on that.
+
+- **Fix**: `src/net/cyw43_bus_pio_spi_speccy.c` = the SDK 2.3.1 `cyw43_bus_pio_spi.c`
+  compiled INSTEAD of the SDK's (cmake/wifi.cmake strips it from `cyw43_driver_picow`;
+  the file is an empty TU on non-W boards), with the gSPI words fed to / drained from
+  the PIO FIFOs by core0 (`CYW43_SPI_CPU_COPY`, bswap per 32-bit word as the DMA did).
+  No DMA channels for the radio at all. core0 only ever busy-waited for them, so nothing
+  is slower; hw: zero underruns in the same session, download speed unchanged. The DMA
+  path stays under `CYW43_SPI_CPU_COPY=0`. Also in the file, kept but measured NOT to be
+  the cause: busy-polls paced every 256 cycles by a NOP pause, `dma_channel_abort` only
+  for a busy channel, the radio preferring pio0 over the SDK's first-fit (which put it in
+  pio2 with the HDMI SMs). Boot log: `cyw43 bus: pico-speccy driver (CPU FIFO copy, …)`
+  and `cyw43 bus: pioN smN, dma A/B`.
+- **The mechanism inside the DMA engine was NOT established** — only that triggering and
+  running two low-priority channels beside the four high-priority HDMI feeders does it.
+  `bus_ctrl` priority was set, no DMA touched XIP, the line ISR was on time (gap 34 us,
+  dur 23 us) throughout.
+- **Why "only Next / only 576p / only with the menu"**: with the machine running,
+  `WifiNet::poll` runs from `ESPectrum::loop` at one raster phase per frame; from
+  `uiIdle` it runs at random phases, 95 % of them in active video. The other two are
+  most likely degree, not mechanism — not re-checked after the fix.
+- **How it was found, in order (each a build + a hardware run)**: ISR gap/dur in the
+  underrun line (ISR exonerated); BUSCTRL counters (FASTPERI contested went 3k → 900k
+  with core0's polling — a red herring: throttling the SD and radio polls cut it to
+  150k and the underruns stayed); per-master activity counters (radio xfers tracked the
+  underruns); stall raster lines (random → not structural); then the one that worked:
+  **core0 tags its code sections in a byte, idle core1 polls the video SM's TXSTALL
+  flag every ~200 cycles and buckets each hit by the tag** — 100 % inside
+  `cyw43_spi_transfer`; splitting that tag put the densest cluster at the DMA trigger.
+  The diagnostics were removed again; `hdmi_tmds_stall_log` keeps ISR gap/dur and the
+  four BUSCTRL counters in the underrun line (`fastperi cont/dn/up`, `xip stall`,
+  `prio`), cheap and enough to separate "the bridge is busy" from "nothing on the bus
+  explains this". The probe pattern is the thing to rebuild first on the next
+  "DMA feeder starves" report; counters alone cost five rounds here.
+- Owed: Pentagon and 640x480 on the same build (the "only Next" claim is pre-fix), the
+  other W boards (`m1p2ws`/`m2p2ws`: radio ≥ GPIO32, the pio0 preference falls back to
+  the SDK search when pio0 is VGA's), and a long download for throughput.
+
+## PI-CARD MUSICA emulation (#63/#67) — the esxDOS "Tracker player" plugin (2026-10-23; hw-confirmed DVp2w on `debug/DVp2w-pimusica2-1.1.0`, owner: IT, MID, MOD, S3M and XM all play)
+
+AlexZor's `Tracker player 0.2` (five identical 3356-byte plugins in `/BIN/BPLUGINS`,
+named MOD/XM/S3M/IT/MID) decodes nothing: it hands the file over the bus to a
+**PI-CARD with the PI-MUSICA firmware** (demyanenko-d/PICARD-MUSICA, RP2350B), which
+plays MOD/S3M/XM/IT (libxmp) and .mid (SoundFont) itself. `src/speccy/devices/sound/
+PiMusica.{h,cpp}` is that card: the protocol (`docs/protocol.md` of the firmware,
+summarised in the .cpp header — the BOARD leads: command code on #63, byte-serial
+argument frame on #67 with a mod-256 checksum, the host serves 4 KB read windows into
+#67 and acknowledges with an 8-byte command into #63), a file buffer in butter PSRAM,
+and the Pico-Zx-Player's own decoders (`Decoder::openMemory`, new on XmpDecoder and
+MidiDecoder) rendering into `pcm_card_ring` — a second ring in pwm_audio that is
+ADDED to the ZX + GS mix at the master volume (the player's ring REPLACES the output).
+Tracker modules render on core1 (`PiMusica::core1Pump` in render_core, one spinlock,
+a core0 top-up at the frame end when the ring falls under 1024 frames); a .mid renders
+on core0 only (`midi_wt` is one engine — `MidiSynth::gen_sound` steps aside while
+`PiMusica::ownsMidiSynth()`). Audio > "PI-CARD MUSICA" (`Config::pimusica`, NVS
+`pimusica`, AC_REBOOT: the 16 KB ring + lock are claimed in setup(); `pp::available()`
+= QSPI PSRAM only). Ports: one byte test (`g_pimus_on`) + a flash call in both RAM
+port paths, BEFORE the Beta alias switch (`address & 0xE3` takes #63/#67 for the
+WD1793 DATA register in DOS context); not on Profi (VV55 there, on real hardware too).
+Deviations: the whole file is pulled sequentially and the decoder opens once it is
+complete (the firmware reads samples in play order); commands are handled at the OUT
+(the board needs ~1 ms); the seek bit is set for every open track (forward = silent
+render in 15 ms slices, back = reopen from the image); 0x17/0x18 are never sent (nor
+by the real firmware). A read of a frame past its end wraps to byte 0 (re-reads
+without a NAK); a decoder failure or 3 NAKs end the session as "finished" (0x16
+state 2). `[PIMUS]` log lines: reset / session / open / short window / track ended.
+Hardware Info row `PI-CARD MUSICA`. **`tools/pimusica_test.cpp`** (recipe in its
+header, stubs in `tools/pimusica_stub/`) drives the shipped .cpp with the plugin's
+bus sequence — it found the two bugs of the first cut (0x14 never armed, no wrap);
+re-run after any change. **The first build (`pimusica`) blacked the screen and hung the
+board on the first module**: core1 faulted inside libxmp's render (`<signal handler
+called>` on core1 in the debugger) while holding the spinlock, core0 waited for it in
+`frameTick` for ever — the VDAC2 mip2 shape, libxmp's call chain + the HDMI ISR's frames
+over core1's 2 KB stack (the player ran it on core0's 8 KB). `pimusica2`: core1 renders
+on an 8 KB heap stack (`c1CallOnStack`, the zipCallOnStack MSP/MSPLIM switch), no stack
+= core0 renders everything, and an overflow there is a STKOF dump. **Rule: anything the
+player's decoders run on core1 goes through that stack.** XM confirmed the same day. No IT module on hand: `tools/mkit_test.py` writes a minimal
+one (4 channels, one looped sine, an arpeggio; `debug/pimusica/PICOTEST.IT`, loads and
+renders through the vendored libxmp on the host — the same loader as the firmware).
+The .mid (GM.DLS, rendered on core0) and the IT test module play too (owner, same day).
+Not itemised: FPS/IDL with libxmp on core1 (unmeasured), P/F keys, Q/Space back to the
+browser, F11 mid-track.

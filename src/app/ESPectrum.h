@@ -273,6 +273,9 @@ public:
     // contiguous per-frame generation pass, so ordering and timing are exact.
     // Entry: pos | (port<<16) | (val<<24). Allocated by OplSubsys.
     static uint32_t* oplWriteQueue;
+    // ZXM-MoonSound wave data port #7F (write queued with the FM writes / read).
+    static void    MoonWaveData(uint8_t v);
+    static uint8_t MoonWaveRead();
     static uint16_t  oplQHead, oplQTail;
     // YM2413/OPLL: mono buffer + its own write queue, same scheme (OpllSubsys).
     static int16_t* audioBufferOPLL;

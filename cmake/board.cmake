@@ -89,11 +89,29 @@ message(STATUS "PICO_BOARD: ${PICO_BOARD}")
 # firmware (rp2350-memmap.ld), and on 4 MB the firmware has ~2.4 MB before it eats
 # into the GM_BANK_MIN_KB floor — a bound main has already overflowed once — against
 # ~14.3 MB here, where the same rule leaves the bank a 13.6 MB tail by itself.
+# Any other board builds in two types, 4 MB (default) and 16 MB (-DFLASH_16MB=ON);
+# the board header's own 4 MB default is overridden here, before the SDK reads it
+# (the SDK then defines PICO_FLASH_SIZE_BYTES for the C code from this value too).
 if(PICOSPECCY_WIFI)
+    set(FLASH_16MB ON)
+endif()
+if(FLASH_16MB)
     set(FLASH_SIZE 16384)
+    set(PICO_FLASH_SIZE_BYTES "16 * 1024 * 1024")
+    set(YRW801_BUILTIN 1)
+    set(GM_BANK_BUILTIN 1)
 else()
     set(FLASH_SIZE 4096)
+    set(YRW801_BUILTIN 0)
+    set(GM_BANK_BUILTIN 0)
 endif()
+# MOONSOUND: the ZXM-MoonSound card (YMF278B wave half), on every image.
+# YRW801_BUILTIN: its 2 MB YRW801 ROM embedded in flash (16 MB only); the 4 MB image
+# reads it from the SD card (src/speccy/devices/sound/MoonRom.h).
+set(MOONSOUND 1)
+add_compile_definitions(MOONSOUND=${MOONSOUND} YRW801_BUILTIN=${YRW801_BUILTIN})
+# GM_BANK_BUILTIN: the GM.DLS bank embedded in flash (src/speccy/roms/gmbank).
+add_compile_definitions(GM_BANK_BUILTIN=${GM_BANK_BUILTIN})
 
 # Board tag: prefix of the firmware file name and the per-board NVS config dir.
 # No chip suffix anymore — every target is RP2350.

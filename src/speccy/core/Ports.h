@@ -206,11 +206,12 @@ public:
     static void pitWrite(uint8_t a8, uint8_t data);
     static void pitGenSound(uint8_t* buf, int bufsize);
 
+public:
+    static uint8_t speaker_values[8];   // (public: the SAM Coupe beeper uses it)
 private :
 
     static void ioContentionLate(bool contend);
     static uint8_t port254;
-    static uint8_t speaker_values[8];
 
 };
 

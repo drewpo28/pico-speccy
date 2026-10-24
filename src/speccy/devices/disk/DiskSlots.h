@@ -14,6 +14,7 @@
 #include "wd1793.h"
 #include "MB02.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
+#include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/devices/storage/DivMMC.h"
 #include "speccy/devices/storage/IDE.h"
 
@@ -24,6 +25,7 @@ namespace DiskSlots {
             case IFACE_BETA: return 4;
             case IFACE_MB02: return 4;
             case IFACE_PLUS3: return 2;   // the +3 decodes US0 only: A: and B:
+            case IFACE_SAM:   return 2;   // SAM Coupe drives 1 and 2
             case IFACE_ESX:
                 // Slots visible in popup depend on the active esxDOS interface.
                 if (Config::esxdos == 1) return 1; // DivMMC: hd0
@@ -37,7 +39,7 @@ namespace DiskSlots {
     }
     // Only the floppy interfaces carry a write-protect flag.
     inline bool slotHasWP(DiskIface iface) {
-        return iface == IFACE_BETA || iface == IFACE_MB02 || iface == IFACE_PLUS3;
+        return iface == IFACE_BETA || iface == IFACE_MB02 || iface == IFACE_PLUS3 || iface == IFACE_SAM;
     }
     inline string slotLabel(DiskIface iface, uint8_t idx) {
         if (iface == IFACE_BETA) return string("Drive ") + (char)('A' + idx);
@@ -46,6 +48,7 @@ namespace DiskSlots {
             return string(b);
         }
         if (iface == IFACE_PLUS3) return string("Drive ") + (char)('A' + idx) + ":";
+        if (iface == IFACE_SAM) return string("Drive ") + (char)('1' + idx);
         if (iface == IFACE_ESX) {
             char b[8]; snprintf(b, sizeof(b), "hd%u", (unsigned)idx);
             return string(b);
@@ -62,6 +65,7 @@ namespace DiskSlots {
             return ESPectrum::mb02_fdd.disk[idx] ? ESPectrum::mb02_fdd.disk[idx]->fname : "";
         }
         if (iface == IFACE_PLUS3) return Plus3Fdc::fname(idx);
+        if (iface == IFACE_SAM) return SamFdc::fname(idx);
         if (iface == IFACE_ESX) return Config::esxdos_hdf_image[idx];
         if (iface == IFACE_IDE) return Config::ide_image[idx];
         return "";
@@ -70,6 +74,7 @@ namespace DiskSlots {
         if (iface == IFACE_BETA) return Config::driveWP[idx];
         if (iface == IFACE_MB02) return Config::mb02WP[idx];
         if (iface == IFACE_PLUS3) return Config::p3WP[idx];
+        if (iface == IFACE_SAM) return Config::samWP[idx];
         return false;
     }
     // Toggle stored WP and mirror to live disk; caller persists via Config::save.
@@ -88,6 +93,10 @@ namespace DiskSlots {
             Config::p3WP[idx] = !Config::p3WP[idx];
             Plus3Fdc::setWriteProtect(idx, Config::p3WP[idx]);
         }
+        else if (iface == IFACE_SAM) {
+            Config::samWP[idx] = !Config::samWP[idx];
+            SamFdc::setWriteProtect(idx, Config::samWP[idx]);
+        }
     }
     // Eject the disk/image currently mounted in `idx`. No-op for empty slots.
     inline void slotEject(DiskIface iface, uint8_t idx) {
@@ -103,6 +112,10 @@ namespace DiskSlots {
         else if (iface == IFACE_PLUS3) {
             Plus3Fdc::eject(idx);
             Config::p3DiskFile[idx].clear();
+        }
+        else if (iface == IFACE_SAM) {
+            SamFdc::eject(idx);
+            Config::samDiskFile[idx].clear();
         }
         else if (iface == IFACE_ESX) {
             Config::esxdos_hdf_image[idx].clear();
@@ -134,6 +147,9 @@ namespace DiskSlots {
         }
         else if (iface == IFACE_PLUS3) {
             if (Plus3Fdc::mount(idx, fname)) Config::p3DiskFile[idx] = fname;
+        }
+        else if (iface == IFACE_SAM) {
+            if (SamFdc::mount(idx, fname)) { Config::samDiskFile[idx] = fname; LastRun::note(fname); }
         }
         else if (iface == IFACE_ESX) {
             Config::esxdos_hdf_image[idx] = fname;

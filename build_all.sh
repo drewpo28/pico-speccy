@@ -27,7 +27,8 @@ while [ $# -gt 0 ]; do
             cat <<EOF
 Usage: $0 [--clean] [-j JOBS_PER_BUILD] [-p MAX_PARALLEL] [TARGETS...]
 
-Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR
+Env vars: BUILD_TYPE, MAX_PARALLEL, JOBS_PER_BUILD, CMAKE_GENERATOR,
+          FLASH_TYPES ("4 16" = both flash types, the default; "4" or "16" = one)
 Targets:  MURM MURM2 PICO_PC PICO_DV ZERO2 MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS (default: all)
 EOF
             exit 0 ;;
@@ -111,6 +112,13 @@ PIOUSB_TARGETS="ZERO2"
 # CMake's AUTO would make it HSTX too and the two images would be the same.
 HSTX_TARGETS="PICO_PC MURM2 MURM2_W PICO_PC_W MURM2_WS PICO_PC_WS"
 
+# Flash types: every board ships a 4 MB image and a 16 MB one (-DFLASH_16MB=ON,
+# "-16MB" in the file name, adds ZXM-MoonSound with its embedded ROM). The W/WS
+# boards exist as 16 MB modules only, so they get the 16 MB image alone (named
+# with -16MB like every other 16 MB image; their build dir keeps the plain name).
+FLASH_TYPES="${FLASH_TYPES:-4 16}"
+W_TARGETS="MURM_W MURM2_W PICO_DV_W PICO_PC_W MURM_WS MURM2_WS PICO_DV_WS PICO_PC_WS"
+
 # Parse arguments: pass target names to build specific ones, or nothing for all
 if [ $# -gt 0 ]; then
     TARGETS="$*"
@@ -118,39 +126,49 @@ else
     TARGETS="$ALL_TARGETS"
 fi
 
-# Build list of (target, display) pairs
-BUILD_PAIRS=()
+# Build list of (target, display) pairs, then expand each into its flash types
+# ("target:display:4" / "target:display:16").
+BASE_PAIRS=()
 for TARGET in $TARGETS; do
-    BUILD_PAIRS+=("${TARGET}:VGA_HDMI")
+    BASE_PAIRS+=("${TARGET}:VGA_HDMI")
     for TFT_T in $TFT_TARGETS; do
         if [ "$TARGET" = "$TFT_T" ]; then
-            BUILD_PAIRS+=("${TARGET}:TFT_ILI9341")
+            BASE_PAIRS+=("${TARGET}:TFT_ILI9341")
             break
         fi
     done
     for TFT_ST_T in $TFT_ST_TARGETS; do
         if [ "$TARGET" = "$TFT_ST_T" ]; then
-            BUILD_PAIRS+=("${TARGET}:TFT_ST7789")
+            BASE_PAIRS+=("${TARGET}:TFT_ST7789")
             break
         fi
     done
     for STV_T in $SOFTTV_TARGETS; do
         if [ "$TARGET" = "$STV_T" ]; then
-            BUILD_PAIRS+=("${TARGET}:SOFTTV")
+            BASE_PAIRS+=("${TARGET}:SOFTTV")
             break
         fi
     done
     for PU_T in $PIOUSB_TARGETS; do
         if [ "$TARGET" = "$PU_T" ]; then
-            BUILD_PAIRS+=("${TARGET}:PIOUSB")
+            BASE_PAIRS+=("${TARGET}:PIOUSB")
             break
         fi
     done
     for HX_T in $HSTX_TARGETS; do
         if [ "$TARGET" = "$HX_T" ]; then
-            BUILD_PAIRS+=("${TARGET}:HSTX")
+            BASE_PAIRS+=("${TARGET}:HSTX")
             break
         fi
+    done
+done
+BUILD_PAIRS=()
+for PAIR in "${BASE_PAIRS[@]}"; do
+    IS_W=false
+    for W_T in $W_TARGETS; do [ "${PAIR%%:*}" = "$W_T" ] && IS_W=true; done
+    for FT in $FLASH_TYPES; do
+        if $IS_W && [ "$FT" != "16" ]; then continue; fi
+        BUILD_PAIRS+=("${PAIR}:${FT}")
     done
 done
 
@@ -169,20 +187,29 @@ BUILD_ROOT="$SCRIPT_DIR/build-all"
 LOG_DIR="$BUILD_ROOT/logs"
 mkdir -p "$OUTPUT_DIR" "$LOG_DIR"
 
+# 4 MB images keep the historic dir names; a 16 MB one appends -16MB (the W/WS
+# boards are 16 MB only and keep their plain DIR names — the file name carries -16MB).
 build_dir_for() {
-    local target="$1" display="$2"
-    if [ "$display" = "VGA_HDMI" ]; then
-        echo "$BUILD_ROOT/${target}"
-    else
-        echo "$BUILD_ROOT/${target}-${display}"
+    local target="$1" display="$2" flash="$3" suffix=""
+    if [ "$flash" = "16" ]; then
+        case " $W_TARGETS " in *" $target "*) ;; *) suffix="-16MB" ;; esac
     fi
+    if [ "$display" = "VGA_HDMI" ]; then
+        echo "$BUILD_ROOT/${target}${suffix}"
+    else
+        echo "$BUILD_ROOT/${target}-${display}${suffix}"
+    fi
+}
+log_name_for() {
+    local target="$1" display="$2" flash="$3"
+    if [ "$flash" = "16" ]; then echo "${target}-${display}-16MB"; else echo "${target}-${display}"; fi
 }
 
 # Optional clean
 if $CLEAN; then
     for PAIR in "${BUILD_PAIRS[@]}"; do
-        IFS=':' read -r TARGET DISPLAY <<<"$PAIR"
-        BUILD_DIR="$(build_dir_for "$TARGET" "$DISPLAY")"
+        IFS=':' read -r TARGET DISPLAY FLASH <<<"$PAIR"
+        BUILD_DIR="$(build_dir_for "$TARGET" "$DISPLAY" "$FLASH")"
         if [ -d "$BUILD_DIR" ]; then
             echo "Cleaning $BUILD_DIR ..."
             rm -rf "$BUILD_DIR"
@@ -195,12 +222,12 @@ fi
 # Exits 0 on success, non-zero on failure.
 build_one() {
     local pair="$1"
-    local target display
-    IFS=':' read -r target display <<<"$pair"
+    local target display flash
+    IFS=':' read -r target display flash <<<"$pair"
     local build_dir label log
-    build_dir="$(build_dir_for "$target" "$display")"
-    label="$target ($display)"
-    log="$LOG_DIR/${target}-${display}.log"
+    build_dir="$(build_dir_for "$target" "$display" "$flash")"
+    label="$target ($display, ${flash} MB)"
+    log="$LOG_DIR/$(log_name_for "$target" "$display" "$flash").log"
 
     # Serialize against a second build_all (or a VS Code build task) working on the
     # SAME build dir: two ninjas in one dir clobber each other's objects, and the
@@ -267,6 +294,12 @@ build_one() {
         # while it was set would keep forcing the split into every image built from
         # it, release ones included.
         target_flags+=(-DFB_FORCE_CHUNKS=0)
+        # Flash type, explicit for the same reason.
+        if [ "$flash" = "16" ]; then
+            target_flags+=(-DFLASH_16MB=ON)
+        else
+            target_flags+=(-DFLASH_16MB=OFF)
+        fi
 
         local cmake_args=(
             -B "$build_dir" -S "$SCRIPT_DIR"
@@ -286,8 +319,8 @@ build_one() {
 
 # Run builds with bounded concurrency via xargs -P.
 # xargs spawns one subshell per pair, at most MAX_PARALLEL concurrently.
-export -f build_one build_dir_for
-export SCRIPT_DIR BUILD_ROOT BUILD_TYPE CMAKE_GENERATOR CMAKE_MAKE_PROGRAM LOG_DIR JOBS_PER_BUILD
+export -f build_one build_dir_for log_name_for
+export W_TARGETS SCRIPT_DIR BUILD_ROOT BUILD_TYPE CMAKE_GENERATOR CMAKE_MAKE_PROGRAM LOG_DIR JOBS_PER_BUILD
 export CCACHE_ARGS_STR="${CCACHE_ARGS[*]}"
 # Re-export CCACHE_ARGS as a string and reconstruct in subshell (arrays don't export cleanly).
 build_one_wrapper() {
@@ -335,9 +368,9 @@ if [ ${#SUCCEEDED[@]} -gt 0 ]; then
     echo "Succeeded (${#SUCCEEDED[@]}):"
     for ENTRY in "${SUCCEEDED[@]}"; do
         PAIR="${ENTRY%% (*}"
-        IFS=':' read -r TARGET DISPLAY <<<"$PAIR"
-        BUILD_DIR="$(build_dir_for "$TARGET" "$DISPLAY")"
-        LOG="$LOG_DIR/${TARGET}-${DISPLAY}.log"
+        IFS=':' read -r TARGET DISPLAY FLASH <<<"$PAIR"
+        BUILD_DIR="$(build_dir_for "$TARGET" "$DISPLAY" "$FLASH")"
+        LOG="$LOG_DIR/$(log_name_for "$TARGET" "$DISPLAY" "$FLASH").log"
         echo "  $ENTRY"
         # Copy only the uf2 from THIS run's CMake config (BUILD_NAME embeds the
         # current PORT_VERSION), not every stale *.uf2 left in the bin dir from
@@ -374,8 +407,8 @@ if [ ${#FAILED[@]} -gt 0 ]; then
     echo "Failed (${#FAILED[@]}):"
     for ENTRY in "${FAILED[@]}"; do
         PAIR="${ENTRY%% (*}"
-        IFS=':' read -r TARGET DISPLAY <<<"$PAIR"
-        echo "  $ENTRY    (see $LOG_DIR/${TARGET}-${DISPLAY}.log)"
+        IFS=':' read -r TARGET DISPLAY FLASH <<<"$PAIR"
+        echo "  $ENTRY    (see $LOG_DIR/$(log_name_for "$TARGET" "$DISPLAY" "$FLASH").log)"
     done
     exit 1
 fi

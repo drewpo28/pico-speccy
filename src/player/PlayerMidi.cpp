@@ -52,6 +52,7 @@ public:
     ~MidiDecoder() override { close(); }
 
     bool open(const char* path) override;
+    bool openMemory(const uint8_t* data, uint32_t size) override;
     int  render(int16_t* lr, int n) override;
     int  channels() const override { return 16; }
     const char* chanName(int i) const override {
@@ -93,6 +94,7 @@ private:
     bool readVar(Track& t, uint32_t& v);
     void setTempo(uint32_t us);
     void dispatchDue();            // runs every event with tick <= current
+    bool parseLoaded();
     bool anyLeft() const;
     void event(Track& t);
     void chanMsg(uint8_t st, uint8_t a, uint8_t b);
@@ -256,6 +258,20 @@ void MidiDecoder::dispatchDue() {
 
 bool MidiDecoder::open(const char* path) {
     if (!loadFile(path)) return false;
+    return parseLoaded();
+}
+
+bool MidiDecoder::openMemory(const uint8_t* data, uint32_t size) {
+    if (size < 14 || size > MAX_FILE) { err = "Bad file size"; return false; }
+    d_ = (uint8_t*)Buffer::palloc(size, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+    if (!d_) { err = "File too big for PSRAM"; return false; }
+    memcpy(d_, data, size);
+    n_ = size;
+    return parseLoaded();
+}
+
+// Everything after the file image is in d_/n_: header, length, the bank.
+bool MidiDecoder::parseLoaded() {
     // RIFF RMID wrapper → the "data" chunk is a plain SMF.
     if (n_ >= 20 && !memcmp(d_, "RIFF", 4) && !memcmp(d_ + 8, "RMID", 4)) {
         uint32_t p = 12;

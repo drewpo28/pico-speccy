@@ -34,6 +34,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 */
 
+#include "speccy/machines/Sam/Sam.h"
 #include "Ports.h"
 #include "hardware/structs/timer.h"
 #if PERF_TRACE
@@ -45,6 +46,8 @@ bool g_brd_first_set = false;
 #include "speccy/devices/sound/OpnFm.h"
 #include "speccy/devices/sound/OplFm.h"
 #include "speccy/devices/sound/OpllFm.h"
+#include "speccy/devices/sound/MoonPcm.h"
+#include "speccy/devices/sound/PiMusica.h"
 #include "speccy/devices/sound/SnSound.h"
 #include "speccy/devices/sound/SAASound.h"
 #include "speccy/z80/CPU.h"
@@ -1124,6 +1127,15 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     return v;
   }
 
+  // PI-CARD MUSICA (#63 command/status, #67 argument frame), low-byte decode.
+  // Before the Beta alias switch, which takes #63/#67 for the WD1793 DATA
+  // register in DOS context; not on Profi (the VV55 sits there on real hardware
+  // too). One byte test here, the protocol in flash (PiMusica.cpp).
+  if (!PROFI && g_pimus_on && (address & 0xFB) == 0x63) {
+    uint8_t v;
+    if (PiMusica::portRead((uint8_t)address, v)) { ioContentionLate(MemESP::ramContended[rambank]); return v; }
+  }
+
   if (MEM_PG_CNT > 64 && !Z80Ops::isTsconf && address == 0xAFF7) {
     LED::touchR(LED::RAM);
     return portAFF7;
@@ -1212,6 +1224,15 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     }
     return 0x00;
   }
+  // ZXM-MoonSound wavetable ports #7E (address) / #7F (data), low-byte decode
+  // (the card's CPLD: CA7..CA1 = 0111111) and switched off while the DOS signal
+  // is up — #7F is the WD1793 data register under TR-DOS. Before the ULA branch:
+  // #7E is even, and the card's IORQG keeps it off the rest of the bus. A read
+  // of #7E answers the FM status, as the chip's status port does.
+  if (moonpcm && (address & 0xFE) == 0x7E && !ESPectrum::trdos) {
+    if (Tape::tapeStatus != TAPE_LOADING) ESPectrum::OPLGetSample();
+    return (address & 1) ? ESPectrum::MoonWaveRead() : (oplfm ? oplfm->status() : 0x00);
+  }
   // Scorpion GMX register read-backs — cold flash dispatch, see gmxPortRead.
   if (g_scorp_gmx) {
     uint8_t gmxData;
@@ -1297,10 +1318,14 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     }
     if (Tape::tapeStatus == TAPE_LOADING) LED::touchR(LED::TAPE);
     if (Tape::TapePortRead()) return data;
-    // Turbo loaders at 0xFE00+ write to port254 to set border colors, which
-    // on Issue2 hardware feeds bit3 back into EAR input (bit6), inverting
-    // the tape signal. Bypass port254 feedback for turbo loaders.
-    if (Tape::tapeStatus == TAPE_LOADING && Z80::getRegPC() >= 0xFE00) {
+    // A PLAYING tape drives EAR (bit 6) by itself: the port-254 feedback (Issue 2
+    // MIC bit 3, the speaker bit 4, the Pentagon's idle-high input) only decides
+    // the level with no signal. XORing it in inverted the tape whenever the
+    // loader's border OUT has MIC set — the ROM's LD-EDGE always writes OR 8 —
+    // which a polarity-sensitive loader cannot survive: Wizball (PZX, and TAP
+    // played in real time) reset ~5200 bytes in on a 48K with Issue 2 (hw +
+    // host sim 2026-10-24). This used to apply to loaders at 0xFE00+ only.
+    if (Tape::tapeStatus == TAPE_LOADING) {
       if (Tape::tapeEarBit)
         data |= 0x40;
     } else {
@@ -2135,6 +2160,7 @@ static inline __attribute__((always_inline)) bool nxRegPort(uint16_t address) {
 }
 IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   if (__builtin_expect(Z80Ops::isProfi, 0)) { return inputProfi(address); }
+  if (__builtin_expect(Z80Ops::isSam, 0)) return Sam::portIn(address);
   if (nxRegPort(address) && Config::numPortReadBP == 0) {
     const bool c = MemESP::ramContended[address >> 13];
     VIDEO::Draw(1, c);
@@ -3225,6 +3251,14 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // even #7FFD paging (OUT (#C4),#04 = #04C4); emulating that would flash the
   // border and corrupt paging mid-tune. oplfm is non-null only while
   // OplSubsys is up (Config::opl3), so nothing changes while the card is off.
+  // PI-CARD MUSICA — the read side's twin: #63 = one byte of the host's 8-byte
+  // command, #67 = file data for the card's read request.
+  if (!PROFI && g_pimus_on && (address & 0xFB) == 0x63) {
+    LED::touchW(LED::AY);
+    PiMusica::portWrite((uint8_t)address, data);
+    ioContentionLate(MemESP::ramContended[rambank]);
+    return;
+  }
   if (oplfm && (address & 0x00FC) == 0x00C4) {
     // Queued, not applied: generating the elapsed samples inside every OUT
     // re-faulted gen()'s flash code through the XIP cache hundreds of times
@@ -3232,6 +3266,15 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
     // at the exact sample positions, so timing is unchanged.
     LED::touchW(LED::AY); // music-note glyph: VGM playback = a stream of writes
     ESPectrum::OPLPortWrite(address & 3, data);
+    ioContentionLate(MemESP::ramContended[rambank]);
+    return;
+  }
+  // ZXM-MoonSound wavetable ports #7E/#7F — see the read side. The address
+  // write is a latch; data writes go through the OPL queue (MoonWaveData).
+  if (moonpcm && (address & 0xFE) == 0x7E && !ESPectrum::trdos) {
+    LED::touchW(LED::AY);
+    if (address & 1) ESPectrum::MoonWaveData(data);
+    else             moonpcm->writeAddr(data);
     ioContentionLate(MemESP::ramContended[rambank]);
     return;
   }
@@ -4302,6 +4345,7 @@ __attribute__((noinline)) void Ports::outputProfi(uint16_t address, uint8_t data
 
 IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (__builtin_expect(Z80Ops::isProfi, 0)) { outputProfi(address, data); return; }
+  if (__builtin_expect(Z80Ops::isSam, 0)) { Sam::portOut(address, data); return; }
   if (nxRegPort(address) && Config::numPortWriteBP == 0) {
     VIDEO::Draw(1, MemESP::ramContended[address >> 13]);
     p_states = CPU::tstates;

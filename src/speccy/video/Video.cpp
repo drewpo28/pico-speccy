@@ -38,6 +38,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "hardware/regs/addressmap.h"
 #endif
 #include "Video.h"
+#include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Sam/SamFdc.h"
 #include "app/PerfScope.h"
 #include "speccy/devices/storage/DivMMC.h"
 #include <math.h>       // powf() — CRT filter gamma curve (cold path, init only)
@@ -63,6 +65,17 @@ static void ftTraceTick();   // defined in the VDAC2 glue section below
 #include "VidPrecalc.h"
 #include "speccy/z80/CPU.h"
 #include "app/ESPectrum.h"
+#include "speccy/devices/sound/MoonSplit.h"
+// ZXM-MoonSound wave half on core1 (MoonSplit.h): once per rendered guest
+// line, tell core1 how far the guest has got — one test and one store.
+#if MOONSOUND
+#define MOON_LINE_PUB() do { if (g_moon_c1_live) { \
+    uint32_t _p = CPU::tstates / ESPectrum::audioAYDivider; \
+    if (ESPectrum::multiplicator) _p >>= ESPectrum::multiplicator; \
+    MoonSplit::publish(_p); } } while (0)
+#else
+#define MOON_LINE_PUB() do {} while (0)
+#endif
 #include "speccy/core/MemESP.h"
 #include "app/Config.h"
 #include "ui/OSDMain.h"
@@ -334,6 +347,8 @@ static __attribute__((noinline)) void profi_ds80_driver_set(bool active, const u
 // installs its own palette instead, which makes the choice meaningless, so the option
 // and Config::profi_ds80_std_palette_osd were removed; the classic OSD keeps the
 // running app's palette, which was that toggle's default.)
+static uint32_t* s_samPairPal = nullptr;   // SAM mode 3 pair palette, 16 words of heap (samPairSync)
+static void samPairPush();
 static uint32_t profi_palette_ui_saved[16];
 static bool     profi_palette_ui_saved_valid = false;
 
@@ -373,6 +388,7 @@ void VIDEO::restoreUiDS80Palette() {
         // guest palette port) — hand the guest ITS colours back, not Profi's.
         if (timex_hires_live) timexHiresRefresh();
         else if (bl_pair_live) blPairRefresh();
+        else if (sam_pair_live) samPairPush();
         else profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         rebuildDS80ColorLut();
     }
@@ -420,7 +436,7 @@ void VIDEO::profiPaletteApplyPending() {
     // Timex hi-res raises profi_ds80_active but is NOT driven by the Profi
     // palette port — refreshing from profi_palette_live here would replace the
     // machine's own ZX palette with Profi's.
-    if (timex_hires_live || bl_pair_live) { profi_palette_dirty = false; return; }
+    if (timex_hires_live || bl_pair_live || sam_pair_live) { profi_palette_dirty = false; return; }
     if (profi_palette_dirty && profi_ds80_active
         && !profi_ds80_activate_pending && !profi_ds80_deactivate_pending) {
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
@@ -2248,6 +2264,26 @@ static void tsPalette256Flush(bool invalidate);   // TS-Conf 256-slot remap (def
 
 uint8_t VIDEO::paletteGen = 0;
 
+// SAM Coupe: the 16 CLUT entries own hardware slots 0..15 (the renderer writes
+// CLUT indices). Called from applyPalette (every palette rebuild) and from
+// EndFrame when the guest wrote #F8.
+// The SAM's 128 palette colours in hardware slots PAL_SLOT0..+127 (16..143: below
+// the UI block and the HDMI island words). The CLUT itself is applied per row by
+// the renderer, so this runs only when the slots were rewritten (Reset, applyPalette,
+// leaving the mode-3 pair driver). Slots 0..15 keep the ZX colours for the overlays.
+static void samPaletteFlush() {
+    Sam::clutDirty = false;
+    if (VIDEO::sam_pair_live) return;   // pair tables own the slots; samPairSync re-pushes
+    for (int i = 0; i < 128; i++) {
+        const uint32_t c = snapTransform(crtTransform(Sam::colourRgb((uint8_t)i)));
+        const uint8_t slot = (uint8_t)(Sam::PAL_SLOT0 + i);
+        graphics_set_palette(slot, c);
+        // Arbitrary colours, not the flat ZX 16: the dithered VGA entry
+        // graphics_set_palette wrote is right unless the user asked for solid.
+        if (!Config::vga_dither) vga_set_palette_entry_solid(slot, c);
+    }
+}
+
 void VIDEO::applyPalette() {
     tsRenderDrain();   // rewrites slots the core1 line queue maps into
     paletteGen++;      // the menu's palette preview re-programs its slots on a change
@@ -2282,6 +2318,7 @@ void VIDEO::applyPalette() {
     }
     // Orange (index 16)
     graphics_set_palette(16, paletteFinal(0xFF7F00));
+    if (Config::arch == A_SAM) samPaletteFlush();
 
     Debug::log2SD("applyPalette: done, 240+16+1 entries written");
 
@@ -2307,6 +2344,7 @@ void VIDEO::applyPalette() {
     // the driver is running and what has to come back.
     if (timex_hires_live && !profi_palette_ui_saved_valid) timexHiresRefresh();
     else if (bl_pair_live && !profi_palette_ui_saved_valid) blPairRefresh();
+    else if (sam_pair_live && !profi_palette_ui_saved_valid) samPairPush();
     else if (profi_ds80_active) {
         profi_ds80_driver_set(true, profi_palette_live, &profi_pair_lookup[0][0]);
         profi_palette_dirty = false;
@@ -3974,7 +4012,8 @@ void VIDEO::getBmpPalette(uint8_t* out) {
         // into profi_palette_live, which is then what the driver is running.
         const bool tmx = (timex_hires_live || bl_pair_live) && !profi_palette_ui_saved_valid;
         for (int i = 0; i < 16; i++) {
-            uint32_t src = tmx ? paletteTransform(spectrum_rgb888[i]) : profi_palette_live[i];
+            uint32_t src = (sam_pair_live && s_samPairPal && !profi_palette_ui_saved_valid) ? s_samPairPal[i]
+                         : tmx ? paletteTransform(spectrum_rgb888[i]) : profi_palette_live[i];
             uint32_t c = Config::crt_filter ? crtTransform(src) : src;
             out[i * 4 + 0] = c & 0xFF;
             out[i * 4 + 1] = (c >> 8) & 0xFF;
@@ -4948,7 +4987,9 @@ bool VIDEO::gigascreenModeIncompatible() {
         // Spectrum Next: NEXTVID renders every layer itself and owns palette
         // slots 17..219 (its RGB333 lattice) — the blend LUT's 17..136 landed
         // on top of it and broke the Next's colours.
-        || Config::arch == A_NEXT;
+        || Config::arch == A_NEXT
+        // SAM Coupe: its own per-row renderer (Sam::renderRow), no prev-FB.
+        || Config::arch == A_SAM;
 }
 
 // The one predicate every palette/blend decision uses: the user wants Gigascreen
@@ -5235,7 +5276,7 @@ void VIDEO::pickMachineVideoMode() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 2;
                 else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5243,7 +5284,7 @@ void VIDEO::pickMachineVideoMode() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -5260,7 +5301,7 @@ void VIDEO::pickMachineVideoMode() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 2;
                 else if (Config::arch == A_128K || Config::isEvo128Raster() || nk == 1) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5269,7 +5310,7 @@ void VIDEO::pickMachineVideoMode() {
                 break;
             case Config::VM_720x576_169:
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -5285,7 +5326,7 @@ void VIDEO::pickMachineVideoMode() {
     if (Config::isBigVideoMode(vmSel)) {
         // The big modes are per machine too (except the 60 Hz entries):
         // 0 = Pentagon, 1 = 48K/Profi/Scorpion, 2 = 128K — the 720x576 grouping.
-        const int klass = (Config::arch == A_48K || Config::arch == A_PROFI || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) ? 1
+        const int klass = (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) ? 1
                         : (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) ? 2 : 0;
         // VGA runs them at its own pixel clocks (63 / 42 MHz, integer at 252/378/504),
         // so it takes the entry the HDMI mode would use at its own clock.
@@ -5664,6 +5705,7 @@ void VIDEO::Reset() {
     timexHiresForceOff();
     if (NEXTVID::p80Live) NEXTVID::pairForceOff();   // Next 640-wide frames: re-armed by pairPoll
     blPairForceOff();   // borderless pair scaler: same rule, re-armed at EndFrame
+    samPairForceOff();  // SAM mode 3: re-armed by the next EndFrame
 
     if (Config::arch == A_PROFI || g_scorp_gmx || Config::arch == A_TSCONF || Config::arch == A_ATM) {
         // Build pair_lookup every reset (palette may change). Cheap — 16×16 = 256 iters.
@@ -5788,6 +5830,22 @@ void VIDEO::Reset() {
         Draw_Opcode = &NEXTVID::Tick_Opcode;
         Draw_OSD169 = &NEXTVID::Tick;
         DrawBorder = &NEXTVID::borderMark;
+    }
+
+    if (Z80Ops::isSam) {
+        // SAM Coupe: rows are rendered on the beam from Sam::draw (Sam::frameStart/End);
+        // the beam machinery idles.
+        gigascreen_enabled = false;
+        // The raster: 384 T a line. haltAdvanceTo steps by it, and no other branch
+        // above sets it for SAM — after a cold boot straight into SAM it was 0 and the
+        // first HALT outside an INT window spun for ever (Arkanoid 2 Demo, hw 2026-10-22).
+        tStatesPerLine = Sam::T_PER_LINE;
+        // Draw only counts T-states (+ the contention wait, Sam::draw).
+        Draw = &Sam::draw;
+        Draw_Opcode = &Sam::drawOpcode;
+        Draw_OSD169 = &Sam::draw;
+        DrawBorder = &Border_Blank;
+        samPaletteFlush();
     }
 
     osdGeomRecalc();
@@ -6183,6 +6241,7 @@ IRAM_ATTR void VIDEO::MainScreen(unsigned int statestoadd, bool contended) {
 
     if (coldraw_cnt >= 32) {
         tstateDraw += tStatesPerLine;
+        MOON_LINE_PUB();
         if (++linedraw_cnt == lin_end2) {
             Draw = &Blank;
             Draw_Opcode = &Blank_Opcode;
@@ -6483,6 +6542,7 @@ IRAM_ATTR void VIDEO::MainScreen_NoPaper(unsigned int statestoadd, bool contende
 
     if (coldraw_cnt >= 32) {
         tstateDraw += tStatesPerLine;
+        MOON_LINE_PUB();
         if (++linedraw_cnt == lin_end2) {
             Draw = &Blank;
             Draw_Opcode = &Blank_Opcode;
@@ -6506,6 +6566,7 @@ IRAM_ATTR void VIDEO::MainScreen_OSD(unsigned int statestoadd, bool contended) {
 
     if (coldraw_cnt >= 32) {
         tstateDraw += tStatesPerLine;
+        MOON_LINE_PUB();
         if (++linedraw_cnt == lin_end2) {
             Draw = &Blank;
             Draw_Opcode = &Blank_Opcode;
@@ -6543,6 +6604,7 @@ IRAM_ATTR void VIDEO::MainScreen_Snow(unsigned int statestoadd, bool contended) 
 
     if (coldraw_cnt >= 128) {
         tstateDraw += tStatesPerLine;
+        MOON_LINE_PUB();
         if (++linedraw_cnt == lin_end2) {
             Draw = &Blank_Snow;
             Draw_Opcode = &Blank_Snow_Opcode;
@@ -6636,6 +6698,7 @@ IRAM_ATTR void VIDEO::MainScreen_Snow_Opcode(bool contended) {
 
     if (coldraw_cnt >= 128) {
         tstateDraw += tStatesPerLine;
+        MOON_LINE_PUB();
         if (++linedraw_cnt == lin_end2) {
             Draw =&Blank_Snow;
             Draw_Opcode = &Blank_Snow_Opcode;
@@ -7182,6 +7245,57 @@ void VIDEO::blPairRefresh() {
 // now, blRecalc re-arms it at the next EndFrame.
 void VIDEO::blPairForceOff() { blPairOff(); }
 
+// ── SAM Coupe mode 3 through the pair driver ─────────────────────────────────
+bool VIDEO::sam_pair_live = false;
+static bool     s_samPairRefused = false;
+
+static void samPairPush() {
+    profi_ds80_driver_set(true, s_samPairPal, &VIDEO::profi_pair_lookup[0][0]);
+}
+
+static void samPairOff() {
+    if (!VIDEO::sam_pair_live) return;
+    VIDEO::sam_pair_live = false;
+    profi_ds80_driver_set(false, nullptr, nullptr);
+    Graphics8BitPalette::ds80_active = false;
+    samPaletteFlush();          // slots 0..15 back to the CLUT for modes 1/2/4
+    Debug::log("[SAM] mode 3: 512 px pair mode off");
+}
+
+bool VIDEO::samPairSync(bool want, const uint32_t rgb12[12]) {
+    if (!want) { s_samPairRefused = false; samPairOff(); return false; }
+    if (s_samPairRefused) return false;
+    uint32_t pal[16];
+    for (int i = 0; i < 12; i++) pal[i] = rgb12[i] & 0x00FFFFFF;   // Sam.cpp's sticky entries
+    for (int i = 12; i < 16; i++) pal[i] = paletteTransform(spectrum_rgb888[i]) & 0x00FFFFFF;
+    if (sam_pair_live) {
+        // A full-screen menu owns the pair palette: leave it alone until it hands back.
+        if (profi_palette_ui_saved_valid) return true;
+        if (memcmp(pal, s_samPairPal, sizeof(pal)) == 0) return true;
+        memcpy(s_samPairPal, pal, sizeof(pal));
+        samPairPush();
+        return true;
+    }
+    if (profi_ds80_active) { s_samPairRefused = true; return false; }   // another pair owner
+    if (!s_samPairPal) s_samPairPal = (uint32_t*)tryMalloc(16 * sizeof(uint32_t));
+    if (!s_samPairPal) { s_samPairRefused = true; return false; }
+    memcpy(s_samPairPal, pal, sizeof(pal));
+    init_profi_pair_lookup();
+    samPairPush();
+    if (!profi_ds80_active) {
+        s_samPairRefused = true;
+        Debug::log("[SAM] mode 3: no packed-pair driver, 256 px fallback");
+        return false;
+    }
+    rebuildDS80ColorLut();
+    Graphics8BitPalette::ds80_active = true;
+    sam_pair_live = true;
+    Debug::log("[SAM] mode 3: 512 px pair mode on");
+    return true;
+}
+
+void VIDEO::samPairForceOff() { s_samPairRefused = false; samPairOff(); }
+
 void VIDEO::blSetCarve(int id, int x0, int y0, int x1, int y1) {
     if (id < 0 || id >= BL_CARVE_N) return;
     int16_t* r = ov_carve[id];
@@ -7361,6 +7475,18 @@ static __attribute__((noinline, optimize("O2", "no-unroll-loops", "no-tree-loop-
     }
 }
 
+int VIDEO::rowCarves(int row, int (*cx)[2]) {
+    int n = 0;
+    if (row >= osd_bar_y && row < osd_bar_y + 16
+        && osdBarRange((OSD & 0x07) != 0, (int)vga.xres, cx[n][0], cx[n][1])) n++;
+    if (row >= ts_notice_y0 && row < ts_notice_y1) { cx[n][0] = ts_notice_x0; cx[n][1] = ts_notice_x1; n++; }
+    for (int i = 0; i < BL_CARVE_N && n < 8; i++) {
+        const int16_t* r = ov_carve[i];
+        if (row >= r[1] && row < r[3]) { cx[n][0] = r[0]; cx[n][1] = r[2]; n++; }
+    }
+    return n;
+}
+
 void VIDEO::ovRecalc() {
     if (!osd_in_paper || !ov_stage || bl_live) { ov_y0 = ov_y1 = 0; return; }
     int y0 = 1 << 30, y1 = 0;
@@ -7418,6 +7544,7 @@ void VIDEO::tsBandReplay() {
 }
 
 IRAM_ATTR void VIDEO::tsDrawTick() {
+    MOON_LINE_PUB();   // every whole-line clock (TS-Conf, ATM/Evo, 16col, Next) passes here once a line
     if (Z80Ops::isNext) { NEXTVID::lineTick(); return; }   // TsFastMem.h: the Next shares the fast path
     // ATM-Turbo / ZX-Evo whole-line modes share this clock (atmDrawTick, flash):
     // one test per rendered line, not per access. Pentagon 16col likewise.
@@ -9107,6 +9234,20 @@ IRAM_ATTR void VIDEO::EndFrame() {
     // PERF window comfortably carries the ~600 bytes those lines write.
     Debug::pumpUart();
 
+    if (Z80Ops::isSam) {
+        if (Sam::clutDirty) samPaletteFlush();   // a slot rewrite (Reset), never a CLUT write
+        SamFdc::frameEnd();
+        Sam::frameTick();
+        Sam::frameEnd();                         // rows the beam missed; disarm the row tick
+        gigascreenModeGate();
+        LED::decay();
+        if (Config::ledIndicators) LED::draw();
+        else { setLedBar(0); setLedCarve(0, 0, 0, -1); setLedStrip(-1); }
+        OSD::drawNotify();
+        framecnt++;
+        return;
+    }
+
     if (Z80Ops::isNext) {
         // Timex hi-res (port FF %110 / NR 0x69): the same vblank-deferred
         // packed-pair switch as on a TC2048; NEXTVID then renders the ULA at
@@ -9973,6 +10114,8 @@ void VIDEO::RedrawPausedFrame() {
     // VDAC2: the picture is the FT812's last swapped list, not the ZX VRAM —
     // re-render it (core1) and wait; there is no beam walk to do.
     if (ft_live) { ftRedrawSync(); return; }
+    // SAM Coupe: no beam walk — redraw the frame from the current state.
+    if (Z80Ops::isSam) { Sam::renderFrame(); return; }
 
     // A TS-Conf palette change still waiting for the beam has to be applied
     // NOW: the beam rule is meaningless once the machine is stopped — nothing

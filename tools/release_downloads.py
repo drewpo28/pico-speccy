@@ -4,7 +4,7 @@
 Usage: release_downloads.py REPO TAG FILE.uf2 [FILE.uf2 ...]
 
 Rows are carrier boards, columns are video outputs, each cell lists the
-module variants that were built (m1p2 / m1p2w / m1p2ws) as direct links to
+module variants that were built (m1p2 / m1p2-16MB / m1p2w / m1p2ws) as direct links to
 the release assets. Only the files passed in appear; an empty cell is "—".
 A board tag or display missing from the tables below still gets a row or
 column of its own, named after the raw token.
@@ -60,14 +60,17 @@ def main():
             print(f"release_downloads: skipping {name}", file=sys.stderr)
             continue
         board, module = split_tag(m.group("tag"))
-        col, suffix = DISPLAYS.get(m.group("disp"), (m.group("disp"), ""))
+        disp, flash = m.group("disp"), ""
+        if disp.endswith("-16MB"):          # the 16 MB flash type of a 4 MB board
+            disp, flash = disp[:-5], "-16MB"
+        col, suffix = DISPLAYS.get(disp, (disp, ""))
         if board not in rows:
             rows.append(board)
         if col not in cols:
             cols.append(col)
-        key = (1 if suffix else 0, MODULE_ORDER.get(module, 9), module)
+        key = (1 if suffix else 0, 1 if flash else 0, MODULE_ORDER.get(module, 9), module)
         cells.setdefault((board, col), []).append(
-            (key, f"[{m.group('tag')}{suffix}]({base}{name})"))
+            (key, f"[{m.group('tag')}{suffix}{flash}]({base}{name})"))
 
     rows = [r for r in rows if any((r, c) in cells for c in cols)]
     cols = [c for c in cols if any((r, c) in cells for r in rows)]
@@ -85,7 +88,9 @@ def main():
             "`*p2` — Raspberry Pi Pico 2 / Pimoroni Pico Plus 2, "
             "`*p2w` — Pimoroni Pico Plus 2 W, "
             "`*p2ws` — Waveshare RP2350B-Plus-W. "
-            "`*p2w` and `*p2ws` firmwares are not interchangeable.",
+            "`*p2w` and `*p2ws` firmwares are not interchangeable. "
+            "`-16MB` — the same board with a 16 MB flash module (adds ZXM-MoonSound); "
+            "the plain images are for 4 MB modules.",
             ""]
     print("\n".join(out))
 

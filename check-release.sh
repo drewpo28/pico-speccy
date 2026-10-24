@@ -52,6 +52,11 @@ BOARDS=(
     "PICO_PC|build-all/PICO_PC/bin/MinSizeRel/PCp2-speccy-VGA-HDMI-*.elf|532480|RP2350"
     "PICO_DV|build-all/PICO_DV/bin/MinSizeRel/DVp2-speccy-VGA-HDMI-*.elf|532480|RP2350"
     "ZERO2|build-all/ZERO2/bin/MinSizeRel/z0p2-speccy-VGA-HDMI-*.elf|532480|RP2350"
+    "MURM-16M|build-all/MURM-16MB/bin/MinSizeRel/m1p2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
+    "MURM2-16M|build-all/MURM2-16MB/bin/MinSizeRel/m2p2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
+    "PICO_PC-16M|build-all/PICO_PC-16MB/bin/MinSizeRel/PCp2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
+    "PICO_DV-16M|build-all/PICO_DV-16MB/bin/MinSizeRel/DVp2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
+    "ZERO2-16M|build-all/ZERO2-16MB/bin/MinSizeRel/z0p2-speccy-VGA-HDMI-16MB-*.elf|532480|RP2350"
     "MURM_W|build-all/MURM_W/bin/MinSizeRel/m1p2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
     "MURM2_W|build-all/MURM2_W/bin/MinSizeRel/m2p2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
     "PICO_DV_W|build-all/PICO_DV_W/bin/MinSizeRel/DVp2w-speccy-VGA-HDMI-*.elf|532480|RP2350"
@@ -86,7 +91,7 @@ sram_static_bytes() {
 }
 
 printf "pico-speccy pre-release memory check — v%s\n\n" "$VER"
-printf "%-10s %-8s %10s %10s %10s %10s  %s\n" \
+printf "%-11s %-8s %10s %10s %10s %10s  %s\n" \
     "BOARD" "MCU" "STATIC" "FREE@STAT" "FIXEDBOOT" "PROJECTED" "STATUS"
 
 EXIT_CODE=0
@@ -97,7 +102,7 @@ for entry in "${BOARDS[@]}"; do
 
     ELF=$(ls -t $GLOB 2>/dev/null | head -1)
     if [ -z "$ELF" ]; then
-        printf "%-10s %-8s %10s %10s %10s %10s  %s\n" "$NAME" "$MCU" "-" "-" "-" "-" "NOT BUILT"
+        printf "%-11s %-8s %10s %10s %10s %10s  %s\n" "$NAME" "$MCU" "-" "-" "-" "-" "NOT BUILT"
         MISSING+=("$NAME")
         continue
     fi
@@ -122,7 +127,7 @@ for entry in "${BOARDS[@]}"; do
         STATUS="$STATUS (stale: $BASENAME)"
     fi
 
-    printf "%-10s %-8s %10d %10d %10d %10d  %s\n" \
+    printf "%-11s %-8s %10d %10d %10d %10d  %s\n" \
         "$NAME" "$MCU" "$STATIC" "$FREE_AT_STATIC" "$FIXED_BOOT" "$PROJECTED" "$STATUS"
 done
 
@@ -139,7 +144,7 @@ echo "  ALF cart 16KB | remembered disk/tape mounts ~2KB each"
 
 if [ ${#MISSING[@]} -gt 0 ]; then
     echo ""
-    echo "Not built (run ./build_all.sh ${MISSING[*]}): ${MISSING[*]}"
+    echo "Not built (run ./build_all.sh; -16M = the 16 MB images): ${MISSING[*]}"
 fi
 
 exit $EXIT_CODE

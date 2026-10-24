@@ -385,6 +385,10 @@ static bool    hook_tsconfVdac2Smooth(int32_t, int32_t) { Ft812::renderRequest()
 static int32_t get_tsconfVdac2Adapt()          { return Config::tsconf_vdac2_adapt ? 1 : 0; }
 static void    put_tsconfVdac2Adapt(int32_t v) { Config::tsconf_vdac2_adapt = v != 0; }
 static bool    hook_tsconfVdac2Adapt(int32_t, int32_t) { VIDEO::ftPaletteProgram(); return true; }   // cube back in, or the adaptive one rebuilt
+static int32_t get_moonsound()          { return Config::moonsound ? 1 : 0; }
+static void    put_moonsound(int32_t v) { Config::moonsound = v != 0; }
+static int32_t get_pimusica()           { return Config::pimusica ? 1 : 0; }
+static void    put_pimusica(int32_t v)  { Config::pimusica = v != 0; }
 static int32_t get_screenTop()          { return (int32_t)Config::screen_top; }
 static void    put_screenTop(int32_t v) { Config::screen_top = (uint8_t)(v >= 0 && v <= 2 ? v : 0); }
 static bool    hook_screenTop(int32_t, int32_t) { VIDEO::screenTopApply(); return true; }
@@ -993,6 +997,11 @@ static bool stagedIsPlus3e() {
     if (m >= 0) return isPlus3eRomset((RomsetIdx)(m & 0xFF));
     return Config::isPlus3e();
 }
+static bool stagedIsSam() {
+    const int32_t m = staged(SET_MACHINE);
+    if (m >= 0) return (ArchIdx)(m >> 8) == A_SAM;
+    return Config::arch == A_SAM;
+}
 static bool stagedIsPlus3Div() {
     const int32_t m = staged(SET_MACHINE);
     if (m >= 0) return isPlus3DivRomset((RomsetIdx)(m & 0xFF));
@@ -1165,6 +1174,14 @@ static void resolveConstraints(CommitReport& rep) {
                 changed |= force(SET_ZIFI_NIC, 0, rep, "ZiFi NIC off: it shares #xxEF with the +3e IDE");
         } else if (staged(SET_IDE_SCHEME) == IDE::PLUS3E) {
             changed |= force(SET_IDE_SCHEME, IDE::OFF, rep, "IDE off: the +3e interface needs the +3e ROM");
+        }
+        // SAM Coupe: the Atom Lite is its card (drive 2's ports); the other schemes
+        // decode ports the SAM does not have, and it decodes nothing elsewhere.
+        if (stagedIsSam()) {
+            if (staged(SET_IDE_SCHEME) != IDE::OFF && staged(SET_IDE_SCHEME) != IDE::ATOMLITE)
+                changed |= force(SET_IDE_SCHEME, IDE::ATOMLITE, rep, "IDE set to the Atom Lite");
+        } else if (staged(SET_IDE_SCHEME) == IDE::ATOMLITE) {
+            changed |= force(SET_IDE_SCHEME, IDE::OFF, rep, "IDE off: the Atom Lite is a SAM Coupe card");
         }
 
         // The +3 (divIDE) romset is the same story one interface over: its ROM drives a
@@ -1492,7 +1509,8 @@ static bool want_turbo() { return Config::twoAyChips(); }
 static bool want_covox() { return Config::covox != 0 || Config::soundriveEnabled(); }
 static bool want_saa()   { return Config::SAA1099; }
 static bool want_tsfm()  { return Config::tsfm != 0; }
-static bool want_opl3()  { return Config::opl3 != 0; }
+// MoonSound's FM half IS the OPL3, so the card keeps OplSubsys up by itself.
+static bool want_opl3()  { return Config::opl3 != 0 || Config::moonsound; }
 static bool want_opll()  { return Config::ym2413 != 0; }
 static bool want_cms()   { return Config::cms != 0; }
 static bool want_sn()    { return Config::sn76489 != 0; }

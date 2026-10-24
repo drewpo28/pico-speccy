@@ -142,6 +142,7 @@ public:
     static RomsetIdx romSetScorp;
     static RomsetIdx romSetTsconf;
     static RomsetIdx romSetAtm;
+    static RomsetIdx romSetSam;   // SAM Coupe: the memory fitted (ArchRom.h isSamRomset)
     static ArchIdx   pref_arch;
     static RomsetIdx pref_romSet_48;
     static RomsetIdx pref_romSet_128;
@@ -246,6 +247,13 @@ public:
     // then calls requestMachine, which compares against this).
     static uint32_t wantedPages(ArchIdx a, RomsetIdx rs = R_NONE) {
         if (a == A_TSCONF) return TSCONF_PAGES;
+        // SAM Coupe: 32 internal 16K pages + the external megabytes (samExtPages),
+        // never fewer than the 64 the rest of the firmware assumes exist.
+        if (a == A_SAM) {
+            const RomsetIdx r = (rs == R_NONE) ? romSetSam : rs;
+            const uint32_t n = 32 + samExtPages(r);
+            return n < 64 ? 64 : n;
+        }
         uint32_t n = mem_pg_cnt;
         if (n > 64 && !(a == A_PENT || a == A_P512 || a == A_P1024)) n = 64;
         // GMX requires live QSPI (butter) PSRAM — without it requestMachine falls
@@ -402,6 +410,16 @@ public:
     // YMF262/OPL3 sound card (AlexZor DivMMC VGM player: address/data pairs on
     // ports #C4/#C5 and #C6/#C7). Gates the port decode and OplFm/OplSubsys.
     static uint8_t  opl3;
+    // ZXM-MoonSound (Mick's YMF278B/OPL4 card): the FM half is the OPL3 above
+    // (#C4-#C7, brought up with it), the wavetable half answers #7E/#7F outside
+    // TR-DOS. Its 2 MB YRW801 ROM (from SD) + 1 MB SRAM live in butter PSRAM,
+    // claimed once in setup(), so the switch is reboot-class.
+    static bool     moonsound;
+    // PI-CARD MUSICA (HRDY) emulation on #63/#67: the esxDOS "Tracker player" /
+    // WC plugins hand MOD/S3M/XM/IT/MID files to it over the bus and the
+    // Pico-Zx-Player's decoders play them beside the machine. Reboot-class (the
+    // ring is claimed in setup()), QSPI PSRAM only.
+    static bool     pimusica;
     // Creative Music System (2x SAA1099 @7.159 MHz, #FF family / A9 select)
     // and 2x SN76489 (#C9/#CD) — the same VGM-player card family.
     static uint8_t  cms;
@@ -432,6 +450,7 @@ public:
     static bool trdosBaseOwnedByMachine();
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
     // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
+    static bool isSam() { return arch == A_SAM; }
     static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
     static bool isScorpEvo() { return arch == A_SCORP && isScorpEvoRomset(romSetScorp); }
     // Both ZX-Evo configurations that run the Pentagon raster (320 lines x 224 T).
@@ -530,6 +549,9 @@ public:
     // decodes US0 alone, so there is no third unit to remember.
     static bool p3WP[2];         // per-drive write protect
     static string p3DiskFile[2]; // remembered paths; survive the machine being switched away
+    static bool samWP[2];        // SAM Coupe drives 1/2: write protect
+    static string samDiskFile[2]; // SAM Coupe drives 1/2: remembered paths
+    static bool samKeepTmp;      // a /tmp disk launch must survive the reboot of a machine switch
     // Speedlock's protection reads one sector twice and expects the reads to differ;
     // the dumps carry a single copy, so the difference is manufactured. On by default,
     // matching Fuse, and self-suppressing on a dump that records the variation for real.

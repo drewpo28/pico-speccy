@@ -22,6 +22,8 @@
 #include "hardware/regs/addressmap.h"   // XIP_BASE
 #include "pico/stdlib.h"                // set_sys_clock_khz
 #include "speccy/devices/gs/GS.h"         // GS::gs_ram_size
+#include "speccy/devices/sound/MoonPcm.h"
+#include "speccy/devices/sound/MoonRom.h"   // the 4 MB firmware reserves its SD ROM
 #include "speccy/machines/TsConf/Ft812.h"         // Ft812::configuredBytes (VDAC2 RAM_G on a TS-Conf boot)
 
 extern int butter_pages;             // MemESP.cpp — pages placed in butter PSRAM
@@ -211,6 +213,13 @@ static size_t pageBudget(size_t chip, bool gs_lands_here, bool divmmc_here) {
     // The VDAC2's FT812 keeps its 1 MB RAM_G (+ fonts + state) in the butter arena
     // on a TS-Conf boot (ESPectrum::setup → Ft812::init, right after GS::init).
     if (gs_lands_here && Config::tsconf_vdac2 && Config::arch == A_TSCONF) reserve += Ft812::configuredBytes();
+    // ZXM-MoonSound: the YMF278B's 1 MB SRAM (ESPectrum::setup, after GS::init), plus
+    // its 2 MB ROM on the 4 MB firmware when the SD card carries it (MoonRom.h; the
+    // 16 MB firmware reads it from flash).
+    if (gs_lands_here && Config::moonsound) {
+        reserve += MoonPcm::RAM_SIZE;
+        if (!MoonRom::builtin() && MoonRom::filePresent()) reserve += MoonPcm::ROM_SIZE;
+    }
     // DivMMC's banks sit directly above the pages (DivMMC.cpp). Reserved
     // unconditionally: esxDOS can be switched on at runtime, and 128 KB is cheap
     // next to being pushed onto the swap-file path for the rest of the session.

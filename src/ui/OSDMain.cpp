@@ -75,6 +75,8 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/Ports.h"
 #include "drivers/audio/audio.h"
 #include "speccy/devices/sound/AySound.h"
+#include "speccy/devices/sound/MoonPcm.h"
+#include "speccy/devices/sound/MoonRom.h"
 #include "speccy/devices/sound/Midi.h"
 #include "speccy/devices/sound/MidiSynth.h"
 #include "speccy/devices/sound/dls_conv.h"
@@ -89,6 +91,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "OSDNewMenu.h"
 #include "UiModel.h"
 #include "player/PicoPlayer.h"  // pp::available / playableExt (F5 -> Pico-Zx-Player)
+#include "speccy/devices/sound/PiMusica.h"
 #include "UiBrowser.h"
 #include "UiDialog.h"
 #include "UiGfx.h"
@@ -180,6 +183,8 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/machines/Next/NextReg.h"
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/devices/disk/MB02.h"
+#include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/disk/DiskSlots.h"
 #include "app/MachineSwitch.h"
@@ -1792,6 +1797,22 @@ static bool notifyPaint(const char* text, uint8_t level, bool nmUi, bool left) {
         if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
         if (px1 - px0 < textw) return false;
         VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
+    } else if (Z80Ops::isSam) {
+        // SAM Coupe: the standard band geometry, but no border machine — every fb
+        // row (border included) is rendered on the beam by Sam::renderRow, which
+        // keeps only the rects VIDEO::rowCarves names. Without the carve the banner
+        // painted at EndFrame lived until the next frame's row tick reached rows
+        // 6-17: a busy-looping ROM (BASIC, a game menu) rendered them ~1.5 ms into
+        // the frame, after the display had scanned them, so the banner showed; a
+        // HALT-synced game renders them at once (haltAdvanceTo) and erased it
+        // before the display ever saw it (Rick Dangerous, hw 2026-10-23). Snap to 4:
+        // the fb is in the ISR's x^2 order and renderRow saves/restores row bytes.
+        px0 &= ~3;
+        px1 = (px1 + 3) & ~3;
+        if (px0 < 0) px0 = 0;
+        if (px1 > (int)VIDEO::vga.xres) px1 = (int)VIDEO::vga.xres;
+        if (px1 - px0 < textw) return false;
+        VIDEO::setNoticeCarve(px0, y, px1, y + NOTIFY_BAND_H);
     } else {
         VIDEO::setNoticeBand(y, y + NOTIFY_BAND_H - 1, px0, px1);
         if (px1 - px0 < textw) return false;
@@ -2457,6 +2478,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             notify(Config::next_ext_keys ? " Next keyboard ON " : " Next keyboard OFF ", LEVEL_INFO, 900);
             return;
         }
+        if (Z80Ops::isSam) {      // SAM Coupe F-keys: the same three states
+            const Sam::KeysMode m = Sam::cycleKeysMode();
+            notify(m == Sam::KEYS_ON  ? " F-keys: ON "
+                 : m == Sam::KEYS_OFF ? " F-keys: OFF " : " F-keys: AUTO ", LEVEL_INFO, 900);
+            return;
+        }
         if (Z80Ops::isTsconf || (Z80Ops::isAtm && Atm::evo)) {
             // ON -> OFF -> AUTO, for the session only: AUTO is the resting
             // state (the guest's own polling decides) and a machine reset
@@ -2904,7 +2931,10 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                 ext = FileUtils::getLCaseExt(fname);
                 fromZip = false;
 
-                // ZIP archive — extract and replace fname/ext/mFile
+                // ZIP archive — extract and replace fname/ext/mFile. Also an archive
+                // under an image name (defenders_of_the_earth.dsk from zxart = a
+                // ZIP holding the .dsk): mounting the archive itself as a +3 disk.
+                if (ext != "zip" && FileUtils::isZipByMagic(fname)) ext = "zip";
                 if (ext == "zip") {
                     // (The Gigascreen prevFB lease that used to be taken here now
                     // lives inside ZipExtract::extract, so every entry point gets it.)
@@ -2977,6 +3007,18 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             || ESPectrum::fdd.disk[0]->IsTD0File
                             ;
                     Config::save();
+                }
+                else if (FileUtils::ifaceForPath(fname) == IFACE_SAM) {
+                    // A SAM Coupe disk: Enter mounts it in drive 1 and boots it,
+                    // F5 opens the slot picker.
+                    if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+                    if (forcePopup) {
+                        nm::runDiskSlots(IFACE_SAM, fname.c_str());
+                        forcePopup = false;
+                        goto f5_retry;
+                    }
+                    if (!Sam::launchDisk(fname))
+                        OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
                 }
                 else if (FileUtils::ifaceForExt(ext) == IFACE_PLUS3) {
                     // A +3 disk. The image is only meaningful on a +3, so mounting one
@@ -6627,10 +6669,12 @@ void OSD::MemoryInfo() {
         const size_t gs    = Config::gs_enabled ? GS::configuredRamBytes() : 0;
         const size_t midi  = MidiSynth::bankPsramBytes();   // butter here (SPI only without butter)
         const size_t gig   = VIDEO::gigascreenArmed() ? VIDEO::gigascreenPrevFBBytes() : 0;
+        // ZXM-MoonSound: its 1 MB SRAM, plus the 2 MB YRW801 when read from SD (4 MB fw)
+        const size_t moon  = moonpcm ? MoonPcm::RAM_SIZE + MoonRom::psramBytes() : 0;
         Buffer::PoolStat bp = Buffer::poolStat(Buffer::TIER_BUTTER);
-        const size_t known = roms + midi + gig;           // arena users listed by name
+        const size_t known = roms + midi + gig + moon;    // arena users listed by name
         const size_t other = bp.used > known ? bp.used - known : 0;
-        const size_t used  = emu + divm + gs + roms + midi + gig + other;
+        const size_t used  = emu + divm + gs + roms + midi + gig + moon + other;
         const size_t free_ = bsz > used ? bsz - used : 0;
         const char* fam = nullptr; const char* rs = nullptr;
         pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, " Butter PSRAM (%d.%d MB):\n",
@@ -6651,6 +6695,7 @@ void OSD::MemoryInfo() {
         row("General Sound", gs);
         row("MIDI (GM.DLS)", midi);
         row("Gigascreen", gig);
+        row("MoonSound", moon);
         row("Other buffers", other);
         pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d KB\n", "Free", (int)(free_ / KB));
         pos += snprintf(buf + pos, OSD_INFO_BUF_SZ - pos, "  %-14s : %d/%d KB\n",
@@ -6979,6 +7024,15 @@ static void buildEmulatorInfoText() {
             " SAA1099        : %s\n",
             Config::SAA1099 ? "On (#FF)" : "Off");
 
+#if MOONSOUND
+        // ZXM-MoonSound — configured vs up (its 1 MB of PSRAM may not have fitted)
+        pos += infoAppend(buf, pos, bufsz, " MoonSound      : %s\n",
+            !Config::moonsound ? "Off" : moonpcm ? (MoonRom::builtin() ? "On (#C4-#C7, #7E/#7F)" : "On, ROM from SD")
+            : MoonRom::builtin() || MoonRom::filePresent() ? "No PSRAM" : "No yrw801.rom");
+#endif
+
+        pos += infoAppend(buf, pos, bufsz, " PI-CARD MUSICA : %s\n", PiMusica::status());
+
         // General Sound — configured vs actually running: GS::init needs PSRAM
         // for its sample RAM, so "enabled but not up" is a real state (same
         // distinction MB-02+ makes below).
@@ -7115,7 +7169,7 @@ static void buildEmulatorInfoText() {
 
         // IDE/HDD (NEMO/PROFI/SMUC/IDEDOS/DivIDE) — indexed by IDE::Scheme
         if (Config::ide_scheme != 0) {
-            static const char* idesc[] = { "Off", "NEMO", "PROFI", "SMUC", "IDEDOS", "DivIDE", "ATM" };
+            static const char* idesc[] = { "Off", "NEMO", "PROFI", "SMUC", "IDEDOS", "DivIDE", "ATM", "Atom Lite" };
             int si = Config::ide_scheme;
             if (si >= (int)(sizeof(idesc) / sizeof(idesc[0]))) si = 0;
             pos += infoAppend(buf, pos, bufsz, " IDE/HDD        : %s\n", idesc[si]);

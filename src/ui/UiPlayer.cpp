@@ -409,7 +409,7 @@ bool plBuildRemote(RemoteFs* fs) {
 // (FatFs's code page), a catalog playlist carries UTF-8 display names.
 string dispName(int i) {
 #if ZIFI_NET_CLIENT
-    if (s_rfs && s_rfs->utf8Names()) return FileUtils::utf8ToCp1251(g_ps->P.name(i));
+    if (s_rfs && s_rfs->utf8Names()) return FileUtils::utf8ToCp1251(g_ps->P.name(i), true);
 #endif
     return g_ps->P.name(i);
 }

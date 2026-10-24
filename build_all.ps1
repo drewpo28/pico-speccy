@@ -3,6 +3,8 @@ param(
     [string]$BuildType = $env:BUILD_TYPE,
     [int]$JobsPerBuild = 0,
     [int]$MaxParallel = 0,
+    # Flash types to build: 4 and 16 (default both). The W/WS boards are 16 MB only.
+    [int[]]$FlashTypes = @(4, 16),
     [switch]$Clean
 )
 
@@ -84,24 +86,39 @@ $HstxTargets   = @("PICO_PC", "MURM2", "MURM2_W", "PICO_PC_W", "MURM2_WS", "PICO
 
 if (-not $Targets -or $Targets.Count -eq 0) { $Targets = $AllTargets }
 
-# Build list of (target, display) pairs
-$BuildPairs = @()
+# Every board ships a 4 MB image and a 16 MB one (-DFLASH_16MB=ON, "-16MB" in the
+# file name, adds ZXM-MoonSound with its embedded ROM); the W/WS boards are 16 MB only.
+$WTargets = @("MURM_W", "MURM2_W", "PICO_DV_W", "PICO_PC_W", "MURM_WS", "MURM2_WS", "PICO_DV_WS", "PICO_PC_WS")
+
+# Build list of (target, display) pairs, then expand each into its flash types
+$BasePairs = @()
 foreach ($Target in $Targets) {
-    $BuildPairs += ,@{ Target = $Target; Display = "VGA_HDMI" }
+    $BasePairs += ,@{ Target = $Target; Display = "VGA_HDMI" }
     if ($TftTargets -contains $Target) {
-        $BuildPairs += ,@{ Target = $Target; Display = "TFT_ILI9341" }
+        $BasePairs += ,@{ Target = $Target; Display = "TFT_ILI9341" }
     }
     if ($TftStTargets -contains $Target) {
-        $BuildPairs += ,@{ Target = $Target; Display = "TFT_ST7789" }
+        $BasePairs += ,@{ Target = $Target; Display = "TFT_ST7789" }
     }
     if ($SofttvTargets -contains $Target) {
-        $BuildPairs += ,@{ Target = $Target; Display = "SOFTTV" }
+        $BasePairs += ,@{ Target = $Target; Display = "SOFTTV" }
     }
     if ($PiousbTargets -contains $Target) {
-        $BuildPairs += ,@{ Target = $Target; Display = "PIOUSB" }
+        $BasePairs += ,@{ Target = $Target; Display = "PIOUSB" }
     }
     if ($HstxTargets -contains $Target) {
-        $BuildPairs += ,@{ Target = $Target; Display = "HSTX" }
+        $BasePairs += ,@{ Target = $Target; Display = "HSTX" }
+    }
+}
+$BuildPairs = @()
+foreach ($P in $BasePairs) {
+    $IsW = $WTargets -contains $P.Target
+    foreach ($Ft in $FlashTypes) {
+        if ($IsW -and $Ft -ne 16) { continue }
+        # 4 MB images keep the historic dir/log names; a 16 MB one appends -16MB
+        # (the W/WS boards keep their plain names: they have no 4 MB twin).
+        $Sfx = if ($Ft -eq 16 -and -not $IsW) { "-16MB" } else { "" }
+        $BuildPairs += ,@{ Target = $P.Target; Display = $P.Display; Flash = $Ft; Suffix = $Sfx }
     }
 }
 
@@ -122,15 +139,15 @@ $LogDir    = Join-Path $BuildRoot "logs"
 if (-not (Test-Path $OutputDir)) { New-Item -ItemType Directory -Path $OutputDir | Out-Null }
 if (-not (Test-Path $LogDir))    { New-Item -ItemType Directory -Path $LogDir    | Out-Null }
 
-function Get-BuildDir($Target, $Display) {
-    if ($Display -eq "VGA_HDMI") { Join-Path (Join-Path $ScriptDir "build-all") "$Target" }
-    else { Join-Path (Join-Path $ScriptDir "build-all") "${Target}-${Display}" }
+function Get-BuildDir($Target, $Display, $Suffix) {
+    if ($Display -eq "VGA_HDMI") { Join-Path (Join-Path $ScriptDir "build-all") "$Target$Suffix" }
+    else { Join-Path (Join-Path $ScriptDir "build-all") "${Target}-${Display}$Suffix" }
 }
 
 # Optional clean
 if ($Clean) {
     foreach ($Pair in $BuildPairs) {
-        $Bd = Get-BuildDir $Pair.Target $Pair.Display
+        $Bd = Get-BuildDir $Pair.Target $Pair.Display $Pair.Suffix
         if (Test-Path $Bd) {
             Write-Host "Cleaning $Bd ..."
             Remove-Item $Bd -Recurse -Force
@@ -147,14 +164,15 @@ $Worker = {
 
     $Target  = $Pair.Target
     $Display = $Pair.Display
+    $Flash   = $Pair.Flash
+    $Sfx     = $Pair.Suffix
     if ($Display -eq "VGA_HDMI") {
-        $BuildDir = Join-Path (Join-Path $ScriptDir "build-all") "$Target"
-        $Label    = "$Target (VGA_HDMI)"
+        $BuildDir = Join-Path (Join-Path $ScriptDir "build-all") "$Target$Sfx"
     } else {
-        $BuildDir = Join-Path (Join-Path $ScriptDir "build-all") "${Target}-${Display}"
-        $Label    = "$Target ($Display)"
+        $BuildDir = Join-Path (Join-Path $ScriptDir "build-all") "${Target}-${Display}$Sfx"
     }
-    $LogFile = Join-Path $LogDir "${Target}-${Display}.log"
+    $Label    = "$Target ($Display, $Flash MB)"
+    $LogFile = Join-Path $LogDir "${Target}-${Display}$Sfx.log"
     $Start   = Get-Date
 
     try {
@@ -211,6 +229,9 @@ $Worker = {
         } else {
             $TargetFlags += @("-DHDMI_HSTX=OFF")
         }
+        # Flash type, explicit: the option's default only applies to a fresh cache.
+        if ($Flash -eq 16) { $TargetFlags += @("-DFLASH_16MB=ON") }
+        else               { $TargetFlags += @("-DFLASH_16MB=OFF") }
 
         $CMakeArgs = @(
             "-B", $BuildDir, "-S", $ScriptDir,
@@ -236,7 +257,9 @@ $Worker = {
     $Elapsed = [int]((Get-Date) - $Start).TotalSeconds
     [pscustomobject]@{
         Target  = $Target
-        Display = $Display
+        Display = "$Display$Sfx"
+        Suffix  = $Sfx
+        RawDisplay = $Display
         Label   = $Label
         Ok      = $ok
         Seconds = $Elapsed
@@ -301,7 +324,7 @@ if ($Succeeded.Count -gt 0) {
     Get-ChildItem -Path $OutputDir -Filter "*.uf2" -ErrorAction SilentlyContinue | Remove-Item -Force
     Write-Host "Succeeded ($($Succeeded.Count)):"
     foreach ($R in $Succeeded) {
-        $BuildDir = Get-BuildDir $R.Target $R.Display
+        $BuildDir = Get-BuildDir $R.Target $R.RawDisplay $R.Suffix
         Write-Host ("  {0}:{1} ({2}s)" -f $R.Target, $R.Display, $R.Seconds)
         # Copy only the uf2 from THIS run's CMake config (BUILD_NAME embeds the
         # current PORT_VERSION), not every stale *.uf2 left in the bin dir from

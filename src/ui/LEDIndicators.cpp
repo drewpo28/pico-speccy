@@ -241,7 +241,7 @@ bool isVisible(Id i) {
         // OPLL, 2x SN76489 — their port writes touchW(AY)), so it must be in
         // the row whenever any of them is enabled, 48K with AY48 off included.
         case AY:       return Config::AY48 || !Z80Ops::is48
-                           || Config::opl3 != 0 || Config::ym2413 != 0
+                           || Config::opl3 != 0 || Config::moonsound || Config::ym2413 != 0
                            || Config::sn76489 != 0;
         case BEEPER:   return true;
         case COVOX:    return Config::covox != 0 || Config::soundriveEnabled();

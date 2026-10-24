@@ -18,7 +18,7 @@ Each entry is (top_row, [rows...]) and rows are strings of '#' / '.' up to 6 wid
 the generator pads on the right and vertically.
 
 Encoding in C: one byte per row, bit 5 = leftmost pixel (x=0) ... bit 0 = x=5.
-    UI_FONT_FIRST = 0x20, UI_FONT_LAST = 0x86      # 0x7F..0x86 are our own UI symbols, see below  -> 95 glyphs x 10 bytes = 950 B flash.
+    UI_FONT_FIRST = 0x20, UI_FONT_LAST = 0x87      # 0x7F..0x86 are our own UI symbols, 0x87 = e-acute, see below  -> 104 glyphs x 10 bytes = 1040 B flash.
 
 Usage:  python3 tools/mkuifont.py            # write src/ui/UiFont.cpp
         python3 tools/mkuifont.py --preview  # render every glyph to stdout
@@ -30,7 +30,7 @@ import os
 H = 10          # cell height
 W = 6           # cell width (5 px art + 1 px advance gap)
 FIRST = 0x20
-LAST = 0x86      # 0x7F..0x86 are our own UI symbols, see below
+LAST = 0x87      # 0x7F..0x86 are our own UI symbols, 0x87 = e-acute, see below
 
 # (top_row, art rows)
 G = {}
@@ -146,6 +146,9 @@ G['\x83'] = (3, ["..#..", ".#...", "#####", ".#...", "..#.."])            # left
 G['\x84'] = (2, ["....#", "....#", ".#..#", "##..#", "#####", "##..."])   # return
 G['\x85'] = (2, [".#...", "..#..", "...#.", "..#..", ".#..."])            # chevron >
 G['\x86'] = (2, ["...#.", "..#..", ".#...", "..#..", "...#."])            # chevron <
+# 0x87 = e-acute (U+00E9): CP1251 has no Latin-1 accents, and the web catalog says
+# "SAM Coupé". FileUtils::utf8ToCp1251(s, true) maps U+00E9 here for display only.
+G['\x87'] = (1, ["...#.", "..#..", ".###.", "#...#", "#####", "#....", ".###."])
 
 
 def glyph_rows(ch):
@@ -210,8 +213,15 @@ def emit(path):
     out.append("};")
     out.append("")
     out.append("} // namespace nm")
+    # Keep everything after the generated table (the CP1251 extension, uiGlyphExt).
+    tail = ""
+    if os.path.exists(path):
+        old = open(path).read()
+        k = old.find("} // namespace nm\n")
+        if k >= 0:
+            tail = old[k + len("} // namespace nm\n"):]
     with open(path, "w") as f:
-        f.write("\n".join(out) + "\n")
+        f.write("\n".join(out) + "\n" + tail)
     print("wrote %s (%d glyphs, %d bytes of flash)"
           % (path, LAST - FIRST + 1, (LAST - FIRST + 1) * H))
 

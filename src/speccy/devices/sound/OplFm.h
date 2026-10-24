@@ -72,6 +72,7 @@ public:
     // half-rate halves exactly the expensive part. The timers always count
     // real output time, so the VGM plugin's detect stays sample-exact.
     void setRates(int clock, int rate, bool halfRate = false);
+    bool halfRate() const { return m_half != 0; }
     void reset();
 
     // The four Z80 ports: a = low two address bits, exactly MAME's OPL3Write.

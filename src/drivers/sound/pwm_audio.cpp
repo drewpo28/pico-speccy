@@ -491,6 +491,25 @@ void pcm_player_detach() {
     m_off = m_size;
 }
 
+volatile int16_t* volatile pcm_card_ring = nullptr;
+volatile uint32_t pcm_card_mask = 0;
+volatile uint32_t pcm_card_r = 0;
+volatile uint32_t pcm_card_w = 0;
+
+void pcm_card_attach(int16_t* ring, uint32_t frames) {
+    pcm_card_ring = nullptr;
+    __dmb();
+    pcm_card_mask = frames - 1;
+    pcm_card_r = pcm_card_w = 0;
+    __dmb();
+    pcm_card_ring = ring;
+}
+
+void pcm_card_detach() {
+    pcm_card_ring = nullptr;
+    __dmb();
+}
+
 static void __not_in_flash_func(pcm_call_inner)() {
     g_pcm_tick_ct++;
     int32_t sL, sR;
@@ -554,6 +573,19 @@ static void __not_in_flash_func(pcm_call_inner)() {
     }
     sL = zL + gs_offL;
     sR = zR + gs_offR;
+    // The PI-CARD MUSICA ring: int16 full scale lands at the level of a full-swing
+    // GS DAC (±127 × vol8 == ±32767 × vol8 >> 8).
+    volatile int16_t* cring = pcm_card_ring;
+    if (cring) {
+        const uint32_t r = pcm_card_r;
+        if (r != pcm_card_w) {
+            const uint32_t i = (r & pcm_card_mask) << 1;
+            const int32_t vol8 = (int32_t)((uint32_t)(vol + Config::audio_boost) << 3);
+            sL += ((int32_t)cring[i] * vol8) >> 8;
+            sR += ((int32_t)cring[i + 1] * vol8) >> 8;
+            pcm_card_r = r + 1;
+        }
+    }
     }
 mixed:
     if (sL < -32768) sL = -32768; else if (sL > 32767) sL = 32767;

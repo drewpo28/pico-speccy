@@ -31,6 +31,9 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 */
 
+#include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Sam/SamClock.h"
+#include "speccy/machines/Sam/SamFdc.h"
 #include "app/DramPattern.h"
 #include "speccy/core/Pss.h"
 #include "app/PerfFdc.h"
@@ -43,6 +46,10 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/devices/sound/OpnFm.h"
 #include "speccy/devices/sound/OplFm.h"
 #include "speccy/devices/sound/OpllFm.h"
+#include "speccy/devices/sound/MoonPcm.h"
+#include "speccy/devices/sound/MoonRom.h"
+#include "speccy/devices/sound/MoonSplit.h"
+#include "speccy/devices/sound/PiMusica.h"
 #include "speccy/devices/sound/SnSound.h"
 #include "hardware/clocks.h"
 #include "Subsystem.h"
@@ -58,6 +65,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/core/MemESP.h"
 #include "Buffer.h"
+#include "TryAlloc.h"
 #include "ui/LEDIndicators.h"
 #include "ui/OSDMain.h"
 #include "ui/OSDNewMenu.h"
@@ -875,6 +883,43 @@ void ESPectrum::powerOnRamFill(int arch, int romset) {
              getFreeHeap());
 }
 
+// ZXM-MoonSound wavetable half: the YRW801 ROM is embedded in flash on the 16 MB
+// firmware and read in place; the 4 MB firmware reads it from the SD card into
+// 2 MB of butter PSRAM (MoonRom.h). The card's 1 MB SRAM comes from butter PSRAM.
+// Runs once, in setup(): the blocks are kept for the session.
+#if MOONSOUND
+static void moonSoundInit() {
+  if (!butter_psram_size()) {
+    OSD::bootNotice("MoonSound off: needs QSPI PSRAM");
+    return;
+  }
+  uint8_t* ram = (uint8_t*)Buffer::palloc(MoonPcm::RAM_SIZE, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
+  if (!ram || (uintptr_t)ram < (uintptr_t)PSRAM_DATA) {
+    if (ram) Buffer::pfree(ram);
+    OSD::bootNotice("MoonSound off: no 1 MB of PSRAM left");
+    Debug::log("[MOON] no 1 MB PSRAM block (GS/pages took it)");
+    return;
+  }
+  const char* why = nullptr;
+  if (!MoonRom::loadForCard(&why)) {
+    Buffer::pfree(ram);
+    static char msg[64];
+    snprintf(msg, sizeof(msg), "MoonSound off: %s", why ? why : "no ROM");
+    OSD::bootNotice(msg);
+    Debug::log("[MOON] %s", msg);
+    return;
+  }
+  memset(ram, 0, MoonPcm::RAM_SIZE);
+  moonpcm = new (std::nothrow) MoonPcm(MoonRom::get(), ram);
+  if (!moonpcm) { Buffer::pfree(ram); return; }
+  moonpcm->setRate(ESPectrum::Audio_freq);   // full rate: half-rate aliases samples (see the policy in loop)
+  Debug::log("[MOON] ZXM-MoonSound up: ROM @%08X (%s), 1 MB SRAM @%08X",
+             (unsigned)(uintptr_t)MoonRom::get(), MoonRom::builtin() ? "flash" : "SD",
+             (unsigned)(uintptr_t)ram);
+  MoonSplit::init();   // the wave half on core1; no block = the inline path
+}
+#endif
+
 void ESPectrum::setup() {
   LastRun::mute(true);   // remounts of remembered media are not "started"; unmuted below
   //=======================================================================================
@@ -1103,6 +1148,8 @@ void ESPectrum::setup() {
           Config::romSet = Config::romSetAtm;
       } else if (Config::arch == A_NEXT) {
         Config::romSet = R_NEXT;
+      } else if (Config::arch == A_SAM) {
+        Config::romSet = Config::romSetSam;
       } else {
         if (Config::pref_romSetPent != R_LAST)
           Config::romSet = Config::pref_romSetPent;
@@ -1138,6 +1185,12 @@ void ESPectrum::setup() {
       }
     } else if (Config::ide_scheme == IDE::PLUS3E) {
       Config::ide_scheme = IDE::OFF;   // the +3e interface without the +3e ROM
+    }
+    // SAM Coupe: only the Atom Lite (its card); the Atom Lite only on the SAM.
+    if (Config::arch == A_SAM) {
+      if (Config::ide_scheme != IDE::OFF && Config::ide_scheme != IDE::ATOMLITE) Config::ide_scheme = IDE::ATOMLITE;
+    } else if (Config::ide_scheme == IDE::ATOMLITE) {
+      Config::ide_scheme = IDE::OFF;
     }
     // The +3 (divIDE) romset's own interface, same rule. No ZiFi clause: divIDE lives
     // on #A3..#BF, nowhere near the NIC's #xxEF — what it does share is General Sound's
@@ -1528,6 +1581,19 @@ void ESPectrum::setup() {
     Debug::log2SD("setup: Ft812::init %s, freeHeap=%u", ok ? "ok" : "FAILED", (unsigned)getFreeHeap());
   }
 
+  // ZXM-MoonSound: the YMF278B's 2 MB ROM + 1 MB SRAM out of the butter arena
+  // (Buffer::pageBudget reserved them), before the GM.DLS bank takes its share.
+#if MOONSOUND
+  if (Config::moonsound) moonSoundInit();
+#endif
+  // PI-CARD MUSICA: its ring (SRAM) and lock; the file buffers come per session.
+  if (Config::pimusica) {
+    if (const char* why = PiMusica::init()) {
+      Debug::log("[PIMUS] off: %s", why);
+      OSD::bootNotice("PI-CARD MUSICA off: needs QSPI PSRAM");
+    }
+  }
+
   // GM.DLS MIDI bank: load into butter PSRAM (preferred) or provision the flash
   // partition from SD. MUST be here — AFTER initPools() (the PSRAM arena is now
   // final) and BEFORE VIDEO::Init(): a flash erase disables XIP for the whole QMI
@@ -1567,6 +1633,7 @@ void ESPectrum::setup() {
     // the machine, not the "AY on 48K" card Config::AY48 offers, so the setting
     // cannot switch it off (the user's AY48 pick is left alone for other 48Ks).
     AY_emu = Config::AY48 || Config::isTc2068();
+    if (Config::arch == A_SAM) Config::SAA1099 = true;   // the SAM's SAA1099 is on the board
     SAA_emu = Config::SAA1099;
     Midi::enabled = Config::midi;
 #if defined(MIDI_TX_PIN)
@@ -1598,6 +1665,14 @@ void ESPectrum::setup() {
   // twin). Scorpion Green (316-line frame) gets its own exact set below.
   if (Config::arch == A_NEXT) {
     nextAudioSet();   // the machine timing's set (48K / 128K / Pentagon / 60 Hz)
+  } else if (Config::arch == A_SAM) {
+    // SAM Coupe: 119808 T / 624 samples = 192 T a sample, 31250 Hz at 50.08 fps.
+    samplesPerFrame = ESP_AUDIO_SAMPLES_48;
+    audioOverSampleDivider = 32;
+    audioAYDivider = 192;
+    audioSampleDivider = 6;
+    Audio_freq = ESP_AUDIO_FREQ_48;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_SAM << 8) / ESP_AUDIO_SAMPLES_48;
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
@@ -1691,7 +1766,7 @@ void ESPectrum::setup() {
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
   if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
-  OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
+  OplSubsys::request(!Config::tape_player && (Config::opl3 != 0 || Config::moonsound));
   OpllSubsys::request(!Config::tape_player && Config::ym2413 != 0);
   CmsSubsys::request(!Config::tape_player && Config::cms != 0);
   SnSubsys::request(!Config::tape_player && Config::sn76489 != 0);
@@ -1777,6 +1852,8 @@ void ESPectrum::setup() {
       plus3AutoBootArm();
     }
   }
+
+  if (Config::arch == A_SAM) Sam::bootResume();   // a SAM disk launch that rebooted
 
   // Re-reset MB-02 after disk mounts so boot EPROM starts with disks already inserted
   if (MB02::enabled && mb02_fdd.disk[0]) {
@@ -2093,6 +2170,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   // keyboard goes back to the automatic verdict (and that is one more way out
   // for a user who forced the keys to the guest and wants the menu back).
   ZxEvoAvr::clearKeysOverride();
+  Sam::clearKeysOverride();
   VIDEO::timexHiresForceOff();// Timex hi-res 512x192: ditto (VIDEO::Reset zeroes timex_mode)
   VIDEO::blPairForceOff();    // borderless pair scaler: blRecalc re-arms it
   // Timex TC2068 SCLD: HSR = 0 and DEC bit 7 = 0, i.e. the whole 64 KB is HOME
@@ -2277,6 +2355,8 @@ void ESPectrum::reset(uint8_t romInUse) {
     }
     else GS::reset();
   }
+  // PI-CARD MUSICA: the plugin driving it is gone with the reset.
+  if (g_pimus_on) PiMusica::reset();
   // The ATA device: only IDE::init() used to reset it, so a COLD boot handed the
   // guest a clean register file and F11 handed it whatever the last session had
   // left — a half-consumed sector transfer with DRQ still up, most of the time.
@@ -2295,6 +2375,12 @@ void ESPectrum::reset(uint8_t romInUse) {
   Tape::CSW_Close();   // a .csw decoder (~45 KB) goes with the file; LoadRemembered re-opens it
   Tape::tapeStatus = TAPE_STOPPED;
   Tape::tapePhase = TAPE_PHASE_STOPPED;
+  // A JJ screen animation cut by F11 kept its flag for good: no ROM fast load and
+  // no auto-start until F12 (hw 2026-10-24, La Formica). Same for the two
+  // continuation flags — they describe the tape this reset just closed.
+  Tape::jjScreenAnimating = false;
+  Tape::pzxFlashCont = false;
+  Tape::tapFlashCont = false;
   Tape::SaveStatus = SAVE_STOPPED;
   Tape::romLoading = false;
 
@@ -2314,6 +2400,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   Ports::sndriveUsed = 0;
 
   AY_emu = Config::AY48 || Config::isTc2068();   // built in on a TC2068 — see setup()
+    if (Config::arch == A_SAM) Config::SAA1099 = true;   // the SAM's SAA1099 is on the board
     SAA_emu = Config::SAA1099;
     Midi::enabled = Config::midi;
     if (Midi::enabled) Midi::init();
@@ -2330,6 +2417,14 @@ void ESPectrum::reset(uint8_t romInUse) {
   // its own exact 632-sample set below.
   if (Config::arch == A_NEXT) {
     nextAudioSet();   // the machine timing's set (48K / 128K / Pentagon / 60 Hz)
+  } else if (Config::arch == A_SAM) {
+    // SAM Coupe: 119808 T / 624 samples = 192 T a sample, 31250 Hz at 50.08 fps.
+    samplesPerFrame = ESP_AUDIO_SAMPLES_48;
+    audioOverSampleDivider = 32;
+    audioAYDivider = 192;
+    audioSampleDivider = 6;
+    Audio_freq = ESP_AUDIO_FREQ_48;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_SAM << 8) / ESP_AUDIO_SAMPLES_48;
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
@@ -2399,7 +2494,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Backstop for the menu/MachineSwitch rule: on TS-Conf the VGM player (Wild
   // Commander's) drives OPL3 + AY + SAA only — OPLL and SN never allocate there.
   if (Config::arch == A_TSCONF) { Config::ym2413 = 0; Config::sn76489 = 0; }
-  OplSubsys::request(!Config::tape_player && Config::opl3 != 0);
+  OplSubsys::request(!Config::tape_player && (Config::opl3 != 0 || Config::moonsound));
   OpllSubsys::request(!Config::tape_player && Config::ym2413 != 0);
   CmsSubsys::request(!Config::tape_player && Config::cms != 0);
   SnSubsys::request(!Config::tape_player && Config::sn76489 != 0);
@@ -2431,9 +2526,21 @@ void ESPectrum::reset(uint8_t romInUse) {
   // Reset the OPL3 the same way (the VGM-player card sits on the ZX reset
   // line); rate can have changed with the arch, so re-derive it too.
   if (oplfm) {
+#if MOONSOUND
+    if (g_moon_c1_live) MoonSplit::hold();   // core1 may be inside gen()
+#endif
     oplfm->setRates(OPL3_YMF262_CLOCK, Audio_freq, clock_get_hz(clk_sys) < 450000000u);
     oplfm->reset();
+#if MOONSOUND
+    if (g_moon_c1_live) MoonSplit::release();
+#endif
   }
+#if MOONSOUND
+  if (moonpcm) {   // same reset line (under the core1 lock when the chip runs there)
+    if (g_moon_c1_live) MoonSplit::resetChip(Audio_freq);
+    else { moonpcm->reset(); moonpcm->setRate(Audio_freq); }
+  }
+#endif
   if (opllfm) {
     opllfm->setRates(OPLL_YM2413_CLOCK, Audio_freq, clock_get_hz(clk_sys) < 450000000u);
     opllfm->reset();
@@ -2617,6 +2724,50 @@ static void nextExtKeys(fabgl::Keyboard* Kbd, uint8_t* cols) {
     if (ralt) { cols[0] &= ~1; cols[4] &= ~2; }        // GRAPH  = CS + 9
     if (tab)  { cols[0] &= ~1; cols[3] &= ~4; }        // TRUE VIDEO = CS + 3
     if (bsl)  { cols[0] &= ~1; cols[3] &= ~8; }        // INV VIDEO  = CS + 4
+}
+
+// SAM Coupe keyboard (Sam::keys, read by Sam::portIn). Built from scratch, not
+// from the Spectrum PS2cols: those press SYMBOL/CAPS combos for punctuation and
+// cursors, while the SAM has its own keys for both (rows 0-7 bits 5-7, row 8 =
+// CNTRL + cursors; SimCoupe Keyboard.cpp). Left Ctrl = SYMBOL, Right Ctrl = CNTRL,
+// numpad = F0-F9.
+static void samKeys(fabgl::Keyboard* Kbd) {
+    using namespace fabgl;
+    struct K { VirtualKey a, b; uint8_t row, bit; };
+    static const K map[] = {
+        {VK_LSHIFT, VK_RSHIFT, 0, 0}, {VK_Z, VK_z, 0, 1}, {VK_X, VK_x, 0, 2}, {VK_C, VK_c, 0, 3}, {VK_V, VK_v, 0, 4},
+        {VK_KP_1, VK_KP_END, 0, 5}, {VK_KP_2, VK_KP_DOWN, 0, 6}, {VK_KP_3, VK_KP_PAGEDOWN, 0, 7},
+        {VK_A, VK_a, 1, 0}, {VK_S, VK_s, 1, 1}, {VK_D, VK_d, 1, 2}, {VK_F, VK_f, 1, 3}, {VK_G, VK_g, 1, 4},
+        {VK_KP_4, VK_KP_LEFT, 1, 5}, {VK_KP_5, VK_KP_CENTER, 1, 6}, {VK_KP_6, VK_KP_RIGHT, 1, 7},
+        {VK_Q, VK_q, 2, 0}, {VK_W, VK_w, 2, 1}, {VK_E, VK_e, 2, 2}, {VK_R, VK_r, 2, 3}, {VK_T, VK_t, 2, 4},
+        {VK_KP_7, VK_KP_HOME, 2, 5}, {VK_KP_8, VK_KP_UP, 2, 6}, {VK_KP_9, VK_KP_PAGEUP, 2, 7},
+        {VK_1, VK_EXCLAIM, 3, 0}, {VK_2, VK_AT, 3, 1}, {VK_3, VK_HASH, 3, 2}, {VK_4, VK_DOLLAR, 3, 3}, {VK_5, VK_PERCENT, 3, 4},
+        {VK_ESCAPE, VK_NONE, 3, 5}, {VK_TAB, VK_NONE, 3, 6}, {VK_CAPSLOCK, VK_NONE, 3, 7},
+        {VK_0, VK_RIGHTPAREN, 4, 0}, {VK_9, VK_LEFTPAREN, 4, 1}, {VK_8, VK_ASTERISK, 4, 2}, {VK_7, VK_AMPERSAND, 4, 3}, {VK_6, VK_CARET, 4, 4},
+        {VK_MINUS, VK_UNDERSCORE, 4, 5}, {VK_KP_PLUS, VK_NONE, 4, 6}, {VK_BACKSPACE, VK_NONE, 4, 7},
+        {VK_P, VK_p, 5, 0}, {VK_O, VK_o, 5, 1}, {VK_I, VK_i, 5, 2}, {VK_U, VK_u, 5, 3}, {VK_Y, VK_y, 5, 4},
+        {VK_EQUALS, VK_PLUS, 5, 5}, {VK_QUOTE, VK_QUOTEDBL, 5, 6}, {VK_KP_0, VK_KP_INSERT, 5, 7},
+        {VK_RETURN, VK_KP_ENTER, 6, 0}, {VK_L, VK_l, 6, 1}, {VK_K, VK_k, 6, 2}, {VK_J, VK_j, 6, 3}, {VK_H, VK_h, 6, 4},
+        {VK_SEMICOLON, VK_NONE, 6, 5}, {VK_COLON, VK_NONE, 6, 6}, {VK_GRAVEACCENT, VK_TILDE, 6, 7},
+        {VK_SPACE, VK_NONE, 7, 0}, {VK_LCTRL, VK_NONE, 7, 1}, {VK_M, VK_m, 7, 2}, {VK_N, VK_n, 7, 3}, {VK_B, VK_b, 7, 4},
+        {VK_COMMA, VK_LESS, 7, 5}, {VK_PERIOD, VK_GREATER, 7, 6}, {VK_BACKSLASH, VK_VERTICALBAR, 7, 7},
+        {VK_RCTRL, VK_NONE, 8, 0}, {VK_UP, VK_NONE, 8, 1}, {VK_DOWN, VK_NONE, 8, 2}, {VK_LEFT, VK_NONE, 8, 3}, {VK_RIGHT, VK_NONE, 8, 4},
+    };
+    // Host F1-F9 / F10 = SAM F1-F9 / F0, only while the guest owns them (Sam::keysToGuest).
+    static const K fmap[] = {
+        {VK_F1, VK_NONE, 0, 5}, {VK_F2, VK_NONE, 0, 6}, {VK_F3, VK_NONE, 0, 7},
+        {VK_F4, VK_NONE, 1, 5}, {VK_F5, VK_NONE, 1, 6}, {VK_F6, VK_NONE, 1, 7},
+        {VK_F7, VK_NONE, 2, 5}, {VK_F8, VK_NONE, 2, 6}, {VK_F9, VK_NONE, 2, 7},
+        {VK_F10, VK_NONE, 5, 7},
+    };
+    uint8_t k[9] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    for (const K& e : map)
+        if (Kbd->isVKDown(e.a) || (e.b != VK_NONE && Kbd->isVKDown(e.b)))
+            k[e.row] &= (uint8_t)~(1u << e.bit);
+    if (Sam::keysToGuest())
+        for (const K& e : fmap)
+            if (Kbd->isVKDown(e.a)) k[e.row] &= (uint8_t)~(1u << e.bit);
+    memcpy(Sam::keys, k, sizeof(k));
 }
 
 void ESPectrum::processKeyboard() {
@@ -2803,7 +2954,10 @@ void ESPectrum::processKeyboard() {
         // real ZX-Evo too (the AVR's hardware reset).
         const bool extKeysOn = (Z80Ops::isProfi && Config::profi_ext_keys)
             || (ZxEvoAvr::keysToGuest()
-                && KeytoESP != fabgl::VK_F11 && KeytoESP != fabgl::VK_F12);
+                && KeytoESP != fabgl::VK_F11 && KeytoESP != fabgl::VK_F12)
+            // SAM Coupe: F1-F10 only (its keyboard has no nav keys to give).
+            || (Z80Ops::isSam && Sam::keysToGuest()
+                && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F10);
         bool passToZ80 = extKeysOn
             && KeytoESP != fabgl::VK_PAUSE
             && KeytoESP != fabgl::VK_TILDE
@@ -3095,6 +3249,7 @@ void ESPectrum::processKeyboard() {
                (!Kbd->isVKDown(fabgl::VK_B)) & (!Kbd->isVKDown(fabgl::VK_b)));
 
       if (Z80Ops::isNext) nextExtKeys(Kbd, PS2cols);
+      if (Z80Ops::isSam) samKeys(Kbd);
 
       // ── Profi extended keyboard ─────────────────────────────────────────
       // Active when arch=Profi and extended keyboard mode is on.
@@ -3437,6 +3592,16 @@ __not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
 }
 
 #define OPL_WRITE_QUEUE_LEN 512
+// Queue entry: pos (bits 0-14; a frame is < 1024 samples) | bit 15 = MoonSound
+// wave write | FM port (bits 16-17) or wave register (bits 16-23) | value << 24.
+#define OPLQ_POS_MASK 0x7FFFu
+#define OPLQ_WAVE     0x8000u
+
+static inline void oplQueueApply(uint32_t e) {
+  if (e & OPLQ_WAVE) { if (moonpcm) moonpcm->write((uint8_t)(e >> 16), (uint8_t)(e >> 24)); }
+  else oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
+}
+static uint8_t s_oplHiAddr = 0;   // last #C6 address byte (NEW2 = reg 0x105 bit 1)
 
 // YMF262 into audioBufferOPL_L/R[bufpos .. bufpos+count-1]; cleared first
 // because OplFm::gen accumulates. Queued register writes are applied at their
@@ -3448,12 +3613,22 @@ __not_in_flash("audio") void ESPectrum::FMGenSound(int count, int bufpos) {
 // while audible. This is the number that attributed the Doom IDL<0 dips.
 #if OPL_PERF_TRACE
 static uint32_t g_opl_gen_us = 0;
+static uint32_t g_moon_gen_us = 0;   // the MoonPcm share of the above
+#endif
+#if MOONSOUND
+static uint32_t g_opl_frame_us = 0;  // this frame's OPLGenSound time (the half-rate policy)
 #endif
 
 void ESPectrum::OPLGenSound(int count, int bufpos) {
   if (!OplSubsys::enabled || !audioBufferOPL_L || !oplfm) return;
+#if MOONSOUND
+  if (g_moon_c1_live) return;   // both halves generate on core1 (MoonSplit); the frame end joins + sums
+#endif
 #if OPL_PERF_TRACE
   uint32_t _t0 = time_us_32();
+#endif
+#if MOONSOUND
+  const uint32_t _f0 = time_us_32();
 #endif
   memset(audioBufferOPL_L + bufpos, 0, count * sizeof(int16_t));
   memset(audioBufferOPL_R + bufpos, 0, count * sizeof(int16_t));
@@ -3462,21 +3637,32 @@ void ESPectrum::OPLGenSound(int count, int bufpos) {
     uint32_t next = end;
     if (oplWriteQueue && oplQHead < oplQTail) {
       uint32_t e = oplWriteQueue[oplQHead];
-      uint32_t p = e & 0xFFFF;
+      uint32_t p = e & OPLQ_POS_MASK;
       if (p <= cur) {          // due now — apply before generating further
-        oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
+        oplQueueApply(e);
         oplQHead++;
         continue;
       }
       if (p < next) next = p;
     }
     oplfm->gen(audioBufferOPL_L, audioBufferOPL_R, next - cur, cur);
+    // MoonSound: the FM half is in the buffer now; the PCM half mixes onto it —
+    // here only without the core1 split (MoonSplit: the wave half is then
+    // synthesized on core1 and summed at the frame end, frameFinish).
+    if (moonpcm && !g_moon_c1_live) {
+#if OPL_PERF_TRACE
+      const uint32_t _m0 = time_us_32();
+#endif
+      moonpcm->gen(audioBufferOPL_L, audioBufferOPL_R, next - cur, cur);
+#if OPL_PERF_TRACE
+      g_moon_gen_us += time_us_32() - _m0;
+#endif
+    }
     cur = next;
   }
   // writes stamped exactly at `end` belong before whatever comes next
-  while (oplWriteQueue && oplQHead < oplQTail && (oplWriteQueue[oplQHead] & 0xFFFF) <= end) {
-    uint32_t e = oplWriteQueue[oplQHead++];
-    oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
+  while (oplWriteQueue && oplQHead < oplQTail && (oplWriteQueue[oplQHead] & OPLQ_POS_MASK) <= end) {
+    oplQueueApply(oplWriteQueue[oplQHead++]);
   }
   if (oplQHead == oplQTail) { oplQHead = oplQTail = 0; }
   dcblock_run(audioBufferOPL_L + bufpos, count, s_dcOplL, &s_oplOutQuiet);
@@ -3484,16 +3670,81 @@ void ESPectrum::OPLGenSound(int count, int bufpos) {
 #if OPL_PERF_TRACE
   g_opl_gen_us += time_us_32() - _t0;
 #endif
+#if MOONSOUND
+  if (moonpcm) g_opl_frame_us += time_us_32() - _f0;
+#endif
 }
 
 // Queue one OPL register write at the current T-state's sample position.
 void ESPectrum::OPLPortWrite(uint8_t a, uint8_t v) {
   if (!OplSubsys::enabled || !oplfm) return;
+  // NEW2 opens the MoonSound wave registers; it gates the writes at the port, so
+  // it is tracked here, not at queue time.
+  if (moonpcm) {
+    if ((a & 3) == 2) s_oplHiAddr = v;
+    else if ((a & 3) == 3 && s_oplHiAddr == 0x05) moonpcm->setNew2((v & 2) != 0);
+  }
+#if MOONSOUND
+  if (g_moon_c1_live) {   // the core1 chip: its ring, and a write IS a point the guest has reached
+    uint32_t pos = CPU::tstates / audioAYDivider;
+    if (multiplicator) pos >>= multiplicator;
+    MoonSplit::fmWrite(pos, (uint8_t)(a & 3), v);
+    MoonSplit::publish(pos);
+    return;
+  }
+#endif
   if (!oplWriteQueue) { oplfm->write(a, v); return; }   // no queue: degrade to direct
   if (oplQTail >= OPL_WRITE_QUEUE_LEN) OPLGetSample();  // overflow: flush (drains + resets)
   uint32_t pos = CPU::tstates / audioAYDivider;
   if (multiplicator) pos >>= multiplicator;
-  oplWriteQueue[oplQTail++] = (pos & 0xFFFF) | ((uint32_t)(a & 3) << 16) | ((uint32_t)v << 24);
+  oplWriteQueue[oplQTail++] = (pos & OPLQ_POS_MASK) | ((uint32_t)(a & 3) << 16) | ((uint32_t)v << 24);
+}
+
+// MoonSound wave data port (#7F). The memory access registers (2-6) take effect
+// at once — a sample upload is hundreds of KB through register 6 and must not
+// go through the 512-entry queue; register 2 also picks the header bank, so the
+// queue is drained first to keep it in order with the queued writes before it.
+// Everything else is queued at its sample position like an FM write.
+void ESPectrum::MoonWaveData(uint8_t v) {
+  if (!moonpcm || !moonpcm->new2()) return;
+  const uint8_t reg = moonpcm->addr();
+  uint32_t pos = CPU::tstates / audioAYDivider;
+  if (multiplicator) pos >>= multiplicator;
+  if (g_moon_c1_live) {
+    // the core1 split: timed writes go to its ring (and publish the position —
+    // a write IS a point the guest has reached); the immediate ones apply here
+    // after the ring has been drained up to now, so they stay in order.
+    if (MoonPcm::immediate(reg)) {
+      if (reg == 2) MoonSplit::sync(pos);
+      moonpcm->write(reg, v);
+      return;
+    }
+    MoonSplit::waveWrite(pos, reg, v);
+    MoonSplit::publish(pos);
+    return;
+  }
+  if (MoonPcm::immediate(reg) || !oplWriteQueue) {
+    if (reg == 2) OPLGetSample();
+    moonpcm->write(reg, v);
+    return;
+  }
+  if (oplQTail >= OPL_WRITE_QUEUE_LEN) OPLGetSample();
+  oplWriteQueue[oplQTail++] = (pos & OPLQ_POS_MASK) | OPLQ_WAVE | ((uint32_t)reg << 16) | ((uint32_t)v << 24);
+}
+
+// A read sees every write before it (players read-modify-write the key register).
+uint8_t ESPectrum::MoonWaveRead() {
+  if (!moonpcm) return 0xFF;
+  if (!MoonPcm::immediate(moonpcm->addr())) {
+    if (g_moon_c1_live) {
+      uint32_t pos = CPU::tstates / audioAYDivider;
+      if (multiplicator) pos >>= multiplicator;
+      MoonSplit::sync(pos);
+    } else {
+      OPLGetSample();
+    }
+  }
+  return moonpcm->read(moonpcm->addr());
 }
 
 // Catch the OPL3 stream (and its write queue) up to the current T-state.
@@ -3504,6 +3755,9 @@ void ESPectrum::OPLPortWrite(uint8_t a, uint8_t v) {
 void ESPectrum::OPLGetSample() {
   uint32_t audbufpos = CPU::tstates / audioAYDivider;
   if (multiplicator) audbufpos >>= multiplicator;
+#if MOONSOUND
+  if (g_moon_c1_live) { MoonSplit::sync(audbufpos); return; }   // timers + queued writes caught up on core0
+#endif
   if (audbufpos > audbufcntOPL) {
     OPLGenSound(audbufpos - audbufcntOPL, audbufcntOPL);
     audbufcntOPL = audbufpos;
@@ -4003,16 +4257,58 @@ void ESPectrum::loop() {
 
     audbufcntSAA = 0;
     audbufcntPIT = 0;
+#if MOONSOUND
+    // ZXM-MoonSound budget: an OPL4 track keys the FM half AND up to 24 wave
+    // channels — measured 8.5-10.5 ms a frame at full rate (FM ~5.2, wave
+    // 3.4-5.3; hw 2026-10-22, TS-Conf + VGMPLAY.WMF, "05 encounter"), where a
+    // plain OPL3 score alone fits a 504 MHz frame. So the policy is the measured
+    // cost itself (g_opl_frame_us, an always-on timer round OPLGenSound): ten
+    // frames over 6.5 ms switch the FM half to half-rate synthesis, two seconds
+    // under 2.5 ms switch back; the <450 MHz rule stays underneath. The WAVE
+    // half stays at full rate: point-decimating 44.1 kHz samples to 15.6 kHz
+    // aliases them (host: -9 dB of in-band error against the full-rate render
+    // of the "05" track; hw: "sound is bad, to put it mildly"), where the FM
+    // synth at half rate only loses what it would have generated above 7.8 kHz.
+    // OplFm::setRates re-derives its constants AND the held notes' increments,
+    // so it is called only on a change. With the chip on core1 (MoonSplit)
+    // the policy is OFF: core0 pays only what core1 did not finish (the
+    // frame-end join), and that is the balancer; it remains for the inline path.
+    if (moonpcm && oplfm && OplSubsys::enabled && !g_moon_c1_live) {
+      static uint8_t over = 0, under = 0;
+      const uint32_t us = g_opl_frame_us;
+      g_opl_frame_us = 0;
+      const bool clkHalf = clock_get_hz(clk_sys) < 450000000u;
+      bool half = oplfm->halfRate();
+      if (!half) {
+        if (us > 6500) { if (++over >= 10) { half = true; over = 0; } } else over = 0;
+      } else if (!clkHalf) {
+        if (us < 2500) { if (++under >= 100) { half = false; under = 0; } } else under = 0;
+      }
+      if (half != oplfm->halfRate()) {
+        oplfm->setRates(OPL3_YMF262_CLOCK, Audio_freq, half);
+        Debug::log("[MOON] OPL4 FM synthesis at %s rate (%lu us/frame)", half ? "half" : "full", (unsigned long)us);
+      }
+    }
+#endif
 #if OPL_PERF_TRACE
     // OPL cost meter: ~us per frame averaged over 300 frames, only while the
     // chip is audible. This is the number to read against the ~20500 us frame.
     if (OplSubsys::enabled && oplfm) {
       static uint16_t oplPerfFrames = 0;
       if (++oplPerfFrames >= 300) {
-        if (oplfm->audible() && g_opl_gen_us)
-          Debug::log("OPL: gen %lu us/fr", (unsigned long)(g_opl_gen_us / oplPerfFrames));
+        uint32_t c1fm = 0, c1wave = 0, joinus = 0;
+#if MOONSOUND
+        if (g_moon_c1_live) MoonSplit::perfTake(c1fm, c1wave, joinus);
+#endif
+        // split: `gen` is the inline path's cost (0 with the chip on core1), `join`
+        // is what core0 pays — the frame-end tail core1 did not reach + the sum.
+        if ((oplfm->audible() || g_moon_gen_us || c1fm || c1wave) && (g_opl_gen_us || joinus))
+          Debug::log("OPL: gen %lu us/fr (moon %lu; core1 fm %lu wave %lu, join %lu)", (unsigned long)(g_opl_gen_us / oplPerfFrames),
+                     (unsigned long)(g_moon_gen_us / oplPerfFrames), (unsigned long)(c1fm / oplPerfFrames),
+                     (unsigned long)(c1wave / oplPerfFrames), (unsigned long)(joinus / oplPerfFrames));
         oplPerfFrames = 0;
         g_opl_gen_us = 0;
+        g_moon_gen_us = 0;
       }
     }
 #endif
@@ -4020,12 +4316,16 @@ void ESPectrum::loop() {
     // skipped-mix frame (maxSpeed) may leave stragglers — apply them directly
     // so no register write is ever lost, then restart the queue.
     if (oplWriteQueue && oplfm) {
-      while (oplQHead < oplQTail) {
-        uint32_t e = oplWriteQueue[oplQHead++];
-        oplfm->write((e >> 16) & 3, (uint8_t)(e >> 24));
-      }
+      while (oplQHead < oplQTail) oplQueueApply(oplWriteQueue[oplQHead++]);   // FM and (inline path) wave entries alike
     }
     oplQHead = oplQTail = 0;
+#if MOONSOUND
+    if (g_moon_c1_live) {
+      const bool fm = OplSubsys::enabled && oplfm && audioBufferOPL_L;
+      MoonSplit::frameBoundary(samplesPerFrame, fm ? oplfm : nullptr,
+                               fm ? audioBufferOPL_L : nullptr, fm ? audioBufferOPL_R : nullptr);
+    }
+#endif
     if (opllWriteQueue && opllfm) {
       while (opllQHead < opllQTail) {
         uint32_t e = opllWriteQueue[opllQHead++];
@@ -4188,6 +4488,7 @@ void ESPectrum::loop() {
     wf_bg_mark(2);
 #endif
     Nvram24::flush();  // ...and the SMUC card's own 24LC16, same contract
+    if (Z80Ops::isSam) SamClock::flush();   // the Dallas clock's user RAM, same contract
 #if NEXT_TRACE
     wf_bg_mark(3);
 #endif
@@ -4198,18 +4499,20 @@ void ESPectrum::loop() {
 
     netBackgroundTick();      // radio poll + the boot join/SNTP FSM (also pumped
                               // from the OSD idle loops — see nm::uiIdle)
+    if (g_pimus_on) PiMusica::frameTick();   // telemetry, file open, .mid render, ring top-up
 #if NEXT_TRACE
     wf_bg_mark(5);
 #endif
 
     // TS-Conf: F1-F10 silently ceasing to open the menu is exactly the kind of
     // thing a user cannot be asked to guess, so say it once per transition.
-    if (Z80Ops::isTsconf) {
+    if (Z80Ops::isTsconf || Z80Ops::isSam) {
         static bool s_keys_prev = false;
-        const bool  keys_now = ZxEvoAvr::keysToGuest();
+        const bool  keys_now = Z80Ops::isSam ? Sam::keysToGuest() : ZxEvoAvr::keysToGuest();
         if (keys_now != s_keys_prev) {
             s_keys_prev = keys_now;
-            OSD::notify(keys_now ? " PS/2 keys: ON " : " PS/2 keys: OFF ", LEVEL_INFO, 900);
+            OSD::notify(Z80Ops::isSam ? (keys_now ? " F-keys: ON " : " F-keys: OFF ")
+                                      : (keys_now ? " PS/2 keys: ON " : " PS/2 keys: OFF "), LEVEL_INFO, 900);
             Debug::log("[PS2] keys -> %s", keys_now ? "ON (guest is reading the scancode log)"
                                                     : "OFF (the hotkey layer keeps them)");
         }
@@ -4429,6 +4732,18 @@ void ESPectrum::loop() {
         }
         if (OplSubsys::enabled && audioBufferOPL_L && faudbufcntOPL < samplesPerFrame)
             OPLGenSound(samplesPerFrame - faudbufcntOPL, faudbufcntOPL);
+#if MOONSOUND
+        // MoonSound wave half from core1: join + sum onto the FM buffer. A sounding
+        // wave half keeps the OPL mix open (the quiet gate below only ever saw FM).
+        if (g_moon_c1_live && OplSubsys::enabled && audioBufferOPL_L) {
+            const bool wave = MoonSplit::frameJoin(samplesPerFrame);
+            // the FM half's coupling-cap model + quiet gate, once over the frame (FM only)
+            dcblock_run(audioBufferOPL_L, samplesPerFrame, s_dcOplL, &s_oplOutQuiet);
+            dcblock_run(audioBufferOPL_R, samplesPerFrame, s_dcOplR, nullptr);
+            MoonSplit::frameSum(audioBufferOPL_L, audioBufferOPL_R, samplesPerFrame);
+            if (wave) s_oplOutQuiet = 0;
+        }
+#endif
         if (OpllSubsys::enabled && audioBufferOPLL && faudbufcntOPLL < samplesPerFrame)
             OPLLGenSound(samplesPerFrame - faudbufcntOPLL, faudbufcntOPLL);
         if (SnSubsys::enabled && audioBufferSN && faudbufcntSN < samplesPerFrame)
@@ -4455,8 +4770,13 @@ void ESPectrum::loop() {
         }
         if (MidiSubsys::enabled && audioBufferMIDI_L && audioBufferMIDI_R)
         {
-          if (Midi::enabled == 4)
-            MidiSynth::gen_sound(audioBufferMIDI_L, audioBufferMIDI_R, samplesPerFrame);
+          if (Midi::enabled == 4) {
+            // A PI-CARD MUSICA .mid owns midi_wt (its render goes to the card
+            // ring); rendering it here too would advance every voice twice.
+            if (!(g_pimus_on && PiMusica::ownsMidiSynth()))
+              MidiSynth::gen_sound(audioBufferMIDI_L, audioBufferMIDI_R, samplesPerFrame);
+            else { memset(audioBufferMIDI_L, 0, samplesPerFrame); memset(audioBufferMIDI_R, 0, samplesPerFrame); }
+          }
         }
         // Hoist frame-invariant source flags outside the mix loop
         bool mix_chip0 = AY_emu && (Config::twoAyChips() || AySound::selected_chip == 0);
@@ -4778,6 +5098,10 @@ void ESPectrum::loop() {
         fdd_active = Plus3Fdc::fdc.activity != 0;
         fdd_write  = Plus3Fdc::fdc.wroteRecently;
     }
+    if (Z80Ops::isSam) {                      // SAM Coupe: its VL1772 pair
+        fdd_active = SamFdc::active();
+        fdd_write  = SamFdc::wroteRecently();
+    }
     // While active: draw ONLY the sprite's foreground pixels (border shows through);
     // dotFast maps the ZX index for the current mode (DS80 → solid pair slot).
     // On the active→idle edge: erase by scheduling a full border repaint instead of
@@ -4789,7 +5113,7 @@ void ESPectrum::loop() {
     // the black DS80 right border).
     bool lamp_on = fdd_active &&
                    ((MB02::enabled && (Config::mb02SoundLed & 1)) ||
-                    (Z80Ops::isP3 && (Config::trdosSoundLed & 1)) ||
+                    ((Z80Ops::isP3 || Z80Ops::isSam) && (Config::trdosSoundLed & 1)) ||
                     (hasFdd && (Config::trdosSoundLed & 1)));
     static bool lamp_was_on = false;
     const int lx = VIDEO::osd_lamp_x, ly = VIDEO::osd_lamp_y;

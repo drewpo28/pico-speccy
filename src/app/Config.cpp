@@ -8,6 +8,7 @@
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/core/roms.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/If2.h"
 #include "speccy/roms/atm/atm_banks.h"   // ATM page tables — this TU only (see requestMachine)
 #include "speccy/roms/kay/kay_banks.h"   // Nemo KAY bank tables — this TU only (same reason)
@@ -15,6 +16,7 @@
 #include "ESPectrum.h"
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
+#include "speccy/machines/Sam/SamFdc.h"
 #include "drivers/input/fabutils.h"
 #include "messages.h"
 #include "ui/OSDMain.h"
@@ -39,6 +41,7 @@ RomsetIdx Config::romSetProfi = R_PROFI;
 RomsetIdx Config::romSetScorp = R_SCORP;
 RomsetIdx Config::romSetTsconf = R_TSCONF;
 RomsetIdx Config::romSetAtm = R_ATM2;
+RomsetIdx Config::romSetSam = R_SAM512;
 ArchIdx   Config::pref_arch = A_LAST;
 RomsetIdx Config::pref_romSet_48 = R_LAST;
 RomsetIdx Config::pref_romSet_128 = R_LAST;
@@ -141,6 +144,8 @@ uint8_t  Config::ayConfig = 0;
 uint8_t  Config::turbosound = 3; // BOTH
 uint8_t  Config::tsfm = 0;       // TurboSound FM off by default
 uint8_t  Config::opl3 = 0;       // OPL3 (YMF262) card off by default
+bool     Config::moonsound = false;
+bool     Config::pimusica = false;
 uint8_t  Config::cms = 0;        // CMS (2x SAA1099) off by default
 uint8_t  Config::sn76489 = 0;    // 2x SN76489 off by default
 uint8_t  Config::sn_clock = 0;   // 3.579545 MHz
@@ -182,6 +187,9 @@ uint8_t  Config::mb02SoundLed = 0; // 0=Off, 1=Led, 2=Sound, 3=Sound+Led
 // image is not written to until the user says so.
 bool     Config::p3WP[2] = { true, true };
 string   Config::p3DiskFile[2] = { "", "" };
+bool     Config::samWP[2] = { false, false };
+string   Config::samDiskFile[2] = { "", "" };
+bool     Config::samKeepTmp = false;
 bool     Config::p3_speedlock = true;
 bool     Config::p3_fastdisk = false;
 bool     Config::zcontroller = true;
@@ -384,6 +392,9 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         if (newArch == A_ATM) {
             OSD::bootNotice("ATM-Turbo ROM traded for the GM.DLS bank - using Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
+        } else if (newArch == A_SAM) {
+            OSD::bootNotice("SAM Coupe ROM traded for the GM.DLS bank - using Pentagon");
+            newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_TSCONF) {
             OSD::bootNotice("TS-Conf ROM traded for the GM.DLS bank - using Pentagon");
             Debug::log("[FlashRoms] TS-Conf unavailable (overlay traded) - Pentagon");
@@ -399,6 +410,18 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     if (newArch == A_ATM && butter_psram_size() == 0) {
         OSD::bootNotice("ATM-Turbo needs QSPI PSRAM - using Pentagon");
         newArch = A_PENT; newRomSet = R_NONE;
+    }
+    // SAM Coupe: every RAM page must be a plain pointer (the frame renderer reads
+    // the screen straight out of them) — butter/QSPI PSRAM only, like ATM.
+    if (newArch == A_SAM && butter_psram_size() == 0) {
+        OSD::bootNotice("SAM Coupe needs QSPI PSRAM - using Pentagon");
+        newArch = A_PENT; newRomSet = R_NONE;
+    }
+    // The memory fitted decides the page strip, so the slot must hold the new pick
+    // before the boundary below compares (and before setup() re-reads it).
+    if (newArch == A_SAM) {
+        if (!isSamRomset(newRomSet)) newRomSet = isSamRomset(romSetSam) ? romSetSam : R_SAM512;
+        romSetSam = newRomSet;
     }
     // Profi boundary: setup() lays out the Profi memory once at boot —
     // forced-SRAM pages (DS80 colour 56/58 + CP/M pool 60/61) on ALL RP2350
@@ -860,6 +883,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         else                        Atm::bindRoms(romSet, gb_rom_atm2_pages, 4);
         break;
     }
+    case A_SAM: {
+        romSet = newRomSet;          // normalised above
+        romSetSam = romSet;
+        Sam::bindRoms();             // ROM 3.0 (two 16K halves, .psramroms)
+        break;
+    }
     case A_NEXT: {
         // ZX Spectrum Next. The real NextZXOS ROM set is loaded from SD into
         // butter PSRAM later in setup() (MemESP::loadNextRoms); the 128K ROM
@@ -1097,6 +1126,17 @@ void Config::loadDiskMounts() {
                         Plus3Fdc::mount(i, fn);
                 }
             }
+            for (size_t i = 0; i < 2; ++i) {
+                char prefix[16];
+                snprintf(prefix, sizeof(prefix), "samd%u.file=", (unsigned)i);
+                const size_t plen = strlen(prefix);
+                if (s.length() >= plen && s.compare(0, plen, prefix) == 0) {
+                    std::string fn = s.substr(plen);
+                    samDiskFile[i] = fn;
+                    if (!fn.empty() && Config::arch == A_SAM && FileUtils::waitVolumeReady(fn))
+                        SamFdc::mount(i, fn);
+                }
+            }
             s.clear();
         } else {
             s += c;
@@ -1309,6 +1349,7 @@ void Config::load() {
         nvs_get_romset("romSetScorp", romSetScorp, sts);
         nvs_get_romset("romSetTsconf", romSetTsconf, sts);
         nvs_get_romset("romSetAtm", romSetAtm, sts);
+        nvs_get_romset("romSetSam", romSetSam, sts);
         nvs_get_arch("pref_arch", pref_arch, sts);
         pref_arch = archCanon(pref_arch);
         nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
@@ -1461,6 +1502,8 @@ void Config::load() {
         nvs_get_u8("turbosound", Config::turbosound, sts);
         nvs_get_u8("tsfm", Config::tsfm, sts);
         nvs_get_u8("opl3", Config::opl3, sts);
+        nvs_get_b("moonsound", Config::moonsound, sts);
+        nvs_get_b("pimusica", Config::pimusica, sts);
         nvs_get_u8("cms", Config::cms, sts);
         nvs_get_u8("sn76489", Config::sn76489, sts);
         nvs_get_u8("sn_clock", Config::sn_clock, sts);
@@ -1541,6 +1584,12 @@ void Config::load() {
             nvs_get_b(k, p3WP[i], sts);
             snprintf(k, sizeof(k), "p3d%d.file", i);
             nvs_get_str(k, p3DiskFile[i], sts);
+        }
+        for (int i = 0; i < 2; i++) {
+            char k[16]; snprintf(k, sizeof(k), "samd%d.wp", i);
+            nvs_get_b(k, samWP[i], sts);
+            snprintf(k, sizeof(k), "samd%d.file", i);
+            nvs_get_str(k, samDiskFile[i], sts);
         }
         nvs_get_b("p3_speedlock", p3_speedlock, sts);
         nvs_get_b("p3_fastdisk", p3_fastdisk, sts);
@@ -1832,6 +1881,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_str(buf,"romSetScorp",romsetToStr(romSetScorp));
     nvs_set_str(buf,"romSetTsconf",romsetToStr(romSetTsconf));
     nvs_set_str(buf,"romSetAtm",romsetToStr(romSetAtm));
+    nvs_set_str(buf,"romSetSam",romsetToStr(romSetSam));
     nvs_set_str(buf,"pref_arch",archToStr(pref_arch));
     nvs_set_str(buf,"pref_romSet_48",romsetToStr(pref_romSet_48));
     nvs_set_str(buf,"pref_romSet_128",romsetToStr(pref_romSet_128));
@@ -1862,6 +1912,8 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u8(buf,"turbosound", Config::turbosound);
     nvs_set_u8(buf,"tsfm", Config::tsfm);
     nvs_set_u8(buf,"opl3", Config::opl3);
+    nvs_set_str(buf,"moonsound", Config::moonsound ? "true" : "false");
+    nvs_set_str(buf,"pimusica", Config::pimusica ? "true" : "false");
     nvs_set_u8(buf,"cms", Config::cms);
     nvs_set_u8(buf,"sn76489", Config::sn76489);
     nvs_set_u8(buf,"sn_clock", Config::sn_clock);
@@ -1966,6 +2018,10 @@ void Config::writeKeys(NvsWriter& buf) {
         char k[12]; snprintf(k, sizeof(k), "p3d%d.wp", i);
         nvs_set_str(buf, k, p3WP[i] ? "true" : "false");
     }
+    for (int i = 0; i < 2; i++) {
+        char k[12]; snprintf(k, sizeof(k), "samd%d.wp", i);
+        nvs_set_str(buf, k, samWP[i] ? "true" : "false");
+    }
     nvs_set_str(buf,"p3_speedlock", p3_speedlock ? "true" : "false");
     nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
     nvs_set_str(buf,"zcontroller", zcontroller ? "true" : "false");
@@ -2010,6 +2066,14 @@ void Config::writeKeys(NvsWriter& buf) {
                 if (Config::isPlus3())
                     p3DiskFile[i] = Plus3Fdc::fname(i);
                 persistFile("p3d" + to_string(i) + ".file", p3DiskFile[i]);
+                // SAM Coupe drives, the same rule.
+                if (Config::arch == A_SAM)
+                    samDiskFile[i] = SamFdc::fname(i);
+                // A Web-catalog launch reaches the SAM through a reboot: the /tmp image
+                // has to come back for that one boot (Sam::launchDisk sets the flag,
+                // Sam::bootResume clears it), otherwise /tmp mounts are not remembered.
+                if (samKeepTmp) nvs_set_str(buf, ("samd" + to_string(i) + ".file").c_str(), samDiskFile[i].c_str());
+                else persistFile("samd" + to_string(i) + ".file", samDiskFile[i]);
             }
         }
     }
@@ -2242,7 +2306,7 @@ static bool lineIsKey(const string& l, const char* key) {
 // is everything that is only read at boot: those go through storage.nvs + reboot.
 static const char* const kSnapArchKeys[] = {
     "arch", "romSet", "romSet48", "romSet128", "romSetPent", "romSetP512", "romSetP1M",
-    "romSetScorp", "romSetProfi", "romSetAtm", "romSetTsconf",
+    "romSetScorp", "romSetProfi", "romSetAtm", "romSetSam", "romSetTsconf",
 };
 static const char* const kSnapRebootKeys[] = {
     "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",

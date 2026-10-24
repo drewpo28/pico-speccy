@@ -51,6 +51,7 @@ public:
     static bool isAtm;      // MicroART ATM-Turbo 1 / 2+ (src/Atm.cpp owns the memory map)
     static bool isTc2068;   // Timex TC2068 (SCLD MMU on #F4, EX-ROM/DOCK, AY on #F5/#F6)
     static bool isNext;
+    static bool isSam;      // MGT SAM Coupe (src/speccy/machines/Sam owns the memory map)
 };
 
 #endif // Z80OPERATIONS_H

@@ -451,6 +451,10 @@ public:
   // the F8 stats box's 16 rows. Every renderer leaves the rect to LED::draw.
   static void setLedBar(int w);
   static bool osdBoxCarved();
+  // Overlay rects on fb row `row` a whole-frame renderer must leave alone (stats /
+  // volume box + LED panel, notify banner, LED/lamp carves): fills cx[i] = {x0, x1},
+  // returns the count (<= 8). Flash; for renderers that repaint every row (SAM).
+  static int rowCarves(int row, int (*cx)[2]);
   // Cold EndFrame halves, flash-resident on purpose (EndFrame is RAM code):
   static void gmxApplyPending();         // deferred on/off switch, vblank only
   static void gmxBorderFrame(bool skipFrame); // top/bottom band repaint
@@ -535,6 +539,12 @@ public:
   static bool bl_pair_live;
   static void blPairRefresh();      // the ZX palette changed: re-push the pair tables
   static void blPairForceOff();     // machine reset: blRecalc re-arms it at EndFrame
+  // SAM Coupe mode 3 (512 px, 4 colours) through the packed-pair driver: pair
+  // index 0..3 = the four mode-3 CLUT colours, 4 = border, 5..15 = the ZX palette
+  // (for overlays). samPairSync(want, rgb5) arms/refreshes it, true while live.
+  static bool sam_pair_live;
+  static bool samPairSync(bool want, const uint32_t rgb12[12]);
+  static void samPairForceOff();
   // A menu or dialog is about to draw over the framebuffer: drop the scanout
   // line map until the next EndFrame, so what it draws is shown row for row.
   static void blVmapSuspend();

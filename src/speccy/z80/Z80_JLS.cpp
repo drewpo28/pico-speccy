@@ -31,6 +31,7 @@
 #include "CPU.h"
 #include "app/Col16Trace.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/EvoBase.h"
 #include "speccy/devices/tape/Tape.h"
 #include "app/Config.h"
@@ -889,6 +890,10 @@ IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
     // automap there, and rom[4] is never assigned (hw: the NMI-DOS restore
     // below ran on a stale flag and plugged a garbage rom[4] over the MMU —
     // the NextZXOS loader then CALLed into an empty ROM2 region and wedged).
+    if (Z80Ops::isSam) {            // SAM Coupe: no Beta, no #3Dxx trap — only the
+        if (REG_PC == Sam::TAPE_LDSTRT) Sam::tapeTrap();   // ROM 3.0 tape loader (flash)
+        return;
+    }
     if (Z80Ops::isNext) {
 #if NEXT_TRACE
         nxJumpNote('J');
@@ -1482,7 +1487,7 @@ IRAM_ATTR void Z80::execute() {
     // CPU::prev_tstates = CPU::tstates;
 
     // // if (!(CPU::tstates & 0xf)) {
-    //     if (Tape::tapeStatus == TAPE_LOADING) {
+    //     if (Tape::tapeStatus == TAPE_LOADING && !Tape::tapFlashCont) {
     //     // if (Tape::tapePhase == TAPE_PHASE_DATA) {
     //         Tape::Read();
     //     }
@@ -2398,7 +2403,7 @@ void Z80::decodeOpcode76()
     // On the Next, NextZXOS's own tape trap (automap at #056A) gets the block
     // whenever it is armed — see NextReg::osTapeTrapArmed(). BIOS personalities
     // without it (48K/128K/Pentagon, divmmc off) keep our fast load.
-    if ((((REG_PC == 0x56b || REG_PC == 0x56d || REG_PC == 0x57d)) && !Z80Ops::isTc2068
+    if ((((REG_PC == 0x56b || REG_PC == 0x56d || REG_PC == 0x57d)) && !Z80Ops::isTc2068 && !Z80Ops::isSam
          && !(Z80Ops::isNext && NextReg::osTapeTrapArmed()))
         || tcTrap) {
 
@@ -2423,7 +2428,7 @@ void Z80::decodeOpcode76()
                     // Stop tape if it was auto-started.
                     // Preserve tapePhase if pzxFlashCont is set (partial PZX load
                     // set up DATA1 phase for real-mode continuation by auto-start).
-                    if (Tape::tapeStatus == TAPE_LOADING) {
+                    if (Tape::tapeStatus == TAPE_LOADING && !Tape::tapFlashCont) {
                         Tape::tapeStatus = TAPE_STOPPED;
                         if (!Tape::pzxFlashCont)
                             Tape::tapePhase = TAPE_PHASE_STOPPED;
@@ -2727,7 +2732,7 @@ Z80_COLD bool Z80::evo_tape_trap() {
     REG_C = regA;            // LD C,A
     cp(regA);                // CP A
     if (Tape::FlashLoad()) {
-        if (Tape::tapeStatus == TAPE_LOADING) {
+        if (Tape::tapeStatus == TAPE_LOADING && !Tape::tapFlashCont) {
             Tape::tapeStatus = TAPE_STOPPED;
             if (!Tape::pzxFlashCont) Tape::tapePhase = TAPE_PHASE_STOPPED;
         }
@@ -2758,7 +2763,7 @@ Z80_COLD bool Z80::next_os_tape_decline() {
           (Tape::tapeFileType == TAPE_FTYPE_TAP || Tape::tapeFileType == TAPE_FTYPE_TZX ||
            Tape::tapeFileType == TAPE_FTYPE_PZX) && Tape::tapeFileName != "none")) return false;
     if (!Tape::FlashLoad()) return false;
-    if (Tape::tapeStatus == TAPE_LOADING) {
+    if (Tape::tapeStatus == TAPE_LOADING && !Tape::tapFlashCont) {
         Tape::tapeStatus = TAPE_STOPPED;
         if (!Tape::pzxFlashCont) Tape::tapePhase = TAPE_PHASE_STOPPED;
     }
@@ -2783,7 +2788,7 @@ Z80_COLD bool Z80::byte_tape_trap() {
     // FlashLoad loads the full block (it uses min(DE, blockLen)).
     uint16_t origDE = getRegDE();
     if (Tape::FlashLoad()) {
-        if (Tape::tapeStatus == TAPE_LOADING) {
+        if (Tape::tapeStatus == TAPE_LOADING && !Tape::tapFlashCont) {
             Tape::tapeStatus = TAPE_STOPPED;
             if (!Tape::pzxFlashCont)
                 Tape::tapePhase = TAPE_PHASE_STOPPED;

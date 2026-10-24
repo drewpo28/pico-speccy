@@ -306,6 +306,25 @@ void OplFm::setRates(int clock, int rate, bool halfRate) {
     // timers count chip samples (T1 unit = 4 of them = 80.4 us), and they are
     // advanced once per OUTPUT sample — real time, independent of half-rate
     m_timer_step_q16 = (uint32_t)((rate ? ((double)clock / 288.0) / (double)rate : 0.0) * 65536.0);
+
+    // The per-channel phase increments were derived from the OLD freqbase at
+    // their register writes (fc at the A0/B0 write, Incr = fc * mul per slot).
+    // A rate switch under sounding notes (the MoonSound half-rate policy) must
+    // re-derive them, or every held note plays an octave off until re-keyed
+    // (hw 2026-10-22: "sound is bad, to put it mildly"). A 4-op pair's second
+    // channel takes the first channel's fc, as the write path does.
+    for (int i = 0; i < 18; i++) {
+        Chan* CH = &m_ch[i];
+        const uint32_t bf = CH->block_fnum;
+        CH->fc = fnInc(bf & 0x03ff) >> (7 - (bf >> 10));
+    }
+    for (int i = 0; i < 18; i++) {
+        Chan* CH = &m_ch[i];
+        const int n = i % 9;
+        const Chan* src = ((m_OPL3_mode & 1) && n >= 3 && n <= 5 && (CH - 3)->extended) ? CH - 3 : CH;
+        CH->SLOT[0].Incr = src->fc * CH->SLOT[0].mul;
+        CH->SLOT[1].Incr = src->fc * CH->SLOT[1].mul;
+    }
 }
 
 // ── status / IRQ ────────────────────────────────────────────────────────────

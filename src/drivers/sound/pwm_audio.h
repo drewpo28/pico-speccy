@@ -72,3 +72,15 @@ extern volatile uint32_t pcm_player_r;
 extern volatile uint32_t pcm_player_w;
 void pcm_player_attach(int16_t* ring, uint32_t frames);
 void pcm_player_detach();
+
+// ── PI-CARD MUSICA card PCM source ─────────────────────────────────────────────
+// The same shape of ring, but ADDED to the ZX + GS mix (the card plays beside the
+// machine, whose own sound stays): bipolar int16 L,R at the output rate, scaled
+// here by the master volume like the live GS. Filled from core1 (PiMusica.cpp)
+// with a core0 top-up at the frame end. An empty ring adds nothing.
+extern volatile int16_t* volatile pcm_card_ring;
+extern volatile uint32_t pcm_card_mask;
+extern volatile uint32_t pcm_card_r;
+extern volatile uint32_t pcm_card_w;
+void pcm_card_attach(int16_t* ring, uint32_t frames);
+void pcm_card_detach();

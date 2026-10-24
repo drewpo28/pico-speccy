@@ -21,6 +21,8 @@ extern "C" size_t getLargestAllocatable(void);  // largest block malloc() can re
 #include "speccy/devices/sound/SAASound.h"
 #include "speccy/devices/sound/OpnFm.h"
 #include "speccy/devices/sound/OplFm.h"
+#include "speccy/devices/sound/MoonPcm.h"
+#include "speccy/devices/sound/MoonSplit.h"
 #include "speccy/devices/sound/OpllFm.h"
 #include "speccy/devices/sound/SnSound.h"
 #include "hardware/clocks.h"
@@ -445,9 +447,19 @@ bool OplSubsys::apply() {
         oplfm->setRates(OPL3_YMF262_CLOCK, ESPectrum::Audio_freq,
                         clock_get_hz(clk_sys) < 450000000u);
         oplfm->reset();
+#if MOONSOUND
+        if (moonpcm) {
+            if (g_moon_c1_live) MoonSplit::resetChip(ESPectrum::Audio_freq);
+            else { moonpcm->reset(); moonpcm->setRate(ESPectrum::Audio_freq); }
+        }
+        if (g_moon_c1_live) MoonSplit::fmAttach(oplfm, ESPectrum::audioBufferOPL_L, ESPectrum::audioBufferOPL_R);
+#endif
         enabled = true;
     } else {
         enabled = false;
+#if MOONSOUND
+        if (g_moon_c1_live) MoonSplit::fmDetach();   // core1 may hold these pointers
+#endif
         delete oplfm; oplfm = nullptr;
         free(ESPectrum::audioBufferOPL_L);
         ESPectrum::audioBufferOPL_L = nullptr;

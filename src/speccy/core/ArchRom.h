@@ -30,7 +30,8 @@
     X(A_ALF,        "ALF")      \
     X(A_TSCONF,     "TSconf")   \
     X(A_ATM,        "ATM")      \
-    X(A_NEXT,       "Next")
+    X(A_NEXT,       "Next")     \
+    X(A_SAM,        "SAM")
 
 // Third column = the human label. The second column is an on-disk spelling that
 // must never change (NVS, .esp sidecars); the third is what a user reads, kept
@@ -82,7 +83,12 @@
     X(R_ATM3_107,       "ATM3v107",         "ATM-Turbo 3 (BIOS 1.07.13EC)") \
     X(R_EVO_BASE,       "EvoBase",          "BaseConf (EVO Reset Service)") \
     X(R_SCORP_EVO,      "ScorpEvo",         "ScorpEvo (ZX-Evo, ProfROM 4.44)")  \
-    X(R_NEXT,           "Next",             "NextZXOS")
+    X(R_NEXT,           "Next",             "NextZXOS")  \
+    X(R_SAM256,         "SAM256",           "256K")      \
+    X(R_SAM512,         "SAM512",           "512K")      \
+    X(R_SAM512_1M,      "SAM512_1M",        "512K + 1 MB") \
+    X(R_SAM512_2M,      "SAM512_2M",        "512K + 2 MB") \
+    X(R_SAM512_4M,      "SAM512_4M",        "512K + 4 MB")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -151,6 +157,7 @@ inline RomsetIdx defaultRomsetFor(ArchIdx a) {
         case A_TSCONF:  return R_TSCONF;
         case A_ATM:     return R_ATM2;
         case A_NEXT:    return R_NEXT;
+        case A_SAM:     return R_SAM512;
         default:        return R_PENT;   // Pentagon / P512 / P1024
     }
 }
@@ -289,3 +296,14 @@ inline bool atmHasIde(RomsetIdx r)    { return r == R_ATM2 || r == R_ATM2X || is
 // #3DBC and its boot menu's ISR (#813D) NOPs out the menu's exit (#80D9) unless the
 // count lands in #0F4B..#0F4F — i.e. a frame of ~70740..70800 T. 69888 gives #0F1C.
 inline bool atmFrame316(RomsetIdx r)  { return r == R_ATM2_106; }
+
+// MGT SAM Coupe (A_SAM, src/speccy/machines/Sam/). One arch; the romsets are the
+// memory fitted — 256K or 512K internal, plus 0/1/2/4 MB external — over the one
+// ROM 3.0. Internal pages 0..31 are ram[0..31], external page n is ram[32 + n].
+inline bool isSamRomset(RomsetIdx r) {
+    return r == R_SAM256 || r == R_SAM512 || r == R_SAM512_1M || r == R_SAM512_2M || r == R_SAM512_4M;
+}
+inline uint32_t samIntPages(RomsetIdx r) { return r == R_SAM256 ? 16 : 32; }
+inline uint32_t samExtPages(RomsetIdx r) {
+    return r == R_SAM512_1M ? 64 : r == R_SAM512_2M ? 128 : r == R_SAM512_4M ? 256 : 0;
+}

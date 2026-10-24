@@ -43,6 +43,10 @@
 #include "app/ESPectrum.h"
 #include "speccy/video/Video.h"
 #include "speccy/devices/disk/wd1793.h"
+#include "speccy/machines/Sam/SamFdc.h"
+#include "speccy/z80/z80.h"              // must precede z80operations.h (RegisterPair)
+#include "speccy/z80/z80operations.h"   // Z80Ops::isSam (F9 = New MGT)
+#include "speccy/z80/CPU.h"
 #include "drivers/sound/PinSerialData_595.h"
 #include "app/Debug.h"
 #include "fs/SortedFiles.h"
@@ -245,7 +249,8 @@ static const char* typeLabel(const string& lcext) {
     if (lcext == "trd" || lcext == "scl" || lcext == "fdi"
                        || lcext == "udi")                   return "TR-DOS disk";
     if (lcext == "mbd")                                     return "MB-02 disk";
-    if (lcext == "dsk")                                     return "+3 disk";
+    if (lcext == "dsk")                                     return "+3 / SAM disk";
+    if (lcext == "mgt" || lcext == "sad")                   return "SAM Coupe disk";
     if (lcext == "hdd" || lcext == "img") return "Raw disk image";
     if (lcext == "vhd") return "VHD disk image";
     if (lcext == "mmc" || lcext == "hdf")                   return "esxDOS image";
@@ -281,7 +286,7 @@ static bool viewableExt(const string& lcext) {
 // whitespace) — READ.ME, FILE_ID, a readme without an extension.
 static bool infoKnownExt(const string& e) {
     static const char* const kExt[] = { "tap", "tzx", "pzx", "csw", "trd", "scl", "sna", "z80",
-        "szx", "spg", "pss", "rzx", "fdi", "dsk", "udi", "hdf", "pro", "mbd", "td0", "hdd",
+        "szx", "spg", "pss", "rzx", "fdi", "dsk", "mgt", "sad", "udi", "hdf", "pro", "mbd", "td0", "hdd",
         "img", "vhd", "mmc", "zip" };
     for (const char* k : kExt) if (e == k) return true;
     return false;
@@ -479,7 +484,7 @@ static void drawInfo() {
         { "F6", "Rename",   mng && !up },
         { "F7", "New dir",  mng },
         { "F8", "Delete",   mng && !up },
-        { "F9", "New TRD",  all },
+        { "F9", Z80Ops::isSam ? "New MGT" : "New TRD",  all },
     };
     for (const auto& vb : verbs) {
         if (!vb.on) continue;
@@ -829,8 +834,8 @@ static void viewTextFile(const string& path, const string& name) {
                     else u = '.';
                 }
                 else if (te != ENC_CP1251) u = '.';
-                // 0x80-0x86 are the UI's own symbols in this font.
-                if (u >= 0x80 && u <= 0x86) u = '.';
+                // 0x80-0x87 are the UI's own glyphs in this font.
+                if (u >= 0x80 && u <= UI_FONT_LAST) u = '.';
             }
             // A file that turned out not to be text stays readable as a shape
             // instead of painting control codes through the font.
@@ -1222,6 +1227,18 @@ static string runLoop() {
                 }
                 continue;
             }
+            if (all && k.vk == fabgl::VK_F9 && Z80Ops::isSam) {         // new MGT (SAM Coupe)
+                OSD::clickNoPause();
+                string nn;
+                if (footerAsk("New MGT:", nn)) {
+                    if (nn.size() < 4 || nn.substr(nn.size() - 4) != ".mgt") nn += ".mgt";
+                    status("Creating MGT...", -1);
+                    SamFdc::createEmpty(s_dir + nn);
+                    s_goto = nn;
+                    break;
+                }
+                continue;
+            }
             if (all && k.vk == fabgl::VK_F9) {                          // new TRD
                 OSD::clickNoPause();
                 string nn;
@@ -1286,7 +1303,7 @@ void uiProgressStatus(const char* title, const char* msg, int percent, int actio
         if (!m.empty()) m += "  ";
         m += msg;
     }
-    if (cyrillic) m = FileUtils::utf8ToCp1251(m);
+    if (cyrillic) m = FileUtils::utf8ToCp1251(m, true);
 
     const int bw = L.iw / 3;
     const int bx = L.ix + L.iw - L.pad - bw;
@@ -1470,7 +1487,7 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
     // Display form of a record: strip markers, transcode UTF-8 catalog names.
     auto disp = [&](const string& rec) -> string {
         string nm_ = isUpRec(rec) ? ".." : plainName(rec);
-        return utf8 ? FileUtils::utf8ToCp1251(nm_) : nm_;
+        return utf8 ? FileUtils::utf8ToCp1251(nm_, true) : nm_;
     };
 
     auto drawRowN = [&](int visRow) {
@@ -1561,7 +1578,7 @@ int browseIndexNav(const string& title, const string& subtitle, int side,
         const int py = L.iy + L.hdr_h;
         fill(L.ix, py, L.iw, L.path_h, C_PANEL_ALT);
         {
-            const string p = utf8 ? FileUtils::utf8ToCp1251(subtitle) : subtitle;
+            const string p = utf8 ? FileUtils::utf8ToCp1251(subtitle, true) : subtitle;
             const int fits = (L.iw - 2 * L.pad) / glyphW();
             if ((int)p.size() > fits && fits > 2)
                 text(L.ix + L.pad, py + 2, (".." + p.substr(p.size() - fits + 2)).c_str(), C_TEXT);

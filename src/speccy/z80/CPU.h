@@ -40,6 +40,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "app/ESPectrum.h"
 
 #define TSTATES_PER_FRAME_48 69888
+#define TSTATES_PER_FRAME_SAM 119808   // SAM Coupe: 6 MHz, 384 T x 312 lines
 #define TSTATES_PER_FRAME_128 70908
 #define TSTATES_PER_FRAME_EVO60 58688   // ZX-Evo BaseConf 60 Hz raster: 262 lines x 224 T (video_sync_v.v)
 #define TSTATES_PER_FRAME_PENTAGON 71680
@@ -68,6 +69,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #define INT_START48 0
 #define INT_END48 32
+#define INT_END_SAM 128                // SAM frame INT: 128 T (SimCoupe INT_ACTIVE_TIME)
 #define INT_END_BYTE48 33
 #define INT_START128 0
 #define INT_END128 36 // 35 in real +2 and Weiv's Spectramine. I'll have to check those numbers
@@ -166,7 +168,8 @@ public:
     static void FlushOnHaltTo(uint32_t stEnd); // explicit target (TS-Conf sliced loop)
     static void haltAdvanceTo(uint32_t stEnd); // HALT sleep, video walked per line (TS-Conf Stage D)
     static void tsFrameLoop(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due); // TS-Conf frame, in the .tsovl window (CPU.cpp)
-    static void nextFrameLoop(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due); // Next frame rest, in the .nxovl window (CPU.cpp)
+    static void nextFrameLoop(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due);
+    static void samFrameLoop(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due); // SAM Coupe frame (flash, CPU.cpp) // Next frame rest, in the .nxovl window (CPU.cpp)
     template <bool NEXT> static void frameRest(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due);
 
     // CPU Tstates elapsed in current frame

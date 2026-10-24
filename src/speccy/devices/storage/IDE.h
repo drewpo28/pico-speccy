@@ -32,8 +32,10 @@ public:
     // ATM is the ATM-Turbo 2+'s on-board interface (xx0F family in the DOS port
     // space, A8 = the high-byte latch — src/Atm.cpp); tied to the ATM-Turbo 2+
     // romsets the way PLUS3E / DIVIDE are tied to theirs.
+    // ATOMLITE is the SAM Coupe's Atom Lite card on drive 2's ports (machines/Sam):
+    // an 8-bit card whose driver uses ATA 8-bit transfers, i.e. the plain stride.
     enum Scheme : uint8_t { OFF = 0, NEMO = 1, PROFI = 2, SMUC = 3, PLUS3E = 4,
-                            DIVIDE = 5, ATM = 6 };
+                            DIVIDE = 5, ATM = 6, ATOMLITE = 7 };
 
     // Active scheme mirror of Config::ide_scheme (set in init()).
     static uint8_t scheme;

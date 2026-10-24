@@ -955,6 +955,13 @@ void IDE::execute_command(uint8_t cmd) {
             break;
         }
 
+        case 0xEF:   // SET FEATURES: 8-bit transfers on/off (0x01/0x81) accepted as a no-op —
+                     // every interface here moves one buffer byte per data access
+                     // anyway; other subcommands likewise (a real drive aborts the
+                     // unknown ones, nothing observed checks).
+            reg_error = 0;
+            reg_status = IDE_STATUS_READY;
+            break;
         default:
             Debug::log("IDE CMD   %02X UNKNOWN -> ABRT", cmd);
             reg_error = IDE_ERROR_ABRT;

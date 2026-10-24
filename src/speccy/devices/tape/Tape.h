@@ -232,6 +232,22 @@ public:
     static void Stop();
     static void Read();
     static bool FlashLoad();
+    // Block-level file access for a machine whose ROM loader has its own register
+    // conventions and therefore its own trap (SAM Coupe: Sam::tapeTrap). Keeps the
+    // tape-format knowledge here and the ROM semantics in the machine module.
+    // flashBlockOpen: the next flash-loadable block (TAP; TZX 0x10/0x11/0x14),
+    // file positioned at its first byte AFTER the flag; dataLen = the bytes left
+    // in the block, checksum included. False when nothing can be flash-loaded —
+    // the tape is then started for real where the ROM must read it (as FlashLoad).
+    // flashBlockDone advances to the next block (wraps to block 0 at the end).
+    struct FlashBlk { uint8_t flag; uint32_t dataLen; };
+    static bool    flashBlockOpen(FlashBlk& b);
+    static uint8_t flashBlockRead();
+    static void    flashBlockDone();
+    static bool    fastLoadEnabled();    // Fast load on, tape wear off, no RZX playback
+    // SAM Coupe T-states (6 MHz) until the playing tape's next edge, 0 when not
+    // playing / unknown (WAV, MP3). Sam::portIn's ROM edge-loop skip.
+    static uint32_t samEdgeWaitT();
     static bool CerikopikFlashLoad();
     static int JJFlashLoad(); // 0=not applicable, 1=in progress, 2=done
     static bool jjScreenAnimating; // true while JJ screen animation in progress
@@ -278,6 +294,10 @@ public:
     static void CSW_RewindTo0();
     static void CSW_Close();
     static bool pzxFlashCont;         // FlashLoad partial -> real-mode continuation pending
+    // TAP FlashLoad filled the ROM's share of a longer block and left the rest
+    // PLAYING (TAP_ContinueFrom). The traps' "stop an auto-started tape" must keep it.
+    static bool tapFlashCont;
+    static void TAP_ContinueFrom(int block, uint32_t byteIdx);
 
     // .pss (PSTP block): where the tape is and whether it plays. A TAP/TZX/PZX
     // that was playing a plain-pulse phase resumes mid-block, at the pulse; a CSW

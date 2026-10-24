@@ -5,6 +5,8 @@
 #include "drivers/sound/PinSerialData_595.h"   // ay595_reclock()
 #include "speccy/devices/sound/OplFm.h"
 #include "speccy/devices/sound/OpllFm.h"
+#include "speccy/devices/sound/MoonSplit.h"
+#include "speccy/devices/sound/PiMusica.h"
 #include <cstdio>
 #include <cstring>
 #include <cstdarg>
@@ -1109,6 +1111,14 @@ void __not_in_flash_func(render_core)() {
         // heap on every other machine, so calling them there would be a jump into
         // heap data. The flag is only ever true while TS-Conf has the queue up.
         if (g_ts_c1_live) ts_render_core1_pump();   // TS-Conf whole-line renderer jobs posted by core0 (Video.cpp)
+#if MOONSOUND
+        // ZXM-MoonSound wave half: one bounded chunk (~32 samples) up to the
+        // position core0 has published (MoonSplit.h). Never blocks on core0.
+        if (g_moon_c1_live) MoonSplit::core1Pump();
+#endif
+        // PI-CARD MUSICA: one render chunk of a tracker module into the card ring
+        // (flash body, the flag is the fast exit; the lock is taken only with room).
+        if (g_pimus_c1_live) PiMusica::core1Pump();
         // TS-Conf VDAC2: one band of the FT812 display list per call (Video.cpp).
         // The body lives in flash, not the TS overlay, so the gate is only a
         // fast exit — no jump-into-heap hazard here.
@@ -1423,7 +1433,7 @@ extern char __StackOneBottom;
 extern char __StackOneTop;
 
 // C linkage so the naked-asm `b sigbus_handler` resolves without mangling.
-extern "C" void sigbus_handler(uint32_t *frame, uint32_t exc_return) {
+extern "C" void sigbus_handler(uint32_t *frame, uint32_t exc_return, const uint32_t *hi) {
     static int count = 0;
     if (++count > 3) return;
     // Exception frame: [0]=r0 [1]=r1 [2]=r2 [3]=r3 [4]=r12 [5]=LR [6]=PC [7]=xPSR.
@@ -1468,10 +1478,21 @@ extern "C" void sigbus_handler(uint32_t *frame, uint32_t exc_return) {
                    (unsigned)frame[0], (unsigned)frame[1], (unsigned)frame[2],
                    (unsigned)frame[3], (unsigned)frame[4], (unsigned)frame[7],
                    (unsigned)exc_return);
+            // r4-r11 as they were at the fault (the trampoline pushes them): in this
+            // RAM-resident code they hold the section anchors and address registers of
+            // the function that was running, so a PC that equals one of them names the
+            // frame whose saved slot the pop read (hw 2026-10-22: PC = &VIDEO::ts_line_t
+            // out of Ports::output's epilogue on the Next, SP 16 bytes low).
+            Debug::fault_log("SIGBUS r4-r11: %08x %08x %08x %08x %08x %08x %08x %08x",
+                   (unsigned)hi[0], (unsigned)hi[1], (unsigned)hi[2], (unsigned)hi[3],
+                   (unsigned)hi[4], (unsigned)hi[5], (unsigned)hi[6], (unsigned)hi[7]);
             const uint32_t* c = frame + fwords;   // top of the faulting function's frame
-            Debug::fault_log("SIGBUS stk(%u): %08x %08x %08x %08x %08x %08x %08x %08x",
-                   fwords, (unsigned)c[0], (unsigned)c[1], (unsigned)c[2], (unsigned)c[3],
-                   (unsigned)c[4], (unsigned)c[5], (unsigned)c[6], (unsigned)c[7]);
+            // 32 words of the caller's frames (bounded by the stack top): enough to see
+            // the return addresses of three or four callers, not just the first.
+            for (unsigned i = 0; i < 32 && sp + (fwords + i + 8) * sizeof(uint32_t) <= top; i += 8)
+                Debug::fault_log("SIGBUS stk(%u)+%u: %08x %08x %08x %08x %08x %08x %08x %08x",
+                       fwords, i, (unsigned)c[i], (unsigned)c[i + 1], (unsigned)c[i + 2], (unsigned)c[i + 3],
+                       (unsigned)c[i + 4], (unsigned)c[i + 5], (unsigned)c[i + 6], (unsigned)c[i + 7]);
         } else {
             Debug::fault_log("SIGBUS regs: SP out of range, frame not dumped (exc=%08x)",
                    (unsigned)exc_return);
@@ -1487,6 +1508,8 @@ void __attribute__((naked)) sigbus(void) {
         "mrseq  r0, msp\n"
         "mrsne  r0, psp\n"
         "mov    r1, lr\n"       // EXC_RETURN: bit 2 = MSP/PSP, bit 4 = basic/FP frame
+        "push   {r4-r11}\n"     // the callee-saved registers of the faulting code
+        "mov    r2, sp\n"
         "b      sigbus_handler\n"
     );
 }

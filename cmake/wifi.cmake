@@ -24,6 +24,14 @@ if (PICOSPECCY_WIFI)
     # the network runs. All lwIP memory is heap/net-arena via Buffer::palloc (see
     # lwipopts.h); the static footprint is a few hundred bytes.
     target_link_libraries(${PROJECT_NAME} PRIVATE pico_cyw43_arch_lwip_poll)
+    # The gSPI bus driver is OUR copy, src/net/cyw43_bus_pio_spi_speccy.c (picked up
+    # by the src/ glob; a no-op TU on the non-W boards): the SDK's busy-waits in
+    # cyw43_spi_transfer() hammer the FASTPERI bridge and starve the HDMI feeder
+    # DMA — see the PICO-SPEC PATCH header in that file. Strip the SDK's source so
+    # the two do not both define cyw43_spi_transfer & co.
+    get_target_property(_cyw43_bus_srcs cyw43_driver_picow INTERFACE_SOURCES)
+    list(FILTER _cyw43_bus_srcs EXCLUDE REGEX "cyw43_bus_pio_spi\\.c$")
+    set_target_properties(cyw43_driver_picow PROPERTIES INTERFACE_SOURCES "${_cyw43_bus_srcs}")
 else()
     target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
 endif()

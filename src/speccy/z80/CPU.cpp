@@ -34,6 +34,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "CPU.h"
+#include "speccy/machines/Sam/Sam.h"
 #include "app/ESPectrum.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/core/Ports.h"
@@ -136,6 +137,7 @@ bool Z80Ops::isTc2068 = false;
 // there (0x00FF data / 0x01FF address).
 bool g_timex_machine = false;
 bool Z80Ops::isNext = false;
+bool Z80Ops::isSam = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -213,11 +215,18 @@ void CPU::updateStatesInFrame() {
         statesInFrame = (uint32_t)r.tpl * r.lines;
         IntStart = 0;
         IntEnd = r.intEnd + (r.kind == 1 ? CPU::latetiming : 0);
+    } else if (Config::arch == A_SAM) {
+        statesInFrame = TSTATES_PER_FRAME_SAM;
+        IntStart = 0;
+        IntEnd = INT_END_SAM;
     } else { // if (Config::arch == A_PENT) - by default
         statesInFrame = TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
     }
+    // SAM Coupe: no turbo — the 6 MHz clock is the machine's only speed. The
+    // user's pick (multUser) is kept for the next machine.
+    if (Config::arch == A_SAM) ESPectrum::multiplicator = 0;
     uint8_t m = ESPectrum::multiplicator;
     if (m) {
         statesInFrame <<= m;
@@ -277,7 +286,8 @@ void CPU::reset() {
     // 128K branch below hands it a separate flag set.
     Z80Ops::isTsconf = (Config::arch == A_TSCONF);
     Z80Ops::isAtm = (Config::arch == A_ATM);
-    if (!Z80Ops::isAtm) g_atm_ro = 0;
+    Z80Ops::isSam = (Config::arch == A_SAM);
+    if (!Z80Ops::isAtm && !Z80Ops::isSam) g_atm_ro = 0;
     Z80Ops::isTc2068 = Config::isTc2068();
     g_timex_machine  = Config::isTimex();
     Z80Ops::isNext = (Config::arch == A_NEXT);
@@ -408,6 +418,17 @@ void CPU::reset() {
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
         ESPectrum::target = NextReg::raster().micros;
+    } else if (Config::arch == A_SAM) {
+        // SAM Coupe: 119808 T at 6 MHz = the 48K frame period (19968 us).
+        Ports::getFloatBusData = &Ports::getFloatBusDataNone;
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        ESPectrum::target = MICROS_PER_FRAME_48;
     } else if (Config::arch == A_TSCONF) {
         // TS-Conf: Pentagon raster (224 T/line, 71680 T/frame), uncontended.
         Z80Ops::isByte = false;
@@ -466,6 +487,11 @@ void CPU::reset() {
     } else if (Config::ide_scheme == IDE::PLUS3E) {
         Config::ide_scheme = IDE::OFF;
     }
+    if (Config::arch == A_SAM) {   // the Atom Lite is the SAM's card and nobody else's
+        if (Config::ide_scheme != IDE::OFF && Config::ide_scheme != IDE::ATOMLITE) Config::ide_scheme = IDE::ATOMLITE;
+    } else if (Config::ide_scheme == IDE::ATOMLITE) {
+        Config::ide_scheme = IDE::OFF;
+    }
     // ...and the same for the +3 (divIDE): its ROM drives the divIDE taskfile, and that
     // scheme must not survive onto another machine — its decode is ahead of General
     // Sound's #B3/#BB in Ports.cpp.
@@ -513,6 +539,17 @@ void CPU::reset() {
         // HOME ROM are unrelated code — and its page-0 window would fight the SCLD
         // for the same 8 KB slots. Same three-place treatment as Beta on the +3.
         if (Z80Ops::isTc2068 && Config::esxdos) Config::esxdos = 0;
+    }
+
+    // SAM Coupe: none of the Spectrum interfaces exist on its bus; the SAA1099 is
+    // on the board. Backstop for paths that never pass through MachineSwitch.
+    if (Z80Ops::isSam) {
+        Config::betadisk = false;
+        if (Config::esxdos) Config::esxdos = 0;
+        Config::mb02 = false;
+        Config::timex_video = false;
+        Config::SAA1099 = true;
+        Sam::reset();
     }
 
     // Interface 2 cartridge: esxDOS off the bus while it is in (its automap entry
@@ -761,6 +798,7 @@ IRAM_ATTR void CPU::loop() {
     // is instantiated twice (the Profi "compile twice" shape), so the RAM-resident
     // loop carries none of the Next code (2026-10-10).
     if (Z80Ops::isNext) { nextFrameLoop(_loop_t0, pbbp, nbp, zifi_pump_due); return; }
+    if (__builtin_expect(Z80Ops::isSam, 0)) { samFrameLoop(_loop_t0, pbbp, nbp, zifi_pump_due); return; }
     frameRest<false>(_loop_t0, pbbp, nbp, zifi_pump_due);
 }
 
@@ -923,6 +961,55 @@ __attribute__((always_inline)) inline void CPU::frameRest(uint64_t _loop_t0, boo
     CPU::prev_tstates = tstates;
 }
 
+// SAM Coupe frame: two INT sources, the frame window at T 0 and the line window
+// (STATUS bit 0, Sam::lineIntStart). Unchecked slices up to the next window,
+// checked execute() while a window is up — the Stage D shape without an EI hook:
+// a window is only 128 T, so it is simply run checked whatever IFF1 says, and an
+// EI after it closed misses it, as on the chip. FLASH: SAM is butter-PSRAM only
+// and its frame costs the RAM-resident loop one test.
+__attribute__((noinline)) void CPU::samFrameLoop(uint64_t _loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due) {
+    (void)zifi_pump_due;
+    bool halted = false;
+    while (tstates < statesInFrame) {
+        const uint32_t t = tstates;
+        const uint32_t tail = statesInFrame - IntEnd;       // the next frame's INT, by wrap
+        if (t < (uint32_t)IntEnd || t >= tail || Sam::intWindowUp(t)) {
+            Z80::execute();
+            BREAKPOINTS
+            continue;
+        }
+        uint32_t next = tail;
+        const uint32_t ls = Sam::nextIntStart(t);             // line INT or MIDI-out INT
+        if (ls < next) next = ls;
+        if (Z80::isHalted()) {
+            if (!halted) { tstates_active = tstates; halted = true; }
+            haltAdvanceTo(next);
+        } else {
+            stFrame = next;
+            Z80::exec_nocheck();
+            if (stFrame == 0) {
+                if (!halted) { tstates_active = tstates; halted = true; }
+                haltAdvanceTo(next);
+            }
+        }
+        BREAKPOINTS
+    }
+    {
+        uint64_t _ef_t0 = time_us_64();
+        VIDEO::EndFrame();
+        endframe_us = (uint32_t)(time_us_64() - _ef_t0);
+    }
+    CPU::tstates_diff += CPU::tstates - CPU::prev_tstates;
+    CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
+    cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+    global_tstates += statesInFrame;
+    tstates_frame = tstates;
+    if (!halted) tstates_active = tstates_frame;
+    tstates -= statesInFrame;
+    CPU::prev_tstates = tstates;
+    Sam::frameStart();               // arm the row tick for the frame that just began
+}
+
 NX_OVL_CODE void CPU::nextFrameLoop(uint64_t _loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due) {
     frameRest<true>(_loop_t0, pbbp, nbp, zifi_pump_due);
 }
@@ -949,7 +1036,7 @@ IRAM_ATTR void CPU::haltAdvanceTo(uint32_t stEnd) {
     const uint32_t pre = tstates;
     while (tstates < stEnd) {
         uint32_t n = stEnd - tstates;
-        if (n > VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
+        if (n > VIDEO::tStatesPerLine && VIDEO::tStatesPerLine) n = VIDEO::tStatesPerLine;
         VIDEO::Draw(n, false);
     }
     Z80::incRegR((tstates - pre) >> 2);
@@ -1828,6 +1915,8 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     // gates the line itself, so the window still opens and closes on time; the CPU
     // simply never sees it. Cleared on reset with the rest of the DEC register.
     if (__builtin_expect(VIDEO::timex_int_inhibit, 0)) return false;
+    // SAM Coupe: frame window OR the line window (STATUS bits 3 / 0); flash.
+    if (__builtin_expect(Z80Ops::isSam, 0)) return Sam::intLine();
     // Adding latetiming shifts the check 1T later for Late mode.
     // At end of frame (tstates=statesInFrame-1), tmp wraps to 0, firing
     // the Late INT via straddle — this is the correct hardware behaviour.
