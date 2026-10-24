@@ -11695,6 +11695,11 @@ static void ftVideoSinkAttach() { Ft812::videoSetSink(&kFtVideoSink); }
 // ISR's frames (hw 2026-09-28: core1 died on the first frame), so the decode runs
 // on a 4 KB heap stack. Same MSP+MSPLIM switch as zipCallOnStack (ZipExtract.cpp):
 // the limit is off whenever SP crosses between the stacks.
+#if HOST_BUILD
+static void ftCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
+    (void)new_top; (void)new_bottom; fn(arg);   // a PC thread stack is ample
+}
+#else
 __attribute__((naked, noinline))
 static void ftCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
     __asm volatile(
@@ -11717,6 +11722,7 @@ static void ftCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new
         "bx   lr                \n"
     );
 }
+#endif
 static void ftVidTramp(void*) { Ft812::videoDecodeJob(); }
 
 FT_GLUE_HOT void VIDEO::ftRenderPump() {

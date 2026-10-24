@@ -591,6 +591,11 @@ string ZipExtract::extractByIndex(const string& zipPath, int fileIndex) {
 // (hw-traced 2026-07-22: SIGBUS with SP==MSPLIM==alt-stack bottom, PC inside
 // this function). IRQs during the limit-off windows are fine — SP always
 // points into a valid stack there.
+#if HOST_BUILD
+static void zipCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
+    (void)new_top; (void)new_bottom; fn(arg);   // a PC thread stack is ample
+}
+#else
 __attribute__((naked, noinline))
 static void zipCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
     __asm volatile(
@@ -613,6 +618,7 @@ static void zipCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* ne
         "bx   lr                \n"
     );
 }
+#endif
 
 struct ZipDeepArgs {
     FIL*        zipFile;

@@ -238,7 +238,7 @@ extern "C" void mem_swap_reopen(void) {
 void* mem_desc_t::mem_desc_int_t::operator new(size_t sz) {
 #if !MEM_ACCESS_TRACE
     // Locked down on purpose: 4 bytes added here is 8 KB of SRAM at 2050 pages.
-    static_assert(sizeof(mem_desc_int_t) == 12, "page descriptor grew — see MemESP.h");
+    static_assert(sizeof(void*) != 4 || sizeof(mem_desc_int_t) == 12, "page descriptor grew — see MemESP.h");
 #endif
     static uint8_t* blk  = nullptr;
     static size_t   left = 0;

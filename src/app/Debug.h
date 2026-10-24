@@ -15,7 +15,11 @@ using namespace std;
 #define STORAGE_LOG "/.config/pico-speccy/debug.log"
 
 // Current stack pointer — for stack-depth watermarks in Debug::log lines.
+#if HOST_BUILD
+static inline uint32_t debug_sp() { return (uint32_t)(uintptr_t)__builtin_frame_address(0); }
+#else
 static inline uint32_t debug_sp() { uint32_t sp; __asm volatile("mov %0, sp" : "=r"(sp)); return sp; }
+#endif
 
 class Debug
 {

@@ -466,6 +466,7 @@ void OSD::esp_hard_reset() {
     // reboot) wiped its own return addresses and then faulted on the next push:
     // SIGBUS PC=0 SP=0x115xxxxx stackOvf=1 (hw 2026-10-15). Never coming back,
     // so finish on the core0 SRAM stack from its top, guard off.
+#if !HOST_BUILD
     uint32_t sp;
     __asm volatile ("mov %0, sp" : "=r"(sp));
     if (sp < SRAM_BASE || sp >= SRAM_END) {
@@ -477,6 +478,7 @@ void OSD::esp_hard_reset() {
             "bl   ehr_tail      \n"
             :: "r"(__StackTop) : "r1", "memory");
     }
+#endif
     ehr_tail();
 }
 
@@ -607,6 +609,13 @@ bool OSD::featureBudgetGate(int featureId) {
 }
 
 
+#ifdef KBDUSB
+// hid_app.cpp — USB keyboard state-resync counters for the Hardware Info row.
+// At file scope because a linkage specification is not permitted at block scope.
+extern "C" void usb_kbd_resync_stats(unsigned *inst, unsigned *flags,
+                                     unsigned *fixes, unsigned *unproven,
+                                     unsigned *stale, unsigned *demoted);
+#endif
 #if ZIFI_NET_CLIENT
 // ─── Network file-transfer client (FTP / SFTP) ──────────────────────────────
 
@@ -718,6 +727,11 @@ static void netSessionRun(void* p) {
 // Call fn(arg) with MSP switched to new_top (8-byte aligned highest address of a
 // scratch buffer). Saves/restores SP, MSPLIM and LR. RP2350/ARM only (this whole
 // file region is gated to RP2350 via ZIFI_NET_CLIENT).
+#if HOST_BUILD
+extern "C" void net_call_on_stack(void* new_top, void (*fn)(void*), void* arg) {
+    (void)new_top; fn(arg);   // a PC thread stack is ample
+}
+#else
 extern "C" __attribute__((naked, noinline))
 void net_call_on_stack(void* new_top, void (*fn)(void*), void* arg) {
     __asm volatile(
@@ -735,6 +749,7 @@ void net_call_on_stack(void* new_top, void (*fn)(void*), void* arg) {
         "bx   lr                \n"
     );
 }
+#endif
 
 // NetArenaLease (the RAII prev-FB lease used below) now lives in NetArena.h —
 // ZIP extraction takes the same lease from ZipExtract.cpp.
@@ -1049,13 +1064,6 @@ bool osdPlayerLocations() { return f5Locations(); }
 // Readers are gated by `li < ftpd_log_count`, and ftpd_log_count only advances
 // after a successful alloc here, so they never touch a null buffer.
 static char (*ftpd_log)[FTPD_LOG_COLS] = nullptr;
-#ifdef KBDUSB
-// hid_app.cpp — USB keyboard state-resync counters for the Hardware Info row.
-// At file scope because a linkage specification is not permitted at block scope.
-extern "C" void usb_kbd_resync_stats(unsigned *inst, unsigned *flags,
-                                     unsigned *fixes, unsigned *unproven,
-                                     unsigned *stale, unsigned *demoted);
-#endif
 extern "C" size_t getLargestAllocatable(void);   // defined at the bottom of this file
 static int  ftpd_log_count = 0;  // total lines pushed (monotonic)
 static bool ftpd_log_dirty = true;

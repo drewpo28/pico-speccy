@@ -316,7 +316,11 @@ bool commit(ArchIdx arch, RomsetIdx romset) {
         if (Config::arch == A_PROFI && Config::zifi_enabled && !butter_psram_size()) {
             Config::zifi_enabled = 0;
             ZiFi::enabled = 0;
-            if (!ZiFiAT::connected) { ZiFiSock::end(); ZiFi::deinit(); }
+            if (!ZiFiAT::connected) {
+#if ZIFI_NET_CLIENT
+                ZiFiSock::end();
+#endif
+                ZiFi::deinit(); }
             OSD::osdCenteredMsg("ZiFi NIC disabled", LEVEL_WARN, 1500);
         }
         // Switching into Profi: turn DivMMC off and free its

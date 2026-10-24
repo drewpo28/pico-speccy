@@ -755,7 +755,7 @@ void Tape::WAV_Open(const string& name) {
     }
     if (strncmp(wav.data, "LIST", 4) == 0) {
         char* sch = new char[wav.subchunk_size];
-        size_t size;
+        UINT size;
         if (f_read(&tape, sch, wav.subchunk_size, &size) != FR_OK || size != wav.subchunk_size) {
             OSD::osdCenteredMsg("Unexpected end of file\n" + fname + "\n", LEVEL_ERROR);
             delete[] sch;
