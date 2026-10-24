@@ -43,6 +43,7 @@ void process_kbd_report(hid_keyboard_report_t const* report, hid_keyboard_report
 void repeat_handler(void);
 
 extern const char* host_sd_path;
+extern std::string host_root;
 extern char** host_argv;
 
 input_bits_t gamepad1_bits = {};
@@ -220,10 +221,13 @@ int main(int argc, char** argv) {
     host_argv = argv;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--sd") && i + 1 < argc) host_sd_path = argv[++i];
+        else if (!strcmp(argv[i], "--root") && i + 1 < argc) host_root = argv[++i];
         else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
-            printf("usage: %s [--sd card.img]\n"
-                   "  card.img: a FAT32/exFAT image used as the SD card (default %s)\n",
-                   argv[0], host_sd_path);
+            printf("usage: %s [--root DIR] [--sd card.img]\n"
+                   "  DIR:      the folder the emulator sees as its SD card (default ~/pico-speccy)\n"
+                   "  card.img: optional raw card image for the devices that read the card by\n"
+                   "            sector (Next DivSD, Z-Controller, NeoGS SD)\n",
+                   argv[0]);
             return 0;
         }
     }
