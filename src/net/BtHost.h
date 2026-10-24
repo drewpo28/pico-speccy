@@ -45,6 +45,21 @@ bool isAudio(const Dev& d);
 // Keyboard / mouse / joystick: classic CoD major class 0x05, or LE HID.
 bool isHid(const Dev& d);
 
+// ── Added devices ────────────────────────────────────────────────────────────
+// Every device that connected once is remembered (most recent first), up to
+// KNOWN_MAX per kind, in CONFIG_DIR/bt_audio.txt and bt_input.txt.
+static const int KNOWN_MAX = 8;
+struct Known {
+    uint8_t addr[6];
+    char    name[32];
+    bool    le;          // input only
+    uint8_t addrType;    // input only (LE)
+};
+int  known(bool input, Known* out, int max);
+bool isKnown(bool input, const uint8_t addr[6]);
+// Is this the device the audio (input) side is connected / connecting to?
+bool connectedTo(bool input, const uint8_t addr[6]);
+
 // ── Audio (A2DP source) ──────────────────────────────────────────────────────
 enum AudioState : uint8_t { A_IDLE, A_CONNECTING, A_STREAMING, A_FAILED };
 AudioState audioState();
@@ -52,7 +67,7 @@ const char* audioName();          // the device being / last connected
 // Connect to `addr` and start streaming. Asynchronous: watch audioState().
 bool audioConnect(const uint8_t addr[6], const char* name);
 void audioDisconnect();
-// The device remembered from the last successful connection ("" = none).
+// The most recently connected audio device (false = none added).
 bool remembered(uint8_t addr[6], char* name, int cap);
 // Forget a device: drop its pairing key (it has to pair again), and if it is the
 // remembered one, forget that too. Disconnects it first if it is connected.
@@ -67,8 +82,25 @@ InputState inputState();
 const char* inputName();
 bool inputConnect(const Dev& d);
 void inputDisconnect();
-// Remembered input device ("" = none): it is reconnected by itself — a classic one
-// when it pages us (keypress), an LE one as soon as it advertises.
+// What is known about the connected (or connecting) input device; nullptr when
+// none. Battery and the strings come from BLE devices only (Battery Service,
+// Device Information Service) and arrive a moment after the connection.
+struct InputInfo {
+    char     kind[12];       // "mouse", "keyboard", "gamepad", ... ("" = not read yet)
+    int8_t   battery;        // percent, -1 = unknown
+    char     maker[24];
+    char     model[24];
+    char     fw[16];
+    uint16_t descLen;        // HID descriptor size
+};
+const InputInfo* inputInfo();
+// The A2DP stream in use (false = not streaming).
+struct AudioInfo { int fs, bitpool, blocks, subbands; bool joint; };
+bool audioInfo(AudioInfo& a);
+
+// The most recently connected input device (false = none added). Every added one
+// reconnects by itself — classic when it pages us (keypress), LE as soon as it
+// advertises — one input device at a time.
 bool inputRemembered(uint8_t addr[6], char* name, int cap);
 
 // Once per frame: powers the radio up after boot when an input device is

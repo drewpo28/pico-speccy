@@ -192,12 +192,35 @@ const char* dynHint(int i) {
     return (i >= 0 && i < n) ? kDynHints[i] : nullptr;
 }
 
+// Right-pane line `i` of a dynamic level: the info callback's lines for the row
+// under the cursor when the builder gave one, else the verb list.
+uint8_t dynRightLine(int i, char* label, char* value) {
+    label[0] = value[0] = 0;
+    Level& L = curLevel();
+    if (S.dyn && S.dyn->info && L.nvis) {
+        const uint8_t r = L.vis[L.sel];
+        if (S.dyn->dim[r]) return DYN_INFO_END;
+        return S.dyn->info(S.dyn->tag[r], i, label, value);
+    }
+    const char* h = dynHint(i);
+    if (!h) return DYN_INFO_END;
+    snprintf(label, NM_DYN_LABEL_LEN, "%s", h);
+    return DYN_INFO_HINT;
+}
+
 static void refreshRightPane() {
     if (curLevel().dyn) {
         const Node* o = dynOwner();
-        S.rcount = (o && o->opts && o->count)
-                       ? o->count
-                       : (uint8_t)(sizeof(kDynHints) / sizeof(kDynHints[0]));
+        if (S.dyn && S.dyn->info) {
+            char l[NM_DYN_LABEL_LEN], v[NM_DYN_VALUE_LEN];
+            int n = 0;
+            while (n < LY.body_rows && dynRightLine(n, l, v) != DYN_INFO_END) n++;
+            S.rcount = (uint8_t)n;
+        } else {
+            S.rcount = (o && o->opts && o->count)
+                           ? o->count
+                           : (uint8_t)(sizeof(kDynHints) / sizeof(kDynHints[0]));
+        }
         S.rtop = S.rsel = 0;
         return;
     }
@@ -782,6 +805,28 @@ resume:
             if (netStatusTick()) {
                 markDirty(D_LEFT | D_RIGHT);
                 flushDirty();
+            }
+            // A level whose right pane carries live details (a Bluetooth
+            // device's battery, connection state) is rebuilt once a second.
+            if (curLevel().dyn && S.dyn && S.dyn->info) {
+                static uint64_t lastInfo = 0;
+                const uint64_t now = time_us_64();
+                if (now - lastInfo > 1000000ull) {
+                    lastInfo = now;
+                    const Node* owner = curLevel().parent;
+                    if (owner && owner->build) {
+                        Level& L = curLevel();
+                        S.dyn->clear();
+                        owner->build(*S.dyn);
+                        L.count = S.dyn->n;
+                        const uint8_t sel = L.sel;
+                        buildVisible(L);
+                        if (L.nvis) L.sel = sel < L.nvis ? sel : L.nvis - 1;
+                    }
+                    refreshRightPane();
+                    markDirty(D_LEFT | D_RIGHT);
+                    flushDirty();
+                }
             }
             if (FileUtils::storageTick() != FileUtils::StorageEvent::None)
                 storageChanged();
