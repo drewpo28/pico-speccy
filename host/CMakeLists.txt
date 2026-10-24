@@ -48,10 +48,9 @@ file(GLOB_RECURSE EXT_SRC CONFIGURE_DEPENDS
 file(GLOB XMP_SRC CONFIGURE_DEPENDS ${ROOT}/external/libxmp/*.c ${ROOT}/external/libxmp/loaders/*.c)
 set_source_files_properties(${XMP_SRC} PROPERTIES COMPILE_FLAGS
     "-DLIBXMP_CORE_PLAYER -DLIBXMP_STATIC -I${ROOT}/external/libxmp -include ${ROOT}/src/player/pp_xmp_alloc.h")
-list(APPEND EXT_SRC ${XMP_SRC}
-    ${ROOT}/external/fatfs/ff.c
-    ${ROOT}/external/fatfs/ffsystem.c
-    ${ROOT}/external/fatfs/ffunicode.c)
+# No external/fatfs/ff.c: host/host_fatfs.cpp implements the FatFs API over a host
+# directory. ff.h is still the interface (types, constants).
+list(APPEND EXT_SRC ${XMP_SRC})
 
 # Per-file flags the firmware sets in cmake/source-flags.cmake that change meaning.
 set_source_files_properties(${ROOT}/external/redcode/Z80_redcode.c PROPERTIES
