@@ -18,9 +18,11 @@
 #define PICO_BUILD_VARIANT_TAG ""
 #define PICO_GIT_BRANCH "host"
 #define PICO_GIT_COMMIT "host"
-#define PICOSPECCY_WIFI 0
+#define PICOSPECCY_WIFI 1   // the PC network behind the on-chip interfaces (host_net.cpp)
 #define PICOSPECCY_WIFI_WS 0
-#define ZIFI_NET_CLIENT 0
+#ifndef ZIFI_NET_CLIENT
+#define ZIFI_NET_CLIENT 0   // CMake sets 1 when the Pico SDK's mbedTLS is found
+#endif
 
 #define PICO_STACK_SIZE 0x2000
 #define PICO_CORE1_STACK_SIZE 0x800
@@ -81,6 +83,12 @@
 #define FB_FORCE_CHUNKS 0
 #define PERF_TRACE 0
 #define PERF_HIST 0
+
+// cmake/board.cmake's image flags, as on a 4 MB image: MoonSound is on and reads its
+// YRW801 ROM from the card, the GM.DLS bank comes from the card too.
+#define MOONSOUND 1
+#define YRW801_BUILTIN 0
+#define GM_BANK_BUILTIN 0
 
 // C11 keyword used by shared C headers that are also included from C++.
 #ifdef __cplusplus

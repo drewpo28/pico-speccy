@@ -5,12 +5,15 @@
 // (pcm_player_attach) is drained by the same callback, as the PWM timer does.
 #include <SDL.h>
 #include <atomic>
+#include <chrono>
+#include <thread>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
 #include "app/Config.h"
 #include "drivers/sound/pwm_audio.h"
+#include "speccy/devices/gs/GS.h"
 
 #define VOLUME_0DB 16
 static volatile uint8_t vol = VOLUME_0DB;
@@ -18,6 +21,11 @@ uint8_t link_i2s_code = 0xFF;
 bool is_i2s_enabled = false;
 volatile uint32_t g_pcm_tick_ct = 0;
 volatile uint32_t g_pcm_hold_ct = 0;
+
+volatile int16_t* volatile pcm_card_ring = nullptr;   // PI-CARD MUSICA
+volatile uint32_t pcm_card_mask = 0;
+volatile uint32_t pcm_card_r = 0;
+volatile uint32_t pcm_card_w = 0;
 
 volatile int16_t* volatile pcm_player_ring = nullptr;
 volatile uint32_t pcm_player_mask = 0;
@@ -55,6 +63,62 @@ volatile uint32_t host_au_in = 0, host_au_out = 0, host_au_fmin = 0xFFFFFFFF, ho
 static SDL_AudioDeviceID s_dev = 0;
 static int s_hz = 31250;
 
+// General Sound / NeoGS. On the board GS::getLiveLR() is called once per PCM tick,
+// every 32 us, and its own ring holds only ~128 samples (GS_RING_TARGET) with a
+// drain-rate servo tuned to that regular pace. The SDL callback pulls hundreds of
+// samples at once, which empties that ring and repeats its last sample - audible as
+// stutter. So a thread calls getLiveLR at the board's pace (31250/s, a millisecond's
+// worth at a time) into a ring of our own, and the callback reads that ring with a
+// cushion and the same +-0.5% follow as the ZX ring.
+static constexpr uint32_t GRING = 8192;
+static constexpr uint32_t GTARGET = 1024;          // ~33 ms
+static int32_t s_gring[GRING][2];
+static std::atomic<uint32_t> s_gw{0}, s_gr{0};
+static uint32_t s_gfrac = 0;
+static bool s_gprimed = false;
+
+static void gs_sampler() {
+    using clk = std::chrono::steady_clock;
+    const auto t0 = clk::now();
+    uint64_t made = 0;
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        const uint64_t us = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(clk::now() - t0).count();
+        const uint64_t due = us * 31250 / 1000000;
+        if (due - made > 4096) made = due - 4096;   // after a stall: do not replay seconds
+        if (!GS::enabled) { made = due; continue; }
+        const int32_t vol8 = (int32_t)((uint32_t)(vol + Config::audio_boost) << 3);
+        while (made < due) {
+            uint8_t gL, gR;
+            GS::getLiveLR(gL, gR);
+            const uint32_t w = s_gw.load(std::memory_order_relaxed);
+            if (w - s_gr.load(std::memory_order_acquire) >= GRING - 1) s_gr.fetch_add(1, std::memory_order_acq_rel);
+            s_gring[w % GRING][0] = ((int32_t)gL - 128) * vol8;
+            s_gring[w % GRING][1] = ((int32_t)gR - 128) * vol8;
+            s_gw.store(w + 1, std::memory_order_release);
+            made++;
+        }
+    }
+}
+
+// One GS sample for the callback (0 while the ring is priming).
+static inline void gs_next(uint32_t step, int32_t& l, int32_t& r) {
+    l = r = 0;
+    uint32_t rp = s_gr.load(std::memory_order_relaxed);
+    const uint32_t wp = s_gw.load(std::memory_order_acquire);
+    if (!s_gprimed) { if (wp - rp >= GTARGET) s_gprimed = true; else return; }
+    if (wp - rp < 2) { s_gprimed = false; return; }
+    const int32_t* a = s_gring[rp % GRING];
+    const int32_t* b = s_gring[(rp + 1) % GRING];
+    const int64_t f = s_gfrac;
+    l = a[0] + (int32_t)(((int64_t)(b[0] - a[0]) * f) >> 16);
+    r = a[1] + (int32_t)(((int64_t)(b[1] - a[1]) * f) >> 16);
+    s_gfrac += step;
+    rp += s_gfrac >> 16;
+    s_gfrac &= 0xFFFF;
+    s_gr.store(rp, std::memory_order_release);
+}
+
 static void audio_cb(void*, Uint8* out, int bytes) {
     int16_t* o = (int16_t*)out;
     const int frames = bytes / 4;
@@ -74,6 +138,14 @@ static void audio_cb(void*, Uint8* out, int bytes) {
         step = (uint32_t)(0x10000 + (int64_t)err * 328 / (int32_t)TARGET);
         // A backlog far past the cushion (a stall, the menu): skip to the cushion.
         if (fill > 3 * TARGET) s_r.store(s_w.load(std::memory_order_acquire) - TARGET, std::memory_order_release);
+    }
+    uint32_t gstep = 0x10000;
+    if (GS::enabled) {
+        const uint32_t gfill = s_gw.load(std::memory_order_acquire) - s_gr.load(std::memory_order_relaxed);
+        int32_t gerr = (int32_t)gfill - (int32_t)GTARGET;
+        if (gerr > (int32_t)GTARGET) gerr = GTARGET;
+        if (gerr < -(int32_t)GTARGET) gerr = -(int32_t)GTARGET;
+        gstep = (uint32_t)(0x10000 + (int64_t)gerr * 328 / (int32_t)GTARGET);
     }
     for (int i = 0; i < frames; i++) {
         g_pcm_tick_ct++;
@@ -121,6 +193,25 @@ static void audio_cb(void*, Uint8* out, int bytes) {
             s_dcR += ((s_lastR << 16) - s_dcR) >> 10;
             l = s_lastL - (s_dcL >> 16);
             r = s_lastR - (s_dcR >> 16);
+            // The board's PCM tick (pwm_audio.cpp pcm_call_inner) adds two live
+            // sources per output sample: General Sound / NeoGS and PI-CARD MUSICA.
+            const int32_t vol8 = (int32_t)((uint32_t)(vol + Config::audio_boost) << 3);
+            if (GS::enabled) {
+                int32_t gl, gr;
+                gs_next(gstep, gl, gr);
+                l += gl;
+                r += gr;
+            }
+            volatile int16_t* cring = pcm_card_ring;
+            if (cring) {
+                const uint32_t cr = pcm_card_r;
+                if (cr != pcm_card_w) {
+                    const uint32_t k = (cr & pcm_card_mask) << 1;
+                    l += ((int32_t)cring[k] * vol8) >> 8;
+                    r += ((int32_t)cring[k + 1] * vol8) >> 8;
+                    pcm_card_r = cr + 1;
+                }
+            }
         }
         o[2 * i] = (int16_t)(l > 32767 ? 32767 : l < -32768 ? -32768 : l);
         o[2 * i + 1] = (int16_t)(r > 32767 ? 32767 : r < -32768 ? -32768 : r);
@@ -140,6 +231,8 @@ void pcm_setup(int hz) {
     want.samples = 256;
     want.callback = audio_cb;
     s_dev = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
+    static bool gsThread = false;
+    if (!gsThread) { gsThread = true; std::thread(gs_sampler).detach(); }
     if (s_dev) {
         SDL_PauseAudioDevice(s_dev, 0);
         fprintf(stderr, "host: audio %s, %d Hz, %u-frame buffer\n",
@@ -183,6 +276,14 @@ void pcm_player_attach(int16_t* ring, uint32_t frames) {
     pcm_player_ring = ring;
 }
 void pcm_player_detach() { pcm_player_ring = nullptr; }
+
+void pcm_card_attach(int16_t* ring, uint32_t frames) {
+    pcm_card_ring = nullptr;
+    pcm_card_mask = frames - 1;
+    pcm_card_r = pcm_card_w = 0;
+    pcm_card_ring = ring;
+}
+void pcm_card_detach() { pcm_card_ring = nullptr; }
 
 // No line-in on the host.
 bool pcm_data_in(void) { return false; }

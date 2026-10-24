@@ -33,6 +33,9 @@ size_t bankSizePlain()    { return (size_t)(__gm_bank_end - __gm_bank_start); }
 size_t bankSizeExtended() { return (size_t)(__gm_bank_end - __psramrom_start); }
 
 bool intact() {
+#if HOST_BUILD
+    return true;   // a PC: these ROMs are ordinary data in the executable, never traded
+#endif
     if (regionSize() < sizeof(kMagic)) return false;   // nothing linked here
     const volatile uint8_t* p = (const volatile uint8_t*)__psramrom_start;
     for (size_t i = 0; i < sizeof(kMagic); i++)

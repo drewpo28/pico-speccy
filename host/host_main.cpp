@@ -25,6 +25,7 @@
 #include "host_video.h"
 #include "host_kbd_prelude.h"
 #include "app/ESPectrum.h"
+#include "net/HttpsGet.h"
 #include "speccy/video/Video.h"
 #include "speccy/devices/gs/GS.h"
 
@@ -42,6 +43,9 @@ extern volatile bool g_next_c1_live;
 }
 
 void process_kbd_report(hid_keyboard_report_t const* report, hid_keyboard_report_t const* prev);
+void host_pads_event(const SDL_Event& e);   // host_pad.cpp
+void host_pads_sample();
+void host_pads_apply();
 void repeat_handler(void);
 
 extern const char* host_sd_path;
@@ -110,6 +114,7 @@ void repeat_me_for_input() {
         process_kbd_report(&r, &s_prev);
         s_prev = r;
     }
+    host_pads_apply();
     static uint64_t t_rep = 0;
     const uint64_t now = time_us_64();
     if (now - t_rep > 150000) { repeat_handler(); t_rep = now; }
@@ -118,6 +123,8 @@ void repeat_me_for_input() {
 // ---- threads ------------------------------------------------------------------------
 static std::atomic<bool> s_quit{false};
 
+volatile uint64_t host_gs_busy_us = 0;   // core1 time inside GS::pump that ran the GS-Z80
+
 static void core1_loop() {
     host_cpuid = 1;
     while (!s_quit) {
@@ -125,14 +132,8 @@ static void core1_loop() {
         if (g_ts_c1_live) { ts_render_core1_pump(); idle = false; }
         if (g_ft_c1_live) { ft812_render_core1_pump(); idle = false; }
         if (g_next_c1_live) { next_render_core1_pump(); idle = false; }
-        if (GS::enabled) {
-            bool run = true;
-            if (g_ts_c1_live) {
-                if (GS::idleThrottled) run = !ts_render_core1_busy();
-                else if (ts_render_core1_prio()) run = GS::hostActive();
-            }
-            if (run) { GS::pump(); idle = false; }
-        }
+        // GS::pump is NOT called here: the host runs the card on the emulator
+        // thread in lockstep with the guest's clock (GS::pumpGuest, GS.cpp).
         if (idle) std::this_thread::sleep_for(std::chrono::microseconds(200));
     }
 }
@@ -141,6 +142,12 @@ static void core0_main() {
     host_cpuid = 0;
     ESPectrum::setup();
     std::thread(core1_loop).detach();
+#if ZIFI_NET_CLIENT
+    // PICOSPECCY_NETTEST=https://host/path runs the firmware's own HTTPS self-test
+    // (DNS, TCP, TLS, HTTP) once at start - a network check without the menu.
+    if (const char* u = getenv("PICOSPECCY_NETTEST"))
+        fprintf(stderr, "host: net self-test %s: %s\n", u, HttpsGet::selfTest(u) ? "OK" : "FAILED");
+#endif
     ESPectrum::loop();
 }
 
@@ -398,7 +405,7 @@ int main(int argc, char** argv) {
     // ring in host_audio.cpp adapts). A value already in the environment wins.
     setenv("PIPEWIRE_LATENCY", "512/48000", 0);
     setenv("PULSE_LATENCY_MSEC", "20", 0);
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS) != 0) {
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
@@ -418,6 +425,7 @@ int main(int argc, char** argv) {
     while (!s_quit) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            host_pads_event(e);
             if (e.type == SDL_QUIT) s_quit = true;
             else if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat) {
                 // Alt+Enter toggles full screen; that Enter (down and up) never reaches
@@ -444,6 +452,17 @@ int main(int argc, char** argv) {
                 const uint32_t h = g_pcm_hold_ct;
                 extern volatile uint32_t host_au_in, host_au_out, host_au_fmin, host_au_fmax, host_au_stall;
                 uint32_t host_audio_target();
+                static uint32_t lastInt = 0;
+                const uint32_t gi = GS::int_count, gsInt = (gi - lastInt) / 5;
+                lastInt = gi;
+                if (getenv("PICOSPECCY_AUDIO_TRACE") && GS::enabled)
+                {
+                    static uint64_t lastBusy = 0;
+                    const uint64_t b = host_gs_busy_us;
+                    fprintf(stderr, "host: GS %u int/s (37500 = real time), GS-Z80 busy %u%%%s\n", gsInt,
+                            (unsigned)((b - lastBusy) / 50000), GS::idleThrottled ? " [idle throttle]" : "");
+                    lastBusy = b;
+                }
                 if (getenv("PICOSPECCY_AUDIO_TRACE"))
                     fprintf(stderr, "host: audio in %u/s out %u/s fill %u..%u target %u dry %u (emulator stopped %u)\n",
                             host_au_in / 5, host_au_out / 5, host_au_fmin, host_au_fmax, host_audio_target(),
@@ -453,6 +472,7 @@ int main(int argc, char** argv) {
                 lastHold = h;
             }
         }
+        host_pads_sample();
         const uint32_t f = host_frames.load();
         if (f != shown) { shown = f; present(ren, tex, tw, th); }
         else SDL_Delay(2);
