@@ -293,6 +293,7 @@ bool CodeOverlay::loaded(Which x) {
 }
 
 #else  // no overlay at all
+#include <cstddef>
 
 extern "C" char __HeapLimit[];
 extern "C" char* heap_ceiling_now() { return __HeapLimit; }
