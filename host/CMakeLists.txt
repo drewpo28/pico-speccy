@@ -36,6 +36,11 @@ list(APPEND EMU_SRC
     ${ROOT}/src/drivers/framebuffer/I2S.cpp
     ${ROOT}/src/drivers/graphics/graphics.c)
 
+# The on-chip radio's lwIP/CYW43 halves; host/host_net.cpp puts the PC's network
+# behind the same interfaces (WifiNet, WifiSock, AtEmu).
+list(FILTER EMU_SRC EXCLUDE REGEX "/src/net/(WifiNet|WifiSock|AtEmu)\\.cpp$")
+list(FILTER EMU_SRC EXCLUDE REGEX "/src/net/cyw43_[^/]*\\.c$")
+
 # Firmware-only: libc/libstdc++ link-time shims (malloc wrap, terminate handler).
 list(FILTER EMU_SRC EXCLUDE REGEX "/src/app/cxx_shims\\.cpp$")
 
@@ -48,6 +53,29 @@ file(GLOB_RECURSE EXT_SRC CONFIGURE_DEPENDS
 file(GLOB XMP_SRC CONFIGURE_DEPENDS ${ROOT}/external/libxmp/*.c ${ROOT}/external/libxmp/loaders/*.c)
 set_source_files_properties(${XMP_SRC} PROPERTIES COMPILE_FLAGS
     "-DLIBXMP_CORE_PLAYER -DLIBXMP_STATIC -I${ROOT}/external/libxmp -include ${ROOT}/src/player/pp_xmp_alloc.h")
+# mbedTLS for HTTPS (TlsSock) and SSH: the Pico SDK's vendored copy with the
+# firmware's own config, so the host network client is the board's. Without it the
+# client (catalog over HTTPS, FTP, SSH) is left out and only the guest NIC works.
+set(PICO_SDK_PATH "$ENV{PICO_SDK_PATH}" CACHE PATH "Pico SDK (for its mbedTLS)")
+if(NOT PICO_SDK_PATH)
+    file(GLOB _sdks "$ENV{HOME}/.pico-sdk/sdk/*")
+    list(SORT _sdks)
+    list(REVERSE _sdks)
+    list(GET _sdks 0 _sdk0)
+    set(PICO_SDK_PATH "${_sdk0}")
+endif()
+set(MBEDTLS_DIR "${PICO_SDK_PATH}/lib/mbedtls")
+if(EXISTS "${MBEDTLS_DIR}/library/ssl_tls.c")
+    file(GLOB MBEDTLS_SRC "${MBEDTLS_DIR}/library/*.c")
+    set(HOST_NET_CLIENT 1)
+    message(STATUS "host: network client on (mbedTLS from ${MBEDTLS_DIR})")
+else()
+    set(MBEDTLS_SRC "")
+    set(HOST_NET_CLIENT 0)
+    message(STATUS "host: no Pico SDK mbedTLS found - HTTPS/FTP/SSH left out (set PICO_SDK_PATH)")
+endif()
+list(APPEND EXT_SRC ${MBEDTLS_SRC})
+
 # No external/fatfs/ff.c: host/host_fatfs.cpp implements the FatFs API over a host
 # directory. ff.h is still the interface (types, constants).
 list(APPEND EXT_SRC ${XMP_SRC})
@@ -105,6 +133,17 @@ target_include_directories(pico-speccy PRIVATE
     ${ROOT}/src/drivers/framebuffer
     ${ROOT}/src/drivers/input
     ${SDL2_INCLUDE_DIRS})
+
+target_compile_definitions(pico-speccy PRIVATE ZIFI_NET_CLIENT=${HOST_NET_CLIENT}
+    "MBEDTLS_CONFIG_FILE=\"${ROOT}/src/drivers/board/mbedtls_config_picospeccy.h\"")
+# GS per-second perf counters ([GS PERF] lines), as on the board: -DGS_PERF_TRACE=ON.
+option(GS_PERF_TRACE "General Sound per-second perf counters" OFF)
+if(GS_PERF_TRACE)
+    target_compile_definitions(pico-speccy PRIVATE GS_PERF_TRACE=1)
+endif()
+if(HOST_NET_CLIENT)
+    target_include_directories(pico-speccy PRIVATE ${MBEDTLS_DIR}/include)
+endif()
 
 target_compile_options(pico-speccy PRIVATE
     -include ${CMAKE_CURRENT_SOURCE_DIR}/host_config.h

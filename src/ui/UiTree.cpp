@@ -1834,7 +1834,10 @@ static const Node kNetwork[] = {
     NM_ACTIONV_EN(TXT_NET_WIFI, act_wifi, vl_wifi, nullptr, p_espLink),
     // The ESP link settings, shared by WiFi and the NIC — indented under WiFi.
     // Transport's option list is per-board (GPIO pairs), hence the runtime radio.
+#if !HOST_BUILD
+    // Host: always the PC's network (Config::load pins transport 2).
     NM_RADIO_D(NM_IND TXT_NET_TRANSPORT, SET_ZIFI_TRANSPORT, zifi_transportOpts, nullptr),
+#endif
     NM_RADIO    (NM_IND TXT_NET_BAUD,     SET_ZIFI_BAUD,      opt_zifi_baud,     nullptr),
     NM_RADIO    (TXT_NET_TZ,   SET_WIFI_TZ, opt_tz, nullptr),
     NM_ACTION_EN(TXT_NET_SYNC, act_sntp, nullptr, p_wifiOn),

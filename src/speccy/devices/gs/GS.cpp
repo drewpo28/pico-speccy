@@ -2858,6 +2858,13 @@ void __not_in_flash_func(GS::pump)() {
             GS_PERF(s_perf_idle_calls++);
         }
     }
+#if HOST_BUILD
+    // A PC thread, not a core of its own: the OS may leave it unscheduled for
+    // several ms, and every microsecond past the clamps below is GS time lost (the
+    // music plays slow - 94% measured). Allow 20 ms of catch-up instead.
+    dt_cap = 20000;
+    cap = (int32_t)(((uint64_t)q16 * 20000u) >> 16);
+#endif
     if (dt_us > dt_cap) {
         GS_PERF(s_perf_dt_clamps++);
         dt_us = dt_cap;
@@ -2919,6 +2926,81 @@ void __not_in_flash_func(GS::pump)() {
     (void)ran;
     gs_end_pump();
 }
+
+#if HOST_BUILD
+// Host lockstep. On the board the GS-Z80 runs on core1 against the wall clock,
+// while core0 emulates a ZX frame in a burst (a few ms) and then idles — so in
+// guest time the card answers late, and every handshake costs the guest dozens
+// of #BB polls. On a PC the burst is ~10x shorter still: Z-Player 5 reading a
+// pattern (~1000 bytes, one round trip each) took ~16 guest frames instead of
+// one ("hangs at every pattern change", 2026-10-25: TST 71680 in its stats).
+// Here the card is advanced to the guest's own clock before every host access
+// and once per frame, so it sees the host exactly as on hardware and none of
+// the board's co-scheduling waits are needed (kGsLockstep below).
+extern volatile uint64_t host_gs_busy_us;
+extern "C" uint64_t gs_host_guest_t(uint8_t* mult);
+static inline void gs_host_sd_service();
+static uint64_t s_lk_prev_ts = 0;
+static bool     s_lk_started = false;
+static uint64_t s_lk_acc_q16 = 0;
+
+// Card T for `us` µs of guest time, at the turbo-boot rate when it applies.
+static inline uint32_t gs_lk_q16() {
+    uint32_t q16 = s_t_per_us_q16;
+    if (s_ngs && !s_gs_main_loop) q16 <<= 3;   // turbo-boot, as in pump()
+    return q16;
+}
+
+static void gs_lk_run(int32_t floor_t) {
+    if (!gs_try_begin_pump()) return;
+    const uint64_t t0 = time_us_64();
+    if (__builtin_expect(!gs_cpu_hooks_ok(), 0)) gs_cpu_hooks_repair();
+    while (s_pump_credit_t >= floor_t) {
+        const int want = s_pump_credit_t > 4000 ? 4000 : s_pump_credit_t;
+        const int ran = GS::step(want);
+        s_pump_credit_t -= ran;
+        GS_PERF(s_perf_tstates += (uint32_t)ran);
+        GS_PERF(s_perf_pump_calls++);
+        if (ran <= 0) break;
+        if (s_pump_credit_t >= floor_t) gs_host_sd_service();  // card may wait on SD
+    }
+    if (s_pump_credit_t < -(int32_t)GS_INT_PERIOD) s_pump_credit_t = -(int32_t)GS_INT_PERIOD;
+    host_gs_busy_us += time_us_64() - t0;
+    gs_end_pump();
+}
+
+void GS::pumpGuest() {
+    if (!enabled) return;
+    // Monotonic guest clock: the per-frame counter wraps at the frame end, and a
+    // frame with no host access would otherwise look like a few T (first cut:
+    // GS at 13 of 20 MHz).
+    uint8_t mult;
+    const uint64_t tsn = gs_host_guest_t(&mult);
+    if (!s_lk_started || tsn < s_lk_prev_ts) { s_lk_prev_ts = tsn; s_lk_started = true; return; }
+    uint64_t d = tsn - s_lk_prev_ts;
+    s_lk_prev_ts = tsn;
+    if (d > 4000000u) d = 4000000u;            // a reset / pause: at most ~1 s at 3.5 MHz
+    const uint32_t dT = (uint32_t)d;
+    if (s_ngs_boot_hold || dT == 0) return;
+    // guest µs = T * 2 / (7 << mult); card T = µs * q16 / 65536
+    s_lk_acc_q16 += ((uint64_t)dT * gs_lk_q16() * 2u) / (7u << mult);
+    s_pump_credit_t += (int32_t)(s_lk_acc_q16 >> 16);
+    s_lk_acc_q16 &= 0xFFFFu;
+    gs_lk_run(32);
+}
+
+// A core0 wait for the card (the boot gate): guest time stands still, so run
+// the card on its own for a slice of wall time.
+static void gs_lk_run_free() {
+    s_pump_credit_t += 2000;
+    gs_lk_run(1);
+}
+static constexpr bool kGsLockstep = true;
+#define GS_LK_SYNC() GS::pumpGuest()
+#else
+static constexpr bool kGsLockstep = false;
+#define GS_LK_SYNC() ((void)0)
+#endif
 
 // Current stereo DAC mix, GS or NeoGS flavor. GS: Unreal stereo mix
 // (L=0+1, R=2+3 with 50% cross-mix, /2 final scale). NeoGS: per GSCFG0 —
@@ -3120,6 +3202,7 @@ static void ngs_g2h_purge_dead() {
 }
 
 uint8_t GS::hostReadB3() {
+    GS_LK_SYNC();
     GS_PERF(s_perf_h_b3r++);
     gs_host_touch();
     s_bb_pace_streak = 0;  // host made progress — new poll episode
@@ -3214,6 +3297,7 @@ static uint32_t s_cmd_w_acks  = 0;
 static uint32_t s_cmd_w_polls = 0;
 
 uint8_t GS::hostReadBB() {
+    GS_LK_SYNC();
 #if NGS_TRACE
     if ((++gs_dbg_bb_polls & 0xFFFu) == 0) {
         gs_dbg_bb_pc = gs_host_z80_pc();
@@ -3365,7 +3449,7 @@ uint8_t GS::hostReadBB() {
         if (s_bb_pace_streak == 48) {              // episode start
             s_bb_pace_t0_us   = time_us_32();
             s_bb_pace_goal_us = 0;
-        } else if (s_bb_pace_streak > 48 && !maxsp) {
+        } else if (!kGsLockstep && s_bb_pace_streak > 48 && !maxsp) {
             uint32_t dt = (tsn >= s_bb_pace_prev_ts)
                             ? tsn - s_bb_pace_prev_ts
                             : tsn + (sif - s_bb_pace_prev_ts);
@@ -3422,6 +3506,7 @@ static uint32_t s_b3_seen_r   = 0;
 static uint32_t s_b3_drain_us = 0;
 
 void GS::hostWriteB3(uint8_t data) {
+    GS_LK_SYNC();
     GS_PERF(s_perf_h_b3w++);
     // Classic GS: the host READ #B3 since its last write while its own bytes were
     // still unread (s_host_d7_off). On hardware that read dropped data_bit, so the
@@ -3458,7 +3543,7 @@ void GS::hostWriteB3(uint8_t data) {
     // emulated ZX ("ZP4 тормозит", hw 2026-08-10). Only a writer running
     // AHEAD of the card (a blast) accumulates 4+, and only blasts need the
     // latch-like pacing.
-    if (s_ngs && s_host_fifo_w - s_host_fifo_r >= 4) {
+    if (!kGsLockstep && s_ngs && s_host_fifo_w - s_host_fifo_r >= 4) {
         uint32_t now = time_us_32();
         uint32_t p0 = s_h2c_pops;
         if (p0 != s_b3_seen_r) { s_b3_seen_r = p0; s_b3_drain_us = now; }
@@ -3480,8 +3565,16 @@ void GS::hostWriteB3(uint8_t data) {
     uint32_t w = s_host_fifo_w;
     uint32_t used = w - s_host_fifo_r;
     if (used >= GS_HOST_FIFO_SIZE) {
+        // Wait for room only while the card is actually draining. A guest that
+        // writes (and reads) #B3 with no command to the card fills the FIFO and
+        // nothing ever pops it: 500 us per OUT froze the emulator (~2500 OUT/s,
+        // fifo=512, BB=0 in the PERF log, 2026-10-25). On hardware the write
+        // simply overwrites the latch.
         uint32_t spin_t0 = time_us_32();
-        while ((s_host_fifo_w - s_host_fifo_r) >= GS_HOST_FIFO_SIZE
+        uint32_t p0 = s_h2c_pops;
+        if (p0 != s_b3_seen_r) { s_b3_seen_r = p0; s_b3_drain_us = spin_t0; }
+        const bool draining = !kGsLockstep && (spin_t0 - s_b3_drain_us) <= 15000;
+        while (draining && (s_host_fifo_w - s_host_fifo_r) >= GS_HOST_FIFO_SIZE
                && (time_us_32() - spin_t0) < 500) {
             __dmb();
         }
@@ -3530,6 +3623,7 @@ void GS::hostWriteB3(uint8_t data) {
 }
 
 void GS::hostWriteBB(uint8_t data) {
+    GS_LK_SYNC();
     GS_PERF(s_perf_h_bbw++);
     gs_host_touch();
     s_bb_pace_streak = 0;  // host made progress — new poll episode
@@ -3576,6 +3670,9 @@ void GS::hostWriteBB(uint8_t data) {
         const uint32_t boot_cap_us = s_ngs ? 3000000 : 2000000;
         uint32_t t0 = time_us_32();
         while (!s_gs_main_loop && (time_us_32() - t0) < boot_cap_us) {
+#if HOST_BUILD
+            gs_lk_run_free();      // lockstep: nothing else runs the card now
+#endif
             gs_host_sd_service();  // NGS: firmware may be inside the SD boot path
             gs_host_touch();       // the spin IS the host waiting: keeps hostActive()
                                    // true, i.e. turbo-boot on under a TS-Conf renderer
@@ -3717,6 +3814,7 @@ bool __not_in_flash_func(GS::hostActive)() {
 
 void GS::hostWriteCtrl(uint8_t data) {
     if (!enabled || !neogs) return;
+    GS_LK_SYNC();
     gs_host_touch();
     gs_hs('N', data, reg_status);
     gs_host_sd_service();

@@ -167,6 +167,11 @@ static inline void stdio_set_driver_enabled(stdio_driver_t* d, bool e) { (void)d
 static inline bool stdio_init_all(void) { return true; }
 static inline void stdio_flush(void) { fflush(stdout); }
 
+// ---- pico/error.h -------------------------------------------------------------------
+#ifndef PICO_OK
+enum { PICO_OK = 0, PICO_ERROR_NONE = 0, PICO_ERROR_GENERIC = -1, PICO_ERROR_TIMEOUT = -2 };
+#endif
+
 // ---- pico/rand.h --------------------------------------------------------------------
 uint32_t get_rand_32(void);
 uint64_t get_rand_64(void);

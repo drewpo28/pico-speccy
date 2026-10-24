@@ -1811,6 +1811,18 @@ static void wlogCb(const char* l) {
 }
 
 void act_wifi() {
+#if HOST_BUILD
+    // A PC: the OS owns WiFi; the firmware just uses its connection.
+    {
+        netStatusInvalidate();
+        netStatusRefresh();
+        char m[64];
+        if (s_netConn) snprintf(m, sizeof m, " PC network: %s ", ZiFiAT::current_ip.c_str());
+        else snprintf(m, sizeof m, " The PC has no network ");
+        uiToast(m, !s_netConn, 2500);
+        return;
+    }
+#endif
     if (Config::wifi_enabled) {
         netStatusRefresh();
         char q[96];

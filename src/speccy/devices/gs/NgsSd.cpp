@@ -507,7 +507,9 @@ void NgsSd::reset() {
     s_req_op = REQ_NONE;
     s_dbg_logged = 0;
     cache_flush();   // card may have been swapped
-    DWORD sectors = 0;
+    // LBA_t: with FF_LBA64 the USB ioctl (and the host build's) writes 8 bytes - a
+    // DWORD here gets its stack neighbour clobbered (the DivMMC.cpp fix, missed here).
+    LBA_t sectors = 0;
     if (disk_ioctl(0, GET_SECTOR_COUNT, &sectors) != RES_OK) sectors = 0;
     s_sector_count = (uint32_t)sectors;
     build_csd(s_sector_count);

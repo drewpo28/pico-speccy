@@ -67,6 +67,12 @@ public:
     // Wall-clock-locked pump. Call in a tight loop on core1; runs the GS-Z80
     // at exactly 12 MHz regardless of how fast the emulator could go.
     static void pump();
+#if HOST_BUILD
+    // Host build: the GS-Z80 runs on the emulator thread in lockstep with the
+    // guest's clock. Call at every host port access and once per frame; it
+    // runs the card for exactly the guest time elapsed since the last call.
+    static void pumpGuest();
+#endif
 
     // Polled from core0 once per second; emits one perf-line that combines
     // core0 (per-frame IDL min) and core1 (GS-Z80 t-states, port-04 spin)

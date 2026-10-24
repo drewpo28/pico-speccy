@@ -710,6 +710,14 @@ extern "C" void gs_host_clock(uint32_t* tstates, uint32_t* states_in_frame,
   *mult = ESPectrum::multiplicator;
   *max_speed = ESPectrum::maxSpeed ? 1 : 0;
 }
+#if HOST_BUILD
+// Monotonic guest T-state count (does not wrap at the frame end) for the host's
+// GS lockstep, plus the current clock multiplier.
+extern "C" uint64_t gs_host_guest_t(uint8_t* mult) {
+  *mult = ESPectrum::multiplicator;
+  return CPU::global_tstates + CPU::tstates;
+}
+#endif
 // Return address of whatever called the #BB poll loop. The PC alone is useless
 // there — all three waits are three-byte loops and the host sits in one of them
 // permanently — but the word on top of its stack names the routine, exactly as

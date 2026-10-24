@@ -1601,6 +1601,9 @@ void Config::load() {
 #if !PICOSPECCY_WIFI
         if (zifi_transport == 2) zifi_transport = 0;   // on-chip radio exists only on W boards
 #endif
+#if HOST_BUILD
+        zifi_transport = 2;   // a PC: the host-socket transport (host/host_net.cpp)
+#endif
         nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
         nvs_get_str("snap_exp", snap_export_dir, sts);
         nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
@@ -1796,6 +1799,12 @@ void Config::load() {
     loaded = true;
     if (FileUtils::fsMount)
         loadWifiConfig();
+#if HOST_BUILD
+    // A PC: the network is the OS's, so "WiFi" is always on (the boot sync then
+    // takes the time from the PC clock, host/host_net.cpp).
+    wifi_enabled = true;
+    if (wifi_ssid.empty()) wifi_ssid = "PC";
+#endif
 }
 
 // Streams key=value lines straight to the SD file when one is open;

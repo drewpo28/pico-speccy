@@ -4979,6 +4979,9 @@ void ESPectrum::loop() {
     // before the pacing wait below, so the cost lands in the frame budget we
     // then wait out rather than on top of it.
     if (GS::neogs) { GS::ngsBootRelease(); NgsSd::service(); NgsMp3::service(); }
+#if HOST_BUILD
+    GS::pumpGuest();   // host: the card runs here, in step with the guest (GS.cpp)
+#endif
     // Update stats every 50 frames
     if (VIDEO::OSD && VIDEO::framecnt >= 10) {
       if (VIDEO::OSD & 0x04) {
