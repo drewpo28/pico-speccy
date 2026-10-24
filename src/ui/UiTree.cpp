@@ -1858,11 +1858,14 @@ static const Node kNetwork[] = {
 
 #if PICOSPECCY_BT
 // Bluetooth on the on-chip radio (W boards): audio out (A2DP source), input
-// devices (HID host), discovery.
+// devices (HID host). Each lists the devices added so far + "Add new...".
+static const Option opt_bt_hints[] = {
+    { SYM_ENTER " Connect / disconnect", 0 },
+    { "F8  Forget", 0 },
+};
 static const Node kBluetooth[] = {
-    NM_ACTIONV(TXT_BT_AUDIO, act_btAudio, vl_btAudio, nullptr),
-    NM_ACTIONV(TXT_BT_INPUT, act_btInput, vl_btInput, nullptr),
-    NM_ACTION (TXT_BT_SCAN,  act_btScan,  nullptr),
+    NM_DYNH(TXT_BT_AUDIO, bt_buildAudio, bt_keyAudio, opt_bt_hints, nullptr),
+    NM_DYNH(TXT_BT_INPUT, bt_buildInput, bt_keyInput, opt_bt_hints, nullptr),
 };
 #endif
 

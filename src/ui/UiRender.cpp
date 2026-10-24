@@ -473,8 +473,13 @@ static void drawRightRow(int visRow) {
 
     if (curLevel().dyn) {
         fill(LY.rx, y, LY.rw, LY.row_h, C_PANEL);
-        const char* h = dynHint(idx);
-        if (h) textClip(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad, h, C_TEXT_DIM);
+        char l[NM_DYN_LABEL_LEN], v[NM_DYN_VALUE_LEN];
+        const uint8_t st = idx < S.rcount ? dynRightLine(idx, l, v) : DYN_INFO_END;
+        if (st == DYN_INFO_END || st == DYN_INFO_BLANK) return;
+        const int vw = (st == DYN_INFO_FIELD && v[0]) ? textWidth(v) : 0;
+        if (vw) text(LY.rx + LY.rw - LY.pad - vw, y + 1, v, C_TEXT_DIM);
+        textClip(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad - vw - (vw ? LY.pad : 0), l,
+                 st == DYN_INFO_FIELD ? C_TEXT : st == DYN_INFO_HEAD ? C_ACCENT : C_TEXT_DIM);
         return;
     }
 

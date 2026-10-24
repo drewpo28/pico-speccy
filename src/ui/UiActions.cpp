@@ -1954,256 +1954,396 @@ void act_sntp() {
 }
 
 #if PICOSPECCY_BT
-// Bluetooth > Scan devices: a discovery into the same right-pane log the WiFi
-// flows use. Esc / Enter stop the scan early; the list then stays scrollable.
+// ── Bluetooth > Audio / Input ─────────────────────────────────────────────────
+// Each is a level listing the devices already added (most recent first) plus an
+// "Add new..." row. Enter on a device connects / disconnects it, F8 forgets it;
+// "Add new..." searches and lists what it finds in the RIGHT pane as it finds it,
+// and the device picked there is paired and connected. Everything the radio says
+// goes into the right-pane log the WiFi flows use.
 static void btLogCb(const char* l) { wlogAdd(l, C_TEXT); }
 
-// Run a scan in the pane until it ends or Esc/Enter/F1 stops it.
-static void btScanWait() {
+static const int32_t BT_TAG_ADD = 100;
+
+static void btAddrStr(const uint8_t* a, char* out, int cap) {
+    snprintf(out, cap, "%02X:%02X:%02X:%02X:%02X:%02X", a[0], a[1], a[2], a[3], a[4], a[5]);
+}
+
+static void btDone() {
+    BtHost::setLog(nullptr);
+    paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
+    wlogView();
+    wlogEnd();
+}
+
+// Wait for an asynchronous connect, Esc cancels. Log open, sink armed.
+static void btAudioWait() {
+    paneFooter("Esc Cancel");
     auto kbd = ESPectrum::PS2Controller.keyboard();
     fabgl::VirtualKeyItem k;
-    while (BtHost::scanBusy()) {
+    const uint64_t t0 = time_us_64();
+    while (BtHost::audioState() == BtHost::A_CONNECTING) {
         uiIdle(2);
+        if (time_us_64() - t0 > 25000000ull) { wlogAdd("Timed out.", C_ICON_R); BtHost::audioDisconnect(); break; }
         if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
-            (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_MENU_ENTER || k.vk == fabgl::VK_F1))
-            BtHost::scanStop();
+            (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1)) {
+            wlogAdd("Cancelled.", C_ICON_R);
+            BtHost::audioDisconnect();
+            break;
+        }
     }
+    if (BtHost::audioState() == BtHost::A_STREAMING) wlogAdd("Playing through Bluetooth.", C_ACCENT);
+    else if (BtHost::audioState() == BtHost::A_FAILED) wlogAdd("Could not connect.", C_ICON_R);
 }
 
-void act_btScan() {
-    gfxResumePalette();
-    wlogBegin(TXT_BT_SCAN);
-    paneFooter("Esc Stop");
-    BtHost::setLog(btLogCb);
-    if (BtHost::scanBegin(12)) btScanWait();
-    BtHost::setLog(nullptr);
-    paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-    wlogView();
-    wlogEnd();
-}
-
-const char* vl_btAudio() {
-    static char v[40];
-    switch (BtHost::audioState()) {
-        case BtHost::A_STREAMING:  snprintf(v, sizeof(v), "%s", BtHost::audioName()); return v;
-        case BtHost::A_CONNECTING: return "connecting";
-        default:                   return "Off";
-    }
-}
-
-// Bluetooth > Headphones: pick an audio sink (the last one, or a fresh classic
-// inquiry filtered to the Audio major class), connect, and stream the mix to it.
-// Enter again while connected = disconnect.
-void act_btAudio() {
-    gfxResumePalette();
-    const BtHost::AudioState st0 = BtHost::audioState();
-    if (st0 == BtHost::A_STREAMING || st0 == BtHost::A_CONNECTING) {
-        char q[72];
-        snprintf(q, sizeof(q), "%s\nDisconnect?", BtHost::audioName());
-        if (uiConfirm(q, TXT_BT_AUDIO)) BtHost::audioDisconnect();
-        return;
-    }
-    wlogBegin(TXT_BT_AUDIO);
-    BtHost::setLog(btLogCb);
-
-    uint8_t addr[6];
-    char name[32];
-    bool have = false;
-    uint8_t ra[6];
-    char rn[32];
-    if (BtHost::remembered(ra, rn, sizeof(rn))) {
-        char first[48];
-        snprintf(first, sizeof(first), "%s", rn);
-        const char* items[2] = { first, "Search for devices..." };
-        int sel;
-        while ((sel = leftList(TXT_BT_AUDIO, items, 2, true)) == -3) {}   // F8 on "Search": nothing
-        if (sel == -2) {                       // F8 / Del on the remembered device: forget it
-            wlogRepaint(TXT_BT_AUDIO);
-            BtHost::forget(ra);
-            sel = 1;                           // ...and look for one
-        }
-        if (sel < 0) { BtHost::setLog(nullptr); wlogEnd(); return; }
-        if (sel == 0) { memcpy(addr, ra, 6); snprintf(name, sizeof(name), "%s", rn); have = true; }
-        wlogRepaint(TXT_BT_AUDIO);
-    }
-    if (!have) {
-        paneFooter("Esc Stop");
-        if (!BtHost::scanBegin(10, true)) {
-            paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-            wlogView(); BtHost::setLog(nullptr); wlogEnd(); return;
-        }
-        btScanWait();
-        // Audio devices first; if the inquiry found none, offer every classic one
-        // (some sinks report a generic class).
-        static const int MAXI = 24;
-        const char* items[MAXI];
-        char labels[MAXI][40];
-        int idx[MAXI], n = 0;
-        for (int pass = 0; pass < 2 && n == 0; pass++)
-            for (int i = 0; i < BtHost::devCount() && n < MAXI; i++) {
-                const BtHost::Dev* d = BtHost::dev(i);
-                if (d->le || (pass == 0 && !BtHost::isAudio(*d))) continue;
-                if (d->name[0]) snprintf(labels[n], sizeof(labels[n]), "%s", d->name);
-                else snprintf(labels[n], sizeof(labels[n]), "%02X:%02X:%02X:%02X:%02X:%02X",
-                              d->addr[0], d->addr[1], d->addr[2], d->addr[3], d->addr[4], d->addr[5]);
-                items[n] = labels[n]; idx[n] = i; n++;
-            }
-        if (n == 0) {
-            wlogAdd("No audio devices found. Put the headphones in pairing mode.", C_ICON_R);
-            paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-            wlogView(); BtHost::setLog(nullptr); wlogEnd(); return;
-        }
-        int sel;
-        // F8 / Del forgets the device under the cursor (its pairing key, and the
-        // remembered entry if it is that one); the list stays up.
-        while ((sel = leftList(TXT_BT_AUDIO, items, n, true)) <= -2) {
-            const BtHost::Dev* f = BtHost::dev(idx[-2 - sel]);
-            wlogRepaint(TXT_BT_AUDIO);
-            if (f) BtHost::forget(f->addr);
-        }
-        if (sel < 0) { BtHost::setLog(nullptr); wlogEnd(); return; }
-        const BtHost::Dev* d = BtHost::dev(idx[sel]);
-        memcpy(addr, d->addr, 6);
-        snprintf(name, sizeof(name), "%s", labels[sel]);
-        wlogRepaint(TXT_BT_AUDIO);
-    }
-
+static void btInputWait() {
     paneFooter("Esc Cancel");
-    if (BtHost::audioConnect(addr, name)) {
-        auto kbd = ESPectrum::PS2Controller.keyboard();
-        fabgl::VirtualKeyItem k;
-        const uint64_t t0 = time_us_64();
-        while (BtHost::audioState() == BtHost::A_CONNECTING) {
-            uiIdle(2);
-            if (time_us_64() - t0 > 25000000ull) { wlogAdd("Timed out.", C_ICON_R); BtHost::audioDisconnect(); break; }
-            if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
-                (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1)) {
-                wlogAdd("Cancelled.", C_ICON_R);
-                BtHost::audioDisconnect();
-                break;
-            }
+    auto kbd = ESPectrum::PS2Controller.keyboard();
+    fabgl::VirtualKeyItem k;
+    const uint64_t t0 = time_us_64();
+    // Pairing a keyboard can mean typing a passkey on it: allow a minute.
+    while (BtHost::inputState() == BtHost::I_CONNECTING) {
+        uiIdle(2);
+        if (time_us_64() - t0 > 60000000ull) { wlogAdd("Timed out.", C_ICON_R); BtHost::inputDisconnect(); break; }
+        if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
+            (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1)) {
+            wlogAdd("Cancelled.", C_ICON_R);
+            BtHost::inputDisconnect();
+            break;
         }
-        if (BtHost::audioState() == BtHost::A_STREAMING) wlogAdd("Playing through Bluetooth.", C_ACCENT);
-        else if (BtHost::audioState() == BtHost::A_FAILED) wlogAdd("Could not connect.", C_ICON_R);
     }
-    BtHost::setLog(nullptr);
-    paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-    wlogView();
-    wlogEnd();
+    if (BtHost::inputState() == BtHost::I_READY) wlogAdd("Connected.", C_ACCENT);
+    else if (BtHost::inputState() == BtHost::I_FAILED) wlogAdd("Could not connect.", C_ICON_R);
 }
 
-const char* vl_btInput() {
-    static char v[40];
-    switch (BtHost::inputState()) {
-        case BtHost::I_READY:      snprintf(v, sizeof(v), "%s", BtHost::inputName()); return v;
-        case BtHost::I_CONNECTING: return "connecting";
-        default: {
-            uint8_t a[6]; char n[32];
-            if (BtHost::inputRemembered(a, n, sizeof(n))) { snprintf(v, sizeof(v), "%s (off)", n); return v; }
-            return "Off";
-        }
-    }
+// Does a found device belong in this list? Audio: the Audio major class — or, when
+// the search is over and found none, any classic device (some sinks report a
+// generic class). Input: keyboards, mice and pads, classic or LE.
+static bool btWanted(const BtHost::Dev& d, bool input, bool anyClassic) {
+    if (input) return BtHost::isHid(d);
+    return !d.le && (anyClassic || BtHost::isAudio(d));
 }
 
-// Bluetooth > Input: keyboard / mouse / joystick. The remembered device, or a
-// classic + LE scan filtered to HID devices; pick one, pair, and its reports go
-// into the same funnels a USB device's do. A remembered device reconnects by
-// itself later (classic: when it pages us on a keypress; LE: when it advertises).
-void act_btInput() {
-    gfxResumePalette();
-    const BtHost::InputState st0 = BtHost::inputState();
-    if (st0 == BtHost::I_READY || st0 == BtHost::I_CONNECTING) {
-        char q[72];
-        snprintf(q, sizeof(q), "%s\nDisconnect?", BtHost::inputName());
-        if (uiConfirm(q, TXT_BT_INPUT)) BtHost::inputDisconnect();
-        return;
-    }
-    wlogBegin(TXT_BT_INPUT);
-    BtHost::setLog(btLogCb);
+// "Add new": search, and list what turns up in the right pane while the search
+// runs (the left pane keeps the device list with the cursor on "Add new..."). The
+// log is already open (it shows the radio coming up). 1 = *out picked, 0 = Esc,
+// -1 = the radio did not come up (the log says why).
+static int btPickFound(const char* title, bool input, BtHost::Dev* out) {
+    static const int MAXI = 24;
+    if (!BtHost::scanBegin(12, !input)) return -1;
+    BtHost::setLog(nullptr);                       // the list owns the pane now
 
-    BtHost::Dev pick;
-    bool have = false;
-    uint8_t ra[6];
-    char rn[32];
-    if (BtHost::inputRemembered(ra, rn, sizeof(rn))) {
-        char first[48];
-        snprintf(first, sizeof(first), "%s", rn);
-        const char* items[2] = { first, "Search for devices..." };
-        int sel;
-        while ((sel = leftList(TXT_BT_INPUT, items, 2, true)) == -3) {}
-        if (sel == -2) {
-            wlogRepaint(TXT_BT_INPUT);
-            BtHost::forget(ra);
-            sel = 1;
-        }
-        if (sel < 0) { BtHost::setLog(nullptr); wlogEnd(); return; }
-        wlogRepaint(TXT_BT_INPUT);
-        if (sel == 0) {
-            // It reconnects by itself: just say how to wake it up.
-            wlogAdd("Press a key / move it to wake it up; it connects by itself.", C_TEXT);
-            paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-            wlogView(); BtHost::setLog(nullptr); wlogEnd(); return;
-        }
-    }
-    if (!have) {
-        wlogAdd("Put the device in pairing mode.", C_TEXT_DIM);
-        paneFooter("Esc Stop");
-        if (!BtHost::scanBegin(12, false)) {
-            paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-            wlogView(); BtHost::setLog(nullptr); wlogEnd(); return;
-        }
-        btScanWait();
-        static const int MAXI = 24;
-        const char* items[MAXI];
-        char labels[MAXI][40];
-        int idx[MAXI], n = 0;
+    char labels[MAXI][44];
+    uint8_t addrs[MAXI][6];
+    int idx[MAXI];
+    int n = 0, sel = 0, top = 0;
+    uint8_t selAddr[6] = {0};
+    bool haveSel = false, anyClassic = false;
+    uint32_t drawnSig = 0xFFFFFFFFu;
+
+    auto rebuild = [&]() {
+        n = 0;
         for (int i = 0; i < BtHost::devCount() && n < MAXI; i++) {
             const BtHost::Dev* d = BtHost::dev(i);
-            if (!BtHost::isHid(*d)) continue;
-            if (d->name[0]) snprintf(labels[n], sizeof(labels[n]), "%s%s", d->le ? "LE " : "", d->name);
-            else snprintf(labels[n], sizeof(labels[n]), "%s%02X:%02X:%02X:%02X:%02X:%02X", d->le ? "LE " : "",
-                          d->addr[0], d->addr[1], d->addr[2], d->addr[3], d->addr[4], d->addr[5]);
-            items[n] = labels[n]; idx[n] = i; n++;
+            if (!btWanted(*d, input, anyClassic)) continue;
+            char a[20];
+            btAddrStr(d->addr, a, sizeof(a));
+            snprintf(labels[n], sizeof(labels[n]), "%s%s", input && d->le ? "LE " : "",
+                     d->name[0] ? d->name : a);
+            memcpy(addrs[n], d->addr, 6);
+            idx[n] = i;
+            n++;
         }
-        if (n == 0) {
-            wlogAdd("No keyboards, mice or joysticks found.", C_ICON_R);
-            paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-            wlogView(); BtHost::setLog(nullptr); wlogEnd(); return;
-        }
-        int sel;
-        while ((sel = leftList(TXT_BT_INPUT, items, n, true)) <= -2) {
-            const BtHost::Dev* f = BtHost::dev(idx[-2 - sel]);
-            wlogRepaint(TXT_BT_INPUT);
-            if (f) BtHost::forget(f->addr);
-        }
-        if (sel < 0) { BtHost::setLog(nullptr); wlogEnd(); return; }
-        pick = *BtHost::dev(idx[sel]);
-        wlogRepaint(TXT_BT_INPUT);
-    }
-
-    paneFooter("Esc Cancel");
-    if (BtHost::inputConnect(pick)) {
-        auto kbd = ESPectrum::PS2Controller.keyboard();
-        fabgl::VirtualKeyItem k;
-        const uint64_t t0 = time_us_64();
-        // Pairing a keyboard can mean typing a passkey on it: allow a minute.
-        while (BtHost::inputState() == BtHost::I_CONNECTING) {
-            uiIdle(2);
-            if (time_us_64() - t0 > 60000000ull) { wlogAdd("Timed out.", C_ICON_R); BtHost::inputDisconnect(); break; }
-            if (kbd->virtualKeyAvailable() && ESPectrum::readKbd(&k) && k.down &&
-                (k.vk == fabgl::VK_ESCAPE || k.vk == fabgl::VK_F1)) {
-                wlogAdd("Cancelled.", C_ICON_R);
-                BtHost::inputDisconnect();
-                break;
+        // Keep the cursor on the same device while the list grows.
+        int ns = 0;
+        if (haveSel)
+            for (int i = 0; i < n; i++) if (memcmp(addrs[i], selAddr, 6) == 0) { ns = i; break; }
+        sel = n ? ns : 0;
+        if (n) { memcpy(selAddr, addrs[sel], 6); haveSel = true; }
+    };
+    auto sig = [&]() {
+        uint32_t h = 2166136261u ^ (uint32_t)n ^ ((uint32_t)sel << 8) ^ ((uint32_t)top << 16) ^
+                     (BtHost::scanBusy() ? 0x80000000u : 0);
+        for (int i = 0; i < n; i++)
+            for (const char* p = labels[i]; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+        return h;
+    };
+    auto drawIt = [&]() {
+        const int rows = LY.body_rows;
+        if (sel < top) top = sel;
+        if (sel >= top + rows) top = sel - rows + 1;
+        const uint32_t s = sig();
+        if (s == drawnSig) return;
+        drawnSig = s;
+        char right[24];
+        if (BtHost::scanBusy()) snprintf(right, sizeof(right), "searching...");
+        else snprintf(right, sizeof(right), "%d found", n);
+        paneTitle(title, right);
+        for (int r = 0; r < rows; r++) {
+            const int i = top + r;
+            const int y = paneRowY(r);
+            if (i >= n) {
+                fill(LY.rx, y, LY.rw, LY.row_h, C_PANEL);
+                if (n == 0 && r == 0)
+                    textClip(LY.rx + LY.pad, y + 1, LY.rw - 2 * LY.pad,
+                             BtHost::scanBusy() ? "Searching..." : "Nothing found",
+                             C_TEXT_DIM);
+                continue;
             }
+            const bool s1 = i == sel;
+            fill(LY.rx, y, LY.rw, LY.row_h, s1 ? C_SEL_BG : C_PANEL);
+            const char* tag = BtHost::isKnown(input, addrs[i]) ? "added" : nullptr;
+            int avail = LY.rw - 2 * LY.pad;
+            if (tag) {
+                const int tw = textWidth(tag);
+                text(LY.rx + LY.rw - LY.pad - tw, y + 1, tag, s1 ? C_WHITE : C_TEXT_DIM);
+                avail -= tw + LY.pad;
+            }
+            textClip(LY.rx + LY.pad, y + 1, avail, labels[i], s1 ? C_WHITE : C_TEXT);
         }
-        if (BtHost::inputState() == BtHost::I_READY) wlogAdd("Connected.", C_ACCENT);
-        else if (BtHost::inputState() == BtHost::I_FAILED) wlogAdd("Could not connect.", C_ICON_R);
+    };
+    bool footBusy = true;
+    auto footer = [&]() {
+        footBusy = BtHost::scanBusy();
+        paneFooter(footBusy ? SYM_UP SYM_DOWN " Move  " SYM_ENTER " Add  Esc Back"
+                            : SYM_UP SYM_DOWN " Move  " SYM_ENTER " Add  F5 Search again  Esc Back");
+    };
+
+    rebuild();
+    drawIt();
+    footer();
+    auto kbd = ESPectrum::PS2Controller.keyboard();
+    { fabgl::VirtualKeyItem d; while (kbd->virtualKeyAvailable()) kbd->getNextVirtualKey(&d); }
+    fabgl::VirtualKeyItem k;
+    uint64_t lastRefresh = time_us_64();
+    while (1) {
+        if (!kbd->virtualKeyAvailable()) {
+            uiIdle(2);
+            const bool busy = BtHost::scanBusy();
+            if (!busy && !input && !anyClassic) {
+                // Search over: if it found no audio device, offer every classic one.
+                bool none = true;
+                for (int i = 0; i < BtHost::devCount() && none; i++)
+                    if (btWanted(*BtHost::dev(i), false, false)) none = false;
+                if (none) anyClassic = true;
+            }
+            if (time_us_64() - lastRefresh > 300000ull || busy != footBusy) {
+                lastRefresh = time_us_64();
+                rebuild();
+                drawIt();
+                if (busy != footBusy) footer();
+            }
+            continue;
+        }
+        if (!ESPectrum::readKbd(&k) || !k.down) continue;
+        int ns = sel;
+        switch (k.vk) {
+            case fabgl::VK_MENU_UP:    ns = n ? (sel > 0 ? sel - 1 : n - 1) : 0; break;
+            case fabgl::VK_MENU_DOWN:  ns = n ? (sel < n - 1 ? sel + 1 : 0) : 0; break;
+            case fabgl::VK_PAGEUP:     ns = sel - LY.body_rows; break;
+            case fabgl::VK_PAGEDOWN:   ns = sel + LY.body_rows; break;
+            case fabgl::VK_MENU_HOME:
+            case fabgl::VK_HOME:       ns = 0; break;
+            case fabgl::VK_END:        ns = n - 1; break;
+            case fabgl::VK_MENU_ENTER:
+            case fabgl::VK_MENU_RIGHT:
+                if (!n) break;
+                OSD::clickNoPause();
+                if (BtHost::scanBusy()) BtHost::scanStop();
+                *out = *BtHost::dev(idx[sel]);
+                return 1;
+            case fabgl::VK_F5:
+                if (BtHost::scanBusy()) break;
+                OSD::clickNoPause();
+                anyClassic = false;
+                haveSel = false;
+                if (BtHost::scanBegin(12, !input)) { rebuild(); drawnSig = 0xFFFFFFFFu; drawIt(); footer(); }
+                break;
+            case fabgl::VK_ESCAPE: case fabgl::VK_F1:
+            case fabgl::VK_MENU_LEFT:
+                OSD::clickNoPause();
+                if (BtHost::scanBusy()) BtHost::scanStop();
+                return 0;
+            default: break;
+        }
+        if (ns < 0) ns = 0;
+        if (ns > n - 1) ns = n - 1;
+        if (n == 0 || ns == sel) continue;
+        sel = ns;
+        memcpy(selAddr, addrs[sel], 6);
+        haveSel = true;
+        drawIt();
+        OSD::clickNoPause();
     }
-    BtHost::setLog(nullptr);
-    paneFooter(SYM_UP SYM_DOWN " Scroll   " SYM_ENTER " / Esc Back");
-    wlogView();
-    wlogEnd();
+}
+
+// The "Add new" flow end to end: log, search + pick, pair + connect.
+static void btAddNew(bool input) {
+    const char* title = input ? TXT_BT_INPUT : TXT_BT_AUDIO;
+    gfxResumePalette();
+    wlogBegin(title);
+    BtHost::setLog(btLogCb);
+    wlogAdd(input ? "Put the device in pairing mode." : "Put the headphones in pairing mode.", C_TEXT_DIM);
+    paneFooter("Esc Back");
+    BtHost::Dev d;
+    const int got = btPickFound(title, input, &d);
+    if (got == 0) { BtHost::setLog(nullptr); wlogEnd(); return; }
+    if (got < 0) { btDone(); return; }             // the radio did not come up: show why
+    wlogRepaint(title);
+    BtHost::setLog(btLogCb);
+    if (input) {
+        if (BtHost::inputConnect(d)) btInputWait();
+    } else {
+        char a[20], name[32];
+        btAddrStr(d.addr, a, sizeof(a));
+        snprintf(name, sizeof(name), "%s", d.name[0] ? d.name : a);
+        if (BtHost::audioConnect(d.addr, name)) btAudioWait();
+    }
+    btDone();
+}
+
+// Connect an added device (Enter on its row), or disconnect it if it is the one.
+static void btUseKnown(bool input, const BtHost::Known& kn) {
+    const char* title = input ? TXT_BT_INPUT : TXT_BT_AUDIO;
+    gfxResumePalette();
+    if (BtHost::connectedTo(input, kn.addr)) {
+        char q[72];
+        snprintf(q, sizeof(q), "%s\nDisconnect?", kn.name);
+        if (uiConfirm(q, title)) { if (input) BtHost::inputDisconnect(); else BtHost::audioDisconnect(); }
+        return;
+    }
+    wlogBegin(title);
+    BtHost::setLog(btLogCb);
+    if (input) {
+        BtHost::Dev d = {};
+        memcpy(d.addr, kn.addr, 6);
+        snprintf(d.name, sizeof(d.name), "%s", kn.name);
+        d.le = kn.le;
+        d.addrType = kn.addrType;
+        wlogAdd(kn.le ? "Move it or press a key so that it advertises."
+                      : "Press a key on it to wake it up.", C_TEXT_DIM);
+        if (BtHost::inputConnect(d)) btInputWait();
+    } else {
+        if (BtHost::audioConnect(kn.addr, kn.name)) btAudioWait();
+    }
+    btDone();
+}
+
+// The lists as the level last built them: the right pane's details read these
+// (once a second) instead of the card.
+static BtHost::Known s_btKnown[2][BtHost::KNOWN_MAX];
+static int s_btN[2];
+
+// Right-pane details of the row under the cursor (DynRows::info).
+static uint8_t btInfo(bool input, int32_t tag, int line, char* label, char* value) {
+    const int L = NM_DYN_LABEL_LEN, V = NM_DYN_VALUE_LEN;
+    if (tag == BT_TAG_ADD) {
+        static const char* const kAdd[] = {
+            "Add a new device",
+            input ? "Keyboards, mice, gamepads," : "Headphones and speakers,",
+            input ? "classic or BLE." : "classic Bluetooth.",
+            "",
+            SYM_ENTER " Search",
+        };
+        static const uint8_t kSt[] = { DYN_INFO_HEAD, DYN_INFO_HINT, DYN_INFO_HINT, DYN_INFO_BLANK, DYN_INFO_HINT };
+        if (line < 0 || line >= (int)(sizeof(kSt))) return DYN_INFO_END;
+        snprintf(label, L, "%s", kAdd[line]);
+        return kSt[line];
+    }
+    const int k = input ? 1 : 0;
+    if (tag < 0 || tag >= s_btN[k]) return DYN_INFO_END;
+    const BtHost::Known& d = s_btKnown[k][tag];
+    const bool conn = BtHost::connectedTo(input, d.addr);
+    const BtHost::InputInfo* ii = (input && conn) ? BtHost::inputInfo() : nullptr;
+    BtHost::AudioInfo ai;
+    const bool aon = !input && conn && BtHost::audioInfo(ai);
+
+    // Build the line list on the fly: line N is the N-th line that applies.
+    int n = 0;
+    auto field = [&](const char* l, const char* v) -> bool {
+        if (n++ != line) return false;
+        snprintf(label, L, "%s", l); snprintf(value, V, "%s", v); return true;
+    };
+    char b[24];
+    if (n++ == line) { snprintf(label, L, "%s", d.name[0] ? d.name : "(no name)"); return DYN_INFO_HEAD; }
+    btAddrStr(d.addr, b, sizeof(b));
+    if (field("MAC", b)) return DYN_INFO_FIELD;
+    if (field("Type", input ? (d.le ? "BLE" : "Classic") : "Classic (A2DP)")) return DYN_INFO_FIELD;
+    const char* st = "not connected";
+    if (conn) {
+        const bool busy = input ? BtHost::inputState() == BtHost::I_CONNECTING
+                                : BtHost::audioState() == BtHost::A_CONNECTING;
+        st = busy ? "connecting" : (input ? "connected" : "playing");
+    }
+    if (field("State", st)) return DYN_INFO_FIELD;
+    if (ii) {
+        if (ii->kind[0] && field("Kind", ii->kind)) return DYN_INFO_FIELD;
+        if (d.le) {
+            if (ii->battery >= 0) snprintf(b, sizeof(b), "%d%%", ii->battery);
+            else snprintf(b, sizeof(b), "-");
+            if (field("Battery", b)) return DYN_INFO_FIELD;
+        }
+        if (ii->maker[0] && field("Maker", ii->maker)) return DYN_INFO_FIELD;
+        if (ii->model[0] && field("Model", ii->model)) return DYN_INFO_FIELD;
+        if (ii->fw[0] && field("Firmware", ii->fw)) return DYN_INFO_FIELD;
+    }
+    if (aon) {
+        snprintf(b, sizeof(b), "SBC %d.%d kHz", ai.fs / 1000, (ai.fs % 1000) / 100);
+        if (field("Codec", b)) return DYN_INFO_FIELD;
+        snprintf(b, sizeof(b), "%d %s", ai.bitpool, ai.joint ? "joint" : "stereo");
+        if (field("Bitpool", b)) return DYN_INFO_FIELD;
+    }
+    if (n++ == line) return DYN_INFO_BLANK;
+    if (n++ == line) { snprintf(label, L, "%s", conn ? SYM_ENTER " Disconnect" : SYM_ENTER " Connect"); return DYN_INFO_HINT; }
+    if (n++ == line) { snprintf(label, L, "F8  Forget"); return DYN_INFO_HINT; }
+    return DYN_INFO_END;
+}
+static uint8_t btInfoAudio(int32_t t, int l, char* a, char* v) { return btInfo(false, t, l, a, v); }
+static uint8_t btInfoInput(int32_t t, int l, char* a, char* v) { return btInfo(true, t, l, a, v); }
+
+static void btBuild(DynRows& r, bool input) {
+    BtHost::Known* l = s_btKnown[input ? 1 : 0];
+    const int n = BtHost::known(input, l, BtHost::KNOWN_MAX);
+    s_btN[input ? 1 : 0] = n;
+    r.info = input ? btInfoInput : btInfoAudio;
+    for (int i = 0; i < n; i++) {
+        const char* v = nullptr;
+        if (BtHost::connectedTo(input, l[i].addr)) {
+            const bool busy = input ? BtHost::inputState() == BtHost::I_CONNECTING
+                                    : BtHost::audioState() == BtHost::A_CONNECTING;
+            v = busy ? "connecting" : (input ? "connected" : "playing");
+        }
+        char a[20];
+        btAddrStr(l[i].addr, a, sizeof(a));
+        char lbl[NM_DYN_LABEL_LEN];
+        snprintf(lbl, sizeof(lbl), "%s%s", input && l[i].le ? "LE " : "", l[i].name[0] ? l[i].name : a);
+        r.add(lbl, v, i, false);
+    }
+    r.add("Add new...", nullptr, BT_TAG_ADD, false);
+}
+
+static void btKey(bool input, int32_t tag, uint8_t key) {
+    if (tag == BT_TAG_ADD) { if (key == 0) btAddNew(input); return; }
+    BtHost::Known l[BtHost::KNOWN_MAX];
+    const int n = BtHost::known(input, l, BtHost::KNOWN_MAX);
+    if (tag < 0 || tag >= n) return;
+    if (key == 0) { btUseKnown(input, l[tag]); return; }
+    if (key == 8) {
+        char q[72];
+        snprintf(q, sizeof(q), "Forget %s?", l[tag].name);
+        if (uiConfirm(q, input ? TXT_BT_INPUT : TXT_BT_AUDIO)) BtHost::forget(l[tag].addr);
+    }
+}
+
+void bt_buildAudio(DynRows& r)              { btBuild(r, false); }
+void bt_buildInput(DynRows& r)              { btBuild(r, true); }
+void bt_keyAudio(int32_t tag, uint8_t key)  { btKey(false, tag, key); }
+void bt_keyInput(int32_t tag, uint8_t key)  { btKey(true, tag, key); }
+
+// Audio > Driver > Bluetooth: play through the most recent added device, or add one.
+void act_btAudio() {
+    BtHost::Known kn;
+    if (BtHost::known(false, &kn, 1) == 1) btUseKnown(false, kn);
+    else btAddNew(false);
 }
 #endif
 

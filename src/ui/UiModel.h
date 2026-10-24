@@ -59,6 +59,15 @@ struct Option {
 #define NM_DYN_LABEL_LEN  48
 #define NM_DYN_VALUE_LEN  22
 
+// DynRows::info line styles.
+enum : uint8_t {
+    DYN_INFO_END = 0,
+    DYN_INFO_FIELD,     // label (white) + value (dim, right-aligned)
+    DYN_INFO_HINT,      // a verb hint, dim, like the default verb list
+    DYN_INFO_BLANK,
+    DYN_INFO_HEAD,      // a heading, accent colour
+};
+
 struct DynRows {
     uint8_t n;
     char    label[NM_DYN_MAX_ROWS][NM_DYN_LABEL_LEN];
@@ -75,8 +84,13 @@ struct DynRows {
     // (e.g. the persist picker opens on Config::persist_slot).
     int32_t focus_tag;
     bool    focus_set;
+    // Optional: the right pane shows lines about the row under the cursor instead
+    // of the level's verb list (Bluetooth device details). Called with the row's
+    // tag and a line number from 0; fills label (and value, right-aligned) and
+    // returns the line's style — DYN_INFO_END when there are no more lines.
+    uint8_t (*info)(int32_t tag, int line, char* label, char* value);
 
-    void clear() { n = 0; focus_set = false; }
+    void clear() { n = 0; focus_set = false; info = nullptr; }
     void add(const char* lbl, const char* val = nullptr, int32_t t = 0, bool dimmed = false);
     // Flags the row just added (no-op if none was).
     void badgeLast(const char* txt, bool active);

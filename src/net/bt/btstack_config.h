@@ -26,9 +26,10 @@
 #define MAX_NR_GATT_CLIENTS 1
 #define MAX_NR_HID_HOST_CONNECTIONS 1
 #define MAX_NR_HIDS_HOSTS 1
+#define MAX_NR_BATTERY_SERVICE_CLIENTS 1  // battery of the connected BLE input device
 #define MAX_NR_SM_LOOKUP_ENTRIES 3
-#define MAX_NR_WHITELIST_ENTRIES 1
-#define MAX_NR_LE_DEVICE_DB_ENTRIES 4
+#define MAX_NR_WHITELIST_ENTRIES 8         // every added BLE input device auto-reconnects
+#define MAX_NR_LE_DEVICE_DB_ENTRIES 8
 #define MAX_NR_BTSTACK_LINK_KEY_DB_MEMORY_ENTRIES 1
 #define MAX_NR_RFCOMM_CHANNELS 0
 #define MAX_NR_RFCOMM_MULTIPLEXERS 0
@@ -53,8 +54,8 @@
 
 // Link keys / LE bonds: TLV on pico_flash_bank (the top 12 KB of flash are reserved
 // for it in rp2350-memmap.ld when PICOSPECCY_BT is on).
-#define NVM_NUM_DEVICE_DB_ENTRIES 4
-#define NVM_NUM_LINK_KEYS 4
+#define NVM_NUM_DEVICE_DB_ENTRIES 8        // BLE bonds: as many as the added-device list holds
+#define NVM_NUM_LINK_KEYS 8                // classic link keys, likewise
 
 #define HAVE_EMBEDDED_TIME_MS
 #define HAVE_ASSERT

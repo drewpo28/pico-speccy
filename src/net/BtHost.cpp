@@ -17,6 +17,7 @@
 #include "hardware/sync.h"
 #include "hardware/timer.h"
 #include "btstack.h"
+#include "hci_dump.h"
 
 // The 31250 Hz audio tick's tap (pwm_audio.cpp, core1 producer -> core0 consumer).
 extern volatile int16_t* pcm_bt_ring;
@@ -31,6 +32,7 @@ void bt_hid_mouse(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32_t whe
 void bt_hid_gamepad(bool up, bool down, bool left, bool right, uint32_t buttons);
 
 namespace BtHost {
+bool audioEstablish();          // defined with the public audio calls below
 namespace {
 
 #define BT_AUDIO_CFG CONFIG_DIR "/bt_audio.txt"
@@ -187,6 +189,9 @@ uint8_t s_sdpA2dp[150];
 
 AudioState s_audio = A_IDLE;
 char       s_audioName[32] = "";
+bool     s_audioPending = false;   // a switch waits for the old connection to close
+btstack_timer_source_t s_audioRetryT;   // busy-connect retries (audioEstablish)
+uint8_t  s_audioRetries = 0;
 bd_addr_t  s_audioAddr;
 uint16_t   s_cid  = 0;
 uint8_t    s_seid = 0;        // local stream endpoint
@@ -236,14 +241,118 @@ void streamFree() {
     if (s_st) { Buffer::pfree(s_st); s_st = nullptr; }
 }
 
-void saveRemembered() {
-    if (!FileUtils::fsMount) return;
+// ── The added-device lists ───────────────────────────────────────────────────
+// One file per kind, one device per line, most recently used first:
+//   audio "addr\tname", input "addr\tC|L\taddrType\tname".
+// A file written by the one-device firmware is simply a list of one.
+const char* listPath(bool input) { return input ? BT_INPUT_CFG : BT_AUDIO_CFG; }
+
+int listLoad(bool input, Known* out, int max) {
+    if (!FileUtils::fsMount) return 0;
     FIL f;
-    if (f_open(&f, BT_AUDIO_CFG, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return;
-    char line[64];
-    const int n = snprintf(line, sizeof(line), "%s\t%s\n", bd_addr_to_str(s_audioAddr), s_audioName);
-    UINT w; f_write(&f, line, n, &w);
+    if (f_open(&f, listPath(input), FA_READ) != FR_OK) return 0;
+    char buf[KNOWN_MAX * 72 + 8];
+    UINT got = 0;
+    f_read(&f, buf, sizeof(buf) - 1, &got);
     f_close(&f);
+    buf[got] = 0;
+    int n = 0;
+    char* line = buf;
+    while (line && *line && n < max) {
+        char* next = strpbrk(line, "\r\n");
+        if (next) { *next++ = 0; while (*next == '\r' || *next == '\n') next++; }
+        Known k = {};
+        char* f1 = strchr(line, '\t');
+        if (f1) {
+            *f1++ = 0;
+            bd_addr_t a;
+            bool ok = sscanf_bd_addr(line, a) != 0;
+            const char* nm = f1;
+            if (ok && input) {
+                char* f2 = strchr(f1, '\t');
+                char* f3 = f2 ? strchr(f2 + 1, '\t') : nullptr;
+                if (!f3) ok = false;
+                else {
+                    *f2++ = 0; *f3++ = 0;
+                    k.le = f1[0] == 'L';
+                    k.addrType = (uint8_t)(f2[0] - '0');
+                    nm = f3;
+                }
+            }
+            static const uint8_t kZero[6] = {0};
+            if (ok && memcmp(a, kZero, 6) == 0) ok = false;     // a bogus entry of the 1st build
+            if (ok) {
+                memcpy(k.addr, a, 6);
+                snprintf(k.name, sizeof(k.name), "%s", nm);
+                out[n++] = k;
+            }
+        }
+        line = next;
+    }
+    return n;
+}
+
+void listSave(bool input, const Known* l, int n) {
+    if (!FileUtils::fsMount) return;
+    if (n <= 0) { f_unlink(listPath(input)); return; }
+    FIL f;
+    if (f_open(&f, listPath(input), FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return;
+    for (int i = 0; i < n; i++) {
+        char line[80];
+        bd_addr_t a;
+        memcpy(a, l[i].addr, 6);
+        const int len = input
+            ? snprintf(line, sizeof(line), "%s\t%c\t%u\t%s\n", bd_addr_to_str(a),
+                       l[i].le ? 'L' : 'C', (unsigned)l[i].addrType, l[i].name)
+            : snprintf(line, sizeof(line), "%s\t%s\n", bd_addr_to_str(a), l[i].name);
+        UINT w; f_write(&f, line, len, &w);
+    }
+    f_close(&f);
+}
+
+// Put `k` at the head of its list (an entry with the same address moves there).
+void listUpsert(bool input, const Known& k) {
+    Known l[KNOWN_MAX];
+    int n = listLoad(input, l, KNOWN_MAX);
+    int at = n;
+    for (int i = 0; i < n; i++) if (memcmp(l[i].addr, k.addr, 6) == 0) { at = i; break; }
+    if (at == n && n == KNOWN_MAX) at = n - 1;          // full: the oldest goes
+    else if (at == n) n++;
+    for (int i = at; i > 0; i--) l[i] = l[i - 1];
+    l[0] = k;
+    listSave(input, l, n);
+}
+
+// Drop `addr` from a list; the entry it had goes to *was (when given).
+bool listRemove(bool input, const uint8_t addr[6], Known* was) {
+    Known l[KNOWN_MAX];
+    int n = listLoad(input, l, KNOWN_MAX);
+    for (int i = 0; i < n; i++)
+        if (memcmp(l[i].addr, addr, 6) == 0) {
+            if (was) *was = l[i];
+            for (int j = i; j + 1 < n; j++) l[j] = l[j + 1];
+            listSave(input, l, n - 1);
+            return true;
+        }
+    return false;
+}
+
+// Is `addr` in the input list, with this link type? (fills *k when it is)
+bool inputKnown(const uint8_t addr[6], bool le, Known* k) {
+    Known l[KNOWN_MAX];
+    const int n = listLoad(true, l, KNOWN_MAX);
+    for (int i = 0; i < n; i++)
+        if (l[i].le == le && memcmp(l[i].addr, addr, 6) == 0) { if (k) *k = l[i]; return true; }
+    return false;
+}
+
+void saveRemembered() {
+    static const uint8_t kZero[6] = {0};
+    if (memcmp(s_audioAddr, kZero, 6) == 0) return;
+    Known k = {};
+    memcpy(k.addr, s_audioAddr, 6);
+    snprintf(k.name, sizeof(k.name), "%s", s_audioName);
+    listUpsert(false, k);
 }
 
 void sendPacket() {
@@ -377,6 +486,28 @@ void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
                 break;
             }
             s_cid = a2dp_subevent_signaling_connection_established_get_a2dp_cid(p);
+            {
+                // The sink may have connected to US (a speaker that remembers this
+                // source pages it when switched on): then nothing set the address
+                // and name, and the zeros went into the device list.
+                bd_addr_t a;
+                a2dp_subevent_signaling_connection_established_get_bd_addr(p, a);
+                const bool incoming = s_audio != A_CONNECTING || bd_addr_cmp(a, s_audioAddr) != 0;
+                if (incoming) {
+                    memcpy(s_audioAddr, a, 6);
+                    s_audioName[0] = 0;
+                    Known l[KNOWN_MAX];                          // a name we already know
+                    const int n = listLoad(false, l, KNOWN_MAX);
+                    for (int i = 0; i < n; i++)
+                        if (memcmp(l[i].addr, a, 6) == 0) { snprintf(s_audioName, sizeof(s_audioName), "%s", l[i].name); break; }
+                    for (int i = 0; i < s_ndev && !s_audioName[0]; i++)  // ...or one the last scan saw
+                        if (memcmp(s_dev[i].addr, a, 6) == 0 && s_dev[i].name[0])
+                            snprintf(s_audioName, sizeof(s_audioName), "%s", s_dev[i].name);
+                    if (!s_audioName[0]) snprintf(s_audioName, sizeof(s_audioName), "%s", bd_addr_to_str(s_audioAddr));
+                    s_audio = A_CONNECTING;
+                    blog("%s connected to us", s_audioName);
+                }
+            }
             blog("signaling up, negotiating...");
             break;
         }
@@ -430,12 +561,17 @@ void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
         case A2DP_SUBEVENT_STREAM_RELEASED:
             blog("stream released");
             streamFree();
-            if (s_audio == A_STREAMING || s_audio == A_CONNECTING) s_audio = A_IDLE;
+            if (!s_audioPending && (s_audio == A_STREAMING || s_audio == A_CONNECTING)) s_audio = A_IDLE;
             break;
         case A2DP_SUBEVENT_SIGNALING_CONNECTION_RELEASED:
             blog("disconnected");
             streamFree();
             s_cid = 0;
+            if (s_audioPending) {                  // switching: now the new device
+                s_audioPending = false;
+                audioEstablish();
+                break;
+            }
             if (s_audio != A_FAILED) s_audio = A_IDLE;
             break;
         default:
@@ -450,6 +586,11 @@ bd_addr_t  s_inAddr;
 uint8_t    s_inAddrType = 0;        // LE address type
 bool       s_inLe = false;
 bool       s_inUser = false;        // the user asked for this connection (not a reconnect)
+// Pairing a NEW LE device: a link that drops before the HID service is reached
+// (0x3E "not established" is common on the first connect) is retried once.
+bool       s_pairNew   = false;
+uint8_t    s_pairTry   = 0;         // 0 = first attempt, 1 = the retry
+uint32_t   s_leConnMs  = 0;         // when the current LE link came up
 uint16_t   s_hidCid  = 0;           // classic hid_host
 hid_protocol_mode_t s_hidMode = HID_PROTOCOL_MODE_REPORT;
 bool       s_hidDescOk = false;
@@ -459,6 +600,120 @@ btstack_packet_callback_registration_t s_sm_reg;
 // Descriptor storage the two hosts keep the devices' HID descriptors in.
 uint8_t    s_hidDescStore[512];
 uint8_t    s_hidsDescStore[512];
+
+// What the menu shows about the connected input device (Bluetooth > Input, the
+// right pane). Battery and the Device Information strings are BLE-only: read
+// once the HID service is up (DIS first, then the Battery Service, which keeps
+// the level fresh by notification or a 60 s poll).
+InputInfo s_info;
+uint16_t  s_basCid = 0;
+
+void infoReset() {
+    memset(&s_info, 0, sizeof(s_info));
+    s_info.battery = -1;
+}
+
+// "mouse" / "keyboard" / ... from the descriptor's first top-level usage.
+void descKind(const uint8_t* d, uint16_t len) {
+    s_info.descLen = len;
+    uint16_t page = 0, usage = 0xFFFF;
+    for (uint16_t i = 0; d && i < len;) {
+        const uint8_t pfx = d[i];
+        if (pfx == 0xFE) { if (i + 2 >= len) break; i += 3 + d[i + 1]; continue; }   // long item
+        static const uint8_t kSz[4] = { 0, 1, 2, 4 };
+        const uint8_t sz = kSz[pfx & 3];
+        if (i + 1 + sz > len) break;
+        uint32_t v = 0;
+        for (uint8_t b = 0; b < sz; b++) v |= (uint32_t)d[i + 1 + b] << (8 * b);
+        const uint8_t tag = pfx & 0xFC;
+        if (tag == 0x04) page = (uint16_t)v;                         // Usage Page
+        else if (tag == 0x08 && usage == 0xFFFF) usage = (uint16_t)v; // first Usage
+        else if (tag == 0xA0) break;                                  // Collection
+        i += 1 + sz;
+    }
+    const char* k = "HID device";
+    if (page == 0x01) {
+        switch (usage) {
+            case 0x02: k = "mouse"; break;
+            case 0x06: k = "keyboard"; break;
+            case 0x04: k = "joystick"; break;
+            case 0x05: k = "gamepad"; break;
+            default: break;
+        }
+    } else if (page == 0x0C) k = "media keys";
+    snprintf(s_info.kind, sizeof(s_info.kind), "%s", k);
+}
+
+void disHandler(uint8_t, uint16_t, uint8_t* p, uint16_t);
+
+void batHandler(uint8_t, uint16_t, uint8_t* p, uint16_t) {
+    if (hci_event_packet_get_type(p) != HCI_EVENT_GATTSERVICE_META) return;
+    switch (hci_event_gattservice_meta_get_subevent_code(p)) {
+        case GATTSERVICE_SUBEVENT_BATTERY_SERVICE_CONNECTED: {
+            const uint8_t st = gattservice_subevent_battery_service_connected_get_status(p);
+            if (st != ERROR_CODE_SUCCESS) { blog("no battery service (0x%02x)", st); s_basCid = 0; }
+            else {
+                blog("battery service: %u instance(s), poll mask %02X",
+                     gattservice_subevent_battery_service_connected_get_num_instances(p),
+                     gattservice_subevent_battery_service_connected_get_poll_bitmap(p));
+                // A notifying service only reports a CHANGE of the level (hours on a
+                // mouse): read the current value once.
+                const uint8_t rc = battery_service_client_read_battery_level(s_basCid, 0);
+                if (rc != ERROR_CODE_SUCCESS) blog("battery read failed to start 0x%02x", rc);
+            }
+            // Then the Device Information strings (one GATT query at a time).
+            if (s_leHandle != HCI_CON_HANDLE_INVALID) {
+                const uint8_t rc = device_information_service_client_query(s_leHandle, disHandler);
+                if (rc != ERROR_CODE_SUCCESS) blog("device information: start failed 0x%02x", rc);
+            }
+            break;
+        }
+        case GATTSERVICE_SUBEVENT_BATTERY_SERVICE_LEVEL:
+            if (gattservice_subevent_battery_service_level_get_att_status(p) == ATT_ERROR_SUCCESS) {
+                const int8_t lv = (int8_t)gattservice_subevent_battery_service_level_get_level(p);
+                if (lv != s_info.battery) blog("battery %d%%", lv);
+                s_info.battery = lv;
+            }
+            break;
+        default: break;
+    }
+}
+
+void disHandler(uint8_t, uint16_t, uint8_t* p, uint16_t) {
+    if (hci_event_packet_get_type(p) != HCI_EVENT_GATTSERVICE_META) return;
+    switch (hci_event_gattservice_meta_get_subevent_code(p)) {
+        case GATTSERVICE_SUBEVENT_DEVICE_INFORMATION_MANUFACTURER_NAME:
+            if (gattservice_subevent_device_information_manufacturer_name_get_att_status(p) == ATT_ERROR_SUCCESS)
+                snprintf(s_info.maker, sizeof(s_info.maker), "%s", gattservice_subevent_device_information_manufacturer_name_get_value(p));
+            break;
+        case GATTSERVICE_SUBEVENT_DEVICE_INFORMATION_MODEL_NUMBER:
+            if (gattservice_subevent_device_information_model_number_get_att_status(p) == ATT_ERROR_SUCCESS)
+                snprintf(s_info.model, sizeof(s_info.model), "%s", gattservice_subevent_device_information_model_number_get_value(p));
+            break;
+        case GATTSERVICE_SUBEVENT_DEVICE_INFORMATION_FIRMWARE_REVISION:
+            if (gattservice_subevent_device_information_firmware_revision_get_att_status(p) == ATT_ERROR_SUCCESS)
+                snprintf(s_info.fw, sizeof(s_info.fw), "%s", gattservice_subevent_device_information_firmware_revision_get_value(p));
+            break;
+        case GATTSERVICE_SUBEVENT_DEVICE_INFORMATION_DONE:
+            blog("device information done (0x%02x)", gattservice_subevent_device_information_done_get_att_status(p));
+            break;
+        default: break;
+    }
+}
+
+// After the HID service: the battery first (it is what the menu wants most),
+// then the Device Information strings once the battery client has settled.
+void infoQueryStart() {
+    if (s_leHandle == HCI_CON_HANDLE_INVALID) return;
+    if (s_basCid) { battery_service_client_disconnect(s_basCid); s_basCid = 0; }
+    const uint8_t rc = battery_service_client_connect(s_leHandle, batHandler, 60000, &s_basCid);
+    if (rc != ERROR_CODE_SUCCESS) {
+        blog("battery service: start failed 0x%02x", rc);
+        s_basCid = 0;
+        const uint8_t r2 = device_information_service_client_query(s_leHandle, disHandler);
+        if (r2 != ERROR_CODE_SUCCESS) blog("device information: start failed 0x%02x", r2);
+    }
+}
 
 // Absolute X/Y (and the hat) ranges of the connected device, from its descriptor:
 // a pad's stick is 0..255 on one device and 0..1023 or -32768..32767 on the next.
@@ -497,9 +752,19 @@ void inputRelease() {
     bt_hid_gamepad(false, false, false, false, 0);
 }
 
+// The first reports of a connection go to the log (raw bytes + what came out of
+// them): "connected but does nothing" is otherwise undiagnosable.
+uint8_t s_repLog = 0;
+
 // One input report, through the device's descriptor (or the boot one).
 void inputReport(const uint8_t* desc, uint16_t dlen, const uint8_t* rep, uint16_t rlen) {
     if (!desc || !dlen || !rlen) return;
+    char raw[3 * 12 + 1];
+    if (s_repLog < 12) {
+        int o = 0;
+        for (int i = 0; i < rlen && i < 12; i++) o += snprintf(raw + o, sizeof(raw) - o, "%02X ", rep[i]);
+        raw[o] = 0;
+    }
     btstack_hid_parser_t ps;
     btstack_hid_parser_init(&ps, desc, dlen, HID_REPORT_TYPE_INPUT, rep, rlen);
     uint8_t mod = 0, keys[6] = {0};
@@ -531,6 +796,12 @@ void inputReport(const uint8_t* desc, uint16_t dlen, const uint8_t* rep, uint16_
             }
         }
     }
+    if (s_repLog < 12) {
+        s_repLog++;
+        blog("report %u B: %s-> %s%s%s btn=%lX dx=%ld dy=%ld", (unsigned)rlen, raw,
+             kbd ? "kbd " : "", rel ? "rel " : "", (absx || absy || hat) ? "abs " : "",
+             (unsigned long)buttons, (long)dx, (long)dy);
+    }
     if (kbd) bt_hid_keyboard(mod, keys);
     if (rel) {
         bt_hid_mouse(buttons & 1, buttons & 2, buttons & 4, dx, dy, wheel);
@@ -561,47 +832,31 @@ void inputReport(const uint8_t* desc, uint16_t dlen, const uint8_t* rep, uint16_
 }
 
 void saveInput() {
-    if (!FileUtils::fsMount) return;
-    FIL f;
-    if (f_open(&f, BT_INPUT_CFG, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return;
-    char line[80];
-    const int n = snprintf(line, sizeof(line), "%s\t%c\t%u\t%s\n", bd_addr_to_str(s_inAddr),
-                           s_inLe ? 'L' : 'C', (unsigned)s_inAddrType, s_inName);
-    UINT w; f_write(&f, line, n, &w);
-    f_close(&f);
+    Known k = {};
+    memcpy(k.addr, s_inAddr, 6);
+    k.le = s_inLe;
+    k.addrType = s_inAddrType;
+    snprintf(k.name, sizeof(k.name), "%s", s_inName);
+    listUpsert(true, k);
 }
 
-// "addr\tC|L\taddrType\tname"
-bool loadInput(bd_addr_t a, bool& le, uint8_t& type, char* name, int cap) {
-    if (!FileUtils::fsMount) return false;
-    FIL f;
-    if (f_open(&f, BT_INPUT_CFG, FA_READ) != FR_OK) return false;
-    char line[96] = {0};
-    UINT n = 0;
-    f_read(&f, line, sizeof(line) - 1, &n);
-    f_close(&f);
-    line[n] = 0;
-    char* f1 = strchr(line, '\t');        if (!f1) return false; *f1++ = 0;
-    char* f2 = strchr(f1, '\t');          if (!f2) return false; *f2++ = 0;
-    char* f3 = strchr(f2, '\t');          if (!f3) return false; *f3++ = 0;
-    char* nl = strpbrk(f3, "\r\n");       if (nl) *nl = 0;
-    if (!sscanf_bd_addr(line, a)) return false;
-    le = f1[0] == 'L';
-    type = (uint8_t)(f2[0] - '0');
-    snprintf(name, cap, "%s", f3);
-    return true;
-}
-
-// The remembered LE device reconnects when it advertises: keep the controller
-// listening for it (BTstack's auto-connect = whitelist + background connect).
+// The added LE devices reconnect when they advertise: keep the controller
+// listening for them (BTstack's auto-connect = whitelist + background connect).
 void leAutoConnect(bool on) {
-    bd_addr_t a; bool le; uint8_t t; char nm[32];
-    if (!loadInput(a, le, t, nm, sizeof(nm)) || !le) return;
-    if (on) gap_auto_connection_start((bd_addr_type_t)t, a);
-    else    gap_auto_connection_stop((bd_addr_type_t)t, a);
+    Known l[KNOWN_MAX];
+    const int n = listLoad(true, l, KNOWN_MAX);
+    for (int i = 0; i < n; i++) {
+        if (!l[i].le) continue;
+        bd_addr_t a;
+        memcpy(a, l[i].addr, 6);
+        if (on) gap_auto_connection_start((bd_addr_type_t)l[i].addrType, a);
+        else    gap_auto_connection_stop((bd_addr_type_t)l[i].addrType, a);
+    }
 }
 
 void inputReady() {
+    s_pairTry = 0;
+    s_pairNew = false;
     s_in = I_READY;
     saveInput();
     blog("%s ready (%s)", s_inName, s_inLe ? "BLE" : "classic");
@@ -609,6 +864,8 @@ void inputReady() {
 
 void inputClosed(const char* why) {
     inputRelease();
+    s_basCid = 0;              // the battery client drops itself with the link
+    infoReset();
     s_hidCid = 0; s_hidsCid = 0; s_leHandle = HCI_CON_HANDLE_INVALID;
     s_hidDescOk = false;
     if (s_in != I_FAILED) s_in = I_IDLE;
@@ -624,12 +881,12 @@ void hidHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
             // A classic device pages us: the remembered one waking up, or the one
             // being paired. Anything else is declined.
             hid_subevent_incoming_connection_get_address(p, a);
-            bd_addr_t ra; bool le; uint8_t t; char nm[32];
-            const bool known = (loadInput(ra, le, t, nm, sizeof(nm)) && !le && bd_addr_cmp(ra, a) == 0) ||
+            Known kn = {};
+            const bool known = inputKnown(a, false, &kn) ||
                                (s_in == I_CONNECTING && !s_inLe && bd_addr_cmp(s_inAddr, a) == 0);
             const uint16_t cid = hid_subevent_incoming_connection_get_hid_cid(p);
             if (!known || s_hidCid) { hid_host_decline_connection(cid); break; }
-            if (s_in != I_CONNECTING) { memcpy(s_inAddr, a, 6); snprintf(s_inName, sizeof(s_inName), "%s", nm); s_inLe = false; }
+            if (s_in != I_CONNECTING) { memcpy(s_inAddr, a, 6); snprintf(s_inName, sizeof(s_inName), "%s", kn.name); s_inLe = false; }
             s_hidCid = cid;
             s_in = I_CONNECTING;
             hid_host_accept_connection(cid, HID_PROTOCOL_MODE_REPORT);
@@ -650,8 +907,12 @@ void hidHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
         }
         case HID_SUBEVENT_DESCRIPTOR_AVAILABLE:
             s_hidDescOk = hid_subevent_descriptor_available_get_status(p) == ERROR_CODE_SUCCESS;
-            if (s_hidDescOk) axesScan(hid_descriptor_storage_get_descriptor_data(s_hidCid),
-                                      hid_descriptor_storage_get_descriptor_len(s_hidCid));
+            if (s_hidDescOk) {
+                axesScan(hid_descriptor_storage_get_descriptor_data(s_hidCid),
+                         hid_descriptor_storage_get_descriptor_len(s_hidCid));
+                descKind(hid_descriptor_storage_get_descriptor_data(s_hidCid),
+                         hid_descriptor_storage_get_descriptor_len(s_hidCid));
+            }
             blog(s_hidDescOk ? "descriptor %u bytes" : "no descriptor (boot protocol)",
                  (unsigned)hid_descriptor_storage_get_descriptor_len(s_hidCid));
             inputReady();
@@ -679,8 +940,11 @@ void hidHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
     }
 }
 
-void hidsHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
-    if (type != HCI_EVENT_PACKET || hci_event_packet_get_type(p) != HCI_EVENT_GATTSERVICE_META) return;
+void hidsHandler(uint8_t, uint16_t, uint8_t* p, uint16_t) {
+    // No packet-type test: hids_host hands its HID reports over with packet type
+    // HCI_EVENT_GATTSERVICE_META (hids_host_handle_notification_event), not
+    // HCI_EVENT_PACKET — testing for the latter silently dropped every report.
+    if (hci_event_packet_get_type(p) != HCI_EVENT_GATTSERVICE_META) return;
     switch (hci_event_gattservice_meta_get_subevent_code(p)) {
         case GATTSERVICE_SUBEVENT_HID_SERVICE_CONNECTED:
             if (gattservice_subevent_hid_service_connected_get_status(p) != ERROR_CODE_SUCCESS) {
@@ -689,16 +953,30 @@ void hidsHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
                 gap_disconnect(s_leHandle);
                 break;
             }
-            axesScan(hids_host_descriptor_storage_get_descriptor_data(s_hidsCid, 0),
-                     hids_host_descriptor_storage_get_descriptor_len(s_hidsCid, 0));
+        {
+            const uint8_t* dd = hids_host_descriptor_storage_get_descriptor_data(s_hidsCid, 0);
+            const uint16_t dl = hids_host_descriptor_storage_get_descriptor_len(s_hidsCid, 0);
+            blog("HID descriptor %u B%s, report IDs %s", (unsigned)dl,
+                 dl >= sizeof(s_hidsDescStore) ? " (TRUNCATED)" : "",
+                 dl && btstack_hid_report_id_declared(dd, dl) ? "yes" : "no");
+            axesScan(dd, dl);
+            descKind(dd, dl);
+            s_repLog = 0;
             inputReady();
+            infoQueryStart();
+        }
             break;
         case GATTSERVICE_SUBEVENT_HID_REPORT: {
             const uint8_t si = gattservice_subevent_hid_report_get_service_index(p);
-            inputReport(hids_host_descriptor_storage_get_descriptor_data(s_hidsCid, si),
-                        hids_host_descriptor_storage_get_descriptor_len(s_hidsCid, si),
-                        gattservice_subevent_hid_report_get_report(p),
-                        gattservice_subevent_hid_report_get_report_len(p));
+            const uint8_t* dd = hids_host_descriptor_storage_get_descriptor_data(s_hidsCid, si);
+            const uint16_t dl = hids_host_descriptor_storage_get_descriptor_len(s_hidsCid, si);
+            const uint8_t* r = gattservice_subevent_hid_report_get_report(p);
+            uint16_t rl = gattservice_subevent_hid_report_get_report_len(p);
+            // hids_host always puts the report ID in front, also for a descriptor
+            // that declares none — then the parser would read every field one
+            // byte off. Strip it there.
+            if (rl && dl && !btstack_hid_report_id_declared(dd, dl)) { r++; rl--; }
+            inputReport(dd, dl, r, rl);
             break;
         }
         case GATTSERVICE_SUBEVENT_HID_SERVICE_DISCONNECTED:
@@ -721,10 +999,23 @@ void smHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
         case SM_EVENT_PASSKEY_DISPLAY_NUMBER:
             blog("type %06u then Enter on the keyboard", (unsigned)sm_event_passkey_display_number_get_passkey(p));
             break;
-        case SM_EVENT_PAIRING_COMPLETE:
-            if (sm_event_pairing_complete_get_status(p) == ERROR_CODE_SUCCESS) { blog("paired"); go = true; }
-            else { blog("pairing failed (0x%02x)", sm_event_pairing_complete_get_status(p)); s_in = I_FAILED; gap_disconnect(s_leHandle); }
+        case SM_EVENT_SECURITY_REQUEST:
+            blog("the device asks for security (auth %02X)", sm_event_security_request_get_auth_req(p));
             break;
+        case SM_EVENT_PAIRING_STARTED:
+            blog("pairing...");
+            break;
+        case SM_EVENT_PAIRING_COMPLETE: {
+            const uint8_t st = sm_event_pairing_complete_get_status(p);
+            if (st == ERROR_CODE_SUCCESS) { blog("paired"); go = true; break; }
+            // 0x13 = the link dropped during pairing (the cause is on the
+            // disconnect line); 0x05 = SMP failure, the reason says why.
+            blog("pairing failed (status 0x%02x, reason 0x%02x)", st, sm_event_pairing_complete_get_reason(p));
+            // leDisconnected decides: retry, or fail.
+            if (sm_event_pairing_complete_get_handle(p) == s_leHandle && s_leHandle != HCI_CON_HANDLE_INVALID)
+                gap_disconnect(s_leHandle);
+            break;
+        }
         case SM_EVENT_REENCRYPTION_COMPLETE:
             if (sm_event_reencryption_complete_get_status(p) == ERROR_CODE_SUCCESS) go = true;
             else { blog("re-encryption failed (0x%02x) - pair it again", sm_event_reencryption_complete_get_status(p));
@@ -743,20 +1034,42 @@ void leConnected(const uint8_t* p) {
     if (gap_subevent_le_connection_complete_get_status(p) != ERROR_CODE_SUCCESS) return;
     bd_addr_t a;
     gap_subevent_le_connection_complete_get_peer_address(p, a);
-    bd_addr_t ra; bool le; uint8_t t; char nm[32];
+    Known kn = {};
     const bool pairing = s_in == I_CONNECTING && s_inLe && bd_addr_cmp(a, s_inAddr) == 0;
-    const bool known   = loadInput(ra, le, t, nm, sizeof(nm)) && le && bd_addr_cmp(ra, a) == 0;
+    const bool known   = inputKnown(a, true, &kn);
     if (!pairing && !known) return;        // not ours (the audio side never uses LE)
-    if (!pairing) { memcpy(s_inAddr, a, 6); s_inAddrType = t; snprintf(s_inName, sizeof(s_inName), "%s", nm); s_inLe = true; }
+    // One input device at a time: a second added one that advertises meanwhile is dropped.
+    if (!pairing && (s_in == I_READY || s_in == I_CONNECTING)) {
+        gap_disconnect(gap_subevent_le_connection_complete_get_connection_handle(p));
+        return;
+    }
+    if (!pairing) { memcpy(s_inAddr, a, 6); s_inAddrType = kn.addrType; snprintf(s_inName, sizeof(s_inName), "%s", kn.name); s_inLe = true; }
     s_leHandle = gap_subevent_le_connection_complete_get_connection_handle(p);
+    s_leConnMs = nowMs();
     s_in = I_CONNECTING;
     leAutoConnect(false);
     blog("%s connected, securing the link...", s_inName);
     sm_request_pairing(s_leHandle);         // pairs, or re-encrypts a bonded device
 }
 
-void leDisconnected(hci_con_handle_t h) {
+void leDisconnected(hci_con_handle_t h, uint8_t reason) {
     if (h != s_leHandle) return;
+    blog("link dropped after %u ms, reason 0x%02x%s", (unsigned)(nowMs() - s_leConnMs), reason,
+         reason == 0x08 ? " (timeout: too far / weak signal)" :
+         reason == 0x13 ? " (by the device)" :
+         reason == 0x3E ? " (link not established)" : "");
+    if (s_in == I_CONNECTING && s_inLe && s_pairNew && !s_hidsCid && s_pairTry == 0) {
+        // A new device dropped before it was set up: one more try.
+        s_pairTry = 1;
+        s_leHandle = HCI_CON_HANDLE_INVALID;
+        gap_delete_bonding((bd_addr_type_t)s_inAddrType, s_inAddr);
+        const uint8_t rc = gap_connect(s_inAddr, (bd_addr_type_t)s_inAddrType);
+        if (rc == ERROR_CODE_SUCCESS) { blog("retrying..."); return; }
+        blog("retry failed to start, status 0x%02x", rc);
+    }
+    s_pairTry = 0;
+    if (s_in == I_CONNECTING) s_in = I_FAILED;
+    s_pairNew = false;
     inputClosed("disconnected");
 }
 
@@ -781,12 +1094,20 @@ void servicesInit() {
     hid_host_init(s_hidDescStore, sizeof(s_hidDescStore));
     hid_host_register_packet_handler(&hidHandler);
     sm_init();
+    // BTstack defaults to Secure Connections ONLY when ENABLE_LE_SECURE_CONNECTIONS
+    // is set, and then refuses every legacy-pairing device with reason 0x03 —
+    // which is most cheap BLE mice (FY-128 answers io=03 auth=01). SC is still
+    // asked for and used whenever the device supports it.
+    sm_set_secure_connections_only_mode(false);
     sm_set_io_capabilities(IO_CAPABILITY_DISPLAY_ONLY);
     sm_set_authentication_requirements(SM_AUTHREQ_SECURE_CONNECTION | SM_AUTHREQ_BONDING);
     s_sm_reg.callback = &smHandler;
     sm_add_event_handler(&s_sm_reg);
     gatt_client_init();
     hids_host_init(s_hidsDescStore, sizeof(s_hidsDescStore));
+    battery_service_client_init();
+    device_information_service_client_init();
+    infoReset();
 
     gap_set_local_name("Pico-Speccy");
     gap_set_class_of_device(0x200408);       // audio service, A/V hifi
@@ -828,7 +1149,8 @@ void packetHandler(uint8_t type, uint16_t, uint8_t* packet, uint16_t) {
                 leConnected(packet);
             break;
         case HCI_EVENT_DISCONNECTION_COMPLETE:
-            leDisconnected(hci_event_disconnection_complete_get_connection_handle(packet));
+            leDisconnected(hci_event_disconnection_complete_get_connection_handle(packet),
+                           hci_event_disconnection_complete_get_reason(packet));
             break;
         case HCI_EVENT_USER_CONFIRMATION_REQUEST: // SSP "Just Works"
             hci_event_user_confirmation_request_get_bd_addr(packet, a);
@@ -844,6 +1166,49 @@ void packetHandler(uint8_t type, uint16_t, uint8_t* packet, uint16_t) {
     }
 }
 
+// SMP trace: every Security Manager PDU (L2CAP CID 6) in both directions goes to
+// the log, decoded enough to tell WHO refused pairing and what each side asked
+// for. BTstack's own error messages come along too. Cheap: one CID test per ACL
+// packet, and SMP is a handful of packets per pairing.
+void smpField(char*& o, char* end, const char* name, unsigned v) {
+    const int n = snprintf(o, end - o, " %s=%02X", name, v);
+    if (n > 0 && o + n < end) o += n;
+}
+void dumpPacket(uint8_t type, uint8_t in, uint8_t* p, uint16_t len) {
+    if (type != HCI_ACL_DATA_PACKET || len < 9) return;
+    if (little_endian_read_16(p, 6) != L2CAP_CID_SECURITY_MANAGER_PROTOCOL) return;
+    const uint8_t* d = p + 8;
+    const int n = len - 8;
+    char line[110];
+    char* o = line;
+    char* end = line + sizeof(line);
+    static const char* const kOp[] = { "?", "PairReq", "PairRsp", "Confirm", "Random", "Failed",
+                                       "EncInfo", "MasterId", "IdInfo", "IdAddr", "SignInfo",
+                                       "SecReq", "PubKey", "DHKeyChk", "Keypress" };
+    const uint8_t op = d[0];
+    o += snprintf(o, end - o, "SMP %s %s", in ? "<" : ">", op < 15 ? kOp[op] : "?");
+    if ((op == 1 || op == 2) && n >= 7) {
+        smpField(o, end, "io", d[1]); smpField(o, end, "oob", d[2]); smpField(o, end, "auth", d[3]);
+        smpField(o, end, "key", d[4]); smpField(o, end, "ikd", d[5]); smpField(o, end, "rkd", d[6]);
+    } else if (op == 5 && n >= 2) {
+        smpField(o, end, "reason", d[1]);
+    } else if (op == 11 && n >= 2) {
+        smpField(o, end, "auth", d[1]);
+    }
+    blog("%s", line);
+}
+void dumpMessage(int level, const char* fmt, va_list ap) {
+    if (level != HCI_DUMP_LOG_LEVEL_ERROR) return;
+    char line[110];
+    vsnprintf(line, sizeof(line), fmt, ap);
+    // An audio switch retries while the old link closes; the controller refuses
+    // each Create Connection meanwhile ("Command packet sent failed, error = 86")
+    // — expected, and already said once by "waiting for the previous connection".
+    if (s_audioRetries && strstr(line, "Command packet sent failed")) return;
+    blog("btstack: %s", line);
+}
+const hci_dump_t s_dump = { nullptr, dumpPacket, dumpMessage };
+
 // Start the controller (BT firmware download) without waiting. False = no radio.
 uint32_t s_powerT0 = 0;
 bool powerOnAsync() {
@@ -853,6 +1218,7 @@ bool powerOnAsync() {
         blog("radio not available");
         return false;
     }
+    hci_dump_init(&s_dump);
     s_hci_reg.callback = &packetHandler;
     hci_add_event_handler(&s_hci_reg);
     servicesInit();
@@ -932,7 +1298,17 @@ bool inputConnect(const Dev& d) {
     s_inLe = d.le;
     s_inAddrType = d.addrType;
     snprintf(s_inName, sizeof(s_inName), "%s", d.name[0] ? d.name : bd_addr_to_str(s_inAddr));
+    s_pairNew = d.le && !inputKnown(d.addr, true, nullptr);
+    s_pairTry = 0;
     s_in = I_CONNECTING;
+    if (d.le && !s_pairNew) {
+        // An added LE device: the background auto-connect already waits for it
+        // to advertise (a direct gap_connect beside it is refused, "le connect
+        // already active"). Keep it running; leConnected takes it from here.
+        leAutoConnect(true);
+        blog("waiting for %s to advertise...", s_inName);
+        return true;
+    }
     uint8_t rc;
     if (d.le) {
         rc = gap_connect(s_inAddr, (bd_addr_type_t)s_inAddrType);
@@ -951,29 +1327,66 @@ bool inputConnect(const Dev& d) {
 }
 
 void inputDisconnect() {
-    if (s_in == I_CONNECTING && s_inLe && s_leHandle == HCI_CON_HANDLE_INVALID) gap_connect_cancel();
+    const bool waitingLe = s_in == I_CONNECTING && s_inLe && s_leHandle == HCI_CON_HANDLE_INVALID;
+    if (waitingLe && s_pairNew) gap_connect_cancel();
     if (s_hidCid) hid_host_disconnect(s_hidCid);
     if (s_hidsCid) hids_host_disconnect(s_hidsCid);
     if (s_leHandle != HCI_CON_HANDLE_INVALID) gap_disconnect(s_leHandle);
     inputRelease();
+    if (s_basCid) { battery_service_client_disconnect(s_basCid); s_basCid = 0; }
+    infoReset();
+    s_pairTry = 0;
+    s_pairNew = false;
     s_in = I_IDLE;
 }
 
 bool inputRemembered(uint8_t addr[6], char* name, int cap) {
-    bd_addr_t a; bool le; uint8_t t;
-    if (!loadInput(a, le, t, name, cap)) return false;
-    memcpy(addr, a, 6);
+    Known k;
+    if (listLoad(true, &k, 1) < 1) return false;
+    memcpy(addr, k.addr, 6);
+    snprintf(name, cap, "%s", k.name);
     return true;
 }
 
+const InputInfo* inputInfo() {
+    return (s_in == I_READY || s_in == I_CONNECTING) ? &s_info : nullptr;
+}
+
+bool audioInfo(AudioInfo& a) {
+    if (s_audio != A_STREAMING) return false;
+    a.fs = s_cfg.fs;
+    a.bitpool = s_cfg.bitpool;
+    a.blocks = s_cfg.blocks;
+    a.subbands = s_cfg.subbands;
+    a.joint = s_cfg.cm == SBC_CHANNEL_MODE_JOINT_STEREO;
+    return true;
+}
+
+int known(bool input, Known* out, int max) {
+    if (max > KNOWN_MAX) max = KNOWN_MAX;
+    return listLoad(input, out, max);
+}
+
+bool isKnown(bool input, const uint8_t addr[6]) {
+    Known l[KNOWN_MAX];
+    const int n = listLoad(input, l, KNOWN_MAX);
+    for (int i = 0; i < n; i++) if (memcmp(l[i].addr, addr, 6) == 0) return true;
+    return false;
+}
+
+bool connectedTo(bool input, const uint8_t addr[6]) {
+    if (input) return (s_in == I_READY || s_in == I_CONNECTING) && memcmp(s_inAddr, addr, 6) == 0;
+    return (s_audio == A_STREAMING || s_audio == A_CONNECTING) && memcmp(s_audioAddr, addr, 6) == 0;
+}
+
 void bootTick() {
-    // ~3 s after boot, once: power up if an input device is remembered.
+    // ~3 s after boot, once: power up if an input device has been added.
     static bool done = false;
     if (done || s_state != S_OFF || nowMs() < 3000) return;
     done = true;
-    bd_addr_t a; bool le; uint8_t t; char nm[32];
-    if (!loadInput(a, le, t, nm, sizeof(nm))) return;
-    blog("remembered input %s - starting Bluetooth", nm);
+    Known k;
+    if (listLoad(true, &k, 1) < 1) return;
+    blog("added input %s - starting Bluetooth", k.name);
     powerOnAsync();
 }
 
@@ -983,16 +1396,53 @@ const char* audioName() { return s_audioName; }
 bool audioConnect(const uint8_t addr[6], const char* name) {
     if (!ensureUp()) return false;
     if (s_busy) finish("stopped");
-    if (s_cid) audioDisconnect();
+    const bool switching = s_cid != 0;
+    if (switching) audioDisconnect();
     memcpy(s_audioAddr, addr, 6);
     snprintf(s_audioName, sizeof(s_audioName), "%s", name && name[0] ? name : bd_addr_to_str(s_audioAddr));
+    s_audioRetries = 0;
+    if (switching) {
+        // The stack holds ONE A2DP connection (MAX_NR_AVDTP_CONNECTIONS): the
+        // new one may only start once the old one is gone (connecting right away
+        // failed with 0x56 "not enough memory", then 0x1f). Continued in
+        // A2DP_SUBEVENT_SIGNALING_CONNECTION_RELEASED.
+        s_audioPending = true;
+        s_audio = A_CONNECTING;
+        blog("switching to %s...", s_audioName);
+        return true;
+    }
+    return audioEstablish();
+}
+
+// The previous device is let go in stages after "disconnected" (the AVDTP
+// connection object, then the ACL link), and until then a new connect is refused
+// with 0x56 (no free AVDTP connection) or 0x1f (HCI Create Connection rejected,
+// "error 86"). Those two are retried every 500 ms for up to 8 s; anything else
+// fails at once. audioDisconnect stops it.
+static void audioRetryTick(btstack_timer_source_t*) {
+    if (s_audio != A_CONNECTING || s_cid) return;    // cancelled, or got through
+    audioEstablish();
+}
+
+bool audioEstablish() {
     uint16_t cid = 0;
     const uint8_t rc = a2dp_source_establish_stream(s_audioAddr, &cid);
     if (rc != ERROR_CODE_SUCCESS) {
+        const bool busy = rc == BTSTACK_MEMORY_ALLOC_FAILED || rc == ERROR_CODE_UNSPECIFIED_ERROR;
+        if (busy && s_audioRetries < 16) {
+            if (s_audioRetries++ == 0) blog("waiting for the previous connection to close...");
+            s_audio = A_CONNECTING;
+            btstack_run_loop_set_timer_handler(&s_audioRetryT, audioRetryTick);
+            btstack_run_loop_set_timer(&s_audioRetryT, 500);
+            btstack_run_loop_add_timer(&s_audioRetryT);
+            return true;
+        }
         blog("connect failed to start, status 0x%02x", rc);
+        s_audioRetries = 0;
         s_audio = A_FAILED;
         return false;
     }
+    s_audioRetries = 0;
     s_cid = cid;
     s_audio = A_CONNECTING;
     blog("connecting to %s...", s_audioName);
@@ -1000,29 +1450,19 @@ bool audioConnect(const uint8_t addr[6], const char* name) {
 }
 
 void audioDisconnect() {
+    s_audioPending = false;
+    btstack_run_loop_remove_timer(&s_audioRetryT);
+    s_audioRetries = 0;
     ringOff();
     if (s_cid) a2dp_source_disconnect(s_cid);
     s_audio = A_IDLE;
 }
 
 bool remembered(uint8_t addr[6], char* name, int cap) {
-    if (!FileUtils::fsMount) return false;
-    FIL f;
-    if (f_open(&f, BT_AUDIO_CFG, FA_READ) != FR_OK) return false;
-    char line[80] = {0};
-    UINT n = 0;
-    f_read(&f, line, sizeof(line) - 1, &n);
-    f_close(&f);
-    line[n] = 0;
-    char* tab = strchr(line, '\t');
-    if (!tab) return false;
-    *tab = 0;
-    char* nl = strpbrk(tab + 1, "\r\n");
-    if (nl) *nl = 0;
-    bd_addr_t a;
-    if (!sscanf_bd_addr(line, a)) return false;
-    memcpy(addr, a, 6);
-    snprintf(name, cap, "%s", tab + 1);
+    Known k;
+    if (listLoad(false, &k, 1) < 1) return false;
+    memcpy(addr, k.addr, 6);
+    snprintf(name, cap, "%s", k.name);
     return true;
 }
 
@@ -1031,13 +1471,14 @@ void forget(const uint8_t addr[6]) {
     memcpy(a, addr, 6);
     if (s_cid && memcmp(a, s_audioAddr, 6) == 0) audioDisconnect();
     if (ensureUp()) gap_drop_link_key_for_bd_addr(a);   // the key lives in the stack's TLV
-    uint8_t ra[6]; char rn[32];
-    if (remembered(ra, rn, sizeof(rn)) && memcmp(ra, a, 6) == 0) f_unlink(BT_AUDIO_CFG);
-    bd_addr_t ia; bool le; uint8_t t;
-    if (loadInput(ia, le, t, rn, sizeof(rn)) && memcmp(ia, a, 6) == 0) {
+    listRemove(false, a, nullptr);
+    Known in;
+    if (listRemove(true, a, &in)) {
         if ((s_in == I_READY || s_in == I_CONNECTING) && memcmp(s_inAddr, a, 6) == 0) inputDisconnect();
-        if (le && s_state == S_UP) { gap_auto_connection_stop((bd_addr_type_t)t, ia); gap_delete_bonding((bd_addr_type_t)t, ia); }
-        f_unlink(BT_INPUT_CFG);
+        if (in.le && s_state == S_UP) {
+            gap_auto_connection_stop((bd_addr_type_t)in.addrType, a);
+            gap_delete_bonding((bd_addr_type_t)in.addrType, a);
+        }
     }
     blog("forgot %s", bd_addr_to_str(a));
 }
