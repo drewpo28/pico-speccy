@@ -4,11 +4,18 @@
 // FAT/exFAT volume, tools/host/mksd.sh makes one); without it the folder itself is
 // the card, as a virtual FAT32 volume (host_vfat.cpp). Drive 1 = USB stick, never
 // present.
+//
+// Folder card upkeep: a thread mirrors the guest's writes into the folder once the
+// guest has been quiet for SYNC_QUIET_MS (vfat_sync), host_sd_card_reset() - the
+// devices call it on CMD0 - brings in changes made on the PC, and host_sd_flush()
+// runs the last sync at exit / reboot.
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <cstring>
 #include <mutex>
+#include <thread>
+#include <chrono>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -29,17 +36,22 @@ bool vfat_build(const std::string& root);
 uint64_t vfat_sectors();
 void vfat_read(uint64_t sector, uint8_t* buf, uint32_t count);
 void vfat_write(uint64_t sector, const uint8_t* buf, uint32_t count);
+bool vfat_sync_due(uint64_t quietMs);
+void vfat_sync();
+bool vfat_card_reset();
+
+static constexpr uint64_t SYNC_QUIET_MS = 1000;
 
 extern "C" {
+extern volatile uint32_t g_disk_write_gen;   // DivMMC's read-ahead drops its windows on a change
 void disk_invalidate(void) {}
+
+static bool ensureVfat();
 
 DSTATUS disk_initialize(BYTE pdrv) {
     if (pdrv != 0) return STA_NOINIT | STA_NODISK;
     std::lock_guard<std::mutex> lk(s_mx);
-    if (!host_sd_path) {
-        if (!s_vfat) s_vfat = vfat_build(host_root_dir());
-        return s_vfat ? 0 : STA_NOINIT;
-    }
+    if (!host_sd_path) return ensureVfat() ? 0 : STA_NOINIT;
     if (s_fd < 0) {
         s_fd = open(host_sd_path, O_RDWR);
         if (s_fd < 0) { s_fd = open(host_sd_path, O_RDONLY); s_ro = s_fd >= 0; }
@@ -52,9 +64,34 @@ DSTATUS disk_status(BYTE pdrv) {
     if (!host_sd_path) return 0;
     return s_fd < 0 ? STA_NOINIT : (s_ro ? STA_PROTECT : 0);
 }
+static void syncThread() {
+    for (;;) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+        std::lock_guard<std::mutex> lk(s_mx);
+        if (vfat_sync_due(SYNC_QUIET_MS)) vfat_sync();
+    }
+}
 static bool ensureVfat() {
-    if (!s_vfat) s_vfat = vfat_build(host_root_dir());
+    if (!s_vfat) {
+        s_vfat = vfat_build(host_root_dir());
+        static bool started = false;
+        if (s_vfat && !started) { started = true; std::thread(syncThread).detach(); }
+    }
     return s_vfat;
+}
+
+// The guest reset the card (CMD0 from DivMMC / Z-Controller / NeoGS SD).
+void host_sd_card_reset(void) {
+    if (host_sd_path) return;
+    std::lock_guard<std::mutex> lk(s_mx);
+    if (s_vfat && vfat_card_reset()) g_disk_write_gen++;
+}
+
+// The last guest writes into the folder before the process exits or restarts.
+void host_sd_flush(void) {
+    if (host_sd_path || !s_vfat) return;
+    std::lock_guard<std::mutex> lk(s_mx);
+    vfat_sync();
 }
 DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
     if (pdrv != 0) return RES_NOTRDY;
@@ -73,6 +110,7 @@ DRESULT disk_read(BYTE pdrv, BYTE* buff, LBA_t sector, UINT count) {
 DRESULT disk_write(BYTE pdrv, const BYTE* buff, LBA_t sector, UINT count) {
     if (pdrv != 0) return RES_NOTRDY;
     std::lock_guard<std::mutex> lk(s_mx);
+    g_disk_write_gen++;
     if (!host_sd_path) {
         if (!ensureVfat()) return RES_NOTRDY;
         vfat_write(sector, buff, count);

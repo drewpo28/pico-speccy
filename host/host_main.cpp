@@ -32,6 +32,7 @@
 extern "C" {
 #include "drivers/graphics/graphics.h"
 void ESPectrum_vsync(void);
+void host_sd_flush(void);   // host_disk.cpp
 void ts_render_core1_pump(void);
 bool ts_render_core1_prio(void);
 bool ts_render_core1_busy(void);
@@ -477,6 +478,7 @@ int main(int argc, char** argv) {
         if (f != shown) { shown = f; present(ren, tex, tw, th); }
         else SDL_Delay(2);
     }
+    host_sd_flush();   // the guest's last writes into the folder card
     SDL_Quit();
     _exit(0);
 }
