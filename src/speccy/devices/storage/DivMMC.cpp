@@ -2,6 +2,9 @@
 #include "speccy/machines/Next/NextMf.h"
 #include "app/SnapPack.h"
 #include "app/Buffer.h"
+#if HOST_BUILD
+extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card takes PC-side changes here
+#endif
 #include "app/TryAlloc.h"
 #include "hardware/sync.h"
 #include "speccy/z80/CPU.h"
@@ -2427,6 +2430,9 @@ void DivMMC::mmc_write(uint8_t value) {
             if (mmc_index_command == 5) {
                 mmc_r1 = 1; // Idle
                 mmc_index_command = 0;
+#if HOST_BUILD
+                host_sd_card_reset();
+#endif
             } else {
                 mmc_index_command++;
             }

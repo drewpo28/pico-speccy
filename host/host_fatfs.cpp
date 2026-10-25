@@ -73,6 +73,7 @@ static std::string cpToUtf8(const std::string& s) {
     }
     return o;
 }
+std::string host_cp1251_to_utf8(const std::string& s) { return cpToUtf8(s); }   // host_vfat.cpp
 static std::string utf8ToCp(const char* s) {
     std::string o;
     const unsigned char* p = (const unsigned char*)s;

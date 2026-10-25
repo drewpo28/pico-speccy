@@ -31,9 +31,26 @@ the same folder as a virtual FAT32 card (`host_vfat.cpp`: MBR + one FAT32 partit
 built from the tree at the first access, LFN + 8.3 names). Put a Next SD
 distribution into the folder and the Next boots from it.
 
-Limits of this stage: what the guest writes to the card stays in memory for the
-session (the guest sees it, the folder does not change), and files changed on the
-PC while the emulator runs are not seen until the next start.
+What the guest writes reaches the folder: after a second without card writes (and
+at exit / F12) the card is read back as the guest left it and mirrored into the
+folder — new and changed files, renames (as host renames), new and removed
+directories. A file only patched in place gets just the written sectors. The guest's
+own view never moves under it: a host file that is replaced or removed stays readable
+to the card through its old inode. The log says what was done
+(`host: card -> folder: ...`).
+
+Files changed on the PC come in when the guest resets the card (CMD0 — a machine
+reset, a re-mount): the folder is rescanned, and if it differs the card is rebuilt
+(`host: folder changed on the PC - card rebuilt ...`). Not while the guest has the
+card mounted: changing the layout under it would corrupt its FAT caches.
+
+Safety: a guest that reformats the card, or removes more than half of all entries (over 32)
+at once, switches the mirroring off for the session (it keeps its view in memory,
+the folder is untouched). A card the parser cannot read at that moment (the guest
+is mid-update) is retried after the next quiet second.
+
+Test: `tools/host/vfat_sync_test.cpp` (recipe in its header) — a real FatFs plays the
+guest; re-run it after any change to `host_vfat.cpp`.
 
 A real image still works: `--sd card.img` (`tools/host/mksd.sh card.img 256 files...`
 makes a FAT32 one).

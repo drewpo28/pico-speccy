@@ -117,7 +117,9 @@ bool set_sys_clock_khz(uint32_t khz, bool) { s_sys_hz = khz * 1000u; return true
 
 // ---- watchdog: a reboot restarts the process -------------------------------------------
 extern char** host_argv;
+void host_sd_flush(void);   // host_disk.cpp
 static void host_restart(void) {
+    host_sd_flush();
     fprintf(stderr, "host: firmware reboot -> restarting the process\n");
     fflush(stdout);
     fflush(stderr);
