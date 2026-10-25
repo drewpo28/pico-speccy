@@ -12,6 +12,11 @@
 //       $H/tools/host/vfat_sync_test.cpp $H/host/host_vfat.cpp $H/host/host_fsdir.cpp $O/ff.o $O/ffunicode.o
 //   $O/t 3000 1
 //
+// The same on a case-insensitive folder (the macOS/Windows behaviour; ciopfs is a FUSE
+// layer, `apt install ciopfs`): mkdir -p $O/back $O/ci && ciopfs $O/back $O/ci &&
+// VFAT_TEST_DIR=$O/ci $O/t 3000 1. It also brings FUSE's .fuse_hidden placeholders for
+// open-but-deleted files, i.e. the rmdir-under-a-kept-inode case.
+//
 // Re-run after any change to host_vfat.cpp. Each of these hand mutations fails it: no
 // keepFd taken (keepOld returns at once), keepFd ignored by readSector, patchInPlace
 // writing nothing, a host rename without remapAll.
@@ -126,6 +131,7 @@ static void hlist(const std::string& rel, std::map<std::string, std::string>& ou
     DIR* d = opendir((ROOT + (rel.empty() ? "" : "/" + rel)).c_str());
     while (dirent* e = readdir(d)) {
         std::string n = e->d_name; if (n == "." || n == "..") continue;
+        if (n.rfind(".fuse_hidden", 0) == 0) continue;   // FUSE: an open-but-deleted inode
         std::string r = rel.empty() ? n : rel + "/" + n;
         struct stat st; stat((ROOT + "/" + r).c_str(), &st);
         if (S_ISDIR(st.st_mode)) { out[r] = DIRM; hlist(r, out); }
@@ -163,7 +169,10 @@ static std::string utf(const std::string& p) { return host_cp1251_to_utf8(p); }
 
 int main(int argc, char** argv) {
     rng.seed(argc > 2 ? atoi(argv[2]) : 12345);
-    char tmpl[] = "/tmp/vfatXXXXXX"; ROOT = mkdtemp(tmpl);
+    // VFAT_TEST_DIR puts the folder elsewhere - e.g. on a case-insensitive mount
+    // (ciopfs, vfat) to exercise the case-only rename path for real
+    std::string base = getenv("VFAT_TEST_DIR") ? getenv("VFAT_TEST_DIR") : "/tmp";
+    std::string tmpl = base + "/vfatXXXXXX"; ROOT = mkdtemp(&tmpl[0]);
     // starting folder (ASCII names, so model paths == host paths)
     mkdir((ROOT + "/Games").c_str(), 0755); mkdir((ROOT + "/dir2").c_str(), 0755);
     model["Games"] = DIRM; model["dir2"] = DIRM;
@@ -196,6 +205,14 @@ int main(int argc, char** argv) {
     vfat_sync();
     { bool ok; CHECK(hread("hidden.dat", ok) == model["hidden.dat"], "hidden.dat on host"); }
     { bool ok; std::string g = gread("hidden.dat", ok); CHECK(ok && g == model["hidden.dat"], "guest reads hidden.dat"); }
+    // case-only renames: on a case-insensitive host the target "exists" (it is the
+    // source itself) - the sync must rename, not delete the file and write a new one
+    CHECK(f_rename("/kept.txt", "/KEPT.TXT") == FR_OK, "case rename");
+    model["KEPT.TXT"] = model["kept.txt"]; model.erase("kept.txt");
+    CHECK(f_rename("/Newdir", "/NEWDIR") == FR_OK, "case rename dir");
+    { std::map<std::string, std::string> m2; for (auto& [p, c] : model) { std::string q = p; if (q == "Newdir" || q.rfind("Newdir/", 0) == 0) q = "NEWDIR" + q.substr(6); m2[q] = c; } model.swap(m2); }
+    vfat_sync();
+    verify("after case renames");
     // a host-side change comes in at the card reset
     hput("pc.txt", "from the PC"); model["pc.txt"] = "from the PC";
     umount(); CHECK(vfat_card_reset(), "card reset rebuilt"); mount();

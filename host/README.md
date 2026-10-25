@@ -49,6 +49,10 @@ at once, switches the mirroring off for the session (it keeps its view in memory
 the folder is untouched). A card the parser cannot read at that moment (the guest
 is mid-update) is retried after the next quiet second.
 
+A rename that changes only the letter case (`kept.txt` -> `KEPT.TXT`) is done as a
+host rename on a case-insensitive folder too (vfat/exFAT mounts, ciopfs, later macOS
+and Windows), where the target name already resolves to the source itself.
+
 Test: `tools/host/vfat_sync_test.cpp` (recipe in its header) — a real FatFs plays the
 guest; re-run it after any change to `host_vfat.cpp`.
 
