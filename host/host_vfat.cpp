@@ -243,6 +243,9 @@ void listDir(const std::string& path, std::vector<std::pair<std::string, struct 
         if (!S_ISDIR(st.st_mode) && !S_ISREG(st.st_mode)) continue;
         if (S_ISREG(st.st_mode) && (uint64_t)st.st_size >= 0xFFFFFFFFull) continue;   // FAT32 limit
         if (!strcmp(n, kTmpName)) continue;
+        // FUSE (sshfs, ciopfs...) and NFS keep a deleted file that is still open under
+        // a placeholder name - and the sync holds old inodes open on purpose (keepOld)
+        if (!strncmp(n, ".fuse_hidden", 12) || !strncmp(n, ".nfs", 4)) continue;
         items.push_back({n, st});
     }
     hd_close(h);
@@ -606,14 +609,8 @@ std::string hostPath(const std::string& rel) { return rel.empty() ? s_root : s_r
 // The base node behind `hp` keeps reading its old bytes once the host file goes: the
 // old inode stays open, or, if it cannot be (out of descriptors), its sectors are
 // copied into the overlay while the file is still there.
-void keepOld(const std::string& hp) {
-    auto it = s_hostIdx.find(hp);
-    if (it == s_hostIdx.end()) return;
-    Node& n = s_nodes[it->second];
-    if (n.dir || n.keepFd >= 0 || !n.nclus) return;
-    n.keepFd = open(hp.c_str(), O_RDONLY);
-    if (n.keepFd >= 0) return;
-    fprintf(stderr, "host: card sync: cannot keep %s open (%s), copying it into memory\n", hp.c_str(), strerror(errno));
+// Copies a node's base sectors into the overlay, so nothing on the host backs them.
+void toOverlay(Node& n) {
     for (uint32_t c = 0; c < n.nclus; c++)
         for (uint32_t j = 0; j < SPC; j++) {
             const uint64_t s = clusterSector(n.first + c) + j;
@@ -622,6 +619,31 @@ void keepOld(const std::string& hp) {
             readSector(s, a.data());
             s_overlay[s] = a;
         }
+}
+
+void keepOld(const std::string& hp) {
+    auto it = s_hostIdx.find(hp);
+    if (it == s_hostIdx.end()) return;
+    Node& n = s_nodes[it->second];
+    if (n.dir || n.keepFd >= 0 || !n.nclus) return;
+    n.keepFd = open(hp.c_str(), O_RDONLY);
+    if (n.keepFd >= 0) return;
+    fprintf(stderr, "host: card sync: cannot keep %s open (%s), copying it into memory\n", hp.c_str(), strerror(errno));
+    toOverlay(n);
+}
+
+// Hands the old inodes kept under a directory back to the host: their sectors go into
+// the overlay and the descriptors are closed. On FUSE (sshfs, ciopfs) and NFS an open
+// but deleted file lives on as a placeholder in its directory, so the directory cannot
+// be removed while it is held.
+void releaseUnder(const std::string& dir) {
+    const std::string pre = dir + "/";
+    for (Node& n : s_nodes) {
+        if (n.keepFd < 0 || n.host.compare(0, pre.size(), pre) != 0) continue;
+        toOverlay(n);
+        close(n.keepFd);
+        n.keepFd = -1;
+    }
 }
 
 void setMtime(const std::string& hp, uint16_t date, uint16_t tm16) {
@@ -730,6 +752,46 @@ void remapAll(const std::string& from, const std::string& to) {
 
 bool exists(const std::string& hp) { struct stat st; return lstat(hp.c_str(), &st) == 0; }
 
+// Two paths that name one file: on a case-insensitive host filesystem (exFAT / NTFS /
+// casefold ext4 mounts, APFS, Windows) "game.tap" and "GAME.TAP" are the same entry.
+// Case fold for the one question below: ASCII and Cyrillic (the names a CP1251 card
+// can carry), in UTF-8.
+std::string foldName(const std::string& s) {
+    std::string r;
+    for (size_t i = 0; i < s.size(); i++) {
+        unsigned char c = s[i];
+        if (c >= 'A' && c <= 'Z') { r += char(c + 32); continue; }
+        if (c == 0xD0 && i + 1 < s.size()) {
+            unsigned char d = s[i + 1];
+            if (d >= 0x90 && d <= 0x9F) { r += char(0xD0); r += char(d + 0x20); i++; continue; }  // А..П
+            if (d >= 0xA0 && d <= 0xAF) { r += char(0xD1); r += char(d - 0x20); i++; continue; }  // Р..Я
+            if (d == 0x81) { r += char(0xD1); r += char(0x91); i++; continue; }                   // Ё
+        }
+        r += char(c);
+    }
+    return r;
+}
+
+// True when `to` already resolves to something other than `from`. A rename that only
+// changes the letter case meets its own source on a case-insensitive host (macOS,
+// Windows, a vfat or ciopfs mount): the target "exists" but the directory holds no
+// entry spelled that way. Inode numbers cannot settle it - FUSE without use_ino gives
+// each spelling its own.
+bool targetTaken(const std::string& from, const std::string& to) {
+    if (!exists(to)) return false;
+    const size_t sf = from.rfind('/'), st = to.rfind('/');
+    const std::string pf = from.substr(0, sf), pt = to.substr(0, st);
+    const std::string lf = from.substr(sf + 1), lt = to.substr(st + 1);
+    if (pf != pt || foldName(lf) != foldName(lt)) return true;
+    void* h = hd_open(pt.c_str());
+    if (!h) return true;
+    bool exact = false;
+    struct stat stt;
+    while (const char* n = hd_next(h, &stt)) if (lt == n) { exact = true; break; }
+    hd_close(h);
+    return exact;
+}
+
 // Mirrors the guest's changes into the folder. Returns false when it could not run
 // (the overlay still holds everything; the caller retries later).
 bool syncNow() {
@@ -785,7 +847,12 @@ bool syncNow() {
             auto ai = arrived.find(((uint64_t)gi->second.dir << 32) | gi->second.first);
             if (ai == arrived.end() || s_gview.count(ai->second)) continue;
             const std::string to = ai->second;
-            if (exists(hostPath(to)) || rename(hostPath(rel).c_str(), hostPath(to).c_str()) != 0) continue;
+            const std::string hf = hostPath(rel), ht = hostPath(to);
+            // A target that exists blocks the rename - unless it IS the source, i.e. the
+            // guest only changed the letter case and the host folder ignores case. The
+            // fallback (remove the old name, write the new) would then remove the file.
+            if (targetTaken(hf, ht)) continue;
+            if (rename(hf.c_str(), ht.c_str()) != 0) continue;
             remapAll(rel, to);
             nRen++;
         }
@@ -817,7 +884,10 @@ bool syncNow() {
     }
     std::sort(delDirs.rbegin(), delDirs.rend());   // children before their parent
     for (const std::string& rel : delDirs) {
-        if (rmdir(hostPath(rel).c_str()) == 0 || errno == ENOENT) nDel++;
+        const std::string hp = hostPath(rel);
+        bool ok = rmdir(hp.c_str()) == 0 || errno == ENOENT;
+        if (!ok && errno == ENOTEMPTY) { releaseUnder(hp); ok = rmdir(hp.c_str()) == 0 || errno == ENOENT; }
+        if (ok) nDel++;
         else fprintf(stderr, "host: card sync: cannot remove /%s: %s\n", rel.c_str(), strerror(errno));
         s_hview.erase(rel);
     }
