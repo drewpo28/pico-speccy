@@ -8,8 +8,10 @@
 #include <cstring>
 #include <ctime>
 #include <cstdio>
+#include "host_posix.h"
+#ifndef _WIN32
 #include <sys/mman.h>
-#include <unistd.h>
+#endif
 
 #include "pico_host.h"
 #include "ff.h"
@@ -46,6 +48,14 @@ extern "C" void __real_free(void* p) { free(p); }
 static constexpr size_t HOST_BUTTER = 8u << 20;
 uint8_t* PSRAM_DATA = (uint8_t*)0x11000000;
 __attribute__((constructor)) static void host_butter_map() {
+#ifdef _WIN32
+    // Windows: the window is part of the image (the gap section of
+    // host/win/pico-speccy.ld), one mapping without an alias (host_config.h).
+    if (host_mem_rw((void*)0x11000000, HOST_BUTTER) != 0) {
+        fprintf(stderr, "host: psram window at 0x11000000 is not usable\n");
+        exit(1);
+    }
+#else
     const int fd = memfd_create("pico-speccy-psram", 0);
     if (fd < 0 || ftruncate(fd, HOST_BUTTER) != 0) { perror("host: psram"); exit(1); }
     for (uintptr_t a : { (uintptr_t)0x11000000, (uintptr_t)0x15000000 }) {
@@ -53,6 +63,7 @@ __attribute__((constructor)) static void host_butter_map() {
                        MAP_SHARED | MAP_FIXED_NOREPLACE, fd, 0);
         if (p != (void*)a) { perror("host: psram mmap"); exit(1); }
     }
+#endif
 }
 uint16_t control_bits = 0;
 uint8_t flash_qe = 0;

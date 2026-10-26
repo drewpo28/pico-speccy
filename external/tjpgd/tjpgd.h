@@ -11,7 +11,7 @@ extern "C" {
 #include "tjpgdcnf.h"
 #include <string.h>
 
-#if defined(_WIN32)	/* VC++ or some compiler without stdint.h */
+#if defined(_WIN32) && !defined(__GNUC__)	/* VC++ or some compiler without stdint.h */
 typedef unsigned char	uint8_t;
 typedef unsigned short	uint16_t;
 typedef short			int16_t;

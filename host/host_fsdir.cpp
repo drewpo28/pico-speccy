@@ -2,6 +2,7 @@
 // define a type called DIR, so ff.h and <dirent.h> cannot meet in one translation unit.
 #include <dirent.h>
 #include <sys/stat.h>
+#include "host_posix.h"
 #include <string>
 
 struct HostDir {
@@ -23,7 +24,11 @@ extern "C" const char* hd_next(void* h, struct stat* st) {
         struct dirent* e = readdir(hd->d);
         if (!e) return nullptr;
         if (e->d_name[0] == '.' && (!e->d_name[1] || (e->d_name[1] == '.' && !e->d_name[2]))) continue;
+#ifdef _WIN32
+        if (stat((hd->path + "/" + e->d_name).c_str(), st) != 0) continue;
+#else
         if (fstatat(dirfd(hd->d), e->d_name, st, 0) != 0) continue;
+#endif
         return e->d_name;
     }
 }

@@ -184,7 +184,13 @@ uint64_t get_rand_64(void);
 #ifndef XIP_BASE
 #define XIP_BASE 0x10000000u
 #endif
+#ifdef _WIN32
+// One mapping of the PSRAM window, no uncached alias (host_config.h): the video
+// path that would stream through the alias stays on the cached one.
+#define XIP_NOCACHE_NOALLOC_BASE XIP_BASE
+#else
 #define XIP_NOCACHE_NOALLOC_BASE 0x14000000u
+#endif
 #define SRAM_BASE 0x20000000u
 // SYSINFO package select: bit 0 = RP2350A. The host reports an RP2350B (48 GPIOs).
 extern uint32_t host_sysinfo[4];

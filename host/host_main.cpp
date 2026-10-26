@@ -19,10 +19,11 @@
 #include <vector>
 #include <string>
 #include <cstdlib>
-#include <unistd.h>
+#include "host_posix.h"
 
 #include "pico_host.h"
 #include "host_video.h"
+#include "host_menu.h"
 #include "host_kbd_prelude.h"
 #include "app/ESPectrum.h"
 #include "net/HttpsGet.h"
@@ -347,9 +348,12 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
     // pixel wider than others, which visibly deforms the 8x8 font.
     int ow = 0, oh = 0;
     SDL_GetRendererOutputSize(ren, &ow, &oh);
+    const int bar = host_menu_bar_height(ren);   // the drawn menu bar (not on Windows)
+    oh -= bar;
     SDL_Rect dst = {0, 0, ow, oh};
     if ((int64_t)ow * h > (int64_t)oh * w) { dst.w = (int)((int64_t)oh * w / h); dst.x = (ow - dst.w) / 2; }
     else { dst.h = (int)((int64_t)ow * h / w); dst.y = (oh - dst.h) / 2; }
+    dst.y += bar;
     int k = (dst.h + h - 1) / h;
     if (k < 1) k = 1;
     if (k > 8) k = 8;
@@ -372,6 +376,8 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
     }
     SDL_RenderClear(ren);
     if (!crt || !crtScreen(ren, src, dst, scan, crt, xres, yres)) SDL_RenderCopy(ren, src, nullptr, &dst);
+    host_menu_draw(ren);
+    oh += bar;
     // PICOSPECCY_WSHOT=file.bmp:N saves the N-th WINDOW image (scaling, CRT shape).
     static const char* wshot = getenv("PICOSPECCY_WSHOT");
     if (wshot) {
@@ -386,6 +392,53 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
         }
     }
     SDL_RenderPresent(ren);
+}
+
+// The SD card folder picked from the File menu, kept outside the folder itself:
+// %APPDATA%/pico-speccy-host/sd-folder.txt (~/.config/... elsewhere). --root wins.
+static std::string sdFolderFile(bool mkdirs) {
+#ifdef _WIN32
+    const char* base = getenv("APPDATA");
+#else
+    const char* base = getenv("XDG_CONFIG_HOME");
+    std::string home;
+    if (!base || !*base) { const char* h = getenv("HOME"); home = std::string(h ? h : ".") + "/.config"; base = home.c_str(); }
+#endif
+    if (!base || !*base) return std::string();
+    const std::string dir = std::string(base) + "/pico-speccy-host";
+    if (mkdirs) mkdir(dir.c_str(), 0755);
+    return dir + "/sd-folder.txt";
+}
+static std::string loadSdFolder() {
+    const std::string f = sdFolderFile(false);
+    FILE* fp = f.empty() ? nullptr : fopen(f.c_str(), "rb");
+    if (!fp) return std::string();
+    char buf[1024];
+    const size_t n = fread(buf, 1, sizeof buf - 1, fp);
+    fclose(fp);
+    std::string s(buf, n);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+static bool saveSdFolder(const std::string& dir) {
+    const std::string f = sdFolderFile(true);
+    FILE* fp = f.empty() ? nullptr : fopen(f.c_str(), "wb");
+    if (!fp) return false;
+    fprintf(fp, "%s\n", dir.c_str());
+    return fclose(fp) == 0;
+}
+// The emulator takes its folder once, at start: a new one is a restart, without the
+// --root of this run so the pick holds.
+static void switchSdFolder(const std::string& dir) {
+    if (!saveSdFolder(dir)) { fprintf(stderr, "host: cannot save the SD folder choice\n"); return; }
+    fprintf(stderr, "host: SD card folder -> %s, restarting\n", dir.c_str());
+    int w = 1;
+    for (int r = 1; host_argv[r]; r++) {
+        if (!strcmp(host_argv[r], "--root") && host_argv[r + 1]) { r++; continue; }
+        host_argv[w++] = host_argv[r];
+    }
+    host_argv[w] = nullptr;
+    watchdog_reboot(0, 0, 0);
 }
 
 int main(int argc, char** argv) {
@@ -404,8 +457,11 @@ int main(int argc, char** argv) {
     }
     // Ask the audio server for small blocks (it may still choose bigger ones; the
     // ring in host_audio.cpp adapts). A value already in the environment wins.
+#ifndef _WIN32
     setenv("PIPEWIRE_LATENCY", "512/48000", 0);
     setenv("PULSE_LATENCY_MSEC", "20", 0);
+#endif
+    if (host_root.empty()) host_root = loadSdFolder();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
@@ -416,6 +472,7 @@ int main(int argc, char** argv) {
     if (!ren && win) ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
     if (!ren) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    host_menu_init(win);
 
     std::thread(core0_main).detach();
     std::thread(vsync_loop).detach();
@@ -423,9 +480,26 @@ int main(int argc, char** argv) {
     SDL_Texture* tex = nullptr;
     int tw = 0, th = 0;
     uint32_t shown = 0;
+    uint32_t f1Release = 0;   // File > Settings: F1 is held for a few frames, then let go
     while (!s_quit) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
+            bool eaten = false;
+            switch (host_menu_event(win, ren, e, eaten)) {
+            case HOST_MENU_SD_FOLDER: host_menu_pick_folder(win, host_root); break;
+            case HOST_MENU_SD_PICKED: {
+                std::string dir;
+                if (host_menu_take_folder(dir) && dir != host_root) switchSdFolder(dir);
+                break;
+            }
+            case HOST_MENU_SETTINGS:
+                key_event(SDL_SCANCODE_F1, true);
+                f1Release = SDL_GetTicks() + 100;
+                break;
+            case HOST_MENU_EXIT: s_quit = true; break;
+            default: break;
+            }
+            if (eaten) continue;
             host_pads_event(e);
             if (e.type == SDL_QUIT) s_quit = true;
             else if ((e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) && !e.key.repeat) {
@@ -436,7 +510,9 @@ int main(int argc, char** argv) {
                 const bool enter = sc == SDL_SCANCODE_RETURN || sc == SDL_SCANCODE_KP_ENTER;
                 if (enter && e.type == SDL_KEYDOWN && (e.key.keysym.mod & KMOD_ALT)) {
                     const bool fs = SDL_GetWindowFlags(win) & SDL_WINDOW_FULLSCREEN_DESKTOP;
+                    if (!fs) host_menu_fullscreen(win, true);
                     SDL_SetWindowFullscreen(win, fs ? 0 : SDL_WINDOW_FULLSCREEN_DESKTOP);
+                    if (fs) host_menu_fullscreen(win, false);
                     SDL_ShowCursor(fs ? SDL_ENABLE : SDL_DISABLE);
                     enterEaten = true;
                 } else if (enter && e.type == SDL_KEYUP && enterEaten) {
@@ -473,9 +549,13 @@ int main(int argc, char** argv) {
                 lastHold = h;
             }
         }
+        if (f1Release && (int32_t)(SDL_GetTicks() - f1Release) >= 0) {
+            key_event(SDL_SCANCODE_F1, false);
+            f1Release = 0;
+        }
         host_pads_sample();
         const uint32_t f = host_frames.load();
-        if (f != shown) { shown = f; present(ren, tex, tw, th); }
+        if (f != shown || host_menu_dirty()) { shown = f; present(ren, tex, tw, th); }
         else SDL_Delay(2);
     }
     host_sd_flush();   // the guest's last writes into the folder card

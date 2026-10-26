@@ -6,7 +6,8 @@
 //   WifiNet  - "connected" = the PC has a non-loopback IPv4 address; no scan, no
 //              join (the OS owns WiFi); SNTP = the PC's clock, with the menu's time
 //              zone applied exactly as an SNTP answer would be;
-//   WifiSock - blocking TCP over POSIX sockets, 2 links (FTP control + data), plus
+//   WifiSock - blocking TCP over the PC's sockets (host_sock.cpp: POSIX or
+//              Winsock), 2 links (FTP control + data), plus
 //              listen/accept for the FTP server;
 //   AtEmu    - the ESP-AT emulator (AtEmuCore, shared with the board) over
 //              non-blocking sockets, paced at the NIC's baud in guest time like the
@@ -24,58 +25,28 @@
 #include "app/Debug.h"
 #include "ui/LEDIndicators.h"
 
-#include <arpa/inet.h>
-#include <cerrno>
+#include <chrono>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
-#include <fcntl.h>
-#include <ifaddrs.h>
-#include <net/if.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <netinet/tcp.h>
-#include <poll.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <unistd.h>
+
+#include "host_sock.h"
 
 namespace {
 
 uint32_t nowMs() {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
-}
-
-void setNonBlock(int fd, bool on) {
-    int f = fcntl(fd, F_GETFL, 0);
-    fcntl(fd, F_SETFL, on ? (f | O_NONBLOCK) : (f & ~O_NONBLOCK));
-}
-
-// Resolve host:port to an IPv4 address (the firmware only ever speaks IPv4).
-bool resolve(const char* host, uint16_t port, sockaddr_in& sa) {
-    memset(&sa, 0, sizeof sa);
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(port);
-    if (inet_pton(AF_INET, host, &sa.sin_addr) == 1) return true;
-    addrinfo hints{}, *res = nullptr;
-    hints.ai_family = AF_INET;
-    hints.ai_socktype = SOCK_STREAM;
-    if (getaddrinfo(host, nullptr, &hints, &res) != 0 || !res) return false;
-    sa.sin_addr = ((sockaddr_in*)res->ai_addr)->sin_addr;
-    freeaddrinfo(res);
-    return true;
+    return (uint32_t)std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
 // Peek without consuming: 1 = data waiting, 0 = peer closed (EOF), -1 = nothing yet, -2 = error.
 int peekState(int fd) {
     char c;
-    const ssize_t r = recv(fd, &c, 1, MSG_PEEK | MSG_DONTWAIT);
+    const int r = hs_recv(fd, &c, 1, true);
     if (r > 0) return 1;
     if (r == 0) return 0;
-    return (errno == EAGAIN || errno == EWOULDBLOCK) ? -1 : -2;
+    return r == HS_WOULDBLOCK ? -1 : -2;
 }
 
 }  // namespace
@@ -108,20 +79,7 @@ void ledSet(bool) {}
 void logPioDmaClaims(const char*) {}
 void autoCancel() {}
 
-bool ipString(char* out, size_t cap) {
-    ifaddrs* ifs = nullptr;
-    if (getifaddrs(&ifs) != 0) return false;
-    bool found = false;
-    for (ifaddrs* i = ifs; i && !found; i = i->ifa_next) {
-        if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET) continue;
-        if (i->ifa_flags & IFF_LOOPBACK) continue;
-        if (!(i->ifa_flags & IFF_UP)) continue;
-        inet_ntop(AF_INET, &((sockaddr_in*)i->ifa_addr)->sin_addr, out, (socklen_t)cap);
-        found = true;
-    }
-    freeifaddrs(ifs);
-    return found;
-}
+bool ipString(char* out, size_t cap) { return hs_local_ip(out, cap); }
 
 bool isConnected() {
     char ip[20];
@@ -146,7 +104,7 @@ int scan(std::string*, int, uint32_t) {
 bool sntpSync(int tz, std::string& out_str) {
     const time_t t = time(nullptr) + (time_t)tz * 3600;
     struct tm tm;
-    gmtime_r(&t, &tm);
+    hs_gmtime(t, tm);
     RTC::setDateTime(tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
     char buf[32];
     snprintf(buf, sizeof buf, "%04d-%02d-%02d %02d:%02d:%02d", tm.tm_year + 1900, tm.tm_mon + 1,
@@ -175,7 +133,7 @@ static int s_listen = -1;
 
 static bool validId(int id) { return id >= 0 && id < N_LINKS; }
 static void closeLink(int id) {
-    if (L[id].fd >= 0) close(L[id].fd);
+    hs_close(L[id].fd);
     L[id] = Link{};
 }
 
@@ -188,28 +146,23 @@ int sock_open(const char* host, uint16_t port, bool, uint32_t timeout_ms) {
     if (s_mux) { for (int i = 0; i < N_LINKS; i++) if (L[i].fd < 0) { id = i; break; } }
     else { closeLink(0); id = 0; }
     if (id < 0) { Debug::log("WifiSock: open %s: no free link", host); return -1; }
-    sockaddr_in sa;
-    if (!resolve(host, port, sa)) { Debug::log("WifiSock: DNS failed for %s", host); return -1; }
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    uint32_t ip;
+    if (!hs_resolve(host, ip)) { Debug::log("WifiSock: DNS failed for %s", host); return -1; }
+    const int fd = hs_tcp(true);
     if (fd < 0) return -1;
-    int one = 1;
-    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-    setNonBlock(fd, true);
-    if (::connect(fd, (sockaddr*)&sa, sizeof sa) != 0 && errno != EINPROGRESS) { close(fd); return -1; }
+    if (hs_connect(fd, ip, port) == HS_ERR) { hs_close(fd); return -1; }
     const uint32_t end = nowMs() + timeout_ms;
     for (;;) {
-        pollfd p{fd, POLLOUT, 0};
-        if (poll(&p, 1, 10) > 0) break;
+        if (hs_wait(fd, true, 10) > 0) break;
         if ((int32_t)(nowMs() - end) >= 0 || NetCancel::abortIo()) {
             Debug::log("WifiSock: connect %s:%u timed out", host, (unsigned)port);
-            close(fd);
+            hs_close(fd);
             return -1;
         }
         NetCancel::poll();
     }
-    int err = 0; socklen_t el = sizeof err;
-    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &el);
-    if (err) { Debug::log("WifiSock: connect %s:%u refused (%d)", host, (unsigned)port, err); close(fd); return -1; }
+    const int err = hs_error(fd);
+    if (err) { Debug::log("WifiSock: connect %s:%u refused (%d)", host, (unsigned)port, err); hs_close(fd); return -1; }
     L[id].fd = fd;
     L[id].eof = false;
     return id;
@@ -220,12 +173,11 @@ int sock_send(int id, const uint8_t* buf, size_t len, uint32_t timeout_ms) {
     size_t sent = 0;
     const uint32_t end = nowMs() + timeout_ms;
     while (sent < len) {
-        const ssize_t r = send(L[id].fd, buf + sent, len - sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+        const int r = hs_send(L[id].fd, buf + sent, (int)(len - sent));
         if (r > 0) { sent += (size_t)r; continue; }
-        if (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK) return sent ? (int)sent : -1;
+        if (r == HS_ERR) return sent ? (int)sent : -1;
         if ((int32_t)(nowMs() - end) >= 0) return sent ? (int)sent : -1;
-        pollfd p{L[id].fd, POLLOUT, 0};
-        poll(&p, 1, 10);
+        hs_wait(L[id].fd, true, 10);
     }
     return (int)sent;
 }
@@ -235,13 +187,12 @@ int sock_recv(int id, uint8_t* buf, size_t maxlen, uint32_t timeout_ms) {
     if (L[id].fd < 0) return L[id].eof ? 0 : -1;
     const uint32_t end = nowMs() + timeout_ms;
     for (;;) {
-        const ssize_t r = recv(L[id].fd, buf, maxlen, MSG_DONTWAIT);
-        if (r > 0) return (int)r;
+        const int r = hs_recv(L[id].fd, buf, (int)maxlen, false);
+        if (r > 0) return r;
         if (r == 0) { L[id].eof = true; return 0; }
-        if (errno != EAGAIN && errno != EWOULDBLOCK) { L[id].eof = true; return 0; }
+        if (r == HS_ERR) { L[id].eof = true; return 0; }
         if ((int32_t)(nowMs() - end) >= 0 || NetCancel::abortIo()) return 0;
-        pollfd p{L[id].fd, POLLIN, 0};
-        poll(&p, 1, 10);
+        hs_wait(L[id].fd, false, 10);
         NetCancel::poll();
     }
 }
@@ -289,28 +240,20 @@ void end() {
     s_ready = false;
 }
 
-// A port below 1024 needs root on Linux; the FTP server's 21 then goes to 2121.
+// A port below 1024 needs root on Linux/macOS; the FTP server's 21 then goes to 2121.
 bool server_listen(uint16_t port) {
     if (!s_ready) begin(true);
     s_mux = true;
     server_stop();
-    const int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) return false;
-    int one = 1;
-    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
-    sockaddr_in sa{};
-    sa.sin_family = AF_INET;
-    sa.sin_addr.s_addr = htonl(INADDR_ANY);
-    sa.sin_port = htons(port);
-    if (bind(fd, (sockaddr*)&sa, sizeof sa) != 0 && errno == EACCES && port < 1024) {
+    int fd = -1;
+    int rc = hs_listen(port, fd);
+    if (rc == HS_DENIED && port < 1024) {
         const uint16_t alt = (uint16_t)(port + 2100);
-        sa.sin_port = htons(alt);
-        if (bind(fd, (sockaddr*)&sa, sizeof sa) == 0)
+        rc = hs_listen(alt, fd);
+        if (rc == HS_OK)
             Debug::log("WifiSock: port %u needs root; listening on %u instead", (unsigned)port, (unsigned)alt);
-        else { close(fd); return false; }
     }
-    if (listen(fd, 1) != 0) { close(fd); return false; }
-    setNonBlock(fd, true);
+    if (rc != HS_OK) return false;
     s_listen = fd;
     return true;
 }
@@ -319,26 +262,22 @@ int server_accept(uint32_t timeout_ms) {
     if (s_listen < 0) return -1;
     const uint32_t end = nowMs() + timeout_ms;
     for (;;) {
-        const int fd = accept(s_listen, nullptr, nullptr);
+        const int fd = hs_accept(s_listen);
         if (fd >= 0) {
             int id = -1;
             for (int i = 0; i < N_LINKS; i++) if (L[i].fd < 0) { id = i; break; }
-            if (id < 0) { close(fd); return -1; }
-            setNonBlock(fd, true);
-            int one = 1;
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+            if (id < 0) { hs_close(fd); return -1; }
             L[id].fd = fd;
             L[id].eof = false;
             return id;
         }
         if ((int32_t)(nowMs() - end) >= 0) return -1;
-        pollfd p{s_listen, POLLIN, 0};
-        poll(&p, 1, 10);
+        hs_wait(s_listen, false, 10);
     }
 }
 
 void server_stop() {
-    if (s_listen >= 0) { close(s_listen); s_listen = -1; }
+    if (s_listen >= 0) { hs_close(s_listen); s_listen = -1; }
 }
 
 }  // namespace WifiSock
@@ -366,52 +305,40 @@ struct SockTransport : AtTransport {
 
     bool open(int id, const char* host, uint16_t port) override {
         close(id);
-        sockaddr_in sa;
-        if (!resolve(host, port, sa)) { L[id].st = -1; return true; }
-        const int fd = socket(AF_INET, SOCK_STREAM, 0);
+        uint32_t ip;
+        if (!hs_resolve(host, ip)) { L[id].st = -1; return true; }
+        const int fd = hs_tcp(true);
         if (fd < 0) { L[id].st = -1; return true; }
-        int one = 1;
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
-        setNonBlock(fd, true);
-        if (::connect(fd, (sockaddr*)&sa, sizeof sa) != 0 && errno != EINPROGRESS) {
-            ::close(fd); L[id].st = -1; return true;
-        }
+        if (hs_connect(fd, ip, port) == HS_ERR) { hs_close(fd); L[id].st = -1; return true; }
         L[id].fd = fd;
         L[id].st = 1;
         L[id].eof = false;
-        inet_ntop(AF_INET, &sa.sin_addr, L[id].ip, sizeof L[id].ip);
+        hs_ntoa(ip, L[id].ip, sizeof L[id].ip);
         L[id].port = port;
         return true;
     }
     int openState(int id) override {
         Link& l = L[id];
         if (l.st == 1) {
-            pollfd p{l.fd, POLLOUT, 0};
-            if (poll(&p, 1, 0) > 0) {
-                int err = 0; socklen_t el = sizeof err;
-                getsockopt(l.fd, SOL_SOCKET, SO_ERROR, &err, &el);
-                l.st = err ? -1 : 2;
-            }
+            if (hs_wait(l.fd, true, 0) > 0) l.st = hs_error(l.fd) ? -1 : 2;
         }
         return l.st == 2 ? 1 : (l.st == 1 ? 0 : -1);
     }
     int send(int id, const uint8_t* p, int n) override {
         if (L[id].fd < 0 || L[id].st != 2) return -1;
-        const ssize_t r = ::send(L[id].fd, p, (size_t)n, MSG_NOSIGNAL | MSG_DONTWAIT);
-        if (r >= 0) return (int)r;
-        return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
+        const int r = hs_send(L[id].fd, p, n);
+        if (r >= 0) return r;
+        return r == HS_WOULDBLOCK ? 0 : -1;
     }
     int avail(int id) override {
         if (L[id].fd < 0) return 0;
-        int n = 0;
-        if (ioctl(L[id].fd, FIONREAD, &n) != 0) return 0;
-        return n;
+        return hs_avail(L[id].fd);
     }
     int recv(int id, uint8_t* p, int n) override {
         if (L[id].fd < 0) return 0;
-        const ssize_t r = ::recv(L[id].fd, p, (size_t)n, MSG_DONTWAIT);
+        const int r = hs_recv(L[id].fd, p, n, false);
         if (r == 0) { L[id].eof = true; return 0; }
-        return r > 0 ? (int)r : 0;
+        return r > 0 ? r : 0;
     }
     bool closed(int id) override {
         if (L[id].fd < 0) return true;
@@ -421,7 +348,7 @@ struct SockTransport : AtTransport {
         return L[id].eof;
     }
     void close(int id) override {
-        if (L[id].fd >= 0) ::close(L[id].fd);
+        hs_close(L[id].fd);
         L[id] = Link{};
     }
     bool remote(int id, char* ip, size_t cap, uint16_t& port) override {

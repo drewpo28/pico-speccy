@@ -23,11 +23,11 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include <fcntl.h>
-#include <sys/stat.h>
+#include "host_posix.h"
+#ifndef _WIN32
 #include <sys/statvfs.h>
 #include <sys/time.h>
-#include <unistd.h>
+#endif
 
 extern "C" {
 #include "ff.h"
@@ -111,6 +111,9 @@ const std::string& host_root_dir() { return rootDir(); }   // host_disk.cpp
 static const std::string& rootDir() {
     if (host_root.empty()) {
         const char* h = getenv("HOME");
+#ifdef _WIN32
+        if (!h || !*h) h = getenv("USERPROFILE");
+#endif
         host_root = std::string(h && *h ? h : ".") + "/pico-speccy";
     }
     return host_root;
@@ -270,7 +273,7 @@ FRESULT f_open(FIL* fp, const TCHAR* path, BYTE mode) {
         return FR_NO_FILE;
     }
     if ((flags & O_CREAT) && !(mode & FA_WRITE)) flags = (flags & ~O_RDONLY) | O_RDWR;
-    int fd = open(r.host.c_str(), flags, 0644);
+    int fd = open(r.host.c_str(), flags | O_BINARY, 0644);
     if (fd < 0) return errnoResult(errno);
     struct stat st;
     fstat(fd, &st);
@@ -456,8 +459,12 @@ FRESULT f_utime(const TCHAR* path, const FILINFO* fno) {
     tm.tm_min = (fno->ftime >> 5) & 63;
     tm.tm_sec = (fno->ftime & 31) * 2;
     tm.tm_isdst = -1;
+#ifdef _WIN32
+    return host_set_mtime(r.host.c_str(), mktime(&tm)) == 0 ? FR_OK : errnoResult(errno);
+#else
     struct timeval tv[2] = {{mktime(&tm), 0}, {mktime(&tm), 0}};
     return utimes(r.host.c_str(), tv) == 0 ? FR_OK : errnoResult(errno);
+#endif
 }
 
 FRESULT f_chdir(const TCHAR* path) {
@@ -496,11 +503,18 @@ FRESULT f_getfree(const TCHAR* path, DWORD* nclst, FATFS** fatfs) {
     FRESULT fr = parsePath(path, vol, comps);
     if (fr != FR_OK) return fr;
     if (vol != 0) return FR_NOT_READY;
+    const uint64_t clusterBytes = 32768;
+#ifdef _WIN32
+    uint64_t tb = 0, ab = 0;
+    if (host_disk_space(rootDir().c_str(), &tb, &ab) != 0) return FR_DISK_ERR;
+    uint64_t total = tb / clusterBytes;
+    uint64_t freec = ab / clusterBytes;
+#else
     struct statvfs sv;
     if (statvfs(rootDir().c_str(), &sv) != 0) return FR_DISK_ERR;
-    const uint64_t clusterBytes = 32768;
     uint64_t total = (uint64_t)sv.f_blocks * sv.f_frsize / clusterBytes;
     uint64_t freec = (uint64_t)sv.f_bavail * sv.f_frsize / clusterBytes;
+#endif
     if (total > 0xFFFFFFF0ull) total = 0xFFFFFFF0ull;
     if (freec > total) freec = total;
     s_fs.fs_type = FS_EXFAT;
