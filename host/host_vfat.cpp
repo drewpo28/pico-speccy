@@ -31,6 +31,7 @@
 // a parse error skips the sync (the overlay keeps everything, nothing is lost).
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -42,10 +43,13 @@
 #include <map>
 #include <chrono>
 #include <cerrno>
-#include <fcntl.h>
+#include "host_posix.h"
+#if defined(__linux__)
+#include <sys/inotify.h>
+#endif
+#ifndef _WIN32
 #include <sys/resource.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#endif
 
 std::string host_cp1251_to_utf8(const std::string& s);   // host_fatfs.cpp
 
@@ -58,13 +62,18 @@ void hd_close(void* h);
 namespace {
 
 constexpr uint32_t SS = 512;          // sector size
-constexpr uint32_t SPC = 8;           // sectors per cluster (4 KB)
-constexpr uint32_t CL = SS * SPC;     // cluster bytes
+// Sectors per cluster: picked per folder at build (pickClusterSize), 4..32 KB, like a
+// card formatter does. A guest that looks for a free cluster by walking the FAT from
+// the start (Wild Commander does) reads the whole table: with 4 KB clusters a 9 GB
+// folder has an 18000-sector FAT, which took it ~40 s at 14 MHz.
+uint32_t SPC = 8;
+uint32_t CL = SS * 8;                 // cluster bytes
 constexpr uint32_t PART_START = 2048;
 constexpr uint32_t RSVD = 32;
 constexpr uint32_t NFATS = 2;
-constexpr uint32_t FREE_CLUSTERS = 262144;   // 1 GB of free space shown to the guest
+constexpr uint64_t FREE_BYTES = 1ull << 30;   // free space shown to the guest
 constexpr uint32_t MIN_CLUSTERS = 70000;     // FAT32 needs >= 65525
+constexpr uint32_t MAX_USED_CLUSTERS = 393216;   // bigger clusters past this (a ~3 MB FAT)
 
 struct Node {
     std::string host;      // host path
@@ -256,15 +265,60 @@ void listDir(const std::string& path, std::vector<std::pair<std::string, struct 
 HSig hsigOf(const struct stat& st) {
     const bool d = S_ISDIR(st.st_mode);
     return HSig{d, d ? 0 : (uint64_t)st.st_size,
+#ifdef _WIN32
+                d ? 0 : (int64_t)st.st_mtime * 1000000000LL};
+#else
                 d ? 0 : (int64_t)st.st_mtim.tv_sec * 1000000000LL + st.st_mtim.tv_nsec};
+#endif
 }
 
 std::string relOf(const std::string& host) {
     return host.size() > s_root.size() ? host.substr(s_root.size() + 1) : std::string();
 }
 
+#if defined(__linux__)
+// ---- inotify: has the folder changed since the card was built? ----------------------
+int s_inFd = -1;          // -1: no inotify, every card reset walks the folder
+bool s_inDirty = true;    // an event came in (or there is no inotify)
+void notifyReset() {
+    if (s_inFd >= 0) close(s_inFd);
+    s_inFd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+    s_inDirty = s_inFd < 0;
+}
+void notifyWatch(const std::string& dir) {
+    if (s_inFd < 0) return;
+    const uint32_t mask = IN_CREATE | IN_DELETE | IN_MODIFY | IN_CLOSE_WRITE | IN_ATTRIB | IN_MOVED_FROM |
+                          IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF;
+    if (inotify_add_watch(s_inFd, dir.c_str(), mask) < 0) {   // out of watches: walk every time
+        fprintf(stderr, "host: no inotify watch for %s (%s) - every card reset rescans the folder\n",
+                dir.c_str(), strerror(errno));
+        close(s_inFd);
+        s_inFd = -1;
+        s_inDirty = true;
+    }
+}
+// Something changed since the last call that returned true (events drained here).
+bool notifyPending() {
+    if (s_inFd < 0) return true;
+    alignas(inotify_event) char buf[16384];
+    for (;;) {
+        const ssize_t n = read(s_inFd, buf, sizeof buf);
+        if (n <= 0) break;
+        s_inDirty = true;
+    }
+    const bool d = s_inDirty;
+    s_inDirty = false;   // an event during the walk that follows marks it again
+    return d;
+}
+#else
+void notifyReset() {}
+void notifyWatch(const std::string&) {}
+bool notifyPending() { return true; }
+#endif
+
 void scan(int idx, int depth) {
     if (depth > 32) return;
+    notifyWatch(s_nodes[idx].host);
     std::vector<std::pair<std::string, struct stat>> items;
     listDir(s_nodes[idx].host, items);
     for (auto& it : items) {
@@ -292,6 +346,23 @@ void walkHost(const std::string& path, int depth, std::map<std::string, HSig>& m
         std::string hp = path + "/" + it.first;
         m[relOf(hp)] = hsigOf(it.second);
         if (S_ISDIR(it.second.st_mode)) walkHost(hp, depth + 1, m);
+    }
+}
+
+// The smallest cluster (4, 8, 16, 32 KB) that keeps the used part of the FAT within
+// MAX_USED_CLUSTERS entries. Directories are counted as one cluster each.
+void pickClusterSize() {
+    if (const char* f = getenv("PICOSPECCY_VFAT_SPC")) {   // tests: force 8, 16, 32 or 64
+        const uint32_t v = (uint32_t)atoi(f);
+        if (v == 8 || v == 16 || v == 32 || v == 64) { SPC = v; CL = SS * v; return; }
+    }
+    for (uint32_t spc : {8u, 16u, 32u, 64u}) {
+        const uint64_t cl = (uint64_t)SS * spc;
+        uint64_t n = 0;
+        for (const Node& nd : s_nodes) n += nd.dir ? 1 : (nd.size + cl - 1) / cl;
+        SPC = spc;
+        CL = SS * spc;
+        if (n <= MAX_USED_CLUSTERS) break;
     }
 }
 
@@ -427,7 +498,7 @@ void readSector(uint64_t s, uint8_t* out) {
     if (fd < 0) {
         if (s_fdNode != r->node) {
             if (s_fd >= 0) close(s_fd);
-            s_fd = open(n.host.c_str(), O_RDONLY);
+            s_fd = open(n.host.c_str(), O_RDONLY | O_BINARY);
             s_fdNode = r->node;
         }
         fd = s_fd;
@@ -621,12 +692,42 @@ void toOverlay(Node& n) {
         }
 }
 
+// Windows cannot rename, remove or replace a file (or a directory above one) that is
+// open, so the read descriptor is closed first; readSector() opens it again on demand.
+void closeReaderUnder(const std::string& hp) {
+#ifdef _WIN32
+    if (s_fd < 0 || s_fdNode < 0) return;
+    const std::string& h = s_nodes[s_fdNode].host;
+    if (h != hp && h.compare(0, hp.size() + 1, hp + "/") != 0) return;
+    close(s_fd);
+    s_fd = -1;
+    s_fdNode = -1;
+#else
+    (void)hp;
+#endif
+}
+
+// Replaces `to` if it exists (POSIX rename does; the Windows CRT's does not).
+int renameOver(const std::string& from, const std::string& to) {
+#ifdef _WIN32
+    return host_rename_replace(from.c_str(), to.c_str());
+#else
+    return rename(from.c_str(), to.c_str());
+#endif
+}
+
 void keepOld(const std::string& hp) {
+    closeReaderUnder(hp);
     auto it = s_hostIdx.find(hp);
     if (it == s_hostIdx.end()) return;
     Node& n = s_nodes[it->second];
     if (n.dir || n.keepFd >= 0 || !n.nclus) return;
-    n.keepFd = open(hp.c_str(), O_RDONLY);
+#ifdef _WIN32
+    toOverlay(n);   // an open file could not be replaced: the old content goes to memory
+    closeReaderUnder(hp);   // toOverlay() read it through the reader
+    return;
+#endif
+    n.keepFd = open(hp.c_str(), O_RDONLY | O_BINARY);
     if (n.keepFd >= 0) return;
     fprintf(stderr, "host: card sync: cannot keep %s open (%s), copying it into memory\n", hp.c_str(), strerror(errno));
     toOverlay(n);
@@ -644,6 +745,7 @@ void releaseUnder(const std::string& dir) {
         close(n.keepFd);
         n.keepFd = -1;
     }
+    closeReaderUnder(dir);
 }
 
 void setMtime(const std::string& hp, uint16_t date, uint16_t tm16) {
@@ -658,16 +760,20 @@ void setMtime(const std::string& hp, uint16_t date, uint16_t tm16) {
     t.tm_isdst = -1;
     const time_t v = mktime(&t);
     if (v == (time_t)-1) return;
+#ifdef _WIN32
+    host_set_mtime(hp.c_str(), v);
+#else
     struct timespec ts[2];
     ts[0].tv_sec = 0; ts[0].tv_nsec = UTIME_OMIT;
     ts[1].tv_sec = v; ts[1].tv_nsec = 0;
     utimensat(AT_FDCWD, hp.c_str(), ts, 0);
+#endif
 }
 
 bool writeFull(const PEnt& e, const std::string& hp) {
     const size_t slash = hp.rfind('/');
     const std::string tmp = hp.substr(0, slash) + "/" + kTmpName;
-    const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    const int fd = open(tmp.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
     if (fd < 0) { fprintf(stderr, "host: card sync: %s: %s\n", tmp.c_str(), strerror(errno)); return false; }
     std::vector<uint8_t> buf(CL);
     uint32_t remain = e.size;
@@ -682,7 +788,7 @@ bool writeFull(const PEnt& e, const std::string& hp) {
     if (close(fd) != 0) ok = false;
     if (ok) {
         keepOld(hp);
-        if (rename(tmp.c_str(), hp.c_str()) != 0) ok = false;
+        if (renameOver(tmp, hp) != 0) ok = false;
     }
     if (!ok) {
         fprintf(stderr, "host: card sync: cannot write %s: %s\n", hp.c_str(), strerror(errno));
@@ -697,7 +803,7 @@ bool writeFull(const PEnt& e, const std::string& hp) {
 bool patchInPlace(const PEnt& e, const std::string& hp, const std::unordered_set<uint32_t>& dc) {
     struct stat st;
     if (stat(hp.c_str(), &st) != 0 || !S_ISREG(st.st_mode) || (uint64_t)st.st_size != e.size) return false;
-    const int fd = open(hp.c_str(), O_WRONLY);
+    const int fd = open(hp.c_str(), O_WRONLY | O_BINARY);
     if (fd < 0) return false;
     uint8_t b[SS];
     bool ok = true;
@@ -852,7 +958,8 @@ bool syncNow() {
             // guest only changed the letter case and the host folder ignores case. The
             // fallback (remove the old name, write the new) would then remove the file.
             if (targetTaken(hf, ht)) continue;
-            if (rename(hf.c_str(), ht.c_str()) != 0) continue;
+            closeReaderUnder(hf);
+            if (renameOver(hf, ht) != 0) continue;
             remapAll(rel, to);
             nRen++;
         }
@@ -879,12 +986,14 @@ bool syncNow() {
     for (const std::string& rel : delFiles) {
         const std::string hp = hostPath(rel);
         keepOld(hp);
-        if (unlink(hp.c_str()) == 0 || errno == ENOENT) nDel++; else nErr++;
+        if (unlink(hp.c_str()) == 0 || errno == ENOENT) nDel++;
+        else { nErr++; fprintf(stderr, "host: card sync: cannot remove /%s: %s\n", rel.c_str(), strerror(errno)); }
         s_hview.erase(rel);
     }
     std::sort(delDirs.rbegin(), delDirs.rend());   // children before their parent
     for (const std::string& rel : delDirs) {
         const std::string hp = hostPath(rel);
+        closeReaderUnder(hp);
         bool ok = rmdir(hp.c_str()) == 0 || errno == ENOENT;
         if (!ok && errno == ENOTEMPTY) { releaseUnder(hp); ok = rmdir(hp.c_str()) == 0 || errno == ENOENT; }
         if (ok) nDel++;
@@ -898,7 +1007,7 @@ bool syncNow() {
         const std::string hp = hostPath(e.rel);
         struct stat st;
         if (stat(hp.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) { hviewSet(e.rel); continue; }
-        if (mkdir(hp.c_str(), 0755) == 0) { nDir++; hviewSet(e.rel); }
+        if (mkdir(hp.c_str(), 0755) == 0) { nDir++; hviewSet(e.rel); notifyWatch(hp); }
         else { nErr++; cur.erase(e.rel); fprintf(stderr, "host: card sync: mkdir /%s: %s\n", e.rel.c_str(), strerror(errno)); }
     }
     for (const PEnt& e : P.out) {
@@ -928,14 +1037,25 @@ bool syncNow() {
     return true;
 }
 
-bool hostChanged() {
-    std::map<std::string, HSig> m;
-    walkHost(s_root, 0, m);
+// Host-side change detection. A whole walk of a big folder costs ~0.5 s (97k entries),
+// and some guests reset the card (CMD0) before every file operation. On Linux the
+// kernel says when something changed (inotify, one watch per directory, set up by
+// scan()): a card reset walks only after an event. Our own sync writes raise events
+// too, which costs one walk after it - never a missed change. Without inotify (other
+// systems, out of watches) every card reset walks, as before.
+bool differs(const std::map<std::string, HSig>& m) {
     if (m.size() != s_hview.size()) return true;
-    for (auto a = m.begin(), b = s_hview.begin(); a != m.end(); ++a, ++b)
+    auto b = s_hview.cbegin();
+    for (auto a = m.cbegin(); a != m.cend(); ++a, ++b)
         if (a->first != b->first || a->second.dir != b->second.dir || a->second.size != b->second.size ||
             a->second.mtimeNs != b->second.mtimeNs) return true;
     return false;
+}
+
+bool hostChanged() {
+    std::map<std::string, HSig> m;
+    walkHost(s_root, 0, m);
+    return differs(m);
 }
 
 void releaseAll() {
@@ -950,6 +1070,7 @@ void releaseAll() {
 // Builds the card from `root`. Returns false when the folder cannot be read.
 bool vfat_build(const std::string& root) {
     if (s_built) return true;
+#ifndef _WIN32
     static bool s_rlim = false;
     if (!s_rlim) {   // keepOld() holds one descriptor per replaced host file
         s_rlim = true;
@@ -959,10 +1080,12 @@ bool vfat_build(const std::string& root) {
             setrlimit(RLIMIT_NOFILE, &rl);
         }
     }
+#endif
     releaseAll();
     s_nodes.clear(); s_runs.clear(); s_overlay.clear(); s_hostIdx.clear(); s_hview.clear();
     s_gview.clear(); s_dirty.clear();
     s_wrote = false;
+    notifyReset();
     struct stat st;
     if (stat(root.c_str(), &st) != 0 || !S_ISDIR(st.st_mode)) return false;
     s_root = root;
@@ -972,10 +1095,11 @@ bool vfat_build(const std::string& root) {
     r.mtime = st.st_mtime;
     s_nodes.push_back(r);
     scan(0, 0);
+    pickClusterSize();
     uint32_t next = 2;
     alloc(0, next);
     s_used = next - 2;
-    s_nclusters = std::max<uint32_t>(s_used + FREE_CLUSTERS, MIN_CLUSTERS);
+    s_nclusters = std::max<uint32_t>(s_used + (uint32_t)(FREE_BYTES / CL), MIN_CLUSTERS);
     s_fatsz = (uint32_t)(((uint64_t)(s_nclusters + 2) * 4 + SS - 1) / SS);
     s_datastart = RSVD + NFATS * s_fatsz;
     s_partsec = s_datastart + s_nclusters * SPC;
@@ -997,9 +1121,9 @@ bool vfat_build(const std::string& root) {
                 fprintf(stderr, "host: card name '%s' does not map back to the folder\n", e.rel.c_str());
         }
     }
-    fprintf(stderr, "host: SD card = folder %s (%zu entries, %u MB used, %llu sectors)\n",
+    fprintf(stderr, "host: SD card = folder %s (%zu entries, %u MB used, %llu sectors, %u KB clusters)\n",
             root.c_str(), s_nodes.size() - 1, (unsigned)((uint64_t)s_used * CL >> 20),
-            (unsigned long long)s_total);
+            (unsigned long long)s_total, CL / 1024);
     return true;
 }
 
@@ -1038,6 +1162,7 @@ void vfat_sync() {
 bool vfat_card_reset() {
     if (!s_built || s_syncOff) return false;
     if (!syncNow()) return false;                   // the guest's writes come first
+    if (!notifyPending()) return false;             // the kernel saw nothing change
     if (!hostChanged()) return false;
     fprintf(stderr, "host: folder changed on the PC - card rebuilt at the guest's card reset\n");
     const std::string root = s_root;
@@ -1045,3 +1170,4 @@ bool vfat_card_reset() {
     vfat_build(root);
     return true;
 }
+

@@ -17,6 +17,18 @@
 // VFAT_TEST_DIR=$O/ci $O/t 3000 1. It also brings FUSE's .fuse_hidden placeholders for
 // open-but-deleted files, i.e. the rmdir-under-a-kept-inode case.
 //
+// Windows (mingw-w64, run under wine or on Windows; the manifest gives the CRT UTF-8 paths):
+//   x86_64-w64-mingw32-windres $H/host/win/pico-speccy.rc -O coff -o $O/rc.o
+//   (ff.c / ffunicode.c with x86_64-w64-mingw32-gcc -DHOST_BUILD, then)
+//   x86_64-w64-mingw32-g++ -O1 -std=c++17 -DHOST_BUILD -I$H/external/fatfs \
+//       -include $H/host/host_posix.h -o $O/t.exe $H/tools/host/vfat_sync_test.cpp \
+//       $H/host/host_vfat.cpp $H/host/host_fsdir.cpp $H/host/host_posix_win.cpp \
+//       $O/ff.o $O/ffunicode.o $O/rc.o -lwinmm -static
+//   VFAT_TEST_DIR='C:\temp' wine $O/t.exe 3000 1
+//
+// The cluster size follows the folder (4 KB for this small one); PICOSPECCY_VFAT_SPC=64
+// runs the same with 32 KB clusters.
+//
 // Re-run after any change to host_vfat.cpp. Each of these hand mutations fails it: no
 // keepFd taken (keepOld returns at once), keepFd ignored by readSector, patchInPlace
 // writing nothing, a host rename without remapAll.
@@ -166,6 +178,10 @@ static std::string newName() {
 }
 static std::string join(const std::string& d, const std::string& n) { return d.empty() ? n : d + "/" + n; }
 static std::string utf(const std::string& p) { return host_cp1251_to_utf8(p); }
+
+#ifdef _WIN32
+static char* mkdtemp(char* t) { return _mktemp(t) && _mkdir(t) == 0 ? t : nullptr; }
+#endif
 
 int main(int argc, char** argv) {
     rng.seed(argc > 2 ? atoi(argv[2]) : 12345);

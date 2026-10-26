@@ -108,8 +108,11 @@ static inline bool vram_butter(uint32_t ba) {
 // Coherence rule: the backing strip (pages 0..MEM_PG_CNT+1) must NEVER be
 // touched through the cached alias; setup() cleans the cache once after the
 // butter size probe (which writes markers through the cached alias).
+#ifndef PSRAM_NC_OFFSET
+#define PSRAM_NC_OFFSET 0x04000000u   // the Windows host build maps no alias: 0 there
+#endif
 static inline uint8_t* butter_nc(uint32_t ba) {
-    return (uint8_t*)((uintptr_t)PSRAM_DATA + 0x04000000u + ba);
+    return (uint8_t*)((uintptr_t)PSRAM_DATA + PSRAM_NC_OFFSET + ba);
 }
 
 class mem_desc_t {

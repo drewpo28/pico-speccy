@@ -36,7 +36,7 @@ extern "C" {
 
 /* Integer types used for FatFs API */
 
-#if defined(_WIN32)		/* Windows VC++ (for development only) */
+#if defined(_WIN32) && !defined(HOST_BUILD)	/* Windows VC++ (for development only); not the mingw host build */
 #define FF_INTDEF 2
 #include <windows.h>
 typedef unsigned __int64 QWORD;

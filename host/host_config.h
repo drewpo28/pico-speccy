@@ -94,3 +94,24 @@
 #ifdef __cplusplus
 #define _Static_assert static_assert
 #endif
+
+#ifdef _WIN32
+// Windows (mingw-w64): what glibc's headers give the firmware sources for free.
+#include <stddef.h>
+typedef unsigned int uint;
+// The PSRAM window is one mapping here (an image section, host/win/pico-speccy.ld):
+// its "uncached alias" is the same address.
+#define PSRAM_NC_OFFSET 0u
+// <malloc.h> mallinfo() and sbrk(), answered by host_winheap.c's dlmalloc.
+#ifdef __cplusplus
+extern "C" {
+#endif
+struct mallinfo {
+    size_t arena, ordblks, smblks, hblks, hblkhd, usmblks, fsmblks, uordblks, fordblks, keepcost;
+};
+struct mallinfo mallinfo(void);
+void* sbrk(ptrdiff_t inc);
+#ifdef __cplusplus
+}
+#endif
+#endif

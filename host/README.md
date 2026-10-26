@@ -1,6 +1,6 @@
 # pico-speccy on a PC (SDL2) — stage 1
 
-The emulator from `src/` built for Linux (Windows/macOS later) against host
+The emulator from `src/` built for Linux and Windows (macOS later) against host
 stand-ins for the Pico SDK (`host/include`) and the board drivers (`host/*.cpp`).
 The firmware build (root `CMakeLists.txt`) is not affected; firmware sources only
 gained a few `#if HOST_BUILD` branches where they contained ARM assembly.
@@ -19,6 +19,39 @@ lookup is case-insensitive, like FAT.
 
 F1 opens the menu, F5 the file browser, F12 "reboots" (restarts the process) —
 the same keys as on the board. The firmware log goes to stderr.
+
+The window has its own File menu: **SD Card Folder...** picks the folder (the choice
+is kept in `~/.config/pico-speccy-host/sd-folder.txt`, `%APPDATA%\pico-speccy-host\`
+on Windows, and applied by restarting; `--root` still wins), **Settings** = F1,
+**Exit**. On Windows it is the native menu bar (mouse only: Alt stays with the
+emulator); elsewhere the host draws the bar itself (`host_menu.cpp`), keys Up/Down/
+Enter/Esc work while it is open, and the folder dialog is `zenity` or `kdialog`.
+There is no bar in full screen.
+
+### Windows
+
+Cross-built from Linux with mingw-w64 (posix threads) and the SDL2 mingw development
+package (`SDL2-devel-2.x-mingw.tar.gz` from libsdl-org/SDL releases):
+
+    cmake -S host -B build-all/host-win -G Ninja \
+          -DCMAKE_TOOLCHAIN_FILE=host/mingw-w64-x86_64.cmake \
+          -DSDL2_DIR=<SDL2-x.y.z>/x86_64-w64-mingw32/lib/cmake/SDL2
+    ninja -C build-all/host-win
+
+The result is `pico-speccy.exe` plus `SDL2.dll` (copied next to it); the mingw
+runtime is linked in. Windows 10 1903 or later (file names are UTF-8 through the
+manifest). The folder is `%USERPROFILE%\pico-speccy`. What differs from Linux:
+
+- The folder card does not write back yet: what the guest writes to the raw card
+  stays in memory for the session, and PC-side changes come in at the next start
+  (the write-back relies on POSIX semantics of open files; it is next).
+- Memory layout, which the emulator relies on (ROM below 0x11000000, RAM above):
+  `win/pico-speccy.ld` places code and `.rdata` at 0x10000000 and `.data`/`.bss` at
+  0x20000000 with one gap section between them that holds the 8 MB PSRAM window at
+  0x11000000; `host_winheap.c` puts every `malloc`/`new` into a region at
+  0x30000000 (dlmalloc, `external/dlmalloc`), since the Windows heap lives low.
+- Sockets go through `host_sock.cpp` (Winsock there), file I/O through
+  `host_posix.h` / `host_posix_win.cpp`.
 
 VS Code: F7 -> pick `HOST` builds it, F5 with "Host: pico-speccy (gdb)" builds and
 runs it under gdb (local `.vscode`, not in git).

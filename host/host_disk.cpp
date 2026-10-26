@@ -16,9 +16,7 @@
 #include <mutex>
 #include <thread>
 #include <chrono>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include "host_posix.h"
 
 extern "C" {
 #include "ff.h"
@@ -53,8 +51,8 @@ DSTATUS disk_initialize(BYTE pdrv) {
     std::lock_guard<std::mutex> lk(s_mx);
     if (!host_sd_path) return ensureVfat() ? 0 : STA_NOINIT;
     if (s_fd < 0) {
-        s_fd = open(host_sd_path, O_RDWR);
-        if (s_fd < 0) { s_fd = open(host_sd_path, O_RDONLY); s_ro = s_fd >= 0; }
+        s_fd = open(host_sd_path, O_RDWR | O_BINARY);
+        if (s_fd < 0) { s_fd = open(host_sd_path, O_RDONLY | O_BINARY); s_ro = s_fd >= 0; }
         if (s_fd < 0) { fprintf(stderr, "host: no SD image '%s'\n", host_sd_path); return STA_NOINIT | STA_NODISK; }
     }
     return s_ro ? STA_PROTECT : 0;
@@ -83,8 +81,24 @@ static bool ensureVfat() {
 // The guest reset the card (CMD0 from DivMMC / Z-Controller / NeoGS SD).
 void host_sd_card_reset(void) {
     if (host_sd_path) return;
-    std::lock_guard<std::mutex> lk(s_mx);
-    if (s_vfat && vfat_card_reset()) g_disk_write_gen++;
+    const auto t0 = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lk(s_mx);
+        if (s_vfat && vfat_card_reset()) g_disk_write_gen++;
+    }
+    // How often the guest resets the card and what it costs it: some drivers send
+    // CMD0 before every file operation. One line per 5 s at most.
+    static uint32_t n = 0;
+    static uint64_t us = 0, maxUs = 0;
+    static auto lastLog = t0;
+    const uint64_t d = (uint64_t)std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now() - t0).count();
+    n++; us += d; if (d > maxUs) maxUs = d;
+    if (std::chrono::steady_clock::now() - lastLog > std::chrono::seconds(5)) {
+        fprintf(stderr, "host: card reset (CMD0) x%u, %.1f ms total, max %.1f ms\n", n, us / 1000.0, maxUs / 1000.0);
+        n = 0; us = maxUs = 0;
+        lastLog = std::chrono::steady_clock::now();
+    }
 }
 
 // The last guest writes into the folder before the process exits or restarts.

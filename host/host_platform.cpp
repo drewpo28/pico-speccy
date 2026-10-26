@@ -15,8 +15,10 @@
 #include <mutex>
 #include <random>
 #include <thread>
+#include "host_posix.h"
+#ifndef _WIN32
 #include <sys/mman.h>
-#include <unistd.h>
+#endif
 
 #include "pico_host.h"
 
@@ -123,7 +125,11 @@ static void host_restart(void) {
     fprintf(stderr, "host: firmware reboot -> restarting the process\n");
     fflush(stdout);
     fflush(stderr);
+#ifdef _WIN32
+    _execv(host_exe_path(), host_argv);   // the CRT starts the new process and exits this one
+#else
     execv("/proc/self/exe", host_argv);
+#endif
     _exit(0);   // execv failed: just leave
 }
 void watchdog_reboot(uint32_t, uint32_t, uint32_t) { host_restart(); }
@@ -131,10 +137,14 @@ void watchdog_enable(uint32_t, bool) { host_restart(); }
 
 // ---- flash: writes go straight to the addresses (they sit in writable memory) ----------
 static void flash_unprotect(uint8_t* p, size_t n) {
+#ifdef _WIN32
+    host_mem_rw(p, n);
+#else
     const uintptr_t pg = (uintptr_t)sysconf(_SC_PAGESIZE);
     const uintptr_t a = (uintptr_t)p & ~(pg - 1);
     const uintptr_t e = ((uintptr_t)p + n + pg - 1) & ~(pg - 1);
     mprotect((void*)a, e - a, PROT_READ | PROT_WRITE);
+#endif
 }
 void flash_range_erase(uint32_t off, size_t n) {
     uint8_t* p = (uint8_t*)(uintptr_t)(XIP_BASE + off);
