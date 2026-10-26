@@ -1725,7 +1725,9 @@ static const Option opt_profile_foot[] = {
 };
 
 static const Node kOptions[] = {
+#if !HOST_BUILD   // the host has no RP2350 clock, voltage or flash/PSRAM timing to set
     NM_SUB   (TXT_HW_OVERCLOCK,     kOverclock,     nullptr),
+#endif
     NM_SUB   (TXT_INTERFACE,        kInterface,     nullptr),
     // Named config profiles: a full snapshot of storage.nvs per slot, loaded by
     // copying it back and rebooting. The right pane IS the slot list (K_PICK) and
@@ -1738,7 +1740,9 @@ static const Node kOptions[] = {
     NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
     NM_SUB   (TXT_OPT_PREF_ROM,     kPrefRom,       nullptr),
     NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),
+#if !HOST_BUILD   // the host has no flash to write a firmware image into
     NM_ACTION(TXT_OPT_UPDATE_FW,    act_updateFirmware, nullptr),
+#endif
 };
 
 // ── Debug ──────────────────────────────────────────────────────────────────────
