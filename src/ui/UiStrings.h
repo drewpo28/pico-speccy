@@ -162,7 +162,11 @@
 // ── Reset ──────────────────────────────────────────────────────────────────────
 #define TXT_RESET_SOFT      "Soft ZX reset"
 #define TXT_RESET_HARD      "Hard ZX reset"
+#if HOST_BUILD   // host: watchdog_reboot restarts the process (= a power cycle)
+#define TXT_RESET_RPI       "Restart emulator"
+#else
 #define TXT_RESET_RPI       "Hard RP2350 reset"
+#endif
 #define TXT_RESET_MOS       "MurmulatorOS"
 #define TXT_RESET_FACTORY   "Reset to defaults"
 
