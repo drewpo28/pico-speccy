@@ -9411,7 +9411,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
     // v_sync wait (true blanking start) via profiPaletteApplyPending(); apply
     // here only when that hook won't run (v-sync pacing off, or maxSpeed which
     // skips the wait) — unsynced anyway, a tear is unavoidable then.
-    if (!Config::v_sync_enabled || ESPectrum::maxSpeed)
+    if (!Config::loopVsync() || ESPectrum::maxSpeed)
         profiPaletteApplyPending();
 
     // DS80 top/bottom border bands (720×576) are rendered per-T-state by the

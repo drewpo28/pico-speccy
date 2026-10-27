@@ -1712,10 +1712,13 @@ void Config::load() {
             };
             hdmi_video_mode = host_vm(hdmi_video_mode);
             vga_video_mode = host_vm(vga_video_mode);
-            // Paced by host_main's frame thread, which ticks at the MACHINE's frame
-            // rate on an absolute schedule; the vsync-off path (sleep for the rest
-            // of the frame) loses the OS's wake-up latency every frame (~1.7% slow).
-            v_sync_enabled = true;
+            // V-Sync on the host means "follow the monitor" (as on the board with a
+            // 60 Hz mode: the machine then runs at the display's rate); off = the
+            // machine's own frame rate. The loop waits for ticks either way
+            // (Config::loopVsync), so off does not mean sleeping out the frame.
+            // Own key: earlier host builds forced and saved v_sync_enabled = true.
+            v_sync_enabled = false;
+            nvs_get_b("host_vsync_display", v_sync_enabled, sts);
         }
 #endif
         nvs_get_b("gigascreen_enabled", gigascreen_enabled, sts);
@@ -2096,7 +2099,11 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u8(buf,"AudBoost", Config::audio_boost);
     nvs_set_u8(buf,"hdmi_vmode",Config::hdmi_video_mode);
     nvs_set_u8(buf,"vga_vmode",Config::vga_video_mode);
+#if HOST_BUILD
+    nvs_set_str(buf,"host_vsync_display", Config::v_sync_enabled ? "true" : "false");
+#else
     nvs_set_str(buf,"v_sync_enabled", Config::v_sync_enabled ? "true" : "false");
+#endif
     nvs_set_str(buf,"gigascreen_enabled", Config::gigascreen_enabled ? "true" : "false");
     nvs_set_u8(buf,"gigascreen_onoff", Config::gigascreen_onoff);
     nvs_set_str(buf,"ulaplus", Config::ulaplus ? "true" : "false");

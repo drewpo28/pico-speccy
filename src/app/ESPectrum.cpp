@@ -2086,7 +2086,7 @@ bool ESPectrum::nextRefreshCheckPending = false;
 // (reboot-class, so the first frame after boot re-checks) and V-Sync itself.
 void ESPectrum::nextRefreshCheck() {
 #ifdef VGA_HDMI
-    if (Config::arch != A_NEXT || !Config::v_sync_enabled) return;
+    if (Config::arch != A_NEXT || !Config::loopVsync()) return;
     extern bool SELECT_VGA;
     const uint8_t vm = Config::baseVideoMode(SELECT_VGA ? Config::vga_video_mode
                                                         : Config::hdmi_video_mode);
@@ -4242,6 +4242,9 @@ void ESPectrum::loop() {
     ts_start = time_us_64();
 
     if (!CPU::paused) {
+#if HOST_BUILD
+      host_frame_done();   // the window shows this complete frame (host_main.cpp)
+#endif
       uint64_t _aud_t0 = time_us_64();
       pwm_audio_write((uint8_t *)audioBuffer_L, (uint8_t *)audioBuffer_R,
                       maxSpeed ? 1 : samplesPerFrame, 0, 0);
@@ -5301,7 +5304,7 @@ void ESPectrum::loop() {
 
     totalsecondsnodelay += elapsed;
 
-    if (!maxSpeed && Z80Ops::isNext && !Config::v_sync_enabled && idle > 0) {
+    if (!maxSpeed && Z80Ops::isNext && !Config::loopVsync() && idle > 0) {
       // The Next renders on core1; rows it has not reached yet are rendered
       // here while core0 would only wait (NEXTVID::c0Help, one row a call).
       // TX-1696 at 576p, sprite-heavy scenes: core1 22 ms a frame, core0 14
@@ -5318,7 +5321,7 @@ void ESPectrum::loop() {
       // page truncated at the same offset every run). Keep servicing the host
       // stack while we wait; cdcPump() self-limits to ~1 kHz and is a no-op on
       // the GPIO UART transport.
-      if (Config::v_sync_enabled) {
+      if (Config::loopVsync()) {
         for (;;) {
           if (ZiFi::cdcNicActive) ZiFi::cdcPump();
           // SD only. An MP3 frame decode is an indivisible multi-millisecond
@@ -5339,12 +5342,24 @@ void ESPectrum::loop() {
           if (Z80Ops::isTsconf && VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
           // TS-Conf: take queued lines off core1 while there is nothing else to do.
           if (g_ts_c1_live) VIDEO::tsC1HelpOne();
+#if HOST_BUILD
+          // Counted ticks: a late frame is made up instead of lost (host_main.cpp).
+          if (host_vsync_take()) {
+            v_sync = false;
+            break;
+          }
+#else
           if (v_sync) {
             v_sync = false;
             break;
           }
+#endif
 #if HOST_BUILD
-          sleep_us(100);   // a PC core: wait for the frame thread without spinning
+          // A PC core: wait for the frame thread without spinning. sleep_us()
+          // busy-waits below 2 ms on the host, which held a whole core at 100%
+          // between frames (and the laptop's cores at a lower clock). The tick
+          // wakes this early; 2 ms is only the poll period for the helpers above.
+          host_idle_us(2000);
 #endif
         }
         // Blanking just started (v_sync fires at scanout line v_active): apply

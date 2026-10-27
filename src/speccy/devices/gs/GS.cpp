@@ -2944,10 +2944,28 @@ static uint64_t s_lk_prev_ts = 0;
 static bool     s_lk_started = false;
 static uint64_t s_lk_acc_q16 = 0;
 
+// Turbo-boot on the host runs on the emulator's own thread, so 8x the card's clock
+// is 8x its cost inside every guest frame: a NeoGS reboot (Z-Player resets the card
+// at a track change) made frames late enough to drop V-Sync ticks, and the ZX audio
+// lost a quarter of a second each time (2026-10-26: "GS 191476 int/s ... 60 V-Sync
+// tick(s) dropped"). So the turbo part gets a wall-time budget: it refills at 40%
+// of elapsed time (at most 8 ms banked), and a run past it ends with the extra
+// credit dropped - the boot then continues at the card's normal speed.
+static int64_t  s_lk_bucket_us = 8000;
+static uint64_t s_lk_bucket_t = 0;
+static bool     s_lk_turbo = false;
+
 // Card T for `us` µs of guest time, at the turbo-boot rate when it applies.
 static inline uint32_t gs_lk_q16() {
     uint32_t q16 = s_t_per_us_q16;
-    if (s_ngs && !s_gs_main_loop) q16 <<= 3;   // turbo-boot, as in pump()
+    s_lk_turbo = false;
+    if (s_ngs && !s_gs_main_loop) {            // turbo-boot, as in pump()
+        const uint64_t now = time_us_64();
+        if (s_lk_bucket_t) s_lk_bucket_us += (int64_t)((now - s_lk_bucket_t) * 2 / 5);
+        if (s_lk_bucket_us > 8000) s_lk_bucket_us = 8000;
+        s_lk_bucket_t = now;
+        if (s_lk_bucket_us > 0) { q16 <<= 3; s_lk_turbo = true; }
+    }
     return q16;
 }
 
@@ -2956,6 +2974,10 @@ static void gs_lk_run(int32_t floor_t) {
     const uint64_t t0 = time_us_64();
     if (__builtin_expect(!gs_cpu_hooks_ok(), 0)) gs_cpu_hooks_repair();
     while (s_pump_credit_t >= floor_t) {
+        if (s_lk_turbo && (int64_t)(time_us_64() - t0) > s_lk_bucket_us) {
+            s_pump_credit_t = 0;                   // budget spent: drop the turbo excess
+            break;
+        }
         const int want = s_pump_credit_t > 4000 ? 4000 : s_pump_credit_t;
         const int ran = GS::step(want);
         s_pump_credit_t -= ran;
@@ -2965,7 +2987,9 @@ static void gs_lk_run(int32_t floor_t) {
         if (s_pump_credit_t >= floor_t) gs_host_sd_service();  // card may wait on SD
     }
     if (s_pump_credit_t < -(int32_t)GS_INT_PERIOD) s_pump_credit_t = -(int32_t)GS_INT_PERIOD;
-    host_gs_busy_us += time_us_64() - t0;
+    const uint64_t spent = time_us_64() - t0;
+    if (s_lk_turbo) s_lk_bucket_us -= (int64_t)spent;
+    host_gs_busy_us += spent;
     gs_end_pump();
 }
 
@@ -2992,6 +3016,7 @@ void GS::pumpGuest() {
 // A core0 wait for the card (the boot gate): guest time stands still, so run
 // the card on its own for a slice of wall time.
 static void gs_lk_run_free() {
+    s_lk_turbo = false;                        // not turbo time: the budget does not apply
     s_pump_credit_t += 2000;
     gs_lk_run(1);
 }
@@ -3884,6 +3909,9 @@ static inline uint8_t gs_to_u8(int32_t v) {
     return (uint8_t)u;
 }
 
+// Always inlined: getLiveLR runs from RAM in the audio IRQ on the board.
+static inline __attribute__((always_inline)) void gs_out_note(uint8_t L, uint8_t R);
+
 void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
     if (__atomic_load_n(&s_run_state, __ATOMIC_ACQUIRE) == GS_RUN_RESETTING) {
         L = 128;
@@ -3963,6 +3991,12 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
     L = gs_to_u8(sumL / (int32_t)n);
     R = gs_to_u8(sumR / (int32_t)n);
     s_ring_rpos = r + n;
+    gs_out_note(L, R);
+}
+
+// The LED and the idle-throttle input for one output sample (getLiveLR, and the
+// host's drainFrame).
+static inline __attribute__((always_inline)) void gs_out_note(uint8_t L, uint8_t R) {
     // Light on CHANGING output, not on a non-zero level. The channel latches
     // keep whatever the firmware last wrote, so a card sitting idle after (or
     // before) playback usually holds a non-silent DC value and `sumL || sumR`
@@ -3991,6 +4025,62 @@ void __not_in_flash_func(GS::getLiveLR)(uint8_t& L, uint8_t& R) {
         }
     }
 }
+
+#if HOST_BUILD
+// Host: one frame of GS output for the frame's ZX samples. The card runs in
+// lockstep with the guest (pumpGuest), so a frame's worth of ring entries
+// (~768 at 37500 Hz for a 20.48 ms Pentagon frame) arrives in one burst, and the
+// board's drain servo - a 128-entry cushion averaged over 256 calls, made for a
+// producer that never stops - read that burst as a deep ring, pinned the rate at
+// +3% and emptied the ring every frame: repeated samples, audible as distortion.
+// Here everything the card produced up to the frame's end is spread over the
+// frame's `n` output samples (box average), so GS keeps the guest's tempo exactly
+// and travels with the AY mix through one ring. Output: gs_to_u8() - 128.
+void GS::drainFrame(int16_t* L, int16_t* R, int n) {
+    if (n <= 0) return;
+    if (__atomic_load_n(&s_run_state, __ATOMIC_ACQUIRE) == GS_RUN_RESETTING) {
+        for (int i = 0; i < n; i++) L[i] = R[i] = 0;
+        return;
+    }
+    pumpGuest();                                  // the card up to the frame's end
+    const uint32_t w = s_ring_wpos;
+    uint32_t r = s_ring_rpos;
+    uint32_t avail = w - r;
+    // A frame not drained (max speed, a skipped mix): keep at most two frames'
+    // worth, or the next frame would play them all at double speed.
+    const uint32_t cap = (uint32_t)n * 12 / 5;
+    if (avail > cap) { r = w - cap; avail = cap; }
+    if (avail == 0) {
+        uint8_t l = 128, rr = 128;
+        if (w) { l = gs_to_u8(s_ring_L[(w - 1) & GS_RING_MASK]); rr = gs_to_u8(s_ring_R[(w - 1) & GS_RING_MASK]); }
+        GS_PERF(s_perf_ring_und++);
+        for (int i = 0; i < n; i++) { L[i] = (int16_t)l - 128; R[i] = (int16_t)rr - 128; }
+        gs_out_note(l, rr);
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        uint32_t a = (uint32_t)((uint64_t)avail * i / n);
+        uint32_t b = (uint32_t)((uint64_t)avail * (i + 1) / n);
+        int32_t sL = 0, sR = 0;
+        if (b <= a) {                             // fewer entries than samples: hold
+            sL = s_ring_L[(r + a) & GS_RING_MASK];
+            sR = s_ring_R[(r + a) & GS_RING_MASK];
+            b = a + 1;
+        } else {
+            for (uint32_t k = a; k < b; k++) {
+                sL += s_ring_L[(r + k) & GS_RING_MASK];
+                sR += s_ring_R[(r + k) & GS_RING_MASK];
+            }
+        }
+        const uint8_t l = gs_to_u8(sL / (int32_t)(b - a));
+        const uint8_t rr = gs_to_u8(sR / (int32_t)(b - a));
+        L[i] = (int16_t)l - 128;
+        R[i] = (int16_t)rr - 128;
+        if ((i & 63) == 0) gs_out_note(l, rr);
+    }
+    s_ring_rpos = r + avail;
+}
+#endif
 
 // =================================================================
 // traceDump — flush the ring buffer to Debug::log

@@ -764,6 +764,14 @@ public:
     static uint8_t vga_video_mode;
 
     static bool v_sync_enabled;
+    // Does the frame loop wait for a V-Sync tick? On the board only with V-Sync on;
+    // on the host always - its tick thread (or, with V-Sync on, the window following
+    // the monitor) paces the loop either way, and v_sync_enabled picks which.
+#if HOST_BUILD
+    static bool loopVsync() { return true; }
+#else
+    static bool loopVsync() { return v_sync_enabled; }
+#endif
     static bool gigascreen_enabled;
     static uint8_t gigascreen_onoff; // 0=Off, 1=On, 2=Auto
     static bool ulaplus;

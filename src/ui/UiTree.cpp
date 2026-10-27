@@ -1362,10 +1362,9 @@ static const Node kVideo[] = {
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),
     NM_RADIO(TXT_VID_CRT,        SET_CRT_FILTER, opt_crt,        nullptr),
-#if !HOST_BUILD
-    // Host: paced by the machine's own timer, the window already syncs to the monitor.
+    // Host: on = the machine follows the monitor's refresh (smooth scrolling, a 50 Hz
+    // machine runs ~20% fast on a 60 Hz screen), off = the machine's own frame rate.
     NM_BOOL (TXT_VID_VSYNC,      SET_VSYNC,      nullptr),
-#endif
     NM_RADIO(TXT_VID_GIGASCREEN, SET_GIGASCREEN, opt_gigascreen, nullptr),
     NM_BOOL (TXT_VID_ULAPLUS,    SET_ULAPLUS,    nullptr),
     NM_BOOL (TXT_VID_TIMEX,      SET_TIMEX,      nullptr),
