@@ -97,6 +97,25 @@ static inline uint32_t time_us_32(void) { return (uint32_t)time_us_64(); }
 void sleep_us(uint64_t us);
 void sleep_ms(uint32_t ms);
 void busy_wait_us(uint64_t us);
+// A real sleep of up to `us` that ends early when a V-Sync tick arrives (host_main.cpp):
+// the frame loop's wait, where sleep_us() busy-waits below 2 ms for precision.
+void host_idle_us(uint32_t us);
+// Ask for SCHED_FIFO `prio` for the calling thread (directly, else via rtkit); logs
+// the outcome, never fails (host_rt.cpp). PICOSPECCY_NO_RT=1 skips it.
+void host_thread_realtime(const char* name, int prio);
+// A high ordinary priority (nice `nice_level`, negative = higher) for the calling
+// thread, directly or via rtkit: for a thread that may run long stretches without
+// blocking, which a realtime thread must not (the kernel kills it).
+void host_thread_high_priority(const char* name, int nice_level);
+// V-Sync ticks not yet taken by the frame loop (host_main.cpp). A late frame
+// leaves several; each one taken lets the loop run one frame, so emulated time
+// catches up instead of falling behind for good.
+bool host_vsync_take(void);
+// The frame loop finished a frame: the window takes a copy of it (host_main.cpp).
+void host_frame_done(void);
+// The machine's speed against real time (1.0 = its own frame rate; V-Sync on a
+// 60 Hz monitor runs a 50 Hz machine ~1.2x). The audio is played at that pace.
+void host_audio_set_speed(double factor);
 static inline void busy_wait_us_32(uint32_t us) { busy_wait_us(us); }
 static inline void busy_wait_ms(uint32_t ms) { busy_wait_us((uint64_t)ms * 1000); }
 static inline absolute_time_t get_absolute_time(void) { return time_us_64(); }

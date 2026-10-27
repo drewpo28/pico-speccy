@@ -174,6 +174,11 @@ public:
     // Called from the audio timer IRQ at 31.25 kHz — GS-Z80 runs on core1
     // at 12 MHz wall-clock, so reg_ch/reg_vol reflect live real-time state.
     static void getLiveLR(uint8_t& L, uint8_t& R);
+#if HOST_BUILD
+    // Host: the frame's GS output spread over its n ZX samples, gs_to_u8() - 128
+    // (GS.cpp, beside pumpGuest).
+    static void drainFrame(int16_t* L, int16_t* R, int n);
+#endif
 
     static uint32_t gs_ram_size;
 

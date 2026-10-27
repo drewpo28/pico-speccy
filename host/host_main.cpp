@@ -3,7 +3,8 @@
 // Threads, mirroring the RP2350:
 //   core0  - ESPectrum::setup() then ESPectrum::loop() (never returns), as main() does;
 //   core1  - the render_core pumps (TS-Conf / VDAC2 / Next line renderers, GS::pump);
-//   vsync  - calls ESPectrum_vsync() at the machine's frame rate (absolute schedule);
+//   vsync  - calls ESPectrum_vsync() at the machine's frame rate, or the monitor's
+//            with V-Sync on (absolute schedule; the window never paces the machine);
 //   main   - SDL: window, events, presenting VIDEO::vga.frameBuffer.
 // Keyboard: SDL scancodes are USB HID usage ids, so key events are turned into HID
 // boot reports and fed to the firmware's own process_kbd_report() (extracted from
@@ -12,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -26,6 +28,7 @@
 #include "host_menu.h"
 #include "host_kbd_prelude.h"
 #include "app/ESPectrum.h"
+#include "app/Config.h"
 #include "net/HttpsGet.h"
 #include "speccy/video/Video.h"
 #include "speccy/devices/gs/GS.h"
@@ -136,13 +139,19 @@ static void core1_loop() {
         if (g_next_c1_live) { next_render_core1_pump(); idle = false; }
         // GS::pump is NOT called here: the host runs the card on the emulator
         // thread in lockstep with the guest's clock (GS::pumpGuest, GS.cpp).
-        if (idle) std::this_thread::sleep_for(std::chrono::microseconds(200));
+        // 1 ms, not 0.2: an idle core1 was 5000 wake-ups a second for nothing,
+        // more CPU than the emulator itself on the start screen (2026-10-26).
+        if (idle) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
 static void core0_main() {
     host_cpuid = 0;
     ESPectrum::setup();
+    // After setup(): the card scan runs here for seconds without blocking, and
+    // the frame loop may too (a 28 MHz Next, a disk load) - a high ordinary
+    // priority, never realtime (host_rt.cpp).
+    host_thread_high_priority("emulator", -15);
     std::thread(core1_loop).detach();
 #if ZIFI_NET_CLIENT
     // PICOSPECCY_NETTEST=https://host/path runs the firmware's own HTTPS self-test
@@ -160,15 +169,84 @@ static double frame_us() {
     return (t >= 5000 && t <= 50000) ? (double)t : 20000.0;
 }
 
+// Ticks the frame loop has not taken yet. ESPectrum::v_sync is a flag, so two
+// ticks that arrive while the emulator is late (an OS scheduling hiccup, 40-80 ms
+// on a laptop) merged into one and emulated time fell behind for good: the audio
+// ring lost that much and the next big pull by the audio server ran it dry
+// (2026-10-26, "late frame 83 ms ... underrun"). Counted, the loop runs the missed
+// frames back to back. Capped, so a long stop (menu, pause) does not fast-forward.
+static std::atomic<int> s_vsync_pending{0};
+// ~100 ms (1 would be the old merging behaviour: smoother after a stall, but the
+// audio loses the stall).
+static constexpr int s_vsync_catchup_max = 5;
+// Ticks dropped because the frame loop was already 5 behind: emulated time (and
+// its audio) lost for good. Reported every 5 s.
+static volatile uint32_t host_vsync_dropped = 0;
+// Snapshots taken so far (host_frame_done, below): 0 until the frame loop runs.
+static std::atomic<uint32_t> s_snapSeq{0}, s_snapMs{0};
+
+
+extern "C" bool host_vsync_take(void) {
+    int p = s_vsync_pending.load(std::memory_order_acquire);
+    while (p > 0) {
+        if (s_vsync_pending.compare_exchange_weak(p, p - 1, std::memory_order_acq_rel)) return true;
+    }
+    return false;
+}
+
+// The frame loop waits for a tick on this, woken by vsync_tick(): one wake-up per
+// tick instead of a 0.2 ms polling sleep (5000 wake-ups a second, each a trip
+// through the laptop's scheduler - and the thing that came back 5-75 ms late).
+static std::mutex s_tickMx;
+static std::condition_variable s_tickCv;
+
+// A real sleep of up to `us` that ends early when a V-Sync tick arrives.
+extern "C" void host_idle_us(uint32_t us) {
+    std::unique_lock<std::mutex> lk(s_tickMx);
+    s_tickCv.wait_for(lk, std::chrono::microseconds(us),
+                      [] { return s_vsync_pending.load(std::memory_order_acquire) > 0 || s_quit; });
+}
+
+// One frame tick, from the timer thread below: at the machine's own rate (V-Sync
+// off) or at the monitor's (V-Sync on). The window is NOT in this path any more:
+// it used to tick after each SDL_RenderPresent, and under Xwayland/GNOME a present
+// now and then comes back 2-6 refreshes late - the machine stood still with it
+// ("late frame ... wait 40-107 ms, ticks pending 0", 2026-10-26). Now a late
+// present only repeats a frame on screen.
+static void vsync_tick() {
+    int p = s_vsync_pending.load(std::memory_order_relaxed);
+    while (p < s_vsync_catchup_max &&
+           !s_vsync_pending.compare_exchange_weak(p, p + 1, std::memory_order_acq_rel)) {}
+    // Emulated time lost - once the frame loop runs: before its first frame (the
+    // card scan in setup()) the ticks pile up by design and mean nothing.
+    if (p >= s_vsync_catchup_max && s_snapSeq.load(std::memory_order_relaxed)) host_vsync_dropped++;
+    ESPectrum_vsync();
+    host_frames++;
+    { std::lock_guard<std::mutex> lk(s_tickMx); }   // no lost wake-up against the wait's test
+    s_tickCv.notify_all();
+}
+
+// The monitor's refresh, Hz: SDL's figure at start, then measured from the window's
+// presents while V-Sync drives the machine. Read by the menu's V-Sync description.
+static std::atomic<double> s_display_hz{60.0};
+static double s_display_hz_sdl = 60.0;   // what SDL reports: bounds the measurement
+extern "C" unsigned host_display_hz(void) { return (unsigned)(s_display_hz.load() + 0.5); }
+
 static void vsync_loop() {
+    host_thread_realtime("V-Sync tick", 12);
     using clk = std::chrono::steady_clock;
     auto next = clk::now();
     while (!s_quit) {
-        next += std::chrono::nanoseconds((long long)(frame_us() * 1000.0));
+        // V-Sync on: the monitor's rate, so every emulated frame is shown for one
+        // refresh (a 50 Hz machine runs ~20% fast on 60 Hz, as on the board with
+        // a 60 Hz video mode); the audio follows that pace.
+        const bool vs = Config::v_sync_enabled;
+        const double period = vs ? 1e6 / s_display_hz.load() : frame_us();
+        host_audio_set_speed(vs ? period > 0 ? frame_us() / period : 1.0 : 1.0);
+        next += std::chrono::nanoseconds((long long)(period * 1000.0));
         std::this_thread::sleep_until(next);
         if (clk::now() - next > std::chrono::milliseconds(100)) next = clk::now();
-        ESPectrum_vsync();
-        host_frames++;
+        vsync_tick();
     }
 }
 
@@ -274,10 +352,52 @@ static bool crtScreen(SDL_Renderer* ren, SDL_Texture* src, const SDL_Rect& dst,
     return false;
 #endif
 }
-static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
+// The last COMPLETE frame, copied by the emulator thread at the frame boundary
+// (host_frame_done, top of ESPectrum::loop, before the next frame is drawn).
+// present() used to read the live framebuffer whenever a V-Sync tick came - the
+// very moment the tick woke the emulator to draw over it - so the window showed a
+// mix of two frames, worse when a late frame was made up by several in a row.
+static std::mutex s_snapMx;
+static std::vector<uint8_t> s_snap;
+static int s_snapW = 0, s_snapH = 0;
+// The window waits for a new snapshot on this (one wake-up per frame, not a 1 ms poll).
+static std::mutex s_snapCvMx;
+static std::condition_variable s_snapCv;
+
+extern "C" void host_frame_done(void) {
     uint8_t** fb = VIDEO::vga.frameBuffer;
     const int xres = VIDEO::vga.xres, yres = VIDEO::vga.yres;
     if (!fb || xres <= 0 || yres <= 0) return;
+    {
+        std::lock_guard<std::mutex> lk(s_snapMx);
+        s_snap.resize((size_t)xres * yres);
+        for (int y = 0; y < yres; y++) {
+            if (fb[y]) memcpy(&s_snap[(size_t)y * xres], fb[y], (size_t)xres);
+            else memset(&s_snap[(size_t)y * xres], 0, (size_t)xres);
+        }
+        s_snapW = xres; s_snapH = yres;
+    }
+    s_snapMs.store(SDL_GetTicks(), std::memory_order_relaxed);
+    s_snapSeq.fetch_add(1, std::memory_order_release);
+    { std::lock_guard<std::mutex> lk(s_snapCvMx); }
+    s_snapCv.notify_all();
+}
+
+// useSnap: draw the last complete frame; otherwise the live framebuffer (the
+// emulator stands still - menu, pause - and the screen is drawn directly).
+static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool useSnap) {
+    uint8_t** fbLive = VIDEO::vga.frameBuffer;
+    const int xres = VIDEO::vga.xres, yres = VIDEO::vga.yres;
+    if (!fbLive || xres <= 0 || yres <= 0) return;
+    std::unique_lock<std::mutex> snapLk(s_snapMx, std::defer_lock);
+    std::vector<const uint8_t*> rows((size_t)yres);
+    if (useSnap) {
+        snapLk.lock();
+        if (s_snapW != xres || s_snapH != yres) { snapLk.unlock(); useSnap = false; }
+    }
+    for (int y = 0; y < yres; y++)
+        rows[y] = useSnap ? &s_snap[(size_t)y * xres] : fbLive[y];
+    const uint8_t* const* fb = rows.data();
     const int w = xres * 2, h = yres * 2;
     if (!tex || tw != w || th != h) {
         if (tex) SDL_DestroyTexture(tex);
@@ -322,6 +442,7 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th) {
         if (scan && !crtShape) { const uint32_t g = 0xFF000000u | kScanGray[scan]; for (int x = 0; x < w; x++) d1[x] = g; }
         else memcpy(d1, d0, (size_t)w * 4);
     }
+    if (snapLk.owns_lock()) snapLk.unlock();
     // PICOSPECCY_SHOT=file.bmp:N saves the N-th presented frame; PICOSPECCY_SHOTS=
     // prefix:N saves every N-th as prefix_<frame>.bmp (testing without a display).
     static const char* shot = getenv("PICOSPECCY_SHOT");
@@ -455,11 +576,17 @@ int main(int argc, char** argv) {
             return 0;
         }
     }
-    // Ask the audio server for small blocks (it may still choose bigger ones; the
-    // ring in host_audio.cpp adapts). A value already in the environment wins.
+    // The block size we ask the audio server for becomes its whole graph's cycle.
+    // 512/48000 (10.7 ms) was missed about once a second on a laptop in a
+    // power-saving profile: xruns in the sound card's node, heard as distortion
+    // "in places" (pw-top ERR growing; forcing quantum 2048 stopped it,
+    // 2026-10-26). So ask for 2048 (43 ms); the ring in host_audio.cpp keeps its
+    // own cushion above that. pipewire-pulse turns PULSE_LATENCY_MSEC into a
+    // quarter-size fragment (60 ms -> 469 frames at 31250), hence 200 here.
+    // A value already in the environment wins.
 #ifndef _WIN32
-    setenv("PIPEWIRE_LATENCY", "512/48000", 0);
-    setenv("PULSE_LATENCY_MSEC", "20", 0);
+    setenv("PIPEWIRE_LATENCY", "2048/48000", 0);
+    setenv("PULSE_LATENCY_MSEC", "200", 0);
 #endif
     if (host_root.empty()) host_root = loadSdFolder();
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
@@ -473,6 +600,13 @@ int main(int argc, char** argv) {
     if (!ren) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     host_menu_init(win);
+    {   // the monitor's refresh, until the presents measure it (V-Sync on)
+        SDL_DisplayMode dm;
+        if (win && SDL_GetWindowDisplayMode(win, &dm) == 0 && dm.refresh_rate >= 30 && dm.refresh_rate <= 240) {
+            s_display_hz_sdl = (double)dm.refresh_rate;
+            s_display_hz.store(s_display_hz_sdl);
+        }
+    }
 
     std::thread(core0_main).detach();
     std::thread(vsync_loop).detach();
@@ -544,7 +678,25 @@ int main(int argc, char** argv) {
                     fprintf(stderr, "host: audio in %u/s out %u/s fill %u..%u target %u dry %u (emulator stopped %u)\n",
                             host_au_in / 5, host_au_out / 5, host_au_fmin, host_au_fmax, host_audio_target(),
                             h - lastHold, host_au_stall);
-                else if (h != lastHold) fprintf(stderr, "host: audio ran dry %u time(s)\n", h - lastHold);
+                else if (h != lastHold) {
+                    // A dry ring while the emulator stands still (menu, file load)
+                    // is harmless; only the rest is an audible underrun.
+                    const uint32_t real = (h - lastHold) - host_au_stall;
+                    fprintf(stderr, "host: audio ran dry %u time(s) (emulator stopped: %u, underrun: %u, cushion %u)\n",
+                            h - lastHold, host_au_stall, real, host_audio_target());
+                }
+                if (host_vsync_dropped) {
+                    fprintf(stderr, "host: %u V-Sync tick(s) dropped (emulator more than 5 frames behind)\n",
+                            host_vsync_dropped);
+                    host_vsync_dropped = 0;
+                }
+                {   // the ring overflowed and old samples were thrown away (a click)
+                    extern volatile uint32_t host_au_dropped;
+                    if (host_au_dropped) {
+                        fprintf(stderr, "host: audio overflow, %u samples dropped\n", host_au_dropped);
+                        host_au_dropped = 0;
+                    }
+                }
                 host_au_in = host_au_out = host_au_stall = 0; host_au_fmin = 0xFFFFFFFF; host_au_fmax = 0;
                 lastHold = h;
             }
@@ -554,9 +706,48 @@ int main(int argc, char** argv) {
             f1Release = 0;
         }
         host_pads_sample();
+        // A new complete frame from the emulator: show it. No frame for 100 ms (the
+        // menu, a pause): fall back to the live framebuffer on the V-Sync tick.
         const uint32_t f = host_frames.load();
-        if (f != shown || host_menu_dirty()) { shown = f; present(ren, tex, tw, th); }
-        else SDL_Delay(2);
+        const uint32_t sq = s_snapSeq.load(std::memory_order_acquire);
+        static uint32_t shownSeq = 0;
+        const bool snapFresh = SDL_GetTicks() - s_snapMs.load(std::memory_order_relaxed) < 100;
+        // The machine is paced by the tick thread; the window only shows the last
+        // complete frame as soon as there is one (the emulator stands still - menu,
+        // pause - : the live framebuffer, on the tick). A present that comes back
+        // late repeats a frame on screen and nothing else.
+        static uint32_t lastPresentMs = 0;
+        static uint64_t lastPresentUs = 0;
+        const bool newFrame = sq != shownSeq;
+        if (newFrame || (!snapFresh && f != shown) || SDL_GetTicks() - lastPresentMs > 50 || host_menu_dirty()) {
+            const bool useSnap = newFrame || snapFresh;
+            shownSeq = sq; shown = f;
+            present(ren, tex, tw, th, useSnap);
+            const uint64_t now = time_us_64();
+            lastPresentMs = SDL_GetTicks();
+            // The monitor's refresh, measured from vsync-blocked presents while
+            // V-Sync paces the machine (SDL says 60 for a 59.82 Hz panel). Only gaps
+            // near one refresh count - not a stall, not a skipped vblank - and the
+            // figure stays within 10% of SDL's: a present that does not block at all
+            // would otherwise measure our own tick rate back into itself.
+            if (Config::v_sync_enabled && newFrame && lastPresentUs) {
+                const uint64_t gap = now - lastPresentUs;
+                const double period = 1e6 / s_display_hz_sdl;
+                if (gap > period * 0.6 && gap < period * 1.5) {
+                    double v = s_display_hz.load() * 0.98 + (1e6 / (double)gap) * 0.02;
+                    if (v < s_display_hz_sdl * 0.9) v = s_display_hz_sdl * 0.9;
+                    if (v > s_display_hz_sdl * 1.1) v = s_display_hz_sdl * 1.1;
+                    s_display_hz.store(v);
+                }
+            }
+            lastPresentUs = now;
+        } else {
+            // Nothing to show: wait for the next snapshot (or 4 ms, for events and
+            // the menu's own redraws).
+            std::unique_lock<std::mutex> lk(s_snapCvMx);
+            s_snapCv.wait_for(lk, std::chrono::milliseconds(4),
+                              [&] { return s_snapSeq.load(std::memory_order_acquire) != shownSeq || s_quit; });
+        }
     }
     host_sd_flush();   // the guest's last writes into the folder card
     SDL_Quit();
