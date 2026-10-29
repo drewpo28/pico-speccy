@@ -122,6 +122,9 @@ extern bool g_scorp_even_m1;
 //  g_len_kbmask — AND-ed into a keyboard read (L2: D5 and D7 are grounded);
 //  g_len_wrap — the bottom border lies past the frame end (VIDEO::EndFrame).
 extern uint8_t g_len_m1, g_len_rd, g_len_fe, g_len_kemp_hi, g_len_kbmask;
+// Quorum (machines/Quorum.h): 0 = none, 1 = Quorum 64, 2 = Quorum 128, 3 = Quorum 128+.
+// Set by Quorum::reset (CPU::reset); gates one early port dispatch and the DOS trap.
+extern uint8_t g_quorum;
 extern bool g_len_wrap;
 // A GMX romset live (isScorpGmxRomset) — set in CPU::reset, gates the GMX port
 // family, the 2 MB page composition and the ProfROM plane arithmetic.

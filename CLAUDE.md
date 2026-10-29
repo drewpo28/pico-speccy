@@ -16064,6 +16064,57 @@ speccy4ever.speccy.org/_KA.htm (`curl -sk -A Mozilla`).
   0.2d); a 1 MB memory test on KAY1024 and 2 MB on the Phoenix (UMT); turbo with Alt+F2 on and a program writing
   1FFD D2; Reset Service's Gluk clock detect with CMOS + NVRAM on and off.
 
+## Quorum 64 / 128 / 128+ (2026-10-29, NOT hw-tested, `debug/DVp2w-quorum-1.1.1`)
+
+Machine → Quorum. Q64 = romset `R_48K_QU64` of A_48K, Q128/Q128+ = `R_QU128`/`R_QU128P`
+of A_PENT. All machine code in `src/speccy/machines/Quorum.{h,cpp}` (flash; `g_quorum`
+1/2/3 is the one test in Ports input/output, check_trdos and doNMI). Full port/timing
+spec in the header of Quorum.h. Sources: UncleRus/quorum-reborn (KiCad + ports.md),
+ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru).
+- **Q64 timing is derived from the schematic** (line/frame counters, sync flip-flops):
+  14 MHz, 224 T x 312 = 69888 T, INT 32 T at the START OF THE BOTTOM BORDER (V = 192,
+  the Leningrad-1 shape), paper 120 lines + 50 T later (`kPaperDelta64` 12594 over
+  TS_SCREEN_48). Rides Leningrad's cyclic border machine (`g_len_wrap`), no contention,
+  no snow, no floating bus.
+- **Q128/128+ timing is NOT derivable** (inside the ULA-M КБ01ВГ1-2, clocked 8 MHz; the
+  manual says 700k op/s = 3.5 MHz): the Pentagon preset, as Unreal/SpeccyP. UNCONFIRMED.
+- Window 0 is Quorum's (`p3special = 3`): #00 D0 shadow RAM / D5 SYS ROM / D6 write
+  protect (`g_atm_ro`) / D7 TR-DOS ROM vs shadow RAM; writes under visible ROM go to the
+  shadow page (`wrOverlay`). #00 cleared by reset and the NMI ack; a snapshot load sets
+  #A0 (`Quorum::afterSnapshot`, from LoadSnapshot). WD1793 on #80-#83 / #85 (mapped to
+  the Beta SYS register via `Ports::fdcSysWrite`); the Beta #1F family, other even
+  ports, #F7 and the printer are swallowed. #7E extended keyboard = `quorumKeys()`
+  (ESPectrum.cpp, ZXMAK2 map, only keys with no Spectrum-matrix twin; F-keys stay ours).
+- ROMs: QU4V93T4 (Q64) + QU7V42 (Q128), `tools/rom_pack.py quorum` = 1 raw SYS page +
+  5 overlays, 22 967 B; `rom_verify.py` checks them.
+- **Quorum 128 CP/M boots (hw 2026-10-29, owner: NC for Quorum v2.3 on `kv_cpm (System 3.1
+  97).fdi`, `debug/DVp2w-quorum4-1.1.1`).** Four fixes, each found by reading the guest:
+  (1) the SYS ROM's "Boot DOS" (#045F) issues RESTORE with h = 0 and waits for INDEX pulses —
+  a status read steps the WD1793 while #85 D5 (motor) is on (`s_p85`); (2) `.cpm` = raw
+  80x2x5x1024 with IDs 1..5 on every track (`proPlainIds`, the PRO loader otherwise);
+  (3) the 128 follows ZXMAK2 MemoryQuorum256 where sources disagree: #7FFD lock = #00 D6
+  (not #7FFD D5), SYS ROM only with #00 D5 = D7 = 0 and DOS first, screen page 5/7 by
+  #7FFD D3 (#80FD latched, moves nothing); (4) the loader's ~6K T delay between READ SECTOR
+  and the first status read lost every sector after the first (LOST DATA) — Quorum takes
+  the Profi CP/M host-paced transfer in `rvmWD1793Step` (`|| g_quorum`). System 3.2 (`gmd3`, `SYS32.CPM`) needed
+  a fifth: its loader waits for BUSY to RISE after `OUT (#80),#58` (#88A9), so Quorum outside
+  TR-DOS takes the Profi one-shot BUSY on instant Type I commands (`typeI_busy_oneshot`). The loop
+  signature was: white/black border = SYS ROM boot retrying, power-on garbage = page 7
+  left on screen by the loader's #7FFD = #1F. `-DFDD_PORT_TRACE=ON` named (4) in one run.
+  SpeccyP disables fast tape load on Quorum (traps at ROM addresses fire inside CP/M RAM);
+  ours is untouched — first suspect if CP/M breaks with a tape mounted.
+- Not modelled: #80FD's own ULA-M mapping, #00 D7 port switch of the "modified controller" (Unreal and ZXMAK2 both have it commented out).
+- **Quorum 256/512/1024 (2026-10-29, owner confirmed the memory map)**: #7FFD D6 EX_RAM -> page bit 3,
+  D7 E2_RAM -> bit 4, D5 E3_RAM -> bit 5 (the Quorum memory-map table; SpeccyP's D7 -> bit 3 is wrong).
+  The extended bits and RAM_8 reach RAM only while #00 D4 ZX128 = 0 (DD24.3 -> /EXRAMEN -> DD22 /EO):
+  reset = 1024 mode, the port table's ZX128 polarity is inverted. D5 (BROMEN on the schematic) is NOT in
+  the gate: QU7V42, the only ROM, runs BASIC/TR-DOS with D5 = 1. BIOS "Boot DOS" (#04D2) writes #7FFD
+  = #17 and #00 = #E0, whose D6 locks #7FFD on 256..1024 — UMT then sees 128K; authentic (doc + ZXMAK2).
+- Quorum 64: F11 is a WARM reset by the ROM (#399F: (#5C10) = 1 and Caps Shift up -> #1238, RAM kept);
+  hold Caps Shift for a cold one. Original 64 (CP/M): Alt+F11 -> "Disk boot (NMI)" = reset + NMI,
+  quorum48.rom #0066 loads track 0 sector 1 to #8800 and runs it if #8820 = JP.
+- Gluk clock #EFF7/#DFF7/#BFF7 on every Quorum while Devices > CMOS + NVRAM (else #FF / swallowed).
+
 ## ZX Interface 2 cartridges on the 48K (`src/speccy/machines/If2.*`, 2026-10-15, hw-confirmed DVp2: owner "работает" on `debug/DVp2-if2-1.0.10`, not itemised)
 
 A `.rom`/`.bin` of at most 16 KB (F5, zip, Web catalog, Machine > Interface 2 cartridge)

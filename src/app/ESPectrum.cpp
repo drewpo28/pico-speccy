@@ -31,6 +31,7 @@ To Contact the dev team you can write to zxespectrum@gmail.com or
 visit https://zxespectrum.speccy.org/contacto
 */
 
+#include "speccy/machines/Quorum.h"
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Sam/SamClock.h"
 #include "speccy/machines/Sam/SamFdc.h"
@@ -1489,7 +1490,7 @@ void ESPectrum::setup() {
                  !(Config::arch == A_P1024 || Config::arch == A_P512 ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
-                   Config::isLeningrad()));   // no ULA: CPU and video share slots, no wait
+                   Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait
   MemESP::plug16(2, MemESP::ram[2].sync(2), false);
   MemESP::plug16(3, MemESP::ram[MemESP::bankLatch].sync(3), false);
 
@@ -1677,7 +1678,7 @@ void ESPectrum::setup() {
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
-      Config::isEvo48Raster()) {
+      Config::isEvo48Raster() || Config::isQuorumKvRaster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -2265,7 +2266,7 @@ void ESPectrum::reset(uint8_t romInUse) {
                  !(Config::arch == A_P1024 || Config::arch == A_P512 ||
                    Config::arch == A_PENT || Config::arch == A_PROFI ||
                    Config::arch == A_SCORP || Config::arch == A_ATM ||
-                   Config::isLeningrad()));   // no ULA: CPU and video share slots, no wait
+                   Config::isLeningrad() || Config::isQuorum64()));   // no ULA: CPU and video share slots, no wait
   MemESP::plug16(2, MemESP::ram[2].sync(2), false);
   MemESP::plug16(3, MemESP::ram[0].sync(3), false);
 
@@ -2430,7 +2431,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
-      Config::isEvo48Raster()) {
+      Config::isEvo48Raster() || Config::isQuorumKvRaster()) {
     samplesPerFrame = ESP_AUDIO_SAMPLES_48;
     audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
     audioAYDivider = ESP_AUDIO_AY_DIV_48;
@@ -2772,6 +2773,43 @@ static void samKeys(fabgl::Keyboard* Kbd) {
     memcpy(Sam::keys, k, sizeof(k));
 }
 
+// Quorum extended keyboard on #7E (machines/Quorum.h): ext[i] = row A(8+i), bits
+// 0..5 active high. Map from ZXMAK2 KeyboardQuorum, keys with no Spectrum-matrix
+// equivalent only (the generic layer already folds punctuation into SS combos, and
+// F1-F6 stay our hot keys).
+static void quorumKeys(fabgl::Keyboard* Kbd) {
+    using namespace fabgl;
+    struct K { VirtualKey a, b; uint8_t row, bit; };
+    static const K map[] = {
+        {VK_PAGEUP, VK_NONE, 0, 0}, {VK_PAGEDOWN, VK_NONE, 0, 1}, {VK_KP_1, VK_KP_END, 0, 3}, {VK_KP_2, VK_KP_DOWN, 0, 4},
+        {VK_CAPSLOCK, VK_NONE, 1, 0}, {VK_KP_4, VK_KP_LEFT, 1, 3}, {VK_KP_6, VK_KP_RIGHT, 1, 5},
+        {VK_TAB, VK_NONE, 2, 0}, {VK_KP_7, VK_KP_HOME, 2, 3}, {VK_KP_5, VK_KP_CENTER, 2, 4}, {VK_KP_9, VK_KP_PAGEUP, 2, 5},
+        {VK_DELETE, VK_NONE, 3, 2}, {VK_KP_DIVIDE, VK_NONE, 3, 3}, {VK_KP_8, VK_KP_UP, 3, 4}, {VK_KP_MINUS, VK_NONE, 3, 5},
+        {VK_KP_MULTIPLY, VK_NONE, 4, 4},
+        {VK_KP_3, VK_KP_PAGEDOWN, 6, 5},
+        {VK_KP_0, VK_KP_INSERT, 7, 3}, {VK_KP_PERIOD, VK_KP_DELETE, 7, 4}, {VK_KP_PLUS, VK_NONE, 7, 5},
+    };
+    // Only while Alt+~ hands them to the guest (NC, CP/M): F1-F6 (ZXMAK2
+    // KeyboardQuorum), Backspace (ZXMAK2: row 4 bit 3) and the main-block arrows
+    // on the keypad arrows' cells. Off = the generic layer's Caps Shift + 5..8 / 0,
+    // which is what BASIC needs: its #7E decoder (ROM page 3 #394C) never yields the
+    // cursor codes 8..11, and CS+0 plus a #7E key would be three keys = none.
+    static const K fmap[] = {
+        {VK_F1, VK_NONE, 7, 1}, {VK_F2, VK_NONE, 1, 1}, {VK_F3, VK_NONE, 5, 1},
+        {VK_F4, VK_NONE, 2, 1}, {VK_F5, VK_NONE, 3, 1}, {VK_F6, VK_NONE, 4, 5},
+        {VK_BACKSPACE, VK_NONE, 4, 3},
+        {VK_LEFT, VK_NONE, 1, 3}, {VK_RIGHT, VK_NONE, 1, 5}, {VK_UP, VK_NONE, 3, 4}, {VK_DOWN, VK_NONE, 0, 4},
+    };
+    uint8_t k[8] = {};
+    for (const K& e : map)
+        if (Kbd->isVKDown(e.a) || (e.b != VK_NONE && Kbd->isVKDown(e.b)))
+            k[e.row] |= (uint8_t)(1u << e.bit);
+    if (Quorum::fkeysToGuest)
+        for (const K& e : fmap)
+            if (Kbd->isVKDown(e.a)) k[e.row] |= (uint8_t)(1u << e.bit);
+    memcpy(Quorum::ext, k, sizeof(k));
+}
+
 void ESPectrum::processKeyboard() {
   static uint8_t PS2cols[8] = {0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf, 0xbf};
   auto Kbd = PS2Controller.keyboard();
@@ -2959,7 +2997,10 @@ void ESPectrum::processKeyboard() {
                 && KeytoESP != fabgl::VK_F11 && KeytoESP != fabgl::VK_F12)
             // SAM Coupe: F1-F10 only (its keyboard has no nav keys to give).
             || (Z80Ops::isSam && Sam::keysToGuest()
-                && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F10);
+                && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F10)
+            // Quorum: F1-F6 are its #7E keys while Alt+~ says so (quorumKeys).
+            || (g_quorum && Quorum::fkeysToGuest
+                && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F6);
         bool passToZ80 = extKeysOn
             && KeytoESP != fabgl::VK_PAUSE
             && KeytoESP != fabgl::VK_TILDE
@@ -3106,20 +3147,24 @@ void ESPectrum::processKeyboard() {
 
       jShift =
           !(Kbd->isVKDown(fabgl::VK_LSHIFT) || Kbd->isVKDown(fabgl::VK_RSHIFT));
+      // Quorum with Alt+~ on: the arrows and Backspace are its #7E keys
+      // (quorumKeys), not Caps Shift + 5..8 / 0 — NC reads Caps Shift as Shift.
+      const bool qExt = g_quorum && Quorum::fkeysToGuest;
+      const bool kBsZx = Kbd->isVKDown(fabgl::VK_BACKSPACE) && !qExt;
       // Cursor Keys
-      if (Kbd->isVKDown(fabgl::VK_RIGHT)) {
+      if (!qExt && Kbd->isVKDown(fabgl::VK_RIGHT)) {
         jShift = false;
         j[8] = jShift;
       }
-      if (Kbd->isVKDown(fabgl::VK_LEFT)) {
+      if (!qExt && Kbd->isVKDown(fabgl::VK_LEFT)) {
         jShift = false;
         j[5] = jShift;
       }
-      if (Kbd->isVKDown(fabgl::VK_DOWN)) {
+      if (!qExt && Kbd->isVKDown(fabgl::VK_DOWN)) {
         jShift = false;
         j[6] = jShift;
       }
-      if (Kbd->isVKDown(fabgl::VK_UP)) {
+      if (!qExt && Kbd->isVKDown(fabgl::VK_UP)) {
         jShift = false;
         j[7] = jShift;
       }
@@ -3128,7 +3173,7 @@ void ESPectrum::processKeyboard() {
           (Z80Ops::isNext && Config::next_ext_keys) ? fabgl::VK_NONE : VK_ESPECTRUM_TAB;
       // Check keyboard status and map it to Spectrum Ports
       bitWrite(PS2cols[0], 0,
-               (jShift) & (!Kbd->isVKDown(fabgl::VK_BACKSPACE)) &
+               (jShift) & (!kBsZx) &
                    (!Kbd->isVKDown(fabgl::VK_CAPSLOCK))         // Caps lock
                    & (!Kbd->isVKDown(VK_ESPECTRUM_GRAVEACCENT)) // Edit
                    & (!Kbd->isVKDown(tabExt))         // Extended mode
@@ -3187,7 +3232,7 @@ void ESPectrum::processKeyboard() {
       bitWrite(PS2cols[4], 0,
                (!Kbd->isVKDown(fabgl::VK_0)) &
                    (!Kbd->isVKDown(fabgl::VK_RIGHTPAREN)) &
-                   (!Kbd->isVKDown(fabgl::VK_BACKSPACE)) & (j[0]));
+                   (!kBsZx) & (j[0]));
       bitWrite(PS2cols[4], 1,
                !Kbd->isVKDown(fabgl::VK_9) &
                    (!Kbd->isVKDown(fabgl::VK_LEFTPAREN)) & (j[9]));
@@ -3252,6 +3297,7 @@ void ESPectrum::processKeyboard() {
 
       if (Z80Ops::isNext) nextExtKeys(Kbd, PS2cols);
       if (Z80Ops::isSam) samKeys(Kbd);
+      if (g_quorum) quorumKeys(Kbd);
 
       // ── Profi extended keyboard ─────────────────────────────────────────
       // Active when arch=Profi and extended keyboard mode is on.

@@ -56,6 +56,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/Atm.h"        // g_atm_ro (ATM-Turbo ROM windows) + Atm::reset/intEnabled
 #include "speccy/machines/EvoBase.h"    // ZX-Evo font RAM, INT ack
 #include "speccy/machines/Leningrad.h"  // Leningrad-1/-2 frame INT, /WAIT alignment
+#include "speccy/machines/Quorum.h"     // Quorum 64 frame INT, window 0
 #include "speccy/machines/TsConf/TsFastMem.h"
 #include "app/CodeOverlay.h" // TS_OVL_CODE (CPU::tsFrameLoop)
 #include "speccy/core/Rzx.h"
@@ -164,6 +165,11 @@ void CPU::updateStatesInFrame() {
             IntStart = 0;
             IntEnd = isLeningrad1Romset(Config::romSet48) ? Leningrad::kIntLen1 : Leningrad::kIntLen2;
         }
+        // Quorum 64: VSYN at the start of the bottom border, 32 T (Quorum.h).
+        if (isQuorum64Romset(Config::romSet48)) {
+            IntStart = 0;
+            IntEnd = Quorum::kIntLen64;
+        }
     } else if (Config::arch == A_128K || Z80Ops::isALF) {
         // The +2A/+3 (romset R_P3) keeps the 128K frame (70908 T, 228 T/line, screen
         // at 14361) and differs only in the contention PATTERN and which pages are
@@ -229,7 +235,8 @@ void CPU::updateStatesInFrame() {
         IntStart = 0;
         IntEnd = INT_END_SAM;
     } else { // if (Config::arch == A_PENT) - by default
-        statesInFrame = TSTATES_PER_FRAME_PENTAGON;
+        statesInFrame = Config::isQuorumKvRaster() ? TSTATES_PER_FRAME_48
+                                                   : TSTATES_PER_FRAME_PENTAGON;
         IntStart = INT_START_PENTAGON;
         IntEnd = INT_END_PENTAGON;
     }
@@ -323,7 +330,8 @@ void CPU::reset() {
         // Leningrad: no ULA, so no floating bus — L1 answers every odd port with its
         // Kempston, L2's data bus has pull-ups (machines/Leningrad.h).
         Ports::getFloatBusData = isLeningrad1Romset(Config::romSet48) ? &Ports::getFloatBusDataLen1
-                               : isLeningrad2Romset(Config::romSet48) ? &Ports::getFloatBusDataNone
+                               : (isLeningrad2Romset(Config::romSet48) ||
+                                  isQuorum64Romset(Config::romSet48)) ? &Ports::getFloatBusDataNone
                                                                       : &Ports::getFloatBusData48;
         Z80Ops::is48 = true;
         Z80Ops::is128 = false;
@@ -463,7 +471,8 @@ void CPU::reset() {
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
         // Set emulation loop sync target
-        ESPectrum::target = MICROS_PER_FRAME_PENTAGON;
+        ESPectrum::target = Config::isQuorumKvRaster() ? MICROS_PER_FRAME_48
+                                                       : MICROS_PER_FRAME_PENTAGON;
     }
 
     Leningrad::apply();
@@ -481,7 +490,8 @@ void CPU::reset() {
 
     // TR-DOS (betadisk) is mandatory on Pentagon — force on without saving.
     // Scorpion too: its Beta-128 is on board (TR-DOS in the machine's own rom[3]).
-    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm) && !Config::betadisk) Config::betadisk = true;
+    if ((Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion || Z80Ops::isTsconf || Z80Ops::isAtm ||
+         Config::isQuorum64()) && !Config::betadisk) Config::betadisk = true;
 
     // ...and impossible on the +3, which has the uPD765 on #2FFD/#3FFD instead. Beta's
     // #1F/#FF decode and its 0x3D00 ROM trap would both fire inside the +3's own ROMs.
@@ -594,6 +604,8 @@ void CPU::reset() {
     // ATM-Turbo: register file + memory map (overrides ESPectrum::reset's standard
     // ramCurrent assignment, like TsConf::setBanks does).
     if (Z80Ops::isAtm) Atm::reset();
+    // Quorum: window 0 (+ the #7FFD windows on the 128) belongs to Quorum::remap.
+    Quorum::reset();
 
     tstates = 0;
     global_tstates = 0;

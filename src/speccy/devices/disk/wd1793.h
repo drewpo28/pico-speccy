@@ -190,6 +190,9 @@ typedef struct
     // with special sector ID layout — first track (cyl 0 side 0) uses IDs
     // {1,2,3,4,9} (5th sector has ID=9 for CP/M boot), other tracks {1,2,3,4,5}.
     bool IsProFile;
+    // .cpm (Quorum CP/M raw image): the PRO geometry with plain IDs 1..5 on every
+    // track, track 0 included. Read only together with IsProFile.
+    bool proPlainIds;
     // TD0 (Teledisk) flag. Streamed track-by-track from SD to avoid holding the
     // whole (potentially ~1 MB) image in RAM. Packed images (lowercase "td"
     // magic) are LZH-decompressed once into a temp file on the SD card at insert;

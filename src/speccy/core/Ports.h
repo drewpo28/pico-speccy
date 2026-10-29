@@ -76,6 +76,9 @@ public:
     static uint8_t getFloatBusDataNext();
 
     static void FDDStep(bool force);
+    // The Beta-128 SYS register write (#FF: drive / side / HLT / reset), for a
+    // machine whose controller sits on other ports (Quorum #85, machines/Quorum.cpp).
+    static void fdcSysWrite(uint8_t data);
     static void dmaOutput(uint16_t address, uint8_t data);
     static uint8_t dmaInput(uint16_t address);
 

@@ -449,6 +449,11 @@ public:
     static bool isTimex() { return arch == A_48K && isTimexRomset(romSet); }
     // Leningrad-1 / Leningrad-2 (ArchRom.h isLeningradRomset, machines/Leningrad.h).
     static bool isLeningrad() { return arch == A_48K && isLeningradRomset(romSet); }
+    // Quorum 64 (ArchRom.h isQuorum64Romset, machines/Quorum.h): a 48K with no ULA.
+    static bool isQuorum64() { return arch == A_48K && isQuorum64Romset(romSet); }
+    // Quorum-1024+ in its "Quorum" raster (timing diagram, machines/Quorum.h): the
+    // Pentagon renderer on a 312-line 69888 T frame, INT 8 lines later.
+    static bool isQuorumKvRaster() { return arch == A_PENT && romSet == R_QU1024; }
     static bool trdosBaseOwnedByMachine();
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
     // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).

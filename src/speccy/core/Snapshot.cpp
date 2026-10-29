@@ -56,6 +56,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/core/Rzx.h"
 #include "speccy/core/Pss.h"
 #include "speccy/machines/Next/NexLaunch.h"
+#include "speccy/machines/Quorum.h"
 #include "app/Config.h"
 
 #include <sys/unistd.h>
@@ -127,6 +128,9 @@ bool LoadSnapshot(const string& filename, ArchIdx force_arch, RomsetIdx force_ro
         res = Rzx::startPlayback(filename);
         if (!res) s_load_reported = true;
     }
+    // Quorum: no snapshot format carries port #00 — rebuild window 0 around the
+    // #7FFD latches the loader left (BASIC running, TR-DOS from ROM).
+    if (res) Quorum::afterSnapshot();
     if (!nested) g_snapshot_loading_path.clear();
     // Quick-slot name suggestion: a .pss names itself; a quick slot's own file
     // (persistN.*) is not a name at all.

@@ -11,7 +11,8 @@
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/If2.h"
 #include "speccy/roms/atm/atm_banks.h"   // ATM page tables — this TU only (see requestMachine)
-#include "speccy/roms/kay/kay_banks.h"   // Nemo KAY bank tables — this TU only (same reason)
+#include "speccy/roms/kay/kay_banks.h"
+#include "speccy/roms/quorum/quorum_banks.h"   // Quorum ROM roles — this TU only (same reason)   // Nemo KAY bank tables — this TU only (same reason)
 #include "fs/FileUtils.h"
 #include "ESPectrum.h"
 #include "speccy/devices/disk/MB02.h"
@@ -356,6 +357,8 @@ void profRegisterLiveOverlay(uint8_t bank) {
 // them out made the pick's overlay materialise into 16 KB of butter PSRAM for nothing.
 bool Config::trdosBaseOwnedByMachine() {
     if (arch == A_TSCONF || arch == A_ATM) return true;
+    if (arch == A_48K && isQuorum64Romset(romSet48)) return true;     // Quorum: own TR-DOS
+    if (arch == A_PENT && isQuorum128Romset(romSetPent)) return true;
     return arch == A_SCORP && (isScorpGmxRomset(romSetScorp) || romSetScorp == R_SCORP_PROF ||
                                isScorpEvoRomset(romSetScorp) ||
                                isKayRomset(romSetScorp));
@@ -547,6 +550,24 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::rom[0].assign_rom(gb_rom_0_sinclair_48k);
             MemESP::registerOverlay(gb_rom_0_sinclair_48k, gb_overlay_48k_tc2048);
             break;
+        case R_48K_QU64: {
+            // Quorum 64 (machines/Quorum.h): rom[0] = its BASIC-48, rom[4] = its own
+            // TR-DOS 5.04T (controller on #80-#85), both overlays over shipped bases.
+            const quorum_rom_bank_t* t = gb_rom_qu64_banks;
+            MemESP::rom[0].assign_rom(t[0].data);
+            MemESP::registerOverlay(t[0].data, t[0].overlay);
+            MemESP::rom[4].assign_rom(t[1].data);
+            MemESP::registerOverlay(t[1].data, t[1].overlay);
+            break;
+        }
+        case R_48K_QU64O: {
+            // The original Quorum 64: rom[0] = its BASIC-48 (quorum48.rom), nothing
+            // else — TR-DOS / CP/M come from disk into the shadow RAM.
+            const quorum_rom_bank_t* t = gb_rom_qu64o_banks;
+            MemESP::rom[0].assign_rom(t[0].data);
+            MemESP::registerOverlay(t[0].data, t[0].overlay);
+            break;
+        }
         case R_TC2068:
             // Timex TC2068 — its own 16 KB HOME ROM, nothing to do with the Sinclair
             // one (measured: the cheapest overlay against anything in the tree is
@@ -929,6 +950,16 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             MemESP::registerOverlay(gb_rom_1_sinclair_128k, nullptr);
             if (romSet == R_PENT_GLUK) {
                 MemESP::rom[3].assign_rom(gb_rom_gluk);
+            }
+            if (isQuorum128Romset(romSet)) {
+                // Quorum 128 / 128+ (machines/Quorum.h): 0 BASIC-128, 1 BASIC-48,
+                // 2 SYS (menu / tests / monitor / copier), 4 its own TR-DOS.
+                const quorum_rom_bank_t* t = gb_rom_qu128_banks;
+                static const uint8_t slot[4] = { 0, 1, 2, 4 };
+                for (int i = 0; i < 4; i++) {
+                    MemESP::rom[slot[i]].assign_rom(t[i].data);
+                    MemESP::registerOverlay(t[i].data, t[i].overlay);
+                }
             }
         }
         break;
