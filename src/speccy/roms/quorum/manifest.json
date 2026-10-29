@@ -48,7 +48,21 @@
       "len": 2263,
       "runs": 104,
       "diff_bytes": 1627
+    },
+    {
+      "sym": "gb_overlay_qu1024p_48",
+      "base": "gb_rom_1_sinclair_128k",
+      "len": 2204,
+      "runs": 98,
+      "diff_bytes": 1604
+    },
+    {
+      "sym": "gb_overlay_qu1024p_sys",
+      "base": "gb_rom_qu128_sys",
+      "len": 868,
+      "runs": 30,
+      "diff_bytes": 676
     }
   ],
-  "flash_bytes": 25230
+  "flash_bytes": 28302
 }

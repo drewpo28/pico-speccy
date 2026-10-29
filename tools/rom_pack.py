@@ -1398,14 +1398,27 @@ QUORUM_IMAGES = [
     ('qu4v93t4.bin', 0xA1D4CB9A),
     ('qu7v42.bin',   0xE950EEE5),
     ('quorum48.bin', 0x48085B0E),
+    # ROM-MENU QUORUM V.5.0 19.01.2025 for the Quorum-1024+ (github.com/atsidaev/
+    # quorum-rom, the CI build of quorum-1024plus.rom): V4.2 patched to read/keep
+    # #00 D2 (Pentagon raster) / D4 (1024 on), memtest over 1 MB. Same page order.
+    # ONE BYTE PATCHED here: CI image CRC32 8BD858C7 has PATCH_OUT0_5_CODE = IN A,(0) /
+    # AND #14 / OR #0E (page 0 #3D7A) for V4.2's "LD A,#E0 ; fixed!" before JP #5D15,
+    # i.e. Boot DOS entered TR-DOS with D7 = 0 (TR-DOS from the shadow RAM) and D2/D3/D1
+    # set — the disk never booted (hw 2026-10-30). #3D7B #0E -> #E0.
+    # SECOND patch: the menu's "B - 128K-ONLY MODE" printed ON for #00 D4 = 0, which is
+    # 1024 mode (its own memtest only works that way, see Quorum.cpp extRamOn): #3C47
+    # XOR #FF -> OR 0, so ON now means D4 = 1 = 128K only.
+    ('quorum1024p.bin', 0x123C2F8F),
 ]
 QUORUM_ROMSETS = [
     # tag, [(file, page) for roles ...]
     ('qu64',  [('qu4v93t4.bin', 1), ('qu4v93t4.bin', 0)]),                       # 48, dos
     ('qu128', [('qu7v42.bin', 2), ('qu7v42.bin', 3), ('qu7v42.bin', 0), ('qu7v42.bin', 1)]),  # 128, 48, sys, dos
     ('qu64o', [('quorum48.bin', 0)]),                                            # 48
+    ('qu1024p', [('quorum1024p.bin', 2), ('quorum1024p.bin', 3), ('quorum1024p.bin', 0), ('quorum1024p.bin', 1)]),  # 128, 48, sys, dos
 ]
-QUORUM_ROLE_NAMES = {'qu64': ['48', 'dos'], 'qu128': ['128', '48', 'sys', 'dos'], 'qu64o': ['48']}
+QUORUM_ROLE_NAMES = {'qu64': ['48', 'dos'], 'qu128': ['128', '48', 'sys', 'dos'], 'qu64o': ['48'],
+                     'qu1024p': ['128', '48', 'sys', 'dos']}
 
 def pack_quorum():
     out_dir = os.path.join('src', 'speccy', 'roms', 'quorum')
@@ -1441,10 +1454,15 @@ def pack_quorum():
             if len(best[1]) > KAY_RAW_MAX:
                 sym = 'gb_rom_%s_%s' % (tag, names[ri])
                 raws.append((sym, page))
+                bases.append((sym, page))   # a later romset may overlay a raw page
                 d = (sym, 'nullptr')
             else:
-                osym = 'gb_overlay_%s_%s' % (tag, names[ri])
-                ovls.append((osym, best[1], best[0], best[2], best[3]))
+                same = [o for o in ovls if o[2] == best[0] and o[1] == best[1]]
+                if same:                    # an identical page of another romset: share it
+                    osym = same[0][0]
+                else:
+                    osym = 'gb_overlay_%s_%s' % (tag, names[ri])
+                    ovls.append((osym, best[1], best[0], best[2], best[3]))
                 d = (best[0], osym)
             row.append(d)
         used = [b for b, o in row if o != 'nullptr']

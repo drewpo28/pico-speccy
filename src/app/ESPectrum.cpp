@@ -2079,6 +2079,36 @@ void ESPectrum::nextRasterApply() {
     nextRefreshCheckPending = true;
 }
 
+// Quorum 256..1024: the guest flipped #00 D2 (Pentagon / "Quorum" raster — the V5.0
+// menu's "A - PENTAGON MODE"). Called from loop() right after CPU::loop, i.e. after the
+// frame wrap: tstates is the small overshoot, so the frame length can change under it.
+void ESPectrum::quorumRasterApply() {
+    Quorum::rasterPending = false;
+    if (!g_quorum) return;
+    const bool kv = Config::isQuorumKvRaster();
+    CPU::updateStatesInFrame();
+    target = kv ? MICROS_PER_FRAME_48 : MICROS_PER_FRAME_PENTAGON;
+    if (kv) {
+        samplesPerFrame = ESP_AUDIO_SAMPLES_48;
+        audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_48;
+        audioAYDivider = ESP_AUDIO_AY_DIV_48;
+        audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_48;
+        Audio_freq = ESP_AUDIO_FREQ_48;
+        tstatesPerSampleFP = (TSTATES_PER_FRAME_48 << 8) / ESP_AUDIO_SAMPLES_48;
+    } else {
+        samplesPerFrame = ESP_AUDIO_SAMPLES_PENTAGON;
+        audioOverSampleDivider = ESP_AUDIO_OVERSAMPLES_DIV_PENTAGON;
+        audioAYDivider = ESP_AUDIO_AY_DIV_PENTAGON;
+        audioSampleDivider = ESP_AUDIO_SAMPLES_DIV_PENTAGON;
+        Audio_freq = ESP_AUDIO_FREQ_PENTAGON;
+        tstatesPerSampleFP = (TSTATES_PER_FRAME_PENTAGON << 8) / ESP_AUDIO_SAMPLES_PENTAGON;
+    }
+    audioCOVOXDivider = audioAYDivider;
+    VIDEO::quorumRasterSet();
+    VIDEO::pickMachineVideoMode();   // the display frame follows the raster (V-Sync pacing)
+    Debug::log("[QUORUM] raster %s", kv ? "Quorum 312 lines" : "Pentagon 320 lines");
+}
+
 bool ESPectrum::nextRefreshCheckPending = false;
 
 // With V-Sync the display refresh paces the emulation, and a 50 Hz machine on a
@@ -4473,6 +4503,7 @@ void ESPectrum::loop() {
     DivMMC::sdStatTick();
 #endif
     CPU::loop();
+    if (__builtin_expect(Quorum::rasterPending, 0)) quorumRasterApply();
 #if NEXT_TRACE
     const uint32_t wf_c1 = time_us_32();
     uint32_t wf_trace_us = 0;

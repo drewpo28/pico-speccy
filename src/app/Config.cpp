@@ -1,4 +1,5 @@
 #include "Config.h"
+#include "speccy/machines/Quorum.h"
 #include "FlashRoms.h"
 #include "CodeOverlay.h"
 #include "speccy/core/MemESP.h"
@@ -355,6 +356,10 @@ void profRegisterLiveOverlay(uint8_t bank) {
 // never read rom[4] anyway. TS-Conf (TS-BIOS page 1) and ATM / ZX-Evo (their own
 // page tables) carry TR-DOS in their ROM image and never read rom[4] either; leaving
 // them out made the pick's overlay materialise into 16 KB of butter PSRAM for nothing.
+bool Config::isQuorumKvRaster() {
+    return arch == A_PENT && romSet == R_QU1024 && !Quorum::pentRaster();
+}
+
 bool Config::trdosBaseOwnedByMachine() {
     if (arch == A_TSCONF || arch == A_ATM) return true;
     if (arch == A_48K && isQuorum64Romset(romSet48)) return true;     // Quorum: own TR-DOS
@@ -954,7 +959,10 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
             if (isQuorum128Romset(romSet)) {
                 // Quorum 128 / 128+ (machines/Quorum.h): 0 BASIC-128, 1 BASIC-48,
                 // 2 SYS (menu / tests / monitor / copier), 4 its own TR-DOS.
-                const quorum_rom_bank_t* t = gb_rom_qu128_banks;
+                // 256: the same V4.2 ROM (it is the Quorum 256 ROM — "RAM 256 Kbyte").
+                // 1024: ROM-MENU V5.0 of the Quorum-1024+, same page roles.
+                const quorum_rom_bank_t* t = romSet == R_QU1024 ? gb_rom_qu1024p_banks
+                                                                : gb_rom_qu128_banks;
                 static const uint8_t slot[4] = { 0, 1, 2, 4 };
                 for (int i = 0; i < 4; i++) {
                     MemESP::rom[slot[i]].assign_rom(t[i].data);

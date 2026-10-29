@@ -415,6 +415,7 @@ public:
   static bool     snowAllowed();         // ULA snow exists on this machine (Render type)
   static void     pickMachineVideoMode(); // per-machine 50 Hz display mode (v_total) + publish
   static void     nextRasterSet();       // Spectrum Next: raster anchors of the machine timing
+  static void     quorumRasterSet();     // Quorum 256..1024: anchors after a #00 D2 flip (frame boundary)
   static void     tsRenderDrain();       // core0: wait for the core1 queue to empty
   static bool     tsRenderOverlaps(uint32_t addr, uint32_t len); // a RAM write would race a queued line
   static bool     tsWatchedPage(uint32_t page);   // a queued line may read this physical page

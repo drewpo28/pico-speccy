@@ -453,7 +453,9 @@ public:
     static bool isQuorum64() { return arch == A_48K && isQuorum64Romset(romSet); }
     // Quorum-1024+ in its "Quorum" raster (timing diagram, machines/Quorum.h): the
     // Pentagon renderer on a 312-line 69888 T frame, INT 8 lines later.
-    static bool isQuorumKvRaster() { return arch == A_PENT && romSet == R_QU1024; }
+    // Quorum 1024 (the 1024+ board): the "Quorum" raster (its timing diagram) unless the
+    // guest set #00 D2 = Pentagon raster (Quorum::pentRaster). Out of line: reads Quorum.
+    static bool isQuorumKvRaster();
     static bool trdosBaseOwnedByMachine();
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
     // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
