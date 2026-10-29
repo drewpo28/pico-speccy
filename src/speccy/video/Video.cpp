@@ -5389,6 +5389,29 @@ void VIDEO::nextRasterSet() {
     NextReg::applyRasterPaper();
 }
 
+// Quorum 256..1024: #00 D2 picked the other raster. Called between frames
+// (ESPectrum::quorumRasterApply), after the wrap: re-derive the paper/border anchors
+// the way Reset's Pentagon block does and re-arm both machines at the frame start,
+// the screenTopApply shape. Flash.
+void VIDEO::quorumRasterSet() {
+    tStatesPerLine = TSTATES_PER_LINE_PENTAGON;
+    tStatesScreen = TS_SCREEN_PENTAGON;
+    tStatesBorder = isFullBorder ? (isFullBorder240() ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
+                  : TS_BORDER_320x240_PENTAGON;
+    if (Config::isQuorumKvRaster()) {
+        tStatesScreen -= Quorum::kKvRasterShift;
+        tStatesBorder -= Quorum::kKvRasterShift;
+    }
+    if (isFullBorder && !isFullBorder240())
+        tStatesBorder -= ((int)lin_end - 48) * (int)tStatesPerLine;   // Video > Screen position
+    linedraw_cnt  = lin_end;
+    tstateDraw    = tStatesScreen;
+    lastBrdTstate = tStatesBorder;
+    DrawBorder    = bl_live ? &Border_Blank : &TopBorder_Blank;
+    brdChange     = false;
+    brdnextframe  = true;
+}
+
 // ULA snow exists only on the Sinclair ULA machines (48K/128K/+2 and the
 // machines that reuse their beam renderer). One rule for Reset and the
 // Video > Render type hook: the hook used to test only the Pentagons and

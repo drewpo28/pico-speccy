@@ -117,6 +117,7 @@ public:
     static void nextAudioSet();
     static void nextChip2Init();       // TurboSound Next third AY (setup + reset)
     static void nextRasterApply();
+    static void quorumRasterApply();
     // 50/60 Hz of the Next vs the video mode, with V-Sync on: banner if they
     // differ. Raised by a raster change, the V-Sync setting and the first frame.
     static bool nextRefreshCheckPending;

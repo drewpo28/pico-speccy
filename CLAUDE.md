@@ -16104,14 +16104,24 @@ ZXMAK2 Hardware/Quorum, Unreal MM_QUORUM, SpeccyP, the 128+ manual (old-hard.ru)
   SpeccyP disables fast tape load on Quorum (traps at ROM addresses fire inside CP/M RAM);
   ours is untouched — first suspect if CP/M breaks with a tape mounted.
 - Not modelled: #80FD's own ULA-M mapping, #00 D7 port switch of the "modified controller" (Unreal and ZXMAK2 both have it commented out).
-- **Quorum 256/512/1024 (2026-10-29, owner confirmed the memory map)**: #7FFD D6 EX_RAM -> page bit 3,
-  D7 E2_RAM -> bit 4, D5 E3_RAM -> bit 5 (the Quorum memory-map table; SpeccyP's D7 -> bit 3 is wrong).
-  The extended bits and RAM_8 reach RAM only while #00 D4 ZX128 = 0 (DD24.3 -> /EXRAMEN -> DD22 /EO):
-  reset = 1024 mode, the port table's ZX128 polarity is inverted. D5 (BROMEN on the schematic) is NOT in
-  the gate: QU7V42, the only ROM, runs BASIC/TR-DOS with D5 = 1. BIOS "Boot DOS" (#04D2) writes #7FFD
-  = #17 and #00 = #E0, whose D6 locks #7FFD on 256..1024 — UMT then sees 128K; authentic (doc + ZXMAK2).
+- **Quorum 256 = QU7V42** (README of atsidaev/quorum-rom: V4.2 is the Quorum 256 ROM), Pentagon raster,
+  #00 write-only, D2/D4 reserved (ZXMAK2 MemoryQuorum256). **No Quorum 512** (removed 2026-10-30, owner:
+  only the port table names it). The rest of this bullet is the 1024 (Quorum-1024+ board).
+- **Quorum 1024 (2026-10-29/30)**: ROM = ROM-MENU V5.0 19.01.2025 (github.com/atsidaev/
+  quorum-rom CI build CRC32 8BD858C7 with ONE byte patched — #3D7B Boot DOS `OR #0E` -> `OR #E0`, the
+  disk never booted — shipped `quorum1024p.bin` = FBF5B539; sys page = 873 B overlay over the V4.2 sys).
+  #7FFD D6 EX -> page bit 3, D7 E2 -> bit 4, D5 E3 -> bit 5 (memory-map table, owner-confirmed;
+  SpeccyP's D7 -> bit 3 is the Nova 256). #00 reads back; extended bits + RAM_8 only while #00 D4 = 0
+  (schematic). V5.0's menu labelled it the other way ("128K-ONLY MODE: ON" at D4 = 0; patched at #3C47
+  XOR #FF -> OR 0 so the label is now true) — WRONG: its ROM
+  test (#0516, unpatched) ends XOR A / OUT (0),A, so the RAM test always runs with D4 = 0, and with
+  0 = 128K-only page 0Dh aliases page 5 and the test overwrites its own code (`DD1F 74 00` over a
+  striped screen, hw 2026-10-30, owner had picked the ROM polarity first). D2 = 1 -> Pentagon raster,
+  else the 312-line "Quorum" one, applied after the frame (`ESPectrum::quorumRasterApply`). D2/D4
+  survive F11 and the NMI ack; power-on / romset change = 0 (1024, Quorum raster). BIOS "Boot DOS" writes #00 = #E0 (via
+  V4.2 code) whose D6 locks #7FFD on 256..1024: authentic (doc + ZXMAK2).
 - Quorum 64: F11 is a WARM reset by the ROM (#399F: (#5C10) = 1 and Caps Shift up -> #1238, RAM kept);
-  hold Caps Shift for a cold one. Original 64 (CP/M): Alt+F11 -> "Disk boot (NMI)" = reset + NMI,
+  hold Caps Shift for a cold one. Original 64 (CP/M): its NMI (Alt+F10) boots the disk —
   quorum48.rom #0066 loads track 0 sector 1 to #8800 and runs it if #8820 = JP.
 - Gluk clock #EFF7/#DFF7/#BFF7 on every Quorum while Devices > CMOS + NVRAM (else #FF / swallowed).
 

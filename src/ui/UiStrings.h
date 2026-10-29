@@ -339,8 +339,6 @@
 #define TXT_ROM_QU128P_S     "Quorum 128+"
 #define TXT_ROM_QU256        "Quorum 256 (AY)"
 #define TXT_ROM_QU256_S      "Quorum 256"
-#define TXT_ROM_QU512        "Quorum 512 (AY)"
-#define TXT_ROM_QU512_S      "Quorum 512"
 #define TXT_ROM_QU1024       "Quorum 1024 (AY)"
 #define TXT_ROM_QU1024_S     "Quorum 1024"
 #define TXT_ROM_CUSTOM      "Custom"

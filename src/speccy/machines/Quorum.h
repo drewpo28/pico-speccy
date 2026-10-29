@@ -15,18 +15,21 @@
 //   Quorum 128+  (KB01VG1-2); the 128+ adds the AY and an internal drive. ROM
 //                QU7V42 "ROM-MENU QUORUM V4.2": SYS (menu/tests/monitor/copier),
 //                TR-DOS, BASIC-128, BASIC-48.
-//   Quorum 256 / 512 / 1024  romsets R_QU256/512/1024 of A_PENT: the 128+ (AY)
+//   Quorum 256 / 1024  romsets R_QU256/R_QU1024 of A_PENT: the 128+ (AY)
 //                with more RAM. #C000 page = #7FFD D0-D2 | D6 EX_RAM -> bit 3 | D7
 //                E2_RAM -> bit 4 | D5 E3_RAM -> bit 5 (the Quorum memory-map table),
 //                masked by the size; #00 D3 RAM_8 = page 8 at #0000. On these #00 D6
 //                is only the #7FFD lock and D5 B_ROM = 1 write-protects the shadow
-//                RAM; #7E D6/D7 read RAM_8 / SCR_P. The extended page bits (EX/E2/E3
-//                and RAM_8) reach the RAM only while #00 D4 ZX128 = 0 (DD24.3 ->
-//                /EXRAMEN -> DD22 /EO), so a reset is 1024 mode; the port table's
-//                "ZX128 = 0 -> 128 mode" is inverted, the schematic wins. BROMEN on
-//                the same OR is not #00 D5 (QU7V42 runs BASIC with D5 = 1). The 1024 runs the "Quorum" raster
-//                of the Quorum-1024+ timing diagram (kKvRasterShift). Not modelled:
-//                the "Pentagon" raster mode (#00 D2), #80FD D7 EN_RAM.
+//                RAM; #7E D6/D7 read RAM_8 / SCR_P.
+//                256: QU7V42 (it IS the Quorum 256 ROM), Pentagon raster, #00 write-only,
+//                D2/D4 reserved — the ZXMAK2 MemoryQuorum256 machine.
+//                1024 = the Quorum-1024+ (74xx board), ROM-MENU V5.0 (atsidaev/quorum-rom):
+//                the extended page bits (EX/E2/E3 and RAM_8) reach the RAM only while #00
+//                D4 = 0 (schematic; V5.0's menu label is inverted, its memtest proves it);
+//                #00 reads back; D2 picks the Pentagon raster (else the "Quorum" one of its
+//                timing diagram, kKvRasterShift), switched live at the frame boundary; D2/D4
+//                survive F11 and the NMI acknowledge.
+//                Not modelled: #80FD D7 EN_RAM. (No Quorum 512: only the port table names it.)
 //
 // Sources: the KiCad schematics in github.com/UncleRus/quorum-reborn (Quorum 64 drawn
 // by its designer), its resources/Doc/ports.md, UnrealSpeccy MM_QUORUM, ZXMAK2
@@ -85,9 +88,14 @@ constexpr int kIntLen64 = 32;
 constexpr int kKvRasterShift = 16 * 224;
 
 // #00 bits
-constexpr uint8_t F_RAM = 0x01, UP_S = 0x02, RAM_8 = 0x08, ZX128 = 0x10, B_ROM = 0x20, BLK_WR = 0x40, TR_DOS = 0x80;
+constexpr uint8_t F_RAM = 0x01, UP_S = 0x02, PENT = 0x04, RAM_8 = 0x08, ZX128 = 0x10, B_ROM = 0x20, BLK_WR = 0x40, TR_DOS = 0x80;
 
 extern uint8_t p00;
+// A #00 write flipped D2 (256..1024): ESPectrum::loop re-derives the raster after the
+// frame (quorumRasterApply), the Next nextRasterApply pattern.
+extern bool rasterPending;
+// #00 D2 = 1 on a 256..1024: the Pentagon raster instead of the "Quorum" one.
+bool pentRaster();
 extern uint8_t p80FD;
 // Extended keyboard (#7E): ext[i] = keys pressed in row A(8+i), bits 0..5 active HIGH.
 extern uint8_t ext[8];

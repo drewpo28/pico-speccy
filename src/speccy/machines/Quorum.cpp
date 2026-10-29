@@ -18,6 +18,7 @@ uint8_t g_quorum = 0;
 namespace Quorum {
 
 uint8_t p00 = 0;
+bool rasterPending = false;
 uint8_t p80FD = 0;
 uint8_t ext[8] = {};
 bool fkeysToGuest = false;
@@ -36,13 +37,24 @@ static uint8_t s_pages = 8;
 static bool s_orig = false;
 
 static inline bool is128() { return g_quorum >= 2; }
-// /EXRAMEN (DD24.3 = ZX128 OR BROMEN) enables DD22, which drives RAM17-19: in
-// window 3 EX/E2/E3 from #7FFD, elsewhere RAM_8. Disabled = those lines low, i.e. a
-// 128K map. #00 D4 ZX128 = 0 is 1024 mode — the reset state; the port table has the
-// polarity backwards. The schematic's BROMEN is NOT taken as #00 D5: QU7V42 (the only
-// ROM, the 1024 has no other) enters BASIC/TR-DOS with D5 = 1 (#A8 at #008C, #20 at
-// #0336), which would hide the extra RAM from everything under BASIC.
-static inline bool extRamOn() { return !(p00 & ZX128); }
+// The Quorum-1024+ (74xx board, ROM-MENU V5.0): #00 reads back, D2 = Pentagon raster,
+// D4 = 128K-only. The Quorum 256 has neither (D2/D4 reserved, #00 write-only).
+static inline bool is1024() { return g_quorum >= 2 && s_pages == 64; }
+// /EXRAMEN enables DD22, which drives RAM17-19: in window 3 EX/E2/E3 from #7FFD,
+// elsewhere RAM_8. Disabled = those lines low, i.e. a 128K map. #00 D4 ZX128 = 0 is
+// 1024 mode (the schematic: DD24.3 OR -> /EXRAMEN). ROM-MENU V5.0's menu labelled it the
+// other way ("128K-ONLY MODE: ON" at D4 = 0 — our copy is patched, rom_pack.py), but its
+// own memtest settles it: the ROM
+// test procedure (#0516) ends XOR A / OUT (0),A, unpatched, so the RAM test always runs
+// with D4 = 0 — with D4 = 0 as 128K-only, page 0Dh aliases page 5 and the test
+// overwrites its code at #5D1A ("DD1F 74 00" over a striped screen, hw 2026-10-30).
+// #00 D5 is not in the gate: the ROM runs BASIC/TR-DOS with D5 = 1.
+static inline bool extRamOn() { return !is1024() || !(p00 & ZX128); }
+// #00 D2 (Pentagon raster) and D4 (1024) are the menu's settings: V5.0 keeps them in
+// every #00 write, so a reset and the NMI acknowledge leave them (owner's call). Power-on
+// and a romset change clear them (1024, "Quorum" raster). Quorum 1024 only.
+static RomsetIdx s_cfgOwner = R_NONE;
+static inline uint8_t keepBits() { return is1024() ? (uint8_t)(p00 & (PENT | ZX128)) : 0; }
 // The shadow RAM at #0000: page 0 on the 128 (the same page #7FFD can show at
 // #C000, as on the ZXMAK2/Unreal model), a page the 48K map never uses on the 64.
 // #00 D3 RAM_8 puts page 8 there instead (Quorum 256+; folds to 0 on the 128).
@@ -128,7 +140,15 @@ void reset() {
              : (Config::arch == A_PENT && isQuorum128Romset(Config::romSetPent))
                  ? (Config::romSetPent == R_QU128 ? 2 : 3)     // 128+ and up have the AY
                  : 0;
-    p00 = 0;
+    {
+        // Keep D2/D4 across a reset of the same 256..1024 romset (keepBits).
+        const RomsetIdx rs = (g_quorum >= 2) ? Config::romSetPent : R_NONE;
+        // Power-on / romset change: #00 = 0 = 1024 mode, "Quorum" raster.
+        const uint8_t keep = (rs == s_cfgOwner && rs == R_QU1024)
+                                 ? (uint8_t)(p00 & (PENT | ZX128)) : 0;
+        s_cfgOwner = rs;
+        p00 = keep;
+    }
     p80FD = 0;
     s_p7ffd = 0;
     s_pages = (g_quorum >= 2) ? quorumRamPages(Config::romSetPent) : 4;
@@ -146,7 +166,7 @@ void reset() {
 
 void afterSnapshot() {
     if (!g_quorum) return;
-    p00 = B_ROM | TR_DOS;      // BASIC running, TR-DOS from ROM
+    p00 = (uint8_t)(B_ROM | TR_DOS | keepBits());      // BASIC running, TR-DOS from ROM
     s_p7ffd = (uint8_t)((MemESP::bankLatch & 7) | (MemESP::videoLatch ? 0x08 : 0)
                       | (MemESP::romLatch ? 0x10 : 0));
     remap();
@@ -154,7 +174,7 @@ void afterSnapshot() {
 
 void nmiAck() {
     if (!g_quorum) return;
-    p00 = 0;
+    p00 = keepBits();
     remap();
 }
 
@@ -166,12 +186,13 @@ void bootRom(Boot b) {
     MemESP::videoLatch = 0;
     s_p7ffd = 0;
     ESPectrum::trdos = false;
+    const uint8_t keep = keepBits();
     switch (b) {
     case BOOT_SYS:
         p00 = 0;
         break;
-    case BOOT_128:                                    // SYS #0083: #00 = #A8 (D3 RAM_8 ignored)
-        p00 = B_ROM | TR_DOS;
+    case BOOT_128:                                    // SYS #0083 (RUN_BASIC_128): #00 = #A8
+        p00 = B_ROM | TR_DOS | RAM_8;                 // (RAM_8 folds to page 0 on the 128)
         break;
     case BOOT_48:                                     // SYS #0097: #7FFD = #17, #00 = #E0
         if (is128()) {
@@ -191,6 +212,7 @@ void bootRom(Boot b) {
         ESPectrum::trdos = true;
         break;
     }
+    p00 |= keep;
     remap();
 }
 
@@ -239,7 +261,6 @@ static uint8_t extRead(uint16_t address) {
 // The Quorum-1024 (2024) port table says the same: #1F/#3F/#5F/#7F/#FF are the
 // WD1793 with TRD = 0, #80-#85 with TRD = 1. #80-#85 stay decoded under DOS here
 // too, because QU7V42's own TR-DOS is the moved-port one.
-static inline bool is1024() { return g_quorum >= 2 && s_pages == 64; }
 static inline bool betaPort64(uint8_t lo) {
     return ((g_quorum == 1 && !s_orig) || is1024()) && ESPectrum::trdos && (lo & 0x1F) == 0x1F;
 }
@@ -269,6 +290,8 @@ bool portIn(uint16_t address, uint8_t* out) {
         *out = v;
         return true;
     }
+    // #00 reads back on the Quorum-1024+ (V5.0: IN A,(0) / AND #14 / OR x / OUT (0),A).
+    if (is1024() && (lo & 0x99) == 0x00) { *out = p00; return true; }
     if ((lo & 0x99) == 0x18) { *out = extRead(address); return true; }   // #7E
     // Quorum-1024 (2024) port table: #7FFD reads back (0xxx xxxx xxx1 1x0x).
     if (is1024() && (address & 0x801A) == 0x0018) { *out = s_p7ffd; return true; }
@@ -296,6 +319,7 @@ bool portOut(uint16_t address, uint8_t data) {
     const uint8_t lo = (uint8_t)address;
     if (betaPort64(lo)) return false;
     if ((lo & 0x99) == 0x00) {                       // #00 memory control
+        if (is1024() && ((p00 ^ data) & PENT)) rasterPending = true;
         p00 = data;
         remap();
         return true;
@@ -340,6 +364,14 @@ bool portOut(uint16_t address, uint8_t data) {
         return true;
     }
     return false;
+}
+
+// Config::isQuorumKvRaster: the "Quorum" raster unless #00 D2 asks for Pentagon's.
+// D2 is honoured only once Quorum::reset has claimed it for the current romset — CPU::reset
+// derives the frame before Quorum::reset runs, and a stale D2 of another romset must not
+// leak into it.
+bool pentRaster() {
+    return s_cfgOwner == Config::romSetPent && (p00 & PENT) != 0;
 }
 
 }

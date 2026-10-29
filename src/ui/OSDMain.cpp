@@ -2551,7 +2551,9 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     ESPectrum::reset();
                 }
             } else
-            if (g_quorum && !isQuorum64OrigRomset(Config::romSet48)) {
+            // (romSet48 is only the 64's romset while the 64 runs — on a Quorum 128..1024
+            // it is whatever 48K set was last picked.)
+            if (g_quorum && !(g_quorum == 1 && isQuorum64OrigRomset(Config::romSet48))) {
                 // Quorum: window 0 belongs to Quorum::remap (#00), so the generic
                 // reset(n) + romLatch/trdos assignments do nothing there.
                 const bool q64 = g_quorum == 1;

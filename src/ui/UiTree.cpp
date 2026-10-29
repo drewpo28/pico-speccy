@@ -724,7 +724,6 @@ static const Option* mach_quorumOpts(uint8_t& cnt) {
     opts[n++] = { TXT_ROM_QU128P,     NM_MACH(A_PENT, R_QU128P),   TXT_ROM_QU128P_S };
     if (p_extRam()) {
         opts[n++] = { TXT_ROM_QU256,  NM_MACH(A_PENT, R_QU256),    TXT_ROM_QU256_S };
-        opts[n++] = { TXT_ROM_QU512,  NM_MACH(A_PENT, R_QU512),    TXT_ROM_QU512_S };
         opts[n++] = { TXT_ROM_QU1024, NM_MACH(A_PENT, R_QU1024),   TXT_ROM_QU1024_S };
     }
     cnt = n;
