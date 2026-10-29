@@ -31,6 +31,7 @@
 #include "CPU.h"
 #include "app/Col16Trace.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/Quorum.h"   // Quorum DOS edges + NMI acknowledge
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/EvoBase.h"
 #include "speccy/devices/tape/Tape.h"
@@ -890,6 +891,11 @@ IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
     // automap there, and rom[4] is never assigned (hw: the NMI-DOS restore
     // below ran on a stale flag and plugged a garbage rom[4] over the MMU —
     // the NextZXOS loader then CALLed into an empty ROM2 region and wedged).
+    // Quorum: window 0 is Quorum::remap's; only the two DOS edges can act.
+    if (g_quorum) {
+        if (ESPectrum::trdos ? REG_PCh >= 0x40 : REG_PCh == 0x3D) Quorum::trdosEdge(REG_PCh);
+        return;
+    }
     if (Z80Ops::isSam) {            // SAM Coupe: no Beta, no #3Dxx trap — only the
         if (REG_PC == Sam::TAPE_LDSTRT) Sam::tapeTrap();   // ROM 3.0 tape loader (flash)
         return;
@@ -1293,6 +1299,9 @@ Z80_COLD void Z80::doNMI(void) {
         Ports::port1FFD |= 0x02;
         Ports::scorpionRomUpdate();
     }
+    // Quorum: the NMI acknowledge clears #00 (ZXMAK2 BusNmiAck, SpeccyP) — on the
+    // 128 that puts the SYS ROM's NMI service at #0066.
+    if (g_quorum) Quorum::nmiAck();
     // ZX-Evo BaseConf (znmi.v): the M1 at #0066 reads #00 — the FPGA drives a NOP
     // onto the bus (drive_00) — and RAM page #FF replaces window 0 only after that
     // M1 (in_nmi rises at its refresh), until OUT (#BE). So the handler in page #FF
@@ -1321,6 +1330,9 @@ Z80_COLD void Z80::doNMIDOS(void) {
     // ATM-Turbo: the magic-button DOS entry maps rom[] banks over window 0, which on
     // this machine belongs to the memory manager — take a plain NMI instead.
     if (Z80Ops::isAtm) { nmi(); return; }
+    // Quorum: window 0 is the machine's too, and its BASIC NMI handler already
+    // offers TR-DOS (Caps Shift held) — a plain NMI.
+    if (g_quorum) { nmi(); return; }
 
     // Save current state
     nmiDos_savedRomInUse = MemESP::romInUse;

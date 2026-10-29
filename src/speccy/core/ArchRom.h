@@ -90,7 +90,14 @@
     X(R_SAM512_2M,      "SAM512_2M",        "512K + 2 MB") \
     X(R_SAM512_4M,      "SAM512_4M",        "512K + 4 MB") \
     X(R_48K_LEN1,       "48Klen1",          "Leningrad-1")  \
-    X(R_48K_LEN2,       "48Klen2",          "Leningrad-2")
+    X(R_48K_LEN2,       "48Klen2",          "Leningrad-2")  \
+    X(R_48K_QU64,       "48Kqu64",          "Quorum 64")    \
+    X(R_QU128,          "Quorum128",        "Quorum 128")   \
+    X(R_QU128P,         "Quorum128p",       "Quorum 128+")  \
+    X(R_QU256,          "Quorum256",        "Quorum 256")   \
+    X(R_QU512,          "Quorum512",        "Quorum 512")   \
+    X(R_QU1024,         "Quorum1024",       "Quorum 1024")  \
+    X(R_48K_QU64O,      "48Kqu64o",         "Quorum 64 (original)")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -217,6 +224,24 @@ inline bool isDidaktikRomset(RomsetIdx r) { return r == R_48K_DG89; }
 inline bool isLeningrad1Romset(RomsetIdx r) { return r == R_48K_LEN1; }
 inline bool isLeningrad2Romset(RomsetIdx r) { return r == R_48K_LEN2; }
 inline bool isLeningradRomset(RomsetIdx r)  { return r == R_48K_LEN1 || r == R_48K_LEN2; }
+
+// Quorum (Kvorum, Kamil Karimov, Sverdlovsk/Yekaterinburg): Quorum 64 is a ROMSET of
+// A_48K (a 48K with 16 KB of shadow RAM at #0000 and its own disk controller on
+// #80-#85), Quorum 128 / 128+ are romsets of A_PENT (uncontended 128K on a ULA-M gate
+// array; the 128+ adds the AY and an internal drive). Appended at the END of the
+// table (Pss writes the index). Everything that differs is src/speccy/machines/
+// Quorum.{h,cpp}.
+inline bool isQuorum64Romset(RomsetIdx r)  { return r == R_48K_QU64 || r == R_48K_QU64O; }
+// The original Quorum 64: BASIC-48 only (quorum48.rom), no TR-DOS ROM and no DOS
+// signal; the OS is loaded from disk into the shadow RAM, the WD1793 is on #80-#85.
+inline bool isQuorum64OrigRomset(RomsetIdx r) { return r == R_48K_QU64O; }
+inline bool isQuorum128Romset(RomsetIdx r) {
+    return r == R_QU128 || r == R_QU128P || r == R_QU256 || r == R_QU512 || r == R_QU1024;
+}
+// RAM pages (16 KB) of a Quorum 128-family romset: 128/128+ 8, 256 16, 512 32, 1024 64.
+inline uint8_t quorumRamPages(RomsetIdx r) {
+    return r == R_QU1024 ? 64 : r == R_QU512 ? 32 : r == R_QU256 ? 16 : 8;
+}
 
 // "Is the GMX firmware live?" — one romset today (ProfRom GMX v5.44), but the question
 // is asked from a dozen places (CPU::reset's g_scorp_gmx, the butter/traded fallbacks

@@ -81,10 +81,10 @@ string FileUtils::DLS_Path = "/";
 DISK_FTYPE FileUtils::fileTypes[9] = {
     {".pss,.PSS,.sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.rzx,.RZX,.nex,.NEX,.snx,.SNX,.bas,.BAS,.zip,.ZIP",2,2,0,""},
     {".tap,.TAP,.tzx,.TZX,.pzx,.PZX,.csw,.CSW,.wav,.WAV,.mp3,.MP3,.zip,.ZIP",2,2,0,""},
-    {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mgt,.MGT,.sad,.SAD,.zip,.ZIP",2,2,0,""},
+    {".trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.cpm,.CPM,.dsk,.DSK,.mgt,.MGT,.sad,.SAD,.zip,.ZIP",2,2,0,""},
     {".rom,.ROM,.bin,.BIN,.dck,.DCK,.zip,.ZIP",2,2,0,""},
     {".mmc,.MMC,.hdf,.HDF,.hdd,.HDD,.vhd,.VHD,.img,.IMG,.iso,.ISO,.zip,.ZIP",2,2,0,""},
-    {".pss,.PSS,.sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.rzx,.RZX,.nex,.NEX,.snx,.SNX,.bas,.BAS,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.csw,.CSW,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.dsk,.DSK,.mgt,.MGT,.sad,.SAD,.mmc,.MMC,.hdf,.HDF,.vhd,.VHD,.hdd,.HDD,.img,.IMG,.rom,.ROM,.bin,.BIN,.dck,.DCK,.dls,.DLS,.vgm,.VGM,.vgz,.VGZ,.mid,.MID,.midi,.MIDI,.kar,.KAR,.rmi,.RMI,.etc,.ETC,.saa,.SAA,.cop,.COP,.sng,.SNG,.tfc,.TFC,.tfd,.TFD,.tfe,.TFE,.pt3,.PT3,.pt2,.PT2,.stc,.STC,.stp,.STP,.sqt,.SQT,.zxs,.ZXS,.stp2,.STP2,.psc,.PSC,.pt1,.PT1,.asc,.ASC,.ftc,.FTC,.fls,.FLS,.gtr,.GTR,.fxm,.FXM,.psm,.PSM,.vtx,.VTX,.mod,.MOD,.s3m,.S3M,.xm,.XM,.it,.IT,.ay,.AY,.zip,.ZIP",2,2,0,""},
+    {".pss,.PSS,.sna,.SNA,.z80,.Z80,.p,.P,.spg,.SPG,.rzx,.RZX,.nex,.NEX,.snx,.SNX,.bas,.BAS,.tap,.TAP,.tzx,.TZX,.pzx,.PZX,.csw,.CSW,.wav,.WAV,.mp3,.MP3,.trd,.TRD,.scl,.SCL,.udi,.UDI,.fdi,.FDI,.td0,.TD0,.mbd,.MBD,.pro,.PRO,.cpm,.CPM,.dsk,.DSK,.mgt,.MGT,.sad,.SAD,.mmc,.MMC,.hdf,.HDF,.vhd,.VHD,.hdd,.HDD,.img,.IMG,.rom,.ROM,.bin,.BIN,.dck,.DCK,.dls,.DLS,.vgm,.VGM,.vgz,.VGZ,.mid,.MID,.midi,.MIDI,.kar,.KAR,.rmi,.RMI,.etc,.ETC,.saa,.SAA,.cop,.COP,.sng,.SNG,.tfc,.TFC,.tfd,.TFD,.tfe,.TFE,.pt3,.PT3,.pt2,.PT2,.stc,.STC,.stp,.STP,.sqt,.SQT,.zxs,.ZXS,.stp2,.STP2,.psc,.PSC,.pt1,.PT1,.asc,.ASC,.ftc,.FTC,.fls,.FLS,.gtr,.GTR,.fxm,.FXM,.psm,.PSM,.vtx,.VTX,.mod,.MOD,.s3m,.S3M,.xm,.XM,.it,.IT,.ay,.AY,.zip,.ZIP",2,2,0,""},
     {".dls,.DLS",2,2,0,""},  // DISK_DLSFILE (GM.DLS soundbank conversion)
     // DISK_CFGFILE (Debug > Config folders). No extension list on purpose: nothing
     // here is "of interest" over anything else, so an empty list means every name
@@ -168,7 +168,7 @@ string FileUtils::cp1251ToUtf8(const string& s) {
 
 DiskIface FileUtils::ifaceForExt(const string& lcExt) {
     if (lcExt == "trd" || lcExt == "scl" || lcExt == "fdi" || lcExt == "udi"
-     || lcExt == "td0" || lcExt == "pro") return IFACE_BETA;
+     || lcExt == "td0" || lcExt == "pro" || lcExt == "cpm") return IFACE_BETA;
     if (lcExt == "mbd") return IFACE_MB02;
     if (lcExt == "dsk") return IFACE_PLUS3;
     if (lcExt == "mgt" || lcExt == "sad") return IFACE_SAM;

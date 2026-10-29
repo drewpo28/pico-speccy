@@ -248,5 +248,24 @@ for tag, roles in KAY_ROMSETS:
         got = kay_sym(b) if o == 'nullptr' else apply_overlay(kay_sym(b), arr('kay/kay_roms.c', o))
         check('KAY %s role %d' % (tag, ri), got, dump('kay/src/' + f)[i * 16384:(i + 1) * 16384])
 
+# Quorum 64 / 128: the same check through quorum_banks.h, roles as in rom_pack.py
+# QUORUM_ROMSETS, plus each whole source image's CRC.
+print("Quorum romsets (through quorum_banks.h):")
+qu_h = open(os.path.join(R, 'quorum/quorum_banks.h')).read()
+def qu_sym(sym):
+    try: return arr('quorum/quorum_roms.c', sym)
+    except SystemExit: pass
+    return {'gb_rom_4_trdos_504t': base_trdos, 'gb_rom_0_pentagon_128k': base_pent,
+            'gb_rom_1_sinclair_128k': s128_1}[sym]
+from rom_pack import QUORUM_ROMSETS, QUORUM_IMAGES
+for f, crc in QUORUM_IMAGES:
+    check('Quorum %s CRC32' % f, '%08X' % (zlib.crc32(dump('quorum/src/' + f)) & 0xffffffff), '%08X' % crc)
+for tag, roles in QUORUM_ROMSETS:
+    body = qu_h.split('gb_rom_%s_banks[' % tag, 1)[1].split('};', 1)[0]
+    rows = re.findall(r'\{ (\w+), (\w+) \}', body)
+    for ri, ((b, o), (f, i)) in enumerate(zip(rows, roles)):
+        got = qu_sym(b) if o == 'nullptr' else apply_overlay(qu_sym(b), arr('quorum/quorum_roms.c', o))
+        check('Quorum %s role %d' % (tag, ri), got, dump('quorum/src/' + f)[i * 16384:(i + 1) * 16384])
+
 print("\n%s" % ("FAILED: " + ", ".join(fails) if fails else "all ROM images verified"))
 sys.exit(1 if fails else 0)

@@ -90,6 +90,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "hardware/gpio.h"
 #include "drivers/sdcard/sdcard.h"
 #include "speccy/machines/Atm.h"
+#include "speccy/machines/Quorum.h"   // Quorum early port dispatch
 #include "speccy/machines/EvoBase.h"
 #include "speccy/machines/Scorpion.h"
 #include "speccy/machines/Pentagon.h"
@@ -1247,6 +1248,12 @@ template<bool PROFI> __attribute__((always_inline)) inline uint8_t Ports::inputI
     // 3 T short against the raster (Across the Edge on BaseConf, 2026-10-04).
     if (atmPortReadEarly(address, &atmData)) { VIDEO::Draw(3, false); return atmData; }
   }
+  // Quorum: #00 / #7E / #80-#85 / #1F and the partial #FE decode — cold flash
+  // dispatch (machines/Quorum.cpp), ahead of the ULA and Beta-128 branches.
+  if (__builtin_expect(g_quorum != 0, 0)) {
+    uint8_t qData;
+    if (Quorum::portIn(address, &qData)) { VIDEO::Draw(3, false); return qData; }
+  }
   // Scorpion Turbo+ speed toggle. The clock is switched by READING a port, not by
   // writing one: MAME's scorpiontb_state::scorpion_io installs
   //   map(0x0021).mirror(0x3fdc) -> m_turbo = 0, set_clock_scale(1)   // #1FFD-shaped
@@ -2256,6 +2263,8 @@ static inline void profiFdcSysWrite(uint8_t data) {
     ESPectrum::fdd.control |= kRVMWD177XDDEN;
 }
 
+void Ports::fdcSysWrite(uint8_t data) { profiFdcSysWrite(data); }
+
 // GMX ProfROM 0x0100-0x010F read tap: armed only while the SERVICE bank sits at
 // 0x0000 with ROM actually mapped (ZXMAK2 MemoryScorpionProfRom256 gates on SYSEN;
 // MAME taps 0x0100-0x010C when (bank & 3) == SYS && !romram). Recomputed on every
@@ -3143,6 +3152,10 @@ template<bool PROFI> __attribute__((always_inline)) inline void Ports::outputImp
   // + the late 3 T of the I/O cycle, as above: Across the Edge on BaseConf lost 3 T a
   // line through one such OUT, and every border change slid 6 px per line (hw 2026-10-04).
   if (Z80Ops::isAtm && atmPortWriteEarly(address, data)) { VIDEO::Draw(3, false); return; }
+  // Quorum system ports (machines/Quorum.cpp): #00, #7FFD/#80FD on the 128, the
+  // WD1793 on #80-#85; every even port but #FE is swallowed (the board decodes
+  // 1xx11xx0 for the ULA), as are the Beta-128 ports it does not have.
+  if (__builtin_expect(g_quorum != 0, 0) && Quorum::portOut(address, data)) { VIDEO::Draw(3, false); return; }
   // MC146818 RTC (Pentagon/Profi "Mr Gluk" TimeKeeper):
   //   OUT (#DFF7), reg  → latch register index
   //   OUT (#BFF7), data → write selected register
@@ -4485,7 +4498,7 @@ IRAM_ATTR void Ports::pitGenSound(uint8_t *buf, int bufsize) {
 bool g_ula_io_contend = true;
 void Ports::ulaIoContendRecalc() {
     g_ula_io_contend = !(Z80Ops::isPentagon || Z80Ops::isProfi || Z80Ops::isScorpion ||
-                         Config::isLeningrad() ||
+                         Config::isLeningrad() || Config::isQuorum64() ||
                          Z80Ops::isTsconf || (Z80Ops::isAtm && !g_evo_contend) ||
                          (Z80Ops::isNext && !(NEXTVID::contend & 2)));
 }

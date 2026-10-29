@@ -67,6 +67,7 @@ static void ftTraceTick();   // defined in the VDAC2 glue section below
 #include "app/ESPectrum.h"
 #include "speccy/devices/sound/MoonSplit.h"
 #include "speccy/machines/Leningrad.h"   // Leningrad raster anchors + bottom-border flush
+#include "speccy/machines/Quorum.h"      // Quorum 64 raster anchor
 // ZXM-MoonSound wave half on core1 (MoonSplit.h): once per rendered guest
 // line, tell core1 how far the guest has got — one test and one store.
 #if MOONSOUND
@@ -5277,7 +5278,7 @@ void VIDEO::pickMachineVideoMode() {
     {
         switch (Config::baseVideoMode(vmSel)) {
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 2;
                 else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5285,7 +5286,7 @@ void VIDEO::pickMachineVideoMode() {
                 video_mode = 7;
                 break;
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -5302,7 +5303,7 @@ void VIDEO::pickMachineVideoMode() {
                 video_mode = 0;
                 break;
             case Config::VM_640x480_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 2;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 2;
                 else if (Config::arch == A_128K || Config::isEvo128Raster() || nk == 1) video_mode = 3;
                 else video_mode = 1; // Pentagon
                 break;
@@ -5311,7 +5312,7 @@ void VIDEO::pickMachineVideoMode() {
                 break;
             case Config::VM_720x576_169:
             case Config::VM_720x576_50:
-                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) video_mode = 5;
+                if (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) video_mode = 5;
                 else if (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) video_mode = 6;
                 else video_mode = 4; // Pentagon
                 break;
@@ -5327,7 +5328,7 @@ void VIDEO::pickMachineVideoMode() {
     if (Config::isBigVideoMode(vmSel)) {
         // The big modes are per machine too (except the 60 Hz entries):
         // 0 = Pentagon, 1 = 48K/Profi/Scorpion, 2 = 128K — the 720x576 grouping.
-        const int klass = (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || nk == 0) ? 1
+        const int klass = (Config::arch == A_48K || Config::arch == A_PROFI || Config::arch == A_SAM || (Config::arch == A_SCORP && !Config::isScorpEvo()) || (Config::arch == A_ATM && !Config::isEvoBase()) || Config::isEvo48Raster() || Config::isQuorumKvRaster() || nk == 0) ? 1
                         : (Config::arch == A_128K || Config::arch == A_ALF || Config::isEvo128Raster() || nk == 1) ? 2 : 0;
         // VGA runs them at its own pixel clocks (63 / 42 MHz, integer at 252/378/504),
         // so it takes the entry the HDMI mode would use at its own clock.
@@ -5399,7 +5400,7 @@ bool VIDEO::snowAllowed() {
     return Config::arch != A_P1024 && Config::arch != A_P512 && Config::arch != A_PENT &&
            Config::arch != A_PROFI && Config::arch != A_SCORP && Config::arch != A_TSCONF &&
            Config::arch != A_ATM && Config::arch != A_NEXT && !Config::isPlus3() &&
-           !Config::isLeningrad();
+           !Config::isLeningrad() && !Config::isQuorum64();
 }
 
 void VIDEO::Reset() {
@@ -5462,6 +5463,10 @@ void VIDEO::Reset() {
                 tStatesScreen += d;
                 tStatesBorder += d;
             }
+            if (isQuorum64Romset(Config::romSet48)) {
+                tStatesScreen += Quorum::kPaperDelta64;
+                tStatesBorder += Quorum::kPaperDelta64;
+            }
         }
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
@@ -5505,6 +5510,12 @@ void VIDEO::Reset() {
         tStatesScreen = TS_SCREEN_PENTAGON;
         tStatesBorder = isFullBorder ? (isFullBorder240 ? TS_BORDER_360x240_PENTAGON : TS_BORDER_360x288_PENTAGON)
                       : TS_BORDER_320x240_PENTAGON;
+        // Quorum-1024+ "Quorum" raster: INT at line 248 instead of the Pentagon's 240,
+        // same point in the line, frame 312 lines — the paper 16 lines earlier.
+        if (Config::isQuorumKvRaster()) {
+            tStatesScreen -= Quorum::kKvRasterShift;
+            tStatesBorder -= Quorum::kKvRasterShift;
+        }
         VsyncFinetune[0] = 0;
         VsyncFinetune[1] = 0;
 

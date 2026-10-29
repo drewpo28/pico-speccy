@@ -544,6 +544,12 @@ static bool rfd_launch_tmp(string path) {
             Config::last_ram_file = NO_RAM_FILE;
             ESPectrum::reset();
             Atm::cpmBootArmed = true;
+        } else if (g_quorum) {
+            // Quorum: window 0 belongs to its own ROM manager, which bootTrdos()
+            // would bypass. A reset brings up the SYS menu (Q128: "3 - Boot DOS").
+            Config::ram_file = NO_RAM_FILE;
+            Config::last_ram_file = NO_RAM_FILE;
+            ESPectrum::reset();
         } else {
             OSD::bootTrdos();          // cold-boot into TR-DOS so the disk auto-runs
         }

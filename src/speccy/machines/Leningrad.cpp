@@ -32,7 +32,10 @@ void Leningrad::apply() {
     g_len_fe = l1 ? 1 : l2 ? 2 : 0;
     g_len_kemp_hi = l1 ? 0xE0 : 0;
     g_len_kbmask = l2 ? 0x5F : 0xFF;
-    g_len_wrap = l1;
+    // Quorum 64 has the same shape of frame: INT at the start of the bottom border,
+    // the paper 120 lines later (machines/Quorum.h) — the cyclic border machine and
+    // the frame-end paper flush serve it unchanged.
+    g_len_wrap = l1 || (on48 && isQuorum64Romset(Config::romSet));
     VIDEO::len_glitch = l1;     // the DD33 early-/SCR glitch is the board, not an option
 }
 

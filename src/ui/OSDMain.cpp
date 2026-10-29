@@ -184,6 +184,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Quorum.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/disk/DiskSlots.h"
@@ -2252,7 +2253,10 @@ static constexpr int kProfiHkCount = (int)(sizeof(kProfiHkKeys) / sizeof(kProfiH
 void OSD::bootTrdos() {
     Config::ram_file = NO_RAM_FILE;
     Config::last_ram_file = NO_RAM_FILE;
-    if (Config::arch == A_PROFI) {
+    if (g_quorum) {
+        ESPectrum::reset();
+        Quorum::bootRom(Quorum::BOOT_TRDOS);
+    } else if (Config::arch == A_PROFI) {
         ESPectrum::reset(1);
         MemESP::romLatch = 1;
         ESPectrum::trdos = true;
@@ -2464,6 +2468,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             notify(Config::profi_ext_keys ? " XT keyboard ON " : " XT keyboard OFF ", LEVEL_INFO, 900);
             return;
         }
+        if (g_quorum) {
+            Quorum::fkeysToGuest = !Quorum::fkeysToGuest;
+            notify(Quorum::fkeysToGuest ? " Quorum keys (F1-F6, arrows, BS): ON "
+                                        : " Quorum keys (F1-F6, arrows, BS): OFF ", LEVEL_INFO, 900);
+            return;
+        }
         if (Config::arch == A_NEXT) {
             Config::next_ext_keys = !Config::next_ext_keys;
             Config::save();
@@ -2539,6 +2549,21 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     Config::last_ram_file = NO_RAM_FILE;
                     DivMMC::init();
                     ESPectrum::reset();
+                }
+            } else
+            if (g_quorum && !isQuorum64OrigRomset(Config::romSet48)) {
+                // Quorum: window 0 belongs to Quorum::remap (#00), so the generic
+                // reset(n) + romLatch/trdos assignments do nothing there.
+                const bool q64 = g_quorum == 1;
+                uint8_t opt = hotkeyChooser(q64 ? MENU_RESETTO_QUORUM64 : MENU_RESETTO_QUORUM);
+                if (opt > 0) {
+                    if (q64) opt++;                      // no ROM-MENU row on the 64
+                    if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
+                    Config::last_ram_file = NO_RAM_FILE;
+                    ESPectrum::reset();
+                    Quorum::bootRom(opt == 1 ? Quorum::BOOT_SYS
+                                  : opt == 2 ? Quorum::BOOT_TRDOS
+                                  : opt == 3 ? Quorum::BOOT_128 : Quorum::BOOT_48);
                 }
             } else
             if (Z80Ops::is48) {
@@ -6823,6 +6848,8 @@ static void buildEmulatorInfoText() {
             " Frameskip      : %d us\n", Config::throtling * 1000);
     if (Z80Ops::isProfi && Config::profi_ext_keys)
         pos += infoAppend(buf, pos, bufsz, " XT keyboard    : On\n");
+    if (g_quorum && Quorum::fkeysToGuest)
+        pos += infoAppend(buf, pos, bufsz, " Quorum ext keys: On\n");
     if (Z80Ops::isTsconf)
         pos += infoAppend(buf, pos, bufsz, " PS/2 keys      : %s\n",
                           ZxEvoAvr::keysMode() == ZxEvoAvr::KEYS_ON  ? "ON"

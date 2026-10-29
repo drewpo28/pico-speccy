@@ -135,6 +135,9 @@ visit https://zxespectrum.speccy.org/contacto
 #define MENU_RESETTO_DIVMMC "Reset\n" "Soft Reset\n" "Hard Reset\n"
 
 #define MENU_RESETTO_PENT "Reset to\n" "TR-DOS\n" "128K\n" "48K\n"
+// Quorum 128/128+: the SYS ROM's own menu first; the 64 has no SYS ROM.
+#define MENU_RESETTO_QUORUM "Reset to\n" "ROM-MENU\n" "TR-DOS\n" "128K\n" "48K\n"
+#define MENU_RESETTO_QUORUM64 "Reset to\n" "TR-DOS\n" "48K\n"
 
 #define MENU_RESETTO_PENTGLUK "Reset to\n" "Mr Gluk Reset Srvs\n" "TR-DOS\n" "128K\n" "48K\n"
 

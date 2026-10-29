@@ -1226,7 +1226,11 @@ IRAM_ATTR void rvmWD1793Step(rvmWD1793 *wd, uint32_t steps) {
 
   // Hoisted out of the per-byte loop: arch/CPM-bit/fastmode can't change
   // while the Z80 is suspended inside this call.
-  const bool profi_cpm = (Ports::portDFFD & 0x20) && Z80Ops::isProfi;
+  // Quorum too: its CP/M loader (sector 1 at #8886) waits ~6K T in a delay loop
+  // between the READ SECTOR and its first status read, and the burst that catches
+  // up with that lost every sector after the first (LOST DATA, hw trace
+  // 2026-10-29). The real controller is no faster than the CPU here.
+  const bool profi_cpm = ((Ports::portDFFD & 0x20) && Z80Ops::isProfi) || g_quorum;
 
   for (;steps > 0; steps--) {
 
@@ -1682,8 +1686,12 @@ IRAM_ATTR void rvmWD1793Write(rvmWD1793 *wd,uint8_t a,uint8_t value) {
             //   - SYS ROM active (romInUse==0) — boot ROM FDC probe at 0x0710.
             // TR-DOS (romInUse=1, CP/M off) relies on BUSY=0 after instant
             // completion, so the oneshot stays OFF there.
-            if (Z80Ops::isProfi &&
-                ((Ports::portDFFD & 0x20) || MemESP::romInUse == 0))
+            //   - Quorum outside TR-DOS: the System 3.2 CP/M loader steps with
+            //     `OUT (#80),#58` and then waits for BUSY to RISE before it waits
+            //     for it to fall (#88A9) — an instant STEP hung it there.
+            if ((Z80Ops::isProfi &&
+                 ((Ports::portDFFD & 0x20) || MemESP::romInUse == 0)) ||
+                (g_quorum && !ESPectrum::trdos))
               wd->typeI_busy_oneshot = true;
 
             _do(wd);
@@ -2576,7 +2584,10 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
     } else if (Filename.length() >= 4 &&
                (Filename.substr(Filename.length() - 4) == ".pro" ||
                 Filename.substr(Filename.length() - 4) == ".PRO" ||
-                Filename.substr(Filename.length() - 4) == ".Pro")) {
+                Filename.substr(Filename.length() - 4) == ".Pro" ||
+                Filename.substr(Filename.length() - 4) == ".cpm" ||
+                Filename.substr(Filename.length() - 4) == ".CPM" ||
+                Filename.substr(Filename.length() - 4) == ".Cpm")) {
         // PRO file — Profi CP/M raw disk image, no header.
         // Layout per UnrealSpeccy wldr_pro.cpp: 80 cyl × 2 sides × 5 sec × 1024 bytes = 800 KB.
         // First track (cyl 0 side 0) uses special sector IDs {1,2,3,4,9}; other
@@ -2587,6 +2598,10 @@ bool rvmWD1793InsertDisk(rvmWD1793 *wd, unsigned char UnitNum, const std::string
         wd->disk[UnitNum]->IsFDIFile = false;
         wd->disk[UnitNum]->IsMBDFile = true;
         wd->disk[UnitNum]->IsProFile = true;
+        {
+            const char e = Filename[Filename.length() - 3];
+            wd->disk[UnitNum]->proPlainIds = (e == 'c' || e == 'C');
+        }
         wd->disk[UnitNum]->sclDataOffset = 0;
 
         FSIZE_t fsize = f_size(wd->disk[UnitNum]->Diskfile);
@@ -3503,7 +3518,7 @@ void mbdLoadTrack(rvmWD1793 *wd, uint32_t cyl, uint8_t side) {
             // IDs {1,2,3,4,9} per UnrealSpeccy wldr_pro.cpp. All other tracks
             // use standard {1,2,3,4,5}.
             uint8_t sec_id;
-            if (disk->IsProFile && cyl == 0 && side == 0) {
+            if (disk->IsProFile && !disk->proPlainIds && cyl == 0 && side == 0) {
                 static const uint8_t sn0[5] = {1, 2, 3, 4, 9};
                 sec_id = (sec < 5) ? sn0[sec] : (uint8_t)(sec + 1);
             } else {
