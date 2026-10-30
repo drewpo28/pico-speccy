@@ -39,23 +39,33 @@ package (`ep128.hu/Emu/ep128emu_roms-2.0.11.bin`, unpacked with its `decompm2`).
   the system segment (DE = BFxx, window 2 = FF while EXOS runs) and is read through
   the CURRENT paging; read/write buffers are user memory, read through the caller's
   page table at FF:3FFC.
-- F5 / `LOAD ""`: `.com` (and `.bas` on the Enterprise) = switch to the Enterprise
-  if needed (scratch tag + `/tmp/ep_launch.txt` if that reboots), reset, wait for
-  the logo, Space, type `load "NAME"` + Enter.
+- F5 on a `.com` (or `.bas` on the Enterprise) = switch to the Enterprise if needed
+  (scratch tag + `/tmp/ep_launch.txt` if that reboots) and make FILE: serve the
+  file's folder; nothing is started (owner's call): `START` or F1 runs the program.
+  (An empty-name `LOAD` opening the F5 pick was tried and removed the same day —
+  owner: not needed.) `:DIR [folder]` lists the folder, `:CD folder`
+  changes it (`..`, `/`): a patch of the FILE: ROM's command handler
+  (`rom_pack.py ep_fileio_patch`, C11B -> C840) asks trap 0x12 whether the command
+  is ours and prints trap 0x13's characters on channel 0 with EXOS 7.
 - Host bench: Jetpac (JETPAC.COM + .SCR + .PRG) plays, Nebulus (CPC conversion,
   .COM + 26 KB .PRG) plays; both by F5, Jetpac also from a Pentagon.
 - Not wired: Web-catalog launch of a .com.
+- Tried and dropped: starting the file from EXOS's extension actions (action 8
+  refuses EXOS calls with .ILLFN, action 1 never reached our ROM) and typing
+  `load "name"` into the keyboard matrix (owner: no autostart).
 
 ## Phase 2 — Dave sound + EP function keys (2026-10-30, host-tested, NOT hw-tested)
 
 - Sound = ep128emu `Dave::runOneCycle_` in `EpCore::Dave::step`: three tone channels
   (square or 4/5/7-bit / variable-length polynomial counter, highpass, ring mod),
   noise channel (clock source, 7-bit/VL swap, lowpass/highpass/ring mod), DAC mode,
-  stereo 0..63 volumes. Polynomial counters run as LFSRs (ep128emu reads its reversed
+  stereo 0..63 volumes. Bit-exact with ep128emu's `dave.cpp` over 11.1M cycles of
+  Target Renegade's music (offline diff on the same write stream). Polynomial counters run as LFSRs (ep128emu reads its reversed
   160 KB tables in the same order); a change of the VL length keeps the register
   state instead of ep128emu's phase modulo. Tape feedback not modelled.
 - Dave has its own clock (16 T a cycle, 24 with #BF bit 1), caught up at line ends
-  and at every Dave port access; 8 cycles = one 31250 Hz sample, 624 a frame, into a
+  and at every Dave port access; a sample = 128 T (not 8 cycles: with bit 1 set that
+  gave 416 samples a frame and a 50 Hz chop — Target Renegade sets it), 624 a frame, into a
   1.25 KB heap buffer taken at the first reset (`Ep::audio`), mixed unipolar in the
   frame mixer. Code in flash.
 - Host: `SOUND PITCH 37` = 261.6 Hz (middle C), 1 s default duration; PING envelope;
@@ -63,14 +73,119 @@ package (`ep128.hu/Emu/ep128emu_roms-2.0.11.bin`, unpacked with its `decompm2`).
 - F1-F8 = EP row 4 (F4 F8 F3 F6 F5 F7 F2 F1), the SAM ON/OFF/AUTO scheme
   (Alt+~ / PrtScr cycles it, a reset drops the override); AUTO = row 4 read by code
   running from RAM within 2 s. Nebulus's title cheats respond to F1.
-- Owed on hw: the cost of 250 kHz `step()` from flash on core0 (~5000 calls a frame).
+- Dave is event-driven (2026-10-30, NOT hw-tested): between events (a counter
+  running out, a channel output in transition, a noise clock edge) `Dave::skip`
+  advances the counters in closed form and `emit` weights the level over the skipped
+  T; channels that are silent AND read by nothing (`idleMask`) may run out inside a
+  skip (their phase and output are advanced arithmetically, so a later volume write
+  finds them where step() would). The 4/5/7-bit polynomial counters are tables, the
+  variable-length one is stepped lazily. Byte-identical samples and interrupt flags
+  against the per-cycle model on both logged write streams (Target Renegade + Jetpac),
+  in chunks and per cycle, 16 and 24 T; the ep128emu diff still 0. Hw profile before:
+  `Dave::step` 11% + `tick` 4% of core0 on an idle IS-BASIC prompt.
+- Nick draws the display slots in runs between margin events with the mode fixed
+  per run (`spanT<VM>`): ~14k per-slot calls + switches a frame gone. Screenshots
+  byte-identical (Turbo Esprit title, TEXT 80/40).
+- `CPU::epFrameLoop` runs checked only while the INT line is up AND IFF1 is set; a
+  latched source under DI ran every instruction checked. EI/RETI/RETN end the
+  slice (`Ep::intEnable`).
+
+## Phase 3a — 2-colour PIXEL at 16 px a slot (2026-10-30, host-tested, NOT hw-tested)
+
+- `Nick::hiOut` (HI_PX = 736 bytes) takes the line at hi-res resolution: 2-colour
+  PIXEL slots write 16 px, every other slot its 8 lores px twice. `L_HIRES` is
+  reported only when some slot's 16 px really differ from its 8 (a pixel pair split
+  between two different colours), so EXOS's blank PIXEL lines and games drawn in
+  lores pairs do not engage it.
+- A frame with an `L_HIRES` line switches the next frame to the 512 px pair driver
+  (`VIDEO::samPairSync`, shared with SAM mode 3): 12 sticky pair entries
+  (`pairEntry`, nearest colour when full), fb byte = `profi_pair_lookup[l][r]`.
+  A frame without one switches back (`[VID] 512 px pair mode on/off`).
+- Host: `TEXT 80` crisp 80 columns, `TEXT 40` back to the slot path, Target
+  Renegade stays on the slot path. Test image `debug/DVp2w-ep-hires-1.1.1`.
+- Known: one frame of wrong colours at each switch; a palette with more than 12
+  colours on screen in pair mode is approximated.
+
+## Phase 3b — speed (2026-10-30; hw-confirmed DVp2w: step 1 TEXT 80 and Turbo Esprit at 50 FPS, step 2 TEXT 80 IDL 500 -> 2000, step 4 2000 -> 2000-3000; step 3 rode along in the same image as 4)
+
+Measured on `debug/DVp2w-ep-prof7ram-1.1.1` (576p, 504 MHz) before any of it — PROF
+values are PER MILLE, not samples: Turbo Esprit in game 20.2 ms/frame at 98% load =
+Z80 core 22%, Dave 19%, Nick 15%, lineOut 11%, generic accessors 9%, Ep::draw 6%,
+flash memset 3.4%; the EXOS prompt / TEXT 80 at 43.6 ms = 23 FPS, half of it
+`pairEntry` called from flash twice per fb byte. Three builds of the day (fast3,
+prof7, prof7ram) had not touched either.
+
+1. **Nick + lineOut** (`DVp2w-ep-pair1`, hw: TEXT 80 50 FPS "almost no headroom",
+   Turbo Esprit 50 with headroom): `pairEntry` = inline map hit, the miss a noinline
+   flash `pairMiss`; the pair row written as words (x^2 order) with the carve loop
+   only on overlay rows; every slot memset replaced by word stores (`Nick::span` had
+   16 `bl memset` into flash libc), 2-colour pixels by a nibble mask (`px4w`, no
+   branches), the lores->hi duplication 4 words. Host: 300 EXOS boot frames identical
+   in lores and hi-res (`EP_SIM_HI=1` in tools/ep_sim.cpp writes `ep_screen_hi.ppm`).
+2. **Dave** (`DVp2w-ep-dave1`): (a) a `#B4` read catches Dave up only once
+   `CPU::tstates` has reached `s_daveStatT` = the frame T at which the first cycle
+   that can move the status completes (`Dave::statusCycles`: clk1000 + 1, or the sound
+   source channel's phase); 62% of the reads in the random test need no catch-up.
+   (b) the idle / square / noise-idle masks are recomputed only after a register
+   write (`maskDirty`). (c) inaudible, unread noise on the 62.5 kHz clock
+   (`noiseIdle`) no longer bounds a skip at the next clock edge: `skip(k, idle, nz)`
+   counts the falling edges inside k (`clk62Phase + 1 | 5 + 8q`), steps the 7-bit or
+   VL counter that many times and leaves st[3]/prv[3] as step() would. (d) `#B5`
+   keeps the keyboard copy, `#B4` does not; the F-key poll stamp is `time_us_32`.
+   **Found on the way, a bug of the skip since Phase 2**: step() recomputes
+   `st[c] = st1[c] ^ rm` and `st[3] = st2_3 ^ rm` EVERY cycle, and right after a
+   register write (channel stopped, an rm/lp bit flipped) st and st1 differ for one
+   step — the skip held the old level. tick() now requires st == its next value for
+   every non-idle channel and the noise, and skip() syncs an idle channel's st from
+   st1 (prv = step k-1's st). `tools`-less differential test (session scratch
+   `dave_diff.cpp`: old vs new vs a step()-only reference over 2000 random register
+   programs, ticks in random chunks and with the status gate): the OLD skip diverged
+   from the reference in 94% of programs, the new one in 0, samples, state and `#B4`
+   reads alike. Hw (owner, `DVp2w-ep-dave1`): TEXT 80 IDL 500 -> 2000 us; the
+   `[EPPERF] dave` figure itself was not read.
+
+3. **Nick writes the framebuffer row itself** (`DVp2w-ep-nick1`, NOT hw-tested):
+   `Nick::line(out, aux, visLo, visHi)` emits 8 bytes a slot **in the fb's word order**
+   (pixels 4q+2, 4q+3, 4q, 4q+1 — `x2w`, a 16-bit rotate; the nibble masks are
+   rotated once, not the pixels) through `outMap` (Ep's `PAL_SLOT0 + q7`, kept per
+   LPB palette entry in `palO[]`), so `lineRun` hands it `row - x0` and only the two
+   edge slots (a 360-px row starts 4 px into slot 8) go through `aux` and a 4-byte
+   copy. The second pass over the line (`lineOut`'s fbc + x^2 swizzle) is gone;
+   `lineOutSlow` remains for pair frames (hi buffer RAW: `setOutMap(nullptr)` while
+   `sam_pair_live`) and rows carrying an overlay rect. Host: `tools/ep_sim.cpp`
+   un-rotates (`out[x ^ 2]`), `EP_SIM_CLIP=1` / `EP_SIM_MAP=1` drive the clipped
+   row + aux path and a non-identity map — EXOS boot frames byte-identical in all
+   four combinations; a second differential test (session scratch `nick_diff.cpp`,
+   old vs new Nick on 300 random LPTs covering every video x colour x alt-bit
+   combination, 120000 lines, 4035 of them hi-res) found 0 differences.
+
+4. **The accessor fast path** (`DVp2w-ep-mem1`; hw-confirmed DVp2w the same evening,
+   owner: TEXT 80 IDL 2000-3000 us, up from 2000 after step 2): `EpFast.h` — the
+   wait-state arithmetic of `Ep::draw`/`drawOpcode` as inline `tickRd`/`tickOp`
+   over `Ep::lineT` / `frac57` / `wait1Rd` / `wait1Op` (set by #BF and reset), and
+   `MEMGATES_EP` = bit 6 of the gate word's atm_ro byte (`Ep::mapWin` ORs it into
+   the read-only window bits). `Z80Ops::peek8/poke8/peek16/poke16` test it on the
+   gate word they already hold, right before the generic tail call, and go to
+   `ep_peek8` & co (RAM leaves: tick + `ramCurrent` pointer, the RO/absent window
+   dropping the write, `tsPoke8Store`'s dirty hook); `fetchOpcode` and the fetch
+   inside `exec_nocheck` take `tickOp` + a pointer read. Memory breakpoints fall
+   back to the generic path (`readbyte` checks them); `Ep::draw` still serves the
+   internal cycles and that path. A same-page 16-bit access now pays its +1 wait
+   per BYTE (the generic Draw(6) skipped it) — closer to ep128emu, ~0.1% of the
+   frame. Cost on every other machine: one AND+branch on the generic path of each
+   accessor. Host build (`build-all/host`, `arch=EP` in the root's
+   `.config/pico-speccy/1.1.0-host/host/storage.nvs`): EXOS boots to IS-BASIC, a
+   typed line executes.
+
+Removed with the round: the `EP_HOT_IN_RAM` CMake experiment (the hot path in SRAM —
+~2.5 ms a frame before the restructure, nothing measurable after it; the code is
+leaf-like now and SRAM is the scarcer resource). Left: `Ep::draw` glue for the
+internal cycles (addressOnBus) — small.
 
 ## Next
 
-1. PIXEL 2-colour at its real 16 px a slot (pair driver, as Timex/SAM mode 3); the
-   EXOS 80-column text is this mode.
-2. Joysticks (internal + EXT1/EXT2 on #B6).
-3. Loading software: `.com`/`.bas` straight into memory through EXOS; EXDOS (WD1770
+1. Joysticks (internal + EXT1/EXT2 on #B6).
+2. Loading software: `.com`/`.bas` straight into memory through EXOS; EXDOS (WD1770
    on #10-#18, FAT12 images); tape.
-4. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
-5. Web catalog adapter, .pss.
+3. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
+4. Web catalog adapter, .pss.

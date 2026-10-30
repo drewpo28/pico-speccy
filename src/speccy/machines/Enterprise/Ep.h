@@ -17,16 +17,30 @@
 // every access / on M1 only / none) outside VRAM; a VRAM access waits for a Nick
 // slot (ep128emu videoMemoryWait).
 //
-// Video: each Nick line is rendered when the CPU passes its end (the tick in
-// draw/drawOpcode), at 8 lores px a slot. Framebuffer row = lines since the end of
-// VSYNC - top; the byte is PAL_SLOT0 + the Nick colour with red's LSB dropped
-// (128 colours in hardware slots 16..143, Video epPaletteFlush).
+// Video: each Nick line is rendered when the CPU passes its end (the tick in the
+// memory accessors — EpFast.h inline, Ep::draw for the rest), 8 lores px a slot
+// written by Nick straight into the framebuffer row in its word order (Nick::outMap
+// = PAL_SLOT0 + the Nick colour with red's LSB dropped: 128 colours in hardware
+// slots 16..143, Video epPaletteFlush). Row = lines since the end of VSYNC - top.
 #pragma once
 
 #include <stdint.h>
 #include <string>
+#if PERF_TRACE || HOST_BUILD
+#include "pico/time.h"
+#endif
 
 namespace Ep {
+#if PERF_TRACE || HOST_BUILD
+    // Per-frame wall-clock phases (us) and counts, printed by frameEnd every 50 frames.
+    struct Perf {
+        uint32_t z80, line, dave, out, fe, frame;     // us: Z80 slices (incl. the ticks), Nick lines, Dave, line output, frameEnd, whole frame
+        uint32_t slices, chk, halt, lines, dcyc, dsteps, dwr, dpoll;
+        uint32_t t0;
+    };
+    extern Perf perf;
+    static inline uint32_t perfNow() { return (uint32_t)time_us_64(); }
+#endif
     // Keyboard matrix rows 0..9, active low (ep128emu config/ep_keys.cfg layout).
     // Written by the host keyboard scan (ESPectrum::processKeyboard).
     extern uint8_t keys[10];
@@ -41,6 +55,7 @@ namespace Ep {
     void portOut(uint16_t address, uint8_t data);
 
     bool intLine();                  // Z80Ops::isActiveINT
+    void intEnable();                // EI / RETI / RETN set IFF1: end the slice if INT is up
     // Dave's output for the frame that just ended (EndFrame), 0..252 a side,
     // unipolar; false = no buffer (no heap at reset).
     bool audio(const uint8_t** l, const uint8_t** r);
@@ -65,13 +80,10 @@ namespace Ep {
     // FILE: device (EpFile.cpp) — Z80::decodeED calls fileTrap on ED FE.
     void fileTrap();
     void fileReset();
-    // Launching a .COM / .BAS from the browser: switch to the Enterprise if needed,
-    // reset, type LOAD "name" (EXOS reads it through FILE: from the file's folder).
+    // F5 on a .COM / .BAS: switch to the Enterprise if needed and make FILE: serve
+    // that file's folder; the user then types LOAD "name". Nothing is started.
     bool launchFile(const std::string& path);
-    void launchResume();             // setup(): a launch that rebooted the board
-    void launchTick();               // EndFrame: drives the typing
-    extern uint8_t inj[10];          // keys the typing holds (active low, ANDed with keys)
-    int logoFrames();
+    void launchResume();             // setup(): the folder of a switch that rebooted the board
 
     // EP F1-F8 (keyboard row 4): ON = the host F1-F8 are the guest's, OFF = our
     // hotkeys, AUTO = the guest's while code running from RAM reads row 4 (a program
@@ -79,5 +91,5 @@ namespace Ep {
     enum KeysMode : int8_t { KEYS_AUTO = -1, KEYS_OFF = 0, KEYS_ON = 1 };
     bool     keysToGuest();
     KeysMode cycleKeysMode();        // session only; returns the new mode
-    void     clearKeysOverride();    // machine reset                // consecutive frames that showed a 256-colour PIXEL line
+    void     clearKeysOverride();    // machine reset
 }

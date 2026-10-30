@@ -36,6 +36,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "CPU.h"
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Enterprise/Ep.h"
+#include "speccy/machines/Enterprise/EpFast.h"   // the EP accessor fast path (MEMGATES_EP)
 #include "app/ESPectrum.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/core/Ports.h"
@@ -1072,10 +1073,25 @@ __attribute__((noinline)) void CPU::samFrameLoop(uint64_t _loop_t0, bool pbbp, i
 // FLASH: the RAM-resident loop pays one test.
 __attribute__((noinline)) void CPU::epFrameLoop(uint64_t _loop_t0, bool pbbp, int nbp) {
     bool halted = false;
+#if PERF_TRACE
+#define EPL_T(v) const uint32_t v = Ep::perfNow()
+#define EPL_ADD(f, v) Ep::perf.f += Ep::perfNow() - (v)
+#define EPL_CNT(f) Ep::perf.f++
+#else
+#define EPL_T(v)
+#define EPL_ADD(f, v)
+#define EPL_CNT(f)
+#endif
     while (tstates < statesInFrame) {
         Ep::catchUp();
-        if (Ep::intLine()) {
+        // Checked only while the line can be taken: a source latched with IFF1
+        // clear (a DI section, or a handler that never acknowledged it) used to
+        // run every instruction checked — IS-BASIC after a game, 22 FPS on hw.
+        // EI / RETI / RETN end the slice (Ep::intEnable).
+        if (Ep::intLine() && Z80::isIFF1()) {
+            EPL_T(t0);
             Z80::execute();
+            EPL_ADD(z80, t0); EPL_CNT(chk);
             BREAKPOINTS
             continue;
         }
@@ -1083,13 +1099,19 @@ __attribute__((noinline)) void CPU::epFrameLoop(uint64_t _loop_t0, bool pbbp, in
         if (next > statesInFrame) next = statesInFrame;
         if (Z80::isHalted()) {
             if (!halted) { tstates_active = tstates; halted = true; }
+            EPL_T(t0);
             haltAdvanceTo(next);
+            EPL_ADD(z80, t0); EPL_CNT(halt);
         } else {
             stFrame = next;
+            EPL_T(t0);
             Z80::exec_nocheck();
+            EPL_ADD(z80, t0); EPL_CNT(slices);
             if (stFrame == 0) {
                 if (!halted) { tstates_active = tstates; halted = true; }
+                EPL_T(t1);
                 haltAdvanceTo(next);
+                EPL_ADD(z80, t1); EPL_CNT(halt);
             }
         }
         BREAKPOINTS
@@ -1423,6 +1445,7 @@ static inline void gsDmaPoke8(uint16_t address, uint8_t value) {
 // path) is a tail call into a noinline helper, so the hot path runs without a
 // push/pop pair — that prologue was a third of the fast path's instructions.
 static IRAM_ATTR __attribute__((noinline)) uint8_t peek8_generic(uint16_t address);
+static IRAM_ATTR __attribute__((noinline)) uint8_t ep_peek8(uint16_t address);
 static IRAM_ATTR __attribute__((noinline)) uint8_t peek8_tick(uint16_t address) {
     VIDEO::tsDrawTick();
     return MemESP::ramCurrent[address >> 13][address & 0x1FFF];
@@ -1456,7 +1479,17 @@ IRAM_ATTR uint8_t Z80Ops::peek8(uint16_t address) {
         if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return peek8_tick(address);
         return MemESP::ramCurrent[address >> 13][address & 0x1FFF];
     }
+    if (__builtin_expect((gates & MEMGATES_EP) != 0, 0)) return ep_peek8(address);
     return peek8_generic(address);
+}
+// Enterprise (EpFast.h): the wait-state tick inline and a plain pointer read — the
+// four windows are plugged pointers (RAM, ROM, the 0xFF page), nothing overlays them.
+// Memory breakpoints go the generic way (readbyte checks them).
+static IRAM_ATTR __attribute__((noinline)) uint8_t ep_peek8(uint16_t address) {
+    if (__builtin_expect(Config::numMemReadBP != 0, 0)) return peek8_generic(address);
+    const uint8_t slot = address >> 13;
+    Ep::tickRd(MemESP::ramContended[slot]);
+    return MemESP::ramCurrent[slot][address & 0x1FFF];
 }
 static IRAM_ATTR __attribute__((noinline)) uint8_t peek8_generic(uint16_t address) {
     // Leningrad-2 /WAIT on a RAM data read (Leningrad.h).
@@ -1516,6 +1549,11 @@ IRAM_ATTR uint8_t Z80Ops::fetchOpcode() {
     if (g_ts_fastrd == 2) {   // Next below 0x4000 (see exec_nocheck)
         tsFastTick(4);
         if (DivMMC::enabled) return DivMMC::nextOpcode(pc);
+        return MemESP::ramCurrent[pg][pc & 0x1fff];
+    }
+    if (__builtin_expect((g_memgates.w & MEMGATES_EP) != 0, 0)) {   // Enterprise (EpFast.h)
+        Ep::tickOp(MemESP::ramContended[pg]);
+        C16_FE(pc);
         return MemESP::ramCurrent[pg][pc & 0x1fff];
     }
     // Scorpion Yellow-PCB even-M1 (see the g_scorp_even_m1 note in CPU.h): an M1
@@ -1639,6 +1677,7 @@ static inline void tsPoke8Store(uint16_t address, uint8_t value) {
     p[address & 0x1FFF] = value;
 }
 static IRAM_ATTR __attribute__((noinline)) void poke8_generic(uint16_t address, uint8_t value);
+static IRAM_ATTR __attribute__((noinline)) void ep_poke8(uint16_t address, uint8_t value);
 static IRAM_ATTR __attribute__((noinline)) void poke8_tick(uint16_t address, uint8_t value) {
     VIDEO::tsDrawTick();
     tsPoke8Store(address, value);
@@ -1681,7 +1720,17 @@ IRAM_ATTR void Z80Ops::poke8(uint16_t address, uint8_t value) {
         tsPoke8Store(address, value);
         return;
     }
+    if (__builtin_expect((gates & MEMGATES_EP) != 0, 0)) return ep_poke8(address, value);
     return poke8_generic(address, value);
+}
+// Enterprise: a window showing ROM or an absent segment (g_atm_ro bit) drops the
+// byte, RAM takes it with the page's dirty hook (tsPoke8Store's rule).
+static IRAM_ATTR __attribute__((noinline)) void ep_poke8(uint16_t address, uint8_t value) {
+    if (__builtin_expect(Config::numMemWriteBP != 0, 0)) return poke8_generic(address, value);
+    const uint8_t slot = address >> 13;
+    Ep::tickRd(MemESP::ramContended[slot]);
+    if ((g_atm_ro >> (address >> 14)) & 1) return;
+    tsPoke8Store(address, value);
 }
 static IRAM_ATTR __attribute__((noinline)) void poke8_generic(uint16_t address, uint8_t value) {
     // Spectrum Next, a write below 0x4000 into the Layer 2 write window (port
@@ -1715,6 +1764,7 @@ static inline uint16_t tsPeek16Load(uint16_t address) {   // lsb first, like the
     return (uint16_t)((msb << 8) | lsb);
 }
 static IRAM_ATTR __attribute__((noinline)) uint16_t peek16_generic(uint16_t address);
+static IRAM_ATTR __attribute__((noinline)) uint16_t ep_peek16(uint16_t address);
 static IRAM_ATTR __attribute__((noinline)) uint16_t peek16_tick(uint16_t address) {
     VIDEO::tsDrawTick();
     return tsPeek16Load(address);
@@ -1742,7 +1792,19 @@ IRAM_ATTR uint16_t Z80Ops::peek16(uint16_t address) {
         if (__builtin_expect(CPU::tstates >= VIDEO::ts_line_t, 0)) return peek16_tick(address);
         return tsPeek16Load(address);
     }
+    if (__builtin_expect((gates & MEMGATES_EP) != 0, 0)) return ep_peek16(address);
     return peek16_generic(address);
+}
+// Enterprise: two byte cycles, each with its own wait (lsb first).
+static IRAM_ATTR __attribute__((noinline)) uint16_t ep_peek16(uint16_t address) {
+    if (__builtin_expect(Config::numMemReadBP != 0, 0)) return peek16_generic(address);
+    const uint16_t a1 = (uint16_t)(address + 1);
+    const uint8_t s0 = address >> 13, s1 = a1 >> 13;
+    Ep::tickRd(MemESP::ramContended[s0]);
+    const uint8_t lsb = MemESP::ramCurrent[s0][address & 0x1FFF];
+    Ep::tickRd(MemESP::ramContended[s1]);
+    const uint8_t msb = MemESP::ramCurrent[s1][a1 & 0x1FFF];
+    return (uint16_t)((msb << 8) | lsb);
 }
 static IRAM_ATTR __attribute__((noinline)) uint16_t peek16_generic(uint16_t address) {
 
@@ -1794,6 +1856,7 @@ static inline void tsPoke16Store(uint16_t address, RegisterPair word) {
     tsPoke8Store((uint16_t)(address + 1), word.byte8.hi);
 }
 static IRAM_ATTR __attribute__((noinline)) void poke16_generic(uint16_t address, RegisterPair word);
+static IRAM_ATTR __attribute__((noinline)) void ep_poke16(uint16_t address, RegisterPair word);
 static IRAM_ATTR __attribute__((noinline)) void poke16_tick(uint16_t address, RegisterPair word) {
     VIDEO::tsDrawTick();
     tsPoke16Store(address, word);
@@ -1829,7 +1892,13 @@ IRAM_ATTR void Z80Ops::poke16(uint16_t address, RegisterPair word) {
         tsPoke16Store(address, word);
         return;
     }
+    if (__builtin_expect((gates & MEMGATES_EP) != 0, 0)) return ep_poke16(address, word);
     return poke16_generic(address, word);
+}
+static IRAM_ATTR __attribute__((noinline)) void ep_poke16(uint16_t address, RegisterPair word) {
+    if (__builtin_expect(Config::numMemWriteBP != 0, 0)) return poke16_generic(address, word);
+    ep_poke8(address, word.byte8.lo);
+    ep_poke8((uint16_t)(address + 1), word.byte8.hi);
 }
 static IRAM_ATTR __attribute__((noinline)) void poke16_generic(uint16_t address, RegisterPair word) {
     uint8_t page = address >> 13;

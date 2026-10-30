@@ -6,6 +6,8 @@
 #include "EpCore.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 #include "app/Config.h"
 #include "app/Buffer.h"
@@ -15,9 +17,14 @@
 #include "speccy/z80/CPU.h"
 #include "speccy/z80/z80.h"
 #include "pico/time.h"
-#include "speccy/z80/MemGates.h"   // g_atm_ro: bit n = drop writes to CPU window n
+#include "speccy/z80/MemGates.h"   // g_atm_ro: bit n = drop writes to CPU window n, ATM_RO_EP = the EP fast path
+#include "EpFast.h"
 #include "speccy/video/Video.h"
 #include "speccy/roms/ep/ep_roms.h"
+
+#if PERF_TRACE && PERF_HIST
+extern void pcprof_dump();   // PcProf.cpp (global: a declaration inside namespace Ep would not link)
+#endif
 
 namespace Ep {
 
@@ -28,20 +35,30 @@ static EpCore::Dave s_dave;
 static const uint8_t* s_exos = nullptr;     // 32K: segments 0, 1
 static const uint8_t* s_basic = nullptr;    // 16K: segment 4
 static const uint8_t* s_fileio = nullptr;   // 16K: segment 0x10 (FILE:, EpFile.cpp)
-static bool     s_logoLine = false;         // this frame showed a 256-colour PIXEL line
-static int      s_logoFrames = 0;
 static bool     s_ep64 = false;             // RAM = FC..FF only
 static uint8_t* s_ff = nullptr;             // a 16K page of 0xFF for absent segments
 static uint8_t  s_ro = 0, s_vram = 0;       // windows read-only / showing VRAM
-static uint32_t s_lineT = Ep::T_PER_LINE;   // frame T of the next line end
-static uint32_t s_frac = 0;                 // wait states: carried 1/57 T
+#if PERF_TRACE || HOST_BUILD
+Perf perf;
+#define EPT_BEGIN(v) const uint32_t v = perfNow()
+#define EPT_ADD(f, v) perf.f += perfNow() - (v)
+#else
+#define EPT_BEGIN(v)
+#define EPT_ADD(f, v)
+#endif
+// The fast accessors' state (EpFast.h): the next line end, the wait-state fraction
+// and the #BF wait flags. Written here, read inline from CPU.cpp / Z80_JLS.cpp.
+uint32_t lineT = Ep::T_PER_LINE;
+uint32_t frac57 = 0;
+uint8_t  wait1Rd = 1, wait1Op = 1;
 static int      s_row = 0;                  // lines since the end of VSYNC
 static bool     s_prevVs = false;
 static uint32_t s_daveT = 16;               // frame T at which the next Dave cycle ends
 static uint8_t* s_aud = nullptr;            // AUD_CAP left samples, then AUD_CAP right
 static constexpr int AUD_CAP = 640;
 static int8_t   s_keysOvr = -1;             // KeysMode override, -1 = AUTO
-static uint32_t s_fkPollMs = 0;             // last read of row 4 from RAM code
+static uint32_t s_fkPollUs = 0;             // last read of row 4 from RAM code (time_us_32)
+static bool     s_fkPolled = false;
 
 void bindRoms() {
     s_ep64 = (Config::romSet == R_EP64);
@@ -80,8 +97,6 @@ uint8_t* segPtr(uint8_t seg) {
 
 bool pcInFileRom(uint16_t pc) { return s_dave.page[pc >> 14] == 0x10; }
 
-int logoFrames() { return s_logoFrames; }
-
 static void mapWin(int w, uint8_t seg) {
     const uint8_t bit = (uint8_t)(1u << w);
     s_ro &= (uint8_t)~bit;
@@ -92,7 +107,7 @@ static void mapWin(int w, uint8_t seg) {
     } else if (const uint8_t* p = segPtr(seg)) mapRo(w, p);
     else                  mapRo(w, ffPage());
     MemESP::ramContended[w * 2] = MemESP::ramContended[w * 2 + 1] = (s_vram & bit) != 0;
-    g_atm_ro = s_ro;
+    g_atm_ro = (uint8_t)(s_ro | ATM_RO_EP);
 }
 
 static void pageCb(void*, int w, uint8_t seg) { mapWin(w, seg); }
@@ -101,7 +116,7 @@ static void irqCb(void*, bool st) { s_dave.setInt1(st); }
 // ---------------------------------------------------------------------------
 // Video
 
-static inline uint8_t q7(uint8_t c) { return (uint8_t)((c & 0x3F) | ((c >> 1) & 0x40)); }
+static __attribute__((always_inline)) inline uint8_t q7(uint8_t c) { return (uint8_t)((c & 0x3F) | ((c >> 1) & 0x40)); }
 
 uint32_t slotRgb(uint8_t i) {
     // Back to a Nick colour: red's two upper bits from bits 0 and 3 (i bit 0, 3),
@@ -111,84 +126,228 @@ uint32_t slotRgb(uint8_t i) {
     return EpCore::colourRgb(c);
 }
 
-static void lineOut(const uint8_t* px) {
+// ---------------------------------------------------------------------------
+// 2-colour PIXEL mode at its real 16 px a slot (EXOS's 80-column text): a frame that
+// showed such a line is drawn through the packed-pair driver (VIDEO::samPairSync,
+// shared with SAM mode 3) from the next frame on. A fb byte = two output pixels,
+// each a pair-palette entry: 12 of them allocated sticky to the Nick colours the
+// frame uses (a full table gives the nearest), 12..15 the ZX colours the overlays
+// draw with. A colour first seen mid-frame is exact from the next frame on.
+static constexpr int PAIR_DYN = 12;
+struct PairState {
+    alignas(4) uint8_t hi[EpCore::Nick::HI_PX];   // the line at 16 px a slot (word stores)
+    uint8_t map[256];                  // Nick colour -> entry, 0xFF = not placed
+    int16_t col[PAIR_DYN];             // Nick colour per entry, -1 = free
+};
+static PairState* s_ps = nullptr;      // heap, taken the first time a hi-res line shows
+static bool       s_hiSeen = false;    // this frame showed a 2-colour PIXEL line
+
+static void pairReset() {
+    memset(s_ps->map, 0xFF, sizeof(s_ps->map));
+    for (int i = 0; i < PAIR_DYN; i++) s_ps->col[i] = -1;
+}
+
+// A Nick colour the map has not placed yet: allocate or approximate. Cold (flash):
+// it runs once per new colour per frame; the hit is the inline pairEntry below.
+static __attribute__((noinline)) uint8_t pairMiss(uint8_t c) {
+    int freeAt = -1;
+    for (int i = 0; i < PAIR_DYN; i++) if (s_ps->col[i] < 0) { freeAt = i; break; }
+    if (freeAt >= 0) { s_ps->col[freeAt] = c; return s_ps->map[c] = (uint8_t)freeAt; }
+    const uint32_t want = EpCore::colourRgb(c);
+    const int wr = (want >> 16) & 255, wg = (want >> 8) & 255, wb = want & 255;
+    int best = 0; uint32_t bd = 0xFFFFFFFFu;
+    for (int i = 0; i < PAIR_DYN; i++) {
+        const uint32_t h = EpCore::colourRgb((uint8_t)s_ps->col[i]);
+        const int dr = ((h >> 16) & 255) - wr, dg = ((h >> 8) & 255) - wg, db = (h & 255) - wb;
+        const uint32_t d = (uint32_t)(dr * dr + dg * dg + db * db);
+        if (d < bd) { bd = d; best = i; }
+    }
+    return s_ps->map[c] = (uint8_t)best;   // approximated: stays so until the next reset
+}
+static __attribute__((always_inline)) inline uint32_t pairEntry(const uint8_t* map, uint8_t c) {
+    const uint8_t e = map[c];
+    return e != 0xFF ? e : pairMiss(c);
+}
+
+
+// Nick colour -> framebuffer byte, as a table Nick applies itself (Nick::setOutMap):
+// its slot output IS the framebuffer row's content. 256 B of heap beside the audio.
+static uint8_t* s_fbMap = nullptr;
+
+// The fb row this raster line lands on, or nullptr. The EXOS picture: 27 text rows
+// x 9 = 243 lines from line 38 after VSYNC (the first is its status line), 40 slots
+// from slot 11. A 240-row fb starts at the picture's first line (the last 3, blank
+// in a 9-line character row, fall off); a 288-row one shows 24 lines of border.
+static __attribute__((always_inline)) inline uint8_t* fbRow(int& y) {
     auto& vga = VIDEO::vga;
-    if (!vga.frameBuffer) return;
-    const int xres = (int)vga.xres, yres = (int)vga.yres;
-    // The EXOS picture: 27 text rows x 9 = 243 lines from line 38 after VSYNC (the
-    // first is its status line), 40 slots from slot 11. A 240-row fb starts at the
-    // picture's first line (the last 3, blank in a 9-line character row, fall off);
-    // a 288-row one shows 24 lines of border above it.
+    if (!vga.frameBuffer) return nullptr;
+    const int yres = (int)vga.yres;
     int top = 38 - (yres - 240) / 2;
     if (top < 0) top = 0;
-    const int y = s_row - top;
-    if (y < 0 || y >= yres) return;
-    uint8_t* row = vga.frameBuffer[y];
-    if (!row) return;
-    int x0 = (EpCore::Nick::OUT_PX - xres) / 2, n = xres;
-    int dx = 0;
-    if (x0 < 0) { dx = -x0; x0 = 0; n = EpCore::Nick::OUT_PX; }
-    // Overlays drawn after EndFrame (F8 stats, volume box, LED panel, notify banner)
-    // own their rects: leave those bytes alone.
-    int cx[8][2];
-    const int nc = VIDEO::rowCarves(y, cx);
-    for (int i = 0; i < n; i++) {
-        const int x = dx + i;
-        bool carved = false;
-        for (int k = 0; k < nc && !carved; k++) carved = x >= cx[k][0] && x < cx[k][1];
-        if (!carved) row[x ^ 2] = (uint8_t)(PAL_SLOT0 + q7(px[x0 + i]));
+    y = s_row - top;
+    if (y < 0 || y >= yres) return nullptr;
+    return vga.frameBuffer[y];
+}
+
+// The slow lines: a 2-colour PIXEL frame (pair driver) and rows carrying an overlay
+// (F8 stats, volume box, LED panel, notify banner — their rects are left alone).
+// `px` is the line in fb order, fbMap applied (lores) / `s_ps->hi` the hi-res line.
+static void lineOutSlow(uint8_t* row, int y, const uint8_t* px, int nc, int (*cx)[2]) {
+    const int xres = (int)VIDEO::vga.xres;
+    const int x0 = (EpCore::Nick::OUT_PX - xres) / 2;   // >= 0: the fb is never wider than the line
+    auto carved = [&](int x) { for (int k = 0; k < nc; k++) if (x >= cx[k][0] && x < cx[k][1]) return true; return false; };
+    (void)y;
+    if (VIDEO::sam_pair_live && s_ps) {
+        // 2 output pixels a fb byte: hi-res pixels 2x and 2x+1 of the line
+        const uint8_t* pl = &VIDEO::profi_pair_lookup[0][0];
+        const uint8_t* map = s_ps->map;
+        const uint8_t* h = s_ps->hi + 2 * x0;
+#define EP_PAIR(k) ((uint32_t)pl[(pairEntry(map, h[(k) * 2]) << 4) | pairEntry(map, h[(k) * 2 + 1])])
+        if (nc == 0) {
+            uint32_t* d = (uint32_t*)row;              // x^2 order: pixels x+2, x+3, x, x+1
+            for (int i = 0; i < xres; i += 4, h += 8)
+                *d++ = EP_PAIR(2) | (EP_PAIR(3) << 8) | (EP_PAIR(0) << 16) | (EP_PAIR(1) << 24);
+            return;
+        }
+        for (int x = 0; x < xres; x++, h += 2)
+            if (!carved(x)) row[x ^ 2] = (uint8_t)EP_PAIR(0);
+#undef EP_PAIR
+        return;
     }
+    // px is already in fb order with x0 a multiple of 4: byte i of the row = px[x0 + i]
+    for (int i = 0; i < xres; i++)
+        if (!carved(i ^ 2)) row[i] = px[x0 + i];
 }
 
 static void lineRun() {
-    uint8_t px[EpCore::Nick::OUT_PX];
-    const int fl = s_nick.line(px);
+    EPT_BEGIN(t0);
+    alignas(4) uint8_t px[EpCore::Nick::OUT_PX];
+    const bool pair = VIDEO::sam_pair_live && s_ps;
+    s_nick.hiOut = pair ? s_ps->hi : nullptr;
+    int y = 0;
+    uint8_t* row = fbRow(y);
+    int cx[8][2];
+    const int nc = row ? VIDEO::rowCarves(y, cx) : 0;
+    int fl;
+    if (row && nc == 0 && !pair) {
+        // Nick writes the row itself: slots whose 8 px lie inside the row go
+        // straight in, the two edge slots (a 360-wide row starts 4 px into slot 8)
+        // land in px and their visible words are copied below.
+        const int xres = (int)VIDEO::vga.xres;
+        const int x0 = (EpCore::Nick::OUT_PX - xres) / 2;          // 4 at 360, 24 at 320
+        const int visLo = EpCore::Nick::FIRST + (x0 + 7) / 8;
+        const int visHi = EpCore::Nick::FIRST + (x0 + xres) / 8;
+        fl = s_nick.line(row - x0, px, visLo, visHi);
+        const int lo = (visLo - EpCore::Nick::FIRST) * 8, hi = (visHi - EpCore::Nick::FIRST) * 8;
+        for (int p = x0; p < lo; p += 4) __builtin_memcpy(row + (p - x0), px + p, 4);
+        for (int p = hi; p < x0 + xres; p += 4) __builtin_memcpy(row + (p - x0), px + p, 4);
+    } else {
+        fl = s_nick.line(px);
+        if (row) { EPT_BEGIN(t1); lineOutSlow(row, y, px, nc, cx); EPT_ADD(out, t1); }
+    }
+    if (fl & EpCore::Nick::L_HIRES) s_hiSeen = true;
     const bool vs = (fl & EpCore::Nick::L_VSYNC) != 0;
-    if (s_nick.displayEnabled && s_nick.videoMode == 1 && s_nick.colorMode == 3) s_logoLine = true;
     if (s_prevVs && !vs) s_row = 0;
     s_prevVs = vs;
-    if (!vs) lineOut(px);
     if (s_row < 1000) s_row++;
+    EPT_ADD(line, t0);
+#if PERF_TRACE || HOST_BUILD
+    perf.lines++;
+#endif
 }
 
 // Dave runs on its own clock (250 kHz = 16 T a cycle): to the line ends, and to the
 // exact T of every Dave register access, so a sampled-sound write lands in its cycle.
+// Frame T from which a #B4 read needs Dave caught up: the first cycle that can move
+// the status completes at s_daveT + (statusCycles - 1) * cycleT. Kept beside every
+// move of s_daveT and every register write (a keyboard-polling game reads #B4
+// ~1500 times a frame; before this each read ran Dave to its own T).
+static uint32_t s_daveStatT = 0;
+static __attribute__((always_inline)) inline void daveStatRecalc() {
+    s_daveStatT = s_daveT + (s_dave.statusCycles() - 1) * (uint32_t)s_dave.cycleT();
+}
+
 static void daveTo(uint32_t t) {
     if (t < s_daveT) return;
+    EPT_BEGIN(t0);
     const uint32_t ct = (uint32_t)s_dave.cycleT();
     const uint32_t n = (t - s_daveT) / ct + 1;
     s_dave.tick((int)n);
     s_daveT += n * ct;
+    daveStatRecalc();
+    EPT_ADD(dave, t0);
+#if PERF_TRACE || HOST_BUILD
+    perf.dcyc += n;
+#endif
 }
 
 void catchUp() {
-    while (CPU::tstates >= s_lineT) {
+    while (CPU::tstates >= lineT) {
         lineRun();
-        daveTo(s_lineT);
-        s_lineT += T_PER_LINE;
+        daveTo(lineT);
+        lineT += T_PER_LINE;
     }
 }
 
-uint32_t nextLineT() { return s_lineT; }
+uint32_t nextLineT() { return lineT; }
 
 void frameEnd() {
+#if PERF_TRACE && PERF_HIST
+    { static int n; if (++n >= 50) { n = 0; ::pcprof_dump(); } }
+#endif
+    EPT_BEGIN(tfe);
     catchUp();
     daveTo(CPU::statesInFrame);
     s_daveT -= CPU::statesInFrame;
+    daveStatRecalc();
     if (s_aud) {                                // a short frame: hold the last sample
         const int n = s_dave.outN;
         const uint8_t l = n ? s_aud[n - 1] : 0, r = n ? s_aud[AUD_CAP + n - 1] : 0;
         for (int i = n; i < AUD_CAP; i++) { s_aud[i] = l; s_aud[AUD_CAP + i] = r; }
     }
     s_dave.outN = 0;
-    s_logoFrames = s_logoLine ? s_logoFrames + 1 : 0;
-    s_logoLine = false;
-    s_lineT -= CPU::statesInFrame;
+    // The next frame's resolution: 16 px a slot if this one showed a hi-res line.
+    bool want = s_hiSeen;
+    s_hiSeen = false;
+    if (want && !s_ps) {
+        s_ps = (PairState*)tryMalloc(sizeof(PairState));
+        if (s_ps) pairReset();
+    }
+    if (!s_ps) want = false;
+    if (want && !VIDEO::sam_pair_live) pairReset();
+    uint32_t rgb[PAIR_DYN];
+    for (int i = 0; i < PAIR_DYN; i++)
+        rgb[i] = (want && s_ps->col[i] >= 0) ? EpCore::colourRgb((uint8_t)s_ps->col[i]) : 0;
+    VIDEO::samPairSync(want, rgb);
+    // In a pair frame the hi-res buffer must carry RAW Nick colours (pairEntry keys
+    // on them); the lores output is scratch then. Else Nick writes fb bytes.
+    s_nick.setOutMap(VIDEO::sam_pair_live ? nullptr : s_fbMap);
+    lineT -= CPU::statesInFrame;
+    EPT_ADD(fe, tfe);
+#if PERF_TRACE || HOST_BUILD
+    {
+        static int n; static uint32_t tLast;
+        const uint32_t now = perfNow();
+        if (tLast) perf.frame += now - tLast;
+        tLast = now;
+        perf.dsteps = s_dave.steps;
+        if (++n >= 50) {
+            const Perf& p = perf;
+            Debug::log("[EPPERF] /fr us: frame %u z80 %u (own %u) line %u (out %u) dave %u fe %u | slices %u chk %u halt %u lines %u dave cyc %u steps %u wr %u poll %u",
+                       p.frame / 50, p.z80 / 50, (p.z80 - p.line - p.dave) / 50, p.line / 50, p.out / 50, p.dave / 50, p.fe / 50,
+                       p.slices / 50, p.chk / 50, p.halt / 50, p.lines / 50, p.dcyc / 50, p.dsteps / 50, p.dwr / 50, p.dpoll / 50);
+            memset(&perf, 0, sizeof perf); s_dave.steps = 0; n = 0;
+        }
+    }
+#endif
 }
 
 void renderFrame() {}
 
 bool intLine() { return s_dave.irq(); }
+void intEnable() {
+    if (s_dave.irq() && CPU::stFrame > CPU::tstates) CPU::stFrame = CPU::tstates ? CPU::tstates : 1;
+}
 
 bool audio(const uint8_t** l, const uint8_t** r) {
     if (!s_aud) return false;
@@ -201,7 +360,7 @@ bool audio(const uint8_t** l, const uint8_t** r) {
 
 bool keysToGuest() {
     if (s_keysOvr >= 0) return s_keysOvr != 0;
-    return s_fkPollMs && (to_ms_since_boot(get_absolute_time()) - s_fkPollMs) < 2000;
+    return s_fkPolled && (uint32_t)(time_us_32() - s_fkPollUs) < 2000000u;
 }
 
 KeysMode cycleKeysMode() {
@@ -213,7 +372,7 @@ KeysMode cycleKeysMode() {
     return (KeysMode)s_keysOvr;
 }
 
-void clearKeysOverride() { s_keysOvr = -1; s_fkPollMs = 0; }
+void clearKeysOverride() { s_keysOvr = -1; s_fkPolled = false; }
 
 // ---------------------------------------------------------------------------
 // Reset
@@ -225,18 +384,21 @@ void reset() {
     s_dave.pageCb = pageCb;
     s_nick.reset();
     s_dave.reset(true);
+    if (!s_fbMap && (s_fbMap = (uint8_t*)tryMalloc(256)) != nullptr)
+        for (int c = 0; c < 256; c++) s_fbMap[c] = (uint8_t)(PAL_SLOT0 + q7((uint8_t)c));
+    s_nick.setOutMap(s_fbMap);                  // no heap: raw Nick colours (a wrong picture, no crash)
     if (!s_aud) s_aud = (uint8_t*)tryCalloc(2 * AUD_CAP);   // no heap: no sound
     s_dave.outL = s_aud;
     s_dave.outR = s_aud ? s_aud + AUD_CAP : nullptr;
     s_dave.outCap = s_aud ? AUD_CAP : 0;
     s_dave.outN = 0;
     s_daveT = (uint32_t)s_dave.cycleT();
+    daveStatRecalc();
     fileReset();
-    s_logoFrames = 0;
-    s_logoLine = false;
     memcpy(s_dave.keys, keys, sizeof(keys));
-    s_lineT = T_PER_LINE;
-    s_frac = 0;
+    lineT = T_PER_LINE;
+    frac57 = 0;
+    wait1Rd = s_dave.waitMode() == 0; wait1Op = s_dave.waitMode() <= 1;
     s_row = 0;
     s_prevVs = false;
     MemESP::romInUse = 0;
@@ -252,35 +414,16 @@ void reset() {
 // so slot boundaries are where tstates * 57 is a multiple of 256; the arithmetic
 // is in 1/57 T and the fraction is carried (ep128emu keeps half cycles).
 
-static inline uint32_t t57() { return CPU::tstates * 57u + s_frac; }
-static inline uint32_t up256(uint32_t v) { return (v + 255u) & ~255u; }
-
-// `pre`: T before the sync point, `post`: T (x57) after it, `base`: the access's own T.
-static inline void vramWait(uint32_t pre57, uint32_t post57, uint32_t base) {
-    const uint32_t s = t57();
-    const uint32_t end = up256(s + pre57) + post57;
-    uint32_t extra = end - s;
-    extra = extra > base * 57u ? extra - base * 57u : 0;
-    s_frac += extra;
-    CPU::tstates += s_frac / 57u;
-    s_frac %= 57u;
-}
-
+// VIDEO::Draw / Draw_Opcode: the internal cycles (addressOnBus, n != 3) and the
+// generic accessor path (memory breakpoints set) — the inline twins in EpFast.h
+// serve the ordinary accesses.
 void draw(unsigned int n, bool contended) {
-    if (__builtin_expect(CPU::tstates >= s_lineT, 0)) catchUp();
-    if (n == 3) {                               // a memory access (internal cycles pass n != 3)
-        if (contended) vramWait(2 * 57, 57 + 82, 3);
-        else if (s_dave.waitMode() == 0) CPU::tstates += 1;
-    }
+    if (n == 3) { tickRd(contended); return; }  // a memory access
+    if (__builtin_expect(CPU::tstates >= lineT, 0)) catchUp();
     CPU::tstates += n;
 }
 
-void drawOpcode(bool contended) {
-    if (__builtin_expect(CPU::tstates >= s_lineT, 0)) catchUp();
-    if (contended) vramWait(86, 142 + 81, 4);
-    else if (s_dave.waitMode() <= 1) CPU::tstates += 1;
-    CPU::tstates += 4;
-}
+void drawOpcode(bool contended) { tickOp(contended); }
 
 // ---------------------------------------------------------------------------
 // Ports (low byte only): Dave #A0..#BF, Nick #80..#8F.
@@ -288,11 +431,21 @@ void drawOpcode(bool contended) {
 uint8_t portIn(uint16_t address) {
     const uint8_t lo = (uint8_t)address;
     if (lo >= 0xA0 && lo <= 0xBF) {
-        catchUp();
-        daveTo(CPU::tstates);
-        if (lo == 0xB5 && s_dave.kbRow == 4 && segIsRam(s_dave.page[Z80::getRegPC() >> 14]))
-            s_fkPollMs = to_ms_since_boot(get_absolute_time());
-        for (int i = 0; i < 10; i++) s_dave.keys[i] = keys[i] & inj[i];
+#if PERF_TRACE || HOST_BUILD
+        perf.dpoll++;
+#endif
+        // Only a read whose value depends on Dave's clock (the interrupt status)
+        // needs the catch-up: the keyboard rows, the page registers and the rest
+        // are plain latches. A keyboard-polling loop reads #B5 ~1500 times a frame.
+        if (lo == 0xB4) {
+            if (CPU::tstates >= lineT) catchUp();
+            if (CPU::tstates >= s_daveStatT) daveTo(CPU::tstates);   // else the latches are current
+        } else if (lo == 0xB5) {
+            if (s_dave.kbRow == 4 && segIsRam(s_dave.page[Z80::getRegPC() >> 14])) {
+                s_fkPollUs = time_us_32(); s_fkPolled = true;
+            }
+            memcpy(s_dave.keys, keys, sizeof(keys));
+        }
         return s_dave.read(lo);
     }
     if ((lo & 0xF0) == 0x80) {
@@ -305,7 +458,30 @@ uint8_t portIn(uint16_t address) {
 
 void portOut(uint16_t address, uint8_t data) {
     const uint8_t lo = (uint8_t)address;
-    if (lo >= 0xA0 && lo <= 0xBF) { catchUp(); daveTo(CPU::tstates); s_dave.write(lo, data); return; }
+    if (lo >= 0xA0 && lo <= 0xBF) {
+#if PERF_TRACE || HOST_BUILD
+        perf.dwr++;
+#endif
+        // Timed registers: the sound (#A0-#AF), the interrupt latches (#B4) and
+        // #BF (the Dave clock itself). The keyboard row (#B5) and the page
+        // registers (#B0-#B3) are latches a later catch-up reads as they are.
+        if (lo <= 0xAF || lo == 0xB4 || lo == 0xBF) {
+            if (CPU::tstates >= lineT) catchUp();
+            daveTo(CPU::tstates);
+        }
+#if HOST_BUILD
+        // Tests: PICOSPECCY_DAVELOG=file logs each sound-register write as
+        // "cycle reg value" (reg 0..0x0F, cycles since reset) for an offline diff
+        // against ep128emu's Dave.
+        static FILE* dl = [] { const char* f = getenv("PICOSPECCY_DAVELOG"); return f ? fopen(f, "w") : nullptr; }();
+        if (dl && ((lo & 0x1F) < 0x10 || (lo & 0x1F) == 0x14 || (lo & 0x1F) == 0x1F))
+            fprintf(dl, "%u %u %u\n", s_dave.cycles, lo & 0x1F, data);
+#endif
+        s_dave.write(lo, data);
+        if (lo <= 0xAF || lo == 0xB4 || lo == 0xBF) daveStatRecalc();   // source / clock / latches moved
+        if (lo == 0xBF) { wait1Rd = s_dave.waitMode() == 0; wait1Op = s_dave.waitMode() <= 1; }
+        return;
+    }
     if ((lo & 0xF0) == 0x80) {
         catchUp();
         vramWait(0, 83, 0);

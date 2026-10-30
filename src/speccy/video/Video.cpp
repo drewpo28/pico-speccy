@@ -2290,6 +2290,7 @@ static void samPaletteFlush() {
 // Enterprise: the 128 colours of Ep::slotRgb own hardware slots 16..143 (the line
 // renderer writes Ep::PAL_SLOT0 + colour). Programmed at Reset and on every rebuild.
 static void epPaletteFlush() {
+    if (VIDEO::sam_pair_live) return;   // 2-colour PIXEL frames: the pair tables own the slots
     for (int i = 0; i < 128; i++) {
         const uint32_t c = snapTransform(crtTransform(Ep::slotRgb((uint8_t)i)));
         const uint8_t slot = (uint8_t)(Ep::PAL_SLOT0 + i);
@@ -7334,8 +7335,9 @@ static void samPairOff() {
     VIDEO::sam_pair_live = false;
     profi_ds80_driver_set(false, nullptr, nullptr);
     Graphics8BitPalette::ds80_active = false;
-    samPaletteFlush();          // slots 0..15 back to the CLUT for modes 1/2/4
-    Debug::log("[SAM] mode 3: 512 px pair mode off");
+    // the machine's own slots back (SAM: the CLUT; Enterprise: the 128 Nick colours)
+    if (Config::arch == A_ENT) epPaletteFlush(); else samPaletteFlush();
+    Debug::log("[VID] 512 px pair mode off");
 }
 
 bool VIDEO::samPairSync(bool want, const uint32_t rgb12[12]) {
@@ -7360,13 +7362,13 @@ bool VIDEO::samPairSync(bool want, const uint32_t rgb12[12]) {
     samPairPush();
     if (!profi_ds80_active) {
         s_samPairRefused = true;
-        Debug::log("[SAM] mode 3: no packed-pair driver, 256 px fallback");
+        Debug::log("[VID] no packed-pair driver: 512 px shown at half width");
         return false;
     }
     rebuildDS80ColorLut();
     Graphics8BitPalette::ds80_active = true;
     sam_pair_live = true;
-    Debug::log("[SAM] mode 3: 512 px pair mode on");
+    Debug::log("[VID] 512 px pair mode on");
     return true;
 }
 
@@ -9337,7 +9339,6 @@ IRAM_ATTR void VIDEO::EndFrame() {
 
     if (Z80Ops::isEnt) {
         Ep::frameEnd();                          // lines up to the frame end; rebase the line clock
-        Ep::launchTick();                        // a browser launch typing LOAD "name"
         gigascreenModeGate();
         LED::decay();
         if (Config::ledIndicators) LED::draw();

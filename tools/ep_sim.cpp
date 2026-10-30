@@ -10,6 +10,10 @@
 //   /tmp/ep_sim src/speccy/roms/ep/src/exos21.bin src/speccy/roms/ep/src/basic21.bin <frames> [portlog] [ram KB 64|128]
 //
 // KEYS="frame:row:bit,..." holds a key (active low) for 5 frames from that frame.
+// EP_SIM_HI=1 also writes ep_screen_hi.ppm (the 16-px-a-slot buffer); EP_SIM_CLIP=1
+// drives Nick::line the way the firmware does (a clipped 360-px row + the edge
+// slots through aux) and EP_SIM_MAP=1 a non-identity output map — both must leave
+// the frames byte-identical (the 2026-10-30 Nick rewrite was checked this way).
 extern "C" {
 #include "Z80_redcode.h"
 }
@@ -57,6 +61,18 @@ static void io_out(void*, uint16_t port, uint8_t v) {
 static const int W = EpCore::Nick::OUT_PX, H = 320;
 static uint8_t img[H][W], last[H][W];
 static int lastRows = 0;
+// EP_SIM_HI=1: run Nick with the 16-px-a-slot buffer too and write ep_screen_hi.ppm
+// (the pair-mode path of Ep.cpp's lineOut reads it).
+alignas(4) static uint8_t hiBuf[EpCore::Nick::HI_PX];
+static uint8_t hiImg[H][EpCore::Nick::HI_PX], hiLast[H][EpCore::Nick::HI_PX];
+static bool hiOn = false;
+// EP_SIM_CLIP=1: drive Nick the way the firmware does — the visible slots into a
+// 360-px "row" (guard bytes around it), the edge slots into aux — and rebuild the
+// line from both; EP_SIM_MAP=1: an output map (c -> c ^ 0x5A), undone here. Both
+// must leave ep_screen.ppm byte-identical.
+static bool clipOn = false, mapOn = false;
+static uint8_t outMapTab[256];
+alignas(4) static uint8_t rowBuf[16 + 360 + 16], auxBuf[EpCore::Nick::OUT_PX];
 
 static void dump() {
     FILE* f = fopen("ep_screen.ppm", "wb");
@@ -65,6 +81,16 @@ static void dump() {
     for (int y = 0; y < h; y++)
         for (int x = 0; x < W; x++) {
             const uint32_t c = EpCore::colourRgb(last[y][x]);
+            uint8_t o[3] = {(uint8_t)(c >> 16), (uint8_t)(c >> 8), (uint8_t)c};
+            fwrite(o, 1, 3, f);
+        }
+    fclose(f);
+    if (!hiOn) return;
+    f = fopen("ep_screen_hi.ppm", "wb");
+    fprintf(f, "P6 %d %d 255\n", EpCore::Nick::HI_PX, h);
+    for (int y = 0; y < h; y++)
+        for (int x = 0; x < EpCore::Nick::HI_PX; x++) {
+            const uint32_t c = EpCore::colourRgb(hiLast[y][x]);
             uint8_t o[3] = {(uint8_t)(c >> 16), (uint8_t)(c >> 8), (uint8_t)c};
             fwrite(o, 1, 3, f);
         }
@@ -90,6 +116,9 @@ static void lptDump() {
 
 int main(int argc, char** argv) {
     if (argc < 3) { fprintf(stderr, "usage: ep_sim exos.bin basic.bin [frames] [portlog] [ramKB]\n"); return 1; }
+    if (getenv("EP_SIM_HI")) { hiOn = true; nick.hiOut = hiBuf; }
+    if (getenv("EP_SIM_CLIP")) clipOn = true;
+    if (getenv("EP_SIM_MAP")) { mapOn = true; for (int c = 0; c < 256; c++) outMapTab[c] = (uint8_t)(c ^ 0x5A); nick.setOutMap(outMapTab); }
     FILE* f = fopen(argv[1], "rb"); if (!f || fread(rom, 1, 32768, f) != 32768) { fprintf(stderr, "EXOS\n"); return 1; } fclose(f);
     f = fopen(argv[2], "rb"); if (!f || fread(rom[2], 1, 16384, f) != 16384) { fprintf(stderr, "BASIC\n"); return 1; } fclose(f);
     const int nframes = argc > 3 ? atoi(argv[3]) : 200;
@@ -115,7 +144,7 @@ int main(int argc, char** argv) {
     long lineT = 0;
     int row = 0, lines = 0;
     bool prevVs = false;
-    uint8_t out[W];
+    alignas(4) uint8_t out[W];
     for (;;) {
         // keys
         memset(dave.keys, 0xFF, 10);
@@ -131,11 +160,22 @@ int main(int argc, char** argv) {
         T += (long)z80_run(&cpu, 32); cpu.cycles = 0;
         while (T - lineT >= 256) {
             lineT += 256;
-            const int fl = nick.line(out);
+            int fl;
+            if (clipOn) {
+                const int xres = 360, x0 = (W - xres) / 2;                 // 4
+                const int visLo = EpCore::Nick::FIRST + (x0 + 7) / 8, visHi = EpCore::Nick::FIRST + (x0 + xres) / 8;
+                memset(rowBuf, 0xA5, 16); memset(rowBuf + 16 + xres, 0xA5, 16);
+                fl = nick.line(rowBuf + 16 - x0, auxBuf, visLo, visHi);
+                for (int i = 0; i < 16; i++) if (rowBuf[i] != 0xA5 || rowBuf[16 + xres + i] != 0xA5) { printf("GUARD byte %d clobbered\n", i); return 2; }
+                const int lo = (visLo - EpCore::Nick::FIRST) * 8, hi = (visHi - EpCore::Nick::FIRST) * 8;
+                for (int p = 0; p < W; p++) out[p] = (p >= lo && p < hi) ? rowBuf[16 + p - x0] : auxBuf[p];
+            } else fl = nick.line(out);
+            if (mapOn) { for (int p = 0; p < W; p++) out[p] ^= 0x5A; if (hiOn) for (int p = 0; p < EpCore::Nick::HI_PX; p++) hiBuf[p] ^= 0x5A; }
             dave.tick(16);
             const bool vs = (fl & EpCore::Nick::L_VSYNC) != 0;
             if (prevVs && !vs) {            // a frame begins after the VSYNC block
                 memcpy(last, img, sizeof img);
+                if (hiOn) memcpy(hiLast, hiImg, sizeof hiImg);
                 lastRows = row;
                 row = 0;
                 nframe++;
@@ -147,7 +187,10 @@ int main(int argc, char** argv) {
                 if (nframe >= nframes) { lptDump(); dump(); return 0; }
             }
             prevVs = vs;
-            if (row < H) memcpy(img[row], out, W);
+            if (row < H) {
+                for (int x = 0; x < W; x++) img[row][x] = out[x ^ 2];   // Nick writes the fb word order
+                if (hiOn) memcpy(hiImg[row], hiBuf, sizeof hiBuf);
+            }
             row++; lines++;
             if (lines > 2000) { printf("no VSYNC: pc=%04X lpt=%04X\n", cpu.pc.uint16_value, nick.lptBase); lines = 0; if (++nframe >= nframes) { lptDump(); memcpy(last, img, sizeof img); lastRows = H; dump(); return 0; } }
         }
