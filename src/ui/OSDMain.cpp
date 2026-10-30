@@ -184,6 +184,7 @@ extern "C" const uint32_t profi_default_palette16[16];
 #include "speccy/devices/storage/IDE.h"
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Quorum.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
@@ -3048,6 +3049,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                             || ESPectrum::fdd.disk[0]->IsTD0File
                             ;
                     Config::save();
+                }
+                else if (ext == "com" || (ext == "bas" && Config::arch == A_ENT)) {
+                    // Enterprise program (EXOS header, machine code or IS-BASIC):
+                    // EXOS loads it through FILE: from its own folder.
+                    Ep::launchFile(fname);
                 }
                 else if (FileUtils::ifaceForPath(fname) == IFACE_SAM) {
                     // A SAM Coupe disk: Enter mounts it in drive 1 and boots it,

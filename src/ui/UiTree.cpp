@@ -624,6 +624,15 @@ static bool p_showSam() {
     return butter_psram_size() >= (1u << 20) && FlashRoms::romsUsable();
 #endif
 }
+// Enterprise 64/128: ROMs in .psramroms, its 64/128K in the static page strip
+// (ram[0..7]) — no PSRAM needed.
+static bool p_showEp() {
+#if !defined(VGA_HDMI)
+    return false;
+#else
+    return FlashRoms::romsUsable();
+#endif
+}
 // ZX Evolution BaseConf (ATM arch, R_EVO_BASE) running or staged.
 static bool p_evoBaseActive() {
     const int32_t m = Stage::get(SET_MACHINE);
@@ -839,6 +848,11 @@ static const Option opt_mach_atm[] = {
     { TXT_ROM_ATM3,  NM_MACH(A_ATM, R_ATM3),  TXT_ROM_ATM3_S  },
 };
 // SAM Coupe: internal 256K / 512K, plus the external megabytes (LEPR/HEPR).
+// Enterprise: EP64 (EXOS 2.0 + BASIC 2.0, 64K) / EP128 (EXOS 2.1 + BASIC 2.1, 128K).
+static const Option opt_mach_ep[] = {
+    { "64",   NM_MACH(A_ENT, R_EP64),  "64"  },
+    { "128",  NM_MACH(A_ENT, R_EP128), "128" },
+};
 static const Option opt_mach_sam[] = {
     { "256K",          NM_MACH(A_SAM, R_SAM256),    "256K"   },
     { "512K",          NM_MACH(A_SAM, R_SAM512),    "512K"   },
@@ -954,6 +968,7 @@ static const Node kMachine[] = {
     // Scorpion sits with the Soviet-clone block, right after the Pentagons.
     // Its pages above the base 128K need extended-RAM backing, same gate as P512.
     NM_RADIO(TXT_MACH_SAM,   SET_MACHINE, opt_mach_sam,   p_showSam),
+    NM_RADIO(TXT_MACH_EP,    SET_MACHINE, opt_mach_ep,    p_showEp),
     NM_RADIO_D(TXT_MACH_SCORP, SET_MACHINE, mach_scorpOpts, p_extRam),
     // KAY is a Scorpion-arch family (ArchRom.h isKayRomset), so it sits right under it.
     NM_RADIO  (TXT_MACH_KAY,   SET_MACHINE, opt_mach_kay,   p_extRam),

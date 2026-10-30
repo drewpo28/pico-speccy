@@ -31,7 +31,8 @@
     X(A_TSCONF,     "TSconf")   \
     X(A_ATM,        "ATM")      \
     X(A_NEXT,       "Next")     \
-    X(A_SAM,        "SAM")
+    X(A_SAM,        "SAM")      \
+    X(A_ENT,        "EP")
 
 // Third column = the human label. The second column is an on-disk spelling that
 // must never change (NVS, .esp sidecars); the third is what a user reads, kept
@@ -96,7 +97,9 @@
     X(R_QU128P,         "Quorum128p",       "Quorum 128+")  \
     X(R_QU256,          "Quorum256",        "Quorum 256")   \
     X(R_QU1024,         "Quorum1024",       "Quorum 1024")  \
-    X(R_48K_QU64O,      "48Kqu64o",         "Quorum 64 (original)")
+    X(R_48K_QU64O,      "48Kqu64o",         "Quorum 64 (original)") \
+    X(R_EP64,           "EP64",             "Enterprise 64")  \
+    X(R_EP128,          "EP128",            "Enterprise 128")
 
 #define NM_X_IDX(id, str) id,
 #define NM_XR_IDX(id, str, ui) id,
@@ -166,6 +169,7 @@ inline RomsetIdx defaultRomsetFor(ArchIdx a) {
         case A_ATM:     return R_ATM2;
         case A_NEXT:    return R_NEXT;
         case A_SAM:     return R_SAM512;
+        case A_ENT:     return R_EP128;
         default:        return R_PENT;   // Pentagon / P512 / P1024
     }
 }
@@ -344,3 +348,8 @@ inline uint32_t samIntPages(RomsetIdx r) { return r == R_SAM256 ? 16 : 32; }
 inline uint32_t samExtPages(RomsetIdx r) {
     return r == R_SAM512_1M ? 64 : r == R_SAM512_2M ? 128 : r == R_SAM512_4M ? 256 : 0;
 }
+
+// Enterprise 64/128 (A_ENT, src/speccy/machines/Enterprise/). EP64 = EXOS 2.0 +
+// BASIC 2.0 with 64K (segments FC..FF), EP128 = EXOS 2.1 + BASIC 2.1 with 128K
+// (F8..FF); RAM segment F8 + n is ram[n].
+inline bool isEpRomset(RomsetIdx r) { return r == R_EP64 || r == R_EP128; }

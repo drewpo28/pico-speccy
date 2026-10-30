@@ -257,6 +257,7 @@
 #define TXT_MACH_MURM_SIZE  "Extra RAM"
 #define TXT_MACH_TSCONF      "ZX Evolution"
 #define TXT_MACH_ATM         "ATM-Turbo"
+#define TXT_MACH_EP          "Enterprise"
 #define TXT_MACH_SAM         "SAM Coup\x87"   // \x87 = e-acute in the UI font (UiFont.h)
 #define TXT_MACH_OPTS        "Options"
 #define TXT_MACH_EVO_OPTS    "BaseConf options"

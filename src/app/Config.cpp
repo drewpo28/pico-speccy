@@ -10,6 +10,7 @@
 #include "speccy/core/roms.h"
 #include "speccy/machines/Atm.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/If2.h"
 #include "speccy/roms/atm/atm_banks.h"   // ATM page tables — this TU only (see requestMachine)
 #include "speccy/roms/kay/kay_banks.h"
@@ -44,6 +45,7 @@ RomsetIdx Config::romSetScorp = R_SCORP;
 RomsetIdx Config::romSetTsconf = R_TSCONF;
 RomsetIdx Config::romSetAtm = R_ATM2;
 RomsetIdx Config::romSetSam = R_SAM512;
+RomsetIdx Config::romSetEp = R_EP128;
 ArchIdx   Config::pref_arch = A_LAST;
 RomsetIdx Config::pref_romSet_48 = R_LAST;
 RomsetIdx Config::pref_romSet_128 = R_LAST;
@@ -403,6 +405,9 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         } else if (newArch == A_SAM) {
             OSD::bootNotice("SAM Coupe ROM traded for the GM.DLS bank - using Pentagon");
             newArch = A_PENT; newRomSet = R_NONE;
+        } else if (newArch == A_ENT) {
+            OSD::bootNotice("Enterprise ROM traded for the GM.DLS bank - using Pentagon");
+            newArch = A_PENT; newRomSet = R_NONE;
         } else if (newArch == A_TSCONF) {
             OSD::bootNotice("TS-Conf ROM traded for the GM.DLS bank - using Pentagon");
             Debug::log("[FlashRoms] TS-Conf unavailable (overlay traded) - Pentagon");
@@ -427,6 +432,10 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
     }
     // The memory fitted decides the page strip, so the slot must hold the new pick
     // before the boundary below compares (and before setup() re-reads it).
+    if (newArch == A_ENT) {
+        if (!isEpRomset(newRomSet)) newRomSet = isEpRomset(romSetEp) ? romSetEp : R_EP128;
+        romSetEp = newRomSet;
+    }
     if (newArch == A_SAM) {
         if (!isSamRomset(newRomSet)) newRomSet = isSamRomset(romSetSam) ? romSetSam : R_SAM512;
         romSetSam = newRomSet;
@@ -915,6 +924,12 @@ void Config::requestMachine(ArchIdx newArch, RomsetIdx newRomSet)
         Sam::bindRoms();             // ROM 3.0 (two 16K halves, .psramroms)
         break;
     }
+    case A_ENT: {
+        romSet = newRomSet;          // normalised above
+        romSetEp = romSet;
+        Ep::bindRoms();              // EXOS + BASIC (.psramroms)
+        break;
+    }
     case A_NEXT: {
         // ZX Spectrum Next. The real NextZXOS ROM set is loaded from SD into
         // butter PSRAM later in setup() (MemESP::loadNextRoms); the 128K ROM
@@ -1389,6 +1404,7 @@ void Config::load() {
         nvs_get_romset("romSetTsconf", romSetTsconf, sts);
         nvs_get_romset("romSetAtm", romSetAtm, sts);
         nvs_get_romset("romSetSam", romSetSam, sts);
+        nvs_get_romset("romSetEp", romSetEp, sts);
         nvs_get_arch("pref_arch", pref_arch, sts);
         pref_arch = archCanon(pref_arch);
         nvs_get_romset("pref_romSet_48", pref_romSet_48, sts);
@@ -1933,6 +1949,7 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_str(buf,"romSetTsconf",romsetToStr(romSetTsconf));
     nvs_set_str(buf,"romSetAtm",romsetToStr(romSetAtm));
     nvs_set_str(buf,"romSetSam",romsetToStr(romSetSam));
+    nvs_set_str(buf,"romSetEp",romsetToStr(romSetEp));
     nvs_set_str(buf,"pref_arch",archToStr(pref_arch));
     nvs_set_str(buf,"pref_romSet_48",romsetToStr(pref_romSet_48));
     nvs_set_str(buf,"pref_romSet_128",romsetToStr(pref_romSet_128));
@@ -2361,7 +2378,7 @@ static bool lineIsKey(const string& l, const char* key) {
 // is everything that is only read at boot: those go through storage.nvs + reboot.
 static const char* const kSnapArchKeys[] = {
     "arch", "romSet", "romSet48", "romSet128", "romSetPent", "romSetP512", "romSetP1M",
-    "romSetScorp", "romSetProfi", "romSetAtm", "romSetSam", "romSetTsconf",
+    "romSetScorp", "romSetProfi", "romSetAtm", "romSetSam", "romSetEp", "romSetTsconf",
 };
 static const char* const kSnapRebootKeys[] = {
     "AY48", "SAA1099", "ayConfig", "turbosound", "tsfm", "covox", "soundrive",

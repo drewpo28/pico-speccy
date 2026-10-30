@@ -35,6 +35,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "Ports.h"
 #include "hardware/structs/timer.h"
 #if PERF_TRACE
@@ -2177,6 +2178,7 @@ static inline __attribute__((always_inline)) bool nxRegPort(uint16_t address) {
 IRAM_ATTR uint8_t Ports::input(uint16_t address) {
   if (__builtin_expect(Z80Ops::isProfi, 0)) { return inputProfi(address); }
   if (__builtin_expect(Z80Ops::isSam, 0)) return Sam::portIn(address);
+  if (__builtin_expect(Z80Ops::isEnt, 0)) return Ep::portIn(address);
   if (nxRegPort(address) && Config::numPortReadBP == 0) {
     const bool c = MemESP::ramContended[address >> 13];
     VIDEO::Draw(1, c);
@@ -4372,6 +4374,7 @@ __attribute__((noinline)) void Ports::outputProfi(uint16_t address, uint8_t data
 IRAM_ATTR void Ports::output(uint16_t address, uint8_t data) {
   if (__builtin_expect(Z80Ops::isProfi, 0)) { outputProfi(address, data); return; }
   if (__builtin_expect(Z80Ops::isSam, 0)) { Sam::portOut(address, data); return; }
+  if (__builtin_expect(Z80Ops::isEnt, 0)) { Ep::portOut(address, data); return; }
   if (nxRegPort(address) && Config::numPortWriteBP == 0) {
     VIDEO::Draw(1, MemESP::ramContended[address >> 13]);
     p_states = CPU::tstates;
