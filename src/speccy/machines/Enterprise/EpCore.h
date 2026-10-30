@@ -80,11 +80,33 @@ struct Dave {
     // Interrupts: snd = 1 kHz / 50 Hz / tone ch0 / ch1, hz = 1 Hz, i1 = Nick, i2 = external.
     uint8_t  enSnd = 0, enHz = 0, en1 = 0, en2 = 0;
     uint8_t  actSnd = 0, actHz = 0, act1 = 0, act2 = 0;
-    uint8_t  stSnd = 0, stHz = 0, st1 = 1, st2 = 1;
+    uint8_t  stSnd = 0, stHz = 0, st1_ = 1, st2 = 1;   // source states (#B4 read)
     uint8_t  sndSrc = 0;           // #A7 bits 5-6
     int      clk1000 = 0, clk50 = 0, clk1 = 0;
     int      chFrq[3] = {0, 0, 0}, chPhase[3] = {0, 0, 0};
     uint8_t  chRun[3] = {1, 1, 1};
+
+    // Sound (ep128emu Dave::runOneCycle_). The polynomial counters are LFSRs run
+    // forward, which is exactly the order ep128emu reads its reversed tables in;
+    // only a change of the variable-length counter's length differs (ep128emu
+    // keeps the phase modulo the new length, here the register state carries over).
+    struct Poly { uint32_t sr, m0, m1, mask; uint8_t out; };
+    Poly     p4{}, p5{}, p7{}, pvl{};
+    uint8_t  noise7 = 0;           // #A6 bit 4: noise uses the 7-bit counter
+    uint8_t  chIn[3] = {};         // #A1/3/5 bits 4-5: 0 square, 1 poly4, 2 poly5, 3 poly7/VL
+    uint8_t  chHp[3] = {}, chRm[3] = {};
+    uint8_t  st[4] = {}, prv[4] = {}, st1[4] = {}, st2_3 = 0; // channel outputs (3 = noise)
+    uint8_t  n3Clk = 0, n3ClkPrv = 0, n3Lp = 0, n3Hp = 0, n3Rm = 0;
+    uint8_t  clk62 = 0; int clk62Phase = 0;
+    uint8_t  volL[4] = {}, volR[4] = {};
+    uint8_t  dacL = 0, dacR = 0;
+    uint8_t  outLv = 0, outRv = 0;     // this cycle's DAC output, 0..252 each
+
+    // Output: every 8 Dave cycles (128 T = 31250 Hz) the average of the cycles goes
+    // to outL/outR[outN] (glue-owned buffers, nullptr = no sound wanted).
+    uint8_t* outL = nullptr; uint8_t* outR = nullptr;
+    int      outN = 0, outCap = 0;
+    uint16_t accL = 0, accR = 0; uint8_t accN = 0;
 
     void reset(bool cold);
     void write(uint8_t r, uint8_t v);          // r = port & 0x1F
@@ -93,8 +115,10 @@ struct Dave {
     void setInt1(bool state);
     bool irq() const { return (actSnd | actHz | act1 | act2) != 0; }
     int  waitMode() const { return (sysconf >> 2) & 3; }
+    int  cycleT() const { return (sysconf & 2) ? 24 : 16; } // 4 MHz T a Dave cycle (#BF bit 1)
 
 private:
+    void step();                               // one Dave cycle: timers + sound
     void trigSnd() { if (!actSnd) actSnd = 1; }
     void trigHz()  { if (!actHz) actHz = 1; }
 };

@@ -212,6 +212,13 @@ esp_err_t pwm_audio_set_volume(int8_t volume) {
 
 esp_err_t pwm_audio_write(uint8_t* bufL, uint8_t* bufR, size_t len, size_t* written, uint32_t) {
     const int32_t vol8 = (int32_t)((uint32_t)(vol + Config::audio_boost) << 3);
+    // Tests: PICOSPECCY_WAV=file records the frames as raw unsigned 8-bit stereo at
+    // 31250 Hz (L, R interleaved), before the volume and the GS mix.
+    static FILE* wav = [] { const char* p = getenv("PICOSPECCY_WAV"); return p ? fopen(p, "wb") : nullptr; }();
+    if (wav) {
+        for (size_t i = 0; i < len; i++) { fputc(bufL[i], wav); fputc(bufR[i], wav); }
+        fflush(wav);
+    }
     // The frame's General Sound output (the card is already at the frame's end).
     static int16_t gL[1024], gR[1024];
     const bool gs = GS::enabled && len <= 1024;

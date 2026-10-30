@@ -15855,8 +15855,12 @@ ep128emu's epfileio.rom in segment 0x10, `ED FE FE n` traps in `EpFile.cpp`; the
 NAME is EXOS's copy in the system segment (DE = BFxx), read through the CURRENT
 paging — reading it through the caller's page table gave empty names for any program
 that repages window 2 (Jetpac). F5 on a .com = reset + typed `load "NAME"`; Jetpac
-and Nebulus play on the host. Not yet: Dave sound, hi-res PIXEL 2-colour (shown at
-lores), EP F-keys, EXDOS, tape, joysticks.
+and Nebulus play on the host. Dave sound = ep128emu runOneCycle_ on its own 16-T
+clock (caught up at every Dave port access), polynomial counters as LFSRs, 624
+samples a frame into a heap buffer mixed in ESPectrum (`Ep::audio`); host bench
+`PICOSPECCY_WAV=file`. F1-F8 = EP row 4 under the SAM ON/OFF/AUTO scheme (AUTO = row 4
+read from RAM code). Not yet: hi-res PIXEL 2-colour (shown at lores), EXDOS, tape,
+joysticks; the flash cost of 250 kHz Dave steps is unmeasured on hw.
 **Host build (merged 2026-10-30) is the test bench**: `ninja -C build-all/host`,
 `SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy PICOSPECCY_NO_RT=1`, select the machine
 by writing `arch=EP` / `romSet=EP128` into the root's `storage.nvs`, capture with

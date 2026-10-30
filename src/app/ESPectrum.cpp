@@ -2216,6 +2216,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   // for a user who forced the keys to the guest and wants the menu back).
   ZxEvoAvr::clearKeysOverride();
   Sam::clearKeysOverride();
+  Ep::clearKeysOverride();
   VIDEO::timexHiresForceOff();// Timex hi-res 512x192: ditto (VIDEO::Reset zeroes timex_mode)
   VIDEO::blPairForceOff();    // borderless pair scaler: blRecalc re-arms it
   // Timex TC2068 SCLD: HSR = 0 and DEC bit 7 = 0, i.e. the whole 64 KB is HOME
@@ -2789,7 +2790,7 @@ static void nextExtKeys(fabgl::Keyboard* Kbd, uint8_t* cols) {
 // POSITION, like the SAM's: shifted host keys press the same EP key and the guest's
 // own SHIFT does the rest. Rows/bits = ep128emu config/ep_keys.cfg. STOP = End,
 // HOLD = Home, ERASE = Backspace, ALT = right Alt (left Alt is our hotkey modifier).
-// The EP function keys F1-F8 stay with our hotkey layer in phase 0.
+// Host F1-F8 = EP F1-F8 (row 4) while the guest owns them (Ep::keysToGuest).
 static void epKeys(fabgl::Keyboard* Kbd) {
     using namespace fabgl;
     struct K { VirtualKey a, b; uint8_t row, bit; };
@@ -2818,6 +2819,11 @@ static void epKeys(fabgl::Keyboard* Kbd) {
     for (const K& e : map)
         if (Kbd->isVKDown(e.a) || (e.b != VK_NONE && Kbd->isVKDown(e.b)))
             k[e.row] &= (uint8_t)~(1u << e.bit);
+    if (Ep::keysToGuest()) {
+        // row 4, bits 0..7 = F4 F8 F3 F6 F5 F7 F2 F1
+        static const VirtualKey fk[8] = {VK_F4, VK_F8, VK_F3, VK_F6, VK_F5, VK_F7, VK_F2, VK_F1};
+        for (int b = 0; b < 8; b++) if (Kbd->isVKDown(fk[b])) k[4] &= (uint8_t)~(1u << b);
+    }
     memcpy(Ep::keys, k, sizeof(k));
 }
 
@@ -3085,6 +3091,9 @@ void ESPectrum::processKeyboard() {
             // SAM Coupe: F1-F10 only (its keyboard has no nav keys to give).
             || (Z80Ops::isSam && Sam::keysToGuest()
                 && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F10)
+            // Enterprise: F1-F8.
+            || (Z80Ops::isEnt && Ep::keysToGuest()
+                && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F8)
             // Quorum: F1-F6 are its #7E keys while Alt+~ says so (quorumKeys).
             || (g_quorum && Quorum::fkeysToGuest
                 && KeytoESP >= fabgl::VK_F1 && KeytoESP <= fabgl::VK_F6);
@@ -4650,14 +4659,16 @@ void ESPectrum::loop() {
 
     // TS-Conf: F1-F10 silently ceasing to open the menu is exactly the kind of
     // thing a user cannot be asked to guess, so say it once per transition.
-    if (Z80Ops::isTsconf || Z80Ops::isSam) {
+    if (Z80Ops::isTsconf || Z80Ops::isSam || Z80Ops::isEnt) {
         static bool s_keys_prev = false;
-        const bool  keys_now = Z80Ops::isSam ? Sam::keysToGuest() : ZxEvoAvr::keysToGuest();
+        const bool  keys_now = Z80Ops::isSam ? Sam::keysToGuest()
+                             : Z80Ops::isEnt ? Ep::keysToGuest() : ZxEvoAvr::keysToGuest();
         if (keys_now != s_keys_prev) {
             s_keys_prev = keys_now;
-            OSD::notify(Z80Ops::isSam ? (keys_now ? " F-keys: ON " : " F-keys: OFF ")
+            OSD::notify(!Z80Ops::isTsconf ? (keys_now ? " F-keys: ON " : " F-keys: OFF ")
                                       : (keys_now ? " PS/2 keys: ON " : " PS/2 keys: OFF "), LEVEL_INFO, 900);
-            Debug::log("[PS2] keys -> %s", keys_now ? "ON (guest is reading the scancode log)"
+            Debug::log("[PS2] keys -> %s", keys_now ? (Z80Ops::isTsconf ? "ON (guest is reading the scancode log)"
+                                                                         : "ON (guest is scanning the F-key row)")
                                                     : "OFF (the hotkey layer keeps them)");
         }
     }
@@ -4969,6 +4980,9 @@ void ESPectrum::loop() {
         // VDAC2 (FT812) MJPEG player: the AVI's 8-bit PCM track, resampled to our rate,
         // mixed unipolar like the beeper/Covox (it is unsigned 8-bit already).
         const uint8_t* ftv = Ft812::enabled ? Ft812::videoAudioFrame(samplesPerFrame, ESP_AUDIO_FREQ_PENTAGON) : nullptr;
+        // Enterprise Dave: unipolar 0..252 a side, rendered by Ep::frameEnd.
+        const uint8_t* epL = nullptr; const uint8_t* epR = nullptr;
+        if (Config::arch == A_ENT && !Ep::audio(&epL, &epR)) epL = epR = nullptr;
         bool fddSndEnabledMix = (Config::trdosSoundLed & 2) != 0;
         if (MB02::enabled) fddSndEnabledMix = (Config::mb02SoundLed & 2) != 0;
         bool mix_fdd = fddSndEnabledMix && (fddSound.click_count > 0 || fddSound.motor_noise);
@@ -4980,6 +4994,7 @@ void ESPectrum::loop() {
           if (mix_fdd) beeper_L += getFDDSample(i);
           if (ftv) beeper_L += ftv[i] >> 1;
           int beeper_R = beeper_L;
+          if (epL) { beeper_L += epL[i]; beeper_R += epR[i]; }
           if (mix_covox) {
             beeper_L += audioBufferCovoxL[i];
             beeper_R += audioBufferCovoxR[i];
