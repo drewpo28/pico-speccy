@@ -142,6 +142,7 @@ public:
     static RomsetIdx romSetScorp;
     static RomsetIdx romSetTsconf;
     static RomsetIdx romSetAtm;
+    static RomsetIdx romSetEp;    // Enterprise: EP64 / EP128 (ArchRom.h isEpRomset)
     static RomsetIdx romSetSam;   // SAM Coupe: the memory fitted (ArchRom.h isSamRomset)
     static ArchIdx   pref_arch;
     static RomsetIdx pref_romSet_48;
@@ -460,6 +461,7 @@ public:
     static bool isAtm1()  { return arch == A_ATM && isAtm1Romset(romSetAtm); }
     // ZX Evolution BaseConf: the ATM arch on the Pentagon raster (71680 T, 48.83 Hz).
     static bool isSam() { return arch == A_SAM; }
+    static bool isEp() { return arch == A_ENT; }
     static bool isEvoBase() { return arch == A_ATM && isEvoBaseRomset(romSetAtm); }
     static bool isScorpEvo() { return arch == A_SCORP && isScorpEvoRomset(romSetScorp); }
     // Both ZX-Evo configurations that run the Pentagon raster (320 lines x 224 T).

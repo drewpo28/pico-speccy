@@ -41,6 +41,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #define TSTATES_PER_FRAME_48 69888
 #define TSTATES_PER_FRAME_SAM 119808   // SAM Coupe: 6 MHz, 384 T x 312 lines
+#define TSTATES_PER_FRAME_EP 79872     // Enterprise: 4 MHz, 256 T x 312 lines
 #define TSTATES_PER_FRAME_128 70908
 #define TSTATES_PER_FRAME_EVO60 58688   // ZX-Evo BaseConf 60 Hz raster: 262 lines x 224 T (video_sync_v.v)
 #define TSTATES_PER_FRAME_PENTAGON 71680
@@ -183,6 +184,7 @@ public:
     static void haltAdvanceTo(uint32_t stEnd); // HALT sleep, video walked per line (TS-Conf Stage D)
     static void tsFrameLoop(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due); // TS-Conf frame, in the .tsovl window (CPU.cpp)
     static void nextFrameLoop(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due);
+    static void epFrameLoop(uint64_t loop_t0, bool pbbp, int nbp);  // Enterprise frame (flash, CPU.cpp)
     static void samFrameLoop(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due); // SAM Coupe frame (flash, CPU.cpp) // Next frame rest, in the .nxovl window (CPU.cpp)
     template <bool NEXT> static void frameRest(uint64_t loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due);
 

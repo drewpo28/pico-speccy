@@ -33,6 +33,7 @@
 #include "speccy/machines/Atm.h"
 #include "speccy/machines/Quorum.h"   // Quorum DOS edges + NMI acknowledge
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Enterprise/Ep.h"   // ED FE: the FILE: device trap
 #include "speccy/machines/EvoBase.h"
 #include "speccy/devices/tape/Tape.h"
 #include "app/Config.h"
@@ -896,6 +897,7 @@ IRAM_ATTR __attribute__((noinline)) void Z80::check_trdos() {
         if (ESPectrum::trdos ? REG_PCh >= 0x40 : REG_PCh == 0x3D) Quorum::trdosEdge(REG_PCh);
         return;
     }
+    if (Z80Ops::isEnt) return;      // Enterprise: no Beta, no #3Dxx trap
     if (Z80Ops::isSam) {            // SAM Coupe: no Beta, no #3Dxx trap — only the
         if (REG_PC == Sam::TAPE_LDSTRT) Sam::tapeTrap();   // ROM 3.0 tape loader (flash)
         return;
@@ -2419,7 +2421,7 @@ void Z80::decodeOpcode76()
     // On the Next, NextZXOS's own tape trap (automap at #056A) gets the block
     // whenever it is armed — see NextReg::osTapeTrapArmed(). BIOS personalities
     // without it (48K/128K/Pentagon, divmmc off) keep our fast load.
-    if ((((REG_PC == 0x56b || REG_PC == 0x56d || REG_PC == 0x57d)) && !Z80Ops::isTc2068 && !Z80Ops::isSam
+    if ((((REG_PC == 0x56b || REG_PC == 0x56d || REG_PC == 0x57d)) && !Z80Ops::isTc2068 && !Z80Ops::isSam && !Z80Ops::isEnt
          && !(Z80Ops::isNext && NextReg::osTapeTrapArmed()))
         || tcTrap) {
 
@@ -4009,6 +4011,11 @@ void Z80::decodeED(void) {
     switch (opCode) {
         // ===== Z80N (ZX Spectrum Next) extended opcodes =====
         // On non-Next machines these remain 8T NOPs (as unhandled ED opcodes).
+        // ED FE FE n: ep128emu's system call (the Enterprise FILE: ROM, EpFile.cpp);
+        // an 8T NOP everywhere else.
+        case 0xFE:
+            if (Z80Ops::isEnt) Ep::fileTrap();
+            break;
         case 0x23: case 0x24: case 0x27: case 0x28: case 0x29: case 0x2A: case 0x2B: case 0x2C: case 0x30: case 0x31: case 0x32: case 0x33: case 0x34: case 0x35: case 0x36: case 0x8A: case 0x90: case 0x91: case 0x92: case 0x93: case 0x94: case 0x95: case 0x98: case 0xA4: case 0xA5: case 0xAC: case 0xB4: case 0xB7: case 0xBC:
             if (Z80Ops::isNext) decodeZ80N();   // .nxovl window; an 8T NOP elsewhere
             break;

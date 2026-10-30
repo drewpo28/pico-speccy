@@ -458,6 +458,37 @@ static void present(SDL_Renderer* ren, SDL_Texture*& tex, int& tw, int& th, bool
         base.assign(spec, c ? (size_t)(c - spec) : strlen(spec));
         return c ? (uint32_t)atoi(c + 1) : 200u;
     };
+    // PICOSPECCY_KEYS="frame:Key,frame:Key,..." holds each key (an SDL scancode name:
+    // Space, Return, A, F1, ...) from that presented frame for 6 frames — typing
+    // without a display (SDL_VIDEODRIVER=dummy), alongside the shots above.
+    {
+        struct HK { uint32_t at; SDL_Scancode sc; };
+        static std::vector<HK> hk;
+        static bool hkParsed = false;
+        if (!hkParsed) {
+            hkParsed = true;
+            if (const char* ks = getenv("PICOSPECCY_KEYS")) {
+                std::string all(ks);
+                size_t p = 0;
+                while (p < all.size()) {
+                    size_t e = all.find(',', p);
+                    if (e == std::string::npos) e = all.size();
+                    const std::string item = all.substr(p, e - p);
+                    const size_t c = item.find(':');
+                    if (c != std::string::npos) {
+                        const SDL_Scancode sc = SDL_GetScancodeFromName(item.substr(c + 1).c_str());
+                        if (sc != SDL_SCANCODE_UNKNOWN) hk.push_back({(uint32_t)atoi(item.c_str()), sc});
+                        else fprintf(stderr, "host: PICOSPECCY_KEYS: unknown key '%s'\n", item.c_str() + c + 1);
+                    }
+                    p = e + 1;
+                }
+            }
+        }
+        for (const HK& k : hk) {
+            if (presented == k.at) key_event(k.sc, true);
+            if (presented == k.at + 6) key_event(k.sc, false);
+        }
+    }
     std::string base;
     if (shot && presented == parse(shot, base)) save(base);
     if (shots) { const uint32_t n = parse(shots, base); if (n && presented % n == 0) save(base + "_" + std::to_string(presented) + ".bmp"); }

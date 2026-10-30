@@ -33,6 +33,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #include "speccy/machines/Quorum.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Sam/SamClock.h"
 #include "speccy/machines/Sam/SamFdc.h"
 #include "app/DramPattern.h"
@@ -1152,6 +1153,8 @@ void ESPectrum::setup() {
         Config::romSet = R_NEXT;
       } else if (Config::arch == A_SAM) {
         Config::romSet = Config::romSetSam;
+      } else if (Config::arch == A_ENT) {
+        Config::romSet = Config::romSetEp;
       } else {
         if (Config::pref_romSetPent != R_LAST)
           Config::romSet = Config::pref_romSetPent;
@@ -1676,6 +1679,14 @@ void ESPectrum::setup() {
     audioSampleDivider = 6;
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SAM << 8) / ESP_AUDIO_SAMPLES_48;
+  } else if (Config::arch == A_ENT) {
+    // Enterprise: 79872 T / 624 samples = 128 T a sample, 31250 Hz at 50.08 fps.
+    samplesPerFrame = ESP_AUDIO_SAMPLES_48;
+    audioOverSampleDivider = 32;
+    audioAYDivider = 128;
+    audioSampleDivider = 4;
+    Audio_freq = ESP_AUDIO_FREQ_48;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_EP << 8) / ESP_AUDIO_SAMPLES_48;
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
@@ -1856,7 +1867,8 @@ void ESPectrum::setup() {
     }
   }
 
-  if (Config::arch == A_SAM) Sam::bootResume();   // a SAM disk launch that rebooted
+  if (Config::arch == A_SAM) Sam::bootResume();
+  if (Config::arch == A_ENT) Ep::launchResume();   // a .COM launch that rebooted   // a SAM disk launch that rebooted
 
   // Re-reset MB-02 after disk mounts so boot EPROM starts with disks already inserted
   if (MB02::enabled && mb02_fdd.disk[0]) {
@@ -2459,6 +2471,14 @@ void ESPectrum::reset(uint8_t romInUse) {
     audioSampleDivider = 6;
     Audio_freq = ESP_AUDIO_FREQ_48;
     tstatesPerSampleFP = (TSTATES_PER_FRAME_SAM << 8) / ESP_AUDIO_SAMPLES_48;
+  } else if (Config::arch == A_ENT) {
+    // Enterprise: 79872 T / 624 samples = 128 T a sample, 31250 Hz at 50.08 fps.
+    samplesPerFrame = ESP_AUDIO_SAMPLES_48;
+    audioOverSampleDivider = 32;
+    audioAYDivider = 128;
+    audioSampleDivider = 4;
+    Audio_freq = ESP_AUDIO_FREQ_48;
+    tstatesPerSampleFP = (TSTATES_PER_FRAME_EP << 8) / ESP_AUDIO_SAMPLES_48;
   } else if (Config::arch == A_48K || Config::arch == A_PROFI ||
       (Config::arch == A_SCORP && isScorpYellowTiming(Config::romSetScorp)) ||
       (Config::arch == A_ATM && !atmFrame316(Config::romSetAtm) && !Config::isEvoBase()) ||
@@ -2765,6 +2785,42 @@ static void nextExtKeys(fabgl::Keyboard* Kbd, uint8_t* cols) {
 // cursors, while the SAM has its own keys for both (rows 0-7 bits 5-7, row 8 =
 // CNTRL + cursors; SimCoupe Keyboard.cpp). Left Ctrl = SYMBOL, Right Ctrl = CNTRL,
 // numpad = F0-F9.
+// Enterprise keyboard (Ep::keys, read through Dave #B5). Built from scratch by key
+// POSITION, like the SAM's: shifted host keys press the same EP key and the guest's
+// own SHIFT does the rest. Rows/bits = ep128emu config/ep_keys.cfg. STOP = End,
+// HOLD = Home, ERASE = Backspace, ALT = right Alt (left Alt is our hotkey modifier).
+// The EP function keys F1-F8 stay with our hotkey layer in phase 0.
+static void epKeys(fabgl::Keyboard* Kbd) {
+    using namespace fabgl;
+    struct K { VirtualKey a, b; uint8_t row, bit; };
+    static const K map[] = {
+        {VK_N, VK_n, 0, 0}, {VK_BACKSLASH, VK_VERTICALBAR, 0, 1}, {VK_B, VK_b, 0, 2}, {VK_C, VK_c, 0, 3},
+        {VK_V, VK_v, 0, 4}, {VK_X, VK_x, 0, 5}, {VK_Z, VK_z, 0, 6}, {VK_LSHIFT, VK_NONE, 0, 7},
+        {VK_H, VK_h, 1, 0}, {VK_CAPSLOCK, VK_NONE, 1, 1}, {VK_G, VK_g, 1, 2}, {VK_D, VK_d, 1, 3},
+        {VK_F, VK_f, 1, 4}, {VK_S, VK_s, 1, 5}, {VK_A, VK_a, 1, 6}, {VK_LCTRL, VK_RCTRL, 1, 7},
+        {VK_U, VK_u, 2, 0}, {VK_Q, VK_q, 2, 1}, {VK_Y, VK_y, 2, 2}, {VK_R, VK_r, 2, 3},
+        {VK_T, VK_t, 2, 4}, {VK_E, VK_e, 2, 5}, {VK_W, VK_w, 2, 6}, {VK_TAB, VK_NONE, 2, 7},
+        {VK_7, VK_AMPERSAND, 3, 0}, {VK_1, VK_EXCLAIM, 3, 1}, {VK_6, VK_CARET, 3, 2}, {VK_4, VK_DOLLAR, 3, 3},
+        {VK_5, VK_PERCENT, 3, 4}, {VK_3, VK_HASH, 3, 5}, {VK_2, VK_AT, 3, 6}, {VK_ESCAPE, VK_NONE, 3, 7},
+        {VK_8, VK_ASTERISK, 5, 0}, {VK_9, VK_LEFTPAREN, 5, 2}, {VK_MINUS, VK_UNDERSCORE, 5, 3},
+        {VK_0, VK_RIGHTPAREN, 5, 4}, {VK_EQUALS, VK_PLUS, 5, 5}, {VK_BACKSPACE, VK_NONE, 5, 6},
+        {VK_J, VK_j, 6, 0}, {VK_K, VK_k, 6, 2}, {VK_SEMICOLON, VK_COLON, 6, 3}, {VK_L, VK_l, 6, 4},
+        {VK_QUOTE, VK_QUOTEDBL, 6, 5}, {VK_RIGHTBRACKET, VK_RIGHTBRACE, 6, 6},
+        {VK_END, VK_NONE, 7, 0}, {VK_DOWN, VK_NONE, 7, 1}, {VK_RIGHT, VK_NONE, 7, 2}, {VK_UP, VK_NONE, 7, 3},
+        {VK_HOME, VK_NONE, 7, 4}, {VK_LEFT, VK_NONE, 7, 5}, {VK_RETURN, VK_KP_ENTER, 7, 6}, {VK_RALT, VK_NONE, 7, 7},
+        {VK_M, VK_m, 8, 0}, {VK_DELETE, VK_NONE, 8, 1}, {VK_COMMA, VK_LESS, 8, 2}, {VK_SLASH, VK_QUESTION, 8, 3},
+        {VK_PERIOD, VK_GREATER, 8, 4}, {VK_RSHIFT, VK_NONE, 8, 5}, {VK_SPACE, VK_NONE, 8, 6}, {VK_INSERT, VK_NONE, 8, 7},
+        {VK_I, VK_i, 9, 0}, {VK_O, VK_o, 9, 2}, {VK_GRAVEACCENT, VK_TILDE, 9, 3}, {VK_P, VK_p, 9, 4},
+        {VK_LEFTBRACKET, VK_LEFTBRACE, 9, 5},
+    };
+    uint8_t k[10];
+    memset(k, 0xFF, sizeof(k));
+    for (const K& e : map)
+        if (Kbd->isVKDown(e.a) || (e.b != VK_NONE && Kbd->isVKDown(e.b)))
+            k[e.row] &= (uint8_t)~(1u << e.bit);
+    memcpy(Ep::keys, k, sizeof(k));
+}
+
 static void samKeys(fabgl::Keyboard* Kbd) {
     using namespace fabgl;
     struct K { VirtualKey a, b; uint8_t row, bit; };
@@ -3328,6 +3384,7 @@ void ESPectrum::processKeyboard() {
 
       if (Z80Ops::isNext) nextExtKeys(Kbd, PS2cols);
       if (Z80Ops::isSam) samKeys(Kbd);
+      if (Z80Ops::isEnt) epKeys(Kbd);
       if (g_quorum) quorumKeys(Kbd);
 
       // ── Profi extended keyboard ─────────────────────────────────────────

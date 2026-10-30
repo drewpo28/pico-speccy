@@ -15840,6 +15840,30 @@ config port there, its CS bit 1 = 1 deselects the card), and on our ATM3 it hung
      so clearing it in `EvoBase::reset()` brought back Disc error until F12 (hw-confirmed fixed 2026-10-04, owner: "работает"). Test ELF
      `debug/DVp2-evo-vdisk2-1.0.8.elf`.
 
+## Enterprise 64/128 (A_ENT, 2026-10-30, phase 0, host-tested, NOT hw-tested)
+
+Plan + status: `docs/enterprise-plan.md`. Model = ep128emu (Istvan Varga). Machine >
+Enterprise: `R_EP64` (EXOS 2.0 + BASIC 2.0, 64K) / `R_EP128` (EXOS 2.1 + BASIC 2.1,
+128K); ROMs raw in `.psramroms` (`tools/rom_pack.py ep`), RAM segment F8+n = `ram[n]`
+(no PSRAM needed). `src/speccy/machines/Enterprise/EpCore.*` = Nick + Dave with NO
+firmware dependencies — `tools/ep_sim.cpp` links the same file, run it first on any
+EP boot report. `Ep.*` = glue: Nick line every 256 T rendered from the `Ep::draw` tick
+(the real line is 256.2 T), fb row = lines after VSYNC - top, slot 16 + colour with
+red's LSB dropped (128 slots); `CPU::epFrameLoop` runs checked while Dave's INT is up.
+Wait states approximate ep128emu (VRAM = next Nick slot + latency). FILE: device =
+ep128emu's epfileio.rom in segment 0x10, `ED FE FE n` traps in `EpFile.cpp`; the open
+NAME is EXOS's copy in the system segment (DE = BFxx), read through the CURRENT
+paging — reading it through the caller's page table gave empty names for any program
+that repages window 2 (Jetpac). F5 on a .com = reset + typed `load "NAME"`; Jetpac
+and Nebulus play on the host. Not yet: Dave sound, hi-res PIXEL 2-colour (shown at
+lores), EP F-keys, EXDOS, tape, joysticks.
+**Host build (merged 2026-10-30) is the test bench**: `ninja -C build-all/host`,
+`SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy PICOSPECCY_NO_RT=1`, select the machine
+by writing `arch=EP` / `romSet=EP128` into the root's `storage.nvs`, capture with
+`PICOSPECCY_SHOT(S)`, type with `PICOSPECCY_KEYS="frame:Key,..."` (SDL scancode names,
+held 6 frames; added for this). Checked there: memory test, logo, IS-BASIC on both
+romsets, `print 12345` answered.
+
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
 
 Plan + status: `docs/sam-coupe-plan.md`. Model = SimCoupe (`Base/SAMIO.cpp`,

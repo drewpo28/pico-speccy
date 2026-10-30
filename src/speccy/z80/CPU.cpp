@@ -35,6 +35,7 @@ visit https://zxespectrum.speccy.org/contacto
 
 #include "CPU.h"
 #include "speccy/machines/Sam/Sam.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "app/ESPectrum.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/core/Ports.h"
@@ -142,6 +143,7 @@ bool Z80Ops::isTc2068 = false;
 bool g_timex_machine = false;
 bool Z80Ops::isNext = false;
 bool Z80Ops::isSam = false;
+bool Z80Ops::isEnt = false;
 
 void CPU::updateStatesInFrame() {
     Z80Ops::isALF = (Config::arch == A_ALF);
@@ -234,6 +236,11 @@ void CPU::updateStatesInFrame() {
         statesInFrame = TSTATES_PER_FRAME_SAM;
         IntStart = 0;
         IntEnd = INT_END_SAM;
+    } else if (Config::arch == A_ENT) {
+        // Enterprise: no frame INT — Dave holds the line (Ep::intLine).
+        statesInFrame = TSTATES_PER_FRAME_EP;
+        IntStart = 0;
+        IntEnd = 0;
     } else { // if (Config::arch == A_PENT) - by default
         statesInFrame = Config::isQuorumKvRaster() ? TSTATES_PER_FRAME_48
                                                    : TSTATES_PER_FRAME_PENTAGON;
@@ -242,7 +249,8 @@ void CPU::updateStatesInFrame() {
     }
     // SAM Coupe: no turbo — the 6 MHz clock is the machine's only speed. The
     // user's pick (multUser) is kept for the next machine.
-    if (Config::arch == A_SAM) ESPectrum::multiplicator = 0;
+    // Enterprise: phase 0 runs at its 4 MHz only.
+    if (Config::arch == A_SAM || Config::arch == A_ENT) ESPectrum::multiplicator = 0;
     uint8_t m = ESPectrum::multiplicator;
     if (m) {
         statesInFrame <<= m;
@@ -304,7 +312,8 @@ void CPU::reset() {
     Z80Ops::isTsconf = (Config::arch == A_TSCONF);
     Z80Ops::isAtm = (Config::arch == A_ATM);
     Z80Ops::isSam = (Config::arch == A_SAM);
-    if (!Z80Ops::isAtm && !Z80Ops::isSam) g_atm_ro = 0;
+    Z80Ops::isEnt = (Config::arch == A_ENT);
+    if (!Z80Ops::isAtm && !Z80Ops::isSam && !Z80Ops::isEnt) g_atm_ro = 0;
     Z80Ops::isTc2068 = Config::isTc2068();
     g_timex_machine  = Config::isTimex();
     Z80Ops::isNext = (Config::arch == A_NEXT);
@@ -440,6 +449,17 @@ void CPU::reset() {
         Z80Ops::is1024 = false;
         Z80Ops::isProfi = false;
         ESPectrum::target = NextReg::raster().micros;
+    } else if (Config::arch == A_ENT) {
+        // Enterprise: 79872 T at 4 MHz = the 48K frame period (19968 us).
+        Ports::getFloatBusData = &Ports::getFloatBusDataNone;
+        Z80Ops::isByte = false;
+        Z80Ops::is48 = false;
+        Z80Ops::is128 = false;
+        Z80Ops::isPentagon = false;
+        Z80Ops::is512 = false;
+        Z80Ops::is1024 = false;
+        Z80Ops::isProfi = false;
+        ESPectrum::target = MICROS_PER_FRAME_48;
     } else if (Config::arch == A_SAM) {
         // SAM Coupe: 119808 T at 6 MHz = the 48K frame period (19968 us).
         Ports::getFloatBusData = &Ports::getFloatBusDataNone;
@@ -575,6 +595,14 @@ void CPU::reset() {
         Config::timex_video = false;
         Config::SAA1099 = true;
         Sam::reset();
+    }
+    // Enterprise: the same backstop (its bus has no Spectrum interface at all).
+    if (Z80Ops::isEnt) {
+        Config::betadisk = false;
+        if (Config::esxdos) Config::esxdos = 0;
+        Config::mb02 = false;
+        Config::timex_video = false;
+        Ep::reset();
     }
 
     // Interface 2 cartridge: esxDOS off the bus while it is in (its automap entry
@@ -826,6 +854,7 @@ IRAM_ATTR void CPU::loop() {
     // loop carries none of the Next code (2026-10-10).
     if (Z80Ops::isNext) { nextFrameLoop(_loop_t0, pbbp, nbp, zifi_pump_due); return; }
     if (__builtin_expect(Z80Ops::isSam, 0)) { samFrameLoop(_loop_t0, pbbp, nbp, zifi_pump_due); return; }
+    if (__builtin_expect(Z80Ops::isEnt, 0)) { epFrameLoop(_loop_t0, pbbp, nbp); return; }
     frameRest<false>(_loop_t0, pbbp, nbp, zifi_pump_due);
 }
 
@@ -1035,6 +1064,49 @@ __attribute__((noinline)) void CPU::samFrameLoop(uint64_t _loop_t0, bool pbbp, i
     tstates -= statesInFrame;
     CPU::prev_tstates = tstates;
     Sam::frameStart();               // arm the row tick for the frame that just began
+}
+
+// Enterprise frame: Dave holds the INT line until the guest clears it, so the loop
+// runs checked execute() while it is up and unchecked slices to the next Nick line
+// end otherwise (a source latched inside a slice is seen at its end, <= 256 T late).
+// FLASH: the RAM-resident loop pays one test.
+__attribute__((noinline)) void CPU::epFrameLoop(uint64_t _loop_t0, bool pbbp, int nbp) {
+    bool halted = false;
+    while (tstates < statesInFrame) {
+        Ep::catchUp();
+        if (Ep::intLine()) {
+            Z80::execute();
+            BREAKPOINTS
+            continue;
+        }
+        uint32_t next = Ep::nextLineT();
+        if (next > statesInFrame) next = statesInFrame;
+        if (Z80::isHalted()) {
+            if (!halted) { tstates_active = tstates; halted = true; }
+            haltAdvanceTo(next);
+        } else {
+            stFrame = next;
+            Z80::exec_nocheck();
+            if (stFrame == 0) {
+                if (!halted) { tstates_active = tstates; halted = true; }
+                haltAdvanceTo(next);
+            }
+        }
+        BREAKPOINTS
+    }
+    {
+        uint64_t _ef_t0 = time_us_64();
+        VIDEO::EndFrame();
+        endframe_us = (uint32_t)(time_us_64() - _ef_t0);
+    }
+    CPU::tstates_diff += CPU::tstates - CPU::prev_tstates;
+    CPU::tstates_diff = CPU::tstates_diff % WD177XSTEPSTATES;
+    cpu_frame_us += (uint32_t)(time_us_64() - _loop_t0);
+    global_tstates += statesInFrame;
+    tstates_frame = tstates;
+    if (!halted) tstates_active = tstates_frame;
+    tstates -= statesInFrame;
+    CPU::prev_tstates = tstates;
 }
 
 NX_OVL_CODE void CPU::nextFrameLoop(uint64_t _loop_t0, bool pbbp, int nbp, uint32_t zifi_pump_due) {
@@ -1951,6 +2023,7 @@ IRAM_ATTR bool Z80Ops::isActiveINT(void) {
     if (__builtin_expect(VIDEO::timex_int_inhibit, 0)) return false;
     // SAM Coupe: frame window OR the line window (STATUS bits 3 / 0); flash.
     if (__builtin_expect(Z80Ops::isSam, 0)) return Sam::intLine();
+    if (__builtin_expect(Z80Ops::isEnt, 0)) return Ep::intLine();
     // Adding latetiming shifts the check 1T later for Late mode.
     // At end of frame (tstates=statesInFrame-1), tmp wraps to 0, firing
     // the Late INT via straddle — this is the correct hardware behaviour.
