@@ -279,6 +279,7 @@ bool sntpApply(int tz, std::string* out_str) {
 // ── boot-time auto join + sync (one step per autoPoll) ──
 enum AutoState { A_IDLE, A_JOIN, A_SNTP, A_DONE, A_FAIL };
 AutoState a_state = A_IDLE;
+bool      a_begun = false;     // autoBegin ran this session (bootJoinPending)
 uint32_t  a_deadline = 0, a_send_deadline = 0;
 int       a_tz = 0, a_join_tries = 0, a_sntp_tries = 0;
 bool      a_sntp = true;   // false = join only, never start the SNTP exchange
@@ -452,6 +453,7 @@ bool sntpSync(int tz, std::string& out_str) {
 }
 
 void autoBegin(const char* ssid_, const char* pass, int tz, bool sntp) {
+    a_begun = true;
     if (!busUp()) { a_state = A_FAIL; return; }
     snprintf(s_ssid, sizeof(s_ssid), "%s", ssid_ ? ssid_ : "");
     snprintf(a_pass, sizeof(a_pass), "%s", pass ? pass : "");
@@ -471,6 +473,11 @@ void autoBegin(const char* ssid_, const char* pass, int tz, bool sntp) {
 
 bool autoBusy() { return a_state == A_JOIN || a_state == A_SNTP; }
 
+bool bootJoinPending() {
+    if (!selected() || !Config::wifi_enabled || Config::wifi_ssid.empty()) return false;
+    return !a_begun || a_state == A_JOIN;
+}
+
 void autoPoll() {
     if (!autoBusy()) return;
     cyw43_arch_poll();
@@ -488,7 +495,14 @@ void autoPoll() {
         const int st = cyw43_wifi_link_status(&cyw43_state, CYW43_ITF_STA);
         if (st < 0 || now >= a_deadline) {
             wlog("WiFi(bg): join try %d ended link=%d", a_join_tries, st);
-            if (a_join_tries < 3) autoJoin(); else a_state = A_FAIL;
+            if (a_join_tries < 3) autoJoin();
+            else {
+                // Stop the firmware's own reconnect search: it keeps taking the
+                // shared radio's airtime and an A2DP stream stutters under it
+                // (hw 2026-10-30, send waits ~55 ms with a join that failed).
+                cyw43_wifi_leave(&cyw43_state, CYW43_ITF_STA);
+                a_state = A_FAIL;
+            }
         }
         return;
     }

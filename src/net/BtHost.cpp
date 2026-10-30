@@ -32,11 +32,16 @@ void bt_hid_mouse(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32_t whe
 void bt_hid_gamepad(bool up, bool down, bool left, bool right, uint32_t buttons);
 
 namespace BtHost {
+
+void audioResume();   // reconnect the speaker that played before a reboot
+void audioDrop();     // audioDisconnect without forgetting the "audio on" marker
 bool audioEstablish();          // defined with the public audio calls below
 namespace {
 
 #define BT_AUDIO_CFG CONFIG_DIR "/bt_audio.txt"
 #define BT_INPUT_CFG CONFIG_DIR "/bt_input.txt"
+// Present while the remembered speaker is in use: the next boot reconnects it.
+#define BT_AUDIO_ON  CONFIG_DIR "/bt_audio_on"
 
 enum State : uint8_t { S_OFF, S_STARTING, S_UP, S_FAILED };
 State   s_state = S_OFF;
@@ -194,10 +199,18 @@ btstack_timer_source_t s_audioRetryT;   // busy-connect retries (audioEstablish)
 uint8_t  s_audioRetries = 0;
 bd_addr_t  s_audioAddr;
 uint16_t   s_cid  = 0;
+hci_con_handle_t s_audioHandle = HCI_CON_HANDLE_INVALID;   // the sink's ACL link
 uint8_t    s_seid = 0;        // local stream endpoint
 
 constexpr int SBC_STORAGE = 1030;
-constexpr int RING_FRAMES = 2048;   // 65 ms of 31250 Hz stereo
+// 262 ms of 31250 Hz stereo (32 KB, butter PSRAM when there is one). The radio
+// can hold the send slot for 40-120 ms when WiFi or the LE background connect
+// takes its airtime (hw 2026-10-30, JBL GO 2): with the old 65 ms ring the
+// latency cap threw that audio away and the sink filled the hole. Steady state
+// the ring is near empty, so this costs no latency; after a stall the backlog
+// goes out back to back.
+constexpr int RING_FRAMES = 8192;
+void leAudioMode(bool on);         // defined after leAutoConnect
 
 // The heavy, connection-only state: allocated when a stream starts.
 struct Stream {
@@ -217,6 +230,7 @@ struct Stream {
     int      pcmN;
     // Stats.
     uint32_t pkts, frames, encUs, statT;
+    uint32_t skips, skipSmp;        // latency-cap jumps and the samples they threw away
 };
 Stream*  s_st = nullptr;
 struct SbcCfg {
@@ -234,6 +248,7 @@ void ringOff() {
     // cleared and still be storing into it: let two ticks (64 us) pass before
     // the block goes back to the heap.
     if (s_ring) { busy_wait_us(100); Buffer::pfree(s_ring); s_ring = nullptr; }
+    leAudioMode(false);
 }
 
 void streamFree() {
@@ -346,6 +361,19 @@ bool inputKnown(const uint8_t addr[6], bool le, Known* k) {
     return false;
 }
 
+// The "audio on" marker: set when a stream starts, removed when the user
+// disconnects. A reboot (F12, a machine switch) then brings the speaker back.
+void audioOnSave(bool on) {
+    if (!FileUtils::fsMount) return;
+    if (!on) { f_unlink(BT_AUDIO_ON); return; }
+    FIL f;
+    if (f_open(&f, BT_AUDIO_ON, FA_WRITE | FA_CREATE_NEW) == FR_OK) f_close(&f);
+}
+bool audioOnSaved() {
+    FILINFO fi;
+    return FileUtils::fsMount && f_stat(BT_AUDIO_ON, &fi) == FR_OK;
+}
+
 void saveRemembered() {
     static const uint8_t kZero[6] = {0};
     if (memcmp(s_audioAddr, kZero, 6) == 0) return;
@@ -378,9 +406,14 @@ void audioWork() {
     uint32_t r = pcm_bt_r;
     const uint32_t w = pcm_bt_w;
     __dmb();
-    // Latency cap: a stall (menu flush, SD load) must not leave the stream
-    // permanently behind — keep the newest ~30 ms.
-    if (w - r > (uint32_t)(RING_FRAMES * 3 / 4)) r = w - 1024;
+    // Latency cap, emergency only: a stall of ~245 ms (a long SD load, a radio
+    // that stops granting slots) must not leave the stream permanently behind -
+    // keep the newest ~65 ms. Shorter stalls are sent late instead of dropped.
+    if (w - r > (uint32_t)(RING_FRAMES - 512)) {
+        st->skips++;
+        st->skipSmp += (w - r) - 2048;
+        r = w - 2048;
+    }
     const uint32_t t0 = time_us_32();
     while (!st->readyToSend) {
         // Fill one SBC frame of output samples.
@@ -418,11 +451,13 @@ out:
 
     const uint32_t now = nowMs();
     if (now - st->statT >= 5000) {
-        Debug::log("BT audio: %u pkt %u sbc/5s, enc %u ms/5s, drops %u, ring %u, bad idx %u/%u",
+        Debug::log("BT audio: %u pkt %u sbc/5s, enc %u ms/5s, skip %u/%u smp, drops %u, ring %u, bad idx %u/%u",
                    (unsigned)st->pkts, (unsigned)st->frames, (unsigned)(st->encUs / 1000),
+                   (unsigned)st->skips, (unsigned)st->skipSmp,
                    (unsigned)pcm_bt_drops, (unsigned)(pcm_bt_w - pcm_bt_r),
                    (unsigned)cybt_bad_index_reads, (unsigned)cybt_bad_index_giveups);
         st->pkts = st->frames = st->encUs = 0;
+        st->skips = st->skipSmp = 0;
         st->statT = now;
     }
 }
@@ -433,7 +468,7 @@ bool streamStart() {
         if (!s_st) { blog("no memory for the SBC encoder (%u B)", (unsigned)sizeof(Stream)); return false; }
     }
     if (!s_ring) {
-        s_ring = (int16_t*)Buffer::palloc(RING_FRAMES * 4, Buffer::NEED_POINTER | Buffer::HOT_SRAM);
+        s_ring = (int16_t*)Buffer::palloc(RING_FRAMES * 4, Buffer::NEED_POINTER | Buffer::PREFER_PSRAM);
         if (!s_ring) { blog("no memory for the audio ring"); streamFree(); return false; }
     }
     Stream* st = s_st;
@@ -486,6 +521,7 @@ void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
                 break;
             }
             s_cid = a2dp_subevent_signaling_connection_established_get_a2dp_cid(p);
+            s_audioHandle = a2dp_subevent_signaling_connection_established_get_con_handle(p);
             {
                 // The sink may have connected to US (a speaker that remembers this
                 // source pages it when switched on): then nothing set the address
@@ -547,7 +583,9 @@ void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
                 break;
             }
             s_audio = A_STREAMING;
+            leAudioMode(true);
             saveRemembered();
+            audioOnSave(true);
             blog("streaming to %s", s_audioName[0] ? s_audioName : bd_addr_to_str(s_audioAddr));
             break;
         case A2DP_SUBEVENT_STREAMING_CAN_SEND_MEDIA_PACKET_NOW:
@@ -567,6 +605,7 @@ void a2dpHandler(uint8_t type, uint16_t, uint8_t* p, uint16_t) {
             blog("disconnected");
             streamFree();
             s_cid = 0;
+            s_audioHandle = HCI_CON_HANDLE_INVALID;
             if (s_audioPending) {                  // switching: now the new device
                 s_audioPending = false;
                 audioEstablish();
@@ -854,12 +893,41 @@ void leAutoConnect(bool on) {
     }
 }
 
+// With a BLE device connected the CYW43 hands the A2DP link about one ACL packet
+// per LE connection event (hw 2026-10-30, FY-128 + JBL GO 2): at 48.75 ms the
+// stream got ~22 packets/s, at 15 ms ~66 against the 69 it needs. While audio
+// streams the LE link is therefore kept at 7.5 ms with NO slave latency, so its
+// events never thin out.
+void leFastLink() {
+    if (s_leHandle == HCI_CON_HANDLE_INVALID) return;
+    const int rc = gap_update_connection_parameters(s_leHandle, 6, 6, 0, 300);
+    blog("LE link %04x: asking 7.5 ms, latency 0 while audio streams (rc %d)", (unsigned)s_leHandle, rc);
+}
+
+// While A2DP streams: a connected BLE input device keeps short, latency-free
+// connection events (leFastLink), and BTstack refuses its requests for slave
+// latency. Undone when the stream stops.
+void leAudioMode(bool on) {
+    static bool s_on = false;
+    if (on == s_on || s_state != S_UP) { if (s_state != S_UP) s_on = false; return; }
+    s_on = on;
+    le_connection_parameter_range_t r;
+    gap_get_connection_parameter_range(&r);
+    r.le_conn_latency_max = on ? 0 : 500;
+    gap_set_connection_parameter_range(&r);
+    if (on) leFastLink();
+}
+
 void inputReady() {
     s_pairTry = 0;
     s_pairNew = false;
     s_in = I_READY;
     saveInput();
     blog("%s ready (%s)", s_inName, s_inLe ? "BLE" : "classic");
+    // A BLE device that (re)connected while audio already streams: its link
+    // came up at the default 30 ms / latency 4, and the stream got ~30 packets
+    // a second off it (hw 2026-10-30, diag7). leAudioMode ran before it existed.
+    if (s_inLe && s_audio == A_STREAMING) leFastLink();
 }
 
 void inputClosed(const char* why) {
@@ -1130,6 +1198,7 @@ void packetHandler(uint8_t type, uint16_t, uint8_t* packet, uint16_t) {
                 gap_local_bd_addr(a);
                 blog("controller up, %s", bd_addr_to_str(a));
                 leAutoConnect(true);              // a remembered BLE keyboard/mouse/pad
+                audioResume();                    // the speaker that played before a reboot
             }
             break;
         case HCI_EVENT_PIN_CODE_REQUEST:          // legacy pairing (pre-2.1 devices)
@@ -1143,6 +1212,41 @@ void packetHandler(uint8_t type, uint16_t, uint8_t* packet, uint16_t) {
         case HCI_EVENT_USER_PASSKEY_NOTIFICATION: // SSP passkey entry (keyboards)
             blog("type %06u then Enter on the keyboard",
                  (unsigned)hci_event_user_passkey_notification_get_numeric_value(packet));
+            break;
+        case HCI_EVENT_NUMBER_OF_COMPLETED_PACKETS: {
+            // The radio sometimes reports the sink's completed packets with bit 0
+            // of the handle cleared (000b -> 000a, 000d -> 000c; hw 2026-10-30,
+            // every A2DP collapse). BTstack drops a completion for an unknown
+            // handle, so those packets stay "in flight" for ever and the stream
+            // runs on what is left of the controller's 8 ACL buffers: ~4 packets a
+            // second until a reboot. Credit them to the sink's link when its handle
+            // differs only in bit 0.
+            if (s_audioHandle == HCI_CON_HANDLE_INVALID) break;
+            const int n = packet[2];
+            for (int i = 0; i < n; i++) {
+                const uint16_t h = little_endian_read_16(packet, 3 + i * 4) & 0x0fff;
+                const uint16_t c = little_endian_read_16(packet, 5 + i * 4);
+                if ((h ^ s_audioHandle) != 1 || hci_connection_for_handle(h)) continue;
+                hci_connection_t* ac = hci_connection_for_handle(s_audioHandle);
+                if (!ac) continue;
+                const unsigned before = ac->num_packets_sent;
+                ac->num_packets_sent = before >= c ? (uint8_t)(before - c) : 0;
+                blog("repaired %u completed packets: handle %04x -> %04x (outstanding %u -> %u)",
+                     (unsigned)c, (unsigned)h, (unsigned)s_audioHandle, before,
+                     (unsigned)ac->num_packets_sent);
+                if (s_st && s_st->readyToSend)
+                    a2dp_source_stream_endpoint_request_can_send_now(s_cid, s_seid);
+            }
+            break;
+        }
+        case HCI_EVENT_LE_META:
+            if (hci_event_le_meta_get_subevent_code(packet) == HCI_SUBEVENT_LE_CONNECTION_UPDATE_COMPLETE) {
+                // The device renegotiated its link while audio streams: back to 7.5 ms.
+                const uint16_t iv = hci_subevent_le_connection_update_complete_get_conn_interval(packet);
+                if (s_audio == A_STREAMING &&
+                    (iv > 6 || hci_subevent_le_connection_update_complete_get_conn_latency(packet) != 0))
+                    leFastLink();
+            }
             break;
         case HCI_EVENT_META_GAP:
             if (hci_event_gap_meta_get_subevent_code(packet) == GAP_SUBEVENT_LE_CONNECTION_COMPLETE)
@@ -1293,6 +1397,7 @@ bool inputConnect(const Dev& d) {
     if (!ensureUp()) return false;
     if (s_busy) finish("stopped");
     if (s_in == I_READY || s_in == I_CONNECTING) inputDisconnect();
+    leAudioMode(false);   // the user is connecting a device now: normal LE rules
     leAutoConnect(false);
     memcpy(s_inAddr, d.addr, 6);
     s_inLe = d.le;
@@ -1380,13 +1485,18 @@ bool connectedTo(bool input, const uint8_t addr[6]) {
 }
 
 void bootTick() {
-    // ~3 s after boot, once: power up if an input device has been added.
+    // ~3 s after boot, once: power up if an input device has been added. The
+    // boot WiFi join goes first (up to 30 s): the BT firmware download takes the
+    // shared radio, a join running beside it failed, and the radio left searching
+    // for the network made the A2DP stream stutter (hw 2026-10-30).
     static bool done = false;
     if (done || s_state != S_OFF || nowMs() < 3000) return;
+    if (WifiNet::bootJoinPending() && nowMs() < 30000) return;
     done = true;
     Known k;
-    if (listLoad(true, &k, 1) < 1) return;
-    blog("added input %s - starting Bluetooth", k.name);
+    if (listLoad(true, &k, 1) >= 1) blog("added input %s - starting Bluetooth", k.name);
+    else if (audioOnSaved() && listLoad(false, &k, 1) >= 1) blog("speaker %s was in use - starting Bluetooth", k.name);
+    else return;
     powerOnAsync();
 }
 
@@ -1397,7 +1507,7 @@ bool audioConnect(const uint8_t addr[6], const char* name) {
     if (!ensureUp()) return false;
     if (s_busy) finish("stopped");
     const bool switching = s_cid != 0;
-    if (switching) audioDisconnect();
+    if (switching) audioDrop();
     memcpy(s_audioAddr, addr, 6);
     snprintf(s_audioName, sizeof(s_audioName), "%s", name && name[0] ? name : bd_addr_to_str(s_audioAddr));
     s_audioRetries = 0;
@@ -1449,13 +1559,27 @@ bool audioEstablish() {
     return true;
 }
 
-void audioDisconnect() {
+void audioDrop() {
     s_audioPending = false;
     btstack_run_loop_remove_timer(&s_audioRetryT);
     s_audioRetries = 0;
     ringOff();
     if (s_cid) a2dp_source_disconnect(s_cid);
     s_audio = A_IDLE;
+}
+
+void audioDisconnect() {
+    audioDrop();
+    audioOnSave(false);
+}
+
+// Controller up: reconnect the speaker that was playing when the board rebooted.
+void audioResume() {
+    if (s_audio != A_IDLE || !audioOnSaved()) return;
+    Known k;
+    if (listLoad(false, &k, 1) < 1) return;
+    blog("reconnecting %s", k.name);
+    audioConnect(k.addr, k.name);
 }
 
 bool remembered(uint8_t addr[6], char* name, int cap) {
@@ -1493,9 +1617,33 @@ void pump() {
     const uint32_t now = time_us_32();
     if (now - last < 2000) return;
     last = now;
+    // A busy guest (NxModPlayer: no frame-pacing wait) gets here once a frame,
+    // and one packet a call is 50 a second against the 69 the stream needs (hw
+    // 2026-10-30: the ring overflowed, ~11k samples a second thrown away). The
+    // send slot for the next packet opens a radio poll or two after the last one
+    // went out, so while a backlog is waiting: encode, poll until it is sent,
+    // repeat - up to four packets in ~2.5 ms.
     audioWork();
     WifiNet::poll();
+    for (int i = 0; i < 4 && s_st && s_audio == A_STREAMING; i++) {
+        if (pcm_bt_w - pcm_bt_r < 1024) break;
+        const uint32_t sent = s_st->pkts;
+        for (int k = 0; k < 3 && s_st && s_st->pkts == sent; k++) {
+            if (time_us_32() - now > 2500) return;
+            audioWork();
+            WifiNet::poll();
+        }
+        if (!s_st || s_st->pkts == sent) break;
+    }
 }
+
+}  // namespace BtHost
+
+// GS.cpp's host waits (a guest uploading to the card can hold core0 there for a
+// whole frame and more): keep the A2DP stream fed. Weak-referenced by GS.cpp.
+extern "C" void gs_host_wait_hook(void) { BtHost::pump(); }
+
+namespace BtHost {
 
 const char* stateStr() {
     switch (s_state) {

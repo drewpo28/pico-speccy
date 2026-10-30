@@ -71,6 +71,10 @@ bool sntpSync(int tz, std::string& out_str);
 void autoBegin(const char* ssid, const char* pass, int tz, bool sntp = true);
 void autoPoll();
 bool autoBusy();
+// The boot join (WiFi on, an SSID saved, on-chip transport) has not started yet
+// or is still associating. Bluetooth waits for it: a BT firmware download in the
+// middle of the join made it fail (hw 2026-10-30).
+bool bootJoinPending();
 
 // Optional line sink for the UI (the same right-pane log ZiFiAT feeds).
 typedef void (*LogCb)(const char* line);
