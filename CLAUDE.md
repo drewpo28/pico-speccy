@@ -15854,10 +15854,11 @@ Wait states approximate ep128emu (VRAM = next Nick slot + latency). FILE: device
 ep128emu's epfileio.rom in segment 0x10, `ED FE FE n` traps in `EpFile.cpp`; the open
 NAME is EXOS's copy in the system segment (DE = BFxx), read through the CURRENT
 paging — reading it through the caller's page table gave empty names for any program
-that repages window 2 (Jetpac). F5 on a .com = reset + typed `load "NAME"`; Jetpac
-and Nebulus play on the host. Dave sound = ep128emu runOneCycle_ on its own 16-T
-clock (caught up at every Dave port access), polynomial counters as LFSRs, 624
-samples a frame into a heap buffer mixed in ESPectrum (`Ep::audio`); host bench
+that repages window 2 (Jetpac). F5 on a .com only sets the FILE: folder (+ switches to the Enterprise); an empty
+`LOAD` opens the F5 pick, `:DIR` / `:CD` come from a patch of the FILE: ROM's command
+handler (rom_pack.py ep_fileio_patch). Jetpac, Nebulus, Target Renegade play on the host. Dave sound = ep128emu runOneCycle_ on its own 16-T
+clock (caught up at every Dave port access), polynomial counters as LFSRs, a sample
+per 128 T (NOT per 8 Dave cycles: #BF bit 1 makes a cycle 24 T), 624 a frame into a heap buffer mixed in ESPectrum (`Ep::audio`); host bench
 `PICOSPECCY_WAV=file`. F1-F8 = EP row 4 under the SAM ON/OFF/AUTO scheme (AUTO = row 4
 read from RAM code). Not yet: hi-res PIXEL 2-colour (shown at lores), EXDOS, tape,
 joysticks; the flash cost of 250 kHz Dave steps is unmeasured on hw.
@@ -15867,6 +15868,25 @@ by writing `arch=EP` / `romSet=EP128` into the root's `storage.nvs`, capture wit
 `PICOSPECCY_SHOT(S)`, type with `PICOSPECCY_KEYS="frame:Key,..."` (SDL scancode names,
 held 6 frames; added for this). Checked there: memory test, logo, IS-BASIC on both
 romsets, `print 12345` answered.
+**Speed round (2026-10-30 evening, hw-confirmed DVp2w: TEXT 80 23 -> 50 FPS at IDL
++2000..3000, Turbo Esprit 50 with headroom; details `docs/enterprise-plan.md` Phase
+3b).** PROF values are PER MILLE, not samples. Four levers, all measured first: (1)
+`pairEntry` inline / word stores in Nick (its `span` had 16 `bl memset` into flash
+libc) — the TEXT 80 half; (2) Dave: a `#B4` read catches Dave up only once
+`Ep::statusCycles()` says the status could have moved, masks cached until a register
+write, inaudible unread noise skipped across the 62.5 kHz edges in closed form — and
+a pre-existing skip() bug (st vs st1 one step after a register write) found by a
+step()-only differential test (old code diverged in 94% of random programs); (3) Nick
+writes fb-order bytes (`x2w`, `outMap` = PAL_SLOT0 + q7) straight into the fb row,
+`lineOutSlow` only for pair frames / overlay rows; (4) `EpFast.h`: `MEMGATES_EP` (bit 6
+of the gate word's atm_ro byte) sends `peek8/poke8/peek16/poke16` and both fetches to
+RAM leaves with the wait ticks inline, instead of Draw pointer -> gsDmaPeek8 ->
+readbyte. The `EP_HOT_IN_RAM` SRAM experiment was removed (it bought ~2.5 ms before
+the restructure, nothing after). EP pages 4/6 are back in butter like every machine's
+(owner's call); only 5/7 stay SRAM. Verification tools: `tools/ep_sim.cpp`
+`EP_SIM_HI/CLIP/MAP=1` (frames byte-identical), and old-vs-new differential harnesses
+for Dave and Nick described in the plan (session scratch, rebuild before touching
+`Dave::tick/skip` or `Nick::slotT`).
 
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
 

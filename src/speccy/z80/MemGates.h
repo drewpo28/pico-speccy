@@ -31,3 +31,8 @@ extern MemGates g_memgates;
 // store/load. The address test (fastrd / fastmem against 0x4000) stays separate.
 #define MEMGATES_READ_PLAIN(w)  (((w) & 0xFF00u) == 0u)
 #define MEMGATES_WRITE_PLAIN(w) (((w) & 0xFFFFFF00u) == 0u)
+// Enterprise (EpFast.h): bit 6 of the atm_ro byte — never a window bit (those are
+// 0..3) nor the ZX-Evo font bit (7). The accessors' generic branch takes the EP
+// path when it is set.
+#define MEMGATES_EP 0x40000000u
+#define ATM_RO_EP   0x40u

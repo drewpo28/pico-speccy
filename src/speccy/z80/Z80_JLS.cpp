@@ -34,6 +34,7 @@
 #include "speccy/machines/Quorum.h"   // Quorum DOS edges + NMI acknowledge
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Enterprise/Ep.h"   // ED FE: the FILE: device trap
+#include "speccy/machines/Enterprise/EpFast.h"   // the fetch of an Enterprise (MEMGATES_EP)
 #include "speccy/machines/EvoBase.h"
 #include "speccy/devices/tape/Tape.h"
 #include "app/Config.h"
@@ -1734,6 +1735,10 @@ IRAM_ATTR void Z80::exec_nocheck() {
             pg = REG_PCh >> 5;
             opCode = MemESP::ramCurrent[pg][REG_PC & 0x1fff];
             if (divmmc) DivMMC::postOpcFetch();
+        } else if (__builtin_expect((g_memgates.w & MEMGATES_EP) != 0, 0)) {
+            // Enterprise (EpFast.h): the wait-state tick inline, a plain pointer read.
+            Ep::tickOp(MemESP::ramContended[pg]);
+            opCode = MemESP::ramCurrent[pg][REG_PC & 0x1fff];
         } else {
         // Leningrad /WAIT (machines/Leningrad.h): this is the fetch that runs most of
         // the frame, so the alignment has to be here as well as in fetchOpcode().
@@ -2887,6 +2892,7 @@ void Z80::decodeOpcodefb() /* EI */
     pendingEI = true;
     if (Z80Ops::isTsconf) TsConf::intEnableHook();
     if (Z80Ops::isNext && NextInt::ex) NextInt::wake();
+    if (Z80Ops::isEnt) Ep::intEnable();
 }
 
 
@@ -4075,6 +4081,7 @@ void Z80::decodeED(void) {
             REG_PC = REG_WZ = pop();
             check_trdos();
             if (Z80Ops::isTsconf && ffIFF1) TsConf::intEnableHook();
+            if (Z80Ops::isEnt && ffIFF1) Ep::intEnable();
             if (Z80Ops::isNext && NextInt::ex) NextInt::reti();   // the source in service leaves it
             break;
         }
@@ -4109,6 +4116,7 @@ void Z80::decodeED(void) {
             else if (Z80Ops::isNext && DivMMC::enabled) DivMMC::nextRetn();
             check_trdos();
             if (Z80Ops::isTsconf && ffIFF1) TsConf::intEnableHook();
+            if (Z80Ops::isEnt && ffIFF1) Ep::intEnable();
             // a zxnDMA paused for the NMI (NR 0xCC bit 7) resumes after RETN —
             // BEFORE the next instruction: wake() let one more run, and Atic
             // Atac Remake's copper NMI (every line) then advanced its page-fill

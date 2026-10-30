@@ -771,6 +771,12 @@ static void donateZxPagesToFb() {
   // the ZX machines had before pages 0-3 were added to the donation.
   const bool next = Config::arch == A_NEXT ||
                     (Config::ram_file == NO_RAM_FILE && Config::pref_arch == A_NEXT);
+  // Enterprise: its whole 128 KB IS these eight pages, and Nick's video RAM is
+  // segments FC-FF = pages 4-7, read two bytes a slot (~14k slots a frame, a 16-byte
+  // XIP line per 8 slots). Pages 4/6 were kept in SRAM for one day (2026-10-30: the
+  // Turbo Esprit title spent 8 ms a frame on Nick lines with the per-byte renderer);
+  // with the word renderer the owner put them back in butter like every machine's —
+  // 32 KB of heap an EP session had lost. Only 5/7 stay in SRAM.
   if ((ZX_PSRAM_PAGES & 0x0F) == 0x0F) {
     if (next) VIDEO::fbDonate(p0 + 2u * MEM_PG_SZ, 2u * MEM_PG_SZ, 0x0Cu);   // pages 2/3 only
     else      VIDEO::fbDonate(p0, 4u * MEM_PG_SZ, 0x0Fu);

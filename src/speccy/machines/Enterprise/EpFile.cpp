@@ -17,12 +17,15 @@
 
 #include <string.h>
 #include <string>
+#include <vector>
+#include <algorithm>
 
 #include "app/Config.h"
 #include "app/Debug.h"
 #include "app/TryAlloc.h"
 #include "app/ESPectrum.h"
 #include "app/MachineSwitch.h"
+#include "ui/OSDMain.h"
 #include "fatfs/ff.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/z80/z80.h"
@@ -38,6 +41,9 @@ static constexpr int MAX_CH = 8;
 struct Ch { bool used; uint8_t chn; FIL* f; };
 static Ch          s_ch[MAX_CH];
 static std::string s_dir = "/";
+static std::string s_out;               // :DIR / :CD text the ROM is printing
+static size_t      s_outPos = 0;
+
 static bool        s_defFile = true;      // function 14/15: default device is FILE:
 
 static Ch* findCh(uint8_t chn) {
@@ -75,6 +81,91 @@ static std::string pathOf(const std::string& name) {
     return p + name;
 }
 
+// ---------------------------------------------------------------------------
+// :DIR [folder] / :CD [folder] (EXOS action 2, tools/rom_pack.py ep_fileio_patch).
+// The command string is at DE (length byte first) in the current paging. The text
+// goes to s_out, which the ROM prints a character at a time (trap 0x13).
+
+static std::string resolveDir(const std::string& arg) {
+    std::string d = arg.empty() ? s_dir : (arg[0] == '/' ? arg : s_dir + arg);
+    // normalise "." / ".." / repeated slashes
+    std::string out = "/";
+    size_t i = 0;
+    while (i < d.size()) {
+        size_t j = d.find('/', i);
+        if (j == std::string::npos) j = d.size();
+        const std::string part = d.substr(i, j - i);
+        if (part == "..") {
+            if (out.size() > 1) { out.pop_back(); out.erase(out.rfind('/') + 1); }
+        } else if (!part.empty() && part != ".") out += part + "/";
+        i = j + 1;
+    }
+    return out;
+}
+
+static bool dirExists(const std::string& d) {
+    DIR dir;
+    std::string p = d.size() > 1 ? d.substr(0, d.size() - 1) : d;
+    if (f_opendir(&dir, p.c_str()) != FR_OK) return false;
+    f_closedir(&dir);
+    return true;
+}
+
+static void listDir(const std::string& d) {
+    DIR dir;
+    FILINFO fi;
+    const std::string p = d.size() > 1 ? d.substr(0, d.size() - 1) : d;
+    s_out = "FILE: " + d + "\r\n";
+    if (f_opendir(&dir, p.c_str()) != FR_OK) { s_out += "*** No such folder\r\n"; return; }
+    std::vector<std::string> dirs, files;
+    while (f_readdir(&dir, &fi) == FR_OK && fi.fname[0] && dirs.size() + files.size() < 256) {
+        if (fi.fattrib & (AM_HID | AM_SYS)) continue;
+        if (fi.fname[0] == '.') continue;
+        char line[64];
+        if (fi.fattrib & AM_DIR) {
+            snprintf(line, sizeof(line), " %-26.26s <DIR>", fi.fname);
+            dirs.push_back(line);
+        } else {
+            snprintf(line, sizeof(line), " %-26.26s %8lu", fi.fname, (unsigned long)fi.fsize);
+            files.push_back(line);
+        }
+    }
+    f_closedir(&dir);
+    std::sort(dirs.begin(), dirs.end());
+    std::sort(files.begin(), files.end());
+    for (const std::string& l : dirs) s_out += l + "\r\n";
+    for (const std::string& l : files) s_out += l + "\r\n";
+    char tail[48];
+    snprintf(tail, sizeof(tail), " %u folder(s), %u file(s)\r\n", (unsigned)dirs.size(), (unsigned)files.size());
+    s_out += tail;
+}
+
+static bool command() {
+    uint16_t a = Z80::getRegDE();
+    const uint8_t len = MemESP::readbyte(a);
+    std::string cmd;
+    for (int i = 0; i < len; i++) cmd += (char)MemESP::readbyte(++a);
+    size_t sp = cmd.find(' ');
+    std::string word = cmd.substr(0, sp), arg;
+    if (sp != std::string::npos) {
+        arg = cmd.substr(sp + 1);
+        while (!arg.empty() && arg[0] == ' ') arg.erase(0, 1);
+        while (!arg.empty() && arg.back() == ' ') arg.pop_back();
+    }
+    for (char& c : word) if (c >= 'a' && c <= 'z') c = (char)(c - 32);
+    if (word != "DIR" && word != "CD") return false;
+    s_outPos = 0;
+    if (word == "DIR") listDir(resolveDir(arg));
+    else if (arg.empty()) s_out = "FILE: " + s_dir + "\r\n";
+    else {
+        const std::string d = resolveDir(arg);
+        if (dirExists(d)) { s_dir = d; s_out = "FILE: " + s_dir + "\r\n"; }
+        else s_out = "*** No such folder\r\n";
+    }
+    Debug::log("[EP] :%s '%s' -> %u chars", word.c_str(), arg.c_str(), (unsigned)s_out.size());
+    return true;
+}
+
 // EXOS error codes (epfileio.s errMsgTable): CF not found, A6 bad name, A1 bad
 // attributes, BA not ready, E4 end of file, E7 no function, F9/FB channel exists /
 // does not exist.
@@ -82,6 +173,12 @@ void fileTrap() {
     const uint16_t pc = Z80::getRegPC();          // just past ED FE
     if (MemESP::readbyte(pc) != 0xFE) return;
     const uint8_t n = MemESP::readbyte((uint16_t)(pc + 1));
+    if ((n == 0x12 || n == 0x13) && pcInFileRom(pc)) {
+        if (n == 0x12) Z80::setRegA(command() ? 1 : 0);
+        else Z80::setRegA(s_outPos < s_out.size() ? (uint8_t)s_out[s_outPos++] : 0);
+        if (n == 0x13 && s_outPos >= s_out.size() && Z80::getRegA() == 0) { s_out.clear(); s_outPos = 0; }
+        return;
+    }
     if (n >= 0x10 || !pcInFileRom(pc)) return;
     const uint8_t chn = Z80::getRegA();
     Ch* ch = nullptr;
@@ -201,72 +298,8 @@ void fileTrap() {
 }
 
 // ---------------------------------------------------------------------------
-// Launch: typing into the keyboard matrix
-
-uint8_t inj[10] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-
-struct Key { uint8_t row, bit; bool shift; };
-static Key   s_seq[48];
-static int   s_seqN = 0, s_seqPos = 0;
-static int   s_phase = -1;               // -1 off, 0 wait for the logo, 1 typing
-static int   s_wait = 0, s_hold = 0;
-
-// Character -> EP matrix key (rows/bits of ep128emu config/ep_keys.cfg).
-static bool keyFor(char c, Key& k) {
-    struct M { char c; uint8_t row, bit; };
-    static const M map[] = {
-        {'n',0,0}, {'\\',0,1}, {'b',0,2}, {'c',0,3}, {'v',0,4}, {'x',0,5}, {'z',0,6},
-        {'h',1,0}, {'g',1,2}, {'d',1,3}, {'f',1,4}, {'s',1,5}, {'a',1,6},
-        {'u',2,0}, {'q',2,1}, {'y',2,2}, {'r',2,3}, {'t',2,4}, {'e',2,5}, {'w',2,6},
-        {'7',3,0}, {'1',3,1}, {'6',3,2}, {'4',3,3}, {'5',3,4}, {'3',3,5}, {'2',3,6},
-        {'8',5,0}, {'9',5,2}, {'-',5,3}, {'0',5,4}, {'^',5,5},
-        {'j',6,0}, {'k',6,2}, {';',6,3}, {'l',6,4}, {':',6,5}, {']',6,6},
-        {'m',8,0}, {',',8,2}, {'/',8,3}, {'.',8,4}, {' ',8,6},
-        {'i',9,0}, {'o',9,2}, {'@',9,3}, {'p',9,4}, {'[',9,5},
-    };
-    if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-    if (c == '"')  { k = {3, 6, true};  return true; }      // SHIFT + 2
-    if (c == '\n') { k = {7, 6, false}; return true; }      // ENTER
-    for (const M& m : map)
-        if (m.c == c) { k = {m.row, m.bit, false}; return true; }
-    return false;
-}
-
-static void seqArm(const std::string& text) {
-    s_seqN = 0;
-    for (char c : text) {
-        Key k;
-        if (s_seqN < (int)(sizeof(s_seq) / sizeof(s_seq[0])) && keyFor(c, k)) s_seq[s_seqN++] = k;
-    }
-    s_seqPos = 0;
-    s_phase = 0;
-    s_wait = 0;
-    s_hold = 0;
-    memset(inj, 0xFF, sizeof(inj));
-}
-
-// EndFrame: drives the typing. Phase 0 waits until the boot logo (a 256-colour
-// PIXEL screen, Ep::logoSeen) has been up for a while, or 15 s for a warm boot that
-// skips it, and leaves it with a SPACE; phase 1 types the command.
-void launchTick() {
-    if (s_phase < 0) return;
-    memset(inj, 0xFF, sizeof(inj));
-    if (s_phase == 0) {
-        s_wait++;
-        if (!(logoFrames() > 25 || s_wait > 750)) return;
-        if (s_hold < 5) { inj[8] &= (uint8_t)~(1u << 6); s_hold++; return; }   // SPACE
-        if (s_hold < 80) { s_hold++; return; }                                 // BASIC comes up
-        s_phase = 1; s_hold = 0;
-        return;
-    }
-    if (s_seqPos >= s_seqN) { s_phase = -1; return; }
-    const Key& k = s_seq[s_seqPos];
-    if (s_hold < 4) {
-        inj[k.row] &= (uint8_t)~(1u << k.bit);
-        if (k.shift) inj[0] &= (uint8_t)~(1u << 7);
-    }
-    if (++s_hold >= 8) { s_hold = 0; s_seqPos++; }
-}
+// F5 on a .COM / .BAS: FILE: serves that file's folder from now on. Nothing is
+// started — the user types LOAD "name" in IS-BASIC.
 
 static constexpr uint32_t LAUNCH_SCRATCH = 1;          // shares the P3BT / SAMB register
 static constexpr uint32_t LAUNCH_TAG = 0x45504C4Eu;    // 'EPLN'
@@ -276,8 +309,7 @@ static void armFor(const std::string& path) {
     const size_t sl = path.rfind('/');
     s_dir = sl == std::string::npos ? std::string("/") : path.substr(0, sl + 1);
     const std::string name = sl == std::string::npos ? path : path.substr(sl + 1);
-    seqArm("load \"" + name + "\"\n");
-    Debug::log("[EP] launch '%s' from '%s'", name.c_str(), s_dir.c_str());
+    Debug::log("[EP] FILE: folder '%s' (%s)", s_dir.c_str(), name.c_str());
 }
 
 bool launchFile(const std::string& path) {
@@ -292,10 +324,9 @@ bool launchFile(const std::string& path) {
         MachineSwitch::commit(A_ENT, Config::romSetEp);   // resets, or reboots and never returns
         watchdog_hw->scratch[LAUNCH_SCRATCH] = 0;
         f_unlink(LAUNCH_FILE);
-    } else {
-        ESPectrum::resetForLoad();
     }
     armFor(path);
+    OSD::notify((" FILE: " + s_dir + " ").c_str(), LEVEL_INFO, 2000);
     return true;
 }
 
