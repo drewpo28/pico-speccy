@@ -93,6 +93,13 @@ void act_replaceRom(int32_t slot);
 // Network
 void act_wifi();
 void act_sntp();
+#if PICOSPECCY_BT
+void act_btAudio();             // Audio > Driver > Bluetooth
+void bt_buildAudio(DynRows& r);
+void bt_buildInput(DynRows& r);
+void bt_keyAudio(int32_t tag, uint8_t key);
+void bt_keyInput(int32_t tag, uint8_t key);
+#endif
 #if ZIFI_NET_CLIENT
 void act_ftpServer();
 void act_httpTest();

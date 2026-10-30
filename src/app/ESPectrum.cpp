@@ -108,6 +108,7 @@ extern "C" volatile uint32_t hdmi_au_late_write_ct;
 #include "speccy/devices/zifi/ZiFi.h"
 #include "net/ZiFiAT.h"
 #include "net/WifiNet.h"
+#include "net/BtHost.h"
 #include "drivers/board/BoardPins.h"
 #include "speccy/devices/storage/RTC.h"
 #include "speccy/devices/storage/Nvram24.h"
@@ -4092,6 +4093,10 @@ void ESPectrum::netBackgroundTick() {
 #if PICOSPECCY_WIFI
     WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
 #endif
+#if PICOSPECCY_BT
+    BtHost::pump();    // A2DP stream: encode what core1 produced, send it (no-op when idle)
+    BtHost::bootTick(); // a remembered keyboard/mouse/pad: bring Bluetooth up after boot
+#endif
 
     // A WiFi dialog on screen owns the radio (its scan/connect cancelled the FSM
     // on purpose) — don't start or step it underneath the user.
@@ -5392,6 +5397,9 @@ void ESPectrum::loop() {
       if (Config::v_sync_enabled) {
         for (;;) {
           if (ZiFi::cdcNicActive) ZiFi::cdcPump();
+#if PICOSPECCY_BT
+          BtHost::pump();   // self-limited to one pass per 2 ms, no-op unless streaming
+#endif
           // SD only. An MP3 frame decode is an indivisible multi-millisecond
           // unit of work, and started here it delays our notice of v_sync by
           // its whole duration — the frame ends late, which shows up as FPS
@@ -5425,6 +5433,19 @@ void ESPectrum::loop() {
       } else {
         if (idle > 0) {
           Debug::pumpUart();
+#if PICOSPECCY_BT
+          if (BtHost::streaming()) {
+            // Bluetooth audio wants a send slot every few ms: spend the idle
+            // pumping the radio instead of sleeping through it.
+            int64_t e = (int64_t)time_us_64() + idle;
+            while ((int64_t)time_us_64() < e) {
+              BtHost::pump();
+              if (GS::neogs) NgsSd::service();
+              if (Z80Ops::isTsconf && VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
+              if (g_ts_c1_live) VIDEO::tsC1HelpOne();
+            }
+          } else
+#endif
           if (ZiFi::cdcNicActive) {
             int64_t e = (int64_t)time_us_64() + idle;
             while ((int64_t)time_us_64() < e) {

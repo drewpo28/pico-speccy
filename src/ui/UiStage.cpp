@@ -33,6 +33,10 @@
 #include "speccy/core/Ports.h"
 #include "app/Debug.h"
 #include "speccy/devices/gs/GS.h"
+#if PICOSPECCY_BT
+#include "net/BtHost.h"
+#endif
+extern uint8_t audio_driver_running;   // pwm_audio.cpp: the wired driver init_sound() set up
 #include "speccy/devices/zifi/ZiFi.h"
 #include "net/ZiFiAT.h"
 #include "drivers/board/BoardPins.h"
@@ -143,7 +147,27 @@ NM_INT_ACCESS (covox,     covox)
 NM_INT_ACCESS (soundrive, soundrive)
 NM_BOOL_ACCESS(saa,       SAA1099)
 NM_INT_ACCESS (boost,     audio_boost)
-NM_INT_ACCESS (audioDrv,  audio_driver)
+// Audio > Driver: Config::audio_driver is the WIRED output (read once at boot,
+// hence AC_REBOOT). With the on-chip Bluetooth streaming to a sink the row reads
+// "Bluetooth" (Config::AUDIO_DRIVER_BT) instead; picking it is intercepted by the
+// nav (it opens Bluetooth > Audio), and picking a wired driver while Bluetooth
+// plays disconnects it — a reboot only if the wired driver itself changes
+// (audioDrvNeedsReboot).
+static int32_t get_audioDrv() {
+#if PICOSPECCY_BT
+    const BtHost::AudioState s = BtHost::audioState();
+    if (s == BtHost::A_STREAMING || s == BtHost::A_CONNECTING) return Config::AUDIO_DRIVER_BT;
+#endif
+    return (int32_t)Config::audio_driver;
+}
+static void put_audioDrv(int32_t v) {
+    if (v == Config::AUDIO_DRIVER_BT) return;     // runtime state, never stored
+#if PICOSPECCY_BT
+    const BtHost::AudioState s = BtHost::audioState();
+    if (s == BtHost::A_STREAMING || s == BtHost::A_CONNECTING) BtHost::audioDisconnect();
+#endif
+    Config::audio_driver = (uint8_t)v;
+}
 NM_INT_ACCESS (dma,       dma_mode)
 NM_INT_ACCESS (cpuMhz,    cpu_mhz)
 NM_INT_ACCESS (vreg,      vreq_voltage)
@@ -909,9 +933,19 @@ void set(uint16_t id, int32_t v) {
 
 bool isDirty(uint16_t id) { return valid(id) && bmGet(g_dirty, id); }
 
+// A staged setting that needs a reboot. Audio > Driver is the one exception to
+// "AC_REBOOT and dirty": switching between Bluetooth and the wired driver already
+// running is live — only a different WIRED driver needs the reboot.
+static bool rebootDirty(uint16_t id) {
+    if (!bmGet(g_dirty, id) || kDesc[id].cls != AC_REBOOT) return false;
+    if (id == SET_AUDIO_DRIVER)
+        return g_val[id] != Config::AUDIO_DRIVER_BT && g_val[id] != (int32_t)audio_driver_running;
+    return true;
+}
+
 bool rebootPending() {
     for (uint16_t id = 1; id < SET_COUNT; id++)
-        if (bmGet(g_dirty, id) && kDesc[id].cls == AC_REBOOT) return true;
+        if (rebootDirty(id)) return true;
     return false;
 }
 
@@ -1855,7 +1889,7 @@ void commit(CommitReport& rep) {
 
     // Computed after the gate: a refused enable must not leave a reboot prompt behind.
     for (uint16_t id = 1; id < SET_COUNT; id++)
-        if (bmGet(g_dirty, id) && kDesc[id].cls == AC_REBOOT) rep.needsReboot = true;
+        if (rebootDirty(id)) rep.needsReboot = true;
 
     // General Sound and DivIDE both decode ports 0xB3/0xBB (OSDMain.cpp:3262), so turning
     // GS on turns DivIDE off. Config::esxdos is not a staged setting yet, so this writes

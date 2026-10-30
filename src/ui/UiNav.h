@@ -60,6 +60,7 @@ int         rightRowCount(const Node* n);   // rows the right pane will show for
 const char* rightTitle(const Node* n);
 void        breadcrumb(char* out, size_t n);
 const char* dynHint(int i);          // right-pane verb list of a dynamic level
+uint8_t     dynRightLine(int i, char* label, char* value);   // DYN_INFO_* style
 
 } // namespace nm
 

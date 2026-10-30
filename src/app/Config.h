@@ -829,6 +829,10 @@ public:
     // Palette: 0=Default, 1=Grayscale
     static uint8_t palette;
     static uint8_t audio_driver;
+    // Audio > Driver shows this value while a Bluetooth A2DP sink is connected
+    // (PICOSPECCY_BT). It is a RUNTIME state, never stored in audio_driver: the
+    // wired driver stays configured underneath and comes back on disconnect.
+    static constexpr uint8_t AUDIO_DRIVER_BT = 6;
     static bool byte_cobmect_mode;
 
     // «Байт» доп. ПЗУ (DD71) flip-flop: any access to the Kempston-decoded port
