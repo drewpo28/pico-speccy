@@ -1176,7 +1176,7 @@ static void mouse_apply(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32
     ESPectrum::mouseDY += dy;
 }
 
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 //--------------------------------------------------------------------+
 // Bluetooth HID (src/net/BtHost.cpp): the same funnels the USB devices use.
 //--------------------------------------------------------------------+

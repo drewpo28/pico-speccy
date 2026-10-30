@@ -32,7 +32,7 @@
 #include "fs/FileUtils.h"
 #include "drivers/input/fabutils.h"
 #include "app/Debug.h"
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 #include "net/BtHost.h"
 #endif
 #include <pico/stdlib.h>
@@ -452,7 +452,7 @@ static void activate() {
             } else {                               // commit the highlighted option
                 uint8_t cnt; const Option* o = nodeOptions(*n, cnt);
                 if (S.rsel >= cnt) break;
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
                 // Audio > Driver > Bluetooth is not a stored value: it is the
                 // Bluetooth > Audio flow (pick a sink, connect). Whatever it ends
                 // with, the row then reads the live state.

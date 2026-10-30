@@ -551,7 +551,7 @@ foreach(_pat IN ITEMS "*/src/player/Player*" "*/external/libxmp/*")
     string(APPEND PSRAMROM_CODE_KEEP "${_pat}(.text* .rodata*) ")   # no KEEP: gc-sections must still drop dead libxmp code
 endforeach()
 
-if (PICOSPECCY_BT)
+if (PICOSPECCY_WIFI)
     set(BT_FLASH_RESERVE 12288)   # BTstack flash bank: 2 x 4 KB + the RP2350 top sector
 else()
     set(BT_FLASH_RESERVE 0)

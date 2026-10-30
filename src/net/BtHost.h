@@ -1,6 +1,6 @@
 #pragma once
 
-// On-chip Bluetooth (PICOSPECCY_BT: the CYW43439 of a W/WS board) through BTstack.
+// On-chip Bluetooth (PICOSPECCY_WIFI: the CYW43439 of a W/WS board) through BTstack.
 //
 // Stage 1 — discovery: classic inquiry + LE scan side by side, every answer logged
 // and kept in a small device table (name, address, kind).
@@ -9,9 +9,9 @@
 // picked (44.1/48 kHz), encodes SBC and sends it. The local output keeps playing.
 //
 // Threading: everything here runs on core0 inside cyw43_arch_poll() (WifiNet::poll)
-// or pump(), the same poll-mode loop lwIP uses. Compiled out when PICOSPECCY_BT=0.
+// or pump(), the same poll-mode loop lwIP uses. Compiled out when PICOSPECCY_WIFI=0.
 
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 
 #include <stdint.h>
 
@@ -116,4 +116,4 @@ const char* stateStr();
 
 }  // namespace BtHost
 
-#endif  // PICOSPECCY_BT
+#endif  // PICOSPECCY_WIFI

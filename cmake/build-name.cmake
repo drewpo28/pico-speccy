@@ -36,12 +36,6 @@ ELSE()
     SET(BUILD_NAME "${BUILD_NAME}-4MB")
 ENDIF()
 
-IF(PICOSPECCY_BT)
-    SET(BUILD_NAME "${BUILD_NAME}-BT")
-    SET(VARIANT_TAG "${VARIANT_TAG}+BT")
-    SET(DISPLAY_TAG "${DISPLAY_TAG}+BT")
-ENDIF()
-
 SET(BUILD_NAME "${BUILD_NAME}-${PORT_VERSION}")
 
 # Compact form for the OSD's Hardware Info row — z0p2+HDMI+1.0.2 — where the full

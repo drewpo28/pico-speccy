@@ -176,7 +176,7 @@ static const Option opt_audio_driver[] = {
 #ifdef PCM5122_I2S_DATA
     { "PCM5122",  5 },              // ZERO2's I2S DAC board (I2C-configured)
 #endif
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
     { "Bluetooth", Config::AUDIO_DRIVER_BT },   // runtime: a connected A2DP sink
 #endif
 };
@@ -1856,7 +1856,7 @@ static const Node kNetwork[] = {
     NM_BOOL_EN  (TXT_NET_NIC_SUB, SET_ZIFI_NIC, nullptr, p_nicAvail),
 };
 
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 // Bluetooth on the on-chip radio (W boards): audio out (A2DP source), input
 // devices (HID host). Each lists the devices added so far + "Add new...".
 static const Option opt_bt_hints[] = {
@@ -1894,7 +1894,7 @@ static const Node kRoot[] = {
     NM_SUB   (TXT_AUDIO,     kAudio,    nullptr),
     NM_SUB   (TXT_JOYSTICK,  kJoystick, nullptr),
     NM_SUB   (TXT_NETWORK,   kNetwork,  nullptr),
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
     NM_SUB   (TXT_BLUETOOTH, kBluetooth, nullptr),
 #endif
     NM_SUB   (TXT_OPTIONS,   kOptions,  nullptr),

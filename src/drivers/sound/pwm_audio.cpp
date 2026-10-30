@@ -512,7 +512,7 @@ void pcm_card_detach() {
     __dmb();
 }
 
-// Bluetooth audio tap (PICOSPECCY_BT, src/net/BtHost.cpp): the final mix of
+// Bluetooth audio tap (PICOSPECCY_WIFI, src/net/BtHost.cpp): the final mix of
 // every tick, copied into a ring core0 encodes to SBC. Single producer (this
 // tick), single consumer (core0); a full ring drops the sample and counts it.
 volatile int16_t* pcm_bt_ring = nullptr;
@@ -630,7 +630,7 @@ mixed:
     if (sL < -32768) sL = -32768; else if (sL > 32767) sL = 32767;
     if (sR < -32768) sR = -32768; else if (sR > 32767) sR = 32767;
 
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
     {
         volatile int16_t* bring = pcm_bt_ring;
         if (bring) {

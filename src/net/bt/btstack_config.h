@@ -1,4 +1,4 @@
-// BTstack configuration for the on-chip Bluetooth (PICOSPECCY_BT, W boards).
+// BTstack configuration for the on-chip Bluetooth (PICOSPECCY_WIFI, W boards).
 //
 // Sized for discovery + one A2DP source stream (headphones) + later one HID
 // keyboard/mouse. No HAVE_MALLOC: BTstack's pools are
@@ -53,7 +53,7 @@
 #define HCI_HOST_SCO_PACKET_NUM 3
 
 // Link keys / LE bonds: TLV on pico_flash_bank (the top 12 KB of flash are reserved
-// for it in rp2350-memmap.ld when PICOSPECCY_BT is on).
+// for it in rp2350-memmap.ld when PICOSPECCY_WIFI is on).
 #define NVM_NUM_DEVICE_DB_ENTRIES 8        // BLE bonds: as many as the added-device list holds
 #define NVM_NUM_LINK_KEYS 8                // classic link keys, likewise
 
