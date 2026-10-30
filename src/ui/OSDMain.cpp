@@ -2583,8 +2583,11 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                                   : opt == 3 ? Quorum::BOOT_128 : Quorum::BOOT_48);
                 }
             } else
-            if (Z80Ops::is48) {
-                // 48K - just reset directly
+            if (Z80Ops::is48 || Z80Ops::isEnt || Z80Ops::isSam) {
+                // 48K, Enterprise, SAM Coupe: one ROM set, nothing to pick - reset
+                // directly (the EP's reset is a warm one, EXOS keeps the program;
+                // owner 2026-10-31). The fallback dialog below would offer the
+                // Spectrum's "128K / 48K" rows, which mean nothing on either.
                 if (Config::ram_file != NO_RAM_FILE) Config::ram_file = NO_RAM_FILE;
                 Config::last_ram_file = NO_RAM_FILE;
                 ESPectrum::reset(0);
