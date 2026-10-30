@@ -9487,7 +9487,7 @@ IRAM_ATTR void VIDEO::EndFrame() {
     // v_sync wait (true blanking start) via profiPaletteApplyPending(); apply
     // here only when that hook won't run (v-sync pacing off, or maxSpeed which
     // skips the wait) — unsynced anyway, a tear is unavoidable then.
-    if (!Config::v_sync_enabled || ESPectrum::maxSpeed)
+    if (!Config::loopVsync() || ESPectrum::maxSpeed)
         profiPaletteApplyPending();
 
     // DS80 top/bottom border bands (720×576) are rendered per-T-state by the
@@ -11978,6 +11978,11 @@ static void ftVideoSinkAttach() { Ft812::videoSetSink(&kFtVideoSink); }
 // ISR's frames (hw 2026-09-28: core1 died on the first frame), so the decode runs
 // on a 4 KB heap stack. Same MSP+MSPLIM switch as zipCallOnStack (ZipExtract.cpp):
 // the limit is off whenever SP crosses between the stacks.
+#if HOST_BUILD
+static void ftCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
+    (void)new_top; (void)new_bottom; fn(arg);   // a PC thread stack is ample
+}
+#else
 __attribute__((naked, noinline))
 static void ftCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new_bottom) {
     __asm volatile(
@@ -12000,6 +12005,7 @@ static void ftCallOnStack(void* new_top, void (*fn)(void*), void* arg, void* new
         "bx   lr                \n"
     );
 }
+#endif
 static void ftVidTramp(void*) { Ft812::videoDecodeJob(); }
 
 FT_GLUE_HOT void VIDEO::ftRenderPump() {

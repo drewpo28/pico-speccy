@@ -7,6 +7,9 @@
 #include "hardware/sync.h"
 #include <string.h>
 #include "app/CodeOverlay.h"   // NGS_OVL_BSS: the whole card SD state is NeoGS-only
+#if HOST_BUILD
+extern "C" void host_sd_card_reset(void);   // host/host_disk.cpp: a folder card takes PC-side changes here
+#endif
 
 extern "C" {
     #include "fatfs/ff.h"       // BYTE/DWORD for diskio.h
@@ -249,6 +252,10 @@ static void __not_in_flash_func(fsm_execute)() {
         case 0x40: {                              // CMD0 GO_IDLE_STATE
             static const uint8_t r[] = {0xFF, 0x01};
             fsm_reset();
+#if HOST_BUILD
+            host_sd_card_reset();
+            cache_flush();
+#endif
             s_idle = true;
             queue_resp(r, sizeof(r));
             break;
@@ -507,7 +514,9 @@ void NgsSd::reset() {
     s_req_op = REQ_NONE;
     s_dbg_logged = 0;
     cache_flush();   // card may have been swapped
-    DWORD sectors = 0;
+    // LBA_t: with FF_LBA64 the USB ioctl (and the host build's) writes 8 bytes - a
+    // DWORD here gets its stack neighbour clobbered (the DivMMC.cpp fix, missed here).
+    LBA_t sectors = 0;
     if (disk_ioctl(0, GET_SECTOR_COUNT, &sectors) != RES_OK) sectors = 0;
     s_sector_count = (uint32_t)sectors;
     build_csd(s_sector_count);

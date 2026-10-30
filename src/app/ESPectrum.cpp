@@ -2119,7 +2119,7 @@ bool ESPectrum::nextRefreshCheckPending = false;
 // (reboot-class, so the first frame after boot re-checks) and V-Sync itself.
 void ESPectrum::nextRefreshCheck() {
 #ifdef VGA_HDMI
-    if (Config::arch != A_NEXT || !Config::v_sync_enabled) return;
+    if (Config::arch != A_NEXT || !Config::loopVsync()) return;
     extern bool SELECT_VGA;
     const uint8_t vm = Config::baseVideoMode(SELECT_VGA ? Config::vga_video_mode
                                                         : Config::hdmi_video_mode);
@@ -4159,6 +4159,11 @@ void ESPectrum::loop() {
   // Must be here (not in setup) because HDMI DMA starts on core1 after setup returns
   {
       uint8_t pend_hdmi = 0, pend_vga = 0;
+#if HOST_BUILD
+      // A PC window shows any framebuffer size: nothing to confirm.
+      if (Config::loadPendingVideoMode(pend_hdmi, pend_vga)) Config::clearPendingVideoMode();
+      else
+#endif
       if (Config::loadPendingVideoMode(pend_hdmi, pend_vga)) {
           sleep_ms(500); // Let HDMI stabilize
           if (!OSD::videoModeConfirm(15)) {
@@ -4320,6 +4325,9 @@ void ESPectrum::loop() {
     ts_start = time_us_64();
 
     if (!CPU::paused) {
+#if HOST_BUILD
+      host_frame_done();   // the window shows this complete frame (host_main.cpp)
+#endif
       uint64_t _aud_t0 = time_us_64();
       pwm_audio_write((uint8_t *)audioBuffer_L, (uint8_t *)audioBuffer_R,
                       maxSpeed ? 1 : samplesPerFrame, 0, 0);
@@ -5058,6 +5066,9 @@ void ESPectrum::loop() {
     // before the pacing wait below, so the cost lands in the frame budget we
     // then wait out rather than on top of it.
     if (GS::neogs) { GS::ngsBootRelease(); NgsSd::service(); NgsMp3::service(); }
+#if HOST_BUILD
+    GS::pumpGuest();   // host: the card runs here, in step with the guest (GS.cpp)
+#endif
     // Update stats every 50 frames
     if (VIDEO::OSD && VIDEO::framecnt >= 10) {
       if (VIDEO::OSD & 0x04) {
@@ -5377,7 +5388,7 @@ void ESPectrum::loop() {
 
     totalsecondsnodelay += elapsed;
 
-    if (!maxSpeed && Z80Ops::isNext && !Config::v_sync_enabled && idle > 0) {
+    if (!maxSpeed && Z80Ops::isNext && !Config::loopVsync() && idle > 0) {
       // The Next renders on core1; rows it has not reached yet are rendered
       // here while core0 would only wait (NEXTVID::c0Help, one row a call).
       // TX-1696 at 576p, sprite-heavy scenes: core1 22 ms a frame, core0 14
@@ -5394,7 +5405,7 @@ void ESPectrum::loop() {
       // page truncated at the same offset every run). Keep servicing the host
       // stack while we wait; cdcPump() self-limits to ~1 kHz and is a no-op on
       // the GPIO UART transport.
-      if (Config::v_sync_enabled) {
+      if (Config::loopVsync()) {
         for (;;) {
           if (ZiFi::cdcNicActive) ZiFi::cdcPump();
 #if PICOSPECCY_WIFI
@@ -5418,10 +5429,25 @@ void ESPectrum::loop() {
           if (Z80Ops::isTsconf && VIDEO::tsPollWanted()) VIDEO::tsPalettePoll(false);
           // TS-Conf: take queued lines off core1 while there is nothing else to do.
           if (g_ts_c1_live) VIDEO::tsC1HelpOne();
+#if HOST_BUILD
+          // Counted ticks: a late frame is made up instead of lost (host_main.cpp).
+          if (host_vsync_take()) {
+            v_sync = false;
+            break;
+          }
+#else
           if (v_sync) {
             v_sync = false;
             break;
           }
+#endif
+#if HOST_BUILD
+          // A PC core: wait for the frame thread without spinning. sleep_us()
+          // busy-waits below 2 ms on the host, which held a whole core at 100%
+          // between frames (and the laptop's cores at a lower clock). The tick
+          // wakes this early; 2 ms is only the poll period for the helpers above.
+          host_idle_us(2000);
+#endif
         }
         // Blanking just started (v_sync fires at scanout line v_active): apply
         // any pending Profi DS80 palette refresh now, while the scanout DMA is

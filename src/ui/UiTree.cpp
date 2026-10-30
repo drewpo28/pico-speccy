@@ -1252,7 +1252,9 @@ static const Node kTft[] = {
 // Video > HDMI — the HDMI link's own knobs, shown only while HDMI is the live
 // output (a VGA_HDMI image on VGA, and the SOFTTV/TFT builds, have no link).
 static bool p_hdmiOut() {
-#if defined(VGA_HDMI)
+#if HOST_BUILD
+    return false;   // a PC window: no HDMI link
+#elif defined(VGA_HDMI)
     return !SELECT_VGA;
 #elif defined(HDMI)
     return true;
@@ -1283,7 +1285,9 @@ static const Node kHdmi[] = {
 // Interface menu-palette row further down — on HDMI (and the non-VGA builds)
 // neither has anything to say.
 static bool p_vgaOut() {
-#if defined(VGA_HDMI)
+#if HOST_BUILD
+    return false;
+#elif defined(VGA_HDMI)
     return SELECT_VGA;
 #else
     return false;
@@ -1361,8 +1365,20 @@ static bool p_screenTop() {
     return (a == (int)Config::arch) && Config::isEvoPentRaster();   // BaseConf / ScorpEvo, live
 }
 
+#if HOST_BUILD
+// On a PC the window sets the output size; the video mode only picks the
+// framebuffer (Config::load folds every mode onto these two).
+static const Option opt_host_border[] = {
+    { "Standard (320x240)",   Config::VM_640x480_60, "Standard" },
+    { "Full (360x288)",       Config::VM_720x576_50, "Full" },
+};
+#endif
 static const Node kVideo[] = {
+#if HOST_BUILD
+    NM_RADIO(TXT_VID_BORDER_SIZE, SET_VIDEO_MODE, opt_host_border, nullptr),
+#else
     NM_RADIO_D(TXT_VID_MODE,     SET_VIDEO_MODE, video_modeOpts, nullptr),
+#endif
     NM_SUB  (TXT_VID_HDMI,       kHdmi,          p_hdmiOut),
     NM_SUB  (TXT_VID_VGA,        kVga,           p_vgaOut),
     NM_RADIO(TXT_VID_SCREEN_TOP, SET_SCREEN_TOP, opt_screen_top, p_screenTop),
@@ -1375,6 +1391,8 @@ static const Node kVideo[] = {
     NM_RADIO(TXT_VID_RENDER,     SET_RENDER,     opt_render,     nullptr),
     NM_RADIO(TXT_VID_SCANLINES,  SET_SCANLINES,  opt_scanlines,  nullptr),
     NM_RADIO(TXT_VID_CRT,        SET_CRT_FILTER, opt_crt,        nullptr),
+    // Host: on = the machine follows the monitor's refresh (smooth scrolling, a 50 Hz
+    // machine runs ~20% fast on a 60 Hz screen), off = the machine's own frame rate.
     NM_BOOL (TXT_VID_VSYNC,      SET_VSYNC,      nullptr),
     NM_RADIO(TXT_VID_GIGASCREEN, SET_GIGASCREEN, opt_gigascreen, nullptr),
     NM_BOOL (TXT_VID_ULAPLUS,    SET_ULAPLUS,    nullptr),
@@ -1512,7 +1530,10 @@ static const Node kPlayerOpts[] = {
 };
 
 static const Node kAudio[] = {
+#if !HOST_BUILD
+    // Host: the sound goes to the PC's audio device; there is no output to pick.
     NM_RADIO(TXT_AUD_DRIVER,     SET_AUDIO_DRIVER, opt_audio_driver, nullptr),
+#endif
     NM_BOOL (TXT_AUD_AY,         SET_AY48,         nullptr),
     NM_RADIO(TXT_AUD_AY_STEREO,  SET_AY_STEREO,    opt_ay_stereo,  nullptr),
     NM_RADIO(TXT_AUD_TURBOSOUND, SET_TURBOSOUND,   opt_turbosound, nullptr),
@@ -1732,7 +1753,9 @@ static const Option opt_profile_foot[] = {
 };
 
 static const Node kOptions[] = {
+#if !HOST_BUILD   // the host has no RP2350 clock, voltage or flash/PSRAM timing to set
     NM_SUB   (TXT_HW_OVERCLOCK,     kOverclock,     nullptr),
+#endif
     NM_SUB   (TXT_INTERFACE,        kInterface,     nullptr),
     // Named config profiles: a full snapshot of storage.nvs per slot, loaded by
     // copying it back and rebooting. The right pane IS the slot list (K_PICK) and
@@ -1745,7 +1768,9 @@ static const Node kOptions[] = {
     NM_RADIO (TXT_OPT_PREF_MACHINE, SET_PREF_ARCH,  opt_pref_arch, nullptr),
     NM_SUB   (TXT_OPT_PREF_ROM,     kPrefRom,       nullptr),
     NM_SUB   (TXT_OPT_REPLACE_ROM,  kReplaceRom,    p_hasSD),
+#if !HOST_BUILD   // the host has no flash to write a firmware image into
     NM_ACTION(TXT_OPT_UPDATE_FW,    act_updateFirmware, nullptr),
+#endif
 };
 
 // ── Debug ──────────────────────────────────────────────────────────────────────
@@ -1841,7 +1866,10 @@ static const Node kNetwork[] = {
     NM_ACTIONV_EN(TXT_NET_WIFI, act_wifi, vl_wifi, nullptr, p_espLink),
     // The ESP link settings, shared by WiFi and the NIC — indented under WiFi.
     // Transport's option list is per-board (GPIO pairs), hence the runtime radio.
+#if !HOST_BUILD
+    // Host: always the PC's network (Config::load pins transport 2).
     NM_RADIO_D(NM_IND TXT_NET_TRANSPORT, SET_ZIFI_TRANSPORT, zifi_transportOpts, nullptr),
+#endif
     NM_RADIO    (NM_IND TXT_NET_BAUD,     SET_ZIFI_BAUD,      opt_zifi_baud,     nullptr),
     NM_RADIO    (TXT_NET_TZ,   SET_WIFI_TZ, opt_tz, nullptr),
     NM_ACTION_EN(TXT_NET_SYNC, act_sntp, nullptr, p_wifiOn),

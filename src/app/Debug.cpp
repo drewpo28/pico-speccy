@@ -7,6 +7,8 @@
 #include "pico/time.h"
 #include "pico/stdio/driver.h"
 #include <stdlib.h>
+#include <stdio.h>
+#include <stdarg.h>
 #include "fs/FileUtils.h"
 
 static uint32_t log_counter = 0;
@@ -272,6 +274,10 @@ void Debug::uartFlushSync()
 
 bool Debug::tryLog(const char* fmt, ...)
 {
+#if HOST_BUILD
+    { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); fputc('\n', stderr); }
+    return true;
+#endif
     if (!s_dbg_uart) return true;
     char buf[256];
     va_list args;
@@ -297,6 +303,10 @@ bool Debug::tryLog(const char* fmt, ...)
 
 void Debug::log(const char* fmt, ...)
 {
+#if HOST_BUILD
+    { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); fputc('\n', stderr); }
+    return;
+#endif
     if (!s_dbg_uart) return;   // console off: no sink, so don't even format
     char buf[256];
     va_list args;
@@ -355,6 +365,10 @@ void __not_in_flash_func(Debug::neo8TrapStep)(uint16_t pc, uint16_t sp, uint16_t
 
 void Debug::fault_log(const char* fmt, ...)
 {
+#if HOST_BUILD
+    { va_list a; va_start(a, fmt); vfprintf(stderr, fmt, a); va_end(a); fputc('\n', stderr); }
+    return;
+#endif
     // Per-core static buffers: the fault stack may itself be the problem
     // (overflow), and both cores can fault near-simultaneously.
     if (!s_dbg_uart) return;   // no exception-safe sink without the console

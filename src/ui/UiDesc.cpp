@@ -160,12 +160,21 @@ static int describeGs(int32_t v, DescLine* out, int max) {
 
 // V-Sync paces one emulated frame per DISPLAY frame, so the emulation runs at the
 // display's refresh: right on a 50 Hz mode, ~20% fast on 60 Hz.
+#if HOST_BUILD
+extern "C" unsigned host_display_hz(void);   // host_main.cpp: the monitor's refresh
+#endif
 static int describeVsync(int32_t v, DescLine* out, int max) {
     if (v != 1) return 0;
+#if HOST_BUILD
+    const unsigned hz = host_display_hz();       // the machine follows the monitor
+    const char* what = "Monitor";
+#else
     const unsigned hz = stagedVideoHz();
+    const char* what = "Video mode";
+#endif
     char now[20];
     snprintf(now, sizeof(now), "now %u Hz", hz);
-    int n = sub (out, 0, max, "Video mode", now, hz == 50 ? DESC_OK : DESC_BAD);
+    int n = sub (out, 0, max, what, now, hz == 50 ? DESC_OK : DESC_BAD);
     n = rule(out, n, max, "50 Hz", "normal speed", hz == 50);
     n = rule(out, n, max, "60 Hz", "runs faster",  hz != 50);
     return n;

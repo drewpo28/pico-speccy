@@ -1640,6 +1640,9 @@ void Config::load() {
 #if !PICOSPECCY_WIFI
         if (zifi_transport == 2) zifi_transport = 0;   // on-chip radio exists only on W boards
 #endif
+#if HOST_BUILD
+        zifi_transport = 2;   // a PC: the host-socket transport (host/host_net.cpp)
+#endif
         nvs_get_str("SNA_Path", FileUtils::SNA_Path, sts);
         nvs_get_str("snap_exp", snap_export_dir, sts);
         nvs_get_str("TAP_Path", FileUtils::TAP_Path, sts);
@@ -1738,6 +1741,25 @@ void Config::load() {
             || forcesVsyncOff(hdmi_video_mode, cpu_mhz)    // 59 Hz display, 50 Hz machine
             || forcesVsyncOffVga(vga_video_mode))          // VGA 60 Hz
             v_sync_enabled = false;
+#if HOST_BUILD
+        // PC window: the output resolution is the window's, so the video mode only
+        // picks the framebuffer - 320x240 or the full-border 360x288.
+        {
+            auto host_vm = [](uint8_t vm) -> uint8_t {
+                return (vm == VM_720x576_50 || vm == VM_720x576_75 || vm == VM_720x576_169)
+                       ? VM_720x576_50 : VM_640x480_60;
+            };
+            hdmi_video_mode = host_vm(hdmi_video_mode);
+            vga_video_mode = host_vm(vga_video_mode);
+            // V-Sync on the host means "follow the monitor" (as on the board with a
+            // 60 Hz mode: the machine then runs at the display's rate); off = the
+            // machine's own frame rate. The loop waits for ticks either way
+            // (Config::loopVsync), so off does not mean sleeping out the frame.
+            // Own key: earlier host builds forced and saved v_sync_enabled = true.
+            v_sync_enabled = false;
+            nvs_get_b("host_vsync_display", v_sync_enabled, sts);
+        }
+#endif
         nvs_get_b("gigascreen_enabled", gigascreen_enabled, sts);
         nvs_get_u8("gigascreen_onoff", gigascreen_onoff, sts);
         nvs_get_b("ulaplus", ulaplus, sts);
@@ -1819,6 +1841,12 @@ void Config::load() {
     loaded = true;
     if (FileUtils::fsMount)
         loadWifiConfig();
+#if HOST_BUILD
+    // A PC: the network is the OS's, so "WiFi" is always on (the boot sync then
+    // takes the time from the PC clock, host/host_net.cpp).
+    wifi_enabled = true;
+    if (wifi_ssid.empty()) wifi_ssid = "PC";
+#endif
 }
 
 // Streams key=value lines straight to the SD file when one is open;
@@ -2110,7 +2138,11 @@ void Config::writeKeys(NvsWriter& buf) {
     nvs_set_u8(buf,"AudBoost", Config::audio_boost);
     nvs_set_u8(buf,"hdmi_vmode",Config::hdmi_video_mode);
     nvs_set_u8(buf,"vga_vmode",Config::vga_video_mode);
+#if HOST_BUILD
+    nvs_set_str(buf,"host_vsync_display", Config::v_sync_enabled ? "true" : "false");
+#else
     nvs_set_str(buf,"v_sync_enabled", Config::v_sync_enabled ? "true" : "false");
+#endif
     nvs_set_str(buf,"gigascreen_enabled", Config::gigascreen_enabled ? "true" : "false");
     nvs_set_u8(buf,"gigascreen_onoff", Config::gigascreen_onoff);
     nvs_set_str(buf,"ulaplus", Config::ulaplus ? "true" : "false");
