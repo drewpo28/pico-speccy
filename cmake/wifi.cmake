@@ -32,27 +32,20 @@ if (PICOSPECCY_WIFI)
     get_target_property(_cyw43_bus_srcs cyw43_driver_picow INTERFACE_SOURCES)
     list(FILTER _cyw43_bus_srcs EXCLUDE REGEX "cyw43_bus_pio_spi\\.c$")
     set_target_properties(cyw43_driver_picow PROPERTIES INTERFACE_SOURCES "${_cyw43_bus_srcs}")
-else()
-    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
-endif()
-# Bluetooth on the same radio (BTstack, HCI over the same gSPI bus — our vendored
-# bus driver serves it unchanged: the BT half talks to the chip through cyw43_ll's
-# backplane calls, not through cyw43_spi_*). Linking pico_btstack_cyw43 raises
-# CYW43_ENABLE_BLUETOOTH, which (a) swaps in the combined WiFi+BT firmware blob and
-# (b) makes cyw43_arch_init() call btstack_cyw43_init() itself (poll arch: the
-# BTstack run loop is an async_context worker serviced by cyw43_arch_poll, i.e. by
-# WifiNet::poll on core0 like lwIP). Config: src/net/bt/btstack_config.h.
-if (PICOSPECCY_BT)
-    if (NOT PICOSPECCY_WIFI)
-        message(FATAL_ERROR "PICOSPECCY_BT needs a W board (PICOSPECCY_WIFI)")
-    endif()
+    # Bluetooth on the same radio, always built with WiFi: it is one CYW43439
+    # (BTstack, HCI over the same gSPI bus — our vendored bus driver
+    # serves it unchanged: the BT half talks to the chip through cyw43_ll's
+    # backplane calls, not through cyw43_spi_*). Linking pico_btstack_cyw43 raises
+    # CYW43_ENABLE_BLUETOOTH, which (a) swaps in the combined WiFi+BT firmware blob and
+    # (b) makes cyw43_arch_init() call btstack_cyw43_init() itself (poll arch: the
+    # BTstack run loop is an async_context worker serviced by cyw43_arch_poll, i.e. by
+    # WifiNet::poll on core0 like lwIP). Config: src/net/bt/btstack_config.h.
     target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_SOURCE_DIR}/src/net/bt)
     # Our copy of cybt_shared_bus_driver.c (src/net/cybt_shared_bus_driver_speccy.c):
     # it validates the BT ring indices read from the radio — see its header.
     get_target_property(_cybt_srcs cybt_shared_bus INTERFACE_SOURCES)
     list(FILTER _cybt_srcs EXCLUDE REGEX "cybt_shared_bus_driver\\.c$")
     set_target_properties(cybt_shared_bus PROPERTIES INTERFACE_SOURCES "${_cybt_srcs}")
-    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_BT=1)
     target_link_libraries(${PROJECT_NAME} PRIVATE
         pico_btstack_cyw43 pico_btstack_classic pico_btstack_ble pico_btstack_sbc_encoder)
     # The SBC encoder runs on core0 for every 128 samples of the A2DP stream: -O2
@@ -62,7 +55,7 @@ if (PICOSPECCY_BT)
         "${PICO_BTSTACK_PATH}/src/classic/btstack_sbc_encoder_bluedroid.c"
         PROPERTIES COMPILE_OPTIONS "-O2")
 else()
-    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_BT=0)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE PICOSPECCY_WIFI=0)
 endif()
 # Board identity for the sources. MURM2 already defines MURM2=1 in its pin arm;
 # MURM1 defines nothing and is the `#else` fallback everywhere, so the Murmulator W

@@ -4093,7 +4093,7 @@ void ESPectrum::netBackgroundTick() {
 #if PICOSPECCY_WIFI
     WifiNet::poll();   // on-chip radio + lwIP housekeeping (DHCP, ARP, ACKs); cheap when idle
 #endif
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
     BtHost::pump();    // A2DP stream: encode what core1 produced, send it (no-op when idle)
     BtHost::bootTick(); // a remembered keyboard/mouse/pad: bring Bluetooth up after boot
 #endif
@@ -5397,7 +5397,7 @@ void ESPectrum::loop() {
       if (Config::v_sync_enabled) {
         for (;;) {
           if (ZiFi::cdcNicActive) ZiFi::cdcPump();
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
           BtHost::pump();   // self-limited to one pass per 2 ms, no-op unless streaming
 #endif
           // SD only. An MP3 frame decode is an indivisible multi-millisecond
@@ -5433,7 +5433,7 @@ void ESPectrum::loop() {
       } else {
         if (idle > 0) {
           Debug::pumpUart();
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
           if (BtHost::streaming()) {
             // Bluetooth audio wants a send slot every few ms: spend the idle
             // pumping the radio instead of sleeping through it.

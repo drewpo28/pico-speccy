@@ -1,5 +1,5 @@
 // On-chip Bluetooth: discovery, A2DP source, HID host (classic + BLE). See BtHost.h.
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 
 #include "BtHost.h"
 #include "WifiNet.h"
@@ -1508,4 +1508,4 @@ const char* stateStr() {
 
 }  // namespace BtHost
 
-#endif  // PICOSPECCY_BT
+#endif  // PICOSPECCY_WIFI

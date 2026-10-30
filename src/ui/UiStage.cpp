@@ -33,7 +33,7 @@
 #include "speccy/core/Ports.h"
 #include "app/Debug.h"
 #include "speccy/devices/gs/GS.h"
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 #include "net/BtHost.h"
 #endif
 extern uint8_t audio_driver_running;   // pwm_audio.cpp: the wired driver init_sound() set up
@@ -154,7 +154,7 @@ NM_INT_ACCESS (boost,     audio_boost)
 // plays disconnects it — a reboot only if the wired driver itself changes
 // (audioDrvNeedsReboot).
 static int32_t get_audioDrv() {
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
     const BtHost::AudioState s = BtHost::audioState();
     if (s == BtHost::A_STREAMING || s == BtHost::A_CONNECTING) return Config::AUDIO_DRIVER_BT;
 #endif
@@ -162,7 +162,7 @@ static int32_t get_audioDrv() {
 }
 static void put_audioDrv(int32_t v) {
     if (v == Config::AUDIO_DRIVER_BT) return;     // runtime state, never stored
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
     const BtHost::AudioState s = BtHost::audioState();
     if (s == BtHost::A_STREAMING || s == BtHost::A_CONNECTING) BtHost::audioDisconnect();
 #endif

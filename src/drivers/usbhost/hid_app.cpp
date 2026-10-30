@@ -1192,7 +1192,7 @@ static void mouse_apply(bool bl, bool br, bool bm, int32_t dx, int32_t dy, int32
 struct PadPrev { bool u, d, l, r; uint32_t b; };
 static void pad_apply(PadPrev& p, bool up, bool down, bool left, bool right, uint32_t buttons);
 
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 //--------------------------------------------------------------------+
 // Bluetooth HID (src/net/BtHost.cpp): the same funnels the USB devices use.
 //--------------------------------------------------------------------+

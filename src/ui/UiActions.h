@@ -93,7 +93,7 @@ void act_replaceRom(int32_t slot);
 // Network
 void act_wifi();
 void act_sntp();
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 void act_btAudio();             // Audio > Driver > Bluetooth
 void bt_buildAudio(DynRows& r);
 void bt_buildInput(DynRows& r);

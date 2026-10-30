@@ -1,8 +1,8 @@
 // PICO-SPEC PATCH: a copy of the SDK's
 // src/rp2_common/pico_cyw43_driver/cybt_shared_bus/cybt_shared_bus_driver.c (SDK 2.3.1),
-// compiled INSTEAD of it when PICOSPECCY_BT is on (cmake/wifi.cmake strips the SDK's
+// compiled INSTEAD of it when PICOSPECCY_WIFI is on (cmake/wifi.cmake strips the SDK's
 // copy). One change, cybt_get_bt_buf_index(), marked PICO-SPEC PATCH below.
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 /*
  * Copyright (c) 2023 Raspberry Pi (Trading) Ltd.
  *
@@ -716,4 +716,4 @@ void cybt_sharedbus_driver_init(cyw43_ll_t *driver) {
     cyw43_ll = driver;
 }
 
-#endif // PICOSPECCY_BT (PICO-SPEC PATCH)
+#endif // PICOSPECCY_WIFI (PICO-SPEC PATCH)

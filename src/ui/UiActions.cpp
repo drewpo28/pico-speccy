@@ -40,7 +40,7 @@
 #include "app/ScanLite.h"
 #include "speccy/core/Rzx.h"
 #include "speccy/core/Pss.h"
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 #include "net/BtHost.h"
 #endif
 
@@ -1953,7 +1953,7 @@ void act_sntp() {
     wlogEnd();
 }
 
-#if PICOSPECCY_BT
+#if PICOSPECCY_WIFI
 // ── Bluetooth > Audio / Input ─────────────────────────────────────────────────
 // Each is a level listing the devices already added (most recent first) plus an
 // "Add new..." row. Enter on a device connects / disconnects it, F8 forgets it;
