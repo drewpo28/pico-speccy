@@ -508,7 +508,21 @@ uint8_t Dave::read(uint8_t r) const {
         return (uint8_t)((stSnd | (actSnd << 1)) | ((stHz | (actHz << 1)) << 2) |
                          ((st1_ | (act1 << 1)) << 4) | ((st2 | (act2 << 1)) << 6));
     case 0x15: return kbRow < 10 ? keys[kbRow] : 0xFF;
-    case 0x16: return 0xCF;               // no tape signal, no joystick
+    case 0x16: {
+        // Tape input idle (bits 6-7 high), then the joysticks the way ep128emu wires
+        // them (dave.cpp read 0x16): EXT1 on keys[14], EXT2 on keys[15], both
+        // active low with bits 0 RIGHT 1 LEFT 2 DOWN 3 UP 4 FIRE. Row 0 / 5 read the
+        // fire buttons (bits 0-2 of the port), rows 1-4 / 6-9 the directions on bit 0.
+        uint8_t n = 0xCF;
+        if (kbRow < 5) {
+            if (kbRow == 0) n &= (uint8_t)(0xF8 | (keys[14] >> 4));
+            else            n &= (uint8_t)(0xFE | (keys[14] >> (4 - kbRow)));
+        } else if (kbRow < 10) {
+            if (kbRow == 5) n &= (uint8_t)(0xF8 | (keys[15] >> 4));
+            else            n &= (uint8_t)(0xFE | (keys[15] >> (9 - kbRow)));
+        }
+        return n;
+    }
     }
     return 0xFF;
 }

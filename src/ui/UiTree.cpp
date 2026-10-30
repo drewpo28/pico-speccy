@@ -1147,6 +1147,12 @@ static bool p_samOn() {
     if (m >= 0) return (ArchIdx)((m >> 8) & 0xFF) == A_SAM;
     return Config::arch == A_SAM;
 }
+// Enterprise EXDOS drive rows, the same rule.
+static bool p_epOn() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    if (m >= 0) return (ArchIdx)((m >> 8) & 0xFF) == A_ENT;
+    return Config::arch == A_ENT;
+}
 static bool p_plus3On() {
     const int32_t m = Stage::get(SET_MACHINE);
     if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
@@ -1237,6 +1243,7 @@ static const Node kHardware[] = {
     NM_RADIO_EN(NM_IND TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
     NM_DYN_EN  (TXT_P3_DRIVES,     slots_buildP3, slots_keyP3, p_hasSD, p_plus3On),
     NM_DYN_EN  (TXT_SAM_DRIVES,    slots_buildSam, slots_keySam, p_hasSD, p_samOn),
+    NM_DYN_EN  (TXT_EP_DRIVES,     slots_buildEp, slots_keyEp, p_hasSD, p_epOn),
     NM_BOOL_EN (NM_IND TXT_P3_FASTDISK,   SET_P3_FASTDISK,  nullptr, p_plus3On),
     NM_BOOL_EN (NM_IND TXT_P3_SPEEDLOCK,  SET_P3_SPEEDLOCK, nullptr, p_plus3On),
     NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_hasSD),
@@ -1965,6 +1972,7 @@ const Node* slotNodeFor(int iface) {
         case IFACE_ESX:  return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEsx);
         case IFACE_PLUS3: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildP3);
         case IFACE_SAM:   return findDyn(kHardware, NM_COUNT(kHardware), slots_buildSam);
+        case IFACE_EP:    return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEp);
         default:         return nullptr;
     }
 }

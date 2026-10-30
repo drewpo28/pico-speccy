@@ -59,6 +59,7 @@ using namespace std;
 #include "speccy/devices/disk/wd1793.h"
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Sam/SamFdc.h"
+#include "speccy/machines/Enterprise/EpFdc.h"
 #include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/disk/DiskSlots.h"
@@ -560,6 +561,15 @@ static bool rfd_launch_tmp(string path) {
         }
         return true;
     }
+    if (FileUtils::ifaceForPath(path) == IFACE_EP) {
+        // An Enterprise disk image: A:, switch to the Enterprise if needed, reset.
+        FileUtils::DSK_Path = dir;
+        if (!Ep::launchDisk(path)) {
+            OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
+            return false;
+        }
+        return true;
+    }
     if (FileUtils::ifaceForPath(path) == IFACE_SAM) {
         // A SAM Coupe disk (.mgt / .sad, or a .dsk with SAM geometry — zxart ships
         // SAM software as .dsk, which used to land on the +3): drive 1, switch to the
@@ -665,6 +675,9 @@ static void rfd_release_tmp(const string& tmpp) {
     for (uint8_t u = 0; u < 2; u++)                 // ...and in a SAM drive
         if (SamFdc::mounted(u) && SamFdc::fname(u) == tmpp)
             DiskSlots::slotEject(IFACE_SAM, u);
+    for (uint8_t u = 0; u < 2; u++)                 // ...and in an Enterprise drive
+        if (EpFdc::mounted(u) && EpFdc::fname(u) == tmpp)
+            DiskSlots::slotEject(IFACE_EP, u);
     if (Tape::tapeFileType != TAPE_FTYPE_EMPTY &&
         FileUtils::TAP_Path + Tape::tapeFileName == tmpp)
         Tape::Init();   // closes the open tape FIL

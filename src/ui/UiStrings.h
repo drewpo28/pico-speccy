@@ -182,6 +182,7 @@
 #define TXT_SNAPSHOT        "Snapshot"
 #define TXT_P3_DRIVES      "+3DOS"
 #define TXT_SAM_DRIVES     "SAM drives"
+#define TXT_EP_DRIVES      "Enterprise drives"
 #define TXT_P3_FASTDISK    "Fast disk"
 #define TXT_P3_SPEEDLOCK   "Speedlock protection"
 #define TXT_MB02            "MB-02+"

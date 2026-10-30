@@ -34,6 +34,7 @@ visit https://zxespectrum.speccy.org/contacto
 */
 
 #include "speccy/machines/Sam/SamFdc.h"
+#include "speccy/machines/Enterprise/EpFdc.h"
 #include <stdio.h>
 #include "app/TryAlloc.h"
 #include <stdlib.h>
@@ -172,6 +173,7 @@ DiskIface FileUtils::ifaceForExt(const string& lcExt) {
     if (lcExt == "mbd") return IFACE_MB02;
     if (lcExt == "dsk") return IFACE_PLUS3;
     if (lcExt == "mgt" || lcExt == "sad") return IFACE_SAM;
+    if (lcExt == "ima") return IFACE_EP;
     if (lcExt == "vhd" || lcExt == "hdd" || lcExt == "img") return Config::esxdos == 2 ? IFACE_ESX : IFACE_IDE;
     if (lcExt == "mmc" || lcExt == "hdf") return IFACE_ESX;
     return IFACE_NONE;
@@ -179,6 +181,11 @@ DiskIface FileUtils::ifaceForExt(const string& lcExt) {
 
 DiskIface FileUtils::ifaceForPath(const string& path) {
     const string e = getLCaseExt(path);
+    // An Enterprise disk is a flat FAT12 image with a boot sector; those come as
+    // .img (ep128emu), .ima or .dsk. The FAT signature is checked first: a 720 KB
+    // .dsk is also a size SamFdc accepts, and a 720 KB .img would otherwise be an
+    // esxDOS / IDE image.
+    if ((e == "dsk" || e == "img" || e == "ima") && EpFdc::looksEp(path)) return IFACE_EP;
     if (e == "dsk" && SamFdc::looksSam(path)) return IFACE_SAM;
     return ifaceForExt(e);
 }

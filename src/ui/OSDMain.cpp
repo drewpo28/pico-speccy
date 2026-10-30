@@ -3064,6 +3064,18 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
                     // EXOS loads it through FILE: from its own folder.
                     Ep::launchFile(fname);
                 }
+                else if (FileUtils::ifaceForPath(fname) == IFACE_EP) {
+                    // An Enterprise disk image (FAT12): Enter mounts it in A: and
+                    // resets into EXDOS, F5 opens the slot picker.
+                    if (!fromZip) FileUtils::DSK_Path = FileUtils::ALL_Path;
+                    if (forcePopup) {
+                        nm::runDiskSlots(IFACE_EP, fname.c_str());
+                        forcePopup = false;
+                        goto f5_retry;
+                    }
+                    if (!Ep::launchDisk(fname))
+                        OSD::osdCenteredMsg(MSG_NET_UNSUPPORTED, LEVEL_WARN, 2200);
+                }
                 else if (FileUtils::ifaceForPath(fname) == IFACE_SAM) {
                     // A SAM Coupe disk: Enter mounts it in drive 1 and boots it,
                     // F5 opens the slot picker.

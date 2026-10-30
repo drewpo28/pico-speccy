@@ -224,10 +224,66 @@ line clock and `s_row`, the LPT bytes to `/tmp/picospec_ep_lpt.bin`) — the que
 "is Nick producing VSYNC" is answered there; the first dump of this bug had no EP
 block and only said "EXOS runs".
 
+## Phase 4 — joysticks and EXDOS (2026-10-31; hw-confirmed DVp2w: the .img mounts, games run from it; the F5-with-disk fix host-tested)
+
+- **Joysticks** (`Dave::read` 0x16, ep128emu dave.cpp): EXT1 on `keys[14]`, EXT2 on
+  `keys[15]`, active low, bits 0 RIGHT 1 LEFT 2 DOWN 3 UP 4 FIRE; row 0 / 5 read the
+  fire buttons on port bits 0-2, rows 1-4 / 6-9 the directions on bit 0. The host pad
+  feeds EXT1 while Joystick type = Kempston (`Ep::joy[0]` from
+  `Ports::port[kempPortLive()]` in `epKeys()`, same bit order, inverted); the Cursor
+  type reaches the INTERNAL joystick through the arrow keys (row 7) as before. EXT2
+  idle. Not host-testable (no pad on the stand).
+- **EXDOS** (`src/speccy/machines/Enterprise/EpFdc.{h,cpp}`): WD1770 ported from
+  ep128emu wd177x.cpp (Type I-IV commands, READ ADDRESS, WRITE TRACK's format parser,
+  multi-sector, the WD1770 motor bit) + two drives over FatFs — one 512 B sector
+  buffered, a written sector goes to the file at its end (or zero-padded on an
+  abort). Ports #10-#1F: A3 = control (write: bits 0-3 drive select, bit 4 side, bit
+  6 clears disk-change; read: bit 0 NOT ready, 1 IRQ, 6 no change, 7 DRQ), else
+  A1..A0 = the chip. "Ready" toggles at ~250 Hz while the motor runs (the index pulse
+  ep128emu's LED counter gives); the motor spins 160 ms past the last command (ep128emu
+  ledStateCount1). Media = flat 512 B/sector dumps, geometry from the FAT BPB (80/2/9
+  for a 720 KB image) or a standard size. **EXDOS 1.3 (ep128emu ROM package, 32 KB,
+  segments 0x20-0x21) joins the bus at a reset while a disk is in a drive** — with no
+  disk the machine boots exactly as before (FILE: default, two segments less to scan);
+  a boot with a remembered disk resets a second time in setup() because the mounts
+  land after the first reset. Default device: A: while a disk is in, FILE: otherwise —
+  except at a .COM/.BAS launch, whose reset hands FILE: the default
+  (`launchWantsFile`), so F5 on a .COM works with a disk in; the no-reset prompt
+  shortcut is off while a disk is in (A: would take the typed LOAD). The first hw
+  build lost that flag in `Ep::launchAbort`, which `ESPectrum::reset` calls on the
+  way into the launch's own reset — "File not found" on F5 + Jetpac with the disk in
+  (owner's screenshot); a dump of the same session showed Jetpac loaded by hand
+  through FILE: with A: default: its .SCR/.PRG opens failed and it ran away (HALT at
+  #0038 with DI, segment FF overwritten). `-exdos2-` keeps the flag.
+- **Mounting**: `IFACE_EP` everywhere a SAM disk is (DiskSlots, Devices > "Enterprise
+  drives" A:/B: with write protect, F5 Enter = `Ep::launchDisk` = mount in A: + switch
+  + reset, F5 on the row = the slot picker, Web catalog, `/tmp` eject, .pss media
+  lines, `Config::epDiskFile/epWP/epKeepTmp`, F9 "New IMG" in the browser = a blank
+  FAT12 720 KB image). A file is an EP disk by CONTENT (`EpFdc::looksEp`: a FAT boot
+  sector whose BPB fits the size) for `.img` / `.ima` / `.dsk` — checked before the
+  SAM test, since a 720 KB .dsk is also a SAM DOS size, and before the esxDOS/IDE
+  meaning of `.img`.
+- **The typed launch had to learn EXDOS**: its "BASIC's own read" wait took ANY EXOS
+  function 5 from outside EXOS, and EXDOS's start-up read (segment 0x20, channel FF —
+  it looks for EXDOS.INI) came 60 frames before BASIC's prompt, so the line went into
+  nothing ("ac.com"" on screen). Now only segment 4 on channel 0 counts.
+- Host bench (`PICOSPECCY_EPLOG=1` logs every FDC command and EXOS read with the frame
+  number; `PICOSPECCY_EP_NOFILE=1` lets a typed LOAD go to A:): the owner's
+  `GAMES_EP64_01.IMG` (25 games, 720 KB FAT12) boots into EXDOS (boot sector + root
+  directory read at start: RESTORE, SEEK, READ SECTOR, READ ADDRESS), SNAKE1K and
+  HERO load from it and run; Turbo Esprit loads through FILE: with the disk in; Jetpac
+  with no disk unchanged. A mtools-made image (`mformat -C -f 720`) with Jetpac on it
+  works the same. Not exercised: writes (a game saving to disk, FORMAT), drive B:,
+  disk change while running, EP64 + EXDOS, EXDOS.INI auto-start.
+- Hw 2026-10-31 (owner, `debug/DVp2w-ep-exdos-1.1.1`): the .img mounts and games start
+  from it by hand; `:DIR` on FILE:, F5 launches without a disk as before. Owed: a pad
+  on EXT1 (Jetpac's "EXTERNAL JOYSTICK"), F5 on a .COM with the disk in on `-exdos2-`,
+  a disk save, drive B:, F9 New IMG. One oddity in the log: the first F5 on Jetpac
+  right after a `:DIR` typed its line at the prompt and nothing opened; the repeat
+  worked — not reproduced, watch for it.
+
 ## Next
 
-1. Joysticks (internal + EXT1/EXT2 on #B6).
-2. Loading software: EXDOS (WD1770 on #10-#18, FAT12 images); tape. (.com/.bas
-   autostart done 2026-10-30, hw check owed.)
-3. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
-4. Web catalog adapter, .pss.
+1. Tape (.wav/.tzx? — the EP tape format), EXDOS writes exercised, drive B:.
+2. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
+3. Web catalog adapter, .pss (incl. the FDC).

@@ -44,6 +44,10 @@ namespace Ep {
     // Keyboard matrix rows 0..9, active low (ep128emu config/ep_keys.cfg layout).
     // Written by the host keyboard scan (ESPectrum::processKeyboard).
     extern uint8_t keys[10];
+    // External joysticks EXT1 / EXT2 (Dave #B6), active low: bits 0 RIGHT 1 LEFT
+    // 2 DOWN 3 UP 4 FIRE. The host pad feeds EXT1 while its type is Kempston; the
+    // Cursor type reaches the INTERNAL joystick through the arrow keys (row 7).
+    extern uint8_t joy[2];
 
     static constexpr uint32_t T_PER_LINE = 256, LINES = 312;
     static constexpr uint8_t  PAL_SLOT0 = 16;
@@ -82,6 +86,13 @@ namespace Ep {
     // FILE: device (EpFile.cpp) — Z80::decodeED calls fileTrap on ED FE.
     void fileTrap();
     void fileReset();
+    void fileSetDefault(bool on); // FILE: answers EXOS "default device?" with this (EXDOS A: otherwise)
+    bool launchWantsFile();       // a .COM/.BAS launch is pending: FILE: default at this reset (consumed)
+    // EXDOS: the card (EpFdc) is always on the bus; its ROM (segments 0x20-0x21) is
+    // present from the next reset on while a disk is in a drive. F5 / Web catalog
+    // on an EP disk image: mount in A:, switch to the Enterprise if needed, reset.
+    bool exdosOn();
+    bool launchDisk(const std::string& path);
     // F5 / Web catalog on a .COM / .BAS: switch to the Enterprise if needed, reset,
     // make FILE: serve that file's folder and type LOAD "name" (+ RUN for a .bas)
     // into the matrix once IS-BASIC waits for a line.

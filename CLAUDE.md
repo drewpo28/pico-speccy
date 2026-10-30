@@ -15909,6 +15909,36 @@ the restructure, nothing after). EP pages 4/6 are back in butter like every mach
 `EP_SIM_HI/CLIP/MAP=1` (frames byte-identical), and old-vs-new differential harnesses
 for Dave and Nick described in the plan (session scratch, rebuild before touching
 `Dave::tick/skip` or `Nick::slotT`).
+**Joysticks + EXDOS (2026-10-31; hw-confirmed DVp2w on `debug/DVp2w-ep-exdos-1.1.1` — owner:
+the .img mounts and games run from it by hand; `-exdos2-` = the F5-with-a-disk fix below,
+host-tested; plan Phase 4).** Dave #B6 = ep128emu's layout: EXT1 `keys[14]` / EXT2 `keys[15]`, active
+low, bits 0 RIGHT 1 LEFT 2 DOWN 3 UP 4 FIRE, fire on port bits 0-2 of rows 0 / 5,
+directions on bit 0 of rows 1-4 / 6-9; the host pad is EXT1 while Joystick type =
+Kempston (`Ep::joy[0]`, `epKeys()`), Cursor = the internal joystick via the arrows (row
+7). `src/speccy/machines/Enterprise/EpFdc.{h,cpp}` = WD1770 (ep128emu wd177x.cpp ported:
+Type I-IV, READ ADDRESS, WRITE TRACK format parser, multi-sector, motor bit) + two
+drives over FatFs (one 512 B sector buffered, write-through at the sector end), ports
+#10-#1F (A3 = control: drive select bits 0-3, side bit 4, bit 6 clears disk-change; read
+= NOT ready / IRQ / no change / DRQ, "ready" toggling at ~250 Hz while the motor runs
+160 ms past the last command). Media = flat 512 B/sector images, geometry from the FAT
+BPB or a standard size; `looksEp` (a FAT boot sector fitting the size) makes `.img` /
+`.ima` / `.dsk` an EP disk BEFORE the SAM test (720 KB is a SAM size too) and before the
+esxDOS/IDE `.img`. **EXDOS 1.3 (32 KB, segments 0x20-0x21, `rom_pack.py ep`) is on the bus
+only from a reset with a disk in a drive**; no disk = the old boot. setup() resets a
+second time when `loadDiskMounts` mounted an EP disk (the mounts land after the first
+reset). Default device: A: with a disk in, FILE: otherwise, and FILE: at the reset of a
+.COM/.BAS launch (`launchWantsFile`; the flag must SURVIVE `Ep::launchAbort`, which
+`ESPectrum::reset` calls on the way into that very reset — the first build dropped it there
+and F5 on a .COM with a disk in got "File not found", hw); the no-reset prompt shortcut is off
+with a disk in. The memdump.gdb Enterprise block prints the EXDOS state.
+`IFACE_EP` mirrors `IFACE_SAM` everywhere (Devices > Enterprise drives, F5 Enter =
+`Ep::launchDisk`, Web catalog, .pss lines, `Config::epDiskFile/epWP/epKeepTmp`, F9 New
+IMG = blank FAT12 720 KB). The typed launch's wait now takes only BASIC's fn 5 (segment
+4, channel 0): EXDOS's start-up EXDOS.INI read (segment 0x20, channel FF) came 60 frames
+earlier and the line was typed into nothing. Host: the owner's `GAMES_EP64_01.IMG` boots
+EXDOS, SNAKE1K and HERO run from it; `PICOSPECCY_EPLOG=1` logs FDC commands + EXOS reads,
+`PICOSPECCY_EP_NOFILE=1` lets a typed LOAD go to A:. Not exercised: writes, drive B:,
+disk change, EP64 + EXDOS, EXDOS.INI auto-start.
 
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
 

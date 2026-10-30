@@ -36,6 +36,7 @@ visit https://zxespectrum.speccy.org/contacto
 #include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Sam/SamClock.h"
 #include "speccy/machines/Sam/SamFdc.h"
+#include "speccy/machines/Enterprise/EpFdc.h"
 #include "app/DramPattern.h"
 #include "speccy/core/Pss.h"
 #include "app/PerfFdc.h"
@@ -1874,7 +1875,16 @@ void ESPectrum::setup() {
   }
 
   if (Config::arch == A_SAM) Sam::bootResume();
-  if (Config::arch == A_ENT) Ep::launchResume();   // a .COM launch that rebooted   // a SAM disk launch that rebooted
+  if (Config::arch == A_ENT) {
+    Ep::launchResume();                     // a .COM launch that rebooted
+    // The EXDOS ROM joins the bus at a reset while a disk is in a drive, and the
+    // drives were loaded AFTER the machine reset above: reset again so EXOS finds it.
+    if (EpFdc::anyMounted() && !Ep::exdosOn()) {
+      Debug::log("setup: Enterprise disk mounted, reset into EXDOS");
+      CPU::reset();
+      VIDEO::Reset();
+    }
+  }
 
   // Re-reset MB-02 after disk mounts so boot EPROM starts with disks already inserted
   if (MB02::enabled && mb02_fdd.disk[0]) {
@@ -2832,6 +2842,13 @@ static void epKeys(fabgl::Keyboard* Kbd) {
         for (int b = 0; b < 8; b++) if (Kbd->isVKDown(fk[b])) k[4] &= (uint8_t)~(1u << b);
     }
     memcpy(Ep::keys, k, sizeof(k));
+    // EXT1 joystick = the host pad while its type is Kempston (the Cursor type
+    // already drives the internal joystick through the arrows); same bit layout,
+    // active low. EXT2 idle.
+    uint8_t j = 0xFF;
+    if (Config::joyLive() == JOY_KEMPSTON) j = (uint8_t)(~Ports::port[Config::kempPortLive()] | 0xE0);
+    Ep::joy[0] = j;
+    Ep::joy[1] = 0xFF;
 }
 
 static void samKeys(fabgl::Keyboard* Kbd) {
@@ -5270,6 +5287,10 @@ void ESPectrum::loop() {
     if (Z80Ops::isSam) {                      // SAM Coupe: its VL1772 pair
         fdd_active = SamFdc::active();
         fdd_write  = SamFdc::wroteRecently();
+    }
+    if (Z80Ops::isEnt) {                      // Enterprise: the EXDOS WD1770
+        fdd_active = EpFdc::active();
+        fdd_write  = EpFdc::wroteRecently();
     }
     // While active: draw ONLY the sprite's foreground pixels (border shows through);
     // dotFast maps the ZX index for the current mode (DS80 → solid pair slot).
