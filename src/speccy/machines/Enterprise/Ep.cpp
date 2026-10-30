@@ -10,8 +10,11 @@
 #include "app/Config.h"
 #include "app/Buffer.h"
 #include "app/Debug.h"
+#include "app/TryAlloc.h"
 #include "speccy/core/MemESP.h"
 #include "speccy/z80/CPU.h"
+#include "speccy/z80/z80.h"
+#include "pico/time.h"
 #include "speccy/z80/MemGates.h"   // g_atm_ro: bit n = drop writes to CPU window n
 #include "speccy/video/Video.h"
 #include "speccy/roms/ep/ep_roms.h"
@@ -34,6 +37,11 @@ static uint32_t s_lineT = Ep::T_PER_LINE;   // frame T of the next line end
 static uint32_t s_frac = 0;                 // wait states: carried 1/57 T
 static int      s_row = 0;                  // lines since the end of VSYNC
 static bool     s_prevVs = false;
+static uint32_t s_daveT = 16;               // frame T at which the next Dave cycle ends
+static uint8_t* s_aud = nullptr;            // AUD_CAP left samples, then AUD_CAP right
+static constexpr int AUD_CAP = 640;
+static int8_t   s_keysOvr = -1;             // KeysMode override, -1 = AUTO
+static uint32_t s_fkPollMs = 0;             // last read of row 4 from RAM code
 
 void bindRoms() {
     s_ep64 = (Config::romSet == R_EP64);
@@ -135,7 +143,6 @@ static void lineOut(const uint8_t* px) {
 static void lineRun() {
     uint8_t px[EpCore::Nick::OUT_PX];
     const int fl = s_nick.line(px);
-    s_dave.tick(16);                            // 256 T at 4 MHz = 16 Dave cycles (250 kHz)
     const bool vs = (fl & EpCore::Nick::L_VSYNC) != 0;
     if (s_nick.displayEnabled && s_nick.videoMode == 1 && s_nick.colorMode == 3) s_logoLine = true;
     if (s_prevVs && !vs) s_row = 0;
@@ -144,9 +151,20 @@ static void lineRun() {
     if (s_row < 1000) s_row++;
 }
 
+// Dave runs on its own clock (250 kHz = 16 T a cycle): to the line ends, and to the
+// exact T of every Dave register access, so a sampled-sound write lands in its cycle.
+static void daveTo(uint32_t t) {
+    if (t < s_daveT) return;
+    const uint32_t ct = (uint32_t)s_dave.cycleT();
+    const uint32_t n = (t - s_daveT) / ct + 1;
+    s_dave.tick((int)n);
+    s_daveT += n * ct;
+}
+
 void catchUp() {
     while (CPU::tstates >= s_lineT) {
         lineRun();
+        daveTo(s_lineT);
         s_lineT += T_PER_LINE;
     }
 }
@@ -155,6 +173,14 @@ uint32_t nextLineT() { return s_lineT; }
 
 void frameEnd() {
     catchUp();
+    daveTo(CPU::statesInFrame);
+    s_daveT -= CPU::statesInFrame;
+    if (s_aud) {                                // a short frame: hold the last sample
+        const int n = s_dave.outN;
+        const uint8_t l = n ? s_aud[n - 1] : 0, r = n ? s_aud[AUD_CAP + n - 1] : 0;
+        for (int i = n; i < AUD_CAP; i++) { s_aud[i] = l; s_aud[AUD_CAP + i] = r; }
+    }
+    s_dave.outN = 0;
     s_logoFrames = s_logoLine ? s_logoFrames + 1 : 0;
     s_logoLine = false;
     s_lineT -= CPU::statesInFrame;
@@ -163,6 +189,31 @@ void frameEnd() {
 void renderFrame() {}
 
 bool intLine() { return s_dave.irq(); }
+
+bool audio(const uint8_t** l, const uint8_t** r) {
+    if (!s_aud) return false;
+    *l = s_aud; *r = s_aud + AUD_CAP;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Function keys
+
+bool keysToGuest() {
+    if (s_keysOvr >= 0) return s_keysOvr != 0;
+    return s_fkPollMs && (to_ms_since_boot(get_absolute_time()) - s_fkPollMs) < 2000;
+}
+
+KeysMode cycleKeysMode() {
+    switch (s_keysOvr) {
+        case KEYS_AUTO: s_keysOvr = keysToGuest() ? KEYS_OFF : KEYS_ON; break;   // always a change
+        case KEYS_ON:   s_keysOvr = KEYS_OFF; break;
+        default:        s_keysOvr = KEYS_AUTO; break;
+    }
+    return (KeysMode)s_keysOvr;
+}
+
+void clearKeysOverride() { s_keysOvr = -1; s_fkPollMs = 0; }
 
 // ---------------------------------------------------------------------------
 // Reset
@@ -174,6 +225,12 @@ void reset() {
     s_dave.pageCb = pageCb;
     s_nick.reset();
     s_dave.reset(true);
+    if (!s_aud) s_aud = (uint8_t*)tryCalloc(2 * AUD_CAP);   // no heap: no sound
+    s_dave.outL = s_aud;
+    s_dave.outR = s_aud ? s_aud + AUD_CAP : nullptr;
+    s_dave.outCap = s_aud ? AUD_CAP : 0;
+    s_dave.outN = 0;
+    s_daveT = (uint32_t)s_dave.cycleT();
     fileReset();
     s_logoFrames = 0;
     s_logoLine = false;
@@ -231,6 +288,10 @@ void drawOpcode(bool contended) {
 uint8_t portIn(uint16_t address) {
     const uint8_t lo = (uint8_t)address;
     if (lo >= 0xA0 && lo <= 0xBF) {
+        catchUp();
+        daveTo(CPU::tstates);
+        if (lo == 0xB5 && s_dave.kbRow == 4 && segIsRam(s_dave.page[Z80::getRegPC() >> 14]))
+            s_fkPollMs = to_ms_since_boot(get_absolute_time());
         for (int i = 0; i < 10; i++) s_dave.keys[i] = keys[i] & inj[i];
         return s_dave.read(lo);
     }
@@ -244,7 +305,7 @@ uint8_t portIn(uint16_t address) {
 
 void portOut(uint16_t address, uint8_t data) {
     const uint8_t lo = (uint8_t)address;
-    if (lo >= 0xA0 && lo <= 0xBF) { catchUp(); s_dave.write(lo, data); return; }
+    if (lo >= 0xA0 && lo <= 0xBF) { catchUp(); daveTo(CPU::tstates); s_dave.write(lo, data); return; }
     if ((lo & 0xF0) == 0x80) {
         catchUp();
         vramWait(0, 83, 0);

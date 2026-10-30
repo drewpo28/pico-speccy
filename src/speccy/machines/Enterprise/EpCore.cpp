@@ -253,13 +253,40 @@ int Nick::line(uint8_t* out) {
 // ---------------------------------------------------------------------------
 // Dave
 
+static inline void polyInit(Dave::Poly& p, uint32_t m0, uint32_t m1) {
+    p.m0 = m0; p.m1 = m1; p.mask = (m0 << 1) - 1; p.sr = p.mask; p.out = 0;
+}
+static inline uint8_t polyStep(Dave::Poly& p) {
+    p.out = (p.sr & p.m0) ? 1 : 0;
+    const uint8_t b1 = (p.sr & p.m1) ? 1 : 0;
+    p.sr = ((p.sr << 1) | (uint32_t)(p.out ^ b1)) & p.mask;
+    return p.out;
+}
+// #A6 bits 2-3: 17 / 15 / 11 / 9-bit variable-length counter (ep128emu polycnt_params).
+static void polyVl(Dave::Poly& p, int sel) {
+    static const uint32_t m[4][2] = {{0x10000, 0x2000}, {0x4000, 0x2000}, {0x400, 0x100}, {0x100, 0x10}};
+    if (p.m0 == m[sel][0]) return;
+    const uint32_t sr = p.sr;
+    p.m0 = m[sel][0]; p.m1 = m[sel][1]; p.mask = (p.m0 << 1) - 1;
+    p.sr = sr & p.mask;
+    if (!p.sr) p.sr = p.mask;                  // an all-zero LFSR would stay silent
+}
+
 void Dave::reset(bool cold) {
     clk1000 = clk50 = clk1 = 0;
+    clk62Phase = 0; clk62 = 0;
     for (int i = 0; i < 3; i++) { chPhase[i] = 0; chFrq[i] = 0; chRun[i] = 1; }
-    stSnd = stHz = 0; st1 = st2 = 1;
+    for (int i = 0; i < 4; i++) st[i] = prv[i] = st1[i] = 0;
+    st2_3 = 0; n3ClkPrv = 0;
+    polyInit(p4, 0x8, 0x4);
+    polyInit(p5, 0x10, 0x4);
+    polyInit(p7, 0x40, 0x20);
+    polyInit(pvl, 0x10000, 0x2000);
+    stSnd = stHz = 0; st1_ = 1; st2 = 1;
     actSnd = actHz = act1 = act2 = 0;
     for (int i = 0; i < 0x20; i++) write((uint8_t)i, 0);
     write(0x14, 0xAA);
+    accL = accR = 0; accN = 0;
     if (cold) memset(keys, 0xFF, sizeof(keys));
 }
 
@@ -270,16 +297,33 @@ void Dave::write(uint8_t r, uint8_t value) {
     case 0x00: case 0x02: case 0x04:
         chFrq[r >> 1] = (chFrq[r >> 1] & 0x0F00) | value;
         break;
-    case 0x01: case 0x03: case 0x05:
-        chFrq[r >> 1] = (chFrq[r >> 1] & 0x00FF) | ((value & 0x0F) << 8);
+    case 0x01: case 0x03: case 0x05: {
+        const int c = r >> 1;
+        chFrq[c] = (chFrq[c] & 0x00FF) | ((value & 0x0F) << 8);
+        chIn[c] = (value >> 4) & 3;
+        chHp[c] = (value & 0x40) ? 1 : 0;      // ch0 by ch1, ch1 by ch2, ch2 by noise
+        chRm[c] = (value & 0x80) ? 1 : 0;      // ch0 by ch2, ch1 by noise, ch2 by ch0
+        break;
+    }
+    case 0x06:
+        n3Clk = value & 3;                     // 31.25 kHz, ch0, ch1, ch2
+        polyVl(pvl, (value >> 2) & 3);
+        noise7 = (value & 0x10) ? 1 : 0;
+        n3Lp = (value & 0x20) ? 1 : 0;
+        n3Hp = (value & 0x40) ? 1 : 0;
+        n3Rm = (value & 0x80) ? 1 : 0;
         break;
     case 0x07:
         for (int c = 0; c < 3; c++) {
-            if (value & (1 << c)) chRun[c] = 0;
+            if (value & (1 << c)) { chRun[c] = 0; st1[c] = 0; }
             else if (!chRun[c]) { chPhase[c] = chFrq[c]; chRun[c] = 1; }
         }
+        dacL = (value & 0x08) ? 1 : 0;
+        dacR = (value & 0x10) ? 1 : 0;
         sndSrc = (value >> 5) & 3;
         break;
+    case 0x08: case 0x09: case 0x0A: case 0x0B: volL[r & 3] = value & 0x3F; break;
+    case 0x0C: case 0x0D: case 0x0E: case 0x0F: volR[r & 3] = value & 0x3F; break;
     case 0x10: case 0x11: case 0x12: case 0x13:
         page[r & 3] = value;
         if (pageCb) pageCb(ud, r & 3, value);
@@ -303,39 +347,100 @@ uint8_t Dave::read(uint8_t r) const {
     case 0x10: case 0x11: case 0x12: case 0x13: return page[r & 3];
     case 0x14:
         return (uint8_t)((stSnd | (actSnd << 1)) | ((stHz | (actHz << 1)) << 2) |
-                         ((st1 | (act1 << 1)) << 4) | ((st2 | (act2 << 1)) << 6));
+                         ((st1_ | (act1 << 1)) << 4) | ((st2 | (act2 << 1)) << 6));
     case 0x15: return kbRow < 10 ? keys[kbRow] : 0xFF;
-    case 0x16: return 0xCF;               // no tape signal, no joystick (phase 1)
+    case 0x16: return 0xCF;               // no tape signal, no joystick
     }
     return 0xFF;
 }
 
 void Dave::setInt1(bool state) {
-    const uint8_t prv = st1;
-    st1 = state ? 1 : 0;
-    if (!en1 || st1 || !prv || act1) return;          // negative edge, enabled, not active
+    const uint8_t old = st1_;
+    st1_ = state ? 1 : 0;
+    if (!en1 || st1_ || !old || act1) return;          // negative edge, enabled, not active
     act1 = 1;
+}
+
+void Dave::step() {
+    // polynomial counters (the noise channel's one steps on its clock's falling edge)
+    polyStep(p4);
+    polyStep(p5);
+    const uint8_t clkSrc = n3Clk == 0 ? clk62 : st[n3Clk - 1];
+    const bool edge = clkSrc < n3ClkPrv;
+    n3ClkPrv = clkSrc;
+    Poly& noise = noise7 ? p7 : pvl;           // the noise channel's counter
+    Poly& other = noise7 ? pvl : p7;           // free-running
+    polyStep(other);
+    if (edge) {
+        st1[3] = polyStep(noise);
+        if (!n3Lp) st2_3 = st1[3];
+    }
+
+    // phases, timers, interrupts
+    clk62Phase--;
+    clk1000--;
+    for (int c = 0; c < 3; c++) chPhase[c] -= chRun[c];
+    const int* src = sndSrc == 0 ? &clk1000 : sndSrc == 1 ? &clk50 : &chPhase[sndSrc - 2];
+    if (clk1000 < 0) {
+        clk50--;
+        if (*src < 0) { stSnd ^= 1; if (enSnd) trigSnd(); }
+        clk1000 = 249;
+        if (clk50 < 0) {
+            clk50 = 19;
+            if (--clk1 < 0) { clk1 = 49; stHz ^= 1; if (enHz) trigHz(); }
+        }
+    } else if (*src < 0) {
+        stSnd ^= 1;
+        if (enSnd) trigSnd();
+    }
+    if (clk62Phase < 0) { clk62Phase = 3; clk62 ^= 1; }
+
+    // channel 3 (noise)
+    prv[3] = st[3];
+    if (n3Lp && st[2] < prv[2]) st2_3 = st1[3];    // lowpass: hold until ch2 falls
+    if (n3Hp && st[0] < prv[0]) st2_3 = 0;         // highpass: 0 when ch0 falls
+    st[3] = st2_3;
+    if (n3Rm) st[3] ^= (uint8_t)(st[1] ^ 1);       // ring mod: XNOR ch1
+    // channels 2, 1, 0: highpass by noise / ch2 / ch1, ring mod by ch0 / noise / ch2
+    static const uint8_t hpBy[3] = {1, 2, 3}, rmBy[3] = {2, 3, 0};
+    for (int c = 2; c >= 0; c--) {
+        prv[c] = st[c];
+        if (chPhase[c] < 0) {
+            chPhase[c] = chFrq[c];
+            switch (chIn[c]) {
+            case 0: st1[c] ^= 1; break;
+            case 1: st1[c] = p4.out; break;
+            case 2: st1[c] = p5.out; break;
+            default: st1[c] = noise7 ? pvl.out : p7.out; break;
+            }
+        }
+        const int h = hpBy[c];
+        if (chHp[c] && st[h] < prv[h]) st1[c] = 0;
+        st[c] = st1[c];
+        if (chRm[c]) st[c] ^= (uint8_t)(st[rmBy[c]] ^ 1);
+    }
+
+    // DAC: in DAC mode a side plays channel 0's volume register x4 (sampled sound)
+    unsigned l = 0, r = 0;
+    if (dacL) l = volL[0] << 2;
+    else for (int c = 0; c < 4; c++) if (st[c]) l += volL[c];
+    if (dacR) r = volR[0] << 2;
+    else for (int c = 0; c < 4; c++) if (st[c]) r += volR[c];
+    outLv = (uint8_t)l; outRv = (uint8_t)r;
 }
 
 void Dave::tick(int n) {
     while (n-- > 0) {
-        clk1000--;
-        for (int c = 0; c < 3; c++) chPhase[c] -= chRun[c];
-        const int* src = sndSrc == 0 ? &clk1000 : sndSrc == 1 ? &clk50 : &chPhase[sndSrc - 2];
-        if (clk1000 < 0) {
-            clk50--;
-            if (*src < 0) { stSnd ^= 1; if (enSnd) trigSnd(); }
-            clk1000 = 249;
-            if (clk50 < 0) {
-                clk50 = 19;
-                if (--clk1 < 0) { clk1 = 49; stHz ^= 1; if (enHz) trigHz(); }
+        step();
+        accL += outLv; accR += outRv;
+        if (++accN == 8) {
+            if (outL && outN < outCap) {
+                outL[outN] = (uint8_t)(accL >> 3);
+                outR[outN] = (uint8_t)(accR >> 3);
+                outN++;
             }
-        } else if (*src < 0) {
-            stSnd ^= 1;
-            if (enSnd) trigSnd();
+            accL = accR = 0; accN = 0;
         }
-        for (int c = 0; c < 3; c++)
-            if (chPhase[c] < 0) chPhase[c] = chFrq[c];
     }
 }
 

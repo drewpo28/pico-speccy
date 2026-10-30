@@ -2489,6 +2489,12 @@ void OSD::do_OSD(fabgl::VirtualKey KeytoESP, bool ALT, bool CTRL) {
             notify(Config::next_ext_keys ? " Next keyboard ON " : " Next keyboard OFF ", LEVEL_INFO, 900);
             return;
         }
+        if (Z80Ops::isEnt) {      // Enterprise F1-F8: the same three states
+            const Ep::KeysMode m = Ep::cycleKeysMode();
+            notify(m == Ep::KEYS_ON  ? " F-keys: ON "
+                 : m == Ep::KEYS_OFF ? " F-keys: OFF " : " F-keys: AUTO ", LEVEL_INFO, 900);
+            return;
+        }
         if (Z80Ops::isSam) {      // SAM Coupe F-keys: the same three states
             const Sam::KeysMode m = Sam::cycleKeysMode();
             notify(m == Sam::KEYS_ON  ? " F-keys: ON "

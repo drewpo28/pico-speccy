@@ -41,6 +41,9 @@ namespace Ep {
     void portOut(uint16_t address, uint8_t data);
 
     bool intLine();                  // Z80Ops::isActiveINT
+    // Dave's output for the frame that just ended (EndFrame), 0..252 a side,
+    // unipolar; false = no buffer (no heap at reset).
+    bool audio(const uint8_t** l, const uint8_t** r);
     uint32_t nextLineT();            // frame T of the next line end
     void catchUp();                  // run the lines whose end CPU::tstates has passed
     void frameEnd();                 // EndFrame (before the frame's T are subtracted)
@@ -68,5 +71,13 @@ namespace Ep {
     void launchResume();             // setup(): a launch that rebooted the board
     void launchTick();               // EndFrame: drives the typing
     extern uint8_t inj[10];          // keys the typing holds (active low, ANDed with keys)
-    int logoFrames();                // consecutive frames that showed a 256-colour PIXEL line
+    int logoFrames();
+
+    // EP F1-F8 (keyboard row 4): ON = the host F1-F8 are the guest's, OFF = our
+    // hotkeys, AUTO = the guest's while code running from RAM reads row 4 (a program
+    // scanning the keyboard itself; EXOS scans it from ROM in every program).
+    enum KeysMode : int8_t { KEYS_AUTO = -1, KEYS_OFF = 0, KEYS_ON = 1 };
+    bool     keysToGuest();
+    KeysMode cycleKeysMode();        // session only; returns the new mode
+    void     clearKeysOverride();    // machine reset                // consecutive frames that showed a 256-colour PIXEL line
 }
