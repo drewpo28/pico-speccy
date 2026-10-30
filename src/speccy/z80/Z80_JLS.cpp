@@ -3310,6 +3310,9 @@ void Z80::decodeRST() {    /* RST p */
     // DEFB #45 in place of LD C,A / CP A at #0569, so the CP A trap never fires there.
     if (__builtin_expect(opCode == 0xCF && REG_PC == 0x056A, 0) && Z80Ops::isAtm &&
         evo_tape_trap()) return;
+    // Enterprise: RST 30h is the EXOS call (function byte at PC) — the typed-launch
+    // prompt detector (Ep::exosCall, flash) watches for BASIC's read-character call.
+    if (__builtin_expect(Z80Ops::isEnt, 0) && opCode == 0xF7) Ep::exosCall(REG_PC);
     Z80Ops::addressOnBusIR(1);
     push(REG_PC);
     REG_PC = REG_WZ = opCode & 0x38;

@@ -39,20 +39,37 @@ package (`ep128.hu/Emu/ep128emu_roms-2.0.11.bin`, unpacked with its `decompm2`).
   the system segment (DE = BFxx, window 2 = FF while EXOS runs) and is read through
   the CURRENT paging; read/write buffers are user memory, read through the caller's
   page table at FF:3FFC.
-- F5 on a `.com` (or `.bas` on the Enterprise) = switch to the Enterprise if needed
-  (scratch tag + `/tmp/ep_launch.txt` if that reboots) and make FILE: serve the
-  file's folder; nothing is started (owner's call): `START` or F1 runs the program.
-  (An empty-name `LOAD` opening the F5 pick was tried and removed the same day —
-  owner: not needed.) `:DIR [folder]` lists the folder, `:CD folder`
+- F5 / Web catalog on a `.com` (or `.bas` on the Enterprise) = switch to the
+  Enterprise if needed (scratch tag + `/tmp/ep_launch.txt`, line 2 = autostart, if
+  that reboots) or `resetForLoad`, make FILE: serve the file's folder, and **type
+  `load "name"` + ENTER (then `run` + ENTER for a .bas) into the matrix** (owner,
+  2026-10-30 evening: "через BIOS, как tap/tzx"; hw-confirmed the same evening on
+  `debug/DVp2w-ep-autostart-1.1.1`). **No reset when IS-BASIC is already at its
+  prompt** (owner's follow-up; `debug/DVp2w-ep-autostart2-1.1.1`, host-tested, NOT
+  hw-tested): `basicPromptIdle()` = the last EXOS read-character call came from
+  segment 4 (BASIC) on channel 0, nothing has been read for 4 frames and the CPU is
+  inside EXOS — the editor waiting for the first key of a line (a host trace showed
+  it makes no further EXOS call there; each key later costs a function 5 on the
+  KEYBOARD channel 0x69 from segment 0, the cursor flashes through function 7). Then
+  the line is typed into the running BASIC; anything else (logo, a program) takes the
+  reset. The first attempt (same day, removed) typed on a timer and landed in
+  the boot logo; now `Ep::exosCall` (Z80::decodeRST on RST 30h) marks EXOS function
+  5 (read character) from outside segments 0/1 and `launchTick` (frameEnd) types a
+  line once such a call was followed by 4 frames without another — BASIC blocked in
+  the editor's line read; an ENTER every 100 frames of waiting leaves the EXOS logo
+  (its key wait is EXOS's own, invisible); 30 s without a prompt = toast "Type
+  LOAD". Keys: `injKeys[10]` ANDed into the #B5 read, held 3 frames, 6 per key,
+  letters unshifted (FatFs is case-insensitive), `"` = SHIFT 2, `_` = SHIFT 0; a
+  name over 28 characters or with a key the matrix lacks gets the folder only.
+  `Ep::launchAbort` from ESPectrum::reset. Host hook `PICOSPECCY_EP_LAUNCH=/EP/X.COM`
+  (host_main.cpp) replays the reboot path. `:DIR [folder]` lists the folder, `:CD folder`
   changes it (`..`, `/`): a patch of the FILE: ROM's command handler
   (`rom_pack.py ep_fileio_patch`, C11B -> C840) asks trap 0x12 whether the command
   is ours and prints trap 0x13's characters on channel 0 with EXOS 7.
 - Host bench: Jetpac (JETPAC.COM + .SCR + .PRG) plays, Nebulus (CPC conversion,
   .COM + 26 KB .PRG) plays; both by F5, Jetpac also from a Pentagon.
-- Not wired: Web-catalog launch of a .com.
 - Tried and dropped: starting the file from EXOS's extension actions (action 8
-  refuses EXOS calls with .ILLFN, action 1 never reached our ROM) and typing
-  `load "name"` into the keyboard matrix (owner: no autostart).
+  refuses EXOS calls with .ILLFN, action 1 never reached our ROM).
 
 ## Phase 2 — Dave sound + EP function keys (2026-10-30, host-tested, NOT hw-tested)
 
@@ -182,10 +199,35 @@ Removed with the round: the `EP_HOT_IN_RAM` CMake experiment (the hot path in SR
 leaf-like now and SRAM is the scarcer resource). Left: `Ep::draw` glue for the
 internal cycles (addressOnBus) — small.
 
+## F11 = a WARM reset, and Nick must survive it (2026-10-30/31; host-reproduced, fix host-tested, NOT hw-tested)
+
+Owner (DVp2w): "after several F11 a black screen, usually when pressed before the
+ROM has loaded"; his Ctrl+Alt+D dump showed EXOS alive (PC inside the device-call
+dispatcher at #0578 from #0CA2, IFF1 = 1, interrupts served) — a Z80 that runs and a
+Nick that shows nothing. Reproduced on the host stand (F5 launch of Jetpac from BASIC,
+three F11 while it loads; gdb attached: `lptBase=F900 lptCur=5110 s_row=1000`): Nick's
+LPT counter was walking segment FC from 0 and never met a VSYNC block, so the glue had
+no row to draw into. Cause: `Ep::reset` called `Nick::reset()` on every reset, but
+**Nick has no reset line** — ep128emu's `Ep128VM::reset` leaves it alone (a cold reset
+only `randomizeRegisters()` and zeroes EXOS's warm signature at FF:3FF8/9) — and EXOS's
+display init (EXOS 2.1 #126A..#12AE) decides by the LPT's first byte at FF:3900: zero
+(the memory test has run) → `OUT 83 = 0F / 4F / CF` restarts the LPT from the base,
+non-zero (warm start, program kept) → `OUT 83 = CF` alone, trusting the counter to be
+inside the LPT already. A warm start therefore needs the chip's state from before the
+reset; F11 during the memory test took the cold path and survived, which is why the
+93-reset boot stress never showed it. Fix: `Nick::reset()` only on the first EP reset of
+the session (`nickUp` in `Ep::reset`); Dave, the Z80 and the page registers reset as
+before. After the fix the same scenario warm-starts into IS-BASIC (`ok`, no memory
+test — the real machine's behaviour), the boot stress still passes. `tools/memdump.gdb`
+gained an `== Enterprise ==` block (Dave pages/INT latches, Nick LPT state, the glue's
+line clock and `s_row`, the LPT bytes to `/tmp/picospec_ep_lpt.bin`) — the question
+"is Nick producing VSYNC" is answered there; the first dump of this bug had no EP
+block and only said "EXOS runs".
+
 ## Next
 
 1. Joysticks (internal + EXT1/EXT2 on #B6).
-2. Loading software: `.com`/`.bas` straight into memory through EXOS; EXDOS (WD1770
-   on #10-#18, FAT12 images); tape.
+2. Loading software: EXDOS (WD1770 on #10-#18, FAT12 images); tape. (.com/.bas
+   autostart done 2026-10-30, hw check owed.)
 3. Precise VRAM/IO wait timing against ep128emu, Nick per-slot border/palette writes.
 4. Web catalog adapter, .pss.

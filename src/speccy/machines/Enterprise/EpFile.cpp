@@ -10,12 +10,17 @@
 // of the file launched from the browser.
 //
 // Launch: switch to the Enterprise if needed, reset, then type into the keyboard
-// matrix — a key to leave the boot logo, then LOAD "name" + ENTER. A switch that
-// reboots carries the request through /tmp/ep_launch.txt + a watchdog tag.
+// matrix LOAD "name" + ENTER (and RUN + ENTER for a .bas) once IS-BASIC waits for
+// a line — detected, not timed: an EXOS read-character call (RST 30h, function 5)
+// from outside EXOS with no further one for a few frames is BASIC blocked in the
+// editor's line read; a fixed delay was what the first version did and it typed
+// into the boot logo. A switch that reboots carries the request through
+// /tmp/ep_launch.txt + a watchdog tag.
 
 #include "Ep.h"
 
 #include <string.h>
+#include <ctype.h>
 #include <string>
 #include <vector>
 #include <algorithm>
@@ -298,18 +303,179 @@ void fileTrap() {
 }
 
 // ---------------------------------------------------------------------------
-// F5 on a .COM / .BAS: FILE: serves that file's folder from now on. Nothing is
-// started — the user types LOAD "name" in IS-BASIC.
+// F5 / Web catalog on a .COM / .BAS: FILE: serves that file's folder and LOAD "name"
+// is typed for the user (RUN too for a .bas) — into the running IS-BASIC when it is
+// sitting at its prompt (owner, 2026-10-30: no reset then), after a reset otherwise.
+//
+// The keys go into the matrix EXOS scans from its 50 Hz interrupt (injKeys, ANDed
+// into the #B5 read), each held SEQ_HOLD frames and released for the rest of
+// SEQ_STEP — the same key twice in a row needs the gap. A line is typed only once
+// IS-BASIC is waiting for one: exosCall() sees every RST 30h from outside EXOS, and
+// a function 5 (read character) followed by SEQ_QUIET frames without another is the
+// editor's line read blocking inside EXOS. After ENTER the editor hands the line
+// back through more function-5 calls in quick succession, LOAD runs, and the next
+// blocking read is the prompt for RUN. SEQ_TIMEOUT frames with no prompt (a program
+// that took over, a ROM set that never gets there) drops the request with a toast.
+// Letters are typed unshifted (lowercase: FatFs matches names case-insensitively,
+// IS-BASIC keywords are case-insensitive); only " (SHIFT 2) and _ (SHIFT 0) take
+// the shift key. A name EXOS cannot take (over 28 characters, or a character the
+// matrix has no key for) gets the folder and a "type LOAD" toast, nothing typed.
 
 static constexpr uint32_t LAUNCH_SCRATCH = 1;          // shares the P3BT / SAMB register
 static constexpr uint32_t LAUNCH_TAG = 0x45504C4Eu;    // 'EPLN'
 static const char* const LAUNCH_FILE = "/tmp/ep_launch.txt";
 
-static void armFor(const std::string& path) {
+uint8_t injKeys[10] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+bool    injOn = false;
+
+static constexpr int SEQ_HOLD = 3, SEQ_STEP = 6, SEQ_QUIET = 4, SEQ_TIMEOUT = 1500;
+static constexpr int LOGO_KEY_EVERY = 100, LOGO_KEY_AT = 60;
+static constexpr int SEQ_MAX = 64;
+static constexpr int EXOS_NAME_MAX = 28;
+struct SeqKey { uint8_t row, bit, shift; };         // row 0xFF = wait for the prompt
+static SeqKey  s_seq[SEQ_MAX];
+static int     s_seqN = 0, s_seqI = -1;             // -1 = idle
+static int     s_ph = 0;                            // frames into the current key / the wait
+static int     s_quiet = 0;                         // frames since the last read-character call
+static bool    s_rdSeen = false;
+
+static void injClear() { memset(injKeys, 0xFF, sizeof(injKeys)); injOn = false; }
+static void seqStop()  { s_seqI = -1; s_seqN = 0; injClear(); }
+
+// The EP matrix position of an ASCII character (the layout of ESPectrum::epKeys /
+// ep128emu's ep_keys.cfg); false = no key.
+static bool keyOf(char c, SeqKey& k) {
+    if (c >= 'A' && c <= 'Z') c = (char)(c + 32);
+    switch (c) {
+        case 'n': k = {0, 0, 0}; return true; case 'b': k = {0, 2, 0}; return true;
+        case 'c': k = {0, 3, 0}; return true; case 'v': k = {0, 4, 0}; return true;
+        case 'x': k = {0, 5, 0}; return true; case 'z': k = {0, 6, 0}; return true;
+        case 'h': k = {1, 0, 0}; return true; case 'g': k = {1, 2, 0}; return true;
+        case 'd': k = {1, 3, 0}; return true; case 'f': k = {1, 4, 0}; return true;
+        case 's': k = {1, 5, 0}; return true; case 'a': k = {1, 6, 0}; return true;
+        case 'u': k = {2, 0, 0}; return true; case 'q': k = {2, 1, 0}; return true;
+        case 'y': k = {2, 2, 0}; return true; case 'r': k = {2, 3, 0}; return true;
+        case 't': k = {2, 4, 0}; return true; case 'e': k = {2, 5, 0}; return true;
+        case 'w': k = {2, 6, 0}; return true;
+        case '7': k = {3, 0, 0}; return true; case '1': k = {3, 1, 0}; return true;
+        case '6': k = {3, 2, 0}; return true; case '4': k = {3, 3, 0}; return true;
+        case '5': k = {3, 4, 0}; return true; case '3': k = {3, 5, 0}; return true;
+        case '2': k = {3, 6, 0}; return true; case '"': k = {3, 6, 1}; return true;
+        case '8': k = {5, 0, 0}; return true; case '9': k = {5, 2, 0}; return true;
+        case '-': k = {5, 3, 0}; return true; case '0': k = {5, 4, 0}; return true;
+        case '_': k = {5, 4, 1}; return true;
+        case 'j': k = {6, 0, 0}; return true; case 'k': k = {6, 2, 0}; return true;
+        case 'l': k = {6, 4, 0}; return true; case '\r': k = {7, 6, 0}; return true;
+        case 'm': k = {8, 0, 0}; return true; case '.': k = {8, 4, 0}; return true;
+        case ' ': k = {8, 6, 0}; return true;
+        case 'i': k = {9, 0, 0}; return true; case 'o': k = {9, 2, 0}; return true;
+        case 'p': k = {9, 4, 0}; return true;
+        default: return false;
+    }
+}
+
+static bool seqAdd(const char* s) {
+    for (; *s; s++) {
+        if (s_seqN >= SEQ_MAX) return false;
+        if (*s == '\n') { s_seq[s_seqN++] = {0xFF, 0, 0}; continue; }
+        if (!keyOf(*s, s_seq[s_seqN])) return false;
+        s_seqN++;
+    }
+    return true;
+}
+
+// Type the launch of `name` (the file's base name) in the current folder.
+// `primed`: BASIC is already at its prompt — the first wait is over before it starts.
+static bool seqArm(const std::string& name, bool bas, bool primed) {
+    s_seqN = 0;
+    if (name.size() > (size_t)EXOS_NAME_MAX) return false;
+    std::string line = "\nload \"" + name + "\"\r";
+    if (bas) line += "\nrun\r";
+    if (!seqAdd(line.c_str())) { s_seqN = 0; return false; }
+    s_seqI = 0; s_ph = 0;
+    s_quiet = primed ? SEQ_QUIET : 0; s_rdSeen = primed;
+    injClear();
+    Debug::log("[EP] launch: typing %d keys for '%s'%s%s", s_seqN, name.c_str(), bas ? " + RUN" : "",
+               primed ? " at the prompt" : "");
+    return true;
+}
+
+// The last EXOS read-character call (segment of the caller, A = channel), kept
+// always, so a launch can tell IS-BASIC sitting at its prompt from anything else. How
+// the prompt looks on the bus (host trace, 2026-10-30): BASIC (segment 4, which it
+// pages into window 3) calls function 5 on channel 0 and the EDITOR device waits for
+// the first key inside EXOS with no further call (function-7 writes flash the cursor,
+// so only function 5 counts); each key then costs a function 5 on the KEYBOARD
+// channel (0x69) from segment 0, and ENTER hands the line back through function 5 on
+// channel 0 again. INPUT in a running program looks the same, and typing a line there
+// is what the user would do too.
+static uint8_t s_rdSeg = 0xFF, s_rdA = 0;
+
+void exosCall(uint16_t pc) {
+    if (MemESP::readbyte(pc) != 5) return;                    // read character
+    const uint8_t seg = winSeg(pc >> 14);
+    if (seg == 0x10) return;                                  // our FILE: ROM
+    s_rdSeg = seg; s_rdA = Z80::getRegA();
+    s_quiet = 0;
+    if (seg > 1) s_rdSeen = true;                             // the sequence waits for BASIC's own read
+}
+
+// IS-BASIC asked the editor for a line and nothing has been read for SEQ_QUIET
+// frames, the CPU inside EXOS: the "ok" prompt (or an INPUT) — a line can be typed
+// with no reset.
+static bool basicPromptIdle() {
+    return s_rdSeg == 4 && s_rdA == 0 && s_quiet >= SEQ_QUIET &&
+           winSeg(Z80::getRegPC() >> 14) <= 1;
+}
+
+void launchTick() {
+    s_quiet++;
+    if (s_seqI < 0) return;
+    if (s_seqI >= s_seqN) { seqStop(); return; }
+    const SeqKey& k = s_seq[s_seqI];
+    if (k.row == 0xFF) {                                      // wait for BASIC's prompt
+        injClear();
+        if (s_rdSeen && s_quiet >= SEQ_QUIET) {
+            s_rdSeen = false; s_seqI++; s_ph = 0;
+            return;
+        }
+        // The EXOS boot logo stays until a key is pressed (its wait is EXOS's own
+        // read, invisible here): an ENTER every LOGO_KEY_EVERY frames of waiting
+        // leaves it — and is an empty line, i.e. nothing, once BASIC is up.
+        if (!s_rdSeen && s_ph % LOGO_KEY_EVERY >= LOGO_KEY_AT && s_ph % LOGO_KEY_EVERY < LOGO_KEY_AT + SEQ_HOLD) {
+            injKeys[7] &= (uint8_t)~0x40u;
+            injOn = true;
+        }
+        if (++s_ph > SEQ_TIMEOUT) {
+            Debug::log("[EP] launch: no prompt in %d frames, giving up", SEQ_TIMEOUT);
+            seqStop();
+            OSD::notify(" Type LOAD \"name\" ", LEVEL_WARN, 2500);
+        }
+        return;
+    }
+    memset(injKeys, 0xFF, sizeof(injKeys));
+    if (s_ph < SEQ_HOLD) {
+        injKeys[k.row] &= (uint8_t)~(1u << k.bit);
+        if (k.shift) injKeys[0] &= (uint8_t)~0x80u;           // left SHIFT
+    }
+    injOn = true;
+    if (++s_ph >= SEQ_STEP) { s_ph = 0; s_seqI++; }
+}
+
+void launchAbort() { seqStop(); s_rdSeg = 0xFF; }
+
+static void armFor(const std::string& path, bool autostart, bool primed = false) {
     const size_t sl = path.rfind('/');
     s_dir = sl == std::string::npos ? std::string("/") : path.substr(0, sl + 1);
     const std::string name = sl == std::string::npos ? path : path.substr(sl + 1);
     Debug::log("[EP] FILE: folder '%s' (%s)", s_dir.c_str(), name.c_str());
+    std::string ext;
+    const size_t dot = name.rfind('.');
+    if (dot != std::string::npos) { ext = name.substr(dot + 1); for (char& c : ext) c = (char)tolower(c); }
+    if (autostart && seqArm(name, ext == "bas", primed))
+        OSD::notify((" LOAD \"" + name + "\" ").c_str(), LEVEL_INFO, 2000);
+    else
+        OSD::notify((" FILE: " + s_dir + " - type LOAD ").c_str(), LEVEL_INFO, 2500);
 }
 
 bool launchFile(const std::string& path) {
@@ -318,15 +484,21 @@ bool launchFile(const std::string& path) {
         UINT put = 0;
         if (f_open(&f, LAUNCH_FILE, FA_WRITE | FA_CREATE_ALWAYS) == FR_OK) {
             f_write(&f, path.data(), (UINT)path.size(), &put);
+            f_write(&f, "\n1", 2, &put);                       // line 2: autostart
             f_close(&f);
         }
         watchdog_hw->scratch[LAUNCH_SCRATCH] = LAUNCH_TAG;
         MachineSwitch::commit(A_ENT, Config::romSetEp);   // resets, or reboots and never returns
         watchdog_hw->scratch[LAUNCH_SCRATCH] = 0;
         f_unlink(LAUNCH_FILE);
+    } else if (basicPromptIdle()) {
+        Debug::log("[EP] launch: BASIC at its prompt, no reset");
+        armFor(path, true, true);                             // BASIC waits at "ok": just type
+        return true;
+    } else {
+        ESPectrum::resetForLoad();                            // like a tape launch: a fresh BASIC
     }
-    armFor(path);
-    OSD::notify((" FILE: " + s_dir + " ").c_str(), LEVEL_INFO, 2000);
+    armFor(path, true);
     return true;
 }
 
@@ -341,7 +513,9 @@ void launchResume() {
     f_close(&f);
     f_unlink(LAUNCH_FILE);
     buf[got] = 0;
-    if (Config::arch == A_ENT && got) armFor(buf);
+    bool autostart = false;
+    if (char* nl = strchr(buf, '\n')) { *nl = 0; autostart = nl[1] == '1'; }
+    if (Config::arch == A_ENT && buf[0]) armFor(buf, autostart);
 }
 
 } // namespace Ep

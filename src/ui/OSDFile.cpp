@@ -59,6 +59,7 @@ using namespace std;
 #include "speccy/devices/disk/wd1793.h"
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Sam/SamFdc.h"
+#include "speccy/machines/Enterprise/Ep.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/devices/disk/DiskSlots.h"
 #include "app/MachineSwitch.h"
@@ -516,6 +517,10 @@ static bool rfd_launch_tmp(string path) {
         Tape::LoadTape((Config::tape_autostart ? "R" : "L") + base); // LoadTape prepends TAP_Path
         return true;
     }
+    if (ext == "com" || (ext == "bas" && Config::arch == A_ENT)) {
+        // Enterprise program: FILE: serves /tmp, LOAD "name" is typed (EpFile.cpp).
+        return Ep::launchFile(path);
+    }
     if (ext == "pss" || ext == "sna" || ext == "z80" || ext == "p" || ext == "spg" || ext == "rzx" || ext == "nex" || ext == "snx" || ext == "bas") {
         FileUtils::SNA_Path = dir;
         Config::save();
@@ -923,7 +928,7 @@ void OSD::remoteFileDialog(RemoteFs* fs) {
         auto isLaunchExt = [](const string& lc) {
             return lc == "tap" || lc == "tzx" || lc == "pzx" || lc == "csw" || lc == "wav" || lc == "mp3"
                 || lc == "sna" || lc == "z80" || lc == "p"   || lc == "spg" || lc == "rzx" || lc == "zip"
-                || lc == "rom" || lc == "bin"
+                || lc == "rom" || lc == "bin" || lc == "com"
                 || FileUtils::ifaceForExt(lc) != IFACE_NONE; // trd/scl/fdi/udi/td0/pro/mbd/mmc/hdf
         };
         string ext;

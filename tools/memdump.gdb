@@ -372,6 +372,30 @@ if Z80Ops::isTc2068
   set logging redirect off
 end
 
+# Enterprise 64/128: the main dump walks the four windows as Dave pages them, but
+# says nothing about WHY the screen is what it is — Nick's LPT walk (a stuck LPT
+# never reaches its VSYNC block and the renderer then has no row to draw into:
+# s_row runs to 1000 and stays), Dave's interrupt latches, the line clock. The LPT
+# itself goes to /tmp/picospec_ep_lpt.bin (512 B from lptBase in VRAM) — 16 bytes
+# a block: 256-lines, mode byte (b0 reload, b1-3 video mode 0 = VSYNC, b7 IRQ),
+# margins, LD1, LD2, 8 palette bytes. After the TS-Conf/Timex blocks for the same
+# reason: a missing symbol here must not lose the main dump.
+if Z80Ops::isEnt
+  set logging file /tmp/picospec_ep.txt
+  set logging overwrite on
+  set logging redirect on
+  set logging enabled on
+  printf "== Enterprise ==\n"
+  printf "Dave pages %02X %02X %02X %02X  kbRow=%d sysconf=%02X  en snd/hz/1/2=%d%d%d%d act=%d%d%d%d st1=%d clk1000=%d\n", (unsigned char)Ep::s_dave.page[0], (unsigned char)Ep::s_dave.page[1], (unsigned char)Ep::s_dave.page[2], (unsigned char)Ep::s_dave.page[3], (int)Ep::s_dave.kbRow, (unsigned char)Ep::s_dave.sysconf, (int)Ep::s_dave.enSnd, (int)Ep::s_dave.enHz, (int)Ep::s_dave.en1, (int)Ep::s_dave.en2, (int)Ep::s_dave.actSnd, (int)Ep::s_dave.actHz, (int)Ep::s_dave.act1, (int)Ep::s_dave.act2, (int)Ep::s_dave.st1_, (int)Ep::s_dave.clk1000
+  printf "Nick lptBase=%04X lptCur=%04X port0=%02X border=%02X port3=%02X lptFlags=%02X reload=%d vsync=%d dispEn=%d videoMode=%d nLines=%d linesRemaining=%d irqFlag=%d\n", (unsigned)Ep::s_nick.lptBase, (unsigned)Ep::s_nick.lptCur, (unsigned char)Ep::s_nick.port0, (unsigned char)Ep::s_nick.border, (unsigned char)Ep::s_nick.port3, (unsigned char)Ep::s_nick.lptFlags, (int)Ep::s_nick.reload, (int)Ep::s_nick.vsync, (int)Ep::s_nick.displayEnabled, (int)Ep::s_nick.videoMode, (int)Ep::s_nick.nLines, (int)Ep::s_nick.linesRemaining, (int)Ep::s_nick.irqFlag
+  printf "glue lineT=%u frac57=%u tstates=%u s_row=%d prevVs=%d daveT=%u hiSeen=%d pair=%d ps=%p injOn=%d\n", (unsigned)Ep::lineT, (unsigned)Ep::frac57, (unsigned)CPU::tstates, (int)Ep::s_row, (int)Ep::s_prevVs, (unsigned)Ep::s_daveT, (int)Ep::s_hiSeen, (int)VIDEO::sam_pair_live, Ep::s_ps, (int)Ep::injOn
+  printf "vram %p %p %p %p\n", Ep::s_nick.vram[0], Ep::s_nick.vram[1], Ep::s_nick.vram[2], Ep::s_nick.vram[3]
+  set logging enabled off
+  set logging redirect off
+  set $eplpt = Ep::s_nick.vram[(Ep::s_nick.lptBase >> 14)] + (Ep::s_nick.lptBase & 0x3FFF)
+  dump binary memory /tmp/picospec_ep_lpt.bin $eplpt ($eplpt + 512)
+end
+
 # ── cores (ARM) ─────────────────────────────────────────────────────────────
 
 # ATM-Turbo: CP/M and Beta-128 share the DOS/FDC signal, but the generic dump

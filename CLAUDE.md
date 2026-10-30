@@ -15854,9 +15854,31 @@ Wait states approximate ep128emu (VRAM = next Nick slot + latency). FILE: device
 ep128emu's epfileio.rom in segment 0x10, `ED FE FE n` traps in `EpFile.cpp`; the open
 NAME is EXOS's copy in the system segment (DE = BFxx), read through the CURRENT
 paging — reading it through the caller's page table gave empty names for any program
-that repages window 2 (Jetpac). F5 on a .com only sets the FILE: folder (+ switches to the Enterprise); an empty
-`LOAD` opens the F5 pick, `:DIR` / `:CD` come from a patch of the FILE: ROM's command
-handler (rom_pack.py ep_fileio_patch). Jetpac, Nebulus, Target Renegade play on the host. Dave sound = ep128emu runOneCycle_ on its own 16-T
+that repages window 2 (Jetpac). **F5 / Web catalog on a .com (.bas on the EP) = switch +
+`resetForLoad` + FILE: folder + `load "name"` (+ `run` for .bas) TYPED into the matrix
+(2026-10-30, hw-confirmed DVp2w; the no-reset-at-the-prompt variant below host-tested
+only)**: `injKeys` ANDed into the #B5 read,
+3 frames down / 6 per key, `"` = SHIFT 2; a line is typed only once `Ep::exosCall`
+(decodeRST on RST 30h) saw EXOS fn 5 from outside segments 0/1 followed by 4 quiet
+frames = BASIC blocked in its line read (a timer-paced version typed into the boot logo
+and was removed earlier that day); an ENTER every 100 waiting frames leaves the EXOS
+logo, 30 s without a prompt = "Type LOAD" toast; names > 28 chars or with a key the
+matrix lacks get the folder only. Reboot path = `/tmp/ep_launch.txt` line 2 `1`
+(host: `PICOSPECCY_EP_LAUNCH=/EP/X.COM`). **IS-BASIC already at `ok` = no reset, the line
+is typed into it** (`basicPromptIdle`: the last fn 5 came from segment 4 on channel 0,
+4 quiet frames, PC inside EXOS — the editor waits for the first key with NO EXOS call;
+the owner's "handler spins around CC82" is that wait). The host trace that settled the
+bus shape is in docs/enterprise-plan.md Phase 1; the readiness of a typed line can only
+be judged by fn 5 calls, fn 7 (cursor flash) and fn 11 (BASIC start-up polls) are noise.
+`:DIR` / `:CD` come from a patch of the FILE:
+ROM's command handler (rom_pack.py ep_fileio_patch). **F11 is a WARM reset and Nick
+survives it** (2026-10-31, host-reproduced + fixed, NOT hw-tested): `Nick::reset()` runs
+on the FIRST EP reset only — the chip has no reset line (ep128emu leaves it alone), and
+EXOS's warm start (LPT first byte at FF:3900 non-zero) writes only `OUT 83 = CF`,
+trusting the LPT counter to be inside the LPT; a reset to `lptCur = 0` walked segment FC
+for ever with no VSYNC = black screen with EXOS alive (the owner's "several F11 → black").
+`tools/memdump.gdb` has an `== Enterprise ==` block (Nick LPT state, Dave latches, the
+glue's `s_row` — 1000 = no VSYNC seen). Jetpac, Nebulus, Target Renegade play on the host. Dave sound = ep128emu runOneCycle_ on its own 16-T
 clock (caught up at every Dave port access), polynomial counters as LFSRs, a sample
 per 128 T (NOT per 8 Dave cycles: #BF bit 1 makes a cycle 24 T), 624 a frame into a heap buffer mixed in ESPectrum (`Ep::audio`); host bench
 `PICOSPECCY_WAV=file`. F1-F8 = EP row 4 under the SAM ON/OFF/AUTO scheme (AUTO = row 4
