@@ -96,6 +96,7 @@ uint8_t* segPtr(uint8_t seg) {
 }
 
 bool pcInFileRom(uint16_t pc) { return s_dave.page[pc >> 14] == 0x10; }
+uint8_t winSeg(int w) { return s_dave.page[w & 3]; }
 
 static void mapWin(int w, uint8_t seg) {
     const uint8_t bit = (uint8_t)(1u << w);
@@ -323,6 +324,7 @@ void frameEnd() {
     // on them); the lores output is scratch then. Else Nick writes fb bytes.
     s_nick.setOutMap(VIDEO::sam_pair_live ? nullptr : s_fbMap);
     lineT -= CPU::statesInFrame;
+    launchTick();
     EPT_ADD(fe, tfe);
 #if PERF_TRACE || HOST_BUILD
     {
@@ -382,7 +384,16 @@ void reset() {
     for (int i = 0; i < 4; i++) s_nick.vram[i] = MemESP::ram[4 + i].direct();
     s_nick.irqCb = irqCb;
     s_dave.pageCb = pageCb;
-    s_nick.reset();
+    // Nick has no reset line (ep128emu's Ep128VM::reset leaves it alone; a cold
+    // reset only randomises its registers): on a WARM start EXOS finds its LPT's
+    // first byte non-zero at FF:3900 and merely writes port 3 = CF, trusting the
+    // LPT counter to be inside the LPT already — a Nick reset to lptCur = 0 then
+    // walks segment FC from 0 for ever, no VSYNC block, no row to draw: a black
+    // screen after F11 with EXOS alive (hw + host, 2026-10-30). Only the first
+    // reset of the session resets the chip; a cold start on RAM garbage restarts
+    // the LPT itself (0F / 4F / CF).
+    static bool nickUp = false;
+    if (!nickUp) { s_nick.reset(); nickUp = true; }
     s_dave.reset(true);
     if (!s_fbMap && (s_fbMap = (uint8_t*)tryMalloc(256)) != nullptr)
         for (int c = 0; c < 256; c++) s_fbMap[c] = (uint8_t)(PAL_SLOT0 + q7((uint8_t)c));
@@ -445,6 +456,7 @@ uint8_t portIn(uint16_t address) {
                 s_fkPollUs = time_us_32(); s_fkPolled = true;
             }
             memcpy(s_dave.keys, keys, sizeof(keys));
+            if (injOn) for (int r = 0; r < 10; r++) s_dave.keys[r] &= injKeys[r];
         }
         return s_dave.read(lo);
     }

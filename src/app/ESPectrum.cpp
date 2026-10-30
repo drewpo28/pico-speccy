@@ -2223,6 +2223,7 @@ void ESPectrum::reset(uint8_t romInUse) {
   ZxEvoAvr::clearKeysOverride();
   Sam::clearKeysOverride();
   Ep::clearKeysOverride();
+  Ep::launchAbort();          // a typed LOAD in progress dies with the BASIC it was for
   VIDEO::timexHiresForceOff();// Timex hi-res 512x192: ditto (VIDEO::Reset zeroes timex_mode)
   VIDEO::blPairForceOff();    // borderless pair scaler: blRecalc re-arms it
   // Timex TC2068 SCLD: HSR = 0 and DEC bit 7 = 0, i.e. the whole 64 KB is HOME

@@ -147,6 +147,17 @@ static void core1_loop() {
 
 static void core0_main() {
     host_cpuid = 0;
+    // PICOSPECCY_EP_LAUNCH=/EP/GAME.COM (a card path): the Enterprise .COM launch
+    // as it resumes after a machine-switch reboot (Ep::launchResume reads
+    // /tmp/ep_launch.txt under the watchdog tag) — the typed LOAD without a browser.
+    if (const char* lp = getenv("PICOSPECCY_EP_LAUNCH")) {
+        const std::string dir = host_root + "/tmp";
+        (void)mkdir(dir.c_str(), 0777);
+        if (FILE* f = fopen((dir + "/ep_launch.txt").c_str(), "wb")) {
+            fputs(lp, f); fputs("\n1", f); fclose(f);
+            host_watchdog_hw.scratch[1] = 0x45504C4Eu;   // Ep's LAUNCH_TAG
+        }
+    }
     ESPectrum::setup();
     // After setup(): the card scan runs here for seconds without blocking, and
     // the frame loop may too (a 28 MHz Next, a disk load) - a high ordinary

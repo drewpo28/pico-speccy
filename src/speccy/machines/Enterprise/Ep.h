@@ -77,13 +77,22 @@ namespace Ep {
     bool segIsRam(uint8_t seg);
     bool pcInFileRom(uint16_t pc);   // the window of `pc` shows segment 0x10
 
+    uint8_t winSeg(int w);           // the segment Dave's page register shows in window w (0..3)
+
     // FILE: device (EpFile.cpp) — Z80::decodeED calls fileTrap on ED FE.
     void fileTrap();
     void fileReset();
-    // F5 on a .COM / .BAS: switch to the Enterprise if needed and make FILE: serve
-    // that file's folder; the user then types LOAD "name". Nothing is started.
+    // F5 / Web catalog on a .COM / .BAS: switch to the Enterprise if needed, reset,
+    // make FILE: serve that file's folder and type LOAD "name" (+ RUN for a .bas)
+    // into the matrix once IS-BASIC waits for a line.
     bool launchFile(const std::string& path);
-    void launchResume();             // setup(): the folder of a switch that rebooted the board
+    void launchResume();             // setup(): a launch whose machine switch rebooted the board
+    void launchTick();               // frameEnd: the typed sequence, one frame
+    void launchAbort();              // machine reset by the user: nothing left to type
+    void exosCall(uint16_t pc);      // Z80::decodeRST on RST 30h: pc = the function byte
+    // The keys the launch presses, active low, ANDed into the #B5 read while injOn.
+    extern uint8_t injKeys[10];
+    extern bool    injOn;
 
     // EP F1-F8 (keyboard row 4): ON = the host F1-F8 are the guest's, OFF = our
     // hotkeys, AUTO = the guest's while code running from RAM reads row 4 (a program
