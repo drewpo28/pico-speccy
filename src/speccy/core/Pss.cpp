@@ -34,6 +34,7 @@
 #include "speccy/machines/Atm.h"
 #include "speccy/machines/Sam/Sam.h"
 #include "speccy/machines/Sam/SamFdc.h"
+#include "speccy/machines/Enterprise/EpFdc.h"
 #include "speccy/machines/TsConf/TsConf.h"
 #include "speccy/machines/TsConf/Ft812.h"
 #include "speccy/devices/gs/GS.h"
@@ -986,6 +987,16 @@ static void applyLiveMedia(const vector<string>& lines) {
                 if (fileExists(v)) DiskSlots::slotMount(IFACE_SAM, i, v);
             }
             SamFdc::setWriteProtect(i, Config::samWP[i]);
+        }
+        for (uint8_t i = 0; i < 2; i++) {
+            snprintf(key, sizeof(key), "epd%u.wp", i);
+            if (cfgValue(lines, key, v)) Config::epWP[i] = v == "true";
+            snprintf(key, sizeof(key), "epd%u.file", i);
+            if (cfgValue(lines, key, v) && v != EpFdc::fname(i)) {
+                DiskSlots::slotEject(IFACE_EP, i);
+                if (fileExists(v)) DiskSlots::slotMount(IFACE_EP, i, v);
+            }
+            EpFdc::setWriteProtect(i, Config::epWP[i]);
         }
     }
     if (cfgValue(lines, "tape_file", v) && v != Config::tape_file) {

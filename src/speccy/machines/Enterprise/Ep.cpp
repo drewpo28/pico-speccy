@@ -3,6 +3,7 @@
 // Enterprise access here.
 
 #include "Ep.h"
+#include "EpFdc.h"
 #include "EpCore.h"
 
 #include <string.h>
@@ -29,12 +30,15 @@ extern void pcprof_dump();   // PcProf.cpp (global: a declaration inside namespa
 namespace Ep {
 
 uint8_t keys[10] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+uint8_t joy[2] = {0xFF, 0xFF};
 
 static EpCore::Nick s_nick;
 static EpCore::Dave s_dave;
 static const uint8_t* s_exos = nullptr;     // 32K: segments 0, 1
 static const uint8_t* s_basic = nullptr;    // 16K: segment 4
 static const uint8_t* s_fileio = nullptr;   // 16K: segment 0x10 (FILE:, EpFile.cpp)
+static const uint8_t* s_exdos = nullptr;    // 32K: segments 0x20, 0x21 (EXDOS 1.3) while s_exdosOn
+static bool     s_exdosOn = false;          // decided at reset: a disk is in a drive
 static bool     s_ep64 = false;             // RAM = FC..FF only
 static uint8_t* s_ff = nullptr;             // a 16K page of 0xFF for absent segments
 static uint8_t  s_ro = 0, s_vram = 0;       // windows read-only / showing VRAM
@@ -65,7 +69,10 @@ void bindRoms() {
     s_exos  = s_ep64 ? gb_rom_ep_exos20 : gb_rom_ep_exos21;
     s_basic = s_ep64 ? gb_rom_ep_basic20 : gb_rom_ep_basic21;
     s_fileio = gb_rom_ep_fileio;
+    s_exdos = gb_rom_ep_exdos13;
 }
+
+bool exdosOn() { return s_exdosOn; }
 
 // ---------------------------------------------------------------------------
 // Memory
@@ -92,6 +99,7 @@ uint8_t* segPtr(uint8_t seg) {
     if (seg <= 1)      return (uint8_t*)(s_exos + (seg << 14));
     if (seg == 4)      return (uint8_t*)s_basic;
     if (seg == 0x10)   return (uint8_t*)s_fileio;
+    if ((seg == 0x20 || seg == 0x21) && s_exdosOn) return (uint8_t*)(s_exdos + ((seg & 1) << 14));
     return nullptr;
 }
 
@@ -325,6 +333,7 @@ void frameEnd() {
     s_nick.setOutMap(VIDEO::sam_pair_live ? nullptr : s_fbMap);
     lineT -= CPU::statesInFrame;
     launchTick();
+    EpFdc::frameEnd();
     EPT_ADD(fe, tfe);
 #if PERF_TRACE || HOST_BUILD
     {
@@ -406,6 +415,12 @@ void reset() {
     s_daveT = (uint32_t)s_dave.cycleT();
     daveStatRecalc();
     fileReset();
+    // EXDOS: the ROM is on the bus from this reset on when a disk is in a drive, and
+    // then its A: is the default device; with no disk the machine boots as before
+    // (FILE: default, EXOS scans two segments fewer).
+    EpFdc::reset();
+    s_exdosOn = EpFdc::anyMounted();
+    fileSetDefault(!s_exdosOn || launchWantsFile());
     memcpy(s_dave.keys, keys, sizeof(keys));
     lineT = T_PER_LINE;
     frac57 = 0;
@@ -457,9 +472,13 @@ uint8_t portIn(uint16_t address) {
             }
             memcpy(s_dave.keys, keys, sizeof(keys));
             if (injOn) for (int r = 0; r < 10; r++) s_dave.keys[r] &= injKeys[r];
+        } else if (lo == 0xB6) {
+            s_dave.keys[14] = joy[0];
+            s_dave.keys[15] = joy[1];
         }
         return s_dave.read(lo);
     }
+    if ((lo & 0xF0) == 0x10) return EpFdc::in(lo);
     if ((lo & 0xF0) == 0x80) {
         catchUp();
         vramWait(0, 83, 0);
@@ -498,7 +517,9 @@ void portOut(uint16_t address, uint8_t data) {
         catchUp();
         vramWait(0, 83, 0);
         s_nick.writePort(lo, data);
+        return;
     }
+    if ((lo & 0xF0) == 0x10) EpFdc::out(lo, data);
 }
 
 } // namespace Ep

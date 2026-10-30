@@ -563,6 +563,9 @@ public:
     static bool samWP[2];        // SAM Coupe drives 1/2: write protect
     static string samDiskFile[2]; // SAM Coupe drives 1/2: remembered paths
     static bool samKeepTmp;      // a /tmp disk launch must survive the reboot of a machine switch
+    static bool epWP[2];         // Enterprise EXDOS A:/B:: write protect
+    static string epDiskFile[2]; // Enterprise EXDOS A:/B:: remembered paths
+    static bool epKeepTmp;       // the Enterprise twin of samKeepTmp
     // Speedlock's protection reads one sector twice and expects the reads to differ;
     // the dumps carry a single copy, so the difference is manufactured. On by default,
     // matching Fuse, and self-suppressing on a dump that records the variation for real.

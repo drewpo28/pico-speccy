@@ -20,6 +20,7 @@
 #include "speccy/devices/disk/MB02.h"
 #include "speccy/machines/Plus3/Plus3Fdc.h"
 #include "speccy/machines/Sam/SamFdc.h"
+#include "speccy/machines/Enterprise/EpFdc.h"
 #include "drivers/input/fabutils.h"
 #include "messages.h"
 #include "ui/OSDMain.h"
@@ -194,6 +195,9 @@ string   Config::p3DiskFile[2] = { "", "" };
 bool     Config::samWP[2] = { false, false };
 string   Config::samDiskFile[2] = { "", "" };
 bool     Config::samKeepTmp = false;
+bool     Config::epWP[2] = { false, false };
+string   Config::epDiskFile[2] = { "", "" };
+bool     Config::epKeepTmp = false;
 bool     Config::p3_speedlock = true;
 bool     Config::p3_fastdisk = false;
 bool     Config::zcontroller = true;
@@ -1190,6 +1194,15 @@ void Config::loadDiskMounts() {
                     if (!fn.empty() && Config::arch == A_SAM && FileUtils::waitVolumeReady(fn))
                         SamFdc::mount(i, fn);
                 }
+                snprintf(prefix, sizeof(prefix), "epd%u.file=", (unsigned)i);
+                const size_t elen = strlen(prefix);
+                if (s.length() >= elen && s.compare(0, elen, prefix) == 0) {
+                    std::string fn = s.substr(elen);
+                    epDiskFile[i] = fn;
+                    if (!fn.empty() && Config::arch == A_ENT && FileUtils::waitVolumeReady(fn) &&
+                        EpFdc::mount(i, fn))
+                        EpFdc::setWriteProtect(i, epWP[i]);
+                }
             }
             s.clear();
         } else {
@@ -1645,6 +1658,10 @@ void Config::load() {
             nvs_get_b(k, samWP[i], sts);
             snprintf(k, sizeof(k), "samd%d.file", i);
             nvs_get_str(k, samDiskFile[i], sts);
+            snprintf(k, sizeof(k), "epd%d.wp", i);
+            nvs_get_b(k, epWP[i], sts);
+            snprintf(k, sizeof(k), "epd%d.file", i);
+            nvs_get_str(k, epDiskFile[i], sts);
         }
         nvs_get_b("p3_speedlock", p3_speedlock, sts);
         nvs_get_b("p3_fastdisk", p3_fastdisk, sts);
@@ -2089,6 +2106,8 @@ void Config::writeKeys(NvsWriter& buf) {
     for (int i = 0; i < 2; i++) {
         char k[12]; snprintf(k, sizeof(k), "samd%d.wp", i);
         nvs_set_str(buf, k, samWP[i] ? "true" : "false");
+        snprintf(k, sizeof(k), "epd%d.wp", i);
+        nvs_set_str(buf, k, epWP[i] ? "true" : "false");
     }
     nvs_set_str(buf,"p3_speedlock", p3_speedlock ? "true" : "false");
     nvs_set_str(buf,"p3_fastdisk", p3_fastdisk ? "true" : "false");
@@ -2142,6 +2161,11 @@ void Config::writeKeys(NvsWriter& buf) {
                 // Sam::bootResume clears it), otherwise /tmp mounts are not remembered.
                 if (samKeepTmp) nvs_set_str(buf, ("samd" + to_string(i) + ".file").c_str(), samDiskFile[i].c_str());
                 else persistFile("samd" + to_string(i) + ".file", samDiskFile[i]);
+                // Enterprise EXDOS drives, the same rules (Ep::launchDisk sets epKeepTmp).
+                if (Config::arch == A_ENT)
+                    epDiskFile[i] = EpFdc::fname(i);
+                if (epKeepTmp) nvs_set_str(buf, ("epd" + to_string(i) + ".file").c_str(), epDiskFile[i].c_str());
+                else persistFile("epd" + to_string(i) + ".file", epDiskFile[i]);
             }
         }
     }

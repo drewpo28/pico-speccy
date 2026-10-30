@@ -1223,12 +1223,14 @@ void slots_buildBeta(DynRows& d) { buildSlots(d, IFACE_BETA); }
 void slots_buildMb02(DynRows& d) { buildSlots(d, IFACE_MB02); }
 void slots_buildP3  (DynRows& d) { buildSlots(d, IFACE_PLUS3); }
 void slots_buildSam (DynRows& d) { buildSlots(d, IFACE_SAM); }
+void slots_buildEp  (DynRows& d) { buildSlots(d, IFACE_EP); }
 void slots_buildEsx (DynRows& d) { buildSlots(d, IFACE_ESX);  }
 void slots_buildIde (DynRows& d) { buildSlots(d, IFACE_IDE);  }
 void slots_keyBeta(int32_t s, uint8_t k) { keySlots(IFACE_BETA, s, k); }
 void slots_keyMb02(int32_t s, uint8_t k) { keySlots(IFACE_MB02, s, k); }
 void slots_keyP3  (int32_t s, uint8_t k) { keySlots(IFACE_PLUS3, s, k); }
 void slots_keySam (int32_t s, uint8_t k) { keySlots(IFACE_SAM, s, k); }
+void slots_keyEp  (int32_t s, uint8_t k) { keySlots(IFACE_EP, s, k); }
 void slots_keyEsx (int32_t s, uint8_t k) { keySlots(IFACE_ESX,  s, k); }
 void slots_keyIde (int32_t s, uint8_t k) { keySlots(IFACE_IDE,  s, k); }
 

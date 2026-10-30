@@ -86,6 +86,9 @@ enum DiskIface {
     IFACE_PLUS3 = 5,
     // SAM Coupe (VL1772): .mgt .sad, and a .dsk whose geometry is a SAM disk — Drive 1/2.
     IFACE_SAM = 6,
+    // Enterprise EXDOS (WD1770): flat FAT12 images (.img .ima, or a .dsk with a FAT
+    // boot sector) — Drive A:/B:.
+    IFACE_EP = 7,
 };
 
 class FileUtils

@@ -18,8 +18,12 @@
 // /tmp/ep_launch.txt + a watchdog tag.
 
 #include "Ep.h"
+#include "EpFdc.h"
+#include "speccy/devices/disk/DiskSlots.h"
 
 #include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <ctype.h>
 #include <string>
 #include <vector>
@@ -64,6 +68,38 @@ static void closeCh(Ch& c) {
 
 void fileReset() {
     for (Ch& c : s_ch) if (c.used) closeCh(c);
+}
+void fileSetDefault(bool on) { s_defFile = on; }
+
+// A .COM/.BAS launch is served by FILE:, so the reset it goes through makes FILE:
+// the default device even with a disk in A: (a plain disk launch leaves A: default).
+static bool s_launchWantsFile = false;
+bool launchWantsFile() { const bool w = s_launchWantsFile; s_launchWantsFile = false; return w; }
+static void launchPrefersFile() {
+#if HOST_BUILD
+    if (getenv("PICOSPECCY_EP_NOFILE")) return;   // test: let the typed LOAD go to A:
+#endif
+    s_launchWantsFile = true;
+}
+
+// A disk image in A:, then a reset into EXDOS (the ROM joins the bus at reset
+// while a disk is in): the Sam::launchDisk shape. EXDOS runs EXDOS.INI off the disk
+// if it has one, else the user is at IS-BASIC with A: as the default device.
+bool launchDisk(const std::string& path) {
+    DiskSlots::slotMount(IFACE_EP, 0, path);
+    if (!EpFdc::mounted(0)) return false;
+    Config::ram_file = NO_RAM_FILE;
+    Config::last_ram_file = NO_RAM_FILE;
+    // Switching machine may reboot: every save until then keeps a /tmp path.
+    Config::epKeepTmp = (Config::arch != A_ENT);
+    Config::save();
+    if (Config::arch != A_ENT) {
+        MachineSwitch::commit(A_ENT, Config::romSetEp);   // resets, or reboots and never returns
+    } else {
+        ESPectrum::resetForLoad();
+    }
+    Config::epKeepTmp = false;              // reached only without a reboot
+    return true;
 }
 
 // The user's memory as EXOS paged it in: EXOS keeps the four page registers of
@@ -411,13 +447,23 @@ static bool seqArm(const std::string& name, bool bas, bool primed) {
 // is what the user would do too.
 static uint8_t s_rdSeg = 0xFF, s_rdA = 0;
 
+#if HOST_BUILD
+static uint32_t s_frames = 0;                                 // PICOSPECCY_EPLOG: frame stamps of the EXOS reads
+#endif
 void exosCall(uint16_t pc) {
     if (MemESP::readbyte(pc) != 5) return;                    // read character
     const uint8_t seg = winSeg(pc >> 14);
     if (seg == 0x10) return;                                  // our FILE: ROM
+#if HOST_BUILD
+    static const bool lg = getenv("PICOSPECCY_EPLOG") != nullptr;
+    if (lg) fprintf(stderr, "[EPLOG] f%u fn5 seg %02X A %02X pc %04X\n", (unsigned)s_frames, seg, Z80::getRegA(), pc);
+#endif
     s_rdSeg = seg; s_rdA = Z80::getRegA();
     s_quiet = 0;
-    if (seg > 1) s_rdSeen = true;                             // the sequence waits for BASIC's own read
+    // The sequence waits for BASIC's own line read (segment 4, channel 0): EXDOS's
+    // start-up read from its ROM (segment 0x20, channel FF: EXDOS.INI) came first and
+    // typed the line into nothing (host, 2026-10-31).
+    if (seg == 4 && s_rdA == 0) s_rdSeen = true;
 }
 
 // IS-BASIC asked the editor for a line and nothing has been read for SEQ_QUIET
@@ -430,6 +476,9 @@ static bool basicPromptIdle() {
 
 void launchTick() {
     s_quiet++;
+#if HOST_BUILD
+    s_frames++;
+#endif
     if (s_seqI < 0) return;
     if (s_seqI >= s_seqN) { seqStop(); return; }
     const SeqKey& k = s_seq[s_seqI];
@@ -462,6 +511,10 @@ void launchTick() {
     if (++s_ph >= SEQ_STEP) { s_ph = 0; s_seqI++; }
 }
 
+// The flag for FILE: as default is NOT dropped here: ESPectrum::reset calls this on
+// the way into the very reset a launch just asked for (launchFile -> resetForLoad),
+// and Ep::reset consumes it there. On hw (2026-10-31) dropping it sent the typed LOAD
+// to A: ("File not found") whenever a disk was in.
 void launchAbort() { seqStop(); s_rdSeg = 0xFF; }
 
 static void armFor(const std::string& path, bool autostart, bool primed = false) {
@@ -488,14 +541,18 @@ bool launchFile(const std::string& path) {
             f_close(&f);
         }
         watchdog_hw->scratch[LAUNCH_SCRATCH] = LAUNCH_TAG;
+        launchPrefersFile();
         MachineSwitch::commit(A_ENT, Config::romSetEp);   // resets, or reboots and never returns
         watchdog_hw->scratch[LAUNCH_SCRATCH] = 0;
         f_unlink(LAUNCH_FILE);
-    } else if (basicPromptIdle()) {
+    } else if (basicPromptIdle() && !EpFdc::anyMounted()) {
+        // (with a disk in A: the default device is the disk: the reset below hands
+        // it to FILE: for this launch)
         Debug::log("[EP] launch: BASIC at its prompt, no reset");
         armFor(path, true, true);                             // BASIC waits at "ok": just type
         return true;
     } else {
+        launchPrefersFile();
         ESPectrum::resetForLoad();                            // like a tape launch: a fresh BASIC
     }
     armFor(path, true);
@@ -503,6 +560,7 @@ bool launchFile(const std::string& path) {
 }
 
 void launchResume() {
+    Config::epKeepTmp = false;              // a disk launch that rebooted: the /tmp mount is back (Config::load)
     if (watchdog_hw->scratch[LAUNCH_SCRATCH] != LAUNCH_TAG) return;
     watchdog_hw->scratch[LAUNCH_SCRATCH] = 0;
     FIL f;
@@ -515,7 +573,7 @@ void launchResume() {
     buf[got] = 0;
     bool autostart = false;
     if (char* nl = strchr(buf, '\n')) { *nl = 0; autostart = nl[1] == '1'; }
-    if (Config::arch == A_ENT && buf[0]) armFor(buf, autostart);
+    if (Config::arch == A_ENT && buf[0]) { launchPrefersFile(); armFor(buf, autostart); }   // the EXDOS re-reset in setup consumes it
 }
 
 } // namespace Ep
