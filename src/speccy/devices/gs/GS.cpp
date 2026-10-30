@@ -3094,6 +3094,18 @@ static inline void gs_host_sd_service() {
     if (GS::neogs) NgsSd::service();
 }
 
+// The host waits below hold core0 inside one OUT/IN, and a guest uploading to the
+// card hits them back to back: with the card throttled the FIFO-full spin in
+// hostWriteB3 alone (0.5 ms a byte) kept the main loop away for ~325 ms at a time
+// and the Bluetooth A2DP stream starved (hw 2026-10-30, PC sampler). Waits only,
+// never the plain port path. Defined by BtHost on W builds (self-limited to one
+// pass per 2 ms); absent elsewhere.
+extern "C" void gs_host_wait_hook(void) __attribute__((weak));
+static inline void gs_host_wait() {
+    gs_host_sd_service();
+    if (gs_host_wait_hook) gs_host_wait_hook();
+}
+
 // Unproductive-poll pacing state (see the comment in hostReadBB). Reset by any
 // host write and by every visible status change.
 static uint8_t  s_bb_pace_last    = 0xFF;
@@ -3374,7 +3386,7 @@ uint8_t GS::hostReadBB() {
             s_bb_pace_goal_us += (dt * 2u) / (7u << mult);
             if (s_bb_pace_goal_us > 8000) s_bb_pace_goal_us = 8000;
             while ((uint32_t)(time_us_32() - s_bb_pace_t0_us) < s_bb_pace_goal_us) {
-                gs_host_sd_service();
+                gs_host_wait();
                 busy_wait_us_32(10);
             }
         }
@@ -3465,7 +3477,7 @@ void GS::hostWriteB3(uint8_t data) {
         if (now - s_b3_drain_us <= 15000) {
             uint32_t t0 = now;
             while (s_host_fifo_w != s_host_fifo_r) {
-                gs_host_sd_service();   // card may be blocked on the SD mailbox
+                gs_host_wait();         // card may be blocked on the SD mailbox
                 __dmb();
                 now = time_us_32();
                 uint32_t p = s_h2c_pops;
@@ -3483,6 +3495,7 @@ void GS::hostWriteB3(uint8_t data) {
         uint32_t spin_t0 = time_us_32();
         while ((s_host_fifo_w - s_host_fifo_r) >= GS_HOST_FIFO_SIZE
                && (time_us_32() - spin_t0) < 500) {
+            if (gs_host_wait_hook) gs_host_wait_hook();
             __dmb();
         }
         hostB3WaitUs += time_us_32() - spin_t0;
@@ -3576,7 +3589,7 @@ void GS::hostWriteBB(uint8_t data) {
         const uint32_t boot_cap_us = s_ngs ? 3000000 : 2000000;
         uint32_t t0 = time_us_32();
         while (!s_gs_main_loop && (time_us_32() - t0) < boot_cap_us) {
-            gs_host_sd_service();  // NGS: firmware may be inside the SD boot path
+            gs_host_wait();        // NGS: firmware may be inside the SD boot path
             gs_host_touch();       // the spin IS the host waiting: keeps hostActive()
                                    // true, i.e. turbo-boot on under a TS-Conf renderer
                                    // (it would lapse 500 ms into a 2 s boot otherwise)
