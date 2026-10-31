@@ -231,6 +231,8 @@ public:
     static void LoadRemembered(); // re-mount Config::tape_file after F11/boot; auto-plays if tape_autostart
     static void Eject();          // take the tape out: close, drop the listing, forget Config::tape_file
     static void Play();
+    static uint32_t fastEdge();             // Enterprise fast load: skip to the next ear edge
+    static void fastSkip(uint32_t t) { tapeStart -= t; }   // ... the deck moves t T on
     static void Stop(bool quiet = false);   // quiet: a guest remote pause, no toast
     static void Read();
     static bool FlashLoad();

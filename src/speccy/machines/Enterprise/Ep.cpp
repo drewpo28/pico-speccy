@@ -342,6 +342,83 @@ uint32_t nextLineT() { return lineT; }
 uint32_t nextDaveIntT() { return s_dave.intArmed() ? s_daveStatT : 0xFFFFFFFFu; }
 void davePoll() { if (CPU::tstates >= s_daveStatT) daveTo(CPU::tstates); }
 
+// Fast tape load. EXOS times every tape pulse the same way (2.1 #EBCB half a period,
+// #EBD9 a whole one; 2.0 is the same code 0x9B bytes lower): EI + HALT for one Dave
+// channel 0 period, then a busy loop counting E until the #B6 edge(s), then a common
+// tail at #EBFE. Everything above it (leader average, threshold, CRC, chunks, remote)
+// is relative to E. So at that HALT the deck is run ahead to the edge, E gets what the
+// loop would have counted, and the tail runs: real EXOS code on real pulses, no ROM
+// patch, EPTE / ep128emu .tap / CSW / WAV (MP3 plays in real time). Recognised by its bytes, so another loader, or a RAM
+// copy with other code, plays in real time. The STOP key takes the real loop.
+bool tapeFastHalt() {
+    if (Tape::tapeStatus != TAPE_LOADING || !Tape::fastLoadEnabled()) return false;
+    const uint16_t pc = Z80::getRegPC();
+    if (MemESP::readbyte(pc - 2) != 0xFB || MemESP::readbyte(pc - 1) != 0x76) return false;
+    int edges, tail;
+    if (MemESP::readbyte(pc) == 0x18 && MemESP::readbyte(pc + 1) == 0x14) { edges = 1; tail = 0x27; }
+    else if (MemESP::readbyte(pc) == 0xDB && MemESP::readbyte(pc + 1) == 0xB5 &&
+             MemESP::readbyte(pc + 2) == 0x0F && MemESP::readbyte(pc + 3) == 0xD2) { edges = 2; tail = 0x1E; }
+    else return false;
+    const uint16_t to = (uint16_t)(pc + tail);
+    if (MemESP::readbyte(to) != 0x3E || MemESP::readbyte(to + 1) != 0x4E ||
+        MemESP::readbyte(to + 2) != 0xD3 || MemESP::readbyte(to + 3) != 0xA7) return false;
+    if (!(s_dave.keys[7] & 1)) return false;
+    const uint32_t haltT = (((uint32_t)s_dave.reg[0] | ((uint32_t)(s_dave.reg[1] & 0x0F) << 8)) + 1) * 16;
+    const auto measure = [&](uint8_t& e) {
+        uint32_t dt = 0;
+        for (int i = 0; i < edges; i++) {
+            const uint32_t d = Tape::fastEdge();
+            if (!d) return false;
+            dt += d;
+        }
+        const uint32_t n = dt > haltT ? (dt - haltT) / 60 + 1 : 1;
+        e = n > 255 ? 255 : (uint8_t)n;
+        return true;
+    };
+    // Called from the byte reader (#EBB9, H = the shift register with its marker):
+    // all bits but the last are taken here, with the CRC (#ED58: CCITT in HL'), so a
+    // byte costs the guest one bit's worth of code. The last goes back the normal way.
+    bool byteLoop = false;
+    if (edges == 2) {
+        const uint16_t sp = Z80::getRegSP();
+        const uint16_t ret = (uint16_t)(MemESP::readbyte(sp) | (MemESP::readbyte((uint16_t)(sp + 1)) << 8));
+        if (MemESP::readbyte(ret) == 0xBA && MemESP::readbyte(ret + 1) == 0xF5 &&
+            MemESP::readbyte(ret + 2) == 0x9F && MemESP::readbyte(ret + 3) == 0xCD) {
+            const uint16_t crc = (uint16_t)(MemESP::readbyte(ret + 4) | (MemESP::readbyte(ret + 5) << 8));
+            static const uint8_t sig[] = {0xD9, 0x3E, 0x80, 0x20, 0x01, 0xAF, 0xAC, 0x17};
+            byteLoop = true;
+            for (unsigned i = 0; i < sizeof(sig); i++)
+                if (MemESP::readbyte((uint16_t)(crc + i)) != sig[i]) byteLoop = false;
+        }
+    }
+    uint8_t e = 0;
+    if (!measure(e)) return false;
+    if (byteLoop) {
+        uint8_t h = Z80::getRegH();
+        uint16_t c = Z80::getRegHLx();
+        const uint8_t d = Z80::getRegD();
+        while (!(h & 1)) {
+            const bool bit = e < d;
+            const bool fb = (((bit ? 0x80 : 0) ^ (c >> 8)) & 0x80) != 0;
+            if (fb) c ^= 0x0810;
+            c = (uint16_t)((c << 1) | (fb ? 1 : 0));
+            h = (uint8_t)((h >> 1) | (bit ? 0x80 : 0));
+            Tape::fastSkip(400);                // the deck runs on through the bit code
+            if (!measure(e)) break;             // the guest no longer spends (measured)
+        }
+        Z80::setRegH(h);
+        Z80::setRegHLx(c);
+    }
+    Z80::setRegE(e);
+    Z80::setHalted(false);
+    Z80::setIFF1(false);                // the handler at #0038 is a bare RET
+    Z80::setIFF2(false);
+    portOut(0xA7, 0x4F);                // what the loop does: the tail restarts channel 0
+    Z80::setRegPC(to);
+    CPU::tstates += 32;                 // the screen and the frame keep moving
+    return true;
+}
+
 #if HOST_BUILD
 static const char* s_pssAt = nullptr;
 void hostPssPoll() { if (s_pssAt) { Debug::log("[EP] pss %s: %d", s_pssAt, (int)Pss::save(s_pssAt, "host")); s_pssAt = nullptr; } }

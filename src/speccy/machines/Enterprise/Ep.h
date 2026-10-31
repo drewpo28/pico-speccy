@@ -113,6 +113,7 @@ namespace Ep {
     // and stops it. launchTape types LOAD "TAPE:" (reset unless BASIC is at its prompt).
     void launchTape(bool freshReset = false);   // freshReset: the machine was just reset (setup), type at its first prompt
     void tapeRemote(uint8_t bits);
+    bool tapeFastHalt();   // fast load: answer EXOS's pulse measurement at its HALT
     bool tapeRemoteUp();   // #B5 bits 6-7 as written
     // F5 / Web catalog on a .COM / .BAS: switch to the Enterprise if needed, reset,
     // make FILE: serve that file's folder and type LOAD "name" (+ RUN for a .bas)

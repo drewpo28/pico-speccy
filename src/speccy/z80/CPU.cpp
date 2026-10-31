@@ -1102,6 +1102,7 @@ __attribute__((noinline)) void CPU::epFrameLoop(uint64_t _loop_t0, bool pbbp, in
         if (next > statesInFrame) next = statesInFrame;
         if (next <= tstates) next = tstates + 1;
         if (Z80::isHalted()) {
+            if (Ep::tapeFastHalt()) continue;
             if (!halted) { tstates_active = tstates; halted = true; }
             EPL_T(t0);
             haltAdvanceTo(next);
@@ -1112,6 +1113,7 @@ __attribute__((noinline)) void CPU::epFrameLoop(uint64_t _loop_t0, bool pbbp, in
             Z80::exec_nocheck();
             EPL_ADD(z80, t0); EPL_CNT(slices);
             if (stFrame == 0) {
+                if (Ep::tapeFastHalt()) continue;
                 if (!halted) { tstates_active = tstates; halted = true; }
                 EPL_T(t1);
                 haltAdvanceTo(next);

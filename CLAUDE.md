@@ -15967,7 +15967,7 @@ EXOS keeps it on — `Dave::tapeFb/setTapeIn`, a level edge at #B6 runs Dave to 
 **A tape launch boots without EXDOS even with a disk mounted** (A: default would eat the loaders' plain
 `LOAD "name"` — Amaurote died at its first chunk with GAMES_EP64_01.IMG still in A:). EP64 stops Amaurote
 after 4 chunks on the host too (needs 128K?, EXOS 2.0's tape code = 2.1's).
-Not done: SAVE, MP3 resume. Not itemised on hw: the tape audible from the speaker, the EPTE/WAV test
+SAVE (2026-10-31): Dave's left output -> `EpTapeRec` -> `/pico-speccy/tapes/EPnnnn.tap`. Fast load: `Ep::tapeFastHalt` at EXOS's own EI/HALT pulse measurement, plan "Fast tape load" (EPTE, ep128emu .tap, CSW, WAV; MP3 in real time). I/O is charged now (3 T + 1 T tail), Nick runs in parts so port writes land on their slot, `.pss` covers the EP (PSEP/PSEF, `epd` lines). Those four are host-tested only. Not itemised on hw: the tape audible from the speaker, the EPTE/WAV test
 tapes, Enter-rewind in the tape browser.
 
 ## MGT SAM Coupe (A_SAM, 2026-10-22, phase 0, NOT hw-tested)
