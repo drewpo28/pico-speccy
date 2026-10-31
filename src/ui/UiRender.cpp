@@ -270,7 +270,7 @@ static void drawPaneTitles() {
     hline(LY.rx, y + LY.row_h - 1, LY.rw, C_SEP);
 }
 
-static void drawLeftRow(int visRow) {
+static void drawLeftRowBody(int visRow) {
     if (visRow < 0 || visRow >= LY.body_rows) return;
     Level& lv = curLevel();
     const int y = rowY(visRow);
@@ -321,7 +321,10 @@ static void drawLeftRow(int visRow) {
 
     const Node& n = lv.nodes[lv.vis[idx]];
     const bool en = nodeEnabled(n);
-    const UiColor ink = !en ? C_DISABLED : (sel ? C_WHITE : C_TEXT);
+    // The group orderLevel() put first: its first row is the running machine, in the
+    // accent colour (the right pane's "chosen" dot colour), and a rule closes it.
+    const bool active = lv.nhead && idx == 0;
+    const UiColor ink = !en ? C_DISABLED : active ? C_ACCENT : (sel ? C_WHITE : C_TEXT);
 
     const bool isSub = (n.kind == K_SUB || n.kind == K_DYNAMIC);
     const char* val  = isSub ? (n.vlabel ? n.vlabel() : nullptr) : nodeValueLabel(n);
@@ -335,7 +338,31 @@ static void drawLeftRow(int visRow) {
                 !en ? C_DISABLED : (sel ? C_WHITE : C_DISABLED));
     if (val && *val)
         text(LY.lx + LY.lw - LY.pad - rightW, y + 1, val,
-             !en ? C_DISABLED : (sel ? C_WHITE : C_TEXT_DIM));
+             !en ? C_DISABLED : active ? C_ACCENT : (sel ? C_WHITE : C_TEXT_DIM));
+    if (lv.nhead && idx == lv.nhead - 1 && idx + 1 < lv.nvis)   // after the text: it paints the cell
+        hline(LY.lx + LY.pad, y + LY.row_h - 1, LY.lw - 2 * LY.pad, C_TEXT_DIM);
+}
+
+// A level longer than the pane gets a scroll bar in the pane's right padding:
+// a C_SEP track with the visible part as a C_TEXT_DIM thumb. Drawn per row, after
+// the row (its fill covers the padding), so a single-row repaint keeps it intact.
+static void drawLeftScroll(int visRow) {
+    const Level& lv = curLevel();
+    if (lv.nvis <= LY.body_rows || visRow < 0 || visRow >= LY.body_rows) return;
+    const int w = LY.pad / 2 > 2 ? LY.pad / 2 : 2;
+    const int x = LY.lx + LY.lw - w;
+    const int t0 = rowY(0), th = LY.row_h * LY.body_rows;
+    const int a = t0 + th * lv.top / lv.nvis;
+    int b = t0 + th * (lv.top + LY.body_rows) / lv.nvis;
+    if (b > t0 + th) b = t0 + th;
+    const int y = rowY(visRow);
+    for (int yy = y; yy < y + LY.row_h; yy++)
+        hline(x, yy, w, (yy >= a && yy < b) ? C_TEXT_DIM : C_SEP);
+}
+
+static void drawLeftRow(int visRow) {
+    drawLeftRowBody(visRow);
+    drawLeftScroll(visRow);
 }
 
 // ── Video > Palette preview ───────────────────────────────────────────────────

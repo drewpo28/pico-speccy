@@ -71,6 +71,7 @@ void requestClose() { S.quit = true; }
 
 void buildVisible(Level& L) {
     L.nvis = 0;
+    L.nhead = 0;
     if (L.dyn) {
         // The pool is already exactly what should be shown; dimmed rows stay in the list
         // (they carry information) and are refused at activation instead.
@@ -79,6 +80,7 @@ void buildVisible(Level& L) {
         for (uint8_t i = 0; i < L.count && L.nvis < NM_MAX_ROWS; i++)
             if (!L.nodes[i].visible || L.nodes[i].visible())
                 L.vis[L.nvis++] = i;
+        L.nhead = orderLevel(L.nodes, L.vis, L.nvis);
     }
     if (L.sel >= L.nvis) L.sel = L.nvis ? L.nvis - 1 : 0;
     if (L.top > L.sel)   L.top = L.sel;
@@ -89,15 +91,14 @@ void buildVisible(Level& L) {
 // Hidden children must not appear in the right-pane preview either, so the count and
 // the row lookup both walk the visible subset.
 const Node* subVisibleChild(const Node* n, int i) {
-    if (!n || n->kind != K_SUB) return nullptr;
-    int seen = 0;
-    for (uint8_t k = 0; k < n->count; k++) {
+    if (!n || n->kind != K_SUB || i < 0) return nullptr;
+    uint8_t vis[NM_MAX_ROWS], nv = 0;
+    for (uint8_t k = 0; k < n->count && nv < NM_MAX_ROWS; k++) {
         const Node& c = n->kids[k];
-        if (c.visible && !c.visible()) continue;
-        if (seen == i) return &c;
-        seen++;
+        if (!c.visible || c.visible()) vis[nv++] = k;
     }
-    return nullptr;
+    orderLevel(n->kids, vis, nv);   // the preview shows the order the level opens in
+    return i < nv ? &n->kids[vis[i]] : nullptr;
 }
 
 int rightRowCount(const Node* n) {

@@ -213,6 +213,10 @@ enum ArchIdx : uint8_t;     // ArchRom.h
 enum RomsetIdx : uint8_t;
 namespace nm {
 bool machineMenuNameFor(ArchIdx arch, RomsetIdx romSet, const char*& family, const char*& romShort);
+// Reorders a level's visible rows in place (the Machine level puts the running
+// machine's group first) and returns how many rows were moved to the front (the
+// renderer marks the first as active and rules a line under the last); 0 elsewhere.
+uint8_t orderLevel(const Node* nodes, uint8_t* vis, uint8_t nvis);
 const Node* slotNodeFor(int iface);   // DiskIface -> its K_DYNAMIC slot level
 const Node* persistNodeFor();        // the fast-snapshot slot list (Snapshots > Quick slots)
 // The fast menu's (Alt+F7) node targets, by row number; nullptr for a row that
