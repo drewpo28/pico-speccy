@@ -19,6 +19,7 @@
 #include "app/Config.h"
 #include "fs/FileUtils.h"
 #include "speccy/core/Rzx.h"               // p_rzxPlaying (Snapshots > Stop RZX playback)
+#include "speccy/devices/storage/IDE.h"     // IDE::Scheme for the Devices > IDE / HDD rows
 #include "speccy/core/MemESP.h"         // butter_psram_size() for the Profi / ext-RAM predicates
 #include "app/FlashRoms.h"      // romsUsable()/extendable() for the GMX, TS-Conf and bank rows
 #include "drivers/psram/psram_spi.h"       // psram_size()
@@ -1124,12 +1125,70 @@ static const Option opt_ide_slot_hints[] = {
     { "F8  Eject", 0 },
 };
 
-// The storage interfaces are flat rows of the Devices level: the feature row
-// itself carries the on/off value, and its extra settings sit indented right
-// below it — ALWAYS visible, but greyed out and inert until the feature is on
-// (running or staged). The generic pattern for feature-owned options; the drive
-// rows keep their own F2/F8 verbs and persistence.
-static bool p_betaOn()  { return Stage::get(SET_BETADISK) != 0; }
+// Devices shows what the STAGED machine has: a row of another machine is not greyed,
+// it is not there. These mirror resolveConstraints / MachineSwitch / the CPU::reset
+// backstops, which stay the authority; a value left set by an NVS from elsewhere is
+// still cleared by them. Inside an interface's submenu the options keep the generic
+// grey-until-on gate (NM_*_EN).
+static ArchIdx devArch() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    return m >= 0 ? (ArchIdx)((m >> 8) & 0xFF) : Config::arch;
+}
+static RomsetIdx devRomset() {
+    const int32_t m = Stage::get(SET_MACHINE);
+    return m >= 0 ? (RomsetIdx)(m & 0xFF) : Config::romSet;
+}
+static bool devProfi() { return devArch() == A_PROFI || devArch() == A_KARABAS; }
+static bool devPent()  {
+    const ArchIdx a = devArch();
+    return a == A_PENT || a == A_P512 || a == A_P1024;
+}
+static bool devOwnBus() {        // SAM, Enterprise, Next: no Spectrum interface on the bus
+    const ArchIdx a = devArch();
+    return a == A_SAM || a == A_ENT || a == A_NEXT;
+}
+static bool p_samOn()   { return devArch() == A_SAM; }
+static bool p_epOn()    { return devArch() == A_ENT; }
+static bool p_plus3On() { return isPlus3Romset(devRomset()); }
+// Beta-128 on the board: Config forces it on there, so a machine picked in this very
+// session has live drive rows before the commit has caught the setting up.
+static bool p_betaBuiltIn() {
+    const ArchIdx a = devArch();
+    return devPent() || devProfi() || a == A_SCORP || a == A_TSCONF || a == A_ATM ||
+           isQuorum64Romset(devRomset());
+}
+static bool p_betaOptional() { return !p_betaBuiltIn(); }
+static bool p_diskBeta() {
+    return !devOwnBus() && !p_plus3On() && devRomset() != R_48K_BY;
+}
+static bool p_betaOn()  { return p_betaBuiltIn() || Stage::get(SET_BETADISK) != 0; }
+static bool p_esxRow() {
+    const ArchIdx a = devArch();
+    return p_hasSD() && !devOwnBus() && !devProfi() && !p_plus3On() &&
+           a != A_TSCONF && a != A_ATM && !isTc2068Romset(devRomset());
+}
+static bool p_mb02Row() {
+    const ArchIdx a = devArch();
+    const RomsetIdx r = devRomset();
+    return !devOwnBus() && !devPent() && !devProfi() && !p_plus3On() &&
+           a != A_SCORP && a != A_TSCONF && a != A_ATM &&
+           r != R_48K_BY && r != R_128K_BY;
+}
+static bool p_zcRow() {
+    return p_hasSD() && !p_plus3On() && !devOwnBus();
+}
+static bool p_ideRow() {
+    const ArchIdx a = devArch();
+    const RomsetIdx r = devRomset();
+    if (!p_hasSD() || a == A_ENT || a == A_NEXT) return false;
+    return a != A_ATM || atmHasIde(r) || isEvoBaseRomset(r);
+}
+// A clock chip answers on neither of these (Quorum's Gluk is a romset of the 48K arch).
+static bool p_rtcRow() {
+    const ArchIdx a = devArch();
+    if (a == A_ENT) return false;
+    return (a != A_48K && a != A_128K) || isQuorum64Romset(devRomset());
+}
 // Images make sense for DivMMC (hd0) and DivIDE (hd0+hd1) only — DivSD talks to
 // the real SD card, so the row stays greyed there just like when esxDOS is off.
 static bool p_esxImages() {
@@ -1137,30 +1196,6 @@ static bool p_esxImages() {
     return v == 1 || v == 2;
 }
 static bool p_mb02On()  { return Stage::get(SET_MB02) != 0; }
-// The +3 disk rows follow the machine, not a toggle: the interface is part of the
-// machine and cannot be turned off, so they appear whenever a +3 is staged or running.
-// The +3 is the R_P3 romset of the 128K arch, so this keys on the romset (as
-// p_byteActive does).
-// SAM Coupe drive rows: the drives belong to the machine, like the +3's.
-static bool p_samOn() {
-    const int32_t m = Stage::get(SET_MACHINE);
-    if (m >= 0) return (ArchIdx)((m >> 8) & 0xFF) == A_SAM;
-    return Config::arch == A_SAM;
-}
-// Enterprise EXDOS drive rows, the same rule.
-static bool p_epOn() {
-    const int32_t m = Stage::get(SET_MACHINE);
-    if (m >= 0) return (ArchIdx)((m >> 8) & 0xFF) == A_ENT;
-    return Config::arch == A_ENT;
-}
-static bool p_plus3On() {
-    const int32_t m = Stage::get(SET_MACHINE);
-    if (m >= 0) return isPlus3Romset((RomsetIdx)(m & 0xFF));
-    return Config::isPlus3();
-}
-// The +3e carries an IDE interface whether or not the scheme row has caught up yet
-// (resolveConstraints only forces it at commit), so the image rows follow the machine
-// there — the same rule the +3 disk rows use.
 static bool p_ideOn()   { return Stage::get(SET_IDE_SCHEME) != 0; }
 
 // IDE/HDD scheme: the value IS Config::ide_scheme. "IDEDOS" and "DivIDE" are not cards
@@ -1178,6 +1213,34 @@ static const Option opt_ide_scheme[] = {
     { "ATM",    6 },  // IDE::ATM — the ATM-Turbo 2+ on-board controller, same rule
     { "Atom Lite", 7 },   // IDE::ATOMLITE — the SAM Coupe card on drive 2's ports
 };
+// Only what this machine can reach, rebuilt per call (the machine may be staged in the
+// same session). A staged value outside the list keeps its row until the commit
+// resolves it: nodeValueLabel looks the value up here.
+static const Option* ide_schemeOpts(uint8_t& cnt) {
+    static Option opts[6];
+    uint8_t n = 0;
+    const auto add = [&](int32_t v) {
+        for (uint8_t i = 0; i < n; i++) if (opts[i].value == v) return;
+        for (const Option& o : opt_ide_scheme) if (o.value == v) { opts[n++] = o; return; }
+    };
+    const ArchIdx a = devArch();
+    const RomsetIdx r = devRomset();
+    add(IDE::OFF);
+    if      (isPlus3eRomset(r))   add(IDE::PLUS3E);
+    else if (isPlus3DivRomset(r)) add(IDE::DIVIDE);
+    else if (a == A_SAM)          add(IDE::ATOMLITE);
+    else if (a == A_ATM) {
+        if (atmHasIde(r)) add(IDE::ATM);
+        if (isAtm3Romset(r) || isEvoBaseRomset(r)) add(IDE::NEMO);
+    } else {
+        add(IDE::NEMO);
+        add(IDE::PROFI);
+        if (a == A_SCORP || a == A_TSCONF) add(IDE::SMUC);
+    }
+    add(Stage::get(SET_IDE_SCHEME));
+    cnt = n;
+    return opts;
+}
 
 
 // ── Additional hardware ────────────────────────────────────────────────────────
@@ -1224,35 +1287,54 @@ static const Node kMouse[] = {
     NM_RADIO (TXT_HW_MOUSE_SENS, SET_MOUSE_SENS, opt_mouse_sens, nullptr),
 };
 
-// Storage and Devices used to be two top-level items, which split one question ("what is
-// this machine plugged into?") across two menus — Betadisk sat in one and the Z-Controller
-// that also drives disks in the other. Merged, storage first in the order the classic
-// Storage menu used (MENU_STORAGE_MAIN), then everything else.
+// Each interface is its own level. The machine's disk controller is one row named
+// after it: the four nodes below are mutually exclusive by predicate, and slotNodeFor finds
+// the drive levels by builder, so they can move without touching the hot keys.
+static const Node kDiskBeta[] = {
+    NM_BOOL    (TXT_BETA,          SET_BETADISK, p_betaOptional),
+    NM_DYN_EN  (TXT_BETA_DRIVES,   slots_buildBeta, slots_keyBeta, p_hasSD, p_betaOn),
+    NM_BOOL_EN (TXT_BETA_FASTMODE, SET_TRDOS_FAST,     nullptr, p_betaOn),
+    NM_RADIO_EN(TXT_BETA_SNDLED,   SET_TRDOS_LED,      opt_sndled, nullptr, p_betaOn),
+    NM_RADIO_EN(TXT_BETA_ROM,      SET_TRDOS_ROM,      opt_trdos_rom, nullptr, p_betaOn),
+    NM_BOOL_EN (TXT_BETA_AUTOBOOT, SET_TRDOS_AUTOBOOT, nullptr, p_betaOn),
+};
+static const Node kDiskP3[] = {
+    NM_DYN     (TXT_BETA_DRIVES_P3, slots_buildP3, slots_keyP3, p_hasSD),
+    NM_BOOL    (TXT_P3_FASTDISK,   SET_P3_FASTDISK,  nullptr),
+    NM_BOOL    (TXT_P3_SPEEDLOCK,  SET_P3_SPEEDLOCK, nullptr),
+};
+static const Node kEsx[] = {
+    NM_RADIO   (TXT_IFACE_MODE,    SET_ESXDOS, opt_esxdos, nullptr),
+    NM_DYN_EN  (TXT_HW_ESX_IMAGES, slots_buildEsx, slots_keyEsx, nullptr, p_esxImages),
+};
+static const Node kMb02[] = {
+    NM_BOOL    (TXT_MB02,          SET_MB02,  nullptr),
+    NM_DYN_EN  (TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
+    NM_RADIO_EN(TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
+};
+static const Node kIde[] = {
+    NM_RADIO_D (TXT_IFACE_MODE,    SET_IDE_SCHEME, ide_schemeOpts, nullptr),
+    NM_DYNH_EN (TXT_IDE_IMAGES,    slots_buildIde, slots_keyIde,
+                opt_ide_slot_hints, nullptr, p_ideOn),
+    NM_ACTION_EN(TXT_IDE_CREATE,   act_ideCreate, nullptr, p_ideOn),
+};
+// The value beside a submenu row. Kept short: a long one clips the row's own label.
+static const char* vl_beta()  { return p_betaBuiltIn() ? nullptr : nodeValueLabel(kDiskBeta[0]); }
+static const char* vl_esx()   { return nodeValueLabel(kEsx[0]); }
+static const char* vl_mb02()  { return nodeValueLabel(kMb02[0]); }
+static const char* vl_ide()   { return nodeValueLabel(kIde[0]); }
 static const Node kHardware[] = {
     NM_SUB     (TXT_TAPE,          kTape,     nullptr),
-    NM_BOOL    (TXT_BETA,          SET_BETADISK, nullptr),
-    NM_DYN_EN  (NM_IND TXT_BETA_DRIVES,   slots_buildBeta, slots_keyBeta, p_hasSD, p_betaOn),
-    NM_BOOL_EN (NM_IND TXT_BETA_FASTMODE, SET_TRDOS_FAST,     nullptr, p_betaOn),
-    NM_RADIO_EN(NM_IND TXT_BETA_SNDLED,   SET_TRDOS_LED,      opt_sndled, nullptr, p_betaOn),
-    NM_RADIO_EN(NM_IND TXT_BETA_ROM,      SET_TRDOS_ROM,      opt_trdos_rom, nullptr, p_betaOn),
-    NM_BOOL_EN (NM_IND TXT_BETA_AUTOBOOT, SET_TRDOS_AUTOBOOT, nullptr, p_betaOn),
-    NM_RADIO   (TXT_HW_ESXDOS,     SET_ESXDOS, opt_esxdos, p_hasSD),
-    NM_DYN_EN  (NM_IND TXT_HW_ESX_IMAGES, slots_buildEsx, slots_keyEsx, p_hasSD, p_esxImages),
-    NM_BOOL    (TXT_MB02,          SET_MB02,  nullptr),
-    NM_DYN_EN  (NM_IND TXT_MB02_DRIVES,   slots_buildMb02, slots_keyMb02, p_hasSD, p_mb02On),
-    NM_RADIO_EN(NM_IND TXT_MB02_SNDLED,   SET_MB02_LED,   opt_sndled, nullptr, p_mb02On),
-    NM_DYN_EN  (TXT_P3_DRIVES,     slots_buildP3, slots_keyP3, p_hasSD, p_plus3On),
-    NM_DYN_EN  (TXT_SAM_DRIVES,    slots_buildSam, slots_keySam, p_hasSD, p_samOn),
-    NM_DYN_EN  (TXT_EP_DRIVES,     slots_buildEp, slots_keyEp, p_hasSD, p_epOn),
-    NM_BOOL_EN (NM_IND TXT_P3_FASTDISK,   SET_P3_FASTDISK,  nullptr, p_plus3On),
-    NM_BOOL_EN (NM_IND TXT_P3_SPEEDLOCK,  SET_P3_SPEEDLOCK, nullptr, p_plus3On),
-    NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_hasSD),
-    NM_RADIO   (TXT_HW_IDE,        SET_IDE_SCHEME, opt_ide_scheme, p_hasSD),
-    NM_DYNH_EN (NM_IND TXT_IDE_IMAGES,   slots_buildIde, slots_keyIde,
-                opt_ide_slot_hints, p_hasSD, p_ideOn),
-    NM_ACTION_EN(NM_IND TXT_IDE_CREATE,  act_ideCreate, p_hasSD, p_ideOn),
-    NM_BOOL  (TXT_HW_RTC,        SET_RTC,     nullptr),
-    NM_SUB   (TXT_HW_MOUSE,      kMouse,      nullptr),
+    NM_SUBV    (TXT_BETA,          kDiskBeta, vl_beta, p_diskBeta),
+    NM_SUB     (TXT_P3_DRIVES,     kDiskP3,   p_plus3On),
+    NM_DYN     (TXT_SAM_DRIVES,    slots_buildSam, slots_keySam, p_samOn),
+    NM_DYN     (TXT_EP_DRIVES,     slots_buildEp,  slots_keyEp,  p_epOn),
+    NM_SUBV    (TXT_HW_ESXDOS,     kEsx,  vl_esx,  p_esxRow),
+    NM_SUBV    (TXT_MB02,          kMb02, vl_mb02, p_mb02Row),
+    NM_BOOL    (TXT_HW_ZC,         SET_ZCONTROLLER, p_zcRow),
+    NM_SUBV    (TXT_HW_IDE,        kIde,  vl_ide,  p_ideRow),
+    NM_BOOL    (TXT_HW_RTC,        SET_RTC,   p_rtcRow),
+    NM_SUB     (TXT_HW_MOUSE,      kMouse,    nullptr),
 };
 
 // ── Video > TFT panel ──────────────────────────────────────────────────────────
@@ -1964,13 +2046,12 @@ static const Node* findDyn(const Node* arr, uint8_t n, void (*bld)(DynRows&)) {
 }
 
 const Node* slotNodeFor(int iface) {
-    // Matched by builder identity, not by row index: the row can move anywhere
-    // (they are flat rows of the Devices level now).
+    // Matched by builder identity, not by row index: the row can move anywhere.
     switch (iface) {
-        case IFACE_BETA: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildBeta);
-        case IFACE_MB02: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildMb02);
-        case IFACE_ESX:  return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEsx);
-        case IFACE_PLUS3: return findDyn(kHardware, NM_COUNT(kHardware), slots_buildP3);
+        case IFACE_BETA: return findDyn(kDiskBeta, NM_COUNT(kDiskBeta), slots_buildBeta);
+        case IFACE_MB02: return findDyn(kMb02, NM_COUNT(kMb02), slots_buildMb02);
+        case IFACE_ESX:  return findDyn(kEsx, NM_COUNT(kEsx), slots_buildEsx);
+        case IFACE_PLUS3: return findDyn(kDiskP3, NM_COUNT(kDiskP3), slots_buildP3);
         case IFACE_SAM:   return findDyn(kHardware, NM_COUNT(kHardware), slots_buildSam);
         case IFACE_EP:    return findDyn(kHardware, NM_COUNT(kHardware), slots_buildEp);
         default:         return nullptr;

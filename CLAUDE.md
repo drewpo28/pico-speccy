@@ -16878,6 +16878,26 @@ was a per-frame line counter (where the wait began, where the scroll was written
 guest T spent in the token poll — a frame without its scroll write printed beside the SD
 figures.
 
+## The Devices menu shows the staged machine, one level per interface (2026-10-31, host-checked, NOT hw-tested)
+
+`kHardware` (UiTree.cpp) = Tape / <the machine's disk controller> / esxDOS / MB-02+ / Z-Controller / IDE / HDD /
+CMOS + NVRAM / Mouse (an "Other interfaces" level was tried and dropped the same day, owner).
+The controller row is four mutually exclusive nodes by predicate, each under its own
+name (Betadisk `kDiskBeta`, +3DOS `kDiskP3`, SAM drives and Enterprise drives straight to
+their slot levels; a shared "Disk drives" label was tried and dropped, owner). `NM_SUBV`:
+UiRender draws a K_SUB/K_DYNAMIC `vlabel` left of the
+chevron — keep it short, a long one clips the row's label). esxDOS = `kEsx`, MB-02+ =
+`kMb02`, IDE / HDD = `kIde`. A row of another machine is
+ABSENT, not grey: `devArch()/devRomset()` + the `p_*Row` predicates mirror
+resolveConstraints / MachineSwitch / CPU::reset, which stay the authority, so a new
+machine or exclusion has to be added in both. The grey-until-on gate survives inside an
+interface's level. `p_betaOn` includes `p_betaBuiltIn`: on a machine staged this session
+Config has not forced the setting yet. `ide_schemeOpts` lists only the machine's schemes
+plus the staged value (nodeValueLabel looks it up there). Decisions: Next shows no
+disk/interface rows (DivSD forced); Byte 48K no Beta; CMOS row hidden on 48K/128K arch
+(Quorum 64 keeps it) and EP. `slotNodeFor` searches the new arrays by builder. Hw owed: disk hot keys and
+the F5 "which slot" path on each machine, a machine switch from inside the session.
+
 ## Next: Layer 2 640x256x4 goes through the 640 pair frame — SymbOS ZNX 4.0 (2026-10-20, hw-confirmed DVp2 on `debug/DVp2-next-l2hi640-1.0.10`: owner "текст читаемый, картинка хорошая")
 
 SymbOS draws its desktop in Layer 2 640x256x4 (dump: NR 70=20, 69=80, 6B=00, 15=03,

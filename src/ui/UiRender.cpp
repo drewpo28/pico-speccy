@@ -324,15 +324,16 @@ static void drawLeftRow(int visRow) {
     const UiColor ink = !en ? C_DISABLED : (sel ? C_WHITE : C_TEXT);
 
     const bool isSub = (n.kind == K_SUB || n.kind == K_DYNAMIC);
-    const char* val  = isSub ? nullptr : nodeValueLabel(n);
-    const int rightW = isSub ? chevronW() : ((val && *val) ? textWidth(val) : 0);
+    const char* val  = isSub ? (n.vlabel ? n.vlabel() : nullptr) : nodeValueLabel(n);
+    const int valW   = (val && *val) ? textWidth(val) : 0;
+    const int rightW = isSub ? chevronW() + (valW ? valW + LY.pad : 0) : valW;
 
     textClip(LY.lx + LY.pad, y + 1,
              LY.lw - 2 * LY.pad - rightW - (rightW ? LY.pad : 0), n.label, ink);
     if (isSub)
         chevron(LY.lx + LY.lw - LY.pad - chevronW(), y + LY.row_h / 2 - 3,
                 !en ? C_DISABLED : (sel ? C_WHITE : C_DISABLED));
-    else if (val && *val)
+    if (val && *val)
         text(LY.lx + LY.lw - LY.pad - rightW, y + 1, val,
              !en ? C_DISABLED : (sel ? C_WHITE : C_TEXT_DIM));
 }

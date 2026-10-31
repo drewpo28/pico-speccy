@@ -134,6 +134,9 @@ struct Node {
 
 #define NM_SUB(lbl, kids_arr, vis) \
     { lbl, nm::K_SUB, NM_COUNT(kids_arr), 0, nullptr, kids_arr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr }
+// Submenu row with a short live value beside its chevron.
+#define NM_SUBV(lbl, kids_arr, vl, vis) \
+    { lbl, nm::K_SUB, NM_COUNT(kids_arr), 0, nullptr, kids_arr, vis, nullptr, nullptr, nullptr, nullptr, 0, 0, 0, vl, nullptr }
 #define NM_ACTION(lbl, f, vis) \
     { lbl, nm::K_ACTION, 0, 0, nullptr, nullptr, vis, f, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, nullptr }
 // Action whose row shows live state via `vl` (e.g. "On <ssid>").
